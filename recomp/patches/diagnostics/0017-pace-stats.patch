@@ -1,0 +1,98 @@
+diff --git a/src/nx/runtime/main.c b/src/nx/runtime/main.c
+index 6641536..6c4b70a 100644
+--- a/src/nx/runtime/main.c
++++ b/src/nx/runtime/main.c
+@@ -538,15 +538,29 @@ static void frontend_loop(void) {
+     const u64 period = 1000000000u / VI_REFRESH_HZ;
+     u64 tick = 0, next = plat_ns(), now, changed = next, rate_at = next;
+     int frames = 0, stalls = 0, rate_frames = 0;
++    /* the vsync events of the last 5 s (a diagnostic): how late each came after its due time, and the gaps between them */
++    u64 vs_worst_late = 0, vs_last = 0, vs_worst_gap = 0, poll_worst = 0;
++    u32 vs_late = 0, vs_long_gap = 0;
++    enum { VSYNC_LATE_NS = 4000000, VSYNC_LONG_GAP_NS = 22000000 };
+     while (!g_quit) {
+         int shown, paused;
+         SNX_ZONE(z_frontend, "frontend tick");
++        u64 poll_start = plat_ns(), signaled;
+         video_poll();
++        if (plat_ns() - poll_start > poll_worst) poll_worst = plat_ns() - poll_start;
+         /* the game's input and its display's vsync are guest work, which a pause holds back with the rest */
+         paused = game_paused();
+         if (!paused) {
+             hid_update();
+             vi_vsync_tick();
++            signaled = plat_ns();
++            if (signaled > next + VSYNC_LATE_NS) vs_late++;
++            if (signaled > next && signaled - next > vs_worst_late) vs_worst_late = signaled - next;
++            if (vs_last) {
++                if (signaled - vs_last > VSYNC_LONG_GAP_NS) vs_long_gap++;
++                if (signaled - vs_last > vs_worst_gap) vs_worst_gap = signaled - vs_last;
++            }
++            vs_last = signaled;
+         }
+         if (++tick % 60 == 0) ini_poll(0);
+         frontend_frame();
+@@ -583,6 +597,16 @@ static void frontend_loop(void) {
+         if (now - rate_at >= 5000000000u) {
+             LOG("perf: %.1f frames a second over %.1f s (%d shown in all)\n",
+                 (double)(shown - rate_frames) * 1e9 / (double)(now - rate_at), (double)(now - rate_at) / 1e9, shown);
++            {
++                u64 pace_worst;
++                u32 pace_late;
++                present_pace_report(&pace_worst, &pace_late);
++                LOG("pace: vsync events late 4 ms or more %u (worst %.1f ms), gaps over 22 ms %u (longest %.1f ms), the poll took %.1f ms at most; pace sleeps late %u (worst %.1f ms)\n",
++                    vs_late, (double)vs_worst_late / 1e6, vs_long_gap, (double)vs_worst_gap / 1e6, (double)poll_worst / 1e6,
++                    pace_late, (double)pace_worst / 1e6);
++                vs_late = vs_long_gap = 0;
++                vs_worst_late = vs_worst_gap = poll_worst = 0;
++            }
+             rate_at = now;
+             rate_frames = shown;
+ #ifdef MODULE_PACK
+diff --git a/src/nx/runtime/main.h b/src/nx/runtime/main.h
+index 3c6bf7c..4432aa1 100644
+--- a/src/nx/runtime/main.h
++++ b/src/nx/runtime/main.h
+@@ -47,5 +47,7 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
+ /* the wait before vi hands the game a buffer for its next frame, as fps_limit says: with fps_limit=game until the
+    frame before has been on the display for interval refreshes (its swap interval) */
+ void present_pace(u32 interval);
++/* the pace sleeps since the last call: the longest one past its due time, and how many were 4 ms or more late */
++void present_pace_report(u64* worst_late_ns, u32* late_count);
+ 
+ #endif
+diff --git a/src/nx/runtime/present.c b/src/nx/runtime/present.c
+index 013712e..e7c4e69 100644
+--- a/src/nx/runtime/present.c
++++ b/src/nx/runtime/present.c
+@@ -33,6 +33,14 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
+    paces a swap interval of 0, the game's pace with interval 0 does not wait at all */
+ static PMutex g_pace_lock = PMUTEX_INIT;
+ static u64 g_pace_last; /* when the frame before was due, 0 before the first */
++static u64 g_pace_worst_late;
++static u32 g_pace_late_count;
++enum { PACE_LATE_NS = 4000000 }; /* a sleep that ends this long past its due time is late */
++
++void present_pace_report(u64* worst_late_ns, u32* late_count) {
++    *worst_late_ns = __atomic_exchange_n(&g_pace_worst_late, 0, __ATOMIC_RELAXED);
++    *late_count = __atomic_exchange_n(&g_pace_late_count, 0, __ATOMIC_RELAXED);
++}
+ 
+ void present_pace(u32 interval) {
+     int fps = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED);
+@@ -47,5 +55,14 @@ void present_pace(u32 interval) {
+     if (!g_pace_last || now > next + refresh) next = now;
+     g_pace_last = next;
+     pm_unlock(&g_pace_lock);
+-    if (next > now) plat_sleep_ns((i64)(next - now));
++    if (next > now) {
++        u64 woke, late, worst;
++        plat_sleep_ns((i64)(next - now));
++        woke = plat_ns();
++        late = woke > next ? woke - next : 0;
++        if (late >= PACE_LATE_NS) __atomic_add_fetch(&g_pace_late_count, 1, __ATOMIC_RELAXED);
++        worst = __atomic_load_n(&g_pace_worst_late, __ATOMIC_RELAXED);
++        while (late > worst && !__atomic_compare_exchange_n(&g_pace_worst_late, &worst, late, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
++        }
++    }
+ }

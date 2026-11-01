@@ -1,0 +1,14 @@
+diff --git a/src/gui/main.c b/src/gui/main.c
+index 383d2e8..975e264 100644
+--- a/src/gui/main.c
++++ b/src/gui/main.c
+@@ -7301,7 +7301,8 @@ static unsigned group_icon(const char* name) {
+     } icons[] = {{"App", GUI_ICON_APP_WINDOW},  {"Launch", GUI_ICON_ROCKET},
+                  {"Game", GUI_ICON_JOYSTICK},   {"Display", GUI_ICON_MONITOR},
+                  {"Graphics", GUI_ICON_IMAGE},  {"Performance", GUI_ICON_GAUGE},
+-                 {"Overlay", GUI_ICON_POINTER}, {"Controllers", GUI_ICON_GAMEPAD_2},
++                 {"Overlay", GUI_ICON_POINTER}, {"Mouse", GUI_ICON_POINTER},
++                 {"Keyboard", GUI_ICON_KEY_ROUND}, {"Controllers", GUI_ICON_GAMEPAD_2},
+                  {"Network", GUI_ICON_WIFI},    {"User", GUI_ICON_USER},
+                  {"Debug", GUI_ICON_BUG}};
+     for (size_t i = 0; i < SDL_arraysize(icons); ++i)

@@ -441,10 +441,10 @@ index d81eca3d..9c3a5d61 100644
      g_vk.swapchain = VK_NULL_HANDLE;
 diff --git a/src/nx/gpu/vk/imgui.c b/src/nx/gpu/vk/imgui.c
 new file mode 100644
-index 00000000..4e253213
+index 00000000..ac9bad94
 --- /dev/null
 +++ b/src/nx/gpu/vk/imgui.c
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,209 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later
 +   Copyright 2026 the NXAevora contributors */
 +/* Dear ImGui's windows over the presented image (docs/imgui-plan.md). ImGui's backend calls Vulkan directly, so the
@@ -473,8 +473,8 @@ index 00000000..4e253213
 +_Static_assert(sizeof(((ImguiKeyboard*)0)->sub) == sizeof(((OverlayKeyboardView*)0)->sub), "the keyboard's sub text");
 +_Static_assert(sizeof(((ImguiKeyboard*)0)->guide) == sizeof(((OverlayKeyboardView*)0)->guide), "the keyboard's guide");
 +_Static_assert(sizeof(((ImguiKeyboard*)0)->ok) == sizeof(((OverlayKeyboardView*)0)->ok), "the keyboard's OK");
-+static int g_failed, g_hook_set;
-+static int windows_running(void) { return imgui_input_alive(plat_ns()); } /* the backend did not start: not tried again until the swapchain is made again */
++static int g_failed, g_hook_set; /* g_failed: the backend did not start or failed, not tried again until the swapchain is made again */
++static int windows_running(void) { return imgui_input_running(); }
 +
 +static int font_path(char* out, const char* name) {
 +    FILE* f;
@@ -508,7 +508,10 @@ index 00000000..4e253213
 +        g_hook_set = 1;
 +    }
 +    if (g_failed) return 0;
-+    if (imgui_glue_ready()) return 1;
++    if (imgui_glue_ready()) {
++        imgui_input_running_set(1);
++        return 1;
++    }
 +    have_latin = font_path(latin, LATIN_FONT);
 +    have_jp = have_latin && font_path(japanese, JAPANESE_FONT);
 +    in = (ImguiGlueInit){.instance = g_vk.instance,
@@ -524,6 +527,7 @@ index 00000000..4e253213
 +    if (!have_latin) LOG("imgui: %s is missing in the data folder, the built-in font is used\n", LATIN_FONT);
 +    g_failed = !imgui_glue_init(&in);
 +    if (g_failed) LOG("imgui: the Vulkan backend did not start\n");
++    imgui_input_running_set(!g_failed);
 +    return !g_failed;
 +}
 +
@@ -579,6 +583,9 @@ index 00000000..4e253213
 +}
 +
 +void vk_imgui_swapchain_gone(void) {
++    ImguiWants none = {0};
++    imgui_input_running_set(0);
++    imgui_input_publish(&none);
 +    imgui_glue_shutdown();
 +    g_failed = 0;
 +}
@@ -592,6 +599,7 @@ index 00000000..4e253213
 +    int drawn;
 +    if (!__atomic_load_n(&g_settings.imgui, __ATOMIC_RELAXED)) {
 +        g_last_ns = 0;
++        imgui_input_running_set(0);
 +        if (imgui_glue_ready()) imgui_glue_unwanted();
 +        return;
 +    }
@@ -614,11 +622,11 @@ index 00000000..4e253213
 +    drawn = imgui_glue_frame(&frame);
 +    if (imgui_glue_vk_failed()) { /* the backend stays until the swapchain goes: frames may still use it */
 +        g_failed = 1;
++        imgui_input_running_set(0);
 +        LOG("imgui: the Vulkan backend reported an error, the windows are off\n");
 +        imgui_glue_unwanted();
 +        return;
 +    }
-+    imgui_input_alive_set(now);
 +    keyboard_answer(&frame.kb);
 +    if (!drawn) return; /* nothing shows: no drain, no pass */
 +    vk_rec_sync();
@@ -648,10 +656,10 @@ index 00000000..4e253213
 +}
 diff --git a/src/nx/gpu/vk/imgui_events.cpp b/src/nx/gpu/vk/imgui_events.cpp
 new file mode 100644
-index 00000000..0f0d009f
+index 00000000..ba323994
 --- /dev/null
 +++ b/src/nx/gpu/vk/imgui_events.cpp
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,101 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later
 +   Copyright 2026 the NXAevora contributors */
 +#include "nx/gpu/vk/imgui_events.h"
@@ -747,6 +755,7 @@ index 00000000..0f0d009f
 +    w.keyboard = io.WantCaptureKeyboard;
 +    w.text = io.WantTextInput;
 +    w.release = io.WantCaptureMouse || menu_visible;
++    w.redraw = ImGui::GetDrawData()->TotalVtxCount > 0;
 +    w.ime_x = (int)g_ime_pos.x;
 +    w.ime_y = (int)g_ime_pos.y;
 +    w.ime_h = (int)g_ime_height;
@@ -969,10 +978,10 @@ index 00000000..709d8138
 +#endif
 diff --git a/src/nx/gpu/vk/imgui_input.c b/src/nx/gpu/vk/imgui_input.c
 new file mode 100644
-index 00000000..818092a3
+index 00000000..647fc163
 --- /dev/null
 +++ b/src/nx/gpu/vk/imgui_input.c
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,89 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later
 +   Copyright 2026 the NXAevora contributors */
 +#include "nx/gpu/vk/imgui_input.h"
@@ -982,7 +991,8 @@ index 00000000..818092a3
 +static ImguiEvent g_queue[QUEUE_MAX];
 +static int g_head, g_count;
 +static PMutex g_lock = PMUTEX_INIT;
-+static int g_wants_mouse, g_wants_keyboard, g_wants_text, g_wants_release, g_ime_x, g_ime_y, g_ime_h;
++static int g_wants_mouse, g_wants_keyboard, g_wants_text, g_wants_release, g_wants_redraw, g_ime_x, g_ime_y, g_ime_h;
++static int g_running;
 +
 +static ImguiEvent* at(int i) { return &g_queue[(g_head + i) % QUEUE_MAX]; }
 +
@@ -1028,19 +1038,12 @@ index 00000000..818092a3
 +    return have;
 +}
 +
-+static uint64_t g_alive_ns;
-+enum { ALIVE_MS = 500 }; /* a frame this recent: the windows run */
-+void imgui_input_alive_set(uint64_t now_ns) { __atomic_store_n(&g_alive_ns, now_ns, __ATOMIC_RELAXED); }
-+int imgui_input_alive(uint64_t now_ns) {
-+    uint64_t last = __atomic_load_n(&g_alive_ns, __ATOMIC_RELAXED);
-+    return last && now_ns - last < (uint64_t)ALIVE_MS * 1000000u;
-+}
-+
 +void imgui_input_publish(const ImguiWants* w) {
 +    __atomic_store_n(&g_wants_mouse, w->mouse, __ATOMIC_RELAXED);
 +    __atomic_store_n(&g_wants_keyboard, w->keyboard, __ATOMIC_RELAXED);
 +    __atomic_store_n(&g_wants_text, w->text, __ATOMIC_RELAXED);
 +    __atomic_store_n(&g_wants_release, w->release, __ATOMIC_RELAXED);
++    __atomic_store_n(&g_wants_redraw, w->redraw, __ATOMIC_RELAXED);
 +    __atomic_store_n(&g_ime_x, w->ime_x, __ATOMIC_RELAXED);
 +    __atomic_store_n(&g_ime_y, w->ime_y, __ATOMIC_RELAXED);
 +    __atomic_store_n(&g_ime_h, w->ime_h, __ATOMIC_RELAXED);
@@ -1049,16 +1052,31 @@ index 00000000..818092a3
 +ImguiWants imgui_input_wants(void) {
 +    ImguiWants w = {__atomic_load_n(&g_wants_mouse, __ATOMIC_RELAXED), __atomic_load_n(&g_wants_keyboard, __ATOMIC_RELAXED),
 +                    __atomic_load_n(&g_wants_text, __ATOMIC_RELAXED), __atomic_load_n(&g_wants_release, __ATOMIC_RELAXED),
++                    __atomic_load_n(&g_wants_redraw, __ATOMIC_RELAXED),
 +                    __atomic_load_n(&g_ime_x, __ATOMIC_RELAXED), __atomic_load_n(&g_ime_y, __ATOMIC_RELAXED),
 +                    __atomic_load_n(&g_ime_h, __ATOMIC_RELAXED)};
 +    return w;
 +}
++
++void imgui_input_running_set(int running) { __atomic_store_n(&g_running, running, __ATOMIC_RELAXED); }
++
++int imgui_input_running(void) { return __atomic_load_n(&g_running, __ATOMIC_RELAXED); }
++
++int imgui_input_refresh_wanted(void) {
++    int waiting;
++    if (!__atomic_load_n(&g_running, __ATOMIC_RELAXED)) return 0;
++    if (__atomic_load_n(&g_wants_redraw, __ATOMIC_RELAXED)) return 1;
++    pm_lock(&g_lock);
++    waiting = g_count > 0;
++    pm_unlock(&g_lock);
++    return waiting;
++}
 diff --git a/src/nx/gpu/vk/imgui_input.h b/src/nx/gpu/vk/imgui_input.h
 new file mode 100644
-index 00000000..ae2baba2
+index 00000000..0727f47a
 --- /dev/null
 +++ b/src/nx/gpu/vk/imgui_input.h
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,53 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later
 +   Copyright 2026 the NXAevora contributors */
 +/* The input of the ImGui windows. The main thread polls the window's events (runtime/platform/backend/imgui_sdl.c)
@@ -1092,14 +1110,20 @@ index 00000000..ae2baba2
 +    int keyboard; /* a widget has the keyboard: the game does not get keys */
 +    int text;     /* a text field is active: the window's text input is on */
 +    int release;  /* the game's mouse look lets go of the cursor */
++    int redraw;   /* the last frame drew something: it must be drawn again while the game presents nothing */
 +    /* where an input method puts its window: the text cursor, in pixels of the picture, and its line's height */
 +    int ime_x, ime_y, ime_h;
 +} ImguiWants;
-+/* the windows are running: the frame says so at each present, and a part that would otherwise draw a thing the player
-+   needs (the keyboard's box) leaves it to them while they are, so that a window that failed to start leaves it here */
-+void imgui_input_alive_set(uint64_t now_ns);
-+int imgui_input_alive(uint64_t now_ns);
 +void imgui_input_publish(const ImguiWants* w);
++/* the frame runs (the backend is up and the setting is on), set by the frame's owner. The main thread asks whether the
++   game's last picture must be shown again for the windows: they have something drawn, or an event waits for the next
++   frame. This does not depend on a recent frame, so it also starts the windows again after a stall */
++void imgui_input_running_set(int running);
++int imgui_input_refresh_wanted(void);
++/* the windows own what the player needs (the keyboard's box, the menu): the backend is up, the setting is on, and it
++   has not failed. A part that would otherwise draw it leaves it to them while this is 1. It follows the backend's
++   life, not the age of the last frame, so a stall in the game's presents does not hand it back */
++int imgui_input_running(void);
 +ImguiWants imgui_input_wants(void);
 +
 +#ifdef __cplusplus
@@ -1780,7 +1804,7 @@ index 00000000..9be0857e
 +void imgui_sdl_text_input(SDL_Window* win, int keyboard_box, float density);
 +#endif
 diff --git a/src/nx/runtime/platform/backend/sdl3.c b/src/nx/runtime/platform/backend/sdl3.c
-index e240ffeb..c600e593 100644
+index e240ffeb..7c104626 100644
 --- a/src/nx/runtime/platform/backend/sdl3.c
 +++ b/src/nx/runtime/platform/backend/sdl3.c
 @@ -13,6 +13,9 @@
@@ -1869,6 +1893,15 @@ index e240ffeb..c600e593 100644
          /* with the menu open, the pads move it: the on-screen controls' and the connected ones', sticks too */
          overlay_do(overlay_controls(vb | pb | (s & 0xFFFFFull), vs[0] || vs[1] ? vs : pad, SDL_GetTicks()));
          ui_unlock();
+@@ -1752,7 +1770,7 @@ void frontend_frame(void) {
+     if (g_renderer->refresh &&
+         (overlay_shown() || overlay_keyboard_shown() || vpad_shown() || game_paused() || overlay_toasting(plat_ns()) ||
+          __atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED) ||
+-         __atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)))
++         __atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED) || imgui_input_refresh_wanted()))
+         g_renderer->refresh();
+     if (g_shot_req) {
+         g_shot_req = 0;
 diff --git a/src/nx/runtime/platform/overlay.c b/src/nx/runtime/platform/overlay.c
 index 57ae319f..8eb56188 100644
 --- a/src/nx/runtime/platform/overlay.c

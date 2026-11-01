@@ -91,4 +91,4 @@ build/default/scarletnx.exe --help
 
 ## Not verified
 
-- `ctest` after the build
+- `ctest` after the build: set `APPDATA` first (for example `export APPDATA=$(cygpath -w /tmp/snx-appdata)` in MSYS2), or `native_recompiler` and `llvm_module` fail with "HOME is not set". With it set and the patches of `recomp/patches/` applied, all 284 tests pass (2 are skipped).
