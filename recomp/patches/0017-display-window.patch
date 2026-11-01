@@ -1,0 +1,522 @@
+diff --git a/src/nx/gpu/vk/device.c b/src/nx/gpu/vk/device.c
+index 3fe3bbc..3f3524a 100644
+--- a/src/nx/gpu/vk/device.c
++++ b/src/nx/gpu/vk/device.c
+@@ -667,19 +667,22 @@ int vk_swapchain_create(int srgb) {
+         LOG_LIMIT(1, "vulkan: the window has no sRGB format: frames in sRGB show darker\n");
+     }
+ 
+-    /* vsync=1: FIFO, which every device has. Otherwise mailbox, else immediate, else FIFO all the same. Read once: the
++    /* vsync 1: FIFO, which every device has. 2: mailbox, else FIFO. 0: immediate, else mailbox, else FIFO. Read once: the
+        main thread's .ini reload writes it */
+     int vsync = __atomic_load_n(&g_settings.vsync, __ATOMIC_RELAXED);
++    if (vsync < 0 || vsync > 2) vsync = 1; /* the .ini keeps it within 0 to 2 (options.c) */
+     u32 nm = 0;
+     vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, g_vk.surface, &nm, NULL);
+     VkPresentModeKHR* ms = calloc(nm ? nm : 1, sizeof *ms);
+     vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, g_vk.surface, &nm, ms);
++    const VkPresentModeKHR wanted[3][2] = {{VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR},
++                                           {VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_FIFO_KHR},
++                                           {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR}};
+     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
+-    for (u32 i = 0; i < nm && !vsync; i++)
+-        if (ms[i] == VK_PRESENT_MODE_MAILBOX_KHR) mode = ms[i];
+-    if (mode == VK_PRESENT_MODE_FIFO_KHR && !vsync)
++    for (int w = 2; w-- > 0;) { /* the second choice first, so that the first one overrides it */
+         for (u32 i = 0; i < nm; i++)
+-            if (ms[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) mode = ms[i];
++            if (ms[i] == wanted[vsync][w]) mode = ms[i];
++    }
+     free(ms);
+ 
+     /* an image for each frame in flight beyond what the driver keeps: a frame's present waits in the recording ring
+diff --git a/src/nx/gpu/vk/imgui_settings.c b/src/nx/gpu/vk/imgui_settings.c
+index 70c65bd..ca21cc7 100644
+--- a/src/nx/gpu/vk/imgui_settings.c
++++ b/src/nx/gpu/vk/imgui_settings.c
+@@ -4,18 +4,46 @@
+    sections wait for their own work (docs/imgui-plan.md). A row of the game's own (INI_IN_GAME) is left out. */
+ #include "nx/gpu/vk/imgui_settings.h"
+ #include <ctype.h>
++#include <math.h>
++#include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include "common/utilities/pad_map.h"
+ #include "nx/runtime/ini.h"
+ #include "nx/runtime/options.h"
+ #include "nx/runtime/platform/backend.h"
+ 
+-static const char* const PAGES[] = {"Mouse", "Keyboard", "Controllers"};
++enum { SAVED_VALUE_MAX = 64 };
++#define SAVED_FLOAT_EPSILON 1e-6 /* a saved float this close to the running one is the same */
++
++typedef struct {
++    const char* name; /* the section of settings.txt */
++    int window;       /* the window that shows it */
++} Page;
++static const Page PAGES[] = {{"Mouse", IMGUI_WINDOW_INPUT},       {"Keyboard", IMGUI_WINDOW_INPUT},
++                             {"Controllers", IMGUI_WINDOW_INPUT}, {"Display", IMGUI_WINDOW_DISPLAY},
++                             {"Graphics", IMGUI_WINDOW_DISPLAY}, {"Performance", IMGUI_WINDOW_DISPLAY}};
+ enum { PAGE_COUNT = sizeof PAGES / sizeof PAGES[0] };
+ 
+ /* keyboard_map and gamepad_map have their own rows in place of a text field. mouse_native_address is the guest address
+    of a word that a code patch of the game reads: a value that is not 8 aligned and mapped breaks the mouse look, so
+    only the launcher that installs the patch sets it */
++/* Settings that the window shows as a choice from a list, not a slider. A value in the .ini that is not in the list
++   (resolution 16) shows as custom. The sizes are the game's render size at 1x: 1920 x 1080 (the log of resolution 16
++   has targets of 30720 x 17280), and every step costs the square of its scale in GPU memory */
++typedef struct {
++    const char* key;
++    const char* value;
++    const char* label;
++} Preset;
++static const Preset PRESETS[] = {
++    {"resolution", "0.5", "0.5x (960 x 540)"},    {"resolution", "0.75", "0.75x (1440 x 810)"},
++    {"resolution", "1", "1x (1920 x 1080)"},      {"resolution", "1.5", "1.5x (2880 x 1620)"},
++    {"resolution", "2", "2x (3840 x 2160)"},      {"resolution", "3", "3x (5760 x 3240)"},
++    {"resolution", "4", "4x (7680 x 4320)"},      {"anisotropy", "0", "Game's"},
++    {"anisotropy", "2", "2x"},                    {"anisotropy", "4", "4x"},
++    {"anisotropy", "8", "8x"},                    {"anisotropy", "16", "16x"}};
++
+ static const char* const HIDDEN[] = {"keyboard_map", "mouse_native_address", "gamepad_map"};
+ 
+ /* The rows of each player (gamepad_p1_device and the like) are left out: the window edits the settings every player
+@@ -32,7 +60,7 @@ _Static_assert(sizeof(((ImguiKeybind*)0)->keys) == sizeof(((BackendKeybind*)0)->
+ static const IniSection* section_of(int page) {
+     if (page < 0 || page >= PAGE_COUNT) return NULL;
+     for (int s = 0; s < g_ini_sections_count; s++)
+-        if (!strcmp(g_ini_sections[s].name, PAGES[page])) return &g_ini_sections[s];
++        if (!strcmp(g_ini_sections[s].name, PAGES[page].name)) return &g_ini_sections[s];
+     return NULL;
+ }
+ 
+@@ -62,9 +90,27 @@ static const IniOpt* find(const char* key) {
+     return NULL;
+ }
+ 
++static int preset_count(const char* key) {
++    int n = 0;
++    for (size_t p = 0; p < sizeof PRESETS / sizeof *PRESETS; p++) n += !strcmp(PRESETS[p].key, key);
++    return n;
++}
++
++int imgui_settings_preset(const char* key, int i, char* value, size_t vn, char* label, size_t ln) {
++    for (size_t p = 0; p < sizeof PRESETS / sizeof *PRESETS; p++)
++        if (!strcmp(PRESETS[p].key, key) && !i--) {
++            snprintf(value, vn, "%s", PRESETS[p].value);
++            snprintf(label, ln, "%s", PRESETS[p].label);
++            return 1;
++        }
++    return 0;
++}
++
+ int imgui_settings_pages(void) { return PAGE_COUNT; }
+ 
+-const char* imgui_settings_page_name(int page) { return page >= 0 && page < PAGE_COUNT ? PAGES[page] : ""; }
++const char* imgui_settings_page_name(int page) { return page >= 0 && page < PAGE_COUNT ? PAGES[page].name : ""; }
++
++int imgui_settings_page_window(int page) { return page >= 0 && page < PAGE_COUNT ? PAGES[page].window : -1; }
+ 
+ int imgui_settings_rows(int page) {
+     const IniSection* sec = section_of(page);
+@@ -73,6 +119,21 @@ int imgui_settings_rows(int page) {
+     return n;
+ }
+ 
++/* a startup setting that this run changed shows the saved value, and says that the game must start again for it */
++static void saved_value(const IniOpt* o, ImguiSettingRow* r) {
++    char saved[SAVED_VALUE_MAX];
++    if (!(o->flags & INI_STARTUP) || (o->type != INI_INT && o->type != INI_FLOAT)) return;
++    if (!options_restart_value(o->key, saved, sizeof saved)) return;
++    if (o->type == INI_INT && atoi(saved) != r->ivalue) {
++        r->ivalue = atoi(saved);
++        r->flags |= IMGUI_SETTING_RESTART;
++    }
++    if (o->type == INI_FLOAT && fabs(atof(saved) - (double)r->fvalue) > SAVED_FLOAT_EPSILON) {
++        r->fvalue = (float)atof(saved);
++        r->flags |= IMGUI_SETTING_RESTART;
++    }
++}
++
+ int imgui_settings_row(int page, int i, ImguiSettingRow* r) {
+     const IniSection* sec = section_of(page);
+     const IniOpt* o = sec ? row_of(sec, i) : NULL;
+@@ -86,9 +147,11 @@ int imgui_settings_row(int page, int i, ImguiSettingRow* r) {
+                            .lo = o->lo,
+                            .hi = o->hi,
+                            .step = o->step > 0 ? o->step : 1,
+-                           .has_words = o->words && !strchr(o->words, '#')};
++                           .has_words = o->words && !strchr(o->words, '#'),
++                           .presets = preset_count(o->key)};
+     if (o->type == INI_INT) r->ivalue = __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED);
+     if (o->type == INI_FLOAT) r->fvalue = *(const float*)o->var;
++    saved_value(o, r);
+     return 1;
+ }
+ 
+diff --git a/src/nx/gpu/vk/imgui_settings.h b/src/nx/gpu/vk/imgui_settings.h
+index ef58f24..5a6a0be 100644
+--- a/src/nx/gpu/vk/imgui_settings.h
++++ b/src/nx/gpu/vk/imgui_settings.h
+@@ -13,7 +13,8 @@ extern "C" {
+ enum { IMGUI_SETTING_INT, IMGUI_SETTING_FLOAT, IMGUI_SETTING_TEXT };
+ enum {
+     IMGUI_SETTING_STARTUP = 1, /* read when the game starts: a change is saved and applies at the next start */
+-    IMGUI_SETTING_LOCKED = 2   /* the command line holds it for this run: a change is not taken */
++    IMGUI_SETTING_LOCKED = 2,  /* the command line holds it for this run: a change is not taken */
++    IMGUI_SETTING_RESTART = 4  /* the value shown is saved, and the running game has another: it applies at the next start */
+ };
+ typedef struct {
+     const char* key;
+@@ -23,17 +24,26 @@ typedef struct {
+     double lo, hi;
+     int step;          /* of an int with words or arrows, at least 1 */
+     int has_words;     /* an int that is a choice (words between lo and hi), not a number */
++    int presets;       /* a choice from a short list (imgui_settings_preset), 0 for none; INT or FLOAT */
+     int ivalue;        /* INT */
+     float fvalue;      /* FLOAT */
+ } ImguiSettingRow;
+ 
++/* the windows that show pages: Controller&Keyboard and Display */
++enum { IMGUI_WINDOW_INPUT, IMGUI_WINDOW_DISPLAY };
++
+ int imgui_settings_pages(void);
+ const char* imgui_settings_page_name(int page);
++/* the window (IMGUI_WINDOW_) that shows the page, -1 for an index outside the pages */
++int imgui_settings_page_window(int page);
+ int imgui_settings_rows(int page);
+ /* row i of page into r: 1, or 0 for an index outside the page */
+ int imgui_settings_row(int page, int i, ImguiSettingRow* r);
+ /* the word of an int choice's value v (the number when it has none) */
+ void imgui_settings_word(const char* key, int v, char* out, size_t n);
++/* preset i of a setting that is chosen from a list (the resolution, the anisotropic filtering): its value as the .ini
++   writes it, and its label. 1, or 0 for an index past the last */
++int imgui_settings_preset(const char* key, int i, char* value, size_t vn, char* label, size_t ln);
+ /* key set to value (the .ini's text). The main thread applies it and saves it, so the row shows the old value for a
+    moment */
+ void imgui_settings_set(const char* key, const char* value);
+diff --git a/src/nx/gpu/vk/imgui_ui.cpp b/src/nx/gpu/vk/imgui_ui.cpp
+index 2c001ef..9334f83 100644
+--- a/src/nx/gpu/vk/imgui_ui.cpp
++++ b/src/nx/gpu/vk/imgui_ui.cpp
+@@ -2,6 +2,8 @@
+    Copyright 2026 the NXAevora contributors */
+ #include "nx/gpu/vk/imgui_ui.h"
+ #include <cfloat>
++#include <cmath>
++#include <cstdlib>
+ #include <cstdio>
+ #include <cstring>
+ #include "imgui.h"
+@@ -14,7 +16,9 @@ bool g_bar_shown;
+ bool g_show_test;
+ bool g_show_debug;
+ bool g_show_input_settings;
+-constexpr const char* INPUT_SETTINGS_TITLE = "Controller&Keyboard"; /* the menu entry and the window */
++bool g_show_display_settings;
++constexpr const char* INPUT_SETTINGS_TITLE = "Controller&Keyboard"; /* the menu entries and the windows */
++constexpr const char* DISPLAY_SETTINGS_TITLE = "Display";
+ constexpr float DEBUG_WIDTH = 380.0f, DEBUG_HEIGHT = 520.0f, DEBUG_MIN_WIDTH = 300.0f, DEBUG_MIN_HEIGHT = 200.0f;
+ constexpr float GRAPH_HEIGHT = 56.0f, GRAPH_TOP_MS = 50.0f;
+ constexpr float MB_PER_GB = 1024.0f;
+@@ -48,6 +52,7 @@ void menu_bar() {
+     }
+     if (ImGui::BeginMenu("Settings")) {
+         ImGui::MenuItem(INPUT_SETTINGS_TITLE, nullptr, &g_show_input_settings);
++        ImGui::MenuItem(DISPLAY_SETTINGS_TITLE, nullptr, &g_show_display_settings);
+         ImGui::EndMenu();
+     }
+     if (ImGui::BeginMenu("Mods")) {
+@@ -166,7 +171,7 @@ void display_lines(const ImguiFrame& f) {
+     ImGui::EndDisabled();
+     snprintf(v, sizeof v, "%s", f.fps_limit);
+     row("Frame limit", v);
+-    row("V-sync", f.vsync ? "On" : "Off");
++    row("V-sync", f.vsync == 2 ? "On (Mailbox)" : f.vsync ? "On (FIFO)" : "Off");
+     ImGui::EndTable();
+ }
+ 
+@@ -195,6 +200,7 @@ constexpr float SETTINGS_WIDTH = 460.0f, SETTINGS_HEIGHT = 420.0f, SETTINGS_MIN_
+ constexpr float SETTINGS_HELP_WIDTH = 28.0f; /* in font heights: the help tooltip wraps here */
+ constexpr double SLIDER_RANGE_MAX = 100000.0; /* a wider range is typed, not dragged */
+ constexpr int WORD_MAX = 64;
++constexpr double PRESET_EPSILON = 1e-6; /* two values of a preset list that differ less are the same */
+ constexpr int ARROW_COARSE = 10;          /* Shift: this many steps for a press of an arrow */
+ constexpr float ARROW_FLOAT_STEPS = 200.0f; /* a float's step is its range over this */
+ constexpr float ARROW_FLOAT_FINE = 10.0f;   /* Ctrl: a step over this */
+@@ -254,6 +260,42 @@ bool setting_choice(const ImguiSettingRow& r, char* out, size_t n) {
+     return changed;
+ }
+ 
++/* a choice from the short list of imgui_settings_preset; a value that is not in it shows as custom, and Left and Right
++   go to the nearest preset from it */
++bool setting_preset(const ImguiSettingRow& r, char* out, size_t n) {
++    char value[WORD_MAX], label[WORD_MAX], shown[WORD_MAX];
++    const double now = r.type == IMGUI_SETTING_FLOAT ? (double)r.fvalue : (double)r.ivalue;
++    int at = -1, below = -1, count = r.presets;
++    for (int i = 0; i < count; ++i) {
++        imgui_settings_preset(r.key, i, value, sizeof value, label, sizeof label);
++        double v = atof(value);
++        if (fabs(v - now) < PRESET_EPSILON) at = i;
++        if (v < now) below = i;
++    }
++    if (at >= 0)
++        imgui_settings_preset(r.key, at, value, sizeof value, shown, sizeof shown);
++    else
++        snprintf(shown, sizeof shown, "%g (custom)", now);
++    bool open = ImGui::BeginCombo("##value", shown);
++    int dir = arrow_direction();
++    int to = at >= 0 ? at + dir : dir > 0 ? below + 1 : below;
++    bool changed = false;
++    if (dir && to >= 0 && to < count) {
++        imgui_settings_preset(r.key, to, out, n, label, sizeof label);
++        changed = true;
++    }
++    if (!open) return changed;
++    for (int i = 0; i < count; ++i) {
++        imgui_settings_preset(r.key, i, value, sizeof value, label, sizeof label);
++        if (ImGui::Selectable(label, i == at) && i != at) {
++            snprintf(out, n, "%s", value);
++            changed = true;
++        }
++    }
++    ImGui::EndCombo();
++    return changed;
++}
++
+ bool setting_number(const ImguiSettingRow& r, char* out, size_t n) {
+     int v = r.ivalue;
+     bool edited;
+@@ -302,11 +344,15 @@ void setting_row(const ImguiSettingRow& r) {
+         ImGui::TextDisabled("Edit it in the .ini file");
+     else if (r.type == IMGUI_SETTING_FLOAT)
+         changed = setting_float(r, value, sizeof value);
++    else if (r.presets)
++        changed = setting_preset(r, value, sizeof value);
+     else if (r.has_words)
+         changed = setting_choice(r, value, sizeof value);
+     else
+         changed = setting_number(r, value, sizeof value);
+     ImGui::EndDisabled();
++    if (r.flags & IMGUI_SETTING_RESTART)
++        ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_CheckMark], "Saved. Start the game again to apply it.");
+     ImGui::PopID();
+     if (changed) imgui_settings_set(r.key, value);
+ }
+@@ -447,20 +493,25 @@ void settings_page(int page) {
+     if (!strcmp(imgui_settings_page_name(page), PADMAP_PAGE)) padmap();
+ }
+ 
+-void input_settings_window() {
+-    ImGui::SetNextWindowPos(ImVec2(80, 80), ImGuiCond_FirstUseEver);
++/* a window with the tabs of the pages that window shows; the second window opens where the first does not hide it */
++void settings_window(const char* title, int window, bool* shown, float offset) {
++    ImGui::SetNextWindowPos(ImVec2(80 + offset, 80 + offset), ImGuiCond_FirstUseEver);
+     ImGui::SetNextWindowSize(ImVec2(SETTINGS_WIDTH, SETTINGS_HEIGHT), ImGuiCond_FirstUseEver);
+     ImGui::SetNextWindowSizeConstraints(ImVec2(SETTINGS_MIN_WIDTH, SETTINGS_MIN_HEIGHT), ImVec2(FLT_MAX, FLT_MAX));
+-    g_capture_drawn = false;
+-    if (ImGui::Begin(INPUT_SETTINGS_TITLE, &g_show_input_settings) && ImGui::BeginTabBar("##pages")) {
++    if (ImGui::Begin(title, shown) && ImGui::BeginTabBar("##pages")) {
+         for (int p = 0; p < imgui_settings_pages(); ++p)
+-            if (ImGui::BeginTabItem(imgui_settings_page_name(p))) {
++            if (imgui_settings_page_window(p) == window && ImGui::BeginTabItem(imgui_settings_page_name(p))) {
+                 settings_page(p);
+                 ImGui::EndTabItem();
+             }
+         ImGui::EndTabBar();
+     }
+     ImGui::End();
++}
++
++void input_settings_window() {
++    g_capture_drawn = false;
++    settings_window(INPUT_SETTINGS_TITLE, IMGUI_WINDOW_INPUT, &g_show_input_settings, 0.0f);
+     if (!g_capture_drawn) capture_stop();
+ }
+ 
+@@ -594,6 +645,7 @@ void imgui_ui_reset(void) {
+     g_bar_shown = false;
+     g_open_test_was = -1;
+     g_show_input_settings = false;
++    g_show_display_settings = false;
+     capture_stop();
+     keyboard_reset();
+ }
+@@ -618,6 +670,7 @@ bool imgui_ui_draw(ImguiFrame* f) {
+         input_settings_window();
+     else
+         capture_stop();
++    if (g_show_display_settings) settings_window(DISPLAY_SETTINGS_TITLE, IMGUI_WINDOW_DISPLAY, &g_show_display_settings, 30.0f);
+     if (g_show_test) test_window(f->dt);
+     keyboard_window(f->kb);
+     return g_bar_shown;
+diff --git a/src/nx/gpu/vk/renderer.c b/src/nx/gpu/vk/renderer.c
+index e8590e9..177c5ff 100644
+--- a/src/nx/gpu/vk/renderer.c
++++ b/src/nx/gpu/vk/renderer.c
+@@ -447,7 +447,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
+                 int safe[4] = {(int)cx, (int)cy, (int)cw, (int)ch};
+                 vk_ui_draw(cb, sc, safe);
+             }
+-            vk_imgui_draw(cb, sc, fw, fh);
++            vk_imgui_draw(cb, sc, src && game ? g_last_w : fw, src && game ? g_last_h : fh); /* the scaled size */
+             vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
+                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+diff --git a/src/nx/gpu/vk/ui.c b/src/nx/gpu/vk/ui.c
+index 1b61e8b..d5631f5 100644
+--- a/src/nx/gpu/vk/ui.c
++++ b/src/nx/gpu/vk/ui.c
+@@ -24,6 +24,7 @@ static SnxUiQuad g_quads[MAX_QUADS];
+ static VkDescriptorSetLayout g_dsl;
+ static VkPipelineLayout g_layout;
+ static VkPipeline g_pipe;
++static VkPipeline g_pipe_alpha; /* the same shaders writing only alpha, with no blend: the picture's alpha made 1 */
+ static VkFormat g_pipe_format;
+ static VkDescriptorPool g_pool;
+ /* by a quad's sample: the atlas blended (sprites), at its nearest texel (the font, fills), and the picture blended */
+@@ -140,12 +141,17 @@ static int pipeline_make(VkFormat format) {
+     int ok;
+     if (g_pipe && g_pipe_format == format) return 1;
+     if (g_pipe) vkDestroyPipeline(g_vk.dev, g_pipe, NULL); /* vk_finish ran when the swapchain changed format */
+-    g_pipe = VK_NULL_HANDLE;
++    if (g_pipe_alpha) vkDestroyPipeline(g_vk.dev, g_pipe_alpha, NULL);
++    g_pipe = g_pipe_alpha = VK_NULL_HANDLE;
+     vs = vk_module_spv(snx_ui_vs_spv, sizeof snx_ui_vs_spv / 4);
+     fs = vk_module_spv(snx_ui_fs_spv, sizeof snx_ui_fs_spv / 4);
+     st[0].module = vs;
+     st[1].module = fs;
+     ok = vs && fs && VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipe));
++    ba.blendEnable = VK_FALSE;
++    ba.colorWriteMask = VK_COLOR_COMPONENT_A_BIT;
++    if (ok && !VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipe_alpha)))
++        g_pipe_alpha = VK_NULL_HANDLE; /* the alpha stays as the game left it */
+     if (vs) vkDestroyShaderModule(g_vk.dev, vs, NULL);
+     if (fs) vkDestroyShaderModule(g_vk.dev, fs, NULL);
+     g_pipe_format = format;
+@@ -339,6 +345,8 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
+     ui_lock();
+     atlas_upload(cb);
+     image_upload(cb);
++    /* the first quad covers the picture: it makes its alpha 1 (g_pipe_alpha), whatever the game's frame left in it */
++    ui_fill(&list, 0, 0, (float)sw, (float)sh, 0xFFFFFFFFu);
+     /* the screen before the game starts, under the menu, hides the on-screen controls: they aren't drawn under it,
+        where they would take quads for nothing (nor do they take fingers then, sdl3.c's press_event) */
+     if (prepare_screen_shown())
+@@ -406,8 +414,15 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
+         rec_CmdSetScissor(cb, 0, 1, &sci);
+         rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
+         rec_CmdBindVertexBuffers(cb, 0, 1, &buf, &vo);
+-        /* runs of quads that sample the same way, in their order */
+-        for (i = 0; i < n; i = run) {
++        if (g_pipe_alpha) {
++            rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe_alpha);
++            rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1, &g_sets[g_quads[0].sample],
++                                    0, NULL);
++            rec_CmdDraw(cb, 6, 1, 0, 0);
++            rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
++        }
++        /* runs of quads that sample the same way, in their order: the picture's alpha quad is the first */
++        for (i = 1; i < n; i = run) {
+             for (run = i + 1; run < n && g_quads[run].sample == g_quads[i].sample; ++run) continue;
+             if (g_quads[i].sample == UI_IMAGE && !g_image) continue; /* its upload failed */
+             rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1, &g_sets[g_quads[i].sample],
+diff --git a/src/nx/gpu/vk/vk.h b/src/nx/gpu/vk/vk.h
+index 7effbe5..67a9897 100644
+--- a/src/nx/gpu/vk/vk.h
++++ b/src/nx/gpu/vk/vk.h
+@@ -72,7 +72,7 @@ typedef struct {
+     int sc_win_w, sc_win_h; /* the window size it was made for (sc_extent: that as the surface takes it) */
+     int sc_srgb;            /* its format is sRGB: what presented frames in sRGB formats are blitted to */
+     VkFormat sc_format;     /* its images' format, which the on-screen controls draw to (gpu/vk/ui.c) */
+-    int sc_vsync;  /* the vsync setting it was made for (1: FIFO; 0 is FIFO too on a surface with nothing else) */
++    int sc_vsync;  /* the vsync setting it was made for (the present mode may be another: FIFO is the one every surface has) */
+     int sc_turned; /* upright on a display held another way: Android calls each present suboptimal for it */
+     int sc_lost;   /* the last create found the surface lost: show() has it made anew */
+     u32 sc_count;
+diff --git a/src/nx/runtime/options.c b/src/nx/runtime/options.c
+index 9c2f018..336f0bf 100644
+--- a/src/nx/runtime/options.c
++++ b/src/nx/runtime/options.c
+@@ -278,6 +278,37 @@ static void apply(const char* key, const char* value) {
+ }
+ int options_overridden(const char* key) { return override_of(key) != NULL; }
+ 
++/* The startup settings that a window changed in this run: saved to the file, but the running game keeps its value. The
++   window shows the saved one and that the game must start again. A leaf lock, as g_pending_lock's */
++enum { RESTART_MAX = 32 };
++static Pending g_restart[RESTART_MAX];
++static int g_nrestart;
++static PMutex g_restart_lock = PMUTEX_INIT;
++
++static void restart_note(const char* key, const char* value) {
++    pm_lock(&g_restart_lock);
++    int i = 0;
++    while (i < g_nrestart && strcmp(g_restart[i].key, key)) i++;
++    if (i < RESTART_MAX && strlen(key) < sizeof g_restart[i].key && strlen(value) < sizeof g_restart[i].value) {
++        if (i == g_nrestart) g_nrestart++;
++        snprintf(g_restart[i].key, sizeof g_restart[i].key, "%s", key);
++        snprintf(g_restart[i].value, sizeof g_restart[i].value, "%s", value);
++    }
++    pm_unlock(&g_restart_lock);
++}
++
++int options_restart_value(const char* key, char* out, size_t n) {
++    int found = 0;
++    pm_lock(&g_restart_lock);
++    for (int i = 0; i < g_nrestart && !found; i++)
++        if (!strcmp(g_restart[i].key, key)) {
++            snprintf(out, n, "%s", g_restart[i].value);
++            found = 1;
++        }
++    pm_unlock(&g_restart_lock);
++    return found;
++}
++
+ int options_change(const char* key, const char* value) {
+     const IniOpt* o = find_row(key, NULL);
+     char why[128];
+@@ -288,6 +319,7 @@ int options_change(const char* key, const char* value) {
+         return OPTIONS_REJECTED;
+     }
+     apply(key, value);
++    if (g_started && (o->flags & INI_STARTUP)) restart_note(key, value);
+     ini_set(key, value);
+     return OPTIONS_OK;
+ }
+diff --git a/src/nx/runtime/options.h b/src/nx/runtime/options.h
+index f9474e8..5323ac0 100644
+--- a/src/nx/runtime/options.h
++++ b/src/nx/runtime/options.h
+@@ -21,6 +21,9 @@ void ini_set(const char* k, const char* v);
+ enum { OPTIONS_OK, OPTIONS_UNKNOWN, OPTIONS_OVERRIDDEN, OPTIONS_REJECTED };
+ int options_change(const char* key, const char* value);
+ int options_overridden(const char* key); /* 1 when --key=value is on the command line */
++/* a startup setting that options_change saved in this run (the running game keeps its value): 1 with the saved text in
++   out, else 0. Any thread */
++int options_restart_value(const char* key, char* out, size_t n);
+ /* every setting of the file's sections but the game's own (a control's place), a line each on stdout, nine fields
+    between tabs: the section (with /page for a page of its own), the key, its default, int | float | text, the lowest
+    and highest number, the help on one line, the menus' name, and the values as value=word between '|' (empty for a
+diff --git a/src/nx/runtime/settings.txt b/src/nx/runtime/settings.txt
+index b59bac5..d080f72 100644
+--- a/src/nx/runtime/settings.txt
++++ b/src/nx/runtime/settings.txt
+@@ -173,11 +173,12 @@ setting Shadows
+ setting Vsync
+     key vsync
+     label VSync
+-    int 0 1
++    int 0 2
+     default 1
+-    words Off|On
+-    help 1 = images wait for the display's refresh, so nothing tears; 0 = the newest is shown at the next refresh
+-    help the display allows, else at once
++    words Off|On (FIFO)|On (Mailbox)
++    help 1 = images wait for the display's refresh in order, so nothing tears (FIFO). 2 = the newest image is shown at
++    help each refresh and the game does not wait, so nothing tears and the delay is shorter (Mailbox); a display
++    help without it uses FIFO. 0 = images show at once and can tear, else Mailbox, else FIFO
+ setting Anisotropic filtering
+     key anisotropy
+     int 0 16
