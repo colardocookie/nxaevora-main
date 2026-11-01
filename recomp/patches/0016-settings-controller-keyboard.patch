@@ -13,28 +13,38 @@ index da11eac..08104b9 100644
                   "${imgui_SOURCE_DIR}/imgui_tables.cpp" "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
 diff --git a/src/nx/gpu/vk/imgui_settings.c b/src/nx/gpu/vk/imgui_settings.c
 new file mode 100644
-index 0000000..bab8fb9
+index 0000000..70c65bd
 --- /dev/null
 +++ b/src/nx/gpu/vk/imgui_settings.c
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,140 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later
 +   Copyright 2026 the NXAevora contributors */
 +/* The Settings window's view of g_ini_sections (imgui_settings.h). Only the pages in PAGES show; the rest of the
 +   sections wait for their own work (docs/imgui-plan.md). A row of the game's own (INI_IN_GAME) is left out. */
 +#include "nx/gpu/vk/imgui_settings.h"
++#include <ctype.h>
 +#include <string.h>
++#include "common/utilities/pad_map.h"
 +#include "nx/runtime/ini.h"
 +#include "nx/runtime/options.h"
 +#include "nx/runtime/platform/backend.h"
 +
-+static const char* const PAGES[] = {"Mouse", "Keyboard"};
++static const char* const PAGES[] = {"Mouse", "Keyboard", "Controllers"};
 +enum { PAGE_COUNT = sizeof PAGES / sizeof PAGES[0] };
 +
-+/* keyboard_map has the key bindings' rows in place of a text field. mouse_native_address is the guest address of a word
-+   that a code patch of the game reads: a value that is not 8 aligned and mapped breaks the mouse look, so only the
-+   launcher that installs the patch sets it */
-+static const char* const HIDDEN[] = {"keyboard_map", "mouse_native_address"};
++/* keyboard_map and gamepad_map have their own rows in place of a text field. mouse_native_address is the guest address
++   of a word that a code patch of the game reads: a value that is not 8 aligned and mapped breaks the mouse look, so
++   only the launcher that installs the patch sets it */
++static const char* const HIDDEN[] = {"keyboard_map", "mouse_native_address", "gamepad_map"};
 +
++/* The rows of each player (gamepad_p1_device and the like) are left out: the window edits the settings every player
++   shares and their button map */
++#define PLAYER_KEY_PREFIX "gamepad_p"
++
++_Static_assert(IMGUI_PADMAP_CONTROLS == BACKEND_PADMAP_CONTROLS && IMGUI_PADMAP_CONTROLS == SNX_PAD_CONTROLS,
++               "the window lists the controls the backend has");
++_Static_assert(IMGUI_PADMAP_NONE == SNX_PAD_NONE, "the window's none is the runtime's");
++_Static_assert(IMGUI_PADMAP_BUTTONS == SNX_PAD_BUTTONS, "the window lists the buttons the console has");
 +_Static_assert(IMGUI_KEYBIND_COUNT == BACKEND_KEYBIND_COUNT, "the window lists the buttons the backend has");
 +_Static_assert(sizeof(((ImguiKeybind*)0)->keys) == sizeof(((BackendKeybind*)0)->keys), "the keys' line");
 +
@@ -47,6 +57,8 @@ index 0000000..bab8fb9
 +
 +static int shown(const IniOpt* o) {
 +    if (o->flags & INI_IN_GAME) return 0;
++    if (!strncmp(o->key, PLAYER_KEY_PREFIX, sizeof PLAYER_KEY_PREFIX - 1) && isdigit((unsigned char)o->key[sizeof PLAYER_KEY_PREFIX - 1]))
++        return 0;
 +    for (size_t h = 0; h < sizeof HIDDEN / sizeof *HIDDEN; h++)
 +        if (!strcmp(o->key, HIDDEN[h])) return 0;
 +    return 1;
@@ -122,12 +134,35 @@ index 0000000..bab8fb9
 +void imgui_keybind_set(const char* button, const char* key) { backend_keybind_request(button, key); }
 +void imgui_keybind_capture(int on) { backend_key_capture(on); }
 +int imgui_keybind_captured(char* key, size_t n) { return backend_key_captured(key, n); }
++
++/* the controls in pad_map.h's order, named by where they sit and by the labels of the common pads */
++static const char* const PAD_CONTROLS[IMGUI_PADMAP_CONTROLS] = {
++    "Bottom face button (A, Cross)", "Right face button (B, Circle)", "Left face button (X, Square)",
++    "Top face button (Y, Triangle)", "Left shoulder (LB, L1)",        "Right shoulder (RB, R1)",
++    "Left trigger (LT, L2)",         "Right trigger (RT, R2)",        "Left stick press",
++    "Right stick press",             "Back (Select)",                 "Start",
++    "D-pad Up",                      "D-pad Down",                    "D-pad Left",
++    "D-pad Right"};
++
++void imgui_padmap_view(ImguiPadMap* v) {
++    BackendPadMap b;
++    backend_padmap_view(&b);
++    memcpy(v->bit, b.bit, sizeof v->bit);
++    v->custom = b.custom;
++    v->locked = b.locked;
++}
++const char* imgui_padmap_control_name(int control) {
++    return control >= 0 && control < IMGUI_PADMAP_CONTROLS ? PAD_CONTROLS[control] : "";
++}
++const char* imgui_padmap_button_name(int bit) { return snx_pad_button_name(bit); }
++void imgui_padmap_set(int control, int bit) { backend_padmap_request(control, bit); }
++void imgui_padmap_reset(void) { backend_padmap_request(BACKEND_PADMAP_ALL, SNX_PAD_NONE); }
 diff --git a/src/nx/gpu/vk/imgui_settings.h b/src/nx/gpu/vk/imgui_settings.h
 new file mode 100644
-index 0000000..4b1e3b9
+index 0000000..ef58f24
 --- /dev/null
 +++ b/src/nx/gpu/vk/imgui_settings.h
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,77 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later
 +   Copyright 2026 the NXAevora contributors */
 +/* The game's settings as the Settings window reads them: pages from the .ini's sections (settings.txt), rows from their
@@ -184,12 +219,29 @@ index 0000000..4b1e3b9
 +/* 0 while the key is awaited, 1 with its name in key, -1 when it was cancelled, -2 for a key that cannot be bound */
 +int imgui_keybind_captured(char* key, size_t n);
 +
++/* The gamepad button map (gamepad_map, which the rows leave out): for each control of a gamepad the console button it
++   sends now. The sizes are those of backend.h's BackendPadMap */
++enum { IMGUI_PADMAP_CONTROLS = 16, IMGUI_PADMAP_BUTTONS = 16 };
++typedef struct {
++    int bit[IMGUI_PADMAP_CONTROLS]; /* the button each control sends: 0 to IMGUI_PADMAP_BUTTONS - 1, -1 for none */
++    int custom;                     /* the .ini names a map: it is not the console's layout */
++    int locked;                     /* the command line holds gamepad_map: the map does not change */
++} ImguiPadMap;
++void imgui_padmap_view(ImguiPadMap* v);
++const char* imgui_padmap_control_name(int control);
++enum { IMGUI_PADMAP_NONE = -1 }; /* the bit of a control that sends nothing */
++const char* imgui_padmap_button_name(int bit);
++/* control sends bit; the control that sent it gets control's button */
++void imgui_padmap_set(int control, int bit);
++/* the console's layout for all the controls */
++void imgui_padmap_reset(void);
++
 +#ifdef __cplusplus
 +}
 +#endif
 +#endif
 diff --git a/src/nx/gpu/vk/imgui_ui.cpp b/src/nx/gpu/vk/imgui_ui.cpp
-index 54cd566..a81f025 100644
+index 54cd566..2c001ef 100644
 --- a/src/nx/gpu/vk/imgui_ui.cpp
 +++ b/src/nx/gpu/vk/imgui_ui.cpp
 @@ -6,12 +6,15 @@
@@ -238,7 +290,7 @@ index 54cd566..a81f025 100644
          ImGui::EndMenu();
      }
      if (ImGui::BeginMenu("Mods")) {
-@@ -184,6 +190,240 @@ void debug_window(const ImguiFrame& f) {
+@@ -184,6 +190,280 @@ void debug_window(const ImguiFrame& f) {
      ImGui::End();
  }
  
@@ -445,6 +497,45 @@ index 54cd566..a81f025 100644
 +    ImGui::EndDisabled();
 +}
 +
++/* ---- the button map of the Controllers page: a choice of the console's button for each control ---- */
++constexpr const char* PADMAP_PAGE = "Controllers";
++void padmap_row(int control, int bit) {
++    ImGui::TableNextRow();
++    ImGui::TableNextColumn();
++    ImGui::AlignTextToFramePadding();
++    ImGui::TextUnformatted(imgui_padmap_control_name(control));
++    ImGui::TableNextColumn();
++    ImGui::PushID(control);
++    ImGui::SetNextItemWidth(-FLT_MIN);
++    if (ImGui::BeginCombo("##button", imgui_padmap_button_name(bit))) {
++        for (int b = IMGUI_PADMAP_NONE; b < IMGUI_PADMAP_BUTTONS; ++b)
++            if (ImGui::Selectable(imgui_padmap_button_name(b), b == bit) && b != bit) imgui_padmap_set(control, b);
++        ImGui::EndCombo();
++    }
++    ImGui::PopID();
++}
++
++void padmap() {
++    ImguiPadMap m;
++    imgui_padmap_view(&m);
++    ImGui::SeparatorText("Button map");
++    ImGui::TextWrapped("The Switch button that each control of a gamepad sends. A button that another control sends "
++                       "goes to this one's old control, so no button is lost. This is the map of every player "
++                       "(a player's own gamepad_pN_map in the .ini goes over it).");
++    if (m.locked) ImGui::TextDisabled("gamepad_map is set on the command line for this run.");
++    ImGui::BeginDisabled(m.locked != 0);
++    if (ImGui::BeginTable("##padmap", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
++        ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthStretch, 1.0f);
++        ImGui::TableSetupColumn("Sends", ImGuiTableColumnFlags_WidthStretch, 1.2f);
++        for (int c = 0; c < IMGUI_PADMAP_CONTROLS; ++c) padmap_row(c, m.bit[c]);
++        ImGui::EndTable();
++    }
++    ImGui::BeginDisabled(!m.custom);
++    if (ImGui::Button("Reset to the console's layout")) imgui_padmap_reset();
++    ImGui::EndDisabled();
++    ImGui::EndDisabled();
++}
++
 +void settings_page(int page) {
 +    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
 +    ImGui::TextWrapped("Pointer over a slider or a choice: Left and Right change it. Shift moves ten steps, Ctrl one unit.");
@@ -457,6 +548,7 @@ index 54cd566..a81f025 100644
 +        ImGui::EndTable();
 +    }
 +    if (!strcmp(imgui_settings_page_name(page), KEYBIND_PAGE)) keybinds();
++    if (!strcmp(imgui_settings_page_name(page), PADMAP_PAGE)) padmap();
 +}
 +
 +void input_settings_window() {
@@ -479,7 +571,7 @@ index 54cd566..a81f025 100644
  /* ---- the game's software keyboard (the player's name): the box that overlay.c keeps the state of ---- */
  constexpr float KEYBOARD_FIELD_WIDTH = 420.0f;
  constexpr unsigned UTF16_PAIR_MIN = 0x10000; /* a character from here on is two UTF-16 units, as the game counts them */
-@@ -313,6 +553,8 @@ void keyboard_window(ImguiKeyboard& k) {
+@@ -313,6 +593,8 @@ void keyboard_window(ImguiKeyboard& k) {
  void imgui_ui_reset(void) {
      g_bar_shown = false;
      g_open_test_was = -1;
@@ -488,7 +580,7 @@ index 54cd566..a81f025 100644
      keyboard_reset();
  }
  
-@@ -321,8 +563,9 @@ bool imgui_ui_draw(ImguiFrame* f) {
+@@ -321,8 +603,9 @@ bool imgui_ui_draw(ImguiFrame* f) {
          g_open_test_was = f->open_test;
          g_show_test = f->open_test != 0;
      }
@@ -499,7 +591,7 @@ index 54cd566..a81f025 100644
          g_bar_shown = true;
          menu_bar();
          ImGui::EndMainMenuBar();
-@@ -331,6 +574,10 @@ bool imgui_ui_draw(ImguiFrame* f) {
+@@ -331,6 +614,10 @@ bool imgui_ui_draw(ImguiFrame* f) {
          debug_window(*f);
      else
          debug_stats_hardware_demand(nullptr);
@@ -586,10 +678,18 @@ index 4d8a8ae..860ae05 100644
              focus_lost();
              return 0;
 diff --git a/src/nx/runtime/platform/backend/sdl3.c b/src/nx/runtime/platform/backend/sdl3.c
-index 7c10462..cded28a 100644
+index 7c10462..a1d6f0a 100644
 --- a/src/nx/runtime/platform/backend/sdl3.c
 +++ b/src/nx/runtime/platform/backend/sdl3.c
-@@ -51,6 +51,13 @@ static SDL_Window* g_win;
+@@ -27,6 +27,7 @@
+ #include "nx/runtime/platform/vpad.h"
+ #include "nx/runtime/platform/gamepad.h"
+ #include "common/utilities/pad_sdl.h"
++#include "common/utilities/pad_screen.h"
+ #include <math.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -51,6 +52,13 @@ static SDL_Window* g_win;
     a width from one resize from pairing with the height of another */
  static u64 g_wsize = 1280 | (720ull << 32); /* atomic */
  static u64 keys_held;
@@ -603,7 +703,7 @@ index 7c10462..cded28a 100644
  static u64 g_menu_held;      /* keyboard, scripted and on-screen buttons held while the menu had them */
  static u64 g_menu_held_pad0; /* No1's physical pad, tracked separately so a replacement has fresh presses */
  static u64 g_menu_held_extra[SNX_GAMEPADS - 1];
-@@ -447,12 +454,12 @@ static const char* HELP =
+@@ -447,12 +455,12 @@ static const char* HELP =
      "Controller: A, B, X and Y sit where the console has them (gamepad_swap_ab=1 swaps A and B). "
      "Home opens the game's menu.\n\n"
      "Keyboard, by key position on a US layout (keyboard_map in the .ini changes it):\n"
@@ -620,7 +720,7 @@ index 7c10462..cded28a 100644
      "Runtime keys:\n"
      "  F1  this help\n"
      "  F2  open or close the game's menu (arrows move, Enter or Space picks, Esc or Backspace goes back)\n"
-@@ -485,17 +492,15 @@ static PadKind gamepad_kind(int type) {
+@@ -485,17 +493,15 @@ static PadKind gamepad_kind(int type) {
     a different key, and ZL stayed held */
  static u64 default_keymap(SDL_Scancode k) {
      switch (k) {
@@ -647,7 +747,7 @@ index 7c10462..cded28a 100644
          case SDL_SCANCODE_LEFT: return 1ull << 12;
          case SDL_SCANCODE_UP: return 1ull << 13;
          case SDL_SCANCODE_RIGHT: return 1ull << 14;
-@@ -504,10 +509,6 @@ static u64 default_keymap(SDL_Scancode k) {
+@@ -504,10 +510,6 @@ static u64 default_keymap(SDL_Scancode k) {
          case SDL_SCANCODE_W: return 1ull << 41;
          case SDL_SCANCODE_D: return 1ull << 42;
          case SDL_SCANCODE_S: return 1ull << 43;
@@ -658,7 +758,7 @@ index 7c10462..cded28a 100644
          default: break;
      }
      return 0;
-@@ -567,14 +568,14 @@ static int key_entry_read(const char* at, size_t n, KeyEntry* out) {
+@@ -567,14 +569,14 @@ static int key_entry_read(const char* at, size_t n, KeyEntry* out) {
      out->key = SDL_GetScancodeFromName(key);
      return out->key == SDL_SCANCODE_UNKNOWN || key_reserved(out->key) || out->key >= SDL_SCANCODE_COUNT ? -1 : 0;
  }
@@ -677,7 +777,7 @@ index 7c10462..cded28a 100644
      while (*at) {
          size_t n = strcspn(at, " \t");
          if (!n) {
-@@ -582,20 +583,233 @@ void keyboard_map_set(const IniOpt* o, const char* v) {
+@@ -582,20 +584,300 @@ void keyboard_map_set(const IniOpt* o, const char* v) {
              continue;
          }
          if (count == KEY_ENTRIES_MAX || key_entry_read(at, n, &e[count]) < 0) {
@@ -858,7 +958,71 @@ index 7c10462..cded28a 100644
 +    ui_unlock();
 +}
 +
-+/* the main thread, once a pass: the window's changes of settings and of the key map */
++/* ---- the gamepad button map of the window: it edits gamepad_map's text. The map in use belongs to the main thread, so a
++   new map waits in g_padmap_next, and the view shows it until padmap_apply has made it the one in use ---- */
++static SnxPadMap g_padmap_next;
++static int g_padmap_pending; /* g_padmap_next waits to be applied */
++
++/* gamepad_map as it will be: the map that waits, else the one in use. Under ui_lock */
++static SnxPadMap padmap_own(void) { return g_padmap_pending ? g_padmap_next : gamepad_config()->own; }
++
++/* the map the player sees (the button in each control's place under what gamepad_map names, A and B swapped) */
++static SnxPadMap padmap_shown(const SnxPadMap* own) {
++    SnxPadScreen s;
++    SnxPadMap shown;
++    snx_pad_screen_start(&s);
++    s.own = *own;
++    s.swap_ab = g_settings.swap_a_b;
++    snx_pad_screen_map(&s, &shown);
++    return shown;
++}
++
++void backend_padmap_view(BackendPadMap* v) {
++    ui_lock();
++    SnxPadMap own = padmap_own();
++    ui_unlock();
++    SnxPadMap shown = padmap_shown(&own);
++    v->custom = 0;
++    for (int c = 0; c < BACKEND_PADMAP_CONTROLS; ++c) {
++        v->bit[c] = shown.bit[c];
++        v->custom |= own.bit[c] != SNX_PAD_UNSET;
++    }
++    v->locked = options_overridden("gamepad_map");
++}
++
++void backend_padmap_request(int control, int bit) {
++    if (options_overridden("gamepad_map")) return; /* the command line holds it for this run */
++    int all = control == BACKEND_PADMAP_ALL;
++    int button_ok = bit == SNX_PAD_NONE || (bit >= 0 && bit < SNX_PAD_BUTTONS);
++    if (!all && (control < 0 || control >= BACKEND_PADMAP_CONTROLS || !button_ok)) return;
++    ui_lock();
++    SnxPadMap own = padmap_own();
++    if (all) {
++        snx_pad_map_unset(&own);
++    } else {
++        SnxPadMap shown = padmap_shown(&own);
++        int holder = bit == SNX_PAD_NONE ? -1 : snx_pad_map_find(&shown, bit);
++        if (holder >= 0) shown.bit[holder] = shown.bit[control];
++        shown.bit[control] = (signed char)bit;
++        if (g_settings.swap_a_b) snx_pad_map_swap_ab(&shown); /* own is kept without the swap, which goes over it */
++        own = shown;
++    }
++    g_padmap_next = own;
++    g_padmap_pending = 1;
++    ui_unlock();
++}
++
++/* the main thread: the map the window left becomes the one in use and is saved with the .ini's other settings */
++static void padmap_apply(const SnxPadMap* map) {
++    char text[SNX_PAD_MAP_TEXT];
++    snx_pad_map_write(map, text, sizeof text);
++    if (options_change("gamepad_map", text) != OPTIONS_OK) LOG("settings: gamepad_map is not changed by the window\n");
++    ui_lock();
++    if (!memcmp(map, &g_padmap_next, sizeof *map)) g_padmap_pending = 0; /* not asked again meanwhile */
++    ui_unlock();
++}
++
++/* the main thread, once a pass: the window's changes of settings, of the key map and of the button map */
 +static void window_changes_apply(void) {
 +    SettingChange taken[CHANGES_MAX];
 +    char map[sizeof g_keybind_next];
@@ -868,11 +1032,14 @@ index 7c10462..cded28a 100644
 +    g_nchanges = 0;
 +    int map_waits = g_keybind_pending;
 +    if (map_waits) memcpy(map, g_keybind_next, sizeof map);
++    int padmap_waits = g_padmap_pending;
++    SnxPadMap padmap = g_padmap_next;
 +    ui_unlock();
 +    for (int i = 0; i < n; ++i)
 +        if (options_change(taken[i].key, taken[i].value) != OPTIONS_OK)
 +            LOG("settings: the window's change %s=%s is not taken\n", taken[i].key, taken[i].value);
 +    if (map_waits) keybind_apply(map);
++    if (padmap_waits) padmap_apply(&padmap);
 +}
 +
 +/* The key the window waits for: the next press is taken here and goes nowhere else. Esc cancels, losing the focus
@@ -918,7 +1085,7 @@ index 7c10462..cded28a 100644
  }
  
  /* g_fullscreen follows the window: also set from the fullscreen events, for a change the window manager made */
-@@ -1013,7 +1227,7 @@ static u64 finger_id(const SDL_TouchFingerEvent* f) {
+@@ -1013,7 +1295,7 @@ static u64 finger_id(const SDL_TouchFingerEvent* f) {
  static void menu_open(int open) {
      if (overlay_shown() != open) overlay_toggle();
      vpad_release();
@@ -927,7 +1094,7 @@ index 7c10462..cded28a 100644
      /* a finger or button down before this (Home on the on-screen controls opened it) lifts without a tap */
      overlay_pointers_reset();
  }
-@@ -1500,8 +1714,10 @@ void video_poll(void) {
+@@ -1500,8 +1782,10 @@ void video_poll(void) {
      /* the menu, or the keyboard's box, had the controls when this poll began: the press that closes it (B, or A that
         gives the box's line) is in this poll's state */
      int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown();
@@ -938,7 +1105,7 @@ index 7c10462..cded28a 100644
          if (imgui_sdl_event(&e, imgui_density(), g_mouse_captured, !overlay_shown() && !prepare_screen_shown())) continue;
          if (press_event(&e)) continue;
          if (overlay_event(&e)) continue;
-@@ -1554,13 +1770,19 @@ void video_poll(void) {
+@@ -1554,13 +1838,19 @@ void video_poll(void) {
                  if (!e.key.repeat && !(e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) hotkey(e.key.key);
                  /* a repeat doesn't press again: a key held as the menu closed (which cleared keys_held) stays from
                     the game until it is let go */
@@ -962,10 +1129,10 @@ index 7c10462..cded28a 100644
                  ui_lock();
                  vpad_release();
 diff --git a/src/nx/runtime/platform/backend.h b/src/nx/runtime/platform/backend.h
-index 22d1da8..5b13e2e 100644
+index 22d1da8..f0030ee 100644
 --- a/src/nx/runtime/platform/backend.h
 +++ b/src/nx/runtime/platform/backend.h
-@@ -20,6 +20,28 @@ int backend_ini(const char* k, const char* v);
+@@ -20,6 +20,40 @@ int backend_ini(const char* k, const char* v);
  /* the touch screen's mode chosen in the game's menu, saved to the .ini: 0 off, 1 fingers, 2 fingers and the mouse */
  void backend_touch_set(int mode);
  
@@ -990,6 +1157,18 @@ index 22d1da8..5b13e2e 100644
 +   while it waits, 1 with the key's name in name, -1 when it was cancelled, -2 for a key that keyboard_map cannot name */
 +void backend_key_capture(int on);
 +int backend_key_captured(char* name, size_t n);
++
++/* The button map of the Settings window (gamepad_map, every player's): per control, in pad_map.h's order, the button
++   it sends now (0 A to 15 Down, SNX_PAD_NONE), A and B swapped as gamepad_swap_ab says. custom: the .ini names a map.
++   locked: the command line holds it. A request (any thread) swaps the button with the control that sent it, and the
++   main thread applies and saves it. BACKEND_PADMAP_ALL as the control asks for the console's layout */
++enum { BACKEND_PADMAP_CONTROLS = 16, BACKEND_PADMAP_ALL = -1 };
++typedef struct {
++    int bit[BACKEND_PADMAP_CONTROLS];
++    int custom, locked;
++} BackendPadMap;
++void backend_padmap_view(BackendPadMap* v);
++void backend_padmap_request(int control, int bit);
 +
  /* The window in pixels, for the swapchain; 0 x 0 when headless */
  void backend_window_size(int* w, int* h);
