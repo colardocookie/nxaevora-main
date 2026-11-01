@@ -272,3 +272,14 @@ at this point. This is a reading of the code. A run on the console is not availa
 What the runtime cannot change without breaking the game's timing: the sleeps (the game asks for them) and the order of the
 starts. No fix is planned. The diagnostic patches `0004` to `0008` stay in `recomp/patches/` as optional tools (not applied
 to the runtime), to find a wait of another stop. The setting `hitch_dump` is gone from the `.ini` of this game.
+
+## The slow frames of 50 to 85 ms (2026-11-01)
+
+About 10 frames a minute take 50 to 85 ms (a frame is 33 ms at the game's swap interval 2). Checks, all in one village lap:
+
+- They do not depend on ImGui. With `imgui=1` and the test window, with `imgui=1` and no window, and with `imgui=0`, the rate was 8.7, 12.2 and 10.4 a minute. The average stays 29.4 frames a second.
+- No pipeline, render target or texture upload goes with them (a temporary change of the sampling profiler, `profile=1`, now removed). In a slow frame nearly all threads are in an OS wait. No thread does CPU work.
+- The 60 Hz tick of the frontend that signals the guest's vsync event is on time: no event was 4 ms late, the longest gap was 18.3 ms, and `video_poll` took 1.9 ms at most. The pace sleeps of `present_pace` ended 1.0 ms late at most (a temporary `pace:` line in the log, now removed).
+- The display runs at 179 Hz, so a 60 Hz vsync does not round the frame time.
+
+So the runtime's timers are not the cause. The frames come in multiples of 16.7 ms: the game misses one vsync event and takes the next. Which guest wait makes it miss is not known. The next step would be a snapshot of the guest threads in a slow frame (`diagnostics/0004-hitch-dump.patch` with a setting of about 40 ms). The investigation was stopped here by the user's decision.
