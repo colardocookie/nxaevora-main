@@ -1,0 +1,1009 @@
+diff --git a/src/nx/CMakeLists.txt b/src/nx/CMakeLists.txt
+index da11eac..08104b9 100644
+--- a/src/nx/CMakeLists.txt
++++ b/src/nx/CMakeLists.txt
+@@ -104,7 +104,7 @@ snx_shaderdec(snx_shader)
+ snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
+                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/compute.c
+                  gpu/vk/pending_pages.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c
+-                 gpu/vk/ftz_probe.c gpu/vk/imgui.c gpu/vk/imgui_glue.cpp gpu/vk/imgui_style.cpp gpu/vk/imgui_input.c gpu/vk/imgui_events.cpp gpu/vk/imgui_ui.cpp gpu/vk/debug_stats.c
++                 gpu/vk/ftz_probe.c gpu/vk/imgui.c gpu/vk/imgui_glue.cpp gpu/vk/imgui_style.cpp gpu/vk/imgui_input.c gpu/vk/imgui_events.cpp gpu/vk/imgui_ui.cpp gpu/vk/imgui_settings.c gpu/vk/debug_stats.c
+                  "${volk_SOURCE_DIR}/volk.c"
+                  "${imgui_SOURCE_DIR}/imgui.cpp" "${imgui_SOURCE_DIR}/imgui_draw.cpp"
+                  "${imgui_SOURCE_DIR}/imgui_tables.cpp" "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
+diff --git a/src/nx/gpu/vk/imgui_settings.c b/src/nx/gpu/vk/imgui_settings.c
+new file mode 100644
+index 0000000..bab8fb9
+--- /dev/null
++++ b/src/nx/gpu/vk/imgui_settings.c
+@@ -0,0 +1,105 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later
++   Copyright 2026 the NXAevora contributors */
++/* The Settings window's view of g_ini_sections (imgui_settings.h). Only the pages in PAGES show; the rest of the
++   sections wait for their own work (docs/imgui-plan.md). A row of the game's own (INI_IN_GAME) is left out. */
++#include "nx/gpu/vk/imgui_settings.h"
++#include <string.h>
++#include "nx/runtime/ini.h"
++#include "nx/runtime/options.h"
++#include "nx/runtime/platform/backend.h"
++
++static const char* const PAGES[] = {"Mouse", "Keyboard"};
++enum { PAGE_COUNT = sizeof PAGES / sizeof PAGES[0] };
++
++/* keyboard_map has the key bindings' rows in place of a text field. mouse_native_address is the guest address of a word
++   that a code patch of the game reads: a value that is not 8 aligned and mapped breaks the mouse look, so only the
++   launcher that installs the patch sets it */
++static const char* const HIDDEN[] = {"keyboard_map", "mouse_native_address"};
++
++_Static_assert(IMGUI_KEYBIND_COUNT == BACKEND_KEYBIND_COUNT, "the window lists the buttons the backend has");
++_Static_assert(sizeof(((ImguiKeybind*)0)->keys) == sizeof(((BackendKeybind*)0)->keys), "the keys' line");
++
++static const IniSection* section_of(int page) {
++    if (page < 0 || page >= PAGE_COUNT) return NULL;
++    for (int s = 0; s < g_ini_sections_count; s++)
++        if (!strcmp(g_ini_sections[s].name, PAGES[page])) return &g_ini_sections[s];
++    return NULL;
++}
++
++static int shown(const IniOpt* o) {
++    if (o->flags & INI_IN_GAME) return 0;
++    for (size_t h = 0; h < sizeof HIDDEN / sizeof *HIDDEN; h++)
++        if (!strcmp(o->key, HIDDEN[h])) return 0;
++    return 1;
++}
++
++/* the i-th shown row of a section's tables, NULL past the last */
++static const IniOpt* row_of(const IniSection* sec, int i) {
++    for (int t = 0; t < 3 && sec->table[t]; t++)
++        for (const IniOpt* o = sec->table[t]; o->key; o++)
++            if (shown(o) && !i--) return o;
++    return NULL;
++}
++
++static const IniOpt* find(const char* key) {
++    for (int p = 0; p < PAGE_COUNT; p++) {
++        const IniSection* sec = section_of(p);
++        for (int i = 0; sec && row_of(sec, i); i++)
++            if (!strcmp(row_of(sec, i)->key, key)) return row_of(sec, i);
++    }
++    return NULL;
++}
++
++int imgui_settings_pages(void) { return PAGE_COUNT; }
++
++const char* imgui_settings_page_name(int page) { return page >= 0 && page < PAGE_COUNT ? PAGES[page] : ""; }
++
++int imgui_settings_rows(int page) {
++    const IniSection* sec = section_of(page);
++    int n = 0;
++    while (sec && row_of(sec, n)) n++;
++    return n;
++}
++
++int imgui_settings_row(int page, int i, ImguiSettingRow* r) {
++    const IniSection* sec = section_of(page);
++    const IniOpt* o = sec ? row_of(sec, i) : NULL;
++    if (!o) return 0;
++    *r = (ImguiSettingRow){.key = o->key,
++                           .name = o->name ? o->name : o->key,
++                           .help = o->help ? o->help : "",
++                           .type = o->type == INI_INT ? IMGUI_SETTING_INT : o->type == INI_FLOAT ? IMGUI_SETTING_FLOAT : IMGUI_SETTING_TEXT,
++                           .flags = (o->flags & INI_STARTUP ? IMGUI_SETTING_STARTUP : 0) |
++                                    (options_overridden(o->key) ? IMGUI_SETTING_LOCKED : 0),
++                           .lo = o->lo,
++                           .hi = o->hi,
++                           .step = o->step > 0 ? o->step : 1,
++                           .has_words = o->words && !strchr(o->words, '#')};
++    if (o->type == INI_INT) r->ivalue = __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED);
++    if (o->type == INI_FLOAT) r->fvalue = *(const float*)o->var;
++    return 1;
++}
++
++void imgui_settings_word(const char* key, int v, char* out, size_t n) {
++    const IniOpt* o = find(key);
++    if (o)
++        ini_word(o, v, out, n);
++    else
++        out[0] = 0;
++}
++
++void imgui_settings_set(const char* key, const char* value) { backend_setting_request(key, value); }
++
++void imgui_keybind_view(ImguiKeybind v[IMGUI_KEYBIND_COUNT]) {
++    BackendKeybind b[BACKEND_KEYBIND_COUNT];
++    backend_keybind_view(b);
++    for (int i = 0; i < IMGUI_KEYBIND_COUNT; ++i) {
++        v[i].button = b[i].button;
++        memcpy(v[i].keys, b[i].keys, sizeof v[i].keys);
++        v[i].custom = b[i].custom;
++        v[i].locked = b[i].locked;
++    }
++}
++void imgui_keybind_set(const char* button, const char* key) { backend_keybind_request(button, key); }
++void imgui_keybind_capture(int on) { backend_key_capture(on); }
++int imgui_keybind_captured(char* key, size_t n) { return backend_key_captured(key, n); }
+diff --git a/src/nx/gpu/vk/imgui_settings.h b/src/nx/gpu/vk/imgui_settings.h
+new file mode 100644
+index 0000000..4b1e3b9
+--- /dev/null
++++ b/src/nx/gpu/vk/imgui_settings.h
+@@ -0,0 +1,60 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later
++   Copyright 2026 the NXAevora contributors */
++/* The game's settings as the Settings window reads them: pages from the .ini's sections (settings.txt), rows from their
++   tables, so the window and the file cannot differ. Plain C, so that the window (C++) includes no runtime header. */
++#ifndef SNX_IMGUI_SETTINGS_H
++#define SNX_IMGUI_SETTINGS_H
++#include <stddef.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++enum { IMGUI_SETTING_INT, IMGUI_SETTING_FLOAT, IMGUI_SETTING_TEXT };
++enum {
++    IMGUI_SETTING_STARTUP = 1, /* read when the game starts: a change is saved and applies at the next start */
++    IMGUI_SETTING_LOCKED = 2   /* the command line holds it for this run: a change is not taken */
++};
++typedef struct {
++    const char* key;
++    const char* name; /* the menus' name, or the key */
++    const char* help; /* "" for none */
++    int type, flags;
++    double lo, hi;
++    int step;          /* of an int with words or arrows, at least 1 */
++    int has_words;     /* an int that is a choice (words between lo and hi), not a number */
++    int ivalue;        /* INT */
++    float fvalue;      /* FLOAT */
++} ImguiSettingRow;
++
++int imgui_settings_pages(void);
++const char* imgui_settings_page_name(int page);
++int imgui_settings_rows(int page);
++/* row i of page into r: 1, or 0 for an index outside the page */
++int imgui_settings_row(int page, int i, ImguiSettingRow* r);
++/* the word of an int choice's value v (the number when it has none) */
++void imgui_settings_word(const char* key, int v, char* out, size_t n);
++/* key set to value (the .ini's text). The main thread applies it and saves it, so the row shows the old value for a
++   moment */
++void imgui_settings_set(const char* key, const char* value);
++
++/* The key bindings (keyboard_map, which the rows above leave out): a row for each button of the console. The sizes are
++   those of backend.h's BackendKeybind */
++enum { IMGUI_KEYBIND_COUNT = 24, IMGUI_KEYBIND_KEYS = 64 };
++typedef struct {
++    const char* button;
++    char keys[IMGUI_KEYBIND_KEYS]; /* the keys that send it now, "None" for none */
++    int custom;                    /* the .ini names the button: its keys are not the defaults */
++    int locked;                    /* the command line holds keyboard_map: the bindings do not change */
++} ImguiKeybind;
++void imgui_keybind_view(ImguiKeybind v[IMGUI_KEYBIND_COUNT]);
++/* key: a name with _ for a space, "None" for no key, NULL for the defaults. A NULL button: the defaults of all */
++void imgui_keybind_set(const char* button, const char* key);
++void imgui_keybind_capture(int on);
++/* 0 while the key is awaited, 1 with its name in key, -1 when it was cancelled, -2 for a key that cannot be bound */
++int imgui_keybind_captured(char* key, size_t n);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/src/nx/gpu/vk/imgui_ui.cpp b/src/nx/gpu/vk/imgui_ui.cpp
+index 54cd566..a81f025 100644
+--- a/src/nx/gpu/vk/imgui_ui.cpp
++++ b/src/nx/gpu/vk/imgui_ui.cpp
+@@ -6,12 +6,15 @@
+ #include <cstring>
+ #include "imgui.h"
+ #include "nx/gpu/vk/debug_stats.h"
++#include "nx/gpu/vk/imgui_settings.h"
+ 
+ namespace {
+ constexpr float BAR_TRIGGER_PX = 24.0f; /* the cursor this close to the top of the picture shows the bar */
+ bool g_bar_shown;
+ bool g_show_test;
+ bool g_show_debug;
++bool g_show_input_settings;
++constexpr const char* INPUT_SETTINGS_TITLE = "Controller&Keyboard"; /* the menu entry and the window */
+ constexpr float DEBUG_WIDTH = 380.0f, DEBUG_HEIGHT = 520.0f, DEBUG_MIN_WIDTH = 300.0f, DEBUG_MIN_HEIGHT = 200.0f;
+ constexpr float GRAPH_HEIGHT = 56.0f, GRAPH_TOP_MS = 50.0f;
+ constexpr float MB_PER_GB = 1024.0f;
+@@ -21,12 +24,15 @@ bool menu_open_anywhere() {
+     return ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+ }
+ 
+-/* shows from the top edge, and stays while the cursor is on the bar or a menu is open */
+-bool bar_wanted() {
++/* shows from the top edge. It stays while the cursor is on it or one of its menus is open, but only if it showed in the
++   last frame: a popup of another window (a combo) must not bring it up, as its window would take the focus and close
++   the popup */
++bool bar_wanted(bool was_shown) {
+     const ImGuiIO& io = ImGui::GetIO();
+-    bool at_top = io.MousePos.x > -FLT_MAX / 2 && io.MousePos.y >= 0 && io.MousePos.y < BAR_TRIGGER_PX;
+-    bool on_bar = g_bar_shown && io.MousePos.x > -FLT_MAX / 2 && io.MousePos.y >= 0 && io.MousePos.y < ImGui::GetFrameHeight();
+-    return at_top || on_bar || menu_open_anywhere();
++    bool has_mouse = io.MousePos.x > -FLT_MAX / 2 && io.MousePos.y >= 0;
++    bool at_top = has_mouse && io.MousePos.y < BAR_TRIGGER_PX;
++    bool on_bar = was_shown && has_mouse && io.MousePos.y < ImGui::GetFrameHeight();
++    return at_top || on_bar || (was_shown && menu_open_anywhere());
+ }
+ 
+ void unavailable(const char* what) {
+@@ -41,7 +47,7 @@ void menu_bar() {
+         ImGui::EndMenu();
+     }
+     if (ImGui::BeginMenu("Settings")) {
+-        unavailable("Not available yet");
++        ImGui::MenuItem(INPUT_SETTINGS_TITLE, nullptr, &g_show_input_settings);
+         ImGui::EndMenu();
+     }
+     if (ImGui::BeginMenu("Mods")) {
+@@ -184,6 +190,240 @@ void debug_window(const ImguiFrame& f) {
+     ImGui::End();
+ }
+ 
++/* ---- the Controller&Keyboard window: a page for each section of imgui_settings.h, a row for each setting ---- */
++constexpr float SETTINGS_WIDTH = 460.0f, SETTINGS_HEIGHT = 420.0f, SETTINGS_MIN_WIDTH = 320.0f, SETTINGS_MIN_HEIGHT = 160.0f;
++constexpr float SETTINGS_HELP_WIDTH = 28.0f; /* in font heights: the help tooltip wraps here */
++constexpr double SLIDER_RANGE_MAX = 100000.0; /* a wider range is typed, not dragged */
++constexpr int WORD_MAX = 64;
++constexpr int ARROW_COARSE = 10;          /* Shift: this many steps for a press of an arrow */
++constexpr float ARROW_FLOAT_STEPS = 200.0f; /* a float's step is its range over this */
++constexpr float ARROW_FLOAT_FINE = 10.0f;   /* Ctrl: a step over this */
++
++void setting_help(const ImguiSettingRow& r) {
++    char note[160] = "";
++    if (r.flags & IMGUI_SETTING_STARTUP) snprintf(note, sizeof note, "Applies when the game starts again.");
++    if (r.flags & IMGUI_SETTING_LOCKED) snprintf(note, sizeof note, "Set on the command line for this run.");
++    if (!r.help[0] && !note[0]) return;
++    if (!ImGui::BeginItemTooltip()) return;
++    ImGui::PushTextWrapPos(ImGui::GetFontSize() * SETTINGS_HELP_WIDTH);
++    if (r.help[0]) ImGui::TextUnformatted(r.help);
++    if (note[0]) ImGui::TextDisabled("%s", note);
++    ImGui::PopTextWrapPos();
++    ImGui::EndTooltip();
++}
++
++/* Left and Right while the pointer is over the item just drawn: -1, 0 or 1, a held key repeating. The game gets no key
++   while the pointer is there (the arrows are its D-pad) */
++int arrow_direction() {
++    if (!ImGui::IsItemHovered()) return 0;
++    ImGui::SetNextFrameWantCaptureKeyboard(true);
++    return (int)ImGui::IsKeyPressed(ImGuiKey_RightArrow) - (int)ImGui::IsKeyPressed(ImGuiKey_LeftArrow);
++}
++
++/* one press of an arrow moves an int slider by the setting's step, ten of them with Shift, one unit with Ctrl */
++int arrow_amount(int step) {
++    const ImGuiIO& io = ImGui::GetIO();
++    return io.KeyCtrl ? 1 : io.KeyShift ? step * ARROW_COARSE : step;
++}
++
++/* the three setting_* below return whether the row changed, and then the new value as the .ini writes it in out */
++bool setting_choice(const ImguiSettingRow& r, char* out, size_t n) {
++    char word[WORD_MAX];
++    int count = (int)((r.hi - r.lo) / r.step) + 1;
++    bool changed = false;
++    imgui_settings_word(r.key, r.ivalue, word, sizeof word);
++    bool open = ImGui::BeginCombo("##value", word);
++    int dir = arrow_direction();
++    if (dir) {
++        int to = (r.ivalue - (int)r.lo) / r.step + dir;
++        if (to >= 0 && to < count) {
++            snprintf(out, n, "%d", (int)r.lo + to * r.step);
++            changed = true;
++        }
++    }
++    if (!open) return changed;
++    for (int k = 0; k < count; ++k) {
++        int v = (int)r.lo + k * r.step;
++        imgui_settings_word(r.key, v, word, sizeof word);
++        if (ImGui::Selectable(word, v == r.ivalue) && v != r.ivalue) {
++            snprintf(out, n, "%d", v);
++            changed = true;
++        }
++    }
++    ImGui::EndCombo();
++    return changed;
++}
++
++bool setting_number(const ImguiSettingRow& r, char* out, size_t n) {
++    int v = r.ivalue;
++    bool edited;
++    if (r.hi - r.lo <= SLIDER_RANGE_MAX) {
++        edited = ImGui::SliderInt("##value", &v, (int)r.lo, (int)r.hi, "%d", ImGuiSliderFlags_AlwaysClamp);
++        int dir = arrow_direction();
++        if (dir) {
++            v += dir * arrow_amount(r.step);
++            edited = true;
++        }
++    } else
++        edited = ImGui::InputInt("##value", &v, r.step, r.step * ARROW_COARSE, ImGuiInputTextFlags_EnterReturnsTrue);
++    if (!edited || v == r.ivalue) return false;
++    snprintf(out, n, "%d", v < (int)r.lo ? (int)r.lo : v > (int)r.hi ? (int)r.hi : v);
++    return true;
++}
++
++bool setting_float(const ImguiSettingRow& r, char* out, size_t n) {
++    float v = r.fvalue, step = (float)(r.hi - r.lo) / ARROW_FLOAT_STEPS;
++    const ImGuiIO& io = ImGui::GetIO();
++    bool edited = ImGui::SliderFloat("##value", &v, (float)r.lo, (float)r.hi, "%.3f", ImGuiSliderFlags_AlwaysClamp);
++    int dir = arrow_direction();
++    if (dir) {
++        v += dir * (io.KeyCtrl ? step / ARROW_FLOAT_FINE : io.KeyShift ? step * ARROW_COARSE : step);
++        v = v < (float)r.lo ? (float)r.lo : v > (float)r.hi ? (float)r.hi : v;
++        edited = true;
++    }
++    if (!edited || v == r.fvalue) return false;
++    snprintf(out, n, "%g", v);
++    return true;
++}
++
++void setting_row(const ImguiSettingRow& r) {
++    char value[WORD_MAX] = "";
++    bool changed = false;
++    ImGui::TableNextRow();
++    ImGui::TableNextColumn();
++    ImGui::AlignTextToFramePadding();
++    ImGui::TextUnformatted(r.name);
++    setting_help(r);
++    ImGui::TableNextColumn();
++    ImGui::PushID(r.key);
++    ImGui::SetNextItemWidth(-FLT_MIN);
++    ImGui::BeginDisabled((r.flags & IMGUI_SETTING_LOCKED) != 0);
++    if (r.type == IMGUI_SETTING_TEXT)
++        ImGui::TextDisabled("Edit it in the .ini file");
++    else if (r.type == IMGUI_SETTING_FLOAT)
++        changed = setting_float(r, value, sizeof value);
++    else if (r.has_words)
++        changed = setting_choice(r, value, sizeof value);
++    else
++        changed = setting_number(r, value, sizeof value);
++    ImGui::EndDisabled();
++    ImGui::PopID();
++    if (changed) imgui_settings_set(r.key, value);
++}
++
++/* ---- the key bindings of the Keyboard page: the row waiting for a key is g_capture_row ---- */
++constexpr const char* KEYBIND_PAGE = "Keyboard";
++constexpr int NO_ROW = -1;
++constexpr int KEY_NAME_MAX = 48;
++constexpr int CAPTURE_CANCELLED = -1; /* imgui_keybind_captured: Esc or a loss of the focus; -2 is an unnamed key */
++int g_capture_row = NO_ROW;
++bool g_capture_drawn;      /* the bindings showed this frame: a tab or a window that went away ends the capture */
++bool g_capture_unnamed;    /* the last key pressed has no name that keyboard_map can hold */
++
++void capture_stop() {
++    if (g_capture_row == NO_ROW) return;
++    imgui_keybind_capture(0);
++    g_capture_row = NO_ROW;
++}
++
++/* the key that the capture took goes to the row that asked for it; a cancel or an unnamed key ends the wait */
++void capture_take(const ImguiKeybind* v) {
++    if (g_capture_row == NO_ROW) return;
++    char key[KEY_NAME_MAX];
++    int result = imgui_keybind_captured(key, sizeof key);
++    if (!result) return;
++    if (result > 0) imgui_keybind_set(v[g_capture_row].button, key);
++    g_capture_unnamed = result < 0 && result != CAPTURE_CANCELLED;
++    g_capture_row = NO_ROW;
++}
++
++void keybind_row(const ImguiKeybind& k, int i) {
++    ImGui::TableNextRow();
++    ImGui::TableNextColumn();
++    ImGui::AlignTextToFramePadding();
++    ImGui::TextUnformatted(k.button);
++    ImGui::TableNextColumn();
++    if (g_capture_row == i)
++        ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_CheckMark], "Press a key (Esc cancels)");
++    else if (k.custom)
++        ImGui::TextUnformatted(k.keys);
++    else
++        ImGui::TextDisabled("%s", k.keys);
++    ImGui::TableNextColumn();
++    ImGui::PushID(i);
++    if (ImGui::SmallButton(g_capture_row == i ? "Cancel" : "Bind")) {
++        if (g_capture_row == i) {
++            capture_stop();
++        } else {
++            g_capture_row = i;
++            g_capture_unnamed = false;
++            imgui_keybind_capture(1);
++        }
++    }
++    ImGui::SameLine();
++    if (ImGui::SmallButton("None")) imgui_keybind_set(k.button, "None");
++    ImGui::SameLine();
++    ImGui::BeginDisabled(!k.custom);
++    if (ImGui::SmallButton("Default")) imgui_keybind_set(k.button, nullptr);
++    ImGui::EndDisabled();
++    ImGui::PopID();
++}
++
++void keybinds() {
++    ImguiKeybind v[IMGUI_KEYBIND_COUNT];
++    imgui_keybind_view(v);
++    capture_take(v);
++    g_capture_drawn = true;
++    ImGui::SeparatorText("Key bindings");
++    ImGui::TextWrapped("Bind, then press the key. A key the list shows dimmed is the default of its button. "
++                       "Esc cancels, and F1 to F12, Pause and Alt cannot be bound.");
++    if (g_capture_unnamed)
++        ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_CheckMark], "That key has no name that can be saved, so it cannot be bound.");
++    bool locked = v[0].locked != 0;
++    if (locked) ImGui::TextDisabled("keyboard_map is set on the command line for this run.");
++    ImGui::BeginDisabled(locked);
++    if (ImGui::BeginTable("##keys", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
++        ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthStretch, 0.8f);
++        ImGui::TableSetupColumn("Keys", ImGuiTableColumnFlags_WidthStretch, 1.2f);
++        ImGui::TableSetupColumn("##actions", ImGuiTableColumnFlags_WidthFixed);
++        for (int i = 0; i < IMGUI_KEYBIND_COUNT; ++i) keybind_row(v[i], i);
++        ImGui::EndTable();
++    }
++    if (ImGui::Button("Reset all to the defaults")) imgui_keybind_set(nullptr, nullptr);
++    ImGui::EndDisabled();
++}
++
++void settings_page(int page) {
++    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
++    ImGui::TextWrapped("Pointer over a slider or a choice: Left and Right change it. Shift moves ten steps, Ctrl one unit.");
++    ImGui::PopStyleColor();
++    if (ImGui::BeginTable("##rows", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
++        ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthStretch, 1.0f);
++        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.2f);
++        ImguiSettingRow r;
++        for (int i = 0; imgui_settings_row(page, i, &r); ++i) setting_row(r);
++        ImGui::EndTable();
++    }
++    if (!strcmp(imgui_settings_page_name(page), KEYBIND_PAGE)) keybinds();
++}
++
++void input_settings_window() {
++    ImGui::SetNextWindowPos(ImVec2(80, 80), ImGuiCond_FirstUseEver);
++    ImGui::SetNextWindowSize(ImVec2(SETTINGS_WIDTH, SETTINGS_HEIGHT), ImGuiCond_FirstUseEver);
++    ImGui::SetNextWindowSizeConstraints(ImVec2(SETTINGS_MIN_WIDTH, SETTINGS_MIN_HEIGHT), ImVec2(FLT_MAX, FLT_MAX));
++    g_capture_drawn = false;
++    if (ImGui::Begin(INPUT_SETTINGS_TITLE, &g_show_input_settings) && ImGui::BeginTabBar("##pages")) {
++        for (int p = 0; p < imgui_settings_pages(); ++p)
++            if (ImGui::BeginTabItem(imgui_settings_page_name(p))) {
++                settings_page(p);
++                ImGui::EndTabItem();
++            }
++        ImGui::EndTabBar();
++    }
++    ImGui::End();
++    if (!g_capture_drawn) capture_stop();
++}
++
+ /* ---- the game's software keyboard (the player's name): the box that overlay.c keeps the state of ---- */
+ constexpr float KEYBOARD_FIELD_WIDTH = 420.0f;
+ constexpr unsigned UTF16_PAIR_MIN = 0x10000; /* a character from here on is two UTF-16 units, as the game counts them */
+@@ -313,6 +553,8 @@ void keyboard_window(ImguiKeyboard& k) {
+ void imgui_ui_reset(void) {
+     g_bar_shown = false;
+     g_open_test_was = -1;
++    g_show_input_settings = false;
++    capture_stop();
+     keyboard_reset();
+ }
+ 
+@@ -321,8 +563,9 @@ bool imgui_ui_draw(ImguiFrame* f) {
+         g_open_test_was = f->open_test;
+         g_show_test = f->open_test != 0;
+     }
++    bool bar_was_shown = g_bar_shown;
+     g_bar_shown = false;
+-    if (bar_wanted() && ImGui::BeginMainMenuBar()) {
++    if (bar_wanted(bar_was_shown) && ImGui::BeginMainMenuBar()) {
+         g_bar_shown = true;
+         menu_bar();
+         ImGui::EndMainMenuBar();
+@@ -331,6 +574,10 @@ bool imgui_ui_draw(ImguiFrame* f) {
+         debug_window(*f);
+     else
+         debug_stats_hardware_demand(nullptr);
++    if (g_show_input_settings)
++        input_settings_window();
++    else
++        capture_stop();
+     if (g_show_test) test_window(f->dt);
+     keyboard_window(f->kb);
+     return g_bar_shown;
+diff --git a/src/nx/runtime/options.c b/src/nx/runtime/options.c
+index d41ab03..9c2f018 100644
+--- a/src/nx/runtime/options.c
++++ b/src/nx/runtime/options.c
+@@ -276,6 +276,22 @@ static void apply(const char* key, const char* value) {
+     else if (o || unattended_known(key))
+         backend_ini(key, value);
+ }
++int options_overridden(const char* key) { return override_of(key) != NULL; }
++
++int options_change(const char* key, const char* value) {
++    const IniOpt* o = find_row(key, NULL);
++    char why[128];
++    if (!o) return OPTIONS_UNKNOWN;
++    if (override_of(key)) return OPTIONS_OVERRIDDEN;
++    if (ini_check(o, value, why, sizeof why)) {
++        WARN_LIMIT(1, "settings: %s=%s is not taken: %s\n", key, value, why);
++        return OPTIONS_REJECTED;
++    }
++    apply(key, value);
++    ini_set(key, value);
++    return OPTIONS_OK;
++}
++
+ /* every setting: the command line's value, else the file's, else its default; then the keys of no section the
+    unattended options take */
+ static void apply_all(void) {
+diff --git a/src/nx/runtime/options.h b/src/nx/runtime/options.h
+index 106ce04..1eaf1e4 100644
+--- a/src/nx/runtime/options.h
++++ b/src/nx/runtime/options.h
+@@ -14,6 +14,13 @@
+ void ini_override(const char* k, const char* v);
+ /* a value the game's menu set, already applied: written to the file at the next poll, even over an edit made meanwhile */
+ void ini_set(const char* k, const char* v);
++/* a setting of the file's sections set by a window: checked, applied as a reload applies it (a startup setting is only
++   saved), and saved with ini_set. A setting that a thread other than the main one reads is changed by the window as a
++   whole int, as a reload does; the key bindings go through the main thread (backend.h). OPTIONS_OVERRIDDEN: the command
++   line holds it for this run */
++enum { OPTIONS_OK, OPTIONS_UNKNOWN, OPTIONS_OVERRIDDEN, OPTIONS_REJECTED };
++int options_change(const char* key, const char* value);
++int options_overridden(const char* key); /* 1 when --key=value is on the command line */
+ /* every setting of the file's sections but the game's own (a control's place), a line each on stdout, nine fields
+    between tabs: the section (with /page for a page of its own), the key, its default, int | float | text, the lowest
+    and highest number, the help on one line, the menus' name, and the values as value=word between '|' (empty for a
+diff --git a/src/nx/runtime/platform/backend/imgui_sdl.c b/src/nx/runtime/platform/backend/imgui_sdl.c
+index 4d8a8ae..860ae05 100644
+--- a/src/nx/runtime/platform/backend/imgui_sdl.c
++++ b/src/nx/runtime/platform/backend/imgui_sdl.c
+@@ -15,12 +15,13 @@ static void push_pos(float x, float y) {
+     imgui_input_push(&ev);
+ }
+ 
+-/* the windows see no mouse while the mouse look holds the cursor, and the cursor's place once it is let go */
++/* the windows see no mouse while the mouse look holds the cursor, and the cursor's place once it is let go, if the
++   cursor is over the window: else SDL has no place for it, and its last one would show the menu bar */
+ static void follow_capture(int captured, float density) {
+     float x, y;
+     if (captured == g_was_captured) return;
+     g_was_captured = captured;
+-    if (captured) {
++    if (captured || !SDL_GetMouseFocus()) {
+         push_pos(NO_MOUSE, NO_MOUSE);
+         return;
+     }
+@@ -116,6 +117,9 @@ int imgui_sdl_event(const SDL_Event* e, float density, int captured, int owned)
+             if (!w.text) return 0;
+             push_text(e->text.text);
+             return 1;
++        case SDL_EVENT_WINDOW_MOUSE_LEAVE: /* no place: a bar at the top edge goes when the cursor leaves there */
++            push_pos(NO_MOUSE, NO_MOUSE);
++            return 0;
+         case SDL_EVENT_WINDOW_FOCUS_LOST:
+             focus_lost();
+             return 0;
+diff --git a/src/nx/runtime/platform/backend/sdl3.c b/src/nx/runtime/platform/backend/sdl3.c
+index 7c10462..cded28a 100644
+--- a/src/nx/runtime/platform/backend/sdl3.c
++++ b/src/nx/runtime/platform/backend/sdl3.c
+@@ -51,6 +51,13 @@ static SDL_Window* g_win;
+    a width from one resize from pairing with the height of another */
+ static u64 g_wsize = 1280 | (720ull << 32); /* atomic */
+ static u64 keys_held;
++/* the buttons that the press of each key set, so that its release clears those (the map may have changed since) and the
++   buttons of the keys still down stay */
++static u64 g_key_bits[SDL_SCANCODE_COUNT];
++static void keys_release_all(void) {
++    keys_held = 0;
++    memset(g_key_bits, 0, sizeof g_key_bits);
++}
+ static u64 g_menu_held;      /* keyboard, scripted and on-screen buttons held while the menu had them */
+ static u64 g_menu_held_pad0; /* No1's physical pad, tracked separately so a replacement has fresh presses */
+ static u64 g_menu_held_extra[SNX_GAMEPADS - 1];
+@@ -447,12 +454,12 @@ static const char* HELP =
+     "Controller: A, B, X and Y sit where the console has them (gamepad_swap_ab=1 swaps A and B). "
+     "Home opens the game's menu.\n\n"
+     "Keyboard, by key position on a US layout (keyboard_map in the .ini changes it):\n"
+-    "  Buttons      A: X or Space    B: Z    X: C    Y: V\n"
+-    "  Shoulders    L: Q    R: E    ZL: 1    ZR: 3\n"
+-    "  Plus, minus  +: Enter    -: Backspace\n"
++    "  Buttons      A: F    B: Left Shift    X: R    Y: Space\n"
++    "  Shoulders    L: Q    R: E    L3: Left Ctrl (ZL and ZR are the mouse buttons)\n"
++    "  Plus, minus  +: G    -: M\n"
+     "  D-Pad        the arrow keys\n"
+     "  Left stick   W, A, S and D\n"
+-    "  Right stick  I, J, K and L\n\n"
++    "  Right stick  the mouse\n\n"
+     "Runtime keys:\n"
+     "  F1  this help\n"
+     "  F2  open or close the game's menu (arrows move, Enter or Space picks, Esc or Backspace goes back)\n"
+@@ -485,17 +492,15 @@ static PadKind gamepad_kind(int type) {
+    a different key, and ZL stayed held */
+ static u64 default_keymap(SDL_Scancode k) {
+     switch (k) {
+-        case SDL_SCANCODE_X:
+-        case SDL_SCANCODE_SPACE: return 1ull << 0; /* A */
+-        case SDL_SCANCODE_Z: return 1ull << 1;     /* B */
+-        case SDL_SCANCODE_C: return 1ull << 2;     /* X */
+-        case SDL_SCANCODE_V: return 1ull << 3;     /* Y */
+-        case SDL_SCANCODE_Q: return 1ull << 6;     /* L */
+-        case SDL_SCANCODE_E: return 1ull << 7;     /* R */
+-        case SDL_SCANCODE_1: return 1ull << 8;     /* ZL */
+-        case SDL_SCANCODE_3: return 1ull << 9;     /* ZR */
+-        case SDL_SCANCODE_RETURN: return 1ull << 10;
+-        case SDL_SCANCODE_BACKSPACE: return 1ull << 11;
++        case SDL_SCANCODE_F: return 1ull << 0;      /* A */
++        case SDL_SCANCODE_LSHIFT: return 1ull << 1; /* B */
++        case SDL_SCANCODE_R: return 1ull << 2;      /* X */
++        case SDL_SCANCODE_SPACE: return 1ull << 3;  /* Y */
++        case SDL_SCANCODE_LCTRL: return 1ull << 4;  /* L3 */
++        case SDL_SCANCODE_Q: return 1ull << 6;      /* L */
++        case SDL_SCANCODE_E: return 1ull << 7;      /* R */
++        case SDL_SCANCODE_G: return 1ull << 10;     /* Plus */
++        case SDL_SCANCODE_M: return 1ull << 11;     /* Minus */
+         case SDL_SCANCODE_LEFT: return 1ull << 12;
+         case SDL_SCANCODE_UP: return 1ull << 13;
+         case SDL_SCANCODE_RIGHT: return 1ull << 14;
+@@ -504,10 +509,6 @@ static u64 default_keymap(SDL_Scancode k) {
+         case SDL_SCANCODE_W: return 1ull << 41;
+         case SDL_SCANCODE_D: return 1ull << 42;
+         case SDL_SCANCODE_S: return 1ull << 43;
+-        case SDL_SCANCODE_J: return 1ull << 44;
+-        case SDL_SCANCODE_I: return 1ull << 45;
+-        case SDL_SCANCODE_L: return 1ull << 46;
+-        case SDL_SCANCODE_K: return 1ull << 47;
+         default: break;
+     }
+     return 0;
+@@ -567,14 +568,14 @@ static int key_entry_read(const char* at, size_t n, KeyEntry* out) {
+     out->key = SDL_GetScancodeFromName(key);
+     return out->key == SDL_SCANCODE_UNKNOWN || key_reserved(out->key) || out->key >= SDL_SCANCODE_COUNT ? -1 : 0;
+ }
+-/* A button named in the text loses its default keys, and a key named in it belongs to the buttons named with it only.
+-   An unreadable word changes nothing and is said */
+-void keyboard_map_set(const IniOpt* o, const char* v) {
++/* keyboard_map's text as the buttons each key sends, into map. A button named in the text loses its default keys, and a
++   key named in it belongs to the buttons named with it only. 0, or -1 for a word it cannot read (said when say): map is
++   then not made */
++static int keybind_compile(const char* v, u64 map[SDL_SCANCODE_COUNT], int say) {
+     KeyEntry e[KEY_ENTRIES_MAX];
+     int count = 0;
+     u64 named = 0;
+     const char* at = v ? v : "";
+-    (void)o;
+     while (*at) {
+         size_t n = strcspn(at, " \t");
+         if (!n) {
+@@ -582,20 +583,233 @@ void keyboard_map_set(const IniOpt* o, const char* v) {
+             continue;
+         }
+         if (count == KEY_ENTRIES_MAX || key_entry_read(at, n, &e[count]) < 0) {
+-            LOG("settings: keyboard_map's \"%.*s\" is not a button and a key (A:F): the map stays as it was\n", (int)n,
+-                at);
+-            return;
++            if (say)
++                LOG("settings: keyboard_map's \"%.*s\" is not a button and a key (A:F): the map stays as it was\n", (int)n,
++                    at);
++            return -1;
+         }
+         ++count;
+         at += n;
+     }
+-    keybind_reset();
++    for (int k = 0; k < SDL_SCANCODE_COUNT; ++k) map[k] = default_keymap((SDL_Scancode)k);
+     for (int i = 0; i < count; ++i) named |= 1ull << e[i].bit;
+-    for (int k = 0; k < SDL_SCANCODE_COUNT; ++k) g_keybind[k] &= ~named;
++    for (int k = 0; k < SDL_SCANCODE_COUNT; ++k) map[k] &= ~named;
+     for (int i = 0; i < count; ++i)
+-        if (e[i].key) g_keybind[e[i].key] = 0;
++        if (e[i].key) map[e[i].key] = 0;
+     for (int i = 0; i < count; ++i)
+-        if (e[i].key) g_keybind[e[i].key] |= 1ull << e[i].bit;
++        if (e[i].key) map[e[i].key] |= 1ull << e[i].bit;
++    return 0;
++}
++/* the text of the map in use, for the window's view; written under ui_lock (backend_ini holds it) */
++static char g_keybind_accepted[sizeof g_settings.keyboard_map];
++/* An unreadable word changes nothing and is said */
++void keyboard_map_set(const IniOpt* o, const char* v) {
++    u64 map[SDL_SCANCODE_COUNT];
++    (void)o;
++    if (keybind_compile(v, map, 1)) return;
++    memcpy(g_keybind, map, sizeof g_keybind);
++    snprintf(g_keybind_accepted, sizeof g_keybind_accepted, "%s", v ? v : "");
++    g_keybind_ready = 1;
++}
++
++/* ---- what the Settings window changes (backend.h). The window runs on the renderer's thread. A change waits here under
++   ui_lock, and the main thread applies it in video_poll, where the input code that reads the settings runs ---- */
++enum { CHANGES_MAX = 16, CHANGE_KEY_MAX = 64, CHANGE_VALUE_MAX = 64 };
++typedef struct {
++    char key[CHANGE_KEY_MAX];
++    char value[CHANGE_VALUE_MAX];
++} SettingChange;
++static SettingChange g_changes[CHANGES_MAX];
++static int g_nchanges;
++
++void backend_setting_request(const char* key, const char* value) {
++    if (strlen(key) >= CHANGE_KEY_MAX || strlen(value) >= CHANGE_VALUE_MAX) {
++        LOG("settings: the window's change of %.40s is too long and is left out\n", key);
++        return;
++    }
++    ui_lock();
++    int at = 0;
++    while (at < g_nchanges && strcmp(g_changes[at].key, key)) ++at; /* the same key: the later value replaces it */
++    int room = at < CHANGES_MAX;
++    if (room) {
++        if (at == g_nchanges) {
++            snprintf(g_changes[at].key, sizeof g_changes[at].key, "%s", key);
++            ++g_nchanges;
++        }
++        snprintf(g_changes[at].value, sizeof g_changes[at].value, "%s", value);
++    }
++    ui_unlock();
++    if (!room) LOG("settings: too many changes at once, %.40s is not changed\n", key);
++}
++
++/* ---- the key bindings of the window: it edits keyboard_map's text. g_keybind belongs to the main thread, so a new text
++   waits in g_keybind_next, and the view shows it until keybind_apply has made it the text in use ---- */
++_Static_assert(sizeof KEY_BUTTONS / sizeof *KEY_BUTTONS == BACKEND_KEYBIND_COUNT, "the view lists every button");
++static char g_keybind_next[sizeof g_settings.keyboard_map];
++static int g_keybind_pending; /* g_keybind_next waits to be applied */
++
++/* keyboard_map as it will be: the text that waits, else the one in use. Under ui_lock */
++static const char* keybind_text(void) { return g_keybind_pending ? g_keybind_next : g_keybind_accepted; }
++
++/* the buttons that text names */
++static u64 keybind_named(const char* text) {
++    u64 named = 0;
++    for (const char* at = text; *at;) {
++        size_t n = strcspn(at, " \t");
++        KeyEntry e;
++        if (!n) {
++            ++at;
++            continue;
++        }
++        if (key_entry_read(at, n, &e) == 0) named |= 1ull << e.bit;
++        at += n;
++    }
++    return named;
++}
++
++/* the keys that send a button in map, as a line */
++static void keybind_keys(const u64 map[SDL_SCANCODE_COUNT], u64 bit, char* out, size_t size) {
++    size_t at = 0;
++    for (int k = 1; k < SDL_SCANCODE_COUNT; ++k) {
++        if (!(map[k] & bit)) continue;
++        at += (size_t)snprintf(out + at, size - at, "%s%s", at ? ", " : "", SDL_GetScancodeName((SDL_Scancode)k));
++        if (at >= size) { /* cut: the rest of the keys do not fit the line */
++            at = size - 1;
++            break;
++        }
++    }
++    if (!at) snprintf(out, size, "None");
++}
++
++void backend_keybind_view(BackendKeybind v[BACKEND_KEYBIND_COUNT]) {
++    char text[sizeof g_keybind_next];
++    u64 map[SDL_SCANCODE_COUNT];
++    ui_lock();
++    snprintf(text, sizeof text, "%s", keybind_text());
++    ui_unlock();
++    /* only a text that compiles is in use or waits, so this fails never; no keys is the safe line if it does */
++    if (keybind_compile(text, map, 0)) memset(map, 0, sizeof map);
++    u64 named = keybind_named(text);
++    int locked = options_overridden("keyboard_map");
++    for (int i = 0; i < BACKEND_KEYBIND_COUNT; ++i) {
++        u64 bit = 1ull << KEY_BUTTONS[i].bit;
++        v[i].button = KEY_BUTTONS[i].name;
++        v[i].custom = (named & bit) != 0;
++        v[i].locked = locked;
++        keybind_keys(map, bit, v[i].keys, sizeof v[i].keys);
++    }
++}
++
++/* text without the words of button, then Button:key when key is given (button NULL: nothing is left). 0, or -1 when it
++   does not fit; out is then not to be used */
++static int keybind_edit(const char* text, const char* button, const char* key, char* out, size_t n) {
++    size_t blen = button ? strlen(button) : 0, at = 0;
++    out[0] = 0;
++    for (const char* p = text; button && *p;) {
++        size_t len = strcspn(p, " \t");
++        if (!len) {
++            ++p;
++            continue;
++        }
++        if (strcspn(p, ":") != blen || SDL_strncasecmp(p, button, blen)) {
++            int w = snprintf(out + at, n - at, "%s%.*s", at ? " " : "", (int)len, p);
++            if (w < 0 || (size_t)w >= n - at) return -1;
++            at += (size_t)w;
++        }
++        p += len;
++    }
++    if (button && key) {
++        int w = snprintf(out + at, n - at, "%s%s:%s", at ? " " : "", button, key);
++        if (w < 0 || (size_t)w >= n - at) return -1;
++    }
++    return 0;
++}
++
++void backend_keybind_request(const char* button, const char* key) {
++    char next[sizeof g_keybind_next];
++    if (options_overridden("keyboard_map")) return; /* the command line holds it for this run */
++    ui_lock();
++    char text[sizeof next];
++    snprintf(text, sizeof text, "%s", keybind_text());
++    int failed = keybind_edit(text, button, key, next, sizeof next);
++    if (!failed) {
++        memcpy(g_keybind_next, next, sizeof next);
++        g_keybind_pending = 1;
++    }
++    ui_unlock();
++    if (failed) LOG("settings: keyboard_map would be longer than %zu bytes, so the change is not made\n", sizeof next - 1);
++}
++
++/* the main thread: the text the window left becomes the map in use, and is saved with the .ini's other settings. A text
++   that does not compile is dropped, as one that the command line holds */
++static void keybind_apply(const char* text) {
++    u64 check[SDL_SCANCODE_COUNT];
++    if (keybind_compile(text, check, 0))
++        LOG("settings: the window made a keyboard_map that cannot be read, so it is dropped\n");
++    else if (options_change("keyboard_map", text) != OPTIONS_OK)
++        LOG("settings: keyboard_map is not changed by the window\n");
++    ui_lock();
++    if (!strcmp(text, g_keybind_next)) g_keybind_pending = 0; /* not asked again meanwhile */
++    ui_unlock();
++}
++
++/* the main thread, once a pass: the window's changes of settings and of the key map */
++static void window_changes_apply(void) {
++    SettingChange taken[CHANGES_MAX];
++    char map[sizeof g_keybind_next];
++    ui_lock();
++    int n = g_nchanges;
++    memcpy(taken, g_changes, (size_t)n * sizeof *taken);
++    g_nchanges = 0;
++    int map_waits = g_keybind_pending;
++    if (map_waits) memcpy(map, g_keybind_next, sizeof map);
++    ui_unlock();
++    for (int i = 0; i < n; ++i)
++        if (options_change(taken[i].key, taken[i].value) != OPTIONS_OK)
++            LOG("settings: the window's change %s=%s is not taken\n", taken[i].key, taken[i].value);
++    if (map_waits) keybind_apply(map);
++}
++
++/* The key the window waits for: the next press is taken here and goes nowhere else. Esc cancels, losing the focus
++   cancels, and a key the runtime keeps (key_reserved) is not taken. A key that has no name that gives the same key back
++   cannot be written in keyboard_map: the capture ends with KEYCAP_UNNAMED */
++enum { KEYCAP_OFF, KEYCAP_WAIT, KEYCAP_GOT, KEYCAP_CANCEL, KEYCAP_UNNAMED };
++static int g_keycap;
++static char g_keycap_name[48]; /* written before KEYCAP_GOT is published */
++void backend_key_capture(int on) { __atomic_store_n(&g_keycap, on ? KEYCAP_WAIT : KEYCAP_OFF, __ATOMIC_RELEASE); }
++int backend_key_captured(char* name, size_t n) {
++    int state = __atomic_load_n(&g_keycap, __ATOMIC_ACQUIRE);
++    if (state < KEYCAP_GOT) return 0;
++    if (state == KEYCAP_GOT) snprintf(name, n, "%s", g_keycap_name);
++    __atomic_store_n(&g_keycap, KEYCAP_OFF, __ATOMIC_RELEASE);
++    return state == KEYCAP_GOT ? 1 : state == KEYCAP_CANCEL ? -1 : -2;
++}
++static void keycap_cancel(void) {
++    int waiting = KEYCAP_WAIT;
++    __atomic_compare_exchange_n(&g_keycap, &waiting, KEYCAP_CANCEL, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
++}
++/* the key's name for keyboard_map (a space is written as _), or NULL for a key that cannot be written */
++static const char* keycap_name(SDL_Scancode k) {
++    const char* name = SDL_GetScancodeName(k);
++    if (!name[0] || strlen(name) >= sizeof g_keycap_name || strchr(name, '_') || SDL_GetScancodeFromName(name) != k)
++        return NULL;
++    return name;
++}
++static int keycap_event(const SDL_Event* e) {
++    if (e->type != SDL_EVENT_KEY_DOWN || __atomic_load_n(&g_keycap, __ATOMIC_ACQUIRE) != KEYCAP_WAIT) return 0;
++    if (e->key.repeat) return 1;
++    if (e->key.scancode == SDL_SCANCODE_ESCAPE) {
++        keycap_cancel();
++    } else if (!key_reserved(e->key.scancode)) {
++        const char* name = keycap_name(e->key.scancode);
++        if (name) {
++            for (size_t i = 0; i <= strlen(name); ++i) g_keycap_name[i] = name[i] == ' ' ? '_' : name[i];
++            __atomic_store_n(&g_keycap, KEYCAP_GOT, __ATOMIC_RELEASE);
++        } else {
++            __atomic_store_n(&g_keycap, KEYCAP_UNNAMED, __ATOMIC_RELEASE);
++        }
++    }
++    return 1;
+ }
+ 
+ /* g_fullscreen follows the window: also set from the fullscreen events, for a change the window manager made */
+@@ -1013,7 +1227,7 @@ static u64 finger_id(const SDL_TouchFingerEvent* f) {
+ static void menu_open(int open) {
+     if (overlay_shown() != open) overlay_toggle();
+     vpad_release();
+-    keys_held = 0;
++    keys_release_all();
+     /* a finger or button down before this (Home on the on-screen controls opened it) lifts without a tap */
+     overlay_pointers_reset();
+ }
+@@ -1500,8 +1714,10 @@ void video_poll(void) {
+     /* the menu, or the keyboard's box, had the controls when this poll began: the press that closes it (B, or A that
+        gives the box's line) is in this poll's state */
+     int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown();
++    window_changes_apply();
+     while (!g_opt_headless && SDL_PollEvent(&e)) {
+         alt_track(&e);
++        if (keycap_event(&e)) continue;
+         if (imgui_sdl_event(&e, imgui_density(), g_mouse_captured, !overlay_shown() && !prepare_screen_shown())) continue;
+         if (press_event(&e)) continue;
+         if (overlay_event(&e)) continue;
+@@ -1554,13 +1770,19 @@ void video_poll(void) {
+                 if (!e.key.repeat && !(e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) hotkey(e.key.key);
+                 /* a repeat doesn't press again: a key held as the menu closed (which cleared keys_held) stays from
+                    the game until it is let go */
+-                if (!e.key.repeat) keys_held |= keymap(e.key.scancode);
++                if (!e.key.repeat) {
++                    g_key_bits[e.key.scancode] = keymap(e.key.scancode);
++                    keys_held |= g_key_bits[e.key.scancode];
++                }
+                 break;
+             case SDL_EVENT_KEY_UP:
+-                keys_held &= ~keymap(e.key.scancode);
++                keys_held &= ~g_key_bits[e.key.scancode];
++                g_key_bits[e.key.scancode] = 0;
++                for (int k = 0; k < SDL_SCANCODE_COUNT; ++k) keys_held |= g_key_bits[k]; /* a button another key holds */
+                 break;
+             case SDL_EVENT_WINDOW_FOCUS_LOST:
+-                keys_held = 0;
++                keys_release_all();
++                keycap_cancel();
+                 g_alt_held = 0;
+                 ui_lock();
+                 vpad_release();
+diff --git a/src/nx/runtime/platform/backend.h b/src/nx/runtime/platform/backend.h
+index 22d1da8..5b13e2e 100644
+--- a/src/nx/runtime/platform/backend.h
++++ b/src/nx/runtime/platform/backend.h
+@@ -20,6 +20,28 @@ int backend_ini(const char* k, const char* v);
+ /* the touch screen's mode chosen in the game's menu, saved to the .ini: 0 off, 1 fingers, 2 fingers and the mouse */
+ void backend_touch_set(int mode);
+ 
++/* A setting that the Settings window changes, from any thread: the main thread applies it with options_change (the
++   settings that the input code reads are written there) and saves it. Of two requests for a key, the later is taken */
++void backend_setting_request(const char* key, const char* value);
++/* The key bindings of the Settings window, which edits keyboard_map. The view is the buttons with the keys each sends
++   now (custom: the .ini names the button, else the defaults; locked: the command line holds keyboard_map). A request
++   (any thread) takes the button's words out of the text and, for a key, puts Button:key in (key a name with _ for a
++   space, or "None"; NULL: the defaults), and the main thread applies and saves it. A NULL button asks for the defaults
++   of all */
++enum { BACKEND_KEYBIND_COUNT = 24 };
++typedef struct {
++    const char* button;
++    char keys[64];
++    int custom, locked;
++} BackendKeybind;
++void backend_keybind_view(BackendKeybind v[BACKEND_KEYBIND_COUNT]);
++void backend_keybind_request(const char* button, const char* key);
++/* The next key pressed goes to the window's capture alone: on starts it, off ends it. Esc and a loss of the focus cancel
++   it, and the runtime's own keys (F1 to F12, Pause, Alt) are held back so that they do not act meanwhile. captured: 0
++   while it waits, 1 with the key's name in name, -1 when it was cancelled, -2 for a key that keyboard_map cannot name */
++void backend_key_capture(int on);
++int backend_key_captured(char* name, size_t n);
++
+ /* The window in pixels, for the swapchain; 0 x 0 when headless */
+ void backend_window_size(int* w, int* h);
+ /* The part of the window not under system bars or a camera cutout, in pixels (the whole window when fullscreen) */
+diff --git a/src/nx/runtime/settings.txt b/src/nx/runtime/settings.txt
+index 6d1aa0b..b73ddc6 100644
+--- a/src/nx/runtime/settings.txt
++++ b/src/nx/runtime/settings.txt
+@@ -444,7 +444,7 @@ setting Mouse invert X
+ setting Mouse native pitch
+     key mouse_native_pitch
+     int 100 20000
+-    default 1000
++    default 500
+     step 100
+     help The pitch for each count of the mouse's motion, in millionths of the camera's pitch arc (Mouse invert Y turns it)
+ 
