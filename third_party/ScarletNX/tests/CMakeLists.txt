@@ -766,6 +766,10 @@ add_executable(snx-test-nvn-objtab nvn_objtab.c "${PROJECT_SOURCE_DIR}/src/nx/gp
 snx_test_target(snx-test-nvn-objtab 11)
 add_test(NAME nvn_objtab COMMAND snx-test-nvn-objtab)
 
+add_executable(snx-test-nvn-params nvn_params.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_params.c")
+snx_test_target(snx-test-nvn-params 11)
+add_test(NAME nvn_params COMMAND snx-test-nvn-params)
+
 if(TARGET SDL3::SDL3)
     add_executable(snx-test-keybind keybind.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/backend/keybind.c")
     snx_test_target(snx-test-keybind 11)

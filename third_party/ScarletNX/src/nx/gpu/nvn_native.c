@@ -7,6 +7,8 @@
    The loader hooks are the ones of gpu/nvn_trace.c, one level below it: nvn_native_init runs first, and the trace
    wraps what the slots then hold, so it counts the host calls too. */
 #include "nx/gpu/nvn_native.h"
+#include "nx/gpu/nvn_objtab.h"
+#include "nx/gpu/nvn_params.h"
 #include "nx/gpu/nvn_trace.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/options.h"
@@ -18,12 +20,245 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The host handlers by NVN function name. Later steps add their entries here (G1 to G5 of docs/nvn-design.md, 2-6). */
+/* The host's records of the NVN objects. The game's object memory is never written (docs/nvn-design.md, 2-1). Handlers
+   take objs_lock for the whole call, and their pointers into a record end with the call. */
+static NvnObjTab objs;
+static PMutex objs_lock = PMUTEX_INIT;
+
+typedef struct {
+    uint32_t flags;
+} DeviceBuilderRec;
+typedef struct {
+    uint32_t flags, window_origin, depth_mode;
+} DeviceRec;
+typedef struct {
+    NvnQueueBuilder builder; /* the builder as it was at QueueInitialize */
+} QueueRec;
+
+/* the record of kind at addr, made zeroed (with the defaults of that kind) when the game never called SetDefaults */
+static void* rec_get(u64 addr, NvnObjKind kind, size_t size) {
+    NvnObj* o = nvn_objtab_find(&objs, addr);
+    if (o && o->kind == kind) return o->data;
+    o = nvn_objtab_put(&objs, addr, kind, size);
+    if (!o) fatal("nvn-native: out of memory for the record of an NVN object (%llx)\n", (unsigned long long)addr);
+    if (kind == NVN_OBJ_QUEUE_BUILDER) nvn_queue_builder_defaults(o->data);
+    return o->data;
+}
+static NvnQueueBuilder* queue_builder(u64 addr) { return rec_get(addr, NVN_OBJ_QUEUE_BUILDER, sizeof(NvnQueueBuilder)); }
+
+/* G1: device builder and device (docs/nvn-design.md, 2-6). The library's functions are plain field accesses. */
+static void h_device_builder_set_defaults(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    DeviceBuilderRec* b = rec_get(c->x[0], NVN_OBJ_DEVICE_BUILDER, sizeof *b);
+    b->flags = 0;
+    pm_unlock(&objs_lock);
+}
+static void h_device_builder_set_flags(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    ((DeviceBuilderRec*)rec_get(c->x[0], NVN_OBJ_DEVICE_BUILDER, sizeof(DeviceBuilderRec)))->flags = (u32)c->x[1];
+    pm_unlock(&objs_lock);
+}
+static void h_device_builder_get_flags(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = ((DeviceBuilderRec*)rec_get(c->x[0], NVN_OBJ_DEVICE_BUILDER, sizeof(DeviceBuilderRec)))->flags;
+    pm_unlock(&objs_lock);
+}
+/* nvnDeviceInitialize(device, builder): the host has no device to set up, so it records the flags and says yes */
+static void h_device_initialize(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    DeviceBuilderRec* b = rec_get(c->x[1], NVN_OBJ_DEVICE_BUILDER, sizeof *b);
+    NvnObj* o = nvn_objtab_put(&objs, c->x[0], NVN_OBJ_DEVICE, sizeof(DeviceRec));
+    if (!o) fatal("nvn-native: out of memory for the record of the device\n");
+    ((DeviceRec*)o->data)->flags = b->flags;
+    pm_unlock(&objs_lock);
+    c->x[0] = 1;
+}
+static DeviceRec* device_rec(u64 addr) { return rec_get(addr, NVN_OBJ_DEVICE, sizeof(DeviceRec)); }
+static void h_device_set_window_origin_mode(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    device_rec(c->x[0])->window_origin = (u32)c->x[1];
+    pm_unlock(&objs_lock);
+}
+static void h_device_get_window_origin_mode(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = device_rec(c->x[0])->window_origin;
+    pm_unlock(&objs_lock);
+}
+static void h_device_set_depth_mode(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    device_rec(c->x[0])->depth_mode = (u32)c->x[1];
+    pm_unlock(&objs_lock);
+}
+static void h_device_get_depth_mode(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = device_rec(c->x[0])->depth_mode;
+    pm_unlock(&objs_lock);
+}
+
+/* nvnDeviceGetInteger(device, what, int* out). A `what` that no run asked for gets 0 and one log line. */
+static void h_device_get_integer(CPU* c, u64 entry) {
+    (void)entry;
+    u32 what = (u32)c->x[1];
+    int32_t value = 0;
+    if (!nvn_device_integer(what, &value))
+        LOG_LIMIT(32, "nvn-native: nvnDeviceGetInteger what=%u has no known value, answers 0\n", what);
+    gw32(c->x[2], (u32)value);
+}
+/* nvnDeviceGetTimestampInNanoseconds(device, counter): the counter's tick count is at +8 */
+static void h_device_get_timestamp_ns(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = nvn_timestamp_ns(gr64(c->x[1] + 8));
+}
+
+/* G1: queue builder and queue */
+static void h_queue_builder_set_device(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    queue_builder(c->x[0])->device = c->x[1];
+    pm_unlock(&objs_lock);
+}
+static void h_queue_builder_get_device(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = queue_builder(c->x[0])->device;
+    pm_unlock(&objs_lock);
+}
+static void h_queue_builder_set_defaults(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    nvn_queue_builder_defaults(queue_builder(c->x[0]));
+    pm_unlock(&objs_lock);
+}
+static void h_queue_builder_set_flags(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    queue_builder(c->x[0])->flags = (u32)c->x[1];
+    pm_unlock(&objs_lock);
+}
+static void h_queue_builder_get_flags(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = queue_builder(c->x[0])->flags;
+    pm_unlock(&objs_lock);
+}
+static void h_queue_builder_set_priority(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    queue_builder(c->x[0])->priority = (u32)c->x[1];
+    pm_unlock(&objs_lock);
+}
+static void h_queue_builder_get_priority(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = queue_builder(c->x[0])->priority;
+    pm_unlock(&objs_lock);
+}
+static void h_queue_builder_set_queue_memory(CPU* c, u64 entry) { /* (builder, memory, size) */
+    (void)entry;
+    pm_lock(&objs_lock);
+    NvnQueueBuilder* b = queue_builder(c->x[0]);
+    b->memory = c->x[1];
+    b->memory_size = (u32)c->x[2];
+    pm_unlock(&objs_lock);
+}
+static void h_queue_builder_get_memory(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = queue_builder(c->x[0])->memory;
+    pm_unlock(&objs_lock);
+}
+static void h_queue_builder_get_memory_size(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = queue_builder(c->x[0])->memory_size;
+    pm_unlock(&objs_lock);
+}
+/* The three memory sizes and the flush threshold have a setter that marks the value as set, and a getter that writes
+   the value through a pointer and returns whether it was set. */
+#define QUEUE_BUILDER_SIZE_HANDLERS(name, field, has)                                  \
+    static void h_queue_builder_set_##name(CPU* c, u64 entry) {                        \
+        (void)entry;                                                                   \
+        pm_lock(&objs_lock);                                                           \
+        NvnQueueBuilder* b = queue_builder(c->x[0]);                                   \
+        b->has = 1;                                                                    \
+        b->field = (int32_t)c->x[1];                                                   \
+        pm_unlock(&objs_lock);                                                         \
+    }                                                                                  \
+    static void h_queue_builder_get_##name(CPU* c, u64 entry) {                        \
+        (void)entry;                                                                   \
+        pm_lock(&objs_lock);                                                           \
+        NvnQueueBuilder* b = queue_builder(c->x[0]);                                   \
+        gw32(c->x[1], (u32)b->field);                                                  \
+        c->x[0] = b->has;                                                              \
+        pm_unlock(&objs_lock);                                                         \
+    }
+QUEUE_BUILDER_SIZE_HANDLERS(command_memory_size, command, has_command)
+QUEUE_BUILDER_SIZE_HANDLERS(compute_memory_size, compute, has_compute)
+QUEUE_BUILDER_SIZE_HANDLERS(control_memory_size, control, has_control)
+QUEUE_BUILDER_SIZE_HANDLERS(command_flush_threshold, flush_threshold, has_flush_threshold)
+
+static void h_queue_builder_get_queue_memory_size(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = nvn_queue_memory_size(queue_builder(c->x[0]), &nvn_queue_device_words);
+    pm_unlock(&objs_lock);
+}
+/* nvnQueueInitialize(queue, builder): records the builder, says yes. The recording and the submission are in 3c. */
+static void h_queue_initialize(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    NvnQueueBuilder b = *queue_builder(c->x[1]);
+    NvnObj* o = nvn_objtab_put(&objs, c->x[0], NVN_OBJ_QUEUE, sizeof(QueueRec));
+    if (!o) fatal("nvn-native: out of memory for the record of a queue\n");
+    ((QueueRec*)o->data)->builder = b;
+    pm_unlock(&objs_lock);
+    c->x[0] = 1;
+}
+
+/* The host handlers by NVN function name. Later steps add their entries here (G2 to G5 of docs/nvn-design.md, 2-6). */
 typedef struct {
     const char* name;
     GuestFn handler;
 } NativeProc;
 static const NativeProc native_procs[] = {
+    {"nvnDeviceBuilderSetDefaults", h_device_builder_set_defaults},
+    {"nvnDeviceBuilderSetFlags", h_device_builder_set_flags},
+    {"nvnDeviceBuilderGetFlags", h_device_builder_get_flags},
+    {"nvnDeviceInitialize", h_device_initialize},
+    {"nvnDeviceSetWindowOriginMode", h_device_set_window_origin_mode},
+    {"nvnDeviceGetWindowOriginMode", h_device_get_window_origin_mode},
+    {"nvnDeviceSetDepthMode", h_device_set_depth_mode},
+    {"nvnDeviceGetDepthMode", h_device_get_depth_mode},
+    {"nvnDeviceGetInteger", h_device_get_integer},
+    {"nvnDeviceGetTimestampInNanoseconds", h_device_get_timestamp_ns},
+    {"nvnQueueBuilderSetDevice", h_queue_builder_set_device},
+    {"nvnQueueBuilderGetDevice", h_queue_builder_get_device},
+    {"nvnQueueBuilderSetDefaults", h_queue_builder_set_defaults},
+    {"nvnQueueBuilderSetFlags", h_queue_builder_set_flags},
+    {"nvnQueueBuilderGetFlags", h_queue_builder_get_flags},
+    {"nvnQueueBuilderSetQueuePriority", h_queue_builder_set_priority},
+    {"nvnQueueBuilderGetQueuePriority", h_queue_builder_get_priority},
+    {"nvnQueueBuilderSetQueueMemory", h_queue_builder_set_queue_memory},
+    {"nvnQueueBuilderGetMemory", h_queue_builder_get_memory},
+    {"nvnQueueBuilderGetMemorySize", h_queue_builder_get_memory_size},
+    {"nvnQueueBuilderSetCommandMemorySize", h_queue_builder_set_command_memory_size},
+    {"nvnQueueBuilderGetCommandMemorySize", h_queue_builder_get_command_memory_size},
+    {"nvnQueueBuilderSetComputeMemorySize", h_queue_builder_set_compute_memory_size},
+    {"nvnQueueBuilderGetComputeMemorySize", h_queue_builder_get_compute_memory_size},
+    {"nvnQueueBuilderSetControlMemorySize", h_queue_builder_set_control_memory_size},
+    {"nvnQueueBuilderGetControlMemorySize", h_queue_builder_get_control_memory_size},
+    {"nvnQueueBuilderSetCommandFlushThreshold", h_queue_builder_set_command_flush_threshold},
+    {"nvnQueueBuilderGetCommandFlushThreshold", h_queue_builder_get_command_flush_threshold},
+    {"nvnQueueBuilderGetQueueMemorySize", h_queue_builder_get_queue_memory_size},
+    {"nvnQueueInitialize", h_queue_initialize},
     {NULL, NULL},
 };
 
@@ -52,6 +287,17 @@ static NativeSlot* slot_find(u64 addr) {
         if (!a) return NULL;
     }
     return NULL;
+}
+
+/* The function that g_disp holds for every host handler. A guest function ends with RET, which sets c->pc to x30, and
+   the caller's check_return compares c->pc with its return address. A handler leaves c->pc at the caller's last block
+   entry, so without this step the caller runs that block again. The handlers do not change x30. */
+static void native_call(CPU* c, u64 entry) {
+    NativeSlot* s = slot_find(entry);
+    if (!s) fatal("nvn-native: a host handler runs for an address it never registered (%llx)\n", (unsigned long long)entry);
+    u64 lr = c->x[30];
+    s->handler(c, entry);
+    c->pc = lr;
 }
 
 static void missing_handler(CPU* c, u64 entry) {
@@ -97,9 +343,10 @@ static void install(const char* name, u64 addr) {
         s = &slots[i];
         memcpy(s->name, name, strnlen(name, sizeof s->name - 1) + 1);
         s->handler = handler_for(s->name, &s->missing);
+        if (!s->missing) LOG_LIMIT(64, "nvn-native: host handler for %s at %llx\n", s->name, (unsigned long long)addr);
         __atomic_store_n(&s->addr, addr, __ATOMIC_RELEASE);
         nslots++;
-        __atomic_store_n(&g_disp[(addr - g_code_lo) / 4], s->handler, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_disp[(addr - g_code_lo) / 4], native_call, __ATOMIC_RELEASE);
     } else {
         fatal("nvn-native: more than %u resolved NVN functions\n", NATIVE_SLOTS);
     }

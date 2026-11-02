@@ -819,7 +819,7 @@ guess (rule: mechanism first). Each part is one commit.
 | --- | --- | --- |
 | 3b-1 | The setting `nvn_native`, `gpu/nvn_native.c` (loader hooks below the trace, missing-function handler, exit report), `gpu/nvn_objtab.c` (the record table, test `nvn_objtab`), and the trace of the queries (`nvn-value:` lines for `nvnDeviceGetInteger` and six other queries). | Written and built. The unit tests pass, except `tracked_material`, which fails on the two SMAA `.dds` files that were added before this work (not caused by it). Not run in the game. |
 | 3b-2 | A diagnostic run with `nvn_trace=1` to the title: the agent reads the `nvn-value:` lines. | Done (2026-11-02). The values are in "3b-2 Result" below. |
-| 3b-3 | G1: device and queue builders, `DeviceInitialize`, `DeviceGetInteger` (the table of 3b-2), `GetTimestampInNanoseconds`, `QueueInitialize`. | Not started. |
+| 3b-3 | G1: device and queue builders, `DeviceInitialize`, `DeviceGetInteger` (the table of 3b-2), `GetTimestampInNanoseconds`, `QueueInitialize`. | Written and built (30 handlers, `gpu/nvn_params.c`, test `nvn_params`). Not run with `nvn_native=1`. See "3b-3 Result". |
 | 3b-4 | G2: memory pool and the GPU address rule (2-2). | Not started. |
 | 3b-5 | G3 and G5: texture objects, the storage size function (read from the library's disassembly, tested against the 3a table), the pools. | Not started. |
 | 3b-6 | G4: window and sync. | Not started. |
@@ -860,3 +860,46 @@ The six other query functions:
 - `nvnDeviceGetTimestampInNanoseconds`: 0 in the first two calls, a real value after that.
 
 The Vulkan translation reported `79 failed` of 1787 shader programs. It was not compared with an earlier run.
+### 3b-3 Result (run of 2026-11-02, update program, `nvn_trace=1`, `nvn_native=0`)
+
+Library functions read (update 1.1.1 `sdk` module):
+
+- `nvnDeviceGetTimestampInNanoseconds` (d82d0e0): `ticks = counter[+8]`, then `ticks * w58 / w5c` in two steps (whole and rest) with the
+  device words at +0x58 and +0x5c. The run shows w58 = 0x271 and w5c = 0x180, so the ratio is 625 / 384. Device +0x19d8 and
+  +0x19dc (the window origin and depth mode) were 1 and 1 at that time.
+- `nvnQueueBuilderGetQueueMemorySize` (d8383f0): reads the builder (flags at +0x10, set bytes at +0x14 to +0x17, sizes at +0x18,
+  +0x1c, +0x20) and six device words (+0x8c, +0x94, +0x98, +0xe0, +0xe4, +0x1af4). The run shows 0x80, 2, 1, 1, 0x1000 and 0. The
+  game's builder had flags 0, command 0x20000, compute 0x40000, control 0x20000. The port in `gpu/nvn_params.c` gives 0x8a000 for
+  it, the library's answer (hand-checked step by step, and in the test `nvn_params`).
+- `nvnDeviceGetInteger` (d82d060): calls d831f40, a switch over `what` (0 to 0x62) that returns a device field or a constant. The
+  host uses the table of 3b-2. A `what` that no run asked for gets 0 and one log line.
+- The queue builder, device builder and the window origin and depth mode functions are plain field accesses. `SetDefaults` of the
+  queue builder zeroes all fields except the device and sets the priority to 100.
+
+Not verified: the names of the queue flag bits 0 and 1 in `nvn_params.c`, the default of the origin and depth modes after
+`DeviceInitialize` (the host uses 0, no run read them before the game set them), and the queue memory size for flags other than 0.
+`nvnDeviceGetCurrentTimestampInNanoseconds` and the setters with no call in the run still go to the missing-function handler,
+except the ones in the table of `native_procs`.
+### 3b-3 First run with `nvn_native=1` (2026-11-02, update program, 16:57)
+
+The run did not draw (0 frames) and did not crash. The log shows:
+
+- The lookups worked: 522 addresses resolved through `nvnBootstrapLoader` and `nvnDeviceGetProcAddress`. So the open risk (the
+  library's `nvnDeviceGetProcAddress` reads the device object) did not happen for the lookups.
+- The only NVN function that was called is `nvnDeviceBuilderSetDefaults`, 1121063378 times. `SetFlags` and `DeviceInitialize` were
+  not called, but the game's code calls them right after `SetDefaults` (function aa912a8 of `main`, the calls at aa91310,
+  aa91338 and aa91350). This code has no loop. So the repeat is in the host. The main thread stays at lr=aa91314 (the return
+  site of the `SetDefaults` call) in `threads.txt`.
+- Cause: the host handlers did not set `c->pc`. A guest function ends with RET, which sets `c->pc` to x30, and after each call the
+  generated code compares `c->pc` with its return address (`check_return`, `ir_codegen.c`). The handler left `c->pc` at the last block
+  entry of the caller (aa91304), so the caller ran that block again. The trace hypothesis was wrong: the trace wrapper calls the
+  real function, and its RET set `c->pc`, so `nvn_native=0` worked. Fix: runtime change 0028 (`native_call`).
+
+### 3b-3 Second run with `nvn_native=1` (2026-11-02, update program, 17:14)
+
+- The loop is gone. The game resolved the functions, called the 30 handlers and then 37 functions that have no handler: the memory
+  pool builder and `MemoryPoolInitialize`, the texture and sampler pools, the sampler builder and `SamplerInitialize`, the texture
+  builder, `TextureBuilderGetStorageAlignment` and `GetStorageSize`, and `TextureInitialize`. Each returned 0.
+- Then the game crashed in function aa926ec (null pointer plus 0x30). It reads x21, the result of the pool allocator aa969bc, which
+  returns 0 because the pool and texture initialization failed. This follows from the missing handlers, not from a host fault.
+- Next: 3b-4 (memory pool) and 3b-5 (texture, sampler, pools).

@@ -109,8 +109,29 @@ static int value_query_name(const char* name) {
 /* Queries whose answer the host must give by itself: logs each distinct (arguments, result) once. nvnDeviceGetInteger
    (device, what, int* out) is keyed by `what`, its value is read from out. The other queries are keyed by their three
    arguments after the object (object pointers differ in each call and are left out of the key). */
+static u32 word_at(u64 addr) { return addr < AS_SIZE - 4 && readable(addr) && readable(addr + 3) ? gr32(addr) : 0xDEADBEEF; }
+
+/* The words of the device and builder objects that the library reads for the two queries below. The host keeps no
+   device object, so these values become constants of its handlers (docs/nvn-design.md, 3b-3). */
+static void object_words_trace(const char* name, u64 object) {
+    if (!strcmp(name, "nvnDeviceGetTimestampInNanoseconds")) {
+        LOG("nvn-value: device %llx +58=%x +5c=%x +19d8=%x +19dc=%x\n", (unsigned long long)object,
+            word_at(object + 0x58), word_at(object + 0x5c), word_at(object + 0x19d8), word_at(object + 0x19dc));
+    } else if (!strcmp(name, "nvnQueueBuilderGetQueueMemorySize")) {
+        static const u32 builder_off[] = {0x10, 0x14, 0x15, 0x16, 0x18, 0x1c, 0x20, 0x24, 0x28};
+        static const u32 device_off[] = {0x8c, 0x94, 0x98, 0xe0, 0xe4, 0x1af4};
+        u64 device = object + 8 < AS_SIZE - 8 && readable(object + 8) && readable(object + 15) ? gr64(object + 8) : 0;
+        for (size_t i = 0; i < sizeof builder_off / sizeof builder_off[0]; i++)
+            LOG("nvn-value: queue builder %llx +%x=%x\n", (unsigned long long)object, builder_off[i],
+                word_at(object + builder_off[i]));
+        for (size_t i = 0; i < sizeof device_off / sizeof device_off[0]; i++)
+            LOG("nvn-value: queue builder device %llx +%x=%x\n", (unsigned long long)device, device_off[i],
+                word_at(device + device_off[i]));
+    }
+}
+
 static void value_query_trace(CPU* c, u64 entry, NvProc* p) {
-    u64 a1 = c->x[1], a2 = c->x[2], a3 = c->x[3];
+    u64 a0 = c->x[0], a1 = c->x[1], a2 = c->x[2], a3 = c->x[3];
     u64 out = c->x[2];
     p->original(c, entry);
     u64 key = p->value_op == VALUE_GET_INTEGER ? (a1 & 0xFFFFFFFFu) : a1 * 0x9E3779B97F4A7C15ull ^ a2 * 31 ^ a3;
@@ -125,6 +146,7 @@ static void value_query_trace(CPU* c, u64 entry, NvProc* p) {
     if (fresh) p->seen[p->nseen++] = key;
     pm_unlock(&procs_lock);
     if (!fresh) return;
+    if (p->value_op == VALUE_ARGS) object_words_trace(p->name, a0);
     if (p->value_op == VALUE_GET_INTEGER)
         LOG("nvn-value: %s what=%u value=%d (%s)\n", p->name, (u32)a1, value, have ? "read" : "out not readable");
     else
@@ -178,6 +200,7 @@ static void trace_proc(u64 addr, const char* name) {
         while (procs[i].addr) i = (i + 1) & (NVN_PROC_SLOTS - 1);
         p = &procs[i];
         p->original = *dispatch ? *dispatch : g_rtapi.miss; /* what snx_lookup gives an empty slot */
+        if (p->original == proc_trace) fatal("nvn: the slot of %s already holds a trace wrapper (%llx)", name, (unsigned long long)addr);
         memcpy(p->name, name, strlen(name) + 1);
         p->queue_op = !strcmp(name, "nvnQueueSubmitCommands") || !strcmp(name, "nvnQueueFlush") ||
                       !strcmp(name, "nvnQueueFenceSync") || !strcmp(name, "nvnQueuePresentTexture") ||
