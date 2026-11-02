@@ -28,6 +28,18 @@ present, the commands of the library that the game never calls by name).
 - For each object type (device, queue, command buffer, memory pool, texture, sampler, program, sync, window), write which
   state lives in guest memory and which state the game reads back.
 
+Substeps:
+
+- 1-1 List of functions: run `nvn_trace=1` in the boot, title, village, wild area, battle and menu scenes. Write the functions
+  and the call counts in a table. The user runs the game, the agent reads the logs.
+- 1-2 What the hook misses: compare the GPFIFO submissions and the draws with the hook counts. Decide if a recompile with
+  `--hook-direct-calls` is needed (it takes about 11 minutes).
+- 1-3 State of the objects: for each object type, where its state lives in guest memory and what the game reads back.
+  This is read from the code and the disassembly. The game does not run.
+- 1-4 Inline work and extra queue commands: the descriptors that the CPU writes for the GPU, and the commands that the
+  library adds by itself (fences, flushes, present). Also read from the code.
+- 1-5 Summary: `docs/nvn-survey.md`, with the parts that are hard to replace, as input for stage 2.
+
 Exit condition: all drawing paths that the hook does not catch are known.
 
 ## Stage 2: Choose the way of replacement

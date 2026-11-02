@@ -30,6 +30,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/nvn_trace.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/maxwell/inline_to_memory_regs.h"
@@ -1182,6 +1183,33 @@ static GpuItem* job_new(const void* entries, u32 n, u32 wait_id) {
     }
     return j;
 }
+/* nvn_trace=1: what the first submissions hold, to see what a queue call adds to the game's command buffers. */
+#define SUBMIT_TRACE_COUNT 40  /* submissions described */
+#define SUBMIT_TRACE_ENTRIES 4 /* entries of each one listed, the last one always */
+#define SUBMIT_TRACE_WORDS 24  /* words of the last entry shown */
+static void submit_trace(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, u32 expect) {
+    static u32 traced;
+    if (!nvn_trace_active() || traced >= SUBMIT_TRACE_COUNT || !n) return;
+    traced++;
+    LOG("gpu-submit: channel %u, %u entries, %u syncpoint increments, wait id %u, expect %u\n", channel, n, incs,
+        wait_id, expect);
+    for (u32 i = 0; i < n; i++) {
+        u64 e;
+        memcpy(&e, (const u8*)entries + (size_t)i * sizeof e, sizeof e);
+        if (i >= SUBMIT_TRACE_ENTRIES && i != n - 1) continue;
+        LOG("gpu-submit:   entry %u: gpu %llx, %u words%s\n", i, (unsigned long long)gpfifo_addr(e), gpfifo_size(e),
+            gpfifo_sync(e) ? ", sync" : "");
+        if (i != n - 1) continue;
+        u32 words = gpfifo_size(e) < SUBMIT_TRACE_WORDS ? gpfifo_size(e) : SUBMIT_TRACE_WORDS;
+        const u8* p = gmem_ptr_untracked(gpfifo_addr(e), (u64)words * 4);
+        for (u32 w = 0; p && w < words; w++) {
+            u32 v;
+            memcpy(&v, p + (size_t)w * 4, sizeof v);
+            LOG("gpu-submit:     word %u: %08x\n", w, v);
+        }
+    }
+}
+
 void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wait_val, u32 expect) {
     GpuItem* j;
     GpuScan* s;
@@ -1191,6 +1219,7 @@ void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, 
         fatal("gpu: a submission on channel %u, past the %u the GPU has\n", channel, GPU_CHANNELS);
     pm_lock(&g_submit_lk);
     j = job_new(entries, n, wait_id);
+    submit_trace(entries, n, channel, incs, wait_id, expect);
     j->chan = channel;
     j->incs = incs;
     j->wait_id = wait_id;
