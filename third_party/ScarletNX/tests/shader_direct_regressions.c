@@ -39,11 +39,12 @@ static const char* beyond_paths[3];
 static const char* attribute_paths[7];
 static const char* pexit_path;
 static const char* global_dynamic_path;
+static const char* global_red64_path;
 static const char* xfb_path;
 static const char* passthrough_paths[6];
 static const char* structured_paths[2];
 static const char* fswzadd_path;
-static char* fixture_paths[93];
+static char* fixture_paths[94];
 static size_t fixture_count;
 
 static const char* fixture_path(const char* directory, const char* name) {
@@ -774,6 +775,18 @@ static void global_buffers(void) {
     code = translate(dynamic_atomic, 4, ST_FS, &info, &words, 1);
     check_refused(code, &info, "global memory base R6 not tracked at 78: FMUL (reg) at 68",
                   "an untracked global atomic is refused");
+    free(code);
+    /* RED.E.ADD.64 (size 2, a 64-bit add) adds through the buffer's 64-bit view and declares Int64Atomics */
+    const u64 red64[] = {0x4C98078014470004ull, /* MOV R4, c[0][0x510] */
+                         0xEBF9000000270406ull}; /* RED.E.ADD.64 [R4], R6 */
+    code = translate(red64, 2, ST_FS, &info, &words, 1);
+    check(code && !info.unsupported && info.ngbuf == 1 && (info.gbuf_wmask & 1),
+          "a 64-bit global add translates and writes its buffer");
+    if (code) {
+        check(count_opcode(code, words, 17, 12) == 1, "a 64-bit global add declares Int64Atomics");
+        check(count_opcode(code, words, 234, 0xffffffffu) == 1, "a 64-bit global add is one atomic add");
+        save_fixture(global_red64_path, code, words);
+    }
     free(code);
 }
 
@@ -3134,6 +3147,7 @@ int main(int argc, char** argv) {
         }
         pexit_path = fixture_path(argv[1], "pexit");
         global_dynamic_path = fixture_path(argv[1], "global_dynamic");
+        global_red64_path = fixture_path(argv[1], "global_red64");
         xfb_path = fixture_path(argv[1], "xfb");
         for (int i = 0; i < 6; i++) {
             char name[32];
@@ -3150,7 +3164,7 @@ int main(int argc, char** argv) {
             structured_paths[i] = fixture_path(argv[1], name);
         }
         fswzadd_path = fixture_path(argv[1], "fswzadd");
-        if (fixture_count != 93) {
+        if (fixture_count != 94) {
             fprintf(stderr, "failed to allocate fixture paths\n");
             return 2;
         }

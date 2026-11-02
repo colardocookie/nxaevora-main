@@ -465,6 +465,7 @@ static struct {
     OverlayKeyboard kb;
     u32 units;
     int kb_shown, refused, answer;
+    int pad_answer; /* with the window drawing the box: the controller's A or B, for the window to answer in order with the text */
     DialogRows event_rows;
 } g_overlay;
 /* d on a picture sw x sh, into l (NULL: only where it all goes, in out): the head, each paragraph after a blank row,
@@ -615,12 +616,51 @@ void overlay_keyboard_show(const OverlayKeyboard* k) {
     kb_add(k->text);
     g_overlay.refused = 0;
     g_overlay.answer = KB_WAITING;
+    g_overlay.pad_answer = -1;
     __atomic_store_n(&g_overlay.kb_shown, 1, __ATOMIC_RELEASE);
 }
 void overlay_keyboard_hide(u32 ticket) {
     if (g_overlay.kb.ticket == ticket) __atomic_store_n(&g_overlay.kb_shown, 0, __ATOMIC_RELEASE);
 }
 int overlay_keyboard_shown(void) { return __atomic_load_n(&g_overlay.kb_shown, __ATOMIC_ACQUIRE); }
+/* the window of Dear ImGui draws the box: this file's own drawing and taps stay out */
+static int (*g_external)(void);
+void overlay_keyboard_external_set(int (*running)(void)) { __atomic_store_n(&g_external, running, __ATOMIC_RELEASE); }
+int overlay_windows_run(void) {
+    int (*running)(void) = __atomic_load_n(&g_external, __ATOMIC_ACQUIRE);
+    return __atomic_load_n(&g_settings.imgui, __ATOMIC_RELAXED) && running && running();
+}
+static int kb_external(void) { return overlay_windows_run(); }
+int overlay_menu_opens(void) { return !overlay_windows_run() || __atomic_load_n(&g_settings.legacy_menu, __ATOMIC_RELAXED); }
+int overlay_keyboard_view(OverlayKeyboardView* v) {
+    const OverlayKeyboard* k = &g_overlay.kb;
+    if (!g_overlay.kb_shown) return 0;
+    v->ticket = k->ticket;
+    v->units = g_overlay.units;
+    v->min = k->min;
+    v->max = k->max;
+    v->password = k->password;
+    v->numbers = k->numbers;
+    memcpy(v->header, k->header, sizeof v->header);
+    memcpy(v->sub, k->sub, sizeof v->sub);
+    memcpy(v->guide, k->guide, sizeof v->guide);
+    memcpy(v->ok, k->ok, sizeof v->ok);
+    memcpy(v->text, k->text, sizeof v->text);
+    v->pad_answer = g_overlay.pad_answer;
+    g_overlay.pad_answer = -1;
+    return 1;
+}
+int overlay_keyboard_apply(u32 ticket, const char* text, int key) {
+    if (!g_overlay.kb_shown || g_overlay.kb.ticket != ticket) return 0;
+    if (text) {
+        g_overlay.kb.text[0] = 0;
+        g_overlay.units = 0;
+        kb_add(text);
+        g_overlay.refused = 0;
+    }
+    if (key >= 0) overlay_keyboard_key(key);
+    return 1;
+}
 void overlay_keyboard_type(const char* text) {
     if (!g_overlay.kb_shown) return;
     kb_add(text);
@@ -711,6 +751,7 @@ static int kb_tap(float x, float y, int sw, int sh) {
     KbTexts t;
     Dialog d;
     DialogDrawn at;
+    if (kb_external()) return OVERLAY_NONE;
     kb_dialog(&d, &t);
     dialog_draw(NULL, sw, sh, &d, g_overlay.event_rows, &at);
     if (overlay_error_hit(&at.field, x, y)) return OVERLAY_TYPE;
@@ -720,6 +761,11 @@ static int kb_tap(float x, float y, int sw, int sh) {
 }
 /* a button pressed on the box (one HidNpadButton bit): A gives the line, B cancels */
 static int kb_pad(u64 button) {
+    if (kb_external()) { /* in order with the text that the window still has to take: it answers */
+        if (button == 1ull << 0) g_overlay.pad_answer = OVERLAY_KEY_ENTER;
+        if (button == 1ull << 1) g_overlay.pad_answer = OVERLAY_KEY_CANCEL;
+        return OVERLAY_NONE;
+    }
     if (button == 1ull << 0) return overlay_keyboard_key(OVERLAY_KEY_ENTER);
     if (button == 1ull << 1) return overlay_keyboard_key(OVERLAY_KEY_CANCEL);
     return OVERLAY_NONE;
@@ -728,7 +774,7 @@ int overlay_keyboard_typing(int sw, int sh, OverlayTyping* t) {
     KbTexts texts;
     Dialog d;
     DialogDrawn at;
-    if (!g_overlay.kb_shown) return 0;
+    if (!g_overlay.kb_shown || kb_external()) return 0;
     kb_dialog(&d, &texts);
     dialog_draw(NULL, sw, sh, &d, g_overlay.event_rows, &at);
     t->ticket = g_overlay.kb.ticket;
@@ -962,7 +1008,7 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     Dialog d;
     DialogDrawn at;
     if (!shown) { /* the keyboard's box, which the menu goes over */
-        if (g_overlay.kb_shown) {
+        if (g_overlay.kb_shown && !kb_external()) {
             KbTexts t;
             kb_dialog(&d, &t);
             dialog_draw(l, sw, sh, &d, rows_of, &at);

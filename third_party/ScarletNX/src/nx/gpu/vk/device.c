@@ -413,6 +413,7 @@ static int create_device(void) {
                                             .samplerFilterMinmax = q12.samplerFilterMinmax,
                                             .timelineSemaphore = VK_TRUE,
                                             .shaderFloat16 = q12.shaderFloat16,
+                                            .shaderBufferInt64Atomics = q12.shaderBufferInt64Atomics,
                                             .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,
                                             .shaderOutputLayer = q12.shaderOutputLayer,
                                             .shaderSampledImageArrayNonUniformIndexing =
@@ -420,6 +421,7 @@ static int create_device(void) {
     /* shaders pick an indexed texture per invocation from an array (SNX_VKB_TEXARRAY) */
     g_shader_texture_arrays = q12.shaderSampledImageArrayNonUniformIndexing != 0;
     g_shader_float16 = q12.shaderFloat16 != 0;
+    g_shader_int64_atomics = q12.shaderBufferInt64Atomics != 0;
     g_shader_output_layer = q12.shaderOutputLayer != 0; /* ShaderLayer: a vertex or tessellation program's layer */
     g_shader_viewport_index = have.multiViewport ? 2 | (q12.shaderOutputViewportIndex ? 1 : 0) : 0;
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -590,6 +592,7 @@ static void swapchain_retire(void) {
     for (u32 i = 0; i < nretired; i++) vkDestroySemaphore(g_vk.dev, retired[i], NULL);
     nretired = 0;
     for (u32 i = 0; i < g_vk.sc_count; i++) retired[nretired++] = g_vk.sc_done[i];
+    vk_imgui_swapchain_gone();
     vk_ui_swapchain_gone();
     vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
     g_vk.swapchain = VK_NULL_HANDLE;
@@ -664,19 +667,22 @@ int vk_swapchain_create(int srgb) {
         LOG_LIMIT(1, "vulkan: the window has no sRGB format: frames in sRGB show darker\n");
     }
 
-    /* vsync=1: FIFO, which every device has. Otherwise mailbox, else immediate, else FIFO all the same. Read once: the
+    /* vsync 1: FIFO, which every device has. 2: mailbox, else FIFO. 0: immediate, else mailbox, else FIFO. Read once: the
        main thread's .ini reload writes it */
     int vsync = __atomic_load_n(&g_settings.vsync, __ATOMIC_RELAXED);
+    if (vsync < 0 || vsync > 2) vsync = 1; /* the .ini keeps it within 0 to 2 (options.c) */
     u32 nm = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, g_vk.surface, &nm, NULL);
     VkPresentModeKHR* ms = calloc(nm ? nm : 1, sizeof *ms);
     vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, g_vk.surface, &nm, ms);
+    const VkPresentModeKHR wanted[3][2] = {{VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR},
+                                           {VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_FIFO_KHR},
+                                           {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR}};
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
-    for (u32 i = 0; i < nm && !vsync; i++)
-        if (ms[i] == VK_PRESENT_MODE_MAILBOX_KHR) mode = ms[i];
-    if (mode == VK_PRESENT_MODE_FIFO_KHR && !vsync)
+    for (int w = 2; w-- > 0;) { /* the second choice first, so that the first one overrides it */
         for (u32 i = 0; i < nm; i++)
-            if (ms[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) mode = ms[i];
+            if (ms[i] == wanted[vsync][w]) mode = ms[i];
+    }
     free(ms);
 
     /* an image for each frame in flight beyond what the driver keeps: a frame's present waits in the recording ring

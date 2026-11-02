@@ -77,6 +77,7 @@ def main():
             *attributes,
             pexit,
             Path(directory) / 'global_dynamic.spv',
+            Path(directory) / 'global_red64.spv',
             Path(directory) / 'xfb.spv',
             *(Path(directory) / f'passthrough_{i}.spv' for i in range(6)),
             *(Path(directory) / f'audit_{i}.spv' for i in range(6)),

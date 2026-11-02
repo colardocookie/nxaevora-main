@@ -72,7 +72,7 @@ typedef struct {
     int sc_win_w, sc_win_h; /* the window size it was made for (sc_extent: that as the surface takes it) */
     int sc_srgb;            /* its format is sRGB: what presented frames in sRGB formats are blitted to */
     VkFormat sc_format;     /* its images' format, which the on-screen controls draw to (gpu/vk/ui.c) */
-    int sc_vsync;  /* the vsync setting it was made for (1: FIFO; 0 is FIFO too on a surface with nothing else) */
+    int sc_vsync;  /* the vsync setting it was made for (the present mode may be another: FIFO is the one every surface has) */
     int sc_turned; /* upright on a display held another way: Android calls each present suboptimal for it */
     int sc_lost;   /* the last create found the surface lost: show() has it made anew */
     u32 sc_count;
@@ -1019,6 +1019,10 @@ void vk_render_end(void); /* ends the dynamic rendering pass, if one is open */
    safe is the picture's part clear of the system's bars (gpu/vk/ui.c) */
 void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);
 void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain does */
+VkImageView vk_ui_swapchain_view(VkImage sc); /* the view of a swapchain image that ui.c made (gpu/vk/imgui.c draws on it) */
+/* gpu/vk/imgui.c: Dear ImGui's windows over the image, under vk_lock; its backend ends with the swapchain */
+void vk_imgui_draw(VkCommandBuffer cb, VkImage sc, u32 game_w, u32 game_h);
+void vk_imgui_swapchain_gone(void);
 void vk_render_clear(GpuChannel* ch, u32 v);
 VkViewport vk_render_viewport(const u32* r);
 VkViewport vk_render_viewport_at(const u32* r, u32 index);

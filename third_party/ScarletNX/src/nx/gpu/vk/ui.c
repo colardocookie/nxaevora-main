@@ -24,6 +24,7 @@ static SnxUiQuad g_quads[MAX_QUADS];
 static VkDescriptorSetLayout g_dsl;
 static VkPipelineLayout g_layout;
 static VkPipeline g_pipe;
+static VkPipeline g_pipe_alpha; /* the same shaders writing only alpha, with no blend: the picture's alpha made 1 */
 static VkFormat g_pipe_format;
 static VkDescriptorPool g_pool;
 /* by a quad's sample: the atlas blended (sprites), at its nearest texel (the font, fills), and the picture blended */
@@ -140,12 +141,17 @@ static int pipeline_make(VkFormat format) {
     int ok;
     if (g_pipe && g_pipe_format == format) return 1;
     if (g_pipe) vkDestroyPipeline(g_vk.dev, g_pipe, NULL); /* vk_finish ran when the swapchain changed format */
-    g_pipe = VK_NULL_HANDLE;
+    if (g_pipe_alpha) vkDestroyPipeline(g_vk.dev, g_pipe_alpha, NULL);
+    g_pipe = g_pipe_alpha = VK_NULL_HANDLE;
     vs = vk_module_spv(snx_ui_vs_spv, sizeof snx_ui_vs_spv / 4);
     fs = vk_module_spv(snx_ui_fs_spv, sizeof snx_ui_fs_spv / 4);
     st[0].module = vs;
     st[1].module = fs;
     ok = vs && fs && VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipe));
+    ba.blendEnable = VK_FALSE;
+    ba.colorWriteMask = VK_COLOR_COMPONENT_A_BIT;
+    if (ok && !VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipe_alpha)))
+        g_pipe_alpha = VK_NULL_HANDLE; /* the alpha stays as the game left it */
     if (vs) vkDestroyShaderModule(g_vk.dev, vs, NULL);
     if (fs) vkDestroyShaderModule(g_vk.dev, fs, NULL);
     g_pipe_format = format;
@@ -306,6 +312,7 @@ static VkImageView sc_view(VkImage sc) {
         }
     return VK_NULL_HANDLE;
 }
+VkImageView vk_ui_swapchain_view(VkImage sc) { return sc_view(sc); }
 void vk_ui_swapchain_gone(void) {
     u32 i;
     for (i = 0; i < VK_SC_MAX; ++i) {
@@ -338,6 +345,8 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
     ui_lock();
     atlas_upload(cb);
     image_upload(cb);
+    /* the first quad covers the picture: it makes its alpha 1 (g_pipe_alpha), whatever the game's frame left in it */
+    ui_fill(&list, 0, 0, (float)sw, (float)sh, 0xFFFFFFFFu);
     /* the screen before the game starts, under the menu, hides the on-screen controls: they aren't drawn under it,
        where they would take quads for nothing (nor do they take fingers then, sdl3.c's press_event) */
     if (prepare_screen_shown())
@@ -405,8 +414,15 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
         rec_CmdSetScissor(cb, 0, 1, &sci);
         rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
         rec_CmdBindVertexBuffers(cb, 0, 1, &buf, &vo);
-        /* runs of quads that sample the same way, in their order */
-        for (i = 0; i < n; i = run) {
+        if (g_pipe_alpha) {
+            rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe_alpha);
+            rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1, &g_sets[g_quads[0].sample],
+                                    0, NULL);
+            rec_CmdDraw(cb, 6, 1, 0, 0);
+            rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
+        }
+        /* runs of quads that sample the same way, in their order: the picture's alpha quad is the first */
+        for (i = 1; i < n; i = run) {
             for (run = i + 1; run < n && g_quads[run].sample == g_quads[i].sample; ++run) continue;
             if (g_quads[i].sample == UI_IMAGE && !g_image) continue; /* its upload failed */
             rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1, &g_sets[g_quads[i].sample],

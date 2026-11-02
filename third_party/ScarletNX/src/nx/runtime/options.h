@@ -14,6 +14,16 @@
 void ini_override(const char* k, const char* v);
 /* a value the game's menu set, already applied: written to the file at the next poll, even over an edit made meanwhile */
 void ini_set(const char* k, const char* v);
+/* a setting of the file's sections set by a window: checked, applied as a reload applies it (a startup setting is only
+   saved), and saved with ini_set. A setting that a thread other than the main one reads is changed by the window as a
+   whole int, as a reload does; the key bindings go through the main thread (backend.h). OPTIONS_OVERRIDDEN: the command
+   line holds it for this run */
+enum { OPTIONS_OK, OPTIONS_UNKNOWN, OPTIONS_OVERRIDDEN, OPTIONS_REJECTED };
+int options_change(const char* key, const char* value);
+int options_overridden(const char* key); /* 1 when --key=value is on the command line */
+/* a startup setting that options_change saved in this run (the running game keeps its value): 1 with the saved text in
+   out, else 0. Any thread */
+int options_restart_value(const char* key, char* out, size_t n);
 /* every setting of the file's sections but the game's own (a control's place), a line each on stdout, nine fields
    between tabs: the section (with /page for a page of its own), the key, its default, int | float | text, the lowest
    and highest number, the help on one line, the menus' name, and the values as value=word between '|' (empty for a

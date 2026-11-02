@@ -1107,6 +1107,19 @@ uint32_t spv_emit_bit_reverse_u32(SpvEmitter* e, uint32_t u32_type, uint32_t val
     return id;
 }
 
+uint32_t spv_emit_atomic_i_add_u64(SpvEmitter* e, uint32_t u64_type, uint32_t u32_type, uint32_t pointer,
+                                   uint32_t value) {
+    uint32_t id = spv_emit_id(e);
+    instruction(&e->functions, SPV_OP_ATOMIC_I_ADD, 7);
+    put(&e->functions, u64_type);
+    put(&e->functions, id);
+    put(&e->functions, pointer);
+    put(&e->functions, spv_emit_constant_u32(e, u32_type, 1)); /* Device scope */
+    put(&e->functions, spv_emit_constant_u32(e, u32_type, 0)); /* Relaxed */
+    put(&e->functions, value);
+    return id;
+}
+
 uint32_t spv_emit_atomic_u32(SpvEmitter* e, uint32_t u32_type, uint32_t opcode, uint32_t pointer, uint32_t value) {
     assert(opcode == SPV_OP_ATOMIC_EXCHANGE || opcode == SPV_OP_ATOMIC_I_ADD || opcode == 236 || opcode == SPV_OP_ATOMIC_U_MIN ||
            opcode == 238 || opcode == SPV_OP_ATOMIC_U_MAX || opcode == SPV_OP_ATOMIC_AND || opcode == SPV_OP_ATOMIC_OR ||

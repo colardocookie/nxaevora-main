@@ -248,6 +248,7 @@ enum {
     SPV_DECORATION_FLAT = 14,
     SPV_DECORATION_PATCH = 15,
     SPV_DECORATION_INVARIANT = 18,
+    SPV_DECORATION_ALIASED = 20,
     SPV_DECORATION_NON_WRITABLE = 24,
     SPV_DECORATION_LOCATION = 30,
     SPV_DECORATION_COMPONENT = 31,
@@ -505,6 +506,9 @@ uint32_t spv_emit_not_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value);
 uint32_t spv_emit_bitfield_uextract(SpvEmitter* e, uint32_t u32_type, uint32_t value, uint32_t offset, uint32_t count);
 uint32_t spv_emit_bit_reverse_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value);
 uint32_t spv_emit_atomic_u32(SpvEmitter* e, uint32_t u32_type, uint32_t opcode, uint32_t pointer, uint32_t value);
+/* an atomic add on a 64-bit word (the module declares Int64Atomics): u64_type is the result and value type */
+uint32_t spv_emit_atomic_i_add_u64(SpvEmitter* e, uint32_t u64_type, uint32_t u32_type, uint32_t pointer,
+                                   uint32_t value);
 uint32_t spv_emit_atomic_shared_u32(SpvEmitter* e, uint32_t u32_type, uint32_t opcode, uint32_t pointer,
                                     uint32_t value);
 uint32_t spv_emit_atomic_load_u32(SpvEmitter* e, uint32_t u32_type, uint32_t pointer);

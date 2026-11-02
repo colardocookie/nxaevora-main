@@ -54,6 +54,7 @@ typedef struct {
     u32 swapped; /* 1 + the slot whose sampler is an array element for this instruction */
     u32 image[8], image_type[8];
     u32 gbuf[16], gbuf_pointer, smap, subgroup_lane_input;
+    u32 gbuf64[16], gbuf64_pointer; /* the 64-bit view of each gbuf, declared for a 64-bit atomic */
     int quad; /* quad operations are declared: shfl_quad's SHFL are ones */
     /* A fragment program with flow discards nothing inside its loop: a KIL or a failed alpha test sets this bool,
        an EXIT ends the loop for the lane, and the lane is discarded after it. A demote or a kill in the loop lets a
@@ -70,6 +71,7 @@ int g_shader_output_layer = 1;
 int g_shader_viewport_index = 3;
 int g_shader_geometry = 1;
 int g_shader_float16 = 1;
+int g_shader_int64_atomics = 1;
 int g_shader_quad = 1;
 int g_shader_tessellation = 1;
 int g_shader_clock_scopes;
@@ -317,10 +319,14 @@ static u32 xmad_half(DirectCtx* c, u32 i32_type, u32 value, int high, int is_sig
     return spv_emit_bitfield_uextract(&c->emit, c->u32_type, value, offset, width);
 }
 
+/* RED.E.ADD.64: not a SPIR-V opcode of the 32-bit path, but an add through the buffer's 64-bit view */
+#define GLOBAL_ATOMIC_ADD_U64 0xfffffffdu
+
 static u32 global_atomic_opcode(u64 w, int reduction) {
     u32 size = reduction ? B(w, 20, 3) : B(w, 49, 3);
     u32 op = reduction ? B(w, 23, 3) : B(w, 52, 4);
     if (op == 10) op = 0; /* SAFEADD */
+    if (reduction && size == 2 && op == 0) return GLOBAL_ATOMIC_ADD_U64;
     if (size > 1 && size != 3) return 0;
     if (size == 3) return op == 8 ? 229 : op == 0 ? 0xffffffffu : 0;
     switch (op) {
@@ -2133,7 +2139,8 @@ static u32 gbuf_word_index(DirectCtx* c, int stage, u32 slot, u32 word) {
     return spv_emit_select(&c->emit, c->u32_type, no_map, word, mapped);
 }
 
-static u32 global_atomic_pointer(DirectCtx* c, int stage, u32 slot, u32 base_off, u32 a, u64 w) {
+/* the word of the guest buffer that the address of RED, ATOM or ATOM.CAS names, through the page map */
+static u32 global_atomic_word(DirectCtx* c, int stage, u32 slot, u32 base_off, u32 a, u64 w) {
     u32 base = cbuf_read_dynamic(c, SH_GBUF_BANK(base_off),
                                  spv_emit_constant_u32(&c->emit, c->u32_type, SH_GBUF_OFFSET(base_off)));
     u32 immediate = (u32)((i32)(B(w, 28, 20) << 12) >> 12);
@@ -2142,8 +2149,20 @@ static u32 global_atomic_pointer(DirectCtx* c, int stage, u32 slot, u32 base_off
     address = spv_emit_isub_u32(&c->emit, c->u32_type, address, base);
     u32 word =
         spv_emit_shift_right_u32(&c->emit, c->u32_type, address, spv_emit_constant_u32(&c->emit, c->u32_type, 2));
+    return gbuf_word_index(c, stage, slot, word);
+}
+
+static u32 global_atomic_pointer(DirectCtx* c, int stage, u32 slot, u32 base_off, u32 a, u64 w) {
     return spv_emit_storage_access_u32(&c->emit, c->gbuf_pointer, c->gbuf[slot], c->zero,
-                                       gbuf_word_index(c, stage, slot, word));
+                                       global_atomic_word(c, stage, slot, base_off, a, w));
+}
+
+/* The pointer to the 64-bit word at the address of a RED.E.ADD.64. A mapped word is a page's word, and a page holds
+   1024 of them, so an address that is a multiple of 8 stays one pair in a page. */
+static u32 global_atomic_pointer_u64(DirectCtx* c, int stage, u32 slot, u32 base_off, u32 a, u64 w) {
+    u32 word = global_atomic_word(c, stage, slot, base_off, a, w);
+    u32 pair = spv_emit_shift_right_u32(&c->emit, c->u32_type, word, spv_emit_constant_u32(&c->emit, c->u32_type, 1));
+    return spv_emit_storage_access_u32(&c->emit, c->gbuf64_pointer, c->gbuf64[slot], c->zero, pair);
 }
 
 static u32 shared_atomic_index(DirectCtx* c, u32 a, u64 w, u32 shared_words) {
@@ -3427,7 +3446,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     int needs_instance = 0;
     int needs_local_id = 0, needs_group_id = 0;
     int needs_scale = 0, needs_texel_scale = 0;
-    int needs_glsl = 0, needs_f16 = 0, needs_f64 = 0, needs_i64 = 0;
+    int needs_glsl = 0, needs_f16 = 0, needs_f64 = 0, needs_i64 = 0, needs_atomic_i64 = 0;
     int has_flow = 0, has_calls = 0, has_barrier = 0, converge;
     u32 wait_label = 0;
     int first_indexed[SH_INDEXED_TABLES] = {0}, indexed_count = 0, indexed_table[SH_MAXTEX] = {0}, k_indexed;
@@ -3787,6 +3806,10 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (B(insn[i], 45, 1) && a + 1 < 255) used[a + 1] = 1;
         }
         if (op->id == O_RED && d < 255) used[d] = 1;
+        if (op->id == O_RED && global_atomic_opcode(insn[i], 1) == GLOBAL_ATOMIC_ADD_U64) {
+            needs_i64 = needs_atomic_i64 = 1; /* vk_spirv_unavailable reports a device without the feature */
+            if (d + 1 < 255) used[d + 1] = 1;
+        }
         if (op->id == O_ATOM && b < 255) used[b] = 1;
         if (op->id == O_VADD || op->id == O_VABSDIFF || op->id == O_VSET || op->id == O_VSHL || op->id == O_VSHR) {
             /* Signed intermediate, saturation and secondary operations use 64 bits even for narrow source lanes.
@@ -4643,6 +4666,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     if (needs_f64) spv_emit_float64_capability(&c->emit);
     if (needs_clock) spv_emit_shader_clock_extension(&c->emit);
     if (needs_i64) spv_emit_capability(&c->emit, 11); /* Int64 */
+    if (needs_atomic_i64) spv_emit_capability(&c->emit, 12); /* Int64Atomics */
     if (needs_subgroup || converge) spv_emit_subgroup_capabilities(&c->emit);
     if (needs_quad) spv_emit_subgroup_quad_capability(&c->emit);
     c->quad = needs_quad;
@@ -5006,6 +5030,19 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         for (int i = 0; i < ngbuf; i++) {
             c->gbuf[i] = spv_emit_storage_buffer(&c->emit, structure, shader_vk_set(stage), SNX_VKB_SSBO + (u32)i);
             interfaces[count++] = c->gbuf[i];
+        }
+        if (needs_atomic_i64) {
+            /* the same binding seen as 64-bit words: a 64-bit atomic needs a pointer to a 64-bit element */
+            u32 array64 = spv_emit_type_runtime_array(&c->emit, u64_type, 8);
+            u32 structure64 = spv_emit_type_struct_one(&c->emit, array64);
+            c->gbuf64_pointer = spv_emit_type_storage_pointer(&c->emit, u64_type);
+            for (int i = 0; i < ngbuf; i++) {
+                c->gbuf64[i] =
+                    spv_emit_storage_buffer(&c->emit, structure64, shader_vk_set(stage), SNX_VKB_SSBO + (u32)i);
+                spv_emit_decorate(&c->emit, c->gbuf[i], SPV_DECORATION_ALIASED, NULL, 0);
+                spv_emit_decorate(&c->emit, c->gbuf64[i], SPV_DECORATION_ALIASED, NULL, 0);
+                interfaces[count++] = c->gbuf64[i];
+            }
         }
         if (stage != ST_CS) {
             c->smap = spv_emit_storage_buffer(&c->emit, structure, shader_vk_set(stage), SNX_VKB_SMAP);
@@ -6359,6 +6396,12 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             reg_write(c, d,
                       spv_emit_atomic_compare_exchange_shared_u32(&c->emit, c->u32_type, pointer, reg_read(c, b + 1),
                                                                   reg_read(c, b)));
+        } else if (op == O_RED && global_atomic_opcode(w, 1) == GLOBAL_ATOMIC_ADD_U64) {
+            u32 slot = gb_at[i] - 1;
+            u32 pointer = global_atomic_pointer_u64(c, stage, slot, gbuf_off[slot], a, w);
+            u32 bits = spv_emit_vec2_construct(&c->emit, vec2_u32, reg_read(c, d), reg_read(c, d < 254 ? d + 1 : 255));
+            spv_emit_atomic_i_add_u64(&c->emit, u64_type, c->u32_type, pointer,
+                                      spv_emit_bitcast(&c->emit, u64_type, bits));
         } else if (op == O_RED || op == O_ATOM) {
             u32 slot = gb_at[i] - 1;
             u32 pointer = global_atomic_pointer(c, stage, slot, gbuf_off[slot], a, w);

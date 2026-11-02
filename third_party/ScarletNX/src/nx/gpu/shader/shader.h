@@ -138,6 +138,8 @@ extern int g_shader_viewport_index;
 extern int g_shader_geometry;
 /* shaderFloat16, which fp16 texture results need. 1 offline */
 extern int g_shader_float16;
+/* shaderBufferInt64Atomics, which a 64-bit atomic on a guest buffer (RED.E.ADD.64) needs. 1 offline */
+extern int g_shader_int64_atomics;
 /* quad operations in fragment programs (the subgroup's QUAD bit): SHFL within a quad reads its helper lanes. 1 offline */
 extern int g_shader_quad;
 /* the Tessellation capability, which also gives a fragment program PrimitiveId without Geometry */

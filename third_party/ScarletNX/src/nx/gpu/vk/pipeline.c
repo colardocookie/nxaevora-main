@@ -107,6 +107,8 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
         if (!width || at + width > words || (spv[at] & 0xffffu) != 17) break;
         if (width == 2 && spv[at + 1] == 10 && !g_vk.feat.shaderFloat64) return "shaderFloat64 is unavailable";
         if (width == 2 && spv[at + 1] == 11 && !g_vk.feat.shaderInt64) return "shaderInt64 is unavailable";
+        if (width == 2 && spv[at + 1] == 12 && !g_shader_int64_atomics)
+            return "shaderBufferInt64Atomics is unavailable";
         if (width == 2 && spv[at + 1] == 9 && !g_shader_float16) return "shaderFloat16 is unavailable";
         if (width == 2 && spv[at + 1] == 2 && !g_vk.feat.geometryShader) return "geometryShader is unavailable";
         if (width == 2 && spv[at + 1] == 3 && !g_vk.feat.tessellationShader) return "tessellationShader is unavailable";

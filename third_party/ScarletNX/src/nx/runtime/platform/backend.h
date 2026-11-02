@@ -20,6 +20,40 @@ int backend_ini(const char* k, const char* v);
 /* the touch screen's mode chosen in the game's menu, saved to the .ini: 0 off, 1 fingers, 2 fingers and the mouse */
 void backend_touch_set(int mode);
 
+/* A setting that the Settings window changes, from any thread: the main thread applies it with options_change (the
+   settings that the input code reads are written there) and saves it. Of two requests for a key, the later is taken */
+void backend_setting_request(const char* key, const char* value);
+/* The key bindings of the Settings window, which edits keyboard_map. The view is the buttons with the keys each sends
+   now (custom: the .ini names the button, else the defaults; locked: the command line holds keyboard_map). A request
+   (any thread) takes the button's words out of the text and, for a key, puts Button:key in (key a name with _ for a
+   space, or "None"; NULL: the defaults), and the main thread applies and saves it. A NULL button asks for the defaults
+   of all */
+enum { BACKEND_KEYBIND_COUNT = 24 };
+typedef struct {
+    const char* button;
+    char keys[64];
+    int custom, locked;
+} BackendKeybind;
+void backend_keybind_view(BackendKeybind v[BACKEND_KEYBIND_COUNT]);
+void backend_keybind_request(const char* button, const char* key);
+/* The next key pressed goes to the window's capture alone: on starts it, off ends it. Esc and a loss of the focus cancel
+   it, and the runtime's own keys (F1 to F12, Pause, Alt) are held back so that they do not act meanwhile. captured: 0
+   while it waits, 1 with the key's name in name, -1 when it was cancelled, -2 for a key that keyboard_map cannot name */
+void backend_key_capture(int on);
+int backend_key_captured(char* name, size_t n);
+
+/* The button map of the Settings window (gamepad_map, every player's): per control, in pad_map.h's order, the button
+   it sends now (0 A to 15 Down, SNX_PAD_NONE), A and B swapped as gamepad_swap_ab says. custom: the .ini names a map.
+   locked: the command line holds it. A request (any thread) swaps the button with the control that sent it, and the
+   main thread applies and saves it. BACKEND_PADMAP_ALL as the control asks for the console's layout */
+enum { BACKEND_PADMAP_CONTROLS = 16, BACKEND_PADMAP_ALL = -1 };
+typedef struct {
+    int bit[BACKEND_PADMAP_CONTROLS];
+    int custom, locked;
+} BackendPadMap;
+void backend_padmap_view(BackendPadMap* v);
+void backend_padmap_request(int control, int bit);
+
 /* The window in pixels, for the swapchain; 0 x 0 when headless */
 void backend_window_size(int* w, int* h);
 /* The part of the window not under system bars or a camera cutout, in pixels (the whole window when fullscreen) */

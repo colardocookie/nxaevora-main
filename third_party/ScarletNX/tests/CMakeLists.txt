@@ -753,6 +753,11 @@ include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 target_include_directories(snx-test-overlay PRIVATE "${PROJECT_BINARY_DIR}/generated")
 add_test(NAME overlay COMMAND snx-test-overlay)
 
+add_executable(snx-test-imgui-input imgui_input.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/imgui_input.c")
+snx_test_target(snx-test-imgui-input 11)
+target_link_libraries(snx-test-imgui-input PRIVATE scarletnx-common)
+add_test(NAME imgui_input COMMAND snx-test-imgui-input)
+
 add_executable(snx-test-vpad vpad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")

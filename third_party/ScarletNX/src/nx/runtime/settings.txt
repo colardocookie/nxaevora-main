@@ -173,11 +173,12 @@ setting Shadows
 setting Vsync
     key vsync
     label VSync
-    int 0 1
+    int 0 2
     default 1
-    words Off|On
-    help 1 = images wait for the display's refresh, so nothing tears; 0 = the newest is shown at the next refresh
-    help the display allows, else at once
+    words Off|On (FIFO)|On (Mailbox)
+    help 1 = images wait for the display's refresh in order, so nothing tears (FIFO). 2 = the newest image is shown at
+    help each refresh and the game does not wait, so nothing tears and the delay is shorter (Mailbox); a display
+    help without it uses FIFO. 0 = images show at once and can tear, else Mailbox, else FIFO
 setting Anisotropic filtering
     key anisotropy
     int 0 16
@@ -375,6 +376,89 @@ setting Touch screen
     set backend_touch_mode_set
     words Off|Fingers|Fingers and mouse
     help The game's touch screen: 1 = fingers, 2 = fingers and the mouse's left button, 0 = off
+
+# the mouse look (platform/backend/sdl3.c): the mouse drives the camera as the right stick, while it is the input in use
+table g_mouse_ini
+setting Mouse look
+    key mouse_look
+    int 0 1
+    default 1
+    words Off|On
+    help 1 = the mouse is captured and drives the right stick, its left button is ZR and its right button ZL; the
+    help last input in use (mouse or controller) decides. Hold Alt to free the cursor
+setting Mouse sensitivity
+    key mouse_sensitivity
+    int 1 100
+    default 10
+    help The right stick's deflection for a mouse speed: 10 = full at 1000 pixels a second
+setting Mouse vertical sensitivity
+    key mouse_sensitivity_y
+    int 10 300
+    default 100
+    step 10
+    help The vertical sensitivity in percent of the horizontal one
+setting Mouse invert Y
+    key mouse_invert_y
+    int 0 1
+    default 0
+    words Off|On
+    help 1 = the camera looks up when the mouse moves down
+setting Mouse dead zone offset
+    key mouse_deadzone
+    int 0 90
+    default 20
+    help The part of the stick's travel the game ignores, in percent. The mouse look starts past it, so that a slow
+    help motion still moves the camera
+setting Mouse curve
+    key mouse_curve
+    int 50 300
+    default 100
+    step 10
+    help The response in percent: 100 = linear, above 100 = finer at slow speeds
+
+setting Mouse overdrive
+    key mouse_overdrive
+    int 100 1000
+    default 100
+    step 50
+    help The most the mouse look may deflect the right stick, in percent of its full travel. Above 100 the game gets a
+    help stick value past its range, which turns the camera faster than a full stick if the game does not limit it
+setting Mouse native address
+    key mouse_native_address
+    int 0 INT_MAX
+    default 0
+    help The guest address of a 64 bit word (8 aligned: two floats, yaw and pitch) that a code patch of the game takes the
+    help mouse motion from, in place of the right stick. 0 = off, the mouse drives the right stick. See
+    help recomp/patches/native-mouse-look.pchtxt
+setting Mouse native yaw
+    key mouse_native_yaw
+    int 100 20000
+    default 1400
+    step 100
+    help The yaw for each count of the mouse's motion, in millionths of a radian (1400 is 0.08 degrees)
+setting Mouse invert X
+    key mouse_invert_x
+    int 0 1
+    default 0
+    words Off|On
+    help 1 = the camera turns left when the mouse moves right (the native mouse look only)
+setting Mouse native pitch
+    key mouse_native_pitch
+    int 100 20000
+    default 500
+    step 100
+    help The pitch for each count of the mouse's motion, in millionths of the camera's pitch arc (Mouse invert Y turns it)
+
+# the keyboard (platform/backend/sdl3.c): which key sends which button of the console
+table g_keyboard_ini
+setting Keyboard map
+    key keyboard_map
+    text 256
+    once
+    set keyboard_map_set
+    help A button and the key that sends it, as A:F ZL:Q. Buttons A B X Y L R ZL ZR L3 R3 Plus Minus Left Up Right Down
+    help LStickLeft LStickUp LStickRight LStickDown RStickLeft RStickUp RStickRight RStickDown. Keys by SDL's name, a
+    help space in it written as _ (Left_Shift). None frees a button. A button named here loses its default keys
 
 table g_vpad_shown_ini
 setting Control shown
@@ -731,6 +815,27 @@ setting Verify macros
     startup
     words Off|On
     help 1 = runs each native and compiled macro against the interpreter too, and logs where they differ
+setting Imgui
+    key imgui
+    int 0 1
+    default 1
+    words Off|On
+    help 1 = the windows of Dear ImGui: a menu bar at the top of the picture, shown when the cursor is there (hold Alt
+    help to free the cursor from the mouse look). 0 = none, and they take no input
+setting Legacy menu
+    key legacy_menu
+    int 0 1
+    default 0
+    words Off|On
+    help 1 = the game's old menu (F2, Back, Home) opens even while the Dear ImGui windows run. It has pages that the
+    help windows do not have yet: the gamepads' button map and the save states. 0 = only the windows
+setting Imgui test
+    key imgui_test
+    int 0 1
+    default 0
+    words Off|On
+    help 1 = the Dear ImGui test window is open at the start (also in the menu bar's Debug menu), to check the backend
+    help and the fonts (fonts/ in the data folder)
 setting RenderDoc captures
     key renderdoc
     text 1024
@@ -959,6 +1064,8 @@ section Display: g_display_ini
 section Graphics: g_graphics_ini
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend
+section Mouse: g_mouse_ini    backend
+section Keyboard: g_keyboard_ini    backend
 section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player    backend
 section Network: g_network_ini
 section User: g_user_ini

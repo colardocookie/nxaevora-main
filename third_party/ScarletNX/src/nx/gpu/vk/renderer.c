@@ -21,6 +21,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/stats.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/debug_stats.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/pending_pages.h"
@@ -357,6 +358,7 @@ static void gpu_memory_plots(void) {
    Under vk_lock */
 static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
     SNX_ZONE(z_show, "vk show");
+    u64 show_start_ns = plat_ns(); /* the Debug window's cost of showing a frame (debug_stats.h) */
     /* the size the swapchain was made for, not the extent the surface clamped it to: that can stay different */
     int ww, wh, srgb = src ? is_srgb(src->f.vk) : g_sc_srgb, shown = backend_window_shown();
     backend_window_size(&ww, &wh);
@@ -445,6 +447,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
                 int safe[4] = {(int)cx, (int)cy, (int)cw, (int)ch};
                 vk_ui_draw(cb, sc, safe);
             }
+            vk_imgui_draw(cb, sc, src && game ? g_last_w : fw, src && game ? g_last_h : fh); /* the scaled size */
             vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
@@ -507,6 +510,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
         last_present_ns = now_ns;
         g_vk_present++;
         stats_frame(now_ns);
+        debug_stats_frame(now_ns, now_ns - show_start_ns, is[3], is[6]);
         vk_mem_present();
         if (g_last) vk_surf_touch(g_last); /* what screenshots read stays */
         vk_tex_frame();

@@ -143,4 +143,29 @@ typedef struct {
 } OverlayTyping;
 int overlay_keyboard_typing(int sw, int sh, OverlayTyping* t);
 
+/* With the setting imgui on, the Dear ImGui window draws the box and the line's editing (gpu/vk/imgui.c), and this file
+   keeps the state, the limits and the answer. The box is then neither drawn nor tapped here, and it asks the window's
+   text input for nothing. A copy of the state, 1 while the box shows (under ui_lock) */
+typedef struct {
+    u32 ticket, units, min, max; /* units: the line's UTF-16 units; min and max as the game's, max within the box's most */
+    int password, numbers;
+    char header[sizeof(((OverlayKeyboard*)0)->header)], sub[sizeof(((OverlayKeyboard*)0)->sub)],
+        guide[sizeof(((OverlayKeyboard*)0)->guide)], ok[sizeof(((OverlayKeyboard*)0)->ok)];
+    int pad_answer; /* a controller's A (OVERLAY_KEY_ENTER) or B (OVERLAY_KEY_CANCEL) since the last view, else -1 */
+    char text[OVERLAY_KB_TEXT];
+} OverlayKeyboardView;
+int overlay_keyboard_view(OverlayKeyboardView* v);
+/* the window's check that it runs (a window that failed to start leaves the box to this file): NULL for never */
+void overlay_keyboard_external_set(int (*running)(void));
+/* 1 while the Dear ImGui windows run (the setting imgui is on and they have drawn lately) */
+int overlay_windows_run(void);
+/* 1 when this file's menu may be opened (F2, Back, Home, the on-screen controls' menu button): not while the windows
+   run, which replace it, unless the setting legacy_menu is on. Its pages for the gamepads' map and the save states
+   have no window yet */
+int overlay_menu_opens(void);
+/* What the window answers, for the request that it showed (ticket): the line (NULL: unchanged), cut as typing it would
+   be, then the key (OVERLAY_KEY_ENTER or OVERLAY_KEY_CANCEL, or -1 for none). 0, and nothing done, when that request
+   is no longer the box's (the game took it away or asked again meanwhile). Under ui_lock */
+int overlay_keyboard_apply(u32 ticket, const char* text, int key);
+
 #endif

@@ -116,7 +116,7 @@ int snx_setting_known(const char* key) { return find_row(key, NULL) || unattende
 /* ---- the file's values, the command line's, and the menu's waiting to be written ---- */
 
 #define KEY_MAX 64
-#define STORE_MAX 128
+#define STORE_MAX 256
 #define VALUE_MAX 2048
 #define OVERRIDE_MAX 64
 #define PENDING_MAX 64
@@ -276,6 +276,54 @@ static void apply(const char* key, const char* value) {
     else if (o || unattended_known(key))
         backend_ini(key, value);
 }
+int options_overridden(const char* key) { return override_of(key) != NULL; }
+
+/* The startup settings that a window changed in this run: saved to the file, but the running game keeps its value. The
+   window shows the saved one and that the game must start again. A leaf lock, as g_pending_lock's */
+enum { RESTART_MAX = 32 };
+static Pending g_restart[RESTART_MAX];
+static int g_nrestart;
+static PMutex g_restart_lock = PMUTEX_INIT;
+
+static void restart_note(const char* key, const char* value) {
+    pm_lock(&g_restart_lock);
+    int i = 0;
+    while (i < g_nrestart && strcmp(g_restart[i].key, key)) i++;
+    if (i < RESTART_MAX && strlen(key) < sizeof g_restart[i].key && strlen(value) < sizeof g_restart[i].value) {
+        if (i == g_nrestart) g_nrestart++;
+        snprintf(g_restart[i].key, sizeof g_restart[i].key, "%s", key);
+        snprintf(g_restart[i].value, sizeof g_restart[i].value, "%s", value);
+    }
+    pm_unlock(&g_restart_lock);
+}
+
+int options_restart_value(const char* key, char* out, size_t n) {
+    int found = 0;
+    pm_lock(&g_restart_lock);
+    for (int i = 0; i < g_nrestart && !found; i++)
+        if (!strcmp(g_restart[i].key, key)) {
+            snprintf(out, n, "%s", g_restart[i].value);
+            found = 1;
+        }
+    pm_unlock(&g_restart_lock);
+    return found;
+}
+
+int options_change(const char* key, const char* value) {
+    const IniOpt* o = find_row(key, NULL);
+    char why[128];
+    if (!o) return OPTIONS_UNKNOWN;
+    if (override_of(key)) return OPTIONS_OVERRIDDEN;
+    if (ini_check(o, value, why, sizeof why)) {
+        WARN_LIMIT(1, "settings: %s=%s is not taken: %s\n", key, value, why);
+        return OPTIONS_REJECTED;
+    }
+    apply(key, value);
+    if (g_started && (o->flags & INI_STARTUP)) restart_note(key, value);
+    ini_set(key, value);
+    return OPTIONS_OK;
+}
+
 /* every setting: the command line's value, else the file's, else its default; then the keys of no section the
    unattended options take */
 static void apply_all(void) {

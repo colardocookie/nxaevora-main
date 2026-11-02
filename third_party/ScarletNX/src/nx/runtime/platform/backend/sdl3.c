@@ -11,7 +11,11 @@
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h" /* am_keyboard_answered: the keyboard's box's answer */
 #include "nx/hle/kernel/kernel.h"
+#include "nx/memory/mem.h" /* g_mem: the guest words of the native mouse look */
 #include "nx/runtime/platform/backend.h"
+#include "nx/runtime/platform/backend/imgui_sdl.h"
+#include "nx/runtime/platform/prepare_screen.h"
+#include "nx/gpu/vk/imgui_input.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
@@ -23,6 +27,8 @@
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/gamepad.h"
 #include "common/utilities/pad_sdl.h"
+#include "common/utilities/pad_screen.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,6 +52,13 @@ static SDL_Window* g_win;
    a width from one resize from pairing with the height of another */
 static u64 g_wsize = 1280 | (720ull << 32); /* atomic */
 static u64 keys_held;
+/* the buttons that the press of each key set, so that its release clears those (the map may have changed since) and the
+   buttons of the keys still down stay */
+static u64 g_key_bits[SDL_SCANCODE_COUNT];
+static void keys_release_all(void) {
+    keys_held = 0;
+    memset(g_key_bits, 0, sizeof g_key_bits);
+}
 static u64 g_menu_held;      /* keyboard, scripted and on-screen buttons held while the menu had them */
 static u64 g_menu_held_pad0; /* No1's physical pad, tracked separately so a replacement has fresh presses */
 static u64 g_menu_held_extra[SNX_GAMEPADS - 1];
@@ -214,6 +227,8 @@ void backend_touch_set(int mode) {
 int backend_ini(const char* k, const char* v) {
     const IniOpt* o = ini_find(g_backend_ini, k);
     int known;
+    if (!o) o = ini_find(g_mouse_ini, k);
+    if (!o) o = ini_find(g_keyboard_ini, k);
     /* the in-game menu reads the touch mode, and the renderer the on-screen controls, under ui_lock */
     ui_lock();
     if (o) ini_read(o, v);
@@ -439,13 +454,13 @@ int backend_vk_surface(VkInstance instance, VkSurfaceKHR* surface) {
 static const char* HELP =
     "Controller: A, B, X and Y sit where the console has them (gamepad_swap_ab=1 swaps A and B). "
     "Home opens the game's menu.\n\n"
-    "Keyboard, by key position on a US layout:\n"
-    "  Buttons      A: X or Space    B: Z    X: C    Y: V\n"
-    "  Shoulders    L: Q    R: E    ZL: 1    ZR: 3\n"
-    "  Plus, minus  +: Enter    -: Backspace\n"
+    "Keyboard, by key position on a US layout (keyboard_map in the .ini changes it):\n"
+    "  Buttons      A: F    B: Left Shift    X: R    Y: Space\n"
+    "  Shoulders    L: Q    R: E    L3: Left Ctrl (ZL and ZR are the mouse buttons)\n"
+    "  Plus, minus  +: G    -: M\n"
     "  D-Pad        the arrow keys\n"
     "  Left stick   W, A, S and D\n"
-    "  Right stick  I, J, K and L\n\n"
+    "  Right stick  the mouse\n\n"
     "Runtime keys:\n"
     "  F1  this help\n"
     "  F2  open or close the game's menu (arrows move, Enter or Space picks, Esc or Backspace goes back)\n"
@@ -476,19 +491,17 @@ static PadKind gamepad_kind(int type) {
 /* keys -> HidNpadButton bits; 40..47 are the stick keys, turned into axes in video_poll. By scancode, the key's
    position: the keycode depends on the layout and on the modifiers, so Shift pressed while 1 was held made its release
    a different key, and ZL stayed held */
-static u64 keymap(SDL_Scancode k) {
+static u64 default_keymap(SDL_Scancode k) {
     switch (k) {
-        case SDL_SCANCODE_X:
-        case SDL_SCANCODE_SPACE: return 1ull << 0; /* A */
-        case SDL_SCANCODE_Z: return 1ull << 1;     /* B */
-        case SDL_SCANCODE_C: return 1ull << 2;     /* X */
-        case SDL_SCANCODE_V: return 1ull << 3;     /* Y */
-        case SDL_SCANCODE_Q: return 1ull << 6;     /* L */
-        case SDL_SCANCODE_E: return 1ull << 7;     /* R */
-        case SDL_SCANCODE_1: return 1ull << 8;     /* ZL */
-        case SDL_SCANCODE_3: return 1ull << 9;     /* ZR */
-        case SDL_SCANCODE_RETURN: return 1ull << 10;
-        case SDL_SCANCODE_BACKSPACE: return 1ull << 11;
+        case SDL_SCANCODE_F: return 1ull << 0;      /* A */
+        case SDL_SCANCODE_LSHIFT: return 1ull << 1; /* B */
+        case SDL_SCANCODE_R: return 1ull << 2;      /* X */
+        case SDL_SCANCODE_SPACE: return 1ull << 3;  /* Y */
+        case SDL_SCANCODE_LCTRL: return 1ull << 4;  /* L3 */
+        case SDL_SCANCODE_Q: return 1ull << 6;      /* L */
+        case SDL_SCANCODE_E: return 1ull << 7;      /* R */
+        case SDL_SCANCODE_G: return 1ull << 10;     /* Plus */
+        case SDL_SCANCODE_M: return 1ull << 11;     /* Minus */
         case SDL_SCANCODE_LEFT: return 1ull << 12;
         case SDL_SCANCODE_UP: return 1ull << 13;
         case SDL_SCANCODE_RIGHT: return 1ull << 14;
@@ -497,13 +510,374 @@ static u64 keymap(SDL_Scancode k) {
         case SDL_SCANCODE_W: return 1ull << 41;
         case SDL_SCANCODE_D: return 1ull << 42;
         case SDL_SCANCODE_S: return 1ull << 43;
-        case SDL_SCANCODE_J: return 1ull << 44;
-        case SDL_SCANCODE_I: return 1ull << 45;
-        case SDL_SCANCODE_L: return 1ull << 46;
-        case SDL_SCANCODE_K: return 1ull << 47;
         default: break;
     }
     return 0;
+}
+/* the keyboard's table: default_keymap's, over which the .ini's keyboard_map puts its own. Main thread only */
+static u64 g_keybind[SDL_SCANCODE_COUNT];
+static int g_keybind_ready;
+static void keybind_reset(void) {
+    for (int k = 0; k < SDL_SCANCODE_COUNT; ++k) g_keybind[k] = default_keymap((SDL_Scancode)k);
+    g_keybind_ready = 1;
+}
+static u64 keymap(SDL_Scancode k) {
+    if (!g_keybind_ready) keybind_reset();
+    return k > 0 && k < SDL_SCANCODE_COUNT ? g_keybind[k] : 0;
+}
+
+/* keyboard_map's button names and the keys_held bit each sets (the stick bits are turned into axes in video_poll) */
+static const struct {
+    const char* name;
+    int bit;
+} KEY_BUTTONS[] = {
+    {"A", 0},           {"B", 1},           {"X", 2},           {"Y", 3},           {"L3", 4},
+    {"R3", 5},          {"L", 6},           {"R", 7},           {"ZL", 8},          {"ZR", 9},
+    {"Plus", 10},       {"Minus", 11},      {"Left", 12},       {"Up", 13},         {"Right", 14},
+    {"Down", 15},       {"LStickLeft", 40}, {"LStickUp", 41},   {"LStickRight", 42}, {"LStickDown", 43},
+    {"RStickLeft", 44}, {"RStickUp", 45},   {"RStickRight", 46}, {"RStickDown", 47},
+};
+#define KEY_ENTRIES_MAX 64
+typedef struct {
+    int bit;
+    SDL_Scancode key; /* SDL_SCANCODE_UNKNOWN: the button has no key */
+} KeyEntry;
+
+/* the runtime's own keys: a button on one of them would fire the hotkey too */
+static int key_reserved(SDL_Scancode k) {
+    return k == SDL_SCANCODE_ESCAPE || (k >= SDL_SCANCODE_F1 && k <= SDL_SCANCODE_F12) || k == SDL_SCANCODE_PAUSE ||
+           k == SDL_SCANCODE_LALT || k == SDL_SCANCODE_RALT;
+}
+/* one word, Button:Key: 0, else -1 */
+static int key_entry_read(const char* at, size_t n, KeyEntry* out) {
+    char key[48];
+    size_t colon = 0, len;
+    while (colon < n && at[colon] != ':') ++colon;
+    if (colon == 0 || colon >= n - 1 || n - colon - 1 >= sizeof key) return -1;
+    out->bit = -1;
+    for (size_t i = 0; i < sizeof KEY_BUTTONS / sizeof *KEY_BUTTONS; ++i)
+        if (strlen(KEY_BUTTONS[i].name) == colon && SDL_strncasecmp(KEY_BUTTONS[i].name, at, colon) == 0)
+            out->bit = KEY_BUTTONS[i].bit;
+    if (out->bit < 0) return -1;
+    len = n - colon - 1;
+    for (size_t i = 0; i < len; ++i) key[i] = at[colon + 1 + i] == '_' ? ' ' : at[colon + 1 + i];
+    key[len] = 0;
+    if (SDL_strcasecmp(key, "None") == 0) {
+        out->key = SDL_SCANCODE_UNKNOWN;
+        return 0;
+    }
+    out->key = SDL_GetScancodeFromName(key);
+    return out->key == SDL_SCANCODE_UNKNOWN || key_reserved(out->key) || out->key >= SDL_SCANCODE_COUNT ? -1 : 0;
+}
+/* keyboard_map's text as the buttons each key sends, into map. A button named in the text loses its default keys, and a
+   key named in it belongs to the buttons named with it only. 0, or -1 for a word it cannot read (said when say): map is
+   then not made */
+static int keybind_compile(const char* v, u64 map[SDL_SCANCODE_COUNT], int say) {
+    KeyEntry e[KEY_ENTRIES_MAX];
+    int count = 0;
+    u64 named = 0;
+    const char* at = v ? v : "";
+    while (*at) {
+        size_t n = strcspn(at, " \t");
+        if (!n) {
+            ++at;
+            continue;
+        }
+        if (count == KEY_ENTRIES_MAX || key_entry_read(at, n, &e[count]) < 0) {
+            if (say)
+                LOG("settings: keyboard_map's \"%.*s\" is not a button and a key (A:F): the map stays as it was\n", (int)n,
+                    at);
+            return -1;
+        }
+        ++count;
+        at += n;
+    }
+    for (int k = 0; k < SDL_SCANCODE_COUNT; ++k) map[k] = default_keymap((SDL_Scancode)k);
+    for (int i = 0; i < count; ++i) named |= 1ull << e[i].bit;
+    for (int k = 0; k < SDL_SCANCODE_COUNT; ++k) map[k] &= ~named;
+    for (int i = 0; i < count; ++i)
+        if (e[i].key) map[e[i].key] = 0;
+    for (int i = 0; i < count; ++i)
+        if (e[i].key) map[e[i].key] |= 1ull << e[i].bit;
+    return 0;
+}
+/* the text of the map in use, for the window's view; written under ui_lock (backend_ini holds it) */
+static char g_keybind_accepted[sizeof g_settings.keyboard_map];
+/* An unreadable word changes nothing and is said */
+void keyboard_map_set(const IniOpt* o, const char* v) {
+    u64 map[SDL_SCANCODE_COUNT];
+    (void)o;
+    if (keybind_compile(v, map, 1)) return;
+    memcpy(g_keybind, map, sizeof g_keybind);
+    snprintf(g_keybind_accepted, sizeof g_keybind_accepted, "%s", v ? v : "");
+    g_keybind_ready = 1;
+}
+
+/* ---- what the Settings window changes (backend.h). The window runs on the renderer's thread. A change waits here under
+   ui_lock, and the main thread applies it in video_poll, where the input code that reads the settings runs ---- */
+enum { CHANGES_MAX = 16, CHANGE_KEY_MAX = 64, CHANGE_VALUE_MAX = 64 };
+typedef struct {
+    char key[CHANGE_KEY_MAX];
+    char value[CHANGE_VALUE_MAX];
+} SettingChange;
+static SettingChange g_changes[CHANGES_MAX];
+static int g_nchanges;
+
+void backend_setting_request(const char* key, const char* value) {
+    if (strlen(key) >= CHANGE_KEY_MAX || strlen(value) >= CHANGE_VALUE_MAX) {
+        LOG("settings: the window's change of %.40s is too long and is left out\n", key);
+        return;
+    }
+    ui_lock();
+    int at = 0;
+    while (at < g_nchanges && strcmp(g_changes[at].key, key)) ++at; /* the same key: the later value replaces it */
+    int room = at < CHANGES_MAX;
+    if (room) {
+        if (at == g_nchanges) {
+            snprintf(g_changes[at].key, sizeof g_changes[at].key, "%s", key);
+            ++g_nchanges;
+        }
+        snprintf(g_changes[at].value, sizeof g_changes[at].value, "%s", value);
+    }
+    ui_unlock();
+    if (!room) LOG("settings: too many changes at once, %.40s is not changed\n", key);
+}
+
+/* ---- the key bindings of the window: it edits keyboard_map's text. g_keybind belongs to the main thread, so a new text
+   waits in g_keybind_next, and the view shows it until keybind_apply has made it the text in use ---- */
+_Static_assert(sizeof KEY_BUTTONS / sizeof *KEY_BUTTONS == BACKEND_KEYBIND_COUNT, "the view lists every button");
+static char g_keybind_next[sizeof g_settings.keyboard_map];
+static int g_keybind_pending; /* g_keybind_next waits to be applied */
+
+/* keyboard_map as it will be: the text that waits, else the one in use. Under ui_lock */
+static const char* keybind_text(void) { return g_keybind_pending ? g_keybind_next : g_keybind_accepted; }
+
+/* the buttons that text names */
+static u64 keybind_named(const char* text) {
+    u64 named = 0;
+    for (const char* at = text; *at;) {
+        size_t n = strcspn(at, " \t");
+        KeyEntry e;
+        if (!n) {
+            ++at;
+            continue;
+        }
+        if (key_entry_read(at, n, &e) == 0) named |= 1ull << e.bit;
+        at += n;
+    }
+    return named;
+}
+
+/* the keys that send a button in map, as a line */
+static void keybind_keys(const u64 map[SDL_SCANCODE_COUNT], u64 bit, char* out, size_t size) {
+    size_t at = 0;
+    for (int k = 1; k < SDL_SCANCODE_COUNT; ++k) {
+        if (!(map[k] & bit)) continue;
+        at += (size_t)snprintf(out + at, size - at, "%s%s", at ? ", " : "", SDL_GetScancodeName((SDL_Scancode)k));
+        if (at >= size) { /* cut: the rest of the keys do not fit the line */
+            at = size - 1;
+            break;
+        }
+    }
+    if (!at) snprintf(out, size, "None");
+}
+
+void backend_keybind_view(BackendKeybind v[BACKEND_KEYBIND_COUNT]) {
+    char text[sizeof g_keybind_next];
+    u64 map[SDL_SCANCODE_COUNT];
+    ui_lock();
+    snprintf(text, sizeof text, "%s", keybind_text());
+    ui_unlock();
+    /* only a text that compiles is in use or waits, so this fails never; no keys is the safe line if it does */
+    if (keybind_compile(text, map, 0)) memset(map, 0, sizeof map);
+    u64 named = keybind_named(text);
+    int locked = options_overridden("keyboard_map");
+    for (int i = 0; i < BACKEND_KEYBIND_COUNT; ++i) {
+        u64 bit = 1ull << KEY_BUTTONS[i].bit;
+        v[i].button = KEY_BUTTONS[i].name;
+        v[i].custom = (named & bit) != 0;
+        v[i].locked = locked;
+        keybind_keys(map, bit, v[i].keys, sizeof v[i].keys);
+    }
+}
+
+/* text without the words of button, then Button:key when key is given (button NULL: nothing is left). 0, or -1 when it
+   does not fit; out is then not to be used */
+static int keybind_edit(const char* text, const char* button, const char* key, char* out, size_t n) {
+    size_t blen = button ? strlen(button) : 0, at = 0;
+    out[0] = 0;
+    for (const char* p = text; button && *p;) {
+        size_t len = strcspn(p, " \t");
+        if (!len) {
+            ++p;
+            continue;
+        }
+        if (strcspn(p, ":") != blen || SDL_strncasecmp(p, button, blen)) {
+            int w = snprintf(out + at, n - at, "%s%.*s", at ? " " : "", (int)len, p);
+            if (w < 0 || (size_t)w >= n - at) return -1;
+            at += (size_t)w;
+        }
+        p += len;
+    }
+    if (button && key) {
+        int w = snprintf(out + at, n - at, "%s%s:%s", at ? " " : "", button, key);
+        if (w < 0 || (size_t)w >= n - at) return -1;
+    }
+    return 0;
+}
+
+void backend_keybind_request(const char* button, const char* key) {
+    char next[sizeof g_keybind_next];
+    if (options_overridden("keyboard_map")) return; /* the command line holds it for this run */
+    ui_lock();
+    char text[sizeof next];
+    snprintf(text, sizeof text, "%s", keybind_text());
+    int failed = keybind_edit(text, button, key, next, sizeof next);
+    if (!failed) {
+        memcpy(g_keybind_next, next, sizeof next);
+        g_keybind_pending = 1;
+    }
+    ui_unlock();
+    if (failed) LOG("settings: keyboard_map would be longer than %zu bytes, so the change is not made\n", sizeof next - 1);
+}
+
+/* the main thread: the text the window left becomes the map in use, and is saved with the .ini's other settings. A text
+   that does not compile is dropped, as one that the command line holds */
+static void keybind_apply(const char* text) {
+    u64 check[SDL_SCANCODE_COUNT];
+    if (keybind_compile(text, check, 0))
+        LOG("settings: the window made a keyboard_map that cannot be read, so it is dropped\n");
+    else if (options_change("keyboard_map", text) != OPTIONS_OK)
+        LOG("settings: keyboard_map is not changed by the window\n");
+    ui_lock();
+    if (!strcmp(text, g_keybind_next)) g_keybind_pending = 0; /* not asked again meanwhile */
+    ui_unlock();
+}
+
+/* ---- the gamepad button map of the window: it edits gamepad_map's text. The map in use belongs to the main thread, so a
+   new map waits in g_padmap_next, and the view shows it until padmap_apply has made it the one in use ---- */
+static SnxPadMap g_padmap_next;
+static int g_padmap_pending; /* g_padmap_next waits to be applied */
+
+/* gamepad_map as it will be: the map that waits, else the one in use. Under ui_lock */
+static SnxPadMap padmap_own(void) { return g_padmap_pending ? g_padmap_next : gamepad_config()->own; }
+
+/* the map the player sees (the button in each control's place under what gamepad_map names, A and B swapped) */
+static SnxPadMap padmap_shown(const SnxPadMap* own) {
+    SnxPadScreen s;
+    SnxPadMap shown;
+    snx_pad_screen_start(&s);
+    s.own = *own;
+    s.swap_ab = g_settings.swap_a_b;
+    snx_pad_screen_map(&s, &shown);
+    return shown;
+}
+
+void backend_padmap_view(BackendPadMap* v) {
+    ui_lock();
+    SnxPadMap own = padmap_own();
+    ui_unlock();
+    SnxPadMap shown = padmap_shown(&own);
+    v->custom = 0;
+    for (int c = 0; c < BACKEND_PADMAP_CONTROLS; ++c) {
+        v->bit[c] = shown.bit[c];
+        v->custom |= own.bit[c] != SNX_PAD_UNSET;
+    }
+    v->locked = options_overridden("gamepad_map");
+}
+
+void backend_padmap_request(int control, int bit) {
+    if (options_overridden("gamepad_map")) return; /* the command line holds it for this run */
+    int all = control == BACKEND_PADMAP_ALL;
+    int button_ok = bit == SNX_PAD_NONE || (bit >= 0 && bit < SNX_PAD_BUTTONS);
+    if (!all && (control < 0 || control >= BACKEND_PADMAP_CONTROLS || !button_ok)) return;
+    ui_lock();
+    SnxPadMap own = padmap_own();
+    if (all) {
+        snx_pad_map_unset(&own);
+    } else {
+        SnxPadMap shown = padmap_shown(&own);
+        int holder = bit == SNX_PAD_NONE ? -1 : snx_pad_map_find(&shown, bit);
+        if (holder >= 0) shown.bit[holder] = shown.bit[control];
+        shown.bit[control] = (signed char)bit;
+        if (g_settings.swap_a_b) snx_pad_map_swap_ab(&shown); /* own is kept without the swap, which goes over it */
+        own = shown;
+    }
+    g_padmap_next = own;
+    g_padmap_pending = 1;
+    ui_unlock();
+}
+
+/* the main thread: the map the window left becomes the one in use and is saved with the .ini's other settings */
+static void padmap_apply(const SnxPadMap* map) {
+    char text[SNX_PAD_MAP_TEXT];
+    snx_pad_map_write(map, text, sizeof text);
+    if (options_change("gamepad_map", text) != OPTIONS_OK) LOG("settings: gamepad_map is not changed by the window\n");
+    ui_lock();
+    if (!memcmp(map, &g_padmap_next, sizeof *map)) g_padmap_pending = 0; /* not asked again meanwhile */
+    ui_unlock();
+}
+
+/* the main thread, once a pass: the window's changes of settings, of the key map and of the button map */
+static void window_changes_apply(void) {
+    SettingChange taken[CHANGES_MAX];
+    char map[sizeof g_keybind_next];
+    ui_lock();
+    int n = g_nchanges;
+    memcpy(taken, g_changes, (size_t)n * sizeof *taken);
+    g_nchanges = 0;
+    int map_waits = g_keybind_pending;
+    if (map_waits) memcpy(map, g_keybind_next, sizeof map);
+    int padmap_waits = g_padmap_pending;
+    SnxPadMap padmap = g_padmap_next;
+    ui_unlock();
+    for (int i = 0; i < n; ++i)
+        if (options_change(taken[i].key, taken[i].value) != OPTIONS_OK)
+            LOG("settings: the window's change %s=%s is not taken\n", taken[i].key, taken[i].value);
+    if (map_waits) keybind_apply(map);
+    if (padmap_waits) padmap_apply(&padmap);
+}
+
+/* The key the window waits for: the next press is taken here and goes nowhere else. Esc cancels, losing the focus
+   cancels, and a key the runtime keeps (key_reserved) is not taken. A key that has no name that gives the same key back
+   cannot be written in keyboard_map: the capture ends with KEYCAP_UNNAMED */
+enum { KEYCAP_OFF, KEYCAP_WAIT, KEYCAP_GOT, KEYCAP_CANCEL, KEYCAP_UNNAMED };
+static int g_keycap;
+static char g_keycap_name[48]; /* written before KEYCAP_GOT is published */
+void backend_key_capture(int on) { __atomic_store_n(&g_keycap, on ? KEYCAP_WAIT : KEYCAP_OFF, __ATOMIC_RELEASE); }
+int backend_key_captured(char* name, size_t n) {
+    int state = __atomic_load_n(&g_keycap, __ATOMIC_ACQUIRE);
+    if (state < KEYCAP_GOT) return 0;
+    if (state == KEYCAP_GOT) snprintf(name, n, "%s", g_keycap_name);
+    __atomic_store_n(&g_keycap, KEYCAP_OFF, __ATOMIC_RELEASE);
+    return state == KEYCAP_GOT ? 1 : state == KEYCAP_CANCEL ? -1 : -2;
+}
+static void keycap_cancel(void) {
+    int waiting = KEYCAP_WAIT;
+    __atomic_compare_exchange_n(&g_keycap, &waiting, KEYCAP_CANCEL, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+}
+/* the key's name for keyboard_map (a space is written as _), or NULL for a key that cannot be written */
+static const char* keycap_name(SDL_Scancode k) {
+    const char* name = SDL_GetScancodeName(k);
+    if (!name[0] || strlen(name) >= sizeof g_keycap_name || strchr(name, '_') || SDL_GetScancodeFromName(name) != k)
+        return NULL;
+    return name;
+}
+static int keycap_event(const SDL_Event* e) {
+    if (e->type != SDL_EVENT_KEY_DOWN || __atomic_load_n(&g_keycap, __ATOMIC_ACQUIRE) != KEYCAP_WAIT) return 0;
+    if (e->key.repeat) return 1;
+    if (e->key.scancode == SDL_SCANCODE_ESCAPE) {
+        keycap_cancel();
+    } else if (!key_reserved(e->key.scancode)) {
+        const char* name = keycap_name(e->key.scancode);
+        if (name) {
+            for (size_t i = 0; i <= strlen(name); ++i) g_keycap_name[i] = name[i] == ' ' ? '_' : name[i];
+            __atomic_store_n(&g_keycap, KEYCAP_GOT, __ATOMIC_RELEASE);
+        } else {
+            __atomic_store_n(&g_keycap, KEYCAP_UNNAMED, __ATOMIC_RELEASE);
+        }
+    }
+    return 1;
 }
 
 /* g_fullscreen follows the window: also set from the fullscreen events, for a change the window manager made */
@@ -921,7 +1295,7 @@ static u64 finger_id(const SDL_TouchFingerEvent* f) {
 static void menu_open(int open) {
     if (overlay_shown() != open) overlay_toggle();
     vpad_release();
-    keys_held = 0;
+    keys_release_all();
     /* a finger or button down before this (Home on the on-screen controls opened it) lifts without a tap */
     overlay_pointers_reset();
 }
@@ -972,8 +1346,9 @@ static int keyboard_event(const SDL_Event* e) {
 static int menu_event(const SDL_Event* e) {
     int w, h;
     float d;
-    if ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && (e->key.key == SDLK_AC_BACK || e->key.key == SDLK_F2)) ||
-        (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE)) {
+    if (overlay_menu_opens() &&
+        ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && (e->key.key == SDLK_AC_BACK || e->key.key == SDLK_F2)) ||
+         (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE))) {
         if (vpad_editing())
             vpad_edit(0);
         else
@@ -1088,6 +1463,107 @@ static void touch_finger(const SDL_Event* e) {
                                                    : TOUCH_UP,
               finger_id(&e->tfinger), picture, px, py);
 }
+/* The mouse look. While the mouse is the input in use it is captured: its motion drives the right stick, its left
+   button is ZR and its right button ZL. A controller's input makes the controller the input in use, and the mouse is
+   the touch screen again. The game reads no mouse of its own (nn::hid::GetMouseState has no caller in Arceus). */
+#define MOUSE_ZL          (1ull << 8)
+#define MOUSE_ZR          (1ull << 9)
+#define MOUSE_MIN_DT      0.004  /* s: a shorter poll does not make a speed spike */
+#define MOUSE_SMOOTH      0.35   /* the share of the last speed kept, against the bursts of the mouse's reports */
+#define MOUSE_STOP        0.005  /* a deflection below it is none */
+#define MOUSE_SENS_UNIT   10000.0 /* sensitivity 10: full deflection at 1000 pixels a second */
+#define PAD_AXIS_SWITCH   16000  /* the stick travel (of 32767) that makes the controller the input in use */
+static int g_use_mouse, g_mouse_captured, g_alt_held;
+static u64 g_mouse_buttons, g_mouse_poll_ns;
+static float g_mouse_dx, g_mouse_dy;
+static double g_mouse_vx, g_mouse_vy;
+
+/* The native mouse look (mouse_native_address): the game's code patch (recomp/patches/native-mouse-look.pchtxt) takes the
+   64 bit word at that guest address (8 aligned), a float of yaw in radians and then a float of the camera's pitch
+   arc, and clears it. The motion is added here as it arrives. */
+#define MOUSE_NATIVE_CAP  0.5f   /* what may wait for the game: a game that does not take it gets no jump later */
+#define MOUSE_NATIVE_UNIT 1e-6f  /* the settings are in millionths */
+static void mouse_native_motion(float dx, float dy) {
+    u64* word = (u64*)(g_mem + (u32)g_settings.mouse_native_address);
+    float add[2] = {-dx * (float)g_settings.mouse_native_yaw * MOUSE_NATIVE_UNIT * (g_settings.mouse_invert_x ? -1.0f : 1.0f),
+                    dy * (float)g_settings.mouse_native_pitch * MOUSE_NATIVE_UNIT * (g_settings.mouse_invert_y ? -1.0f : 1.0f)};
+    u64 old = __atomic_load_n(word, __ATOMIC_RELAXED), next;
+    do {
+        float cur[2];
+        int axis;
+        memcpy(cur, &old, sizeof cur);
+        for (axis = 0; axis < 2; ++axis)
+            if (fabsf(cur[axis]) < MOUSE_NATIVE_CAP || cur[axis] * add[axis] < 0) cur[axis] += add[axis];
+        memcpy(&next, cur, sizeof next);
+    } while (!__atomic_compare_exchange_n(word, &old, next, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+}
+/* a real mouse event while captured: taken here, 1; else 0 and the touch screen has it */
+static int mouse_look_event(const SDL_Event* e) {
+    if (e->type == SDL_EVENT_MOUSE_MOTION ? e->motion.which == SDL_TOUCH_MOUSEID : e->button.which == SDL_TOUCH_MOUSEID)
+        return 0;
+    if (g_settings.mouse_look) g_use_mouse = 1;
+    if (!g_mouse_captured) return 0;
+    if (e->type == SDL_EVENT_MOUSE_MOTION) {
+        if (g_settings.mouse_native_address)
+            mouse_native_motion(e->motion.xrel, e->motion.yrel);
+        else {
+            g_mouse_dx += e->motion.xrel;
+            g_mouse_dy += e->motion.yrel;
+        }
+    } else {
+        u64 bit = e->button.button == SDL_BUTTON_LEFT ? MOUSE_ZR : e->button.button == SDL_BUTTON_RIGHT ? MOUSE_ZL : 0;
+        if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+            g_mouse_buttons |= bit;
+        else
+            g_mouse_buttons &= ~bit;
+    }
+    return 1;
+}
+/* a controller button or stick travel: the controller is the input in use */
+static void mouse_pad_input(const SDL_Event* e) {
+    if (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && abs(e->gaxis.value) < PAD_AXIS_SWITCH) return;
+    g_use_mouse = 0;
+}
+/* captured while the mouse look is on, the mouse is in use, the window has the focus, no menu is open and Alt is up */
+static void mouse_capture_update(int menu_shown) {
+    int want = g_settings.mouse_look && g_use_mouse && !g_opt_headless && !menu_shown && !g_alt_held &&
+               (SDL_GetWindowFlags(g_win) & SDL_WINDOW_INPUT_FOCUS);
+    if (want == g_mouse_captured) return;
+    g_mouse_captured = want;
+    SDL_SetWindowRelativeMouseMode(g_win, want != 0);
+    g_mouse_buttons = 0;
+    g_mouse_dx = g_mouse_dy = 0;
+    g_mouse_vx = g_mouse_vy = 0;
+    g_mouse_poll_ns = SDL_GetTicksNS();
+    if (want) touch_set(TOUCH_UP, SNX_TOUCH_MOUSE, NULL, 0, 0); /* a click that began as a finger ends here */
+}
+/* the right stick from the motion since the last poll: a speed, smoothed, shaped by the curve, and moved past the
+   dead zone of the game so that a slow motion still turns the camera */
+static void mouse_stick(i32* x, i32* y) {
+    u64 now = SDL_GetTicksNS();
+    double dt = (double)(now - g_mouse_poll_ns) / 1e9, sens = g_settings.mouse_sensitivity / MOUSE_SENS_UNIT;
+    double dx, dy, m, out, top, floor_ = g_settings.mouse_dead_zone_offset / 100.0;
+    g_mouse_poll_ns = now;
+    *x = *y = 0;
+    if (!g_mouse_captured) return;
+    if (dt < MOUSE_MIN_DT) dt = MOUSE_MIN_DT;
+    g_mouse_vx = g_mouse_vx * MOUSE_SMOOTH + (g_mouse_dx / dt) * (1.0 - MOUSE_SMOOTH);
+    g_mouse_vy = g_mouse_vy * MOUSE_SMOOTH + (g_mouse_dy / dt) * (1.0 - MOUSE_SMOOTH);
+    g_mouse_dx = g_mouse_dy = 0;
+    dx = g_mouse_vx * sens;
+    dy = -g_mouse_vy * sens * (g_settings.mouse_vertical_sensitivity / 100.0) * (g_settings.mouse_invert_y ? -1.0 : 1.0);
+    m = sqrt(dx * dx + dy * dy);
+    if (m < MOUSE_STOP) {
+        g_mouse_vx = g_mouse_vy = 0;
+        return;
+    }
+    top = g_settings.mouse_overdrive / 100.0;
+    out = pow(m > top ? top : m, g_settings.mouse_curve / 100.0);
+    out = floor_ + (1.0 - floor_) * out;
+    *x = (i32)(dx / m * out * 32767.0);
+    *y = (i32)(dy / m * out * 32767.0);
+}
+
 /* the mouse's left button as one more finger: on the on-screen controls when they are on, and on the touch screen
    when the touch option asks for it; positions come in window points */
 static void touch_mouse(const SDL_Event* e) {
@@ -1284,6 +1760,17 @@ static void keyboard_sync(void) {
     }
     if (answer >= 0) am_keyboard_answered(ticket, answer, text);
 }
+/* the picture's pixels for each point of the window: the windows work in pixels, SDL's mouse in points */
+static float imgui_density(void) {
+    float d = SDL_GetWindowPixelDensity(g_win);
+    return d > 0 ? d : 1.0f;
+}
+/* the physical state of Alt, before the windows can take the event: a window that took the press must not leave the
+   mouse look to grab the cursor again */
+static void alt_track(const SDL_Event* e) {
+    if (e->type != SDL_EVENT_KEY_DOWN && e->type != SDL_EVENT_KEY_UP) return;
+    if (e->key.key == SDLK_LALT || e->key.key == SDLK_RALT) g_alt_held = e->type == SDL_EVENT_KEY_DOWN;
+}
 void video_poll(void) {
     SDL_Event e;
     char* left = __atomic_load_n(&g_fatal_left, __ATOMIC_ACQUIRE);
@@ -1295,7 +1782,11 @@ void video_poll(void) {
     /* the menu, or the keyboard's box, had the controls when this poll began: the press that closes it (B, or A that
        gives the box's line) is in this poll's state */
     int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown();
+    window_changes_apply();
     while (!g_opt_headless && SDL_PollEvent(&e)) {
+        alt_track(&e);
+        if (keycap_event(&e)) continue;
+        if (imgui_sdl_event(&e, imgui_density(), g_mouse_captured, !overlay_shown() && !prepare_screen_shown())) continue;
         if (press_event(&e)) continue;
         if (overlay_event(&e)) continue;
         switch (e.type) {
@@ -1320,7 +1811,11 @@ void video_poll(void) {
             case SDL_EVENT_FINGER_CANCELED: touch_finger(&e); break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
             case SDL_EVENT_MOUSE_BUTTON_UP:
-            case SDL_EVENT_MOUSE_MOTION: touch_mouse(&e); break;
+            case SDL_EVENT_MOUSE_MOTION:
+                if (!mouse_look_event(&e)) touch_mouse(&e);
+                break;
+            case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            case SDL_EVENT_GAMEPAD_AXIS_MOTION: mouse_pad_input(&e); break;
             case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
                 g_fullscreen = 1;
                 wsafe_set();
@@ -1330,6 +1825,7 @@ void video_poll(void) {
                 wsafe_set();
                 break;
             case SDL_EVENT_KEY_DOWN:
+                if (keymap(e.key.scancode) && g_settings.mouse_look) g_use_mouse = 1;
                 if (e.key.key == SDLK_ESCAPE) { /* a fresh press: the repeats of the Esc that closed the menu don't */
                     if (!e.key.repeat) g_quit = 1;
                     break;
@@ -1342,11 +1838,20 @@ void video_poll(void) {
                 if (!e.key.repeat && !(e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) hotkey(e.key.key);
                 /* a repeat doesn't press again: a key held as the menu closed (which cleared keys_held) stays from
                    the game until it is let go */
-                if (!e.key.repeat) keys_held |= keymap(e.key.scancode);
+                if (!e.key.repeat) {
+                    g_key_bits[e.key.scancode] = keymap(e.key.scancode);
+                    keys_held |= g_key_bits[e.key.scancode];
+                }
                 break;
-            case SDL_EVENT_KEY_UP: keys_held &= ~keymap(e.key.scancode); break;
+            case SDL_EVENT_KEY_UP:
+                keys_held &= ~g_key_bits[e.key.scancode];
+                g_key_bits[e.key.scancode] = 0;
+                for (int k = 0; k < SDL_SCANCODE_COUNT; ++k) keys_held |= g_key_bits[k]; /* a button another key holds */
+                break;
             case SDL_EVENT_WINDOW_FOCUS_LOST:
-                keys_held = 0;
+                keys_release_all();
+                keycap_cancel();
+                g_alt_held = 0;
                 ui_lock();
                 vpad_release();
                 overlay_pointers_reset(); /* lifts that come without their presses don't tap the menu */
@@ -1369,7 +1874,11 @@ void video_poll(void) {
     /* the scripted presses act like keys, stick keys included. Bits 16..23 (the stick directions as buttons) can be
        scripted too, but the stick keys (40..47) are no npad buttons */
     static u64 script_was; /* the scripted buttons of the last poll: a Home press opens or closes the menu */
-    u64 s = unattended_buttons(), k = keys_held | s;
+    if (!g_opt_headless) {
+        imgui_sdl_text_input(g_win, g_typing.ticket != 0, imgui_density());
+        mouse_capture_update(overlay_shown() || vpad_editing() || overlay_keyboard_shown() || imgui_input_wants().release);
+    }
+    u64 s = unattended_buttons(), k = keys_held | s | g_mouse_buttons;
     if (s & ~script_was & SNX_SCRIPT_HOME) {
         ui_lock();
         menu_open(!overlay_shown());
@@ -1428,6 +1937,16 @@ void video_poll(void) {
         rx = pad0[2];
         ry = pad0[3];
     }
+    int mouse_used;
+    {
+        i32 mx, my;
+        mouse_stick(&mx, &my);
+        mouse_used = mx || my;
+        if (mouse_used) {
+            rx = mx;
+            ry = my;
+        }
+    }
     { /* the on-screen controls, as one more pad: their sticks over the others' while held */
         u64 vb;
         i32 vs[4];
@@ -1435,7 +1954,7 @@ void video_poll(void) {
         ui_lock();
         vpad_state(&vb, vs);
         acts = vpad_actions();
-        if (acts & SNX_VPAD_DO_MENU) menu_open(1);
+        if ((acts & SNX_VPAD_DO_MENU) && overlay_menu_opens()) menu_open(1);
         /* with the menu open, the pads move it: the on-screen controls' and the connected ones', sticks too */
         overlay_do(overlay_controls(vb | pb | (s & 0xFFFFFull), vs[0] || vs[1] ? vs : pad, SDL_GetTicks()));
         ui_unlock();
@@ -1452,7 +1971,7 @@ void video_poll(void) {
         if ((acts & SNX_VPAD_DO_BUZZ) && g_buzzer) SDL_PlayHapticRumble(g_buzzer, 0.5f, 15);
     }
     input_stick_clamp(&lx, &ly);
-    input_stick_clamp(&rx, &ry);
+    if (!mouse_used) input_stick_clamp(&rx, &ry); /* the mouse look may go past the range (mouse_overdrive) */
     if (g_press.listening) { /* the loading screen's: a pad's buttons held then reach the game only once let go */
         g_menu_held_pad0 |= g_hle.hid.pad1.buttons;
         for (int i = 0; i < SNX_GAMEPADS - 1; i++) g_menu_held_extra[i] |= g_hle.hid.pad_extra[i].buttons;
@@ -1541,7 +2060,7 @@ void frontend_frame(void) {
     if (g_renderer->refresh &&
         (overlay_shown() || overlay_keyboard_shown() || vpad_shown() || game_paused() || overlay_toasting(plat_ns()) ||
          __atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED) ||
-         __atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)))
+         __atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED) || imgui_input_refresh_wanted()))
         g_renderer->refresh();
     if (g_shot_req) {
         g_shot_req = 0;
