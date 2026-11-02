@@ -260,20 +260,36 @@ bool setting_choice(const ImguiSettingRow& r, char* out, size_t n) {
     return changed;
 }
 
+/* the row whose "Custom" entry was picked: its number field shows even when the value is one of the presets */
+const char* g_custom_key = nullptr;
+
+/* the number field under a preset choice that takes any value of lo to hi (the FPS limit) */
+bool setting_custom_field(const ImguiSettingRow& r, double now, char* out, size_t n) {
+    int v = now >= r.lo ? (int)now : (int)r.lo;
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (!ImGui::InputInt("##custom", &v, 1, ARROW_COARSE, ImGuiInputTextFlags_EnterReturnsTrue)) return false;
+    snprintf(out, n, "%d", v < (int)r.lo ? (int)r.lo : v > (int)r.hi ? (int)r.hi : v);
+    return true;
+}
+
 /* a choice from the short list of imgui_settings_preset; a value that is not in it shows as custom, and Left and Right
-   go to the nearest preset from it */
+   go to the nearest preset from it. A row with IMGUI_SETTING_CUSTOM also has the entry Custom and a number field */
 bool setting_preset(const ImguiSettingRow& r, char* out, size_t n) {
     char value[WORD_MAX], label[WORD_MAX], shown[WORD_MAX];
     const double now = r.type == IMGUI_SETTING_FLOAT ? (double)r.fvalue : (double)r.ivalue;
+    const bool custom_row = (r.flags & IMGUI_SETTING_CUSTOM) != 0;
+    double number;
     int at = -1, below = -1, count = r.presets;
     for (int i = 0; i < count; ++i) {
-        imgui_settings_preset(r.key, i, value, sizeof value, label, sizeof label);
-        double v = atof(value);
-        if (fabs(v - now) < PRESET_EPSILON) at = i;
-        if (v < now) below = i;
+        imgui_settings_preset(r.key, i, value, sizeof value, label, sizeof label, &number);
+        if (fabs(number - now) < PRESET_EPSILON) at = i;
+        if (number < now) below = i;
     }
-    if (at >= 0)
-        imgui_settings_preset(r.key, at, value, sizeof value, shown, sizeof shown);
+    const bool custom_on = custom_row && (at < 0 || g_custom_key == r.key);
+    if (at >= 0 && !custom_on)
+        imgui_settings_preset(r.key, at, value, sizeof value, shown, sizeof shown, &number);
+    else if (custom_row)
+        snprintf(shown, sizeof shown, "Custom");
     else
         snprintf(shown, sizeof shown, "%g (custom)", now);
     bool open = ImGui::BeginCombo("##value", shown);
@@ -281,18 +297,23 @@ bool setting_preset(const ImguiSettingRow& r, char* out, size_t n) {
     int to = at >= 0 ? at + dir : dir > 0 ? below + 1 : below;
     bool changed = false;
     if (dir && to >= 0 && to < count) {
-        imgui_settings_preset(r.key, to, out, n, label, sizeof label);
+        imgui_settings_preset(r.key, to, out, n, label, sizeof label, &number);
+        g_custom_key = nullptr;
         changed = true;
     }
-    if (!open) return changed;
-    for (int i = 0; i < count; ++i) {
-        imgui_settings_preset(r.key, i, value, sizeof value, label, sizeof label);
-        if (ImGui::Selectable(label, i == at) && i != at) {
-            snprintf(out, n, "%s", value);
-            changed = true;
+    if (open) {
+        for (int i = 0; i < count; ++i) {
+            imgui_settings_preset(r.key, i, value, sizeof value, label, sizeof label, &number);
+            if (ImGui::Selectable(label, i == at && !custom_on) && (i != at || custom_on)) {
+                snprintf(out, n, "%s", value);
+                g_custom_key = nullptr;
+                changed = true;
+            }
         }
+        if (custom_row && ImGui::Selectable("Custom", custom_on)) g_custom_key = r.key;
+        ImGui::EndCombo();
     }
-    ImGui::EndCombo();
+    if (custom_on) changed = setting_custom_field(r, now, out, n) || changed;
     return changed;
 }
 

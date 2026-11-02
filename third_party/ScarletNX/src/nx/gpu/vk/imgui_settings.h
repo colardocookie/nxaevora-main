@@ -14,7 +14,8 @@ enum { IMGUI_SETTING_INT, IMGUI_SETTING_FLOAT, IMGUI_SETTING_TEXT };
 enum {
     IMGUI_SETTING_STARTUP = 1, /* read when the game starts: a change is saved and applies at the next start */
     IMGUI_SETTING_LOCKED = 2,  /* the command line holds it for this run: a change is not taken */
-    IMGUI_SETTING_RESTART = 4  /* the value shown is saved, and the running game has another: it applies at the next start */
+    IMGUI_SETTING_RESTART = 4, /* the value shown is saved, and the running game has another: it applies at the next start */
+    IMGUI_SETTING_CUSTOM = 8   /* a choice from presets that also takes a number from lo to hi (a field under the choice) */
 };
 typedef struct {
     const char* key;
@@ -41,9 +42,10 @@ int imgui_settings_rows(int page);
 int imgui_settings_row(int page, int i, ImguiSettingRow* r);
 /* the word of an int choice's value v (the number when it has none) */
 void imgui_settings_word(const char* key, int v, char* out, size_t n);
-/* preset i of a setting that is chosen from a list (the resolution, the anisotropic filtering): its value as the .ini
-   writes it, and its label. 1, or 0 for an index past the last */
-int imgui_settings_preset(const char* key, int i, char* value, size_t vn, char* label, size_t ln);
+/* preset i of a setting that is chosen from a list (the resolution, the anisotropic filtering, the FPS limit): its
+   value as the .ini writes it, its label and its number (what the row's value is when the preset is on). 1, or 0 for
+   an index past the last */
+int imgui_settings_preset(const char* key, int i, char* value, size_t vn, char* label, size_t ln, double* number);
 /* key set to value (the .ini's text). The main thread applies it and saves it, so the row shows the old value for a
    moment */
 void imgui_settings_set(const char* key, const char* value);

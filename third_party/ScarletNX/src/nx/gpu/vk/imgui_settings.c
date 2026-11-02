@@ -15,6 +15,8 @@
 
 enum { SAVED_VALUE_MAX = 64 };
 #define SAVED_FLOAT_EPSILON 1e-6 /* a saved float this close to the running one is the same */
+#define FPS_LIMIT_KEY "fps_limit"
+enum { FPS_RANGE_MIN = 10, FPS_RANGE_MAX = 1000 }; /* the range options_fps_set takes for a frame rate */
 
 typedef struct {
     const char* name; /* the section of settings.txt */
@@ -25,26 +27,43 @@ static const Page PAGES[] = {{"Mouse", IMGUI_WINDOW_INPUT},       {"Keyboard", I
                              {"Graphics", IMGUI_WINDOW_DISPLAY}, {"Performance", IMGUI_WINDOW_DISPLAY}};
 enum { PAGE_COUNT = sizeof PAGES / sizeof PAGES[0] };
 
-/* keyboard_map and gamepad_map have their own rows in place of a text field. mouse_native_address is the guest address
-   of a word that a code patch of the game reads: a value that is not 8 aligned and mapped breaks the mouse look, so
-   only the launcher that installs the patch sets it */
 /* Settings that the window shows as a choice from a list, not a slider. A value in the .ini that is not in the list
-   (resolution 16) shows as custom. The sizes are the game's render size at 1x: 1920 x 1080 (the log of resolution 16
-   has targets of 30720 x 17280), and every step costs the square of its scale in GPU memory */
+   (resolution 16) shows as custom. The label gives the render size docked / handheld: the game renders 1920 x 1080
+   docked and two thirds of that handheld (the log of resolution 16 has targets of 30720 x 17280). Every step costs the
+   square of its scale in GPU memory */
 typedef struct {
     const char* key;
     const char* value;
     const char* label;
+    double number; /* the row's value with this preset on: fps_limit's "game" is SNX_FPS_GAME */
 } Preset;
 static const Preset PRESETS[] = {
-    {"resolution", "0.5", "0.5x (960 x 540)"},    {"resolution", "0.75", "0.75x (1440 x 810)"},
-    {"resolution", "1", "1x (1920 x 1080)"},      {"resolution", "1.5", "1.5x (2880 x 1620)"},
-    {"resolution", "2", "2x (3840 x 2160)"},      {"resolution", "3", "3x (5760 x 3240)"},
-    {"resolution", "4", "4x (7680 x 4320)"},      {"anisotropy", "0", "Game's"},
-    {"anisotropy", "2", "2x"},                    {"anisotropy", "4", "4x"},
-    {"anisotropy", "8", "8x"},                    {"anisotropy", "16", "16x"}};
+    {"resolution", "0.5", "0.5x (960 x 540 / 640 x 360)", 0.5},
+    {"resolution", "0.75", "0.75x (1440 x 810 / 960 x 540)", 0.75},
+    {"resolution", "1", "1x (1920 x 1080 / 1280 x 720)", 1},
+    {"resolution", "1.5", "1.5x (2880 x 1620 / 1920 x 1080)", 1.5},
+    {"resolution", "2", "2x (3840 x 2160 / 2560 x 1440)", 2},
+    {"resolution", "3", "3x (5760 x 3240 / 3840 x 2160)", 3},
+    {"resolution", "4", "4x (7680 x 4320 / 5120 x 2880)", 4},
+    {"anisotropy", "0", "Game's", 0},
+    {"anisotropy", "2", "2x", 2},
+    {"anisotropy", "4", "4x", 4},
+    {"anisotropy", "8", "8x", 8},
+    {"anisotropy", "16", "16x", 16},
+    {"fps_limit", "game", "Game's pace", SNX_FPS_GAME},
+    {"fps_limit", "30", "30", 30},
+    {"fps_limit", "60", "60", 60},
+    {"fps_limit", "120", "120", 120},
+    {"fps_limit", "144", "144", 144},
+    {"fps_limit", "240", "240", 240},
+    {"fps_limit", "0", "Unlimited", 0}};
 
-static const char* const HIDDEN[] = {"keyboard_map", "mouse_native_address", "gamepad_map"};
+/* keyboard_map and gamepad_map have their own rows in place of a text field. mouse_native_address is the guest address
+   of a word that a code patch of the game reads: a value that is not 8 aligned and mapped breaks the mouse look, so
+   only the launcher that installs the patch sets it. The showcase and the stats overlay have the F6 and F12 keys and
+   the Debug window, so they have no rows */
+static const char* const HIDDEN[] = {"keyboard_map", "mouse_native_address", "gamepad_map", "showcase",
+                                     "showcase_corner", "stats", "stats_corner"};
 
 /* The rows of each player (gamepad_p1_device and the like) are left out: the window edits the settings every player
    shares and their button map */
@@ -96,11 +115,12 @@ static int preset_count(const char* key) {
     return n;
 }
 
-int imgui_settings_preset(const char* key, int i, char* value, size_t vn, char* label, size_t ln) {
+int imgui_settings_preset(const char* key, int i, char* value, size_t vn, char* label, size_t ln, double* number) {
     for (size_t p = 0; p < sizeof PRESETS / sizeof *PRESETS; p++)
         if (!strcmp(PRESETS[p].key, key) && !i--) {
             snprintf(value, vn, "%s", PRESETS[p].value);
             snprintf(label, ln, "%s", PRESETS[p].label);
+            *number = PRESETS[p].number;
             return 1;
         }
     return 0;
@@ -134,6 +154,16 @@ static void saved_value(const IniOpt* o, ImguiSettingRow* r) {
     }
 }
 
+/* fps_limit is a text in the .ini ("game", 0 or 10 to 1000) and a number in the running game (g_opt_fps): the row
+   shows the number, as a choice of presets that also takes any value of the range */
+static void fps_limit_row(ImguiSettingRow* r) {
+    r->type = IMGUI_SETTING_INT;
+    r->flags |= IMGUI_SETTING_CUSTOM;
+    r->lo = FPS_RANGE_MIN;
+    r->hi = FPS_RANGE_MAX;
+    r->ivalue = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED);
+}
+
 int imgui_settings_row(int page, int i, ImguiSettingRow* r) {
     const IniSection* sec = section_of(page);
     const IniOpt* o = sec ? row_of(sec, i) : NULL;
@@ -149,6 +179,7 @@ int imgui_settings_row(int page, int i, ImguiSettingRow* r) {
                            .step = o->step > 0 ? o->step : 1,
                            .has_words = o->words && !strchr(o->words, '#'),
                            .presets = preset_count(o->key)};
+    if (!strcmp(o->key, FPS_LIMIT_KEY)) fps_limit_row(r);
     if (o->type == INI_INT) r->ivalue = __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED);
     if (o->type == INI_FLOAT) r->fvalue = *(const float*)o->var;
     saved_value(o, r);
