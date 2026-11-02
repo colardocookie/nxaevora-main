@@ -12,5 +12,17 @@ extern const u32 fxaa_fs_spv[];
 extern const u64 fxaa_fs_spv_size;
 extern const u32 bicubic_fs_spv[];
 extern const u64 bicubic_fs_spv_size;
+extern const u32 smaa_edges_fs_spv[];
+extern const u64 smaa_edges_fs_spv_size;
+extern const u32 smaa_weights_fs_spv[];
+extern const u64 smaa_weights_fs_spv_size;
+extern const u32 smaa_blend_fs_spv[];
+extern const u64 smaa_blend_fs_spv_size;
+/* the lookup tables of SMAA (cmake/smaa_tables.cmake): the area texture 160 x 560 with two 8-bit channels, the search
+   texture 64 x 16 with one */
+extern const u8 smaa_area_tex[];
+extern const u64 smaa_area_tex_size;
+extern const u8 smaa_search_tex[];
+extern const u64 smaa_search_tex_size;
 
 #endif

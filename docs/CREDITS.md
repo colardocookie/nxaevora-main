@@ -11,5 +11,6 @@ NXAevora is GPL-3.0-or-later. These projects and works are used in it.
 | Dear ImGui (Omar Cornut and contributors) | The in-game windows, version 1.93.0, fetched at configure time by patch `0013` | MIT |
 | Roboto (The Roboto Project Authors) | The Latin font of the in-game windows (`assets/fonts`) | SIL OFL 1.1 |
 | Noto Sans JP (Google and the Noto project authors) | The Japanese font of the in-game windows (`assets/fonts`) | SIL OFL 1.1 |
+| SMAA (Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro, Diego Gutierrez) | The anti-aliasing mode SMAA: the shader port and the two lookup textures (`third_party/ScarletNX/src/nx/gpu/vk/shaders/smaa`, license text in `LICENSE.txt` there) | MIT |
 
 The credits of the libraries that ScarletNX uses are in its own `docs/CREDITS.md`.

@@ -167,7 +167,7 @@ void display_lines(const ImguiFrame& f) {
         snprintf(v, sizeof v, "?");
     row("Game resolution", v);
     row("Scaling", f.scaling_filter == 1 ? "Bicubic" : "Bilinear");
-    row("Anti-aliasing", f.anti_aliasing == 1 ? "FXAA" : "Off");
+    row("Anti-aliasing", f.anti_aliasing == 2 ? "SMAA" : f.anti_aliasing == 1 ? "FXAA" : "Off");
     snprintf(v, sizeof v, "%s", f.fps_limit);
     row("Frame limit", v);
     row("V-sync", f.vsync == 2 ? "On (Mailbox)" : f.vsync ? "On (FIFO)" : "Off");

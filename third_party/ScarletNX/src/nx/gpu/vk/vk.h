@@ -1022,7 +1022,7 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);
 /* gpu/vk/postfx.c: the frame through the anti-aliasing pass (VK_AA_*). The image to read from, the size of src's
    image, or VK_NULL_HANDLE where the frame is shown as it is. It is in TRANSFER_SRC_OPTIMAL, or with for_sampling in
    SHADER_READ_ONLY_OPTIMAL, and *view is the view to sample it by */
-enum { VK_AA_OFF = 0, VK_AA_FXAA = 1 };
+enum { VK_AA_OFF = 0, VK_AA_FXAA = 1, VK_AA_SMAA = 2 };
 VkImage vk_postfx_apply(VkCommandBuffer cb, Surf* src, int mode, int for_sampling, VkImageView* view);
 /* the scaling of the frame into the window (VK_SCALE_*, the setting scaling_filter). Bilinear is the blit. A mode that
    vk_postfx_scale_ready says yes to draws into the swapchain image (in TRANSFER_DST_OPTIMAL, where it stays) the part

@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* What the frame goes through on its way to the window. The anti-aliasing pass reads the game's last render target and
-   writes an image of its own (same format and size). The scaling pass draws the frame, or that image, into the window's
+   writes an image of its own (same format and size): FXAA is one pass, SMAA three (edges, blending weights, blending
+   through two images of its own and two lookup tables). The scaling pass draws the frame, or that image, into the window's
    image over the letterboxed rectangle, where a plain blit would stretch it with the hardware's bilinear filter. The
    game's render targets stay as it drew them, and the on-screen controls and the windows are drawn after both */
 #include <string.h>
@@ -35,15 +36,35 @@ typedef struct {
     u32 srgb;
 } ScaleConstants;
 
-static VkDescriptorSetLayout g_dsl;
-static VkPipelineLayout g_aa_layout, g_scale_layout;
-static VkSampler g_sampler;
-static PipeCache g_aa_pipes, g_bicubic_pipes;
-static VkImage g_out;
-static VmaAllocation g_out_mem;
-static VkImageView g_out_view;
-static VkFormat g_out_format;
-static u32 g_out_w, g_out_h;
+/* the SMAA passes' push constants: the frame's metrics (1 / width, 1 / height, width, height), the sRGB flag */
+typedef struct {
+    float metrics[4];
+    u32 srgb, pad[3];
+} SmaaConstants;
+
+/* an image of the passes with its view; created for a format and a size, kept while they stay */
+typedef struct {
+    VkImage img;
+    VmaAllocation mem;
+    VkImageView view;
+    VkFormat format;
+    u32 w, h;
+} Target;
+
+#define SMAA_SETS_BINDINGS 3 /* the most that a pass reads: the edges, the area table and the search table */
+#define SMAA_EDGES_FORMAT VK_FORMAT_R8G8_UNORM
+#define SMAA_WEIGHTS_FORMAT VK_FORMAT_R8G8B8A8_UNORM
+#define SMAA_AREA_W 160u /* the tables of cmake/smaa_tables.cmake */
+#define SMAA_AREA_H 560u
+#define SMAA_SEARCH_W 64u
+#define SMAA_SEARCH_H 16u
+
+static VkDescriptorSetLayout g_dsl, g_smaa_dsl;
+static VkPipelineLayout g_aa_layout, g_scale_layout, g_smaa_layout;
+static VkSampler g_sampler, g_point;
+static PipeCache g_aa_pipes, g_bicubic_pipes, g_edges_pipes, g_weights_pipes, g_blend_pipes;
+static Target g_out, g_edges, g_weights, g_area, g_search;
+static int g_tables_failed; /* the lookup tables could not be made: SMAA stays off */
 
 static int layouts_make(void) {
     VkDescriptorSetLayoutBinding b = {.binding = 0,
@@ -141,9 +162,41 @@ static VkPipeline pipeline_for(PipeCache* cache, VkFormat format, const u32* fs_
     return pipe;
 }
 
-/* the anti-aliasing pass's image for a frame of this size and format: the last one when it fits, else a new one (the
-   old one goes when the frames in flight are done with it) */
-static int out_ensure(VkFormat format, u32 w, u32 h) {
+/* the layouts, the point sampler and the pipeline layout of the SMAA passes, made once */
+static int smaa_layouts_make(void) {
+    VkDescriptorSetLayoutBinding b[SMAA_SETS_BINDINGS];
+    VkDescriptorSetLayoutCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                           .bindingCount = SMAA_SETS_BINDINGS,
+                                           .pBindings = b};
+    VkPushConstantRange pc = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SmaaConstants)};
+    VkPipelineLayoutCreateInfo lci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                      .setLayoutCount = 1,
+                                      .pSetLayouts = &g_smaa_dsl,
+                                      .pushConstantRangeCount = 1,
+                                      .pPushConstantRanges = &pc};
+    VkSamplerCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                               .magFilter = VK_FILTER_NEAREST,
+                               .minFilter = VK_FILTER_NEAREST,
+                               .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                               .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                               .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                               .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+    if (g_smaa_layout) return 1;
+    if (!layouts_make()) return 0; /* the linear sampler */
+    for (u32 i = 0; i < SMAA_SETS_BINDINGS; i++)
+        b[i] = (VkDescriptorSetLayoutBinding){.binding = i,
+                                              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                              .descriptorCount = 1,
+                                              .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT};
+    if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dci, NULL, &g_smaa_dsl))) return 0;
+    if (!VK_OK(vkCreateSampler(g_vk.dev, &sci, NULL, &g_point))) return 0;
+    if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &lci, NULL, &g_smaa_layout))) return 0;
+    return 1;
+}
+
+/* t as an image of this format and size for the passes: the last one when it fits, else a new one (the old one goes when
+   the frames in flight are done with it). what names the image in the log */
+static int target_ensure(Target* t, VkFormat format, u32 w, u32 h, const char* what) {
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
                             .format = format,
@@ -160,24 +213,23 @@ static int out_ensure(VkFormat format, u32 w, u32 h) {
                                  .viewType = VK_IMAGE_VIEW_TYPE_2D,
                                  .format = format,
                                  .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-    if (g_out && g_out_format == format && g_out_w == w && g_out_h == h) return 1;
-    if (g_out) vk_defer_image(g_out, g_out_mem, g_out_view, VK_NULL_HANDLE);
-    g_out = VK_NULL_HANDLE;
-    g_out_view = VK_NULL_HANDLE;
-    if (!vk_image_create(&ii, &g_out, &g_out_mem)) {
-        g_out = VK_NULL_HANDLE;
-        LOG_LIMIT(1, "vulkan: anti-aliasing: no memory for the %ux%u image of the pass\n", w, h);
+    if (t->img && t->format == format && t->w == w && t->h == h) return 1;
+    if (t->img) vk_defer_image(t->img, t->mem, t->view, VK_NULL_HANDLE);
+    *t = (Target){0};
+    if (!vk_image_create(&ii, &t->img, &t->mem)) {
+        *t = (Target){0};
+        LOG_LIMIT(1, "vulkan: anti-aliasing: no memory for the %ux%u %s image of the pass\n", w, h, what);
         return 0;
     }
-    vci.image = g_out;
-    if (!VK_OK(vkCreateImageView(g_vk.dev, &vci, NULL, &g_out_view))) {
-        vk_defer_image(g_out, g_out_mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
-        g_out = VK_NULL_HANDLE;
+    vci.image = t->img;
+    if (!VK_OK(vkCreateImageView(g_vk.dev, &vci, NULL, &t->view))) {
+        vk_defer_image(t->img, t->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        *t = (Target){0};
         return 0;
     }
-    g_out_format = format;
-    g_out_w = w;
-    g_out_h = h;
+    t->format = format;
+    t->w = w;
+    t->h = h;
     return 1;
 }
 
@@ -195,61 +247,230 @@ static VkDescriptorSet sampled_set(VkImageView view) {
     return set;
 }
 
-VkImage vk_postfx_apply(VkCommandBuffer cb, Surf* src, int mode, int for_sampling, VkImageView* view) {
-    VkPipeline pipe;
+/* a descriptor set of this frame for an SMAA pass: the three views with their samplers (a view the pass does not read
+   is any valid one) */
+static VkDescriptorSet smaa_set(const VkImageView views[SMAA_SETS_BINDINGS],
+                                const VkSampler samplers[SMAA_SETS_BINDINGS]) {
+    VkDescriptorSet set = vk_desc_alloc(g_smaa_dsl);
+    VkDescriptorImageInfo di[SMAA_SETS_BINDINGS];
+    VkWriteDescriptorSet wr[SMAA_SETS_BINDINGS];
+    if (!set) return VK_NULL_HANDLE;
+    for (u32 i = 0; i < SMAA_SETS_BINDINGS; i++) {
+        di[i] = (VkDescriptorImageInfo){samplers[i], views[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        wr[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = i,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                       .pImageInfo = &di[i]};
+    }
+    vkUpdateDescriptorSets(g_vk.dev, SMAA_SETS_BINDINGS, wr, 0, NULL);
+    return set;
+}
+
+/* one table to the GPU: the image, filled by a copy from a staging buffer, left in SHADER_READ_ONLY_OPTIMAL */
+static int table_make(VkCommandBuffer cb, Target* t, VkFormat format, u32 w, u32 h, const u8* px, u64 bytes,
+                      const char* what) {
+    VkBuffer buf;
+    VmaAllocation mem;
+    VmaAllocationInfo info;
+    VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                              .size = bytes,
+                              .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VmaAllocationCreateInfo bai = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                            VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                   .usage = VMA_MEMORY_USAGE_AUTO};
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = format,
+                            .extent = {w, h, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                 .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                 .format = format,
+                                 .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &bai, &buf, &mem, &info))) {
+        LOG("vulkan: SMAA: no memory for the %s table's staging buffer\n", what);
+        return 0;
+    }
+    vk_mem_track(mem);
+    memcpy(info.pMappedData, px, (size_t)bytes);
+    vmaFlushAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE);
+    vk_defer_buffer(buf, mem);
+    if (!vk_image_create(&ii, &t->img, &t->mem)) {
+        *t = (Target){0};
+        LOG("vulkan: SMAA: no memory for the %s table\n", what);
+        return 0;
+    }
+    vci.image = t->img;
+    if (!VK_OK(vkCreateImageView(g_vk.dev, &vci, NULL, &t->view))) {
+        vk_defer_image(t->img, t->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        *t = (Target){0};
+        return 0;
+    }
+    vk_barrier(cb, t->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    rec_CmdCopyBufferToImage(cb, buf, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    vk_barrier(cb, t->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    t->format = format;
+    t->w = w;
+    t->h = h;
+    return 1;
+}
+
+/* the area and search tables, made the first time SMAA runs (outside a render pass). A failure is final: SMAA stays
+   off for the run and the frame goes through unsmoothed */
+static int smaa_tables_ready(VkCommandBuffer cb) {
+    if (g_area.img && g_search.img) return 1;
+    if (g_tables_failed) return 0;
+    if (smaa_area_tex_size != (u64)SMAA_AREA_W * SMAA_AREA_H * 2 || smaa_search_tex_size != (u64)SMAA_SEARCH_W * SMAA_SEARCH_H ||
+        !table_make(cb, &g_area, VK_FORMAT_R8G8_UNORM, SMAA_AREA_W, SMAA_AREA_H, smaa_area_tex, smaa_area_tex_size, "area") ||
+        !table_make(cb, &g_search, VK_FORMAT_R8_UNORM, SMAA_SEARCH_W, SMAA_SEARCH_H, smaa_search_tex,
+                    smaa_search_tex_size, "search")) {
+        g_tables_failed = 1;
+        LOG("vulkan: SMAA: the lookup tables could not be made, the frame is shown without anti-aliasing\n");
+        return 0;
+    }
+    return 1;
+}
+
+/* an image of the passes to be written: the last frame read it in a blit or a draw, which finishes first, and its old
+   content is not needed */
+static void to_attachment(VkCommandBuffer cb, const Target* t) {
+    vk_barrier(cb, t->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+               0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+}
+
+/* an image of the passes that a pass wrote, to be sampled by the next */
+static void to_sampled(VkCommandBuffer cb, const Target* t) {
+    vk_barrier(cb, t->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+/* one fullscreen triangle into the target (w x h), with the set and the push constants. load: CLEAR for a pass that
+   discards pixels (the target then holds zero there), else DONT_CARE for a pass that writes them all */
+static void fullscreen_pass(VkCommandBuffer cb, const Target* t, VkAttachmentLoadOp load, VkPipeline pipe,
+                            VkPipelineLayout layout, VkDescriptorSet set, const void* pc, u32 pc_size) {
+    VkRenderingAttachmentInfo at = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                    .imageView = t->view,
+                                    .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                    .loadOp = load,
+                                    .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                          .renderArea = {{0, 0}, {t->w, t->h}},
+                          .layerCount = 1,
+                          .colorAttachmentCount = 1,
+                          .pColorAttachments = &at};
+    VkViewport vp = {0, 0, (float)t->w, (float)t->h, 0, 1};
+    VkRect2D sc = {{0, 0}, {t->w, t->h}};
+    rec_CmdBeginRendering(cb, &ri);
+    vk_render_forget_state();
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdSetScissor(cb, 0, 1, &sc);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, NULL);
+    rec_CmdPushConstants(cb, layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, pc_size, pc);
+    rec_CmdDraw(cb, 3, 1, 0, 0);
+    rec_CmdEndRendering(cb);
+}
+
+/* the anti-aliasing image, ready for what comes after: sampled by the scaling pass, or the source of a blit */
+static VkImage out_finish(VkCommandBuffer cb, int for_sampling, VkImageView* view) {
+    if (for_sampling)
+        to_sampled(cb, &g_out);
+    else
+        vk_barrier(cb, g_out.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    *view = g_out.view;
+    return g_out.img;
+}
+
+static VkImage fxaa_apply(VkCommandBuffer cb, Surf* src, int for_sampling, VkImageView* view) {
+    VkPipeline pipe =
+        pipeline_for(&g_aa_pipes, src->f.vk, fxaa_fs_spv, fxaa_fs_spv_size, g_aa_layout, "anti-aliasing");
     VkDescriptorSet set;
     AaConstants pc;
-    if (mode != VK_AA_FXAA || !src || src->layers != 1 || src->f.depth || !layouts_make()) return VK_NULL_HANDLE;
-    pipe = pipeline_for(&g_aa_pipes, src->f.vk, fxaa_fs_spv, fxaa_fs_spv_size, g_aa_layout, "anti-aliasing");
-    if (!pipe || !out_ensure(src->f.vk, src->sw, src->sh)) return VK_NULL_HANDLE;
+    if (!pipe || !target_ensure(&g_out, src->f.vk, src->sw, src->sh, "FXAA")) return VK_NULL_HANDLE;
     set = sampled_set(src->att);
     if (!set) return VK_NULL_HANDLE;
     vk_render_end();
     vk_surf_use(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    /* the last frame read the image, in a blit or a draw: that finishes before this pass writes it, whose old content
-       is not needed */
-    vk_barrier(cb, g_out, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-               0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    to_attachment(cb, &g_out);
     pc.texel[0] = 1.0f / (float)src->sw;
     pc.texel[1] = 1.0f / (float)src->sh;
     pc.srgb = vk_srgb_as(src->f.vk, 0) != src->f.vk;
     pc.pad = 0;
+    fullscreen_pass(cb, &g_out, VK_ATTACHMENT_LOAD_OP_DONT_CARE, pipe, g_aa_layout, set, &pc, sizeof pc);
+    return out_finish(cb, for_sampling, view);
+}
+
+/* SMAA 1x in three passes (shaders/smaa.frag): the edges of the frame, the blending weights from the shapes of the edges
+   (with the area and search tables), and the frame blended by the weights into the anti-aliasing image */
+static VkImage smaa_apply(VkCommandBuffer cb, Surf* src, int for_sampling, VkImageView* view) {
+    VkPipeline edges_pipe, weights_pipe, blend_pipe;
+    VkDescriptorSet edges_set, weights_set, blend_set;
+    SmaaConstants pc = {.metrics = {1.0f / (float)src->sw, 1.0f / (float)src->sh, (float)src->sw, (float)src->sh}};
+    if (g_tables_failed || !smaa_layouts_make()) return VK_NULL_HANDLE;
+    edges_pipe = pipeline_for(&g_edges_pipes, SMAA_EDGES_FORMAT, smaa_edges_fs_spv, smaa_edges_fs_spv_size,
+                              g_smaa_layout, "SMAA edges");
+    weights_pipe = pipeline_for(&g_weights_pipes, SMAA_WEIGHTS_FORMAT, smaa_weights_fs_spv, smaa_weights_fs_spv_size,
+                                g_smaa_layout, "SMAA weights");
+    blend_pipe = pipeline_for(&g_blend_pipes, src->f.vk, smaa_blend_fs_spv, smaa_blend_fs_spv_size, g_smaa_layout,
+                              "SMAA blending");
+    if (!edges_pipe || !weights_pipe || !blend_pipe) return VK_NULL_HANDLE;
+    if (!target_ensure(&g_edges, SMAA_EDGES_FORMAT, src->sw, src->sh, "SMAA edges") ||
+        !target_ensure(&g_weights, SMAA_WEIGHTS_FORMAT, src->sw, src->sh, "SMAA weights") ||
+        !target_ensure(&g_out, src->f.vk, src->sw, src->sh, "SMAA"))
+        return VK_NULL_HANDLE;
+    vk_render_end();
+    if (!smaa_tables_ready(cb)) return VK_NULL_HANDLE;
     {
-        VkRenderingAttachmentInfo at = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                                        .imageView = g_out_view,
-                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                        .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                                        .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-        VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                              .renderArea = {{0, 0}, {src->sw, src->sh}},
-                              .layerCount = 1,
-                              .colorAttachmentCount = 1,
-                              .pColorAttachments = &at};
-        VkViewport vp = {0, 0, (float)src->sw, (float)src->sh, 0, 1};
-        VkRect2D sc = {{0, 0}, {src->sw, src->sh}};
-        rec_CmdBeginRendering(cb, &ri);
-        vk_render_forget_state();
-        rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-        rec_CmdSetViewport(cb, 0, 1, &vp);
-        rec_CmdSetScissor(cb, 0, 1, &sc);
-        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_aa_layout, 0, 1, &set, 0, NULL);
-        rec_CmdPushConstants(cb, g_aa_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
-        rec_CmdDraw(cb, 3, 1, 0, 0);
-        rec_CmdEndRendering(cb);
+        /* the sets: the source by the point sampler for the edges; the edges, area and search tables for the weights;
+           the source and the weights for the blending. The bindings a pass does not read hold the source */
+        const VkImageView e_v[3] = {src->att, src->att, src->att};
+        const VkSampler e_s[3] = {g_point, g_point, g_point};
+        const VkImageView w_v[3] = {g_edges.view, g_area.view, g_search.view};
+        const VkSampler w_s[3] = {g_sampler, g_sampler, g_sampler};
+        const VkImageView b_v[3] = {src->att, g_weights.view, src->att};
+        const VkSampler b_s[3] = {g_sampler, g_sampler, g_sampler};
+        edges_set = smaa_set(e_v, e_s);
+        weights_set = smaa_set(w_v, w_s);
+        blend_set = smaa_set(b_v, b_s);
     }
-    if (for_sampling)
-        vk_barrier(cb, g_out, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    else
-        vk_barrier(cb, g_out, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                   VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    *view = g_out_view;
-    return g_out;
+    if (!edges_set || !weights_set || !blend_set) return VK_NULL_HANDLE;
+    vk_surf_use(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    pc.srgb = vk_srgb_as(src->f.vk, 0) != src->f.vk;
+    to_attachment(cb, &g_edges);
+    fullscreen_pass(cb, &g_edges, VK_ATTACHMENT_LOAD_OP_CLEAR, edges_pipe, g_smaa_layout, edges_set, &pc, sizeof pc);
+    to_sampled(cb, &g_edges);
+    to_attachment(cb, &g_weights);
+    fullscreen_pass(cb, &g_weights, VK_ATTACHMENT_LOAD_OP_DONT_CARE, weights_pipe, g_smaa_layout, weights_set, &pc,
+                    sizeof pc);
+    to_sampled(cb, &g_weights);
+    to_attachment(cb, &g_out);
+    fullscreen_pass(cb, &g_out, VK_ATTACHMENT_LOAD_OP_DONT_CARE, blend_pipe, g_smaa_layout, blend_set, &pc, sizeof pc);
+    return out_finish(cb, for_sampling, view);
+}
+
+VkImage vk_postfx_apply(VkCommandBuffer cb, Surf* src, int mode, int for_sampling, VkImageView* view) {
+    if ((mode != VK_AA_FXAA && mode != VK_AA_SMAA) || !src || src->layers != 1 || src->f.depth || !layouts_make())
+        return VK_NULL_HANDLE;
+    return mode == VK_AA_SMAA ? smaa_apply(cb, src, for_sampling, view) : fxaa_apply(cb, src, for_sampling, view);
 }
 
 int vk_postfx_scale_ready(VkFormat sc_format, int mode) {

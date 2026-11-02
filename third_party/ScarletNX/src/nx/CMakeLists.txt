@@ -132,6 +132,14 @@ snx_glsl_spirv(snx_vk SOURCE gpu/vk/ftz_probe.comp NAME ftz_probe_spv HEADER nx/
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/post.vert NAME post_vs_spv HEADER nx/gpu/vk/post_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/fxaa.frag NAME fxaa_fs_spv HEADER nx/gpu/vk/post_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/bicubic.frag NAME bicubic_fs_spv HEADER nx/gpu/vk/post_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/smaa.frag NAME smaa_edges_fs_spv HEADER nx/gpu/vk/post_spv.h
+               DEFINES SMAA_PASS_EDGES)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/smaa.frag NAME smaa_weights_fs_spv HEADER nx/gpu/vk/post_spv.h
+               DEFINES SMAA_PASS_WEIGHTS)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/smaa.frag NAME smaa_blend_fs_spv HEADER nx/gpu/vk/post_spv.h
+               DEFINES SMAA_PASS_BLEND)
+include("${PROJECT_SOURCE_DIR}/cmake/smaa_tables.cmake")
+snx_smaa_tables(snx_vk)
 set(components core kernel hle video gpu platform shader vk)
 # third-party code (vma.cpp is VMA's implementation), cmake/dependencies.cmake
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" gpu/vk/vma.cpp PROPERTIES COMPILE_OPTIONS

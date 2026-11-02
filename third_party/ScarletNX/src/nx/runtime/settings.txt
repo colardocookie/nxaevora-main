@@ -181,12 +181,12 @@ setting Vsync
     help without it uses FIFO. 0 = images show at once and can tear, else Mailbox, else FIFO
 setting Anti-aliasing
     key anti_aliasing
-    int 0 1
+    int 0 2
     default 0
-    words Off|FXAA
+    words Off|FXAA|SMAA
     help The frame is smoothed along its edges after the game has drawn it, before the on-screen controls and the
-    help menus. FXAA is one pass and costs little. The game's own frame, the render targets and the guest memory are
-    help not changed
+    help menus. FXAA is one pass and costs little. SMAA finds the edges and their shapes, so it keeps thin lines and
+    help corners better, in three passes. The game's own frame, the render targets and the guest memory are not changed
 setting Scaling filter
     key scaling_filter
     int 0 1
