@@ -22,6 +22,7 @@ typedef struct {
     u64 addr, calls;
     GuestFn original;
     int queue_op; /* a queue call: its GPFIFO submissions are counted */
+    int size_op;  /* a texture builder storage query: the result and the builder words are logged */
     char name[128];
 } NvProc;
 #define NVN_PROC_SLOTS 1024
@@ -69,6 +70,23 @@ static NvProc* proc_find(u64 addr) {
     return NULL;
 }
 
+/* The texture builder is read as raw words: its layout is not known (docs/nvn-design.md, 2-1). The size is the
+   public NVN header's 64 bytes, not verified, so a few words more are read when they are readable. */
+#define SIZE_TRACE_COUNT 40       /* queries logged, over both functions */
+#define SIZE_TRACE_BUILDER_WORDS 32 /* words of the builder shown */
+static u32 size_traced;
+static void size_query_trace(CPU* c, u64 entry, NvProc* p) {
+    u64 builder = c->x[0];
+    u32 words[SIZE_TRACE_BUILDER_WORDS];
+    int have = builder < AS_SIZE - sizeof words && readable(builder) && readable(builder + sizeof words - 1);
+    if (have) memcpy(words, GP(builder), sizeof words); /* before the call: the call may not change it, but this is safe */
+    p->original(c, entry);
+    if (__atomic_fetch_add(&size_traced, 1, __ATOMIC_RELAXED) >= SIZE_TRACE_COUNT) return;
+    LOG("nvn-size: %s builder=%llx result=%llx\n", p->name, (unsigned long long)builder, (unsigned long long)c->x[0]);
+    for (u32 w = 0; have && w < SIZE_TRACE_BUILDER_WORDS; w += 4)
+        LOG("nvn-size:   word %2u: %08x %08x %08x %08x\n", w, words[w], words[w + 1], words[w + 2], words[w + 3]);
+}
+
 static void proc_trace(CPU* c, u64 entry) {
     NvProc* p = proc_find(entry);
     if (!p) { /* generated code reads g_disp without ordering: on a weakly ordered host the lock gives it */
@@ -78,6 +96,10 @@ static void proc_trace(CPU* c, u64 entry) {
         if (!p) fatal("nvn: a trace wrapper runs for a function it never registered (%llx)", (unsigned long long)entry);
     }
     __atomic_fetch_add(&p->calls, 1, __ATOMIC_RELAXED);
+    if (p->size_op) {
+        size_query_trace(c, entry, p);
+        return;
+    }
     if (!p->queue_op) {
         p->original(c, entry);
         return;
@@ -111,6 +133,8 @@ static void trace_proc(u64 addr, const char* name) {
         p->queue_op = !strcmp(name, "nvnQueueSubmitCommands") || !strcmp(name, "nvnQueueFlush") ||
                       !strcmp(name, "nvnQueueFenceSync") || !strcmp(name, "nvnQueuePresentTexture") ||
                       !strcmp(name, "nvnQueueWaitSync");
+        p->size_op = !strcmp(name, "nvnTextureBuilderGetStorageSize") ||
+                     !strcmp(name, "nvnTextureBuilderGetStorageAlignment");
         __atomic_store_n(&p->addr, addr, __ATOMIC_RELEASE);
         nprocs++;
         __atomic_store_n(dispatch, proc_trace, __ATOMIC_RELEASE);

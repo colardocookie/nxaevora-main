@@ -1183,24 +1183,29 @@ static GpuItem* job_new(const void* entries, u32 n, u32 wait_id) {
     }
     return j;
 }
-/* nvn_trace=1: what the first submissions hold, to see what a queue call adds to the game's command buffers. */
+/* nvn_trace=1: what the first submissions hold, to see what a queue call adds to the game's command buffers. The first
+   SUBMIT_FULL_COUNT list every entry and all words of the small ones (the library's own entries). */
 #define SUBMIT_TRACE_COUNT 40  /* submissions described */
 #define SUBMIT_TRACE_ENTRIES 4 /* entries of each one listed, the last one always */
 #define SUBMIT_TRACE_WORDS 24  /* words of the last entry shown */
+#define SUBMIT_FULL_COUNT 3    /* the first submissions that list every entry, with all words of the small ones */
+#define SUBMIT_FULL_ENTRY_WORDS 64 /* an entry of at most this size is a library entry: all its words are shown */
 static void submit_trace(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, u32 expect) {
     static u32 traced;
     if (!nvn_trace_active() || traced >= SUBMIT_TRACE_COUNT || !n) return;
-    traced++;
+    int full = traced++ < SUBMIT_FULL_COUNT;
     LOG("gpu-submit: channel %u, %u entries, %u syncpoint increments, wait id %u, expect %u\n", channel, n, incs,
         wait_id, expect);
     for (u32 i = 0; i < n; i++) {
         u64 e;
         memcpy(&e, (const u8*)entries + (size_t)i * sizeof e, sizeof e);
-        if (i >= SUBMIT_TRACE_ENTRIES && i != n - 1) continue;
+        if (!full && i >= SUBMIT_TRACE_ENTRIES && i != n - 1) continue;
         LOG("gpu-submit:   entry %u: gpu %llx, %u words%s\n", i, (unsigned long long)gpfifo_addr(e), gpfifo_size(e),
             gpfifo_sync(e) ? ", sync" : "");
-        if (i != n - 1) continue;
-        u32 words = gpfifo_size(e) < SUBMIT_TRACE_WORDS ? gpfifo_size(e) : SUBMIT_TRACE_WORDS;
+        int small = full && gpfifo_size(e) <= SUBMIT_FULL_ENTRY_WORDS;
+        if (i != n - 1 && !small) continue;
+        u32 limit = small ? SUBMIT_FULL_ENTRY_WORDS : SUBMIT_TRACE_WORDS;
+        u32 words = gpfifo_size(e) < limit ? gpfifo_size(e) : limit;
         const u8* p = gmem_ptr_untracked(gpfifo_addr(e), (u64)words * 4);
         for (u32 w = 0; p && w < words; w++) {
             u32 v;
