@@ -54,6 +54,8 @@ Content: compare two ways, and decide.
 For each way, write what is replaced, what stays, the size of the work, the risk of visual faults and the patch size
 against upstream.
 
+The comparison and the recommendation are in `docs/nvn-design.md`.
+
 Exit condition: the range that is replaced and the work that remains are explained.
 
 ## Stage 3: Smallest drawing path
