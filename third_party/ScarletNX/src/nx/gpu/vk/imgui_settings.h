@@ -48,6 +48,8 @@ void imgui_settings_word(const char* key, int v, char* out, size_t n);
    value as the .ini writes it, its label and its number (what the row's value is when the preset is on). 1, or 0 for
    an index past the last */
 int imgui_settings_preset(const char* key, int i, char* value, size_t vn, char* label, size_t ln, double* number);
+/* 0 for a value of the setting that needs more GPU memory than there is (only the resolution is checked), else 1 */
+int imgui_settings_fits(const char* key, double number);
 /* word i of a text setting that is a choice (value=label between '|'): its value and its label. 1, or 0 for an index
    past the last */
 int imgui_settings_text_word(const char* key, int i, char* value, size_t vn, char* label, size_t ln);

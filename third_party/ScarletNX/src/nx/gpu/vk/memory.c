@@ -220,6 +220,19 @@ void vk_mem_use(u64* usage, u64* budget) {
     *budget = g_budget_cap && g_budget_cap < b[g_heap].budget ? g_budget_cap : b[g_heap].budget;
 }
 
+/* The memory of the render targets grows with the square of the scale. The logs of two runs (1.5x: 639 MB of ours in
+   the heap, 2x: 924 MB) give 272 MB and 163 MB for each unit of scale squared. Resolution 16 made targets of 15 GB
+   for a 7 GB budget and ran the device out of memory. A share of the budget is left for the desktop and the driver */
+enum { SCALE_BASE_MB = 272, SCALE_MB_PER_SQUARE = 163, SCALE_BUDGET_PERCENT = 90 };
+
+u64 vk_scale_memory_mb(float scale) { return SCALE_BASE_MB + (u64)((double)SCALE_MB_PER_SQUARE * scale * scale + 0.5); }
+
+int vk_scale_fits(float scale) {
+    u64 usage, budget;
+    vk_mem_use(&usage, &budget);
+    return !budget || vk_scale_memory_mb(scale) <= (budget >> 20) * SCALE_BUDGET_PERCENT / 100;
+}
+
 /* the present clock: a present and its time every quarter second at most, seventeen minutes back */
 #define CLOCK_N 4096
 static struct {

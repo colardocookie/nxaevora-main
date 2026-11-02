@@ -157,6 +157,10 @@ static inline void vk_mem_untrack(VmaAllocation a) { (void)a; }
    g_vk_present moved. vk_present_before: the present before which an entry last used then has gone unused for at
    least ago_ns and at least `presents` presents (0: none has) */
 void vk_mem_use(u64* usage, u64* budget);
+/* the heap memory (MB) the game needs with the render targets at this scale, and whether it fits the heap's budget
+   (1 too when the budget is not known). An estimate from the logs, for a warning: the targets are made as the game asks */
+u64 vk_scale_memory_mb(float scale);
+int vk_scale_fits(float scale);
 int vk_mem_heap(void); /* that heap's index */
 void vk_mem_present(void);
 u32 vk_present_before(u64 ago_ns, u32 presents);

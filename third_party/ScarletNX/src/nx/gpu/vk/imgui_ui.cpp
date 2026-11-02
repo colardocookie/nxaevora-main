@@ -291,7 +291,8 @@ bool setting_preset(const ImguiSettingRow& r, char* out, size_t n) {
     else if (custom_row)
         snprintf(shown, sizeof shown, "Custom");
     else
-        snprintf(shown, sizeof shown, "%g (custom)", now);
+        snprintf(shown, sizeof shown, "%g (custom%s)", now,
+                 imgui_settings_fits(r.key, now) ? "" : ", too much GPU memory");
     bool open = ImGui::BeginCombo("##value", shown);
     int dir = arrow_direction();
     int to = at >= 0 ? at + dir : dir > 0 ? below + 1 : below;

@@ -97,6 +97,13 @@ static int vkr_start(void) {
     if (g_vk_anisotropy > 1 && !g_vk.feat.samplerAnisotropy)
         LOG("vulkan: this GPU has no anisotropic filtering, so anisotropy=%d does nothing\n", g_vk_anisotropy);
     if (g_vk_scale != 1.0f) LOG("vulkan: render targets at %.2fx\n", g_vk_scale);
+    if (!vk_scale_fits(g_vk_scale)) {
+        u64 usage, budget;
+        vk_mem_use(&usage, &budget);
+        LOG("vulkan: WARNING: render targets at %.2fx need about %llu MB and the GPU memory budget is %llu MB: the game "
+            "may run out of memory (set resolution lower)\n",
+            g_vk_scale, (unsigned long long)vk_scale_memory_mb(g_vk_scale), (unsigned long long)(budget >> 20));
+    }
     vk_cmd_init();
     vk_pipeline_init();
     vk_own_init(); /* GPU engines' results stay on the GPU where guest memory can be trapped (memory/own.c) */

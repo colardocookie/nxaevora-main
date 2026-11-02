@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "common/utilities/pad_map.h"
+#include "nx/gpu/vk/vk.h"
 #include "nx/runtime/ini.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/backend.h"
@@ -120,12 +121,21 @@ static int preset_count(const char* key) {
     return n;
 }
 
+#define RESOLUTION_KEY "resolution"
+#define NO_MEMORY_NOTE " - too much GPU memory"
+
+int imgui_settings_fits(const char* key, double number) {
+    return strcmp(key, RESOLUTION_KEY) ? 1 : vk_scale_fits((float)number);
+}
+
 int imgui_settings_preset(const char* key, int i, char* value, size_t vn, char* label, size_t ln, double* number) {
     for (size_t p = 0; p < sizeof PRESETS / sizeof *PRESETS; p++)
         if (!strcmp(PRESETS[p].key, key) && !i--) {
             snprintf(value, vn, "%s", PRESETS[p].value);
             snprintf(label, ln, "%s", PRESETS[p].label);
             *number = PRESETS[p].number;
+            if (!imgui_settings_fits(key, *number) && strlen(label) + sizeof NO_MEMORY_NOTE <= ln)
+                strcat(label, NO_MEMORY_NOTE);
             return 1;
         }
     return 0;
