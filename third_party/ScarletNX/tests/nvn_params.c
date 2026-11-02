@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The pure parts of the host's device and queue functions (gpu/nvn_params.c): the GetInteger table, the timestamp
-   conversion and the queue memory size, against the values that the game's NVN library gave in the run of 2026-11-02. */
+/* Device and queue cases use the library results of 2026-11-02. Pool cases check the accepted disassembly table
+   and the host GPU address allocation rule. */
 #include "nx/gpu/nvn_params.h"
 #include <stdio.h>
 #include <string.h>
@@ -66,11 +66,86 @@ static void test_queue_defaults(void) {
     CHECK(b.flags == 0 && b.memory == 0 && b.memory_size == 0);
 }
 
+static void test_memory_pool_defaults(void) {
+    NvnMemoryPoolBuilder b;
+    memset(&b, 0xab, sizeof b);
+    b.device = 0x1234;
+    nvn_memory_pool_builder_defaults(&b);
+    CHECK(b.device == 0x1234 && b.flags == 0x21);
+    CHECK(!b.storage && !b.size && !b.handle);
+    CHECK(!b.optional[0] && !b.optional[1] && !b.optional[2]);
+}
+
+static void test_memory_pool_params(void) {
+    NvnMemoryPoolBuilder b = {.storage = 0x1000, .size = 0x1000};
+    uint32_t flags;
+    /* Each low-bit combination, with upper bits preserved. */
+    static const uint32_t cpu[] = {2, 1, 2, 2, 4, 4, 2, 2};
+    static const uint32_t gpu[] = {32, 8, 16, 16, 32, 32, 32, 32};
+    for (uint32_t f = 0; f < 64; f++) {
+        b.flags = f | 0x80000040u;
+        CHECK(nvn_memory_pool_params(&b, 0x10000, &flags) == NVN_POOL_OK);
+        CHECK(flags == (0x80000040u | cpu[f & 7] | gpu[f >> 3]));
+    }
+    b.flags = NVN_POOL_DEFAULT_FLAGS;
+    CHECK(nvn_memory_pool_params(&b, NVN_POOL_PAGE_SIZE, &flags) == NVN_POOL_OK && flags == 0x21);
+    b.flags = NVN_POOL_PHYSICAL | 0x3f;
+    CHECK(nvn_memory_pool_params(&b, 0x10000, &flags) == NVN_POOL_INVALID_PAGE_SIZE);
+    CHECK(flags == (NVN_POOL_PHYSICAL | 2 | 8));
+    b.size = 0x10000;
+    CHECK(nvn_memory_pool_params(&b, 0x10000, &flags) == NVN_POOL_OK);
+    b.flags = NVN_POOL_VIRTUAL | 0x3f;
+    CHECK(nvn_memory_pool_params(&b, 0x10000, &flags) == NVN_POOL_UNSUPPORTED_VIRTUAL);
+    CHECK(flags == (NVN_POOL_VIRTUAL | 1 | 32));
+    b.flags = NVN_POOL_IMPORT;
+    CHECK(nvn_memory_pool_params(&b, 0x10000, &flags) == NVN_POOL_UNSUPPORTED_IMPORT);
+    b.flags = 0;
+    b.storage = 0;
+    b.handle = 1;
+    CHECK(nvn_memory_pool_params(&b, 0x1000, &flags) == NVN_POOL_INVALID_STORAGE);
+    b.storage = 0x1001;
+    CHECK(nvn_memory_pool_params(&b, 0x1000, &flags) == NVN_POOL_INVALID_STORAGE);
+    b.storage = 0x1000;
+    b.size = 0;
+    CHECK(nvn_memory_pool_params(&b, 0x1000, &flags) == NVN_POOL_INVALID_STORAGE);
+    b.size = 0x1001;
+    CHECK(nvn_memory_pool_params(&b, 0x1000, &flags) == NVN_POOL_INVALID_STORAGE);
+    b.size = 0x1000;
+    CHECK(nvn_memory_pool_params(&b, 0, &flags) == NVN_POOL_INVALID_PAGE_SIZE);
+    CHECK(nvn_memory_pool_map(NVN_POOL_CPU_NO_ACCESS, 0x123000) == 0);
+    CHECK(nvn_memory_pool_map(NVN_POOL_CPU_CACHED, 0x123000) == 0x123000);
+    CHECK(nvn_memory_pool_flags(0xffffffffu) == 0x01ffffffu);
+}
+
+static void test_pool_gpu_allocate(void) {
+    uint64_t address = 7, next = 9;
+    CHECK(nvn_pool_gpu_allocate(NVN_POOL_GPU_BASE, 0x1001, 0x1000, &address, &next));
+    CHECK(address == NVN_POOL_GPU_BASE && next == address + 0x2000);
+    uint64_t first_end = next;
+    CHECK(nvn_pool_gpu_allocate(next, 0x10000, 0x10000, &address, &next));
+    CHECK(address >= first_end && address % 0x10000 == 0 && next == address + 0x10000);
+    CHECK(nvn_pool_gpu_allocate(NVN_POOL_GPU_END - 0x1000, 0x1000, 0x1000, &address, &next));
+    CHECK(next == NVN_POOL_GPU_END);
+    address = 7;
+    next = 9;
+    CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_END, 0x1000, 0x1000, &address, &next));
+    CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_END - 1, 1, 0x1000, &address, &next));
+    CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_BASE, UINT64_MAX, 0x1000, &address, &next));
+    CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_BASE, 0, 0x1000, &address, &next));
+    CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_BASE, 0x1000, 0, &address, &next));
+    CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_BASE, 0x1000, 0x800, &address, &next));
+    CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_BASE - 1, 0x1000, 0x1000, &address, &next));
+    CHECK(address == 7 && next == 9);
+}
+
 int main(void) {
     test_device_integer();
     test_timestamp();
     test_queue_memory();
     test_queue_defaults();
+    test_memory_pool_defaults();
+    test_memory_pool_params();
+    test_pool_gpu_allocate();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

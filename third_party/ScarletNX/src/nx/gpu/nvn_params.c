@@ -74,3 +74,53 @@ uint64_t nvn_queue_memory_size(const NvnQueueBuilder* b, const NvnQueueDeviceWor
     area = (area + 0xFFFu) & 0xFFFFF000u;
     return (uint64_t)(command + control) + area;
 }
+
+void nvn_memory_pool_builder_defaults(NvnMemoryPoolBuilder* b) {
+    uint64_t device = b->device;
+    memset(b, 0, sizeof *b);
+    b->device = device;
+    b->flags = NVN_POOL_DEFAULT_FLAGS;
+}
+
+NvnPoolResult nvn_memory_pool_params(const NvnMemoryPoolBuilder* b, uint64_t page_size, uint32_t* flags) {
+    uint32_t f = b->flags;
+    uint32_t cpu = (f & NVN_POOL_CPU_UNCACHED) ? NVN_POOL_CPU_UNCACHED :
+                   (f & NVN_POOL_CPU_CACHED) ? NVN_POOL_CPU_CACHED :
+                   (f & NVN_POOL_CPU_NO_ACCESS) ? NVN_POOL_CPU_NO_ACCESS : NVN_POOL_CPU_UNCACHED;
+    uint32_t gpu = (f & NVN_POOL_GPU_CACHED) ? NVN_POOL_GPU_CACHED :
+                   (f & NVN_POOL_GPU_UNCACHED) ? NVN_POOL_GPU_UNCACHED :
+                   (f & NVN_POOL_GPU_NO_ACCESS) ? NVN_POOL_GPU_NO_ACCESS : NVN_POOL_GPU_CACHED;
+    if (f & NVN_POOL_VIRTUAL) cpu = NVN_POOL_CPU_NO_ACCESS;
+    if (f & NVN_POOL_PHYSICAL) gpu = NVN_POOL_GPU_NO_ACCESS;
+    *flags = (f & ~(NVN_POOL_CPU_NO_ACCESS | NVN_POOL_CPU_UNCACHED | NVN_POOL_CPU_CACHED |
+                    NVN_POOL_GPU_NO_ACCESS | NVN_POOL_GPU_UNCACHED | NVN_POOL_GPU_CACHED)) | cpu | gpu;
+    if (f & NVN_POOL_VIRTUAL) return NVN_POOL_UNSUPPORTED_VIRTUAL;
+    if (f & NVN_POOL_IMPORT) return NVN_POOL_UNSUPPORTED_IMPORT;
+    if (!b->storage || !b->size || b->storage % NVN_POOL_STORAGE_ALIGNMENT ||
+        b->size % NVN_POOL_STORAGE_ALIGNMENT) return NVN_POOL_INVALID_STORAGE;
+    if (page_size < NVN_POOL_STORAGE_ALIGNMENT || page_size % NVN_POOL_STORAGE_ALIGNMENT ||
+        ((f & NVN_POOL_PHYSICAL) && b->size % page_size)) return NVN_POOL_INVALID_PAGE_SIZE;
+    return NVN_POOL_OK;
+}
+
+int nvn_pool_gpu_allocate(uint64_t cursor, uint64_t size, uint64_t page_size,
+                          uint64_t* address, uint64_t* next) {
+    if (!size || page_size < NVN_POOL_STORAGE_ALIGNMENT || page_size % NVN_POOL_STORAGE_ALIGNMENT ||
+        cursor < NVN_POOL_GPU_BASE || cursor >= NVN_POOL_GPU_END) return 0;
+    uint64_t padding = (page_size - cursor % page_size) % page_size;
+    if (padding >= NVN_POOL_GPU_END - cursor) return 0;
+    uint64_t base = cursor + padding;
+    if (size > NVN_POOL_GPU_END - base) return 0;
+    uint64_t end = base + size;
+    padding = (page_size - end % page_size) % page_size;
+    if (padding > NVN_POOL_GPU_END - end) return 0;
+    *address = base;
+    *next = end + padding;
+    return 1;
+}
+
+uint64_t nvn_memory_pool_map(uint32_t flags, uint64_t storage) {
+    return (flags & NVN_POOL_CPU_NO_ACCESS) ? 0 : storage;
+}
+
+uint32_t nvn_memory_pool_flags(uint32_t flags) { return flags & NVN_POOL_PUBLIC_FLAGS; }

@@ -42,6 +42,7 @@ static void* rec_get(u64 addr, NvnObjKind kind, size_t size) {
     o = nvn_objtab_put(&objs, addr, kind, size);
     if (!o) fatal("nvn-native: out of memory for the record of an NVN object (%llx)\n", (unsigned long long)addr);
     if (kind == NVN_OBJ_QUEUE_BUILDER) nvn_queue_builder_defaults(o->data);
+    if (kind == NVN_OBJ_MEMORY_POOL_BUILDER) nvn_memory_pool_builder_defaults(o->data);
     return o->data;
 }
 static NvnQueueBuilder* queue_builder(u64 addr) { return rec_get(addr, NVN_OBJ_QUEUE_BUILDER, sizeof(NvnQueueBuilder)); }
@@ -223,6 +224,129 @@ static void h_queue_initialize(CPU* c, u64 entry) {
     c->x[0] = 1;
 }
 
+/* G2 and G5: pool state stays in host records. GPU page-table mapping is not connected yet. */
+typedef struct {
+    uint64_t device, storage, size, gpu_address;
+    uint32_t flags;
+} MemoryPoolRec;
+typedef struct {
+    uint64_t memory_pool, offset;
+    uint32_t count;
+} DescriptorPoolRec;
+static uint64_t pool_gpu_cursor = NVN_POOL_GPU_BASE;
+
+static NvnMemoryPoolBuilder* memory_pool_builder(u64 addr) {
+    return rec_get(addr, NVN_OBJ_MEMORY_POOL_BUILDER, sizeof(NvnMemoryPoolBuilder));
+}
+static MemoryPoolRec* memory_pool_rec(u64 addr) {
+    return rec_get(addr, NVN_OBJ_MEMORY_POOL, sizeof(MemoryPoolRec));
+}
+static void h_memory_pool_builder_set_defaults(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    nvn_memory_pool_builder_defaults(memory_pool_builder(c->x[0]));
+    pm_unlock(&objs_lock);
+}
+static void h_memory_pool_builder_set_device(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    memory_pool_builder(c->x[0])->device = c->x[1];
+    pm_unlock(&objs_lock);
+}
+static void h_memory_pool_builder_set_flags(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    memory_pool_builder(c->x[0])->flags = (u32)c->x[1];
+    pm_unlock(&objs_lock);
+}
+static void h_memory_pool_builder_set_storage(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    NvnMemoryPoolBuilder* b = memory_pool_builder(c->x[0]);
+    b->storage = c->x[1];
+    b->size = c->x[2];
+    b->handle = 0;
+    pm_unlock(&objs_lock);
+}
+static void pool_initialize_error(NvnPoolResult result, u64 pool, const NvnMemoryPoolBuilder* b) {
+    if (result == NVN_POOL_UNSUPPORTED_VIRTUAL)
+        LOG("nvn-native: virtual memory pool not supported\n");
+    else if (result == NVN_POOL_UNSUPPORTED_IMPORT)
+        LOG("nvn-native: imported memory pool not supported\n");
+    else
+        LOG("nvn-native: MemoryPoolInitialize pool=%llx storage=%llx size=%llx flags=%x check=%u\n",
+            (unsigned long long)pool, (unsigned long long)b->storage, (unsigned long long)b->size,
+            b->flags, (unsigned)result);
+}
+static void h_memory_pool_initialize(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    NvnMemoryPoolBuilder b = *memory_pool_builder(c->x[1]);
+    uint32_t flags;
+    NvnPoolResult result = nvn_memory_pool_params(&b, NVN_POOL_PAGE_SIZE, &flags);
+    /* Replacing the record also discards state after a failed initialization. */
+    NvnObj* o = nvn_objtab_put(&objs, c->x[0], NVN_OBJ_MEMORY_POOL, sizeof(MemoryPoolRec));
+    if (!o) fatal("nvn-native: out of memory for the record of memory pool %llx\n", (unsigned long long)c->x[0]);
+    if (result != NVN_POOL_OK) {
+        pool_initialize_error(result, c->x[0], &b);
+        c->x[0] = 0;
+        pm_unlock(&objs_lock);
+        return;
+    }
+    uint64_t address, next;
+    if (!nvn_pool_gpu_allocate(pool_gpu_cursor, b.size, NVN_POOL_PAGE_SIZE, &address, &next)) {
+        LOG("nvn-native: MemoryPoolInitialize pool=%llx size=%llx GPU address allocation failed\n",
+            (unsigned long long)c->x[0], (unsigned long long)b.size);
+        c->x[0] = 0;
+        pm_unlock(&objs_lock);
+        return;
+    }
+    MemoryPoolRec* p = o->data;
+    *p = (MemoryPoolRec){.device = b.device, .storage = b.storage, .size = b.size,
+                         .gpu_address = address, .flags = flags};
+    pool_gpu_cursor = next;
+    c->x[0] = 1;
+    pm_unlock(&objs_lock);
+}
+
+static void h_memory_pool_finalize(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    NvnObj* o = nvn_objtab_find(&objs, c->x[0]);
+    if (o && o->kind == NVN_OBJ_MEMORY_POOL) nvn_objtab_remove(&objs, c->x[0]);
+    pm_unlock(&objs_lock);
+}
+#define MEMORY_POOL_GETTER(name, expression)                                        \
+    static void h_memory_pool_##name(CPU* c, u64 entry) {                           \
+        (void)entry;                                                                \
+        pm_lock(&objs_lock);                                                        \
+        MemoryPoolRec* p = memory_pool_rec(c->x[0]);                                \
+        c->x[0] = (expression);                                                     \
+        pm_unlock(&objs_lock);                                                      \
+    }
+MEMORY_POOL_GETTER(map, nvn_memory_pool_map(p->flags, p->storage))
+MEMORY_POOL_GETTER(get_flags, nvn_memory_pool_flags(p->flags))
+MEMORY_POOL_GETTER(get_buffer_address, p->gpu_address)
+
+#define DESCRIPTOR_POOL_HANDLERS(name, kind)                                        \
+    static void h_##name##_pool_initialize(CPU* c, u64 entry) {                     \
+        (void)entry;                                                                \
+        pm_lock(&objs_lock);                                                        \
+        DescriptorPoolRec* p = rec_get(c->x[0], kind, sizeof *p);                   \
+        *p = (DescriptorPoolRec){c->x[1], c->x[2], (u32)c->x[3]};                   \
+        c->x[0] = 1;                                                                \
+        pm_unlock(&objs_lock);                                                      \
+    }                                                                               \
+    static void h_##name##_pool_get_size(CPU* c, u64 entry) {                       \
+        (void)entry;                                                                \
+        pm_lock(&objs_lock);                                                        \
+        DescriptorPoolRec* p = rec_get(c->x[0], kind, sizeof *p);                   \
+        c->x[0] = p->count;                                                         \
+        pm_unlock(&objs_lock);                                                      \
+    }
+DESCRIPTOR_POOL_HANDLERS(texture, NVN_OBJ_TEXTURE_POOL)
+DESCRIPTOR_POOL_HANDLERS(sampler, NVN_OBJ_SAMPLER_POOL)
+
 /* The host handlers by NVN function name. Later steps add their entries here (G2 to G5 of docs/nvn-design.md, 2-6). */
 typedef struct {
     const char* name;
@@ -259,6 +383,19 @@ static const NativeProc native_procs[] = {
     {"nvnQueueBuilderGetCommandFlushThreshold", h_queue_builder_get_command_flush_threshold},
     {"nvnQueueBuilderGetQueueMemorySize", h_queue_builder_get_queue_memory_size},
     {"nvnQueueInitialize", h_queue_initialize},
+    {"nvnMemoryPoolBuilderSetDefaults", h_memory_pool_builder_set_defaults},
+    {"nvnMemoryPoolBuilderSetDevice", h_memory_pool_builder_set_device},
+    {"nvnMemoryPoolBuilderSetFlags", h_memory_pool_builder_set_flags},
+    {"nvnMemoryPoolBuilderSetStorage", h_memory_pool_builder_set_storage},
+    {"nvnMemoryPoolInitialize", h_memory_pool_initialize},
+    {"nvnMemoryPoolFinalize", h_memory_pool_finalize},
+    {"nvnMemoryPoolMap", h_memory_pool_map},
+    {"nvnMemoryPoolGetFlags", h_memory_pool_get_flags},
+    {"nvnMemoryPoolGetBufferAddress", h_memory_pool_get_buffer_address},
+    {"nvnTexturePoolInitialize", h_texture_pool_initialize},
+    {"nvnTexturePoolGetSize", h_texture_pool_get_size},
+    {"nvnSamplerPoolInitialize", h_sampler_pool_initialize},
+    {"nvnSamplerPoolGetSize", h_sampler_pool_get_size},
     {NULL, NULL},
 };
 
