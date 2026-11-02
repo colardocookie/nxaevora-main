@@ -74,4 +74,87 @@ int nvn_pool_gpu_allocate(uint64_t cursor, uint64_t size, uint64_t page_size,
 uint64_t nvn_memory_pool_map(uint32_t flags, uint64_t storage);
 uint32_t nvn_memory_pool_flags(uint32_t flags);
 
+#define NVN_SAMPLER_FILTER_DEFAULT 1u
+#define NVN_SAMPLER_WRAP_DEFAULT 1u
+#define NVN_SAMPLER_COMPARE_DEFAULT 2u
+#define NVN_SAMPLER_MAX_LOD_DEFAULT 1000.0f
+#define NVN_SAMPLER_ANISOTROPY_DEFAULT 1.0f
+#define NVN_SAMPLER_DESCRIPTOR_WORDS 8u
+#define NVN_SAMPLER_DESCRIPTOR_BYTES 32u
+
+typedef struct {
+    uint64_t device;
+    uint32_t min_filter, mag_filter, wrap[3];
+    float min_lod, max_lod, lod_bias;
+    uint32_t compare_enable, compare, border[4];
+    float anisotropy;
+    uint32_t reduction;
+    float lod_snap;
+} NvnSampler;
+typedef struct { uint32_t w1a80, w1a84; } NvnSamplerDeviceWords;
+/* These words were not logged by 3b-2. Zero is provisional, not a device measurement. */
+#define NVN_SAMPLER_UNKNOWN_LOD_BIAS 0u
+#define NVN_SAMPLER_UNKNOWN_FILTER_FLAGS 0u
+extern const NvnSamplerDeviceWords nvn_sampler_device_words;
+void nvn_sampler_defaults(NvnSampler* s);
+float nvn_sampler_snap_bias(uint32_t index);
+/* A wrap enum is masked to 0..7 (the library reads its table unchecked). NaN anisotropy has no defined library result. */
+void nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* dev,
+                            uint32_t out[NVN_SAMPLER_DESCRIPTOR_WORDS]);
+
+#define NVN_TEXTURE_FLAG_MINIMAL_TILE 0x2u
+#define NVN_TEXTURE_FLAG_COMPRESS 0x8u
+#define NVN_TEXTURE_FLAG_LINEAR 0x10u
+#define NVN_TEXTURE_FLAG_SPARSE 0x20u
+#define NVN_TEXTURE_FLAG_LINEAR_RENDER_TARGET 0x40u
+#define NVN_TEXTURE_FLAG_ADAPTIVE_TILE 0x200u
+#define NVN_TEXTURE_POOL_STORAGE_FLAGS 0x280u
+#define NVN_TEXTURE_SPARSE_TILE_MASK 0x32u
+#define NVN_TEXTURE_KIND_PITCH 0xfeu
+#define NVN_TEXTURE_LINEAR_FLAGS (NVN_TEXTURE_FLAG_LINEAR | NVN_TEXTURE_FLAG_LINEAR_RENDER_TARGET)
+#define NVN_TEXTURE_TARGET_1D 0u
+#define NVN_TEXTURE_TARGET_2D 1u
+#define NVN_TEXTURE_TARGET_3D 2u
+#define NVN_TEXTURE_TARGET_1D_ARRAY 3u
+#define NVN_TEXTURE_TARGET_2D_ARRAY 4u
+#define NVN_TEXTURE_TARGET_RECTANGLE 5u
+#define NVN_TEXTURE_TARGET_2D_MS 6u
+#define NVN_TEXTURE_TARGET_2D_MS_ARRAY 7u
+#define NVN_TEXTURE_TARGET_CUBE 8u
+#define NVN_TEXTURE_TARGET_CUBE_ARRAY 9u
+#define NVN_TEXTURE_TARGET_BUFFER 10u
+#define NVN_TEXTURE_CUBE_FACES 6u
+#define NVN_TEXTURE_FORMAT_MAX 0xa0u
+#define NVN_TEXTURE_GOB_WIDTH 64u
+#define NVN_TEXTURE_GOB_HEIGHT 8u
+#define NVN_TEXTURE_GOB_BYTES 512u
+#define NVN_TEXTURE_LINEAR_ALIGNMENT 0x20u
+#define NVN_TEXTURE_LINEAR_RT_ALIGNMENT 0x80u
+#define NVN_TEXTURE_COMPRESSION_DISABLED 0x76165656u
+/* Provisional device inputs required by the accepted derived cases, not measured device fields. */
+#define NVN_TEXTURE_DEVICE_PAGE_SIZE 0x10000u
+#define NVN_TEXTURE_DEVICE_COLOR_COMPRESSION 0u
+#define NVN_TEXTURE_DEVICE_DEPTH_COMPRESSION 0u
+#define NVN_TEXTURE_DEVICE_BUFFER_KIND 0u
+#define NVN_TEXTURE_DEVICE_COMPRESSION_ENABLE 1u
+
+typedef struct {
+    uint64_t device, pool, offset, packaged;
+    uint32_t flags, target, width, height, depth, levels, format, samples;
+    uint32_t swizzle[4], depth_stencil_mode, stride, gl_name;
+    uint16_t tile;
+} NvnTextureBuilder;
+typedef struct { uint32_t wac, w19f8, w19fc, w1b18, w1b1c; } NvnTextureDeviceWords;
+extern const NvnTextureDeviceWords nvn_texture_device_words;
+typedef struct {
+    uint64_t size, alignment, layer_stride;
+    uint32_t linear_stride, samples, width, height, depth;
+    uint8_t bytes_per_block, log2_bytes, sample_x, sample_y, block_width, block_height;
+    uint8_t levels, dim, kind, depth_stencil, tile_x, tile_y, tile_z;
+} NvnTextureLayout;
+void nvn_texture_builder_defaults(NvnTextureBuilder* b);
+uint64_t nvn_texture_storage_alignment(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev);
+/* Returns 0 for unsupported formats. GL imports have size 0 but retain alignment. Kind stays 0. */
+int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev, NvnTextureLayout* out);
+
 #endif

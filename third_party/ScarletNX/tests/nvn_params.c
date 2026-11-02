@@ -4,6 +4,8 @@
    and the host GPU address allocation rule. */
 #include "nx/gpu/nvn_params.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
 #include <string.h>
 
 static int failures;
@@ -138,7 +140,195 @@ static void test_pool_gpu_allocate(void) {
     CHECK(address == 7 && next == 9);
 }
 
-int main(void) {
+
+static void test_sampler(void) {
+    NvnSampler s = {.device = 0x1234};
+    nvn_sampler_defaults(&s);
+    CHECK(s.device == 0x1234 && s.min_filter == 1 && s.mag_filter == 1);
+    CHECK(s.wrap[0] == 1 && s.wrap[1] == 1 && s.wrap[2] == 1);
+    CHECK(s.min_lod == 0 && s.max_lod == 1000 && s.lod_bias == 0);
+    CHECK(s.compare_enable == 0 && s.compare == 2 && s.anisotropy == 1);
+    CHECK(!s.border[0] && !s.border[1] && !s.border[2] && !s.border[3] && !s.reduction && !s.lod_snap);
+    NvnSamplerDeviceWords dev = {0, 0};
+    uint32_t words[8];
+    const uint32_t defaults[8] = {0x26000, 0x262, 0xf00000, 0, 0, 0, 0, 0};
+    nvn_sampler_descriptor(&s, &dev, words);
+    CHECK(!memcmp(words, defaults, sizeof words));
+    s.wrap[0] = 0; s.wrap[1] = 2; s.wrap[2] = 7;
+    nvn_sampler_descriptor(&s, &dev, words);
+    CHECK(words[0] == 0x260bc); /* 4 | (7<<3) | (2<<6) */
+    nvn_sampler_defaults(&s);
+    s.compare_enable = 9; s.compare = 2;
+    nvn_sampler_descriptor(&s, &dev, words);
+    CHECK(words[0] == 0x26600); /* enable 0x200 and compare code 1 at bit 10 */
+    nvn_sampler_defaults(&s);
+    s.anisotropy = 16;
+    nvn_sampler_descriptor(&s, &dev, words);
+    CHECK(words[0] == 0x726000);
+    s.anisotropy = 2.5f;
+    nvn_sampler_descriptor(&s, &dev, words);
+    CHECK(words[0] == 0x126000); /* round to even: 2, anisotropy code 1 */
+    nvn_sampler_defaults(&s);
+    s.border[0] = s.border[3] = 0x3f800000;
+    s.border[2] = 0x3f000000;
+    nvn_sampler_descriptor(&s, &dev, words);
+    CHECK(words[2] == 0xfff00000 && words[3] == 0x0bc00000); /* sRGB(0.5) rounds to 188 */
+    CHECK(!memcmp(words + 4, s.border, sizeof s.border));
+    s.border[0] = 0x3a800000; /* linear sRGB branch: (1/1024)*12.92*255 rounds to 3 */
+    s.border[1] = 0xbf800000;
+    s.border[2] = 0x40000000;
+    nvn_sampler_descriptor(&s, &dev, words);
+    CHECK(words[2] == 0x03f00000 && words[3] == 0x0ff00000);
+    nvn_sampler_defaults(&s);
+    s.lod_snap = 0.25f;
+    nvn_sampler_descriptor(&s, &dev, words);
+    CHECK(words[1] == 0x21fc0262); /* index 8, bias -64/256 */
+    s.lod_snap = 0; s.lod_bias = -100; s.min_lod = 20; s.max_lod = -1;
+    dev = (NvnSamplerDeviceWords){16, 0x100};
+    s.reduction = 2;
+    nvn_sampler_descriptor(&s, &dev, words);
+    CHECK(words[1] == 0x1100b62 && words[2] == 0xf00f00);
+    nvn_sampler_defaults(&s);
+    s.lod_bias = 0.5f; s.reduction = 1;
+    nvn_sampler_descriptor(&s, &dev, words);
+    CHECK(words[1] == 0x180762); /* device adds 1, bias 384/256 */
+}
+static void test_snap_formula(void) {
+    CHECK(nvn_sampler_snap_bias(0) == 0 && !signbit(nvn_sampler_snap_bias(0)));
+    CHECK(nvn_sampler_snap_bias(1) == -1.0f / 18.0f);
+    CHECK(nvn_sampler_snap_bias(7) == -7.0f / 30.0f);
+    CHECK(nvn_sampler_snap_bias(8) == -0.25f);
+    CHECK(nvn_sampler_snap_bias(16) == -0.375f);
+    CHECK(nvn_sampler_snap_bias(24) == -0.4375f);
+    CHECK(nvn_sampler_snap_bias(31) == -7.0f / 15.0f);
+    for (unsigned i = 1; i < 32; i++) CHECK(nvn_sampler_snap_bias(i) < nvn_sampler_snap_bias(i - 1));
+}
+static void test_texture_layout(void) {
+    NvnTextureBuilder b = {.device = 0x1234};
+    nvn_texture_builder_defaults(&b);
+    CHECK(b.device == 0x1234 && b.target == 1 && b.levels == 1);
+    CHECK(!b.width && !b.height && !b.depth && !b.flags && !b.pool && !b.offset && !b.packaged);
+    CHECK(!b.format && !b.samples && !b.stride && !b.tile && !b.gl_name && !b.depth_stencil_mode);
+    for (unsigned i = 0; i < 4; i++) CHECK(b.swizzle[i] == i + 2);
+    NvnTextureLayout l;
+    b = (NvnTextureBuilder){.flags = 9, .target = 1, .width = 1920, .height = 1080, .depth = 1,
+                            .levels = 1, .format = 0x25};
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.alignment == 0x10000 && l.size == 0x870000 && l.layer_stride == 0x870000);
+    CHECK(l.bytes_per_block == 4 && l.log2_bytes == 2 && l.sample_x == 1 && l.sample_y == 1);
+    CHECK(l.block_width == 1 && l.block_height == 1 && l.levels == 1 && l.dim == 2 && l.tile_y == 4 && !l.kind);
+    b.flags = 8; b.width = 960; b.height = 540; b.format = 0x3f;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.alignment == 0x10000 && l.size == 0x260000 && l.layer_stride == 0x258000);
+    b.flags = 0x10; b.format = 1; b.height = 1; b.stride = 0x20;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.alignment == 0x20 && l.size == 0x20 && l.linear_stride == 0x20 && l.levels == 1 && l.dim == 2);
+    b.target = 10; b.flags = 0; b.width = 7; b.format = 0x22;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.alignment == 4 && l.size == 84 && l.layer_stride == 84 && l.dim == 1 && l.levels == 1);
+    b = (NvnTextureBuilder){.target = 1, .width = 16, .height = 16, .depth = 1, .levels = 3, .format = 0x25};
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.alignment == 512 && l.size == 2048 && l.layer_stride == 2048); /* mips: 1024+512+512 */
+    b.target = 8; b.levels = 1;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.depth == 6 && l.layer_stride == 1024 && l.size == 6144);
+    b.target = 3; b.height = 4;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.height == 1 && l.depth == 4 && l.dim == 1 && l.layer_stride == 512 && l.size == 2048);
+    b.target = 1; b.depth = 1; b.width = 128; b.height = 128; b.flags = 0x20;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.tile_x == 3 && l.tile_y == 4 && l.tile_z == 0 && l.size == 65536);
+    b.flags = 2; b.width = 16; b.height = 16;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.tile_y == 1 && l.size == 1024);
+    b.flags = 0x200; b.height = 17;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.tile_y == 0 && l.size == 1536); /* automatic tile costs 2048, minimal tile costs 1536 */
+    b.flags = 0; b.width = 8; b.height = 8; b.depth = 4; b.target = 2; b.levels = 2;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.dim == 3 && l.tile_z == 2 && l.size == 3072);
+    b.target = 1; b.depth = 1; b.levels = 1; b.width = b.height = 16; b.samples = 4;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.sample_x == 2 && l.sample_y == 2 && l.samples == 4 && l.size == 4096);
+    b.samples = 0; b.width = b.height = 4; b.format = 0x41;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.bytes_per_block == 8 && l.block_width == 4 && l.block_height == 4 && l.size == 512);
+    b.flags = 0; b.format = 0x25; b.width = 16; b.height = 64; b.samples = 0; b.tile = 0x21;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.tile_x == 0 && l.tile_y == 2 && l.tile_z == 0 && l.size == 4096);
+    b.tile = 0; b.flags = 0x20; b.width = 16; b.height = 16;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.tile_x == 0 && l.tile_y == 1 && l.size == 1024); /* first mip does not fit a sparse tile */
+    b.width = b.height = 4; b.flags = 0x40;
+    CHECK(nvn_texture_storage_alignment(&b, &nvn_texture_device_words) == 0x80);
+    b.flags = 0; b.format = 0x35;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l));
+    CHECK(l.depth_stencil == 3 && l.alignment == 0x10000 && l.size == 0x10000);
+    b.gl_name = 1;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l) && l.size == 0 && l.alignment == 0x10000);
+    b.gl_name = 0; b.format = 0x25; b.flags = 8;
+    NvnTextureDeviceWords dev = nvn_texture_device_words;
+    dev.w19f8 = NVN_TEXTURE_COMPRESSION_DISABLED;
+    CHECK(nvn_texture_layout(&b, &dev, &l) && l.alignment == 512 && l.size == 512);
+    b.levels = 0;
+    CHECK(nvn_texture_layout(&b, &dev, &l) && l.size == 0);
+    b.target = 5;
+    CHECK(nvn_texture_layout(&b, &dev, &l) && l.levels == 1 && l.size == 512);
+    b.target = 10; dev.w1b18 = 7;
+    CHECK(nvn_texture_storage_alignment(&b, &dev) == 0x10000);
+    dev.w1b18 = 0xfe;
+    CHECK(nvn_texture_storage_alignment(&b, &dev) == 4);
+    b.format = 0xa1;
+    CHECK(!nvn_texture_layout(&b, &dev, &l) && !l.size);
+    b.flags = 0x10;
+    CHECK(nvn_texture_storage_alignment(&b, &dev) == 0x20);
+}
+
+/* Optional external diagnostic input. The game log remains outside the source tree. */
+static void test_texture_queries(const char* path) {
+    FILE* file = fopen(path, "r");
+    CHECK(file != NULL);
+    if (!file) return;
+    char line[2048];
+    unsigned count = 0, agree = 0;
+    while (fgets(line, sizeof line, file)) {
+        char* query = strstr(line, "nvn-size: nvnTextureBuilderGetStorage");
+        if (!query) continue;
+        int alignment = strstr(query, "GetStorageAlignment") != NULL;
+        char* result = strstr(query, "result=");
+        if (!result) continue;
+        uint64_t expected = strtoull(result + 7, NULL, 16);
+        uint32_t words[32] = {0};
+        unsigned rows = 0;
+        for (; rows < 8 && fgets(line, sizeof line, file); rows++) {
+            char* row = strstr(line, "nvn-size:   word");
+            unsigned at, a, b, c, d;
+            if (!row || sscanf(row, "nvn-size:   word %u: %x %x %x %x", &at, &a, &b, &c, &d) != 5 || at != rows * 4) break;
+            words[at] = a; words[at + 1] = b; words[at + 2] = c; words[at + 3] = d;
+        }
+        CHECK(rows == 8);
+        if (rows != 8) break;
+        NvnTextureBuilder b = {.flags = words[8], .target = words[9], .width = words[10], .height = words[11],
+            .depth = words[12], .levels = words[13], .format = words[14], .samples = words[15],
+            .tile = (uint16_t)words[24], .stride = words[25], .gl_name = words[26]};
+        NvnTextureLayout l;
+        nvn_texture_layout(&b, &nvn_texture_device_words, &l);
+        uint64_t actual = alignment ? nvn_texture_storage_alignment(&b, &nvn_texture_device_words) : l.size;
+        count++;
+        if (expected == actual) agree++;
+        else printf("query %u: %s actual=%llx expected=%llx\n", count, alignment ? "alignment" : "size",
+                    (unsigned long long)actual, (unsigned long long)expected);
+    }
+    fclose(file);
+    printf("texture queries: %u/%u agree\n", agree, count);
+    CHECK(count == 40 && agree == count);
+}
+
+int main(int argc, char** argv) {
+    test_sampler();
+    test_snap_formula();
+    test_texture_layout();
+    if (argc == 2) test_texture_queries(argv[1]);
     test_device_integer();
     test_timestamp();
     test_queue_memory();

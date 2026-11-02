@@ -2,6 +2,7 @@
    Copyright 2026 the NXAevora contributors */
 #include "nx/gpu/nvn_params.h"
 #include <stddef.h>
+#include <math.h>
 #include <string.h>
 
 /* nvnDeviceGetInteger of the run of 2026-11-02 (title screen). The library takes a value from a device field or from a
@@ -124,3 +125,269 @@ uint64_t nvn_memory_pool_map(uint32_t flags, uint64_t storage) {
 }
 
 uint32_t nvn_memory_pool_flags(uint32_t flags) { return flags & NVN_POOL_PUBLIC_FLAGS; }
+
+const NvnSamplerDeviceWords nvn_sampler_device_words = {
+    NVN_SAMPLER_UNKNOWN_LOD_BIAS, NVN_SAMPLER_UNKNOWN_FILTER_FLAGS
+};
+const NvnTextureDeviceWords nvn_texture_device_words = {
+    NVN_TEXTURE_DEVICE_PAGE_SIZE, NVN_TEXTURE_DEVICE_COLOR_COMPRESSION,
+    NVN_TEXTURE_DEVICE_DEPTH_COMPRESSION, NVN_TEXTURE_DEVICE_BUFFER_KIND,
+    NVN_TEXTURE_DEVICE_COMPRESSION_ENABLE
+};
+
+void nvn_sampler_defaults(NvnSampler* s) {
+    uint64_t device = s->device;
+    memset(s, 0, sizeof *s);
+    s->device = device;
+    s->min_filter = s->mag_filter = NVN_SAMPLER_FILTER_DEFAULT;
+    for (unsigned i = 0; i < 3; i++) s->wrap[i] = NVN_SAMPLER_WRAP_DEFAULT;
+    s->max_lod = NVN_SAMPLER_MAX_LOD_DEFAULT;
+    s->compare = NVN_SAMPLER_COMPARE_DEFAULT;
+    s->anisotropy = NVN_SAMPLER_ANISOTROPY_DEFAULT;
+}
+
+#define SAMPLER_SNAP_SEGMENT_SIZE 8u
+#define SAMPLER_SNAP_LAST_INDEX 31u
+
+/* T[i] = (8-d)/(2*d), d=(8+i%8)*2^(i/8). One division rounds the exact rational to f32.
+   All 32 results match the module at de87870, including the positive zero at index 0. */
+float nvn_sampler_snap_bias(uint32_t index) {
+    uint32_t d = (SAMPLER_SNAP_SEGMENT_SIZE + (index & 7u)) << ((index >> 3) & 31u);
+    return (float)(8.0 - (double)d) / (float)(2.0 * (double)d);
+}
+
+#define SAMPLER_ROUND_MAGIC 12582912.0f
+#define SAMPLER_LOD_LIMIT 15.0f
+#define SAMPLER_LOD_SCALE 256.0f
+#define SAMPLER_DEVICE_BIAS_SCALE 0.0625f
+#define SAMPLER_FIXED_WORD0 0x26000u
+#define SAMPLER_FIXED_WORD1 0x200u
+#define SAMPLER_SRGB_THRESHOLD 0x1.9a5c38p-9f
+#define SAMPLER_SRGB_LINEAR 0x1.9d70a4p+3f
+#define SAMPLER_SRGB_EXPONENT 0x1.aaa8ecp-2f
+#define SAMPLER_SRGB_SCALE 0x1.0e147ap+0f
+#define SAMPLER_SRGB_OFFSET (-0x1.c28f5cp-5f)
+
+static uint32_t float_bits(float f) {
+    uint32_t u;
+    memcpy(&u, &f, sizeof u);
+    return u;
+}
+static float bits_float(uint32_t u) {
+    float f;
+    memcpy(&f, &u, sizeof f);
+    return f;
+}
+static uint32_t sampler_border_byte(uint32_t bits) {
+    float x = bits_float(bits);
+    if (x <= 0) return 0;
+    if (x > 1) return 255;
+    float y = x < SAMPLER_SRGB_THRESHOLD ? x * SAMPLER_SRGB_LINEAR :
+              powf(x, SAMPLER_SRGB_EXPONENT) * SAMPLER_SRGB_SCALE + SAMPLER_SRGB_OFFSET;
+    return float_bits(y * 255.0f + SAMPLER_ROUND_MAGIC) & 255u;
+}
+static uint32_t sampler_anisotropy(float value) {
+    static const uint8_t codes[] = {0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 6, 6, 7};
+    if (!(value > 1)) return 0;
+    if (value >= 16) return 7;
+    uint32_t rounded = float_bits(value + SAMPLER_ROUND_MAGIC) - float_bits(SAMPLER_ROUND_MAGIC);
+    return codes[rounded - 1];
+}
+void nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* dev,
+                            uint32_t out[NVN_SAMPLER_DESCRIPTOR_WORDS]) {
+    static const uint8_t wraps[] = {4, 0, 7, 5, 6, 3, 1, 2};
+    memset(out, 0, NVN_SAMPLER_DESCRIPTOR_BYTES);
+    for (unsigned i = 0; i < 3; i++) out[0] |= (uint32_t)wraps[s->wrap[i] & 7u] << (3 * i);
+    out[0] |= SAMPLER_FIXED_WORD0 | (sampler_anisotropy(s->anisotropy) << 20);
+    if (s->compare_enable) out[0] |= 0x200u | (((s->compare + 7u) & 7u) << 10);
+    uint32_t min = s->min_filter;
+    out[1] = 0x11u + (s->mag_filter & 1u) + ((min & 1u) << 4) +
+             (((((min + ((int32_t)min < 0)) << 5) & 0xc0u) + 0x40u) & 0xc0u);
+    uint32_t snap = 0;
+    if (s->lod_snap > 0)
+        while (snap < SAMPLER_SNAP_LAST_INDEX && s->lod_snap > -nvn_sampler_snap_bias(snap)) snap++;
+    float bias = s->lod_bias + (float)dev->w1a80 * SAMPLER_DEVICE_BIAS_SCALE;
+    bias = fminf(SAMPLER_LOD_LIMIT, fmaxf(-SAMPLER_LOD_LIMIT, bias + nvn_sampler_snap_bias(snap)));
+    out[1] |= (((uint32_t)(int32_t)(bias * SAMPLER_LOD_SCALE) & 0x1fffu) << 12) |
+              (snap << 26) | (dev->w1a84 & 0x100u) | SAMPLER_FIXED_WORD1;
+    if (s->reduction == 1) out[1] |= 0x400u;
+    if (s->reduction == 2) out[1] |= 0x800u;
+    float lo = fminf(SAMPLER_LOD_LIMIT, fmaxf(0, s->min_lod));
+    float hi = fminf(SAMPLER_LOD_LIMIT, fmaxf(lo, s->max_lod));
+    out[2] = ((uint32_t)(lo * SAMPLER_LOD_SCALE) & 0xfffu) |
+             (((uint32_t)(hi * SAMPLER_LOD_SCALE) & 0xfffu) << 12) |
+             (sampler_border_byte(s->border[0]) << 24);
+    out[3] = (sampler_border_byte(s->border[1]) << 12) | (sampler_border_byte(s->border[2]) << 20);
+    memcpy(out + 4, s->border, sizeof s->border);
+}
+
+void nvn_texture_builder_defaults(NvnTextureBuilder* b) {
+    uint64_t device = b->device;
+    memset(b, 0, sizeof *b);
+    b->device = device;
+    b->target = NVN_TEXTURE_TARGET_2D;
+    b->levels = 1;
+    for (unsigned i = 0; i < 4; i++) b->swizzle[i] = i + 2;
+}
+
+typedef struct { uint8_t bytes, width, height, depth_stencil; } TextureFormat;
+static int texture_format(uint32_t f, TextureFormat* out) {
+    if (!f || f > NVN_TEXTURE_FORMAT_MAX || (f >= 0x19 && f <= 0x21) || (f >= 0x51 && f <= 0x6c)) return 0;
+    *out = (TextureFormat){4, 1, 1, 0};
+    if (f <= 4 || f == 0x31) out->bytes = 1;
+    if ((f >= 5 && f <= 9) || (f >= 0xd && f <= 0x10) || f == 0x32 ||
+        (f >= 0x39 && f <= 0x3c) || (f >= 0x95 && f <= 0x98)) out->bytes = 2;
+    if ((f >= 0x16 && f <= 0x18) || (f >= 0x29 && f <= 0x2d) || f == 0x36 ||
+        (f >= 0x71 && f <= 0x75) || f == 0x41 || f == 0x42 || f == 0x45 || f == 0x46 ||
+        f == 0x49 || f == 0x4a || f == 0x9d || f == 0x9f) out->bytes = 8;
+    if (f >= 0x22 && f <= 0x24) out->bytes = 12;
+    if ((f >= 0x2e && f <= 0x30) || (f >= 0x76 && f <= 0x94) || f == 0x43 || f == 0x44 ||
+        f == 0x47 || f == 0x48 || (f >= 0x4b && f <= 0x50) || f == 0x9e || f == 0xa0) out->bytes = 16;
+    if ((f >= 0x41 && f <= 0x50) || (f >= 0x79 && f <= 0x94) || f >= 0x9d)
+        out->width = out->height = 4;
+    if ((f >= 0x7a && f <= 0x86) || (f >= 0x88 && f <= 0x94)) {
+        static const uint8_t widths[] = {5, 5, 6, 6, 8, 8, 8, 10, 10, 10, 10, 12, 12};
+        static const uint8_t heights[] = {4, 5, 5, 6, 5, 6, 8, 5, 6, 8, 10, 10, 12};
+        unsigned i = f - (f >= 0x88 ? 0x88 : 0x7a);
+        out->width = widths[i];
+        out->height = heights[i];
+    }
+    if (f >= 0x32 && f <= 0x36) out->depth_stencil |= 1;
+    if (f == 0x31 || f == 0x35 || f == 0x36) out->depth_stencil |= 2;
+    return 1;
+}
+
+static int texture_page_round(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev, TextureFormat f) {
+    return (b->format >= 0x31 && b->format <= 0x36) ||
+           ((b->flags & NVN_TEXTURE_FLAG_COMPRESS) && dev->w1b1c && f.width == 1 && f.bytes >= 4 &&
+            dev->w19f8 != NVN_TEXTURE_COMPRESSION_DISABLED);
+}
+static uint64_t texture_alignment(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev, TextureFormat f) {
+    if (b->target == NVN_TEXTURE_TARGET_BUFFER) {
+        uint32_t kind = dev->w1b18 & 255u;
+        return kind != 0 && kind != NVN_TEXTURE_KIND_PITCH ? dev->wac : f.bytes == 12 ? 4 : f.bytes;
+    }
+    return texture_page_round(b, dev, f) ? dev->wac : NVN_TEXTURE_GOB_BYTES;
+}
+uint64_t nvn_texture_storage_alignment(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev) {
+    if (b->flags & NVN_TEXTURE_FLAG_LINEAR_RENDER_TARGET) return NVN_TEXTURE_LINEAR_RT_ALIGNMENT;
+    if (b->flags & NVN_TEXTURE_FLAG_LINEAR) return NVN_TEXTURE_LINEAR_ALIGNMENT;
+    TextureFormat f;
+    if (!texture_format(b->format, &f)) return 0;
+    return texture_alignment(b, dev, f);
+}
+static uint32_t ceil_u32(uint32_t n, uint32_t d) { return d ? (n + d - 1) / d : 0; }
+static uint64_t align_u64(uint64_t n, uint64_t a) { return (n + a - 1) & -a; }
+static uint32_t tile_shrink(uint32_t exponent, uint32_t base, uint32_t n) {
+    while (exponent && (base << ((exponent - 1) & 31u)) >= n) exponent--;
+    return exponent;
+}
+static uint32_t mip_dimension(uint32_t n, uint32_t i) {
+    n >>= i & 31u;
+    return n ? n : 1;
+}
+static int texture_is_array(uint32_t target) {
+    return target == NVN_TEXTURE_TARGET_1D_ARRAY || target == NVN_TEXTURE_TARGET_2D_ARRAY ||
+           target == NVN_TEXTURE_TARGET_CUBE || target == NVN_TEXTURE_TARGET_CUBE_ARRAY;
+}
+static uint64_t texture_footprint(const NvnTextureLayout* l, uint32_t levels, int array,
+                                 uint32_t x, uint32_t y, uint32_t z) {
+    uint32_t p = 1u << (x & 31u);
+    uint64_t sum = 0;
+    uint32_t w = l->width * l->sample_x, h = l->height * l->sample_y;
+    uint32_t depth = l->dim == 3 ? l->depth : 1;
+    for (uint32_t i = 0; i < levels; i++) {
+        uint32_t a = ceil_u32(mip_dimension(w, i), l->block_width);
+        uint32_t rows = ceil_u32(mip_dimension(h, i), l->block_height);
+        uint32_t d = l->dim == 3 ? mip_dimension(depth, i) : 1;
+        uint32_t ey = tile_shrink(y, NVN_TEXTURE_GOB_HEIGHT, rows), ez = tile_shrink(z, 1, d);
+        uint32_t q = rows >= (NVN_TEXTURE_GOB_HEIGHT << (y & 31u)) &&
+                     a >= (NVN_TEXTURE_GOB_WIDTH / l->bytes_per_block) * p && (d >> (z & 31u)) ? p : 1;
+        uint32_t nx = (ceil_u32(a * l->bytes_per_block, NVN_TEXTURE_GOB_WIDTH) + q - 1) & -q;
+        sum += (uint64_t)nx * ceil_u32(rows, NVN_TEXTURE_GOB_HEIGHT << (ey & 31u)) *
+               ceil_u32(d, 1u << (ez & 31u)) * ((uint64_t)NVN_TEXTURE_GOB_BYTES << ((ey + ez) & 63u));
+    }
+    if (array) {
+        uint32_t shift = p >= 2 ? y + z :
+            tile_shrink(y, NVN_TEXTURE_GOB_HEIGHT, ceil_u32(h, l->block_height)) + tile_shrink(z, 1, depth);
+        uint32_t alignment = (NVN_TEXTURE_GOB_BYTES * (p >= 2 ? p : 1)) << (shift & 31u);
+        sum = align_u64(sum, alignment);
+    }
+    return sum;
+}
+static int texture_sparse_tile(const NvnTextureBuilder* b, NvnTextureLayout* l, uint32_t levels) {
+    if ((b->flags & NVN_TEXTURE_SPARSE_TILE_MASK) != NVN_TEXTURE_FLAG_SPARSE || b->target == NVN_TEXTURE_TARGET_1D ||
+        b->target == NVN_TEXTURE_TARGET_1D_ARRAY || l->bytes_per_block == 12 || !levels) return 0;
+    uint32_t bytes = l->bytes_per_block, x, y, z;
+    if (l->dim == 3) {
+        x = bytes == 4 ? 1 : bytes == 8 || bytes == 16 ? 2 : 0;
+        y = bytes == 8 || bytes == 16 ? 1 : 2;
+        z = bytes == 4 || bytes == 8 || bytes == 16 ? 4 : 5;
+    } else {
+        x = bytes == 2 || bytes == 4 ? 3 : bytes == 8 || bytes == 16 ? 4 : 2;
+        y = bytes == 2 || bytes == 4 ? 4 : bytes == 8 || bytes == 16 ? 3 : 5;
+        z = 0;
+    }
+    uint32_t w = ((NVN_TEXTURE_GOB_WIDTH / bytes) << x) / l->sample_x * l->block_width;
+    uint32_t h = (NVN_TEXTURE_GOB_HEIGHT << y) / l->sample_y * l->block_height;
+    if ((int32_t)l->width < (int32_t)w || (int32_t)l->height < (int32_t)h ||
+        (int32_t)l->depth < (int32_t)(1u << z)) return 0;
+    l->tile_x = x; l->tile_y = y; l->tile_z = z;
+    return 1;
+}
+static void texture_choose_tile(const NvnTextureBuilder* b, NvnTextureLayout* l, uint32_t levels) {
+    if (b->tile & 15u) {
+        l->tile_x = (b->tile >> 12) & 15u;
+        l->tile_y = (b->tile >> 4) & 15u;
+        l->tile_z = (b->tile >> 8) & 15u;
+        return;
+    }
+    if (b->flags & NVN_TEXTURE_FLAG_MINIMAL_TILE) { l->tile_y = 1; return; }
+    if (texture_sparse_tile(b, l, levels)) return;
+    if (l->dim == 3) {
+        uint32_t v = l->depth + l->depth / 2;
+        l->tile_z = v > 15 ? 4 : v >= 8 ? 3 : v > 3 ? 2 : v > 1 ? 1 : 0;
+    } else {
+        uint32_t hb = ceil_u32(l->height * l->sample_y, l->block_height), v = hb + hb / 2;
+        l->tile_y = v >= 128 ? 4 : v >= 64 ? 3 : v > 31 ? 2 : v > 15 ? 1 : 0;
+    }
+    if ((b->flags & NVN_TEXTURE_FLAG_ADAPTIVE_TILE) &&
+        texture_footprint(l, levels, texture_is_array(b->target), 0, l->tile_y, l->tile_z) !=
+        texture_footprint(l, levels, texture_is_array(b->target), 0, 0, 0))
+        l->tile_y = l->tile_z = 0;
+}
+int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev, NvnTextureLayout* l) {
+    memset(l, 0, sizeof *l);
+    l->alignment = nvn_texture_storage_alignment(b, dev);
+    TextureFormat f;
+    if (!texture_format(b->format, &f)) return 0;
+    l->width = b->width; l->height = b->height; l->depth = b->depth;
+    if (b->target == NVN_TEXTURE_TARGET_1D_ARRAY) { l->depth = l->height; l->height = 1; }
+    if (b->target == NVN_TEXTURE_TARGET_CUBE) l->depth = NVN_TEXTURE_CUBE_FACES;
+    l->bytes_per_block = f.bytes; l->block_width = f.width; l->block_height = f.height;
+    l->depth_stencil = f.depth_stencil;
+    for (uint32_t n = f.bytes; n > 1; n >>= 1) l->log2_bytes++;
+    l->sample_x = b->samples == 2 || b->samples == 4 ? 2 : b->samples == 8 || b->samples == 16 ? 4 : 1;
+    l->sample_y = b->samples == 4 || b->samples == 8 ? 2 : b->samples == 16 ? 4 : 1;
+    l->samples = b->samples == 1 || b->samples == 2 ? 2 :
+                 b->samples == 4 || b->samples == 8 || b->samples == 16 ? b->samples : 0;
+    uint32_t levels = b->levels;
+    if (b->target == NVN_TEXTURE_TARGET_BUFFER) {
+        l->dim = l->levels = 1;
+        l->layer_stride = l->size = l->width * f.bytes;
+    } else if (b->flags & NVN_TEXTURE_LINEAR_FLAGS) {
+        l->dim = 2; l->levels = 1; l->linear_stride = b->stride;
+        l->layer_stride = l->size = l->height * b->stride;
+    } else {
+        if (b->target >= NVN_TEXTURE_TARGET_RECTANGLE && b->target <= NVN_TEXTURE_TARGET_2D_MS_ARRAY) levels = 1;
+        l->levels = (uint8_t)levels;
+        l->dim = b->target == NVN_TEXTURE_TARGET_3D ? 3 :
+                 b->target == NVN_TEXTURE_TARGET_1D || b->target == NVN_TEXTURE_TARGET_1D_ARRAY ? 1 : 2;
+        texture_choose_tile(b, l, levels);
+        l->layer_stride = texture_footprint(l, levels, texture_is_array(b->target), l->tile_x, l->tile_y, l->tile_z);
+        l->size = l->layer_stride * (b->target == NVN_TEXTURE_TARGET_3D ? 1 : l->depth);
+        if (texture_page_round(b, dev, f)) l->size = align_u64(l->size, dev->wac);
+    }
+    if (b->gl_name) l->size = 0;
+    return 1;
+}

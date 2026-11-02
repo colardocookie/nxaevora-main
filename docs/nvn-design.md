@@ -820,8 +820,8 @@ guess (rule: mechanism first). Each part is one commit.
 | 3b-1 | The setting `nvn_native`, `gpu/nvn_native.c` (loader hooks below the trace, missing-function handler, exit report), `gpu/nvn_objtab.c` (the record table, test `nvn_objtab`), and the trace of the queries (`nvn-value:` lines for `nvnDeviceGetInteger` and six other queries). | Written and built. The unit tests pass, except `tracked_material`, which fails on the two SMAA `.dds` files that were added before this work (not caused by it). Not run in the game. |
 | 3b-2 | A diagnostic run with `nvn_trace=1` to the title: the agent reads the `nvn-value:` lines. | Done (2026-11-02). The values are in "3b-2 Result" below. |
 | 3b-3 | G1: device and queue builders, `DeviceInitialize`, `DeviceGetInteger` (the table of 3b-2), `GetTimestampInNanoseconds`, `QueueInitialize`. | Written and built (30 handlers, `gpu/nvn_params.c`, test `nvn_params`). Not run with `nvn_native=1`. See "3b-3 Result". |
-| 3b-4 | G2: memory pool and the GPU address rule (2-2). | Not started. |
-| 3b-5 | G3 and G5: texture objects, the storage size function (read from the library's disassembly, tested against the 3a table), the pools. | Not started. |
+| 3b-4 | G2: memory pool and the GPU address rule (2-2). | Written and built (13 handlers, test `nvn_params`, row 0029). Run of 2026-11-02: all 13 ran without a failure. The GPU page table mapping of a pool is not connected. |
+| 3b-5 | G3 and G5: texture objects, the storage size function (read from the library's disassembly, tested against the 3a table), the pools. | Written and built (29 handlers, row 0030, test `nvn_params`; 40 of 40 size queries of the archived run agree). Not run with `nvn_native=1`. |
 | 3b-6 | G4: window and sync. | Not started. |
 | 3b-7 | The selftest harness (comparer with tests, isolated memory, recording backend) and its first cases of kinds `R` and `M`. | Not started. |
 
@@ -903,3 +903,30 @@ The run did not draw (0 frames) and did not crash. The log shows:
 - Then the game crashed in function aa926ec (null pointer plus 0x30). It reads x21, the result of the pool allocator aa969bc, which
   returns 0 because the pool and texture initialization failed. This follows from the missing handlers, not from a host fault.
 - Next: 3b-4 (memory pool) and 3b-5 (texture, sampler, pools).
+
+
+### 3b-5 Host sampler and texture functions
+
+The 29 functions of the accepted 3b-5 table have host handlers. Builders and initialized objects use host records.
+Sampler registration writes eight words at the memory pool CPU base plus pool offset plus signed index times 32.
+An unknown pool or sampler, or a zero CPU base, gives one error line and no descriptor write.
+Texture initialization rejects imports, unknown or null pools, physical pools, unsupported formats, and a texture
+with flag 8 whose pool has no flag in 0x280. Successful initialization logs its parameters only with `nvn_trace=1`.
+
+The sampler LOD snap formula is `T[i]=(8-d)/(2*d)`, with `d=(8+i%8)*2^(i/8)`. All 32 f32 results match the module
+at de87870. The encoder uses this formula rather than a copied table. Border RGB uses the library's sRGB conversion.
+Device words +0x1a80 and +0x1a84 were not measured by 3b-2 and have no stored host value. Their named provisional
+constants are 0. Their actual values remain open.
+
+Texture device inputs are named provisional constants: +0xac=0x10000, +0x19f8=0, +0x19fc=0, +0x1b18=0,
++0x1b1c=1. The first, second and last values are required by the accepted derived cases. The other two use the
+analyst's size model inputs. These are not measurements of device initialization. The code implements classification R
+for size and alignment. Chip kind selection and NvRmGpuMappingModify are not ported. The texture kind byte stays 0,
+and the address is always the memory pool host GPU base plus offset. GPU page-table mapping remains open from 3b-4.
+
+The standalone `nvn_params` tests check sampler defaults and encoding, snap fractions, texture defaults, the three
+known storage cases, buffer, mip chain, cube, 1D array, 3D, samples, compressed blocks, sparse tiles, minimal tiles,
+adaptive tiles, imports, invalid formats and compression inputs. All 40 storage queries agree with the archived
+library run `logs/2026-11-02_16-50-49.log`. The current update log is the later native run and has zero results
+from missing handlers. Give the archived log path to the standalone test to repeat the comparison. No game file
+is part of the source change. Runtime integration has not been built or run for this part.
