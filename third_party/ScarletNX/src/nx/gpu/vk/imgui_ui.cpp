@@ -317,6 +317,38 @@ bool setting_preset(const ImguiSettingRow& r, char* out, size_t n) {
     return changed;
 }
 
+/* a text setting that is a choice of values (value=label words): the label of the one on, Left and Right move through
+   the list */
+bool setting_text_choice(const ImguiSettingRow& r, char* out, size_t n) {
+    char value[WORD_MAX], label[WORD_MAX], shown[WORD_MAX];
+    int at = -1, count = 0;
+    while (imgui_settings_text_word(r.key, count, value, sizeof value, label, sizeof label)) {
+        if (!strcmp(value, r.text)) at = count;
+        ++count;
+    }
+    if (at >= 0)
+        imgui_settings_text_word(r.key, at, value, sizeof value, shown, sizeof shown);
+    else
+        snprintf(shown, sizeof shown, "%s (custom)", r.text);
+    bool open = ImGui::BeginCombo("##value", shown);
+    int dir = arrow_direction();
+    bool changed = false;
+    if (dir && at >= 0 && at + dir >= 0 && at + dir < count) {
+        imgui_settings_text_word(r.key, at + dir, out, n, label, sizeof label);
+        changed = true;
+    }
+    if (!open) return changed;
+    for (int i = 0; i < count; ++i) {
+        imgui_settings_text_word(r.key, i, value, sizeof value, label, sizeof label);
+        if (ImGui::Selectable(label, i == at) && i != at) {
+            snprintf(out, n, "%s", value);
+            changed = true;
+        }
+    }
+    ImGui::EndCombo();
+    return changed;
+}
+
 bool setting_number(const ImguiSettingRow& r, char* out, size_t n) {
     int v = r.ivalue;
     bool edited;
@@ -363,6 +395,8 @@ void setting_row(const ImguiSettingRow& r) {
     ImGui::BeginDisabled((r.flags & IMGUI_SETTING_LOCKED) != 0);
     if (r.presets)
         changed = setting_preset(r, value, sizeof value);
+    else if (r.type == IMGUI_SETTING_TEXT && r.has_words)
+        changed = setting_text_choice(r, value, sizeof value);
     else if (r.type == IMGUI_SETTING_TEXT)
         ImGui::TextDisabled("Edit it in the .ini file");
     else if (r.type == IMGUI_SETTING_FLOAT)

@@ -11,6 +11,7 @@ extern "C" {
 #endif
 
 enum { IMGUI_SETTING_INT, IMGUI_SETTING_FLOAT, IMGUI_SETTING_TEXT };
+enum { IMGUI_SETTING_TEXT_MAX = 64 };
 enum {
     IMGUI_SETTING_STARTUP = 1, /* read when the game starts: a change is saved and applies at the next start */
     IMGUI_SETTING_LOCKED = 2,  /* the command line holds it for this run: a change is not taken */
@@ -28,6 +29,7 @@ typedef struct {
     int presets;       /* a choice from a short list (imgui_settings_preset), 0 for none; INT or FLOAT */
     int ivalue;        /* INT */
     float fvalue;      /* FLOAT */
+    char text[IMGUI_SETTING_TEXT_MAX]; /* TEXT: the value; a TEXT with has_words is a choice of imgui_settings_text_word */
 } ImguiSettingRow;
 
 /* the windows that show pages: Controller&Keyboard and Display */
@@ -46,6 +48,9 @@ void imgui_settings_word(const char* key, int v, char* out, size_t n);
    value as the .ini writes it, its label and its number (what the row's value is when the preset is on). 1, or 0 for
    an index past the last */
 int imgui_settings_preset(const char* key, int i, char* value, size_t vn, char* label, size_t ln, double* number);
+/* word i of a text setting that is a choice (value=label between '|'): its value and its label. 1, or 0 for an index
+   past the last */
+int imgui_settings_text_word(const char* key, int i, char* value, size_t vn, char* label, size_t ln);
 /* key set to value (the .ini's text). The main thread applies it and saves it, so the row shows the old value for a
    moment */
 void imgui_settings_set(const char* key, const char* value);

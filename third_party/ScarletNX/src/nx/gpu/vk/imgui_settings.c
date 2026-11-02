@@ -63,6 +63,10 @@ static const Preset PRESETS[] = {
    of a word that a code patch of the game reads: a value that is not 8 aligned and mapped breaks the mouse look, so
    only the launcher that installs the patch sets it. The showcase and the stats overlay have the F6 and F12 keys and
    the Debug window, so they have no rows */
+/* A text setting that holds a whole number of megabytes: the window shows it as a number field */
+static const char* const NUMBER_TEXT[] = {"heap_max_mb"};
+enum { NUMBER_TEXT_MAX = 1048576 };
+
 static const char* const HIDDEN[] = {"keyboard_map", "mouse_native_address", "gamepad_map", "showcase",
                                      "showcase_corner", "stats", "stats_corner"};
 
@@ -155,6 +159,26 @@ static void saved_value(const IniOpt* o, ImguiSettingRow* r) {
     }
 }
 
+/* a text setting's value: the saved one when this run changed a startup setting, else what the game read. A text that
+   holds a number (NUMBER_TEXT) becomes an int row */
+static void text_row(const IniOpt* o, ImguiSettingRow* r) {
+    char saved[SAVED_VALUE_MAX];
+    if (r->type != IMGUI_SETTING_TEXT || !o->var || !o->size) return;
+    snprintf(r->text, sizeof r->text, "%s", (const char*)o->var);
+    if ((o->flags & INI_STARTUP) && options_restart_value(o->key, saved, sizeof saved) && strcmp(saved, r->text)) {
+        snprintf(r->text, sizeof r->text, "%s", saved);
+        r->flags |= IMGUI_SETTING_RESTART;
+    }
+    for (size_t k = 0; k < sizeof NUMBER_TEXT / sizeof *NUMBER_TEXT; k++)
+        if (!strcmp(o->key, NUMBER_TEXT[k])) {
+            r->type = IMGUI_SETTING_INT;
+            r->lo = 0;
+            r->hi = NUMBER_TEXT_MAX;
+            r->ivalue = atoi(r->text);
+        }
+    r->has_words = o->words && strchr(o->words, '=');
+}
+
 /* fps_limit is a text in the .ini ("game", 0 or 10 to 1000) and a number in the running game (g_opt_fps): the row
    shows the number, as a choice of presets that also takes any value of the range */
 static void fps_limit_row(ImguiSettingRow* r) {
@@ -184,7 +208,23 @@ int imgui_settings_row(int page, int i, ImguiSettingRow* r) {
     if (o->type == INI_INT) r->ivalue = __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED);
     if (o->type == INI_FLOAT) r->fvalue = *(const float*)o->var;
     saved_value(o, r);
+    text_row(o, r);
     return 1;
+}
+
+int imgui_settings_text_word(const char* key, int i, char* value, size_t vn, char* label, size_t ln) {
+    const IniOpt* o = find(key);
+    const char* w = o && o->type == INI_TEXT ? o->words : NULL;
+    while (w && *w) {
+        size_t len = strcspn(w, "|"), eq = strcspn(w, "=|");
+        if (!i--) {
+            snprintf(value, vn, "%.*s", (int)eq, w);
+            snprintf(label, ln, "%.*s", (int)(eq < len ? len - eq - 1 : len), w + (eq < len ? eq + 1 : 0));
+            return 1;
+        }
+        w += len + (w[len] == '|');
+    }
+    return 0;
 }
 
 void imgui_settings_word(const char* key, int v, char* out, size_t n) {
