@@ -18,6 +18,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/scale.h"
 
 #define ALLOC_CAP_DEFAULT (256ull << 20)
 
@@ -225,7 +226,7 @@ void vk_mem_use(u64* usage, u64* budget) {
    for a 7 GB budget and ran the device out of memory. A share of the budget is left for the desktop and the driver */
 enum { SCALE_BASE_MB = 272, SCALE_MB_PER_SQUARE = 163, SCALE_BUDGET_PERCENT = 90 };
 
-u64 vk_scale_memory_mb(float scale) { return SCALE_BASE_MB + (u64)((double)SCALE_MB_PER_SQUARE * scale * scale + 0.5); }
+uint64_t vk_scale_memory_mb(float scale) { return SCALE_BASE_MB + (u64)((double)SCALE_MB_PER_SQUARE * scale * scale + 0.5); }
 
 int vk_scale_fits(float scale) {
     u64 usage, budget;

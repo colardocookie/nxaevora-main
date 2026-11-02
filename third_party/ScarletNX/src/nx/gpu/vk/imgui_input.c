@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 #include "nx/gpu/vk/imgui_input.h"
+#include <string.h>
 #include "common/filesystem/host.h"
 
 enum { QUEUE_MAX = 4096 }; /* the frame pops them: a stalled frame (a loading interval) keeps what the player pressed */
@@ -86,4 +87,18 @@ int imgui_input_refresh_wanted(void) {
     waiting = g_count > 0;
     pm_unlock(&g_lock);
     return waiting;
+}
+
+void imgui_input_push_text(const char* text) {
+    size_t at = 0, n = strlen(text);
+    while (at < n) {
+        ImguiEvent ev = {.type = IMGUI_EV_TEXT};
+        size_t take = n - at < IMGUI_TEXT_MAX - 1 ? n - at : IMGUI_TEXT_MAX - 1;
+        if (at + take < n) /* back to the start of the character that the piece would cut */
+            while (take && ((unsigned char)text[at + take] & 0xC0) == 0x80) --take;
+        if (!take) break;
+        memcpy(ev.text, text + at, take);
+        imgui_input_push(&ev);
+        at += take;
+    }
 }

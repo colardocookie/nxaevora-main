@@ -5,6 +5,7 @@
 #include "nx/gpu/vk/imgui_input.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "common/filesystem/host.h"
 
 /* the queue's lock, without the platform layer */
@@ -67,6 +68,24 @@ int main(void) {
     for (int i = 0; i < QUEUE_MAX + 5; ++i) push(IMGUI_EV_KEY, 0, 0, i);
     n = drain(&motion, &type, &key);
     check(n == QUEUE_MAX && key == QUEUE_MAX - 1, "a queue of transitions keeps the oldest and drops the newest past its end");
+
+    /* a commit longer than a piece: pieces end between characters and together give the text back */
+    {
+        char text[200] = "", got[200] = "";
+        for (int i = 0; i < 20; ++i) strcat(text, "\xE3\x81\x82"); /* 60 bytes of three byte characters */
+        imgui_input_push_text(text);
+        int pieces = 0, ok = 1;
+        while (imgui_input_pop(&e)) {
+            ok &= e.type == IMGUI_EV_TEXT && strlen(e.text) < IMGUI_TEXT_MAX && strlen(e.text) % 3 == 0;
+            strcat(got, e.text);
+            ++pieces;
+        }
+        check(ok && pieces == 2 && !strcmp(got, text), "a long commit is cut between characters and whole");
+        imgui_input_push_text("");
+        check(!imgui_input_pop(&e), "an empty commit makes no event");
+        imgui_input_push_text("\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82\x82"); /* only continuation bytes */
+        check(!imgui_input_pop(&e), "bytes that are not UTF-8 make no piece");
+    }
 
     puts("imgui_input: ok");
     return 0;

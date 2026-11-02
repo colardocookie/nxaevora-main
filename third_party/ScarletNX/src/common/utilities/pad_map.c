@@ -87,3 +87,11 @@ int snx_pad_map_find(const SnxPadMap* map, int bit) {
         if (map->bit[c] == bit) return c;
     return -1;
 }
+int snx_pad_map_assign(SnxPadMap* map, int control, int bit) {
+    int none = bit == SNX_PAD_NONE;
+    if (control < 0 || control >= SNX_PAD_CONTROLS || (!none && (bit < 0 || bit >= SNX_PAD_BUTTONS))) return -1;
+    int holder = none ? -1 : snx_pad_map_find(map, bit);
+    if (holder >= 0) map->bit[holder] = map->bit[control];
+    map->bit[control] = (signed char)bit;
+    return 0;
+}

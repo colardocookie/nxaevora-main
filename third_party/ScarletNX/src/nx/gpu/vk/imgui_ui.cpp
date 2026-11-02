@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
+#include "nx/gpu/vk/imgui_text.h"
 #include "nx/gpu/vk/imgui_ui.h"
 #include <cfloat>
 #include <cmath>
@@ -580,34 +581,6 @@ struct KeyboardLimit {
     bool numbers;
 };
 
-/* the UTF-16 units of the UTF-8 text, as the game counts them: a four byte character is a pair */
-unsigned utf16_units(const char* s, size_t n) {
-    unsigned units = 0;
-    for (size_t i = 0; i < n; ++i) {
-        unsigned char c = (unsigned char)s[i];
-        if (c >= 0xF0)
-            units += 2;
-        else if ((c & 0xC0) != 0x80)
-            units += 1;
-    }
-    return units;
-}
-
-/* the longest start of the text that holds at most max units, in bytes: it ends between characters */
-size_t fit_units(const char* s, size_t n, unsigned max) {
-    unsigned units = 0;
-    size_t i = 0;
-    while (i < n) {
-        unsigned char c = (unsigned char)s[i];
-        size_t len = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
-        unsigned add = c >= 0xF0 ? 2 : 1;
-        if (units + add > max || i + len > n) break;
-        units += add;
-        i += len;
-    }
-    return i;
-}
-
 /* ImGui hands the filter the character only (not the line), so it refuses controls and, for a number pad, all but
    digits. The line's most is kept after each edit, which does have the line */
 int keyboard_callback(ImGuiInputTextCallbackData* data) {
@@ -617,7 +590,7 @@ int keyboard_callback(ImGuiInputTextCallbackData* data) {
         if (c < 0x20 || c == 0x7F) return 1;
         return limit->numbers && (c < '0' || c > '9') ? 1 : 0;
     }
-    size_t keep = fit_units(data->Buf, (size_t)data->BufTextLen, limit->max);
+    size_t keep = imgui_text_fit_units(data->Buf, (size_t)data->BufTextLen, limit->max);
     if (keep < (size_t)data->BufTextLen) data->DeleteChars((int)keep, data->BufTextLen - (int)keep);
     return 0;
 }
@@ -671,7 +644,7 @@ void keyboard_window(ImguiKeyboard& k) {
     refocus = false;
     const bool pad_enter = k.pad_answer == IMGUI_KB_ENTER, pad_cancel = k.pad_answer == IMGUI_KB_CANCEL;
     bool entered = ImGui::InputText("##line", line, sizeof g_kb.line, flags, keyboard_callback, &limit);
-    unsigned units = utf16_units(line, strlen(line));
+    unsigned units = imgui_text_utf16_units(line, strlen(line));
     bool enough = units >= k.min;
     bool ok = ImGui::Button(k.ok[0] ? k.ok : "OK");
     ImGui::SameLine();

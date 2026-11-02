@@ -72,6 +72,24 @@ int main(void) {
     assert(!strcmp(snx_pad_button_name(ZL), "ZL") && !strcmp(snx_pad_button_name(SNX_PAD_NONE), "None"));
     for (c = 0; c < SNX_PAD_CONTROLS; ++c) assert(snx_pad_control_key(c)[0]);
     assert(!snx_pad_control_key(SNX_PAD_CONTROLS)[0] && !snx_pad_control_name(-1, NULL)[0]);
+    /* a control given a button takes it from the control that had it, which gets what the first one sent */
+    snx_pad_map_position(&map);
+    assert(snx_pad_map_assign(&map, SNX_PAD_SOUTH, A) == 0);
+    assert(map.bit[SNX_PAD_SOUTH] == A && map.bit[SNX_PAD_EAST] == B);
+    for (c = 0; c < SNX_PAD_CONTROLS; ++c) assert(snx_pad_map_find(&map, c) >= 0); /* every button is still sent */
+    assert(snx_pad_map_assign(&map, SNX_PAD_SOUTH, A) == 0 && map.bit[SNX_PAD_SOUTH] == A); /* the same: no change */
+    /* None frees the control and takes nothing from another */
+    snx_pad_map_position(&placed);
+    map = placed;
+    assert(snx_pad_map_assign(&map, SNX_PAD_START, SNX_PAD_NONE) == 0 && map.bit[SNX_PAD_START] == SNX_PAD_NONE);
+    for (c = 0; c < SNX_PAD_CONTROLS; ++c)
+        if (c != SNX_PAD_START) assert(map.bit[c] == placed.bit[c]);
+    /* a control or a button that does not exist leaves the map as it was */
+    placed = map;
+    assert(snx_pad_map_assign(&map, -1, A) == -1 && snx_pad_map_assign(&map, SNX_PAD_CONTROLS, A) == -1 &&
+           snx_pad_map_assign(&map, SNX_PAD_SOUTH, SNX_PAD_BUTTONS) == -1 &&
+           snx_pad_map_assign(&map, SNX_PAD_SOUTH, -2) == -1);
+    assert(!memcmp(&map, &placed, sizeof map));
     puts("pad_map passed");
     return 0;
 }

@@ -44,21 +44,6 @@ static int button_event(const SDL_Event* e, ImguiWants w) {
     return taken;
 }
 
-/* a commit of any length, in pieces that each end between UTF-8 characters */
-static void push_text(const char* text) {
-    size_t at = 0, n = strlen(text);
-    while (at < n) {
-        ImguiEvent ev = {.type = IMGUI_EV_TEXT};
-        size_t take = n - at < IMGUI_TEXT_MAX - 1 ? n - at : IMGUI_TEXT_MAX - 1;
-        if (at + take < n) /* back to the start of the character that the piece would cut */
-            while (take && ((unsigned char)text[at + take] & 0xC0) == 0x80) --take;
-        if (!take) break; /* a character longer than a piece: not UTF-8 */
-        memcpy(ev.text, text + at, take);
-        imgui_input_push(&ev);
-        at += take;
-    }
-}
-
 static void focus_lost(void) {
     ImguiEvent ev = {.type = IMGUI_EV_FOCUS};
     g_grabbed = 0;
@@ -115,7 +100,7 @@ int imgui_sdl_event(const SDL_Event* e, float density, int captured, int owned) 
         case SDL_EVENT_KEY_UP: return key_event(e, w);
         case SDL_EVENT_TEXT_INPUT:
             if (!w.text) return 0;
-            push_text(e->text.text);
+            imgui_input_push_text(e->text.text);
             return 1;
         case SDL_EVENT_WINDOW_MOUSE_LEAVE: /* no place: a bar at the top edge goes when the cursor leaves there */
             push_pos(NO_MOUSE, NO_MOUSE);

@@ -24,6 +24,9 @@ typedef struct {
 
 void imgui_input_push(const ImguiEvent* e); /* any thread; motion is merged and goes first when full, the rest stays */
 int imgui_input_pop(ImguiEvent* e);         /* the context's owner: 1 with the oldest event, 0 when empty */
+/* a commit of any length (UTF-8) as text events, each piece ending between characters. A piece cannot be made of a
+   character longer than a piece (not UTF-8): the rest is left out */
+void imgui_input_push_text(const char* text);
 
 /* what the windows want, set by the frame and read by the main thread */
 typedef struct {

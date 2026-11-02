@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "common/utilities/pad_map.h"
-#include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/scale.h"
 #include "nx/runtime/ini.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/backend.h"

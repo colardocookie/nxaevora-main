@@ -751,6 +751,25 @@ snx_test_target(snx-test-imgui-input 11)
 target_link_libraries(snx-test-imgui-input PRIVATE scarletnx-common)
 add_test(NAME imgui_input COMMAND snx-test-imgui-input)
 
+add_executable(snx-test-imgui-text imgui_text.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/imgui_text.c")
+snx_test_target(snx-test-imgui-text 11)
+add_test(NAME imgui_text COMMAND snx-test-imgui-text)
+
+add_executable(snx-test-imgui-settings imgui_settings.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/imgui_settings.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+snx_test_target(snx-test-imgui-settings 11)
+target_link_libraries(snx-test-imgui-settings PRIVATE scarletnx-common m)
+target_include_directories(snx-test-imgui-settings PRIVATE "${PROJECT_BINARY_DIR}/generated")
+add_test(NAME imgui_settings COMMAND snx-test-imgui-settings)
+
+if(TARGET SDL3::SDL3)
+    add_executable(snx-test-keybind keybind.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/backend/keybind.c")
+    snx_test_target(snx-test-keybind 11)
+    target_link_libraries(snx-test-keybind PRIVATE SDL3::SDL3)
+    target_include_directories(snx-test-keybind PRIVATE "${PROJECT_BINARY_DIR}/generated") # the log header includes snx_settings.h
+    add_test(NAME keybind COMMAND snx-test-keybind)
+endif()
+
 add_executable(snx-test-vpad vpad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")

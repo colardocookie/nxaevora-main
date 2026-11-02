@@ -14,6 +14,7 @@
 #include "nx/memory/mem.h" /* g_mem: the guest words of the native mouse look */
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/backend/imgui_sdl.h"
+#include "nx/runtime/platform/backend/keybind.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/gpu/vk/imgui_input.h"
 #include "nx/runtime/platform/log.h"
@@ -488,37 +489,11 @@ static PadKind gamepad_kind(int type) {
     }
 }
 
-/* keys -> HidNpadButton bits; 40..47 are the stick keys, turned into axes in video_poll. By scancode, the key's
-   position: the keycode depends on the layout and on the modifiers, so Shift pressed while 1 was held made its release
-   a different key, and ZL stayed held */
-static u64 default_keymap(SDL_Scancode k) {
-    switch (k) {
-        case SDL_SCANCODE_F: return 1ull << 0;      /* A */
-        case SDL_SCANCODE_LSHIFT: return 1ull << 1; /* B */
-        case SDL_SCANCODE_R: return 1ull << 2;      /* X */
-        case SDL_SCANCODE_SPACE: return 1ull << 3;  /* Y */
-        case SDL_SCANCODE_LCTRL: return 1ull << 4;  /* L3 */
-        case SDL_SCANCODE_Q: return 1ull << 6;      /* L */
-        case SDL_SCANCODE_E: return 1ull << 7;      /* R */
-        case SDL_SCANCODE_G: return 1ull << 10;     /* Plus */
-        case SDL_SCANCODE_M: return 1ull << 11;     /* Minus */
-        case SDL_SCANCODE_LEFT: return 1ull << 12;
-        case SDL_SCANCODE_UP: return 1ull << 13;
-        case SDL_SCANCODE_RIGHT: return 1ull << 14;
-        case SDL_SCANCODE_DOWN: return 1ull << 15;
-        case SDL_SCANCODE_A: return 1ull << 40;
-        case SDL_SCANCODE_W: return 1ull << 41;
-        case SDL_SCANCODE_D: return 1ull << 42;
-        case SDL_SCANCODE_S: return 1ull << 43;
-        default: break;
-    }
-    return 0;
-}
-/* the keyboard's table: default_keymap's, over which the .ini's keyboard_map puts its own. Main thread only */
+/* the keyboard's table: keybind_default's, over which the .ini's keyboard_map puts its own. Main thread only */
 static u64 g_keybind[SDL_SCANCODE_COUNT];
 static int g_keybind_ready;
 static void keybind_reset(void) {
-    for (int k = 0; k < SDL_SCANCODE_COUNT; ++k) g_keybind[k] = default_keymap((SDL_Scancode)k);
+    for (int k = 0; k < SDL_SCANCODE_COUNT; ++k) g_keybind[k] = keybind_default((SDL_Scancode)k);
     g_keybind_ready = 1;
 }
 static u64 keymap(SDL_Scancode k) {
@@ -526,81 +501,6 @@ static u64 keymap(SDL_Scancode k) {
     return k > 0 && k < SDL_SCANCODE_COUNT ? g_keybind[k] : 0;
 }
 
-/* keyboard_map's button names and the keys_held bit each sets (the stick bits are turned into axes in video_poll) */
-static const struct {
-    const char* name;
-    int bit;
-} KEY_BUTTONS[] = {
-    {"A", 0},           {"B", 1},           {"X", 2},           {"Y", 3},           {"L3", 4},
-    {"R3", 5},          {"L", 6},           {"R", 7},           {"ZL", 8},          {"ZR", 9},
-    {"Plus", 10},       {"Minus", 11},      {"Left", 12},       {"Up", 13},         {"Right", 14},
-    {"Down", 15},       {"LStickLeft", 40}, {"LStickUp", 41},   {"LStickRight", 42}, {"LStickDown", 43},
-    {"RStickLeft", 44}, {"RStickUp", 45},   {"RStickRight", 46}, {"RStickDown", 47},
-};
-#define KEY_ENTRIES_MAX 64
-typedef struct {
-    int bit;
-    SDL_Scancode key; /* SDL_SCANCODE_UNKNOWN: the button has no key */
-} KeyEntry;
-
-/* the runtime's own keys: a button on one of them would fire the hotkey too */
-static int key_reserved(SDL_Scancode k) {
-    return k == SDL_SCANCODE_ESCAPE || (k >= SDL_SCANCODE_F1 && k <= SDL_SCANCODE_F12) || k == SDL_SCANCODE_PAUSE ||
-           k == SDL_SCANCODE_LALT || k == SDL_SCANCODE_RALT;
-}
-/* one word, Button:Key: 0, else -1 */
-static int key_entry_read(const char* at, size_t n, KeyEntry* out) {
-    char key[48];
-    size_t colon = 0, len;
-    while (colon < n && at[colon] != ':') ++colon;
-    if (colon == 0 || colon >= n - 1 || n - colon - 1 >= sizeof key) return -1;
-    out->bit = -1;
-    for (size_t i = 0; i < sizeof KEY_BUTTONS / sizeof *KEY_BUTTONS; ++i)
-        if (strlen(KEY_BUTTONS[i].name) == colon && SDL_strncasecmp(KEY_BUTTONS[i].name, at, colon) == 0)
-            out->bit = KEY_BUTTONS[i].bit;
-    if (out->bit < 0) return -1;
-    len = n - colon - 1;
-    for (size_t i = 0; i < len; ++i) key[i] = at[colon + 1 + i] == '_' ? ' ' : at[colon + 1 + i];
-    key[len] = 0;
-    if (SDL_strcasecmp(key, "None") == 0) {
-        out->key = SDL_SCANCODE_UNKNOWN;
-        return 0;
-    }
-    out->key = SDL_GetScancodeFromName(key);
-    return out->key == SDL_SCANCODE_UNKNOWN || key_reserved(out->key) || out->key >= SDL_SCANCODE_COUNT ? -1 : 0;
-}
-/* keyboard_map's text as the buttons each key sends, into map. A button named in the text loses its default keys, and a
-   key named in it belongs to the buttons named with it only. 0, or -1 for a word it cannot read (said when say): map is
-   then not made */
-static int keybind_compile(const char* v, u64 map[SDL_SCANCODE_COUNT], int say) {
-    KeyEntry e[KEY_ENTRIES_MAX];
-    int count = 0;
-    u64 named = 0;
-    const char* at = v ? v : "";
-    while (*at) {
-        size_t n = strcspn(at, " \t");
-        if (!n) {
-            ++at;
-            continue;
-        }
-        if (count == KEY_ENTRIES_MAX || key_entry_read(at, n, &e[count]) < 0) {
-            if (say)
-                LOG("settings: keyboard_map's \"%.*s\" is not a button and a key (A:F): the map stays as it was\n", (int)n,
-                    at);
-            return -1;
-        }
-        ++count;
-        at += n;
-    }
-    for (int k = 0; k < SDL_SCANCODE_COUNT; ++k) map[k] = default_keymap((SDL_Scancode)k);
-    for (int i = 0; i < count; ++i) named |= 1ull << e[i].bit;
-    for (int k = 0; k < SDL_SCANCODE_COUNT; ++k) map[k] &= ~named;
-    for (int i = 0; i < count; ++i)
-        if (e[i].key) map[e[i].key] = 0;
-    for (int i = 0; i < count; ++i)
-        if (e[i].key) map[e[i].key] |= 1ull << e[i].bit;
-    return 0;
-}
 /* the text of the map in use, for the window's view; written under ui_lock (backend_ini holds it) */
 static char g_keybind_accepted[sizeof g_settings.keyboard_map];
 /* An unreadable word changes nothing and is said */
@@ -645,42 +545,12 @@ void backend_setting_request(const char* key, const char* value) {
 
 /* ---- the key bindings of the window: it edits keyboard_map's text. g_keybind belongs to the main thread, so a new text
    waits in g_keybind_next, and the view shows it until keybind_apply has made it the text in use ---- */
-_Static_assert(sizeof KEY_BUTTONS / sizeof *KEY_BUTTONS == BACKEND_KEYBIND_COUNT, "the view lists every button");
+_Static_assert(KEYBIND_BUTTON_COUNT == BACKEND_KEYBIND_COUNT, "the view lists every button");
 static char g_keybind_next[sizeof g_settings.keyboard_map];
 static int g_keybind_pending; /* g_keybind_next waits to be applied */
 
 /* keyboard_map as it will be: the text that waits, else the one in use. Under ui_lock */
 static const char* keybind_text(void) { return g_keybind_pending ? g_keybind_next : g_keybind_accepted; }
-
-/* the buttons that text names */
-static u64 keybind_named(const char* text) {
-    u64 named = 0;
-    for (const char* at = text; *at;) {
-        size_t n = strcspn(at, " \t");
-        KeyEntry e;
-        if (!n) {
-            ++at;
-            continue;
-        }
-        if (key_entry_read(at, n, &e) == 0) named |= 1ull << e.bit;
-        at += n;
-    }
-    return named;
-}
-
-/* the keys that send a button in map, as a line */
-static void keybind_keys(const u64 map[SDL_SCANCODE_COUNT], u64 bit, char* out, size_t size) {
-    size_t at = 0;
-    for (int k = 1; k < SDL_SCANCODE_COUNT; ++k) {
-        if (!(map[k] & bit)) continue;
-        at += (size_t)snprintf(out + at, size - at, "%s%s", at ? ", " : "", SDL_GetScancodeName((SDL_Scancode)k));
-        if (at >= size) { /* cut: the rest of the keys do not fit the line */
-            at = size - 1;
-            break;
-        }
-    }
-    if (!at) snprintf(out, size, "None");
-}
 
 void backend_keybind_view(BackendKeybind v[BACKEND_KEYBIND_COUNT]) {
     char text[sizeof g_keybind_next];
@@ -693,37 +563,12 @@ void backend_keybind_view(BackendKeybind v[BACKEND_KEYBIND_COUNT]) {
     u64 named = keybind_named(text);
     int locked = options_overridden("keyboard_map");
     for (int i = 0; i < BACKEND_KEYBIND_COUNT; ++i) {
-        u64 bit = 1ull << KEY_BUTTONS[i].bit;
-        v[i].button = KEY_BUTTONS[i].name;
+        u64 bit = 1ull << KEYBIND_BUTTONS[i].bit;
+        v[i].button = KEYBIND_BUTTONS[i].name;
         v[i].custom = (named & bit) != 0;
         v[i].locked = locked;
         keybind_keys(map, bit, v[i].keys, sizeof v[i].keys);
     }
-}
-
-/* text without the words of button, then Button:key when key is given (button NULL: nothing is left). 0, or -1 when it
-   does not fit; out is then not to be used */
-static int keybind_edit(const char* text, const char* button, const char* key, char* out, size_t n) {
-    size_t blen = button ? strlen(button) : 0, at = 0;
-    out[0] = 0;
-    for (const char* p = text; button && *p;) {
-        size_t len = strcspn(p, " \t");
-        if (!len) {
-            ++p;
-            continue;
-        }
-        if (strcspn(p, ":") != blen || SDL_strncasecmp(p, button, blen)) {
-            int w = snprintf(out + at, n - at, "%s%.*s", at ? " " : "", (int)len, p);
-            if (w < 0 || (size_t)w >= n - at) return -1;
-            at += (size_t)w;
-        }
-        p += len;
-    }
-    if (button && key) {
-        int w = snprintf(out + at, n - at, "%s%s:%s", at ? " " : "", button, key);
-        if (w < 0 || (size_t)w >= n - at) return -1;
-    }
-    return 0;
 }
 
 void backend_keybind_request(const char* button, const char* key) {
@@ -789,22 +634,21 @@ void backend_padmap_view(BackendPadMap* v) {
 void backend_padmap_request(int control, int bit) {
     if (options_overridden("gamepad_map")) return; /* the command line holds it for this run */
     int all = control == BACKEND_PADMAP_ALL;
-    int button_ok = bit == SNX_PAD_NONE || (bit >= 0 && bit < SNX_PAD_BUTTONS);
-    if (!all && (control < 0 || control >= BACKEND_PADMAP_CONTROLS || !button_ok)) return;
+    int refused = 0;
     ui_lock();
     SnxPadMap own = padmap_own();
     if (all) {
         snx_pad_map_unset(&own);
     } else {
         SnxPadMap shown = padmap_shown(&own);
-        int holder = bit == SNX_PAD_NONE ? -1 : snx_pad_map_find(&shown, bit);
-        if (holder >= 0) shown.bit[holder] = shown.bit[control];
-        shown.bit[control] = (signed char)bit;
+        refused = snx_pad_map_assign(&shown, control, bit);
         if (g_settings.swap_a_b) snx_pad_map_swap_ab(&shown); /* own is kept without the swap, which goes over it */
         own = shown;
     }
-    g_padmap_next = own;
-    g_padmap_pending = 1;
+    if (!refused) {
+        g_padmap_next = own;
+        g_padmap_pending = 1;
+    }
     ui_unlock();
 }
 
@@ -839,7 +683,7 @@ static void window_changes_apply(void) {
 }
 
 /* The key the window waits for: the next press is taken here and goes nowhere else. Esc cancels, losing the focus
-   cancels, and a key the runtime keeps (key_reserved) is not taken. A key that has no name that gives the same key back
+   cancels, and a key the runtime keeps (keybind_key_reserved) is not taken. A key that has no name that gives the same key back
    cannot be written in keyboard_map: the capture ends with KEYCAP_UNNAMED */
 enum { KEYCAP_OFF, KEYCAP_WAIT, KEYCAP_GOT, KEYCAP_CANCEL, KEYCAP_UNNAMED };
 static int g_keycap;
@@ -868,7 +712,7 @@ static int keycap_event(const SDL_Event* e) {
     if (e->key.repeat) return 1;
     if (e->key.scancode == SDL_SCANCODE_ESCAPE) {
         keycap_cancel();
-    } else if (!key_reserved(e->key.scancode)) {
+    } else if (!keybind_key_reserved(e->key.scancode)) {
         const char* name = keycap_name(e->key.scancode);
         if (name) {
             for (size_t i = 0; i <= strlen(name); ++i) g_keycap_name[i] = name[i] == ' ' ? '_' : name[i];

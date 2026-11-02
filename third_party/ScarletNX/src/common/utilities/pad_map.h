@@ -68,5 +68,8 @@ int snx_pad_map_read(SnxPadMap* map, const char* text, char* error, size_t size)
 void snx_pad_map_write(const SnxPadMap* map, char* out, size_t size);
 /* the control sending bit, -1 for none */
 int snx_pad_map_find(const SnxPadMap* map, int bit);
+/* control sends bit (SNX_PAD_NONE for none), and the control that sent it gets what control sent, so no button is lost.
+   0, or -1 for a control or a button that does not exist: map is then as it was */
+int snx_pad_map_assign(SnxPadMap* map, int control, int bit);
 #define SNX_PAD_MAP_TEXT 192 /* room for snx_pad_map_write's text: 165 at most */
 #endif

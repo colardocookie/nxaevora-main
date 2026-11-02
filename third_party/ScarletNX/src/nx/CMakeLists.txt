@@ -79,7 +79,7 @@ snx_ship_walk(gpu/shipped_pass.c)
 include("${PROJECT_SOURCE_DIR}/cmake/controls_atlas.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 set(platform runtime/platform/plat.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
-             runtime/platform/backend/sdl3.c runtime/platform/backend/imgui_sdl.c
+             runtime/platform/backend/sdl3.c runtime/platform/backend/imgui_sdl.c runtime/platform/backend/keybind.c
              runtime/platform/backend/gamepad.c runtime/platform/tracy.c
              runtime/platform/hud.c runtime/platform/overlay.c runtime/platform/stats.c runtime/platform/touch.c
              runtime/platform/ui.c runtime/platform/vpad.c runtime/platform/fatal_screen.c
@@ -104,7 +104,7 @@ snx_shaderdec(snx_shader)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/compute.c
                  gpu/vk/pending_pages.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c
-                 gpu/vk/ftz_probe.c gpu/vk/imgui.c gpu/vk/imgui_glue.cpp gpu/vk/imgui_style.cpp gpu/vk/imgui_input.c gpu/vk/imgui_events.cpp gpu/vk/imgui_ui.cpp gpu/vk/imgui_settings.c gpu/vk/debug_stats.c
+                 gpu/vk/ftz_probe.c gpu/vk/imgui.c gpu/vk/imgui_glue.cpp gpu/vk/imgui_style.cpp gpu/vk/imgui_input.c gpu/vk/imgui_text.c gpu/vk/imgui_events.cpp gpu/vk/imgui_ui.cpp gpu/vk/imgui_settings.c gpu/vk/debug_stats.c
                  "${volk_SOURCE_DIR}/volk.c"
                  "${imgui_SOURCE_DIR}/imgui.cpp" "${imgui_SOURCE_DIR}/imgui_draw.cpp"
                  "${imgui_SOURCE_DIR}/imgui_tables.cpp" "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
