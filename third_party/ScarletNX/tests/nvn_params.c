@@ -149,9 +149,9 @@ static void test_sampler(void) {
     CHECK(s.min_lod == 0 && s.max_lod == 1000 && s.lod_bias == 0);
     CHECK(s.compare_enable == 0 && s.compare == 2 && s.anisotropy == 1);
     CHECK(!s.border[0] && !s.border[1] && !s.border[2] && !s.border[3] && !s.reduction && !s.lod_snap);
-    NvnSamplerDeviceWords dev = {0, 0};
+    NvnSamplerDeviceWords dev = nvn_sampler_device_words;
     uint32_t words[8];
-    const uint32_t defaults[8] = {0x26000, 0x262, 0xf00000, 0, 0, 0, 0, 0};
+    const uint32_t defaults[8] = {0x26000, 0x362, 0xf00000, 0, 0, 0, 0, 0};
     nvn_sampler_descriptor(&s, &dev, words);
     CHECK(!memcmp(words, defaults, sizeof words));
     s.wrap[0] = 0; s.wrap[1] = 2; s.wrap[2] = 7;
@@ -182,7 +182,7 @@ static void test_sampler(void) {
     nvn_sampler_defaults(&s);
     s.lod_snap = 0.25f;
     nvn_sampler_descriptor(&s, &dev, words);
-    CHECK(words[1] == 0x21fc0262); /* index 8, bias -64/256 */
+    CHECK(words[1] == 0x21fc0362); /* index 8, bias -64/256 */
     s.lod_snap = 0; s.lod_bias = -100; s.min_lod = 20; s.max_lod = -1;
     dev = (NvnSamplerDeviceWords){16, 0x100};
     s.reduction = 2;
@@ -284,6 +284,204 @@ static void test_texture_layout(void) {
     CHECK(nvn_texture_storage_alignment(&b, &dev) == 0x20);
 }
 
+/* Expected words below are hand-computed from the accepted encoder table. The synthetic seed
+   has component codes (1,2,3,4), bit31, and low format bits 0x25. No game format data is used. */
+static void check_texture_descriptor(const NvnTexture* t, const NvnTextureView* v,
+    const NvnTextureDeviceWords* dev, const NvnTextureFormatRecord* r, const uint32_t expected[8]) {
+    uint32_t words[8];
+    CHECK(nvn_texture_descriptor(t, v, dev, r, words) == NVN_TEXTURE_DESCRIPTOR_OK);
+    for (unsigned i = 0; i < 8; i++) {
+        if (words[i] != expected[i])
+            printf("descriptor word %u: actual=%08x expected=%08x\n", i, words[i], expected[i]);
+        CHECK(words[i] == expected[i]);
+    }
+}
+static void test_texture_descriptor(void) {
+    NvnTexture t = {0};
+    nvn_texture_builder_defaults(&t.builder);
+    t.builder.format = 0x25;
+    t.layout = (NvnTextureLayout){.width = 16, .height = 8, .depth = 1, .levels = 1,
+        .tile_x = 3, .tile_y = 1, .tile_z = 2, .layer_stride = 0x1000};
+    t.address = 0x0412345600ull;
+    NvnTextureFormatRecord r = {.seed = 0xc6880025};
+    NvnTextureDeviceWords dev = nvn_texture_device_words;
+    /* q3: enable 0x10000, quality 0x60000, tile 0xc88. Row 2 gives q6=0x3000000.
+       q4: fixed 0xe0000000, sector 1<<27, target 1<<23, width-1=15. */
+    const uint32_t rgba[8] = {0xc6880025, 0x12345600, 0x00600004, 0x00070c88,
+                              0xe880000f, 0x80000007, 0x03000000, 0};
+    check_texture_descriptor(&t, NULL, &dev, &r, rgba);
+    CHECK(dev.w08 == 0x4000 && dev.w1a48 == 2 && dev.w1a4c == 1 && dev.w1a50 == 0);
+    CHECK(dev.w1a54 == 0xffffffff && dev.w1a88 == 2 && dev.w1b1c == 1);
+    CHECK(nvn_sampler_device_words.w1a80 == 0 && nvn_sampler_device_words.w1a84 == 0x111);
+    /* Linear: stride>>5=0x55e6f, low16=0x5e6f; clear bits10..12, insert tile_x=3.
+       Pitch kind=2 and target code=7. No sector or mip fields. */
+    t.builder.flags = NVN_TEXTURE_FLAG_LINEAR;
+    t.layout.linear_stride = 0xabcde0;
+    const uint32_t linear[8] = {0xc6880025, 0x12345600, 0x00400004, 0x00004e6f,
+                                0xe380000f, 0x80000007, 0x03000000, 0};
+    check_texture_descriptor(&t, NULL, &dev, &r, linear);
+    /* Buffer: width-1=0x123455 splits across q3 and q4. Only target code 6 remains. */
+    t.builder.flags = 0; t.builder.target = 10; t.layout.width = 0x123456;
+    const uint32_t buffer[8] = {0xc6880025, 0x12345600, 4, 0x12, 0x03003455, 0, 0, 0};
+    check_texture_descriptor(&t, NULL, &dev, &r, buffer);
+    /* Cube uses target code 3 and depth 1, even with six faces in the layout. */
+    t.builder.target = 8; t.layout.width = 16; t.layout.depth = 6;
+    uint32_t cube[8]; memcpy(cube, rgba, sizeof cube); cube[4] = 0xe980000f;
+    check_texture_descriptor(&t, NULL, &dev, &r, cube);
+    /* Array: layer 0x109 adds 0x109000 to A, puts 1 in q4[16:18],
+       1 in q2[16:20] and 1 in q2[29:31]. Two layers give q5[16:29]=1. */
+    t.builder.target = 4; t.layout.depth = 300;
+    NvnTextureView v = {.flags = NVN_VIEW_LAYERS, .base_layer = 0x109, .layer_count = 2};
+    const uint32_t array[8] = {0xc6880025, 0x1244e600, 0x20610004, 0x00070c88,
+                               0xea81000f, 0x80010007, 0x03000000, 0};
+    check_texture_descriptor(&t, &v, &dev, &r, array);
+    /* Count 0 uses Z-base=35. Clearing the flag stops the address change,
+       but registration still copies raw base-layer bits. */
+    v.layer_count = 0;
+    uint32_t remaining[8]; memcpy(remaining, array, sizeof remaining); remaining[5] = 0x80220007;
+    check_texture_descriptor(&t, &v, &dev, &r, remaining);
+    v.flags = 0; memcpy(remaining, array, sizeof remaining);
+    remaining[1] = 0x12345600; remaining[5] = 0x812b0007;
+    check_texture_descriptor(&t, &v, &dev, &r, remaining);
+    /* View selects 2D and another synthetic seed. Swizzle (A,ONE,ZERO,invalid)
+       selects codes (4,6,0,1). sRGB adds bit22 in q4. */
+    t.builder.target = 10; t.layout.depth = 1;
+    v = (NvnTextureView){.flags = NVN_VIEW_FORMAT | NVN_VIEW_SWIZZLE | NVN_VIEW_TARGET,
+        .format = 0x26, .target = 1, .swizzle = {5, 1, 0, 99}};
+    r = (NvnTextureFormatRecord){.seed = 0xc6880055, .one_code = 1, .srgb = 1};
+    uint32_t override[8]; memcpy(override, rgba, sizeof override);
+    override[0] = 0x91a00055; override[4] = 0xe8c0000f;
+    check_texture_descriptor(&t, &v, &dev, &r, override);
+    r.one_code = 0; override[0] = 0x91e00055;
+    check_texture_descriptor(&t, &v, &dev, &r, override);
+    /* Depth/stencil mode 1 uses B=0x24900000 for f=0x35 and changes low6 to 14.
+       Mode 9 uses B=0x76d80000. Identity swizzle preserves each changed seed. */
+    t.builder.target = 1; t.builder.format = 0x35;
+    r = (NvnTextureFormatRecord){.seed = 0xc6880025, .depth_size = 24, .stencil_size = 8};
+    v = (NvnTextureView){.flags = NVN_VIEW_DEPTH_STENCIL_MODE, .depth_stencil_mode = 1};
+    uint32_t ds[8]; memcpy(ds, rgba, sizeof ds); ds[0] = 0xa490000e;
+    check_texture_descriptor(&t, &v, &dev, &r, ds);
+    v.depth_stencil_mode = 9; ds[0] = 0xf6d80025;
+    check_texture_descriptor(&t, &v, &dev, &r, ds);
+    /* Ordinary depth format: B=0x36d80000 or 0x74900000. A 32/8 record uses low6=5. */
+    t.builder.format = 0x36; r.depth_size = 32; v.depth_stencil_mode = 1; ds[0] = 0xb6d80005;
+    check_texture_descriptor(&t, &v, &dev, &r, ds);
+    t.builder.depth_stencil_mode = 2; ds[0] = 0xf4900025;
+    check_texture_descriptor(&t, NULL, &dev, &r, ds);
+    r.depth_size = 0; ds[0] = 0xa4900025;
+    check_texture_descriptor(&t, NULL, &dev, &r, ds);
+    /* Multisample target 6 has code 5. Four samples give sample code 2 at q7 bit8. */
+    t.builder.format = 0x25; t.builder.target = 6; t.layout.samples = 4;
+    r = (NvnTextureFormatRecord){.seed = 0xc6880025};
+    uint32_t ms[8]; memcpy(ms, rgba, sizeof ms); ms[4] = 0xea80000f; ms[7] = 0x200;
+    check_texture_descriptor(&t, NULL, &dev, &r, ms);
+    /* M=6-1=5; hi=min(4-1,5)=3. View base2,count1 gives lo=hi=2. */
+    t.builder.target = 1; t.builder.levels = 4; t.layout.levels = 6;
+    uint32_t mip[8]; memcpy(mip, rgba, sizeof mip); mip[3] = 0x50070c88; mip[7] = 0x30;
+    check_texture_descriptor(&t, NULL, &dev, &r, mip);
+    v = (NvnTextureView){.flags = NVN_VIEW_LEVELS, .base_level = 2, .level_count = 1};
+    mip[7] = 0x22; check_texture_descriptor(&t, &v, &dev, &r, mip);
+    v.base_level = 9; v.level_count = 0; mip[7] = 0x35;
+    check_texture_descriptor(&t, &v, &dev, &r, mip);
+    /* Clamp row index to 5: q3 adds 31<<21; q6=(3<<25)|(3<<23)|(1<<30). */
+    dev.w1a88 = UINT32_MAX; t.builder.levels = t.layout.levels = 1;
+    uint32_t clamp[8]; memcpy(clamp, rgba, sizeof clamp);
+    clamp[3] = 0x03e70c88; clamp[6] = 0x47800000;
+    check_texture_descriptor(&t, NULL, &dev, &r, clamp);
+    uint32_t out[8], unchanged[8];
+    memset(out, 0xa5, sizeof out); memcpy(unchanged, out, sizeof out);
+    t.builder.format = 0xa1;
+    CHECK(nvn_texture_descriptor(&t, NULL, &dev, &r, out) == NVN_TEXTURE_DESCRIPTOR_BAD_FORMAT);
+    CHECK(!memcmp(out, unchanged, sizeof out));
+    t.builder.format = 0xa0; t.builder.target = 11;
+    CHECK(nvn_texture_descriptor(&t, NULL, &dev, &r, out) == NVN_TEXTURE_DESCRIPTOR_BAD_TARGET);
+    CHECK(!memcmp(out, unchanged, sizeof out));
+    v = (NvnTextureView){.flags = NVN_VIEW_FORMAT | NVN_VIEW_TARGET, .format = 0xa1, .target = 1};
+    CHECK(nvn_texture_descriptor(&t, &v, &dev, &r, out) == NVN_TEXTURE_DESCRIPTOR_BAD_FORMAT);
+    v.format = 0; v.target = 11;
+    CHECK(nvn_texture_descriptor(&t, &v, &dev, &r, out) == NVN_TEXTURE_DESCRIPTOR_BAD_TARGET);
+    CHECK(!memcmp(out, unchanged, sizeof out));
+}
+static void test_texture_descriptor_fields(void) {
+    NvnTexture t = {.address = 0x0412345600ull};
+    nvn_texture_builder_defaults(&t.builder);
+    t.builder.format = 0x25;
+    t.layout = (NvnTextureLayout){.width = 1, .height = 1, .depth = 1, .levels = 1, .layer_stride = 0x1000};
+    NvnTextureFormatRecord r = {.seed = 0xc6880025};
+    NvnTextureDeviceWords dev = nvn_texture_device_words;
+    uint32_t expected[8] = {0xc6880025, 0x12345600, 0x00600004, 0x70000, 0xe8800000, 0x80000000, 0x3000000, 0};
+    /* Sector codes for device values 0,1,2,3,4 are 0,2,1,3,0 at q4 bit27. */
+    const uint32_t sectors[] = {0xe0800000, 0xf0800000, 0xe8800000, 0xf8800000, 0xe0800000};
+    for (unsigned i = 0; i < 5; i++) {
+        dev.w1a48 = i; expected[4] = sectors[i];
+        check_texture_descriptor(&t, NULL, &dev, &r, expected);
+    }
+    dev = nvn_texture_device_words; expected[4] = 0xe8800000;
+    /* Enable adds bit16. Quality codes 1,2,3,0 occupy q3 bits17..18. */
+    const uint32_t overrides[] = {0x914b83af, 0xab0341cf, 0x13478abe, 0x034e1413};
+    const uint32_t quality[] = {0x30000, 0x50000, 0x70000, 0x10000};
+    for (unsigned i = 0; i < 4; i++) {
+        dev.w1a54 = overrides[i]; expected[3] = quality[i];
+        check_texture_descriptor(&t, NULL, &dev, &r, expected);
+    }
+    dev = nvn_texture_device_words; dev.w1a50 = 20; expected[3] = 0x50000;
+    check_texture_descriptor(&t, NULL, &dev, &r, expected);
+    dev.w1a4c = 0; expected[3] = 0x40000;
+    check_texture_descriptor(&t, NULL, &dev, &r, expected);
+    dev = nvn_texture_device_words;
+    /* Each row puts its five fields at q6:25, q6:23, q3:19, q6:30, q3:21. */
+    const uint32_t row_q3[] = {0x70000, 0xf0000, 0x70000, 0x70000, 0x1270000, 0x3e70000};
+    const uint32_t row_q6[] = {0x1000000, 0x41000000, 0x3000000, 0x3800000, 0x7800000, 0x47800000};
+    for (unsigned i = 0; i < 6; i++) {
+        dev.w1a88 = i; expected[3] = row_q3[i]; expected[6] = row_q6[i];
+        check_texture_descriptor(&t, NULL, &dev, &r, expected);
+    }
+    dev = nvn_texture_device_words; expected[3] = 0x70000; expected[6] = 0x3000000;
+    /* Targets 5 and 6 both use the sample table. Samples 0,2,4,8,16,3 give 0,5,2,4,6,0. */
+    const uint32_t samples[] = {0, 2, 4, 8, 16, 3};
+    const uint32_t sample_words[] = {0, 0x500, 0x200, 0x400, 0x600, 0};
+    for (unsigned target = 5; target <= 6; target++) {
+        t.builder.target = target; expected[4] = target == 5 ? 0xe8800000 : 0xea800000;
+        for (unsigned i = 0; i < 6; i++) {
+            t.layout.samples = samples[i]; expected[7] = sample_words[i];
+            check_texture_descriptor(&t, NULL, &dev, &r, expected);
+        }
+    }
+    /* Target 7 clears q5 bit31. A dimension above +8 changes its target code from 1 to 7. */
+    t.builder.target = 7; expected[4] = 0xe8800000; expected[5] = 0; expected[7] = 0;
+    check_texture_descriptor(&t, NULL, &dev, &r, expected);
+    t.layout.width = 0x4001; expected[4] = 0xeb804000;
+    check_texture_descriptor(&t, NULL, &dev, &r, expected);
+    t.layout.width = 1; t.layout.height = 0x4001; expected[4] = 0xeb800000; expected[5] = 0x4000;
+    check_texture_descriptor(&t, NULL, &dev, &r, expected);
+    /* Cube array: twelve selected faces become two cubes. A adds six layer strides. */
+    t.builder.target = 9; t.layout.height = 1; t.layout.depth = 18;
+    NvnTextureView v = {.flags = NVN_VIEW_LAYERS, .base_layer = 6, .layer_count = 12};
+    expected[1] = 0x1234b600; expected[4] = 0xec060000; expected[5] = 0x80010000;
+    check_texture_descriptor(&t, &v, &dev, &r, expected);
+    v.layer_count = 0;
+    check_texture_descriptor(&t, &v, &dev, &r, expected);
+    /* Target 6 also applies layer count; target 7 retains all 18 layout layers. */
+    t.builder.target = 6; v.layer_count = 2; expected[4] = 0xea860000;
+    check_texture_descriptor(&t, &v, &dev, &r, expected);
+    t.builder.target = 7; expected[4] = 0xe8860000; expected[5] = 0x00110000;
+    check_texture_descriptor(&t, &v, &dev, &r, expected);
+    /* Registration: flags bit5 -> q5 bit30; bit3 -> q6 bit0 for block kind 3. */
+    t.builder.target = 1; t.builder.flags = 0x28; t.layout.depth = 1;
+    expected[1] = 0x12345600; expected[4] = 0xe8800000; expected[5] = 0xc0000000; expected[6] = 0x3000001;
+    check_texture_descriptor(&t, NULL, &dev, &r, expected);
+    /* Buffer kind 0 puts flags bit3 at q5 bit31 instead. */
+    t.builder.target = 10;
+    expected[2] = 4; expected[3] = 0; expected[4] = 0x03000000; expected[6] = 0;
+    check_texture_descriptor(&t, NULL, &dev, &r, expected);
+}
+static void test_packaged_tile(void) {
+    CHECK(nvn_texture_packaged_tile(0) == 1);
+    CHECK(nvn_texture_packaged_tile(0x123) == 0x1231);
+    CHECK(nvn_texture_packaged_tile(0xfffffabc) == 0xabc1);
+    CHECK(nvn_texture_packaged_tile(UINT32_MAX) == 0xfff1);
+}
+
 /* Optional external diagnostic input. The game log remains outside the source tree. */
 static void test_texture_queries(const char* path) {
     FILE* file = fopen(path, "r");
@@ -326,6 +524,9 @@ static void test_texture_queries(const char* path) {
 
 int main(int argc, char** argv) {
     test_sampler();
+    test_packaged_tile();
+    test_texture_descriptor();
+    test_texture_descriptor_fields();
     test_snap_formula();
     test_texture_layout();
     if (argc == 2) test_texture_queries(argv[1]);

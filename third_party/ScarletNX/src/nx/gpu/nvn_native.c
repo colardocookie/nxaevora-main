@@ -350,16 +350,28 @@ DESCRIPTOR_POOL_HANDLERS(texture, NVN_OBJ_TEXTURE_POOL)
 DESCRIPTOR_POOL_HANDLERS(sampler, NVN_OBJ_SAMPLER_POOL)
 
 /* G3 and G5: the sampler and texture records are independent of the guest allocation sizes. */
-typedef struct {
-    NvnTextureBuilder builder;
-    NvnTextureLayout layout;
-    uint64_t address;
-} TextureRec;
+typedef NvnTexture TextureRec;
 static NvnSampler* sampler_builder(u64 addr) {
     return rec_get(addr, NVN_OBJ_SAMPLER_BUILDER, sizeof(NvnSampler));
 }
 static NvnTextureBuilder* texture_builder(u64 addr) {
     return rec_get(addr, NVN_OBJ_TEXTURE_BUILDER, sizeof(NvnTextureBuilder));
+}
+static NvnTextureView* texture_view(u64 addr) {
+    return rec_get(addr, NVN_OBJ_TEXTURE_VIEW, sizeof(NvnTextureView));
+}
+/* Check each memory region before using the guest read helpers. */
+static int native_guest_readable(u64 addr, u64 size) {
+    if (!addr || addr >= AS_SIZE || size > AS_SIZE - addr) return 0;
+    u64 end = addr + size;
+    while (addr < end) {
+        MemBlock block;
+        mem_query(addr, &block);
+        if (!(block.perm & PERM_R) || !block.size || block.addr > addr ||
+            block.size > AS_SIZE - block.addr || block.addr + block.size <= addr) return 0;
+        addr = block.addr + block.size;
+    }
+    return 1;
 }
 static float native_float_arg(const CPU* c, unsigned index) {
     uint32_t bits = SNX_VS(c->v[index], 0);
@@ -428,6 +440,37 @@ RESOURCE_BUILDER_HANDLER(texture_builder_get_storage_alignment, NvnTextureBuilde
 RESOURCE_BUILDER_HANDLER(texture_builder_get_storage_size, NvnTextureBuilder, texture_builder,
     NvnTextureLayout l; nvn_texture_layout(b, &nvn_texture_device_words, &l); c->x[0] = l.size)
 
+RESOURCE_BUILDER_HANDLER(texture_builder_set_width, NvnTextureBuilder, texture_builder,
+    b->width = (u32)c->x[1])
+RESOURCE_BUILDER_HANDLER(texture_builder_set_height, NvnTextureBuilder, texture_builder,
+    b->height = (u32)c->x[1])
+RESOURCE_BUILDER_HANDLER(texture_builder_set_depth, NvnTextureBuilder, texture_builder,
+    b->depth = (u32)c->x[1])
+RESOURCE_BUILDER_HANDLER(texture_view_set_defaults, NvnTextureView, texture_view,
+    memset(b, 0, sizeof *b))
+RESOURCE_BUILDER_HANDLER(texture_view_set_levels, NvnTextureView, texture_view,
+    b->flags |= NVN_VIEW_LEVELS; b->base_level = (uint8_t)c->x[1]; b->level_count = (uint8_t)c->x[2])
+RESOURCE_BUILDER_HANDLER(texture_view_set_layers, NvnTextureView, texture_view,
+    b->flags |= NVN_VIEW_LAYERS; b->base_layer = (uint16_t)c->x[1]; b->layer_count = (uint16_t)c->x[2])
+RESOURCE_BUILDER_HANDLER(texture_view_set_format, NvnTextureView, texture_view,
+    b->flags |= NVN_VIEW_FORMAT; b->format = (u32)c->x[1])
+RESOURCE_BUILDER_HANDLER(texture_view_set_swizzle, NvnTextureView, texture_view,
+    b->flags |= NVN_VIEW_SWIZZLE; for (unsigned i = 0; i < 4; i++) b->swizzle[i] = (u32)c->x[i + 1])
+RESOURCE_BUILDER_HANDLER(texture_view_set_depth_stencil_mode, NvnTextureView, texture_view,
+    b->flags |= NVN_VIEW_DEPTH_STENCIL_MODE; b->depth_stencil_mode = (u32)c->x[1])
+RESOURCE_BUILDER_HANDLER(texture_view_set_target, NvnTextureView, texture_view,
+    b->flags |= NVN_VIEW_TARGET; b->target = (u32)c->x[1])
+
+static void h_texture_builder_set_packaged_texture_layout(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    if (native_guest_readable(c->x[1], sizeof(uint32_t)))
+        texture_builder(c->x[0])->tile = nvn_texture_packaged_tile(gr32(c->x[1]));
+    else
+        LOG("nvn-native: packaged texture layout unreadable address=%llx\n", (unsigned long long)c->x[1]);
+    pm_unlock(&objs_lock);
+}
+
 #undef RESOURCE_BUILDER_HANDLER
 
 static void h_sampler_initialize(CPU* c, u64 entry) {
@@ -443,23 +486,30 @@ static void* known_record(u64 addr, NvnObjKind kind) {
     NvnObj* o = nvn_objtab_find(&objs, addr);
     return o && o->kind == (uint32_t)kind ? o->data : NULL;
 }
-static void sampler_pool_register(CPU* c) {
-    DescriptorPoolRec* pool = known_record(c->x[0], NVN_OBJ_SAMPLER_POOL);
+/* Caller holds objs_lock. Both descriptor types use signed indices and 32-byte entries. */
+static int descriptor_destination(CPU* c, NvnObjKind kind, const char* operation, uint64_t* at) {
+    DescriptorPoolRec* pool = known_record(c->x[0], kind);
     if (!pool) {
-        LOG("nvn-native: sampler registration unknown descriptor pool=%llx\n", (unsigned long long)c->x[0]);
-        return;
+        LOG("nvn-native: %s unknown descriptor pool=%llx\n", operation, (unsigned long long)c->x[0]);
+        return 0;
     }
     MemoryPoolRec* memory = known_record(pool->memory_pool, NVN_OBJ_MEMORY_POOL);
     if (!memory) {
-        LOG("nvn-native: sampler registration unknown memory pool=%llx\n", (unsigned long long)pool->memory_pool);
-        return;
+        LOG("nvn-native: %s unknown memory pool=%llx\n", operation, (unsigned long long)pool->memory_pool);
+        return 0;
     }
     uint64_t base = nvn_memory_pool_map(memory->flags, memory->storage);
     if (!base) {
-        LOG("nvn-native: sampler registration has no CPU base, memory pool=%llx flags=%x\n",
-            (unsigned long long)pool->memory_pool, memory->flags);
-        return;
+        LOG("nvn-native: %s has no CPU base, memory pool=%llx flags=%x\n",
+            operation, (unsigned long long)pool->memory_pool, memory->flags);
+        return 0;
     }
+    *at = base + pool->offset + (uint64_t)((int64_t)(int32_t)c->x[1] * NVN_SAMPLER_DESCRIPTOR_BYTES);
+    return 1;
+}
+static void sampler_pool_register(CPU* c) {
+    uint64_t at;
+    if (!descriptor_destination(c, NVN_OBJ_SAMPLER_POOL, "sampler registration", &at)) return;
     NvnSampler* sampler = known_record(c->x[2], NVN_OBJ_SAMPLER);
     if (!sampler) {
         LOG("nvn-native: sampler registration unknown sampler=%llx\n", (unsigned long long)c->x[2]);
@@ -467,7 +517,6 @@ static void sampler_pool_register(CPU* c) {
     }
     uint32_t words[NVN_SAMPLER_DESCRIPTOR_WORDS];
     nvn_sampler_descriptor(sampler, &nvn_sampler_device_words, words);
-    uint64_t at = base + pool->offset + (uint64_t)((int64_t)(int32_t)c->x[1] * NVN_SAMPLER_DESCRIPTOR_BYTES);
     for (unsigned i = 0; i < NVN_SAMPLER_DESCRIPTOR_WORDS; i++) gw32(at + i * sizeof(uint32_t), words[i]);
 }
 static void h_sampler_pool_register_sampler(CPU* c, u64 entry) {
@@ -476,6 +525,83 @@ static void h_sampler_pool_register_sampler(CPU* c, u64 entry) {
     sampler_pool_register(c);
     pm_unlock(&objs_lock);
 }
+#define TEXTURE_FORMAT_TABLE_POINTER 0xe03fd40ull
+#define TEXTURE_FORMAT_RECORD_BYTES 0x30u
+#define TEXTURE_FORMAT_SEED_OFFSET 0x24u
+#define TEXTURE_FORMAT_DEPTH_OFFSET 0x0eu
+#define TEXTURE_FORMAT_STENCIL_OFFSET 0x0fu
+#define TEXTURE_FORMAT_ONE_OFFSET 0x11u
+#define TEXTURE_FORMAT_SRGB_OFFSET 0x12u
+
+static int texture_format_record(uint32_t format, NvnTextureFormatRecord* record) {
+    if (format > NVN_TEXTURE_FORMAT_MAX) {
+        LOG("nvn-native: texture registration invalid format=%x\n", format);
+        return 0;
+    }
+    if (!native_guest_readable(TEXTURE_FORMAT_TABLE_POINTER, sizeof(uint64_t))) {
+        LOG("nvn-native: texture registration unreadable table pointer at=%llx\n",
+            (unsigned long long)TEXTURE_FORMAT_TABLE_POINTER);
+        return 0;
+    }
+    uint64_t table = gr64(TEXTURE_FORMAT_TABLE_POINTER);
+    uint64_t offset = (uint64_t)format * TEXTURE_FORMAT_RECORD_BYTES;
+    if (!table || table > UINT64_MAX - offset || !native_guest_readable(table + offset, TEXTURE_FORMAT_RECORD_BYTES)) {
+        LOG("nvn-native: texture registration unreadable format=%x table=%llx\n", format, (unsigned long long)table);
+        return 0;
+    }
+    uint64_t at = table + offset;
+    record->seed = gr32(at + TEXTURE_FORMAT_SEED_OFFSET);
+    record->depth_size = *GP(at + TEXTURE_FORMAT_DEPTH_OFFSET);
+    record->stencil_size = *GP(at + TEXTURE_FORMAT_STENCIL_OFFSET);
+    record->one_code = *GP(at + TEXTURE_FORMAT_ONE_OFFSET);
+    record->srgb = *GP(at + TEXTURE_FORMAT_SRGB_OFFSET);
+    return 1;
+}
+static void texture_pool_register(CPU* c) {
+    uint64_t at;
+    if (!descriptor_destination(c, NVN_OBJ_TEXTURE_POOL, "texture registration", &at)) return;
+    TextureRec* texture = known_record(c->x[2], NVN_OBJ_TEXTURE);
+    if (!texture) {
+        LOG("nvn-native: texture registration unknown texture=%llx\n", (unsigned long long)c->x[2]);
+        return;
+    }
+    NvnTextureView* view = c->x[3] ? known_record(c->x[3], NVN_OBJ_TEXTURE_VIEW) : NULL;
+    if (c->x[3] && !view) {
+        LOG("nvn-native: texture registration unknown view=%llx\n", (unsigned long long)c->x[3]);
+        return;
+    }
+    uint32_t format = view && (view->flags & NVN_VIEW_FORMAT) ? view->format : texture->builder.format;
+    NvnTextureFormatRecord record;
+    if (!texture_format_record(format, &record)) return;
+    uint32_t words[NVN_TEXTURE_DESCRIPTOR_WORDS];
+    NvnTextureDescriptorResult result = nvn_texture_descriptor(texture, view, &nvn_texture_device_words, &record, words);
+    if (result != NVN_TEXTURE_DESCRIPTOR_OK) {
+        LOG("nvn-native: texture registration invalid descriptor result=%u texture=%llx\n",
+            (unsigned)result, (unsigned long long)c->x[2]);
+        return;
+    }
+    for (unsigned i = 0; i < NVN_TEXTURE_DESCRIPTOR_WORDS; i++) gw32(at + i * sizeof(uint32_t), words[i]);
+}
+static void h_texture_pool_register_texture(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    texture_pool_register(c);
+    pm_unlock(&objs_lock);
+}
+#define TEXTURE_GETTER(name, value) \
+    static void h_texture_get_##name(CPU* c, u64 entry) { \
+        (void)entry; \
+        pm_lock(&objs_lock); \
+        TextureRec* t = known_record(c->x[0], NVN_OBJ_TEXTURE); \
+        if (!t) LOG("nvn-native: texture getter " #name " unknown texture=%llx\n", (unsigned long long)c->x[0]); \
+        c->x[0] = t ? (value) : 0; \
+        pm_unlock(&objs_lock); \
+    }
+TEXTURE_GETTER(width, t->builder.width)
+TEXTURE_GETTER(height, t->builder.height)
+TEXTURE_GETTER(stride, t->layout.linear_stride)
+#undef TEXTURE_GETTER
+
 static int texture_initialize(TextureRec* t, const NvnTextureBuilder* b) {
     if (b->gl_name) {
         LOG("nvn-native: texture import not supported\n");
@@ -596,6 +722,21 @@ static const NativeProc native_procs[] = {
     {"nvnSamplerInitialize", h_sampler_initialize},
     {"nvnSamplerPoolRegisterSampler", h_sampler_pool_register_sampler},
     {"nvnTextureInitialize", h_texture_initialize},
+    {"nvnTextureBuilderSetWidth", h_texture_builder_set_width},
+    {"nvnTextureBuilderSetHeight", h_texture_builder_set_height},
+    {"nvnTextureBuilderSetDepth", h_texture_builder_set_depth},
+    {"nvnTextureBuilderSetPackagedTextureLayout", h_texture_builder_set_packaged_texture_layout},
+    {"nvnTextureViewSetDefaults", h_texture_view_set_defaults},
+    {"nvnTextureViewSetLevels", h_texture_view_set_levels},
+    {"nvnTextureViewSetLayers", h_texture_view_set_layers},
+    {"nvnTextureViewSetFormat", h_texture_view_set_format},
+    {"nvnTextureViewSetSwizzle", h_texture_view_set_swizzle},
+    {"nvnTextureViewSetDepthStencilMode", h_texture_view_set_depth_stencil_mode},
+    {"nvnTextureViewSetTarget", h_texture_view_set_target},
+    {"nvnTextureGetWidth", h_texture_get_width},
+    {"nvnTextureGetHeight", h_texture_get_height},
+    {"nvnTextureGetStride", h_texture_get_stride},
+    {"nvnTexturePoolRegisterTexture", h_texture_pool_register_texture},
     {NULL, NULL},
 };
 

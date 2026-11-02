@@ -915,12 +915,12 @@ with flag 8 whose pool has no flag in 0x280. Successful initialization logs its 
 
 The sampler LOD snap formula is `T[i]=(8-d)/(2*d)`, with `d=(8+i%8)*2^(i/8)`. All 32 f32 results match the module
 at de87870. The encoder uses this formula rather than a copied table. Border RGB uses the library's sRGB conversion.
-Device words +0x1a80 and +0x1a84 were not measured by 3b-2 and have no stored host value. Their named provisional
-constants are 0. Their actual values remain open.
+Device initialization disassembly verifies +0x1a80=0 and +0x1a84=0x111. The sampler descriptor now
+includes bit 0x100 in word 1 with these inputs.
 
-Texture device inputs are named provisional constants: +0xac=0x10000, +0x19f8=0, +0x19fc=0, +0x1b18=0,
-+0x1b1c=1. The first, second and last values are required by the accepted derived cases. The other two use the
-analyst's size model inputs. These are not measurements of device initialization. The code implements classification R
+Texture device inputs +0xac=0x10000, +0x19f8=0, +0x19fc=0 and +0x1b18=0 are verified device values.
+Only +0x1b1c=1 stays provisional: the 40 archived size queries require R to be true for flags 9 and format 0x25,
+although device initialization clears this byte. The code implements classification R
 for size and alignment. Chip kind selection and NvRmGpuMappingModify are not ported. The texture kind byte stays 0,
 and the address is always the memory pool host GPU base plus offset. GPU page-table mapping remains open from 3b-4.
 
@@ -930,3 +930,17 @@ adaptive tiles, imports, invalid formats and compression inputs. All 40 storage 
 library run `logs/2026-11-02_16-50-49.log`. The current update log is the later native run and has zero results
 from missing handlers. Give the archived log path to the standalone test to repeat the comparison. No game file
 is part of the source change. Runtime integration has not been built or run for this part.
+
+### 3b-5b Texture views and descriptor registration
+
+The 15 new handlers add builder dimensions and packaged layout, seven view setters, texture width/height/stride
+getters and pool registration. Views use host records with set flags and 8-bit level or 16-bit layer fields.
+The pure encoder follows d858c70, d8593f0 and registration d83d99c..d83da34. It reads a supplied format record.
+The handler reads the relocated pointer at guest e03fd40 on each call. Records have 0x30 bytes; the seed is the
+u32 at byte offset 0x24 (d858d28). No game format table is in the source. New verified device words are
++8=0x4000, +0x1a48=2, +0x1a4c=1, +0x1a50=0, +0x1a54=0xffffffff and +0x1a88=2. Format indices above 0xa0
+and targets above 10 fail; device rows above 5 use row 5. Both descriptor types share the CPU destination lookup.
+Unknown objects, a zero CPU base or unreadable input give one error line and no write. A null view is valid.
+Synthetic tests check hand-computed descriptor words, view overrides, depth/stencil, samples, mips, invalid indices,
+device rows and packaged tiles. No real descriptor was logged. Other view getters are outside this part.
+The texture initialization log is unchanged. Runtime integration has not been built or run for this part.

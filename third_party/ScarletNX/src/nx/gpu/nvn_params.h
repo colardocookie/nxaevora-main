@@ -92,9 +92,9 @@ typedef struct {
     float lod_snap;
 } NvnSampler;
 typedef struct { uint32_t w1a80, w1a84; } NvnSamplerDeviceWords;
-/* These words were not logged by 3b-2. Zero is provisional, not a device measurement. */
-#define NVN_SAMPLER_UNKNOWN_LOD_BIAS 0u
-#define NVN_SAMPLER_UNKNOWN_FILTER_FLAGS 0u
+/* Device initialization stores these values (SDK d8312e4 and d8312fc). */
+#define NVN_SAMPLER_DEVICE_LOD_BIAS 0u
+#define NVN_SAMPLER_DEVICE_FILTER_FLAGS 0x111u
 extern const NvnSamplerDeviceWords nvn_sampler_device_words;
 void nvn_sampler_defaults(NvnSampler* s);
 float nvn_sampler_snap_bias(uint32_t index);
@@ -131,12 +131,20 @@ void nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* de
 #define NVN_TEXTURE_LINEAR_ALIGNMENT 0x20u
 #define NVN_TEXTURE_LINEAR_RT_ALIGNMENT 0x80u
 #define NVN_TEXTURE_COMPRESSION_DISABLED 0x76165656u
-/* Provisional device inputs required by the accepted derived cases, not measured device fields. */
+/* Device initialization values checked against the library disassembly. */
 #define NVN_TEXTURE_DEVICE_PAGE_SIZE 0x10000u
 #define NVN_TEXTURE_DEVICE_COLOR_COMPRESSION 0u
 #define NVN_TEXTURE_DEVICE_DEPTH_COMPRESSION 0u
 #define NVN_TEXTURE_DEVICE_BUFFER_KIND 0u
+/* Provisional: keep R true for flags 9 and format 0x25. The 40 archived size
+   queries need this non-zero value, although device initialization clears +0x1b1c. */
 #define NVN_TEXTURE_DEVICE_COMPRESSION_ENABLE 1u
+#define NVN_TEXTURE_DEVICE_DIMENSION_LIMIT 0x4000u
+#define NVN_TEXTURE_DEVICE_SECTOR_LAYOUT 2u
+#define NVN_TEXTURE_DEVICE_HEADER_ENABLE 1u
+#define NVN_TEXTURE_DEVICE_QUALITY 0u
+#define NVN_TEXTURE_DEVICE_QUALITY_OVERRIDE 0xffffffffu
+#define NVN_TEXTURE_DEVICE_DESCRIPTOR_ROW 2u
 
 typedef struct {
     uint64_t device, pool, offset, packaged;
@@ -144,7 +152,10 @@ typedef struct {
     uint32_t swizzle[4], depth_stencil_mode, stride, gl_name;
     uint16_t tile;
 } NvnTextureBuilder;
-typedef struct { uint32_t wac, w19f8, w19fc, w1b18, w1b1c; } NvnTextureDeviceWords;
+typedef struct {
+    uint32_t wac, w19f8, w19fc, w1b18, w1b1c;
+    uint32_t w08, w1a48, w1a4c, w1a50, w1a54, w1a88;
+} NvnTextureDeviceWords;
 extern const NvnTextureDeviceWords nvn_texture_device_words;
 typedef struct {
     uint64_t size, alignment, layer_stride;
@@ -156,5 +167,40 @@ void nvn_texture_builder_defaults(NvnTextureBuilder* b);
 uint64_t nvn_texture_storage_alignment(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev);
 /* Returns 0 for unsupported formats. GL imports have size 0 but retain alignment. Kind stays 0. */
 int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev, NvnTextureLayout* out);
+
+#define NVN_TEXTURE_DESCRIPTOR_WORDS 8u
+#define NVN_TEXTURE_DESCRIPTOR_BYTES 32u
+#define NVN_VIEW_LEVELS 0x1u
+#define NVN_VIEW_LAYERS 0x2u
+#define NVN_VIEW_FORMAT 0x4u
+#define NVN_VIEW_SWIZZLE 0x8u
+#define NVN_VIEW_DEPTH_STENCIL_MODE 0x10u
+#define NVN_VIEW_TARGET 0x20u
+
+typedef struct {
+    uint8_t flags, base_level, level_count;
+    uint16_t base_layer, layer_count;
+    uint32_t format, swizzle[4], depth_stencil_mode, target;
+} NvnTextureView;
+typedef struct {
+    NvnTextureBuilder builder;
+    NvnTextureLayout layout;
+    uint64_t address;
+} NvnTexture;
+/* seed is the u32 at byte offset 0x24, not u32 array index 0x24 (d858d28). */
+typedef struct {
+    uint32_t seed;
+    uint8_t depth_size, stencil_size, one_code, srgb;
+} NvnTextureFormatRecord;
+typedef enum {
+    NVN_TEXTURE_DESCRIPTOR_OK = 0,
+    NVN_TEXTURE_DESCRIPTOR_BAD_FORMAT,
+    NVN_TEXTURE_DESCRIPTOR_BAD_TARGET
+} NvnTextureDescriptorResult;
+uint16_t nvn_texture_packaged_tile(uint32_t layout);
+/* The caller supplies the effective format record. Errors leave out unchanged. */
+NvnTextureDescriptorResult nvn_texture_descriptor(const NvnTexture* texture, const NvnTextureView* view,
+    const NvnTextureDeviceWords* dev, const NvnTextureFormatRecord* format,
+    uint32_t out[NVN_TEXTURE_DESCRIPTOR_WORDS]);
 
 #endif
