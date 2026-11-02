@@ -105,6 +105,13 @@ Content: connect initialization, a screen clear, one simple draw and the present
   never touch the queue or the state of the game. A pass is recorded as `selftest` or `exec`, separate from `seen` (a game run).
   The rules are in `docs/nvn-design.md`, section "Unobserved functions", part "The selftest".
 
+- Code review (decided by the user, 2026-11-02): use the "code reviewer" agent of the skill `orca-agents` after step 3b and after
+  step 3c, and after 3d when the change is large. Check at 3b: the life of objects, the generation check, the GPU address rule,
+  the size functions. Check at 3c: the life of recorded lists, the threads (GPU thread and guest threads), the fence tokens
+  (`SyncWait` must not hold the GPU thread), the shadow RAM mode at the frame start. Fix the findings before the next step. A
+  commit that used the agent lists it (the `Co-Authored-By` line of CLAUDE.md and one line of the work in the message body).
+  Step 3a (the trace) needs no review.
+
 Exit condition: the new path and the old path give the same drawing result for this scene.
 
 ## Stage 4: Extend to the real game

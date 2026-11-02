@@ -809,3 +809,24 @@ the fields that decide the result (target, levels, flags, packaged layout) must 
 
 Open: the log lines are many (about 10000 `gpu-submit:` lines, because the small entries of the game's lists are also printed
 in full in the first 3 submissions). The trace is for this diagnostic only.
+
+## 3b Progress (2026-11-02)
+
+Step 3b is split in parts, because the answers of the device queries and the sizes must come from the library and not from a
+guess (rule: mechanism first). Each part is one commit.
+
+| Part | Content | State |
+| --- | --- | --- |
+| 3b-1 | The setting `nvn_native`, `gpu/nvn_native.c` (loader hooks below the trace, missing-function handler, exit report), `gpu/nvn_objtab.c` (the record table, test `nvn_objtab`), and the trace of the queries (`nvn-value:` lines for `nvnDeviceGetInteger` and six other queries). | Written and built. The unit tests pass, except `tracked_material`, which fails on the two SMAA `.dds` files that were added before this work (not caused by it). Not run in the game. |
+| 3b-2 | A diagnostic run with `nvn_trace=1` to the title: the agent reads the `nvn-value:` lines. | Waits for the user. |
+| 3b-3 | G1: device and queue builders, `DeviceInitialize`, `DeviceGetInteger` (the table of 3b-2), `GetTimestampInNanoseconds`, `QueueInitialize`. | Not started. |
+| 3b-4 | G2: memory pool and the GPU address rule (2-2). | Not started. |
+| 3b-5 | G3 and G5: texture objects, the storage size function (read from the library's disassembly, tested against the 3a table), the pools. | Not started. |
+| 3b-6 | G4: window and sync. | Not started. |
+| 3b-7 | The selftest harness (comparer with tests, isolated memory, recording backend) and its first cases of kinds `R` and `M`. | Not started. |
+
+The code review of the Orca "code reviewer" (decided for 3b) comes after 3b-7, over the code of 3b-1 to 3b-7.
+
+Open risk of 3b-1 (first run with `nvn_native=1` shows it): the library's `nvnDeviceGetProcAddress` runs for the lookups on a
+device that the library never initialized. If it reads the device object, the run stops there, and the host must answer the
+lookups itself from a table of names.

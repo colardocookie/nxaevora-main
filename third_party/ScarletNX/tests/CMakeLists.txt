@@ -762,6 +762,10 @@ target_link_libraries(snx-test-imgui-settings PRIVATE scarletnx-common m)
 target_include_directories(snx-test-imgui-settings PRIVATE "${PROJECT_BINARY_DIR}/generated")
 add_test(NAME imgui_settings COMMAND snx-test-imgui-settings)
 
+add_executable(snx-test-nvn-objtab nvn_objtab.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_objtab.c")
+snx_test_target(snx-test-nvn-objtab 11)
+add_test(NAME nvn_objtab COMMAND snx-test-nvn-objtab)
+
 if(TARGET SDL3::SDL3)
     add_executable(snx-test-keybind keybind.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/backend/keybind.c")
     snx_test_target(snx-test-keybind 11)

@@ -18,11 +18,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define VALUE_SEEN_MAX 64 /* distinct queries logged for one function */
+enum { VALUE_NONE = 0, VALUE_GET_INTEGER, VALUE_ARGS };
 typedef struct {
     u64 addr, calls;
     GuestFn original;
     int queue_op; /* a queue call: its GPFIFO submissions are counted */
     int size_op;  /* a texture builder storage query: the result and the builder words are logged */
+    int value_op; /* VALUE_*: a query whose distinct arguments and results are logged (the data of a host handler) */
+    u64 seen[VALUE_SEEN_MAX]; /* the keys of the queries logged so far */
+    u32 nseen;
     char name[128];
 } NvProc;
 #define NVN_PROC_SLOTS 1024
@@ -59,6 +64,8 @@ static int read_name(u64 ptr, char name[128]) {
     return 0;
 }
 
+int nvn_guest_name(u64 ptr, char name[128]) { return read_name(ptr, name); }
+
 static u32 slot_hash(u64 addr) { return (u32)((addr >> 2) * 2654435761u) & (NVN_PROC_SLOTS - 1); }
 /* the slot of addr, or NULL; never loops on a full table */
 static NvProc* proc_find(u64 addr) {
@@ -87,6 +94,44 @@ static void size_query_trace(CPU* c, u64 entry, NvProc* p) {
         LOG("nvn-size:   word %2u: %08x %08x %08x %08x\n", w, words[w], words[w + 1], words[w + 2], words[w + 3]);
 }
 
+/* The queries (other than nvnDeviceGetInteger) whose arguments and results are logged. The host layer must give the
+   same answers (docs/nvn-design.md, 2-6, G1 to G5). */
+static int value_query_name(const char* name) {
+    static const char* const names[] = {
+        "nvnQueueBuilderGetQueueMemorySize", "nvnTexturePoolGetSize", "nvnSamplerPoolGetSize",
+        "nvnMemoryPoolGetFlags",             "nvnBufferBuilderGetSize", "nvnDeviceGetTimestampInNanoseconds",
+    };
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (!strcmp(name, names[i])) return 1;
+    return 0;
+}
+
+/* Queries whose answer the host must give by itself: logs each distinct (arguments, result) once. nvnDeviceGetInteger
+   (device, what, int* out) is keyed by `what`, its value is read from out. The other queries are keyed by their three
+   arguments after the object (object pointers differ in each call and are left out of the key). */
+static void value_query_trace(CPU* c, u64 entry, NvProc* p) {
+    u64 a1 = c->x[1], a2 = c->x[2], a3 = c->x[3];
+    u64 out = c->x[2];
+    p->original(c, entry);
+    u64 key = p->value_op == VALUE_GET_INTEGER ? (a1 & 0xFFFFFFFFu) : a1 * 0x9E3779B97F4A7C15ull ^ a2 * 31 ^ a3;
+    key = key ? key : 1;
+    int32_t value = 0;
+    int have = p->value_op == VALUE_GET_INTEGER && out < AS_SIZE - 4 && readable(out) && readable(out + 3);
+    if (have) memcpy(&value, GP(out), sizeof value);
+    pm_lock(&procs_lock);
+    u32 i = 0;
+    while (i < p->nseen && p->seen[i] != key) i++;
+    int fresh = i == p->nseen && p->nseen < VALUE_SEEN_MAX;
+    if (fresh) p->seen[p->nseen++] = key;
+    pm_unlock(&procs_lock);
+    if (!fresh) return;
+    if (p->value_op == VALUE_GET_INTEGER)
+        LOG("nvn-value: %s what=%u value=%d (%s)\n", p->name, (u32)a1, value, have ? "read" : "out not readable");
+    else
+        LOG("nvn-value: %s x1=%llx x2=%llx x3=%llx result=%llx\n", p->name, (unsigned long long)a1,
+            (unsigned long long)a2, (unsigned long long)a3, (unsigned long long)c->x[0]);
+}
+
 static void proc_trace(CPU* c, u64 entry) {
     NvProc* p = proc_find(entry);
     if (!p) { /* generated code reads g_disp without ordering: on a weakly ordered host the lock gives it */
@@ -98,6 +143,10 @@ static void proc_trace(CPU* c, u64 entry) {
     __atomic_fetch_add(&p->calls, 1, __ATOMIC_RELAXED);
     if (p->size_op) {
         size_query_trace(c, entry, p);
+        return;
+    }
+    if (p->value_op) {
+        value_query_trace(c, entry, p);
         return;
     }
     if (!p->queue_op) {
@@ -135,6 +184,7 @@ static void trace_proc(u64 addr, const char* name) {
                       !strcmp(name, "nvnQueueWaitSync");
         p->size_op = !strcmp(name, "nvnTextureBuilderGetStorageSize") ||
                      !strcmp(name, "nvnTextureBuilderGetStorageAlignment");
+        p->value_op = !strcmp(name, "nvnDeviceGetInteger") ? VALUE_GET_INTEGER : value_query_name(name) ? VALUE_ARGS : 0;
         __atomic_store_n(&p->addr, addr, __ATOMIC_RELEASE);
         nprocs++;
         __atomic_store_n(dispatch, proc_trace, __ATOMIC_RELEASE);
