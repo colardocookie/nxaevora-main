@@ -166,9 +166,7 @@ void display_lines(const ImguiFrame& f) {
     else
         snprintf(v, sizeof v, "?");
     row("Game resolution", v);
-    ImGui::BeginDisabled(); /* no setting behind this one yet */
-    row("Scaling", "-");
-    ImGui::EndDisabled();
+    row("Scaling", f.scaling_filter == 1 ? "Bicubic" : "Bilinear");
     row("Anti-aliasing", f.anti_aliasing == 1 ? "FXAA" : "Off");
     snprintf(v, sizeof v, "%s", f.fps_limit);
     row("Frame limit", v);

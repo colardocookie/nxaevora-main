@@ -1211,6 +1211,8 @@ static void copy_layers(VkCommandBuffer cb, Surf* s, Surf* t, u32 l, u32 dst, u3
                          regions, c);
         return;
     }
+    LOG_LIMIT(40, "vulkan: a scaled render target at %llx (%ux%u) is copied down to %ux%u, nearest, for a texture\n",
+              (unsigned long long)s->gva, s->sw, s->sh, w, h);
     VkImageBlit b[2];
     b[0] = (VkImageBlit){.srcSubresource = from,
                          .srcOffsets = {{0, 0, 0}, {(i32)vk_sc(w), (i32)vk_sc(h), 1}},
@@ -1275,6 +1277,8 @@ static void tex_take_drawn(Surf* t) {
                 if (scaled && !mid) continue;
                 VkCommandBuffer cb = copy_begin(s, t);
                 if (scaled) {
+                    LOG_LIMIT(40, "vulkan: a scaled render target at %llx is copied down to %ux%u, nearest, as slices\n",
+                              (unsigned long long)s->gva, t->w, t->h);
                     VkImageSubresourceLayers all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, t->depth3d};
                     VkImageBlit b = {.srcSubresource = all,
                                      .srcOffsets = {{0, 0, 0}, {(i32)vk_sc(t->w), (i32)vk_sc(t->h), 1}},

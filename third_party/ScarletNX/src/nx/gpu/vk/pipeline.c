@@ -805,7 +805,8 @@ static VkPipeline pipe_create(const Pipe* e) {
                                                  .polygonMode = (VkPolygonMode)k->polygon,
                                                  .lineWidth = 1.0f};
     VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-                                               .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+                                               .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+                                               .alphaToCoverageEnable = k->alpha_to_coverage ? VK_TRUE : VK_FALSE};
     VkPipelineDepthStencilStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     VkPipelineColorBlendAttachmentState cba[8];
     int changed = 0;

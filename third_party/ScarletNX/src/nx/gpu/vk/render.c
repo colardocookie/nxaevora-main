@@ -2178,6 +2178,12 @@ static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs,
     k->provoking_last = (r[0x5A1] & 1) && g_vk.has_provoking_last;
     if ((r[0x5A1] & 1) && !g_vk.has_provoking_last)
         LOG_LIMIT(1, "vulkan: flat inputs take the first vertex of a primitive, not the last the game asks for\n");
+    /* ANTI_ALIAS_ALPHA_CONTROL (0x54F) bit 0. The game uses it for grass and leaves: with one sample the driver
+       dithers the coverage by alpha, which softens the edges of the alpha-cut quads */
+    k->alpha_to_coverage = fs ? r[0x54F] & 1 : 0;
+    if (k->alpha_to_coverage)
+        LOG_LIMIT(4, "vulkan: the game draws with alpha to coverage (register 0x54f = %x, msaa mode 0x574 = %x)\n",
+                  r[0x54F], r[0x574]);
     /* LOGIC_OP (0x671 on, 0x672 the operation as GL numbers it from CLEAR 0x1500 to SET 0x150F, VkLogicOp's order) */
     if (r[0x671] & 1) {
         if (g_vk.feat.logicOp)

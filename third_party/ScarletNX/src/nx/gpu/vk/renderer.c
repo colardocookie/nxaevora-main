@@ -411,11 +411,23 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
             VkImage sc = g_vk.sc_images[idx];
             /* the game's frame only: the menu's own frames are drawn as they are */
             VkImage blit_from = VK_NULL_HANDLE;
+            VkImageView from_view = VK_NULL_HANDLE;
+            int scaling = __atomic_load_n(&g_settings.scaling_filter, __ATOMIC_RELAXED);
+            int scaled = src && game && vk_postfx_scale_ready(g_vk.sc_format, scaling); /* a pass, not the blit */
             if (src && game)
-                blit_from = vk_postfx_apply(cb, src, __atomic_load_n(&g_settings.anti_aliasing, __ATOMIC_RELAXED));
+                LOG_LIMIT(3, "vulkan: the frame shown is %ux%u (guest %ux%u), AA %d, scaling %d\n", src->sw, src->sh,
+                          src->w, src->h, __atomic_load_n(&g_settings.anti_aliasing, __ATOMIC_RELAXED), scaling);
+            if (src && game)
+                blit_from = vk_postfx_apply(cb, src, __atomic_load_n(&g_settings.anti_aliasing, __ATOMIC_RELAXED),
+                                            scaled, &from_view);
             if (src && !blit_from) {
-                vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
-                            VK_ACCESS_2_TRANSFER_READ_BIT);
+                if (scaled) {
+                    vk_surf_use(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                    from_view = src->att;
+                } else
+                    vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                                VK_ACCESS_2_TRANSFER_READ_BIT);
                 blit_from = src->img;
             }
             /* the submit waits for the acquire at the clear, the image's first use */
@@ -454,8 +466,15 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
                                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                     .dstOffsets = {{dx, dy, 0}, {dx + (i32)dw, dy + (i32)dh, 1}}};
                 flip_src(&blit, transform); /* render targets stay in guest order */
-                rec_CmdBlitImage(cb, blit_from, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+                if (scaled) {
+                    float uv[4] = {(float)blit.srcOffsets[0].x / (float)src->sw, (float)blit.srcOffsets[0].y / (float)src->sh,
+                                   (float)blit.srcOffsets[1].x / (float)src->sw, (float)blit.srcOffsets[1].y / (float)src->sh};
+                    int rect[4] = {dx, dy, (int)dw, (int)dh};
+                    vk_postfx_scale(cb, sc, vk_ui_swapchain_view(sc), from_view, src->sw, src->sh, srgb, uv, rect,
+                                    scaling, 0.0f);
+                } else
+                    rec_CmdBlitImage(cb, blit_from, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
             }
             {
                 int safe[4] = {(int)cx, (int)cy, (int)cw, (int)ch};

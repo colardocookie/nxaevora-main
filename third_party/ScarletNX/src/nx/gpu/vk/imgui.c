@@ -171,6 +171,7 @@ void vk_imgui_draw(VkCommandBuffer cb, VkImage sc, u32 game_w, u32 game_h) {
     frame.game_h = (int)game_h;
     frame.vsync = __atomic_load_n(&g_settings.vsync, __ATOMIC_RELAXED);
     frame.anti_aliasing = __atomic_load_n(&g_settings.anti_aliasing, __ATOMIC_RELAXED);
+    frame.scaling_filter = __atomic_load_n(&g_settings.scaling_filter, __ATOMIC_RELAXED);
     frame.fps_limit = limit;
     frame.gpu_uuid = gpu_uuid();
     drawn = imgui_glue_frame(&frame);

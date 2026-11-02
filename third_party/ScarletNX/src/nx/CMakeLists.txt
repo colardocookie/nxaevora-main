@@ -131,6 +131,7 @@ snx_glsl_spirv(snx_vk SOURCE gpu/vk/query_predicate.comp NAME query_predicate_sp
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/ftz_probe.comp NAME ftz_probe_spv HEADER nx/gpu/vk/ftz_probe_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/post.vert NAME post_vs_spv HEADER nx/gpu/vk/post_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/fxaa.frag NAME fxaa_fs_spv HEADER nx/gpu/vk/post_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/bicubic.frag NAME bicubic_fs_spv HEADER nx/gpu/vk/post_spv.h)
 set(components core kernel hle video gpu platform shader vk)
 # third-party code (vma.cpp is VMA's implementation), cmake/dependencies.cmake
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" gpu/vk/vma.cpp PROPERTIES COMPILE_OPTIONS

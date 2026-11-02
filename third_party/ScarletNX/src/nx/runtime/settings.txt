@@ -187,6 +187,13 @@ setting Anti-aliasing
     help The frame is smoothed along its edges after the game has drawn it, before the on-screen controls and the
     help menus. FXAA is one pass and costs little. The game's own frame, the render targets and the guest memory are
     help not changed
+setting Scaling filter
+    key scaling_filter
+    int 0 1
+    default 0
+    words Bilinear|Bicubic
+    help How the frame is stretched to the window. Bilinear is the graphics card's own filter and the lightest.
+    help Bicubic (Catmull-Rom) keeps edges sharper, and it holds more detail when the frame is larger than the window
 setting Anisotropic filtering
     key anisotropy
     int 0 16

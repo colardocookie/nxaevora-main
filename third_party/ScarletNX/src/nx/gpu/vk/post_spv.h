@@ -10,5 +10,7 @@ extern const u32 post_vs_spv[];
 extern const u64 post_vs_spv_size; /* in bytes */
 extern const u32 fxaa_fs_spv[];
 extern const u64 fxaa_fs_spv_size;
+extern const u32 bicubic_fs_spv[];
+extern const u64 bicubic_fs_spv_size;
 
 #endif

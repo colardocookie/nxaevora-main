@@ -957,6 +957,7 @@ typedef struct {
     u32 feedback; /* VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT, without the dynamic state for it */
     u32 provoking_last; /* the last vertex provokes (has_provoking_last) */
     u32 logic_op;       /* 0, or the VkLogicOp the color targets take in place of blending, plus 1 */
+    u32 alpha_to_coverage; /* the 3D engine's ANTI_ALIAS_ALPHA_CONTROL bit 0: the fragment's alpha thins its coverage */
     u32 arrays;   /* the sets with texture arrays: its layout, vk_playout(arrays) */
 } PipeKey;
 /* the pipeline for k, made when new and waited for while a worker makes it: NULL only when it can't be made */
@@ -1018,10 +1019,19 @@ void vk_render_end(void); /* ends the dynamic rendering pass, if one is open */
 /* the on-screen controls and the game's menu over a swapchain image in TRANSFER_DST_OPTIMAL, which it stays in;
    safe is the picture's part clear of the system's bars (gpu/vk/ui.c) */
 void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);
-/* gpu/vk/postfx.c: the frame through the anti-aliasing pass (VK_AA_*). The image to blit from, in
-   TRANSFER_SRC_OPTIMAL and the size of src's image, or VK_NULL_HANDLE where the frame is shown as it is */
+/* gpu/vk/postfx.c: the frame through the anti-aliasing pass (VK_AA_*). The image to read from, the size of src's
+   image, or VK_NULL_HANDLE where the frame is shown as it is. It is in TRANSFER_SRC_OPTIMAL, or with for_sampling in
+   SHADER_READ_ONLY_OPTIMAL, and *view is the view to sample it by */
 enum { VK_AA_OFF = 0, VK_AA_FXAA = 1 };
-VkImage vk_postfx_apply(VkCommandBuffer cb, Surf* src, int mode);
+VkImage vk_postfx_apply(VkCommandBuffer cb, Surf* src, int mode, int for_sampling, VkImageView* view);
+/* the scaling of the frame into the window (VK_SCALE_*, the setting scaling_filter). Bilinear is the blit. A mode that
+   vk_postfx_scale_ready says yes to draws into the swapchain image (in TRANSFER_DST_OPTIMAL, where it stays) the part
+   uv (corners u0, v0, u1, v1: swapped for a flip) of the image `from` (in SHADER_READ_ONLY_OPTIMAL) over the pixel
+   rectangle dst (x, y, width, height) */
+enum { VK_SCALE_BILINEAR = 0, VK_SCALE_BICUBIC = 1 };
+int vk_postfx_scale_ready(VkFormat sc_format, int mode);
+void vk_postfx_scale(VkCommandBuffer cb, VkImage sc, VkImageView sc_view, VkImageView from, u32 sw, u32 sh, int srgb,
+                     const float uv[4], const int dst[4], int mode, float sharpness);
 void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain does */
 VkImageView vk_ui_swapchain_view(VkImage sc); /* the view of a swapchain image that ui.c made (gpu/vk/imgui.c draws on it) */
 /* gpu/vk/imgui.c: Dear ImGui's windows over the image, under vk_lock; its backend ends with the swapchain */

@@ -53,6 +53,7 @@ typedef struct {
     int game_w, game_h;     /* the game's picture, as the renderer makes it: the console's size times the render scale */
     int vsync;
     int anti_aliasing; /* the setting: 0 off, 1 FXAA */
+    int scaling_filter; /* the setting: 0 bilinear, 1 bicubic */
     const char* fps_limit;  /* the setting's text: game, 0 or a number */
     const unsigned char* gpu_uuid; /* the rendering device: 16 bytes */
     ImguiKeyboard kb;
