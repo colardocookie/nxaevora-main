@@ -55,10 +55,10 @@ NXAevora contains no game files and no keys. Do not ask for them and do not shar
 
 ## Build
 
-Clone the repository with its submodule:
+Clone the repository. ScarletNX is part of it:
 
 ```sh
-git clone --recursive <this repository>
+git clone <this repository>
 ```
 
 The build steps for Windows are in [docs/SCARLETNX_BUILD-NOTES.md](docs/SCARLETNX_BUILD-NOTES.md). They use MSYS2
@@ -68,8 +68,8 @@ and the CLANG64 environment.
 
 | Folder                     | Content                                                |
 | -------------------------- | ------------------------------------------------------ |
-| `third_party/ScarletNX/` | The recompiler and the Switch runtime (submodule)      |
-| `recomp/`                | Settings and patches for the recompile of this game    |
+| `third_party/ScarletNX/` | The recompiler and the Switch runtime (vendored)       |
+| `recomp/`                | Settings and game code patches for this game          |
 | `runtime/`               | Parts of the runtime that ScarletNX does not have      |
 | `launcher/`              | The launcher (planned)                                 |
 | `tools/`                 | Helper scripts for the analysis of the recompiled game |

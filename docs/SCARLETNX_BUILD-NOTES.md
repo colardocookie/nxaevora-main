@@ -26,16 +26,12 @@ pacman -S --needed git make patch perl patchutils \
 
 If `pacman -Syu` closes the shell, open it again and run the command a second time.
 
-## 2. Get the submodule
+## 2. Get the source
+
+Clone the repository. ScarletNX is in `third_party/ScarletNX` and needs no extra step.
 
 ```sh
-git clone --recursive <this repository>
-```
-
-If the repository is cloned already:
-
-```sh
-git submodule update --init
+git clone <this repository>
 ```
 
 ## 3. Configure and build
