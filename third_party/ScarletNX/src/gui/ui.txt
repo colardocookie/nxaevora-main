@@ -1,0 +1,256 @@
+# The launcher's scenes: tools/uigen makes gui/ui.h and gui/ui.c of them as it builds (its first comment has the
+# format), and main.c draws each in the area its screen gives it. android. values are a phone's, iOS's too
+[scene]Menu {
+	# in the order of model.h's items, which main.c checks; the code gives the active one and the keys' state
+	[list]Entries {
+		attr = callback
+		# every entry where they fit: a list shows 8 rows at most by default
+		max_rows = 64
+		# a finger's (main.c's GUI_FINGER_ROW): 96 pixels at a phone's default 2x, about 37dp at a density of 2.6; 144 at
+		# 3x, Android's 48dp touch target (#589)
+		android.row_height = 48px
+		[button]"Load Switch NSP/XCI/NRO" {
+			icon = gamepad-2
+		}
+		[button]"Load Linux ARM ELF" {
+			icon = square-terminal
+		}
+		[button]"Load 3DS game" {
+			icon = box
+		}
+		[button]"Load Vita VPK" {
+			icon = package
+		}
+		[button]"Load GBA ROM" {
+			icon = gamepad
+		}
+		[button]"Install Keys" {
+			icon = key-round
+		}
+		[button]"Settings" {
+			icon = settings
+		}
+		[button]"Share Log" {
+			icon = share-2
+		}
+		[button]"Folders" {
+			icon = folder-open
+		}
+		[button]"Exit" {
+			icon = log-out
+		}
+	}
+}
+[scene]Games {
+	# Recent Games over the recent rows, then a page of the games, as many as fit, each group under its heading (P, the
+	# foot's, adds a folder)
+	[list]Rows {
+		max_rows = 64
+		android.row_height = 48px
+	}
+}
+# Games as a grid (the View box's View: Grid): a tile a game, its icon over its name, as many a line as fit; Recent
+# Games and a group's heading each on a line of its own
+[scene]GamesGrid {
+	[list]Tiles {
+		max_rows = 64
+		row_gap = 8px
+		tile_width = 12cols
+		tile_height = 4rows + 8px
+		android.row_height = 48px
+	}
+}
+# the Settings and the theme editor: the groups, or the theme's keys, in the list's column; beside them, under the
+# side box's head, the open group's rows or the focused one's (Folders: on the whole screen, each group under its title)
+[scene]FormList {
+	[list]Rows {
+		max_rows = 64
+		android.row_height = 48px
+	}
+}
+[scene]FormSide {
+	[list]Rows {
+		max_rows = 64
+		android.row_height = 48px
+	}
+}
+# a question's choices, a row each: the setup page's, and those of a box over a screen (a question, UI scale's, the
+# folders a recompile's game may go in); main.c places the dialog as the theme's options-dialog says, and the rows in it
+[scene]Choices {
+	[list]Rows {
+		max_rows = 64
+		android.row_height = 48px
+	}
+}
+# the setup's Appearance page: Settings > App's Language, Theme, UI scale and Side panel, Games' View and Icon size, a
+# row each, under the page box's head
+[scene]Appearance {
+	[list]Rows {
+		max_rows = 6
+		android.row_height = 48px
+	}
+}
+# the box of users a click on the head's user opens, a row each (its picture at its right), and the box of a game's
+# updates, DLCs and mods, which opening it shows
+[scene]Users {
+	[list]Rows {
+		max_rows = 8
+		android.row_height = 48px
+	}
+}
+[scene]Addons {
+	[list]Rows {
+		max_rows = 64
+		android.row_height = 48px
+	}
+}
+# the box Games' V opens: an option of the list a row each, its value between the arrows Left and Right go by
+[scene]View {
+	[list]Rows {
+		max_rows = 8
+		android.row_height = 48px
+	}
+}
+# the Compile tab's queue, under its box's head: a row a compile in the order they were asked, those that ended
+# until seen, the one running and those waiting
+[scene]Queue {
+	[list]Rows {
+		max_rows = 16
+		android.row_height = 48px
+	}
+}
+# the box of a game's save states, which S on Games opens: a row each, the focused one's picture beside the box
+[scene]States {
+	[list]Rows {
+		max_rows = 64
+		android.row_height = 48px
+	}
+}
+# the OK under the files of a box over the screen (what an older version left, what Clean Old Settings did): any key,
+# button or finger closes the box before a row is hit, so the row's own action is none (@)
+[scene]Files {
+	[list]Ok {
+		max_rows = 1
+		android.row_height = 48px
+		@[button]"OK" {}
+	}
+}
+# the frame of a screen: the head (tabs, title, user), the tips under it, the body and the foot (place_screen fills them
+# in); a slot is an area main.c draws in, a box lays slots out as a scene does. A column of margin at either side and
+# half a row of text between boxes, at 1x 8px both. Below 45 columns inside, the side box and the status go (they are
+# reached otherwise: Liz, 2026-10-22)
+[scene]Screen {
+	direction = column
+	padding = 1cols
+	gap = 8px
+	narrow_below = 45cols
+	# the tabs, the title after them (or under them where they do not fit) and the user, as tall as they lay out; off
+	# with none of them
+	[slot]Head {
+		measure = callback
+		shown = callback
+	}
+	# a row of the foot's letters; off in the setup, whose tips are the foot's
+	[slot]Tips {
+		measure = callback
+		shown = callback
+	}
+	[box]Body {
+		direction = row
+		grow = 1
+		gap = 1cols
+		# the list two fifths, 20 columns at least
+		[slot]List {
+			grow = 2
+			min_width = 20cols
+		}
+		# off where a screen is one box, and with app.ini's side_box = off (F2); with side_box = on, below 45
+		# columns the screen is Wide's, the side box under the list
+		[box]Side {
+			direction = column
+			grow = 3
+			gap = 8px
+			shown = callback
+			narrow = hide
+			[slot]About {
+				grow = 1
+			}
+			# at most half the side box; off with the footer's style none
+			[slot]Status {
+				measure = callback
+				max_height = 50%
+				shown = callback
+			}
+		}
+	}
+	[box]Foot {
+		direction = row
+		gap = 1cols
+		# the setup's tips
+		[slot]Tips {
+			grow = 1
+			shown = callback
+		}
+		# as tall as the keys' sentences wrap to its width, as wide as the widest at least
+		[slot]Keys {
+			grow = 1
+			min_width = callback
+			measure = callback
+		}
+	}
+}
+# a wide list's, a run's output or the theme editor's keys: three fifths, the box beside it the rest, 24 columns at
+# least, under it where the screen is narrow
+[scene]Wide {
+	direction = column
+	padding = 1cols
+	gap = 8px
+	narrow_below = 45cols
+	[slot]Head {
+		measure = callback
+		shown = callback
+	}
+	[slot]Tips {
+		measure = callback
+		shown = callback
+	}
+	[box]Body {
+		direction = row
+		grow = 1
+		gap = 1cols
+		narrow.direction = column
+		[slot]List {
+			grow = 3
+		}
+		# off with app.ini's side_box = off (F2)
+		[box]Side {
+			direction = column
+			grow = 2
+			min_width = 24cols
+			narrow.min_width = 0px
+			gap = 8px
+			shown = callback
+			[slot]About {
+				grow = 1
+			}
+			[slot]Status {
+				measure = callback
+				max_height = 50%
+				shown = callback
+			}
+		}
+	}
+	[box]Foot {
+		direction = row
+		gap = 1cols
+		[slot]Tips {
+			grow = 1
+			shown = callback
+		}
+		[slot]Keys {
+			grow = 1
+			min_width = callback
+			measure = callback
+		}
+	}
+}

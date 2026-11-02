@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ScarletNX (Linux programs)
+Comment=Runs Linux AArch64 programs recompiled to native code
+Exec=scarletnx-gnuabi
+Icon=wimsy
+Categories=Development;Emulator;
+Keywords=AArch64;ARM64;recompiler;
+Terminal=true
+NoDisplay=true
+X-AppImage-Integrate=false

@@ -1,0 +1,282 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* Clean Old Settings (src/gui/clean.c): a game's .ini without its [Deprecated] section and nothing else changed, the
+   .ini files of a folder, and an entry for each file, done or not */
+#include "gui/clean.h"
+#include "common/utilities/common.h"
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#ifdef SNX_XDG
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+/* text cleaned: what is left as a string */
+static const char* cleaned(const char* text) {
+    static char buffer[1024];
+    size_t n = strlen(text), kept;
+    assert(n < sizeof buffer);
+    memcpy(buffer, text, n + 1);
+    kept = gui_clean_deprecated(buffer, n);
+    buffer[kept] = 0;
+    return buffer;
+}
+static char* read_text(const char* path) {
+    size_t size;
+    return (char*)snx_read_file(path, &size);
+}
+static void write_text(const char* path, const char* text) { assert(!snx_write_file(path, text, strlen(text))); }
+/* the entries as "+file|what" lines */
+/* text, made with /, in the system's separators as the paths it names are */
+static char* native(char* text) {
+    snx_path_native(text);
+    return text;
+}
+static const char* entries(const GuiCleaned* done, const char* base) {
+    static char out[8192];
+    char file[4400], what[4400];
+    const char* at = done->text;
+    bool ok;
+    size_t n = 0, skip = strlen(base);
+    out[0] = 0;
+    while (at) {
+        at = gui_cleaned_entry(at, &ok, file, what, sizeof file);
+        n += (size_t)snprintf(out + n, sizeof out - n, "%c%s|%s\n", ok ? '+' : '!',
+                              strncmp(file, base, skip) ? file : file + skip, what);
+    }
+    return out;
+}
+
+int main(void) {
+    /* the runtime's section, last after [Other]: it and the blank line before it go, the rest as it was */
+    const char* game =
+        "[Display]\nfullscreen=1\n\n[Other]\nlanguage=en\n\n"
+        "[Deprecated]\n; keys an older version used, which do nothing now (docs/DEPRECATIONS.md): delete "
+        "them, or use Settings > App >\n;   Clean Old Settings in the launcher\n"
+        "; renderer: Vulkan is the only renderer\nrenderer=opengl\n; touch_controls: now controls\n"
+        "touch_controls=1\n";
+    assert(!strcmp(cleaned(game), "[Display]\nfullscreen=1\n\n[Other]\nlanguage=en\n"));
+    /* none: the size as it was, the text untouched */
+    {
+        char text[] = "[Other]\nx=1\n\n";
+        assert(gui_clean_deprecated(text, strlen(text)) == strlen(text) && !strcmp(text, "[Other]\nx=1\n\n"));
+    }
+    /* Windows line ends; blanks of spaces and tabs; a section after it stays, as do the blank lines inside the rest */
+    assert(!strcmp(cleaned("[A]\r\na=1\r\n \t\r\n\r\n[Deprecated]\r\nold=1\r\n[B]\r\n\r\nb=2\r\n"),
+                   "[A]\r\na=1\r\n[B]\r\n\r\nb=2\r\n"));
+    /* only that line exactly: other names, a space around it, are other sections */
+    assert(!strcmp(cleaned("[deprecated]\nx=1\n[Deprecated] \ny=1\n [Deprecated]\nz=1\n"),
+                   "[deprecated]\nx=1\n[Deprecated] \ny=1\n [Deprecated]\nz=1\n"));
+    /* two of them, one first in the file, the last without a line end; an indented header ends one */
+    assert(!strcmp(cleaned("[Deprecated]\na=1\n  [A]\nb=2\n\n[Deprecated]\nc=3"), "  [A]\nb=2\n"));
+    assert(!strcmp(cleaned("[Deprecated]"), ""));
+
+    char* root = snx_temp_dir(NULL);
+    char *games = snx_path_join(root, "games"), *path, *text;
+    GuiCleaned done = {0};
+    assert(root && !snx_mkdirs(games));
+
+    /* a folder's .ini files: the ones with the section counted, then cleaned, an entry each; the others untouched */
+    path = snx_path_join(games, "First.ini");
+    write_text(path, game);
+    free(path);
+    path = snx_path_join(games, "Second.INI");
+    write_text(path, "[Deprecated]\nx=1\n");
+    free(path);
+    path = snx_path_join(games, "Clean.ini");
+    write_text(path, "[Other]\nx=1\n");
+    free(path);
+    path = snx_path_join(games, "notes.txt");
+    write_text(path, "[Deprecated]\nx=1\n");
+    free(path);
+    /* a game's folder: its own .ini, not another file of it, nor a folder that is not a game's */
+    {
+        char* folder = snx_path_join(games, "0100ABCD12345000");
+        char* data = snx_path_join(games, "Second_data");
+        assert(!snx_mkdirs(folder) && !snx_mkdirs(data));
+        path = snx_path_join(folder, "0100ABCD12345000.ini");
+        write_text(path, "[Deprecated]\nx=1\n");
+        free(path);
+        path = snx_path_join(folder, "other.ini");
+        write_text(path, "[Deprecated]\nx=1\n");
+        free(path);
+        path = snx_path_join(data, "Second_data.ini");
+        write_text(path, "[Display]\n");
+        free(path);
+        path = snx_path_join(data, "save.ini");
+        write_text(path, "[Deprecated]\nx=1\n");
+        free(path);
+        free(folder);
+        free(data);
+    }
+    assert(gui_clean_inis(NULL, games) == 3 && !done.count);
+    assert(gui_clean_inis(NULL, NULL) == 0 && gui_clean_inis(NULL, root) == 0);
+    {
+        char* other = snx_path_join(root, "absent");
+        assert(gui_clean_inis(&done, other) == 0 && !done.count);
+        free(other);
+    }
+    assert(gui_clean_inis(&done, games) == 3 && done.count == 3 && done.done == 3);
+    {
+        const char* list = entries(&done, games);
+        char *first = native(snx_strdup("+/First.ini|[Deprecated] removed\n")),
+             *second = native(snx_strdup("+/Second.INI|[Deprecated] removed\n")),
+             *own = native(snx_strdup("+/0100ABCD12345000/0100ABCD12345000.ini|[Deprecated] removed\n"));
+        assert(strstr(list, first) && strstr(list, second) && strstr(list, own));
+        free(first);
+        free(second);
+        free(own);
+    }
+    path = snx_path_join(games, "0100ABCD12345000/other.ini");
+    text = read_text(path);
+    assert(!strcmp(text, "[Deprecated]\nx=1\n"));
+    free(text);
+    free(path);
+    path = snx_path_join(games, "First.ini");
+    text = read_text(path);
+    assert(!strcmp(text, "[Display]\nfullscreen=1\n\n[Other]\nlanguage=en\n"));
+    free(text);
+    free(path);
+    path = snx_path_join(games, "Clean.ini");
+    text = read_text(path);
+    assert(!strcmp(text, "[Other]\nx=1\n"));
+    free(text);
+    free(path);
+    path = snx_path_join(games, "notes.txt");
+    text = read_text(path);
+    assert(!strcmp(text, "[Deprecated]\nx=1\n"));
+    free(text);
+    free(path);
+    path = snx_path_join(games, "First.ini.new");
+    assert(!snx_path_exists(path)); /* the staged copy went in place */
+    free(path);
+    assert(gui_clean_inis(NULL, games) == 0); /* nothing left to take out */
+    gui_cleaned_free(&done);
+
+#ifdef SNX_XDG
+    /* what cannot be done is an entry of its own, why in it, and the file stays */
+    if (geteuid()) {
+        char *locked = snx_path_join(root, "locked"), *ini = snx_path_join(locked, "Game.ini"), expected[512];
+        assert(!snx_mkdirs(locked));
+        write_text(ini, "[A]\n[Deprecated]\nx=1\n");
+        assert(!chmod(locked, 0555));
+        assert(gui_clean_inis(&done, locked) == 1);
+        assert(done.count == 1 && !done.done);
+        snprintf(expected, sizeof expected, "!/locked/Game.ini|Not written without [Deprecated]: Permission denied\n");
+        assert(!strcmp(entries(&done, root), expected));
+        text = read_text(ini);
+        assert(text && !strcmp(text, "[A]\n[Deprecated]\nx=1\n"));
+        free(text);
+        assert(!chmod(locked, 0755));
+        gui_cleaned_free(&done);
+        free(locked);
+        free(ini);
+    }
+#endif
+    /* a tab or a line's end in a name keeps the entry whole */
+    {
+        char file[64], what[64];
+        bool ok;
+        const char* next;
+        gui_cleaned_add(&done, true, "a\tb\nc", "d\te");
+        gui_cleaned_add(&done, false, "f", "g");
+        next = gui_cleaned_entry(done.text, &ok, file, what, sizeof file);
+        assert(ok && !strcmp(file, "a b c") && !strcmp(what, "d e") && next);
+        next = gui_cleaned_entry(next, &ok, file, what, sizeof file);
+        assert(!ok && !strcmp(file, "f") && !strcmp(what, "g") && !next);
+        assert(done.count == 2 && done.done == 1);
+        gui_cleaned_free(&done);
+        assert(!gui_cleaned_entry(NULL, &ok, file, what, sizeof file));
+    }
+    /* Move Old Files: each entry into the new folder, one already there left and said; nothing touched without
+       apply, the new folder made with it, the old one gone once empty; only the entries named; a file by its name */
+    {
+        char *old = snx_path_join(root, "old"), *now = snx_path_join(root, "now"), *base = snx_path_join(root, "");
+        char *a = snx_path_join(old, "a"), *b = snx_path_join(old, "b"), *kept = snx_path_join(now, "b");
+        char *c = snx_format("%s/c", b), *moved = snx_path_join(now, "a");
+        const char* only[] = {"x", NULL};
+        assert(!snx_mkdirs(b) && !snx_mkdirs(kept));
+        write_text(a, "a");
+        write_text(c, "c");
+        assert(gui_move_entries(&done, old, now, NULL, false) == 1);
+        {
+            char* said = native(snx_format("+old/a|Moves to %s/now/a\n!old/b|Stays: %s/now/b is there\n", root, root));
+            assert(!strcmp(entries(&done, base), said) && done.count == 2 && done.done == 1);
+            free(said);
+        }
+        assert(snx_is_file(a) && !snx_path_exists(moved)); /* nothing moved */
+        gui_cleaned_free(&done);
+        assert(gui_move_entries(&done, old, now, NULL, true) == 1);
+        {
+            char* said = native(snx_format("+old/a|Moved to %s/now/a\n!old/b|Stays: %s/now/b is there\n", root, root));
+            assert(!strcmp(entries(&done, base), said));
+            free(said);
+        }
+        assert(!snx_path_exists(a) && snx_is_file(moved) && snx_is_file(c) && snx_is_dir(old)); /* b keeps old */
+        gui_cleaned_free(&done);
+        assert(!snx_remove_tree(b)); /* empty now: it goes after its last entry */
+        write_text(a, "again");
+        assert(!snx_remove_tree(moved));
+        assert(gui_move_entries(&done, old, now, NULL, true) == 1 && !snx_path_exists(old) && snx_is_file(moved));
+        {
+            char* said = native(snx_format("+old/a|Moved to %s/now/a\n+old|Removed: it was empty\n", root));
+            assert(!strcmp(entries(&done, base), said));
+            free(said);
+        }
+        gui_cleaned_free(&done);
+        /* only x of x and y, into a folder not there yet; the old folder stays with y */
+        assert(!snx_mkdirs(old));
+        write_text(a, "");
+        free(a);
+        a = snx_path_join(old, "x");
+        write_text(a, "x");
+        free(c);
+        c = snx_path_join(old, "y");
+        write_text(c, "y");
+        free(kept);
+        kept = snx_path_join(root, "later");
+        assert(gui_move_entries(&done, old, kept, only, false) == 1 && !snx_path_exists(kept));
+        assert(gui_move_entries(&done, old, kept, only, true) == 1 && snx_is_dir(kept) && snx_is_file(c));
+        assert(!snx_path_exists(a) && snx_is_dir(old) && done.count == 2 && done.done == 2);
+        gui_cleaned_free(&done);
+        /* a file, by its own name */
+        assert(gui_move_entries(&done, c, kept, NULL, true) == 1 && !snx_path_exists(c));
+        free(c);
+        c = snx_path_join(kept, "y");
+        assert(snx_is_file(c) && done.count == 1);
+        gui_cleaned_free(&done);
+        assert(!gui_move_entries(&done, "/nonexistent/snx-move", now, NULL, true) && !done.count); /* none there */
+#ifdef SNX_XDG
+        { /* another disk: the entry not moved, the folder on the other named */
+            char* shm = snx_is_dir("/dev/shm") ? snx_temp_dir("/dev/shm") : NULL;
+            if (shm && !snx_same_disk(shm, root)) {
+                char* file = snx_path_join(shm, "far");
+                char* said = snx_format("!%s|Not moved: %s/now is on another disk\n", file, root);
+                write_text(file, "far");
+                assert(!gui_move_entries(&done, shm, now, NULL, true) && !strcmp(entries(&done, base), said));
+                assert(snx_is_file(file) && snx_is_dir(shm));
+                gui_cleaned_free(&done);
+                free(said);
+                free(file);
+            }
+            if (shm) assert(!snx_remove_tree(shm));
+            free(shm);
+        }
+#endif
+        free(moved);
+        free(c);
+        free(kept);
+        free(b);
+        free(a);
+        free(base);
+        free(now);
+        free(old);
+    }
+    assert(!snx_remove_tree(root));
+    free(games);
+    free(root);
+    puts("gui_clean passed");
+    return 0;
+}

@@ -1,0 +1,82 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* am.c with a control.nacp: the desired language against its supported-language flags, its display version and
+   save data sizes, and the sizes ExtendSaveData sets; then am_service.c's checks, whose stand-ins this reuses */
+#define main am_service_main
+#include "am_service.c"
+#undef main
+
+extern const u8* g_test_nacp;
+extern u64 g_test_nacp_size;
+
+static void nacp_reset(void) {
+    free(g_hle.am.nacp);
+    g_hle.am.nacp = NULL;
+    g_hle.am.nacp_read = 0;
+}
+
+int main(void) {
+    static u8 nacp[0x4000];
+    u32 flags;
+    nn_oe_DisplayVersion version;
+    i64 normal = 0, journal = 0, required;
+    hle_init(); /* am_service_main runs it again, which keeps what this left (the NACP reset) */
+    g_hle.kernel.title_id = 0x0100BF00112C0000ull; /* the title am_service.c was written for */
+    /* the system's language when the game has it (flags 0: every one), else the first fallback ns tries */
+    CHECK(am_desired_language(1, 0) == 1);           /* American English */
+    CHECK(am_desired_language(0, 1u << 2) == 0);     /* Japanese, which the game has */
+    CHECK(am_desired_language(0, 1u << 0) == 1);     /* Japanese falls back to American English */
+    CHECK(am_desired_language(12, 1u << 0) == 1);    /* British English to American */
+    CHECK(am_desired_language(2, 1u << 9) == 13);    /* French to Canadian French */
+    CHECK(am_desired_language(17, 1u << 10) == 9);   /* Brazilian Portuguese to Portuguese */
+    CHECK(am_desired_language(15, 1u << 13) == 16);  /* Simplified Chinese to Traditional (zh-Hant) */
+    CHECK(am_desired_language(6, 1u << 14) == 6);    /* zh-CN keeps its own code */
+    CHECK(am_desired_language(1, 1u << 16) == 1);    /* only Polish, which has no code here: the system's */
+    CHECK(am_desired_language(99, 1u << 2) == 0);    /* an index out of range is American English's list */
+
+    /* GetDisplayVersion and GetSaveDataSize from the NACP, and without one */
+    memcpy(nacp + 0x3060, "2.0.0", 6);
+    flags = 1u << 2;
+    snx_st_le32(nacp + 0x302c, flags);
+    snx_st_le64(nacp + 0x3080, 0x4000000);
+    snx_st_le64(nacp + 0x3088, 0x1000000);
+    snx_st_le64(nacp + 0x3090, 0x200000);
+    g_test_nacp = nacp;
+    g_test_nacp_size = sizeof nacp;
+    CHECK(nn_am_service_IApplicationFunctions_GetDisplayVersion(NULL, &version) == 0);
+    CHECK(!strcmp((char*)version.v, "2.0.0"));
+    /* IsUserAccountSwitchLocked reads this byte, as acc's command does */
+    CHECK(am_user_account_switch_lock() == 0);
+    nacp[0x3026] = 1;
+    nacp_reset(); /* the helper reads the NACP again after the byte changed */
+    CHECK(am_user_account_switch_lock() == 1);
+    nacp[0x3026] = 0;
+    nacp_reset();
+    CHECK(nn_am_service_IApplicationFunctions_GetSaveDataSize(NULL, 1, NULL, &normal, &journal) == 0);
+    CHECK(normal == 0x4000000 && journal == 0x1000000);
+    CHECK(nn_am_service_IApplicationFunctions_GetSaveDataSize(NULL, 3, NULL, &normal, &journal) == 0);
+    CHECK(normal == 0x200000 && journal == 0);
+    /* ExtendSaveData's sizes are what GetSaveDataSize answers from then on, for that save only */
+    required = -1;
+    CHECK(nn_am_service_IApplicationFunctions_ExtendSaveData(NULL, 1, NULL, 0x5000000, 0x1400000, &required) == 0);
+    CHECK(required == 0);
+    CHECK(nn_am_service_IApplicationFunctions_GetSaveDataSize(NULL, 1, NULL, &normal, &journal) == 0);
+    CHECK(normal == 0x5000000 && journal == 0x1400000);
+    CHECK(nn_am_service_IApplicationFunctions_GetSaveDataSize(NULL, 3, NULL, &normal, &journal) == 0);
+    CHECK(normal == 0x200000 && journal == 0);
+    CHECK(nn_am_service_IApplicationFunctions_ExtendSaveData(NULL, 3, NULL, 0x300000, 0x100000, &required) == 0);
+    CHECK(nn_am_service_IApplicationFunctions_GetSaveDataSize(NULL, 3, NULL, &normal, &journal) == 0);
+    CHECK(normal == 0x300000 && journal == 0x100000);
+    CHECK(nn_am_service_IApplicationFunctions_GetSaveDataSize(NULL, 1, NULL, &normal, &journal) == 0);
+    CHECK(normal == 0x5000000 && journal == 0x1400000);
+    nacp_reset();
+    g_test_nacp = NULL;
+    g_hle.am.save_extended[0] = g_hle.am.save_extended[1] = 0; /* a program just started, without a NACP: nothing extended yet */
+    CHECK(nn_am_service_IApplicationFunctions_GetDisplayVersion(NULL, &version) == 0);
+    CHECK(!strcmp((char*)version.v, "1.0.0"));
+    CHECK(am_user_account_switch_lock() == 0); /* no NACP: not locked */
+    CHECK(nn_am_service_IApplicationFunctions_GetSaveDataSize(NULL, 1, NULL, &normal, &journal) == 0);
+    CHECK(normal == 0x4000000 && journal == 0x4000000); /* 64 MiB each without a NACP */
+    nacp_reset();
+    return am_service_main();
+}

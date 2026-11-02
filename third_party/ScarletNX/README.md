@@ -1,0 +1,132 @@
+# ScarletNX
+<p align="center">
+  <img src="./dist/wimsy.svg" alt="Wimsy, the mascot" width="200"><br>
+  <b>Wimsy, the ScarletNX mascot</b>
+</p>
+
+Discord: https://discord.gg/tRTRXXbyjp (my god why don't we just use IRC like good people?)
+
+A GPLv3 static ARM64 to x86 recompiler with a Switch, GBA and GNU/Linux ABI translation layer for Solaris, Linux, Windows, FreeBSD and Android.
+
+## Quick start
+
+Each push to `main` that builds everywhere becomes a nightly in [scarletnx/nightly](https://github.com/scarletnx/nightly/releases), the newest 30
+kept, with each open pull request's builds. The latest:
+[ScarletNX-linux-x86_64.AppImage](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-linux-x86_64.AppImage) and
+[ScarletNX-linux-aarch64.AppImage](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-linux-aarch64.AppImage) for Linux (`chmod +x` it first;
+[ScarletNX-linux-ppc64le.AppImage](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-linux-ppc64le.AppImage),
+[ScarletNX-linux-riscv64.AppImage](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-linux-riscv64.AppImage) and
+[ScarletNX-linux-loongarch64.AppImage](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-linux-loongarch64.AppImage) are
+cross-built for [PowerPC64 LE](docs/PPC64.md), [RISC-V and LoongArch](docs/RISCV-LOONGARCH.md), when their jobs built.
+[ScarletNX-linux-ppc64.AppImage](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-linux-ppc64.AppImage), for
+[PowerPC64 BE](docs/PPC64.md#big-endian-hosts), not yet run on a big-endian machine),
+[ScarletNX-windows-x86_64.zip](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-windows-x86_64.zip) for Windows (run `bin\scarletnx.exe`)
+and [ScarletNX-android-universal.apk](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-android-universal.apk) ([Android](docs/ANDROID.md)).
+Games need a Vulkan 1.3 driver.
+
+Keys and games must be dumped from your own console. Started with no arguments, the program opens the
+[launcher](docs/GUI.md). **Install Keys** installs your `prod.keys`. For NSPs, also put `title.keys` in
+`~/.switch` (`%USERPROFILE%\.switch` on Windows). **Load Switch NSP/XCI/NRO** then picks a dump, extracts and
+recompiles it and starts the game, which the **Games** tab lists from then on. See [Usage](docs/USAGE.md) for the
+command line and [Folders](docs/USAGE.md#folders) for where games, saves and settings go.
+
+The shared ARM64 recompiler lives under `src/common/`. Switch Horizon HLE
+and Maxwell graphics live under `src/nx/`. The CPU-only Linux AArch64 runtime lives
+under `src/gnuabi/` and builds without the Switch graphics or media dependencies:
+
+```sh
+cmake -S . -B build/gnuabi -DSNX_BUILD_NX=OFF
+cmake --build build/gnuabi
+build/gnuabi/scarletnx-gnuabi -L /path/to/aarch64-sysroot ./test_aarch64
+```
+
+It runs static and dynamically linked programs, which start other processes, talk
+through pipes and read and write files through a sysroot, as QEMU's `-L` gives one
+(`linux/` of the data folder by default). See [Linux ABI execution and QEMU validation](docs/GNUABI.md)
+for the sysroot, the JIT and AOT modes, supported syscalls, and current limits. Every driver a build has is part
+of one program, `scarletnx`, which runs the driver its name says. On Linux and macOS `scarletnx-switch`,
+`scarletnx-3ds`, `scarletnx-vita`, `scarletnx-gnuabi` and `scarletnx-agb` are links to it. On Windows, which has no
+links, the driver's name goes first instead (`scarletnx.exe scarletnx-3ds Game.cia`), as the launcher runs them.
+Game Boy Advance ROMs run under the `scarletnx-agb` system type,
+on the emulated AGB board being built under `src/agb/` (licensed under MPL-2.0), see [AGB board](docs/AGB.md).
+
+The recompiler is also a library on its own, `libscarletnx-recompiler`: a program hands
+it ARM64 or AArch32 code in memory and runs the result in its own process with its own
+SVC handler, with no Switch runtime behind it. See
+[The recompiler as a library](docs/LIBRARY.md).
+
+Install the build tools first. On Debian/Ubuntu:
+```bash
+sudo apt update
+sudo apt install build-essential git cmake ninja-build clang llvm-dev nasm pkg-config \
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
+  libasound2-dev libpulse-dev libpipewire-0.3-dev
+```
+If your distribution provides `libsdl3-dev`, install it too. Otherwise CMake builds a pinned SDL3
+using the X11 and audio development packages above. SDL2 is not a substitute for SDL3. You also
+need a Vulkan 1.3 driver to run games. See [Build prerequisites](./docs/BUILD.md#prerequisites) for
+Wayland, other systems, and the SDL3 troubleshooting steps.
+
+Then build:
+```bash
+git clone --depth=1 https://github.com/scarletnx/ScarletNX
+cd ScarletNX
+cmake --preset default -B build && cmake --build build
+```
+
+For encrypted dumps, put `prod.keys` (and `title.keys`, for NSPs) in `~/.switch`, or pass them with
+`--keys` and `--title-keys`. Decrypted DNSP/DXCI content needs no keys.
+```bash
+./build/scarletnx "Game.xci"  # extract, recompile, then play (also accepts NSP, DNSP and DXCI)
+```
+Run the same command again after an interruption. Completed extraction and recompilation are skipped,
+but the game always starts anew. The driver keeps games, extractions and keys in its data folder,
+`~/.local/share/scarletnx` on Linux ([Folders](./docs/USAGE.md#folders)). To run the steps separately, here in
+folders of the current one:
+```bash
+./build/scarletnx -x "Game.xci" --out work/Game     # -> work/Game/{exefs,romfs}
+./build/scarletnx -r work/Game Game --outdir games  # -> games/Game/Game
+./build/scarletnx -rx "Game.xci"                   # prepare without playing (UNIX)
+./build/scarletnx -Hs "Game.xci"                   # headless, wait for GDB (UNIX)
+cd games/Game && ./Game
+```
+
+For an SDL3 menu, run `./build/scarletnx` with no arguments. Select a driver with arrow keys and
+Enter or hover and click, then choose drag-and-drop or the paginated `games/` browser.
+The GUI shows live driver/game
+output and combined CPU/RAM usage. See [GUI launcher](docs/GUI.md).
+
+The experimental `scarletnx-3ds` driver and **Load 3DS game** menu entry support
+encrypted or decrypted application CIAs (`scarletnx-3ds -x game.cia`), cartridge
+images (`game.cci`, `game.3ds`), bare NCCHs (`game.cxi`), a bundle or a z3ds
+compressed game of any of them, an update partition
+played as the update, and an independent
+page-based memory controller. It runs the extracted titles through an experimental
+**extract -> offline AOT -> native run** pipeline on 64-bit Linux and Windows, using an
+explicit ARM11/checked-memory profile without changing shared A57 defaults.
+The homebrew SuperTux draws its title and loading screens with a software port of
+Azahar's PICA pipeline and plays its music through a port of Azahar's HLE DSP.
+It is not playable yet: there is no input, the bottom screen is not shown, and parts of the OS are missing.
+See the [3DS port](docs/3DS.md) for limits, build instructions and the parity roadmap.
+
+The experimental `scarletnx-vita` driver and **Load Vita VPK** menu entry run PS Vita homebrew VPKs through the same
+**extract -> offline AOT -> native run** pipeline, compiling code it missed at run time. It draws sceGxm's scenes
+on Vulkan with a port of Vita3K's shader translator. The Lua Vita Tester draws its screen, reads input and plays sound.
+See the [Vita driver](docs/VITA.md) for what it covers.
+
+For more detailed information please see: [Build + run](./docs/BUILD.md). For the Android app (arm64 and x86_64),
+see [Android](./docs/ANDROID.md). macOS and iOS build in CI. An iPhone prepares and runs a game by itself, and no game
+runs on macOS yet: see [macOS and iOS](./docs/APPLE.md). Every document: [docs](./docs/README.md).
+
+# Special thanks
+
+- yuzu, Suyu, Torzu, Ryujinx, [Ryubing](https://git.ryujinx.app/ryubing/ryujinx) (Ryujinx's continuation), [Citron](https://git.citron-emu.org/citron/emulator) and [Eden](https://git.eden-emu.dev/eden-emu/eden).
+- [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)
+- LibHac.
+- [NeXium](https://nexium-emu.org/) for research and development.
+- [Switchbrew](https://switchbrew.org) for research.
+- [Azahar](https://github.com/azahar-emu/azahar) and Citra, for all of the 3DS emulation.
+- [Vita3K](https://github.com/Vita3K/Vita3K), for the PS Vita's GXM and shader translation, and [vita-headers](https://github.com/vitasdk/vita-headers) for its NIDs.
+- [mGBA](https://github.com/mgba-emu/mgba) as a direct reference for the AGB board.
+
+Wimsy, the mascot and the runtime's icon (`dist/wimsy.svg`) was drawn by Liz.

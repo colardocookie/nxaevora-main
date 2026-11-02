@@ -1,0 +1,137 @@
+# tests/gui_ui.c's scenes: what tools/uigen generates from them is built and run there
+[scene]Main {
+	padding = 4px
+	gap = 10px
+	[label]"Pick one" {
+		color = soft
+	}
+	[list]LoadList {
+		max_rows = 3
+		attr = callback
+		max_row_width = 200px
+		[button]"Load Switch" {
+			attr = callback
+		}
+		[button]"Load 3DS game" {
+			key = alt-f4
+			icon = box
+		}
+		[button]"Open Data Folder" {
+			for-platform = android
+		}
+		[button]"Settings" {
+			color = focus
+		}
+		@[button]"Decor" {}
+	}
+	[list]Games {
+		scroll = edge
+		max_row_width = 300px
+	}
+	[label]Status {
+		height = 20%
+	}
+}
+[scene]Row {
+	direction = row
+	justify = center
+	align = center
+	[button]"OK" {
+		width = 60px
+		height = 20px
+		key = o
+	}
+	[button]"Back" {
+		width = 25%
+		attr = callback
+	}
+}
+[scene]Touch {
+	[list]Big {
+		android.row_height = 30px
+		desktop.max_rows = 2
+		[button]"A" {}
+		[button]"B" {}
+		[button]"C" {}
+	}
+}
+# a tile list: its rows tiles, as many a line as fit, a label on a line of its own; a phone's tiles wider
+[scene]Grid {
+	padding = 4px
+	[list]Tiles {
+		max_rows = 9
+		row_height = 10px
+		row_gap = 4px
+		tile_width = 40px
+		tile_height = 30px
+		android.tile_width = 60px
+	}
+}
+# a frame: slots main.c draws in, laid out at run time by its boxes
+[scene]Frame {
+	direction = column
+	padding = 1cols
+	gap = 4px
+	narrow_below = 40cols
+	# as tall as its callback says at its width, or off
+	[slot]Top {
+		measure = callback
+		shown = callback
+	}
+	# a sum, in either order
+	[slot]Bar {
+		height = 4px + 1rows
+	}
+	# a row, a column below 40 columns inside
+	[box]Body {
+		direction = row
+		grow = 1
+		gap = 1cols
+		narrow.direction = column
+		# two fifths, 20 columns at least
+		[slot]Left {
+			grow = 2
+			min_width = 20cols
+		}
+		[box]Right {
+			direction = column
+			grow = 3
+			gap = 4px
+			shown = callback
+			[slot]About {
+				grow = 1
+			}
+			# as tall as its callback says, half the box at most
+			[slot]Info {
+				measure = callback
+				max_height = 50%
+			}
+		}
+		[slot]Side {
+			width = 10cols
+			narrow = hide
+		}
+	}
+	# a quarter wide against its right, as tall as its callback says
+	[box]Foot {
+		direction = row
+		justify = end
+		[slot]Keys {
+			width = 25%
+			measure = callback
+		}
+	}
+	# halves, Knob as wide as its callback says at least
+	[box]Pair {
+		direction = row
+		gap = 1cols
+		[slot]Note {
+			grow = 1
+		}
+		[slot]Knob {
+			grow = 1
+			height = 1rows
+			min_width = callback
+		}
+	}
+}

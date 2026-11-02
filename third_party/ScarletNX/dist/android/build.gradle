@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 the ScarletNX contributors
+// The Android app around what CMake installs into the stage folder: the libraries, SDL's Java and the icon
+// (scripts/android-apk.sh, docs/ANDROID.md)
+plugins {
+    id 'com.android.application' version '9.4.0'
+}
+
+def stage = file(providers.gradleProperty('scarletnx.stage').get())
+layout.buildDirectory = new File(stage, 'gradle')
+// One key signs every APK given it, so each installs over the one before: scarletnx.keystore names its keystore,
+// SNX_ANDROID_KEYSTORE_PASSWORD is the keystore's password and the key's, SNX_ANDROID_KEY_ALIAS the key (scarletnx).
+// Without it the machine's own debug key signs, a new one on every machine that had none (docs/ANDROID.md)
+def keystore = providers.gradleProperty('scarletnx.keystore').orNull
+
+android {
+    namespace = 'org.scarletnx'
+    compileSdk = 36
+    defaultConfig {
+        applicationId = 'org.scarletnx'
+        minSdk = 21 // the native builds' API level too (scripts/android-*.sh)
+        targetSdk = 36
+        versionCode = 1
+        versionName = '0.1'
+    }
+    if (keystore) {
+        signingConfigs.debug {
+            storeFile = file(keystore)
+            storePassword = providers.environmentVariable('SNX_ANDROID_KEYSTORE_PASSWORD').get()
+            keyAlias = providers.environmentVariable('SNX_ANDROID_KEY_ALIAS').orElse('scarletnx').get()
+            keyPassword = storePassword
+        }
+    }
+    sourceSets.main {
+        java.srcDir new File(stage, 'java')
+        jniLibs.srcDir new File(stage, 'lib')
+        res.srcDir new File(stage, 'res')
+    }
+    // extracted into the app's libraries folder, where the menu runs the driver from
+    packaging.jniLibs.useLegacyPackaging = true
+}
+
+// AGP 9 adds Kotlin's standard library (2.4 MB of dex) to every app; this one is Java only
+configurations.configureEach {
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib'
+}
