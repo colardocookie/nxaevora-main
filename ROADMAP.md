@@ -122,24 +122,95 @@ Exit condition: the decision above is recorded. The optional check can be done a
   pooled objects one after the other and waits for each with a sleep of 16 ms, with no other thread busy and no slow file
   read (see `docs/stutter-analysis.md`, the hitch runs). The runtime's sleeps are exact, so no fix is planned. The cause of
   the other slow frames is not known.
-- Audio, input and save data.
+- Audio and save data.
 - Services of the console that Arceus needs and ScarletNX does not have yet (`runtime/hle`).
 
 Exit condition: the covered scenes play at the speed and the quality that the user accepts.
 
-## Phase 6: Launcher
+## Native plan
+
+The CPU code of the game is native after the recompile. The other layers of the ScarletNX runtime still re-create the
+console. The user decided to replace them in the order below. The earlier rule "replace a layer only after a measured
+problem" no longer applies to these five steps. Each step still needs a test in the game, and the 30 frames each second
+and the 0 misses are the baseline that no step may make worse. Every step moves away from the upstream project, so a
+patch must be kept up to date or be proposed upstream.
+
+Not in the plan: audio, memory and video. They stay as they are. Open them again only with a measured problem.
+
+## Phase 6: Graphics, NVN to Vulkan
+
+Now: the game calls its own NVN library, which writes a GPU command stream. ScarletNX decodes that stream (the methods
+and macros of the console GPU) and draws with Vulkan. The chain is: game, NVN library inside the game, GPU command
+stream, interpretation by ScarletNX, Vulkan.
+
+Goal: game, NVN implementation on the host, Vulkan. The NVN calls of the game go to code on the PC that calls Vulkan
+directly, and the command stream is gone.
+
+The plan is in `docs/nvn-plan.md`. It has five stages:
+1. Survey the paths of Arceus (the NVN API, inline work, extra queue commands). Exit: the paths that the hook does not catch are known.
+2. Choose the way: replace NVN completely, or replace the existing Maxwell layer in part. Exit: the range and the remaining work are explained.
+3. Smallest drawing path: initialization, clear, one simple draw and present. Exit: the result matches the old path.
+4. Extend to the real game: textures, compute, synchronization and memory sharing. Exit: the target scenes match the old path.
+5. Measure CPU time, frame time and dropped draws. Exit: the effect and the limits are confirmed.
+
+The translation of the shader binaries stays. Drawbacks to plan for: the API is large, the game uses it in its own ways,
+and a new path can add visual faults.
+
+Exit condition: the covered scenes draw the same as before with no command stream decode, at 30 frames each second.
+
+## Phase 7: Input and camera
+
+Facts are in `docs/input-analysis.md` and `docs/camera-analysis.md`.
+
+- Finish the direct mouse look (the mod `native-mouse-look`). Test it in cutscenes, dialogs, menus, battles and the
+  other camera modes. If a scene whose camera the player does not control moves, gate the stub on a game state.
+- Arrange the state of the controls and the remap: the mouse buttons (now fixed), the wheel, rebinding and profiles
+  for the keyboard, the mouse and the pads.
+- The launcher writes the setting `mouse_native_address` and keeps the mod in the mods folder.
+
+Exit condition: the whole game is playable with the keyboard and the mouse, and the user can rebind every control.
+
+## Phase 8: Host replacement of SDK functions
+
+Replace SDK functions of the game with code on the host. Use the preparation that exists (the recompile patches in
+`recomp/patches/`, the analysis of the SDK code from the disassembly, and the HLE services in `runtime/hle`). Make the
+new graphics layer of phase 6 part of it, so that the SDK calls that touch graphics go to the host too.
+
+Exit condition: the replaced functions are listed in `docs/`, each has a test run, and the game runs with 0 misses.
+
+## Phase 9: Shaders and pipelines
+
+Use the existing preparation (shaders made ahead of time, `shader_cache/`, `async_pipelines`, see
+`docs/stutter-analysis.md`) and build it into the new graphics layer of phase 6. Pipelines for new draw states cannot be
+made before the game uses them, so the aim is to prepare as many as possible before play and to hide the rest.
+
+Exit condition: the stutter at the first use of a pipeline is gone in the covered scenes, and the shaders that fail
+now (11 of 1379, see `docs/shader-analysis.md`) are handled.
+
+## Phase 10: Extracted RomFS and a file layer for mods
+
+Extract the RomFS to the disk ahead of time (ScarletNX has an extract option) and read normal files. Add a file layer
+for mods that replaces files of the game without touching the dump.
+
+- The extracted copy is for the own use of the user only and must never be shared. It needs 6 GB or more of disk space,
+  and it must be made again after an update.
+- The launcher checks the files and the mod folder. Define the order in which a mod overrides a game file.
+
+Exit condition: the game runs from the extracted files, and a test mod replaces one file without a change to the dump.
+
+## Phase 11: Launcher
 
 A launcher made with Tauri (`launcher/`).
 
 - The user chooses the game dump, the update and the keys. The launcher never copies or uploads them.
 - It starts the recompile, shows its progress and starts the game.
-- It lists the settings that matter, for example the language and the resolution. It sets `async_pipelines` to 1 by
-  default (see `docs/stutter-analysis.md`).
+- It lists the settings that matter, for example the language, the resolution and the input. It manages the extracted
+  files and the mods of phase 10.
 - It ships with the runtime DLLs, so that no other tool must be installed.
 
 Exit condition: a user with a dump and keys goes from a fresh install to a running game without a terminal.
 
-## Phase 7: Release
+## Phase 12: Release
 
 - Choose and write down the license (GPL-3.0-or-later is the plan, because ScarletNX is GPL-3.0).
 - Add the credits for the projects whose code or research NXAevora uses.
@@ -147,93 +218,10 @@ Exit condition: a user with a dump and keys goes from a fresh install to a runni
 - Write the README for users, with the legal notes: the game files are not part of NXAevora and the user must dump
   them from their own console.
 
-## Candidates for native replacement
-
-The CPU code of the game is native after the recompile. The other layers of the ScarletNX runtime still re-create
-the console: they decode its GPU commands, mix its audio, read its input, decode its video, rebuild its memory and
-read its files. A native replacement moves one of these layers to code made for the PC.
-
-These are candidates and not decisions. The current runtime works (30 frames each second and no visible fault in the
-tested scenes), so each replacement must earn its place. Measure first. Every replacement also moves away from the
-upstream project, so a patch must be kept up to date or be proposed upstream.
-
-### Graphics
-
-- Now: the runtime decodes the GPU command stream that the game writes (methods and macros of the console GPU) and
-  draws with Vulkan. A shader is translated from its console binary when the game first uses it. A pipeline is made
-  at the first draw, which causes the stutter that we see.
-- Native: handle the graphics API calls of the game (NVN) directly on Vulkan, and make the shaders and pipelines
-  before the play.
-- Benefits: no command stream to decode, less CPU work. The pipelines can be ready before play, so the stutter goes.
-  Room for PC options such as the resolution.
-- Drawbacks: the API is large, and the game uses it in its own ways, so each call must be written and tested. The
-  stream emulation works now, and a new path can add visual faults. The translation of the shader binaries stays. It
-  is a large patch to keep against upstream.
-- Step 1, small: ScarletNX makes the shaders ahead of time and the pipelines of earlier runs at the start. A pipeline
-  for a new draw state cannot be made before the game uses it. What is left is the setting `async_pipelines` and the
-  other causes of slow frames (see `docs/stutter-analysis.md`).
-
-### Audio
-
-- Now: the runtime re-creates the audio renderer of the console (voices, mixing, effects) and sends the result to
-  the PC through SDL (WASAPI). Music and voices are decoded with FFmpeg.
-- Native: give the voices of the game to a PC mixer.
-- Benefits: possibly less CPU work and latency, and options such as volume for each kind of sound.
-- Drawbacks: the effects of the game (for example reverb) must sound the same, and the result is hard to check
-  without listening. The present path works, and no fault is recorded. Low priority.
-
-### Input
-
-- Now: the pad state of the console is made from the SDL gamepad (an XInput pad is found in the log). The keyboard and
-  mouse are mapped to pad buttons and sticks, so the mouse look acts like a stick and feels poor.
-- Native: read the keyboard and mouse directly. The mouse moves the camera by its own delta and does not pass through a
-  stick. The launcher offers rebinding and profiles.
-- Benefits: a camera that is usable with the mouse, and rebinding.
-- Drawbacks: the game reads its camera from the stick values, so a mouse delta must be turned into a stick value (or
-  into a change that the game accepts). Functions that the console has and the PC may not have (motion, touch) need a
-  plan. The work is in `docs/input-analysis.md`.
-
-### Memory
-
-- Now: the runtime re-creates the address space of the game. The generated code uses the addresses of the game, the
-  memory calls of the console are emulated, and the pages that the GPU uses are tracked.
-- Native: change the addresses of the game to native pointers and use the PC allocator.
-- Benefits: possibly faster memory access and simpler debugging.
-- Drawbacks: this is the largest and riskiest change. The game keeps addresses in its data. The mapping calls (alias,
-  permissions) must act the same. It reaches into the core of the recompiler. The game already runs at 30 frames
-  each second with no JIT misses, so the gain is not proven. Do not start without a measured problem.
-
-### Files
-
-- Now: the runtime reads the ExeFS and the RomFS in place from the dump (6 GB, 19095 files) and decrypts them at each
-  read. Saves are in the data folder of the game.
-- Native: extract the files to the disk ahead of time (ScarletNX has an extract option) and read them as normal
-  files.
-- Benefits: possibly faster loading, because nothing is decrypted at a read. The dump is not needed to play.
-  The launcher can check the files, and mods are easier.
-- Drawbacks: 6 GB or more of disk space for a second copy of the data. The extraction takes time and must be made
-  again after an update. The copy is for the own use of the user only and must never be shared. The loading time is
-  not measured yet, so the gain is not known.
-
-### Decision
-
-A layer is replaced only when a measurement shows a problem. The measurements so far show none for the layers below:
-the CPU waits for most of the time, the GPU uses about 6 ms of a frame of 33 ms, and the user sees no stutter while
-walking (`docs/stutter-analysis.md`).
-
-- Video: no replacement. The movies of the game are cutscenes that the game engine renders itself.
-- Files: no replacement for now. A run with the RomFS extracted still had the stop at the start, so reading the dump in
-  place is not the cause.
-- Graphics (NVN), memory and audio: not started. Open them again only with a measured problem. Review of this
-  decision: the measurements still show none. The 30 frames each second come from the game's swap interval, so the
-  layers are not the limit. Open graphics and memory again if a higher frame rate is tried and the CPU cost of the GPU
-  command stream decode becomes the limit.
-- Open measurement: the stop of about 1.3 s at the start (a wait, not work, see run L). Find the lock or the read that
-  it waits on.
-- Input: the one layer that is replaced. The keyboard and mouse must work as native input, because the mouse look of
-  an emulated pad is poor. See `docs/input-analysis.md`.
-- Game enhancements such as the frame rate are later work and are not part of this list.
+Game enhancements such as a higher frame rate are later work and are not part of this list. The full playthrough comes
+after the phases above.
 
 ## Open questions
 
 - Which Arceus versions are supported? The work so far uses 1.1.1.
+- Measure: the stop of about 1.3 s at the start (a wait, not work). Find the lock or the read that it waits on.
