@@ -990,6 +990,8 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
     VkFmt f = depth ? vk_zt_format(fmt) : vk_rt_format(fmt);
     Surf* s = surf_create(gva, w, h, f, fkey, bl, bh, pitch, 1, layers);
     if (!s) return NULL;
+    /* the sizes of the new color targets show whether the game changes its resolution (dynamic resolution) */
+    if (!depth && w >= 640) LOG_LIMIT(60, "vulkan: new render target %ux%u at %llx format %x\n", w, h, (unsigned long long)gva, fmt);
     rtx_add(s);
     s->layer_size = layer_size;
     s->bd = bd;

@@ -1018,6 +1018,10 @@ void vk_render_end(void); /* ends the dynamic rendering pass, if one is open */
 /* the on-screen controls and the game's menu over a swapchain image in TRANSFER_DST_OPTIMAL, which it stays in;
    safe is the picture's part clear of the system's bars (gpu/vk/ui.c) */
 void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);
+/* gpu/vk/postfx.c: the frame through the anti-aliasing pass (VK_AA_*). The image to blit from, in
+   TRANSFER_SRC_OPTIMAL and the size of src's image, or VK_NULL_HANDLE where the frame is shown as it is */
+enum { VK_AA_OFF = 0, VK_AA_FXAA = 1 };
+VkImage vk_postfx_apply(VkCommandBuffer cb, Surf* src, int mode);
 void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain does */
 VkImageView vk_ui_swapchain_view(VkImage sc); /* the view of a swapchain image that ui.c made (gpu/vk/imgui.c draws on it) */
 /* gpu/vk/imgui.c: Dear ImGui's windows over the image, under vk_lock; its backend ends with the swapchain */

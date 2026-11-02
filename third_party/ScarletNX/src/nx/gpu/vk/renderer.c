@@ -409,9 +409,15 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
             wait = acq;
             signal = g_vk.sc_done[idx];
             VkImage sc = g_vk.sc_images[idx];
-            if (src)
+            /* the game's frame only: the menu's own frames are drawn as they are */
+            VkImage blit_from = VK_NULL_HANDLE;
+            if (src && game)
+                blit_from = vk_postfx_apply(cb, src, __atomic_load_n(&g_settings.anti_aliasing, __ATOMIC_RELAXED));
+            if (src && !blit_from) {
                 vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                             VK_ACCESS_2_TRANSFER_READ_BIT);
+                blit_from = src->img;
+            }
             /* the submit waits for the acquire at the clear, the image's first use */
             vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_CLEAR_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
                        VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -448,7 +454,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
                                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                     .dstOffsets = {{dx, dy, 0}, {dx + (i32)dw, dy + (i32)dh, 1}}};
                 flip_src(&blit, transform); /* render targets stay in guest order */
-                rec_CmdBlitImage(cb, src->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc,
+                rec_CmdBlitImage(cb, blit_from, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
             }
             {

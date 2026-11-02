@@ -179,6 +179,14 @@ setting Vsync
     help 1 = images wait for the display's refresh in order, so nothing tears (FIFO). 2 = the newest image is shown at
     help each refresh and the game does not wait, so nothing tears and the delay is shorter (Mailbox); a display
     help without it uses FIFO. 0 = images show at once and can tear, else Mailbox, else FIFO
+setting Anti-aliasing
+    key anti_aliasing
+    int 0 1
+    default 0
+    words Off|FXAA
+    help The frame is smoothed along its edges after the game has drawn it, before the on-screen controls and the
+    help menus. FXAA is one pass and costs little. The game's own frame, the render targets and the guest memory are
+    help not changed
 setting Anisotropic filtering
     key anisotropy
     int 0 16

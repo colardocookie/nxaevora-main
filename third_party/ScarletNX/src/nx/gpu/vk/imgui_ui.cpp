@@ -166,10 +166,10 @@ void display_lines(const ImguiFrame& f) {
     else
         snprintf(v, sizeof v, "?");
     row("Game resolution", v);
-    ImGui::BeginDisabled(); /* no setting behind these two yet */
+    ImGui::BeginDisabled(); /* no setting behind this one yet */
     row("Scaling", "-");
-    row("Anti-aliasing", "-");
     ImGui::EndDisabled();
+    row("Anti-aliasing", f.anti_aliasing == 1 ? "FXAA" : "Off");
     snprintf(v, sizeof v, "%s", f.fps_limit);
     row("Frame limit", v);
     row("V-sync", f.vsync == 2 ? "On (Mailbox)" : f.vsync ? "On (FIFO)" : "Off");
