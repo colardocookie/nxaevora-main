@@ -818,7 +818,7 @@ guess (rule: mechanism first). Each part is one commit.
 | Part | Content | State |
 | --- | --- | --- |
 | 3b-1 | The setting `nvn_native`, `gpu/nvn_native.c` (loader hooks below the trace, missing-function handler, exit report), `gpu/nvn_objtab.c` (the record table, test `nvn_objtab`), and the trace of the queries (`nvn-value:` lines for `nvnDeviceGetInteger` and six other queries). | Written and built. The unit tests pass, except `tracked_material`, which fails on the two SMAA `.dds` files that were added before this work (not caused by it). Not run in the game. |
-| 3b-2 | A diagnostic run with `nvn_trace=1` to the title: the agent reads the `nvn-value:` lines. | Waits for the user. |
+| 3b-2 | A diagnostic run with `nvn_trace=1` to the title: the agent reads the `nvn-value:` lines. | Done (2026-11-02). The values are in "3b-2 Result" below. |
 | 3b-3 | G1: device and queue builders, `DeviceInitialize`, `DeviceGetInteger` (the table of 3b-2), `GetTimestampInNanoseconds`, `QueueInitialize`. | Not started. |
 | 3b-4 | G2: memory pool and the GPU address rule (2-2). | Not started. |
 | 3b-5 | G3 and G5: texture objects, the storage size function (read from the library's disassembly, tested against the 3a table), the pools. | Not started. |
@@ -830,3 +830,33 @@ The code review of the Orca "code reviewer" (decided for 3b) comes after 3b-7, o
 Open risk of 3b-1 (first run with `nvn_native=1` shows it): the library's `nvnDeviceGetProcAddress` runs for the lookups on a
 device that the library never initialized. If it reads the device object, the run stops there, and the host must answer the
 lookups itself from a table of names.
+
+### 3b-2 Result (run of 2026-11-02, update program, title screen, `nvn_trace=1`, `nvn_native=0`)
+
+The run ended without a crash. JIT misses: 0. Frame rate: about 30. `nvn: 522 resolved addresses, 231 called`.
+
+`nvnDeviceGetInteger` (27 distinct queries, what = value). The queries 0 to 39 were not made.
+
+| Value | what |
+| --- | --- |
+| 1 | 40, 41, 42, 50, 59, 66, 67, 68, 69, 71, 72, 73, 74, 75, 76, 87 |
+| 0 | 90 |
+| 256 | 4, 17, 18 |
+| 32 | 15, 16 |
+| 4 | 19 |
+| 8 | 20 |
+| 65536 | 82 |
+| 262144 | 85 |
+| 16384 | 92 |
+
+The six other query functions:
+
+- `nvnTexturePoolGetSize`: returns the size argument (0x2000). `nvnSamplerPoolGetSize`: the same (0x200).
+- `nvnQueueBuilderGetQueueMemorySize`: 0x8a000.
+- `nvnBufferBuilderGetSize`: returns the size argument in almost all calls. Two calls have an x3 that looks like a stack address
+  (0x13000ffef8 gives 0x40, 0x13000ffed8 gives 0x4000). The trace may read the wrong argument there. Check it in the
+  disassembly in 3b-3.
+- `nvnMemoryPoolGetFlags`: 0x22 in most calls, 0x24 for small pools in CPU memory, 0x12 once (a pool of 0x3000000 bytes).
+- `nvnDeviceGetTimestampInNanoseconds`: 0 in the first two calls, a real value after that.
+
+The Vulkan translation reported `79 failed` of 1787 shader programs. It was not compared with an earlier run.
