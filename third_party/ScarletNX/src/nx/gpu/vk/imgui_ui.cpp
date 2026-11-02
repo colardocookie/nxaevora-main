@@ -361,12 +361,12 @@ void setting_row(const ImguiSettingRow& r) {
     ImGui::PushID(r.key);
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::BeginDisabled((r.flags & IMGUI_SETTING_LOCKED) != 0);
-    if (r.type == IMGUI_SETTING_TEXT)
+    if (r.presets)
+        changed = setting_preset(r, value, sizeof value);
+    else if (r.type == IMGUI_SETTING_TEXT)
         ImGui::TextDisabled("Edit it in the .ini file");
     else if (r.type == IMGUI_SETTING_FLOAT)
         changed = setting_float(r, value, sizeof value);
-    else if (r.presets)
-        changed = setting_preset(r, value, sizeof value);
     else if (r.has_words)
         changed = setting_choice(r, value, sizeof value);
     else
