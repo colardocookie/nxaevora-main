@@ -371,19 +371,21 @@ static NvnTextureBuilder* texture_builder(u64 addr) {
 static NvnTextureView* texture_view(u64 addr) {
     return rec_get(addr, NVN_OBJ_TEXTURE_VIEW, sizeof(NvnTextureView));
 }
-/* Check each memory region before using the guest read helpers. */
-static int native_guest_readable(u64 addr, u64 size) {
+/* Check each memory region for the permission before using the guest access helpers. */
+static int native_guest_access(u64 addr, u64 size, int perm) {
     if (!addr || addr >= AS_SIZE || size > AS_SIZE - addr) return 0;
     u64 end = addr + size;
     while (addr < end) {
         MemBlock block;
         mem_query(addr, &block);
-        if (!(block.perm & PERM_R) || !block.size || block.addr > addr ||
+        if (!(block.perm & perm) || !block.size || block.addr > addr ||
             block.size > AS_SIZE - block.addr || block.addr + block.size <= addr) return 0;
         addr = block.addr + block.size;
     }
     return 1;
 }
+static int native_guest_readable(u64 addr, u64 size) { return native_guest_access(addr, size, PERM_R); }
+static int native_guest_writable(u64 addr, u64 size) { return native_guest_access(addr, size, PERM_W); }
 static float native_float_arg(const CPU* c, unsigned index) {
     uint32_t bits = SNX_VS(c->v[index], 0);
     float value;
@@ -498,7 +500,7 @@ static void* known_record(u64 addr, NvnObjKind kind) {
     return o && o->kind == (uint32_t)kind ? o->data : NULL;
 }
 /* Caller holds objs_lock. Both descriptor types use signed indices and 32-byte entries. */
-static int descriptor_destination(CPU* c, NvnObjKind kind, const char* operation, uint64_t* at) {
+static int descriptor_destination(CPU* c, NvnObjKind kind, const char* operation, uint32_t entry_bytes, uint64_t* at) {
     DescriptorPoolRec* pool = known_record(c->x[0], kind);
     if (!pool) {
         LOG("nvn-native: %s unknown descriptor pool=%llx\n", operation, (unsigned long long)c->x[0]);
@@ -515,12 +517,20 @@ static int descriptor_destination(CPU* c, NvnObjKind kind, const char* operation
             operation, (unsigned long long)pool->memory_pool, memory->flags);
         return 0;
     }
-    *at = base + pool->offset + (uint64_t)((int64_t)(int32_t)c->x[1] * NVN_SAMPLER_DESCRIPTOR_BYTES);
+    uint64_t offset;
+    if (!nvn_descriptor_offset(pool->offset, pool->count, memory->size, entry_bytes, (int32_t)c->x[1], &offset) ||
+        offset > UINT64_MAX - base || !native_guest_writable(base + offset, entry_bytes)) {
+        LOG("nvn-native: %s index=%d is outside descriptor pool=%llx (offset=%llx count=%u memory size=%llx)\n",
+            operation, (int32_t)c->x[1], (unsigned long long)c->x[0], (unsigned long long)pool->offset, pool->count,
+            (unsigned long long)memory->size);
+        return 0;
+    }
+    *at = base + offset;
     return 1;
 }
 static void sampler_pool_register(CPU* c) {
     uint64_t at;
-    if (!descriptor_destination(c, NVN_OBJ_SAMPLER_POOL, "sampler registration", &at)) return;
+    if (!descriptor_destination(c, NVN_OBJ_SAMPLER_POOL, "sampler registration", NVN_SAMPLER_DESCRIPTOR_BYTES, &at)) return;
     NvnSampler* sampler = known_record(c->x[2], NVN_OBJ_SAMPLER);
     if (!sampler) {
         LOG("nvn-native: sampler registration unknown sampler=%llx\n", (unsigned long long)c->x[2]);
@@ -570,7 +580,7 @@ static int texture_format_record(uint32_t format, NvnTextureFormatRecord* record
 }
 static void texture_pool_register(CPU* c) {
     uint64_t at;
-    if (!descriptor_destination(c, NVN_OBJ_TEXTURE_POOL, "texture registration", &at)) return;
+    if (!descriptor_destination(c, NVN_OBJ_TEXTURE_POOL, "texture registration", NVN_TEXTURE_DESCRIPTOR_BYTES, &at)) return;
     TextureRec* texture = known_record(c->x[2], NVN_OBJ_TEXTURE);
     if (!texture) {
         LOG("nvn-native: texture registration unknown texture=%llx\n", (unsigned long long)c->x[2]);
@@ -1021,7 +1031,7 @@ static void bootstrap_native(CPU* c, u64 entry) {
     if (resolver < g_code_lo || resolver >= g_code_hi || (resolver & 3)) return;
     pm_lock(&slots_lock);
     GuestFn* slot = &g_disp[(resolver - g_code_lo) / 4];
-    if (*slot && *slot != getproc_native) {
+    if (*slot && !getproc_original) { /* hook once: with nvn_trace the slot may hold the trace hook, which calls back here */
         __atomic_store_n(&getproc_original, *slot, __ATOMIC_RELEASE);
         getproc_addr = resolver;
         __atomic_store_n(slot, getproc_native, __ATOMIC_RELEASE);

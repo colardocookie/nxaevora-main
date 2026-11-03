@@ -137,6 +137,14 @@ NvnPoolResult nvn_memory_pool_params(const NvnMemoryPoolBuilder* b, uint64_t pag
     return NVN_POOL_OK;
 }
 
+int nvn_descriptor_offset(uint64_t pool_offset, uint32_t count, uint64_t memory_size, uint32_t entry_bytes,
+                          int32_t index, uint64_t* offset) {
+    if (index < 0 || (uint32_t)index >= count || pool_offset > memory_size) return 0;
+    if ((uint64_t)count * entry_bytes > memory_size - pool_offset) return 0;
+    *offset = pool_offset + (uint64_t)(uint32_t)index * entry_bytes;
+    return 1;
+}
+
 int nvn_pool_gpu_allocate(uint64_t cursor, uint64_t size, uint64_t page_size,
                           uint64_t* address, uint64_t* next) {
     if (!size || page_size < NVN_POOL_STORAGE_ALIGNMENT || page_size % NVN_POOL_STORAGE_ALIGNMENT ||

@@ -254,7 +254,7 @@ static void bootstrap_trace(CPU* c, u64 entry) {
     if (resolver < g_code_lo || resolver >= g_code_hi || (resolver & 3)) return;
     pm_lock(&procs_lock);
     GuestFn* slot = &g_disp[(resolver - g_code_lo) / 4];
-    if (*slot && *slot != getproc_trace) {
+    if (*slot && !getproc_original) { /* hook once: with nvn_native the slot may hold its hook, which calls back here */
         __atomic_store_n(&getproc_original, *slot, __ATOMIC_RELEASE);
         __atomic_store_n(slot, getproc_trace, __ATOMIC_RELEASE);
     }

@@ -92,6 +92,10 @@ void nvn_memory_pool_builder_defaults(NvnMemoryPoolBuilder* b);
 /* Normalizes flags even on failure. Service-owned handles are not supported. */
 NvnPoolResult nvn_memory_pool_params(const NvnMemoryPoolBuilder* b, uint64_t page_size, uint32_t* flags);
 /* Pure bump allocation: no address reuse. Outputs stay unchanged on failure. End is exclusive. */
+/* The byte offset of a descriptor inside its memory pool. Fails (0) when index is outside [0, count), or when the
+   descriptor range [pool_offset, pool_offset + count * entry_bytes) does not fit in the memory pool. */
+int nvn_descriptor_offset(uint64_t pool_offset, uint32_t count, uint64_t memory_size, uint32_t entry_bytes,
+                          int32_t index, uint64_t* offset);
 int nvn_pool_gpu_allocate(uint64_t cursor, uint64_t size, uint64_t page_size,
                           uint64_t* address, uint64_t* next);
 uint64_t nvn_memory_pool_map(uint32_t flags, uint64_t storage);

@@ -571,6 +571,20 @@ static void test_texture_queries(const char* path) {
     CHECK(count == 40 && agree == count);
 }
 
+static void test_descriptor_offset(void) {
+    uint64_t offset = 99;
+    CHECK(nvn_descriptor_offset(0x100, 4, 0x1000, 32, 0, &offset) && offset == 0x100);
+    CHECK(nvn_descriptor_offset(0x100, 4, 0x1000, 32, 3, &offset) && offset == 0x160);
+    CHECK(nvn_descriptor_offset(0xf80, 4, 0x1000, 32, 3, &offset) && offset == 0xfe0);
+    CHECK(!nvn_descriptor_offset(0x100, 4, 0x1000, 32, -1, &offset));
+    CHECK(!nvn_descriptor_offset(0x100, 4, 0x1000, 32, 4, &offset));
+    CHECK(!nvn_descriptor_offset(0x100, 4, 0x1000, 32, INT32_MIN, &offset));
+    CHECK(!nvn_descriptor_offset(0xf81, 4, 0x1000, 32, 0, &offset));
+    CHECK(!nvn_descriptor_offset(0x1001, 0, 0x1000, 32, 0, &offset));
+    CHECK(!nvn_descriptor_offset(UINT64_MAX, 1, 0x1000, 32, 0, &offset));
+    CHECK(!nvn_descriptor_offset(0, UINT32_MAX, 0x1000, 32, 0, &offset));
+}
+
 int main(int argc, char** argv) {
     test_window_params();
     test_window_sync_cycle_params();
@@ -588,6 +602,7 @@ int main(int argc, char** argv) {
     test_memory_pool_defaults();
     test_memory_pool_params();
     test_pool_gpu_allocate();
+    test_descriptor_offset();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;
