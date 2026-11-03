@@ -774,6 +774,13 @@ add_executable(snx-test-nvn-replay nvn_replay.c "${PROJECT_SOURCE_DIR}/src/nx/gp
 snx_test_target(snx-test-nvn-replay 11)
 add_test(NAME nvn_replay COMMAND snx-test-nvn-replay)
 
+add_executable(snx-test-nvn-rt nvn_rt.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_rt.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_params.c")
+snx_test_target(snx-test-nvn-rt 11)
+if(NOT WIN32)
+    target_link_libraries(snx-test-nvn-rt PRIVATE m)
+endif()
+add_test(NAME nvn_rt COMMAND snx-test-nvn-rt)
+
 add_executable(snx-test-nvn-params nvn_params.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_params.c")
 snx_test_target(snx-test-nvn-params 11)
 if(NOT WIN32)
