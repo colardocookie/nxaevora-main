@@ -762,6 +762,15 @@ setting NVN native
     help 1 = the host answers the NVN functions of the game (gpu/nvn_native.c) and the game's NVN library is not run. A
     help function the host does not have yet is logged and returns 0. 0 = the library runs as always. Phase 6 of
     help NXAevora, under construction: with 1 the game does not draw yet
+setting NVN selftest
+    key nvn_selftest
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = at the first nvnQueueInitialize, the same scripted calls go to the game's NVN library and to the host
+    help handlers, and the results are compared (gpu/nvn_selftest.c). The result is in the log. It needs nvn_trace=1
+    help and nvn_native=0. A diagnostic: it draws nothing and writes no object of the game
 setting Shader corpus
     key shader_corpus
     text 1024

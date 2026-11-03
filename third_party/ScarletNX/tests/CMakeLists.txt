@@ -773,6 +773,20 @@ if(NOT WIN32)
 endif()
 add_test(NAME nvn_params COMMAND snx-test-nvn-params)
 
+add_executable(snx-test-nvn-selftest-cmp nvn_selftest_cmp.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_cmp.c")
+snx_test_target(snx-test-nvn-selftest-cmp 11)
+add_test(NAME nvn_selftest_cmp COMMAND snx-test-nvn-selftest-cmp)
+
+add_executable(snx-test-nvn-selftest-mem nvn_selftest_mem.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_mem.c")
+snx_test_target(snx-test-nvn-selftest-mem 11)
+add_test(NAME nvn_selftest_mem COMMAND snx-test-nvn-selftest-mem)
+
+add_executable(snx-test-nvn-selftest-rec nvn_selftest_rec.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_rec.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_cmp.c")
+snx_test_target(snx-test-nvn-selftest-rec 11)
+target_include_directories(snx-test-nvn-selftest-rec PRIVATE "${PROJECT_BINARY_DIR}/generated")
+add_test(NAME nvn_selftest_rec COMMAND snx-test-nvn-selftest-rec)
+
 if(TARGET SDL3::SDL3)
     add_executable(snx-test-keybind keybind.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/backend/keybind.c")
     snx_test_target(snx-test-keybind 11)

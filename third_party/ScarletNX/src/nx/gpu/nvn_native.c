@@ -1050,6 +1050,12 @@ void nvn_native_init(void) {
 
 int nvn_native_active(void) { return active; }
 
+GuestFn nvn_native_handler(const char* name) {
+    int missing;
+    GuestFn h = handler_for(name, &missing);
+    return missing ? NULL : h;
+}
+
 void nvn_native_report(void) {
     if (!active) return;
     pm_lock(&slots_lock);

@@ -824,7 +824,7 @@ guess (rule: mechanism first). Each part is one commit.
 | 3b-5 | G3 and G5: texture objects, the storage size function (read from the library's disassembly, tested against the 3a table), the pools. | Written and built (29 handlers, row 0030, test `nvn_params`; 40 of 40 size queries of the archived run agree). Not run with `nvn_native=1`. |
 | 3b-6a | G4: window builder and initialization, interval and crop setters, and sync initialization. | Written. |
 | 3b-6b | G4: `WindowAcquireTexture` with host image state and `SyncWait` for the two states known so far. Finalizers remain for later parts. | Written. |
-| 3b-7 | The selftest harness (comparer with tests, isolated memory, recording backend) and its first cases of kinds `R` and `M`. | Not started. |
+| 3b-7 | The selftest harness (comparer with tests, isolated memory, recording backend) and its first cases of kinds `R` and `M`. | Done (2026-11-03, row 0034). Run with `nvn_native=0`, `nvn_trace=1`, `nvn_selftest=1` to the title: 51 cases, 0 failed (`DeviceGetInteger` 27 values, M; texture builder storage queries 24 sets, R). Scope: kinds R and M, this build of the `sdk` module. Not yet shown on the live run: that the selftest sees a wrong handler (the mutation check comes in 3c). |
 
 The code review of the Orca "code reviewer" (decided for 3b) comes after 3b-7, over the code of 3b-1 to 3b-7.
 

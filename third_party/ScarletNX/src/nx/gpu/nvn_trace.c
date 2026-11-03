@@ -8,6 +8,7 @@
    unchanged. */
 #include "nx/gpu/nvn_trace.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/nvn_selftest.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/rtapi.h"
@@ -19,12 +20,14 @@
 #include <string.h>
 
 #define VALUE_SEEN_MAX 64 /* distinct queries logged for one function */
+enum { SELFTEST_NONE = 0, SELFTEST_DEVICE_INIT, SELFTEST_QUEUE_INIT };
 enum { VALUE_NONE = 0, VALUE_GET_INTEGER, VALUE_ARGS };
 typedef struct {
     u64 addr, calls;
     GuestFn original;
     int queue_op; /* a queue call: its GPFIFO submissions are counted */
     int size_op;  /* a texture builder storage query: the result and the builder words are logged */
+    int selftest_hook; /* SELFTEST_*: the selftest needs this call (nvn_selftest=1) */
     int value_op; /* VALUE_*: a query whose distinct arguments and results are logged (the data of a host handler) */
     u64 seen[VALUE_SEEN_MAX]; /* the keys of the queries logged so far */
     u32 nseen;
@@ -163,6 +166,8 @@ static void proc_trace(CPU* c, u64 entry) {
         if (!p) fatal("nvn: a trace wrapper runs for a function it never registered (%llx)", (unsigned long long)entry);
     }
     __atomic_fetch_add(&p->calls, 1, __ATOMIC_RELAXED);
+    if (p->selftest_hook == SELFTEST_DEVICE_INIT) nvn_selftest_note_device(c->x[0]);
+    if (p->selftest_hook == SELFTEST_QUEUE_INIT) nvn_selftest_run(c);
     if (p->size_op) {
         size_query_trace(c, entry, p);
         return;
@@ -207,6 +212,10 @@ static void trace_proc(u64 addr, const char* name) {
                       !strcmp(name, "nvnQueueWaitSync");
         p->size_op = !strcmp(name, "nvnTextureBuilderGetStorageSize") ||
                      !strcmp(name, "nvnTextureBuilderGetStorageAlignment");
+        if (g_settings.nvn_selftest)
+            p->selftest_hook = !strcmp(name, "nvnDeviceInitialize")  ? SELFTEST_DEVICE_INIT
+                               : !strcmp(name, "nvnQueueInitialize") ? SELFTEST_QUEUE_INIT
+                                                                     : SELFTEST_NONE;
         p->value_op = !strcmp(name, "nvnDeviceGetInteger") ? VALUE_GET_INTEGER : value_query_name(name) ? VALUE_ARGS : 0;
         __atomic_store_n(&p->addr, addr, __ATOMIC_RELEASE);
         nprocs++;
@@ -254,6 +263,7 @@ static void bootstrap_trace(CPU* c, u64 entry) {
 
 void nvn_trace_init(void) {
     tracing = g_settings.nvn_trace;
+    if (!tracing && g_settings.nvn_selftest) WARN("nvn-selftest: it needs nvn_trace=1, so it does not run\n");
     if (!tracing) return;
     u64 entry = kernel_find_symbol_exact("nvnBootstrapLoader");
     if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3)) {
@@ -271,6 +281,19 @@ void nvn_trace_init(void) {
 }
 
 int nvn_trace_active(void) { return tracing; }
+
+int nvn_trace_library(const char* name, GuestFn* fn, uint64_t* entry) {
+    int found = 0;
+    pm_lock(&procs_lock);
+    for (u32 i = 0; i < NVN_PROC_SLOTS && !found; i++) {
+        if (!procs[i].addr || strcmp(procs[i].name, name)) continue;
+        *fn = procs[i].original;
+        *entry = procs[i].addr;
+        found = 1;
+    }
+    pm_unlock(&procs_lock);
+    return found;
+}
 
 void nvn_trace_report(void) {
     if (!tracing || !bootstrap_original) return;

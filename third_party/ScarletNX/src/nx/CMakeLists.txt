@@ -70,7 +70,7 @@ target_link_libraries(snx_video PRIVATE FFmpeg::avcodec)
 include("${PROJECT_SOURCE_DIR}/cmake/splash.cmake")
 target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec OpenSSL::SSL snx_splash)
 snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/mme_hle.c gpu/maxwell/mme_jit.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/write_pages.c gpu/maxwell/maxwell3d.c gpu/renderer.c
-              gpu/nvn_trace.c gpu/nvn_native.c gpu/nvn_objtab.c gpu/nvn_params.c gpu/shipped_pass.c)
+              gpu/nvn_trace.c gpu/nvn_native.c gpu/nvn_objtab.c gpu/nvn_params.c gpu/nvn_selftest.c gpu/nvn_selftest_cmp.c gpu/nvn_selftest_mem.c gpu/nvn_selftest_rec.c gpu/shipped_pass.c)
 # mme_jit.c compiles the macros mme_hle.c has no implementation for with the LLVM backend
 target_link_libraries(snx_gpu PRIVATE snx_llvm)
 include("${PROJECT_SOURCE_DIR}/cmake/ship_walk.cmake")
