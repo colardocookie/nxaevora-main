@@ -5,6 +5,27 @@
 #include <math.h>
 #include <string.h>
 
+void nvn_window_builder_defaults(NvnWindowBuilder* b) {
+    memset(b, 0, sizeof *b);
+    b->interval = 1;
+}
+
+void nvn_window_builder_set_device(NvnWindowBuilder* b, uint64_t device) { b->device = device; }
+void nvn_window_builder_set_native_window(NvnWindowBuilder* b, uint64_t native_window) { b->native_window = native_window; }
+void nvn_window_builder_set_textures(NvnWindowBuilder* b, uint32_t count, uint64_t textures) {
+    b->texture_count = count;
+    b->textures = textures;
+}
+void nvn_window_builder_set_interval(NvnWindowBuilder* b, uint32_t interval) { b->interval = interval; }
+int nvn_window_initialize_check(uint32_t texture_count) {
+    return texture_count != 0 && texture_count <= NVN_WINDOW_MAX_TEXTURES;
+}
+NvnWindowCrop nvn_window_crop(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                              uint32_t texture_width, uint32_t texture_height) {
+    if (!width || !height) return (NvnWindowCrop){0, 0, texture_width, texture_height};
+    return (NvnWindowCrop){x, y, width, height};
+}
+
 /* nvnDeviceGetInteger of the run of 2026-11-02 (title screen). The library takes a value from a device field or from a
    constant, and the run does not say which. */
 static const struct {

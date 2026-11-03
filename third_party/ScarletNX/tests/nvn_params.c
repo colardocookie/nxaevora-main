@@ -17,6 +17,31 @@ static int failures;
         }                                                          \
     } while (0)
 
+static void test_window_params(void) {
+    NvnWindowBuilder b;
+    nvn_window_builder_defaults(&b);
+    CHECK(b.device == 0 && b.native_window == 0 && b.texture_count == 0 && b.textures == 0 && b.interval == 1);
+    nvn_window_builder_set_device(&b, 0x1234);
+    nvn_window_builder_set_native_window(&b, 0x5678);
+    nvn_window_builder_set_textures(&b, 4, 0x9abc);
+    nvn_window_builder_set_interval(&b, 0);
+    CHECK(b.device == 0x1234 && b.native_window == 0x5678 && b.texture_count == 4 && b.textures == 0x9abc);
+    CHECK(b.interval == 0);
+    CHECK(!nvn_window_initialize_check(0));
+    CHECK(nvn_window_initialize_check(1));
+    CHECK(nvn_window_initialize_check(4));
+    CHECK(!nvn_window_initialize_check(5));
+    CHECK(!nvn_window_initialize_check(UINT32_MAX));
+    NvnWindowCrop crop = nvn_window_crop(8, 9, 0, 12, 640, 480);
+    CHECK(crop.x == 0 && crop.y == 0 && crop.width == 640 && crop.height == 480);
+    crop = nvn_window_crop(8, 9, 12, 0, 640, 480);
+    CHECK(crop.x == 0 && crop.y == 0 && crop.width == 640 && crop.height == 480);
+    crop = nvn_window_crop(8, 9, 12, 13, 640, 480);
+    CHECK(crop.x == 8 && crop.y == 9 && crop.width == 12 && crop.height == 13);
+    crop = nvn_window_crop(UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, 640, 480);
+    CHECK(crop.x == UINT32_MAX && crop.y == UINT32_MAX && crop.width == UINT32_MAX && crop.height == UINT32_MAX);
+}
+
 static void test_device_integer(void) {
     static const struct {
         uint32_t what;
@@ -523,6 +548,7 @@ static void test_texture_queries(const char* path) {
 }
 
 int main(int argc, char** argv) {
+    test_window_params();
     test_sampler();
     test_packaged_tile();
     test_texture_descriptor();

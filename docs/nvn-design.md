@@ -822,7 +822,7 @@ guess (rule: mechanism first). Each part is one commit.
 | 3b-3 | G1: device and queue builders, `DeviceInitialize`, `DeviceGetInteger` (the table of 3b-2), `GetTimestampInNanoseconds`, `QueueInitialize`. | Written and built (30 handlers, `gpu/nvn_params.c`, test `nvn_params`). Not run with `nvn_native=1`. See "3b-3 Result". |
 | 3b-4 | G2: memory pool and the GPU address rule (2-2). | Written and built (13 handlers, test `nvn_params`, row 0029). Run of 2026-11-02: all 13 ran without a failure. The GPU page table mapping of a pool is not connected. |
 | 3b-5 | G3 and G5: texture objects, the storage size function (read from the library's disassembly, tested against the 3a table), the pools. | Written and built (29 handlers, row 0030, test `nvn_params`; 40 of 40 size queries of the archived run agree). Not run with `nvn_native=1`. |
-| 3b-6 | G4: window and sync. | Not started. |
+| 3b-6a | G4: window builder and initialization, interval and crop setters, and sync initialization. `WindowAcquireTexture`, `SyncWait`, and finalizers remain for later parts. | Written (8 named functions plus the builder interval setter). |
 | 3b-7 | The selftest harness (comparer with tests, isolated memory, recording backend) and its first cases of kinds `R` and `M`. | Not started. |
 
 The code review of the Orca "code reviewer" (decided for 3b) comes after 3b-7, over the code of 3b-1 to 3b-7.
@@ -830,6 +830,21 @@ The code review of the Orca "code reviewer" (decided for 3b) comes after 3b-7, o
 Open risk of 3b-1 (first run with `nvn_native=1` shows it): the library's `nvnDeviceGetProcAddress` runs for the lookups on a
 device that the library never initialized. If it reads the device object, the run stops there, and the host must answer the
 lookups itself from a table of names.
+
+### 3b-6a Host window and sync records
+
+With `nvn_native=1`, the host owns window builder, window, and sync state in the object table. The game’s object memory is
+not written, and the host does not create compatibility words for the game’s NVN library. The builder defaults to device 0,
+native window 0, no textures, a null texture array, and interval 1. `WindowInitialize` reads the texture array when it runs,
+so the game may fill the array after `WindowBuilderSetTextures`. It accepts 1 to 4 entries and requires each address to name
+known host texture. An invalid count, unreadable array, or unknown texture gives one failure log and leaves an existing
+window record unchanged. The native-window pointer is stored only; the host does not call VI or a wrapper from this part.
+The window record keeps the device, textures, the builder interval, the full first-texture crop, and index -1. Crop
+width or height zero resets all crop fields to the first texture size. `WindowSetPresentInterval` always stores its 32-bit
+value because the host has no wrapper callback. The builder interval setter stores the supplied value (the library stores it minus 1 and adds 1 at initialization, which gives the same result).
+`SyncInitialize` records its device and the unsignaled state. Acquire, wait, finalize, active-texture count, and getters stay
+on the missing-function path, so this part does not complete the frame cycle. The disassembly corrections are: the alleged
+`+0x50` call and `d94ec20` belong outside `WindowInitialize`.
 
 ### 3b-2 Result (run of 2026-11-02, update program, title screen, `nvn_trace=1`, `nvn_native=0`)
 

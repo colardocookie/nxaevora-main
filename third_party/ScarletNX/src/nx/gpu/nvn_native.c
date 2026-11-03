@@ -34,6 +34,13 @@ typedef struct {
 typedef struct {
     NvnQueueBuilder builder; /* the builder as it was at QueueInitialize */
 } QueueRec;
+typedef struct {
+    uint64_t device, native_window, textures[NVN_WINDOW_MAX_TEXTURES];
+    uint32_t texture_count, interval;
+    NvnWindowCrop crop;
+    int32_t index;
+} WindowRec;
+typedef struct { uint64_t device; NvnSyncState state; } SyncRec;
 
 /* the record of kind at addr, made zeroed (with the defaults of that kind) when the game never called SetDefaults */
 static void* rec_get(u64 addr, NvnObjKind kind, size_t size) {
@@ -45,8 +52,10 @@ static void* rec_get(u64 addr, NvnObjKind kind, size_t size) {
     if (kind == NVN_OBJ_MEMORY_POOL_BUILDER) nvn_memory_pool_builder_defaults(o->data);
     if (kind == NVN_OBJ_SAMPLER_BUILDER) nvn_sampler_defaults(o->data);
     if (kind == NVN_OBJ_TEXTURE_BUILDER) nvn_texture_builder_defaults(o->data);
+    if (kind == NVN_OBJ_WINDOW_BUILDER) nvn_window_builder_defaults(o->data);
     return o->data;
 }
+static void* known_record(u64 addr, NvnObjKind kind);
 static NvnQueueBuilder* queue_builder(u64 addr) { return rec_get(addr, NVN_OBJ_QUEUE_BUILDER, sizeof(NvnQueueBuilder)); }
 
 /* G1: device builder and device (docs/nvn-design.md, 2-6). The library's functions are plain field accesses. */
@@ -644,6 +653,85 @@ static void h_texture_initialize(CPU* c, u64 entry) {
     pm_unlock(&objs_lock);
 }
 
+/* G4: window and sync state stays in host records; guest object bytes stay untouched. */
+#define WINDOW_BUILDER_HANDLER(name, call) \
+    static void h_##name(CPU* c, u64 entry) { \
+        (void)entry; pm_lock(&objs_lock); \
+        NvnWindowBuilder* b = rec_get(c->x[0], NVN_OBJ_WINDOW_BUILDER, sizeof *b); \
+        call; pm_unlock(&objs_lock); \
+    }
+WINDOW_BUILDER_HANDLER(window_builder_set_defaults, nvn_window_builder_defaults(b))
+WINDOW_BUILDER_HANDLER(window_builder_set_device, nvn_window_builder_set_device(b, c->x[1]))
+WINDOW_BUILDER_HANDLER(window_builder_set_native_window, nvn_window_builder_set_native_window(b, c->x[1]))
+WINDOW_BUILDER_HANDLER(window_builder_set_textures, nvn_window_builder_set_textures(b, (u32)c->x[1], c->x[2]))
+WINDOW_BUILDER_HANDLER(window_builder_set_present_interval, nvn_window_builder_set_interval(b, (u32)c->x[1]))
+#undef WINDOW_BUILDER_HANDLER
+
+static void h_window_initialize(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    NvnWindowBuilder* b = known_record(c->x[1], NVN_OBJ_WINDOW_BUILDER);
+    if (!b) {
+        LOG("nvn-native: window initialize failed: unknown builder (%llx)\n", (unsigned long long)c->x[1]);
+        c->x[0] = 0; pm_unlock(&objs_lock); return;
+    }
+    if (!nvn_window_initialize_check(b->texture_count)) {
+        LOG("nvn-native: window initialize failed: invalid texture count (%u)\n", b->texture_count);
+        c->x[0] = 0; pm_unlock(&objs_lock); return;
+    }
+    uint64_t bytes = (uint64_t)b->texture_count * sizeof(uint64_t);
+    if (!native_guest_readable(b->textures, bytes)) {
+        LOG("nvn-native: window initialize failed: unreadable texture array (%llx, %u)\n",
+            (unsigned long long)b->textures, b->texture_count);
+        c->x[0] = 0; pm_unlock(&objs_lock); return;
+    }
+    WindowRec next = {0};
+    next.device = b->device; next.native_window = b->native_window;
+    next.texture_count = b->texture_count; next.interval = b->interval; next.index = -1;
+    for (uint32_t i = 0; i < b->texture_count; i++) {
+        uint64_t addr = gr64(b->textures + (uint64_t)i * sizeof(uint64_t));
+        TextureRec* texture = known_record(addr, NVN_OBJ_TEXTURE);
+        if (!texture) {
+            LOG("nvn-native: window initialize failed: unknown texture (%u, %llx)\n", i, (unsigned long long)addr);
+            c->x[0] = 0; pm_unlock(&objs_lock); return;
+        }
+        next.textures[i] = addr;
+        if (!i) next.crop = nvn_window_crop(0, 0, 0, 0, texture->builder.width, texture->builder.height);
+    }
+    NvnObj* o = nvn_objtab_put(&objs, c->x[0], NVN_OBJ_WINDOW, sizeof next);
+    if (!o) fatal("nvn-native: out of memory for the record of a window\n");
+    memcpy(o->data, &next, sizeof next);
+    c->x[0] = 1;
+    pm_unlock(&objs_lock);
+}
+static void h_window_set_present_interval(CPU* c, u64 entry) {
+    (void)entry; pm_lock(&objs_lock);
+    WindowRec* w = known_record(c->x[0], NVN_OBJ_WINDOW);
+    if (!w) LOG("nvn-native: nvnWindowSetPresentInterval unknown window=%llx\n", (unsigned long long)c->x[0]);
+    else w->interval = (u32)c->x[1];
+    pm_unlock(&objs_lock);
+}
+static void h_window_set_crop(CPU* c, u64 entry) {
+    (void)entry; pm_lock(&objs_lock);
+    WindowRec* w = known_record(c->x[0], NVN_OBJ_WINDOW);
+    if (!w) { LOG("nvn-native: nvnWindowSetCrop unknown window=%llx\n", (unsigned long long)c->x[0]); pm_unlock(&objs_lock); return; }
+    TextureRec* t = known_record(w->textures[0], NVN_OBJ_TEXTURE);
+    if (!t) {
+        LOG("nvn-native: nvnWindowSetCrop first texture of window %llx is gone\n", (unsigned long long)c->x[0]);
+        pm_unlock(&objs_lock);
+        return;
+    }
+    w->crop = nvn_window_crop((u32)c->x[1], (u32)c->x[2], (u32)c->x[3], (u32)c->x[4],
+                              t->builder.width, t->builder.height);
+    pm_unlock(&objs_lock);
+}
+static void h_sync_initialize(CPU* c, u64 entry) {
+    (void)entry; pm_lock(&objs_lock);
+    SyncRec* s = rec_get(c->x[0], NVN_OBJ_SYNC, sizeof *s);
+    s->device = c->x[1]; s->state = NVN_SYNC_UNSIGNALED;
+    c->x[0] = 1; pm_unlock(&objs_lock);
+}
+
 /* The host handlers by NVN function name. Later steps add their entries here (G2 to G5 of docs/nvn-design.md, 2-6). */
 typedef struct {
     const char* name;
@@ -722,6 +810,15 @@ static const NativeProc native_procs[] = {
     {"nvnSamplerInitialize", h_sampler_initialize},
     {"nvnSamplerPoolRegisterSampler", h_sampler_pool_register_sampler},
     {"nvnTextureInitialize", h_texture_initialize},
+    {"nvnWindowBuilderSetDefaults", h_window_builder_set_defaults},
+    {"nvnWindowBuilderSetDevice", h_window_builder_set_device},
+    {"nvnWindowBuilderSetNativeWindow", h_window_builder_set_native_window},
+    {"nvnWindowBuilderSetTextures", h_window_builder_set_textures},
+    {"nvnWindowBuilderSetPresentInterval", h_window_builder_set_present_interval},
+    {"nvnWindowInitialize", h_window_initialize},
+    {"nvnWindowSetPresentInterval", h_window_set_present_interval},
+    {"nvnWindowSetCrop", h_window_set_crop},
+    {"nvnSyncInitialize", h_sync_initialize},
     {"nvnTextureBuilderSetWidth", h_texture_builder_set_width},
     {"nvnTextureBuilderSetHeight", h_texture_builder_set_height},
     {"nvnTextureBuilderSetDepth", h_texture_builder_set_depth},

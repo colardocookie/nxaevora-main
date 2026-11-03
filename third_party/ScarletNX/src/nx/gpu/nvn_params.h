@@ -4,6 +4,22 @@
 #define SNX_NVN_PARAMS_H
 #include <stdint.h>
 
+#define NVN_WINDOW_MAX_TEXTURES 4u
+typedef struct {
+    uint64_t device, native_window, textures;
+    uint32_t texture_count, interval;
+} NvnWindowBuilder;
+typedef struct { uint32_t x, y, width, height; } NvnWindowCrop;
+typedef enum { NVN_SYNC_UNSIGNALED = 0, NVN_SYNC_SIGNALED = 1 } NvnSyncState;
+void nvn_window_builder_defaults(NvnWindowBuilder* b);
+void nvn_window_builder_set_device(NvnWindowBuilder* b, uint64_t device);
+void nvn_window_builder_set_native_window(NvnWindowBuilder* b, uint64_t native_window);
+void nvn_window_builder_set_textures(NvnWindowBuilder* b, uint32_t count, uint64_t textures);
+void nvn_window_builder_set_interval(NvnWindowBuilder* b, uint32_t interval);
+int nvn_window_initialize_check(uint32_t texture_count);
+NvnWindowCrop nvn_window_crop(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                              uint32_t texture_width, uint32_t texture_height);
+
 /* The pure parts of the host's device, queue and pool functions (docs/nvn-design.md, 3b-3). The game's NVN library computes
    these from device fields that it fills at DeviceInitialize. The host has no device object, so it uses the values that
    a run of the library showed (the "3b-2 Result" and "3b-3 Result" sections). */
