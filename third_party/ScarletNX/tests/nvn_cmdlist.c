@@ -111,6 +111,24 @@ static void test_handles(void) {
     nvn_list_store_free(&s);
 }
 
+/* the store grows while a replay holds a list pointer: the pointer must stay valid (the GPU thread reads it) */
+static void test_find_pointer_stable(void) {
+    NvnListStore s = {0};
+    NvnOpBarrier b = {1, 0};
+    NvnOpList first = {0};
+    CHECK(nvn_oplist_append(&first, NVN_OP_BARRIER, &b, sizeof b));
+    uint64_t h = nvn_list_publish(&s, &first);
+    const NvnOpList* held = nvn_list_find(&s, h);
+    CHECK(held && held->ops == 1);
+    for (uint32_t i = 0; i < 300; i++) { /* several growths of the slot array */
+        NvnOpList l = {0};
+        CHECK(nvn_oplist_append(&l, NVN_OP_BARRIER, &b, sizeof b));
+        CHECK(nvn_list_publish(&s, &l));
+    }
+    CHECK(nvn_list_find(&s, h) == held && held->ops == 1);
+    nvn_list_store_free(&s);
+}
+
 static void test_call_release(void) {
     NvnListStore s = {0};
     NvnOpList la = {0};
@@ -172,6 +190,7 @@ int main(void) {
     test_append_refused();
     test_growth();
     test_handles();
+    test_find_pointer_stable();
     test_call_release();
     test_deep_chain();
     test_many_lists();

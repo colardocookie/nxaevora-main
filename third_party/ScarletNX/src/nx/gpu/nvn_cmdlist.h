@@ -67,7 +67,7 @@ typedef struct {
     uint32_t generation, refs; /* refs 0: the slot is free */
 } NvnListSlot;
 typedef struct {
-    NvnListSlot* slot;
+    NvnListSlot** slot; /* each slot is its own allocation, so a pointer from nvn_list_find stays valid while the list lives */
     uint32_t count, cap;
     uint32_t* free_index;
     uint32_t free_count, free_cap;

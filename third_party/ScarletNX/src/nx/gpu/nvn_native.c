@@ -7,6 +7,7 @@
 #include "nx/gpu/nvn_cmdlist.h"
 #include "nx/gpu/nvn_objtab.h"
 #include "nx/gpu/nvn_params.h"
+#include "nx/gpu/nvn_rt.h"
 #include "nx/gpu/nvn_trace.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
@@ -1146,6 +1147,96 @@ static void h_command_buffer_call_commands(CPU* c, u64 entry) {
             }
     }
     pm_unlock(&objs_lock);
+}
+
+/* G7: the callbacks of the replay (decision 6 of the 3c design). They run on the GPU thread in the frame job and read the
+   records of the host under objs_lock. A list pointer stays valid because the frame job holds a reference of the list. */
+#define REPLAY_LOG_LIMIT 16u
+#define REPLAY_METHOD_LAST 1 /* each write is a batch of one: a macro call runs at once */
+static void replay_host_method(void* ctx, uint32_t m, uint32_t v) {
+    maxwell3d_method(((NvnNativeReplayHost*)ctx)->channel, m, v, REPLAY_METHOD_LAST);
+}
+static uint32_t replay_host_read_register(void* ctx, uint32_t m) {
+    const GpuChannel* ch = ((NvnNativeReplayHost*)ctx)->channel;
+    return m < GPU_ENGINE_METHODS ? ch->r3d[m] : 0;
+}
+static const NvnOpList* replay_host_find_list(void* ctx, uint64_t handle) {
+    (void)ctx;
+    pm_lock(&objs_lock);
+    const NvnOpList* list = nvn_list_find(&lists, handle);
+    pm_unlock(&objs_lock);
+    return list;
+}
+static int replay_host_descriptor_pool(void* ctx, NvnOpCode op, const NvnOpPool* pool, uint64_t* gpu_base, uint32_t* count) {
+    (void)ctx;
+    NvnObjKind kind = op == NVN_OP_SET_TEXTURE_POOL ? NVN_OBJ_TEXTURE_POOL : NVN_OBJ_SAMPLER_POOL;
+    int ok = 0;
+    pm_lock(&objs_lock);
+    const DescriptorPoolRec* descriptors = nvn_objtab_valid(&objs, pool->pool, pool->generation)
+                                               ? known_record(pool->pool, kind) : NULL;
+    const MemoryPoolRec* memory = descriptors ? known_record(descriptors->memory_pool, NVN_OBJ_MEMORY_POOL) : NULL;
+    if (memory && memory->gpu_address && descriptors->offset <= UINT64_MAX - memory->gpu_address) {
+        *gpu_base = memory->gpu_address + descriptors->offset;
+        *count = descriptors->count;
+        ok = 1;
+    }
+    pm_unlock(&objs_lock);
+    return ok;
+}
+static void replay_host_rt_fault(void* ctx, const char* what, uint64_t value) {
+    (void)ctx;
+    LOG_LIMIT(REPLAY_LOG_LIMIT, "nvn-native: replay render targets refused: %s (%llx)\n", what, (unsigned long long)value);
+}
+/* The textures are copied under the lock, so that the words are made without it. 0 when a texture is gone. */
+static int replay_host_targets(const NvnOpRenderTargets* op, NvnTexture textures[NVN_RENDER_TARGETS_MAX],
+                               NvnRtColor color[NVN_RENDER_TARGETS_MAX]) {
+    int ok = 1;
+    pm_lock(&objs_lock);
+    for (uint32_t i = 0; ok && i < op->count; i++) {
+        const NvnOpTarget* target = &op->color[i];
+        color[i] = (NvnRtColor){0};
+        if (!target->texture) continue;
+        const TextureRec* t = nvn_objtab_valid(&objs, target->texture, target->generation)
+                                  ? known_record(target->texture, NVN_OBJ_TEXTURE) : NULL;
+        if (!t) {
+            ok = 0;
+            break;
+        }
+        textures[i] = *t;
+        color[i].texture = &textures[i];
+        color[i].view = target->has_view ? &target->view : NULL;
+    }
+    pm_unlock(&objs_lock);
+    return ok;
+}
+static int replay_host_render_targets(void* ctx, const NvnOpRenderTargets* op) {
+    NvnNativeReplayHost* host = ctx;
+    NvnTexture textures[NVN_RENDER_TARGETS_MAX];
+    NvnRtColor color[NVN_RENDER_TARGETS_MAX];
+    if (op->count > NVN_RENDER_TARGETS_MAX) {
+        replay_host_rt_fault(ctx, "count", op->count);
+        return 0;
+    }
+    if (!host->clip_limit) {
+        replay_host_rt_fault(ctx, "clip limit unknown", 0);
+        return 0;
+    }
+    if (!replay_host_targets(op, textures, color)) {
+        replay_host_rt_fault(ctx, "texture gone", op->count);
+        return 0;
+    }
+    NvnRtEnv env = {ctx, replay_host_method, replay_host_rt_fault};
+    return nvn_rt_emit(&env, color, op->count, op->depth.texture != 0, host->clip_limit);
+}
+static void replay_host_fault(void* ctx, const char* what, uint64_t value) {
+    (void)ctx;
+    LOG_LIMIT(REPLAY_LOG_LIMIT, "nvn-native: replay fault: %s (%llx)\n", what, (unsigned long long)value);
+}
+void nvn_native_replay_env(NvnNativeReplayHost* host, int window_origin_flip, NvnReplayEnv* env) {
+    *env = (NvnReplayEnv){.ctx = host, .method = replay_host_method, .read_register = replay_host_read_register,
+                          .find_list = replay_host_find_list, .descriptor_pool = replay_host_descriptor_pool,
+                          .render_targets = replay_host_render_targets, .fault = replay_host_fault,
+                          .window_origin_flip = window_origin_flip};
 }
 
 /* G4: window and sync state stays in host records; guest object bytes stay untouched. */

@@ -49,7 +49,7 @@ static int store_reserve(NvnListStore* s) {
     if (s->count == s->cap) {
         uint32_t cap = s->cap ? s->cap * 2 : STORE_MIN_CAPACITY;
         if (cap > HANDLE_INDEX_LIMIT) return 0;
-        NvnListSlot* fresh = realloc(s->slot, (size_t)cap * sizeof *fresh);
+        NvnListSlot** fresh = realloc(s->slot, (size_t)cap * sizeof *fresh);
         if (!fresh) return 0;
         s->slot = fresh;
         s->cap = cap;
@@ -66,7 +66,7 @@ static NvnListSlot* slot_of(const NvnListStore* s, uint64_t handle) {
     if (!generation || (low & 1) || !low) return NULL;
     uint32_t index = (low >> 1) - 1;
     if (index >= s->count) return NULL;
-    NvnListSlot* slot = &s->slot[index];
+    NvnListSlot* slot = s->slot[index];
     return slot->refs && slot->generation == generation ? slot : NULL;
 }
 
@@ -76,10 +76,12 @@ uint64_t nvn_list_publish(NvnListStore* s, NvnOpList* list) {
     if (s->free_count) {
         index = s->free_index[--s->free_count];
     } else {
+        NvnListSlot* fresh = calloc(1, sizeof *fresh);
+        if (!fresh) return 0;
         index = s->count++;
-        s->slot[index].generation = 0;
+        s->slot[index] = fresh;
     }
-    NvnListSlot* slot = &s->slot[index];
+    NvnListSlot* slot = s->slot[index];
     if (++s->next_generation == 0) s->next_generation = 1; /* generation 0 never names a list */
     slot->generation = s->next_generation;
     slot->refs = 1;
@@ -137,7 +139,7 @@ void nvn_list_unref(NvnListStore* s, uint64_t handle) {
                 memcpy(&stack[depth++], payload, sizeof(uint64_t));
             }
             nvn_oplist_free(&slot->list);
-            if (!free_slot_remember(s, (uint32_t)(slot - s->slot))) {
+            if (!free_slot_remember(s, ((uint32_t)handle >> 1) - 1)) {
                 slot->refs = 1; /* the slot cannot be reused: it stays out of use and counts as leaked */
                 s->leaked++;
             }
@@ -150,12 +152,15 @@ void nvn_list_unref(NvnListStore* s, uint64_t handle) {
 
 uint32_t nvn_list_live(const NvnListStore* s) {
     uint32_t live = 0;
-    for (uint32_t i = 0; i < s->count; i++) live += s->slot[i].refs != 0;
+    for (uint32_t i = 0; i < s->count; i++) live += s->slot[i]->refs != 0;
     return live;
 }
 
 void nvn_list_store_free(NvnListStore* s) {
-    for (uint32_t i = 0; i < s->count; i++) nvn_oplist_free(&s->slot[i].list);
+    for (uint32_t i = 0; i < s->count; i++) {
+        nvn_oplist_free(&s->slot[i]->list);
+        free(s->slot[i]);
+    }
     free(s->slot);
     free(s->free_index);
     *s = (NvnListStore){0};
