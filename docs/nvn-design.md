@@ -1014,9 +1014,17 @@ unknown part stops with a log line.
    command and control memory ranges (stored for the log, not used), the recording flag, and the list in progress. `AddCommandMemory`
    and `AddControlMemory` store the range and do not check it. `BeginRecording` during a recording logs a line and drops the open
    list (the library does not check). `EndRecording` outside a recording returns 0 (as the library).
-4. **Handle.** A host id: generation in the upper 32 bits, list index in the lower 31 bits, bit 0 clear, never 0. `QueueSubmitCommands`
+4. **Handle.** A host id: generation in the upper 32 bits, (list index + 1) in bits 1 to 31, bit 0 clear, never 0. A published list is
+   immutable and has a reference count: the command buffer owns one reference, each `Submit` and each `CallCommands` takes one
+   (a `CALL` op holds its target). The owner reference ends at `Finalize`, and when the game gives control memory that overlaps
+   the control memory the list had at `EndRecording` (the library's handle is a control memory address, so the handle ends when
+   the game reuses that memory). Lists of one command buffer only: a chunk reused by another command buffer is not seen, and the
+   frame line must show the number of live lists so that a growth is found. A cycle of `CALL` ops cannot exist (a list names only
+   published lists). `QueueSubmitCommands`
    and `CallCommands` take ids only. An id that is not valid is skipped with a log line (counted).
-5. **Lists and ops.** An op is an opcode and at most 32 bytes. The list lives in an arena of the command buffer. Values are copied at
+5. **Lists and ops.** An op is an opcode with a payload of at most `NVN_OP_MAX_PAYLOAD` (512) bytes, padded to 8 bytes (changed
+   in the work: `SET_RENDER_TARGETS` holds 8 targets with copied views, so 32 bytes do not fit; viewport and scissor are one op
+   for each rectangle). The list lives in an arena of the command buffer (`gpu/nvn_cmdlist.c`). Values are copied at
    record time (viewport floats, scissor integers, clear color, barrier bits, render target arguments). Objects (texture, pool) are
    held as address plus generation and read at replay. Ops of 3c: `SET_TEXTURE_POOL`, `SET_SAMPLER_POOL`, `SET_RENDER_TARGETS`,
    `SET_VIEWPORTS`, `SET_SCISSORS`, `CLEAR_COLOR`, `BARRIER`, `CALL`. Any other command buffer function is a missing function:
