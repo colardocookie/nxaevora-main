@@ -5,6 +5,11 @@
 #include <stdint.h>
 
 #define NVN_WINDOW_MAX_TEXTURES 4u
+#define NVN_WINDOW_NO_IMAGE (-1)
+#define NVN_WINDOW_INVALID_INDEX UINT32_MAX
+typedef enum { NVN_IMAGE_FREE = 0, NVN_IMAGE_ACQUIRED = 1 } NvnImageState;
+typedef enum { NVN_SYNC_WAIT_SIGNALED = 0, NVN_SYNC_WAIT_SATISFIED = 1,
+               NVN_SYNC_WAIT_TIMEOUT = 2, NVN_SYNC_WAIT_FAILED = 3 } NvnSyncWaitResult;
 typedef struct {
     uint64_t device, native_window, textures;
     uint32_t texture_count, interval;
@@ -17,6 +22,8 @@ void nvn_window_builder_set_native_window(NvnWindowBuilder* b, uint64_t native_w
 void nvn_window_builder_set_textures(NvnWindowBuilder* b, uint32_t count, uint64_t textures);
 void nvn_window_builder_set_interval(NvnWindowBuilder* b, uint32_t interval);
 int nvn_window_initialize_check(uint32_t texture_count);
+int32_t nvn_window_pick_image(const uint8_t* states, uint32_t count, int32_t last);
+NvnSyncWaitResult nvn_sync_wait_result(NvnSyncState state);
 NvnWindowCrop nvn_window_crop(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
                               uint32_t texture_width, uint32_t texture_height);
 

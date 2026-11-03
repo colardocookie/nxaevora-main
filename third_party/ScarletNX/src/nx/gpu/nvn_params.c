@@ -20,6 +20,18 @@ void nvn_window_builder_set_interval(NvnWindowBuilder* b, uint32_t interval) { b
 int nvn_window_initialize_check(uint32_t texture_count) {
     return texture_count != 0 && texture_count <= NVN_WINDOW_MAX_TEXTURES;
 }
+int32_t nvn_window_pick_image(const uint8_t* states, uint32_t count, int32_t last) {
+    if (!states || !count || count > NVN_WINDOW_MAX_TEXTURES) return NVN_WINDOW_NO_IMAGE;
+    uint32_t start = last >= 0 && (uint32_t)last < count ? (uint32_t)last + 1u : 0u;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t index = (start + i) % count;
+        if (states[index] == NVN_IMAGE_FREE) return (int32_t)index;
+    }
+    return NVN_WINDOW_NO_IMAGE;
+}
+NvnSyncWaitResult nvn_sync_wait_result(NvnSyncState state) {
+    return state == NVN_SYNC_SIGNALED ? NVN_SYNC_WAIT_SIGNALED : NVN_SYNC_WAIT_FAILED;
+}
 NvnWindowCrop nvn_window_crop(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
                               uint32_t texture_width, uint32_t texture_height) {
     if (!width || !height) return (NvnWindowCrop){0, 0, texture_width, texture_height};

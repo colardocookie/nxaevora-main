@@ -822,7 +822,8 @@ guess (rule: mechanism first). Each part is one commit.
 | 3b-3 | G1: device and queue builders, `DeviceInitialize`, `DeviceGetInteger` (the table of 3b-2), `GetTimestampInNanoseconds`, `QueueInitialize`. | Written and built (30 handlers, `gpu/nvn_params.c`, test `nvn_params`). Not run with `nvn_native=1`. See "3b-3 Result". |
 | 3b-4 | G2: memory pool and the GPU address rule (2-2). | Written and built (13 handlers, test `nvn_params`, row 0029). Run of 2026-11-02: all 13 ran without a failure. The GPU page table mapping of a pool is not connected. |
 | 3b-5 | G3 and G5: texture objects, the storage size function (read from the library's disassembly, tested against the 3a table), the pools. | Written and built (29 handlers, row 0030, test `nvn_params`; 40 of 40 size queries of the archived run agree). Not run with `nvn_native=1`. |
-| 3b-6a | G4: window builder and initialization, interval and crop setters, and sync initialization. `WindowAcquireTexture`, `SyncWait`, and finalizers remain for later parts. | Written (8 named functions plus the builder interval setter). |
+| 3b-6a | G4: window builder and initialization, interval and crop setters, and sync initialization. | Written. |
+| 3b-6b | G4: `WindowAcquireTexture` with host image state and `SyncWait` for the two states known so far. Finalizers remain for later parts. | Written. |
 | 3b-7 | The selftest harness (comparer with tests, isolated memory, recording backend) and its first cases of kinds `R` and `M`. | Not started. |
 
 The code review of the Orca "code reviewer" (decided for 3b) comes after 3b-7, over the code of 3b-1 to 3b-7.
@@ -845,6 +846,18 @@ value because the host has no wrapper callback. The builder interval setter stor
 `SyncInitialize` records its device and the unsignaled state. Acquire, wait, finalize, active-texture count, and getters stay
 on the missing-function path, so this part does not complete the frame cycle. The disassembly corrections are: the alleged
 `+0x50` call and `d94ec20` belong outside `WindowInitialize`.
+
+### 3b-6b Acquire and wait
+
+Each host window image starts FREE. `WindowAcquireTexture` uses `nvn_window_pick_image` to select the first FREE image after
+the last acquired index, with wraparound. It calls `present_pace(interval)` outside `objs_lock`, then checks the records
+again. On success it marks the image ACQUIRED, records its index, signals the supplied sync and writes the index to the
+guest. A FREE image means its previous frame job has finished. No frame job in this part releases an image, so when every
+image is ACQUIRED the handler logs `no free window image`, writes -1 and returns failure. This is the intended stop until
+3c implements present and image release.
+
+`SyncWait` ignores its timeout in this part. Its result is 0 for SIGNALED, 3 for UNSIGNALED or an unknown sync. The library
+also defines 1 for a condition met after waiting and 2 for timeout; 3c adds the waiting states.
 
 ### 3b-2 Result (run of 2026-11-02, update program, title screen, `nvn_trace=1`, `nvn_native=0`)
 

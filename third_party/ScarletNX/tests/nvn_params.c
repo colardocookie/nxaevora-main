@@ -17,6 +17,30 @@ static int failures;
         }                                                          \
     } while (0)
 
+static void test_window_sync_cycle_params(void) {
+    const uint8_t free1[] = {NVN_IMAGE_FREE};
+    const uint8_t free2[] = {NVN_IMAGE_FREE, NVN_IMAGE_FREE};
+    const uint8_t free4[] = {NVN_IMAGE_FREE, NVN_IMAGE_FREE, NVN_IMAGE_FREE, NVN_IMAGE_FREE};
+    const uint8_t acquired4[] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED};
+    const uint8_t mixed[] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_FREE, NVN_IMAGE_ACQUIRED, NVN_IMAGE_FREE};
+    CHECK(nvn_window_pick_image(free1, 1, -1) == 0);
+    CHECK(nvn_window_pick_image(free1, 1, 0) == 0);
+    CHECK(nvn_window_pick_image(free2, 2, -1) == 0);
+    CHECK(nvn_window_pick_image(free2, 2, 0) == 1);
+    CHECK(nvn_window_pick_image(free2, 2, 1) == 0);
+    CHECK(nvn_window_pick_image(free4, 4, -1) == 0);
+    CHECK(nvn_window_pick_image(free4, 4, 1) == 2);
+    CHECK(nvn_window_pick_image(free4, 4, 3) == 0);
+    CHECK(nvn_window_pick_image(acquired4, 4, -1) == -1);
+    CHECK(nvn_window_pick_image(mixed, 4, 0) == 1);
+    CHECK(nvn_window_pick_image(mixed, 4, 1) == 3);
+    CHECK(nvn_window_pick_image(mixed, 4, 3) == 1);
+    CHECK(nvn_window_pick_image(free1, 0, -1) == -1);
+    CHECK(nvn_window_pick_image(free4, 5, -1) == -1);
+    CHECK(nvn_sync_wait_result(NVN_SYNC_SIGNALED) == NVN_SYNC_WAIT_SIGNALED);
+    CHECK(nvn_sync_wait_result(NVN_SYNC_UNSIGNALED) == NVN_SYNC_WAIT_FAILED);
+}
+
 static void test_window_params(void) {
     NvnWindowBuilder b;
     nvn_window_builder_defaults(&b);
@@ -549,6 +573,7 @@ static void test_texture_queries(const char* path) {
 
 int main(int argc, char** argv) {
     test_window_params();
+    test_window_sync_cycle_params();
     test_sampler();
     test_packaged_tile();
     test_texture_descriptor();

@@ -11,6 +11,7 @@
 #include "nx/gpu/nvn_params.h"
 #include "nx/gpu/nvn_trace.h"
 #include "nx/runtime/loader.h"
+#include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/rtapi.h"
 #include "nx/hle/kernel/kernel.h"
@@ -38,7 +39,8 @@ typedef struct {
     uint64_t device, native_window, textures[NVN_WINDOW_MAX_TEXTURES];
     uint32_t texture_count, interval;
     NvnWindowCrop crop;
-    int32_t index;
+    uint8_t states[NVN_WINDOW_MAX_TEXTURES];
+    int32_t last_index;
 } WindowRec;
 typedef struct { uint64_t device; NvnSyncState state; } SyncRec;
 
@@ -687,7 +689,7 @@ static void h_window_initialize(CPU* c, u64 entry) {
     }
     WindowRec next = {0};
     next.device = b->device; next.native_window = b->native_window;
-    next.texture_count = b->texture_count; next.interval = b->interval; next.index = -1;
+    next.texture_count = b->texture_count; next.interval = b->interval; next.last_index = -1;
     for (uint32_t i = 0; i < b->texture_count; i++) {
         uint64_t addr = gr64(b->textures + (uint64_t)i * sizeof(uint64_t));
         TextureRec* texture = known_record(addr, NVN_OBJ_TEXTURE);
@@ -696,6 +698,7 @@ static void h_window_initialize(CPU* c, u64 entry) {
             c->x[0] = 0; pm_unlock(&objs_lock); return;
         }
         next.textures[i] = addr;
+        next.states[i] = NVN_IMAGE_FREE;
         if (!i) next.crop = nvn_window_crop(0, 0, 0, 0, texture->builder.width, texture->builder.height);
     }
     NvnObj* o = nvn_objtab_put(&objs, c->x[0], NVN_OBJ_WINDOW, sizeof next);
@@ -730,6 +733,69 @@ static void h_sync_initialize(CPU* c, u64 entry) {
     SyncRec* s = rec_get(c->x[0], NVN_OBJ_SYNC, sizeof *s);
     s->device = c->x[1]; s->state = NVN_SYNC_UNSIGNALED;
     c->x[0] = 1; pm_unlock(&objs_lock);
+}
+
+enum { NVN_ACQUIRE_OK = 0, NVN_ACQUIRE_FAILED = 1 };
+static void h_window_acquire_texture(CPU* c, u64 entry) {
+    (void)entry;
+    const u64 window_addr = c->x[0], sync_addr = c->x[1], index_addr = c->x[2];
+    pm_lock(&objs_lock);
+    WindowRec* window = known_record(window_addr, NVN_OBJ_WINDOW);
+    SyncRec* sync = known_record(sync_addr, NVN_OBJ_SYNC);
+    if (!window || !sync || !native_guest_readable(index_addr, sizeof(uint32_t))) {
+        const char* reason = !window ? "unknown window" : !sync ? "unknown sync" : "unreadable index";
+        LOG("nvn-native: nvnWindowAcquireTexture failed: %s (window=%llx sync=%llx index=%llx)\n",
+            reason, (unsigned long long)window_addr, (unsigned long long)sync_addr, (unsigned long long)index_addr);
+        if (native_guest_readable(index_addr, sizeof(uint32_t))) gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
+        c->x[0] = NVN_ACQUIRE_FAILED;
+        pm_unlock(&objs_lock);
+        return;
+    }
+    uint32_t interval = window->interval;
+    pm_unlock(&objs_lock);
+    present_pace(interval);
+    pm_lock(&objs_lock);
+    window = known_record(window_addr, NVN_OBJ_WINDOW);
+    sync = known_record(sync_addr, NVN_OBJ_SYNC);
+    if (!window || !sync || !native_guest_readable(index_addr, sizeof(uint32_t))) {
+        const char* reason = !window ? "window changed" : !sync ? "sync changed" : "index changed";
+        LOG("nvn-native: nvnWindowAcquireTexture failed: %s (window=%llx sync=%llx index=%llx)\n",
+            reason, (unsigned long long)window_addr, (unsigned long long)sync_addr, (unsigned long long)index_addr);
+        if (native_guest_readable(index_addr, sizeof(uint32_t))) gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
+        c->x[0] = NVN_ACQUIRE_FAILED;
+        pm_unlock(&objs_lock);
+        return;
+    }
+    int32_t index = nvn_window_pick_image(window->states, window->texture_count, window->last_index);
+    if (index < 0) {
+        LOG("nvn-native: nvnWindowAcquireTexture failed: no free window image (window=%llx states=%u,%u,%u,%u)\n",
+            (unsigned long long)window_addr, window->states[0], window->states[1], window->states[2], window->states[3]);
+        gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
+        c->x[0] = NVN_ACQUIRE_FAILED;
+        pm_unlock(&objs_lock);
+        return;
+    }
+    window->states[index] = NVN_IMAGE_ACQUIRED;
+    window->last_index = index;
+    /* A free image means its previous frame job has finished. */
+    sync->state = NVN_SYNC_SIGNALED;
+    gw32(index_addr, (uint32_t)index);
+    c->x[0] = NVN_ACQUIRE_OK;
+    pm_unlock(&objs_lock);
+}
+static void h_sync_wait(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    SyncRec* sync = known_record(c->x[0], NVN_OBJ_SYNC);
+    if (!sync) {
+        LOG("nvn-native: nvnSyncWait unknown sync=%llx\n", (unsigned long long)c->x[0]);
+        c->x[0] = NVN_SYNC_WAIT_FAILED;
+        pm_unlock(&objs_lock);
+        return;
+    }
+    /* 3c adds the waiting states; timeout is ignored here. */
+    c->x[0] = nvn_sync_wait_result(sync->state);
+    pm_unlock(&objs_lock);
 }
 
 /* The host handlers by NVN function name. Later steps add their entries here (G2 to G5 of docs/nvn-design.md, 2-6). */
@@ -819,6 +885,8 @@ static const NativeProc native_procs[] = {
     {"nvnWindowSetPresentInterval", h_window_set_present_interval},
     {"nvnWindowSetCrop", h_window_set_crop},
     {"nvnSyncInitialize", h_sync_initialize},
+    {"nvnWindowAcquireTexture", h_window_acquire_texture},
+    {"nvnSyncWait", h_sync_wait},
     {"nvnTextureBuilderSetWidth", h_texture_builder_set_width},
     {"nvnTextureBuilderSetHeight", h_texture_builder_set_height},
     {"nvnTextureBuilderSetDepth", h_texture_builder_set_depth},
