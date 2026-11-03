@@ -1256,6 +1256,17 @@ void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, 
     g_gpu_submits++;
     pm_unlock(&g_submit_lk);
 }
+GpuChannel* gpu_channel_open(u32 channel) {
+    GpuChannel* ch;
+    if (channel >= GPU_CHANNELS)
+        fatal("gpu: a channel open on %u, past the %u the GPU has\n", channel, GPU_CHANNELS);
+    pm_lock(&g_qlk);
+    queue_init();
+    ch = channel_get(channel);
+    g_scan_stale[channel] = 0;
+    pm_unlock(&g_qlk);
+    return ch;
+}
 void gpu_channel_close(u32 channel) {
     GpuChannel* ch;
     if (channel >= GPU_CHANNELS) return;
