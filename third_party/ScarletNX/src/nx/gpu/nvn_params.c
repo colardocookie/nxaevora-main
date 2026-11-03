@@ -401,10 +401,12 @@ static void texture_choose_tile(const NvnTextureBuilder* b, NvnTextureLayout* l,
     if (texture_sparse_tile(b, l, levels)) return;
     if (l->dim == 3) {
         uint32_t v = l->depth + l->depth / 2;
-        l->tile_z = v > 15 ? 4 : v >= 8 ? 3 : v > 3 ? 2 : v > 1 ? 1 : 0;
+        l->tile_z = v > NVN_TEXTURE_AUTO_TILE_DEPTH_4 ? 4 : v >= NVN_TEXTURE_AUTO_TILE_DEPTH_3 ? 3 :
+                    v > NVN_TEXTURE_AUTO_TILE_DEPTH_2 ? 2 : v > NVN_TEXTURE_AUTO_TILE_DEPTH_1 ? 1 : 0;
     } else {
         uint32_t hb = ceil_u32(l->height * l->sample_y, l->block_height), v = hb + hb / 2;
-        l->tile_y = v >= 128 ? 4 : v >= 64 ? 3 : v > 31 ? 2 : v > 15 ? 1 : 0;
+        l->tile_y = v >= NVN_TEXTURE_AUTO_TILE_ROWS_4 ? 4 : v >= NVN_TEXTURE_AUTO_TILE_ROWS_3 ? 3 :
+                    v > NVN_TEXTURE_AUTO_TILE_ROWS_2 ? 2 : v > NVN_TEXTURE_AUTO_TILE_ROWS_1 ? 1 : 0;
     }
     if ((b->flags & NVN_TEXTURE_FLAG_ADAPTIVE_TILE) &&
         texture_footprint(l, levels, texture_is_array(b->target), 0, l->tile_y, l->tile_z) !=

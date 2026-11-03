@@ -210,6 +210,9 @@ How `nvn_trace` works, and what the host layer reuses:
   `nvn_trace_init` (called in `main.c` after `kernel_load_symbols`, before `jit_init` and before any guest thread) replaces the
   dispatch slot `g_disp[(addr - g_code_lo) / 4]` of `nvnBootstrapLoader` with a wrapper. The wrapper then replaces the slot of
   `nvnDeviceGetProcAddress`. Each name that the game resolves gets a wrapper in the slot of its address.
+- With `nvn_native=1` the host handlers replace the game's NVN library for every call through the table. The loader hooks are the
+  ones of `gpu/nvn_trace.c`, one level below it: `nvn_native_init` runs first, and the trace wraps what the slots then hold, so it
+  counts the host calls too. A function without a handler gets the missing-function handler, so one run lists every missing function.
 - A handler is a `GuestFn(CPU* c, u64 entry)`. The arguments are `c->x[0..7]` (and `c->v[]` for floats), the result is
   `c->x[0]`, and guest memory is read and written with `GP()`, `gr64()` and the like. The game calls NVN through pointers, and the
   generated code reads `g_disp` for such calls, so a handler in the slot sees every call. A recompile with `--hook-direct-calls`
@@ -713,7 +716,8 @@ each kind of comparison:
 
 | Step | Functions | Kinds |
 | --- | --- | --- |
-| 3b | `TextureBuilderGetStorageSize`, `TextureBuilderGetStorageAlignment`, `BufferGetAddress`, `VertexAttribStateSetFormat` and `GetFormat`, `BlendStateSetBlendFunc` | `R`, `M` |
+| 3b | `DeviceGetInteger` (the device-integer case) and the texture builder case (`TextureBuilderGetStorageSize`, `TextureBuilderGetStorageAlignment`, `TextureBuilderGetWidth` and `GetHeight`) | `R`, `M` |
+|  | `BufferGetAddress`, the vertex-format functions and `BlendStateSetBlendFunc` have no case yet. They follow with the buffer functions in 3c. | |
 | 3c | `CommandBufferSetViewports`, `SetScissors`, `ClearColor`, `Barrier`, `QueueFenceSync` | `S`, `Y` |
 | 3d | `CommandBufferBindBlendState`, `DrawArrays` | `S` for a draw |
 

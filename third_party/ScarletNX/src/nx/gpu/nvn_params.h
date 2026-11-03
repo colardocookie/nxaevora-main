@@ -160,6 +160,15 @@ int nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* dev
 #define NVN_TEXTURE_GOB_WIDTH 64u
 #define NVN_TEXTURE_GOB_HEIGHT 8u
 #define NVN_TEXTURE_GOB_BYTES 512u
+/* Automatic tile choice: the 1.5 times size of the depth (3D) or of the block rows (other targets) selects the tile exponent. */
+#define NVN_TEXTURE_AUTO_TILE_DEPTH_4 15u
+#define NVN_TEXTURE_AUTO_TILE_DEPTH_3 8u
+#define NVN_TEXTURE_AUTO_TILE_DEPTH_2 3u
+#define NVN_TEXTURE_AUTO_TILE_DEPTH_1 1u
+#define NVN_TEXTURE_AUTO_TILE_ROWS_4 128u
+#define NVN_TEXTURE_AUTO_TILE_ROWS_3 64u
+#define NVN_TEXTURE_AUTO_TILE_ROWS_2 31u
+#define NVN_TEXTURE_AUTO_TILE_ROWS_1 15u
 #define NVN_TEXTURE_LINEAR_ALIGNMENT 0x20u
 #define NVN_TEXTURE_LINEAR_RT_ALIGNMENT 0x80u
 #define NVN_TEXTURE_COMPRESSION_DISABLED 0x76165656u

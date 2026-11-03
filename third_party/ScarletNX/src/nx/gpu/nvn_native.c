@@ -1,11 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* nvn_native=1: the host answers the NVN functions that the game resolves through nvnBootstrapLoader and
-   nvnDeviceGetProcAddress. Each resolved address gets a host handler in its dispatch slot, so the game's NVN library
-   never runs for a call through the table. A function without a handler gets the missing-function handler: it logs the
-   first call and returns 0, so one run lists every missing function (docs/nvn-design.md, 2-3 and 2-6).
-   The loader hooks are the ones of gpu/nvn_trace.c, one level below it: nvn_native_init runs first, and the trace
-   wraps what the slots then hold, so it counts the host calls too. */
+   nvnDeviceGetProcAddress. Each resolved address gets a host handler in its dispatch slot. A function without a
+   handler logs its first call and returns 0. The hook order and the trace are in docs/nvn-design.md, 2-3 and 2-6. */
 #include "nx/gpu/nvn_native.h"
 #include "nx/gpu/nvn_objtab.h"
 #include "nx/gpu/nvn_params.h"
