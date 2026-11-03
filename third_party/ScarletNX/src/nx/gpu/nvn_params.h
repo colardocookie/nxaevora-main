@@ -256,4 +256,20 @@ NvnTextureDescriptorResult nvn_texture_descriptor(const NvnTexture* texture, con
    A 0 result is a fault of the caller: log it and stop. */
 uint32_t nvn_rt_format_word(uint32_t format);
 
+/* The Android buffer format and libnx NvLayout values of the window image show (3c decision 9). */
+#define NVN_PRESENT_FORMAT_RGBA8888 1u
+#define NVN_PRESENT_LAYOUT_PITCH    1u
+#define NVN_PRESENT_LAYOUT_BLOCK    3u
+typedef struct {
+    uint64_t cpu_addr;
+    uint32_t w, h, pitch, layout, bhl, fmt;
+    int32_t crop[4];
+} NvnPresentArgs;
+/* The arguments of present_buffer for the window image in texture t, its storage in pool_storage. 0 with out
+   unchanged when the format is not RGBA8, the address sum overflows or a crop value does not fit int32_t. Pure. */
+int nvn_window_present_args(const NvnTexture* t, uint64_t pool_storage, const NvnWindowCrop* crop, NvnPresentArgs* out);
+/* The sync state after one token of a frame job: fences goes down by one when it is above 0, and the state is
+   SIGNALED at 0. Pure. */
+NvnSyncState nvn_sync_after_token(NvnSyncState state, uint32_t* fences);
+
 #endif

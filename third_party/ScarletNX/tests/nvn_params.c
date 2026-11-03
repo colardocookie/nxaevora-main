@@ -653,9 +653,57 @@ static void test_rt_format_word(void) {
     CHECK(nvn_rt_format_word(UINT32_MAX) == 0);
 }
 
+static void test_window_present_args(void) {
+    NvnTexture t;
+    memset(&t, 0, sizeof t);
+    t.builder.width = 640;
+    t.builder.height = 480;
+    t.builder.format = 0x25; /* RGBA8, the RT word 0xD5 */
+    t.builder.offset = 0x1000;
+    t.layout.tile_y = 4;
+    NvnWindowCrop crop = {8, 9, 100, 120};
+    NvnPresentArgs args;
+    memset(&args, 0, sizeof args);
+    CHECK(nvn_window_present_args(&t, 0x2000, &crop, &args));
+    CHECK(args.cpu_addr == 0x3000 && args.w == 640 && args.h == 480);
+    CHECK(args.layout == NVN_PRESENT_LAYOUT_BLOCK && args.pitch == 640 * 4 && args.bhl == 4);
+    CHECK(args.fmt == NVN_PRESENT_FORMAT_RGBA8888);
+    CHECK(args.crop[0] == 8 && args.crop[1] == 9 && args.crop[2] == 108 && args.crop[3] == 129);
+
+    t.builder.flags = NVN_TEXTURE_FLAG_LINEAR;
+    t.layout.linear_stride = 0x800;
+    CHECK(nvn_window_present_args(&t, 0x2000, &crop, &args));
+    CHECK(args.layout == NVN_PRESENT_LAYOUT_PITCH && args.pitch == 0x800 && args.bhl == 0);
+
+    NvnPresentArgs before = args;
+    t.builder.format = 0x01; /* not RGBA8 */
+    CHECK(!nvn_window_present_args(&t, 0x2000, &crop, &args));
+    CHECK(memcmp(&args, &before, sizeof args) == 0);
+
+    t.builder.format = 0x25;
+    NvnWindowCrop wide = {INT32_MAX, 0, 1, 1};
+    CHECK(!nvn_window_present_args(&t, 0x2000, &wide, &args));
+    t.builder.offset = UINT64_MAX;
+    CHECK(!nvn_window_present_args(&t, 1, &crop, &args));
+}
+
+static void test_sync_after_token(void) {
+    uint32_t fences = 2;
+    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_FENCED && fences == 1);
+    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_SIGNALED && fences == 0);
+    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_SIGNALED && fences == 0);
+    CHECK(nvn_sync_after_token(NVN_SYNC_SIGNALED, &fences) == NVN_SYNC_SIGNALED && fences == 0);
+    CHECK(nvn_sync_after_token(NVN_SYNC_UNSIGNALED, &fences) == NVN_SYNC_SIGNALED && fences == 0);
+    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, NULL) == NVN_SYNC_FENCED);
+    fences = 3;
+    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_FENCED && fences == 2);
+}
+
 int main(int argc, char** argv) {
     test_window_params();
     test_window_sync_cycle_params();
+    test_window_present_args();
+    test_sync_after_token();
     test_sampler();
     test_packaged_tile();
     test_texture_descriptor();

@@ -12,6 +12,8 @@
 #define NVN_FRAME_TOKENS_MAX  256u   /* syncs fenced on one frame */
 #define NVN_FRAME_HANDLE_CAP  64u    /* first allocation of the handle array */
 #define NVN_FRAME_TOKEN_CAP   16u    /* first allocation of the token array */
+#define NVN_FRAME_LOG_FIRST   60u    /* the first frames of a run, each logged */
+#define NVN_FRAME_LOG_EVERY   300u   /* after that, every frame with this number */
 
 /* nvn_frame_add_lists returns one of these. LIMIT and MEMORY differ, so a caller can log one and stop on the other. */
 #define NVN_FRAME_ADDED   1
@@ -44,5 +46,8 @@ int nvn_frame_is_empty(const NvnPendingFrame* frame);
 NvnPendingFrame nvn_frame_take(NvnPendingFrame* frame);
 /* Gives back one reference of each handle, frees both arrays, and zeroes the frame. */
 void nvn_frame_release(NvnPendingFrame* frame, NvnListStore* store);
+/* 1 when the frame line is logged: the first NVN_FRAME_LOG_FIRST frames, then every NVN_FRAME_LOG_EVERYth, and always
+   when abnormal is set. frame_number counts from 1. Pure. */
+int nvn_frame_log_due(uint32_t frame_number, int abnormal);
 
 #endif

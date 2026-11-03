@@ -57,3 +57,9 @@ void nvn_frame_release(NvnPendingFrame* frame, NvnListStore* store) {
     free(frame->tokens);
     *frame = (NvnPendingFrame){0};
 }
+
+int nvn_frame_log_due(uint32_t frame_number, int abnormal) {
+    if (abnormal) return 1;
+    if (frame_number <= NVN_FRAME_LOG_FIRST) return 1;
+    return frame_number % NVN_FRAME_LOG_EVERY == 0;
+}

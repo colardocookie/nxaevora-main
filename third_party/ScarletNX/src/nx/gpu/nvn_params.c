@@ -637,3 +637,42 @@ static const uint8_t rt_format_words[NVN_TEXTURE_FORMAT_MAX + 1] = {
 uint32_t nvn_rt_format_word(uint32_t format) {
     return format > NVN_TEXTURE_FORMAT_MAX ? 0 : rt_format_words[format];
 }
+
+#define NVN_PRESENT_RT_WORD 0xD5u /* RGBA8: the only format that present_buffer shows as RGBA8 */
+#define NVN_PRESENT_BYTES_PER_PIXEL 4u
+
+int nvn_window_present_args(const NvnTexture* t, uint64_t pool_storage, const NvnWindowCrop* crop, NvnPresentArgs* out) {
+    if (!t || !crop || !out) return 0;
+    if (nvn_rt_format_word(t->builder.format) != NVN_PRESENT_RT_WORD) return 0;
+    if (t->builder.offset > UINT64_MAX - pool_storage) return 0;
+    uint32_t w = t->builder.width, h = t->builder.height;
+    if (w > UINT32_MAX / NVN_PRESENT_BYTES_PER_PIXEL) return 0;
+    if (crop->x > INT32_MAX || crop->y > INT32_MAX || crop->width > INT32_MAX || crop->height > INT32_MAX) return 0;
+    if (crop->x > INT32_MAX - crop->width || crop->y > INT32_MAX - crop->height) return 0;
+    NvnPresentArgs args = {0};
+    args.cpu_addr = pool_storage + t->builder.offset;
+    args.w = w;
+    args.h = h;
+    if (t->builder.flags & NVN_TEXTURE_LINEAR_FLAGS) {
+        args.layout = NVN_PRESENT_LAYOUT_PITCH;
+        args.pitch = t->layout.linear_stride;
+        args.bhl = 0;
+    } else {
+        args.layout = NVN_PRESENT_LAYOUT_BLOCK;
+        args.pitch = w * NVN_PRESENT_BYTES_PER_PIXEL;
+        args.bhl = t->layout.tile_y;
+    }
+    args.fmt = NVN_PRESENT_FORMAT_RGBA8888;
+    args.crop[0] = (int32_t)crop->x;
+    args.crop[1] = (int32_t)crop->y;
+    args.crop[2] = (int32_t)(crop->x + crop->width);
+    args.crop[3] = (int32_t)(crop->y + crop->height);
+    *out = args;
+    return 1;
+}
+
+NvnSyncState nvn_sync_after_token(NvnSyncState state, uint32_t* fences) {
+    if (!fences) return state;
+    if (*fences > 0) (*fences)--;
+    return *fences == 0 ? NVN_SYNC_SIGNALED : state;
+}

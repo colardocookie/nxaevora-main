@@ -103,12 +103,25 @@ static void test_token_limit(void) {
     CHECK(f.token_count == 0 && !f.tokens);
 }
 
+static void test_log_due(void) {
+    CHECK(nvn_frame_log_due(1, 0));
+    CHECK(nvn_frame_log_due(NVN_FRAME_LOG_FIRST, 0));
+    CHECK(!nvn_frame_log_due(NVN_FRAME_LOG_FIRST + 1, 0));
+    CHECK(!nvn_frame_log_due(NVN_FRAME_LOG_EVERY - 1, 0));
+    CHECK(nvn_frame_log_due(NVN_FRAME_LOG_EVERY, 0));
+    CHECK(nvn_frame_log_due(NVN_FRAME_LOG_EVERY * 2, 0));
+    CHECK(!nvn_frame_log_due(NVN_FRAME_LOG_EVERY * 2 + 1, 0));
+    CHECK(nvn_frame_log_due(NVN_FRAME_LOG_FIRST + 1, 1));
+    CHECK(nvn_frame_log_due(0, 1));
+}
+
 int main(void) {
     test_add_lists();
     test_stale_handles();
     test_limit();
     test_take_and_release();
     test_token_limit();
+    test_log_due();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

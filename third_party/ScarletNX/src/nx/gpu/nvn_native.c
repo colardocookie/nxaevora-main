@@ -10,8 +10,10 @@
 #include "nx/gpu/nvn_params.h"
 #include "nx/gpu/nvn_rt.h"
 #include "nx/gpu/nvn_trace.h"
+#include "nx/gpu/renderer.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
+#include "nx/runtime/cheats.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/rtapi.h"
 #include "nx/hle/kernel/kernel.h"
@@ -19,6 +21,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -27,6 +30,10 @@
 static NvnObjTab objs;
 static PMutex objs_lock = PMUTEX_INIT;
 static NvnListStore lists; /* the command lists of the game, guarded by objs_lock */
+/* The frame line counters (3c decision 12). The three guarded by objs_lock are read and written with it; the other two
+   are atomic because missing_handler and the recorder run without it. */
+static uint32_t frame_acquires, frame_submitted_lists, frame_skipped_lists;
+static uint32_t missing_calls, dropped_ops;
 
 typedef struct {
     uint32_t flags;
@@ -37,6 +44,8 @@ typedef struct {
 typedef struct {
     NvnQueueBuilder builder; /* the builder as it was at QueueInitialize */
     NvnPendingFrame pending; /* the frame that Present closes */
+    uint32_t channel_id;     /* the syncpoint id of the private channel of the frame jobs */
+    GpuChannel* channel;     /* the private channel of the frame jobs, made at QueueInitialize */
 } QueueRec;
 typedef struct {
     uint64_t device, native_window, textures[NVN_WINDOW_MAX_TEXTURES];
@@ -230,18 +239,31 @@ static void h_queue_builder_get_queue_memory_size(CPU* c, u64 entry) {
     c->x[0] = nvn_queue_memory_size(queue_builder(c->x[0]), &nvn_queue_device_words);
     pm_unlock(&objs_lock);
 }
-/* nvnQueueInitialize(queue, builder): records the builder, says yes. The recording and the submission are in 3c. */
+/* nvnQueueInitialize(queue, builder): records the builder and opens the private channel of the frame jobs. */
 static void h_queue_initialize(CPU* c, u64 entry) {
     (void)entry;
     pm_lock(&objs_lock);
     NvnQueueBuilder b = *queue_builder(c->x[1]);
     QueueRec* old = known_record(c->x[0], NVN_OBJ_QUEUE);
-    if (old) nvn_frame_release(&old->pending, &lists); /* initialized again without Finalize */
+    uint32_t channel_id = 0;
+    GpuChannel* channel = NULL;
+    if (old) { /* initialized again without Finalize */
+        nvn_frame_release(&old->pending, &lists);
+        channel_id = old->channel_id;
+        channel = old->channel;
+    }
+    /* QueueFinalize is not observed and has no handler: the channel lives to the end of the process. */
+    if (!channel) {
+        channel_id = syncpt_alloc();
+        channel = gpu_channel_open(channel_id);
+    }
     NvnObj* o = nvn_objtab_put(&objs, c->x[0], NVN_OBJ_QUEUE, sizeof(QueueRec));
     if (!o) fatal("nvn-native: out of memory for the record of a queue\n");
     QueueRec* q = o->data;
     q->builder = b;
     q->pending = (NvnPendingFrame){0};
+    q->channel_id = channel_id;
+    q->channel = channel;
     pm_unlock(&objs_lock);
     c->x[0] = 1;
 }
@@ -987,6 +1009,7 @@ static void command_record(CommandBufferRec* cb, u64 addr, const char* operation
                            uint32_t bytes) {
     if (!cb->recording) {
         cb->dropped_ops++;
+        __atomic_fetch_add(&dropped_ops, 1, __ATOMIC_RELAXED);
         COMMAND_LOG("nvn-native: %s outside a recording, command buffer=%llx: dropped\n", operation,
                     (unsigned long long)addr);
         return;
@@ -995,6 +1018,7 @@ static void command_record(CommandBufferRec* cb, u64 addr, const char* operation
 }
 static void command_dropped(CommandBufferRec* cb, const char* operation, const char* reason, u64 value) {
     cb->dropped_ops++;
+    __atomic_fetch_add(&dropped_ops, 1, __ATOMIC_RELAXED);
     COMMAND_LOG("nvn-native: %s %s (%llx): dropped\n", operation, reason, (unsigned long long)value);
 }
 static int command_object(u64 addr, NvnObjKind kind, uint32_t* generation) {
@@ -1378,6 +1402,7 @@ static void h_window_acquire_texture(CPU* c, u64 entry) {
     sync->state = NVN_SYNC_SIGNALED;
     gw32(index_addr, (uint32_t)index);
     c->x[0] = NVN_ACQUIRE_OK;
+    frame_acquires++;
     pm_unlock(&objs_lock);
 }
 static void h_sync_wait(CPU* c, u64 entry) {
@@ -1398,23 +1423,195 @@ static void h_sync_wait(CPU* c, u64 entry) {
     pm_unlock(&objs_lock);
 }
 
-/* The frame that Present closes (decision 8). Step 2d replays it on the GPU thread; 2c only drops it. */
+/* The frame that Present closes (decision 8). The GPU thread replays it on the private channel, shows the window
+   image, frees it and signals the tokens (decisions 9 to 12). */
 typedef struct {
     NvnPendingFrame frame;
     uint64_t queue, window, texture;
     uint32_t window_generation, texture_generation, index;
     int window_origin_flip;
+    GpuChannel* channel; /* the private channel of the queue, used on the GPU thread only */
 } FrameJob;
-static uint32_t frame_submitted_lists; /* for the frame line of 2d, guarded by objs_lock */
-static uint32_t frame_skipped_lists;
-#define FRAME_LOG_LIMIT 4u /* log lines for frame jobs that 2c cannot run */
-/* 2d replaces this body with the replay on the GPU thread, then the image FREE and the token signals. Until then the
-   present drops the frame on purpose: the third Acquire stops with "no free window image", not a fake success. */
-static void frame_dispatch(FrameJob* job) {
-    LOG_LIMIT(FRAME_LOG_LIMIT,
-              "nvn-native: frame job is not implemented (step 2d): frame of window=%llx index=%u dropped, %u lists, %u fences\n",
-              (unsigned long long)job->window, job->index, job->frame.handle_count, job->frame.token_count);
+#define FRAME_LOG_LIMIT 4u           /* log lines for the faults of the frame job */
+#define NVN_FRAME_ABNORMAL_LIMIT 200u /* abnormal frame lines, so that a broken frame does not flood the log */
+/* The device word at +0x18 was 0x4000 in one run; its source is not found.
+   The selftest S case of step 4 checks it. */
+#define NVN_REPLAY_CLIP_LIMIT 0x4000u
+
+/* What the job needs from the records, copied under objs_lock. A part whose record was gone stays 0. */
+typedef struct {
+    int window_valid, texture_valid, pool_valid;
+    NvnTexture texture;
+    uint64_t pool_storage;
+    NvnWindowCrop crop;
+} FrameParts;
+
+/* Runs on the GPU thread. */
+static void frame_begin(void) {
+    if (g_renderer->stream_run) g_renderer->stream_run(1);
+    if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
+}
+static void frame_read_parts(const FrameJob* job, FrameParts* parts) {
+    *parts = (FrameParts){0};
+    pm_lock(&objs_lock);
+    NvnObj* wo = nvn_objtab_valid(&objs, job->window, job->window_generation) ? nvn_objtab_find(&objs, job->window) : NULL;
+    WindowRec* window = wo && wo->kind == NVN_OBJ_WINDOW ? wo->data : NULL;
+    if (window) {
+        parts->window_valid = 1;
+        parts->crop = window->crop;
+    }
+    NvnObj* to = nvn_objtab_valid(&objs, job->texture, job->texture_generation)
+                     ? nvn_objtab_find(&objs, job->texture) : NULL;
+    TextureRec* texture = to && to->kind == NVN_OBJ_TEXTURE ? to->data : NULL;
+    if (texture) {
+        parts->texture = *texture;
+        parts->texture_valid = 1;
+        MemoryPoolRec* pool = known_record(texture->builder.pool, NVN_OBJ_MEMORY_POOL);
+        if (pool) {
+            parts->pool_valid = 1;
+            parts->pool_storage = pool->storage;
+        }
+    }
+    pm_unlock(&objs_lock);
+    if (!parts->window_valid)
+        LOG_LIMIT(FRAME_LOG_LIMIT, "nvn-native: frame window=%llx generation=%u is gone\n",
+                  (unsigned long long)job->window, job->window_generation);
+    if (!parts->texture_valid)
+        LOG_LIMIT(FRAME_LOG_LIMIT, "nvn-native: frame texture=%llx generation=%u is gone\n",
+                  (unsigned long long)job->texture, job->texture_generation);
+    if (parts->texture_valid && !parts->pool_valid)
+        LOG_LIMIT(FRAME_LOG_LIMIT, "nvn-native: frame texture=%llx memory pool=%llx is gone\n",
+                  (unsigned long long)job->texture, (unsigned long long)parts->texture.builder.pool);
+}
+static void frame_first_log(const FrameJob* job, const FrameParts* parts) {
+    static int logged; /* only the GPU thread runs the frame jobs */
+    if (logged) return;
+    logged = 1;
+    LOG("nvn-native: frame job channel=%u window=%ux%u format=%x\n", job->channel->id,
+        parts->texture_valid ? parts->texture.builder.width : 0,
+        parts->texture_valid ? parts->texture.builder.height : 0,
+        parts->texture_valid ? parts->texture.builder.format : 0);
+}
+/* Sets the window image as color target 0 through the replay callback, as the library's tail entry does. */
+static int frame_set_target(const FrameJob* job, const FrameParts* parts) {
+    if (!parts->texture_valid) return 0;
+    NvnOpRenderTargets op = {0};
+    op.count = 1;
+    op.color[0].texture = job->texture;
+    op.color[0].generation = job->texture_generation;
+    op.color[0].has_view = 0;
+    NvnNativeReplayHost host = {job->channel, NVN_REPLAY_CLIP_LIMIT};
+    NvnReplayEnv env;
+    nvn_native_replay_env(&host, job->window_origin_flip, &env);
+    return env.render_targets(env.ctx, &op);
+}
+static void frame_replay_lists(const FrameJob* job, NvnReplayStats* stats) {
+    NvnNativeReplayHost host = {job->channel, NVN_REPLAY_CLIP_LIMIT};
+    NvnReplayEnv env;
+    nvn_native_replay_env(&host, job->window_origin_flip, &env);
+    for (uint32_t i = 0; i < job->frame.handle_count; i++) {
+        pm_lock(&objs_lock);
+        const NvnOpList* list = nvn_list_find(&lists, job->frame.handles[i]);
+        pm_unlock(&objs_lock);
+        if (!list) {
+            stats->faults++;
+            LOG_LIMIT(FRAME_LOG_LIMIT, "nvn-native: frame handle=%llx is not a live list\n",
+                      (unsigned long long)job->frame.handles[i]);
+            continue;
+        }
+        nvn_replay_list(&env, list, stats);
+    }
+}
+static void frame_end(const FrameJob* job) {
+    r3d_const_flush(job->channel);
+    r3d_pending_flush();
+    if (g_renderer->stream_end) g_renderer->stream_end();
+    if (g_renderer->stream_run) g_renderer->stream_run(0);
+}
+static int frame_show(const FrameJob* job, const FrameParts* parts) {
+    if (!parts->window_valid || !parts->texture_valid || !parts->pool_valid) return 0;
+    NvnPresentArgs args;
+    if (!nvn_window_present_args(&parts->texture, parts->pool_storage, &parts->crop, &args)) {
+        LOG_LIMIT(FRAME_LOG_LIMIT, "nvn-native: frame texture=%llx cannot be shown (format=%x width=%u height=%u)\n",
+                  (unsigned long long)job->texture, parts->texture.builder.format, parts->texture.builder.width,
+                  parts->texture.builder.height);
+        return 0;
+    }
+    if (!g_renderer->present_buffer) {
+        LOG_LIMIT(FRAME_LOG_LIMIT, "nvn-native: frame texture=%llx is not shown: the renderer has no present_buffer\n",
+                  (unsigned long long)job->texture);
+        return 0;
+    }
+    g_renderer->present_buffer(args.cpu_addr, args.w, args.h, args.pitch, args.layout, args.bhl, args.fmt, args.crop, 0);
+    __atomic_add_fetch(&g_frames, 1, __ATOMIC_RELAXED);
+    cheats_frame();
+    SNX_FRAME_MARK();
+    return 1;
+}
+static void frame_finish(FrameJob* job) {
+    pm_lock(&objs_lock);
+    NvnObj* wo = nvn_objtab_valid(&objs, job->window, job->window_generation) ? nvn_objtab_find(&objs, job->window) : NULL;
+    WindowRec* window = wo && wo->kind == NVN_OBJ_WINDOW ? wo->data : NULL;
+    if (window && job->index < window->texture_count && window->states[job->index] == NVN_IMAGE_PRESENTED)
+        window->states[job->index] = NVN_IMAGE_FREE;
+    for (uint32_t i = 0; i < job->frame.token_count; i++) {
+        const NvnFrameToken* token = &job->frame.tokens[i];
+        NvnObj* so = nvn_objtab_valid(&objs, token->sync, token->generation)
+                         ? nvn_objtab_find(&objs, token->sync) : NULL;
+        if (!so || so->kind != NVN_OBJ_SYNC) continue;
+        SyncRec* sync = so->data;
+        sync->state = nvn_sync_after_token(sync->state, &sync->fences);
+    }
     nvn_frame_release(&job->frame, &lists);
+    pm_unlock(&objs_lock);
+}
+static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int shown, uint32_t fences,
+                       uint32_t frame_number) {
+    uint32_t ops = 0;
+    for (uint32_t i = 0; i < NVN_OP_COUNT; i++) ops += stats->replayed[i];
+    uint32_t missing = __atomic_load_n(&missing_calls, __ATOMIC_RELAXED);
+    uint32_t dropped = __atomic_load_n(&dropped_ops, __ATOMIC_RELAXED);
+    static uint32_t last_missing_calls, last_dropped_ops; /* only the GPU thread runs the frame jobs */
+    uint32_t missing_delta = missing - last_missing_calls, dropped_delta = dropped - last_dropped_ops;
+    pm_lock(&objs_lock);
+    uint32_t submitted = frame_submitted_lists, skipped = frame_skipped_lists, acquires = frame_acquires;
+    uint32_t live = nvn_list_live(&lists);
+    pm_unlock(&objs_lock);
+    int abnormal = stats->faults != 0 || dropped_delta != 0 || missing_delta != 0 || !shown;
+    if ((abnormal && nvn_frame_log_due(frame_number, 1)) || (!abnormal && nvn_frame_log_due(frame_number, 0))) {
+        last_missing_calls = missing; /* the deltas of the next line are from this one */
+        last_dropped_ops = dropped;
+        if (abnormal)
+            LOG_LIMIT(NVN_FRAME_ABNORMAL_LIMIT,
+                      "nvn-native: frame %u window=%llx index=%u lists=%u (live %u) ops=%u faults=%u methods=%u "
+                      "dropped=%u missing=%u skipped_lists=%u acquires=%u fences=%u shown=%d\n",
+                      frame_number, (unsigned long long)job->window, job->index, submitted, live, ops, stats->faults,
+                      stats->methods, dropped_delta, missing_delta, skipped, acquires, fences, shown);
+        else
+            LOG("nvn-native: frame %u window=%llx index=%u lists=%u (live %u) ops=%u faults=%u methods=%u dropped=%u "
+                "missing=%u skipped_lists=%u acquires=%u fences=%u shown=%d\n",
+                frame_number, (unsigned long long)job->window, job->index, submitted, live, ops, stats->faults,
+                stats->methods, dropped_delta, missing_delta, skipped, acquires, fences, shown);
+    }
+}
+/* Runs on the GPU thread: it frees the job that Present made. */
+static void frame_run(void* arg) {
+    FrameJob* job = arg;
+    static uint32_t frame_jobs; /* only the GPU thread runs the frame jobs */
+    frame_begin();
+    FrameParts parts;
+    frame_read_parts(job, &parts);
+    frame_first_log(job, &parts);
+    frame_set_target(job, &parts);
+    NvnReplayStats stats = {0};
+    frame_replay_lists(job, &stats);
+    frame_end(job);
+    int shown = frame_show(job, &parts);
+    uint32_t fences = job->frame.token_count;
+    uint32_t frame_number = ++frame_jobs;
+    frame_finish(job);
+    frame_line(job, &stats, shown, fences, frame_number);
+    free(job);
 }
 
 /* nvnQueueSubmitCommands(queue, count, handles): copies the handle array at once and adds the lists to the pending
@@ -1536,10 +1733,14 @@ static void h_queue_present_texture(CPU* c, u64 entry) {
     NvnObj* to = nvn_objtab_find(&objs, job.texture);
     job.texture_generation = to ? to->generation : 0;
     job.index = (uint32_t)index;
+    job.channel = q->channel;
     const DeviceRec* device = known_record(window->device, NVN_OBJ_DEVICE);
     job.window_origin_flip = device && device->window_origin == 1;
-    frame_dispatch(&job);
+    FrameJob* dispatched = malloc(sizeof *dispatched);
+    if (!dispatched) fatal("nvn-native: out of memory for the frame job of a queue\n");
+    *dispatched = job;
     pm_unlock(&objs_lock);
+    gpu_call(frame_run, dispatched, NULL, 0);
 }
 
 /* The host handlers by NVN function name. Later steps add their entries here (G2 to G5 of docs/nvn-design.md, 2-6). */
@@ -1720,6 +1921,7 @@ static void missing_handler(CPU* c, u64 entry) {
     NativeSlot* s = slot_find(entry);
     if (!s) fatal("nvn-native: the missing-function handler runs for an address it never registered (%llx)\n",
                   (unsigned long long)entry);
+    __atomic_fetch_add(&missing_calls, 1, __ATOMIC_RELAXED);
     if (!__atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED)) /* the first call: what the game asked for */
         LOG("nvn-native: not implemented: %s (x0=%llx x1=%llx x2=%llx x3=%llx), returns 0\n", s->name,
             (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2],
