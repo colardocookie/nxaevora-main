@@ -977,3 +977,105 @@ Unknown objects, a zero CPU base or unreadable input give one error line and no 
 Synthetic tests check hand-computed descriptor words, view overrides, depth/stencil, samples, mips, invalid indices,
 device rows and packaged tiles. No real descriptor was logged. Other view getters are outside this part.
 The texture initialization log is unchanged. Runtime integration has not been built or run for this part.
+
+## 3c Host design decisions (2026-11-03)
+
+Sources: the reports `analyst-3c-A-1.md`, `analyst-3c-B-1.md`, `analyst-3c-C-1.md` and `explorer-3c-1.md` (scratchpad). Checked
+against the disassembly: BufferInitialize, BufferMap, BufferGetAddress, BufferBuilderGetSize, CommandBufferInitialize, the
+QueueFenceSync thunk, EndRecording (start), SetTexturePool. Not checked: ProgramSetShadersExt, the tables of the explorer. The
+rule of the user for window and sync work applies: the host owns the objects, no compatibility words go into game memory, and an
+unknown part stops with a log line.
+
+### Facts that decide the design
+
+- The library command buffer is a list of records plus command memory. `SetTexturePool` and `SetSamplerPool` store a 16 byte
+  control record (op 0x13 and 0x14 with the pool pointer) and write no method at call time. The interpreter (d839d20) expands
+  them at submission. `SetViewports`, `SetScissors`, `SetRenderTargets`, `ClearColor` and `Barrier` write their methods into
+  command memory at call time. The host records all of them as ops, so this difference does not reach the host.
+- The `EndRecording` handle is a control memory address with a 16 bit tag. `QueueSubmitCommands` and `CallCommands` read the
+  memory behind it. The host replaces both, so its handle can be any value. `nvnDeviceFinalizeCommandHandle` is not in the
+  call list of `nvn-calls.md`: it follows the rule for unobserved functions (no handler, the missing-function line).
+- `QueueSubmitCommands` makes no GPFIFO submission and no entry. `QueuePresentTexture` flushes the queue and builds the entries
+  (explorer: entry 0 caches, entry 1 empty, entry 2 pools, entry 3 fence and window image). `QueueFenceSync` makes the 56 word tail
+  entry (fence and report semaphore).
+- `BufferMap` returns pool map pointer plus offset, and 0 only for a pool with the CPU no-access flag. The crash after 3b came
+  from the missing handler that returned 0.
+
+### Decisions
+
+1. **Objects.** New kinds `NVN_OBJ_BUFFER_BUILDER`, `NVN_OBJ_BUFFER`, `NVN_OBJ_PROGRAM`, `NVN_OBJ_COMMAND_BUFFER`. A buffer record holds
+   pool address, pool generation, offset and size. `BufferInitialize` fails with a log line when the pool is unknown, has the
+   physical flag (0x100, as the library) or when offset plus size is outside the pool (the library has no range check, the host
+   adds it because the next step would read outside the pool). `BufferFinalize` removes the record. `BufferSetDebugLabel` does
+   nothing. `BufferGetAddress` is pool GPU address plus offset. `BufferMap` is `nvn_memory_pool_map` plus offset.
+2. **Program (G8, not 3c).** `ProgramInitialize`, `SetShadersExt` and `Finalize` stay out of 3c. 3c draws nothing, and the program
+   needs the shader path of 3d. They keep the missing-function line.
+3. **Command buffer record.** One record for each command buffer: the memory callback and data (stored, never called), the added
+   command and control memory ranges (stored for the log, not used), the recording flag, and the list in progress. `AddCommandMemory`
+   and `AddControlMemory` store the range and do not check it. `BeginRecording` during a recording logs a line and drops the open
+   list (the library does not check). `EndRecording` outside a recording returns 0 (as the library).
+4. **Handle.** A host id: generation in the upper 32 bits, list index in the lower 31 bits, bit 0 clear, never 0. `QueueSubmitCommands`
+   and `CallCommands` take ids only. An id that is not valid is skipped with a log line (counted).
+5. **Lists and ops.** An op is an opcode and at most 32 bytes. The list lives in an arena of the command buffer. Values are copied at
+   record time (viewport floats, scissor integers, clear color, barrier bits, render target arguments). Objects (texture, pool) are
+   held as address plus generation and read at replay. Ops of 3c: `SET_TEXTURE_POOL`, `SET_SAMPLER_POOL`, `SET_RENDER_TARGETS`,
+   `SET_VIEWPORTS`, `SET_SCISSORS`, `CLEAR_COLOR`, `BARRIER`, `CALL`. Any other command buffer function is a missing function:
+   its first call is logged and nothing is recorded. A frame that has such a call is counted in the frame line (3c cannot draw).
+6. **Replay.** On the GPU thread in the frame job, through `maxwell3d_method` on the private channel. Nested `CALL` depth is limited by
+   a named constant. A cycle stops with a log line that has the handle.
+   - Texture pool op: `SET_TEX_HEADER_POOL_A/B/C` (0x55D) with base high, base low and limit (count minus 1).
+   - Sampler pool op: `SET_TEX_SAMPLER_POOL_A/B/C` (0x557) the same way.
+   - Subchannel 1 (compute) and the macro 16 constant buffer words are not written. Compute is stage 4. The constant buffer is open
+     for 3d (the shader use is a guess of the explorer).
+   - Viewport: scale `w/2` and `+-h/2` (the sign is `device.window_origin == 1`), translate `x + w/2`, `y + h/2`, and the clip words
+     (floor and ceil clamp rules of the analyst, written in the table). The depth range comes from `SetDepthRanges` (3d).
+   - Scissor: the clamp rules of the analyst. The enable method 0x380 is not written here.
+   - Render targets: `RT_CONTROL` (0x487), one nine word block for each color target, the format-0 disable for unused slots, the
+     depth block (0x3F8, 0x48A) and `SURFACE_CLIP` (0x3FD). The parts for depth compression and the sample table are left out until a
+     scene needs them. The format word needs a host table of the library format rows (`[0xe03fd40] + format*0x30 + 0x1c`): the
+     table is the first thing to read before this op (a new analyst task).
+   - Clear color: write 0x360 to 0x363 and run the clear of one target with the channel mask. The macro 1 body is not read. The host
+     calls the renderer clear for the bound target instead of the macro, and the clear covers the whole target.
+   - Barrier: no method for bits 0 to 2 and 4 to 8 in 3c (the host has no L2 and no cache of its own that the game needs here, one
+     counter for the log). Bit 3 and 8 are logged with their count. The range records of bit 3 are not decoded.
+7. **Pool mapping.** The renderer reads render targets and textures by GPU address, so every pool needs a page table entry from the
+   first use. `gmmu_map` is public in `nvdrv.h`. The unmap (`gmmu_unmap` plus `gmap_cut` and the allocator) is not. Decision: add one
+   small function pair to `nvdrv` (`nvn_gpu_map_range`, `nvn_gpu_unmap_range`) with a row in `docs/runtime-changes.md`. The host
+   keeps the bump allocator from 0x400000000 and maps at `MemoryPoolInitialize`, unmaps at `Finalize`. Overlap with a game mapping
+   fails the initialize with a log line. This is the first work of 3c, because the clear needs it.
+8. **Queue and frame.** `QueueRec` gets the pending frame: the lists of `Submit` (the handle array is copied at once), the tokens of
+   `FenceSync`, and the last pool objects. `QueuePresentTexture(queue, window, index)` closes the pending frame and calls
+   `gpu_call` once. A bad index (not ACQUIRED) fails with a log line and shows nothing.
+9. **Frame job.** `stream_run(1)`, `mem_may_have_changed`, set the window image as color target 0 and the clip (the tail entry of the
+   library does this, the game sets its own targets later), replay the lists, the last method, `stream_end`, `stream_run(0)`, show
+   the image with `present_buffer` (address from the texture storage, layout from the builder fields), set the image FREE, signal
+   the tokens, then the frame counters as `vi_show_buffer` does. Skipped on purpose, each with a reason: the L2 operations (no L2),
+   the cache invalidations of entry 0 (the renderer tracks writes), the sync point and report semaphore writes (the host has
+   tokens), the shadow RAM modes (set once at channel setup, passthrough), the decompress of the window image (the renderer reads
+   plain memory). The assumption that none of these changes a result is checked by the first execution test and the first scene.
+10. **Sync.** `NVN_SYNC_UNSIGNALED`, `FENCED` (a frame will signal it) and `SIGNALED`. `FenceSync` with nothing pending signals at
+    once, otherwise it attaches a token and sets `FENCED`. `SyncWait` waits on a condition variable with the timeout in
+    nanoseconds (-1 no limit), outside `objs_lock`, never on the GPU thread. Results: 0 already signaled, 1 signaled after a wait,
+    2 timeout, 3 failed (a sync never fenced, as now). `Acquire` still sets the sync to `SIGNALED`.
+11. **Window images.** The states are FREE, ACQUIRED and PRESENTED. `Present` sets PRESENTED, the frame job sets FREE. The third
+    `Acquire` then finds a FREE image.
+12. **Log.** One line for each frame job: frame number, lists, ops replayed, ops of each kind skipped, missing-function calls in the
+    frame. The success path of `Acquire` is counted in this line.
+13. **Selftest.** Kinds S and Y: the first S case records `SetViewports` and `SetScissors` in the library path and in the host path and
+    compares the recorded method words (the snapshot hook of `nvn_selftest_rec.c`). The first Y case is a fence after a clear and the
+    CPU read of the cleared window image. Mutation: `nvn_selftest_mutate` flips one viewport word and the run must show a fail.
+    The S case compares the host replay with the words that the library writes in command memory (not with the old path).
+
+### Open for the user
+
+- None blocks the start. Decision 7 adds a small public interface to `nvdrv`. If the user does not want a change in `nvdrv`, the
+  other way is a private page table copy in the host (more code, and the renderer does not read it). The recommendation is
+  decision 7.
+
+### Work order of 3c
+
+1. Pool mapping (decision 7) and the buffer handlers (decision 1), with host tests. Selftest: none. Needs no run.
+2. The analyst task for the format word table, and the read of the `ClearColor` macro 1 (explorer), in parallel.
+3. Command buffer record, handles and the recorder with host tests (decisions 3 to 5).
+4. Replay and frame job (decisions 6 to 12). Run: the user starts the title scene with `nvn_native=1`.
+5. Selftest cases S and Y, the mutation, the first execution test (decision 13). Run: `nvn_selftest=1`.
