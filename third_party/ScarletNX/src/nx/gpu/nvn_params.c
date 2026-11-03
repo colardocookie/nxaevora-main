@@ -51,6 +51,10 @@ static const struct {
 };
 
 int nvn_device_integer(uint32_t what, int32_t* value) {
+    if (what > NVN_DEVICE_INTEGER_LIMIT) {
+        *value = 0;
+        return 1;
+    }
     for (size_t i = 0; i < sizeof device_integers / sizeof device_integers[0]; i++)
         if (device_integers[i].what == what) {
             *value = device_integers[i].value;
@@ -135,6 +139,10 @@ NvnPoolResult nvn_memory_pool_params(const NvnMemoryPoolBuilder* b, uint64_t pag
     if (page_size < NVN_POOL_STORAGE_ALIGNMENT || page_size % NVN_POOL_STORAGE_ALIGNMENT ||
         ((f & NVN_POOL_PHYSICAL) && b->size % page_size)) return NVN_POOL_INVALID_PAGE_SIZE;
     return NVN_POOL_OK;
+}
+
+int nvn_pool_range_fits(uint64_t pool_size, uint64_t offset, uint64_t size) {
+    return offset <= pool_size && size <= pool_size - offset;
 }
 
 int nvn_descriptor_offset(uint64_t pool_offset, uint32_t count, uint64_t memory_size, uint32_t entry_bytes,
@@ -237,11 +245,13 @@ static uint32_t sampler_anisotropy(float value) {
     uint32_t rounded = float_bits(value + SAMPLER_ROUND_MAGIC) - float_bits(SAMPLER_ROUND_MAGIC);
     return codes[rounded - 1];
 }
-void nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* dev,
-                            uint32_t out[NVN_SAMPLER_DESCRIPTOR_WORDS]) {
+int nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* dev,
+                           uint32_t out[NVN_SAMPLER_DESCRIPTOR_WORDS]) {
     static const uint8_t wraps[] = {4, 0, 7, 5, 6, 3, 1, 2};
+    for (unsigned i = 0; i < 3; i++)
+        if (s->wrap[i] >= sizeof wraps / sizeof wraps[0]) return 0;
     memset(out, 0, NVN_SAMPLER_DESCRIPTOR_BYTES);
-    for (unsigned i = 0; i < 3; i++) out[0] |= (uint32_t)wraps[s->wrap[i] & 7u] << (3 * i);
+    for (unsigned i = 0; i < 3; i++) out[0] |= (uint32_t)wraps[s->wrap[i]] << (3 * i);
     out[0] |= SAMPLER_FIXED_WORD0 | (sampler_anisotropy(s->anisotropy) << 20);
     if (s->compare_enable) out[0] |= 0x200u | (((s->compare + 7u) & 7u) << 10);
     uint32_t min = s->min_filter;
@@ -263,6 +273,7 @@ void nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* de
              (sampler_border_byte(s->border[0]) << 24);
     out[3] = (sampler_border_byte(s->border[1]) << 12) | (sampler_border_byte(s->border[2]) << 20);
     memcpy(out + 4, s->border, sizeof s->border);
+    return 1;
 }
 
 void nvn_texture_builder_defaults(NvnTextureBuilder* b) {
@@ -418,12 +429,12 @@ int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* 
     uint32_t levels = b->levels;
     if (b->target == NVN_TEXTURE_TARGET_BUFFER) {
         l->dim = l->levels = 1;
-        l->layer_stride = l->size = l->width * f.bytes;
+        l->layer_stride = l->size = (uint64_t)l->width * f.bytes;
     } else if (b->flags & NVN_TEXTURE_LINEAR_FLAGS) {
         l->dim = 2; l->levels = 1; l->linear_stride = b->stride;
-        l->layer_stride = l->size = l->height * b->stride;
+        l->layer_stride = l->size = (uint64_t)l->height * b->stride;
     } else {
-        if (b->target >= NVN_TEXTURE_TARGET_RECTANGLE && b->target <= NVN_TEXTURE_TARGET_2D_MS_ARRAY) levels = 1;
+        if (b->target >= NVN_TEXTURE_TARGET_2D_MS && b->target <= NVN_TEXTURE_TARGET_RECTANGLE) levels = 1;
         l->levels = (uint8_t)levels;
         l->dim = b->target == NVN_TEXTURE_TARGET_3D ? 3 :
                  b->target == NVN_TEXTURE_TARGET_1D || b->target == NVN_TEXTURE_TARGET_1D_ARRAY ? 1 : 2;
@@ -474,9 +485,9 @@ static void texture_descriptor_storage(const NvnTexture* t, uint32_t target,
         texture_bits(&q[4], 23, 4, 6);
     } else {
         texture_bits(&q[2], 21, 3, linear ? 2 : 3);
-        texture_bits(&q[5], 31, 1, target != NVN_TEXTURE_TARGET_2D_MS_ARRAY);
+        texture_bits(&q[5], 31, 1, target != NVN_TEXTURE_TARGET_RECTANGLE);
         uint32_t code = linear ? 7 : texture_target_codes[target];
-        if (!linear && target == NVN_TEXTURE_TARGET_2D_MS_ARRAY &&
+        if (!linear && target == NVN_TEXTURE_TARGET_RECTANGLE &&
             (t->layout.width > dev->w08 || t->layout.height > dev->w08)) code = 7;
         texture_bits(&q[4], 23, 4, code);
         q[4] |= 0xe0000000u;
@@ -498,7 +509,7 @@ static void texture_descriptor_storage(const NvnTexture* t, uint32_t target,
         default: break;
         }
     }
-    if (target == NVN_TEXTURE_TARGET_RECTANGLE || target == NVN_TEXTURE_TARGET_2D_MS)
+    if (target == NVN_TEXTURE_TARGET_2D_MS || target == NVN_TEXTURE_TARGET_2D_MS_ARRAY)
         for (unsigned i = 0; i < sizeof texture_sample_codes / sizeof texture_sample_codes[0]; i++)
             if (t->layout.samples == texture_sample_codes[i].samples)
                 texture_bits(&q[7], 8, 4, texture_sample_codes[i].code);
@@ -510,7 +521,7 @@ static uint64_t texture_descriptor_dimensions(const NvnTexture* t, const NvnText
     if (v && (v->flags & NVN_VIEW_LAYERS)) {
         address += t->layout.layer_stride * v->base_layer;
         if (target == NVN_TEXTURE_TARGET_1D_ARRAY || target == NVN_TEXTURE_TARGET_2D_ARRAY ||
-            target == NVN_TEXTURE_TARGET_2D_MS || target == NVN_TEXTURE_TARGET_CUBE_ARRAY)
+            target == NVN_TEXTURE_TARGET_2D_MS_ARRAY || target == NVN_TEXTURE_TARGET_CUBE_ARRAY)
             depth = v->layer_count ? v->layer_count : depth - v->base_layer;
     }
     if (target == NVN_TEXTURE_TARGET_CUBE_ARRAY) depth /= NVN_TEXTURE_CUBE_FACES;
@@ -522,6 +533,8 @@ static uint64_t texture_descriptor_dimensions(const NvnTexture* t, const NvnText
     }
     texture_bits(&q[5], 0, 16, t->layout.height - 1u);
     texture_bits(&q[5], 16, 14, depth - 1u);
+    /* The library clears word 3 bits 10..12 for linear textures too, so a pitch with bit 15 set loses it
+       (the library function at d858c70 run on 1800 cases agrees). */
     q[3] &= 0xfc07e3ffu;
     q[6] &= 0x387fffffu;
     texture_bits(&q[3], 10, 3, t->layout.tile_x);
@@ -580,6 +593,8 @@ NvnTextureDescriptorResult nvn_texture_descriptor(const NvnTexture* t, const Nvn
     if (target > NVN_TEXTURE_TARGET_BUFFER) return NVN_TEXTURE_DESCRIPTOR_BAD_TARGET;
     uint32_t q[NVN_TEXTURE_DESCRIPTOR_WORDS] = {0};
     const uint32_t* sw = (vf & NVN_VIEW_SWIZZLE) ? v->swizzle : t->builder.swizzle;
+    for (unsigned i = 0; i < 4; i++)
+        if (sw[i] > NVN_TEXTURE_SWIZZLE_MAX) return NVN_TEXTURE_DESCRIPTOR_BAD_SWIZZLE;
     q[0] = texture_swizzle(r->seed, sw, r->one_code);
     texture_bits(&q[4], 22, 1, r->srgb != 0);
     texture_descriptor_storage(t, target, dev, q);

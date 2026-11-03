@@ -77,7 +77,8 @@ static void test_device_integer(void) {
     }
     int32_t v = 7;
     CHECK(!nvn_device_integer(0, &v) && v == 7); /* no run asked for it: no value, the output is untouched */
-    CHECK(!nvn_device_integer(1000, &v));
+    CHECK(nvn_device_integer(NVN_DEVICE_INTEGER_LIMIT + 1, &v) && v == 0); /* the library's switch default */
+    CHECK(!nvn_device_integer(NVN_DEVICE_INTEGER_LIMIT, &v));
 }
 
 static void test_timestamp(void) {
@@ -206,6 +207,13 @@ static void test_sampler(void) {
     s.wrap[0] = 0; s.wrap[1] = 2; s.wrap[2] = 7;
     nvn_sampler_descriptor(&s, &dev, words);
     CHECK(words[0] == 0x260bc); /* 4 | (7<<3) | (2<<6) */
+    {
+        uint32_t before[8];
+        memcpy(before, words, sizeof before);
+        s.wrap[1] = 8;
+        CHECK(!nvn_sampler_descriptor(&s, &dev, words) && !memcmp(words, before, sizeof words));
+        s.wrap[1] = 2;
+    }
     nvn_sampler_defaults(&s);
     s.compare_enable = 9; s.compare = 2;
     nvn_sampler_descriptor(&s, &dev, words);
@@ -392,11 +400,11 @@ static void test_texture_descriptor(void) {
     v.flags = 0; memcpy(remaining, array, sizeof remaining);
     remaining[1] = 0x12345600; remaining[5] = 0x812b0007;
     check_texture_descriptor(&t, &v, &dev, &r, remaining);
-    /* View selects 2D and another synthetic seed. Swizzle (A,ONE,ZERO,invalid)
+    /* View selects 2D and another synthetic seed. Swizzle (A,ONE,ZERO,R)
        selects codes (4,6,0,1). sRGB adds bit22 in q4. */
     t.builder.target = 10; t.layout.depth = 1;
     v = (NvnTextureView){.flags = NVN_VIEW_FORMAT | NVN_VIEW_SWIZZLE | NVN_VIEW_TARGET,
-        .format = 0x26, .target = 1, .swizzle = {5, 1, 0, 99}};
+        .format = 0x26, .target = 1, .swizzle = {5, 1, 0, 2}};
     r = (NvnTextureFormatRecord){.seed = 0xc6880055, .one_code = 1, .srgb = 1};
     uint32_t override[8]; memcpy(override, rgba, sizeof override);
     override[0] = 0x91a00055; override[4] = 0xe8c0000f;
@@ -449,6 +457,12 @@ static void test_texture_descriptor(void) {
     CHECK(nvn_texture_descriptor(&t, &v, &dev, &r, out) == NVN_TEXTURE_DESCRIPTOR_BAD_FORMAT);
     v.format = 0; v.target = 11;
     CHECK(nvn_texture_descriptor(&t, &v, &dev, &r, out) == NVN_TEXTURE_DESCRIPTOR_BAD_TARGET);
+    CHECK(!memcmp(out, unchanged, sizeof out));
+    t.builder.target = 1;
+    v = (NvnTextureView){.flags = NVN_VIEW_SWIZZLE, .swizzle = {2, 3, 4, NVN_TEXTURE_SWIZZLE_MAX + 1}};
+    CHECK(nvn_texture_descriptor(&t, &v, &dev, &r, out) == NVN_TEXTURE_DESCRIPTOR_BAD_SWIZZLE);
+    t.builder.swizzle[0] = 6;
+    CHECK(nvn_texture_descriptor(&t, NULL, &dev, &r, out) == NVN_TEXTURE_DESCRIPTOR_BAD_SWIZZLE);
     CHECK(!memcmp(out, unchanged, sizeof out));
 }
 static void test_texture_descriptor_fields(void) {
@@ -571,6 +585,26 @@ static void test_texture_queries(const char* path) {
     CHECK(count == 40 && agree == count);
 }
 
+static void test_pool_range_fits(void) {
+    CHECK(nvn_pool_range_fits(0x1000, 0, 0x1000));
+    CHECK(nvn_pool_range_fits(0x1000, 0x1000, 0));
+    CHECK(!nvn_pool_range_fits(0x1000, 0x1000, 1));
+    CHECK(!nvn_pool_range_fits(0x1000, 0x1001, 0));
+    CHECK(!nvn_pool_range_fits(0x1000, UINT64_MAX, 2));
+    CHECK(!nvn_pool_range_fits(0x1000, 0x800, UINT64_MAX));
+}
+
+static void test_texture_layout_wide_size(void) {
+    NvnTextureBuilder b;
+    NvnTextureLayout l;
+    memset(&b, 0, sizeof b);
+    nvn_texture_builder_defaults(&b);
+    b.format = 0x25; b.width = 1; b.height = 0x4000; b.flags = NVN_TEXTURE_FLAG_LINEAR; b.stride = 0x40000;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l) && l.size == 0x100000000ull);
+    b.target = NVN_TEXTURE_TARGET_BUFFER; b.flags = 0; b.width = 0x40000000u;
+    CHECK(nvn_texture_layout(&b, &nvn_texture_device_words, &l) && l.size == 0x100000000ull);
+}
+
 static void test_descriptor_offset(void) {
     uint64_t offset = 99;
     CHECK(nvn_descriptor_offset(0x100, 4, 0x1000, 32, 0, &offset) && offset == 0x100);
@@ -603,6 +637,8 @@ int main(int argc, char** argv) {
     test_memory_pool_params();
     test_pool_gpu_allocate();
     test_descriptor_offset();
+    test_pool_range_fits();
+    test_texture_layout_wide_size();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

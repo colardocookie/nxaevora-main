@@ -18,6 +18,11 @@
 #define ARENA_BYTES 0x10000u
 #define BUILDER_BYTES 0x200u /* more than the library's builder (a reserved block) and the host's record */
 #define NAME_MAX_LEN 64
+#define OUT_GUARD_BYTES 16u /* untouched bytes before and after the output word: an extra write shows as kind M */
+#define OUT_WORD_BYTES 4u
+#define OUT_FILL 0xA5
+#define DEVICE_TEXTURE_WORD_OFFSET 0x1b18u     /* the buffer kind word of the device (nvn_params.h) */
+#define DEVICE_COMPRESSION_BYTE_OFFSET 0x1b1cu /* the compression switch of the device, source unknown */
 
 static uint64_t g_device;
 static int g_ran;
@@ -85,19 +90,21 @@ static void case_device_get_integer(CPU* c, Run* run) {
         LOG("selftest: nvnDeviceGetInteger skipped (the game did not resolve it, or the host has no handler)\n");
         return;
     }
-    uint64_t out = nvn_st_arena_alloc(&run->arena, 16, 16);
-    for (size_t i = 0; out && i < sizeof device_what / sizeof device_what[0]; i++) {
-        uint8_t lib_word[4], host_word[4];
-        memset(GP(out), 0xA5, 4); /* a word that the call must overwrite */
+    enum { REGION = OUT_GUARD_BYTES + OUT_WORD_BYTES + OUT_GUARD_BYTES };
+    uint64_t region = nvn_st_arena_alloc(&run->arena, REGION, 16);
+    uint64_t out = region + OUT_GUARD_BYTES;
+    for (size_t i = 0; region && i < sizeof device_what / sizeof device_what[0]; i++) {
+        uint8_t lib_bytes[REGION], host_bytes[REGION];
+        memset(GP(region), OUT_FILL, REGION); /* the word must be overwritten, the guards must not */
         call(c, &p.lib, g_device, device_what[i], out, 0, 0);
-        memcpy(lib_word, GP(out), 4);
-        memset(GP(out), 0xA5, 4);
+        memcpy(lib_bytes, GP(region), REGION);
+        memset(GP(region), OUT_FILL, REGION);
         call(c, &p.host, g_device, device_what[i], out, 0, 0);
-        memcpy(host_word, GP(out), 4);
+        memcpy(host_bytes, GP(region), REGION);
         NvnStRec ref = {0}, got = {0};
         NvnStDiff d;
-        nvn_st_add_blob(&ref, "out", lib_word, NULL, 4);
-        nvn_st_add_blob(&got, "out", host_word, NULL, 4);
+        nvn_st_add_blob(&ref, "out", lib_bytes, NULL, REGION);
+        nvn_st_add_blob(&got, "out", host_bytes, NULL, REGION);
         nvn_st_compare(&ref, &got, &d);
         char args[32];
         snprintf(args, sizeof args, "what=%u", device_what[i]);
@@ -195,6 +202,9 @@ void nvn_selftest_run(CPU* c) {
     u64 base = kmem_alloc(ARENA_BYTES, MS_STATIC, PERM_RW);
     nvn_st_arena_init(&run.arena, base, ARENA_BYTES);
     LOG("selftest: start, device=%" PRIx64 ", arena=%" PRIx64 "+%x\n", g_device, base, ARENA_BYTES);
+    LOG("selftest: device texture words +%x=%08x +%x=%08x\n", DEVICE_TEXTURE_WORD_OFFSET,
+        gr32(g_device + DEVICE_TEXTURE_WORD_OFFSET), DEVICE_COMPRESSION_BYTE_OFFSET,
+        (u32)*(const uint8_t*)GP(g_device + DEVICE_COMPRESSION_BYTE_OFFSET));
     case_device_get_integer(c, &run);
     case_texture_builder(c, &run);
     LOG("selftest: %u cases, %u failed, %u skipped, arena used %" PRIu64 " of %u bytes\n", run.cases, run.failed,

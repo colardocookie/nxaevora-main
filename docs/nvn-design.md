@@ -947,8 +947,9 @@ Device initialization disassembly verifies +0x1a80=0 and +0x1a84=0x111. The samp
 includes bit 0x100 in word 1 with these inputs.
 
 Texture device inputs +0xac=0x10000, +0x19f8=0, +0x19fc=0 and +0x1b18=0 are verified device values.
-Only +0x1b1c=1 stays provisional: the 40 archived size queries require R to be true for flags 9 and format 0x25,
-although device initialization clears this byte. The code implements classification R
+Only +0x1b1c=1 stays provisional: the 40 archived size queries require R to be true for flags 9 and format 0x25.
+The only store found for this range is a 4 byte clear of +0x1b18 at d831c0c, which does not reach +0x1b1c, so the
+earlier claim that device initialization clears this byte was wrong. The selftest logs the byte of the game's device. The code implements classification R
 for size and alignment. Chip kind selection and NvRmGpuMappingModify are not ported. The texture kind byte stays 0,
 and the address is always the memory pool host GPU base plus offset. GPU page-table mapping remains open from 3b-4.
 

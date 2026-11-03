@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 #include "nx/gpu/nvn_selftest_rec.h"
+#include "nx/gpu/maxwell/kepler_compute_regs.h"
 
 static NvnStRec* rec;
 static NvnStSnapshotFn snapshot_fn;
@@ -39,9 +40,24 @@ static void draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count
 static void draw_texture(GpuChannel* ch) { work(ch, "draw_texture"); }
 
 static void dispatch(GpuChannel* ch, const u32* q, u64 code) {
-    (void)q;
     work(ch, "dispatch");
-    if (rec) nvn_st_add_state(rec, "dispatch.code", code);
+    if (!rec) return;
+    nvn_st_add_state(rec, "dispatch.code", code);
+    if (!q) return;
+    nvn_st_add_state(rec, "dispatch.grid_x", qmd_grid_dim_x(q));
+    nvn_st_add_state(rec, "dispatch.grid_y", qmd_grid_dim_y(q));
+    nvn_st_add_state(rec, "dispatch.grid_z", qmd_grid_dim_z(q));
+    nvn_st_add_state(rec, "dispatch.block_x", qmd_block_dim_x(q));
+    nvn_st_add_state(rec, "dispatch.block_y", qmd_block_dim_y(q));
+    nvn_st_add_state(rec, "dispatch.block_z", qmd_block_dim_z(q));
+    nvn_st_add_state(rec, "dispatch.shared", qmd_shared_alloc(q));
+    nvn_st_add_state(rec, "dispatch.program_start", qmd_program_start(q));
+    nvn_st_add_state(rec, "dispatch.cb_mask", q[QMD_CONST_BUFFER_ENABLE] & 0xFFu);
+    for (u32 i = 0; i < QMD_NUM_CONST_BUFFERS; i++) {
+        if (!qmd_const_buffer_enabled(q, i)) continue;
+        nvn_st_add_state(rec, "dispatch.cb_address", qmd_const_buffer_address(q, i));
+        nvn_st_add_state(rec, "dispatch.cb_size", qmd_const_buffer_size(q, i));
+    }
 }
 
 /* kind Y: the order of the sync operations, not their timing */

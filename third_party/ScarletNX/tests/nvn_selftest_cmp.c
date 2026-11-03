@@ -158,7 +158,24 @@ static void test_format_line(void) {
     CHECK(strcmp(line, "selftest: GetFormat () R:ok M:- S:- Y:-") == 0);
 }
 
+/* The output word of a query sits between guard bytes: a write beyond the word is a kind M difference. */
+static void test_guard_bytes(void) {
+    uint8_t lib[24], host[24];
+    NvnStRec a = {0}, b = {0};
+    NvnStDiff d;
+    memset(lib, 0xA5, sizeof lib);
+    memset(host, 0xA5, sizeof host);
+    memset(lib + 8, 7, 4);
+    memset(host + 8, 7, 4);
+    nvn_st_add_blob(&a, "out", lib, NULL, sizeof lib);
+    nvn_st_add_blob(&b, "out", host, NULL, sizeof host);
+    CHECK(nvn_st_compare(&a, &b, &d) == 0);
+    memset(host + 12, 7, 4); /* an eight byte write */
+    CHECK(nvn_st_compare(&a, &b, &d) == NVN_ST_M);
+}
+
 int main(void) {
+    test_guard_bytes();
     test_equal();
     test_return_value();
     test_byte();

@@ -21,7 +21,7 @@
 
 #define VALUE_SEEN_MAX 64 /* distinct queries logged for one function */
 enum { SELFTEST_NONE = 0, SELFTEST_DEVICE_INIT, SELFTEST_QUEUE_INIT };
-enum { VALUE_NONE = 0, VALUE_GET_INTEGER, VALUE_ARGS };
+enum { VALUE_NONE = 0, VALUE_GET_INTEGER, VALUE_ARGS, VALUE_RESULT };
 typedef struct {
     u64 addr, calls;
     GuestFn original;
@@ -109,9 +109,9 @@ static int value_query_name(const char* name) {
     return 0;
 }
 
-/* Queries whose answer the host must give by itself: logs each distinct (arguments, result) once. nvnDeviceGetInteger
-   (device, what, int* out) is keyed by `what`, its value is read from out. The other queries are keyed by their three
-   arguments after the object (object pointers differ in each call and are left out of the key). */
+/* Queries whose answer the host must give by itself: logs each distinct query once. nvnDeviceGetInteger
+   (device, what, int* out) is keyed by `what`, its value is read from out. The timestamp query is keyed by its three
+   arguments after the object. The others take only an object, so they are keyed by their result. */
 static u32 word_at(u64 addr) { return addr < AS_SIZE - 4 && readable(addr) && readable(addr + 3) ? gr32(addr) : 0xDEADBEEF; }
 
 /* The words of the device and builder objects that the library reads for the two queries below. The host keeps no
@@ -137,8 +137,9 @@ static void value_query_trace(CPU* c, u64 entry, NvProc* p) {
     u64 a0 = c->x[0], a1 = c->x[1], a2 = c->x[2], a3 = c->x[3];
     u64 out = c->x[2];
     p->original(c, entry);
-    u64 key = p->value_op == VALUE_GET_INTEGER ? (a1 & 0xFFFFFFFFu) : a1 * 0x9E3779B97F4A7C15ull ^ a2 * 31 ^ a3;
-    key = key ? key : 1;
+    u64 key = p->value_op == VALUE_GET_INTEGER ? (a1 & 0xFFFFFFFFu)
+              : p->value_op == VALUE_RESULT    ? c->x[0]
+                                               : a1 * 0x9E3779B97F4A7C15ull ^ a2 * 31 ^ a3;
     int32_t value = 0;
     int have = p->value_op == VALUE_GET_INTEGER && out < AS_SIZE - 4 && readable(out) && readable(out + 3);
     if (have) memcpy(&value, GP(out), sizeof value);
@@ -149,9 +150,11 @@ static void value_query_trace(CPU* c, u64 entry, NvProc* p) {
     if (fresh) p->seen[p->nseen++] = key;
     pm_unlock(&procs_lock);
     if (!fresh) return;
-    if (p->value_op == VALUE_ARGS) object_words_trace(p->name, a0);
+    if (p->value_op != VALUE_GET_INTEGER) object_words_trace(p->name, a0);
     if (p->value_op == VALUE_GET_INTEGER)
         LOG("nvn-value: %s what=%u value=%d (%s)\n", p->name, (u32)a1, value, have ? "read" : "out not readable");
+    else if (p->value_op == VALUE_RESULT)
+        LOG("nvn-value: %s result=%llx\n", p->name, (unsigned long long)c->x[0]);
     else
         LOG("nvn-value: %s x1=%llx x2=%llx x3=%llx result=%llx\n", p->name, (unsigned long long)a1,
             (unsigned long long)a2, (unsigned long long)a3, (unsigned long long)c->x[0]);
@@ -216,7 +219,10 @@ static void trace_proc(u64 addr, const char* name) {
             p->selftest_hook = !strcmp(name, "nvnDeviceInitialize")  ? SELFTEST_DEVICE_INIT
                                : !strcmp(name, "nvnQueueInitialize") ? SELFTEST_QUEUE_INIT
                                                                      : SELFTEST_NONE;
-        p->value_op = !strcmp(name, "nvnDeviceGetInteger") ? VALUE_GET_INTEGER : value_query_name(name) ? VALUE_ARGS : 0;
+        p->value_op = !strcmp(name, "nvnDeviceGetInteger")                  ? VALUE_GET_INTEGER
+                      : !strcmp(name, "nvnDeviceGetTimestampInNanoseconds") ? VALUE_ARGS
+                      : value_query_name(name)                              ? VALUE_RESULT
+                                                                            : VALUE_NONE;
         __atomic_store_n(&p->addr, addr, __ATOMIC_RELEASE);
         nprocs++;
         __atomic_store_n(dispatch, proc_trace, __ATOMIC_RELEASE);

@@ -3,6 +3,7 @@
 /* The recording Renderer of the NVN selftest (gpu/nvn_selftest_rec.c): the engine's calls land in a record in order,
    the same calls give equal records, a changed argument or a changed order is a fail of the right kind, and calls outside
    a recording are not kept. */
+#include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/nvn_selftest_rec.h"
 #include <stdio.h>
 
@@ -83,7 +84,37 @@ static void test_snapshot_and_idle(void) {
     CHECK(a.n_state == 12 && a.n_sync == 5);
 }
 
+static void dispatch_record(NvnStRec* r, const u32* q) {
+    nvn_st_renderer_begin(r, NULL);
+    nvn_st_renderer.dispatch(NULL, q, 0x1000);
+    nvn_st_renderer_end();
+}
+
+static void test_dispatch_arguments(void) {
+    static NvnStRec a, b;
+    NvnStDiff d;
+    u32 qa[KEPLER_COMPUTE_QMD_WORDS] = {0}, qb[KEPLER_COMPUTE_QMD_WORDS] = {0};
+    qa[QMD_GRID_DIM_X] = 4;
+    qb[QMD_GRID_DIM_X] = 4;
+    dispatch_record(&a, qa);
+    dispatch_record(&b, qb);
+    CHECK(nvn_st_compare(&a, &b, &d) == 0);
+    qb[QMD_GRID_DIM_X] = 5;
+    dispatch_record(&b, qb);
+    CHECK(nvn_st_compare(&a, &b, &d) == NVN_ST_S);
+    qb[QMD_GRID_DIM_X] = 4;
+    qb[QMD_BLOCK_DIM_YZ] = 8;
+    dispatch_record(&b, qb);
+    CHECK(nvn_st_compare(&a, &b, &d) == NVN_ST_S);
+    qb[QMD_BLOCK_DIM_YZ] = 0;
+    qb[QMD_CONST_BUFFER_ENABLE] = 1;
+    qb[QMD_CONST_BUFFER_CONFIG] = 0x1000;
+    dispatch_record(&b, qb);
+    CHECK(nvn_st_compare(&a, &b, &d) == NVN_ST_S);
+}
+
 int main(void) {
+    test_dispatch_arguments();
     test_same_script();
     test_changed_argument();
     test_changed_order();

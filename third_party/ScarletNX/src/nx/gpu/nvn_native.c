@@ -117,13 +117,15 @@ static void h_device_get_depth_mode(CPU* c, u64 entry) {
     pm_unlock(&objs_lock);
 }
 
-/* nvnDeviceGetInteger(device, what, int* out). A `what` that no run asked for gets 0 and one log line. */
+/* nvnDeviceGetInteger(device, what, int* out). A `what` that the library answers but no run asked for writes nothing. */
 static void h_device_get_integer(CPU* c, u64 entry) {
     (void)entry;
     u32 what = (u32)c->x[1];
-    int32_t value = 0;
-    if (!nvn_device_integer(what, &value))
-        LOG_LIMIT(32, "nvn-native: nvnDeviceGetInteger what=%u has no known value, answers 0\n", what);
+    int32_t value;
+    if (!nvn_device_integer(what, &value)) {
+        LOG_LIMIT(32, "nvn-native: nvnDeviceGetInteger what=%u has no known value, nothing written\n", what);
+        return;
+    }
     gw32(c->x[2], (u32)value);
 }
 /* nvnDeviceGetTimestampInNanoseconds(device, counter): the counter's tick count is at +8 */
@@ -297,11 +299,12 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
     NvnMemoryPoolBuilder b = *memory_pool_builder(c->x[1]);
     uint32_t flags;
     NvnPoolResult result = nvn_memory_pool_params(&b, NVN_POOL_PAGE_SIZE, &flags);
-    /* Replacing the record also discards state after a failed initialization. */
+    /* A failed initialization removes the record, so later calls find no pool. */
     NvnObj* o = nvn_objtab_put(&objs, c->x[0], NVN_OBJ_MEMORY_POOL, sizeof(MemoryPoolRec));
     if (!o) fatal("nvn-native: out of memory for the record of memory pool %llx\n", (unsigned long long)c->x[0]);
     if (result != NVN_POOL_OK) {
         pool_initialize_error(result, c->x[0], &b);
+        nvn_objtab_remove(&objs, c->x[0]);
         c->x[0] = 0;
         pm_unlock(&objs_lock);
         return;
@@ -310,6 +313,7 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
     if (!nvn_pool_gpu_allocate(pool_gpu_cursor, b.size, NVN_POOL_PAGE_SIZE, &address, &next)) {
         LOG("nvn-native: MemoryPoolInitialize pool=%llx size=%llx GPU address allocation failed\n",
             (unsigned long long)c->x[0], (unsigned long long)b.size);
+        nvn_objtab_remove(&objs, c->x[0]);
         c->x[0] = 0;
         pm_unlock(&objs_lock);
         return;
@@ -537,7 +541,11 @@ static void sampler_pool_register(CPU* c) {
         return;
     }
     uint32_t words[NVN_SAMPLER_DESCRIPTOR_WORDS];
-    nvn_sampler_descriptor(sampler, &nvn_sampler_device_words, words);
+    if (!nvn_sampler_descriptor(sampler, &nvn_sampler_device_words, words)) {
+        LOG("nvn-native: sampler registration unsupported wrap modes %u,%u,%u sampler=%llx\n", sampler->wrap[0],
+            sampler->wrap[1], sampler->wrap[2], (unsigned long long)c->x[2]);
+        return;
+    }
     for (unsigned i = 0; i < NVN_SAMPLER_DESCRIPTOR_WORDS; i++) gw32(at + i * sizeof(uint32_t), words[i]);
 }
 static void h_sampler_pool_register_sampler(CPU* c, u64 entry) {
@@ -649,6 +657,12 @@ static int texture_initialize(TextureRec* t, const NvnTextureBuilder* b) {
             (unsigned long long)b->pool, pool->flags);
         return 0;
     }
+    if (!nvn_pool_range_fits(pool->size, b->offset, t->layout.size)) {
+        LOG("nvn-native: texture initialization pool=%llx size=%llx: offset=%llx layout size=%llx does not fit\n",
+            (unsigned long long)b->pool, (unsigned long long)pool->size, (unsigned long long)b->offset,
+            (unsigned long long)t->layout.size);
+        return 0;
+    }
     t->address = pool->gpu_address + b->offset;
     if (nvn_trace_active())
         LOG("nvn-native: texture format=%x flags=%x target=%u width=%u height=%u levels=%u size=%llx\n",
@@ -661,7 +675,10 @@ static void h_texture_initialize(CPU* c, u64 entry) {
     NvnTextureBuilder b = *texture_builder(c->x[1]);
     TextureRec* t = rec_get(c->x[0], NVN_OBJ_TEXTURE, sizeof *t);
     memset(t, 0, sizeof *t);
-    c->x[0] = texture_initialize(t, &b);
+    u64 addr = c->x[0];
+    int ok = texture_initialize(t, &b);
+    if (!ok) nvn_objtab_remove(&objs, addr); /* later calls must not find a half-made texture */
+    c->x[0] = ok;
     pm_unlock(&objs_lock);
 }
 
@@ -752,11 +769,11 @@ static void h_window_acquire_texture(CPU* c, u64 entry) {
     pm_lock(&objs_lock);
     WindowRec* window = known_record(window_addr, NVN_OBJ_WINDOW);
     SyncRec* sync = known_record(sync_addr, NVN_OBJ_SYNC);
-    if (!window || !sync || !native_guest_readable(index_addr, sizeof(uint32_t))) {
-        const char* reason = !window ? "unknown window" : !sync ? "unknown sync" : "unreadable index";
+    if (!window || !sync || !native_guest_writable(index_addr, sizeof(uint32_t))) {
+        const char* reason = !window ? "unknown window" : !sync ? "unknown sync" : "unwritable index";
         LOG("nvn-native: nvnWindowAcquireTexture failed: %s (window=%llx sync=%llx index=%llx)\n",
             reason, (unsigned long long)window_addr, (unsigned long long)sync_addr, (unsigned long long)index_addr);
-        if (native_guest_readable(index_addr, sizeof(uint32_t))) gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
+        if (native_guest_writable(index_addr, sizeof(uint32_t))) gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
         c->x[0] = NVN_ACQUIRE_FAILED;
         pm_unlock(&objs_lock);
         return;
@@ -767,11 +784,11 @@ static void h_window_acquire_texture(CPU* c, u64 entry) {
     pm_lock(&objs_lock);
     window = known_record(window_addr, NVN_OBJ_WINDOW);
     sync = known_record(sync_addr, NVN_OBJ_SYNC);
-    if (!window || !sync || !native_guest_readable(index_addr, sizeof(uint32_t))) {
+    if (!window || !sync || !native_guest_writable(index_addr, sizeof(uint32_t))) {
         const char* reason = !window ? "window changed" : !sync ? "sync changed" : "index changed";
         LOG("nvn-native: nvnWindowAcquireTexture failed: %s (window=%llx sync=%llx index=%llx)\n",
             reason, (unsigned long long)window_addr, (unsigned long long)sync_addr, (unsigned long long)index_addr);
-        if (native_guest_readable(index_addr, sizeof(uint32_t))) gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
+        if (native_guest_writable(index_addr, sizeof(uint32_t))) gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
         c->x[0] = NVN_ACQUIRE_FAILED;
         pm_unlock(&objs_lock);
         return;
@@ -803,8 +820,11 @@ static void h_sync_wait(CPU* c, u64 entry) {
         pm_unlock(&objs_lock);
         return;
     }
-    /* 3c adds the waiting states; timeout is ignored here. */
-    c->x[0] = nvn_sync_wait_result(sync->state);
+    NvnSyncWaitResult result = nvn_sync_wait_result(sync->state);
+    if (result != NVN_SYNC_WAIT_SIGNALED) /* 3c adds the waiting states; until then the timeout is not used */
+        LOG_LIMIT(32, "nvn-native: nvnSyncWait sync=%llx state=%u timeout=%llx is not signaled, fails\n",
+                  (unsigned long long)c->x[0], (unsigned)sync->state, (unsigned long long)c->x[1]);
+    c->x[0] = result;
     pm_unlock(&objs_lock);
 }
 

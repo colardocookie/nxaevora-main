@@ -31,7 +31,9 @@ NvnWindowCrop nvn_window_crop(uint32_t x, uint32_t y, uint32_t width, uint32_t h
    these from device fields that it fills at DeviceInitialize. The host has no device object, so it uses the values that
    a run of the library showed (the "3b-2 Result" and "3b-3 Result" sections). */
 
-/* What nvnDeviceGetInteger answers for `what`. 0 when the host has no value for it (nothing in the run asked for it). */
+/* The library answers a `what` above this with 0 (the default of the switch at d831f68). Below it, a table gives the value. */
+#define NVN_DEVICE_INTEGER_LIMIT 0x62u
+/* What nvnDeviceGetInteger answers for `what`. 0 when the host has no value for it (the library has one, no run asked). */
 int nvn_device_integer(uint32_t what, int32_t* value);
 
 /* nvnDeviceGetTimestampInNanoseconds: the GPU ticks of a counter report as nanoseconds. Same integer steps as the
@@ -94,6 +96,8 @@ NvnPoolResult nvn_memory_pool_params(const NvnMemoryPoolBuilder* b, uint64_t pag
 /* Pure bump allocation: no address reuse. Outputs stay unchanged on failure. End is exclusive. */
 /* The byte offset of a descriptor inside its memory pool. Fails (0) when index is outside [0, count), or when the
    descriptor range [pool_offset, pool_offset + count * entry_bytes) does not fit in the memory pool. */
+/* 1 when [offset, offset + size) lies inside a memory pool of pool_size bytes, without overflow. */
+int nvn_pool_range_fits(uint64_t pool_size, uint64_t offset, uint64_t size);
 int nvn_descriptor_offset(uint64_t pool_offset, uint32_t count, uint64_t memory_size, uint32_t entry_bytes,
                           int32_t index, uint64_t* offset);
 int nvn_pool_gpu_allocate(uint64_t cursor, uint64_t size, uint64_t page_size,
@@ -125,9 +129,10 @@ typedef struct { uint32_t w1a80, w1a84; } NvnSamplerDeviceWords;
 extern const NvnSamplerDeviceWords nvn_sampler_device_words;
 void nvn_sampler_defaults(NvnSampler* s);
 float nvn_sampler_snap_bias(uint32_t index);
-/* A wrap enum is masked to 0..7 (the library reads its table unchecked). NaN anisotropy has no defined library result. */
-void nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* dev,
-                            uint32_t out[NVN_SAMPLER_DESCRIPTOR_WORDS]);
+/* 0 (out unchanged) when a wrap enum is above 7: the library reads its table unchecked. NaN anisotropy has no defined
+   library result. */
+int nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* dev,
+                           uint32_t out[NVN_SAMPLER_DESCRIPTOR_WORDS]);
 
 #define NVN_TEXTURE_FLAG_MINIMAL_TILE 0x2u
 #define NVN_TEXTURE_FLAG_COMPRESS 0x8u
@@ -144,9 +149,9 @@ void nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* de
 #define NVN_TEXTURE_TARGET_3D 2u
 #define NVN_TEXTURE_TARGET_1D_ARRAY 3u
 #define NVN_TEXTURE_TARGET_2D_ARRAY 4u
-#define NVN_TEXTURE_TARGET_RECTANGLE 5u
-#define NVN_TEXTURE_TARGET_2D_MS 6u
-#define NVN_TEXTURE_TARGET_2D_MS_ARRAY 7u
+#define NVN_TEXTURE_TARGET_2D_MS 5u
+#define NVN_TEXTURE_TARGET_2D_MS_ARRAY 6u
+#define NVN_TEXTURE_TARGET_RECTANGLE 7u
 #define NVN_TEXTURE_TARGET_CUBE 8u
 #define NVN_TEXTURE_TARGET_CUBE_ARRAY 9u
 #define NVN_TEXTURE_TARGET_BUFFER 10u
@@ -163,8 +168,8 @@ void nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* de
 #define NVN_TEXTURE_DEVICE_COLOR_COMPRESSION 0u
 #define NVN_TEXTURE_DEVICE_DEPTH_COMPRESSION 0u
 #define NVN_TEXTURE_DEVICE_BUFFER_KIND 0u
-/* Provisional: keep R true for flags 9 and format 0x25. The 40 archived size
-   queries need this non-zero value, although device initialization clears +0x1b1c. */
+/* Provisional: the 40 archived size queries need a non-zero value here. The only store found for +0x1b18 is a 4 byte
+   clear at d831c0c, which does not reach +0x1b1c. Its source is unknown: the selftest logs the byte of the game's device. */
 #define NVN_TEXTURE_DEVICE_COMPRESSION_ENABLE 1u
 #define NVN_TEXTURE_DEVICE_DIMENSION_LIMIT 0x4000u
 #define NVN_TEXTURE_DEVICE_SECTOR_LAYOUT 2u
@@ -222,8 +227,10 @@ typedef struct {
 typedef enum {
     NVN_TEXTURE_DESCRIPTOR_OK = 0,
     NVN_TEXTURE_DESCRIPTOR_BAD_FORMAT,
-    NVN_TEXTURE_DESCRIPTOR_BAD_TARGET
+    NVN_TEXTURE_DESCRIPTOR_BAD_TARGET,
+    NVN_TEXTURE_DESCRIPTOR_BAD_SWIZZLE
 } NvnTextureDescriptorResult;
+#define NVN_TEXTURE_SWIZZLE_MAX 5u /* ZERO, ONE, R, G, B, A */
 uint16_t nvn_texture_packaged_tile(uint32_t layout);
 /* The caller supplies the effective format record. Errors leave out unchanged. */
 NvnTextureDescriptorResult nvn_texture_descriptor(const NvnTexture* texture, const NvnTextureView* view,
