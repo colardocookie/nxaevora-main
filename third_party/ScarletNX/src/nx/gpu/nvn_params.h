@@ -250,4 +250,8 @@ NvnTextureDescriptorResult nvn_texture_descriptor(const NvnTexture* texture, con
     const NvnTextureDeviceWords* dev, const NvnTextureFormatRecord* format,
     uint32_t out[NVN_TEXTURE_DESCRIPTOR_WORDS]);
 
+/* Returns the Maxwell RT format word of an NVN format, or 0 when the format has none or is above NVN_TEXTURE_FORMAT_MAX.
+   A 0 result is a fault of the caller: log it and stop. */
+uint32_t nvn_rt_format_word(uint32_t format);
+
 #endif

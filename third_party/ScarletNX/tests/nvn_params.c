@@ -628,6 +628,25 @@ static void test_descriptor_offset(void) {
     CHECK(!nvn_descriptor_offset(0, UINT32_MAX, 0x1000, 32, 0, &offset));
 }
 
+static void test_rt_format_word(void) {
+    CHECK(nvn_rt_format_word(0) == 0);
+    CHECK(nvn_rt_format_word(0x01) == 0xf3);
+    CHECK(nvn_rt_format_word(0x02) == 0xf4);
+    CHECK(nvn_rt_format_word(0x25) == 0xd5);
+    CHECK(nvn_rt_format_word(0x29) == 0xca);
+    CHECK(nvn_rt_format_word(0x34) == 0x0a);
+    CHECK(nvn_rt_format_word(0x35) == 0x14);
+    CHECK(nvn_rt_format_word(0x6d) == 0xf9);
+    CHECK(nvn_rt_format_word(0x95) == 0xe8);
+    CHECK(nvn_rt_format_word(0x9c) == 0xd0);
+    CHECK(nvn_rt_format_word(0x19) == 0);
+    CHECK(nvn_rt_format_word(0x39) == 0);
+    CHECK(nvn_rt_format_word(0x98) == 0);
+    CHECK(nvn_rt_format_word(0xa0) == 0);
+    CHECK(nvn_rt_format_word(0xa1) == 0);
+    CHECK(nvn_rt_format_word(UINT32_MAX) == 0);
+}
+
 int main(int argc, char** argv) {
     test_window_params();
     test_window_sync_cycle_params();
@@ -649,6 +668,7 @@ int main(int argc, char** argv) {
     test_pool_range_fits();
     test_buffer_check();
     test_texture_layout_wide_size();
+    test_rt_format_word();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;
