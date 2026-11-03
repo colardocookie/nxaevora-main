@@ -594,6 +594,15 @@ static void test_pool_range_fits(void) {
     CHECK(!nvn_pool_range_fits(0x1000, 0x800, UINT64_MAX));
 }
 
+static void test_buffer_check(void) {
+    CHECK(nvn_buffer_check(0x21, 0x1000, 0, 0x1000) == NVN_BUFFER_OK);
+    CHECK(nvn_buffer_check(0x21, 0x1000, 0x800, 0) == NVN_BUFFER_OK);
+    CHECK(nvn_buffer_check(0x21, 0x1000, 0x800, 0x801) == NVN_BUFFER_OUT_OF_POOL);
+    CHECK(nvn_buffer_check(0x21, 0x1000, UINT64_MAX, 2) == NVN_BUFFER_OUT_OF_POOL);
+    CHECK(nvn_buffer_check(0x121, 0x1000, 0, 0x10) == NVN_BUFFER_PHYSICAL_POOL);
+    CHECK(nvn_buffer_check(0x121, 0x1000, 0, 0x2000) == NVN_BUFFER_PHYSICAL_POOL); /* the flag is tested first */
+}
+
 static void test_texture_layout_wide_size(void) {
     NvnTextureBuilder b;
     NvnTextureLayout l;
@@ -638,6 +647,7 @@ int main(int argc, char** argv) {
     test_pool_gpu_allocate();
     test_descriptor_offset();
     test_pool_range_fits();
+    test_buffer_check();
     test_texture_layout_wide_size();
     if (failures) {
         printf("%d failures\n", failures);

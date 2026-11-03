@@ -38,6 +38,12 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu);
 /* Points the pages of [gva, gva + size) at guest memory from cpu on, the renderer told (its mapping bracket): what
    nvhost-as-gpu's MapBufferEx does, and a test without the ioctls */
 void gmmu_map(u64 gva, u64 cpu, u64 size);
+/* The NVN host's pool mappings (docs/nvn-design.md, 3c decision 7). Map [gva, gva + size) to guest memory from cpu on,
+   all three page aligned and the range inside the 40-bit space. 1 when mapped. 0 and nothing changed when an argument
+   is not valid or when any page of the range is mapped already: the host owns the range it asks for. From any thread */
+int nvn_gpu_map_range(u64 gva, u64 cpu, u64 size);
+/* Clears what nvn_gpu_map_range(gva, cpu, size) mapped. A page that something mapped elsewhere since stays */
+void nvn_gpu_unmap_range(u64 gva, u64 cpu, u64 size);
 /* Each GPU range that shows guest bytes of [cpu, cpu + size), clipped to them: fn(ctx, gva, n) for the n bytes at
    gva, each mapped page once. The same guest memory is mapped at several GPU addresses, so what is known of it by one
    address holds at the others, and this finds them all from the guest side. From any thread. fn runs under the

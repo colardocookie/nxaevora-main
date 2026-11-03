@@ -145,6 +145,11 @@ int nvn_pool_range_fits(uint64_t pool_size, uint64_t offset, uint64_t size) {
     return offset <= pool_size && size <= pool_size - offset;
 }
 
+NvnBufferResult nvn_buffer_check(uint32_t pool_flags, uint64_t pool_size, uint64_t offset, uint64_t size) {
+    if (pool_flags & NVN_POOL_PHYSICAL) return NVN_BUFFER_PHYSICAL_POOL;
+    return nvn_pool_range_fits(pool_size, offset, size) ? NVN_BUFFER_OK : NVN_BUFFER_OUT_OF_POOL;
+}
+
 int nvn_descriptor_offset(uint64_t pool_offset, uint32_t count, uint64_t memory_size, uint32_t entry_bytes,
                           int32_t index, uint64_t* offset) {
     if (index < 0 || (uint32_t)index >= count || pool_offset > memory_size) return 0;

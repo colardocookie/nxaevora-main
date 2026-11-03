@@ -12,6 +12,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/rtapi.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -236,7 +237,8 @@ static void h_queue_initialize(CPU* c, u64 entry) {
     c->x[0] = 1;
 }
 
-/* G2 and G5: pool state stays in host records. GPU page-table mapping is not connected yet. */
+/* G2 and G5: pool state stays in host records. A pool maps its storage at its GPU address from Initialize to
+   Finalize (nvn_gpu_map_range), so the renderer reads the pool by GPU address. */
 typedef struct {
     uint64_t device, storage, size, gpu_address;
     uint32_t flags;
@@ -315,6 +317,15 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
         pm_unlock(&objs_lock);
         return;
     }
+    if (!nvn_gpu_map_range(address, b.storage, b.size)) {
+        LOG("nvn-native: MemoryPoolInitialize pool=%llx GPU range %llx size=%llx storage=%llx cannot be mapped\n",
+            (unsigned long long)c->x[0], (unsigned long long)address, (unsigned long long)b.size,
+            (unsigned long long)b.storage);
+        nvn_objtab_remove(&objs, c->x[0]);
+        c->x[0] = 0;
+        pm_unlock(&objs_lock);
+        return;
+    }
     MemoryPoolRec* p = o->data;
     *p = (MemoryPoolRec){.device = b.device, .storage = b.storage, .size = b.size,
                          .gpu_address = address, .flags = flags};
@@ -327,7 +338,11 @@ static void h_memory_pool_finalize(CPU* c, u64 entry) {
     (void)entry;
     pm_lock(&objs_lock);
     NvnObj* o = nvn_objtab_find(&objs, c->x[0]);
-    if (o && o->kind == NVN_OBJ_MEMORY_POOL) nvn_objtab_remove(&objs, c->x[0]);
+    if (o && o->kind == NVN_OBJ_MEMORY_POOL) {
+        const MemoryPoolRec* p = o->data;
+        nvn_gpu_unmap_range(p->gpu_address, p->storage, p->size);
+        nvn_objtab_remove(&objs, c->x[0]);
+    }
     pm_unlock(&objs_lock);
 }
 #define MEMORY_POOL_GETTER(name, expression)                                        \
@@ -360,6 +375,131 @@ MEMORY_POOL_GETTER(get_buffer_address, p->gpu_address)
     }
 DESCRIPTOR_POOL_HANDLERS(texture, NVN_OBJ_TEXTURE_POOL)
 DESCRIPTOR_POOL_HANDLERS(sampler, NVN_OBJ_SAMPLER_POOL)
+
+/* Buffers (G7, decision 1 of the 3c design): a buffer holds its pool (address and generation), offset and size. */
+typedef struct { uint64_t device, pool, offset, size; } BufferBuilderRec;
+typedef struct { uint64_t pool, offset, size; uint32_t pool_generation; } BufferRec;
+#define BUFFER_LOSS_LOG_LIMIT 8u /* a buffer used after its pool or itself ended is a game fault: log the first calls */
+static uint32_t buffer_losses;
+
+static BufferBuilderRec* buffer_builder(u64 addr) {
+    return rec_get(addr, NVN_OBJ_BUFFER_BUILDER, sizeof(BufferBuilderRec));
+}
+static void buffer_lost(const char* operation, u64 buffer) {
+    if (buffer_losses++ < BUFFER_LOSS_LOG_LIMIT)
+        LOG("nvn-native: %s buffer=%llx has no record or its pool ended, returns 0\n", operation,
+            (unsigned long long)buffer);
+}
+/* the pool of the buffer at addr, with the buffer in *out; NULL (and a log line) when either is gone */
+static MemoryPoolRec* buffer_pool(u64 addr, const char* operation, const BufferRec** out) {
+    const BufferRec* b = known_record(addr, NVN_OBJ_BUFFER);
+    NvnObj* o = b ? nvn_objtab_find(&objs, b->pool) : NULL;
+    if (!o || o->kind != NVN_OBJ_MEMORY_POOL || o->generation != b->pool_generation) {
+        buffer_lost(operation, addr);
+        return NULL;
+    }
+    *out = b;
+    return o->data;
+}
+static void h_buffer_builder_set_device(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    buffer_builder(c->x[0])->device = c->x[1];
+    pm_unlock(&objs_lock);
+}
+static void h_buffer_builder_set_defaults(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    BufferBuilderRec* b = buffer_builder(c->x[0]);
+    b->pool = b->offset = b->size = 0; /* the device stays, as in the library */
+    pm_unlock(&objs_lock);
+}
+static void h_buffer_builder_set_storage(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    BufferBuilderRec* b = buffer_builder(c->x[0]);
+    b->pool = c->x[1];
+    b->offset = c->x[2];
+    b->size = c->x[3];
+    pm_unlock(&objs_lock);
+}
+static void h_buffer_builder_get_size(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = buffer_builder(c->x[0])->size;
+    pm_unlock(&objs_lock);
+}
+static int buffer_initialize(BufferRec* r, const BufferBuilderRec* b) {
+    NvnObj* o = nvn_objtab_find(&objs, b->pool);
+    if (!o || o->kind != NVN_OBJ_MEMORY_POOL) {
+        LOG("nvn-native: buffer initialization %s pool=%llx\n", b->pool ? "unknown" : "null",
+            (unsigned long long)b->pool);
+        return 0;
+    }
+    const MemoryPoolRec* pool = o->data;
+    NvnBufferResult check = nvn_buffer_check(pool->flags, pool->size, b->offset, b->size);
+    if (check == NVN_BUFFER_PHYSICAL_POOL) {
+        LOG("nvn-native: buffer initialization physical pool=%llx flags=%x\n", (unsigned long long)b->pool,
+            pool->flags);
+        return 0;
+    }
+    if (check == NVN_BUFFER_OUT_OF_POOL) {
+        LOG("nvn-native: buffer initialization pool=%llx size=%llx: offset=%llx size=%llx does not fit\n",
+            (unsigned long long)b->pool, (unsigned long long)pool->size, (unsigned long long)b->offset,
+            (unsigned long long)b->size);
+        return 0;
+    }
+    *r = (BufferRec){.pool = b->pool, .offset = b->offset, .size = b->size, .pool_generation = o->generation};
+    return 1;
+}
+static void h_buffer_initialize(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    BufferBuilderRec b = *buffer_builder(c->x[1]);
+    u64 addr = c->x[0];
+    BufferRec* r = rec_get(addr, NVN_OBJ_BUFFER, sizeof *r);
+    memset(r, 0, sizeof *r);
+    int ok = buffer_initialize(r, &b);
+    if (!ok) nvn_objtab_remove(&objs, addr); /* later calls must not find a half-made buffer */
+    c->x[0] = ok;
+    pm_unlock(&objs_lock);
+}
+static void h_buffer_finalize(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    NvnObj* o = nvn_objtab_find(&objs, c->x[0]);
+    if (o && o->kind == NVN_OBJ_BUFFER) nvn_objtab_remove(&objs, c->x[0]);
+    pm_unlock(&objs_lock);
+}
+static void h_buffer_map(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const BufferRec* b = NULL;
+    const MemoryPoolRec* pool = buffer_pool(c->x[0], "BufferMap", &b);
+    u64 base = pool ? nvn_memory_pool_map(pool->flags, pool->storage) : 0;
+    c->x[0] = base ? base + b->offset : 0; /* 0 for a pool without CPU access, as in the library */
+    pm_unlock(&objs_lock);
+}
+static void h_buffer_get_address(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const BufferRec* b = NULL;
+    const MemoryPoolRec* pool = buffer_pool(c->x[0], "BufferGetAddress", &b);
+    c->x[0] = pool ? pool->gpu_address + b->offset : 0;
+    pm_unlock(&objs_lock);
+}
+static void h_buffer_get_size(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const BufferRec* b = known_record(c->x[0], NVN_OBJ_BUFFER);
+    if (!b) buffer_lost("BufferGetSize", c->x[0]);
+    c->x[0] = b ? b->size : 0;
+    pm_unlock(&objs_lock);
+}
+static void h_buffer_set_debug_label(CPU* c, u64 entry) {
+    (void)c;
+    (void)entry; /* the library stores no label */
+}
 
 /* G3 and G5: the sampler and texture records are independent of the guest allocation sizes. */
 typedef NvnTexture TextureRec;
@@ -929,6 +1069,16 @@ static const NativeProc native_procs[] = {
     {"nvnTextureGetHeight", h_texture_get_height},
     {"nvnTextureGetStride", h_texture_get_stride},
     {"nvnTexturePoolRegisterTexture", h_texture_pool_register_texture},
+    {"nvnBufferBuilderSetDevice", h_buffer_builder_set_device},
+    {"nvnBufferBuilderSetDefaults", h_buffer_builder_set_defaults},
+    {"nvnBufferBuilderSetStorage", h_buffer_builder_set_storage},
+    {"nvnBufferBuilderGetSize", h_buffer_builder_get_size},
+    {"nvnBufferInitialize", h_buffer_initialize},
+    {"nvnBufferFinalize", h_buffer_finalize},
+    {"nvnBufferMap", h_buffer_map},
+    {"nvnBufferGetAddress", h_buffer_get_address},
+    {"nvnBufferGetSize", h_buffer_get_size},
+    {"nvnBufferSetDebugLabel", h_buffer_set_debug_label},
     {NULL, NULL},
 };
 

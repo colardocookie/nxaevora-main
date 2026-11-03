@@ -434,6 +434,29 @@ static void gmmu_unmap(u64 gva, u64 size, int own, u64 cpu) {
     grun_change(first, last, 0, own, cpu);
     gmmu_change_end(gva, size);
 }
+/* 1 when a run of the page table shows a page of [g0, g1) */
+static int grun_overlaps(u64 g0, u64 g1) {
+    pm_lock(&g_host.nvdrv.alias_lock);
+    u32 k = grun_find(g0);
+    int hit = k < g_hle.nvdrv.ngruns && g_hle.nvdrv.gruns[k].gpage < g1;
+    pm_unlock(&g_host.nvdrv.alias_lock);
+    return hit;
+}
+static int nvn_range_valid(u64 gva, u64 cpu, u64 size) {
+    if (!size || ((gva | cpu | size) & GMMU_PAGE_MASK)) return 0;
+    if (gva >= 1ull << GMMU_ADDRESS_SPACE_BITS || size > (1ull << GMMU_ADDRESS_SPACE_BITS) - gva) return 0;
+    return cpu + size > cpu;
+}
+int nvn_gpu_map_range(u64 gva, u64 cpu, u64 size) {
+    if (!nvn_range_valid(gva, cpu, size)) return 0;
+    if (grun_overlaps(gva >> GMMU_PAGE_BITS, (gva + size) >> GMMU_PAGE_BITS)) return 0;
+    gmmu_map(gva, cpu, size);
+    return 1;
+}
+void nvn_gpu_unmap_range(u64 gva, u64 cpu, u64 size) {
+    if (!nvn_range_valid(gva, cpu, size)) return;
+    gmmu_unmap(gva, size, 1, cpu);
+}
 /* A GPU mapping of a handle's memory pins it, as the console's nvmap does: the handle object lives until the mapping
    goes, even when FREE has given back the game's reference, and FREE reports no memory meanwhile. A pin is one piece
    of a mapping, since a split keeps a piece of its own; every pin's piece unpins it in turn */

@@ -725,6 +725,28 @@ static void test_gmmu_freed(void) {
     CHECK(gmmu_run(g, ~0ull, &cpu) == 0x4000);
     gmmu_unmap(g, 0x4000, 0, 0);
 }
+/* the NVN host's pool mappings: refused on a bad argument or an overlap, and the unmap keeps a page mapped over it */
+static void test_nvn_gpu_range(void) {
+    const u64 g = 0x7300000000ull, c = 0xB0000000ull;
+    u64 cpu = 0;
+    CHECK(nvn_gpu_map_range(g, c, 0x4000));
+    CHECK(gmmu_translate(g + 0x3FFF) == c + 0x3FFF && !gmmu_translate(g + 0x4000));
+    CHECK(!nvn_gpu_map_range(g + 0x3000, 0xC0000000ull, 0x2000)); /* the last page overlaps */
+    CHECK(!nvn_gpu_map_range(g - 0x1000, 0xC0000000ull, 0x2000)); /* the first page overlaps */
+    CHECK(!nvn_gpu_map_range(g, 0xC0000000ull, 0x1000) && gmmu_translate(g) == c);
+    CHECK(nvn_gpu_map_range(g + 0x4000, c + 0x4000, 0x1000)); /* the next page is free: one run, then two */
+    CHECK(!nvn_gpu_map_range(g + 0x10000, c, 0) && !nvn_gpu_map_range(g + 0x10001, c, 0x1000));
+    CHECK(!nvn_gpu_map_range(g + 0x10000, c + 1, 0x1000) && !nvn_gpu_map_range(g + 0x10000, c, 0x1001));
+    CHECK(!nvn_gpu_map_range(1ull << 40, c, 0x1000) && !nvn_gpu_map_range((1ull << 40) - 0x1000, c, 0x2000));
+    CHECK(!nvn_gpu_map_range(g + 0x10000, ~0ull & ~GMMU_PAGE_MASK, 0x1000));
+    gmmu_map(g + 0x1000, 0xD0000000ull, 0x1000); /* something maps over the second page */
+    nvn_gpu_unmap_range(g, c, 0x4000);
+    CHECK(!gmmu_translate(g) && gmmu_translate(g + 0x1000) == 0xD0000000ull && !gmmu_translate(g + 0x2000));
+    CHECK(gmmu_run(g + 0x4000, ~0ull, &cpu) == 0x1000 && cpu == c + 0x4000); /* the other range is untouched */
+    nvn_gpu_unmap_range(g + 0x1000, 0xD0000000ull, 0x1000);
+    nvn_gpu_unmap_range(g + 0x4000, c + 0x4000, 0x1000);
+    CHECK(!gmmu_translate(g + 0x1000) && !gmmu_translate(g + 0x4000));
+}
 /* gmmu_run against gmmu_translate page by page: runs longer than an entry's count, across a table's end, broken by a
    page mapped elsewhere, and what an own unmap keeps */
 static u64 run_by_pages(u64 gva, u64 max, u64* cpu) {
@@ -957,6 +979,7 @@ int main(void) {
     test_nvmap_as();
     test_gmmu_freed();
     test_gmmu_runs();
+    test_nvn_gpu_range();
     test_gmmu_aliases();
     nvdrv = new_nvdrv();
     u32 error;

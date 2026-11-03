@@ -98,6 +98,10 @@ NvnPoolResult nvn_memory_pool_params(const NvnMemoryPoolBuilder* b, uint64_t pag
    descriptor range [pool_offset, pool_offset + count * entry_bytes) does not fit in the memory pool. */
 /* 1 when [offset, offset + size) lies inside a memory pool of pool_size bytes, without overflow. */
 int nvn_pool_range_fits(uint64_t pool_size, uint64_t offset, uint64_t size);
+typedef enum { NVN_BUFFER_OK = 0, NVN_BUFFER_PHYSICAL_POOL, NVN_BUFFER_OUT_OF_POOL } NvnBufferResult;
+/* The library fails BufferInitialize only for a physical pool (flag 0x100). The range check is the host's: the library
+   has none, and the replay reads the buffer's bytes from the pool. */
+NvnBufferResult nvn_buffer_check(uint32_t pool_flags, uint64_t pool_size, uint64_t offset, uint64_t size);
 int nvn_descriptor_offset(uint64_t pool_offset, uint32_t count, uint64_t memory_size, uint32_t entry_bytes,
                           int32_t index, uint64_t* offset);
 int nvn_pool_gpu_allocate(uint64_t cursor, uint64_t size, uint64_t page_size,
