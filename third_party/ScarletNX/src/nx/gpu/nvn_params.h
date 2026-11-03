@@ -177,8 +177,8 @@ int nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* dev
 #define NVN_TEXTURE_DEVICE_COLOR_COMPRESSION 0u
 #define NVN_TEXTURE_DEVICE_DEPTH_COMPRESSION 0u
 #define NVN_TEXTURE_DEVICE_BUFFER_KIND 0u
-/* Provisional: the 40 archived size queries need a non-zero value here. The only store found for +0x1b18 is a 4 byte
-   clear at d831c0c, which does not reach +0x1b1c. Its source is unknown: the selftest logs the byte of the game's device. */
+/* The game's device holds 1 at +0x1b1c (selftest run, 2026-11-03), and the 24 size cases match with it. The store that
+   sets it is not found: the value is from one run. */
 #define NVN_TEXTURE_DEVICE_COMPRESSION_ENABLE 1u
 #define NVN_TEXTURE_DEVICE_DIMENSION_LIMIT 0x4000u
 #define NVN_TEXTURE_DEVICE_SECTOR_LAYOUT 2u
