@@ -770,6 +770,10 @@ add_executable(snx-test-nvn-cmdlist nvn_cmdlist.c "${PROJECT_SOURCE_DIR}/src/nx/
 snx_test_target(snx-test-nvn-cmdlist 11)
 add_test(NAME nvn_cmdlist COMMAND snx-test-nvn-cmdlist)
 
+add_executable(snx-test-nvn-frame nvn_frame.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_frame.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_cmdlist.c")
+snx_test_target(snx-test-nvn-frame 11)
+add_test(NAME nvn_frame COMMAND snx-test-nvn-frame)
+
 add_executable(snx-test-nvn-replay nvn_replay.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_replay.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_cmdlist.c")
 snx_test_target(snx-test-nvn-replay 11)
 add_test(NAME nvn_replay COMMAND snx-test-nvn-replay)

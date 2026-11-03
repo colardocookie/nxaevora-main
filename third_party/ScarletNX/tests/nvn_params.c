@@ -23,6 +23,8 @@ static void test_window_sync_cycle_params(void) {
     const uint8_t free4[] = {NVN_IMAGE_FREE, NVN_IMAGE_FREE, NVN_IMAGE_FREE, NVN_IMAGE_FREE};
     const uint8_t acquired4[] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED};
     const uint8_t mixed[] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_FREE, NVN_IMAGE_ACQUIRED, NVN_IMAGE_FREE};
+    const uint8_t presented2[] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_PRESENTED};
+    const uint8_t presented4[] = {NVN_IMAGE_PRESENTED, NVN_IMAGE_PRESENTED, NVN_IMAGE_PRESENTED, NVN_IMAGE_PRESENTED};
     CHECK(nvn_window_pick_image(free1, 1, -1) == 0);
     CHECK(nvn_window_pick_image(free1, 1, 0) == 0);
     CHECK(nvn_window_pick_image(free2, 2, -1) == 0);
@@ -37,8 +39,12 @@ static void test_window_sync_cycle_params(void) {
     CHECK(nvn_window_pick_image(mixed, 4, 3) == 1);
     CHECK(nvn_window_pick_image(free1, 0, -1) == -1);
     CHECK(nvn_window_pick_image(free4, 5, -1) == -1);
+    CHECK(nvn_window_pick_image(presented2, 2, -1) == -1);
+    CHECK(nvn_window_pick_image(presented2, 2, 0) == -1);
+    CHECK(nvn_window_pick_image(presented4, 4, -1) == -1);
     CHECK(nvn_sync_wait_result(NVN_SYNC_SIGNALED) == NVN_SYNC_WAIT_SIGNALED);
     CHECK(nvn_sync_wait_result(NVN_SYNC_UNSIGNALED) == NVN_SYNC_WAIT_FAILED);
+    CHECK(nvn_sync_wait_result(NVN_SYNC_FENCED) == NVN_SYNC_WAIT_FAILED);
 }
 
 static void test_window_params(void) {

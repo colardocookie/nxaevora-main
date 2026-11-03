@@ -30,6 +30,8 @@ int32_t nvn_window_pick_image(const uint8_t* states, uint32_t count, int32_t las
     return NVN_WINDOW_NO_IMAGE;
 }
 NvnSyncWaitResult nvn_sync_wait_result(NvnSyncState state) {
+    /* FENCED is signaled by its frame job, which step 2e adds. Until then a wait on it cannot be
+       satisfied. */
     return state == NVN_SYNC_SIGNALED ? NVN_SYNC_WAIT_SIGNALED : NVN_SYNC_WAIT_FAILED;
 }
 NvnWindowCrop nvn_window_crop(uint32_t x, uint32_t y, uint32_t width, uint32_t height,

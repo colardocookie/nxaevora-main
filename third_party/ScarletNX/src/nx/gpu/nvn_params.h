@@ -7,7 +7,7 @@
 #define NVN_WINDOW_MAX_TEXTURES 4u
 #define NVN_WINDOW_NO_IMAGE (-1)
 #define NVN_WINDOW_INVALID_INDEX UINT32_MAX
-typedef enum { NVN_IMAGE_FREE = 0, NVN_IMAGE_ACQUIRED = 1 } NvnImageState;
+typedef enum { NVN_IMAGE_FREE = 0, NVN_IMAGE_ACQUIRED = 1, NVN_IMAGE_PRESENTED = 2 } NvnImageState;
 typedef enum { NVN_SYNC_WAIT_SIGNALED = 0, NVN_SYNC_WAIT_SATISFIED = 1,
                NVN_SYNC_WAIT_TIMEOUT = 2, NVN_SYNC_WAIT_FAILED = 3 } NvnSyncWaitResult;
 typedef struct {
@@ -15,7 +15,9 @@ typedef struct {
     uint32_t texture_count, interval;
 } NvnWindowBuilder;
 typedef struct { uint32_t x, y, width, height; } NvnWindowCrop;
-typedef enum { NVN_SYNC_UNSIGNALED = 0, NVN_SYNC_SIGNALED = 1 } NvnSyncState;
+typedef enum { NVN_SYNC_UNSIGNALED = 0, NVN_SYNC_SIGNALED = 1, NVN_SYNC_FENCED = 2 } NvnSyncState;
+/* nvnQueueFenceSync condition: the only value that the game used. A frame job signals the sync after all its work. */
+#define NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE 0u
 void nvn_window_builder_defaults(NvnWindowBuilder* b);
 void nvn_window_builder_set_device(NvnWindowBuilder* b, uint64_t device);
 void nvn_window_builder_set_native_window(NvnWindowBuilder* b, uint64_t native_window);
