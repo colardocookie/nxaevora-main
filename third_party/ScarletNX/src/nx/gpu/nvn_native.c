@@ -1064,6 +1064,45 @@ static void h_texture_view_get_layers(CPU* c, u64 entry) {
     }
     pm_unlock(&objs_lock);
 }
+static void h_texture_view_get_format(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnTextureViewGetFormat";
+    pm_lock(&objs_lock);
+    const NvnTextureView* v = NULL;
+    if (texture_view_getter(c, name, 1, &v)) {
+        gw32(c->x[1], v->format);
+        c->x[0] = (v->flags & NVN_VIEW_FORMAT) != 0;
+    } else {
+        c->x[0] = 0;
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_texture_view_get_swizzle(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnTextureViewGetSwizzle";
+    pm_lock(&objs_lock);
+    const NvnTextureView* v = NULL;
+    if (texture_view_getter(c, name, 4, &v)) {
+        for (unsigned i = 0; i < 4; i++) gw32(c->x[1 + i], v->swizzle[i]);
+        c->x[0] = (v->flags & NVN_VIEW_SWIZZLE) != 0;
+    } else {
+        c->x[0] = 0;
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_texture_view_get_depth_stencil_mode(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnTextureViewGetDepthStencilMode";
+    pm_lock(&objs_lock);
+    const NvnTextureView* v = NULL;
+    if (texture_view_getter(c, name, 1, &v)) {
+        gw32(c->x[1], v->depth_stencil_mode);
+        c->x[0] = (v->flags & NVN_VIEW_DEPTH_STENCIL_MODE) != 0;
+    } else {
+        c->x[0] = 0;
+    }
+    pm_unlock(&objs_lock);
+}
 static void h_texture_view_get_target(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnTextureViewGetTarget";
@@ -3166,6 +3205,9 @@ static const NativeProc native_procs[] = {
     {"nvnTextureViewGetLevels", h_texture_view_get_levels},
     {"nvnTextureViewGetLayers", h_texture_view_get_layers},
     {"nvnTextureViewGetTarget", h_texture_view_get_target},
+    {"nvnTextureViewGetFormat", h_texture_view_get_format},
+    {"nvnTextureViewGetSwizzle", h_texture_view_get_swizzle},
+    {"nvnTextureViewGetDepthStencilMode", h_texture_view_get_depth_stencil_mode},
     {"nvnTextureGetWidth", h_texture_get_width},
     {"nvnTextureGetHeight", h_texture_get_height},
     {"nvnTextureGetStride", h_texture_get_stride},
