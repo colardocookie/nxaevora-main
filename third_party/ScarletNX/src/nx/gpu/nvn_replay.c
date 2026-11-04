@@ -260,6 +260,41 @@ static int replay_bind_state(const NvnReplayEnv* env, NvnReplayStats* stats, con
     return 1;
 }
 
+static int replay_draw(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpDraw* op) {
+    if (!env->draw || !env->draw(env->ctx, op)) {
+        replay_fault(env, stats, "draw", op->kind);
+        return 0;
+    }
+    return 1;
+}
+
+static int replay_dispatch(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpDispatch* op) {
+    if (!env->dispatch || !env->dispatch(env->ctx, op)) {
+        replay_fault(env, stats, "dispatch", op->x);
+        return 0;
+    }
+    return 1;
+}
+
+static int replay_bind_program(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpBindProgram* op) {
+    if (!env->bind_program || !env->bind_program(env->ctx, op)) {
+        replay_fault(env, stats, "bind program", op->stage_mask);
+        return 0;
+    }
+    return 1;
+}
+
+static int replay_raster(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpRaster* op) {
+    NvnRasterMethod methods[NVN_RASTER_METHODS_MAX];
+    uint32_t count = 0;
+    if (!nvn_raster_methods((NvnRasterKind)op->which, op->w, methods, &count)) {
+        replay_fault(env, stats, "raster kind", op->which);
+        return 0;
+    }
+    for (uint32_t i = 0; i < count; i++) replay_method(env, stats, methods[i].method, methods[i].value);
+    return 1;
+}
+
 static int replay_render_targets(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpRenderTargets* op) {
     if (!env->render_targets(env->ctx, op)) {
         replay_fault(env, stats, "render targets", op->count);
@@ -359,6 +394,34 @@ static void replay_op(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnO
             return;
         }
         ok = replay_bind_state(env, stats, payload);
+        break;
+    case NVN_OP_DRAW:
+        if (!payload_matches(header, sizeof(NvnOpDraw))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_draw(env, stats, payload);
+        break;
+    case NVN_OP_DISPATCH:
+        if (!payload_matches(header, sizeof(NvnOpDispatch))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_dispatch(env, stats, payload);
+        break;
+    case NVN_OP_BIND_PROGRAM:
+        if (!payload_matches(header, sizeof(NvnOpBindProgram))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_bind_program(env, stats, payload);
+        break;
+    case NVN_OP_SET_RASTER:
+        if (!payload_matches(header, sizeof(NvnOpRaster))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_raster(env, stats, payload);
         break;
     case NVN_OP_CALL:
         if (!payload_matches(header, sizeof(NvnOpCall))) {

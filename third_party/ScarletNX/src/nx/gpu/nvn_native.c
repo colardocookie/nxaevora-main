@@ -1692,6 +1692,159 @@ static void h_channel_mask_state_get_channel_mask(CPU* c, u64 entry) {
     for (uint32_t i = 0; i < 4; i++) *GP(c->x[2 + i]) = out[i];
     pm_unlock(&objs_lock);
 }
+static void h_color_state_get_logic_op(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const uint32_t* w = state_words(c->x[0], NVN_STATE_COLOR);
+    c->x[0] = nvn_color_state_get_logic_op(w[0]);
+    pm_unlock(&objs_lock);
+}
+static void h_depth_stencil_state_get_stencil_test_enable(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const uint32_t* w = state_words(c->x[0], NVN_STATE_DEPTH_STENCIL);
+    c->x[0] = nvn_depth_stencil_state_get_stencil_test_enable(w[0]);
+    pm_unlock(&objs_lock);
+}
+static void h_depth_stencil_state_get_stencil_func(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const uint32_t* w = state_words(c->x[0], NVN_STATE_DEPTH_STENCIL);
+    c->x[0] = nvn_depth_stencil_state_get_stencil_func(w[1], (u32)c->x[1]);
+    pm_unlock(&objs_lock);
+}
+static void h_polygon_state_get_polygon_mode(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const uint32_t* w = state_words(c->x[0], NVN_STATE_POLYGON);
+    c->x[0] = nvn_polygon_state_get_polygon_mode(w[0]);
+    pm_unlock(&objs_lock);
+}
+static void h_blend_state_get_blend_equation(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnBlendStateGetBlendEquation";
+    pm_lock(&objs_lock);
+    if (!native_guest_writable(c->x[1], sizeof(uint32_t)) || !native_guest_writable(c->x[2], sizeof(uint32_t))) {
+        LOG("nvn-native: %s unwritable output\n", name);
+        pm_unlock(&objs_lock);
+        return;
+    }
+    const uint32_t* w = state_words(c->x[0], NVN_STATE_BLEND);
+    uint32_t rgb = 0, alpha = 0;
+    nvn_blend_state_get_blend_equation(w[0], &rgb, &alpha);
+    gw32(c->x[1], rgb);
+    gw32(c->x[2], alpha);
+    pm_unlock(&objs_lock);
+}
+
+/* G4: draw, dispatch, program bind and the rest of the raster setters. A draw and a dispatch are recorded, not
+   executed: the pipeline stage reads the table later. */
+static void command_draw(CommandBufferRec* cb, u64 addr, const char* operation, const NvnOpDraw* op) {
+    command_record(cb, addr, operation, NVN_OP_DRAW, op, sizeof *op);
+}
+static void h_command_buffer_draw_arrays(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferDrawArrays";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpDraw op = {.kind = NVN_DRAW_ARRAYS, .mode = (u32)c->x[1], .first = (u32)c->x[2],
+                    .count = (u32)c->x[3], .instances = 1};
+    if (cb) command_draw(cb, c->x[0], name, &op);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_draw_arrays_instanced(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferDrawArraysInstanced";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpDraw op = {.kind = NVN_DRAW_ARRAYS_INSTANCED, .mode = (u32)c->x[1], .first = (u32)c->x[2],
+                    .count = (u32)c->x[3], .base_instance = (u32)c->x[4], .instances = (u32)c->x[5]};
+    if (cb) command_draw(cb, c->x[0], name, &op);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_draw_elements(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferDrawElements";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpDraw op = {.kind = NVN_DRAW_ELEMENTS, .mode = (u32)c->x[1], .type = (u32)c->x[2],
+                    .count = (u32)c->x[3], .address = c->x[4], .instances = 1};
+    if (cb) command_draw(cb, c->x[0], name, &op);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_draw_elements_base_vertex(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferDrawElementsBaseVertex";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpDraw op = {.kind = NVN_DRAW_ELEMENTS_BASE_VERTEX, .mode = (u32)c->x[1], .type = (u32)c->x[2],
+                    .count = (u32)c->x[3], .address = c->x[4], .base_vertex = (u32)c->x[5], .instances = 1};
+    if (cb) command_draw(cb, c->x[0], name, &op);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_draw_elements_instanced(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferDrawElementsInstanced";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpDraw op = {.kind = NVN_DRAW_ELEMENTS_INSTANCED, .mode = (u32)c->x[1], .type = (u32)c->x[2],
+                    .count = (u32)c->x[3], .address = c->x[4], .base_vertex = (u32)c->x[5],
+                    .base_instance = (u32)c->x[6], .instances = (u32)c->x[7]};
+    if (cb) command_draw(cb, c->x[0], name, &op);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_dispatch_compute(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferDispatchCompute";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpDispatch op = {(u32)c->x[1], (u32)c->x[2], (u32)c->x[3], 0};
+    if (cb) command_record(cb, c->x[0], name, NVN_OP_DISPATCH, &op, sizeof op);
+    pm_unlock(&objs_lock);
+}
+/* The library does nothing for a null program or an empty stage mask. */
+static void h_command_buffer_bind_program(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferBindProgram";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpBindProgram op = {c->x[1], (u32)c->x[2], 0};
+    if (cb && op.program && op.stage_mask) {
+        if (op.stage_mask > NVN_PROGRAM_STAGE_MASK_ALL)
+            command_dropped(cb, name, "unknown stage bits", op.stage_mask);
+        else if (!known_record(op.program, NVN_OBJ_PROGRAM))
+            command_dropped(cb, name, "unknown program", op.program);
+        else
+            command_record(cb, c->x[0], name, NVN_OP_BIND_PROGRAM, &op, sizeof op);
+    }
+    pm_unlock(&objs_lock);
+}
+/* The words are raw: an enable word as given and a float as its 32-bit bits. The replay maps them to methods. */
+static void command_raster(CommandBufferRec* cb, u64 addr, const char* operation, NvnRasterKind which,
+                           uint32_t w0, uint32_t w1, uint32_t w2) {
+    NvnOpRaster op = {(uint32_t)which, {w0, w1, w2}};
+    command_record(cb, addr, operation, NVN_OP_SET_RASTER, &op, sizeof op);
+}
+#define COMMAND_RASTER_HANDLER(name, operation, which, w0, w1, w2)                    \
+    static void h_command_buffer_##name(CPU* c, u64 entry) {                           \
+        (void)entry;                                                                   \
+        pm_lock(&objs_lock);                                                           \
+        CommandBufferRec* cb = command_buffer(c->x[0], operation);                     \
+        if (cb) command_raster(cb, c->x[0], operation, which, (w0), (w1), (w2));       \
+        pm_unlock(&objs_lock);                                                         \
+    }
+COMMAND_RASTER_HANDLER(set_depth_bounds, "nvnCommandBufferSetDepthBounds", NVN_RASTER_DEPTH_BOUNDS,
+                       (u32)c->x[1], SNX_VS(c->v[0], 0), SNX_VS(c->v[1], 0))
+COMMAND_RASTER_HANDLER(set_rasterizer_discard, "nvnCommandBufferSetRasterizerDiscard", NVN_RASTER_DISCARD,
+                       (u32)c->x[1], 0, 0)
+COMMAND_RASTER_HANDLER(set_polygon_offset_clamp, "nvnCommandBufferSetPolygonOffsetClamp",
+                       NVN_RASTER_POLYGON_OFFSET_CLAMP, SNX_VS(c->v[0], 0), SNX_VS(c->v[1], 0),
+                       SNX_VS(c->v[2], 0))
+COMMAND_RASTER_HANDLER(set_depth_clamp, "nvnCommandBufferSetDepthClamp", NVN_RASTER_DEPTH_CLAMP,
+                       (u32)c->x[1], 0, 0)
+COMMAND_RASTER_HANDLER(set_line_width, "nvnCommandBufferSetLineWidth", NVN_RASTER_LINE_WIDTH,
+                       SNX_VS(c->v[0], 0), 0, 0)
+#undef COMMAND_RASTER_HANDLER
 
 static void h_command_buffer_clear_color(CPU* c, u64 entry) {
     (void)entry;
@@ -1847,6 +2000,39 @@ static int replay_host_bind_state(void* ctx, const NvnOpBindState* op) {
     state->bound = 1;
     return 1;
 }
+/* The replay thread writes these without a lock. The first draw and the first dispatch of the run get one log line. */
+static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
+    NvnNativeReplayHost* host = ctx;
+    if (op->kind >= (uint32_t)NVN_DRAW_KIND_COUNT) return 0;
+    host->draws[op->kind]++;
+    host->last_draw = *op;
+    static int logged; /* only the replay thread runs the frame jobs */
+    if (!logged) {
+        logged = 1;
+        LOG("nvn-native: draw recorded, not executed (stage 4)\n");
+    }
+    return 1;
+}
+static int replay_host_dispatch(void* ctx, const NvnOpDispatch* op) {
+    NvnNativeReplayHost* host = ctx;
+    host->dispatches++;
+    host->last_dispatch[0] = op->x;
+    host->last_dispatch[1] = op->y;
+    host->last_dispatch[2] = op->z;
+    static int logged; /* only the replay thread runs the frame jobs */
+    if (!logged) {
+        logged = 1;
+        LOG("nvn-native: dispatch recorded, not executed (stage 4)\n");
+    }
+    return 1;
+}
+static int replay_host_bind_program(void* ctx, const NvnOpBindProgram* op) {
+    NvnNativeReplayHost* host = ctx;
+    if (op->stage_mask > NVN_PROGRAM_STAGE_MASK_ALL) return 0;
+    for (uint32_t stage = 0; stage < NVN_PROGRAM_STAGE_COUNT; stage++)
+        if (op->stage_mask & (1u << stage)) host->program[stage] = op->program;
+    return 1;
+}
 static int replay_host_descriptor_pool(void* ctx, NvnOpCode op, const NvnOpPool* pool, uint64_t* gpu_base, uint32_t* count) {
     (void)ctx;
     NvnObjKind kind = op == NVN_OP_SET_TEXTURE_POOL ? NVN_OBJ_TEXTURE_POOL : NVN_OBJ_SAMPLER_POOL;
@@ -1965,8 +2151,9 @@ void nvn_native_replay_env(NvnNativeReplayHost* host, int window_origin_flip, Nv
     *env = (NvnReplayEnv){.ctx = host, .method = replay_host_method, .read_register = replay_host_read_register,
                           .find_list = replay_host_find_list, .descriptor_pool = replay_host_descriptor_pool,
                           .bind_texture = replay_host_bind_texture, .bind_buffer = replay_host_bind_buffer,
-                          .bind_state = replay_host_bind_state, .render_targets = replay_host_render_targets,
-                          .fault = replay_host_fault,
+                          .bind_state = replay_host_bind_state, .draw = replay_host_draw,
+                          .dispatch = replay_host_dispatch, .bind_program = replay_host_bind_program,
+                          .render_targets = replay_host_render_targets, .fault = replay_host_fault,
                           .window_origin_flip = window_origin_flip};
 }
 
@@ -2281,14 +2468,16 @@ static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int sho
         if (abnormal)
             LOG_LIMIT(NVN_FRAME_ABNORMAL_LIMIT,
                       "nvn-native: frame %u window=%llx index=%u lists=%u (live %u) ops=%u faults=%u methods=%u "
-                      "dropped=%u missing=%u skipped_lists=%u acquires=%u fences=%u shown=%d\n",
+                      "draws=%u dispatches=%u dropped=%u missing=%u skipped_lists=%u acquires=%u fences=%u shown=%d\n",
                       frame_number, (unsigned long long)job->window, job->index, submitted, live, ops, stats->faults,
-                      stats->methods, dropped_delta, missing_delta, skipped, acquires, fences, shown);
+                      stats->methods, stats->replayed[NVN_OP_DRAW], stats->replayed[NVN_OP_DISPATCH], dropped_delta,
+                      missing_delta, skipped, acquires, fences, shown);
         else
-            LOG("nvn-native: frame %u window=%llx index=%u lists=%u (live %u) ops=%u faults=%u methods=%u dropped=%u "
-                "missing=%u skipped_lists=%u acquires=%u fences=%u shown=%d\n",
+            LOG("nvn-native: frame %u window=%llx index=%u lists=%u (live %u) ops=%u faults=%u methods=%u draws=%u "
+                "dispatches=%u dropped=%u missing=%u skipped_lists=%u acquires=%u fences=%u shown=%d\n",
                 frame_number, (unsigned long long)job->window, job->index, submitted, live, ops, stats->faults,
-                stats->methods, dropped_delta, missing_delta, skipped, acquires, fences, shown);
+                stats->methods, stats->replayed[NVN_OP_DRAW], stats->replayed[NVN_OP_DISPATCH], dropped_delta,
+                missing_delta, skipped, acquires, fences, shown);
     }
 }
 /* Runs on the GPU thread: it frees the job that Present made. */
@@ -2582,6 +2771,13 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferBindStorageBuffers", h_command_buffer_bind_storage_buffers},
     {"nvnCommandBufferBindVertexBuffers", h_command_buffer_bind_vertex_buffers},
     {"nvnCommandBufferBindTransformFeedbackBuffers", h_command_buffer_bind_transform_feedback_buffers},
+    {"nvnCommandBufferDrawArrays", h_command_buffer_draw_arrays},
+    {"nvnCommandBufferDrawArraysInstanced", h_command_buffer_draw_arrays_instanced},
+    {"nvnCommandBufferDrawElements", h_command_buffer_draw_elements},
+    {"nvnCommandBufferDrawElementsBaseVertex", h_command_buffer_draw_elements_base_vertex},
+    {"nvnCommandBufferDrawElementsInstanced", h_command_buffer_draw_elements_instanced},
+    {"nvnCommandBufferDispatchCompute", h_command_buffer_dispatch_compute},
+    {"nvnCommandBufferBindProgram", h_command_buffer_bind_program},
     {"nvnCommandBufferBindColorState", h_command_buffer_bind_color_state},
     {"nvnCommandBufferBindDepthStencilState", h_command_buffer_bind_depth_stencil_state},
     {"nvnCommandBufferBindBlendState", h_command_buffer_bind_blend_state},
@@ -2594,6 +2790,7 @@ static const NativeProc native_procs[] = {
     {"nvnBlendStateSetBlendEquation", h_blend_state_set_blend_equation},
     {"nvnBlendStateGetBlendTarget", h_blend_state_get_blend_target},
     {"nvnBlendStateGetBlendFunc", h_blend_state_get_blend_func},
+    {"nvnBlendStateGetBlendEquation", h_blend_state_get_blend_equation},
     {"nvnChannelMaskStateSetDefaults", h_channel_mask_state_set_defaults},
     {"nvnChannelMaskStateSetChannelMask", h_channel_mask_state_set_channel_mask},
     {"nvnChannelMaskStateGetChannelMask", h_channel_mask_state_get_channel_mask},
@@ -2603,6 +2800,7 @@ static const NativeProc native_procs[] = {
     {"nvnColorStateSetAlphaTest", h_color_state_set_alpha_test},
     {"nvnColorStateGetBlendEnable", h_color_state_get_blend_enable},
     {"nvnColorStateGetAlphaTest", h_color_state_get_alpha_test},
+    {"nvnColorStateGetLogicOp", h_color_state_get_logic_op},
     {"nvnDepthStencilStateSetDefaults", h_depth_stencil_state_set_defaults},
     {"nvnDepthStencilStateSetDepthTestEnable", h_depth_stencil_state_set_depth_test_enable},
     {"nvnDepthStencilStateSetDepthWriteEnable", h_depth_stencil_state_set_depth_write_enable},
@@ -2613,6 +2811,8 @@ static const NativeProc native_procs[] = {
     {"nvnDepthStencilStateGetDepthTestEnable", h_depth_stencil_state_get_depth_test_enable},
     {"nvnDepthStencilStateGetDepthWriteEnable", h_depth_stencil_state_get_depth_write_enable},
     {"nvnDepthStencilStateGetDepthFunc", h_depth_stencil_state_get_depth_func},
+    {"nvnDepthStencilStateGetStencilTestEnable", h_depth_stencil_state_get_stencil_test_enable},
+    {"nvnDepthStencilStateGetStencilFunc", h_depth_stencil_state_get_stencil_func},
     {"nvnMultisampleStateSetDefaults", h_multisample_state_set_defaults},
     {"nvnMultisampleStateSetMultisampleEnable", h_multisample_state_set_multisample_enable},
     {"nvnMultisampleStateSetAlphaToCoverageEnable", h_multisample_state_set_alpha_to_coverage_enable},
@@ -2639,6 +2839,7 @@ static const NativeProc native_procs[] = {
     {"nvnPolygonStateSetPolygonOffsetEnables", h_polygon_state_set_polygon_offset_enables},
     {"nvnPolygonStateGetCullFace", h_polygon_state_get_cull_face},
     {"nvnPolygonStateGetFrontFace", h_polygon_state_get_front_face},
+    {"nvnPolygonStateGetPolygonMode", h_polygon_state_get_polygon_mode},
     {"nvnCommandBufferSetRenderTargets", h_command_buffer_set_render_targets},
     {"nvnCommandBufferSetViewports", h_command_buffer_set_viewports},
     {"nvnCommandBufferSetScissors", h_command_buffer_set_scissors},
@@ -2649,6 +2850,11 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferSetStencilMask", h_command_buffer_set_stencil_mask},
     {"nvnCommandBufferSetBlendColor", h_command_buffer_set_blend_color},
     {"nvnCommandBufferSetAlphaRef", h_command_buffer_set_alpha_ref},
+    {"nvnCommandBufferSetDepthBounds", h_command_buffer_set_depth_bounds},
+    {"nvnCommandBufferSetRasterizerDiscard", h_command_buffer_set_rasterizer_discard},
+    {"nvnCommandBufferSetPolygonOffsetClamp", h_command_buffer_set_polygon_offset_clamp},
+    {"nvnCommandBufferSetDepthClamp", h_command_buffer_set_depth_clamp},
+    {"nvnCommandBufferSetLineWidth", h_command_buffer_set_line_width},
     {NULL, NULL},
 };
 

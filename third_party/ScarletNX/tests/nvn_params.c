@@ -850,6 +850,87 @@ static void test_state_getters(void) {
     CHECK(nvn_polygon_state_get_front_face(0xFFFFFFFFu) == 1);
 }
 
+static void test_state_getters_extra(void) {
+    uint32_t rgb = 0xFFFFu, alpha = 0xFFFFu;
+    CHECK(nvn_color_state_get_logic_op(0x08030000u) == 3u);
+    CHECK(nvn_color_state_get_logic_op(0x00AB0000u) == 0xABu);
+    CHECK(nvn_color_state_get_logic_op(0xFFFFFFFFu) == 0xFFu);
+
+    CHECK(nvn_depth_stencil_state_get_stencil_test_enable(0x00000022u) == 0u);
+    CHECK(nvn_depth_stencil_state_get_stencil_test_enable(0x00000004u) == 1u);
+    CHECK(nvn_depth_stencil_state_get_stencil_test_enable(0xFFFFFFFFu) == 1u);
+
+    CHECK(nvn_depth_stencil_state_get_stencil_func(0x11180118u, 0) == 8u);
+    CHECK(nvn_depth_stencil_state_get_stencil_func(0x11180118u, 1) == 8u);
+    CHECK(nvn_depth_stencil_state_get_stencil_func(0x11180118u, 2) == 8u);
+    CHECK(nvn_depth_stencil_state_get_stencil_func(0x1234ABCDu, 0) == 0xDu);
+    CHECK(nvn_depth_stencil_state_get_stencil_func(0x1234ABCDu, 2) == 0x4u);
+    CHECK(nvn_depth_stencil_state_get_stencil_func(0x1234ABCDu, 3) == 0xDu);
+    CHECK(nvn_depth_stencil_state_get_stencil_func(0xFFFFFFFFu, 2) == 0xFu);
+
+    CHECK(nvn_polygon_state_get_polygon_mode(0x14u) == 2u);
+    CHECK(nvn_polygon_state_get_polygon_mode(0x08u) == 1u);
+    CHECK(nvn_polygon_state_get_polygon_mode(0xFFFFFFFFu) == 3u);
+
+    nvn_blend_state_get_blend_equation(0x110C0000u, &rgb, &alpha);
+    CHECK(rgb == 1u && alpha == 1u);
+    nvn_blend_state_get_blend_equation(0x28000000u, &rgb, &alpha);
+    CHECK(rgb == 0u && alpha == 2u);
+    nvn_blend_state_get_blend_equation(0xFFFFFFFFu, &rgb, &alpha);
+    CHECK(rgb == 7u && alpha == 7u);
+    alpha = 0;
+    nvn_blend_state_get_blend_equation(0xFFFFFFFFu, NULL, &alpha);
+    CHECK(alpha == 7u);
+    rgb = 0;
+    nvn_blend_state_get_blend_equation(0xFFFFFFFFu, &rgb, NULL);
+    CHECK(rgb == 7u);
+}
+
+static void test_raster_methods(void) {
+    NvnRasterMethod out[NVN_RASTER_METHODS_MAX];
+    uint32_t count = 0;
+    CHECK(nvn_raster_methods(NVN_RASTER_DEPTH_BOUNDS, (const uint32_t[3]){1u, 0x3F000000u, 0x3F800000u}, out,
+                             &count));
+    CHECK(count == 3u);
+    CHECK(out[0].method == NVN_RASTER_METHOD_DEPTH_BOUNDS && out[0].value == 1u);
+    CHECK(out[1].method == NVN_RASTER_METHOD_DEPTH_BOUNDS_MIN && out[1].value == 0x3F000000u);
+    CHECK(out[2].method == NVN_RASTER_METHOD_DEPTH_BOUNDS_MAX && out[2].value == 0x3F800000u);
+    CHECK(nvn_raster_methods(NVN_RASTER_DEPTH_BOUNDS, (const uint32_t[3]){0x100u, 1u, 2u}, out, &count));
+    CHECK(count == 1u && out[0].method == 0x66Fu && out[0].value == 0u);
+
+    CHECK(nvn_raster_methods(NVN_RASTER_DISCARD, (const uint32_t[3]){0u, 0u, 0u}, out, &count));
+    CHECK(count == 1u && out[0].method == 0x0DFu && out[0].value == 1u);
+    CHECK(nvn_raster_methods(NVN_RASTER_DISCARD, (const uint32_t[3]){1u, 0u, 0u}, out, &count));
+    CHECK(count == 1u && out[0].value == 0u);
+
+    CHECK(nvn_raster_methods(NVN_RASTER_POLYGON_OFFSET_CLAMP,
+                             (const uint32_t[3]){0xABCDu, 0x3FC00000u, 0x61F00000u}, out, &count));
+    CHECK(count == 3u);
+    CHECK(out[0].method == 0x55Bu && out[0].value == 0xABCDu);
+    CHECK(out[1].method == 0x56Fu && out[1].value == 0x40400000u); /* 1.5 + 1.5 = 3.0 */
+    CHECK(out[2].method == 0x61Fu && out[2].value == 0x61F00000u);
+    uint32_t nan_pattern = 0x7FC00001u;
+    CHECK(nvn_raster_methods(NVN_RASTER_POLYGON_OFFSET_CLAMP, (const uint32_t[3]){0u, nan_pattern, 0u}, out,
+                             &count));
+    float doubled;
+    memcpy(&doubled, &out[1].value, sizeof doubled);
+    CHECK(isnan(doubled));
+
+    CHECK(nvn_raster_methods(NVN_RASTER_DEPTH_CLAMP, (const uint32_t[3]){1u, 0u, 0u}, out, &count));
+    CHECK(count == 1u && out[0].method == 0x64Fu && out[0].value == 0x101Au);
+    CHECK(nvn_raster_methods(NVN_RASTER_DEPTH_CLAMP, (const uint32_t[3]){0u, 0u, 0u}, out, &count));
+    CHECK(count == 1u && out[0].value == 0x181Du);
+
+    CHECK(nvn_raster_methods(NVN_RASTER_LINE_WIDTH, (const uint32_t[3]){0x40000000u, 0u, 0u}, out, &count));
+    CHECK(count == 2u);
+    CHECK(out[0].method == 0x4ECu && out[0].value == 0x40000000u);
+    CHECK(out[1].method == 0x4EDu && out[1].value == 0x40000000u);
+
+    count = 77;
+    CHECK(!nvn_raster_methods(NVN_RASTER_KIND_COUNT, (const uint32_t[3]){0u, 0u, 0u}, out, &count));
+    CHECK(count == 77u);
+}
+
 static void test_program_header_stage(void) {
     uint32_t index = 99;
     CHECK(nvn_program_header_stage(1, 5, 0x120, 0xb, 0, &index) && index == 0);
@@ -899,6 +980,8 @@ int main(int argc, char** argv) {
     test_state_setters();
     test_state_defaults();
     test_state_getters();
+    test_state_getters_extra();
+    test_raster_methods();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

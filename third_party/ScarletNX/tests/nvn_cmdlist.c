@@ -97,6 +97,44 @@ static void test_bind_state(void) {
     nvn_oplist_free(&l);
 }
 
+static void test_draw_path_ops(void) {
+    CHECK(NVN_OP_DRAW > NVN_OP_BIND_STATE && NVN_OP_SET_RASTER < NVN_OP_COUNT);
+    NvnOpList l = {0};
+    NvnOpDraw draw = {NVN_DRAW_ELEMENTS_INSTANCED, 4, 1, 36, 0x400001000ull, 0, 7, 2, 3};
+    NvnOpDispatch dispatch = {8, 4, 2, 0};
+    NvnOpBindProgram program = {0x400002000ull, 0x21u, 0};
+    NvnOpRaster raster = {NVN_RASTER_LINE_WIDTH, {0x40000000u, 0, 0}};
+    CHECK(nvn_oplist_append(&l, NVN_OP_DRAW, &draw, sizeof draw));
+    CHECK(nvn_oplist_append(&l, NVN_OP_DISPATCH, &dispatch, sizeof dispatch));
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_PROGRAM, &program, sizeof program));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_RASTER, &raster, sizeof raster));
+    CHECK(l.ops == 4);
+
+    size_t pos = 0;
+    NvnOpHeader h;
+    const void* p;
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_DRAW && h.bytes == 40u);
+    const NvnOpDraw* got_draw = p;
+    CHECK(got_draw->kind == NVN_DRAW_ELEMENTS_INSTANCED && got_draw->mode == 4 && got_draw->type == 1);
+    CHECK(got_draw->count == 36 && got_draw->address == 0x400001000ull);
+    CHECK(got_draw->first == 0 && got_draw->base_vertex == 7);
+    CHECK(got_draw->base_instance == 2 && got_draw->instances == 3);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_DISPATCH && h.bytes == 16u);
+    const NvnOpDispatch* got_dispatch = p;
+    CHECK(got_dispatch->x == 8 && got_dispatch->y == 4 && got_dispatch->z == 2 && got_dispatch->reserved == 0);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_BIND_PROGRAM && h.bytes == 16u);
+    const NvnOpBindProgram* got_program = p;
+    CHECK(got_program->program == 0x400002000ull && got_program->stage_mask == 0x21u);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_SET_RASTER && h.bytes == 16u);
+    const NvnOpRaster* got_raster = p;
+    CHECK(got_raster->which == NVN_RASTER_LINE_WIDTH && got_raster->w[0] == 0x40000000u && got_raster->w[2] == 0);
+    CHECK(!nvn_oplist_next(&l, &pos, &h, &p));
+    nvn_oplist_free(&l);
+}
+
 static void test_growth(void) {
     NvnOpList l = {0};
     for (uint32_t i = 0; i < 5000; i++) {
@@ -235,6 +273,7 @@ int main(void) {
     test_bind_texture();
     test_bind_buffer();
     test_bind_state();
+    test_draw_path_ops();
     test_growth();
     test_handles();
     test_find_pointer_stable();

@@ -54,6 +54,49 @@ uint64_t nvn_image_handle(uint32_t image_index);
 typedef enum { NVN_BIND_UNIFORM = 0, NVN_BIND_STORAGE, NVN_BIND_VERTEX, NVN_BIND_TRANSFORM_FEEDBACK } NvnBindKind;
 int nvn_bind_buffer_active(NvnBindKind kind, uint64_t addr, uint64_t size);
 
+/* The kinds of the draw op. The order is the kind word. The library copies the arguments unchanged. */
+typedef enum {
+    NVN_DRAW_ARRAYS = 0,
+    NVN_DRAW_ARRAYS_INSTANCED,
+    NVN_DRAW_ELEMENTS,
+    NVN_DRAW_ELEMENTS_BASE_VERTEX,
+    NVN_DRAW_ELEMENTS_INSTANCED,
+    NVN_DRAW_KIND_COUNT
+} NvnDrawKind;
+
+/* The kinds of the raster op. The order is the kind word. */
+typedef enum {
+    NVN_RASTER_DEPTH_BOUNDS = 0,
+    NVN_RASTER_DISCARD,
+    NVN_RASTER_POLYGON_OFFSET_CLAMP,
+    NVN_RASTER_DEPTH_CLAMP,
+    NVN_RASTER_LINE_WIDTH,
+    NVN_RASTER_KIND_COUNT
+} NvnRasterKind;
+
+/* The Maxwell methods that a raster op writes (analyst-g4-draw-1.md). */
+#define NVN_RASTER_METHOD_DEPTH_BOUNDS         0x66Fu
+#define NVN_RASTER_METHOD_DEPTH_BOUNDS_MIN     0x3E7u
+#define NVN_RASTER_METHOD_DEPTH_BOUNDS_MAX     0x3E8u
+#define NVN_RASTER_METHOD_DISCARD              0x0DFu
+#define NVN_RASTER_METHOD_POLYGON_OFFSET       0x55Bu
+#define NVN_RASTER_METHOD_POLYGON_OFFSET_UNITS 0x56Fu
+#define NVN_RASTER_METHOD_POLYGON_OFFSET_CLAMP 0x61Fu
+#define NVN_RASTER_METHOD_DEPTH_CLAMP          0x64Fu
+#define NVN_RASTER_METHOD_LINE_WIDTH           0x4ECu
+#define NVN_RASTER_METHOD_LINE_WIDTH_ALIAS     0x4EDu
+#define NVN_RASTER_DEPTH_CLAMP_NEAR            0x101Au
+#define NVN_RASTER_DEPTH_CLAMP_FAR             0x181Du
+#define NVN_RASTER_METHODS_MAX 3u
+
+/* One method and value pair of a raster op. */
+typedef struct { uint32_t method, value; } NvnRasterMethod;
+
+/* The pairs that the library writes for a raster op, in order. 0 for a kind the library does not write
+   (out and count unchanged). Pure. */
+int nvn_raster_methods(NvnRasterKind which, const uint32_t w[3], NvnRasterMethod out[NVN_RASTER_METHODS_MAX],
+                       uint32_t* count);
+
 /* The six state objects of a command buffer. The order is the kind word of the bind state op. */
 typedef enum {
     NVN_STATE_COLOR = 0,
@@ -106,6 +149,11 @@ uint32_t nvn_multisample_state_get_coverage_to_color_enable(uint32_t word);
 uint32_t nvn_multisample_state_get_coverage_to_color_output(uint32_t word);
 uint32_t nvn_polygon_state_get_cull_face(uint32_t word);
 uint32_t nvn_polygon_state_get_front_face(uint32_t word);
+uint32_t nvn_color_state_get_logic_op(uint32_t word);
+uint32_t nvn_depth_stencil_state_get_stencil_test_enable(uint32_t word);
+uint32_t nvn_depth_stencil_state_get_stencil_func(uint32_t word, uint32_t face);
+uint32_t nvn_polygon_state_get_polygon_mode(uint32_t word);
+void nvn_blend_state_get_blend_equation(uint32_t word, uint32_t* rgb, uint32_t* alpha);
 
 /* The device words that nvnQueueBuilderGetQueueMemorySize reads (offsets in the names). */
 typedef struct {
@@ -339,6 +387,8 @@ NvnSyncState nvn_sync_after_token(NvnSyncState state, uint32_t* fences);
 
 /* The pipeline stages of a program: 0 vertex, 1 fragment (the only two the game uses), 2 to 5 accepted by the library. */
 #define NVN_PROGRAM_STAGES 6u
+#define NVN_PROGRAM_STAGE_COUNT 6u    /* the bound program array of a frame job, bit t is stage t (bit 5 compute) */
+#define NVN_PROGRAM_STAGE_MASK_ALL 0x3Fu /* bits 0 to 5: the only stage bits that the library accepts */
 /* Header +8 is the layout version (5 to 16), not the stage. The stage index is the u32 at header +0x714 (sdk d837228). */
 #define NVN_PROGRAM_LAYOUT_FIRST 5u
 #define NVN_PROGRAM_LAYOUT_LAST 16u

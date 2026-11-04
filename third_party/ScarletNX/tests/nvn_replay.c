@@ -46,6 +46,15 @@ typedef struct {
     int bind_state_ok;
     uint32_t bind_state_calls;
     NvnOpBindState bind_state_op;
+    int draw_ok;
+    uint32_t draw_calls;
+    NvnOpDraw draw_op;
+    int dispatch_ok;
+    uint32_t dispatch_calls;
+    NvnOpDispatch dispatch_op;
+    int bind_program_ok;
+    uint32_t bind_program_calls;
+    NvnOpBindProgram bind_program_op;
     uint32_t fault_count;
     const char* last_fault;
     uint64_t last_fault_value;
@@ -112,6 +121,27 @@ static int mock_bind_state(void* ctx, const NvnOpBindState* op) {
     return k->bind_state_ok;
 }
 
+static int mock_draw(void* ctx, const NvnOpDraw* op) {
+    Mock* k = ctx;
+    k->draw_calls++;
+    k->draw_op = *op;
+    return k->draw_ok;
+}
+
+static int mock_dispatch(void* ctx, const NvnOpDispatch* op) {
+    Mock* k = ctx;
+    k->dispatch_calls++;
+    k->dispatch_op = *op;
+    return k->dispatch_ok;
+}
+
+static int mock_bind_program(void* ctx, const NvnOpBindProgram* op) {
+    Mock* k = ctx;
+    k->bind_program_calls++;
+    k->bind_program_op = *op;
+    return k->bind_program_ok;
+}
+
 static void mock_fault(void* ctx, const char* what, uint64_t value) {
     Mock* k = ctx;
     k->fault_count++;
@@ -130,6 +160,9 @@ static NvnReplayEnv make_env(Mock* k) {
     env.bind_texture = mock_bind_texture;
     env.bind_buffer = mock_bind_buffer;
     env.bind_state = mock_bind_state;
+    env.draw = mock_draw;
+    env.dispatch = mock_dispatch;
+    env.bind_program = mock_bind_program;
     env.render_targets = mock_render_targets;
     env.fault = mock_fault;
     return env;
@@ -651,6 +684,178 @@ static void test_alpha_ref(void) {
     nvn_oplist_free(&l);
 }
 
+static void test_draw(void) {
+    for (uint32_t kind = 0; kind < (uint32_t)NVN_DRAW_KIND_COUNT; kind++) {
+        Mock k = {0};
+        NvnReplayEnv env = make_env(&k);
+        NvnOpList l = {0};
+        NvnReplayStats st = {0};
+        NvnOpDraw op = {kind, 4u, 1u, 36u, 0x400001000ull, 2u, 7u, 3u, 5u};
+        k.draw_ok = 1;
+        CHECK(nvn_oplist_append(&l, NVN_OP_DRAW, &op, sizeof op));
+        nvn_replay_list(&env, &l, &st);
+        CHECK(k.draw_calls == 1 && k.draw_op.kind == kind && k.draw_op.mode == 4u);
+        CHECK(k.draw_op.type == 1u && k.draw_op.count == 36u && k.draw_op.address == 0x400001000ull);
+        CHECK(k.draw_op.first == 2u && k.draw_op.base_vertex == 7u);
+        CHECK(k.draw_op.base_instance == 3u && k.draw_op.instances == 5u);
+        CHECK(st.replayed[NVN_OP_DRAW] == 1 && st.methods == 0 && st.faults == 0);
+        nvn_oplist_free(&l);
+    }
+
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpDraw op = {NVN_DRAW_ARRAYS, 4u, 0u, 3u, 0u, 1u, 0u, 0u, 1u};
+    k.draw_ok = 0;
+    CHECK(nvn_oplist_append(&l, NVN_OP_DRAW, &op, sizeof op));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 1 && k.draw_calls == 1 && st.replayed[NVN_OP_DRAW] == 0);
+    CHECK(k.last_fault && !strcmp(k.last_fault, "draw") && k.last_fault_value == NVN_DRAW_ARRAYS);
+    nvn_oplist_free(&l);
+
+    Mock kn = {0};
+    NvnReplayEnv envn = make_env(&kn);
+    NvnOpList ln = {0};
+    NvnReplayStats stn = {0};
+    envn.draw = NULL;
+    CHECK(nvn_oplist_append(&ln, NVN_OP_DRAW, &op, sizeof op));
+    nvn_replay_list(&envn, &ln, &stn);
+    CHECK(stn.faults == 1 && stn.replayed[NVN_OP_DRAW] == 0);
+    nvn_oplist_free(&ln);
+}
+
+static void test_dispatch(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpDispatch op = {8u, 4u, 2u, 0u};
+    k.dispatch_ok = 1;
+    CHECK(nvn_oplist_append(&l, NVN_OP_DISPATCH, &op, sizeof op));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.dispatch_calls == 1 && k.dispatch_op.x == 8u && k.dispatch_op.y == 4u);
+    CHECK(k.dispatch_op.z == 2u && st.replayed[NVN_OP_DISPATCH] == 1 && st.faults == 0);
+    nvn_oplist_free(&l);
+
+    Mock kr = {0};
+    NvnReplayEnv envr = make_env(&kr);
+    NvnOpList lr = {0};
+    NvnReplayStats str = {0};
+    kr.dispatch_ok = 0;
+    CHECK(nvn_oplist_append(&lr, NVN_OP_DISPATCH, &op, sizeof op));
+    nvn_replay_list(&envr, &lr, &str);
+    CHECK(str.faults == 1 && kr.dispatch_calls == 1 && str.replayed[NVN_OP_DISPATCH] == 0);
+    CHECK(kr.last_fault && !strcmp(kr.last_fault, "dispatch") && kr.last_fault_value == 8u);
+    nvn_oplist_free(&lr);
+
+    Mock kn = {0};
+    NvnReplayEnv envn = make_env(&kn);
+    NvnOpList ln = {0};
+    NvnReplayStats stn = {0};
+    envn.dispatch = NULL;
+    CHECK(nvn_oplist_append(&ln, NVN_OP_DISPATCH, &op, sizeof op));
+    nvn_replay_list(&envn, &ln, &stn);
+    CHECK(stn.faults == 1 && stn.replayed[NVN_OP_DISPATCH] == 0);
+    nvn_oplist_free(&ln);
+}
+
+static void test_bind_program(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpBindProgram op = {0x400002000ull, 0x21u, 0u};
+    k.bind_program_ok = 1;
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_PROGRAM, &op, sizeof op));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.bind_program_calls == 1 && k.bind_program_op.program == 0x400002000ull);
+    CHECK(k.bind_program_op.stage_mask == 0x21u && st.replayed[NVN_OP_BIND_PROGRAM] == 1 && st.faults == 0);
+    nvn_oplist_free(&l);
+
+    Mock kr = {0};
+    NvnReplayEnv envr = make_env(&kr);
+    NvnOpList lr = {0};
+    NvnReplayStats str = {0};
+    kr.bind_program_ok = 0;
+    CHECK(nvn_oplist_append(&lr, NVN_OP_BIND_PROGRAM, &op, sizeof op));
+    nvn_replay_list(&envr, &lr, &str);
+    CHECK(str.faults == 1 && kr.bind_program_calls == 1 && str.replayed[NVN_OP_BIND_PROGRAM] == 0);
+    CHECK(kr.last_fault && !strcmp(kr.last_fault, "bind program") && kr.last_fault_value == 0x21u);
+    nvn_oplist_free(&lr);
+
+    Mock kn = {0};
+    NvnReplayEnv envn = make_env(&kn);
+    NvnOpList ln = {0};
+    NvnReplayStats stn = {0};
+    envn.bind_program = NULL;
+    CHECK(nvn_oplist_append(&ln, NVN_OP_BIND_PROGRAM, &op, sizeof op));
+    nvn_replay_list(&envn, &ln, &stn);
+    CHECK(stn.faults == 1 && stn.replayed[NVN_OP_BIND_PROGRAM] == 0);
+    nvn_oplist_free(&ln);
+}
+
+static void test_draw_path_bad_payload(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    uint8_t small[8] = {0};
+    CHECK(nvn_oplist_append(&l, NVN_OP_DRAW, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_DISPATCH, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_PROGRAM, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_RASTER, small, sizeof small));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 4 && k.last_fault && !strcmp(k.last_fault, "op size"));
+    CHECK(k.last_fault_value == NVN_OP_SET_RASTER && st.methods == 0);
+    CHECK(st.replayed[NVN_OP_DRAW] == 0 && st.replayed[NVN_OP_DISPATCH] == 0);
+    CHECK(st.replayed[NVN_OP_BIND_PROGRAM] == 0 && st.replayed[NVN_OP_SET_RASTER] == 0);
+    nvn_oplist_free(&l);
+}
+
+static void test_raster_methods(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpRaster depth = {NVN_RASTER_DEPTH_BOUNDS, {1u, 0x3F000000u, 0x3F800000u}};
+    NvnOpRaster discard = {NVN_RASTER_DISCARD, {1u, 0u, 0u}};
+    NvnOpRaster offset = {NVN_RASTER_POLYGON_OFFSET_CLAMP, {0xABCDu, 0x3FC00000u, 0x61F00000u}};
+    NvnOpRaster clamp = {NVN_RASTER_DEPTH_CLAMP, {1u, 0u, 0u}};
+    NvnOpRaster line = {NVN_RASTER_LINE_WIDTH, {0x40000000u, 0u, 0u}};
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_RASTER, &depth, sizeof depth));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_RASTER, &discard, sizeof discard));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_RASTER, &offset, sizeof offset));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_RASTER, &clamp, sizeof clamp));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_RASTER, &line, sizeof line));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.write_count == 10);
+    CHECK(k.writes[0].method == 0x66F && k.writes[0].value == 1u);
+    CHECK(k.writes[1].method == 0x3E7 && k.writes[1].value == 0x3F000000u);
+    CHECK(k.writes[2].method == 0x3E8 && k.writes[2].value == 0x3F800000u);
+    CHECK(k.writes[3].method == 0x0DF && k.writes[3].value == 0u);
+    CHECK(k.writes[4].method == 0x55B && k.writes[4].value == 0xABCDu);
+    CHECK(k.writes[5].method == 0x56F && k.writes[5].value == 0x40400000u);
+    CHECK(k.writes[6].method == 0x61F && k.writes[6].value == 0x61F00000u);
+    CHECK(k.writes[7].method == 0x64F && k.writes[7].value == 0x101Au);
+    CHECK(k.writes[8].method == 0x4EC && k.writes[8].value == 0x40000000u);
+    CHECK(k.writes[9].method == 0x4ED && k.writes[9].value == 0x40000000u);
+    CHECK(st.replayed[NVN_OP_SET_RASTER] == 5 && st.methods == 10 && st.faults == 0);
+    nvn_oplist_free(&l);
+
+    Mock ku = {0};
+    NvnReplayEnv envu = make_env(&ku);
+    NvnOpList lu = {0};
+    NvnReplayStats stu = {0};
+    NvnOpRaster unknown = {(uint32_t)NVN_RASTER_KIND_COUNT, {0u, 0u, 0u}};
+    CHECK(nvn_oplist_append(&lu, NVN_OP_SET_RASTER, &unknown, sizeof unknown));
+    nvn_replay_list(&envu, &lu, &stu);
+    CHECK(stu.faults == 1 && ku.last_fault && !strcmp(ku.last_fault, "raster kind"));
+    CHECK(ku.last_fault_value == NVN_RASTER_KIND_COUNT && stu.methods == 0);
+    CHECK(stu.replayed[NVN_OP_SET_RASTER] == 0);
+    nvn_oplist_free(&lu);
+}
+
 static void test_raster_bad_payload(void) {
     Mock k = {0};
     NvnReplayEnv env = make_env(&k);
@@ -813,6 +1018,11 @@ int main(void) {
     test_stencil_unknown_kind();
     test_blend_color();
     test_alpha_ref();
+    test_draw();
+    test_dispatch();
+    test_bind_program();
+    test_draw_path_bad_payload();
+    test_raster_methods();
     test_raster_bad_payload();
     test_call_live();
     test_call_dead();

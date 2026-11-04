@@ -28,6 +28,10 @@ typedef struct NvnReplayEnv {
     int (*bind_buffer)(void* ctx, const NvnOpBindBuffer* op);
     /* The bind state of one state object. 1 when stored, 0 when refused (the host reports the cause). */
     int (*bind_state)(void* ctx, const NvnOpBindState* op);
+    /* A draw, a dispatch or a program bind. 1 when stored, 0 when refused (the host reports the cause). */
+    int (*draw)(void* ctx, const NvnOpDraw* op);
+    int (*dispatch)(void* ctx, const NvnOpDispatch* op);
+    int (*bind_program)(void* ctx, const NvnOpBindProgram* op);
     /* The caller writes the render target methods itself. 1 when done, 0 when it could not (it reports the cause). */
     int (*render_targets)(void* ctx, const NvnOpRenderTargets* op);
     /* a bad part: a short text and one value. The module then skips the op and goes on. */

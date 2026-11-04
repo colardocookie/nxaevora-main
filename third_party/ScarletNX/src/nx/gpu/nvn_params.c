@@ -196,6 +196,64 @@ uint32_t nvn_multisample_state_get_coverage_to_color_enable(uint32_t word) { ret
 uint32_t nvn_multisample_state_get_coverage_to_color_output(uint32_t word) { return (word >> 21) & 7u; }
 uint32_t nvn_polygon_state_get_cull_face(uint32_t word) { return word & 3u; }
 uint32_t nvn_polygon_state_get_front_face(uint32_t word) { return (word >> 2) & 1u; }
+uint32_t nvn_color_state_get_logic_op(uint32_t word) { return (word >> 16) & 0xFFu; }
+uint32_t nvn_depth_stencil_state_get_stencil_test_enable(uint32_t word) { return (word >> 2) & 1u; }
+
+uint32_t nvn_depth_stencil_state_get_stencil_func(uint32_t word, uint32_t face) {
+    return face == 2u ? (word >> 16) & 0xFu : word & 0xFu;
+}
+
+uint32_t nvn_polygon_state_get_polygon_mode(uint32_t word) { return (word >> 3) & 3u; }
+
+void nvn_blend_state_get_blend_equation(uint32_t word, uint32_t* rgb, uint32_t* alpha) {
+    if (rgb) *rgb = (word >> 24) & 7u;
+    if (alpha) *alpha = (word >> 28) & 7u;
+}
+
+static uint32_t raster_float_bits(float value) {
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof bits);
+    return bits;
+}
+
+int nvn_raster_methods(NvnRasterKind which, const uint32_t w[3], NvnRasterMethod out[NVN_RASTER_METHODS_MAX],
+                       uint32_t* count) {
+    uint32_t n = 0;
+    switch (which) {
+    case NVN_RASTER_DEPTH_BOUNDS: {
+        uint32_t enabled = (w[0] & 0xFFu) != 0;
+        out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_DEPTH_BOUNDS, enabled};
+        if (enabled) {
+            out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_DEPTH_BOUNDS_MIN, w[1]};
+            out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_DEPTH_BOUNDS_MAX, w[2]};
+        }
+        break;
+    }
+    case NVN_RASTER_DISCARD:
+        out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_DISCARD, (w[0] & 0xFFu) == 0 ? 1u : 0u};
+        break;
+    case NVN_RASTER_POLYGON_OFFSET_CLAMP: {
+        float units;
+        memcpy(&units, &w[1], sizeof units);
+        out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_POLYGON_OFFSET, w[0]};
+        out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_POLYGON_OFFSET_UNITS, raster_float_bits(units + units)};
+        out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_POLYGON_OFFSET_CLAMP, w[2]};
+        break;
+    }
+    case NVN_RASTER_DEPTH_CLAMP:
+        out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_DEPTH_CLAMP,
+                                     (w[0] & 0xFFu) != 0 ? NVN_RASTER_DEPTH_CLAMP_NEAR : NVN_RASTER_DEPTH_CLAMP_FAR};
+        break;
+    case NVN_RASTER_LINE_WIDTH:
+        out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_LINE_WIDTH, w[0]};
+        out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_LINE_WIDTH_ALIAS, w[0]};
+        break;
+    default:
+        return 0;
+    }
+    *count = n;
+    return 1;
+}
 
 const NvnQueueDeviceWords nvn_queue_device_words = {.w8c = 0x80, .w94 = 2, .w98 = 1, .we0 = 1, .we4 = 0x1000, .w1af4 = 0};
 

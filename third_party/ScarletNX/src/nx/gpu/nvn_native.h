@@ -38,6 +38,12 @@ typedef struct {
     NvnBindEntry xfb[NVN_XFB_SLOT_MAX];
     /* The bound state objects of one frame job, written by the replay and read by the pipeline stage later. */
     NvnBoundState state[NVN_STATE_COUNT];
+    /* The draws, dispatches and program binds of one frame job. The replay thread writes them without a lock. */
+    uint64_t draws[NVN_DRAW_KIND_COUNT];
+    NvnOpDraw last_draw;
+    uint64_t dispatches;
+    uint32_t last_dispatch[3];
+    uint64_t program[NVN_PROGRAM_STAGE_COUNT]; /* 0: no program of that stage */
 } NvnNativeReplayHost;
 /* Fills env for the replay of host lists. The callbacks read the records of the host under its lock and write
    methods on host->channel. window_origin_flip is 1 when the device window origin mode is 1. */

@@ -27,6 +27,10 @@ typedef enum {
     NVN_OP_BIND_TEXTURE,
     NVN_OP_BIND_BUFFER,
     NVN_OP_BIND_STATE,
+    NVN_OP_DRAW,
+    NVN_OP_DISPATCH,
+    NVN_OP_BIND_PROGRAM,
+    NVN_OP_SET_RASTER,
     NVN_OP_COUNT
 } NvnOpCode;
 
@@ -61,6 +65,15 @@ typedef struct { uint64_t handle; } NvnOpCall;
 typedef struct { uint32_t stage, slot; uint64_t handle; } NvnOpBindTexture;
 typedef struct { uint32_t kind, stage, slot, reserved; uint64_t addr, size; } NvnOpBindBuffer;
 typedef struct { uint32_t kind, words; uint32_t w[NVN_STATE_WORDS_MAX]; } NvnOpBindState;
+/* The raw draw arguments, as the library copies them. Unused fields are zero and a non-instanced draw has instances 1. */
+typedef struct {
+    uint32_t kind, mode, type, count;
+    uint64_t address;
+    uint32_t first, base_vertex, base_instance, instances;
+} NvnOpDraw;
+typedef struct { uint32_t x, y, z, reserved; } NvnOpDispatch;
+typedef struct { uint64_t program; uint32_t stage_mask, reserved; } NvnOpBindProgram;
+typedef struct { uint32_t which, w[3]; } NvnOpRaster;
 typedef struct {
     uint64_t texture; /* 0 for no target */
     uint32_t generation, has_view;
