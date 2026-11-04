@@ -81,7 +81,7 @@ static uint32_t rt_tile_word(const NvnTextureLayout* layout) {
 static int rt_texture_checks(const NvnRtEnv* env, const NvnTexture* texture, const char* linear_fault,
                              uint32_t* format_word) {
     const NvnTextureLayout* layout = &texture->layout;
-    if (texture->builder.target != NVN_TEXTURE_TARGET_2D) {
+    if (texture->builder.target != NVN_TEXTURE_TARGET_2D && texture->builder.target != NVN_TEXTURE_TARGET_2D_ARRAY) {
         env->fault(env->ctx, "rt target", texture->builder.target);
         return 0;
     }

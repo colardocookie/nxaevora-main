@@ -421,6 +421,18 @@ static void test_depth_linear(void) {
     CHECK(k.write_count == 0 && k.fault_count == 1 && k.last_fault_value == NVN_TEXTURE_FLAG_LINEAR);
 }
 
+static void test_2d_array_target(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTexture array = make_texture(0x25, 64, 64, 0x1000);
+    array.builder.target = NVN_TEXTURE_TARGET_2D_ARRAY;
+    array.layout.depth = 4;
+    NvnRtColor color[1] = {{&array, NULL}};
+    CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    expect(&k, 7, 0x206, 4u);
+}
+
 static void test_refusals(void) {
     Mock k;
     NvnRtEnv env;
@@ -643,6 +655,7 @@ int main(void) {
     test_color_view_target_3d();
     test_color_view_checks();
     test_depth_linear();
+    test_2d_array_target();
     test_refusals();
     test_bad_input();
     test_null_env_fields();
