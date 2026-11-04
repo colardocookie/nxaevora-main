@@ -81,6 +81,13 @@ static void* rec_get(u64 addr, NvnObjKind kind, size_t size) {
     if (kind == NVN_OBJ_SAMPLER_BUILDER) nvn_sampler_defaults(o->data);
     if (kind == NVN_OBJ_TEXTURE_BUILDER) nvn_texture_builder_defaults(o->data);
     if (kind == NVN_OBJ_WINDOW_BUILDER) nvn_window_builder_defaults(o->data);
+    /* a state object that the game never gave to SetDefaults starts with the library's defaults */
+    if (kind == NVN_OBJ_COLOR_STATE) nvn_color_state_defaults(o->data);
+    if (kind == NVN_OBJ_DEPTH_STENCIL_STATE) nvn_depth_stencil_state_defaults(o->data);
+    if (kind == NVN_OBJ_BLEND_STATE) nvn_blend_state_defaults(o->data);
+    if (kind == NVN_OBJ_POLYGON_STATE) nvn_polygon_state_defaults(o->data);
+    if (kind == NVN_OBJ_MULTISAMPLE_STATE) nvn_multisample_state_defaults(o->data);
+    if (kind == NVN_OBJ_CHANNEL_MASK_STATE) nvn_channel_mask_state_defaults(o->data);
     return o->data;
 }
 static void* known_record(u64 addr, NvnObjKind kind);
@@ -1470,6 +1477,222 @@ static void h_command_buffer_bind_transform_feedback_buffers(CPU* c, u64 entry) 
                                   NVN_XFB_SLOT_MAX);
     pm_unlock(&objs_lock);
 }
+/* G3: the six state objects. The record holds the words of the library layout, so the formulas of the tables apply. */
+typedef struct {
+    NvnObjKind obj;
+    uint32_t record_words, bind_words;
+} StateKindInfo;
+static const StateKindInfo state_kinds[NVN_STATE_COUNT] = {
+    {NVN_OBJ_COLOR_STATE, 1, 1},
+    {NVN_OBJ_DEPTH_STENCIL_STATE, 2, 2},
+    {NVN_OBJ_BLEND_STATE, 2, 2},
+    {NVN_OBJ_POLYGON_STATE, 1, 1},
+    {NVN_OBJ_MULTISAMPLE_STATE, 6, 5},
+    {NVN_OBJ_CHANNEL_MASK_STATE, 1, 1},
+};
+static uint32_t* state_words(u64 addr, NvnStateKind kind) {
+    const StateKindInfo* info = &state_kinds[kind];
+    return rec_get(addr, info->obj, (size_t)info->record_words * sizeof(uint32_t));
+}
+/* The bind copies the words that the replay stores. The advanced blend path of the library is not decoded. */
+static void command_bind_state(CommandBufferRec* cb, u64 addr, u64 state_addr, const char* operation,
+                               NvnStateKind kind) {
+    const StateKindInfo* info = &state_kinds[kind];
+    const uint32_t* state = rec_get(state_addr, info->obj, (size_t)info->record_words * sizeof(uint32_t));
+    NvnOpBindState op = {(uint32_t)kind, info->bind_words, {0}};
+    for (uint32_t i = 0; i < info->bind_words; i++) op.w[i] = state[i];
+    if (kind == NVN_STATE_BLEND && ((op.w[0] >> 8) & 0x3Fu) != 0)
+        command_dropped(cb, operation, "blend advanced mode is not supported", op.w[0]);
+    else
+        command_record(cb, addr, operation, NVN_OP_BIND_STATE, &op, sizeof op);
+}
+#define BIND_STATE_HANDLER(name, operation, kind)                        \
+    static void h_command_buffer_bind_##name(CPU* c, u64 entry) {        \
+        (void)entry;                                                     \
+        pm_lock(&objs_lock);                                             \
+        CommandBufferRec* cb = command_buffer(c->x[0], operation);       \
+        if (cb) command_bind_state(cb, c->x[0], c->x[1], operation, kind); \
+        pm_unlock(&objs_lock);                                           \
+    }
+BIND_STATE_HANDLER(color_state, "nvnCommandBufferBindColorState", NVN_STATE_COLOR)
+BIND_STATE_HANDLER(depth_stencil_state, "nvnCommandBufferBindDepthStencilState", NVN_STATE_DEPTH_STENCIL)
+BIND_STATE_HANDLER(blend_state, "nvnCommandBufferBindBlendState", NVN_STATE_BLEND)
+BIND_STATE_HANDLER(polygon_state, "nvnCommandBufferBindPolygonState", NVN_STATE_POLYGON)
+BIND_STATE_HANDLER(multisample_state, "nvnCommandBufferBindMultisampleState", NVN_STATE_MULTISAMPLE)
+BIND_STATE_HANDLER(channel_mask_state, "nvnCommandBufferBindChannelMaskState", NVN_STATE_CHANNEL_MASK)
+#undef BIND_STATE_HANDLER
+
+#define STATE_INSERT_HANDLER(name, kind, mask, shift)          \
+    static void h_##name(CPU* c, u64 entry) {                  \
+        (void)entry;                                           \
+        pm_lock(&objs_lock);                                   \
+        uint32_t* w = state_words(c->x[0], kind);              \
+        w[0] = nvn_state_insert(w[0], mask, shift, (u32)c->x[1]); \
+        pm_unlock(&objs_lock);                                 \
+    }
+STATE_INSERT_HANDLER(blend_state_set_blend_target, NVN_STATE_BLEND, 0x7u, 0)
+STATE_INSERT_HANDLER(color_state_set_logic_op, NVN_STATE_COLOR, 0x00FF0000u, 16)
+STATE_INSERT_HANDLER(color_state_set_alpha_test, NVN_STATE_COLOR, 0x0F000000u, 24)
+STATE_INSERT_HANDLER(depth_stencil_state_set_depth_func, NVN_STATE_DEPTH_STENCIL, 0x000000F0u, 4)
+STATE_INSERT_HANDLER(polygon_state_set_cull_face, NVN_STATE_POLYGON, 0x3u, 0)
+STATE_INSERT_HANDLER(polygon_state_set_front_face, NVN_STATE_POLYGON, 0x4u, 2)
+STATE_INSERT_HANDLER(polygon_state_set_polygon_mode, NVN_STATE_POLYGON, 0x18u, 3)
+STATE_INSERT_HANDLER(polygon_state_set_polygon_offset_enables, NVN_STATE_POLYGON, 0x78000u, 15)
+STATE_INSERT_HANDLER(multisample_state_set_samples, NVN_STATE_MULTISAMPLE, 0x1F00u, 8)
+STATE_INSERT_HANDLER(multisample_state_set_raster_samples, NVN_STATE_MULTISAMPLE, 0xF8000u, 15)
+STATE_INSERT_HANDLER(multisample_state_set_coverage_modulation_mode, NVN_STATE_MULTISAMPLE, 0x6000u, 13)
+STATE_INSERT_HANDLER(multisample_state_set_coverage_to_color_output, NVN_STATE_MULTISAMPLE, 0xE00000u, 21)
+#undef STATE_INSERT_HANDLER
+
+#define STATE_FLAG_HANDLER(name, kind, bit)                    \
+    static void h_##name(CPU* c, u64 entry) {                  \
+        (void)entry;                                           \
+        pm_lock(&objs_lock);                                   \
+        uint32_t* w = state_words(c->x[0], kind);              \
+        w[0] = nvn_state_set_flag(w[0], bit, (u32)c->x[1]);    \
+        pm_unlock(&objs_lock);                                 \
+    }
+STATE_FLAG_HANDLER(depth_stencil_state_set_depth_test_enable, NVN_STATE_DEPTH_STENCIL, 0)
+STATE_FLAG_HANDLER(depth_stencil_state_set_depth_write_enable, NVN_STATE_DEPTH_STENCIL, 1)
+STATE_FLAG_HANDLER(depth_stencil_state_set_stencil_test_enable, NVN_STATE_DEPTH_STENCIL, 2)
+STATE_FLAG_HANDLER(multisample_state_set_multisample_enable, NVN_STATE_MULTISAMPLE, 0)
+STATE_FLAG_HANDLER(multisample_state_set_alpha_to_coverage_enable, NVN_STATE_MULTISAMPLE, 1)
+STATE_FLAG_HANDLER(multisample_state_set_alpha_to_coverage_dither, NVN_STATE_MULTISAMPLE, 2)
+STATE_FLAG_HANDLER(multisample_state_set_sample_locations_enable, NVN_STATE_MULTISAMPLE, 3)
+STATE_FLAG_HANDLER(multisample_state_set_sample_locations_grid_enable, NVN_STATE_MULTISAMPLE, 4)
+STATE_FLAG_HANDLER(multisample_state_set_coverage_to_color_enable, NVN_STATE_MULTISAMPLE, 20)
+#undef STATE_FLAG_HANDLER
+
+static void h_blend_state_set_blend_func(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    uint32_t* w = state_words(c->x[0], NVN_STATE_BLEND);
+    w[1] = nvn_blend_state_set_blend_func(w[1], (u32)c->x[1], (u32)c->x[2], (u32)c->x[3], (u32)c->x[4]);
+    pm_unlock(&objs_lock);
+}
+static void h_blend_state_set_blend_equation(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    uint32_t* w = state_words(c->x[0], NVN_STATE_BLEND);
+    w[0] = nvn_blend_state_set_blend_equation(w[0], (u32)c->x[1], (u32)c->x[2]);
+    pm_unlock(&objs_lock);
+}
+static void h_channel_mask_state_set_channel_mask(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    uint32_t* w = state_words(c->x[0], NVN_STATE_CHANNEL_MASK);
+    w[0] = nvn_channel_mask_state_set_channel_mask(w[0], (u32)c->x[1], (u32)c->x[2], (u32)c->x[3],
+                                                   (u32)c->x[4], (u32)c->x[5]);
+    pm_unlock(&objs_lock);
+}
+static void h_color_state_set_blend_enable(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    uint32_t* w = state_words(c->x[0], NVN_STATE_COLOR);
+    w[0] = nvn_color_state_set_blend_enable(w[0], (u32)c->x[1], (u32)c->x[2]);
+    pm_unlock(&objs_lock);
+}
+static void h_depth_stencil_state_set_stencil_func(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    uint32_t* w = state_words(c->x[0], NVN_STATE_DEPTH_STENCIL);
+    w[1] = nvn_depth_stencil_state_set_stencil_func(w[1], (u32)c->x[1], (u32)c->x[2]);
+    pm_unlock(&objs_lock);
+}
+static void h_depth_stencil_state_set_stencil_op(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    uint32_t* w = state_words(c->x[0], NVN_STATE_DEPTH_STENCIL);
+    w[1] = nvn_depth_stencil_state_set_stencil_op(w[1], (u32)c->x[1], (u32)c->x[2], (u32)c->x[3], (u32)c->x[4]);
+    pm_unlock(&objs_lock);
+}
+
+#define STATE_DEFAULTS_HANDLER(name, kind, defaults) \
+    static void h_##name(CPU* c, u64 entry) {         \
+        (void)entry;                                  \
+        pm_lock(&objs_lock);                          \
+        defaults(state_words(c->x[0], kind));         \
+        pm_unlock(&objs_lock);                        \
+    }
+STATE_DEFAULTS_HANDLER(blend_state_set_defaults, NVN_STATE_BLEND, nvn_blend_state_defaults)
+STATE_DEFAULTS_HANDLER(channel_mask_state_set_defaults, NVN_STATE_CHANNEL_MASK, nvn_channel_mask_state_defaults)
+STATE_DEFAULTS_HANDLER(color_state_set_defaults, NVN_STATE_COLOR, nvn_color_state_defaults)
+STATE_DEFAULTS_HANDLER(depth_stencil_state_set_defaults, NVN_STATE_DEPTH_STENCIL, nvn_depth_stencil_state_defaults)
+STATE_DEFAULTS_HANDLER(multisample_state_set_defaults, NVN_STATE_MULTISAMPLE, nvn_multisample_state_defaults)
+STATE_DEFAULTS_HANDLER(polygon_state_set_defaults, NVN_STATE_POLYGON, nvn_polygon_state_defaults)
+#undef STATE_DEFAULTS_HANDLER
+
+#define STATE_GET_HANDLER(name, kind, value)      \
+    static void h_##name(CPU* c, u64 entry) {     \
+        (void)entry;                              \
+        pm_lock(&objs_lock);                      \
+        const uint32_t* w = state_words(c->x[0], kind); \
+        c->x[0] = (value);                        \
+        pm_unlock(&objs_lock);                    \
+    }
+STATE_GET_HANDLER(blend_state_get_blend_target, NVN_STATE_BLEND, nvn_blend_state_get_blend_target(w[0]))
+STATE_GET_HANDLER(color_state_get_alpha_test, NVN_STATE_COLOR, nvn_color_state_get_alpha_test(w[0]))
+STATE_GET_HANDLER(color_state_get_blend_enable, NVN_STATE_COLOR,
+                  nvn_color_state_get_blend_enable(w[0], (u32)c->x[1]))
+STATE_GET_HANDLER(depth_stencil_state_get_depth_func, NVN_STATE_DEPTH_STENCIL,
+                  nvn_depth_stencil_state_get_depth_func(w[0]))
+STATE_GET_HANDLER(depth_stencil_state_get_depth_test_enable, NVN_STATE_DEPTH_STENCIL,
+                  nvn_depth_stencil_state_get_depth_test_enable(w[0]))
+STATE_GET_HANDLER(depth_stencil_state_get_depth_write_enable, NVN_STATE_DEPTH_STENCIL,
+                  nvn_depth_stencil_state_get_depth_write_enable(w[0]))
+STATE_GET_HANDLER(multisample_state_get_multisample_enable, NVN_STATE_MULTISAMPLE,
+                  nvn_multisample_state_get_multisample_enable(w[0]))
+STATE_GET_HANDLER(multisample_state_get_samples, NVN_STATE_MULTISAMPLE, nvn_multisample_state_get_samples(w[0]))
+STATE_GET_HANDLER(multisample_state_get_alpha_to_coverage_enable, NVN_STATE_MULTISAMPLE,
+                  nvn_multisample_state_get_alpha_to_coverage_enable(w[0]))
+STATE_GET_HANDLER(multisample_state_get_alpha_to_coverage_dither, NVN_STATE_MULTISAMPLE,
+                  nvn_multisample_state_get_alpha_to_coverage_dither(w[0]))
+STATE_GET_HANDLER(multisample_state_get_coverage_modulation_mode, NVN_STATE_MULTISAMPLE,
+                  nvn_multisample_state_get_coverage_modulation_mode(w[0]))
+STATE_GET_HANDLER(multisample_state_get_raster_samples, NVN_STATE_MULTISAMPLE,
+                  nvn_multisample_state_get_raster_samples(w[0]))
+STATE_GET_HANDLER(multisample_state_get_coverage_to_color_enable, NVN_STATE_MULTISAMPLE,
+                  nvn_multisample_state_get_coverage_to_color_enable(w[0]))
+STATE_GET_HANDLER(multisample_state_get_coverage_to_color_output, NVN_STATE_MULTISAMPLE,
+                  nvn_multisample_state_get_coverage_to_color_output(w[0]))
+STATE_GET_HANDLER(polygon_state_get_cull_face, NVN_STATE_POLYGON, nvn_polygon_state_get_cull_face(w[0]))
+STATE_GET_HANDLER(polygon_state_get_front_face, NVN_STATE_POLYGON, nvn_polygon_state_get_front_face(w[0]))
+#undef STATE_GET_HANDLER
+
+/* The Get functions with output pointers check every destination before the first store. */
+static void h_blend_state_get_blend_func(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnBlendStateGetBlendFunc";
+    pm_lock(&objs_lock);
+    if (!native_guest_writable(c->x[1], sizeof(uint32_t)) || !native_guest_writable(c->x[2], sizeof(uint32_t)) ||
+        !native_guest_writable(c->x[3], sizeof(uint32_t)) || !native_guest_writable(c->x[4], sizeof(uint32_t))) {
+        LOG("nvn-native: %s unwritable output\n", name);
+        pm_unlock(&objs_lock);
+        return;
+    }
+    const uint32_t* w = state_words(c->x[0], NVN_STATE_BLEND);
+    uint32_t out[4];
+    nvn_blend_state_get_blend_func(w[1], out);
+    for (uint32_t i = 0; i < 4; i++) gw32(c->x[1 + i], out[i]);
+    pm_unlock(&objs_lock);
+}
+static void h_channel_mask_state_get_channel_mask(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnChannelMaskStateGetChannelMask";
+    pm_lock(&objs_lock);
+    if (!native_guest_writable(c->x[2], 1) || !native_guest_writable(c->x[3], 1) ||
+        !native_guest_writable(c->x[4], 1) || !native_guest_writable(c->x[5], 1)) {
+        LOG("nvn-native: %s unwritable output\n", name);
+        pm_unlock(&objs_lock);
+        return;
+    }
+    const uint32_t* w = state_words(c->x[0], NVN_STATE_CHANNEL_MASK);
+    uint8_t out[4];
+    nvn_channel_mask_state_get_channel_mask(w[0], (u32)c->x[1], out);
+    for (uint32_t i = 0; i < 4; i++) *GP(c->x[2 + i]) = out[i];
+    pm_unlock(&objs_lock);
+}
+
 static void h_command_buffer_clear_color(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnCommandBufferClearColor";
@@ -1614,6 +1837,16 @@ static int replay_host_bind_buffer(void* ctx, const NvnOpBindBuffer* op) {
     entry->bound = (uint8_t)nvn_bind_buffer_active((NvnBindKind)op->kind, op->addr, op->size);
     return 1;
 }
+/* The replay stores the words of a state bind. The host refuses a kind or word count that its table cannot hold. */
+static int replay_host_bind_state(void* ctx, const NvnOpBindState* op) {
+    NvnNativeReplayHost* host = ctx;
+    if (op->kind >= (uint32_t)NVN_STATE_COUNT || op->words > NVN_STATE_WORDS_MAX) return 0;
+    NvnBoundState* state = &host->state[op->kind];
+    memset(state->w, 0, sizeof state->w);
+    for (uint32_t i = 0; i < op->words; i++) state->w[i] = op->w[i];
+    state->bound = 1;
+    return 1;
+}
 static int replay_host_descriptor_pool(void* ctx, NvnOpCode op, const NvnOpPool* pool, uint64_t* gpu_base, uint32_t* count) {
     (void)ctx;
     NvnObjKind kind = op == NVN_OP_SET_TEXTURE_POOL ? NVN_OBJ_TEXTURE_POOL : NVN_OBJ_SAMPLER_POOL;
@@ -1732,7 +1965,8 @@ void nvn_native_replay_env(NvnNativeReplayHost* host, int window_origin_flip, Nv
     *env = (NvnReplayEnv){.ctx = host, .method = replay_host_method, .read_register = replay_host_read_register,
                           .find_list = replay_host_find_list, .descriptor_pool = replay_host_descriptor_pool,
                           .bind_texture = replay_host_bind_texture, .bind_buffer = replay_host_bind_buffer,
-                          .render_targets = replay_host_render_targets, .fault = replay_host_fault,
+                          .bind_state = replay_host_bind_state, .render_targets = replay_host_render_targets,
+                          .fault = replay_host_fault,
                           .window_origin_flip = window_origin_flip};
 }
 
@@ -2348,6 +2582,63 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferBindStorageBuffers", h_command_buffer_bind_storage_buffers},
     {"nvnCommandBufferBindVertexBuffers", h_command_buffer_bind_vertex_buffers},
     {"nvnCommandBufferBindTransformFeedbackBuffers", h_command_buffer_bind_transform_feedback_buffers},
+    {"nvnCommandBufferBindColorState", h_command_buffer_bind_color_state},
+    {"nvnCommandBufferBindDepthStencilState", h_command_buffer_bind_depth_stencil_state},
+    {"nvnCommandBufferBindBlendState", h_command_buffer_bind_blend_state},
+    {"nvnCommandBufferBindPolygonState", h_command_buffer_bind_polygon_state},
+    {"nvnCommandBufferBindMultisampleState", h_command_buffer_bind_multisample_state},
+    {"nvnCommandBufferBindChannelMaskState", h_command_buffer_bind_channel_mask_state},
+    {"nvnBlendStateSetDefaults", h_blend_state_set_defaults},
+    {"nvnBlendStateSetBlendTarget", h_blend_state_set_blend_target},
+    {"nvnBlendStateSetBlendFunc", h_blend_state_set_blend_func},
+    {"nvnBlendStateSetBlendEquation", h_blend_state_set_blend_equation},
+    {"nvnBlendStateGetBlendTarget", h_blend_state_get_blend_target},
+    {"nvnBlendStateGetBlendFunc", h_blend_state_get_blend_func},
+    {"nvnChannelMaskStateSetDefaults", h_channel_mask_state_set_defaults},
+    {"nvnChannelMaskStateSetChannelMask", h_channel_mask_state_set_channel_mask},
+    {"nvnChannelMaskStateGetChannelMask", h_channel_mask_state_get_channel_mask},
+    {"nvnColorStateSetDefaults", h_color_state_set_defaults},
+    {"nvnColorStateSetBlendEnable", h_color_state_set_blend_enable},
+    {"nvnColorStateSetLogicOp", h_color_state_set_logic_op},
+    {"nvnColorStateSetAlphaTest", h_color_state_set_alpha_test},
+    {"nvnColorStateGetBlendEnable", h_color_state_get_blend_enable},
+    {"nvnColorStateGetAlphaTest", h_color_state_get_alpha_test},
+    {"nvnDepthStencilStateSetDefaults", h_depth_stencil_state_set_defaults},
+    {"nvnDepthStencilStateSetDepthTestEnable", h_depth_stencil_state_set_depth_test_enable},
+    {"nvnDepthStencilStateSetDepthWriteEnable", h_depth_stencil_state_set_depth_write_enable},
+    {"nvnDepthStencilStateSetDepthFunc", h_depth_stencil_state_set_depth_func},
+    {"nvnDepthStencilStateSetStencilTestEnable", h_depth_stencil_state_set_stencil_test_enable},
+    {"nvnDepthStencilStateSetStencilFunc", h_depth_stencil_state_set_stencil_func},
+    {"nvnDepthStencilStateSetStencilOp", h_depth_stencil_state_set_stencil_op},
+    {"nvnDepthStencilStateGetDepthTestEnable", h_depth_stencil_state_get_depth_test_enable},
+    {"nvnDepthStencilStateGetDepthWriteEnable", h_depth_stencil_state_get_depth_write_enable},
+    {"nvnDepthStencilStateGetDepthFunc", h_depth_stencil_state_get_depth_func},
+    {"nvnMultisampleStateSetDefaults", h_multisample_state_set_defaults},
+    {"nvnMultisampleStateSetMultisampleEnable", h_multisample_state_set_multisample_enable},
+    {"nvnMultisampleStateSetAlphaToCoverageEnable", h_multisample_state_set_alpha_to_coverage_enable},
+    {"nvnMultisampleStateSetAlphaToCoverageDither", h_multisample_state_set_alpha_to_coverage_dither},
+    {"nvnMultisampleStateSetSamples", h_multisample_state_set_samples},
+    {"nvnMultisampleStateSetSampleLocationsEnable", h_multisample_state_set_sample_locations_enable},
+    {"nvnMultisampleStateSetSampleLocationsGridEnable", h_multisample_state_set_sample_locations_grid_enable},
+    {"nvnMultisampleStateSetRasterSamples", h_multisample_state_set_raster_samples},
+    {"nvnMultisampleStateSetCoverageModulationMode", h_multisample_state_set_coverage_modulation_mode},
+    {"nvnMultisampleStateSetCoverageToColorEnable", h_multisample_state_set_coverage_to_color_enable},
+    {"nvnMultisampleStateSetCoverageToColorOutput", h_multisample_state_set_coverage_to_color_output},
+    {"nvnMultisampleStateGetMultisampleEnable", h_multisample_state_get_multisample_enable},
+    {"nvnMultisampleStateGetSamples", h_multisample_state_get_samples},
+    {"nvnMultisampleStateGetAlphaToCoverageEnable", h_multisample_state_get_alpha_to_coverage_enable},
+    {"nvnMultisampleStateGetAlphaToCoverageDither", h_multisample_state_get_alpha_to_coverage_dither},
+    {"nvnMultisampleStateGetRasterSamples", h_multisample_state_get_raster_samples},
+    {"nvnMultisampleStateGetCoverageModulationMode", h_multisample_state_get_coverage_modulation_mode},
+    {"nvnMultisampleStateGetCoverageToColorEnable", h_multisample_state_get_coverage_to_color_enable},
+    {"nvnMultisampleStateGetCoverageToColorOutput", h_multisample_state_get_coverage_to_color_output},
+    {"nvnPolygonStateSetDefaults", h_polygon_state_set_defaults},
+    {"nvnPolygonStateSetCullFace", h_polygon_state_set_cull_face},
+    {"nvnPolygonStateSetFrontFace", h_polygon_state_set_front_face},
+    {"nvnPolygonStateSetPolygonMode", h_polygon_state_set_polygon_mode},
+    {"nvnPolygonStateSetPolygonOffsetEnables", h_polygon_state_set_polygon_offset_enables},
+    {"nvnPolygonStateGetCullFace", h_polygon_state_get_cull_face},
+    {"nvnPolygonStateGetFrontFace", h_polygon_state_get_front_face},
     {"nvnCommandBufferSetRenderTargets", h_command_buffer_set_render_targets},
     {"nvnCommandBufferSetViewports", h_command_buffer_set_viewports},
     {"nvnCommandBufferSetScissors", h_command_buffer_set_scissors},

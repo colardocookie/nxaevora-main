@@ -93,6 +93,110 @@ int nvn_bind_buffer_active(NvnBindKind kind, uint64_t addr, uint64_t size) {
     }
 }
 
+/* The state objects of a command buffer (analyst-g3-A-1.md and analyst-g3-B-1.md). The formulas keep the library's
+   unmasked values and its spills. */
+uint32_t nvn_state_insert(uint32_t word, uint32_t mask, uint32_t shift, uint32_t value) {
+    return (word & ~mask) | (value << shift);
+}
+
+uint32_t nvn_state_set_flag(uint32_t word, uint32_t bit, uint32_t value) {
+    uint32_t on = (value & 0xFFu) != 0;
+    return (word & ~(1u << bit)) | (on << bit);
+}
+
+uint32_t nvn_blend_state_set_blend_func(uint32_t word, uint32_t src_color, uint32_t dst_color,
+                                        uint32_t src_alpha, uint32_t dst_alpha) {
+    return (word & 0x80808080u) | (src_color & 0x808080FFu) | ((dst_color << 8) & 0x8080FF00u) |
+           ((src_alpha << 16) & 0x80FFFFFFu) | (dst_alpha << 24);
+}
+
+uint32_t nvn_blend_state_set_blend_equation(uint32_t word, uint32_t rgb, uint32_t alpha) {
+    return (word & 0x88FFFFFFu) | ((rgb << 24) & 0x8FFFFFFFu) | (alpha << 28);
+}
+
+uint32_t nvn_channel_mask_state_set_channel_mask(uint32_t word, uint32_t target, uint32_t r, uint32_t g,
+                                                 uint32_t b, uint32_t a) {
+    uint32_t value = ((r & 0xFFu) != 0) | (((g & 0xFFu) != 0) << 1) | (((b & 0xFFu) != 0) << 2) |
+                     (((a & 0xFFu) != 0) << 3);
+    uint32_t shift = (target << 2) & 31u;
+    return (word & ~(0xFu << shift)) | (value << shift);
+}
+
+uint32_t nvn_color_state_set_blend_enable(uint32_t word, uint32_t target, uint32_t value) {
+    uint32_t bit = target & 31u;
+    uint32_t on = (value & 0xFFu) != 0;
+    uint32_t byte1 = ((~(1u << bit)) & (word >> 8) & 0xFFu) | (on << bit);
+    return (word & 0xFFFF00FFu) | (byte1 << 8);
+}
+
+uint32_t nvn_depth_stencil_state_set_stencil_func(uint32_t word, uint32_t face, uint32_t func) {
+    if (face & 1u) word = (word & 0xFFFFFFF0u) | func;
+    if (face & 2u) word = (word & 0xFFF0FFFFu) | (func << 16);
+    return word;
+}
+
+uint32_t nvn_depth_stencil_state_set_stencil_op(uint32_t word, uint32_t face, uint32_t fail, uint32_t zfail,
+                                                uint32_t zpass) {
+    if (face & 1u)
+        word = (word & 0xFFFF000Fu) | ((fail << 4) & 0xFFFF00FFu) | (zfail << 12) | (zpass << 8);
+    if (face & 2u)
+        word = (word & 0xFFFFFu) | ((fail & 0xFu) << 20) | ((zfail & 0xFu) << 28) | (zpass << 24);
+    return word;
+}
+
+void nvn_color_state_defaults(uint32_t* words) { words[0] = 0x08030000u; }
+
+void nvn_depth_stencil_state_defaults(uint32_t* words) {
+    words[0] = 0x00000022u;
+    words[1] = 0x11180118u;
+}
+
+void nvn_blend_state_defaults(uint32_t* words) {
+    words[0] = 0x110C0000u;
+    words[1] = 0x01020102u;
+}
+
+void nvn_polygon_state_defaults(uint32_t* words) { words[0] = 0x14u; }
+
+void nvn_multisample_state_defaults(uint32_t* words) {
+    words[0] = 5;
+    for (uint32_t i = 1; i <= 4; i++) words[i] = 0x88888888u;
+    words[5] = 0;
+}
+
+void nvn_channel_mask_state_defaults(uint32_t* words) { words[0] = 0xFFFFFFFFu; }
+
+uint32_t nvn_blend_state_get_blend_target(uint32_t word) { return word & 7u; }
+
+void nvn_blend_state_get_blend_func(uint32_t word, uint32_t out[4]) {
+    for (uint32_t i = 0; i < 4; i++) out[i] = (word >> (8u * i)) & 0x7Fu;
+}
+
+void nvn_channel_mask_state_get_channel_mask(uint32_t word, uint32_t target, uint8_t out[4]) {
+    uint32_t shift = (target << 2) & 31u;
+    for (uint32_t i = 0; i < 4; i++) out[i] = (uint8_t)((word >> (shift + i)) & 1u);
+}
+
+uint32_t nvn_color_state_get_alpha_test(uint32_t word) { return (word >> 24) & 0xFu; }
+
+uint32_t nvn_color_state_get_blend_enable(uint32_t word, uint32_t target) {
+    return (((word >> 8) & 0xFFu) >> (target & 31u)) & 1u;
+}
+
+uint32_t nvn_depth_stencil_state_get_depth_func(uint32_t word) { return (word >> 4) & 0xFu; }
+uint32_t nvn_depth_stencil_state_get_depth_test_enable(uint32_t word) { return word & 1u; }
+uint32_t nvn_depth_stencil_state_get_depth_write_enable(uint32_t word) { return (word >> 1) & 1u; }
+uint32_t nvn_multisample_state_get_multisample_enable(uint32_t word) { return word & 1u; }
+uint32_t nvn_multisample_state_get_samples(uint32_t word) { return (word >> 8) & 0x1Fu; }
+uint32_t nvn_multisample_state_get_alpha_to_coverage_enable(uint32_t word) { return (word >> 1) & 1u; }
+uint32_t nvn_multisample_state_get_alpha_to_coverage_dither(uint32_t word) { return (word >> 2) & 1u; }
+uint32_t nvn_multisample_state_get_coverage_modulation_mode(uint32_t word) { return (word >> 13) & 3u; }
+uint32_t nvn_multisample_state_get_raster_samples(uint32_t word) { return (word >> 15) & 0x1Fu; }
+uint32_t nvn_multisample_state_get_coverage_to_color_enable(uint32_t word) { return (word >> 20) & 1u; }
+uint32_t nvn_multisample_state_get_coverage_to_color_output(uint32_t word) { return (word >> 21) & 7u; }
+uint32_t nvn_polygon_state_get_cull_face(uint32_t word) { return word & 3u; }
+uint32_t nvn_polygon_state_get_front_face(uint32_t word) { return (word >> 2) & 1u; }
+
 const NvnQueueDeviceWords nvn_queue_device_words = {.w8c = 0x80, .w94 = 2, .w98 = 1, .we0 = 1, .we4 = 0x1000, .w1af4 = 0};
 
 void nvn_queue_builder_defaults(NvnQueueBuilder* b) {

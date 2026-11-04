@@ -724,6 +724,132 @@ static void test_bind_buffer_active(void) {
     CHECK(nvn_bind_buffer_active(NVN_BIND_TRANSFORM_FEEDBACK, 0x400000000ull, 16));
 }
 
+static void test_state_insert_and_flag(void) {
+    CHECK(nvn_state_insert(0xFFFFFFFFu, 0x7u, 0, 0x2u) == 0xFFFFFFFAu);
+    CHECK(nvn_state_insert(0, 0x18u, 3, 1) == 8);
+    CHECK(nvn_state_insert(0x12345678u, 0xFFFF0000u, 16, 0xABCDu) == 0xABCD5678u);
+    CHECK(nvn_state_insert(0, 0xFu, 0, 0x1Fu) == 0x1Fu);
+    CHECK(nvn_state_insert(0, 0xFu, 28, 0x1Fu) == 0xF0000000u);
+    CHECK(nvn_state_insert(0x80000000u, 0x80000000u, 31, 0) == 0);
+    CHECK(nvn_state_set_flag(0, 0, 1) == 1);
+    CHECK(nvn_state_set_flag(1, 0, 0x100) == 0);
+    CHECK(nvn_state_set_flag(0, 31, 0x1FF) == 0x80000000u);
+    CHECK(nvn_state_set_flag(0x80000000u, 31, 0x100) == 0);
+    CHECK(nvn_state_set_flag(0xFFFFFFFFu, 5, 2) == 0xFFFFFFFFu);
+    CHECK(nvn_state_set_flag(0, 3, 0xFF) == 8);
+}
+
+static void test_state_setters(void) {
+    CHECK(nvn_blend_state_set_blend_func(0x01020102u, 2, 1, 2, 1) == 0x01020102u);
+    CHECK(nvn_blend_state_set_blend_func(0, 0x81u, 0x82u, 0x83u, 0x84u) == 0x84838281u);
+    CHECK(nvn_blend_state_set_blend_func(0, 0x12345678u, 0, 0, 0) == 0x78u);
+    CHECK(nvn_blend_state_set_blend_equation(0x110C0000u, 1, 1) == 0x110C0000u);
+    CHECK(nvn_blend_state_set_blend_equation(0xFFFFFFFFu, 0, 0) == 0x88FFFFFFu);
+    CHECK(nvn_blend_state_set_blend_equation(0, 0xFFu, 0xFu) == 0xFF000000u);
+    CHECK(nvn_blend_state_set_blend_equation(0, 0x10u, 0) == 0);
+
+    CHECK(nvn_channel_mask_state_set_channel_mask(0xFFFFFFFFu, 0, 1, 0, 0, 0) == 0xFFFFFFF1u);
+    CHECK(nvn_channel_mask_state_set_channel_mask(0, 3, 1, 1, 1, 1) == 0xF000u);
+    CHECK(nvn_channel_mask_state_set_channel_mask(0, 9, 1, 0, 0, 0) == 0x10u);
+    CHECK(nvn_channel_mask_state_set_channel_mask(0xFFFFFFFFu, 0, 0x100u, 0, 0, 0) == 0xFFFFFFF0u);
+    CHECK(nvn_channel_mask_state_set_channel_mask(0, 15, 0, 1, 0, 0) == 0x20000000u);
+
+    CHECK(nvn_color_state_set_blend_enable(0x08030000u, 0, 1) == 0x08030100u);
+    CHECK(nvn_color_state_set_blend_enable(0x08030000u, 1, 1) == 0x08030200u);
+    CHECK(nvn_color_state_set_blend_enable(0x08000000u, 8, 1) == 0x08010000u);
+    CHECK(nvn_color_state_set_blend_enable(0x08030000u, 24, 1) == 0x08030000u);
+    CHECK(nvn_color_state_set_blend_enable(0x08030000u, 0, 0x100u) == 0x08030000u);
+    CHECK(nvn_color_state_set_blend_enable(0x12345678u, 0, 1) == 0x12345778u);
+
+    CHECK(nvn_depth_stencil_state_set_stencil_func(0x11180118u, 1, 5) == 0x11180115u);
+    CHECK(nvn_depth_stencil_state_set_stencil_func(0x11180118u, 2, 6) == 0x11160118u);
+    CHECK(nvn_depth_stencil_state_set_stencil_func(0x11180118u, 3, 0x123u) == 0x11330133u);
+    CHECK(nvn_depth_stencil_state_set_stencil_func(0x11180118u, 0, 5) == 0x11180118u);
+
+    CHECK(nvn_depth_stencil_state_set_stencil_op(0x11180118u, 1, 2, 3, 4) == 0x11183428u);
+    CHECK(nvn_depth_stencil_state_set_stencil_op(0x11180118u, 2, 5, 6, 7) == 0x67580118u);
+    CHECK(nvn_depth_stencil_state_set_stencil_op(0x11180118u, 0, 2, 3, 4) == 0x11180118u);
+    CHECK(nvn_depth_stencil_state_set_stencil_op(0, 1, 0x10000u, 0, 0) == 0x100000u);
+    CHECK(nvn_depth_stencil_state_set_stencil_op(0, 2, 0, 0, 0x1Fu) == 0x1F000000u);
+}
+
+static void test_state_defaults(void) {
+    uint32_t w[6];
+    nvn_color_state_defaults(w);
+    CHECK(w[0] == 0x08030000u);
+    nvn_depth_stencil_state_defaults(w);
+    CHECK(w[0] == 0x00000022u && w[1] == 0x11180118u);
+    nvn_blend_state_defaults(w);
+    CHECK(w[0] == 0x110C0000u && w[1] == 0x01020102u);
+    nvn_polygon_state_defaults(w);
+    CHECK(w[0] == 0x14u);
+    nvn_channel_mask_state_defaults(w);
+    CHECK(w[0] == 0xFFFFFFFFu);
+    for (uint32_t i = 0; i < 6; i++) w[i] = 0xDEADBEEFu;
+    nvn_multisample_state_defaults(w);
+    CHECK(w[0] == 5 && w[1] == 0x88888888u && w[2] == 0x88888888u && w[3] == 0x88888888u);
+    CHECK(w[4] == 0x88888888u && w[5] == 0);
+}
+
+static void test_state_getters(void) {
+    uint32_t out[4];
+    uint8_t bytes[4];
+    CHECK(nvn_blend_state_get_blend_target(0x110C0000u) == 0);
+    CHECK(nvn_blend_state_get_blend_target(0xFFFFFFFFu) == 7);
+    CHECK(nvn_blend_state_get_blend_target(5) == 5);
+    nvn_blend_state_get_blend_func(0x01020102u, out);
+    CHECK(out[0] == 2 && out[1] == 1 && out[2] == 2 && out[3] == 1);
+    nvn_blend_state_get_blend_func(0xFFFFFFFFu, out);
+    CHECK(out[0] == 0x7Fu && out[1] == 0x7Fu && out[2] == 0x7Fu && out[3] == 0x7Fu);
+    nvn_channel_mask_state_get_channel_mask(0xFFFFFFFFu, 0, bytes);
+    CHECK(bytes[0] == 1 && bytes[1] == 1 && bytes[2] == 1 && bytes[3] == 1);
+    nvn_channel_mask_state_get_channel_mask(0x0000000Au, 0, bytes);
+    CHECK(bytes[0] == 0 && bytes[1] == 1 && bytes[2] == 0 && bytes[3] == 1);
+    nvn_channel_mask_state_get_channel_mask(0xF0000000u, 7, bytes);
+    CHECK(bytes[0] == 1 && bytes[1] == 1 && bytes[2] == 1 && bytes[3] == 1);
+    nvn_channel_mask_state_get_channel_mask(0x0000000Au, 8, bytes);
+    CHECK(bytes[0] == 0 && bytes[1] == 1 && bytes[2] == 0 && bytes[3] == 1);
+
+    CHECK(nvn_color_state_get_alpha_test(0x08030000u) == 8);
+    CHECK(nvn_color_state_get_alpha_test(0xFF000000u) == 0xF);
+    CHECK(nvn_color_state_get_blend_enable(0x08030000u, 0) == 0);
+    CHECK(nvn_color_state_get_blend_enable(0x00000100u, 0) == 1);
+    CHECK(nvn_color_state_get_blend_enable(0x00008000u, 7) == 1);
+    CHECK(nvn_color_state_get_blend_enable(0x00000100u, 8) == 0);
+
+    CHECK(nvn_depth_stencil_state_get_depth_func(0x00000022u) == 2);
+    CHECK(nvn_depth_stencil_state_get_depth_test_enable(0x00000022u) == 0);
+    CHECK(nvn_depth_stencil_state_get_depth_write_enable(0x00000022u) == 1);
+    CHECK(nvn_depth_stencil_state_get_depth_func(0xFFFFFFFFu) == 0xF);
+    CHECK(nvn_depth_stencil_state_get_depth_test_enable(0xFFFFFFFFu) == 1);
+    CHECK(nvn_depth_stencil_state_get_depth_write_enable(0) == 0);
+
+    CHECK(nvn_multisample_state_get_multisample_enable(5) == 1);
+    CHECK(nvn_multisample_state_get_samples(5) == 0);
+    CHECK(nvn_multisample_state_get_alpha_to_coverage_enable(5) == 0);
+    CHECK(nvn_multisample_state_get_alpha_to_coverage_dither(5) == 1);
+    CHECK(nvn_multisample_state_get_alpha_to_coverage_dither(1) == 0);
+    CHECK(nvn_multisample_state_get_coverage_modulation_mode(5) == 0);
+    CHECK(nvn_multisample_state_get_raster_samples(5) == 0);
+    CHECK(nvn_multisample_state_get_coverage_to_color_enable(5) == 0);
+    CHECK(nvn_multisample_state_get_coverage_to_color_output(5) == 0);
+    CHECK(nvn_multisample_state_get_multisample_enable(0xFFFFFFFFu) == 1);
+    CHECK(nvn_multisample_state_get_samples(0xFFFFFFFFu) == 0x1F);
+    CHECK(nvn_multisample_state_get_alpha_to_coverage_enable(0xFFFFFFFFu) == 1);
+    CHECK(nvn_multisample_state_get_alpha_to_coverage_dither(0xFFFFFFFFu) == 1);
+    CHECK(nvn_multisample_state_get_coverage_modulation_mode(0xFFFFFFFFu) == 3);
+    CHECK(nvn_multisample_state_get_raster_samples(0xFFFFFFFFu) == 0x1F);
+    CHECK(nvn_multisample_state_get_coverage_to_color_enable(0xFFFFFFFFu) == 1);
+    CHECK(nvn_multisample_state_get_coverage_to_color_output(0xFFFFFFFFu) == 7);
+
+    CHECK(nvn_polygon_state_get_cull_face(0x14u) == 0);
+    CHECK(nvn_polygon_state_get_front_face(0x14u) == 1);
+    CHECK(nvn_polygon_state_get_cull_face(3) == 3);
+    CHECK(nvn_polygon_state_get_front_face(3) == 0);
+    CHECK(nvn_polygon_state_get_cull_face(0xFFFFFFFFu) == 3);
+    CHECK(nvn_polygon_state_get_front_face(0xFFFFFFFFu) == 1);
+}
+
 static void test_program_header_stage(void) {
     uint32_t index = 99;
     CHECK(nvn_program_header_stage(1, 5, 0x120, 0xb, 0, &index) && index == 0);
@@ -769,6 +895,10 @@ int main(int argc, char** argv) {
     test_program_header_stage();
     test_handles();
     test_bind_buffer_active();
+    test_state_insert_and_flag();
+    test_state_setters();
+    test_state_defaults();
+    test_state_getters();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

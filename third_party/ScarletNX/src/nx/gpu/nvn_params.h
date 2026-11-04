@@ -54,6 +54,59 @@ uint64_t nvn_image_handle(uint32_t image_index);
 typedef enum { NVN_BIND_UNIFORM = 0, NVN_BIND_STORAGE, NVN_BIND_VERTEX, NVN_BIND_TRANSFORM_FEEDBACK } NvnBindKind;
 int nvn_bind_buffer_active(NvnBindKind kind, uint64_t addr, uint64_t size);
 
+/* The six state objects of a command buffer. The order is the kind word of the bind state op. */
+typedef enum {
+    NVN_STATE_COLOR = 0,
+    NVN_STATE_DEPTH_STENCIL,
+    NVN_STATE_BLEND,
+    NVN_STATE_POLYGON,
+    NVN_STATE_MULTISAMPLE,
+    NVN_STATE_CHANNEL_MASK,
+    NVN_STATE_COUNT
+} NvnStateKind;
+
+#define NVN_STATE_WORDS_MAX 5u /* the multisample bind reads word 0 and four sample location words */
+
+/* The library stores these fields in plain words; the value is not masked, so its high bits spill as in the library. */
+uint32_t nvn_state_insert(uint32_t word, uint32_t mask, uint32_t shift, uint32_t value);
+uint32_t nvn_state_set_flag(uint32_t word, uint32_t bit, uint32_t value);
+
+uint32_t nvn_blend_state_set_blend_func(uint32_t word, uint32_t src_color, uint32_t dst_color,
+                                        uint32_t src_alpha, uint32_t dst_alpha);
+uint32_t nvn_blend_state_set_blend_equation(uint32_t word, uint32_t rgb, uint32_t alpha);
+uint32_t nvn_channel_mask_state_set_channel_mask(uint32_t word, uint32_t target, uint32_t r, uint32_t g,
+                                                 uint32_t b, uint32_t a);
+uint32_t nvn_color_state_set_blend_enable(uint32_t word, uint32_t target, uint32_t value);
+uint32_t nvn_depth_stencil_state_set_stencil_func(uint32_t word, uint32_t face, uint32_t func);
+uint32_t nvn_depth_stencil_state_set_stencil_op(uint32_t word, uint32_t face, uint32_t fail, uint32_t zfail,
+                                                uint32_t zpass);
+
+void nvn_color_state_defaults(uint32_t* words);
+void nvn_depth_stencil_state_defaults(uint32_t* words);
+void nvn_blend_state_defaults(uint32_t* words);
+void nvn_polygon_state_defaults(uint32_t* words);
+void nvn_multisample_state_defaults(uint32_t* words);
+void nvn_channel_mask_state_defaults(uint32_t* words);
+
+uint32_t nvn_blend_state_get_blend_target(uint32_t word);
+void nvn_blend_state_get_blend_func(uint32_t word, uint32_t out[4]);
+void nvn_channel_mask_state_get_channel_mask(uint32_t word, uint32_t target, uint8_t out[4]);
+uint32_t nvn_color_state_get_alpha_test(uint32_t word);
+uint32_t nvn_color_state_get_blend_enable(uint32_t word, uint32_t target);
+uint32_t nvn_depth_stencil_state_get_depth_func(uint32_t word);
+uint32_t nvn_depth_stencil_state_get_depth_test_enable(uint32_t word);
+uint32_t nvn_depth_stencil_state_get_depth_write_enable(uint32_t word);
+uint32_t nvn_multisample_state_get_multisample_enable(uint32_t word);
+uint32_t nvn_multisample_state_get_samples(uint32_t word);
+uint32_t nvn_multisample_state_get_alpha_to_coverage_enable(uint32_t word);
+uint32_t nvn_multisample_state_get_alpha_to_coverage_dither(uint32_t word);
+uint32_t nvn_multisample_state_get_coverage_modulation_mode(uint32_t word);
+uint32_t nvn_multisample_state_get_raster_samples(uint32_t word);
+uint32_t nvn_multisample_state_get_coverage_to_color_enable(uint32_t word);
+uint32_t nvn_multisample_state_get_coverage_to_color_output(uint32_t word);
+uint32_t nvn_polygon_state_get_cull_face(uint32_t word);
+uint32_t nvn_polygon_state_get_front_face(uint32_t word);
+
 /* The device words that nvnQueueBuilderGetQueueMemorySize reads (offsets in the names). */
 typedef struct {
     uint32_t w8c, w94, w98, we0, we4, w1af4;

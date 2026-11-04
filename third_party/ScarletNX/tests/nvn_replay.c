@@ -43,6 +43,9 @@ typedef struct {
     int bind_buffer_ok;
     uint32_t bind_buffer_calls;
     NvnOpBindBuffer bind_buffer_op;
+    int bind_state_ok;
+    uint32_t bind_state_calls;
+    NvnOpBindState bind_state_op;
     uint32_t fault_count;
     const char* last_fault;
     uint64_t last_fault_value;
@@ -102,6 +105,13 @@ static int mock_bind_buffer(void* ctx, const NvnOpBindBuffer* op) {
     return k->bind_buffer_ok;
 }
 
+static int mock_bind_state(void* ctx, const NvnOpBindState* op) {
+    Mock* k = ctx;
+    k->bind_state_calls++;
+    k->bind_state_op = *op;
+    return k->bind_state_ok;
+}
+
 static void mock_fault(void* ctx, const char* what, uint64_t value) {
     Mock* k = ctx;
     k->fault_count++;
@@ -119,6 +129,7 @@ static NvnReplayEnv make_env(Mock* k) {
     env.descriptor_pool = mock_descriptor_pool;
     env.bind_texture = mock_bind_texture;
     env.bind_buffer = mock_bind_buffer;
+    env.bind_state = mock_bind_state;
     env.render_targets = mock_render_targets;
     env.fault = mock_fault;
     return env;
@@ -470,6 +481,53 @@ static void test_bind_buffer(void) {
     nvn_oplist_free(&ls);
 }
 
+static void test_bind_state(void) {
+    NvnOpBindState bind = {NVN_STATE_DEPTH_STENCIL, 2, {0x00000022u, 0x11180118u, 0, 0, 0}};
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    k.bind_state_ok = 1;
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_STATE, &bind, sizeof bind));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.bind_state_calls == 1 && k.bind_state_op.kind == NVN_STATE_DEPTH_STENCIL);
+    CHECK(k.bind_state_op.words == 2 && k.bind_state_op.w[0] == 0x00000022u);
+    CHECK(k.bind_state_op.w[1] == 0x11180118u);
+    CHECK(st.replayed[NVN_OP_BIND_STATE] == 1 && st.faults == 0 && st.methods == 0);
+    nvn_oplist_free(&l);
+
+    Mock kn = {0};
+    NvnReplayEnv envn = make_env(&kn);
+    NvnOpList ln = {0};
+    NvnReplayStats stn = {0};
+    envn.bind_state = NULL;
+    CHECK(nvn_oplist_append(&ln, NVN_OP_BIND_STATE, &bind, sizeof bind));
+    nvn_replay_list(&envn, &ln, &stn);
+    CHECK(stn.faults == 1 && kn.fault_count == 1 && stn.replayed[NVN_OP_BIND_STATE] == 0);
+    nvn_oplist_free(&ln);
+
+    Mock kr = {0};
+    NvnReplayEnv envr = make_env(&kr);
+    NvnOpList lr = {0};
+    NvnReplayStats str = {0};
+    kr.bind_state_ok = 0;
+    CHECK(nvn_oplist_append(&lr, NVN_OP_BIND_STATE, &bind, sizeof bind));
+    nvn_replay_list(&envr, &lr, &str);
+    CHECK(str.faults == 1 && kr.bind_state_calls == 1 && str.replayed[NVN_OP_BIND_STATE] == 0);
+    nvn_oplist_free(&lr);
+
+    Mock ks = {0};
+    NvnReplayEnv envs = make_env(&ks);
+    NvnOpList ls = {0};
+    NvnReplayStats sts = {0};
+    uint8_t too_big[40] = {0};
+    CHECK(nvn_oplist_append(&ls, NVN_OP_BIND_STATE, too_big, sizeof too_big));
+    nvn_replay_list(&envs, &ls, &sts);
+    CHECK(sts.faults == 1 && ks.last_fault && !strcmp(ks.last_fault, "op size"));
+    CHECK(ks.last_fault_value == NVN_OP_BIND_STATE && sts.replayed[NVN_OP_BIND_STATE] == 0);
+    nvn_oplist_free(&ls);
+}
+
 static void test_barrier(void) {
     Mock k = {0};
     NvnReplayEnv env = make_env(&k);
@@ -747,6 +805,7 @@ int main(void) {
     test_render_targets();
     test_bind_texture();
     test_bind_buffer();
+    test_bind_state();
     test_barrier();
     test_stencil_ref();
     test_stencil_face_and_value_mask();
