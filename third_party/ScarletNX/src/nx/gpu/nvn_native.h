@@ -23,6 +23,10 @@ GuestFn nvn_native_handler(const char* name);
 typedef struct {
     GpuChannel* channel; /* the private channel that the methods go to, used on the GPU thread only */
     uint32_t clip_limit; /* the device word at +0x18: 0 until its source is known, then SetRenderTargets is refused */
+    /* The texture binds of one frame job: written by the replay, read by the shader and pipeline stage later. The host
+       struct starts zeroed at each frame job, and the table is not cleared between the command lists of one job. */
+    uint64_t texture_handle[NVN_BIND_STAGE_MAX + 1u][NVN_BIND_SLOT_MAX];
+    uint8_t texture_bound[NVN_BIND_STAGE_MAX + 1u][NVN_BIND_SLOT_MAX];
 } NvnNativeReplayHost;
 /* Fills env for the replay of host lists. The callbacks read the records of the host under its lock and write
    methods on host->channel. window_origin_flip is 1 when the device window origin mode is 1. */

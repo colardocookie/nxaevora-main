@@ -699,6 +699,16 @@ static void test_sync_after_token(void) {
     CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_FENCED && fences == 2);
 }
 
+static void test_handles(void) {
+    CHECK(nvn_texture_handle(0x147, 0x100) == 0x110000147ull);
+    CHECK(nvn_texture_handle(0, 0) == 0x100000000ull);
+    CHECK(nvn_texture_handle(0x80000000u, 0) == 0xFFFFFFFF80000000ull);
+    CHECK(nvn_texture_handle(0, 0x800u) == 0xFFFFFFFF80000000ull);
+    CHECK(nvn_image_handle(0) == 0);
+    CHECK(nvn_image_handle(5) == 5);
+    CHECK(nvn_image_handle(0x80000000u) == 0xFFFFFFFF80000000ull);
+}
+
 static void test_program_header_stage(void) {
     uint32_t index = 99;
     CHECK(nvn_program_header_stage(1, 5, 0x120, 0xb, 0, &index) && index == 0);
@@ -742,6 +752,7 @@ int main(int argc, char** argv) {
     test_texture_layout_wide_size();
     test_rt_format_word();
     test_program_header_stage();
+    test_handles();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

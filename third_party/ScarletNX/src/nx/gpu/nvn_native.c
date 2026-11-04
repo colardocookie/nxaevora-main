@@ -159,6 +159,15 @@ static void h_device_get_timestamp_ns(CPU* c, u64 entry) {
     (void)entry;
     c->x[0] = nvn_timestamp_ns(gr64(c->x[1] + 8));
 }
+/* nvnDeviceGetTextureHandle(device, texture index, sampler index) and nvnDeviceGetImageHandle(device, image index): pure. */
+static void h_device_get_texture_handle(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = nvn_texture_handle((u32)c->x[1], (u32)c->x[2]);
+}
+static void h_device_get_image_handle(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = nvn_image_handle((u32)c->x[1]);
+}
 
 /* G1: queue builder and queue */
 static void h_queue_builder_set_device(CPU* c, u64 entry) {
@@ -1316,6 +1325,23 @@ static void h_command_buffer_set_scissors(CPU* c, u64 entry) {
     }
     pm_unlock(&objs_lock);
 }
+/* nvnCommandBufferBindTexture(cb, stage, slot, handle). The library checks neither the stage nor the slot; the host
+   refuses a value that its bind table cannot hold. */
+static void h_command_buffer_bind_texture(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferBindTexture";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpBindTexture op = {(u32)c->x[1], (u32)c->x[2], c->x[3]};
+    if (!cb) {
+    } else if (op.stage > NVN_BIND_STAGE_MAX)
+        command_dropped(cb, name, "stage outside the bind stages", op.stage);
+    else if (op.slot >= NVN_BIND_SLOT_MAX)
+        command_dropped(cb, name, "slot outside the bind slots", op.slot);
+    else
+        command_record(cb, c->x[0], name, NVN_OP_BIND_TEXTURE, &op, sizeof op);
+    pm_unlock(&objs_lock);
+}
 static void h_command_buffer_clear_color(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnCommandBufferClearColor";
@@ -1420,6 +1446,15 @@ static const NvnOpList* replay_host_find_list(void* ctx, uint64_t handle) {
     const NvnOpList* list = nvn_list_find(&lists, handle);
     pm_unlock(&objs_lock);
     return list;
+}
+/* The replay thread owns the bind table; no lock is needed. A bind is state of the command buffer in the game, so the
+   table is not cleared between the command lists of one frame job. */
+static int replay_host_bind_texture(void* ctx, uint32_t stage, uint32_t slot, uint64_t handle) {
+    NvnNativeReplayHost* host = ctx;
+    if (stage > NVN_BIND_STAGE_MAX || slot >= NVN_BIND_SLOT_MAX) return 0;
+    host->texture_handle[stage][slot] = handle;
+    host->texture_bound[stage][slot] = 1;
+    return 1;
 }
 static int replay_host_descriptor_pool(void* ctx, NvnOpCode op, const NvnOpPool* pool, uint64_t* gpu_base, uint32_t* count) {
     (void)ctx;
@@ -1538,7 +1573,8 @@ static void replay_host_fault(void* ctx, const char* what, uint64_t value) {
 void nvn_native_replay_env(NvnNativeReplayHost* host, int window_origin_flip, NvnReplayEnv* env) {
     *env = (NvnReplayEnv){.ctx = host, .method = replay_host_method, .read_register = replay_host_read_register,
                           .find_list = replay_host_find_list, .descriptor_pool = replay_host_descriptor_pool,
-                          .render_targets = replay_host_render_targets, .fault = replay_host_fault,
+                          .bind_texture = replay_host_bind_texture, .render_targets = replay_host_render_targets,
+                          .fault = replay_host_fault,
                           .window_origin_flip = window_origin_flip};
 }
 
@@ -2028,6 +2064,8 @@ static const NativeProc native_procs[] = {
     {"nvnDeviceGetDepthMode", h_device_get_depth_mode},
     {"nvnDeviceGetInteger", h_device_get_integer},
     {"nvnDeviceGetTimestampInNanoseconds", h_device_get_timestamp_ns},
+    {"nvnDeviceGetTextureHandle", h_device_get_texture_handle},
+    {"nvnDeviceGetImageHandle", h_device_get_image_handle},
     {"nvnQueueBuilderSetDevice", h_queue_builder_set_device},
     {"nvnQueueBuilderGetDevice", h_queue_builder_get_device},
     {"nvnQueueBuilderSetDefaults", h_queue_builder_set_defaults},
@@ -2143,6 +2181,7 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferCallCommands", h_command_buffer_call_commands},
     {"nvnCommandBufferSetTexturePool", h_command_buffer_set_texture_pool},
     {"nvnCommandBufferSetSamplerPool", h_command_buffer_set_sampler_pool},
+    {"nvnCommandBufferBindTexture", h_command_buffer_bind_texture},
     {"nvnCommandBufferSetRenderTargets", h_command_buffer_set_render_targets},
     {"nvnCommandBufferSetViewports", h_command_buffer_set_viewports},
     {"nvnCommandBufferSetScissors", h_command_buffer_set_scissors},

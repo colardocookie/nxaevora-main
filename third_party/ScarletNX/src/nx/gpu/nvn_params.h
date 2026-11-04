@@ -42,6 +42,13 @@ int nvn_device_integer(uint32_t what, int32_t* value);
    library, so the results match to the last digit and a large tick count does not overflow. */
 uint64_t nvn_timestamp_ns(uint64_t ticks);
 
+/* The NVN texture and image handles (sdk d82d0d0, d82d050). The library masks no index: a texture index above 0xFFFFF
+   spills into the sampler field, and index bit 31 is sign extended. Both properties are kept. */
+#define NVN_HANDLE_SAMPLER_SHIFT 20u
+#define NVN_TEXTURE_HANDLE_TAG   0x100000000ull
+uint64_t nvn_texture_handle(uint32_t texture_index, uint32_t sampler_index);
+uint64_t nvn_image_handle(uint32_t image_index);
+
 /* The device words that nvnQueueBuilderGetQueueMemorySize reads (offsets in the names). */
 typedef struct {
     uint32_t w8c, w94, w98, we0, we4, w1af4;

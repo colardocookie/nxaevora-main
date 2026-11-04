@@ -74,6 +74,15 @@ uint64_t nvn_timestamp_ns(uint64_t ticks) {
     return whole * TIMESTAMP_NUM + rest * TIMESTAMP_NUM / TIMESTAMP_DEN;
 }
 
+/* The library masks no index and sign extends index bit 31: texture bits above 0xFFFFF spill into the sampler field and
+   a high index reaches the tag. Both are kept, so a handle matches the library. An image handle has no tag. */
+uint64_t nvn_texture_handle(uint32_t texture_index, uint32_t sampler_index) {
+    int32_t packed = (int32_t)(texture_index | (sampler_index << NVN_HANDLE_SAMPLER_SHIFT));
+    return (uint64_t)(int64_t)packed | NVN_TEXTURE_HANDLE_TAG;
+}
+
+uint64_t nvn_image_handle(uint32_t image_index) { return (uint64_t)(int64_t)(int32_t)image_index; }
+
 const NvnQueueDeviceWords nvn_queue_device_words = {.w8c = 0x80, .w94 = 2, .w98 = 1, .we0 = 1, .we4 = 0x1000, .w1af4 = 0};
 
 void nvn_queue_builder_defaults(NvnQueueBuilder* b) {

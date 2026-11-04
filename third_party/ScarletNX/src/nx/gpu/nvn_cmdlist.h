@@ -24,6 +24,7 @@ typedef enum {
     NVN_OP_SET_STENCIL,
     NVN_OP_SET_BLEND_COLOR,
     NVN_OP_SET_ALPHA_REF,
+    NVN_OP_BIND_TEXTURE,
     NVN_OP_COUNT
 } NvnOpCode;
 
@@ -32,6 +33,8 @@ typedef enum {
 #define NVN_RENDER_TARGETS_MAX 8u
 #define NVN_VIEWPORTS_MAX    16u /* viewports and scissors, as the engine has */
 #define NVN_CALL_DEPTH_MAX   8u  /* nested CALL ops at replay */
+#define NVN_BIND_STAGE_MAX   5u  /* stages 0 to 5; compute is the last valid stage */
+#define NVN_BIND_SLOT_MAX    128u /* bind slots of one stage */
 
 /* a pool or a texture is named by address and generation (nvn_objtab) and read at replay */
 typedef struct { uint64_t pool; uint32_t generation, reserved; } NvnOpPool;
@@ -49,6 +52,7 @@ typedef struct { uint32_t which, face, value, reserved; } NvnOpStencil;
 typedef struct { uint32_t color[4]; } NvnOpBlendColor; /* the float bits as the game gave them */
 typedef struct { uint32_t bits, reserved; } NvnOpAlphaRef;
 typedef struct { uint64_t handle; } NvnOpCall;
+typedef struct { uint32_t stage, slot; uint64_t handle; } NvnOpBindTexture;
 typedef struct {
     uint64_t texture; /* 0 for no target */
     uint32_t generation, has_view;

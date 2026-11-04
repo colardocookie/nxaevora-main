@@ -22,6 +22,8 @@ typedef struct NvnReplayEnv {
     /* The GPU base address and the descriptor count of the pool that a pool op names. 1 when found, 0 when the pool
        object is gone (op is NVN_OP_SET_TEXTURE_POOL or NVN_OP_SET_SAMPLER_POOL). */
     int (*descriptor_pool)(void* ctx, NvnOpCode op, const NvnOpPool* pool, uint64_t* gpu_base, uint32_t* count);
+    /* The bind state of one stage and slot. 1 when stored, 0 when refused (the host reports the cause). */
+    int (*bind_texture)(void* ctx, uint32_t stage, uint32_t slot, uint64_t handle);
     /* The caller writes the render target methods itself. 1 when done, 0 when it could not (it reports the cause). */
     int (*render_targets)(void* ctx, const NvnOpRenderTargets* op);
     /* a bad part: a short text and one value. The module then skips the op and goes on. */
