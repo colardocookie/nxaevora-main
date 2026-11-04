@@ -40,6 +40,19 @@
 
 #define NVN_REPLAY_BARRIER_BITS 9u
 
+#define NVN_REPLAY_STENCIL_REF_FRONT        0x4E5u
+#define NVN_REPLAY_STENCIL_REF_BACK         0x3D5u
+#define NVN_REPLAY_STENCIL_VALUE_MASK_FRONT 0x4E6u
+#define NVN_REPLAY_STENCIL_VALUE_MASK_BACK  0x3D7u
+#define NVN_REPLAY_STENCIL_MASK_FRONT       0x4E7u
+#define NVN_REPLAY_STENCIL_MASK_BACK        0x3D6u
+#define NVN_REPLAY_STENCIL_FACE_FRONT       0x1u
+#define NVN_REPLAY_STENCIL_FACE_BACK        0x2u
+#define NVN_REPLAY_STENCIL_VALUE_MASK       0xFFu
+#define NVN_REPLAY_BLEND_COLOR_BASE         0x4C7u
+#define NVN_REPLAY_BLEND_COLOR_WORDS        4u
+#define NVN_REPLAY_ALPHA_REF                0x4C4u
+
 static uint32_t padded_payload(size_t bytes) {
     return (uint32_t)((bytes + (NVN_OP_ALIGN - 1u)) & ~(size_t)(NVN_OP_ALIGN - 1u));
 }
@@ -180,6 +193,49 @@ static int replay_barrier(const NvnReplayEnv* env, NvnReplayStats* stats, const 
     return 1;
 }
 
+/* The method pair of a stencil kind: front first, then back. 0 for a kind the library does not write. */
+static int stencil_method_pair(uint32_t which, uint32_t* front, uint32_t* back) {
+    switch (which) {
+    case NVN_STENCIL_REF:
+        *front = NVN_REPLAY_STENCIL_REF_FRONT;
+        *back = NVN_REPLAY_STENCIL_REF_BACK;
+        return 1;
+    case NVN_STENCIL_VALUE_MASK:
+        *front = NVN_REPLAY_STENCIL_VALUE_MASK_FRONT;
+        *back = NVN_REPLAY_STENCIL_VALUE_MASK_BACK;
+        return 1;
+    case NVN_STENCIL_MASK:
+        *front = NVN_REPLAY_STENCIL_MASK_FRONT;
+        *back = NVN_REPLAY_STENCIL_MASK_BACK;
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int replay_stencil(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpStencil* op) {
+    uint32_t front, back;
+    if (!stencil_method_pair(op->which, &front, &back)) {
+        replay_fault(env, stats, "stencil kind", op->which);
+        return 0;
+    }
+    uint32_t value = op->value & NVN_REPLAY_STENCIL_VALUE_MASK;
+    if (op->face & NVN_REPLAY_STENCIL_FACE_FRONT) replay_method(env, stats, front, value);
+    if (op->face & NVN_REPLAY_STENCIL_FACE_BACK) replay_method(env, stats, back, value);
+    return 1;
+}
+
+static int replay_blend_color(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpBlendColor* op) {
+    for (uint32_t k = 0; k < NVN_REPLAY_BLEND_COLOR_WORDS; k++)
+        replay_method(env, stats, NVN_REPLAY_BLEND_COLOR_BASE + k, op->color[k]);
+    return 1;
+}
+
+static int replay_alpha_ref(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpAlphaRef* op) {
+    replay_method(env, stats, NVN_REPLAY_ALPHA_REF, op->bits);
+    return 1;
+}
+
 static int replay_render_targets(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpRenderTargets* op) {
     if (!env->render_targets(env->ctx, op)) {
         replay_fault(env, stats, "render targets", op->count);
@@ -265,6 +321,27 @@ static void replay_op(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnO
             return;
         }
         ok = replay_call(env, stats, payload, depth);
+        break;
+    case NVN_OP_SET_STENCIL:
+        if (!payload_matches(header, sizeof(NvnOpStencil))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_stencil(env, stats, payload);
+        break;
+    case NVN_OP_SET_BLEND_COLOR:
+        if (!payload_matches(header, sizeof(NvnOpBlendColor))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_blend_color(env, stats, payload);
+        break;
+    case NVN_OP_SET_ALPHA_REF:
+        if (!payload_matches(header, sizeof(NvnOpAlphaRef))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_alpha_ref(env, stats, payload);
         break;
     default:
         replay_fault(env, stats, "op code", header->code);

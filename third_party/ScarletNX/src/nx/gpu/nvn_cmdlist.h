@@ -21,6 +21,9 @@ typedef enum {
     NVN_OP_CLEAR_COLOR,
     NVN_OP_BARRIER,
     NVN_OP_CALL,
+    NVN_OP_SET_STENCIL,
+    NVN_OP_SET_BLEND_COLOR,
+    NVN_OP_SET_ALPHA_REF,
     NVN_OP_COUNT
 } NvnOpCode;
 
@@ -36,6 +39,15 @@ typedef struct { uint32_t index; float x, y, width, height; } NvnOpViewport;
 typedef struct { uint32_t index; int32_t x, y, width, height; } NvnOpScissor;
 typedef struct { uint32_t index, mask; uint32_t color[4]; } NvnOpClearColor; /* the float bits as the game gave them */
 typedef struct { uint32_t bits, reserved; } NvnOpBarrier;
+typedef enum {
+    NVN_STENCIL_REF = 0,
+    NVN_STENCIL_VALUE_MASK,
+    NVN_STENCIL_MASK
+} NvnStencilKind;
+/* face and value are raw: the replay masks them (face bit 0 front, bit 1 back). */
+typedef struct { uint32_t which, face, value, reserved; } NvnOpStencil;
+typedef struct { uint32_t color[4]; } NvnOpBlendColor; /* the float bits as the game gave them */
+typedef struct { uint32_t bits, reserved; } NvnOpAlphaRef;
 typedef struct { uint64_t handle; } NvnOpCall;
 typedef struct {
     uint64_t texture; /* 0 for no target */

@@ -1340,6 +1340,44 @@ static void h_command_buffer_barrier(CPU* c, u64 entry) {
     if (cb) command_record(cb, c->x[0], "nvnCommandBufferBarrier", NVN_OP_BARRIER, &op, sizeof op);
     pm_unlock(&objs_lock);
 }
+/* The three stencil setters store the raw face and value; the replay masks them. */
+#define COMMAND_STENCIL_HANDLER(name, operation, kind)                                              \
+    static void h_command_buffer_##name(CPU* c, u64 entry) {                                        \
+        (void)entry;                                                                                \
+        pm_lock(&objs_lock);                                                                        \
+        CommandBufferRec* cb = command_buffer(c->x[0], operation);                                  \
+        NvnOpStencil op = {(u32)(kind), (u32)c->x[1], (u32)c->x[2], 0};                             \
+        if (cb) command_record(cb, c->x[0], operation, NVN_OP_SET_STENCIL, &op, sizeof op);         \
+        pm_unlock(&objs_lock);                                                                      \
+    }
+COMMAND_STENCIL_HANDLER(set_stencil_ref, "nvnCommandBufferSetStencilRef", NVN_STENCIL_REF)
+COMMAND_STENCIL_HANDLER(set_stencil_value_mask, "nvnCommandBufferSetStencilValueMask", NVN_STENCIL_VALUE_MASK)
+COMMAND_STENCIL_HANDLER(set_stencil_mask, "nvnCommandBufferSetStencilMask", NVN_STENCIL_MASK)
+static void h_command_buffer_set_blend_color(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferSetBlendColor";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb) {
+        NvnOpBlendColor op;
+        if (!native_guest_readable(c->x[1], sizeof op.color))
+            command_dropped(cb, name, "unreadable color", c->x[1]);
+        else {
+            for (u32 k = 0; k < 4; k++) op.color[k] = gr32(c->x[1] + k * 4);
+            command_record(cb, c->x[0], name, NVN_OP_SET_BLEND_COLOR, &op, sizeof op);
+        }
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_set_alpha_ref(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferSetAlphaRef";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpAlphaRef op = {SNX_VS(c->v[0], 0), 0};
+    if (cb) command_record(cb, c->x[0], name, NVN_OP_SET_ALPHA_REF, &op, sizeof op);
+    pm_unlock(&objs_lock);
+}
 static void h_command_buffer_call_commands(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnCommandBufferCallCommands";
@@ -2110,6 +2148,11 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferSetScissors", h_command_buffer_set_scissors},
     {"nvnCommandBufferClearColor", h_command_buffer_clear_color},
     {"nvnCommandBufferBarrier", h_command_buffer_barrier},
+    {"nvnCommandBufferSetStencilRef", h_command_buffer_set_stencil_ref},
+    {"nvnCommandBufferSetStencilValueMask", h_command_buffer_set_stencil_value_mask},
+    {"nvnCommandBufferSetStencilMask", h_command_buffer_set_stencil_mask},
+    {"nvnCommandBufferSetBlendColor", h_command_buffer_set_blend_color},
+    {"nvnCommandBufferSetAlphaRef", h_command_buffer_set_alpha_ref},
     {NULL, NULL},
 };
 

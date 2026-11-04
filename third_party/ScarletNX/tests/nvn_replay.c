@@ -366,6 +366,132 @@ static void test_barrier(void) {
     nvn_oplist_free(&l);
 }
 
+static void test_stencil_ref(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpStencil front = {NVN_STENCIL_REF, 1u, 0x1ABu, 0u};
+    NvnOpStencil back = {NVN_STENCIL_REF, 2u, 0x2CDu, 0u};
+    NvnOpStencil both = {NVN_STENCIL_REF, 3u, 0x3EFu, 0u};
+    NvnOpStencil none = {NVN_STENCIL_REF, 0u, 0x55u, 0u};
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_STENCIL, &front, sizeof front));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_STENCIL, &back, sizeof back));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_STENCIL, &both, sizeof both));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_STENCIL, &none, sizeof none));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.write_count == 4);
+    CHECK(k.writes[0].method == 0x4E5 && k.writes[0].value == 0xABu);
+    CHECK(k.writes[1].method == 0x3D5 && k.writes[1].value == 0xCDu);
+    CHECK(k.writes[2].method == 0x4E5 && k.writes[2].value == 0xEFu);
+    CHECK(k.writes[3].method == 0x3D5 && k.writes[3].value == 0xEFu);
+    CHECK(st.replayed[NVN_OP_SET_STENCIL] == 4 && st.methods == 4 && st.faults == 0);
+    nvn_oplist_free(&l);
+}
+
+static void test_stencil_face_and_value_mask(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpStencil high = {NVN_STENCIL_VALUE_MASK, 1u, 0xFFFFFFFFu, 0u};
+    NvnOpStencil ignored = {NVN_STENCIL_MASK, 0xFCu, 0x77u, 0u};
+    NvnOpStencil all = {NVN_STENCIL_MASK, 0xFFu, 0x77u, 0u};
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_STENCIL, &high, sizeof high));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_STENCIL, &ignored, sizeof ignored));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_STENCIL, &all, sizeof all));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.write_count == 3);
+    CHECK(k.writes[0].method == 0x4E6 && k.writes[0].value == 0xFFu);
+    CHECK(k.writes[1].method == 0x4E7 && k.writes[1].value == 0x77u);
+    CHECK(k.writes[2].method == 0x3D6 && k.writes[2].value == 0x77u);
+    CHECK(st.replayed[NVN_OP_SET_STENCIL] == 3 && st.methods == 3 && st.faults == 0);
+    nvn_oplist_free(&l);
+}
+
+static void test_stencil_kinds(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpStencil ref = {NVN_STENCIL_REF, 3u, 1u, 0u};
+    NvnOpStencil value = {NVN_STENCIL_VALUE_MASK, 3u, 2u, 0u};
+    NvnOpStencil mask = {NVN_STENCIL_MASK, 3u, 3u, 0u};
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_STENCIL, &ref, sizeof ref));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_STENCIL, &value, sizeof value));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_STENCIL, &mask, sizeof mask));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.write_count == 6);
+    CHECK(k.writes[0].method == 0x4E5 && k.writes[0].value == 1u);
+    CHECK(k.writes[1].method == 0x3D5 && k.writes[1].value == 1u);
+    CHECK(k.writes[2].method == 0x4E6 && k.writes[2].value == 2u);
+    CHECK(k.writes[3].method == 0x3D7 && k.writes[3].value == 2u);
+    CHECK(k.writes[4].method == 0x4E7 && k.writes[4].value == 3u);
+    CHECK(k.writes[5].method == 0x3D6 && k.writes[5].value == 3u);
+    CHECK(st.methods == 6 && st.faults == 0);
+    nvn_oplist_free(&l);
+}
+
+static void test_stencil_unknown_kind(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpStencil bad = {3u, 3u, 1u, 0u};
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_STENCIL, &bad, sizeof bad));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 1 && k.fault_count == 1 && k.last_fault_value == 3u);
+    CHECK(st.replayed[NVN_OP_SET_STENCIL] == 0 && st.methods == 0);
+    nvn_oplist_free(&l);
+}
+
+static void test_blend_color(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpBlendColor op = {{0x7FC00001u, 0xFFFFFFFFu, 0x3F800000u, 0x80000000u}};
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_BLEND_COLOR, &op, sizeof op));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.write_count == 4);
+    CHECK(k.writes[0].method == 0x4C7 && k.writes[0].value == 0x7FC00001u);
+    CHECK(k.writes[1].method == 0x4C8 && k.writes[1].value == 0xFFFFFFFFu);
+    CHECK(k.writes[2].method == 0x4C9 && k.writes[2].value == 0x3F800000u);
+    CHECK(k.writes[3].method == 0x4CA && k.writes[3].value == 0x80000000u);
+    CHECK(st.replayed[NVN_OP_SET_BLEND_COLOR] == 1 && st.methods == 4 && st.faults == 0);
+    nvn_oplist_free(&l);
+}
+
+static void test_alpha_ref(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpAlphaRef op = {0x3F000000u, 0u};
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_ALPHA_REF, &op, sizeof op));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.write_count == 1 && k.writes[0].method == 0x4C4 && k.writes[0].value == 0x3F000000u);
+    CHECK(st.replayed[NVN_OP_SET_ALPHA_REF] == 1 && st.methods == 1 && st.faults == 0);
+    nvn_oplist_free(&l);
+}
+
+static void test_raster_bad_payload(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    uint8_t small[8] = {0};
+    uint8_t big[16] = {0};
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_STENCIL, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_BLEND_COLOR, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_ALPHA_REF, big, sizeof big));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 3 && k.fault_count == 3 && k.last_fault_value == NVN_OP_SET_ALPHA_REF);
+    CHECK(st.replayed[NVN_OP_SET_STENCIL] == 0 && st.replayed[NVN_OP_SET_BLEND_COLOR] == 0);
+    CHECK(st.replayed[NVN_OP_SET_ALPHA_REF] == 0 && st.methods == 0);
+    nvn_oplist_free(&l);
+}
+
 static void test_call_live(void) {
     Mock k = {0};
     NvnReplayEnv env = make_env(&k);
@@ -502,6 +628,13 @@ int main(void) {
     test_pool();
     test_render_targets();
     test_barrier();
+    test_stencil_ref();
+    test_stencil_face_and_value_mask();
+    test_stencil_kinds();
+    test_stencil_unknown_kind();
+    test_blend_color();
+    test_alpha_ref();
+    test_raster_bad_payload();
     test_call_live();
     test_call_dead();
     test_call_depth();
