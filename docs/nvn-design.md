@@ -245,8 +245,8 @@ Design of the attachment:
 Facts found on the way (from the disassembly of the `sdk` module):
 
 - The handle functions of the device are small and pure. `nvnDeviceGetTextureHandle` (d82d0d0) returns
-  `sign_extend(texture | sampler << 20) | 1 << 32`. `nvnDeviceGetImageHandle` and the sampler handle function (d82d0a0,
-  d82d0b0, d82d0c0) use the same form. This settles the handle format of step 2-2: the host layer uses this formula, and
+  `sign_extend(texture | sampler << 20) | 1 << 32`. `nvnDeviceGetImageHandle` (d82d050) returns `sign_extend(index)` with no tag (checked 2026-11-04). The sampler handle
+  functions (d82d0a0, d82d0b0, d82d0c0) are not checked. This settles the handle format of step 2-2: the host layer uses this formula, and
   the pool registration takes the texture index from the low 20 bits.
 - Correction to the survey: d82d110 (`nvnDeviceInitialize` as the loader returns it) is a trampoline, and not the function that
   writes at +0x19d8. The access at +0x19d8 belongs to the small getter at d82d100. The table "Object memory that Initialize
