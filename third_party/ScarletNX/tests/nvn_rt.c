@@ -61,6 +61,18 @@ static void expect(const Mock* k, uint32_t index, uint32_t method, uint32_t valu
     }
 }
 
+static int same_writes(const Mock* a, const Mock* b) {
+    if (a->write_count != b->write_count) return 0;
+    for (uint32_t i = 0; i < a->write_count; i++)
+        if (a->writes[i].method != b->writes[i].method || a->writes[i].value != b->writes[i].value)
+            return 0;
+    return 1;
+}
+
+static int fault_is(const Mock* k, const char* what) {
+    return k->fault_count == 1 && k->last_fault && strcmp(k->last_fault, what) == 0;
+}
+
 static NvnTexture make_texture_with(uint32_t format, uint32_t width, uint32_t height, uint64_t address,
                                     uint16_t tile, uint32_t samples) {
     NvnTexture t;
@@ -361,13 +373,14 @@ static void test_depth_view_checks(void) {
     view.level_count = 1;
     NvnRtColor levels = {&d, &view};
     CHECK(nvn_rt_emit(&env, NULL, 0, &levels, 0x4000) == 0);
-    CHECK(k.write_count == 0 && k.fault_count == 1 && k.last_fault_value == NVN_VIEW_LEVELS);
+    CHECK(k.write_count == 0 && fault_is(&k, "rt view levels") && k.last_fault_value == 1u);
 
     memset(&k, 0, sizeof k);
     view.base_level = 0;
     view.level_count = 2;
-    CHECK(nvn_rt_emit(&env, NULL, 0, &levels, 0x4000) == 0);
-    CHECK(k.write_count == 0 && k.fault_count == 1 && k.last_fault_value == NVN_VIEW_LEVELS);
+    CHECK(nvn_rt_emit(&env, NULL, 0, &levels, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    expect(&k, 18, 0x48C, 1u);
 
     memset(&k, 0, sizeof k);
     view.base_level = 0;
@@ -381,7 +394,7 @@ static void test_depth_view_checks(void) {
     view.format = 0x33;
     NvnRtColor format = {&d, &view};
     CHECK(nvn_rt_emit(&env, NULL, 0, &format, 0x4000) == 0);
-    CHECK(k.write_count == 0 && k.fault_count == 1 && k.last_fault_value == 0x33u);
+    CHECK(k.write_count == 0 && fault_is(&k, "rt view format") && k.last_fault_value == 0x33u);
 
     memset(&k, 0, sizeof k);
     view.format = 0x34;
@@ -422,10 +435,11 @@ static void test_refusals(void) {
     NvnTextureView view;
     memset(&view, 0, sizeof view);
     view.flags = NVN_VIEW_LEVELS;
+    view.base_level = 1;
     NvnRtColor with_view[1] = {{&good, &view}};
     memset(&k, 0, sizeof k);
     CHECK(nvn_rt_emit(&env, with_view, 1, NULL, 0x4000) == 0);
-    CHECK(k.write_count == 0 && k.fault_count == 1 && k.last_fault_value == NVN_VIEW_LEVELS);
+    CHECK(k.write_count == 0 && fault_is(&k, "rt view levels") && k.last_fault_value == 1u);
 
     NvnTexture not_2d = make_texture(0x25, 64, 64, 0x1000);
     not_2d.builder.target = NVN_TEXTURE_TARGET_2D_MS;
@@ -506,6 +520,110 @@ static void test_null_env_fields(void) {
     CHECK(k.write_count == 0 && k.fault_count == 0);
 }
 
+static void test_color_view_no_change(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTexture t = make_texture(0x25, 1280, 720, 0x0000000412345600ull);
+    NvnRtColor plain[1] = {{&t, NULL}};
+    CHECK(nvn_rt_emit(&env, plain, 1, NULL, 0x4000) == 1);
+    Mock base = k;
+
+    NvnTextureView view;
+    memset(&view, 0, sizeof view);
+    view.level_count = 1;
+    view.layer_count = 1;
+    view.format = 0x25;
+    view.target = NVN_TEXTURE_TARGET_2D;
+    NvnRtColor seen[1] = {{&t, &view}};
+
+    view.flags = 0x3fu;
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_emit(&env, seen, 1, NULL, 0x4000) == 1);
+    CHECK(k.fault_count == 0 && same_writes(&base, &k));
+
+    view.flags = 0x27u;
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_emit(&env, seen, 1, NULL, 0x4000) == 1);
+    CHECK(k.fault_count == 0 && same_writes(&base, &k));
+}
+
+static void test_color_view_layers(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTexture t = make_texture(0x25, 1280, 720, 0x0000000412345600ull);
+    NvnTextureView view;
+    memset(&view, 0, sizeof view);
+    view.flags = NVN_VIEW_LAYERS;
+    view.base_layer = 3;
+    view.layer_count = 5;
+    NvnRtColor color[1] = {{&t, &view}};
+    CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    expect(&k, 1, 0x200, 0x00000004u);
+    expect(&k, 2, 0x201, 0x12E85600u);
+    expect(&k, 7, 0x206, 5u);
+    expect(&k, 8, 0x207, 0x000F0000u);
+
+    view.base_layer = 0;
+    view.layer_count = 0;
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    expect(&k, 2, 0x201, 0x12345600u);
+    expect(&k, 7, 0x206, 1u);
+
+    view.base_layer = 3;
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 0);
+    CHECK(k.write_count == 0 && fault_is(&k, "rt view layers") && k.last_fault_value == 3u);
+}
+
+static void test_color_view_target_3d(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTexture t = make_texture(0x25, 1280, 720, 0x1000);
+    NvnTextureView view;
+    memset(&view, 0, sizeof view);
+    view.target = NVN_TEXTURE_TARGET_3D;
+    NvnRtColor color[1] = {{&t, &view}};
+
+    view.flags = NVN_VIEW_TARGET;
+    CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    expect(&k, 6, 0x205, 0x00010040u);
+
+    view.flags = NVN_VIEW_SWIZZLE;
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    expect(&k, 6, 0x205, 0x00000040u);
+}
+
+static void test_color_view_checks(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTexture t = make_texture(0x25, 1280, 720, 0x1000);
+    NvnTextureView view;
+    memset(&view, 0, sizeof view);
+    NvnRtColor color[1] = {{&t, &view}};
+
+    view.flags = NVN_VIEW_LEVELS;
+    view.base_level = 1;
+    CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 0);
+    CHECK(k.write_count == 0 && fault_is(&k, "rt view levels") && k.last_fault_value == 1u);
+
+    memset(&k, 0, sizeof k);
+    view.flags = NVN_VIEW_FORMAT;
+    view.format = 0x26;
+    CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 0);
+    CHECK(k.write_count == 0 && fault_is(&k, "rt view format") && k.last_fault_value == 0x26u);
+
+    memset(&k, 0, sizeof k);
+    view.flags = 0x40u;
+    CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 0);
+    CHECK(k.write_count == 0 && fault_is(&k, "rt view flags") && k.last_fault_value == 0x40u);
+}
+
 int main(void) {
     test_one_target();
     test_null_slot_zero();
@@ -520,6 +638,10 @@ int main(void) {
     test_sample_mode();
     test_depth_view_layers();
     test_depth_view_checks();
+    test_color_view_no_change();
+    test_color_view_layers();
+    test_color_view_target_3d();
+    test_color_view_checks();
     test_depth_linear();
     test_refusals();
     test_bad_input();

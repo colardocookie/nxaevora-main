@@ -28,13 +28,20 @@
 #define NVN_RT_SAMPLE_INDEX_MAX     7u
 #define NVN_RT_SHIFT_MASK           31u
 #define NVN_RT_DEPTH_WORD_MASK      0xFFFFu
-#define NVN_RT_DEPTH_VIEW_FLAGS     (NVN_VIEW_LEVELS | NVN_VIEW_LAYERS | NVN_VIEW_FORMAT | \
+#define NVN_RT_VIEW_FLAGS           (NVN_VIEW_LEVELS | NVN_VIEW_LAYERS | NVN_VIEW_FORMAT | \
                                      NVN_VIEW_SWIZZLE | NVN_VIEW_DEPTH_STENCIL_MODE | NVN_VIEW_TARGET)
+#define NVN_RT_TILE_3D_BIT          0x10000u
 
 typedef struct {
     uint64_t address;
     uint32_t width, height, depth, format, tile, layer_stride_words;
 } NvnRtDepth;
+
+typedef struct {
+    uint64_t address;
+    uint32_t depth_word;
+    int target_3d;
+} NvnRtViewResult;
 
 static uint32_t rt_align_up(uint32_t value, uint32_t multiple) {
     return ((value + multiple - 1u) / multiple) * multiple;
@@ -103,79 +110,98 @@ static int rt_texture_checks(const NvnRtEnv* env, const NvnTexture* texture, con
     return 1;
 }
 
-/* The depth view reads LEVELS, LAYERS and FORMAT. SWIZZLE, DEPTH_STENCIL_MODE and TARGET do not change
-   the depth words. */
-static int rt_depth_view(const NvnRtEnv* env, const NvnTexture* texture, const NvnTextureView* view) {
-    if (!view || view->flags == 0u) return 1;
-    if (view->flags & (uint8_t)~NVN_RT_DEPTH_VIEW_FLAGS) {
-        env->fault(env->ctx, "rt depth view flags", view->flags);
+/* The address, the depth word and the 3D bit of a view, shared by the color and the depth target.
+   The library reads LEVELS, LAYERS, FORMAT and TARGET. It does not read level_count, and it wraps
+   when base_layer is above the texture depth; the host refuses that case. A refusal writes no part
+   of *out. */
+static int rt_view_apply(const NvnRtEnv* env, const NvnTexture* texture, const NvnTextureView* view,
+                         NvnRtViewResult* out) {
+    const NvnTextureLayout* layout = &texture->layout;
+    uint64_t address = texture->address;
+    uint32_t depth_word = layout->depth;
+    uint32_t target = texture->builder.target;
+    if (!view || view->flags == 0u) {
+        out->address = address;
+        out->depth_word = depth_word;
+        out->target_3d = target == NVN_TEXTURE_TARGET_3D;
+        return 1;
+    }
+    if (view->flags & (uint8_t)~NVN_RT_VIEW_FLAGS) {
+        env->fault(env->ctx, "rt view flags", view->flags);
         return 0;
     }
-    if ((view->flags & NVN_VIEW_LEVELS) && (view->base_level != 0u || view->level_count != 1u)) {
-        env->fault(env->ctx, "rt depth view levels", view->flags);
+    if ((view->flags & NVN_VIEW_LEVELS) && view->base_level != 0u) {
+        env->fault(env->ctx, "rt view levels", view->base_level);
         return 0;
+    }
+    if (view->flags & NVN_VIEW_LAYERS) {
+        uint64_t offset = (uint64_t)view->base_layer * layout->layer_stride;
+        if (offset > UINT64_MAX - address) {
+            env->fault(env->ctx, "rt view address", address);
+            return 0;
+        }
+        address += offset;
+        if (view->layer_count != 0u) {
+            depth_word = view->layer_count;
+        } else if (view->base_layer != 0u) {
+            if (view->base_layer > layout->depth) {
+                env->fault(env->ctx, "rt view layers", view->base_layer);
+                return 0;
+            }
+            depth_word = layout->depth - view->base_layer;
+        }
     }
     if ((view->flags & NVN_VIEW_FORMAT) && view->format != texture->builder.format) {
-        env->fault(env->ctx, "rt depth view format", view->format);
+        env->fault(env->ctx, "rt view format", view->format);
         return 0;
     }
+    if (view->flags & NVN_VIEW_TARGET) target = view->target;
+    out->address = address;
+    out->depth_word = depth_word;
+    out->target_3d = target == NVN_TEXTURE_TARGET_3D;
     return 1;
 }
 
 /* One target: check it and compute its eight words. The fault callback reports the first bad part. */
 static int rt_target_words(const NvnRtEnv* env, const NvnRtColor* color, uint32_t word[NVN_RT_WORDS_PER_TARGET]) {
     const NvnTexture* texture = color->texture;
-    const NvnTextureView* view = color->view;
     const NvnTextureLayout* layout = &texture->layout;
-    if (view && view->flags != 0u) {
-        env->fault(env->ctx, "rt view flags", view->flags);
-        return 0;
-    }
     uint32_t format_word = 0;
     if (!rt_texture_checks(env, texture, "rt linear", &format_word)) return 0;
+    NvnRtViewResult view;
+    if (!rt_view_apply(env, texture, color->view, &view)) return 0;
     uint32_t width = layout->width * layout->sample_x;
     uint32_t height = layout->height * layout->sample_y;
     uint32_t gob_blocks = NVN_TEXTURE_GOB_WIDTH / layout->bytes_per_block;
     uint32_t factor = rt_tile_factor(layout, width, height, layout->depth);
-    word[0] = (uint32_t)(texture->address >> 32);
-    word[1] = (uint32_t)texture->address;
+    word[0] = (uint32_t)(view.address >> 32);
+    word[1] = (uint32_t)view.address;
     word[2] = rt_align_up(width, factor * gob_blocks);
     word[3] = height;
     word[4] = format_word;
-    word[5] = rt_tile_word(layout);
-    word[6] = layout->depth;
+    word[5] = rt_tile_word(layout) | (view.target_3d ? NVN_RT_TILE_3D_BIT : 0u);
+    word[6] = view.depth_word;
     word[7] = (uint32_t)(layout->layer_stride >> NVN_RT_LAYER_STRIDE_SHIFT);
     return 1;
 }
 
-/* The depth surface: check it and compute its words. A view without levels and format errors only moves
-   the address by the base layer and sets the depth word to the layer count. */
+/* The depth surface: check it and compute its words. The view rules are the color rules; the depth
+   word is the low 16 bits and the 3D tile bit has no depth part. */
 static int rt_depth_words(const NvnRtEnv* env, const NvnRtColor* depth, NvnRtDepth* out) {
     const NvnTexture* texture = depth->texture;
-    const NvnTextureView* view = depth->view;
     const NvnTextureLayout* layout = &texture->layout;
     uint32_t format_word = 0;
     if (!rt_texture_checks(env, texture, "rt depth linear", &format_word)) return 0;
-    if (!rt_depth_view(env, texture, view)) return 0;
-    uint64_t address = texture->address;
-    uint32_t depth_word = layout->depth & NVN_RT_DEPTH_WORD_MASK;
-    if (view && (view->flags & NVN_VIEW_LAYERS)) {
-        uint64_t offset = (uint64_t)view->base_layer * layout->layer_stride;
-        if (offset > UINT64_MAX - address) {
-            env->fault(env->ctx, "rt depth address", address);
-            return 0;
-        }
-        address += offset;
-        depth_word = view->layer_count;
-    }
+    NvnRtViewResult view;
+    if (!rt_view_apply(env, texture, depth->view, &view)) return 0;
     uint32_t width = layout->width * layout->sample_x;
     uint32_t height = layout->height * layout->sample_y;
     uint32_t gob_blocks = NVN_TEXTURE_GOB_WIDTH / layout->bytes_per_block;
     uint32_t factor = rt_tile_factor(layout, width, height, layout->depth);
-    out->address = address;
+    out->address = view.address;
     out->width = rt_align_up(width, factor * gob_blocks);
     out->height = height;
-    out->depth = depth_word;
+    out->depth = view.depth_word & NVN_RT_DEPTH_WORD_MASK;
     out->format = format_word;
     out->tile = rt_tile_word(layout);
     out->layer_stride_words = (uint32_t)(layout->layer_stride >> NVN_RT_LAYER_STRIDE_SHIFT);
