@@ -1399,8 +1399,39 @@ static int replay_host_descriptor_pool(void* ctx, NvnOpCode op, const NvnOpPool*
     pm_unlock(&objs_lock);
     return ok;
 }
+/* Counts of the refusals by cause in one frame. The log lines are limited, so the frame line shows these counts. Only the
+   GPU thread (the frame job) calls the replay callbacks. Causes are string literals. */
+#define REPLAY_CAUSES_MAX 16u
+static struct { const char* what; uint32_t count; } replay_causes[REPLAY_CAUSES_MAX];
+static uint32_t replay_cause_overflow;
+static void replay_cause_count(const char* what) {
+    for (uint32_t i = 0; i < REPLAY_CAUSES_MAX; i++) {
+        if (!replay_causes[i].what) replay_causes[i].what = what;
+        if (replay_causes[i].what == what || strcmp(replay_causes[i].what, what) == 0) {
+            replay_causes[i].count++;
+            return;
+        }
+    }
+    replay_cause_overflow++;
+}
+/* Writes "cause=count" pairs of the frame into out and clears the counts. out is empty when there was no refusal. */
+static void replay_causes_take(char* out, size_t size) {
+    size_t used = 0;
+    out[0] = 0;
+    for (uint32_t i = 0; i < REPLAY_CAUSES_MAX && replay_causes[i].what; i++) {
+        int n = snprintf(out + used, size - used, "%s%s=%u", used ? "; " : "", replay_causes[i].what, replay_causes[i].count);
+        if (n > 0 && (size_t)n < size - used) used += (size_t)n;
+        replay_causes[i].what = NULL;
+        replay_causes[i].count = 0;
+    }
+    if (replay_cause_overflow) {
+        snprintf(out + used, size - used, "%sother=%u", used ? "; " : "", replay_cause_overflow);
+        replay_cause_overflow = 0;
+    }
+}
 static void replay_host_rt_fault(void* ctx, const char* what, uint64_t value) {
     (void)ctx;
+    replay_cause_count(what);
     LOG_LIMIT(REPLAY_LOG_LIMIT, "nvn-native: replay render targets refused: %s (%llx)\n", what, (unsigned long long)value);
 }
 /* The textures are copied under the lock, so that the words are made without it. 0 when a texture is gone. */
@@ -1446,6 +1477,7 @@ static int replay_host_render_targets(void* ctx, const NvnOpRenderTargets* op) {
 }
 static void replay_host_fault(void* ctx, const char* what, uint64_t value) {
     (void)ctx;
+    replay_cause_count(what);
     LOG_LIMIT(REPLAY_LOG_LIMIT, "nvn-native: replay fault: %s (%llx)\n", what, (unsigned long long)value);
 }
 void nvn_native_replay_env(NvnNativeReplayHost* host, int window_origin_flip, NvnReplayEnv* env) {
@@ -1757,7 +1789,10 @@ static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int sho
     uint32_t live = nvn_list_live(&lists);
     pm_unlock(&objs_lock);
     int abnormal = stats->faults != 0 || dropped_delta != 0 || missing_delta != 0 || !shown;
+    char causes[256];
+    replay_causes_take(causes, sizeof causes);
     if ((abnormal && nvn_frame_log_due(frame_number, 1)) || (!abnormal && nvn_frame_log_due(frame_number, 0))) {
+        if (causes[0]) LOG("nvn-native: frame %u refusals: %s\n", frame_number, causes);
         last_missing_calls = missing; /* the deltas of the next line are from this one */
         last_dropped_ops = dropped;
         if (abnormal)
