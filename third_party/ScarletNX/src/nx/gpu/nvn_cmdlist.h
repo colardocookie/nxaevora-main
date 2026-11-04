@@ -25,6 +25,7 @@ typedef enum {
     NVN_OP_SET_BLEND_COLOR,
     NVN_OP_SET_ALPHA_REF,
     NVN_OP_BIND_TEXTURE,
+    NVN_OP_BIND_BUFFER,
     NVN_OP_COUNT
 } NvnOpCode;
 
@@ -35,6 +36,10 @@ typedef enum {
 #define NVN_CALL_DEPTH_MAX   8u  /* nested CALL ops at replay */
 #define NVN_BIND_STAGE_MAX   5u  /* stages 0 to 5; compute is the last valid stage */
 #define NVN_BIND_SLOT_MAX    128u /* bind slots of one stage */
+#define NVN_UNIFORM_SLOT_MAX 32u /* the library masks slot+3 to 5 bits, so a higher slot would alias */
+#define NVN_STORAGE_SLOT_MAX NVN_BIND_SLOT_MAX
+#define NVN_VERTEX_SLOT_MAX  16u
+#define NVN_XFB_SLOT_MAX     4u
 
 /* a pool or a texture is named by address and generation (nvn_objtab) and read at replay */
 typedef struct { uint64_t pool; uint32_t generation, reserved; } NvnOpPool;
@@ -53,6 +58,7 @@ typedef struct { uint32_t color[4]; } NvnOpBlendColor; /* the float bits as the 
 typedef struct { uint32_t bits, reserved; } NvnOpAlphaRef;
 typedef struct { uint64_t handle; } NvnOpCall;
 typedef struct { uint32_t stage, slot; uint64_t handle; } NvnOpBindTexture;
+typedef struct { uint32_t kind, stage, slot, reserved; uint64_t addr, size; } NvnOpBindBuffer;
 typedef struct {
     uint64_t texture; /* 0 for no target */
     uint32_t generation, has_view;

@@ -49,6 +49,11 @@ uint64_t nvn_timestamp_ns(uint64_t ticks);
 uint64_t nvn_texture_handle(uint32_t texture_index, uint32_t sampler_index);
 uint64_t nvn_image_handle(uint32_t image_index);
 
+/* The four kinds of buffer bind of a command buffer. A uniform and a vertex bind are active with a nonzero size, a
+   transform feedback bind with a nonzero address, and a storage bind is always active. */
+typedef enum { NVN_BIND_UNIFORM = 0, NVN_BIND_STORAGE, NVN_BIND_VERTEX, NVN_BIND_TRANSFORM_FEEDBACK } NvnBindKind;
+int nvn_bind_buffer_active(NvnBindKind kind, uint64_t addr, uint64_t size);
+
 /* The device words that nvnQueueBuilderGetQueueMemorySize reads (offsets in the names). */
 typedef struct {
     uint32_t w8c, w94, w98, we0, we4, w1af4;

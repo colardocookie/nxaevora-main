@@ -83,6 +83,16 @@ uint64_t nvn_texture_handle(uint32_t texture_index, uint32_t sampler_index) {
 
 uint64_t nvn_image_handle(uint32_t image_index) { return (uint64_t)(int64_t)(int32_t)image_index; }
 
+int nvn_bind_buffer_active(NvnBindKind kind, uint64_t addr, uint64_t size) {
+    switch (kind) {
+    case NVN_BIND_UNIFORM: return size != 0;
+    case NVN_BIND_STORAGE: return 1;
+    case NVN_BIND_VERTEX: return size != 0;
+    case NVN_BIND_TRANSFORM_FEEDBACK: return addr != 0;
+    default: return 0;
+    }
+}
+
 const NvnQueueDeviceWords nvn_queue_device_words = {.w8c = 0x80, .w94 = 2, .w98 = 1, .we0 = 1, .we4 = 0x1000, .w1af4 = 0};
 
 void nvn_queue_builder_defaults(NvnQueueBuilder* b) {

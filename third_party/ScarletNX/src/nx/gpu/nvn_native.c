@@ -1342,6 +1342,134 @@ static void h_command_buffer_bind_texture(CPU* c, u64 entry) {
         command_record(cb, c->x[0], name, NVN_OP_BIND_TEXTURE, &op, sizeof op);
     pm_unlock(&objs_lock);
 }
+/* One buffer bind: the stage, the slot limit and the bind table are the host's; the library checks none of them. */
+static void command_bind_buffer(CommandBufferRec* cb, u64 addr, const char* operation, NvnBindKind kind,
+                                uint32_t stage, uint32_t slot, uint32_t slot_max, uint64_t buffer, uint64_t size) {
+    NvnOpBindBuffer op = {kind, stage, slot, 0, buffer, size};
+    if (stage > NVN_BIND_STAGE_MAX)
+        command_dropped(cb, operation, "stage outside the bind stages", stage);
+    else if (slot >= slot_max)
+        command_dropped(cb, operation, "slot outside the bind slots", slot);
+    else
+        command_record(cb, addr, operation, NVN_OP_BIND_BUFFER, &op, sizeof op);
+}
+/* The range checks of a plural bind, done before any entry is read. 1 when the call can be recorded. */
+static int command_bind_range_ok(CommandBufferRec* cb, const char* operation, uint32_t stage, uint32_t first,
+                                 int32_t count, u64 array, uint32_t slot_max) {
+    if (stage > NVN_BIND_STAGE_MAX) {
+        command_dropped(cb, operation, "stage outside the bind stages", stage);
+        return 0;
+    }
+    if ((u64)first + (u64)count > slot_max) {
+        command_dropped(cb, operation, "range outside the bind slots", ((u64)first << 32) | (u32)count);
+        return 0;
+    }
+    if (!native_guest_readable(array, (u64)count * 16)) {
+        command_dropped(cb, operation, "unreadable array", array);
+        return 0;
+    }
+    return 1;
+}
+/* A plural bind whose array entry is {u64 addr; u32 size; u32 pad}. */
+static void command_bind_buffers_sized(CommandBufferRec* cb, u64 addr, const char* operation, NvnBindKind kind,
+                                       uint32_t stage, uint32_t first, int32_t count, u64 array, uint32_t slot_max) {
+    if (!command_bind_range_ok(cb, operation, stage, first, count, array, slot_max)) return;
+    for (uint32_t i = 0; i < (uint32_t)count; i++) {
+        u64 at = array + (u64)i * 16;
+        NvnOpBindBuffer op = {kind, stage, first + i, 0, gr64(at), (uint32_t)gr32(at + 8)};
+        command_record(cb, addr, operation, NVN_OP_BIND_BUFFER, &op, sizeof op);
+    }
+}
+/* A plural bind whose array entry is {u64 addr; u64 size}. The vertex and transform feedback binds have no stage. */
+static void command_bind_buffers_full(CommandBufferRec* cb, u64 addr, const char* operation, NvnBindKind kind,
+                                      uint32_t first, int32_t count, u64 array, uint32_t slot_max) {
+    if (!command_bind_range_ok(cb, operation, 0, first, count, array, slot_max)) return;
+    for (uint32_t i = 0; i < (uint32_t)count; i++) {
+        u64 at = array + (u64)i * 16;
+        NvnOpBindBuffer op = {kind, 0, first + i, 0, gr64(at), gr64(at + 8)};
+        command_record(cb, addr, operation, NVN_OP_BIND_BUFFER, &op, sizeof op);
+    }
+}
+static void h_command_buffer_bind_uniform_buffer(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferBindUniformBuffer";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb) command_bind_buffer(cb, c->x[0], name, NVN_BIND_UNIFORM, (u32)c->x[1], (u32)c->x[2],
+                                NVN_UNIFORM_SLOT_MAX, c->x[3], (uint32_t)c->x[4]);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_bind_storage_buffer(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferBindStorageBuffer";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb) command_bind_buffer(cb, c->x[0], name, NVN_BIND_STORAGE, (u32)c->x[1], (u32)c->x[2],
+                                NVN_STORAGE_SLOT_MAX, c->x[3], (uint32_t)c->x[4]);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_bind_vertex_buffer(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferBindVertexBuffer";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb) command_bind_buffer(cb, c->x[0], name, NVN_BIND_VERTEX, 0, (u32)c->x[1], NVN_VERTEX_SLOT_MAX,
+                                c->x[2], c->x[3]);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_bind_transform_feedback_buffer(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferBindTransformFeedbackBuffer";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb) command_bind_buffer(cb, c->x[0], name, NVN_BIND_TRANSFORM_FEEDBACK, 0, (u32)c->x[1], NVN_XFB_SLOT_MAX,
+                                c->x[2], c->x[3]);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_bind_uniform_buffers(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferBindUniformBuffers";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    int32_t count = (int32_t)c->x[3];
+    if (cb && count > 0)
+        command_bind_buffers_sized(cb, c->x[0], name, NVN_BIND_UNIFORM, (u32)c->x[1], (u32)c->x[2], count,
+                                   c->x[4], NVN_UNIFORM_SLOT_MAX);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_bind_storage_buffers(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferBindStorageBuffers";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    int32_t count = (int32_t)c->x[3];
+    if (cb && count > 0)
+        command_bind_buffers_sized(cb, c->x[0], name, NVN_BIND_STORAGE, (u32)c->x[1], (u32)c->x[2], count,
+                                   c->x[4], NVN_STORAGE_SLOT_MAX);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_bind_vertex_buffers(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferBindVertexBuffers";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    int32_t count = (int32_t)c->x[2];
+    if (cb && count > 0)
+        command_bind_buffers_full(cb, c->x[0], name, NVN_BIND_VERTEX, (u32)c->x[1], count, c->x[3],
+                                  NVN_VERTEX_SLOT_MAX);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_bind_transform_feedback_buffers(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferBindTransformFeedbackBuffers";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    int32_t count = (int32_t)c->x[2];
+    if (cb && count > 0)
+        command_bind_buffers_full(cb, c->x[0], name, NVN_BIND_TRANSFORM_FEEDBACK, (u32)c->x[1], count, c->x[3],
+                                  NVN_XFB_SLOT_MAX);
+    pm_unlock(&objs_lock);
+}
 static void h_command_buffer_clear_color(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnCommandBufferClearColor";
@@ -1454,6 +1582,36 @@ static int replay_host_bind_texture(void* ctx, uint32_t stage, uint32_t slot, ui
     if (stage > NVN_BIND_STAGE_MAX || slot >= NVN_BIND_SLOT_MAX) return 0;
     host->texture_handle[stage][slot] = handle;
     host->texture_bound[stage][slot] = 1;
+    return 1;
+}
+/* The replay stores addr and size even when the bind is not active, so that a bind that disables the slot replaces the
+   old one. The host refuses a kind, stage or slot that its bind table cannot hold. */
+static int replay_host_bind_buffer(void* ctx, const NvnOpBindBuffer* op) {
+    NvnNativeReplayHost* host = ctx;
+    NvnBindEntry* entry;
+    switch ((NvnBindKind)op->kind) {
+    case NVN_BIND_UNIFORM:
+        if (op->stage > NVN_BIND_STAGE_MAX || op->slot >= NVN_UNIFORM_SLOT_MAX) return 0;
+        entry = &host->uniform[op->stage][op->slot];
+        break;
+    case NVN_BIND_STORAGE:
+        if (op->stage > NVN_BIND_STAGE_MAX || op->slot >= NVN_STORAGE_SLOT_MAX) return 0;
+        entry = &host->storage[op->stage][op->slot];
+        break;
+    case NVN_BIND_VERTEX:
+        if (op->slot >= NVN_VERTEX_SLOT_MAX) return 0;
+        entry = &host->vertex[op->slot];
+        break;
+    case NVN_BIND_TRANSFORM_FEEDBACK:
+        if (op->slot >= NVN_XFB_SLOT_MAX) return 0;
+        entry = &host->xfb[op->slot];
+        break;
+    default:
+        return 0;
+    }
+    entry->addr = op->addr;
+    entry->size = op->size;
+    entry->bound = (uint8_t)nvn_bind_buffer_active((NvnBindKind)op->kind, op->addr, op->size);
     return 1;
 }
 static int replay_host_descriptor_pool(void* ctx, NvnOpCode op, const NvnOpPool* pool, uint64_t* gpu_base, uint32_t* count) {
@@ -1573,8 +1731,8 @@ static void replay_host_fault(void* ctx, const char* what, uint64_t value) {
 void nvn_native_replay_env(NvnNativeReplayHost* host, int window_origin_flip, NvnReplayEnv* env) {
     *env = (NvnReplayEnv){.ctx = host, .method = replay_host_method, .read_register = replay_host_read_register,
                           .find_list = replay_host_find_list, .descriptor_pool = replay_host_descriptor_pool,
-                          .bind_texture = replay_host_bind_texture, .render_targets = replay_host_render_targets,
-                          .fault = replay_host_fault,
+                          .bind_texture = replay_host_bind_texture, .bind_buffer = replay_host_bind_buffer,
+                          .render_targets = replay_host_render_targets, .fault = replay_host_fault,
                           .window_origin_flip = window_origin_flip};
 }
 
@@ -2182,6 +2340,14 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferSetTexturePool", h_command_buffer_set_texture_pool},
     {"nvnCommandBufferSetSamplerPool", h_command_buffer_set_sampler_pool},
     {"nvnCommandBufferBindTexture", h_command_buffer_bind_texture},
+    {"nvnCommandBufferBindUniformBuffer", h_command_buffer_bind_uniform_buffer},
+    {"nvnCommandBufferBindStorageBuffer", h_command_buffer_bind_storage_buffer},
+    {"nvnCommandBufferBindVertexBuffer", h_command_buffer_bind_vertex_buffer},
+    {"nvnCommandBufferBindTransformFeedbackBuffer", h_command_buffer_bind_transform_feedback_buffer},
+    {"nvnCommandBufferBindUniformBuffers", h_command_buffer_bind_uniform_buffers},
+    {"nvnCommandBufferBindStorageBuffers", h_command_buffer_bind_storage_buffers},
+    {"nvnCommandBufferBindVertexBuffers", h_command_buffer_bind_vertex_buffers},
+    {"nvnCommandBufferBindTransformFeedbackBuffers", h_command_buffer_bind_transform_feedback_buffers},
     {"nvnCommandBufferSetRenderTargets", h_command_buffer_set_render_targets},
     {"nvnCommandBufferSetViewports", h_command_buffer_set_viewports},
     {"nvnCommandBufferSetScissors", h_command_buffer_set_scissors},

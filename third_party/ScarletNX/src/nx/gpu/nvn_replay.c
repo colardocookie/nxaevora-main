@@ -244,6 +244,14 @@ static int replay_bind_texture(const NvnReplayEnv* env, NvnReplayStats* stats, c
     return 1;
 }
 
+static int replay_bind_buffer(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpBindBuffer* op) {
+    if (!env->bind_buffer || !env->bind_buffer(env->ctx, op)) {
+        replay_fault(env, stats, "bind buffer", op->addr);
+        return 0;
+    }
+    return 1;
+}
+
 static int replay_render_targets(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpRenderTargets* op) {
     if (!env->render_targets(env->ctx, op)) {
         replay_fault(env, stats, "render targets", op->count);
@@ -329,6 +337,13 @@ static void replay_op(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnO
             return;
         }
         ok = replay_bind_texture(env, stats, payload);
+        break;
+    case NVN_OP_BIND_BUFFER:
+        if (!payload_matches(header, sizeof(NvnOpBindBuffer))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_bind_buffer(env, stats, payload);
         break;
     case NVN_OP_CALL:
         if (!payload_matches(header, sizeof(NvnOpCall))) {

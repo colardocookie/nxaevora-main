@@ -19,6 +19,8 @@ int nvn_native_active(void);
    library). It does not need nvn_native=1. */
 GuestFn nvn_native_handler(const char* name);
 
+/* The bind state of one buffer slot. bound follows the library: a size 0 uniform or vertex bind is stored but not active. */
+typedef struct { uint64_t addr, size; uint8_t bound; } NvnBindEntry;
 /* The state behind the callbacks of a replay (docs/nvn-design.md, 3c decision 6). The frame job owns it for one replay. */
 typedef struct {
     GpuChannel* channel; /* the private channel that the methods go to, used on the GPU thread only */
@@ -27,6 +29,11 @@ typedef struct {
        struct starts zeroed at each frame job, and the table is not cleared between the command lists of one job. */
     uint64_t texture_handle[NVN_BIND_STAGE_MAX + 1u][NVN_BIND_SLOT_MAX];
     uint8_t texture_bound[NVN_BIND_STAGE_MAX + 1u][NVN_BIND_SLOT_MAX];
+    /* The buffer binds of one frame job, written by the replay and read by the shader and pipeline stage later. */
+    NvnBindEntry uniform[NVN_BIND_STAGE_MAX + 1u][NVN_UNIFORM_SLOT_MAX];
+    NvnBindEntry storage[NVN_BIND_STAGE_MAX + 1u][NVN_STORAGE_SLOT_MAX];
+    NvnBindEntry vertex[NVN_VERTEX_SLOT_MAX];
+    NvnBindEntry xfb[NVN_XFB_SLOT_MAX];
 } NvnNativeReplayHost;
 /* Fills env for the replay of host lists. The callbacks read the records of the host under its lock and write
    methods on host->channel. window_origin_flip is 1 when the device window origin mode is 1. */

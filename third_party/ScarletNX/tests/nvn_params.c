@@ -709,6 +709,21 @@ static void test_handles(void) {
     CHECK(nvn_image_handle(0x80000000u) == 0xFFFFFFFF80000000ull);
 }
 
+static void test_bind_buffer_active(void) {
+    CHECK(!nvn_bind_buffer_active(NVN_BIND_UNIFORM, 0x400000000ull, 0));
+    CHECK(nvn_bind_buffer_active(NVN_BIND_UNIFORM, 0x400000000ull, 16));
+    CHECK(nvn_bind_buffer_active(NVN_BIND_UNIFORM, 0, 16));
+    CHECK(nvn_bind_buffer_active(NVN_BIND_STORAGE, 0x400000000ull, 0));
+    CHECK(nvn_bind_buffer_active(NVN_BIND_STORAGE, 0, 0));
+    CHECK(nvn_bind_buffer_active(NVN_BIND_STORAGE, 0x400000000ull, 16));
+    CHECK(!nvn_bind_buffer_active(NVN_BIND_VERTEX, 0x400000000ull, 0));
+    CHECK(nvn_bind_buffer_active(NVN_BIND_VERTEX, 0, 16));
+    CHECK(nvn_bind_buffer_active(NVN_BIND_VERTEX, 0x400000000ull, 16));
+    CHECK(!nvn_bind_buffer_active(NVN_BIND_TRANSFORM_FEEDBACK, 0, 0));
+    CHECK(nvn_bind_buffer_active(NVN_BIND_TRANSFORM_FEEDBACK, 0x400000000ull, 0));
+    CHECK(nvn_bind_buffer_active(NVN_BIND_TRANSFORM_FEEDBACK, 0x400000000ull, 16));
+}
+
 static void test_program_header_stage(void) {
     uint32_t index = 99;
     CHECK(nvn_program_header_stage(1, 5, 0x120, 0xb, 0, &index) && index == 0);
@@ -753,6 +768,7 @@ int main(int argc, char** argv) {
     test_rt_format_word();
     test_program_header_stage();
     test_handles();
+    test_bind_buffer_active();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

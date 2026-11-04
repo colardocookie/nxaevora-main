@@ -67,6 +67,21 @@ static void test_bind_texture(void) {
     nvn_oplist_free(&l);
 }
 
+static void test_bind_buffer(void) {
+    NvnOpList l = {0};
+    NvnOpBindBuffer bind = {NVN_BIND_STORAGE, 1, 9, 0, 0x400000000ull, 0x1234};
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_BUFFER, &bind, sizeof bind));
+    CHECK(l.ops == 1);
+    size_t pos = 0;
+    NvnOpHeader h;
+    const void* p;
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_BIND_BUFFER && h.bytes == sizeof bind);
+    const NvnOpBindBuffer* got = p;
+    CHECK(got->kind == NVN_BIND_STORAGE && got->stage == 1 && got->slot == 9);
+    CHECK(got->addr == 0x400000000ull && got->size == 0x1234);
+    nvn_oplist_free(&l);
+}
+
 static void test_growth(void) {
     NvnOpList l = {0};
     for (uint32_t i = 0; i < 5000; i++) {
@@ -203,6 +218,7 @@ int main(void) {
     test_append_next();
     test_append_refused();
     test_bind_texture();
+    test_bind_buffer();
     test_growth();
     test_handles();
     test_find_pointer_stable();
