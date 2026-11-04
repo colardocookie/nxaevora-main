@@ -295,6 +295,39 @@ static int replay_raster(const NvnReplayEnv* env, NvnReplayStats* stats, const N
     return 1;
 }
 
+static int replay_bind_vertex_attrib(const NvnReplayEnv* env, NvnReplayStats* stats,
+                                     const NvnOpBindVertexAttrib* op) {
+    if (!env->bind_vertex_attrib || !env->bind_vertex_attrib(env->ctx, op)) {
+        replay_fault(env, stats, "bind vertex attrib", op->count);
+        return 0;
+    }
+    return 1;
+}
+
+static int replay_bind_vertex_stream(const NvnReplayEnv* env, NvnReplayStats* stats,
+                                     const NvnOpBindVertexStream* op) {
+    if (!env->bind_vertex_stream || !env->bind_vertex_stream(env->ctx, op)) {
+        replay_fault(env, stats, "bind vertex stream", op->count);
+        return 0;
+    }
+    return 1;
+}
+
+static int replay_depth_range(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpDepthRange* op) {
+    if (op->index >= NVN_VIEWPORTS_MAX) {
+        replay_fault(env, stats, "depth range index", op->index);
+        return 0;
+    }
+    float near_value, far_value;
+    memcpy(&near_value, &op->near_bits, sizeof near_value);
+    memcpy(&far_value, &op->far_bits, sizeof far_value);
+    NvnDepthRangeMethod methods[NVN_DEPTH_RANGE_METHODS_MAX];
+    nvn_depth_range_methods(op->index, op->depth_mode, near_value, far_value, methods);
+    for (uint32_t i = 0; i < NVN_DEPTH_RANGE_METHODS_MAX; i++)
+        replay_method(env, stats, methods[i].method, methods[i].value);
+    return 1;
+}
+
 static int replay_render_targets(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpRenderTargets* op) {
     if (!env->render_targets(env->ctx, op)) {
         replay_fault(env, stats, "render targets", op->count);
@@ -422,6 +455,27 @@ static void replay_op(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnO
             return;
         }
         ok = replay_raster(env, stats, payload);
+        break;
+    case NVN_OP_BIND_VERTEX_ATTRIB:
+        if (!payload_matches(header, sizeof(NvnOpBindVertexAttrib))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_bind_vertex_attrib(env, stats, payload);
+        break;
+    case NVN_OP_BIND_VERTEX_STREAM:
+        if (!payload_matches(header, sizeof(NvnOpBindVertexStream))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_bind_vertex_stream(env, stats, payload);
+        break;
+    case NVN_OP_SET_DEPTH_RANGE:
+        if (!payload_matches(header, sizeof(NvnOpDepthRange))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_depth_range(env, stats, payload);
         break;
     case NVN_OP_CALL:
         if (!payload_matches(header, sizeof(NvnOpCall))) {

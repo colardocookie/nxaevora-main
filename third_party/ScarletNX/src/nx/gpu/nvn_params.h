@@ -97,6 +97,22 @@ typedef struct { uint32_t method, value; } NvnRasterMethod;
 int nvn_raster_methods(NvnRasterKind which, const uint32_t w[3], NvnRasterMethod out[NVN_RASTER_METHODS_MAX],
                        uint32_t* count);
 
+/* The Maxwell methods that a depth range writes (analyst-g5-vertex-1.md). */
+#define NVN_DEPTH_RANGE_METHOD_FRACTION   0x282u
+#define NVN_DEPTH_RANGE_METHOD_TRANSLATE  0x285u
+#define NVN_DEPTH_RANGE_METHOD_MIN        0x302u
+#define NVN_DEPTH_RANGE_METHOD_MAX        0x303u
+#define NVN_DEPTH_RANGE_METHOD_STRIDE     8u
+#define NVN_DEPTH_RANGE_CLIP_STRIDE       4u
+#define NVN_DEPTH_RANGE_METHODS_MAX       4u
+
+typedef struct { uint32_t method, value; } NvnDepthRangeMethod;
+
+/* The four method and value pairs of one depth range, in the order the library writes them. depth_mode 1 keeps the
+   values, other modes halve the difference and the sum. Pure. */
+void nvn_depth_range_methods(uint32_t index, uint32_t depth_mode, float near_value, float far_value,
+                             NvnDepthRangeMethod out[NVN_DEPTH_RANGE_METHODS_MAX]);
+
 /* The six state objects of a command buffer. The order is the kind word of the bind state op. */
 typedef enum {
     NVN_STATE_COLOR = 0,
@@ -123,6 +139,8 @@ uint32_t nvn_color_state_set_blend_enable(uint32_t word, uint32_t target, uint32
 uint32_t nvn_depth_stencil_state_set_stencil_func(uint32_t word, uint32_t face, uint32_t func);
 uint32_t nvn_depth_stencil_state_set_stencil_op(uint32_t word, uint32_t face, uint32_t fail, uint32_t zfail,
                                                 uint32_t zpass);
+uint32_t nvn_vertex_attrib_state_set_format(uint32_t word, uint32_t format, uint32_t relative_offset);
+uint32_t nvn_vertex_attrib_state_set_stream_index(uint32_t word, uint32_t stream_index);
 
 void nvn_color_state_defaults(uint32_t* words);
 void nvn_depth_stencil_state_defaults(uint32_t* words);
@@ -153,6 +171,8 @@ uint32_t nvn_color_state_get_logic_op(uint32_t word);
 uint32_t nvn_depth_stencil_state_get_stencil_test_enable(uint32_t word);
 uint32_t nvn_depth_stencil_state_get_stencil_func(uint32_t word, uint32_t face);
 uint32_t nvn_polygon_state_get_polygon_mode(uint32_t word);
+uint32_t nvn_polygon_state_get_polygon_offset_enables(uint32_t word);
+void nvn_depth_stencil_state_get_stencil_op(uint32_t word, uint32_t face, uint32_t out[3]);
 void nvn_blend_state_get_blend_equation(uint32_t word, uint32_t* rgb, uint32_t* alpha);
 
 /* The device words that nvnQueueBuilderGetQueueMemorySize reads (offsets in the names). */

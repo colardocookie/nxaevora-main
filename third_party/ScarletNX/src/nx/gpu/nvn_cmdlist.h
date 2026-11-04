@@ -31,6 +31,9 @@ typedef enum {
     NVN_OP_DISPATCH,
     NVN_OP_BIND_PROGRAM,
     NVN_OP_SET_RASTER,
+    NVN_OP_BIND_VERTEX_ATTRIB,
+    NVN_OP_BIND_VERTEX_STREAM,
+    NVN_OP_SET_DEPTH_RANGE,
     NVN_OP_COUNT
 } NvnOpCode;
 
@@ -45,6 +48,8 @@ typedef enum {
 #define NVN_STORAGE_SLOT_MAX NVN_BIND_SLOT_MAX
 #define NVN_VERTEX_SLOT_MAX  16u
 #define NVN_XFB_SLOT_MAX     4u
+#define NVN_VERTEX_ATTRIB_MAX 16u /* vertex attribute state records of one bind */
+#define NVN_VERTEX_STREAM_MAX 16u /* vertex stream state records of one bind */
 
 /* a pool or a texture is named by address and generation (nvn_objtab) and read at replay */
 typedef struct { uint64_t pool; uint32_t generation, reserved; } NvnOpPool;
@@ -74,6 +79,13 @@ typedef struct {
 typedef struct { uint32_t x, y, z, reserved; } NvnOpDispatch;
 typedef struct { uint64_t program; uint32_t stage_mask, reserved; } NvnOpBindProgram;
 typedef struct { uint32_t which, w[3]; } NvnOpRaster;
+typedef struct { uint32_t count; uint32_t w[NVN_VERTEX_ATTRIB_MAX]; } NvnOpBindVertexAttrib;
+typedef struct {
+    uint32_t count;
+    uint32_t stride[NVN_VERTEX_STREAM_MAX];
+    uint32_t divisor[NVN_VERTEX_STREAM_MAX];
+} NvnOpBindVertexStream;
+typedef struct { uint32_t index, depth_mode; uint32_t near_bits, far_bits; } NvnOpDepthRange;
 typedef struct {
     uint64_t texture; /* 0 for no target */
     uint32_t generation, has_view;

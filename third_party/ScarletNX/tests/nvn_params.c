@@ -886,6 +886,64 @@ static void test_state_getters_extra(void) {
     CHECK(rgb == 7u);
 }
 
+static void test_vertex_attrib_state(void) {
+    CHECK(nvn_vertex_attrib_state_set_format(0, 0x22, 0) == 0x04400040u);
+    CHECK(nvn_vertex_attrib_state_set_format(0xFFFFFFFFu, 0x22, 0xC) == 0x8440067Fu);
+    CHECK(nvn_vertex_attrib_state_set_format(0, 0x400, 0) == 0x80000040u);       /* format bit 10 reaches bit 31 */
+    CHECK(nvn_vertex_attrib_state_set_format(0, 0, 0x4000) == 0x00200040u);      /* offset bit 14 reaches bit 21 */
+    CHECK(nvn_vertex_attrib_state_set_format(0x3Fu, 0, 0) == 0x7Fu);             /* bits 0-5 kept, bit 6 set */
+    CHECK(nvn_vertex_attrib_state_set_stream_index(0, 5) == 5u);
+    CHECK(nvn_vertex_attrib_state_set_stream_index(0xFFFFFFFFu, 0) == 0xFFFFFFE0u);
+    CHECK(nvn_vertex_attrib_state_set_stream_index(0, 0x100) == 0x100u);          /* not masked: spills into stride */
+    CHECK(nvn_vertex_attrib_state_set_stream_index(0x20u, 0) == 0x20u);           /* bit 5 kept */
+}
+
+static void test_depth_range_methods(void) {
+    NvnDepthRangeMethod out[NVN_DEPTH_RANGE_METHODS_MAX];
+    nvn_depth_range_methods(3, 1, 0.25f, 0.75f, out);
+    CHECK(out[0].method == 0x29Au && out[0].value == 0x3F000000u); /* 0x282 + 8*3, far - near */
+    CHECK(out[1].method == 0x29Du && out[1].value == 0x3E800000u); /* 0x285 + 8*3, near */
+    CHECK(out[2].method == 0x30Eu && out[2].value == 0x3E800000u); /* 0x302 + 4*3, minimum */
+    CHECK(out[3].method == 0x30Fu && out[3].value == 0x3F400000u); /* 0x303 + 4*3, maximum */
+    nvn_depth_range_methods(0, 0, 0.25f, 0.75f, out);
+    CHECK(out[0].method == 0x282u && out[0].value == 0x3E800000u); /* (far - near) * 0.5 */
+    CHECK(out[1].method == 0x285u && out[1].value == 0x3F000000u); /* (near + far) * 0.5 */
+    CHECK(out[2].value == 0x3E800000u && out[3].value == 0x3F400000u);
+    nvn_depth_range_methods(1, 1, 1.0f, 0.0f, out); /* near above far */
+    CHECK(out[0].method == 0x28Au && out[0].value == 0xBF800000u);
+    CHECK(out[1].method == 0x28Du && out[1].value == 0x3F800000u);
+    CHECK(out[2].method == 0x306u && out[2].value == 0x00000000u);
+    CHECK(out[3].method == 0x307u && out[3].value == 0x3F800000u);
+    nvn_depth_range_methods(2, 0, 0.5f, 0.5f, out); /* equal */
+    CHECK(out[0].value == 0 && out[1].value == 0x3F000000u);
+    CHECK(out[2].value == 0x3F000000u && out[3].value == 0x3F000000u);
+    nvn_depth_range_methods(0, 0, NAN, 0.5f, out); /* a NaN near takes far in both the minimum and the maximum */
+    float value;
+    memcpy(&value, &out[0].value, sizeof value);
+    CHECK(isnan(value));
+    memcpy(&value, &out[1].value, sizeof value);
+    CHECK(isnan(value));
+    CHECK(out[2].value == 0x3F000000u && out[3].value == 0x3F000000u);
+}
+
+static void test_stencil_op_and_polygon_offset(void) {
+    uint32_t out[3];
+    nvn_depth_stencil_state_get_stencil_op(0x1234ABCDu, 2, out);
+    CHECK(out[0] == 3u && out[1] == 1u && out[2] == 2u);
+    nvn_depth_stencil_state_get_stencil_op(0x1234ABCDu, 0, out);
+    CHECK(out[0] == 0xCu && out[1] == 0xAu && out[2] == 0xBu);
+    nvn_depth_stencil_state_get_stencil_op(0x1234ABCDu, 1, out);
+    CHECK(out[0] == 0xCu && out[1] == 0xAu && out[2] == 0xBu);
+    nvn_depth_stencil_state_get_stencil_op(0x1234ABCDu, 3, out);
+    CHECK(out[0] == 0xCu && out[1] == 0xAu && out[2] == 0xBu);
+    nvn_depth_stencil_state_get_stencil_op(0xFFFFFFFFu, 2, out);
+    CHECK(out[0] == 0xFu && out[1] == 0xFu && out[2] == 0xFu);
+    CHECK(nvn_polygon_state_get_polygon_offset_enables(0x78000u) == 0xFu);
+    CHECK(nvn_polygon_state_get_polygon_offset_enables(0x12345678u) == 8u);
+    CHECK(nvn_polygon_state_get_polygon_offset_enables(0) == 0u);
+    CHECK(nvn_polygon_state_get_polygon_offset_enables(0xFFFFFFFFu) == 0xFu);
+}
+
 static void test_raster_methods(void) {
     NvnRasterMethod out[NVN_RASTER_METHODS_MAX];
     uint32_t count = 0;
@@ -981,6 +1039,9 @@ int main(int argc, char** argv) {
     test_state_defaults();
     test_state_getters();
     test_state_getters_extra();
+    test_vertex_attrib_state();
+    test_depth_range_methods();
+    test_stencil_op_and_polygon_offset();
     test_raster_methods();
     if (failures) {
         printf("%d failures\n", failures);

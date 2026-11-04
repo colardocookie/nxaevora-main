@@ -144,6 +144,14 @@ uint32_t nvn_depth_stencil_state_set_stencil_op(uint32_t word, uint32_t face, ui
     return word;
 }
 
+uint32_t nvn_vertex_attrib_state_set_format(uint32_t word, uint32_t format, uint32_t relative_offset) {
+    return (word & 0x8000003Fu) | (format << 21) | (relative_offset << 7) | 0x40u;
+}
+
+uint32_t nvn_vertex_attrib_state_set_stream_index(uint32_t word, uint32_t stream_index) {
+    return (word & 0xFFFFFFE0u) | stream_index;
+}
+
 void nvn_color_state_defaults(uint32_t* words) { words[0] = 0x08030000u; }
 
 void nvn_depth_stencil_state_defaults(uint32_t* words) {
@@ -204,13 +212,26 @@ uint32_t nvn_depth_stencil_state_get_stencil_func(uint32_t word, uint32_t face) 
 }
 
 uint32_t nvn_polygon_state_get_polygon_mode(uint32_t word) { return (word >> 3) & 3u; }
+uint32_t nvn_polygon_state_get_polygon_offset_enables(uint32_t word) { return (word >> 15) & 0xFu; }
+
+void nvn_depth_stencil_state_get_stencil_op(uint32_t word, uint32_t face, uint32_t out[3]) {
+    if (face == 2u) {
+        out[0] = (word >> 20) & 0xFu;
+        out[1] = (word >> 28) & 0xFu;
+        out[2] = (word >> 24) & 0xFu;
+    } else {
+        out[0] = (word >> 4) & 0xFu;
+        out[1] = (word >> 12) & 0xFu;
+        out[2] = (word >> 8) & 0xFu;
+    }
+}
 
 void nvn_blend_state_get_blend_equation(uint32_t word, uint32_t* rgb, uint32_t* alpha) {
     if (rgb) *rgb = (word >> 24) & 7u;
     if (alpha) *alpha = (word >> 28) & 7u;
 }
 
-static uint32_t raster_float_bits(float value) {
+static uint32_t float_bits(float value) {
     uint32_t bits;
     memcpy(&bits, &value, sizeof bits);
     return bits;
@@ -236,7 +257,7 @@ int nvn_raster_methods(NvnRasterKind which, const uint32_t w[3], NvnRasterMethod
         float units;
         memcpy(&units, &w[1], sizeof units);
         out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_POLYGON_OFFSET, w[0]};
-        out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_POLYGON_OFFSET_UNITS, raster_float_bits(units + units)};
+        out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_POLYGON_OFFSET_UNITS, float_bits(units + units)};
         out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_POLYGON_OFFSET_CLAMP, w[2]};
         break;
     }
@@ -253,6 +274,20 @@ int nvn_raster_methods(NvnRasterKind which, const uint32_t w[3], NvnRasterMethod
     }
     *count = n;
     return 1;
+}
+
+void nvn_depth_range_methods(uint32_t index, uint32_t depth_mode, float near_value, float far_value,
+                             NvnDepthRangeMethod out[NVN_DEPTH_RANGE_METHODS_MAX]) {
+    float fraction = depth_mode == 1u ? far_value - near_value : (far_value - near_value) * 0.5f;
+    float translate = depth_mode == 1u ? near_value : (near_value + far_value) * 0.5f;
+    float lowest = near_value < far_value ? near_value : far_value;
+    float highest = near_value > far_value ? near_value : far_value;
+    uint32_t method_stride = NVN_DEPTH_RANGE_METHOD_STRIDE * index;
+    uint32_t clip_stride = NVN_DEPTH_RANGE_CLIP_STRIDE * index;
+    out[0] = (NvnDepthRangeMethod){NVN_DEPTH_RANGE_METHOD_FRACTION + method_stride, float_bits(fraction)};
+    out[1] = (NvnDepthRangeMethod){NVN_DEPTH_RANGE_METHOD_TRANSLATE + method_stride, float_bits(translate)};
+    out[2] = (NvnDepthRangeMethod){NVN_DEPTH_RANGE_METHOD_MIN + clip_stride, float_bits(lowest)};
+    out[3] = (NvnDepthRangeMethod){NVN_DEPTH_RANGE_METHOD_MAX + clip_stride, float_bits(highest)};
 }
 
 const NvnQueueDeviceWords nvn_queue_device_words = {.w8c = 0x80, .w94 = 2, .w98 = 1, .we0 = 1, .we4 = 0x1000, .w1af4 = 0};
@@ -408,11 +443,6 @@ float nvn_sampler_snap_bias(uint32_t index) {
 #define SAMPLER_SRGB_SCALE 0x1.0e147ap+0f
 #define SAMPLER_SRGB_OFFSET (-0x1.c28f5cp-5f)
 
-static uint32_t float_bits(float f) {
-    uint32_t u;
-    memcpy(&u, &f, sizeof u);
-    return u;
-}
 static float bits_float(uint32_t u) {
     float f;
     memcpy(&f, &u, sizeof f);

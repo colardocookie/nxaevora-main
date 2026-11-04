@@ -135,6 +135,47 @@ static void test_draw_path_ops(void) {
     nvn_oplist_free(&l);
 }
 
+static void test_vertex_state_and_depth_ops(void) {
+    CHECK(NVN_OP_BIND_VERTEX_ATTRIB > NVN_OP_SET_RASTER && NVN_OP_SET_DEPTH_RANGE < NVN_OP_COUNT);
+    NvnOpList l = {0};
+    NvnOpBindVertexAttrib attrib;
+    memset(&attrib, 0, sizeof attrib);
+    attrib.count = 2;
+    attrib.w[0] = 0x04400040u;
+    attrib.w[1] = 0x00000025u;
+    NvnOpBindVertexStream stream;
+    memset(&stream, 0, sizeof stream);
+    stream.count = 2;
+    stream.stride[0] = 0x123u;
+    stream.stride[1] = 0x456u;
+    stream.divisor[1] = 3;
+    NvnOpDepthRange depth = {5, 1, 0x3E800000u, 0x3F000000u};
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_VERTEX_ATTRIB, &attrib, sizeof attrib));
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_VERTEX_STREAM, &stream, sizeof stream));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_DEPTH_RANGE, &depth, sizeof depth));
+    CHECK(l.ops == 3);
+
+    size_t pos = 0;
+    NvnOpHeader h;
+    const void* p;
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_BIND_VERTEX_ATTRIB && h.bytes == 72u);
+    const NvnOpBindVertexAttrib* got_attrib = p;
+    CHECK(got_attrib->count == 2 && got_attrib->w[0] == 0x04400040u && got_attrib->w[1] == 0x00000025u);
+    CHECK(got_attrib->w[2] == 0);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_BIND_VERTEX_STREAM && h.bytes == 136u);
+    const NvnOpBindVertexStream* got_stream = p;
+    CHECK(got_stream->count == 2 && got_stream->stride[0] == 0x123u && got_stream->stride[1] == 0x456u);
+    CHECK(got_stream->divisor[0] == 0 && got_stream->divisor[1] == 3 && got_stream->stride[2] == 0);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_SET_DEPTH_RANGE && h.bytes == 16u);
+    const NvnOpDepthRange* got_depth = p;
+    CHECK(got_depth->index == 5 && got_depth->depth_mode == 1);
+    CHECK(got_depth->near_bits == 0x3E800000u && got_depth->far_bits == 0x3F000000u);
+    CHECK(!nvn_oplist_next(&l, &pos, &h, &p));
+    nvn_oplist_free(&l);
+}
+
 static void test_growth(void) {
     NvnOpList l = {0};
     for (uint32_t i = 0; i < 5000; i++) {
@@ -274,6 +315,7 @@ int main(void) {
     test_bind_buffer();
     test_bind_state();
     test_draw_path_ops();
+    test_vertex_state_and_depth_ops();
     test_growth();
     test_handles();
     test_find_pointer_stable();

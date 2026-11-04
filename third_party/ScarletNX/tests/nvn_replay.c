@@ -55,6 +55,14 @@ typedef struct {
     int bind_program_ok;
     uint32_t bind_program_calls;
     NvnOpBindProgram bind_program_op;
+    int bind_vertex_attrib_ok;
+    uint32_t bind_vertex_attrib_calls;
+    NvnOpBindVertexAttrib bind_vertex_attrib_op;
+    struct { uint32_t w; uint8_t enabled; } vattrib[NVN_VERTEX_ATTRIB_MAX];
+    int bind_vertex_stream_ok;
+    uint32_t bind_vertex_stream_calls;
+    NvnOpBindVertexStream bind_vertex_stream_op;
+    struct { uint32_t stride, divisor; uint8_t enabled; } vstream[NVN_VERTEX_STREAM_MAX];
     uint32_t fault_count;
     const char* last_fault;
     uint64_t last_fault_value;
@@ -142,6 +150,32 @@ static int mock_bind_program(void* ctx, const NvnOpBindProgram* op) {
     return k->bind_program_ok;
 }
 
+static int mock_bind_vertex_attrib(void* ctx, const NvnOpBindVertexAttrib* op) {
+    Mock* k = ctx;
+    k->bind_vertex_attrib_calls++;
+    k->bind_vertex_attrib_op = *op;
+    if (op->count > NVN_VERTEX_ATTRIB_MAX) return 0;
+    for (uint32_t i = 0; i < NVN_VERTEX_ATTRIB_MAX; i++) {
+        uint32_t w = i < op->count ? op->w[i] : 0;
+        k->vattrib[i].w = w;
+        k->vattrib[i].enabled = (uint8_t)((w >> 6) & 1u);
+    }
+    return k->bind_vertex_attrib_ok;
+}
+
+static int mock_bind_vertex_stream(void* ctx, const NvnOpBindVertexStream* op) {
+    Mock* k = ctx;
+    k->bind_vertex_stream_calls++;
+    k->bind_vertex_stream_op = *op;
+    if (op->count > NVN_VERTEX_STREAM_MAX) return 0;
+    for (uint32_t i = 0; i < NVN_VERTEX_STREAM_MAX; i++) {
+        k->vstream[i].stride = i < op->count ? op->stride[i] & 0xFFFu : 0;
+        k->vstream[i].divisor = i < op->count ? op->divisor[i] : 0;
+        k->vstream[i].enabled = (uint8_t)(i < op->count);
+    }
+    return k->bind_vertex_stream_ok;
+}
+
 static void mock_fault(void* ctx, const char* what, uint64_t value) {
     Mock* k = ctx;
     k->fault_count++;
@@ -163,6 +197,8 @@ static NvnReplayEnv make_env(Mock* k) {
     env.draw = mock_draw;
     env.dispatch = mock_dispatch;
     env.bind_program = mock_bind_program;
+    env.bind_vertex_attrib = mock_bind_vertex_attrib;
+    env.bind_vertex_stream = mock_bind_vertex_stream;
     env.render_targets = mock_render_targets;
     env.fault = mock_fault;
     return env;
@@ -873,6 +909,248 @@ static void test_raster_bad_payload(void) {
     nvn_oplist_free(&l);
 }
 
+static void test_bind_vertex_attrib(void) {
+    NvnOpBindVertexAttrib op = {0};
+    op.count = 3;
+    op.w[0] = 0x04400040u; /* bit 6 set: enabled */
+    op.w[1] = 0x00000020u;
+    op.w[2] = 0x80000025u;
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    k.bind_vertex_attrib_ok = 1;
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_VERTEX_ATTRIB, &op, sizeof op));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.bind_vertex_attrib_calls == 1 && k.bind_vertex_attrib_op.count == 3);
+    CHECK(k.bind_vertex_attrib_op.w[0] == 0x04400040u && k.bind_vertex_attrib_op.w[2] == 0x80000025u);
+    CHECK(k.vattrib[0].w == 0x04400040u && k.vattrib[0].enabled == 1);
+    CHECK(k.vattrib[1].w == 0x00000020u && k.vattrib[1].enabled == 0);
+    CHECK(k.vattrib[2].w == 0x80000025u && k.vattrib[2].enabled == 0);
+    CHECK(k.vattrib[3].w == 0 && k.vattrib[3].enabled == 0 && k.vattrib[15].w == 0);
+    CHECK(st.replayed[NVN_OP_BIND_VERTEX_ATTRIB] == 1 && st.methods == 0 && st.faults == 0);
+    nvn_oplist_free(&l);
+
+    /* count 0 clears the entries that an earlier bind left */
+    Mock k0 = {0};
+    NvnReplayEnv env0 = make_env(&k0);
+    NvnOpList l0 = {0};
+    NvnReplayStats st0 = {0};
+    NvnOpBindVertexAttrib empty = {0};
+    for (uint32_t i = 0; i < NVN_VERTEX_ATTRIB_MAX; i++) {
+        k0.vattrib[i].w = 0xDEADBEEFu;
+        k0.vattrib[i].enabled = 1;
+    }
+    k0.bind_vertex_attrib_ok = 1;
+    CHECK(nvn_oplist_append(&l0, NVN_OP_BIND_VERTEX_ATTRIB, &empty, sizeof empty));
+    nvn_replay_list(&env0, &l0, &st0);
+    CHECK(k0.bind_vertex_attrib_op.count == 0 && st0.faults == 0);
+    for (uint32_t i = 0; i < NVN_VERTEX_ATTRIB_MAX; i++) CHECK(k0.vattrib[i].w == 0 && k0.vattrib[i].enabled == 0);
+    nvn_oplist_free(&l0);
+
+    /* count 16 fills every entry */
+    Mock k16 = {0};
+    NvnReplayEnv env16 = make_env(&k16);
+    NvnOpList l16 = {0};
+    NvnReplayStats st16 = {0};
+    NvnOpBindVertexAttrib full = {0};
+    full.count = NVN_VERTEX_ATTRIB_MAX;
+    for (uint32_t i = 0; i < NVN_VERTEX_ATTRIB_MAX; i++) full.w[i] = i + 1u;
+    full.w[15] = 0x40u;
+    k16.bind_vertex_attrib_ok = 1;
+    CHECK(nvn_oplist_append(&l16, NVN_OP_BIND_VERTEX_ATTRIB, &full, sizeof full));
+    nvn_replay_list(&env16, &l16, &st16);
+    CHECK(st16.faults == 0 && k16.vattrib[15].w == 0x40u && k16.vattrib[15].enabled == 1);
+    CHECK(k16.vattrib[14].w == 15u && k16.vattrib[14].enabled == 0);
+    nvn_oplist_free(&l16);
+
+    /* a count over 16 is refused by the host callback */
+    Mock kr = {0};
+    NvnReplayEnv envr = make_env(&kr);
+    NvnOpList lr = {0};
+    NvnReplayStats str = {0};
+    NvnOpBindVertexAttrib many = {0};
+    many.count = NVN_VERTEX_ATTRIB_MAX + 1u;
+    kr.bind_vertex_attrib_ok = 1;
+    CHECK(nvn_oplist_append(&lr, NVN_OP_BIND_VERTEX_ATTRIB, &many, sizeof many));
+    nvn_replay_list(&envr, &lr, &str);
+    CHECK(str.faults == 1 && kr.bind_vertex_attrib_calls == 1);
+    CHECK(kr.last_fault && !strcmp(kr.last_fault, "bind vertex attrib"));
+    CHECK(kr.last_fault_value == NVN_VERTEX_ATTRIB_MAX + 1u && str.replayed[NVN_OP_BIND_VERTEX_ATTRIB] == 0);
+    nvn_oplist_free(&lr);
+
+    Mock kn = {0};
+    NvnReplayEnv envn = make_env(&kn);
+    NvnOpList ln = {0};
+    NvnReplayStats stn = {0};
+    envn.bind_vertex_attrib = NULL;
+    CHECK(nvn_oplist_append(&ln, NVN_OP_BIND_VERTEX_ATTRIB, &op, sizeof op));
+    nvn_replay_list(&envn, &ln, &stn);
+    CHECK(stn.faults == 1 && stn.replayed[NVN_OP_BIND_VERTEX_ATTRIB] == 0);
+    nvn_oplist_free(&ln);
+
+    Mock ks = {0};
+    NvnReplayEnv envs = make_env(&ks);
+    NvnOpList ls = {0};
+    NvnReplayStats sts = {0};
+    uint8_t small[8] = {0};
+    CHECK(nvn_oplist_append(&ls, NVN_OP_BIND_VERTEX_ATTRIB, small, sizeof small));
+    nvn_replay_list(&envs, &ls, &sts);
+    CHECK(sts.faults == 1 && ks.last_fault && !strcmp(ks.last_fault, "op size"));
+    CHECK(ks.last_fault_value == NVN_OP_BIND_VERTEX_ATTRIB && sts.replayed[NVN_OP_BIND_VERTEX_ATTRIB] == 0);
+    nvn_oplist_free(&ls);
+}
+
+static void test_bind_vertex_stream(void) {
+    NvnOpBindVertexStream op = {0};
+    op.count = 3;
+    op.stride[0] = 0x1123u; /* the host masks with 0xFFF */
+    op.stride[1] = 0x1FFFu;
+    op.stride[2] = 0x456u;
+    op.divisor[0] = 0;
+    op.divisor[1] = 3;
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    k.bind_vertex_stream_ok = 1;
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_VERTEX_STREAM, &op, sizeof op));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.bind_vertex_stream_calls == 1 && k.bind_vertex_stream_op.count == 3);
+    CHECK(k.vstream[0].stride == 0x123u && k.vstream[0].divisor == 0 && k.vstream[0].enabled == 1);
+    CHECK(k.vstream[1].stride == 0xFFFu && k.vstream[1].divisor == 3 && k.vstream[1].enabled == 1);
+    CHECK(k.vstream[2].stride == 0x456u && k.vstream[2].divisor == 0 && k.vstream[2].enabled == 1);
+    CHECK(k.vstream[3].stride == 0 && k.vstream[3].divisor == 0 && k.vstream[3].enabled == 0);
+    CHECK(k.vstream[15].stride == 0 && k.vstream[15].enabled == 0);
+    CHECK(st.replayed[NVN_OP_BIND_VERTEX_STREAM] == 1 && st.methods == 0 && st.faults == 0);
+    nvn_oplist_free(&l);
+
+    /* count 0 clears the entries that an earlier bind left */
+    Mock k0 = {0};
+    NvnReplayEnv env0 = make_env(&k0);
+    NvnOpList l0 = {0};
+    NvnReplayStats st0 = {0};
+    NvnOpBindVertexStream empty = {0};
+    for (uint32_t i = 0; i < NVN_VERTEX_STREAM_MAX; i++) {
+        k0.vstream[i].stride = 0x123u;
+        k0.vstream[i].divisor = 7u;
+        k0.vstream[i].enabled = 1;
+    }
+    k0.bind_vertex_stream_ok = 1;
+    CHECK(nvn_oplist_append(&l0, NVN_OP_BIND_VERTEX_STREAM, &empty, sizeof empty));
+    nvn_replay_list(&env0, &l0, &st0);
+    CHECK(k0.bind_vertex_stream_op.count == 0 && st0.faults == 0);
+    for (uint32_t i = 0; i < NVN_VERTEX_STREAM_MAX; i++)
+        CHECK(k0.vstream[i].stride == 0 && k0.vstream[i].divisor == 0 && k0.vstream[i].enabled == 0);
+    nvn_oplist_free(&l0);
+
+    /* count 16 fills every entry */
+    Mock k16 = {0};
+    NvnReplayEnv env16 = make_env(&k16);
+    NvnOpList l16 = {0};
+    NvnReplayStats st16 = {0};
+    NvnOpBindVertexStream full = {0};
+    full.count = NVN_VERTEX_STREAM_MAX;
+    for (uint32_t i = 0; i < NVN_VERTEX_STREAM_MAX; i++) {
+        full.stride[i] = i + 1u;
+        full.divisor[i] = i;
+    }
+    k16.bind_vertex_stream_ok = 1;
+    CHECK(nvn_oplist_append(&l16, NVN_OP_BIND_VERTEX_STREAM, &full, sizeof full));
+    nvn_replay_list(&env16, &l16, &st16);
+    CHECK(st16.faults == 0 && k16.vstream[15].stride == 16u && k16.vstream[15].divisor == 15u);
+    CHECK(k16.vstream[15].enabled == 1);
+    nvn_oplist_free(&l16);
+
+    /* a count over 16 is refused by the host callback */
+    Mock kr = {0};
+    NvnReplayEnv envr = make_env(&kr);
+    NvnOpList lr = {0};
+    NvnReplayStats str = {0};
+    NvnOpBindVertexStream many = {0};
+    many.count = NVN_VERTEX_STREAM_MAX + 1u;
+    kr.bind_vertex_stream_ok = 1;
+    CHECK(nvn_oplist_append(&lr, NVN_OP_BIND_VERTEX_STREAM, &many, sizeof many));
+    nvn_replay_list(&envr, &lr, &str);
+    CHECK(str.faults == 1 && kr.bind_vertex_stream_calls == 1);
+    CHECK(kr.last_fault && !strcmp(kr.last_fault, "bind vertex stream"));
+    CHECK(kr.last_fault_value == NVN_VERTEX_STREAM_MAX + 1u && str.replayed[NVN_OP_BIND_VERTEX_STREAM] == 0);
+    nvn_oplist_free(&lr);
+
+    Mock kn = {0};
+    NvnReplayEnv envn = make_env(&kn);
+    NvnOpList ln = {0};
+    NvnReplayStats stn = {0};
+    envn.bind_vertex_stream = NULL;
+    CHECK(nvn_oplist_append(&ln, NVN_OP_BIND_VERTEX_STREAM, &op, sizeof op));
+    nvn_replay_list(&envn, &ln, &stn);
+    CHECK(stn.faults == 1 && stn.replayed[NVN_OP_BIND_VERTEX_STREAM] == 0);
+    nvn_oplist_free(&ln);
+
+    Mock ks = {0};
+    NvnReplayEnv envs = make_env(&ks);
+    NvnOpList ls = {0};
+    NvnReplayStats sts = {0};
+    uint8_t small[8] = {0};
+    CHECK(nvn_oplist_append(&ls, NVN_OP_BIND_VERTEX_STREAM, small, sizeof small));
+    nvn_replay_list(&envs, &ls, &sts);
+    CHECK(sts.faults == 1 && ks.last_fault && !strcmp(ks.last_fault, "op size"));
+    CHECK(ks.last_fault_value == NVN_OP_BIND_VERTEX_STREAM && sts.replayed[NVN_OP_BIND_VERTEX_STREAM] == 0);
+    nvn_oplist_free(&ls);
+}
+
+static void test_depth_range_op(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpDepthRange mode_one = {0, 1, 0x3E800000u, 0x3F400000u};    /* 0.25, 0.75 */
+    NvnOpDepthRange mode_zero = {1, 0, 0x3F800000u, 0x00000000u};   /* 1.0, 0.0 */
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_DEPTH_RANGE, &mode_one, sizeof mode_one));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_DEPTH_RANGE, &mode_zero, sizeof mode_zero));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.write_count == 8);
+    CHECK(k.writes[0].method == 0x282u && k.writes[0].value == 0x3F000000u); /* far - near */
+    CHECK(k.writes[1].method == 0x285u && k.writes[1].value == 0x3E800000u); /* near */
+    CHECK(k.writes[2].method == 0x302u && k.writes[2].value == 0x3E800000u);
+    CHECK(k.writes[3].method == 0x303u && k.writes[3].value == 0x3F400000u);
+    CHECK(k.writes[4].method == 0x28Au && k.writes[4].value == 0xBF000000u); /* (far - near) * 0.5 */
+    CHECK(k.writes[5].method == 0x28Du && k.writes[5].value == 0x3F000000u); /* (near + far) * 0.5 */
+    CHECK(k.writes[6].method == 0x306u && k.writes[6].value == 0x00000000u);
+    CHECK(k.writes[7].method == 0x307u && k.writes[7].value == 0x3F800000u);
+    CHECK(st.replayed[NVN_OP_SET_DEPTH_RANGE] == 2 && st.methods == 8 && st.faults == 0);
+    nvn_oplist_free(&l);
+
+    Mock ki = {0};
+    NvnReplayEnv envi = make_env(&ki);
+    NvnOpList li = {0};
+    NvnReplayStats sti = {0};
+    NvnOpDepthRange bad = {NVN_VIEWPORTS_MAX, 0, 0, 0};
+    CHECK(nvn_oplist_append(&li, NVN_OP_SET_DEPTH_RANGE, &bad, sizeof bad));
+    nvn_replay_list(&envi, &li, &sti);
+    CHECK(sti.faults == 1 && ki.fault_count == 1 && sti.methods == 0);
+    CHECK(ki.last_fault && !strcmp(ki.last_fault, "depth range index"));
+    CHECK(ki.last_fault_value == NVN_VIEWPORTS_MAX && sti.replayed[NVN_OP_SET_DEPTH_RANGE] == 0);
+    nvn_oplist_free(&li);
+}
+
+static void test_vertex_ops_bad_payload(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    uint8_t small[8] = {0};
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_VERTEX_ATTRIB, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_VERTEX_STREAM, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_DEPTH_RANGE, small, sizeof small));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 3 && k.last_fault && !strcmp(k.last_fault, "op size"));
+    CHECK(k.last_fault_value == NVN_OP_SET_DEPTH_RANGE && st.methods == 0);
+    CHECK(st.replayed[NVN_OP_BIND_VERTEX_ATTRIB] == 0 && st.replayed[NVN_OP_BIND_VERTEX_STREAM] == 0);
+    CHECK(st.replayed[NVN_OP_SET_DEPTH_RANGE] == 0);
+    nvn_oplist_free(&l);
+}
+
 static void test_call_live(void) {
     Mock k = {0};
     NvnReplayEnv env = make_env(&k);
@@ -1024,6 +1302,10 @@ int main(void) {
     test_draw_path_bad_payload();
     test_raster_methods();
     test_raster_bad_payload();
+    test_bind_vertex_attrib();
+    test_bind_vertex_stream();
+    test_depth_range_op();
+    test_vertex_ops_bad_payload();
     test_call_live();
     test_call_dead();
     test_call_depth();
