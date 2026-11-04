@@ -699,6 +699,24 @@ static void test_sync_after_token(void) {
     CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_FENCED && fences == 2);
 }
 
+static void test_program_header_stage(void) {
+    uint32_t index = 99;
+    CHECK(nvn_program_header_stage(1, 5, 0x120, 0xb, 0, &index) && index == 0);
+    index = 99;
+    CHECK(nvn_program_header_stage(1, 16, 0x120, 0xb, 1, &index) && index == 1);
+    index = 99;
+    CHECK(nvn_program_header_stage(1, 10, 0x120, 0xb, 5, &index) && index == 5);
+    index = 99;
+    CHECK(!nvn_program_header_stage(1, 4, 0x120, 0xb, 0, &index) && index == 99);
+    CHECK(!nvn_program_header_stage(1, 17, 0x120, 0xb, 0, &index) && index == 99);
+    CHECK(!nvn_program_header_stage(0, 5, 0x120, 0xb, 0, &index) && index == 99);
+    CHECK(!nvn_program_header_stage(2, 5, 0x120, 0xb, 0, &index) && index == 99);
+    CHECK(!nvn_program_header_stage(1, 5, 0x121, 0xb, 0, &index) && index == 99);
+    CHECK(!nvn_program_header_stage(1, 5, 0x120, 0xc, 0, &index) && index == 99);
+    CHECK(!nvn_program_header_stage(1, 5, 0x120, 0xb, 6, &index) && index == 99);
+    CHECK(!nvn_program_header_stage(1, 5, 0x120, 0xb, 0, NULL));
+}
+
 int main(int argc, char** argv) {
     test_window_params();
     test_window_sync_cycle_params();
@@ -723,6 +741,7 @@ int main(int argc, char** argv) {
     test_buffer_check();
     test_texture_layout_wide_size();
     test_rt_format_word();
+    test_program_header_stage();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

@@ -272,4 +272,18 @@ int nvn_window_present_args(const NvnTexture* t, uint64_t pool_storage, const Nv
    SIGNALED at 0. Pure. */
 NvnSyncState nvn_sync_after_token(NvnSyncState state, uint32_t* fences);
 
+/* The pipeline stages of a program: 0 vertex, 1 fragment (the only two the game uses), 2 to 5 accepted by the library. */
+#define NVN_PROGRAM_STAGES 6u
+/* Header +8 is the layout version (5 to 16), not the stage. The stage index is the u32 at header +0x714 (sdk d837228). */
+#define NVN_PROGRAM_LAYOUT_FIRST 5u
+#define NVN_PROGRAM_LAYOUT_LAST 16u
+#define NVN_PROGRAM_STAGE_OFFSET 0x714u
+/* The words of a shader header at +4, +0xc and +0x10 that the library checks. */
+#define NVN_PROGRAM_HEADER_VERSION 1u
+#define NVN_PROGRAM_HEADER_SIZE 0x120u
+#define NVN_PROGRAM_HEADER_KIND 0xbu
+/* 1 and *index_out = stage_word for a valid header; 0 (index_out unchanged) for any other word or a NULL index_out. */
+int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_word, uint32_t kind_word,
+                             uint32_t stage_word, uint32_t* index_out);
+
 #endif

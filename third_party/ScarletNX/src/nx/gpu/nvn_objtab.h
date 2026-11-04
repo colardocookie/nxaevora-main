@@ -30,6 +30,7 @@ typedef enum {
     NVN_OBJ_BUFFER_BUILDER,
     NVN_OBJ_BUFFER,
     NVN_OBJ_COMMAND_BUFFER,
+    NVN_OBJ_PROGRAM,
     NVN_OBJ_KIND_COUNT
 } NvnObjKind;
 

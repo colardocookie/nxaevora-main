@@ -55,6 +55,20 @@ typedef struct {
     int32_t last_index;
 } WindowRec;
 typedef struct { uint64_t device; NvnSyncState state; uint32_t fences; } SyncRec;
+/* The program records: the shader header stays in the game's memory, and the host copies the small control block.
+   SetShadersExt validates all entries before it replaces the table. */
+typedef struct {
+    uint64_t header;     /* the guest address of the shader header */
+    uint64_t entry_word; /* the +0 word of the entry that named the shader */
+    uint8_t control[0x18];
+    uint8_t has_control;
+} ProgramStageRec;
+typedef struct {
+    uint64_t device;
+    uint32_t device_generation;
+    uint32_t stage_mask;
+    ProgramStageRec stage[NVN_PROGRAM_STAGES];
+} ProgramRec;
 
 /* the record of kind at addr, made zeroed (with the defaults of that kind) when the game never called SetDefaults */
 static void* rec_get(u64 addr, NvnObjKind kind, size_t size) {
@@ -677,6 +691,171 @@ static void h_sampler_initialize(CPU* c, u64 entry) {
 static void* known_record(u64 addr, NvnObjKind kind) {
     NvnObj* o = nvn_objtab_find(&objs, addr);
     return o && o->kind == (uint32_t)kind ? o->data : NULL;
+}
+
+/* G8: the program records. The library links the shaders and checks each header; the host keeps the same checks and
+   copies the control block at set time. No draw uses the record in this step. */
+#define PROGRAM_LOG_LIMIT 64u           /* log lines for the faults of the program functions */
+#define PROGRAM_ENTRY_BYTES 0x18u       /* one SetShadersExt entry: word, header pointer, control pointer */
+#define PROGRAM_HEADER_READ_BYTES (NVN_PROGRAM_STAGE_OFFSET + 4u) /* the header words up to the stage word */
+#define PROGRAM_CONTROL_BYTES 0x18u     /* the control block that the host copies */
+#define PROGRAM_HEADER_ALIGNMENT 8u
+
+#define PROGRAM_REFUSAL_ENTRY_UNREADABLE "entry is unreadable"
+#define PROGRAM_REFUSAL_WORD_ZERO "entry word is zero"
+#define PROGRAM_REFUSAL_HEADER_NULL "header is null"
+#define PROGRAM_REFUSAL_HEADER_UNALIGNED "header is not aligned"
+#define PROGRAM_REFUSAL_HEADER_UNREADABLE "header is unreadable"
+#define PROGRAM_REFUSAL_HEADER_BAD "header is not a shader"
+#define PROGRAM_REFUSAL_STAGE_REPEATED "stage is repeated"
+#define PROGRAM_REFUSAL_CONTROL_UNREADABLE "control is unreadable"
+
+/* Caller holds objs_lock. Reads one entry and its header. On a refusal returns 0 and sets *reason. */
+static int program_read_entry(u64 entries, int32_t index, ProgramStageRec* out, uint32_t* stage_index,
+                              const char** reason) {
+    u64 offset = (u64)(uint32_t)index * PROGRAM_ENTRY_BYTES;
+    if (entries > UINT64_MAX - offset) {
+        *reason = PROGRAM_REFUSAL_ENTRY_UNREADABLE;
+        return 0;
+    }
+    u64 at = entries + offset;
+    if (!native_guest_readable(at, PROGRAM_ENTRY_BYTES)) {
+        *reason = PROGRAM_REFUSAL_ENTRY_UNREADABLE;
+        return 0;
+    }
+    uint64_t entry_word = gr64(at);
+    uint64_t header = gr64(at + 8);
+    uint64_t control = gr64(at + 0x10);
+    if (!entry_word) {
+        *reason = PROGRAM_REFUSAL_WORD_ZERO;
+        return 0;
+    }
+    if (!header) {
+        *reason = PROGRAM_REFUSAL_HEADER_NULL;
+        return 0;
+    }
+    if (header & (PROGRAM_HEADER_ALIGNMENT - 1u)) {
+        *reason = PROGRAM_REFUSAL_HEADER_UNALIGNED;
+        return 0;
+    }
+    if (!native_guest_readable(header, PROGRAM_HEADER_READ_BYTES)) {
+        *reason = PROGRAM_REFUSAL_HEADER_UNREADABLE;
+        return 0;
+    }
+    if (!nvn_program_header_stage(gr32(header + 4), gr32(header + 8), gr32(header + 0xc), gr32(header + 0x10),
+                                  gr32(header + NVN_PROGRAM_STAGE_OFFSET), stage_index)) {
+        *reason = PROGRAM_REFUSAL_HEADER_BAD;
+        return 0;
+    }
+    ProgramStageRec stage = {.header = header, .entry_word = entry_word};
+    if (control) {
+        if (!native_guest_readable(control, PROGRAM_CONTROL_BYTES)) {
+            *reason = PROGRAM_REFUSAL_CONTROL_UNREADABLE;
+            return 0;
+        }
+        for (unsigned i = 0; i < PROGRAM_CONTROL_BYTES / 4u; i++) {
+            uint32_t word = gr32(control + (u64)i * 4u);
+            memcpy(&stage.control[i * 4u], &word, sizeof word);
+        }
+        stage.has_control = 1;
+    }
+    *out = stage;
+    return 1;
+}
+
+/* nvnProgramInitialize(prog, device): the host keeps the device link and writes nothing into the game memory. */
+static void h_program_initialize(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    u64 addr = c->x[0], device = c->x[1];
+    ProgramRec* r = rec_get(addr, NVN_OBJ_PROGRAM, sizeof *r);
+    memset(r, 0, sizeof *r);
+    if (!known_record(device, NVN_OBJ_DEVICE)) {
+        nvn_objtab_remove(&objs, addr); /* a later call must not find a program without a device */
+        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program initialization %llx device=%llx is not a live device\n",
+                  (unsigned long long)addr, (unsigned long long)device);
+        c->x[0] = 0;
+        pm_unlock(&objs_lock);
+        return;
+    }
+    r->device = device;
+    r->device_generation = nvn_objtab_find(&objs, device)->generation;
+    c->x[0] = 1;
+    pm_unlock(&objs_lock);
+}
+
+/* nvnProgramSetShadersExt(prog, count, entries). All entries must be valid: the host writes the new stage table only
+   then, and keeps the old content on a refusal. */
+static void h_program_set_shaders_ext(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    u64 addr = c->x[0], entries = c->x[2];
+    int32_t count = (int32_t)c->x[1];
+    ProgramRec* r = known_record(addr, NVN_OBJ_PROGRAM);
+    if (!r) {
+        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program set shaders %llx is not a live program\n",
+                  (unsigned long long)addr);
+        c->x[0] = 0;
+        pm_unlock(&objs_lock);
+        return;
+    }
+    ProgramRec next = *r;
+    next.stage_mask = 0;
+    memset(next.stage, 0, sizeof next.stage);
+    int ok = 1;
+    if (count < 0) {
+        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: count=%d is negative\n",
+                  (unsigned long long)addr, count);
+        ok = 0;
+    } else if ((uint32_t)count > NVN_PROGRAM_STAGES) {
+        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: count=%d is above %u\n",
+                  (unsigned long long)addr, count, (unsigned)NVN_PROGRAM_STAGES);
+        ok = 0;
+    } else if (count > 0 && !entries) {
+        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: entries is null\n",
+                  (unsigned long long)addr);
+        ok = 0;
+    } else if (count > 0 && !native_guest_readable(entries, (u64)count * PROGRAM_ENTRY_BYTES)) {
+        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: entries=%llx is unreadable\n",
+                  (unsigned long long)addr, (unsigned long long)entries);
+        ok = 0;
+    }
+    for (int32_t i = 0; ok && i < count; i++) {
+        ProgramStageRec stage;
+        uint32_t stage_index = 0;
+        const char* reason = NULL;
+        if (!program_read_entry(entries, i, &stage, &stage_index, &reason)) {
+            LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx entry=%d refused: %s\n",
+                      (unsigned long long)addr, i, reason);
+            ok = 0;
+            break;
+        }
+        if (next.stage_mask & (1u << stage_index)) {
+            LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx entry=%d refused: %s\n",
+                      (unsigned long long)addr, i, PROGRAM_REFUSAL_STAGE_REPEATED);
+            ok = 0;
+            break;
+        }
+        next.stage[stage_index] = stage;
+        next.stage_mask |= 1u << stage_index;
+    }
+    if (ok) {
+        *r = next;
+        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx set stages=%x count=%d\n",
+                  (unsigned long long)addr, next.stage_mask, count);
+        c->x[0] = 1;
+    } else {
+        c->x[0] = 0;
+    }
+    pm_unlock(&objs_lock);
+}
+
+/* nvnProgramFinalize(prog): the library does not check the object, and neither does the host. */
+static void h_program_finalize(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    if (known_record(c->x[0], NVN_OBJ_PROGRAM)) nvn_objtab_remove(&objs, c->x[0]);
+    pm_unlock(&objs_lock);
 }
 /* Caller holds objs_lock. Both descriptor types use signed indices and 32-byte entries. */
 static int descriptor_destination(CPU* c, NvnObjKind kind, const char* operation, uint32_t entry_bytes, uint64_t* at) {
@@ -1860,6 +2039,9 @@ static const NativeProc native_procs[] = {
     {"nvnBufferGetAddress", h_buffer_get_address},
     {"nvnBufferGetSize", h_buffer_get_size},
     {"nvnBufferSetDebugLabel", h_buffer_set_debug_label},
+    {"nvnProgramInitialize", h_program_initialize},
+    {"nvnProgramSetShadersExt", h_program_set_shaders_ext},
+    {"nvnProgramFinalize", h_program_finalize},
     {"nvnCommandBufferInitialize", h_command_buffer_initialize},
     {"nvnCommandBufferFinalize", h_command_buffer_finalize},
     {"nvnCommandBufferSetMemoryCallback", h_command_buffer_set_memory_callback},

@@ -676,3 +676,13 @@ NvnSyncState nvn_sync_after_token(NvnSyncState state, uint32_t* fences) {
     if (*fences > 0) (*fences)--;
     return *fences == 0 ? NVN_SYNC_SIGNALED : state;
 }
+
+int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_word, uint32_t kind_word,
+                             uint32_t stage_word, uint32_t* index_out) {
+    if (!index_out || version != NVN_PROGRAM_HEADER_VERSION || layout < NVN_PROGRAM_LAYOUT_FIRST ||
+        layout > NVN_PROGRAM_LAYOUT_LAST || size_word != NVN_PROGRAM_HEADER_SIZE ||
+        kind_word != NVN_PROGRAM_HEADER_KIND || stage_word >= NVN_PROGRAM_STAGES)
+        return 0;
+    *index_out = stage_word;
+    return 1;
+}
