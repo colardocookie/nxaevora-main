@@ -336,6 +336,14 @@ static int replay_render_targets(const NvnReplayEnv* env, NvnReplayStats* stats,
     return 1;
 }
 
+static int replay_gpu_op(const NvnReplayEnv* env, NvnReplayStats* stats, NvnOpCode code, const void* payload) {
+    if (!env->gpu_op || !env->gpu_op(env->ctx, code, payload)) {
+        replay_fault(env, stats, "gpu op", (uint64_t)code);
+        return 0;
+    }
+    return 1;
+}
+
 static void replay_list_at(const NvnReplayEnv* env, const NvnOpList* list, NvnReplayStats* stats, uint32_t depth);
 
 static int replay_call(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpCall* op, uint32_t depth) {
@@ -476,6 +484,49 @@ static void replay_op(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnO
             return;
         }
         ok = replay_depth_range(env, stats, payload);
+        break;
+    case NVN_OP_CLEAR_DEPTH_STENCIL:
+        if (!payload_matches(header, sizeof(NvnOpClearDepthStencil))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_CLEAR_DEPTH_STENCIL, payload);
+        break;
+    case NVN_OP_CLEAR_TEXTURE:
+        if (!payload_matches(header, sizeof(NvnOpClearTexture))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_CLEAR_TEXTURE, payload);
+        break;
+    case NVN_OP_COPY_TEXTURE:
+        if (!payload_matches(header, sizeof(NvnOpCopyTexture))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_COPY_TEXTURE, payload);
+        break;
+    case NVN_OP_REPORT_COUNTER:
+        if (!payload_matches(header, sizeof(NvnOpReportCounter))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        if (((const NvnOpReportCounter*)payload)->type > NVN_REPORT_TYPE_MAX) {
+            replay_fault(env, stats, "report type", ((const NvnOpReportCounter*)payload)->type);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_REPORT_COUNTER, payload);
+        break;
+    case NVN_OP_BIND_IMAGE:
+        if (!payload_matches(header, sizeof(NvnOpBindImage))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        if (((const NvnOpBindImage*)payload)->count > NVN_IMAGE_BINDS_MAX) {
+            replay_fault(env, stats, "image count", ((const NvnOpBindImage*)payload)->count);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_BIND_IMAGE, payload);
         break;
     case NVN_OP_CALL:
         if (!payload_matches(header, sizeof(NvnOpCall))) {

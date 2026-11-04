@@ -1007,12 +1007,43 @@ static void test_program_header_stage(void) {
     CHECK(!nvn_program_header_stage(1, 5, 0x120, 0xb, 0, NULL));
 }
 
+static void test_sampler_equal(void) {
+    NvnSampler a, b;
+    nvn_sampler_defaults(&a);
+    b = a;
+    CHECK(nvn_sampler_equal(&a, &b));
+    b = a; b.device++; CHECK(!nvn_sampler_equal(&a, &b));
+    b = a; b.min_filter++; CHECK(!nvn_sampler_equal(&a, &b));
+    b = a; b.mag_filter++; CHECK(!nvn_sampler_equal(&a, &b));
+    for (unsigned i = 0; i < 3; i++) {
+        b = a; b.wrap[i]++;
+        CHECK(!nvn_sampler_equal(&a, &b));
+    }
+    b = a; b.min_lod += 1.0f; CHECK(!nvn_sampler_equal(&a, &b));
+    b = a; b.max_lod += 1.0f; CHECK(!nvn_sampler_equal(&a, &b));
+    b = a; b.lod_bias += 1.0f; CHECK(!nvn_sampler_equal(&a, &b));
+    b = a; b.compare_enable++; CHECK(!nvn_sampler_equal(&a, &b));
+    b = a; b.compare++; CHECK(!nvn_sampler_equal(&a, &b));
+    for (unsigned i = 0; i < 4; i++) {
+        b = a; b.border[i]++;
+        CHECK(!nvn_sampler_equal(&a, &b));
+    }
+    b = a; b.anisotropy += 1.0f; CHECK(!nvn_sampler_equal(&a, &b));
+    b = a; b.reduction++; CHECK(!nvn_sampler_equal(&a, &b));
+    b = a; b.lod_snap += 1.0f; CHECK(!nvn_sampler_equal(&a, &b));
+    NvnSampler nan;
+    nvn_sampler_defaults(&nan);
+    nan.lod_bias = NAN;
+    CHECK(!nvn_sampler_equal(&nan, &nan));
+}
+
 int main(int argc, char** argv) {
     test_window_params();
     test_window_sync_cycle_params();
     test_window_present_args();
     test_sync_after_token();
     test_sampler();
+    test_sampler_equal();
     test_packaged_tile();
     test_texture_descriptor();
     test_texture_descriptor_fields();

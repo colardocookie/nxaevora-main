@@ -34,6 +34,11 @@ typedef enum {
     NVN_OP_BIND_VERTEX_ATTRIB,
     NVN_OP_BIND_VERTEX_STREAM,
     NVN_OP_SET_DEPTH_RANGE,
+    NVN_OP_CLEAR_DEPTH_STENCIL,
+    NVN_OP_CLEAR_TEXTURE,
+    NVN_OP_COPY_TEXTURE,
+    NVN_OP_REPORT_COUNTER,
+    NVN_OP_BIND_IMAGE,
     NVN_OP_COUNT
 } NvnOpCode;
 
@@ -50,6 +55,8 @@ typedef enum {
 #define NVN_XFB_SLOT_MAX     4u
 #define NVN_VERTEX_ATTRIB_MAX 16u /* vertex attribute state records of one bind */
 #define NVN_VERTEX_STREAM_MAX 16u /* vertex stream state records of one bind */
+#define NVN_REPORT_TYPE_MAX   16u /* report types 0 to 16 (16 is the timestamp report) */
+#define NVN_IMAGE_BINDS_MAX   16u /* the most handles of one BindImages call */
 
 /* a pool or a texture is named by address and generation (nvn_objtab) and read at replay */
 typedef struct { uint64_t pool; uint32_t generation, reserved; } NvnOpPool;
@@ -96,6 +103,39 @@ typedef struct {
     NvnOpTarget color[NVN_RENDER_TARGETS_MAX];
     NvnOpTarget depth;
 } NvnOpRenderTargets;
+
+/* A clear of the depth and the stencil buffer. depth_bits is the float bits of the depth value. */
+typedef struct { uint32_t depth_bits, depth_enable, stencil, stencil_mask; } NvnOpClearDepthStencil;
+typedef enum {
+    NVN_CLEAR_KIND_FLOAT = 0,
+    NVN_CLEAR_KIND_INT = 1,
+    NVN_CLEAR_KIND_UINT = 2
+} NvnClearKind;
+/* One clear of a texture. region and color keep the game's words; color holds the float bits for kind 0. */
+typedef struct {
+    NvnOpTarget target;
+    uint32_t kind, mask;
+    uint32_t region[6];
+    uint32_t color[4];
+} NvnOpClearTexture;
+/* One texture copy. Each region is the game's six words. */
+typedef struct {
+    NvnOpTarget dst, src;
+    uint32_t flags, reserved;
+    uint32_t dst_region[6];
+    uint32_t src_region[6];
+} NvnOpCopyTexture;
+typedef struct { uint32_t type, reserved; uint64_t address; } NvnOpReportCounter;
+typedef struct {
+    uint32_t stage, first, count, reserved;
+    uint64_t handle[NVN_IMAGE_BINDS_MAX];
+} NvnOpBindImage;
+
+_Static_assert(sizeof(NvnOpClearDepthStencil) <= NVN_OP_MAX_PAYLOAD, "NvnOpClearDepthStencil fits an op payload");
+_Static_assert(sizeof(NvnOpClearTexture) <= NVN_OP_MAX_PAYLOAD, "NvnOpClearTexture fits an op payload");
+_Static_assert(sizeof(NvnOpCopyTexture) <= NVN_OP_MAX_PAYLOAD, "NvnOpCopyTexture fits an op payload");
+_Static_assert(sizeof(NvnOpReportCounter) <= NVN_OP_MAX_PAYLOAD, "NvnOpReportCounter fits an op payload");
+_Static_assert(sizeof(NvnOpBindImage) <= NVN_OP_MAX_PAYLOAD, "NvnOpBindImage fits an op payload");
 
 typedef struct { uint32_t code, bytes; } NvnOpHeader; /* bytes: the payload size, a multiple of NVN_OP_ALIGN */
 typedef struct {

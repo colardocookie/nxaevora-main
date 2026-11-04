@@ -63,6 +63,14 @@ typedef struct {
     uint32_t bind_vertex_stream_calls;
     NvnOpBindVertexStream bind_vertex_stream_op;
     struct { uint32_t stride, divisor; uint8_t enabled; } vstream[NVN_VERTEX_STREAM_MAX];
+    int gpu_op_ok;
+    uint32_t gpu_op_calls;
+    NvnOpCode gpu_op_code;
+    NvnOpClearDepthStencil gpu_depth_stencil;
+    NvnOpClearTexture gpu_clear_texture;
+    NvnOpCopyTexture gpu_copy_texture;
+    NvnOpReportCounter gpu_report;
+    NvnOpBindImage gpu_bind_image;
     uint32_t fault_count;
     const char* last_fault;
     uint64_t last_fault_value;
@@ -176,6 +184,32 @@ static int mock_bind_vertex_stream(void* ctx, const NvnOpBindVertexStream* op) {
     return k->bind_vertex_stream_ok;
 }
 
+static int mock_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
+    Mock* k = ctx;
+    k->gpu_op_calls++;
+    k->gpu_op_code = code;
+    switch (code) {
+    case NVN_OP_CLEAR_DEPTH_STENCIL:
+        k->gpu_depth_stencil = *(const NvnOpClearDepthStencil*)payload;
+        break;
+    case NVN_OP_CLEAR_TEXTURE:
+        k->gpu_clear_texture = *(const NvnOpClearTexture*)payload;
+        break;
+    case NVN_OP_COPY_TEXTURE:
+        k->gpu_copy_texture = *(const NvnOpCopyTexture*)payload;
+        break;
+    case NVN_OP_REPORT_COUNTER:
+        k->gpu_report = *(const NvnOpReportCounter*)payload;
+        break;
+    case NVN_OP_BIND_IMAGE:
+        k->gpu_bind_image = *(const NvnOpBindImage*)payload;
+        break;
+    default:
+        return 0;
+    }
+    return k->gpu_op_ok;
+}
+
 static void mock_fault(void* ctx, const char* what, uint64_t value) {
     Mock* k = ctx;
     k->fault_count++;
@@ -200,6 +234,7 @@ static NvnReplayEnv make_env(Mock* k) {
     env.bind_vertex_attrib = mock_bind_vertex_attrib;
     env.bind_vertex_stream = mock_bind_vertex_stream;
     env.render_targets = mock_render_targets;
+    env.gpu_op = mock_gpu_op;
     env.fault = mock_fault;
     return env;
 }
@@ -1276,6 +1311,135 @@ static void test_stats_accumulate(void) {
     nvn_oplist_free(&l);
 }
 
+static void test_gpu_ops_reach_callback(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    k.gpu_op_ok = 1;
+    NvnOpClearDepthStencil ds = {0x3F000000u, 1u, 0x11u, 0x22u};
+    NvnOpClearTexture clear;
+    memset(&clear, 0, sizeof clear);
+    clear.target.texture = 0x400001000ull;
+    clear.target.generation = 2;
+    clear.target.has_view = 1;
+    clear.target.view.base_level = 3;
+    clear.target.view.base_layer = 1;
+    clear.kind = NVN_CLEAR_KIND_FLOAT;
+    clear.mask = 0x9u;
+    for (uint32_t i = 0; i < 6; i++) clear.region[i] = i + 1u;
+    for (uint32_t i = 0; i < 4; i++) clear.color[i] = 0x3F000000u + i;
+    NvnOpCopyTexture copy;
+    memset(&copy, 0, sizeof copy);
+    copy.dst.texture = 0x400002000ull;
+    copy.dst.generation = 4;
+    copy.src.texture = 0x400003000ull;
+    copy.src.generation = 5;
+    copy.src.has_view = 1;
+    copy.src.view.base_layer = 2;
+    copy.flags = 7u;
+    for (uint32_t i = 0; i < 6; i++) {
+        copy.dst_region[i] = 10u + i;
+        copy.src_region[i] = 20u + i;
+    }
+    NvnOpReportCounter report = {NVN_REPORT_TYPE_MAX, 0, 0x412bbbfe0ull};
+    NvnOpBindImage images;
+    memset(&images, 0, sizeof images);
+    images.stage = 5;
+    images.first = 2;
+    images.count = 3;
+    images.handle[0] = 0x100000001ull;
+    images.handle[1] = 0x200000002ull;
+    images.handle[2] = 0x300000003ull;
+    CHECK(nvn_oplist_append(&l, NVN_OP_CLEAR_DEPTH_STENCIL, &ds, sizeof ds));
+    CHECK(nvn_oplist_append(&l, NVN_OP_CLEAR_TEXTURE, &clear, sizeof clear));
+    CHECK(nvn_oplist_append(&l, NVN_OP_COPY_TEXTURE, &copy, sizeof copy));
+    CHECK(nvn_oplist_append(&l, NVN_OP_REPORT_COUNTER, &report, sizeof report));
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_IMAGE, &images, sizeof images));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.gpu_op_calls == 5 && st.faults == 0 && st.methods == 0);
+    CHECK(k.gpu_op_code == NVN_OP_BIND_IMAGE);
+    CHECK(!memcmp(&k.gpu_depth_stencil, &ds, sizeof ds));
+    CHECK(!memcmp(&k.gpu_clear_texture, &clear, sizeof clear));
+    CHECK(!memcmp(&k.gpu_copy_texture, &copy, sizeof copy));
+    CHECK(!memcmp(&k.gpu_report, &report, sizeof report));
+    CHECK(!memcmp(&k.gpu_bind_image, &images, sizeof images));
+    CHECK(st.replayed[NVN_OP_CLEAR_DEPTH_STENCIL] == 1 && st.replayed[NVN_OP_CLEAR_TEXTURE] == 1);
+    CHECK(st.replayed[NVN_OP_COPY_TEXTURE] == 1 && st.replayed[NVN_OP_REPORT_COUNTER] == 1);
+    CHECK(st.replayed[NVN_OP_BIND_IMAGE] == 1);
+    nvn_oplist_free(&l);
+}
+
+static void test_gpu_ops_null_callback(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpClearDepthStencil ds = {0x3F800000u, 1u, 0u, 0u};
+    env.gpu_op = NULL;
+    CHECK(nvn_oplist_append(&l, NVN_OP_CLEAR_DEPTH_STENCIL, &ds, sizeof ds));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 1 && k.fault_count == 1 && st.replayed[NVN_OP_CLEAR_DEPTH_STENCIL] == 0);
+    CHECK(k.last_fault && !strcmp(k.last_fault, "gpu op"));
+    CHECK(k.last_fault_value == NVN_OP_CLEAR_DEPTH_STENCIL);
+    nvn_oplist_free(&l);
+}
+
+static void test_gpu_ops_refused(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpReportCounter report = {3u, 0, 0x400000000ull};
+    k.gpu_op_ok = 0;
+    CHECK(nvn_oplist_append(&l, NVN_OP_REPORT_COUNTER, &report, sizeof report));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 1 && k.gpu_op_calls == 1 && st.replayed[NVN_OP_REPORT_COUNTER] == 0);
+    CHECK(k.last_fault && !strcmp(k.last_fault, "gpu op") && k.last_fault_value == NVN_OP_REPORT_COUNTER);
+    nvn_oplist_free(&l);
+}
+
+static void test_gpu_ops_bad_payload(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    uint8_t small[8] = {0};
+    k.gpu_op_ok = 1;
+    CHECK(nvn_oplist_append(&l, NVN_OP_CLEAR_DEPTH_STENCIL, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_CLEAR_TEXTURE, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_COPY_TEXTURE, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_REPORT_COUNTER, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_IMAGE, small, sizeof small));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 5 && k.gpu_op_calls == 0 && st.methods == 0);
+    CHECK(k.last_fault && !strcmp(k.last_fault, "op size") && k.last_fault_value == NVN_OP_BIND_IMAGE);
+    CHECK(st.replayed[NVN_OP_CLEAR_DEPTH_STENCIL] == 0 && st.replayed[NVN_OP_CLEAR_TEXTURE] == 0);
+    CHECK(st.replayed[NVN_OP_COPY_TEXTURE] == 0 && st.replayed[NVN_OP_REPORT_COUNTER] == 0);
+    CHECK(st.replayed[NVN_OP_BIND_IMAGE] == 0);
+    nvn_oplist_free(&l);
+}
+
+static void test_gpu_ops_range_checks(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpReportCounter report = {NVN_REPORT_TYPE_MAX + 1u, 0, 0x400000000ull};
+    NvnOpBindImage images;
+    memset(&images, 0, sizeof images);
+    images.count = NVN_IMAGE_BINDS_MAX + 1u;
+    k.gpu_op_ok = 1;
+    CHECK(nvn_oplist_append(&l, NVN_OP_REPORT_COUNTER, &report, sizeof report));
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_IMAGE, &images, sizeof images));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 2 && k.gpu_op_calls == 0);
+    CHECK(st.replayed[NVN_OP_REPORT_COUNTER] == 0 && st.replayed[NVN_OP_BIND_IMAGE] == 0);
+    CHECK(k.last_fault && !strcmp(k.last_fault, "image count"));
+    CHECK(k.last_fault_value == NVN_IMAGE_BINDS_MAX + 1u);
+    nvn_oplist_free(&l);
+}
+
 int main(void) {
     test_viewport();
     test_viewport_flip();
@@ -1306,6 +1470,11 @@ int main(void) {
     test_bind_vertex_stream();
     test_depth_range_op();
     test_vertex_ops_bad_payload();
+    test_gpu_ops_reach_callback();
+    test_gpu_ops_null_callback();
+    test_gpu_ops_refused();
+    test_gpu_ops_bad_payload();
+    test_gpu_ops_range_checks();
     test_call_live();
     test_call_dead();
     test_call_depth();

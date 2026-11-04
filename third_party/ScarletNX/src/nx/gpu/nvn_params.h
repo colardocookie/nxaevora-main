@@ -267,6 +267,8 @@ typedef struct { uint32_t w1a80, w1a84; } NvnSamplerDeviceWords;
 #define NVN_SAMPLER_DEVICE_FILTER_FLAGS 0x111u
 extern const NvnSamplerDeviceWords nvn_sampler_device_words;
 void nvn_sampler_defaults(NvnSampler* s);
+/* 1 when every field is equal; a NaN float is unequal to itself, as the library fcmp. Pure. */
+int nvn_sampler_equal(const NvnSampler* a, const NvnSampler* b);
 float nvn_sampler_snap_bias(uint32_t index);
 /* 0 (out unchanged) when a wrap enum is above 7: the library reads its table unchecked. NaN anisotropy has no defined
    library result. */

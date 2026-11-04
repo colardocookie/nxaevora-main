@@ -421,6 +421,19 @@ void nvn_sampler_defaults(NvnSampler* s) {
     s->anisotropy = NVN_SAMPLER_ANISOTROPY_DEFAULT;
 }
 
+/* The library compares every word of the sampler and treats a NaN as unequal (fcmp). */
+int nvn_sampler_equal(const NvnSampler* a, const NvnSampler* b) {
+    if (a->device != b->device || a->min_filter != b->min_filter || a->mag_filter != b->mag_filter) return 0;
+    for (unsigned i = 0; i < 3; i++)
+        if (a->wrap[i] != b->wrap[i]) return 0;
+    if (a->min_lod != b->min_lod || a->max_lod != b->max_lod || a->lod_bias != b->lod_bias) return 0;
+    if (a->compare_enable != b->compare_enable || a->compare != b->compare) return 0;
+    for (unsigned i = 0; i < 4; i++)
+        if (a->border[i] != b->border[i]) return 0;
+    if (a->anisotropy != b->anisotropy || a->reduction != b->reduction || a->lod_snap != b->lod_snap) return 0;
+    return 1;
+}
+
 #define SAMPLER_SNAP_SEGMENT_SIZE 8u
 #define SAMPLER_SNAP_LAST_INDEX 31u
 

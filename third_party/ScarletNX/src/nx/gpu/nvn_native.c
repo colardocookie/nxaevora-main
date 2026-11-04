@@ -568,6 +568,11 @@ static void h_buffer_set_debug_label(CPU* c, u64 entry) {
     (void)c;
     (void)entry; /* the library stores no label */
 }
+/* Every other SetDebugLabel is one `ret` in the library. */
+static void h_set_debug_label(CPU* c, u64 entry) {
+    (void)c;
+    (void)entry;
+}
 
 /* G3 and G5: the sampler and texture records are independent of the guest allocation sizes. */
 typedef NvnTexture TextureRec;
@@ -641,6 +646,8 @@ RESOURCE_BUILDER_HANDLER(texture_builder_set_target, NvnTextureBuilder, texture_
     b->target = (u32)c->x[1])
 RESOURCE_BUILDER_HANDLER(texture_builder_set_size_2d, NvnTextureBuilder, texture_builder,
     b->width = (u32)c->x[1]; b->height = (u32)c->x[2]; b->depth = 1)
+RESOURCE_BUILDER_HANDLER(texture_builder_set_size_3d, NvnTextureBuilder, texture_builder,
+    b->width = (u32)c->x[1]; b->height = (u32)c->x[2]; b->depth = (u32)c->x[3])
 RESOURCE_BUILDER_HANDLER(texture_builder_set_levels, NvnTextureBuilder, texture_builder,
     b->levels = (u32)c->x[1])
 RESOURCE_BUILDER_HANDLER(texture_builder_set_format, NvnTextureBuilder, texture_builder,
@@ -701,6 +708,17 @@ static void h_sampler_initialize(CPU* c, u64 entry) {
     NvnSampler b = *sampler_builder(c->x[1]);
     *(NvnSampler*)rec_get(c->x[0], NVN_OBJ_SAMPLER, sizeof b) = b;
     c->x[0] = 1;
+    pm_unlock(&objs_lock);
+}
+static void h_sampler_compare(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const NvnSampler* a = known_record(c->x[0], NVN_OBJ_SAMPLER);
+    const NvnSampler* b = known_record(c->x[1], NVN_OBJ_SAMPLER);
+    if (!a || !b)
+        LOG("nvn-native: nvnSamplerCompare unknown sampler=%llx\n",
+            (unsigned long long)(a ? c->x[1] : c->x[0]));
+    c->x[0] = a && b ? nvn_sampler_equal(a, b) : 0;
     pm_unlock(&objs_lock);
 }
 /* Find only: a failed link must not create a pool record. Caller holds objs_lock. */
@@ -999,7 +1017,66 @@ static void h_texture_pool_register_texture(CPU* c, u64 entry) {
 TEXTURE_GETTER(width, t->builder.width)
 TEXTURE_GETTER(height, t->builder.height)
 TEXTURE_GETTER(stride, t->layout.linear_stride)
+TEXTURE_GETTER(target, t->builder.target)
+TEXTURE_GETTER(depth, t->builder.depth)
 #undef TEXTURE_GETTER
+
+/* The outputs of a texture view getter: the pointer must be writable before the record is used. One log line on failure. */
+static int texture_view_getter(CPU* c, const char* name, unsigned outputs, const NvnTextureView** out) {
+    for (unsigned i = 0; i < outputs; i++)
+        if (!native_guest_writable(c->x[1 + i], sizeof(uint32_t))) {
+            LOG("nvn-native: %s unwritable output\n", name);
+            return 0;
+        }
+    const NvnTextureView* v = known_record(c->x[0], NVN_OBJ_TEXTURE_VIEW);
+    if (!v) {
+        LOG("nvn-native: %s unknown view=%llx\n", name, (unsigned long long)c->x[0]);
+        return 0;
+    }
+    *out = v;
+    return 1;
+}
+static void h_texture_view_get_levels(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnTextureViewGetLevels";
+    pm_lock(&objs_lock);
+    const NvnTextureView* v = NULL;
+    if (texture_view_getter(c, name, 2, &v)) {
+        gw32(c->x[1], v->base_level);
+        gw32(c->x[2], v->level_count);
+        c->x[0] = (v->flags & NVN_VIEW_LEVELS) != 0;
+    } else {
+        c->x[0] = 0;
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_texture_view_get_layers(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnTextureViewGetLayers";
+    pm_lock(&objs_lock);
+    const NvnTextureView* v = NULL;
+    if (texture_view_getter(c, name, 2, &v)) {
+        gw32(c->x[1], v->base_layer);
+        gw32(c->x[2], v->layer_count);
+        c->x[0] = (v->flags & NVN_VIEW_LAYERS) != 0;
+    } else {
+        c->x[0] = 0;
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_texture_view_get_target(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnTextureViewGetTarget";
+    pm_lock(&objs_lock);
+    const NvnTextureView* v = NULL;
+    if (texture_view_getter(c, name, 1, &v)) {
+        gw32(c->x[1], v->target);
+        c->x[0] = (v->flags & NVN_VIEW_TARGET) != 0;
+    } else {
+        c->x[0] = 0;
+    }
+    pm_unlock(&objs_lock);
+}
 
 static int texture_initialize(TextureRec* t, const NvnTextureBuilder* b) {
     if (b->gl_name) {
@@ -1049,6 +1126,22 @@ static void h_texture_initialize(CPU* c, u64 entry) {
     int ok = texture_initialize(t, &b);
     if (!ok) nvn_objtab_remove(&objs, addr); /* later calls must not find a half-made texture */
     c->x[0] = ok;
+    pm_unlock(&objs_lock);
+}
+
+static void h_texture_finalize(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    NvnObj* o = nvn_objtab_find(&objs, c->x[0]);
+    if (o && o->kind == NVN_OBJ_TEXTURE) nvn_objtab_remove(&objs, c->x[0]);
+    pm_unlock(&objs_lock);
+}
+/* The library flushes the pool cache and moves no data; the host write tracking already covers the pool. */
+static void h_texture_flush_texels(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    if (!known_record(c->x[0], NVN_OBJ_TEXTURE))
+        LOG("nvn-native: nvnTextureFlushTexels unknown texture=%llx\n", (unsigned long long)c->x[0]);
     pm_unlock(&objs_lock);
 }
 
@@ -2101,6 +2194,128 @@ static void h_command_buffer_call_commands(CPU* c, u64 entry) {
     }
     pm_unlock(&objs_lock);
 }
+/* ClearDepthStencil(cb, depth, depth_enable, stencil, stencil_mask): the raw depth bits and the three words. */
+static void h_command_buffer_clear_depth_stencil(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferClearDepthStencil";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpClearDepthStencil op = {SNX_VS(c->v[0], 0), (u32)c->x[1], (u32)c->x[2], (u32)c->x[3]};
+    if (cb) command_record(cb, c->x[0], name, NVN_OP_CLEAR_DEPTH_STENCIL, &op, sizeof op);
+    pm_unlock(&objs_lock);
+}
+/* The three ClearTexture calls share these steps; kind says how the color words are read. */
+static void command_clear_texture(CPU* c, const char* operation, uint32_t kind) {
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], operation);
+    NvnOpClearTexture op = {.kind = kind, .mask = (uint32_t)c->x[5]};
+    if (!cb) {
+    } else if (!c->x[1]) {
+        command_dropped(cb, operation, "null texture", c->x[1]);
+    } else if (!command_target(c->x[1], c->x[2], &op.target, cb, operation)) {
+    } else if (!native_guest_readable(c->x[3], sizeof op.region)) {
+        command_dropped(cb, operation, "unreadable region", c->x[3]);
+    } else if (!native_guest_readable(c->x[4], sizeof op.color)) {
+        command_dropped(cb, operation, "unreadable color", c->x[4]);
+    } else {
+        for (u32 i = 0; i < 6; i++) op.region[i] = gr32(c->x[3] + (u64)i * 4);
+        for (u32 i = 0; i < 4; i++) op.color[i] = gr32(c->x[4] + (u64)i * 4);
+        command_record(cb, c->x[0], operation, NVN_OP_CLEAR_TEXTURE, &op, sizeof op);
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_clear_texture(CPU* c, u64 entry) {
+    (void)entry;
+    command_clear_texture(c, "nvnCommandBufferClearTexture", NVN_CLEAR_KIND_FLOAT);
+}
+static void h_command_buffer_clear_texturei(CPU* c, u64 entry) {
+    (void)entry;
+    command_clear_texture(c, "nvnCommandBufferClearTexturei", NVN_CLEAR_KIND_INT);
+}
+static void h_command_buffer_clear_textureui(CPU* c, u64 entry) {
+    (void)entry;
+    command_clear_texture(c, "nvnCommandBufferClearTextureui", NVN_CLEAR_KIND_UINT);
+}
+static void h_command_buffer_copy_texture_to_texture(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferCopyTextureToTexture";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpCopyTexture op = {0};
+    if (!cb) {
+    } else if (!c->x[1]) {
+        command_dropped(cb, name, "null texture", c->x[1]);
+    } else if (!c->x[4]) {
+        command_dropped(cb, name, "null texture", c->x[4]);
+    } else if (!command_target(c->x[1], c->x[2], &op.src, cb, name)) {
+    } else if (!command_target(c->x[4], c->x[5], &op.dst, cb, name)) {
+    } else if (!native_guest_readable(c->x[3], sizeof op.src_region)) {
+        command_dropped(cb, name, "unreadable region", c->x[3]);
+    } else if (!native_guest_readable(c->x[6], sizeof op.dst_region)) {
+        command_dropped(cb, name, "unreadable region", c->x[6]);
+    } else {
+        op.flags = (uint32_t)c->x[7];
+        for (u32 i = 0; i < 6; i++) {
+            op.src_region[i] = gr32(c->x[3] + (u64)i * 4);
+            op.dst_region[i] = gr32(c->x[6] + (u64)i * 4);
+        }
+        command_record(cb, c->x[0], name, NVN_OP_COPY_TEXTURE, &op, sizeof op);
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_report_counter(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferReportCounter";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpReportCounter op = {(uint32_t)c->x[1], 0, c->x[2]};
+    if (cb) {
+        if (op.type > NVN_REPORT_TYPE_MAX)
+            command_dropped(cb, name, "report type", op.type);
+        else
+            command_record(cb, c->x[0], name, NVN_OP_REPORT_COUNTER, &op, sizeof op);
+    }
+    pm_unlock(&objs_lock);
+}
+/* One BindImage or BindImages call. A NULL host_handles reads the guest array at guest_handles. */
+static void command_bind_image(CommandBufferRec* cb, u64 addr, const char* operation, uint32_t stage, uint32_t first,
+                               int32_t count, u64 guest_handles, const uint64_t* host_handles) {
+    if (count < 1) return;
+    uint32_t n = (uint32_t)count;
+    if (stage > NVN_BIND_STAGE_MAX) {
+        command_dropped(cb, operation, "stage outside the bind stages", stage);
+        return;
+    }
+    if (n > NVN_IMAGE_BINDS_MAX || first >= NVN_BIND_SLOT_MAX || n > NVN_BIND_SLOT_MAX - first) {
+        command_dropped(cb, operation, "range outside the image slots", ((u64)first << 32) | n);
+        return;
+    }
+    if (!host_handles && !native_guest_readable(guest_handles, (u64)n * 8)) {
+        command_dropped(cb, operation, "unreadable handles", guest_handles);
+        return;
+    }
+    NvnOpBindImage op = {.stage = stage, .first = first, .count = n};
+    for (uint32_t i = 0; i < n; i++)
+        op.handle[i] = host_handles ? host_handles[i] : gr64(guest_handles + (u64)i * 8);
+    command_record(cb, addr, operation, NVN_OP_BIND_IMAGE, &op, sizeof op);
+}
+static void h_command_buffer_bind_image(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferBindImage";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb) command_bind_image(cb, c->x[0], name, (uint32_t)c->x[1], (uint32_t)c->x[2], 1, 0, &c->x[3]);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_bind_images(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferBindImages";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb)
+        command_bind_image(cb, c->x[0], name, (uint32_t)c->x[1], (uint32_t)c->x[2], (int32_t)c->x[3], c->x[4], NULL);
+    pm_unlock(&objs_lock);
+}
 
 /* G7: the callbacks of the replay (decision 6 of the 3c design). They run on the GPU thread in the frame job and read the
    records of the host under objs_lock. A list pointer stays valid because the frame job holds a reference of the list. */
@@ -2335,6 +2550,15 @@ static int replay_host_render_targets(void* ctx, const NvnOpRenderTargets* op) {
     NvnRtEnv env = {ctx, replay_host_method, replay_host_rt_fault};
     return nvn_rt_emit(&env, color, op->count, depth.texture ? &depth : NULL, host->clip_limit);
 }
+/* The replay thread counts the op, and keeps the last report and the last image bind for stage 4. */
+static int replay_host_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
+    NvnNativeReplayHost* host = ctx;
+    if (code >= NVN_OP_COUNT) return 0;
+    host->gpu_ops[code]++;
+    if (code == NVN_OP_REPORT_COUNTER) host->last_report = *(const NvnOpReportCounter*)payload;
+    if (code == NVN_OP_BIND_IMAGE) host->last_bind_image = *(const NvnOpBindImage*)payload;
+    return 1;
+}
 static void replay_host_fault(void* ctx, const char* what, uint64_t value) {
     (void)ctx;
     replay_cause_count(what);
@@ -2348,8 +2572,8 @@ void nvn_native_replay_env(NvnNativeReplayHost* host, int window_origin_flip, Nv
                           .dispatch = replay_host_dispatch, .bind_program = replay_host_bind_program,
                           .bind_vertex_attrib = replay_host_bind_vertex_attrib,
                           .bind_vertex_stream = replay_host_bind_vertex_stream,
-                          .render_targets = replay_host_render_targets, .fault = replay_host_fault,
-                          .window_origin_flip = window_origin_flip};
+                          .render_targets = replay_host_render_targets, .gpu_op = replay_host_gpu_op,
+                          .fault = replay_host_fault, .window_origin_flip = window_origin_flip};
 }
 
 /* G4: window and sync state stays in host records; guest object bytes stay untouched. */
@@ -2653,6 +2877,9 @@ static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int sho
     uint32_t submitted = frame_submitted_lists, skipped = frame_skipped_lists, acquires = frame_acquires;
     uint32_t live = nvn_list_live(&lists);
     pm_unlock(&objs_lock);
+    uint32_t gops = stats->replayed[NVN_OP_CLEAR_DEPTH_STENCIL] + stats->replayed[NVN_OP_CLEAR_TEXTURE] +
+                    stats->replayed[NVN_OP_COPY_TEXTURE] + stats->replayed[NVN_OP_REPORT_COUNTER] +
+                    stats->replayed[NVN_OP_BIND_IMAGE];
     int abnormal = stats->faults != 0 || dropped_delta != 0 || missing_delta != 0 || !shown;
     char causes[256];
     replay_causes_take(causes, sizeof causes);
@@ -2663,18 +2890,18 @@ static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int sho
         if (abnormal)
             LOG_LIMIT(NVN_FRAME_ABNORMAL_LIMIT,
                       "nvn-native: frame %u window=%llx index=%u lists=%u (live %u) ops=%u faults=%u methods=%u "
-                      "draws=%u dispatches=%u vbinds=%u dropped=%u missing=%u skipped_lists=%u acquires=%u fences=%u "
+                      "draws=%u dispatches=%u vbinds=%u gops=%u dropped=%u missing=%u skipped_lists=%u acquires=%u fences=%u "
                       "shown=%d\n",
                       frame_number, (unsigned long long)job->window, job->index, submitted, live, ops, stats->faults,
                       stats->methods, stats->replayed[NVN_OP_DRAW], stats->replayed[NVN_OP_DISPATCH],
-                      stats->replayed[NVN_OP_BIND_VERTEX_ATTRIB] + stats->replayed[NVN_OP_BIND_VERTEX_STREAM],
+                      stats->replayed[NVN_OP_BIND_VERTEX_ATTRIB] + stats->replayed[NVN_OP_BIND_VERTEX_STREAM], gops,
                       dropped_delta, missing_delta, skipped, acquires, fences, shown);
         else
             LOG("nvn-native: frame %u window=%llx index=%u lists=%u (live %u) ops=%u faults=%u methods=%u draws=%u "
-                "dispatches=%u vbinds=%u dropped=%u missing=%u skipped_lists=%u acquires=%u fences=%u shown=%d\n",
+                "dispatches=%u vbinds=%u gops=%u dropped=%u missing=%u skipped_lists=%u acquires=%u fences=%u shown=%d\n",
                 frame_number, (unsigned long long)job->window, job->index, submitted, live, ops, stats->faults,
                 stats->methods, stats->replayed[NVN_OP_DRAW], stats->replayed[NVN_OP_DISPATCH],
-                stats->replayed[NVN_OP_BIND_VERTEX_ATTRIB] + stats->replayed[NVN_OP_BIND_VERTEX_STREAM],
+                stats->replayed[NVN_OP_BIND_VERTEX_ATTRIB] + stats->replayed[NVN_OP_BIND_VERTEX_STREAM], gops,
                 dropped_delta, missing_delta, skipped, acquires, fences, shown);
     }
 }
@@ -2897,6 +3124,7 @@ static const NativeProc native_procs[] = {
     {"nvnTextureBuilderSetFlags", h_texture_builder_set_flags},
     {"nvnTextureBuilderSetTarget", h_texture_builder_set_target},
     {"nvnTextureBuilderSetSize2D", h_texture_builder_set_size_2d},
+    {"nvnTextureBuilderSetSize3D", h_texture_builder_set_size_3d},
     {"nvnTextureBuilderSetLevels", h_texture_builder_set_levels},
     {"nvnTextureBuilderSetFormat", h_texture_builder_set_format},
     {"nvnTextureBuilderSetSwizzle", h_texture_builder_set_swizzle},
@@ -2909,7 +3137,10 @@ static const NativeProc native_procs[] = {
     {"nvnTextureBuilderGetStorageSize", h_texture_builder_get_storage_size},
     {"nvnSamplerInitialize", h_sampler_initialize},
     {"nvnSamplerPoolRegisterSampler", h_sampler_pool_register_sampler},
+    {"nvnSamplerCompare", h_sampler_compare},
     {"nvnTextureInitialize", h_texture_initialize},
+    {"nvnTextureFinalize", h_texture_finalize},
+    {"nvnTextureFlushTexels", h_texture_flush_texels},
     {"nvnWindowBuilderSetDefaults", h_window_builder_set_defaults},
     {"nvnWindowBuilderSetDevice", h_window_builder_set_device},
     {"nvnWindowBuilderSetNativeWindow", h_window_builder_set_native_window},
@@ -2932,9 +3163,14 @@ static const NativeProc native_procs[] = {
     {"nvnTextureViewSetSwizzle", h_texture_view_set_swizzle},
     {"nvnTextureViewSetDepthStencilMode", h_texture_view_set_depth_stencil_mode},
     {"nvnTextureViewSetTarget", h_texture_view_set_target},
+    {"nvnTextureViewGetLevels", h_texture_view_get_levels},
+    {"nvnTextureViewGetLayers", h_texture_view_get_layers},
+    {"nvnTextureViewGetTarget", h_texture_view_get_target},
     {"nvnTextureGetWidth", h_texture_get_width},
     {"nvnTextureGetHeight", h_texture_get_height},
     {"nvnTextureGetStride", h_texture_get_stride},
+    {"nvnTextureGetTarget", h_texture_get_target},
+    {"nvnTextureGetDepth", h_texture_get_depth},
     {"nvnTexturePoolRegisterTexture", h_texture_pool_register_texture},
     {"nvnBufferBuilderSetDevice", h_buffer_builder_set_device},
     {"nvnBufferBuilderSetDefaults", h_buffer_builder_set_defaults},
@@ -2946,6 +3182,17 @@ static const NativeProc native_procs[] = {
     {"nvnBufferGetAddress", h_buffer_get_address},
     {"nvnBufferGetSize", h_buffer_get_size},
     {"nvnBufferSetDebugLabel", h_buffer_set_debug_label},
+    {"nvnDeviceSetDebugLabel", h_set_debug_label},
+    {"nvnCommandBufferSetDebugLabel", h_set_debug_label},
+    {"nvnMemoryPoolSetDebugLabel", h_set_debug_label},
+    {"nvnProgramSetDebugLabel", h_set_debug_label},
+    {"nvnQueueSetDebugLabel", h_set_debug_label},
+    {"nvnSamplerSetDebugLabel", h_set_debug_label},
+    {"nvnSyncSetDebugLabel", h_set_debug_label},
+    {"nvnTextureSetDebugLabel", h_set_debug_label},
+    {"nvnWindowSetDebugLabel", h_set_debug_label},
+    {"nvnTexturePoolSetDebugLabel", h_set_debug_label},
+    {"nvnSamplerPoolSetDebugLabel", h_set_debug_label},
     {"nvnProgramInitialize", h_program_initialize},
     {"nvnProgramSetShadersExt", h_program_set_shaders_ext},
     {"nvnProgramFinalize", h_program_finalize},
@@ -3066,6 +3313,14 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferSetLineWidth", h_command_buffer_set_line_width},
     {"nvnCommandBufferSetDepthRanges", h_command_buffer_set_depth_ranges},
     {"nvnCommandBufferSetDepthRange", h_command_buffer_set_depth_range},
+    {"nvnCommandBufferClearDepthStencil", h_command_buffer_clear_depth_stencil},
+    {"nvnCommandBufferClearTexture", h_command_buffer_clear_texture},
+    {"nvnCommandBufferClearTexturei", h_command_buffer_clear_texturei},
+    {"nvnCommandBufferClearTextureui", h_command_buffer_clear_textureui},
+    {"nvnCommandBufferCopyTextureToTexture", h_command_buffer_copy_texture_to_texture},
+    {"nvnCommandBufferReportCounter", h_command_buffer_report_counter},
+    {"nvnCommandBufferBindImage", h_command_buffer_bind_image},
+    {"nvnCommandBufferBindImages", h_command_buffer_bind_images},
     {NULL, NULL},
 };
 

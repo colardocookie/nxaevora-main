@@ -37,6 +37,8 @@ typedef struct NvnReplayEnv {
     int (*bind_vertex_stream)(void* ctx, const NvnOpBindVertexStream* op);
     /* The caller writes the render target methods itself. 1 when done, 0 when it could not (it reports the cause). */
     int (*render_targets)(void* ctx, const NvnOpRenderTargets* op);
+    /* A clear, a copy, a report or an image bind. 1 when stored, 0 when refused (the host reports the cause). */
+    int (*gpu_op)(void* ctx, NvnOpCode code, const void* payload);
     /* a bad part: a short text and one value. The module then skips the op and goes on. */
     void (*fault)(void* ctx, const char* what, uint64_t value);
     int window_origin_flip; /* 1 when the device window origin mode is 1: the viewport Y scale is negative */

@@ -176,6 +176,84 @@ static void test_vertex_state_and_depth_ops(void) {
     nvn_oplist_free(&l);
 }
 
+static void test_gpu_ops(void) {
+    CHECK(NVN_OP_CLEAR_DEPTH_STENCIL > NVN_OP_SET_DEPTH_RANGE);
+    CHECK(NVN_OP_BIND_IMAGE < NVN_OP_COUNT);
+    NvnOpList l = {0};
+    NvnOpClearDepthStencil ds = {0x3F800000u, 1u, 0x2Au, 0xFFu};
+    NvnOpClearTexture clear;
+    memset(&clear, 0, sizeof clear);
+    clear.target.texture = 0x400001000ull;
+    clear.target.generation = 3;
+    clear.target.has_view = 1;
+    clear.target.view.base_level = 2;
+    clear.target.view.base_layer = 4;
+    clear.kind = NVN_CLEAR_KIND_INT;
+    clear.mask = 0xFu;
+    for (uint32_t i = 0; i < 6; i++) clear.region[i] = 10u + i;
+    for (uint32_t i = 0; i < 4; i++) clear.color[i] = 0x100u + i;
+    NvnOpCopyTexture copy;
+    memset(&copy, 0, sizeof copy);
+    copy.dst.texture = 0x400002000ull;
+    copy.dst.generation = 4;
+    copy.dst.has_view = 1;
+    copy.dst.view.base_level = 1;
+    copy.src.texture = 0x400003000ull;
+    copy.src.generation = 5;
+    copy.flags = 0x15u;
+    for (uint32_t i = 0; i < 6; i++) {
+        copy.dst_region[i] = 20u + i;
+        copy.src_region[i] = 30u + i;
+    }
+    NvnOpReportCounter report = {NVN_REPORT_TYPE_MAX, 0, 0x412bbbfe0ull};
+    NvnOpBindImage images;
+    memset(&images, 0, sizeof images);
+    images.stage = 4;
+    images.first = 7;
+    images.count = 2;
+    images.handle[0] = 0x100000001ull;
+    images.handle[1] = 0x200000002ull;
+    CHECK(nvn_oplist_append(&l, NVN_OP_CLEAR_DEPTH_STENCIL, &ds, sizeof ds));
+    CHECK(nvn_oplist_append(&l, NVN_OP_CLEAR_TEXTURE, &clear, sizeof clear));
+    CHECK(nvn_oplist_append(&l, NVN_OP_COPY_TEXTURE, &copy, sizeof copy));
+    CHECK(nvn_oplist_append(&l, NVN_OP_REPORT_COUNTER, &report, sizeof report));
+    CHECK(nvn_oplist_append(&l, NVN_OP_BIND_IMAGE, &images, sizeof images));
+    CHECK(l.ops == 5);
+
+    size_t pos = 0;
+    NvnOpHeader h;
+    const void* p;
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_CLEAR_DEPTH_STENCIL && h.bytes == sizeof ds);
+    const NvnOpClearDepthStencil* got_ds = p;
+    CHECK(got_ds->depth_bits == 0x3F800000u && got_ds->depth_enable == 1u);
+    CHECK(got_ds->stencil == 0x2Au && got_ds->stencil_mask == 0xFFu);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_CLEAR_TEXTURE && h.bytes == sizeof clear);
+    const NvnOpClearTexture* got_clear = p;
+    CHECK(got_clear->target.texture == 0x400001000ull && got_clear->target.generation == 3);
+    CHECK(got_clear->target.has_view == 1 && got_clear->target.view.base_level == 2);
+    CHECK(got_clear->target.view.base_layer == 4 && got_clear->kind == NVN_CLEAR_KIND_INT);
+    CHECK(got_clear->mask == 0xFu && got_clear->region[5] == 15u && got_clear->color[3] == 0x103u);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_COPY_TEXTURE && h.bytes == sizeof copy);
+    const NvnOpCopyTexture* got_copy = p;
+    CHECK(got_copy->dst.texture == 0x400002000ull && got_copy->dst.generation == 4);
+    CHECK(got_copy->src.texture == 0x400003000ull && got_copy->src.generation == 5);
+    CHECK(got_copy->flags == 0x15u && got_copy->dst_region[5] == 25u && got_copy->src_region[5] == 35u);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_REPORT_COUNTER && h.bytes == sizeof report);
+    const NvnOpReportCounter* got_report = p;
+    CHECK(got_report->type == NVN_REPORT_TYPE_MAX && got_report->address == 0x412bbbfe0ull);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_BIND_IMAGE && h.bytes == sizeof images);
+    const NvnOpBindImage* got_images = p;
+    CHECK(got_images->stage == 4 && got_images->first == 7 && got_images->count == 2);
+    CHECK(got_images->handle[0] == 0x100000001ull && got_images->handle[1] == 0x200000002ull);
+    CHECK(got_images->handle[2] == 0);
+    CHECK(!nvn_oplist_next(&l, &pos, &h, &p));
+    nvn_oplist_free(&l);
+}
+
 static void test_growth(void) {
     NvnOpList l = {0};
     for (uint32_t i = 0; i < 5000; i++) {
@@ -316,6 +394,7 @@ int main(void) {
     test_bind_state();
     test_draw_path_ops();
     test_vertex_state_and_depth_ops();
+    test_gpu_ops();
     test_growth();
     test_handles();
     test_find_pointer_stable();

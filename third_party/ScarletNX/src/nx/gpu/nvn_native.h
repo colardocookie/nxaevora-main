@@ -49,6 +49,10 @@ typedef struct {
     struct { uint32_t w; uint8_t enabled; } vertex_attrib[NVN_VERTEX_ATTRIB_MAX];
     struct { uint32_t stride, divisor; uint8_t enabled; } vertex_stream[NVN_VERTEX_STREAM_MAX];
     uint32_t vattrib_binds, vstream_binds;
+    /* The clears, copies, reports and image binds of one frame job. The replay thread writes them without a lock. */
+    uint64_t gpu_ops[NVN_OP_COUNT];
+    NvnOpReportCounter last_report;
+    NvnOpBindImage last_bind_image;
 } NvnNativeReplayHost;
 /* Fills env for the replay of host lists. The callbacks read the records of the host under its lock and write
    methods on host->channel. window_origin_flip is 1 when the device window origin mode is 1. */
