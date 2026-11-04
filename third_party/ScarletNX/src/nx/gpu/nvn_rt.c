@@ -11,6 +11,9 @@
 #define NVN_RT_COLOR_STRIDE         0x10u
 #define NVN_RT_DEPTH_A              0x54Eu
 #define NVN_RT_DEPTH_B              0xD28u
+#define NVN_RT_DEPTH_ENABLE         1u
+#define NVN_RT_DEPTH_BIND_BASE      0x3F8u
+#define NVN_RT_DEPTH_SIZE_BASE      0x48Au
 #define NVN_RT_CLIP_X               0x3FDu
 #define NVN_RT_CLIP_Y               0x3FEu
 #define NVN_RT_SAMPLE_MODE          0x574u
@@ -23,6 +26,15 @@
 #define NVN_RT_TILE_Z_SHIFT         8u
 #define NVN_RT_LAYER_STRIDE_SHIFT   2u
 #define NVN_RT_SAMPLE_INDEX_MAX     7u
+#define NVN_RT_SHIFT_MASK           31u
+#define NVN_RT_DEPTH_WORD_MASK      0xFFFFu
+#define NVN_RT_DEPTH_VIEW_FLAGS     (NVN_VIEW_LEVELS | NVN_VIEW_LAYERS | NVN_VIEW_FORMAT | \
+                                     NVN_VIEW_SWIZZLE | NVN_VIEW_DEPTH_STENCIL_MODE | NVN_VIEW_TARGET)
+
+typedef struct {
+    uint64_t address;
+    uint32_t width, height, depth, format, tile, layer_stride_words;
+} NvnRtDepth;
 
 static uint32_t rt_align_up(uint32_t value, uint32_t multiple) {
     return ((value + multiple - 1u) / multiple) * multiple;
@@ -39,15 +51,29 @@ static uint32_t rt_sample_mode(uint32_t code) {
     return index <= NVN_RT_SAMPLE_INDEX_MAX ? modes[index] : 0u;
 }
 
-/* One target: check it and compute its eight words. The fault callback reports the first bad part. */
-static int rt_target_words(const NvnRtEnv* env, const NvnRtColor* color, uint32_t word[NVN_RT_WORDS_PER_TARGET]) {
-    const NvnTexture* texture = color->texture;
-    const NvnTextureView* view = color->view;
+/* d869d10: the tile row count of a block linear layout. A target below the tile size gets 1. */
+static uint32_t rt_tile_factor(const NvnTextureLayout* layout, uint32_t width, uint32_t height, uint32_t depth) {
+    uint32_t gob_blocks = NVN_TEXTURE_GOB_WIDTH / layout->bytes_per_block;
+    uint32_t tile_x = layout->tile_x & NVN_RT_SHIFT_MASK;
+    uint32_t tile_y = layout->tile_y & NVN_RT_SHIFT_MASK;
+    uint32_t tile_z = layout->tile_z & NVN_RT_SHIFT_MASK;
+    uint32_t factor = 1u << tile_x;
+    if ((uint64_t)width < ((uint64_t)gob_blocks << tile_x)) return 1u;
+    if ((uint64_t)height < ((uint64_t)NVN_TEXTURE_GOB_HEIGHT << tile_y)) return 1u;
+    if ((depth >> tile_z) == 0u) return 1u;
+    return factor;
+}
+
+static uint32_t rt_tile_word(const NvnTextureLayout* layout) {
+    return ((uint32_t)layout->tile_x & NVN_RT_TILE_NIBBLE) |
+           (((uint32_t)layout->tile_y & NVN_RT_TILE_NIBBLE) << NVN_RT_TILE_Y_SHIFT) |
+           (((uint32_t)layout->tile_z & NVN_RT_TILE_NIBBLE) << NVN_RT_TILE_Z_SHIFT);
+}
+
+/* The checks that a color and a depth target share. *format_word is set when 1 is returned. */
+static int rt_texture_checks(const NvnRtEnv* env, const NvnTexture* texture, const char* linear_fault,
+                             uint32_t* format_word) {
     const NvnTextureLayout* layout = &texture->layout;
-    if (view && view->flags != 0u) {
-        env->fault(env->ctx, "rt view flags", view->flags);
-        return 0;
-    }
     if (texture->builder.target != NVN_TEXTURE_TARGET_2D) {
         env->fault(env->ctx, "rt target", texture->builder.target);
         return 0;
@@ -57,11 +83,11 @@ static int rt_target_words(const NvnRtEnv* env, const NvnRtColor* color, uint32_
         return 0;
     }
     if (texture->builder.flags & NVN_TEXTURE_LINEAR_FLAGS) {
-        env->fault(env->ctx, "rt linear", texture->builder.flags);
+        env->fault(env->ctx, linear_fault, texture->builder.flags);
         return 0;
     }
-    uint32_t format_word = nvn_rt_format_word(texture->builder.format);
-    if (format_word == 0u) {
+    uint32_t word = nvn_rt_format_word(texture->builder.format);
+    if (word == 0u) {
         env->fault(env->ctx, "rt format", texture->builder.format);
         return 0;
     }
@@ -73,29 +99,106 @@ static int rt_target_words(const NvnRtEnv* env, const NvnRtColor* color, uint32_
         env->fault(env->ctx, "rt bytes per block", layout->bytes_per_block);
         return 0;
     }
-    uint32_t width = layout->width * layout->sample_x;
-    uint32_t height = layout->height * layout->sample_y;
-    uint32_t depth = layout->depth;
-    uint32_t tile_height = NVN_TEXTURE_GOB_HEIGHT << (layout->tile_y & 31u);
-    if (height < tile_height || (depth >> (layout->tile_z & 31u)) == 0u) {
-        env->fault(env->ctx, "rt small target", height);
+    *format_word = word;
+    return 1;
+}
+
+/* The depth view reads LEVELS, LAYERS and FORMAT. SWIZZLE, DEPTH_STENCIL_MODE and TARGET do not change
+   the depth words. */
+static int rt_depth_view(const NvnRtEnv* env, const NvnTexture* texture, const NvnTextureView* view) {
+    if (!view || view->flags == 0u) return 1;
+    if (view->flags & (uint8_t)~NVN_RT_DEPTH_VIEW_FLAGS) {
+        env->fault(env->ctx, "rt depth view flags", view->flags);
         return 0;
     }
+    if ((view->flags & NVN_VIEW_LEVELS) && (view->base_level != 0u || view->level_count != 1u)) {
+        env->fault(env->ctx, "rt depth view levels", view->flags);
+        return 0;
+    }
+    if ((view->flags & NVN_VIEW_FORMAT) && view->format != texture->builder.format) {
+        env->fault(env->ctx, "rt depth view format", view->format);
+        return 0;
+    }
+    return 1;
+}
+
+/* One target: check it and compute its eight words. The fault callback reports the first bad part. */
+static int rt_target_words(const NvnRtEnv* env, const NvnRtColor* color, uint32_t word[NVN_RT_WORDS_PER_TARGET]) {
+    const NvnTexture* texture = color->texture;
+    const NvnTextureView* view = color->view;
+    const NvnTextureLayout* layout = &texture->layout;
+    if (view && view->flags != 0u) {
+        env->fault(env->ctx, "rt view flags", view->flags);
+        return 0;
+    }
+    uint32_t format_word = 0;
+    if (!rt_texture_checks(env, texture, "rt linear", &format_word)) return 0;
+    uint32_t width = layout->width * layout->sample_x;
+    uint32_t height = layout->height * layout->sample_y;
     uint32_t gob_blocks = NVN_TEXTURE_GOB_WIDTH / layout->bytes_per_block;
-    uint32_t factor = width < (gob_blocks << (layout->tile_x & 31u)) ? 1u : (1u << (layout->tile_x & 31u));
+    uint32_t factor = rt_tile_factor(layout, width, height, layout->depth);
     word[0] = (uint32_t)(texture->address >> 32);
     word[1] = (uint32_t)texture->address;
     word[2] = rt_align_up(width, factor * gob_blocks);
     word[3] = height;
     word[4] = format_word;
-    word[5] = ((uint32_t)(layout->tile_y & NVN_RT_TILE_NIBBLE) << NVN_RT_TILE_Y_SHIFT) |
-              ((uint32_t)(layout->tile_z & NVN_RT_TILE_NIBBLE) << NVN_RT_TILE_Z_SHIFT);
-    word[6] = depth;
+    word[5] = rt_tile_word(layout);
+    word[6] = layout->depth;
     word[7] = (uint32_t)(layout->layer_stride >> NVN_RT_LAYER_STRIDE_SHIFT);
     return 1;
 }
 
-int nvn_rt_emit(const NvnRtEnv* env, const NvnRtColor* color, uint32_t count, int has_depth, uint32_t clip_limit) {
+/* The depth surface: check it and compute its words. A view without levels and format errors only moves
+   the address by the base layer and sets the depth word to the layer count. */
+static int rt_depth_words(const NvnRtEnv* env, const NvnRtColor* depth, NvnRtDepth* out) {
+    const NvnTexture* texture = depth->texture;
+    const NvnTextureView* view = depth->view;
+    const NvnTextureLayout* layout = &texture->layout;
+    uint32_t format_word = 0;
+    if (!rt_texture_checks(env, texture, "rt depth linear", &format_word)) return 0;
+    if (!rt_depth_view(env, texture, view)) return 0;
+    uint64_t address = texture->address;
+    uint32_t depth_word = layout->depth & NVN_RT_DEPTH_WORD_MASK;
+    if (view && (view->flags & NVN_VIEW_LAYERS)) {
+        uint64_t offset = (uint64_t)view->base_layer * layout->layer_stride;
+        if (offset > UINT64_MAX - address) {
+            env->fault(env->ctx, "rt depth address", address);
+            return 0;
+        }
+        address += offset;
+        depth_word = view->layer_count;
+    }
+    uint32_t width = layout->width * layout->sample_x;
+    uint32_t height = layout->height * layout->sample_y;
+    uint32_t gob_blocks = NVN_TEXTURE_GOB_WIDTH / layout->bytes_per_block;
+    uint32_t factor = rt_tile_factor(layout, width, height, layout->depth);
+    out->address = address;
+    out->width = rt_align_up(width, factor * gob_blocks);
+    out->height = height;
+    out->depth = depth_word;
+    out->format = format_word;
+    out->tile = rt_tile_word(layout);
+    out->layer_stride_words = (uint32_t)(layout->layer_stride >> NVN_RT_LAYER_STRIDE_SHIFT);
+    return 1;
+}
+
+/* The depth bind words, the 0/1 pair, then the depth size words (order of d855da0). The library writes 0 only when
+   there is no depth target. The depth enable meaning is an inference from that call order. */
+static void rt_depth_emit(const NvnRtEnv* env, const NvnRtDepth* depth) {
+    env->method(env->ctx, NVN_RT_DEPTH_BIND_BASE + 0u, (uint32_t)(depth->address >> 32));
+    env->method(env->ctx, NVN_RT_DEPTH_BIND_BASE + 1u, (uint32_t)depth->address);
+    env->method(env->ctx, NVN_RT_DEPTH_BIND_BASE + 2u, depth->format);
+    env->method(env->ctx, NVN_RT_DEPTH_BIND_BASE + 3u, depth->tile);
+    env->method(env->ctx, NVN_RT_DEPTH_BIND_BASE + 4u, depth->layer_stride_words);
+    env->method(env->ctx, NVN_RT_DEPTH_A, 0u);
+    env->method(env->ctx, NVN_RT_DEPTH_A, NVN_RT_DEPTH_ENABLE);
+    env->method(env->ctx, NVN_RT_DEPTH_SIZE_BASE + 0u, depth->width);
+    env->method(env->ctx, NVN_RT_DEPTH_SIZE_BASE + 1u, depth->height);
+    env->method(env->ctx, NVN_RT_DEPTH_SIZE_BASE + 2u, depth->depth);
+}
+
+int nvn_rt_emit(const NvnRtEnv* env, const NvnRtColor* color, uint32_t count, const NvnRtColor* depth,
+                uint32_t clip_limit) {
     if (!env || !env->method || !env->fault) return 0;
     if (count > NVN_RT_COLOR_MAX) {
         env->fault(env->ctx, "rt count", count);
@@ -105,23 +208,30 @@ int nvn_rt_emit(const NvnRtEnv* env, const NvnRtColor* color, uint32_t count, in
         env->fault(env->ctx, "rt no color array", count);
         return 0;
     }
-    if (has_depth) {
-        env->fault(env->ctx, "rt depth", (uint64_t)has_depth);
-        return 0;
-    }
     uint32_t words[NVN_RT_COLOR_MAX][NVN_RT_WORDS_PER_TARGET];
     uint8_t present[NVN_RT_COLOR_MAX] = {0};
     uint32_t min_width = NVN_RT_CLIP_MAX;
     uint32_t min_height = NVN_RT_CLIP_MAX;
     uint32_t samples = 0;
+    int has_color = 0;
     for (uint32_t i = 0; i < count; i++) {
         if (!color[i].texture) continue;
         if (!rt_target_words(env, &color[i], words[i])) return 0;
         present[i] = 1;
+        has_color = 1;
         const NvnTextureLayout* layout = &color[i].texture->layout;
         if (layout->width < min_width) min_width = layout->width;
         if (layout->height < min_height) min_height = layout->height;
         samples = layout->samples;
+    }
+    NvnRtDepth depth_words;
+    int has_depth = depth && depth->texture;
+    if (has_depth) {
+        if (!rt_depth_words(env, depth, &depth_words)) return 0;
+        const NvnTextureLayout* layout = &depth->texture->layout;
+        if (layout->width < min_width) min_width = layout->width;
+        if (layout->height < min_height) min_height = layout->height;
+        if (!has_color) samples = layout->samples;
     }
     uint32_t clip_x = rt_clip_word(min_width, clip_limit);
     uint32_t clip_y = rt_clip_word(min_height, clip_limit);
@@ -138,8 +248,14 @@ int nvn_rt_emit(const NvnRtEnv* env, const NvnRtColor* color, uint32_t count, in
     }
     for (uint32_t j = count; j < NVN_RT_COLOR_MAX; j++)
         env->method(env->ctx, NVN_RT_COLOR_DISABLE_BASE + NVN_RT_COLOR_STRIDE * j, 0u);
-    env->method(env->ctx, NVN_RT_DEPTH_A, 0u);
-    env->method(env->ctx, NVN_RT_DEPTH_B, 0u);
+    /* The dependent block (0x1F8, 0x572) is not written: its words depend on compression and zcull,
+       device+0x1A04 is unknown, and only a device mode accepts no block (explorer section 4). */
+    if (has_depth) {
+        rt_depth_emit(env, &depth_words);
+    } else {
+        env->method(env->ctx, NVN_RT_DEPTH_A, 0u);
+        env->method(env->ctx, NVN_RT_DEPTH_B, 0u);
+    }
     env->method(env->ctx, NVN_RT_CLIP_X, clip_x);
     env->method(env->ctx, NVN_RT_CLIP_Y, clip_y);
     env->method(env->ctx, NVN_RT_SAMPLE_MODE, mode);

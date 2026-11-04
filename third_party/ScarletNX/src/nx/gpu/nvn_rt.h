@@ -19,7 +19,8 @@ typedef struct NvnRtEnv {
 } NvnRtEnv;
 
 /* 1 when all words are written. 0 when the request is refused: then NOTHING is written and fault was called once.
-   has_depth is 1 when the game gave a depth texture. clip_limit is the device word at +0x18. */
-int nvn_rt_emit(const NvnRtEnv* env, const NvnRtColor* color, uint32_t count, int has_depth, uint32_t clip_limit);
+   depth is NULL or one target with a texture and its view. clip_limit is the device word at +0x18. */
+int nvn_rt_emit(const NvnRtEnv* env, const NvnRtColor* color, uint32_t count, const NvnRtColor* depth,
+                uint32_t clip_limit);
 
 #endif

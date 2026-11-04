@@ -1434,10 +1434,13 @@ static void replay_host_rt_fault(void* ctx, const char* what, uint64_t value) {
     replay_cause_count(what);
     LOG_LIMIT(REPLAY_LOG_LIMIT, "nvn-native: replay render targets refused: %s (%llx)\n", what, (unsigned long long)value);
 }
-/* The textures are copied under the lock, so that the words are made without it. 0 when a texture is gone. */
+/* The textures are copied under the lock, so that the words are made without it.
+   0 when a color or the depth texture is gone. depth is filled when op->depth.texture is not 0. */
 static int replay_host_targets(const NvnOpRenderTargets* op, NvnTexture textures[NVN_RENDER_TARGETS_MAX],
-                               NvnRtColor color[NVN_RENDER_TARGETS_MAX]) {
+                               NvnRtColor color[NVN_RENDER_TARGETS_MAX], NvnTexture* depth_texture,
+                               NvnRtColor* depth) {
     int ok = 1;
+    *depth = (NvnRtColor){0};
     pm_lock(&objs_lock);
     for (uint32_t i = 0; ok && i < op->count; i++) {
         const NvnOpTarget* target = &op->color[i];
@@ -1453,6 +1456,18 @@ static int replay_host_targets(const NvnOpRenderTargets* op, NvnTexture textures
         color[i].texture = &textures[i];
         color[i].view = target->has_view ? &target->view : NULL;
     }
+    if (ok && op->depth.texture) {
+        const NvnOpTarget* target = &op->depth;
+        const TextureRec* t = nvn_objtab_valid(&objs, target->texture, target->generation)
+                                  ? known_record(target->texture, NVN_OBJ_TEXTURE) : NULL;
+        if (!t) {
+            ok = 0;
+        } else {
+            *depth_texture = *t;
+            depth->texture = depth_texture;
+            depth->view = target->has_view ? &target->view : NULL;
+        }
+    }
     pm_unlock(&objs_lock);
     return ok;
 }
@@ -1460,6 +1475,8 @@ static int replay_host_render_targets(void* ctx, const NvnOpRenderTargets* op) {
     NvnNativeReplayHost* host = ctx;
     NvnTexture textures[NVN_RENDER_TARGETS_MAX];
     NvnRtColor color[NVN_RENDER_TARGETS_MAX];
+    NvnTexture depth_texture;
+    NvnRtColor depth;
     if (op->count > NVN_RENDER_TARGETS_MAX) {
         replay_host_rt_fault(ctx, "count", op->count);
         return 0;
@@ -1468,12 +1485,12 @@ static int replay_host_render_targets(void* ctx, const NvnOpRenderTargets* op) {
         replay_host_rt_fault(ctx, "clip limit unknown", 0);
         return 0;
     }
-    if (!replay_host_targets(op, textures, color)) {
+    if (!replay_host_targets(op, textures, color, &depth_texture, &depth)) {
         replay_host_rt_fault(ctx, "texture gone", op->count);
         return 0;
     }
     NvnRtEnv env = {ctx, replay_host_method, replay_host_rt_fault};
-    return nvn_rt_emit(&env, color, op->count, op->depth.texture != 0, host->clip_limit);
+    return nvn_rt_emit(&env, color, op->count, depth.texture ? &depth : NULL, host->clip_limit);
 }
 static void replay_host_fault(void* ctx, const char* what, uint64_t value) {
     (void)ctx;
