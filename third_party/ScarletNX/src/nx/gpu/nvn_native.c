@@ -1322,6 +1322,25 @@ static int texture_format_record(uint32_t format, NvnTextureFormatRecord* record
     record->srgb = *GP(at + TEXTURE_FORMAT_SRGB_OFFSET);
     return 1;
 }
+#define VERTEX_FORMAT_WORD_OFFSET 0x14u
+
+/* The format word of one vertex attribute format index. The replay reads the game's table on its own thread; the
+   reads are of guest memory, so objs_lock is not needed. */
+static int vertex_format_word(uint32_t index, uint32_t* word) {
+    if (!native_guest_readable(TEXTURE_FORMAT_TABLE_POINTER, sizeof(uint64_t))) {
+        LOG("nvn-native: vertex format unreadable table pointer at=%llx\n",
+            (unsigned long long)TEXTURE_FORMAT_TABLE_POINTER);
+        return 0;
+    }
+    uint64_t table = gr64(TEXTURE_FORMAT_TABLE_POINTER);
+    uint64_t offset = (uint64_t)index * TEXTURE_FORMAT_RECORD_BYTES;
+    if (!table || table > UINT64_MAX - offset || !native_guest_readable(table + offset, TEXTURE_FORMAT_RECORD_BYTES)) {
+        LOG("nvn-native: vertex format unreadable index=%x table=%llx\n", index, (unsigned long long)table);
+        return 0;
+    }
+    *word = gr32(table + offset + VERTEX_FORMAT_WORD_OFFSET);
+    return 1;
+}
 static void texture_pool_register(CPU* c, NvnTextureDescriptorMode mode) {
     uint64_t at;
     if (!descriptor_destination(c, NVN_OBJ_TEXTURE_POOL, "texture registration", NVN_TEXTURE_DESCRIPTOR_BYTES, &at)) return;
@@ -2928,6 +2947,9 @@ static void h_command_buffer_bind_images(CPU* c, u64 entry) {
    records of the host under objs_lock. A list pointer stays valid because the frame job holds a reference of the list. */
 #define REPLAY_LOG_LIMIT 16u
 #define REPLAY_METHOD_LAST 1 /* each write is a batch of one: a macro call runs at once */
+/* The device word at +0x1A00 is 1, set at device init. nvnCommandBufferInitialize copies it to cb+0x70 bit 4, and
+   no writer clears it. So every texture bind sends the descriptor flag word. */
+#define NVN_TEXTURE_DESCRIPTOR_FLAG 1
 static void replay_host_method(void* ctx, uint32_t m, uint32_t v) {
     maxwell3d_method(((NvnNativeReplayHost*)ctx)->channel, m, v, REPLAY_METHOD_LAST);
 }
@@ -2949,6 +2971,7 @@ static int replay_host_bind_texture(void* ctx, uint32_t stage, uint32_t slot, ui
     if (stage > NVN_BIND_STAGE_MAX || slot >= NVN_BIND_SLOT_MAX) return 0;
     host->texture_handle[stage][slot] = handle;
     host->texture_bound[stage][slot] = 1;
+    host->texture_dirty[stage][slot] = NVN_BIND_DIRTY;
     return 1;
 }
 /* The replay stores addr and size even when the bind is not active, so that a bind that disables the slot replaces the
@@ -2956,18 +2979,22 @@ static int replay_host_bind_texture(void* ctx, uint32_t stage, uint32_t slot, ui
 static int replay_host_bind_buffer(void* ctx, const NvnOpBindBuffer* op) {
     NvnNativeReplayHost* host = ctx;
     NvnBindEntry* entry;
+    uint8_t* dirty = NULL;
     switch ((NvnBindKind)op->kind) {
     case NVN_BIND_UNIFORM:
         if (op->stage > NVN_BIND_STAGE_MAX || op->slot >= NVN_UNIFORM_SLOT_MAX) return 0;
         entry = &host->uniform[op->stage][op->slot];
+        dirty = &host->uniform_dirty[op->stage][op->slot];
         break;
     case NVN_BIND_STORAGE:
         if (op->stage > NVN_BIND_STAGE_MAX || op->slot >= NVN_STORAGE_SLOT_MAX) return 0;
         entry = &host->storage[op->stage][op->slot];
+        dirty = &host->storage_dirty[op->stage][op->slot];
         break;
     case NVN_BIND_VERTEX:
         if (op->slot >= NVN_VERTEX_SLOT_MAX) return 0;
         entry = &host->vertex[op->slot];
+        dirty = &host->vertex_dirty[op->slot];
         break;
     case NVN_BIND_TRANSFORM_FEEDBACK:
         if (op->slot >= NVN_XFB_SLOT_MAX) return 0;
@@ -2979,6 +3006,7 @@ static int replay_host_bind_buffer(void* ctx, const NvnOpBindBuffer* op) {
     entry->addr = op->addr;
     entry->size = op->size;
     entry->bound = (uint8_t)nvn_bind_buffer_active((NvnBindKind)op->kind, op->addr, op->size);
+    if (dirty) *dirty = NVN_BIND_DIRTY;
     return 1;
 }
 /* The replay stores the words of a state bind. The host refuses a kind or word count that its table cannot hold. */
@@ -2989,18 +3017,188 @@ static int replay_host_bind_state(void* ctx, const NvnOpBindState* op) {
     memset(state->w, 0, sizeof state->w);
     for (uint32_t i = 0; i < op->words; i++) state->w[i] = op->w[i];
     state->bound = 1;
+    host->state_dirty[op->kind] = NVN_BIND_DIRTY;
+    if (op->kind == NVN_STATE_MULTISAMPLE && !host->multisample_logged) {
+        host->multisample_logged = 1;
+        LOG("nvn-native: multisample state bound, not sent (stage 4): %08x %08x %08x %08x %08x\n",
+            state->w[0], state->w[1], state->w[2], state->w[3], state->w[4]);
+    }
     return 1;
+}
+static const char* const replay_bind_group[NVN_STATE_COUNT] = {
+    "color", "depth stencil", "blend", "polygon", "multisample", "channel mask"};
+/* One refusal line: the group, stage, slot and first builder input word. The data stays for a later bind. */
+static void replay_bind_refuse(NvnNativeReplayHost* host, const char* group, int32_t stage, int32_t slot,
+                               uint32_t word) {
+    host->bind_refusals++;
+    LOG_LIMIT(REPLAY_LOG_LIMIT, "nvn-native: bind %s refused stage=%d slot=%d word=%08x\n", group, stage, slot, word);
+}
+/* Sends the builder words of one bind group. A damaged stream is a refusal, and the words sent before it stay. */
+static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, uint32_t count) {
+    NvnWordStream stream = {0};
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t method, value;
+        int last;
+        int result = nvn_word_stream_next(&stream, words[i], &method, &value, &last);
+        if (result < 0) return 0;
+        if (result == 1) {
+            maxwell3d_method(host->channel, method, value, last);
+            host->bind_methods++;
+        }
+    }
+    return nvn_word_stream_complete(&stream);
+}
+/* Multisample has no builder: its bind is only logged, once for the frame job. */
+static void replay_bind_send_state(NvnNativeReplayHost* host, uint32_t kind) {
+    if (!host->state_dirty[kind]) return;
+    host->state_dirty[kind] = 0;
+    if (kind == NVN_STATE_MULTISAMPLE) return;
+    const uint32_t* w = host->state[kind].w;
+    uint32_t out[NVN_BIND_BLEND_WORDS_MAX];
+    uint32_t count;
+    switch (kind) {
+    case NVN_STATE_COLOR: count = nvn_bind_color_words(w[0], out); break;
+    case NVN_STATE_CHANNEL_MASK: count = nvn_bind_channel_mask_words(w[0], out); break;
+    case NVN_STATE_DEPTH_STENCIL: count = nvn_bind_depth_stencil_words(w[0], w[1], out); break;
+    case NVN_STATE_POLYGON: count = nvn_bind_polygon_words(w[0], out); break;
+    case NVN_STATE_BLEND: count = nvn_bind_blend_words(w[0], w[1], out); break;
+    default: return;
+    }
+    if (!count || !replay_bind_send(host, out, count))
+        replay_bind_refuse(host, replay_bind_group[kind], -1, -1, w[0]);
+}
+/* Only a format-set attribute reads the game's format table; the others get format word 0, which the builder
+   replaces with its default. */
+static void replay_bind_send_vertex_attrib(NvnNativeReplayHost* host) {
+    if (!host->vertex_attrib_dirty) return;
+    host->vertex_attrib_dirty = 0;
+    uint8_t enabled[NVN_VERTEX_ATTRIB_MAX];
+    uint32_t s[NVN_VERTEX_ATTRIB_MAX], fmt[NVN_VERTEX_ATTRIB_MAX];
+    for (uint32_t i = 0; i < NVN_VERTEX_ATTRIB_MAX; i++) {
+        enabled[i] = host->vertex_attrib[i].enabled;
+        s[i] = host->vertex_attrib[i].w;
+        fmt[i] = 0;
+    }
+    uint32_t count = nvn_highest_enabled_index(enabled, NVN_VERTEX_ATTRIB_MAX);
+    for (uint32_t i = 0; i < count; i++) {
+        if (!enabled[i]) continue;
+        if (!vertex_format_word(nvn_vertex_attrib_format_index(s[i]), &fmt[i])) {
+            replay_bind_refuse(host, "vertex attrib", -1, (int32_t)i, s[i]);
+            return;
+        }
+    }
+    uint32_t out[NVN_BIND_VERTEX_ATTRIB_WORDS_MAX];
+    uint32_t words = nvn_bind_vertex_attrib_words(count, s, fmt, out);
+    if (!words || !replay_bind_send(host, out, words))
+        replay_bind_refuse(host, "vertex attrib", -1, -1, s[0]);
+}
+/* The builder zeroes the stride of each stream above the highest enabled one, so the group is always sent whole. */
+static void replay_bind_send_vertex_stream(NvnNativeReplayHost* host) {
+    if (!host->vertex_stream_dirty) return;
+    host->vertex_stream_dirty = 0;
+    uint8_t enabled[NVN_VERTEX_STREAM_MAX];
+    uint32_t stride[NVN_VERTEX_STREAM_MAX], divisor[NVN_VERTEX_STREAM_MAX];
+    for (uint32_t i = 0; i < NVN_VERTEX_STREAM_MAX; i++) {
+        enabled[i] = host->vertex_stream[i].enabled;
+        stride[i] = host->vertex_stream[i].stride;
+        divisor[i] = host->vertex_stream[i].divisor;
+    }
+    uint32_t count = nvn_highest_enabled_index(enabled, NVN_VERTEX_STREAM_MAX);
+    uint32_t out[NVN_BIND_VERTEX_STREAM_WORDS_MAX];
+    uint32_t words = nvn_bind_vertex_stream_words(count, stride, divisor, out);
+    if (!words || !replay_bind_send(host, out, words))
+        replay_bind_refuse(host, "vertex stream", -1, -1, count ? stride[0] : 0);
+}
+/* Decision 7: only a bound slot is sent. A later size 0 bind disables the slot in the host table but sends nothing. */
+static void replay_bind_send_vertex_buffers(NvnNativeReplayHost* host) {
+    for (uint32_t i = 0; i < NVN_VERTEX_SLOT_MAX; i++) {
+        if (!host->vertex_dirty[i]) continue;
+        host->vertex_dirty[i] = 0;
+        if (!host->vertex[i].bound) continue;
+        uint32_t out[NVN_BIND_VERTEX_BUFFER_WORDS_MAX];
+        uint32_t words =
+            nvn_bind_vertex_buffer_words(i, host->vertex[i].addr, host->vertex[i].size, out);
+        if (!words || !replay_bind_send(host, out, words))
+            replay_bind_refuse(host, "vertex buffer", -1, (int32_t)i, (uint32_t)host->vertex[i].addr);
+    }
+}
+/* A size 0 uniform bind is sent too: the builder writes the invalid bind word for it. */
+static void replay_bind_send_uniforms(NvnNativeReplayHost* host) {
+    for (uint32_t stage = 0; stage <= NVN_BIND_STAGE_MAX; stage++) {
+        for (uint32_t slot = 0; slot < NVN_UNIFORM_SLOT_MAX; slot++) {
+            if (!host->uniform_dirty[stage][slot]) continue;
+            host->uniform_dirty[stage][slot] = 0;
+            const NvnBindEntry* entry = &host->uniform[stage][slot];
+            if (entry->size > UINT32_MAX) {
+                replay_bind_refuse(host, "uniform buffer", (int32_t)stage, (int32_t)slot, (uint32_t)entry->addr);
+                continue;
+            }
+            uint32_t out[NVN_BIND_UNIFORM_BUFFER_WORDS_MAX];
+            uint32_t words =
+                nvn_bind_uniform_buffer_words(stage, slot, entry->addr, (uint32_t)entry->size, out);
+            if (!words || !replay_bind_send(host, out, words))
+                replay_bind_refuse(host, "uniform buffer", (int32_t)stage, (int32_t)slot, (uint32_t)entry->addr);
+        }
+    }
+}
+/* A size 0 storage bind is always sent: the builder writes its parameter word and a zero data block. */
+static void replay_bind_send_storages(NvnNativeReplayHost* host) {
+    for (uint32_t stage = 0; stage <= NVN_BIND_STAGE_MAX; stage++) {
+        for (uint32_t slot = 0; slot < NVN_STORAGE_SLOT_MAX; slot++) {
+            if (!host->storage_dirty[stage][slot]) continue;
+            host->storage_dirty[stage][slot] = 0;
+            const NvnBindEntry* entry = &host->storage[stage][slot];
+            if (entry->size > UINT32_MAX) {
+                replay_bind_refuse(host, "storage buffer", (int32_t)stage, (int32_t)slot, (uint32_t)entry->addr);
+                continue;
+            }
+            uint32_t out[NVN_BIND_STORAGE_BUFFER_WORDS_MAX];
+            uint32_t words =
+                nvn_bind_storage_buffer_words(stage, slot, entry->addr, (uint32_t)entry->size, out);
+            if (!words || !replay_bind_send(host, out, words))
+                replay_bind_refuse(host, "storage buffer", (int32_t)stage, (int32_t)slot, (uint32_t)entry->addr);
+        }
+    }
+}
+static void replay_bind_send_textures(NvnNativeReplayHost* host) {
+    for (uint32_t stage = 0; stage <= NVN_BIND_STAGE_MAX; stage++) {
+        for (uint32_t slot = 0; slot < NVN_BIND_SLOT_MAX; slot++) {
+            if (!host->texture_dirty[stage][slot]) continue;
+            host->texture_dirty[stage][slot] = 0;
+            uint64_t handle = host->texture_handle[stage][slot];
+            uint32_t out[NVN_BIND_TEXTURE_WORDS_MAX];
+            uint32_t words = nvn_bind_texture_words(stage, slot, handle, NVN_TEXTURE_DESCRIPTOR_FLAG, out);
+            if (!words || !replay_bind_send(host, out, words))
+                replay_bind_refuse(host, "texture", (int32_t)stage, (int32_t)slot, (uint32_t)handle);
+        }
+    }
+}
+/* Sends each dirty group once, in the order of decision 3. Multisample is not in the list: it has no builder. */
+static void replay_bind_send_all(NvnNativeReplayHost* host) {
+    replay_bind_send_state(host, NVN_STATE_COLOR);
+    replay_bind_send_state(host, NVN_STATE_CHANNEL_MASK);
+    replay_bind_send_state(host, NVN_STATE_DEPTH_STENCIL);
+    replay_bind_send_state(host, NVN_STATE_POLYGON);
+    replay_bind_send_state(host, NVN_STATE_BLEND);
+    replay_bind_send_vertex_attrib(host);
+    replay_bind_send_vertex_stream(host);
+    replay_bind_send_vertex_buffers(host);
+    replay_bind_send_uniforms(host);
+    replay_bind_send_storages(host);
+    replay_bind_send_textures(host);
 }
 /* The replay thread writes these without a lock. The first draw and the first dispatch of the run get one log line. */
 static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
     NvnNativeReplayHost* host = ctx;
     if (op->kind >= (uint32_t)NVN_DRAW_KIND_COUNT) return 0;
+    replay_bind_send_all(host);
     host->draws[op->kind]++;
     host->last_draw = *op;
     static int logged; /* only the replay thread runs the frame jobs */
     if (!logged) {
         logged = 1;
-        LOG("nvn-native: draw recorded, not executed (stage 4)\n");
+        LOG("nvn-native: draw recorded, not executed (stage 4) bind methods=%u refusals=%u\n",
+            host->bind_methods, host->bind_refusals);
     }
     return 1;
 }
@@ -3066,6 +3264,7 @@ static int replay_host_bind_vertex_attrib(void* ctx, const NvnOpBindVertexAttrib
         host->vertex_attrib[i].w = w;
         host->vertex_attrib[i].enabled = (uint8_t)((w >> 6) & 1u);
     }
+    host->vertex_attrib_dirty = NVN_BIND_DIRTY;
     host->vattrib_binds++;
     return 1;
 }
@@ -3078,6 +3277,7 @@ static int replay_host_bind_vertex_stream(void* ctx, const NvnOpBindVertexStream
         host->vertex_stream[i].divisor = i < op->count ? op->divisor[i] : 0;
         host->vertex_stream[i].enabled = (uint8_t)(i < op->count);
     }
+    host->vertex_stream_dirty = NVN_BIND_DIRTY;
     host->vstream_binds++;
     return 1;
 }

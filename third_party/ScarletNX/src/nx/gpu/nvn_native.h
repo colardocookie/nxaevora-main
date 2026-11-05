@@ -23,6 +23,8 @@ GuestFn nvn_native_handler(const char* name);
 typedef struct { uint64_t addr, size; uint8_t bound; } NvnBindEntry;
 /* The state of one state-object bind, stored by the replay from the bind state op. */
 typedef struct { uint32_t w[NVN_STATE_WORDS_MAX]; uint8_t bound; } NvnBoundState;
+/* The value of a bind dirty flag: the bind stored new state that the next draw has not sent yet. */
+#define NVN_BIND_DIRTY 1u
 /* The state behind the callbacks of a replay (docs/nvn-design.md, 3c decision 6). The frame job owns it for one replay. */
 typedef struct {
     GpuChannel* channel; /* the private channel that the methods go to, used on the GPU thread only */
@@ -31,13 +33,20 @@ typedef struct {
        struct starts zeroed at each frame job, and the table is not cleared between the command lists of one job. */
     uint64_t texture_handle[NVN_BIND_STAGE_MAX + 1u][NVN_BIND_SLOT_MAX];
     uint8_t texture_bound[NVN_BIND_STAGE_MAX + 1u][NVN_BIND_SLOT_MAX];
+    uint8_t texture_dirty[NVN_BIND_STAGE_MAX + 1u][NVN_BIND_SLOT_MAX];
     /* The buffer binds of one frame job, written by the replay and read by the shader and pipeline stage later. */
     NvnBindEntry uniform[NVN_BIND_STAGE_MAX + 1u][NVN_UNIFORM_SLOT_MAX];
     NvnBindEntry storage[NVN_BIND_STAGE_MAX + 1u][NVN_STORAGE_SLOT_MAX];
     NvnBindEntry vertex[NVN_VERTEX_SLOT_MAX];
     NvnBindEntry xfb[NVN_XFB_SLOT_MAX];
+    uint8_t uniform_dirty[NVN_BIND_STAGE_MAX + 1u][NVN_UNIFORM_SLOT_MAX];
+    uint8_t storage_dirty[NVN_BIND_STAGE_MAX + 1u][NVN_STORAGE_SLOT_MAX];
+    uint8_t vertex_dirty[NVN_VERTEX_SLOT_MAX];
     /* The bound state objects of one frame job, written by the replay and read by the pipeline stage later. */
     NvnBoundState state[NVN_STATE_COUNT];
+    uint8_t state_dirty[NVN_STATE_COUNT];
+    /* 1 after the one multisample log line of the frame job. */
+    uint8_t multisample_logged;
     /* The draws, dispatches and program binds of one frame job. The replay thread writes them without a lock. */
     uint64_t draws[NVN_DRAW_KIND_COUNT];
     NvnOpDraw last_draw;
@@ -48,6 +57,7 @@ typedef struct {
        between the command lists of one job. */
     struct { uint32_t w; uint8_t enabled; } vertex_attrib[NVN_VERTEX_ATTRIB_MAX];
     struct { uint32_t stride, divisor; uint8_t enabled; } vertex_stream[NVN_VERTEX_STREAM_MAX];
+    uint8_t vertex_attrib_dirty, vertex_stream_dirty;
     uint32_t vattrib_binds, vstream_binds;
     /* The clears, copies, reports and image binds of one frame job. The replay thread writes them without a lock. */
     uint64_t gpu_ops[NVN_OP_COUNT];
@@ -55,6 +65,8 @@ typedef struct {
     NvnOpBindImage last_bind_image;
     /* Set at the first graphics program bind of the frame job, after the region base is written once. */
     uint8_t region_base_sent;
+    /* The bind methods sent at the draws of the frame job, and the binds that a builder refused. */
+    uint32_t bind_methods, bind_refusals;
 } NvnNativeReplayHost;
 /* Fills env for the replay of host lists. The callbacks read the records of the host under its lock and write
    methods on host->channel. window_origin_flip is 1 when the device window origin mode is 1. */

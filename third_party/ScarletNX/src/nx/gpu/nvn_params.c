@@ -1514,6 +1514,14 @@ uint32_t nvn_vertex_attrib_format_index(uint32_t s) {
     return (s >> NVN_BIND_VERTEX_ATTRIB_FORMAT_SHIFT) & NVN_BIND_VERTEX_ATTRIB_FORMAT_MASK;
 }
 
+uint32_t nvn_highest_enabled_index(const uint8_t* enabled, uint32_t count) {
+    uint32_t highest = 0;
+    if (!enabled) return 0;
+    for (uint32_t i = 0; i < count; i++)
+        if (enabled[i]) highest = i + 1u;
+    return highest;
+}
+
 /* 16 attribute words, from the state words below count and the default word above it. */
 uint32_t nvn_bind_vertex_attrib_words(uint32_t count, const uint32_t* s, const uint32_t* fmt, uint32_t* out) {
     if (!out || count > NVN_BIND_VERTEX_ATTRIB_COUNT || (count && (!s || !fmt))) return 0;

@@ -205,6 +205,8 @@ uint32_t nvn_bind_storage_buffer_words(uint32_t stage, uint32_t slot, uint64_t a
 uint32_t nvn_bind_texture_words(uint32_t stage, uint32_t slot, uint64_t handle, int descriptor_flag, uint32_t* out);
 /* The 10-bit format index that the host uses to read the format word of one vertex attribute state. */
 uint32_t nvn_vertex_attrib_format_index(uint32_t s);
+/* The count to pass to a builder for a table of enabled flags: the highest set index plus one, or 0 when none is set. */
+uint32_t nvn_highest_enabled_index(const uint8_t* enabled, uint32_t count);
 
 /* The device words that nvnQueueBuilderGetQueueMemorySize reads (offsets in the names). */
 typedef struct {

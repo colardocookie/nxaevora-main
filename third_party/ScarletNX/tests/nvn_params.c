@@ -1934,6 +1934,19 @@ static void test_bind_texture(void) {
     CHECK(nvn_bind_texture_words(0, 0, 0, 0, NULL) == 0);
 }
 
+static void test_highest_enabled_index(void) {
+    const uint8_t none[4] = {0, 0, 0, 0};
+    const uint8_t first[4] = {1, 0, 0, 0};
+    const uint8_t last[4] = {0, 0, 0, 1};
+    const uint8_t mixed[4] = {0, 1, 0, 1};
+    CHECK(nvn_highest_enabled_index(none, 4) == 0);
+    CHECK(nvn_highest_enabled_index(first, 4) == 1);
+    CHECK(nvn_highest_enabled_index(last, 4) == 4);
+    CHECK(nvn_highest_enabled_index(mixed, 4) == 4);
+    CHECK(nvn_highest_enabled_index(last, 0) == 0);
+    CHECK(nvn_highest_enabled_index(NULL, 4) == 0);
+}
+
 int main(int argc, char** argv) {
     test_window_params();
     test_window_sync_cycle_params();
@@ -1995,6 +2008,7 @@ int main(int argc, char** argv) {
     test_bind_uniform_buffer();
     test_bind_storage_buffer();
     test_bind_texture();
+    test_highest_enabled_index();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;
