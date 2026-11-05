@@ -696,6 +696,8 @@ static const struct { uint32_t samples, code; } texture_sample_codes[] = {{2, 5}
 #define TEXTURE_QUALITY_CLEAR_BIT 0xab0341cfu
 #define TEXTURE_QUALITY_ALL_BITS 0x13478abeu
 #define TEXTURE_QUALITY_ZERO 0x034e1413u
+#define TEXTURE_IMAGE_CUBE_TARGET_CODE 5u
+#define TEXTURE_DESCRIPTOR_IMAGE_BIT 0x01000000u
 
 static void texture_bits(uint32_t* word, unsigned bit, unsigned count, uint32_t value) {
     uint32_t mask = (1u << count) - 1;
@@ -711,7 +713,7 @@ static uint32_t texture_swizzle(uint32_t seed, const uint32_t sw[4], uint8_t one
     }
     return result;
 }
-static void texture_descriptor_storage(const NvnTexture* t, uint32_t target,
+static void texture_descriptor_storage(const NvnTexture* t, uint32_t target, NvnTextureDescriptorMode mode,
                                        const NvnTextureDeviceWords* dev, uint32_t q[8]) {
     int linear = (t->builder.flags & NVN_TEXTURE_LINEAR_FLAGS) != 0;
     if (target == NVN_TEXTURE_TARGET_BUFFER) {
@@ -722,6 +724,9 @@ static void texture_descriptor_storage(const NvnTexture* t, uint32_t target,
         uint32_t code = linear ? 7 : texture_target_codes[target];
         if (!linear && target == NVN_TEXTURE_TARGET_RECTANGLE &&
             (t->layout.width > dev->w08 || t->layout.height > dev->w08)) code = 7;
+        /* Image mode uses code 5 for both cube targets (d858e0c: (target|1)==9 and mode bit 0). */
+        if (mode == NVN_TEXTURE_DESCRIPTOR_MODE_IMAGE && !linear &&
+            (target | 1u) == NVN_TEXTURE_TARGET_CUBE_ARRAY) code = TEXTURE_IMAGE_CUBE_TARGET_CODE;
         texture_bits(&q[4], 23, 4, code);
         q[4] |= 0xe0000000u;
     }
@@ -748,7 +753,7 @@ static void texture_descriptor_storage(const NvnTexture* t, uint32_t target,
                 texture_bits(&q[7], 8, 4, texture_sample_codes[i].code);
 }
 static uint64_t texture_descriptor_dimensions(const NvnTexture* t, const NvnTextureView* v,
-    uint32_t target, const NvnTextureDeviceWords* dev, uint32_t q[8]) {
+    uint32_t target, NvnTextureDescriptorMode mode, const NvnTextureDeviceWords* dev, uint32_t q[8]) {
     uint64_t address = t->address;
     uint32_t depth = t->layout.depth;
     if (v && (v->flags & NVN_VIEW_LAYERS)) {
@@ -757,8 +762,10 @@ static uint64_t texture_descriptor_dimensions(const NvnTexture* t, const NvnText
             target == NVN_TEXTURE_TARGET_2D_MS_ARRAY || target == NVN_TEXTURE_TARGET_CUBE_ARRAY)
             depth = v->layer_count ? v->layer_count : depth - v->base_layer;
     }
-    if (target == NVN_TEXTURE_TARGET_CUBE_ARRAY) depth /= NVN_TEXTURE_CUBE_FACES;
-    if (target == NVN_TEXTURE_TARGET_CUBE) depth = 1;
+    /* Image mode keeps the raw depth for both cube targets (d858fe8, d8590a8). */
+    if (mode == NVN_TEXTURE_DESCRIPTOR_MODE_TEXTURE && target == NVN_TEXTURE_TARGET_CUBE_ARRAY)
+        depth /= NVN_TEXTURE_CUBE_FACES;
+    if (mode == NVN_TEXTURE_DESCRIPTOR_MODE_TEXTURE && target == NVN_TEXTURE_TARGET_CUBE) depth = 1;
     texture_bits(&q[4], 0, 16, t->layout.width - 1u);
     if (target == NVN_TEXTURE_TARGET_BUFFER) {
         texture_bits(&q[3], 0, 16, (t->layout.width - 1u) >> 16);
@@ -808,17 +815,21 @@ static void texture_descriptor_mips(const NvnTexture* t, const NvnTextureView* v
     texture_bits(&q[3], 28, 4, m);
 }
 /* Registration adds raw layer bits even when the view's LAYERS flag is clear (d83d99c). */
-static void texture_descriptor_registration(uint32_t flags, uint32_t layer, uint32_t q[8]) {
+static void texture_descriptor_registration(uint32_t flags, uint32_t layer, NvnTextureDescriptorMode mode,
+    uint32_t q[8]) {
     uint32_t kind = (q[2] >> 21) & 7u;
     texture_bits(&q[4], 16, 3, layer);
     q[2] = (q[2] & 0x1fe0ffffu) | (((layer << 21) | (layer << 13)) & 0xe01f0000u);
     texture_bits(&q[5], 30, 1, flags >> 5);
     if (kind == 0) texture_bits(&q[5], 31, 1, flags >> 3);
     if (kind == 2 || kind == 3) texture_bits(&q[6], 0, 1, flags >> 3);
-    q[2] &= 0xfeffffffu;
+    /* The mode bit at word 2 bit 24 marks an image descriptor (d83dbc0). */
+    if (mode == NVN_TEXTURE_DESCRIPTOR_MODE_IMAGE) q[2] |= TEXTURE_DESCRIPTOR_IMAGE_BIT;
+    else q[2] &= ~TEXTURE_DESCRIPTOR_IMAGE_BIT;
 }
 NvnTextureDescriptorResult nvn_texture_descriptor(const NvnTexture* t, const NvnTextureView* v,
-    const NvnTextureDeviceWords* dev, const NvnTextureFormatRecord* r, uint32_t out[NVN_TEXTURE_DESCRIPTOR_WORDS]) {
+    const NvnTextureDeviceWords* dev, const NvnTextureFormatRecord* r, NvnTextureDescriptorMode mode,
+    uint32_t out[NVN_TEXTURE_DESCRIPTOR_WORDS]) {
     uint32_t vf = v ? v->flags : 0;
     uint32_t format = (vf & NVN_VIEW_FORMAT) ? v->format : t->builder.format;
     uint32_t target = (vf & NVN_VIEW_TARGET) ? v->target : t->builder.target;
@@ -830,17 +841,17 @@ NvnTextureDescriptorResult nvn_texture_descriptor(const NvnTexture* t, const Nvn
         if (sw[i] > NVN_TEXTURE_SWIZZLE_MAX) return NVN_TEXTURE_DESCRIPTOR_BAD_SWIZZLE;
     q[0] = texture_swizzle(r->seed, sw, r->one_code);
     texture_bits(&q[4], 22, 1, r->srgb != 0);
-    texture_descriptor_storage(t, target, dev, q);
-    uint64_t address = texture_descriptor_dimensions(t, v, target, dev, q);
+    texture_descriptor_storage(t, target, mode, dev, q);
+    uint64_t address = texture_descriptor_dimensions(t, v, target, mode, dev, q);
     if (r->depth_size || r->stencil_size) {
-        uint32_t mode = (vf & NVN_VIEW_DEPTH_STENCIL_MODE) ? v->depth_stencil_mode : t->builder.depth_stencil_mode;
-        q[0] = texture_descriptor_depth(q[0], format, mode, r, sw);
+        uint32_t ds_mode = (vf & NVN_VIEW_DEPTH_STENCIL_MODE) ? v->depth_stencil_mode : t->builder.depth_stencil_mode;
+        q[0] = texture_descriptor_depth(q[0], format, ds_mode, r, sw);
     }
     if (!(t->builder.flags & NVN_TEXTURE_LINEAR_FLAGS) && target != NVN_TEXTURE_TARGET_BUFFER)
         texture_descriptor_mips(t, v, q);
     q[1] |= (uint32_t)address;
     q[2] |= (uint32_t)(address >> 32);
-    texture_descriptor_registration(t->builder.flags, v ? v->base_layer : 0, q);
+    texture_descriptor_registration(t->builder.flags, v ? v->base_layer : 0, mode, q);
     memcpy(out, q, sizeof q);
     return NVN_TEXTURE_DESCRIPTOR_OK;
 }

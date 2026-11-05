@@ -974,7 +974,7 @@ static int texture_format_record(uint32_t format, NvnTextureFormatRecord* record
     record->srgb = *GP(at + TEXTURE_FORMAT_SRGB_OFFSET);
     return 1;
 }
-static void texture_pool_register(CPU* c) {
+static void texture_pool_register(CPU* c, NvnTextureDescriptorMode mode) {
     uint64_t at;
     if (!descriptor_destination(c, NVN_OBJ_TEXTURE_POOL, "texture registration", NVN_TEXTURE_DESCRIPTOR_BYTES, &at)) return;
     TextureRec* texture = known_record(c->x[2], NVN_OBJ_TEXTURE);
@@ -991,7 +991,8 @@ static void texture_pool_register(CPU* c) {
     NvnTextureFormatRecord record;
     if (!texture_format_record(format, &record)) return;
     uint32_t words[NVN_TEXTURE_DESCRIPTOR_WORDS];
-    NvnTextureDescriptorResult result = nvn_texture_descriptor(texture, view, &nvn_texture_device_words, &record, words);
+    NvnTextureDescriptorResult result =
+        nvn_texture_descriptor(texture, view, &nvn_texture_device_words, &record, mode, words);
     if (result != NVN_TEXTURE_DESCRIPTOR_OK) {
         LOG("nvn-native: texture registration invalid descriptor result=%u texture=%llx\n",
             (unsigned)result, (unsigned long long)c->x[2]);
@@ -1002,7 +1003,13 @@ static void texture_pool_register(CPU* c) {
 static void h_texture_pool_register_texture(CPU* c, u64 entry) {
     (void)entry;
     pm_lock(&objs_lock);
-    texture_pool_register(c);
+    texture_pool_register(c, NVN_TEXTURE_DESCRIPTOR_MODE_TEXTURE);
+    pm_unlock(&objs_lock);
+}
+static void h_texture_pool_register_image(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    texture_pool_register(c, NVN_TEXTURE_DESCRIPTOR_MODE_IMAGE);
     pm_unlock(&objs_lock);
 }
 #define TEXTURE_GETTER(name, value) \
@@ -3214,6 +3221,7 @@ static const NativeProc native_procs[] = {
     {"nvnTextureGetTarget", h_texture_get_target},
     {"nvnTextureGetDepth", h_texture_get_depth},
     {"nvnTexturePoolRegisterTexture", h_texture_pool_register_texture},
+    {"nvnTexturePoolRegisterImage", h_texture_pool_register_image},
     {"nvnBufferBuilderSetDevice", h_buffer_builder_set_device},
     {"nvnBufferBuilderSetDefaults", h_buffer_builder_set_defaults},
     {"nvnBufferBuilderSetStorage", h_buffer_builder_set_storage},

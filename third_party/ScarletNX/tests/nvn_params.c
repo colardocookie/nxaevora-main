@@ -349,15 +349,20 @@ static void test_texture_layout(void) {
 
 /* Expected words below are hand-computed from the accepted encoder table. The synthetic seed
    has component codes (1,2,3,4), bit31, and low format bits 0x25. No game format data is used. */
-static void check_texture_descriptor(const NvnTexture* t, const NvnTextureView* v,
-    const NvnTextureDeviceWords* dev, const NvnTextureFormatRecord* r, const uint32_t expected[8]) {
+static void check_texture_descriptor_mode(const NvnTexture* t, const NvnTextureView* v,
+    const NvnTextureDeviceWords* dev, const NvnTextureFormatRecord* r, NvnTextureDescriptorMode mode,
+    const uint32_t expected[8]) {
     uint32_t words[8];
-    CHECK(nvn_texture_descriptor(t, v, dev, r, words) == NVN_TEXTURE_DESCRIPTOR_OK);
+    CHECK(nvn_texture_descriptor(t, v, dev, r, mode, words) == NVN_TEXTURE_DESCRIPTOR_OK);
     for (unsigned i = 0; i < 8; i++) {
         if (words[i] != expected[i])
             printf("descriptor word %u: actual=%08x expected=%08x\n", i, words[i], expected[i]);
         CHECK(words[i] == expected[i]);
     }
+}
+static void check_texture_descriptor(const NvnTexture* t, const NvnTextureView* v,
+    const NvnTextureDeviceWords* dev, const NvnTextureFormatRecord* r, const uint32_t expected[8]) {
+    check_texture_descriptor_mode(t, v, dev, r, NVN_TEXTURE_DESCRIPTOR_MODE_TEXTURE, expected);
 }
 static void test_texture_descriptor(void) {
     NvnTexture t = {0};
@@ -454,22 +459,58 @@ static void test_texture_descriptor(void) {
     uint32_t out[8], unchanged[8];
     memset(out, 0xa5, sizeof out); memcpy(unchanged, out, sizeof out);
     t.builder.format = 0xa1;
-    CHECK(nvn_texture_descriptor(&t, NULL, &dev, &r, out) == NVN_TEXTURE_DESCRIPTOR_BAD_FORMAT);
+    CHECK(nvn_texture_descriptor(&t, NULL, &dev, &r, NVN_TEXTURE_DESCRIPTOR_MODE_TEXTURE, out) == NVN_TEXTURE_DESCRIPTOR_BAD_FORMAT);
     CHECK(!memcmp(out, unchanged, sizeof out));
     t.builder.format = 0xa0; t.builder.target = 11;
-    CHECK(nvn_texture_descriptor(&t, NULL, &dev, &r, out) == NVN_TEXTURE_DESCRIPTOR_BAD_TARGET);
+    CHECK(nvn_texture_descriptor(&t, NULL, &dev, &r, NVN_TEXTURE_DESCRIPTOR_MODE_TEXTURE, out) == NVN_TEXTURE_DESCRIPTOR_BAD_TARGET);
     CHECK(!memcmp(out, unchanged, sizeof out));
     v = (NvnTextureView){.flags = NVN_VIEW_FORMAT | NVN_VIEW_TARGET, .format = 0xa1, .target = 1};
-    CHECK(nvn_texture_descriptor(&t, &v, &dev, &r, out) == NVN_TEXTURE_DESCRIPTOR_BAD_FORMAT);
+    CHECK(nvn_texture_descriptor(&t, &v, &dev, &r, NVN_TEXTURE_DESCRIPTOR_MODE_TEXTURE, out) == NVN_TEXTURE_DESCRIPTOR_BAD_FORMAT);
     v.format = 0; v.target = 11;
-    CHECK(nvn_texture_descriptor(&t, &v, &dev, &r, out) == NVN_TEXTURE_DESCRIPTOR_BAD_TARGET);
+    CHECK(nvn_texture_descriptor(&t, &v, &dev, &r, NVN_TEXTURE_DESCRIPTOR_MODE_TEXTURE, out) == NVN_TEXTURE_DESCRIPTOR_BAD_TARGET);
     CHECK(!memcmp(out, unchanged, sizeof out));
     t.builder.target = 1;
     v = (NvnTextureView){.flags = NVN_VIEW_SWIZZLE, .swizzle = {2, 3, 4, NVN_TEXTURE_SWIZZLE_MAX + 1}};
-    CHECK(nvn_texture_descriptor(&t, &v, &dev, &r, out) == NVN_TEXTURE_DESCRIPTOR_BAD_SWIZZLE);
+    CHECK(nvn_texture_descriptor(&t, &v, &dev, &r, NVN_TEXTURE_DESCRIPTOR_MODE_TEXTURE, out) == NVN_TEXTURE_DESCRIPTOR_BAD_SWIZZLE);
     t.builder.swizzle[0] = 6;
-    CHECK(nvn_texture_descriptor(&t, NULL, &dev, &r, out) == NVN_TEXTURE_DESCRIPTOR_BAD_SWIZZLE);
+    CHECK(nvn_texture_descriptor(&t, NULL, &dev, &r, NVN_TEXTURE_DESCRIPTOR_MODE_TEXTURE, out) == NVN_TEXTURE_DESCRIPTOR_BAD_SWIZZLE);
     CHECK(!memcmp(out, unchanged, sizeof out));
+}
+/* Image mode keeps the cube depth, uses target code 5 and sets q2 bit 24.
+   The texture-mode words of each case are derived in test_texture_descriptor. */
+static void test_texture_descriptor_image(void) {
+    NvnTexture t = {0};
+    nvn_texture_builder_defaults(&t.builder);
+    t.builder.format = 0x25;
+    t.layout = (NvnTextureLayout){.width = 16, .height = 8, .depth = 6, .levels = 1,
+        .tile_x = 3, .tile_y = 1, .tile_z = 2, .layer_stride = 0x1000};
+    t.address = 0x0412345600ull;
+    NvnTextureFormatRecord r = {.seed = 0xc6880025};
+    NvnTextureDeviceWords dev = nvn_texture_device_words;
+    /* Cube texture words are rgba with q4=0xe980000f. Image: code 3->5 adds 0x01000000
+       to q4, depth stays 6 so q5=0x80050007, and q2 gains bit 24. */
+    t.builder.target = NVN_TEXTURE_TARGET_CUBE;
+    const uint32_t cube_image[8] = {0xc6880025, 0x12345600, 0x01600004, 0x00070c88,
+                                    0xea80000f, 0x80050007, 0x03000000, 0};
+    check_texture_descriptor_mode(&t, NULL, &dev, &r, NVN_TEXTURE_DESCRIPTOR_MODE_IMAGE, cube_image);
+    /* Cube array: texture divides depth 12 by 6 and uses code 8.
+       Image keeps depth 12 and code 5, so q5=0x800b0007 and q4=0xea80000f. */
+    t.builder.target = NVN_TEXTURE_TARGET_CUBE_ARRAY;
+    t.layout.depth = 12;
+    const uint32_t cube_array_image[8] = {0xc6880025, 0x12345600, 0x01600004, 0x00070c88,
+                                          0xea80000f, 0x800b0007, 0x03000000, 0};
+    check_texture_descriptor_mode(&t, NULL, &dev, &r, NVN_TEXTURE_DESCRIPTOR_MODE_IMAGE, cube_array_image);
+    /* A non-cube 2D texture differs only in the q2 mode bit. */
+    t.builder.target = NVN_TEXTURE_TARGET_2D;
+    t.layout.depth = 1;
+    uint32_t texture[8], image[8];
+    CHECK(nvn_texture_descriptor(&t, NULL, &dev, &r, NVN_TEXTURE_DESCRIPTOR_MODE_TEXTURE, texture) ==
+          NVN_TEXTURE_DESCRIPTOR_OK);
+    CHECK(nvn_texture_descriptor(&t, NULL, &dev, &r, NVN_TEXTURE_DESCRIPTOR_MODE_IMAGE, image) ==
+          NVN_TEXTURE_DESCRIPTOR_OK);
+    CHECK((texture[2] ^ image[2]) == 0x01000000);
+    for (unsigned i = 0; i < 8; i++)
+        if (i != 2) CHECK(texture[i] == image[i]);
 }
 static void test_texture_descriptor_fields(void) {
     NvnTexture t = {.address = 0x0412345600ull};
@@ -1046,6 +1087,7 @@ int main(int argc, char** argv) {
     test_sampler_equal();
     test_packaged_tile();
     test_texture_descriptor();
+    test_texture_descriptor_image();
     test_texture_descriptor_fields();
     test_snap_formula();
     test_texture_layout();

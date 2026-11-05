@@ -380,11 +380,15 @@ typedef enum {
     NVN_TEXTURE_DESCRIPTOR_BAD_TARGET,
     NVN_TEXTURE_DESCRIPTOR_BAD_SWIZZLE
 } NvnTextureDescriptorResult;
+typedef enum {
+    NVN_TEXTURE_DESCRIPTOR_MODE_TEXTURE = 0,
+    NVN_TEXTURE_DESCRIPTOR_MODE_IMAGE = 1
+} NvnTextureDescriptorMode;
 #define NVN_TEXTURE_SWIZZLE_MAX 5u /* ZERO, ONE, R, G, B, A */
 uint16_t nvn_texture_packaged_tile(uint32_t layout);
 /* The caller supplies the effective format record. Errors leave out unchanged. */
 NvnTextureDescriptorResult nvn_texture_descriptor(const NvnTexture* texture, const NvnTextureView* view,
-    const NvnTextureDeviceWords* dev, const NvnTextureFormatRecord* format,
+    const NvnTextureDeviceWords* dev, const NvnTextureFormatRecord* format, NvnTextureDescriptorMode mode,
     uint32_t out[NVN_TEXTURE_DESCRIPTOR_WORDS]);
 
 /* Returns the Maxwell RT format word of an NVN format, or 0 when the format has none or is above NVN_TEXTURE_FORMAT_MAX.
