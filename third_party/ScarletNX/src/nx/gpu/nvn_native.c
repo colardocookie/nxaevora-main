@@ -3264,6 +3264,24 @@ static void replay_dispatch_refuse(NvnNativeReplayHost* host, const char* what, 
     LOG_LIMIT(REPLAY_LOG_LIMIT, "nvn-native: dispatch %s refused word=%08x\n", what, word);
 }
 
+/* Logs a QMD refusal when its reason or its values differ from the last one. The replay thread is the only caller. */
+static void replay_dispatch_qmd_refused(const NvnOpDispatch* op, const NvnProgramComputeIn* prog, const NvnComputeBinds* binds,
+                                        uint32_t reason, uint32_t slot) {
+    uint32_t bound_mask = 0;
+    for (uint32_t i = 0; i < NVN_COMPUTE_UNIFORM_SLOTS; i++)
+        if (binds->uniform[i].bound) bound_mask |= 1u << i;
+    const NvnComputeBindEntry* entry = &binds->uniform[slot];
+    uint64_t key[] = {reason, op->x, op->y, op->z, slot, entry->size, bound_mask, prog->h6fc};
+    static uint64_t last[sizeof key / sizeof key[0]];
+    static int have_last;
+    if (have_last && memcmp(last, key, sizeof key) == 0) return;
+    memcpy(last, key, sizeof key);
+    have_last = 1;
+    LOG("nvn-native: dispatch qmd refused (%s) x=%u y=%u z=%u slot=%u size=%llx uniform_bound=%08x h6fc=%x\n",
+        nvn_compute_qmd_reason_name(reason), op->x, op->y, op->z, slot, (unsigned long long)entry->size, bound_mask,
+        prog->h6fc);
+}
+
 /* Copies the stage 5 binds of the host into the pure builder inputs. The caller gives the scratch cbuf0 address. */
 static void replay_dispatch_binds(const NvnNativeReplayHost* host, NvnComputeBinds* binds, uint64_t cbuf0_address) {
     memset(binds, 0, sizeof *binds);
@@ -3315,8 +3333,11 @@ static int replay_host_dispatch(void* ctx, const NvnOpDispatch* op) {
     NvnComputeBinds binds;
     replay_dispatch_binds(host, &binds, scratch_gpu + NVN_DISPATCH_CBUF0_OFFSET);
     uint32_t qmd[NVN_COMPUTE_QMD_WORDS];
-    if (!nvn_compute_qmd_build(&prog, op->x, op->y, op->z, &binds, qmd)) {
-        replay_dispatch_refuse(host, "qmd", op->x);
+    uint32_t qmd_slot = 0;
+    uint32_t qmd_reason = nvn_compute_qmd_check(&prog, op->x, op->y, op->z, &binds, &qmd_slot);
+    if (qmd_reason != NVN_QMD_OK || !nvn_compute_qmd_build(&prog, op->x, op->y, op->z, &binds, qmd)) {
+        host->dispatch_refusals++;
+        replay_dispatch_qmd_refused(op, &prog, &binds, qmd_reason, qmd_slot);
         return 1;
     }
     uint32_t cbuf0[NVN_COMPUTE_CBUF0_WORDS];

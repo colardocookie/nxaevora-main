@@ -545,6 +545,21 @@ typedef struct {
    above 4 with size 0x100 or more, or a size above 32 bits). Pure. */
 int nvn_compute_qmd_build(const NvnProgramComputeIn* prog, uint32_t x, uint32_t y, uint32_t z,
                           const NvnComputeBinds* binds, uint32_t qmd[NVN_COMPUTE_QMD_WORDS]);
+/* Why nvn_compute_qmd_build refuses. NVN_QMD_OK means that it builds. */
+enum {
+    NVN_QMD_OK = 0,
+    NVN_QMD_NULL_ARGUMENT,
+    NVN_QMD_GRID_X,
+    NVN_QMD_GRID_Y,
+    NVN_QMD_GRID_Z,
+    NVN_QMD_CBUF1_SIZE,
+    NVN_QMD_UNIFORM_SLOT, /* a bound uniform slot of 5 or more with size 0x100 or more */
+    NVN_QMD_UNIFORM_SIZE
+};
+/* The refusal check of nvn_compute_qmd_build. *detail gets the uniform slot for the last two reasons, else 0. Pure. */
+uint32_t nvn_compute_qmd_check(const NvnProgramComputeIn* prog, uint32_t x, uint32_t y, uint32_t z,
+                               const NvnComputeBinds* binds, uint32_t* detail);
+const char* nvn_compute_qmd_reason_name(uint32_t reason);
 /* Builds the 0x500-byte driver constant block with the uniform and storage descriptor tables. Returns 0 on a refusal
    (a bound storage slot above 7, a size above 32 bits, or a null argument). Pure. */
 int nvn_compute_cbuf0_build(const NvnComputeBindEntry* uniform, const NvnComputeBindEntry* storage,

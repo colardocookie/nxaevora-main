@@ -1867,12 +1867,43 @@ static void compute_qmd_cbuf_config(uint32_t* qmd, uint32_t index, uint64_t addr
     qmd[at + 1] = ((uint32_t)(address >> 32) & 0xFFu) | (size << NVN_COMPUTE_CBUF_ADDRESS_HIGH_SHIFT);
 }
 
+uint32_t nvn_compute_qmd_check(const NvnProgramComputeIn* prog, uint32_t x, uint32_t y, uint32_t z,
+                               const NvnComputeBinds* binds, uint32_t* detail) {
+    if (detail) *detail = 0;
+    if (!prog || !binds) return NVN_QMD_NULL_ARGUMENT;
+    if (x > COMPUTE_QMD_GRID_X_MAX) return NVN_QMD_GRID_X;
+    if (y > COMPUTE_QMD_GRID_YZ_MAX) return NVN_QMD_GRID_Y;
+    if (z > COMPUTE_QMD_GRID_YZ_MAX) return NVN_QMD_GRID_Z;
+    if ((uint64_t)prog->h6fc + 0xFFu > UINT32_MAX) return NVN_QMD_CBUF1_SIZE;
+    for (uint32_t slot = 0; slot < NVN_COMPUTE_UNIFORM_SLOTS; slot++) {
+        const NvnComputeBindEntry* entry = &binds->uniform[slot];
+        if (!entry->bound || entry->size < NVN_COMPUTE_MIN_CBUF_BYTES) continue;
+        if (detail) *detail = slot;
+        if (slot >= NVN_COMPUTE_UNIFORM_QBUF_SLOTS) return NVN_QMD_UNIFORM_SLOT;
+        if (entry->size > UINT32_MAX) return NVN_QMD_UNIFORM_SIZE;
+    }
+    if (detail) *detail = 0;
+    return NVN_QMD_OK;
+}
+
+const char* nvn_compute_qmd_reason_name(uint32_t reason) {
+    switch (reason) {
+    case NVN_QMD_OK: return "ok";
+    case NVN_QMD_NULL_ARGUMENT: return "null argument";
+    case NVN_QMD_GRID_X: return "grid x above its field";
+    case NVN_QMD_GRID_Y: return "grid y above its field";
+    case NVN_QMD_GRID_Z: return "grid z above its field";
+    case NVN_QMD_CBUF1_SIZE: return "constant buffer 1 size above 32 bits";
+    case NVN_QMD_UNIFORM_SLOT: return "bound uniform slot of 5 or more";
+    case NVN_QMD_UNIFORM_SIZE: return "uniform size above 32 bits";
+    default: return "unknown";
+    }
+}
+
 int nvn_compute_qmd_build(const NvnProgramComputeIn* prog, uint32_t x, uint32_t y, uint32_t z,
                           const NvnComputeBinds* binds, uint32_t qmd[NVN_COMPUTE_QMD_WORDS]) {
-    if (!prog || !binds || !qmd) return 0;
-    if (x > COMPUTE_QMD_GRID_X_MAX || y > COMPUTE_QMD_GRID_YZ_MAX || z > COMPUTE_QMD_GRID_YZ_MAX) return 0;
+    if (!qmd || nvn_compute_qmd_check(prog, x, y, z, binds, NULL) != NVN_QMD_OK) return 0;
     uint64_t cb1_size = (uint64_t)prog->h6fc + 0xFFu;
-    if (cb1_size > UINT32_MAX) return 0;
     memset(qmd, 0, NVN_COMPUTE_QMD_WORDS * sizeof qmd[0]);
     qmd[COMPUTE_QMD_PROGRAM_START] = prog->code_offset;
     qmd[COMPUTE_QMD_GRID_DIM_X] = x & COMPUTE_QMD_GRID_X_MAX;
@@ -1898,7 +1929,6 @@ int nvn_compute_qmd_build(const NvnProgramComputeIn* prog, uint32_t x, uint32_t 
     for (uint32_t slot = 0; slot < NVN_COMPUTE_UNIFORM_SLOTS; slot++) {
         const NvnComputeBindEntry* entry = &binds->uniform[slot];
         if (!entry->bound || entry->size < NVN_COMPUTE_MIN_CBUF_BYTES) continue;
-        if (slot >= NVN_COMPUTE_UNIFORM_QBUF_SLOTS || entry->size > UINT32_MAX) return 0;
         enable |= 1u << (slot + 3u);
         compute_qmd_cbuf_config(qmd, slot + 3u, entry->addr,
                                 ((uint32_t)entry->size + 0xFFu) & ~0xFFu);

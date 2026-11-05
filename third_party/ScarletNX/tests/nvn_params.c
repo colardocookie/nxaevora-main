@@ -2034,6 +2034,17 @@ static void test_compute_qmd_build(void) {
     NvnComputeBinds high = binds;
     high.uniform[5] = (NvnComputeBindEntry){0x400004000ull, 0x100u, 1};
     CHECK(!nvn_compute_qmd_build(&prog, 3, 2, 1, &high, qmd));
+    uint32_t detail = 99;
+    CHECK(nvn_compute_qmd_check(&prog, 3, 2, 1, &binds, &detail) == NVN_QMD_OK && detail == 0);
+    CHECK(nvn_compute_qmd_check(&prog, 0x80000000u, 2, 1, &binds, &detail) == NVN_QMD_GRID_X);
+    CHECK(nvn_compute_qmd_check(&prog, 3, 0x10000u, 1, &binds, &detail) == NVN_QMD_GRID_Y);
+    CHECK(nvn_compute_qmd_check(&prog, 3, 2, 0x10000u, &binds, &detail) == NVN_QMD_GRID_Z);
+    CHECK(nvn_compute_qmd_check(&prog, 3, 2, 1, &high, &detail) == NVN_QMD_UNIFORM_SLOT && detail == 5);
+    NvnProgramComputeIn big = prog;
+    big.h6fc = 0xFFFFFFF0u;
+    CHECK(nvn_compute_qmd_check(&big, 3, 2, 1, &binds, &detail) == NVN_QMD_CBUF1_SIZE);
+    CHECK(nvn_compute_qmd_check(NULL, 3, 2, 1, &binds, &detail) == NVN_QMD_NULL_ARGUMENT);
+    CHECK(strcmp(nvn_compute_qmd_reason_name(NVN_QMD_UNIFORM_SLOT), "bound uniform slot of 5 or more") == 0);
     /* Without uniforms the enable word has constant buffers 0 and 1 only. */
     NvnComputeBinds none = {0};
     none.cbuf0_address = binds.cbuf0_address;
