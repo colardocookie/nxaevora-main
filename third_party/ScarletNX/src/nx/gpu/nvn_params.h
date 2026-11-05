@@ -517,13 +517,12 @@ typedef struct {
 #define NVN_COMPUTE_CBUF0_WORDS (NVN_COMPUTE_CBUF0_BYTES / 4u)
 #define NVN_COMPUTE_UNIFORM_SLOTS 32u  /* nvn_cmdlist.h's NVN_UNIFORM_SLOT_MAX */
 #define NVN_COMPUTE_STORAGE_SLOTS 128u /* nvn_cmdlist.h's NVN_STORAGE_SLOT_MAX */
-#define NVN_COMPUTE_DESCRIPTOR_SLOTS 8u
+#define NVN_COMPUTE_DESCRIPTOR_SLOTS 16u /* each table of the driver block: 0x100 bytes of 16 byte entries */
 #define NVN_COMPUTE_UNIFORM_QBUF_SLOTS 5u /* stage 5 uniform slots 0 to 4 map to QMD constant buffers 3 to 7 */
 #define NVN_COMPUTE_CBUF0_UNIFORM_OFFSET 0x210u
 #define NVN_COMPUTE_CBUF0_STORAGE_OFFSET 0x310u
 #define NVN_COMPUTE_DESCRIPTOR_BYTES 16u
 #define NVN_COMPUTE_CBUF_ADDRESS_HIGH_SHIFT 15u /* the size field of a QMD constant buffer config word */
-#define NVN_COMPUTE_MIN_CBUF_BYTES 0x100u       /* a uniform slot below this size stays disabled */
 /* nvn_native.c's NVN_SHADER_REGION_BASE: the window that the program offsets are relative to. */
 #define NVN_COMPUTE_SHADER_REGION_BASE NVN_POOL_GPU_BASE
 
@@ -541,8 +540,8 @@ typedef struct {
     NvnComputeBindEntry storage[NVN_COMPUTE_STORAGE_SLOTS];
 } NvnComputeBinds;
 
-/* Builds the 64-word launch description. Returns 0 on a refusal (a grid dimension above its field, a bound uniform slot
-   above 4 with size 0x100 or more, or a size above 32 bits). Pure. */
+/* Builds the 64-word launch description. Returns 0 on a refusal (a grid dimension above its field or a size above 32
+   bits). Uniform slots 0 to 4 become QMD constant buffers 3 to 7, the other slots only reach the driver block. Pure. */
 int nvn_compute_qmd_build(const NvnProgramComputeIn* prog, uint32_t x, uint32_t y, uint32_t z,
                           const NvnComputeBinds* binds, uint32_t qmd[NVN_COMPUTE_QMD_WORDS]);
 /* Why nvn_compute_qmd_build refuses. NVN_QMD_OK means that it builds. */
@@ -553,15 +552,14 @@ enum {
     NVN_QMD_GRID_Y,
     NVN_QMD_GRID_Z,
     NVN_QMD_CBUF1_SIZE,
-    NVN_QMD_UNIFORM_SLOT, /* a bound uniform slot of 5 or more with size 0x100 or more */
-    NVN_QMD_UNIFORM_SIZE
+    NVN_QMD_UNIFORM_SIZE /* a bound uniform slot with a size above 32 bits */
 };
-/* The refusal check of nvn_compute_qmd_build. *detail gets the uniform slot for the last two reasons, else 0. Pure. */
+/* The refusal check of nvn_compute_qmd_build. *detail gets the uniform slot of NVN_QMD_UNIFORM_SIZE, else 0. Pure. */
 uint32_t nvn_compute_qmd_check(const NvnProgramComputeIn* prog, uint32_t x, uint32_t y, uint32_t z,
                                const NvnComputeBinds* binds, uint32_t* detail);
 const char* nvn_compute_qmd_reason_name(uint32_t reason);
 /* Builds the 0x500-byte driver constant block with the uniform and storage descriptor tables. Returns 0 on a refusal
-   (a bound storage slot above 7, a size above 32 bits, or a null argument). Pure. */
+   (a bound slot of 16 or more, a size above 32 bits, or a null argument). Pure. */
 int nvn_compute_cbuf0_build(const NvnComputeBindEntry* uniform, const NvnComputeBindEntry* storage,
                             uint32_t words[NVN_COMPUTE_CBUF0_WORDS]);
 

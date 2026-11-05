@@ -1877,10 +1877,9 @@ uint32_t nvn_compute_qmd_check(const NvnProgramComputeIn* prog, uint32_t x, uint
     if ((uint64_t)prog->h6fc + 0xFFu > UINT32_MAX) return NVN_QMD_CBUF1_SIZE;
     for (uint32_t slot = 0; slot < NVN_COMPUTE_UNIFORM_SLOTS; slot++) {
         const NvnComputeBindEntry* entry = &binds->uniform[slot];
-        if (!entry->bound || entry->size < NVN_COMPUTE_MIN_CBUF_BYTES) continue;
+        if (!entry->bound || entry->size <= UINT32_MAX) continue;
         if (detail) *detail = slot;
-        if (slot >= NVN_COMPUTE_UNIFORM_QBUF_SLOTS) return NVN_QMD_UNIFORM_SLOT;
-        if (entry->size > UINT32_MAX) return NVN_QMD_UNIFORM_SIZE;
+        return NVN_QMD_UNIFORM_SIZE;
     }
     if (detail) *detail = 0;
     return NVN_QMD_OK;
@@ -1894,7 +1893,6 @@ const char* nvn_compute_qmd_reason_name(uint32_t reason) {
     case NVN_QMD_GRID_Y: return "grid y above its field";
     case NVN_QMD_GRID_Z: return "grid z above its field";
     case NVN_QMD_CBUF1_SIZE: return "constant buffer 1 size above 32 bits";
-    case NVN_QMD_UNIFORM_SLOT: return "bound uniform slot of 5 or more";
     case NVN_QMD_UNIFORM_SIZE: return "uniform size above 32 bits";
     default: return "unknown";
     }
@@ -1926,9 +1924,10 @@ int nvn_compute_qmd_build(const NvnProgramComputeIn* prog, uint32_t x, uint32_t 
         enable |= 1u << 1;
         compute_qmd_cbuf_config(qmd, 1, NVN_COMPUTE_SHADER_REGION_BASE + prog->cb_offset, (uint32_t)cb1_size);
     }
-    for (uint32_t slot = 0; slot < NVN_COMPUTE_UNIFORM_SLOTS; slot++) {
+    /* The library enables the constant buffer of a bound slot when its size rounds up to 0x100 or more (size >= 1). */
+    for (uint32_t slot = 0; slot < NVN_COMPUTE_UNIFORM_QBUF_SLOTS; slot++) {
         const NvnComputeBindEntry* entry = &binds->uniform[slot];
-        if (!entry->bound || entry->size < NVN_COMPUTE_MIN_CBUF_BYTES) continue;
+        if (!entry->bound || entry->size == 0) continue;
         enable |= 1u << (slot + 3u);
         compute_qmd_cbuf_config(qmd, slot + 3u, entry->addr,
                                 ((uint32_t)entry->size + 0xFFu) & ~0xFFu);
@@ -1953,8 +1952,9 @@ int nvn_compute_cbuf0_build(const NvnComputeBindEntry* uniform, const NvnCompute
     for (uint32_t slot = 0; slot < NVN_COMPUTE_STORAGE_SLOTS; slot++)
         if (storage[slot].bound && (slot >= NVN_COMPUTE_DESCRIPTOR_SLOTS || storage[slot].size > UINT32_MAX))
             return 0;
-    for (uint32_t slot = 0; slot < NVN_COMPUTE_DESCRIPTOR_SLOTS && slot < NVN_COMPUTE_UNIFORM_SLOTS; slot++)
-        if (uniform[slot].bound && uniform[slot].size > UINT32_MAX) return 0;
+    for (uint32_t slot = 0; slot < NVN_COMPUTE_UNIFORM_SLOTS; slot++)
+        if (uniform[slot].bound && (slot >= NVN_COMPUTE_DESCRIPTOR_SLOTS || uniform[slot].size > UINT32_MAX))
+            return 0;
     /* The rest of the block that the library copies is not decoded; those bytes are zero (guess). */
     memset(words, 0, NVN_COMPUTE_CBUF0_BYTES);
     for (uint32_t slot = 0; slot < NVN_COMPUTE_DESCRIPTOR_SLOTS; slot++) {

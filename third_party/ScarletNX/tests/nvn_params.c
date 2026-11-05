@@ -2028,23 +2028,32 @@ static void test_compute_qmd_build(void) {
     CHECK(qmd[0x2E] == 0x00023456u);
     CHECK(qmd[0x2F] == 0x00034567u);
     CHECK(qmd[0] == 0u && qmd[NVN_COMPUTE_QMD_WORDS - 1] == 0u);
-    /* Refusals: a field above its bits and a uniform slot above 4. */
+    /* Refusals: a grid field above its bits. */
     CHECK(!nvn_compute_qmd_build(&prog, 3, 0x10000u, 1, &binds, qmd));
     CHECK(!nvn_compute_qmd_build(&prog, 0x80000000u, 2, 1, &binds, qmd));
     NvnComputeBinds high = binds;
     high.uniform[5] = (NvnComputeBindEntry){0x400004000ull, 0x100u, 1};
-    CHECK(!nvn_compute_qmd_build(&prog, 3, 2, 1, &high, qmd));
     uint32_t detail = 99;
     CHECK(nvn_compute_qmd_check(&prog, 3, 2, 1, &binds, &detail) == NVN_QMD_OK && detail == 0);
     CHECK(nvn_compute_qmd_check(&prog, 0x80000000u, 2, 1, &binds, &detail) == NVN_QMD_GRID_X);
     CHECK(nvn_compute_qmd_check(&prog, 3, 0x10000u, 1, &binds, &detail) == NVN_QMD_GRID_Y);
     CHECK(nvn_compute_qmd_check(&prog, 3, 2, 0x10000u, &binds, &detail) == NVN_QMD_GRID_Z);
-    CHECK(nvn_compute_qmd_check(&prog, 3, 2, 1, &high, &detail) == NVN_QMD_UNIFORM_SLOT && detail == 5);
+    /* Slot 5 and above only reach the driver block: no refusal, no enable bit. */
+    CHECK(nvn_compute_qmd_check(&prog, 3, 2, 1, &high, &detail) == NVN_QMD_OK);
+    CHECK(nvn_compute_qmd_build(&prog, 3, 2, 1, &high, qmd) && qmd[0x14] == 0x13u);
+    /* A small bound slot 0 to 4 is enabled with its size rounded up to 0x100. */
+    NvnComputeBinds small = binds;
+    small.uniform[0] = (NvnComputeBindEntry){0x400007000ull, 0x20u, 1};
+    CHECK(nvn_compute_qmd_build(&prog, 3, 2, 1, &small, qmd));
+    CHECK(qmd[0x14] == 0x1Bu && qmd[0x23] == 0x7000u && qmd[0x24] == 0x00800004u);
+    NvnComputeBinds huge = binds;
+    huge.uniform[9] = (NvnComputeBindEntry){0x400008000ull, 0x100000000ull, 1};
+    CHECK(nvn_compute_qmd_check(&prog, 3, 2, 1, &huge, &detail) == NVN_QMD_UNIFORM_SIZE && detail == 9);
     NvnProgramComputeIn big = prog;
     big.h6fc = 0xFFFFFFF0u;
     CHECK(nvn_compute_qmd_check(&big, 3, 2, 1, &binds, &detail) == NVN_QMD_CBUF1_SIZE);
     CHECK(nvn_compute_qmd_check(NULL, 3, 2, 1, &binds, &detail) == NVN_QMD_NULL_ARGUMENT);
-    CHECK(strcmp(nvn_compute_qmd_reason_name(NVN_QMD_UNIFORM_SLOT), "bound uniform slot of 5 or more") == 0);
+    CHECK(strcmp(nvn_compute_qmd_reason_name(NVN_QMD_UNIFORM_SIZE), "uniform size above 32 bits") == 0);
     /* Without uniforms the enable word has constant buffers 0 and 1 only. */
     NvnComputeBinds none = {0};
     none.cbuf0_address = binds.cbuf0_address;
@@ -2066,7 +2075,16 @@ static void test_compute_cbuf0_build(void) {
     /* An empty slot stays zero, and the rest of the block is zero. */
     CHECK(words[0x210u / 4u + 4u] == 0u && words[0x310u / 4u] == 0u);
     CHECK(words[0] == 0u && words[NVN_COMPUTE_CBUF0_WORDS - 1] == 0u);
-    storage[8] = (NvnComputeBindEntry){0x400006000ull, 0x100u, 1};
+    /* Slots 8 to 15 have descriptors too (the library does not limit the table to 8). */
+    uniform[12] = (NvnComputeBindEntry){0x400009000ull, 0x30u, 1};
+    storage[15] = (NvnComputeBindEntry){0x400006000ull, 0x100u, 1};
+    CHECK(nvn_compute_cbuf0_build(uniform, storage, words));
+    CHECK(words[0x210u / 4u + 12u * 4u] == 0x9000u && words[0x210u / 4u + 12u * 4u + 2u] == 0x30u);
+    CHECK(words[0x310u / 4u + 15u * 4u] == 0x6000u);
+    storage[16] = (NvnComputeBindEntry){0x400006000ull, 0x100u, 1};
+    CHECK(!nvn_compute_cbuf0_build(uniform, storage, words));
+    storage[16].bound = 0;
+    uniform[16] = (NvnComputeBindEntry){0x40000A000ull, 0x100u, 1};
     CHECK(!nvn_compute_cbuf0_build(uniform, storage, words));
 }
 
