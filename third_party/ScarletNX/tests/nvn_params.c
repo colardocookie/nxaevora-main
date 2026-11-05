@@ -1577,6 +1577,363 @@ static void test_sampler_equal(void) {
     CHECK(!nvn_sampler_equal(&nan, &nan));
 }
 
+static void check_bind_words(const uint32_t* got, uint32_t count, const uint32_t* want, uint32_t want_count) {
+    CHECK(count == want_count);
+    uint32_t n = count < want_count ? count : want_count;
+    for (uint32_t i = 0; i < n; i++) CHECK(got[i] == want[i]);
+}
+
+static void bind_sentinel(uint32_t* out, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) out[i] = 0xDEADBEEFu;
+}
+
+static void check_bind_sentinel(const uint32_t* out, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) CHECK(out[i] == 0xDEADBEEFu);
+}
+
+static void test_bind_color(void) {
+    static const uint32_t typical[] = {0x20020671u, 1u, 0x1505u, 0x800104BBu, 0x800404C5u};
+    static const uint32_t logic8[] = {0x20010E10u, 0x09030000u, 0x800104BBu, 0x800904C5u};
+    static const uint32_t alpha8[] = {0x20020671u, 1u, 0x1500u, 0x800004BBu};
+    static const uint32_t both8[] = {0x20010E10u, 0x08030000u, 0x800004BBu};
+    static const uint32_t edges[] = {0x20020671u, 1u, 0x15FFu, 0x800104BBu, 0x800F04C5u};
+    uint32_t out[NVN_BIND_COLOR_WORDS_MAX];
+    uint32_t count = nvn_bind_color_words(0x04050000u, out);
+    check_bind_words(out, count, typical, 5);
+    count = nvn_bind_color_words(0x09030000u, out);
+    check_bind_words(out, count, logic8, 4);
+    count = nvn_bind_color_words(0x08000000u, out);
+    check_bind_words(out, count, alpha8, 4);
+    count = nvn_bind_color_words(0x08030000u, out);
+    check_bind_words(out, count, both8, 3);
+    count = nvn_bind_color_words(0x0FFF0000u, out);
+    check_bind_words(out, count, edges, 5);
+    CHECK(nvn_bind_color_words(0x04050000u, NULL) == 0);
+}
+
+static void test_bind_channel_mask(void) {
+    static const uint32_t all[] = {0xA0040E12u, 0x11111111u, 0x11111111u, 0x11111111u, 0x11111111u};
+    static const uint32_t target5[] = {0xA0040E12u, 0u, 0u, 0x11110000u, 0u};
+    static const uint32_t setter[] = {0xA0040E12u, 0u, 0x101u, 0u, 0u};
+    static const uint32_t zero[] = {0xA0040E12u, 0u, 0u, 0u, 0u};
+    uint32_t out[NVN_BIND_CHANNEL_MASK_WORDS_MAX];
+    uint32_t count = nvn_bind_channel_mask_words(0xFFFFFFFFu, out);
+    check_bind_words(out, count, all, 5);
+    count = nvn_bind_channel_mask_words(0x00F00000u, out);
+    check_bind_words(out, count, target5, 5);
+    uint32_t word = nvn_channel_mask_state_set_channel_mask(0, 5, 1, 1, 1, 1);
+    CHECK(word == 0x00F00000u);
+    count = nvn_bind_channel_mask_words(word, out);
+    check_bind_words(out, count, target5, 5);
+    word = nvn_channel_mask_state_set_channel_mask(0, 2, 1, 0, 1, 0);
+    CHECK(word == 0x500u);
+    count = nvn_bind_channel_mask_words(word, out);
+    check_bind_words(out, count, setter, 5);
+    count = nvn_bind_channel_mask_words(0, out);
+    check_bind_words(out, count, zero, 5);
+    CHECK(nvn_bind_channel_mask_words(0, NULL) == 0);
+}
+
+static void test_bind_depth_stencil(void) {
+    static const uint32_t off[] = {0x800004B3u, 0x800004E0u};
+    static const uint32_t depth_only[] = {0x800004BAu, 0x800104B3u, 0x800004C3u, 0x800004E0u};
+    static const uint32_t stencil_only[] = {0x800004B3u, 0x20010E1Au, 0x11223344u};
+    static const uint32_t both[] = {0x800104BAu, 0x800104B3u, 0x800504C3u, 0x20010E1Au, 0x11223344u};
+    static const uint32_t edges[] = {0x800104BAu, 0x800104B3u, 0x800F04C3u, 0x20010E1Au, 0xAABBCCDDu};
+    uint32_t out[NVN_BIND_DEPTH_STENCIL_WORDS_MAX];
+    uint32_t count = nvn_bind_depth_stencil_words(0, 0xFFFFFFFFu, out);
+    check_bind_words(out, count, off, 2);
+    count = nvn_bind_depth_stencil_words(1, 0xFFFFFFFFu, out);
+    check_bind_words(out, count, depth_only, 4);
+    count = nvn_bind_depth_stencil_words(4, 0x11223344u, out);
+    check_bind_words(out, count, stencil_only, 3);
+    count = nvn_bind_depth_stencil_words(0x57u, 0x11223344u, out);
+    check_bind_words(out, count, both, 5);
+    count = nvn_bind_depth_stencil_words(0xFFFFFFFFu, 0xAABBCCDDu, out);
+    check_bind_words(out, count, edges, 5);
+    CHECK(nvn_bind_depth_stencil_words(0, 0, NULL) == 0);
+}
+
+static void test_bind_polygon(void) {
+    static const uint32_t solid[] = {0x89000647u, 0x80000646u, 0x9B00036Bu, 0x9B00036Cu, 0x80000370u};
+    static const uint32_t cull1[] = {0x89000647u, 0x80010646u, 0x84040648u, 0x9B00036Bu, 0x9B00036Cu,
+                                     0x80000370u};
+    static const uint32_t pm1[] = {0x89010647u, 0x80010646u, 0x84050648u, 0x9B01036Bu, 0x9B01036Cu, 0x80010371u};
+    static const uint32_t pm2[] = {0x89000647u, 0x80010646u, 0x84080648u, 0x9B02036Bu, 0x9B02036Cu, 0x80010372u};
+    uint32_t out[NVN_BIND_POLYGON_WORDS_MAX];
+    uint32_t count = nvn_bind_polygon_words(0, out);
+    check_bind_words(out, count, solid, 5);
+    count = nvn_bind_polygon_words(1, out);
+    check_bind_words(out, count, cull1, 6);
+    count = nvn_bind_polygon_words(0x1000Eu, out);
+    check_bind_words(out, count, pm1, 6);
+    count = nvn_bind_polygon_words(0x20013u, out);
+    check_bind_words(out, count, pm2, 6);
+    bind_sentinel(out, NVN_BIND_POLYGON_WORDS_MAX);
+    CHECK(nvn_bind_polygon_words(0x18u, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_POLYGON_WORDS_MAX);
+    CHECK(nvn_bind_polygon_words(0, NULL) == 0);
+}
+
+static void test_bind_blend(void) {
+    static const uint32_t typical[] = {0x80060D35u, 0x80000374u, 0x800104B9u, 0x20060789u,
+                                       3u, 0x12u, 0x4014u, 5u, 0x8016u, 0xC018u};
+    static const uint32_t edges[] = {0x800F0D35u, 0x80000374u, 0x800104B9u, 0x200607B9u,
+                                     7u, 0xC01Fu, 0xC01Fu, 7u, 0xC01Fu, 0xC01Fu};
+    static const uint32_t zero[] = {0x80000D35u, 0x80000374u, 0x800104B9u, 0x20060781u,
+                                    0u, 0u, 0u, 0u, 0u, 0u};
+    uint32_t out[NVN_BIND_BLEND_WORDS_MAX];
+    uint32_t func[4], rgb = 0, alpha = 0;
+    uint32_t count = nvn_bind_blend_words(0x53050001u, 0x78563412u, out);
+    check_bind_words(out, count, typical, 10);
+    CHECK(nvn_blend_state_get_blend_target(0x53050001u) == 1u);
+    nvn_blend_state_get_blend_equation(0x53050001u, &rgb, &alpha);
+    CHECK(rgb == 3u && alpha == 5u);
+    nvn_blend_state_get_blend_func(0x78563412u, func);
+    CHECK(func[0] == 0x12u && func[1] == 0x34u && func[2] == 0x56u && func[3] == 0x78u);
+    CHECK(((typical[5] & 0x1Fu) | (((typical[5] >> 14) & 3u) << 5)) == func[0]);
+    CHECK(((typical[6] & 0x1Fu) | (((typical[6] >> 14) & 3u) << 5)) == func[1]);
+    CHECK(((typical[8] & 0x1Fu) | (((typical[8] >> 14) & 3u) << 5)) == func[2]);
+    CHECK(((typical[9] & 0x1Fu) | (((typical[9] >> 14) & 3u) << 5)) == func[3]);
+    count = nvn_bind_blend_words(0x770F0007u, 0x7F7F7F7Fu, out);
+    check_bind_words(out, count, edges, 10);
+    count = nvn_bind_blend_words(0, 0, out);
+    check_bind_words(out, count, zero, 10);
+    bind_sentinel(out, NVN_BIND_BLEND_WORDS_MAX);
+    CHECK(nvn_bind_blend_words(0x2A00u, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_BLEND_WORDS_MAX);
+    CHECK(nvn_bind_blend_words(0, 0, NULL) == 0);
+}
+
+static void test_bind_vertex_attrib(void) {
+    static const uint32_t defaults[] = {
+        0x20100458u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u,
+        0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u,
+        0x3A400040u, 0x3A400040u, 0x3A400040u,
+    };
+    static const uint32_t one_default[] = {
+        0x20100458u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u,
+        0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u,
+        0x3A400040u, 0x3A400040u, 0x3A400040u,
+    };
+    static const uint32_t one_format[] = {
+        0x20100458u, 0x38400600u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u,
+        0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u,
+        0x3A400040u, 0x3A400040u, 0x3A400040u,
+    };
+    static const uint32_t two[] = {
+        0x20100458u, 0x3A400040u, 0x38400600u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u,
+        0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u, 0x3A400040u,
+        0x3A400040u, 0x3A400040u, 0x3A400040u,
+    };
+    static const uint32_t sixteen[] = {
+        0x20100458u, 0x30000000u, 0x30000001u, 0x30000002u, 0x30000003u, 0x30000004u, 0x30000005u,
+        0x30000006u, 0x30000007u, 0x30000008u, 0x30000009u, 0x3000000Au, 0x3000000Bu, 0x3000000Cu,
+        0x3000000Du, 0x3000000Eu, 0x3000000Fu,
+    };
+    uint32_t s[16], fmt[16], out[NVN_BIND_VERTEX_ATTRIB_WORDS_MAX];
+    CHECK(nvn_vertex_attrib_format_index(0x04400640u) == 0x22u);
+    CHECK(nvn_vertex_attrib_format_index(0) == 0u);
+    CHECK(nvn_vertex_attrib_format_index(0x7FE00000u) == 0x3FFu);
+    CHECK(nvn_vertex_attrib_format_index(0x84400640u) == 0x22u);
+    uint32_t count = nvn_bind_vertex_attrib_words(0, NULL, NULL, out);
+    check_bind_words(out, count, defaults, 17);
+    s[0] = 0x001FFF1Fu;
+    fmt[0] = 0x11111111u;
+    count = nvn_bind_vertex_attrib_words(1, s, fmt, out);
+    check_bind_words(out, count, one_default, 17);
+    s[0] = 0x04400640u;
+    fmt[0] = 0x38400000u;
+    count = nvn_bind_vertex_attrib_words(1, s, fmt, out);
+    check_bind_words(out, count, one_format, 17);
+    s[1] = 0x04400640u;
+    s[0] = 0x001FFF1Fu;
+    fmt[1] = 0x38400000u;
+    count = nvn_bind_vertex_attrib_words(2, s, fmt, out);
+    check_bind_words(out, count, two, 17);
+    for (uint32_t i = 0; i < 16; i++) {
+        s[i] = 0x40u;
+        fmt[i] = 0x30000000u + i;
+    }
+    count = nvn_bind_vertex_attrib_words(16, s, fmt, out);
+    check_bind_words(out, count, sixteen, 17);
+    bind_sentinel(out, NVN_BIND_VERTEX_ATTRIB_WORDS_MAX);
+    CHECK(nvn_bind_vertex_attrib_words(17, s, fmt, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_VERTEX_ATTRIB_WORDS_MAX);
+    CHECK(nvn_bind_vertex_attrib_words(1, NULL, fmt, out) == 0);
+    CHECK(nvn_bind_vertex_attrib_words(0, NULL, NULL, NULL) == 0);
+}
+
+static void test_bind_vertex_stream(void) {
+    static const uint32_t fill[] = {
+        0x80000700u, 0x80000704u, 0x80000708u, 0x8000070Cu, 0x80000710u, 0x80000714u, 0x80000718u,
+        0x8000071Cu, 0x80000720u, 0x80000724u, 0x80000728u, 0x8000072Cu, 0x80000730u, 0x80000734u,
+        0x80000738u, 0x8000073Cu,
+    };
+    static const uint32_t one_zero[] = {
+        0x900C0700u, 0x80000620u, 0x80000704u, 0x80000708u, 0x8000070Cu, 0x80000710u, 0x80000714u,
+        0x80000718u, 0x8000071Cu, 0x80000720u, 0x80000724u, 0x80000728u, 0x8000072Cu, 0x80000730u,
+        0x80000734u, 0x80000738u, 0x8000073Cu,
+    };
+    static const uint32_t one_div[] = {
+        0x900C0700u, 0x80010620u, 0x20010703u, 2u, 0x80000704u, 0x80000708u, 0x8000070Cu, 0x80000710u,
+        0x80000714u, 0x80000718u, 0x8000071Cu, 0x80000720u, 0x80000724u, 0x80000728u, 0x8000072Cu,
+        0x80000730u, 0x80000734u, 0x80000738u, 0x8000073Cu,
+    };
+    static const uint32_t two[] = {
+        0x9FFF0700u, 0x80010620u, 0x20010703u, 1u, 0x90000704u, 0x80000621u, 0x80000708u, 0x8000070Cu,
+        0x80000710u, 0x80000714u, 0x80000718u, 0x8000071Cu, 0x80000720u, 0x80000724u, 0x80000728u,
+        0x8000072Cu, 0x80000730u, 0x80000734u, 0x80000738u, 0x8000073Cu,
+    };
+    static const uint32_t full[] = {
+        0x90040700u, 0x80000620u, 0x90040704u, 0x80000621u, 0x90040708u, 0x80000622u, 0x9004070Cu,
+        0x80000623u, 0x90040710u, 0x80000624u, 0x90040714u, 0x80000625u, 0x90040718u, 0x80000626u,
+        0x9004071Cu, 0x80000627u, 0x90040720u, 0x80000628u, 0x90040724u, 0x80000629u, 0x90040728u,
+        0x8000062Au, 0x9004072Cu, 0x8000062Bu, 0x90040730u, 0x8000062Cu, 0x90040734u, 0x8000062Du,
+        0x90040738u, 0x8000062Eu, 0x9004073Cu, 0x8000062Fu,
+    };
+    uint32_t stride[16], divisor[16], out[NVN_BIND_VERTEX_STREAM_WORDS_MAX];
+    uint32_t count = nvn_bind_vertex_stream_words(0, NULL, NULL, out);
+    check_bind_words(out, count, fill, 16);
+    stride[0] = 0xCu;
+    divisor[0] = 0;
+    count = nvn_bind_vertex_stream_words(1, stride, divisor, out);
+    check_bind_words(out, count, one_zero, 17);
+    divisor[0] = 2;
+    count = nvn_bind_vertex_stream_words(1, stride, divisor, out);
+    check_bind_words(out, count, one_div, 19);
+    stride[0] = 0xFFFu;
+    divisor[0] = 1;
+    stride[1] = 0x1000u;
+    divisor[1] = 0;
+    count = nvn_bind_vertex_stream_words(2, stride, divisor, out);
+    check_bind_words(out, count, two, 20);
+    for (uint32_t i = 0; i < 16; i++) {
+        stride[i] = 4u;
+        divisor[i] = 0;
+    }
+    count = nvn_bind_vertex_stream_words(16, stride, divisor, out);
+    check_bind_words(out, count, full, 32);
+    stride[0] = 0;
+    divisor[0] = 0xFFFFFFFFu;
+    count = nvn_bind_vertex_stream_words(1, stride, divisor, out);
+    CHECK(count == 19u && out[0] == 0x90000700u && out[1] == 0x80010620u && out[2] == 0x20010703u);
+    CHECK(out[3] == 0xFFFFFFFFu);
+    bind_sentinel(out, NVN_BIND_VERTEX_STREAM_WORDS_MAX);
+    CHECK(nvn_bind_vertex_stream_words(17, stride, divisor, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_VERTEX_STREAM_WORDS_MAX);
+    CHECK(nvn_bind_vertex_stream_words(0, NULL, NULL, NULL) == 0);
+}
+
+static void test_bind_vertex_buffer(void) {
+    static const uint32_t normal[] = {0x20020701u, 0x12u, 0x3456789Au, 0x200207C0u, 0x12u, 0x34567999u};
+    static const uint32_t disabled[] = {0x2002073Du, 0u, 0x1000u, 0x200207DEu, 0u, 0xFFFu};
+    static const uint32_t sized[] = {0x2002070Du, 4u, 0u, 0x200207C6u, 4u, 0u};
+    uint32_t out[NVN_BIND_VERTEX_BUFFER_WORDS_MAX];
+    uint32_t count = nvn_bind_vertex_buffer_words(0, 0x123456789Aull, 0x100u, out);
+    check_bind_words(out, count, normal, 6);
+    count = nvn_bind_vertex_buffer_words(15, UINT64_MAX, 0, out);
+    check_bind_words(out, count, disabled, 6);
+    count = nvn_bind_vertex_buffer_words(3, 0x400000000ull, 1, out);
+    check_bind_words(out, count, sized, 6);
+    bind_sentinel(out, NVN_BIND_VERTEX_BUFFER_WORDS_MAX);
+    CHECK(nvn_bind_vertex_buffer_words(0, UINT64_MAX, 1, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_VERTEX_BUFFER_WORDS_MAX);
+    CHECK(nvn_bind_vertex_buffer_words(0, 0xFFFFFFFFFFFFFF00ull, 0x100u, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_VERTEX_BUFFER_WORDS_MAX);
+    CHECK(nvn_bind_vertex_buffer_words(16, 0, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_VERTEX_BUFFER_WORDS_MAX);
+    CHECK(nvn_bind_vertex_buffer_words(0, 0, 0, NULL) == 0);
+}
+
+static void test_bind_uniform_buffer(void) {
+    static const uint32_t zero_size[] = {0x80300904u};
+    static const uint32_t sized[] = {0x200308E0u, 0x1000u, 0x12u, 0x3456789Au, 0x80510924u};
+    static const uint32_t slot_max[] = {0x80200914u};
+    static const uint32_t rounded[] = {0x200308E0u, 0x200u, 0u, 0u, 0x80310904u};
+    static const uint32_t stage2[] = {0x8030091Cu};
+    static const uint32_t stage3[] = {0x8030090Cu};
+    static const uint32_t size_max[] = {0x200308E0u, 0xFFFFFF00u, 0u, 0u, 0x80310904u};
+    uint32_t out[NVN_BIND_UNIFORM_BUFFER_WORDS_MAX];
+    uint32_t count = nvn_bind_uniform_buffer_words(0, 0, 0, 0, out);
+    check_bind_words(out, count, zero_size, 1);
+    count = nvn_bind_uniform_buffer_words(1, 2, 0x123456789Aull, 0x1000u, out);
+    check_bind_words(out, count, sized, 5);
+    count = nvn_bind_uniform_buffer_words(4, 31, 0, 0, out);
+    check_bind_words(out, count, slot_max, 1);
+    count = nvn_bind_uniform_buffer_words(0, 0, 0, 0x101u, out);
+    check_bind_words(out, count, rounded, 5);
+    count = nvn_bind_uniform_buffer_words(2, 0, 0, 0, out);
+    check_bind_words(out, count, stage2, 1);
+    count = nvn_bind_uniform_buffer_words(3, 0, 0, 0, out);
+    check_bind_words(out, count, stage3, 1);
+    count = nvn_bind_uniform_buffer_words(0, 0, 0, 0xFFFFFF00u, out);
+    check_bind_words(out, count, size_max, 5);
+    bind_sentinel(out, NVN_BIND_UNIFORM_BUFFER_WORDS_MAX);
+    CHECK(nvn_bind_uniform_buffer_words(5, 0, 0, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_UNIFORM_BUFFER_WORDS_MAX);
+    CHECK(nvn_bind_uniform_buffer_words(0, 32, 0, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_UNIFORM_BUFFER_WORDS_MAX);
+    CHECK(nvn_bind_uniform_buffer_words(0, 0, 0, 0xFFFFFFFFu, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_UNIFORM_BUFFER_WORDS_MAX);
+    CHECK(nvn_bind_uniform_buffer_words(0, 0, 0, 0xFFFFFF01u, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_UNIFORM_BUFFER_WORDS_MAX);
+    CHECK(nvn_bind_uniform_buffer_words(0, 0, 0, 0, NULL) == 0);
+}
+
+static void test_bind_storage_buffer(void) {
+    static const uint32_t vertex[] = {0x80440E20u, 0x200308E4u, 0x3456789Au, 0x12u, 0x200u};
+    static const uint32_t slot_max[] = {0x83400E20u, 0x200308E4u, 0u, 0u, 0u};
+    static const uint32_t geometry[] = {0x81040E20u, 0x200308E4u, 0u, 1u, 1u};
+    static const uint32_t tess_control[] = {0x80840E20u, 0x200308E4u, 0u, 0u, 0u};
+    static const uint32_t tess_eval[] = {0x80C40E20u, 0x200308E4u, 0u, 0u, 0u};
+    uint32_t out[NVN_BIND_STORAGE_BUFFER_WORDS_MAX];
+    uint32_t count = nvn_bind_storage_buffer_words(0, 0, 0x123456789Aull, 0x200u, out);
+    check_bind_words(out, count, vertex, 5);
+    count = nvn_bind_storage_buffer_words(1, 127, 0, 0, out);
+    check_bind_words(out, count, slot_max, 5);
+    count = nvn_bind_storage_buffer_words(2, 0, 0x100000000ull, 1, out);
+    check_bind_words(out, count, geometry, 5);
+    count = nvn_bind_storage_buffer_words(3, 0, 0, 0, out);
+    check_bind_words(out, count, tess_control, 5);
+    count = nvn_bind_storage_buffer_words(4, 0, 0, 0, out);
+    check_bind_words(out, count, tess_eval, 5);
+    bind_sentinel(out, NVN_BIND_STORAGE_BUFFER_WORDS_MAX);
+    CHECK(nvn_bind_storage_buffer_words(5, 0, 0, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_STORAGE_BUFFER_WORDS_MAX);
+    CHECK(nvn_bind_storage_buffer_words(0, 128, 0, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_STORAGE_BUFFER_WORDS_MAX);
+    CHECK(nvn_bind_storage_buffer_words(0, 0, 0, 0, NULL) == 0);
+}
+
+static void test_bind_texture(void) {
+    static const uint32_t plain[] = {0x80040E0E, 0x200208E3, 0x20, 0x12345678};
+    static const uint32_t descriptor[] = {0x80040E0E, 0x8000068B, 0x200208E3, 0x20, 0x12345678};
+    static const uint32_t slot_max[] = {0x80020E0E, 0x200208E3, 0x418, 0x12345678};
+    static const uint32_t stage0[] = {0x80000E0E, 0x200208E3, 0x20, 0};
+    static const uint32_t stage2[] = {0x80030E0E, 0x200208E3, 0x20, 0};
+    static const uint32_t stage3[] = {0x80010E0E, 0x200208E3, 0x20, 0};
+    uint32_t out[NVN_BIND_TEXTURE_WORDS_MAX];
+    uint32_t count = nvn_bind_texture_words(1, 0, 0x12345678ull, 0, out);
+    check_bind_words(out, count, plain, 4);
+    count = nvn_bind_texture_words(1, 0, 0x12345678ull, 1, out);
+    check_bind_words(out, count, descriptor, 5);
+    count = nvn_bind_texture_words(4, 127, 0xFFFFFFFF12345678ull, 0, out);
+    check_bind_words(out, count, slot_max, 4);
+    count = nvn_bind_texture_words(0, 0, 0, 0, out);
+    check_bind_words(out, count, stage0, 4);
+    count = nvn_bind_texture_words(2, 0, 0, 0, out);
+    check_bind_words(out, count, stage2, 4);
+    count = nvn_bind_texture_words(3, 0, 0, 0, out);
+    check_bind_words(out, count, stage3, 4);
+    bind_sentinel(out, NVN_BIND_TEXTURE_WORDS_MAX);
+    CHECK(nvn_bind_texture_words(5, 0, 0, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_TEXTURE_WORDS_MAX);
+    CHECK(nvn_bind_texture_words(0, 128, 0, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_TEXTURE_WORDS_MAX);
+    CHECK(nvn_bind_texture_words(0, 0, 0, 0, NULL) == 0);
+}
+
 int main(int argc, char** argv) {
     test_window_params();
     test_window_sync_cycle_params();
@@ -1627,6 +1984,17 @@ int main(int argc, char** argv) {
     test_depth_range_methods();
     test_stencil_op_and_polygon_offset();
     test_raster_methods();
+    test_bind_color();
+    test_bind_channel_mask();
+    test_bind_depth_stencil();
+    test_bind_polygon();
+    test_bind_blend();
+    test_bind_vertex_attrib();
+    test_bind_vertex_stream();
+    test_bind_vertex_buffer();
+    test_bind_uniform_buffer();
+    test_bind_storage_buffer();
+    test_bind_texture();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

@@ -175,6 +175,37 @@ uint32_t nvn_polygon_state_get_polygon_offset_enables(uint32_t word);
 void nvn_depth_stencil_state_get_stencil_op(uint32_t word, uint32_t face, uint32_t out[3]);
 void nvn_blend_state_get_blend_equation(uint32_t word, uint32_t* rgb, uint32_t* alpha);
 
+/* The pushbuffer words that the library writes for the command buffer bind functions (analyst-s2-A-1.md). Each builder
+   writes the same words as the library. The caller supplies room for the named maximum, and the count is 0 on a refusal
+   with nothing written. The host rules refuse a stage above 4, a slot outside its range, a polygon mode of 3, advanced
+   blend and a vertex count above 16. */
+#define NVN_BIND_COLOR_WORDS_MAX 5u
+#define NVN_BIND_CHANNEL_MASK_WORDS_MAX 5u
+#define NVN_BIND_DEPTH_STENCIL_WORDS_MAX 5u
+#define NVN_BIND_POLYGON_WORDS_MAX 6u
+#define NVN_BIND_BLEND_WORDS_MAX 10u
+#define NVN_BIND_VERTEX_ATTRIB_WORDS_MAX 17u
+#define NVN_BIND_VERTEX_STREAM_WORDS_MAX 64u
+#define NVN_BIND_VERTEX_BUFFER_WORDS_MAX 6u
+#define NVN_BIND_UNIFORM_BUFFER_WORDS_MAX 5u
+#define NVN_BIND_STORAGE_BUFFER_WORDS_MAX 5u
+#define NVN_BIND_TEXTURE_WORDS_MAX 6u
+
+uint32_t nvn_bind_color_words(uint32_t w0, uint32_t* out);
+uint32_t nvn_bind_channel_mask_words(uint32_t w0, uint32_t* out);
+uint32_t nvn_bind_depth_stencil_words(uint32_t w0, uint32_t w1, uint32_t* out);
+uint32_t nvn_bind_polygon_words(uint32_t w0, uint32_t* out);
+uint32_t nvn_bind_blend_words(uint32_t w0, uint32_t w1, uint32_t* out);
+uint32_t nvn_bind_vertex_attrib_words(uint32_t count, const uint32_t* s, const uint32_t* fmt, uint32_t* out);
+uint32_t nvn_bind_vertex_stream_words(uint32_t count, const uint32_t* stride, const uint32_t* divisor,
+                                      uint32_t* out);
+uint32_t nvn_bind_vertex_buffer_words(uint32_t index, uint64_t addr, uint64_t size, uint32_t* out);
+uint32_t nvn_bind_uniform_buffer_words(uint32_t stage, uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out);
+uint32_t nvn_bind_storage_buffer_words(uint32_t stage, uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out);
+uint32_t nvn_bind_texture_words(uint32_t stage, uint32_t slot, uint64_t handle, int descriptor_flag, uint32_t* out);
+/* The 10-bit format index that the host uses to read the format word of one vertex attribute state. */
+uint32_t nvn_vertex_attrib_format_index(uint32_t s);
+
 /* The device words that nvnQueueBuilderGetQueueMemorySize reads (offsets in the names). */
 typedef struct {
     uint32_t w8c, w94, w98, we0, we4, w1af4;

@@ -1323,3 +1323,345 @@ uint32_t nvn_program_disable_methods(uint32_t requested_mask, uint32_t program_m
     }
     return n;
 }
+
+/* The command headers of the bind packets (analyst-s2-A-1.md): a mode 1 run of count words, a mode 4 inline value, or
+   a mode 5 macro of count words. The existing program builders define these bits, and the stream decoder names them. */
+typedef struct {
+    uint32_t* out;
+    uint32_t at;
+} NvnBindWriter;
+
+static void bind_word(NvnBindWriter* w, uint32_t word) { w->out[w->at++] = word; }
+
+static void bind_run(NvnBindWriter* w, uint32_t method, uint32_t count) {
+    bind_word(w, NVN_PROGRAM_MODE_INCREASING | (count << NVN_PROGRAM_COUNT_SHIFT) | method);
+}
+
+static void bind_value(NvnBindWriter* w, uint32_t method, uint32_t value) {
+    bind_word(w, NVN_PROGRAM_MODE_INLINE | ((value & NVN_PROGRAM_IMMEDIATE_VALUE_MAX) << NVN_PROGRAM_COUNT_SHIFT) |
+                     method);
+}
+
+static void bind_macro(NvnBindWriter* w, uint32_t method, uint32_t count) {
+    bind_word(w, NVN_PROGRAM_MODE_INCREASE_ONCE | (count << NVN_PROGRAM_COUNT_SHIFT) | method);
+}
+
+#define NVN_BIND_COLOR_LOGIC_SHIFT 16u
+#define NVN_BIND_COLOR_LOGIC_MASK 0xFFu
+#define NVN_BIND_COLOR_ALPHA_SHIFT 24u
+#define NVN_BIND_COLOR_ALPHA_MASK 0xFu
+#define NVN_BIND_COLOR_LOGIC_OP 3u
+#define NVN_BIND_COLOR_ALPHA_8 8u
+#define NVN_BIND_COLOR_LOGIC_BASE 0x1500u
+#define NVN_BIND_COLOR_METHOD_LOGIC 0x671u
+#define NVN_BIND_COLOR_METHOD_LOGIC_OP 0xE10u
+#define NVN_BIND_COLOR_METHOD_ALPHA_TEST 0x4BBu
+#define NVN_BIND_COLOR_METHOD_ALPHA_REF 0x4C5u
+
+/* The logic op block, then the alpha test block. */
+uint32_t nvn_bind_color_words(uint32_t w0, uint32_t* out) {
+    if (!out) return 0;
+    uint32_t logic = (w0 >> NVN_BIND_COLOR_LOGIC_SHIFT) & NVN_BIND_COLOR_LOGIC_MASK;
+    uint32_t alpha = (w0 >> NVN_BIND_COLOR_ALPHA_SHIFT) & NVN_BIND_COLOR_ALPHA_MASK;
+    NvnBindWriter w = {out, 0};
+    if (logic == NVN_BIND_COLOR_LOGIC_OP) {
+        bind_run(&w, NVN_BIND_COLOR_METHOD_LOGIC_OP, 1);
+        bind_word(&w, w0);
+    } else {
+        bind_run(&w, NVN_BIND_COLOR_METHOD_LOGIC, 2);
+        bind_word(&w, 1);
+        bind_word(&w, logic | NVN_BIND_COLOR_LOGIC_BASE);
+    }
+    if (alpha == NVN_BIND_COLOR_ALPHA_8) {
+        bind_value(&w, NVN_BIND_COLOR_METHOD_ALPHA_TEST, 0);
+    } else {
+        bind_value(&w, NVN_BIND_COLOR_METHOD_ALPHA_TEST, 1);
+        bind_value(&w, NVN_BIND_COLOR_METHOD_ALPHA_REF, alpha);
+    }
+    return w.at;
+}
+
+#define NVN_BIND_CHANNEL_MASK_TARGETS 8u
+#define NVN_BIND_CHANNEL_MASK_COUNT 4u
+#define NVN_BIND_CHANNEL_MASK_METHOD 0xE12u
+
+/* One packed word per pair of targets: channel t of a target becomes bit 4t of its packed mask. */
+uint32_t nvn_bind_channel_mask_words(uint32_t w0, uint32_t* out) {
+    if (!out) return 0;
+    uint32_t mask[NVN_BIND_CHANNEL_MASK_TARGETS];
+    for (uint32_t t = 0; t < NVN_BIND_CHANNEL_MASK_TARGETS; t++) {
+        uint32_t n = (w0 >> (4u * t)) & 0xFu;
+        mask[t] = (n & 1u) | (((n >> 1) & 1u) << 4) | (((n >> 2) & 1u) << 8) | (((n >> 3) & 1u) << 12);
+    }
+    NvnBindWriter w = {out, 0};
+    bind_macro(&w, NVN_BIND_CHANNEL_MASK_METHOD, NVN_BIND_CHANNEL_MASK_COUNT);
+    for (uint32_t i = 0; i < NVN_BIND_CHANNEL_MASK_COUNT; i++)
+        bind_word(&w, mask[2u * i] | (mask[2u * i + 1u] << 16));
+    return w.at;
+}
+
+#define NVN_BIND_DEPTH_TEST_BIT 0x1u
+#define NVN_BIND_DEPTH_WRITE_SHIFT 1u
+#define NVN_BIND_STENCIL_TEST_BIT 0x4u
+#define NVN_BIND_DEPTH_FUNC_SHIFT 4u
+#define NVN_BIND_DEPTH_FUNC_MASK 0xFu
+#define NVN_BIND_DEPTH_METHOD_WRITE 0x4BAu
+#define NVN_BIND_DEPTH_METHOD_TEST 0x4B3u
+#define NVN_BIND_DEPTH_METHOD_FUNC 0x4C3u
+#define NVN_BIND_DEPTH_METHOD_STENCIL 0xE1Au
+#define NVN_BIND_DEPTH_METHOD_STENCIL_OFF 0x4E0u
+
+/* The depth test block, then the stencil block when bit 2 is set. */
+uint32_t nvn_bind_depth_stencil_words(uint32_t w0, uint32_t w1, uint32_t* out) {
+    if (!out) return 0;
+    NvnBindWriter w = {out, 0};
+    if (w0 & NVN_BIND_DEPTH_TEST_BIT) {
+        bind_value(&w, NVN_BIND_DEPTH_METHOD_WRITE, (w0 >> NVN_BIND_DEPTH_WRITE_SHIFT) & 1u);
+        bind_value(&w, NVN_BIND_DEPTH_METHOD_TEST, 1);
+        bind_value(&w, NVN_BIND_DEPTH_METHOD_FUNC, (w0 >> NVN_BIND_DEPTH_FUNC_SHIFT) & NVN_BIND_DEPTH_FUNC_MASK);
+    } else {
+        bind_value(&w, NVN_BIND_DEPTH_METHOD_TEST, 0);
+    }
+    if (w0 & NVN_BIND_STENCIL_TEST_BIT) {
+        bind_run(&w, NVN_BIND_DEPTH_METHOD_STENCIL, 1);
+        bind_word(&w, w1);
+    } else {
+        bind_value(&w, NVN_BIND_DEPTH_METHOD_STENCIL_OFF, 0);
+    }
+    return w.at;
+}
+
+#define NVN_BIND_POLYGON_FRONT_SHIFT 2u
+#define NVN_BIND_POLYGON_MODE_SHIFT 3u
+#define NVN_BIND_POLYGON_MODE_MASK 3u
+#define NVN_BIND_POLYGON_MODE_REFUSED 3u
+#define NVN_BIND_POLYGON_CULL_MASK 3u
+#define NVN_BIND_POLYGON_FRONT_CW 0x900u
+#define NVN_BIND_POLYGON_OFFSET_SHIFT 15u
+#define NVN_BIND_POLYGON_METHOD_FRONT 0x647u
+#define NVN_BIND_POLYGON_METHOD_CULL 0x646u
+#define NVN_BIND_POLYGON_METHOD_CULL_FACE 0x648u
+#define NVN_BIND_POLYGON_METHOD_MODE 0x36Bu
+#define NVN_BIND_POLYGON_METHOD_MODE_ALIAS 0x36Cu
+#define NVN_BIND_POLYGON_METHOD_OFFSET 0x370u
+
+static const uint32_t bind_polygon_cull[4] = {0x405u, 0x404u, 0x405u, 0x408u};
+static const uint32_t bind_polygon_mode[3] = {0x1B00u, 0x1B01u, 0x1B02u};
+
+/* The front face, cull, polygon mode and polygon offset words. Polygon mode 3 is a host refusal. */
+uint32_t nvn_bind_polygon_words(uint32_t w0, uint32_t* out) {
+    if (!out) return 0;
+    uint32_t pm = (w0 >> NVN_BIND_POLYGON_MODE_SHIFT) & NVN_BIND_POLYGON_MODE_MASK;
+    if (pm == NVN_BIND_POLYGON_MODE_REFUSED) return 0;
+    uint32_t front = (w0 >> NVN_BIND_POLYGON_FRONT_SHIFT) & 1u;
+    uint32_t cull = w0 & NVN_BIND_POLYGON_CULL_MASK;
+    uint32_t offset = pm < 2u ? pm : 2u;
+    NvnBindWriter w = {out, 0};
+    bind_value(&w, NVN_BIND_POLYGON_METHOD_FRONT, NVN_BIND_POLYGON_FRONT_CW | front);
+    if (cull) {
+        bind_value(&w, NVN_BIND_POLYGON_METHOD_CULL, 1);
+        bind_value(&w, NVN_BIND_POLYGON_METHOD_CULL_FACE, bind_polygon_cull[cull]);
+    } else {
+        bind_value(&w, NVN_BIND_POLYGON_METHOD_CULL, 0);
+    }
+    bind_value(&w, NVN_BIND_POLYGON_METHOD_MODE, bind_polygon_mode[pm]);
+    bind_value(&w, NVN_BIND_POLYGON_METHOD_MODE_ALIAS, bind_polygon_mode[pm]);
+    bind_value(&w, NVN_BIND_POLYGON_METHOD_OFFSET + offset,
+               (w0 >> (NVN_BIND_POLYGON_OFFSET_SHIFT + offset)) & 1u);
+    return w.at;
+}
+
+#define NVN_BIND_BLEND_ADVANCED_SHIFT 8u
+#define NVN_BIND_BLEND_ADVANCED_MASK 0x3Fu
+#define NVN_BIND_BLEND_TARGET_MASK 7u
+#define NVN_BIND_BLEND_FUNC_COUNT 6u
+#define NVN_BIND_BLEND_FUNC_STEP 8u
+#define NVN_BIND_BLEND_METHOD_FLAGS 0xD35u
+#define NVN_BIND_BLEND_METHOD_ENABLE 0x374u
+#define NVN_BIND_BLEND_METHOD_TARGET 0x4B9u
+#define NVN_BIND_BLEND_METHOD_FUNC 0x781u
+
+/* Advanced blend is a host refusal: its further words are not decoded. */
+uint32_t nvn_bind_blend_words(uint32_t w0, uint32_t w1, uint32_t* out) {
+    if (!out) return 0;
+    if (((w0 >> NVN_BIND_BLEND_ADVANCED_SHIFT) & NVN_BIND_BLEND_ADVANCED_MASK) != 0) return 0;
+    uint32_t target = w0 & NVN_BIND_BLEND_TARGET_MASK;
+    uint32_t flags = ((w0 >> 19) & 1u) | (((w0 >> 18) & 1u) << 1) | (((w0 >> 16) & 1u) << 2) |
+                     (((w0 >> 17) & 1u) << 3);
+    NvnBindWriter w = {out, 0};
+    bind_value(&w, NVN_BIND_BLEND_METHOD_FLAGS, flags);
+    bind_value(&w, NVN_BIND_BLEND_METHOD_ENABLE, 0);
+    bind_value(&w, NVN_BIND_BLEND_METHOD_TARGET, 1);
+    bind_run(&w, NVN_BIND_BLEND_METHOD_FUNC + NVN_BIND_BLEND_FUNC_STEP * target, NVN_BIND_BLEND_FUNC_COUNT);
+    bind_word(&w, (w0 >> 24) & 7u);
+    bind_word(&w, (w1 & 0x1Fu) | (((w1 >> 5) & 3u) << 14));
+    bind_word(&w, ((w1 << 1) & 0xC000u) | ((w1 >> 8) & 0x1Fu));
+    bind_word(&w, (w0 >> 28) & 7u);
+    bind_word(&w, ((w1 >> 7) & 0xC000u) | ((w1 >> 16) & 0x1Fu));
+    bind_word(&w, ((w1 >> 24) & 0x1Fu) | (((w1 >> 29) & 3u) << 14));
+    return w.at;
+}
+
+#define NVN_BIND_VERTEX_ATTRIB_FORMAT_SHIFT 21u
+#define NVN_BIND_VERTEX_ATTRIB_FORMAT_MASK 0x3FFu
+#define NVN_BIND_VERTEX_ATTRIB_COUNT 16u
+#define NVN_BIND_VERTEX_ATTRIB_SET_BIT 0x40u
+#define NVN_BIND_VERTEX_ATTRIB_KEEP 0x001FFF9Fu
+#define NVN_BIND_VERTEX_ATTRIB_DEFAULT 0x3A400040u
+#define NVN_BIND_VERTEX_ATTRIB_METHOD 0x458u
+
+uint32_t nvn_vertex_attrib_format_index(uint32_t s) {
+    return (s >> NVN_BIND_VERTEX_ATTRIB_FORMAT_SHIFT) & NVN_BIND_VERTEX_ATTRIB_FORMAT_MASK;
+}
+
+/* 16 attribute words, from the state words below count and the default word above it. */
+uint32_t nvn_bind_vertex_attrib_words(uint32_t count, const uint32_t* s, const uint32_t* fmt, uint32_t* out) {
+    if (!out || count > NVN_BIND_VERTEX_ATTRIB_COUNT || (count && (!s || !fmt))) return 0;
+    NvnBindWriter w = {out, 0};
+    bind_run(&w, NVN_BIND_VERTEX_ATTRIB_METHOD, NVN_BIND_VERTEX_ATTRIB_COUNT);
+    for (uint32_t i = 0; i < count; i++) {
+        if ((s[i] & NVN_BIND_VERTEX_ATTRIB_SET_BIT) == 0)
+            bind_word(&w, NVN_BIND_VERTEX_ATTRIB_DEFAULT);
+        else
+            bind_word(&w, (s[i] & NVN_BIND_VERTEX_ATTRIB_KEEP) | fmt[i]);
+    }
+    while (w.at < NVN_BIND_VERTEX_ATTRIB_WORDS_MAX) bind_word(&w, NVN_BIND_VERTEX_ATTRIB_DEFAULT);
+    return w.at;
+}
+
+#define NVN_BIND_VERTEX_STREAM_COUNT 16u
+#define NVN_BIND_VERTEX_STREAM_STRIDE_MASK 0xFFFu
+#define NVN_BIND_VERTEX_STREAM_STRIDE_VALID 0x1000u
+#define NVN_BIND_VERTEX_STREAM_METHOD_STRIDE 0x700u
+#define NVN_BIND_VERTEX_STREAM_STRIDE_STEP 4u
+#define NVN_BIND_VERTEX_STREAM_METHOD_DIVISOR 0x620u
+#define NVN_BIND_VERTEX_STREAM_METHOD_DIVISOR_DATA 0x703u
+
+/* The stride word and the divisor words of each used stream, then a zero stride for each unused stream. */
+uint32_t nvn_bind_vertex_stream_words(uint32_t count, const uint32_t* stride, const uint32_t* divisor,
+                                      uint32_t* out) {
+    if (!out || count > NVN_BIND_VERTEX_STREAM_COUNT || (count && (!stride || !divisor))) return 0;
+    NvnBindWriter w = {out, 0};
+    for (uint32_t i = 0; i < count; i++) {
+        bind_value(&w, NVN_BIND_VERTEX_STREAM_METHOD_STRIDE + NVN_BIND_VERTEX_STREAM_STRIDE_STEP * i,
+                   (stride[i] & NVN_BIND_VERTEX_STREAM_STRIDE_MASK) | NVN_BIND_VERTEX_STREAM_STRIDE_VALID);
+        if (divisor[i] == 0) {
+            bind_value(&w, NVN_BIND_VERTEX_STREAM_METHOD_DIVISOR + i, 0);
+        } else {
+            bind_value(&w, NVN_BIND_VERTEX_STREAM_METHOD_DIVISOR + i, 1);
+            bind_run(&w, NVN_BIND_VERTEX_STREAM_METHOD_DIVISOR_DATA + NVN_BIND_VERTEX_STREAM_STRIDE_STEP * i, 1);
+            bind_word(&w, divisor[i]);
+        }
+    }
+    for (uint32_t i = count; i < NVN_BIND_VERTEX_STREAM_COUNT; i++)
+        bind_value(&w, NVN_BIND_VERTEX_STREAM_METHOD_STRIDE + NVN_BIND_VERTEX_STREAM_STRIDE_STEP * i, 0);
+    return w.at;
+}
+
+#define NVN_BIND_VERTEX_BUFFER_COUNT 16u
+#define NVN_BIND_VERTEX_BUFFER_METHOD_ADDR 0x701u
+#define NVN_BIND_VERTEX_BUFFER_ADDR_STEP 4u
+#define NVN_BIND_VERTEX_BUFFER_METHOD_LIMIT 0x7C0u
+#define NVN_BIND_VERTEX_BUFFER_LIMIT_STEP 2u
+#define NVN_BIND_VERTEX_BUFFER_DISABLED_ADDR 0x1000u
+#define NVN_BIND_VERTEX_BUFFER_DISABLED_LIMIT 0xFFFu
+
+/* The address and limit packets. A zero size disables the buffer, and an address sum that wraps is a host refusal. */
+uint32_t nvn_bind_vertex_buffer_words(uint32_t index, uint64_t addr, uint64_t size, uint32_t* out) {
+    if (!out || index >= NVN_BIND_VERTEX_BUFFER_COUNT) return 0;
+    uint64_t start = addr, limit;
+    if (size) {
+        if (addr + size < addr) return 0;
+        limit = addr + size - 1u;
+    } else {
+        start = NVN_BIND_VERTEX_BUFFER_DISABLED_ADDR;
+        limit = NVN_BIND_VERTEX_BUFFER_DISABLED_LIMIT;
+    }
+    NvnBindWriter w = {out, 0};
+    bind_run(&w, NVN_BIND_VERTEX_BUFFER_METHOD_ADDR + NVN_BIND_VERTEX_BUFFER_ADDR_STEP * index, 2);
+    bind_word(&w, (uint32_t)(start >> 32));
+    bind_word(&w, (uint32_t)start);
+    bind_run(&w, NVN_BIND_VERTEX_BUFFER_METHOD_LIMIT + NVN_BIND_VERTEX_BUFFER_LIMIT_STEP * index, 2);
+    bind_word(&w, (uint32_t)(limit >> 32));
+    bind_word(&w, (uint32_t)limit);
+    return w.at;
+}
+
+#define NVN_BIND_STAGE_COUNT 5u
+#define NVN_BIND_UNIFORM_SLOT_COUNT 32u
+#define NVN_BIND_UNIFORM_SLOT_BIAS 3u
+#define NVN_BIND_UNIFORM_SLOT_MASK 0x1Fu
+#define NVN_BIND_UNIFORM_SLOT_SHIFT 4u
+#define NVN_BIND_UNIFORM_ALIGN 0x100u
+#define NVN_BIND_UNIFORM_DATA_COUNT 3u
+#define NVN_BIND_UNIFORM_METHOD_DATA 0x8E0u
+#define NVN_BIND_UNIFORM_METHOD_GROUP 0x904u
+#define NVN_BIND_UNIFORM_GROUP_STEP 8u
+
+static const uint32_t bind_uniform_stage_group[NVN_BIND_STAGE_COUNT] = {0u, 4u, 3u, 1u, 2u};
+
+/* The size and address packet, then the bind group word with its valid bit. A zero size writes the invalid bind. */
+uint32_t nvn_bind_uniform_buffer_words(uint32_t stage, uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out) {
+    if (!out || stage >= NVN_BIND_STAGE_COUNT || slot >= NVN_BIND_UNIFORM_SLOT_COUNT) return 0;
+    uint32_t group = bind_uniform_stage_group[stage];
+    uint32_t method = NVN_BIND_UNIFORM_METHOD_GROUP + NVN_BIND_UNIFORM_GROUP_STEP * group;
+    uint32_t index = ((slot + NVN_BIND_UNIFORM_SLOT_BIAS) & NVN_BIND_UNIFORM_SLOT_MASK) << NVN_BIND_UNIFORM_SLOT_SHIFT;
+    NvnBindWriter w = {out, 0};
+    if (size == 0) {
+        bind_value(&w, method, index);
+        return w.at;
+    }
+    if (size > UINT32_MAX - (NVN_BIND_UNIFORM_ALIGN - 1u)) return 0;
+    uint32_t rounded = (size + (NVN_BIND_UNIFORM_ALIGN - 1u)) & ~(NVN_BIND_UNIFORM_ALIGN - 1u);
+    bind_run(&w, NVN_BIND_UNIFORM_METHOD_DATA, NVN_BIND_UNIFORM_DATA_COUNT);
+    bind_word(&w, rounded);
+    bind_word(&w, (uint32_t)(addr >> 32));
+    bind_word(&w, (uint32_t)addr);
+    bind_value(&w, method, 1u | index);
+    return w.at;
+}
+
+#define NVN_BIND_STORAGE_SLOT_COUNT 128u
+#define NVN_BIND_STORAGE_PARAM_SCALE 4u
+#define NVN_BIND_STORAGE_DATA_COUNT 3u
+#define NVN_BIND_STORAGE_METHOD_PARAM 0xE20u
+#define NVN_BIND_STORAGE_METHOD_DATA 0x8E4u
+
+static const uint32_t bind_storage_stage_base[NVN_BIND_STAGE_COUNT] = {0x11u, 0x51u, 0x41u, 0x21u, 0x31u};
+
+/* The parameter word, then the address and size packet. The parameter must fit the 13-bit inline field. */
+uint32_t nvn_bind_storage_buffer_words(uint32_t stage, uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out) {
+    if (!out || stage >= NVN_BIND_STAGE_COUNT || slot >= NVN_BIND_STORAGE_SLOT_COUNT) return 0;
+    uint32_t param = NVN_BIND_STORAGE_PARAM_SCALE * (bind_storage_stage_base[stage] + slot);
+    if (param > NVN_PROGRAM_IMMEDIATE_VALUE_MAX) return 0;
+    NvnBindWriter w = {out, 0};
+    bind_value(&w, NVN_BIND_STORAGE_METHOD_PARAM, param);
+    bind_run(&w, NVN_BIND_STORAGE_METHOD_DATA, NVN_BIND_STORAGE_DATA_COUNT);
+    bind_word(&w, (uint32_t)addr);
+    bind_word(&w, (uint32_t)(addr >> 32));
+    bind_word(&w, size);
+    return w.at;
+}
+
+#define NVN_BIND_TEXTURE_SLOT_COUNT 128u
+#define NVN_BIND_TEXTURE_SLOT_STEP 8u
+#define NVN_BIND_TEXTURE_SLOT_BASE 0x20u
+#define NVN_BIND_TEXTURE_HANDLE_COUNT 2u
+#define NVN_BIND_TEXTURE_METHOD_PARAM 0xE0Eu
+#define NVN_BIND_TEXTURE_METHOD_DESCRIPTOR 0x68Bu
+#define NVN_BIND_TEXTURE_METHOD_HANDLE 0x8E3u
+
+static const uint32_t bind_texture_stage_map[NVN_BIND_STAGE_COUNT] = {0u, 4u, 3u, 1u, 2u};
+
+/* The stage parameter, the optional descriptor flag, and the slot and low handle word. The high handle word is not
+   written. */
+uint32_t nvn_bind_texture_words(uint32_t stage, uint32_t slot, uint64_t handle, int descriptor_flag, uint32_t* out) {
+    if (!out || stage >= NVN_BIND_STAGE_COUNT || slot >= NVN_BIND_TEXTURE_SLOT_COUNT) return 0;
+    NvnBindWriter w = {out, 0};
+    bind_value(&w, NVN_BIND_TEXTURE_METHOD_PARAM, bind_texture_stage_map[stage]);
+    if (descriptor_flag) bind_value(&w, NVN_BIND_TEXTURE_METHOD_DESCRIPTOR, 0);
+    bind_run(&w, NVN_BIND_TEXTURE_METHOD_HANDLE, NVN_BIND_TEXTURE_HANDLE_COUNT);
+    bind_word(&w, slot * NVN_BIND_TEXTURE_SLOT_STEP + NVN_BIND_TEXTURE_SLOT_BASE);
+    bind_word(&w, (uint32_t)handle);
+    return w.at;
+}
