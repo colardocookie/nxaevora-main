@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 #include "nx/gpu/nvn_params.h"
+#include "nx/gpu/texture/blocklinear.h"
 #include <stddef.h>
 #include <math.h>
 #include <string.h>
@@ -576,23 +577,37 @@ static int texture_is_array(uint32_t target) {
     return target == NVN_TEXTURE_TARGET_1D_ARRAY || target == NVN_TEXTURE_TARGET_2D_ARRAY ||
            target == NVN_TEXTURE_TARGET_CUBE || target == NVN_TEXTURE_TARGET_CUBE_ARRAY;
 }
+typedef struct { uint64_t size; uint32_t gobs_x, rows; uint8_t block_height_log2; } TextureLevelParts;
+/* One level of a block linear texture with the tile exponents x, y and z: the GOBs across (rounded to the tile),
+   the block rows, the trimmed block height exponent and the bytes of the level. */
+static TextureLevelParts texture_level_parts(const NvnTextureLayout* l, uint32_t level,
+                                             uint32_t x, uint32_t y, uint32_t z) {
+    uint32_t p = 1u << (x & 31u);
+    uint32_t w = l->width * l->sample_x, h = l->height * l->sample_y;
+    uint32_t depth = l->dim == 3 ? l->depth : 1;
+    uint32_t a = ceil_u32(mip_dimension(w, level), l->block_width);
+    uint32_t rows = ceil_u32(mip_dimension(h, level), l->block_height);
+    uint32_t d = l->dim == 3 ? mip_dimension(depth, level) : 1;
+    uint32_t ey = tile_shrink(y, NVN_TEXTURE_GOB_HEIGHT, rows), ez = tile_shrink(z, 1, d);
+    uint32_t q = rows >= (NVN_TEXTURE_GOB_HEIGHT << (y & 31u)) &&
+                 a >= (NVN_TEXTURE_GOB_WIDTH / l->bytes_per_block) * p && (d >> (z & 31u)) ? p : 1;
+    uint32_t nx = (ceil_u32(a * l->bytes_per_block, NVN_TEXTURE_GOB_WIDTH) + q - 1) & -q;
+    TextureLevelParts parts = {
+        .gobs_x = nx,
+        .rows = rows,
+        .block_height_log2 = (uint8_t)ey,
+    };
+    parts.size = (uint64_t)nx * ceil_u32(rows, NVN_TEXTURE_GOB_HEIGHT << (ey & 31u)) *
+                 ceil_u32(d, 1u << (ez & 31u)) * ((uint64_t)NVN_TEXTURE_GOB_BYTES << ((ey + ez) & 63u));
+    return parts;
+}
 static uint64_t texture_footprint(const NvnTextureLayout* l, uint32_t levels, int array,
                                  uint32_t x, uint32_t y, uint32_t z) {
     uint32_t p = 1u << (x & 31u);
     uint64_t sum = 0;
-    uint32_t w = l->width * l->sample_x, h = l->height * l->sample_y;
+    uint32_t h = l->height * l->sample_y;
     uint32_t depth = l->dim == 3 ? l->depth : 1;
-    for (uint32_t i = 0; i < levels; i++) {
-        uint32_t a = ceil_u32(mip_dimension(w, i), l->block_width);
-        uint32_t rows = ceil_u32(mip_dimension(h, i), l->block_height);
-        uint32_t d = l->dim == 3 ? mip_dimension(depth, i) : 1;
-        uint32_t ey = tile_shrink(y, NVN_TEXTURE_GOB_HEIGHT, rows), ez = tile_shrink(z, 1, d);
-        uint32_t q = rows >= (NVN_TEXTURE_GOB_HEIGHT << (y & 31u)) &&
-                     a >= (NVN_TEXTURE_GOB_WIDTH / l->bytes_per_block) * p && (d >> (z & 31u)) ? p : 1;
-        uint32_t nx = (ceil_u32(a * l->bytes_per_block, NVN_TEXTURE_GOB_WIDTH) + q - 1) & -q;
-        sum += (uint64_t)nx * ceil_u32(rows, NVN_TEXTURE_GOB_HEIGHT << (ey & 31u)) *
-               ceil_u32(d, 1u << (ez & 31u)) * ((uint64_t)NVN_TEXTURE_GOB_BYTES << ((ey + ez) & 63u));
-    }
+    for (uint32_t i = 0; i < levels; i++) sum += texture_level_parts(l, i, x, y, z).size;
     if (array) {
         uint32_t shift = p >= 2 ? y + z :
             tile_shrink(y, NVN_TEXTURE_GOB_HEIGHT, ceil_u32(h, l->block_height)) + tile_shrink(z, 1, depth);
@@ -681,6 +696,44 @@ int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* 
 }
 
 uint16_t nvn_texture_packaged_tile(uint32_t layout) { return (uint16_t)(((layout & 0xfffu) << 4) | 1u); }
+
+/* The offset of byte (x, y) of a level, z = 0 (gpu.c's bl_offset with bd = 0). */
+static uint64_t texture_level_offset(const NvnTextureLevel* lv, uint32_t x, uint32_t y) {
+    uint64_t bh = lv->block_height_log2, gy = y >> GOB_SIZE_Y_SHIFT;
+    return ((uint64_t)(x >> GOB_SIZE_X_SHIFT) << (GOB_SIZE_SHIFT + bh)) + gob_x_offset(x) +
+           ((gy >> bh) * lv->gobs_x << (GOB_SIZE_SHIFT + bh)) +
+           ((gy & ((1u << bh) - 1)) << GOB_SIZE_SHIFT) + gob_y_offset(y);
+}
+int nvn_texture_level(const NvnTexture* t, uint32_t level, NvnTextureLevel* out) {
+    if (!t || !out) return 0;
+    const NvnTextureLayout* l = &t->layout;
+    if ((t->builder.flags & NVN_TEXTURE_LINEAR_FLAGS) || t->builder.target == NVN_TEXTURE_TARGET_BUFFER ||
+        l->dim == 3 || l->sample_x != 1 || l->sample_y != 1 || level >= l->levels) return 0;
+    uint64_t offset = 0;
+    for (uint32_t i = 0; i < level; i++)
+        offset += texture_level_parts(l, i, l->tile_x, l->tile_y, l->tile_z).size;
+    TextureLevelParts parts = texture_level_parts(l, level, l->tile_x, l->tile_y, l->tile_z);
+    *out = (NvnTextureLevel){.offset = offset, .size = parts.size, .gobs_x = parts.gobs_x,
+                             .rows = parts.rows, .block_height_log2 = parts.block_height_log2};
+    return 1;
+}
+int nvn_texture_write_rows(uint8_t* level_base, const NvnTextureLevel* lv, uint32_t x_start, uint32_t x_end,
+                           uint32_t row_start, uint32_t row_end, const uint8_t* src, uint64_t src_stride) {
+    if (!level_base || !lv || !src) return 0;
+    /* The level holds whole blocks: a block is 2^bh GOBs, that is 8 << bh rows, high. */
+    uint64_t block_rows = (uint64_t)GOB_SIZE_Y << lv->block_height_log2;
+    uint64_t row_limit = (lv->rows + block_rows - 1) / block_rows * block_rows;
+    if (x_end > (uint64_t)lv->gobs_x * GOB_SIZE_X || row_end > row_limit) return 0;
+    if (x_start >= x_end || row_start >= row_end) return 1;
+    /* Validate the last byte before the first write: the offsets grow with x and with y. */
+    if (texture_level_offset(lv, x_end - 1, row_end - 1) >= lv->size) return 0;
+    for (uint32_t r = row_start; r < row_end; r++) {
+        const uint8_t* from = src + (uint64_t)(r - row_start) * src_stride;
+        for (uint32_t x = x_start; x < x_end; x++)
+            level_base[texture_level_offset(lv, x, r)] = from[x - x_start];
+    }
+    return 1;
+}
 
 /* Small encoder tables from de879e8, de87970 and the branches selected by de87948. */
 static const uint8_t texture_target_codes[] = {0, 1, 2, 4, 5, 1, 5, 1, 3, 8};

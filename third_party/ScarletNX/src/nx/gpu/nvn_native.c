@@ -1191,6 +1191,210 @@ static void h_texture_flush_texels(CPU* c, u64 entry) {
     pm_unlock(&objs_lock);
 }
 
+/* nvnTextureWriteTexels: texel data of a tightly packed linear source goes into the block linear bytes of a texture.
+   The host checks the whole call before the first write, so a refusal leaves the texture unchanged. */
+#define TEXTURE_WRITE_LOG_LIMIT 32u      /* log lines for the faults of the game in nvnTextureWriteTexels */
+#define TEXTURE_WRITE_REGION_BYTES 0x18u /* the six u32 fields of the region */
+
+typedef struct {
+    const TextureRec* texture;
+    const MemoryPoolRec* pool;
+    NvnTextureLevel level;
+    uint64_t source, src_row_bytes, src_layer_stride;
+    uint64_t layer_first;
+    uint32_t layer_count;
+    uint32_t x_start, x_end, row_start, row_end;
+} TextureWriteCall;
+
+static uint64_t texture_write_ceil(uint64_t n, uint64_t d) { return (n + d - 1) / d; }
+static int texture_write_mul(uint64_t a, uint64_t b, uint64_t* out) {
+    if (a && b > UINT64_MAX / a) return 0;
+    *out = a * b;
+    return 1;
+}
+static int texture_write_add(uint64_t a, uint64_t b, uint64_t* out) {
+    if (a > UINT64_MAX - b) return 0;
+    *out = a + b;
+    return 1;
+}
+/* Reads and checks the arguments of one call. 1 with call filled when the call writes; 0 means return now, and the
+   reason of a refusal is in the log. Caller holds objs_lock. */
+static int texture_write_check(CPU* c, TextureWriteCall* call) {
+    const TextureRec* texture = known_record(c->x[0], NVN_OBJ_TEXTURE);
+    if (!texture) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels unknown texture=%llx\n",
+                  (unsigned long long)c->x[0]);
+        return 0;
+    }
+    const NvnTextureView* view = NULL;
+    if (c->x[1]) {
+        view = known_record(c->x[1], NVN_OBJ_TEXTURE_VIEW);
+        if (!view) {
+            LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels unknown view=%llx\n",
+                      (unsigned long long)c->x[1]);
+            return 0;
+        }
+        if (view->flags & NVN_VIEW_FORMAT) {
+            LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT,
+                      "nvn-native: nvnTextureWriteTexels view=%llx format changes the level size\n",
+                      (unsigned long long)c->x[1]);
+            return 0;
+        }
+    }
+    if (!native_guest_readable(c->x[2], TEXTURE_WRITE_REGION_BYTES)) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels unreadable region=%llx\n",
+                  (unsigned long long)c->x[2]);
+        return 0;
+    }
+    if (texture->builder.flags & NVN_TEXTURE_LINEAR_FLAGS) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels texture=%llx is linear\n",
+                  (unsigned long long)c->x[0]);
+        return 0;
+    }
+    if (texture->builder.target == NVN_TEXTURE_TARGET_BUFFER) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels texture=%llx has the BUFFER target\n",
+                  (unsigned long long)c->x[0]);
+        return 0;
+    }
+    if (texture->layout.dim == 3) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels texture=%llx is 3D\n",
+                  (unsigned long long)c->x[0]);
+        return 0;
+    }
+    if (texture->layout.sample_x != 1 || texture->layout.sample_y != 1) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels texture=%llx is multisample\n",
+                  (unsigned long long)c->x[0]);
+        return 0;
+    }
+    const uint64_t region = c->x[2];
+    uint32_t rx = gr32(region), ry = gr32(region + 4), rz = gr32(region + 8);
+    uint32_t width = gr32(region + 0xc), height = gr32(region + 0x10), depth = gr32(region + 0x14);
+    /* The effective target 1D array moves y and height to the layer fields and writes one row. */
+    uint32_t target = view ? view->target : texture->builder.target;
+    int one_d_array = target == NVN_TEXTURE_TARGET_1D_ARRAY;
+    uint32_t region_layer = one_d_array ? ry : rz;
+    uint32_t layer_count = one_d_array ? height : depth;
+    uint32_t region_row = one_d_array ? 0 : ry;
+    uint32_t row_count = one_d_array ? 1 : height;
+    if (!width || !layer_count || !row_count) return 0; /* the library writes nothing */
+    uint32_t level = view && (view->flags & NVN_VIEW_LEVELS) ? view->base_level : 0;
+    if (!nvn_texture_level(texture, level, &call->level)) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT,
+                  "nvn-native: nvnTextureWriteTexels texture=%llx level=%u levels=%u is outside the texture\n",
+                  (unsigned long long)c->x[0], level, (unsigned)texture->layout.levels);
+        return 0;
+    }
+    const MemoryPoolRec* pool = known_record(texture->builder.pool, NVN_OBJ_MEMORY_POOL);
+    if (!pool) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels unknown pool=%llx\n",
+                  (unsigned long long)texture->builder.pool);
+        return 0;
+    }
+    uint32_t base_layer = view && (view->flags & NVN_VIEW_LAYERS) ? view->base_layer : 0;
+    uint64_t layer_first;
+    if (!texture_write_add(base_layer, region_layer, &layer_first)) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels layer arithmetic overflows\n");
+        return 0;
+    }
+    uint64_t layer_end;
+    uint64_t max_layers = texture->layout.depth ? texture->layout.depth : 1;
+    if (!texture_write_add(layer_first, layer_count, &layer_end) || layer_end > max_layers) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT,
+                  "nvn-native: nvnTextureWriteTexels layer=%llu count=%u depth=%llu is outside the texture\n",
+                  (unsigned long long)layer_first, layer_count, (unsigned long long)texture->layout.depth);
+        return 0;
+    }
+    uint64_t bw = texture->layout.block_width, bh = texture->layout.block_height;
+    uint64_t bpb = texture->layout.bytes_per_block;
+    uint64_t x_start = texture_write_ceil(rx, bw) * bpb;
+    uint64_t src_row_bytes = texture_write_ceil(width, bw) * bpb;
+    uint64_t x_end = x_start + src_row_bytes;
+    uint64_t row_start = texture_write_ceil(region_row, bh);
+    uint64_t rows = texture_write_ceil(row_count, bh);
+    uint64_t row_end = row_start + rows;
+    uint64_t src_layer_stride;
+    if (!texture_write_mul(src_row_bytes, rows, &src_layer_stride) || x_end > UINT32_MAX ||
+        row_end > UINT32_MAX) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels size arithmetic overflows\n");
+        return 0;
+    }
+    uint64_t x_limit = (uint64_t)call->level.gobs_x * NVN_TEXTURE_GOB_WIDTH;
+    /* The level holds whole blocks: a block is 2^bh GOBs, that is 8 << bh rows, high. */
+    uint64_t row_block = (uint64_t)NVN_TEXTURE_GOB_HEIGHT << call->level.block_height_log2;
+    uint64_t row_limit = (call->level.rows + row_block - 1) / row_block * row_block;
+    if (x_end > x_limit) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT,
+                  "nvn-native: nvnTextureWriteTexels x_end=%llu is outside the level columns=%llu\n",
+                  (unsigned long long)x_end, (unsigned long long)x_limit);
+        return 0;
+    }
+    if (row_end > row_limit) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT,
+                  "nvn-native: nvnTextureWriteTexels row_end=%llu is outside the level rows=%llu\n",
+                  (unsigned long long)row_end, (unsigned long long)row_limit);
+        return 0;
+    }
+    /* The source holds only the region: its rows are src_row_bytes apart and start at the first byte (d8232a0). */
+    uint64_t source_length, source_end;
+    if (!texture_write_mul(layer_count, src_layer_stride, &source_length) ||
+        !texture_write_add(c->x[3], source_length, &source_end)) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels source arithmetic overflows\n");
+        return 0;
+    }
+    if (!native_guest_readable(c->x[3], source_length)) {
+        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels unreadable source=%llx bytes=%llu\n",
+                  (unsigned long long)c->x[3], (unsigned long long)source_length);
+        return 0;
+    }
+    uint64_t layer_stride = texture->layout.layer_stride;
+    for (uint32_t i = 0; i < layer_count; i++) {
+        uint64_t layer_offset, dst;
+        if (!texture_write_mul(layer_first + i, layer_stride, &layer_offset) ||
+            !texture_write_add(texture->builder.offset, layer_offset, &layer_offset) ||
+            !texture_write_add(pool->storage, layer_offset, &dst) ||
+            !texture_write_add(dst, call->level.offset, &dst)) {
+            LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels address arithmetic overflows\n");
+            return 0;
+        }
+        if (!native_guest_writable(dst, call->level.size)) {
+            LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT,
+                      "nvn-native: nvnTextureWriteTexels unwritable layer=%llu destination=%llx bytes=%llu\n",
+                      (unsigned long long)(layer_first + i), (unsigned long long)dst,
+                      (unsigned long long)call->level.size);
+            return 0;
+        }
+    }
+    call->texture = texture;
+    call->pool = pool;
+    call->source = c->x[3];
+    call->src_row_bytes = src_row_bytes;
+    call->src_layer_stride = src_layer_stride;
+    call->layer_first = layer_first;
+    call->layer_count = layer_count;
+    call->x_start = (uint32_t)x_start;
+    call->x_end = (uint32_t)x_end;
+    call->row_start = (uint32_t)row_start;
+    call->row_end = (uint32_t)row_end;
+    return 1;
+}
+/* Caller holds objs_lock and texture_write_check accepted the whole call. Copies one layer slice. */
+static void texture_write_slice(const TextureWriteCall* call, uint32_t index) {
+    uint64_t layer = call->layer_first + index;
+    uint64_t dst = call->pool->storage + call->texture->builder.offset +
+                   layer * call->texture->layout.layer_stride + call->level.offset;
+    const uint8_t* src = GP(call->source + index * call->src_layer_stride);
+    nvn_texture_write_rows(GP(dst), &call->level, call->x_start, call->x_end, call->row_start, call->row_end,
+                           src, call->src_row_bytes);
+}
+static void h_texture_write_texels(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    TextureWriteCall call;
+    if (texture_write_check(c, &call))
+        for (uint32_t i = 0; i < call.layer_count; i++) texture_write_slice(&call, i);
+    pm_unlock(&objs_lock);
+}
+
 /* G6: command buffers (decisions 3 to 5 of the 3c design). The host records ops and never writes the command or control
    memory of the game. A published list is owned by the command buffer until the game gives control memory that overlaps
    the memory the list had: the library's handle is a control memory address, so that is when a handle ends. */
@@ -3222,6 +3426,7 @@ static const NativeProc native_procs[] = {
     {"nvnTextureGetDepth", h_texture_get_depth},
     {"nvnTexturePoolRegisterTexture", h_texture_pool_register_texture},
     {"nvnTexturePoolRegisterImage", h_texture_pool_register_image},
+    {"nvnTextureWriteTexels", h_texture_write_texels},
     {"nvnBufferBuilderSetDevice", h_buffer_builder_set_device},
     {"nvnBufferBuilderSetDefaults", h_buffer_builder_set_defaults},
     {"nvnBufferBuilderSetStorage", h_buffer_builder_set_storage},
