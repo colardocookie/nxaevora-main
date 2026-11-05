@@ -939,6 +939,26 @@ static void h_program_initialize(CPU* c, u64 entry) {
     pm_unlock(&objs_lock);
 }
 
+/* Counters of nvnProgramSetShadersExt, guarded by objs_lock. Only the refusal lines use PROGRAM_LOG_LIMIT. */
+#define PROGRAM_SUMMARY_INTERVAL 128u /* sets between two summary lines */
+static uint32_t program_sets_total, program_sets_refused;
+static uint32_t program_sets_by_mask[1u << NVN_PROGRAM_STAGES];
+
+/* Caller holds objs_lock. Prints the total, the refusals and each stage mask that was set. */
+static void log_program_set_summary(void) {
+    char masks[256];
+    size_t used = 0;
+    masks[0] = 0;
+    for (uint32_t m = 0; m < (1u << NVN_PROGRAM_STAGES) && used < sizeof masks; m++) {
+        if (!program_sets_by_mask[m]) continue;
+        int n = snprintf(masks + used, sizeof masks - used, " %x:%u", (unsigned)m, (unsigned)program_sets_by_mask[m]);
+        if (n < 0 || (size_t)n >= sizeof masks - used) break;
+        used += (size_t)n;
+    }
+    LOG("nvn-native: program set summary sets=%u refused=%u masks:%s\n", (unsigned)program_sets_total,
+        (unsigned)program_sets_refused, masks);
+}
+
 /* nvnProgramSetShadersExt(prog, count, entries). All entries must be valid: the host writes the new stage table only
    then, and keeps the old content on a refusal. */
 static void h_program_set_shaders_ext(CPU* c, u64 entry) {
@@ -1057,14 +1077,19 @@ static void h_program_set_shaders_ext(CPU* c, u64 entry) {
             ok = 0;
         }
     }
+    program_sets_total++;
     if (ok) {
         *r = next;
-        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx set stages=%x count=%d words=%u\n",
-                  (unsigned long long)addr, next.stage_mask, count, next.word_count);
+        /* The first set of each stage mask is logged in full, the rest only counts in the summary. */
+        if (program_sets_by_mask[next.stage_mask]++ == 0)
+            LOG("nvn-native: program %llx set stages=%x count=%d words=%u\n", (unsigned long long)addr,
+                next.stage_mask, count, next.word_count);
         c->x[0] = 1;
     } else {
+        program_sets_refused++;
         c->x[0] = 0;
     }
+    if (program_sets_total % PROGRAM_SUMMARY_INTERVAL == 0) log_program_set_summary();
     pm_unlock(&objs_lock);
 }
 
