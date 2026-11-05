@@ -974,3 +974,153 @@ int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_wo
     *index_out = stage_word;
     return 1;
 }
+
+/* The Maxwell header word (analyst-prog-builder-1.md, section 1): mode in bits 29..31, count or value in bits 16..28,
+   method in bits 0..11. */
+#define NVN_PROGRAM_MODE_INCREASING 0x20000000u    /* mode 1: count data words follow */
+#define NVN_PROGRAM_MODE_INLINE 0x80000000u        /* mode 4: the value is in the count field, no data word follows */
+#define NVN_PROGRAM_MODE_INCREASE_ONCE 0xA0000000u /* mode 5: a fixed macro of count data words follows */
+#define NVN_PROGRAM_IMMEDIATE_VALUE_MAX 0x1FFFu    /* the 13 bits of an inline value */
+#define NVN_PROGRAM_COUNT_SHIFT 16u
+
+#define NVN_PROGRAM_METHOD_PROGRAM 0xE18u
+#define NVN_PROGRAM_METHOD_VERTEX 0x800u
+#define NVN_PROGRAM_METHOD_VERTEX_HEADER 0x813u
+#define NVN_PROGRAM_METHOD_FRAGMENT 0x850u
+#define NVN_PROGRAM_METHOD_FRAGMENT_HEADER 0x853u
+#define NVN_PROGRAM_METHOD_FRAGMENT_3D0 0x3D0u
+#define NVN_PROGRAM_METHOD_FRAGMENT_084 0x084u
+#define NVN_PROGRAM_METHOD_FRAGMENT_3C7 0x3C7u
+#define NVN_PROGRAM_METHOD_FRAGMENT_D8 0x0D8u
+#define NVN_PROGRAM_METHOD_FRAGMENT_489 0x489u
+#define NVN_PROGRAM_METHOD_FRAGMENT_65B 0x65Bu
+#define NVN_PROGRAM_METHOD_FRAGMENT_1D5 0x1D5u
+
+#define NVN_PROGRAM_MACRO_COUNT 5u
+#define NVN_PROGRAM_D8_COUNT 2u
+#define NVN_PROGRAM_CB_ADDRESS_SHIFT 8u
+
+#define NVN_PROGRAM_SLOT_VERTEX 1u
+#define NVN_PROGRAM_SLOT_FRAGMENT 5u
+#define NVN_PROGRAM_PROGRAM_ID 0u
+#define NVN_PROGRAM_GROUP_VERTEX 0u
+#define NVN_PROGRAM_GROUP_FRAGMENT 4u
+
+#define NVN_PROGRAM_FRAGMENT_CONTROL 0x51u
+#define NVN_PROGRAM_FRAGMENT_1D5_OPAQUE 1u
+#define NVN_PROGRAM_FRAGMENT_1D5_BLEND 0x30u
+#define NVN_PROGRAM_FRAGMENT_65B_SHIFT 4u
+#define NVN_PROGRAM_FRAGMENT_489_KEYS 4u
+
+#define NVN_PROGRAM_D8_TOP_SHIFT 24u
+#define NVN_PROGRAM_D8_LOW_MASK 0x00FFFFFFu
+#define NVN_PROGRAM_D8_TOP_18 0x18u
+#define NVN_PROGRAM_D8_TOP_20 0x20u
+#define NVN_PROGRAM_D8_WORD_MEDIUM 0x06164010u
+#define NVN_PROGRAM_D8_DATA1_MEDIUM 0x20u
+#define NVN_PROGRAM_D8_SAMPLES 3u
+
+int nvn_program_fragment_unsupported(const NvnProgramFragmentIn* frag) {
+    return frag && frag->g158 != 0 && frag->g160 == 0;
+}
+
+static uint32_t program_cb_address(uint64_t region_base, uint32_t cb_offset) {
+    return (uint32_t)((region_base + cb_offset) >> NVN_PROGRAM_CB_ADDRESS_SHIFT);
+}
+
+static void program_push_word(uint32_t* words, uint32_t* at, uint32_t word) { words[(*at)++] = word; }
+
+static int program_push_immediate(uint32_t* words, uint32_t* at, uint32_t method, uint32_t value) {
+    if (value > NVN_PROGRAM_IMMEDIATE_VALUE_MAX) return 0;
+    words[(*at)++] = NVN_PROGRAM_MODE_INLINE | (value << NVN_PROGRAM_COUNT_SHIFT) | method;
+    return 1;
+}
+
+/* The 0xE18 macro with its five data words: pipeline slot, program id, code offset, bind group, cb address. */
+static void program_push_macro(uint32_t* words, uint32_t* at, uint32_t slot, uint32_t code_offset, uint32_t group,
+                               uint32_t cb_address) {
+    program_push_word(words, at, NVN_PROGRAM_MODE_INCREASE_ONCE | (NVN_PROGRAM_MACRO_COUNT << NVN_PROGRAM_COUNT_SHIFT) |
+                                   NVN_PROGRAM_METHOD_PROGRAM);
+    program_push_word(words, at, slot);
+    program_push_word(words, at, NVN_PROGRAM_PROGRAM_ID);
+    program_push_word(words, at, code_offset);
+    program_push_word(words, at, group);
+    program_push_word(words, at, cb_address);
+}
+
+static int program_build_vertex(const NvnProgramStageIn* in, uint64_t region_base, uint32_t* words, uint32_t* at) {
+    if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_VERTEX, 0)) return 0;
+    program_push_macro(words, at, NVN_PROGRAM_SLOT_VERTEX, in->code_offset, NVN_PROGRAM_GROUP_VERTEX,
+                       program_cb_address(region_base, in->cb_offset));
+    return program_push_immediate(words, at, NVN_PROGRAM_METHOD_VERTEX_HEADER, in->header_value);
+}
+
+static uint32_t program_min(uint32_t a, uint32_t b) { return a < b ? a : b; }
+
+static uint32_t program_d8_data0(uint32_t word, uint32_t top) {
+    return (word & NVN_PROGRAM_D8_LOW_MASK) | (top << NVN_PROGRAM_D8_TOP_SHIFT);
+}
+
+/* The two data words of the 0xD8 method. */
+static void program_build_d8(const NvnProgramFragmentIn* frag, const NvnProgramDeviceIn* dev, uint32_t out[2]) {
+    uint32_t top = dev->d1a38 >> NVN_PROGRAM_D8_TOP_SHIFT;
+    if (frag->g168 != 0) {
+        out[0] = program_d8_data0(dev->d1a38, program_min(top, NVN_PROGRAM_D8_TOP_18));
+        out[1] = dev->d1a68;
+    } else if (frag->g170 != 0) {
+        out[0] = NVN_PROGRAM_D8_WORD_MEDIUM;
+        out[1] = NVN_PROGRAM_D8_DATA1_MEDIUM;
+    } else {
+        if (frag->g198 >= NVN_PROGRAM_D8_SAMPLES && dev->d94 > dev->da4 && dev->d1a70 != 0)
+            top = program_min(top, dev->d1a74 >> NVN_PROGRAM_D8_TOP_SHIFT);
+        out[0] = program_d8_data0(dev->d1a38, program_min(top, NVN_PROGRAM_D8_TOP_20));
+        out[1] = dev->d1a68;
+    }
+}
+
+static uint32_t program_489_value(const NvnProgramFragmentIn* frag, const NvnProgramDeviceIn* dev) {
+    static const uint8_t opaque[NVN_PROGRAM_FRAGMENT_489_KEYS] = {2, 10, 1, 9};
+    static const uint8_t blended[NVN_PROGRAM_FRAGMENT_489_KEYS] = {1, 9, 1, 9};
+    if (dev->d1a40 != 0) return dev->d1a40;
+    uint32_t key = frag->g190 - 1u;
+    if (key >= NVN_PROGRAM_FRAGMENT_489_KEYS) return 0;
+    return frag->g188 == 0 ? opaque[key] : blended[key];
+}
+
+static int program_build_fragment(const NvnProgramStageIn* in, const NvnProgramFragmentIn* frag,
+                                  const NvnProgramDeviceIn* dev, uint64_t region_base, uint32_t* words,
+                                  uint32_t* at) {
+    uint32_t d8[2];
+    program_build_d8(frag, dev, d8);
+    uint32_t value_3d0 = frag->g158 == 0 ? 0u : (frag->g160 == 0 ? 1u : 0u);
+    uint32_t value_084 = (dev->d1a3c != 0 || frag->g148 != 0) ? 1u : 0u;
+    uint32_t value_65b = (uint32_t)frag->g178 | ((uint32_t)frag->g180 << NVN_PROGRAM_FRAGMENT_65B_SHIFT);
+    uint32_t value_1d5 =
+        frag->g188 == 0 ? NVN_PROGRAM_FRAGMENT_1D5_OPAQUE : NVN_PROGRAM_FRAGMENT_1D5_BLEND;
+    if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT, NVN_PROGRAM_FRAGMENT_CONTROL)) return 0;
+    program_push_macro(words, at, NVN_PROGRAM_SLOT_FRAGMENT, in->code_offset, NVN_PROGRAM_GROUP_FRAGMENT,
+                       program_cb_address(region_base, in->cb_offset));
+    if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT_HEADER, in->header_value)) return 0;
+    if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT_3D0, value_3d0)) return 0;
+    if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT_084, value_084)) return 0;
+    if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT_3C7, frag->g150)) return 0;
+    program_push_word(words, at, NVN_PROGRAM_MODE_INCREASING | (NVN_PROGRAM_D8_COUNT << NVN_PROGRAM_COUNT_SHIFT) |
+                                   NVN_PROGRAM_METHOD_FRAGMENT_D8);
+    program_push_word(words, at, d8[0]);
+    program_push_word(words, at, d8[1]);
+    if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT_489, program_489_value(frag, dev))) return 0;
+    if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT_65B, value_65b)) return 0;
+    return program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT_1D5, value_1d5);
+}
+
+int nvn_program_build_words(const NvnProgramStageIn* vertex, const NvnProgramStageIn* fragment,
+                            const NvnProgramFragmentIn* frag, const NvnProgramDeviceIn* dev, uint64_t region_base,
+                            uint32_t* words, uint32_t* count) {
+    if (!words || !count) return 0;
+    if (fragment && (!frag || !dev || nvn_program_fragment_unsupported(frag))) return 0;
+    uint32_t at = 0;
+    if (vertex && !program_build_vertex(vertex, region_base, words, &at)) return 0;
+    if (fragment && !program_build_fragment(fragment, frag, dev, region_base, words, &at)) return 0;
+    *count = at;
+    return 1;
+}

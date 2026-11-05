@@ -68,6 +68,8 @@ typedef struct {
     uint32_t device_generation;
     uint32_t stage_mask;
     ProgramStageRec stage[NVN_PROGRAM_STAGES];
+    uint32_t word_count;
+    uint32_t words[NVN_PROGRAM_WORDS_MAX];
 } ProgramRec;
 
 /* the record of kind at addr, made zeroed (with the defaults of that kind) when the game never called SetDefaults */
@@ -744,6 +746,40 @@ static void* known_record(u64 addr, NvnObjKind kind) {
 #define PROGRAM_REFUSAL_STAGE_REPEATED "stage is repeated"
 #define PROGRAM_REFUSAL_CONTROL_UNREADABLE "control is unreadable"
 
+/* The host builder builds only stage 0 (vertex, no VertexA) and stage 1 (fragment). Stages 2 to 5, VertexA and the
+   transform feedback are not ported, so a program with any of them is refused. */
+#define PROGRAM_STAGE_VERTEX 0u
+#define PROGRAM_STAGE_FRAGMENT 1u
+#define PROGRAM_STAGE_SUPPORTED_MASK 0x3u
+
+#define PROGRAM_BUILD_HEADER_BYTES 0x750u /* the header bytes that the word builder reads */
+#define PROGRAM_HEADER_CB_OFFSET 0x700u
+#define PROGRAM_HEADER_CODE_OFFSET 0x708u
+#define PROGRAM_HEADER_VALUE_OFFSET 0x70Cu
+#define PROGRAM_FRAGMENT_G148_OFFSET 0x718u
+#define PROGRAM_FRAGMENT_G150_OFFSET 0x719u
+#define PROGRAM_FRAGMENT_G158_OFFSET 0x71Au
+#define PROGRAM_FRAGMENT_G160_OFFSET 0x71Bu
+#define PROGRAM_FRAGMENT_G168_OFFSET 0x71Cu
+#define PROGRAM_FRAGMENT_G170_OFFSET 0x71Du
+#define PROGRAM_FRAGMENT_G190_OFFSET 0x720u
+#define PROGRAM_FRAGMENT_G1A0_OFFSET 0x724u
+#define PROGRAM_FRAGMENT_G198_OFFSET 0x734u
+#define PROGRAM_FRAGMENT_G178_OFFSET 0x748u
+#define PROGRAM_FRAGMENT_G180_OFFSET 0x749u
+#define PROGRAM_FRAGMENT_G188_OFFSET 0x74Au
+#define PROGRAM_FRAGMENT_G1A0_WORDS 4u
+
+/* The shader pools lie in one 4 GiB window of the GPU address space, so the library subtraction of low32(P) is the
+   identity and the entry word is the delta d. */
+#define NVN_SHADER_REGION_BASE 0x400000000ull
+
+/* Measured with the game's own library (nvn_native=0). The host has no device object, so these are constants. */
+static const NvnProgramDeviceIn program_device_words = {
+    .d1a38 = 0x087f6080u, .d1a3c = 0u, .d1a40 = 0u, .d1a68 = 0x20u,
+    .d1a70 = 1u, .d1a74 = 0x20806080u, .d94 = 2u, .da4 = 0u,
+};
+
 /* Caller holds objs_lock. Reads one entry and its header. On a refusal returns 0 and sets *reason. */
 static int program_read_entry(u64 entries, int32_t index, ProgramStageRec* out, uint32_t* stage_index,
                               const char** reason) {
@@ -795,6 +831,43 @@ static int program_read_entry(u64 entries, int32_t index, ProgramStageRec* out, 
     }
     *out = stage;
     return 1;
+}
+
+/* Caller holds objs_lock. Reads the header words of one stage record. Returns 0 when the header is too short. */
+static int program_read_stage_in(const ProgramStageRec* rec, NvnProgramStageIn* out) {
+    if (!native_guest_readable(rec->header, PROGRAM_BUILD_HEADER_BYTES)) return 0;
+    uint32_t d = (uint32_t)rec->entry_word;
+    out->code_offset = (uint32_t)(gr32(rec->header + PROGRAM_HEADER_CODE_OFFSET) + d);
+    out->cb_offset = (uint32_t)(gr32(rec->header + PROGRAM_HEADER_CB_OFFSET) + d);
+    out->header_value = gr32(rec->header + PROGRAM_HEADER_VALUE_OFFSET);
+    return 1;
+}
+
+static uint8_t program_guest_byte(u64 addr) { return (uint8_t)(gr32(addr) & 0xffu); }
+
+/* Caller holds objs_lock. program_read_stage_in checked that the header is readable. */
+static void program_read_fragment_in(u64 header, NvnProgramFragmentIn* out) {
+    out->g148 = program_guest_byte(header + PROGRAM_FRAGMENT_G148_OFFSET);
+    out->g150 = program_guest_byte(header + PROGRAM_FRAGMENT_G150_OFFSET);
+    out->g158 = program_guest_byte(header + PROGRAM_FRAGMENT_G158_OFFSET);
+    out->g160 = program_guest_byte(header + PROGRAM_FRAGMENT_G160_OFFSET);
+    out->g168 = program_guest_byte(header + PROGRAM_FRAGMENT_G168_OFFSET);
+    out->g170 = program_guest_byte(header + PROGRAM_FRAGMENT_G170_OFFSET);
+    out->g178 = program_guest_byte(header + PROGRAM_FRAGMENT_G178_OFFSET);
+    out->g180 = program_guest_byte(header + PROGRAM_FRAGMENT_G180_OFFSET);
+    out->g188 = program_guest_byte(header + PROGRAM_FRAGMENT_G188_OFFSET);
+    out->g190 = gr32(header + PROGRAM_FRAGMENT_G190_OFFSET);
+    out->g198 = gr32(header + PROGRAM_FRAGMENT_G198_OFFSET);
+    for (uint32_t i = 0; i < PROGRAM_FRAGMENT_G1A0_WORDS; i++)
+        out->g1a0[i] = gr32(header + PROGRAM_FRAGMENT_G1A0_OFFSET + (u64)i * 4u);
+}
+
+/* The lowest stage above stage 1 that is present, or -1. */
+static int program_unsupported_stage(uint32_t stage_mask) {
+    uint32_t unsupported = stage_mask & ~PROGRAM_STAGE_SUPPORTED_MASK;
+    for (uint32_t stage = PROGRAM_STAGE_FRAGMENT + 1u; stage < NVN_PROGRAM_STAGES; stage++)
+        if (unsupported & (1u << stage)) return (int)stage;
+    return -1;
 }
 
 /* nvnProgramInitialize(prog, device): the host keeps the device link and writes nothing into the game memory. */
@@ -874,9 +947,59 @@ static void h_program_set_shaders_ext(CPU* c, u64 entry) {
         next.stage_mask |= 1u << stage_index;
     }
     if (ok) {
+        int stage = program_unsupported_stage(next.stage_mask);
+        if (stage >= 0) {
+            LOG_LIMIT(PROGRAM_LOG_LIMIT,
+                      "nvn-native: program %llx refused: stage %d is not supported by the host builder\n",
+                      (unsigned long long)addr, stage);
+            ok = 0;
+        }
+    }
+    if (ok) {
+        NvnProgramStageIn vertex_in, fragment_in;
+        NvnProgramFragmentIn frag = {0};
+        const NvnProgramStageIn* vertex = NULL;
+        const NvnProgramStageIn* fragment = NULL;
+        if (next.stage_mask & (1u << PROGRAM_STAGE_VERTEX)) {
+            if (!program_read_stage_in(&next.stage[PROGRAM_STAGE_VERTEX], &vertex_in)) {
+                LOG_LIMIT(PROGRAM_LOG_LIMIT,
+                          "nvn-native: program %llx stage=%u refused: header is too short for the word array\n",
+                          (unsigned long long)addr, (unsigned)PROGRAM_STAGE_VERTEX);
+                ok = 0;
+            } else {
+                vertex = &vertex_in;
+            }
+        }
+        if (ok && (next.stage_mask & (1u << PROGRAM_STAGE_FRAGMENT))) {
+            if (!program_read_stage_in(&next.stage[PROGRAM_STAGE_FRAGMENT], &fragment_in)) {
+                LOG_LIMIT(PROGRAM_LOG_LIMIT,
+                          "nvn-native: program %llx stage=%u refused: header is too short for the word array\n",
+                          (unsigned long long)addr, (unsigned)PROGRAM_STAGE_FRAGMENT);
+                ok = 0;
+            } else {
+                fragment = &fragment_in;
+                frag.present = 1;
+                program_read_fragment_in(next.stage[PROGRAM_STAGE_FRAGMENT].header, &frag);
+                if (nvn_program_fragment_unsupported(&frag)) {
+                    LOG_LIMIT(PROGRAM_LOG_LIMIT,
+                              "nvn-native: program %llx refused: fragment 0x2004 branch is not supported by the host "
+                              "builder\n",
+                              (unsigned long long)addr);
+                    ok = 0;
+                }
+            }
+        }
+        if (ok && !nvn_program_build_words(vertex, fragment, &frag, &program_device_words, NVN_SHADER_REGION_BASE,
+                                            next.words, &next.word_count)) {
+            LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: a word value is above 13 bits\n",
+                      (unsigned long long)addr);
+            ok = 0;
+        }
+    }
+    if (ok) {
         *r = next;
-        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx set stages=%x count=%d\n",
-                  (unsigned long long)addr, next.stage_mask, count);
+        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx set stages=%x count=%d words=%u\n",
+                  (unsigned long long)addr, next.stage_mask, count, next.word_count);
         c->x[0] = 1;
     } else {
         c->x[0] = 0;

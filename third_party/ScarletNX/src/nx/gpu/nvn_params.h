@@ -436,4 +436,36 @@ NvnSyncState nvn_sync_after_token(NvnSyncState state, uint32_t* fences);
 int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_word, uint32_t kind_word,
                              uint32_t stage_word, uint32_t* index_out);
 
+/* The Maxwell command words that nvnProgramSetShadersExt builds for the shaders of a program. The host builds them
+   because it has no library. Only stage 0 (vertex, no VertexA) and stage 1 (fragment) are built. The other stages and
+   the transform feedback are not ported. */
+#define NVN_PROGRAM_WORDS_MAX 32u       /* vertex 8 + fragment 22 */
+#define NVN_PROGRAM_VERTEX_WORDS 8u
+#define NVN_PROGRAM_FRAGMENT_WORDS 17u
+
+typedef struct {
+    uint32_t code_offset;  /* h+0x708 + d, u32 wrap */
+    uint32_t cb_offset;    /* h+0x700 + d, u32 wrap */
+    uint32_t header_value; /* h+0x70c */
+} NvnProgramStageIn;
+
+typedef struct {
+    uint8_t present;
+    uint8_t g148, g150, g158, g160, g168, g170, g178, g180, g188;
+    uint32_t g190, g198;
+    uint32_t g1a0[4];
+} NvnProgramFragmentIn;
+
+typedef struct {
+    uint32_t d1a38, d1a3c, d1a40, d1a68, d1a70, d1a74, d94, da4;
+} NvnProgramDeviceIn;
+
+/* 1 when the fragment block takes the 0x2004 branch, which the host does not build. */
+int nvn_program_fragment_unsupported(const NvnProgramFragmentIn* frag);
+/* Builds the word array of the stages that are present (NULL is absent), vertex block first. Returns 0 on a refusal and
+   leaves *count unchanged; on success sets *count and writes the words. Pure. */
+int nvn_program_build_words(const NvnProgramStageIn* vertex, const NvnProgramStageIn* fragment,
+                            const NvnProgramFragmentIn* frag, const NvnProgramDeviceIn* dev,
+                            uint64_t region_base, uint32_t* words, uint32_t* count);
+
 #endif
