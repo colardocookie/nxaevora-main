@@ -1673,3 +1673,138 @@ uint32_t nvn_bind_texture_words(uint32_t stage, uint32_t slot, uint64_t handle, 
     bind_word(&w, (uint32_t)handle);
     return w.at;
 }
+
+/* The draw macros and methods that the five library draw functions write. The headers use the same forms as the bind
+   packets: a mode 5 macro of count words, a mode 1 run and a mode 4 inline value. */
+#define NVN_DRAW_TYPE_MAX                 0x1FFFu
+#define NVN_DRAW_MACRO_ARRAYS             0xE32u
+#define NVN_DRAW_MACRO_ARRAYS_INSTANCED   0xE36u
+#define NVN_DRAW_MACRO_ARRAYS_CONSTANTS   0xE44u
+#define NVN_DRAW_MACRO_ELEMENTS           0xE38u
+#define NVN_DRAW_MACRO_ELEMENTS_INSTANCED 0xE3Cu
+#define NVN_DRAW_MACRO_ELEMENTS_CONSTANTS 0xE46u
+#define NVN_DRAW_METHOD_CONSTANTS         0xE20u
+#define NVN_DRAW_CONSTANTS_DRIVER_BUFFER  0x190u
+#define NVN_DRAW_METHOD_TYPE              0x5F6u
+#define NVN_DRAW_METHOD_ADDRESS           0x5F2u
+#define NVN_DRAW_METHOD_BASE_VERTEX       0x8E4u
+#define NVN_DRAW_METHOD_VERTEX_HIGH       0x446u
+#define NVN_DRAW_METHOD_VERTEX_LOW        0x50Du
+#define NVN_DRAW_METHOD_STREAM            0x8E3u
+#define NVN_DRAW_STREAM_LIMIT             0x640u
+#define NVN_DRAW_ARRAYS_WORDS             3u
+#define NVN_DRAW_ARRAYS_INSTANCED_WORDS   5u
+#define NVN_DRAW_ELEMENTS_WORDS           5u
+#define NVN_DRAW_ELEMENTS_INSTANCED_WORDS 6u
+#define NVN_DRAW_SINGLE_WORD_RUN          1u
+#define NVN_DRAW_TWO_WORD_RUN             2u
+
+static uint32_t draw_arrays_words(NvnBindWriter* w, uint32_t mode, uint32_t first, uint32_t count) {
+    bind_macro(w, NVN_DRAW_MACRO_ARRAYS, NVN_DRAW_ARRAYS_WORDS);
+    bind_word(w, mode);
+    bind_word(w, first);
+    bind_word(w, count);
+    return w->at;
+}
+
+static uint32_t draw_arrays_instanced_words(NvnBindWriter* w, uint32_t mode, uint32_t count, uint32_t first,
+                                            uint32_t base_instance, uint32_t instances, int* uses_constants) {
+    if (base_instance == 0) {
+        bind_macro(w, NVN_DRAW_MACRO_ARRAYS_INSTANCED, NVN_DRAW_ARRAYS_INSTANCED_WORDS);
+    } else {
+        bind_value(w, NVN_DRAW_METHOD_CONSTANTS, NVN_DRAW_CONSTANTS_DRIVER_BUFFER);
+        bind_macro(w, NVN_DRAW_MACRO_ARRAYS_CONSTANTS, NVN_DRAW_ARRAYS_INSTANCED_WORDS);
+        if (uses_constants) *uses_constants = 1;
+    }
+    bind_word(w, mode);
+    bind_word(w, count);
+    bind_word(w, instances);
+    bind_word(w, first);
+    bind_word(w, base_instance);
+    return w->at;
+}
+
+static void draw_elements_block(NvnBindWriter* w, uint32_t macro, uint32_t mode, uint32_t type, uint32_t count,
+                                uint32_t a_hi, uint32_t a_lo) {
+    bind_macro(w, macro, NVN_DRAW_ELEMENTS_WORDS);
+    bind_word(w, mode);
+    bind_word(w, a_hi);
+    bind_word(w, a_lo);
+    bind_word(w, type);
+    bind_word(w, count);
+}
+
+static uint32_t draw_elements_words(NvnBindWriter* w, uint32_t mode, uint32_t type, uint32_t count, uint32_t a_hi,
+                                    uint32_t a_lo) {
+    draw_elements_block(w, NVN_DRAW_MACRO_ELEMENTS, mode, type, count, a_hi, a_lo);
+    return w->at;
+}
+
+static uint32_t draw_elements_base_vertex_words(NvnBindWriter* w, uint32_t mode, uint32_t type, uint32_t count,
+                                                uint32_t a_hi, uint32_t a_lo, uint32_t base_vertex,
+                                                int* uses_constants) {
+    if (base_vertex != 0) {
+        bind_value(w, NVN_DRAW_METHOD_CONSTANTS, NVN_DRAW_CONSTANTS_DRIVER_BUFFER);
+        bind_run(w, NVN_DRAW_METHOD_BASE_VERTEX, NVN_DRAW_SINGLE_WORD_RUN);
+        bind_word(w, base_vertex);
+        if (uses_constants) *uses_constants = 1;
+    }
+    bind_run(w, NVN_DRAW_METHOD_VERTEX_HIGH, NVN_DRAW_SINGLE_WORD_RUN);
+    bind_word(w, base_vertex);
+    bind_run(w, NVN_DRAW_METHOD_VERTEX_LOW, NVN_DRAW_SINGLE_WORD_RUN);
+    bind_word(w, base_vertex);
+    draw_elements_block(w, NVN_DRAW_MACRO_ELEMENTS, mode, type, count, a_hi, a_lo);
+    bind_value(w, NVN_DRAW_METHOD_VERTEX_LOW, 0);
+    bind_value(w, NVN_DRAW_METHOD_VERTEX_HIGH, 0);
+    if (base_vertex != 0) {
+        bind_run(w, NVN_DRAW_METHOD_STREAM, NVN_DRAW_TWO_WORD_RUN);
+        bind_word(w, NVN_DRAW_STREAM_LIMIT);
+        bind_word(w, 0);
+    }
+    return w->at;
+}
+
+static uint32_t draw_elements_instanced_words(NvnBindWriter* w, uint32_t mode, uint32_t type, uint32_t count,
+                                              uint32_t a_hi, uint32_t a_lo, uint32_t base_vertex,
+                                              uint32_t base_instance, uint32_t instances, int* uses_constants) {
+    int constants = (base_vertex | base_instance) != 0;
+    if (constants) {
+        bind_value(w, NVN_DRAW_METHOD_CONSTANTS, NVN_DRAW_CONSTANTS_DRIVER_BUFFER);
+        if (uses_constants) *uses_constants = 1;
+    }
+    bind_value(w, NVN_DRAW_METHOD_TYPE, type);
+    bind_run(w, NVN_DRAW_METHOD_ADDRESS, NVN_DRAW_TWO_WORD_RUN);
+    bind_word(w, a_hi);
+    bind_word(w, a_lo);
+    bind_macro(w, constants ? NVN_DRAW_MACRO_ELEMENTS_CONSTANTS : NVN_DRAW_MACRO_ELEMENTS_INSTANCED,
+               NVN_DRAW_ELEMENTS_INSTANCED_WORDS);
+    bind_word(w, mode);
+    bind_word(w, count);
+    bind_word(w, instances);
+    bind_word(w, 0);
+    bind_word(w, base_vertex);
+    bind_word(w, base_instance);
+    return w->at;
+}
+
+uint32_t nvn_draw_words(uint32_t kind, uint32_t mode, uint32_t type, uint32_t count, uint64_t address, uint32_t first,
+                        uint32_t base_vertex, uint32_t base_instance, uint32_t instances, uint32_t* out,
+                        int* uses_constants) {
+    if (!out || kind >= (uint32_t)NVN_DRAW_KIND_COUNT || type > NVN_DRAW_TYPE_MAX) return 0;
+    if (uses_constants) *uses_constants = 0;
+    NvnBindWriter w = {out, 0};
+    uint32_t a_hi = (uint32_t)(address >> 32);
+    uint32_t a_lo = (uint32_t)address;
+    switch (kind) {
+    case NVN_DRAW_ARRAYS: return draw_arrays_words(&w, mode, first, count);
+    case NVN_DRAW_ARRAYS_INSTANCED:
+        return draw_arrays_instanced_words(&w, mode, count, first, base_instance, instances, uses_constants);
+    case NVN_DRAW_ELEMENTS: return draw_elements_words(&w, mode, type, count, a_hi, a_lo);
+    case NVN_DRAW_ELEMENTS_BASE_VERTEX:
+        return draw_elements_base_vertex_words(&w, mode, type, count, a_hi, a_lo, base_vertex, uses_constants);
+    case NVN_DRAW_ELEMENTS_INSTANCED:
+        return draw_elements_instanced_words(&w, mode, type, count, a_hi, a_lo, base_vertex, base_instance,
+                                             instances, uses_constants);
+    default: return 0;
+    }
+}

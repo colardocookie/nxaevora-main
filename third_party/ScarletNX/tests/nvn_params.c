@@ -1934,6 +1934,61 @@ static void test_bind_texture(void) {
     CHECK(nvn_bind_texture_words(0, 0, 0, 0, NULL) == 0);
 }
 
+static void test_draw_words(void) {
+    const uint64_t address = 0x123456789Aull;
+    static const uint32_t arrays[] = {0xA0030E32u, 4u, 7u, 0x123u};
+    static const uint32_t arrays_instanced[] = {0xA0050E36u, 4u, 0x123u, 3u, 7u, 0u};
+    static const uint32_t arrays_instanced_constants[] = {0x81900E20u, 0xA0050E44u, 4u, 0x123u, 3u, 7u, 0x22u};
+    static const uint32_t elements[] = {0xA0050E38u, 4u, 0x12u, 0x3456789Au, 2u, 0x123u};
+    static const uint32_t elements_base[] = {0x20010446u, 0u, 0x2001050Du, 0u, 0xA0050E38u, 4u, 0x12u, 0x3456789Au,
+                                             2u, 0x123u, 0x8000050Du, 0x80000446u};
+    static const uint32_t elements_base_constants[] = {
+        0x81900E20u, 0x200108E4u, 0x11u, 0x20010446u, 0x11u, 0x2001050Du, 0x11u, 0xA0050E38u, 4u,
+        0x12u, 0x3456789Au, 2u, 0x123u, 0x8000050Du, 0x80000446u, 0x200208E3u, 0x640u, 0u};
+    static const uint32_t elements_instanced[] = {0x800205F6u, 0x200205F2u, 0x12u, 0x3456789Au, 0xA0060E3Cu,
+                                                  4u, 0x123u, 3u, 0u, 0u, 0u};
+    static const uint32_t elements_instanced_constants[] = {0x81900E20u, 0x800205F6u, 0x200205F2u, 0x12u,
+                                                            0x3456789Au, 0xA0060E46u, 4u, 0x123u, 3u, 0u,
+                                                            0x11u, 0x22u};
+    uint32_t out[NVN_DRAW_WORDS_MAX];
+    int constants;
+    uint32_t count;
+
+    count = nvn_draw_words(NVN_DRAW_ARRAYS, 4u, 2u, 0x123u, address, 7u, 0x11u, 0x22u, 3u, out, &constants);
+    check_bind_words(out, count, arrays, 4);
+    CHECK(constants == 0);
+    count = nvn_draw_words(NVN_DRAW_ARRAYS_INSTANCED, 4u, 2u, 0x123u, address, 7u, 0x11u, 0u, 3u, out, &constants);
+    check_bind_words(out, count, arrays_instanced, 6);
+    CHECK(constants == 0);
+    count = nvn_draw_words(NVN_DRAW_ARRAYS_INSTANCED, 4u, 2u, 0x123u, address, 7u, 0x11u, 0x22u, 3u, out, &constants);
+    check_bind_words(out, count, arrays_instanced_constants, 7);
+    CHECK(constants == 1);
+    count = nvn_draw_words(NVN_DRAW_ELEMENTS, 4u, 2u, 0x123u, address, 7u, 0x11u, 0x22u, 3u, out, &constants);
+    check_bind_words(out, count, elements, 6);
+    CHECK(constants == 0);
+    count =
+        nvn_draw_words(NVN_DRAW_ELEMENTS_BASE_VERTEX, 4u, 2u, 0x123u, address, 7u, 0u, 0x22u, 3u, out, &constants);
+    check_bind_words(out, count, elements_base, 12);
+    CHECK(constants == 0);
+    count = nvn_draw_words(NVN_DRAW_ELEMENTS_BASE_VERTEX, 4u, 2u, 0x123u, address, 7u, 0x11u, 0x22u, 3u, out,
+                           &constants);
+    check_bind_words(out, count, elements_base_constants, NVN_DRAW_WORDS_MAX);
+    CHECK(count == NVN_DRAW_WORDS_MAX);
+    CHECK(constants == 1);
+    count = nvn_draw_words(NVN_DRAW_ELEMENTS_INSTANCED, 4u, 2u, 0x123u, address, 7u, 0u, 0u, 3u, out, &constants);
+    check_bind_words(out, count, elements_instanced, 11);
+    CHECK(constants == 0);
+    count = nvn_draw_words(NVN_DRAW_ELEMENTS_INSTANCED, 4u, 2u, 0x123u, address, 7u, 0x11u, 0x22u, 3u, out, &constants);
+    check_bind_words(out, count, elements_instanced_constants, 12);
+    CHECK(constants == 1);
+    bind_sentinel(out, NVN_DRAW_WORDS_MAX);
+    CHECK(nvn_draw_words(NVN_DRAW_KIND_COUNT, 4u, 2u, 0x123u, address, 7u, 0x11u, 0x22u, 3u, out, &constants) == 0);
+    check_bind_sentinel(out, NVN_DRAW_WORDS_MAX);
+    CHECK(nvn_draw_words(NVN_DRAW_ELEMENTS, 4u, 0x2000u, 0x123u, address, 7u, 0x11u, 0x22u, 3u, out, &constants) == 0);
+    check_bind_sentinel(out, NVN_DRAW_WORDS_MAX);
+    CHECK(nvn_draw_words(NVN_DRAW_ARRAYS, 4u, 2u, 0x123u, address, 7u, 0x11u, 0x22u, 3u, NULL, &constants) == 0);
+}
+
 static void test_highest_enabled_index(void) {
     const uint8_t none[4] = {0, 0, 0, 0};
     const uint8_t first[4] = {1, 0, 0, 0};
@@ -2008,6 +2063,7 @@ int main(int argc, char** argv) {
     test_bind_uniform_buffer();
     test_bind_storage_buffer();
     test_bind_texture();
+    test_draw_words();
     test_highest_enabled_index();
     if (failures) {
         printf("%d failures\n", failures);

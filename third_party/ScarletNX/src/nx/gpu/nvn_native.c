@@ -3185,18 +3185,37 @@ static void replay_bind_send_all(NvnNativeReplayHost* host) {
     replay_bind_send_storages(host);
     replay_bind_send_textures(host);
 }
+/* The 3D register at +0xD18 holds the GPU address of the driver constants buffer that macro 0xE20 reads. */
+#define NVN_MME_DRIVER_CONSTANTS_REGISTER 0xD18u
+
 /* The replay thread writes these without a lock. The first draw and the first dispatch of the run get one log line. */
 static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
     NvnNativeReplayHost* host = ctx;
     if (op->kind >= (uint32_t)NVN_DRAW_KIND_COUNT) return 0;
     replay_bind_send_all(host);
+    uint32_t words[NVN_DRAW_WORDS_MAX];
+    int uses_constants = 0;
+    uint32_t count = nvn_draw_words(op->kind, op->mode, op->type, op->count, op->address, op->first,
+                                    op->base_vertex, op->base_instance, op->instances, words, &uses_constants);
+    if (!count) {
+        replay_bind_refuse(host, "draw", -1, -1, op->kind);
+        return 1;
+    }
+    if (uses_constants && host->channel->r3d[NVN_MME_DRIVER_CONSTANTS_REGISTER] == 0) {
+        replay_bind_refuse(host, "draw constants", -1, -1, op->kind);
+        return 1;
+    }
+    if (!replay_bind_send(host, words, count)) {
+        replay_bind_refuse(host, "draw words", -1, -1, op->kind);
+        return 1;
+    }
     host->draws[op->kind]++;
     host->last_draw = *op;
     static int logged; /* only the replay thread runs the frame jobs */
     if (!logged) {
         logged = 1;
-        LOG("nvn-native: draw recorded, not executed (stage 4) bind methods=%u refusals=%u\n",
-            host->bind_methods, host->bind_refusals);
+        LOG("nvn-native: first draw sent, bind methods=%u refusals=%u r3d[0xD18]=%08x\n",
+            host->bind_methods, host->bind_refusals, host->channel->r3d[NVN_MME_DRIVER_CONSTANTS_REGISTER]);
     }
     return 1;
 }

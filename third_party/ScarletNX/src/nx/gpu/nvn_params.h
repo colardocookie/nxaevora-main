@@ -64,6 +64,14 @@ typedef enum {
     NVN_DRAW_KIND_COUNT
 } NvnDrawKind;
 
+/* Writes the words of one draw as the library does. kind is NvnDrawKind. Returns the word count, or 0 for a refusal
+   (kind out of range, out NULL), with nothing written. *uses_constants is set to 1 when the words need the driver
+   constants buffer (macro 0xE20), else 0. */
+#define NVN_DRAW_WORDS_MAX 18u
+uint32_t nvn_draw_words(uint32_t kind, uint32_t mode, uint32_t type, uint32_t count, uint64_t address, uint32_t first,
+                        uint32_t base_vertex, uint32_t base_instance, uint32_t instances, uint32_t* out,
+                        int* uses_constants);
+
 /* The kinds of the raster op. The order is the kind word. */
 typedef enum {
     NVN_RASTER_DEPTH_BOUNDS = 0,
