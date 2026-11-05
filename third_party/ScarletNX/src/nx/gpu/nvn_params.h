@@ -510,6 +510,46 @@ typedef struct {
     uint32_t flags;           /* word 16: bits 0 to 2, see the flag constants */
 } NvnProgramComputeIn;
 
+/* The stage 5 (compute) dispatch inputs and outputs that the host builds: the launch description (QMD) and the
+   driver constant block that the library submit path fills itself. */
+#define NVN_COMPUTE_QMD_WORDS 64u
+#define NVN_COMPUTE_CBUF0_BYTES 0x500u
+#define NVN_COMPUTE_CBUF0_WORDS (NVN_COMPUTE_CBUF0_BYTES / 4u)
+#define NVN_COMPUTE_UNIFORM_SLOTS 32u  /* nvn_cmdlist.h's NVN_UNIFORM_SLOT_MAX */
+#define NVN_COMPUTE_STORAGE_SLOTS 128u /* nvn_cmdlist.h's NVN_STORAGE_SLOT_MAX */
+#define NVN_COMPUTE_DESCRIPTOR_SLOTS 8u
+#define NVN_COMPUTE_UNIFORM_QBUF_SLOTS 5u /* stage 5 uniform slots 0 to 4 map to QMD constant buffers 3 to 7 */
+#define NVN_COMPUTE_CBUF0_UNIFORM_OFFSET 0x210u
+#define NVN_COMPUTE_CBUF0_STORAGE_OFFSET 0x310u
+#define NVN_COMPUTE_DESCRIPTOR_BYTES 16u
+#define NVN_COMPUTE_CBUF_ADDRESS_HIGH_SHIFT 15u /* the size field of a QMD constant buffer config word */
+#define NVN_COMPUTE_MIN_CBUF_BYTES 0x100u       /* a uniform slot below this size stays disabled */
+/* nvn_native.c's NVN_SHADER_REGION_BASE: the window that the program offsets are relative to. */
+#define NVN_COMPUTE_SHADER_REGION_BASE NVN_POOL_GPU_BASE
+
+typedef struct {
+    uint64_t addr;
+    uint64_t size;
+    uint8_t bound;
+} NvnComputeBindEntry;
+
+/* One compute dispatch: the scratch block that becomes constant buffer 0, the stage 5 uniform slots and the storage
+   slots. A slot without bound is empty. */
+typedef struct {
+    uint64_t cbuf0_address;
+    NvnComputeBindEntry uniform[NVN_COMPUTE_UNIFORM_SLOTS];
+    NvnComputeBindEntry storage[NVN_COMPUTE_STORAGE_SLOTS];
+} NvnComputeBinds;
+
+/* Builds the 64-word launch description. Returns 0 on a refusal (a grid dimension above its field, a bound uniform slot
+   above 4 with size 0x100 or more, or a size above 32 bits). Pure. */
+int nvn_compute_qmd_build(const NvnProgramComputeIn* prog, uint32_t x, uint32_t y, uint32_t z,
+                          const NvnComputeBinds* binds, uint32_t qmd[NVN_COMPUTE_QMD_WORDS]);
+/* Builds the 0x500-byte driver constant block with the uniform and storage descriptor tables. Returns 0 on a refusal
+   (a bound storage slot above 7, a size above 32 bits, or a null argument). Pure. */
+int nvn_compute_cbuf0_build(const NvnComputeBindEntry* uniform, const NvnComputeBindEntry* storage,
+                            uint32_t words[NVN_COMPUTE_CBUF0_WORDS]);
+
 typedef struct {
     uint8_t present;
     uint8_t g148, g150, g158, g160, g168, g170, g178, g180, g188;
@@ -526,6 +566,9 @@ typedef struct {
 int nvn_program_build_words(const NvnProgramComputeIn* compute, const NvnProgramStageIn* vertex,
                             const NvnProgramStageIn* fragment, const NvnProgramFragmentIn* frag,
                             const NvnProgramDeviceIn* dev, uint64_t region_base, uint32_t* words, uint32_t* count);
+/* Reverses program_build_compute: fills *out from an 18-word compute block. Returns 0 when count is not 18 or an
+   argument is null. Pure. */
+int nvn_program_compute_from_words(const uint32_t* words, uint32_t count, NvnProgramComputeIn* out);
 
 /* The pushbuffer stream of the method words of a program (gpu.c's pb_decode). Mode 1 increments the method for each
    data word, mode 5 sends the first word to the header method and the rest to the next one, and mode 4 carries its value in the count field. A macro call gets last only on its

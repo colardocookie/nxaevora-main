@@ -2002,6 +2002,81 @@ static void test_highest_enabled_index(void) {
     CHECK(nvn_highest_enabled_index(NULL, 4) == 0);
 }
 
+static void test_compute_qmd_build(void) {
+    const NvnProgramComputeIn prog = {
+        .code_offset = 0x2000u, .cb_offset = 0x1000u, .h6fc = 0x40u,
+        .h718 = 8u, .h71c = 4u, .h720 = 2u, .h724 = 0x1001u,
+        .h728 = 0x12345u, .h72c = 0x23456u, .h730 = 0x34567u, .h734 = 0x1Fu,
+    };
+    NvnComputeBinds binds = {0};
+    binds.cbuf0_address = 0x400002000ull;
+    binds.uniform[1] = (NvnComputeBindEntry){0x400003000ull, 0x200u, 1};
+    uint32_t qmd[NVN_COMPUTE_QMD_WORDS];
+    /* x, y, z = 3, 2, 1; block 8, 4, 2. */
+    CHECK(nvn_compute_qmd_build(&prog, 3, 2, 1, &binds, qmd));
+    CHECK(qmd[0x8] == 0x2000u);
+    CHECK(qmd[0xC] == 3u);
+    CHECK(qmd[0xD] == 0x00010002u);
+    CHECK(qmd[0x11] == 0x1100u); /* ((0x1001 + 0xFF) >> 8) << 8 */
+    CHECK(qmd[0x12] == 0x00080000u);
+    CHECK(qmd[0x13] == 0x00020004u);
+    CHECK(qmd[0x14] == 0x13u); /* cbuf 0, cbuf 1 and uniform slot 1 */
+    CHECK(qmd[0x1D] == 0x2000u && qmd[0x1E] == 0x02800004u);
+    CHECK(qmd[0x1F] == 0x1000u && qmd[0x20] == 0x009F8004u);
+    CHECK(qmd[0x25] == 0x3000u && qmd[0x26] == 0x01000004u);
+    CHECK(qmd[0x2D] == 0xF8012345u);
+    CHECK(qmd[0x2E] == 0x00023456u);
+    CHECK(qmd[0x2F] == 0x00034567u);
+    CHECK(qmd[0] == 0u && qmd[NVN_COMPUTE_QMD_WORDS - 1] == 0u);
+    /* Refusals: a field above its bits and a uniform slot above 4. */
+    CHECK(!nvn_compute_qmd_build(&prog, 3, 0x10000u, 1, &binds, qmd));
+    CHECK(!nvn_compute_qmd_build(&prog, 0x80000000u, 2, 1, &binds, qmd));
+    NvnComputeBinds high = binds;
+    high.uniform[5] = (NvnComputeBindEntry){0x400004000ull, 0x100u, 1};
+    CHECK(!nvn_compute_qmd_build(&prog, 3, 2, 1, &high, qmd));
+    /* Without uniforms the enable word has constant buffers 0 and 1 only. */
+    NvnComputeBinds none = {0};
+    none.cbuf0_address = binds.cbuf0_address;
+    CHECK(nvn_compute_qmd_build(&prog, 3, 2, 1, &none, qmd));
+    CHECK(qmd[0x14] == 0x3u);
+}
+
+static void test_compute_cbuf0_build(void) {
+    NvnComputeBindEntry uniform[NVN_COMPUTE_UNIFORM_SLOTS] = {0};
+    NvnComputeBindEntry storage[NVN_COMPUTE_STORAGE_SLOTS] = {0};
+    uniform[0] = (NvnComputeBindEntry){0x400000100ull, 0x40u, 1};
+    storage[2] = (NvnComputeBindEntry){0x400005000ull, 0x1000u, 1};
+    uint32_t words[NVN_COMPUTE_CBUF0_WORDS];
+    CHECK(nvn_compute_cbuf0_build(uniform, storage, words));
+    CHECK(words[0x210u / 4u] == 0x100u && words[0x210u / 4u + 1u] == 4u);
+    CHECK(words[0x210u / 4u + 2u] == 0x40u && words[0x210u / 4u + 3u] == 0u);
+    CHECK(words[0x310u / 4u + 2u * 4u] == 0x5000u && words[0x310u / 4u + 2u * 4u + 1u] == 4u);
+    CHECK(words[0x310u / 4u + 2u * 4u + 2u] == 0x1000u);
+    /* An empty slot stays zero, and the rest of the block is zero. */
+    CHECK(words[0x210u / 4u + 4u] == 0u && words[0x310u / 4u] == 0u);
+    CHECK(words[0] == 0u && words[NVN_COMPUTE_CBUF0_WORDS - 1] == 0u);
+    storage[8] = (NvnComputeBindEntry){0x400006000ull, 0x100u, 1};
+    CHECK(!nvn_compute_cbuf0_build(uniform, storage, words));
+}
+
+static void test_program_compute_round_trip(void) {
+    const NvnProgramComputeIn compute = {
+        .code_offset = 0x11u, .cb_offset = 0x22u, .h6fc = 0x33u, .h710 = 0x44u, .h70c = 0x55u,
+        .h718 = 0x66u, .h71c = 0x77u, .h720 = 0x88u, .h724 = 0x99u, .h728 = 0xAAu,
+        .h72c = 0xBBu, .h730 = 0xCCu, .h734 = 0xDDu, .h6f8 = 0xEEu,
+        .h750_low = 0x12345678u, .h750_high = 0x9ABCDEF0u, .flags = 0x5u,
+    };
+    uint32_t words[NVN_PROGRAM_WORDS_MAX] = {0};
+    uint32_t count = 0;
+    NvnProgramComputeIn back = {0};
+    CHECK(nvn_program_build_words(&compute, NULL, NULL, NULL, NULL, 0, words, &count));
+    CHECK(nvn_program_compute_from_words(words, count, &back));
+    CHECK(memcmp(&compute, &back, sizeof compute) == 0);
+    CHECK(!nvn_program_compute_from_words(words, NVN_PROGRAM_COMPUTE_WORDS - 1u, &back));
+    CHECK(!nvn_program_compute_from_words(NULL, NVN_PROGRAM_COMPUTE_WORDS, &back));
+    CHECK(!nvn_program_compute_from_words(words, NVN_PROGRAM_COMPUTE_WORDS, NULL));
+}
+
 int main(int argc, char** argv) {
     test_window_params();
     test_window_sync_cycle_params();
@@ -2037,6 +2112,9 @@ int main(int argc, char** argv) {
     test_program_build_fragment_values();
     test_program_build_compute();
     test_program_build_refusals();
+    test_compute_qmd_build();
+    test_compute_cbuf0_build();
+    test_program_compute_round_trip();
     test_word_stream();
     test_pushbuf_decode();
     test_program_words_decode();

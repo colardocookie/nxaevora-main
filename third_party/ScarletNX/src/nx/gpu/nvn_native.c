@@ -10,6 +10,7 @@
 #include "nx/gpu/nvn_params.h"
 #include "nx/gpu/nvn_rt.h"
 #include "nx/gpu/nvn_trace.h"
+#include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/renderer.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
@@ -2606,7 +2607,10 @@ static void h_command_buffer_bind_program(CPU* c, u64 entry) {
                 command_dropped(cb, name, "unknown program", op.program);
             else {
                 op.program_mask = program->stage_mask;
-                if (!(program->stage_mask & (1u << NVN_PROGRAM_STAGE_COMPUTE))) {
+                if (program->stage_mask & (1u << NVN_PROGRAM_STAGE_COMPUTE)) {
+                    op.word_count = NVN_PROGRAM_COMPUTE_WORDS;
+                    memcpy(op.words, program->words, NVN_PROGRAM_COMPUTE_WORDS * sizeof op.words[0]);
+                } else {
                     op.word_count = program->word_count;
                     memcpy(op.words, program->words, sizeof op.words);
                 }
@@ -3219,16 +3223,132 @@ static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
     }
     return 1;
 }
+/* The dispatch arena: one guest page that holds the QMD and the driver constant block of every dispatch, mapped once
+   at the first dispatch and kept for the run. vk_dispatch reads both during the launch call, so one slot is enough. */
+#define NVN_DISPATCH_SCRATCH_BYTES NVN_POOL_PAGE_SIZE
+#define NVN_DISPATCH_QMD_OFFSET 0u
+#define NVN_DISPATCH_CBUF0_OFFSET 0x100u
+#define NVN_COMPUTE_INVALIDATE_VALUE 0x1000u /* the library's I(0x87,0x1000) */
+#define NVN_COMPUTE_LAUNCH_VALUE 3u
+static uint64_t dispatch_scratch_gpu;
+static uint8_t dispatch_scratch_ready, dispatch_scratch_failed;
+
+/* Allocates the arena at the first dispatch. It takes objs_lock for the shared GPU cursor. */
+static int dispatch_scratch_get(uint64_t* gpu) {
+    pm_lock(&objs_lock);
+    if (!dispatch_scratch_ready && !dispatch_scratch_failed) {
+        uint64_t cpu = kmem_alloc(NVN_DISPATCH_SCRATCH_BYTES, MS_STATIC, PERM_RW);
+        uint64_t address = 0, next = 0;
+        if (!cpu || !nvn_pool_gpu_allocate(pool_gpu_cursor, NVN_DISPATCH_SCRATCH_BYTES, NVN_POOL_PAGE_SIZE,
+                                           &address, &next) ||
+            !nvn_gpu_map_range(address, cpu, NVN_DISPATCH_SCRATCH_BYTES)) {
+            dispatch_scratch_failed = 1;
+            LOG_LIMIT(REPLAY_LOG_LIMIT,
+                      "nvn-native: dispatch arena of %u bytes cannot be allocated and mapped\n",
+                      (unsigned)NVN_DISPATCH_SCRATCH_BYTES);
+        } else {
+            pool_gpu_cursor = next;
+            dispatch_scratch_gpu = address;
+            dispatch_scratch_ready = 1;
+        }
+    }
+    if (gpu) *gpu = dispatch_scratch_gpu;
+    int ready = dispatch_scratch_ready;
+    pm_unlock(&objs_lock);
+    return ready;
+}
+
+/* One dispatch refusal line, in the style of replay_bind_refuse. The frame line shows the count next to the sent one. */
+static void replay_dispatch_refuse(NvnNativeReplayHost* host, const char* what, uint32_t word) {
+    host->dispatch_refusals++;
+    LOG_LIMIT(REPLAY_LOG_LIMIT, "nvn-native: dispatch %s refused word=%08x\n", what, word);
+}
+
+/* Copies the stage 5 binds of the host into the pure builder inputs. The caller gives the scratch cbuf0 address. */
+static void replay_dispatch_binds(const NvnNativeReplayHost* host, NvnComputeBinds* binds, uint64_t cbuf0_address) {
+    memset(binds, 0, sizeof *binds);
+    binds->cbuf0_address = cbuf0_address;
+    for (uint32_t slot = 0; slot < NVN_COMPUTE_UNIFORM_SLOTS; slot++) {
+        const NvnBindEntry* entry = &host->uniform[NVN_BIND_STAGE_COMPUTE][slot];
+        if (!entry->bound) continue;
+        binds->uniform[slot] = (NvnComputeBindEntry){entry->addr, entry->size, 1};
+    }
+    for (uint32_t slot = 0; slot < NVN_COMPUTE_STORAGE_SLOTS; slot++) {
+        const NvnBindEntry* entry = &host->storage[NVN_BIND_STAGE_COMPUTE][slot];
+        if (!entry->bound) continue;
+        binds->storage[slot] = (NvnComputeBindEntry){entry->addr, entry->size, 1};
+    }
+}
+
+/* Clears the stage 5 binds that the dispatch sent. */
+static void replay_dispatch_clear_dirty(NvnNativeReplayHost* host) {
+    for (uint32_t slot = 0; slot < NVN_UNIFORM_SLOT_MAX; slot++)
+        host->uniform_dirty[NVN_BIND_STAGE_COMPUTE][slot] = 0;
+    for (uint32_t slot = 0; slot < NVN_STORAGE_SLOT_MAX; slot++)
+        host->storage_dirty[NVN_BIND_STAGE_COMPUTE][slot] = 0;
+    for (uint32_t slot = 0; slot < NVN_BIND_SLOT_MAX; slot++)
+        host->texture_dirty[NVN_BIND_STAGE_COMPUTE][slot] = 0;
+}
+
 static int replay_host_dispatch(void* ctx, const NvnOpDispatch* op) {
     NvnNativeReplayHost* host = ctx;
+    if (!host->program[NVN_PROGRAM_STAGE_COMPUTE] || !host->compute_valid) {
+        replay_dispatch_refuse(host, "compute program", 0);
+        return 1;
+    }
+    /* v1 has no texture handle block (constant buffer 2), so a bound compute texture stops the dispatch. */
+    for (uint32_t slot = 0; slot < NVN_BIND_SLOT_MAX; slot++)
+        if (host->texture_bound[NVN_BIND_STAGE_COMPUTE][slot]) {
+            replay_dispatch_refuse(host, "compute texture", (uint32_t)host->texture_handle[NVN_BIND_STAGE_COMPUTE][slot]);
+            return 1;
+        }
+    NvnProgramComputeIn prog;
+    if (!nvn_program_compute_from_words(host->compute_words, NVN_PROGRAM_COMPUTE_WORDS, &prog)) {
+        replay_dispatch_refuse(host, "compute words", 0);
+        return 1;
+    }
+    uint64_t scratch_gpu = 0;
+    if (!dispatch_scratch_get(&scratch_gpu)) {
+        replay_dispatch_refuse(host, "arena", 0);
+        return 1;
+    }
+    NvnComputeBinds binds;
+    replay_dispatch_binds(host, &binds, scratch_gpu + NVN_DISPATCH_CBUF0_OFFSET);
+    uint32_t qmd[NVN_COMPUTE_QMD_WORDS];
+    if (!nvn_compute_qmd_build(&prog, op->x, op->y, op->z, &binds, qmd)) {
+        replay_dispatch_refuse(host, "qmd", op->x);
+        return 1;
+    }
+    uint32_t cbuf0[NVN_COMPUTE_CBUF0_WORDS];
+    if (!nvn_compute_cbuf0_build(binds.uniform, binds.storage, cbuf0)) {
+        replay_dispatch_refuse(host, "constant block", 0);
+        return 1;
+    }
+    uint64_t qmd_address = scratch_gpu + NVN_DISPATCH_QMD_OFFSET;
+    if (gmem_write(qmd_address, qmd, sizeof qmd) < 0 ||
+        gmem_write(binds.cbuf0_address, cbuf0, sizeof cbuf0) < 0) {
+        replay_dispatch_refuse(host, "scratch write", (uint32_t)qmd_address);
+        return 1;
+    }
+    compute_method(host->channel, KEPLER_COMPUTE_CODE_LOC_HIGH, (uint32_t)(NVN_SHADER_REGION_BASE >> 32),
+                   REPLAY_METHOD_LAST);
+    compute_method(host->channel, KEPLER_COMPUTE_CODE_LOC_LOW, (uint32_t)NVN_SHADER_REGION_BASE, REPLAY_METHOD_LAST);
+    /* The library sends I(0x87,0x1000) at each dispatch in v1; bit 0 invalidates the instruction cache. */
+    compute_method(host->channel, KEPLER_COMPUTE_INVALIDATE_SHADER_CACHES, NVN_COMPUTE_INVALIDATE_VALUE,
+                   REPLAY_METHOD_LAST);
+    compute_method(host->channel, KEPLER_COMPUTE_LAUNCH_DESC_LOC,
+                   (uint32_t)(qmd_address >> KEPLER_COMPUTE_LAUNCH_DESC_LOC_SHIFT), REPLAY_METHOD_LAST);
+    compute_method(host->channel, KEPLER_COMPUTE_LAUNCH, NVN_COMPUTE_LAUNCH_VALUE, REPLAY_METHOD_LAST);
     host->dispatches++;
     host->last_dispatch[0] = op->x;
     host->last_dispatch[1] = op->y;
     host->last_dispatch[2] = op->z;
+    replay_dispatch_clear_dirty(host);
     static int logged; /* only the replay thread runs the frame jobs */
     if (!logged) {
         logged = 1;
-        LOG("nvn-native: dispatch recorded, not executed (stage 4)\n");
+        LOG("nvn-native: first compute dispatch sent x=%u y=%u z=%u qmd=%llx program=%x\n", op->x, op->y, op->z,
+            (unsigned long long)qmd_address, prog.code_offset);
     }
     return 1;
 }
@@ -3266,7 +3386,12 @@ static int replay_host_bind_program(void* ctx, const NvnOpBindProgram* op) {
     if (op->word_count > NVN_PROGRAM_WORDS_MAX) return 0;
     for (uint32_t stage = 0; stage < NVN_PROGRAM_STAGE_COUNT; stage++)
         if (op->stage_mask & (1u << stage)) host->program[stage] = op->program;
-    if (op->stage_mask & (1u << NVN_PROGRAM_STAGE_COMPUTE)) return 1;
+    if (op->stage_mask & (1u << NVN_PROGRAM_STAGE_COMPUTE)) {
+        if (op->word_count != NVN_PROGRAM_COMPUTE_WORDS) return 0;
+        memcpy(host->compute_words, op->words, sizeof host->compute_words);
+        host->compute_valid = 1;
+        return 1;
+    }
     replay_host_region_base(host);
     if (!replay_host_program_words(host, op)) return 0;
     replay_host_disable_stages(host, op);
@@ -3664,7 +3789,8 @@ static int frame_set_target(const FrameJob* job, const FrameParts* parts) {
     nvn_native_replay_env(&host, job->window_origin_flip, &env);
     return env.render_targets(env.ctx, &op);
 }
-static void frame_replay_lists(const FrameJob* job, NvnReplayStats* stats) {
+static void frame_replay_lists(const FrameJob* job, NvnReplayStats* stats, uint64_t* dispatches,
+                               uint32_t* dispatch_refusals) {
     NvnNativeReplayHost host = {job->channel, NVN_REPLAY_CLIP_LIMIT};
     NvnReplayEnv env;
     nvn_native_replay_env(&host, job->window_origin_flip, &env);
@@ -3680,6 +3806,8 @@ static void frame_replay_lists(const FrameJob* job, NvnReplayStats* stats) {
         }
         nvn_replay_list(&env, list, stats);
     }
+    if (dispatches) *dispatches = host.dispatches;
+    if (dispatch_refusals) *dispatch_refusals = host.dispatch_refusals;
 }
 static void frame_end(const FrameJob* job) {
     r3d_const_flush(job->channel);
@@ -3725,7 +3853,7 @@ static void frame_finish(FrameJob* job) {
     pm_unlock(&objs_lock);
 }
 static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int shown, uint32_t fences,
-                       uint32_t frame_number) {
+                       uint32_t frame_number, uint64_t dispatches, uint32_t dispatch_refusals) {
     uint32_t ops = 0;
     for (uint32_t i = 0; i < NVN_OP_COUNT; i++) ops += stats->replayed[i];
     uint32_t missing = __atomic_load_n(&missing_calls, __ATOMIC_RELAXED);
@@ -3749,17 +3877,18 @@ static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int sho
         if (abnormal)
             LOG_LIMIT(NVN_FRAME_ABNORMAL_LIMIT,
                       "nvn-native: frame %u window=%llx index=%u lists=%u (live %u) ops=%u faults=%u methods=%u "
-                      "draws=%u dispatches=%u vbinds=%u gops=%u dropped=%u missing=%u skipped_lists=%u acquires=%u fences=%u "
-                      "shown=%d\n",
+                      "draws=%u dispatches=%llu dispatch_refusals=%u vbinds=%u gops=%u dropped=%u missing=%u "
+                      "skipped_lists=%u acquires=%u fences=%u shown=%d\n",
                       frame_number, (unsigned long long)job->window, job->index, submitted, live, ops, stats->faults,
-                      stats->methods, stats->replayed[NVN_OP_DRAW], stats->replayed[NVN_OP_DISPATCH],
+                      stats->methods, stats->replayed[NVN_OP_DRAW], (unsigned long long)dispatches, dispatch_refusals,
                       stats->replayed[NVN_OP_BIND_VERTEX_ATTRIB] + stats->replayed[NVN_OP_BIND_VERTEX_STREAM], gops,
                       dropped_delta, missing_delta, skipped, acquires, fences, shown);
         else
             LOG("nvn-native: frame %u window=%llx index=%u lists=%u (live %u) ops=%u faults=%u methods=%u draws=%u "
-                "dispatches=%u vbinds=%u gops=%u dropped=%u missing=%u skipped_lists=%u acquires=%u fences=%u shown=%d\n",
+                "dispatches=%llu dispatch_refusals=%u vbinds=%u gops=%u dropped=%u missing=%u skipped_lists=%u "
+                "acquires=%u fences=%u shown=%d\n",
                 frame_number, (unsigned long long)job->window, job->index, submitted, live, ops, stats->faults,
-                stats->methods, stats->replayed[NVN_OP_DRAW], stats->replayed[NVN_OP_DISPATCH],
+                stats->methods, stats->replayed[NVN_OP_DRAW], (unsigned long long)dispatches, dispatch_refusals,
                 stats->replayed[NVN_OP_BIND_VERTEX_ATTRIB] + stats->replayed[NVN_OP_BIND_VERTEX_STREAM], gops,
                 dropped_delta, missing_delta, skipped, acquires, fences, shown);
     }
@@ -3799,13 +3928,15 @@ static void frame_run(void* arg) {
     frame_replay_init(job);
     frame_set_target(job, &parts);
     NvnReplayStats stats = {0};
-    frame_replay_lists(job, &stats);
+    uint64_t dispatches = 0;
+    uint32_t dispatch_refusals = 0;
+    frame_replay_lists(job, &stats, &dispatches, &dispatch_refusals);
     frame_end(job);
     int shown = frame_show(job, &parts);
     uint32_t fences = job->frame.token_count;
     uint32_t frame_number = ++frame_jobs;
     frame_finish(job);
-    frame_line(job, &stats, shown, fences, frame_number);
+    frame_line(job, &stats, shown, fences, frame_number, dispatches, dispatch_refusals);
     free(job->init_words);
     free(job);
 }

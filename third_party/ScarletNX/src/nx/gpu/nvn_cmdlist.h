@@ -86,7 +86,7 @@ typedef struct {
 } NvnOpDraw;
 typedef struct { uint32_t x, y, z, reserved; } NvnOpDispatch;
 /* The method words of the program are copied at record time, so the replay sends them without the object record.
-   program_mask is the stage mask of the program itself. A compute program keeps word_count 0: its words are plain data. */
+   program_mask is the stage mask of the program itself. A compute program copies its 18 plain data words. */
 typedef struct {
     uint64_t program;
     uint32_t stage_mask, program_mask, word_count, reserved;

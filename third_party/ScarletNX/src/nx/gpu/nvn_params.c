@@ -1154,6 +1154,28 @@ int nvn_program_build_words(const NvnProgramComputeIn* compute, const NvnProgram
     return 1;
 }
 
+int nvn_program_compute_from_words(const uint32_t* words, uint32_t count, NvnProgramComputeIn* out) {
+    if (!words || !out || count != NVN_PROGRAM_COMPUTE_WORDS) return 0;
+    out->code_offset = words[0];
+    out->cb_offset = words[1];
+    out->h6fc = words[2];
+    out->h710 = words[3];
+    out->h70c = words[4];
+    out->h718 = words[5];
+    out->h71c = words[6];
+    out->h720 = words[7];
+    out->h724 = words[8];
+    out->h728 = words[9];
+    out->h72c = words[10];
+    out->h730 = words[11];
+    out->h734 = words[12];
+    out->h6f8 = words[13];
+    out->h750_low = words[14];
+    out->h750_high = words[15];
+    out->flags = words[16];
+    return 1;
+}
+
 #define NVN_WORD_MODE_SHIFT 29u
 #define NVN_WORD_MODE_INCREASING 1u
 #define NVN_WORD_MODE_INLINE 4u
@@ -1808,3 +1830,109 @@ uint32_t nvn_draw_words(uint32_t kind, uint32_t mode, uint32_t type, uint32_t co
     default: return 0;
     }
 }
+
+/* The launch description words that a compute dispatch writes (maxwell/kepler_compute_regs.h's QMD_* names). */
+enum {
+    COMPUTE_QMD_PROGRAM_START = 0x8,
+    COMPUTE_QMD_GRID_DIM_X = 0xC,
+    COMPUTE_QMD_GRID_DIM_YZ = 0xD,
+    COMPUTE_QMD_SHARED_ALLOC = 0x11,
+    COMPUTE_QMD_BLOCK_DIM_X = 0x12,
+    COMPUTE_QMD_BLOCK_DIM_YZ = 0x13,
+    COMPUTE_QMD_CONST_BUFFER_ENABLE = 0x14,
+    COMPUTE_QMD_CONST_BUFFER_CONFIG = 0x1D,
+    COMPUTE_QMD_LOCAL_POS_ALLOC = 0x2D,
+    COMPUTE_QMD_LOCAL_NEG_ALLOC = 0x2E,
+    COMPUTE_QMD_LOCAL_CRS_ALLOC = 0x2F
+};
+#define COMPUTE_QMD_GRID_X_MAX 0x7FFFFFFFu
+#define COMPUTE_QMD_GRID_YZ_MAX 0xFFFFu
+#define COMPUTE_QMD_GRID_Z_SHIFT 16u
+#define COMPUTE_QMD_BLOCK_X_SHIFT 16u
+#define COMPUTE_QMD_BLOCK_Z_SHIFT 16u
+#define COMPUTE_QMD_SHARED_ALLOC_SHIFT 8u
+#define COMPUTE_QMD_SHARED_ALLOC_MASK 0x3FFu
+#define COMPUTE_QMD_LOCAL_MASK 0xFFFFFu
+#define COMPUTE_QMD_BARRIER_SHIFT 27u
+#define COMPUTE_QMD_BARRIER_MASK 0x1Fu
+#define COMPUTE_QMD_GPR_SHIFT 24u
+#define COMPUTE_QMD_GPR_ALLOC_UNKNOWN 0u    /* the byte at x21+0x823: vk_dispatch does not read it */
+#define COMPUTE_QMD_SASS_VERSION_UNKNOWN 0u /* the byte at x21+0x82b: vk_dispatch does not read it */
+#define COMPUTE_QMD_CBUF0_ENABLE 0x1u       /* the library leaves it clear; vk_dispatch reads cbuf 0 for storage */
+
+/* Writes the address and size pair of one QMD constant buffer. The size sits in bits 31:15 of the second word. */
+static void compute_qmd_cbuf_config(uint32_t* qmd, uint32_t index, uint64_t address, uint32_t size) {
+    uint32_t at = COMPUTE_QMD_CONST_BUFFER_CONFIG + index * 2u;
+    qmd[at] = (uint32_t)address;
+    qmd[at + 1] = ((uint32_t)(address >> 32) & 0xFFu) | (size << NVN_COMPUTE_CBUF_ADDRESS_HIGH_SHIFT);
+}
+
+int nvn_compute_qmd_build(const NvnProgramComputeIn* prog, uint32_t x, uint32_t y, uint32_t z,
+                          const NvnComputeBinds* binds, uint32_t qmd[NVN_COMPUTE_QMD_WORDS]) {
+    if (!prog || !binds || !qmd) return 0;
+    if (x > COMPUTE_QMD_GRID_X_MAX || y > COMPUTE_QMD_GRID_YZ_MAX || z > COMPUTE_QMD_GRID_YZ_MAX) return 0;
+    uint64_t cb1_size = (uint64_t)prog->h6fc + 0xFFu;
+    if (cb1_size > UINT32_MAX) return 0;
+    memset(qmd, 0, NVN_COMPUTE_QMD_WORDS * sizeof qmd[0]);
+    qmd[COMPUTE_QMD_PROGRAM_START] = prog->code_offset;
+    qmd[COMPUTE_QMD_GRID_DIM_X] = x & COMPUTE_QMD_GRID_X_MAX;
+    qmd[COMPUTE_QMD_GRID_DIM_YZ] = (y & COMPUTE_QMD_GRID_YZ_MAX) | (z << COMPUTE_QMD_GRID_Z_SHIFT);
+    qmd[COMPUTE_QMD_SHARED_ALLOC] =
+        (((prog->h724 + 0xFFu) >> COMPUTE_QMD_SHARED_ALLOC_SHIFT) & COMPUTE_QMD_SHARED_ALLOC_MASK)
+        << COMPUTE_QMD_SHARED_ALLOC_SHIFT;
+    qmd[COMPUTE_QMD_BLOCK_DIM_X] = (prog->h718 & COMPUTE_QMD_GRID_YZ_MAX) << COMPUTE_QMD_BLOCK_X_SHIFT;
+    qmd[COMPUTE_QMD_BLOCK_DIM_YZ] = (prog->h71c & COMPUTE_QMD_GRID_YZ_MAX) |
+                                   ((prog->h720 & COMPUTE_QMD_GRID_YZ_MAX) << COMPUTE_QMD_BLOCK_Z_SHIFT);
+    qmd[COMPUTE_QMD_LOCAL_POS_ALLOC] =
+        (prog->h728 & COMPUTE_QMD_LOCAL_MASK) | ((prog->h734 & COMPUTE_QMD_BARRIER_MASK) << COMPUTE_QMD_BARRIER_SHIFT);
+    qmd[COMPUTE_QMD_LOCAL_NEG_ALLOC] =
+        (prog->h72c & COMPUTE_QMD_LOCAL_MASK) | (COMPUTE_QMD_GPR_ALLOC_UNKNOWN << COMPUTE_QMD_GPR_SHIFT);
+    qmd[COMPUTE_QMD_LOCAL_CRS_ALLOC] =
+        (prog->h730 & COMPUTE_QMD_LOCAL_MASK) | (COMPUTE_QMD_SASS_VERSION_UNKNOWN << COMPUTE_QMD_GPR_SHIFT);
+    uint32_t enable = COMPUTE_QMD_CBUF0_ENABLE;
+    compute_qmd_cbuf_config(qmd, 0, binds->cbuf0_address, NVN_COMPUTE_CBUF0_BYTES);
+    if (prog->h6fc) {
+        enable |= 1u << 1;
+        compute_qmd_cbuf_config(qmd, 1, NVN_COMPUTE_SHADER_REGION_BASE + prog->cb_offset, (uint32_t)cb1_size);
+    }
+    for (uint32_t slot = 0; slot < NVN_COMPUTE_UNIFORM_SLOTS; slot++) {
+        const NvnComputeBindEntry* entry = &binds->uniform[slot];
+        if (!entry->bound || entry->size < NVN_COMPUTE_MIN_CBUF_BYTES) continue;
+        if (slot >= NVN_COMPUTE_UNIFORM_QBUF_SLOTS || entry->size > UINT32_MAX) return 0;
+        enable |= 1u << (slot + 3u);
+        compute_qmd_cbuf_config(qmd, slot + 3u, entry->addr,
+                                ((uint32_t)entry->size + 0xFFu) & ~0xFFu);
+    }
+    qmd[COMPUTE_QMD_CONST_BUFFER_ENABLE] = enable;
+    return 1;
+}
+
+/* Writes one 16-byte descriptor: address low, address high, size, then a zero word. */
+static void compute_descriptor_write(uint32_t* words, uint32_t base, uint32_t slot,
+                                     const NvnComputeBindEntry* entry) {
+    uint32_t at = (base + slot * NVN_COMPUTE_DESCRIPTOR_BYTES) / 4u;
+    words[at] = (uint32_t)entry->addr;
+    words[at + 1] = (uint32_t)(entry->addr >> 32) & 0xFFu;
+    words[at + 2] = (uint32_t)entry->size;
+    words[at + 3] = 0;
+}
+
+int nvn_compute_cbuf0_build(const NvnComputeBindEntry* uniform, const NvnComputeBindEntry* storage,
+                            uint32_t words[NVN_COMPUTE_CBUF0_WORDS]) {
+    if (!uniform || !storage || !words) return 0;
+    for (uint32_t slot = 0; slot < NVN_COMPUTE_STORAGE_SLOTS; slot++)
+        if (storage[slot].bound && (slot >= NVN_COMPUTE_DESCRIPTOR_SLOTS || storage[slot].size > UINT32_MAX))
+            return 0;
+    for (uint32_t slot = 0; slot < NVN_COMPUTE_DESCRIPTOR_SLOTS && slot < NVN_COMPUTE_UNIFORM_SLOTS; slot++)
+        if (uniform[slot].bound && uniform[slot].size > UINT32_MAX) return 0;
+    /* The rest of the block that the library copies is not decoded; those bytes are zero (guess). */
+    memset(words, 0, NVN_COMPUTE_CBUF0_BYTES);
+    for (uint32_t slot = 0; slot < NVN_COMPUTE_DESCRIPTOR_SLOTS; slot++) {
+        if (uniform[slot].bound)
+            compute_descriptor_write(words, NVN_COMPUTE_CBUF0_UNIFORM_OFFSET, slot, &uniform[slot]);
+        if (storage[slot].bound)
+            compute_descriptor_write(words, NVN_COMPUTE_CBUF0_STORAGE_OFFSET, slot, &storage[slot]);
+    }
+    return 1;
+}
+

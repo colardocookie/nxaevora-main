@@ -48,9 +48,13 @@ typedef struct {
     /* The draws, dispatches and program binds of one frame job. The replay thread writes them without a lock. */
     uint64_t draws[NVN_DRAW_KIND_COUNT];
     NvnOpDraw last_draw;
-    uint64_t dispatches;
+    uint64_t dispatches;       /* sent dispatches: a refusal does not count */
+    uint32_t dispatch_refusals;
     uint32_t last_dispatch[3];
     uint64_t program[NVN_PROGRAM_STAGE_COUNT]; /* 0: no program of that stage */
+    /* The 18 plain words of the bound compute program, stored by the replay at BindProgram. */
+    uint32_t compute_words[NVN_PROGRAM_COMPUTE_WORDS];
+    uint8_t compute_valid;
     /* The bound vertex state of one frame job. The replay thread writes it without a lock, and it is not cleared
        between the command lists of one job. */
     struct { uint32_t w; uint8_t enabled; } vertex_attrib[NVN_VERTEX_ATTRIB_MAX];
