@@ -122,7 +122,8 @@ static void object_words_trace(const char* name, u64 object) {
             word_at(object + 0x58), word_at(object + 0x5c), word_at(object + 0x19d8), word_at(object + 0x19dc));
     } else if (!strcmp(name, "nvnQueueBuilderGetQueueMemorySize")) {
         static const u32 builder_off[] = {0x10, 0x14, 0x15, 0x16, 0x18, 0x1c, 0x20, 0x24, 0x28};
-        static const u32 device_off[] = {0x8c, 0x94, 0x98, 0xe0, 0xe4, 0x1af4};
+        static const u32 device_off[] = {0x8c, 0x90, 0x94, 0x98, 0xa4, 0xe0, 0xe4, 0xe8, 0x1a38, 0x1a3c, 0x1a40,
+                                         0x1a48, 0x1a68, 0x1a70, 0x1a74, 0x1af4};
         u64 device = object + 8 < AS_SIZE - 8 && readable(object + 8) && readable(object + 15) ? gr64(object + 8) : 0;
         for (size_t i = 0; i < sizeof builder_off / sizeof builder_off[0]; i++)
             LOG("nvn-value: queue builder %llx +%x=%x\n", (unsigned long long)object, builder_off[i],
