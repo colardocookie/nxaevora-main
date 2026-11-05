@@ -1196,6 +1196,78 @@ int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint
 
 int nvn_word_stream_complete(const NvnWordStream* s) { return s && s->remaining == 0; }
 
+/* The pushbuffer command header (pushbuffer.h): type in bits 31:29, count in 28:16, subchannel in 15:13, method in
+   12:0. Types 1, 3, 4 and 5 carry method words; type 0 is a no-op. */
+#define NVN_PUSHBUF_TYPE_SHIFT 29u
+#define NVN_PUSHBUF_TYPE_NOOP 0u
+#define NVN_PUSHBUF_TYPE_INCREASING 1u
+#define NVN_PUSHBUF_TYPE_NON_INCREASING 3u
+#define NVN_PUSHBUF_TYPE_IMMEDIATE 4u
+#define NVN_PUSHBUF_TYPE_INCREASE_ONCE 5u
+#define NVN_PUSHBUF_COUNT_SHIFT 16u
+#define NVN_PUSHBUF_COUNT_MASK 0x1FFFu
+#define NVN_PUSHBUF_SUBCHANNEL_SHIFT 13u
+#define NVN_PUSHBUF_SUBCHANNEL_MASK 7u
+#define NVN_PUSHBUF_SUBCHANNEL_3D 0u
+#define NVN_PUSHBUF_METHOD_MASK 0xFFFu
+
+/* Checks the stream and, when emit is set, calls the callback for each method word. The checks come first, so a
+   refused stream changes no state. */
+static int pushbuf_pass(const uint32_t* words, uint32_t count, NvnPushbufMethod callback, void* ctx, int emit,
+                        uint32_t* error_index) {
+    uint32_t i = 0;
+    while (i < count) {
+        uint32_t header = words[i];
+        uint32_t type = header >> NVN_PUSHBUF_TYPE_SHIFT;
+        uint32_t n = (header >> NVN_PUSHBUF_COUNT_SHIFT) & NVN_PUSHBUF_COUNT_MASK;
+        uint32_t sub = (header >> NVN_PUSHBUF_SUBCHANNEL_SHIFT) & NVN_PUSHBUF_SUBCHANNEL_MASK;
+        uint32_t method = header & NVN_PUSHBUF_METHOD_MASK;
+        if (type == NVN_PUSHBUF_TYPE_NOOP) {
+            i++;
+            continue;
+        }
+        if (sub != NVN_PUSHBUF_SUBCHANNEL_3D ||
+            (type != NVN_PUSHBUF_TYPE_INCREASING && type != NVN_PUSHBUF_TYPE_NON_INCREASING &&
+             type != NVN_PUSHBUF_TYPE_IMMEDIATE && type != NVN_PUSHBUF_TYPE_INCREASE_ONCE)) {
+            if (error_index) *error_index = i;
+            return -1;
+        }
+        if (type == NVN_PUSHBUF_TYPE_IMMEDIATE) { /* the count field is the value (IMMD) */
+            if (emit) callback(ctx, method, n);
+            i++;
+            continue;
+        }
+        if (n > count - i - 1u) { /* the data words run past the end */
+            if (error_index) *error_index = i;
+            return -1;
+        }
+        if (emit) {
+            for (uint32_t k = 0; k < n; k++) {
+                uint32_t m = method;
+                if (type == NVN_PUSHBUF_TYPE_INCREASING)
+                    m = (method + k) & NVN_PUSHBUF_METHOD_MASK;
+                else if (type == NVN_PUSHBUF_TYPE_INCREASE_ONCE && k)
+                    m = (method + 1u) & NVN_PUSHBUF_METHOD_MASK;
+                callback(ctx, m, words[i + 1u + k]);
+            }
+        }
+        i += 1u + n;
+    }
+    return 0;
+}
+
+int nvn_pushbuf_decode(const uint32_t* words, uint32_t count, NvnPushbufMethod callback, void* ctx,
+                       uint32_t* error_index) {
+    if (error_index) *error_index = 0;
+    if (!callback || (!words && count)) return -1;
+    uint32_t bad = 0;
+    if (pushbuf_pass(words, count, NULL, NULL, 0, &bad) != 0) {
+        if (error_index) *error_index = bad;
+        return -1;
+    }
+    return pushbuf_pass(words, count, callback, ctx, 1, error_index);
+}
+
 #define NVN_PROGRAM_DISABLE_BIT_FRAGMENT 1u
 #define NVN_PROGRAM_DISABLE_BIT_GEOMETRY 2u
 #define NVN_PROGRAM_DISABLE_BIT_TESS_CONTROL 3u

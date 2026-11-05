@@ -1405,6 +1405,84 @@ static void test_word_stream(void) {
     CHECK(nvn_word_stream_next(NULL, 0, &m, &v, &last) == -1);
 }
 
+typedef struct {
+    uint32_t method[8], value[8], count;
+} PushbufRec;
+
+static uint32_t pushbuf_header(uint32_t type, uint32_t count, uint32_t sub, uint32_t method) {
+    return (type << 29) | (count << 16) | (sub << 13) | method;
+}
+
+static void pushbuf_record(void* ctx, uint32_t method, uint32_t value) {
+    PushbufRec* r = ctx;
+    if (r->count < 8) {
+        r->method[r->count] = method;
+        r->value[r->count] = value;
+    }
+    r->count++;
+}
+
+static void test_pushbuf_decode(void) {
+    uint32_t words[8];
+    uint32_t bad = 0;
+    /* Type 1: the method rises by one for each data word. */
+    PushbufRec rec = {0};
+    words[0] = pushbuf_header(1, 2, 0, 0x100);
+    words[1] = 0xAAAA;
+    words[2] = 0xBBBB;
+    CHECK(nvn_pushbuf_decode(words, 3, pushbuf_record, &rec, &bad) == 0 && rec.count == 2);
+    CHECK(rec.method[0] == 0x100 && rec.method[1] == 0x101);
+    CHECK(rec.value[0] == 0xAAAA && rec.value[1] == 0xBBBB);
+    /* Type 3: every word goes to the header method. */
+    rec = (PushbufRec){0};
+    words[0] = pushbuf_header(3, 2, 0, 0x200);
+    words[1] = 0x1111;
+    words[2] = 0x2222;
+    CHECK(nvn_pushbuf_decode(words, 3, pushbuf_record, &rec, &bad) == 0 && rec.count == 2);
+    CHECK(rec.method[0] == 0x200 && rec.method[1] == 0x200);
+    /* Type 5: the first word goes to the header method, the rest to method + 1. */
+    rec = (PushbufRec){0};
+    words[0] = pushbuf_header(5, 3, 0, 0x45);
+    words[1] = 1;
+    words[2] = 2;
+    words[3] = 3;
+    CHECK(nvn_pushbuf_decode(words, 4, pushbuf_record, &rec, &bad) == 0 && rec.count == 3);
+    CHECK(rec.method[0] == 0x45 && rec.method[1] == 0x46 && rec.method[2] == 0x46);
+    CHECK(rec.value[0] == 1 && rec.value[1] == 2 && rec.value[2] == 3);
+    /* Type 4: the count field is the value, and no data word follows. */
+    rec = (PushbufRec){0};
+    words[0] = pushbuf_header(4, 0x1234, 0, 0x300);
+    CHECK(nvn_pushbuf_decode(words, 1, pushbuf_record, &rec, &bad) == 0 && rec.count == 1);
+    CHECK(rec.method[0] == 0x300 && rec.value[0] == 0x1234);
+    /* Type 0 words are skipped. */
+    rec = (PushbufRec){0};
+    words[0] = 0x00000500;
+    words[1] = pushbuf_header(1, 1, 0, 0x400);
+    words[2] = 0x4444;
+    CHECK(nvn_pushbuf_decode(words, 3, pushbuf_record, &rec, &bad) == 0 && rec.count == 1);
+    CHECK(rec.method[0] == 0x400 && rec.value[0] == 0x4444);
+    /* A subchannel other than 0 stops the decode at its word. */
+    rec = (PushbufRec){0};
+    words[0] = pushbuf_header(1, 1, 0, 0x500);
+    words[1] = 0x5555;
+    words[2] = pushbuf_header(1, 1, 1, 0x600);
+    words[3] = 0x6666;
+    CHECK(nvn_pushbuf_decode(words, 4, pushbuf_record, &rec, &bad) == -1 && bad == 2);
+    /* An unknown type, and a count that runs past the end. */
+    words[0] = pushbuf_header(6, 1, 0, 0x700);
+    CHECK(nvn_pushbuf_decode(words, 4, pushbuf_record, &rec, &bad) == -1 && bad == 0);
+    words[0] = pushbuf_header(1, 3, 0, 0x700);
+    CHECK(nvn_pushbuf_decode(words, 3, pushbuf_record, &rec, &bad) == -1 && bad == 0);
+    words[0] = pushbuf_header(1, 2, 0, 0x700);
+    CHECK(nvn_pushbuf_decode(words, 2, pushbuf_record, &rec, &bad) == -1 && bad == 0);
+    /* A run of zero words uses its header only. */
+    words[0] = pushbuf_header(1, 0, 0, 0x700);
+    rec = (PushbufRec){0};
+    CHECK(nvn_pushbuf_decode(words, 1, pushbuf_record, &rec, &bad) == 0 && rec.count == 0);
+    CHECK(nvn_pushbuf_decode(words, 1, NULL, &rec, &bad) == -1);
+    CHECK(nvn_pushbuf_decode(NULL, 1, pushbuf_record, &rec, &bad) == -1);
+}
+
 static int decode_program_words(const uint32_t* words, uint32_t count) {
     NvnWordStream s = {0};
     for (uint32_t i = 0; i < count; i++) {
@@ -1535,6 +1613,7 @@ int main(int argc, char** argv) {
     test_program_build_compute();
     test_program_build_refusals();
     test_word_stream();
+    test_pushbuf_decode();
     test_program_words_decode();
     test_program_disable();
     test_handles();

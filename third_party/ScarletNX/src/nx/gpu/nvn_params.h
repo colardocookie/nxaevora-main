@@ -495,6 +495,13 @@ int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint
 /* 1 when no run is left open (remaining 0), so the array ended on a method call. */
 int nvn_word_stream_complete(const NvnWordStream* s);
 
+/* The pushbuffer stream of a command image (the library's macro code of a queue). Calls callback for each method
+   word. Only subchannel 0 is accepted. Returns 0 when the words are exactly used up, or -1 with the index of the
+   refused word in *error_index. Type 0 words are no-ops. Pure. */
+typedef void (*NvnPushbufMethod)(void* ctx, uint32_t method, uint32_t value);
+int nvn_pushbuf_decode(const uint32_t* words, uint32_t count, NvnPushbufMethod callback, void* ctx,
+                       uint32_t* error_index);
+
 /* The method and value pairs that the library writes for each requested stage that the program does not have, in the
    order 3, 4, 2, 1. The stage is disabled by method 0x820 bit 0 = 0, so the 0x821 offset is not used. */
 #define NVN_PROGRAM_DISABLE_MAX 7u
