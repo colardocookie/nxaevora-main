@@ -422,6 +422,7 @@ NvnSyncState nvn_sync_after_token(NvnSyncState state, uint32_t* fences);
 
 /* The pipeline stages of a program: 0 vertex, 1 fragment (the only two the game uses), 2 to 5 accepted by the library. */
 #define NVN_PROGRAM_STAGES 6u
+#define NVN_PROGRAM_STAGE_COMPUTE 5u  /* compute: its record holds plain data, not method words */
 #define NVN_PROGRAM_STAGE_COUNT 6u    /* the bound program array of a frame job, bit t is stage t (bit 5 compute) */
 #define NVN_PROGRAM_STAGE_MASK_ALL 0x3Fu /* bits 0 to 5: the only stage bits that the library accepts */
 /* Header +8 is the layout version (5 to 16), not the stage. The stage index is the u32 at header +0x714 (sdk d837228). */
@@ -484,5 +485,23 @@ typedef struct {
 int nvn_program_build_words(const NvnProgramComputeIn* compute, const NvnProgramStageIn* vertex,
                             const NvnProgramStageIn* fragment, const NvnProgramFragmentIn* frag,
                             const NvnProgramDeviceIn* dev, uint64_t region_base, uint32_t* words, uint32_t* count);
+
+/* The pushbuffer stream of the method words of a program (gpu.c's pb_decode). Mode 1 increments the method for each
+   data word, mode 5 sends the first word to the header method and the rest to the next one, and mode 4 carries its value in the count field. A macro call gets last only on its
+   last data word. Pure: the struct holds the state between the words. */
+typedef struct { uint32_t mode, method, remaining; } NvnWordStream;
+/* 1 for a method call (*method, *value, *last set), 0 for a header that starts a run, -1 for a refusal. */
+int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint32_t* value, int* last);
+/* 1 when no run is left open (remaining 0), so the array ended on a method call. */
+int nvn_word_stream_complete(const NvnWordStream* s);
+
+/* The method and value pairs that the library writes for each requested stage that the program does not have, in the
+   order 3, 4, 2, 1. The stage is disabled by method 0x820 bit 0 = 0, so the 0x821 offset is not used. */
+#define NVN_PROGRAM_DISABLE_MAX 7u
+#define NVN_PROGRAM_DISABLE_TCS_OFFSET 0u
+typedef struct { uint32_t method, value; } NvnProgramMethod;
+/* Fills out and returns the count (0 to NVN_PROGRAM_DISABLE_MAX). Pure. */
+uint32_t nvn_program_disable_methods(uint32_t requested_mask, uint32_t program_mask,
+                                     NvnProgramMethod out[NVN_PROGRAM_DISABLE_MAX]);
 
 #endif

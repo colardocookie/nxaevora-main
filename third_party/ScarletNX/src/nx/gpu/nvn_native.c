@@ -790,6 +790,9 @@ static void* known_record(u64 addr, NvnObjKind kind) {
 /* The shader pools lie in one 4 GiB window of the GPU address space, so the library subtraction of low32(P) is the
    identity and the entry word is the delta d. */
 #define NVN_SHADER_REGION_BASE 0x400000000ull
+/* The two methods that carry the region base once for a frame job: high 32 bits, then low 32 bits. */
+#define NVN_SHADER_REGION_BASE_HIGH_METHOD 0x582u
+#define NVN_SHADER_REGION_BASE_LOW_METHOD 0x583u
 
 /* Measured with the game's own library (nvn_native=0). The host has no device object, so these are constants. */
 static const NvnProgramDeviceIn program_device_words = {
@@ -2438,14 +2441,23 @@ static void h_command_buffer_bind_program(CPU* c, u64 entry) {
     static const char* const name = "nvnCommandBufferBindProgram";
     pm_lock(&objs_lock);
     CommandBufferRec* cb = command_buffer(c->x[0], name);
-    NvnOpBindProgram op = {c->x[1], (u32)c->x[2], 0};
+    NvnOpBindProgram op = {.program = c->x[1], .stage_mask = (u32)c->x[2]};
     if (cb && op.program && op.stage_mask) {
         if (op.stage_mask > NVN_PROGRAM_STAGE_MASK_ALL)
             command_dropped(cb, name, "unknown stage bits", op.stage_mask);
-        else if (!known_record(op.program, NVN_OBJ_PROGRAM))
-            command_dropped(cb, name, "unknown program", op.program);
-        else
-            command_record(cb, c->x[0], name, NVN_OP_BIND_PROGRAM, &op, sizeof op);
+        else {
+            const ProgramRec* program = known_record(op.program, NVN_OBJ_PROGRAM);
+            if (!program)
+                command_dropped(cb, name, "unknown program", op.program);
+            else {
+                op.program_mask = program->stage_mask;
+                if (!(program->stage_mask & (1u << NVN_PROGRAM_STAGE_COMPUTE))) {
+                    op.word_count = program->word_count;
+                    memcpy(op.words, program->words, sizeof op.words);
+                }
+                command_record(cb, c->x[0], name, NVN_OP_BIND_PROGRAM, &op, sizeof op);
+            }
+        }
     }
     pm_unlock(&objs_lock);
 }
@@ -2869,11 +2881,44 @@ static int replay_host_dispatch(void* ctx, const NvnOpDispatch* op) {
     }
     return 1;
 }
+/* Sends the method words of a graphics program with last marked on the last word of each batch. A damaged stream (a
+   refusal or a run left open) gives 0. */
+static int replay_host_program_words(NvnNativeReplayHost* host, const NvnOpBindProgram* op) {
+    NvnWordStream stream = {0};
+    for (uint32_t i = 0; i < op->word_count; i++) {
+        uint32_t method, value;
+        int last;
+        int result = nvn_word_stream_next(&stream, op->words[i], &method, &value, &last);
+        if (result < 0) return 0;
+        if (result == 1) maxwell3d_method(host->channel, method, value, last);
+    }
+    return nvn_word_stream_complete(&stream);
+}
+/* The shader pools of the frame job lie in one region: the library writes its base once, before the first program. */
+static void replay_host_region_base(NvnNativeReplayHost* host) {
+    if (host->region_base_sent) return;
+    host->region_base_sent = 1;
+    maxwell3d_method(host->channel, NVN_SHADER_REGION_BASE_HIGH_METHOD,
+                     (uint32_t)(NVN_SHADER_REGION_BASE >> 32), REPLAY_METHOD_LAST);
+    maxwell3d_method(host->channel, NVN_SHADER_REGION_BASE_LOW_METHOD,
+                     (uint32_t)NVN_SHADER_REGION_BASE, REPLAY_METHOD_LAST);
+}
+static void replay_host_disable_stages(NvnNativeReplayHost* host, const NvnOpBindProgram* op) {
+    NvnProgramMethod pair[NVN_PROGRAM_DISABLE_MAX];
+    uint32_t count = nvn_program_disable_methods(op->stage_mask, op->program_mask, pair);
+    for (uint32_t i = 0; i < count; i++)
+        maxwell3d_method(host->channel, pair[i].method, pair[i].value, REPLAY_METHOD_LAST);
+}
 static int replay_host_bind_program(void* ctx, const NvnOpBindProgram* op) {
     NvnNativeReplayHost* host = ctx;
     if (op->stage_mask > NVN_PROGRAM_STAGE_MASK_ALL) return 0;
+    if (op->word_count > NVN_PROGRAM_WORDS_MAX) return 0;
     for (uint32_t stage = 0; stage < NVN_PROGRAM_STAGE_COUNT; stage++)
         if (op->stage_mask & (1u << stage)) host->program[stage] = op->program;
+    if (op->stage_mask & (1u << NVN_PROGRAM_STAGE_COMPUTE)) return 1;
+    replay_host_region_base(host);
+    if (!replay_host_program_words(host, op)) return 0;
+    replay_host_disable_stages(host, op);
     return 1;
 }
 /* The raw attribute word stays for the pipeline stage; enabled is the format-set bit. Unused entries go back to zero. */

@@ -836,7 +836,7 @@ static void test_bind_program(void) {
     NvnReplayEnv env = make_env(&k);
     NvnOpList l = {0};
     NvnReplayStats st = {0};
-    NvnOpBindProgram op = {0x400002000ull, 0x21u, 0u};
+    NvnOpBindProgram op = {.program = 0x400002000ull, .stage_mask = 0x21u};
     k.bind_program_ok = 1;
     CHECK(nvn_oplist_append(&l, NVN_OP_BIND_PROGRAM, &op, sizeof op));
     nvn_replay_list(&env, &l, &st);

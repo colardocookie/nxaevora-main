@@ -1153,3 +1153,101 @@ int nvn_program_build_words(const NvnProgramComputeIn* compute, const NvnProgram
     *count = at;
     return 1;
 }
+
+#define NVN_WORD_MODE_SHIFT 29u
+#define NVN_WORD_MODE_INCREASING 1u
+#define NVN_WORD_MODE_INLINE 4u
+#define NVN_WORD_MODE_NON_INCREASING 3u
+#define NVN_WORD_MODE_INCREASE_ONCE 5u
+#define NVN_WORD_COUNT_MASK 0x1FFFu
+#define NVN_WORD_METHOD_MASK 0xFFFu
+
+int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint32_t* value, int* last) {
+    if (!s || !method || !value || !last) return -1;
+    if (s->remaining) {
+        s->remaining--;
+        *method = s->method;
+        *value = word;
+        *last = s->remaining == 0;
+        if (s->mode == NVN_WORD_MODE_INCREASING) {
+            s->method++;
+        } else if (s->mode == NVN_WORD_MODE_INCREASE_ONCE) { /* the first word, then the next method for the rest */
+            s->method++;
+            s->mode = NVN_WORD_MODE_NON_INCREASING;
+        }
+        return 1;
+    }
+    uint32_t mode = word >> NVN_WORD_MODE_SHIFT;
+    uint32_t count = (word >> NVN_PROGRAM_COUNT_SHIFT) & NVN_WORD_COUNT_MASK;
+    uint32_t header_method = word & NVN_WORD_METHOD_MASK;
+    if (mode == NVN_WORD_MODE_INLINE) {
+        *method = header_method;
+        *value = count;
+        *last = 1;
+        return 1;
+    }
+    if (mode != NVN_WORD_MODE_INCREASING && mode != NVN_WORD_MODE_INCREASE_ONCE) return -1;
+    if (!count) return -1;
+    s->mode = mode;
+    s->method = header_method;
+    s->remaining = count;
+    return 0;
+}
+
+int nvn_word_stream_complete(const NvnWordStream* s) { return s && s->remaining == 0; }
+
+#define NVN_PROGRAM_DISABLE_BIT_FRAGMENT 1u
+#define NVN_PROGRAM_DISABLE_BIT_GEOMETRY 2u
+#define NVN_PROGRAM_DISABLE_BIT_TESS_CONTROL 3u
+#define NVN_PROGRAM_DISABLE_BIT_TESS_EVALUATION 4u
+
+#define NVN_PROGRAM_DISABLE_METHOD_TESS_CONTROL 0x820u
+#define NVN_PROGRAM_DISABLE_VALUE_TESS_CONTROL 0x20u
+#define NVN_PROGRAM_DISABLE_METHOD_TESS_CONTROL_OFFSET 0x821u
+#define NVN_PROGRAM_DISABLE_METHOD_TESS_CONTROL_OFF 0xD1Eu
+#define NVN_PROGRAM_DISABLE_METHOD_TESS_EVALUATION 0x830u
+#define NVN_PROGRAM_DISABLE_VALUE_TESS_EVALUATION 0x30u
+#define NVN_PROGRAM_DISABLE_METHOD_GEOMETRY 0x840u
+#define NVN_PROGRAM_DISABLE_VALUE_GEOMETRY 0x40u
+#define NVN_PROGRAM_DISABLE_METHOD_GEOMETRY_OFF 0x47Cu
+#define NVN_PROGRAM_DISABLE_METHOD_FRAGMENT 0x850u
+#define NVN_PROGRAM_DISABLE_VALUE_FRAGMENT 0x50u
+
+static const NvnProgramMethod disable_tess_control[] = {
+    {NVN_PROGRAM_DISABLE_METHOD_TESS_CONTROL, NVN_PROGRAM_DISABLE_VALUE_TESS_CONTROL},
+    {NVN_PROGRAM_DISABLE_METHOD_TESS_CONTROL_OFFSET, NVN_PROGRAM_DISABLE_TCS_OFFSET},
+    {NVN_PROGRAM_DISABLE_METHOD_TESS_CONTROL_OFF, 0u},
+};
+static const NvnProgramMethod disable_tess_evaluation[] = {
+    {NVN_PROGRAM_DISABLE_METHOD_TESS_EVALUATION, NVN_PROGRAM_DISABLE_VALUE_TESS_EVALUATION},
+};
+static const NvnProgramMethod disable_geometry[] = {
+    {NVN_PROGRAM_DISABLE_METHOD_GEOMETRY, NVN_PROGRAM_DISABLE_VALUE_GEOMETRY},
+    {NVN_PROGRAM_DISABLE_METHOD_GEOMETRY_OFF, 0u},
+};
+static const NvnProgramMethod disable_fragment[] = {
+    {NVN_PROGRAM_DISABLE_METHOD_FRAGMENT, NVN_PROGRAM_DISABLE_VALUE_FRAGMENT},
+};
+
+/* The library writes the stages in this order: 3, 4, 2, 1. */
+static const struct {
+    uint32_t bit, count;
+    const NvnProgramMethod* pair;
+} disable_table[] = {
+    {NVN_PROGRAM_DISABLE_BIT_TESS_CONTROL, 3u, disable_tess_control},
+    {NVN_PROGRAM_DISABLE_BIT_TESS_EVALUATION, 1u, disable_tess_evaluation},
+    {NVN_PROGRAM_DISABLE_BIT_GEOMETRY, 2u, disable_geometry},
+    {NVN_PROGRAM_DISABLE_BIT_FRAGMENT, 1u, disable_fragment},
+};
+
+uint32_t nvn_program_disable_methods(uint32_t requested_mask, uint32_t program_mask,
+                                     NvnProgramMethod out[NVN_PROGRAM_DISABLE_MAX]) {
+    if (!out) return 0;
+    uint32_t n = 0;
+    for (size_t i = 0; i < sizeof disable_table / sizeof disable_table[0]; i++) {
+        uint32_t bit = disable_table[i].bit;
+        if (!(requested_mask & (1u << bit)) || (program_mask & (1u << bit))) continue;
+        for (uint32_t j = 0; j < disable_table[i].count; j++) out[n++] = disable_table[i].pair[j];
+    }
+    return n;
+}

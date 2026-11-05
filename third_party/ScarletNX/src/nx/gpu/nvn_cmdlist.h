@@ -84,7 +84,13 @@ typedef struct {
     uint32_t first, base_vertex, base_instance, instances;
 } NvnOpDraw;
 typedef struct { uint32_t x, y, z, reserved; } NvnOpDispatch;
-typedef struct { uint64_t program; uint32_t stage_mask, reserved; } NvnOpBindProgram;
+/* The method words of the program are copied at record time, so the replay sends them without the object record.
+   program_mask is the stage mask of the program itself. A compute program keeps word_count 0: its words are plain data. */
+typedef struct {
+    uint64_t program;
+    uint32_t stage_mask, program_mask, word_count, reserved;
+    uint32_t words[NVN_PROGRAM_WORDS_MAX];
+} NvnOpBindProgram;
 typedef struct { uint32_t which, w[3]; } NvnOpRaster;
 typedef struct { uint32_t count; uint32_t w[NVN_VERTEX_ATTRIB_MAX]; } NvnOpBindVertexAttrib;
 typedef struct {
@@ -136,6 +142,7 @@ _Static_assert(sizeof(NvnOpClearTexture) <= NVN_OP_MAX_PAYLOAD, "NvnOpClearTextu
 _Static_assert(sizeof(NvnOpCopyTexture) <= NVN_OP_MAX_PAYLOAD, "NvnOpCopyTexture fits an op payload");
 _Static_assert(sizeof(NvnOpReportCounter) <= NVN_OP_MAX_PAYLOAD, "NvnOpReportCounter fits an op payload");
 _Static_assert(sizeof(NvnOpBindImage) <= NVN_OP_MAX_PAYLOAD, "NvnOpBindImage fits an op payload");
+_Static_assert(sizeof(NvnOpBindProgram) <= NVN_OP_MAX_PAYLOAD, "NvnOpBindProgram fits an op payload");
 
 typedef struct { uint32_t code, bytes; } NvnOpHeader; /* bytes: the payload size, a multiple of NVN_OP_ALIGN */
 typedef struct {

@@ -102,7 +102,7 @@ static void test_draw_path_ops(void) {
     NvnOpList l = {0};
     NvnOpDraw draw = {NVN_DRAW_ELEMENTS_INSTANCED, 4, 1, 36, 0x400001000ull, 0, 7, 2, 3};
     NvnOpDispatch dispatch = {8, 4, 2, 0};
-    NvnOpBindProgram program = {0x400002000ull, 0x21u, 0};
+    NvnOpBindProgram program = {.program = 0x400002000ull, .stage_mask = 0x21u};
     NvnOpRaster raster = {NVN_RASTER_LINE_WIDTH, {0x40000000u, 0, 0}};
     CHECK(nvn_oplist_append(&l, NVN_OP_DRAW, &draw, sizeof draw));
     CHECK(nvn_oplist_append(&l, NVN_OP_DISPATCH, &dispatch, sizeof dispatch));
@@ -124,9 +124,10 @@ static void test_draw_path_ops(void) {
     const NvnOpDispatch* got_dispatch = p;
     CHECK(got_dispatch->x == 8 && got_dispatch->y == 4 && got_dispatch->z == 2 && got_dispatch->reserved == 0);
 
-    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_BIND_PROGRAM && h.bytes == 16u);
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_BIND_PROGRAM && h.bytes == 152u);
     const NvnOpBindProgram* got_program = p;
     CHECK(got_program->program == 0x400002000ull && got_program->stage_mask == 0x21u);
+    CHECK(got_program->program_mask == 0u && got_program->word_count == 0u && got_program->words[0] == 0u);
 
     CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_SET_RASTER && h.bytes == 16u);
     const NvnOpRaster* got_raster = p;

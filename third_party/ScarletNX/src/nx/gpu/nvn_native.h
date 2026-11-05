@@ -53,6 +53,8 @@ typedef struct {
     uint64_t gpu_ops[NVN_OP_COUNT];
     NvnOpReportCounter last_report;
     NvnOpBindImage last_bind_image;
+    /* Set at the first graphics program bind of the frame job, after the region base is written once. */
+    uint8_t region_base_sent;
 } NvnNativeReplayHost;
 /* Fills env for the replay of host lists. The callbacks read the records of the host under its lock and write
    methods on host->channel. window_origin_flip is 1 when the device window origin mode is 1. */

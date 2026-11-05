@@ -1368,6 +1368,107 @@ static void test_program_build_refusals(void) {
     CHECK(count == 77u);
 }
 
+static void test_word_stream(void) {
+    NvnWordStream s = {0};
+    uint32_t m = 0, v = 0;
+    int last = -1;
+    /* Mode 1: two words, the method increments and last is only on the second. */
+    CHECK(nvn_word_stream_next(&s, 0x20020820u, &m, &v, &last) == 0);
+    CHECK(nvn_word_stream_next(&s, 0x20u, &m, &v, &last) == 1 && m == 0x820u && v == 0x20u && last == 0);
+    CHECK(nvn_word_stream_next(&s, 0x821u, &m, &v, &last) == 1 && m == 0x821u && v == 0x821u && last == 1);
+    CHECK(nvn_word_stream_complete(&s));
+    /* Mode 5: the first word goes to 0xE18, the other four to 0xE19, last is only on the fifth. */
+    s = (NvnWordStream){0};
+    CHECK(nvn_word_stream_next(&s, 0xa0050e18u, &m, &v, &last) == 0);
+    for (uint32_t i = 0; i < 5u; i++) {
+        CHECK(nvn_word_stream_next(&s, i, &m, &v, &last) == 1 && m == (i ? 0xE19u : 0xE18u) && v == i);
+        CHECK(last == (i == 4u));
+    }
+    CHECK(nvn_word_stream_complete(&s));
+    /* Inline: the count field is the value. */
+    s = (NvnWordStream){0};
+    CHECK(nvn_word_stream_next(&s, 0x80300830u, &m, &v, &last) == 1 && m == 0x830u && v == 0x30u && last == 1);
+    CHECK(nvn_word_stream_complete(&s));
+    /* Unknown modes, and a run with a count of 0. */
+    s = (NvnWordStream){0};
+    CHECK(nvn_word_stream_next(&s, 0x00000000u, &m, &v, &last) == -1);
+    CHECK(nvn_word_stream_next(&s, 0x40000500u, &m, &v, &last) == -1);
+    CHECK(nvn_word_stream_next(&s, 0x60000500u, &m, &v, &last) == -1);
+    CHECK(nvn_word_stream_next(&s, 0x20000000u, &m, &v, &last) == -1);
+    CHECK(nvn_word_stream_next(&s, 0xa0000000u, &m, &v, &last) == -1);
+    /* A run left open. */
+    s = (NvnWordStream){0};
+    CHECK(nvn_word_stream_next(&s, 0x20020820u, &m, &v, &last) == 0);
+    CHECK(nvn_word_stream_next(&s, 0x20u, &m, &v, &last) == 1);
+    CHECK(!nvn_word_stream_complete(&s));
+    CHECK(!nvn_word_stream_complete(NULL));
+    CHECK(nvn_word_stream_next(NULL, 0, &m, &v, &last) == -1);
+}
+
+static int decode_program_words(const uint32_t* words, uint32_t count) {
+    NvnWordStream s = {0};
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t m, v;
+        int last;
+        if (nvn_word_stream_next(&s, words[i], &m, &v, &last) < 0) return 0;
+    }
+    return nvn_word_stream_complete(&s);
+}
+
+static void test_program_words_decode(void) {
+    const NvnProgramDeviceIn dev = {
+        .d1a38 = 0x087f6080u, .d1a68 = 0x20u, .d1a70 = 1u, .d1a74 = 0x20806080u, .d94 = 2u,
+    };
+    const NvnProgramStageIn vertex = {.code_offset = 0x100u, .cb_offset = 0x200u, .header_value = 0x30u};
+    const NvnProgramStageIn fragment = {.code_offset = 0x300u, .cb_offset = 0x400u, .header_value = 0x20u};
+    NvnProgramFragmentIn frag = {0};
+    uint32_t words[NVN_PROGRAM_WORDS_MAX] = {0};
+    uint32_t count = 0;
+    CHECK(nvn_program_build_words(NULL, &vertex, NULL, NULL, &dev, 0x400000000ull, words, &count));
+    CHECK(count == 8u && decode_program_words(words, count));
+    /* A truncated array leaves the 0xE18 run of five words open. */
+    CHECK(!decode_program_words(words, 2u));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(count == 25u && decode_program_words(words, count));
+    CHECK(nvn_program_build_words(NULL, NULL, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(count == 17u && decode_program_words(words, count));
+    frag.g158 = 1;
+    for (uint32_t i = 0; i < 4u; i++) frag.g1a0[i] = 0x11111111u * (i + 1u);
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(count == 30u && decode_program_words(words, count));
+}
+
+static void test_program_disable(void) {
+    static const NvnProgramMethod tcs[] = {{0x820u, 0x20u}, {0x821u, NVN_PROGRAM_DISABLE_TCS_OFFSET}, {0xD1Eu, 0u}};
+    static const NvnProgramMethod tes[] = {{0x830u, 0x30u}};
+    static const NvnProgramMethod gs[] = {{0x840u, 0x40u}, {0x47Cu, 0u}};
+    static const NvnProgramMethod fs[] = {{0x850u, 0x50u}};
+    NvnProgramMethod out[NVN_PROGRAM_DISABLE_MAX] = {0};
+    /* The 16 combinations of bits 1 to 4, in the library order 3, 4, 2, 1. */
+    for (uint32_t m = 0; m < 16u; m++) {
+        uint32_t requested = m << 1;
+        NvnProgramMethod expected[NVN_PROGRAM_DISABLE_MAX] = {0};
+        uint32_t at = 0;
+        if (requested & (1u << 3)) for (uint32_t i = 0; i < 3u; i++) expected[at++] = tcs[i];
+        if (requested & (1u << 4)) expected[at++] = tes[0];
+        if (requested & (1u << 2)) for (uint32_t i = 0; i < 2u; i++) expected[at++] = gs[i];
+        if (requested & (1u << 1)) expected[at++] = fs[0];
+        uint32_t n = nvn_program_disable_methods(requested, 0, out);
+        CHECK(n == at);
+        for (uint32_t i = 0; i < at; i++)
+            CHECK(out[i].method == expected[i].method && out[i].value == expected[i].value);
+        CHECK(nvn_program_disable_methods(requested, requested, out) == 0u);
+    }
+    /* Bits 0 and 5 have no disable words. */
+    CHECK(nvn_program_disable_methods(1u << 0, 0, out) == 0u);
+    CHECK(nvn_program_disable_methods(1u << 5, 0, out) == 0u);
+    CHECK(nvn_program_disable_methods(0x3Fu, 0x3Fu, out) == 0u);
+    /* Bit 3 in the program removes its three words; the others stay in order. */
+    CHECK(nvn_program_disable_methods(0x1Eu, 1u << 3, out) == 4u);
+    CHECK(out[0].method == 0x830u && out[1].method == 0x840u && out[2].method == 0x47Cu && out[3].method == 0x850u);
+    CHECK(nvn_program_disable_methods(0x1Eu, 0, NULL) == 0u);
+}
+
 static void test_sampler_equal(void) {
     NvnSampler a, b;
     nvn_sampler_defaults(&a);
@@ -1433,6 +1534,9 @@ int main(int argc, char** argv) {
     test_program_build_fragment_values();
     test_program_build_compute();
     test_program_build_refusals();
+    test_word_stream();
+    test_program_words_decode();
+    test_program_disable();
     test_handles();
     test_bind_buffer_active();
     test_state_insert_and_flag();
