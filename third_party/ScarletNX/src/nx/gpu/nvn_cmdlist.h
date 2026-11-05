@@ -48,6 +48,7 @@ typedef enum {
 #define NVN_VIEWPORTS_MAX    16u /* viewports and scissors, as the engine has */
 #define NVN_CALL_DEPTH_MAX   8u  /* nested CALL ops at replay */
 #define NVN_BIND_STAGE_MAX   5u  /* stages 0 to 5; compute is the last valid stage */
+#define NVN_BIND_STAGE_COMPUTE NVN_BIND_STAGE_MAX /* the draw sends stages below it, a dispatch sends this one */
 #define NVN_BIND_SLOT_MAX    128u /* bind slots of one stage */
 #define NVN_UNIFORM_SLOT_MAX 32u /* the library masks slot+3 to 5 bits, so a higher slot would alias */
 #define NVN_STORAGE_SLOT_MAX NVN_BIND_SLOT_MAX

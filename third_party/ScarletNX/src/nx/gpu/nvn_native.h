@@ -45,8 +45,6 @@ typedef struct {
     /* The bound state objects of one frame job, written by the replay and read by the pipeline stage later. */
     NvnBoundState state[NVN_STATE_COUNT];
     uint8_t state_dirty[NVN_STATE_COUNT];
-    /* 1 after the one multisample log line of the frame job. */
-    uint8_t multisample_logged;
     /* The draws, dispatches and program binds of one frame job. The replay thread writes them without a lock. */
     uint64_t draws[NVN_DRAW_KIND_COUNT];
     NvnOpDraw last_draw;

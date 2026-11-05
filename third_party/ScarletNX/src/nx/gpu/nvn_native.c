@@ -3018,11 +3018,9 @@ static int replay_host_bind_state(void* ctx, const NvnOpBindState* op) {
     for (uint32_t i = 0; i < op->words; i++) state->w[i] = op->w[i];
     state->bound = 1;
     host->state_dirty[op->kind] = NVN_BIND_DIRTY;
-    if (op->kind == NVN_STATE_MULTISAMPLE && !host->multisample_logged) {
-        host->multisample_logged = 1;
-        LOG("nvn-native: multisample state bound, not sent (stage 4): %08x %08x %08x %08x %08x\n",
-            state->w[0], state->w[1], state->w[2], state->w[3], state->w[4]);
-    }
+    if (op->kind == NVN_STATE_MULTISAMPLE)
+        LOG_LIMIT(REPLAY_LOG_LIMIT, "nvn-native: multisample state bound, not sent (stage 4): %08x %08x %08x %08x %08x\n",
+                  state->w[0], state->w[1], state->w[2], state->w[3], state->w[4]);
     return 1;
 }
 static const char* const replay_bind_group[NVN_STATE_COUNT] = {
@@ -3124,7 +3122,7 @@ static void replay_bind_send_vertex_buffers(NvnNativeReplayHost* host) {
 }
 /* A size 0 uniform bind is sent too: the builder writes the invalid bind word for it. */
 static void replay_bind_send_uniforms(NvnNativeReplayHost* host) {
-    for (uint32_t stage = 0; stage <= NVN_BIND_STAGE_MAX; stage++) {
+    for (uint32_t stage = 0; stage < NVN_BIND_STAGE_COMPUTE; stage++) {
         for (uint32_t slot = 0; slot < NVN_UNIFORM_SLOT_MAX; slot++) {
             if (!host->uniform_dirty[stage][slot]) continue;
             host->uniform_dirty[stage][slot] = 0;
@@ -3143,7 +3141,7 @@ static void replay_bind_send_uniforms(NvnNativeReplayHost* host) {
 }
 /* A size 0 storage bind is always sent: the builder writes its parameter word and a zero data block. */
 static void replay_bind_send_storages(NvnNativeReplayHost* host) {
-    for (uint32_t stage = 0; stage <= NVN_BIND_STAGE_MAX; stage++) {
+    for (uint32_t stage = 0; stage < NVN_BIND_STAGE_COMPUTE; stage++) {
         for (uint32_t slot = 0; slot < NVN_STORAGE_SLOT_MAX; slot++) {
             if (!host->storage_dirty[stage][slot]) continue;
             host->storage_dirty[stage][slot] = 0;
@@ -3161,7 +3159,7 @@ static void replay_bind_send_storages(NvnNativeReplayHost* host) {
     }
 }
 static void replay_bind_send_textures(NvnNativeReplayHost* host) {
-    for (uint32_t stage = 0; stage <= NVN_BIND_STAGE_MAX; stage++) {
+    for (uint32_t stage = 0; stage < NVN_BIND_STAGE_COMPUTE; stage++) {
         for (uint32_t slot = 0; slot < NVN_BIND_SLOT_MAX; slot++) {
             if (!host->texture_dirty[stage][slot]) continue;
             host->texture_dirty[stage][slot] = 0;
@@ -3173,7 +3171,7 @@ static void replay_bind_send_textures(NvnNativeReplayHost* host) {
         }
     }
 }
-/* Sends each dirty group once, in the order of decision 3. Multisample is not in the list: it has no builder. */
+/* Sends each dirty graphics group once. The compute stage stays dirty for the dispatch work. */
 static void replay_bind_send_all(NvnNativeReplayHost* host) {
     replay_bind_send_state(host, NVN_STATE_COLOR);
     replay_bind_send_state(host, NVN_STATE_CHANNEL_MASK);
