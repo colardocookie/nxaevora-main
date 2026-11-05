@@ -437,17 +437,36 @@ int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_wo
                              uint32_t stage_word, uint32_t* index_out);
 
 /* The Maxwell command words that nvnProgramSetShadersExt builds for the shaders of a program. The host builds them
-   because it has no library. Only stage 0 (vertex, no VertexA) and stage 1 (fragment) are built. The other stages and
-   the transform feedback are not ported. */
-#define NVN_PROGRAM_WORDS_MAX 32u       /* vertex 8 + fragment 22 */
+   because it has no library. Stage 0 (vertex, no VertexA), stage 1 (fragment) and stage 5 (compute) are built. The
+   other stages and the transform feedback are not ported. A compute stage cannot share a program with vertex or
+   fragment: the library crashes for that case. */
+#define NVN_PROGRAM_WORDS_MAX 32u       /* compute 18 alone, or vertex 8 + fragment 22 = 30 */
 #define NVN_PROGRAM_VERTEX_WORDS 8u
 #define NVN_PROGRAM_FRAGMENT_WORDS 17u
+#define NVN_PROGRAM_COMPUTE_WORDS 18u
+
+/* The flag bits of the compute word 16: bit n is (byte at h+0x769+n) & 1, the upper bits are 0. */
+#define NVN_PROGRAM_COMPUTE_FLAG_0 0x1u
+#define NVN_PROGRAM_COMPUTE_FLAG_1 0x2u
+#define NVN_PROGRAM_COMPUTE_FLAG_2 0x4u
 
 typedef struct {
     uint32_t code_offset;  /* h+0x708 + d, u32 wrap */
     uint32_t cb_offset;    /* h+0x700 + d, u32 wrap */
     uint32_t header_value; /* h+0x70c */
 } NvnProgramStageIn;
+
+/* The stage 5 (compute) words. The builder copies them unchanged: they are raw offsets, not region addresses. */
+typedef struct {
+    uint32_t code_offset; /* word 0: h+0x708 + d, u32 wrap */
+    uint32_t cb_offset;   /* word 1: h+0x700 + d, u32 wrap */
+    uint32_t h6fc, h710, h70c;
+    uint32_t h718, h71c, h720, h724, h728, h72c, h730, h734; /* words 5 to 12 */
+    uint32_t h6f8;            /* word 13 */
+    uint32_t h750_low;        /* word 14 */
+    uint32_t h750_high;       /* word 15 */
+    uint32_t flags;           /* word 16: bits 0 to 2, see the flag constants */
+} NvnProgramComputeIn;
 
 typedef struct {
     uint8_t present;
@@ -460,12 +479,10 @@ typedef struct {
     uint32_t d1a38, d1a3c, d1a40, d1a68, d1a70, d1a74, d94, da4;
 } NvnProgramDeviceIn;
 
-/* 1 when the fragment block takes the 0x2004 branch, which the host does not build. */
-int nvn_program_fragment_unsupported(const NvnProgramFragmentIn* frag);
-/* Builds the word array of the stages that are present (NULL is absent), vertex block first. Returns 0 on a refusal and
-   leaves *count unchanged; on success sets *count and writes the words. Pure. */
-int nvn_program_build_words(const NvnProgramStageIn* vertex, const NvnProgramStageIn* fragment,
-                            const NvnProgramFragmentIn* frag, const NvnProgramDeviceIn* dev,
-                            uint64_t region_base, uint32_t* words, uint32_t* count);
+/* Builds the word array of the stages that are present (NULL is absent). A compute block comes first, then vertex,
+   then fragment. Returns 0 on a refusal and leaves *count unchanged; on success sets *count and writes the words. Pure. */
+int nvn_program_build_words(const NvnProgramComputeIn* compute, const NvnProgramStageIn* vertex,
+                            const NvnProgramStageIn* fragment, const NvnProgramFragmentIn* frag,
+                            const NvnProgramDeviceIn* dev, uint64_t region_base, uint32_t* words, uint32_t* count);
 
 #endif

@@ -746,16 +746,33 @@ static void* known_record(u64 addr, NvnObjKind kind) {
 #define PROGRAM_REFUSAL_STAGE_REPEATED "stage is repeated"
 #define PROGRAM_REFUSAL_CONTROL_UNREADABLE "control is unreadable"
 
-/* The host builder builds only stage 0 (vertex, no VertexA) and stage 1 (fragment). Stages 2 to 5, VertexA and the
-   transform feedback are not ported, so a program with any of them is refused. */
+/* The host builder builds stage 0 (vertex, no VertexA), stage 1 (fragment) and stage 5 (compute). Stages 2 to 4,
+   VertexA and the transform feedback are not ported, so a program with any of them is refused. */
 #define PROGRAM_STAGE_VERTEX 0u
 #define PROGRAM_STAGE_FRAGMENT 1u
-#define PROGRAM_STAGE_SUPPORTED_MASK 0x3u
+#define PROGRAM_STAGE_COMPUTE 5u
+#define PROGRAM_STAGE_SUPPORTED_MASK 0x23u
 
-#define PROGRAM_BUILD_HEADER_BYTES 0x750u /* the header bytes that the word builder reads */
+#define PROGRAM_BUILD_HEADER_BYTES 0x76Cu /* the header bytes that the word builder reads, up to h+0x76b */
 #define PROGRAM_HEADER_CB_OFFSET 0x700u
 #define PROGRAM_HEADER_CODE_OFFSET 0x708u
 #define PROGRAM_HEADER_VALUE_OFFSET 0x70Cu
+#define PROGRAM_COMPUTE_6F8_OFFSET 0x6F8u
+#define PROGRAM_COMPUTE_6FC_OFFSET 0x6FCu
+#define PROGRAM_COMPUTE_710_OFFSET 0x710u
+#define PROGRAM_COMPUTE_718_OFFSET 0x718u
+#define PROGRAM_COMPUTE_71C_OFFSET 0x71Cu
+#define PROGRAM_COMPUTE_720_OFFSET 0x720u
+#define PROGRAM_COMPUTE_724_OFFSET 0x724u
+#define PROGRAM_COMPUTE_728_OFFSET 0x728u
+#define PROGRAM_COMPUTE_72C_OFFSET 0x72Cu
+#define PROGRAM_COMPUTE_730_OFFSET 0x730u
+#define PROGRAM_COMPUTE_734_OFFSET 0x734u
+#define PROGRAM_COMPUTE_750_OFFSET 0x750u
+#define PROGRAM_COMPUTE_754_OFFSET 0x754u
+#define PROGRAM_COMPUTE_FLAG_769_OFFSET 0x769u
+#define PROGRAM_COMPUTE_FLAG_76A_OFFSET 0x76Au
+#define PROGRAM_COMPUTE_FLAG_76B_OFFSET 0x76Bu
 #define PROGRAM_FRAGMENT_G148_OFFSET 0x718u
 #define PROGRAM_FRAGMENT_G150_OFFSET 0x719u
 #define PROGRAM_FRAGMENT_G158_OFFSET 0x71Au
@@ -862,7 +879,38 @@ static void program_read_fragment_in(u64 header, NvnProgramFragmentIn* out) {
         out->g1a0[i] = gr32(header + PROGRAM_FRAGMENT_G1A0_OFFSET + (u64)i * 4u);
 }
 
-/* The lowest stage above stage 1 that is present, or -1. */
+/* Caller holds objs_lock. Reads the compute words. The flags word is three bytes, each its bit 0; the upper bits are
+   0 because the library leaves the rest of the word as stack content. */
+static int program_read_compute_in(const ProgramStageRec* rec, NvnProgramComputeIn* out) {
+    if (!native_guest_readable(rec->header, PROGRAM_BUILD_HEADER_BYTES)) return 0;
+    uint32_t d = (uint32_t)rec->entry_word;
+    out->code_offset = (uint32_t)(gr32(rec->header + PROGRAM_HEADER_CODE_OFFSET) + d);
+    out->cb_offset = (uint32_t)(gr32(rec->header + PROGRAM_HEADER_CB_OFFSET) + d);
+    out->h6fc = gr32(rec->header + PROGRAM_COMPUTE_6FC_OFFSET);
+    out->h710 = gr32(rec->header + PROGRAM_COMPUTE_710_OFFSET);
+    out->h70c = gr32(rec->header + PROGRAM_HEADER_VALUE_OFFSET);
+    out->h718 = gr32(rec->header + PROGRAM_COMPUTE_718_OFFSET);
+    out->h71c = gr32(rec->header + PROGRAM_COMPUTE_71C_OFFSET);
+    out->h720 = gr32(rec->header + PROGRAM_COMPUTE_720_OFFSET);
+    out->h724 = gr32(rec->header + PROGRAM_COMPUTE_724_OFFSET);
+    out->h728 = gr32(rec->header + PROGRAM_COMPUTE_728_OFFSET);
+    out->h72c = gr32(rec->header + PROGRAM_COMPUTE_72C_OFFSET);
+    out->h730 = gr32(rec->header + PROGRAM_COMPUTE_730_OFFSET);
+    out->h734 = gr32(rec->header + PROGRAM_COMPUTE_734_OFFSET);
+    out->h6f8 = gr32(rec->header + PROGRAM_COMPUTE_6F8_OFFSET);
+    out->h750_low = gr32(rec->header + PROGRAM_COMPUTE_750_OFFSET);
+    out->h750_high = gr32(rec->header + PROGRAM_COMPUTE_754_OFFSET);
+    out->flags = 0;
+    if (program_guest_byte(rec->header + PROGRAM_COMPUTE_FLAG_769_OFFSET) & 1u)
+        out->flags |= NVN_PROGRAM_COMPUTE_FLAG_0;
+    if (program_guest_byte(rec->header + PROGRAM_COMPUTE_FLAG_76A_OFFSET) & 1u)
+        out->flags |= NVN_PROGRAM_COMPUTE_FLAG_1;
+    if (program_guest_byte(rec->header + PROGRAM_COMPUTE_FLAG_76B_OFFSET) & 1u)
+        out->flags |= NVN_PROGRAM_COMPUTE_FLAG_2;
+    return 1;
+}
+
+/* The lowest stage above stage 1 that is present and not supported, or -1. */
 static int program_unsupported_stage(uint32_t stage_mask) {
     uint32_t unsupported = stage_mask & ~PROGRAM_STAGE_SUPPORTED_MASK;
     for (uint32_t stage = PROGRAM_STAGE_FRAGMENT + 1u; stage < NVN_PROGRAM_STAGES; stage++)
@@ -957,9 +1005,11 @@ static void h_program_set_shaders_ext(CPU* c, u64 entry) {
     }
     if (ok) {
         NvnProgramStageIn vertex_in, fragment_in;
+        NvnProgramComputeIn compute_in;
         NvnProgramFragmentIn frag = {0};
         const NvnProgramStageIn* vertex = NULL;
         const NvnProgramStageIn* fragment = NULL;
+        const NvnProgramComputeIn* compute = NULL;
         if (next.stage_mask & (1u << PROGRAM_STAGE_VERTEX)) {
             if (!program_read_stage_in(&next.stage[PROGRAM_STAGE_VERTEX], &vertex_in)) {
                 LOG_LIMIT(PROGRAM_LOG_LIMIT,
@@ -980,17 +1030,28 @@ static void h_program_set_shaders_ext(CPU* c, u64 entry) {
                 fragment = &fragment_in;
                 frag.present = 1;
                 program_read_fragment_in(next.stage[PROGRAM_STAGE_FRAGMENT].header, &frag);
-                if (nvn_program_fragment_unsupported(&frag)) {
-                    LOG_LIMIT(PROGRAM_LOG_LIMIT,
-                              "nvn-native: program %llx refused: fragment 0x2004 branch is not supported by the host "
-                              "builder\n",
-                              (unsigned long long)addr);
-                    ok = 0;
-                }
             }
         }
-        if (ok && !nvn_program_build_words(vertex, fragment, &frag, &program_device_words, NVN_SHADER_REGION_BASE,
-                                            next.words, &next.word_count)) {
+        if (ok && (next.stage_mask & (1u << PROGRAM_STAGE_COMPUTE))) {
+            if (!program_read_compute_in(&next.stage[PROGRAM_STAGE_COMPUTE], &compute_in)) {
+                LOG_LIMIT(PROGRAM_LOG_LIMIT,
+                          "nvn-native: program %llx stage=%u refused: header is too short for the word array\n",
+                          (unsigned long long)addr, (unsigned)PROGRAM_STAGE_COMPUTE);
+                ok = 0;
+            } else {
+                compute = &compute_in;
+            }
+        }
+        if (ok && compute && (vertex || fragment)) {
+            uint32_t other = vertex ? PROGRAM_STAGE_VERTEX : PROGRAM_STAGE_FRAGMENT;
+            LOG_LIMIT(PROGRAM_LOG_LIMIT,
+                      "nvn-native: program %llx refused: compute stage %u with stage %u is not supported by the host "
+                      "builder\n",
+                      (unsigned long long)addr, (unsigned)PROGRAM_STAGE_COMPUTE, (unsigned)other);
+            ok = 0;
+        }
+        if (ok && !nvn_program_build_words(compute, vertex, fragment, &frag, &program_device_words,
+                                           NVN_SHADER_REGION_BASE, next.words, &next.word_count)) {
             LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: a word value is above 13 bits\n",
                       (unsigned long long)addr);
             ok = 0;

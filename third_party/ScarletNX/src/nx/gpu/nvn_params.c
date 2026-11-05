@@ -989,6 +989,7 @@ int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_wo
 #define NVN_PROGRAM_METHOD_FRAGMENT 0x850u
 #define NVN_PROGRAM_METHOD_FRAGMENT_HEADER 0x853u
 #define NVN_PROGRAM_METHOD_FRAGMENT_3D0 0x3D0u
+#define NVN_PROGRAM_METHOD_FRAGMENT_3D1 0x3D1u
 #define NVN_PROGRAM_METHOD_FRAGMENT_084 0x084u
 #define NVN_PROGRAM_METHOD_FRAGMENT_3C7 0x3C7u
 #define NVN_PROGRAM_METHOD_FRAGMENT_D8 0x0D8u
@@ -998,6 +999,7 @@ int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_wo
 
 #define NVN_PROGRAM_MACRO_COUNT 5u
 #define NVN_PROGRAM_D8_COUNT 2u
+#define NVN_PROGRAM_FRAGMENT_3D1_COUNT 4u
 #define NVN_PROGRAM_CB_ADDRESS_SHIFT 8u
 
 #define NVN_PROGRAM_SLOT_VERTEX 1u
@@ -1019,10 +1021,6 @@ int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_wo
 #define NVN_PROGRAM_D8_WORD_MEDIUM 0x06164010u
 #define NVN_PROGRAM_D8_DATA1_MEDIUM 0x20u
 #define NVN_PROGRAM_D8_SAMPLES 3u
-
-int nvn_program_fragment_unsupported(const NvnProgramFragmentIn* frag) {
-    return frag && frag->g158 != 0 && frag->g160 == 0;
-}
 
 static uint32_t program_cb_address(uint64_t region_base, uint32_t cb_offset) {
     return (uint32_t)((region_base + cb_offset) >> NVN_PROGRAM_CB_ADDRESS_SHIFT);
@@ -1093,6 +1091,7 @@ static int program_build_fragment(const NvnProgramStageIn* in, const NvnProgramF
     uint32_t d8[2];
     program_build_d8(frag, dev, d8);
     uint32_t value_3d0 = frag->g158 == 0 ? 0u : (frag->g160 == 0 ? 1u : 0u);
+    int branch_2004 = frag->g158 != 0 && frag->g160 == 0;
     uint32_t value_084 = (dev->d1a3c != 0 || frag->g148 != 0) ? 1u : 0u;
     uint32_t value_65b = (uint32_t)frag->g178 | ((uint32_t)frag->g180 << NVN_PROGRAM_FRAGMENT_65B_SHIFT);
     uint32_t value_1d5 =
@@ -1102,6 +1101,11 @@ static int program_build_fragment(const NvnProgramStageIn* in, const NvnProgramF
                        program_cb_address(region_base, in->cb_offset));
     if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT_HEADER, in->header_value)) return 0;
     if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT_3D0, value_3d0)) return 0;
+    if (branch_2004) {
+        program_push_word(words, at, NVN_PROGRAM_MODE_INCREASING | (NVN_PROGRAM_FRAGMENT_3D1_COUNT << NVN_PROGRAM_COUNT_SHIFT) |
+                                       NVN_PROGRAM_METHOD_FRAGMENT_3D1);
+        for (uint32_t i = 0; i < NVN_PROGRAM_FRAGMENT_3D1_COUNT; i++) program_push_word(words, at, frag->g1a0[i]);
+    }
     if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT_084, value_084)) return 0;
     if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT_3C7, frag->g150)) return 0;
     program_push_word(words, at, NVN_PROGRAM_MODE_INCREASING | (NVN_PROGRAM_D8_COUNT << NVN_PROGRAM_COUNT_SHIFT) |
@@ -1113,12 +1117,37 @@ static int program_build_fragment(const NvnProgramStageIn* in, const NvnProgramF
     return program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT_1D5, value_1d5);
 }
 
-int nvn_program_build_words(const NvnProgramStageIn* vertex, const NvnProgramStageIn* fragment,
-                            const NvnProgramFragmentIn* frag, const NvnProgramDeviceIn* dev, uint64_t region_base,
-                            uint32_t* words, uint32_t* count) {
+/* The stage 5 block: 18 plain data words, no method header. The library leaves word 17 as stack content, so the host
+   writes 0. */
+static void program_build_compute(const NvnProgramComputeIn* in, uint32_t* words, uint32_t* at) {
+    program_push_word(words, at, in->code_offset);
+    program_push_word(words, at, in->cb_offset);
+    program_push_word(words, at, in->h6fc);
+    program_push_word(words, at, in->h710);
+    program_push_word(words, at, in->h70c);
+    program_push_word(words, at, in->h718);
+    program_push_word(words, at, in->h71c);
+    program_push_word(words, at, in->h720);
+    program_push_word(words, at, in->h724);
+    program_push_word(words, at, in->h728);
+    program_push_word(words, at, in->h72c);
+    program_push_word(words, at, in->h730);
+    program_push_word(words, at, in->h734);
+    program_push_word(words, at, in->h6f8);
+    program_push_word(words, at, in->h750_low);
+    program_push_word(words, at, in->h750_high);
+    program_push_word(words, at, in->flags);
+    program_push_word(words, at, 0u);
+}
+
+int nvn_program_build_words(const NvnProgramComputeIn* compute, const NvnProgramStageIn* vertex,
+                            const NvnProgramStageIn* fragment, const NvnProgramFragmentIn* frag,
+                            const NvnProgramDeviceIn* dev, uint64_t region_base, uint32_t* words, uint32_t* count) {
     if (!words || !count) return 0;
-    if (fragment && (!frag || !dev || nvn_program_fragment_unsupported(frag))) return 0;
+    if (compute && (vertex || fragment)) return 0;
+    if (fragment && (!frag || !dev)) return 0;
     uint32_t at = 0;
+    if (compute) program_build_compute(compute, words, &at);
     if (vertex && !program_build_vertex(vertex, region_base, words, &at)) return 0;
     if (fragment && !program_build_fragment(fragment, frag, dev, region_base, words, &at)) return 0;
     *count = at;
