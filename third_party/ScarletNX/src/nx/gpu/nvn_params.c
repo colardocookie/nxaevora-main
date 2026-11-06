@@ -153,6 +153,13 @@ uint32_t nvn_vertex_attrib_state_set_stream_index(uint32_t word, uint32_t stream
     return (word & 0xFFFFFFE0u) | stream_index;
 }
 
+void nvn_vertex_attrib_state_get_format(uint32_t word, uint32_t* format, uint64_t* relative_offset) {
+    *format = (word >> 21) & 0x3FFu;
+    *relative_offset = (word >> 7) & 0x3FFFu;
+}
+
+uint32_t nvn_vertex_attrib_state_get_stream_index(uint32_t word) { return word & 0x1Fu; }
+
 void nvn_color_state_defaults(uint32_t* words) { words[0] = 0x08030000u; }
 
 void nvn_depth_stencil_state_defaults(uint32_t* words) {
