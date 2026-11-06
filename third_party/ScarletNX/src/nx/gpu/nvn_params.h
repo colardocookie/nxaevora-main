@@ -79,6 +79,7 @@ typedef enum {
     NVN_RASTER_POLYGON_OFFSET_CLAMP,
     NVN_RASTER_DEPTH_CLAMP,
     NVN_RASTER_LINE_WIDTH,
+    NVN_RASTER_POINT_SIZE,
     NVN_RASTER_KIND_COUNT
 } NvnRasterKind;
 
@@ -93,6 +94,9 @@ typedef enum {
 #define NVN_RASTER_METHOD_DEPTH_CLAMP          0x64Fu
 #define NVN_RASTER_METHOD_LINE_WIDTH           0x4ECu
 #define NVN_RASTER_METHOD_LINE_WIDTH_ALIAS     0x4EDu
+#define NVN_RASTER_METHOD_POINT_SIZE           0x546u
+/* SetPointSize (d84a600) writes 0 here after the size, BindTexture writes the same word under a flag. Not decoded. */
+#define NVN_RASTER_METHOD_POINT_SIZE_FOLLOW    0x68Bu
 #define NVN_RASTER_DEPTH_CLAMP_NEAR            0x101Au
 #define NVN_RASTER_DEPTH_CLAMP_FAR             0x181Du
 #define NVN_RASTER_METHODS_MAX 3u
@@ -152,6 +156,11 @@ uint32_t nvn_vertex_attrib_state_set_stream_index(uint32_t word, uint32_t stream
 /* The library getters (d83af80, d83afa0): format bits 21-30, relative offset bits 7-20, stream index bits 0-4. */
 void nvn_vertex_attrib_state_get_format(uint32_t word, uint32_t* format, uint64_t* relative_offset);
 uint32_t nvn_vertex_attrib_state_get_stream_index(uint32_t word);
+
+/* ResetCounter (d856b40) writes CLEAR_REPORT_VALUE with a word of a table that the counter type indexes. 1 and the
+   word for a type of 0 to 16. The library has no range check. 0 for any other type. */
+#define NVN_RESET_COUNTER_METHOD 0x54Cu
+int nvn_reset_counter_word(uint32_t type, uint32_t* word);
 
 void nvn_color_state_defaults(uint32_t* words);
 void nvn_depth_stencil_state_defaults(uint32_t* words);

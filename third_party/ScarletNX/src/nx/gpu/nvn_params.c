@@ -160,6 +160,16 @@ void nvn_vertex_attrib_state_get_format(uint32_t word, uint32_t* format, uint64_
 
 uint32_t nvn_vertex_attrib_state_get_stream_index(uint32_t word) { return word & 0x1Fu; }
 
+/* The library table at sdk 0xde877bc (update 1.1.1), one word for each counter type. */
+static const uint32_t reset_counter_words[] = {0x01u, 0x01u, 0x12u, 0x13u, 0x15u, 0x16u, 0x17u, 0x1Au, 0x1Eu,
+                                               0x18u, 0x1Bu, 0x1Cu, 0x1Du, 0x1Fu, 0x10u, 0x02u, 0x01u};
+
+int nvn_reset_counter_word(uint32_t type, uint32_t* word) {
+    if (type >= sizeof reset_counter_words / sizeof reset_counter_words[0]) return 0;
+    *word = reset_counter_words[type];
+    return 1;
+}
+
 void nvn_color_state_defaults(uint32_t* words) { words[0] = 0x08030000u; }
 
 void nvn_depth_stencil_state_defaults(uint32_t* words) {
@@ -276,6 +286,10 @@ int nvn_raster_methods(NvnRasterKind which, const uint32_t w[3], NvnRasterMethod
     case NVN_RASTER_LINE_WIDTH:
         out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_LINE_WIDTH, w[0]};
         out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_LINE_WIDTH_ALIAS, w[0]};
+        break;
+    case NVN_RASTER_POINT_SIZE:
+        out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_POINT_SIZE, w[0]};
+        out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_POINT_SIZE_FOLLOW, 0u};
         break;
     default:
         return 0;

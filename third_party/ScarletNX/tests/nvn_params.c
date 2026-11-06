@@ -1033,6 +1033,17 @@ static void test_vertex_attrib_state(void) {
     CHECK(nvn_vertex_attrib_state_get_stream_index(0xFFFFFFFFu) == 0x1Fu);         /* bit 5 not read */
 }
 
+static void test_reset_counter_word(void) {
+    uint32_t word = 0;
+    CHECK(nvn_reset_counter_word(0, &word) && word == 0x01u);
+    CHECK(nvn_reset_counter_word(2, &word) && word == 0x12u);
+    CHECK(nvn_reset_counter_word(13, &word) && word == 0x1Fu);
+    CHECK(nvn_reset_counter_word(16, &word) && word == 0x01u); /* the timestamp type */
+    word = 77;
+    CHECK(!nvn_reset_counter_word(17, &word) && word == 77u);
+    CHECK(!nvn_reset_counter_word(0xFFFFFFFFu, &word) && word == 77u);
+}
+
 static void test_depth_range_methods(void) {
     NvnDepthRangeMethod out[NVN_DEPTH_RANGE_METHODS_MAX];
     nvn_depth_range_methods(3, 1, 0.25f, 0.75f, out);
@@ -1118,6 +1129,11 @@ static void test_raster_methods(void) {
     CHECK(count == 2u);
     CHECK(out[0].method == 0x4ECu && out[0].value == 0x40000000u);
     CHECK(out[1].method == 0x4EDu && out[1].value == 0x40000000u);
+
+    CHECK(nvn_raster_methods(NVN_RASTER_POINT_SIZE, (const uint32_t[3]){0x40800000u, 0u, 0u}, out, &count));
+    CHECK(count == 2u);
+    CHECK(out[0].method == 0x546u && out[0].value == 0x40800000u); /* the float as given */
+    CHECK(out[1].method == 0x68Bu && out[1].value == 0u);
 
     count = 77;
     CHECK(!nvn_raster_methods(NVN_RASTER_KIND_COUNT, (const uint32_t[3]){0u, 0u, 0u}, out, &count));
@@ -2165,6 +2181,7 @@ int main(int argc, char** argv) {
     test_state_getters();
     test_state_getters_extra();
     test_vertex_attrib_state();
+    test_reset_counter_word();
     test_depth_range_methods();
     test_stencil_op_and_polygon_offset();
     test_raster_methods();
