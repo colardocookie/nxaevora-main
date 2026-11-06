@@ -531,6 +531,17 @@ static void replay_op(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnO
         ok = 1;
         break;
     }
+    case NVN_OP_TRANSFORM_FEEDBACK:
+        if (!payload_matches(header, sizeof(NvnOpTransformFeedback))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        if (((const NvnOpTransformFeedback*)payload)->kind >= NVN_XFB_KIND_COUNT) {
+            replay_fault(env, stats, "transform feedback kind", ((const NvnOpTransformFeedback*)payload)->kind);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_TRANSFORM_FEEDBACK, payload);
+        break;
     case NVN_OP_BIND_IMAGE:
         if (!payload_matches(header, sizeof(NvnOpBindImage))) {
             replay_fault(env, stats, "op size", header->code);

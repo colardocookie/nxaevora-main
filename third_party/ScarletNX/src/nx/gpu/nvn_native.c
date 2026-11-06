@@ -2942,6 +2942,22 @@ static void h_command_buffer_report_counter(CPU* c, u64 entry) {
     }
     pm_unlock(&objs_lock);
 }
+/* Begin and End record the control address. The words are built at replay (nvn_xfb_words). */
+static void command_xfb(CPU* c, const char* name, NvnXfbKind kind) {
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpTransformFeedback op = {(uint32_t)kind, 0, c->x[1]};
+    if (cb) command_record(cb, c->x[0], name, NVN_OP_TRANSFORM_FEEDBACK, &op, sizeof op);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_begin_transform_feedback(CPU* c, u64 entry) {
+    (void)entry;
+    command_xfb(c, "nvnCommandBufferBeginTransformFeedback", NVN_XFB_BEGIN);
+}
+static void h_command_buffer_end_transform_feedback(CPU* c, u64 entry) {
+    (void)entry;
+    command_xfb(c, "nvnCommandBufferEndTransformFeedback", NVN_XFB_END);
+}
 static void h_command_buffer_reset_counter(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnCommandBufferResetCounter";
@@ -3028,6 +3044,19 @@ static int replay_host_bind_texture(void* ctx, uint32_t stage, uint32_t slot, ui
     host->texture_dirty[stage][slot] = NVN_BIND_DIRTY;
     return 1;
 }
+static void replay_bind_refuse(NvnNativeReplayHost* host, const char* group, int32_t stage, int32_t slot, uint32_t word);
+static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, uint32_t count);
+/* The library writes a transform feedback bind at once, before the Begin that may read it, so it is not deferred to
+   the draw as the other binds are. */
+static int replay_host_send_xfb_bind(NvnNativeReplayHost* host, const NvnOpBindBuffer* op) {
+    uint32_t words[NVN_BIND_XFB_WORDS_MAX];
+    uint32_t count = nvn_bind_xfb_words(op->slot, op->addr, (uint32_t)op->size, words);
+    if (!count || !replay_bind_send(host, words, count)) {
+        replay_bind_refuse(host, "transform feedback", -1, (int32_t)op->slot, (uint32_t)op->addr);
+        return 0;
+    }
+    return 1;
+}
 /* The replay stores addr and size even when the bind is not active, so that a bind that disables the slot replaces the
    old one. The host refuses a kind, stage or slot that its bind table cannot hold. */
 static int replay_host_bind_buffer(void* ctx, const NvnOpBindBuffer* op) {
@@ -3061,6 +3090,7 @@ static int replay_host_bind_buffer(void* ctx, const NvnOpBindBuffer* op) {
     entry->size = op->size;
     entry->bound = (uint8_t)nvn_bind_buffer_active((NvnBindKind)op->kind, op->addr, op->size);
     if (dirty) *dirty = NVN_BIND_DIRTY;
+    if (op->kind == NVN_BIND_TRANSFORM_FEEDBACK) return replay_host_send_xfb_bind(host, op);
     return 1;
 }
 /* The replay stores the words of a state bind. The host refuses a kind or word count that its table cannot hold. */
@@ -3603,13 +3633,23 @@ static int replay_host_render_targets(void* ctx, const NvnOpRenderTargets* op) {
     NvnRtEnv env = {ctx, replay_host_method, replay_host_rt_fault};
     return nvn_rt_emit(&env, color, op->count, depth.texture ? &depth : NULL, host->clip_limit);
 }
-/* The replay thread counts the op, and keeps the last report and the last image bind for stage 4. */
+/* The replay thread counts the op, sends the words of a transform feedback op, and keeps the last report and the last
+   image bind for stage 4. */
 static int replay_host_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
     NvnNativeReplayHost* host = ctx;
     if (code >= NVN_OP_COUNT) return 0;
     host->gpu_ops[code]++;
     if (code == NVN_OP_REPORT_COUNTER) host->last_report = *(const NvnOpReportCounter*)payload;
     if (code == NVN_OP_BIND_IMAGE) host->last_bind_image = *(const NvnOpBindImage*)payload;
+    if (code == NVN_OP_TRANSFORM_FEEDBACK) {
+        const NvnOpTransformFeedback* op = payload;
+        uint32_t words[NVN_XFB_WORDS_MAX];
+        uint32_t count = nvn_xfb_words(op->kind, op->address, words);
+        if (!count || !replay_bind_send(host, words, count)) {
+            replay_bind_refuse(host, "transform feedback", -1, -1, op->kind);
+            return 0;
+        }
+    }
     return 1;
 }
 static void replay_host_fault(void* ctx, const char* what, uint64_t value) {
@@ -4426,6 +4466,8 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferCopyTextureToTexture", h_command_buffer_copy_texture_to_texture},
     {"nvnCommandBufferReportCounter", h_command_buffer_report_counter},
     {"nvnCommandBufferResetCounter", h_command_buffer_reset_counter},
+    {"nvnCommandBufferBeginTransformFeedback", h_command_buffer_begin_transform_feedback},
+    {"nvnCommandBufferEndTransformFeedback", h_command_buffer_end_transform_feedback},
     {"nvnCommandBufferBindImage", h_command_buffer_bind_image},
     {"nvnCommandBufferBindImages", h_command_buffer_bind_images},
     {NULL, NULL},

@@ -223,6 +223,16 @@ uint32_t nvn_bind_vertex_buffer_words(uint32_t index, uint64_t addr, uint64_t si
 uint32_t nvn_bind_uniform_buffer_words(uint32_t stage, uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out);
 uint32_t nvn_bind_storage_buffer_words(uint32_t stage, uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out);
 uint32_t nvn_bind_texture_words(uint32_t stage, uint32_t slot, uint64_t handle, int descriptor_flag, uint32_t* out);
+
+/* Transform feedback (sdk d84b400 to d84b6e4). A buffer bind is the enable, address and size run of its slot, or an
+   inline 0 there for address 0. Begin calls macro 0 with the control address. End disables the feedback and writes
+   the four stream byte counts to address + 4 to + 16 with report semaphores. 0 for a bad slot or kind. */
+#define NVN_XFB_BUFFER_COUNT 4u
+#define NVN_BIND_XFB_WORDS_MAX 5u
+#define NVN_XFB_WORDS_MAX 21u
+typedef enum { NVN_XFB_BEGIN = 0, NVN_XFB_END, NVN_XFB_KIND_COUNT } NvnXfbKind;
+uint32_t nvn_bind_xfb_words(uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out);
+uint32_t nvn_xfb_words(uint32_t kind, uint64_t addr, uint32_t* out);
 /* The 10-bit format index that the host uses to read the format word of one vertex attribute state. */
 uint32_t nvn_vertex_attrib_format_index(uint32_t s);
 /* The count to pass to a builder for a table of enabled flags: the highest set index plus one, or 0 when none is set. */

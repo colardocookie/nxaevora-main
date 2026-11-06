@@ -1033,6 +1033,30 @@ static void test_vertex_attrib_state(void) {
     CHECK(nvn_vertex_attrib_state_get_stream_index(0xFFFFFFFFu) == 0x1Fu);         /* bit 5 not read */
 }
 
+static void test_xfb_words(void) {
+    uint32_t out[NVN_XFB_WORDS_MAX];
+    CHECK(nvn_bind_xfb_words(2, 0x123456780ull, 0x100u, out) == 5u);
+    CHECK(out[0] == 0x200400F0u && out[1] == 1u && out[2] == 1u && out[3] == 0x23456780u && out[4] == 0x100u);
+    CHECK(nvn_bind_xfb_words(3, 0, 0x100u, out) == 1u && out[0] == 0x800000F8u); /* a null buffer: inline 0 */
+    CHECK(nvn_bind_xfb_words(0, 0x10ull, 0, out) == 5u && out[0] == 0x200400E0u);
+    CHECK(nvn_bind_xfb_words(NVN_XFB_BUFFER_COUNT, 0x10ull, 4u, out) == 0u);
+
+    CHECK(nvn_xfb_words(NVN_XFB_BEGIN, 0x1234567800ull, out) == 3u);
+    CHECK(out[0] == 0xA0020E00u && out[1] == 0x12u && out[2] == 0x34567800u);
+
+    static const uint32_t query[4] = {0x1D005002u, 0x1D005022u, 0x1D005042u, 0x1D005062u};
+    CHECK(nvn_xfb_words(NVN_XFB_END, 0x1FFFFFFF8ull, out) == 21u);
+    CHECK(out[0] == 0x800001D1u);
+    for (uint32_t i = 0; i < 4; i++) {
+        const uint32_t* r = out + 1 + 5 * i;
+        uint64_t at = 0x1FFFFFFF8ull + 4u * (i + 1u);
+        CHECK(r[0] == 0x200406C0u && r[1] == (uint32_t)(at >> 32) && r[2] == (uint32_t)at);
+        CHECK(r[3] == 0u && r[4] == query[i]);
+    }
+    CHECK(out[7] == 2u && out[8] == 0u); /* buffer 1 at 0x200000000: the high word carries */
+    CHECK(nvn_xfb_words(NVN_XFB_KIND_COUNT, 0, out) == 0u);
+}
+
 static void test_reset_counter_word(void) {
     uint32_t word = 0;
     CHECK(nvn_reset_counter_word(0, &word) && word == 0x01u);
@@ -2182,6 +2206,7 @@ int main(int argc, char** argv) {
     test_state_getters_extra();
     test_vertex_attrib_state();
     test_reset_counter_word();
+    test_xfb_words();
     test_depth_range_methods();
     test_stencil_op_and_polygon_offset();
     test_raster_methods();
