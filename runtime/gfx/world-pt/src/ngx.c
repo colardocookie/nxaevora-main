@@ -1,3 +1,5 @@
+#include "nx/runtime/options.h"
+#include "graphics-options.h"
 // NVIDIA DLAA for the temporal anti-aliasing (exec.c fsr2_copy, F1 > Video > Temporal anti-aliasing): DLSS at the scene's
 // own size, fed what FSR 2 is fed - the jittered picture, the scene depth (reversed), the camera's motion vectors.
 //
@@ -92,12 +94,7 @@ static bool p_getf(const NgxParam *p, const char *n, float *v) { return NGX_OK((
 static bool p_getp(const NgxParam *p, const char *n, void **v) { return NGX_OK(((GetP)p->vt->slot[G_P])(p, n, v)); }
 
 bool vk_dlaa_wanted(void) {
-    static int wanted = -1;
-    if (wanted < 0) {
-        const char *e = getenv("ARCEUS_NGX");
-        wanted = e && *e ? atoi(e) != 0 : (getenv("ARCEUS_UPSCALER") && !strcmp(getenv("ARCEUS_UPSCALER"),"DLSS"));
-    }
-    return wanted;
+    return arceus_dlss_requested(g_settings.arceus_dlss);
 }
 
 static bool core_load(void) {

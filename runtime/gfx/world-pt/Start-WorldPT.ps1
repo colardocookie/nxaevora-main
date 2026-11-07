@@ -14,11 +14,19 @@ if($RayTracing -and $Backend -eq 'Native'){$Backend='FSR'}
 $program=(Resolve-Path -LiteralPath $Executable).Path
 $gamePath=(Resolve-Path -LiteralPath $Game).Path
 if($Terrain){$env:ARCEUS_TERRAIN_DIR=(Resolve-Path -LiteralPath $Terrain).Path}
-$env:ARCEUS_UPSCALER=if($Backend -eq 'RR'){'DLSS'}else{$Backend}
-$env:ARCEUS_NGX=if($Backend -in 'DLSS','RR'){'1'}else{'0'}
-$env:ARCEUS_RAY_TRACING=if($RayTracing){'1'}else{'0'}
-$env:ARCEUS_DLSS_RR=if($Backend -eq 'RR'){'1'}else{'0'}
-$env:ARCEUS_PT_FILTER=if($RayTracing){'1'}else{'0'}
+# Saved graphics settings apply unless the caller explicitly supplies an override.
+foreach($key in 'ARCEUS_UPSCALER','ARCEUS_NGX','ARCEUS_DLSS_RR','ARCEUS_RAY_TRACING'){
+    [Environment]::SetEnvironmentVariable($key,$null,'Process')
+}
+if($PSBoundParameters.ContainsKey('Backend')){
+    $env:ARCEUS_UPSCALER=if($Backend -eq 'RR'){'DLSS'}else{$Backend}
+    $env:ARCEUS_NGX=if($Backend -in 'DLSS','RR'){'1'}else{'0'}
+    $env:ARCEUS_DLSS_RR=if($Backend -eq 'RR'){'1'}else{'0'}
+}
+if($PSBoundParameters.ContainsKey('RayTracing')){
+    $env:ARCEUS_RAY_TRACING=if($RayTracing){'1'}else{'0'}
+}
+$env:ARCEUS_PT_FILTER='1'
 $env:SNX_ARCEUS_FIXED_RESOLUTION='1'
 $env:SNX_ARCEUS_SCREEN_FETCH='1'
 $env:SNX_ARCEUS_NATIVE_SHADOWS='1'
