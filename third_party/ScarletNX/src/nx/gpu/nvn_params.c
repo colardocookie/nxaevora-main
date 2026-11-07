@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 #include "nx/gpu/nvn_params.h"
+#include "nx/gpu/nvn_cmdlist.h"
 #include "nx/gpu/texture/blocklinear.h"
 #include <stddef.h>
 #include <math.h>
@@ -1693,6 +1694,141 @@ uint32_t nvn_bind_texture_words(uint32_t stage, uint32_t slot, uint64_t handle, 
     bind_run(&w, NVN_BIND_TEXTURE_METHOD_HANDLE, NVN_BIND_TEXTURE_HANDLE_COUNT);
     bind_word(&w, slot * NVN_BIND_TEXTURE_SLOT_STEP + NVN_BIND_TEXTURE_SLOT_BASE);
     bind_word(&w, (uint32_t)handle);
+    return w.at;
+}
+
+/* ReportCounter: the type selects one query of the library table, four queries for type 15, or the timestamp packet for
+   type 16. Each packet is four data words at 0x6C0, then one trigger word. */
+#define NVN_REPORT_TYPE_MULTI 15u
+#define NVN_REPORT_QUERY_COUNT 15u
+#define NVN_REPORT_DATA_COUNT 4u
+#define NVN_REPORT_QUERY_STEP 4u
+#define NVN_REPORT_METHOD_COUNTER 0x6C0u
+#define NVN_REPORT_METHOD_TIMESTAMP 0x004u
+#define NVN_REPORT_METHOD_TRIGGER 0x3E0u
+#define NVN_REPORT_TIMESTAMP_QUERY 0x00100002u
+
+static const uint32_t report_counter_query[NVN_REPORT_QUERY_COUNT] = {
+    0x0000F002u, 0x0A80F002u, 0x00801002u, 0x01801002u, 0x02802002u, 0x0D808002u, 0x0E809002u, 0x03806002u,
+    0x0980A002u, 0x0F809002u, 0x04806002u, 0x07804002u, 0x08804002u, 0x09005002u, 0x05805002u,
+};
+
+static const uint32_t report_counter_multi_query[NVN_REPORT_DATA_COUNT] = {
+    0x15007002u, 0x16007002u, 0x17007002u, 0x18007002u,
+};
+
+uint32_t nvn_report_counter_words(uint32_t type, uint64_t address, uint32_t* out) {
+    if (!out || type > NVN_REPORT_TYPE_MAX) return 0;
+    NvnBindWriter w = {out, 0};
+    if (type == NVN_REPORT_TYPE_MAX) {
+        bind_run(&w, NVN_REPORT_METHOD_TIMESTAMP, NVN_REPORT_DATA_COUNT);
+        bind_word(&w, (uint32_t)(address >> 32));
+        bind_word(&w, (uint32_t)address);
+        bind_word(&w, 0);
+        bind_word(&w, NVN_REPORT_TIMESTAMP_QUERY);
+        bind_value(&w, NVN_REPORT_METHOD_TRIGGER, 0);
+        return w.at;
+    }
+    if (type == NVN_REPORT_TYPE_MULTI) {
+        for (uint32_t i = 0; i < NVN_REPORT_DATA_COUNT; i++) {
+            uint64_t at = address + (uint64_t)NVN_REPORT_QUERY_STEP * i;
+            bind_run(&w, NVN_REPORT_METHOD_COUNTER, NVN_REPORT_DATA_COUNT);
+            bind_word(&w, (uint32_t)(at >> 32));
+            bind_word(&w, (uint32_t)at);
+            bind_word(&w, 0);
+            bind_word(&w, report_counter_multi_query[i]);
+        }
+    } else {
+        bind_run(&w, NVN_REPORT_METHOD_COUNTER, NVN_REPORT_DATA_COUNT);
+        bind_word(&w, (uint32_t)(address >> 32));
+        bind_word(&w, (uint32_t)address);
+        bind_word(&w, 0);
+        bind_word(&w, report_counter_query[type]);
+    }
+    bind_value(&w, NVN_REPORT_METHOD_TRIGGER, 0);
+    return w.at;
+}
+
+/* BindImage: one stage macro and the slot and two handle words for each handle. Stage 5 is the compute record and is
+   not a method, so a stage above 4 is a refusal. */
+#define NVN_BIND_IMAGE_METHOD_PARAM 0xE0Eu
+#define NVN_BIND_IMAGE_METHOD_DESCRIPTOR 0x68Bu
+#define NVN_BIND_IMAGE_METHOD_HANDLE 0x8E3u
+#define NVN_BIND_IMAGE_DATA_COUNT 3u
+#define NVN_BIND_IMAGE_SLOT_STEP 8u
+#define NVN_BIND_IMAGE_SLOT_BASE 0x120u
+
+uint32_t nvn_bind_image_words(uint32_t stage, uint32_t first, uint32_t count, const uint64_t* handles,
+                              int descriptor_flag, uint32_t* out) {
+    if (!out || !handles || !count || count > NVN_IMAGE_BINDS_MAX || stage >= NVN_BIND_STAGE_COUNT) return 0;
+    NvnBindWriter w = {out, 0};
+    for (uint32_t i = 0; i < count; i++) {
+        bind_value(&w, NVN_BIND_IMAGE_METHOD_PARAM, bind_texture_stage_map[stage]);
+        if (descriptor_flag) bind_value(&w, NVN_BIND_IMAGE_METHOD_DESCRIPTOR, 0);
+        bind_run(&w, NVN_BIND_IMAGE_METHOD_HANDLE, NVN_BIND_IMAGE_DATA_COUNT);
+        bind_word(&w, (first + i) * NVN_BIND_IMAGE_SLOT_STEP + NVN_BIND_IMAGE_SLOT_BASE);
+        bind_word(&w, (uint32_t)handles[i]);
+        bind_word(&w, (uint32_t)(handles[i] >> 32));
+    }
+    return w.at;
+}
+
+/* ClearDepthStencil: the zcull flag, the optional scratch macro, the depth word, then the stencil branch or the depth
+   only macro. The macro 0xE04 value is 3 for depth and stencil, 2 for stencil only and 1 for depth only. */
+#define NVN_CLEAR_DEPTH_ENABLE_MASK 0xFFu
+#define NVN_CLEAR_DEPTH_METHOD_ZCULL 0x36Fu
+#define NVN_CLEAR_DEPTH_METHOD_DEPTH 0x364u
+#define NVN_CLEAR_DEPTH_METHOD_STENCIL_MASK 0x4E7u
+#define NVN_CLEAR_DEPTH_METHOD_STENCIL 0x368u
+#define NVN_CLEAR_DEPTH_METHOD_SHADOW 0x049u
+#define NVN_CLEAR_DEPTH_MACRO_E26 0xE26u
+#define NVN_CLEAR_DEPTH_MACRO_STENCIL 0xE04u
+#define NVN_CLEAR_DEPTH_FLAG_BELOW_HALF 0x1u
+#define NVN_CLEAR_DEPTH_FLAG_ENDPOINT 0x10000u
+#define NVN_CLEAR_DEPTH_SHADOW_MODE 2u
+#define NVN_CLEAR_DEPTH_SHADOW_MODE_STENCIL 3u
+#define NVN_CLEAR_DEPTH_SHADOW_MODE_DONE 1u
+#define NVN_CLEAR_DEPTH_MACRO_DEPTH_AND_STENCIL 3u
+#define NVN_CLEAR_DEPTH_MACRO_STENCIL_ONLY 2u
+#define NVN_CLEAR_DEPTH_MACRO_DEPTH_ONLY 1u
+
+/* The library writes nothing when neither the depth nor the stencil is enabled. That early return is not a refusal. */
+int nvn_clear_depth_stencil_nothing(uint32_t depth_enable, uint32_t stencil_mask) {
+    return (depth_enable & NVN_CLEAR_DEPTH_ENABLE_MASK) == 0 && stencil_mask == 0;
+}
+
+uint32_t nvn_clear_depth_stencil_words(uint32_t depth_bits, uint32_t depth_enable, uint32_t stencil,
+                                       uint32_t stencil_mask, int zcull_clear, int use_macro_e26, uint32_t* out) {
+    if (!out) return 0;
+    int depth = (depth_enable & NVN_CLEAR_DEPTH_ENABLE_MASK) != 0;
+    if (!depth && stencil_mask == 0) return 0;
+    float depth_value;
+    memcpy(&depth_value, &depth_bits, sizeof depth_value);
+    NvnBindWriter w = {out, 0};
+    if (zcull_clear && depth) {
+        uint32_t flag = 0;
+        if (depth_value < 0.5f) flag |= NVN_CLEAR_DEPTH_FLAG_BELOW_HALF;
+        if (depth_value == 0.0f || depth_value == 1.0f) flag |= NVN_CLEAR_DEPTH_FLAG_ENDPOINT;
+        bind_run(&w, NVN_CLEAR_DEPTH_METHOD_ZCULL, 1);
+        bind_word(&w, flag);
+    }
+    if (use_macro_e26 && zcull_clear && depth) bind_value(&w, NVN_CLEAR_DEPTH_MACRO_E26, 0);
+    if (depth) {
+        bind_run(&w, NVN_CLEAR_DEPTH_METHOD_DEPTH, 1);
+        bind_word(&w, depth_bits);
+    }
+    if (stencil_mask != 0) {
+        bind_value(&w, NVN_CLEAR_DEPTH_METHOD_SHADOW, NVN_CLEAR_DEPTH_SHADOW_MODE);
+        bind_value(&w, NVN_CLEAR_DEPTH_METHOD_STENCIL_MASK, stencil_mask & 0xFFu);
+        bind_value(&w, NVN_CLEAR_DEPTH_METHOD_STENCIL, stencil & 0xFFu);
+        bind_value(&w, NVN_CLEAR_DEPTH_MACRO_STENCIL,
+                   depth ? NVN_CLEAR_DEPTH_MACRO_DEPTH_AND_STENCIL : NVN_CLEAR_DEPTH_MACRO_STENCIL_ONLY);
+        bind_value(&w, NVN_CLEAR_DEPTH_METHOD_SHADOW, NVN_CLEAR_DEPTH_SHADOW_MODE_STENCIL);
+        bind_value(&w, NVN_CLEAR_DEPTH_METHOD_STENCIL_MASK, 0);
+        bind_value(&w, NVN_CLEAR_DEPTH_METHOD_SHADOW, NVN_CLEAR_DEPTH_SHADOW_MODE_DONE);
+    } else if (depth) {
+        bind_value(&w, NVN_CLEAR_DEPTH_MACRO_STENCIL, NVN_CLEAR_DEPTH_MACRO_DEPTH_ONLY);
+    }
     return w.at;
 }
 

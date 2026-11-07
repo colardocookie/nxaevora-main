@@ -3553,13 +3553,60 @@ static int replay_host_render_targets(void* ctx, const NvnOpRenderTargets* op) {
     NvnRtEnv env = {ctx, replay_host_method, replay_host_rt_fault};
     return nvn_rt_emit(&env, color, op->count, depth.texture ? &depth : NULL, host->clip_limit);
 }
-/* The replay thread counts the op, and keeps the last report and the last image bind for stage 4. */
+/* The game's device word +0x1A04 is 0, not 0x08C8B771, so the zcull clear word is written. The device word +0x1A08
+   is unknown, so the scratch macro 0xE26 stays off until its meaning is known. */
+#define NVN_REPLAY_ZCULL_CLEAR 1
+#define NVN_REPLAY_MACRO_E26 0
+
+static int replay_host_report_counter(NvnNativeReplayHost* host, const NvnOpReportCounter* op) {
+    uint32_t words[NVN_REPORT_WORDS_MAX];
+    uint32_t count = nvn_report_counter_words(op->type, op->address, words);
+    if (!count || !replay_bind_send(host, words, count)) {
+        replay_bind_refuse(host, "report counter", -1, -1, op->type);
+        return 1;
+    }
+    return 1;
+}
+
+static int replay_host_bind_image(NvnNativeReplayHost* host, const NvnOpBindImage* op) {
+    uint32_t words[NVN_BIND_IMAGE_WORDS_MAX];
+    uint32_t count = nvn_bind_image_words(op->stage, op->first, op->count, op->handle,
+                                          NVN_TEXTURE_DESCRIPTOR_FLAG, words);
+    if (!count || !replay_bind_send(host, words, count)) {
+        replay_bind_refuse(host, "image bind", (int32_t)op->stage, (int32_t)op->first, op->count);
+        return 1;
+    }
+    return 1;
+}
+
+static int replay_host_clear_depth_stencil(NvnNativeReplayHost* host, const NvnOpClearDepthStencil* op) {
+    if (nvn_clear_depth_stencil_nothing(op->depth_enable, op->stencil_mask)) return 1;
+    uint32_t words[NVN_CLEAR_DEPTH_STENCIL_WORDS_MAX];
+    uint32_t count = nvn_clear_depth_stencil_words(op->depth_bits, op->depth_enable, op->stencil,
+                                                   op->stencil_mask, NVN_REPLAY_ZCULL_CLEAR,
+                                                   NVN_REPLAY_MACRO_E26, words);
+    if (!count || !replay_bind_send(host, words, count)) {
+        replay_bind_refuse(host, "clear depth stencil", -1, -1, op->depth_bits);
+        return 1;
+    }
+    return 1;
+}
+
+/* The replay thread counts the op, sends the three group 6 words, and keeps the last report and image bind. */
 static int replay_host_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
     NvnNativeReplayHost* host = ctx;
     if (code >= NVN_OP_COUNT) return 0;
     host->gpu_ops[code]++;
-    if (code == NVN_OP_REPORT_COUNTER) host->last_report = *(const NvnOpReportCounter*)payload;
-    if (code == NVN_OP_BIND_IMAGE) host->last_bind_image = *(const NvnOpBindImage*)payload;
+    if (code == NVN_OP_REPORT_COUNTER) {
+        host->last_report = *(const NvnOpReportCounter*)payload;
+        return replay_host_report_counter(host, &host->last_report);
+    }
+    if (code == NVN_OP_BIND_IMAGE) {
+        host->last_bind_image = *(const NvnOpBindImage*)payload;
+        return replay_host_bind_image(host, &host->last_bind_image);
+    }
+    if (code == NVN_OP_CLEAR_DEPTH_STENCIL)
+        return replay_host_clear_depth_stencil(host, (const NvnOpClearDepthStencil*)payload);
     return 1;
 }
 static void replay_host_fault(void* ctx, const char* what, uint64_t value) {

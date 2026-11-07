@@ -1989,6 +1989,116 @@ static void test_draw_words(void) {
     CHECK(nvn_draw_words(NVN_DRAW_ARRAYS, 4u, 2u, 0x123u, address, 7u, 0x11u, 0x22u, 3u, NULL, &constants) == 0);
 }
 
+static void test_report_counter_words(void) {
+    const uint64_t address = 0x123456789Aull;
+    /* Type 0: table row 0 (query 0x0000F002). */
+    static const uint32_t type0[] = {0x200406C0u, 0x12u, 0x3456789Au, 0u, 0x0000F002u, 0x800003E0u};
+    /* Type 14: table row 14 (query 0x05805002). */
+    static const uint32_t type14[] = {0x200406C0u, 0x12u, 0x3456789Au, 0u, 0x05805002u, 0x800003E0u};
+    /* Type 15: four packets at address, address+4, address+8 and address+0xC. */
+    static const uint32_t type15[] = {
+        0x200406C0u, 0x12u, 0x3456789Au, 0u, 0x15007002u, 0x200406C0u, 0x12u,
+        0x3456789Eu, 0u, 0x16007002u, 0x200406C0u, 0x12u, 0x345678A2u, 0u,
+        0x17007002u, 0x200406C0u, 0x12u, 0x345678A6u, 0u, 0x18007002u, 0x800003E0u,
+    };
+    /* Type 16: the timestamp packet at 0x004 with query 0x00100002. */
+    static const uint32_t type16[] = {0x20040004u, 0x12u, 0x3456789Au, 0u, 0x00100002u, 0x800003E0u};
+    uint32_t out[NVN_REPORT_WORDS_MAX];
+    uint32_t count = nvn_report_counter_words(0, address, out);
+    check_bind_words(out, count, type0, 6);
+    count = nvn_report_counter_words(14, address, out);
+    check_bind_words(out, count, type14, 6);
+    count = nvn_report_counter_words(15, address, out);
+    check_bind_words(out, count, type15, NVN_REPORT_WORDS_MAX);
+    CHECK(count == NVN_REPORT_WORDS_MAX);
+    count = nvn_report_counter_words(16, address, out);
+    check_bind_words(out, count, type16, 6);
+    bind_sentinel(out, NVN_REPORT_WORDS_MAX);
+    CHECK(nvn_report_counter_words(17, address, out) == 0);
+    check_bind_sentinel(out, NVN_REPORT_WORDS_MAX);
+    CHECK(nvn_report_counter_words(0, address, NULL) == 0);
+}
+
+static void test_bind_image(void) {
+    const uint64_t handles[2] = {0x123456789Aull, 0xFEDCBA9876543210ull};
+    /* Stage 0 has table value 0; one handle at slot 5 is 0x120 + 5*8. */
+    static const uint32_t stage0[] = {0x80000E0Eu, 0x200308E3u, 0x148u, 0x3456789Au, 0x12u};
+    /* Stage 4 has table value 2. */
+    static const uint32_t stage4[] = {0x80020E0Eu, 0x200308E3u, 0x148u, 0x3456789Au, 0x12u};
+    /* The descriptor flag inserts the 0x68B word after the stage word. */
+    static const uint32_t descriptor[] = {0x80000E0Eu, 0x8000068Bu, 0x200308E3u, 0x148u, 0x3456789Au, 0x12u};
+    /* Two handles: the second packet uses slot first+1 (0x150) and its own handle words. */
+    static const uint32_t two[] = {
+        0x80000E0Eu, 0x200308E3u, 0x148u, 0x3456789Au, 0x12u,
+        0x80000E0Eu, 0x200308E3u, 0x150u, 0x76543210u, 0xFEDCBA98u,
+    };
+    uint32_t out[NVN_BIND_IMAGE_WORDS_MAX];
+    uint32_t count = nvn_bind_image_words(0, 5, 1, handles, 0, out);
+    check_bind_words(out, count, stage0, 5);
+    count = nvn_bind_image_words(4, 5, 1, handles, 0, out);
+    check_bind_words(out, count, stage4, 5);
+    count = nvn_bind_image_words(0, 5, 1, handles, 1, out);
+    check_bind_words(out, count, descriptor, 6);
+    count = nvn_bind_image_words(0, 5, 2, handles, 0, out);
+    check_bind_words(out, count, two, 10);
+    bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
+    CHECK(nvn_bind_image_words(5, 5, 1, handles, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
+    CHECK(nvn_bind_image_words(0, 5, 0, handles, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
+    CHECK(nvn_bind_image_words(0, 5, 17, handles, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
+    CHECK(nvn_bind_image_words(0, 5, 1, NULL, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
+    CHECK(nvn_bind_image_words(0, 5, 1, handles, 0, NULL) == 0);
+}
+
+static void test_clear_depth_stencil_words(void) {
+    /* Depth only: rows 1, 3 and 11, no stencil branch. */
+    static const uint32_t depth_zero[] = {0x2001036Fu, 0x10001u, 0x20010364u, 0x00000000u, 0x80010E04u};
+    static const uint32_t depth_quarter[] = {0x2001036Fu, 0x1u, 0x20010364u, 0x3E800000u, 0x80010E04u};
+    static const uint32_t depth_half[] = {0x2001036Fu, 0x0u, 0x20010364u, 0x3F000000u, 0x80010E04u};
+    static const uint32_t depth_one[] = {0x2001036Fu, 0x10000u, 0x20010364u, 0x3F800000u, 0x80010E04u};
+    /* No zcull word: rows 3 and 11. */
+    static const uint32_t no_zcull[] = {0x20010364u, 0x3F000000u, 0x80010E04u};
+    /* The scratch macro follows the zcull word when it is on. */
+    static const uint32_t scratch[] = {0x2001036Fu, 0x0u, 0x80000E26u, 0x20010364u, 0x3F000000u, 0x80010E04u};
+    /* Stencil only: rows 4 to 10, with macro value 2. */
+    static const uint32_t stencil_only[] = {0x80020049u, 0x800104E7u, 0x807F0368u, 0x80020E04u,
+                                            0x80030049u, 0x800004E7u, 0x80010049u};
+    /* Depth and stencil: rows 1, 3 and 4 to 10, with macro value 3. */
+    static const uint32_t both[] = {0x2001036Fu,         0x0u,         0x20010364u, 0x3F000000u,
+                                    0x80020049u,         0x800104E7u,   0x807F0368u, 0x80030E04u,
+                                    0x80030049u,         0x800004E7u,   0x80010049u};
+    uint32_t out[NVN_CLEAR_DEPTH_STENCIL_WORDS_MAX];
+    uint32_t count;
+
+    CHECK(nvn_clear_depth_stencil_nothing(0, 0));
+    CHECK(!nvn_clear_depth_stencil_nothing(1, 0));
+    CHECK(!nvn_clear_depth_stencil_nothing(0, 1));
+    bind_sentinel(out, NVN_CLEAR_DEPTH_STENCIL_WORDS_MAX);
+    CHECK(nvn_clear_depth_stencil_words(0x3F000000u, 0, 0, 0, 1, 0, out) == 0);
+    check_bind_sentinel(out, NVN_CLEAR_DEPTH_STENCIL_WORDS_MAX);
+
+    count = nvn_clear_depth_stencil_words(0x00000000u, 1, 0, 0, 1, 0, out);
+    check_bind_words(out, count, depth_zero, 5);
+    count = nvn_clear_depth_stencil_words(0x3E800000u, 1, 0, 0, 1, 0, out);
+    check_bind_words(out, count, depth_quarter, 5);
+    count = nvn_clear_depth_stencil_words(0x3F000000u, 1, 0, 0, 1, 0, out);
+    check_bind_words(out, count, depth_half, 5);
+    count = nvn_clear_depth_stencil_words(0x3F800000u, 1, 0, 0, 1, 0, out);
+    check_bind_words(out, count, depth_one, 5);
+    count = nvn_clear_depth_stencil_words(0x3F000000u, 1, 0, 0, 0, 0, out);
+    check_bind_words(out, count, no_zcull, 3);
+    count = nvn_clear_depth_stencil_words(0x3F000000u, 1, 0, 0, 1, 1, out);
+    check_bind_words(out, count, scratch, 6);
+    count = nvn_clear_depth_stencil_words(0x3F000000u, 0, 0x7F, 1, 1, 0, out);
+    check_bind_words(out, count, stencil_only, 7);
+    count = nvn_clear_depth_stencil_words(0x3F000000u, 1, 0x7F, 1, 1, 0, out);
+    check_bind_words(out, count, both, 11);
+    CHECK(nvn_clear_depth_stencil_words(0x3F000000u, 1, 0, 0, 1, 0, NULL) == 0);
+}
+
 static void test_highest_enabled_index(void) {
     const uint8_t none[4] = {0, 0, 0, 0};
     const uint8_t first[4] = {1, 0, 0, 0};
@@ -2171,6 +2281,9 @@ int main(int argc, char** argv) {
     test_bind_storage_buffer();
     test_bind_texture();
     test_draw_words();
+    test_report_counter_words();
+    test_bind_image();
+    test_clear_depth_stencil_words();
     test_highest_enabled_index();
     if (failures) {
         printf("%d failures\n", failures);
