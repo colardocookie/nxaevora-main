@@ -42,9 +42,45 @@ static void test_window_sync_cycle_params(void) {
     CHECK(nvn_window_pick_image(presented2, 2, -1) == -1);
     CHECK(nvn_window_pick_image(presented2, 2, 0) == -1);
     CHECK(nvn_window_pick_image(presented4, 4, -1) == -1);
-    CHECK(nvn_sync_wait_result(NVN_SYNC_SIGNALED) == NVN_SYNC_WAIT_SIGNALED);
-    CHECK(nvn_sync_wait_result(NVN_SYNC_UNSIGNALED) == NVN_SYNC_WAIT_FAILED);
-    CHECK(nvn_sync_wait_result(NVN_SYNC_FENCED) == NVN_SYNC_WAIT_FAILED);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_SIGNALED) == NVN_SYNC_ACTION_SIGNALED);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_UNSIGNALED) == NVN_SYNC_ACTION_REFUSE);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_FENCED) == NVN_SYNC_ACTION_WAIT);
+    CHECK(nvn_window_has_presented(presented2, 2));
+}
+
+static void test_sync_wait_limit(void) {
+    const uint8_t acquired4[] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED};
+    const uint8_t mixed[] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_PRESENTED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED};
+    CHECK(!nvn_window_has_presented(acquired4, 4));
+    CHECK(nvn_window_has_presented(mixed, 4));
+    CHECK(!nvn_window_has_presented(mixed, 1));
+    CHECK(!nvn_window_has_presented(mixed, 5));
+    CHECK(!nvn_window_has_presented(NULL, 4));
+
+    NvnWaitDeadline d = nvn_wait_deadline(0, 100);
+    CHECK(d.has_deadline && d.deadline_ns == 100);
+    CHECK(nvn_wait_remaining_ns(d, 99) == 1);
+    CHECK(nvn_wait_remaining_ns(d, 100) == 0);
+    CHECK(nvn_wait_remaining_ns(d, 101) == 0);
+
+    d = nvn_wait_deadline(1, 100);
+    CHECK(d.has_deadline && d.deadline_ns == 101);
+    CHECK(nvn_wait_remaining_ns(d, 100) == 1);
+    CHECK(nvn_wait_remaining_ns(d, 101) == 0);
+
+    d = nvn_wait_deadline(NVN_SYNC_WAIT_NO_LIMIT, 100);
+    CHECK(!d.has_deadline);
+    CHECK(nvn_wait_remaining_ns(d, 0) == -1);
+    CHECK(nvn_wait_remaining_ns(d, UINT64_MAX) == -1);
+
+    /* a huge timeout clamps the wait to INT64_MAX; an overflow of now + timeout stays finite */
+    d = nvn_wait_deadline(0x8000000000000000ull, 0);
+    CHECK(d.has_deadline && d.deadline_ns == 0x8000000000000000ull);
+    CHECK(nvn_wait_remaining_ns(d, 0) == INT64_MAX);
+    d = nvn_wait_deadline(10, UINT64_MAX - 5);
+    CHECK(d.has_deadline && d.deadline_ns == UINT64_MAX);
+    CHECK(nvn_wait_remaining_ns(d, UINT64_MAX - 5) == 5);
+    CHECK(nvn_wait_remaining_ns(d, UINT64_MAX) == 0);
 }
 
 static void test_window_params(void) {
@@ -380,7 +416,9 @@ static void test_texture_level(void) {
     t.builder = (NvnTextureBuilder){.target = NVN_TEXTURE_TARGET_3D, .width = 8, .height = 8, .depth = 4,
                                     .levels = 1, .format = 0x25};
     CHECK(nvn_texture_layout(&t.builder, &nvn_texture_device_words, &t.layout));
-    CHECK(!nvn_texture_level(&t, 0, &lv)); /* 3D */
+    /* A 3D level: 8 by 8 by 4 texels of 4 bytes, blocks 2 slices deep (ez = 2), 2048 bytes. */
+    CHECK(nvn_texture_level(&t, 0, &lv) && lv.offset == 0 && lv.size == 2048 && lv.depth == 4 &&
+          lv.depth_log2 == 2 && lv.gobs_x == 1 && lv.rows == 8 && lv.block_height_log2 == 0);
     t.builder = (NvnTextureBuilder){.target = NVN_TEXTURE_TARGET_2D_MS, .width = 16, .height = 16, .depth = 1,
                                     .levels = 1, .format = 0x25, .samples = 4};
     CHECK(nvn_texture_layout(&t.builder, &nvn_texture_device_words, &t.layout));
@@ -408,7 +446,8 @@ static uint64_t reference_level_offset(uint32_t gobs_x, uint32_t bh, uint32_t x,
 }
 static void test_texture_write_rows(void) {
     /* 128 bytes by 32 rows, two blocks of two GOBs high each: 4096 bytes */
-    NvnTextureLevel lv = {.offset = 0, .size = 4096, .gobs_x = 2, .rows = 32, .block_height_log2 = 1};
+    NvnTextureLevel lv = {.offset = 0, .size = 4096, .gobs_x = 2, .rows = 32, .depth = 1,
+                          .block_height_log2 = 1};
     uint8_t level[4096], expected[4096], source[2048];
     const uint32_t x_start = 20, x_end = 76, row_start = 5, row_end = 27;
     const uint32_t row_bytes = x_end - x_start;
@@ -419,16 +458,87 @@ static void test_texture_write_rows(void) {
         for (uint32_t x = x_start; x < x_end; x++)
             expected[reference_level_offset(lv.gobs_x, lv.block_height_log2, x, r)] =
                 source[(r - row_start) * row_bytes + (x - x_start)];
-    CHECK(nvn_texture_write_rows(level, &lv, x_start, x_end, row_start, row_end, source, row_bytes));
+    CHECK(nvn_texture_write_rows(level, &lv, x_start, x_end, row_start, row_end, source, row_bytes, 0));
     CHECK(memcmp(level, expected, sizeof level) == 0);
     /* refusals write nothing */
     memset(level, 0xa5, sizeof level);
-    CHECK(!nvn_texture_write_rows(level, &lv, 0, 129, 0, 1, source, 129));
-    CHECK(!nvn_texture_write_rows(level, &lv, 0, 1, 0, 33, source, 1));
+    CHECK(!nvn_texture_write_rows(level, &lv, 0, 129, 0, 1, source, 129, 0));
+    CHECK(!nvn_texture_write_rows(level, &lv, 0, 1, 0, 33, source, 1, 0));
     for (size_t i = 0; i < sizeof level; i++) CHECK(level[i] == 0xa5);
     NvnTextureLevel small = lv;
     small.size = 100;
-    CHECK(!nvn_texture_write_rows(level, &small, 0, 64, 0, 1, source, 64));
+    CHECK(!nvn_texture_write_rows(level, &small, 0, 64, 0, 1, source, 64, 0));
+    for (size_t i = 0; i < sizeof level; i++) CHECK(level[i] == 0xa5);
+}
+
+/* The block linear offset of byte (x, y) of slice z, from the same GOB geometry as reference_level_offset:
+   a block is 2^bh GOBs high and 2^bd slices deep, blocks go gobs_x to a row, the rows of a slab come next and then
+   the slabs (gpu.c's bl_offset). */
+static uint64_t reference_level_offset_3d(uint32_t gobs_x, uint32_t rows, uint32_t bh, uint32_t bd,
+                                          uint32_t x, uint32_t y, uint32_t z) {
+    uint32_t x_bits = 0x12fu, y_bits = 0xd0u;
+    uint64_t block_rows = ((uint64_t)rows + (8u << bh) - 1) >> (3 + bh);
+    uint64_t gy = y >> 3;
+    return ((uint64_t)(x >> 6) << (9 + bh + bd)) + deposit_bits(x, x_bits) +
+           (((z >> bd) * block_rows + (gy >> bh)) * gobs_x << (9 + bh + bd)) +
+           ((((z & ((1u << bd) - 1)) << bh) + (gy & ((1u << bh) - 1))) << 9) + deposit_bits(y & 7, y_bits);
+}
+static void test_texture_write_rows_3d(void) {
+    /* 64 bytes by 16 block rows, two slices in blocks 2 GOBs high and 2 slices deep: 2048 bytes */
+    NvnTextureLevel lv = {.offset = 0, .size = 2048, .gobs_x = 1, .rows = 16, .depth = 2,
+                          .block_height_log2 = 0, .depth_log2 = 1};
+    uint8_t level[2048], expected[2048], source[2 * 64 * 16];
+    for (size_t i = 0; i < sizeof source; i++) source[i] = (uint8_t)(i * 53u + 7u);
+    for (uint32_t z = 0; z < 2; z++)
+        for (uint32_t y = 0; y < 16; y++)
+            for (uint32_t x = 0; x < 64; x++)
+                expected[reference_level_offset_3d(lv.gobs_x, lv.rows, lv.block_height_log2, lv.depth_log2,
+                                                   x, y, z)] = source[z * 64 * 16 + y * 64 + x];
+    memset(level, 0xa5, sizeof level);
+    CHECK(nvn_texture_write_rows(level, &lv, 0, 64, 0, 16, source, 64, 0));
+    CHECK(nvn_texture_write_rows(level, &lv, 0, 64, 0, 16, source + 64 * 16, 64, 1));
+    CHECK(memcmp(level, expected, sizeof level) == 0);
+    /* hand computed: z = 1's first slice half at 512, z = 0's second block row at 1024, the last byte at 2047 */
+    CHECK(reference_level_offset_3d(1, 16, 0, 1, 0, 0, 1) == 512);
+    CHECK(reference_level_offset_3d(1, 16, 0, 1, 0, 8, 0) == 1024);
+    CHECK(reference_level_offset_3d(1, 16, 0, 1, 63, 15, 1) == 2047);
+    /* ez = 0: each slice is a slab of two block rows, so slice z = 1 starts at 1024 */
+    NvnTextureLevel flat = lv;
+    flat.depth_log2 = 0;
+    CHECK(reference_level_offset_3d(1, 16, 0, 0, 0, 0, 1) == 1024);
+    CHECK(reference_level_offset_3d(1, 16, 0, 0, 0, 8, 0) == 512);
+    for (uint32_t z = 0; z < 2; z++)
+        for (uint32_t y = 0; y < 16; y++)
+            for (uint32_t x = 0; x < 64; x++)
+                expected[reference_level_offset_3d(flat.gobs_x, flat.rows, flat.block_height_log2,
+                                                   flat.depth_log2, x, y, z)] = source[z * 64 * 16 + y * 64 + x];
+    memset(level, 0xa5, sizeof level);
+    CHECK(nvn_texture_write_rows(level, &flat, 0, 64, 0, 16, source, 64, 0));
+    CHECK(nvn_texture_write_rows(level, &flat, 0, 64, 0, 16, source + 64 * 16, 64, 1));
+    CHECK(memcmp(level, expected, sizeof level) == 0);
+    /* bh = 1 and bd = 1 together: 128 bytes by 32 rows, blocks 2 GOBs high and 2 slices deep, 3 slices (two slabs) */
+    NvnTextureLevel deep = {.offset = 0, .size = 16384, .gobs_x = 2, .rows = 32, .depth = 3,
+                            .block_height_log2 = 1, .depth_log2 = 1};
+    static uint8_t deep_level[16384], deep_expected[16384], deep_source[3 * 128 * 32];
+    for (size_t i = 0; i < sizeof deep_source; i++) deep_source[i] = (uint8_t)(i * 29u + 3u);
+    memset(deep_level, 0xa5, sizeof deep_level);
+    memset(deep_expected, 0xa5, sizeof deep_expected);
+    for (uint32_t z = 0; z < 3; z++) {
+        for (uint32_t y = 0; y < 32; y++)
+            for (uint32_t x = 0; x < 128; x++)
+                deep_expected[reference_level_offset_3d(deep.gobs_x, deep.rows, deep.block_height_log2,
+                                                        deep.depth_log2, x, y, z)] =
+                    deep_source[z * 128 * 32 + y * 128 + x];
+        CHECK(nvn_texture_write_rows(deep_level, &deep, 0, 128, 0, 32, deep_source + z * 128 * 32, 128, z));
+    }
+    CHECK(memcmp(deep_level, deep_expected, sizeof deep_level) == 0);
+    /* hand computed: slice 1 of block (0, 0) starts 2 GOBs in, slice 2 starts the second slab (2 block rows of 2 blocks) */
+    CHECK(reference_level_offset_3d(2, 32, 1, 1, 0, 0, 1) == 1024);
+    CHECK(reference_level_offset_3d(2, 32, 1, 1, 0, 8, 0) == 512);
+    CHECK(reference_level_offset_3d(2, 32, 1, 1, 0, 0, 2) == 8192);
+    /* a slice outside the level depth is refused and writes nothing */
+    memset(level, 0xa5, sizeof level);
+    CHECK(!nvn_texture_write_rows(level, &lv, 0, 64, 0, 16, source, 64, 2));
     for (size_t i = 0; i < sizeof level; i++) CHECK(level[i] == 0xa5);
 }
 
@@ -1022,6 +1132,50 @@ static void test_vertex_attrib_state(void) {
     CHECK(nvn_vertex_attrib_state_set_stream_index(0xFFFFFFFFu, 0) == 0xFFFFFFE0u);
     CHECK(nvn_vertex_attrib_state_set_stream_index(0, 0x100) == 0x100u);          /* not masked: spills into stride */
     CHECK(nvn_vertex_attrib_state_set_stream_index(0x20u, 0) == 0x20u);           /* bit 5 kept */
+
+    uint32_t format = 0;
+    uint64_t offset = 0;
+    uint32_t word = nvn_vertex_attrib_state_set_stream_index(nvn_vertex_attrib_state_set_format(0, 0x22, 0xC), 7);
+    nvn_vertex_attrib_state_get_format(word, &format, &offset);
+    CHECK(format == 0x22u && offset == 0xCu && nvn_vertex_attrib_state_get_stream_index(word) == 7u);
+    nvn_vertex_attrib_state_get_format(0xFFFFFFFFu, &format, &offset);
+    CHECK(format == 0x3FFu && offset == 0x3FFFu);                                /* bit 31 and bits 0-6 not read */
+    CHECK(nvn_vertex_attrib_state_get_stream_index(0xFFFFFFFFu) == 0x1Fu);         /* bit 5 not read */
+}
+
+static void test_xfb_words(void) {
+    uint32_t out[NVN_XFB_WORDS_MAX];
+    CHECK(nvn_bind_xfb_words(2, 0x123456780ull, 0x100u, out) == 5u);
+    CHECK(out[0] == 0x200400F0u && out[1] == 1u && out[2] == 1u && out[3] == 0x23456780u && out[4] == 0x100u);
+    CHECK(nvn_bind_xfb_words(3, 0, 0x100u, out) == 1u && out[0] == 0x800000F8u); /* a null buffer: inline 0 */
+    CHECK(nvn_bind_xfb_words(0, 0x10ull, 0, out) == 5u && out[0] == 0x200400E0u);
+    CHECK(nvn_bind_xfb_words(NVN_XFB_BUFFER_COUNT, 0x10ull, 4u, out) == 0u);
+
+    CHECK(nvn_xfb_words(NVN_XFB_BEGIN, 0x1234567800ull, out) == 3u);
+    CHECK(out[0] == 0xA0020E00u && out[1] == 0x12u && out[2] == 0x34567800u);
+
+    static const uint32_t query[4] = {0x1D005002u, 0x1D005022u, 0x1D005042u, 0x1D005062u};
+    CHECK(nvn_xfb_words(NVN_XFB_END, 0x1FFFFFFF8ull, out) == 21u);
+    CHECK(out[0] == 0x800001D1u);
+    for (uint32_t i = 0; i < 4; i++) {
+        const uint32_t* r = out + 1 + 5 * i;
+        uint64_t at = 0x1FFFFFFF8ull + 4u * (i + 1u);
+        CHECK(r[0] == 0x200406C0u && r[1] == (uint32_t)(at >> 32) && r[2] == (uint32_t)at);
+        CHECK(r[3] == 0u && r[4] == query[i]);
+    }
+    CHECK(out[7] == 2u && out[8] == 0u); /* buffer 1 at 0x200000000: the high word carries */
+    CHECK(nvn_xfb_words(NVN_XFB_KIND_COUNT, 0, out) == 0u);
+}
+
+static void test_reset_counter_word(void) {
+    uint32_t word = 0;
+    CHECK(nvn_reset_counter_word(0, &word) && word == 0x01u);
+    CHECK(nvn_reset_counter_word(2, &word) && word == 0x12u);
+    CHECK(nvn_reset_counter_word(13, &word) && word == 0x1Fu);
+    CHECK(nvn_reset_counter_word(16, &word) && word == 0x01u); /* the timestamp type */
+    word = 77;
+    CHECK(!nvn_reset_counter_word(17, &word) && word == 77u);
+    CHECK(!nvn_reset_counter_word(0xFFFFFFFFu, &word) && word == 77u);
 }
 
 static void test_depth_range_methods(void) {
@@ -1109,6 +1263,11 @@ static void test_raster_methods(void) {
     CHECK(count == 2u);
     CHECK(out[0].method == 0x4ECu && out[0].value == 0x40000000u);
     CHECK(out[1].method == 0x4EDu && out[1].value == 0x40000000u);
+
+    CHECK(nvn_raster_methods(NVN_RASTER_POINT_SIZE, (const uint32_t[3]){0x40800000u, 0u, 0u}, out, &count));
+    CHECK(count == 2u);
+    CHECK(out[0].method == 0x546u && out[0].value == 0x40800000u); /* the float as given */
+    CHECK(out[1].method == 0x68Bu && out[1].value == 0u);
 
     count = 77;
     CHECK(!nvn_raster_methods(NVN_RASTER_KIND_COUNT, (const uint32_t[3]){0u, 0u, 0u}, out, &count));
@@ -1989,6 +2148,116 @@ static void test_draw_words(void) {
     CHECK(nvn_draw_words(NVN_DRAW_ARRAYS, 4u, 2u, 0x123u, address, 7u, 0x11u, 0x22u, 3u, NULL, &constants) == 0);
 }
 
+static void test_report_counter_words(void) {
+    const uint64_t address = 0x123456789Aull;
+    /* Type 0: table row 0 (query 0x0000F002). */
+    static const uint32_t type0[] = {0x200406C0u, 0x12u, 0x3456789Au, 0u, 0x0000F002u, 0x800003E0u};
+    /* Type 14: table row 14 (query 0x05805002). */
+    static const uint32_t type14[] = {0x200406C0u, 0x12u, 0x3456789Au, 0u, 0x05805002u, 0x800003E0u};
+    /* Type 15: four packets at address, address+4, address+8 and address+0xC. */
+    static const uint32_t type15[] = {
+        0x200406C0u, 0x12u, 0x3456789Au, 0u, 0x15007002u, 0x200406C0u, 0x12u,
+        0x3456789Eu, 0u, 0x16007002u, 0x200406C0u, 0x12u, 0x345678A2u, 0u,
+        0x17007002u, 0x200406C0u, 0x12u, 0x345678A6u, 0u, 0x18007002u, 0x800003E0u,
+    };
+    /* Type 16: the timestamp packet at 0x004 with query 0x00100002. */
+    static const uint32_t type16[] = {0x20040004u, 0x12u, 0x3456789Au, 0u, 0x00100002u, 0x800003E0u};
+    uint32_t out[NVN_REPORT_WORDS_MAX];
+    uint32_t count = nvn_report_counter_words(0, address, out);
+    check_bind_words(out, count, type0, 6);
+    count = nvn_report_counter_words(14, address, out);
+    check_bind_words(out, count, type14, 6);
+    count = nvn_report_counter_words(15, address, out);
+    check_bind_words(out, count, type15, NVN_REPORT_WORDS_MAX);
+    CHECK(count == NVN_REPORT_WORDS_MAX);
+    count = nvn_report_counter_words(16, address, out);
+    check_bind_words(out, count, type16, 6);
+    bind_sentinel(out, NVN_REPORT_WORDS_MAX);
+    CHECK(nvn_report_counter_words(17, address, out) == 0);
+    check_bind_sentinel(out, NVN_REPORT_WORDS_MAX);
+    CHECK(nvn_report_counter_words(0, address, NULL) == 0);
+}
+
+static void test_bind_image(void) {
+    const uint64_t handles[2] = {0x123456789Aull, 0xFEDCBA9876543210ull};
+    /* Stage 0 has table value 0; one handle at slot 5 is 0x120 + 5*8. */
+    static const uint32_t stage0[] = {0x80000E0Eu, 0x200308E3u, 0x148u, 0x3456789Au, 0x12u};
+    /* Stage 4 has table value 2. */
+    static const uint32_t stage4[] = {0x80020E0Eu, 0x200308E3u, 0x148u, 0x3456789Au, 0x12u};
+    /* The descriptor flag inserts the 0x68B word after the stage word. */
+    static const uint32_t descriptor[] = {0x80000E0Eu, 0x8000068Bu, 0x200308E3u, 0x148u, 0x3456789Au, 0x12u};
+    /* Two handles: the second packet uses slot first+1 (0x150) and its own handle words. */
+    static const uint32_t two[] = {
+        0x80000E0Eu, 0x200308E3u, 0x148u, 0x3456789Au, 0x12u,
+        0x80000E0Eu, 0x200308E3u, 0x150u, 0x76543210u, 0xFEDCBA98u,
+    };
+    uint32_t out[NVN_BIND_IMAGE_WORDS_MAX];
+    uint32_t count = nvn_bind_image_words(0, 5, 1, handles, 0, out);
+    check_bind_words(out, count, stage0, 5);
+    count = nvn_bind_image_words(4, 5, 1, handles, 0, out);
+    check_bind_words(out, count, stage4, 5);
+    count = nvn_bind_image_words(0, 5, 1, handles, 1, out);
+    check_bind_words(out, count, descriptor, 6);
+    count = nvn_bind_image_words(0, 5, 2, handles, 0, out);
+    check_bind_words(out, count, two, 10);
+    bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
+    CHECK(nvn_bind_image_words(5, 5, 1, handles, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
+    CHECK(nvn_bind_image_words(0, 5, 0, handles, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
+    CHECK(nvn_bind_image_words(0, 5, 17, handles, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
+    CHECK(nvn_bind_image_words(0, 5, 1, NULL, 0, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
+    CHECK(nvn_bind_image_words(0, 5, 1, handles, 0, NULL) == 0);
+}
+
+static void test_clear_depth_stencil_words(void) {
+    /* Depth only: rows 1, 3 and 11, no stencil branch. */
+    static const uint32_t depth_zero[] = {0x2001036Fu, 0x10001u, 0x20010364u, 0x00000000u, 0x80010E04u};
+    static const uint32_t depth_quarter[] = {0x2001036Fu, 0x1u, 0x20010364u, 0x3E800000u, 0x80010E04u};
+    static const uint32_t depth_half[] = {0x2001036Fu, 0x0u, 0x20010364u, 0x3F000000u, 0x80010E04u};
+    static const uint32_t depth_one[] = {0x2001036Fu, 0x10000u, 0x20010364u, 0x3F800000u, 0x80010E04u};
+    /* No zcull word: rows 3 and 11. */
+    static const uint32_t no_zcull[] = {0x20010364u, 0x3F000000u, 0x80010E04u};
+    /* The scratch macro follows the zcull word when it is on. */
+    static const uint32_t scratch[] = {0x2001036Fu, 0x0u, 0x80000E26u, 0x20010364u, 0x3F000000u, 0x80010E04u};
+    /* Stencil only: rows 4 to 10, with macro value 2. */
+    static const uint32_t stencil_only[] = {0x80020049u, 0x800104E7u, 0x807F0368u, 0x80020E04u,
+                                            0x80030049u, 0x800004E7u, 0x80010049u};
+    /* Depth and stencil: rows 1, 3 and 4 to 10, with macro value 3. */
+    static const uint32_t both[] = {0x2001036Fu,         0x0u,         0x20010364u, 0x3F000000u,
+                                    0x80020049u,         0x800104E7u,   0x807F0368u, 0x80030E04u,
+                                    0x80030049u,         0x800004E7u,   0x80010049u};
+    uint32_t out[NVN_CLEAR_DEPTH_STENCIL_WORDS_MAX];
+    uint32_t count;
+
+    CHECK(nvn_clear_depth_stencil_nothing(0, 0));
+    CHECK(!nvn_clear_depth_stencil_nothing(1, 0));
+    CHECK(!nvn_clear_depth_stencil_nothing(0, 1));
+    bind_sentinel(out, NVN_CLEAR_DEPTH_STENCIL_WORDS_MAX);
+    CHECK(nvn_clear_depth_stencil_words(0x3F000000u, 0, 0, 0, 1, 0, out) == 0);
+    check_bind_sentinel(out, NVN_CLEAR_DEPTH_STENCIL_WORDS_MAX);
+
+    count = nvn_clear_depth_stencil_words(0x00000000u, 1, 0, 0, 1, 0, out);
+    check_bind_words(out, count, depth_zero, 5);
+    count = nvn_clear_depth_stencil_words(0x3E800000u, 1, 0, 0, 1, 0, out);
+    check_bind_words(out, count, depth_quarter, 5);
+    count = nvn_clear_depth_stencil_words(0x3F000000u, 1, 0, 0, 1, 0, out);
+    check_bind_words(out, count, depth_half, 5);
+    count = nvn_clear_depth_stencil_words(0x3F800000u, 1, 0, 0, 1, 0, out);
+    check_bind_words(out, count, depth_one, 5);
+    count = nvn_clear_depth_stencil_words(0x3F000000u, 1, 0, 0, 0, 0, out);
+    check_bind_words(out, count, no_zcull, 3);
+    count = nvn_clear_depth_stencil_words(0x3F000000u, 1, 0, 0, 1, 1, out);
+    check_bind_words(out, count, scratch, 6);
+    count = nvn_clear_depth_stencil_words(0x3F000000u, 0, 0x7F, 1, 1, 0, out);
+    check_bind_words(out, count, stencil_only, 7);
+    count = nvn_clear_depth_stencil_words(0x3F000000u, 1, 0x7F, 1, 1, 0, out);
+    check_bind_words(out, count, both, 11);
+    CHECK(nvn_clear_depth_stencil_words(0x3F000000u, 1, 0, 0, 1, 0, NULL) == 0);
+}
+
 static void test_highest_enabled_index(void) {
     const uint8_t none[4] = {0, 0, 0, 0};
     const uint8_t first[4] = {1, 0, 0, 0};
@@ -2061,6 +2330,51 @@ static void test_compute_qmd_build(void) {
     CHECK(qmd[0x14] == 0x3u);
 }
 
+static void test_compute_qmd_size_limits(void) {
+    NvnProgramComputeIn prog = {0};
+    NvnComputeBinds binds = {0};
+    uint32_t qmd[NVN_COMPUTE_QMD_WORDS], detail;
+    const uint64_t refused[] = {0x1FF01u, 0x20000u, 0xFFFFFF01u, UINT32_MAX};
+    CHECK(strcmp(nvn_compute_qmd_reason_name(NVN_QMD_UNIFORM_QBUF_SIZE),
+                 "rounded uniform size above its QMD field") == 0);
+    /* QMD sizes occupy bits 31:15. Uniform sizes round up to 256 bytes before packing. */
+    for (uint32_t slot = 0; slot < NVN_COMPUTE_UNIFORM_QBUF_SLOTS; slot++) {
+        binds.uniform[slot] = (NvnComputeBindEntry){0x400003000ull, 0x1FE01u, 1};
+        CHECK(nvn_compute_qmd_build(&prog, 1, 1, 1, &binds, qmd));
+        CHECK((qmd[0x1E + 2u * (slot + 3u)] >> 15) == 0x1FF00u);
+        CHECK(qmd[0x14] == (1u | (1u << (slot + 3u))));
+        binds.uniform[slot].size = 0x1FF00u;
+        CHECK(nvn_compute_qmd_build(&prog, 1, 1, 1, &binds, qmd));
+        CHECK((qmd[0x1E + 2u * (slot + 3u)] >> 15) == 0x1FF00u);
+        for (uint32_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+            binds.uniform[slot].size = refused[i];
+            CHECK(nvn_compute_qmd_check(&prog, 1, 1, 1, &binds, &detail) == NVN_QMD_UNIFORM_QBUF_SIZE);
+            CHECK(detail == slot);
+            bind_sentinel(qmd, NVN_COMPUTE_QMD_WORDS);
+            CHECK(!nvn_compute_qmd_build(&prog, 1, 1, 1, &binds, qmd));
+            check_bind_sentinel(qmd, NVN_COMPUTE_QMD_WORDS);
+        }
+        binds.uniform[slot].bound = 0;
+        CHECK(nvn_compute_qmd_build(&prog, 1, 1, 1, &binds, qmd) && qmd[0x14] == 1u);
+    }
+    /* Driver-only slots keep the full 32-bit size, without a QMD enable bit. */
+    uint32_t words[NVN_COMPUTE_CBUF0_WORDS];
+    for (uint32_t slot = NVN_COMPUTE_UNIFORM_QBUF_SLOTS; slot < NVN_COMPUTE_DESCRIPTOR_SLOTS; slot++) {
+        binds.uniform[slot] = (NvnComputeBindEntry){0x400003000ull, UINT32_MAX, 1};
+        CHECK(nvn_compute_qmd_build(&prog, 1, 1, 1, &binds, qmd) && qmd[0x14] == 1u);
+        CHECK(nvn_compute_cbuf0_build(binds.uniform, binds.storage, words));
+        CHECK(words[NVN_COMPUTE_CBUF0_UNIFORM_OFFSET / 4u + slot * 4u + 2u] == UINT32_MAX);
+    }
+    prog.h6fc = 0x1FF00u;
+    CHECK(nvn_compute_qmd_build(&prog, 1, 1, 1, &binds, qmd));
+    CHECK((qmd[0x20] >> 15) == 0x1FFFFu);
+    prog.h6fc++;
+    CHECK(nvn_compute_qmd_check(&prog, 1, 1, 1, &binds, &detail) == NVN_QMD_CBUF1_SIZE && detail == 0);
+    bind_sentinel(qmd, NVN_COMPUTE_QMD_WORDS);
+    CHECK(!nvn_compute_qmd_build(&prog, 1, 1, 1, &binds, qmd));
+    check_bind_sentinel(qmd, NVN_COMPUTE_QMD_WORDS);
+}
+
 static void test_compute_cbuf0_build(void) {
     NvnComputeBindEntry uniform[NVN_COMPUTE_UNIFORM_SLOTS] = {0};
     NvnComputeBindEntry storage[NVN_COMPUTE_STORAGE_SLOTS] = {0};
@@ -2107,8 +2421,10 @@ static void test_program_compute_round_trip(void) {
 }
 
 int main(int argc, char** argv) {
+    test_compute_qmd_size_limits();
     test_window_params();
     test_window_sync_cycle_params();
+    test_sync_wait_limit();
     test_window_present_args();
     test_sync_after_token();
     test_sampler();
@@ -2121,6 +2437,7 @@ int main(int argc, char** argv) {
     test_texture_layout();
     test_texture_level();
     test_texture_write_rows();
+    test_texture_write_rows_3d();
     if (argc == 2) test_texture_queries(argv[1]);
     test_device_integer();
     test_timestamp();
@@ -2156,6 +2473,8 @@ int main(int argc, char** argv) {
     test_state_getters();
     test_state_getters_extra();
     test_vertex_attrib_state();
+    test_reset_counter_word();
+    test_xfb_words();
     test_depth_range_methods();
     test_stencil_op_and_polygon_offset();
     test_raster_methods();
@@ -2171,6 +2490,9 @@ int main(int argc, char** argv) {
     test_bind_storage_buffer();
     test_bind_texture();
     test_draw_words();
+    test_report_counter_words();
+    test_bind_image();
+    test_clear_depth_stencil_words();
     test_highest_enabled_index();
     if (failures) {
         printf("%d failures\n", failures);

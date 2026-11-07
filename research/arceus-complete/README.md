@@ -2,7 +2,7 @@
 
 This archive preserves the earlier timing, camera, menu, controller, shadow, shader translation, memory writeback, motion estimation, upscaling and world path tracing work alongside the maintained renderer in [runtime/gfx/world-pt](../../runtime/gfx/world-pt/README.md).
 
-The inventory maps each audited source file to its published copy and records its SHA-256 after CRLF normalization. Identical source files share a published copy. Large modified runtime translation units are stored as individual unified patches against the vendored ScarletNX file named by the inventory's `base` field. Each patch represents one independent snapshot. Its original source hash is recorded for reconstruction.
+The inventory maps each audited source file to its published copy and records its SHA-256 after CRLF normalization. Identical source files share a published copy. Large modified runtime translation units are stored as individual unified patches against the recorded ScarletNX base file named by the inventory's `base` field. Each patch represents one independent snapshot. Its original source hash is recorded for reconstruction.
 
 The source roots cover the November 6 project research workspaces, November 7 renderer workspace, offline runtime benchmark scripts, modified native runtime and project mirror documentation and tests. SDKs, compiler installations, upstream repository checkouts and package caches are outside the authored-source inventory. Entries marked `local_only` identify generated shader arrays or guest instruction fixtures.
 
