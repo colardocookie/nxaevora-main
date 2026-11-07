@@ -2281,6 +2281,51 @@ static void test_compute_qmd_build(void) {
     CHECK(qmd[0x14] == 0x3u);
 }
 
+static void test_compute_qmd_size_limits(void) {
+    NvnProgramComputeIn prog = {0};
+    NvnComputeBinds binds = {0};
+    uint32_t qmd[NVN_COMPUTE_QMD_WORDS], detail;
+    const uint64_t refused[] = {0x1FF01u, 0x20000u, 0xFFFFFF01u, UINT32_MAX};
+    CHECK(strcmp(nvn_compute_qmd_reason_name(NVN_QMD_UNIFORM_QBUF_SIZE),
+                 "rounded uniform size above its QMD field") == 0);
+    /* QMD sizes occupy bits 31:15. Uniform sizes round up to 256 bytes before packing. */
+    for (uint32_t slot = 0; slot < NVN_COMPUTE_UNIFORM_QBUF_SLOTS; slot++) {
+        binds.uniform[slot] = (NvnComputeBindEntry){0x400003000ull, 0x1FE01u, 1};
+        CHECK(nvn_compute_qmd_build(&prog, 1, 1, 1, &binds, qmd));
+        CHECK((qmd[0x1E + 2u * (slot + 3u)] >> 15) == 0x1FF00u);
+        CHECK(qmd[0x14] == (1u | (1u << (slot + 3u))));
+        binds.uniform[slot].size = 0x1FF00u;
+        CHECK(nvn_compute_qmd_build(&prog, 1, 1, 1, &binds, qmd));
+        CHECK((qmd[0x1E + 2u * (slot + 3u)] >> 15) == 0x1FF00u);
+        for (uint32_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+            binds.uniform[slot].size = refused[i];
+            CHECK(nvn_compute_qmd_check(&prog, 1, 1, 1, &binds, &detail) == NVN_QMD_UNIFORM_QBUF_SIZE);
+            CHECK(detail == slot);
+            bind_sentinel(qmd, NVN_COMPUTE_QMD_WORDS);
+            CHECK(!nvn_compute_qmd_build(&prog, 1, 1, 1, &binds, qmd));
+            check_bind_sentinel(qmd, NVN_COMPUTE_QMD_WORDS);
+        }
+        binds.uniform[slot].bound = 0;
+        CHECK(nvn_compute_qmd_build(&prog, 1, 1, 1, &binds, qmd) && qmd[0x14] == 1u);
+    }
+    /* Driver-only slots keep the full 32-bit size, without a QMD enable bit. */
+    uint32_t words[NVN_COMPUTE_CBUF0_WORDS];
+    for (uint32_t slot = NVN_COMPUTE_UNIFORM_QBUF_SLOTS; slot < NVN_COMPUTE_DESCRIPTOR_SLOTS; slot++) {
+        binds.uniform[slot] = (NvnComputeBindEntry){0x400003000ull, UINT32_MAX, 1};
+        CHECK(nvn_compute_qmd_build(&prog, 1, 1, 1, &binds, qmd) && qmd[0x14] == 1u);
+        CHECK(nvn_compute_cbuf0_build(binds.uniform, binds.storage, words));
+        CHECK(words[NVN_COMPUTE_CBUF0_UNIFORM_OFFSET / 4u + slot * 4u + 2u] == UINT32_MAX);
+    }
+    prog.h6fc = 0x1FF00u;
+    CHECK(nvn_compute_qmd_build(&prog, 1, 1, 1, &binds, qmd));
+    CHECK((qmd[0x20] >> 15) == 0x1FFFFu);
+    prog.h6fc++;
+    CHECK(nvn_compute_qmd_check(&prog, 1, 1, 1, &binds, &detail) == NVN_QMD_CBUF1_SIZE && detail == 0);
+    bind_sentinel(qmd, NVN_COMPUTE_QMD_WORDS);
+    CHECK(!nvn_compute_qmd_build(&prog, 1, 1, 1, &binds, qmd));
+    check_bind_sentinel(qmd, NVN_COMPUTE_QMD_WORDS);
+}
+
 static void test_compute_cbuf0_build(void) {
     NvnComputeBindEntry uniform[NVN_COMPUTE_UNIFORM_SLOTS] = {0};
     NvnComputeBindEntry storage[NVN_COMPUTE_STORAGE_SLOTS] = {0};
@@ -2327,6 +2372,7 @@ static void test_program_compute_round_trip(void) {
 }
 
 int main(int argc, char** argv) {
+    test_compute_qmd_size_limits();
     test_window_params();
     test_window_sync_cycle_params();
     test_sync_wait_limit();

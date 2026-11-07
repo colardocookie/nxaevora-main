@@ -2025,6 +2025,8 @@ enum {
 #define COMPUTE_QMD_GPR_ALLOC_UNKNOWN 0u    /* the byte at x21+0x823: vk_dispatch does not read it */
 #define COMPUTE_QMD_SASS_VERSION_UNKNOWN 0u /* the byte at x21+0x82b: vk_dispatch does not read it */
 #define COMPUTE_QMD_CBUF0_ENABLE 0x1u       /* the library leaves it clear; vk_dispatch reads cbuf 0 for storage */
+#define COMPUTE_QMD_CBUF_SIZE_MAX (UINT32_MAX >> NVN_COMPUTE_CBUF_ADDRESS_HIGH_SHIFT)
+#define COMPUTE_QMD_CBUF_SIZE_PADDING 0xFFu /* uniform sizes round up to 256 bytes */
 
 /* Writes the address and size pair of one QMD constant buffer. The size sits in bits 31:15 of the second word. */
 static void compute_qmd_cbuf_config(uint32_t* qmd, uint32_t index, uint64_t address, uint32_t size) {
@@ -2040,12 +2042,21 @@ uint32_t nvn_compute_qmd_check(const NvnProgramComputeIn* prog, uint32_t x, uint
     if (x > COMPUTE_QMD_GRID_X_MAX) return NVN_QMD_GRID_X;
     if (y > COMPUTE_QMD_GRID_YZ_MAX) return NVN_QMD_GRID_Y;
     if (z > COMPUTE_QMD_GRID_YZ_MAX) return NVN_QMD_GRID_Z;
-    if ((uint64_t)prog->h6fc + 0xFFu > UINT32_MAX) return NVN_QMD_CBUF1_SIZE;
+    if ((uint64_t)prog->h6fc + COMPUTE_QMD_CBUF_SIZE_PADDING > COMPUTE_QMD_CBUF_SIZE_MAX)
+        return NVN_QMD_CBUF1_SIZE;
     for (uint32_t slot = 0; slot < NVN_COMPUTE_UNIFORM_SLOTS; slot++) {
         const NvnComputeBindEntry* entry = &binds->uniform[slot];
-        if (!entry->bound || entry->size <= UINT32_MAX) continue;
-        if (detail) *detail = slot;
-        return NVN_QMD_UNIFORM_SIZE;
+        if (!entry->bound) continue;
+        uint32_t reason = NVN_QMD_OK;
+        if (entry->size > UINT32_MAX)
+            reason = NVN_QMD_UNIFORM_SIZE;
+        else if (slot < NVN_COMPUTE_UNIFORM_QBUF_SLOTS &&
+                 entry->size > (COMPUTE_QMD_CBUF_SIZE_MAX & ~COMPUTE_QMD_CBUF_SIZE_PADDING))
+            reason = NVN_QMD_UNIFORM_QBUF_SIZE;
+        if (reason != NVN_QMD_OK) {
+            if (detail) *detail = slot;
+            return reason;
+        }
     }
     if (detail) *detail = 0;
     return NVN_QMD_OK;
@@ -2058,8 +2069,9 @@ const char* nvn_compute_qmd_reason_name(uint32_t reason) {
     case NVN_QMD_GRID_X: return "grid x above its field";
     case NVN_QMD_GRID_Y: return "grid y above its field";
     case NVN_QMD_GRID_Z: return "grid z above its field";
-    case NVN_QMD_CBUF1_SIZE: return "constant buffer 1 size above 32 bits";
+    case NVN_QMD_CBUF1_SIZE: return "constant buffer 1 size above its QMD field";
     case NVN_QMD_UNIFORM_SIZE: return "uniform size above 32 bits";
+    case NVN_QMD_UNIFORM_QBUF_SIZE: return "rounded uniform size above its QMD field";
     default: return "unknown";
     }
 }
@@ -2067,7 +2079,7 @@ const char* nvn_compute_qmd_reason_name(uint32_t reason) {
 int nvn_compute_qmd_build(const NvnProgramComputeIn* prog, uint32_t x, uint32_t y, uint32_t z,
                           const NvnComputeBinds* binds, uint32_t qmd[NVN_COMPUTE_QMD_WORDS]) {
     if (!qmd || nvn_compute_qmd_check(prog, x, y, z, binds, NULL) != NVN_QMD_OK) return 0;
-    uint64_t cb1_size = (uint64_t)prog->h6fc + 0xFFu;
+    uint64_t cb1_size = (uint64_t)prog->h6fc + COMPUTE_QMD_CBUF_SIZE_PADDING;
     memset(qmd, 0, NVN_COMPUTE_QMD_WORDS * sizeof qmd[0]);
     qmd[COMPUTE_QMD_PROGRAM_START] = prog->code_offset;
     qmd[COMPUTE_QMD_GRID_DIM_X] = x & COMPUTE_QMD_GRID_X_MAX;
@@ -2095,8 +2107,8 @@ int nvn_compute_qmd_build(const NvnProgramComputeIn* prog, uint32_t x, uint32_t 
         const NvnComputeBindEntry* entry = &binds->uniform[slot];
         if (!entry->bound || entry->size == 0) continue;
         enable |= 1u << (slot + 3u);
-        compute_qmd_cbuf_config(qmd, slot + 3u, entry->addr,
-                                ((uint32_t)entry->size + 0xFFu) & ~0xFFu);
+        uint32_t size = ((uint32_t)entry->size + COMPUTE_QMD_CBUF_SIZE_PADDING) & ~COMPUTE_QMD_CBUF_SIZE_PADDING;
+        compute_qmd_cbuf_config(qmd, slot + 3u, entry->addr, size);
     }
     qmd[COMPUTE_QMD_CONST_BUFFER_ENABLE] = enable;
     return 1;

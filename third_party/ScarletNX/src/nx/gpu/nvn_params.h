@@ -574,8 +574,8 @@ typedef struct {
     NvnComputeBindEntry storage[NVN_COMPUTE_STORAGE_SLOTS];
 } NvnComputeBinds;
 
-/* Builds the 64-word launch description. Returns 0 on a refusal (a grid dimension above its field or a size above 32
-   bits). Uniform slots 0 to 4 become QMD constant buffers 3 to 7, the other slots only reach the driver block. Pure. */
+/* Builds the 64-word launch description. Returns 0 on a refusal and leaves qmd unchanged. QMD sizes must fit in 17
+   bits after padding. Uniform slots 0 to 4 become QMD constant buffers 3 to 7, the others use 32-bit driver sizes. Pure. */
 int nvn_compute_qmd_build(const NvnProgramComputeIn* prog, uint32_t x, uint32_t y, uint32_t z,
                           const NvnComputeBinds* binds, uint32_t qmd[NVN_COMPUTE_QMD_WORDS]);
 /* Why nvn_compute_qmd_build refuses. NVN_QMD_OK means that it builds. */
@@ -586,9 +586,10 @@ enum {
     NVN_QMD_GRID_Y,
     NVN_QMD_GRID_Z,
     NVN_QMD_CBUF1_SIZE,
-    NVN_QMD_UNIFORM_SIZE /* a bound uniform slot with a size above 32 bits */
+    NVN_QMD_UNIFORM_SIZE, /* a bound uniform slot with a size above 32 bits */
+    NVN_QMD_UNIFORM_QBUF_SIZE /* a rounded uniform size above the QMD field */
 };
-/* The refusal check of nvn_compute_qmd_build. *detail gets the uniform slot of NVN_QMD_UNIFORM_SIZE, else 0. Pure. */
+/* The refusal check of nvn_compute_qmd_build. *detail gets the slot for either uniform size refusal, else 0. Pure. */
 uint32_t nvn_compute_qmd_check(const NvnProgramComputeIn* prog, uint32_t x, uint32_t y, uint32_t z,
                                const NvnComputeBinds* binds, uint32_t* detail);
 const char* nvn_compute_qmd_reason_name(uint32_t reason);
