@@ -73,6 +73,8 @@ NXAevora contains no game files and no keys. Do not ask for them and do not shar
 
 ## Build
 
+The [optional Vulkan world path tracer](runtime/gfx/world-pt/README.md) supports DLSS Super Resolution, FSR, and opt-in Ray Reconstruction on Windows.
+
 Clone the repository. ScarletNX is part of it (`third_party/ScarletNX`, copied from upstream commit 8efbf9c4):
 
 ```sh
