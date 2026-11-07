@@ -2685,6 +2685,8 @@ COMMAND_RASTER_HANDLER(set_depth_clamp, "nvnCommandBufferSetDepthClamp", NVN_RAS
                        (u32)c->x[1], 0, 0)
 COMMAND_RASTER_HANDLER(set_line_width, "nvnCommandBufferSetLineWidth", NVN_RASTER_LINE_WIDTH,
                        SNX_VS(c->v[0], 0), 0, 0)
+COMMAND_RASTER_HANDLER(set_point_size, "nvnCommandBufferSetPointSize", NVN_RASTER_POINT_SIZE,
+                       SNX_VS(c->v[0], 0), 0, 0)
 #undef COMMAND_RASTER_HANDLER
 
 /* G5: the vertex state binds. Above 16 the host cannot store the bind, and a count below 1 records 16 disabled entries. */
@@ -2944,6 +2946,21 @@ static void h_command_buffer_report_counter(CPU* c, u64 entry) {
             command_dropped(cb, name, "report type", op.type);
         else
             command_record(cb, c->x[0], name, NVN_OP_REPORT_COUNTER, &op, sizeof op);
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_reset_counter(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferResetCounter";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpResetCounter op = {(uint32_t)c->x[1], 0};
+    uint32_t word;
+    if (cb) {
+        if (!nvn_reset_counter_word(op.type, &word))
+            command_dropped(cb, name, "counter type", op.type);
+        else
+            command_record(cb, c->x[0], name, NVN_OP_RESET_COUNTER, &op, sizeof op);
     }
     pm_unlock(&objs_lock);
 }
@@ -4575,6 +4592,7 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferSetPolygonOffsetClamp", h_command_buffer_set_polygon_offset_clamp},
     {"nvnCommandBufferSetDepthClamp", h_command_buffer_set_depth_clamp},
     {"nvnCommandBufferSetLineWidth", h_command_buffer_set_line_width},
+    {"nvnCommandBufferSetPointSize", h_command_buffer_set_point_size},
     {"nvnCommandBufferSetDepthRanges", h_command_buffer_set_depth_ranges},
     {"nvnCommandBufferSetDepthRange", h_command_buffer_set_depth_range},
     {"nvnCommandBufferClearDepthStencil", h_command_buffer_clear_depth_stencil},
@@ -4583,6 +4601,7 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferClearTextureui", h_command_buffer_clear_textureui},
     {"nvnCommandBufferCopyTextureToTexture", h_command_buffer_copy_texture_to_texture},
     {"nvnCommandBufferReportCounter", h_command_buffer_report_counter},
+    {"nvnCommandBufferResetCounter", h_command_buffer_reset_counter},
     {"nvnCommandBufferBindImage", h_command_buffer_bind_image},
     {"nvnCommandBufferBindImages", h_command_buffer_bind_images},
     {NULL, NULL},

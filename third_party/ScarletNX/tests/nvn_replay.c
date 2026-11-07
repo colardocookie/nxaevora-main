@@ -927,6 +927,28 @@ static void test_raster_methods(void) {
     nvn_oplist_free(&lu);
 }
 
+static void test_reset_counter(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpResetCounter samples = {1u, 0u}, primitives = {14u, 0u}, bad = {17u, 0u};
+    NvnOpRaster point = {NVN_RASTER_POINT_SIZE, {0x40800000u, 0u, 0u}};
+    CHECK(nvn_oplist_append(&l, NVN_OP_RESET_COUNTER, &samples, sizeof samples));
+    CHECK(nvn_oplist_append(&l, NVN_OP_RESET_COUNTER, &bad, sizeof bad));
+    CHECK(nvn_oplist_append(&l, NVN_OP_RESET_COUNTER, &primitives, sizeof primitives));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_RASTER, &point, sizeof point));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.write_count == 4);
+    CHECK(k.writes[0].method == 0x54C && k.writes[0].value == 0x01u);
+    CHECK(k.writes[1].method == 0x54C && k.writes[1].value == 0x10u);
+    CHECK(k.writes[2].method == 0x546 && k.writes[2].value == 0x40800000u);
+    CHECK(k.writes[3].method == 0x68B && k.writes[3].value == 0u);
+    CHECK(st.replayed[NVN_OP_RESET_COUNTER] == 2 && st.replayed[NVN_OP_SET_RASTER] == 1);
+    CHECK(st.faults == 1 && k.last_fault && !strcmp(k.last_fault, "counter type") && k.last_fault_value == 17u);
+    nvn_oplist_free(&l);
+}
+
 static void test_raster_bad_payload(void) {
     Mock k = {0};
     NvnReplayEnv env = make_env(&k);
@@ -1465,6 +1487,7 @@ int main(void) {
     test_bind_program();
     test_draw_path_bad_payload();
     test_raster_methods();
+    test_reset_counter();
     test_raster_bad_payload();
     test_bind_vertex_attrib();
     test_bind_vertex_stream();
