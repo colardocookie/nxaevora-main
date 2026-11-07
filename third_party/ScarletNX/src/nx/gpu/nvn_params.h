@@ -25,7 +25,21 @@ void nvn_window_builder_set_textures(NvnWindowBuilder* b, uint32_t count, uint64
 void nvn_window_builder_set_interval(NvnWindowBuilder* b, uint32_t interval);
 int nvn_window_initialize_check(uint32_t texture_count);
 int32_t nvn_window_pick_image(const uint8_t* states, uint32_t count, int32_t last);
-NvnSyncWaitResult nvn_sync_wait_result(NvnSyncState state);
+/* 1 when at least one image of the window waits for its frame job. */
+int nvn_window_has_presented(const uint8_t* states, uint32_t count);
+/* nvnSyncWait of the game: this timeout waits without limit. */
+#define NVN_SYNC_WAIT_NO_LIMIT UINT64_MAX
+typedef enum { NVN_SYNC_ACTION_SIGNALED = 0, NVN_SYNC_ACTION_WAIT, NVN_SYNC_ACTION_REFUSE } NvnSyncAction;
+/* What nvnSyncWait does at once for a sync state: return 0, wait for the frame job, or return 3. */
+NvnSyncAction nvn_sync_wait_action(NvnSyncState state);
+/* The limit of a wait in host nanoseconds. */
+typedef struct {
+    uint64_t deadline_ns;
+    int has_deadline; /* 0: the game gave NVN_SYNC_WAIT_NO_LIMIT */
+} NvnWaitDeadline;
+NvnWaitDeadline nvn_wait_deadline(uint64_t timeout_ns, uint64_t now_ns);
+/* The time left for a wait: -1 without limit, 0 at or after the deadline. */
+int64_t nvn_wait_remaining_ns(NvnWaitDeadline limit, uint64_t now_ns);
 NvnWindowCrop nvn_window_crop(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
                               uint32_t texture_width, uint32_t texture_height);
 

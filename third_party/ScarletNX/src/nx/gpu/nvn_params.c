@@ -31,10 +31,30 @@ int32_t nvn_window_pick_image(const uint8_t* states, uint32_t count, int32_t las
     }
     return NVN_WINDOW_NO_IMAGE;
 }
-NvnSyncWaitResult nvn_sync_wait_result(NvnSyncState state) {
-    /* FENCED is signaled by its frame job, which step 2e adds. Until then a wait on it cannot be
-       satisfied. */
-    return state == NVN_SYNC_SIGNALED ? NVN_SYNC_WAIT_SIGNALED : NVN_SYNC_WAIT_FAILED;
+int nvn_window_has_presented(const uint8_t* states, uint32_t count) {
+    if (!states || count > NVN_WINDOW_MAX_TEXTURES) return 0;
+    for (uint32_t i = 0; i < count; i++)
+        if (states[i] == NVN_IMAGE_PRESENTED) return 1;
+    return 0;
+}
+NvnSyncAction nvn_sync_wait_action(NvnSyncState state) {
+    switch (state) {
+    case NVN_SYNC_SIGNALED: return NVN_SYNC_ACTION_SIGNALED;
+    case NVN_SYNC_FENCED: return NVN_SYNC_ACTION_WAIT;
+    default: return NVN_SYNC_ACTION_REFUSE; /* UNSIGNALED never gets a frame job */
+    }
+}
+NvnWaitDeadline nvn_wait_deadline(uint64_t timeout_ns, uint64_t now_ns) {
+    if (timeout_ns == NVN_SYNC_WAIT_NO_LIMIT) return (NvnWaitDeadline){0, 0};
+    uint64_t deadline = now_ns + timeout_ns;
+    if (deadline < now_ns) deadline = UINT64_MAX; /* the clock cannot hold now + timeout: keep it finite */
+    return (NvnWaitDeadline){deadline, 1};
+}
+int64_t nvn_wait_remaining_ns(NvnWaitDeadline limit, uint64_t now_ns) {
+    if (!limit.has_deadline) return -1;
+    if (now_ns >= limit.deadline_ns) return 0;
+    uint64_t left = limit.deadline_ns - now_ns;
+    return left > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)left;
 }
 NvnWindowCrop nvn_window_crop(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
                               uint32_t texture_width, uint32_t texture_height) {

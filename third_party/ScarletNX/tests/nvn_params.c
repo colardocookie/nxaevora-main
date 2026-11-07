@@ -42,9 +42,45 @@ static void test_window_sync_cycle_params(void) {
     CHECK(nvn_window_pick_image(presented2, 2, -1) == -1);
     CHECK(nvn_window_pick_image(presented2, 2, 0) == -1);
     CHECK(nvn_window_pick_image(presented4, 4, -1) == -1);
-    CHECK(nvn_sync_wait_result(NVN_SYNC_SIGNALED) == NVN_SYNC_WAIT_SIGNALED);
-    CHECK(nvn_sync_wait_result(NVN_SYNC_UNSIGNALED) == NVN_SYNC_WAIT_FAILED);
-    CHECK(nvn_sync_wait_result(NVN_SYNC_FENCED) == NVN_SYNC_WAIT_FAILED);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_SIGNALED) == NVN_SYNC_ACTION_SIGNALED);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_UNSIGNALED) == NVN_SYNC_ACTION_REFUSE);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_FENCED) == NVN_SYNC_ACTION_WAIT);
+    CHECK(nvn_window_has_presented(presented2, 2));
+}
+
+static void test_sync_wait_limit(void) {
+    const uint8_t acquired4[] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED};
+    const uint8_t mixed[] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_PRESENTED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED};
+    CHECK(!nvn_window_has_presented(acquired4, 4));
+    CHECK(nvn_window_has_presented(mixed, 4));
+    CHECK(!nvn_window_has_presented(mixed, 1));
+    CHECK(!nvn_window_has_presented(mixed, 5));
+    CHECK(!nvn_window_has_presented(NULL, 4));
+
+    NvnWaitDeadline d = nvn_wait_deadline(0, 100);
+    CHECK(d.has_deadline && d.deadline_ns == 100);
+    CHECK(nvn_wait_remaining_ns(d, 99) == 1);
+    CHECK(nvn_wait_remaining_ns(d, 100) == 0);
+    CHECK(nvn_wait_remaining_ns(d, 101) == 0);
+
+    d = nvn_wait_deadline(1, 100);
+    CHECK(d.has_deadline && d.deadline_ns == 101);
+    CHECK(nvn_wait_remaining_ns(d, 100) == 1);
+    CHECK(nvn_wait_remaining_ns(d, 101) == 0);
+
+    d = nvn_wait_deadline(NVN_SYNC_WAIT_NO_LIMIT, 100);
+    CHECK(!d.has_deadline);
+    CHECK(nvn_wait_remaining_ns(d, 0) == -1);
+    CHECK(nvn_wait_remaining_ns(d, UINT64_MAX) == -1);
+
+    /* a huge timeout clamps the wait to INT64_MAX; an overflow of now + timeout stays finite */
+    d = nvn_wait_deadline(0x8000000000000000ull, 0);
+    CHECK(d.has_deadline && d.deadline_ns == 0x8000000000000000ull);
+    CHECK(nvn_wait_remaining_ns(d, 0) == INT64_MAX);
+    d = nvn_wait_deadline(10, UINT64_MAX - 5);
+    CHECK(d.has_deadline && d.deadline_ns == UINT64_MAX);
+    CHECK(nvn_wait_remaining_ns(d, UINT64_MAX - 5) == 5);
+    CHECK(nvn_wait_remaining_ns(d, UINT64_MAX) == 0);
 }
 
 static void test_window_params(void) {
@@ -2293,6 +2329,7 @@ static void test_program_compute_round_trip(void) {
 int main(int argc, char** argv) {
     test_window_params();
     test_window_sync_cycle_params();
+    test_sync_wait_limit();
     test_window_present_args();
     test_sync_after_token();
     test_sampler();

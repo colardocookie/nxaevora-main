@@ -30,6 +30,8 @@
    take objs_lock for the whole call, and their pointers into a record end with the call. */
 static NvnObjTab objs;
 static PMutex objs_lock = PMUTEX_INIT;
+/* The frame job tells the guest waits that it freed an image and updated the syncs. */
+static PCond frame_done_cv;
 static NvnListStore lists; /* the command lists of the game, guarded by objs_lock */
 /* The frame line counters (3c decision 12). The three guarded by objs_lock are read and written with it; the other two
    are atomic because missing_handler and the recorder run without it. */
@@ -3818,6 +3820,13 @@ static void h_sync_initialize(CPU* c, u64 entry) {
 }
 
 enum { NVN_ACQUIRE_OK = 0, NVN_ACQUIRE_FAILED = 1 };
+/* Ends a failed nvnWindowAcquireTexture: the reason, the invalid index and the result. objs_lock is held. */
+static void window_acquire_failed(CPU* c, u64 window_addr, u64 sync_addr, u64 index_addr, const char* reason) {
+    LOG("nvn-native: nvnWindowAcquireTexture failed: %s (window=%llx sync=%llx index=%llx)\n",
+        reason, (unsigned long long)window_addr, (unsigned long long)sync_addr, (unsigned long long)index_addr);
+    if (native_guest_writable(index_addr, sizeof(uint32_t))) gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
+    c->x[0] = NVN_ACQUIRE_FAILED;
+}
 static void h_window_acquire_texture(CPU* c, u64 entry) {
     (void)entry;
     const u64 window_addr = c->x[0], sync_addr = c->x[1], index_addr = c->x[2];
@@ -3826,10 +3835,7 @@ static void h_window_acquire_texture(CPU* c, u64 entry) {
     SyncRec* sync = known_record(sync_addr, NVN_OBJ_SYNC);
     if (!window || !sync || !native_guest_writable(index_addr, sizeof(uint32_t))) {
         const char* reason = !window ? "unknown window" : !sync ? "unknown sync" : "unwritable index";
-        LOG("nvn-native: nvnWindowAcquireTexture failed: %s (window=%llx sync=%llx index=%llx)\n",
-            reason, (unsigned long long)window_addr, (unsigned long long)sync_addr, (unsigned long long)index_addr);
-        if (native_guest_writable(index_addr, sizeof(uint32_t))) gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
-        c->x[0] = NVN_ACQUIRE_FAILED;
+        window_acquire_failed(c, window_addr, sync_addr, index_addr, reason);
         pm_unlock(&objs_lock);
         return;
     }
@@ -3841,14 +3847,24 @@ static void h_window_acquire_texture(CPU* c, u64 entry) {
     sync = known_record(sync_addr, NVN_OBJ_SYNC);
     if (!window || !sync || !native_guest_writable(index_addr, sizeof(uint32_t))) {
         const char* reason = !window ? "window changed" : !sync ? "sync changed" : "index changed";
-        LOG("nvn-native: nvnWindowAcquireTexture failed: %s (window=%llx sync=%llx index=%llx)\n",
-            reason, (unsigned long long)window_addr, (unsigned long long)sync_addr, (unsigned long long)index_addr);
-        if (native_guest_writable(index_addr, sizeof(uint32_t))) gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
-        c->x[0] = NVN_ACQUIRE_FAILED;
+        window_acquire_failed(c, window_addr, sync_addr, index_addr, reason);
         pm_unlock(&objs_lock);
         return;
     }
     int32_t index = nvn_window_pick_image(window->states, window->texture_count, window->last_index);
+    /* A PRESENTED image comes back when its frame job finishes. */
+    while (index < 0 && nvn_window_has_presented(window->states, window->texture_count)) {
+        kthread_wait(&frame_done_cv, &objs_lock, -1);
+        window = known_record(window_addr, NVN_OBJ_WINDOW);
+        sync = known_record(sync_addr, NVN_OBJ_SYNC);
+        if (!window || !sync || !native_guest_writable(index_addr, sizeof(uint32_t))) {
+            const char* reason = !window ? "window changed" : !sync ? "sync changed" : "index changed";
+            window_acquire_failed(c, window_addr, sync_addr, index_addr, reason);
+            pm_unlock(&objs_lock);
+            return;
+        }
+        index = nvn_window_pick_image(window->states, window->texture_count, window->last_index);
+    }
     if (index < 0) {
         LOG("nvn-native: nvnWindowAcquireTexture failed: no free window image (window=%llx states=%u,%u,%u,%u)\n",
             (unsigned long long)window_addr, window->states[0], window->states[1], window->states[2], window->states[3]);
@@ -3868,18 +3884,55 @@ static void h_window_acquire_texture(CPU* c, u64 entry) {
 }
 static void h_sync_wait(CPU* c, u64 entry) {
     (void)entry;
+    const u64 sync_addr = c->x[0];
+    const NvnWaitDeadline limit = nvn_wait_deadline(c->x[1], plat_ns());
     pm_lock(&objs_lock);
-    SyncRec* sync = known_record(c->x[0], NVN_OBJ_SYNC);
+    SyncRec* sync = known_record(sync_addr, NVN_OBJ_SYNC);
     if (!sync) {
-        LOG("nvn-native: nvnSyncWait unknown sync=%llx\n", (unsigned long long)c->x[0]);
+        LOG("nvn-native: nvnSyncWait unknown sync=%llx\n", (unsigned long long)sync_addr);
         c->x[0] = NVN_SYNC_WAIT_FAILED;
         pm_unlock(&objs_lock);
         return;
     }
-    NvnSyncWaitResult result = nvn_sync_wait_result(sync->state);
-    if (result != NVN_SYNC_WAIT_SIGNALED) /* 3c adds the waiting states; until then the timeout is not used */
+    NvnSyncAction action = nvn_sync_wait_action(sync->state);
+    if (action == NVN_SYNC_ACTION_REFUSE) {
         LOG_LIMIT(32, "nvn-native: nvnSyncWait sync=%llx state=%u timeout=%llx is not signaled, fails\n",
-                  (unsigned long long)c->x[0], (unsigned)sync->state, (unsigned long long)c->x[1]);
+                  (unsigned long long)sync_addr, (unsigned)sync->state, (unsigned long long)c->x[1]);
+        c->x[0] = NVN_SYNC_WAIT_FAILED;
+        pm_unlock(&objs_lock);
+        return;
+    }
+    NvnSyncWaitResult result = NVN_SYNC_WAIT_SIGNALED;
+    while (action == NVN_SYNC_ACTION_WAIT) {
+        i64 left = nvn_wait_remaining_ns(limit, plat_ns());
+        if (left == 0) {
+            result = NVN_SYNC_WAIT_TIMEOUT;
+            break;
+        }
+        int timed_out = kthread_wait(&frame_done_cv, &objs_lock, left);
+        sync = known_record(sync_addr, NVN_OBJ_SYNC);
+        if (!sync) {
+            LOG_LIMIT(32, "nvn-native: nvnSyncWait sync=%llx is gone while it waited, fails\n",
+                      (unsigned long long)sync_addr);
+            result = NVN_SYNC_WAIT_FAILED;
+            break;
+        }
+        action = nvn_sync_wait_action(sync->state);
+        if (action == NVN_SYNC_ACTION_SIGNALED) {
+            result = NVN_SYNC_WAIT_SIGNALED;
+            break;
+        }
+        if (action == NVN_SYNC_ACTION_REFUSE) {
+            LOG_LIMIT(32, "nvn-native: nvnSyncWait sync=%llx state=%u is not fenced after the wait, fails\n",
+                      (unsigned long long)sync_addr, (unsigned)sync->state);
+            result = NVN_SYNC_WAIT_FAILED;
+            break;
+        }
+        if (timed_out) {
+            result = NVN_SYNC_WAIT_TIMEOUT;
+            break;
+        }
+    }
     c->x[0] = result;
     pm_unlock(&objs_lock);
 }
@@ -4029,6 +4082,7 @@ static void frame_finish(FrameJob* job) {
         sync->state = nvn_sync_after_token(sync->state, &sync->fences);
     }
     nvn_frame_release(&job->frame, &lists);
+    pc_broadcast(&frame_done_cv); /* the image and the syncs are up to date */
     pm_unlock(&objs_lock);
 }
 static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int shown, uint32_t fences,
@@ -4660,6 +4714,7 @@ static void bootstrap_native(CPU* c, u64 entry) {
 
 void nvn_native_init(void) {
     if (!g_settings.nvn_native) return;
+    pc_init(&frame_done_cv);
     u64 entry = kernel_find_symbol_exact("nvnBootstrapLoader");
     if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3)) {
         WARN("nvn-native: bootstrap loader symbol is unavailable\n");
