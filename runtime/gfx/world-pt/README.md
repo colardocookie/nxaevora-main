@@ -20,7 +20,7 @@ Use the prepared runtime when generating or relinking your local game executable
 ./runtime/gfx/world-pt/Start-WorldPT.ps1 -Executable C:/games/build/ArceusTest.exe -Game C:/games/ArceusTest -Backend FSR -Terrain C:/games/local-terrain
 ```
 
-Choose `DLSS`, `FSR`, or `RR`. The launcher uses native controller input, game-controlled frame pacing, a 120 FPS target, and camera multiplier 2.2. The terrain directory is optional. Camera-visible geometry is captured from guest draws. Additional local terrain, structure and instance tables provide offscreen geometry and materials.
+The default backend is `Native` and ray tracing is off. Select `-Backend DLSS` for DLSS Super Resolution or `-Backend FSR` for FSR without ray tracing. Add `-RayTracing` to enable the path tracer. With `-RayTracing` alone, the launcher selects FSR. Select `-Backend RR -RayTracing` for DLSS Ray Reconstruction. These options apply at launch and require restarting the game to change. The launcher explicitly overrides inherited graphics environment variables. Direct executable launches also leave DLSS and ray tracing off unless explicitly enabled through `ARCEUS_UPSCALER=DLSS` / `ARCEUS_NGX=1` and `ARCEUS_RAY_TRACING=1`. Ray tracing can use FSR with DLSS disabled. The launcher uses native controller input, game-controlled frame pacing, a 120 FPS target, and camera multiplier 2.2. The terrain directory is optional. Camera-visible geometry is captured from guest draws. Additional local terrain, structure and instance tables provide offscreen geometry and materials.
 
 ## Scene and lighting
 
