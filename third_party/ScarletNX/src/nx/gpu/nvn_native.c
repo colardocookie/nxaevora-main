@@ -1647,11 +1647,6 @@ static int texture_write_check(CPU* c, TextureWriteCall* call) {
                   (unsigned long long)c->x[0]);
         return 0;
     }
-    if (texture->layout.dim == 3) {
-        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels texture=%llx is 3D\n",
-                  (unsigned long long)c->x[0]);
-        return 0;
-    }
     if (texture->layout.sample_x != 1 || texture->layout.sample_y != 1) {
         LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels texture=%llx is multisample\n",
                   (unsigned long long)c->x[0]);
@@ -1688,7 +1683,9 @@ static int texture_write_check(CPU* c, TextureWriteCall* call) {
         return 0;
     }
     uint64_t layer_end;
-    uint64_t max_layers = texture->layout.depth ? texture->layout.depth : 1;
+    /* A 3D level counts its slices in the level depth; the other targets count layers in the texture depth. */
+    uint64_t max_layers = texture->layout.dim == 3 ? call->level.depth :
+                          texture->layout.depth ? texture->layout.depth : 1;
     if (!texture_write_add(layer_first, layer_count, &layer_end) || layer_end > max_layers) {
         LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT,
                   "nvn-native: nvnTextureWriteTexels layer=%llu count=%u depth=%llu is outside the texture\n",
@@ -1737,22 +1734,38 @@ static int texture_write_check(CPU* c, TextureWriteCall* call) {
                   (unsigned long long)c->x[3], (unsigned long long)source_length);
         return 0;
     }
-    uint64_t layer_stride = texture->layout.layer_stride;
-    for (uint32_t i = 0; i < layer_count; i++) {
-        uint64_t layer_offset, dst;
-        if (!texture_write_mul(layer_first + i, layer_stride, &layer_offset) ||
-            !texture_write_add(texture->builder.offset, layer_offset, &layer_offset) ||
-            !texture_write_add(pool->storage, layer_offset, &dst) ||
+    if (texture->layout.dim == 3) {
+        /* A 3D level is one layer: its slices share the level base and the level size covers all of them. */
+        uint64_t dst;
+        if (!texture_write_add(pool->storage, texture->builder.offset, &dst) ||
             !texture_write_add(dst, call->level.offset, &dst)) {
             LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels address arithmetic overflows\n");
             return 0;
         }
         if (!native_guest_writable(dst, call->level.size)) {
             LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT,
-                      "nvn-native: nvnTextureWriteTexels unwritable layer=%llu destination=%llx bytes=%llu\n",
-                      (unsigned long long)(layer_first + i), (unsigned long long)dst,
-                      (unsigned long long)call->level.size);
+                      "nvn-native: nvnTextureWriteTexels unwritable 3D level destination=%llx bytes=%llu\n",
+                      (unsigned long long)dst, (unsigned long long)call->level.size);
             return 0;
+        }
+    } else {
+        uint64_t layer_stride = texture->layout.layer_stride;
+        for (uint32_t i = 0; i < layer_count; i++) {
+            uint64_t layer_offset, dst;
+            if (!texture_write_mul(layer_first + i, layer_stride, &layer_offset) ||
+                !texture_write_add(texture->builder.offset, layer_offset, &layer_offset) ||
+                !texture_write_add(pool->storage, layer_offset, &dst) ||
+                !texture_write_add(dst, call->level.offset, &dst)) {
+                LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels address arithmetic overflows\n");
+                return 0;
+            }
+            if (!native_guest_writable(dst, call->level.size)) {
+                LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT,
+                          "nvn-native: nvnTextureWriteTexels unwritable layer=%llu destination=%llx bytes=%llu\n",
+                          (unsigned long long)(layer_first + i), (unsigned long long)dst,
+                          (unsigned long long)call->level.size);
+                return 0;
+            }
         }
     }
     call->texture = texture;
@@ -1768,14 +1781,16 @@ static int texture_write_check(CPU* c, TextureWriteCall* call) {
     call->row_end = (uint32_t)row_end;
     return 1;
 }
-/* Caller holds objs_lock and texture_write_check accepted the whole call. Copies one layer slice. */
+/* Caller holds objs_lock and texture_write_check accepted the whole call. Copies one slice: slice z of a 3D level
+   at the level base, layer i of a 2D level at its layer stride. */
 static void texture_write_slice(const TextureWriteCall* call, uint32_t index) {
     uint64_t layer = call->layer_first + index;
-    uint64_t dst = call->pool->storage + call->texture->builder.offset +
-                   layer * call->texture->layout.layer_stride + call->level.offset;
+    int is_3d = call->texture->layout.dim == 3;
+    uint64_t dst = call->pool->storage + call->texture->builder.offset + call->level.offset +
+                   (is_3d ? 0 : layer * call->texture->layout.layer_stride);
     const uint8_t* src = GP(call->source + index * call->src_layer_stride);
     nvn_texture_write_rows(GP(dst), &call->level, call->x_start, call->x_end, call->row_start, call->row_end,
-                           src, call->src_row_bytes);
+                           src, call->src_row_bytes, is_3d ? (uint32_t)layer : 0);
 }
 static void h_texture_write_texels(CPU* c, u64 entry) {
     (void)entry;

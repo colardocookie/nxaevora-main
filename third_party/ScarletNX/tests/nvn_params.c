@@ -380,7 +380,9 @@ static void test_texture_level(void) {
     t.builder = (NvnTextureBuilder){.target = NVN_TEXTURE_TARGET_3D, .width = 8, .height = 8, .depth = 4,
                                     .levels = 1, .format = 0x25};
     CHECK(nvn_texture_layout(&t.builder, &nvn_texture_device_words, &t.layout));
-    CHECK(!nvn_texture_level(&t, 0, &lv)); /* 3D */
+    /* A 3D level: 8 by 8 by 4 texels of 4 bytes, blocks 2 slices deep (ez = 2), 2048 bytes. */
+    CHECK(nvn_texture_level(&t, 0, &lv) && lv.offset == 0 && lv.size == 2048 && lv.depth == 4 &&
+          lv.depth_log2 == 2 && lv.gobs_x == 1 && lv.rows == 8 && lv.block_height_log2 == 0);
     t.builder = (NvnTextureBuilder){.target = NVN_TEXTURE_TARGET_2D_MS, .width = 16, .height = 16, .depth = 1,
                                     .levels = 1, .format = 0x25, .samples = 4};
     CHECK(nvn_texture_layout(&t.builder, &nvn_texture_device_words, &t.layout));
@@ -408,7 +410,8 @@ static uint64_t reference_level_offset(uint32_t gobs_x, uint32_t bh, uint32_t x,
 }
 static void test_texture_write_rows(void) {
     /* 128 bytes by 32 rows, two blocks of two GOBs high each: 4096 bytes */
-    NvnTextureLevel lv = {.offset = 0, .size = 4096, .gobs_x = 2, .rows = 32, .block_height_log2 = 1};
+    NvnTextureLevel lv = {.offset = 0, .size = 4096, .gobs_x = 2, .rows = 32, .depth = 1,
+                          .block_height_log2 = 1};
     uint8_t level[4096], expected[4096], source[2048];
     const uint32_t x_start = 20, x_end = 76, row_start = 5, row_end = 27;
     const uint32_t row_bytes = x_end - x_start;
@@ -419,16 +422,87 @@ static void test_texture_write_rows(void) {
         for (uint32_t x = x_start; x < x_end; x++)
             expected[reference_level_offset(lv.gobs_x, lv.block_height_log2, x, r)] =
                 source[(r - row_start) * row_bytes + (x - x_start)];
-    CHECK(nvn_texture_write_rows(level, &lv, x_start, x_end, row_start, row_end, source, row_bytes));
+    CHECK(nvn_texture_write_rows(level, &lv, x_start, x_end, row_start, row_end, source, row_bytes, 0));
     CHECK(memcmp(level, expected, sizeof level) == 0);
     /* refusals write nothing */
     memset(level, 0xa5, sizeof level);
-    CHECK(!nvn_texture_write_rows(level, &lv, 0, 129, 0, 1, source, 129));
-    CHECK(!nvn_texture_write_rows(level, &lv, 0, 1, 0, 33, source, 1));
+    CHECK(!nvn_texture_write_rows(level, &lv, 0, 129, 0, 1, source, 129, 0));
+    CHECK(!nvn_texture_write_rows(level, &lv, 0, 1, 0, 33, source, 1, 0));
     for (size_t i = 0; i < sizeof level; i++) CHECK(level[i] == 0xa5);
     NvnTextureLevel small = lv;
     small.size = 100;
-    CHECK(!nvn_texture_write_rows(level, &small, 0, 64, 0, 1, source, 64));
+    CHECK(!nvn_texture_write_rows(level, &small, 0, 64, 0, 1, source, 64, 0));
+    for (size_t i = 0; i < sizeof level; i++) CHECK(level[i] == 0xa5);
+}
+
+/* The block linear offset of byte (x, y) of slice z, from the same GOB geometry as reference_level_offset:
+   a block is 2^bh GOBs high and 2^bd slices deep, blocks go gobs_x to a row, the rows of a slab come next and then
+   the slabs (gpu.c's bl_offset). */
+static uint64_t reference_level_offset_3d(uint32_t gobs_x, uint32_t rows, uint32_t bh, uint32_t bd,
+                                          uint32_t x, uint32_t y, uint32_t z) {
+    uint32_t x_bits = 0x12fu, y_bits = 0xd0u;
+    uint64_t block_rows = ((uint64_t)rows + (8u << bh) - 1) >> (3 + bh);
+    uint64_t gy = y >> 3;
+    return ((uint64_t)(x >> 6) << (9 + bh + bd)) + deposit_bits(x, x_bits) +
+           (((z >> bd) * block_rows + (gy >> bh)) * gobs_x << (9 + bh + bd)) +
+           ((((z & ((1u << bd) - 1)) << bh) + (gy & ((1u << bh) - 1))) << 9) + deposit_bits(y & 7, y_bits);
+}
+static void test_texture_write_rows_3d(void) {
+    /* 64 bytes by 16 block rows, two slices in blocks 2 GOBs high and 2 slices deep: 2048 bytes */
+    NvnTextureLevel lv = {.offset = 0, .size = 2048, .gobs_x = 1, .rows = 16, .depth = 2,
+                          .block_height_log2 = 0, .depth_log2 = 1};
+    uint8_t level[2048], expected[2048], source[2 * 64 * 16];
+    for (size_t i = 0; i < sizeof source; i++) source[i] = (uint8_t)(i * 53u + 7u);
+    for (uint32_t z = 0; z < 2; z++)
+        for (uint32_t y = 0; y < 16; y++)
+            for (uint32_t x = 0; x < 64; x++)
+                expected[reference_level_offset_3d(lv.gobs_x, lv.rows, lv.block_height_log2, lv.depth_log2,
+                                                   x, y, z)] = source[z * 64 * 16 + y * 64 + x];
+    memset(level, 0xa5, sizeof level);
+    CHECK(nvn_texture_write_rows(level, &lv, 0, 64, 0, 16, source, 64, 0));
+    CHECK(nvn_texture_write_rows(level, &lv, 0, 64, 0, 16, source + 64 * 16, 64, 1));
+    CHECK(memcmp(level, expected, sizeof level) == 0);
+    /* hand computed: z = 1's first slice half at 512, z = 0's second block row at 1024, the last byte at 2047 */
+    CHECK(reference_level_offset_3d(1, 16, 0, 1, 0, 0, 1) == 512);
+    CHECK(reference_level_offset_3d(1, 16, 0, 1, 0, 8, 0) == 1024);
+    CHECK(reference_level_offset_3d(1, 16, 0, 1, 63, 15, 1) == 2047);
+    /* ez = 0: each slice is a slab of two block rows, so slice z = 1 starts at 1024 */
+    NvnTextureLevel flat = lv;
+    flat.depth_log2 = 0;
+    CHECK(reference_level_offset_3d(1, 16, 0, 0, 0, 0, 1) == 1024);
+    CHECK(reference_level_offset_3d(1, 16, 0, 0, 0, 8, 0) == 512);
+    for (uint32_t z = 0; z < 2; z++)
+        for (uint32_t y = 0; y < 16; y++)
+            for (uint32_t x = 0; x < 64; x++)
+                expected[reference_level_offset_3d(flat.gobs_x, flat.rows, flat.block_height_log2,
+                                                   flat.depth_log2, x, y, z)] = source[z * 64 * 16 + y * 64 + x];
+    memset(level, 0xa5, sizeof level);
+    CHECK(nvn_texture_write_rows(level, &flat, 0, 64, 0, 16, source, 64, 0));
+    CHECK(nvn_texture_write_rows(level, &flat, 0, 64, 0, 16, source + 64 * 16, 64, 1));
+    CHECK(memcmp(level, expected, sizeof level) == 0);
+    /* bh = 1 and bd = 1 together: 128 bytes by 32 rows, blocks 2 GOBs high and 2 slices deep, 3 slices (two slabs) */
+    NvnTextureLevel deep = {.offset = 0, .size = 16384, .gobs_x = 2, .rows = 32, .depth = 3,
+                            .block_height_log2 = 1, .depth_log2 = 1};
+    static uint8_t deep_level[16384], deep_expected[16384], deep_source[3 * 128 * 32];
+    for (size_t i = 0; i < sizeof deep_source; i++) deep_source[i] = (uint8_t)(i * 29u + 3u);
+    memset(deep_level, 0xa5, sizeof deep_level);
+    memset(deep_expected, 0xa5, sizeof deep_expected);
+    for (uint32_t z = 0; z < 3; z++) {
+        for (uint32_t y = 0; y < 32; y++)
+            for (uint32_t x = 0; x < 128; x++)
+                deep_expected[reference_level_offset_3d(deep.gobs_x, deep.rows, deep.block_height_log2,
+                                                        deep.depth_log2, x, y, z)] =
+                    deep_source[z * 128 * 32 + y * 128 + x];
+        CHECK(nvn_texture_write_rows(deep_level, &deep, 0, 128, 0, 32, deep_source + z * 128 * 32, 128, z));
+    }
+    CHECK(memcmp(deep_level, deep_expected, sizeof deep_level) == 0);
+    /* hand computed: slice 1 of block (0, 0) starts 2 GOBs in, slice 2 starts the second slab (2 block rows of 2 blocks) */
+    CHECK(reference_level_offset_3d(2, 32, 1, 1, 0, 0, 1) == 1024);
+    CHECK(reference_level_offset_3d(2, 32, 1, 1, 0, 8, 0) == 512);
+    CHECK(reference_level_offset_3d(2, 32, 1, 1, 0, 0, 2) == 8192);
+    /* a slice outside the level depth is refused and writes nothing */
+    memset(level, 0xa5, sizeof level);
+    CHECK(!nvn_texture_write_rows(level, &lv, 0, 64, 0, 16, source, 64, 2));
     for (size_t i = 0; i < sizeof level; i++) CHECK(level[i] == 0xa5);
 }
 
@@ -2231,6 +2305,7 @@ int main(int argc, char** argv) {
     test_texture_layout();
     test_texture_level();
     test_texture_write_rows();
+    test_texture_write_rows_3d();
     if (argc == 2) test_texture_queries(argv[1]);
     test_device_integer();
     test_timestamp();
