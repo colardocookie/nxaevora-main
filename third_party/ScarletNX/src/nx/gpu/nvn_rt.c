@@ -58,6 +58,47 @@
 #define NVN_RT_CLEAR_MACRO(method, count) \
     (NVN_RT_HEADER_INCREASE_ONCE | ((count) << NVN_RT_HEADER_COUNT_SHIFT) | (method))
 
+/* The fixed words and methods of nvnCommandBufferCopyTextureToTexture (d82bfd0, d82c5d0, verify-s4-4b.md). */
+#define NVN_RT_COPY_OPEN             0x91030002u
+#define NVN_RT_COPY_CLOSE            0x91000002u
+#define NVN_RT_COPY_SRC_METHOD       0x608Cu
+#define NVN_RT_COPY_SRC_SIZE_METHOD  0x6092u
+#define NVN_RT_COPY_ADDRESS_METHOD   0x6094u
+#define NVN_RT_COPY_DST_METHOD       0x6080u
+#define NVN_RT_COPY_DST_SIZE_METHOD  0x6086u
+#define NVN_RT_COPY_DST_ADDR_METHOD  0x6088u
+#define NVN_RT_COPY_IMMD_METHOD      0x60B5u
+#define NVN_RT_COPY_FLAGS_METHOD     0x6223u
+#define NVN_RT_COPY_RECT_METHOD      0x622Cu
+#define NVN_RT_COPY_SCALE_METHOD     0x6230u
+#define NVN_RT_COPY_OFFSET_METHOD    0x6234u
+#define NVN_RT_COPY_SRC_WORDS        4u
+#define NVN_RT_COPY_DST_WORDS        5u
+#define NVN_RT_COPY_PAIR_WORDS       2u
+#define NVN_RT_COPY_RECT_WORDS       4u
+#define NVN_RT_COPY_FLAGS_WORDS      1u
+#define NVN_RT_COPY_IMMD_VALUE       1u
+#define NVN_RT_COPY_FLAGS_MASK       0x1u   /* only bit0 is in this step */
+#define NVN_RT_COPY_FLAGS_VALUE      0x10u
+#define NVN_RT_COPY_FLAGS_BASE       1u
+#define NVN_RT_COPY_RATIO_UNIT       0x8000
+#define NVN_RT_COPY_RATIO_SHIFT      15u
+#define NVN_RT_COPY_FRACTION_SHIFT   17u    /* 32 - NVN_RT_COPY_RATIO_SHIFT */
+#define NVN_RT_COPY_RATIO_INT_SHIFT  12u
+#define NVN_RT_COPY_ORIGIN_SHIFT     4u
+#define NVN_RT_COPY_OFFSET_SHIFT     28u
+#define NVN_RT_COPY_OFFSET_RIGHT     4u
+#define NVN_RT_COPY_LAYER_LIMIT      0xFFFFu
+#define NVN_RT_COPY_FORMAT_0X37      0x37u
+#define NVN_RT_COPY_FORMAT_0X38      0x38u
+#define NVN_RT_COPY_FORMAT_0X6D      0x6Du
+#define NVN_RT_COPY_FORMAT_0X25      0x25u
+
+#define NVN_RT_COPY_RUN(method, count) \
+    (NVN_RT_HEADER_INCREASING | ((count) << NVN_RT_HEADER_COUNT_SHIFT) | (method))
+#define NVN_RT_COPY_VALUE(method, value) \
+    (NVN_RT_HEADER_INLINE | (((value) & NVN_RT_HEADER_VALUE_MAX) << NVN_RT_HEADER_COUNT_SHIFT) | (method))
+
 typedef struct {
     uint64_t address;
     uint32_t width, height, depth, format, tile, layer_stride_words;
@@ -68,6 +109,10 @@ typedef struct {
     uint32_t depth_word;
     int target_3d;
 } NvnRtViewResult;
+
+typedef struct {
+    uint32_t aligned_width, height, tile, depth_word;
+} NvnRtCopySurface;
 
 static uint32_t rt_align_up(uint32_t value, uint32_t multiple) {
     return ((value + multiple - 1u) / multiple) * multiple;
@@ -405,5 +450,214 @@ uint32_t nvn_rt_clear_texture_words(const NvnRtEnv* env, const NvnTexture* textu
     out[at++] = surface;
     out[at++] = NVN_RT_CLEAR_VALUE(NVN_RT_CLEAR_IMMD_METHOD, 1u);
     out[at++] = NVN_RT_CLEAR_CLOSE;
+    return at;
+}
+
+/* The checks that the two copy surfaces share. The format word is read after the copy format change, so it is not
+   part of these checks: rt_texture_checks reads the render target column +0x1C and the copy takes +0x18. */
+static int rt_copy_checks(const NvnRtCopyEnv* env, const NvnTexture* texture) {
+    const NvnTextureLayout* layout = &texture->layout;
+    if (texture->builder.target != NVN_TEXTURE_TARGET_2D &&
+        texture->builder.target != NVN_TEXTURE_TARGET_2D_ARRAY) {
+        env->base.fault(env->base.ctx, "copy target", texture->builder.target);
+        return 0;
+    }
+    if (texture->builder.levels > 1u) {
+        env->base.fault(env->base.ctx, "copy levels", texture->builder.levels);
+        return 0;
+    }
+    if (texture->builder.flags & NVN_TEXTURE_LINEAR_FLAGS) {
+        env->base.fault(env->base.ctx, "copy linear", texture->builder.flags);
+        return 0;
+    }
+    if (layout->block_width != 1u || layout->block_height != 1u) {
+        env->base.fault(env->base.ctx, "copy block", texture->builder.format);
+        return 0;
+    }
+    if (layout->bytes_per_block == 0u || layout->bytes_per_block > NVN_TEXTURE_GOB_WIDTH) {
+        env->base.fault(env->base.ctx, "copy bytes per block", layout->bytes_per_block);
+        return 0;
+    }
+    return 1;
+}
+
+/* The size and tile words of one copy surface. The width and height use the sample scale as in ClearTexture. */
+static void rt_copy_surface(const NvnTexture* texture, NvnRtCopySurface* out) {
+    const NvnTextureLayout* layout = &texture->layout;
+    uint32_t width = layout->width * layout->sample_x;
+    uint32_t height = layout->height * layout->sample_y;
+    uint32_t gob_blocks = NVN_TEXTURE_GOB_WIDTH / layout->bytes_per_block;
+    uint32_t factor = rt_tile_factor(layout, width, height, layout->depth);
+    uint32_t tile_depth = 1u << (layout->tile_z & NVN_RT_SHIFT_MASK);
+    out->aligned_width = rt_align_up(width, factor * gob_blocks);
+    out->height = height;
+    out->tile = rt_tile_word(layout);
+    out->depth_word = layout->depth < tile_depth ? layout->depth : tile_depth;
+}
+
+/* (int32_t)(extent << 15) / divisor (SDIV). The INT32_MIN / -1 case is undefined in C and is refused here. */
+static int rt_copy_ratio(const NvnRtCopyEnv* env, uint32_t extent, uint32_t divisor, int32_t* out) {
+    int32_t value = (int32_t)(extent << NVN_RT_COPY_RATIO_SHIFT);
+    int32_t div = (int32_t)divisor;
+    if (value == INT32_MIN && div == -1) {
+        env->base.fault(env->base.ctx, "copy ratio", divisor);
+        return 0;
+    }
+    *out = value / div;
+    return 1;
+}
+
+uint32_t nvn_rt_copy_texture_words(const NvnRtCopyEnv* env, const NvnTexture* src,
+                                   const NvnTextureView* src_view, const NvnTexture* dst,
+                                   const NvnTextureView* dst_view, const uint32_t src_region[6],
+                                   const uint32_t dst_region[6], uint32_t flags, int* nothing,
+                                   uint32_t* out) {
+    if (nothing) *nothing = 0;
+    if (!env || !env->base.fault || !env->format_word || !out || !nothing || !src || !dst ||
+        !src_region || !dst_region) return 0;
+    uint32_t layers = dst_region[5];
+    /* The library returns before the start word when the destination region is empty (explorer section 7). */
+    if (dst_region[3] == 0u || dst_region[4] == 0u || layers == 0u) {
+        *nothing = 1;
+        return 0;
+    }
+    if (!rt_copy_checks(env, src) || !rt_copy_checks(env, dst)) return 0;
+    if (flags & ~NVN_RT_COPY_FLAGS_MASK) {
+        env->base.fault(env->base.ctx, "copy flags", flags);
+        return 0;
+    }
+    if (layers > NVN_RT_COPY_LAYERS_MAX) {
+        env->base.fault(env->base.ctx, "copy layers", layers);
+        return 0;
+    }
+    int32_t ratio_x = 0, ratio_y = 0;
+    if (!rt_copy_ratio(env, src_region[3], dst_region[3], &ratio_x) ||
+        !rt_copy_ratio(env, src_region[4], dst_region[4], &ratio_y)) return 0;
+
+    /* The format change of item 5, then the +0x18 word of each index (explorer sections 2 and 5).
+       The caller reads the format from the view when the view has one, else from the texture. */
+    uint32_t src_format = (src_view && (src_view->flags & NVN_VIEW_FORMAT)) ? src_view->format
+                                                                           : src->builder.format;
+    uint32_t dst_format = (dst_view && (dst_view->flags & NVN_VIEW_FORMAT)) ? dst_view->format
+                                                                           : dst->builder.format;
+    if (src_format == dst_format &&
+        (!(flags & NVN_RT_COPY_FLAGS_MASK) ||
+         (ratio_x == NVN_RT_COPY_RATIO_UNIT && ratio_y == NVN_RT_COPY_RATIO_UNIT))) {
+        if (src_format == NVN_RT_COPY_FORMAT_0X38) {
+            src_format = NVN_RT_COPY_FORMAT_0X25;
+            dst_format = NVN_RT_COPY_FORMAT_0X25;
+        } else if (src_format == NVN_RT_COPY_FORMAT_0X37) {
+            src_format = NVN_RT_COPY_FORMAT_0X6D;
+            dst_format = NVN_RT_COPY_FORMAT_0X6D;
+        }
+    }
+    uint32_t src_format_word = env->format_word(env->base.ctx, src_format);
+    if (src_format_word == 0u) {
+        env->base.fault(env->base.ctx, "copy format", src_format);
+        return 0;
+    }
+    uint32_t dst_format_word = env->format_word(env->base.ctx, dst_format);
+    if (dst_format_word == 0u) {
+        env->base.fault(env->base.ctx, "copy format", dst_format);
+        return 0;
+    }
+
+    /* The layer addresses are made first, so that a late refusal writes no part of out. */
+    uint32_t src_high[NVN_RT_COPY_LAYERS_MAX], src_low[NVN_RT_COPY_LAYERS_MAX];
+    uint32_t dst_high[NVN_RT_COPY_LAYERS_MAX], dst_low[NVN_RT_COPY_LAYERS_MAX];
+    uint32_t src_view_base = (src_view && (src_view->flags & NVN_VIEW_LAYERS)) ? src_view->base_layer : 0u;
+    uint32_t dst_view_base = (dst_view && (dst_view->flags & NVN_VIEW_LAYERS)) ? dst_view->base_layer : 0u;
+    int32_t step = (int32_t)src_region[5] / (int32_t)layers;
+    NvnTextureView src_layer = {0};
+    NvnTextureView dst_layer = {0};
+    src_layer.flags = dst_layer.flags = NVN_VIEW_LEVELS | NVN_VIEW_LAYERS;
+    src_layer.level_count = dst_layer.level_count = 1u;
+    src_layer.layer_count = dst_layer.layer_count = 1u;
+    src_layer.base_level =
+        (uint8_t)((src_view && (src_view->flags & NVN_VIEW_LEVELS)) ? src_view->base_level : 0u);
+    dst_layer.base_level =
+        (uint8_t)((dst_view && (dst_view->flags & NVN_VIEW_LEVELS)) ? dst_view->base_level : 0u);
+    for (uint32_t i = 0; i < layers; i++) {
+        uint64_t src_position =
+            (uint64_t)src_region[2] + src_view_base + (uint64_t)((int64_t)step * (int64_t)i);
+        uint64_t dst_position = (uint64_t)dst_region[2] + dst_view_base + i;
+        if (src_position > NVN_RT_COPY_LAYER_LIMIT || dst_position > NVN_RT_COPY_LAYER_LIMIT) {
+            env->base.fault(env->base.ctx, "copy layers",
+                            src_position > NVN_RT_COPY_LAYER_LIMIT ? src_position : dst_position);
+            return 0;
+        }
+        src_layer.base_layer = (uint16_t)src_position;
+        dst_layer.base_layer = (uint16_t)dst_position;
+        NvnRtViewResult src_result, dst_result;
+        if (!rt_view_apply(&env->base, src, &src_layer, &src_result)) return 0;
+        if (!rt_view_apply(&env->base, dst, &dst_layer, &dst_result)) return 0;
+        src_high[i] = (uint32_t)(src_result.address >> 32);
+        src_low[i] = (uint32_t)src_result.address;
+        dst_high[i] = (uint32_t)(dst_result.address >> 32);
+        dst_low[i] = (uint32_t)dst_result.address;
+    }
+
+    NvnRtCopySurface src_surface, dst_surface;
+    rt_copy_surface(src, &src_surface);
+    rt_copy_surface(dst, &dst_surface);
+    uint32_t w5 = (uint32_t)(ratio_x >> NVN_RT_COPY_RATIO_INT_SHIFT) + (src_region[0] << NVN_RT_COPY_ORIGIN_SHIFT);
+    uint32_t w6 = (uint32_t)(ratio_y >> NVN_RT_COPY_RATIO_INT_SHIFT) + (src_region[1] << NVN_RT_COPY_ORIGIN_SHIFT);
+
+    uint32_t at = 0;
+    out[at++] = NVN_RT_COPY_OPEN;
+    for (uint32_t i = 0; i < layers; i++) {
+        if (i == 0u) {
+            out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_SRC_METHOD, NVN_RT_COPY_SRC_WORDS);
+            out[at++] = src_format_word;
+            out[at++] = 0u;
+            out[at++] = src_surface.tile;
+            out[at++] = src_surface.depth_word;
+            out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_SRC_SIZE_METHOD, NVN_RT_COPY_PAIR_WORDS);
+            out[at++] = src_surface.aligned_width;
+            out[at++] = src_surface.height;
+            out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_ADDRESS_METHOD, NVN_RT_COPY_PAIR_WORDS);
+            out[at++] = src_high[i];
+            out[at++] = src_low[i];
+            out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_DST_METHOD, NVN_RT_COPY_DST_WORDS);
+            out[at++] = dst_format_word;
+            out[at++] = 0u;
+            out[at++] = dst_surface.tile;
+            out[at++] = dst_surface.depth_word;
+            out[at++] = 0u;
+            out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_DST_SIZE_METHOD, NVN_RT_COPY_PAIR_WORDS);
+            out[at++] = dst_surface.aligned_width;
+            out[at++] = dst_surface.height;
+            out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_DST_ADDR_METHOD, NVN_RT_COPY_PAIR_WORDS);
+            out[at++] = dst_high[i];
+            out[at++] = dst_low[i];
+            out[at++] = NVN_RT_COPY_VALUE(NVN_RT_COPY_IMMD_METHOD, NVN_RT_COPY_IMMD_VALUE);
+        } else {
+            out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_ADDRESS_METHOD, NVN_RT_COPY_PAIR_WORDS);
+            out[at++] = src_high[i];
+            out[at++] = src_low[i];
+            out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_DST_ADDR_METHOD, NVN_RT_COPY_PAIR_WORDS);
+            out[at++] = dst_high[i];
+            out[at++] = dst_low[i];
+        }
+        out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_FLAGS_METHOD, NVN_RT_COPY_FLAGS_WORDS);
+        out[at++] = ((flags & NVN_RT_COPY_FLAGS_MASK) ? NVN_RT_COPY_FLAGS_VALUE : 0u) |
+                    NVN_RT_COPY_FLAGS_BASE;
+        out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_RECT_METHOD, NVN_RT_COPY_RECT_WORDS);
+        out[at++] = dst_region[0];
+        out[at++] = dst_region[1];
+        out[at++] = dst_region[3];
+        out[at++] = dst_region[4];
+        out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_SCALE_METHOD, NVN_RT_COPY_RECT_WORDS);
+        out[at++] = (uint32_t)ratio_x << NVN_RT_COPY_FRACTION_SHIFT;
+        out[at++] = (uint32_t)(ratio_x >> NVN_RT_COPY_RATIO_SHIFT);
+        out[at++] = (uint32_t)ratio_y << NVN_RT_COPY_FRACTION_SHIFT;
+        out[at++] = (uint32_t)(ratio_y >> NVN_RT_COPY_RATIO_SHIFT);
+        out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_OFFSET_METHOD, NVN_RT_COPY_RECT_WORDS);
+        out[at++] = w5 << NVN_RT_COPY_OFFSET_SHIFT;
+        out[at++] = (uint32_t)((int32_t)w5 >> NVN_RT_COPY_OFFSET_RIGHT);
+        out[at++] = w6 << NVN_RT_COPY_OFFSET_SHIFT;
+        out[at++] = (uint32_t)((int32_t)w6 >> NVN_RT_COPY_OFFSET_RIGHT);
+    }
+    out[at++] = NVN_RT_COPY_CLOSE;
     return at;
 }

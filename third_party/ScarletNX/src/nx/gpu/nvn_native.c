@@ -1298,6 +1298,7 @@ static void h_sampler_pool_register_sampler(CPU* c, u64 entry) {
 #define TEXTURE_FORMAT_STENCIL_OFFSET 0x0fu
 #define TEXTURE_FORMAT_ONE_OFFSET 0x11u
 #define TEXTURE_FORMAT_SRGB_OFFSET 0x12u
+#define TEXTURE_FORMAT_COPY_OFFSET 0x18u
 
 static int texture_format_record(uint32_t format, NvnTextureFormatRecord* record) {
     if (format > NVN_TEXTURE_FORMAT_MAX) {
@@ -1341,6 +1342,28 @@ static int vertex_format_word(uint32_t index, uint32_t* word) {
     }
     *word = gr32(table + offset + VERTEX_FORMAT_WORD_OFFSET);
     return 1;
+}
+/* The copy format word is the column +0x18 of the same table. The replay reads the game's table on its own thread;
+   the reads are of guest memory, so objs_lock is not needed. 0 means an unreadable or invalid format. */
+static uint32_t copy_format_word_cb(void* ctx, uint32_t format) {
+    (void)ctx;
+    if (format > NVN_TEXTURE_FORMAT_MAX) {
+        LOG("nvn-native: copy format invalid format=%x\n", format);
+        return 0;
+    }
+    if (!native_guest_readable(TEXTURE_FORMAT_TABLE_POINTER, sizeof(uint64_t))) {
+        LOG("nvn-native: copy format unreadable table pointer at=%llx\n",
+            (unsigned long long)TEXTURE_FORMAT_TABLE_POINTER);
+        return 0;
+    }
+    uint64_t table = gr64(TEXTURE_FORMAT_TABLE_POINTER);
+    uint64_t offset = (uint64_t)format * TEXTURE_FORMAT_RECORD_BYTES;
+    if (!table || table > UINT64_MAX - offset ||
+        !native_guest_readable(table + offset, TEXTURE_FORMAT_RECORD_BYTES)) {
+        LOG("nvn-native: copy format unreadable format=%x table=%llx\n", format, (unsigned long long)table);
+        return 0;
+    }
+    return gr32(table + offset + TEXTURE_FORMAT_COPY_OFFSET);
 }
 static void texture_pool_register(CPU* c, NvnTextureDescriptorMode mode) {
     uint64_t at;
@@ -3626,6 +3649,41 @@ static int replay_host_clear_texture(NvnNativeReplayHost* host, const NvnOpClear
     return 1;
 }
 
+/* The two texture records are copied under the lock, so that the words are made without it. */
+static int replay_host_copy_texture(NvnNativeReplayHost* host, const NvnOpCopyTexture* op) {
+    NvnTexture src = {0}, dst = {0};
+    int found = 0;
+    pm_lock(&objs_lock);
+    const TextureRec* s = op->src.texture &&
+                          nvn_objtab_valid(&objs, op->src.texture, op->src.generation)
+                              ? known_record(op->src.texture, NVN_OBJ_TEXTURE) : NULL;
+    const TextureRec* d = op->dst.texture &&
+                          nvn_objtab_valid(&objs, op->dst.texture, op->dst.generation)
+                              ? known_record(op->dst.texture, NVN_OBJ_TEXTURE) : NULL;
+    if (s && d) {
+        src = *s;
+        dst = *d;
+        found = 1;
+    }
+    pm_unlock(&objs_lock);
+    if (!found) {
+        replay_bind_refuse(host, "copy texture", -1, -1, (uint32_t)op->src.texture);
+        return 1;
+    }
+    uint32_t words[NVN_RT_COPY_WORDS_MAX];
+    int nothing = 0;
+    NvnRtCopyEnv env = {{host, replay_host_method, replay_host_rt_fault}, copy_format_word_cb};
+    uint32_t count = nvn_rt_copy_texture_words(&env, &src,
+                                               op->src.has_view ? &op->src.view : NULL, &dst,
+                                               op->dst.has_view ? &op->dst.view : NULL,
+                                               op->src_region, op->dst_region, op->flags,
+                                               &nothing, words);
+    if (nothing) return 1;
+    if (!count || !replay_bind_send(host, words, count))
+        replay_bind_refuse(host, "copy texture", -1, -1, (uint32_t)op->src.texture);
+    return 1;
+}
+
 /* The replay thread counts the op, sends the four group 6 words, and keeps the last report and image bind. */
 static int replay_host_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
     NvnNativeReplayHost* host = ctx;
@@ -3643,6 +3701,8 @@ static int replay_host_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
         return replay_host_clear_depth_stencil(host, (const NvnOpClearDepthStencil*)payload);
     if (code == NVN_OP_CLEAR_TEXTURE)
         return replay_host_clear_texture(host, (const NvnOpClearTexture*)payload);
+    if (code == NVN_OP_COPY_TEXTURE)
+        return replay_host_copy_texture(host, (const NvnOpCopyTexture*)payload);
     return 1;
 }
 static void replay_host_fault(void* ctx, const char* what, uint64_t value) {

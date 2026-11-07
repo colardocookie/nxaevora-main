@@ -48,6 +48,26 @@ static NvnRtEnv make_env(Mock* k) {
     return env;
 }
 
+/* The copy takes the format word from the game's table column +0x18: the tests give each index its own word. */
+static uint32_t copy_format_word_stub(void* ctx, uint32_t format) {
+    (void)ctx;
+    return 0x5000u + format;
+}
+
+static uint32_t copy_format_word_zero(void* ctx, uint32_t format) {
+    (void)ctx;
+    (void)format;
+    return 0u;
+}
+
+static NvnRtCopyEnv make_copy_env(Mock* k, uint32_t (*format_word)(void*, uint32_t)) {
+    NvnRtCopyEnv env;
+    memset(&env, 0, sizeof env);
+    env.base = make_env(k);
+    env.format_word = format_word;
+    return env;
+}
+
 static void expect(const Mock* k, uint32_t index, uint32_t method, uint32_t value) {
     if (index >= k->write_count) {
         printf("FAIL write %u: missing\n", index);
@@ -107,6 +127,24 @@ static NvnTexture make_linear_texture(uint32_t format, uint32_t width, uint32_t 
     t.builder.flags = NVN_TEXTURE_FLAG_LINEAR;
     if (!nvn_texture_layout(&t.builder, &nvn_texture_device_words, &t.layout)) {
         printf("FAIL linear texture layout: format %08x %ux%u\n", format, width, height);
+        failures++;
+    }
+    t.address = address;
+    return t;
+}
+
+static NvnTexture make_array_texture(uint32_t format, uint32_t width, uint32_t height, uint32_t depth,
+                                     uint64_t address) {
+    NvnTexture t;
+    memset(&t, 0, sizeof t);
+    nvn_texture_builder_defaults(&t.builder);
+    t.builder.format = format;
+    t.builder.width = width;
+    t.builder.height = height;
+    t.builder.depth = depth;
+    t.builder.target = NVN_TEXTURE_TARGET_2D_ARRAY;
+    if (!nvn_texture_layout(&t.builder, &nvn_texture_device_words, &t.layout)) {
+        printf("FAIL array texture layout: format %08x %ux%u depth %u\n", format, width, height, depth);
         failures++;
     }
     t.address = address;
@@ -761,6 +799,189 @@ static void test_clear_texture_refusals(void) {
     CHECK(nothing == 0 && fault_is(&k, "clear layers") && k.last_fault_value == NVN_RT_CLEAR_LAYERS_MAX + 1u);
 }
 
+static void test_copy_one_layer(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture t = make_texture(0x25, 64, 64, 0x1000);
+    uint32_t src[6] = {0, 0, 0, 64, 64, 1};
+    uint32_t dst[6] = {0, 0, 0, 64, 64, 1};
+    uint32_t words[NVN_RT_COPY_WORDS_MAX];
+    int nothing = -1;
+    uint32_t count = nvn_rt_copy_texture_words(&env, &t, NULL, &t, NULL, src, dst, 0u, &nothing, words);
+    /* verify-s4-4b.md, "CopyTextureToTexture builder": the first layer, the 0x60B5 word and the tail;
+       explorer-s4-4c.md section 7: the start word and the end word. */
+    CHECK(count == 43 && nothing == 0 && k.fault_count == 0);
+    CHECK(words[0] == 0x91030002u);
+    CHECK(words[1] == 0x2004608Cu);
+    CHECK(words[2] == 0x5025u && words[3] == 0u && words[4] == 0x30u && words[5] == 1u);
+    CHECK(words[6] == 0x20026092u && words[7] == 64u && words[8] == 64u);
+    CHECK(words[9] == 0x20026094u && words[10] == 0u && words[11] == 0x1000u);
+    CHECK(words[12] == 0x20056080u);
+    CHECK(words[13] == 0x5025u && words[14] == 0u && words[15] == 0x30u && words[16] == 1u && words[17] == 0u);
+    CHECK(words[18] == 0x20026086u && words[19] == 64u && words[20] == 64u);
+    CHECK(words[21] == 0x20026088u && words[22] == 0u && words[23] == 0x1000u);
+    CHECK(words[24] == 0x800160B5u);
+    CHECK(words[25] == 0x20016223u && words[26] == 1u);
+    CHECK(words[27] == 0x2004622Cu && words[28] == 0u && words[29] == 0u && words[30] == 64u && words[31] == 64u);
+    CHECK(words[32] == 0x20046230u && words[33] == 0u && words[34] == 1u && words[35] == 0u && words[36] == 1u);
+    CHECK(words[37] == 0x20046234u && words[38] == 0x80000000u && words[39] == 0u);
+    CHECK(words[40] == 0x80000000u && words[41] == 0u);
+    CHECK(words[42] == 0x91000002u);
+}
+
+static void test_copy_two_layers(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture src = make_array_texture(0x25, 64, 64, 4, 0x2000);
+    NvnTexture dst = make_array_texture(0x25, 64, 64, 4, 0x1000);
+    uint32_t sregion[6] = {0, 0, 0, 64, 64, 2};
+    uint32_t dregion[6] = {0, 0, 1, 64, 64, 2};
+    uint32_t words[NVN_RT_COPY_WORDS_MAX];
+    int nothing = -1;
+    uint32_t count = nvn_rt_copy_texture_words(&env, &src, NULL, &dst, NULL, sregion, dregion, 0u, &nothing,
+                                               words);
+    uint32_t src1 = (uint32_t)(src.address + src.layout.layer_stride);
+    uint32_t dst1 = (uint32_t)(dst.address + dst.layout.layer_stride);
+    uint32_t dst2 = (uint32_t)(dst.address + 2u * dst.layout.layer_stride);
+    /* explorer-s4-4c.md section 6: the destination layer rises by 1 and the source layer by step = R5 / S5. */
+    CHECK(count == 66 && nothing == 0 && k.fault_count == 0);
+    CHECK(words[23] == dst1);
+    CHECK(words[24] == 0x800160B5u);
+    CHECK(words[42] == 0x20026094u && words[43] == 0u && words[44] == src1);
+    CHECK(words[45] == 0x20026088u && words[46] == 0u && words[47] == dst2);
+    CHECK(words[48] == 0x20016223u);
+    CHECK(words[65] == 0x91000002u);
+
+    /* A source layer count of 4 over 2 destination layers makes the step 2. */
+    sregion[5] = 4;
+    memset(&k, 0, sizeof k);
+    count = nvn_rt_copy_texture_words(&env, &src, NULL, &dst, NULL, sregion, dregion, 0u, &nothing, words);
+    CHECK(count == 66 && nothing == 0 && k.fault_count == 0);
+    CHECK(words[44] == (uint32_t)(src.address + 2u * src.layout.layer_stride));
+    CHECK(words[47] == dst2);
+}
+
+static void test_copy_scaling(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture src = make_texture(0x38, 64, 64, 0x2000);
+    NvnTexture dst = make_texture(0x38, 64, 64, 0x1000);
+    uint32_t sregion[6] = {3, 2, 0, 32, 16, 1};
+    uint32_t dregion[6] = {5, 7, 0, 16, 16, 1};
+    uint32_t words[NVN_RT_COPY_WORDS_MAX];
+    int nothing = -1;
+    uint32_t count = nvn_rt_copy_texture_words(&env, &src, NULL, &dst, NULL, sregion, dregion, 1u, &nothing,
+                                               words);
+    /* explorer-s4-4c.md sections 2, 3 and 5: a doubled source width gives ratioX 0x10000, the offsets use the
+       origins, and flags bit0 with ratios other than 0x8000 keeps format 0x38. */
+    CHECK(count == 43 && nothing == 0 && k.fault_count == 0);
+    CHECK(words[2] == 0x5038u && words[13] == 0x5038u);
+    CHECK(words[26] == 0x11u);
+    CHECK(words[28] == 5u && words[29] == 7u && words[30] == 16u && words[31] == 16u);
+    CHECK(words[33] == 0u && words[34] == 2u && words[35] == 0u && words[36] == 1u);
+    CHECK(words[38] == 0u && words[39] == 4u);
+    CHECK(words[40] == 0x80000000u && words[41] == 2u);
+}
+
+static void test_copy_format_change(void) {
+    Mock k;
+    NvnRtCopyEnv env;
+    uint32_t words[NVN_RT_COPY_WORDS_MAX];
+    int nothing = -1;
+    uint32_t src[6] = {0, 0, 0, 64, 64, 1};
+    uint32_t dst[6] = {0, 0, 0, 64, 64, 1};
+
+    NvnTexture a = make_texture(0x38, 64, 64, 0x1000);
+    memset(&k, 0, sizeof k);
+    env = make_copy_env(&k, copy_format_word_stub);
+    /* explorer-s4-4c.md section 5: equal formats 0x38 become 0x25 and 0x37 becomes 0x6d. */
+    CHECK(nvn_rt_copy_texture_words(&env, &a, NULL, &a, NULL, src, dst, 0u, &nothing, words) == 43);
+    CHECK(words[2] == 0x5025u && words[13] == 0x5025u);
+
+    NvnTexture b = make_texture(0x37, 64, 64, 0x1000);
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_copy_texture_words(&env, &b, NULL, &b, NULL, src, dst, 0u, &nothing, words) == 43);
+    CHECK(words[2] == 0x506Du && words[13] == 0x506Du);
+
+    /* Flags bit0 needs the exact 1:1 ratios for the change; these regions give ratioX = ratioY = 0x8000. */
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_copy_texture_words(&env, &b, NULL, &b, NULL, src, dst, 1u, &nothing, words) == 43);
+    CHECK(words[2] == 0x506Du && words[13] == 0x506Du);
+}
+
+static void test_copy_nothing(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture t = make_texture(0x25, 64, 64, 0x1000);
+    uint32_t src[6] = {0, 0, 0, 64, 64, 1};
+    uint32_t base[6] = {0, 0, 0, 64, 64, 1};
+    uint32_t words[NVN_RT_COPY_WORDS_MAX];
+    /* explorer-s4-4c.md section 7: a zero width, height or layer count writes no word and no fault. */
+    for (uint32_t field = 3; field <= 5; field++) {
+        uint32_t dst[6];
+        memcpy(dst, base, sizeof dst);
+        dst[field] = 0;
+        words[0] = 0xDEADBEEFu;
+        int nothing = -1;
+        memset(&k, 0, sizeof k);
+        CHECK(nvn_rt_copy_texture_words(&env, &t, NULL, &t, NULL, src, dst, 0u, &nothing, words) == 0);
+        CHECK(nothing == 1 && k.fault_count == 0 && words[0] == 0xDEADBEEFu);
+    }
+}
+
+static void test_copy_refusals(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture t = make_texture(0x25, 64, 64, 0x1000);
+    uint32_t src[6] = {0, 0, 0, 64, 64, 1};
+    uint32_t dst[6] = {0, 0, 0, 64, 64, 1};
+    uint32_t words[NVN_RT_COPY_WORDS_MAX];
+    int nothing = -1;
+
+    NvnTexture linear = make_linear_texture(0x25, 64, 64, 0x1000);
+    words[0] = 0xDEADBEEFu;
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_copy_texture_words(&env, &linear, NULL, &t, NULL, src, dst, 0u, &nothing, words) == 0);
+    CHECK(nothing == 0 && fault_is(&k, "copy linear") && words[0] == 0xDEADBEEFu);
+
+    NvnTexture block = make_texture(0x41, 16, 16, 0x1000);
+    memset(&k, 0, sizeof k);
+    nothing = -1;
+    CHECK(nvn_rt_copy_texture_words(&env, &t, NULL, &block, NULL, src, dst, 0u, &nothing, words) == 0);
+    CHECK(nothing == 0 && fault_is(&k, "copy block") && k.last_fault_value == 0x41u);
+
+    NvnTexture target = make_texture(0x25, 64, 64, 0x1000);
+    target.builder.target = NVN_TEXTURE_TARGET_3D;
+    memset(&k, 0, sizeof k);
+    nothing = -1;
+    CHECK(nvn_rt_copy_texture_words(&env, &target, NULL, &t, NULL, src, dst, 0u, &nothing, words) == 0);
+    CHECK(nothing == 0 && fault_is(&k, "copy target") && k.last_fault_value == NVN_TEXTURE_TARGET_3D);
+
+    memset(&k, 0, sizeof k);
+    nothing = -1;
+    CHECK(nvn_rt_copy_texture_words(&env, &t, NULL, &t, NULL, src, dst, 4u, &nothing, words) == 0);
+    CHECK(nothing == 0 && fault_is(&k, "copy flags") && k.last_fault_value == 4u);
+
+    uint32_t many[6] = {0, 0, 0, 64, 64, NVN_RT_COPY_LAYERS_MAX + 1u};
+    memset(&k, 0, sizeof k);
+    nothing = -1;
+    CHECK(nvn_rt_copy_texture_words(&env, &t, NULL, &t, NULL, src, many, 0u, &nothing, words) == 0);
+    CHECK(nothing == 0 && fault_is(&k, "copy layers") && k.last_fault_value == NVN_RT_COPY_LAYERS_MAX + 1u);
+
+    uint32_t wide_src[6] = {0, 0, 0, 0x10000u, 16, 1};
+    uint32_t wide_dst[6] = {0, 0, 0, 0xFFFFFFFFu, 16, 1};
+    memset(&k, 0, sizeof k);
+    nothing = -1;
+    CHECK(nvn_rt_copy_texture_words(&env, &t, NULL, &t, NULL, wide_src, wide_dst, 0u, &nothing, words) == 0);
+    CHECK(nothing == 0 && fault_is(&k, "copy ratio"));
+
+    env = make_copy_env(&k, copy_format_word_zero);
+    memset(&k, 0, sizeof k);
+    nothing = -1;
+    CHECK(nvn_rt_copy_texture_words(&env, &t, NULL, &t, NULL, src, dst, 0u, &nothing, words) == 0);
+    CHECK(nothing == 0 && fault_is(&k, "copy format") && k.last_fault_value == 0x25u);
+}
+
 int main(void) {
     test_one_target();
     test_null_slot_zero();
@@ -784,6 +1005,12 @@ int main(void) {
     test_clear_texture_clip();
     test_clear_texture_nothing();
     test_clear_texture_refusals();
+    test_copy_one_layer();
+    test_copy_two_layers();
+    test_copy_scaling();
+    test_copy_format_change();
+    test_copy_nothing();
+    test_copy_refusals();
     test_depth_linear();
     test_2d_array_target();
     test_refusals();
