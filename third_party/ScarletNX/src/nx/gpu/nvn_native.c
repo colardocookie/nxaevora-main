@@ -3896,8 +3896,9 @@ static void h_sync_wait(CPU* c, u64 entry) {
     }
     NvnSyncAction action = nvn_sync_wait_action(sync->state);
     if (action == NVN_SYNC_ACTION_REFUSE) {
-        LOG_LIMIT(32, "nvn-native: nvnSyncWait sync=%llx state=%u timeout=%llx is not signaled, fails\n",
-                  (unsigned long long)sync_addr, (unsigned)sync->state, (unsigned long long)c->x[1]);
+        LOG_LIMIT(32, "nvn-native: nvnSyncWait sync=%llx state=%u timeout=%llx is not signaled, fails (caller lr=%llx)\n",
+                  (unsigned long long)sync_addr, (unsigned)sync->state, (unsigned long long)c->x[1],
+                  (unsigned long long)c->x[30]);
         c->x[0] = NVN_SYNC_WAIT_FAILED;
         pm_unlock(&objs_lock);
         return;
