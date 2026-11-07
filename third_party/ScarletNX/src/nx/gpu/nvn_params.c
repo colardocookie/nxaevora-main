@@ -1862,6 +1862,59 @@ uint32_t nvn_clear_depth_stencil_words(uint32_t depth_bits, uint32_t depth_enabl
     return w.at;
 }
 
+#define NVN_XFB_METHOD_BUFFER 0xE0u      /* enable, address high, address low, size of buffer 0 */
+#define NVN_XFB_METHOD_BUFFER_STEP 8u
+#define NVN_XFB_BUFFER_WORDS 4u
+#define NVN_XFB_METHOD_ENABLE 0x1D1u
+#define NVN_XFB_METHOD_BEGIN_MACRO 0xE00u /* macro 0 of the library's macro code */
+#define NVN_XFB_METHOD_REPORT 0x6C0u      /* report semaphore: address high, address low, payload, query */
+#define NVN_XFB_REPORT_WORDS 4u
+#define NVN_XFB_COUNT_OFFSET 4u          /* the byte count of buffer i goes to address + 4 + 4i */
+
+/* The query words of End, from the library's constants at sdk 0xde13dc0, 0xde135c8, 0xde13e50 and 0xde13f78. */
+static const uint32_t xfb_count_query[NVN_XFB_BUFFER_COUNT] = {0x1D005002u, 0x1D005022u, 0x1D005042u, 0x1D005062u};
+
+uint32_t nvn_bind_xfb_words(uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out) {
+    if (!out || slot >= NVN_XFB_BUFFER_COUNT) return 0;
+    NvnBindWriter w = {out, 0};
+    uint32_t method = NVN_XFB_METHOD_BUFFER + NVN_XFB_METHOD_BUFFER_STEP * slot;
+    if (!addr) {
+        bind_value(&w, method, 0);
+        return w.at;
+    }
+    bind_run(&w, method, NVN_XFB_BUFFER_WORDS);
+    bind_word(&w, 1);
+    bind_word(&w, (uint32_t)(addr >> 32));
+    bind_word(&w, (uint32_t)addr);
+    bind_word(&w, size);
+    return w.at;
+}
+
+uint32_t nvn_xfb_words(uint32_t kind, uint64_t addr, uint32_t* out) {
+    if (!out) return 0;
+    NvnBindWriter w = {out, 0};
+    switch (kind) {
+    case NVN_XFB_BEGIN:
+        bind_macro(&w, NVN_XFB_METHOD_BEGIN_MACRO, 2);
+        bind_word(&w, (uint32_t)(addr >> 32));
+        bind_word(&w, (uint32_t)addr);
+        return w.at;
+    case NVN_XFB_END:
+        bind_value(&w, NVN_XFB_METHOD_ENABLE, 0);
+        for (uint32_t i = 0; i < NVN_XFB_BUFFER_COUNT; i++) {
+            uint64_t at = addr + NVN_XFB_COUNT_OFFSET * (i + 1u);
+            bind_run(&w, NVN_XFB_METHOD_REPORT, NVN_XFB_REPORT_WORDS);
+            bind_word(&w, (uint32_t)(at >> 32));
+            bind_word(&w, (uint32_t)at);
+            bind_word(&w, 0);
+            bind_word(&w, xfb_count_query[i]);
+        }
+        return w.at;
+    default:
+        return 0;
+    }
+}
+
 /* The draw macros and methods that the five library draw functions write. The headers use the same forms as the bind
    packets: a mode 5 macro of count words, a mode 1 run and a mode 4 inline value. */
 #define NVN_DRAW_TYPE_MAX                 0x1FFFu
