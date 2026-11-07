@@ -79,6 +79,7 @@ typedef enum {
     NVN_RASTER_POLYGON_OFFSET_CLAMP,
     NVN_RASTER_DEPTH_CLAMP,
     NVN_RASTER_LINE_WIDTH,
+    NVN_RASTER_POINT_SIZE,
     NVN_RASTER_KIND_COUNT
 } NvnRasterKind;
 
@@ -93,6 +94,9 @@ typedef enum {
 #define NVN_RASTER_METHOD_DEPTH_CLAMP          0x64Fu
 #define NVN_RASTER_METHOD_LINE_WIDTH           0x4ECu
 #define NVN_RASTER_METHOD_LINE_WIDTH_ALIAS     0x4EDu
+#define NVN_RASTER_METHOD_POINT_SIZE           0x546u
+/* SetPointSize (d84a600) writes 0 here after the size, BindTexture writes the same word under a flag. Not decoded. */
+#define NVN_RASTER_METHOD_POINT_SIZE_FOLLOW    0x68Bu
 #define NVN_RASTER_DEPTH_CLAMP_NEAR            0x101Au
 #define NVN_RASTER_DEPTH_CLAMP_FAR             0x181Du
 #define NVN_RASTER_METHODS_MAX 3u
@@ -149,6 +153,14 @@ uint32_t nvn_depth_stencil_state_set_stencil_op(uint32_t word, uint32_t face, ui
                                                 uint32_t zpass);
 uint32_t nvn_vertex_attrib_state_set_format(uint32_t word, uint32_t format, uint32_t relative_offset);
 uint32_t nvn_vertex_attrib_state_set_stream_index(uint32_t word, uint32_t stream_index);
+/* The library getters (d83af80, d83afa0): format bits 21-30, relative offset bits 7-20, stream index bits 0-4. */
+void nvn_vertex_attrib_state_get_format(uint32_t word, uint32_t* format, uint64_t* relative_offset);
+uint32_t nvn_vertex_attrib_state_get_stream_index(uint32_t word);
+
+/* ResetCounter (d856b40) writes CLEAR_REPORT_VALUE with a word of a table that the counter type indexes. 1 and the
+   word for a type of 0 to 16. The library has no range check. 0 for any other type. */
+#define NVN_RESET_COUNTER_METHOD 0x54Cu
+int nvn_reset_counter_word(uint32_t type, uint32_t* word);
 
 void nvn_color_state_defaults(uint32_t* words);
 void nvn_depth_stencil_state_defaults(uint32_t* words);
@@ -224,6 +236,16 @@ uint32_t nvn_bind_image_words(uint32_t stage, uint32_t first, uint32_t count, co
 int nvn_clear_depth_stencil_nothing(uint32_t depth_enable, uint32_t stencil_mask);
 uint32_t nvn_clear_depth_stencil_words(uint32_t depth_bits, uint32_t depth_enable, uint32_t stencil,
                                        uint32_t stencil_mask, int zcull_clear, int use_macro_e26, uint32_t* out);
+
+/* Transform feedback (sdk d84b400 to d84b6e4). A buffer bind is the enable, address and size run of its slot, or an
+   inline 0 there for address 0. Begin calls macro 0 with the control address. End disables the feedback and writes
+   the four stream byte counts to address + 4 to + 16 with report semaphores. 0 for a bad slot or kind. */
+#define NVN_XFB_BUFFER_COUNT 4u
+#define NVN_BIND_XFB_WORDS_MAX 5u
+#define NVN_XFB_WORDS_MAX 21u
+typedef enum { NVN_XFB_BEGIN = 0, NVN_XFB_END, NVN_XFB_KIND_COUNT } NvnXfbKind;
+uint32_t nvn_bind_xfb_words(uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out);
+uint32_t nvn_xfb_words(uint32_t kind, uint64_t addr, uint32_t* out);
 /* The 10-bit format index that the host uses to read the format word of one vertex attribute state. */
 uint32_t nvn_vertex_attrib_format_index(uint32_t s);
 /* The count to pass to a builder for a table of enabled flags: the highest set index plus one, or 0 when none is set. */
