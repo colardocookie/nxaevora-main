@@ -31,10 +31,30 @@ int32_t nvn_window_pick_image(const uint8_t* states, uint32_t count, int32_t las
     }
     return NVN_WINDOW_NO_IMAGE;
 }
-NvnSyncWaitResult nvn_sync_wait_result(NvnSyncState state) {
-    /* FENCED is signaled by its frame job, which step 2e adds. Until then a wait on it cannot be
-       satisfied. */
-    return state == NVN_SYNC_SIGNALED ? NVN_SYNC_WAIT_SIGNALED : NVN_SYNC_WAIT_FAILED;
+int nvn_window_has_presented(const uint8_t* states, uint32_t count) {
+    if (!states || count > NVN_WINDOW_MAX_TEXTURES) return 0;
+    for (uint32_t i = 0; i < count; i++)
+        if (states[i] == NVN_IMAGE_PRESENTED) return 1;
+    return 0;
+}
+NvnSyncAction nvn_sync_wait_action(NvnSyncState state) {
+    switch (state) {
+    case NVN_SYNC_SIGNALED: return NVN_SYNC_ACTION_SIGNALED;
+    case NVN_SYNC_FENCED: return NVN_SYNC_ACTION_WAIT;
+    default: return NVN_SYNC_ACTION_REFUSE; /* UNSIGNALED never gets a frame job */
+    }
+}
+NvnWaitDeadline nvn_wait_deadline(uint64_t timeout_ns, uint64_t now_ns) {
+    if (timeout_ns == NVN_SYNC_WAIT_NO_LIMIT) return (NvnWaitDeadline){0, 0};
+    uint64_t deadline = now_ns + timeout_ns;
+    if (deadline < now_ns) deadline = UINT64_MAX; /* the clock cannot hold now + timeout: keep it finite */
+    return (NvnWaitDeadline){deadline, 1};
+}
+int64_t nvn_wait_remaining_ns(NvnWaitDeadline limit, uint64_t now_ns) {
+    if (!limit.has_deadline) return -1;
+    if (now_ns >= limit.deadline_ns) return 0;
+    uint64_t left = limit.deadline_ns - now_ns;
+    return left > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)left;
 }
 NvnWindowCrop nvn_window_crop(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
                               uint32_t texture_width, uint32_t texture_height) {
@@ -599,9 +619,9 @@ static int texture_is_array(uint32_t target) {
     return target == NVN_TEXTURE_TARGET_1D_ARRAY || target == NVN_TEXTURE_TARGET_2D_ARRAY ||
            target == NVN_TEXTURE_TARGET_CUBE || target == NVN_TEXTURE_TARGET_CUBE_ARRAY;
 }
-typedef struct { uint64_t size; uint32_t gobs_x, rows; uint8_t block_height_log2; } TextureLevelParts;
+typedef struct { uint64_t size; uint32_t gobs_x, rows, depth; uint8_t block_height_log2, depth_log2; } TextureLevelParts;
 /* One level of a block linear texture with the tile exponents x, y and z: the GOBs across (rounded to the tile),
-   the block rows, the trimmed block height exponent and the bytes of the level. */
+   the block rows, the depth, the trimmed height and depth exponents and the bytes of the level. */
 static TextureLevelParts texture_level_parts(const NvnTextureLayout* l, uint32_t level,
                                              uint32_t x, uint32_t y, uint32_t z) {
     uint32_t p = 1u << (x & 31u);
@@ -617,7 +637,9 @@ static TextureLevelParts texture_level_parts(const NvnTextureLayout* l, uint32_t
     TextureLevelParts parts = {
         .gobs_x = nx,
         .rows = rows,
+        .depth = d,
         .block_height_log2 = (uint8_t)ey,
+        .depth_log2 = (uint8_t)ez,
     };
     parts.size = (uint64_t)nx * ceil_u32(rows, NVN_TEXTURE_GOB_HEIGHT << (ey & 31u)) *
                  ceil_u32(d, 1u << (ez & 31u)) * ((uint64_t)NVN_TEXTURE_GOB_BYTES << ((ey + ez) & 63u));
@@ -719,40 +741,48 @@ int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* 
 
 uint16_t nvn_texture_packaged_tile(uint32_t layout) { return (uint16_t)(((layout & 0xfffu) << 4) | 1u); }
 
-/* The offset of byte (x, y) of a level, z = 0 (gpu.c's bl_offset with bd = 0). */
-static uint64_t texture_level_offset(const NvnTextureLevel* lv, uint32_t x, uint32_t y) {
-    uint64_t bh = lv->block_height_log2, gy = y >> GOB_SIZE_Y_SHIFT;
-    return ((uint64_t)(x >> GOB_SIZE_X_SHIFT) << (GOB_SIZE_SHIFT + bh)) + gob_x_offset(x) +
-           ((gy >> bh) * lv->gobs_x << (GOB_SIZE_SHIFT + bh)) +
-           ((gy & ((1u << bh) - 1)) << GOB_SIZE_SHIFT) + gob_y_offset(y);
+/* The offset of byte (x, y) of slice z of a level (gpu.c's bl_offset with bh and bd). */
+static uint64_t texture_level_offset(const NvnTextureLevel* lv, uint32_t x, uint32_t y, uint32_t z) {
+    uint64_t bh = lv->block_height_log2, bd = lv->depth_log2, gy = y >> GOB_SIZE_Y_SHIFT;
+    uint64_t block = (uint64_t)NVN_TEXTURE_GOB_BYTES << (bh + bd);
+    uint64_t block_rows = (lv->rows + (NVN_TEXTURE_GOB_HEIGHT << bh) - 1) >> (GOB_SIZE_Y_SHIFT + bh);
+    uint64_t block_row = (uint64_t)(z >> bd) * block_rows + (gy >> bh);
+    return ((uint64_t)(x >> GOB_SIZE_X_SHIFT) << (GOB_SIZE_SHIFT + bh + bd)) + gob_x_offset(x) +
+           block_row * lv->gobs_x * block +
+           ((((z & ((1u << bd) - 1)) << bh) + (gy & ((1u << bh) - 1))) << GOB_SIZE_SHIFT) + gob_y_offset(y);
 }
 int nvn_texture_level(const NvnTexture* t, uint32_t level, NvnTextureLevel* out) {
     if (!t || !out) return 0;
     const NvnTextureLayout* l = &t->layout;
     if ((t->builder.flags & NVN_TEXTURE_LINEAR_FLAGS) || t->builder.target == NVN_TEXTURE_TARGET_BUFFER ||
-        l->dim == 3 || l->sample_x != 1 || l->sample_y != 1 || level >= l->levels) return 0;
+        l->sample_x != 1 || l->sample_y != 1 || level >= l->levels) return 0;
     uint64_t offset = 0;
     for (uint32_t i = 0; i < level; i++)
         offset += texture_level_parts(l, i, l->tile_x, l->tile_y, l->tile_z).size;
     TextureLevelParts parts = texture_level_parts(l, level, l->tile_x, l->tile_y, l->tile_z);
     *out = (NvnTextureLevel){.offset = offset, .size = parts.size, .gobs_x = parts.gobs_x,
-                             .rows = parts.rows, .block_height_log2 = parts.block_height_log2};
+                             .rows = parts.rows, .depth = parts.depth, .block_height_log2 = parts.block_height_log2,
+                             .depth_log2 = parts.depth_log2};
     return 1;
 }
 int nvn_texture_write_rows(uint8_t* level_base, const NvnTextureLevel* lv, uint32_t x_start, uint32_t x_end,
-                           uint32_t row_start, uint32_t row_end, const uint8_t* src, uint64_t src_stride) {
+                           uint32_t row_start, uint32_t row_end, const uint8_t* src, uint64_t src_stride,
+                           uint32_t z) {
     if (!level_base || !lv || !src) return 0;
+    /* A level without a 3D depth holds one slice. */
+    uint32_t depth = lv->depth ? lv->depth : 1;
+    if (z >= depth) return 0;
     /* The level holds whole blocks: a block is 2^bh GOBs, that is 8 << bh rows, high. */
     uint64_t block_rows = (uint64_t)GOB_SIZE_Y << lv->block_height_log2;
     uint64_t row_limit = (lv->rows + block_rows - 1) / block_rows * block_rows;
     if (x_end > (uint64_t)lv->gobs_x * GOB_SIZE_X || row_end > row_limit) return 0;
     if (x_start >= x_end || row_start >= row_end) return 1;
     /* Validate the last byte before the first write: the offsets grow with x and with y. */
-    if (texture_level_offset(lv, x_end - 1, row_end - 1) >= lv->size) return 0;
+    if (texture_level_offset(lv, x_end - 1, row_end - 1, z) >= lv->size) return 0;
     for (uint32_t r = row_start; r < row_end; r++) {
         const uint8_t* from = src + (uint64_t)(r - row_start) * src_stride;
         for (uint32_t x = x_start; x < x_end; x++)
-            level_base[texture_level_offset(lv, x, r)] = from[x - x_start];
+            level_base[texture_level_offset(lv, x, r, z)] = from[x - x_start];
     }
     return 1;
 }

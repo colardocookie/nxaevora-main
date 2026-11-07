@@ -25,7 +25,21 @@ void nvn_window_builder_set_textures(NvnWindowBuilder* b, uint32_t count, uint64
 void nvn_window_builder_set_interval(NvnWindowBuilder* b, uint32_t interval);
 int nvn_window_initialize_check(uint32_t texture_count);
 int32_t nvn_window_pick_image(const uint8_t* states, uint32_t count, int32_t last);
-NvnSyncWaitResult nvn_sync_wait_result(NvnSyncState state);
+/* 1 when at least one image of the window waits for its frame job. */
+int nvn_window_has_presented(const uint8_t* states, uint32_t count);
+/* nvnSyncWait of the game: this timeout waits without limit. */
+#define NVN_SYNC_WAIT_NO_LIMIT UINT64_MAX
+typedef enum { NVN_SYNC_ACTION_SIGNALED = 0, NVN_SYNC_ACTION_WAIT, NVN_SYNC_ACTION_REFUSE } NvnSyncAction;
+/* What nvnSyncWait does at once for a sync state: return 0, wait for the frame job, or return 3. */
+NvnSyncAction nvn_sync_wait_action(NvnSyncState state);
+/* The limit of a wait in host nanoseconds. */
+typedef struct {
+    uint64_t deadline_ns;
+    int has_deadline; /* 0: the game gave NVN_SYNC_WAIT_NO_LIMIT */
+} NvnWaitDeadline;
+NvnWaitDeadline nvn_wait_deadline(uint64_t timeout_ns, uint64_t now_ns);
+/* The time left for a wait: -1 without limit, 0 at or after the deadline. */
+int64_t nvn_wait_remaining_ns(NvnWaitDeadline limit, uint64_t now_ns);
 NvnWindowCrop nvn_window_crop(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
                               uint32_t texture_width, uint32_t texture_height);
 
@@ -446,14 +460,21 @@ typedef struct {
     uint64_t address;
 } NvnTexture;
 /* One mip level of a block linear texture: the offset and bytes of the level in one layer, the block columns (GOBs
-   across), the block rows and the trimmed block height exponent (2^bh GOBs high). */
-typedef struct { uint64_t offset, size; uint32_t gobs_x, rows; uint8_t block_height_log2; } NvnTextureLevel;
-/* 0 (out unchanged) for a linear texture, the BUFFER target, a 3D texture, a multisample texture or level too large. */
+   across), the block rows, the level depth, the trimmed block height exponent (2^bh GOBs high) and the trimmed
+   depth exponent (2^bd slices deep). */
+typedef struct {
+    uint64_t offset, size;
+    uint32_t gobs_x, rows, depth;
+    uint8_t block_height_log2, depth_log2;
+} NvnTextureLevel;
+/* 0 (out unchanged) for a linear texture, the BUFFER target, a multisample texture or level too large. */
 int nvn_texture_level(const NvnTexture* t, uint32_t level, NvnTextureLevel* out);
-/* Copies the bytes [x_start, x_end) of the source rows [row_start, row_end) into the block linear bytes of one level.
-   0 with no write when the region leaves the level or an offset would pass the size of the level. */
+/* Copies the bytes [x_start, x_end) of the source rows [row_start, row_end) of slice z into the block linear bytes
+   of one level (z = 0 for a 2D level). 0 with no write when z is outside the level depth, the region leaves the level
+   or an offset would pass the size of the level. */
 int nvn_texture_write_rows(uint8_t* level_base, const NvnTextureLevel* lv, uint32_t x_start, uint32_t x_end,
-                           uint32_t row_start, uint32_t row_end, const uint8_t* src, uint64_t src_stride);
+                           uint32_t row_start, uint32_t row_end, const uint8_t* src, uint64_t src_stride,
+                           uint32_t z);
 /* seed is the u32 at byte offset 0x24, not u32 array index 0x24 (d858d28). */
 typedef struct {
     uint32_t seed;

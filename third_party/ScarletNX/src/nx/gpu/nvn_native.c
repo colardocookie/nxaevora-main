@@ -30,6 +30,8 @@
    take objs_lock for the whole call, and their pointers into a record end with the call. */
 static NvnObjTab objs;
 static PMutex objs_lock = PMUTEX_INIT;
+/* The frame job tells the guest waits that it freed an image and updated the syncs. */
+static PCond frame_done_cv;
 static NvnListStore lists; /* the command lists of the game, guarded by objs_lock */
 /* The frame line counters (3c decision 12). The three guarded by objs_lock are read and written with it; the other two
    are atomic because missing_handler and the recorder run without it. */
@@ -1303,6 +1305,7 @@ static void h_sampler_pool_register_sampler(CPU* c, u64 entry) {
 #define TEXTURE_FORMAT_STENCIL_OFFSET 0x0fu
 #define TEXTURE_FORMAT_ONE_OFFSET 0x11u
 #define TEXTURE_FORMAT_SRGB_OFFSET 0x12u
+#define TEXTURE_FORMAT_COPY_OFFSET 0x18u
 
 static int texture_format_record(uint32_t format, NvnTextureFormatRecord* record) {
     if (format > NVN_TEXTURE_FORMAT_MAX) {
@@ -1346,6 +1349,28 @@ static int vertex_format_word(uint32_t index, uint32_t* word) {
     }
     *word = gr32(table + offset + VERTEX_FORMAT_WORD_OFFSET);
     return 1;
+}
+/* The copy format word is the column +0x18 of the same table. The replay reads the game's table on its own thread;
+   the reads are of guest memory, so objs_lock is not needed. 0 means an unreadable or invalid format. */
+static uint32_t copy_format_word_cb(void* ctx, uint32_t format) {
+    (void)ctx;
+    if (format > NVN_TEXTURE_FORMAT_MAX) {
+        LOG("nvn-native: copy format invalid format=%x\n", format);
+        return 0;
+    }
+    if (!native_guest_readable(TEXTURE_FORMAT_TABLE_POINTER, sizeof(uint64_t))) {
+        LOG("nvn-native: copy format unreadable table pointer at=%llx\n",
+            (unsigned long long)TEXTURE_FORMAT_TABLE_POINTER);
+        return 0;
+    }
+    uint64_t table = gr64(TEXTURE_FORMAT_TABLE_POINTER);
+    uint64_t offset = (uint64_t)format * TEXTURE_FORMAT_RECORD_BYTES;
+    if (!table || table > UINT64_MAX - offset ||
+        !native_guest_readable(table + offset, TEXTURE_FORMAT_RECORD_BYTES)) {
+        LOG("nvn-native: copy format unreadable format=%x table=%llx\n", format, (unsigned long long)table);
+        return 0;
+    }
+    return gr32(table + offset + TEXTURE_FORMAT_COPY_OFFSET);
 }
 static void texture_pool_register(CPU* c, NvnTextureDescriptorMode mode) {
     uint64_t at;
@@ -1629,11 +1654,6 @@ static int texture_write_check(CPU* c, TextureWriteCall* call) {
                   (unsigned long long)c->x[0]);
         return 0;
     }
-    if (texture->layout.dim == 3) {
-        LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels texture=%llx is 3D\n",
-                  (unsigned long long)c->x[0]);
-        return 0;
-    }
     if (texture->layout.sample_x != 1 || texture->layout.sample_y != 1) {
         LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels texture=%llx is multisample\n",
                   (unsigned long long)c->x[0]);
@@ -1670,7 +1690,9 @@ static int texture_write_check(CPU* c, TextureWriteCall* call) {
         return 0;
     }
     uint64_t layer_end;
-    uint64_t max_layers = texture->layout.depth ? texture->layout.depth : 1;
+    /* A 3D level counts its slices in the level depth; the other targets count layers in the texture depth. */
+    uint64_t max_layers = texture->layout.dim == 3 ? call->level.depth :
+                          texture->layout.depth ? texture->layout.depth : 1;
     if (!texture_write_add(layer_first, layer_count, &layer_end) || layer_end > max_layers) {
         LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT,
                   "nvn-native: nvnTextureWriteTexels layer=%llu count=%u depth=%llu is outside the texture\n",
@@ -1719,22 +1741,38 @@ static int texture_write_check(CPU* c, TextureWriteCall* call) {
                   (unsigned long long)c->x[3], (unsigned long long)source_length);
         return 0;
     }
-    uint64_t layer_stride = texture->layout.layer_stride;
-    for (uint32_t i = 0; i < layer_count; i++) {
-        uint64_t layer_offset, dst;
-        if (!texture_write_mul(layer_first + i, layer_stride, &layer_offset) ||
-            !texture_write_add(texture->builder.offset, layer_offset, &layer_offset) ||
-            !texture_write_add(pool->storage, layer_offset, &dst) ||
+    if (texture->layout.dim == 3) {
+        /* A 3D level is one layer: its slices share the level base and the level size covers all of them. */
+        uint64_t dst;
+        if (!texture_write_add(pool->storage, texture->builder.offset, &dst) ||
             !texture_write_add(dst, call->level.offset, &dst)) {
             LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels address arithmetic overflows\n");
             return 0;
         }
         if (!native_guest_writable(dst, call->level.size)) {
             LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT,
-                      "nvn-native: nvnTextureWriteTexels unwritable layer=%llu destination=%llx bytes=%llu\n",
-                      (unsigned long long)(layer_first + i), (unsigned long long)dst,
-                      (unsigned long long)call->level.size);
+                      "nvn-native: nvnTextureWriteTexels unwritable 3D level destination=%llx bytes=%llu\n",
+                      (unsigned long long)dst, (unsigned long long)call->level.size);
             return 0;
+        }
+    } else {
+        uint64_t layer_stride = texture->layout.layer_stride;
+        for (uint32_t i = 0; i < layer_count; i++) {
+            uint64_t layer_offset, dst;
+            if (!texture_write_mul(layer_first + i, layer_stride, &layer_offset) ||
+                !texture_write_add(texture->builder.offset, layer_offset, &layer_offset) ||
+                !texture_write_add(pool->storage, layer_offset, &dst) ||
+                !texture_write_add(dst, call->level.offset, &dst)) {
+                LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT, "nvn-native: nvnTextureWriteTexels address arithmetic overflows\n");
+                return 0;
+            }
+            if (!native_guest_writable(dst, call->level.size)) {
+                LOG_LIMIT(TEXTURE_WRITE_LOG_LIMIT,
+                          "nvn-native: nvnTextureWriteTexels unwritable layer=%llu destination=%llx bytes=%llu\n",
+                          (unsigned long long)(layer_first + i), (unsigned long long)dst,
+                          (unsigned long long)call->level.size);
+                return 0;
+            }
         }
     }
     call->texture = texture;
@@ -1750,14 +1788,16 @@ static int texture_write_check(CPU* c, TextureWriteCall* call) {
     call->row_end = (uint32_t)row_end;
     return 1;
 }
-/* Caller holds objs_lock and texture_write_check accepted the whole call. Copies one layer slice. */
+/* Caller holds objs_lock and texture_write_check accepted the whole call. Copies one slice: slice z of a 3D level
+   at the level base, layer i of a 2D level at its layer stride. */
 static void texture_write_slice(const TextureWriteCall* call, uint32_t index) {
     uint64_t layer = call->layer_first + index;
-    uint64_t dst = call->pool->storage + call->texture->builder.offset +
-                   layer * call->texture->layout.layer_stride + call->level.offset;
+    int is_3d = call->texture->layout.dim == 3;
+    uint64_t dst = call->pool->storage + call->texture->builder.offset + call->level.offset +
+                   (is_3d ? 0 : layer * call->texture->layout.layer_stride);
     const uint8_t* src = GP(call->source + index * call->src_layer_stride);
     nvn_texture_write_rows(GP(dst), &call->level, call->x_start, call->x_end, call->row_start, call->row_end,
-                           src, call->src_row_bytes);
+                           src, call->src_row_bytes, is_3d ? (uint32_t)layer : 0);
 }
 static void h_texture_write_texels(CPU* c, u64 entry) {
     (void)entry;
@@ -3682,8 +3722,75 @@ static int replay_host_transform_feedback(NvnNativeReplayHost* host, const NvnOp
     return 1;
 }
 
-/* The replay thread counts the op, sends the words of the group 6 and transform feedback ops, and keeps the last
-   report and the last image bind. */
+/* The texture record is copied under the lock, so that the words are made without it. */
+static int replay_host_clear_texture(NvnNativeReplayHost* host, const NvnOpClearTexture* op) {
+    if (!host->clip_limit) {
+        replay_host_rt_fault(host, "clip limit unknown", 0);
+        return 1;
+    }
+    NvnTexture texture = {0};
+    int found = 0;
+    pm_lock(&objs_lock);
+    const TextureRec* t = op->target.texture &&
+                          nvn_objtab_valid(&objs, op->target.texture, op->target.generation)
+                              ? known_record(op->target.texture, NVN_OBJ_TEXTURE) : NULL;
+    if (t) {
+        texture = *t;
+        found = 1;
+    }
+    pm_unlock(&objs_lock);
+    if (!found) {
+        replay_bind_refuse(host, "clear texture", -1, -1, (uint32_t)op->target.texture);
+        return 1;
+    }
+    uint32_t words[NVN_RT_CLEAR_WORDS_MAX];
+    int nothing = 0;
+    NvnRtEnv env = {host, replay_host_method, replay_host_rt_fault};
+    uint32_t count = nvn_rt_clear_texture_words(&env, &texture,
+                                                op->target.has_view ? &op->target.view : NULL,
+                                                op->region, op->color, op->mask, host->clip_limit,
+                                                &nothing, words);
+    if (nothing) return 1;
+    if (!count || !replay_bind_send(host, words, count))
+        replay_bind_refuse(host, "clear texture", -1, -1, (uint32_t)op->target.texture);
+    return 1;
+}
+
+/* The two texture records are copied under the lock, so that the words are made without it. */
+static int replay_host_copy_texture(NvnNativeReplayHost* host, const NvnOpCopyTexture* op) {
+    NvnTexture src = {0}, dst = {0};
+    int found = 0;
+    pm_lock(&objs_lock);
+    const TextureRec* s = op->src.texture &&
+                          nvn_objtab_valid(&objs, op->src.texture, op->src.generation)
+                              ? known_record(op->src.texture, NVN_OBJ_TEXTURE) : NULL;
+    const TextureRec* d = op->dst.texture &&
+                          nvn_objtab_valid(&objs, op->dst.texture, op->dst.generation)
+                              ? known_record(op->dst.texture, NVN_OBJ_TEXTURE) : NULL;
+    if (s && d) {
+        src = *s;
+        dst = *d;
+        found = 1;
+    }
+    pm_unlock(&objs_lock);
+    if (!found) {
+        replay_bind_refuse(host, "copy texture", -1, -1, (uint32_t)op->src.texture);
+        return 1;
+    }
+    uint32_t words[NVN_RT_COPY_WORDS_MAX];
+    int nothing = 0;
+    NvnRtCopyEnv env = {{host, replay_host_method, replay_host_rt_fault}, copy_format_word_cb};
+    uint32_t count = nvn_rt_copy_texture_words(&env, &src,
+                                               op->src.has_view ? &op->src.view : NULL, &dst,
+                                               op->dst.has_view ? &op->dst.view : NULL,
+                                               op->src_region, op->dst_region, op->flags,
+                                               &nothing, words);
+    if (nothing) return 1;
+    if (!count || !replay_bind_send(host, words, count))
+        replay_bind_refuse(host, "copy texture", -1, -1, (uint32_t)op->src.texture);
+    return 1;
+}
+
 static int replay_host_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
     NvnNativeReplayHost* host = ctx;
     if (code >= NVN_OP_COUNT) return 0;
@@ -3700,6 +3807,10 @@ static int replay_host_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
         return replay_host_clear_depth_stencil(host, (const NvnOpClearDepthStencil*)payload);
     if (code == NVN_OP_TRANSFORM_FEEDBACK)
         return replay_host_transform_feedback(host, (const NvnOpTransformFeedback*)payload);
+    if (code == NVN_OP_CLEAR_TEXTURE)
+        return replay_host_clear_texture(host, (const NvnOpClearTexture*)payload);
+    if (code == NVN_OP_COPY_TEXTURE)
+        return replay_host_copy_texture(host, (const NvnOpCopyTexture*)payload);
     return 1;
 }
 static void replay_host_fault(void* ctx, const char* what, uint64_t value) {
@@ -3800,6 +3911,13 @@ static void h_sync_initialize(CPU* c, u64 entry) {
 }
 
 enum { NVN_ACQUIRE_OK = 0, NVN_ACQUIRE_FAILED = 1 };
+/* Ends a failed nvnWindowAcquireTexture: the reason, the invalid index and the result. objs_lock is held. */
+static void window_acquire_failed(CPU* c, u64 window_addr, u64 sync_addr, u64 index_addr, const char* reason) {
+    LOG("nvn-native: nvnWindowAcquireTexture failed: %s (window=%llx sync=%llx index=%llx)\n",
+        reason, (unsigned long long)window_addr, (unsigned long long)sync_addr, (unsigned long long)index_addr);
+    if (native_guest_writable(index_addr, sizeof(uint32_t))) gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
+    c->x[0] = NVN_ACQUIRE_FAILED;
+}
 static void h_window_acquire_texture(CPU* c, u64 entry) {
     (void)entry;
     const u64 window_addr = c->x[0], sync_addr = c->x[1], index_addr = c->x[2];
@@ -3808,10 +3926,7 @@ static void h_window_acquire_texture(CPU* c, u64 entry) {
     SyncRec* sync = known_record(sync_addr, NVN_OBJ_SYNC);
     if (!window || !sync || !native_guest_writable(index_addr, sizeof(uint32_t))) {
         const char* reason = !window ? "unknown window" : !sync ? "unknown sync" : "unwritable index";
-        LOG("nvn-native: nvnWindowAcquireTexture failed: %s (window=%llx sync=%llx index=%llx)\n",
-            reason, (unsigned long long)window_addr, (unsigned long long)sync_addr, (unsigned long long)index_addr);
-        if (native_guest_writable(index_addr, sizeof(uint32_t))) gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
-        c->x[0] = NVN_ACQUIRE_FAILED;
+        window_acquire_failed(c, window_addr, sync_addr, index_addr, reason);
         pm_unlock(&objs_lock);
         return;
     }
@@ -3823,14 +3938,24 @@ static void h_window_acquire_texture(CPU* c, u64 entry) {
     sync = known_record(sync_addr, NVN_OBJ_SYNC);
     if (!window || !sync || !native_guest_writable(index_addr, sizeof(uint32_t))) {
         const char* reason = !window ? "window changed" : !sync ? "sync changed" : "index changed";
-        LOG("nvn-native: nvnWindowAcquireTexture failed: %s (window=%llx sync=%llx index=%llx)\n",
-            reason, (unsigned long long)window_addr, (unsigned long long)sync_addr, (unsigned long long)index_addr);
-        if (native_guest_writable(index_addr, sizeof(uint32_t))) gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
-        c->x[0] = NVN_ACQUIRE_FAILED;
+        window_acquire_failed(c, window_addr, sync_addr, index_addr, reason);
         pm_unlock(&objs_lock);
         return;
     }
     int32_t index = nvn_window_pick_image(window->states, window->texture_count, window->last_index);
+    /* A PRESENTED image comes back when its frame job finishes. */
+    while (index < 0 && nvn_window_has_presented(window->states, window->texture_count)) {
+        kthread_wait(&frame_done_cv, &objs_lock, -1);
+        window = known_record(window_addr, NVN_OBJ_WINDOW);
+        sync = known_record(sync_addr, NVN_OBJ_SYNC);
+        if (!window || !sync || !native_guest_writable(index_addr, sizeof(uint32_t))) {
+            const char* reason = !window ? "window changed" : !sync ? "sync changed" : "index changed";
+            window_acquire_failed(c, window_addr, sync_addr, index_addr, reason);
+            pm_unlock(&objs_lock);
+            return;
+        }
+        index = nvn_window_pick_image(window->states, window->texture_count, window->last_index);
+    }
     if (index < 0) {
         LOG("nvn-native: nvnWindowAcquireTexture failed: no free window image (window=%llx states=%u,%u,%u,%u)\n",
             (unsigned long long)window_addr, window->states[0], window->states[1], window->states[2], window->states[3]);
@@ -3850,18 +3975,56 @@ static void h_window_acquire_texture(CPU* c, u64 entry) {
 }
 static void h_sync_wait(CPU* c, u64 entry) {
     (void)entry;
+    const u64 sync_addr = c->x[0];
+    const NvnWaitDeadline limit = nvn_wait_deadline(c->x[1], plat_ns());
     pm_lock(&objs_lock);
-    SyncRec* sync = known_record(c->x[0], NVN_OBJ_SYNC);
+    SyncRec* sync = known_record(sync_addr, NVN_OBJ_SYNC);
     if (!sync) {
-        LOG("nvn-native: nvnSyncWait unknown sync=%llx\n", (unsigned long long)c->x[0]);
+        LOG("nvn-native: nvnSyncWait unknown sync=%llx\n", (unsigned long long)sync_addr);
         c->x[0] = NVN_SYNC_WAIT_FAILED;
         pm_unlock(&objs_lock);
         return;
     }
-    NvnSyncWaitResult result = nvn_sync_wait_result(sync->state);
-    if (result != NVN_SYNC_WAIT_SIGNALED) /* 3c adds the waiting states; until then the timeout is not used */
-        LOG_LIMIT(32, "nvn-native: nvnSyncWait sync=%llx state=%u timeout=%llx is not signaled, fails\n",
-                  (unsigned long long)c->x[0], (unsigned)sync->state, (unsigned long long)c->x[1]);
+    NvnSyncAction action = nvn_sync_wait_action(sync->state);
+    if (action == NVN_SYNC_ACTION_REFUSE) {
+        LOG_LIMIT(32, "nvn-native: nvnSyncWait sync=%llx state=%u timeout=%llx is not signaled, fails (caller lr=%llx)\n",
+                  (unsigned long long)sync_addr, (unsigned)sync->state, (unsigned long long)c->x[1],
+                  (unsigned long long)c->x[30]);
+        c->x[0] = NVN_SYNC_WAIT_FAILED;
+        pm_unlock(&objs_lock);
+        return;
+    }
+    NvnSyncWaitResult result = NVN_SYNC_WAIT_SIGNALED;
+    while (action == NVN_SYNC_ACTION_WAIT) {
+        i64 left = nvn_wait_remaining_ns(limit, plat_ns());
+        if (left == 0) {
+            result = NVN_SYNC_WAIT_TIMEOUT;
+            break;
+        }
+        int timed_out = kthread_wait(&frame_done_cv, &objs_lock, left);
+        sync = known_record(sync_addr, NVN_OBJ_SYNC);
+        if (!sync) {
+            LOG_LIMIT(32, "nvn-native: nvnSyncWait sync=%llx is gone while it waited, fails\n",
+                      (unsigned long long)sync_addr);
+            result = NVN_SYNC_WAIT_FAILED;
+            break;
+        }
+        action = nvn_sync_wait_action(sync->state);
+        if (action == NVN_SYNC_ACTION_SIGNALED) {
+            result = NVN_SYNC_WAIT_SIGNALED;
+            break;
+        }
+        if (action == NVN_SYNC_ACTION_REFUSE) {
+            LOG_LIMIT(32, "nvn-native: nvnSyncWait sync=%llx state=%u is not fenced after the wait, fails\n",
+                      (unsigned long long)sync_addr, (unsigned)sync->state);
+            result = NVN_SYNC_WAIT_FAILED;
+            break;
+        }
+        if (timed_out) {
+            result = NVN_SYNC_WAIT_TIMEOUT;
+            break;
+        }
+    }
     c->x[0] = result;
     pm_unlock(&objs_lock);
 }
@@ -4011,6 +4174,7 @@ static void frame_finish(FrameJob* job) {
         sync->state = nvn_sync_after_token(sync->state, &sync->fences);
     }
     nvn_frame_release(&job->frame, &lists);
+    pc_broadcast(&frame_done_cv); /* the image and the syncs are up to date */
     pm_unlock(&objs_lock);
 }
 static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int shown, uint32_t fences,
@@ -4650,6 +4814,7 @@ static void bootstrap_native(CPU* c, u64 entry) {
 
 void nvn_native_init(void) {
     if (!g_settings.nvn_native) return;
+    pc_init(&frame_done_cv);
     u64 entry = kernel_find_symbol_exact("nvnBootstrapLoader");
     if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3)) {
         WARN("nvn-native: bootstrap loader symbol is unavailable\n");

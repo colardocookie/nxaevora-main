@@ -862,8 +862,10 @@ guest. A FREE image means its previous frame job has finished. No frame job in t
 image is ACQUIRED the handler logs `no free window image`, writes -1 and returns failure. This is the intended stop until
 3c implements present and image release.
 
-`SyncWait` ignores its timeout in this part. Its result is 0 for SIGNALED, 3 for UNSIGNALED or an unknown sync. The library
-also defines 1 for a condition met after waiting and 2 for timeout; 3c adds the waiting states.
+`SyncWait` ignored its timeout in this part. Since the fix of 2026-11-07 it waits on a FENCED sync until the frame job signals
+it or the timeout ends (result 0 or 2; `0xffffffffffffffff` is no limit). A sync that was never fenced and an unknown sync give 3
+at once. `WindowAcquireTexture` waits the same way when no image is FREE and one is PRESENTED. `frame_finish` wakes both
+(`frame_done_cv`, `objs_lock`). Cause: the first frame job needs 0.5 s on the GPU thread, and the game waits on its fence meanwhile.
 
 ### 3b-2 Result (run of 2026-11-02, update program, title screen, `nvn_trace=1`, `nvn_native=0`)
 
