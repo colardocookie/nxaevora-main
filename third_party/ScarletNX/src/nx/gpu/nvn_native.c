@@ -3592,7 +3592,41 @@ static int replay_host_clear_depth_stencil(NvnNativeReplayHost* host, const NvnO
     return 1;
 }
 
-/* The replay thread counts the op, sends the three group 6 words, and keeps the last report and image bind. */
+/* The texture record is copied under the lock, so that the words are made without it. */
+static int replay_host_clear_texture(NvnNativeReplayHost* host, const NvnOpClearTexture* op) {
+    if (!host->clip_limit) {
+        replay_host_rt_fault(host, "clip limit unknown", 0);
+        return 1;
+    }
+    NvnTexture texture = {0};
+    int found = 0;
+    pm_lock(&objs_lock);
+    const TextureRec* t = op->target.texture &&
+                          nvn_objtab_valid(&objs, op->target.texture, op->target.generation)
+                              ? known_record(op->target.texture, NVN_OBJ_TEXTURE) : NULL;
+    if (t) {
+        texture = *t;
+        found = 1;
+    }
+    pm_unlock(&objs_lock);
+    if (!found) {
+        replay_bind_refuse(host, "clear texture", -1, -1, (uint32_t)op->target.texture);
+        return 1;
+    }
+    uint32_t words[NVN_RT_CLEAR_WORDS_MAX];
+    int nothing = 0;
+    NvnRtEnv env = {host, replay_host_method, replay_host_rt_fault};
+    uint32_t count = nvn_rt_clear_texture_words(&env, &texture,
+                                                op->target.has_view ? &op->target.view : NULL,
+                                                op->region, op->color, op->mask, host->clip_limit,
+                                                &nothing, words);
+    if (nothing) return 1;
+    if (!count || !replay_bind_send(host, words, count))
+        replay_bind_refuse(host, "clear texture", -1, -1, (uint32_t)op->target.texture);
+    return 1;
+}
+
+/* The replay thread counts the op, sends the four group 6 words, and keeps the last report and image bind. */
 static int replay_host_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
     NvnNativeReplayHost* host = ctx;
     if (code >= NVN_OP_COUNT) return 0;
@@ -3607,6 +3641,8 @@ static int replay_host_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
     }
     if (code == NVN_OP_CLEAR_DEPTH_STENCIL)
         return replay_host_clear_depth_stencil(host, (const NvnOpClearDepthStencil*)payload);
+    if (code == NVN_OP_CLEAR_TEXTURE)
+        return replay_host_clear_texture(host, (const NvnOpClearTexture*)payload);
     return 1;
 }
 static void replay_host_fault(void* ctx, const char* what, uint64_t value) {

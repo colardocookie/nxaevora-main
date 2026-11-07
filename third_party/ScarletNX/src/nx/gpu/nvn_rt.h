@@ -23,4 +23,15 @@ typedef struct NvnRtEnv {
 int nvn_rt_emit(const NvnRtEnv* env, const NvnRtColor* color, uint32_t count, const NvnRtColor* depth,
                 uint32_t clip_limit);
 
+#define NVN_RT_CLEAR_LAYERS_MAX 64u
+#define NVN_RT_CLEAR_WORDS_MAX  (15u + 10u * NVN_RT_CLEAR_LAYERS_MAX)
+
+/* The words of nvnCommandBufferClearTexture (d857610). Returns the word count. A refusal returns 0, calls fault once and
+   writes no part of out. An empty region writes no word in the library: then 0 is returned with *nothing set to 1 and
+   fault is not called. view is the view of the call, NULL when there is none. */
+uint32_t nvn_rt_clear_texture_words(const NvnRtEnv* env, const NvnTexture* texture,
+                                    const NvnTextureView* view, const uint32_t region[6],
+                                    const uint32_t color[4], uint32_t mask, uint32_t clip_limit,
+                                    int* nothing, uint32_t* out);
+
 #endif

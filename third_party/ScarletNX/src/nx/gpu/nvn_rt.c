@@ -32,6 +32,32 @@
                                      NVN_VIEW_SWIZZLE | NVN_VIEW_DEPTH_STENCIL_MODE | NVN_VIEW_TARGET)
 #define NVN_RT_TILE_3D_BIT          0x10000u
 
+/* The fixed words and headers of nvnCommandBufferClearTexture (d857610, verify-s4-4b.md). */
+#define NVN_RT_HEADER_INCREASING    0x20000000u /* mode 1: a run of count data words follows */
+#define NVN_RT_HEADER_INLINE        0x80000000u /* mode 4: the value is in the count field */
+#define NVN_RT_HEADER_INCREASE_ONCE 0xA0000000u /* mode 5: a macro of count data words follows */
+#define NVN_RT_HEADER_COUNT_SHIFT   16u
+#define NVN_RT_HEADER_VALUE_MAX     0x1FFFu
+#define NVN_RT_CLEAR_OPEN           0x91080002u
+#define NVN_RT_CLEAR_CLOSE          0x91000002u
+#define NVN_RT_CLEAR_COLOR_METHOD   0x360u
+#define NVN_RT_CLEAR_IMMD_METHOD    0x049u
+#define NVN_RT_CLEAR_MACRO_METHOD   0xE1Eu
+#define NVN_RT_CLEAR_MASK_METHOD    0x674u
+#define NVN_RT_CLEAR_COLOR_WORDS    4u
+#define NVN_RT_CLEAR_MACRO_WORDS    4u
+#define NVN_RT_CLEAR_MASK_NIBBLE    0xFu
+#define NVN_RT_CLEAR_MASK_SHIFT     2u
+#define NVN_RT_CLEAR_FORMAT_SHIFT   24u
+#define NVN_RT_CLEAR_LAYER_LIMIT    0xFFFFu
+
+#define NVN_RT_CLEAR_RUN(method, count) \
+    (NVN_RT_HEADER_INCREASING | ((count) << NVN_RT_HEADER_COUNT_SHIFT) | (method))
+#define NVN_RT_CLEAR_VALUE(method, value) \
+    (NVN_RT_HEADER_INLINE | (((value) & NVN_RT_HEADER_VALUE_MAX) << NVN_RT_HEADER_COUNT_SHIFT) | (method))
+#define NVN_RT_CLEAR_MACRO(method, count) \
+    (NVN_RT_HEADER_INCREASE_ONCE | ((count) << NVN_RT_HEADER_COUNT_SHIFT) | (method))
+
 typedef struct {
     uint64_t address;
     uint32_t width, height, depth, format, tile, layer_stride_words;
@@ -50,6 +76,18 @@ static uint32_t rt_align_up(uint32_t value, uint32_t multiple) {
 static uint32_t rt_clip_word(uint32_t minimum, uint32_t limit) {
     if (minimum < 1u || limit < 1u) return 0u;
     return (minimum < limit ? minimum : limit) << NVN_RT_CLIP_SHIFT;
+}
+
+/* One ClearTexture clip word: the origin in the low 16 bits and the span above it. The library compares the wrapped
+   int32 values, so a negative origin moves the span start back. origin and span are already sample scaled. */
+static uint32_t rt_clear_clip_word(uint32_t origin, uint32_t span, uint32_t limit) {
+    int32_t p = (int32_t)origin;
+    uint32_t low = p < 0 ? (uint32_t)p : 0u;          /* min(origin, 0) */
+    uint32_t start = p < 0 ? 0u : origin;             /* max(origin, 0) */
+    int32_t reached = (int32_t)(span + low);
+    if (reached < 1 || (int32_t)(limit - start) <= 0) return 0u;
+    int32_t clipped = (int32_t)(span + low + start) < (int32_t)limit ? reached : (int32_t)(limit - start);
+    return start | ((uint32_t)clipped << NVN_RT_CLIP_SHIFT);
 }
 
 static uint32_t rt_sample_mode(uint32_t code) {
@@ -286,4 +324,86 @@ int nvn_rt_emit(const NvnRtEnv* env, const NvnRtColor* color, uint32_t count, co
     env->method(env->ctx, NVN_RT_CLIP_Y, clip_y);
     env->method(env->ctx, NVN_RT_SAMPLE_MODE, mode);
     return 1;
+}
+
+uint32_t nvn_rt_clear_texture_words(const NvnRtEnv* env, const NvnTexture* texture,
+                                    const NvnTextureView* view, const uint32_t region[6],
+                                    const uint32_t color[4], uint32_t mask, uint32_t clip_limit,
+                                    int* nothing, uint32_t* out) {
+    if (nothing) *nothing = 0;
+    if (!env || !env->fault || !out || !nothing || !texture || !region || !color) return 0;
+    uint32_t format_word = 0;
+    if (!rt_texture_checks(env, texture, "rt clear linear", &format_word)) return 0;
+    uint32_t layers = region[5];
+    uint32_t width_count = region[3];
+    uint32_t rows = region[4];
+    if (layers == 0u || width_count == 0u || rows == 0u) {
+        *nothing = 1;
+        return 0;
+    }
+    if (layers > NVN_RT_CLEAR_LAYERS_MAX) {
+        env->fault(env->ctx, "clear layers", layers);
+        return 0;
+    }
+
+    const NvnTextureLayout* layout = &texture->layout;
+    uint32_t view_base = (view && (view->flags & NVN_VIEW_LAYERS)) ? view->base_layer : 0u;
+    uint32_t base_level = (view && (view->flags & NVN_VIEW_LEVELS)) ? view->base_level : 0u;
+    NvnTextureView layer_view = {0};
+    layer_view.flags = NVN_VIEW_LEVELS | NVN_VIEW_LAYERS;
+    layer_view.base_level = (uint8_t)base_level;
+    layer_view.level_count = 1;
+    layer_view.layer_count = 1;
+
+    /* The addresses are made first, so that a late refusal writes no part of out. */
+    uint32_t layer_arg1[NVN_RT_CLEAR_LAYERS_MAX];
+    for (uint32_t i = 0; i < layers; i++) {
+        uint64_t layer = (uint64_t)region[2] + view_base + i;
+        if (layer > NVN_RT_CLEAR_LAYER_LIMIT) {
+            env->fault(env->ctx, "clear layers", layer);
+            return 0;
+        }
+        layer_view.base_layer = (uint16_t)layer;
+        NvnRtViewResult result;
+        if (!rt_view_apply(env, texture, &layer_view, &result)) return 0;
+        layer_arg1[i] = (uint32_t)(result.address >> 8);
+    }
+
+    uint32_t width = layout->width * layout->sample_x;
+    uint32_t height = layout->height * layout->sample_y;
+    uint32_t gob_blocks = NVN_TEXTURE_GOB_WIDTH / layout->bytes_per_block;
+    uint32_t factor = rt_tile_factor(layout, width, height, layout->depth);
+    uint32_t aligned_width = rt_align_up(width, factor * gob_blocks);
+    uint32_t surface = rt_tile_word(layout) | ((format_word & 0xFFu) << NVN_RT_CLEAR_FORMAT_SHIFT);
+    uint32_t clip_x = rt_clear_clip_word(layout->sample_x * region[0], layout->sample_x * width_count,
+                                         clip_limit);
+    uint32_t clip_y = rt_clear_clip_word(layout->sample_y * region[1], layout->sample_y * rows, clip_limit);
+    uint32_t mask_word = (mask & NVN_RT_CLEAR_MASK_NIBBLE) << NVN_RT_CLEAR_MASK_SHIFT;
+
+    uint32_t at = 0;
+    out[at++] = NVN_RT_CLEAR_OPEN;
+    out[at++] = NVN_RT_CLEAR_RUN(NVN_RT_CLEAR_COLOR_METHOD, NVN_RT_CLEAR_COLOR_WORDS);
+    for (uint32_t i = 0; i < NVN_RT_CLEAR_COLOR_WORDS; i++) out[at++] = color[i];
+    out[at++] = NVN_RT_CLEAR_VALUE(NVN_RT_CLEAR_IMMD_METHOD, 2u);
+    for (uint32_t i = 0; i < layers; i++) {
+        out[at++] = NVN_RT_CLEAR_MACRO(NVN_RT_CLEAR_MACRO_METHOD, NVN_RT_CLEAR_MACRO_WORDS);
+        out[at++] = layer_arg1[i];
+        out[at++] = aligned_width;
+        out[at++] = height;
+        out[at++] = surface;
+        out[at++] = NVN_RT_CLEAR_RUN(NVN_RT_CLIP_X, 2u);
+        out[at++] = clip_x;
+        out[at++] = clip_y;
+        out[at++] = NVN_RT_CLEAR_RUN(NVN_RT_CLEAR_MASK_METHOD, 1u);
+        out[at++] = mask_word;
+    }
+    out[at++] = NVN_RT_CLEAR_VALUE(NVN_RT_CLEAR_IMMD_METHOD, 3u);
+    out[at++] = NVN_RT_CLEAR_MACRO(NVN_RT_CLEAR_MACRO_METHOD, NVN_RT_CLEAR_MACRO_WORDS);
+    out[at++] = layer_arg1[layers - 1u];
+    out[at++] = aligned_width;
+    out[at++] = height;
+    out[at++] = surface;
+    out[at++] = NVN_RT_CLEAR_VALUE(NVN_RT_CLEAR_IMMD_METHOD, 1u);
+    out[at++] = NVN_RT_CLEAR_CLOSE;
+    return at;
 }

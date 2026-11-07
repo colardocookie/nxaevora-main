@@ -636,6 +636,131 @@ static void test_color_view_checks(void) {
     CHECK(k.write_count == 0 && fault_is(&k, "rt view flags") && k.last_fault_value == 0x40u);
 }
 
+static void test_clear_texture_one_layer(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTexture t = make_texture(0x25, 1280, 720, 0x0000000412345600ull);
+    uint32_t region[6] = {0, 0, 0, 320, 240, 1};
+    uint32_t color[4] = {0x11223344u, 0x55667788u, 0x99AABBCCu, 0xDDEEFF00u};
+    uint32_t words[NVN_RT_CLEAR_WORDS_MAX];
+    int nothing = -1;
+    uint32_t count = nvn_rt_clear_texture_words(&env, &t, NULL, region, color, 0xFu, 0x4000u, &nothing,
+                                                words);
+    /* verify-s4-4b.md, "ClearTexture": the full list for one layer with no view. */
+    CHECK(count == 25 && nothing == 0 && k.fault_count == 0);
+    CHECK(words[0] == 0x91080002u);
+    CHECK(words[1] == 0x20040360u);
+    CHECK(words[2] == color[0] && words[3] == color[1] && words[4] == color[2] && words[5] == color[3]);
+    CHECK(words[6] == 0x80020049u);
+    CHECK(words[7] == 0xA0040E1Eu);
+    CHECK(words[8] == 0x04123456u);
+    CHECK(words[9] == 1280u && words[10] == 720u);
+    CHECK(words[11] == 0xD5000040u);
+    CHECK(words[12] == 0x200203FDu);
+    CHECK(words[13] == 0x01400000u && words[14] == 0x00F00000u);
+    CHECK(words[15] == 0x20010674u && words[16] == 0x3Cu);
+    CHECK(words[17] == 0x80030049u && words[18] == 0xA0040E1Eu);
+    CHECK(words[19] == 0x04123456u && words[20] == 1280u && words[21] == 720u && words[22] == 0xD5000040u);
+    CHECK(words[23] == 0x80010049u && words[24] == 0x91000002u);
+}
+
+static void test_clear_texture_two_layers(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTexture t = make_texture(0x25, 64, 64, 0x1000);
+    uint32_t region[6] = {0, 0, 1, 8, 8, 2};
+    uint32_t color[4] = {0, 0, 0, 0};
+    uint32_t words[NVN_RT_CLEAR_WORDS_MAX];
+    int nothing = -1;
+    uint32_t count = nvn_rt_clear_texture_words(&env, &t, NULL, region, color, 0x3u, 0x4000u, &nothing,
+                                                words);
+    uint32_t layer1 = (uint32_t)((t.address + t.layout.layer_stride) >> 8);
+    uint32_t layer2 = (uint32_t)((t.address + 2u * t.layout.layer_stride) >> 8);
+    /* verify-s4-4b.md, "ClearTexture": region[2] is a, so the second group is layer a+1 and the tail repeats it. */
+    CHECK(count == 35 && nothing == 0 && k.fault_count == 0);
+    CHECK(words[7] == 0xA0040E1Eu && words[8] == layer1);
+    CHECK(words[17] == 0xA0040E1Eu && words[18] == layer2);
+    CHECK(words[19] == 64u && words[20] == 64u);
+    CHECK(words[27] == 0x80030049u && words[28] == 0xA0040E1Eu);
+    CHECK(words[29] == layer2 && words[30] == 64u && words[31] == 64u);
+    CHECK(words[33] == 0x80010049u && words[34] == 0x91000002u);
+}
+
+static void test_clear_texture_clip(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTexture t = make_texture(0x25, 1280, 720, 0x1000);
+    uint32_t color[4] = {0, 0, 0, 0};
+    uint32_t words[NVN_RT_CLEAR_WORDS_MAX];
+    int nothing = -1;
+
+    uint32_t region[6] = {0xFFFFFFF0u, 0, 0, 32, 6, 1};
+    CHECK(nvn_rt_clear_texture_words(&env, &t, NULL, region, color, 0xFu, 8u, &nothing, words) == 25);
+    /* verify-s4-4b.md, correction 2: a negative origin moves the span, and the limit clips the width. */
+    CHECK(words[13] == 0x00080000u && words[14] == 0x00060000u);
+    /* The same region with a wide limit: the span is 32 - 16 = 16 from origin 0. */
+    CHECK(nvn_rt_clear_texture_words(&env, &t, NULL, region, color, 0xFu, 0x4000u, &nothing, words) == 25);
+    CHECK(words[13] == 0x00100000u);
+
+    NvnTexture ms = make_texture_with(0x25, 1280, 720, 0x1000, 0u, 4u);
+    uint32_t sampled[6] = {2, 3, 0, 5, 4, 1};
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_clear_texture_words(&env, &ms, NULL, sampled, color, 0xFu, 0x4000u, &nothing, words) == 25);
+    /* verify-s4-4b.md, correction 2: a 4x texture has the sample scale sx = sy = 2. */
+    CHECK(words[13] == 0x000A0004u && words[14] == 0x00080006u);
+}
+
+static void test_clear_texture_nothing(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTexture t = make_texture(0x25, 64, 64, 0x1000);
+    uint32_t color[4] = {0, 0, 0, 0};
+    uint32_t words[NVN_RT_CLEAR_WORDS_MAX];
+    static const uint32_t base[6] = {0, 0, 0, 8, 8, 1};
+    uint32_t region[6];
+    /* verify-s4-4b.md, correction 1: a zero layer count, width count or height count writes no word. */
+    for (uint32_t field = 3; field <= 5; field++) {
+        memcpy(region, base, sizeof region);
+        region[field] = 0;
+        words[0] = 0xDEADBEEFu;
+        int nothing = -1;
+        memset(&k, 0, sizeof k);
+        CHECK(nvn_rt_clear_texture_words(&env, &t, NULL, region, color, 0xFu, 0x4000u, &nothing, words) == 0);
+        CHECK(nothing == 1 && k.fault_count == 0 && words[0] == 0xDEADBEEFu);
+    }
+}
+
+static void test_clear_texture_refusals(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTexture t = make_texture(0x25, 64, 64, 0x1000);
+    uint32_t region[6] = {0, 0, 0, 8, 8, 1};
+    uint32_t color[4] = {0, 0, 0, 0};
+    uint32_t words[NVN_RT_CLEAR_WORDS_MAX];
+    int nothing = -1;
+
+    NvnTexture linear = make_linear_texture(0x25, 64, 64, 0x1000);
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_clear_texture_words(&env, &linear, NULL, region, color, 0xFu, 0x4000u, &nothing, words) == 0);
+    CHECK(nothing == 0 && fault_is(&k, "rt clear linear") && k.last_fault_value == NVN_TEXTURE_FLAG_LINEAR);
+
+    NvnTexture target = make_texture(0x25, 64, 64, 0x1000);
+    target.builder.target = NVN_TEXTURE_TARGET_3D;
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_clear_texture_words(&env, &target, NULL, region, color, 0xFu, 0x4000u, &nothing, words) == 0);
+    CHECK(nothing == 0 && fault_is(&k, "rt target") && k.last_fault_value == NVN_TEXTURE_TARGET_3D);
+
+    target.builder.target = NVN_TEXTURE_TARGET_1D_ARRAY;
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_clear_texture_words(&env, &target, NULL, region, color, 0xFu, 0x4000u, &nothing, words) == 0);
+    CHECK(nothing == 0 && fault_is(&k, "rt target") && k.last_fault_value == NVN_TEXTURE_TARGET_1D_ARRAY);
+
+    uint32_t many[6] = {0, 0, 0, 8, 8, NVN_RT_CLEAR_LAYERS_MAX + 1u};
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_clear_texture_words(&env, &t, NULL, many, color, 0xFu, 0x4000u, &nothing, words) == 0);
+    CHECK(nothing == 0 && fault_is(&k, "clear layers") && k.last_fault_value == NVN_RT_CLEAR_LAYERS_MAX + 1u);
+}
+
 int main(void) {
     test_one_target();
     test_null_slot_zero();
@@ -654,6 +779,11 @@ int main(void) {
     test_color_view_layers();
     test_color_view_target_3d();
     test_color_view_checks();
+    test_clear_texture_one_layer();
+    test_clear_texture_two_layers();
+    test_clear_texture_clip();
+    test_clear_texture_nothing();
+    test_clear_texture_refusals();
     test_depth_linear();
     test_2d_array_target();
     test_refusals();
