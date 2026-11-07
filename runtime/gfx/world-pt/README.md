@@ -17,7 +17,7 @@ cmake --build C:/build/arceus-pt --target scarletnx
 Use the prepared runtime when generating or relinking your local game executable. The project's [build instructions](../../../docs/SCARLETNX_BUILD-NOTES.md) describe the recompiler toolchain. Place the appropriate vendor runtime libraries next to the executable. FSR needs `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll`. DLSS needs an NGX-capable driver and the matching DLSS libraries. Compilation and shader generation need no game assets.
 
 ```powershell
-./runtime/gfx/world-pt/Start-WorldPT.ps1 -Executable C:/games/build/ArceusTest.exe -Game C:/games/ArceusTest -Backend FSR -Terrain C:/games/local-terrain
+./runtime/gfx/world-pt/Start-WorldPT.ps1 -Executable C:/games/build/ArceusTest.exe -Game C:/games/ArceusTest -Terrain C:/games/local-terrain
 ```
 
 Open the in-game menu with F1, then Display > Graphics. The DLSS Super Resolution and Ray tracing switches are saved in the game's INI file as `arceus_dlss` and `arceus_ray_tracing`. Both default to Off. Change either switch in the menu, close the game normally, and start it again to apply the saved choice. The menu marks these settings as requiring a restart. Ray tracing uses FSR when DLSS is off. The launcher reads the saved settings by default and clears inherited graphics overrides. Optional launch flags remain available for a one-run override. The launcher uses native controller input, game-controlled frame pacing, a 120 FPS target, and camera multiplier 2.2. The terrain directory is optional. Camera-visible geometry is captured from guest draws. Additional local terrain, structure and instance tables provide offscreen geometry and materials.
