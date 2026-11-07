@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 #include "nx/gpu/nvn_params.h"
+#include "nx/gpu/nvn_cmdlist.h"
 #include "nx/gpu/texture/blocklinear.h"
 #include <stddef.h>
 #include <math.h>
@@ -30,10 +31,30 @@ int32_t nvn_window_pick_image(const uint8_t* states, uint32_t count, int32_t las
     }
     return NVN_WINDOW_NO_IMAGE;
 }
-NvnSyncWaitResult nvn_sync_wait_result(NvnSyncState state) {
-    /* FENCED is signaled by its frame job, which step 2e adds. Until then a wait on it cannot be
-       satisfied. */
-    return state == NVN_SYNC_SIGNALED ? NVN_SYNC_WAIT_SIGNALED : NVN_SYNC_WAIT_FAILED;
+int nvn_window_has_presented(const uint8_t* states, uint32_t count) {
+    if (!states || count > NVN_WINDOW_MAX_TEXTURES) return 0;
+    for (uint32_t i = 0; i < count; i++)
+        if (states[i] == NVN_IMAGE_PRESENTED) return 1;
+    return 0;
+}
+NvnSyncAction nvn_sync_wait_action(NvnSyncState state) {
+    switch (state) {
+    case NVN_SYNC_SIGNALED: return NVN_SYNC_ACTION_SIGNALED;
+    case NVN_SYNC_FENCED: return NVN_SYNC_ACTION_WAIT;
+    default: return NVN_SYNC_ACTION_REFUSE; /* UNSIGNALED never gets a frame job */
+    }
+}
+NvnWaitDeadline nvn_wait_deadline(uint64_t timeout_ns, uint64_t now_ns) {
+    if (timeout_ns == NVN_SYNC_WAIT_NO_LIMIT) return (NvnWaitDeadline){0, 0};
+    uint64_t deadline = now_ns + timeout_ns;
+    if (deadline < now_ns) deadline = UINT64_MAX; /* the clock cannot hold now + timeout: keep it finite */
+    return (NvnWaitDeadline){deadline, 1};
+}
+int64_t nvn_wait_remaining_ns(NvnWaitDeadline limit, uint64_t now_ns) {
+    if (!limit.has_deadline) return -1;
+    if (now_ns >= limit.deadline_ns) return 0;
+    uint64_t left = limit.deadline_ns - now_ns;
+    return left > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)left;
 }
 NvnWindowCrop nvn_window_crop(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
                               uint32_t texture_width, uint32_t texture_height) {
@@ -153,6 +174,23 @@ uint32_t nvn_vertex_attrib_state_set_stream_index(uint32_t word, uint32_t stream
     return (word & 0xFFFFFFE0u) | stream_index;
 }
 
+void nvn_vertex_attrib_state_get_format(uint32_t word, uint32_t* format, uint64_t* relative_offset) {
+    *format = (word >> 21) & 0x3FFu;
+    *relative_offset = (word >> 7) & 0x3FFFu;
+}
+
+uint32_t nvn_vertex_attrib_state_get_stream_index(uint32_t word) { return word & 0x1Fu; }
+
+/* The library table at sdk 0xde877bc (update 1.1.1), one word for each counter type. */
+static const uint32_t reset_counter_words[] = {0x01u, 0x01u, 0x12u, 0x13u, 0x15u, 0x16u, 0x17u, 0x1Au, 0x1Eu,
+                                               0x18u, 0x1Bu, 0x1Cu, 0x1Du, 0x1Fu, 0x10u, 0x02u, 0x01u};
+
+int nvn_reset_counter_word(uint32_t type, uint32_t* word) {
+    if (type >= sizeof reset_counter_words / sizeof reset_counter_words[0]) return 0;
+    *word = reset_counter_words[type];
+    return 1;
+}
+
 void nvn_color_state_defaults(uint32_t* words) { words[0] = 0x08030000u; }
 
 void nvn_depth_stencil_state_defaults(uint32_t* words) {
@@ -269,6 +307,10 @@ int nvn_raster_methods(NvnRasterKind which, const uint32_t w[3], NvnRasterMethod
     case NVN_RASTER_LINE_WIDTH:
         out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_LINE_WIDTH, w[0]};
         out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_LINE_WIDTH_ALIAS, w[0]};
+        break;
+    case NVN_RASTER_POINT_SIZE:
+        out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_POINT_SIZE, w[0]};
+        out[n++] = (NvnRasterMethod){NVN_RASTER_METHOD_POINT_SIZE_FOLLOW, 0u};
         break;
     default:
         return 0;
@@ -577,9 +619,9 @@ static int texture_is_array(uint32_t target) {
     return target == NVN_TEXTURE_TARGET_1D_ARRAY || target == NVN_TEXTURE_TARGET_2D_ARRAY ||
            target == NVN_TEXTURE_TARGET_CUBE || target == NVN_TEXTURE_TARGET_CUBE_ARRAY;
 }
-typedef struct { uint64_t size; uint32_t gobs_x, rows; uint8_t block_height_log2; } TextureLevelParts;
+typedef struct { uint64_t size; uint32_t gobs_x, rows, depth; uint8_t block_height_log2, depth_log2; } TextureLevelParts;
 /* One level of a block linear texture with the tile exponents x, y and z: the GOBs across (rounded to the tile),
-   the block rows, the trimmed block height exponent and the bytes of the level. */
+   the block rows, the depth, the trimmed height and depth exponents and the bytes of the level. */
 static TextureLevelParts texture_level_parts(const NvnTextureLayout* l, uint32_t level,
                                              uint32_t x, uint32_t y, uint32_t z) {
     uint32_t p = 1u << (x & 31u);
@@ -595,7 +637,9 @@ static TextureLevelParts texture_level_parts(const NvnTextureLayout* l, uint32_t
     TextureLevelParts parts = {
         .gobs_x = nx,
         .rows = rows,
+        .depth = d,
         .block_height_log2 = (uint8_t)ey,
+        .depth_log2 = (uint8_t)ez,
     };
     parts.size = (uint64_t)nx * ceil_u32(rows, NVN_TEXTURE_GOB_HEIGHT << (ey & 31u)) *
                  ceil_u32(d, 1u << (ez & 31u)) * ((uint64_t)NVN_TEXTURE_GOB_BYTES << ((ey + ez) & 63u));
@@ -697,40 +741,48 @@ int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* 
 
 uint16_t nvn_texture_packaged_tile(uint32_t layout) { return (uint16_t)(((layout & 0xfffu) << 4) | 1u); }
 
-/* The offset of byte (x, y) of a level, z = 0 (gpu.c's bl_offset with bd = 0). */
-static uint64_t texture_level_offset(const NvnTextureLevel* lv, uint32_t x, uint32_t y) {
-    uint64_t bh = lv->block_height_log2, gy = y >> GOB_SIZE_Y_SHIFT;
-    return ((uint64_t)(x >> GOB_SIZE_X_SHIFT) << (GOB_SIZE_SHIFT + bh)) + gob_x_offset(x) +
-           ((gy >> bh) * lv->gobs_x << (GOB_SIZE_SHIFT + bh)) +
-           ((gy & ((1u << bh) - 1)) << GOB_SIZE_SHIFT) + gob_y_offset(y);
+/* The offset of byte (x, y) of slice z of a level (gpu.c's bl_offset with bh and bd). */
+static uint64_t texture_level_offset(const NvnTextureLevel* lv, uint32_t x, uint32_t y, uint32_t z) {
+    uint64_t bh = lv->block_height_log2, bd = lv->depth_log2, gy = y >> GOB_SIZE_Y_SHIFT;
+    uint64_t block = (uint64_t)NVN_TEXTURE_GOB_BYTES << (bh + bd);
+    uint64_t block_rows = (lv->rows + (NVN_TEXTURE_GOB_HEIGHT << bh) - 1) >> (GOB_SIZE_Y_SHIFT + bh);
+    uint64_t block_row = (uint64_t)(z >> bd) * block_rows + (gy >> bh);
+    return ((uint64_t)(x >> GOB_SIZE_X_SHIFT) << (GOB_SIZE_SHIFT + bh + bd)) + gob_x_offset(x) +
+           block_row * lv->gobs_x * block +
+           ((((z & ((1u << bd) - 1)) << bh) + (gy & ((1u << bh) - 1))) << GOB_SIZE_SHIFT) + gob_y_offset(y);
 }
 int nvn_texture_level(const NvnTexture* t, uint32_t level, NvnTextureLevel* out) {
     if (!t || !out) return 0;
     const NvnTextureLayout* l = &t->layout;
     if ((t->builder.flags & NVN_TEXTURE_LINEAR_FLAGS) || t->builder.target == NVN_TEXTURE_TARGET_BUFFER ||
-        l->dim == 3 || l->sample_x != 1 || l->sample_y != 1 || level >= l->levels) return 0;
+        l->sample_x != 1 || l->sample_y != 1 || level >= l->levels) return 0;
     uint64_t offset = 0;
     for (uint32_t i = 0; i < level; i++)
         offset += texture_level_parts(l, i, l->tile_x, l->tile_y, l->tile_z).size;
     TextureLevelParts parts = texture_level_parts(l, level, l->tile_x, l->tile_y, l->tile_z);
     *out = (NvnTextureLevel){.offset = offset, .size = parts.size, .gobs_x = parts.gobs_x,
-                             .rows = parts.rows, .block_height_log2 = parts.block_height_log2};
+                             .rows = parts.rows, .depth = parts.depth, .block_height_log2 = parts.block_height_log2,
+                             .depth_log2 = parts.depth_log2};
     return 1;
 }
 int nvn_texture_write_rows(uint8_t* level_base, const NvnTextureLevel* lv, uint32_t x_start, uint32_t x_end,
-                           uint32_t row_start, uint32_t row_end, const uint8_t* src, uint64_t src_stride) {
+                           uint32_t row_start, uint32_t row_end, const uint8_t* src, uint64_t src_stride,
+                           uint32_t z) {
     if (!level_base || !lv || !src) return 0;
+    /* A level without a 3D depth holds one slice. */
+    uint32_t depth = lv->depth ? lv->depth : 1;
+    if (z >= depth) return 0;
     /* The level holds whole blocks: a block is 2^bh GOBs, that is 8 << bh rows, high. */
     uint64_t block_rows = (uint64_t)GOB_SIZE_Y << lv->block_height_log2;
     uint64_t row_limit = (lv->rows + block_rows - 1) / block_rows * block_rows;
     if (x_end > (uint64_t)lv->gobs_x * GOB_SIZE_X || row_end > row_limit) return 0;
     if (x_start >= x_end || row_start >= row_end) return 1;
     /* Validate the last byte before the first write: the offsets grow with x and with y. */
-    if (texture_level_offset(lv, x_end - 1, row_end - 1) >= lv->size) return 0;
+    if (texture_level_offset(lv, x_end - 1, row_end - 1, z) >= lv->size) return 0;
     for (uint32_t r = row_start; r < row_end; r++) {
         const uint8_t* from = src + (uint64_t)(r - row_start) * src_stride;
         for (uint32_t x = x_start; x < x_end; x++)
-            level_base[texture_level_offset(lv, x, r)] = from[x - x_start];
+            level_base[texture_level_offset(lv, x, r, z)] = from[x - x_start];
     }
     return 1;
 }
@@ -1696,6 +1748,194 @@ uint32_t nvn_bind_texture_words(uint32_t stage, uint32_t slot, uint64_t handle, 
     return w.at;
 }
 
+/* ReportCounter: the type selects one query of the library table, four queries for type 15, or the timestamp packet for
+   type 16. Each packet is four data words at 0x6C0, then one trigger word. */
+#define NVN_REPORT_TYPE_MULTI 15u
+#define NVN_REPORT_QUERY_COUNT 15u
+#define NVN_REPORT_DATA_COUNT 4u
+#define NVN_REPORT_QUERY_STEP 4u
+#define NVN_REPORT_METHOD_COUNTER 0x6C0u
+#define NVN_REPORT_METHOD_TIMESTAMP 0x004u
+#define NVN_REPORT_METHOD_TRIGGER 0x3E0u
+#define NVN_REPORT_TIMESTAMP_QUERY 0x00100002u
+
+static const uint32_t report_counter_query[NVN_REPORT_QUERY_COUNT] = {
+    0x0000F002u, 0x0A80F002u, 0x00801002u, 0x01801002u, 0x02802002u, 0x0D808002u, 0x0E809002u, 0x03806002u,
+    0x0980A002u, 0x0F809002u, 0x04806002u, 0x07804002u, 0x08804002u, 0x09005002u, 0x05805002u,
+};
+
+static const uint32_t report_counter_multi_query[NVN_REPORT_DATA_COUNT] = {
+    0x15007002u, 0x16007002u, 0x17007002u, 0x18007002u,
+};
+
+uint32_t nvn_report_counter_words(uint32_t type, uint64_t address, uint32_t* out) {
+    if (!out || type > NVN_REPORT_TYPE_MAX) return 0;
+    NvnBindWriter w = {out, 0};
+    if (type == NVN_REPORT_TYPE_MAX) {
+        bind_run(&w, NVN_REPORT_METHOD_TIMESTAMP, NVN_REPORT_DATA_COUNT);
+        bind_word(&w, (uint32_t)(address >> 32));
+        bind_word(&w, (uint32_t)address);
+        bind_word(&w, 0);
+        bind_word(&w, NVN_REPORT_TIMESTAMP_QUERY);
+        bind_value(&w, NVN_REPORT_METHOD_TRIGGER, 0);
+        return w.at;
+    }
+    if (type == NVN_REPORT_TYPE_MULTI) {
+        for (uint32_t i = 0; i < NVN_REPORT_DATA_COUNT; i++) {
+            uint64_t at = address + (uint64_t)NVN_REPORT_QUERY_STEP * i;
+            bind_run(&w, NVN_REPORT_METHOD_COUNTER, NVN_REPORT_DATA_COUNT);
+            bind_word(&w, (uint32_t)(at >> 32));
+            bind_word(&w, (uint32_t)at);
+            bind_word(&w, 0);
+            bind_word(&w, report_counter_multi_query[i]);
+        }
+    } else {
+        bind_run(&w, NVN_REPORT_METHOD_COUNTER, NVN_REPORT_DATA_COUNT);
+        bind_word(&w, (uint32_t)(address >> 32));
+        bind_word(&w, (uint32_t)address);
+        bind_word(&w, 0);
+        bind_word(&w, report_counter_query[type]);
+    }
+    bind_value(&w, NVN_REPORT_METHOD_TRIGGER, 0);
+    return w.at;
+}
+
+/* BindImage: one stage macro and the slot and two handle words for each handle. Stage 5 is the compute record and is
+   not a method, so a stage above 4 is a refusal. */
+#define NVN_BIND_IMAGE_METHOD_PARAM 0xE0Eu
+#define NVN_BIND_IMAGE_METHOD_DESCRIPTOR 0x68Bu
+#define NVN_BIND_IMAGE_METHOD_HANDLE 0x8E3u
+#define NVN_BIND_IMAGE_DATA_COUNT 3u
+#define NVN_BIND_IMAGE_SLOT_STEP 8u
+#define NVN_BIND_IMAGE_SLOT_BASE 0x120u
+
+uint32_t nvn_bind_image_words(uint32_t stage, uint32_t first, uint32_t count, const uint64_t* handles,
+                              int descriptor_flag, uint32_t* out) {
+    if (!out || !handles || !count || count > NVN_IMAGE_BINDS_MAX || stage >= NVN_BIND_STAGE_COUNT) return 0;
+    NvnBindWriter w = {out, 0};
+    for (uint32_t i = 0; i < count; i++) {
+        bind_value(&w, NVN_BIND_IMAGE_METHOD_PARAM, bind_texture_stage_map[stage]);
+        if (descriptor_flag) bind_value(&w, NVN_BIND_IMAGE_METHOD_DESCRIPTOR, 0);
+        bind_run(&w, NVN_BIND_IMAGE_METHOD_HANDLE, NVN_BIND_IMAGE_DATA_COUNT);
+        bind_word(&w, (first + i) * NVN_BIND_IMAGE_SLOT_STEP + NVN_BIND_IMAGE_SLOT_BASE);
+        bind_word(&w, (uint32_t)handles[i]);
+        bind_word(&w, (uint32_t)(handles[i] >> 32));
+    }
+    return w.at;
+}
+
+/* ClearDepthStencil: the zcull flag, the optional scratch macro, the depth word, then the stencil branch or the depth
+   only macro. The macro 0xE04 value is 3 for depth and stencil, 2 for stencil only and 1 for depth only. */
+#define NVN_CLEAR_DEPTH_ENABLE_MASK 0xFFu
+#define NVN_CLEAR_DEPTH_METHOD_ZCULL 0x36Fu
+#define NVN_CLEAR_DEPTH_METHOD_DEPTH 0x364u
+#define NVN_CLEAR_DEPTH_METHOD_STENCIL_MASK 0x4E7u
+#define NVN_CLEAR_DEPTH_METHOD_STENCIL 0x368u
+#define NVN_CLEAR_DEPTH_METHOD_SHADOW 0x049u
+#define NVN_CLEAR_DEPTH_MACRO_E26 0xE26u
+#define NVN_CLEAR_DEPTH_MACRO_STENCIL 0xE04u
+#define NVN_CLEAR_DEPTH_FLAG_BELOW_HALF 0x1u
+#define NVN_CLEAR_DEPTH_FLAG_ENDPOINT 0x10000u
+#define NVN_CLEAR_DEPTH_SHADOW_MODE 2u
+#define NVN_CLEAR_DEPTH_SHADOW_MODE_STENCIL 3u
+#define NVN_CLEAR_DEPTH_SHADOW_MODE_DONE 1u
+#define NVN_CLEAR_DEPTH_MACRO_DEPTH_AND_STENCIL 3u
+#define NVN_CLEAR_DEPTH_MACRO_STENCIL_ONLY 2u
+#define NVN_CLEAR_DEPTH_MACRO_DEPTH_ONLY 1u
+
+/* The library writes nothing when neither the depth nor the stencil is enabled. That early return is not a refusal. */
+int nvn_clear_depth_stencil_nothing(uint32_t depth_enable, uint32_t stencil_mask) {
+    return (depth_enable & NVN_CLEAR_DEPTH_ENABLE_MASK) == 0 && stencil_mask == 0;
+}
+
+uint32_t nvn_clear_depth_stencil_words(uint32_t depth_bits, uint32_t depth_enable, uint32_t stencil,
+                                       uint32_t stencil_mask, int zcull_clear, int use_macro_e26, uint32_t* out) {
+    if (!out) return 0;
+    int depth = (depth_enable & NVN_CLEAR_DEPTH_ENABLE_MASK) != 0;
+    if (!depth && stencil_mask == 0) return 0;
+    float depth_value;
+    memcpy(&depth_value, &depth_bits, sizeof depth_value);
+    NvnBindWriter w = {out, 0};
+    if (zcull_clear && depth) {
+        uint32_t flag = 0;
+        if (depth_value < 0.5f) flag |= NVN_CLEAR_DEPTH_FLAG_BELOW_HALF;
+        if (depth_value == 0.0f || depth_value == 1.0f) flag |= NVN_CLEAR_DEPTH_FLAG_ENDPOINT;
+        bind_run(&w, NVN_CLEAR_DEPTH_METHOD_ZCULL, 1);
+        bind_word(&w, flag);
+    }
+    if (use_macro_e26 && zcull_clear && depth) bind_value(&w, NVN_CLEAR_DEPTH_MACRO_E26, 0);
+    if (depth) {
+        bind_run(&w, NVN_CLEAR_DEPTH_METHOD_DEPTH, 1);
+        bind_word(&w, depth_bits);
+    }
+    if (stencil_mask != 0) {
+        bind_value(&w, NVN_CLEAR_DEPTH_METHOD_SHADOW, NVN_CLEAR_DEPTH_SHADOW_MODE);
+        bind_value(&w, NVN_CLEAR_DEPTH_METHOD_STENCIL_MASK, stencil_mask & 0xFFu);
+        bind_value(&w, NVN_CLEAR_DEPTH_METHOD_STENCIL, stencil & 0xFFu);
+        bind_value(&w, NVN_CLEAR_DEPTH_MACRO_STENCIL,
+                   depth ? NVN_CLEAR_DEPTH_MACRO_DEPTH_AND_STENCIL : NVN_CLEAR_DEPTH_MACRO_STENCIL_ONLY);
+        bind_value(&w, NVN_CLEAR_DEPTH_METHOD_SHADOW, NVN_CLEAR_DEPTH_SHADOW_MODE_STENCIL);
+        bind_value(&w, NVN_CLEAR_DEPTH_METHOD_STENCIL_MASK, 0);
+        bind_value(&w, NVN_CLEAR_DEPTH_METHOD_SHADOW, NVN_CLEAR_DEPTH_SHADOW_MODE_DONE);
+    } else if (depth) {
+        bind_value(&w, NVN_CLEAR_DEPTH_MACRO_STENCIL, NVN_CLEAR_DEPTH_MACRO_DEPTH_ONLY);
+    }
+    return w.at;
+}
+
+#define NVN_XFB_METHOD_BUFFER 0xE0u      /* enable, address high, address low, size of buffer 0 */
+#define NVN_XFB_METHOD_BUFFER_STEP 8u
+#define NVN_XFB_BUFFER_WORDS 4u
+#define NVN_XFB_METHOD_ENABLE 0x1D1u
+#define NVN_XFB_METHOD_BEGIN_MACRO 0xE00u /* macro 0 of the library's macro code */
+#define NVN_XFB_METHOD_REPORT 0x6C0u      /* report semaphore: address high, address low, payload, query */
+#define NVN_XFB_REPORT_WORDS 4u
+#define NVN_XFB_COUNT_OFFSET 4u          /* the byte count of buffer i goes to address + 4 + 4i */
+
+/* The query words of End, from the library's constants at sdk 0xde13dc0, 0xde135c8, 0xde13e50 and 0xde13f78. */
+static const uint32_t xfb_count_query[NVN_XFB_BUFFER_COUNT] = {0x1D005002u, 0x1D005022u, 0x1D005042u, 0x1D005062u};
+
+uint32_t nvn_bind_xfb_words(uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out) {
+    if (!out || slot >= NVN_XFB_BUFFER_COUNT) return 0;
+    NvnBindWriter w = {out, 0};
+    uint32_t method = NVN_XFB_METHOD_BUFFER + NVN_XFB_METHOD_BUFFER_STEP * slot;
+    if (!addr) {
+        bind_value(&w, method, 0);
+        return w.at;
+    }
+    bind_run(&w, method, NVN_XFB_BUFFER_WORDS);
+    bind_word(&w, 1);
+    bind_word(&w, (uint32_t)(addr >> 32));
+    bind_word(&w, (uint32_t)addr);
+    bind_word(&w, size);
+    return w.at;
+}
+
+uint32_t nvn_xfb_words(uint32_t kind, uint64_t addr, uint32_t* out) {
+    if (!out) return 0;
+    NvnBindWriter w = {out, 0};
+    switch (kind) {
+    case NVN_XFB_BEGIN:
+        bind_macro(&w, NVN_XFB_METHOD_BEGIN_MACRO, 2);
+        bind_word(&w, (uint32_t)(addr >> 32));
+        bind_word(&w, (uint32_t)addr);
+        return w.at;
+    case NVN_XFB_END:
+        bind_value(&w, NVN_XFB_METHOD_ENABLE, 0);
+        for (uint32_t i = 0; i < NVN_XFB_BUFFER_COUNT; i++) {
+            uint64_t at = addr + NVN_XFB_COUNT_OFFSET * (i + 1u);
+            bind_run(&w, NVN_XFB_METHOD_REPORT, NVN_XFB_REPORT_WORDS);
+            bind_word(&w, (uint32_t)(at >> 32));
+            bind_word(&w, (uint32_t)at);
+            bind_word(&w, 0);
+            bind_word(&w, xfb_count_query[i]);
+        }
+        return w.at;
+    default:
+        return 0;
+    }
+}
+
 /* The draw macros and methods that the five library draw functions write. The headers use the same forms as the bind
    packets: a mode 5 macro of count words, a mode 1 run and a mode 4 inline value. */
 #define NVN_DRAW_TYPE_MAX                 0x1FFFu
@@ -1859,6 +2099,8 @@ enum {
 #define COMPUTE_QMD_GPR_ALLOC_UNKNOWN 0u    /* the byte at x21+0x823: vk_dispatch does not read it */
 #define COMPUTE_QMD_SASS_VERSION_UNKNOWN 0u /* the byte at x21+0x82b: vk_dispatch does not read it */
 #define COMPUTE_QMD_CBUF0_ENABLE 0x1u       /* the library leaves it clear; vk_dispatch reads cbuf 0 for storage */
+#define COMPUTE_QMD_CBUF_SIZE_MAX (UINT32_MAX >> NVN_COMPUTE_CBUF_ADDRESS_HIGH_SHIFT)
+#define COMPUTE_QMD_CBUF_SIZE_PADDING 0xFFu /* uniform sizes round up to 256 bytes */
 
 /* Writes the address and size pair of one QMD constant buffer. The size sits in bits 31:15 of the second word. */
 static void compute_qmd_cbuf_config(uint32_t* qmd, uint32_t index, uint64_t address, uint32_t size) {
@@ -1874,12 +2116,21 @@ uint32_t nvn_compute_qmd_check(const NvnProgramComputeIn* prog, uint32_t x, uint
     if (x > COMPUTE_QMD_GRID_X_MAX) return NVN_QMD_GRID_X;
     if (y > COMPUTE_QMD_GRID_YZ_MAX) return NVN_QMD_GRID_Y;
     if (z > COMPUTE_QMD_GRID_YZ_MAX) return NVN_QMD_GRID_Z;
-    if ((uint64_t)prog->h6fc + 0xFFu > UINT32_MAX) return NVN_QMD_CBUF1_SIZE;
+    if ((uint64_t)prog->h6fc + COMPUTE_QMD_CBUF_SIZE_PADDING > COMPUTE_QMD_CBUF_SIZE_MAX)
+        return NVN_QMD_CBUF1_SIZE;
     for (uint32_t slot = 0; slot < NVN_COMPUTE_UNIFORM_SLOTS; slot++) {
         const NvnComputeBindEntry* entry = &binds->uniform[slot];
-        if (!entry->bound || entry->size <= UINT32_MAX) continue;
-        if (detail) *detail = slot;
-        return NVN_QMD_UNIFORM_SIZE;
+        if (!entry->bound) continue;
+        uint32_t reason = NVN_QMD_OK;
+        if (entry->size > UINT32_MAX)
+            reason = NVN_QMD_UNIFORM_SIZE;
+        else if (slot < NVN_COMPUTE_UNIFORM_QBUF_SLOTS &&
+                 entry->size > (COMPUTE_QMD_CBUF_SIZE_MAX & ~COMPUTE_QMD_CBUF_SIZE_PADDING))
+            reason = NVN_QMD_UNIFORM_QBUF_SIZE;
+        if (reason != NVN_QMD_OK) {
+            if (detail) *detail = slot;
+            return reason;
+        }
     }
     if (detail) *detail = 0;
     return NVN_QMD_OK;
@@ -1892,8 +2143,9 @@ const char* nvn_compute_qmd_reason_name(uint32_t reason) {
     case NVN_QMD_GRID_X: return "grid x above its field";
     case NVN_QMD_GRID_Y: return "grid y above its field";
     case NVN_QMD_GRID_Z: return "grid z above its field";
-    case NVN_QMD_CBUF1_SIZE: return "constant buffer 1 size above 32 bits";
+    case NVN_QMD_CBUF1_SIZE: return "constant buffer 1 size above its QMD field";
     case NVN_QMD_UNIFORM_SIZE: return "uniform size above 32 bits";
+    case NVN_QMD_UNIFORM_QBUF_SIZE: return "rounded uniform size above its QMD field";
     default: return "unknown";
     }
 }
@@ -1901,7 +2153,7 @@ const char* nvn_compute_qmd_reason_name(uint32_t reason) {
 int nvn_compute_qmd_build(const NvnProgramComputeIn* prog, uint32_t x, uint32_t y, uint32_t z,
                           const NvnComputeBinds* binds, uint32_t qmd[NVN_COMPUTE_QMD_WORDS]) {
     if (!qmd || nvn_compute_qmd_check(prog, x, y, z, binds, NULL) != NVN_QMD_OK) return 0;
-    uint64_t cb1_size = (uint64_t)prog->h6fc + 0xFFu;
+    uint64_t cb1_size = (uint64_t)prog->h6fc + COMPUTE_QMD_CBUF_SIZE_PADDING;
     memset(qmd, 0, NVN_COMPUTE_QMD_WORDS * sizeof qmd[0]);
     qmd[COMPUTE_QMD_PROGRAM_START] = prog->code_offset;
     qmd[COMPUTE_QMD_GRID_DIM_X] = x & COMPUTE_QMD_GRID_X_MAX;
@@ -1929,8 +2181,8 @@ int nvn_compute_qmd_build(const NvnProgramComputeIn* prog, uint32_t x, uint32_t 
         const NvnComputeBindEntry* entry = &binds->uniform[slot];
         if (!entry->bound || entry->size == 0) continue;
         enable |= 1u << (slot + 3u);
-        compute_qmd_cbuf_config(qmd, slot + 3u, entry->addr,
-                                ((uint32_t)entry->size + 0xFFu) & ~0xFFu);
+        uint32_t size = ((uint32_t)entry->size + COMPUTE_QMD_CBUF_SIZE_PADDING) & ~COMPUTE_QMD_CBUF_SIZE_PADDING;
+        compute_qmd_cbuf_config(qmd, slot + 3u, entry->addr, size);
     }
     qmd[COMPUTE_QMD_CONST_BUFFER_ENABLE] = enable;
     return 1;

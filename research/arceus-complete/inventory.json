@@ -9409,7 +9409,7 @@
   {
     "source": "runtime-working-tree/tests/nvn_params.c",
     "sha256": "5674e95605b465260240c35790a5c9c1a06c48ed2308b16f32bd0f191233cc77",
-    "base": "third_party/ScarletNX/src/nx/gpu/nvn_params.c",
+    "base": "research/arceus-complete/bases/third_party/ScarletNX/src/nx/gpu/nvn_params.c",
     "published": "research/arceus-complete/sources/runtime-working-tree/tests/nvn_params.c.patch"
   },
   {
@@ -9942,7 +9942,7 @@
   {
     "source": "2026-11-06/repository-https-github-com-nxaevora-nxaevora/work/repo/third_party/ScarletNX/tests/nvn_params.c",
     "sha256": "5674e95605b465260240c35790a5c9c1a06c48ed2308b16f32bd0f191233cc77",
-    "base": "third_party/ScarletNX/src/nx/gpu/nvn_params.c",
+    "base": "research/arceus-complete/bases/third_party/ScarletNX/src/nx/gpu/nvn_params.c",
     "published": "research/arceus-complete/sources/runtime-working-tree/tests/nvn_params.c.patch"
   },
   {

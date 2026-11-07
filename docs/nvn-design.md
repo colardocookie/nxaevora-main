@@ -738,7 +738,9 @@ functions that no run reached stay `implemented` plus `unit`, `selftest` or `exe
 ### Steps in stage 4 for this part
 
 - 4-u1: the tool `tools/nvn_coverage.py` and the first `docs/nvn-coverage.md`, with the trace of the argument values and the
-  separate columns for `selftest`, `exec` and `seen`.
+  separate columns for `selftest`, `exec` and `seen`. Done 2026-11-06 except the trace of the argument values: the tool
+  reads the 523 names and addresses from the sdk module (`--sdk`) or a trace log (`--log`). The first file has 274 host
+  handlers and 249 missing-function handlers, and every one of the 242 functions of `nvn-calls.md` has a host handler.
 - 4-u2: the reading of the library for the 281 functions, in groups (events and fences, copies, transform feedback, tessellation
   and raster extras, the rest), one commit for each group, with the unit tests and the cases that the selftest takes.
 - 4-u3: the selftest cases for the rest of the functions that a test can make, by group, and the execution test for events and
@@ -860,8 +862,10 @@ guest. A FREE image means its previous frame job has finished. No frame job in t
 image is ACQUIRED the handler logs `no free window image`, writes -1 and returns failure. This is the intended stop until
 3c implements present and image release.
 
-`SyncWait` ignores its timeout in this part. Its result is 0 for SIGNALED, 3 for UNSIGNALED or an unknown sync. The library
-also defines 1 for a condition met after waiting and 2 for timeout; 3c adds the waiting states.
+`SyncWait` ignored its timeout in this part. Since the fix of 2026-11-07 it waits on a FENCED sync until the frame job signals
+it or the timeout ends (result 0 or 2; `0xffffffffffffffff` is no limit). A sync that was never fenced and an unknown sync give 3
+at once. `WindowAcquireTexture` waits the same way when no image is FREE and one is PRESENTED. `frame_finish` wakes both
+(`frame_done_cv`, `objs_lock`). Cause: the first frame job needs 0.5 s on the GPU thread, and the game waits on its fence meanwhile.
 
 ### 3b-2 Result (run of 2026-11-02, update program, title screen, `nvn_trace=1`, `nvn_native=0`)
 
