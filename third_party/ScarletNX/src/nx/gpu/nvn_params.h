@@ -163,6 +163,9 @@ uint32_t nvn_depth_stencil_state_set_stencil_op(uint32_t word, uint32_t face, ui
                                                 uint32_t zpass);
 uint32_t nvn_vertex_attrib_state_set_format(uint32_t word, uint32_t format, uint32_t relative_offset);
 uint32_t nvn_vertex_attrib_state_set_stream_index(uint32_t word, uint32_t stream_index);
+/* The library getters (d83af80, d83afa0): format bits 21-30, relative offset bits 7-20, stream index bits 0-4. */
+void nvn_vertex_attrib_state_get_format(uint32_t word, uint32_t* format, uint64_t* relative_offset);
+uint32_t nvn_vertex_attrib_state_get_stream_index(uint32_t word);
 
 void nvn_color_state_defaults(uint32_t* words);
 void nvn_depth_stencil_state_defaults(uint32_t* words);

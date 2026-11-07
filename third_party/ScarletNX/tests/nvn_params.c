@@ -1132,6 +1132,15 @@ static void test_vertex_attrib_state(void) {
     CHECK(nvn_vertex_attrib_state_set_stream_index(0xFFFFFFFFu, 0) == 0xFFFFFFE0u);
     CHECK(nvn_vertex_attrib_state_set_stream_index(0, 0x100) == 0x100u);          /* not masked: spills into stride */
     CHECK(nvn_vertex_attrib_state_set_stream_index(0x20u, 0) == 0x20u);           /* bit 5 kept */
+
+    uint32_t format = 0;
+    uint64_t offset = 0;
+    uint32_t word = nvn_vertex_attrib_state_set_stream_index(nvn_vertex_attrib_state_set_format(0, 0x22, 0xC), 7);
+    nvn_vertex_attrib_state_get_format(word, &format, &offset);
+    CHECK(format == 0x22u && offset == 0xCu && nvn_vertex_attrib_state_get_stream_index(word) == 7u);
+    nvn_vertex_attrib_state_get_format(0xFFFFFFFFu, &format, &offset);
+    CHECK(format == 0x3FFu && offset == 0x3FFFu);                                /* bit 31 and bits 0-6 not read */
+    CHECK(nvn_vertex_attrib_state_get_stream_index(0xFFFFFFFFu) == 0x1Fu);         /* bit 5 not read */
 }
 
 static void test_depth_range_methods(void) {

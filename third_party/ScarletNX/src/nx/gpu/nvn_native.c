@@ -851,6 +851,11 @@ static void h_sampler_initialize(CPU* c, u64 entry) {
     c->x[0] = 1;
     pm_unlock(&objs_lock);
 }
+/* The library's function is one `ret` (d83a5b0): the object stays readable, so the host keeps its record too. */
+static void h_sampler_finalize(CPU* c, u64 entry) {
+    (void)c;
+    (void)entry;
+}
 static void h_sampler_compare(CPU* c, u64 entry) {
     (void)entry;
     pm_lock(&objs_lock);
@@ -2563,6 +2568,34 @@ static void h_vertex_stream_state_get_stride(CPU* c, u64 entry) {
     pm_lock(&objs_lock);
     const uint32_t* w = vertex_stream_words(c->x[0]);
     c->x[0] = w[0];
+    pm_unlock(&objs_lock);
+}
+static void h_vertex_stream_state_get_divisor(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const uint32_t* w = vertex_stream_words(c->x[0]);
+    c->x[0] = w[1];
+    pm_unlock(&objs_lock);
+}
+/* The library stores the format as 32 bits and the relative offset as 64 bits (a ptrdiff_t). */
+static void h_vertex_attrib_state_get_format(CPU* c, u64 entry) {
+    (void)entry;
+    if (!native_guest_writable(c->x[1], sizeof(uint32_t)) || !native_guest_writable(c->x[2], sizeof(uint64_t))) {
+        LOG_LIMIT(8, "nvn-native: nvnVertexAttribStateGetFormat unwritable output\n");
+        return;
+    }
+    pm_lock(&objs_lock);
+    uint32_t format;
+    uint64_t offset;
+    nvn_vertex_attrib_state_get_format(vertex_attrib_words(c->x[0])[0], &format, &offset);
+    pm_unlock(&objs_lock);
+    gw32(c->x[1], format);
+    gw64(c->x[2], offset);
+}
+static void h_vertex_attrib_state_get_stream_index(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = nvn_vertex_attrib_state_get_stream_index(vertex_attrib_words(c->x[0])[0]);
     pm_unlock(&objs_lock);
 }
 
@@ -4395,6 +4428,7 @@ static const NativeProc native_procs[] = {
     {"nvnTextureBuilderGetStorageAlignment", h_texture_builder_get_storage_alignment},
     {"nvnTextureBuilderGetStorageSize", h_texture_builder_get_storage_size},
     {"nvnSamplerInitialize", h_sampler_initialize},
+    {"nvnSamplerFinalize", h_sampler_finalize},
     {"nvnSamplerPoolRegisterSampler", h_sampler_pool_register_sampler},
     {"nvnSamplerCompare", h_sampler_compare},
     {"nvnTextureInitialize", h_texture_initialize},
@@ -4560,6 +4594,9 @@ static const NativeProc native_procs[] = {
     {"nvnVertexStreamStateSetStride", h_vertex_stream_state_set_stride},
     {"nvnVertexStreamStateSetDivisor", h_vertex_stream_state_set_divisor},
     {"nvnVertexStreamStateGetStride", h_vertex_stream_state_get_stride},
+    {"nvnVertexStreamStateGetDivisor", h_vertex_stream_state_get_divisor},
+    {"nvnVertexAttribStateGetFormat", h_vertex_attrib_state_get_format},
+    {"nvnVertexAttribStateGetStreamIndex", h_vertex_attrib_state_get_stream_index},
     {"nvnCommandBufferSetRenderTargets", h_command_buffer_set_render_targets},
     {"nvnCommandBufferSetViewports", h_command_buffer_set_viewports},
     {"nvnCommandBufferSetScissors", h_command_buffer_set_scissors},
