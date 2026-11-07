@@ -112,3 +112,5 @@ ScarletNX is also GPL-3.0. Its license and the list of the projects that it buil
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+The [Arceus development archive](research/arceus-complete/README.md) preserves the preceding timing, graphics, controller, research tools and runtime experiments with a verified source inventory.
