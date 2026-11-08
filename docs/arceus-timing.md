@@ -34,3 +34,19 @@ The four main-loop clocks are updated one after another on each frame. `arceus_s
 for the four updates, so they always agree. The step is never zero: a clock that did not move gives the initial
 step of the target rate. A stall longer than 0.1 second is cut to 0.1 second, so the world does not jump. Test
 `arceus_timing` checks this and the camera stick update of `arceus_camera.h`.
+
+## Physics step
+
+The main rigid-body world takes one fixed 1/30 second step per rendered frame, so above 30 FPS physics runs at
+FPS/30 speed. With a target rate, `SNX_ARCEUS_PHYSICS_TIMESTEP_FIX=1` makes the step the smaller of 1/30 second and
+the elapsed time. The `arceus-physics-timestep` line in the log confirms it.
+
+With only the step corrected, thrown Poké Balls flew in slow motion. The flight update at `main+1A7191C` applies
+drag, lift and its flight timer once per update and assumes 1/30 second each. While the step fix is on, a wrapper
+scales those three by the step times 30 for each call and restores the authored values afterwards. With timing
+research on and the step fix off, the same wrapper only observes. `arceus-ball-flight` lines record each launch and
+flight end.
+
+`SNX_ARCEUS_CADENCE_CENSUS=1` with `SNX_ARCEUS_TIMING_RESEARCH=1` counts calls per second of 32 functions that use
+other fixed 1/30 second steps, and logs `arceus-cadence` lines every five seconds. It only observes. It shows which
+of them run once per rendered frame (a high-FPS bug) and which run at 30 Hz.
