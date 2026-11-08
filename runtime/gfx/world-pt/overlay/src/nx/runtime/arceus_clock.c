@@ -1293,6 +1293,63 @@ static const struct { u32 offset, size, head, patch, word, replacement; const ch
 #define CENSUS_N (sizeof census_sites / sizeof census_sites[0])
 static struct { u64 pc, calls, probe, probe_calls; GuestFn original; } census[CENSUS_N];
 static int census_active;
+/* Read-only gravity probe on the shared acceleration owner. Its airborne branch writes
+   -g x factor x rate / 30 to the result's vertical term. One object at a time, while that
+   term is negative, each call logs the velocity read from x1+120, the x2 position and the
+   result at +40 with real time, so a fall shows whether velocity gains it once per frame. */
+static int gravity_probe_active;
+static u64 gravity_object, gravity_skip, gravity_skip_ns, gravity_start_ns, gravity_calls, gravity_lines;
+#define GRAVITY_SEGMENT_NS 4000000000ull
+#define GRAVITY_LINE_LIMIT 40000ull
+static void gravity_end(u64 object, u64 now, const char* why) {
+    LOG("arceus-gravity: end object=%llx calls=%llu seconds=%.4f reason=%s\n", (unsigned long long)object,
+        (unsigned long long)gravity_calls, (double)(now - gravity_start_ns) / 1e9, why);
+    __atomic_store_n(&gravity_object, 0, __ATOMIC_RELEASE);
+}
+static void gravity_probe(CPU* c, u64 entry, GuestFn original) {
+    const u64 object = c->x[0], in = c->x[1], pose = c->x[2], out = c->x[8];
+    float v[3] = {0}, p[3] = {0};
+    const int inputs = in && pose && readable(in + 0x120, 12) && readable(pose, 12);
+    for (int k = 0; inputs && k < 3; k++) {
+        v[k] = guest_float(in + 0x120 + 4 * k);
+        p[k] = guest_float(pose + 4 * k);
+    }
+    original(c, entry);
+    if (!inputs || !out || !readable(out + 0x40, 12)) return;
+    u64 owner = __atomic_load_n(&gravity_object, __ATOMIC_ACQUIRE);
+    if (owner && owner != object) return;
+    const float ox = guest_float(out + 0x40), oy = guest_float(out + 0x44), oz = guest_float(out + 0x48);
+    const u64 now = plat_ns();
+    if (!(oy < 0.0f)) {
+        if (owner) gravity_end(object, now, "landed");
+        return;
+    }
+    if (!owner) {
+        /* An object that filled a whole segment waits 10 s, so others get a turn. */
+        if (object == gravity_skip && now - gravity_skip_ns < 10000000000ull) return;
+        if (__atomic_load_n(&gravity_lines, __ATOMIC_RELAXED) >= GRAVITY_LINE_LIMIT) return;
+        if (!__atomic_compare_exchange_n(&gravity_object, &owner, object, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return;
+        gravity_start_ns = now;
+        gravity_calls = 0;
+        const u64 config = readable(object + 0x5c0, 8) ? gr64(object + 0x5c0) : 0;
+        LOG("arceus-gravity: start object=%llx g=%g factor=%g max_fall=%g damping=%g\n",
+            (unsigned long long)object, (double)guest_float(main_base + 0x413a0f8),
+            (double)guest_float(object + 0xbe8),
+            config && readable(config + 0x80, 4) ? (double)guest_float(config + 0x80) : 0.0,
+            (double)guest_float(object + 0x920));
+    }
+    gravity_calls++;
+    __atomic_add_fetch(&gravity_lines, 1, __ATOMIC_RELAXED);
+    LOG("arceus-gravity: t=%.6f call=%llu v_in=%g,%g,%g pos=%g,%g,%g out=%g,%g,%g\n",
+        (double)(now - gravity_start_ns) / 1e9, (unsigned long long)gravity_calls, (double)v[0], (double)v[1],
+        (double)v[2], (double)p[0], (double)p[1], (double)p[2], (double)ox, (double)oy, (double)oz);
+    if (now - gravity_start_ns >= GRAVITY_SEGMENT_NS) {
+        gravity_skip = object;
+        gravity_skip_ns = now;
+        gravity_end(object, now, "segment limit");
+    }
+}
 static void cadence_census_wrapper(CPU* c, u64 entry) {
     for (unsigned i = 0; i < CENSUS_N; i++) {
         if (census[i].pc != entry) continue;
@@ -1303,7 +1360,10 @@ static void cadence_census_wrapper(CPU* c, u64 entry) {
                                                   __ATOMIC_RELAXED, __ATOMIC_RELAXED))
             probe = c->x[0];
         if (probe == c->x[0]) __atomic_add_fetch(&census[i].probe_calls, 1, __ATOMIC_RELAXED);
-        census[i].original(c, entry);
+        if (gravity_probe_active && census_sites[i].offset == 0x198d7e4)
+            gravity_probe(c, entry, census[i].original);
+        else
+            census[i].original(c, entry);
         return;
     }
 }
@@ -1376,6 +1436,11 @@ static void cadence_census_init(void) {
     census_active = installed != 0;
     LOG("arceus-cadence: read-only census installed %u of %u owners, %u wrapped by fixes\n",
         installed, (unsigned)CENSUS_N, owned);
+    const char* gravity = getenv("SNX_ARCEUS_GRAVITY_PROBE");
+    if (!gravity || strcmp(gravity, "1")) return;
+    for (unsigned k = 0; k < CENSUS_N; k++)
+        if (census_sites[k].offset == 0x198d7e4 && census[k].original) gravity_probe_active = 1;
+    LOG("arceus-gravity: read-only probe %s\n", gravity_probe_active ? "installed" : "unavailable");
 }
 
 void arceus_clock_post_jit(void) {
