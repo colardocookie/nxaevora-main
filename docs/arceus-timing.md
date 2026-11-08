@@ -50,3 +50,11 @@ flight end.
 `SNX_ARCEUS_CADENCE_CENSUS=1` with `SNX_ARCEUS_TIMING_RESEARCH=1` counts calls per second of 32 functions that use
 other fixed 1/30 second steps, and logs `arceus-cadence` lines every five seconds. It only observes. It shows which
 of them run once per rendered frame (a high-FPS bug) and which run at 30 Hz.
+
+## AI navigation step
+
+`main+2795204` steps the AI navigation world once per rendered frame. Its mode byte at +150 stays at the
+constructor's 0, which selects a fixed 1/30 second, so at about 66 FPS navigation advanced about 2.2 times real
+time. With a target rate, `SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX=1` turns the FCSEL at `main+2795244` into FMINNM, so
+the step is the smaller of 1/30 second and the elapsed time. The path has no zero-step check, and the shared step
+is never zero. The `arceus-navigation-timestep` line confirms it.

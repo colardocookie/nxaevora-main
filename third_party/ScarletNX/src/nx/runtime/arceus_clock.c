@@ -611,7 +611,7 @@ static void field_message_probe_init(void) {
    a fixed-step subsystem may have its own scheduler. */
 static GuestFn timing_research_original[2];
 static u64 timing_research_calls[2];
-static int physics_timestep_active;
+static int physics_timestep_active, navigation_timestep_active;
 static u32 physics_input_bits; /* Last main-world elapsed input, research probe only. */
 static void cadence_census_report(u64 frames);
 static void timing_research_update(CPU* c, u64 entry, unsigned kind) {
@@ -630,7 +630,7 @@ static void timing_research_update(CPU* c, u64 entry, unsigned kind) {
             kind, (unsigned long long)count, (unsigned long long)plat_ns(),
             (unsigned long long)object, (unsigned long long)(caller-main_base),
             (double)c->v[0].f[0], mode, kind ? (double)guest_float(object+0x124) : 1.0,
-            kind ? physics_timestep_active : 0);
+            kind ? physics_timestep_active : navigation_timestep_active);
     }
     timing_research_original[kind](c, entry);
 }
@@ -962,6 +962,40 @@ static void physics_timestep_init(void) {
     LOG("arceus-physics-timestep: EXPERIMENT: main rigid-body step is now min(1/30, elapsed)\n");
 }
 
+/* 2795204 steps AI navigation (hkaiWorld::stepWorld) once per rendered frame, but mode
+   +150 stays 0 and selects a fixed 1/30 s, so navigation ran at FPS/30 speed. Use
+   min(1/30, elapsed) like the physics step. arceus_step never yields a zero step and
+   FMINNM maps NaN to 1/30. A nonzero mode, never observed, would also be capped. */
+static void navigation_timestep_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    const u64 pc = main_base + 0x2795204, caller = main_base + 0x279a6d0;
+    int covered = 0;
+    if (!clocks_installed) {
+        WARN("arceus-navigation-timestep: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == 0x928) covered = 1;
+    /* Prologue, the +150 mode load, the FCSEL, and the caller's tail branch. */
+    if (!covered || pc < g_code_lo || pc + 0x928 > g_code_hi || !readable(pc, 0x928) ||
+        !readable(caller, 0x50) || gr32(pc) != 0xd10283ff || gr32(pc + 0x24) != 0x39454008 ||
+        gr32(pc + 0x40) != 0x1e200c28 || gr32(caller) != 0xf81e0ff3 || gr32(caller + 0x4c) != 0x17ffeaba) {
+        WARN("arceus-navigation-timestep: refused instruction/function guard\n");
+        return;
+    }
+    /* FCSEL S8,S1,S0,EQ -> FMINNM S8,S1,S0. S1 holds 1/30 and S0 the input. */
+    gw32(pc + 0x40, 0x1e207828);
+    jit_code_changed(pc, 0x928);
+    if (!jit_wait(pc)) {
+        WARN("arceus-navigation-timestep: JIT failed\n");
+        return;
+    }
+    navigation_timestep_active = 1;
+    LOG("arceus-navigation-timestep: EXPERIMENT: AI navigation step is now min(1/30, elapsed)\n");
+}
+
 /* 1A7191C is a thrown-object flight update, a virtual shared by three classes
    (vtables 41375C0, 413C5D0, 4141950). In flight (+5F8 == 1) each call adds S/30
    to elapsed +618, ends the planned flight when +618/+61C exceeds 1, then
@@ -1191,6 +1225,7 @@ void arceus_clock_post_jit(void) {
     fixed_resolution_init();
     /* Before the research probe, which compiles and keeps this wrapper's body. */
     physics_timestep_init();
+    navigation_timestep_init();
     ball_flight_init();
     timing_research_init();
     cadence_census_init();
