@@ -611,16 +611,26 @@ static void field_message_probe_init(void) {
    a fixed-step subsystem may have its own scheduler. */
 static GuestFn timing_research_original[2];
 static u64 timing_research_calls[2];
+static int physics_timestep_active;
+static u32 physics_input_bits; /* Last main-world elapsed input, research probe only. */
+static void cadence_census_report(u64 frames);
 static void timing_research_update(CPU* c, u64 entry, unsigned kind) {
     u64 object = c->x[0], caller = c->x[30];
     u64 count = __atomic_add_fetch(&timing_research_calls[kind], 1, __ATOMIC_RELAXED);
+    if (kind) {
+        __atomic_store_n(&physics_input_bits, c->v[0].s[0], __ATOMIC_RELAXED);
+        cadence_census_report(count);
+    }
     if ((count <= 4 || count % 300 == 0) && readable(object, 0x154)) {
         unsigned mode = gr32(object + (kind ? 0x120 : 0x150));
         mode = kind ? (mode >> 8) & 255 : mode & 255;
-        LOG("arceus-timing-research: kind=%u count=%llu ns=%llu object=%llx caller=main+%llx incoming_dt=%g variable_mode=%u rate=%g\n",
+        /* The timestep correction leaves the guest's +121 byte alone, so
+           variable_mode stays 0; timestep_fix records which dt was selected. */
+        LOG("arceus-timing-research: kind=%u count=%llu ns=%llu object=%llx caller=main+%llx incoming_dt=%g variable_mode=%u rate=%g timestep_fix=%d\n",
             kind, (unsigned long long)count, (unsigned long long)plat_ns(),
             (unsigned long long)object, (unsigned long long)(caller-main_base),
-            (double)c->v[0].f[0], mode, kind ? (double)guest_float(object+0x124) : 1.0);
+            (double)c->v[0].f[0], mode, kind ? (double)guest_float(object+0x124) : 1.0,
+            kind ? physics_timestep_active : 0);
     }
     timing_research_original[kind](c, entry);
 }
@@ -916,9 +926,274 @@ static void fixed_resolution_init(void) {
     LOG("arceus-resolution: automatic 3D resolution governor disabled; explicit scene modes unchanged\n");
 }
 
+/* The main rigid-body wrapper runs once per rendered frame and normally selects
+   a fixed 1/30 s step, so its world simulates at FPS/30 speed. Replace the
+   selection with the smaller of 1/30 and the elapsed input. Above 30 FPS that
+   is real time; at 30 FPS or below it keeps the authored step and the original
+   slowdown instead of asking the solver for a longer one. A NaN input also
+   falls back to 1/30, and the existing 2^-23 gate at 2AF2A20 still skips the
+   solve for a zero step. Worlds stepped through other callers are not touched. */
+static void physics_timestep_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_PHYSICS_TIMESTEP_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    const u64 pc = main_base + 0x2af25b4;
+    int covered = 0;
+    if (!clocks_installed) {
+        WARN("arceus-physics-timestep: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == 0x6b8) covered = 1;
+    if (!covered || pc < g_code_lo || pc + 0x6b8 > g_code_hi || !readable(pc, 0x6b8) ||
+        gr32(pc) != 0xfc190fe8 || gr32(pc + 0x38) != 0x39448688 ||
+        gr32(pc + 0x48) != 0x1e270100 || gr32(pc + 0x6c) != 0x1e280c08) {
+        WARN("arceus-physics-timestep: refused instruction/function guard\n");
+        return;
+    }
+    /* FCSEL S8,S0,S8,EQ -> FMINNM S8,S0,S8. S0 holds 1/30 and S8 the input. */
+    gw32(pc + 0x6c, 0x1e287808);
+    jit_code_changed(pc, 0x6b8);
+    if (!jit_wait(pc)) {
+        WARN("arceus-physics-timestep: wrapper JIT failed\n");
+        return;
+    }
+    physics_timestep_active = 1;
+    LOG("arceus-physics-timestep: EXPERIMENT: main rigid-body step is now min(1/30, elapsed)\n");
+}
+
+/* 1A7191C is a thrown-object flight update, a virtual shared by three classes
+   (vtables 41375C0, 413C5D0, 4141950). In flight (+5F8 == 1) each call adds S/30
+   to elapsed +618, ends the planned flight when +618/+61C exceeds 1, then
+   applies drag +5A0 and lift +5A4 to the queued velocity. S is a nominal-1
+   ratio, so all three assume one call per 1/30 s. With the elapsed-time physics
+   step, scale them for this call only by r = step/(1/30): +618 and +61C are
+   divided by r so the guest's own end test sees (old + r*S/30)/T, then +618 is
+   multiplied back and +61C restored. Lift is additive per call and scales by r;
+   drag uses 1-(1-d)^r, exact for S = 1. Each field is restored only if the call
+   left our value in place. Without the timestep fix the wrapper only logs. */
+static GuestFn ball_flight_original;
+static int ball_flight_correct;
+static u64 ball_flight_calls, ball_flight_logs;
+static u32 float_bits(float value) { u32 bits; memcpy(&bits, &value, sizeof bits); return bits; }
+static void ball_flight_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    MemBlock block;
+    if (!readable(object, 0x620)) { ball_flight_original(c, entry); return; }
+    mem_query(object + 0x5a0, &block);
+    if (!(block.perm & PERM_W) || block.addr + block.size < object + 0x620) {
+        ball_flight_original(c, entry);
+        return;
+    }
+    const u32 state = gr32(object + 0x5f8);
+    pm_lock(&step_lock);
+    const u64 ns = step.step ? step.step : step.initial_ns;
+    pm_unlock(&step_lock);
+    float r = (float)((double)ns / 33333334.0);
+    if (!(r <= 1.0f)) r = 1.0f;
+    if (r < 0.0625f) r = 0.0625f;
+    const int correct = ball_flight_correct && state == 1 && r < 1.0f;
+    const u32 drag_bits = gr32(object + 0x5a0), lift_bits = gr32(object + 0x5a4);
+    const u32 planned_bits = gr32(object + 0x61c);
+    const float elapsed0 = guest_float(object + 0x618), planned = guest_float(object + 0x61c);
+    const float drag = guest_float(object + 0x5a0), lift = guest_float(object + 0x5a4);
+    float elapsed_seen = elapsed0, planned_seen = planned, drag_seen = drag, lift_seen = lift;
+    if (correct) {
+        elapsed_seen = elapsed0 / r;
+        planned_seen = planned / r;
+        drag_seen = drag >= 0.0f && drag < 1.0f ? 1.0f - powf(1.0f - drag, r) : drag * r;
+        lift_seen = lift * r;
+        guest_float_write(object + 0x618, elapsed_seen);
+        guest_float_write(object + 0x61c, planned_seen);
+        guest_float_write(object + 0x5a0, drag_seen);
+        guest_float_write(object + 0x5a4, lift_seen);
+    }
+    const u64 now = plat_ns();
+    ball_flight_original(c, entry);
+    const u32 state_after = gr32(object + 0x5f8);
+    float elapsed1 = guest_float(object + 0x618);
+    /* Valid only while the call stayed in flight: the guest added S/30. */
+    const float implied_s = 30.0f * (elapsed1 - elapsed_seen);
+    if (correct) {
+        if (gr32(object + 0x5a0) == float_bits(drag_seen)) gw32(object + 0x5a0, drag_bits);
+        if (gr32(object + 0x5a4) == float_bits(lift_seen)) gw32(object + 0x5a4, lift_bits);
+        if (gr32(object + 0x61c) == float_bits(planned_seen)) {
+            gw32(object + 0x61c, planned_bits);
+            elapsed1 *= r;
+            guest_float_write(object + 0x618, elapsed1);
+        }
+    }
+    const u64 count = __atomic_add_fetch(&ball_flight_calls, 1, __ATOMIC_RELAXED);
+    const int transition = state != state_after;
+    if (state != 1 && !transition && count % 600) return;
+    /* Every launch and end, the first 600 in-flight calls, then 1 in 30. */
+    const u64 logs = __atomic_add_fetch(&ball_flight_logs, 1, __ATOMIC_RELAXED);
+    if (!transition && logs > 600 && count % 30) return;
+    u32 input_bits = __atomic_load_n(&physics_input_bits, __ATOMIC_RELAXED);
+    float input; memcpy(&input, &input_bits, sizeof input);
+    LOG("arceus-ball-flight: count=%llu ns=%llu object=%llx state=%u->%u step_ns=%llu r=%g corrected=%d physics_input=%g elapsed=%g->%g planned=%g implied_s=%g drag=%g->%g lift=%g->%g\n",
+        (unsigned long long)count, (unsigned long long)now, (unsigned long long)object, state, state_after,
+        (unsigned long long)ns, (double)r, correct, (double)input, (double)elapsed0, (double)elapsed1,
+        (double)guest_float(object + 0x61c), (double)implied_s, (double)drag, (double)drag_seen,
+        (double)lift, (double)lift_seen);
+}
+
+static void ball_flight_init(void) {
+    const char* research = getenv("SNX_ARCEUS_TIMING_RESEARCH");
+    const int observe = research && !strcmp(research, "1");
+    if (!main_base || (!physics_timestep_active && !observe)) return;
+    const u64 pc = main_base + 0x1a7191c;
+    int covered = 0;
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] >= 0x60c) covered = 1;
+    /* Prologue, the +618 load/store, the +61C load, the drag and lift loads,
+       the drag multiply and the B at +FC that is rewritten below. */
+    if (!covered || pc < g_code_lo || pc + 0x60c > g_code_hi || !readable(pc, 0x60c) ||
+        gr32(pc) != 0xd10203ff || gr32(pc + 0x13c) != 0xbd461e60 ||
+        gr32(pc + 0x160) != 0xbd461a62 || gr32(pc + 0x178) != 0xbd061a60 ||
+        gr32(pc + 0x274) != 0xbd45a268 || gr32(pc + 0x278) != 0xbd45a669 ||
+        gr32(pc + 0x2c8) != 0x1e280841 || gr32(pc + 0xfc) != 0x17ffffda) {
+        WARN("arceus-ball-flight: refused instruction/function guard\n");
+        return;
+    }
+    /* Equivalent B -> CBZ XZR, both to pc+0x64, so a hash-matched original AOT
+       body is not selected after invalidation (same scheme as the event camera). */
+    gw32(pc + 0xfc, 0xb4fffb5f);
+    jit_code_changed(pc, 0x60c);
+    ball_flight_original = jit_wait(pc);
+    if (!ball_flight_original) {
+        WARN("arceus-ball-flight: original body did not compile; wrapper not installed\n");
+        return;
+    }
+    ball_flight_correct = physics_timestep_active;
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], ball_flight_update, __ATOMIC_RELEASE);
+    LOG("arceus-ball-flight: wrapper installed correct=%d\n", ball_flight_correct);
+}
+
+/* Read-only cadence census for the owners of the audited fixed 1/30 (and 1/60,
+   1/120) sites. A fixed step is only a high-FPS bug if its owner runs once per
+   rendered frame, which the static audit could not establish. Every 5 s this
+   logs, per owner, total calls/s and the calls/s of one sampled x0 object
+   (many objects at 30 Hz and one object per frame both give large totals),
+   beside main-world physics calls/s as the frame reference. Labels are the
+   audit's provisional names. Owners already wrapped by other fixes are left out. */
+static const struct { u32 offset, size, head, patch, word, replacement; const char* label; } census_sites[] = {
+    {0xafb898,0x3fc,0xd10283ff,0x168,0x17ffffe6,0xb4fffcdf,"script char motion"},
+    {0x13b32fc,0x2e4,0xd10203ff,0xf0,0x17fffff4,0xb4fffe9f,"credits timer"},
+    {0x1458300,0x1154,0xd10343ff,0x1d8,0x14000069,0xb4000d3f,"movie skip fade"},
+    {0x167f988,0x650,0xd103c3ff,0x440,0x17fffefa,0xb4ffdf5f,"event coord 167F988"},
+    {0x168300c,0x51c,0xd10383ff,0x1fc,0x14000033,0xb400067f,"event coord 168300C"},
+    {0x1683528,0x35c,0xd10103ff,0x16c,0x14000032,0xb400065f,"event coord 1683528"},
+    {0x1717594,0x2d4,0xd100c3ff,0x2d0,0x17fffffc,0xb4ffff9f,"orientation helper"},
+    {0x1727df4,0x3ec,0xd10143ff,0x36c,0x17ffffe8,0xb4fffd1f,"orientation helper 2"},
+    {0x1982408,0xdd4,0xd10403ff,0x178,0x14000055,0xb4000abf,"shared char move"},
+    {0x19843a0,0xb18,0xd102c3ff,0xfc,0x14000002,0xb400005f,"shared char vertical"},
+    {0x198d7e4,0x998,0xd10503ff,0xb0,0x14000114,0xb400229f,"shared char accel"},
+    {0x198eb04,0x2f8,0xd10503ff,0x204,0x17ffffd9,0xb4fffb3f,"char collision predict"},
+    {0x1a08560,0x4bb0,0xd103c3ff,0x3a0,0x14000007,0xb40000ff,"player controller"},
+    {0x1a0d9dc,0x11c,0xd10203ff,0xfc,0x17ffffd2,0xb4fffa5f,"player move helper"},
+    {0x1a0e0ec,0x118c,0xa9ba6ffc,0x510,0x14000007,0xb40000ff,"player move 1A0E0EC"},
+    {0x1a0f278,0x334,0xd10203ff,0xd4,0x17ffffd7,0xb4fffaff,"player method 1A0F278"},
+    {0x1a14f80,0xc54,0xd10283ff,0x140,0x14000002,0xb400005f,"player vertical"},
+    {0x1a173b0,0x22a4,0xfc180fea,0x1b0,0x1400000b,0xb400017f,"player motion 1A173B0"},
+    {0x1a19654,0x220,0xd10143ff,0xa0,0x1400003a,0xb400075f,"player alt helper"},
+    {0x1aab534,0x3c0,0xa9ba6ffc,0x188,0x17ffffd8,0xb4fffb1f,"countdown 1AAB534"},
+    {0x1b47d10,0x1a70,0xd10343ff,0x204,0x17ffff97,0xb4fff2ff,"weather blend"},
+    {0x1d1b454,0x1f48,0x6db63bef,0x8fc,0x14000002,0xb400005f,"player-state predict"},
+    {0x1d5d59c,0x528,0xd10203ff,0x1f8,0x17fffff4,0xb4fffe9f,"world time feed"},
+    {0x1e1a25c,0x17dc,0xd105c3ff,0x11c,0x14000005,0xb40000bf,"cave light easing"},
+    {0x24ac8c4,0x318,0xfc1d0fe8,0x1b8,0x17ffffab,0xb4fff57f,"world time update"},
+    {0x2527e8c,0x4b8,0xd10183ff,0x240,0x14000007,0xb40000ff,"pokemon 2527E8C"},
+    {0x252b124,0xc50,0xd10203ff,0x1b4,0x14000007,0xb40000ff,"pokemon 252B124"},
+    {0x252d448,0x12b0,0xa9ba6ffc,0x4ac,0x14000007,0xb40000ff,"pokemon 252D448"},
+    {0x257abb4,0x3bc,0xd10203ff,0x1a8,0x17ffffac,0xb4fff59f,"pokemon/ride motion"},
+    {0x257af70,0x20d0,0xd10383ff,0x158,0x17fffff1,0xb4fffe3f,"pokemon/ride accel"},
+    {0x25a8a84,0xa58,0xd10343ff,0x378,0x14000007,0xb40000ff,"pokemon/ride 25A8A84"},
+    {0x25abd58,0xcfc,0xd10483ff,0x98,0x140000a0,0xb400141f,"pokemon/ride gravity"},
+};
+#define CENSUS_N (sizeof census_sites / sizeof census_sites[0])
+static struct { u64 pc, calls, probe, probe_calls; GuestFn original; } census[CENSUS_N];
+static int census_active;
+static void cadence_census_wrapper(CPU* c, u64 entry) {
+    for (unsigned i = 0; i < CENSUS_N; i++) {
+        if (census[i].pc != entry) continue;
+        __atomic_add_fetch(&census[i].calls, 1, __ATOMIC_RELAXED);
+        u64 probe = __atomic_load_n(&census[i].probe, __ATOMIC_RELAXED);
+        /* On failure the exchange loads the winner into probe. */
+        if (!probe && __atomic_compare_exchange_n(&census[i].probe, &probe, c->x[0], 0,
+                                                  __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+            probe = c->x[0];
+        if (probe == c->x[0]) __atomic_add_fetch(&census[i].probe_calls, 1, __ATOMIC_RELAXED);
+        census[i].original(c, entry);
+        return;
+    }
+}
+/* Called from the main-world physics probe only, so one thread owns the history. */
+static void cadence_census_report(u64 frames) {
+    static u64 last_ns, last_frames, last_calls[CENSUS_N], last_probe[CENSUS_N];
+    if (!census_active) return;
+    const u64 now = plat_ns();
+    if (!last_ns) { last_ns = now; last_frames = frames; return; }
+    if (now - last_ns < 5000000000ull) return;
+    const double seconds = (double)(now - last_ns) / 1e9;
+    LOG("arceus-cadence: window=%.2fs frames_per_s=%.1f\n", seconds, (double)(frames - last_frames) / seconds);
+    for (unsigned i = 0; i < CENSUS_N; i++) {
+        if (!census[i].original) continue;
+        const u64 calls = __atomic_load_n(&census[i].calls, __ATOMIC_RELAXED);
+        const u64 probe_calls = __atomic_load_n(&census[i].probe_calls, __ATOMIC_RELAXED);
+        const u64 probe = __atomic_load_n(&census[i].probe, __ATOMIC_RELAXED);
+        if (calls != last_calls[i])
+            LOG("arceus-cadence: site=main+%x label=\"%s\" calls_per_s=%.1f object_calls_per_s=%.1f object=%llx\n",
+                census_sites[i].offset, census_sites[i].label, (double)(calls - last_calls[i]) / seconds,
+                (double)(probe_calls - last_probe[i]) / seconds, (unsigned long long)probe);
+        /* Resample next window if the sampled object went quiet (destroyed or idle). */
+        if (probe_calls == last_probe[i]) __atomic_store_n(&census[i].probe, 0, __ATOMIC_RELAXED);
+        last_calls[i] = calls;
+        last_probe[i] = probe_calls;
+    }
+    last_ns = now;
+    last_frames = frames;
+}
+static void cadence_census_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_CADENCE_CENSUS");
+    if (!main_base || !enabled || strcmp(enabled, "1") || !research_observing) return;
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    unsigned installed = 0;
+    for (unsigned k = 0; k < CENSUS_N; k++) {
+        const u64 pc = main_base + census_sites[k].offset, size = census_sites[k].size;
+        int covered = 0;
+        for (u32 i = 0; i < g_mod->nfns; i++)
+            if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == size) covered = 1;
+        if (!covered || pc < g_code_lo || pc + size > g_code_hi || !readable(pc, size) ||
+            gr32(pc) != census_sites[k].head || gr32(pc + census_sites[k].patch) != census_sites[k].word) {
+            WARN("arceus-cadence: refused guard site=main+%x\n", census_sites[k].offset);
+            continue;
+        }
+        /* Equivalent B -> CBZ XZR to the same in-function target. */
+        gw32(pc + census_sites[k].patch, census_sites[k].replacement);
+        jit_code_changed(pc, size);
+        GuestFn original = jit_wait(pc);
+        if (!original) {
+            WARN("arceus-cadence: compile failed site=main+%x\n", census_sites[k].offset);
+            continue;
+        }
+        census[k].pc = pc;
+        census[k].original = original;
+        __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], cadence_census_wrapper, __ATOMIC_RELEASE);
+        installed++;
+    }
+    census_active = installed != 0;
+    LOG("arceus-cadence: read-only census installed %u of %u owners\n", installed, (unsigned)CENSUS_N);
+}
+
 void arceus_clock_post_jit(void) {
     fixed_resolution_init();
+    /* Before the research probe, which compiles and keeps this wrapper's body. */
+    physics_timestep_init();
+    ball_flight_init();
     timing_research_init();
+    cadence_census_init();
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     if (main_base && !experimental && probe && !strcmp(probe, "1")) {
         camera_trace_only = 1;
