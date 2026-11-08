@@ -3095,7 +3095,11 @@ static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, ui
         int result = nvn_word_stream_next(&stream, words[i], &method, &value, &last);
         if (result < 0) return 0;
         if (result == 1) {
-            maxwell3d_method(host->channel, method, value, last);
+            /* The copy words name the 2D engine (subchannel 3): its methods must not reach the 3D registers. */
+            if (stream.subchannel)
+                gpu_channel_method(host->channel, stream.subchannel, method, value, last);
+            else
+                maxwell3d_method(host->channel, method, value, last);
             host->bind_methods++;
         }
     }

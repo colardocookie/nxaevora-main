@@ -568,6 +568,10 @@ static void method_call(GpuChannel* ch, u32 sub, u32 m, u32 v, int last) {
             break;
     }
 }
+/* One method to the engine that the channel binds to the subchannel, as the stream of the channel does (GPU thread). */
+void gpu_channel_method(GpuChannel* ch, u32 sub, u32 m, u32 v, int last) {
+    if (sub < GPU_SUBCHANNELS) method_call(ch, sub, m, v, last);
+}
 
 /* ------------------------------------------------------------ waits */
 #define WAIT_POLL_NS 500000ull /* a release the CPU writes has no wake: semaphore waits look again this often */

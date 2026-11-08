@@ -1217,6 +1217,8 @@ int nvn_program_compute_from_words(const uint32_t* words, uint32_t count, NvnPro
 #define NVN_WORD_MODE_INCREASE_ONCE 5u
 #define NVN_WORD_COUNT_MASK 0x1FFFu
 #define NVN_WORD_METHOD_MASK 0xFFFu
+#define NVN_WORD_SUBCHANNEL_SHIFT 13u
+#define NVN_WORD_SUBCHANNEL_MASK 7u
 
 int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint32_t* value, int* last) {
     if (!s || !method || !value || !last) return -1;
@@ -1236,7 +1238,9 @@ int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint
     uint32_t mode = word >> NVN_WORD_MODE_SHIFT;
     uint32_t count = (word >> NVN_PROGRAM_COUNT_SHIFT) & NVN_WORD_COUNT_MASK;
     uint32_t header_method = word & NVN_WORD_METHOD_MASK;
+    uint32_t subchannel = (word >> NVN_WORD_SUBCHANNEL_SHIFT) & NVN_WORD_SUBCHANNEL_MASK;
     if (mode == NVN_WORD_MODE_INLINE) {
+        s->subchannel = subchannel;
         *method = header_method;
         *value = count;
         *last = 1;
@@ -1246,6 +1250,7 @@ int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint
     if (!count) return -1;
     s->mode = mode;
     s->method = header_method;
+    s->subchannel = subchannel;
     s->remaining = count;
     return 0;
 }

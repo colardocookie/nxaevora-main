@@ -623,8 +623,9 @@ int nvn_program_compute_from_words(const uint32_t* words, uint32_t count, NvnPro
 /* The pushbuffer stream of the method words of a program (gpu.c's pb_decode). Mode 1 increments the method for each
    data word, mode 5 sends the first word to the header method and the rest to the next one, and mode 4 carries its value in the count field. A macro call gets last only on its
    last data word. Pure: the struct holds the state between the words. */
-typedef struct { uint32_t mode, method, remaining; } NvnWordStream;
-/* 1 for a method call (*method, *value, *last set), 0 for a header that starts a run, -1 for a refusal. */
+typedef struct { uint32_t mode, method, remaining, subchannel; } NvnWordStream;
+/* 1 for a method call (*method, *value, *last set, s->subchannel is the subchannel of its header, bits 15:13), 0 for a
+   header that starts a run, -1 for a refusal. */
 int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint32_t* value, int* last);
 /* 1 when no run is left open (remaining 0), so the array ended on a method call. */
 int nvn_word_stream_complete(const NvnWordStream* s);

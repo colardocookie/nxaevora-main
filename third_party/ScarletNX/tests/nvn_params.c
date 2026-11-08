@@ -1507,6 +1507,13 @@ static void test_word_stream(void) {
     s = (NvnWordStream){0};
     CHECK(nvn_word_stream_next(&s, 0x80300830u, &m, &v, &last) == 1 && m == 0x830u && v == 0x30u && last == 1);
     CHECK(nvn_word_stream_complete(&s));
+    /* The subchannel of the header (bits 15:13) goes with each call of its run: the copy words use subchannel 3. */
+    s = (NvnWordStream){0};
+    CHECK(nvn_word_stream_next(&s, 0x20026223u, &m, &v, &last) == 0);
+    CHECK(nvn_word_stream_next(&s, 0x11u, &m, &v, &last) == 1 && m == 0x223u && v == 0x11u && s.subchannel == 3u);
+    CHECK(nvn_word_stream_next(&s, 0x12u, &m, &v, &last) == 1 && m == 0x224u && last == 1 && s.subchannel == 3u);
+    CHECK(nvn_word_stream_next(&s, 0x80052234u, &m, &v, &last) == 1 && m == 0x234u && v == 5u && s.subchannel == 1u);
+    CHECK(nvn_word_stream_next(&s, 0x80300830u, &m, &v, &last) == 1 && m == 0x830u && s.subchannel == 0u);
     /* Unknown modes, and a run with a count of 0. */
     s = (NvnWordStream){0};
     CHECK(nvn_word_stream_next(&s, 0x00000000u, &m, &v, &last) == -1);

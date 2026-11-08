@@ -338,6 +338,7 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans);
 /* The channel of a syncpoint id, made now with the reset state and no submission (the host NVN path writes its methods
    with maxwell3d_method on the GPU thread). The caller takes the id from syncpt_alloc. gpu_channel_close ends it */
 GpuChannel* gpu_channel_open(u32 channel);
+void gpu_channel_method(GpuChannel* ch, u32 sub, u32 m, u32 v, int last); /* to the engine bound to the subchannel */
 void gpu_channel_close(u32 channel);  /* nvdrv closed the channel: a new one with the same id starts from reset */
 void gpu_release_retire(u32 channel); /* complete pending syncpoint releases before nvdrv reuses its id */
 /* the channel's stream waits for the u32 at GPU address addr (a syncpoint's id for the syncpoint kinds) to equal val,
