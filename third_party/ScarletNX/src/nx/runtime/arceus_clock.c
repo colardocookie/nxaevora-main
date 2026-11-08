@@ -35,6 +35,22 @@ static void water_step_write(u64 ns) {
     gw32(water_step_address, bits);
 }
 
+/* Guest cell for world_timers_init: +0 holds min(1/30 s, frame step) and +4 its
+   negation. Patched sites load it in place of their authored +/-1/30 constants. */
+#define NOMINAL_STEP_SECONDS (1.0f / 30.0f)
+static u64 frame_step_address;
+static void frame_step_write(u64 ns) {
+    if (!frame_step_address) return;
+    float seconds = ns ? (float)((double)ns / 1000000000.0) : NOMINAL_STEP_SECONDS;
+    if (!(seconds < NOMINAL_STEP_SECONDS)) seconds = NOMINAL_STEP_SECONDS;
+    const float negative = -seconds;
+    u32 bits;
+    memcpy(&bits, &seconds, sizeof bits);
+    gw32(frame_step_address, bits);
+    memcpy(&bits, &negative, sizeof bits);
+    gw32(frame_step_address + 4, bits);
+}
+
 static void adjust_duration(CPU* c) {
     static const u64 callers[4] = {0x278150c, 0x2781540, 0x2781574, 0x27815a8};
     unsigned channel = (unsigned)c->x[1];
@@ -49,6 +65,7 @@ static void adjust_duration(CPU* c) {
         c->x[2] = value;
         if (channel == 0) {
             water_step_write(value);
+            frame_step_write(value);
             /* Shared 30-Hz cadence for the isolated integer blink state machine. */
             blink_remainder += value * 30;
             blink_ticks = (unsigned)(blink_remainder / 1000000000);
@@ -996,6 +1013,133 @@ static void navigation_timestep_init(void) {
     LOG("arceus-navigation-timestep: EXPERIMENT: AI navigation step is now min(1/30, elapsed)\n");
 }
 
+/* Owners that the cadence census measured once per rendered frame, each adding a fixed
+   +/-1/30 s per call: the day clock feed (in-game minutes), event hold timers and
+   weather blends. Each builds the constant with MOV/MOVK W8, which becomes ADRP X8 and
+   LDR W8 from the frame-step cell, as for the water clock. */
+static const struct { u32 owner, size, head, site; u8 negative; const char* label; } frame_step_sites[] = {
+    {0x1d5d59c,0x528,0xd10203ff,0x1d5d684,0,"world time"},
+    {0x167f988,0x650,0xd103c3ff,0x167ff0c,0,"event hold +190"},
+    {0x168300c,0x51c,0xd10383ff,0x16832c0,0,"event timer +1A0"},
+    {0x168300c,0x51c,0xd10383ff,0x16832e4,0,"event timer +198"},
+    {0x1683528,0x35c,0xd10103ff,0x16836d0,0,"event timer +19C"},
+    {0x1b47d10,0x1a70,0xd10343ff,0x1b47f5c,1,"weather fade +24C"},
+    {0x1b47d10,0x1a70,0xd10343ff,0x1b47f94,1,"weather fade +250"},
+    {0x1b47d10,0x1a70,0xd10343ff,0x1b47fcc,1,"weather fade +254"},
+    {0x1b47d10,0x1a70,0xd10343ff,0x1b48a48,0,"weather rise +254"},
+    {0x1b47d10,0x1a70,0xd10343ff,0x1b48a94,0,"weather rise +24C"},
+    {0x1b47d10,0x1a70,0xd10343ff,0x1b49004,0,"weather rise +24C"},
+    {0x1b47d10,0x1a70,0xd10343ff,0x1b493f4,0,"weather rise +250"},
+};
+#define FRAME_STEP_SITES (sizeof frame_step_sites / sizeof frame_step_sites[0])
+
+static int covers_exactly(u64 pc, u64 size) {
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == size) return 1;
+    return 0;
+}
+static int writable(u64 address, u64 size) {
+    MemBlock block;
+    if (!readable(address, size)) return 0;
+    mem_query(address, &block);
+    return (block.perm & PERM_W) && block.addr + block.size >= address + size;
+}
+static float frame_step_ratio(void) {
+    pm_lock(&step_lock);
+    const u64 ns = step.step ? step.step : step.initial_ns;
+    pm_unlock(&step_lock);
+    float r = (float)((double)ns / 33333334.0);
+    if (!(r <= 1.0f)) r = 1.0f;
+    return r < 0.0625f ? 0.0625f : r;
+}
+
+/* 1E1A25C eases cave lighting through record x0+5E640: target +0, active byte +4,
+   progress +8 and increment +C, which a change sets to 1/120 and then adds once per
+   frame. Scale the increment by step/(1/30) for each call while a change is active,
+   and restore the authored value if the call left ours in place. */
+#define CAVE_LIGHT_RECORD 0x5e640
+static GuestFn cave_light_original;
+static void cave_light_update(CPU* c, u64 entry) {
+    const u64 record = c->x[0] + CAVE_LIGHT_RECORD;
+    if (!writable(record, 16) || !(gr32(record + 4) & 0xff)) {
+        cave_light_original(c, entry);
+        return;
+    }
+    const u32 authored = gr32(record + 0xc);
+    float increment;
+    memcpy(&increment, &authored, sizeof increment);
+    increment *= frame_step_ratio();
+    u32 seen;
+    memcpy(&seen, &increment, sizeof seen);
+    gw32(record + 0xc, seen);
+    cave_light_original(c, entry);
+    if (gr32(record + 0xc) == seen) gw32(record + 0xc, authored);
+}
+
+static unsigned frame_step_sites_init(void) {
+    unsigned installed = 0;
+    for (unsigned k = 0; k < FRAME_STEP_SITES; k++) {
+        const u64 owner = main_base + frame_step_sites[k].owner, pc = main_base + frame_step_sites[k].site;
+        const u32 movk = frame_step_sites[k].negative ? 0x72b7a108 : 0x72a7a108;
+        if (!covers_exactly(owner, frame_step_sites[k].size) || !readable(owner, frame_step_sites[k].size) ||
+            gr32(owner) != frame_step_sites[k].head || gr32(pc) != 0x52911128 || gr32(pc + 4) != movk) {
+            WARN("arceus-world-timers: refused guard %s at main+%x\n", frame_step_sites[k].label, frame_step_sites[k].site);
+            continue;
+        }
+        /* ADRP X8, cell; LDR W8, [X8, #0 or #4]. The next instruction moves W8 to a float. */
+        const u64 pages = ((frame_step_address >> 12) - (pc >> 12)) & 0x1fffff;
+        gw32(pc, 0x90000008 | (u32)((pages & 3) << 29) | (u32)((pages >> 2) << 5));
+        gw32(pc + 4, frame_step_sites[k].negative ? 0xb9400508 : 0xb9400108);
+        jit_code_changed(pc, 8);
+        installed++;
+    }
+    return installed;
+}
+
+static int cave_light_init(void) {
+    const u64 pc = main_base + 0x1e1a25c;
+    /* Prologue, the record offset build, the 1/120 build, the progress load and add, and the B at +11C. */
+    if (!covers_exactly(pc, 0x17dc) || pc < g_code_lo || pc + 0x17dc > g_code_hi || !readable(pc, 0x17dc) ||
+        gr32(pc) != 0xd105c3ff || gr32(pc + 0xc4) != 0x529cc808 || gr32(pc + 0xc8) != 0x72a000a8 ||
+        gr32(pc + 0x101c) != 0x5291112a || gr32(pc + 0x1020) != 0x72a7810a ||
+        gr32(pc + 0x1050) != 0x2d410520 || gr32(pc + 0x1054) != 0x1e202820 || gr32(pc + 0x11c) != 0x14000005) {
+        WARN("arceus-world-timers: refused cave light guard\n");
+        return 0;
+    }
+    gw32(pc + 0x11c, 0xb40000bf); /* Equivalent B -> CBZ XZR to pc+0x130. */
+    jit_code_changed(pc, 0x17dc);
+    cave_light_original = jit_wait(pc);
+    if (!cave_light_original) {
+        WARN("arceus-world-timers: cave light body did not compile\n");
+        return 0;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], cave_light_update, __ATOMIC_RELEASE);
+    return 1;
+}
+
+static void world_timers_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_WORLD_TIMERS_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-world-timers: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 address = mem_find_free(main_base + 0x5000000, main_base + 0x40000000, 4096, 4096);
+    if (!address || mem_map(address, 4096, MS_STATIC, PERM_RW)) {
+        WARN("arceus-world-timers: could not allocate the frame-step cell\n");
+        return;
+    }
+    pm_lock(&step_lock);
+    frame_step_address = address;
+    frame_step_write(step.step ? step.step : step.initial_ns);
+    pm_unlock(&step_lock);
+    const unsigned sites = frame_step_sites_init();
+    const int cave = cave_light_init();
+    LOG("arceus-world-timers: EXPERIMENT: %u of %u fixed-step sites and cave light=%d use min(1/30, elapsed), cell=%llx\n",
+        sites, (unsigned)FRAME_STEP_SITES, cave, (unsigned long long)address);
+}
+
 /* 1A7191C is a thrown-object flight update, a virtual shared by three classes
    (vtables 41375C0, 413C5D0, 4141950). In flight (+5F8 == 1) each call adds S/30
    to elapsed +618, ends the planned flight when +618/+61C exceeds 1, then
@@ -1181,6 +1325,13 @@ static void cadence_census_report(u64 frames) {
             LOG("arceus-cadence: site=main+%x label=\"%s\" calls_per_s=%.1f object_calls_per_s=%.1f object=%llx\n",
                 census_sites[i].offset, census_sites[i].label, (double)(calls - last_calls[i]) / seconds,
                 (double)(probe_calls - last_probe[i]) / seconds, (unsigned long long)probe);
+        /* The day clock keeps in-game minutes (0..1440) as a double at +70. */
+        if (census_sites[i].offset == 0x24ac8c4 && probe && readable(probe + 0x70, 8)) {
+            const u64 bits = gr64(probe + 0x70);
+            double minutes;
+            memcpy(&minutes, &bits, sizeof minutes);
+            LOG("arceus-cadence: world_minutes=%.3f\n", minutes);
+        }
         /* Resample next window if the sampled object went quiet (destroyed or idle). */
         if (probe_calls == last_probe[i]) __atomic_store_n(&census[i].probe, 0, __ATOMIC_RELAXED);
         last_calls[i] = calls;
@@ -1193,10 +1344,15 @@ static void cadence_census_init(void) {
     const char* enabled = getenv("SNX_ARCEUS_CADENCE_CENSUS");
     if (!main_base || !enabled || strcmp(enabled, "1") || !research_observing) return;
     if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
-    unsigned installed = 0;
+    unsigned installed = 0, owned = 0;
     for (unsigned k = 0; k < CENSUS_N; k++) {
         const u64 pc = main_base + census_sites[k].offset, size = census_sites[k].size;
         int covered = 0;
+        /* A fix already wraps this owner through the same rewritten branch. */
+        if (readable(pc + census_sites[k].patch, 4) && gr32(pc + census_sites[k].patch) == census_sites[k].replacement) {
+            owned++;
+            continue;
+        }
         for (u32 i = 0; i < g_mod->nfns; i++)
             if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == size) covered = 1;
         if (!covered || pc < g_code_lo || pc + size > g_code_hi || !readable(pc, size) ||
@@ -1218,7 +1374,8 @@ static void cadence_census_init(void) {
         installed++;
     }
     census_active = installed != 0;
-    LOG("arceus-cadence: read-only census installed %u of %u owners\n", installed, (unsigned)CENSUS_N);
+    LOG("arceus-cadence: read-only census installed %u of %u owners, %u wrapped by fixes\n",
+        installed, (unsigned)CENSUS_N, owned);
 }
 
 void arceus_clock_post_jit(void) {
@@ -1226,6 +1383,8 @@ void arceus_clock_post_jit(void) {
     /* Before the research probe, which compiles and keeps this wrapper's body. */
     physics_timestep_init();
     navigation_timestep_init();
+    /* Before the census, which then skips the owner this wraps. */
+    world_timers_init();
     ball_flight_init();
     timing_research_init();
     cadence_census_init();

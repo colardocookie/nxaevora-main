@@ -58,3 +58,23 @@ constructor's 0, which selects a fixed 1/30 second, so at about 66 FPS navigatio
 time. With a target rate, `SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX=1` turns the FCSEL at `main+2795244` into FMINNM, so
 the step is the smaller of 1/30 second and the elapsed time. The path has no zero-step check, and the shared step
 is never zero. The `arceus-navigation-timestep` line confirms it.
+
+## World timers
+
+The cadence census found these owners running once per rendered frame, each adding a fixed 1/30 second per call:
+
+- `main+1D5D59C` passes 1/30 to the day clock `main+24AC8C4`, which counts in-game minutes. At 60 FPS a day took
+  half as long.
+- `main+167F988` counts how long an event condition has held against a threshold. Its callees `main+168300C` and
+  `main+1683528` keep three more such timers.
+- `main+1B47D10` raises and lowers three weather blend values by a configured rate times 1/30.
+- `main+1E1A25C` adds 1/120 per call to a cave light transition.
+
+With a target rate, `SNX_ARCEUS_WORLD_TIMERS_FIX=1` gives them the smaller of 1/30 second and the elapsed time. The
+twelve constant builds load it from a cell that the runtime writes on each frame, as the water clock does. The
+cave light increment is scaled for each call and restored. The `arceus-world-timers` line confirms it. With the
+census on, `arceus-cadence: world_minutes` lines show the day clock, which should advance about five minutes in
+each five-second window.
+
+The shared character movement at `main+1982408` also scales velocity by 1/30, but only to probe a collision-aware
+move, and multiplies the result by 30 again. It does not depend on the frame rate.
