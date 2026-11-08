@@ -5,6 +5,7 @@ param(
     [ValidateSet('Native','DLSS','FSR','RR')][string]$Backend='Native',
     [switch]$RayTracing,
     [switch]$ElapsedPhysics,
+    [switch]$ElapsedNavigation,
     [string]$Terrain
 )
 $ErrorActionPreference='Stop'
@@ -42,6 +43,7 @@ $env:SNX_ARCEUS_CAMERA_INPUT_FIX='1'
 $env:SNX_ARCEUS_BLINK_FIX='1'
 # Experimental and off by default; an inherited value does not enable it.
 $env:SNX_ARCEUS_PHYSICS_TIMESTEP_FIX=if($ElapsedPhysics){'1'}else{'0'}
+$env:SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX=if($ElapsedNavigation){'1'}else{'0'}
 $env:SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS='1'
 Push-Location -LiteralPath $gamePath
 try {
