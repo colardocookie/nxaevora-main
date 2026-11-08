@@ -1035,7 +1035,6 @@ int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_wo
 
 #define NVN_PROGRAM_SLOT_VERTEX 1u
 #define NVN_PROGRAM_SLOT_FRAGMENT 5u
-#define NVN_PROGRAM_PROGRAM_ID 0u
 #define NVN_PROGRAM_GROUP_VERTEX 0u
 #define NVN_PROGRAM_GROUP_FRAGMENT 4u
 
@@ -1066,20 +1065,21 @@ static int program_push_immediate(uint32_t* words, uint32_t* at, uint32_t method
 }
 
 /* The 0xE18 macro with its five data words: pipeline slot, program id, code offset, bind group, cb address. */
-static void program_push_macro(uint32_t* words, uint32_t* at, uint32_t slot, uint32_t code_offset, uint32_t group,
-                               uint32_t cb_address) {
+static void program_push_macro(uint32_t* words, uint32_t* at, uint32_t slot, uint32_t program_id,
+                               uint32_t code_offset, uint32_t group, uint32_t cb_address) {
     program_push_word(words, at, NVN_PROGRAM_MODE_INCREASE_ONCE | (NVN_PROGRAM_MACRO_COUNT << NVN_PROGRAM_COUNT_SHIFT) |
                                    NVN_PROGRAM_METHOD_PROGRAM);
     program_push_word(words, at, slot);
-    program_push_word(words, at, NVN_PROGRAM_PROGRAM_ID);
+    program_push_word(words, at, program_id);
     program_push_word(words, at, code_offset);
     program_push_word(words, at, group);
     program_push_word(words, at, cb_address);
 }
 
-static int program_build_vertex(const NvnProgramStageIn* in, uint64_t region_base, uint32_t* words, uint32_t* at) {
+static int program_build_vertex(const NvnProgramStageIn* in, uint32_t program_id, uint64_t region_base,
+                                uint32_t* words, uint32_t* at) {
     if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_VERTEX, 0)) return 0;
-    program_push_macro(words, at, NVN_PROGRAM_SLOT_VERTEX, in->code_offset, NVN_PROGRAM_GROUP_VERTEX,
+    program_push_macro(words, at, NVN_PROGRAM_SLOT_VERTEX, program_id, in->code_offset, NVN_PROGRAM_GROUP_VERTEX,
                        program_cb_address(region_base, in->cb_offset));
     return program_push_immediate(words, at, NVN_PROGRAM_METHOD_VERTEX_HEADER, in->header_value);
 }
@@ -1117,8 +1117,8 @@ static uint32_t program_489_value(const NvnProgramFragmentIn* frag, const NvnPro
 }
 
 static int program_build_fragment(const NvnProgramStageIn* in, const NvnProgramFragmentIn* frag,
-                                  const NvnProgramDeviceIn* dev, uint64_t region_base, uint32_t* words,
-                                  uint32_t* at) {
+                                  const NvnProgramDeviceIn* dev, uint32_t program_id, uint64_t region_base,
+                                  uint32_t* words, uint32_t* at) {
     uint32_t d8[2];
     program_build_d8(frag, dev, d8);
     uint32_t value_3d0 = frag->g158 == 0 ? 0u : (frag->g160 == 0 ? 1u : 0u);
@@ -1128,7 +1128,8 @@ static int program_build_fragment(const NvnProgramStageIn* in, const NvnProgramF
     uint32_t value_1d5 =
         frag->g188 == 0 ? NVN_PROGRAM_FRAGMENT_1D5_OPAQUE : NVN_PROGRAM_FRAGMENT_1D5_BLEND;
     if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT, NVN_PROGRAM_FRAGMENT_CONTROL)) return 0;
-    program_push_macro(words, at, NVN_PROGRAM_SLOT_FRAGMENT, in->code_offset, NVN_PROGRAM_GROUP_FRAGMENT,
+    program_push_macro(words, at, NVN_PROGRAM_SLOT_FRAGMENT, program_id, in->code_offset,
+                       NVN_PROGRAM_GROUP_FRAGMENT,
                        program_cb_address(region_base, in->cb_offset));
     if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT_HEADER, in->header_value)) return 0;
     if (!program_push_immediate(words, at, NVN_PROGRAM_METHOD_FRAGMENT_3D0, value_3d0)) return 0;
@@ -1173,14 +1174,16 @@ static void program_build_compute(const NvnProgramComputeIn* in, uint32_t* words
 
 int nvn_program_build_words(const NvnProgramComputeIn* compute, const NvnProgramStageIn* vertex,
                             const NvnProgramStageIn* fragment, const NvnProgramFragmentIn* frag,
-                            const NvnProgramDeviceIn* dev, uint64_t region_base, uint32_t* words, uint32_t* count) {
+                            const NvnProgramDeviceIn* dev, uint32_t program_id, uint64_t region_base, uint32_t* words,
+                            uint32_t* count) {
     if (!words || !count) return 0;
+    if ((vertex || fragment) && !program_id) return 0; /* bind_program skips an id equal to the slot's initial 0 */
     if (compute && (vertex || fragment)) return 0;
     if (fragment && (!frag || !dev)) return 0;
     uint32_t at = 0;
     if (compute) program_build_compute(compute, words, &at);
-    if (vertex && !program_build_vertex(vertex, region_base, words, &at)) return 0;
-    if (fragment && !program_build_fragment(fragment, frag, dev, region_base, words, &at)) return 0;
+    if (vertex && !program_build_vertex(vertex, program_id, region_base, words, &at)) return 0;
+    if (fragment && !program_build_fragment(fragment, frag, dev, program_id, region_base, words, &at)) return 0;
     *count = at;
     return 1;
 }

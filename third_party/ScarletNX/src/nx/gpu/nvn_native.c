@@ -43,6 +43,7 @@ typedef struct {
 } DeviceBuilderRec;
 typedef struct {
     uint32_t flags, window_origin, depth_mode;
+    uint32_t program_ids; /* the library's counter at device+0x1b30: the id of the last program set, guarded by objs_lock */
 } DeviceRec;
 typedef struct {
     NvnQueueBuilder builder; /* the builder as it was at QueueInitialize */
@@ -1212,7 +1213,17 @@ static void h_program_set_shaders_ext(CPU* c, u64 entry) {
                       (unsigned long long)addr, (unsigned)PROGRAM_STAGE_COMPUTE, (unsigned)other);
             ok = 0;
         }
-        if (ok && !nvn_program_build_words(compute, vertex, fragment, &frag, &program_device_words,
+        uint32_t program_id = 0;
+        DeviceRec* device = ok && !compute ? known_record(r->device, NVN_OBJ_DEVICE) : NULL;
+        if (ok && !compute && !device) {
+            LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: its device %llx is not live\n",
+                      (unsigned long long)addr, (unsigned long long)r->device);
+            ok = 0;
+        } else if (device) {
+            program_id = ++device->program_ids;
+            if (!program_id) program_id = ++device->program_ids; /* the library retries the increment at the carry */
+        }
+        if (ok && !nvn_program_build_words(compute, vertex, fragment, &frag, &program_device_words, program_id,
                                            NVN_SHADER_REGION_BASE, next.words, &next.word_count)) {
             LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: a word value is above 13 bits\n",
                       (unsigned long long)addr);

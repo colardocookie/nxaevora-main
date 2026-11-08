@@ -1243,18 +1243,19 @@ static void test_program_header_stage(void) {
     CHECK(!nvn_program_header_stage(1, 5, 0x120, 0xb, 0, NULL));
 }
 
+#define TEST_PROGRAM_ID 7u /* any nonzero id: the device's counter never gives 0 */
 static void test_program_build_vertex(void) {
     const NvnProgramDeviceIn dev = {0};
     const NvnProgramStageIn vertex = {.code_offset = 0x1234u, .cb_offset = 0x560u, .header_value = 0x40u};
     uint32_t words[NVN_PROGRAM_WORDS_MAX] = {0};
     uint32_t count = 77;
-    CHECK(nvn_program_build_words(NULL, &vertex, NULL, NULL, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, NULL, NULL, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == NVN_PROGRAM_VERTEX_WORDS);
-    /* IMM(0x800,0); macro p0..p4 = 1,0,code,0,(P+cb)>>8; IMM(0x813,0x40). */
+    /* IMM(0x800,0); macro p0..p4 = 1,id,code,0,(P+cb)>>8; IMM(0x813,0x40). */
     CHECK(words[0] == 0x80000800u);
     CHECK(words[1] == 0xa0050e18u);
     CHECK(words[2] == 1u);
-    CHECK(words[3] == 0u);
+    CHECK(words[3] == TEST_PROGRAM_ID);
     CHECK(words[4] == 0x1234u);
     CHECK(words[5] == 0u);
     CHECK(words[6] == 0x04000005u);
@@ -1270,14 +1271,14 @@ static void test_program_build_vertex_fragment(void) {
     const NvnProgramFragmentIn frag = {0};
     uint32_t words[NVN_PROGRAM_WORDS_MAX] = {0};
     uint32_t count = 0;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u);
     /* vertex: 8 words. fragment: IMM(0x850,0x51), macro p0..p4 = 5,0,code,4,(P+cb)>>8, IMM(0x853,0x20), then
        0,0,0x200200d8, d1a38 (top byte 8, already below 0x20), d1a68, IMM(0x489,0), IMM(0x65B,0), IMM(0x1D5,1). */
     CHECK(words[0] == 0x80000800u);
     CHECK(words[1] == 0xa0050e18u);
     CHECK(words[2] == 1u);
-    CHECK(words[3] == 0u);
+    CHECK(words[3] == TEST_PROGRAM_ID);
     CHECK(words[4] == 0x100u);
     CHECK(words[5] == 0u);
     CHECK(words[6] == 0x04000002u);
@@ -1285,7 +1286,7 @@ static void test_program_build_vertex_fragment(void) {
     CHECK(words[8] == 0x80510850u);
     CHECK(words[9] == 0xa0050e18u);
     CHECK(words[10] == 5u);
-    CHECK(words[11] == 0u);
+    CHECK(words[11] == TEST_PROGRAM_ID);
     CHECK(words[12] == 0x300u);
     CHECK(words[13] == 4u);
     CHECK(words[14] == 0x04000004u);
@@ -1316,7 +1317,7 @@ static void test_program_build_fragment_2004(void) {
     frag.g1a0[1] = 0x22222222u;
     frag.g1a0[2] = 0x33333333u;
     frag.g1a0[3] = 0x44444444u;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 30u);
     CHECK(words[16] == 0x800103d0u);
     CHECK(words[17] == 0x200403d1u);
@@ -1335,12 +1336,12 @@ static void test_program_build_fragment_2004(void) {
     /* g160 != 0: no insertion, 0x3D0 stays 0. */
     frag.g160 = 1;
     count = 0;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[16] == 0x800003d0u && words[17] == 0x80000084u);
     /* g158 == 0: no insertion. */
     frag = (NvnProgramFragmentIn){0};
     count = 0;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[16] == 0x800003d0u && words[17] == 0x80000084u);
 }
 
@@ -1355,52 +1356,52 @@ static void test_program_build_fragment_values(void) {
     uint32_t count;
     /* keys: g190=2 gives key 1. g188!=0: table {1,9,1,9}; g188==0: table {2,10,1,9}; key>=4 gives 0. */
     frag.g188 = 1; frag.g190 = 2;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[22] == 0x80090489u && words[24] == 0x803001d5u);
     frag = (NvnProgramFragmentIn){0}; frag.g190 = 3;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[22] == 0x80010489u && words[24] == 0x800101d5u);
     frag = (NvnProgramFragmentIn){0}; frag.g190 = 5;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[22] == 0x80000489u);
     frag = (NvnProgramFragmentIn){0};
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[22] == 0x80000489u);
     /* d1a40 overrides the table. */
     NvnProgramDeviceIn dev2 = dev;
     dev2.d1a40 = 0x1234u;
     frag.g190 = 5;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev2, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev2, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[22] == 0x92340489u);
     /* 0x084 = 1 for g148 != 0 or d1a3c != 0. */
     frag = (NvnProgramFragmentIn){0}; frag.g148 = 1;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[17] == 0x80010084u);
     frag = (NvnProgramFragmentIn){0};
     dev2 = dev; dev2.d1a3c = 1;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev2, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev2, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[17] == 0x80010084u);
     /* D8: g168 clamps the top byte to 0x18; g170 writes the constant; the else clamps to 0x20 and may min d1a74. */
     frag = (NvnProgramFragmentIn){0}; frag.g168 = 1;
     dev2 = dev; dev2.d1a38 = 0x30ab1234u;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev2, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev2, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[20] == 0x18ab1234u && words[21] == 0x20u);
     frag = (NvnProgramFragmentIn){0}; frag.g170 = 1;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev2, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev2, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[20] == 0x06164010u && words[21] == 0x20u);
     frag = (NvnProgramFragmentIn){0};
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev2, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev2, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[20] == 0x20ab1234u && words[21] == 0x20u);
     frag = (NvnProgramFragmentIn){0}; frag.g198 = 3;
     dev2.d1a74 = 0x0a112233u;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev2, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev2, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[20] == 0x0aab1234u);
     frag.g198 = 2;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev2, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev2, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[20] == 0x20ab1234u);
     /* 0x65B = g178 | g180 << 4, no mask. */
     frag = (NvnProgramFragmentIn){0}; frag.g178 = 0x0au; frag.g180 = 0x03u;
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && words[23] == 0x803a065bu);
 }
 
@@ -1415,7 +1416,7 @@ static void test_program_build_compute(void) {
     };
     uint32_t words[NVN_PROGRAM_WORDS_MAX] = {0};
     uint32_t count = 0;
-    CHECK(nvn_program_build_words(&compute, NULL, NULL, NULL, NULL, 0, words, &count));
+    CHECK(nvn_program_build_words(&compute, NULL, NULL, NULL, NULL, 0, 0, words, &count));
     CHECK(count == NVN_PROGRAM_COMPUTE_WORDS);
     CHECK(words[0] == 0x11111111u);
     CHECK(words[1] == 0x22222222u);
@@ -1440,7 +1441,7 @@ static void test_program_build_compute(void) {
     for (uint32_t flags = 0; flags < 8u; flags++) {
         flagged.flags = flags;
         count = 0;
-        CHECK(nvn_program_build_words(&flagged, NULL, NULL, NULL, NULL, 0, words, &count));
+        CHECK(nvn_program_build_words(&flagged, NULL, NULL, NULL, NULL, 0, 0, words, &count));
         CHECK(count == NVN_PROGRAM_COMPUTE_WORDS && words[16] == flags && words[17] == 0u);
     }
 }
@@ -1454,27 +1455,34 @@ static void test_program_build_refusals(void) {
     uint32_t words[NVN_PROGRAM_WORDS_MAX] = {0};
     uint32_t count = 77;
     /* An immediate value above 13 bits. */
-    CHECK(!nvn_program_build_words(NULL, &vertex, NULL, NULL, &dev, 0, words, &count));
+    CHECK(!nvn_program_build_words(NULL, &vertex, NULL, NULL, &dev, TEST_PROGRAM_ID, 0, words, &count));
     CHECK(count == 77u);
-    CHECK(!nvn_program_build_words(NULL, &vertex, NULL, NULL, &dev, 0, NULL, &count));
-    CHECK(!nvn_program_build_words(NULL, NULL, &fragment, &frag, &dev, 0, words, NULL));
+    CHECK(!nvn_program_build_words(NULL, &vertex, NULL, NULL, &dev, TEST_PROGRAM_ID, 0, NULL, &count));
+    CHECK(!nvn_program_build_words(NULL, NULL, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0, words, NULL));
     /* A fragment without a vertex block is 17 words. */
+    /* Id 0 would equal the slot's initial id in bind_program, so the offset would never be written. */
+    {
+        const NvnProgramStageIn ok_vertex = {.code_offset = 0x1234u, .cb_offset = 0x560u, .header_value = 0x40u};
+        count = 77;
+        CHECK(!nvn_program_build_words(NULL, &ok_vertex, NULL, NULL, &dev, 0, 0, words, &count));
+        CHECK(count == 77u);
+    }
     count = 0;
-    CHECK(nvn_program_build_words(NULL, NULL, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, NULL, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == NVN_PROGRAM_FRAGMENT_WORDS);
     CHECK(words[0] == 0x80510850u && words[6] == 0x04000000u && words[16] == 0x800101d5u);
     /* g160 != 0 is the normal path, and 0x3D0 stays 0. */
     frag.g158 = 1; frag.g160 = 1;
     count = 0;
-    CHECK(nvn_program_build_words(NULL, NULL, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, NULL, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 17u && words[8] == 0x800003d0u);
     /* A compute stage cannot share a program with vertex or fragment. */
     count = 77;
-    CHECK(!nvn_program_build_words(&compute, &vertex, NULL, NULL, &dev, 0, words, &count));
+    CHECK(!nvn_program_build_words(&compute, &vertex, NULL, NULL, &dev, TEST_PROGRAM_ID, 0, words, &count));
     CHECK(count == 77u);
-    CHECK(!nvn_program_build_words(&compute, NULL, &fragment, &frag, &dev, 0, words, &count));
+    CHECK(!nvn_program_build_words(&compute, NULL, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0, words, &count));
     CHECK(count == 77u);
-    CHECK(!nvn_program_build_words(&compute, NULL, NULL, NULL, NULL, 0, NULL, &count));
+    CHECK(!nvn_program_build_words(&compute, NULL, NULL, NULL, NULL, 0, 0, NULL, &count));
     CHECK(count == 77u);
 }
 
@@ -1612,17 +1620,17 @@ static void test_program_words_decode(void) {
     NvnProgramFragmentIn frag = {0};
     uint32_t words[NVN_PROGRAM_WORDS_MAX] = {0};
     uint32_t count = 0;
-    CHECK(nvn_program_build_words(NULL, &vertex, NULL, NULL, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, NULL, NULL, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 8u && decode_program_words(words, count));
     /* A truncated array leaves the 0xE18 run of five words open. */
     CHECK(!decode_program_words(words, 2u));
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 25u && decode_program_words(words, count));
-    CHECK(nvn_program_build_words(NULL, NULL, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, NULL, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 17u && decode_program_words(words, count));
     frag.g158 = 1;
     for (uint32_t i = 0; i < 4u; i++) frag.g1a0[i] = 0x11111111u * (i + 1u);
-    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, 0x400000000ull, words, &count));
+    CHECK(nvn_program_build_words(NULL, &vertex, &fragment, &frag, &dev, TEST_PROGRAM_ID, 0x400000000ull, words, &count));
     CHECK(count == 30u && decode_program_words(words, count));
 }
 
@@ -2318,7 +2326,7 @@ static void test_program_compute_round_trip(void) {
     uint32_t words[NVN_PROGRAM_WORDS_MAX] = {0};
     uint32_t count = 0;
     NvnProgramComputeIn back = {0};
-    CHECK(nvn_program_build_words(&compute, NULL, NULL, NULL, NULL, 0, words, &count));
+    CHECK(nvn_program_build_words(&compute, NULL, NULL, NULL, NULL, 0, 0, words, &count));
     CHECK(nvn_program_compute_from_words(words, count, &back));
     CHECK(memcmp(&compute, &back, sizeof compute) == 0);
     CHECK(!nvn_program_compute_from_words(words, NVN_PROGRAM_COMPUTE_WORDS - 1u, &back));

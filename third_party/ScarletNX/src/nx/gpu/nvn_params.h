@@ -609,10 +609,13 @@ typedef struct {
 } NvnProgramDeviceIn;
 
 /* Builds the word array of the stages that are present (NULL is absent). A compute block comes first, then vertex,
-   then fragment. Returns 0 on a refusal and leaves *count unchanged; on success sets *count and writes the words. Pure. */
+   then fragment. program_id is the id word of the bind macros: the device's counter after its increment, never 0
+   for a vertex or fragment stage. Returns 0 on a refusal and leaves *count unchanged; on success sets *count and
+   writes the words. Pure. */
 int nvn_program_build_words(const NvnProgramComputeIn* compute, const NvnProgramStageIn* vertex,
                             const NvnProgramStageIn* fragment, const NvnProgramFragmentIn* frag,
-                            const NvnProgramDeviceIn* dev, uint64_t region_base, uint32_t* words, uint32_t* count);
+                            const NvnProgramDeviceIn* dev, uint32_t program_id, uint64_t region_base, uint32_t* words,
+                            uint32_t* count);
 /* Reverses program_build_compute: fills *out from an 18-word compute block. Returns 0 when count is not 18 or an
    argument is null. Pure. */
 int nvn_program_compute_from_words(const uint32_t* words, uint32_t count, NvnProgramComputeIn* out);
