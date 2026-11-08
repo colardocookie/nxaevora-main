@@ -78,3 +78,13 @@ each five-second window.
 
 The shared character movement at `main+1982408` also scales velocity by 1/30, but only to probe a collision-aware
 move, and multiplies the result by 30 again. It does not depend on the frame rate.
+
+## Gravity probe
+
+In its airborne branch the shared acceleration at `main+198D7E4` writes a vertical term of gravity times a
+per-character factor and rate times 1/30, and it does not add the current velocity. If its caller adds that term to
+the velocity on every call, falls and jumps run faster at high FPS. With the census on, `SNX_ARCEUS_GRAVITY_PROBE=1`
+logs `arceus-gravity` lines. While that term is negative, it follows one character for up to four seconds. Each
+call logs the velocity the function read, the position it was given and its result, with real time. If the velocity
+gains the vertical term on every call, gravity runs at FPS/30 speed, and the positions give the real acceleration.
+It only observes.
