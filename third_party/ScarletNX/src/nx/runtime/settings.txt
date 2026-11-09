@@ -761,7 +761,7 @@ setting NVN native
     words Off|On
     help 1 = the host answers the NVN functions of the game (gpu/nvn_native.c) and the game's NVN library is not run. A
     help function the host does not have yet is logged and returns 0. 0 = the library runs as always. Phase 6 of
-    help NXAevora, under construction: with 1 the game does not draw yet
+    help NXAevora, under construction: with 1 the game draws, but some objects such as characters are missing
 setting NVN selftest
     key nvn_selftest
     int 0 1

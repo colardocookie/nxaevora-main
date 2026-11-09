@@ -1048,8 +1048,26 @@ unknown part stops with a log line.
      table is the first thing to read before this op (a new analyst task).
    - Clear color: write 0x360 to 0x363 and run the clear of one target with the channel mask. The macro 1 body is not read. The host
      calls the renderer clear for the bound target instead of the macro, and the clear covers the whole target.
-   - Barrier: no method for bits 0 to 2 and 4 to 8 in 3c (the host has no L2 and no cache of its own that the game needs here, one
-     counter for the log). Bit 3 and 8 are logged with their count. The range records of bit 3 are not decoded.
+   - Barrier (changed 2026-11-09, task (b)): the replay sends the words of `nvnCommandBufferBarrier` (sdk d856590, read in the
+     disassembly). The old rule (no method, one counter for each bit) gave the transform feedback write of the skinning shader no
+     Vulkan barrier before the vertex read, because `WAIT_FOR_IDLE` did not reach `vkr_method_barrier`. The words, in this order:
+     1. Always first: `0x910E0002` (puller NOP, data 0x110E).
+     2. One of these, the first set bit wins: bit 3 `0x80000014` (puller `REF_CNT` 0), then the range record of type 1, then
+        `0x80000040` (3D method 0x40). Else bit 0 `0x80000044` (`WAIT_FOR_IDLE`). Else bit 1 `0x80000378` (`FRAGMENT_BARRIER`).
+        Else bit 2 `0x800003DF` (`TILED_CACHE_BARRIER`). Bits 0 to 2 are not sent when bit 3 is set.
+     3. Bit 4: `0x800003DD` (`INVALIDATE_TEXTURE_DATA_CACHE`) when step 2 sent bit 1 or bit 2, else `0x800004A2` (method 0x4A2,
+        no name in `maxwell_3d_regs.h`, no action in `maxwell3d_method`).
+     4. Bit 5: `0x90110369` (`INVALIDATE_SHADER_CACHE_NO_WFI`, data 0x1011). Bit 6: `0x8000050A` then `0x80000509` (texture
+        header cache, then sampler cache, both `NO_WFI`). Bit 7: `0x801904B2` (method 0x4B2, data 0x19).
+     5. Bit 8: the words of sdk d859710 (cb, 1, 1): `0x8000C014` (subchannel 6, puller `REF_CNT` 0). Then, when the device byte
+        +0x60 is not 0, `0x2001C00B 0x80000000` (`MEM_OP_B`, operation 16). Then `0x2001C00B 0x70000000` (`MEM_OP_B`, operation
+        14). These are puller register writes only: `puller_method` keeps them and does nothing more.
+     6. Bit 3 again: the range record of type 7. Always last: `0x91000002` (puller NOP, data 0x1100).
+
+     The builder is a pure function in `nvn_params.c` (bits in, words out) with a test. The host sends a word with a method below
+     0x40 to the puller (`gpu_channel_method`), on any subchannel, and a 3D method to `maxwell3d_method`. The range records of bit 3
+     are not words: they split the command memory of the library into GPFIFO entries. The host has no GPFIFO on this path, so it
+     does not make them. The bit counters for the log stay. The value of the device byte +0x60 is open: read it before step 2.
 7. **Pool mapping.** The renderer reads render targets and textures by GPU address, so every pool needs a page table entry from the
    first use. `gmmu_map` is public in `nvdrv.h`. The unmap (`gmmu_unmap` plus `gmap_cut` and the allocator) is not. Decision: add one
    small function pair to `nvdrv` (`nvn_gpu_map_range`, `nvn_gpu_unmap_range`) with a row in `docs/runtime-changes.md`. The host
