@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "deny": [
+      "Agent",
+      "Skill(anthropic-skills:docx)",
+      "Skill(anthropic-skills:pptx)",
+      "Skill(anthropic-skills:xlsx)",
+      "Skill(anthropic-skills:pdf)",
+      "Skill(anthropic-skills:docs)",
+      "Skill(anthropic-skills:deep-research)",
+      "Skill(anthropic-skills:built-in-browser)",
+      "Skill(anthropic-skills:chrome-browser)",
+      "Skill(anthropic-skills:computer-use)",
+      "Skill(anthropic-skills:skill-creator)",
+      "Skill(claude-api)",
+      "Skill(dataviz)",
+      "Skill(plugin-authoring)",
+      "Skill(schedule)",
+      "Skill(loop)",
+      "Skill(run)",
+      "Skill(init)",
+      "Skill(security-review)",
+      "Skill(update-config)",
+      "Skill(keybindings-help)",
+      "Skill(fewer-permission-prompts)"
+    ]
+  }
+}
