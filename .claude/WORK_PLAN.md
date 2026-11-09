@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - NOT PUSHED: `9aa4635` and all later commits (`a897e21` and `8c6a511` are code, the others are work plan updates).
   `4e6b015` and older are PUSHED. History: `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is `8c6a511` (md5 3c38c171), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is task (a) step 1 (md5 a63e12b7), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=0`, `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -47,14 +47,10 @@ RomFS and a file layer for mods.
 Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 to 3 are done except the open steps
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-NEXT: task (a) step 1, brief and launch of the code writer (user agreed 2026-11-09).
+NEXT: task (a) step 2 (`pipeline.c:449`), brief and launch of the code writer. Step 1 is committed (shader_hash end rule).
 - Task (a), plan agreed by the user: step 1 `shader_hash` end rule (4 shaders), step 2 `pipeline.c:449` keeps a shipped result
   when no cbuf read succeeded (6 + 4). Step 2 changes the draw: a shipped entry with no read matches every draw, so the runtime
   PC switch replaces the draw-time translation. Ask the user for a run after step 2. One commit for each step.
-- Step 1 rule: when a BRX table is not read and the scan finds an always-run BRA to itself, end at the last always-run EXIT before
-  it (len = (EXIT + 1) * 8). Explorer result: `OLD-WORK_PLAN.md`, section "Task (a) step 1 explorer result". Not verified by the
-  caller yet: check one row (for example a3c1291e, `main.bin@0x4041c30`) before the brief. Add a test in the style of the
-  existing `shader_hash` tests (synthetic program). Code: `shader.c` `shader_hash` (about line 324).
 - Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
   buffer overflow in the init builders would crash).
 - Diagnostic code: `patches/diag-taskB.patch`. Apply it only for a diagnostic run, and remove it before a commit.
