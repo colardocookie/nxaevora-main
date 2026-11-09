@@ -6,7 +6,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 
 ## State
 
-- NOT PUSHED: `9aa4635` and all later commits (`a897e21` is code, the others are work plan updates).
+- NOT PUSHED: `9aa4635` and all later commits (`a897e21` and `8c6a511` are code, the others are work plan updates).
   `4e6b015` and older are PUSHED. History: `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
 - The exe in `game/` is `8c6a511` (md5 3c38c171), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
@@ -47,9 +47,7 @@ RomFS and a file layer for mods.
 Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 to 3 are done except the open steps
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-Task (d) is DONE (2026-11-09): the XFB fix is commit `8c6a511`. Native run to the field: the characters show (user), the
-`diag-xfb` values of the 3 buffers match the non-native ones, 0 refused programs, no crash. The diagnostic is removed (saved as
-`patches/diag-taskD.patch`). The exe in `game/` is `8c6a511` (md5 3c38c171). History: `OLD-WORK_PLAN.md`, last sections.
+Task (d) (missing characters, XFB block) is DONE: commit `8c6a511`. History: `OLD-WORK_PLAN.md`, last sections.
 
 NEXT: ask the user: task (a) or an open item below.
 - Task (a), later (decision of the user): the 11 `not translated` vertex shaders come only from the shipped pass, not from draws.

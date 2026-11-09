@@ -2142,3 +2142,11 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   BindProgram size in tests/nvn_cmdlist.c:127 is 736, not 152. After the fix, ctest passes except `tracked_material`.
   A mutant (table step 5) fails the test.
 - The exe in `game/` (md5 f0c83b01) has the patch and the diagnostic `patches/diag-taskD.patch`. Not run yet.
+
+## Task (d) step 3 done: native run verified, XFB fix committed (2026-11-09, evening, moved from WORK_PLAN.md)
+
+- Native run to the field (update program, exe md5 f0c83b01): the characters show (user). The `diag-xfb` lines of the 3 buffers
+  match the non-native values (ctl {0,3,0xC} / {0,1,4} / {0,1,4}, layout 0x00222120 / 0x24 / 0x28). 4736 program sets, 0
+  refused, 0 `not implemented`, no crash, normal exit at 69.8 s.
+- The diagnostic (render.c, renderer.c) is removed (saved as `patches/diag-taskD.patch`). The XFB fix is commit `8c6a511`.
+  ctest passes except `tracked_material`. The exe in `game/` is `8c6a511` (md5 3c38c171), not run yet.
