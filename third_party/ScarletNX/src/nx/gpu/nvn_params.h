@@ -543,10 +543,15 @@ int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_wo
                              uint32_t stage_word, uint32_t* index_out);
 
 /* The Maxwell command words that nvnProgramSetShadersExt builds for the shaders of a program. The host builds them
-   because it has no library. Stage 0 (vertex, no VertexA), stage 1 (fragment) and stage 5 (compute) are built. The
-   other stages and the transform feedback are not ported. A compute stage cannot share a program with vertex or
-   fragment: the library crashes for that case. */
-#define NVN_PROGRAM_WORDS_MAX 32u       /* compute 18 alone, or vertex 8 + fragment 22 = 30 */
+   because it has no library. Stage 0 (vertex, no VertexA), stage 1 (fragment), stage 5 (compute) and the transform
+   feedback block of the vertex stage are built. Stages 2 to 4 are not ported. A compute stage cannot share a program
+   with vertex or fragment: the library crashes for that case. */
+#define NVN_PROGRAM_XFB_BLOB_BYTES 0x612u      /* the transform feedback blob that follows the vertex header */
+#define NVN_PROGRAM_XFB_HEADER_OFFSET 0xDCu    /* the blob starts at the vertex header plus this offset */
+#define NVN_PROGRAM_XFB_STREAMS 4u
+#define NVN_PROGRAM_XFB_LAYOUT_WORDS_MAX 32u   /* the method range 0xA00+0x20i holds 32 words */
+#define NVN_PROGRAM_XFB_WORDS_MAX (NVN_PROGRAM_XFB_STREAMS * (4u + 1u + NVN_PROGRAM_XFB_LAYOUT_WORDS_MAX))
+#define NVN_PROGRAM_WORDS_MAX (30u + NVN_PROGRAM_XFB_WORDS_MAX) /* graphics 30, then the transform feedback block */
 #define NVN_PROGRAM_VERTEX_WORDS 8u
 #define NVN_PROGRAM_FRAGMENT_WORDS 17u
 #define NVN_PROGRAM_COMPUTE_WORDS 18u
@@ -650,6 +655,12 @@ int nvn_program_build_words(const NvnProgramComputeIn* compute, const NvnProgram
 /* Reverses program_build_compute: fills *out from an 18-word compute block. Returns 0 when count is not 18 or an
    argument is null. Pure. */
 int nvn_program_compute_from_words(const uint32_t* words, uint32_t count, NvnProgramComputeIn* out);
+
+/* Builds the transform feedback block that the library appends after the graphics words, from the 0x612-byte blob
+   at vertex header + 0xDC. Returns 1 with *count = 0 when the blob is disabled, and 1 with the words when it is
+   good. Returns 0 with a static *reason on a refusal: a comps above 0x80, an id outside the table, a layout above
+   32 words or above the stride allocation, or a word array that is too small. Writes at most max words. Pure. */
+int nvn_program_xfb_words(const uint8_t* blob, uint32_t* words, uint32_t max, uint32_t* count, const char** reason);
 
 /* The pushbuffer stream of the method words of a program (gpu.c's pb_decode). Mode 1 increments the method for each
    data word, mode 5 sends the first word to the header method and the rest to the next one, and mode 4 carries its value in the count field. A macro call gets last only on its

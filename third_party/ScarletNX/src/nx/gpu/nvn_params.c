@@ -1260,6 +1260,128 @@ int nvn_program_build_words(const NvnProgramComputeIn* compute, const NvnProgram
     return 1;
 }
 
+/* The transform feedback blob after the vertex header: a signed id, a start and a count per component row, then the
+   stride, the buffer and the comps per stream and the enable byte. */
+#define NVN_PROGRAM_XFB_ID_OFFSET 0x000u
+#define NVN_PROGRAM_XFB_START_OFFSET 0x200u
+#define NVN_PROGRAM_XFB_COUNT_OFFSET 0x400u
+#define NVN_PROGRAM_XFB_STRIDE_OFFSET 0x600u
+#define NVN_PROGRAM_XFB_BUFFER_OFFSET 0x608u
+#define NVN_PROGRAM_XFB_COMPS_OFFSET 0x60Cu
+#define NVN_PROGRAM_XFB_ENABLE_OFFSET 0x610u
+#define NVN_PROGRAM_XFB_ROW_BYTES 0x80u
+#define NVN_PROGRAM_XFB_COMPS_MAX 0x80u
+#define NVN_PROGRAM_XFB_ID_COUNT 64
+#define NVN_PROGRAM_XFB_ID_POINT_FIRST (-6)
+#define NVN_PROGRAM_XFB_ID_POINT_END (-3)
+#define NVN_PROGRAM_XFB_TABLE_FIRST 32u
+#define NVN_PROGRAM_XFB_TABLE_BASE 0x20u
+#define NVN_PROGRAM_XFB_TABLE_STEP 4u
+#define NVN_PROGRAM_XFB_LAYOUT_BYTES (NVN_PROGRAM_XFB_LAYOUT_WORDS_MAX * 4u)
+#define NVN_PROGRAM_XFB_METHOD_FIRST 0x1C0u
+#define NVN_PROGRAM_XFB_METHOD_STREAM_STEP 4u
+#define NVN_PROGRAM_XFB_METHOD_LAYOUT_FIRST 0xA00u
+#define NVN_PROGRAM_XFB_METHOD_LAYOUT_STEP 0x20u
+#define NVN_PROGRAM_XFB_WORD_HEADER 0x20030000u
+#define NVN_PROGRAM_XFB_WORD_LAYOUT_HEADER 0x20000000u
+#define NVN_PROGRAM_XFB_POINT_BYTE 0xFFu
+
+#define NVN_PROGRAM_XFB_REASON_COMPS "transform feedback: comps is above 0x80"
+#define NVN_PROGRAM_XFB_REASON_ID "transform feedback: an id is outside the table"
+#define NVN_PROGRAM_XFB_REASON_LAYOUT "transform feedback: the layout is above 32 words"
+#define NVN_PROGRAM_XFB_REASON_STRIDE "transform feedback: the layout is above the stride allocation"
+#define NVN_PROGRAM_XFB_REASON_SPACE "transform feedback: the word array is too small"
+
+/* The low byte of the u16 table entries 0 to 31 (sdk 0xde87370). Entries 32 to 63 follow the linear rule below. */
+static const uint8_t program_xfb_table[NVN_PROGRAM_XFB_TABLE_FIRST] = {
+    0x1c, 0xa0, 0xa4, 0xa8, 0xac, 0xba, 0x1b, 0xc0, 0xc4, 0xc8, 0xcc, 0xd0, 0xd4, 0xd8, 0xdc, 0xe0,
+    0xe4, 0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xbf, 0x1a, 0x19, 0xe8, 0xff, 0x18, 0xff,
+};
+
+static uint8_t program_xfb_table_byte(uint32_t id) {
+    if (id < NVN_PROGRAM_XFB_TABLE_FIRST) return program_xfb_table[id];
+    return (uint8_t)(NVN_PROGRAM_XFB_TABLE_BASE + NVN_PROGRAM_XFB_TABLE_STEP * (id - NVN_PROGRAM_XFB_TABLE_FIRST));
+}
+
+static int program_xfb_id_is_point(int32_t id) {
+    return id >= NVN_PROGRAM_XFB_ID_POINT_FIRST && id <= NVN_PROGRAM_XFB_ID_POINT_END;
+}
+
+/* Packs the layout of stream i and pads it to a word multiple. Returns 1 with *bytes; 0 with *reason on a refusal. */
+static int program_xfb_layout_bytes(const uint8_t* blob, uint32_t stream, uint32_t comps,
+                                    uint8_t layout[NVN_PROGRAM_XFB_LAYOUT_BYTES], uint32_t* bytes,
+                                    const char** reason) {
+    uint32_t at = 0;
+    for (uint32_t j = 0; j < comps; j++) {
+        uint32_t s = blob[NVN_PROGRAM_XFB_START_OFFSET + NVN_PROGRAM_XFB_ROW_BYTES * stream + j];
+        uint32_t e = (s + blob[NVN_PROGRAM_XFB_COUNT_OFFSET + NVN_PROGRAM_XFB_ROW_BYTES * stream + j]) & 0xFFu;
+        if (s >= e) continue;
+        int32_t id = (int8_t)blob[NVN_PROGRAM_XFB_ID_OFFSET + NVN_PROGRAM_XFB_ROW_BYTES * stream + j];
+        if (at + (e - s) > NVN_PROGRAM_XFB_LAYOUT_BYTES) {
+            *reason = NVN_PROGRAM_XFB_REASON_LAYOUT;
+            return 0;
+        }
+        if (!program_xfb_id_is_point(id) && (id < 0 || id >= NVN_PROGRAM_XFB_ID_COUNT)) {
+            *reason = NVN_PROGRAM_XFB_REASON_ID;
+            return 0;
+        }
+        for (uint32_t k = s; k < e; k++)
+            layout[at++] = program_xfb_id_is_point(id) ? NVN_PROGRAM_XFB_POINT_BYTE
+                                                       : (uint8_t)(program_xfb_table_byte((uint32_t)id) + k);
+    }
+    while (at % 4u) layout[at++] = 0;
+    *bytes = at;
+    return 1;
+}
+
+int nvn_program_xfb_words(const uint8_t* blob, uint32_t* words, uint32_t max, uint32_t* count,
+                          const char** reason) {
+    if (!blob || !words || !count || !reason) return 0;
+    *reason = NULL;
+    if (!blob[NVN_PROGRAM_XFB_ENABLE_OFFSET]) {
+        *count = 0;
+        return 1;
+    }
+    uint32_t out[NVN_PROGRAM_XFB_WORDS_MAX];
+    uint32_t at = 0;
+    for (uint32_t i = 0; i < NVN_PROGRAM_XFB_STREAMS; i++) {
+        uint32_t comps = blob[NVN_PROGRAM_XFB_COMPS_OFFSET + i];
+        if (comps > NVN_PROGRAM_XFB_COMPS_MAX) {
+            *reason = NVN_PROGRAM_XFB_REASON_COMPS;
+            return 0;
+        }
+        uint32_t stride = (uint32_t)blob[NVN_PROGRAM_XFB_STRIDE_OFFSET + 2u * i] |
+                          ((uint32_t)blob[NVN_PROGRAM_XFB_STRIDE_OFFSET + 2u * i + 1u] << 8);
+        out[at++] = NVN_PROGRAM_XFB_WORD_HEADER | (NVN_PROGRAM_XFB_METHOD_FIRST + NVN_PROGRAM_XFB_METHOD_STREAM_STEP * i);
+        out[at++] = blob[NVN_PROGRAM_XFB_BUFFER_OFFSET + i];
+        out[at++] = stride >> 2;
+        out[at++] = stride;
+        if (!stride) continue;
+        uint8_t layout[NVN_PROGRAM_XFB_LAYOUT_BYTES];
+        uint32_t bytes = 0;
+        if (!program_xfb_layout_bytes(blob, i, comps, layout, &bytes, reason)) return 0;
+        uint32_t nwords = bytes / 4u;
+        if (nwords > ((stride + 0xCu) >> 4)) {
+            *reason = NVN_PROGRAM_XFB_REASON_STRIDE;
+            return 0;
+        }
+        /* The library writes a layout header with count 0 when the layout is empty, which is not a valid word: skip it. */
+        if (!nwords) continue;
+        out[at++] = NVN_PROGRAM_XFB_WORD_LAYOUT_HEADER | (nwords << NVN_PROGRAM_COUNT_SHIFT) |
+                    (NVN_PROGRAM_XFB_METHOD_LAYOUT_FIRST + NVN_PROGRAM_XFB_METHOD_LAYOUT_STEP * i);
+        for (uint32_t w = 0; w < nwords; w++)
+            out[at++] = (uint32_t)layout[4u * w] | ((uint32_t)layout[4u * w + 1u] << 8) |
+                        ((uint32_t)layout[4u * w + 2u] << 16) | ((uint32_t)layout[4u * w + 3u] << 24);
+    }
+    if (at > max) {
+        *reason = NVN_PROGRAM_XFB_REASON_SPACE;
+        return 0;
+    }
+    memcpy(words, out, (size_t)at * sizeof out[0]);
+    *count = at;
+    return 1;
+}
+
 int nvn_program_compute_from_words(const uint32_t* words, uint32_t count, NvnProgramComputeIn* out) {
     if (!words || !out || count != NVN_PROGRAM_COMPUTE_WORDS) return 0;
     out->code_offset = words[0];

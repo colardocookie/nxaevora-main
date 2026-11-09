@@ -44,7 +44,7 @@ typedef enum {
     NVN_OP_COUNT
 } NvnOpCode;
 
-#define NVN_OP_MAX_PAYLOAD   512u /* bytes; the largest payload is NvnOpRenderTargets */
+#define NVN_OP_MAX_PAYLOAD   768u /* bytes; the largest payload is NvnOpBindProgram with the transform feedback words */
 #define NVN_OP_ALIGN         8u
 #define NVN_RENDER_TARGETS_MAX 8u
 #define NVN_VIEWPORTS_MAX    16u /* viewports and scissors, as the engine has */

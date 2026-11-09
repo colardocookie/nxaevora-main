@@ -124,7 +124,7 @@ static void test_draw_path_ops(void) {
     const NvnOpDispatch* got_dispatch = p;
     CHECK(got_dispatch->x == 8 && got_dispatch->y == 4 && got_dispatch->z == 2 && got_dispatch->reserved == 0);
 
-    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_BIND_PROGRAM && h.bytes == 152u);
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_BIND_PROGRAM && h.bytes == 736u);
     const NvnOpBindProgram* got_program = p;
     CHECK(got_program->program == 0x400002000ull && got_program->stage_mask == 0x21u);
     CHECK(got_program->program_mask == 0u && got_program->word_count == 0u && got_program->words[0] == 0u);

@@ -1568,6 +1568,115 @@ static void test_program_build_refusals(void) {
     CHECK(count == 77u);
 }
 
+#define TEST_XFB_SENTINEL 0xDEADBEEFu
+
+static void test_xfb_row(uint8_t blob[NVN_PROGRAM_XFB_BLOB_BYTES], uint32_t stream, uint32_t j, int8_t id,
+                         uint8_t start, uint8_t cnt) {
+    blob[0x80u * stream + j] = (uint8_t)id;
+    blob[0x200u + 0x80u * stream + j] = start;
+    blob[0x400u + 0x80u * stream + j] = cnt;
+}
+
+static void test_xfb_stream(uint8_t blob[NVN_PROGRAM_XFB_BLOB_BYTES], uint32_t stream, uint16_t stride,
+                            uint8_t buffer, uint8_t comps) {
+    blob[0x600u + 2u * stream] = (uint8_t)stride;
+    blob[0x600u + 2u * stream + 1u] = (uint8_t)(stride >> 8);
+    blob[0x608u + stream] = buffer;
+    blob[0x60Cu + stream] = comps;
+}
+
+/* The blob that the game gives in a non-native run: 22 words, the layout 0x20 0x21 0x22 then 0x24 and 0x28. */
+static void test_xfb_blob_game(uint8_t blob[NVN_PROGRAM_XFB_BLOB_BYTES]) {
+    memset(blob, 0, NVN_PROGRAM_XFB_BLOB_BYTES);
+    blob[0x610u] = 1;
+    test_xfb_stream(blob, 0, 0xCu, 0, 1);
+    test_xfb_row(blob, 0, 0, 32, 0, 3);
+    test_xfb_stream(blob, 1, 4u, 0, 1);
+    test_xfb_row(blob, 1, 0, 33, 0, 1);
+    test_xfb_stream(blob, 2, 4u, 0, 1);
+    test_xfb_row(blob, 2, 0, 34, 0, 1);
+    test_xfb_stream(blob, 3, 0, 0, 0);
+}
+
+static void test_program_xfb_words(void) {
+    uint8_t blob[NVN_PROGRAM_XFB_BLOB_BYTES];
+    uint32_t words[NVN_PROGRAM_XFB_WORDS_MAX + 2];
+    uint32_t count = 99;
+    const char* reason = (const char*)1;
+    /* (a) A zero blob has enable 0: no word. */
+    memset(blob, 0, sizeof blob);
+    CHECK(nvn_program_xfb_words(blob, words, 0, &count, &reason) && count == 0);
+    /* (b) The game's values. */
+    test_xfb_blob_game(blob);
+    count = 99;
+    CHECK(nvn_program_xfb_words(blob, words, NVN_PROGRAM_XFB_WORDS_MAX, &count, &reason) && count == 22u);
+    CHECK(words[0] == 0x200301C0u && words[1] == 0u && words[2] == 3u && words[3] == 0xCu);
+    CHECK(words[4] == 0x20010A00u && words[5] == 0x00222120u);
+    CHECK(words[6] == 0x200301C4u && words[7] == 0u && words[8] == 1u && words[9] == 4u);
+    CHECK(words[10] == 0x20010A20u && words[11] == 0x00000024u);
+    CHECK(words[12] == 0x200301C8u && words[13] == 0u && words[14] == 1u && words[15] == 4u);
+    CHECK(words[16] == 0x20010A40u && words[17] == 0x00000028u);
+    CHECK(words[18] == 0x200301CCu && words[19] == 0u && words[20] == 0u && words[21] == 0u);
+    /* (c) A point id gives 0xFF; table 0xFF plus k wraps in 8 bits: 0xFF + 2 = 0x01. */
+    memset(blob, 0, sizeof blob);
+    blob[0x610u] = 1;
+    test_xfb_stream(blob, 0, 0xCu, 0, 1);
+    test_xfb_row(blob, 0, 0, -4, 0, 1);
+    count = 0;
+    /* Stream 0 gives 6 words; streams 1 to 3 have stride 0 and give 4 words each. */
+    CHECK(nvn_program_xfb_words(blob, words, NVN_PROGRAM_XFB_WORDS_MAX, &count, &reason) && count == 18u);
+    CHECK(words[4] == 0x20010A00u && words[5] == 0x000000FFu);
+    CHECK(words[6] == 0x200301C4u && words[9] == 0u && words[14] == 0x200301CCu);
+    test_xfb_row(blob, 0, 0, 29, 2, 1);
+    count = 0;
+    CHECK(nvn_program_xfb_words(blob, words, NVN_PROGRAM_XFB_WORDS_MAX, &count, &reason) && count == 18u);
+    CHECK(words[5] == 0x00000001u);
+}
+
+static void test_program_xfb_refusals(void) {
+    uint8_t blob[NVN_PROGRAM_XFB_BLOB_BYTES];
+    uint32_t words[NVN_PROGRAM_XFB_WORDS_MAX + 2];
+    uint32_t count = 77;
+    const char* reason = NULL;
+    for (uint32_t i = 0; i < NVN_PROGRAM_XFB_WORDS_MAX + 2u; i++) words[i] = TEST_XFB_SENTINEL;
+    /* comps above 0x80. */
+    memset(blob, 0, sizeof blob);
+    blob[0x610u] = 1;
+    test_xfb_stream(blob, 0, 0xCu, 0, 0x81u);
+    reason = NULL;
+    CHECK(!nvn_program_xfb_words(blob, words, NVN_PROGRAM_XFB_WORDS_MAX, &count, &reason) && reason && count == 77u);
+    /* id 64 and id -1 are outside the table. */
+    memset(blob, 0, sizeof blob);
+    blob[0x610u] = 1;
+    test_xfb_stream(blob, 0, 0xCu, 0, 1);
+    test_xfb_row(blob, 0, 0, 64, 0, 1);
+    reason = NULL;
+    CHECK(!nvn_program_xfb_words(blob, words, NVN_PROGRAM_XFB_WORDS_MAX, &count, &reason) && reason && count == 77u);
+    test_xfb_row(blob, 0, 0, -1, 0, 1);
+    reason = NULL;
+    CHECK(!nvn_program_xfb_words(blob, words, NVN_PROGRAM_XFB_WORDS_MAX, &count, &reason) && reason && count == 77u);
+    /* Two rows of three bytes pad to two words, above the one word that stride 4 allows. */
+    memset(blob, 0, sizeof blob);
+    blob[0x610u] = 1;
+    test_xfb_stream(blob, 0, 4u, 0, 2);
+    test_xfb_row(blob, 0, 0, 32, 0, 3);
+    test_xfb_row(blob, 0, 1, 33, 0, 3);
+    reason = NULL;
+    CHECK(!nvn_program_xfb_words(blob, words, NVN_PROGRAM_XFB_WORDS_MAX, &count, &reason) && reason && count == 77u);
+    /* A refusal writes no word at all. */
+    for (uint32_t i = 0; i < NVN_PROGRAM_XFB_WORDS_MAX + 2u; i++) CHECK(words[i] == TEST_XFB_SENTINEL);
+    /* (e) The game blob needs 22 words: max 21 refuses and writes nothing past max. */
+    test_xfb_blob_game(blob);
+    for (uint32_t i = 0; i < NVN_PROGRAM_XFB_WORDS_MAX + 2u; i++) words[i] = TEST_XFB_SENTINEL;
+    count = 77;
+    reason = NULL;
+    CHECK(!nvn_program_xfb_words(blob, words, 21u, &count, &reason) && reason && count == 77u);
+    CHECK(words[21] == TEST_XFB_SENTINEL && words[0] == TEST_XFB_SENTINEL);
+    CHECK(!nvn_program_xfb_words(NULL, words, NVN_PROGRAM_XFB_WORDS_MAX, &count, &reason));
+    CHECK(!nvn_program_xfb_words(blob, NULL, NVN_PROGRAM_XFB_WORDS_MAX, &count, &reason));
+    CHECK(!nvn_program_xfb_words(blob, words, NVN_PROGRAM_XFB_WORDS_MAX, NULL, &reason));
+}
+
 static void test_word_stream(void) {
     NvnWordStream s = {0};
     uint32_t m = 0, v = 0;
@@ -2557,6 +2666,8 @@ int main(int argc, char** argv) {
     test_program_build_fragment_values();
     test_program_build_compute();
     test_program_build_refusals();
+    test_program_xfb_words();
+    test_program_xfb_refusals();
     test_compute_qmd_build();
     test_compute_cbuf0_build();
     test_program_compute_round_trip();

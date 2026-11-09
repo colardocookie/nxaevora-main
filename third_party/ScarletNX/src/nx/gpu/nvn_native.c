@@ -1043,8 +1043,9 @@ static void* known_record(u64 addr, NvnObjKind kind) {
 #define PROGRAM_REFUSAL_STAGE_REPEATED "stage is repeated"
 #define PROGRAM_REFUSAL_CONTROL_UNREADABLE "control is unreadable"
 
-/* The host builder builds stage 0 (vertex, no VertexA), stage 1 (fragment) and stage 5 (compute). Stages 2 to 4,
-   VertexA and the transform feedback are not ported, so a program with any of them is refused. */
+/* The host builder builds stage 0 (vertex, no VertexA), stage 1 (fragment), stage 5 (compute) and the transform
+   feedback block of the vertex stage. Stages 2 to 4 and VertexA are not ported, so a program with any of them is
+   refused. */
 #define PROGRAM_STAGE_VERTEX 0u
 #define PROGRAM_STAGE_FRAGMENT 1u
 #define PROGRAM_STAGE_COMPUTE 5u
@@ -1256,6 +1257,15 @@ static void log_program_set_summary(void) {
         (unsigned)program_sets_refused, masks);
 }
 
+/* Caller holds objs_lock. The header read check of program_read_entry covered header + 0x6EE. Reads the transform
+   feedback blob of the vertex header and appends its words. Returns 0 on a refusal and sets *reason. */
+static int program_append_xfb_words(u64 header, uint32_t* words, uint32_t max, uint32_t* count, const char** reason) {
+    uint8_t blob[NVN_PROGRAM_XFB_BLOB_BYTES];
+    u64 at = header + NVN_PROGRAM_XFB_HEADER_OFFSET;
+    for (uint32_t i = 0; i < NVN_PROGRAM_XFB_BLOB_BYTES; i++) blob[i] = program_guest_byte(at + (u64)i);
+    return nvn_program_xfb_words(blob, words, max, count, reason);
+}
+
 /* nvnProgramSetShadersExt(prog, count, entries). All entries must be valid: the host writes the new stage table only
    then, and keeps the old content on a refusal. */
 static void h_program_set_shaders_ext(CPU* c, u64 entry) {
@@ -1382,6 +1392,19 @@ static void h_program_set_shaders_ext(CPU* c, u64 entry) {
             LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: a word value is above 13 bits\n",
                       (unsigned long long)addr);
             ok = 0;
+        }
+        /* The transform feedback block follows all graphics words. Only the vertex stage has a blob. */
+        if (ok && (next.stage_mask & (1u << PROGRAM_STAGE_VERTEX))) {
+            const char* reason = NULL;
+            uint32_t xfb_count = 0;
+            if (!program_append_xfb_words(next.stage[PROGRAM_STAGE_VERTEX].header, next.words + next.word_count,
+                                          NVN_PROGRAM_WORDS_MAX - next.word_count, &xfb_count, &reason)) {
+                LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: %s\n", (unsigned long long)addr,
+                          reason);
+                ok = 0;
+            } else {
+                next.word_count += xfb_count;
+            }
         }
     }
     program_sets_total++;
