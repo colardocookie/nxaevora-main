@@ -2024,3 +2024,24 @@ Code writer 7c (brief `reports/brief-7c.md`, worktree `wt-7c`) wrote `patches/7c
   tool: `analysis/scan_strb60.py`. Brief `reports/brief-7b-barrier.md` (its "13 words" was wrong, 14 is right), report
   `reports/writer-7b-1.md`, patch `patches/7b-barrier-1.patch` (LF in the patch, `git apply` kept CRLF). `puller_method` of gpu.c
   ignores the methods 0x02, 0x14 and 0x0B (default case). Two mutants caught. The exe md5 d4021300.
+
+## State and history moved from WORK_PLAN.md (2026-11-09, evening)
+
+- Stage 4 history: steps 1 to 5, task A, A2, task B steps 0 and 1, task (c) (5c1dd1c) and task (b) (5c3f76d) are done. The black
+  screen is fixed (7becf0c). The game runs at a steady 30 fps (run 2026-11-09 14:36). The characters are shown (5c3f76d, run
+  2026-11-09 15:46).
+- The exe in `game/` has the barrier patch (md5 d4021300, equal in the three copies, no diagnostic code).
+- PR #1 is closed by the user. Its NVN part is 5c1dd1c (pushed).
+- The worktree `wt-7b` was removed. No worktree exists.
+- Measure of 2026-11-03: 58 calls read 8 million tokens. 91 percent of it was in calls with more than 100k of context. The base
+  context is 25k.
+
+## Session of 2026-11-09 (evening): Claude files in git, issue and PR templates
+
+- `1c5cfea`: `.gitignore` keeps only `game/`. `CLAUDE.md`, `.claude/` (work plans, skills, `settings.json`) are in git now.
+  `CLAUDE.md` and `WORK_PLAN.md` do not say "not in git" for these files any more.
+- `4e6b015`: `.github/ISSUE_TEMPLATE/` (forms `bug_report.yml`, `graphics_issue.yml`, `feature_request.yml`, and `config.yml`)
+  and `.github/pull_request_template.md`. Decisions of the user: English, game screenshots are allowed, Discussions are on,
+  the PR template has a required "AI tools" field (if used, name the tools and models). Blank issues are off. Questions go to
+  Discussions. The YAML was parsed with PyYAML (scratch venv).
+- On GitHub: Discussions are enabled, the label `graphics` is made (`#1D76DB`). The templates show on GitHub only after a push.

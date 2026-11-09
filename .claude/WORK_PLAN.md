@@ -6,19 +6,24 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 
 ## State
 
-- Last commit `5c3f76d` (the barrier words in the replay, task (b), run OK), NOT PUSHED, with `2de86ee` and `6a3dfc5`
-  before it. `5c1dd1c` and older are PUSHED. The `Co-Authored-By` line of Claude is now Opus 5.5 (user, 2026-11-09). The exe in
-  `game/` has the barrier patch (md5 d4021300, equal in the three copies, no diagnostic code). The diagnostic code of task B is saved as
-  `patches/diag-taskB.patch` (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
+- Last commit: the work plan update after `4e6b015` (issue and PR templates). NOT PUSHED: `2de86ee`, `6a3dfc5`, `5c3f76d`,
+  `1c5cfea`, `4e6b015` and the work plan update. `5c1dd1c`
+  and older are PUSHED. History: `OLD-WORK_PLAN.md`, last two sections.
+- `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
+- GitHub: Discussions are on, the label `graphics` exists. The templates show only after the push.
+- The exe in `game/` is from `5c3f76d` (md5 d4021300). The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+  (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=1` (not needed, the user may set 0), `nvn_native=1`, `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
-- GitHub: PR #1 is closed by the user (its NVN part is 5c1dd1c). PRs #2 to #6 (opt-in 60/120 fps clocks, colardocookie) and issue #7
-  (a contributor offer): ON HOLD, frame rate is later work. The user replies to them. Facts: `OLD-WORK_PLAN.md`, section "PR #1 NVN part taken".
+- GitHub PRs #2 to #6 (opt-in 60/120 fps clocks, colardocookie) and issue #7 (a contributor offer): ON HOLD, frame rate is later
+  work. The user replies to them. Facts: `OLD-WORK_PLAN.md`, section "PR #1 NVN part taken".
 - Scratchpad: `C:/Users/Azunel/AppData/Roaming/orca/chat-scratch/f41e32fc08995f90ab471cdfd0b7bdb8` (`analysis/` holds disassembly
   text files and `read_sdk.py` (`dis`, `words`, `callers`, run it in the MSYS2 CLANG64 shell with `SNX_SCARLETNX` set; the files
   `write_texels.txt`, `blwriter.txt`, `register_image.txt` are the disassembly of group 7), `reports/` the agent reports and briefs
   (`brief-6a.md`, `brief-6b.md`, `brief-5-writer.md` are good templates), `patches/` the writer patches, `edit_*.py` edit scripts, `design3c.md`).
-  No worktree exists (`wt-7b` was removed). Rule (lesson of 2026-11-04): after each commit run `git show --stat` and compare it with the files of the change.
+  Rule (lesson of 2026-11-04): after each commit run `git show --stat` and compare it with the files of the change.
+- Commit messages: PowerShell 5.1 does not pass a here-string to `git commit -F -`. Write the message to a file in the scratchpad
+  and use `git commit -F <file>`.
 - Setup: Claude Code subagents are denied (`.claude/settings.json`). Use the Orca agents of the skill `orca-agents`: code
   reviewer (`codex`, Sol, high). Game explorer, library analyst, handler writer and code writer are `opencode` with
   `opencode-go/deepseek-v4.1-flash`, started WITHOUT `--effort`. Its output is weaker: check at least 3 rows of every table, read every
@@ -44,19 +49,18 @@ RomFS and a file layer for mods.
 Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 to 3 are done except the open steps
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-2. Stage 4: steps 1 to 5, task A, A2, task B steps 0 and 1, task (c) (5c1dd1c), task (b) (5c3f76d) are DONE. The black screen is fixed (7becf0c),
-   30 fps steady (run 2026-11-09 14:36). Characters are shown (5c3f76d, run 2026-11-09 15:46). History: `OLD-WORK_PLAN.md`,
-   section "Task (b) done". NEXT: ask the user: task (a) or an open item below.
-   Task (a), later (decision of the user): the 11 `not translated` vertex shaders come only from the shipped pass, not from draws.
-   They change the prebuilt cache, not the picture. Do (2) `shader_hash` stops at the always run EXIT, before (1) `pipeline.c:449`.
-   Facts: `OLD-WORK_PLAN.md`, section "Session of 2026-11-09 (afternoon)", and `reports/explorer-shader-1.md`.
-   Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
-   buffer overflow in the init builders would crash).
-   Diagnostic code: `patches/diag-taskB.patch` (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`). Apply it only for a
-   diagnostic run, and remove it before a commit.
-   Known edges: a vertex buffer bind of size 0 is not sent (decision 7). Open for compute: gpr and sass bytes are 0, the rest of
-   cbuf 0 is zero, cbuf 2 textures are refused (no scene needed it yet).
-Open: the reviewer step of the depth and color view work (optional).
+Stage 4: the black screen is fixed, the game runs at 30 fps and the characters are shown (history: `OLD-WORK_PLAN.md`).
+NEXT: ask the user: task (a) or an open item below.
+- Task (a), later (decision of the user): the 11 `not translated` vertex shaders come only from the shipped pass, not from draws.
+  They change the prebuilt cache, not the picture. Do (2) `shader_hash` stops at the always run EXIT, before (1) `pipeline.c:449`.
+  Facts: `OLD-WORK_PLAN.md`, section "Session of 2026-11-09 (afternoon)", and `reports/explorer-shader-1.md`.
+- Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
+  buffer overflow in the init builders would crash).
+- Diagnostic code: `patches/diag-taskB.patch`. Apply it only for a diagnostic run, and remove it before a commit.
+- Known edges: a vertex buffer bind of size 0 is not sent (decision 7). Open for compute: gpr and sass bytes are 0, the rest of
+  cbuf 0 is zero, cbuf 2 textures are refused (no scene needed it yet).
+- Open: the reviewer step of the depth and color view work (optional).
+
 A writer patch can come as UTF-16 (PowerShell redirect): regenerate it with `git diff` in the worktree and `git apply --check` it.
 Read the patch, then build and run `ctest`, before you read the tests: the writers get float constants and keep masks wrong.
 
@@ -81,6 +85,9 @@ Notes:
   design choice).
 - Remove the test window (`imgui_test`, its Debug menu entry) at the end of the window work.
 - A commit that uses the code reviewer lists it: add the line `Co-Authored-By: GPT-6.1-Sol (Codex) <noreply@openai.com>`.
+- Not done yet: make `reports/brief-template.md` (the fixed rules, line ends and patch steps of the briefs) and a code map
+  `.claude/CODE_MAP.md` (function names and line numbers of `nvn_native.c`). The user checks `/context` for the 25k base and may
+  switch off the skills and MCP servers that the project does not use.
 
 ## Phase 7 input (the native keyboard and mouse input is done in the field, scenes left to test)
 
@@ -106,8 +113,7 @@ Facts: `docs/input-analysis.md`, `docs/camera-analysis.md`.
 
 ## How to work
 
-- Keep the context small (measured 2026-11-03: 58 calls read 8 million tokens, 91 percent of it in calls with more than 100k of
-  context; the base context is 25k). Rules:
+- Keep the context small (the measure is in `OLD-WORK_PLAN.md`; the base context is 25k). Rules:
   - One session for one step: (a) brief and launch, (b) review, build and commit of the patch, (c) log reading and analysis. Update
     "State" and "Next" at the end of each step, then tell the user to start a new session.
   - Read a patch with `git apply --stat` first, then `git diff -U0` or the added lines. Read a source file with `Grep` first, then
@@ -115,9 +121,6 @@ Facts: `docs/input-analysis.md`, `docs/camera-analysis.md`.
   - Read a log with `grep -v "host handler for"`, `head` or `tail`. Write long disassembly to a file and read the part that you need.
   - Work of more than 3 disassembly calls goes to the game explorer. Read its short report only.
   - Answers to the user are short: no table unless the user asks for it.
-  - At the start of the next session (not done yet): make `reports/brief-template.md` (the fixed rules, line ends and patch steps of
-    the briefs) and a code map `.claude/CODE_MAP.md` (function names and line numbers of `nvn_native.c`). The user checks `/context`
-    for the 25k base and may switch off the skills and MCP servers that the project does not use.
 - One request, one step. When a step is finished (an analysis, a patch, a build, a run), check the result, prepare the next step (brief, worktree) and stop. Do not start the next step until the user says so. Do not run several steps in one request: the user wants short turns.
 - Run `ctest` and every other CMake command only in the MSYS2 CLANG64 shell (the script below). In Git Bash, the test `runtime_architecture`
   configures `build/default` again with the wrong compiler, and the CMake cache is lost (no `-mcx16`, other LLVM tools, 1481 steps to
