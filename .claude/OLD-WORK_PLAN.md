@@ -2045,3 +2045,18 @@ Code writer 7c (brief `reports/brief-7c.md`, worktree `wt-7c`) wrote `patches/7c
   the PR template has a required "AI tools" field (if used, name the tools and models). Blank issues are off. Questions go to
   Discussions. The YAML was parsed with PyYAML (scratch venv).
 - On GitHub: Discussions are enabled, the label `graphics` is made (`#1D76DB`). The templates show on GitHub only after a push.
+
+## Review of the depth and color view work (2026-11-09, evening, commits a897e21 and 7e48157, moved from WORK_PLAN.md)
+
+- Code reviewer (Codex): brief `reports/brief-review-rt-views.md`, report `reports/review-rt-views-1.md`. Range `4690c52`,
+  `a4d649f`, `15648e5`, checked at HEAD. 5 findings, the 4 P2 findings verified in the code by the caller.
+- Code writer (OpenCode): brief `reports/brief-writer-rtfix.md`, report `reports/writer-rtfix-1.md`, patch
+  `patches/writer-rtfix-1.patch`. The worktree `wt-rtfix` was removed.
+- Fixes in `a897e21`: `rt_view_apply` refuses base_layer + layer_count > layout depth ("rt view layers", also for the clear and
+  copy paths). `rt_depth_words` refuses a depth word above 0xFFFF ("rt depth layers"). `rt_target_words` refuses a color view
+  target above NVN_TEXTURE_TARGET_BUFFER ("rt view target"); depth ignores TARGET. `replay_host_render_targets` logs the
+  omitted dependent block once (`LOG_LIMIT(1)`). The old comment "device+0x1A04 is unknown" is gone (it is 0).
+- Tests: 6 new tests, 3 old tests changed to real array textures. Build OK, `ctest` OK except `tracked_material`. Two mutants
+  caught: no factor fallback (4 checks fail), and no new refusals (all three fail). Exe md5 96ab1617 in the three copies.
+- Run 16:38 had `nvn_native=0` (the user had changed the ini), so it did not test the change. Run 16:40 with `nvn_native=1`:
+  no refusal, `depth target bound` once, no crash, 30 fps. The characters were missing again: see task (d) in WORK_PLAN.md.

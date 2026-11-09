@@ -6,7 +6,8 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 
 ## State
 
-- Last commit: `a897e21` (render target view refusals). NOT PUSHED: `9aa4635`, `a897e21`. `4e6b015` and older are PUSHED.
+- Last commit: the work plan update after `a897e21`. NOT PUSHED: `9aa4635`, `a897e21`, `7e48157` and the work plan updates.
+  `4e6b015` and older are PUSHED.
   History: `OLD-WORK_PLAN.md`, last two sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
 - GitHub: Discussions are on, the label `graphics` exists. The templates show only after the push.
@@ -48,8 +49,23 @@ RomFS and a file layer for mods.
 Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 to 3 are done except the open steps
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-Stage 4: the black screen is fixed, the game runs at 30 fps and the characters are shown (history: `OLD-WORK_PLAN.md`).
-NEXT: ask the user: task (a) or an open item below.
+Stage 4: the black screen is fixed and the game runs at 30 fps (history: `OLD-WORK_PLAN.md`).
+
+NEXT, task (d): the characters are missing again (REGRESSION, run 2026-11-09 16:40, exe `a897e21`, `nvn_native=1`).
+- User: the player, NPCs and Pokemon are not shown, and the broken vertices are back. Same symptom as before `5c3f76d`.
+- Log 16:40: no crash, 30 fps, 63 frame lines all `faults=0 dropped=0 missing=0`, about 600 draws a frame, no refusal of any
+  kind, `depth target bound` once, MME "transform feedback setup" at 18.72 s.
+- `a897e21` is NOT the cause: the only source change from the good exe `5c3f76d` is `a897e21`, and it changes output only
+  when it refuses. No refusal was logged, so the words are the same.
+- Most probable cause (not verified): the barrier fix `5c3f76d` is not complete, and the fault depends on timing. The fix was
+  confirmed by one run only (15:46). Mechanism of the bug: the skinning VS `24ba3b3c` writes the vertices by transform
+  feedback, the draw reads them, and without an ordering barrier the read can see old data.
+- Other differences (probably not the cause): the shader caches were made again at 16:37 by an `nvn_native=0` run (the build
+  is part of the key; the xfb state is part of the shader key, `pipeline.c:514`). The ini now has `vsync=2`, `fps_limit=30`.
+- Step 1: ask the user for 3 to 4 runs to the field with the same exe and `nvn_native=1`. If some runs show the characters,
+  the fault is timing. Step 2: a diagnostic log that shows if each Barrier op of the replay reaches `vkr_method_barrier`
+  (renderer.c:164) and records `vkCmdPipelineBarrier2` between the XFB draw and the draw that reads it.
+- After task (d): ask the user: task (a) or an open item below.
 - Task (a), later (decision of the user): the 11 `not translated` vertex shaders come only from the shipped pass, not from draws.
   They change the prebuilt cache, not the picture. Do (2) `shader_hash` stops at the always run EXIT, before (1) `pipeline.c:449`.
   Facts: `OLD-WORK_PLAN.md`, section "Session of 2026-11-09 (afternoon)", and `reports/explorer-shader-1.md`.
@@ -58,10 +74,6 @@ NEXT: ask the user: task (a) or an open item below.
 - Diagnostic code: `patches/diag-taskB.patch`. Apply it only for a diagnostic run, and remove it before a commit.
 - Known edges: a vertex buffer bind of size 0 is not sent (decision 7). Open for compute: gpr and sass bytes are 0, the rest of
   cbuf 0 is zero, cbuf 2 textures are refused (no scene needed it yet).
-- Review of the depth and color view work: DONE (`reports/review-rt-views-1.md`, 5 findings, fixed in `a897e21` by the code
-  writer). Build and `ctest` pass, mutants fail the new tests. NEXT: one game run (`nvn_native=1`, update program, title and
-  field), then read `frame N refusals:` for new `rt view layers`, `rt depth layers`, `rt view target`, and the line
-  `depth target bound`.
 
 A writer patch can come as UTF-16 (PowerShell redirect): regenerate it with `git diff` in the worktree and `git apply --check` it.
 Read the patch, then build and run `ctest`, before you read the tests: the writers get float constants and keep masks wrong.
