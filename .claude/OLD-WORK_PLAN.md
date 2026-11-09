@@ -2150,3 +2150,7 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   refused, 0 `not implemented`, no crash, normal exit at 69.8 s.
 - The diagnostic (render.c, renderer.c) is removed (saved as `patches/diag-taskD.patch`). The XFB fix is commit `8c6a511`.
   ctest passes except `tracked_material`. The exe in `game/` is `8c6a511` (md5 3c38c171), not run yet.
+
+## Session change after task (d) (2026-11-09, moved from WORK_PLAN.md)
+
+- Task (d) (missing characters, XFB block) is DONE: commit `8c6a511`. The sections above hold the history.
