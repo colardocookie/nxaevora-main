@@ -2060,3 +2060,43 @@ Code writer 7c (brief `reports/brief-7c.md`, worktree `wt-7c`) wrote `patches/7c
   caught: no factor fallback (4 checks fail), and no new refusals (all three fail). Exe md5 96ab1617 in the three copies.
 - Run 16:38 had `nvn_native=0` (the user had changed the ini), so it did not test the change. Run 16:40 with `nvn_native=1`:
   no refusal, `depth target bound` once, no crash, 30 fps. The characters were missing again: see task (d) in WORK_PLAN.md.
+
+## Task (d) cause found: no transform feedback state on the native path (2026-11-09, evening, moved from WORK_PLAN.md)
+
+NEXT, task (d): the characters are missing again (REGRESSION, run 2026-11-09 16:40, exe `a897e21`, `nvn_native=1`).
+- User: the player, NPCs and Pokemon are not shown, and the broken vertices are back. Same symptom as before `5c3f76d`.
+- Log 16:40: no crash, 30 fps, 63 frame lines all `faults=0 dropped=0 missing=0`, about 600 draws a frame, no refusal of any
+  kind, `depth target bound` once, MME "transform feedback setup" at 18.72 s.
+- `a897e21` is NOT the cause: the only source change from the good exe `5c3f76d` is `a897e21`, and it changes output only
+  when it refuses. No refusal was logged, so the words are the same.
+- Most probable cause (not verified): the barrier fix `5c3f76d` is not complete, and the fault depends on timing. The fix was
+  confirmed by one run only (15:46). Mechanism of the bug: the skinning VS `24ba3b3c` writes the vertices by transform
+  feedback, the draw reads them, and without an ordering barrier the read can see old data.
+- Other differences (probably not the cause): the shader caches were made again at 16:37 by an `nvn_native=0` run (the build
+  is part of the key; the xfb state is part of the shader key, `pipeline.c:514`). The ini now has `vsync=2`, `fps_limit=30`.
+- Step 1 DONE (runs 16:44, 16:47, 16:48, 16:49, logs in `logs/`): all 4 runs show the bug. The fault is NOT timing (it is
+  constant). The run 16:44 made all caches again (1380 shaders translated new, `nvn_native=1`) and shows the bug, so the old
+  shader cache is NOT the cause. No `rt view`/`rt depth` fault line, so `a897e21` is not the cause (diff read again).
+  Left: the ini (`vsync=2`, `fps_limit=30`, set after 15:46), or the good run 15:46 was wrong. No copy of the `5c3f76d` exe.
+  The user thinks that the ini did not change after 15:46 (not sure). So the most probable fact: the good run 15:46 was wrong
+  or had another cause, and `5c3f76d` does not fix the characters.
+  Step 2 BUILT (2026-11-09, not committed): diagnostic `patches/diag-taskD.patch` (render.c, renderer.c), exe md5 361c8c3e in
+  the game. Fact found: the Vulkan renderer itself puts a barrier before a draw that reads a pending XFB result (`gfx_gpu_src`,
+  buffer.c:946, `copy_barrier`), so the NVN barrier words are probably not needed for this order. Lines: `diag-xfb` (each
+  capture: vs hash, address, size, ctl 0x1C0, layout 0xA00), `diag-read` (a vertex stream over a captured range: same_buf=1
+  means it reads the XFB result on the GPU), `diag-sum` (each 30th frame: xfb draws, reads, method_barrier kinds 0 to 5).
+  Asked the user for 2 runs to the field: `nvn_native=1`, then `nvn_native=0` (good picture). Compare the two logs (`logs/`).
+  Remove the diagnostic before a commit.
+  Step 2 RESULT (runs 16:57 native = `logs/2026-11-09_16-57-56.log`, 16:59 non-native = the main log; the user named them the
+  other way round): native has 0 `diag-xfb` and 0 `diag-read` lines, so NO transform feedback capture happens at all.
+  Non-native: 60 `diag-xfb` from frame 393, vs `24ba3b3c`, 3 buffers, ctl (0x1C0..0x1C2) = 0,3,0xC / 0,1,4 / 0,1,4,
+  layout 0xA00 = 0x00222120 / 0x24 / 0x28, r1D1=1. CAUSE: the host program builder (`nvn_program_build_words`,
+  nvn_params.c:1247) does not write the transform feedback block of the library builder: `reports/analyst-prog-builder-1.md`
+  section 5 (the analyst guessed "0 of 64 programs use it": wrong). The renderer skips a buffer when 0x1C1 and 0x1C2 are 0
+  (render.c, the xbound loop), so the skinning output is never written and the draws read old memory.
+  The barrier fix `5c3f76d` is not the cause and not the fix (the renderer orders XFB reads itself: `gfx_gpu_src`).
+  NEXT (task (d) step 3): verify the TF block in the disassembly (blob+0x600..0x610, the packing loop d854c08..d854d90, the
+  header getter that fills the blob), write the brief, the code writer adds the block to the host builder (with a test from the
+  values above), build, ctest, then one native run with the diagnostic: `diag-xfb` lines must match the non-native ones.
+  Old step 2 text: a diagnostic log that shows if each Barrier op of the replay reaches `vkr_method_barrier`
+  (renderer.c:164) and records `vkCmdPipelineBarrier2` between the XFB draw and the draw that reads it.

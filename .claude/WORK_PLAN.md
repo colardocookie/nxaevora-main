@@ -6,15 +6,15 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 
 ## State
 
-- Last commit: the work plan update after `a897e21`. NOT PUSHED: `9aa4635`, `a897e21`, `7e48157` and the work plan updates.
+- Last commit: the work plan update of task (d). NOT PUSHED: `9aa4635`, `a897e21`, `7e48157` and the work plan updates.
   `4e6b015` and older are PUSHED.
   History: `OLD-WORK_PLAN.md`, last two sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
 - GitHub: Discussions are on, the label `graphics` exists. The templates show only after the push.
-- The exe in `game/` is from `a897e21` (md5 96ab1617). The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is `48898a1` plus the diagnostic of task (d) (md5 361c8c3e). The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
-  `nvn_trace=1` (not needed, the user may set 0), `nvn_native=1`, `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
+  `nvn_trace=0`, `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
 - GitHub PRs #2 to #6 (opt-in 60/120 fps clocks, colardocookie) and issue #7 (a contributor offer): ON HOLD, frame rate is later
   work. The user replies to them. Facts: `OLD-WORK_PLAN.md`, section "PR #1 NVN part taken".
 - Scratchpad: `C:/Users/Azunel/AppData/Roaming/orca/chat-scratch/f41e32fc08995f90ab471cdfd0b7bdb8` (`analysis/` holds disassembly
@@ -51,20 +51,23 @@ below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions
 
 Stage 4: the black screen is fixed and the game runs at 30 fps (history: `OLD-WORK_PLAN.md`).
 
-NEXT, task (d): the characters are missing again (REGRESSION, run 2026-11-09 16:40, exe `a897e21`, `nvn_native=1`).
-- User: the player, NPCs and Pokemon are not shown, and the broken vertices are back. Same symptom as before `5c3f76d`.
-- Log 16:40: no crash, 30 fps, 63 frame lines all `faults=0 dropped=0 missing=0`, about 600 draws a frame, no refusal of any
-  kind, `depth target bound` once, MME "transform feedback setup" at 18.72 s.
-- `a897e21` is NOT the cause: the only source change from the good exe `5c3f76d` is `a897e21`, and it changes output only
-  when it refuses. No refusal was logged, so the words are the same.
-- Most probable cause (not verified): the barrier fix `5c3f76d` is not complete, and the fault depends on timing. The fix was
-  confirmed by one run only (15:46). Mechanism of the bug: the skinning VS `24ba3b3c` writes the vertices by transform
-  feedback, the draw reads them, and without an ordering barrier the read can see old data.
-- Other differences (probably not the cause): the shader caches were made again at 16:37 by an `nvn_native=0` run (the build
-  is part of the key; the xfb state is part of the shader key, `pipeline.c:514`). The ini now has `vsync=2`, `fps_limit=30`.
-- Step 1: ask the user for 3 to 4 runs to the field with the same exe and `nvn_native=1`. If some runs show the characters,
-  the fault is timing. Step 2: a diagnostic log that shows if each Barrier op of the replay reaches `vkr_method_barrier`
-  (renderer.c:164) and records `vkCmdPipelineBarrier2` between the XFB draw and the draw that reads it.
+NEXT, task (d) step 3: the characters are missing because NO transform feedback capture happens on the native path.
+- Cause (found 2026-11-09 with a diagnostic, history in `OLD-WORK_PLAN.md`, last section): the host program builder
+  (`nvn_program_build_words`, nvn_params.c:1247) does not write the transform feedback block of the library builder
+  (`reports/analyst-prog-builder-1.md` section 5; the analyst guessed "0 of 64 programs use it": wrong). The renderer skips an
+  XFB buffer when 0x1C1 and 0x1C2 are 0 (render.c, the xbound loop), so the skinning VS `24ba3b3c` writes nothing and the
+  draws read old memory. The barrier fix `5c3f76d` is not the cause and not the fix (the renderer orders XFB reads itself).
+- The good values (non-native run, `diag-xfb`): 3 buffers, 0x1C0+4i..+2 = {0,3,0xC} / {0,1,4} / {0,1,4}, layout 0xA00+0x20i
+  first word = 0x00222120 / 0x00000024 / 0x00000028, then 0. The analyst: header `0x20030000|(0x1C0+4i)` with
+  `{blob[0x608+i], n_i>>2, n_i}`, `n_i = u16 blob[0x600+2i]`, and if `n_i != 0` the layout run at 0xA00+0x20i of ceil(w19/4)
+  words, from the packing loop d854c08..d854d90 (`blob[0x80i]`, `blob[0x80i+0x200]`, `blob[0x80i+0x400]`, components
+  `u8 blob[0x60c+i]`). Condition `blob+0x610 != 0`. The blob is the 0x612 byte header blob at descriptor+0x14 (d836b30).
+- Steps (one per session): (1) verify the block in the disassembly (the condition, the loop, how the host gets the blob in
+  `h_program_set_shaders_ext`, nvn_native.c:1261) and write the brief `reports/brief-writer-xfb-prog.md`; (2) the code writer
+  adds the block (test with the values above), the caller reads the patch, builds, runs ctest; (3) one native run to the
+  field: the `diag-xfb` lines must match the non-native ones and the characters must show; then remove the diagnostic and commit.
+- Diagnostic (NOT committed, in the working tree now): `patches/diag-taskD.patch` (render.c, renderer.c). Lines `diag-xfb`,
+  `diag-read`, `diag-sum`. Keep it for step (3). Do not commit it: stage files by name.
 - After task (d): ask the user: task (a) or an open item below.
 - Task (a), later (decision of the user): the 11 `not translated` vertex shaders come only from the shipped pass, not from draws.
   They change the prebuilt cache, not the picture. Do (2) `shader_hash` stops at the always run EXIT, before (1) `pipeline.c:449`.
