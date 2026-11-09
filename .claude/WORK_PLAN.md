@@ -67,15 +67,12 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
   Decision of the user (2026-11-09): the trace of the enum argument values (the missing part of 4-u1) comes after U1.
-  Current step: U1 step b2, not started. Step b1 is done (`2c2b25e`, history in `OLD-WORK_PLAN.md`).
-  - b2: a game explorer finds the device words that 4 functions read (decision 1 of the user, 2026-11-10):
-    TextureBuilderGetStorageClass, TextureGetStorageClass and both GetZCullStorageSize read device +0x970/+0x978 (and
-    d83563c/d950f80), +0xb8..+0xdc and +0x1a08. The host device model gets these words. Until then the 4 stay stub-log.
-    b2 analysis done (2026-11-10): `reports/explorer-devwords2-1.md`. Checked in the disassembly: d830fc0 reads only
-    +0x1a08, d8358c4 copies the ZCULL_GET_INFO reply to +0xb8..+0xdc (our values `gm20b_zcull_info`, `nvdrv.c:1366`),
-    +0x1a08 record = de08020 (1, 0x22555555, 0xff222222, ~0). The kind table (part b) comes from a unicorn run, not checked.
-    Open: +0x1b1c (devwords-1 says 0, this report says a selftest read 1), helpers d868c8c/d869188 (flags bit 7 path).
-    Next session: decide these 2 points with the user, then a brief for the handler writer.
+  Current step: U1 step b2, analysis done (`reports/explorer-devwords2-1.md`, history in `OLD-WORK_PLAN.md`), handlers not
+  written. The 4 functions (TextureBuilderGetStorageClass, TextureGetStorageClass, both GetZCullStorageSize) stay stub-log.
+  - b2 next: (1) check 3 rows of the kind table (part b) and the block formula (part c) in the disassembly. (2) Ask the user
+    about 2 open points: device +0x1b1c (`explorer-devwords-1.md` says 0, the new report says a selftest read 1), and the
+    flags bit 7 path (helpers d868c8c/d869188 have no closed formula: stop with a log line, or more analysis). (3) Brief for
+    the handler writer (host device words +0xb8..+0xe4, +0x1a08 record, kind table).
   - b3: the 3 functions that the writer left out: TextureBuilderGetSparseTileLayout and TextureGetSparseTileLayout (helpers
     d822538 and d869e10 not verified), TextureGetViewOffset (level and 3D slice offset of d83d01c not checked against
     `texture_level_offset`).

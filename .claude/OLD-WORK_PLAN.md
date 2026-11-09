@@ -2217,3 +2217,12 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   sample location NaN takes 0.9375 (fminnm, d83b734, checked in d83b530..d83b768); a uint8_t test constant.
 - Only the pure parts have unit tests (no test links `nvn_native.c`). 9 mutants, all killed. `ctest`: only `tracked_material`
   fails (known). Commit `2c2b25e`: 105 handlers, coverage 379 implemented, 144 stub-log. Exe md5 6a1fd3c9. No game run.
+
+## Task (u) U1 step (b2) analysis done (2026-11-10, moved from WORK_PLAN.md)
+
+- Brief `reports/brief-explorer-devwords2.md`, game explorer (opencode, DeepSeek V4.1 Flash), report
+  `reports/explorer-devwords2-1.md`. Commit `Record the U1 step (b2) device word analysis`.
+- Checked in the disassembly: d830fc0 is `ldr w8,[x0,#0x1a08]; cmp; cset` (not a device query). d8358c4 (d835a44..d835a9c)
+  copies the ZCULL_GET_INFO reply (+0x238..+0x25c) to device +0xb8..+0xdc and the ZCULL ctx size (+0x230) to +0xe0. Our
+  values: `gm20b_zcull_info` (`nvdrv.c:1366`). Device +0x1a08 is a value record from de08020 (1, 0x22555555, 0xff222222, ~0).
+- Not checked: the kind table of d83563c (part b, from a unicorn run) and the block formula of d869610 (part c).
