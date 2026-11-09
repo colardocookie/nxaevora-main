@@ -6,12 +6,11 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 
 ## State
 
-- Last commit: the work plan update after `4e6b015` (issue and PR templates). NOT PUSHED: `2de86ee`, `6a3dfc5`, `5c3f76d`,
-  `1c5cfea`, `4e6b015` and the work plan update. `5c1dd1c`
-  and older are PUSHED. History: `OLD-WORK_PLAN.md`, last two sections.
+- Last commit: `a897e21` (render target view refusals). NOT PUSHED: `9aa4635`, `a897e21`. `4e6b015` and older are PUSHED.
+  History: `OLD-WORK_PLAN.md`, last two sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
 - GitHub: Discussions are on, the label `graphics` exists. The templates show only after the push.
-- The exe in `game/` is from `5c3f76d` (md5 d4021300). The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is from `a897e21` (md5 96ab1617). The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=1` (not needed, the user may set 0), `nvn_native=1`, `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -59,7 +58,10 @@ NEXT: ask the user: task (a) or an open item below.
 - Diagnostic code: `patches/diag-taskB.patch`. Apply it only for a diagnostic run, and remove it before a commit.
 - Known edges: a vertex buffer bind of size 0 is not sent (decision 7). Open for compute: gpr and sass bytes are 0, the rest of
   cbuf 0 is zero, cbuf 2 textures are refused (no scene needed it yet).
-- Open: the reviewer step of the depth and color view work (optional).
+- Review of the depth and color view work: DONE (`reports/review-rt-views-1.md`, 5 findings, fixed in `a897e21` by the code
+  writer). Build and `ctest` pass, mutants fail the new tests. NEXT: one game run (`nvn_native=1`, update program, title and
+  field), then read `frame N refusals:` for new `rt view layers`, `rt depth layers`, `rt view target`, and the line
+  `depth target bound`.
 
 A writer patch can come as UTF-16 (PowerShell redirect): regenerate it with `git diff` in the worktree and `git apply --check` it.
 Read the patch, then build and run `ctest`, before you read the tests: the writers get float constants and keep masks wrong.
