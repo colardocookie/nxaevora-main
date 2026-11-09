@@ -71,6 +71,11 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   - b2: a game explorer finds the device words that 4 functions read (decision 1 of the user, 2026-11-10):
     TextureBuilderGetStorageClass, TextureGetStorageClass and both GetZCullStorageSize read device +0x970/+0x978 (and
     d83563c/d950f80), +0xb8..+0xdc and +0x1a08. The host device model gets these words. Until then the 4 stay stub-log.
+    b2 analysis done (2026-11-10): `reports/explorer-devwords2-1.md`. Checked in the disassembly: d830fc0 reads only
+    +0x1a08, d8358c4 copies the ZCULL_GET_INFO reply to +0xb8..+0xdc (our values `gm20b_zcull_info`, `nvdrv.c:1366`),
+    +0x1a08 record = de08020 (1, 0x22555555, 0xff222222, ~0). The kind table (part b) comes from a unicorn run, not checked.
+    Open: +0x1b1c (devwords-1 says 0, this report says a selftest read 1), helpers d868c8c/d869188 (flags bit 7 path).
+    Next session: decide these 2 points with the user, then a brief for the handler writer.
   - b3: the 3 functions that the writer left out: TextureBuilderGetSparseTileLayout and TextureGetSparseTileLayout (helpers
     d822538 and d869e10 not verified), TextureGetViewOffset (level and 3D slice offset of d83d01c not checked against
     `texture_level_offset`).
