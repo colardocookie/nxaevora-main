@@ -2193,3 +2193,13 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 - Tasks (a) and (b) are closed (sections "Task (a) step 2 done, task (a) closed" and "Task (b) done" above).
 - The State of WORK_PLAN.md said "NOT PUSHED: 9aa4635 and later". Wrong: 19b6d35 and older were pushed. Corrected.
 - User chose task (u), the 249 unobserved functions. Plan U1 to U5 in WORK_PLAN.md, "Next".
+
+## Task (u) U1 step (a) done (2026-11-10, moved from WORK_PLAN.md)
+
+- Nine library analyst runs (opencode, DeepSeek V4.1 Flash), 2 at a time: briefs `reports/brief-analyst-u1-common.md` and
+  `brief-analyst-u1-{A..I}.md`, tables `reports/analyst-u1-{A..I}-1.md`, 118 functions (A SamplerBuilder, B Sampler and
+  SamplerPool, C and D TextureBuilder, E and F Texture, TexturePool, Buffer, G MemoryPool and BlendState advanced, H Window,
+  I Event builder and MultisampleState sample locations).
+- 3 to 6 rows of each table checked in the disassembly, all equal. One error: D gives host `tile` at 0x60 (0x5c).
+- The enum argument trace (missing part of 4-u1) comes after U1 (user, 2026-11-09). Commit `Record the U1 library tables`.
+
