@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - NOT PUSHED: `9aa4635` and all later commits (`a897e21` is code, the others are work plan updates).
   `4e6b015` and older are PUSHED. History: `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is `a8c7a09` plus the XFB patch (not committed) plus the diagnostic of task (d) (md5 f0c83b01). The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is `8c6a511` (md5 3c38c171), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=0`, `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -47,15 +47,11 @@ RomFS and a file layer for mods.
 Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 to 3 are done except the open steps
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-NEXT, task (d) step 3: the characters were missing because the host program builder did not write the transform feedback (XFB)
-block. The fix is in the working tree (NOT committed, `patches/xfb-prog-2.patch`, 6 files). History of the cause and of steps 1 and
-2: `OLD-WORK_PLAN.md`, last sections.
-- Step 3 (this session): ask the user for one native run to the field (`nvn_native=1` is set), then read the log. The `diag-xfb` lines must match the non-native ones
-  (0x1C0+4i = {0,3,0xC} / {0,1,4} / {0,1,4}, 0xA00+0x20i = 0x00222120 / 0x24 / 0x28) and the characters must show. Also look for
-  `program ... refused: transform feedback`. Then remove the diagnostic (render.c, renderer.c) and commit the XFB files by name.
-- Diagnostic (NOT committed, in the working tree now): `patches/diag-taskD.patch` (render.c, renderer.c). Lines `diag-xfb`,
-  `diag-read`, `diag-sum`. Keep it for step (3). Do not commit it: stage files by name.
-- After task (d): ask the user: task (a) or an open item below.
+Task (d) is DONE (2026-11-09): the XFB fix is commit `8c6a511`. Native run to the field: the characters show (user), the
+`diag-xfb` values of the 3 buffers match the non-native ones, 0 refused programs, no crash. The diagnostic is removed (saved as
+`patches/diag-taskD.patch`). The exe in `game/` is `8c6a511` (md5 3c38c171). History: `OLD-WORK_PLAN.md`, last sections.
+
+NEXT: ask the user: task (a) or an open item below.
 - Task (a), later (decision of the user): the 11 `not translated` vertex shaders come only from the shipped pass, not from draws.
   They change the prebuilt cache, not the picture. Do (2) `shader_hash` stops at the always run EXIT, before (1) `pipeline.c:449`.
   Facts: `OLD-WORK_PLAN.md`, section "Session of 2026-11-09 (afternoon)", and `reports/explorer-shader-1.md`.
