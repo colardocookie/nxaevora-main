@@ -2187,3 +2187,9 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   when no cbuf read succeeded (6 + 4). Step 2 changes the draw: a shipped entry with no read matches every draw, so the runtime
   PC switch replaces the draw-time translation. Ask the user for a run after step 2. One commit for each step.
 - Commit of step 2: "Keep a shipped shader when none of its constant buffer reads succeeded". User: task (a) closed.
+
+## Session of 2026-11-09 (night): task (u) planned (moved from WORK_PLAN.md)
+
+- Tasks (a) and (b) are closed (sections "Task (a) step 2 done, task (a) closed" and "Task (b) done" above).
+- The State of WORK_PLAN.md said "NOT PUSHED: 9aa4635 and later". Wrong: 19b6d35 and older were pushed. Corrected.
+- User chose task (u), the 249 unobserved functions. Plan U1 to U5 in WORK_PLAN.md, "Next".

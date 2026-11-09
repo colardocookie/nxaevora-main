@@ -47,8 +47,6 @@ RomFS and a file layer for mods.
 Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 to 3 are done except the open steps
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-Tasks (a) and (b) are closed (`OLD-WORK_PLAN.md`, sections "Task (a) step 2 done, task (a) closed" and "Task (b) done").
-
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
   4-u4. `docs/nvn-coverage.md`: 249 rows of G10 are `stub-log`. Groups (one commit each), in this order:
   - U1 getters and builders (about 110): Sampler, Texture, Buffer, MemoryPool, Window, pool and Event getters and builders,
