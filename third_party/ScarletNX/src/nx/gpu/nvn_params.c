@@ -1329,6 +1329,65 @@ int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint
 
 int nvn_word_stream_complete(const NvnWordStream* s) { return s && s->remaining == 0; }
 
+/* The words of nvnCommandBufferBarrier (sdk d856590), in order (docs/nvn-design.md, decision 6, item "Barrier"). */
+#define NVN_BARRIER_WORD_FIRST        0x910E0002u
+#define NVN_BARRIER_WORD_LAST         0x91000002u
+#define NVN_BARRIER_WORD_REF_CNT      0x80000014u
+#define NVN_BARRIER_WORD_3D_BARRIER   0x80000040u
+#define NVN_BARRIER_WORD_WAIT_IDLE    0x80000044u
+#define NVN_BARRIER_WORD_FRAGMENT     0x80000378u
+#define NVN_BARRIER_WORD_TILED        0x800003DFu
+#define NVN_BARRIER_WORD_INVALIDATE   0x800003DDu
+#define NVN_BARRIER_WORD_4A2          0x800004A2u
+#define NVN_BARRIER_WORD_SHADER_CACHE 0x90110369u
+#define NVN_BARRIER_WORD_TEX_HEADER   0x8000050Au
+#define NVN_BARRIER_WORD_SAMPLER      0x80000509u
+#define NVN_BARRIER_WORD_4B2          0x801904B2u
+#define NVN_BARRIER_WORD_MEM_REF      0x8000C014u
+#define NVN_BARRIER_WORD_MEM_OP_B     0x2001C00Bu
+#define NVN_BARRIER_WORD_MEM_OP_16    0x80000000u
+#define NVN_BARRIER_WORD_MEM_OP_14    0x70000000u
+
+uint32_t nvn_barrier_words(uint32_t bits, uint32_t device_byte, uint32_t* words, uint32_t cap) {
+    uint32_t out[NVN_BARRIER_WORDS_MAX];
+    uint32_t count = 0;
+    int sent_fragment_or_tiled = 0;
+    out[count++] = NVN_BARRIER_WORD_FIRST;
+    if (bits & (1u << 3)) {
+        out[count++] = NVN_BARRIER_WORD_REF_CNT;
+        out[count++] = NVN_BARRIER_WORD_3D_BARRIER;
+    } else if (bits & (1u << 0)) {
+        out[count++] = NVN_BARRIER_WORD_WAIT_IDLE;
+    } else if (bits & (1u << 1)) {
+        out[count++] = NVN_BARRIER_WORD_FRAGMENT;
+        sent_fragment_or_tiled = 1;
+    } else if (bits & (1u << 2)) {
+        out[count++] = NVN_BARRIER_WORD_TILED;
+        sent_fragment_or_tiled = 1;
+    }
+    if (bits & (1u << 4))
+        out[count++] = sent_fragment_or_tiled ? NVN_BARRIER_WORD_INVALIDATE : NVN_BARRIER_WORD_4A2;
+    if (bits & (1u << 5)) out[count++] = NVN_BARRIER_WORD_SHADER_CACHE;
+    if (bits & (1u << 6)) {
+        out[count++] = NVN_BARRIER_WORD_TEX_HEADER;
+        out[count++] = NVN_BARRIER_WORD_SAMPLER;
+    }
+    if (bits & (1u << 7)) out[count++] = NVN_BARRIER_WORD_4B2;
+    if (bits & (1u << 8)) {
+        out[count++] = NVN_BARRIER_WORD_MEM_REF;
+        if (device_byte) {
+            out[count++] = NVN_BARRIER_WORD_MEM_OP_B;
+            out[count++] = NVN_BARRIER_WORD_MEM_OP_16;
+        }
+        out[count++] = NVN_BARRIER_WORD_MEM_OP_B;
+        out[count++] = NVN_BARRIER_WORD_MEM_OP_14;
+    }
+    out[count++] = NVN_BARRIER_WORD_LAST;
+    if (!words || count > cap) return 0;
+    memcpy(words, out, count * sizeof out[0]);
+    return count;
+}
+
 /* The pushbuffer command header (pushbuffer.h): type in bits 31:29, count in 28:16, subchannel in 15:13, method in
    12:0. Types 1, 3, 4 and 5 carry method words; type 0 is a no-op. */
 #define NVN_PUSHBUF_TYPE_SHIFT 29u

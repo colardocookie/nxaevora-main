@@ -1067,7 +1067,10 @@ unknown part stops with a log line.
      The builder is a pure function in `nvn_params.c` (bits in, words out) with a test. The host sends a word with a method below
      0x40 to the puller (`gpu_channel_method`), on any subchannel, and a 3D method to `maxwell3d_method`. The range records of bit 3
      are not words: they split the command memory of the library into GPFIFO entries. The host has no GPFIFO on this path, so it
-     does not make them. The bit counters for the log stay. The value of the device byte +0x60 is open: read it before step 2.
+     does not make them. The bit counters for the log stay. The device byte +0x60 is always 1: device init calls d835630 at d831164,
+     which fills a stack record (d8358c4 writes 1 at +0x60 at d835980, with no branch), and copies record +0x0 to +0x6F to the
+     device (`stp q3, q2, [x19, #0x50]` at d8311b8). So bit 8 always sends the two `MEM_OP_B` pairs. The host uses a named
+     constant 1.
 7. **Pool mapping.** The renderer reads render targets and textures by GPU address, so every pool needs a page table entry from the
    first use. `gmmu_map` is public in `nvdrv.h`. The unmap (`gmmu_unmap` plus `gmap_cut` and the allocator) is not. Decision: add one
    small function pair to `nvdrv` (`nvn_gpu_map_range`, `nvn_gpu_unmap_range`) with a row in `docs/runtime-changes.md`. The host

@@ -39,6 +39,10 @@
 #define NVN_REPLAY_CLIP_HI_MAX 0xFFFFu
 
 #define NVN_REPLAY_BARRIER_BITS 9u
+/* The device byte at +0x60 is always 1: device init writes it at d835980 and no branch changes it. */
+#define NVN_REPLAY_BARRIER_DEVICE_BYTE 1u
+/* The first method that is not a puller method (gpu.c's PULLER_NON_PULLER_METHODS, in a private header). */
+#define NVN_REPLAY_PULLER_METHOD_LIMIT 0x40u
 
 #define NVN_REPLAY_STENCIL_REF_FRONT        0x4E5u
 #define NVN_REPLAY_STENCIL_REF_BACK         0x3D5u
@@ -187,9 +191,37 @@ static int replay_clear(const NvnReplayEnv* env, NvnReplayStats* stats, const Nv
 }
 
 static int replay_barrier(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpBarrier* op) {
-    (void)env;
     for (uint32_t bit = 0; bit < NVN_REPLAY_BARRIER_BITS; bit++)
         if (op->bits & (1u << bit)) stats->barrier_bits[bit]++;
+    if (!env->puller_method) {
+        replay_fault(env, stats, "barrier puller", op->bits);
+        return 0;
+    }
+    uint32_t words[NVN_BARRIER_WORDS_MAX];
+    uint32_t count = nvn_barrier_words(op->bits, NVN_REPLAY_BARRIER_DEVICE_BYTE, words, NVN_BARRIER_WORDS_MAX);
+    if (!count) {
+        replay_fault(env, stats, "barrier words", op->bits);
+        return 0;
+    }
+    NvnWordStream stream = {0};
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t method, value;
+        int last;
+        int result = nvn_word_stream_next(&stream, words[i], &method, &value, &last);
+        if (result < 0) {
+            replay_fault(env, stats, "barrier stream", i);
+            return 0;
+        }
+        if (result == 0) continue;
+        if (method < NVN_REPLAY_PULLER_METHOD_LIMIT)
+            env->puller_method(env->ctx, stream.subchannel, method, value);
+        else
+            replay_method(env, stats, method, value);
+    }
+    if (!nvn_word_stream_complete(&stream)) {
+        replay_fault(env, stats, "barrier open", 0);
+        return 0;
+    }
     return 1;
 }
 

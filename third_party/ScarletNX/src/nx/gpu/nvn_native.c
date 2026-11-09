@@ -3223,6 +3223,9 @@ static void h_command_buffer_bind_images(CPU* c, u64 entry) {
 static void replay_host_method(void* ctx, uint32_t m, uint32_t v) {
     maxwell3d_method(((NvnNativeReplayHost*)ctx)->channel, m, v, REPLAY_METHOD_LAST);
 }
+static void replay_host_puller_method(void* ctx, uint32_t sub, uint32_t m, uint32_t v) {
+    gpu_channel_method(((NvnNativeReplayHost*)ctx)->channel, sub, m, v, REPLAY_METHOD_LAST);
+}
 static uint32_t replay_host_read_register(void* ctx, uint32_t m) {
     const GpuChannel* ch = ((NvnNativeReplayHost*)ctx)->channel;
     return m < GPU_ENGINE_METHODS ? ch->r3d[m] : 0;
@@ -3991,7 +3994,8 @@ void nvn_native_replay_env(NvnNativeReplayHost* host, int window_origin_flip, Nv
                           .bind_vertex_attrib = replay_host_bind_vertex_attrib,
                           .bind_vertex_stream = replay_host_bind_vertex_stream,
                           .render_targets = replay_host_render_targets, .gpu_op = replay_host_gpu_op,
-                          .fault = replay_host_fault, .window_origin_flip = window_origin_flip};
+                          .fault = replay_host_fault, .window_origin_flip = window_origin_flip,
+                          .puller_method = replay_host_puller_method};
 }
 
 /* G4: window and sync state stays in host records; guest object bytes stay untouched. */

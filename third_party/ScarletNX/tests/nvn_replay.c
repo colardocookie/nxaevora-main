@@ -23,12 +23,15 @@ enum {
 };
 
 typedef struct { uint32_t method, value; } MockWrite;
+typedef struct { uint32_t subchannel, method, value; } MockPuller;
 typedef struct { uint64_t handle; const NvnOpList* list; } MockList;
 typedef struct { NvnOpCode op; uint64_t pool, base; uint32_t count; } MockPool;
 
 typedef struct {
     MockWrite writes[MOCK_MAX_WRITES];
     uint32_t write_count;
+    MockPuller pullers[MOCK_MAX_WRITES];
+    uint32_t puller_count;
     uint32_t reg;
     int render_targets_ok;
     MockList lists[MOCK_MAX_LISTS];
@@ -81,6 +84,12 @@ static void mock_method(void* ctx, uint32_t method, uint32_t value) {
     Mock* k = ctx;
     if (k->write_count < MOCK_MAX_WRITES)
         k->writes[k->write_count++] = (MockWrite){method, value};
+}
+
+static void mock_puller_method(void* ctx, uint32_t subchannel, uint32_t method, uint32_t value) {
+    Mock* k = ctx;
+    if (k->puller_count < MOCK_MAX_WRITES)
+        k->pullers[k->puller_count++] = (MockPuller){subchannel, method, value};
 }
 
 static uint32_t mock_read_register(void* ctx, uint32_t method) {
@@ -226,6 +235,7 @@ static NvnReplayEnv make_env(Mock* k) {
     memset(&env, 0, sizeof env);
     env.ctx = k;
     env.method = mock_method;
+    env.puller_method = mock_puller_method;
     env.read_register = mock_read_register;
     env.find_list = mock_find_list;
     env.descriptor_pool = mock_descriptor_pool;
@@ -646,7 +656,57 @@ static void test_barrier(void) {
     nvn_replay_list(&env, &l, &st);
     CHECK(st.barrier_bits[0] == 1 && st.barrier_bits[3] == 1 && st.barrier_bits[8] == 1);
     CHECK(st.barrier_bits[1] == 0 && st.barrier_bits[7] == 0);
+    /* bit 3 sends REF_CNT (puller) and method 0x40 (3D); bit 8 sends puller words only */
+    CHECK(st.replayed[NVN_OP_BARRIER] == 1 && st.methods == 1 && st.faults == 0);
+    CHECK(k.puller_count == 6);
+    nvn_oplist_free(&l);
+}
+
+static void test_barrier_bit0(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpBarrier op = {1u << 0, 0u};
+    CHECK(nvn_oplist_append(&l, NVN_OP_BARRIER, &op, sizeof op));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.replayed[NVN_OP_BARRIER] == 1 && st.methods == 1 && st.faults == 0);
+    CHECK(has_write(&k, 0x44u, 0u));
+    CHECK(k.puller_count == 2);
+    CHECK(k.pullers[0].subchannel == 0 && k.pullers[0].method == 2u && k.pullers[0].value == 0x110Eu);
+    CHECK(k.pullers[1].subchannel == 0 && k.pullers[1].method == 2u && k.pullers[1].value == 0x1100u);
+    nvn_oplist_free(&l);
+}
+
+static void test_barrier_bit8(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpBarrier op = {1u << 8, 0u};
+    CHECK(nvn_oplist_append(&l, NVN_OP_BARRIER, &op, sizeof op));
+    nvn_replay_list(&env, &l, &st);
     CHECK(st.replayed[NVN_OP_BARRIER] == 1 && st.methods == 0 && st.faults == 0);
+    CHECK(k.puller_count == 5);
+    CHECK(k.pullers[0].subchannel == 0 && k.pullers[0].method == 2u);
+    CHECK(k.pullers[1].subchannel == 6 && k.pullers[1].method == 0x14u);
+    CHECK(k.pullers[2].subchannel == 6 && k.pullers[2].method == 0x0Bu && k.pullers[2].value == 0x80000000u);
+    CHECK(k.pullers[3].subchannel == 6 && k.pullers[3].method == 0x0Bu && k.pullers[3].value == 0x70000000u);
+    CHECK(k.pullers[4].subchannel == 0 && k.pullers[4].method == 2u);
+    nvn_oplist_free(&l);
+}
+
+static void test_barrier_null_puller(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpBarrier op = {1u << 0, 0u};
+    env.puller_method = NULL;
+    CHECK(nvn_oplist_append(&l, NVN_OP_BARRIER, &op, sizeof op));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.replayed[NVN_OP_BARRIER] == 0 && st.faults == 1 && st.barrier_bits[0] == 1);
+    CHECK(k.last_fault && !strcmp(k.last_fault, "barrier puller"));
     nvn_oplist_free(&l);
 }
 
@@ -1225,7 +1285,7 @@ static void test_call_live(void) {
     mock_add_list(&k, 0x100u, &target);
     nvn_replay_list(&env, &top, &st);
     CHECK(st.replayed[NVN_OP_CALL] == 1 && st.replayed[NVN_OP_BARRIER] == 1);
-    CHECK(st.faults == 0 && st.methods == 0);
+    CHECK(st.faults == 0 && st.methods == 1);
     nvn_oplist_free(&top);
     nvn_oplist_free(&target);
 }
@@ -1497,6 +1557,9 @@ int main(void) {
     test_bind_buffer();
     test_bind_state();
     test_barrier();
+    test_barrier_bit0();
+    test_barrier_bit8();
+    test_barrier_null_puller();
     test_stencil_ref();
     test_stencil_face_and_value_mask();
     test_stencil_kinds();

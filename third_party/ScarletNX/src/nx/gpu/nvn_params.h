@@ -661,6 +661,13 @@ int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint
 /* 1 when no run is left open (remaining 0), so the array ended on a method call. */
 int nvn_word_stream_complete(const NvnWordStream* s);
 
+/* The words that nvnCommandBufferBarrier writes, in order (docs/nvn-design.md, decision 6, item "Barrier"). The bit 3
+   range records are not words: they split the library's command memory, not this stream. Bits 9 to 31 are ignored. */
+#define NVN_BARRIER_WORDS_MAX 14u
+/* Fills words with at most cap words and returns the count. Returns 0 and writes nothing when words is NULL or cap is
+   too small. device_byte is the device byte at +0x60. Pure. */
+uint32_t nvn_barrier_words(uint32_t bits, uint32_t device_byte, uint32_t* words, uint32_t cap);
+
 /* The pushbuffer stream of a command image (the library's macro code of a queue). Calls callback for each method
    word. Only subchannel 0 is accepted. Returns 0 when the words are exactly used up, or -1 with the index of the
    refused word in *error_index. Type 0 words are no-ops. Pure. */

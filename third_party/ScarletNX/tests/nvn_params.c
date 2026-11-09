@@ -1612,6 +1612,56 @@ static void test_word_stream(void) {
     CHECK(nvn_word_stream_next(NULL, 0, &m, &v, &last) == -1);
 }
 
+static void test_barrier_words(void) {
+    uint32_t w[NVN_BARRIER_WORDS_MAX];
+    uint32_t count;
+    /* (a) No bit: the first and the last NOP. */
+    count = nvn_barrier_words(0u, 1u, w, NVN_BARRIER_WORDS_MAX);
+    CHECK(count == 2u && w[0] == 0x910E0002u && w[1] == 0x91000002u);
+    /* (b) Bit 0 alone: WAIT_FOR_IDLE. */
+    static const uint32_t bit0[] = {0x910E0002u, 0x80000044u, 0x91000002u};
+    count = nvn_barrier_words(1u << 0, 1u, w, NVN_BARRIER_WORDS_MAX);
+    CHECK(count == 3u && !memcmp(w, bit0, sizeof bit0));
+    /* (c) Bits 0, 1 and 2: the first set bit wins. */
+    static const uint32_t bit0_of_three[] = {0x910E0002u, 0x80000044u, 0x91000002u};
+    count = nvn_barrier_words((1u << 0) | (1u << 1) | (1u << 2), 1u, w, NVN_BARRIER_WORDS_MAX);
+    CHECK(count == 3u && !memcmp(w, bit0_of_three, sizeof bit0_of_three));
+    /* (d) Bit 3 with bits 0 and 1: the two bit 3 words, and bit 4 is absent. */
+    static const uint32_t bit3[] = {0x910E0002u, 0x80000014u, 0x80000040u, 0x91000002u};
+    count = nvn_barrier_words((1u << 3) | (1u << 0) | (1u << 1), 1u, w, NVN_BARRIER_WORDS_MAX);
+    CHECK(count == 4u && !memcmp(w, bit3, sizeof bit3));
+    /* (e) Bit 4 after the bit 1 or the bit 2 word, else the 0x4A2 word. */
+    static const uint32_t fragment_bit4[] = {0x910E0002u, 0x80000378u, 0x800003DDu, 0x91000002u};
+    count = nvn_barrier_words((1u << 1) | (1u << 4), 1u, w, NVN_BARRIER_WORDS_MAX);
+    CHECK(count == 4u && !memcmp(w, fragment_bit4, sizeof fragment_bit4));
+    static const uint32_t wait_bit4[] = {0x910E0002u, 0x80000044u, 0x800004A2u, 0x91000002u};
+    count = nvn_barrier_words((1u << 0) | (1u << 4), 1u, w, NVN_BARRIER_WORDS_MAX);
+    CHECK(count == 4u && !memcmp(w, wait_bit4, sizeof wait_bit4));
+    /* (f) Bit 8 with the device byte set and clear. */
+    static const uint32_t bit8_device[] = {0x910E0002u, 0x8000C014u, 0x2001C00Bu, 0x80000000u,
+                                           0x2001C00Bu, 0x70000000u, 0x91000002u};
+    count = nvn_barrier_words(1u << 8, 1u, w, NVN_BARRIER_WORDS_MAX);
+    CHECK(count == 7u && !memcmp(w, bit8_device, sizeof bit8_device));
+    static const uint32_t bit8_plain[] = {0x910E0002u, 0x8000C014u, 0x2001C00Bu, 0x70000000u, 0x91000002u};
+    count = nvn_barrier_words(1u << 8, 0u, w, NVN_BARRIER_WORDS_MAX);
+    CHECK(count == 5u && !memcmp(w, bit8_plain, sizeof bit8_plain));
+    /* (g) All bits 0 to 8 with the device byte set. */
+    static const uint32_t all[] = {0x910E0002u, 0x80000014u, 0x80000040u, 0x800004A2u, 0x90110369u,
+                                   0x8000050Au, 0x80000509u, 0x801904B2u, 0x8000C014u, 0x2001C00Bu,
+                                   0x80000000u, 0x2001C00Bu, 0x70000000u, 0x91000002u};
+    count = nvn_barrier_words(0x1FFu, 1u, w, NVN_BARRIER_WORDS_MAX);
+    CHECK(count == 14u && !memcmp(w, all, sizeof all));
+    /* (h) A cap that is too small, and a NULL array, write nothing. */
+    memset(w, 0xAA, sizeof w);
+    count = nvn_barrier_words(1u << 0, 1u, w, 2u);
+    CHECK(count == 0u && w[0] == 0xAAAAAAAAu);
+    count = nvn_barrier_words(1u << 0, 1u, NULL, NVN_BARRIER_WORDS_MAX);
+    CHECK(count == 0u);
+    /* Bits 9 to 31 are not words. */
+    count = nvn_barrier_words(0xFFFE0000u, 1u, w, NVN_BARRIER_WORDS_MAX);
+    CHECK(count == 2u);
+}
+
 typedef struct {
     uint32_t method[8], value[8], count;
 } PushbufRec;
@@ -2511,6 +2561,7 @@ int main(int argc, char** argv) {
     test_compute_cbuf0_build();
     test_program_compute_round_trip();
     test_word_stream();
+    test_barrier_words();
     test_pushbuf_decode();
     test_program_words_decode();
     test_program_disable();
