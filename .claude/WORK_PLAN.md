@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - NOT PUSHED: `9aa4635` and all later commits (`a897e21`, `8c6a511` and `9036dc8` are code, the others are work plan updates).
   `4e6b015` and older are PUSHED. History: `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is task (a) step 1 (md5 a63e12b7), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is task (a) step 2 (md5 d050d20e), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=0`, `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -47,8 +47,11 @@ RomFS and a file layer for mods.
 Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 to 3 are done except the open steps
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-NEXT: task (a) step 2 (`pipeline.c:449`), brief and launch of the code writer. Step 1 is done (`9036dc8`, history in
-  `OLD-WORK_PLAN.md`, section "Task (a) step 1 done"). Brief template: `reports/brief-a1-writer.md`.
+NEXT: task (a) step 2 is committed, not run. Ask the user for one run (`nvn_native=1`, update program, field scene, 10 s),
+  then read the log: the count of `not translated` lines in the shipped pass (79 before, expect 10 fewer), refusals, crash.
+  Step 2: `sh_spirv` keeps a shipped result whose reads all failed and drops its reads (`cbr.n = 0`). Code writer patch
+  `patches/a2-ship-1.patch` (correct at the first try), no test (no test links `pipeline.c`). `ctest`: only `tracked_material`
+  fails. Exe md5 d050d20e copied to the 3 places. Worktree `wt-a2` removed. Step 1: `9036dc8`.
 - Task (a), plan agreed by the user: step 1 `shader_hash` end rule (4 shaders), step 2 `pipeline.c:449` keeps a shipped result
   when no cbuf read succeeded (6 + 4). Step 2 changes the draw: a shipped entry with no read matches every draw, so the runtime
   PC switch replaces the draw-time translation. Ask the user for a run after step 2. One commit for each step.
