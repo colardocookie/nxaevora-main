@@ -62,9 +62,13 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   `{blob[0x608+i], n_i>>2, n_i}`, `n_i = u16 blob[0x600+2i]`, and if `n_i != 0` the layout run at 0xA00+0x20i of ceil(w19/4)
   words, from the packing loop d854c08..d854d90 (`blob[0x80i]`, `blob[0x80i+0x200]`, `blob[0x80i+0x400]`, components
   `u8 blob[0x60c+i]`). Condition `blob+0x610 != 0`. The blob is the 0x612 byte header blob at descriptor+0x14 (d836b30).
-- Steps (one per session): (1) verify the block in the disassembly (the condition, the loop, how the host gets the blob in
-  `h_program_set_shaders_ext`, nvn_native.c:1261) and write the brief `reports/brief-writer-xfb-prog.md`; (2) the code writer
-  adds the block (test with the values above), the caller reads the patch, builds, runs ctest; (3) one native run to the
+- Step (1) DONE (2026-11-09): the brief `reports/brief-writer-xfb-prog.md` has the verified facts. The blob is raw header bytes
+  `header+0xDC..+0x6EE` (getters d8372dc..d837370 are plain loads, source stage = vertex). Layout byte = `(u8)(TABLE[id]+k)`, TABLE =
+  sdk 0xde87370 (64 u16, low byte), id -6..-3 gives 0xFF. Decisions: NVN_PROGRAM_WORDS_MAX 32 to 178, NVN_OP_MAX_PAYLOAD 512 to 768,
+  no layout header when the layout is empty, refusals for bad ids, comps > 0x80, layout above 32 words or the library allocation.
+- Steps (one per session): (2) the code writer
+  adds the block (brief above, worktree `wt-xfb`, patch `patches/xfb-prog-1.patch`), the caller reads the patch, builds, runs
+  ctest; (3) one native run to the
   field: the `diag-xfb` lines must match the non-native ones and the characters must show; then remove the diagnostic and commit.
 - Diagnostic (NOT committed, in the working tree now): `patches/diag-taskD.patch` (render.c, renderer.c). Lines `diag-xfb`,
   `diag-read`, `diag-sum`. Keep it for step (3). Do not commit it: stage files by name.
