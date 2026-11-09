@@ -2174,3 +2174,16 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 - Code writer (opencode): brief `reports/brief-a1-writer.md`, patch `patches/a1-hash-1.patch`, report `reports/a1-writer-1.md`.
   The patch was correct at the first try. 4 tests in `tests/shader_brx.c`. Mutant (`t == i + 1`) failed 2 tests. `ctest`: only
   `tracked_material` fails (known). Exe md5 a63e12b7 copied to the 3 places. Worktree `wt-a1` removed. Not run in the game.
+
+## Task (a) step 2 done, task (a) closed (2026-11-09, moved from WORK_PLAN.md)
+
+- Task (a) is done. Run 21:34 (`nvn_native=1`): the shipped file has 1390 shaders (1380 before, +10 as expected), made
+  by a run at 21:31 whose log was overwritten. The 10 old hashes are absent because the new lengths change the hash. 0
+  `not translated`, 0 `not implemented`, normal `Exit.` at 74.5 s. The user saw no change on the screen.
+  Step 2: `sh_spirv` keeps a shipped result whose reads all failed and drops its reads (`cbr.n = 0`). Code writer patch
+  `patches/a2-ship-1.patch` (correct at the first try), no test (no test links `pipeline.c`). `ctest`: only `tracked_material`
+  fails. Exe md5 d050d20e copied to the 3 places. Worktree `wt-a2` removed. Step 1: `9036dc8`.
+- Task (a), plan agreed by the user: step 1 `shader_hash` end rule (4 shaders), step 2 `pipeline.c:449` keeps a shipped result
+  when no cbuf read succeeded (6 + 4). Step 2 changes the draw: a shipped entry with no read matches every draw, so the runtime
+  PC switch replaces the draw-time translation. Ask the user for a run after step 2. One commit for each step.
+- Commit of step 2: "Keep a shipped shader when none of its constant buffer reads succeeded". User: task (a) closed.

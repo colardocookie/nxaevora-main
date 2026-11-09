@@ -47,15 +47,8 @@ RomFS and a file layer for mods.
 Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 to 3 are done except the open steps
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-NEXT: task (a) is done. Run 21:34 (`nvn_native=1`): the shipped file has 1390 shaders (1380 before, +10 as expected), made
-  by a run at 21:31 whose log was overwritten. The 10 old hashes are absent because the new lengths change the hash. 0
-  `not translated`, 0 `not implemented`, normal `Exit.` at 74.5 s. Asked the user what the screen showed.
-  Step 2: `sh_spirv` keeps a shipped result whose reads all failed and drops its reads (`cbr.n = 0`). Code writer patch
-  `patches/a2-ship-1.patch` (correct at the first try), no test (no test links `pipeline.c`). `ctest`: only `tracked_material`
-  fails. Exe md5 d050d20e copied to the 3 places. Worktree `wt-a2` removed. Step 1: `9036dc8`.
-- Task (a), plan agreed by the user: step 1 `shader_hash` end rule (4 shaders), step 2 `pipeline.c:449` keeps a shipped result
-  when no cbuf read succeeded (6 + 4). Step 2 changes the draw: a shipped entry with no read matches every draw, so the runtime
-  PC switch replaces the draw-time translation. Ask the user for a run after step 2. One commit for each step.
+NEXT: no task is chosen. Task (a) is closed (user, 2026-11-09, history in `OLD-WORK_PLAN.md`, section
+  "Task (a) step 2 done, task (a) closed"). Ask the user for the next task (the open items below, or task (b) characters).
 - Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
   buffer overflow in the init builders would crash).
 - Diagnostic code: `patches/diag-taskB.patch`. Apply it only for a diagnostic run, and remove it before a commit.
