@@ -2156,3 +2156,12 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 - Task (d) (missing characters, XFB block) is DONE: commit `8c6a511`. The sections above hold the history.
 - The deny of `Artifact`, `ScheduleWakeup`, `ListAgents` in `.claude/settings.json` is committed. `/context` after it: System tools 6k
   (was 20.1k), deferred system tools 18.8k. The claude.ai skill sync (about 2.7k) and the Claude Docs connector were still on.
+
+## Task (a) step 1 explorer result (2026-11-09, moved from WORK_PLAN.md)
+
+- Plan agreed by the user: step 1 `shader_hash` end rule (4 shaders), step 2 `pipeline.c:449` keeps a shipped result when no cbuf
+  read succeeded (6 + 4). One commit for each step.
+- Explorer (`reports/explorer-shader-2.md`, brief `brief-shader-2.md`): the rule length (EXIT + 1) * 8 equals the draw length for
+  adb94885 2992, a3c1291e 2976, 45a7cf5b 3528, 9ff45b16 2480. Every BRX target is before the EXIT. Over 1439 programs: all end with
+  an always-run EXIT and a self-BRA, no target after the self-BRA, the rule never changes a resolved scan. 117 programs have inline
+  data after the self-BRA (floats, tables). The 6 jump-table programs get 8 to 64 bytes shorter (draw length not verified, no record).
