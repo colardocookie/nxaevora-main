@@ -2,6 +2,9 @@
   "permissions": {
     "deny": [
       "Agent",
+      "Artifact",
+      "ScheduleWakeup",
+      "ListAgents",
       "Skill(anthropic-skills:docx)",
       "Skill(anthropic-skills:pptx)",
       "Skill(anthropic-skills:xlsx)",

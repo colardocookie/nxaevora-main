@@ -47,9 +47,6 @@ RomFS and a file layer for mods.
 Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 to 3 are done except the open steps
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-FIRST: the deny of `Artifact`, `ScheduleWakeup`, `ListAgents` in `.claude/settings.json` is NOT COMMITTED. Ask the user for `/context`.
-If "System tools" is about 13k (was 20.1k), commit it. The user turns off the claude.ai skill sync and the connectors.
-
 NEXT: ask the user: task (a) or an open item below.
 - Task (a), later (decision of the user): the 11 `not translated` vertex shaders come only from the shipped pass, not from draws.
   They change the prebuilt cache, not the picture. Do (2) `shader_hash` stops at the always run EXIT, before (1) `pipeline.c:449`.

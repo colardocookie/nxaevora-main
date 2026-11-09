@@ -2154,3 +2154,5 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 ## Session change after task (d) (2026-11-09, moved from WORK_PLAN.md)
 
 - Task (d) (missing characters, XFB block) is DONE: commit `8c6a511`. The sections above hold the history.
+- The deny of `Artifact`, `ScheduleWakeup`, `ListAgents` in `.claude/settings.json` is committed. `/context` after it: System tools 6k
+  (was 20.1k), deferred system tools 18.8k. The claude.ai skill sync (about 2.7k) and the Claude Docs connector were still on.
