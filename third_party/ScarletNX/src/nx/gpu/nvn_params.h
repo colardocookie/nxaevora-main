@@ -262,6 +262,14 @@ void nvn_queue_builder_defaults(NvnQueueBuilder* b);
 /* The bytes of memory that a queue with this builder needs: the answer of nvnQueueBuilderGetQueueMemorySize */
 uint64_t nvn_queue_memory_size(const NvnQueueBuilder* b, const NvnQueueDeviceWords* dev);
 
+/* One word of the queue init device image: its byte offset and its value. */
+typedef struct { uint32_t offset, value; } NvnQueueInitWord;
+#define NVN_QUEUE_INIT_DEVICE_WORD_COUNT 16u
+/* The device image words of the queue init builders, in the order they are written. Returns the count, or 0 when
+   max is below the count (nothing is written then). */
+uint32_t nvn_queue_init_device_words(const NvnQueueDeviceWords* dev, uint32_t window_origin, uint32_t depth_mode,
+                                     NvnQueueInitWord* out, uint32_t max);
+
 #define NVN_POOL_CPU_NO_ACCESS 0x1u
 #define NVN_POOL_CPU_UNCACHED 0x2u
 #define NVN_POOL_CPU_CACHED 0x4u

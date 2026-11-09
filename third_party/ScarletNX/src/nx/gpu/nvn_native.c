@@ -52,6 +52,7 @@ typedef struct {
     GpuChannel* channel;     /* the private channel of the frame jobs, made at QueueInitialize */
     uint32_t* init_words;    /* the macro code that the library builder wrote at QueueInitialize, malloc'd */
     uint32_t init_word_count;
+    uint64_t pool_storage, pool_size, pool_gpu; /* the queue pool of the init words, mapped once and kept */
     uint8_t init_replayed; /* a frame job took the words: the record hands them out once */
 } QueueRec;
 typedef struct {
@@ -280,91 +281,159 @@ static void h_queue_builder_get_queue_memory_size(CPU* c, u64 entry) {
     c->x[0] = nvn_queue_memory_size(queue_builder(c->x[0]), &nvn_queue_device_words);
     pm_unlock(&objs_lock);
 }
-/* The library builder of QueueInitialize writes the macro code of the private channel. The host replaces
-   QueueInitialize, so it runs the builder on a scratch image below the game thread's stack and keeps the words for
-   the first frame job. The address is the sdk address of this game version. */
-#define NVN_QUEUE_BUILDER_ADDRESS 0xD84F800ull
-#define NVN_BUILDER_ALIGN 16u
-#define NVN_BUILDER_STACK_BYTES 0x90u    /* the builder's stack use */
-#define NVN_BUILDER_QUEUE_BYTES 0x1740u  /* the queue image: the reserve granularity at +0x1734 is its last field */
-#define NVN_BUILDER_DEVICE_BYTES 0x100u  /* the device image: the form byte is at +0xB0 */
-#define NVN_BUILDER_COMMAND_BYTES 0x1000u
-#define NVN_BUILDER_RED_ZONE 0x200u /* the gap between the scratch layout and the old stack pointer */
+#define QUEUE_LOG_LIMIT 32u /* log lines for faults of the game in the queue functions */
+/* The shader pools lie in one 4 GiB window of the GPU address space, so the library subtraction of low32(P) is the
+   identity and the entry word is the delta d. */
+#define NVN_SHADER_REGION_BASE 0x400000000ull
+
+/* The library builders of QueueInitialize. The host replaces QueueInitialize, so it runs the builders on a host
+   arena and keeps the words for the first frame job. The addresses are the sdk addresses of this game version. */
+#define NVN_QUEUE_POOL_BUILDER_ADDRESS 0xD838F70ull /* writes the queue pool layout into the pool object */
+#define NVN_QUEUE_INIT_BUILDER_ADDRESS 0xD851880ull /* calls d84f800, then the driver constants setup */
+#define NVN_QUEUE_POOL_VTABLE_METHOD 0xD840B60ull    /* ldr x0,[x0,#0x40]; ret: the queue pool GPU base */
+#define NVN_BUILDER_STACK_BYTES 0x200u               /* the builder's measured stack use is 0x120 */
+#define NVN_BUILDER_QUEUE_BYTES 0x1740u              /* the queue image ends at the reserve word +0x1734 */
+#define NVN_BUILDER_DEVICE_BYTES 0x1B40u             /* the device image ends after the word +0x1AF4 */
+#define NVN_BUILDER_IMAGE_BYTES 0x20u                /* the builder fields that d838f70 reads */
+#define NVN_BUILDER_VTABLE_BYTES 0x40u               /* the pool object's vtable; the GPU base method is at +0x38 */
+#define NVN_BUILDER_VTABLE_METHOD_OFFSET 0x38u
+#define NVN_BUILDER_SHADER_OBJECT_BYTES 0x20u        /* the shader region object; its +0x18 is the region base */
+#define NVN_BUILDER_PROGRAM_OFFSET_BYTES 0x130u      /* the program offset object; its +0x120 is the offset */
+#define NVN_BUILDER_COMMAND_BYTES 0x2400u            /* the words of both builders; 0x21F4 measured at most */
 #define NVN_BUILDER_RESERVE_WORDS 12u
-#define NVN_BUILDER_DEVICE_FORM 0u /* bit 4 = 0 is proven by the run hash, bit 0 = 0 is not proven */
 #define NVN_BUILDER_RETURN_LR 0x4E5640ull /* a known, word-aligned return address outside the code */
 #define NVN_QUEUE_DEVICE_OFFSET 0x00u
 #define NVN_QUEUE_CURSOR_OFFSET 0x16D8u
 #define NVN_QUEUE_END_OFFSET 0x16E0u
 #define NVN_QUEUE_RESERVE_OFFSET 0x1734u
-#define NVN_BUILDER_DEVICE_FORM_OFFSET 0xB0u
-#define NVN_BUILDER_PARTS_BYTES                                                                            \
-    (NVN_BUILDER_STACK_BYTES + NVN_BUILDER_QUEUE_BYTES + NVN_BUILDER_DEVICE_BYTES + NVN_BUILDER_COMMAND_BYTES)
-#define NVN_BUILDER_LAYOUT_BYTES (NVN_BUILDER_RED_ZONE + NVN_BUILDER_PARTS_BYTES)
+#define NVN_QUEUE_CLASS_3D_OFFSET 0xECu          /* the class ids that d84f630 stores, by subchannel */
+#define NVN_QUEUE_CLASS_COMPUTE_OFFSET 0xF0u
+#define NVN_QUEUE_CLASS_DMA_OFFSET 0xF4u
+#define NVN_QUEUE_CLASS_INLINE_OFFSET 0xF8u
+#define NVN_QUEUE_CLASS_2D_OFFSET 0xFCu
+#define NVN_QUEUE_POOL_OBJECT_OFFSET 0x1568u     /* the queue memory pool object inside the queue image */
+#define NVN_QUEUE_POOL_SIZE_OFFSET 0x167Cu       /* the pool size that d838f70 writes (obj+0x114) */
+#define NVN_QUEUE_POOL_GPU_OFFSET 0x40u          /* the pool GPU base that the vtable method reads (obj+0x40) */
+#define NVN_QUEUE_POOL_MAX_BYTES 0x100000u       /* the largest pool size that the host accepts */
+#define NVN_BUILDER_IMAGE_FLAGS_OFFSET 0x10u
+#define NVN_BUILDER_IMAGE_COMPUTE_HAS_OFFSET 0x15u
+#define NVN_BUILDER_IMAGE_COMPUTE_OFFSET 0x1Cu
+#define NVN_DEVICE_SHADER_OBJECT_OFFSET 0x1AF8u         /* a pointer to the shader region object */
+#define NVN_DEVICE_PROGRAM_OFFSET_OBJECT_OFFSET 0x1B00u /* a pointer to the program offset object */
+#define NVN_SHADER_OBJECT_BASE_OFFSET 0x18u             /* the shader region base inside that object */
+#define NVN_BUILDER_ARENA_BYTES                                                                            \
+    (NVN_BUILDER_STACK_BYTES + NVN_BUILDER_QUEUE_BYTES + NVN_BUILDER_DEVICE_BYTES + NVN_BUILDER_IMAGE_BYTES + \
+     NVN_BUILDER_VTABLE_BYTES + NVN_BUILDER_SHADER_OBJECT_BYTES + NVN_BUILDER_PROGRAM_OFFSET_BYTES +       \
+     NVN_BUILDER_COMMAND_BYTES)
 
-/* The scratch image of the builder below the game thread's stack pointer. */
+/* The host arena of the queue init builders: the builder stack, the images and the command buffer. It is allocated
+   at the first QueueInitialize and kept for the run. */
 typedef struct {
-    u64 low, queue, device, command;
-} BuilderScratch;
+    u64 stack_top, queue, device, builder, vtable, shader_object, program_offset, command;
+} BuilderArena;
+static BuilderArena builder_arena;
+static uint8_t builder_arena_ready;
+static PMutex builder_lock = PMUTEX_INIT;
 
-static int builder_scratch(u64 sp, BuilderScratch* s) {
-    const u64 total = NVN_BUILDER_LAYOUT_BYTES;
-    if (sp < total) {
-        LOG("nvn-native: queue builder scratch: sp=%llx is below the %llu byte layout\n", (unsigned long long)sp,
-            (unsigned long long)total);
-        return 0;
+/* The caller holds builder_lock. Each part is 16-byte aligned, so the start of one part is the end of the last. */
+static int builder_arena_get(BuilderArena* out) {
+    if (!builder_arena_ready) {
+        const u64 base = kmem_alloc(NVN_BUILDER_ARENA_BYTES, MS_STATIC, PERM_RW);
+        if (!base || !native_guest_readable(base, NVN_BUILDER_ARENA_BYTES) ||
+            !native_guest_writable(base, NVN_BUILDER_ARENA_BYTES)) {
+            LOG("nvn-native: queue builder arena of %llu bytes cannot be allocated\n",
+                (unsigned long long)NVN_BUILDER_ARENA_BYTES);
+            return 0;
+        }
+        builder_arena.stack_top = base + NVN_BUILDER_STACK_BYTES;
+        builder_arena.queue = builder_arena.stack_top;
+        builder_arena.device = builder_arena.queue + NVN_BUILDER_QUEUE_BYTES;
+        builder_arena.builder = builder_arena.device + NVN_BUILDER_DEVICE_BYTES;
+        builder_arena.vtable = builder_arena.builder + NVN_BUILDER_IMAGE_BYTES;
+        builder_arena.shader_object = builder_arena.vtable + NVN_BUILDER_VTABLE_BYTES;
+        builder_arena.program_offset = builder_arena.shader_object + NVN_BUILDER_SHADER_OBJECT_BYTES;
+        builder_arena.command = builder_arena.program_offset + NVN_BUILDER_PROGRAM_OFFSET_BYTES;
+        builder_arena_ready = 1;
     }
-    u64 low = (sp - total) & ~(u64)(NVN_BUILDER_ALIGN - 1u);
-    u64 size = NVN_BUILDER_PARTS_BYTES;
-    if (!native_guest_readable(low, size) || !native_guest_writable(low, size)) {
-        LOG("nvn-native: queue builder scratch: %llx+%llu is not readable and writable\n", (unsigned long long)low,
-            (unsigned long long)size);
-        return 0;
-    }
-    s->low = low;
-    s->queue = low + NVN_BUILDER_STACK_BYTES; /* the builder's stack is [low, queue) */
-    s->device = s->queue + NVN_BUILDER_QUEUE_BYTES;
-    s->command = s->device + NVN_BUILDER_DEVICE_BYTES;
+    *out = builder_arena;
     return 1;
 }
 
-/* Zeroes a guest range in 8-byte writes; the images here are multiples of 16 bytes. */
+/* Zeroes a guest range in 8-byte writes; the images here are multiples of 8 bytes. */
 static void builder_zero(u64 addr, u64 size) {
     for (u64 at = 0; at < size; at += 8u) gw64(addr + at, 0);
 }
 
-static void builder_images(const BuilderScratch* s) {
-    builder_zero(s->queue, NVN_BUILDER_QUEUE_BYTES);
-    builder_zero(s->device, NVN_BUILDER_DEVICE_BYTES);
-    gw64(s->queue + NVN_QUEUE_DEVICE_OFFSET, s->device);
-    gw64(s->queue + NVN_QUEUE_CURSOR_OFFSET, s->command);
-    gw64(s->queue + NVN_QUEUE_END_OFFSET, s->command + NVN_BUILDER_COMMAND_BYTES);
-    gw32(s->queue + NVN_QUEUE_RESERVE_OFFSET, NVN_BUILDER_RESERVE_WORDS);
-    gw16(s->device + NVN_BUILDER_DEVICE_FORM_OFFSET, NVN_BUILDER_DEVICE_FORM);
+/* A byte store into the zero-filled images; the guest has no byte write helper. */
+static void builder_byte(u64 addr, uint8_t value) {
+    const u64 word_addr = addr & ~3ull;
+    const u32 shift = (u32)(addr & 3ull) * 8u;
+    gw32(word_addr, (gr32(word_addr) & ~(0xFFu << shift)) | ((u32)value << shift));
 }
 
-/* Calls the builder with x0 = queue image and w1 = 0. The callee keeps x19..x29 and returns 1 in w0. */
-static int builder_call(CPU* c, const BuilderScratch* s) {
-    if (NVN_QUEUE_BUILDER_ADDRESS < g_code_lo || NVN_QUEUE_BUILDER_ADDRESS >= g_code_hi ||
-        (NVN_QUEUE_BUILDER_ADDRESS & 3u)) {
-        LOG("nvn-native: queue builder address=%llx is outside [%llx, %llx)\n",
-            (unsigned long long)NVN_QUEUE_BUILDER_ADDRESS, (unsigned long long)g_code_lo,
-            (unsigned long long)g_code_hi);
+/* Fills the images that the builders read: the device table, the queue image, the builder fields and the pool
+   object with its vtable. Returns 0 after a log line. */
+static int builder_images(const BuilderArena* a, const NvnQueueBuilder* b, const NvnQueueDeviceWords* dev,
+                          uint32_t window_origin, uint32_t depth_mode) {
+    builder_zero(a->queue, NVN_BUILDER_QUEUE_BYTES);
+    builder_zero(a->device, NVN_BUILDER_DEVICE_BYTES);
+    builder_zero(a->builder, NVN_BUILDER_IMAGE_BYTES);
+    builder_zero(a->vtable, NVN_BUILDER_VTABLE_BYTES);
+    builder_zero(a->shader_object, NVN_BUILDER_SHADER_OBJECT_BYTES);
+    builder_zero(a->program_offset, NVN_BUILDER_PROGRAM_OFFSET_BYTES);
+    builder_zero(a->command, NVN_BUILDER_COMMAND_BYTES);
+
+    gw64(a->queue + NVN_QUEUE_DEVICE_OFFSET, a->device);
+    gw64(a->queue + NVN_QUEUE_CURSOR_OFFSET, a->command);
+    gw64(a->queue + NVN_QUEUE_END_OFFSET, a->command + NVN_BUILDER_COMMAND_BYTES);
+    gw32(a->queue + NVN_QUEUE_RESERVE_OFFSET, NVN_BUILDER_RESERVE_WORDS);
+    gw32(a->queue + NVN_QUEUE_CLASS_3D_OFFSET, CLASS_MAXWELL_B);
+    gw32(a->queue + NVN_QUEUE_CLASS_COMPUTE_OFFSET, CLASS_KEPLER_COMPUTE_B);
+    gw32(a->queue + NVN_QUEUE_CLASS_DMA_OFFSET, CLASS_MAXWELL_DMA_COPY_A);
+    gw32(a->queue + NVN_QUEUE_CLASS_INLINE_OFFSET, CLASS_KEPLER_INLINE_TO_MEMORY_B);
+    gw32(a->queue + NVN_QUEUE_CLASS_2D_OFFSET, CLASS_FERMI_TWOD_A);
+    gw64(a->queue + NVN_QUEUE_POOL_OBJECT_OFFSET, a->vtable);
+    gw64(a->vtable + NVN_BUILDER_VTABLE_METHOD_OFFSET, NVN_QUEUE_POOL_VTABLE_METHOD);
+
+    NvnQueueInitWord words[NVN_QUEUE_INIT_DEVICE_WORD_COUNT];
+    const uint32_t count =
+        nvn_queue_init_device_words(dev, window_origin, depth_mode, words, NVN_QUEUE_INIT_DEVICE_WORD_COUNT);
+    if (!count) {
+        LOG("nvn-native: queue init device words: the table is empty\n");
         return 0;
     }
-    GuestFn fn = g_disp[(NVN_QUEUE_BUILDER_ADDRESS - g_code_lo) / 4u];
+    for (uint32_t i = 0; i < count; i++) gw32(a->device + words[i].offset, words[i].value);
+    gw64(a->device + NVN_DEVICE_SHADER_OBJECT_OFFSET, a->shader_object);
+    gw64(a->device + NVN_DEVICE_PROGRAM_OFFSET_OBJECT_OFFSET, a->program_offset);
+    gw64(a->shader_object + NVN_SHADER_OBJECT_BASE_OFFSET, NVN_SHADER_REGION_BASE);
+
+    builder_byte(a->builder + NVN_BUILDER_IMAGE_FLAGS_OFFSET, (uint8_t)b->flags);
+    builder_byte(a->builder + NVN_BUILDER_IMAGE_COMPUTE_HAS_OFFSET, b->has_compute);
+    gw32(a->builder + NVN_BUILDER_IMAGE_COMPUTE_OFFSET, (u32)b->compute);
+    return 1;
+}
+
+/* Calls a library builder with x0..x2 and the stack top. The callee keeps x19..x29 and returns to the host LR. */
+static int builder_call(CPU* c, u64 function, u64 x0, u64 x1, u64 x2, u64 sp) {
+    if (function < g_code_lo || function >= g_code_hi || (function & 3u)) {
+        LOG("nvn-native: queue builder function=%llx is outside [%llx, %llx)\n", (unsigned long long)function,
+            (unsigned long long)g_code_lo, (unsigned long long)g_code_hi);
+        return 0;
+    }
+    GuestFn fn = g_disp[(function - g_code_lo) / 4u];
     if (!fn) fn = g_rtapi.miss; /* an empty slot, as trace_proc uses */
     const u64 old_sp = c->x[31], old_lr = c->x[30];
-    c->x[0] = s->queue;
-    c->x[1] = 0;
+    c->x[0] = x0;
+    c->x[1] = x1;
+    c->x[2] = x2;
     c->x[30] = NVN_BUILDER_RETURN_LR;
-    c->x[31] = s->queue; /* the builder's stack grows down into [low, queue) */
-    fn(c, NVN_QUEUE_BUILDER_ADDRESS);
-    const int ok = c->x[0] == 1 && c->pc == NVN_BUILDER_RETURN_LR;
+    c->x[31] = sp;
+    fn(c, function);
+    const int ok = c->pc == NVN_BUILDER_RETURN_LR;
     c->x[30] = old_lr;
     c->x[31] = old_sp;
     if (!ok)
-        LOG("nvn-native: queue builder returned w0=%llx pc=%llx\n", (unsigned long long)c->x[0],
+        LOG("nvn-native: queue builder function=%llx returned pc=%llx\n", (unsigned long long)function,
             (unsigned long long)c->pc);
     return ok;
 }
@@ -388,30 +457,85 @@ static int builder_read_words(u64 command, u64 cursor, uint32_t** out, uint32_t*
     return 1;
 }
 
-/* Runs the builder on the scratch image. Returns its words (malloc'd), or NULL with *count 0 after a log line. */
-static uint32_t* queue_builder_words(CPU* c, uint32_t* count) {
-    *count = 0;
-    BuilderScratch s;
-    if (!builder_scratch(c->x[31], &s)) return NULL;
-    builder_images(&s);
-    if (!builder_call(c, &s)) return NULL;
-    const u64 cursor = gr64(s.queue + NVN_QUEUE_CURSOR_OFFSET);
-    uint32_t* words = NULL;
-    if (!builder_read_words(s.command, cursor, &words, count)) return NULL;
-    LOG("nvn-native: queue builder words=%u cursor=%llx\n", *count, (unsigned long long)cursor);
-    return words;
+/* The words that the builders wrote and the queue pool that the words point into. */
+typedef struct {
+    uint32_t* words;
+    uint32_t word_count;
+    uint64_t pool_storage, pool_size, pool_gpu;
+} QueueInitBuild;
+
+static int queue_pool_create(uint64_t size, uint64_t* storage, uint64_t* gpu);
+
+/* Runs both library builders on the host arena. The caller holds builder_lock and no objs_lock. Returns 0 with a log
+   line when a stage fails; the caller then drops the words. */
+static int queue_init_build(CPU* c, const NvnQueueBuilder* b, u64 queue_addr, QueueInitBuild* out) {
+    *out = (QueueInitBuild){0};
+    BuilderArena arena;
+    if (!builder_arena_get(&arena)) return 0;
+
+    pm_lock(&objs_lock);
+    const DeviceRec* device = known_record(b->device, NVN_OBJ_DEVICE);
+    const uint32_t window_origin = device ? device->window_origin : 0;
+    const uint32_t depth_mode = device ? device->depth_mode : 0;
+    pm_unlock(&objs_lock);
+    if (!device) {
+        LOG("nvn-native: queue init: no device record for device=%llx\n", (unsigned long long)b->device);
+        return 0;
+    }
+
+    if (!builder_images(&arena, b, &nvn_queue_device_words, window_origin, depth_mode)) return 0;
+    if (!builder_call(c, NVN_QUEUE_POOL_BUILDER_ADDRESS, arena.queue + NVN_QUEUE_POOL_OBJECT_OFFSET, arena.device,
+                      arena.builder, arena.stack_top))
+        return 0;
+
+    const uint64_t pool_size = gr32(arena.queue + NVN_QUEUE_POOL_SIZE_OFFSET);
+    if (!pool_size || pool_size > NVN_QUEUE_POOL_MAX_BYTES) {
+        LOG("nvn-native: queue pool size=%llu is not in [1, %u]\n", (unsigned long long)pool_size,
+            NVN_QUEUE_POOL_MAX_BYTES);
+        return 0;
+    }
+
+    uint64_t old_pool_size = 0;
+    pm_lock(&objs_lock);
+    const QueueRec* old = known_record(queue_addr, NVN_OBJ_QUEUE);
+    const int reuse = old && old->pool_size >= pool_size;
+    if (reuse) {
+        out->pool_storage = old->pool_storage;
+        out->pool_size = old->pool_size;
+        out->pool_gpu = old->pool_gpu;
+    } else if (old) {
+        old_pool_size = old->pool_size;
+    }
+    pm_unlock(&objs_lock);
+    if (!reuse) {
+        if (old_pool_size)
+            LOG("nvn-native: queue=%llx pool of %llu bytes is below the new size=%llu, a new pool replaces it\n",
+                (unsigned long long)queue_addr, (unsigned long long)old_pool_size, (unsigned long long)pool_size);
+        if (!queue_pool_create(pool_size, &out->pool_storage, &out->pool_gpu)) return 0;
+        out->pool_size = pool_size;
+    }
+
+    gw64(arena.queue + NVN_QUEUE_POOL_OBJECT_OFFSET + NVN_QUEUE_POOL_GPU_OFFSET, out->pool_gpu);
+    if (!builder_call(c, NVN_QUEUE_INIT_BUILDER_ADDRESS, arena.queue, 0, 0, arena.stack_top)) return 0;
+
+    const u64 cursor = gr64(arena.queue + NVN_QUEUE_CURSOR_OFFSET);
+    if (!builder_read_words(arena.command, cursor, &out->words, &out->word_count)) return 0;
+    LOG("nvn-native: queue builder words=%u cursor=%llx\n", out->word_count, (unsigned long long)cursor);
+    return 1;
 }
 
-/* nvnQueueInitialize(queue, builder): runs the library builder, records the builder and opens the private channel of
-   the frame jobs. A failed builder stage leaves the macro code empty. */
+/* nvnQueueInitialize(queue, builder): runs the library builders, records the builder and opens the private channel
+   of the frame jobs. A failed builder stage leaves the macro code empty. */
 static void h_queue_initialize(CPU* c, u64 entry) {
     (void)entry;
-    const u64 queue_addr = c->x[0]; /* the builder call may change x0 */
+    const u64 queue_addr = c->x[0]; /* the builder calls may change x0 */
     pm_lock(&objs_lock);
     NvnQueueBuilder b = *queue_builder(c->x[1]);
     pm_unlock(&objs_lock);
-    uint32_t word_count = 0;
-    uint32_t* words = queue_builder_words(c, &word_count); /* runs guest code, so no objs_lock */
+    QueueInitBuild build;
+    pm_lock(&builder_lock);
+    const int built = queue_init_build(c, &b, queue_addr, &build); /* runs guest code, so no objs_lock */
+    pm_unlock(&builder_lock);
     pm_lock(&objs_lock);
     QueueRec* old = known_record(queue_addr, NVN_OBJ_QUEUE);
     uint32_t channel_id = 0;
@@ -421,6 +545,11 @@ static void h_queue_initialize(CPU* c, u64 entry) {
         channel_id = old->channel_id;
         channel = old->channel;
         free(old->init_words);
+        if (!built) { /* a failed rebuild keeps the pool of the recorded init */
+            build.pool_storage = old->pool_storage;
+            build.pool_size = old->pool_size;
+            build.pool_gpu = old->pool_gpu;
+        }
     }
     /* QueueFinalize is not observed and has no handler: the channel lives to the end of the process. */
     if (!channel) {
@@ -434,12 +563,14 @@ static void h_queue_initialize(CPU* c, u64 entry) {
     q->pending = (NvnPendingFrame){0};
     q->channel_id = channel_id;
     q->channel = channel;
-    q->init_words = words;
-    q->init_word_count = word_count;
+    q->init_words = build.words;
+    q->init_word_count = build.word_count;
+    q->pool_storage = build.pool_storage;
+    q->pool_size = build.pool_size;
+    q->pool_gpu = build.pool_gpu;
     pm_unlock(&objs_lock);
     c->x[0] = 1;
 }
-#define QUEUE_LOG_LIMIT 32u /* log lines for faults of the game in the queue functions */
 /* Caller holds objs_lock. */
 static QueueRec* queue_rec(u64 addr, const char* operation) {
     QueueRec* q = known_record(addr, NVN_OBJ_QUEUE);
@@ -458,6 +589,27 @@ typedef struct {
     uint32_t count;
 } DescriptorPoolRec;
 static uint64_t pool_gpu_cursor = NVN_POOL_GPU_BASE;
+
+/* Makes a GPU-visible queue pool of size bytes and maps its storage at its GPU address. The storage is never freed:
+   QueueFinalize has no handler. Returns 0 after a log line. */
+static int queue_pool_create(uint64_t size, uint64_t* storage, uint64_t* gpu) {
+    const uint64_t bytes = (size + NVN_POOL_PAGE_SIZE - 1u) & ~(uint64_t)(NVN_POOL_PAGE_SIZE - 1u);
+    pm_lock(&objs_lock);
+    const uint64_t cpu = kmem_alloc(bytes, MS_STATIC, PERM_RW);
+    uint64_t address = 0, next = 0;
+    const int ok = cpu && nvn_pool_gpu_allocate(pool_gpu_cursor, bytes, NVN_POOL_PAGE_SIZE, &address, &next) &&
+                   nvn_gpu_map_range(address, cpu, bytes);
+    if (ok) pool_gpu_cursor = next;
+    pm_unlock(&objs_lock);
+    if (!ok) {
+        LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: queue pool of %llu bytes cannot be allocated and mapped\n",
+                  (unsigned long long)bytes);
+        return 0;
+    }
+    *storage = cpu;
+    *gpu = address;
+    return 1;
+}
 
 static NvnMemoryPoolBuilder* memory_pool_builder(u64 addr) {
     return rec_get(addr, NVN_OBJ_MEMORY_POOL_BUILDER, sizeof(NvnMemoryPoolBuilder));
@@ -927,9 +1079,6 @@ static void* known_record(u64 addr, NvnObjKind kind) {
 #define PROGRAM_FRAGMENT_G188_OFFSET 0x74Au
 #define PROGRAM_FRAGMENT_G1A0_WORDS 4u
 
-/* The shader pools lie in one 4 GiB window of the GPU address space, so the library subtraction of low32(P) is the
-   identity and the entry word is the delta d. */
-#define NVN_SHADER_REGION_BASE 0x400000000ull
 /* The two methods that carry the region base once for a frame job: high 32 bits, then low 32 bits. */
 #define NVN_SHADER_REGION_BASE_HIGH_METHOD 0x582u
 #define NVN_SHADER_REGION_BASE_LOW_METHOD 0x583u
@@ -4142,28 +4291,34 @@ static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int sho
                 dropped_delta, missing_delta, skipped, acquires, fences, shown);
     }
 }
-typedef struct {
-    GpuChannel* channel;
-    uint32_t methods;
-} FrameInitReplay;
-
-static void frame_init_method(void* ctx, uint32_t method, uint32_t value) {
-    FrameInitReplay* replay = ctx;
-    maxwell3d_method(replay->channel, method, value, REPLAY_METHOD_LAST);
-    replay->methods++;
-}
-
-/* Replays the macro code that the library builder wrote at QueueInitialize, before the frame's own lists. */
+/* Replays the init words that the host built at QueueInitialize, before the frame's own lists. Subchannel 0 is the
+   3D engine; the other subchannels are their own classes. */
 static void frame_replay_init(const FrameJob* job) {
     if (!job->init_word_count) return;
-    FrameInitReplay replay = {job->channel, 0};
-    uint32_t bad = 0;
-    if (nvn_pushbuf_decode(job->init_words, job->init_word_count, frame_init_method, &replay, &bad) != 0) {
-        LOG_LIMIT(FRAME_LOG_LIMIT, "nvn-native: queue init stream refused at word=%u of %u\n", bad,
+    NvnWordStream stream = {0};
+    uint32_t methods = 0;
+    for (uint32_t i = 0; i < job->init_word_count; i++) {
+        uint32_t method, value;
+        int last;
+        const int result = nvn_word_stream_next(&stream, job->init_words[i], &method, &value, &last);
+        if (result < 0) {
+            LOG_LIMIT(FRAME_LOG_LIMIT, "nvn-native: queue init stream refused at word=%u of %u\n", i,
+                      job->init_word_count);
+            return;
+        }
+        if (result == 0) continue; /* a header word: its data words follow */
+        if (stream.subchannel)
+            gpu_channel_method(job->channel, stream.subchannel, method, value, last);
+        else
+            maxwell3d_method(job->channel, method, value, last);
+        methods++;
+    }
+    if (!nvn_word_stream_complete(&stream)) {
+        LOG_LIMIT(FRAME_LOG_LIMIT, "nvn-native: queue init stream ends inside a run after %u words\n",
                   job->init_word_count);
         return;
     }
-    LOG("nvn-native: queue init stream replayed methods=%u\n", replay.methods);
+    LOG("nvn-native: queue init stream replayed methods=%u\n", methods);
 }
 
 /* Runs on the GPU thread: it frees the job that Present made. */

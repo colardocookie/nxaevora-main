@@ -353,6 +353,57 @@ uint64_t nvn_queue_memory_size(const NvnQueueBuilder* b, const NvnQueueDeviceWor
     return (uint64_t)(command + control) + area;
 }
 
+/* The device image that the queue init builders read. The offsets are bytes in the image. */
+#define NVN_QUEUE_INIT_DEV_OFFSET_W8C 0x08Cu
+#define NVN_QUEUE_INIT_DEV_OFFSET_SM_VERSION 0x090u
+#define NVN_QUEUE_INIT_DEV_OFFSET_W94 0x094u
+#define NVN_QUEUE_INIT_DEV_OFFSET_W98 0x098u
+#define NVN_QUEUE_INIT_DEV_OFFSET_FORM 0x0B0u
+#define NVN_QUEUE_INIT_DEV_OFFSET_WE0 0x0E0u
+#define NVN_QUEUE_INIT_DEV_OFFSET_WE4 0x0E4u
+#define NVN_QUEUE_INIT_DEV_OFFSET_99C 0x99Cu
+#define NVN_QUEUE_INIT_DEV_OFFSET_9A4 0x9A4u
+#define NVN_QUEUE_INIT_DEV_OFFSET_WINDOW_ORIGIN 0x19D8u
+#define NVN_QUEUE_INIT_DEV_OFFSET_DEPTH_MODE 0x19DCu
+#define NVN_QUEUE_INIT_DEV_OFFSET_1A84 0x1A84u
+#define NVN_QUEUE_INIT_DEV_OFFSET_1AAC 0x1AACu
+#define NVN_QUEUE_INIT_DEV_OFFSET_1AB0 0x1AB0u
+#define NVN_QUEUE_INIT_DEV_OFFSET_1AC0 0x1AC0u
+#define NVN_QUEUE_INIT_DEV_OFFSET_W1AF4 0x1AF4u
+#define NVN_QUEUE_INIT_DEV_VALUE_SM_VERSION 0x503u /* the GM20B sm_arch_sm_version */
+#define NVN_QUEUE_INIT_DEV_VALUE_FORM 0u           /* the form byte at +0xB0: the builder's value is 0 */
+#define NVN_QUEUE_INIT_DEV_VALUE_99C 0x230u
+#define NVN_QUEUE_INIT_DEV_VALUE_9A4 0x430u
+#define NVN_QUEUE_INIT_DEV_VALUE_1A84 0x111u
+#define NVN_QUEUE_INIT_DEV_VALUE_1AAC 0x3Fu
+#define NVN_QUEUE_INIT_DEV_VALUE_1AB0 0x00110011u
+#define NVN_QUEUE_INIT_DEV_VALUE_1AC0 5u
+
+uint32_t nvn_queue_init_device_words(const NvnQueueDeviceWords* dev, uint32_t window_origin, uint32_t depth_mode,
+                                     NvnQueueInitWord* out, uint32_t max) {
+    if (!dev || !out || max < NVN_QUEUE_INIT_DEVICE_WORD_COUNT) return 0;
+    const NvnQueueInitWord words[NVN_QUEUE_INIT_DEVICE_WORD_COUNT] = {
+        {NVN_QUEUE_INIT_DEV_OFFSET_W8C, dev->w8c},
+        {NVN_QUEUE_INIT_DEV_OFFSET_SM_VERSION, NVN_QUEUE_INIT_DEV_VALUE_SM_VERSION},
+        {NVN_QUEUE_INIT_DEV_OFFSET_W94, dev->w94},
+        {NVN_QUEUE_INIT_DEV_OFFSET_W98, dev->w98},
+        {NVN_QUEUE_INIT_DEV_OFFSET_FORM, NVN_QUEUE_INIT_DEV_VALUE_FORM},
+        {NVN_QUEUE_INIT_DEV_OFFSET_WE0, dev->we0},
+        {NVN_QUEUE_INIT_DEV_OFFSET_WE4, dev->we4},
+        {NVN_QUEUE_INIT_DEV_OFFSET_99C, NVN_QUEUE_INIT_DEV_VALUE_99C},
+        {NVN_QUEUE_INIT_DEV_OFFSET_9A4, NVN_QUEUE_INIT_DEV_VALUE_9A4},
+        {NVN_QUEUE_INIT_DEV_OFFSET_WINDOW_ORIGIN, window_origin},
+        {NVN_QUEUE_INIT_DEV_OFFSET_DEPTH_MODE, depth_mode},
+        {NVN_QUEUE_INIT_DEV_OFFSET_1A84, NVN_QUEUE_INIT_DEV_VALUE_1A84},
+        {NVN_QUEUE_INIT_DEV_OFFSET_1AAC, NVN_QUEUE_INIT_DEV_VALUE_1AAC},
+        {NVN_QUEUE_INIT_DEV_OFFSET_1AB0, NVN_QUEUE_INIT_DEV_VALUE_1AB0},
+        {NVN_QUEUE_INIT_DEV_OFFSET_1AC0, NVN_QUEUE_INIT_DEV_VALUE_1AC0},
+        {NVN_QUEUE_INIT_DEV_OFFSET_W1AF4, dev->w1af4},
+    };
+    memcpy(out, words, sizeof words);
+    return NVN_QUEUE_INIT_DEVICE_WORD_COUNT;
+}
+
 void nvn_memory_pool_builder_defaults(NvnMemoryPoolBuilder* b) {
     uint64_t device = b->device;
     memset(b, 0, sizeof *b);

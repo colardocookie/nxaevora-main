@@ -149,6 +149,39 @@ static void test_queue_memory(void) {
     CHECK(nvn_queue_memory_size(&b, &nvn_queue_device_words) == 0x5E000);
 }
 
+static int queue_init_word_value(const NvnQueueInitWord* words, uint32_t count, uint32_t offset, uint32_t* value) {
+    for (uint32_t i = 0; i < count; i++) {
+        if (words[i].offset == offset) {
+            *value = words[i].value;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void test_queue_init_device_words(void) {
+    NvnQueueInitWord words[NVN_QUEUE_INIT_DEVICE_WORD_COUNT];
+    const uint32_t count =
+        nvn_queue_init_device_words(&nvn_queue_device_words, 1, 1, words, NVN_QUEUE_INIT_DEVICE_WORD_COUNT);
+    CHECK(count == NVN_QUEUE_INIT_DEVICE_WORD_COUNT);
+    uint32_t v = 0;
+    CHECK(queue_init_word_value(words, count, 0x8C, &v) && v == 0x80);
+    CHECK(queue_init_word_value(words, count, 0x90, &v) && v == 0x503);
+    CHECK(queue_init_word_value(words, count, 0x1AB0, &v) && v == 0x00110011);
+    CHECK(queue_init_word_value(words, count, 0x19D8, &v) && v == 1);
+    CHECK(queue_init_word_value(words, count, 0x1AF4, &v) && v == 0);
+
+    /* A max below the count writes nothing and returns 0. */
+    NvnQueueInitWord small[NVN_QUEUE_INIT_DEVICE_WORD_COUNT - 1];
+    memset(small, 0xAB, sizeof small);
+    CHECK(nvn_queue_init_device_words(&nvn_queue_device_words, 1, 1, small, NVN_QUEUE_INIT_DEVICE_WORD_COUNT - 1) ==
+          0);
+    int untouched = 1;
+    for (uint32_t i = 0; i < NVN_QUEUE_INIT_DEVICE_WORD_COUNT - 1; i++)
+        if (small[i].offset != 0xABABABABu || small[i].value != 0xABABABABu) untouched = 0;
+    CHECK(untouched);
+}
+
 static void test_queue_defaults(void) {
     NvnQueueBuilder b;
     memset(&b, 0xAB, sizeof b);
@@ -2362,6 +2395,7 @@ int main(int argc, char** argv) {
     test_device_integer();
     test_timestamp();
     test_queue_memory();
+    test_queue_init_device_words();
     test_queue_defaults();
     test_memory_pool_defaults();
     test_memory_pool_params();
