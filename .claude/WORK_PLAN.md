@@ -69,10 +69,11 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   Decision of the user (2026-11-09): the trace of the enum argument values (the missing part of 4-u1) comes after U1.
   Current step: U1 step b2, analysis done (`reports/explorer-devwords2-1.md`, history in `OLD-WORK_PLAN.md`), handlers not
   written. The 4 functions (TextureBuilderGetStorageClass, TextureGetStorageClass, both GetZCullStorageSize) stay stub-log.
-  - b2 next: (1) check 3 rows of the kind table (part b) and the block formula (part c) in the disassembly. (2) Ask the user
-    about 2 open points: device +0x1b1c (`explorer-devwords-1.md` says 0, the new report says a selftest read 1), and the
-    flags bit 7 path (helpers d868c8c/d869188 have no closed formula: stop with a log line, or more analysis). (3) Brief for
-    the handler writer (host device words +0xb8..+0xe4, +0x1a08 record, kind table).
+  - b2: the formula and the kind table are checked (history in `OLD-WORK_PLAN.md`). Decision: flags bit 7 set gives a log
+    line and a refusal.
+  - b2 next: (a) game explorer: find the store that makes device +0x1b1c = 1 (sdk init clears it at `d831c0c` area, no sdk
+    store found; check the main module, the nvnBootstrapLoader path, a device builder flag, our host code). (b) Brief for the
+    handler writer (host device words +0xb8..+0xe4, +0x1a08 record, kind table for the found +0x1b1c value).
   - b3: the 3 functions that the writer left out: TextureBuilderGetSparseTileLayout and TextureGetSparseTileLayout (helpers
     d822538 and d869e10 not verified), TextureGetViewOffset (level and 3D slice offset of d83d01c not checked against
     `texture_level_offset`).

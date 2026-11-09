@@ -2226,3 +2226,10 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   copies the ZCULL_GET_INFO reply (+0x238..+0x25c) to device +0xb8..+0xdc and the ZCULL ctx size (+0x230) to +0xe0. Our
   values: `gm20b_zcull_info` (`nvdrv.c:1366`). Device +0x1a08 is a value record from de08020 (1, 0x22555555, 0xff222222, ~0).
 - Not checked: the kind table of d83563c (part b, from a unicorn run) and the block formula of d869610 (part c).
+
+## Task (u) U1 step (b2) checks and decisions (2026-11-10, moved from WORK_PLAN.md)
+
+- Block formula `d869610` and caller `d83cf88..d83cff0` checked: the switch index w3 is 1 or 2 (`cinc` at `d83cebc`), table
+  `de8833a` entries 1 and 2 keep the count. Size = `+0xc8 * blocks + +0xcc + +0xd0`.
+- Kind table `de7f0b1`: kinds 2b, 08, 52, 87 have bit 0 set and second byte 2a, 01, 46, 7b (the w3=0 kinds). cc/e0/cd give fe.
+- Decisions of the user: flags bit 7 set gives a log line and a refusal (no info path). Device +0x1b1c: analyze again.
