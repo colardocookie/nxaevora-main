@@ -6,8 +6,8 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 
 ## State
 
-- NOT PUSHED: `9aa4635` and all later commits (`a897e21`, `8c6a511` and `9036dc8` are code, the others are work plan updates).
-  `4e6b015` and older are PUSHED. History: `OLD-WORK_PLAN.md`, last sections.
+- PUSHED: `19b6d35` and older (the last code commit is `c1fdb45`). Commits after `19b6d35` are not pushed. History:
+  `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
 - The exe in `game/` is task (a) step 2 (md5 d050d20e), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
@@ -47,8 +47,30 @@ RomFS and a file layer for mods.
 Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 to 3 are done except the open steps
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-NEXT: no task is chosen. Task (a) is closed (user, 2026-11-09, history in `OLD-WORK_PLAN.md`, section
-  "Task (a) step 2 done, task (a) closed"). Ask the user for the next task (the open items below, or task (b) characters).
+Tasks (a) and (b) are closed (`OLD-WORK_PLAN.md`, sections "Task (a) step 2 done, task (a) closed" and "Task (b) done").
+
+NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
+  4-u4. `docs/nvn-coverage.md`: 249 rows of G10 are `stub-log`. Groups (one commit each), in this order:
+  - U1 getters and builders (about 110): Sampler, Texture, Buffer, MemoryPool, Window, pool and Event getters and builders,
+    BlendState advanced, MultisampleState sample locations. Pure: a unit test checks each getter against its setter.
+  - U2 events and sync (about 20): Event*, CommandBuffer SignalEvent, WaitEvent, WaitSync, FenceSync, ReportValue, Queue
+    WaitSync, Finish, Flush, Finalize, Sync*. Check with `nvn_exectest`.
+  - U3 copies, clears, texel IO (about 25): CopyBufferTo*, CopyTextureToBuffer, ClearBuffer, ClearColori/ui, Downsample*,
+    TiledDownsample*, ResolveDepthBuffer, Discard*, Read/WriteTexels*, Flush/InvalidateMappedRange, MapVirtual,
+    UpdateUniformBuffer, CopyCommands.
+  - U4 draw extras (about 40): indirect draws, DrawTransformFeedback, Pause/ResumeTransformFeedback, tessellation, conservative
+    raster, SetScissor, SetViewport, PrimitiveRestart, SampleMask, ViewportSwizzles, RenderEnable, ZCull, separate sampler and
+    texture binds, BindTextures, subroutines, scratch memory, coverage modulation, tiled cache, color reduction.
+  - U5 debug and the rest (about 50): debug markers and groups, checkpoints, memory usage getters, GL interop, finalizers,
+    GetProcAddress, fast clear registration. For each function, the library decides: a logged no-op or an explicit refusal.
+  Steps of one group, one session each: (a) library analyst table, check 3 rows or more in the disassembly. (b) brief, handler
+  writer patch (handlers and unit tests). (c) read the whole patch, build, `ctest`, mutant of each new test, update
+  `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
+  After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
+  reached are written as "not verified in the game".
+  Open decision (ask the user at the start of U1): the trace of the enum argument values (the missing part of 4-u1), before
+  or after U1.
+  Current step: U1 step (a), not started.
 - Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
   buffer overflow in the init builders would crash).
 - Diagnostic code: `patches/diag-taskB.patch`. Apply it only for a diagnostic run, and remove it before a commit.
