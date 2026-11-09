@@ -38,6 +38,11 @@ NXAevora is in alpha. It is not ready for general use.
   run time (the JIT) when the game reaches code that the recompiler missed. NXAevora keeps this as a safety net.
   The JIT was not needed in any of the tested scenes after the jump-table fix. See [ROADMAP.md](ROADMAP.md) and
   [docs/jit-analysis.md](docs/jit-analysis.md).
+- A native graphics path is under construction (phase 6 of the roadmap). With the setting `nvn_native=1`, the NVN
+  calls of the game go to code on the PC and the game's own NVN library does not run. On this path the game now draws
+  and runs at a steady 30 frames each second, but character models are not shown or show with broken vertices, and
+  11 vertex shaders are not translated. The default is still the old path (`nvn_native=0`). The plan is in
+  [docs/nvn-plan.md](docs/nvn-plan.md).
 - Not tested yet: video, long play in the open areas, the native mouse look in cutscenes, menus and battles, and
   battles against wild Pokemon of the later areas.
 - Known problems: a stop of about 1.3 seconds right after the start (the game's own loading loop, so there is no fix),
