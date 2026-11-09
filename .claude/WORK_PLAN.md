@@ -6,11 +6,9 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 
 ## State
 
-- Last commit: `7c0b05a` (work plan, task (d) step 1). NOT PUSHED: `9aa4635`, `a897e21`, `7e48157` and the work plan updates.
-  `4e6b015` and older are PUSHED.
-  History: `OLD-WORK_PLAN.md`, last two sections.
+- NOT PUSHED: `9aa4635` and all later commits (`a897e21` is code, the others are work plan updates).
+  `4e6b015` and older are PUSHED. History: `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- GitHub: Discussions are on, the label `graphics` exists. The templates show only after the push.
 - The exe in `game/` is `48898a1` plus the diagnostic of task (d) (md5 361c8c3e). The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
@@ -49,13 +47,11 @@ RomFS and a file layer for mods.
 Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 to 3 are done except the open steps
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-Stage 4: the black screen is fixed and the game runs at 30 fps (history: `OLD-WORK_PLAN.md`).
-
 NEXT, task (d) step 2: the characters are missing because the host program builder (`nvn_program_build_words`,
 nvn_params.c:1247) does not write the transform feedback (XFB) block, so no XFB capture happens on the native path.
 - Brief: `reports/brief-writer-xfb-prog.md` (verified facts, decisions, tests with the game's values). History of the cause and of
   step 1: `OLD-WORK_PLAN.md`, last two sections.
-- Step 2 (this session): launch the code writer (worktree `wt-xfb` is made, detached at `7c0b05a`, patch `patches/xfb-prog-1.patch`), read the whole patch, build,
+- Step 2 (next session): launch the code writer (worktree `wt-xfb` is made, detached at `7c0b05a`, patch `patches/xfb-prog-1.patch`), read the whole patch, build,
   run ctest. Step 3 (next session): one native run to the field. The `diag-xfb` lines must match the non-native ones
   (0x1C0+4i = {0,3,0xC} / {0,1,4} / {0,1,4}, 0xA00+0x20i = 0x00222120 / 0x24 / 0x28) and the characters must show. Then remove the
   diagnostic and commit.
@@ -79,8 +75,6 @@ Notes:
   `ctest`): `OLD-WORK_PLAN.md`, section "NVN stage 3, 3d steps 3 to 5" (line ~1008). Remove the worktree after the patch.
 - Edit CRLF files with the Edit tool. `sed -i` in Git Bash changes CRLF to LF (restore with `unix2dos`, check with `file`).
 - Wait for an agent with a background loop on the report or patch file (stable for 60 seconds). Read every patch fully.
-- The GPU page table mapping of a pool is connected (0037). The GPU addresses are a bump allocator from 0x400000000. Virtual pools and
-  imports fail with a log line. The texture kind is not ported (stored 0).
 - `tracked_material` fails on two SMAA `.dds` files (not caused by this work). Tell the user; the fix is a list entry or a moved
   file, and the user decides.
 - After each fix of the runtime, ask the user for one run (`nvn_native=1`, update program, wait 10 seconds, close), then read the log
@@ -94,7 +88,6 @@ Notes:
 - Review of `0016` not fixed: finding 5 (the first frame after the pointer arrives gives an arrow key to the game) and finding 8 (a
   design choice).
 - Remove the test window (`imgui_test`, its Debug menu entry) at the end of the window work.
-- A commit that uses the code reviewer lists it: add the line `Co-Authored-By: GPT-6.1-Sol (Codex) <noreply@openai.com>`.
 - Not done yet: make `reports/brief-template.md` (the fixed rules, line ends and patch steps of the briefs) and a code map
   `.claude/CODE_MAP.md` (function names and line numbers of `nvn_native.c`). The user checks `/context` for the 25k base and may
   switch off the skills and MCP servers that the project does not use.

@@ -2122,3 +2122,10 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   adds the block (brief above, worktree `wt-xfb`, patch `patches/xfb-prog-1.patch`), the caller reads the patch, builds, runs
   ctest; (3) one native run to the
   field: the `diag-xfb` lines must match the non-native ones and the characters must show; then remove the diagnostic and commit.
+
+## Facts moved from WORK_PLAN.md (2026-11-09, night, session change before task (d) step 2)
+
+- GitHub: Discussions are on, the label `graphics` exists. The templates show only after the push.
+- Stage 4: the black screen is fixed and the game runs at 30 fps (history: the sections above).
+- The GPU page table mapping of a pool is connected (0037). The GPU addresses are a bump allocator from 0x400000000. Virtual pools and
+  imports fail with a log line. The texture kind is not ported (stored 0).
