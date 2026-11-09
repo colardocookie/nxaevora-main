@@ -57,7 +57,7 @@ typedef struct {
 } QueueRec;
 typedef struct {
     uint64_t device, native_window, textures[NVN_WINDOW_MAX_TEXTURES];
-    uint32_t texture_count, interval;
+    uint32_t texture_count, interval, active_textures;
     NvnWindowCrop crop;
     uint8_t states[NVN_WINDOW_MAX_TEXTURES];
     int32_t last_index;
@@ -644,6 +644,30 @@ static void h_memory_pool_builder_set_storage(CPU* c, u64 entry) {
     b->handle = 0;
     pm_unlock(&objs_lock);
 }
+static void h_memory_pool_builder_get_device(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = memory_pool_builder(c->x[0])->device;
+    pm_unlock(&objs_lock);
+}
+static void h_memory_pool_builder_get_memory(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = memory_pool_builder(c->x[0])->storage;
+    pm_unlock(&objs_lock);
+}
+static void h_memory_pool_builder_get_size(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = memory_pool_builder(c->x[0])->size;
+    pm_unlock(&objs_lock);
+}
+static void h_memory_pool_builder_get_flags(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = memory_pool_builder(c->x[0])->flags;
+    pm_unlock(&objs_lock);
+}
 static void pool_initialize_error(NvnPoolResult result, u64 pool, const NvnMemoryPoolBuilder* b) {
     if (result == NVN_POOL_UNSUPPORTED_VIRTUAL)
         LOG("nvn-native: virtual memory pool not supported\n");
@@ -719,6 +743,58 @@ MEMORY_POOL_GETTER(map, nvn_memory_pool_map(p->flags, p->storage))
 MEMORY_POOL_GETTER(get_flags, nvn_memory_pool_flags(p->flags))
 MEMORY_POOL_GETTER(get_buffer_address, p->gpu_address)
 
+static void h_memory_pool_get_size(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = memory_pool_rec(c->x[0])->size;
+    pm_unlock(&objs_lock);
+}
+
+/* The event builder (pool, offset). A builder that the game never gave to SetDefaults starts zero, as calloc gives. */
+typedef struct { uint64_t pool, offset; } EventBuilderRec;
+static EventBuilderRec* event_builder(u64 addr) { return rec_get(addr, NVN_OBJ_EVENT_BUILDER, sizeof(EventBuilderRec)); }
+static void h_event_builder_set_defaults(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    *event_builder(c->x[0]) = (EventBuilderRec){0};
+    pm_unlock(&objs_lock);
+}
+static void h_event_builder_set_storage(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    EventBuilderRec* b = event_builder(c->x[0]);
+    b->pool = c->x[1];
+    b->offset = c->x[2];
+    pm_unlock(&objs_lock);
+}
+static void h_event_builder_get_memory_pool(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = event_builder(c->x[0])->pool;
+    pm_unlock(&objs_lock);
+}
+static void h_event_builder_get_memory_offset(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = event_builder(c->x[0])->offset;
+    pm_unlock(&objs_lock);
+}
+static void h_event_builder_get_storage(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnEventBuilderGetStorage";
+    pm_lock(&objs_lock);
+    const uint64_t addr = c->x[0];
+    const EventBuilderRec* b = event_builder(addr);
+    c->x[0] = 0;
+    if (!native_guest_writable(c->x[1], sizeof(uint64_t))) {
+        LOG("nvn-native: %s unwritable output\n", name);
+    } else {
+        gw64(c->x[1], b->offset);
+        c->x[0] = b->pool;
+    }
+    pm_unlock(&objs_lock);
+}
+
 #define DESCRIPTOR_POOL_HANDLERS(name, kind)                                        \
     static void h_##name##_pool_initialize(CPU* c, u64 entry) {                     \
         (void)entry;                                                                \
@@ -737,6 +813,27 @@ MEMORY_POOL_GETTER(get_buffer_address, p->gpu_address)
     }
 DESCRIPTOR_POOL_HANDLERS(texture, NVN_OBJ_TEXTURE_POOL)
 DESCRIPTOR_POOL_HANDLERS(sampler, NVN_OBJ_SAMPLER_POOL)
+
+#define DESCRIPTOR_POOL_MEMORY_HANDLERS(name, kind)                                 \
+    static void h_##name##_pool_get_memory_pool(CPU* c, u64 entry) {                \
+        (void)entry;                                                               \
+        pm_lock(&objs_lock);                                                       \
+        const DescriptorPoolRec* p = known_record(c->x[0], kind);                   \
+        if (!p) LOG("nvn-native: " #name " pool getter unknown pool=%llx\n", (unsigned long long)c->x[0]); \
+        c->x[0] = p ? p->memory_pool : 0;                                          \
+        pm_unlock(&objs_lock);                                                     \
+    }                                                                              \
+    static void h_##name##_pool_get_memory_offset(CPU* c, u64 entry) {              \
+        (void)entry;                                                               \
+        pm_lock(&objs_lock);                                                       \
+        const DescriptorPoolRec* p = known_record(c->x[0], kind);                   \
+        if (!p) LOG("nvn-native: " #name " pool getter unknown pool=%llx\n", (unsigned long long)c->x[0]); \
+        c->x[0] = p ? p->offset : 0;                                               \
+        pm_unlock(&objs_lock);                                                     \
+    }
+DESCRIPTOR_POOL_MEMORY_HANDLERS(texture, NVN_OBJ_TEXTURE_POOL)
+DESCRIPTOR_POOL_MEMORY_HANDLERS(sampler, NVN_OBJ_SAMPLER_POOL)
+#undef DESCRIPTOR_POOL_MEMORY_HANDLERS
 
 /* Buffers (G7, decision 1 of the 3c design): a buffer holds its pool (address and generation), offset and size. */
 typedef struct { uint64_t device, pool, offset, size; } BufferBuilderRec;
@@ -791,6 +888,24 @@ static void h_buffer_builder_get_size(CPU* c, u64 entry) {
     c->x[0] = buffer_builder(c->x[0])->size;
     pm_unlock(&objs_lock);
 }
+static void h_buffer_builder_get_device(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = buffer_builder(c->x[0])->device;
+    pm_unlock(&objs_lock);
+}
+static void h_buffer_builder_get_memory_pool(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = buffer_builder(c->x[0])->pool;
+    pm_unlock(&objs_lock);
+}
+static void h_buffer_builder_get_memory_offset(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    c->x[0] = buffer_builder(c->x[0])->offset;
+    pm_unlock(&objs_lock);
+}
 static int buffer_initialize(BufferRec* r, const BufferBuilderRec* b) {
     NvnObj* o = nvn_objtab_find(&objs, b->pool);
     if (!o || o->kind != NVN_OBJ_MEMORY_POOL) {
@@ -826,12 +941,10 @@ static void h_buffer_initialize(CPU* c, u64 entry) {
     c->x[0] = ok;
     pm_unlock(&objs_lock);
 }
+/* The library's function is one `ret`: the object stays readable, so the host keeps its record (U1 decision 2). */
 static void h_buffer_finalize(CPU* c, u64 entry) {
+    (void)c;
     (void)entry;
-    pm_lock(&objs_lock);
-    NvnObj* o = nvn_objtab_find(&objs, c->x[0]);
-    if (o && o->kind == NVN_OBJ_BUFFER) nvn_objtab_remove(&objs, c->x[0]);
-    pm_unlock(&objs_lock);
 }
 static void h_buffer_map(CPU* c, u64 entry) {
     (void)entry;
@@ -857,6 +970,26 @@ static void h_buffer_get_size(CPU* c, u64 entry) {
     if (!b) buffer_lost("BufferGetSize", c->x[0]);
     c->x[0] = b ? b->size : 0;
     pm_unlock(&objs_lock);
+}
+static void h_buffer_get_memory_pool(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const BufferRec* b = known_record(c->x[0], NVN_OBJ_BUFFER);
+    if (!b) buffer_lost("BufferGetMemoryPool", c->x[0]);
+    c->x[0] = b ? b->pool : 0;
+    pm_unlock(&objs_lock);
+}
+static void h_buffer_get_memory_offset(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const BufferRec* b = known_record(c->x[0], NVN_OBJ_BUFFER);
+    if (!b) buffer_lost("BufferGetMemoryOffset", c->x[0]);
+    c->x[0] = b ? b->offset : 0;
+    pm_unlock(&objs_lock);
+}
+static void h_buffer_get_debug_id(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = 0; /* the library body is `mov x0, xzr; ret` */
 }
 static void h_buffer_set_debug_label(CPU* c, u64 entry) {
     (void)c;
@@ -899,6 +1032,11 @@ static float native_float_arg(const CPU* c, unsigned index) {
     float value;
     memcpy(&value, &bits, sizeof value);
     return value;
+}
+static uint32_t native_float_bits(float value) {
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof bits);
+    return bits;
 }
 #define RESOURCE_BUILDER_HANDLER(name, type, get, statements) \
     static void h_##name(CPU* c, u64 entry) {                 \
@@ -994,7 +1132,187 @@ static void h_texture_builder_set_packaged_texture_layout(CPU* c, u64 entry) {
     pm_unlock(&objs_lock);
 }
 
+RESOURCE_BUILDER_HANDLER(sampler_builder_get_device, NvnSampler, sampler_builder,
+    c->x[0] = b->device)
+RESOURCE_BUILDER_HANDLER(sampler_builder_get_lod_bias, NvnSampler, sampler_builder,
+    SNX_VSET_S(c->v[0], 0, native_float_bits(b->lod_bias)))
+RESOURCE_BUILDER_HANDLER(sampler_builder_get_max_anisotropy, NvnSampler, sampler_builder,
+    SNX_VSET_S(c->v[0], 0, native_float_bits(b->anisotropy)))
+RESOURCE_BUILDER_HANDLER(sampler_builder_get_reduction_filter, NvnSampler, sampler_builder,
+    c->x[0] = b->reduction)
+RESOURCE_BUILDER_HANDLER(sampler_builder_get_lod_snap, NvnSampler, sampler_builder,
+    SNX_VSET_S(c->v[0], 0, native_float_bits(b->lod_snap)))
+
+RESOURCE_BUILDER_HANDLER(texture_builder_get_depth, NvnTextureBuilder, texture_builder,
+    c->x[0] = b->depth)
+RESOURCE_BUILDER_HANDLER(texture_builder_get_depth_stencil_mode, NvnTextureBuilder, texture_builder,
+    c->x[0] = b->depth_stencil_mode)
+RESOURCE_BUILDER_HANDLER(texture_builder_get_device, NvnTextureBuilder, texture_builder,
+    c->x[0] = b->device)
+RESOURCE_BUILDER_HANDLER(texture_builder_get_flags, NvnTextureBuilder, texture_builder,
+    c->x[0] = b->flags)
+RESOURCE_BUILDER_HANDLER(texture_builder_get_format, NvnTextureBuilder, texture_builder,
+    c->x[0] = b->format)
+RESOURCE_BUILDER_HANDLER(texture_builder_get_levels, NvnTextureBuilder, texture_builder,
+    c->x[0] = b->levels)
+RESOURCE_BUILDER_HANDLER(texture_builder_get_samples, NvnTextureBuilder, texture_builder,
+    c->x[0] = b->samples)
+RESOURCE_BUILDER_HANDLER(texture_builder_get_target, NvnTextureBuilder, texture_builder,
+    c->x[0] = b->target)
+RESOURCE_BUILDER_HANDLER(texture_builder_get_stride, NvnTextureBuilder, texture_builder,
+    c->x[0] = b->stride)
+RESOURCE_BUILDER_HANDLER(texture_builder_get_memory_offset, NvnTextureBuilder, texture_builder,
+    c->x[0] = b->offset)
+RESOURCE_BUILDER_HANDLER(texture_builder_get_memory_pool, NvnTextureBuilder, texture_builder,
+    c->x[0] = b->pool)
+RESOURCE_BUILDER_HANDLER(texture_builder_get_gl_texture_name, NvnTextureBuilder, texture_builder,
+    c->x[0] = b->gl_name)
+RESOURCE_BUILDER_HANDLER(texture_builder_get_packaged_texture_data, NvnTextureBuilder, texture_builder,
+    c->x[0] = b->packaged)
+RESOURCE_BUILDER_HANDLER(texture_builder_set_gl_texture_name, NvnTextureBuilder, texture_builder,
+    b->gl_name = (u32)c->x[1])
+RESOURCE_BUILDER_HANDLER(texture_builder_set_packaged_texture_data, NvnTextureBuilder, texture_builder,
+    b->packaged = c->x[1])
+RESOURCE_BUILDER_HANDLER(texture_builder_set_samples, NvnTextureBuilder, texture_builder,
+    b->samples = (u32)c->x[1])
+RESOURCE_BUILDER_HANDLER(texture_builder_set_size_1d, NvnTextureBuilder, texture_builder,
+    b->width = (u32)c->x[1]; b->height = 1; b->depth = 1)
+
 #undef RESOURCE_BUILDER_HANDLER
+
+/* 1 when the 32-bit outputs x1.. of a getter are writable, checked before the first store. Caller holds objs_lock. */
+static int guest_outputs_writable(CPU* c, const char* name, unsigned outputs) {
+    for (unsigned i = 0; i < outputs; i++)
+        if (!native_guest_writable(c->x[1 + i], sizeof(uint32_t))) {
+            LOG("nvn-native: %s unwritable output\n", name);
+            return 0;
+        }
+    return 1;
+}
+/* A builder record is made with its defaults; an initialized sampler must be known. */
+static const NvnSampler* sampler_getter_record(CPU* c, const char* name, NvnObjKind kind, unsigned outputs) {
+    if (!guest_outputs_writable(c, name, outputs)) return NULL;
+    const NvnSampler* s = kind == NVN_OBJ_SAMPLER_BUILDER ? sampler_builder(c->x[0]) : known_record(c->x[0], kind);
+    if (!s) LOG("nvn-native: %s unknown sampler=%llx\n", name, (unsigned long long)c->x[0]);
+    return s;
+}
+#define SAMPLER_OUT2(name, kind, first, second)                                     \
+    static void h_##name(CPU* c, u64 entry) {                                       \
+        (void)entry;                                                               \
+        pm_lock(&objs_lock);                                                       \
+        const NvnSampler* b = sampler_getter_record(c, #name, kind, 2);            \
+        if (b) { gw32(c->x[1], (u32)(first)); gw32(c->x[2], (u32)(second)); }       \
+        pm_unlock(&objs_lock);                                                     \
+    }
+#define SAMPLER_OUT3(name, kind, first, second, third)                              \
+    static void h_##name(CPU* c, u64 entry) {                                       \
+        (void)entry;                                                               \
+        pm_lock(&objs_lock);                                                       \
+        const NvnSampler* b = sampler_getter_record(c, #name, kind, 3);            \
+        if (b) { gw32(c->x[1], (u32)(first)); gw32(c->x[2], (u32)(second));         \
+                 gw32(c->x[3], (u32)(third)); }                                    \
+        pm_unlock(&objs_lock);                                                     \
+    }
+SAMPLER_OUT2(sampler_builder_get_min_mag_filter, NVN_OBJ_SAMPLER_BUILDER, b->min_filter, b->mag_filter)
+SAMPLER_OUT2(sampler_builder_get_lod_clamp, NVN_OBJ_SAMPLER_BUILDER,
+             native_float_bits(b->min_lod), native_float_bits(b->max_lod))
+SAMPLER_OUT2(sampler_builder_get_compare, NVN_OBJ_SAMPLER_BUILDER, b->compare_enable, b->compare)
+SAMPLER_OUT3(sampler_builder_get_wrap_mode, NVN_OBJ_SAMPLER_BUILDER, b->wrap[0], b->wrap[1], b->wrap[2])
+SAMPLER_OUT2(sampler_get_min_mag_filter, NVN_OBJ_SAMPLER, b->min_filter, b->mag_filter)
+SAMPLER_OUT2(sampler_get_lod_clamp, NVN_OBJ_SAMPLER, native_float_bits(b->min_lod), native_float_bits(b->max_lod))
+SAMPLER_OUT2(sampler_get_compare, NVN_OBJ_SAMPLER, b->compare_enable, b->compare)
+SAMPLER_OUT3(sampler_get_wrap_mode, NVN_OBJ_SAMPLER, b->wrap[0], b->wrap[1], b->wrap[2])
+#undef SAMPLER_OUT2
+#undef SAMPLER_OUT3
+
+static void sampler_get_border_color(CPU* c, const char* name, NvnObjKind kind) {
+    pm_lock(&objs_lock);
+    if (!native_guest_writable(c->x[1], 4 * sizeof(uint32_t))) {
+        LOG("nvn-native: %s unwritable output\n", name);
+        pm_unlock(&objs_lock);
+        return;
+    }
+    const NvnSampler* s = kind == NVN_OBJ_SAMPLER_BUILDER ? sampler_builder(c->x[0]) : known_record(c->x[0], kind);
+    if (!s) {
+        LOG("nvn-native: %s unknown sampler=%llx\n", name, (unsigned long long)c->x[0]);
+        pm_unlock(&objs_lock);
+        return;
+    }
+    uint32_t out[4];
+    nvn_sampler_border(s, out);
+    for (unsigned i = 0; i < 4; i++) gw32(c->x[1] + i * sizeof(uint32_t), out[i]);
+    pm_unlock(&objs_lock);
+}
+static void h_sampler_builder_get_border_color(CPU* c, u64 entry) {
+    (void)entry;
+    sampler_get_border_color(c, "nvnSamplerBuilderGetBorderColor", NVN_OBJ_SAMPLER_BUILDER);
+}
+static void h_sampler_get_border_color(CPU* c, u64 entry) {
+    (void)entry;
+    sampler_get_border_color(c, "nvnSamplerGetBorderColor", NVN_OBJ_SAMPLER);
+}
+#define SAMPLER_OBJECT_GET_SCALAR(name, expression)                                 \
+    static void h_##name(CPU* c, u64 entry) {                                       \
+        (void)entry;                                                               \
+        pm_lock(&objs_lock);                                                       \
+        const NvnSampler* s = known_record(c->x[0], NVN_OBJ_SAMPLER);              \
+        if (!s) LOG("nvn-native: " #name " unknown sampler=%llx\n", (unsigned long long)c->x[0]); \
+        c->x[0] = s ? (expression) : 0;                                            \
+        pm_unlock(&objs_lock);                                                     \
+    }
+#define SAMPLER_OBJECT_GET_FLOAT(name, field)                                       \
+    static void h_##name(CPU* c, u64 entry) {                                       \
+        (void)entry;                                                               \
+        pm_lock(&objs_lock);                                                       \
+        const NvnSampler* s = known_record(c->x[0], NVN_OBJ_SAMPLER);              \
+        if (!s) LOG("nvn-native: " #name " unknown sampler=%llx\n", (unsigned long long)c->x[0]); \
+        SNX_VSET_S(c->v[0], 0, s ? native_float_bits(s->field) : 0);               \
+        pm_unlock(&objs_lock);                                                     \
+    }
+SAMPLER_OBJECT_GET_SCALAR(sampler_get_reduction_filter, s->reduction)
+SAMPLER_OBJECT_GET_FLOAT(sampler_get_lod_bias, lod_bias)
+SAMPLER_OBJECT_GET_FLOAT(sampler_get_max_anisotropy, anisotropy)
+#undef SAMPLER_OBJECT_GET_SCALAR
+#undef SAMPLER_OBJECT_GET_FLOAT
+
+static void h_sampler_get_debug_id(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = 0; /* the library body is `mov x0, xzr; ret` */
+}
+
+/* The texture builder getters with an output pointer and the two derived values. */
+static void h_texture_builder_get_swizzle(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnTextureBuilderGetSwizzle";
+    pm_lock(&objs_lock);
+    if (guest_outputs_writable(c, name, 4)) {
+        const NvnTextureBuilder* b = texture_builder(c->x[0]);
+        for (unsigned i = 0; i < 4; i++) gw32(c->x[1 + i], b->swizzle[i]);
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_texture_builder_get_raw_storage_class(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const NvnTextureBuilder* b = texture_builder(c->x[0]);
+    c->x[0] = nvn_texture_raw_storage_class(b->flags, b->format);
+    pm_unlock(&objs_lock);
+}
+static void h_texture_builder_get_packaged_texture_layout(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnTextureBuilderGetPackagedTextureLayout";
+    pm_lock(&objs_lock);
+    if (native_guest_writable(c->x[1], sizeof(uint32_t))) {
+        const NvnTextureBuilder* b = texture_builder(c->x[0]);
+        uint32_t layout = 0;
+        c->x[0] = nvn_texture_packaged_layout(b->tile, &layout);
+        gw32(c->x[1], layout);
+    } else {
+        LOG("nvn-native: %s unwritable output\n", name);
+    }
+    pm_unlock(&objs_lock);
+}
+
 
 static void h_sampler_initialize(CPU* c, u64 entry) {
     (void)entry;
@@ -1459,18 +1777,18 @@ static int descriptor_destination(CPU* c, NvnObjKind kind, const char* operation
     *at = base + offset;
     return 1;
 }
-static void sampler_pool_register(CPU* c) {
+static void sampler_pool_register(CPU* c, NvnObjKind source_kind, const char* source_name) {
     uint64_t at;
     if (!descriptor_destination(c, NVN_OBJ_SAMPLER_POOL, "sampler registration", NVN_SAMPLER_DESCRIPTOR_BYTES, &at)) return;
-    NvnSampler* sampler = known_record(c->x[2], NVN_OBJ_SAMPLER);
+    NvnSampler* sampler = known_record(c->x[2], source_kind);
     if (!sampler) {
-        LOG("nvn-native: sampler registration unknown sampler=%llx\n", (unsigned long long)c->x[2]);
+        LOG("nvn-native: sampler registration unknown %s=%llx\n", source_name, (unsigned long long)c->x[2]);
         return;
     }
     uint32_t words[NVN_SAMPLER_DESCRIPTOR_WORDS];
     if (!nvn_sampler_descriptor(sampler, &nvn_sampler_device_words, words)) {
-        LOG("nvn-native: sampler registration unsupported wrap modes %u,%u,%u sampler=%llx\n", sampler->wrap[0],
-            sampler->wrap[1], sampler->wrap[2], (unsigned long long)c->x[2]);
+        LOG("nvn-native: sampler registration unsupported wrap modes %u,%u,%u %s=%llx\n", sampler->wrap[0],
+            sampler->wrap[1], sampler->wrap[2], source_name, (unsigned long long)c->x[2]);
         return;
     }
     for (unsigned i = 0; i < NVN_SAMPLER_DESCRIPTOR_WORDS; i++) gw32(at + i * sizeof(uint32_t), words[i]);
@@ -1478,7 +1796,13 @@ static void sampler_pool_register(CPU* c) {
 static void h_sampler_pool_register_sampler(CPU* c, u64 entry) {
     (void)entry;
     pm_lock(&objs_lock);
-    sampler_pool_register(c);
+    sampler_pool_register(c, NVN_OBJ_SAMPLER, "sampler");
+    pm_unlock(&objs_lock);
+}
+static void h_sampler_pool_register_sampler_builder(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    sampler_pool_register(c, NVN_OBJ_SAMPLER_BUILDER, "sampler builder");
     pm_unlock(&objs_lock);
 }
 #define TEXTURE_FORMAT_TABLE_POINTER 0xe03fd40ull
@@ -1607,7 +1931,64 @@ TEXTURE_GETTER(height, t->builder.height)
 TEXTURE_GETTER(stride, t->layout.linear_stride)
 TEXTURE_GETTER(target, t->builder.target)
 TEXTURE_GETTER(depth, t->builder.depth)
+TEXTURE_GETTER(depth_stencil_mode, t->builder.depth_stencil_mode)
+TEXTURE_GETTER(flags, t->builder.flags)
+TEXTURE_GETTER(format, t->builder.format)
+TEXTURE_GETTER(levels, t->builder.levels)
+TEXTURE_GETTER(memory_offset, t->builder.offset)
+TEXTURE_GETTER(memory_pool, t->builder.pool)
+TEXTURE_GETTER(samples, t->builder.samples)
+TEXTURE_GETTER(storage_size, nvn_texture_storage_size(t))
+TEXTURE_GETTER(texture_address, t->address)
 #undef TEXTURE_GETTER
+
+static void h_texture_get_debug_id(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = 0; /* the library body is `mov x0, xzr; ret` */
+}
+static void h_texture_get_raw_storage_class(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const TextureRec* t = known_record(c->x[0], NVN_OBJ_TEXTURE);
+    if (!t) LOG("nvn-native: nvnTextureGetRawStorageClass unknown texture=%llx\n", (unsigned long long)c->x[0]);
+    c->x[0] = t ? nvn_texture_raw_storage_class(t->builder.flags, t->builder.format) : 0;
+    pm_unlock(&objs_lock);
+}
+static void h_texture_get_swizzle(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnTextureGetSwizzle";
+    pm_lock(&objs_lock);
+    if (guest_outputs_writable(c, name, 4)) {
+        const TextureRec* t = known_record(c->x[0], NVN_OBJ_TEXTURE);
+        if (!t)
+            LOG("nvn-native: %s unknown texture=%llx\n", name, (unsigned long long)c->x[0]);
+        else
+            for (unsigned i = 0; i < 4; i++) gw32(c->x[1 + i], t->builder.swizzle[i]);
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_texture_compare(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const TextureRec* a = known_record(c->x[0], NVN_OBJ_TEXTURE);
+    const TextureRec* b = known_record(c->x[1], NVN_OBJ_TEXTURE);
+    if (!a || !b)
+        LOG("nvn-native: nvnTextureCompare unknown texture=%llx\n",
+            (unsigned long long)(a ? c->x[1] : c->x[0]));
+    c->x[0] = a && b ? nvn_texture_equal(a, b) : 0;
+    pm_unlock(&objs_lock);
+}
+static void h_texture_view_compare(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const NvnTextureView* a = known_record(c->x[0], NVN_OBJ_TEXTURE_VIEW);
+    const NvnTextureView* b = known_record(c->x[1], NVN_OBJ_TEXTURE_VIEW);
+    if (!a || !b)
+        LOG("nvn-native: nvnTextureViewCompare unknown view=%llx\n",
+            (unsigned long long)(a ? c->x[1] : c->x[0]));
+    c->x[0] = a && b ? nvn_texture_view_equal(a, b) : 0;
+    pm_unlock(&objs_lock);
+}
 
 /* The outputs of a texture view getter: the pointer must be writable before the record is used. One log line on failure. */
 static int texture_view_getter(CPU* c, const char* name, unsigned outputs, const NvnTextureView** out) {
@@ -1756,12 +2137,10 @@ static void h_texture_initialize(CPU* c, u64 entry) {
     pm_unlock(&objs_lock);
 }
 
+/* The library's function is one `ret`: the object stays readable, so the host keeps its record (U1 decision 2). */
 static void h_texture_finalize(CPU* c, u64 entry) {
+    (void)c;
     (void)entry;
-    pm_lock(&objs_lock);
-    NvnObj* o = nvn_objtab_find(&objs, c->x[0]);
-    if (o && o->kind == NVN_OBJ_TEXTURE) nvn_objtab_remove(&objs, c->x[0]);
-    pm_unlock(&objs_lock);
 }
 /* The library flushes the pool cache and moves no data; the host write tracking already covers the pool. */
 static void h_texture_flush_texels(CPU* c, u64 entry) {
@@ -2516,6 +2895,62 @@ static void h_blend_state_set_blend_equation(CPU* c, u64 entry) {
     w[0] = nvn_blend_state_set_blend_equation(w[0], (u32)c->x[1], (u32)c->x[2]);
     pm_unlock(&objs_lock);
 }
+static void h_blend_state_get_advanced_mode(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const uint32_t* w = state_words(c->x[0], NVN_STATE_BLEND);
+    c->x[0] = nvn_blend_state_get_advanced_mode(w[0]);
+    pm_unlock(&objs_lock);
+}
+static void h_blend_state_get_advanced_overlap(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const uint32_t* w = state_words(c->x[0], NVN_STATE_BLEND);
+    c->x[0] = nvn_blend_state_get_advanced_overlap(w[0]);
+    pm_unlock(&objs_lock);
+}
+static void h_blend_state_get_advanced_premultiplied_src(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const uint32_t* w = state_words(c->x[0], NVN_STATE_BLEND);
+    c->x[0] = nvn_blend_state_get_advanced_premultiplied_src(w[0]);
+    pm_unlock(&objs_lock);
+}
+static void h_blend_state_get_advanced_normalized_dst(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const uint32_t* w = state_words(c->x[0], NVN_STATE_BLEND);
+    c->x[0] = nvn_blend_state_get_advanced_normalized_dst(w[0]);
+    pm_unlock(&objs_lock);
+}
+static void h_blend_state_set_advanced_mode(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    uint32_t* w = state_words(c->x[0], NVN_STATE_BLEND);
+    w[0] = nvn_blend_state_set_advanced_mode(w[0], (u32)c->x[1]);
+    pm_unlock(&objs_lock);
+}
+static void h_blend_state_set_advanced_overlap(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    uint32_t* w = state_words(c->x[0], NVN_STATE_BLEND);
+    w[0] = nvn_blend_state_set_advanced_overlap(w[0], (u32)c->x[1]);
+    pm_unlock(&objs_lock);
+}
+static void h_blend_state_set_advanced_premultiplied_src(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    uint32_t* w = state_words(c->x[0], NVN_STATE_BLEND);
+    w[0] = nvn_blend_state_set_advanced_premultiplied_src(w[0], (u32)c->x[1]);
+    pm_unlock(&objs_lock);
+}
+static void h_blend_state_set_advanced_normalized_dst(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    uint32_t* w = state_words(c->x[0], NVN_STATE_BLEND);
+    w[0] = nvn_blend_state_set_advanced_normalized_dst(w[0], (u32)c->x[1]);
+    pm_unlock(&objs_lock);
+}
 static void h_channel_mask_state_set_channel_mask(CPU* c, u64 entry) {
     (void)entry;
     pm_lock(&objs_lock);
@@ -2597,6 +3032,66 @@ STATE_GET_HANDLER(multisample_state_get_coverage_to_color_output, NVN_STATE_MULT
 STATE_GET_HANDLER(polygon_state_get_cull_face, NVN_STATE_POLYGON, nvn_polygon_state_get_cull_face(w[0]))
 STATE_GET_HANDLER(polygon_state_get_front_face, NVN_STATE_POLYGON, nvn_polygon_state_get_front_face(w[0]))
 #undef STATE_GET_HANDLER
+
+static void h_multisample_state_get_sample_locations_enable(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const uint32_t* w = state_words(c->x[0], NVN_STATE_MULTISAMPLE);
+    c->x[0] = nvn_multisample_state_get_sample_locations_enable(w[0]);
+    pm_unlock(&objs_lock);
+}
+static void h_multisample_state_get_sample_locations_grid_enable(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const uint32_t* w = state_words(c->x[0], NVN_STATE_MULTISAMPLE);
+    c->x[0] = nvn_multisample_state_get_sample_locations_grid_enable(w[0]);
+    pm_unlock(&objs_lock);
+}
+static void h_multisample_state_get_sample_locations_grid(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnMultisampleStateGetSampleLocationsGrid";
+    pm_lock(&objs_lock);
+    if (guest_outputs_writable(c, name, 2)) {
+        const uint32_t* w = state_words(c->x[0], NVN_STATE_MULTISAMPLE);
+        uint32_t x = 0, y = 0;
+        if (nvn_multisample_state_sample_grid(nvn_multisample_state_get_samples(w[0]),
+                                              nvn_multisample_state_get_raster_samples(w[0]), &x, &y)) {
+            gw32(c->x[1], x);
+            gw32(c->x[2], y);
+        }
+    }
+    pm_unlock(&objs_lock);
+}
+#define MULTISAMPLE_LOCATION_BYTES 16u /* the four sample location words of the record, guest bytes 4..19 */
+static void h_multisample_state_set_sample_locations(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnMultisampleStateSetSampleLocations";
+    const uint32_t count = (u32)c->x[2];
+    pm_lock(&objs_lock);
+    const uint32_t index = (u32)c->x[1];
+    if (!count) {
+        pm_unlock(&objs_lock);
+        return;
+    }
+    /* The library writes past its record when index + count leaves 16. The host refuses that write. */
+    if (!native_guest_readable(c->x[3], (u64)count * 2u * sizeof(uint32_t)) ||
+        index > MULTISAMPLE_LOCATION_BYTES || count > MULTISAMPLE_LOCATION_BYTES - index) {
+        LOG("nvn-native: %s skipped index=%u count=%u\n", name, index, count);
+        pm_unlock(&objs_lock);
+        return;
+    }
+    uint32_t* w = state_words(c->x[0], NVN_STATE_MULTISAMPLE);
+    uint8_t* bytes = (uint8_t*)w + 4;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t xb = gr32(c->x[3] + (u64)i * 2u * sizeof(uint32_t));
+        uint32_t yb = gr32(c->x[3] + (u64)i * 2u * sizeof(uint32_t) + sizeof(uint32_t));
+        float x, y;
+        memcpy(&x, &xb, sizeof x);
+        memcpy(&y, &yb, sizeof y);
+        bytes[index + i] = nvn_multisample_sample_location(x, y);
+    }
+    pm_unlock(&objs_lock);
+}
 
 /* The Get functions with output pointers check every destination before the first store. */
 static void h_blend_state_get_blend_func(CPU* c, u64 entry) {
@@ -4036,7 +4531,44 @@ WINDOW_BUILDER_HANDLER(window_builder_set_device, nvn_window_builder_set_device(
 WINDOW_BUILDER_HANDLER(window_builder_set_native_window, nvn_window_builder_set_native_window(b, c->x[1]))
 WINDOW_BUILDER_HANDLER(window_builder_set_textures, nvn_window_builder_set_textures(b, (u32)c->x[1], c->x[2]))
 WINDOW_BUILDER_HANDLER(window_builder_set_present_interval, nvn_window_builder_set_interval(b, (u32)c->x[1]))
+WINDOW_BUILDER_HANDLER(window_builder_set_num_active_textures,
+                       nvn_window_builder_set_active_textures(b, (u32)c->x[1]))
 #undef WINDOW_BUILDER_HANDLER
+
+#define WINDOW_BUILDER_GETTER(name, expression)                                 \
+    static void h_##name(CPU* c, u64 entry) {                                   \
+        (void)entry;                                                           \
+        pm_lock(&objs_lock);                                                   \
+        NvnWindowBuilder* b = rec_get(c->x[0], NVN_OBJ_WINDOW_BUILDER, sizeof *b); \
+        c->x[0] = (expression);                                                \
+        pm_unlock(&objs_lock);                                                 \
+    }
+WINDOW_BUILDER_GETTER(window_builder_get_device, b->device)
+WINDOW_BUILDER_GETTER(window_builder_get_native_window, b->native_window)
+WINDOW_BUILDER_GETTER(window_builder_get_num_active_textures, b->active_texture_count)
+WINDOW_BUILDER_GETTER(window_builder_get_num_textures, b->texture_count)
+WINDOW_BUILDER_GETTER(window_builder_get_present_interval, nvn_window_builder_present_interval(b))
+#undef WINDOW_BUILDER_GETTER
+
+static void h_window_builder_get_texture(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    NvnWindowBuilder* b = rec_get(c->x[0], NVN_OBJ_WINDOW_BUILDER, sizeof *b);
+    const int32_t index = (int32_t)c->x[1];
+    const uint64_t at = b->textures + (uint64_t)((int64_t)index * (int64_t)sizeof(uint64_t));
+    uint64_t texture = 0;
+    if ((int32_t)b->texture_count <= index) {
+        c->x[0] = 0;
+    } else if (!native_guest_readable(at, sizeof(uint64_t))) {
+        LOG("nvn-native: nvnWindowBuilderGetTexture unreadable index=%d address=%llx\n",
+            (int)index, (unsigned long long)at);
+        c->x[0] = 0;
+    } else {
+        texture = gr64(at);
+        c->x[0] = texture;
+    }
+    pm_unlock(&objs_lock);
+}
 
 static void h_window_initialize(CPU* c, u64 entry) {
     (void)entry;
@@ -4059,6 +4591,7 @@ static void h_window_initialize(CPU* c, u64 entry) {
     WindowRec next = {0};
     next.device = b->device; next.native_window = b->native_window;
     next.texture_count = b->texture_count; next.interval = b->interval; next.last_index = -1;
+    next.active_textures = b->active_texture_count;
     for (uint32_t i = 0; i < b->texture_count; i++) {
         uint64_t addr = gr64(b->textures + (uint64_t)i * sizeof(uint64_t));
         TextureRec* texture = known_record(addr, NVN_OBJ_TEXTURE);
@@ -4095,6 +4628,45 @@ static void h_window_set_crop(CPU* c, u64 entry) {
     }
     w->crop = nvn_window_crop((u32)c->x[1], (u32)c->x[2], (u32)c->x[3], (u32)c->x[4],
                               t->builder.width, t->builder.height);
+    pm_unlock(&objs_lock);
+}
+static void h_window_set_num_active_textures(CPU* c, u64 entry) {
+    (void)entry; pm_lock(&objs_lock);
+    WindowRec* w = known_record(c->x[0], NVN_OBJ_WINDOW);
+    if (!w) LOG("nvn-native: nvnWindowSetNumActiveTextures unknown window=%llx\n", (unsigned long long)c->x[0]);
+    else w->active_textures = nvn_window_active_textures((u32)c->x[1]);
+    pm_unlock(&objs_lock);
+}
+#define WINDOW_GETTER(name, expression)                                         \
+    static void h_##name(CPU* c, u64 entry) {                                   \
+        (void)entry;                                                           \
+        pm_lock(&objs_lock);                                                   \
+        const WindowRec* w = known_record(c->x[0], NVN_OBJ_WINDOW);            \
+        if (!w) LOG("nvn-native: " #name " unknown window=%llx\n", (unsigned long long)c->x[0]); \
+        c->x[0] = w ? (expression) : 0;                                        \
+        pm_unlock(&objs_lock);                                                 \
+    }
+WINDOW_GETTER(window_get_native_window, w->native_window)
+WINDOW_GETTER(window_get_num_active_textures, w->active_textures)
+WINDOW_GETTER(window_get_num_textures, w->texture_count)
+WINDOW_GETTER(window_get_present_interval, w->interval)
+#undef WINDOW_GETTER
+
+static void h_window_get_crop(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnWindowGetCrop";
+    pm_lock(&objs_lock);
+    if (guest_outputs_writable(c, name, 4)) {
+        const WindowRec* w = known_record(c->x[0], NVN_OBJ_WINDOW);
+        if (!w)
+            LOG("nvn-native: %s unknown window=%llx\n", name, (unsigned long long)c->x[0]);
+        else {
+            gw32(c->x[1], w->crop.x);
+            gw32(c->x[2], w->crop.y);
+            gw32(c->x[3], w->crop.width);
+            gw32(c->x[4], w->crop.height);
+        }
+    }
     pm_unlock(&objs_lock);
 }
 static void h_sync_initialize(CPU* c, u64 entry) {
@@ -4649,10 +5221,15 @@ static const NativeProc native_procs[] = {
     {"nvnMemoryPoolBuilderSetDevice", h_memory_pool_builder_set_device},
     {"nvnMemoryPoolBuilderSetFlags", h_memory_pool_builder_set_flags},
     {"nvnMemoryPoolBuilderSetStorage", h_memory_pool_builder_set_storage},
+    {"nvnMemoryPoolBuilderGetDevice", h_memory_pool_builder_get_device},
+    {"nvnMemoryPoolBuilderGetMemory", h_memory_pool_builder_get_memory},
+    {"nvnMemoryPoolBuilderGetSize", h_memory_pool_builder_get_size},
+    {"nvnMemoryPoolBuilderGetFlags", h_memory_pool_builder_get_flags},
     {"nvnMemoryPoolInitialize", h_memory_pool_initialize},
     {"nvnMemoryPoolFinalize", h_memory_pool_finalize},
     {"nvnMemoryPoolMap", h_memory_pool_map},
     {"nvnMemoryPoolGetFlags", h_memory_pool_get_flags},
+    {"nvnMemoryPoolGetSize", h_memory_pool_get_size},
     {"nvnMemoryPoolGetBufferAddress", h_memory_pool_get_buffer_address},
     {"nvnTexturePoolInitialize", h_texture_pool_initialize},
     {"nvnTexturePoolGetSize", h_texture_pool_get_size},
@@ -4669,6 +5246,20 @@ static const NativeProc native_procs[] = {
     {"nvnSamplerBuilderSetMaxAnisotropy", h_sampler_builder_set_max_anisotropy},
     {"nvnSamplerBuilderSetReductionFilter", h_sampler_builder_set_reduction_filter},
     {"nvnSamplerBuilderSetLodSnap", h_sampler_builder_set_lod_snap},
+    {"nvnSamplerBuilderSetBorderColori", h_sampler_builder_set_border_color},
+    {"nvnSamplerBuilderSetBorderColorui", h_sampler_builder_set_border_color},
+    {"nvnSamplerBuilderGetDevice", h_sampler_builder_get_device},
+    {"nvnSamplerBuilderGetMinMagFilter", h_sampler_builder_get_min_mag_filter},
+    {"nvnSamplerBuilderGetWrapMode", h_sampler_builder_get_wrap_mode},
+    {"nvnSamplerBuilderGetLodClamp", h_sampler_builder_get_lod_clamp},
+    {"nvnSamplerBuilderGetLodBias", h_sampler_builder_get_lod_bias},
+    {"nvnSamplerBuilderGetCompare", h_sampler_builder_get_compare},
+    {"nvnSamplerBuilderGetBorderColor", h_sampler_builder_get_border_color},
+    {"nvnSamplerBuilderGetBorderColori", h_sampler_builder_get_border_color},
+    {"nvnSamplerBuilderGetBorderColorui", h_sampler_builder_get_border_color},
+    {"nvnSamplerBuilderGetMaxAnisotropy", h_sampler_builder_get_max_anisotropy},
+    {"nvnSamplerBuilderGetReductionFilter", h_sampler_builder_get_reduction_filter},
+    {"nvnSamplerBuilderGetLodSnap", h_sampler_builder_get_lod_snap},
     {"nvnTextureBuilderSetDevice", h_texture_builder_set_device},
     {"nvnTextureBuilderSetDefaults", h_texture_builder_set_defaults},
     {"nvnTextureBuilderSetFlags", h_texture_builder_set_flags},
@@ -4685,10 +5276,44 @@ static const NativeProc native_procs[] = {
     {"nvnTextureBuilderGetHeight", h_texture_builder_get_height},
     {"nvnTextureBuilderGetStorageAlignment", h_texture_builder_get_storage_alignment},
     {"nvnTextureBuilderGetStorageSize", h_texture_builder_get_storage_size},
+    {"nvnTextureBuilderGetDepth", h_texture_builder_get_depth},
+    {"nvnTextureBuilderGetDepthStencilMode", h_texture_builder_get_depth_stencil_mode},
+    {"nvnTextureBuilderGetDevice", h_texture_builder_get_device},
+    {"nvnTextureBuilderGetFlags", h_texture_builder_get_flags},
+    {"nvnTextureBuilderGetFormat", h_texture_builder_get_format},
+    {"nvnTextureBuilderGetLevels", h_texture_builder_get_levels},
+    {"nvnTextureBuilderGetSamples", h_texture_builder_get_samples},
+    {"nvnTextureBuilderGetSwizzle", h_texture_builder_get_swizzle},
+    {"nvnTextureBuilderGetTarget", h_texture_builder_get_target},
+    {"nvnTextureBuilderGetStride", h_texture_builder_get_stride},
+    {"nvnTextureBuilderGetMemoryOffset", h_texture_builder_get_memory_offset},
+    {"nvnTextureBuilderGetMemoryPool", h_texture_builder_get_memory_pool},
+    {"nvnTextureBuilderGetGLTextureName", h_texture_builder_get_gl_texture_name},
+    {"nvnTextureBuilderGetPackagedTextureData", h_texture_builder_get_packaged_texture_data},
+    {"nvnTextureBuilderGetPackagedTextureLayout", h_texture_builder_get_packaged_texture_layout},
+    {"nvnTextureBuilderGetRawStorageClass", h_texture_builder_get_raw_storage_class},
+    {"nvnTextureBuilderSetGLTextureName", h_texture_builder_set_gl_texture_name},
+    {"nvnTextureBuilderSetPackagedTextureData", h_texture_builder_set_packaged_texture_data},
+    {"nvnTextureBuilderSetSamples", h_texture_builder_set_samples},
+    {"nvnTextureBuilderSetSize1D", h_texture_builder_set_size_1d},
     {"nvnSamplerInitialize", h_sampler_initialize},
     {"nvnSamplerFinalize", h_sampler_finalize},
     {"nvnSamplerPoolRegisterSampler", h_sampler_pool_register_sampler},
+    {"nvnSamplerPoolRegisterSamplerBuilder", h_sampler_pool_register_sampler_builder},
+    {"nvnSamplerPoolGetMemoryPool", h_sampler_pool_get_memory_pool},
+    {"nvnSamplerPoolGetMemoryOffset", h_sampler_pool_get_memory_offset},
     {"nvnSamplerCompare", h_sampler_compare},
+    {"nvnSamplerGetBorderColor", h_sampler_get_border_color},
+    {"nvnSamplerGetBorderColori", h_sampler_get_border_color},
+    {"nvnSamplerGetBorderColorui", h_sampler_get_border_color},
+    {"nvnSamplerGetCompare", h_sampler_get_compare},
+    {"nvnSamplerGetDebugID", h_sampler_get_debug_id},
+    {"nvnSamplerGetLodBias", h_sampler_get_lod_bias},
+    {"nvnSamplerGetLodClamp", h_sampler_get_lod_clamp},
+    {"nvnSamplerGetMaxAnisotropy", h_sampler_get_max_anisotropy},
+    {"nvnSamplerGetMinMagFilter", h_sampler_get_min_mag_filter},
+    {"nvnSamplerGetReductionFilter", h_sampler_get_reduction_filter},
+    {"nvnSamplerGetWrapMode", h_sampler_get_wrap_mode},
     {"nvnTextureInitialize", h_texture_initialize},
     {"nvnTextureFinalize", h_texture_finalize},
     {"nvnTextureFlushTexels", h_texture_flush_texels},
@@ -4697,9 +5322,22 @@ static const NativeProc native_procs[] = {
     {"nvnWindowBuilderSetNativeWindow", h_window_builder_set_native_window},
     {"nvnWindowBuilderSetTextures", h_window_builder_set_textures},
     {"nvnWindowBuilderSetPresentInterval", h_window_builder_set_present_interval},
+    {"nvnWindowBuilderSetNumActiveTextures", h_window_builder_set_num_active_textures},
+    {"nvnWindowBuilderGetDevice", h_window_builder_get_device},
+    {"nvnWindowBuilderGetNativeWindow", h_window_builder_get_native_window},
+    {"nvnWindowBuilderGetNumActiveTextures", h_window_builder_get_num_active_textures},
+    {"nvnWindowBuilderGetNumTextures", h_window_builder_get_num_textures},
+    {"nvnWindowBuilderGetPresentInterval", h_window_builder_get_present_interval},
+    {"nvnWindowBuilderGetTexture", h_window_builder_get_texture},
     {"nvnWindowInitialize", h_window_initialize},
     {"nvnWindowSetPresentInterval", h_window_set_present_interval},
     {"nvnWindowSetCrop", h_window_set_crop},
+    {"nvnWindowSetNumActiveTextures", h_window_set_num_active_textures},
+    {"nvnWindowGetCrop", h_window_get_crop},
+    {"nvnWindowGetNativeWindow", h_window_get_native_window},
+    {"nvnWindowGetNumActiveTextures", h_window_get_num_active_textures},
+    {"nvnWindowGetNumTextures", h_window_get_num_textures},
+    {"nvnWindowGetPresentInterval", h_window_get_present_interval},
     {"nvnSyncInitialize", h_sync_initialize},
     {"nvnWindowAcquireTexture", h_window_acquire_texture},
     {"nvnSyncWait", h_sync_wait},
@@ -4725,6 +5363,22 @@ static const NativeProc native_procs[] = {
     {"nvnTextureGetStride", h_texture_get_stride},
     {"nvnTextureGetTarget", h_texture_get_target},
     {"nvnTextureGetDepth", h_texture_get_depth},
+    {"nvnTextureGetDebugID", h_texture_get_debug_id},
+    {"nvnTextureGetDepthStencilMode", h_texture_get_depth_stencil_mode},
+    {"nvnTextureGetFlags", h_texture_get_flags},
+    {"nvnTextureGetFormat", h_texture_get_format},
+    {"nvnTextureGetLevels", h_texture_get_levels},
+    {"nvnTextureGetMemoryOffset", h_texture_get_memory_offset},
+    {"nvnTextureGetMemoryPool", h_texture_get_memory_pool},
+    {"nvnTextureGetRawStorageClass", h_texture_get_raw_storage_class},
+    {"nvnTextureGetSamples", h_texture_get_samples},
+    {"nvnTextureGetSwizzle", h_texture_get_swizzle},
+    {"nvnTextureGetStorageSize", h_texture_get_storage_size},
+    {"nvnTextureGetTextureAddress", h_texture_get_texture_address},
+    {"nvnTextureCompare", h_texture_compare},
+    {"nvnTextureViewCompare", h_texture_view_compare},
+    {"nvnTexturePoolGetMemoryPool", h_texture_pool_get_memory_pool},
+    {"nvnTexturePoolGetMemoryOffset", h_texture_pool_get_memory_offset},
     {"nvnTexturePoolRegisterTexture", h_texture_pool_register_texture},
     {"nvnTexturePoolRegisterImage", h_texture_pool_register_image},
     {"nvnTextureWriteTexels", h_texture_write_texels},
@@ -4732,11 +5386,17 @@ static const NativeProc native_procs[] = {
     {"nvnBufferBuilderSetDefaults", h_buffer_builder_set_defaults},
     {"nvnBufferBuilderSetStorage", h_buffer_builder_set_storage},
     {"nvnBufferBuilderGetSize", h_buffer_builder_get_size},
+    {"nvnBufferBuilderGetDevice", h_buffer_builder_get_device},
+    {"nvnBufferBuilderGetMemoryPool", h_buffer_builder_get_memory_pool},
+    {"nvnBufferBuilderGetMemoryOffset", h_buffer_builder_get_memory_offset},
     {"nvnBufferInitialize", h_buffer_initialize},
     {"nvnBufferFinalize", h_buffer_finalize},
     {"nvnBufferMap", h_buffer_map},
     {"nvnBufferGetAddress", h_buffer_get_address},
     {"nvnBufferGetSize", h_buffer_get_size},
+    {"nvnBufferGetDebugID", h_buffer_get_debug_id},
+    {"nvnBufferGetMemoryPool", h_buffer_get_memory_pool},
+    {"nvnBufferGetMemoryOffset", h_buffer_get_memory_offset},
     {"nvnBufferSetDebugLabel", h_buffer_set_debug_label},
     {"nvnDeviceSetDebugLabel", h_set_debug_label},
     {"nvnCommandBufferSetDebugLabel", h_set_debug_label},
@@ -4794,6 +5454,14 @@ static const NativeProc native_procs[] = {
     {"nvnBlendStateGetBlendTarget", h_blend_state_get_blend_target},
     {"nvnBlendStateGetBlendFunc", h_blend_state_get_blend_func},
     {"nvnBlendStateGetBlendEquation", h_blend_state_get_blend_equation},
+    {"nvnBlendStateGetAdvancedMode", h_blend_state_get_advanced_mode},
+    {"nvnBlendStateGetAdvancedOverlap", h_blend_state_get_advanced_overlap},
+    {"nvnBlendStateGetAdvancedPremultipliedSrc", h_blend_state_get_advanced_premultiplied_src},
+    {"nvnBlendStateGetAdvancedNormalizedDst", h_blend_state_get_advanced_normalized_dst},
+    {"nvnBlendStateSetAdvancedMode", h_blend_state_set_advanced_mode},
+    {"nvnBlendStateSetAdvancedOverlap", h_blend_state_set_advanced_overlap},
+    {"nvnBlendStateSetAdvancedPremultipliedSrc", h_blend_state_set_advanced_premultiplied_src},
+    {"nvnBlendStateSetAdvancedNormalizedDst", h_blend_state_set_advanced_normalized_dst},
     {"nvnChannelMaskStateSetDefaults", h_channel_mask_state_set_defaults},
     {"nvnChannelMaskStateSetChannelMask", h_channel_mask_state_set_channel_mask},
     {"nvnChannelMaskStateGetChannelMask", h_channel_mask_state_get_channel_mask},
@@ -4836,6 +5504,15 @@ static const NativeProc native_procs[] = {
     {"nvnMultisampleStateGetCoverageModulationMode", h_multisample_state_get_coverage_modulation_mode},
     {"nvnMultisampleStateGetCoverageToColorEnable", h_multisample_state_get_coverage_to_color_enable},
     {"nvnMultisampleStateGetCoverageToColorOutput", h_multisample_state_get_coverage_to_color_output},
+    {"nvnMultisampleStateGetSampleLocationsEnable", h_multisample_state_get_sample_locations_enable},
+    {"nvnMultisampleStateGetSampleLocationsGrid", h_multisample_state_get_sample_locations_grid},
+    {"nvnMultisampleStateGetSampleLocationsGridEnable", h_multisample_state_get_sample_locations_grid_enable},
+    {"nvnMultisampleStateSetSampleLocations", h_multisample_state_set_sample_locations},
+    {"nvnEventBuilderSetDefaults", h_event_builder_set_defaults},
+    {"nvnEventBuilderSetStorage", h_event_builder_set_storage},
+    {"nvnEventBuilderGetMemoryPool", h_event_builder_get_memory_pool},
+    {"nvnEventBuilderGetMemoryOffset", h_event_builder_get_memory_offset},
+    {"nvnEventBuilderGetStorage", h_event_builder_get_storage},
     {"nvnPolygonStateSetDefaults", h_polygon_state_set_defaults},
     {"nvnPolygonStateSetCullFace", h_polygon_state_set_cull_face},
     {"nvnPolygonStateSetFrontFace", h_polygon_state_set_front_face},

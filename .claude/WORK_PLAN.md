@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `19b6d35` and older (the last code commit is `c1fdb45`). Commits after `19b6d35` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is task (a) step 2 (md5 d050d20e), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is U1 step b1 (md5 6a1fd3c9), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=0`, `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -67,7 +67,12 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
   Decision of the user (2026-11-09): the trace of the enum argument values (the missing part of 4-u1) comes after U1.
-  Current step: U1 step (b), not started. Step (a) is done: tables `reports/analyst-u1-{A..I}-1.md` (accepted).
+  Current step: U1 step (b1) is committed (105 handlers, coverage 379 implemented, 144 stub-log). Only the pure parts have unit
+  tests (no test links `nvn_native.c`); 9 mutants killed. Caller fixes: the event builder is an objtab kind, not a side table;
+  the sample location NaN takes 0.9375 (fminnm, d83b734).
+  Left out, open (writer questions): TextureBuilderGetSparseTileLayout and TextureGetSparseTileLayout (helper d822538 and d869e10
+  not verified), TextureGetViewOffset (level and 3D slice offset of d83d01c not checked against `texture_level_offset`).
+  Next: step b2 (game explorer: the device words of decision 1), then these 3 functions.
   Decisions of the user (2026-11-10):
   - (1) TextureBuilderGetStorageClass, TextureGetStorageClass and both GetZCullStorageSize: the host device model gets the
     device words that they read (+0x970/+0x978 and d83563c/d950f80, +0xb8..+0xdc, +0x1a08). A game explorer finds the values

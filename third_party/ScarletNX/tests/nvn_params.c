@@ -2627,6 +2627,235 @@ static void test_program_compute_round_trip(void) {
     CHECK(!nvn_program_compute_from_words(words, NVN_PROGRAM_COMPUTE_WORDS, NULL));
 }
 
+static void test_u1_window_fields(void) {
+    NvnWindowBuilder b;
+    nvn_window_builder_defaults(&b);
+    CHECK(b.interval == 1 && b.active_texture_count == 0);
+    CHECK(nvn_window_builder_present_interval(&b) == 1);
+    nvn_window_builder_set_interval(&b, 0);
+    CHECK(nvn_window_builder_present_interval(&b) == 0);
+    nvn_window_builder_set_interval(&b, 3);
+    CHECK(nvn_window_builder_present_interval(&b) == 3);
+    nvn_window_builder_set_active_textures(&b, 5);
+    CHECK(b.active_texture_count == 5);
+    CHECK(nvn_window_active_textures(0) == 0);
+    CHECK(nvn_window_active_textures(4) == 4);
+    CHECK(nvn_window_active_textures(5) == 5);
+    CHECK(nvn_window_active_textures(UINT32_MAX) == UINT32_MAX);
+}
+
+static void test_u1_sampler_border(void) {
+    NvnSampler s;
+    uint32_t out[4] = {0, 0, 0, 0};
+    memset(&s, 0, sizeof s);
+    s.border[0] = 0x3f800000u;
+    s.border[1] = 0xbf800000u;
+    s.border[2] = 0x7fc00001u;
+    s.border[3] = 0xffffffffu;
+    nvn_sampler_border(&s, out);
+    CHECK(out[0] == 0x3f800000u && out[1] == 0xbf800000u && out[2] == 0x7fc00001u && out[3] == 0xffffffffu);
+    nvn_sampler_border(NULL, out);
+}
+
+static void test_u1_texture_values(void) {
+    uint32_t layout = 0xffffffffu;
+    CHECK(nvn_texture_packaged_layout(0, &layout) == 0 && layout == 0);
+    CHECK(nvn_texture_packaged_layout(1, &layout) == 1 && layout == 0);
+    CHECK(nvn_texture_packaged_layout(0x1234, &layout) == 4 && layout == 0x123);
+    CHECK(nvn_texture_packaged_layout(nvn_texture_packaged_tile(0xabc), &layout) == 1 && layout == 0xabc);
+    CHECK(nvn_texture_packaged_layout(1, NULL) == 1);
+
+    CHECK(nvn_texture_raw_storage_class(0, 0) == 0);
+    CHECK(nvn_texture_raw_storage_class(0, 1) == 2);
+    CHECK(nvn_texture_raw_storage_class(0, 0x30) == 2);
+    CHECK(nvn_texture_raw_storage_class(0, 0x31) == 3);
+    CHECK(nvn_texture_raw_storage_class(0, 0x32) == 3);
+    CHECK(nvn_texture_raw_storage_class(0, 0x33) == 4);
+    CHECK(nvn_texture_raw_storage_class(0, 0x34) == 2);
+    CHECK(nvn_texture_raw_storage_class(0, 0x35) == 4);
+    CHECK(nvn_texture_raw_storage_class(0, 0x36) == 5);
+    CHECK(nvn_texture_raw_storage_class(0, 0x37) == 2);
+    CHECK(nvn_texture_raw_storage_class(NVN_TEXTURE_FLAG_LINEAR, 0x37) == 1);
+    CHECK(nvn_texture_raw_storage_class(NVN_TEXTURE_FLAG_LINEAR_RENDER_TARGET, 0) == 1);
+    CHECK(nvn_texture_raw_storage_class(NVN_TEXTURE_FLAG_SPARSE, 0x36) == 5);
+
+    NvnTexture t;
+    memset(&t, 0, sizeof t);
+    t.layout.size = 0x100000001ull;
+    CHECK(nvn_texture_storage_size(&t) == 1);
+    t.layout.size = 0xffffffffull;
+    CHECK(nvn_texture_storage_size(&t) == 0xffffffffu);
+    CHECK(nvn_texture_storage_size(NULL) == 0);
+}
+
+static void u1_fill_texture(NvnTexture* t) {
+    memset(t, 0, sizeof *t);
+    t->builder.device = 0x11;
+    t->builder.pool = 0x22;
+    t->builder.offset = 0x33;
+    t->builder.flags = 0x44;
+    t->builder.target = 2;
+    t->builder.width = 0x40;
+    t->builder.height = 0x20;
+    t->builder.depth = 8;
+    t->builder.levels = 5;
+    t->builder.format = 0x37;
+    t->builder.samples = 4;
+    for (unsigned i = 0; i < 4; i++) t->builder.swizzle[i] = 2 + i;
+    t->builder.depth_stencil_mode = 7;
+    t->builder.packaged = 0x123;
+    t->builder.tile = 0x456;
+    t->builder.stride = 0x78;
+    t->builder.gl_name = 9;
+    t->layout.size = 0x123456789ull;
+    t->layout.alignment = 0x100;
+    t->layout.layer_stride = 0x200;
+    t->layout.linear_stride = 0x300;
+    t->layout.samples = 4;
+    t->layout.width = 0x40;
+    t->layout.height = 0x20;
+    t->layout.depth = 8;
+    t->layout.bytes_per_block = 4;
+    t->layout.log2_bytes = 2;
+    t->layout.sample_x = 2;
+    t->layout.sample_y = 2;
+    t->layout.block_width = 1;
+    t->layout.block_height = 1;
+    t->layout.levels = 5;
+    t->layout.dim = 2;
+    t->layout.kind = 1;
+    t->layout.depth_stencil = 3;
+    t->layout.tile_x = 1;
+    t->layout.tile_y = 2;
+    t->layout.tile_z = 3;
+    t->address = 0xabc;
+}
+
+static void test_u1_texture_equal(void) {
+    NvnTexture a, b;
+    u1_fill_texture(&a);
+    u1_fill_texture(&b);
+    CHECK(nvn_texture_equal(&a, &b));
+    b.builder.packaged = 0;
+    b.builder.tile = 0;
+    b.builder.stride = 0;
+    b.builder.gl_name = 0;
+    b.layout.alignment = 0;
+    CHECK(nvn_texture_equal(&a, &b));
+    b = a;
+    b.layout.depth_stencil = 0x7; /* only the low two bits are compared */
+    CHECK(nvn_texture_equal(&a, &b));
+    b.layout.depth_stencil = 0;
+    CHECK(!nvn_texture_equal(&a, &b));
+#define U1_TEXTURE_DIFF(field) do { b = a; b.field++; CHECK(!nvn_texture_equal(&a, &b)); } while (0)
+    U1_TEXTURE_DIFF(builder.device);
+    U1_TEXTURE_DIFF(builder.pool);
+    U1_TEXTURE_DIFF(builder.offset);
+    U1_TEXTURE_DIFF(builder.flags);
+    U1_TEXTURE_DIFF(builder.target);
+    U1_TEXTURE_DIFF(builder.width);
+    U1_TEXTURE_DIFF(builder.height);
+    U1_TEXTURE_DIFF(builder.depth);
+    U1_TEXTURE_DIFF(builder.levels);
+    U1_TEXTURE_DIFF(builder.format);
+    U1_TEXTURE_DIFF(builder.samples);
+    U1_TEXTURE_DIFF(builder.swizzle[2]);
+    U1_TEXTURE_DIFF(builder.depth_stencil_mode);
+    U1_TEXTURE_DIFF(layout.layer_stride);
+    U1_TEXTURE_DIFF(layout.linear_stride);
+    U1_TEXTURE_DIFF(layout.samples);
+    U1_TEXTURE_DIFF(layout.width);
+    U1_TEXTURE_DIFF(layout.height);
+    U1_TEXTURE_DIFF(layout.depth);
+    U1_TEXTURE_DIFF(layout.size);
+    U1_TEXTURE_DIFF(layout.tile_z);
+    U1_TEXTURE_DIFF(address);
+#undef U1_TEXTURE_DIFF
+    CHECK(!nvn_texture_equal(NULL, &b));
+}
+
+static void u1_fill_view(NvnTextureView* v, uint8_t flags) {
+    memset(v, 0, sizeof *v);
+    v->flags = flags;
+    v->base_level = 2;
+    v->level_count = 3;
+    v->base_layer = 4;
+    v->layer_count = 5;
+    v->format = 0x33;
+    for (unsigned i = 0; i < 4; i++) v->swizzle[i] = i + 1;
+    v->depth_stencil_mode = 6;
+    v->target = 7;
+}
+
+static void test_u1_texture_view_equal(void) {
+    NvnTextureView a, b;
+    u1_fill_view(&a, NVN_VIEW_COMPARE_MASK);
+    u1_fill_view(&b, NVN_VIEW_COMPARE_MASK);
+    CHECK(nvn_texture_view_equal(&a, &b));
+    b.target = 8;
+    CHECK(!nvn_texture_view_equal(&a, &b));
+    b = a;
+    b.level_count = 9;
+    CHECK(!nvn_texture_view_equal(&a, &b));
+    b = a;
+    b.flags = NVN_VIEW_COMPARE_MASK | 0x80u;
+    CHECK(nvn_texture_view_equal(&a, &b));
+    u1_fill_view(&a, NVN_VIEW_TARGET);
+    u1_fill_view(&b, NVN_VIEW_TARGET);
+    b.format = 0x99;
+    b.base_level = 9;
+    b.swizzle[0] = 99;
+    CHECK(nvn_texture_view_equal(&a, &b));
+    b.flags = NVN_VIEW_TARGET | NVN_VIEW_FORMAT;
+    CHECK(!nvn_texture_view_equal(&a, &b));
+    CHECK(!nvn_texture_view_equal(NULL, &b));
+}
+
+static void test_u1_blend_advanced(void) {
+    const uint32_t defaults = 0x110C0000u;
+    CHECK(nvn_blend_state_get_advanced_mode(defaults) == 0);
+    CHECK(nvn_blend_state_get_advanced_overlap(defaults) == 0);
+    CHECK(nvn_blend_state_get_advanced_premultiplied_src(defaults) == 1);
+    CHECK(nvn_blend_state_get_advanced_normalized_dst(defaults) == 1);
+    uint32_t w = nvn_blend_state_set_advanced_mode(0, 0x2a);
+    CHECK(nvn_blend_state_get_advanced_mode(w) == 0x2a);
+    w = nvn_blend_state_set_advanced_mode(0, 0x40);
+    CHECK(w == 0x4000u); /* the value spills above bit 13 */
+    w = nvn_blend_state_set_advanced_overlap(0, 4);
+    CHECK(w == 0x40000u); /* overlap spills into bit 18 */
+    CHECK(nvn_blend_state_set_advanced_premultiplied_src(1u << 18, 0x100) == 0);
+    CHECK(nvn_blend_state_set_advanced_premultiplied_src(0, 0xff) == (1u << 18));
+    CHECK(nvn_blend_state_set_advanced_normalized_dst(1u << 19, 0) == 0);
+    CHECK(nvn_blend_state_set_advanced_normalized_dst(0, 1) == (1u << 19));
+}
+
+static void test_u1_multisample_locations(void) {
+    CHECK(nvn_multisample_state_get_sample_locations_enable(0) == 0);
+    CHECK(nvn_multisample_state_get_sample_locations_enable(1u << 3) == 1);
+    CHECK(nvn_multisample_state_get_sample_locations_grid_enable(0) == 0);
+    CHECK(nvn_multisample_state_get_sample_locations_grid_enable(1u << 4) == 1);
+    uint32_t x = 99, y = 99;
+    CHECK(nvn_multisample_state_sample_grid(0, 0, &x, &y) && x == 4 && y == 4);
+    CHECK(nvn_multisample_state_sample_grid(1, 0, &x, &y) && x == 4 && y == 4);
+    CHECK(nvn_multisample_state_sample_grid(2, 0, &x, &y) && x == 2 && y == 4);
+    CHECK(nvn_multisample_state_sample_grid(0, 2, &x, &y) && x == 2 && y == 4);
+    CHECK(nvn_multisample_state_sample_grid(4, 0, &x, &y) && x == 2 && y == 2);
+    CHECK(nvn_multisample_state_sample_grid(8, 0, &x, &y) && x == 1 && y == 2);
+    CHECK(nvn_multisample_state_sample_grid(0, 16, &x, &y) && x == 1 && y == 1);
+    x = 7;
+    y = 8;
+    CHECK(!nvn_multisample_state_sample_grid(3, 0, &x, &y) && x == 7 && y == 8);
+    CHECK(!nvn_multisample_state_sample_grid(5, 0, &x, &y));
+    CHECK(!nvn_multisample_state_sample_grid(0, 17, &x, &y));
+    CHECK(nvn_multisample_sample_location(0, 0) == 0);
+    CHECK(nvn_multisample_sample_location(1, 1) == 0xff);
+    CHECK(nvn_multisample_sample_location(0.9375f, 0.9375f) == 0xff);
+    CHECK(nvn_multisample_sample_location(0.5f, 0.25f) == 0x48);
+    CHECK(nvn_multisample_sample_location(-1, 2) == 0xf0);
+    CHECK(nvn_multisample_sample_location(0.03125f, 0) == 0x01);
+    CHECK(nvn_multisample_sample_location(NAN, 0) == 0x0f); /* fminnm takes 0.9375 for a NaN */
+}
+
 int main(int argc, char** argv) {
     test_compute_qmd_size_limits();
     test_window_params();
@@ -2636,6 +2865,13 @@ int main(int argc, char** argv) {
     test_sync_after_token();
     test_sampler();
     test_sampler_equal();
+    test_u1_window_fields();
+    test_u1_sampler_border();
+    test_u1_texture_values();
+    test_u1_texture_equal();
+    test_u1_texture_view_equal();
+    test_u1_blend_advanced();
+    test_u1_multisample_locations();
     test_packaged_tile();
     test_texture_descriptor();
     test_texture_descriptor_image();

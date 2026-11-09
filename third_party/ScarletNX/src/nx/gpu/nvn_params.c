@@ -19,6 +19,13 @@ void nvn_window_builder_set_textures(NvnWindowBuilder* b, uint32_t count, uint64
     b->textures = textures;
 }
 void nvn_window_builder_set_interval(NvnWindowBuilder* b, uint32_t interval) { b->interval = interval; }
+void nvn_window_builder_set_active_textures(NvnWindowBuilder* b, uint32_t count) {
+    b->active_texture_count = count;
+}
+uint32_t nvn_window_builder_present_interval(const NvnWindowBuilder* b) {
+    return b ? b->interval : 0;
+}
+uint32_t nvn_window_active_textures(uint32_t count) { return count; }
 int nvn_window_initialize_check(uint32_t texture_count) {
     return texture_count != 0 && texture_count <= NVN_WINDOW_MAX_TEXTURES;
 }
@@ -268,6 +275,57 @@ void nvn_depth_stencil_state_get_stencil_op(uint32_t word, uint32_t face, uint32
 void nvn_blend_state_get_blend_equation(uint32_t word, uint32_t* rgb, uint32_t* alpha) {
     if (rgb) *rgb = (word >> 24) & 7u;
     if (alpha) *alpha = (word >> 28) & 7u;
+}
+
+uint32_t nvn_blend_state_get_advanced_mode(uint32_t word) { return (word >> 8) & 0x3Fu; }
+uint32_t nvn_blend_state_get_advanced_overlap(uint32_t word) { return (word >> 16) & 0x3u; }
+uint32_t nvn_blend_state_get_advanced_premultiplied_src(uint32_t word) { return (word >> 18) & 1u; }
+uint32_t nvn_blend_state_get_advanced_normalized_dst(uint32_t word) { return (word >> 19) & 1u; }
+uint32_t nvn_blend_state_set_advanced_mode(uint32_t word, uint32_t value) {
+    return nvn_state_insert(word, 0x3F00u, 8, value);
+}
+uint32_t nvn_blend_state_set_advanced_overlap(uint32_t word, uint32_t value) {
+    return nvn_state_insert(word, 0x30000u, 16, value);
+}
+uint32_t nvn_blend_state_set_advanced_premultiplied_src(uint32_t word, uint32_t value) {
+    return nvn_state_set_flag(word, 18, value);
+}
+uint32_t nvn_blend_state_set_advanced_normalized_dst(uint32_t word, uint32_t value) {
+    return nvn_state_set_flag(word, 19, value);
+}
+
+uint32_t nvn_multisample_state_get_sample_locations_enable(uint32_t word) { return (word >> 3) & 1u; }
+uint32_t nvn_multisample_state_get_sample_locations_grid_enable(uint32_t word) { return (word >> 4) & 1u; }
+
+/* The jump table at sdk de860a2. The count of 0 and 1 both give the 4 by 4 grid. */
+int nvn_multisample_state_sample_grid(uint32_t samples, uint32_t raster_samples, uint32_t* x, uint32_t* y) {
+    uint32_t index = samples > raster_samples ? samples : raster_samples;
+    uint32_t width, height;
+    switch (index) {
+    case 0: case 1: width = 4; height = 4; break;
+    case 2: width = 2; height = 4; break;
+    case 4: width = 2; height = 2; break;
+    case 8: width = 1; height = 2; break;
+    case 16: width = 1; height = 1; break;
+    default: return 0;
+    }
+    if (x) *x = width;
+    if (y) *y = height;
+    return 1;
+}
+
+#define MULTISAMPLE_LOCATION_MAX 0.9375f
+#define MULTISAMPLE_LOCATION_SCALE 16.0f
+
+static uint32_t sample_location_nibble(float value) {
+    if (value < 0) value = 0;
+    if (value > 1.0f) value = 1.0f;
+    value = fminf(value, MULTISAMPLE_LOCATION_MAX); /* fminnm: a NaN gives the maximum, as the library */
+    return (uint32_t)(value * MULTISAMPLE_LOCATION_SCALE + 0.5f);
+}
+
+uint8_t nvn_multisample_sample_location(float x, float y) {
+    return (uint8_t)((sample_location_nibble(y) << 4) | sample_location_nibble(x));
 }
 
 static uint32_t float_bits(float value) {
@@ -526,6 +584,11 @@ int nvn_sampler_equal(const NvnSampler* a, const NvnSampler* b) {
         if (a->border[i] != b->border[i]) return 0;
     if (a->anisotropy != b->anisotropy || a->reduction != b->reduction || a->lod_snap != b->lod_snap) return 0;
     return 1;
+}
+
+void nvn_sampler_border(const NvnSampler* s, uint32_t out[4]) {
+    if (!s || !out) return;
+    for (unsigned i = 0; i < 4; i++) out[i] = s->border[i];
 }
 
 #define SAMPLER_SNAP_SEGMENT_SIZE 8u
@@ -791,6 +854,72 @@ int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* 
 }
 
 uint16_t nvn_texture_packaged_tile(uint32_t layout) { return (uint16_t)(((layout & 0xfffu) << 4) | 1u); }
+
+uint32_t nvn_texture_packaged_layout(uint16_t tile, uint32_t* layout) {
+    uint32_t low = tile & 0xFu;
+    if (!low) {
+        if (layout) *layout = 0;
+        return 0;
+    }
+    if (layout) *layout = (tile >> 4) & 0xFFFu;
+    return low;
+}
+
+uint32_t nvn_texture_raw_storage_class(uint32_t flags, uint32_t format) {
+    if (flags & NVN_TEXTURE_LINEAR_FLAGS) return 1;
+    if (format > NVN_TEXTURE_RAW_STORAGE_FORMAT_LAST) return 2;
+    if (!format) return 0;
+    if (format <= 0x30u) return 2;
+    switch (format) {
+    case 0x31u: case 0x32u: return 3;
+    case 0x33u: case 0x35u: return 4;
+    case 0x34u: return 2;
+    default: return 5;
+    }
+}
+
+uint32_t nvn_texture_storage_size(const NvnTexture* t) { return t ? (uint32_t)t->layout.size : 0; }
+
+int nvn_texture_equal(const NvnTexture* a, const NvnTexture* b) {
+    if (!a || !b) return 0;
+    const NvnTextureBuilder* x = &a->builder;
+    const NvnTextureBuilder* y = &b->builder;
+    if (x->device != y->device || x->pool != y->pool || x->offset != y->offset) return 0;
+    if (x->flags != y->flags || x->target != y->target || x->width != y->width || x->height != y->height ||
+        x->depth != y->depth || x->levels != y->levels || x->format != y->format || x->samples != y->samples)
+        return 0;
+    for (unsigned i = 0; i < 4; i++)
+        if (x->swizzle[i] != y->swizzle[i]) return 0;
+    if (x->depth_stencil_mode != y->depth_stencil_mode) return 0;
+    const NvnTextureLayout* p = &a->layout;
+    const NvnTextureLayout* q = &b->layout;
+    if ((p->depth_stencil & 3u) != (q->depth_stencil & 3u)) return 0;
+    if (p->layer_stride != q->layer_stride || p->linear_stride != q->linear_stride ||
+        p->bytes_per_block != q->bytes_per_block || p->log2_bytes != q->log2_bytes ||
+        p->sample_x != q->sample_x || p->sample_y != q->sample_y || p->samples != q->samples ||
+        p->block_width != q->block_width || p->block_height != q->block_height || p->levels != q->levels ||
+        p->dim != q->dim || p->kind != q->kind || p->size != q->size || p->width != q->width ||
+        p->height != q->height || p->depth != q->depth || p->tile_x != q->tile_x || p->tile_y != q->tile_y ||
+        p->tile_z != q->tile_z)
+        return 0;
+    return a->address == b->address;
+}
+
+int nvn_texture_view_equal(const NvnTextureView* a, const NvnTextureView* b) {
+    if (!a || !b) return 0;
+    if ((a->flags & NVN_VIEW_COMPARE_MASK) != (b->flags & NVN_VIEW_COMPARE_MASK)) return 0;
+    if ((a->flags & NVN_VIEW_LEVELS) && (a->base_level != b->base_level || a->level_count != b->level_count))
+        return 0;
+    if ((a->flags & NVN_VIEW_LAYERS) && (a->base_layer != b->base_layer || a->layer_count != b->layer_count))
+        return 0;
+    if ((a->flags & NVN_VIEW_FORMAT) && a->format != b->format) return 0;
+    if (a->flags & NVN_VIEW_SWIZZLE)
+        for (unsigned i = 0; i < 4; i++)
+            if (a->swizzle[i] != b->swizzle[i]) return 0;
+    if ((a->flags & NVN_VIEW_DEPTH_STENCIL_MODE) && a->depth_stencil_mode != b->depth_stencil_mode) return 0;
+    if ((a->flags & NVN_VIEW_TARGET) && a->target != b->target) return 0;
+    return 1;
+}
 
 /* The offset of byte (x, y) of slice z of a level (gpu.c's bl_offset with bh and bd). */
 static uint64_t texture_level_offset(const NvnTextureLevel* lv, uint32_t x, uint32_t y, uint32_t z) {

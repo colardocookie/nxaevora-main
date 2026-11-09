@@ -12,7 +12,7 @@ typedef enum { NVN_SYNC_WAIT_SIGNALED = 0, NVN_SYNC_WAIT_SATISFIED = 1,
                NVN_SYNC_WAIT_TIMEOUT = 2, NVN_SYNC_WAIT_FAILED = 3 } NvnSyncWaitResult;
 typedef struct {
     uint64_t device, native_window, textures;
-    uint32_t texture_count, interval;
+    uint32_t texture_count, interval, active_texture_count;
 } NvnWindowBuilder;
 typedef struct { uint32_t x, y, width, height; } NvnWindowCrop;
 typedef enum { NVN_SYNC_UNSIGNALED = 0, NVN_SYNC_SIGNALED = 1, NVN_SYNC_FENCED = 2 } NvnSyncState;
@@ -23,6 +23,11 @@ void nvn_window_builder_set_device(NvnWindowBuilder* b, uint64_t device);
 void nvn_window_builder_set_native_window(NvnWindowBuilder* b, uint64_t native_window);
 void nvn_window_builder_set_textures(NvnWindowBuilder* b, uint32_t count, uint64_t textures);
 void nvn_window_builder_set_interval(NvnWindowBuilder* b, uint32_t interval);
+void nvn_window_builder_set_active_textures(NvnWindowBuilder* b, uint32_t count);
+/* The host keeps the interval itself. The library stores interval - 1 and its getter adds 1. */
+uint32_t nvn_window_builder_present_interval(const NvnWindowBuilder* b);
+/* The library setter has no range check: the active texture count is every 32-bit value. */
+uint32_t nvn_window_active_textures(uint32_t count);
 int nvn_window_initialize_check(uint32_t texture_count);
 int32_t nvn_window_pick_image(const uint8_t* states, uint32_t count, int32_t last);
 /* 1 when at least one image of the window waits for its frame job. */
@@ -209,6 +214,24 @@ uint32_t nvn_polygon_state_get_polygon_offset_enables(uint32_t word);
 void nvn_depth_stencil_state_get_stencil_op(uint32_t word, uint32_t face, uint32_t out[3]);
 void nvn_blend_state_get_blend_equation(uint32_t word, uint32_t* rgb, uint32_t* alpha);
 
+/* The advanced blend fields of word 0. The setters clear only their own field, so a value with high bits spills as in
+   the library. */
+uint32_t nvn_blend_state_get_advanced_mode(uint32_t word);
+uint32_t nvn_blend_state_get_advanced_overlap(uint32_t word);
+uint32_t nvn_blend_state_get_advanced_premultiplied_src(uint32_t word);
+uint32_t nvn_blend_state_get_advanced_normalized_dst(uint32_t word);
+uint32_t nvn_blend_state_set_advanced_mode(uint32_t word, uint32_t value);
+uint32_t nvn_blend_state_set_advanced_overlap(uint32_t word, uint32_t value);
+uint32_t nvn_blend_state_set_advanced_premultiplied_src(uint32_t word, uint32_t value);
+uint32_t nvn_blend_state_set_advanced_normalized_dst(uint32_t word, uint32_t value);
+
+/* The sample locations of a multisample state (sdk d83b470..d83b560). The grid is a table of the count that the
+   library takes as the larger of the two sample fields. */
+uint32_t nvn_multisample_state_get_sample_locations_enable(uint32_t word);
+uint32_t nvn_multisample_state_get_sample_locations_grid_enable(uint32_t word);
+int nvn_multisample_state_sample_grid(uint32_t samples, uint32_t raster_samples, uint32_t* x, uint32_t* y);
+uint8_t nvn_multisample_sample_location(float x, float y);
+
 /* The pushbuffer words that the library writes for the command buffer bind functions (analyst-s2-A-1.md). Each builder
    writes the same words as the library. The caller supplies room for the named maximum, and the count is 0 on a refusal
    with nothing written. The host rules refuse a stage above 4, a slot outside its range, a polygon mode of 3, advanced
@@ -367,6 +390,8 @@ extern const NvnSamplerDeviceWords nvn_sampler_device_words;
 void nvn_sampler_defaults(NvnSampler* s);
 /* 1 when every field is equal; a NaN float is unequal to itself, as the library fcmp. Pure. */
 int nvn_sampler_equal(const NvnSampler* a, const NvnSampler* b);
+/* The four border words are raw bits, with no float conversion. */
+void nvn_sampler_border(const NvnSampler* s, uint32_t out[4]);
 float nvn_sampler_snap_bias(uint32_t index);
 /* 0 (out unchanged) when a wrap enum is above 7: the library reads its table unchecked. NaN anisotropy has no defined
    library result. */
@@ -456,6 +481,7 @@ int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* 
 #define NVN_VIEW_SWIZZLE 0x8u
 #define NVN_VIEW_DEPTH_STENCIL_MODE 0x10u
 #define NVN_VIEW_TARGET 0x20u
+#define NVN_VIEW_COMPARE_MASK 0x3Fu /* the library compares only these flag bits */
 
 typedef struct {
     uint8_t flags, base_level, level_count;
@@ -467,6 +493,17 @@ typedef struct {
     NvnTextureLayout layout;
     uint64_t address;
 } NvnTexture;
+/* The getters of the builder and object records. The packaged layout word is the inverse of the setter; the raw
+   storage class comes from the flags and the format only. */
+#define NVN_TEXTURE_RAW_STORAGE_FORMAT_LAST 0x36u
+uint32_t nvn_texture_packaged_layout(uint16_t tile, uint32_t* layout);
+uint32_t nvn_texture_raw_storage_class(uint32_t flags, uint32_t format);
+uint32_t nvn_texture_storage_size(const NvnTexture* t);
+/* The fields that nvnTextureCompare compares (sdk d83e3a0). The builder packaged data, tile, stride and GL name are
+   inputs and stay out, and so does the layout alignment. Pure. */
+int nvn_texture_equal(const NvnTexture* a, const NvnTexture* b);
+/* The optional fields of a view are compared only when the same flag bit is set in both views (sdk d83c9a0). Pure. */
+int nvn_texture_view_equal(const NvnTextureView* a, const NvnTextureView* b);
 /* One mip level of a block linear texture: the offset and bytes of the level in one layer, the block columns (GOBs
    across), the block rows, the level depth, the trimmed block height exponent (2^bh GOBs high) and the trimmed
    depth exponent (2^bd slices deep). */
