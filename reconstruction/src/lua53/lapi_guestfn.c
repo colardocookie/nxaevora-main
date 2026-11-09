@@ -1,0 +1,113 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the NXAevora contributors */
+/* GuestFn adapters for the reconstructed lapi.c functions: AAPCS64 arguments from X0-X7 and D0, the result in W0 or
+   X0 (a W write clears the upper half, as the hardware does), then a return through X30. */
+#include "lapi.h"
+#include "recon/registry.h"
+
+#define ARG_I32(n) ((int32_t)(uint32_t)c->x[n])
+#define RETURN_TO_CALLER() (c->pc = c->x[30])
+
+static void fn_absindex(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    c->x[0] = (uint32_t)lua_absindex(&g, c->x[0], ARG_I32(1));
+    RETURN_TO_CALLER();
+}
+static void fn_gettop(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    c->x[0] = (uint32_t)lua_gettop(&g, c->x[0]);
+    RETURN_TO_CALLER();
+}
+static void fn_settop(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    lua_settop(&g, c->x[0], ARG_I32(1));
+    RETURN_TO_CALLER();
+}
+static void fn_pushvalue(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    lua_pushvalue(&g, c->x[0], ARG_I32(1));
+    RETURN_TO_CALLER();
+}
+static void fn_xmove(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    lua_xmove(&g, c->x[0], c->x[1], ARG_I32(2));
+    RETURN_TO_CALLER();
+}
+static void fn_atpanic(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    c->x[0] = lua_atpanic(&g, c->x[0], c->x[1]);
+    RETURN_TO_CALLER();
+}
+static void fn_version(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    c->x[0] = lua_version(&g, c->x[0]);
+    RETURN_TO_CALLER();
+}
+static void fn_typename(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    c->x[0] = lua_typename(&g, c->x[0], ARG_I32(1));
+    RETURN_TO_CALLER();
+}
+static void fn_pushnil(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    lua_pushnil(&g, c->x[0]);
+    RETURN_TO_CALLER();
+}
+static void fn_pushnumber(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    lua_pushnumber(&g, c->x[0], c->v[0].d[0]);
+    RETURN_TO_CALLER();
+}
+static void fn_pushinteger(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    lua_pushinteger(&g, c->x[0], (int64_t)c->x[1]);
+    RETURN_TO_CALLER();
+}
+static void fn_pushboolean(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    lua_pushboolean(&g, c->x[0], ARG_I32(1));
+    RETURN_TO_CALLER();
+}
+static void fn_pushlightuserdata(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    lua_pushlightuserdata(&g, c->x[0], c->x[1]);
+    RETURN_TO_CALLER();
+}
+static void fn_pushthread(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    c->x[0] = (uint32_t)lua_pushthread(&g, c->x[0]);
+    RETURN_TO_CALLER();
+}
+
+#define SRC "src/lua53/lapi.c"
+const ReconFunction recon_lua53_functions[] = {
+    {"lua_absindex", SRC, 0x4FEB0, 52, RECON_RET_W0, fn_absindex},
+    {"lua_gettop", SRC, 0x4FEF0, 28, RECON_RET_W0, fn_gettop},
+    {"lua_settop", SRC, 0x4FF10, 84, RECON_RET_NONE, fn_settop},
+    {"lua_pushvalue", SRC, 0x50260, 172, RECON_RET_NONE, fn_pushvalue},
+    {"lua_xmove", SRC, 0x4FE00, 116, RECON_RET_NONE, fn_xmove},
+    {"lua_atpanic", SRC, 0x4FE80, 16, RECON_RET_X0, fn_atpanic},
+    {"lua_version", SRC, 0x4FE90, 28, RECON_RET_X0, fn_version},
+    {"lua_typename", SRC, 0x503F0, 20, RECON_RET_X0, fn_typename},
+    {"lua_pushnil", SRC, 0x51490, 24, RECON_RET_NONE, fn_pushnil},
+    {"lua_pushnumber", SRC, 0x514B0, 32, RECON_RET_NONE, fn_pushnumber},
+    {"lua_pushinteger", SRC, 0x514D0, 32, RECON_RET_NONE, fn_pushinteger},
+    {"lua_pushboolean", SRC, 0x517E0, 40, RECON_RET_NONE, fn_pushboolean},
+    {"lua_pushlightuserdata", SRC, 0x51810, 32, RECON_RET_NONE, fn_pushlightuserdata},
+    {"lua_pushthread", SRC, 0x51830, 44, RECON_RET_W0, fn_pushthread},
+};
+const size_t recon_lua53_count = sizeof(recon_lua53_functions) / sizeof(recon_lua53_functions[0]);

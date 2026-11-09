@@ -1,0 +1,15 @@
+module,offset,size,bytes_fnv1a,name,library,source,status,evidence
+main,4feb0,52,397b46479b7d78d2,lua_absindex,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,LUA_REGISTRYINDEX offset 0xF4627; ci->func and top walk
+main,4fef0,28,109d4ab78e75a03c,lua_gettop,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,(top - (func + 1)) / sizeof(TValue)
+main,4ff10,84,794bec0ad3da085c,lua_settop,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,setnilvalue loop then top = func + 1 + idx
+main,50260,172,c48ebf71b790b48a,lua_pushvalue,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,index2addr inlined: luaO_nilobject; l_registry at G+40; LUA_TLCF 22 and CClosure upvalues
+main,4fe00,116,478da22f2ad712a8,lua_xmove,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,from->top -= n then n TValue copies
+main,4fe80,16,49a6c9121a1fa6eb,lua_atpanic,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,swaps G(L)->panic
+main,4fe90,28,e54438be6ff64dc9,lua_version,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,NULL state returns the static holding 503.0
+main,503f0,20,4a84030afeda8623,lua_typename,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,luaT_typenames_[t + 1]
+main,51490,24,dcb56eaa8105d2dd,lua_pushnil,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,tag 0 then api_incr_top
+main,514b0,32,9d74b87ce3903350,lua_pushnumber,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,D0 stored with tag 3 (LUA_TNUMFLT)
+main,514d0,32,7b816581568dd69f,lua_pushinteger,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,X1 stored with tag 19 (LUA_TNUMINT)
+main,517e0,40,f49a0c9aaf0c0208,lua_pushboolean,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,b != 0 as an int with tag 1
+main,51810,32,2945501ead893359,lua_pushlightuserdata,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,X1 stored with tag 2
+main,51830,44,1b64d510a00993ab,lua_pushthread,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,tag 72 (LUA_TTHREAD collectable); returns G(L)->mainthread == L
