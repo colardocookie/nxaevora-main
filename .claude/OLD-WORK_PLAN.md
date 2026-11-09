@@ -2203,3 +2203,17 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 - 3 to 6 rows of each table checked in the disassembly, all equal. One error: D gives host `tile` at 0x60 (0x5c).
 - The enum argument trace (missing part of 4-u1) comes after U1 (user, 2026-11-09). Commit `Record the U1 library tables`.
 
+## Task (u) U1 step (b1) done (2026-11-10, moved from WORK_PLAN.md)
+
+- Decisions of the user (2026-11-10): (1) the 4 storage class and ZCull getters wait for the device words (step b2). (2) Buffer
+  and Texture Finalize keep the host record (the library Finalize is one `ret`), as the sampler does. (3) EventGetMemoryPool
+  and EventGetMemoryOffset move to U2. The 5 EventBuilder functions stay in U1.
+- Brief `reports/brief-u1-b1.md`, handler writer (opencode, DeepSeek V4.1 Flash) in worktree `wt-u1` (removed), patch
+  `patches/u1-b1-1.patch`, report `reports/writer-u1-b1-1.md`. Facts of the brief: getters read the host record under
+  `objs_lock`, never guest memory; new host setters (TextureBuilder SetSamples, SetGLTextureName, SetPackagedTextureData,
+  SetSize1D, SamplerBuilder SetBorderColori/ui, Window and WindowBuilder SetNumActiveTextures); the library stores
+  interval-1 (d83e5b0), the host stores the interval; table D gives `tile` at 0x60, it is 0x5c.
+- Caller fixes: the writer's fixed event builder side table (128, never freed) became objtab kind `NVN_OBJ_EVENT_BUILDER`; the
+  sample location NaN takes 0.9375 (fminnm, d83b734, checked in d83b530..d83b768); a uint8_t test constant.
+- Only the pure parts have unit tests (no test links `nvn_native.c`). 9 mutants, all killed. `ctest`: only `tracked_material`
+  fails (known). Commit `2c2b25e`: 105 handlers, coverage 379 implemented, 144 stub-log. Exe md5 6a1fd3c9. No game run.

@@ -67,26 +67,14 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
   Decision of the user (2026-11-09): the trace of the enum argument values (the missing part of 4-u1) comes after U1.
-  Current step: U1 step (b1) is committed (105 handlers, coverage 379 implemented, 144 stub-log). Only the pure parts have unit
-  tests (no test links `nvn_native.c`); 9 mutants killed. Caller fixes: the event builder is an objtab kind, not a side table;
-  the sample location NaN takes 0.9375 (fminnm, d83b734).
-  Left out, open (writer questions): TextureBuilderGetSparseTileLayout and TextureGetSparseTileLayout (helper d822538 and d869e10
-  not verified), TextureGetViewOffset (level and 3D slice offset of d83d01c not checked against `texture_level_offset`).
-  Next: step b2 (game explorer: the device words of decision 1), then these 3 functions.
-  Decisions of the user (2026-11-10):
-  - (1) TextureBuilderGetStorageClass, TextureGetStorageClass and both GetZCullStorageSize: the host device model gets the
-    device words that they read (+0x970/+0x978 and d83563c/d950f80, +0xb8..+0xdc, +0x1a08). A game explorer finds the values
-    first (step b2, after b1). Until then the 4 functions stay stub-log.
-  - (2) Buffer and Texture Finalize keep the host record (the library Finalize is one `ret`), as the sampler does.
-  - (3) EventGetMemoryPool and EventGetMemoryOffset move to U2 (they need Event Initialize). The 5 EventBuilder functions
-    stay in U1 (new host builder record).
-  Step b1: brief and handler writer patch for the other 110 functions. Facts for the brief:
-  - The host setters write only host records. Each getter reads the host record under `objs_lock`, never guest memory.
-    Library sampler and texture objects have other offsets than the host records.
-  - Missing host setters to add: TextureBuilder SetSamples, SetGLTextureName, SetPackagedTextureData, SetSize1D;
-    SamplerBuilder SetBorderColori/ui (= SetBorderColor); Window and WindowBuilder SetNumActiveTextures (new field).
-  - Library d83e5b0 stores interval-1 and the getter adds 1. The host stores the interval, so the getter returns it.
-  - Table D says host `tile` is at 0x60: it is 0x5c (the handler uses the field name).
+  Current step: U1 step b2, not started. Step b1 is done (`2c2b25e`, history in `OLD-WORK_PLAN.md`).
+  - b2: a game explorer finds the device words that 4 functions read (decision 1 of the user, 2026-11-10):
+    TextureBuilderGetStorageClass, TextureGetStorageClass and both GetZCullStorageSize read device +0x970/+0x978 (and
+    d83563c/d950f80), +0xb8..+0xdc and +0x1a08. The host device model gets these words. Until then the 4 stay stub-log.
+  - b3: the 3 functions that the writer left out: TextureBuilderGetSparseTileLayout and TextureGetSparseTileLayout (helpers
+    d822538 and d869e10 not verified), TextureGetViewOffset (level and 3D slice offset of d83d01c not checked against
+    `texture_level_offset`).
+  - EventGetMemoryPool and EventGetMemoryOffset are in U2 (they need Event Initialize).
 - Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
   buffer overflow in the init builders would crash).
 - Diagnostic code: `patches/diag-taskB.patch`. Apply it only for a diagnostic run, and remove it before a commit.
