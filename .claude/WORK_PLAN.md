@@ -47,15 +47,10 @@ RomFS and a file layer for mods.
 Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 to 3 are done except the open steps
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-NEXT, task (d) step 2: the characters are missing because the host program builder (`nvn_program_build_words`,
-nvn_params.c:1247) does not write the transform feedback (XFB) block, so no XFB capture happens on the native path.
-- Brief: `reports/brief-writer-xfb-prog.md` (verified facts, decisions, tests with the game's values). History of the cause and of
-  step 1: `OLD-WORK_PLAN.md`, last two sections.
-- Step 2 DONE (2026-11-09): the writer patch is applied in the working tree (NOT committed). Final patch with the test fixes:
-  `patches/xfb-prog-2.patch` (nvn_cmdlist.h, nvn_native.c, nvn_params.c/.h, tests/nvn_params.c, tests/nvn_cmdlist.c). Two tests of the
-  writer were wrong (count 6 must be 18: streams 1 to 3 add 4 words each, and the old BindProgram size 152 is now 736). ctest passes
-  except `tracked_material`. A mutant (table step 5) fails the test. Worktree `wt-xfb` is removed.
-- Step 3 (next session): one native run to the field (`nvn_native=1` is set). The `diag-xfb` lines must match the non-native ones
+NEXT, task (d) step 3: the characters were missing because the host program builder did not write the transform feedback (XFB)
+block. The fix is in the working tree (NOT committed, `patches/xfb-prog-2.patch`, 6 files). History of the cause and of steps 1 and
+2: `OLD-WORK_PLAN.md`, last sections.
+- Step 3 (this session): ask the user for one native run to the field (`nvn_native=1` is set), then read the log. The `diag-xfb` lines must match the non-native ones
   (0x1C0+4i = {0,3,0xC} / {0,1,4} / {0,1,4}, 0xA00+0x20i = 0x00222120 / 0x24 / 0x28) and the characters must show. Also look for
   `program ... refused: transform feedback`. Then remove the diagnostic (render.c, renderer.c) and commit the XFB files by name.
 - Diagnostic (NOT committed, in the working tree now): `patches/diag-taskD.patch` (render.c, renderer.c). Lines `diag-xfb`,

@@ -2129,3 +2129,16 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 - Stage 4: the black screen is fixed and the game runs at 30 fps (history: the sections above).
 - The GPU page table mapping of a pool is connected (0037). The GPU addresses are a bump allocator from 0x400000000. Virtual pools and
   imports fail with a log line. The texture kind is not ported (stored 0).
+
+## Task (d) step 2 done: XFB block in the host program builder (2026-11-09, night, moved from WORK_PLAN.md)
+
+- The code writer (opencode) wrote the patch from `reports/brief-writer-xfb-prog.md` in the worktree `wt-xfb` (removed after).
+  Report: `reports/writer-xfb-prog-1.md`. Writer patch: `patches/xfb-prog-1.patch`. Final patch with the test fixes:
+  `patches/xfb-prog-2.patch` (nvn_cmdlist.h, nvn_native.c, nvn_params.c/.h, tests/nvn_params.c, tests/nvn_cmdlist.c).
+- New: `nvn_program_xfb_words` (pure, nvn_params.c) and `program_append_xfb_words` (nvn_native.c, called in
+  `h_program_set_shaders_ext` after the graphics words when the vertex stage exists). A refusal logs
+  `program %llx refused: transform feedback: ...` and sets `ok = 0`. `NVN_PROGRAM_WORDS_MAX` = 178, `NVN_OP_MAX_PAYLOAD` = 768.
+- Two tests of the writer were wrong: test (c) count 6 must be 18 (streams 1 to 3 with stride 0 add 4 words each), and the
+  BindProgram size in tests/nvn_cmdlist.c:127 is 736, not 152. After the fix, ctest passes except `tracked_material`.
+  A mutant (table step 5) fails the test.
+- The exe in `game/` (md5 f0c83b01) has the patch and the diagnostic `patches/diag-taskD.patch`. Not run yet.
