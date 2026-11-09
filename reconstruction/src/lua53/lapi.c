@@ -130,3 +130,100 @@ int32_t lua_pushthread(const Guest* g, GAddr L) {
     incr_top(g, L);
     return g_ld64(g, global_of(g, L) + GS_MAINTHREAD) == L;
 }
+
+/* reverse, lua_rotate's helper: swaps the values of from..to end to end */
+static void reverse(const Guest* g, GAddr from, GAddr to) {
+    for (; from < to; from += TVALUE_SIZE, to -= TVALUE_SIZE) {
+        uint8_t temp[TVALUE_SIZE];
+        memcpy(temp, g->mem + from, TVALUE_SIZE);
+        g_copy16(g, from, to);
+        memcpy(g->mem + to, temp, TVALUE_SIZE);
+    }
+}
+
+void lua_rotate(const Guest* g, GAddr L, int32_t idx, int32_t n) {
+    const GAddr t = top_of(g, L) - TVALUE_SIZE; /* the end of the segment being rotated */
+    const GAddr p = index2addr(g, L, idx);      /* its start */
+    const GAddr m = n >= 0 ? t - (GAddr)(int64_t)n * TVALUE_SIZE
+                           : p - (GAddr)(int64_t)n * TVALUE_SIZE - TVALUE_SIZE; /* the end of the prefix */
+    reverse(g, p, m);
+    reverse(g, m + TVALUE_SIZE, t);
+    reverse(g, p, t);
+}
+
+static uint32_t tag_of(const Guest* g, GAddr o) { return g_ld32(g, o + TV_TT); }
+static int32_t novariant(uint32_t tag) { return (int32_t)(tag & 0xF); } /* ttnov */
+
+int32_t lua_type(const Guest* g, GAddr L, int32_t idx) {
+    const GAddr o = index2addr(g, L, idx);
+    return o == g->main_base + MAIN_LUAO_NILOBJECT ? LUA_TNONE : novariant(tag_of(g, o));
+}
+
+int32_t lua_iscfunction(const Guest* g, GAddr L, int32_t idx) {
+    const uint32_t tag = tag_of(g, index2addr(g, L, idx));
+    return tag == LUA_TLCF || tag == LUA_TCCL_TAGGED;
+}
+
+int32_t lua_isinteger(const Guest* g, GAddr L, int32_t idx) {
+    return tag_of(g, index2addr(g, L, idx)) == LUA_TNUMINT;
+}
+
+int32_t lua_isstring(const Guest* g, GAddr L, int32_t idx) {
+    /* ttisstring(o) || cvt2str(o): a string, or a number that converts to one */
+    const int32_t t = novariant(tag_of(g, index2addr(g, L, idx)));
+    return t == 3 || t == 4;
+}
+
+int32_t lua_toboolean(const Guest* g, GAddr L, int32_t idx) {
+    const GAddr o = index2addr(g, L, idx);
+    const uint32_t tag = tag_of(g, o);
+    if (tag == LUA_TNIL) return 0; /* !l_isfalse(o) */
+    if (tag == LUA_TBOOLEAN) return g_ld32(g, o + TV_VALUE) != 0;
+    return 1;
+}
+
+GAddr lua_tocfunction(const Guest* g, GAddr L, int32_t idx) {
+    const GAddr o = index2addr(g, L, idx);
+    const uint32_t tag = tag_of(g, o);
+    if (tag == LUA_TLCF) return g_ld64(g, o + TV_VALUE);
+    if (tag == LUA_TCCL_TAGGED) return g_ld64(g, g_ld64(g, o + TV_VALUE) + CCL_F);
+    return 0;
+}
+
+GAddr lua_touserdata(const Guest* g, GAddr L, int32_t idx) {
+    const GAddr o = index2addr(g, L, idx);
+    switch (novariant(tag_of(g, o))) {
+    case LUA_TUSERDATA: return g_ld64(g, o + TV_VALUE) + UDATA_SIZE; /* getudatamem */
+    case LUA_TLIGHTUSERDATA: return g_ld64(g, o + TV_VALUE);
+    default: return 0;
+    }
+}
+
+GAddr lua_tothread(const Guest* g, GAddr L, int32_t idx) {
+    const GAddr o = index2addr(g, L, idx);
+    return tag_of(g, o) == LUA_TTHREAD_TAGGED ? g_ld64(g, o + TV_VALUE) : 0;
+}
+
+int32_t lua_getmetatable(const Guest* g, GAddr L, int32_t objindex) {
+    const GAddr obj = index2addr(g, L, objindex);
+    const int32_t t = novariant(tag_of(g, obj));
+    GAddr mt;
+    if (t == LUA_TTABLE) mt = g_ld64(g, g_ld64(g, obj + TV_VALUE) + TABLE_METATABLE);
+    else if (t == LUA_TUSERDATA) mt = g_ld64(g, g_ld64(g, obj + TV_VALUE) + UDATA_METATABLE);
+    else mt = g_ld64(g, global_of(g, L) + GS_MT + (GAddr)t * 8);
+    if (!mt) return 0;
+    const GAddr slot = top_of(g, L); /* sethvalue(L, L->top, mt) */
+    g_st64(g, slot + TV_VALUE, mt);
+    g_st32(g, slot + TV_TT, LUA_TTABLE_TAGGED);
+    incr_top(g, L);
+    return 1;
+}
+
+int32_t lua_getuservalue(const Guest* g, GAddr L, int32_t idx) {
+    const GAddr u = g_ld64(g, index2addr(g, L, idx) + TV_VALUE); /* a full userdata (api_check) */
+    const GAddr slot = top_of(g, L);                              /* getuservalue(L, u, L->top) */
+    g_st64(g, slot + TV_VALUE, g_ld64(g, u + UDATA_USER));
+    g_st32(g, slot + TV_TT, g_ld8(g, u + UDATA_TTUV));
+    incr_top(g, L);
+    return novariant(tag_of(g, top_of(g, L) - TVALUE_SIZE));
+}

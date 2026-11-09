@@ -24,20 +24,40 @@
 #define GS_PANIC 0xC0      /* lua_CFunction panic */
 #define GS_MAINTHREAD 0xC8 /* lua_State *mainthread */
 #define GS_VERSION 0xD0    /* const lua_Number *version */
+#define GS_MT 0x1A0        /* struct Table *mt[LUA_NUMTAGS], the basic types' metatables */
 
-/* CClosure: ClosureHeader then TValue upvalue[] */
+/* CClosure: ClosureHeader, then lua_CFunction f and TValue upvalue[] */
 #define CCL_NUPVALUES 0xA /* lu_byte nupvalues */
+#define CCL_F 0x18        /* lua_CFunction f */
 #define CCL_UPVALUE 0x20  /* TValue upvalue[1] */
 
+/* Table and Udata */
+#define TABLE_METATABLE 0x28 /* struct Table *metatable */
+#define UDATA_TTUV 0xA       /* lu_byte ttuv_, the user value's tag */
+#define UDATA_METATABLE 0x10 /* struct Table *metatable */
+#define UDATA_USER 0x20      /* union Value user_ */
+#define UDATA_SIZE 0x28      /* sizeof(UUdata), where getudatamem's block starts */
+
+/* Basic types (lua.h). ttnov(o) is the tag's low 4 bits. */
+#define LUA_TNONE (-1)
+#define LUA_TTABLE 5
+#define LUA_TUSERDATA 7
+
 /* Type tags (tt_) as Lua 5.3 stores them: the basic type, its variant in bits 4-5 and BIT_ISCOLLECTABLE (bit 6) */
+#define BIT_ISCOLLECTABLE 0x40
 #define LUA_TNIL 0
 #define LUA_TBOOLEAN 1
 #define LUA_TLIGHTUSERDATA 2
-#define LUA_TNUMFLT 3          /* LUA_TNUMBER | (0 << 4) */
-#define LUA_TNUMINT 19         /* LUA_TNUMBER | (1 << 4) */
-#define LUA_TLCF 22            /* LUA_TFUNCTION | (1 << 4), a light C function */
-#define LUA_TCCL 38            /* LUA_TFUNCTION | (2 << 4), a C closure */
-#define LUA_TTHREAD_TAGGED 72  /* LUA_TTHREAD | BIT_ISCOLLECTABLE */
+#define LUA_TNUMFLT 3                                /* LUA_TNUMBER | (0 << 4) */
+#define LUA_TNUMINT 19                               /* LUA_TNUMBER | (1 << 4) */
+#define LUA_TSHRSTR_TAGGED (4 | BIT_ISCOLLECTABLE)   /* a short string */
+#define LUA_TLNGSTR_TAGGED (20 | BIT_ISCOLLECTABLE)  /* a long string */
+#define LUA_TTABLE_TAGGED (5 | BIT_ISCOLLECTABLE)
+#define LUA_TLCL_TAGGED (6 | BIT_ISCOLLECTABLE)      /* a Lua closure */
+#define LUA_TLCF 22                                  /* LUA_TFUNCTION | (1 << 4), a light C function */
+#define LUA_TCCL_TAGGED (38 | BIT_ISCOLLECTABLE)     /* LUA_TFUNCTION | (2 << 4), a C closure */
+#define LUA_TUSERDATA_TAGGED (7 | BIT_ISCOLLECTABLE) /* a full userdata */
+#define LUA_TTHREAD_TAGGED (8 | BIT_ISCOLLECTABLE)
 
 /* lua.h: LUAI_MAXSTACK is 1000000, so the registry pseudo-index is -1001000 */
 #define LUA_REGISTRYINDEX (-1000000 - 1000)

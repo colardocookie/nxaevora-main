@@ -93,6 +93,27 @@ static void fn_pushthread(CPU* c, u64 e) {
     RETURN_TO_CALLER();
 }
 
+/* (lua_State *L, int idx) functions with an int or a pointer result */
+#define IDX_TO_W0(fn)                                                                                                      static void fn_##fn(CPU* c, u64 e) {                                                                                       (void)e;                                                                                                               Guest g = recon_guest(c);                                                                                              c->x[0] = (uint32_t)fn(&g, c->x[0], ARG_I32(1));                                                                       RETURN_TO_CALLER();                                                                                                }
+#define IDX_TO_X0(fn)                                                                                                      static void fn_##fn(CPU* c, u64 e) {                                                                                       (void)e;                                                                                                               Guest g = recon_guest(c);                                                                                              c->x[0] = fn(&g, c->x[0], ARG_I32(1));                                                                                 RETURN_TO_CALLER();                                                                                                }
+IDX_TO_W0(lua_type)
+IDX_TO_W0(lua_iscfunction)
+IDX_TO_W0(lua_isinteger)
+IDX_TO_W0(lua_isstring)
+IDX_TO_W0(lua_toboolean)
+IDX_TO_W0(lua_getmetatable)
+IDX_TO_W0(lua_getuservalue)
+IDX_TO_X0(lua_tocfunction)
+IDX_TO_X0(lua_touserdata)
+IDX_TO_X0(lua_tothread)
+
+static void fn_rotate(CPU* c, u64 e) {
+    (void)e;
+    Guest g = recon_guest(c);
+    lua_rotate(&g, c->x[0], ARG_I32(1), ARG_I32(2));
+    RETURN_TO_CALLER();
+}
+
 #define SRC "src/lua53/lapi.c"
 const ReconFunction recon_lua53_functions[] = {
     {"lua_absindex", SRC, 0x4FEB0, 52, RECON_RET_W0, fn_absindex},
@@ -109,5 +130,16 @@ const ReconFunction recon_lua53_functions[] = {
     {"lua_pushboolean", SRC, 0x517E0, 40, RECON_RET_NONE, fn_pushboolean},
     {"lua_pushlightuserdata", SRC, 0x51810, 32, RECON_RET_NONE, fn_pushlightuserdata},
     {"lua_pushthread", SRC, 0x51830, 44, RECON_RET_W0, fn_pushthread},
+    {"lua_rotate", SRC, 0x4FF70, 340, RECON_RET_NONE, fn_rotate},
+    {"lua_type", SRC, 0x50310, 220, RECON_RET_W0, fn_lua_type},
+    {"lua_iscfunction", SRC, 0x50410, 180, RECON_RET_W0, fn_lua_iscfunction},
+    {"lua_isinteger", SRC, 0x504D0, 204, RECON_RET_W0, fn_lua_isinteger},
+    {"lua_isstring", SRC, 0x506A0, 176, RECON_RET_W0, fn_lua_isstring},
+    {"lua_toboolean", SRC, 0x50CC0, 216, RECON_RET_W0, fn_lua_toboolean},
+    {"lua_tocfunction", SRC, 0x510E0, 228, RECON_RET_X0, fn_lua_tocfunction},
+    {"lua_touserdata", SRC, 0x511D0, 248, RECON_RET_X0, fn_lua_touserdata},
+    {"lua_tothread", SRC, 0x512D0, 212, RECON_RET_X0, fn_lua_tothread},
+    {"lua_getmetatable", SRC, 0x52090, 320, RECON_RET_W0, fn_lua_getmetatable},
+    {"lua_getuservalue", SRC, 0x521D0, 200, RECON_RET_W0, fn_lua_getuservalue},
 };
 const size_t recon_lua53_count = sizeof(recon_lua53_functions) / sizeof(recon_lua53_functions[0]);

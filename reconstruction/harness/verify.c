@@ -17,6 +17,8 @@
 #define BSS_ROOM (64ull << 20)     /* zeroed room after the image for its BSS */
 #define SCRATCH_SIZE (1ull << 20)  /* fixture memory, compared byte for byte */
 #define RETURN_ADDRESS 0x1000ull   /* X30 on entry: a RET must land here */
+#define STACK_TOP (SCRATCH_SIZE - 0x1000) /* SP on entry, as a scratch offset */
+#define DEAD_STACK 0x8000ull       /* below SP: a callee's own frame, dead after it returns, not compared */
 #define R_AARCH64_RELATIVE 1027
 
 GAddr recon_main_base = MAIN_BASE;
@@ -134,7 +136,7 @@ static void prepare(CPU* c, RtAPI* rt, Rng* r) {
     for (int i = 0; i < 31; i++) c->x[i] = rng_next(r); /* garbage in every register an argument does not set */
     for (int i = 19; i <= 29; i++) c->x[i] = 0xC0DE000000000000ull | (uint64_t)i;
     c->x[30] = RETURN_ADDRESS;
-    c->x[31] = g_scratch + SCRATCH_SIZE - 0x1000;
+    c->x[31] = g_scratch + STACK_TOP;
 }
 
 static Outcome outcome(const CPU* c) {
@@ -166,7 +168,7 @@ static const char* compare(const Case* k, const Outcome* a, const Outcome* b, co
         return why;
     }
     for (uint64_t i = 0; i < SCRATCH_SIZE; i++)
-        if (mem_a[i] != mem_b[i]) {
+        if (mem_a[i] != mem_b[i] && !(i >= STACK_TOP - DEAD_STACK && i < STACK_TOP)) {
             snprintf(why, why_size, "scratch byte +%llx: %02x, reconstruction %02x", (unsigned long long)i, mem_a[i],
                      mem_b[i]);
             return why;

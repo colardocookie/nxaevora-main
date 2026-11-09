@@ -5,6 +5,7 @@
    must fail: that shows the fixtures and the comparison would catch such a mistake. */
 #include "mutants.h"
 #include "../src/lua53/lua53_layout.h"
+#include <string.h>
 
 #define ARG_I32(n) ((int32_t)(uint32_t)c->x[n])
 #define G recon_guest(c)
@@ -161,6 +162,103 @@ static void m_pushthread(CPU* c, u64 e) {
     c->pc = c->x[30];
 }
 
+/* The mutants' own index2addr, so they do not share code with what they test */
+static GAddr m_index(CPU* c, GAddr L, int32_t idx) {
+    Guest g = G;
+    const GAddr fn = func(c, L), nil = recon_main_base + MAIN_LUAO_NILOBJECT;
+    if (idx > 0) return fn + (GAddr)(int64_t)idx * TVALUE_SIZE < top(c, L) ? fn + (GAddr)(int64_t)idx * TVALUE_SIZE : nil;
+    if (idx > LUA_REGISTRYINDEX) return top(c, L) + (GAddr)(int64_t)idx * TVALUE_SIZE;
+    if (idx == LUA_REGISTRYINDEX) return g_ld64(&g, L + LS_L_G) + GS_L_REGISTRY;
+    idx = LUA_REGISTRYINDEX - idx;
+    if (g_ld32(&g, fn + TV_TT) == LUA_TLCF) return nil;
+    const GAddr cl = g_ld64(&g, fn + TV_VALUE);
+    return idx > g_ld8(&g, cl + CCL_NUPVALUES) ? nil : cl + CCL_UPVALUE + (GAddr)(int64_t)(idx - 1) * TVALUE_SIZE;
+}
+static uint32_t m_tag(CPU* c) {
+    Guest g = G;
+    return g_ld32(&g, m_index(c, c->x[0], ARG_I32(1)) + TV_TT);
+}
+#define RESULT(v) (c->x[0] = (v), c->pc = c->x[30])
+
+/* the end of the prefix one value too far */
+static void m_rotate(CPU* c, u64 e) {
+    (void)e;
+    Guest g = G;
+    const GAddr L = c->x[0], t = top(c, L) - TVALUE_SIZE, p = m_index(c, L, ARG_I32(1));
+    const int32_t n = ARG_I32(2);
+    const GAddr m = n >= 0 ? t - (GAddr)(int64_t)n * TVALUE_SIZE : p - (GAddr)(int64_t)n * TVALUE_SIZE;
+    const GAddr ranges[3][2] = {{p, m}, {m + TVALUE_SIZE, t}, {p, t}};
+    for (int k = 0; k < 3; k++)
+        for (GAddr a = ranges[k][0], b = ranges[k][1]; a < b; a += TVALUE_SIZE, b -= TVALUE_SIZE) {
+            uint8_t tmp[16];
+            memcpy(tmp, g.mem + a, 16);
+            g_copy16(&g, a, b);
+            memcpy(g.mem + b, tmp, 16);
+        }
+    c->pc = c->x[30];
+}
+/* an invalid index reads as nil, not LUA_TNONE */
+static void m_type(CPU* c, u64 e) { (void)e; RESULT((uint32_t)(m_tag(c) & 0xF)); }
+/* any function, Lua closures too */
+static void m_iscfunction(CPU* c, u64 e) { (void)e; RESULT((m_tag(c) & 0xF) == 6); }
+/* any number, floats too */
+static void m_isinteger(CPU* c, u64 e) { (void)e; RESULT((m_tag(c) & 0xF) == 3); }
+/* strings only, without numbers */
+static void m_isstring(CPU* c, u64 e) { (void)e; RESULT((m_tag(c) & 0xF) == 4); }
+/* false only for nil, a false boolean counts as true */
+static void m_toboolean(CPU* c, u64 e) { (void)e; RESULT(m_tag(c) != LUA_TNIL); }
+/* a C closure gives the closure, not its function */
+static void m_tocfunction(CPU* c, u64 e) {
+    (void)e;
+    Guest g = G;
+    const GAddr o = m_index(c, c->x[0], ARG_I32(1));
+    const uint32_t tag = g_ld32(&g, o + TV_TT);
+    RESULT(tag == LUA_TLCF || tag == LUA_TCCL_TAGGED ? g_ld64(&g, o + TV_VALUE) : 0);
+}
+/* a full userdata gives its header, not its memory block */
+static void m_touserdata(CPU* c, u64 e) {
+    (void)e;
+    Guest g = G;
+    const GAddr o = m_index(c, c->x[0], ARG_I32(1));
+    const uint32_t t = g_ld32(&g, o + TV_TT) & 0xF;
+    RESULT(t == 7 || t == 2 ? g_ld64(&g, o + TV_VALUE) : 0);
+}
+/* compares with LUA_TTHREAD, forgetting the collectable bit */
+static void m_tothread(CPU* c, u64 e) {
+    (void)e;
+    Guest g = G;
+    const GAddr o = m_index(c, c->x[0], ARG_I32(1));
+    RESULT(g_ld32(&g, o + TV_TT) == 8 ? g_ld64(&g, o + TV_VALUE) : 0);
+}
+/* a userdata's metatable taken from the table's field */
+static void m_getmetatable(CPU* c, u64 e) {
+    (void)e;
+    Guest g = G;
+    const GAddr L = c->x[0], o = m_index(c, L, ARG_I32(1));
+    const uint32_t t = g_ld32(&g, o + TV_TT) & 0xF;
+    const GAddr mt = t == 5 || t == 7 ? g_ld64(&g, g_ld64(&g, o + TV_VALUE) + TABLE_METATABLE)
+                                      : g_ld64(&g, g_ld64(&g, L + LS_L_G) + GS_MT + t * 8);
+    if (!mt) {
+        RESULT(0);
+        return;
+    }
+    const GAddr s = top(c, L);
+    g_st64(&g, s + TV_VALUE, mt);
+    g_st32(&g, s + TV_TT, LUA_TTABLE_TAGGED);
+    g_st64(&g, L + LS_TOP, s + TVALUE_SIZE);
+    RESULT(1);
+}
+/* the user value's tag as the full byte with no basic type taken */
+static void m_getuservalue(CPU* c, u64 e) {
+    (void)e;
+    Guest g = G;
+    const GAddr L = c->x[0], u = g_ld64(&g, m_index(c, L, ARG_I32(1)) + TV_VALUE), s = top(c, L);
+    g_st64(&g, s + TV_VALUE, g_ld64(&g, u + UDATA_USER));
+    g_st32(&g, s + TV_TT, g_ld8(&g, u + UDATA_TTUV));
+    g_st64(&g, L + LS_TOP, s + TVALUE_SIZE);
+    RESULT(g_ld8(&g, u + UDATA_TTUV));
+}
+
 const Mutant recon_lua53_mutants[] = {
     {"lua_absindex", m_absindex},     {"lua_gettop", m_gettop},
     {"lua_settop", m_settop},         {"lua_pushvalue", m_pushvalue},
@@ -169,5 +267,11 @@ const Mutant recon_lua53_mutants[] = {
     {"lua_pushnil", m_pushnil},       {"lua_pushnumber", m_pushnumber},
     {"lua_pushinteger", m_pushinteger}, {"lua_pushboolean", m_pushboolean},
     {"lua_pushlightuserdata", m_pushlightuserdata}, {"lua_pushthread", m_pushthread},
+    {"lua_rotate", m_rotate},         {"lua_type", m_type},
+    {"lua_iscfunction", m_iscfunction}, {"lua_isinteger", m_isinteger},
+    {"lua_isstring", m_isstring},     {"lua_toboolean", m_toboolean},
+    {"lua_tocfunction", m_tocfunction}, {"lua_touserdata", m_touserdata},
+    {"lua_tothread", m_tothread},     {"lua_getmetatable", m_getmetatable},
+    {"lua_getuservalue", m_getuservalue},
 };
 const size_t recon_lua53_mutant_count = sizeof(recon_lua53_mutants) / sizeof(recon_lua53_mutants[0]);

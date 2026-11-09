@@ -21,5 +21,16 @@ void lua_pushinteger(const Guest* g, GAddr L, int64_t n);
 void lua_pushboolean(const Guest* g, GAddr L, int32_t b);
 void lua_pushlightuserdata(const Guest* g, GAddr L, GAddr p);
 int32_t lua_pushthread(const Guest* g, GAddr L);
+void lua_rotate(const Guest* g, GAddr L, int32_t idx, int32_t n);
+int32_t lua_type(const Guest* g, GAddr L, int32_t idx);
+int32_t lua_iscfunction(const Guest* g, GAddr L, int32_t idx);
+int32_t lua_isinteger(const Guest* g, GAddr L, int32_t idx);
+int32_t lua_isstring(const Guest* g, GAddr L, int32_t idx);
+int32_t lua_toboolean(const Guest* g, GAddr L, int32_t idx);
+GAddr lua_tocfunction(const Guest* g, GAddr L, int32_t idx);
+GAddr lua_touserdata(const Guest* g, GAddr L, int32_t idx);
+GAddr lua_tothread(const Guest* g, GAddr L, int32_t idx);
+int32_t lua_getmetatable(const Guest* g, GAddr L, int32_t objindex);
+int32_t lua_getuservalue(const Guest* g, GAddr L, int32_t idx);
 
 #endif

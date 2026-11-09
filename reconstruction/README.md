@@ -17,9 +17,11 @@ second, native implementation of a game function, and it only counts once it is 
 2. It compiles the original function from those bytes with ScarletNX's LLVM backend, the code generator the
    recompiled game runs on.
 3. A fixture builds the inputs: the registers and the objects in scratch memory (for the Lua API, `lua_State`s with
-   a `CallInfo`, a stack, a `global_State` and a C closure). Every other byte and register is random.
+   a `CallInfo`, a stack of typed values, a `global_State`, a C closure and a pool of tables, userdata, closures and
+   threads the values point to). Every other byte and register is random.
 4. The original and the reconstruction run from the same state. They must agree on the result register, X19 to X29,
-   SP, the return address and every byte of the 1 MB scratch area. The module must be unchanged at the end.
+   SP, the return address and every byte of the 1 MB scratch area except the 32 KB just below SP, where a function
+   keeps its own frame (dead once it returns). The module must be unchanged at the end.
 
 A function is **verified** when it passes at least 10000 randomized runs on the exact bytes recorded in the manifest.
 `recon-verify --control` runs every original against a deliberately wrong variant of its reconstruction
@@ -64,15 +66,17 @@ python tools/progress.py --functions functions.tsv --main MAIN.BIN --results res
 | --- | --- | --- |
 | Functions in the inventory (all modules) | 227067 | 72851324 |
 | Functions in main | 161208 | 57424060 |
-| Verified reconstructions | 14 | 720 |
+| Verified reconstructions | 25 | 3264 |
 
-All 14 are the game's Lua 5.3 C API (`lapi.c`), identified from their layouts and constants and confirmed by the
-"Lua 5.3" string and `lua_version`'s 503.0. Each passed 20000 runs, and all 14 mutants failed the control. Among
-them are `lua_settop` (11108 direct callers), `lua_pushnil` (8031) and `lua_pushlightuserdata` (7427).
+All 25 are the game's Lua 5.3 C API (`lapi.c`), identified from their layouts and constants and confirmed by the
+"Lua 5.3" string and `lua_version`'s 503.0. Each passed 20000 runs, and all 25 mutants failed the control. Among
+them are `lua_touserdata` (11744 direct callers), `lua_settop` (11108), `lua_pushnil` (8031) and `lua_type` (3864).
+Every leaf function of `lapi.c` (main+4E3B0 to main+53000) is now reconstructed. The others there call into the VM.
 
 ## Adding a function
 
-1. Pick one from `tools/candidates.py`, or a function whose library is known.
+1. Pick one from `tools/candidates.py` (`--max-size` raises its 200-byte default), or a function whose library is
+   known.
 2. Write it in `src/<library>/` against `guest.h`, with field offsets as named constants.
 3. Add its `GuestFn` adapter and registry entry, a fixture that builds valid inputs, and a mutant.
 4. Run the verifier and the control, then add the manifest line with the hash the verifier prints.

@@ -13,3 +13,14 @@ main,514d0,32,7b816581568dd69f,lua_pushinteger,Lua 5.3 lapi.c,src/lua53/lapi.c,v
 main,517e0,40,f49a0c9aaf0c0208,lua_pushboolean,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,b != 0 as an int with tag 1
 main,51810,32,2945501ead893359,lua_pushlightuserdata,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,X1 stored with tag 2
 main,51830,44,1b64d510a00993ab,lua_pushthread,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,tag 72 (LUA_TTHREAD collectable); returns G(L)->mainthread == L
+main,4ff70,340,edcb1df8534bd299,lua_rotate,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,three reverse passes through a stack temporary; m = n >= 0 ? t - n : p - n - 1
+main,50310,220,6246da85b5249076,lua_type,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,ttnov (tag & 0xF) or LUA_TNONE for luaO_nilobject
+main,50410,180,1e4f68c69d6300f2,lua_iscfunction,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,tag 22 (light C function) or 0x66 (C closure)
+main,504d0,204,ccc645d4be833a36,lua_isinteger,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,tag 19
+main,506a0,176,f76a75a9f1e68af2,lua_isstring,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,basic type 3 or 4 (cvt2str or a string)
+main,50cc0,216,314578e125276935,lua_toboolean,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,!l_isfalse: nil and false booleans
+main,510e0,228,c0f408646b84df5c,lua_tocfunction,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,light C function value or CClosure f at +18
+main,511d0,248,2f8652dfdfe8ae86,lua_touserdata,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,getudatamem (Udata + 0x28) or the light userdata
+main,512d0,212,be5d75198532c650,lua_tothread,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,tag 0x48
+main,52090,320,006b2f601904dcc8,lua_getmetatable,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,Table +28; Udata +10; else G(L)->mt[t] at G+1A0; pushed with tag 0x45
+main,521d0,200,730a919656a8af19,lua_getuservalue,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,Udata user_ at +20 and ttuv_ at +A; returns ttnov
