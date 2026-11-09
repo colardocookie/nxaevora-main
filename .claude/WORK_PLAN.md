@@ -47,8 +47,9 @@ RomFS and a file layer for mods.
 Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 to 3 are done except the open steps
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-NEXT: task (a) step 2 is committed, not run. Ask the user for one run (`nvn_native=1`, update program, field scene, 10 s),
-  then read the log: the count of `not translated` lines in the shipped pass (79 before, expect 10 fewer), refusals, crash.
+NEXT: task (a) is done. Run 21:34 (`nvn_native=1`): the shipped file has 1390 shaders (1380 before, +10 as expected), made
+  by a run at 21:31 whose log was overwritten. The 10 old hashes are absent because the new lengths change the hash. 0
+  `not translated`, 0 `not implemented`, normal `Exit.` at 74.5 s. Asked the user what the screen showed.
   Step 2: `sh_spirv` keeps a shipped result whose reads all failed and drops its reads (`cbr.n = 0`). Code writer patch
   `patches/a2-ship-1.patch` (correct at the first try), no test (no test links `pipeline.c`). `ctest`: only `tracked_material`
   fails. Exe md5 d050d20e copied to the 3 places. Worktree `wt-a2` removed. Step 1: `9036dc8`.
