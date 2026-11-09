@@ -2100,3 +2100,25 @@ NEXT, task (d): the characters are missing again (REGRESSION, run 2026-11-09 16:
   values above), build, ctest, then one native run with the diagnostic: `diag-xfb` lines must match the non-native ones.
   Old step 2 text: a diagnostic log that shows if each Barrier op of the replay reaches `vkr_method_barrier`
   (renderer.c:164) and records `vkCmdPipelineBarrier2` between the XFB draw and the draw that reads it.
+
+## Task (d) step 1 done: XFB block verified, brief written (2026-11-09, night, commit 7c0b05a, moved from WORK_PLAN.md)
+
+NEXT, task (d) step 3: the characters are missing because NO transform feedback capture happens on the native path.
+- Cause (found 2026-11-09 with a diagnostic, history in `OLD-WORK_PLAN.md`, last section): the host program builder
+  (`nvn_program_build_words`, nvn_params.c:1247) does not write the transform feedback block of the library builder
+  (`reports/analyst-prog-builder-1.md` section 5; the analyst guessed "0 of 64 programs use it": wrong). The renderer skips an
+  XFB buffer when 0x1C1 and 0x1C2 are 0 (render.c, the xbound loop), so the skinning VS `24ba3b3c` writes nothing and the
+  draws read old memory. The barrier fix `5c3f76d` is not the cause and not the fix (the renderer orders XFB reads itself).
+- The good values (non-native run, `diag-xfb`): 3 buffers, 0x1C0+4i..+2 = {0,3,0xC} / {0,1,4} / {0,1,4}, layout 0xA00+0x20i
+  first word = 0x00222120 / 0x00000024 / 0x00000028, then 0. The analyst: header `0x20030000|(0x1C0+4i)` with
+  `{blob[0x608+i], n_i>>2, n_i}`, `n_i = u16 blob[0x600+2i]`, and if `n_i != 0` the layout run at 0xA00+0x20i of ceil(w19/4)
+  words, from the packing loop d854c08..d854d90 (`blob[0x80i]`, `blob[0x80i+0x200]`, `blob[0x80i+0x400]`, components
+  `u8 blob[0x60c+i]`). Condition `blob+0x610 != 0`. The blob is the 0x612 byte header blob at descriptor+0x14 (d836b30).
+- Step (1) DONE (2026-11-09): the brief `reports/brief-writer-xfb-prog.md` has the verified facts. The blob is raw header bytes
+  `header+0xDC..+0x6EE` (getters d8372dc..d837370 are plain loads, source stage = vertex). Layout byte = `(u8)(TABLE[id]+k)`, TABLE =
+  sdk 0xde87370 (64 u16, low byte), id -6..-3 gives 0xFF. Decisions: NVN_PROGRAM_WORDS_MAX 32 to 178, NVN_OP_MAX_PAYLOAD 512 to 768,
+  no layout header when the layout is empty, refusals for bad ids, comps > 0x80, layout above 32 words or the library allocation.
+- Steps (one per session): (2) the code writer
+  adds the block (brief above, worktree `wt-xfb`, patch `patches/xfb-prog-1.patch`), the caller reads the patch, builds, runs
+  ctest; (3) one native run to the
+  field: the `diag-xfb` lines must match the non-native ones and the characters must show; then remove the diagnostic and commit.
