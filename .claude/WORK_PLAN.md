@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - NOT PUSHED: `9aa4635` and all later commits (`a897e21` is code, the others are work plan updates).
   `4e6b015` and older are PUSHED. History: `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is `48898a1` plus the diagnostic of task (d) (md5 361c8c3e). The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is `a8c7a09` plus the XFB patch (not committed) plus the diagnostic of task (d) (md5 f0c83b01). The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=0`, `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -51,10 +51,13 @@ NEXT, task (d) step 2: the characters are missing because the host program build
 nvn_params.c:1247) does not write the transform feedback (XFB) block, so no XFB capture happens on the native path.
 - Brief: `reports/brief-writer-xfb-prog.md` (verified facts, decisions, tests with the game's values). History of the cause and of
   step 1: `OLD-WORK_PLAN.md`, last two sections.
-- Step 2 (next session): launch the code writer (worktree `wt-xfb` is made, detached at `7c0b05a`, patch `patches/xfb-prog-1.patch`), read the whole patch, build,
-  run ctest. Step 3 (next session): one native run to the field. The `diag-xfb` lines must match the non-native ones
-  (0x1C0+4i = {0,3,0xC} / {0,1,4} / {0,1,4}, 0xA00+0x20i = 0x00222120 / 0x24 / 0x28) and the characters must show. Then remove the
-  diagnostic and commit.
+- Step 2 DONE (2026-11-09): the writer patch is applied in the working tree (NOT committed). Final patch with the test fixes:
+  `patches/xfb-prog-2.patch` (nvn_cmdlist.h, nvn_native.c, nvn_params.c/.h, tests/nvn_params.c, tests/nvn_cmdlist.c). Two tests of the
+  writer were wrong (count 6 must be 18: streams 1 to 3 add 4 words each, and the old BindProgram size 152 is now 736). ctest passes
+  except `tracked_material`. A mutant (table step 5) fails the test. Worktree `wt-xfb` is removed.
+- Step 3 (next session): one native run to the field (`nvn_native=1` is set). The `diag-xfb` lines must match the non-native ones
+  (0x1C0+4i = {0,3,0xC} / {0,1,4} / {0,1,4}, 0xA00+0x20i = 0x00222120 / 0x24 / 0x28) and the characters must show. Also look for
+  `program ... refused: transform feedback`. Then remove the diagnostic (render.c, renderer.c) and commit the XFB files by name.
 - Diagnostic (NOT committed, in the working tree now): `patches/diag-taskD.patch` (render.c, renderer.c). Lines `diag-xfb`,
   `diag-read`, `diag-sum`. Keep it for step (3). Do not commit it: stage files by name.
 - After task (d): ask the user: task (a) or an open item below.
