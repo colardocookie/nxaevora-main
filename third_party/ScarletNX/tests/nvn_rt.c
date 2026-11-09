@@ -333,6 +333,163 @@ static void test_small_target_factor(void) {
     expect(&k, 12, 0x3FB, 0u);
 }
 
+static void test_small_target_tile(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    /* tile_x 2 gives factor 4 only from width 16 GOB blocks << 2 = 64 on. */
+    NvnTexture c = make_texture_with(0x25, 48, 4, 0x1000, 0x2001u, 0);
+    NvnRtColor color[1] = {{&c, NULL}};
+    CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    /* rt_tile_factor: 48 < 64 gives factor 1; rt_align_up(48, 1 * 16) = 48. */
+    expect(&k, 3, 0x202, 48u);
+
+    /* Width 80 passes the tile, but height 4 < 8 << tile_y 1 = 16 gives factor 1. */
+    NvnTexture wide = make_texture_with(0x25, 80, 4, 0x1000, 0x2011u, 0);
+    NvnRtColor wide_color[1] = {{&wide, NULL}};
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_emit(&env, wide_color, 1, NULL, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    /* 80 >= 64 and the height fails, so rt_align_up(80, 1 * 16) = 80. */
+    expect(&k, 3, 0x202, 80u);
+
+    NvnTexture d = make_texture_with(0x34, 48, 4, 0x2000, 0x2001u, 0);
+    NvnRtColor depth = {&d, NULL};
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_emit(&env, NULL, 0, &depth, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    /* 0x48A gets rt_align_up(48, 1 * 16) = 48. */
+    expect(&k, 16, 0x48A, 48u);
+
+    NvnTexture wide_depth = make_texture_with(0x34, 80, 4, 0x2000, 0x2011u, 0);
+    NvnRtColor wide_depth_color = {&wide_depth, NULL};
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_emit(&env, NULL, 0, &wide_depth_color, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    /* The height 4 is below 16, so rt_align_up(80, 1 * 16) = 80. */
+    expect(&k, 16, 0x48A, 80u);
+}
+
+static void test_view_layer_bounds(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTextureView view;
+    memset(&view, 0, sizeof view);
+    view.flags = NVN_VIEW_LAYERS;
+
+    NvnTexture c = make_array_texture(0x25, 64, 64, 4, 0x1000);
+    NvnRtColor color[1] = {{&c, &view}};
+    view.base_layer = 4;
+    view.layer_count = 1;
+    CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 0);
+    CHECK(k.write_count == 0 && fault_is(&k, "rt view layers") && k.last_fault_value == 5u);
+
+    memset(&k, 0, sizeof k);
+    view.base_layer = 3;
+    view.layer_count = 2;
+    CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 0);
+    CHECK(k.write_count == 0 && fault_is(&k, "rt view layers") && k.last_fault_value == 5u);
+
+    memset(&k, 0, sizeof k);
+    view.base_layer = 3;
+    view.layer_count = 1;
+    CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    expect(&k, 2, 0x201, (uint32_t)(c.address + (uint64_t)3 * c.layout.layer_stride));
+    expect(&k, 7, 0x206, 1u);
+
+    NvnTexture d = make_array_texture(0x34, 64, 64, 4, 0x2000);
+    NvnRtColor depth = {&d, &view};
+    view.base_layer = 4;
+    view.layer_count = 1;
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_emit(&env, NULL, 0, &depth, 0x4000) == 0);
+    CHECK(k.write_count == 0 && fault_is(&k, "rt view layers") && k.last_fault_value == 5u);
+
+    memset(&k, 0, sizeof k);
+    view.base_layer = 3;
+    view.layer_count = 2;
+    CHECK(nvn_rt_emit(&env, NULL, 0, &depth, 0x4000) == 0);
+    CHECK(k.write_count == 0 && fault_is(&k, "rt view layers") && k.last_fault_value == 5u);
+
+    memset(&k, 0, sizeof k);
+    view.base_layer = 3;
+    view.layer_count = 1;
+    CHECK(nvn_rt_emit(&env, NULL, 0, &depth, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    expect(&k, 10, 0x3F9, (uint32_t)(d.address + (uint64_t)3 * d.layout.layer_stride));
+    expect(&k, 18, 0x48C, 1u);
+}
+
+static void test_depth_layers(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTexture t = make_array_texture(0x34, 1, 1, 0xFFFFu, 0x1000);
+    NvnRtColor depth = {&t, NULL};
+    CHECK(nvn_rt_emit(&env, NULL, 0, &depth, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    expect(&k, 18, 0x48C, 0xFFFFu);
+
+    NvnTexture many = make_array_texture(0x34, 1, 1, 0x10000u, 0x1000);
+    NvnRtColor many_depth = {&many, NULL};
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_emit(&env, NULL, 0, &many_depth, 0x4000) == 0);
+    CHECK(k.write_count == 0 && fault_is(&k, "rt depth layers") && k.last_fault_value == 0x10000u);
+}
+
+static void test_view_target_unknown(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTextureView view;
+    memset(&view, 0, sizeof view);
+    view.flags = NVN_VIEW_TARGET;
+    view.target = 0xFFFFFFFFu;
+
+    NvnTexture c = make_texture(0x25, 64, 64, 0x1000);
+    NvnRtColor color[1] = {{&c, &view}};
+    CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 0);
+    CHECK(k.write_count == 0 && fault_is(&k, "rt view target") && k.last_fault_value == 0xFFFFFFFFu);
+
+    NvnTexture d = make_texture(0x34, 64, 64, 0x2000);
+    NvnRtColor depth = {&d, &view};
+    memset(&k, 0, sizeof k);
+    CHECK(nvn_rt_emit(&env, NULL, 0, &depth, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    expect(&k, 18, 0x48C, 1u);
+}
+
+static void test_sample_mode_last_present(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTexture c0 = make_texture_with(0x25, 64, 64, 0x1000, 0u, 4u);
+    NvnTexture c1 = make_texture_with(0x25, 64, 64, 0x2000, 0u, 8u);
+    NvnRtColor color[3] = {{&c0, NULL}, {&c1, NULL}, {NULL, NULL}};
+    CHECK(nvn_rt_emit(&env, color, 3, NULL, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    /* The sample mode 4 comes from the present slot 1 (8 samples), not from slot 0 (4 samples, mode 2). */
+    expect(&k, 27, 0x574, 4u);
+    /* The absent slot 2 writes its disable word at 0x204 + 0x10 * 2 = 0x224. */
+    expect(&k, 17, 0x224, 0u);
+}
+
+static void test_depth_view_address(void) {
+    Mock k = {0};
+    NvnRtEnv env = make_env(&k);
+    NvnTexture d = make_array_texture(0x34, 1280, 720, 4, 0x0000000212345600ull);
+    NvnTextureView view;
+    memset(&view, 0, sizeof view);
+    view.flags = NVN_VIEW_LAYERS;
+    view.base_layer = 1;
+    view.layer_count = 2;
+    NvnRtColor depth = {&d, &view};
+    uint64_t address = d.address + (uint64_t)1 * d.layout.layer_stride;
+    CHECK(nvn_rt_emit(&env, NULL, 0, &depth, 0x4000) == 1);
+    CHECK(k.fault_count == 0);
+    expect(&k, 9, 0x3F8, (uint32_t)(address >> 32));
+    expect(&k, 10, 0x3F9, (uint32_t)address);
+    expect(&k, 18, 0x48C, 2u);
+}
+
 static void test_tile_x_nibble(void) {
     Mock k = {0};
     NvnRtEnv env = make_env(&k);
@@ -385,17 +542,18 @@ static void test_sample_mode(void) {
 static void test_depth_view_layers(void) {
     Mock k = {0};
     NvnRtEnv env = make_env(&k);
-    NvnTexture d = make_texture(0x34, 1280, 720, 0x0000000212345600ull);
+    NvnTexture d = make_array_texture(0x34, 1280, 720, 8, 0x0000000212345600ull);
     NvnTextureView view;
     memset(&view, 0, sizeof view);
     view.flags = NVN_VIEW_LAYERS;
     view.base_layer = 3;
     view.layer_count = 5;
     NvnRtColor depth = {&d, &view};
+    uint64_t address = d.address + (uint64_t)3 * d.layout.layer_stride;
     CHECK(nvn_rt_emit(&env, NULL, 0, &depth, 0x4000) == 1);
     CHECK(k.fault_count == 0);
-    expect(&k, 9, 0x3F8, 0x00000002u);
-    expect(&k, 10, 0x3F9, 0x12E85600u);
+    expect(&k, 9, 0x3F8, (uint32_t)(address >> 32));
+    expect(&k, 10, 0x3F9, (uint32_t)address);
     expect(&k, 18, 0x48C, 5u);
 }
 
@@ -600,19 +758,20 @@ static void test_color_view_no_change(void) {
 static void test_color_view_layers(void) {
     Mock k = {0};
     NvnRtEnv env = make_env(&k);
-    NvnTexture t = make_texture(0x25, 1280, 720, 0x0000000412345600ull);
+    NvnTexture t = make_array_texture(0x25, 1280, 720, 8, 0x0000000412345600ull);
     NvnTextureView view;
     memset(&view, 0, sizeof view);
     view.flags = NVN_VIEW_LAYERS;
     view.base_layer = 3;
     view.layer_count = 5;
     NvnRtColor color[1] = {{&t, &view}};
+    uint64_t address = t.address + (uint64_t)3 * t.layout.layer_stride;
     CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 1);
     CHECK(k.fault_count == 0);
-    expect(&k, 1, 0x200, 0x00000004u);
-    expect(&k, 2, 0x201, 0x12E85600u);
+    expect(&k, 1, 0x200, (uint32_t)(address >> 32));
+    expect(&k, 2, 0x201, (uint32_t)address);
     expect(&k, 7, 0x206, 5u);
-    expect(&k, 8, 0x207, 0x000F0000u);
+    expect(&k, 8, 0x207, (uint32_t)(t.layout.layer_stride >> 2));
 
     view.base_layer = 0;
     view.layer_count = 0;
@@ -620,12 +779,12 @@ static void test_color_view_layers(void) {
     CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 1);
     CHECK(k.fault_count == 0);
     expect(&k, 2, 0x201, 0x12345600u);
-    expect(&k, 7, 0x206, 1u);
+    expect(&k, 7, 0x206, 8u);
 
-    view.base_layer = 3;
+    view.base_layer = 9;
     memset(&k, 0, sizeof k);
     CHECK(nvn_rt_emit(&env, color, 1, NULL, 0x4000) == 0);
-    CHECK(k.write_count == 0 && fault_is(&k, "rt view layers") && k.last_fault_value == 3u);
+    CHECK(k.write_count == 0 && fault_is(&k, "rt view layers") && k.last_fault_value == 9u);
 }
 
 static void test_color_view_target_3d(void) {
@@ -705,7 +864,7 @@ static void test_clear_texture_one_layer(void) {
 static void test_clear_texture_two_layers(void) {
     Mock k = {0};
     NvnRtEnv env = make_env(&k);
-    NvnTexture t = make_texture(0x25, 64, 64, 0x1000);
+    NvnTexture t = make_array_texture(0x25, 64, 64, 4, 0x1000);
     uint32_t region[6] = {0, 0, 1, 8, 8, 2};
     uint32_t color[4] = {0, 0, 0, 0};
     uint32_t words[NVN_RT_CLEAR_WORDS_MAX];
@@ -991,10 +1150,16 @@ int main(void) {
     test_depth_only_d32f();
     test_color_plus_depth();
     test_small_target_factor();
+    test_small_target_tile();
     test_tile_x_nibble();
     test_clip_includes_depth();
     test_sample_mode();
     test_depth_view_layers();
+    test_depth_view_address();
+    test_depth_layers();
+    test_view_layer_bounds();
+    test_view_target_unknown();
+    test_sample_mode_last_present();
     test_depth_view_checks();
     test_color_view_no_change();
     test_color_view_layers();

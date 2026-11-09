@@ -3838,7 +3838,10 @@ static int replay_host_render_targets(void* ctx, const NvnOpRenderTargets* op) {
         return 0;
     }
     NvnRtEnv env = {ctx, replay_host_method, replay_host_rt_fault};
-    return nvn_rt_emit(&env, color, op->count, depth.texture ? &depth : NULL, host->clip_limit);
+    int emitted = nvn_rt_emit(&env, color, op->count, depth.texture ? &depth : NULL, host->clip_limit);
+    if (emitted && depth.texture)
+        LOG_LIMIT(1, "nvn-native: depth target bound, the dependent block (0x1F8, 0x572) is not written\n");
+    return emitted;
 }
 /* The game's device word +0x1A04 is 0, not 0x08C8B771, so the zcull clear word is written. The device word +0x1A08
    is unknown, so the scratch macro 0xE26 stays off until its meaning is known. */

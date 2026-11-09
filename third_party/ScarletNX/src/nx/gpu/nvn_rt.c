@@ -31,6 +31,7 @@
 #define NVN_RT_VIEW_FLAGS           (NVN_VIEW_LEVELS | NVN_VIEW_LAYERS | NVN_VIEW_FORMAT | \
                                      NVN_VIEW_SWIZZLE | NVN_VIEW_DEPTH_STENCIL_MODE | NVN_VIEW_TARGET)
 #define NVN_RT_TILE_3D_BIT          0x10000u
+#define NVN_RT_VIEW_TARGET_LAST     NVN_TEXTURE_TARGET_BUFFER
 
 /* The fixed words and headers of nvnCommandBufferClearTexture (d857610, verify-s4-4b.md). */
 #define NVN_RT_HEADER_INCREASING    0x20000000u /* mode 1: a run of count data words follows */
@@ -195,8 +196,8 @@ static int rt_texture_checks(const NvnRtEnv* env, const NvnTexture* texture, con
 
 /* The address, the depth word and the 3D bit of a view, shared by the color and the depth target.
    The library reads LEVELS, LAYERS, FORMAT and TARGET. It does not read level_count, and it wraps
-   when base_layer is above the texture depth; the host refuses that case. A refusal writes no part
-   of *out. */
+   when the base layer and the count pass the texture depth; the host refuses that case. A refusal
+   writes no part of *out. */
 static int rt_view_apply(const NvnRtEnv* env, const NvnTexture* texture, const NvnTextureView* view,
                          NvnRtViewResult* out) {
     const NvnTextureLayout* layout = &texture->layout;
@@ -218,13 +219,12 @@ static int rt_view_apply(const NvnRtEnv* env, const NvnTexture* texture, const N
         return 0;
     }
     if (view->flags & NVN_VIEW_LAYERS) {
-        uint64_t offset = (uint64_t)view->base_layer * layout->layer_stride;
-        if (offset > UINT64_MAX - address) {
-            env->fault(env->ctx, "rt view address", address);
-            return 0;
-        }
-        address += offset;
         if (view->layer_count != 0u) {
+            uint64_t layers = (uint64_t)view->base_layer + view->layer_count;
+            if (layers > layout->depth) {
+                env->fault(env->ctx, "rt view layers", layers);
+                return 0;
+            }
             depth_word = view->layer_count;
         } else if (view->base_layer != 0u) {
             if (view->base_layer > layout->depth) {
@@ -233,6 +233,12 @@ static int rt_view_apply(const NvnRtEnv* env, const NvnTexture* texture, const N
             }
             depth_word = layout->depth - view->base_layer;
         }
+        uint64_t offset = (uint64_t)view->base_layer * layout->layer_stride;
+        if (offset > UINT64_MAX - address) {
+            env->fault(env->ctx, "rt view address", address);
+            return 0;
+        }
+        address += offset;
     }
     if ((view->flags & NVN_VIEW_FORMAT) && view->format != texture->builder.format) {
         env->fault(env->ctx, "rt view format", view->format);
@@ -251,6 +257,11 @@ static int rt_target_words(const NvnRtEnv* env, const NvnRtColor* color, uint32_
     const NvnTextureLayout* layout = &texture->layout;
     uint32_t format_word = 0;
     if (!rt_texture_checks(env, texture, "rt linear", &format_word)) return 0;
+    if (color->view && (color->view->flags & NVN_VIEW_TARGET) &&
+        color->view->target > NVN_RT_VIEW_TARGET_LAST) {
+        env->fault(env->ctx, "rt view target", color->view->target);
+        return 0;
+    }
     NvnRtViewResult view;
     if (!rt_view_apply(env, texture, color->view, &view)) return 0;
     uint32_t width = layout->width * layout->sample_x;
@@ -277,6 +288,10 @@ static int rt_depth_words(const NvnRtEnv* env, const NvnRtColor* depth, NvnRtDep
     if (!rt_texture_checks(env, texture, "rt depth linear", &format_word)) return 0;
     NvnRtViewResult view;
     if (!rt_view_apply(env, texture, depth->view, &view)) return 0;
+    if (view.depth_word > NVN_RT_DEPTH_WORD_MASK) {
+        env->fault(env->ctx, "rt depth layers", view.depth_word);
+        return 0;
+    }
     uint32_t width = layout->width * layout->sample_x;
     uint32_t height = layout->height * layout->sample_y;
     uint32_t gob_blocks = NVN_TEXTURE_GOB_WIDTH / layout->bytes_per_block;
@@ -358,7 +373,8 @@ int nvn_rt_emit(const NvnRtEnv* env, const NvnRtColor* color, uint32_t count, co
     for (uint32_t j = count; j < NVN_RT_COLOR_MAX; j++)
         env->method(env->ctx, NVN_RT_COLOR_DISABLE_BASE + NVN_RT_COLOR_STRIDE * j, 0u);
     /* The dependent block (0x1F8, 0x572) is not written: its words depend on compression and zcull,
-       device+0x1A04 is unknown, and only a device mode accepts no block (explorer section 4). */
+       which the host does not model, and only a device mode accepts no block (explorer section 4).
+       replay_host_render_targets logs the omission once. */
     if (has_depth) {
         rt_depth_emit(env, &depth_words);
     } else {
