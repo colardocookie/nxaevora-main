@@ -18,6 +18,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SOURCES = [
     "harness/verify.c",
+    "harness/imports.c",
+    "harness/callees_lua53.c",
     "harness/fixtures_lua53.c",
     "harness/mutants_lua53.c",
     "src/lua53/lapi.c",

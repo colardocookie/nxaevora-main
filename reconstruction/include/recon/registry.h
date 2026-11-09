@@ -13,6 +13,7 @@ typedef enum {
     RECON_RET_NONE, /* void */
     RECON_RET_W0,   /* a 32-bit result: only W0 is defined */
     RECON_RET_X0,   /* a 64-bit result or a pointer */
+    RECON_RET_D0,   /* a double: the bits of D0 */
 } ReconReturn;
 
 typedef struct {

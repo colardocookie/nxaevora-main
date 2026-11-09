@@ -6,6 +6,8 @@
    boolean a 4-byte int. Main-module offsets are in reconstruction/manifest/functions.csv. */
 #include "lapi.h"
 #include "lua53_layout.h"
+#include "recon/call.h"
+#include "recon/registry.h"
 
 static GAddr top_of(const Guest* g, GAddr L) { return g_ld64(g, L + LS_TOP); }
 static void set_top(const Guest* g, GAddr L, GAddr top) { g_st64(g, L + LS_TOP, top); }
@@ -217,6 +219,106 @@ int32_t lua_getmetatable(const Guest* g, GAddr L, int32_t objindex) {
     g_st32(g, slot + TV_TT, LUA_TTABLE_TAGGED);
     incr_top(g, L);
     return 1;
+}
+
+/* ---- functions that call into the VM: guest calls (recon/call.h), with the original's frame size so the pointers
+   they pass are the original's. RET_SITE is the address after the original's BL. ---- */
+#define RET_SITE(fn_offset, bl) (recon_main_base + (fn_offset) + (bl) + 4)
+#define CONVERT_FRAME 0x20 /* tonumberx, isnumber and tointegerx: the number at SP + 8 */
+
+uint64_t lua_tonumberx(CPU* c, GAddr L, int32_t idx, GAddr pisnum) {
+    const Guest gv = recon_guest(c), *g = &gv;
+    const GAddr o = index2addr(g, L, idx);
+    const GAddr n = recon_stack_alloc(c, CONVERT_FRAME) + 8;
+    int32_t isnum = 1;
+    if (tag_of(g, o) == LUA_TNUMFLT) {
+        g_st64(g, n, g_ld64(g, o + TV_VALUE));
+    } else { /* cvt2num: luaV_tonumber_ converts integers and numeric strings */
+        c->x[0] = o;
+        c->x[1] = n;
+        isnum = (int32_t)recon_call(c, recon_main_base + MAIN_LUAV_TONUMBER, RET_SITE(0x50A90, 0xEC));
+        if (!isnum) g_st64(g, n, 0); /* the result is 0 when it does not convert */
+    }
+    if (pisnum) g_st32(g, pisnum, (uint32_t)isnum);
+    const uint64_t bits = g_ld64(g, n);
+    recon_stack_free(c, CONVERT_FRAME);
+    return bits;
+}
+
+int32_t lua_isnumber(CPU* c, GAddr L, int32_t idx) {
+    const Guest gv = recon_guest(c), *g = &gv;
+    const GAddr o = index2addr(g, L, idx);
+    if (tag_of(g, o) == LUA_TNUMFLT) return 1;
+    c->x[0] = o;
+    c->x[1] = recon_stack_alloc(c, CONVERT_FRAME) + 8; /* tonumber(o, &n): n is not used */
+    const int32_t r = (int32_t)recon_call(c, recon_main_base + MAIN_LUAV_TONUMBER, RET_SITE(0x505A0, 0xEC));
+    recon_stack_free(c, CONVERT_FRAME);
+    return r;
+}
+
+int64_t lua_tointegerx(CPU* c, GAddr L, int32_t idx, GAddr pisnum) {
+    const Guest gv = recon_guest(c), *g = &gv;
+    const GAddr o = index2addr(g, L, idx);
+    const GAddr n = recon_stack_alloc(c, CONVERT_FRAME) + 8;
+    int32_t isnum = 1;
+    if (tag_of(g, o) == LUA_TNUMINT) {
+        g_st64(g, n, g_ld64(g, o + TV_VALUE));
+    } else { /* luaV_tointeger with mode 0: only floats with an exact integer value convert */
+        c->x[0] = o;
+        c->x[1] = n;
+        c->x[2] = 0;
+        isnum = (int32_t)recon_call(c, recon_main_base + MAIN_LUAV_TOINTEGER, RET_SITE(0x50BA0, 0xF0));
+        if (!isnum) g_st64(g, n, 0);
+    }
+    if (pisnum) g_st32(g, pisnum, (uint32_t)isnum);
+    const int64_t v = (int64_t)g_ld64(g, n);
+    recon_stack_free(c, CONVERT_FRAME);
+    return v;
+}
+
+uint64_t lua_rawlen(CPU* c, GAddr L, int32_t idx) {
+    const Guest gv = recon_guest(c), *g = &gv;
+    const GAddr o = index2addr(g, L, idx);
+    const GAddr p = g_ld64(g, o + TV_VALUE);
+    switch (tag_of(g, o) & 0x3F) { /* ttype: the type and its variant */
+    case LUA_TSHRSTR_TAGGED & 0x3F: return g_ld8(g, p + TSTRING_SHRLEN);
+    case LUA_TLNGSTR_TAGGED & 0x3F: return g_ld64(g, p + TSTRING_LNGLEN);
+    case LUA_TUSERDATA_TAGGED & 0x3F: return g_ld64(g, p + UDATA_LEN);
+    case LUA_TTABLE_TAGGED & 0x3F: {
+        recon_stack_alloc(c, 0x10);
+        c->x[0] = p;
+        const int32_t n = (int32_t)recon_call(c, recon_main_base + MAIN_LUAH_GETN, RET_SITE(0x50FC0, 0xA8));
+        recon_stack_free(c, 0x10);
+        return (uint64_t)(int64_t)n;
+    }
+    default: return 0;
+    }
+}
+
+GAddr lua_tolstring(CPU* c, GAddr L, int32_t idx, GAddr len) {
+    const Guest gv = recon_guest(c), *g = &gv;
+    GAddr o = index2addr(g, L, idx);
+    const int32_t t = novariant(tag_of(g, o));
+    if (t != 4) { /* not a string */
+        if (t != 3) { /* !cvt2str(o): not a number either */
+            if (len) g_st64(g, len, 0);
+            return 0;
+        }
+        recon_stack_alloc(c, 0x30);
+        c->x[0] = L;
+        c->x[1] = o;
+        recon_call(c, recon_main_base + MAIN_LUAO_TOSTRING, RET_SITE(0x50DA0, 0x118));
+        if ((int64_t)g_ld64(g, global_of(g, L) + GS_GCDEBT) > 0) { /* luaC_checkGC */
+            c->x[0] = L;
+            recon_call(c, recon_main_base + MAIN_LUAC_STEP, RET_SITE(0x50DA0, 0x130));
+        }
+        recon_stack_free(c, 0x30);
+        o = index2addr(g, L, idx); /* the collector may have moved the stack */
+    }
+    const GAddr ts = g_ld64(g, o + TV_VALUE);
+    if (len) /* vslen(o) */
+        g_st64(g, len, g_ld8(g, ts + TSTRING_TT) == 4 ? g_ld8(g, ts + TSTRING_SHRLEN) : g_ld64(g, ts + TSTRING_LNGLEN));
+    return ts + TSTRING_CONTENTS; /* svalue(o) */
 }
 
 int32_t lua_getuservalue(const Guest* g, GAddr L, int32_t idx) {

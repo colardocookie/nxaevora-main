@@ -20,6 +20,7 @@
 #define CI_FUNC 0x0 /* StkId func */
 
 /* global_State */
+#define GS_GCDEBT 0x18     /* l_mem GCdebt: luaC_checkGC steps the collector when it is positive */
 #define GS_L_REGISTRY 0x40 /* TValue l_registry */
 #define GS_PANIC 0xC0      /* lua_CFunction panic */
 #define GS_MAINTHREAD 0xC8 /* lua_State *mainthread */
@@ -36,7 +37,14 @@
 #define UDATA_TTUV 0xA       /* lu_byte ttuv_, the user value's tag */
 #define UDATA_METATABLE 0x10 /* struct Table *metatable */
 #define UDATA_USER 0x20      /* union Value user_ */
+#define UDATA_LEN 0x18       /* size_t len */
 #define UDATA_SIZE 0x28      /* sizeof(UUdata), where getudatamem's block starts */
+
+/* TString */
+#define TSTRING_TT 0x8       /* lu_byte tt: LUA_TSHRSTR (4) or LUA_TLNGSTR (20) */
+#define TSTRING_SHRLEN 0xB  /* lu_byte shrlen, a short string's length */
+#define TSTRING_LNGLEN 0x10  /* size_t lnglen, a long string's length */
+#define TSTRING_CONTENTS 0x18 /* getstr(ts): the bytes, NUL terminated */
 
 /* Basic types (lua.h). ttnov(o) is the tag's low 4 bits. */
 #define LUA_TNONE (-1)
@@ -66,5 +74,12 @@
 #define MAIN_LUAO_NILOBJECT 0x38C5C28 /* const TValue luaO_nilobject_ */
 #define MAIN_LUA_VERSION 0x38C5A20    /* static const lua_Number version (lapi.c) */
 #define MAIN_LUAT_TYPENAMES 0x401AD80 /* const char *const luaT_typenames_[LUA_TOTALTAGS] */
+
+/* VM functions the API calls, as module offsets. This build's conversions take no lua_State. */
+#define MAIN_LUAV_TONUMBER 0x752D0  /* int luaV_tonumber_(const TValue *obj, lua_Number *n) */
+#define MAIN_LUAV_TOINTEGER 0x75390 /* int luaV_tointeger(const TValue *obj, lua_Integer *p, int mode) */
+#define MAIN_LUAH_GETN 0x72700      /* int luaH_getn(Table *t) */
+#define MAIN_LUAO_TOSTRING 0x62A50  /* void luaO_tostring(lua_State *L, StkId obj) */
+#define MAIN_LUAC_STEP 0x5DC70      /* void luaC_step(lua_State *L) */
 
 #endif

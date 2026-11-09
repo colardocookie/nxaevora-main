@@ -24,3 +24,8 @@ main,511d0,248,2f8652dfdfe8ae86,lua_touserdata,Lua 5.3 lapi.c,src/lua53/lapi.c,v
 main,512d0,212,be5d75198532c650,lua_tothread,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,tag 0x48
 main,52090,320,006b2f601904dcc8,lua_getmetatable,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,Table +28; Udata +10; else G(L)->mt[t] at G+1A0; pushed with tag 0x45
 main,521d0,200,730a919656a8af19,lua_getuservalue,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,Udata user_ at +20 and ttuv_ at +A; returns ttnov
+main,505a0,252,69588e338bdfa725,lua_isnumber,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,float tag 3 fast path else luaV_tonumber_ (+752D0); callees compiled
+main,50a90,272,0ea97396339ad508,lua_tonumberx,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,luaV_tonumber_ into SP+8; 0 when it fails; *isnum as int; callees compiled
+main,50ba0,276,3f43b4cf337ff7de,lua_tointegerx,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,integer tag 19 fast path else luaV_tointeger (+75390) mode 0; callees compiled
+main,50fc0,276,e324282e23e1f0b7,lua_rawlen,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,jump table on tag & 0x3F: shrlen; lnglen; Udata len +18; luaH_getn (+72700) stubbed
+main,50da0,532,3e22508c7a5978e4,lua_tolstring,Lua 5.3 lapi.c,src/lua53/lapi.c,verified,luaO_tostring (+62A50) then luaC_checkGC (GCdebt at G+18) and index2addr again; both stubbed

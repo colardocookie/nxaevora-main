@@ -114,6 +114,46 @@ static void fn_rotate(CPU* c, u64 e) {
     RETURN_TO_CALLER();
 }
 
+/* The ones that make calls: those set X30, so the caller's return address is kept from entry */
+static void fn_tonumberx(CPU* c, u64 e) {
+    (void)e;
+    const u64 lr = c->x[30];
+    const uint64_t bits = lua_tonumberx(c, c->x[0], ARG_I32(1), c->x[2]);
+    c->v[0].d[0] = bits; /* an LDR of D0 clears the rest of V0 */
+    c->v[0].d[1] = 0;
+    c->x[30] = lr;
+    c->pc = lr;
+}
+static void fn_isnumber(CPU* c, u64 e) {
+    (void)e;
+    const u64 lr = c->x[30];
+    c->x[0] = (uint32_t)lua_isnumber(c, c->x[0], ARG_I32(1));
+    c->x[30] = lr;
+    c->pc = lr;
+}
+static void fn_tointegerx(CPU* c, u64 e) {
+    (void)e;
+    const u64 lr = c->x[30];
+    c->x[0] = (uint64_t)lua_tointegerx(c, c->x[0], ARG_I32(1), c->x[2]);
+    c->x[30] = lr;
+    c->pc = lr;
+}
+static void fn_rawlen(CPU* c, u64 e) {
+    (void)e;
+    const u64 lr = c->x[30];
+    c->x[0] = lua_rawlen(c, c->x[0], ARG_I32(1));
+    c->x[30] = lr;
+    c->pc = lr;
+}
+
+static void fn_tolstring(CPU* c, u64 e) {
+    (void)e;
+    const u64 lr = c->x[30];
+    c->x[0] = lua_tolstring(c, c->x[0], ARG_I32(1), c->x[2]);
+    c->x[30] = lr;
+    c->pc = lr;
+}
+
 #define SRC "src/lua53/lapi.c"
 const ReconFunction recon_lua53_functions[] = {
     {"lua_absindex", SRC, 0x4FEB0, 52, RECON_RET_W0, fn_absindex},
@@ -141,5 +181,10 @@ const ReconFunction recon_lua53_functions[] = {
     {"lua_tothread", SRC, 0x512D0, 212, RECON_RET_X0, fn_lua_tothread},
     {"lua_getmetatable", SRC, 0x52090, 320, RECON_RET_W0, fn_lua_getmetatable},
     {"lua_getuservalue", SRC, 0x521D0, 200, RECON_RET_W0, fn_lua_getuservalue},
+    {"lua_isnumber", SRC, 0x505A0, 252, RECON_RET_W0, fn_isnumber},
+    {"lua_tonumberx", SRC, 0x50A90, 272, RECON_RET_D0, fn_tonumberx},
+    {"lua_tointegerx", SRC, 0x50BA0, 276, RECON_RET_X0, fn_tointegerx},
+    {"lua_rawlen", SRC, 0x50FC0, 276, RECON_RET_X0, fn_rawlen},
+    {"lua_tolstring", SRC, 0x50DA0, 532, RECON_RET_X0, fn_tolstring},
 };
 const size_t recon_lua53_count = sizeof(recon_lua53_functions) / sizeof(recon_lua53_functions[0]);

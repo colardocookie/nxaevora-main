@@ -4,20 +4,9 @@
    values, a shared global_State and a pool of tables, userdata, closures and threads they point to. Fields nothing
    reads keep random bytes, so a stray access shows. Indices follow lapi.c's api_check rules for callers. */
 #include "fixtures.h"
+#include "fixtures_lua53.h"
 #include "../src/lua53/lua53_layout.h"
 
-/* Scratch layout, as offsets from the scratch base */
-#define OFF_STATE_A 0x0000
-#define OFF_STATE_B 0x0400
-#define OFF_GLOBAL 0x0800
-#define OFF_CI_A 0x0A00
-#define OFF_CI_B 0x0A80
-#define OFF_CLOSURE 0x0B00
-#define OFF_STACK_A 0x1000
-#define OFF_STACK_B 0x4000
-#define OFF_OBJECTS 0x8000 /* the pool that collectable values point into */
-#define OBJECT_SIZE 0x80
-#define OBJECT_COUNT 64
 #define MAX_VALUES 40 /* values above the function, well within the stack */
 #define MAX_UPVALUES 8
 #define NUMTAGS 9
@@ -187,7 +176,67 @@ static void setup_boolean(Rng* r, CPU* c, const Guest* g, GAddr s, uint64_t n) {
     c->x[1] = arg32(r, (int32_t)choices[rng_below(r, 4)]);
 }
 
+/* Gives the strings among the stack's values text that converts now and then: luaO_str2num runs for real */
+static void numeric_strings(Rng* r, const Guest* g, const State* s) {
+    static const char* const texts[] = {"0",     "42",    "-7",   "  0x1F  ", "3.25",  "1e3",    "abc",
+                                        "",      "0x",    "nan",  " 12 x",    "1.5e+308", "0x1p4", "-0.0",
+                                        "9223372036854775807", "9223372036854775808", "0x7fffffffffffffff", ".5"};
+    for (int i = 1; i <= s->values; i++) {
+        const GAddr slot = s->func + TVALUE_SIZE * (uint64_t)i;
+        const uint32_t tag = g_ld32(g, slot + TV_TT);
+        if ((tag != LUA_TSHRSTR_TAGGED && tag != LUA_TLNGSTR_TAGGED) || !rng_below(r, 4)) continue;
+        const char* text = texts[rng_below(r, sizeof(texts) / sizeof(texts[0]))];
+        const GAddr ts = g_ld64(g, slot + TV_VALUE);
+        const size_t n = strlen(text);
+        memcpy(g->mem + ts + TSTRING_CONTENTS, text, n + 1);
+        g->mem[ts + TSTRING_SHRLEN] = (uint8_t)n;
+        g_st64(g, ts + TSTRING_LNGLEN, n);
+    }
+}
+
+/* lua_tonumberx and lua_tointegerx: an index and int *isnum, NULL or a slot in scratch */
+static void setup_convert(Rng* r, CPU* c, const Guest* g, GAddr s, uint64_t n) {
+    State a = world(r, c, g, s, n);
+    numeric_strings(r, g, &a);
+    c->x[1] = arg32(r, pick_index(r, &a));
+    c->x[2] = rng_below(r, 4) ? s + OFF_CI_B + 0x40 + 4 * rng_below(r, 8) : 0;
+}
+
+static void setup_isnumber(Rng* r, CPU* c, const Guest* g, GAddr s, uint64_t n) {
+    State a = world(r, c, g, s, n);
+    numeric_strings(r, g, &a);
+    c->x[1] = arg32(r, pick_index(r, &a));
+}
+
+/* lua_rawlen: also values whose tag has bits above the variant, which ttype (tag & 0x3F) drops */
+static void setup_rawlen(Rng* r, CPU* c, const Guest* g, GAddr s, uint64_t n) {
+    static const uint8_t types[] = {0x04, 0x05, 0x07, 0x14};
+    State a = world_at_least(r, c, g, s, n, 1);
+    int32_t idx = pick_index(r, &a);
+    if (!rng_below(r, 3)) {
+        idx = pick_stack_index(r, &a);
+        const GAddr o = idx > 0 ? a.func + TVALUE_SIZE * (uint64_t)idx
+                                : g_ld64(g, a.L + LS_TOP) + TVALUE_SIZE * (uint64_t)(int64_t)idx;
+        const uint32_t low = rng_below(r, 3) ? types[rng_below(r, 4)] : (uint32_t)(rng_next(r) & 0x3F);
+        g_st64(g, o + TV_VALUE, object(r, s));
+        g_st32(g, o + TV_TT, ((uint32_t)rng_next(r) & 0xFFFFFFC0u) | low);
+    }
+    c->x[1] = arg32(r, idx);
+}
+
+/* lua_tolstring: an index and size_t *len, NULL or a slot in scratch */
+static void setup_tolstring(Rng* r, CPU* c, const Guest* g, GAddr s, uint64_t n) {
+    State a = world(r, c, g, s, n);
+    c->x[1] = arg32(r, pick_index(r, &a));
+    c->x[2] = rng_below(r, 4) ? s + OFF_CI_B + 0x40 + 8 * rng_below(r, 8) : 0;
+}
+
 const Fixture recon_lua53_fixtures[] = {
+    {"lua_tolstring", setup_tolstring},
+    {"lua_isnumber", setup_isnumber},
+    {"lua_tonumberx", setup_convert},
+    {"lua_tointegerx", setup_convert},
+    {"lua_rawlen", setup_rawlen},
     {"lua_absindex", setup_index},
     {"lua_gettop", setup_state_only},
     {"lua_settop", setup_settop},

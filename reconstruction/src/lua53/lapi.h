@@ -5,6 +5,7 @@
 #ifndef RECON_LUA53_LAPI_H
 #define RECON_LUA53_LAPI_H
 
+#include "common/cpu/aarch64/cpu.h"
 #include "recon/guest.h"
 
 int32_t lua_absindex(const Guest* g, GAddr L, int32_t idx);
@@ -32,5 +33,12 @@ GAddr lua_touserdata(const Guest* g, GAddr L, int32_t idx);
 GAddr lua_tothread(const Guest* g, GAddr L, int32_t idx);
 int32_t lua_getmetatable(const Guest* g, GAddr L, int32_t objindex);
 int32_t lua_getuservalue(const Guest* g, GAddr L, int32_t idx);
+
+/* These call other game functions, so they run on the guest CPU (recon/call.h). A lua_Number result is its bits. */
+uint64_t lua_tonumberx(CPU* c, GAddr L, int32_t idx, GAddr pisnum);
+int32_t lua_isnumber(CPU* c, GAddr L, int32_t idx);
+int64_t lua_tointegerx(CPU* c, GAddr L, int32_t idx, GAddr pisnum);
+uint64_t lua_rawlen(CPU* c, GAddr L, int32_t idx);
+GAddr lua_tolstring(CPU* c, GAddr L, int32_t idx, GAddr len);
 
 #endif

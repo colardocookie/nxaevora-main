@@ -5,6 +5,7 @@
    must fail: that shows the fixtures and the comparison would catch such a mistake. */
 #include "mutants.h"
 #include "../src/lua53/lua53_layout.h"
+#include "recon/call.h"
 #include <string.h>
 
 #define ARG_I32(n) ((int32_t)(uint32_t)c->x[n])
@@ -259,7 +260,117 @@ static void m_getuservalue(CPU* c, u64 e) {
     RESULT(g_ld8(&g, u + UDATA_TTUV));
 }
 
+/* The ones that call the VM, through the same guest calls and frames as the reconstructions */
+#define CALL(fn, ret_site) recon_call(c, recon_main_base + (fn), recon_main_base + (ret_site))
+
+/* keeps the stack slot's old bits when the value does not convert, not 0 */
+static void m_tonumberx(CPU* c, u64 e) {
+    (void)e;
+    Guest g = G;
+    const u64 lr = c->x[30];
+    const GAddr o = m_index(c, c->x[0], ARG_I32(1)), pisnum = c->x[2], n = recon_stack_alloc(c, 0x20) + 8;
+    int32_t isnum = 1;
+    if (g_ld32(&g, o + TV_TT) == LUA_TNUMFLT) g_st64(&g, n, g_ld64(&g, o + TV_VALUE));
+    else {
+        c->x[0] = o;
+        c->x[1] = n;
+        isnum = (int32_t)CALL(MAIN_LUAV_TONUMBER, 0x50B80);
+    }
+    if (pisnum) g_st32(&g, pisnum, (uint32_t)isnum);
+    c->v[0].d[0] = g_ld64(&g, n);
+    recon_stack_free(c, 0x20);
+    c->pc = lr;
+}
+/* takes every string as a number without converting it */
+static void m_isnumber(CPU* c, u64 e) {
+    (void)e;
+    Guest g = G;
+    const u64 lr = c->x[30];
+    const GAddr o = m_index(c, c->x[0], ARG_I32(1));
+    const uint32_t tag = g_ld32(&g, o + TV_TT);
+    if (tag == LUA_TNUMFLT || (tag & 0xF) == 4) {
+        c->x[0] = 1;
+    } else {
+        c->x[0] = o;
+        c->x[1] = recon_stack_alloc(c, 0x20) + 8;
+        c->x[0] = (uint32_t)CALL(MAIN_LUAV_TONUMBER, 0x50690);
+        recon_stack_free(c, 0x20);
+    }
+    c->pc = lr;
+}
+/* converts floats with mode 1 (floor), not 0 (exact only) */
+static void m_tointegerx(CPU* c, u64 e) {
+    (void)e;
+    Guest g = G;
+    const u64 lr = c->x[30];
+    const GAddr o = m_index(c, c->x[0], ARG_I32(1)), pisnum = c->x[2], n = recon_stack_alloc(c, 0x20) + 8;
+    int32_t isnum = 1;
+    if (g_ld32(&g, o + TV_TT) == LUA_TNUMINT) g_st64(&g, n, g_ld64(&g, o + TV_VALUE));
+    else {
+        c->x[0] = o;
+        c->x[1] = n;
+        c->x[2] = 1;
+        isnum = (int32_t)CALL(MAIN_LUAV_TOINTEGER, 0x50C94);
+        if (!isnum) g_st64(&g, n, 0);
+    }
+    if (pisnum) g_st32(&g, pisnum, (uint32_t)isnum);
+    c->x[0] = g_ld64(&g, n);
+    recon_stack_free(c, 0x20);
+    c->pc = lr;
+}
+/* switches on the basic type (tag & 0xF), so a long string reads as a short one */
+static void m_rawlen(CPU* c, u64 e) {
+    (void)e;
+    Guest g = G;
+    const u64 lr = c->x[30];
+    const GAddr o = m_index(c, c->x[0], ARG_I32(1)), p = g_ld64(&g, o + TV_VALUE);
+    switch (g_ld32(&g, o + TV_TT) & 0xF) {
+    case 4: c->x[0] = g_ld8(&g, p + TSTRING_SHRLEN); break;
+    case 7: c->x[0] = g_ld64(&g, p + UDATA_LEN); break;
+    case 5:
+        recon_stack_alloc(c, 0x10);
+        c->x[0] = p;
+        c->x[0] = (uint64_t)(int64_t)(int32_t)CALL(MAIN_LUAH_GETN, 0x5106C);
+        recon_stack_free(c, 0x10);
+        break;
+    default: c->x[0] = 0;
+    }
+    c->pc = lr;
+}
+
+/* converts a number but never steps the collector (no luaC_checkGC) */
+static void m_tolstring(CPU* c, u64 e) {
+    (void)e;
+    Guest g = G;
+    const u64 lr = c->x[30];
+    const GAddr L = c->x[0], len = c->x[2];
+    const int32_t idx = ARG_I32(1);
+    GAddr o = m_index(c, L, idx);
+    const uint32_t t = g_ld32(&g, o + TV_TT) & 0xF;
+    if (t != 4 && t != 3) {
+        if (len) g_st64(&g, len, 0);
+        c->x[0] = 0;
+        c->pc = lr;
+        return;
+    }
+    if (t == 3) {
+        recon_stack_alloc(c, 0x30);
+        c->x[0] = L;
+        c->x[1] = o;
+        CALL(MAIN_LUAO_TOSTRING, 0x50EBC);
+        recon_stack_free(c, 0x30);
+        o = m_index(c, L, idx);
+    }
+    const GAddr ts = g_ld64(&g, o + TV_VALUE);
+    if (len) g_st64(&g, len, g_ld8(&g, ts + 8) == 4 ? g_ld8(&g, ts + TSTRING_SHRLEN) : g_ld64(&g, ts + TSTRING_LNGLEN));
+    c->x[0] = ts + TSTRING_CONTENTS;
+    c->pc = lr;
+}
+
 const Mutant recon_lua53_mutants[] = {
+    {"lua_tolstring", m_tolstring},
+    {"lua_isnumber", m_isnumber},     {"lua_tonumberx", m_tonumberx},
+    {"lua_tointegerx", m_tointegerx}, {"lua_rawlen", m_rawlen},
     {"lua_absindex", m_absindex},     {"lua_gettop", m_gettop},
     {"lua_settop", m_settop},         {"lua_pushvalue", m_pushvalue},
     {"lua_xmove", m_xmove},           {"lua_atpanic", m_atpanic},
