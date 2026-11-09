@@ -2165,3 +2165,12 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   adb94885 2992, a3c1291e 2976, 45a7cf5b 3528, 9ff45b16 2480. Every BRX target is before the EXIT. Over 1439 programs: all end with
   an always-run EXIT and a self-BRA, no target after the self-BRA, the rule never changes a resolved scan. 117 programs have inline
   data after the self-BRA (floats, tables). The 6 jump-table programs get 8 to 64 bytes shorter (draw length not verified, no record).
+
+## Task (a) step 1 done (2026-11-09, moved from WORK_PLAN.md)
+
+- Commit `9036dc8`: `shader_hash` ends at the last always-run EXIT before an always-run self-BRA when a BRX table is not read
+  (`resolved == 0`, `i >= furthest`, `last_exit >= furthest`). Other cases do not change.
+- The caller verified a3c1291e (`main.bin@0x4041c30`): BRX 111, EXIT 371, self-BRA 372, len 2976 = draw len.
+- Code writer (opencode): brief `reports/brief-a1-writer.md`, patch `patches/a1-hash-1.patch`, report `reports/a1-writer-1.md`.
+  The patch was correct at the first try. 4 tests in `tests/shader_brx.c`. Mutant (`t == i + 1`) failed 2 tests. `ctest`: only
+  `tracked_material` fails (known). Exe md5 a63e12b7 copied to the 3 places. Worktree `wt-a1` removed. Not run in the game.
