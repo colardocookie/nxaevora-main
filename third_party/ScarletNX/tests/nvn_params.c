@@ -1385,6 +1385,75 @@ static void test_xfb_words(void) {
     CHECK(nvn_xfb_words(NVN_XFB_KIND_COUNT, 0, out) == 0u);
 }
 
+static void test_xfb_pause_resume(void) {
+    uint32_t out[NVN_XFB_WORDS_MAX];
+    uint32_t end[NVN_XFB_WORDS_MAX];
+    CHECK(nvn_xfb_words(NVN_XFB_PAUSE, 0, out) == 1u && out[0] == 0x800001D1u);
+    CHECK(nvn_xfb_words(NVN_XFB_PAUSE, 0x1FFFFFFF8ull, out) == 21u);
+    CHECK(nvn_xfb_words(NVN_XFB_END, 0x1FFFFFFF8ull, end) == 21u);
+    CHECK(!memcmp(out, end, sizeof out));
+    CHECK(nvn_xfb_words(NVN_XFB_RESUME, 0, out) == 1u && out[0] == 0x800101D1u);
+    CHECK(nvn_xfb_words(NVN_XFB_RESUME, 0x100ull, out) == 0u);
+}
+
+static void test_u4_tessellation_words(void) {
+    uint32_t out[NVN_TESS_OUTER_LEVELS_WORDS_MAX];
+    CHECK(nvn_patch_size_words(0x1234u, out) == 1u && out[0] == 0x92340373u);
+    CHECK(nvn_patch_size_words(0x2000u, out) == 1u && out[0] == 0xA0000373u); /* the library does not mask */
+    static const uint32_t inner[2] = {0x3F800000u, 0x40000000u};
+    CHECK(nvn_inner_tessellation_levels_words(inner, out) == 3u);
+    CHECK(out[0] == 0x200200CDu && out[1] == 0x3F800000u && out[2] == 0x40000000u);
+    static const uint32_t outer[4] = {0x3F800000u, 0x40000000u, 0x40400000u, 0x40800000u};
+    CHECK(nvn_outer_tessellation_levels_words(outer, out) == 5u);
+    CHECK(out[0] == 0x200400C9u && out[1] == 0x3F800000u && out[2] == 0x40000000u);
+    CHECK(out[3] == 0x40400000u && out[4] == 0x40800000u);
+    CHECK(nvn_inner_tessellation_levels_words(NULL, out) == 0u);
+    CHECK(nvn_outer_tessellation_levels_words(outer, NULL) == 0u);
+}
+
+static void test_u4_primitive_restart_and_render_enable(void) {
+    uint32_t out[NVN_RENDER_ENABLE_CONDITIONAL_WORDS_MAX];
+    CHECK(nvn_primitive_restart_words(0, 0, out) == 1u && out[0] == 0x80000591u);
+    CHECK(nvn_primitive_restart_words(0x100u, 0, out) == 1u && out[0] == 0x80000591u); /* low byte only */
+    CHECK(nvn_primitive_restart_words(1, 0xABCDu, out) == 3u);
+    CHECK(out[0] == 0x80010591u && out[1] == 0x20010592u && out[2] == 0xABCDu);
+    CHECK(nvn_render_enable_words(0, out) == 1u && out[0] == 0x80000556u);
+    CHECK(nvn_render_enable_words(1, out) == 1u && out[0] == 0x80010556u);
+    CHECK(nvn_render_enable_words(0x100u, out) == 1u && out[0] == 0x80000556u);
+    CHECK(nvn_render_enable_conditional_words(0, 0x123456789Aull, out) == 4u);
+    CHECK(out[0] == 0x20030554u && out[1] == 0x12u && out[2] == 0x3456789Au && out[3] == 3u);
+    CHECK(nvn_render_enable_conditional_words(1, 0x123456789Aull, out) == 4u && out[3] == 4u);
+    CHECK(nvn_render_enable_conditional_words(2, 0, out) == 0u);
+}
+
+static void test_conservative_raster_dilate_level(void) {
+    CHECK(nvn_conservative_raster_dilate_level(-1.0f) == 0u);
+    CHECK(nvn_conservative_raster_dilate_level(0.0f) == 0u);
+    CHECK(nvn_conservative_raster_dilate_level(0.1f) == 1u);
+    CHECK(nvn_conservative_raster_dilate_level(0.75f) == 3u);
+    CHECK(nvn_conservative_raster_dilate_level(1.0f) == 3u); /* ceil gives 4, the clamp gives 3 */
+    CHECK(nvn_conservative_raster_dilate_level(5.0f) == 3u);
+    CHECK(nvn_conservative_raster_dilate_level(NAN) == 0u);
+}
+
+static void test_viewport_swizzles(void) {
+    static const uint32_t identity[4] = {0, 2, 4, 6};
+    static const uint32_t other[4] = {1, 2, 4, 6};
+    uint32_t word[2];
+    word[0] = nvn_viewport_swizzle_word(identity);
+    CHECK(word[0] == 0x6420u);
+    CHECK(nvn_viewport_swizzles_identity(word, 1));
+    word[0] = nvn_viewport_swizzle_word(other);
+    CHECK(word[0] == 0x6421u);
+    CHECK(!nvn_viewport_swizzles_identity(word, 1));
+    CHECK(nvn_viewport_swizzles_identity(word, 0)); /* no entry */
+    word[0] = 0x6420u;
+    word[1] = 0x6420u;
+    CHECK(nvn_viewport_swizzles_identity(word, 2));
+    word[1] = 0x1234u;
+    CHECK(!nvn_viewport_swizzles_identity(word, 2));
+}
+
 static void test_reset_counter_word(void) {
     uint32_t word = 0;
     CHECK(nvn_reset_counter_word(0, &word) && word == 0x01u);
@@ -3274,6 +3343,11 @@ int main(int argc, char** argv) {
     test_vertex_attrib_state();
     test_reset_counter_word();
     test_xfb_words();
+    test_xfb_pause_resume();
+    test_u4_tessellation_words();
+    test_u4_primitive_restart_and_render_enable();
+    test_conservative_raster_dilate_level();
+    test_viewport_swizzles();
     test_depth_range_methods();
     test_stencil_op_and_polygon_offset();
     test_raster_methods();

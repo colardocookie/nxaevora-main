@@ -2683,7 +2683,10 @@ uint32_t nvn_xfb_words(uint32_t kind, uint64_t addr, uint32_t* out) {
         bind_word(&w, (uint32_t)addr);
         return w.at;
     case NVN_XFB_END:
+    case NVN_XFB_PAUSE:
         bind_value(&w, NVN_XFB_METHOD_ENABLE, 0);
+        /* A pause without an address is the disable alone. With an address it writes the End reports. */
+        if (kind == NVN_XFB_PAUSE && !addr) return w.at;
         for (uint32_t i = 0; i < NVN_XFB_BUFFER_COUNT; i++) {
             uint64_t at = addr + NVN_XFB_COUNT_OFFSET * (i + 1u);
             bind_run(&w, NVN_XFB_METHOD_REPORT, NVN_XFB_REPORT_WORDS);
@@ -2693,9 +2696,108 @@ uint32_t nvn_xfb_words(uint32_t kind, uint64_t addr, uint32_t* out) {
             bind_word(&w, xfb_count_query[i]);
         }
         return w.at;
+    case NVN_XFB_RESUME:
+        if (addr) return 0; /* a resume with an address reads the byte counts that the GPU writes */
+        bind_value(&w, NVN_XFB_METHOD_ENABLE, 1);
+        return w.at;
     default:
         return 0;
     }
+}
+
+/* The U4 draw state setters (analyst-u4-A-1.md, analyst-u4-B-1.md). The tables give the words of each function. */
+#define NVN_TESS_METHOD_PATCH_SIZE 0x373u /* I(0x373, patches): the library does not mask the value */
+#define NVN_TESS_METHOD_INNER_LEVELS 0xCDu
+#define NVN_TESS_METHOD_OUTER_LEVELS 0xC9u
+#define NVN_PRIMITIVE_RESTART_METHOD_ENABLE 0x591u
+#define NVN_PRIMITIVE_RESTART_METHOD_INDEX 0x592u
+#define NVN_RENDER_ENABLE_METHOD 0x556u
+#define NVN_RENDER_ENABLE_CONDITIONAL_METHOD 0x554u
+#define NVN_RENDER_ENABLE_CONDITIONAL_WORDS 3u
+#define NVN_RENDER_ENABLE_CONDITION 0u
+#define NVN_RENDER_ENABLE_SYNC 1u
+#define NVN_RENDER_ENABLE_MODE_PARAMETER 3u /* condition 0: the draw waits on the report */
+#define NVN_RENDER_ENABLE_MODE_SYNC 4u      /* condition 1: the draw waits on a sync */
+#define NVN_VIEWPORT_SWIZZLE_FIELD_MASK 0x7u
+#define NVN_VIEWPORT_SWIZZLE_FIELD_BITS 4u
+#define NVN_VIEWPORT_SWIZZLE_IDENTITY 0x6420u /* MAXWELL3D_VIEWPORT_SWIZZLE_IDENTITY after the packing */
+
+uint32_t nvn_patch_size_words(uint32_t patches, uint32_t* out) {
+    if (!out) return 0;
+    NvnBindWriter w = {out, 0};
+    /* The library shifts the value without the 13-bit mask, so a value above 0x1FFF changes the mode bits too. */
+    bind_word(&w, NVN_PROGRAM_MODE_INLINE | (patches << NVN_PROGRAM_COUNT_SHIFT) | NVN_TESS_METHOD_PATCH_SIZE);
+    return w.at;
+}
+
+uint32_t nvn_inner_tessellation_levels_words(const uint32_t bits[2], uint32_t* out) {
+    if (!out || !bits) return 0;
+    NvnBindWriter w = {out, 0};
+    bind_run(&w, NVN_TESS_METHOD_INNER_LEVELS, NVN_TESS_INNER_LEVEL_COUNT);
+    for (uint32_t i = 0; i < NVN_TESS_INNER_LEVEL_COUNT; i++) bind_word(&w, bits[i]);
+    return w.at;
+}
+
+uint32_t nvn_outer_tessellation_levels_words(const uint32_t bits[4], uint32_t* out) {
+    if (!out || !bits) return 0;
+    NvnBindWriter w = {out, 0};
+    bind_run(&w, NVN_TESS_METHOD_OUTER_LEVELS, NVN_TESS_OUTER_LEVEL_COUNT);
+    for (uint32_t i = 0; i < NVN_TESS_OUTER_LEVEL_COUNT; i++) bind_word(&w, bits[i]);
+    return w.at;
+}
+
+uint32_t nvn_primitive_restart_words(uint32_t enable, uint32_t index, uint32_t* out) {
+    if (!out) return 0;
+    NvnBindWriter w = {out, 0};
+    uint32_t on = (enable & 0xFFu) != 0;
+    bind_value(&w, NVN_PRIMITIVE_RESTART_METHOD_ENABLE, on);
+    if (on) {
+        bind_run(&w, NVN_PRIMITIVE_RESTART_METHOD_INDEX, 1);
+        bind_word(&w, index);
+    }
+    return w.at;
+}
+
+uint32_t nvn_render_enable_words(uint32_t enable, uint32_t* out) {
+    if (!out) return 0;
+    NvnBindWriter w = {out, 0};
+    bind_value(&w, NVN_RENDER_ENABLE_METHOD, (enable & 0xFFu) != 0 ? 1u : 0u);
+    return w.at;
+}
+
+uint32_t nvn_render_enable_conditional_words(uint32_t condition, uint64_t sync, uint32_t* out) {
+    if (!out) return 0;
+    uint32_t mode;
+    if (condition == NVN_RENDER_ENABLE_CONDITION) mode = NVN_RENDER_ENABLE_MODE_PARAMETER;
+    else if (condition == NVN_RENDER_ENABLE_SYNC) mode = NVN_RENDER_ENABLE_MODE_SYNC;
+    else return 0; /* the library writes nothing for another condition */
+    NvnBindWriter w = {out, 0};
+    bind_run(&w, NVN_RENDER_ENABLE_CONDITIONAL_METHOD, NVN_RENDER_ENABLE_CONDITIONAL_WORDS);
+    bind_word(&w, (uint32_t)(sync >> 32));
+    bind_word(&w, (uint32_t)sync);
+    bind_word(&w, mode);
+    return w.at;
+}
+
+uint32_t nvn_conservative_raster_dilate_level(float dilate) {
+    float scaled = ceilf(dilate * 4.0f);
+    if (!(scaled > 0.0f)) return 0; /* NaN and every value at or below 0 */
+    if (scaled > 3.0f) return 3;
+    return (uint32_t)scaled;
+}
+
+uint32_t nvn_viewport_swizzle_word(const uint32_t entry[4]) {
+    uint32_t word = entry[0] & NVN_VIEWPORT_SWIZZLE_FIELD_MASK;
+    word |= (entry[1] & NVN_VIEWPORT_SWIZZLE_FIELD_MASK) << NVN_VIEWPORT_SWIZZLE_FIELD_BITS;
+    word |= (entry[2] & NVN_VIEWPORT_SWIZZLE_FIELD_MASK) << (2u * NVN_VIEWPORT_SWIZZLE_FIELD_BITS);
+    word |= (entry[3] & NVN_VIEWPORT_SWIZZLE_FIELD_MASK) << (3u * NVN_VIEWPORT_SWIZZLE_FIELD_BITS);
+    return word;
+}
+
+int nvn_viewport_swizzles_identity(const uint32_t* words, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++)
+        if (words[i] != NVN_VIEWPORT_SWIZZLE_IDENTITY) return 0;
+    return 1;
 }
 
 /* The draw macros and methods that the five library draw functions write. The headers use the same forms as the bind

@@ -30,8 +30,8 @@ tool keeps them.
 | G7 | 4 | 4 | 0 | 4 | 0 |
 | G8 | 112 | 112 | 0 | 112 | 0 |
 | G9 | 43 | 43 | 0 | 43 | 0 |
-| G10 | 281 | 193 | 88 | 0 | 0 |
-| all | 523 | 435 | 88 | 242 | 0 |
+| G10 | 281 | 220 | 61 | 0 | 0 |
+| all | 523 | 462 | 61 | 242 | 0 |
 
 ## Functions
 
@@ -317,13 +317,13 @@ tool keeps them.
 | `nvnCommandBufferCopyTextureToBuffer` | G10 | d82bb70 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferDiscardColor` | G10 | d8564c0 | 0 | implemented |  |  |  |
 | `nvnCommandBufferDiscardDepthStencil` | G10 | d856530 | 0 | implemented |  |  |  |
-| `nvnCommandBufferDispatchComputeIndirect` | G10 | d84dc60 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferDispatchComputeIndirect` | G10 | d84dc60 | 0 | implemented | |  | refused: no host path for a QMD at a GPU address |
 | `nvnCommandBufferDownsample` | G10 | d82cb10 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferDownsampleTextureView` | G10 | d82cb20 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferDrawArraysIndirect` | G10 | d849a00 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferDrawElementsIndirect` | G10 | d849bd0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferDrawTexture` | G10 | d84cad0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferDrawTransformFeedback` | G10 | d84bb40 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferDrawArraysIndirect` | G10 | d849a00 | 0 | implemented | |  | refused: the GPU reads the record at draw time, the replay has no fetch |
+| `nvnCommandBufferDrawElementsIndirect` | G10 | d849bd0 | 0 | implemented | |  | refused: the GPU reads the record at draw time, the replay has no fetch |
+| `nvnCommandBufferDrawTexture` | G10 | d84cad0 | 0 | implemented | |  | refused: needs the driver program at device+0x1b00 |
+| `nvnCommandBufferDrawTransformFeedback` | G10 | d84bb40 | 0 | implemented | |  | refused: the renderer does not write the byte counts |
 | `nvnCommandBufferFenceSync` | G10 | d825a80 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferGetCommandMemoryFree` | G10 | d8240a0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferGetCommandMemorySize` | G10 | d824080 | 0 | stub-log |  |  |  |
@@ -341,9 +341,9 @@ tool keeps them.
 | `nvnCommandBufferInsertDebugMarkerDynamic` | G10 | d84d3b0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferInsertDebugMarkerStatic` | G10 | d84d200 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferIsRecording` | G10 | d826400 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferMultiDrawArraysIndirectCount` | G10 | d849dd0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferMultiDrawElementsIndirectCount` | G10 | d84a230 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferPauseTransformFeedback` | G10 | d84b6f0 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferMultiDrawArraysIndirectCount` | G10 | d849dd0 | 0 | implemented | |  | refused: the record feed of the macro is not known |
+| `nvnCommandBufferMultiDrawElementsIndirectCount` | G10 | d84a230 | 0 | implemented | |  | refused: the record feed of the macro is not known |
+| `nvnCommandBufferPauseTransformFeedback` | G10 | d84b6f0 | 0 | implemented | unit (nvn_params) |  | library read: End words, address 0 sends only the disable |
 | `nvnCommandBufferPopDebugGroup` | G10 | d84cfc0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferPopDebugGroupId` | G10 | d84d030 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferPushDebugGroup` | G10 | d84d0a0 | 0 | stub-log |  |  |  |
@@ -351,33 +351,33 @@ tool keeps them.
 | `nvnCommandBufferPushDebugGroupStatic` | G10 | d84d110 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferReportValue` | G10 | d856ab0 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferResolveDepthBuffer` | G10 | d84ce80 | 0 | implemented |  |  |  |
-| `nvnCommandBufferRestoreZCullData` | G10 | d84c8e0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferResumeTransformFeedback` | G10 | d84b810 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSaveZCullData` | G10 | d84c840 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetColorReductionEnable` | G10 | d84d4e0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetColorReductionThresholds` | G10 | d84d550 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferRestoreZCullData` | G10 | d84c8e0 | 0 | implemented | |  | logged no-op: the host has no ZCull |
+| `nvnCommandBufferResumeTransformFeedback` | G10 | d84b810 | 0 | implemented | unit (nvn_params) |  | library read: address 0 sends the enable; an address is refused |
+| `nvnCommandBufferSaveZCullData` | G10 | d84c840 | 0 | implemented | |  | logged no-op: the host has no ZCull |
+| `nvnCommandBufferSetColorReductionEnable` | G10 | d84d4e0 | 0 | implemented | |  | logged no-op: full color precision is kept |
+| `nvnCommandBufferSetColorReductionThresholds` | G10 | d84d550 | 0 | implemented | |  | logged no-op: full color precision is kept |
 | `nvnCommandBufferSetCommandMemoryCallbackEnabled` | G10 | d823d90 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetConservativeRasterDilate` | G10 | d84c6c0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetConservativeRasterEnable` | G10 | d84c630 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferSetConservativeRasterDilate` | G10 | d84c6c0 | 0 | implemented | unit (nvn_params) |  | logged no-op for level 0, else refused |
+| `nvnCommandBufferSetConservativeRasterEnable` | G10 | d84c630 | 0 | implemented | |  | logged no-op for disable, enable is refused |
 | `nvnCommandBufferSetCopyImageStride` | G10 | d82cb40 | 0 | implemented |  |  |  |
 | `nvnCommandBufferSetCopyRowStride` | G10 | d82cb30 | 0 | implemented |  |  |  |
 | `nvnCommandBufferSetDebugLabel` | G10 | d82ccd0 | 0 | implemented |  |  |  |
-| `nvnCommandBufferSetInnerTessellationLevels` | G10 | d84b310 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetOuterTessellationLevels` | G10 | d84b380 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetPatchSize` | G10 | d84b2b0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetPrimitiveRestart` | G10 | d84a370 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferSetInnerTessellationLevels` | G10 | d84b310 | 0 | implemented | unit (nvn_params) |  | library read: sent as draw state at the next draw |
+| `nvnCommandBufferSetOuterTessellationLevels` | G10 | d84b380 | 0 | implemented | unit (nvn_params) |  | library read: sent as draw state at the next draw |
+| `nvnCommandBufferSetPatchSize` | G10 | d84b2b0 | 0 | implemented | unit (nvn_params) |  | library read: sent as draw state at the next draw, no mask |
+| `nvnCommandBufferSetPrimitiveRestart` | G10 | d84a370 | 0 | implemented | unit (nvn_params) |  | library read: sent as draw state at the next draw |
 | `nvnCommandBufferSetProgramSubroutines` | G10 | d826180 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetRenderEnable` | G10 | d856bb0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetRenderEnableConditional` | G10 | d856c20 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetSampleMask` | G10 | d84a800 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetScissor` | G10 | d84b280 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferSetRenderEnable` | G10 | d856bb0 | 0 | implemented | unit (nvn_params) |  | library read: one draw state with the conditional form (both write 0x556) |
+| `nvnCommandBufferSetRenderEnableConditional` | G10 | d856c20 | 0 | implemented | unit (nvn_params) |  | library read: condition 0 or 1, another value is a logged no-op |
+| `nvnCommandBufferSetSampleMask` | G10 | d84a800 | 0 | implemented | |  | logged no-op: the host renders one sample |
+| `nvnCommandBufferSetScissor` | G10 | d84b280 | 0 | implemented | |  | library read: the SetScissors op with index 0 |
 | `nvnCommandBufferSetShaderScratchMemory` | G10 | d825f10 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetStencilCullCriteria` | G10 | d84d600 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetSubpixelPrecisionBias` | G10 | d84c770 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferSetStencilCullCriteria` | G10 | d84d600 | 0 | implemented | |  | logged no-op: the host has no stencil cull |
+| `nvnCommandBufferSetSubpixelPrecisionBias` | G10 | d84c770 | 0 | implemented | |  | logged no-op: the device subpixel grid is used |
 | `nvnCommandBufferSetTiledCacheAction` | G10 | d84bf30 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferSetTiledCacheTileSize` | G10 | d84c000 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetViewport` | G10 | d84ae60 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetViewportSwizzles` | G10 | d84afe0 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferSetViewport` | G10 | d84ae60 | 0 | implemented | |  | library read: the SetViewports op with index 0 |
+| `nvnCommandBufferSetViewportSwizzles` | G10 | d84afe0 | 0 | implemented | unit (nvn_params) |  | logged no-op for identity entries, else refused |
 | `nvnCommandBufferSignalEvent` | G10 | d832ef0 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferTiledDownsample` | G10 | d8575f0 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferTiledDownsampleTextureView` | G10 | d857600 | 0 | implemented | unit |  |  |

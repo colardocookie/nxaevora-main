@@ -144,7 +144,9 @@ typedef struct { uint32_t method, value; } NvnDepthRangeMethod;
 void nvn_depth_range_methods(uint32_t index, uint32_t depth_mode, float near_value, float far_value,
                              NvnDepthRangeMethod out[NVN_DEPTH_RANGE_METHODS_MAX]);
 
-/* The six state objects of a command buffer. The order is the kind word of the bind state op. */
+/* The state objects of a command buffer and the argument kinds of the U4 draw state setters. The order is the kind
+   word of the bind state op, so the six object kinds stay first. Only the object kinds have a state record. */
+#define NVN_STATE_OBJECT_COUNT 6u
 typedef enum {
     NVN_STATE_COLOR = 0,
     NVN_STATE_DEPTH_STENCIL,
@@ -152,6 +154,11 @@ typedef enum {
     NVN_STATE_POLYGON,
     NVN_STATE_MULTISAMPLE,
     NVN_STATE_CHANNEL_MASK,
+    NVN_STATE_PATCH_SIZE,
+    NVN_STATE_INNER_TESSELLATION,
+    NVN_STATE_OUTER_TESSELLATION,
+    NVN_STATE_PRIMITIVE_RESTART,
+    NVN_STATE_RENDER_ENABLE, /* both setters write 0x556, so one kind keeps their order */
     NVN_STATE_COUNT
 } NvnStateKind;
 
@@ -300,13 +307,45 @@ uint32_t nvn_update_uniform_words(uint64_t address, uint32_t size256, uint32_t o
 
 /* Transform feedback (sdk d84b400 to d84b6e4). A buffer bind is the enable, address and size run of its slot, or an
    inline 0 there for address 0. Begin calls macro 0 with the control address. End disables the feedback and writes
-   the four stream byte counts to address + 4 to + 16 with report semaphores. 0 for a bad slot or kind. */
+   the four stream byte counts to address + 4 to + 16 with report semaphores. Pause with an address writes the End
+   words and with address 0 only the disable. Resume writes only the enable and needs address 0. 0 for a bad slot or
+   kind. */
 #define NVN_XFB_BUFFER_COUNT 4u
 #define NVN_BIND_XFB_WORDS_MAX 5u
 #define NVN_XFB_WORDS_MAX 21u
-typedef enum { NVN_XFB_BEGIN = 0, NVN_XFB_END, NVN_XFB_KIND_COUNT } NvnXfbKind;
+typedef enum { NVN_XFB_BEGIN = 0, NVN_XFB_END, NVN_XFB_PAUSE, NVN_XFB_RESUME, NVN_XFB_KIND_COUNT } NvnXfbKind;
 uint32_t nvn_bind_xfb_words(uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out);
 uint32_t nvn_xfb_words(uint32_t kind, uint64_t addr, uint32_t* out);
+
+/* The draw state of the U4 tessellation, primitive restart and render enable setters (analyst-u4-A-1.md,
+   analyst-u4-B-1.md). Each builder writes the library words for the arguments of one setter. 0 for an argument
+   that has no library form. */
+#define NVN_PATCH_SIZE_WORDS_MAX 1u
+#define NVN_TESS_INNER_LEVEL_COUNT 2u
+#define NVN_TESS_OUTER_LEVEL_COUNT 4u
+#define NVN_TESS_INNER_LEVELS_WORDS_MAX 3u
+#define NVN_TESS_OUTER_LEVELS_WORDS_MAX 5u
+#define NVN_PRIMITIVE_RESTART_WORDS_MAX 3u
+#define NVN_RENDER_ENABLE_WORDS_MAX 1u
+#define NVN_RENDER_ENABLE_CONDITIONAL_WORDS_MAX 4u
+uint32_t nvn_patch_size_words(uint32_t patches, uint32_t* out);
+uint32_t nvn_inner_tessellation_levels_words(const uint32_t bits[2], uint32_t* out);
+uint32_t nvn_outer_tessellation_levels_words(const uint32_t bits[4], uint32_t* out);
+uint32_t nvn_primitive_restart_words(uint32_t enable, uint32_t index, uint32_t* out);
+uint32_t nvn_render_enable_words(uint32_t enable, uint32_t* out);
+#define NVN_RENDER_ENABLE_CONDITION_COUNT 2u /* the library writes a word for condition 0 and 1 only */
+/* Render enable state words: form, then the enable (form VALUE) or condition, sync high, sync low (form CONDITIONAL). */
+#define NVN_RENDER_ENABLE_FORM_VALUE 0u
+#define NVN_RENDER_ENABLE_FORM_CONDITIONAL 1u
+#define NVN_RENDER_ENABLE_STATE_WORDS 4u
+uint32_t nvn_render_enable_conditional_words(uint32_t condition, uint64_t sync, uint32_t* out);
+/* SetConservativeRasterDilate: clamp(ceil(4 * s), 0, 3); a NaN or a negative value gives 0. Pure. */
+uint32_t nvn_conservative_raster_dilate_level(float dilate);
+/* SetViewportSwizzles: the packed word of one entry, and 1 when every entry is the identity.
+   MAXWELL3D_VIEWPORT_SWIZZLE_IDENTITY of maxwell/maxwell_3d_regs.h packs to 0x6420. Pure. */
+#define NVN_VIEWPORT_SWIZZLE_ENTRY_BYTES 16u /* four u32 per entry */
+uint32_t nvn_viewport_swizzle_word(const uint32_t entry[4]);
+int nvn_viewport_swizzles_identity(const uint32_t* words, uint32_t count);
 /* The 10-bit format index that the host uses to read the format word of one vertex attribute state. */
 uint32_t nvn_vertex_attrib_format_index(uint32_t s);
 /* The count to pass to a builder for a table of enabled flags: the highest set index plus one, or 0 when none is set. */

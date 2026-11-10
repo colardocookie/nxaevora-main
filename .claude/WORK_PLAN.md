@@ -9,10 +9,10 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the U3 patch 3 build (md5 a2321187), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the U4 patch 1 build (md5 d06f471e), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
-  `nvn_trace=0` (the user was asked to set it on 2026-11-10, check it), `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
+  `nvn_trace=0`, `nvn_native=1` (both set by the user, 2026-11-10), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
 - GitHub PRs #2 to #6 (opt-in 60/120 fps clocks, colardocookie) and issue #7 (a contributor offer): ON HOLD, frame rate is later
   work. The user replies to them. Facts: `OLD-WORK_PLAN.md`, section "PR #1 NVN part taken".
 - Scratchpad: `C:/Users/Azunel/AppData/Roaming/orca/chat-scratch/f41e32fc08995f90ab471cdfd0b7bdb8` (`analysis/` holds disassembly
@@ -59,12 +59,25 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U4 step (b), the handler writer briefs. Tables (step (a), checked): `reports/analyst-u4-A-1.md` (draws, xfb,
+  Current step: U4 patch 2 step (b), the brief of table C (model: `reports/brief-writer-u4-1.md`). Patch 1 (tables A and
+    B, 27 rows) is committed. Its record: the caller merged RenderEnable and RenderEnableConditional into one state kind
+    (both write 0x556, two kinds lost the order) and added a dilate test at 1.0 (a mutant survived). Known limit: the
+    patch 1 setters are draw state, sent at the next draw, so a clear or a blit between does not see them. Tables (step (a), checked): `reports/analyst-u4-A-1.md` (draws, xfb,
     tess), `analyst-u4-B-1.md` (raster state), `analyst-u4-C-1.md` (binds, program setters, tiled cache). Record of step (a):
     `OLD-WORK_PLAN.md`, "U4 step (a)". Decisions for the briefs: refuse DispatchComputeIndirect (no host QMD path), and
     ViewportSwizzles, ConservativeRaster, CoverageModulation when not identity or disabled. Logged no-op: zcull, color reduction,
-    tiled cache, subpixel bias, sample mask. Decide before the briefs: the separate texture and sampler table (the host has 128
-    combined slots), subroutines, scratch memory, the XFB byte count reports. SetPatchSize: no 0x1FFF mask (see the record).
+    tiled cache, subpixel bias, sample mask. SetPatchSize: no 0x1FFF mask (see the record).
+    Decisions of 2026-11-10 (all rows have 0 calls in `nvn-coverage.md`):
+    - Separate textures and samplers (BindSeparate*): refuse (no host table). GetSeparateTexture/Sampler/TexelFetchHandle:
+      implement (pure values, table C rows 26 to 28).
+    - Subroutines (SetProgramSubroutines, SetSubroutineLinkage): refuse (the words of d855880 are not known).
+    - SetShaderScratchMemory: refuse (two SDK constants of the 0x1E4 block are not known).
+    - XFB: Pause sends the End words (only 0x1D1=0 for address 0). Resume with address 0 sends 0x1D1=1. Refuse Resume with an
+      address and DrawTransformFeedback: they read byte counts that the GPU writes, and the renderer does not write the
+      0x6C0 byte count reports and ignores 0x4C6/0x48F (checked in `vk/render.c`, `mme_hle.c` `draw_byte_count`).
+    - Patch 1 = tables A and B, patch 2 = table C. Refuse also: MultiDraw*IndirectCount (the record feed is not known),
+      DrawTexture (it needs the driver program at device+0x1b00), DispatchComputeIndirect, and DrawArrays/ElementsIndirect (the
+      GPU reads the record at draw time, the host replay has no such fetch, and a read at replay can be stale).
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
   - Rows near U1 that stay in other groups: CommandBuffer command and control memory getters, memory callback getters (U5).
     ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).

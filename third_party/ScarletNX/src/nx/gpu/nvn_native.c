@@ -3023,6 +3023,66 @@ static int command_object(u64 addr, NvnObjKind kind, uint32_t* generation) {
     *generation = o->generation;
     return 1;
 }
+#define COMMAND_REFUSE_LOG_LIMIT 16u /* log lines for the refusals of the U4 command functions */
+/* A refused command: the name, the reason and the arguments. Nothing is recorded; these library functions return
+   void, so there is no result to keep. */
+static void command_refused(const CPU* c, const char* operation, const char* reason) {
+    LOG_LIMIT(COMMAND_REFUSE_LOG_LIMIT, "nvn-native: %s refused: %s (x0=%llx x1=%llx x2=%llx x3=%llx)\n", operation,
+              reason, (unsigned long long)c->x[0], (unsigned long long)c->x[1],
+              (unsigned long long)c->x[2], (unsigned long long)c->x[3]);
+}
+/* The arguments of one draw state setter, stored as words. The builder in nvn_params.c makes the library words at
+   replay, as the other draw state does. Caller holds objs_lock. */
+static void command_state_record(CommandBufferRec* cb, u64 addr, const char* operation, NvnStateKind kind,
+                                 const uint32_t* words, uint32_t count) {
+    NvnOpBindState op = {(uint32_t)kind, count};
+    memcpy(op.w, words, (size_t)count * sizeof words[0]);
+    command_record(cb, addr, operation, NVN_OP_BIND_STATE, &op, sizeof op);
+}
+#define COMMAND_REFUSE_HANDLER(handler, operation, reason)                                      \
+    static void h_command_buffer_##handler(CPU* c, u64 entry) {                                 \
+        (void)entry;                                                                            \
+        pm_lock(&objs_lock);                                                                    \
+        if (command_buffer(c->x[0], operation)) command_refused(c, operation, reason);          \
+        pm_unlock(&objs_lock);                                                                  \
+    }
+COMMAND_REFUSE_HANDLER(draw_arrays_indirect, "nvnCommandBufferDrawArraysIndirect",
+                       "the GPU reads the record at draw time and the host replay has no such fetch")
+COMMAND_REFUSE_HANDLER(draw_elements_indirect, "nvnCommandBufferDrawElementsIndirect",
+                       "the GPU reads the record at draw time and the host replay has no such fetch")
+COMMAND_REFUSE_HANDLER(multi_draw_arrays_indirect_count, "nvnCommandBufferMultiDrawArraysIndirectCount",
+                       "the GPU reads the records and the count at draw time and the host replay has no such fetch")
+COMMAND_REFUSE_HANDLER(multi_draw_elements_indirect_count, "nvnCommandBufferMultiDrawElementsIndirectCount",
+                       "the GPU reads the records and the count at draw time and the host replay has no such fetch")
+COMMAND_REFUSE_HANDLER(dispatch_compute_indirect, "nvnCommandBufferDispatchComputeIndirect",
+                       "the host has no QMD path for a QMD that the GPU writes")
+COMMAND_REFUSE_HANDLER(draw_texture, "nvnCommandBufferDrawTexture",
+                       "it needs the driver program at device+0x1b00, which the host does not have")
+COMMAND_REFUSE_HANDLER(draw_transform_feedback, "nvnCommandBufferDrawTransformFeedback",
+                       "it reads byte counts that the GPU writes, and the renderer does not write them")
+#undef COMMAND_REFUSE_HANDLER
+/* A command whose effect the host keeps with another rule: nothing is recorded, and the library words are not
+   needed. Each handler has its own LOG_LIMIT counter. */
+#define COMMAND_NO_OP_HANDLER(handler, operation, reason)                                      \
+    static void h_command_buffer_##handler(CPU* c, u64 entry) {                                \
+        (void)entry;                                                                            \
+        pm_lock(&objs_lock);                                                                    \
+        if (command_buffer(c->x[0], operation))                                                 \
+            LOG_LIMIT(1, "nvn-native: %s is a logged no-op: %s\n", operation, reason);          \
+        pm_unlock(&objs_lock);                                                                  \
+    }
+COMMAND_NO_OP_HANDLER(set_sample_mask, "nvnCommandBufferSetSampleMask", "the host renders one sample")
+COMMAND_NO_OP_HANDLER(save_zcull_data, "nvnCommandBufferSaveZCullData", "the host has no ZCull")
+COMMAND_NO_OP_HANDLER(restore_zcull_data, "nvnCommandBufferRestoreZCullData", "the host has no ZCull")
+COMMAND_NO_OP_HANDLER(set_stencil_cull_criteria, "nvnCommandBufferSetStencilCullCriteria",
+                      "the host has no stencil cull criteria")
+COMMAND_NO_OP_HANDLER(set_color_reduction_enable, "nvnCommandBufferSetColorReductionEnable",
+                      "the host keeps full color precision")
+COMMAND_NO_OP_HANDLER(set_color_reduction_thresholds, "nvnCommandBufferSetColorReductionThresholds",
+                      "the host keeps full color precision")
+COMMAND_NO_OP_HANDLER(set_subpixel_precision_bias, "nvnCommandBufferSetSubpixelPrecisionBias",
+                      "the host uses the device subpixel grid")
+#undef COMMAND_NO_OP_HANDLER
 #define COMMAND_POOL_HANDLER(name, operation, kind, code)                                                   \
     static void h_command_buffer_##name(CPU* c, u64 entry) {                                                \
         (void)entry;                                                                                        \
@@ -3088,6 +3148,18 @@ static void h_command_buffer_set_render_targets(CPU* c, u64 entry) {
 done:
     pm_unlock(&objs_lock);
 }
+/* One viewport of the 16, in the shape of the op. */
+static void command_viewport(CommandBufferRec* cb, u64 addr, const char* operation, uint32_t index, float x, float y,
+                             float width, float height) {
+    NvnOpViewport op = {index, x, y, width, height};
+    command_record(cb, addr, operation, NVN_OP_SET_VIEWPORT, &op, sizeof op);
+}
+/* One scissor of the 16, in the shape of the op. */
+static void command_scissor(CommandBufferRec* cb, u64 addr, const char* operation, uint32_t index, int32_t x,
+                            int32_t y, int32_t width, int32_t height) {
+    NvnOpScissor op = {index, x, y, width, height};
+    command_record(cb, addr, operation, NVN_OP_SET_SCISSOR, &op, sizeof op);
+}
 /* SetViewports and SetScissors: one op for each rectangle, so an op stays small. */
 static void h_command_buffer_set_viewports(CPU* c, u64 entry) {
     (void)entry;
@@ -3102,11 +3174,12 @@ static void h_command_buffer_set_viewports(CPU* c, u64 entry) {
             command_dropped(cb, name, "unreadable array", c->x[3]);
         else
             for (u32 i = 0; i < count; i++) {
-                NvnOpViewport op = {first + i};
-                u32 bits[4];
-                for (u32 k = 0; k < 4; k++) bits[k] = gr32(c->x[3] + (u64)i * 16 + k * 4);
-                memcpy(&op.x, bits, sizeof bits);
-                command_record(cb, c->x[0], name, NVN_OP_SET_VIEWPORT, &op, sizeof op);
+                float v[4];
+                for (u32 k = 0; k < 4; k++) {
+                    u32 bits = gr32(c->x[3] + (u64)i * 16 + k * 4);
+                    memcpy(&v[k], &bits, sizeof bits);
+                }
+                command_viewport(cb, c->x[0], name, first + i, v[0], v[1], v[2], v[3]);
             }
     }
     pm_unlock(&objs_lock);
@@ -3124,13 +3197,34 @@ static void h_command_buffer_set_scissors(CPU* c, u64 entry) {
             command_dropped(cb, name, "unreadable array", c->x[3]);
         else
             for (u32 i = 0; i < count; i++) {
-                NvnOpScissor op = {first + i};
-                u32 bits[4];
-                for (u32 k = 0; k < 4; k++) bits[k] = gr32(c->x[3] + (u64)i * 16 + k * 4);
-                memcpy(&op.x, bits, sizeof bits);
-                command_record(cb, c->x[0], name, NVN_OP_SET_SCISSOR, &op, sizeof op);
+                command_scissor(cb, c->x[0], name, first + i, (int32_t)gr32(c->x[3] + (u64)i * 16),
+                                (int32_t)gr32(c->x[3] + (u64)i * 16 + 4),
+                                (int32_t)gr32(c->x[3] + (u64)i * 16 + 8),
+                                (int32_t)gr32(c->x[3] + (u64)i * 16 + 12));
             }
     }
+    pm_unlock(&objs_lock);
+}
+/* SetViewport takes four int32 values; the library converts them with scvtf. */
+static void h_command_buffer_set_viewport(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferSetViewport";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb)
+        command_viewport(cb, c->x[0], name, 0, (float)(int32_t)c->x[1], (float)(int32_t)c->x[2],
+                         (float)(int32_t)c->x[3], (float)(int32_t)c->x[4]);
+    pm_unlock(&objs_lock);
+}
+/* SetScissor is SetScissors(first 0, count 1) with the four int32 values on the stack. */
+static void h_command_buffer_set_scissor(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferSetScissor";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb)
+        command_scissor(cb, c->x[0], name, 0, (int32_t)c->x[1], (int32_t)c->x[2], (int32_t)c->x[3],
+                        (int32_t)c->x[4]);
     pm_unlock(&objs_lock);
 }
 /* nvnCommandBufferBindTexture(cb, stage, slot, handle). The library checks neither the stage nor the slot; the host
@@ -3283,7 +3377,7 @@ typedef struct {
     NvnObjKind obj;
     uint32_t record_words, bind_words;
 } StateKindInfo;
-static const StateKindInfo state_kinds[NVN_STATE_COUNT] = {
+static const StateKindInfo state_kinds[NVN_STATE_OBJECT_COUNT] = {
     {NVN_OBJ_COLOR_STATE, 1, 1},
     {NVN_OBJ_DEPTH_STENCIL_STATE, 2, 2},
     {NVN_OBJ_BLEND_STATE, 2, 2},
@@ -4475,6 +4569,154 @@ static void h_command_buffer_end_transform_feedback(CPU* c, u64 entry) {
     (void)entry;
     command_xfb(c, "nvnCommandBufferEndTransformFeedback", NVN_XFB_END);
 }
+static void h_command_buffer_pause_transform_feedback(CPU* c, u64 entry) {
+    (void)entry;
+    command_xfb(c, "nvnCommandBufferPauseTransformFeedback", NVN_XFB_PAUSE);
+}
+static void h_command_buffer_resume_transform_feedback(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferResumeTransformFeedback";
+    if (c->x[1]) {
+        pm_lock(&objs_lock);
+        if (command_buffer(c->x[0], name))
+            command_refused(c, name, "it reads the byte counts that the GPU writes");
+        pm_unlock(&objs_lock);
+        return;
+    }
+    command_xfb(c, name, NVN_XFB_RESUME);
+}
+/* The draw state of the U4 tessellation, primitive restart and render enable setters. The host stores the
+   arguments and the builder in nvn_params.c makes the library words at replay. */
+static void h_command_buffer_set_patch_size(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferSetPatchSize";
+    uint32_t patches = (uint32_t)c->x[1];
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb) command_state_record(cb, c->x[0], name, NVN_STATE_PATCH_SIZE, &patches, 1);
+    pm_unlock(&objs_lock);
+}
+static void command_set_tessellation_levels(CPU* c, const char* name, NvnStateKind kind, uint32_t count) {
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb) {
+        if (!native_guest_readable(c->x[1], (u64)count * sizeof(uint32_t)))
+            command_refused(c, name, "the level array is unreadable");
+        else {
+            uint32_t bits[NVN_TESS_OUTER_LEVEL_COUNT];
+            for (uint32_t i = 0; i < count; i++) bits[i] = gr32(c->x[1] + (u64)i * 4u);
+            command_state_record(cb, c->x[0], name, kind, bits, count);
+        }
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_set_inner_tessellation_levels(CPU* c, u64 entry) {
+    (void)entry;
+    command_set_tessellation_levels(c, "nvnCommandBufferSetInnerTessellationLevels", NVN_STATE_INNER_TESSELLATION,
+                                    NVN_TESS_INNER_LEVEL_COUNT);
+}
+static void h_command_buffer_set_outer_tessellation_levels(CPU* c, u64 entry) {
+    (void)entry;
+    command_set_tessellation_levels(c, "nvnCommandBufferSetOuterTessellationLevels", NVN_STATE_OUTER_TESSELLATION,
+                                    NVN_TESS_OUTER_LEVEL_COUNT);
+}
+static void h_command_buffer_set_primitive_restart(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferSetPrimitiveRestart";
+    uint32_t words[2] = {(uint32_t)c->x[1], (uint32_t)c->x[2]};
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb) command_state_record(cb, c->x[0], name, NVN_STATE_PRIMITIVE_RESTART, words, 2);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_set_render_enable(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferSetRenderEnable";
+    uint32_t words[NVN_RENDER_ENABLE_STATE_WORDS] = {NVN_RENDER_ENABLE_FORM_VALUE, (uint32_t)c->x[1], 0, 0};
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb) command_state_record(cb, c->x[0], name, NVN_STATE_RENDER_ENABLE, words, NVN_RENDER_ENABLE_STATE_WORDS);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_set_render_enable_conditional(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferSetRenderEnableConditional";
+    uint32_t condition = (uint32_t)c->x[1];
+    uint64_t sync = c->x[2];
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb) {
+        if (condition >= NVN_RENDER_ENABLE_CONDITION_COUNT) {
+            LOG_LIMIT(1, "nvn-native: %s condition=%u is a logged no-op: the library writes nothing\n", name,
+                      condition);
+        } else {
+            uint32_t words[NVN_RENDER_ENABLE_STATE_WORDS] = {NVN_RENDER_ENABLE_FORM_CONDITIONAL, condition,
+                                                             (uint32_t)(sync >> 32), (uint32_t)sync};
+            command_state_record(cb, c->x[0], name, NVN_STATE_RENDER_ENABLE, words, NVN_RENDER_ENABLE_STATE_WORDS);
+        }
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_set_viewport_swizzles(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferSetViewportSwizzles";
+    int32_t count = (int32_t)c->x[2];
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    if (cb) {
+        if (count < 0) {
+            command_refused(c, name, "the entry count is negative");
+        } else if (!count) {
+            LOG_LIMIT(1, "nvn-native: %s with no entries is a logged no-op\n", name);
+        } else if (!native_guest_readable(c->x[3], (u64)count * NVN_VIEWPORT_SWIZZLE_ENTRY_BYTES)) {
+            command_refused(c, name, "the entry array is unreadable");
+        } else {
+            int identity = 1;
+            for (int32_t i = 0; i < count && identity; i++) {
+                uint32_t entry[4];
+                for (uint32_t k = 0; k < 4; k++)
+                    entry[k] = gr32(c->x[3] + (u64)i * NVN_VIEWPORT_SWIZZLE_ENTRY_BYTES + (u64)k * 4u);
+                uint32_t word = nvn_viewport_swizzle_word(entry);
+                identity = nvn_viewport_swizzles_identity(&word, 1);
+            }
+            if (identity) {
+                LOG_LIMIT(1, "nvn-native: %s entries are all the identity, a logged no-op\n", name);
+            } else {
+                command_refused(c, name, "an entry is not the identity");
+            }
+        }
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_set_conservative_raster_enable(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferSetConservativeRasterEnable";
+    pm_lock(&objs_lock);
+    if (command_buffer(c->x[0], name)) {
+        if ((c->x[1] & 0xFFu) != 0)
+            command_refused(c, name, "the host has no conservative rasterization");
+        else
+            LOG_LIMIT(1, "nvn-native: %s is a logged no-op: the host has no conservative rasterization, which is "
+                         "already disabled\n", name);
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_set_conservative_raster_dilate(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferSetConservativeRasterDilate";
+    uint32_t bits = SNX_VS(c->v[0], 0);
+    float dilate;
+    memcpy(&dilate, &bits, sizeof dilate);
+    pm_lock(&objs_lock);
+    if (command_buffer(c->x[0], name)) {
+        if (nvn_conservative_raster_dilate_level(dilate) != 0)
+            command_refused(c, name, "the host has no conservative rasterization");
+        else
+            LOG_LIMIT(1, "nvn-native: %s is a logged no-op: the host has no conservative rasterization, and the "
+                         "level is 0\n", name);
+    }
+    pm_unlock(&objs_lock);
+}
 static void h_command_buffer_reset_counter(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnCommandBufferResetCounter";
@@ -4628,7 +4870,8 @@ static int replay_host_bind_state(void* ctx, const NvnOpBindState* op) {
     return 1;
 }
 static const char* const replay_bind_group[NVN_STATE_COUNT] = {
-    "color", "depth stencil", "blend", "polygon", "multisample", "channel mask"};
+    "color", "depth stencil", "blend", "polygon", "multisample", "channel mask",
+    "patch size", "inner tessellation", "outer tessellation", "primitive restart", "render enable"};
 /* One refusal line: the group, stage, slot and first builder input word. The data stays for a later bind. */
 static void replay_bind_refuse(NvnNativeReplayHost* host, const char* group, int32_t stage, int32_t slot,
                                uint32_t word) {
@@ -4668,6 +4911,15 @@ static void replay_bind_send_state(NvnNativeReplayHost* host, uint32_t kind) {
     case NVN_STATE_DEPTH_STENCIL: count = nvn_bind_depth_stencil_words(w[0], w[1], out); break;
     case NVN_STATE_POLYGON: count = nvn_bind_polygon_words(w[0], out); break;
     case NVN_STATE_BLEND: count = nvn_bind_blend_words(w[0], w[1], out); break;
+    case NVN_STATE_PATCH_SIZE: count = nvn_patch_size_words(w[0], out); break;
+    case NVN_STATE_INNER_TESSELLATION: count = nvn_inner_tessellation_levels_words(w, out); break;
+    case NVN_STATE_OUTER_TESSELLATION: count = nvn_outer_tessellation_levels_words(w, out); break;
+    case NVN_STATE_PRIMITIVE_RESTART: count = nvn_primitive_restart_words(w[0], w[1], out); break;
+    case NVN_STATE_RENDER_ENABLE:
+        count = w[0] == NVN_RENDER_ENABLE_FORM_VALUE
+                    ? nvn_render_enable_words(w[1], out)
+                    : nvn_render_enable_conditional_words(w[1], ((uint64_t)w[2] << 32) | w[3], out);
+        break;
     default: return;
     }
     if (!count || !replay_bind_send(host, out, count))
@@ -4786,6 +5038,11 @@ static void replay_bind_send_all(NvnNativeReplayHost* host) {
     replay_bind_send_state(host, NVN_STATE_DEPTH_STENCIL);
     replay_bind_send_state(host, NVN_STATE_POLYGON);
     replay_bind_send_state(host, NVN_STATE_BLEND);
+    replay_bind_send_state(host, NVN_STATE_PATCH_SIZE);
+    replay_bind_send_state(host, NVN_STATE_INNER_TESSELLATION);
+    replay_bind_send_state(host, NVN_STATE_OUTER_TESSELLATION);
+    replay_bind_send_state(host, NVN_STATE_PRIMITIVE_RESTART);
+    replay_bind_send_state(host, NVN_STATE_RENDER_ENABLE);
     replay_bind_send_vertex_attrib(host);
     replay_bind_send_vertex_stream(host);
     replay_bind_send_vertex_buffers(host);
@@ -6724,6 +6981,20 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferSetRenderTargets", h_command_buffer_set_render_targets},
     {"nvnCommandBufferSetViewports", h_command_buffer_set_viewports},
     {"nvnCommandBufferSetScissors", h_command_buffer_set_scissors},
+    {"nvnCommandBufferSetScissor", h_command_buffer_set_scissor},
+    {"nvnCommandBufferSetViewport", h_command_buffer_set_viewport},
+    {"nvnCommandBufferSetViewportSwizzles", h_command_buffer_set_viewport_swizzles},
+    {"nvnCommandBufferSetSampleMask", h_command_buffer_set_sample_mask},
+    {"nvnCommandBufferSetConservativeRasterEnable", h_command_buffer_set_conservative_raster_enable},
+    {"nvnCommandBufferSetConservativeRasterDilate", h_command_buffer_set_conservative_raster_dilate},
+    {"nvnCommandBufferSetSubpixelPrecisionBias", h_command_buffer_set_subpixel_precision_bias},
+    {"nvnCommandBufferSetRenderEnable", h_command_buffer_set_render_enable},
+    {"nvnCommandBufferSetRenderEnableConditional", h_command_buffer_set_render_enable_conditional},
+    {"nvnCommandBufferSaveZCullData", h_command_buffer_save_zcull_data},
+    {"nvnCommandBufferRestoreZCullData", h_command_buffer_restore_zcull_data},
+    {"nvnCommandBufferSetStencilCullCriteria", h_command_buffer_set_stencil_cull_criteria},
+    {"nvnCommandBufferSetColorReductionEnable", h_command_buffer_set_color_reduction_enable},
+    {"nvnCommandBufferSetColorReductionThresholds", h_command_buffer_set_color_reduction_thresholds},
     {"nvnCommandBufferClearColor", h_command_buffer_clear_color},
     {"nvnCommandBufferClearColori", h_command_buffer_clear_colori},
     {"nvnCommandBufferClearColorui", h_command_buffer_clear_colorui},
@@ -6767,6 +7038,19 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferResetCounter", h_command_buffer_reset_counter},
     {"nvnCommandBufferBeginTransformFeedback", h_command_buffer_begin_transform_feedback},
     {"nvnCommandBufferEndTransformFeedback", h_command_buffer_end_transform_feedback},
+    {"nvnCommandBufferPauseTransformFeedback", h_command_buffer_pause_transform_feedback},
+    {"nvnCommandBufferResumeTransformFeedback", h_command_buffer_resume_transform_feedback},
+    {"nvnCommandBufferDrawArraysIndirect", h_command_buffer_draw_arrays_indirect},
+    {"nvnCommandBufferDrawElementsIndirect", h_command_buffer_draw_elements_indirect},
+    {"nvnCommandBufferMultiDrawArraysIndirectCount", h_command_buffer_multi_draw_arrays_indirect_count},
+    {"nvnCommandBufferMultiDrawElementsIndirectCount", h_command_buffer_multi_draw_elements_indirect_count},
+    {"nvnCommandBufferDispatchComputeIndirect", h_command_buffer_dispatch_compute_indirect},
+    {"nvnCommandBufferDrawTexture", h_command_buffer_draw_texture},
+    {"nvnCommandBufferDrawTransformFeedback", h_command_buffer_draw_transform_feedback},
+    {"nvnCommandBufferSetPatchSize", h_command_buffer_set_patch_size},
+    {"nvnCommandBufferSetInnerTessellationLevels", h_command_buffer_set_inner_tessellation_levels},
+    {"nvnCommandBufferSetOuterTessellationLevels", h_command_buffer_set_outer_tessellation_levels},
+    {"nvnCommandBufferSetPrimitiveRestart", h_command_buffer_set_primitive_restart},
     {"nvnCommandBufferBindImage", h_command_buffer_bind_image},
     {"nvnCommandBufferBindImages", h_command_buffer_bind_images},
     {NULL, NULL},
