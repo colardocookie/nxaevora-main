@@ -743,7 +743,9 @@ functions that no run reached stay `implemented` plus `unit`, `selftest` or `exe
   handlers and 249 missing-function handlers, and every one of the 242 functions of `nvn-calls.md` has a host handler.
   The trace of the argument values is in `gpu/nvn_enum_trace.c` (2026-11-10): with `nvn_trace=1`, each new value of an
   enum or flag register of 63 observed functions gives one line `nvn-enum: <function> w<N>=<hex>`, at most 64 for each
-  function. Not yet read from a game run.
+  function. Run 2 (2026-11-10, update program to the title, DrawElements masks fixed to w1 and w2) logged 277 distinct values
+  of all 63 functions, the same set as run 1 except DrawElements. The three DrawElements functions use only mode 4 (triangles)
+  and index type 1. Each value of the run is now the observed scope of its function for the stub and refusal decisions of U2 to U5.
 - 4-u2: the reading of the library for the 281 functions, in groups (events and fences, copies, transform feedback, tessellation
   and raster extras, the rest), one commit for each group, with the unit tests and the cases that the selftest takes.
 - 4-u3: the selftest cases for the rest of the functions that a test can make, by group, and the execution test for events and

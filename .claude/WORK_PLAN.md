@@ -65,7 +65,8 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
   Current step: enum trace (4-u1), step (d) fix. Step (c) and run 1: `OLD-WORK_PLAN.md`, last section.
-    Fix DONE: the DrawElements masks are 0x06, test row added, `ctest` and mutant checked, exe copied. NOW: run 2 by the user (`nvn_trace=1`
+    Fix DONE. Run 2 DONE (`analysis/enum-run2.txt`, result in `docs/nvn-design.md` 4-u1). NOW: the user sets `nvn_trace=0`,
+    then U2 step (a). Old text: run 2 by the user (`nvn_trace=1`
     is still set in the `.ini`), read the `nvn-enum:` lines, compare with `analysis/enum-run1.txt`, write the values found in
     `docs/nvn-design.md` (4-u1), and ask the user to set `nvn_trace=0`. Then U2 step (a).
   - Rows near U1 that stay in other groups: EventGetMemoryPool, EventGetMemoryOffset, EventGetValue (U2). CommandBuffer
