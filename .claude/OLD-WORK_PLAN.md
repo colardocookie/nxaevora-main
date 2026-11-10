@@ -2233,3 +2233,12 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   `de8833a` entries 1 and 2 keep the count. Size = `+0xc8 * blocks + +0xcc + +0xd0`.
 - Kind table `de7f0b1`: kinds 2b, 08, 52, 87 have bit 0 set and second byte 2a, 01, 46, 7b (the w3=0 kinds). cc/e0/cd give fe.
 - Decisions of the user: flags bit 7 set gives a log line and a refusal (no info path). Device +0x1b1c: analyze again.
+
+## Task (u) U1 step (b2) device +0x1b1c found (2026-11-10, moved from WORK_PLAN.md)
+
+- Brief `reports/brief-explorer-devwords3.md`, game explorer (opencode), report `reports/explorer-devwords3-1.md`. Commit
+  `Record the U1 step (b2) device +0x1b1c store`.
+- Checked: the device constructor `d8310a0` writes 1 at `d831cb4` (`strb w8,[x20,#0x124]`, x20 = device+0x19f8 from
+  `d831150`) after the display context is made. `d831cc8` writes 0 only if device+0x1a00 has bit 1 clear and bit 2 set.
+- Not checked: device+0x1a00 comes from the NvOs config value "0x9abdc5" (`d835784` at `d831608`). The selftest read 1, so
+  the value is most likely 0. The selftest reads guest memory (`nvn_selftest.c:209`).
