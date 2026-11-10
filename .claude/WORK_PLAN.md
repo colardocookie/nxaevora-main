@@ -62,9 +62,10 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U3 step (b). Write the brief of the handler writer (or code writer) for the accepted tables
-    `reports/analyst-u3-A-1.md` and `analyst-u3-B-1.md`. Read them, not the old plan. The open decisions for the brief
-    are in `OLD-WORK_PLAN.md`, section "U3 copies, clears, texel IO, step (a)". Show them to the user first.
+  Current step: U3 step (b2). Write the design of the 7 open items in `docs/nvn-design.md` ("Unobserved functions")
+    from `reports/explorer-u3-A-1.md` and `explorer-u3-B-1.md` (checked), then show it to the user. User decision: no
+    refusal, a sure design for each item. Then (b3): the writer brief for the easy rows (`analyst-u3-A-1.md`, `-B-1.md`)
+    and the designed rows. Record: `OLD-WORK_PLAN.md`, section "U3 open items, step (b1)".
     U2 is done (`OLD-WORK_PLAN.md`, last sections). Its exectest cases come in 4-u3.
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
   - Rows near U1 that stay in other groups: CommandBuffer Get/SetCopyRowStride and Get/SetCopyImageStride (U3, copies).

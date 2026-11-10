@@ -2368,3 +2368,25 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   false and log), B2T/T2B flip bits and bit1, TiledDownsample (device+0x9AC..+0x9B8 not decoded), ResolveDepthBuffer (no
   Vulkan depth resolve), Discard gate device+0xA8 (writer not found), UpdateUniformBuffer (payload over 768 B), CopyCommands
   (deep copy, or NVN_OP_CALL with a fence assumption).
+
+## U3 open items, step (b1) (2026-11-10, moved from WORK_PLAN.md)
+
+- Decision of the user: no refusal for the 7 open items (MapVirtual, B2T/T2B flags, TiledDownsample, ResolveDepthBuffer,
+  Discard gate, UpdateUniformBuffer over 768 B, CopyCommands). Make a sure design for each one.
+- Two game explorers: briefs `reports/brief-explorer-u3-common.md`, `-A.md`, `-B.md`. Reports `explorer-u3-A-1.md`,
+  `explorer-u3-B-1.md`. Checked in the disassembly: B2T route bit1 (d82b53c), MIRROR_Y (d82b7e8), device+0xA8 = 0
+  (writer d835a2c, gate d8564d0), cb+0x70 bit4 = device+0x1A00 (d823d24), PipeNop 0x68B (d84ca10).
+- No `main` caller for any of the 7. Only CallCommands is called (aab1a74).
+- Facts for the design:
+  - Copy flags: 0x1 LINEAR_FILTER (not used here), 0x2 ENGINE_2D (B2T only, 2D engine, format change), 0x4 MIRROR_X (B2T 2D
+    route only), 0x8 MIRROR_Y and 0x10 MIRROR_Z (both routes, negative row or image stride). Strides cb+0x88/+0x8C replace
+    the tight strides when not 0.
+  - TiledDownsample: device +0x9AC/+0x9B0 = program 1 offset/register count, +0x9B4/+0x9B8 = program 5. No writer in sdk
+    (value 0). Driver program pass with macro 0xE1E. Box 2x2 filter is a guess.
+  - ResolveDepthBuffer: method 0x47F ResolveDepthValues, an in-place depth compression resolve, not an MSAA resolve.
+  - MapVirtual: the game makes no pool with flag 0x200. The library returns false for a non-virtual pool.
+  - Discard: method 0x3DE DiscardRenderTarget, contents become undefined. Gate device+0xA8 is always 0.
+  - UpdateUniformBuffer: data copied into the stream at record time, ordered with the draws. Bytes 1..3 of a tail drop.
+  - CopyCommands: copies the word blocks that the source owns (record byte+0x14 bit0), the rest stays a reference.
+- Trap: a `for` loop with a failed `grep` launched both agents, then a third. Parse the
+  launch JSON with spaces after the colon (`"handle": "..."`).
