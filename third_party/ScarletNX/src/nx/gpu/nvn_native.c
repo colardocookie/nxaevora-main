@@ -611,6 +611,8 @@ static QueueRec* queue_rec(u64 addr, const char* operation) {
    Finalize (nvn_gpu_map_range), so the renderer reads the pool by GPU address. */
 typedef struct {
     uint64_t device, storage, size, gpu_address;
+    /* The block linear range of a normal pool: a second range over the same storage. 0 for a virtual pool. */
+    uint64_t block_linear_address;
     uint32_t flags;
     /* A virtual pool owns one entry for each 64 KiB page: the CPU address that the page maps, 0 unmapped.
        A normal pool has no table (page_cpu NULL, page_count 0). */
@@ -647,6 +649,10 @@ static NvnMemoryPoolBuilder* memory_pool_builder(u64 addr) {
 }
 static MemoryPoolRec* memory_pool_rec(u64 addr) {
     return rec_get(addr, NVN_OBJ_MEMORY_POOL, sizeof(MemoryPoolRec));
+}
+/* The GPU bytes of a pool: one range, or two for a normal pool (the pitch and block linear ranges). */
+static uint64_t memory_pool_va_size(uint32_t flags, uint64_t size) {
+    return (flags & NVN_POOL_VIRTUAL) ? size : size * 2u;
 }
 static void h_memory_pool_builder_set_defaults(CPU* c, u64 entry) {
     (void)entry;
@@ -725,9 +731,18 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
         pm_unlock(&objs_lock);
         return;
     }
+    if (!(flags & NVN_POOL_VIRTUAL) && b.size > UINT64_MAX / 2u) {
+        LOG("nvn-native: MemoryPoolInitialize pool=%llx size=%llx overflows two GPU ranges\n",
+            (unsigned long long)c->x[0], (unsigned long long)b.size);
+        nvn_objtab_remove(&objs, c->x[0]);
+        c->x[0] = 0;
+        pm_unlock(&objs_lock);
+        return;
+    }
     /* MapVirtual maps whole 64 KiB pages, so a virtual range starts on one. */
     const uint64_t gpu_page = (flags & NVN_POOL_VIRTUAL) ? NVN_POOL_VIRTUAL_PAGE_SIZE : NVN_POOL_PAGE_SIZE;
-    const uint64_t address = nvn_gpu_va_alloc(b.size, gpu_page);
+    const uint64_t va_size = memory_pool_va_size(flags, b.size);
+    const uint64_t address = nvn_gpu_va_alloc(va_size, gpu_page);
     if (!address) {
         LOG("nvn-native: MemoryPoolInitialize pool=%llx size=%llx GPU address allocation failed\n",
             (unsigned long long)c->x[0], (unsigned long long)b.size);
@@ -744,7 +759,7 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
         if (!table) {
             LOG("nvn-native: MemoryPoolInitialize pool=%llx virtual page table of %u pages cannot be allocated\n",
                 (unsigned long long)c->x[0], pages);
-            nvn_gpu_va_free(address, b.size);
+            nvn_gpu_va_free(address, va_size);
             nvn_objtab_remove(&objs, c->x[0]);
             c->x[0] = 0;
             pm_unlock(&objs_lock);
@@ -757,18 +772,32 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
         pm_unlock(&objs_lock);
         return;
     }
+    /* A normal pool maps its storage at two ranges, the pitch range and the block linear range. The library maps a
+       third range for pool kinds with bit 7; the host does not. */
+    const uint64_t block_linear = address + b.size;
     if (!nvn_gpu_map_range(address, b.storage, b.size)) {
         LOG("nvn-native: MemoryPoolInitialize pool=%llx GPU range %llx size=%llx storage=%llx cannot be mapped\n",
             (unsigned long long)c->x[0], (unsigned long long)address, (unsigned long long)b.size,
             (unsigned long long)b.storage);
-        nvn_gpu_va_free(address, b.size);
+        nvn_gpu_va_free(address, va_size);
+        nvn_objtab_remove(&objs, c->x[0]);
+        c->x[0] = 0;
+        pm_unlock(&objs_lock);
+        return;
+    }
+    if (!nvn_gpu_map_range(block_linear, b.storage, b.size)) {
+        LOG("nvn-native: MemoryPoolInitialize pool=%llx block linear range %llx size=%llx storage=%llx cannot be mapped\n",
+            (unsigned long long)c->x[0], (unsigned long long)block_linear, (unsigned long long)b.size,
+            (unsigned long long)b.storage);
+        nvn_gpu_unmap_range(address, b.storage, b.size);
+        nvn_gpu_va_free(address, va_size);
         nvn_objtab_remove(&objs, c->x[0]);
         c->x[0] = 0;
         pm_unlock(&objs_lock);
         return;
     }
     *p = (MemoryPoolRec){.device = b.device, .storage = b.storage, .size = b.size,
-                         .gpu_address = address, .flags = flags};
+                         .gpu_address = address, .block_linear_address = block_linear, .flags = flags};
     c->x[0] = 1;
     pm_unlock(&objs_lock);
 }
@@ -788,8 +817,9 @@ static void h_memory_pool_finalize(CPU* c, u64 entry) {
             free(p->page_cpu);
         } else {
             nvn_gpu_unmap_range(p->gpu_address, p->storage, p->size);
+            nvn_gpu_unmap_range(p->block_linear_address, p->storage, p->size);
         }
-        nvn_gpu_va_free(p->gpu_address, p->size);
+        nvn_gpu_va_free(p->gpu_address, memory_pool_va_size(p->flags, p->size));
         nvn_objtab_remove(&objs, c->x[0]);
     }
     pm_unlock(&objs_lock);
@@ -2592,6 +2622,13 @@ static void h_texture_view_get_target(CPU* c, u64 entry) {
     pm_unlock(&objs_lock);
 }
 
+/* The GPU address of a texture in its pool: the pitch range for a linear or BUFFER texture, else the block linear
+   range. A virtual pool has no block linear range, so it keeps range 0 (d83f418). */
+static uint64_t texture_pool_base(const MemoryPoolRec* pool, const NvnTextureBuilder* b) {
+    const int pitch = nvn_texture_uses_pitch_range(b->flags, b->target);
+    const uint64_t base = (pitch || !pool->block_linear_address) ? pool->gpu_address : pool->block_linear_address;
+    return base + b->offset;
+}
 static int texture_initialize(TextureRec* t, const NvnTextureBuilder* b) {
     if (b->gl_name) {
         LOG("nvn-native: texture import not supported\n");
@@ -2624,7 +2661,7 @@ static int texture_initialize(TextureRec* t, const NvnTextureBuilder* b) {
             (unsigned long long)t->layout.size);
         return 0;
     }
-    t->address = pool->gpu_address + b->offset;
+    t->address = texture_pool_base(pool, b);
     if (nvn_trace_active())
         LOG("nvn-native: texture format=%x flags=%x target=%u width=%u height=%u levels=%u size=%llx\n",
             b->format, b->flags, b->target, b->width, b->height, b->levels, (unsigned long long)t->layout.size);

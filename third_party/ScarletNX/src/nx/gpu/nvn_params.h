@@ -434,6 +434,8 @@ NvnPoolResult nvn_memory_pool_params(const NvnMemoryPoolBuilder* b, uint64_t pag
    descriptor range [pool_offset, pool_offset + count * entry_bytes) does not fit in the memory pool. */
 /* 1 when [offset, offset + size) lies inside a memory pool of pool_size bytes, without overflow. */
 int nvn_pool_range_fits(uint64_t pool_size, uint64_t offset, uint64_t size);
+/* 1 when a texture gets the pitch range of its pool, 0 for the block linear range (d83f418). */
+int nvn_texture_uses_pitch_range(uint32_t texture_flags, uint32_t target);
 typedef enum { NVN_BUFFER_OK = 0, NVN_BUFFER_PHYSICAL_POOL, NVN_BUFFER_OUT_OF_POOL } NvnBufferResult;
 /* The library fails BufferInitialize only for a physical pool (flag 0x100). The range check is the host's: the library
    has none, and the replay reads the buffer's bytes from the pool. */

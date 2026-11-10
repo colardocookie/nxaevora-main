@@ -1042,6 +1042,14 @@ static void test_pool_range_fits(void) {
     CHECK(!nvn_pool_range_fits(0x1000, 0x800, UINT64_MAX));
 }
 
+static void test_texture_uses_pitch_range(void) {
+    CHECK(!nvn_texture_uses_pitch_range(0, NVN_TEXTURE_TARGET_2D));
+    CHECK(nvn_texture_uses_pitch_range(NVN_TEXTURE_FLAG_LINEAR, NVN_TEXTURE_TARGET_2D));
+    CHECK(nvn_texture_uses_pitch_range(NVN_TEXTURE_FLAG_LINEAR_RENDER_TARGET, NVN_TEXTURE_TARGET_2D));
+    CHECK(!nvn_texture_uses_pitch_range(NVN_TEXTURE_FLAG_COMPRESS, NVN_TEXTURE_TARGET_2D));
+    CHECK(nvn_texture_uses_pitch_range(0, NVN_TEXTURE_TARGET_BUFFER));
+}
+
 static void test_buffer_check(void) {
     CHECK(nvn_buffer_check(0x21, 0x1000, 0, 0x1000) == NVN_BUFFER_OK);
     CHECK(nvn_buffer_check(0x21, 0x1000, 0x800, 0) == NVN_BUFFER_OK);
@@ -3330,6 +3338,7 @@ int main(int argc, char** argv) {
     test_map_virtual_batches();
     test_descriptor_offset();
     test_pool_range_fits();
+    test_texture_uses_pitch_range();
     test_buffer_check();
     test_texture_layout_wide_size();
     test_rt_format_word();

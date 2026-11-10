@@ -540,6 +540,10 @@ int nvn_pool_range_fits(uint64_t pool_size, uint64_t offset, uint64_t size) {
     return offset <= pool_size && size <= pool_size - offset;
 }
 
+int nvn_texture_uses_pitch_range(uint32_t texture_flags, uint32_t target) {
+    return (texture_flags & NVN_TEXTURE_LINEAR_FLAGS) != 0 || target == NVN_TEXTURE_TARGET_BUFFER; /* d83f418 */
+}
+
 NvnBufferResult nvn_buffer_check(uint32_t pool_flags, uint64_t pool_size, uint64_t offset, uint64_t size) {
     if (pool_flags & NVN_POOL_PHYSICAL) return NVN_BUFFER_PHYSICAL_POOL;
     return nvn_pool_range_fits(pool_size, offset, size) ? NVN_BUFFER_OK : NVN_BUFFER_OUT_OF_POOL;

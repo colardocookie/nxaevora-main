@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the build of `8a440fd` (md5 a78c5b74), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the build of the pool range commit after `0f7cb93` (md5 9fc85bdc), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=1`, `nvn_native=0`, `nvn_selftest=1` (the selftest run of 2026-11-10). After each build: `tasklist` shows no game, then copy the exe.
@@ -53,10 +53,13 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
     Run 21:56: 247 cases, 2 failed: `nvnTexture block fmt=0x25/0x26 32x32` R, `nvnTextureGetTextureAddress` relative to
     the pool buffer address: library 0x14000 / 0x18000, host 0x4000 / 0x8000 (texture at pool offset 0x4000 / 0x8000).
     The difference is 0x10000 = the pool size (`RES_TEX_POOL_BYTES`, `nvn_selftest_res.c`). Linear textures pass.
-    Guess (not checked): the library gives a block-linear texture an address in a second GPU view of the pool, after
-    the pitch view. Next action: brief for the game explorer: nvnTextureGetTextureAddress, the texture initialize and
-    the pool initialize (how many GPU ranges a pool maps, of which kind and size). Then decide the host fix with the
-    user, then fill the checks column.
+    Cause (explorer `reports/explorer-u3-2f-1.md`, checked d83d920, d83f474..d83f4b4, d83fa00..d83fa7c, d83d650): a
+    non-virtual pool (d83f9ac) maps the same storage in range 0 (kind 0, base pool+0x40, GetBufferAddress) and range 1
+    (device kind d950f80, base +0x50), each of the rounded pool size. Range 2 (+0x60) only when pool kind bit 7. A linear
+    texture (flags&0x50 or target 0xa) gets +0x40 base, block-linear gets +0x50 base (d83f418). Virtual pool: one range.
+    Fix committed (writer patch u3-2f-1): a normal pool allocates one GPU range of 2*size, range 0 (pitch) and range 1
+    (block-linear) map the same storage. No third range. Selftest run 23:48: 247 cases, 0 failed.
+    Next action: fill the checks column of `docs/nvn-coverage.md` for 4-u3-2, then 4-u3-3.
     Then: 4-u3-3 (S/Y harness, mutation, command buffer), 4-u3-4 (exectest). The `unit` scope is not in the checks column yet.
   - Open for 4-u4: the design asks for no `stub-log` row, but `nvnDeviceGetProcAddress` stays `stub-log` by decision (the
     game resolves names through d832940, which the hook covers). Decide the row (a handler that calls the resolver, or an
