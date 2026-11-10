@@ -48,10 +48,7 @@ Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
-  4-u4. `docs/nvn-coverage.md`: 119 rows of G10 are `stub-log`. Groups (one commit each), in this order:
-  - U3 copies, clears, texel IO (about 25): CopyBufferTo*, CopyTextureToBuffer, ClearBuffer, ClearColori/ui, Downsample*,
-    TiledDownsample*, ResolveDepthBuffer, Discard*, Read/WriteTexels*, Flush/InvalidateMappedRange, MapVirtual,
-    UpdateUniformBuffer, CopyCommands.
+  4-u4. `docs/nvn-coverage.md`: 88 rows of G10 are `stub-log` (after U3). Groups left, in this order:
   - U4 draw extras (about 40): indirect draws, DrawTransformFeedback, Pause/ResumeTransformFeedback, tessellation, conservative
     raster, SetScissor, SetViewport, PrimitiveRestart, SampleMask, ViewportSwizzles, RenderEnable, ZCull, separate sampler and
     texture binds, BindTextures, subroutines, scratch memory, coverage modulation, tiled cache, color reduction.
@@ -62,9 +59,9 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U4 step (a), the library analyst tables of the draw extras. U3 is done (3 patches, records in
-    `OLD-WORK_PLAN.md`, "U3 patch 3"). Templates: `reports/brief-analyst-u3-common.md`, `brief-analyst-u3-A.md`.
-    U2 and U3 exectest cases come in 4-u3.
+  Current step: U4 step (a), the library analyst tables of the draw extras. Read the U4 rows in `nvn-coverage.md`, split
+    them into 2 or 3 briefs of 10 to 15 functions, launch at most 2 analysts. Templates: `reports/brief-analyst-u3-common.md`,
+    `brief-analyst-u3-A.md`. U3 is done (records in `OLD-WORK_PLAN.md`, "U3 ..."). U2 and U3 exectest cases come in 4-u3.
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
   - Rows near U1 that stay in other groups: CommandBuffer command and control memory getters, memory callback getters (U5).
     ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).
@@ -84,6 +81,7 @@ Notes:
   `ctest`): `OLD-WORK_PLAN.md`, section "NVN stage 3, 3d steps 3 to 5" (line ~1008). Remove the worktree after the patch.
 - Edit CRLF files with the Edit tool. `sed -i` in Git Bash changes CRLF to LF (restore with `unix2dos`, check with `file`).
 - Wait for an agent with a background loop on the report or patch file (stable for 60 seconds). Read every patch fully.
+- `gui_sdl_events` can time out in the parallel `ctest` run. Run it alone before you call it a fault.
 - `tracked_material` fails on two SMAA `.dds` files (not caused by this work). Tell the user; the fix is a list entry or a moved
   file, and the user decides.
 - After each fix of the runtime, ask the user for one run (`nvn_native=1`, update program, wait 10 seconds, close), then read the log

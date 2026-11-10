@@ -2433,3 +2433,9 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 - Caller fix: the virtual range starts on a 64 KiB page (the writer used 4 KiB). 3 mutants failed. `ctest` passes except
   `tracked_material` (`gui_sdl_events` timed out in the parallel run and passes alone).
 - Not handled: a physical pool finalized under a mapping. Not verified in the game: no `main` caller.
+
+## U3 group scope (2026-11-10, moved from WORK_PLAN.md)
+
+- U3 copies, clears, texel IO (about 25): CopyBufferTo*, CopyTextureToBuffer, ClearBuffer, ClearColori/ui, Downsample*,
+  TiledDownsample*, ResolveDepthBuffer, Discard*, Read/WriteTexels*, Flush/InvalidateMappedRange, MapVirtual,
+  UpdateUniformBuffer, CopyCommands. Done in 3 patches (c4f60c5, 22b4ad6, the MapVirtual commit). 88 rows of G10 stay stub-log.
