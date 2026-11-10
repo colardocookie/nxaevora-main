@@ -33,9 +33,9 @@ static PMutex objs_lock = PMUTEX_INIT;
 /* The frame job tells the guest waits that it freed an image and updated the syncs. */
 static PCond frame_done_cv;
 static NvnListStore lists; /* the command lists of the game, guarded by objs_lock */
-/* The frame line counters (3c decision 12). The three guarded by objs_lock are read and written with it; the other two
+/* The frame line counters (3c decision 12). The four guarded by objs_lock are read and written with it; the other two
    are atomic because missing_handler and the recorder run without it. */
-static uint32_t frame_acquires, frame_submitted_lists, frame_skipped_lists;
+static uint32_t frame_acquires, frame_submitted_lists, frame_skipped_lists, frame_unmet_event_waits;
 static uint32_t frames_in_flight; /* frame jobs that a present posted and frame_finish has not ended */
 static uint32_t missing_calls, dropped_ops;
 
@@ -3902,6 +3902,80 @@ static void h_command_buffer_report_counter(CPU* c, u64 entry) {
     }
     pm_unlock(&objs_lock);
 }
+/* ReportValue(cb, value, address): any value and address are accepted, as in the library. */
+static void h_command_buffer_report_value(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferReportValue";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpReportValue op = {(uint32_t)c->x[1], 0, c->x[2]};
+    if (cb) command_record(cb, c->x[0], name, NVN_OP_REPORT_VALUE, &op, sizeof op);
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_signal_event(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferSignalEvent";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    /* (cb, event, mode, location, flags, value): the library reads location in w3, flags in w4, value in w5. */
+    NvnOpSignalEvent op = {c->x[1], 0, (uint32_t)c->x[2], (uint32_t)c->x[5], (uint32_t)c->x[3]};
+    if (!cb) {
+    } else if (!command_object(op.event, NVN_OBJ_EVENT, &op.generation)) {
+        command_dropped(cb, name, "unknown event", op.event);
+    } else {
+        command_record(cb, c->x[0], name, NVN_OP_SIGNAL_EVENT, &op, sizeof op);
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_wait_event(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferWaitEvent";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpWaitEvent op = {c->x[1], 0, (uint32_t)c->x[2], (uint32_t)c->x[3], 0};
+    if (!cb) {
+    } else if (!command_object(op.event, NVN_OBJ_EVENT, &op.generation)) {
+        command_dropped(cb, name, "unknown event", op.event);
+    } else {
+        command_record(cb, c->x[0], name, NVN_OP_WAIT_EVENT, &op, sizeof op);
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_fence_sync(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferFenceSync";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpFenceSync op = {c->x[1], 0, (uint32_t)c->x[2]};
+    if (!cb) {
+    } else if (!command_object(op.sync, NVN_OBJ_SYNC, &op.generation)) {
+        command_dropped(cb, name, "unknown sync", op.sync);
+    } else if (op.condition != NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE) {
+        cb->dropped_ops++;
+        __atomic_fetch_add(&dropped_ops, 1, __ATOMIC_RELAXED);
+        COMMAND_LOG("nvn-native: %s condition=%u is not supported\n", name, op.condition);
+    } else {
+        if (c->x[3])
+            LOG_LIMIT(8, "nvn-native: %s flags=%llx (bit 0 FLUSH_FOR_CPU is done by the host)\n",
+                      name, (unsigned long long)c->x[3]);
+        command_record(cb, c->x[0], name, NVN_OP_FENCE_SYNC, &op, sizeof op);
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_wait_sync(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferWaitSync";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    NvnOpWaitSync op = {c->x[1], 0, 0};
+    if (!cb) {
+    } else if (!command_object(op.sync, NVN_OBJ_SYNC, &op.generation)) {
+        command_dropped(cb, name, "unknown sync", op.sync);
+    } else {
+        command_record(cb, c->x[0], name, NVN_OP_WAIT_SYNC, &op, sizeof op);
+    }
+    pm_unlock(&objs_lock);
+}
 /* Begin and End record the control address. The words are built at replay (nvn_xfb_words). */
 static void command_xfb(CPU* c, const char* name, NvnXfbKind kind) {
     pm_lock(&objs_lock);
@@ -4618,6 +4692,61 @@ static int replay_host_report_counter(NvnNativeReplayHost* host, const NvnOpRepo
     return 1;
 }
 
+static int replay_host_report_value(NvnNativeReplayHost* host, const NvnOpReportValue* op) {
+    uint32_t words[NVN_REPORT_VALUE_WORDS_MAX];
+    uint32_t count = nvn_report_value_words(op->value, op->address, words);
+    if (!count || !replay_bind_send(host, words, count)) {
+        replay_bind_refuse(host, "report value", -1, -1, op->value);
+        return 1;
+    }
+    return 1;
+}
+
+/* The value word of a live event, or 0 after a log line. Caller holds objs_lock. */
+static u64 replay_event_word(u64 event, uint32_t generation, const char* operation) {
+    NvnObj* o = nvn_objtab_valid(&objs, event, generation) ? nvn_objtab_find(&objs, event) : NULL;
+    if (!o || o->kind != NVN_OBJ_EVENT) {
+        LOG_LIMIT(REPLAY_LOG_LIMIT, "nvn-native: %s event=%llx generation=%u is gone\n", operation,
+                  (unsigned long long)event, generation);
+        return 0;
+    }
+    return event_value_address(o->data, operation, event);
+}
+
+/* SignalEvent: the host writes the CPU word. The location only names a stage in the library; the replay is serial. */
+static int replay_host_signal_event(NvnNativeReplayHost* host, const NvnOpSignalEvent* op) {
+    (void)host;
+    pm_lock(&objs_lock);
+    const u64 word = replay_event_word(op->event, op->generation, "nvnCommandBufferSignalEvent");
+    if (word) {
+        uint32_t* at = (uint32_t*)GP(word);
+        const uint32_t old = __atomic_load_n(at, __ATOMIC_ACQUIRE);
+        __atomic_store_n(at, nvn_event_signal_value(op->mode, old, op->value), __ATOMIC_RELEASE);
+    }
+    pm_unlock(&objs_lock);
+    return 1;
+}
+
+static int replay_host_wait_event(NvnNativeReplayHost* host, const NvnOpWaitEvent* op) {
+    (void)host;
+    pm_lock(&objs_lock);
+    const u64 word = replay_event_word(op->event, op->generation, "nvnCommandBufferWaitEvent");
+    if (word) {
+        const uint32_t value = __atomic_load_n((const uint32_t*)GP(word), __ATOMIC_ACQUIRE);
+        if (!nvn_event_wait_met(op->mode, value, op->value)) {
+            frame_unmet_event_waits++;
+            LOG_LIMIT(REPLAY_LOG_LIMIT,
+                      "nvn-native: nvnCommandBufferWaitEvent event=%llx mode=%u word=%08x value=%08x is not met, the "
+                      "replay goes on\n",
+                      (unsigned long long)op->event, op->mode, value, op->value);
+            /* The host has one GPU thread, so a wait for a later CPU or queue signal can never end, and the library
+               has no timeout. The frame line counts the misses. */
+        }
+    }
+    pm_unlock(&objs_lock);
+    return 1;
+}
+
 static int replay_host_bind_image(NvnNativeReplayHost* host, const NvnOpBindImage* op) {
     uint32_t words[NVN_BIND_IMAGE_WORDS_MAX];
     uint32_t count = nvn_bind_image_words(op->stage, op->first, op->count, op->handle,
@@ -4729,6 +4858,9 @@ static int replay_host_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
         host->last_report = *(const NvnOpReportCounter*)payload;
         return replay_host_report_counter(host, &host->last_report);
     }
+    if (code == NVN_OP_REPORT_VALUE) return replay_host_report_value(host, (const NvnOpReportValue*)payload);
+    if (code == NVN_OP_SIGNAL_EVENT) return replay_host_signal_event(host, (const NvnOpSignalEvent*)payload);
+    if (code == NVN_OP_WAIT_EVENT) return replay_host_wait_event(host, (const NvnOpWaitEvent*)payload);
     if (code == NVN_OP_BIND_IMAGE) {
         host->last_bind_image = *(const NvnOpBindImage*)payload;
         return replay_host_bind_image(host, &host->last_bind_image);
@@ -5221,6 +5353,7 @@ static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int sho
     uint32_t missing_delta = missing - last_missing_calls, dropped_delta = dropped - last_dropped_ops;
     pm_lock(&objs_lock);
     uint32_t submitted = frame_submitted_lists, skipped = frame_skipped_lists, acquires = frame_acquires;
+    uint32_t unmet_event_waits = frame_unmet_event_waits;
     uint32_t live = nvn_list_live(&lists);
     pm_unlock(&objs_lock);
     uint32_t gops = stats->replayed[NVN_OP_CLEAR_DEPTH_STENCIL] + stats->replayed[NVN_OP_CLEAR_TEXTURE] +
@@ -5237,19 +5370,19 @@ static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int sho
             LOG_LIMIT(NVN_FRAME_ABNORMAL_LIMIT,
                       "nvn-native: frame %u window=%llx index=%u lists=%u (live %u) ops=%u faults=%u methods=%u "
                       "draws=%u dispatches=%llu dispatch_refusals=%u vbinds=%u gops=%u dropped=%u missing=%u "
-                      "skipped_lists=%u acquires=%u fences=%u shown=%d\n",
+                      "skipped_lists=%u acquires=%u fences=%u unmet_event_waits=%u shown=%d\n",
                       frame_number, (unsigned long long)job->window, job->index, submitted, live, ops, stats->faults,
                       stats->methods, stats->replayed[NVN_OP_DRAW], (unsigned long long)dispatches, dispatch_refusals,
                       stats->replayed[NVN_OP_BIND_VERTEX_ATTRIB] + stats->replayed[NVN_OP_BIND_VERTEX_STREAM], gops,
-                      dropped_delta, missing_delta, skipped, acquires, fences, shown);
+                      dropped_delta, missing_delta, skipped, acquires, fences, unmet_event_waits, shown);
         else
             LOG("nvn-native: frame %u window=%llx index=%u lists=%u (live %u) ops=%u faults=%u methods=%u draws=%u "
                 "dispatches=%llu dispatch_refusals=%u vbinds=%u gops=%u dropped=%u missing=%u skipped_lists=%u "
-                "acquires=%u fences=%u shown=%d\n",
+                "acquires=%u fences=%u unmet_event_waits=%u shown=%d\n",
                 frame_number, (unsigned long long)job->window, job->index, submitted, live, ops, stats->faults,
                 stats->methods, stats->replayed[NVN_OP_DRAW], (unsigned long long)dispatches, dispatch_refusals,
                 stats->replayed[NVN_OP_BIND_VERTEX_ATTRIB] + stats->replayed[NVN_OP_BIND_VERTEX_STREAM], gops,
-                dropped_delta, missing_delta, skipped, acquires, fences, shown);
+                dropped_delta, missing_delta, skipped, acquires, fences, unmet_event_waits, shown);
     }
 }
 /* Replays the init words that the host built at QueueInitialize, before the frame's own lists. Subchannel 0 is the
@@ -5306,6 +5439,66 @@ static void frame_run(void* arg) {
     free(job);
 }
 
+/* Follows the fence, wait and CALL ops of one submitted list. A fence becomes a frame token, and its signal is at the
+   end of the frame, later than in the library: a waiter waits longer, never shorter. A wait only checks what the serial
+   order has reached. Called with objs_lock held, after the lists were added to the pending frame. */
+static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const NvnOpList* list, uint64_t list_handle,
+                            uint32_t depth) {
+    size_t pos = 0;
+    NvnOpHeader header;
+    const void* payload;
+    while (nvn_oplist_next(list, &pos, &header, &payload)) {
+        if (header.code == NVN_OP_FENCE_SYNC) {
+            const NvnOpFenceSync* op = payload;
+            NvnObj* so = nvn_objtab_valid(&objs, op->sync, op->generation) ? nvn_objtab_find(&objs, op->sync) : NULL;
+            if (!so || so->kind != NVN_OBJ_SYNC) {
+                LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx sync=%llx generation=%u is gone\n",
+                          name, (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                          (unsigned long long)op->sync, op->generation);
+            } else if (!nvn_frame_add_token(&q->pending, op->sync, op->generation)) {
+                LOG_LIMIT(QUEUE_LOG_LIMIT,
+                          "nvn-native: %s queue=%llx list=%llx sync=%llx does not fit in the pending frame\n", name,
+                          (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                          (unsigned long long)op->sync);
+            } else {
+                SyncRec* sync = so->data;
+                sync->fences++;
+                sync->state = NVN_SYNC_FENCED;
+            }
+        } else if (header.code == NVN_OP_WAIT_SYNC) {
+            const NvnOpWaitSync* op = payload;
+            NvnObj* so = nvn_objtab_valid(&objs, op->sync, op->generation) ? nvn_objtab_find(&objs, op->sync) : NULL;
+            const SyncRec* sync = so && so->kind == NVN_OBJ_SYNC ? so->data : NULL;
+            if (!sync) {
+                LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx sync=%llx generation=%u is gone\n",
+                          name, (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                          (unsigned long long)op->sync, op->generation);
+            } else if (sync->state == NVN_SYNC_UNSIGNALED) {
+                LOG_LIMIT(QUEUE_LOG_LIMIT,
+                          "nvn-native: %s queue=%llx list=%llx sync=%llx is not reached before the wait\n", name,
+                          (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                          (unsigned long long)op->sync);
+            }
+        } else if (header.code == NVN_OP_CALL) {
+            const NvnOpCall* op = payload;
+            if (depth >= NVN_CALL_DEPTH_MAX) {
+                LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx call=%llx is deeper than %u\n", name,
+                          (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                          (unsigned long long)op->handle, NVN_CALL_DEPTH_MAX);
+                continue;
+            }
+            const NvnOpList* target = nvn_list_find(&lists, op->handle);
+            if (!target) {
+                LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx call=%llx is not a live list\n", name,
+                          (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                          (unsigned long long)op->handle);
+                continue;
+            }
+            queue_scan_list(queue_addr, q, name, target, op->handle, depth + 1);
+        }
+    }
+}
+
 /* nvnQueueSubmitCommands(queue, count, handles): copies the handle array at once and adds the lists to the pending
    frame (decision 8). The game alternates two arrays and reuses them, so the copy is not optional. */
 static void h_queue_submit_commands(CPU* c, u64 entry) {
@@ -5336,8 +5529,10 @@ static void h_queue_submit_commands(CPU* c, u64 entry) {
     for (uint32_t i = 0; i < handle_count; i++) handles[i] = gr64(c->x[2] + (u64)i * 8);
     uint32_t skipped = 0;
     int result = nvn_frame_add_lists(&q->pending, &lists, handles, handle_count, &skipped);
-    free(handles);
-    if (result == NVN_FRAME_MEMORY) fatal("nvn-native: out of memory for the pending frame of a queue\n");
+    if (result == NVN_FRAME_MEMORY) {
+        free(handles);
+        fatal("nvn-native: out of memory for the pending frame of a queue\n");
+    }
     if (result == NVN_FRAME_LIMIT) {
         LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx count=%u does not fit in the pending frame\n",
                   name, (unsigned long long)c->x[0], handle_count);
@@ -5345,9 +5540,14 @@ static void h_queue_submit_commands(CPU* c, u64 entry) {
         if (skipped)
             LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx skipped %u handles that are not live lists\n",
                       name, (unsigned long long)c->x[0], skipped);
+        for (uint32_t i = 0; i < handle_count; i++) {
+            const NvnOpList* list = nvn_list_find(&lists, handles[i]);
+            if (list) queue_scan_list(c->x[0], q, name, list, handles[i], 0);
+        }
         frame_submitted_lists += handle_count - skipped;
         frame_skipped_lists += skipped;
     }
+    free(handles);
     pm_unlock(&objs_lock);
 }
 
@@ -5909,6 +6109,11 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferClearTextureui", h_command_buffer_clear_textureui},
     {"nvnCommandBufferCopyTextureToTexture", h_command_buffer_copy_texture_to_texture},
     {"nvnCommandBufferReportCounter", h_command_buffer_report_counter},
+    {"nvnCommandBufferReportValue", h_command_buffer_report_value},
+    {"nvnCommandBufferSignalEvent", h_command_buffer_signal_event},
+    {"nvnCommandBufferWaitEvent", h_command_buffer_wait_event},
+    {"nvnCommandBufferFenceSync", h_command_buffer_fence_sync},
+    {"nvnCommandBufferWaitSync", h_command_buffer_wait_sync},
     {"nvnCommandBufferResetCounter", h_command_buffer_reset_counter},
     {"nvnCommandBufferBeginTransformFeedback", h_command_buffer_begin_transform_feedback},
     {"nvnCommandBufferEndTransformFeedback", h_command_buffer_end_transform_feedback},

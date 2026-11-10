@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the U2 task 1 build (md5 878c4351), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the U2 task 2 build (md5 f0d4863f), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=0` (the user was asked to set it on 2026-11-10, check it), `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -64,18 +64,12 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U2 task 2 step (b). Write the brief of the code writer for the 5 command buffer functions: SignalEvent,
-    WaitEvent, ReportValue, FenceSync, WaitSync. Then launch it. Task 1 and step (a): `OLD-WORK_PLAN.md`, last section.
-    - Inputs: tables `reports/analyst-u2-A-1.md` (SignalEvent, WaitEvent, ReportValue) and `analyst-u2-B-1.md` (FenceSync,
-      WaitSync). Template: `reports/brief-writer-u2-1.md`. Host: `command_record` and the `NVN_OP_*` enum (`gpu/nvn_cmdlist.h`),
-      the replay (`replay_host_report_counter`, `nvn_native.c` ~4610), `h_queue_fence_sync`, `frame_finish` (tokens),
-      `EventRec` and `event_value_address` (task 1).
-    - Decisions to write (the caller decides, not the writer): SignalEvent replays a WRITE or ADD of the event word (the
-      location only names the pipeline stage, and the host replay is serial). ReportValue is a variant of the report counter
-      op that takes the value. WaitEvent has no timeout in the library, and the host has one GPU thread: decide between a
-      check at replay time with a log line and a refusal, and a wait on a condition that EventSignal broadcasts. CB FenceSync
-      and WaitSync are records 5/6 in the library and need new ops. Decide how a fence in a list becomes a frame token (for
-      example a scan at QueueSubmitCommands) and what a list reached only through NVN_OP_CALL does.
+  Current step: U3 step (a). Write the brief of the library analyst for the U3 functions (copies, clears, texel IO),
+    10 to 15 functions in one brief. Template: `reports/` analyst briefs of U2. U2 is done (task 1 `94754a7`, task 2: the
+    commit after it). U2 step (d) has no case now: the exectest cases of U2 come in 4-u3.
+    - U2 task 2 facts: the brief `reports/brief-writer-u2-2.md` (decisions 1 to 8). The writer took the SignalEvent
+      arguments wrong: the library reads location in w3, flags in w4, value in w5 (`analysis/u2-sig2.txt`), fixed by the
+      caller. 4 mutants (wait compare, replay dispatch, report value word) fail as expected.
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
   - Rows near U1 that stay in other groups: CommandBuffer Get/SetCopyRowStride and Get/SetCopyImageStride (U3, copies).
     CommandBuffer command and control memory getters, memory callback getters (U5). ProgramSetShaders, SetSampleShading,

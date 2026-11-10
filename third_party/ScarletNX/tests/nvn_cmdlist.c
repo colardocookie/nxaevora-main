@@ -255,6 +255,49 @@ static void test_gpu_ops(void) {
     nvn_oplist_free(&l);
 }
 
+static void test_u2_event_and_sync_ops(void) {
+    CHECK(NVN_OP_SIGNAL_EVENT < NVN_OP_COUNT && NVN_OP_WAIT_SYNC < NVN_OP_COUNT);
+    NvnOpList l = {0};
+    NvnOpSignalEvent signal = {0x400001000ull, 9u, NVN_EVENT_SIGNAL_WRITE, 0x1234u, 1u};
+    NvnOpWaitEvent wait = {0x400001000ull, 9u, NVN_EVENT_WAIT_EQUAL, 0x1234u, 0u};
+    NvnOpReportValue value = {0xABCDEF01u, 0u, 0x400002000ull};
+    NvnOpFenceSync fence = {0x400003000ull, 4u, NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE};
+    NvnOpWaitSync wait_sync = {0x400003000ull, 4u, 0u};
+    CHECK(nvn_oplist_append(&l, NVN_OP_SIGNAL_EVENT, &signal, sizeof signal));
+    CHECK(nvn_oplist_append(&l, NVN_OP_WAIT_EVENT, &wait, sizeof wait));
+    CHECK(nvn_oplist_append(&l, NVN_OP_REPORT_VALUE, &value, sizeof value));
+    CHECK(nvn_oplist_append(&l, NVN_OP_FENCE_SYNC, &fence, sizeof fence));
+    CHECK(nvn_oplist_append(&l, NVN_OP_WAIT_SYNC, &wait_sync, sizeof wait_sync));
+    CHECK(l.ops == 5);
+
+    size_t pos = 0;
+    NvnOpHeader h;
+    const void* p;
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_SIGNAL_EVENT && h.bytes == sizeof signal);
+    const NvnOpSignalEvent* got_signal = p;
+    CHECK(got_signal->event == 0x400001000ull && got_signal->generation == 9u && got_signal->mode == 0u);
+    CHECK(got_signal->value == 0x1234u && got_signal->location == 1u);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_WAIT_EVENT && h.bytes == sizeof wait);
+    const NvnOpWaitEvent* got_wait = p;
+    CHECK(got_wait->event == 0x400001000ull && got_wait->generation == 9u && got_wait->mode == 0u);
+    CHECK(got_wait->value == 0x1234u && got_wait->reserved == 0u);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_REPORT_VALUE && h.bytes == sizeof value);
+    const NvnOpReportValue* got_value = p;
+    CHECK(got_value->value == 0xABCDEF01u && got_value->address == 0x400002000ull);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_FENCE_SYNC && h.bytes == sizeof fence);
+    const NvnOpFenceSync* got_fence = p;
+    CHECK(got_fence->sync == 0x400003000ull && got_fence->generation == 4u && got_fence->condition == 0u);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_WAIT_SYNC && h.bytes == sizeof wait_sync);
+    const NvnOpWaitSync* got_wait_sync = p;
+    CHECK(got_wait_sync->sync == 0x400003000ull && got_wait_sync->generation == 4u && got_wait_sync->reserved == 0u);
+    CHECK(!nvn_oplist_next(&l, &pos, &h, &p));
+    nvn_oplist_free(&l);
+}
+
 static void test_growth(void) {
     NvnOpList l = {0};
     for (uint32_t i = 0; i < 5000; i++) {
@@ -396,6 +439,7 @@ int main(void) {
     test_draw_path_ops();
     test_vertex_state_and_depth_ops();
     test_gpu_ops();
+    test_u2_event_and_sync_ops();
     test_growth();
     test_handles();
     test_find_pointer_stable();

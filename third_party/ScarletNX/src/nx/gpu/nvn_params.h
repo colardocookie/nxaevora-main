@@ -265,9 +265,13 @@ uint32_t nvn_bind_texture_words(uint32_t stage, uint32_t slot, uint64_t handle, 
    the depth and stencil buffer (analyst-s4-4.md, sections 1, 4 and 5). The count is 0 on a refusal with nothing
    written. A clear with neither the depth nor the stencil enabled writes nothing and is not a refusal. */
 #define NVN_REPORT_WORDS_MAX 21u
+#define NVN_REPORT_VALUE_WORDS_MAX 5u
 #define NVN_BIND_IMAGE_WORDS_MAX 96u
 #define NVN_CLEAR_DEPTH_STENCIL_WORDS_MAX 12u
 uint32_t nvn_report_counter_words(uint32_t type, uint64_t address, uint32_t* out);
+/* ReportValue: the report of one value at the address, in the shape of a type 0 report. The library's trigger word
+   (0x800003E0) is not sent: method 0x3E0 has no action in the host model. 0 for a null out. */
+uint32_t nvn_report_value_words(uint32_t value, uint64_t address, uint32_t* out);
 uint32_t nvn_bind_image_words(uint32_t stage, uint32_t first, uint32_t count, const uint64_t* handles,
                               int descriptor_flag, uint32_t* out);
 int nvn_clear_depth_stencil_nothing(uint32_t depth_enable, uint32_t stencil_mask);
@@ -605,6 +609,10 @@ NvnSyncState nvn_sync_after_token(NvnSyncState state, uint32_t* fences);
 #define NVN_EVENT_SIGNAL_WRITE 0u
 #define NVN_EVENT_SIGNAL_ADD   1u
 uint32_t nvn_event_signal_value(uint32_t mode, uint32_t old, uint32_t value);
+/* nvnCommandBufferWaitEvent: mode 1 is GEQUAL with a 32-bit wrap, any other mode is EQUAL, as in the library. Pure. */
+#define NVN_EVENT_WAIT_EQUAL       0u
+#define NVN_EVENT_WAIT_GEQUAL_WRAP 1u
+int nvn_event_wait_met(uint32_t mode, uint32_t word, uint32_t value);
 
 /* The pipeline stages of a program: 0 vertex, 1 fragment (the only two the game uses), 2 to 5 accepted by the library. */
 #define NVN_PROGRAM_STAGES 6u

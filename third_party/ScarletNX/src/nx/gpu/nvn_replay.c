@@ -585,6 +585,43 @@ static void replay_op(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnO
         }
         ok = replay_gpu_op(env, stats, NVN_OP_BIND_IMAGE, payload);
         break;
+    case NVN_OP_SIGNAL_EVENT:
+        if (!payload_matches(header, sizeof(NvnOpSignalEvent))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_SIGNAL_EVENT, payload);
+        break;
+    case NVN_OP_WAIT_EVENT:
+        if (!payload_matches(header, sizeof(NvnOpWaitEvent))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_WAIT_EVENT, payload);
+        break;
+    case NVN_OP_REPORT_VALUE:
+        if (!payload_matches(header, sizeof(NvnOpReportValue))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_REPORT_VALUE, payload);
+        break;
+    /* The fence and the wait are actions of submit, not of the replay: a fence becomes a frame token and a wait is a
+       check in the serial order (nvn_native.c, h_queue_submit_commands). */
+    case NVN_OP_FENCE_SYNC:
+        if (!payload_matches(header, sizeof(NvnOpFenceSync))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = 1;
+        break;
+    case NVN_OP_WAIT_SYNC:
+        if (!payload_matches(header, sizeof(NvnOpWaitSync))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = 1;
+        break;
     case NVN_OP_CALL:
         if (!payload_matches(header, sizeof(NvnOpCall))) {
             replay_fault(env, stats, "op size", header->code);

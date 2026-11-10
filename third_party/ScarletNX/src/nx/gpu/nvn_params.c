@@ -1422,6 +1422,11 @@ uint32_t nvn_event_signal_value(uint32_t mode, uint32_t old, uint32_t value) {
     return mode == NVN_EVENT_SIGNAL_ADD ? old + value : value;
 }
 
+int nvn_event_wait_met(uint32_t mode, uint32_t word, uint32_t value) {
+    if (mode == NVN_EVENT_WAIT_GEQUAL_WRAP) return (int32_t)(word - value) >= 0;
+    return word == value;
+}
+
 int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_word, uint32_t kind_word,
                              uint32_t stage_word, uint32_t* index_out) {
     if (!index_out || version != NVN_PROGRAM_HEADER_VERSION || layout < NVN_PROGRAM_LAYOUT_FIRST ||
@@ -2391,6 +2396,19 @@ uint32_t nvn_report_counter_words(uint32_t type, uint64_t address, uint32_t* out
         bind_word(&w, report_counter_query[type]);
     }
     bind_value(&w, NVN_REPORT_METHOD_TRIGGER, 0);
+    return w.at;
+}
+
+/* ReportValue: the four data words of a type 0 report with the game's value. The library's 0x800003E0 trigger word is
+   not sent: method 0x3E0 has no action in the host model. */
+uint32_t nvn_report_value_words(uint32_t value, uint64_t address, uint32_t* out) {
+    if (!out) return 0;
+    NvnBindWriter w = {out, 0};
+    bind_run(&w, NVN_REPORT_METHOD_COUNTER, NVN_REPORT_DATA_COUNT);
+    bind_word(&w, (uint32_t)(address >> 32));
+    bind_word(&w, (uint32_t)address);
+    bind_word(&w, value);
+    bind_word(&w, report_counter_query[0]);
     return w.at;
 }
 

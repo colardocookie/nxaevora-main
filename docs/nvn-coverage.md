@@ -30,8 +30,8 @@ tool keeps them.
 | G7 | 4 | 4 | 0 | 4 | 0 |
 | G8 | 112 | 112 | 0 | 112 | 0 |
 | G9 | 43 | 43 | 0 | 43 | 0 |
-| G10 | 281 | 162 | 119 | 0 | 0 |
-| all | 523 | 404 | 119 | 242 | 0 |
+| G10 | 281 | 167 | 114 | 0 | 0 |
+| all | 523 | 409 | 114 | 242 | 0 |
 
 ## Functions
 
@@ -324,7 +324,7 @@ tool keeps them.
 | `nvnCommandBufferDrawElementsIndirect` | G10 | d849bd0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferDrawTexture` | G10 | d84cad0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferDrawTransformFeedback` | G10 | d84bb40 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferFenceSync` | G10 | d825a80 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferFenceSync` | G10 | d825a80 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferGetCommandMemoryFree` | G10 | d8240a0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferGetCommandMemorySize` | G10 | d824080 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferGetCommandMemoryUsed` | G10 | d824090 | 0 | stub-log |  |  |  |
@@ -349,7 +349,7 @@ tool keeps them.
 | `nvnCommandBufferPushDebugGroup` | G10 | d84d0a0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferPushDebugGroupDynamic` | G10 | d84d280 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferPushDebugGroupStatic` | G10 | d84d110 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferReportValue` | G10 | d856ab0 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferReportValue` | G10 | d856ab0 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferResolveDepthBuffer` | G10 | d84ce80 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferRestoreZCullData` | G10 | d84c8e0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferResumeTransformFeedback` | G10 | d84b810 | 0 | stub-log |  |  |  |
@@ -378,12 +378,12 @@ tool keeps them.
 | `nvnCommandBufferSetTiledCacheTileSize` | G10 | d84c000 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferSetViewport` | G10 | d84ae60 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferSetViewportSwizzles` | G10 | d84afe0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSignalEvent` | G10 | d832ef0 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferSignalEvent` | G10 | d832ef0 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferTiledDownsample` | G10 | d8575f0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferTiledDownsampleTextureView` | G10 | d857600 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferUpdateUniformBuffer` | G10 | d84c980 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferWaitEvent` | G10 | d832e30 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferWaitSync` | G10 | d825ce0 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferWaitEvent` | G10 | d832e30 | 0 | implemented | unit |  |  |
+| `nvnCommandBufferWaitSync` | G10 | d825ce0 | 0 | implemented | unit |  |  |
 | `nvnDeviceApplyDeferredFinalizes` | G10 | d82cdd0 | 0 | implemented |  |  |  |
 | `nvnDeviceBuilderGetFlags` | G10 | d82cde0 | 0 | implemented |  |  |  |
 | `nvnDeviceFinalize` | G10 | d82ce10 | 0 | implemented |  |  |  |

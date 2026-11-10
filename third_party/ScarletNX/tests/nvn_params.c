@@ -1056,6 +1056,17 @@ static void test_u2_event_signal_value(void) {
     CHECK(nvn_event_signal_value(NVN_EVENT_SIGNAL_ADD, 0xfffffffeu, 3) == 1);
 }
 
+static void test_u2_event_wait_met(void) {
+    CHECK(nvn_event_wait_met(NVN_EVENT_WAIT_EQUAL, 5, 5));
+    CHECK(!nvn_event_wait_met(NVN_EVENT_WAIT_EQUAL, 5, 6));
+    CHECK(nvn_event_wait_met(NVN_EVENT_WAIT_GEQUAL_WRAP, 10, 5));
+    CHECK(nvn_event_wait_met(NVN_EVENT_WAIT_GEQUAL_WRAP, 5, 5));
+    CHECK(!nvn_event_wait_met(NVN_EVENT_WAIT_GEQUAL_WRAP, 4, 5));
+    CHECK(nvn_event_wait_met(NVN_EVENT_WAIT_GEQUAL_WRAP, 0x00000002u, 0xFFFFFFFEu));
+    CHECK(nvn_event_wait_met(7, 5, 5));
+    CHECK(!nvn_event_wait_met(7, 2, 0xFFFFFFFEu));
+}
+
 static void test_handles(void) {
     CHECK(nvn_texture_handle(0x147, 0x100) == 0x110000147ull);
     CHECK(nvn_texture_handle(0, 0) == 0x100000000ull);
@@ -2473,6 +2484,18 @@ static void test_report_counter_words(void) {
     CHECK(nvn_report_counter_words(0, address, NULL) == 0);
 }
 
+static void test_report_value_words(void) {
+    const uint64_t address = 0x123456789Aull;
+    static const uint32_t want[] = {0x200406C0u, 0x12u, 0x3456789Au, 0xDEADBEEFu, 0x0000F002u};
+    uint32_t out[NVN_REPORT_VALUE_WORDS_MAX + 1u];
+    bind_sentinel(out, NVN_REPORT_VALUE_WORDS_MAX + 1u);
+    uint32_t count = nvn_report_value_words(0xDEADBEEFu, address, out);
+    check_bind_words(out, count, want, 5);
+    CHECK(count == NVN_REPORT_VALUE_WORDS_MAX);
+    CHECK(out[NVN_REPORT_VALUE_WORDS_MAX] == 0xDEADBEEFu);
+    CHECK(nvn_report_value_words(0, address, NULL) == 0);
+}
+
 static void test_bind_image(void) {
     const uint64_t handles[2] = {0x123456789Aull, 0xFEDCBA9876543210ull};
     /* Stage 0 has table value 0; one handle at slot 5 is 0x120 + 5*8. */
@@ -3032,6 +3055,7 @@ int main(int argc, char** argv) {
     test_window_present_args();
     test_sync_after_token();
     test_u2_event_signal_value();
+    test_u2_event_wait_met();
     test_sampler();
     test_sampler_equal();
     test_u1_window_fields();
@@ -3111,6 +3135,7 @@ int main(int argc, char** argv) {
     test_bind_texture();
     test_draw_words();
     test_report_counter_words();
+    test_report_value_words();
     test_bind_image();
     test_clear_depth_stencil_words();
     test_highest_enabled_index();

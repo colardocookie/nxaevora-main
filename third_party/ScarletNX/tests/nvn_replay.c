@@ -73,6 +73,9 @@ typedef struct {
     NvnOpClearTexture gpu_clear_texture;
     NvnOpCopyTexture gpu_copy_texture;
     NvnOpReportCounter gpu_report;
+    NvnOpReportValue gpu_report_value;
+    NvnOpSignalEvent gpu_signal_event;
+    NvnOpWaitEvent gpu_wait_event;
     NvnOpBindImage gpu_bind_image;
     NvnOpTransformFeedback gpu_xfb;
     uint32_t fault_count;
@@ -210,6 +213,15 @@ static int mock_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
         break;
     case NVN_OP_REPORT_COUNTER:
         k->gpu_report = *(const NvnOpReportCounter*)payload;
+        break;
+    case NVN_OP_REPORT_VALUE:
+        k->gpu_report_value = *(const NvnOpReportValue*)payload;
+        break;
+    case NVN_OP_SIGNAL_EVENT:
+        k->gpu_signal_event = *(const NvnOpSignalEvent*)payload;
+        break;
+    case NVN_OP_WAIT_EVENT:
+        k->gpu_wait_event = *(const NvnOpWaitEvent*)payload;
         break;
     case NVN_OP_BIND_IMAGE:
         k->gpu_bind_image = *(const NvnOpBindImage*)payload;
@@ -1456,6 +1468,52 @@ static void test_gpu_ops_reach_callback(void) {
     nvn_oplist_free(&l);
 }
 
+static void test_u2_event_and_sync_ops(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    k.gpu_op_ok = 1;
+    NvnOpSignalEvent signal = {0x400001000ull, 9u, NVN_EVENT_SIGNAL_ADD, 0x1234u, 2u};
+    NvnOpWaitEvent wait = {0x400001000ull, 9u, NVN_EVENT_WAIT_GEQUAL_WRAP, 0x1234u, 0u};
+    NvnOpReportValue value = {0xABCDEF01u, 0u, 0x400002000ull};
+    NvnOpFenceSync fence = {0x400003000ull, 4u, NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE};
+    NvnOpWaitSync wait_sync = {0x400003000ull, 4u, 0u};
+    CHECK(nvn_oplist_append(&l, NVN_OP_SIGNAL_EVENT, &signal, sizeof signal));
+    CHECK(nvn_oplist_append(&l, NVN_OP_WAIT_EVENT, &wait, sizeof wait));
+    CHECK(nvn_oplist_append(&l, NVN_OP_REPORT_VALUE, &value, sizeof value));
+    CHECK(nvn_oplist_append(&l, NVN_OP_FENCE_SYNC, &fence, sizeof fence));
+    CHECK(nvn_oplist_append(&l, NVN_OP_WAIT_SYNC, &wait_sync, sizeof wait_sync));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 0 && st.methods == 0);
+    CHECK(k.gpu_op_calls == 3 && k.gpu_op_code == NVN_OP_REPORT_VALUE);
+    CHECK(!memcmp(&k.gpu_signal_event, &signal, sizeof signal));
+    CHECK(!memcmp(&k.gpu_wait_event, &wait, sizeof wait));
+    CHECK(!memcmp(&k.gpu_report_value, &value, sizeof value));
+    CHECK(st.replayed[NVN_OP_SIGNAL_EVENT] == 1 && st.replayed[NVN_OP_WAIT_EVENT] == 1);
+    CHECK(st.replayed[NVN_OP_REPORT_VALUE] == 1 && st.replayed[NVN_OP_FENCE_SYNC] == 1);
+    CHECK(st.replayed[NVN_OP_WAIT_SYNC] == 1);
+    nvn_oplist_free(&l);
+}
+
+static void test_u2_event_and_sync_bad_payload(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    uint8_t small[8] = {0};
+    k.gpu_op_ok = 1;
+    CHECK(nvn_oplist_append(&l, NVN_OP_SIGNAL_EVENT, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_WAIT_EVENT, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_REPORT_VALUE, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_FENCE_SYNC, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_WAIT_SYNC, small, sizeof small));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 5 && k.gpu_op_calls == 0);
+    CHECK(k.last_fault && !strcmp(k.last_fault, "op size") && k.last_fault_value == NVN_OP_WAIT_SYNC);
+    nvn_oplist_free(&l);
+}
+
 static void test_transform_feedback_op(void) {
     Mock k = {0};
     NvnReplayEnv env = make_env(&k);
@@ -1578,6 +1636,8 @@ int main(void) {
     test_depth_range_op();
     test_vertex_ops_bad_payload();
     test_gpu_ops_reach_callback();
+    test_u2_event_and_sync_ops();
+    test_u2_event_and_sync_bad_payload();
     test_gpu_ops_null_callback();
     test_transform_feedback_op();
     test_gpu_ops_refused();

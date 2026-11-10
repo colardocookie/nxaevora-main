@@ -41,6 +41,11 @@ typedef enum {
     NVN_OP_BIND_IMAGE,
     NVN_OP_RESET_COUNTER,
     NVN_OP_TRANSFORM_FEEDBACK,
+    NVN_OP_SIGNAL_EVENT,
+    NVN_OP_WAIT_EVENT,
+    NVN_OP_REPORT_VALUE,
+    NVN_OP_FENCE_SYNC,
+    NVN_OP_WAIT_SYNC,
     NVN_OP_COUNT
 } NvnOpCode;
 
@@ -141,6 +146,12 @@ typedef struct {
     uint32_t stage, first, count, reserved;
     uint64_t handle[NVN_IMAGE_BINDS_MAX];
 } NvnOpBindImage;
+/* The event and sync ops keep the generation that the record had at record time (analyst-u2-A-1.md, analyst-u2-B-1.md). */
+typedef struct { uint64_t event; uint32_t generation, mode, value, location; } NvnOpSignalEvent;
+typedef struct { uint64_t event; uint32_t generation, mode, value, reserved; } NvnOpWaitEvent;
+typedef struct { uint32_t value, reserved; uint64_t address; } NvnOpReportValue;
+typedef struct { uint64_t sync; uint32_t generation, condition; } NvnOpFenceSync;
+typedef struct { uint64_t sync; uint32_t generation, reserved; } NvnOpWaitSync;
 
 _Static_assert(sizeof(NvnOpClearDepthStencil) <= NVN_OP_MAX_PAYLOAD, "NvnOpClearDepthStencil fits an op payload");
 _Static_assert(sizeof(NvnOpClearTexture) <= NVN_OP_MAX_PAYLOAD, "NvnOpClearTexture fits an op payload");
@@ -149,6 +160,11 @@ _Static_assert(sizeof(NvnOpReportCounter) <= NVN_OP_MAX_PAYLOAD, "NvnOpReportCou
 _Static_assert(sizeof(NvnOpResetCounter) <= NVN_OP_MAX_PAYLOAD, "NvnOpResetCounter fits an op payload");
 _Static_assert(sizeof(NvnOpTransformFeedback) <= NVN_OP_MAX_PAYLOAD, "NvnOpTransformFeedback fits an op payload");
 _Static_assert(sizeof(NvnOpBindImage) <= NVN_OP_MAX_PAYLOAD, "NvnOpBindImage fits an op payload");
+_Static_assert(sizeof(NvnOpSignalEvent) <= NVN_OP_MAX_PAYLOAD, "NvnOpSignalEvent fits an op payload");
+_Static_assert(sizeof(NvnOpWaitEvent) <= NVN_OP_MAX_PAYLOAD, "NvnOpWaitEvent fits an op payload");
+_Static_assert(sizeof(NvnOpReportValue) <= NVN_OP_MAX_PAYLOAD, "NvnOpReportValue fits an op payload");
+_Static_assert(sizeof(NvnOpFenceSync) <= NVN_OP_MAX_PAYLOAD, "NvnOpFenceSync fits an op payload");
+_Static_assert(sizeof(NvnOpWaitSync) <= NVN_OP_MAX_PAYLOAD, "NvnOpWaitSync fits an op payload");
 _Static_assert(sizeof(NvnOpBindProgram) <= NVN_OP_MAX_PAYLOAD, "NvnOpBindProgram fits an op payload");
 
 typedef struct { uint32_t code, bytes; } NvnOpHeader; /* bytes: the payload size, a multiple of NVN_OP_ALIGN */
