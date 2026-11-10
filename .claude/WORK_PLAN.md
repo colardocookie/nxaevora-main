@@ -59,9 +59,12 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U4 step (a), the library analyst tables of the draw extras. Read the U4 rows in `nvn-coverage.md`, split
-    them into 2 or 3 briefs of 10 to 15 functions, launch at most 2 analysts. Templates: `reports/brief-analyst-u3-common.md`,
-    `brief-analyst-u3-A.md`. U3 is done (records in `OLD-WORK_PLAN.md`, "U3 ..."). U2 and U3 exectest cases come in 4-u3.
+  Current step: U4 step (b), the handler writer briefs. Tables (step (a), checked): `reports/analyst-u4-A-1.md` (draws, xfb,
+    tess), `analyst-u4-B-1.md` (raster state), `analyst-u4-C-1.md` (binds, program setters, tiled cache). Record of step (a):
+    `OLD-WORK_PLAN.md`, "U4 step (a)". Decisions for the briefs: refuse DispatchComputeIndirect (no host QMD path), and
+    ViewportSwizzles, ConservativeRaster, CoverageModulation when not identity or disabled. Logged no-op: zcull, color reduction,
+    tiled cache, subpixel bias, sample mask. Decide before the briefs: the separate texture and sampler table (the host has 128
+    combined slots), subroutines, scratch memory, the XFB byte count reports. SetPatchSize: no 0x1FFF mask (see the record).
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
   - Rows near U1 that stay in other groups: CommandBuffer command and control memory getters, memory callback getters (U5).
     ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).

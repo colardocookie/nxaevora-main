@@ -2439,3 +2439,14 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 - U3 copies, clears, texel IO (about 25): CopyBufferTo*, CopyTextureToBuffer, ClearBuffer, ClearColori/ui, Downsample*,
   TiledDownsample*, ResolveDepthBuffer, Discard*, Read/WriteTexels*, Flush/InvalidateMappedRange, MapVirtual,
   UpdateUniformBuffer, CopyCommands. Done in 3 patches (c4f60c5, 22b4ad6, the MapVirtual commit). 88 rows of G10 stay stub-log.
+
+## U4 step (a) (2026-11-10, moved from WORK_PLAN.md)
+
+- U4 draw extras: 43 functions in 3 analyst parts. Briefs `reports/brief-analyst-u4-common.md`, `-A.md`, `-B.md`, `-C.md`
+  (made from the U3 briefs). Reports `analyst-u4-A-1.md` (13), `-B-1.md` (14), `-C-1.md` (16). No function is in the enum traces.
+- Rows checked in the disassembly (`reports/verify-u4.txt`): A SetPrimitiveRestart, SetPatchSize. B SetSampleMask,
+  SetRenderEnable, SetColorReductionEnable, SetScissor. C GetSeparateSamplerHandle, GetSeparateTextureHandle,
+  GetTexelFetchHandle, ProgramSetSampleShading, SetTiledCacheAction (word set only, the switch table 0xde864c0 not read).
+- Fault of table A: SetPatchSize ORs the value `<<16` into 0x80000373 with no 0x1FFF mask. The writer must copy that.
+- Analyst claims not checked: macro targets of 0xE0A, 0xE1C, 0xE22; the indirect record field order (inferred from mme_hle.c);
+  separate texture slot 128+n (a guess from other ports); scissor enable 0x380 is not written by SetScissors.
