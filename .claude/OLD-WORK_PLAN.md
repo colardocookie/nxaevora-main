@@ -2354,3 +2354,17 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   (`analysis/u2-sig2.txt`). The caller fixed it.
 - Checks: the whole patch read, `ctest` passes except `tracked_material`, 4 mutants caught (wait compare, replay dispatch,
   report value word). `nvn-coverage.md`: G10 has 114 `stub-log` rows. Exe md5 f0d4863f in the 3 places. No game run.
+
+## U3 copies, clears, texel IO, step (a) (2026-11-10, moved from WORK_PLAN.md)
+
+- Briefs `reports/brief-analyst-u3-common.md`, `-A.md`, `-B.md`. Tables `reports/analyst-u3-A-1.md` (15 command buffer
+  copies and clears) and `analyst-u3-B-1.md` (11 copy strides, mapped ranges, texel IO). DeviceRegisterFastClear* stay in U5.
+- Checked in the disassembly: copy strides (str/ldr cb+0x88 and +0x8C), ResolveDepthBuffer (one word 0x8001047F),
+  ReadTexels (x4=x5=0, tail to d83e030), ClearBuffer (size 0 returns, first word 0x91070002, size>>2 at +0x2C and +0x38).
+- Easy rows: ClearColori/ui have the body of ClearColor (register the existing handler). Invalidate (buffer, pool, texels)
+  is the flush path with pool slot 0x20 (reuse the no-op flush handlers). WriteTexelsStrided reuses the write helpers with
+  x4/x5. ReadTexels(Strided) needs a read helper. Get/SetCopy*Stride need two fields in `CommandBufferRec`.
+- Open decisions (caller proposal: refuse with a log line unless a design exists): MapVirtual (no sparse pools, return
+  false and log), B2T/T2B flip bits and bit1, TiledDownsample (device+0x9AC..+0x9B8 not decoded), ResolveDepthBuffer (no
+  Vulkan depth resolve), Discard gate device+0xA8 (writer not found), UpdateUniformBuffer (payload over 768 B), CopyCommands
+  (deep copy, or NVN_OP_CALL with a fence assumption).

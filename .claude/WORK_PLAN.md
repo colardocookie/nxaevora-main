@@ -49,8 +49,6 @@ below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
   4-u4. `docs/nvn-coverage.md`: 119 rows of G10 are `stub-log`. Groups (one commit each), in this order:
-  - U2 events and sync (about 20): Event*, CommandBuffer SignalEvent, WaitEvent, WaitSync, FenceSync, ReportValue, Queue
-    WaitSync, Finish, Flush, Finalize, Sync*. Check with `nvn_exectest`.
   - U3 copies, clears, texel IO (about 25): CopyBufferTo*, CopyTextureToBuffer, ClearBuffer, ClearColori/ui, Downsample*,
     TiledDownsample*, ResolveDepthBuffer, Discard*, Read/WriteTexels*, Flush/InvalidateMappedRange, MapVirtual,
     UpdateUniformBuffer, CopyCommands.
@@ -64,14 +62,10 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U3 step (b). Step (a) is done (2026-11-10): tables `reports/analyst-u3-A-1.md` (15 command buffer
-    copies and clears) and `analyst-u3-B-1.md` (11 strides, mapped ranges, texel IO). Checked in the disassembly: copy
-    strides (cb+0x88/+0x8C), ResolveDepthBuffer (one word 0x8001047F), ReadTexels (tail to d83e030, strides 0), ClearBuffer
-    (size 0 returns, 0x91070002, size>>2). Decisions for the brief (caller): ClearColori/ui reuse the ClearColor handler;
-    ReadTexels needs a read helper; MapVirtual returns false and logs (no sparse pools); CopyCommands deep copy or
-    NVN_OP_CALL (fence assumption); B2T/T2B flip and bit1 flags, TiledDownsample, ResolveDepthBuffer, the Discard gate
-    (device+0xA8) are open: refuse with a log or decide. UpdateUniformBuffer needs a payload over 768 B.
-    U2 is done: `OLD-WORK_PLAN.md`, last sections. Its exectest cases come in 4-u3.
+  Current step: U3 step (b). Write the brief of the handler writer (or code writer) for the accepted tables
+    `reports/analyst-u3-A-1.md` and `analyst-u3-B-1.md`. Read them, not the old plan. The open decisions for the brief
+    are in `OLD-WORK_PLAN.md`, section "U3 copies, clears, texel IO, step (a)". Show them to the user first.
+    U2 is done (`OLD-WORK_PLAN.md`, last sections). Its exectest cases come in 4-u3.
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
   - Rows near U1 that stay in other groups: CommandBuffer Get/SetCopyRowStride and Get/SetCopyImageStride (U3, copies).
     CommandBuffer command and control memory getters, memory callback getters (U5). ProgramSetShaders, SetSampleShading,
