@@ -2566,3 +2566,9 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `gmem_write` refuses the selftest arena (kmem_alloc MS_STATIC). Harness fault or host fault: check `gmem_write`.
   Also format 0: the host refuses, the library writes zeros.
   Next: fix 1 to 3 (very light edits or the code writer), run again, then write the passed scope into `nvn-coverage.md`.
+  Step (e) 2026-11-10: fixes committed (`c392c09`). 2: d83c4c0 does not check the format, kind 0 gives 0x200 (a buffer
+  gives the table bytes, 0, or `wac` for a kind). 3: host fault, the two sparse handlers wrote a CPU output through the
+  GPU space (`gmem_write`), now `native_write_tile_layout`. Format 0 writes zeros, other unknown formats stay refused.
+  Run 20:39 (same settings): 227 cases, 0 failed, clean exit. Exe md5 03bf4203.
+  `nvn-coverage.md`: column checks filled from this run, 105 functions (the case `nvnTextureBuilderStorage` gives R to
+  GetStorageSize, GetStorageAlignment, GetWidth, GetHeight). The `unit` scope is not written yet. 4-u3-1 is done.

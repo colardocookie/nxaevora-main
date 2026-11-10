@@ -37,22 +37,22 @@ tool keeps them.
 
 | function | group | address | calls | handler | checks | seen | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `nvnDeviceBuilderSetDefaults` | G1 | d82cdf0 | 1 | implemented |  |  |  |
-| `nvnDeviceBuilderSetFlags` | G1 | d82ce00 | 1 | implemented |  |  |  |
-| `nvnDeviceGetInteger` | G1 | d82d060 | 127349 | implemented |  |  |  |
+| `nvnDeviceBuilderSetDefaults` | G1 | d82cdf0 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnDeviceBuilderSetFlags` | G1 | d82ce00 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnDeviceGetInteger` | G1 | d82d060 | 127349 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
 | `nvnDeviceGetTimestampInNanoseconds` | G1 | d82d0e0 | 341922 | implemented |  |  |  |
 | `nvnDeviceInitialize` | G1 | d82d110 | 1 | implemented |  |  |  |
 | `nvnDeviceSetDepthMode` | G1 | d82d170 | 1 | implemented |  |  |  |
 | `nvnDeviceSetWindowOriginMode` | G1 | d82d190 | 1 | implemented |  |  |  |
 | `nvnQueueBuilderGetQueueMemorySize` | G1 | d8383f0 | 1 | implemented |  |  |  |
-| `nvnQueueBuilderSetCommandMemorySize` | G1 | d838150 | 1 | implemented |  |  |  |
-| `nvnQueueBuilderSetComputeMemorySize` | G1 | d838160 | 1 | implemented |  |  |  |
-| `nvnQueueBuilderSetControlMemorySize` | G1 | d838170 | 1 | implemented |  |  |  |
-| `nvnQueueBuilderSetDefaults` | G1 | d838120 | 1 | implemented |  |  |  |
-| `nvnQueueBuilderSetDevice` | G1 | d838110 | 1 | implemented |  |  |  |
-| `nvnQueueBuilderSetFlags` | G1 | d838140 | 1 | implemented |  |  |  |
+| `nvnQueueBuilderSetCommandMemorySize` | G1 | d838150 | 1 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnQueueBuilderSetComputeMemorySize` | G1 | d838160 | 1 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnQueueBuilderSetControlMemorySize` | G1 | d838170 | 1 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnQueueBuilderSetDefaults` | G1 | d838120 | 1 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnQueueBuilderSetDevice` | G1 | d838110 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnQueueBuilderSetFlags` | G1 | d838140 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnQueueBuilderSetQueueMemory` | G1 | d838190 | 1 | implemented |  |  |  |
-| `nvnQueueBuilderSetQueuePriority` | G1 | d838570 | 1 | implemented |  |  |  |
+| `nvnQueueBuilderSetQueuePriority` | G1 | d838570 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnQueueInitialize` | G1 | d839360 | 1 | implemented |  |  |  |
 | `nvnMemoryPoolBuilderSetDefaults` | G2 | d833b90 | 3231 | implemented |  |  |  |
 | `nvnMemoryPoolBuilderSetDevice` | G2 | d833b80 | 3231 | implemented |  |  |  |
@@ -64,26 +64,26 @@ tool keeps them.
 | `nvnMemoryPoolInitialize` | G2 | d833ce0 | 3231 | implemented |  |  |  |
 | `nvnMemoryPoolMap` | G2 | d833ed0 | 3485 | implemented |  |  |  |
 | `nvnMemoryPoolSetDebugLabel` | G2 | d82ccf0 | 67 | implemented |  |  |  |
-| `nvnTextureBuilderGetHeight` | G3 | d83c3a0 | 291 | implemented |  |  |  |
-| `nvnTextureBuilderGetStorageAlignment` | G3 | d83c4c0 | 295 | implemented |  |  |  |
-| `nvnTextureBuilderGetStorageSize` | G3 | d83d350 | 292 | implemented |  |  |  |
-| `nvnTextureBuilderGetWidth` | G3 | d83c390 | 291 | implemented |  |  |  |
-| `nvnTextureBuilderSetDefaults` | G3 | d83c220 | 5883 | implemented |  |  |  |
-| `nvnTextureBuilderSetDepth` | G3 | d83c2a0 | 5592 | implemented |  |  |  |
-| `nvnTextureBuilderSetDepthStencilMode` | G3 | d83c320 | 291 | implemented |  |  |  |
-| `nvnTextureBuilderSetDevice` | G3 | d83c210 | 5883 | implemented |  |  |  |
-| `nvnTextureBuilderSetFlags` | G3 | d83c260 | 5883 | implemented |  |  |  |
-| `nvnTextureBuilderSetFormat` | G3 | d83c2f0 | 5883 | implemented |  |  |  |
-| `nvnTextureBuilderSetHeight` | G3 | d83c290 | 5592 | implemented |  |  |  |
-| `nvnTextureBuilderSetLevels` | G3 | d83c2e0 | 5883 | implemented |  |  |  |
+| `nvnTextureBuilderGetHeight` | G3 | d83c3a0 | 291 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderGetStorageAlignment` | G3 | d83c4c0 | 295 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderGetStorageSize` | G3 | d83d350 | 292 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderGetWidth` | G3 | d83c390 | 291 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderSetDefaults` | G3 | d83c220 | 5883 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderSetDepth` | G3 | d83c2a0 | 5592 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderSetDepthStencilMode` | G3 | d83c320 | 291 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderSetDevice` | G3 | d83c210 | 5883 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderSetFlags` | G3 | d83c260 | 5883 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderSetFormat` | G3 | d83c2f0 | 5883 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderSetHeight` | G3 | d83c290 | 5592 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderSetLevels` | G3 | d83c2e0 | 5883 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTextureBuilderSetPackagedTextureLayout` | G3 | d83c7a0 | 5584 | implemented |  |  |  |
-| `nvnTextureBuilderSetSize2D` | G3 | d83c2c0 | 288 | implemented |  |  |  |
-| `nvnTextureBuilderSetSize3D` | G3 | d83c2d0 | 3 | implemented |  |  |  |
+| `nvnTextureBuilderSetSize2D` | G3 | d83c2c0 | 288 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderSetSize3D` | G3 | d83c2d0 | 3 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTextureBuilderSetStorage` | G3 | d83c330 | 5879 | implemented |  |  |  |
-| `nvnTextureBuilderSetStride` | G3 | d83c350 | 297 | implemented |  |  |  |
-| `nvnTextureBuilderSetSwizzle` | G3 | d83c310 | 291 | implemented |  |  |  |
-| `nvnTextureBuilderSetTarget` | G3 | d83c270 | 5883 | implemented |  |  |  |
-| `nvnTextureBuilderSetWidth` | G3 | d83c280 | 5592 | implemented |  |  |  |
+| `nvnTextureBuilderSetStride` | G3 | d83c350 | 297 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderSetSwizzle` | G3 | d83c310 | 291 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderSetTarget` | G3 | d83c270 | 5883 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderSetWidth` | G3 | d83c280 | 5592 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTextureFinalize` | G3 | d83d750 | 2900 | implemented |  |  |  |
 | `nvnTextureGetDepth` | G3 | d83d890 | 2290 | implemented |  |  |  |
 | `nvnTextureGetHeight` | G3 | d83d880 | 8444 | implemented |  |  |  |
@@ -93,9 +93,9 @@ tool keeps them.
 | `nvnTextureInitialize` | G3 | d83d3c0 | 5879 | implemented |  |  |  |
 | `nvnSyncInitialize` | G4 | d83b800 | 2 | implemented |  |  |  |
 | `nvnSyncWait` | G4 | d83bc00 | 17838 | implemented |  |  |  |
-| `nvnWindowBuilderSetDefaults` | G4 | d83e580 | 1 | implemented |  |  |  |
-| `nvnWindowBuilderSetDevice` | G4 | d83e570 | 1 | implemented |  |  |  |
-| `nvnWindowBuilderSetNativeWindow` | G4 | d83e590 | 1 | implemented |  |  |  |
+| `nvnWindowBuilderSetDefaults` | G4 | d83e580 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnWindowBuilderSetDevice` | G4 | d83e570 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnWindowBuilderSetNativeWindow` | G4 | d83e590 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnWindowBuilderSetTextures` | G4 | d83e5a0 | 1 | implemented |  |  |  |
 | `nvnWindowInitialize` | G4 | d83e7d0 | 1 | implemented |  |  |  |
 | `nvnWindowSetCrop` | G4 | d83eb30 | 8919 | implemented |  |  |  |
@@ -127,13 +127,13 @@ tool keeps them.
 | `nvnBlendStateGetBlendEquation` | G8 | d83ad70 | 52 | implemented |  |  |  |
 | `nvnBlendStateGetBlendFunc` | G8 | d83ad30 | 130 | implemented |  |  |  |
 | `nvnBlendStateGetBlendTarget` | G8 | d83ad20 | 436 | implemented |  |  |  |
-| `nvnBlendStateSetBlendEquation` | G8 | d83ac70 | 834 | implemented |  |  |  |
-| `nvnBlendStateSetBlendFunc` | G8 | d83ac30 | 834 | implemented |  |  |  |
-| `nvnBlendStateSetBlendTarget` | G8 | d83ac10 | 834 | implemented |  |  |  |
-| `nvnBlendStateSetDefaults` | G8 | d83abf0 | 834 | implemented |  |  |  |
+| `nvnBlendStateSetBlendEquation` | G8 | d83ac70 | 834 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnBlendStateSetBlendFunc` | G8 | d83ac30 | 834 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnBlendStateSetBlendTarget` | G8 | d83ac10 | 834 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnBlendStateSetDefaults` | G8 | d83abf0 | 834 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
 | `nvnBufferBuilderGetSize` | G8 | d823b10 | 47967 | implemented |  |  |  |
-| `nvnBufferBuilderSetDefaults` | G8 | d823ac0 | 48878 | implemented |  |  |  |
-| `nvnBufferBuilderSetDevice` | G8 | d823ab0 | 48878 | implemented |  |  |  |
+| `nvnBufferBuilderSetDefaults` | G8 | d823ac0 | 48878 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnBufferBuilderSetDevice` | G8 | d823ab0 | 48878 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnBufferBuilderSetStorage` | G8 | d823ad0 | 48878 | implemented |  |  |  |
 | `nvnBufferFinalize` | G8 | d823b70 | 41583 | implemented |  |  |  |
 | `nvnBufferGetAddress` | G8 | d823bc0 | 316689 | implemented |  |  |  |
@@ -142,15 +142,15 @@ tool keeps them.
 | `nvnBufferMap` | G8 | d823b80 | 2291052 | implemented |  |  |  |
 | `nvnBufferSetDebugLabel` | G8 | d82ccc0 | 164 | implemented |  |  |  |
 | `nvnChannelMaskStateGetChannelMask` | G8 | d83ae30 | 25 | implemented |  |  |  |
-| `nvnChannelMaskStateSetChannelMask` | G8 | d83ade0 | 841 | implemented |  |  |  |
-| `nvnChannelMaskStateSetDefaults` | G8 | d83add0 | 826 | implemented |  |  |  |
+| `nvnChannelMaskStateSetChannelMask` | G8 | d83ade0 | 841 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnChannelMaskStateSetDefaults` | G8 | d83add0 | 826 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
 | `nvnColorStateGetAlphaTest` | G8 | d83af20 | 9278 | implemented |  |  |  |
 | `nvnColorStateGetBlendEnable` | G8 | d83af00 | 83560 | implemented |  |  |  |
 | `nvnColorStateGetLogicOp` | G8 | d83af10 | 9278 | implemented |  |  |  |
-| `nvnColorStateSetAlphaTest` | G8 | d83aee0 | 78 | implemented |  |  |  |
-| `nvnColorStateSetBlendEnable` | G8 | d83ae80 | 857 | implemented |  |  |  |
-| `nvnColorStateSetDefaults` | G8 | d83ae70 | 828 | implemented |  |  |  |
-| `nvnColorStateSetLogicOp` | G8 | d83aec0 | 4 | implemented |  |  |  |
+| `nvnColorStateSetAlphaTest` | G8 | d83aee0 | 78 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnColorStateSetBlendEnable` | G8 | d83ae80 | 857 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnColorStateSetDefaults` | G8 | d83ae70 | 828 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnColorStateSetLogicOp` | G8 | d83aec0 | 4 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnCommandBufferBindBlendState` | G8 | d858670 | 1125187 | implemented |  |  |  |
 | `nvnCommandBufferBindChannelMaskState` | G8 | d847340 | 1028726 | implemented |  |  |  |
 | `nvnCommandBufferBindColorState` | G8 | d8472e0 | 1354349 | implemented |  |  |  |
@@ -188,13 +188,13 @@ tool keeps them.
 | `nvnDepthStencilStateGetStencilFunc` | G8 | d83b170 | 18544 | implemented |  |  |  |
 | `nvnDepthStencilStateGetStencilOp` | G8 | d83b190 | 18544 | implemented |  |  |  |
 | `nvnDepthStencilStateGetStencilTestEnable` | G8 | d83b160 | 14577 | implemented |  |  |  |
-| `nvnDepthStencilStateSetDefaults` | G8 | d83b000 | 955 | implemented |  |  |  |
-| `nvnDepthStencilStateSetDepthFunc` | G8 | d83b060 | 955 | implemented |  |  |  |
-| `nvnDepthStencilStateSetDepthTestEnable` | G8 | d83b020 | 955 | implemented |  |  |  |
-| `nvnDepthStencilStateSetDepthWriteEnable` | G8 | d83b040 | 955 | implemented |  |  |  |
-| `nvnDepthStencilStateSetStencilFunc` | G8 | d83b0a0 | 1910 | implemented |  |  |  |
-| `nvnDepthStencilStateSetStencilOp` | G8 | d83b0e0 | 1910 | implemented |  |  |  |
-| `nvnDepthStencilStateSetStencilTestEnable` | G8 | d83b080 | 955 | implemented |  |  |  |
+| `nvnDepthStencilStateSetDefaults` | G8 | d83b000 | 955 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnDepthStencilStateSetDepthFunc` | G8 | d83b060 | 955 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnDepthStencilStateSetDepthTestEnable` | G8 | d83b020 | 955 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnDepthStencilStateSetDepthWriteEnable` | G8 | d83b040 | 955 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnDepthStencilStateSetStencilFunc` | G8 | d83b0a0 | 1910 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnDepthStencilStateSetStencilOp` | G8 | d83b0e0 | 1910 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnDepthStencilStateSetStencilTestEnable` | G8 | d83b080 | 955 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnMultisampleStateGetAlphaToCoverageDither` | G8 | d83b380 | 36535 | implemented |  |  |  |
 | `nvnMultisampleStateGetAlphaToCoverageEnable` | G8 | d83b370 | 56749 | implemented |  |  |  |
 | `nvnMultisampleStateGetCoverageModulationMode` | G8 | d83b3e0 | 23322 | implemented |  |  |  |
@@ -203,39 +203,39 @@ tool keeps them.
 | `nvnMultisampleStateGetMultisampleEnable` | G8 | d83b350 | 56749 | implemented |  |  |  |
 | `nvnMultisampleStateGetRasterSamples` | G8 | d83b3b0 | 23322 | implemented |  |  |  |
 | `nvnMultisampleStateGetSamples` | G8 | d83b360 | 23322 | implemented |  |  |  |
-| `nvnMultisampleStateSetAlphaToCoverageDither` | G8 | d83b310 | 3 | implemented |  |  |  |
-| `nvnMultisampleStateSetAlphaToCoverageEnable` | G8 | d83b2f0 | 818 | implemented |  |  |  |
-| `nvnMultisampleStateSetCoverageModulationMode` | G8 | d83b3c0 | 3 | implemented |  |  |  |
-| `nvnMultisampleStateSetCoverageToColorEnable` | G8 | d83b3f0 | 3 | implemented |  |  |  |
-| `nvnMultisampleStateSetCoverageToColorOutput` | G8 | d83b420 | 3 | implemented |  |  |  |
-| `nvnMultisampleStateSetDefaults` | G8 | d83b2b0 | 818 | implemented |  |  |  |
-| `nvnMultisampleStateSetMultisampleEnable` | G8 | d83b2d0 | 818 | implemented |  |  |  |
-| `nvnMultisampleStateSetRasterSamples` | G8 | d83b390 | 3 | implemented |  |  |  |
-| `nvnMultisampleStateSetSampleLocationsEnable` | G8 | d83b450 | 3 | implemented |  |  |  |
-| `nvnMultisampleStateSetSampleLocationsGridEnable` | G8 | d83b500 | 3 | implemented |  |  |  |
-| `nvnMultisampleStateSetSamples` | G8 | d83b330 | 818 | implemented |  |  |  |
+| `nvnMultisampleStateSetAlphaToCoverageDither` | G8 | d83b310 | 3 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnMultisampleStateSetAlphaToCoverageEnable` | G8 | d83b2f0 | 818 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnMultisampleStateSetCoverageModulationMode` | G8 | d83b3c0 | 3 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnMultisampleStateSetCoverageToColorEnable` | G8 | d83b3f0 | 3 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnMultisampleStateSetCoverageToColorOutput` | G8 | d83b420 | 3 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnMultisampleStateSetDefaults` | G8 | d83b2b0 | 818 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnMultisampleStateSetMultisampleEnable` | G8 | d83b2d0 | 818 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnMultisampleStateSetRasterSamples` | G8 | d83b390 | 3 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnMultisampleStateSetSampleLocationsEnable` | G8 | d83b450 | 3 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnMultisampleStateSetSampleLocationsGridEnable` | G8 | d83b500 | 3 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnMultisampleStateSetSamples` | G8 | d83b330 | 818 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnPolygonStateGetCullFace` | G8 | d83b270 | 9938 | implemented |  |  |  |
 | `nvnPolygonStateGetFrontFace` | G8 | d83b280 | 9269 | implemented |  |  |  |
 | `nvnPolygonStateGetPolygonMode` | G8 | d83b290 | 9269 | implemented |  |  |  |
 | `nvnPolygonStateGetPolygonOffsetEnables` | G8 | d83b2a0 | 9269 | implemented |  |  |  |
-| `nvnPolygonStateSetCullFace` | G8 | d83b1f0 | 818 | implemented |  |  |  |
-| `nvnPolygonStateSetDefaults` | G8 | d83b1e0 | 818 | implemented |  |  |  |
-| `nvnPolygonStateSetFrontFace` | G8 | d83b210 | 818 | implemented |  |  |  |
-| `nvnPolygonStateSetPolygonMode` | G8 | d83b230 | 818 | implemented |  |  |  |
-| `nvnPolygonStateSetPolygonOffsetEnables` | G8 | d83b250 | 818 | implemented |  |  |  |
+| `nvnPolygonStateSetCullFace` | G8 | d83b1f0 | 818 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnPolygonStateSetDefaults` | G8 | d83b1e0 | 818 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnPolygonStateSetFrontFace` | G8 | d83b210 | 818 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnPolygonStateSetPolygonMode` | G8 | d83b230 | 818 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnPolygonStateSetPolygonOffsetEnables` | G8 | d83b250 | 818 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnProgramFinalize` | G8 | d836330 | 384 | implemented |  |  |  |
 | `nvnProgramInitialize` | G8 | d8362a0 | 5179 | implemented |  |  |  |
 | `nvnProgramSetShadersExt` | G8 | d836da0 | 5179 | implemented |  |  |  |
 | `nvnVertexAttribStateGetFormat` | G8 | d83af80 | 4172578 | implemented | unit (nvn_params) |  | library read: field bits 21-30 and 7-20 |
 | `nvnVertexAttribStateGetStreamIndex` | G8 | d83afa0 | 4188266 | implemented | unit (nvn_params) |  | library read: bits 0-4 |
-| `nvnVertexAttribStateSetDefaults` | G8 | d83af30 | 2291 | implemented |  |  |  |
-| `nvnVertexAttribStateSetFormat` | G8 | d83af40 | 2237 | implemented |  |  |  |
-| `nvnVertexAttribStateSetStreamIndex` | G8 | d83af60 | 2237 | implemented |  |  |  |
+| `nvnVertexAttribStateSetDefaults` | G8 | d83af30 | 2291 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnVertexAttribStateSetFormat` | G8 | d83af40 | 2237 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnVertexAttribStateSetStreamIndex` | G8 | d83af60 | 2237 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnVertexStreamStateGetDivisor` | G8 | d83aff0 | 676554 | implemented |  |  | library read: the second word |
 | `nvnVertexStreamStateGetStride` | G8 | d83afe0 | 1444082 | implemented |  |  |  |
-| `nvnVertexStreamStateSetDefaults` | G8 | d83afb0 | 1801 | implemented |  |  |  |
-| `nvnVertexStreamStateSetDivisor` | G8 | d83afd0 | 1801 | implemented |  |  |  |
-| `nvnVertexStreamStateSetStride` | G8 | d83afc0 | 1801 | implemented |  |  |  |
+| `nvnVertexStreamStateSetDefaults` | G8 | d83afb0 | 1801 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnVertexStreamStateSetDivisor` | G8 | d83afd0 | 1801 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnVertexStreamStateSetStride` | G8 | d83afc0 | 1801 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnCommandBufferBeginTransformFeedback` | G9 | d84b5a0 | 13670 | implemented | unit (nvn_params, nvn_replay) |  | library read: macro 0 with the address |
 | `nvnCommandBufferBindImage` | G9 | d8491c0 | 2 | implemented |  |  |  |
 | `nvnCommandBufferBindTransformFeedbackBuffer` | G9 | d84b400 | 41010 | implemented | unit (nvn_params) |  | library read: sent at the bind, not at the draw |
@@ -248,18 +248,18 @@ tool keeps them.
 | `nvnCommandBufferResetCounter` | G9 | d856b40 | 9962 | implemented | unit (nvn_params, nvn_replay) |  | library read: 0x54C from the table at de877bc |
 | `nvnDeviceGetImageHandle` | G9 | d82d050 | 2 | implemented |  |  |  |
 | `nvnDeviceGetTextureHandle` | G9 | d82d0d0 | 2240087 | implemented |  |  |  |
-| `nvnSamplerBuilderSetBorderColor` | G9 | d83a350 | 168 | implemented |  |  |  |
-| `nvnSamplerBuilderSetCompare` | G9 | d83a340 | 168 | implemented |  |  |  |
-| `nvnSamplerBuilderSetDefaults` | G9 | d83a2c0 | 168 | implemented |  |  |  |
-| `nvnSamplerBuilderSetDevice` | G9 | d83a2b0 | 168 | implemented |  |  |  |
-| `nvnSamplerBuilderSetLodBias` | G9 | d83a330 | 168 | implemented |  |  |  |
-| `nvnSamplerBuilderSetLodClamp` | G9 | d83a320 | 168 | implemented |  |  |  |
-| `nvnSamplerBuilderSetLodSnap` | G9 | d83a400 | 13 | implemented |  |  |  |
-| `nvnSamplerBuilderSetMaxAnisotropy` | G9 | d83a3e0 | 13 | implemented |  |  |  |
-| `nvnSamplerBuilderSetMinMagFilter` | G9 | d83a300 | 168 | implemented |  |  |  |
-| `nvnSamplerBuilderSetReductionFilter` | G9 | d83a3f0 | 168 | implemented |  |  |  |
-| `nvnSamplerBuilderSetWrapMode` | G9 | d83a310 | 168 | implemented |  |  |  |
-| `nvnSamplerCompare` | G9 | d83aae0 | 2362 | implemented |  |  |  |
+| `nvnSamplerBuilderSetBorderColor` | G9 | d83a350 | 168 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnSamplerBuilderSetCompare` | G9 | d83a340 | 168 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnSamplerBuilderSetDefaults` | G9 | d83a2c0 | 168 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnSamplerBuilderSetDevice` | G9 | d83a2b0 | 168 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnSamplerBuilderSetLodBias` | G9 | d83a330 | 168 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnSamplerBuilderSetLodClamp` | G9 | d83a320 | 168 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnSamplerBuilderSetLodSnap` | G9 | d83a400 | 13 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnSamplerBuilderSetMaxAnisotropy` | G9 | d83a3e0 | 13 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnSamplerBuilderSetMinMagFilter` | G9 | d83a300 | 168 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnSamplerBuilderSetReductionFilter` | G9 | d83a3f0 | 168 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnSamplerBuilderSetWrapMode` | G9 | d83a310 | 168 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnSamplerCompare` | G9 | d83aae0 | 2362 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnSamplerFinalize` | G9 | d83a5b0 | 30 | implemented |  |  | library read: one ret, the record stays |
 | `nvnSamplerInitialize` | G9 | d83a570 | 168 | implemented |  |  |  |
 | `nvnSamplerPoolRegisterSampler` | G9 | d83a910 | 82 | implemented |  |  |  |
@@ -271,22 +271,22 @@ tool keeps them.
 | `nvnTextureViewGetLayers` | G9 | d83c8d0 | 2335 | implemented |  |  |  |
 | `nvnTextureViewGetLevels` | G9 | d83c8b0 | 2335 | implemented |  |  |  |
 | `nvnTextureViewGetTarget` | G9 | d83c960 | 2290 | implemented |  |  |  |
-| `nvnTextureViewSetDefaults` | G9 | d83c800 | 5852 | implemented |  |  |  |
-| `nvnTextureViewSetDepthStencilMode` | G9 | d83c890 | 5598 | implemented |  |  |  |
-| `nvnTextureViewSetFormat` | G9 | d83c850 | 5828 | implemented |  |  |  |
-| `nvnTextureViewSetLayers` | G9 | d83c830 | 5827 | implemented |  |  |  |
-| `nvnTextureViewSetLevels` | G9 | d83c810 | 5852 | implemented |  |  |  |
-| `nvnTextureViewSetSwizzle` | G9 | d83c870 | 5598 | implemented |  |  |  |
-| `nvnTextureViewSetTarget` | G9 | d83c980 | 5828 | implemented |  |  |  |
+| `nvnTextureViewSetDefaults` | G9 | d83c800 | 5852 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureViewSetDepthStencilMode` | G9 | d83c890 | 5598 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureViewSetFormat` | G9 | d83c850 | 5828 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureViewSetLayers` | G9 | d83c830 | 5827 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureViewSetLevels` | G9 | d83c810 | 5852 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureViewSetSwizzle` | G9 | d83c870 | 5598 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureViewSetTarget` | G9 | d83c980 | 5828 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTextureWriteTexels` | G9 | d83e020 | 1 | implemented |  |  |  |
 | `nvnBlendStateGetAdvancedMode` | G10 | d83ad90 | 0 | implemented |  |  |  |
 | `nvnBlendStateGetAdvancedNormalizedDst` | G10 | d83adc0 | 0 | implemented |  |  |  |
 | `nvnBlendStateGetAdvancedOverlap` | G10 | d83ada0 | 0 | implemented |  |  |  |
 | `nvnBlendStateGetAdvancedPremultipliedSrc` | G10 | d83adb0 | 0 | implemented |  |  |  |
-| `nvnBlendStateSetAdvancedMode` | G10 | d83aca0 | 0 | implemented |  |  |  |
-| `nvnBlendStateSetAdvancedNormalizedDst` | G10 | d83ad00 | 0 | implemented |  |  |  |
-| `nvnBlendStateSetAdvancedOverlap` | G10 | d83acc0 | 0 | implemented |  |  |  |
-| `nvnBlendStateSetAdvancedPremultipliedSrc` | G10 | d83ace0 | 0 | implemented |  |  |  |
+| `nvnBlendStateSetAdvancedMode` | G10 | d83aca0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnBlendStateSetAdvancedNormalizedDst` | G10 | d83ad00 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnBlendStateSetAdvancedOverlap` | G10 | d83acc0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnBlendStateSetAdvancedPremultipliedSrc` | G10 | d83ace0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnBufferBuilderGetDevice` | G10 | d823ae0 | 0 | implemented |  |  |  |
 | `nvnBufferBuilderGetMemoryOffset` | G10 | d823b00 | 0 | implemented |  |  |  |
 | `nvnBufferBuilderGetMemoryPool` | G10 | d823af0 | 0 | implemented |  |  |  |
@@ -413,7 +413,7 @@ tool keeps them.
 | `nvnEventBuilderGetMemoryOffset` | G10 | d832d30 | 0 | implemented |  |  |  |
 | `nvnEventBuilderGetMemoryPool` | G10 | d832d20 | 0 | implemented |  |  |  |
 | `nvnEventBuilderGetStorage` | G10 | d832d10 | 0 | implemented |  |  |  |
-| `nvnEventBuilderSetDefaults` | G10 | d832cf0 | 0 | implemented |  |  |  |
+| `nvnEventBuilderSetDefaults` | G10 | d832cf0 | 0 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
 | `nvnEventBuilderSetStorage` | G10 | d832d00 | 0 | implemented |  |  |  |
 | `nvnEventFinalize` | G10 | d832dd0 | 0 | implemented |  |  |  |
 | `nvnEventGetMemoryOffset` | G10 | d832e00 | 0 | implemented |  |  |  |
@@ -447,7 +447,7 @@ tool keeps them.
 | `nvnQueueBuilderGetMemory` | G10 | d838560 | 0 | implemented |  |  |  |
 | `nvnQueueBuilderGetMemorySize` | G10 | d838550 | 0 | implemented |  |  |  |
 | `nvnQueueBuilderGetQueuePriority` | G10 | d8385a0 | 0 | implemented |  |  |  |
-| `nvnQueueBuilderSetCommandFlushThreshold` | G10 | d838180 | 0 | implemented |  |  |  |
+| `nvnQueueBuilderSetCommandFlushThreshold` | G10 | d838180 | 0 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
 | `nvnQueueFinalize` | G10 | d8393d0 | 0 | implemented |  |  |  |
 | `nvnQueueFinish` | G10 | d839480 | 0 | implemented |  |  |  |
 | `nvnQueueFlush` | G10 | d83a070 | 0 | implemented |  |  |  |
@@ -470,8 +470,8 @@ tool keeps them.
 | `nvnSamplerBuilderGetMinMagFilter` | G10 | d83a420 | 0 | implemented |  |  |  |
 | `nvnSamplerBuilderGetReductionFilter` | G10 | d83a550 | 0 | implemented |  |  |  |
 | `nvnSamplerBuilderGetWrapMode` | G10 | d83a440 | 0 | implemented |  |  |  |
-| `nvnSamplerBuilderSetBorderColori` | G10 | d83a380 | 0 | implemented |  |  |  |
-| `nvnSamplerBuilderSetBorderColorui` | G10 | d83a3b0 | 0 | implemented |  |  |  |
+| `nvnSamplerBuilderSetBorderColori` | G10 | d83a380 | 0 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
+| `nvnSamplerBuilderSetBorderColorui` | G10 | d83a3b0 | 0 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
 | `nvnSamplerGetBorderColor` | G10 | d83a650 | 0 | implemented |  |  |  |
 | `nvnSamplerGetBorderColori` | G10 | d83a680 | 0 | implemented |  |  |  |
 | `nvnSamplerGetBorderColorui` | G10 | d83a6b0 | 0 | implemented |  |  |  |
@@ -511,10 +511,10 @@ tool keeps them.
 | `nvnTextureBuilderGetSwizzle` | G10 | d83c3f0 | 0 | implemented |  |  |  |
 | `nvnTextureBuilderGetTarget` | G10 | d83c380 | 0 | implemented |  |  |  |
 | `nvnTextureBuilderGetZCullStorageSize` | G10 | d83d760 | 0 | implemented |  |  |  |
-| `nvnTextureBuilderSetGLTextureName` | G10 | d83c340 | 0 | implemented |  |  |  |
+| `nvnTextureBuilderSetGLTextureName` | G10 | d83c340 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTextureBuilderSetPackagedTextureData` | G10 | d83c730 | 0 | implemented |  |  |  |
-| `nvnTextureBuilderSetSamples` | G10 | d83c300 | 0 | implemented |  |  |  |
-| `nvnTextureBuilderSetSize1D` | G10 | d83c2b0 | 0 | implemented |  |  |  |
+| `nvnTextureBuilderSetSamples` | G10 | d83c300 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnTextureBuilderSetSize1D` | G10 | d83c2b0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTextureCompare` | G10 | d83e3a0 | 0 | implemented |  |  |  |
 | `nvnTextureGetDebugID` | G10 | d83e500 | 0 | implemented |  |  |  |
 | `nvnTextureGetDepthStencilMode` | G10 | d83d900 | 0 | implemented |  |  |  |
@@ -540,7 +540,7 @@ tool keeps them.
 | `nvnTextureReadTexels` | G10 | d83e280 | 0 | implemented | unit |  |  |
 | `nvnTextureReadTexelsStrided` | G10 | d83e030 | 0 | implemented | unit |  |  |
 | `nvnTextureSetDebugLabel` | G10 | d82cd40 | 0 | implemented |  |  |  |
-| `nvnTextureViewCompare` | G10 | d83c9a0 | 0 | implemented |  |  |  |
+| `nvnTextureViewCompare` | G10 | d83c9a0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTextureViewGetDepthStencilMode` | G10 | d83c940 | 0 | implemented |  |  |  |
 | `nvnTextureViewGetSwizzle` | G10 | d83c910 | 0 | implemented |  |  |  |
 | `nvnTextureWriteTexelsStrided` | G10 | d83ddd0 | 0 | implemented |  |  |  |
@@ -550,8 +550,8 @@ tool keeps them.
 | `nvnWindowBuilderGetNumTextures` | G10 | d83e5e0 | 0 | implemented |  |  |  |
 | `nvnWindowBuilderGetPresentInterval` | G10 | d83e610 | 0 | implemented |  |  |  |
 | `nvnWindowBuilderGetTexture` | G10 | d83e5f0 | 0 | implemented |  |  |  |
-| `nvnWindowBuilderSetNumActiveTextures` | G10 | d83e5c0 | 0 | implemented |  |  |  |
-| `nvnWindowBuilderSetPresentInterval` | G10 | d83e5b0 | 0 | implemented |  |  |  |
+| `nvnWindowBuilderSetNumActiveTextures` | G10 | d83e5c0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
+| `nvnWindowBuilderSetPresentInterval` | G10 | d83e5b0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnWindowFinalize` | G10 | d83ea90 | 0 | implemented |  |  | removes the host window record |
 | `nvnWindowGetCrop` | G10 | d83eba0 | 0 | implemented |  |  |  |
 | `nvnWindowGetNativeWindow` | G10 | d83eb10 | 0 | implemented |  |  |  |

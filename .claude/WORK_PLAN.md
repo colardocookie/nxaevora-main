@@ -49,21 +49,10 @@ below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
   4-u4. `docs/nvn-coverage.md`: 1 row of G10 is `stub-log` (`nvnDeviceGetProcAddress`, by decision) after U5 (`11978be`).
-  Current step: 4-u3-1 fixes (record of (a) to (d): `OLD-WORK_PLAN.md`, last section). The selftest of builders
-    and states is committed (`nvn_selftest_obj.c`). Run of 2026-11-10: 227 cases, 4 failed. Fix these, then one user run
-    (`nvn_native=0`, `nvn_trace=1`, `nvn_selftest=1`), then write the passed scope into `nvn-coverage.md`:
-    1. CONFIRMED host fault: `nvn_depth_stencil_state_defaults` (`nvn_params.c:227`) word1 0x11180118, the library
-       (d83b000) stores 0x11181118. Fix the constant and its unit test.
-    2. TextureBuilder defaults, GetStorageAlignment with format 0: library 0x200, host 0. Read the library path at
-       d83c540 (the branch for format != 0xa of d83c4c0) before the fix.
-    3. GetSparseTileLayout: the host logs `unwritable output=13800071c0` (`gmem_write` refuses the selftest arena from
-       `kmem_alloc` MS_STATIC). Check `gmem_write` (`gpu/gpu.h:252`): a harness fault or a host fault. Format 0: the host
-       refuses, the library writes zeros (check the library first).
-    DONE 2026-11-10: fixes 1 to 3 are committed (exe md5 03bf4203). User run: 227 cases, 0 failed. NEXT: write the passed
-    scope into `nvn-coverage.md`, then move this record to the old plan and start 4-u3-2.
-    The commit message of the selftest says that the 4 failures are host faults: only 1 is confirmed. Say it right in
-    the commit of the fixes.
-    Then: 4-u3-2 (objects and device), 4-u3-3 (S/Y harness, mutation, command buffer), 4-u3-4 (exectest).
+  Current step: 4-u3-2 (objects and device). 4-u3-1 is done (`OLD-WORK_PLAN.md`, last section): selftest 227 cases,
+    0 failed, `nvn-coverage.md` column checks has 105 functions. Out of 4-u3-1 and to 4-u3-2: the setters that take a pool,
+    texture or memory, `MultisampleStateSetSampleLocations`. Start with the brief (template `reports/brief-5-writer.md`).
+    Then: 4-u3-3 (S/Y harness, mutation, command buffer), 4-u3-4 (exectest). The `unit` scope is not in the checks column yet.
   - Open for 4-u4: the design asks for no `stub-log` row, but `nvnDeviceGetProcAddress` stays `stub-log` by decision (the
     game resolves names through d832940, which the hook covers). Decide the row (a handler that calls the resolver, or an
     explicit exception in the design) before 4-u4.
