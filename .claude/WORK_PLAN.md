@@ -49,13 +49,14 @@ below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
   4-u4. `docs/nvn-coverage.md`: 1 row of G10 is `stub-log` (`nvnDeviceGetProcAddress`, by decision) after U5 (`11978be`).
-  Current step: 4-u3-2 (objects and device), step (e). Fixes of step (d) are in `8a440fd` (selftest arena `MS_NORMAL`,
-    host pool GPU ranges from the nvdrv allocator, `nvn_gpu_va_alloc`/`nvn_gpu_va_free`). Run 21:56 (same `.ini`): 247 cases,
-    2 failed: `nvnTexture block fmt=0x25/0x26 32x32` R, `nvnTextureGetTextureAddress` relative to the pool buffer address:
-    library 0x14000 / 0x18000, host 0x4000 / 0x8000. The difference is 0x10000 = the pool size (`RES_TEX_POOL_BYTES`).
-    Guess (not checked): the library gives a block-linear texture an address in a second GPU view of the pool, placed
-    after the pitch view. Next action: the game explorer reads nvnTextureGetTextureAddress, the texture initialize and
-    the pool mapping (how many GPU ranges a pool maps, and which kind), then decide the host fix. Then fill the checks column.
+  Current step: 4-u3-2 (objects and device), step (f). History of steps (a) to (e): `OLD-WORK_PLAN.md`, last section.
+    Run 21:56: 247 cases, 2 failed: `nvnTexture block fmt=0x25/0x26 32x32` R, `nvnTextureGetTextureAddress` relative to
+    the pool buffer address: library 0x14000 / 0x18000, host 0x4000 / 0x8000 (texture at pool offset 0x4000 / 0x8000).
+    The difference is 0x10000 = the pool size (`RES_TEX_POOL_BYTES`, `nvn_selftest_res.c`). Linear textures pass.
+    Guess (not checked): the library gives a block-linear texture an address in a second GPU view of the pool, after
+    the pitch view. Next action: brief for the game explorer: nvnTextureGetTextureAddress, the texture initialize and
+    the pool initialize (how many GPU ranges a pool maps, of which kind and size). Then decide the host fix with the
+    user, then fill the checks column.
     Then: 4-u3-3 (S/Y harness, mutation, command buffer), 4-u3-4 (exectest). The `unit` scope is not in the checks column yet.
   - Open for 4-u4: the design asks for no `stub-log` row, but `nvnDeviceGetProcAddress` stays `stub-log` by decision (the
     game resolves names through d832940, which the hook covers). Decide the row (a handler that calls the resolver, or an

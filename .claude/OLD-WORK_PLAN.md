@@ -2592,3 +2592,12 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
      `pool_gpu_cursor` starts at `NVN_POOL_GPU_BASE` (0x400000000) inside the ranges that the library mapped by nvdrv.
      The handler refuses correctly (no faked success). Decision of the user: reserve the host range from the nvdrv
      address space allocator.
+- Step (d) fix (2026-11-10): brief `reports/brief-writer-u3s-fix.md`, writer patch `patches/writer-u3s-fix.patch`, report
+  `reports/writer-u3s-fix.md`. Fix 1: the selftest arena is `MS_NORMAL` (`MSF_CAN_CHANGE_ATTR`, a kernel region block passes
+  `attr_blocked`). Fix 2: `nvn_gpu_va_alloc`/`nvn_gpu_va_free` in `nvdrv.c` take `aslock` around `va_alloc`/`va_free`. The
+  queue pool, the memory pools (normal and virtual) and the dispatch scratch take their range there. `pool_gpu_cursor`,
+  `nvn_pool_gpu_allocate`, `NVN_POOL_GPU_END` and their test are deleted. `NVN_POOL_GPU_BASE` stays for the shader window.
+  Lock order `objs_lock`, `aslock`, `alias_lock` (nvdrv.c does not call the nvn layer). The queue pool and the dispatch
+  scratch are never freed. Build ok, ctest ok except `tracked_material`. Commit `8a440fd` (selftest code and fixes).
+- Step (e) run 21:56 (`nvn_native=0`, `nvn_trace=1`, `nvn_selftest=1`, exe md5 a78c5b74): no svcBreak, 247 cases,
+  2 failed. All pool cases (flags 0x24, 0x22, 0x12, 0x21, MapVirtual) ok. The 2 failures: see `WORK_PLAN.md`.
