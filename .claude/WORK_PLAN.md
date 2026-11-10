@@ -58,17 +58,13 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U4 patch 2 step (b): write `reports/brief-writer-u4-2.md` (model: `reports/brief-writer-u4-1.md`, reuse its
-    kinds SEND, NO-OP, REFUSE and `command_refused`), make the worktree `wt-u4-2`, launch the handler writer.
-    Decisions for table C (2026-11-10, all rows have 0 calls):
-    - REFUSE: BindSeparateTexture(s), BindSeparateSampler(s) (the host has only 128 combined slots, no separate table),
-      SetProgramSubroutines and SetSubroutineLinkage (the words of d855880 are not known), SetShaderScratchMemory (two SDK
-      constants of the 0x1E4 block are not known), CoverageModulation when it is not the identity or disabled.
-    - Implement: GetSeparateTextureHandle, GetSeparateSamplerHandle, GetTexelFetchHandle (pure values, rows 26 to 28).
-    - Logged no-op: tiled cache. Read the other rows of table C (BindTextures, ProgramSetShaders, SetSampleShading) and decide
-      with the table and the existing BindTexture path.
-  - Open: one regression run of the user after patch 1 (`b74abf3` touched SetViewports, SetScissors and the draw state
-    send). Asked on 2026-11-10. Read it with `nx-log-read` when the user says that it ran.
+  Current step: U4 patch 2 step (c). The writer is done: `patches/writer-u4-2.patch` (LF, 4 files, +174 -33),
+    `reports/writer-u4-2.md`, worktree `wt-u4-2` (remove it after the patch). Read the whole patch, apply, keep CRLF, build,
+    `ctest`, a mutant of each new test, update `nvn-coverage.md`, commit. Brief: `reports/brief-writer-u4-2.md`.
+    Extra decisions in the brief: BindTextures SEND per entry (stride 8, `command_bind_range_ok` takes the entry size),
+    ProgramSetShaders plain mode (16-byte entries, no control), SetSampleShading NO-OP (one sample), coverage table
+    REFUSE (identity not verified), SetSubroutineLinkage returns 0.
+  - Record of the patch 1 regression run and of the table C decisions: `OLD-WORK_PLAN.md`, "U4 patch 2 step (b)".
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
   - Rows near U1 that stay in other groups: CommandBuffer command and control memory getters, memory callback getters (U5).
     ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).

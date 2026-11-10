@@ -2487,3 +2487,16 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
     - Patch 1 = tables A and B, patch 2 = table C. Refuse also: MultiDraw*IndirectCount (the record feed is not known),
       DrawTexture (it needs the driver program at device+0x1b00), DispatchComputeIndirect, and DrawArrays/ElementsIndirect (the
       GPU reads the record at draw time, the host replay has no such fetch, and a read at replay can be stale).
+
+## U4 patch 2 step (b) and the patch 1 regression run (2026-11-10, moved from WORK_PLAN.md)
+
+  - Done 2026-11-10: the regression run of patch 1 (field, 84 s, 30 fps, no crash, refusals 0, missing 0, screen good).
+    Decisions for table C (2026-11-10, all rows have 0 calls):
+    - REFUSE: BindSeparateTexture(s), BindSeparateSampler(s) (the host has only 128 combined slots, no separate table),
+      SetProgramSubroutines and SetSubroutineLinkage (the words of d855880 are not known), SetShaderScratchMemory (two SDK
+      constants of the 0x1E4 block are not known), CoverageModulation when it is not the identity or disabled.
+    - Implement: GetSeparateTextureHandle, GetSeparateSamplerHandle, GetTexelFetchHandle (pure values, rows 26 to 28).
+    - Logged no-op: tiled cache. Read the other rows of table C (BindTextures, ProgramSetShaders, SetSampleShading) and decide
+      with the table and the existing BindTexture path.
+  - Step (b): brief `reports/brief-writer-u4-2.md`, handler writer (opencode) done, patch `patches/writer-u4-2.patch`,
+    report `reports/writer-u4-2.md`. The writer says: all 16 functions done, no open questions (not checked yet).
