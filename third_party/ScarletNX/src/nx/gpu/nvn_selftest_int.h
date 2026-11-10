@@ -44,4 +44,11 @@ uint64_t nvn_st_device(void);
 /* The builder and state object cases, called from nvn_selftest_run after the two first cases. */
 void nvn_selftest_object_cases(CPU* c, NvnStRun* run);
 
+/* The resource object cases of nvn_selftest_res.c, called from nvn_selftest_run after the builder and state cases. */
+void nvn_selftest_resource_cases(CPU* c, NvnStRun* run);
+
+/* Builds one sampler object from the sampler builder values of nvn_selftest_obj.c. `variant` 2 gives a filter that
+   makes the sampler different from variant 0. 1 when every function was found. */
+int nvn_st_sampler_build(CPU* c, uint64_t builder, uint64_t sampler, uint64_t data, int host, unsigned variant);
+
 #endif

@@ -44,6 +44,12 @@ void gmmu_map(u64 gva, u64 cpu, u64 size);
 int nvn_gpu_map_range(u64 gva, u64 cpu, u64 size);
 /* Clears what nvn_gpu_map_range(gva, cpu, size) mapped. A page that something mapped elsewhere since stays */
 void nvn_gpu_unmap_range(u64 gva, u64 cpu, u64 size);
+/* A GPU range for the NVN host's pool mappings, from the allocator of ALLOC_SPACE and MAP_BUFFER_EX, so the two
+   allocators never hand out one range twice. 0 when size is 0, align is not a power of two, size is past the GPU
+   address space, or no room is left; the caller logs the failure. From any thread */
+u64 nvn_gpu_va_alloc(u64 size, u64 align);
+/* Gives back a range that nvn_gpu_va_alloc returned, with the size it was allocated for */
+void nvn_gpu_va_free(u64 gva, u64 size);
 /* Each GPU range that shows guest bytes of [cpu, cpu + size), clipped to them: fn(ctx, gva, n) for the n bytes at
    gva, each mapped page once. The same guest memory is mapped at several GPU addresses, so what is known of it by one
    address holds at the others, and this finds them all from the guest side. From any thread. fn runs under the

@@ -262,27 +262,6 @@ static void test_memory_pool_params(void) {
     CHECK(nvn_memory_pool_flags(0xffffffffu) == 0x01ffffffu);
 }
 
-static void test_pool_gpu_allocate(void) {
-    uint64_t address = 7, next = 9;
-    CHECK(nvn_pool_gpu_allocate(NVN_POOL_GPU_BASE, 0x1001, 0x1000, &address, &next));
-    CHECK(address == NVN_POOL_GPU_BASE && next == address + 0x2000);
-    uint64_t first_end = next;
-    CHECK(nvn_pool_gpu_allocate(next, 0x10000, 0x10000, &address, &next));
-    CHECK(address >= first_end && address % 0x10000 == 0 && next == address + 0x10000);
-    CHECK(nvn_pool_gpu_allocate(NVN_POOL_GPU_END - 0x1000, 0x1000, 0x1000, &address, &next));
-    CHECK(next == NVN_POOL_GPU_END);
-    address = 7;
-    next = 9;
-    CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_END, 0x1000, 0x1000, &address, &next));
-    CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_END - 1, 1, 0x1000, &address, &next));
-    CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_BASE, UINT64_MAX, 0x1000, &address, &next));
-    CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_BASE, 0, 0x1000, &address, &next));
-    CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_BASE, 0x1000, 0, &address, &next));
-    CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_BASE, 0x1000, 0x800, &address, &next));
-    CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_BASE - 1, 0x1000, 0x1000, &address, &next));
-    CHECK(address == 7 && next == 9);
-}
-
 static void test_memory_pool_virtual_params(void) {
     NvnMemoryPoolBuilder b = {.storage = 0, .size = 0x20000, .flags = NVN_POOL_VIRTUAL};
     uint32_t flags;
@@ -3346,7 +3325,6 @@ int main(int argc, char** argv) {
     test_queue_defaults();
     test_memory_pool_defaults();
     test_memory_pool_params();
-    test_pool_gpu_allocate();
     test_memory_pool_virtual_params();
     test_map_virtual_range();
     test_map_virtual_batches();

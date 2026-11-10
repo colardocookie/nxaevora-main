@@ -409,7 +409,6 @@ uint32_t nvn_queue_init_device_words(const NvnQueueDeviceWords* dev, uint32_t wi
 /* The host device uses the minimum page size. No NvRm device is constructed. */
 #define NVN_POOL_PAGE_SIZE NVN_POOL_STORAGE_ALIGNMENT
 #define NVN_POOL_GPU_BASE 0x400000000ull
-#define NVN_POOL_GPU_END (1ull << 40)
 /* A virtual pool maps pages of the library's page size (the NvRm device's 64 KiB), not the storage alignment. */
 #define NVN_POOL_VIRTUAL_PAGE_SIZE 0x10000ull
 
@@ -441,8 +440,6 @@ typedef enum { NVN_BUFFER_OK = 0, NVN_BUFFER_PHYSICAL_POOL, NVN_BUFFER_OUT_OF_PO
 NvnBufferResult nvn_buffer_check(uint32_t pool_flags, uint64_t pool_size, uint64_t offset, uint64_t size);
 int nvn_descriptor_offset(uint64_t pool_offset, uint32_t count, uint64_t memory_size, uint32_t entry_bytes,
                           int32_t index, uint64_t* offset);
-int nvn_pool_gpu_allocate(uint64_t cursor, uint64_t size, uint64_t page_size,
-                          uint64_t* address, uint64_t* next);
 uint64_t nvn_memory_pool_map(uint32_t flags, uint64_t storage);
 uint32_t nvn_memory_pool_flags(uint32_t flags);
 

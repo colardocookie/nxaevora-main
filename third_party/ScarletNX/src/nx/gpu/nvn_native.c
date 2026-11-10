@@ -621,18 +621,16 @@ typedef struct {
     uint64_t memory_pool, offset;
     uint32_t count;
 } DescriptorPoolRec;
-static uint64_t pool_gpu_cursor = NVN_POOL_GPU_BASE;
 
-/* Makes a GPU-visible queue pool of size bytes and maps its storage at its GPU address. The storage is never freed:
-   QueueFinalize has no handler. Returns 0 after a log line. */
+/* Makes a GPU-visible queue pool of size bytes and maps its storage at its GPU address. The storage and its GPU
+   range are never freed: QueueFinalize has no handler. Returns 0 after a log line. */
 static int queue_pool_create(uint64_t size, uint64_t* storage, uint64_t* gpu) {
     const uint64_t bytes = (size + NVN_POOL_PAGE_SIZE - 1u) & ~(uint64_t)(NVN_POOL_PAGE_SIZE - 1u);
     pm_lock(&objs_lock);
     const uint64_t cpu = kmem_alloc(bytes, MS_STATIC, PERM_RW);
-    uint64_t address = 0, next = 0;
-    const int ok = cpu && nvn_pool_gpu_allocate(pool_gpu_cursor, bytes, NVN_POOL_PAGE_SIZE, &address, &next) &&
-                   nvn_gpu_map_range(address, cpu, bytes);
-    if (ok) pool_gpu_cursor = next;
+    const uint64_t address = nvn_gpu_va_alloc(bytes, NVN_POOL_PAGE_SIZE);
+    const int ok = cpu && address && nvn_gpu_map_range(address, cpu, bytes);
+    if (!ok && address) nvn_gpu_va_free(address, bytes);
     pm_unlock(&objs_lock);
     if (!ok) {
         LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: queue pool of %llu bytes cannot be allocated and mapped\n",
@@ -727,10 +725,10 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
         pm_unlock(&objs_lock);
         return;
     }
-    uint64_t address, next;
     /* MapVirtual maps whole 64 KiB pages, so a virtual range starts on one. */
     const uint64_t gpu_page = (flags & NVN_POOL_VIRTUAL) ? NVN_POOL_VIRTUAL_PAGE_SIZE : NVN_POOL_PAGE_SIZE;
-    if (!nvn_pool_gpu_allocate(pool_gpu_cursor, b.size, gpu_page, &address, &next)) {
+    const uint64_t address = nvn_gpu_va_alloc(b.size, gpu_page);
+    if (!address) {
         LOG("nvn-native: MemoryPoolInitialize pool=%llx size=%llx GPU address allocation failed\n",
             (unsigned long long)c->x[0], (unsigned long long)b.size);
         nvn_objtab_remove(&objs, c->x[0]);
@@ -746,6 +744,7 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
         if (!table) {
             LOG("nvn-native: MemoryPoolInitialize pool=%llx virtual page table of %u pages cannot be allocated\n",
                 (unsigned long long)c->x[0], pages);
+            nvn_gpu_va_free(address, b.size);
             nvn_objtab_remove(&objs, c->x[0]);
             c->x[0] = 0;
             pm_unlock(&objs_lock);
@@ -754,7 +753,6 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
         *p = (MemoryPoolRec){.device = b.device, .storage = 0, .size = b.size,
                              .gpu_address = address, .flags = flags,
                              .page_cpu = table, .page_count = pages};
-        pool_gpu_cursor = next;
         c->x[0] = 1;
         pm_unlock(&objs_lock);
         return;
@@ -763,6 +761,7 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
         LOG("nvn-native: MemoryPoolInitialize pool=%llx GPU range %llx size=%llx storage=%llx cannot be mapped\n",
             (unsigned long long)c->x[0], (unsigned long long)address, (unsigned long long)b.size,
             (unsigned long long)b.storage);
+        nvn_gpu_va_free(address, b.size);
         nvn_objtab_remove(&objs, c->x[0]);
         c->x[0] = 0;
         pm_unlock(&objs_lock);
@@ -770,7 +769,6 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
     }
     *p = (MemoryPoolRec){.device = b.device, .storage = b.storage, .size = b.size,
                          .gpu_address = address, .flags = flags};
-    pool_gpu_cursor = next;
     c->x[0] = 1;
     pm_unlock(&objs_lock);
 }
@@ -791,6 +789,7 @@ static void h_memory_pool_finalize(CPU* c, u64 entry) {
         } else {
             nvn_gpu_unmap_range(p->gpu_address, p->storage, p->size);
         }
+        nvn_gpu_va_free(p->gpu_address, p->size);
         nvn_objtab_remove(&objs, c->x[0]);
     }
     pm_unlock(&objs_lock);
@@ -5312,21 +5311,19 @@ static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
 static uint64_t dispatch_scratch_gpu;
 static uint8_t dispatch_scratch_ready, dispatch_scratch_failed;
 
-/* Allocates the arena at the first dispatch. It takes objs_lock for the shared GPU cursor. */
+/* Allocates the arena at the first dispatch. It takes objs_lock for the shared state of the arena. */
 static int dispatch_scratch_get(uint64_t* gpu) {
     pm_lock(&objs_lock);
     if (!dispatch_scratch_ready && !dispatch_scratch_failed) {
         uint64_t cpu = kmem_alloc(NVN_DISPATCH_SCRATCH_BYTES, MS_STATIC, PERM_RW);
-        uint64_t address = 0, next = 0;
-        if (!cpu || !nvn_pool_gpu_allocate(pool_gpu_cursor, NVN_DISPATCH_SCRATCH_BYTES, NVN_POOL_PAGE_SIZE,
-                                           &address, &next) ||
-            !nvn_gpu_map_range(address, cpu, NVN_DISPATCH_SCRATCH_BYTES)) {
+        uint64_t address = nvn_gpu_va_alloc(NVN_DISPATCH_SCRATCH_BYTES, NVN_POOL_PAGE_SIZE);
+        if (!cpu || !address || !nvn_gpu_map_range(address, cpu, NVN_DISPATCH_SCRATCH_BYTES)) {
+            if (address) nvn_gpu_va_free(address, NVN_DISPATCH_SCRATCH_BYTES);
             dispatch_scratch_failed = 1;
             LOG_LIMIT(REPLAY_LOG_LIMIT,
                       "nvn-native: dispatch arena of %u bytes cannot be allocated and mapped\n",
                       (unsigned)NVN_DISPATCH_SCRATCH_BYTES);
         } else {
-            pool_gpu_cursor = next;
             dispatch_scratch_gpu = address;
             dispatch_scratch_ready = 1;
         }

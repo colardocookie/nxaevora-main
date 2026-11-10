@@ -587,6 +587,49 @@ static uint64_t test_arg(uint64_t v, uint64_t data) {
     return v;
 }
 
+/* The sampler builder cases that the sampler object cases reuse (u3-2, decision 7). Each index is one entry of
+   sampler_tests, so the values stay in that table. Entry 3 is the filter that makes variant 2 different. */
+static const unsigned sampler_object_cases[] = {2, 5, 7, 9, 11, 13, 17, 19, 21};
+static const unsigned sampler_object_other = 3;
+
+/* Applies one sampler builder case of sampler_tests to builder. 1 when its setter was found. */
+static int sampler_apply_case(CPU* c, uint64_t builder, uint64_t data, int host, unsigned index) {
+    const NvnStTest* t = &sampler_tests[index];
+    if (!t->setter) return 1;
+    NvnStProc setter = {0};
+    if (!nvn_st_proc_find(&setter, t->setter)) {
+        LOG("selftest: %s skipped (the game did not resolve it, or the host has no handler)\n", t->setter);
+        return 0;
+    }
+    memset(GP(data), 0, NVN_ST_DATA_WORDS * sizeof(uint32_t));
+    for (unsigned i = 0; i < t->n_data && i < NVN_ST_DATA_WORDS; i++) gw32(data + (uint64_t)i * 4u, t->data[i]);
+    NvnStCall a = {.x = {builder}};
+    for (unsigned r = 1; r < 6; r++) a.x[r] = test_arg(t->x[r], data);
+    a.n_s = t->n_s;
+    for (unsigned i = 0; i < t->n_s; i++) a.s[i] = t->s[i];
+    nvn_st_call(c, host ? &setter.host : &setter.lib, &a);
+    return 1;
+}
+
+int nvn_st_sampler_build(CPU* c, uint64_t builder, uint64_t sampler, uint64_t data, int host, unsigned variant) {
+    NvnStProc set_defaults = {0}, set_device = {0}, initialize = {0};
+    if (!nvn_st_proc_find(&set_defaults, "nvnSamplerBuilderSetDefaults") ||
+        !nvn_st_proc_find(&set_device, "nvnSamplerBuilderSetDevice") ||
+        !nvn_st_proc_find(&initialize, "nvnSamplerInitialize")) {
+        LOG("selftest: nvnSamplerBuilderSetDefaults, SetDevice or nvnSamplerInitialize skipped (not resolved, or no "
+            "handler)\n");
+        return 0;
+    }
+    memset(GP(builder), 0, NVN_ST_OBJ_BYTES);
+    nvn_st_call(c, host ? &set_defaults.host : &set_defaults.lib, &(NvnStCall){.x = {builder}});
+    nvn_st_call(c, host ? &set_device.host : &set_device.lib, &(NvnStCall){.x = {builder, nvn_st_device()}});
+    for (unsigned i = 0; i < ARRAY_LEN(sampler_object_cases); i++)
+        if (!sampler_apply_case(c, builder, data, host, sampler_object_cases[i])) return 0;
+    if (variant == 2 && !sampler_apply_case(c, builder, data, host, sampler_object_other)) return 0;
+    return (uint32_t)nvn_st_call(c, host ? &initialize.host : &initialize.lib,
+                                 &(NvnStCall){.x = {sampler, builder}}) != 0;
+}
+
 static void run_getter(CPU* c, const NvnStProc* p, int host, uint64_t obj, uint64_t out, const NvnStGet* g,
                        NvnStRec* rec) {
     NvnStCall a = {.x = {obj}};

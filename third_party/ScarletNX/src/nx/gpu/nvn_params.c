@@ -553,22 +553,6 @@ int nvn_descriptor_offset(uint64_t pool_offset, uint32_t count, uint64_t memory_
     return 1;
 }
 
-int nvn_pool_gpu_allocate(uint64_t cursor, uint64_t size, uint64_t page_size,
-                          uint64_t* address, uint64_t* next) {
-    if (!size || page_size < NVN_POOL_STORAGE_ALIGNMENT || page_size % NVN_POOL_STORAGE_ALIGNMENT ||
-        cursor < NVN_POOL_GPU_BASE || cursor >= NVN_POOL_GPU_END) return 0;
-    uint64_t padding = (page_size - cursor % page_size) % page_size;
-    if (padding >= NVN_POOL_GPU_END - cursor) return 0;
-    uint64_t base = cursor + padding;
-    if (size > NVN_POOL_GPU_END - base) return 0;
-    uint64_t end = base + size;
-    padding = (page_size - end % page_size) % page_size;
-    if (padding > NVN_POOL_GPU_END - end) return 0;
-    *address = base;
-    *next = end + padding;
-    return 1;
-}
-
 uint64_t nvn_memory_pool_map(uint32_t flags, uint64_t storage) {
     return (flags & NVN_POOL_CPU_NO_ACCESS) ? 0 : storage;
 }

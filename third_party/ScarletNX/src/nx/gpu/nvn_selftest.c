@@ -16,7 +16,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#define ARENA_BYTES 0x10000u
+/* 2 MiB: each side of each resource script has its own 0x1000-aligned storage block and object blocks (4-u3-2). */
+#define ARENA_BYTES 0x200000u
 #define BUILDER_BYTES 0x200u /* more than the library's builder (a reserved block) and the host's record */
 #define NAME_MAX_LEN 64
 #define OUT_GUARD_BYTES 16u /* untouched bytes before and after the output word: an extra write shows as kind M */
@@ -189,7 +190,7 @@ void nvn_selftest_run(CPU* c) {
         return;
     }
     NvnStRun run = {0};
-    u64 base = kmem_alloc(ARENA_BYTES, MS_STATIC, PERM_RW);
+    u64 base = kmem_alloc(ARENA_BYTES, MS_NORMAL, PERM_RW);
     nvn_st_arena_init(&run.arena, base, ARENA_BYTES);
     LOG("selftest: start, device=%" PRIx64 ", arena=%" PRIx64 "+%x\n", g_device, base, ARENA_BYTES);
     LOG("selftest: device texture words +%x=%08x +%x=%08x\n", DEVICE_TEXTURE_WORD_OFFSET,
@@ -202,6 +203,7 @@ void nvn_selftest_run(CPU* c) {
     case_device_get_integer(c, &run);
     case_texture_builder(c, &run);
     nvn_selftest_object_cases(c, &run);
+    nvn_selftest_resource_cases(c, &run);
     LOG("selftest: %u cases, %u failed, %u skipped, arena used %" PRIu64 " of %u bytes\n", run.cases, run.failed,
         run.skipped, run.arena.high_water, ARENA_BYTES);
 }
