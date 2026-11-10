@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the U4 patch 2 build (`1218e3d`, md5 0c3bdc15), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the U5 build (`11978be`, md5 a1870e3a), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=0`, `nvn_native=1` (both set by the user, 2026-11-10), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -48,20 +48,21 @@ Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
-  4-u4. `docs/nvn-coverage.md`: 45 rows of G10 are `stub-log` (after U4 patch 2, `1218e3d`). Groups left, in this order:
-  - U5 debug and the rest (about 50): debug markers and groups, checkpoints, memory usage getters, GL interop, finalizers,
-    GetProcAddress, fast clear registration. For each function, the library decides: a logged no-op or an explicit refusal.
+  4-u4. `docs/nvn-coverage.md`: 1 row of G10 is `stub-log` (`nvnDeviceGetProcAddress`, by decision) after U5 (`11978be`).
   Steps of one group, one session each: (a) library analyst table, check 3 rows or more in the disassembly. (b) brief, handler
   writer patch (handlers and unit tests). (c) read the whole patch, build, `ctest`, mutant of each new test, update
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U5 step (c): read the whole patch `patches/writer-u5-1.patch` (286+/35-, `git apply --check` OK), build,
-    `ctest`, mutant of each new test, update `nvn-coverage.md`, commit. Brief: `reports/brief-writer-u5-1.md`, report:
-    `reports/writer-u5-1.md`, worktree `wt-u5` (remove after). Check: the line ends (`file` says the patch is LF only, the
-    files are CRLF), the factored `window_acquire_texture`, `COMMAND_REFUSE_VALUE_HANDLER`, the rename `h_library_ret`.
-    Step (b) (2026-11-10) decided: the 5 command and control memory getters (not ControlMemorySize) and the 3 queue usage
-    getters refuse with x0 = 0. Fast clear returns 0 outside formats 10..156 / 11..120 (checked d852338, d853f98).
+  Current step: U5 step (d), the regression run. U5 is committed (`11978be`, 2026-11-10): 44 handlers, ctest passes
+    except `tracked_material`, 3 mutants caught. The caller fixed one fault of the writer: `window_acquire_texture` took
+    `has_sync` from sync 0, so a WindowAcquireTexture with sync 0 passed. Now a window acquire always needs its sync.
+    No selftest or exectest case covers U5. The run checks the refactored window acquire (hot path): `nvn_native=1`, update
+    program, field and one menu, close. Read with `nx-log-read`: `nvnWindowAcquireTexture failed`, `not implemented`, crash.
+    After the run: move the U5 record (this item and the lines below) to `OLD-WORK_PLAN.md`, then 4-u3.
+  U5 record: brief `reports/brief-writer-u5-1.md`, report `reports/writer-u5-1.md`, decisions of step (b): the 5 command
+    and control memory getters (not ControlMemorySize) and the 3 queue usage getters refuse with x0 = 0. Fast clear returns
+    0 outside formats 10..156 / 11..120 (checked d852338, d853f98).
   Step (a) record (2026-11-10): tables
     `reports/analyst-u5-{A,B,C}-1.md` (45 functions), checked in the disassembly: the cb memory getters d824080..d8240e0,
     checkpoints d823c80, d82d120, PopDebugGroup d84cfc0, reserve d8243d0, queue getters d83a080..d83a0f0, pool finalizers
