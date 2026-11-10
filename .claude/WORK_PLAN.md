@@ -9,10 +9,10 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the selftest build of 4-u3-1 (md5 a82128ba), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the build of the 4-u3-1 fixes (md5 03bf4203, `c392c09`), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
-  `nvn_trace=0`, `nvn_native=1` (both set by the user, 2026-11-10), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
+  `nvn_trace=1`, `nvn_native=0`, `nvn_selftest=1` (the selftest run of 2026-11-10). After each build: `tasklist` shows no game, then copy the exe.
 - GitHub PRs #2 to #6 (opt-in 60/120 fps clocks, colardocookie) and issue #7 (a contributor offer): ON HOLD, frame rate is later
   work. The user replies to them. Facts: `OLD-WORK_PLAN.md`, section "PR #1 NVN part taken".
 - Scratchpad: `C:/Users/Azunel/AppData/Roaming/orca/chat-scratch/f41e32fc08995f90ab471cdfd0b7bdb8` (`analysis/` holds disassembly
