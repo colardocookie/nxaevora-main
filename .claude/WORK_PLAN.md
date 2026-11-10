@@ -66,7 +66,11 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
   Decision of the user (2026-11-09): the trace of the enum argument values (the missing part of 4-u1) comes after U1.
-  Current step: U1 is closed. Next session: the trace of the enum argument values (4-u1, decision above), then U2 step (a).
+  Current step: enum trace (4-u1). Step (a) done: analyst table `reports/analyst-enum-1.md` (accepted, rows BlendFunc d83ac30,
+    DepthFunc d83b060, TextureBuilderSetFormat d83c2f0, ChannelMask d83ade0 checked). Next: step (b), brief for the code writer.
+    Decisions: in `nvn_trace.c`, a new value op that keys on (register, value) and logs each distinct value once
+    (`nvn-enum: <name> wN=<value>`), from a table of Table 1 rows (enum and flags, not the bool enables `tst #0xff`). Table 2
+    (struct fields) is not traced: the setters of those records are traced. Then U2 step (a).
   - Rows near U1 that stay in other groups: EventGetMemoryPool, EventGetMemoryOffset, EventGetValue (U2). CommandBuffer
     Get/SetCopyRowStride and Get/SetCopyImageStride (U3, copies). CommandBuffer command and control memory getters, memory
     callback getters (U5). ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).
