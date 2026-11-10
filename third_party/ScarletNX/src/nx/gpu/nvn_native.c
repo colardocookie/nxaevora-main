@@ -1340,6 +1340,25 @@ static void h_texture_builder_get_zcull_storage_size(CPU* c, u64 entry) {
     }
     pm_unlock(&objs_lock);
 }
+static void h_texture_builder_get_sparse_tile_layout(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnTextureBuilderGetSparseTileLayout";
+    const u64 dst = c->x[1];
+    uint32_t out[4];
+    int computed = 0;
+    pm_lock(&objs_lock);
+    const NvnTextureBuilder* b = known_record(c->x[0], NVN_OBJ_TEXTURE_BUILDER);
+    if (!b) {
+        LOG("nvn-native: %s unknown builder=%llx\n", name, (unsigned long long)c->x[0]);
+    } else if (!dst) {
+        LOG("nvn-native: %s null output\n", name);
+    } else if (!(computed = nvn_texture_sparse_layout(b, out))) {
+        LOG("nvn-native: %s invalid format=%x\n", name, b->format);
+    }
+    pm_unlock(&objs_lock);
+    if (computed && gmem_write(dst, out, sizeof out) < 0)
+        LOG("nvn-native: %s unwritable output=%llx\n", name, (unsigned long long)dst);
+}
 
 static void h_sampler_initialize(CPU* c, u64 entry) {
     (void)entry;
@@ -2002,6 +2021,52 @@ static void h_texture_get_zcull_storage_size(CPU* c, u64 entry) {
             LOG("nvn-native: nvnTextureGetZCullStorageSize flags=%x: the device ZCull info path is not "
                 "implemented\n", t->builder.flags);
         c->x[0] = size;
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_texture_get_sparse_tile_layout(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnTextureGetSparseTileLayout";
+    const u64 dst = c->x[1];
+    uint32_t out[4];
+    int computed = 0;
+    pm_lock(&objs_lock);
+    const TextureRec* t = known_record(c->x[0], NVN_OBJ_TEXTURE);
+    if (!t) {
+        LOG("nvn-native: %s unknown texture=%llx\n", name, (unsigned long long)c->x[0]);
+    } else if (!dst) {
+        LOG("nvn-native: %s null output\n", name);
+    } else if (!(computed = nvn_texture_sparse_layout(&t->builder, out))) {
+        LOG("nvn-native: %s invalid format=%x\n", name, t->builder.format);
+    }
+    pm_unlock(&objs_lock);
+    if (computed && gmem_write(dst, out, sizeof out) < 0)
+        LOG("nvn-native: %s unwritable output=%llx\n", name, (unsigned long long)dst);
+}
+static void h_texture_get_view_offset(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnTextureGetViewOffset";
+    pm_lock(&objs_lock);
+    const TextureRec* t = known_record(c->x[0], NVN_OBJ_TEXTURE);
+    if (!t) {
+        LOG("nvn-native: %s unknown texture=%llx\n", name, (unsigned long long)c->x[0]);
+        c->x[0] = 0;
+    } else {
+        const NvnTextureView* v = NULL;
+        int view_known = 1;
+        if (c->x[1]) {
+            v = known_record(c->x[1], NVN_OBJ_TEXTURE_VIEW);
+            if (!v) {
+                LOG("nvn-native: %s unknown view=%llx\n", name, (unsigned long long)c->x[1]);
+                view_known = 0;
+            }
+        }
+        uint64_t offset = 0;
+        if (!view_known || !nvn_texture_view_offset(t, v, &offset)) {
+            if (view_known) LOG("nvn-native: %s base level reaches 32\n", name);
+            offset = 0;
+        }
+        c->x[0] = offset;
     }
     pm_unlock(&objs_lock);
 }
@@ -5345,6 +5410,7 @@ static const NativeProc native_procs[] = {
     {"nvnTextureBuilderGetRawStorageClass", h_texture_builder_get_raw_storage_class},
     {"nvnTextureBuilderGetStorageClass", h_texture_builder_get_storage_class},
     {"nvnTextureBuilderGetZCullStorageSize", h_texture_builder_get_zcull_storage_size},
+    {"nvnTextureBuilderGetSparseTileLayout", h_texture_builder_get_sparse_tile_layout},
     {"nvnTextureBuilderSetGLTextureName", h_texture_builder_set_gl_texture_name},
     {"nvnTextureBuilderSetPackagedTextureData", h_texture_builder_set_packaged_texture_data},
     {"nvnTextureBuilderSetSamples", h_texture_builder_set_samples},
@@ -5426,6 +5492,8 @@ static const NativeProc native_procs[] = {
     {"nvnTextureGetRawStorageClass", h_texture_get_raw_storage_class},
     {"nvnTextureGetStorageClass", h_texture_get_storage_class},
     {"nvnTextureGetZCullStorageSize", h_texture_get_zcull_storage_size},
+    {"nvnTextureGetSparseTileLayout", h_texture_get_sparse_tile_layout},
+    {"nvnTextureGetViewOffset", h_texture_get_view_offset},
     {"nvnTextureGetSamples", h_texture_get_samples},
     {"nvnTextureGetSwizzle", h_texture_get_swizzle},
     {"nvnTextureGetStorageSize", h_texture_get_storage_size},

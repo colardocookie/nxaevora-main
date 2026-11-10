@@ -707,6 +707,14 @@ static int texture_format(uint32_t f, TextureFormat* out) {
     if (f == 0x31 || f == 0x35 || f == 0x36) out->depth_stencil |= 2;
     return 1;
 }
+/* The texel-width divisor of a multisample format: 2 for 2 and 4 samples, 4 for 8 and 16. */
+static uint8_t texture_sample_x(uint32_t samples) {
+    return samples == 2 || samples == 4 ? 2u : samples == 8 || samples == 16 ? 4u : 1u;
+}
+/* The texel-height divisor of a multisample format: 2 for 4 and 8 samples, 4 for 16. */
+static uint8_t texture_sample_y(uint32_t samples) {
+    return samples == 4 || samples == 8 ? 2u : samples == 16 ? 4u : 1u;
+}
 
 static int texture_page_round(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev, TextureFormat f) {
     return (b->format >= 0x31 && b->format <= 0x36) ||
@@ -967,8 +975,8 @@ int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* 
     l->bytes_per_block = f.bytes; l->block_width = f.width; l->block_height = f.height;
     l->depth_stencil = f.depth_stencil;
     for (uint32_t n = f.bytes; n > 1; n >>= 1) l->log2_bytes++;
-    l->sample_x = b->samples == 2 || b->samples == 4 ? 2 : b->samples == 8 || b->samples == 16 ? 4 : 1;
-    l->sample_y = b->samples == 4 || b->samples == 8 ? 2 : b->samples == 16 ? 4 : 1;
+    l->sample_x = texture_sample_x(b->samples);
+    l->sample_y = texture_sample_y(b->samples);
     l->samples = b->samples == 1 || b->samples == 2 ? 2 :
                  b->samples == 4 || b->samples == 8 || b->samples == 16 ? b->samples : 0;
     uint32_t levels = b->levels;
@@ -989,6 +997,52 @@ int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* 
         if (texture_page_round(b, dev, f)) l->size = align_u64(l->size, dev->wac);
     }
     if (b->gl_name) l->size = 0;
+    return 1;
+}
+
+int nvn_texture_sparse_layout(const NvnTextureBuilder* b, uint32_t out[4]) {
+    if (!b || !out) return 0;
+    TextureFormat f;
+    if (!texture_format(b->format, &f)) return 0;
+    out[0] = out[1] = out[2] = out[3] = 0;
+    if (b->target > NVN_TEXTURE_TARGET_BUFFER || b->target == NVN_TEXTURE_TARGET_1D ||
+        b->target == NVN_TEXTURE_TARGET_1D_ARRAY || b->target == NVN_TEXTURE_TARGET_BUFFER || f.bytes == 12 ||
+        (b->flags & NVN_TEXTURE_SPARSE_TILE_MASK) != NVN_TEXTURE_FLAG_SPARSE)
+        return 1;
+    uint32_t x, y, z;
+    if (b->target == NVN_TEXTURE_TARGET_3D) {
+        x = f.bytes == 4 ? 1u : f.bytes == 8 || f.bytes == 16 ? 2u : 0u;
+        y = f.bytes == 8 || f.bytes == 16 ? 1u : 2u;
+        z = f.bytes == 4 || f.bytes == 8 || f.bytes == 16 ? 4u : 5u;
+    } else {
+        x = f.bytes == 2 || f.bytes == 4 ? 3u : f.bytes == 8 || f.bytes == 16 ? 4u : 2u;
+        y = f.bytes == 2 || f.bytes == 4 ? 4u : f.bytes == 8 || f.bytes == 16 ? 3u : 5u;
+        z = 0;
+    }
+    uint32_t tile_w = ((NVN_TEXTURE_GOB_WIDTH / f.bytes) << x) / texture_sample_x(b->samples);
+    uint32_t tile_h = (NVN_TEXTURE_GOB_HEIGHT << y) / texture_sample_y(b->samples);
+    uint32_t tile_d = 1u << z;
+    /* A block width of 2 or more scales both tile sides by the block shape (d822538). */
+    if (f.width >= 2) {
+        tile_w *= f.width;
+        tile_h *= f.height;
+    }
+    uint32_t w = b->width, h = b->height, d = b->depth;
+    out[0] = b->levels;
+    for (uint32_t i = 0; i < b->levels; i++) {
+        if ((int32_t)w < (int32_t)tile_w || (int32_t)d < (int32_t)tile_d || (int32_t)h < (int32_t)tile_h) {
+            out[0] = i;
+            break;
+        }
+        w >>= 1;
+        h >>= 1;
+        if (b->target == NVN_TEXTURE_TARGET_3D) d >>= 1;
+    }
+    if (out[0]) {
+        out[1] = tile_w;
+        out[2] = tile_h;
+        out[3] = tile_d;
+    }
     return 1;
 }
 
@@ -1082,6 +1136,34 @@ int nvn_texture_level(const NvnTexture* t, uint32_t level, NvnTextureLevel* out)
     *out = (NvnTextureLevel){.offset = offset, .size = parts.size, .gobs_x = parts.gobs_x,
                              .rows = parts.rows, .depth = parts.depth, .block_height_log2 = parts.block_height_log2,
                              .depth_log2 = parts.depth_log2};
+    return 1;
+}
+int nvn_texture_view_offset(const NvnTexture* t, const NvnTextureView* v, uint64_t* out) {
+    if (!t || !out) return 0;
+    uint32_t base_level = v && (v->flags & NVN_VIEW_LEVELS) ? v->base_level : 0;
+    uint32_t base_layer = v && (v->flags & NVN_VIEW_LAYERS) ? v->base_layer : 0;
+    if ((t->builder.flags & NVN_TEXTURE_LINEAR_FLAGS) || t->builder.target == NVN_TEXTURE_TARGET_BUFFER) {
+        *out = 0;
+        return 1;
+    }
+    if (base_level >= 32) return 0;
+    const NvnTextureLayout* l = &t->layout;
+    uint64_t offset = 0;
+    for (uint32_t i = 0; i < base_level; i++)
+        offset += texture_level_parts(l, i, l->tile_x, l->tile_y, l->tile_z).size;
+    if (base_layer) {
+        if (l->dim == 3) {
+            TextureLevelParts p = texture_level_parts(l, base_level, l->tile_x, l->tile_y, l->tile_z);
+            uint32_t ty = p.block_height_log2, tz = p.depth_log2;
+            uint32_t rows_b = ceil_u32(p.rows, NVN_TEXTURE_GOB_HEIGHT << ty);
+            uint32_t term = ((p.gobs_x * rows_b * (base_layer >> tz)) << (ty + tz)) +
+                            ((base_layer & ((1u << tz) - 1u)) << ty);
+            offset += (uint64_t)term << 9;
+        } else {
+            offset += l->layer_stride * base_layer;
+        }
+    }
+    *out = offset;
     return 1;
 }
 int nvn_texture_write_rows(uint8_t* level_base, const NvnTextureLevel* lv, uint32_t x_start, uint32_t x_end,

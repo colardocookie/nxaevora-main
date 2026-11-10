@@ -498,6 +498,9 @@ void nvn_texture_builder_defaults(NvnTextureBuilder* b);
 uint64_t nvn_texture_storage_alignment(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev);
 /* Returns 0 for unsupported formats. GL imports have size 0 but retain alignment. Kind stays 0. */
 int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev, NvnTextureLayout* out);
+/* The sparse tile layout of d822538: level count, tile width, tile height, tile depth. 0 (out unchanged) for an
+   invalid format. A zero level count is the library result, not a refusal. */
+int nvn_texture_sparse_layout(const NvnTextureBuilder* b, uint32_t out[4]);
 
 #define NVN_TEXTURE_DESCRIPTOR_WORDS 8u
 #define NVN_TEXTURE_DESCRIPTOR_BYTES 32u
@@ -537,6 +540,9 @@ int nvn_texture_zcull_size(const NvnTextureBuilder* b, const NvnZcullDeviceWords
 int nvn_texture_equal(const NvnTexture* a, const NvnTexture* b);
 /* The optional fields of a view are compared only when the same flag bit is set in both views (sdk d83c9a0). Pure. */
 int nvn_texture_view_equal(const NvnTextureView* a, const NvnTextureView* b);
+/* The view offset of d83d01c: the level offset plus the layer offset. 0 (out unchanged) when a block linear
+   base level reaches 32, which wraps the library shift count. Linear and BUFFER textures give 0. */
+int nvn_texture_view_offset(const NvnTexture* t, const NvnTextureView* v, uint64_t* out);
 /* One mip level of a block linear texture: the offset and bytes of the level in one layer, the block columns (GOBs
    across), the block rows, the level depth, the trimmed block height exponent (2^bh GOBs high) and the trimmed
    depth exponent (2^bd slices deep). */

@@ -30,8 +30,8 @@ tool keeps them.
 | G7 | 4 | 4 | 0 | 4 | 0 |
 | G8 | 112 | 112 | 0 | 112 | 0 |
 | G9 | 43 | 43 | 0 | 43 | 0 |
-| G10 | 281 | 141 | 140 | 0 | 0 |
-| all | 523 | 383 | 140 | 242 | 0 |
+| G10 | 281 | 144 | 137 | 0 | 0 |
+| all | 523 | 386 | 137 | 242 | 0 |
 
 ## Functions
 
@@ -505,7 +505,7 @@ tool keeps them.
 | `nvnTextureBuilderGetPackagedTextureLayout` | G10 | d83c440 | 0 | implemented |  |  |  |
 | `nvnTextureBuilderGetRawStorageClass` | G10 | d83c740 | 0 | implemented |  |  |  |
 | `nvnTextureBuilderGetSamples` | G10 | d83c3e0 | 0 | implemented |  |  |  |
-| `nvnTextureBuilderGetSparseTileLayout` | G10 | d83dca0 | 0 | stub-log |  |  |  |
+| `nvnTextureBuilderGetSparseTileLayout` | G10 | d83dca0 | 0 | implemented |  |  |  |
 | `nvnTextureBuilderGetStorageClass` | G10 | d83c620 | 0 | implemented |  |  |  |
 | `nvnTextureBuilderGetStride` | G10 | d83c490 | 0 | implemented |  |  |  |
 | `nvnTextureBuilderGetSwizzle` | G10 | d83c3f0 | 0 | implemented |  |  |  |
@@ -525,12 +525,12 @@ tool keeps them.
 | `nvnTextureGetMemoryPool` | G10 | d83e370 | 0 | implemented |  |  |  |
 | `nvnTextureGetRawStorageClass` | G10 | d83e510 | 0 | implemented |  |  |  |
 | `nvnTextureGetSamples` | G10 | d83d8c0 | 0 | implemented |  |  |  |
-| `nvnTextureGetSparseTileLayout` | G10 | d83dd40 | 0 | stub-log |  |  |  |
+| `nvnTextureGetSparseTileLayout` | G10 | d83dd40 | 0 | implemented |  |  |  |
 | `nvnTextureGetStorageClass` | G10 | d83d800 | 0 | implemented |  |  |  |
 | `nvnTextureGetStorageSize` | G10 | d83e390 | 0 | implemented |  |  |  |
 | `nvnTextureGetSwizzle` | G10 | d83d8d0 | 0 | implemented |  |  |  |
 | `nvnTextureGetTextureAddress` | G10 | d83d920 | 0 | implemented |  |  |  |
-| `nvnTextureGetViewOffset` | G10 | d83d810 | 0 | stub-log |  |  |  |
+| `nvnTextureGetViewOffset` | G10 | d83d810 | 0 | implemented |  |  |  |
 | `nvnTextureGetZCullStorageSize` | G10 | d83d7b0 | 0 | implemented |  |  |  |
 | `nvnTextureInvalidateTexels` | G10 | d83e300 | 0 | stub-log |  |  |  |
 | `nvnTexturePoolFinalize` | G10 | d83d940 | 0 | stub-log |  |  |  |

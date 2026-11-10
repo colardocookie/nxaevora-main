@@ -458,6 +458,87 @@ static void test_texture_level(void) {
     CHECK(!nvn_texture_level(&t, 0, &lv)); /* multisample */
 }
 
+static void test_u1_sparse_layout(void) {
+    NvnTextureBuilder b;
+    uint32_t out[4];
+    b = (NvnTextureBuilder){.flags = 0x20, .target = NVN_TEXTURE_TARGET_2D, .width = 1024, .height = 1024,
+                            .depth = 1, .levels = 11, .format = 0x25};
+    CHECK(nvn_texture_sparse_layout(&b, out));
+    CHECK(out[0] == 4 && out[1] == 128 && out[2] == 128 && out[3] == 1);
+    b.levels = 2;
+    CHECK(nvn_texture_sparse_layout(&b, out));
+    CHECK(out[0] == 2 && out[1] == 128 && out[2] == 128 && out[3] == 1);
+    b.width = b.height = 100;
+    b.levels = 1;
+    CHECK(nvn_texture_sparse_layout(&b, out));
+    CHECK(!out[0] && !out[1] && !out[2] && !out[3]);
+    b.levels = 0;
+    CHECK(nvn_texture_sparse_layout(&b, out));
+    CHECK(!out[0] && !out[1] && !out[2] && !out[3]);
+    b.levels = 1;
+    b.flags = 0;
+    CHECK(nvn_texture_sparse_layout(&b, out));
+    CHECK(!out[0] && !out[1] && !out[2] && !out[3]);
+    b.flags = 0x20;
+    b.target = NVN_TEXTURE_TARGET_1D;
+    CHECK(nvn_texture_sparse_layout(&b, out));
+    CHECK(!out[0] && !out[1] && !out[2] && !out[3]);
+    b = (NvnTextureBuilder){.flags = 0x20, .target = NVN_TEXTURE_TARGET_3D, .width = 256, .height = 256,
+                            .depth = 64, .levels = 4, .format = 0x25};
+    CHECK(nvn_texture_sparse_layout(&b, out));
+    CHECK(out[0] == 3 && out[1] == 32 && out[2] == 32 && out[3] == 16);
+    b = (NvnTextureBuilder){.flags = 0x20, .target = NVN_TEXTURE_TARGET_2D_MS, .width = 1024, .height = 1024,
+                            .depth = 1, .levels = 1, .format = 0x25, .samples = 4};
+    CHECK(nvn_texture_sparse_layout(&b, out));
+    CHECK(out[0] == 1 && out[1] == 64 && out[2] == 64 && out[3] == 1);
+    b = (NvnTextureBuilder){.flags = 0x20, .target = NVN_TEXTURE_TARGET_CUBE, .width = 256, .height = 256,
+                            .depth = 0, .levels = 1, .format = 0x25};
+    CHECK(nvn_texture_sparse_layout(&b, out));
+    CHECK(!out[0] && !out[1] && !out[2] && !out[3]);
+    b.depth = 1;
+    CHECK(nvn_texture_sparse_layout(&b, out));
+    CHECK(out[0] == 1 && out[1] == 128 && out[2] == 128 && out[3] == 1);
+    b.format = 0x19;
+    out[0] = out[1] = out[2] = out[3] = 7;
+    CHECK(!nvn_texture_sparse_layout(&b, out));
+    CHECK(out[0] == 7 && out[1] == 7 && out[2] == 7 && out[3] == 7);
+}
+
+static void test_u1_view_offset(void) {
+    NvnTexture t = {0};
+    NvnTextureView v;
+    uint64_t off = 0;
+    t.builder = (NvnTextureBuilder){.target = NVN_TEXTURE_TARGET_2D_ARRAY, .width = 256, .height = 256,
+                                    .depth = 4, .levels = 2, .format = 0x25};
+    CHECK(nvn_texture_layout(&t.builder, &nvn_texture_device_words, &t.layout));
+    CHECK(t.layout.layer_stride == 0x50000);
+    v = (NvnTextureView){.flags = NVN_VIEW_LEVELS | NVN_VIEW_LAYERS, .base_level = 1, .base_layer = 1};
+    CHECK(nvn_texture_view_offset(&t, &v, &off) && off == 0x90000);
+    v.flags = NVN_VIEW_LEVELS;
+    CHECK(nvn_texture_view_offset(&t, &v, &off) && off == 0x40000);
+    v.flags = NVN_VIEW_LAYERS;
+    CHECK(nvn_texture_view_offset(&t, &v, &off) && off == 0x50000);
+    CHECK(nvn_texture_view_offset(&t, NULL, &off) && off == 0);
+    v = (NvnTextureView){.base_level = 1, .base_layer = 1};
+    CHECK(nvn_texture_view_offset(&t, &v, &off) && off == 0);
+    t.builder = (NvnTextureBuilder){.target = NVN_TEXTURE_TARGET_3D, .width = 64, .height = 64, .depth = 16,
+                                    .levels = 1, .format = 0x25};
+    CHECK(nvn_texture_layout(&t.builder, &nvn_texture_device_words, &t.layout));
+    v = (NvnTextureView){.flags = NVN_VIEW_LAYERS, .base_layer = 5};
+    CHECK(nvn_texture_view_offset(&t, &v, &off) && off == 0xA00);
+    v.base_layer = 17;
+    CHECK(nvn_texture_view_offset(&t, &v, &off) && off == 0x40200);
+    v = (NvnTextureView){.flags = NVN_VIEW_LEVELS, .base_level = 32};
+    off = 9;
+    CHECK(!nvn_texture_view_offset(&t, &v, &off) && off == 9);
+    t.builder = (NvnTextureBuilder){.flags = NVN_TEXTURE_FLAG_LINEAR, .target = NVN_TEXTURE_TARGET_2D,
+                                    .width = 64, .height = 64, .depth = 1, .levels = 1, .format = 0x25,
+                                    .stride = 0x100};
+    CHECK(nvn_texture_layout(&t.builder, &nvn_texture_device_words, &t.layout));
+    v = (NvnTextureView){.flags = NVN_VIEW_LAYERS, .base_layer = 1};
+    CHECK(nvn_texture_view_offset(&t, &v, &off) && off == 0);
+}
+
 /* The block linear byte offset of (x, y), from Eden's SWIZZLE_X_BITS and SWIZZLE_Y_BITS: the low bits of x and y
    go into the set bits of the mask, in order, and the block column and block row parts follow. */
 static uint32_t deposit_bits(uint32_t value, uint32_t bits) {
@@ -2961,6 +3042,8 @@ int main(int argc, char** argv) {
     test_snap_formula();
     test_texture_layout();
     test_texture_level();
+    test_u1_sparse_layout();
+    test_u1_view_offset();
     test_texture_write_rows();
     test_texture_write_rows_3d();
     if (argc == 2) test_texture_queries(argv[1]);
