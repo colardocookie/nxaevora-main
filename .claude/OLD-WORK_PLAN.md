@@ -2339,3 +2339,18 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   `frames_in_flight` (+1 at the present post, -1 in `frame_finish`). Decisions: `docs/nvn-design.md` 4-u2.
 - Checks: the whole patch read, `ctest` passes except `tracked_material` (`driver_workflow` passes alone), the mutant of the
   signal rule is caught. `nvn-coverage.md`: G10 has 119 `stub-log` rows. Exe md5 878c4351 in the 3 places. No game run.
+
+## U2 events and sync, task 2 (2026-11-10, moved from WORK_PLAN.md)
+
+- Commit `1b05ba0`: CommandBuffer SignalEvent, WaitEvent, ReportValue, FenceSync, WaitSync by the code writer (brief
+  `reports/brief-writer-u2-2.md`, decisions 1 to 8, report `writer-u2-2.md`). New ops `NVN_OP_SIGNAL_EVENT`, `WAIT_EVENT`,
+  `REPORT_VALUE`, `FENCE_SYNC`, `WAIT_SYNC`.
+- Mechanism: the host Maxwell model does not emulate the report reduction (ADD) and parks on an ACQUIRE, so Signal/Wait
+  Event write or check the CPU word at replay (no GPU words). A not met wait logs and counts `unmet_event_waits` in the frame
+  line, the replay goes on (one GPU thread, no library timeout). ReportValue sends 0x6C0 words with query 0xF002, not the
+  0x800003E0 word (no action in the host model). FenceSync/WaitSync act at submit (`queue_scan_list`, follows CALL to
+  `NVN_CALL_DEPTH_MAX`): a fence is a frame token, a wait logs an unsignaled or removed sync.
+- The writer took the SignalEvent arguments wrong. The library (d832ef0) reads mode w2, location w3, flags w4, value w5
+  (`analysis/u2-sig2.txt`). The caller fixed it.
+- Checks: the whole patch read, `ctest` passes except `tracked_material`, 4 mutants caught (wait compare, replay dispatch,
+  report value word). `nvn-coverage.md`: G10 has 114 `stub-log` rows. Exe md5 f0d4863f in the 3 places. No game run.
