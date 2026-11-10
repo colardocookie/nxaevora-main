@@ -56,7 +56,13 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U5 step (b), the brief of the handler writer. Step (a) is done (2026-11-10): tables
+  Current step: U5 step (c): read the whole patch `patches/writer-u5-1.patch` (286+/35-, `git apply --check` OK), build,
+    `ctest`, mutant of each new test, update `nvn-coverage.md`, commit. Brief: `reports/brief-writer-u5-1.md`, report:
+    `reports/writer-u5-1.md`, worktree `wt-u5` (remove after). Check: the line ends (`file` says the patch is LF only, the
+    files are CRLF), the factored `window_acquire_texture`, `COMMAND_REFUSE_VALUE_HANDLER`, the rename `h_library_ret`.
+    Step (b) (2026-11-10) decided: the 5 command and control memory getters (not ControlMemorySize) and the 3 queue usage
+    getters refuse with x0 = 0. Fast clear returns 0 outside formats 10..156 / 11..120 (checked d852338, d853f98).
+  Step (a) record (2026-11-10): tables
     `reports/analyst-u5-{A,B,C}-1.md` (45 functions), checked in the disassembly: the cb memory getters d824080..d8240e0,
     checkpoints d823c80, d82d120, PopDebugGroup d84cfc0, reserve d8243d0, queue getters d83a080..d83a0f0, pool finalizers
     (bare `ret`), fast clear thunks d82d130..d82d160, d82d180 (bare `ret`). Real end of cb command memory is cb+0x28
