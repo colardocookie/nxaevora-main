@@ -1418,6 +1418,10 @@ NvnSyncState nvn_sync_after_token(NvnSyncState state, uint32_t* fences) {
     return *fences == 0 ? NVN_SYNC_SIGNALED : state;
 }
 
+uint32_t nvn_event_signal_value(uint32_t mode, uint32_t old, uint32_t value) {
+    return mode == NVN_EVENT_SIGNAL_ADD ? old + value : value;
+}
+
 int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_word, uint32_t kind_word,
                              uint32_t stage_word, uint32_t* index_out) {
     if (!index_out || version != NVN_PROGRAM_HEADER_VERSION || layout < NVN_PROGRAM_LAYOUT_FIRST ||

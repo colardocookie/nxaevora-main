@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the enum trace build with the DrawElements mask fix (md5 25d58048), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the U2 task 1 build (md5 878c4351), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=0` (the user was asked to set it on 2026-11-10, check it), `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -64,7 +64,9 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U2 step (b), the brief of the handler writer. Step (a) is done (2026-11-10): tables
+  Current step: U2 task 2 step (b), the brief of the code writer for the 5 command buffer functions (SignalEvent, WaitEvent,
+    ReportValue, FenceSync, WaitSync: new NVN_OP codes and replay). Task 1 (18 CPU side handlers) is committed: brief
+    `reports/brief-writer-u2-1.md` (a good template), notes in `docs/nvn-design.md` 4-u2. Step (a) is done (2026-11-10): tables
     `reports/analyst-u2-A-1.md` (events, 11) and `analyst-u2-B-1.md` (sync, queue, finalizers, 12). Rows checked in the
     disassembly: EventGetValue, GetMemoryPool, GetMemoryOffset, Signal (mode 1 adds, other modes write), SyncFinalize, QueueWaitSync
     (tail call to d83beb0). Decisions for the brief: a new EVENT object kind, ADD reductions (the host engines only write),

@@ -1049,6 +1049,13 @@ static void test_sync_after_token(void) {
     CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_FENCED && fences == 2);
 }
 
+static void test_u2_event_signal_value(void) {
+    CHECK(nvn_event_signal_value(NVN_EVENT_SIGNAL_WRITE, 0x11223344u, 0xaabbccddu) == 0xaabbccddu);
+    CHECK(nvn_event_signal_value(NVN_EVENT_SIGNAL_ADD, 5, 7) == 12);
+    CHECK(nvn_event_signal_value(7, 0x11223344u, 0xaabbccddu) == 0xaabbccddu);
+    CHECK(nvn_event_signal_value(NVN_EVENT_SIGNAL_ADD, 0xfffffffeu, 3) == 1);
+}
+
 static void test_handles(void) {
     CHECK(nvn_texture_handle(0x147, 0x100) == 0x110000147ull);
     CHECK(nvn_texture_handle(0, 0) == 0x100000000ull);
@@ -3024,6 +3031,7 @@ int main(int argc, char** argv) {
     test_sync_wait_limit();
     test_window_present_args();
     test_sync_after_token();
+    test_u2_event_signal_value();
     test_sampler();
     test_sampler_equal();
     test_u1_window_fields();

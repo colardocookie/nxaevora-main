@@ -36,6 +36,7 @@ static NvnListStore lists; /* the command lists of the game, guarded by objs_loc
 /* The frame line counters (3c decision 12). The three guarded by objs_lock are read and written with it; the other two
    are atomic because missing_handler and the recorder run without it. */
 static uint32_t frame_acquires, frame_submitted_lists, frame_skipped_lists;
+static uint32_t frames_in_flight; /* frame jobs that a present posted and frame_finish has not ended */
 static uint32_t missing_calls, dropped_ops;
 
 typedef struct {
@@ -137,6 +138,21 @@ static void h_device_initialize(CPU* c, u64 entry) {
     c->x[0] = 1;
 }
 static DeviceRec* device_rec(u64 addr) { return rec_get(addr, NVN_OBJ_DEVICE, sizeof(DeviceRec)); }
+/* DeviceFinalize would destroy the device, its queues, pools and programs; the host keeps them to the process end. */
+static void h_device_finalize(CPU* c, u64 entry) {
+    (void)entry;
+    LOG_LIMIT(8, "nvn-native: nvnDeviceFinalize device=%llx is not supported, the records stay\n",
+              (unsigned long long)c->x[0]);
+}
+/* The library does nothing (sdk d82cdd0, d826410). */
+static void h_device_apply_deferred_finalizes(CPU* c, u64 entry) {
+    (void)c;
+    (void)entry;
+}
+static void h_device_finalize_command_handle(CPU* c, u64 entry) {
+    (void)c;
+    (void)entry;
+}
 static void h_device_set_window_origin_mode(CPU* c, u64 entry) {
     (void)entry;
     pm_lock(&objs_lock);
@@ -752,6 +768,8 @@ static void h_memory_pool_get_size(CPU* c, u64 entry) {
 
 /* The event builder (pool, offset). A builder that the game never gave to SetDefaults starts zero, as calloc gives. */
 typedef struct { uint64_t pool, offset; } EventBuilderRec;
+/* An event holds the pool and the offset that its builder had at EventInitialize. Its value word lives in the pool. */
+typedef struct { uint64_t pool, offset; } EventRec;
 static EventBuilderRec* event_builder(u64 addr) { return rec_get(addr, NVN_OBJ_EVENT_BUILDER, sizeof(EventBuilderRec)); }
 static void h_event_builder_set_defaults(CPU* c, u64 entry) {
     (void)entry;
@@ -793,6 +811,114 @@ static void h_event_builder_get_storage(CPU* c, u64 entry) {
         c->x[0] = b->pool;
     }
     pm_unlock(&objs_lock);
+}
+
+/* The value word of an event is the u32 at MemoryPoolRec.storage + offset. The library does not check it; the host
+   refuses a word that it cannot write or read instead of a fault. Caller holds objs_lock. Returns 0 after a log line. */
+static u64 event_value_address(const EventRec* e, const char* operation, u64 event_addr) {
+    const MemoryPoolRec* pool = known_record(e->pool, NVN_OBJ_MEMORY_POOL);
+    if (!pool) {
+        LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s event=%llx memory pool=%llx is unknown\n", operation,
+                  (unsigned long long)event_addr, (unsigned long long)e->pool);
+        return 0;
+    }
+    if (!nvn_memory_pool_map(pool->flags, pool->storage)) {
+        LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s event=%llx memory pool=%llx has no CPU access\n", operation,
+                  (unsigned long long)event_addr, (unsigned long long)e->pool);
+        return 0;
+    }
+    if (!nvn_pool_range_fits(pool->size, e->offset, sizeof(uint32_t))) {
+        LOG_LIMIT(QUEUE_LOG_LIMIT,
+                  "nvn-native: %s event=%llx offset=%llx size=4 is outside memory pool=%llx size=%llu\n",
+                  operation, (unsigned long long)event_addr, (unsigned long long)e->offset,
+                  (unsigned long long)e->pool, (unsigned long long)pool->size);
+        return 0;
+    }
+    return pool->storage + e->offset;
+}
+static EventRec* event_rec(u64 addr) { return rec_get(addr, NVN_OBJ_EVENT, sizeof(EventRec)); }
+
+static void h_event_initialize(CPU* c, u64 entry) {
+    (void)entry;
+    const u64 event_addr = c->x[0], builder_addr = c->x[1];
+    pm_lock(&objs_lock);
+    const EventBuilderRec* b = known_record(builder_addr, NVN_OBJ_EVENT_BUILDER);
+    if (!b) {
+        LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: nvnEventInitialize event=%llx builder=%llx is unknown\n",
+                  (unsigned long long)event_addr, (unsigned long long)builder_addr);
+        c->x[0] = 0;
+    } else {
+        *event_rec(event_addr) = (EventRec){b->pool, b->offset};
+        c->x[0] = 1;
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_event_finalize(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    if (known_record(c->x[0], NVN_OBJ_EVENT)) nvn_objtab_remove(&objs, c->x[0]);
+    pm_unlock(&objs_lock);
+}
+static void h_event_get_value(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnEventGetValue";
+    const u64 event_addr = c->x[0];
+    pm_lock(&objs_lock);
+    const EventRec* e = known_record(event_addr, NVN_OBJ_EVENT);
+    c->x[0] = 0;
+    if (!e)
+        LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s unknown event=%llx\n", name, (unsigned long long)event_addr);
+    else {
+        const u64 word = event_value_address(e, name, event_addr);
+        if (word) c->x[0] = gr32(word);
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_event_get_memory_pool(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const EventRec* e = known_record(c->x[0], NVN_OBJ_EVENT);
+    if (!e) LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: nvnEventGetMemoryPool unknown event=%llx\n",
+                      (unsigned long long)c->x[0]);
+    c->x[0] = e ? e->pool : 0;
+    pm_unlock(&objs_lock);
+}
+static void h_event_get_memory_offset(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const EventRec* e = known_record(c->x[0], NVN_OBJ_EVENT);
+    if (!e) LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: nvnEventGetMemoryOffset unknown event=%llx\n",
+                      (unsigned long long)c->x[0]);
+    c->x[0] = e ? e->offset : 0;
+    pm_unlock(&objs_lock);
+}
+static void h_event_signal(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnEventSignal";
+    const u64 event_addr = c->x[0];
+    const uint32_t mode = (uint32_t)c->x[1];
+    pm_lock(&objs_lock);
+    const EventRec* e = known_record(event_addr, NVN_OBJ_EVENT);
+    const u64 word = e ? event_value_address(e, name, event_addr) : 0;
+    if (!e)
+        LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s unknown event=%llx\n", name, (unsigned long long)event_addr);
+    else if (word) {
+        const uint32_t old = mode == NVN_EVENT_SIGNAL_ADD ? gr32(word) : 0;
+        gw32(word, nvn_event_signal_value(mode, old, (uint32_t)c->x[2]));
+    }
+    pm_unlock(&objs_lock);
+}
+/* The library flushes the CPU data cache of the range. The host renderer reads the same host memory, so this is a
+   no-op: there is no guest cache to flush. */
+static void h_buffer_flush_mapped_range(CPU* c, u64 entry) {
+    (void)c;
+    (void)entry;
+    LOG_LIMIT(1, "nvn-native: nvnBufferFlushMappedRange is a no-op (the renderer reads the same host memory)\n");
+}
+static void h_memory_pool_flush_mapped_range(CPU* c, u64 entry) {
+    (void)c;
+    (void)entry;
+    LOG_LIMIT(1, "nvn-native: nvnMemoryPoolFlushMappedRange is a no-op (the renderer reads the same host memory)\n");
 }
 
 #define DESCRIPTOR_POOL_HANDLERS(name, kind)                                        \
@@ -4791,6 +4917,31 @@ static void h_sync_initialize(CPU* c, u64 entry) {
     s->device = c->x[1]; s->state = NVN_SYNC_UNSIGNALED; s->fences = 0;
     c->x[0] = 1; pm_unlock(&objs_lock);
 }
+static void h_sync_finalize(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    if (known_record(c->x[0], NVN_OBJ_SYNC)) nvn_objtab_remove(&objs, c->x[0]);
+    pm_unlock(&objs_lock);
+}
+/* The host has no GL backend. The library stores a GL sync in a SyncRec of kind 4, so both calls fail the same way:
+   the library's result for "no backend" and "unexpected backend result". */
+#define NVN_GL_SYNC_OK         0u
+#define NVN_GL_SYNC_NO_BACKEND 4u
+static void h_sync_initialize_from_fenced_gl_sync(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnSyncInitializeFromFencedGLSync";
+    LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s sync=%llx device=%llx fails: the host has no GL backend\n", name,
+              (unsigned long long)c->x[0], (unsigned long long)c->x[1]);
+    if (c->x[3] && native_guest_writable(c->x[3], sizeof(uint32_t)))
+        gw32(c->x[3], NVN_GL_SYNC_NO_BACKEND);
+    c->x[0] = NVN_GL_SYNC_OK;
+}
+static void h_sync_create_gl_sync(CPU* c, u64 entry) {
+    (void)entry;
+    LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: nvnSyncCreateGLSync sync=%llx fails: the host has no GL backend\n",
+              (unsigned long long)c->x[0]);
+    c->x[0] = NVN_GL_SYNC_NO_BACKEND;
+}
 
 enum { NVN_ACQUIRE_OK = 0, NVN_ACQUIRE_FAILED = 1 };
 /* Ends a failed nvnWindowAcquireTexture: the reason, the invalid index and the result. objs_lock is held. */
@@ -5056,6 +5207,7 @@ static void frame_finish(FrameJob* job) {
         sync->state = nvn_sync_after_token(sync->state, &sync->fences);
     }
     nvn_frame_release(&job->frame, &lists);
+    frames_in_flight--;
     pc_broadcast(&frame_done_cv); /* the image and the syncs are up to date */
     pm_unlock(&objs_lock);
 }
@@ -5237,6 +5389,65 @@ static void h_queue_fence_sync(CPU* c, u64 entry) {
     pm_unlock(&objs_lock);
 }
 
+/* nvnQueueWaitSync(queue, sync): the host has one GPU worker (gpu.c, gpu_call), and the frame jobs and calls run on it
+   in order, so a sync that a queue fenced is reached before later work of any queue. The library appends GPU waits. */
+static void h_queue_wait_sync(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnQueueWaitSync";
+    const u64 sync_addr = c->x[1];
+    pm_lock(&objs_lock);
+    QueueRec* q = queue_rec(c->x[0], name);
+    const SyncRec* sync = q ? known_record(sync_addr, NVN_OBJ_SYNC) : NULL;
+    if (q && !sync)
+        LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s unknown sync=%llx\n", name, (unsigned long long)sync_addr);
+    if (!q || !sync || sync->state == NVN_SYNC_UNSIGNALED) {
+        if (sync)
+            LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s sync=%llx is not signaled\n", name,
+                      (unsigned long long)sync_addr);
+        c->x[0] = 0;
+    } else {
+        c->x[0] = 1;
+    }
+    pm_unlock(&objs_lock);
+}
+/* nvnQueueFlush: the host hands a pending frame to the GPU only at Present (nvn-design.md, 3c decision 11). A flush of
+   a partial frame has no meaning here. */
+static void h_queue_flush(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnQueueFlush";
+    pm_lock(&objs_lock);
+    QueueRec* q = queue_rec(c->x[0], name);
+    if (q && !nvn_frame_is_empty(&q->pending))
+        LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx with %u pending lists is not supported\n", name,
+                  (unsigned long long)c->x[0], q->pending.handle_count);
+    pm_unlock(&objs_lock);
+}
+/* nvnQueueFinish: waits until every posted frame job has ended. A pending frame that no present took cannot finish. */
+static void h_queue_finish(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnQueueFinish";
+    pm_lock(&objs_lock);
+    QueueRec* q = queue_rec(c->x[0], name);
+    if (!q) {
+        pm_unlock(&objs_lock);
+        return;
+    }
+    if (!nvn_frame_is_empty(&q->pending)) {
+        LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx has %u lists that no present took, returns\n", name,
+                  (unsigned long long)c->x[0], q->pending.handle_count);
+        pm_unlock(&objs_lock);
+        return;
+    }
+    while (frames_in_flight) kthread_wait(&frame_done_cv, &objs_lock, -1);
+    pm_unlock(&objs_lock);
+}
+/* QueueFinalize would destroy the queue and its channel; the host keeps the record to the process end. */
+static void h_queue_finalize(CPU* c, u64 entry) {
+    (void)entry;
+    LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: nvnQueueFinalize queue=%llx is not supported, the record stays\n",
+              (unsigned long long)c->x[0]);
+}
+
 /* nvnQueuePresentTexture(queue, window, index): closes the pending frame and hands it to the GPU (decision 11). A
    present that names an image that is not ACQUIRED is a fault of the game: nothing is shown and the frame stays. */
 static void h_queue_present_texture(CPU* c, u64 entry) {
@@ -5288,6 +5499,7 @@ static void h_queue_present_texture(CPU* c, u64 entry) {
     FrameJob* dispatched = malloc(sizeof *dispatched);
     if (!dispatched) fatal("nvn-native: out of memory for the frame job of a queue\n");
     *dispatched = job;
+    frames_in_flight++;
     pm_unlock(&objs_lock);
     gpu_call(frame_run, dispatched, NULL, 0);
 }
@@ -5310,6 +5522,9 @@ static const NativeProc native_procs[] = {
     {"nvnDeviceGetTimestampInNanoseconds", h_device_get_timestamp_ns},
     {"nvnDeviceGetTextureHandle", h_device_get_texture_handle},
     {"nvnDeviceGetImageHandle", h_device_get_image_handle},
+    {"nvnDeviceFinalize", h_device_finalize},
+    {"nvnDeviceApplyDeferredFinalizes", h_device_apply_deferred_finalizes},
+    {"nvnDeviceFinalizeCommandHandle", h_device_finalize_command_handle},
     {"nvnQueueBuilderSetDevice", h_queue_builder_set_device},
     {"nvnQueueBuilderGetDevice", h_queue_builder_get_device},
     {"nvnQueueBuilderSetDefaults", h_queue_builder_set_defaults},
@@ -5332,6 +5547,10 @@ static const NativeProc native_procs[] = {
     {"nvnQueueInitialize", h_queue_initialize},
     {"nvnQueueSubmitCommands", h_queue_submit_commands},
     {"nvnQueueFenceSync", h_queue_fence_sync},
+    {"nvnQueueWaitSync", h_queue_wait_sync},
+    {"nvnQueueFlush", h_queue_flush},
+    {"nvnQueueFinish", h_queue_finish},
+    {"nvnQueueFinalize", h_queue_finalize},
     {"nvnQueuePresentTexture", h_queue_present_texture},
     {"nvnMemoryPoolBuilderSetDefaults", h_memory_pool_builder_set_defaults},
     {"nvnMemoryPoolBuilderSetDevice", h_memory_pool_builder_set_device},
@@ -5343,6 +5562,7 @@ static const NativeProc native_procs[] = {
     {"nvnMemoryPoolBuilderGetFlags", h_memory_pool_builder_get_flags},
     {"nvnMemoryPoolInitialize", h_memory_pool_initialize},
     {"nvnMemoryPoolFinalize", h_memory_pool_finalize},
+    {"nvnMemoryPoolFlushMappedRange", h_memory_pool_flush_mapped_range},
     {"nvnMemoryPoolMap", h_memory_pool_map},
     {"nvnMemoryPoolGetFlags", h_memory_pool_get_flags},
     {"nvnMemoryPoolGetSize", h_memory_pool_get_size},
@@ -5458,6 +5678,9 @@ static const NativeProc native_procs[] = {
     {"nvnWindowGetNumTextures", h_window_get_num_textures},
     {"nvnWindowGetPresentInterval", h_window_get_present_interval},
     {"nvnSyncInitialize", h_sync_initialize},
+    {"nvnSyncFinalize", h_sync_finalize},
+    {"nvnSyncInitializeFromFencedGLSync", h_sync_initialize_from_fenced_gl_sync},
+    {"nvnSyncCreateGLSync", h_sync_create_gl_sync},
     {"nvnWindowAcquireTexture", h_window_acquire_texture},
     {"nvnSyncWait", h_sync_wait},
     {"nvnTextureBuilderSetWidth", h_texture_builder_set_width},
@@ -5514,6 +5737,7 @@ static const NativeProc native_procs[] = {
     {"nvnBufferBuilderGetMemoryOffset", h_buffer_builder_get_memory_offset},
     {"nvnBufferInitialize", h_buffer_initialize},
     {"nvnBufferFinalize", h_buffer_finalize},
+    {"nvnBufferFlushMappedRange", h_buffer_flush_mapped_range},
     {"nvnBufferMap", h_buffer_map},
     {"nvnBufferGetAddress", h_buffer_get_address},
     {"nvnBufferGetSize", h_buffer_get_size},
@@ -5636,6 +5860,12 @@ static const NativeProc native_procs[] = {
     {"nvnEventBuilderGetMemoryPool", h_event_builder_get_memory_pool},
     {"nvnEventBuilderGetMemoryOffset", h_event_builder_get_memory_offset},
     {"nvnEventBuilderGetStorage", h_event_builder_get_storage},
+    {"nvnEventInitialize", h_event_initialize},
+    {"nvnEventFinalize", h_event_finalize},
+    {"nvnEventGetValue", h_event_get_value},
+    {"nvnEventGetMemoryPool", h_event_get_memory_pool},
+    {"nvnEventGetMemoryOffset", h_event_get_memory_offset},
+    {"nvnEventSignal", h_event_signal},
     {"nvnPolygonStateSetDefaults", h_polygon_state_set_defaults},
     {"nvnPolygonStateSetCullFace", h_polygon_state_set_cull_face},
     {"nvnPolygonStateSetFrontFace", h_polygon_state_set_front_face},

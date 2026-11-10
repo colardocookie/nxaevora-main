@@ -30,8 +30,8 @@ tool keeps them.
 | G7 | 4 | 4 | 0 | 4 | 0 |
 | G8 | 112 | 112 | 0 | 112 | 0 |
 | G9 | 43 | 43 | 0 | 43 | 0 |
-| G10 | 281 | 144 | 137 | 0 | 0 |
-| all | 523 | 386 | 137 | 242 | 0 |
+| G10 | 281 | 162 | 119 | 0 | 0 |
+| all | 523 | 404 | 119 | 242 | 0 |
 
 ## Functions
 
@@ -290,7 +290,7 @@ tool keeps them.
 | `nvnBufferBuilderGetDevice` | G10 | d823ae0 | 0 | implemented |  |  |  |
 | `nvnBufferBuilderGetMemoryOffset` | G10 | d823b00 | 0 | implemented |  |  |  |
 | `nvnBufferBuilderGetMemoryPool` | G10 | d823af0 | 0 | implemented |  |  |  |
-| `nvnBufferFlushMappedRange` | G10 | d823c00 | 0 | stub-log |  |  |  |
+| `nvnBufferFlushMappedRange` | G10 | d823c00 | 0 | implemented |  |  |  |
 | `nvnBufferGetDebugID` | G10 | d823c70 | 0 | implemented |  |  |  |
 | `nvnBufferGetMemoryOffset` | G10 | d823c50 | 0 | implemented |  |  |  |
 | `nvnBufferGetMemoryPool` | G10 | d823c40 | 0 | implemented |  |  |  |
@@ -384,10 +384,10 @@ tool keeps them.
 | `nvnCommandBufferUpdateUniformBuffer` | G10 | d84c980 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferWaitEvent` | G10 | d832e30 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferWaitSync` | G10 | d825ce0 | 0 | stub-log |  |  |  |
-| `nvnDeviceApplyDeferredFinalizes` | G10 | d82cdd0 | 0 | stub-log |  |  |  |
+| `nvnDeviceApplyDeferredFinalizes` | G10 | d82cdd0 | 0 | implemented |  |  |  |
 | `nvnDeviceBuilderGetFlags` | G10 | d82cde0 | 0 | implemented |  |  |  |
-| `nvnDeviceFinalize` | G10 | d82ce10 | 0 | stub-log |  |  |  |
-| `nvnDeviceFinalizeCommandHandle` | G10 | d826410 | 0 | stub-log |  |  |  |
+| `nvnDeviceFinalize` | G10 | d82ce10 | 0 | implemented |  |  |  |
+| `nvnDeviceFinalizeCommandHandle` | G10 | d826410 | 0 | implemented |  |  |  |
 | `nvnDeviceGenerateDebugDomainId` | G10 | d82cfd0 | 0 | stub-log |  |  |  |
 | `nvnDeviceGetCurrentTimestampInNanoseconds` | G10 | d82cff0 | 0 | stub-log |  |  |  |
 | `nvnDeviceGetDepthMode` | G10 | d82d040 | 0 | implemented |  |  |  |
@@ -415,17 +415,17 @@ tool keeps them.
 | `nvnEventBuilderGetStorage` | G10 | d832d10 | 0 | implemented |  |  |  |
 | `nvnEventBuilderSetDefaults` | G10 | d832cf0 | 0 | implemented |  |  |  |
 | `nvnEventBuilderSetStorage` | G10 | d832d00 | 0 | implemented |  |  |  |
-| `nvnEventFinalize` | G10 | d832dd0 | 0 | stub-log |  |  |  |
-| `nvnEventGetMemoryOffset` | G10 | d832e00 | 0 | stub-log |  |  |  |
-| `nvnEventGetMemoryPool` | G10 | d832df0 | 0 | stub-log |  |  |  |
-| `nvnEventGetValue` | G10 | d832de0 | 0 | stub-log |  |  |  |
-| `nvnEventInitialize` | G10 | d832d40 | 0 | stub-log |  |  |  |
-| `nvnEventSignal` | G10 | d832e10 | 0 | stub-log |  |  |  |
+| `nvnEventFinalize` | G10 | d832dd0 | 0 | implemented |  |  |  |
+| `nvnEventGetMemoryOffset` | G10 | d832e00 | 0 | implemented |  |  |  |
+| `nvnEventGetMemoryPool` | G10 | d832df0 | 0 | implemented |  |  |  |
+| `nvnEventGetValue` | G10 | d832de0 | 0 | implemented |  |  |  |
+| `nvnEventInitialize` | G10 | d832d40 | 0 | implemented |  |  |  |
+| `nvnEventSignal` | G10 | d832e10 | 0 | implemented | unit |  |  |
 | `nvnMemoryPoolBuilderGetDevice` | G10 | d833ca0 | 0 | implemented |  |  |  |
 | `nvnMemoryPoolBuilderGetFlags` | G10 | d833cd0 | 0 | implemented |  |  |  |
 | `nvnMemoryPoolBuilderGetMemory` | G10 | d833cb0 | 0 | implemented |  |  |  |
 | `nvnMemoryPoolBuilderGetSize` | G10 | d833cc0 | 0 | implemented |  |  |  |
-| `nvnMemoryPoolFlushMappedRange` | G10 | d833ee0 | 0 | stub-log |  |  |  |
+| `nvnMemoryPoolFlushMappedRange` | G10 | d833ee0 | 0 | implemented |  |  |  |
 | `nvnMemoryPoolGetSize` | G10 | d833f80 | 0 | implemented |  |  |  |
 | `nvnMemoryPoolInvalidateMappedRange` | G10 | d833ef0 | 0 | stub-log |  |  |  |
 | `nvnMemoryPoolMapVirtual` | G10 | d833f10 | 0 | stub-log |  |  |  |
@@ -448,16 +448,16 @@ tool keeps them.
 | `nvnQueueBuilderGetMemorySize` | G10 | d838550 | 0 | implemented |  |  |  |
 | `nvnQueueBuilderGetQueuePriority` | G10 | d8385a0 | 0 | implemented |  |  |  |
 | `nvnQueueBuilderSetCommandFlushThreshold` | G10 | d838180 | 0 | implemented |  |  |  |
-| `nvnQueueFinalize` | G10 | d8393d0 | 0 | stub-log |  |  |  |
-| `nvnQueueFinish` | G10 | d839480 | 0 | stub-log |  |  |  |
-| `nvnQueueFlush` | G10 | d83a070 | 0 | stub-log |  |  |  |
+| `nvnQueueFinalize` | G10 | d8393d0 | 0 | implemented |  |  |  |
+| `nvnQueueFinish` | G10 | d839480 | 0 | implemented |  |  |  |
+| `nvnQueueFlush` | G10 | d83a070 | 0 | implemented |  |  |  |
 | `nvnQueueGetError` | G10 | d839560 | 0 | stub-log |  |  |  |
 | `nvnQueueGetTotalCommandMemoryUsed` | G10 | d83a080 | 0 | stub-log |  |  |  |
 | `nvnQueueGetTotalComputeMemoryUsed` | G10 | d83a0e0 | 0 | stub-log |  |  |  |
 | `nvnQueueGetTotalControlMemoryUsed` | G10 | d83a0a0 | 0 | stub-log |  |  |  |
 | `nvnQueueResetMemoryUsageCounts` | G10 | d83a0f0 | 0 | stub-log |  |  |  |
 | `nvnQueueSetDebugLabel` | G10 | d82cd10 | 0 | implemented |  |  |  |
-| `nvnQueueWaitSync` | G10 | d83bfa0 | 0 | stub-log |  |  |  |
+| `nvnQueueWaitSync` | G10 | d83bfa0 | 0 | implemented |  |  |  |
 | `nvnSamplerBuilderGetBorderColor` | G10 | d83a4b0 | 0 | implemented |  |  |  |
 | `nvnSamplerBuilderGetBorderColori` | G10 | d83a4e0 | 0 | implemented |  |  |  |
 | `nvnSamplerBuilderGetBorderColorui` | G10 | d83a510 | 0 | implemented |  |  |  |
@@ -488,9 +488,9 @@ tool keeps them.
 | `nvnSamplerPoolGetMemoryPool` | G10 | d83aab0 | 0 | implemented |  |  |  |
 | `nvnSamplerPoolRegisterSamplerBuilder` | G10 | d83a9e0 | 0 | implemented |  |  |  |
 | `nvnSamplerPoolSetDebugLabel` | G10 | d82cd70 | 0 | implemented |  |  |  |
-| `nvnSyncCreateGLSync` | G10 | d83c0a0 | 0 | stub-log |  |  |  |
-| `nvnSyncFinalize` | G10 | d83b860 | 0 | stub-log |  |  |  |
-| `nvnSyncInitializeFromFencedGLSync` | G10 | d83bfb0 | 0 | stub-log |  |  |  |
+| `nvnSyncCreateGLSync` | G10 | d83c0a0 | 0 | implemented |  |  |  |
+| `nvnSyncFinalize` | G10 | d83b860 | 0 | implemented |  |  |  |
+| `nvnSyncInitializeFromFencedGLSync` | G10 | d83bfb0 | 0 | implemented |  |  |  |
 | `nvnSyncSetDebugLabel` | G10 | d82cd30 | 0 | implemented |  |  |  |
 | `nvnTextureBuilderGetDepth` | G10 | d83c3b0 | 0 | implemented |  |  |  |
 | `nvnTextureBuilderGetDepthStencilMode` | G10 | d83c420 | 0 | implemented |  |  |  |

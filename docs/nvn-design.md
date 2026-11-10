@@ -748,6 +748,12 @@ functions that no run reached stay `implemented` plus `unit`, `selftest` or `exe
   and index type 1. Each value of the run is now the observed scope of its function for the stub and refusal decisions of U2 to U5.
 - 4-u2: the reading of the library for the 281 functions, in groups (events and fences, copies, transform feedback, tessellation
   and raster extras, the rest), one commit for each group, with the unit tests and the cases that the selftest takes.
+  U2 task 1 (2026-11-10): 18 CPU side handlers. Events keep pool and offset in a host record, and the value word is the u32 in
+  the pool storage (mode 1 adds, other modes write). The flushes of a mapped range and the two deferred finalizer calls are
+  no-ops. GL syncs fail with the library result for "no backend". QueueWaitSync succeeds for a fenced or signaled sync because
+  one GPU thread runs the jobs in order. QueueFinish waits for the posted frame jobs. QueueFlush with a pending frame,
+  QueueFinalize and DeviceFinalize only log. Task 2 is the command buffer part (SignalEvent, WaitEvent, ReportValue,
+  FenceSync, WaitSync).
 - 4-u3: the selftest cases for the rest of the functions that a test can make, by group, and the execution test for events and
   `WaitSync`. Each run is reported with the passed scope.
 - 4-u4: the change of the default of `nvn_native_missing` to stop, when no row is `none` or `stub-log`.

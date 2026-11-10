@@ -600,6 +600,11 @@ int nvn_window_present_args(const NvnTexture* t, uint64_t pool_storage, const Nv
 /* The sync state after one token of a frame job: fences goes down by one when it is above 0, and the state is
    SIGNALED at 0. Pure. */
 NvnSyncState nvn_sync_after_token(NvnSyncState state, uint32_t* fences);
+/* nvnEventSignal: mode 0 writes the value, mode 1 adds it to the old word. Any other mode writes, as in the library.
+   The add wraps at 32 bits. Pure. */
+#define NVN_EVENT_SIGNAL_WRITE 0u
+#define NVN_EVENT_SIGNAL_ADD   1u
+uint32_t nvn_event_signal_value(uint32_t mode, uint32_t old, uint32_t value);
 
 /* The pipeline stages of a program: 0 vertex, 1 fragment (the only two the game uses), 2 to 5 accepted by the library. */
 #define NVN_PROGRAM_STAGES 6u
