@@ -2307,3 +2307,14 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   (struct fields) is not traced: the setters of those records are traced. `nvnDeviceGetInteger` stays `VALUE_GET_INTEGER`.
 - Code writer patch `patches/enum-b-1.patch` (63 rows, 6 files). `nvnPolygonStateSetPolygonOffsetEnables` keeps mask 0x02 (a
   bit field of three enables, not a bool). Not built yet.
+
+## Enum argument trace (4-u1) step (c) and first run (2026-11-10, moved from WORK_PLAN.md)
+
+- Commit `b9d35bb`: patch read fully (rows CopyTextureToTexture w7, ClearTexture w5, BindProgram w2 checked against the table),
+  `ctest` passes except `tracked_material`, 3 mutants caught (a table mask, the full limit, the register in the key). Exe md5
+  95cfea4d in the 3 places.
+- Run 1 (user, update program to the field, `nvn_trace=1`, 72 s, no crash): 371 `nvn-enum:` lines, 62 of 63 functions logged.
+  Lines saved in `analysis/enum-run1.txt` of the scratchpad.
+- Error of the analyst table: DrawElements, DrawElementsInstanced and DrawElementsBaseVertex have mode w1, index type w2, count
+  w3 (log values 6, 0x21c, 0x204; host handler `nvn_native.c:3426` reads type x[2], count x[3]). The mask 0x0a logs the count
+  and fills the seen set of DrawElements (one "seen set full" line). The index type is not logged.
