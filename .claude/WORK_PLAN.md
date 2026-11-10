@@ -49,7 +49,6 @@ below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
   4-u4. `docs/nvn-coverage.md`: 249 rows of G10 are `stub-log`. Groups (one commit each), in this order:
-  - U1 getters and builders: CLOSED (2026-11-10, history in `OLD-WORK_PLAN.md`, sections "Task (u) U1").
   - U2 events and sync (about 20): Event*, CommandBuffer SignalEvent, WaitEvent, WaitSync, FenceSync, ReportValue, Queue
     WaitSync, Finish, Flush, Finalize, Sync*. Check with `nvn_exectest`.
   - U3 copies, clears, texel IO (about 25): CopyBufferTo*, CopyTextureToBuffer, ClearBuffer, ClearColori/ui, Downsample*,
@@ -65,14 +64,10 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Decision of the user (2026-11-09): the trace of the enum argument values (the missing part of 4-u1) comes after U1.
-  Current step: enum trace (4-u1). Step (a) done (`OLD-WORK_PLAN.md`, last section; table `reports/analyst-enum-1.md`).
-    Step (b) done: brief `reports/brief-enum-b.md`, patch `patches/enum-b-1.patch` (6 files, `git apply --check` passes),
-    report `reports/writer-enum-b-1.md`. Next session: step (c), read the whole patch, build, `ctest`, mutant of each new test,
-    commit (with the OpenCode line). Then step (d): one user run with `nvn_trace=1`, read the `nvn-enum:` lines.
-    Decisions: in `nvn_trace.c`, a new value op that keys on (register, value) and logs each distinct value once
-    (`nvn-enum: <name> wN=<value>`), from a table of Table 1 rows (enum and flags, not the bool enables `tst #0xff`). Table 2
-    (struct fields) is not traced: the setters of those records are traced. Then U2 step (a).
+  Current step: enum trace (4-u1), step (c). Steps (a) and (b) done (`OLD-WORK_PLAN.md`, last two sections).
+    Patch `patches/enum-b-1.patch` (6 files, `git apply --check` passes), brief `reports/brief-enum-b.md` (the decisions),
+    report `reports/writer-enum-b-1.md`. Step (c): read the whole patch, build, `ctest`, mutant of each new test, commit (with
+    the OpenCode line). Step (d): one user run with `nvn_trace=1`, read the `nvn-enum:` lines. Then U2 step (a).
   - Rows near U1 that stay in other groups: EventGetMemoryPool, EventGetMemoryOffset, EventGetValue (U2). CommandBuffer
     Get/SetCopyRowStride and Get/SetCopyImageStride (U3, copies). CommandBuffer command and control memory getters, memory
     callback getters (U5). ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).

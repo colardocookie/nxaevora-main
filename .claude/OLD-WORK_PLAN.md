@@ -2296,3 +2296,14 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   flags) of the 242 observed functions, Table 2 the enum fields read from structs. Checked in the disassembly: BlendFunc
   d83ac30, DepthFunc d83b060, TextureBuilderSetFormat d83c2f0, ChannelMask d83ade0. Open: QueueFenceSync argument order
   (w3 & 1 only), ClearColor word meaning, SetShadersExt stage offset (guess 0).
+
+## Enum argument trace (4-u1) step (b) done (2026-11-10, moved from WORK_PLAN.md)
+
+- Decision of the user (2026-11-09): the enum trace (the missing part of 4-u1) comes after U1. U1 is closed (sections
+  "Task (u) U1").
+- Decisions of the brief `reports/brief-enum-b.md`: a pure module `nvn_enum_trace.c/.h` (table of the w register masks of
+  Table 1, enum and flags, not the bool enables `tst #0xff`; a seen set of 64 keys (register, value) for each function).
+  `proc_trace` calls it before the size, value and queue branches, and logs `nvn-enum: <name> wN=<value>` once. Table 2
+  (struct fields) is not traced: the setters of those records are traced. `nvnDeviceGetInteger` stays `VALUE_GET_INTEGER`.
+- Code writer patch `patches/enum-b-1.patch` (63 rows, 6 files). `nvnPolygonStateSetPolygonOffsetEnables` keeps mask 0x02 (a
+  bit field of three enables, not a bool). Not built yet.
