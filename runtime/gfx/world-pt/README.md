@@ -22,6 +22,12 @@ Use the prepared runtime when generating or relinking your local game executable
 
 Open the in-game menu with F1, then Display > Graphics. The DLSS Super Resolution and Ray tracing switches are saved in the game's INI file as `arceus_dlss` and `arceus_ray_tracing`. Both default to Off. Change either switch in the menu, close the game normally, and start it again to apply the saved choice. The menu marks these settings as requiring a restart. Ray tracing uses FSR when DLSS is off. The launcher reads the saved settings by default and clears inherited graphics overrides. Optional launch flags remain available for a one-run override. The launcher uses native controller input, game-controlled frame pacing, a 120 FPS target, and camera multiplier 2.2. The terrain directory is optional. Camera-visible geometry is captured from guest draws. Additional local terrain, structure and instance tables provide offscreen geometry and materials.
 
+The launcher renders for a 4K display by default. On a 2560×1440 display, add `-Display 1440p`. The game then renders the scene at 2560×1440 with render scale 4/3, instead of rendering 4K and shrinking it to the screen. The fixed scene resolution, screen-pixel fetch and native shadow map switches that the launcher always sets keep that scale sharp and free of grid patterns. Ray tracing, DLSS, FSR and Ray Reconstruction build a 3840×2160 scene, so `-Display 1440p` turns them off for that run and refuses the launch flags that ask for them. The settings saved in the menu are kept for the next 4K launch.
+
+```powershell
+./runtime/gfx/world-pt/Start-WorldPT.ps1 -Executable C:/games/build/ArceusTest.exe -Game C:/games/ArceusTest -Display 1440p
+```
+
 ## Scene and lighting
 
 The renderer captures triangle positions and UVs, reconstructs the active camera and builds acceleration structures for ray queries. It combines live geometry with verified archive placements, rejects duplicated live instances, evaluates alpha cutouts, samples emissive triangles and the environment, and traces shadow, diffuse and GGX reflection rays. Native surface frames and normal maps guide secondary shading. At low descriptor limits, a small GPU texture cache provides overflow albedo samples. Cached guest shaders are isolated by the shader translator, renderer inputs and build flags.
