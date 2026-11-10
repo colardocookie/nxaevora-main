@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the U4 patch 1 build (md5 d06f471e), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the U4 patch 2 build (`1218e3d`, md5 0c3bdc15), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=0`, `nvn_native=1` (both set by the user, 2026-11-10), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -48,9 +48,7 @@ Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
-  4-u4. `docs/nvn-coverage.md`: 61 rows of G10 are `stub-log` (after U4 patch 1). Groups left, in this order:
-  - U4 patch 2, table C (`reports/analyst-u4-C-1.md`, checked): separate sampler and texture binds, BindTextures, program
-    setters, subroutines, scratch memory, coverage modulation, tiled cache, and the handle getters.
+  4-u4. `docs/nvn-coverage.md`: 45 rows of G10 are `stub-log` (after U4 patch 2, `1218e3d`). Groups left, in this order:
   - U5 debug and the rest (about 50): debug markers and groups, checkpoints, memory usage getters, GL interop, finalizers,
     GetProcAddress, fast clear registration. For each function, the library decides: a logged no-op or an explicit refusal.
   Steps of one group, one session each: (a) library analyst table, check 3 rows or more in the disassembly. (b) brief, handler
@@ -58,13 +56,10 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U4 patch 2 step (c). The writer is done: `patches/writer-u4-2.patch` (LF, 4 files, +174 -33),
-    `reports/writer-u4-2.md`, worktree `wt-u4-2` (remove it after the patch). Read the whole patch, apply, keep CRLF, build,
-    `ctest`, a mutant of each new test, update `nvn-coverage.md`, commit. Brief: `reports/brief-writer-u4-2.md`.
-    Extra decisions in the brief: BindTextures SEND per entry (stride 8, `command_bind_range_ok` takes the entry size),
-    ProgramSetShaders plain mode (16-byte entries, no control), SetSampleShading NO-OP (one sample), coverage table
-    REFUSE (identity not verified), SetSubroutineLinkage returns 0.
-  - Record of the patch 1 regression run and of the table C decisions: `OLD-WORK_PLAN.md`, "U4 patch 2 step (b)".
+  Current step: U4 step (d), one user run (`nvn_native=1`, update program, wait 10 seconds, close) as a regression check
+    of U4 patch 2. Read the log with `nx-log-read`: no new `not implemented` lines, no crash, the table C names. Then U5 step (a).
+  - U4 patch 2 is done (`1218e3d`): ctest passes except `tracked_material`, the mutant (shift 16) of
+    `test_separate_handles` fails as expected. Decisions: `OLD-WORK_PLAN.md`, "U4 patch 2 step (b)".
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
   - Rows near U1 that stay in other groups: CommandBuffer command and control memory getters, memory callback getters (U5).
     ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).
