@@ -430,6 +430,50 @@ static void test_many_lists(void) {
     nvn_list_store_free(&s);
 }
 
+static void test_oplist_copy(void) {
+    NvnListStore s = {0};
+    NvnOpList inner = {0}, src = {0}, dst = {0};
+    NvnOpBarrier barrier = {7u, 0};
+    NvnOpClearColor color = {1u, 3u, {1u, 2u, 3u, 4u}};
+    CHECK(nvn_oplist_append(&inner, NVN_OP_BARRIER, &barrier, sizeof barrier));
+    uint64_t inner_handle = nvn_list_publish(&s, &inner);
+    CHECK(inner_handle && nvn_list_live(&s) == 1);
+    CHECK(nvn_oplist_append(&src, NVN_OP_CLEAR_COLOR, &color, sizeof color));
+    CHECK(nvn_list_ref(&s, inner_handle)); /* as CallCommands does for the CALL it records */
+    NvnOpCall call = {inner_handle};
+    CHECK(nvn_oplist_append(&src, NVN_OP_CALL, &call, sizeof call));
+    CHECK(nvn_oplist_append(&src, NVN_OP_BARRIER, &barrier, sizeof barrier));
+    uint64_t src_handle = nvn_list_publish(&s, &src);
+    CHECK(src_handle);
+
+    uint64_t failed = 1;
+    CHECK(nvn_oplist_copy(&dst, nvn_list_find(&s, src_handle), &s, &failed) && !failed);
+    size_t pa = 0, pb = 0;
+    NvnOpHeader ha, hb;
+    const void* x;
+    const void* y;
+    uint32_t ops = 0;
+    for (;;) {
+        int a = nvn_oplist_next(nvn_list_find(&s, src_handle), &pa, &ha, &x);
+        int b = nvn_oplist_next(&dst, &pb, &hb, &y);
+        CHECK(a == b);
+        if (!a) break;
+        CHECK(ha.code == hb.code && ha.bytes == hb.bytes && !memcmp(x, y, ha.bytes));
+        ops++;
+    }
+    CHECK(ops == 3);
+
+    /* The copied CALL holds its own reference, so the source can go. */
+    nvn_list_unref(&s, src_handle);
+    CHECK(nvn_list_find(&s, inner_handle) != NULL && nvn_list_live(&s) == 1);
+    uint64_t dst_handle = nvn_list_publish(&s, &dst);
+    nvn_list_unref(&s, inner_handle); /* the owner's reference of the inner list */
+    CHECK(nvn_list_find(&s, inner_handle) != NULL);
+    nvn_list_unref(&s, dst_handle);
+    CHECK(!nvn_list_find(&s, inner_handle) && nvn_list_live(&s) == 0 && !s.leaked);
+    nvn_list_store_free(&s);
+}
+
 int main(void) {
     test_append_next();
     test_append_refused();
@@ -444,6 +488,7 @@ int main(void) {
     test_handles();
     test_find_pointer_stable();
     test_call_release();
+    test_oplist_copy();
     test_deep_chain();
     test_many_lists();
     if (failures) {

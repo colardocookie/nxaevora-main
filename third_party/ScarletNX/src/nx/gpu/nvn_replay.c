@@ -622,6 +622,37 @@ static void replay_op(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnO
         }
         ok = 1;
         break;
+    case NVN_OP_COPY_BUFFER:
+        if (!payload_matches(header, sizeof(NvnOpCopyBuffer))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_COPY_BUFFER, payload);
+        break;
+    case NVN_OP_CLEAR_BUFFER:
+        if (!payload_matches(header, sizeof(NvnOpClearBuffer))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_CLEAR_BUFFER, payload);
+        break;
+    case NVN_OP_UPDATE_UNIFORM: {
+        const NvnOpUpdateUniform* op = payload;
+        if (header->bytes < sizeof *op) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        if (op->words > NVN_UPDATE_UNIFORM_DATA_WORDS) {
+            replay_fault(env, stats, "update words", op->words);
+            return;
+        }
+        if (header->bytes != padded_payload(sizeof *op + (size_t)op->words * 4u)) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_UPDATE_UNIFORM, payload);
+        break;
+    }
     case NVN_OP_CALL:
         if (!payload_matches(header, sizeof(NvnOpCall))) {
             replay_fault(env, stats, "op size", header->code);

@@ -278,6 +278,26 @@ int nvn_clear_depth_stencil_nothing(uint32_t depth_enable, uint32_t stencil_mask
 uint32_t nvn_clear_depth_stencil_words(uint32_t depth_bits, uint32_t depth_enable, uint32_t stencil,
                                        uint32_t stencil_mask, int zcull_clear, int use_macro_e26, uint32_t* out);
 
+/* CopyBufferToBuffer and ClearBuffer (analyst-u3-A-1.md): the DMA words of the library. The copy splits at 0x3FFFFF
+   bytes a chunk and returns 0 when cap cannot hold the chunks. The clear of size 0 writes nothing. The library markers
+   (method 2 of subchannel 0) are left out. */
+#define NVN_COPY_BUFFER_CHUNK_BYTES       0x3FFFFFull
+#define NVN_COPY_BUFFER_WORDS_PER_CHUNK   9u
+#define NVN_COPY_BUFFER_MAX_WORDS         288u /* 32 chunks; a larger copy is split by the replay */
+#define NVN_CLEAR_BUFFER_WORDS_MAX        16u
+uint32_t nvn_copy_buffer_words(uint64_t src, uint64_t dst, uint64_t size, uint32_t* out, uint32_t cap);
+uint32_t nvn_clear_buffer_words(uint64_t dst, uint64_t size, uint32_t value, uint32_t* out);
+
+/* UpdateUniformBuffer (analyst-u3-A-1.md): the size word rounds up to 256 with a minimum of 256. One op holds at most
+   NVN_UPDATE_UNIFORM_DATA_WORDS words; the builder writes the 0x8E0 run, the 0x68B PipeNop and mode 3 data chunks of
+   at most 127 words. 0 for a null out or data. */
+#define NVN_UPDATE_UNIFORM_CHUNK_WORDS 127u
+#define NVN_UPDATE_UNIFORM_DATA_WORDS  186u /* (768 - 24) / 4: one op payload after its 24-byte header */
+#define NVN_UPDATE_UNIFORM_WORDS_MAX   (6u + 2u + NVN_UPDATE_UNIFORM_DATA_WORDS)
+uint32_t nvn_update_uniform_size256(uint32_t size);
+uint32_t nvn_update_uniform_words(uint64_t address, uint32_t size256, uint32_t offset, const uint32_t* data,
+                                  uint32_t words, uint32_t* out);
+
 /* Transform feedback (sdk d84b400 to d84b6e4). A buffer bind is the enable, address and size run of its slot, or an
    inline 0 there for address 0. Begin calls macro 0 with the control address. End disables the feedback and writes
    the four stream byte counts to address + 4 to + 16 with report semaphores. 0 for a bad slot or kind. */
@@ -563,6 +583,11 @@ int nvn_texture_level(const NvnTexture* t, uint32_t level, NvnTextureLevel* out)
 int nvn_texture_write_rows(uint8_t* level_base, const NvnTextureLevel* lv, uint32_t x_start, uint32_t x_end,
                            uint32_t row_start, uint32_t row_end, const uint8_t* src, uint64_t src_stride,
                            uint32_t z);
+/* The reverse of nvn_texture_write_rows: the bytes [x_start, x_end) of the block linear rows [row_start, row_end) of
+   slice z of one level go to the linear rows of dst at dst_stride. 0 with no write when z is outside the level depth,
+   the region leaves the level or an offset would pass the size of the level. */
+int nvn_texture_read_rows(const uint8_t* level_base, const NvnTextureLevel* lv, uint32_t x_start, uint32_t x_end,
+                          uint32_t row_start, uint32_t row_end, uint8_t* dst, uint64_t dst_stride, uint32_t z);
 /* seed is the u32 at byte offset 0x24, not u32 array index 0x24 (d858d28). */
 typedef struct {
     uint32_t seed;

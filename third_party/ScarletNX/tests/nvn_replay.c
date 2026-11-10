@@ -78,6 +78,9 @@ typedef struct {
     NvnOpWaitEvent gpu_wait_event;
     NvnOpBindImage gpu_bind_image;
     NvnOpTransformFeedback gpu_xfb;
+    NvnOpCopyBuffer gpu_copy_buffer;
+    NvnOpClearBuffer gpu_clear_buffer;
+    struct { uint64_t address; uint32_t size256, offset, words; uint32_t data[8]; } gpu_update_uniform;
     uint32_t fault_count;
     const char* last_fault;
     uint64_t last_fault_value;
@@ -229,6 +232,21 @@ static int mock_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
     case NVN_OP_TRANSFORM_FEEDBACK:
         k->gpu_xfb = *(const NvnOpTransformFeedback*)payload;
         break;
+    case NVN_OP_COPY_BUFFER:
+        k->gpu_copy_buffer = *(const NvnOpCopyBuffer*)payload;
+        break;
+    case NVN_OP_CLEAR_BUFFER:
+        k->gpu_clear_buffer = *(const NvnOpClearBuffer*)payload;
+        break;
+    case NVN_OP_UPDATE_UNIFORM: {
+        const NvnOpUpdateUniform* op = payload;
+        k->gpu_update_uniform.address = op->address;
+        k->gpu_update_uniform.size256 = op->size256;
+        k->gpu_update_uniform.offset = op->offset;
+        k->gpu_update_uniform.words = op->words;
+        for (uint32_t i = 0; i < op->words && i < 8u; i++) k->gpu_update_uniform.data[i] = op->data[i];
+        break;
+    }
     default:
         return 0;
     }
@@ -1601,6 +1619,34 @@ static void test_gpu_ops_range_checks(void) {
     nvn_oplist_free(&l);
 }
 
+static void test_u3_copy_clear_update_ops(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    k.gpu_op_ok = 1;
+    NvnOpCopyBuffer copy = {0x400001000ull, 0x400002000ull, 0x3000u};
+    NvnOpClearBuffer clear = {0x400003000ull, 0x10u, 0x11223344u, 0u};
+    struct {
+        uint64_t address;
+        uint32_t size256, offset, words, reserved;
+        uint32_t data[3];
+    } update = {0x400004000ull, 256u, 8u, 3u, 0u, {7u, 8u, 9u}};
+    CHECK(nvn_oplist_append(&l, NVN_OP_COPY_BUFFER, &copy, sizeof copy));
+    CHECK(nvn_oplist_append(&l, NVN_OP_CLEAR_BUFFER, &clear, sizeof clear));
+    CHECK(nvn_oplist_append(&l, NVN_OP_UPDATE_UNIFORM, &update, sizeof update));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 0 && k.gpu_op_calls == 3 && k.gpu_op_code == NVN_OP_UPDATE_UNIFORM);
+    CHECK(!memcmp(&k.gpu_copy_buffer, &copy, sizeof copy));
+    CHECK(!memcmp(&k.gpu_clear_buffer, &clear, sizeof clear));
+    CHECK(k.gpu_update_uniform.address == update.address);
+    CHECK(k.gpu_update_uniform.size256 == update.size256 && k.gpu_update_uniform.offset == update.offset);
+    CHECK(k.gpu_update_uniform.words == update.words && !memcmp(k.gpu_update_uniform.data, update.data, 12u));
+    CHECK(st.replayed[NVN_OP_COPY_BUFFER] == 1 && st.replayed[NVN_OP_CLEAR_BUFFER] == 1);
+    CHECK(st.replayed[NVN_OP_UPDATE_UNIFORM] == 1);
+    nvn_oplist_free(&l);
+}
+
 int main(void) {
     test_viewport();
     test_viewport_flip();
@@ -1637,6 +1683,7 @@ int main(void) {
     test_vertex_ops_bad_payload();
     test_gpu_ops_reach_callback();
     test_u2_event_and_sync_ops();
+    test_u3_copy_clear_update_ops();
     test_u2_event_and_sync_bad_payload();
     test_gpu_ops_null_callback();
     test_transform_feedback_op();

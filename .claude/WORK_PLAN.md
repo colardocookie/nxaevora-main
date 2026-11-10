@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the U2 task 2 build (md5 f0d4863f), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the U3 patch 1 build (md5 95584244), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=0` (the user was asked to set it on 2026-11-10, check it), `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -62,9 +62,13 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U3 step (b3). Write the writer brief for the easy rows (`analyst-u3-A-1.md`, `-B-1.md`) and the 7 designed
-    rows. Design (approved by the user 2026-11-10): `docs/nvn-design.md`, "U3 design of the open items". The group is large:
-    split it into 2 or 3 writer patches. Record: `OLD-WORK_PLAN.md`, section "U3 open items, step (b1)".
+  Current step: U3 step (b3), patch 2 of 3: write the brief (template `reports/brief-writer-u3-1.md`), make a worktree,
+    launch the code writer. Patch 1 is committed (19 rows, see the commit "Add the NVN buffer copies, texel reads ...").
+    Patch 1 facts: `replay_bind_send` reaches the DMA engine on subchannel 4. Method 0x68B only stores a register in
+    `maxwell3d.c`. `command_record` now returns 1 or 0. `texture_write_check` takes the operation name, direction and strides.
+    Patch 2: B2T/T2B with flags (DMA and 2D builders), Downsample, TiledDownsample (design items 1, 2). Patch 3: MapVirtual
+    (item 4). Design (approved by the user 2026-11-10): `docs/nvn-design.md`, "U3 design of the open items". Record:
+    `OLD-WORK_PLAN.md`, section "U3 open items, step (b1)".
     U2 is done (`OLD-WORK_PLAN.md`, last sections). Its exectest cases come in 4-u3.
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
   - Rows near U1 that stay in other groups: CommandBuffer Get/SetCopyRowStride and Get/SetCopyImageStride (U3, copies).

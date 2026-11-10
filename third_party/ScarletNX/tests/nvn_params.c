@@ -656,6 +656,35 @@ static void test_texture_write_rows_3d(void) {
     for (size_t i = 0; i < sizeof level; i++) CHECK(level[i] == 0xa5);
 }
 
+static void test_texture_read_rows(void) {
+    /* The same 128-byte by 32-row level as test_texture_write_rows: a write then a read gives the bytes back. */
+    NvnTextureLevel lv = {.offset = 0, .size = 4096, .gobs_x = 2, .rows = 32, .depth = 1,
+                          .block_height_log2 = 1};
+    uint8_t level[4096], source[2048], back[2048];
+    const uint32_t x_start = 20, x_end = 76, row_start = 5, row_end = 27;
+    const uint32_t row_bytes = x_end - x_start, rows = row_end - row_start;
+    for (size_t i = 0; i < sizeof source; i++) source[i] = (uint8_t)(i * 37u + 11u);
+    memset(level, 0xa5, sizeof level);
+    CHECK(nvn_texture_write_rows(level, &lv, x_start, x_end, row_start, row_end, source, row_bytes, 0));
+    memset(back, 0, sizeof back);
+    CHECK(nvn_texture_read_rows(level, &lv, x_start, x_end, row_start, row_end, back, row_bytes, 0));
+    CHECK(memcmp(back, source, rows * row_bytes) == 0);
+
+    /* A nonzero row stride leaves the gap bytes alone. */
+    const uint32_t stride = row_bytes + 5;
+    uint8_t strided[2300];
+    memset(strided, 0xee, sizeof strided);
+    CHECK(nvn_texture_read_rows(level, &lv, x_start, x_end, row_start, row_end, strided, stride, 0));
+    for (uint32_t r = 0; r < rows; r++) {
+        CHECK(memcmp(strided + r * stride, source + r * row_bytes, row_bytes) == 0);
+        for (uint32_t gap = 0; gap < 5; gap++) CHECK(strided[r * stride + row_bytes + gap] == 0xee);
+    }
+    /* A region outside the level is refused and writes nothing. */
+    memset(strided, 0xee, sizeof strided);
+    CHECK(!nvn_texture_read_rows(level, &lv, 0, 129, 0, 1, strided, 129, 0));
+    for (size_t i = 0; i < sizeof strided; i++) CHECK(strided[i] == 0xee);
+}
+
 /* Expected words below are hand-computed from the accepted encoder table. The synthetic seed
    has component codes (1,2,3,4), bit31, and low format bits 0x25. No game format data is used. */
 static void check_texture_descriptor_mode(const NvnTexture* t, const NvnTextureView* v,
@@ -2496,6 +2525,71 @@ static void test_report_value_words(void) {
     CHECK(nvn_report_value_words(0, address, NULL) == 0);
 }
 
+static void test_copy_buffer_words(void) {
+    const uint64_t src = 0x1122334455667788ull, dst = 0x99aabbccddeeff00ull;
+    uint32_t out[NVN_COPY_BUFFER_MAX_WORDS];
+    uint32_t count = nvn_copy_buffer_words(src, dst, 0x1000, out, NVN_COPY_BUFFER_MAX_WORDS);
+    CHECK(count == 9);
+    CHECK(out[0] == 0x20048100u);
+    CHECK(out[1] == (uint32_t)(src >> 32) && out[2] == (uint32_t)src);
+    CHECK(out[3] == (uint32_t)(dst >> 32) && out[4] == (uint32_t)dst);
+    CHECK(out[5] == 0x20018106u && out[6] == 0x1000u);
+    CHECK(out[7] == 0x200180C0u && out[8] == 0x186u);
+    /* 0x3FFFFF bytes and 4 more: two chunks, and the second one starts where the first ended. */
+    count = nvn_copy_buffer_words(src, dst, NVN_COPY_BUFFER_CHUNK_BYTES + 4u, out, NVN_COPY_BUFFER_MAX_WORDS);
+    CHECK(count == 18);
+    CHECK(out[9] == 0x20048100u);
+    CHECK(out[10] == (uint32_t)((src + NVN_COPY_BUFFER_CHUNK_BYTES) >> 32));
+    CHECK(out[11] == (uint32_t)(src + NVN_COPY_BUFFER_CHUNK_BYTES));
+    CHECK(out[12] == (uint32_t)((dst + NVN_COPY_BUFFER_CHUNK_BYTES) >> 32));
+    CHECK(out[13] == (uint32_t)(dst + NVN_COPY_BUFFER_CHUNK_BYTES));
+    CHECK(out[15] == 4u && out[17] == 0x186u);
+    /* A cap that cannot hold the chunks is a refusal. */
+    CHECK(nvn_copy_buffer_words(src, dst, NVN_COPY_BUFFER_CHUNK_BYTES + 4u, out, 17) == 0);
+    CHECK(nvn_copy_buffer_words(src, dst, 0x1000, NULL, NVN_COPY_BUFFER_MAX_WORDS) == 0);
+}
+
+static void test_clear_buffer_words(void) {
+    const uint64_t dst = 0x1122334455667788ull;
+    uint32_t out[NVN_CLEAR_BUFFER_WORDS_MAX];
+    CHECK(nvn_clear_buffer_words(dst, 0, 0xDEADBEEF, out) == 0); /* the library returns before any word */
+    CHECK(nvn_clear_buffer_words(dst, 6u, 0xDEADBEEF, out) == NVN_CLEAR_BUFFER_WORDS_MAX);
+    CHECK(out[0] == 0x200181C0u && out[1] == 0xDEADBEEFu);
+    CHECK(out[2] == 0x200181C2u && out[3] == 0x34444u);
+    CHECK(out[4] == 0x20048100u);
+    CHECK(out[5] == (uint32_t)(dst >> 32) && out[6] == (uint32_t)dst);
+    CHECK(out[7] == (uint32_t)(dst >> 32) && out[8] == (uint32_t)dst);
+    CHECK(out[9] == 0x200281C4u && out[10] == 1u && out[11] == 1u); /* size 6 gives size >> 2 = 1 */
+    CHECK(out[12] == 0x20018106u && out[13] == 1u);
+    CHECK(out[14] == 0x200180C0u && out[15] == 0x586u);
+    CHECK(nvn_clear_buffer_words(dst, 6u, 0, NULL) == 0);
+}
+
+static void test_update_uniform_words(void) {
+    CHECK(nvn_update_uniform_size256(0) == 256);
+    CHECK(nvn_update_uniform_size256(1) == 256);
+    CHECK(nvn_update_uniform_size256(256) == 256);
+    CHECK(nvn_update_uniform_size256(257) == 512);
+    uint32_t data[NVN_UPDATE_UNIFORM_DATA_WORDS];
+    for (uint32_t i = 0; i < NVN_UPDATE_UNIFORM_DATA_WORDS; i++) data[i] = 0x1000u + i;
+    uint32_t out[NVN_UPDATE_UNIFORM_WORDS_MAX];
+    /* 130 words give two chunks of 127 and 3. */
+    uint32_t count = nvn_update_uniform_words(0x400001000ull, 256u, 8u, data, 130u, out);
+    CHECK(count == 138);
+    CHECK(out[0] == 0x200408E0u);
+    CHECK(out[1] == 256u && out[2] == 0x4u && out[3] == 0x1000u && out[4] == 8u);
+    CHECK(out[5] == 0x8000068Bu);
+    CHECK(out[6] == 0x607F08E4u);
+    for (uint32_t i = 0; i < 127u; i++) CHECK(out[7 + i] == data[i]);
+    CHECK(out[134] == 0x600308E4u);
+    for (uint32_t i = 0; i < 3u; i++) CHECK(out[135 + i] == data[127 + i]);
+    /* No data still writes the packet and the PipeNop. */
+    CHECK(nvn_update_uniform_words(0x400001000ull, 256u, 0u, NULL, 0u, out) == 6);
+    /* More words than one op payload holds are refused. */
+    CHECK(nvn_update_uniform_words(0x400001000ull, 256u, 0u, data, NVN_UPDATE_UNIFORM_DATA_WORDS + 1u, out) == 0);
+    CHECK(nvn_update_uniform_words(0x400001000ull, 256u, 0u, data, 1u, NULL) == 0);
+}
+
 static void test_bind_image(void) {
     const uint64_t handles[2] = {0x123456789Aull, 0xFEDCBA9876543210ull};
     /* Stage 0 has table value 0; one handle at slot 5 is 0x120 + 5*8. */
@@ -3078,6 +3172,7 @@ int main(int argc, char** argv) {
     test_u1_view_offset();
     test_texture_write_rows();
     test_texture_write_rows_3d();
+    test_texture_read_rows();
     if (argc == 2) test_texture_queries(argv[1]);
     test_device_integer();
     test_timestamp();
@@ -3136,6 +3231,9 @@ int main(int argc, char** argv) {
     test_draw_words();
     test_report_counter_words();
     test_report_value_words();
+    test_copy_buffer_words();
+    test_clear_buffer_words();
+    test_update_uniform_words();
     test_bind_image();
     test_clear_depth_stencil_words();
     test_highest_enabled_index();

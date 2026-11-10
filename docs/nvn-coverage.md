@@ -30,8 +30,8 @@ tool keeps them.
 | G7 | 4 | 4 | 0 | 4 | 0 |
 | G8 | 112 | 112 | 0 | 112 | 0 |
 | G9 | 43 | 43 | 0 | 43 | 0 |
-| G10 | 281 | 167 | 114 | 0 | 0 |
-| all | 523 | 409 | 114 | 242 | 0 |
+| G10 | 281 | 186 | 95 | 0 | 0 |
+| all | 523 | 428 | 95 | 242 | 0 |
 
 ## Functions
 
@@ -294,7 +294,7 @@ tool keeps them.
 | `nvnBufferGetDebugID` | G10 | d823c70 | 0 | implemented |  |  |  |
 | `nvnBufferGetMemoryOffset` | G10 | d823c50 | 0 | implemented |  |  |  |
 | `nvnBufferGetMemoryPool` | G10 | d823c40 | 0 | implemented |  |  |  |
-| `nvnBufferInvalidateMappedRange` | G10 | d823c20 | 0 | stub-log |  |  |  |
+| `nvnBufferInvalidateMappedRange` | G10 | d823c20 | 0 | implemented |  |  |  |
 | `nvnCommandBufferBindCoverageModulationTable` | G10 | d84cd20 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferBindImages` | G10 | d849430 | 0 | implemented |  |  |  |
 | `nvnCommandBufferBindSeparateSampler` | G10 | d848ad0 | 0 | stub-log |  |  |  |
@@ -306,17 +306,17 @@ tool keeps them.
 | `nvnCommandBufferBindTransformFeedbackBuffers` | G10 | d84b4d0 | 0 | implemented | unit (nvn_params) |  | library read: sent at the bind, not at the draw |
 | `nvnCommandBufferBindUniformBuffers` | G10 | d847e00 | 0 | implemented |  |  |  |
 | `nvnCommandBufferBindVertexBuffers` | G10 | d847a80 | 0 | implemented |  |  |  |
-| `nvnCommandBufferClearBuffer` | G10 | d84cee0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferClearColori` | G10 | d84a940 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferClearColorui` | G10 | d84aa10 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferClearBuffer` | G10 | d84cee0 | 0 | implemented | unit |  |  |
+| `nvnCommandBufferClearColori` | G10 | d84a940 | 0 | implemented |  |  |  |
+| `nvnCommandBufferClearColorui` | G10 | d84aa10 | 0 | implemented |  |  |  |
 | `nvnCommandBufferClearTexturei` | G10 | d857a10 | 0 | implemented |  |  |  |
 | `nvnCommandBufferClearTextureui` | G10 | d857e10 | 0 | implemented |  |  |  |
-| `nvnCommandBufferCopyBufferToBuffer` | G10 | d82be80 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferCopyBufferToBuffer` | G10 | d82be80 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferCopyBufferToTexture` | G10 | d82b510 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferCopyCommands` | G10 | d825a30 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferCopyCommands` | G10 | d825a30 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferCopyTextureToBuffer` | G10 | d82bb70 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferDiscardColor` | G10 | d8564c0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferDiscardDepthStencil` | G10 | d856530 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferDiscardColor` | G10 | d8564c0 | 0 | implemented |  |  |  |
+| `nvnCommandBufferDiscardDepthStencil` | G10 | d856530 | 0 | implemented |  |  |  |
 | `nvnCommandBufferDispatchComputeIndirect` | G10 | d84dc60 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferDownsample` | G10 | d82cb10 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferDownsampleTextureView` | G10 | d82cb20 | 0 | stub-log |  |  |  |
@@ -331,8 +331,8 @@ tool keeps them.
 | `nvnCommandBufferGetControlMemoryFree` | G10 | d8240e0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferGetControlMemorySize` | G10 | d8240b0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferGetControlMemoryUsed` | G10 | d8240d0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferGetCopyImageStride` | G10 | d82cb60 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferGetCopyRowStride` | G10 | d82cb50 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferGetCopyImageStride` | G10 | d82cb60 | 0 | implemented |  |  |  |
+| `nvnCommandBufferGetCopyRowStride` | G10 | d82cb50 | 0 | implemented |  |  |  |
 | `nvnCommandBufferGetMemoryCallback` | G10 | d823d70 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferGetMemoryCallbackData` | G10 | d823d80 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferInsertCheckpointDynamic` | G10 | d823c90 | 0 | stub-log |  |  |  |
@@ -350,7 +350,7 @@ tool keeps them.
 | `nvnCommandBufferPushDebugGroupDynamic` | G10 | d84d280 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferPushDebugGroupStatic` | G10 | d84d110 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferReportValue` | G10 | d856ab0 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferResolveDepthBuffer` | G10 | d84ce80 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferResolveDepthBuffer` | G10 | d84ce80 | 0 | implemented |  |  |  |
 | `nvnCommandBufferRestoreZCullData` | G10 | d84c8e0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferResumeTransformFeedback` | G10 | d84b810 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferSaveZCullData` | G10 | d84c840 | 0 | stub-log |  |  |  |
@@ -359,8 +359,8 @@ tool keeps them.
 | `nvnCommandBufferSetCommandMemoryCallbackEnabled` | G10 | d823d90 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferSetConservativeRasterDilate` | G10 | d84c6c0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferSetConservativeRasterEnable` | G10 | d84c630 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetCopyImageStride` | G10 | d82cb40 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetCopyRowStride` | G10 | d82cb30 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferSetCopyImageStride` | G10 | d82cb40 | 0 | implemented |  |  |  |
+| `nvnCommandBufferSetCopyRowStride` | G10 | d82cb30 | 0 | implemented |  |  |  |
 | `nvnCommandBufferSetDebugLabel` | G10 | d82ccd0 | 0 | implemented |  |  |  |
 | `nvnCommandBufferSetInnerTessellationLevels` | G10 | d84b310 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferSetOuterTessellationLevels` | G10 | d84b380 | 0 | stub-log |  |  |  |
@@ -381,7 +381,7 @@ tool keeps them.
 | `nvnCommandBufferSignalEvent` | G10 | d832ef0 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferTiledDownsample` | G10 | d8575f0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferTiledDownsampleTextureView` | G10 | d857600 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferUpdateUniformBuffer` | G10 | d84c980 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferUpdateUniformBuffer` | G10 | d84c980 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferWaitEvent` | G10 | d832e30 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferWaitSync` | G10 | d825ce0 | 0 | implemented | unit |  |  |
 | `nvnDeviceApplyDeferredFinalizes` | G10 | d82cdd0 | 0 | implemented |  |  |  |
@@ -427,7 +427,7 @@ tool keeps them.
 | `nvnMemoryPoolBuilderGetSize` | G10 | d833cc0 | 0 | implemented |  |  |  |
 | `nvnMemoryPoolFlushMappedRange` | G10 | d833ee0 | 0 | implemented |  |  |  |
 | `nvnMemoryPoolGetSize` | G10 | d833f80 | 0 | implemented |  |  |  |
-| `nvnMemoryPoolInvalidateMappedRange` | G10 | d833ef0 | 0 | stub-log |  |  |  |
+| `nvnMemoryPoolInvalidateMappedRange` | G10 | d833ef0 | 0 | implemented |  |  |  |
 | `nvnMemoryPoolMapVirtual` | G10 | d833f10 | 0 | stub-log |  |  |  |
 | `nvnMultisampleStateGetSampleLocationsEnable` | G10 | d83b470 | 0 | implemented |  |  |  |
 | `nvnMultisampleStateGetSampleLocationsGrid` | G10 | d83b480 | 0 | implemented |  |  |  |
@@ -532,18 +532,18 @@ tool keeps them.
 | `nvnTextureGetTextureAddress` | G10 | d83d920 | 0 | implemented |  |  |  |
 | `nvnTextureGetViewOffset` | G10 | d83d810 | 0 | implemented |  |  |  |
 | `nvnTextureGetZCullStorageSize` | G10 | d83d7b0 | 0 | implemented |  |  |  |
-| `nvnTextureInvalidateTexels` | G10 | d83e300 | 0 | stub-log |  |  |  |
+| `nvnTextureInvalidateTexels` | G10 | d83e300 | 0 | implemented |  |  |  |
 | `nvnTexturePoolFinalize` | G10 | d83d940 | 0 | stub-log |  |  |  |
 | `nvnTexturePoolGetMemoryOffset` | G10 | d83dc80 | 0 | implemented |  |  |  |
 | `nvnTexturePoolGetMemoryPool` | G10 | d83dc70 | 0 | implemented |  |  |  |
 | `nvnTexturePoolSetDebugLabel` | G10 | d82cd60 | 0 | implemented |  |  |  |
-| `nvnTextureReadTexels` | G10 | d83e280 | 0 | stub-log |  |  |  |
-| `nvnTextureReadTexelsStrided` | G10 | d83e030 | 0 | stub-log |  |  |  |
+| `nvnTextureReadTexels` | G10 | d83e280 | 0 | implemented | unit |  |  |
+| `nvnTextureReadTexelsStrided` | G10 | d83e030 | 0 | implemented | unit |  |  |
 | `nvnTextureSetDebugLabel` | G10 | d82cd40 | 0 | implemented |  |  |  |
 | `nvnTextureViewCompare` | G10 | d83c9a0 | 0 | implemented |  |  |  |
 | `nvnTextureViewGetDepthStencilMode` | G10 | d83c940 | 0 | implemented |  |  |  |
 | `nvnTextureViewGetSwizzle` | G10 | d83c910 | 0 | implemented |  |  |  |
-| `nvnTextureWriteTexelsStrided` | G10 | d83ddd0 | 0 | stub-log |  |  |  |
+| `nvnTextureWriteTexelsStrided` | G10 | d83ddd0 | 0 | implemented |  |  |  |
 | `nvnWindowBuilderGetDevice` | G10 | d83e5d0 | 0 | implemented |  |  |  |
 | `nvnWindowBuilderGetNativeWindow` | G10 | d83e630 | 0 | implemented |  |  |  |
 | `nvnWindowBuilderGetNumActiveTextures` | G10 | d83e620 | 0 | implemented |  |  |  |

@@ -1187,6 +1187,23 @@ int nvn_texture_write_rows(uint8_t* level_base, const NvnTextureLevel* lv, uint3
     }
     return 1;
 }
+int nvn_texture_read_rows(const uint8_t* level_base, const NvnTextureLevel* lv, uint32_t x_start, uint32_t x_end,
+                          uint32_t row_start, uint32_t row_end, uint8_t* dst, uint64_t dst_stride, uint32_t z) {
+    if (!level_base || !lv || !dst) return 0;
+    uint32_t depth = lv->depth ? lv->depth : 1;
+    if (z >= depth) return 0;
+    uint64_t block_rows = (uint64_t)GOB_SIZE_Y << lv->block_height_log2;
+    uint64_t row_limit = (lv->rows + block_rows - 1) / block_rows * block_rows;
+    if (x_end > (uint64_t)lv->gobs_x * GOB_SIZE_X || row_end > row_limit) return 0;
+    if (x_start >= x_end || row_start >= row_end) return 1;
+    if (texture_level_offset(lv, x_end - 1, row_end - 1, z) >= lv->size) return 0;
+    for (uint32_t r = row_start; r < row_end; r++) {
+        uint8_t* to = dst + (uint64_t)(r - row_start) * dst_stride;
+        for (uint32_t x = x_start; x < x_end; x++)
+            to[x - x_start] = level_base[texture_level_offset(lv, x, r, z)];
+    }
+    return 1;
+}
 
 /* Small encoder tables from de879e8, de87970 and the branches selected by de87948. */
 static const uint8_t texture_target_codes[] = {0, 1, 2, 4, 5, 1, 5, 1, 3, 8};
@@ -2491,6 +2508,108 @@ uint32_t nvn_clear_depth_stencil_words(uint32_t depth_bits, uint32_t depth_enabl
         bind_value(&w, NVN_CLEAR_DEPTH_METHOD_SHADOW, NVN_CLEAR_DEPTH_SHADOW_MODE_DONE);
     } else if (depth) {
         bind_value(&w, NVN_CLEAR_DEPTH_MACRO_STENCIL, NVN_CLEAR_DEPTH_MACRO_DEPTH_ONLY);
+    }
+    return w.at;
+}
+
+/* CopyBufferToBuffer and ClearBuffer: the DMA engine of subchannel 4 (analyst-u3-A-1.md). The library's open, close and
+   chunk markers write method 2 of subchannel 0, which the host engines do not need, so the builders leave them out. */
+#define NVN_DMA_SUBCHANNEL                 4u
+#define NVN_DMA_METHOD_ADDRESS             0x100u
+#define NVN_DMA_METHOD_SIZE                0x106u
+#define NVN_DMA_METHOD_LAUNCH              0x0C0u
+#define NVN_DMA_METHOD_REMAP_CONST         0x1C0u
+#define NVN_DMA_METHOD_REMAP_CONST_FORMAT  0x1C2u
+#define NVN_DMA_METHOD_REMAP_WIDTH         0x1C4u
+#define NVN_DMA_COPY_LAUNCH                0x186u
+#define NVN_DMA_CLEAR_LAUNCH               0x586u
+#define NVN_DMA_CLEAR_CONST_FORMAT         0x34444u
+#define NVN_DMA_CLEAR_HEIGHT               1u
+
+static void dma_run(NvnBindWriter* w, uint32_t method, uint32_t count) {
+    bind_word(w, NVN_PROGRAM_MODE_INCREASING | (count << NVN_PROGRAM_COUNT_SHIFT) |
+                    (NVN_DMA_SUBCHANNEL << NVN_WORD_SUBCHANNEL_SHIFT) | method);
+}
+
+uint32_t nvn_copy_buffer_words(uint64_t src, uint64_t dst, uint64_t size, uint32_t* out, uint32_t cap) {
+    if (!out) return 0;
+    uint64_t chunks = size / NVN_COPY_BUFFER_CHUNK_BYTES + (size % NVN_COPY_BUFFER_CHUNK_BYTES != 0);
+    if (chunks * NVN_COPY_BUFFER_WORDS_PER_CHUNK > cap) return 0;
+    NvnBindWriter w = {out, 0};
+    uint64_t done = 0;
+    while (done < size) {
+        uint64_t bytes = size - done;
+        if (bytes > NVN_COPY_BUFFER_CHUNK_BYTES) bytes = NVN_COPY_BUFFER_CHUNK_BYTES;
+        uint64_t from = src + done, to = dst + done;
+        dma_run(&w, NVN_DMA_METHOD_ADDRESS, 4);
+        bind_word(&w, (uint32_t)(from >> 32));
+        bind_word(&w, (uint32_t)from);
+        bind_word(&w, (uint32_t)(to >> 32));
+        bind_word(&w, (uint32_t)to);
+        dma_run(&w, NVN_DMA_METHOD_SIZE, 1);
+        bind_word(&w, (uint32_t)bytes);
+        dma_run(&w, NVN_DMA_METHOD_LAUNCH, 1);
+        bind_word(&w, NVN_DMA_COPY_LAUNCH);
+        done += bytes;
+    }
+    return w.at;
+}
+
+uint32_t nvn_clear_buffer_words(uint64_t dst, uint64_t size, uint32_t value, uint32_t* out) {
+    if (!out) return 0;
+    uint32_t words = (uint32_t)(size >> 2);
+    if (!words) return 0; /* the library returns before any word */
+    NvnBindWriter w = {out, 0};
+    dma_run(&w, NVN_DMA_METHOD_REMAP_CONST, 1);
+    bind_word(&w, value);
+    dma_run(&w, NVN_DMA_METHOD_REMAP_CONST_FORMAT, 1);
+    bind_word(&w, NVN_DMA_CLEAR_CONST_FORMAT);
+    dma_run(&w, NVN_DMA_METHOD_ADDRESS, 4);
+    bind_word(&w, (uint32_t)(dst >> 32));
+    bind_word(&w, (uint32_t)dst);
+    bind_word(&w, (uint32_t)(dst >> 32));
+    bind_word(&w, (uint32_t)dst);
+    dma_run(&w, NVN_DMA_METHOD_REMAP_WIDTH, 2);
+    bind_word(&w, words);
+    bind_word(&w, NVN_DMA_CLEAR_HEIGHT);
+    dma_run(&w, NVN_DMA_METHOD_SIZE, 1);
+    bind_word(&w, words);
+    dma_run(&w, NVN_DMA_METHOD_LAUNCH, 1);
+    bind_word(&w, NVN_DMA_CLEAR_LAUNCH);
+    return w.at;
+}
+
+/* UpdateUniformBuffer: the 0x8E0 packet, the 0x68B PipeNop and mode 3 chunks of at most 127 data words. */
+#define NVN_UPDATE_UNIFORM_METHOD_DATA    0x8E0u
+#define NVN_UPDATE_UNIFORM_DATA_COUNT     4u
+#define NVN_UPDATE_UNIFORM_METHOD_NOP     0x68Bu
+#define NVN_UPDATE_UNIFORM_METHOD_UPLOAD  0x8E4u
+#define NVN_UPDATE_UNIFORM_CHUNK_MODE     0x60000000u
+#define NVN_UPDATE_UNIFORM_SIZE_MIN       0x100u
+#define NVN_UPDATE_UNIFORM_SIZE_ALIGN     0xFFu
+
+uint32_t nvn_update_uniform_size256(uint32_t size) {
+    return size < NVN_UPDATE_UNIFORM_SIZE_MIN ? NVN_UPDATE_UNIFORM_SIZE_MIN
+                                              : (size + NVN_UPDATE_UNIFORM_SIZE_ALIGN) & ~NVN_UPDATE_UNIFORM_SIZE_ALIGN;
+}
+
+uint32_t nvn_update_uniform_words(uint64_t address, uint32_t size256, uint32_t offset, const uint32_t* data,
+                                  uint32_t words, uint32_t* out) {
+    if (!out || (words && !data) || words > NVN_UPDATE_UNIFORM_DATA_WORDS) return 0;
+    NvnBindWriter w = {out, 0};
+    bind_run(&w, NVN_UPDATE_UNIFORM_METHOD_DATA, NVN_UPDATE_UNIFORM_DATA_COUNT);
+    bind_word(&w, size256);
+    bind_word(&w, (uint32_t)(address >> 32));
+    bind_word(&w, (uint32_t)address);
+    bind_word(&w, offset);
+    bind_value(&w, NVN_UPDATE_UNIFORM_METHOD_NOP, 0);
+    for (uint32_t at = 0; at < words;) {
+        uint32_t chunk = words - at;
+        if (chunk > NVN_UPDATE_UNIFORM_CHUNK_WORDS) chunk = NVN_UPDATE_UNIFORM_CHUNK_WORDS;
+        bind_word(&w, NVN_UPDATE_UNIFORM_CHUNK_MODE | (chunk << NVN_PROGRAM_COUNT_SHIFT) |
+                         NVN_UPDATE_UNIFORM_METHOD_UPLOAD);
+        for (uint32_t i = 0; i < chunk; i++) bind_word(&w, data[at + i]);
+        at += chunk;
     }
     return w.at;
 }
