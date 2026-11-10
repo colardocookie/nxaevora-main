@@ -71,9 +71,11 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   written. The 4 functions (TextureBuilderGetStorageClass, TextureGetStorageClass, both GetZCullStorageSize) stay stub-log.
   - b2: the formula and the kind table are checked (history in `OLD-WORK_PLAN.md`). Decision: flags bit 7 set gives a log
     line and a refusal.
-  - b2 next: (a) game explorer: find the store that makes device +0x1b1c = 1 (sdk init clears it at `d831c0c` area, no sdk
-    store found; check the main module, the nvnBootstrapLoader path, a device builder flag, our host code). (b) Brief for the
-    handler writer (host device words +0xb8..+0xe4, +0x1a08 record, kind table for the found +0x1b1c value).
+  - b2 (a) done (`reports/explorer-devwords3-1.md`, store checked): the device constructor `d8310a0` writes 1 at `d831cb4`
+    (`strb w8,[x20,#0x124]`, x20 = device+0x19f8) after the display context is made. `d831cc8` writes 0 only if the NvOs
+    config value "0x9abdc5" (read to device+0x1a00 at `d831608`) has bit 1 clear and bit 2 set. No run set it: the host
+    uses 1 (the `w3=1` kind table).
+  - b2 next: (b) brief for the handler writer (host device words +0xb8..+0xe4, +0x1a08 record, kind table for +0x1b1c = 1).
   - b3: the 3 functions that the writer left out: TextureBuilderGetSparseTileLayout and TextureGetSparseTileLayout (helpers
     d822538 and d869e10 not verified), TextureGetViewOffset (level and 3D slice offset of d83d01c not checked against
     `texture_level_offset`).
