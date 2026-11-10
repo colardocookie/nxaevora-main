@@ -67,13 +67,10 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
   Decision of the user (2026-11-09): the trace of the enum argument values (the missing part of 4-u1) comes after U1.
-  Current step: U1 step b3 (b2 is done, commit `c5fe2db`, history in `OLD-WORK_PLAN.md`).
-  - b3 (a) DONE (2026-11-10): analyst table `reports/analyst-u1-b3-1.md`, accepted. Checked in the disassembly: d83dd40 calls
-    d822300 and d822538 (not d869e10), d83d810 returns `record.address - T[+0x80]`, d83d01c slice offset (3D: 32-bit term `<< 9`,
-    other targets: `T[+0x58] * base_layer`). Sparse output 16 bytes: level count, tile w, h, d; it matches `texture_sparse_tile`
-    (`nvn_params.c:916`) except levels == 0 (library writes zeros, host refuses). View offset of an array target uses
-    `layout.layer_stride` (as `nvn_rt.c:236`), not `texture_level_offset`. The library checks no level or layer range.
-  - b3 (b) NEXT: brief for the handler writer (the 3 functions, the table above), then the patch.
+  Current step: U1 step b3 (b). b3 (a) is done (commit `f4fa50a`, facts in `OLD-WORK_PLAN.md`, last section).
+  - b3 (b): write the brief for the handler writer (TextureBuilderGetSparseTileLayout, TextureGetSparseTileLayout,
+    TextureGetViewOffset, table `reports/analyst-u1-b3-1.md`), launch it, then read the patch. Decide in the brief: levels == 0
+    and the missing level/layer range checks (the library writes zeros and checks nothing).
   - EventGetMemoryPool and EventGetMemoryOffset are in U2 (they need Event Initialize).
 - Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
   buffer overflow in the init builders would crash).

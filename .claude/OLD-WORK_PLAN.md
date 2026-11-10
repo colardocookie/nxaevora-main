@@ -2253,3 +2253,14 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 - The no-surface rule comes before the bit 7 refusal: a color format with bit 7 gives 0 with no log.
 - Caller added the samples 1 and 2 tests. 14 mutants, all killed. `ctest`: only `tracked_material` fails (known).
   Coverage 383 implemented, 140 stub-log. Exe md5 10160cb0. No game run (the 4 functions have call count 0).
+
+## Task (u) U1 step (b3) analysis done (2026-11-10, moved from WORK_PLAN.md)
+
+- Brief `reports/brief-u1-b3a.md`, library analyst (opencode, DeepSeek V4.1 Flash), table `reports/analyst-u1-b3-1.md`, accepted.
+  Commit `f4fa50a`. Disassembly `analysis/b3_check.txt`, `analysis/d83d01c.txt`.
+- Checked: d83dd40 calls d822300 and d822538 (not d869e10). d83d810 returns `record.address - T[+0x80]`. d83d01c slice
+  offset: 3D gives a 32-bit term `<< 9`, other targets give `T[+0x58] * base_layer`.
+- Sparse output, 16 bytes: level count, tile width, height, depth. Same as `texture_sparse_tile` (`nvn_params.c:916`) except
+  levels == 0 (the library writes zeros, the host refuses).
+- View offset of an array target uses `layout.layer_stride` (as `nvn_rt.c:236`), not `texture_level_offset`. The library
+  checks no level or layer range.
