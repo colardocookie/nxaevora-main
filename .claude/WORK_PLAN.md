@@ -59,6 +59,8 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
     3. GetSparseTileLayout: the host logs `unwritable output=13800071c0` (`gmem_write` refuses the selftest arena from
        `kmem_alloc` MS_STATIC). Check `gmem_write` (`gpu/gpu.h:252`): a harness fault or a host fault. Format 0: the host
        refuses, the library writes zeros (check the library first).
+    DONE 2026-11-10: fixes 1 to 3 are committed (exe md5 03bf4203). User run: 227 cases, 0 failed. NEXT: write the passed
+    scope into `nvn-coverage.md`, then move this record to the old plan and start 4-u3-2.
     The commit message of the selftest says that the 4 failures are host faults: only 1 is confirmed. Say it right in
     the commit of the fixes.
     Then: 4-u3-2 (objects and device), 4-u3-3 (S/Y harness, mutation, command buffer), 4-u3-4 (exectest).
