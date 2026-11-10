@@ -2390,3 +2390,19 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   - CopyCommands: copies the word blocks that the source owns (record byte+0x14 bit0), the rest stays a reference.
 - Trap: a `for` loop with a failed `grep` launched both agents, then a third. Parse the
   launch JSON with spaces after the colon (`"handle": "..."`).
+
+## U3 design and patch 1 (2026-11-10, moved from WORK_PLAN.md)
+
+- Step (b2): the design of the 7 open items is in `docs/nvn-design.md`, "U3 design of the open items" (`acec5d0`, approved
+  by the user). MIRROR_Y/Z: one DMA launch for each row or layer, because `dma.c` keeps the pitch as u32. TiledDownsample:
+  `vkCmdBlitImage` linear. MapVirtual: virtual pool and `as_remap` of `nvdrv.c`. Discard, ResolveDepthBuffer: logged no-ops.
+- Patch 1 (`c4f60c5`): 19 rows. Brief `reports/brief-writer-u3-1.md`, patch `patches/writer-u3-1.patch`, report
+  `reports/writer-u3-1.md`. New ops `NVN_OP_COPY_BUFFER`, `NVN_OP_CLEAR_BUFFER`, `NVN_OP_UPDATE_UNIFORM`. New pure functions
+  `nvn_copy_buffer_words`, `nvn_clear_buffer_words`, `nvn_update_uniform_words`, `nvn_texture_read_rows`, `nvn_oplist_copy`.
+- Facts: `replay_bind_send` reaches the DMA engine on subchannel 4 (`gpu.c` binds the DMA class there). Method 0x68B only
+  stores a register in `maxwell3d.c`. `command_record` returns 1 or 0. `texture_write_check` takes the operation name,
+  the direction and the strides. Copy strides are `CommandBufferRec.copy_row_stride`/`copy_image_stride`.
+- Caller fixes of the writer patch: a payload size check before `op->words` in `nvn_replay.c`, a test that kept the
+  owner reference of a list, a joined test line. 6 mutants failed. `ctest` passes except `tracked_material`.
+- Trap: `git worktree remove` needs `--force` when the writer left edits (the patch file has them). The coverage file is LF;
+  its checks cells have two spaces when empty (`|  |`).

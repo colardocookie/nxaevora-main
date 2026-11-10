@@ -63,17 +63,14 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
   Current step: U3 step (b3), patch 2 of 3: write the brief (template `reports/brief-writer-u3-1.md`), make a worktree,
-    launch the code writer. Patch 1 is committed (19 rows, see the commit "Add the NVN buffer copies, texel reads ...").
-    Patch 1 facts: `replay_bind_send` reaches the DMA engine on subchannel 4. Method 0x68B only stores a register in
-    `maxwell3d.c`. `command_record` now returns 1 or 0. `texture_write_check` takes the operation name, direction and strides.
-    Patch 2: B2T/T2B with flags (DMA and 2D builders), Downsample, TiledDownsample (design items 1, 2). Patch 3: MapVirtual
-    (item 4). Design (approved by the user 2026-11-10): `docs/nvn-design.md`, "U3 design of the open items". Record:
-    `OLD-WORK_PLAN.md`, section "U3 open items, step (b1)".
-    U2 is done (`OLD-WORK_PLAN.md`, last sections). Its exectest cases come in 4-u3.
+    launch the code writer. Patch 2: CopyBufferToTexture and CopyTextureToBuffer with all flags (DMA and 2D builders, the
+    strides `copy_row_stride`/`copy_image_stride` of `CommandBufferRec`), Downsample, DownsampleTextureView,
+    TiledDownsample, TiledDownsampleTextureView (design items 1 and 2). Patch 3: MapVirtual (item 4). Design:
+    `docs/nvn-design.md`, "U3 design of the open items". Facts and patch 1: `OLD-WORK_PLAN.md`, sections "U3 open items,
+    step (b1)" and "U3 design and patch 1". U2 exectest cases come in 4-u3.
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
-  - Rows near U1 that stay in other groups: CommandBuffer Get/SetCopyRowStride and Get/SetCopyImageStride (U3, copies).
-    CommandBuffer command and control memory getters, memory callback getters (U5). ProgramSetShaders, SetSampleShading,
-    SetSubroutineLinkage (U4).
+  - Rows near U1 that stay in other groups: CommandBuffer command and control memory getters, memory callback getters (U5).
+    ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).
 - Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
   buffer overflow in the init builders would crash).
 - Diagnostic code: `patches/diag-taskB.patch`. Apply it only for a diagnostic run, and remove it before a commit.
