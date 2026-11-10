@@ -77,6 +77,8 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
 
 A writer patch can come as UTF-16 (PowerShell redirect): regenerate it with `git diff` in the worktree and `git apply --check` it.
 Read the patch, then build and run `ctest`, before you read the tests: the writers get float constants and keep masks wrong.
+The writers also put their own faults into the test values (patch 2: the 2D start not in 32.32, header counts). Check each
+expected word against the register layout, not against the code.
 
 Notes:
 - Method of the agent work (explorer or analyst, brief with decisions, writer in a detached worktree, read the whole patch, build,
