@@ -404,6 +404,11 @@ int nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* dev
 #define NVN_TEXTURE_FLAG_SPARSE 0x20u
 #define NVN_TEXTURE_FLAG_LINEAR_RENDER_TARGET 0x40u
 #define NVN_TEXTURE_FLAG_ADAPTIVE_TILE 0x200u
+/* Bits that only the storage class and ZCull paths read. */
+#define NVN_TEXTURE_FLAG_ZCULL_INFO 0x80u         /* bit 7: the device ZCull info path, not implemented */
+#define NVN_TEXTURE_FLAG_KIND_MINUS_FIVE 0x100u   /* bit 8: the kind of the 32 row is five lower */
+#define NVN_TEXTURE_FLAG_ZCULL_STENCIL 0x400u     /* bit 10: a stencil-only format has a ZCull size */
+#define NVN_TEXTURE_FLAG_KIND_S4_PLUS_TWO 0x1000u /* bit 12: the kind of two S 4 rows is two higher */
 #define NVN_TEXTURE_POOL_STORAGE_FLAGS 0x280u
 #define NVN_TEXTURE_SPARSE_TILE_MASK 0x32u
 #define NVN_TEXTURE_KIND_PITCH 0xfeu
@@ -450,6 +455,20 @@ int nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* dev
 #define NVN_TEXTURE_DEVICE_QUALITY 0u
 #define NVN_TEXTURE_DEVICE_QUALITY_OVERRIDE 0xffffffffu
 #define NVN_TEXTURE_DEVICE_DESCRIPTOR_ROW 2u
+/* The GM20B ZCULL words of the device: these must stay equal to the gm20b_zcull_info reply and to the context size
+   in src/nx/hle/services/nvdrv.c. */
+#define NVN_ZCULL_WIDTH_ALIGN_PIXELS 0x20u
+#define NVN_ZCULL_HEIGHT_ALIGN_PIXELS 0x20u
+#define NVN_ZCULL_PIXEL_SQUARES_BY_ALIQUOTS 0x400u
+#define NVN_ZCULL_ALIQUOT_TOTAL 0x800u
+#define NVN_ZCULL_REGION_BYTE_MULTIPLIER 0x20u
+#define NVN_ZCULL_REGION_HEADER_SIZE 0x20u
+#define NVN_ZCULL_SUBREGION_HEADER_SIZE 0xc0u
+#define NVN_ZCULL_SUBREGION_COUNT 0x10u
+#define NVN_ZCULL_SUBREGION_WIDTH_ALIGN_PIXELS 0x20u
+#define NVN_ZCULL_SUBREGION_HEIGHT_ALIGN_PIXELS 0x40u
+#define NVN_ZCULL_CTX_SIZE 1u
+#define NVN_ZCULL_CTX_ALIGN 0x1000u
 
 typedef struct {
     uint64_t device, pool, offset, packaged;
@@ -462,6 +481,13 @@ typedef struct {
     uint32_t w08, w1a48, w1a4c, w1a50, w1a54, w1a88;
 } NvnTextureDeviceWords;
 extern const NvnTextureDeviceWords nvn_texture_device_words;
+/* The device words at +0xb8..+0xe4, in the order of that block. */
+typedef struct {
+    uint32_t width_align_pixels, height_align_pixels, pixel_squares_by_aliquots, aliquot_total;
+    uint32_t region_byte_multiplier, region_header_size, subregion_header_size, subregion_count;
+    uint32_t subregion_width_align_pixels, subregion_height_align_pixels, ctx_size, ctx_align;
+} NvnZcullDeviceWords;
+extern const NvnZcullDeviceWords nvn_zcull_device_words;
 typedef struct {
     uint64_t size, alignment, layer_stride;
     uint32_t linear_stride, samples, width, height, depth;
@@ -499,6 +525,13 @@ typedef struct {
 uint32_t nvn_texture_packaged_layout(uint16_t tile, uint32_t* layout);
 uint32_t nvn_texture_raw_storage_class(uint32_t flags, uint32_t format);
 uint32_t nvn_texture_storage_size(const NvnTexture* t);
+/* The library result 0x100 | kind. An invalid format record gives kind 0, which is not a refusal. */
+#define NVN_TEXTURE_STORAGE_CLASS_BASE 0x100u
+uint32_t nvn_texture_storage_class(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev);
+/* 1 fills the size, 0 leaves it 0 for a format without a ZCull surface, and a refusal means flags bit 7 or a zero
+   device divisor. The library returns a u32; the host returns its low 32 bits. */
+#define NVN_TEXTURE_ZCULL_REFUSAL (-1)
+int nvn_texture_zcull_size(const NvnTextureBuilder* b, const NvnZcullDeviceWords* zdev, uint32_t* size);
 /* The fields that nvnTextureCompare compares (sdk d83e3a0). The builder packaged data, tile, stride and GL name are
    inputs and stay out, and so does the layout alignment. Pure. */
 int nvn_texture_equal(const NvnTexture* a, const NvnTexture* b);

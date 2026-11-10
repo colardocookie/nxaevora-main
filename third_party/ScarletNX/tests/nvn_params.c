@@ -2688,6 +2688,86 @@ static void test_u1_texture_values(void) {
     CHECK(nvn_texture_storage_size(NULL) == 0);
 }
 
+static void test_u1_texture_storage_class(void) {
+    NvnTextureBuilder b;
+    nvn_texture_builder_defaults(&b);
+    NvnTextureDeviceWords dev = nvn_texture_device_words;
+
+    b.target = NVN_TEXTURE_TARGET_BUFFER;
+    CHECK(nvn_texture_storage_class(&b, &dev) == 0x100);
+    dev.w1b18 = 0x5a;
+    CHECK(nvn_texture_storage_class(&b, &dev) == 0x15a);
+    b.target = NVN_TEXTURE_TARGET_2D;
+    b.flags = NVN_TEXTURE_FLAG_LINEAR;
+    CHECK(nvn_texture_storage_class(&b, &dev) == 0x15a);
+
+    dev = nvn_texture_device_words;
+    b.flags = NVN_TEXTURE_FLAG_COMPRESS;
+    b.format = 0x32;
+    b.samples = 4;
+    CHECK(nvn_texture_storage_class(&b, &dev) == 0x109);
+    b.flags = NVN_TEXTURE_FLAG_COMPRESS | NVN_TEXTURE_FLAG_KIND_MINUS_FIVE;
+    CHECK(nvn_texture_storage_class(&b, &dev) == 0x104);
+    b.flags = NVN_TEXTURE_FLAG_COMPRESS;
+    b.samples = 2;
+    CHECK(nvn_texture_storage_class(&b, &dev) == 0x108);
+    b.samples = 1;
+    CHECK(nvn_texture_storage_class(&b, &dev) == 0x108);
+    b.samples = 4;
+    b.format = 0x0a;
+    b.flags = NVN_TEXTURE_FLAG_COMPRESS | NVN_TEXTURE_FLAG_KIND_S4_PLUS_TWO;
+    CHECK(nvn_texture_storage_class(&b, &dev) == 0x1e2);
+    b.flags = 0;
+    CHECK(nvn_texture_storage_class(&b, &dev) == 0x1fe);
+    b.format = 0x31;
+    CHECK(nvn_texture_storage_class(&b, &dev) == 0x12a);
+    b.format = 0x33;
+    b.samples = 0;
+    b.flags = NVN_TEXTURE_FLAG_COMPRESS;
+    CHECK(nvn_texture_storage_class(&b, &dev) == 0x151);
+    b.format = 0x19;
+    CHECK(nvn_texture_storage_class(&b, &dev) == 0x100);
+
+    b.format = 0x32;
+    b.samples = 4;
+    b.flags = NVN_TEXTURE_FLAG_COMPRESS;
+    dev.w1b1c = 0;
+    CHECK(nvn_texture_storage_class(&b, &dev) == 0x101);
+    CHECK(nvn_texture_storage_class(NULL, &dev) == 0);
+}
+
+static void test_u1_texture_zcull_size(void) {
+    NvnTextureBuilder b;
+    nvn_texture_builder_defaults(&b);
+    b.format = 0x32;
+    b.depth = 1;
+    uint32_t size = 0;
+    b.width = 1920; b.height = 1080;
+    CHECK(nvn_texture_zcull_size(&b, &nvn_zcull_device_words, &size) == 1 && size == 0x20u * 0x7f8u + 0xe0u);
+    b.width = 960; b.height = 540;
+    CHECK(nvn_texture_zcull_size(&b, &nvn_zcull_device_words, &size) == 1 && size == 0x20u * 0x1feu + 0xe0u);
+    b.width = 1280; b.height = 720;
+    CHECK(nvn_texture_zcull_size(&b, &nvn_zcull_device_words, &size) == 1 && size == 0x20u * 0x398u + 0xe0u);
+    b.width = 32; b.height = 32;
+    CHECK(nvn_texture_zcull_size(&b, &nvn_zcull_device_words, &size) == 1 && size == 0x20u * 1u + 0xe0u);
+    b.width = 100; b.height = 100; b.depth = 5;
+    CHECK(nvn_texture_zcull_size(&b, &nvn_zcull_device_words, &size) == 1 && size == 0x20u * 0x50u + 0xe0u);
+
+    b.format = 0x0a;
+    b.width = 1920; b.height = 1080; b.depth = 1;
+    size = 0xffffffffu;
+    CHECK(nvn_texture_zcull_size(&b, &nvn_zcull_device_words, &size) == 0 && size == 0);
+    b.format = 0x31;
+    b.width = 32; b.height = 32;
+    CHECK(nvn_texture_zcull_size(&b, &nvn_zcull_device_words, &size) == 0 && size == 0);
+    b.flags = NVN_TEXTURE_FLAG_ZCULL_STENCIL;
+    CHECK(nvn_texture_zcull_size(&b, &nvn_zcull_device_words, &size) == 1 && size == 0x20u * 1u + 0xe0u);
+    b.format = 0x32;
+    b.flags = NVN_TEXTURE_FLAG_ZCULL_INFO;
+    CHECK(nvn_texture_zcull_size(&b, &nvn_zcull_device_words, &size) == NVN_TEXTURE_ZCULL_REFUSAL && size == 0);
+    CHECK(nvn_texture_zcull_size(NULL, &nvn_zcull_device_words, &size) == NVN_TEXTURE_ZCULL_REFUSAL);
+}
+
 static void u1_fill_texture(NvnTexture* t) {
     memset(t, 0, sizeof *t);
     t->builder.device = 0x11;
@@ -2868,6 +2948,8 @@ int main(int argc, char** argv) {
     test_u1_window_fields();
     test_u1_sampler_border();
     test_u1_texture_values();
+    test_u1_texture_storage_class();
+    test_u1_texture_zcull_size();
     test_u1_texture_equal();
     test_u1_texture_view_equal();
     test_u1_blend_advanced();

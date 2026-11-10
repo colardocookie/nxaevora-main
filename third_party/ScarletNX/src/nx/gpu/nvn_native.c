@@ -1314,6 +1314,33 @@ static void h_texture_builder_get_packaged_texture_layout(CPU* c, u64 entry) {
 }
 
 
+static void h_texture_builder_get_storage_class(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const NvnTextureBuilder* b = known_record(c->x[0], NVN_OBJ_TEXTURE_BUILDER);
+    if (!b)
+        LOG("nvn-native: nvnTextureBuilderGetStorageClass unknown builder=%llx\n", (unsigned long long)c->x[0]);
+    c->x[0] = b ? nvn_texture_storage_class(b, &nvn_texture_device_words) : 0;
+    pm_unlock(&objs_lock);
+}
+static void h_texture_builder_get_zcull_storage_size(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const NvnTextureBuilder* b = known_record(c->x[0], NVN_OBJ_TEXTURE_BUILDER);
+    if (!b) {
+        LOG("nvn-native: nvnTextureBuilderGetZCullStorageSize unknown builder=%llx\n",
+            (unsigned long long)c->x[0]);
+        c->x[0] = 0;
+    } else {
+        uint32_t size = 0;
+        if (nvn_texture_zcull_size(b, &nvn_zcull_device_words, &size) == NVN_TEXTURE_ZCULL_REFUSAL)
+            LOG("nvn-native: nvnTextureBuilderGetZCullStorageSize flags=%x: the device ZCull info path is not "
+                "implemented\n", b->flags);
+        c->x[0] = size;
+    }
+    pm_unlock(&objs_lock);
+}
+
 static void h_sampler_initialize(CPU* c, u64 entry) {
     (void)entry;
     pm_lock(&objs_lock);
@@ -1952,6 +1979,30 @@ static void h_texture_get_raw_storage_class(CPU* c, u64 entry) {
     const TextureRec* t = known_record(c->x[0], NVN_OBJ_TEXTURE);
     if (!t) LOG("nvn-native: nvnTextureGetRawStorageClass unknown texture=%llx\n", (unsigned long long)c->x[0]);
     c->x[0] = t ? nvn_texture_raw_storage_class(t->builder.flags, t->builder.format) : 0;
+    pm_unlock(&objs_lock);
+}
+static void h_texture_get_storage_class(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const TextureRec* t = known_record(c->x[0], NVN_OBJ_TEXTURE);
+    if (!t) LOG("nvn-native: nvnTextureGetStorageClass unknown texture=%llx\n", (unsigned long long)c->x[0]);
+    c->x[0] = t ? nvn_texture_storage_class(&t->builder, &nvn_texture_device_words) : 0;
+    pm_unlock(&objs_lock);
+}
+static void h_texture_get_zcull_storage_size(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    const TextureRec* t = known_record(c->x[0], NVN_OBJ_TEXTURE);
+    if (!t) {
+        LOG("nvn-native: nvnTextureGetZCullStorageSize unknown texture=%llx\n", (unsigned long long)c->x[0]);
+        c->x[0] = 0;
+    } else {
+        uint32_t size = 0;
+        if (nvn_texture_zcull_size(&t->builder, &nvn_zcull_device_words, &size) == NVN_TEXTURE_ZCULL_REFUSAL)
+            LOG("nvn-native: nvnTextureGetZCullStorageSize flags=%x: the device ZCull info path is not "
+                "implemented\n", t->builder.flags);
+        c->x[0] = size;
+    }
     pm_unlock(&objs_lock);
 }
 static void h_texture_get_swizzle(CPU* c, u64 entry) {
@@ -5292,6 +5343,8 @@ static const NativeProc native_procs[] = {
     {"nvnTextureBuilderGetPackagedTextureData", h_texture_builder_get_packaged_texture_data},
     {"nvnTextureBuilderGetPackagedTextureLayout", h_texture_builder_get_packaged_texture_layout},
     {"nvnTextureBuilderGetRawStorageClass", h_texture_builder_get_raw_storage_class},
+    {"nvnTextureBuilderGetStorageClass", h_texture_builder_get_storage_class},
+    {"nvnTextureBuilderGetZCullStorageSize", h_texture_builder_get_zcull_storage_size},
     {"nvnTextureBuilderSetGLTextureName", h_texture_builder_set_gl_texture_name},
     {"nvnTextureBuilderSetPackagedTextureData", h_texture_builder_set_packaged_texture_data},
     {"nvnTextureBuilderSetSamples", h_texture_builder_set_samples},
@@ -5371,6 +5424,8 @@ static const NativeProc native_procs[] = {
     {"nvnTextureGetMemoryOffset", h_texture_get_memory_offset},
     {"nvnTextureGetMemoryPool", h_texture_get_memory_pool},
     {"nvnTextureGetRawStorageClass", h_texture_get_raw_storage_class},
+    {"nvnTextureGetStorageClass", h_texture_get_storage_class},
+    {"nvnTextureGetZCullStorageSize", h_texture_get_zcull_storage_size},
     {"nvnTextureGetSamples", h_texture_get_samples},
     {"nvnTextureGetSwizzle", h_texture_get_swizzle},
     {"nvnTextureGetStorageSize", h_texture_get_storage_size},

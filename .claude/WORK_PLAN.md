@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `19b6d35` and older (the last code commit is `c1fdb45`). Commits after `19b6d35` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is U1 step b1 (md5 6a1fd3c9), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is U1 step b2 (md5 10160cb0), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=0`, `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -72,9 +72,9 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   - b2: the formula and the kind table are checked (history in `OLD-WORK_PLAN.md`). Decision: flags bit 7 set gives a log
     line and a refusal.
   - Device +0x1b1c = 1 (constructor store, history in `OLD-WORK_PLAN.md`): the host uses the `w3=1` kind table.
-  - b2 next: (b) brief for the handler writer (host device words +0xb8..+0xe4, +0x1a08 record, kind table for +0x1b1c = 1).
-    Template: `reports/brief-6a.md`. Facts: `reports/explorer-devwords2-1.md`, `explorer-devwords3-1.md`, and the two
-    last U1 (b2) sections of `OLD-WORK_PLAN.md`.
+  - b2 done (2026-11-10): brief `reports/brief-u1-b2.md`, patch `patches/u1-b2-1.patch`. 4 handlers, pure helpers
+    `nvn_texture_storage_class` and `nvn_texture_zcull_size`. Caller added the samples 1 and 2 tests. 14 mutants, all killed.
+    Coverage 383 implemented, 140 stub-log. Exe md5 10160cb0 (copied). No game run.
   - b3: the 3 functions that the writer left out: TextureBuilderGetSparseTileLayout and TextureGetSparseTileLayout (helpers
     d822538 and d869e10 not verified), TextureGetViewOffset (level and 3D slice offset of d83d01c not checked against
     `texture_level_offset`).
