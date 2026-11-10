@@ -68,9 +68,12 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   reached are written as "not verified in the game".
   Decision of the user (2026-11-09): the trace of the enum argument values (the missing part of 4-u1) comes after U1.
   Current step: U1 step b3 (b2 is done, commit `c5fe2db`, history in `OLD-WORK_PLAN.md`).
-  - b3 (a): analysis. The 3 functions that the writer left out: TextureBuilderGetSparseTileLayout and TextureGetSparseTileLayout (helpers
-    d822538 and d869e10 not verified), TextureGetViewOffset (level and 3D slice offset of d83d01c not checked against
-    `texture_level_offset`).
+  - b3 (a) DONE (2026-11-10): analyst table `reports/analyst-u1-b3-1.md`, accepted. Checked in the disassembly: d83dd40 calls
+    d822300 and d822538 (not d869e10), d83d810 returns `record.address - T[+0x80]`, d83d01c slice offset (3D: 32-bit term `<< 9`,
+    other targets: `T[+0x58] * base_layer`). Sparse output 16 bytes: level count, tile w, h, d; it matches `texture_sparse_tile`
+    (`nvn_params.c:916`) except levels == 0 (library writes zeros, host refuses). View offset of an array target uses
+    `layout.layer_stride` (as `nvn_rt.c:236`), not `texture_level_offset`. The library checks no level or layer range.
+  - b3 (b) NEXT: brief for the handler writer (the 3 functions, the table above), then the patch.
   - EventGetMemoryPool and EventGetMemoryOffset are in U2 (they need Event Initialize).
 - Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
   buffer overflow in the init builders would crash).
