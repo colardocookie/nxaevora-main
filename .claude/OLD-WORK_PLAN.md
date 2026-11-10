@@ -2264,3 +2264,15 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   levels == 0 (the library writes zeros, the host refuses).
 - View offset of an array target uses `layout.layer_stride` (as `nvn_rt.c:236`), not `texture_level_offset`. The library
   checks no level or layer range.
+
+## Task (u) U1 step (b3) writer patch done (2026-11-10, moved from WORK_PLAN.md)
+
+- Brief `reports/brief-u1-b3.md`. The caller checked the decisions in `analysis/d822538.txt` and `analysis/d83d01c.txt`:
+  - Sparse layout (d822538): the level count is the first level that is smaller than one tile. The sizes are the raw builder
+    values. Count 0 (also levels == 0) gives all 4 words 0. This is not a refusal.
+  - View offset (d83d01c): the base level is used only with NVN_VIEW_LEVELS, the base layer only with NVN_VIEW_LAYERS.
+    Linear and BUFFER textures give 0. 3D layer term is u32, then `<< 9`. Other targets use `layer_stride * layer`.
+    A base level >= 32 is a refusal (the shift count wraps).
+- Handler writer (opencode, DeepSeek V4.1 Flash): patch `patches/u1-b3-1.patch` (4 files, +241/-2), report
+  `reports/writer-u1-b3-1.md`. The caller read the whole patch and found no fault. The patch also moves the sample divisors
+  of `nvn_texture_layout` to `texture_sample_x` and `texture_sample_y`. Worktree removed. Commit `01c2ecd`.

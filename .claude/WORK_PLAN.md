@@ -67,11 +67,8 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
   Decision of the user (2026-11-09): the trace of the enum argument values (the missing part of 4-u1) comes after U1.
-  Current step: U1 step b3 (c). b3 (a) is done (commit `f4fa50a`, facts in `OLD-WORK_PLAN.md`, last section).
-  - b3 (b) done: brief `reports/brief-u1-b3.md` (decisions checked in `analysis/d822538.txt` and `analysis/d83d01c.txt`),
-    patch `patches/u1-b3-1.patch` (4 files, +241/-2), report `reports/writer-u1-b3-1.md`. The caller read the whole patch and
-    found no fault. Worktree removed. The patch also moves the sample divisors of `nvn_texture_layout` to two helpers.
-  - b3 (c): `git apply` the patch, build, `ctest`, a mutant of each new test, update `nvn-coverage.md` (3 rows), commit
+  Current step: U1 step b3 (c). b3 (a) and (b) are done (facts in `OLD-WORK_PLAN.md`, last two sections).
+  - b3 (c): patch `patches/u1-b3-1.patch`, brief `reports/brief-u1-b3.md`. `git apply` the patch, build, `ctest`, a mutant of each new test, update `nvn-coverage.md` (3 rows), commit
     (Co-Authored-By of OpenCode for the writer).
   - EventGetMemoryPool and EventGetMemoryOffset are in U2 (they need Event Initialize).
 - Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
