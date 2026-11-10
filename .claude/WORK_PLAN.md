@@ -49,10 +49,9 @@ below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
   4-u4. `docs/nvn-coverage.md`: 1 row of G10 is `stub-log` (`nvnDeviceGetProcAddress`, by decision) after U5 (`11978be`).
-  Current step: 4-u3-2 (objects and device), step (g): fill the checks column of `docs/nvn-coverage.md` for the
-    4-u3-2 cases. History of steps (a) to (f): `OLD-WORK_PLAN.md`, last section. Last selftest run (23:48, exe md5
-    9fc85bdc, commit `8db7485`): 247 cases, 0 failed.
-    Then: 4-u3-3 (S/Y harness, mutation, command buffer), 4-u3-4 (exectest). The `unit` scope is not in the checks column yet.
+  Current step: 4-u3-3 (S/Y harness, mutation, command buffer), step (a): plan and brief. 4-u3-2 is done (history:
+    `OLD-WORK_PLAN.md`, last section).
+    Then: 4-u3-4 (exectest). The `unit` scope is not in the checks column yet.
   - Open for 4-u4: the design asks for no `stub-log` row, but `nvnDeviceGetProcAddress` stays `stub-log` by decision (the
     game resolves names through d832940, which the hook covers). Decide the row (a handler that calls the resolver, or an
     explicit exception in the design) before 4-u4.

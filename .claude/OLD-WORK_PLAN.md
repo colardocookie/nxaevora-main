@@ -2611,3 +2611,7 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   range of 2*size, range 0 and range 1 = range 0 + size map the same storage. `nvn_texture_uses_pitch_range` with a
   test (mutant caught). No third range (open if a texture of a bit-7 pool needs it). Commit `8db7485`.
   Selftest run 23:48 (exe md5 9fc85bdc): 247 cases, 0 failed.
+- Step (g) (2026-11-10): checks column of `nvn-coverage.md` filled from the run 23:48 for 100 functions. Rule: R when the
+  return value is compared, M when the output bytes are compared, a setter or Initialize when a compared getter shows
+  its effect. No credit: Finalize, SetDebugLabel, Flush/Invalidate, ProgramSetSampleShading (called, not compared), and
+  the SetDefaults of the pool and event builders (each getter value is set again). 4-u3-2 is done.
