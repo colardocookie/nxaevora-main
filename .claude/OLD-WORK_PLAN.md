@@ -2572,3 +2572,23 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   Run 20:39 (same settings): 227 cases, 0 failed, clean exit. Exe md5 03bf4203.
   `nvn-coverage.md`: column checks filled from this run, 105 functions (the case `nvnTextureBuilderStorage` gives R to
   GetStorageSize, GetStorageAlignment, GetWidth, GetHeight). The `unit` scope is not written yet. 4-u3-1 is done.
+
+## Task (u) 4-u3-2: selftest of objects and device (2026-11-10)
+
+- Step (a): brief `reports/brief-writer-u3s-2.md` (decisions 1 to 12: separate storage and objects for each side,
+  addresses compared relative to the pool, device functions with a lasting effect out of scope). Worktree `S/wt-u3s-2`.
+- Step (b): writer patch `patches/writer-u3s-2.patch` (new `nvn_selftest_res.c`, 9 scripts, `ARENA_BYTES` 0x200000).
+  Caller edits: no `nvnDeviceSetDebugLabel` on the game device (it clears the label for good), the void setters
+  (`Set*DebugLabel`, `ProgramSetSampleShading`) are called but their x0 is not compared. Result `patches/writer-u3s-2b.patch`,
+  applied to the working tree, NOT committed. Checked: `nvnProgramInitialize`/`Finalize` add and remove the program in the
+  device list (no lasting effect), the host has a virtual pool path (flag 0x200), TIC words 1 and 2 are the address
+  (masked), the sampler case indexes of `sampler_tests` are right. Build ok, ctest ok except `tracked_material`. Exe md5 c1ecadb0.
+- Step (c) run 21:35 (`nvn_native=0`, `nvn_trace=1`, `nvn_selftest=1`, 3 tries, same result): all 4-u3-1 cases ok, then
+  `nvnMemoryPool flags=0x24` FAIL (initialize: library 1, host 0) and svcBreak in the case flags=0x22.
+  1. svcBreak: NvRmMemHandleAllocAttr (d7b08a0) calls nn::os SetMemoryAttributeImpl on the storage 1380016000, the
+     kernel refuses (block state 0x42002 = `MS_STATIC`, `mem.h:64`), nn::diag Abort. The arena comes from
+     `kmem_alloc(ARENA_BYTES, MS_STATIC, PERM_RW)` in `nvn_selftest_run`. The game pool storage is heap memory.
+  2. Host MemoryPoolInitialize: `nvn_gpu_map_range` (nvdrv.c:450) refuses, `grun_overlaps` is true: the host cursor
+     `pool_gpu_cursor` starts at `NVN_POOL_GPU_BASE` (0x400000000) inside the ranges that the library mapped by nvdrv.
+     The handler refuses correctly (no faked success). Decision of the user: reserve the host range from the nvdrv
+     address space allocator.

@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the build of the 4-u3-1 fixes (md5 03bf4203, `c392c09`), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the build of the 4-u3-2 selftest (md5 c1ecadb0, not committed), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=1`, `nvn_native=0`, `nvn_selftest=1` (the selftest run of 2026-11-10). After each build: `tasklist` shows no game, then copy the exe.
@@ -49,9 +49,14 @@ below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
   4-u4. `docs/nvn-coverage.md`: 1 row of G10 is `stub-log` (`nvnDeviceGetProcAddress`, by decision) after U5 (`11978be`).
-  Current step: 4-u3-2 (objects and device). 4-u3-1 is done (`OLD-WORK_PLAN.md`, last section): selftest 227 cases,
-    0 failed, `nvn-coverage.md` column checks has 105 functions. Out of 4-u3-1 and to 4-u3-2: the setters that take a pool,
-    texture or memory, `MultisampleStateSetSampleLocations`. Start with the brief (template `reports/brief-5-writer.md`).
+  Current step: 4-u3-2 (objects and device), step (d): fix the two faults of the run of 21:35 (`OLD-WORK_PLAN.md`,
+    last section). The selftest code of 4-u3-2 is applied to the working tree, NOT committed.
+    1. Harness: the selftest arena is `MS_STATIC`. The library pool calls svcSetMemoryAttribute on its storage and the
+       kernel refuses that state. Give the arena (or the pool storage blocks) the state of the game heap.
+    2. Host: the host pools take their GPU range from the nvdrv address space allocator (decision of the user,
+       2026-11-10), not from `pool_gpu_cursor` (0x400000000). Read `hle/services/nvdrv.c` (`grun_*`, the AS alloc) first.
+    Next action: the brief for the code writer for fix 1 and 2 (template `reports/brief-writer-u3s-2.md`), then build,
+    ctest, one selftest run, then fill the checks column.
     Then: 4-u3-3 (S/Y harness, mutation, command buffer), 4-u3-4 (exectest). The `unit` scope is not in the checks column yet.
   - Open for 4-u4: the design asks for no `stub-log` row, but `nvnDeviceGetProcAddress` stays `stub-log` by decision (the
     game resolves names through d832940, which the hook covers). Decide the row (a handler that calls the resolver, or an
