@@ -762,6 +762,56 @@ Exit condition of this part: every one of the 523 rows is `implemented` and has 
 rows that no game run reached are listed as "not verified in the game". The default of missing functions is stop. A function with a
 check that no test can make has the reason in the file.
 
+### U3 design of the open items (2026-11-10)
+
+Decision of the user: no refusal for these 7 items, a sure design for each. Facts: the explorer reports of U3 (record in
+`OLD-WORK_PLAN.md`, "U3 open items, step (b1)"). No `main` code calls any of the 7, so each row stays "not verified in the game".
+The host replays NVN through the Eden based engines (`maxwell/dma.c`, `fermi2d.c`, `maxwell3d.c`), as
+`replay_host_copy_texture` does with `nvn_rt_copy_texture_words`.
+
+1. CopyBufferToTexture and CopyTextureToBuffer, all flags. The handler records an op with the region, the flags and the copy
+   strides `cb+0x88`/`cb+0x8C` read at call time (0 means tight). The replay builds the words of the library route:
+   - DMA route (B2T without `ENGINE_2D`, every T2B): a new builder of the DMA block `d82b0f0` (methods 0x100 to 0x1CF, then 0xC0
+     LaunchDma), with the block math of the library (block height and depth from the format table, bytes per block, round up
+     to whole blocks). Linear and block-compressed textures use the same builder.
+   - `MIRROR_Y` and `MIRROR_Z`: the library gives a negative pitch, but `dma.c` keeps the pitch as `u32`. The builder sends one
+     launch for each row (`MIRROR_Y`) or each layer (`MIRROR_Z`), in the reversed order, with a positive pitch. The bytes in
+     memory are equal to the library result. `MIRROR_X` on the DMA route has no effect (library mask 0x18).
+   - 2D route (B2T with `ENGINE_2D`): a new builder of the 2D block `d82c5d0` (header `0x91010002`) with the format change and
+     `MIRROR_X` (negative `du_dx`). `fermi2d.c` samples a negative step on its CPU table path. A unit test must show that
+     `r3d_blit` also takes it, else the 2D copy uses the table path. A format pair that `fermi2d.c` cannot convert stops
+     with its log line.
+   - The library does no bounds check. The host checks the region against the level size and the buffer range. A region out
+     of range stops with a log line (the library would write outside the texture).
+   - A multisample texture: the library uses level offset 0 and copies the raw bytes. The host does the same.
+2. TiledDownsample and TiledDownsampleTextureView. The library runs a driver shader through macro 0xE1E, with program fields
+   `device+0x9AC..+0x9B8` that the host does not have. The host does not replay these words. A new op makes the renderer do a
+   `vkCmdBlitImage` with `VK_FILTER_LINEAR` from the source level (view base level and layer, NULL view gives the defaults of
+   d83c800..d83c980) to the whole destination level. For an exact 2x reduction this is the 2x2 box (each sample is at the
+   corner of 4 texels). Another size ratio gives a log line once and the linear blit result. A format without linear filter
+   support stops with a log line. The 2x2 box is an inference from the constants `2*srcWidth`, `2*srcHeight`.
+3. ResolveDepthBuffer. Method 0x47F resolves the depth compression of the bound depth target in place. Host depth images have no
+   compression, so the contents are already resolved. The handler is a no-op with one log line. The library adds no barrier, so
+   the host adds none.
+4. MemoryPoolMapVirtual. Today the host refuses a pool with flag 0x200 (`NVN_POOL_UNSUPPORTED_VIRTUAL`). The host makes a virtual
+   pool as a reserved GPU address range without storage (size a multiple of 64 KiB, storage NULL, as vtbl[0] d83ff88 checks).
+   MapVirtual does what vtbl[0x60] does: batches of at most 0x200 requests of stride 0x28, each turned into a remap entry
+   (64 KiB pages, low bits truncated), given to the remap code of `nvdrv.c` (`as_remap`, exported as a helper). A failed batch
+   returns false. A page outside every request stays unmapped, and an engine access to it gets the existing log line of an
+   unmapped address.
+5. DiscardColor and DiscardDepthStencil. Method 0x3DE makes the contents of the target undefined. Keeping the contents is one
+   allowed result, so the handler is a no-op with one log line. The gate `device+0xA8` is 0, so the library always emits the
+   word. The index of DiscardColor is checked (0 to 7) as the library masks it.
+6. UpdateUniformBuffer of any size. The library copies the data into the stream at record time, ordered with the draws. The
+   handler copies the `(size>>2)` words at call time (1 to 3 tail bytes drop, as in the library). Data over the op payload
+   limit go into several ops in order, each one with the selector (0x8E0, size rounded up to 256, minimum 256) and its offset.
+   The replay sends 0x8E0..0x8E3, the PipeNop 0x68B (the gate `cb+0x70` bit 4 is 1) and the 0x8E4 data words to
+   `maxwell3d.c`. The writer checks what `maxwell3d.c` does with 0x68B before it sends it.
+7. CopyCommands. Host lists are immutable and counted (`nvn_cmdlist.h`). The handler copies the op bytes of each source list
+   into the destination list. A `NVN_OP_CALL` inside a source stays a reference and takes a new reference. Then the
+   destination does not depend on the source list after the call, as in the library, where the source owns the copied
+   words. CallCommands keeps its reference model.
+
 ## 3a Result of the diagnostic run (2026-11-02)
 
 Run: update program, 43.4 s, 1149 frames at 30 frames a second, 0 JIT misses, no crash. The user ran to the title scene once. The
