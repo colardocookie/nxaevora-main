@@ -2325,3 +2325,17 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   `nvnCommandBufferDrawElements` 0x06. `ctest` passes except `tracked_material`, the mutant (0x0a) is caught. Exe md5 25d58048.
 - Run 2 (user, update program, `nvn_trace=1`, no crash line): 277 distinct values, all 63 functions. Same set as run 1 except
   DrawElements: mode 4 and index type 1 only. Saved in `analysis/enum-run2.txt`. Result in `docs/nvn-design.md` 4-u1 (commit `6f09358`).
+
+## U2 events and sync, step (a) and task 1 (2026-11-10, moved from WORK_PLAN.md)
+
+- Step (a), commit `e69f838`: library analyst tables `reports/analyst-u2-A-1.md` (events, 11) and `analyst-u2-B-1.md` (sync,
+  queue, finalizers, 12). Rows checked in the disassembly: EventGetValue, GetMemoryPool, GetMemoryOffset, Signal (mode 1 adds,
+  other modes write), SyncFinalize, QueueWaitSync (tail call to d83beb0).
+- Facts of the tables: the host engines (`gpu.c`, `maxwell/engines.c`) do not do semaphore reductions, they only write.
+  WaitEvent parks the GPU stream with no timeout. CB FenceSync and WaitSync append library records 5 and 6 (no GPU method).
+  QueueWaitSync appends GPU waits and does not block. Sync kind 4 is a GL sync.
+- Task 1, commit `94754a7`: 18 CPU side handlers by the code writer (brief `reports/brief-writer-u2-1.md`, report
+  `writer-u2-1.md`). New `NVN_OBJ_EVENT`, `EventRec`, `event_value_address`, `nvn_event_signal_value` (unit test),
+  `frames_in_flight` (+1 at the present post, -1 in `frame_finish`). Decisions: `docs/nvn-design.md` 4-u2.
+- Checks: the whole patch read, `ctest` passes except `tracked_material` (`driver_workflow` passes alone), the mutant of the
+  signal rule is caught. `nvn-coverage.md`: G10 has 119 `stub-log` rows. Exe md5 878c4351 in the 3 places. No game run.

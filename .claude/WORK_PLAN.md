@@ -48,7 +48,7 @@ Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
-  4-u4. `docs/nvn-coverage.md`: 249 rows of G10 are `stub-log`. Groups (one commit each), in this order:
+  4-u4. `docs/nvn-coverage.md`: 119 rows of G10 are `stub-log`. Groups (one commit each), in this order:
   - U2 events and sync (about 20): Event*, CommandBuffer SignalEvent, WaitEvent, WaitSync, FenceSync, ReportValue, Queue
     WaitSync, Finish, Flush, Finalize, Sync*. Check with `nvn_exectest`.
   - U3 copies, clears, texel IO (about 25): CopyBufferTo*, CopyTextureToBuffer, ClearBuffer, ClearColori/ui, Downsample*,
@@ -64,17 +64,22 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U2 task 2 step (b), the brief of the code writer for the 5 command buffer functions (SignalEvent, WaitEvent,
-    ReportValue, FenceSync, WaitSync: new NVN_OP codes and replay). Task 1 (18 CPU side handlers) is committed: brief
-    `reports/brief-writer-u2-1.md` (a good template), notes in `docs/nvn-design.md` 4-u2. Step (a) is done (2026-11-10): tables
-    `reports/analyst-u2-A-1.md` (events, 11) and `analyst-u2-B-1.md` (sync, queue, finalizers, 12). Rows checked in the
-    disassembly: EventGetValue, GetMemoryPool, GetMemoryOffset, Signal (mode 1 adds, other modes write), SyncFinalize, QueueWaitSync
-    (tail call to d83beb0). Decisions for the brief: a new EVENT object kind, ADD reductions (the host engines only write),
-    WaitEvent without timeout, CB FenceSync/WaitSync records 5/6 (new NVN_OP), QueueWaitSync without a host stream, GL syncs. The enum trace (4-u1) is done:
-    `OLD-WORK_PLAN.md`, last section. Its values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
-  - Rows near U1 that stay in other groups: EventGetMemoryPool, EventGetMemoryOffset, EventGetValue (U2). CommandBuffer
-    Get/SetCopyRowStride and Get/SetCopyImageStride (U3, copies). CommandBuffer command and control memory getters, memory
-    callback getters (U5). ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).
+  Current step: U2 task 2 step (b). Write the brief of the code writer for the 5 command buffer functions: SignalEvent,
+    WaitEvent, ReportValue, FenceSync, WaitSync. Then launch it. Task 1 and step (a): `OLD-WORK_PLAN.md`, last section.
+    - Inputs: tables `reports/analyst-u2-A-1.md` (SignalEvent, WaitEvent, ReportValue) and `analyst-u2-B-1.md` (FenceSync,
+      WaitSync). Template: `reports/brief-writer-u2-1.md`. Host: `command_record` and the `NVN_OP_*` enum (`gpu/nvn_cmdlist.h`),
+      the replay (`replay_host_report_counter`, `nvn_native.c` ~4610), `h_queue_fence_sync`, `frame_finish` (tokens),
+      `EventRec` and `event_value_address` (task 1).
+    - Decisions to write (the caller decides, not the writer): SignalEvent replays a WRITE or ADD of the event word (the
+      location only names the pipeline stage, and the host replay is serial). ReportValue is a variant of the report counter
+      op that takes the value. WaitEvent has no timeout in the library, and the host has one GPU thread: decide between a
+      check at replay time with a log line and a refusal, and a wait on a condition that EventSignal broadcasts. CB FenceSync
+      and WaitSync are records 5/6 in the library and need new ops. Decide how a fence in a list becomes a frame token (for
+      example a scan at QueueSubmitCommands) and what a list reached only through NVN_OP_CALL does.
+  - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
+  - Rows near U1 that stay in other groups: CommandBuffer Get/SetCopyRowStride and Get/SetCopyImageStride (U3, copies).
+    CommandBuffer command and control memory getters, memory callback getters (U5). ProgramSetShaders, SetSampleShading,
+    SetSubroutineLinkage (U4).
 - Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
   buffer overflow in the init builders would crash).
 - Diagnostic code: `patches/diag-taskB.patch`. Apply it only for a diagnostic run, and remove it before a commit.
