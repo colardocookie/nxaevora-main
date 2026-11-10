@@ -56,8 +56,16 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U5 step (a), the library analyst table of U5 (debug and the rest). U4 is done (`OLD-WORK_PLAN.md`,
-    "U4 patch 2 and the U4 regression run"). Brief templates: `reports/brief-6a.md` and `reports/brief-analyst-u4-common.md`.
+  Current step: U5 step (b), the brief of the handler writer. Step (a) is done (2026-11-10): tables
+    `reports/analyst-u5-{A,B,C}-1.md` (45 functions), checked in the disassembly: the cb memory getters d824080..d8240e0,
+    checkpoints d823c80, d82d120, PopDebugGroup d84cfc0, reserve d8243d0, queue getters d83a080..d83a0f0, pool finalizers
+    (bare `ret`), fast clear thunks d82d130..d82d160, d82d180 (bare `ret`). Real end of cb command memory is cb+0x28
+    (cb+0x20 is the soft limit of the markers). Decisions for the brief:
+    - Host cb has no command cursor: Used = 0 and Free = Size do not match the library. Getter or refusal: decide.
+    - `nvnQueueAcquireTexture` is a real handler (factor the pick of `h_window_acquire_texture`), not a stub.
+    - `nvnWindowFinalize`: remove the host window record. `GetProcAddress` d82d090: 0 calls, the hook covers d832940.
+    - `GetCurrentTimestampInNanoseconds`: `nvn_timestamp_ns(gpu_ticks())`. `GenerateDebugDomainId`: static atomic counter.
+    Brief template: `reports/brief-writer-u4-2.md`.
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
   - U5 also has the CommandBuffer command and control memory getters and the memory callback getters.
 - Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
