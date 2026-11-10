@@ -48,10 +48,9 @@ Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design
 below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
-  4-u4. `docs/nvn-coverage.md`: 88 rows of G10 are `stub-log` (after U3). Groups left, in this order:
-  - U4 draw extras (about 40): indirect draws, DrawTransformFeedback, Pause/ResumeTransformFeedback, tessellation, conservative
-    raster, SetScissor, SetViewport, PrimitiveRestart, SampleMask, ViewportSwizzles, RenderEnable, ZCull, separate sampler and
-    texture binds, BindTextures, subroutines, scratch memory, coverage modulation, tiled cache, color reduction.
+  4-u4. `docs/nvn-coverage.md`: 61 rows of G10 are `stub-log` (after U4 patch 1). Groups left, in this order:
+  - U4 patch 2, table C (`reports/analyst-u4-C-1.md`, checked): separate sampler and texture binds, BindTextures, program
+    setters, subroutines, scratch memory, coverage modulation, tiled cache, and the handle getters.
   - U5 debug and the rest (about 50): debug markers and groups, checkpoints, memory usage getters, GL interop, finalizers,
     GetProcAddress, fast clear registration. For each function, the library decides: a logged no-op or an explicit refusal.
   Steps of one group, one session each: (a) library analyst table, check 3 rows or more in the disassembly. (b) brief, handler
@@ -59,25 +58,17 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U4 patch 2 step (b), the brief of table C (model: `reports/brief-writer-u4-1.md`). Patch 1 (tables A and
-    B, 27 rows) is committed. Its record: the caller merged RenderEnable and RenderEnableConditional into one state kind
-    (both write 0x556, two kinds lost the order) and added a dilate test at 1.0 (a mutant survived). Known limit: the
-    patch 1 setters are draw state, sent at the next draw, so a clear or a blit between does not see them. Tables (step (a), checked): `reports/analyst-u4-A-1.md` (draws, xfb,
-    tess), `analyst-u4-B-1.md` (raster state), `analyst-u4-C-1.md` (binds, program setters, tiled cache). Record of step (a):
-    `OLD-WORK_PLAN.md`, "U4 step (a)". Decisions for the briefs: refuse DispatchComputeIndirect (no host QMD path), and
-    ViewportSwizzles, ConservativeRaster, CoverageModulation when not identity or disabled. Logged no-op: zcull, color reduction,
-    tiled cache, subpixel bias, sample mask. SetPatchSize: no 0x1FFF mask (see the record).
-    Decisions of 2026-11-10 (all rows have 0 calls in `nvn-coverage.md`):
-    - Separate textures and samplers (BindSeparate*): refuse (no host table). GetSeparateTexture/Sampler/TexelFetchHandle:
-      implement (pure values, table C rows 26 to 28).
-    - Subroutines (SetProgramSubroutines, SetSubroutineLinkage): refuse (the words of d855880 are not known).
-    - SetShaderScratchMemory: refuse (two SDK constants of the 0x1E4 block are not known).
-    - XFB: Pause sends the End words (only 0x1D1=0 for address 0). Resume with address 0 sends 0x1D1=1. Refuse Resume with an
-      address and DrawTransformFeedback: they read byte counts that the GPU writes, and the renderer does not write the
-      0x6C0 byte count reports and ignores 0x4C6/0x48F (checked in `vk/render.c`, `mme_hle.c` `draw_byte_count`).
-    - Patch 1 = tables A and B, patch 2 = table C. Refuse also: MultiDraw*IndirectCount (the record feed is not known),
-      DrawTexture (it needs the driver program at device+0x1b00), DispatchComputeIndirect, and DrawArrays/ElementsIndirect (the
-      GPU reads the record at draw time, the host replay has no such fetch, and a read at replay can be stale).
+  Current step: U4 patch 2 step (b): write `reports/brief-writer-u4-2.md` (model: `reports/brief-writer-u4-1.md`, reuse its
+    kinds SEND, NO-OP, REFUSE and `command_refused`), make the worktree `wt-u4-2`, launch the handler writer.
+    Decisions for table C (2026-11-10, all rows have 0 calls):
+    - REFUSE: BindSeparateTexture(s), BindSeparateSampler(s) (the host has only 128 combined slots, no separate table),
+      SetProgramSubroutines and SetSubroutineLinkage (the words of d855880 are not known), SetShaderScratchMemory (two SDK
+      constants of the 0x1E4 block are not known), CoverageModulation when it is not the identity or disabled.
+    - Implement: GetSeparateTextureHandle, GetSeparateSamplerHandle, GetTexelFetchHandle (pure values, rows 26 to 28).
+    - Logged no-op: tiled cache. Read the other rows of table C (BindTextures, ProgramSetShaders, SetSampleShading) and decide
+      with the table and the existing BindTexture path.
+  - Open: one regression run of the user after patch 1 (`b74abf3` touched SetViewports, SetScissors and the draw state
+    send). Asked on 2026-11-10. Read it with `nx-log-read` when the user says that it ran.
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
   - Rows near U1 that stay in other groups: CommandBuffer command and control memory getters, memory callback getters (U5).
     ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).
