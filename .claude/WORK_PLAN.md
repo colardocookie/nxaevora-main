@@ -67,15 +67,8 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
   Decision of the user (2026-11-09): the trace of the enum argument values (the missing part of 4-u1) comes after U1.
-  Current step: U1 step b2, analysis done (`reports/explorer-devwords2-1.md`, history in `OLD-WORK_PLAN.md`), handlers not
-  written. The 4 functions (TextureBuilderGetStorageClass, TextureGetStorageClass, both GetZCullStorageSize) stay stub-log.
-  - b2: the formula and the kind table are checked (history in `OLD-WORK_PLAN.md`). Decision: flags bit 7 set gives a log
-    line and a refusal.
-  - Device +0x1b1c = 1 (constructor store, history in `OLD-WORK_PLAN.md`): the host uses the `w3=1` kind table.
-  - b2 done (2026-11-10): brief `reports/brief-u1-b2.md`, patch `patches/u1-b2-1.patch`. 4 handlers, pure helpers
-    `nvn_texture_storage_class` and `nvn_texture_zcull_size`. Caller added the samples 1 and 2 tests. 14 mutants, all killed.
-    Coverage 383 implemented, 140 stub-log. Exe md5 10160cb0 (copied). No game run.
-  - b3: the 3 functions that the writer left out: TextureBuilderGetSparseTileLayout and TextureGetSparseTileLayout (helpers
+  Current step: U1 step b3 (b2 is done, commit `c5fe2db`, history in `OLD-WORK_PLAN.md`).
+  - b3 (a): analysis. The 3 functions that the writer left out: TextureBuilderGetSparseTileLayout and TextureGetSparseTileLayout (helpers
     d822538 and d869e10 not verified), TextureGetViewOffset (level and 3D slice offset of d83d01c not checked against
     `texture_level_offset`).
   - EventGetMemoryPool and EventGetMemoryOffset are in U2 (they need Event Initialize).

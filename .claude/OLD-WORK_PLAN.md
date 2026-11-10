@@ -2242,3 +2242,14 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   `d831150`) after the display context is made. `d831cc8` writes 0 only if device+0x1a00 has bit 1 clear and bit 2 set.
 - Not checked: device+0x1a00 comes from the NvOs config value "0x9abdc5" (`d835784` at `d831608`). The selftest read 1, so
   the value is most likely 0. The selftest reads guest memory (`nvn_selftest.c:209`).
+
+## Task (u) U1 step (b2) done (2026-11-10, moved from WORK_PLAN.md)
+
+- Brief `reports/brief-u1-b2.md`, handler writer (opencode, DeepSeek V4.1 Flash), patch `patches/u1-b2-1.patch`, report
+  `reports/writer-u1-b2-1.md`. Commit `c5fe2db`.
+- Handlers: TextureBuilder and Texture GetStorageClass, GetZCullStorageSize. Pure helpers `nvn_texture_storage_class` (kind
+  tables of d83563c for `w3=1`, bit 8 and bit 12 corrections, `w3=0` kinds) and `nvn_texture_zcull_size` (normal path).
+  New `NvnZcullDeviceWords` (must stay equal to `gm20b_zcull_info`). Flags bit 7 (info path): log line and 0.
+- The no-surface rule comes before the bit 7 refusal: a color format with bit 7 gives 0 with no log.
+- Caller added the samples 1 and 2 tests. 14 mutants, all killed. `ctest`: only `tracked_material` fails (known).
+  Coverage 383 implemented, 140 stub-log. Exe md5 10160cb0. No game run (the 4 functions have call count 0).
