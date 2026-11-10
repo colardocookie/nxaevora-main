@@ -2289,3 +2289,10 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 - No getter or builder of Sampler, Texture, Buffer, MemoryPool, Window, the pools, BlendState or MultisampleState is still
   stub-log in `nvn-coverage.md`. The remaining rows of these objects are texel IO, mapped ranges, MapVirtual (U3), finalizers and
   GL sync (U5). No step b4 was necessary.
+
+## Enum argument trace (4-u1) step (a) done (2026-11-10, moved from WORK_PLAN.md)
+
+- Library analyst table `reports/analyst-enum-1.md` (commit `08a2ef9`): Table 1 has about 90 register arguments (enum and
+  flags) of the 242 observed functions, Table 2 the enum fields read from structs. Checked in the disassembly: BlendFunc
+  d83ac30, DepthFunc d83b060, TextureBuilderSetFormat d83c2f0, ChannelMask d83ade0. Open: QueueFenceSync argument order
+  (w3 & 1 only), ClearColor word meaning, SetShadersExt stage offset (guess 0).
