@@ -2532,3 +2532,37 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
 - Regression run (exe md5 a1870e3a): 57 s, normal exit, no crash, 0 JIT misses, 0 failed shaders, 30 fps, no
   `AcquireTexture failed`, `522 resolved addresses, 0 without a handler, 0 of them called`. The user saw a normal image in
   the field and a menu. No U5 function was called (not verified in the game).
+
+## Task (u) 4-u3-1: selftest of builders and states (2026-11-10)
+
+- Current step: 4-u3 step (a), plan the selftest and exectest cases (`docs/nvn-design.md`, "Unobserved functions", 4-u3:
+  the selftest cases for the rest of the functions that a test can make, by group, and the exectest for events and
+  `WaitSync`). First list the rows of `nvn-coverage.md` without `unit`, `selftest` or `exec` in the checks column, by
+  group, and decide which a selftest can make. U1 to U5 are done (`OLD-WORK_PLAN.md`, last sections).
+  Result of (a) (2026-11-10): the checks column is empty in all 523 rows. The selftest has 2 cases only
+  (`case_device_get_integer`, `case_texture_builder`, R and M). S, Y, `nvn_selftest_mutate` and `nvn_exectest` do not
+  exist yet. The unit tests check helpers (`nvn_params.c`, `nvn_replay.c`, `nvn_rt.c`, `nvn_cmdlist.c`), not handlers.
+  Rows by kind: builders 114 and state objects 95 (CPU only: R, M), objects 97 (pools, buffers, textures, samplers,
+  programs: R, M in the selftest arena), device 32, command buffer 146 (needs S and Y: decode the library stream into the
+  recording backend, plus the mutation), queue, window, sync and event 39 (exectest).
+  Proposed order: 4-u3-1 a table-driven R/M case for builders and state objects (setter values from `enum-run*.txt`,
+  then getters and object bytes). 4-u3-2 objects and device. 4-u3-3 the S/Y harness, the mutation and the command buffer
+  cases. 4-u3-4 the exectest. Also: a mapping handler to helper to test for the `unit` entries (a tool step).
+  Step (b) of 4-u3-1 (2026-11-10): the user accepted the order. Brief `reports/brief-writer-u3s-1.md`, worktree
+  `S/wt-u3s-1` (removed). Decision of the brief: builders and states are compared by kind R (getters after setters),
+  because the host keeps their values in host records, not in the guest bytes.
+  Step (c) done, NOT committed: patch `patches/writer-u3s-1.patch` applied to the working tree (new
+  `nvn_selftest_obj.c`, `nvn_selftest_int.h`; 98 table rows, 172 value sets, 200 of 209 functions). Build ok,
+  ctest ok except `tracked_material`. Exe copied (md5 a82128ba). Out of scope: the setters that take a pool, texture or
+  memory (to 4-u3-2), `MultisampleStateSetSampleLocations` (no getter). Small point: the SamplerCompare case does not
+  call `nvnSamplerFinalize` (host records stay for two arena addresses).
+  Step (d) run of 2026-11-10 20:26 (`nvn_native=0`, `nvn_trace=1`, `nvn_selftest=1`, title, clean exit): 227 cases,
+  4 failed, 0 skipped. The failures:
+  1. DepthStencilState defaults: CONFIRMED host fault. Library d83b000 stores word1 = 0x11181118, the host
+  (`nvn_depth_stencil_state_defaults`, `nvn_params.c:227`) has 0x11180118 (front depth-fail op 0 instead of 1).
+  2. TextureBuilder defaults, GetStorageAlignment with format 0: library 0x200, host 0. Not read yet: the library
+  path at d83c540 (the format != 0xa branch of d83c4c0).
+  3. GetSparseTileLayout (defaults and SetFormat 0x25/0x26): the host logs `unwritable output=13800071c0`, so
+  `gmem_write` refuses the selftest arena (kmem_alloc MS_STATIC). Harness fault or host fault: check `gmem_write`.
+  Also format 0: the host refuses, the library writes zeros.
+  Next: fix 1 to 3 (very light edits or the code writer), run again, then write the passed scope into `nvn-coverage.md`.

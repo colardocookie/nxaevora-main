@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the U5 build (`11978be`, md5 a1870e3a), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the selftest build of 4-u3-1 (md5 a82128ba), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=0`, `nvn_native=1` (both set by the user, 2026-11-10), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -49,37 +49,19 @@ below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
   4-u4. `docs/nvn-coverage.md`: 1 row of G10 is `stub-log` (`nvnDeviceGetProcAddress`, by decision) after U5 (`11978be`).
-  Current step: 4-u3 step (a), plan the selftest and exectest cases (`docs/nvn-design.md`, "Unobserved functions", 4-u3:
-    the selftest cases for the rest of the functions that a test can make, by group, and the exectest for events and
-    `WaitSync`). First list the rows of `nvn-coverage.md` without `unit`, `selftest` or `exec` in the checks column, by
-    group, and decide which a selftest can make. U1 to U5 are done (`OLD-WORK_PLAN.md`, last sections).
-    Result of (a) (2026-11-10): the checks column is empty in all 523 rows. The selftest has 2 cases only
-    (`case_device_get_integer`, `case_texture_builder`, R and M). S, Y, `nvn_selftest_mutate` and `nvn_exectest` do not
-    exist yet. The unit tests check helpers (`nvn_params.c`, `nvn_replay.c`, `nvn_rt.c`, `nvn_cmdlist.c`), not handlers.
-    Rows by kind: builders 114 and state objects 95 (CPU only: R, M), objects 97 (pools, buffers, textures, samplers,
-    programs: R, M in the selftest arena), device 32, command buffer 146 (needs S and Y: decode the library stream into the
-    recording backend, plus the mutation), queue, window, sync and event 39 (exectest).
-    Proposed order: 4-u3-1 a table-driven R/M case for builders and state objects (setter values from `enum-run*.txt`,
-    then getters and object bytes). 4-u3-2 objects and device. 4-u3-3 the S/Y harness, the mutation and the command buffer
-    cases. 4-u3-4 the exectest. Also: a mapping handler to helper to test for the `unit` entries (a tool step).
-    Step (b) of 4-u3-1 (2026-11-10): the user accepted the order. Brief `reports/brief-writer-u3s-1.md`, worktree
-    `S/wt-u3s-1` (removed). Decision of the brief: builders and states are compared by kind R (getters after setters),
-    because the host keeps their values in host records, not in the guest bytes.
-    Step (c) done, NOT committed: patch `patches/writer-u3s-1.patch` applied to the working tree (new
-    `nvn_selftest_obj.c`, `nvn_selftest_int.h`; 98 table rows, 172 value sets, 200 of 209 functions). Build ok,
-    ctest ok except `tracked_material`. Exe copied (md5 a82128ba). Out of scope: the setters that take a pool, texture or
-    memory (to 4-u3-2), `MultisampleStateSetSampleLocations` (no getter). Small point: the SamplerCompare case does not
-    call `nvnSamplerFinalize` (host records stay for two arena addresses).
-    Step (d) run of 2026-11-10 20:26 (`nvn_native=0`, `nvn_trace=1`, `nvn_selftest=1`, title, clean exit): 227 cases,
-    4 failed, 0 skipped. The failures:
-    1. DepthStencilState defaults: CONFIRMED host fault. Library d83b000 stores word1 = 0x11181118, the host
-       (`nvn_depth_stencil_state_defaults`, `nvn_params.c:227`) has 0x11180118 (front depth-fail op 0 instead of 1).
-    2. TextureBuilder defaults, GetStorageAlignment with format 0: library 0x200, host 0. Not read yet: the library
-       path at d83c540 (the format != 0xa branch of d83c4c0).
-    3. GetSparseTileLayout (defaults and SetFormat 0x25/0x26): the host logs `unwritable output=13800071c0`, so
-       `gmem_write` refuses the selftest arena (kmem_alloc MS_STATIC). Harness fault or host fault: check `gmem_write`.
-       Also format 0: the host refuses, the library writes zeros.
-    Next: fix 1 to 3 (very light edits or the code writer), run again, then write the passed scope into `nvn-coverage.md`.
+  Current step: 4-u3-1 fixes (record of (a) to (d): `OLD-WORK_PLAN.md`, last section). The selftest of builders
+    and states is committed (`nvn_selftest_obj.c`). Run of 2026-11-10: 227 cases, 4 failed. Fix these, then one user run
+    (`nvn_native=0`, `nvn_trace=1`, `nvn_selftest=1`), then write the passed scope into `nvn-coverage.md`:
+    1. CONFIRMED host fault: `nvn_depth_stencil_state_defaults` (`nvn_params.c:227`) word1 0x11180118, the library
+       (d83b000) stores 0x11181118. Fix the constant and its unit test.
+    2. TextureBuilder defaults, GetStorageAlignment with format 0: library 0x200, host 0. Read the library path at
+       d83c540 (the branch for format != 0xa of d83c4c0) before the fix.
+    3. GetSparseTileLayout: the host logs `unwritable output=13800071c0` (`gmem_write` refuses the selftest arena from
+       `kmem_alloc` MS_STATIC). Check `gmem_write` (`gpu/gpu.h:252`): a harness fault or a host fault. Format 0: the host
+       refuses, the library writes zeros (check the library first).
+    The commit message of the selftest says that the 4 failures are host faults: only 1 is confirmed. Say it right in
+    the commit of the fixes.
+    Then: 4-u3-2 (objects and device), 4-u3-3 (S/Y harness, mutation, command buffer), 4-u3-4 (exectest).
   - Open for 4-u4: the design asks for no `stub-log` row, but `nvnDeviceGetProcAddress` stays `stub-log` by decision (the
     game resolves names through d832940, which the hook covers). Decide the row (a handler that calls the resolver, or an
     explicit exception in the design) before 4-u4.
