@@ -2615,3 +2615,21 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   return value is compared, M when the output bytes are compared, a setter or Initialize when a compared getter shows
   its effect. No credit: Finalize, SetDebugLabel, Flush/Invalidate, ProgramSetSampleShading (called, not compared), and
   the SetDefaults of the pool and event builders (each getter value is set again). 4-u3-2 is done.
+
+## Task (u) 4-u3-3: S/Y harness, step (a) (2026-11-10 and 11)
+
+- Start facts: the recorder `nvn_selftest_rec.c` and the S/Y comparer with tests exist, but no case uses them. Missing: the
+  decoder of a library recording (no submit) to a private channel, the host oplist replay to a second private channel, the
+  swap of `g_renderer`, and `nvn_selftest_mutate`. The selftest runs BEFORE the library `nvnQueueInitialize` (trace hook
+  in `nvn_trace.c`). 114 of 146 command buffer rows had no check.
+- Explorer: brief `reports/brief-explorer-u3-3.md`, report `reports/explorer-u3-3-1.md`. Checked by the caller: the handle
+  d824348..d82436c, the AddCommandMemory GPU base at cb+0x68 (d823f34), the GPFIFO entry d835b24..d835b48.
+- Handle = `1 | (start+0x18) | count<<48` (bit0 clear: the record list is at the address). Records (interpreter d839d20):
+  op 03 = 8 B header + entries of 0x18 B {u64 GPU start, u64 CPU end, u32 word count, u8 type}, and the words are a plain
+  push buffer. Op 04 = jump. End = low byte 0, 1 or 2. Ops 05 (FenceSync), 06 (WaitSync) and 15 need the queue, so a case
+  with them goes to the exectest. Ops 07..14 expand at submit (state only, or the pool methods of 13/14).
+- `channel_reset` binds the classes (a recording has no SET_OBJECT). Command memory must be a pool with a GPU mapping.
+  Control memory is a CPU pointer. No alignment check. No callback when the memory is large enough (control 0x800,
+  command 0x1000). The recording calls write only the command buffer and its memory.
+- Y hooks: Barrier gives `method_barrier` (0x44, 0x378, 0x3DF, 0x3DD, 0x369, 0x50A/0x509). SignalEvent WRITE and
+  ReportCounter give `release_write`. WaitEvent parks the stream (no hook, do not use it in a case).

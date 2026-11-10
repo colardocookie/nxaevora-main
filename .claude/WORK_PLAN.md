@@ -49,8 +49,11 @@ below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
   4-u4. `docs/nvn-coverage.md`: 1 row of G10 is `stub-log` (`nvnDeviceGetProcAddress`, by decision) after U5 (`11978be`).
-  Current step: 4-u3-3 (S/Y harness, mutation, command buffer), step (a): plan and brief. 4-u3-2 is done (history:
-    `OLD-WORK_PLAN.md`, last section).
+  Current step: 4-u3-3 (S/Y harness, mutation, command buffer). 4-u3-2 is done (history: `OLD-WORK_PLAN.md`, last section).
+    Step (a) is done (facts: `OLD-WORK_PLAN.md`, last section "4-u3-3").
+    Next: (b) writer brief (`reports/brief-6a.md` is the template): harness (decoder of ops 03/04/end, refuse other ops with a log line and skip the case),
+    host replay on its own private channel, `g_renderer` swap in a `gpu_call`, snapshot of the 3D registers, mutation,
+    the 3c/3d cases (no FenceSync). (c) run with a mutation. (d) the other command buffer rows in groups.
     Then: 4-u3-4 (exectest). The `unit` scope is not in the checks column yet.
   - Open for 4-u4: the design asks for no `stub-log` row, but `nvnDeviceGetProcAddress` stays `stub-log` by decision (the
     game resolves names through d832940, which the hook covers). Decide the row (a handler that calls the resolver, or an
