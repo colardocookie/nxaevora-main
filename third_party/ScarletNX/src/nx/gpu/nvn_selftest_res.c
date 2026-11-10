@@ -23,7 +23,6 @@
 #define RES_OUT_GUARD 16u
 #define RES_OUT_SLOT 8u
 #define RES_OUT_FILL 0xA5
-#define RES_CACHE_MAX 64u
 #define RES_DESC_BYTES 32u
 #define RES_DESC_ENTRIES 512u
 #define RES_DESC_ID_A 256u
@@ -38,8 +37,8 @@
 #define RES_DATA_BYTES 0x20u /* the border color words of one sampler builder case */
 
 /* The pool flags of analysis/enum-run2.txt, CPU cached first (decision 4). The host refuses only VIRTUAL and IMPORT. */
-#define RES_POOL_CPU_CACHED 0x24u              /* CPU cached, GPU cached */
-#define RES_POOL_CPU_UNCACHED_GPU_CACHED 0x22u /* CPU uncached, GPU cached */
+#define RES_POOL_CPU_CACHED 0x24u /* CPU cached, GPU cached */
+#define RES_POOL_CPU_UNCACHED_GPU_CACHED NVN_ST_RES_POOL_CPU_UNCACHED_GPU_CACHED /* CPU uncached, GPU cached */
 #define RES_POOL_CPU_UNCACHED_GPU_UNCACHED 0x12u
 #define RES_POOL_CPU_NO_ACCESS 0x21u
 #define RES_POOL_VIRTUAL 0x200u /* a virtual pool has no storage; only nvnMemoryPoolMapVirtual uses it */
@@ -56,27 +55,11 @@ typedef struct {
     unsigned ret; /* 0 nothing, 1 x0, 2 the s0 bits */
 } ResGet;
 
-typedef struct {
-    const char* name;
-    NvnStProc proc;
-    unsigned resolved;
-} ResEntry;
-
-/* The functions of one script, resolved once. A missing name skips the script with one line, as in 4-u3-1. */
-typedef struct {
-    ResEntry e[RES_CACHE_MAX];
-    unsigned n;
-} ResCache;
-
-typedef struct {
-    uint64_t builder, pool, storage;
-} ResPool;
-
-static NvnStProc* res_proc(ResCache* cache, const char* name) {
+NvnStProc* nvn_st_res_proc(NvnStResCache* cache, const char* name) {
     for (unsigned i = 0; i < cache->n; i++)
         if (!strcmp(cache->e[i].name, name)) return cache->e[i].resolved ? &cache->e[i].proc : NULL;
-    if (cache->n >= RES_CACHE_MAX) return NULL;
-    ResEntry* entry = &cache->e[cache->n++];
+    if (cache->n >= NVN_ST_RES_CACHE_MAX) return NULL;
+    NvnStResEntry* entry = &cache->e[cache->n++];
     entry->name = name;
     entry->resolved = (unsigned)nvn_st_proc_find(&entry->proc, name);
     if (!entry->resolved)
@@ -128,13 +111,13 @@ static void res_report(NvnStRun* run, const char* name, const char* args, const 
 }
 
 /* Makes one memory pool of bytes for one side, with its own builder object and storage block. */
-static int res_pool_create(CPU* c, NvnStRun* run, ResCache* cache, int host, ResPool* mp, uint32_t flags,
+int nvn_st_res_pool_create(CPU* c, NvnStRun* run, NvnStResCache* cache, int host, NvnStResPool* mp, uint32_t flags,
                            uint64_t bytes) {
-    NvnStProc* set_defaults = res_proc(cache, "nvnMemoryPoolBuilderSetDefaults");
-    NvnStProc* set_device = res_proc(cache, "nvnMemoryPoolBuilderSetDevice");
-    NvnStProc* set_flags = res_proc(cache, "nvnMemoryPoolBuilderSetFlags");
-    NvnStProc* set_storage = res_proc(cache, "nvnMemoryPoolBuilderSetStorage");
-    NvnStProc* initialize = res_proc(cache, "nvnMemoryPoolInitialize");
+    NvnStProc* set_defaults = nvn_st_res_proc(cache, "nvnMemoryPoolBuilderSetDefaults");
+    NvnStProc* set_device = nvn_st_res_proc(cache, "nvnMemoryPoolBuilderSetDevice");
+    NvnStProc* set_flags = nvn_st_res_proc(cache, "nvnMemoryPoolBuilderSetFlags");
+    NvnStProc* set_storage = nvn_st_res_proc(cache, "nvnMemoryPoolBuilderSetStorage");
+    NvnStProc* initialize = nvn_st_res_proc(cache, "nvnMemoryPoolInitialize");
     if (!set_defaults || !set_device || !set_flags || !set_storage || !initialize) return 0;
     mp->builder = res_obj(run);
     mp->pool = res_obj(run);
@@ -148,8 +131,8 @@ static int res_pool_create(CPU* c, NvnStRun* run, ResCache* cache, int host, Res
     return (uint32_t)RES_CALL(c, initialize, host, mp->pool, mp->builder) != 0;
 }
 
-static void res_pool_destroy(CPU* c, ResCache* cache, int host, const ResPool* mp) {
-    NvnStProc* finalize = res_proc(cache, "nvnMemoryPoolFinalize");
+void nvn_st_res_pool_destroy(CPU* c, NvnStResCache* cache, int host, const NvnStResPool* mp) {
+    NvnStProc* finalize = nvn_st_res_proc(cache, "nvnMemoryPoolFinalize");
     if (finalize) RES_CALL(c, finalize, host, mp->pool);
 }
 
@@ -158,24 +141,24 @@ static const uint32_t res_pool_flags[] = {RES_POOL_CPU_CACHED, RES_POOL_CPU_UNCA
                                           RES_POOL_CPU_UNCACHED_GPU_UNCACHED, RES_POOL_CPU_NO_ACCESS};
 
 static void case_memory_pool(CPU* c, NvnStRun* run) {
-    ResCache cache = {0};
-    NvnStProc* set_defaults = res_proc(&cache, "nvnMemoryPoolBuilderSetDefaults");
-    NvnStProc* set_device = res_proc(&cache, "nvnMemoryPoolBuilderSetDevice");
-    NvnStProc* set_flags = res_proc(&cache, "nvnMemoryPoolBuilderSetFlags");
-    NvnStProc* set_storage = res_proc(&cache, "nvnMemoryPoolBuilderSetStorage");
-    NvnStProc* get_device = res_proc(&cache, "nvnMemoryPoolBuilderGetDevice");
-    NvnStProc* get_memory = res_proc(&cache, "nvnMemoryPoolBuilderGetMemory");
-    NvnStProc* get_builder_size = res_proc(&cache, "nvnMemoryPoolBuilderGetSize");
-    NvnStProc* get_builder_flags = res_proc(&cache, "nvnMemoryPoolBuilderGetFlags");
-    NvnStProc* initialize = res_proc(&cache, "nvnMemoryPoolInitialize");
-    NvnStProc* finalize = res_proc(&cache, "nvnMemoryPoolFinalize");
-    NvnStProc* get_address = res_proc(&cache, "nvnMemoryPoolGetBufferAddress");
-    NvnStProc* get_flags = res_proc(&cache, "nvnMemoryPoolGetFlags");
-    NvnStProc* get_size = res_proc(&cache, "nvnMemoryPoolGetSize");
-    NvnStProc* map = res_proc(&cache, "nvnMemoryPoolMap");
-    NvnStProc* label = res_proc(&cache, "nvnMemoryPoolSetDebugLabel");
-    NvnStProc* flush = res_proc(&cache, "nvnMemoryPoolFlushMappedRange");
-    NvnStProc* invalidate = res_proc(&cache, "nvnMemoryPoolInvalidateMappedRange");
+    NvnStResCache cache = {0};
+    NvnStProc* set_defaults = nvn_st_res_proc(&cache, "nvnMemoryPoolBuilderSetDefaults");
+    NvnStProc* set_device = nvn_st_res_proc(&cache, "nvnMemoryPoolBuilderSetDevice");
+    NvnStProc* set_flags = nvn_st_res_proc(&cache, "nvnMemoryPoolBuilderSetFlags");
+    NvnStProc* set_storage = nvn_st_res_proc(&cache, "nvnMemoryPoolBuilderSetStorage");
+    NvnStProc* get_device = nvn_st_res_proc(&cache, "nvnMemoryPoolBuilderGetDevice");
+    NvnStProc* get_memory = nvn_st_res_proc(&cache, "nvnMemoryPoolBuilderGetMemory");
+    NvnStProc* get_builder_size = nvn_st_res_proc(&cache, "nvnMemoryPoolBuilderGetSize");
+    NvnStProc* get_builder_flags = nvn_st_res_proc(&cache, "nvnMemoryPoolBuilderGetFlags");
+    NvnStProc* initialize = nvn_st_res_proc(&cache, "nvnMemoryPoolInitialize");
+    NvnStProc* finalize = nvn_st_res_proc(&cache, "nvnMemoryPoolFinalize");
+    NvnStProc* get_address = nvn_st_res_proc(&cache, "nvnMemoryPoolGetBufferAddress");
+    NvnStProc* get_flags = nvn_st_res_proc(&cache, "nvnMemoryPoolGetFlags");
+    NvnStProc* get_size = nvn_st_res_proc(&cache, "nvnMemoryPoolGetSize");
+    NvnStProc* map = nvn_st_res_proc(&cache, "nvnMemoryPoolMap");
+    NvnStProc* label = nvn_st_res_proc(&cache, "nvnMemoryPoolSetDebugLabel");
+    NvnStProc* flush = nvn_st_res_proc(&cache, "nvnMemoryPoolFlushMappedRange");
+    NvnStProc* invalidate = nvn_st_res_proc(&cache, "nvnMemoryPoolInvalidateMappedRange");
     if (!set_defaults || !set_device || !set_flags || !set_storage || !get_device || !get_memory ||
         !get_builder_size || !get_builder_flags || !initialize || !finalize || !get_address || !get_flags ||
         !get_size || !map || !label || !flush || !invalidate) {
@@ -228,21 +211,21 @@ static void case_memory_pool(CPU* c, NvnStRun* run) {
 /* nvnMemoryPoolMapVirtual: a physical pool and a virtual pool, then one request of 64 KiB (decision 6 of the U3
    open items). The virtual flag is not in enum-run2: only this function needs it. */
 static void case_memory_pool_map_virtual(CPU* c, NvnStRun* run) {
-    ResCache cache = {0};
-    NvnStProc* set_defaults = res_proc(&cache, "nvnMemoryPoolBuilderSetDefaults");
-    NvnStProc* set_device = res_proc(&cache, "nvnMemoryPoolBuilderSetDevice");
-    NvnStProc* set_flags = res_proc(&cache, "nvnMemoryPoolBuilderSetFlags");
-    NvnStProc* set_storage = res_proc(&cache, "nvnMemoryPoolBuilderSetStorage");
-    NvnStProc* initialize = res_proc(&cache, "nvnMemoryPoolInitialize");
-    NvnStProc* finalize = res_proc(&cache, "nvnMemoryPoolFinalize");
-    NvnStProc* map_virtual = res_proc(&cache, "nvnMemoryPoolMapVirtual");
+    NvnStResCache cache = {0};
+    NvnStProc* set_defaults = nvn_st_res_proc(&cache, "nvnMemoryPoolBuilderSetDefaults");
+    NvnStProc* set_device = nvn_st_res_proc(&cache, "nvnMemoryPoolBuilderSetDevice");
+    NvnStProc* set_flags = nvn_st_res_proc(&cache, "nvnMemoryPoolBuilderSetFlags");
+    NvnStProc* set_storage = nvn_st_res_proc(&cache, "nvnMemoryPoolBuilderSetStorage");
+    NvnStProc* initialize = nvn_st_res_proc(&cache, "nvnMemoryPoolInitialize");
+    NvnStProc* finalize = nvn_st_res_proc(&cache, "nvnMemoryPoolFinalize");
+    NvnStProc* map_virtual = nvn_st_res_proc(&cache, "nvnMemoryPoolMapVirtual");
     if (!set_defaults || !set_device || !set_flags || !set_storage || !initialize || !finalize || !map_virtual) {
         run->skipped++;
         return;
     }
-    ResPool physical[2];
-    if (!res_pool_create(c, run, &cache, 0, &physical[0], RES_POOL_CPU_CACHED, RES_TEX_POOL_BYTES) ||
-        !res_pool_create(c, run, &cache, 1, &physical[1], RES_POOL_CPU_CACHED, RES_TEX_POOL_BYTES)) {
+    NvnStResPool physical[2];
+    if (!nvn_st_res_pool_create(c, run, &cache, 0, &physical[0], RES_POOL_CPU_CACHED, RES_TEX_POOL_BYTES) ||
+        !nvn_st_res_pool_create(c, run, &cache, 1, &physical[1], RES_POOL_CPU_CACHED, RES_TEX_POOL_BYTES)) {
         run->skipped++;
         return;
     }
@@ -272,8 +255,8 @@ static void case_memory_pool_map_virtual(CPU* c, NvnStRun* run) {
         res_add(rec, "mapped", RES_CALL(c, map_virtual, host, virtual_pool[host], 1, request));
         RES_CALL(c, finalize, host, virtual_pool[host]);
     }
-    res_pool_destroy(c, &cache, 0, &physical[0]);
-    res_pool_destroy(c, &cache, 1, &physical[1]);
+    nvn_st_res_pool_destroy(c, &cache, 0, &physical[0]);
+    nvn_st_res_pool_destroy(c, &cache, 1, &physical[1]);
     res_report(run, "nvnMemoryPoolMapVirtual", "one 64 KiB page", &ref, &got);
 }
 
@@ -286,35 +269,35 @@ typedef struct {
 static const ResBufferCase res_buffer_cases[] = {{0, 0x1000}, {0x1000, 0x2000}, {0x2000, 0x1000}};
 
 static void case_buffer(CPU* c, NvnStRun* run) {
-    ResCache cache = {0};
-    NvnStProc* builder_defaults = res_proc(&cache, "nvnBufferBuilderSetDefaults");
-    NvnStProc* builder_device = res_proc(&cache, "nvnBufferBuilderSetDevice");
-    NvnStProc* builder_storage = res_proc(&cache, "nvnBufferBuilderSetStorage");
-    NvnStProc* builder_size = res_proc(&cache, "nvnBufferBuilderGetSize");
-    NvnStProc* builder_get_device = res_proc(&cache, "nvnBufferBuilderGetDevice");
-    NvnStProc* builder_pool = res_proc(&cache, "nvnBufferBuilderGetMemoryPool");
-    NvnStProc* builder_offset = res_proc(&cache, "nvnBufferBuilderGetMemoryOffset");
-    NvnStProc* initialize = res_proc(&cache, "nvnBufferInitialize");
-    NvnStProc* finalize = res_proc(&cache, "nvnBufferFinalize");
-    NvnStProc* address = res_proc(&cache, "nvnBufferGetAddress");
-    NvnStProc* size = res_proc(&cache, "nvnBufferGetSize");
-    NvnStProc* pool = res_proc(&cache, "nvnBufferGetMemoryPool");
-    NvnStProc* offset = res_proc(&cache, "nvnBufferGetMemoryOffset");
-    NvnStProc* debug_id = res_proc(&cache, "nvnBufferGetDebugID");
-    NvnStProc* map = res_proc(&cache, "nvnBufferMap");
-    NvnStProc* label = res_proc(&cache, "nvnBufferSetDebugLabel");
-    NvnStProc* flush = res_proc(&cache, "nvnBufferFlushMappedRange");
-    NvnStProc* invalidate = res_proc(&cache, "nvnBufferInvalidateMappedRange");
-    NvnStProc* pool_address = res_proc(&cache, "nvnMemoryPoolGetBufferAddress");
+    NvnStResCache cache = {0};
+    NvnStProc* builder_defaults = nvn_st_res_proc(&cache, "nvnBufferBuilderSetDefaults");
+    NvnStProc* builder_device = nvn_st_res_proc(&cache, "nvnBufferBuilderSetDevice");
+    NvnStProc* builder_storage = nvn_st_res_proc(&cache, "nvnBufferBuilderSetStorage");
+    NvnStProc* builder_size = nvn_st_res_proc(&cache, "nvnBufferBuilderGetSize");
+    NvnStProc* builder_get_device = nvn_st_res_proc(&cache, "nvnBufferBuilderGetDevice");
+    NvnStProc* builder_pool = nvn_st_res_proc(&cache, "nvnBufferBuilderGetMemoryPool");
+    NvnStProc* builder_offset = nvn_st_res_proc(&cache, "nvnBufferBuilderGetMemoryOffset");
+    NvnStProc* initialize = nvn_st_res_proc(&cache, "nvnBufferInitialize");
+    NvnStProc* finalize = nvn_st_res_proc(&cache, "nvnBufferFinalize");
+    NvnStProc* address = nvn_st_res_proc(&cache, "nvnBufferGetAddress");
+    NvnStProc* size = nvn_st_res_proc(&cache, "nvnBufferGetSize");
+    NvnStProc* pool = nvn_st_res_proc(&cache, "nvnBufferGetMemoryPool");
+    NvnStProc* offset = nvn_st_res_proc(&cache, "nvnBufferGetMemoryOffset");
+    NvnStProc* debug_id = nvn_st_res_proc(&cache, "nvnBufferGetDebugID");
+    NvnStProc* map = nvn_st_res_proc(&cache, "nvnBufferMap");
+    NvnStProc* label = nvn_st_res_proc(&cache, "nvnBufferSetDebugLabel");
+    NvnStProc* flush = nvn_st_res_proc(&cache, "nvnBufferFlushMappedRange");
+    NvnStProc* invalidate = nvn_st_res_proc(&cache, "nvnBufferInvalidateMappedRange");
+    NvnStProc* pool_address = nvn_st_res_proc(&cache, "nvnMemoryPoolGetBufferAddress");
     if (!builder_defaults || !builder_device || !builder_storage || !builder_size || !builder_get_device ||
         !builder_pool || !builder_offset || !initialize || !finalize || !address || !size || !pool || !offset ||
         !debug_id || !map || !label || !flush || !invalidate || !pool_address) {
         run->skipped++;
         return;
     }
-    ResPool memory[2];
-    if (!res_pool_create(c, run, &cache, 0, &memory[0], RES_POOL_CPU_CACHED, RES_POOL_BYTES) ||
-        !res_pool_create(c, run, &cache, 1, &memory[1], RES_POOL_CPU_CACHED, RES_POOL_BYTES)) {
+    NvnStResPool memory[2];
+    if (!nvn_st_res_pool_create(c, run, &cache, 0, &memory[0], RES_POOL_CPU_CACHED, RES_POOL_BYTES) ||
+        !nvn_st_res_pool_create(c, run, &cache, 1, &memory[1], RES_POOL_CPU_CACHED, RES_POOL_BYTES)) {
         run->skipped++;
         return;
     }
@@ -360,8 +343,8 @@ static void case_buffer(CPU* c, NvnStRun* run) {
                  (unsigned long long)res_buffer_cases[k].size);
         res_report(run, "nvnBuffer", args, &ref, &got);
     }
-    res_pool_destroy(c, &cache, 0, &memory[0]);
-    res_pool_destroy(c, &cache, 1, &memory[1]);
+    nvn_st_res_pool_destroy(c, &cache, 0, &memory[0]);
+    nvn_st_res_pool_destroy(c, &cache, 1, &memory[1]);
 }
 
 /* The texture: linear 2D formats of enum-run2, one block-linear 2D texture, and one equal copy. The transfers use the
@@ -415,33 +398,33 @@ static void texture_transfer(CPU* c, const NvnStProc* write, const NvnStProc* re
 }
 
 static void case_texture(CPU* c, NvnStRun* run) {
-    ResCache cache = {0};
-    NvnStProc* builder_defaults = res_proc(&cache, "nvnTextureBuilderSetDefaults");
-    NvnStProc* builder_device = res_proc(&cache, "nvnTextureBuilderSetDevice");
-    NvnStProc* builder_flags = res_proc(&cache, "nvnTextureBuilderSetFlags");
-    NvnStProc* builder_target = res_proc(&cache, "nvnTextureBuilderSetTarget");
-    NvnStProc* builder_size = res_proc(&cache, "nvnTextureBuilderSetSize2D");
-    NvnStProc* builder_levels = res_proc(&cache, "nvnTextureBuilderSetLevels");
-    NvnStProc* builder_format = res_proc(&cache, "nvnTextureBuilderSetFormat");
-    NvnStProc* builder_stride = res_proc(&cache, "nvnTextureBuilderSetStride");
-    NvnStProc* builder_storage = res_proc(&cache, "nvnTextureBuilderSetStorage");
-    NvnStProc* initialize = res_proc(&cache, "nvnTextureInitialize");
-    NvnStProc* finalize = res_proc(&cache, "nvnTextureFinalize");
-    NvnStProc* compare = res_proc(&cache, "nvnTextureCompare");
-    NvnStProc* pool = res_proc(&cache, "nvnTextureGetMemoryPool");
-    NvnStProc* address = res_proc(&cache, "nvnTextureGetTextureAddress");
-    NvnStProc* view_offset = res_proc(&cache, "nvnTextureGetViewOffset");
-    NvnStProc* swizzle = res_proc(&cache, "nvnTextureGetSwizzle");
-    NvnStProc* sparse = res_proc(&cache, "nvnTextureGetSparseTileLayout");
-    NvnStProc* debug_id = res_proc(&cache, "nvnTextureGetDebugID");
-    NvnStProc* label = res_proc(&cache, "nvnTextureSetDebugLabel");
-    NvnStProc* flush = res_proc(&cache, "nvnTextureFlushTexels");
-    NvnStProc* invalidate = res_proc(&cache, "nvnTextureInvalidateTexels");
-    NvnStProc* write = res_proc(&cache, "nvnTextureWriteTexels");
-    NvnStProc* read = res_proc(&cache, "nvnTextureReadTexels");
-    NvnStProc* write_strided = res_proc(&cache, "nvnTextureWriteTexelsStrided");
-    NvnStProc* read_strided = res_proc(&cache, "nvnTextureReadTexelsStrided");
-    NvnStProc* pool_address = res_proc(&cache, "nvnMemoryPoolGetBufferAddress");
+    NvnStResCache cache = {0};
+    NvnStProc* builder_defaults = nvn_st_res_proc(&cache, "nvnTextureBuilderSetDefaults");
+    NvnStProc* builder_device = nvn_st_res_proc(&cache, "nvnTextureBuilderSetDevice");
+    NvnStProc* builder_flags = nvn_st_res_proc(&cache, "nvnTextureBuilderSetFlags");
+    NvnStProc* builder_target = nvn_st_res_proc(&cache, "nvnTextureBuilderSetTarget");
+    NvnStProc* builder_size = nvn_st_res_proc(&cache, "nvnTextureBuilderSetSize2D");
+    NvnStProc* builder_levels = nvn_st_res_proc(&cache, "nvnTextureBuilderSetLevels");
+    NvnStProc* builder_format = nvn_st_res_proc(&cache, "nvnTextureBuilderSetFormat");
+    NvnStProc* builder_stride = nvn_st_res_proc(&cache, "nvnTextureBuilderSetStride");
+    NvnStProc* builder_storage = nvn_st_res_proc(&cache, "nvnTextureBuilderSetStorage");
+    NvnStProc* initialize = nvn_st_res_proc(&cache, "nvnTextureInitialize");
+    NvnStProc* finalize = nvn_st_res_proc(&cache, "nvnTextureFinalize");
+    NvnStProc* compare = nvn_st_res_proc(&cache, "nvnTextureCompare");
+    NvnStProc* pool = nvn_st_res_proc(&cache, "nvnTextureGetMemoryPool");
+    NvnStProc* address = nvn_st_res_proc(&cache, "nvnTextureGetTextureAddress");
+    NvnStProc* view_offset = nvn_st_res_proc(&cache, "nvnTextureGetViewOffset");
+    NvnStProc* swizzle = nvn_st_res_proc(&cache, "nvnTextureGetSwizzle");
+    NvnStProc* sparse = nvn_st_res_proc(&cache, "nvnTextureGetSparseTileLayout");
+    NvnStProc* debug_id = nvn_st_res_proc(&cache, "nvnTextureGetDebugID");
+    NvnStProc* label = nvn_st_res_proc(&cache, "nvnTextureSetDebugLabel");
+    NvnStProc* flush = nvn_st_res_proc(&cache, "nvnTextureFlushTexels");
+    NvnStProc* invalidate = nvn_st_res_proc(&cache, "nvnTextureInvalidateTexels");
+    NvnStProc* write = nvn_st_res_proc(&cache, "nvnTextureWriteTexels");
+    NvnStProc* read = nvn_st_res_proc(&cache, "nvnTextureReadTexels");
+    NvnStProc* write_strided = nvn_st_res_proc(&cache, "nvnTextureWriteTexelsStrided");
+    NvnStProc* read_strided = nvn_st_res_proc(&cache, "nvnTextureReadTexelsStrided");
+    NvnStProc* pool_address = nvn_st_res_proc(&cache, "nvnMemoryPoolGetBufferAddress");
     NvnStProc* gets[ARRAY_LEN(res_texture_get_names)];
     if (!builder_defaults || !builder_device || !builder_flags || !builder_target || !builder_size ||
         !builder_levels || !builder_format || !builder_stride || !builder_storage || !initialize || !finalize ||
@@ -451,15 +434,15 @@ static void case_texture(CPU* c, NvnStRun* run) {
         return;
     }
     for (size_t i = 0; i < ARRAY_LEN(res_texture_get_names); i++) {
-        gets[i] = res_proc(&cache, res_texture_get_names[i]);
+        gets[i] = nvn_st_res_proc(&cache, res_texture_get_names[i]);
         if (!gets[i]) {
             run->skipped++;
             return;
         }
     }
-    ResPool memory[2];
-    if (!res_pool_create(c, run, &cache, 0, &memory[0], RES_POOL_CPU_CACHED, RES_TEX_POOL_BYTES) ||
-        !res_pool_create(c, run, &cache, 1, &memory[1], RES_POOL_CPU_CACHED, RES_TEX_POOL_BYTES)) {
+    NvnStResPool memory[2];
+    if (!nvn_st_res_pool_create(c, run, &cache, 0, &memory[0], RES_POOL_CPU_CACHED, RES_TEX_POOL_BYTES) ||
+        !nvn_st_res_pool_create(c, run, &cache, 1, &memory[1], RES_POOL_CPU_CACHED, RES_TEX_POOL_BYTES)) {
         run->skipped++;
         return;
     }
@@ -558,8 +541,8 @@ static void case_texture(CPU* c, NvnStRun* run) {
     for (int host = 0; host < 2; host++) {
         for (size_t k = 0; k < ARRAY_LEN(res_texture_cases); k++) RES_CALL(c, finalize, host, tex[host][k]);
     }
-    res_pool_destroy(c, &cache, 0, &memory[0]);
-    res_pool_destroy(c, &cache, 1, &memory[1]);
+    nvn_st_res_pool_destroy(c, &cache, 0, &memory[0]);
+    nvn_st_res_pool_destroy(c, &cache, 1, &memory[1]);
 }
 
 /* The descriptor pools: 512 entries, the registers at ids 256 and 257, the pool getters and the device handles. The
@@ -570,39 +553,39 @@ static const uint8_t res_texture_descriptor_mask[RES_DESC_BYTES] = {
 };
 
 static void case_descriptor_pools(CPU* c, NvnStRun* run) {
-    ResCache cache = {0};
-    NvnStProc* texture_pool_init = res_proc(&cache, "nvnTexturePoolInitialize");
-    NvnStProc* texture_pool_final = res_proc(&cache, "nvnTexturePoolFinalize");
-    NvnStProc* texture_pool_size = res_proc(&cache, "nvnTexturePoolGetSize");
-    NvnStProc* texture_pool_memory = res_proc(&cache, "nvnTexturePoolGetMemoryPool");
-    NvnStProc* texture_pool_offset = res_proc(&cache, "nvnTexturePoolGetMemoryOffset");
-    NvnStProc* texture_pool_label = res_proc(&cache, "nvnTexturePoolSetDebugLabel");
-    NvnStProc* register_texture = res_proc(&cache, "nvnTexturePoolRegisterTexture");
-    NvnStProc* register_image = res_proc(&cache, "nvnTexturePoolRegisterImage");
-    NvnStProc* sampler_pool_init = res_proc(&cache, "nvnSamplerPoolInitialize");
-    NvnStProc* sampler_pool_final = res_proc(&cache, "nvnSamplerPoolFinalize");
-    NvnStProc* sampler_pool_size = res_proc(&cache, "nvnSamplerPoolGetSize");
-    NvnStProc* sampler_pool_memory = res_proc(&cache, "nvnSamplerPoolGetMemoryPool");
-    NvnStProc* sampler_pool_offset = res_proc(&cache, "nvnSamplerPoolGetMemoryOffset");
-    NvnStProc* sampler_pool_label = res_proc(&cache, "nvnSamplerPoolSetDebugLabel");
-    NvnStProc* register_sampler = res_proc(&cache, "nvnSamplerPoolRegisterSampler");
-    NvnStProc* register_builder = res_proc(&cache, "nvnSamplerPoolRegisterSamplerBuilder");
-    NvnStProc* texture_handle = res_proc(&cache, "nvnDeviceGetTextureHandle");
-    NvnStProc* image_handle = res_proc(&cache, "nvnDeviceGetImageHandle");
-    NvnStProc* fetch_handle = res_proc(&cache, "nvnDeviceGetTexelFetchHandle");
-    NvnStProc* separate_texture = res_proc(&cache, "nvnDeviceGetSeparateTextureHandle");
-    NvnStProc* separate_sampler = res_proc(&cache, "nvnDeviceGetSeparateSamplerHandle");
-    NvnStProc* texture_defaults = res_proc(&cache, "nvnTextureBuilderSetDefaults");
-    NvnStProc* texture_device = res_proc(&cache, "nvnTextureBuilderSetDevice");
-    NvnStProc* texture_size = res_proc(&cache, "nvnTextureBuilderSetSize2D");
-    NvnStProc* texture_levels = res_proc(&cache, "nvnTextureBuilderSetLevels");
-    NvnStProc* texture_format = res_proc(&cache, "nvnTextureBuilderSetFormat");
-    NvnStProc* texture_storage = res_proc(&cache, "nvnTextureBuilderSetStorage");
-    NvnStProc* texture_init = res_proc(&cache, "nvnTextureInitialize");
-    NvnStProc* texture_final = res_proc(&cache, "nvnTextureFinalize");
-    NvnStProc* sampler_builder = res_proc(&cache, "nvnSamplerBuilderSetDefaults");
-    NvnStProc* sampler_init = res_proc(&cache, "nvnSamplerInitialize");
-    NvnStProc* sampler_final = res_proc(&cache, "nvnSamplerFinalize");
+    NvnStResCache cache = {0};
+    NvnStProc* texture_pool_init = nvn_st_res_proc(&cache, "nvnTexturePoolInitialize");
+    NvnStProc* texture_pool_final = nvn_st_res_proc(&cache, "nvnTexturePoolFinalize");
+    NvnStProc* texture_pool_size = nvn_st_res_proc(&cache, "nvnTexturePoolGetSize");
+    NvnStProc* texture_pool_memory = nvn_st_res_proc(&cache, "nvnTexturePoolGetMemoryPool");
+    NvnStProc* texture_pool_offset = nvn_st_res_proc(&cache, "nvnTexturePoolGetMemoryOffset");
+    NvnStProc* texture_pool_label = nvn_st_res_proc(&cache, "nvnTexturePoolSetDebugLabel");
+    NvnStProc* register_texture = nvn_st_res_proc(&cache, "nvnTexturePoolRegisterTexture");
+    NvnStProc* register_image = nvn_st_res_proc(&cache, "nvnTexturePoolRegisterImage");
+    NvnStProc* sampler_pool_init = nvn_st_res_proc(&cache, "nvnSamplerPoolInitialize");
+    NvnStProc* sampler_pool_final = nvn_st_res_proc(&cache, "nvnSamplerPoolFinalize");
+    NvnStProc* sampler_pool_size = nvn_st_res_proc(&cache, "nvnSamplerPoolGetSize");
+    NvnStProc* sampler_pool_memory = nvn_st_res_proc(&cache, "nvnSamplerPoolGetMemoryPool");
+    NvnStProc* sampler_pool_offset = nvn_st_res_proc(&cache, "nvnSamplerPoolGetMemoryOffset");
+    NvnStProc* sampler_pool_label = nvn_st_res_proc(&cache, "nvnSamplerPoolSetDebugLabel");
+    NvnStProc* register_sampler = nvn_st_res_proc(&cache, "nvnSamplerPoolRegisterSampler");
+    NvnStProc* register_builder = nvn_st_res_proc(&cache, "nvnSamplerPoolRegisterSamplerBuilder");
+    NvnStProc* texture_handle = nvn_st_res_proc(&cache, "nvnDeviceGetTextureHandle");
+    NvnStProc* image_handle = nvn_st_res_proc(&cache, "nvnDeviceGetImageHandle");
+    NvnStProc* fetch_handle = nvn_st_res_proc(&cache, "nvnDeviceGetTexelFetchHandle");
+    NvnStProc* separate_texture = nvn_st_res_proc(&cache, "nvnDeviceGetSeparateTextureHandle");
+    NvnStProc* separate_sampler = nvn_st_res_proc(&cache, "nvnDeviceGetSeparateSamplerHandle");
+    NvnStProc* texture_defaults = nvn_st_res_proc(&cache, "nvnTextureBuilderSetDefaults");
+    NvnStProc* texture_device = nvn_st_res_proc(&cache, "nvnTextureBuilderSetDevice");
+    NvnStProc* texture_size = nvn_st_res_proc(&cache, "nvnTextureBuilderSetSize2D");
+    NvnStProc* texture_levels = nvn_st_res_proc(&cache, "nvnTextureBuilderSetLevels");
+    NvnStProc* texture_format = nvn_st_res_proc(&cache, "nvnTextureBuilderSetFormat");
+    NvnStProc* texture_storage = nvn_st_res_proc(&cache, "nvnTextureBuilderSetStorage");
+    NvnStProc* texture_init = nvn_st_res_proc(&cache, "nvnTextureInitialize");
+    NvnStProc* texture_final = nvn_st_res_proc(&cache, "nvnTextureFinalize");
+    NvnStProc* sampler_builder = nvn_st_res_proc(&cache, "nvnSamplerBuilderSetDefaults");
+    NvnStProc* sampler_init = nvn_st_res_proc(&cache, "nvnSamplerInitialize");
+    NvnStProc* sampler_final = nvn_st_res_proc(&cache, "nvnSamplerFinalize");
     if (!texture_pool_init || !texture_pool_final || !texture_pool_size || !texture_pool_memory ||
         !texture_pool_offset || !texture_pool_label || !register_texture || !register_image || !sampler_pool_init ||
         !sampler_pool_final || !sampler_pool_size || !sampler_pool_memory || !sampler_pool_offset ||
@@ -613,9 +596,9 @@ static void case_descriptor_pools(CPU* c, NvnStRun* run) {
         run->skipped++;
         return;
     }
-    ResPool memory[2];
-    if (!res_pool_create(c, run, &cache, 0, &memory[0], RES_POOL_CPU_CACHED, RES_DESC_POOL_BYTES) ||
-        !res_pool_create(c, run, &cache, 1, &memory[1], RES_POOL_CPU_CACHED, RES_DESC_POOL_BYTES)) {
+    NvnStResPool memory[2];
+    if (!nvn_st_res_pool_create(c, run, &cache, 0, &memory[0], RES_POOL_CPU_CACHED, RES_DESC_POOL_BYTES) ||
+        !nvn_st_res_pool_create(c, run, &cache, 1, &memory[1], RES_POOL_CPU_CACHED, RES_DESC_POOL_BYTES)) {
         run->skipped++;
         return;
     }
@@ -701,27 +684,27 @@ static void case_descriptor_pools(CPU* c, NvnStRun* run) {
         RES_CALL(c, sampler_final, host, sampler[host]);
         RES_CALL(c, texture_final, host, texture[host]);
     }
-    res_pool_destroy(c, &cache, 0, &memory[0]);
-    res_pool_destroy(c, &cache, 1, &memory[1]);
+    nvn_st_res_pool_destroy(c, &cache, 0, &memory[0]);
+    nvn_st_res_pool_destroy(c, &cache, 1, &memory[1]);
 }
 
 /* The sampler objects: the values come from the sampler builder table of nvn_selftest_obj.c (decision 7). The getters
    with pointers compare their output region; the float getters compare the s0 bits. */
 static void case_sampler(CPU* c, NvnStRun* run) {
-    ResCache cache = {0};
-    NvnStProc* finalize = res_proc(&cache, "nvnSamplerFinalize");
-    NvnStProc* label = res_proc(&cache, "nvnSamplerSetDebugLabel");
-    NvnStProc* min_mag = res_proc(&cache, "nvnSamplerGetMinMagFilter");
-    NvnStProc* lod_clamp = res_proc(&cache, "nvnSamplerGetLodClamp");
-    NvnStProc* compare = res_proc(&cache, "nvnSamplerGetCompare");
-    NvnStProc* wrap = res_proc(&cache, "nvnSamplerGetWrapMode");
-    NvnStProc* border = res_proc(&cache, "nvnSamplerGetBorderColor");
-    NvnStProc* borderi = res_proc(&cache, "nvnSamplerGetBorderColori");
-    NvnStProc* borderui = res_proc(&cache, "nvnSamplerGetBorderColorui");
-    NvnStProc* lod_bias = res_proc(&cache, "nvnSamplerGetLodBias");
-    NvnStProc* anisotropy = res_proc(&cache, "nvnSamplerGetMaxAnisotropy");
-    NvnStProc* reduction = res_proc(&cache, "nvnSamplerGetReductionFilter");
-    NvnStProc* debug_id = res_proc(&cache, "nvnSamplerGetDebugID");
+    NvnStResCache cache = {0};
+    NvnStProc* finalize = nvn_st_res_proc(&cache, "nvnSamplerFinalize");
+    NvnStProc* label = nvn_st_res_proc(&cache, "nvnSamplerSetDebugLabel");
+    NvnStProc* min_mag = nvn_st_res_proc(&cache, "nvnSamplerGetMinMagFilter");
+    NvnStProc* lod_clamp = nvn_st_res_proc(&cache, "nvnSamplerGetLodClamp");
+    NvnStProc* compare = nvn_st_res_proc(&cache, "nvnSamplerGetCompare");
+    NvnStProc* wrap = nvn_st_res_proc(&cache, "nvnSamplerGetWrapMode");
+    NvnStProc* border = nvn_st_res_proc(&cache, "nvnSamplerGetBorderColor");
+    NvnStProc* borderi = nvn_st_res_proc(&cache, "nvnSamplerGetBorderColori");
+    NvnStProc* borderui = nvn_st_res_proc(&cache, "nvnSamplerGetBorderColorui");
+    NvnStProc* lod_bias = nvn_st_res_proc(&cache, "nvnSamplerGetLodBias");
+    NvnStProc* anisotropy = nvn_st_res_proc(&cache, "nvnSamplerGetMaxAnisotropy");
+    NvnStProc* reduction = nvn_st_res_proc(&cache, "nvnSamplerGetReductionFilter");
+    NvnStProc* debug_id = nvn_st_res_proc(&cache, "nvnSamplerGetDebugID");
     if (!finalize || !label || !min_mag || !lod_clamp || !compare || !wrap || !border || !borderi || !borderui ||
         !lod_bias || !anisotropy || !reduction || !debug_id) {
         run->skipped++;
@@ -784,12 +767,12 @@ static void case_sampler(CPU* c, NvnStRun* run) {
 /* The program: Initialize, the debug label, sample shading and Finalize (decision 9). SetShaders and the other two
    shader setters need shader code and are out of scope. */
 static void case_program(CPU* c, NvnStRun* run) {
-    ResCache cache = {0};
-    NvnStProc* initialize = res_proc(&cache, "nvnProgramInitialize");
-    NvnStProc* finalize = res_proc(&cache, "nvnProgramFinalize");
-    NvnStProc* label = res_proc(&cache, "nvnProgramSetDebugLabel");
-    NvnStProc* shading = res_proc(&cache, "nvnProgramSetSampleShading");
-    NvnStProc* get_depth = res_proc(&cache, "nvnDeviceGetDepthMode");
+    NvnStResCache cache = {0};
+    NvnStProc* initialize = nvn_st_res_proc(&cache, "nvnProgramInitialize");
+    NvnStProc* finalize = nvn_st_res_proc(&cache, "nvnProgramFinalize");
+    NvnStProc* label = nvn_st_res_proc(&cache, "nvnProgramSetDebugLabel");
+    NvnStProc* shading = nvn_st_res_proc(&cache, "nvnProgramSetSampleShading");
+    NvnStProc* get_depth = nvn_st_res_proc(&cache, "nvnDeviceGetDepthMode");
     if (!initialize || !finalize || !label || !shading || !get_depth) {
         run->skipped++;
         return;
@@ -819,16 +802,16 @@ static void case_program(CPU* c, NvnStRun* run) {
 /* The device queries and the Set/Get pairs that the script restores (decision 8). Only functions without a lasting
    effect on the game device are here. */
 static void case_device(CPU* c, NvnStRun* run) {
-    ResCache cache = {0};
-    NvnStProc* get_depth = res_proc(&cache, "nvnDeviceGetDepthMode");
-    NvnStProc* set_depth = res_proc(&cache, "nvnDeviceSetDepthMode");
-    NvnStProc* get_origin = res_proc(&cache, "nvnDeviceGetWindowOriginMode");
-    NvnStProc* set_origin = res_proc(&cache, "nvnDeviceSetWindowOriginMode");
-    NvnStProc* debugger = res_proc(&cache, "nvnDeviceIsExternalDebuggerAttached");
-    NvnStProc* domain = res_proc(&cache, "nvnDeviceGenerateDebugDomainId");
-    NvnStProc* deferred = res_proc(&cache, "nvnDeviceApplyDeferredFinalizes");
-    NvnStProc* now = res_proc(&cache, "nvnDeviceGetCurrentTimestampInNanoseconds");
-    NvnStProc* timestamp = res_proc(&cache, "nvnDeviceGetTimestampInNanoseconds");
+    NvnStResCache cache = {0};
+    NvnStProc* get_depth = nvn_st_res_proc(&cache, "nvnDeviceGetDepthMode");
+    NvnStProc* set_depth = nvn_st_res_proc(&cache, "nvnDeviceSetDepthMode");
+    NvnStProc* get_origin = nvn_st_res_proc(&cache, "nvnDeviceGetWindowOriginMode");
+    NvnStProc* set_origin = nvn_st_res_proc(&cache, "nvnDeviceSetWindowOriginMode");
+    NvnStProc* debugger = nvn_st_res_proc(&cache, "nvnDeviceIsExternalDebuggerAttached");
+    NvnStProc* domain = nvn_st_res_proc(&cache, "nvnDeviceGenerateDebugDomainId");
+    NvnStProc* deferred = nvn_st_res_proc(&cache, "nvnDeviceApplyDeferredFinalizes");
+    NvnStProc* now = nvn_st_res_proc(&cache, "nvnDeviceGetCurrentTimestampInNanoseconds");
+    NvnStProc* timestamp = nvn_st_res_proc(&cache, "nvnDeviceGetTimestampInNanoseconds");
     if (!get_depth || !set_depth || !get_origin || !set_origin || !debugger || !domain || !deferred || !now ||
         !timestamp) {
         run->skipped++;
@@ -872,28 +855,28 @@ static void case_device(CPU* c, NvnStRun* run) {
 /* The builder setters that take a pool, a texture or an address (decision 10). The object values and the values of
    4-u3-1 stay in nvn_selftest_obj.c; these cases add the storage and packaged data setters only. */
 static void case_builder_storage(CPU* c, NvnStRun* run) {
-    ResCache cache = {0};
-    NvnStProc* texture_defaults = res_proc(&cache, "nvnTextureBuilderSetDefaults");
-    NvnStProc* texture_device = res_proc(&cache, "nvnTextureBuilderSetDevice");
-    NvnStProc* texture_storage = res_proc(&cache, "nvnTextureBuilderSetStorage");
-    NvnStProc* texture_pool = res_proc(&cache, "nvnTextureBuilderGetMemoryPool");
-    NvnStProc* texture_offset = res_proc(&cache, "nvnTextureBuilderGetMemoryOffset");
-    NvnStProc* texture_alignment = res_proc(&cache, "nvnTextureBuilderGetStorageAlignment");
-    NvnStProc* texture_size = res_proc(&cache, "nvnTextureBuilderGetStorageSize");
-    NvnStProc* packaged_set = res_proc(&cache, "nvnTextureBuilderSetPackagedTextureData");
-    NvnStProc* packaged_get = res_proc(&cache, "nvnTextureBuilderGetPackagedTextureData");
-    NvnStProc* buffer_defaults = res_proc(&cache, "nvnBufferBuilderSetDefaults");
-    NvnStProc* buffer_device = res_proc(&cache, "nvnBufferBuilderSetDevice");
-    NvnStProc* buffer_storage = res_proc(&cache, "nvnBufferBuilderSetStorage");
-    NvnStProc* buffer_get_size = res_proc(&cache, "nvnBufferBuilderGetSize");
-    NvnStProc* buffer_get_device = res_proc(&cache, "nvnBufferBuilderGetDevice");
-    NvnStProc* buffer_pool = res_proc(&cache, "nvnBufferBuilderGetMemoryPool");
-    NvnStProc* buffer_offset = res_proc(&cache, "nvnBufferBuilderGetMemoryOffset");
-    NvnStProc* event_defaults = res_proc(&cache, "nvnEventBuilderSetDefaults");
-    NvnStProc* event_storage = res_proc(&cache, "nvnEventBuilderSetStorage");
-    NvnStProc* event_pool = res_proc(&cache, "nvnEventBuilderGetMemoryPool");
-    NvnStProc* event_offset = res_proc(&cache, "nvnEventBuilderGetMemoryOffset");
-    NvnStProc* event_get_storage = res_proc(&cache, "nvnEventBuilderGetStorage");
+    NvnStResCache cache = {0};
+    NvnStProc* texture_defaults = nvn_st_res_proc(&cache, "nvnTextureBuilderSetDefaults");
+    NvnStProc* texture_device = nvn_st_res_proc(&cache, "nvnTextureBuilderSetDevice");
+    NvnStProc* texture_storage = nvn_st_res_proc(&cache, "nvnTextureBuilderSetStorage");
+    NvnStProc* texture_pool = nvn_st_res_proc(&cache, "nvnTextureBuilderGetMemoryPool");
+    NvnStProc* texture_offset = nvn_st_res_proc(&cache, "nvnTextureBuilderGetMemoryOffset");
+    NvnStProc* texture_alignment = nvn_st_res_proc(&cache, "nvnTextureBuilderGetStorageAlignment");
+    NvnStProc* texture_size = nvn_st_res_proc(&cache, "nvnTextureBuilderGetStorageSize");
+    NvnStProc* packaged_set = nvn_st_res_proc(&cache, "nvnTextureBuilderSetPackagedTextureData");
+    NvnStProc* packaged_get = nvn_st_res_proc(&cache, "nvnTextureBuilderGetPackagedTextureData");
+    NvnStProc* buffer_defaults = nvn_st_res_proc(&cache, "nvnBufferBuilderSetDefaults");
+    NvnStProc* buffer_device = nvn_st_res_proc(&cache, "nvnBufferBuilderSetDevice");
+    NvnStProc* buffer_storage = nvn_st_res_proc(&cache, "nvnBufferBuilderSetStorage");
+    NvnStProc* buffer_get_size = nvn_st_res_proc(&cache, "nvnBufferBuilderGetSize");
+    NvnStProc* buffer_get_device = nvn_st_res_proc(&cache, "nvnBufferBuilderGetDevice");
+    NvnStProc* buffer_pool = nvn_st_res_proc(&cache, "nvnBufferBuilderGetMemoryPool");
+    NvnStProc* buffer_offset = nvn_st_res_proc(&cache, "nvnBufferBuilderGetMemoryOffset");
+    NvnStProc* event_defaults = nvn_st_res_proc(&cache, "nvnEventBuilderSetDefaults");
+    NvnStProc* event_storage = nvn_st_res_proc(&cache, "nvnEventBuilderSetStorage");
+    NvnStProc* event_pool = nvn_st_res_proc(&cache, "nvnEventBuilderGetMemoryPool");
+    NvnStProc* event_offset = nvn_st_res_proc(&cache, "nvnEventBuilderGetMemoryOffset");
+    NvnStProc* event_get_storage = nvn_st_res_proc(&cache, "nvnEventBuilderGetStorage");
     if (!texture_defaults || !texture_device || !texture_storage || !texture_pool || !texture_offset ||
         !texture_alignment || !texture_size || !packaged_set || !packaged_get || !buffer_defaults || !buffer_device ||
         !buffer_storage || !buffer_get_size || !buffer_get_device || !buffer_pool || !buffer_offset ||
@@ -901,9 +884,9 @@ static void case_builder_storage(CPU* c, NvnStRun* run) {
         run->skipped++;
         return;
     }
-    ResPool memory[2];
-    if (!res_pool_create(c, run, &cache, 0, &memory[0], RES_POOL_CPU_CACHED, RES_POOL_BYTES) ||
-        !res_pool_create(c, run, &cache, 1, &memory[1], RES_POOL_CPU_CACHED, RES_POOL_BYTES)) {
+    NvnStResPool memory[2];
+    if (!nvn_st_res_pool_create(c, run, &cache, 0, &memory[0], RES_POOL_CPU_CACHED, RES_POOL_BYTES) ||
+        !nvn_st_res_pool_create(c, run, &cache, 1, &memory[1], RES_POOL_CPU_CACHED, RES_POOL_BYTES)) {
         run->skipped++;
         return;
     }
@@ -950,8 +933,8 @@ static void case_builder_storage(CPU* c, NvnStRun* run) {
         nvn_st_add_blob(rec, "eventStorageOffset", GP(out[host]), NULL, RES_OUT_BYTES);
     }
     res_report(run, "nvnBuilderStorage", "texture, buffer and event pools", &ref, &got);
-    res_pool_destroy(c, &cache, 0, &memory[0]);
-    res_pool_destroy(c, &cache, 1, &memory[1]);
+    nvn_st_res_pool_destroy(c, &cache, 0, &memory[0]);
+    nvn_st_res_pool_destroy(c, &cache, 1, &memory[1]);
 }
 
 void nvn_selftest_resource_cases(CPU* c, NvnStRun* run) {

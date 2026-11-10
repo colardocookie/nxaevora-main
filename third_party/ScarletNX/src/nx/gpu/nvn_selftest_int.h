@@ -26,6 +26,36 @@ typedef struct {
     NvnStArena arena;
 } NvnStRun;
 
+/* The device word that SetViewports reads (d84acb0): the window origin mode, for the command buffer cases. */
+#define NVN_ST_DEVICE_WINDOW_ORIGIN_OFFSET 0x19d8u
+
+/* The memory pool flags of the resource and command buffer cases (analysis/enum-run2.txt). */
+#define NVN_ST_RES_POOL_CPU_UNCACHED_GPU_CACHED 0x22u
+
+/* The memory pool of one side of a resource or command buffer script, with its builder object and storage block. */
+typedef struct {
+    uint64_t builder, pool, storage;
+} NvnStResPool;
+
+#define NVN_ST_RES_CACHE_MAX 64u
+
+typedef struct {
+    const char* name;
+    NvnStProc proc;
+    unsigned resolved;
+} NvnStResEntry;
+
+/* The functions of one script, resolved once. A missing name skips the script with one line, as in 4-u3-1. */
+typedef struct {
+    NvnStResEntry e[NVN_ST_RES_CACHE_MAX];
+    unsigned n;
+} NvnStResCache;
+
+NvnStProc* nvn_st_res_proc(NvnStResCache* cache, const char* name);
+int nvn_st_res_pool_create(CPU* c, NvnStRun* run, NvnStResCache* cache, int host, NvnStResPool* mp, uint32_t flags,
+                           uint64_t bytes);
+void nvn_st_res_pool_destroy(CPU* c, NvnStResCache* cache, int host, const NvnStResPool* mp);
+
 /* One call. x0..x5 are the integer arguments and s0..s3 the float arguments (their bit patterns). s0_out, when not
    NULL, receives the s0 bits of the result before the CPU context is restored. */
 typedef struct {
@@ -46,6 +76,9 @@ void nvn_selftest_object_cases(CPU* c, NvnStRun* run);
 
 /* The resource object cases of nvn_selftest_res.c, called from nvn_selftest_run after the builder and state cases. */
 void nvn_selftest_resource_cases(CPU* c, NvnStRun* run);
+
+/* The command buffer cases of nvn_selftest_cmd.c, called from nvn_selftest_run after the resource cases. */
+void nvn_selftest_command_cases(CPU* c, NvnStRun* run);
 
 /* Builds one sampler object from the sampler builder values of nvn_selftest_obj.c. `variant` 2 gives a filter that
    makes the sampler different from variant 0. 1 when every function was found. */

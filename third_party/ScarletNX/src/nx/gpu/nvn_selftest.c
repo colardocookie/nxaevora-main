@@ -26,9 +26,8 @@
 #define DEVICE_TEXTURE_WORD_OFFSET 0x1b18u     /* the buffer kind word of the device (nvn_params.h) */
 #define DEVICE_COMPRESSION_BYTE_OFFSET 0x1b1cu /* the compression switch of the device, source unknown */
 
-#define DEVICE_CLIP_LIMIT_OFFSET 0x18u      /* the limit that SetRenderTargets applies to SURFACE_CLIP (d856414), source unknown */
-#define DEVICE_WINDOW_ORIGIN_OFFSET 0x19d8u /* read by SetViewports (d84acb0) */
-#define DEVICE_DEPTH_MODE_OFFSET 0x1a04u    /* compared with 0x08c8b771 by SetRenderTargets (d856218) */
+#define DEVICE_CLIP_LIMIT_OFFSET 0x18u   /* the limit that SetRenderTargets applies to SURFACE_CLIP (d856414), source unknown */
+#define DEVICE_DEPTH_MODE_OFFSET 0x1a04u /* compared with 0x08c8b771 by SetRenderTargets (d856218) */
 
 static uint64_t g_device;
 static int g_ran;
@@ -197,13 +196,14 @@ void nvn_selftest_run(CPU* c) {
         gr32(g_device + DEVICE_TEXTURE_WORD_OFFSET), DEVICE_COMPRESSION_BYTE_OFFSET,
         (u32)*(const uint8_t*)GP(g_device + DEVICE_COMPRESSION_BYTE_OFFSET));
     LOG("selftest: device render target words +%x=%08x +%x=%08x +%x=%08x\n", DEVICE_CLIP_LIMIT_OFFSET,
-        gr32(g_device + DEVICE_CLIP_LIMIT_OFFSET), DEVICE_WINDOW_ORIGIN_OFFSET,
-        gr32(g_device + DEVICE_WINDOW_ORIGIN_OFFSET), DEVICE_DEPTH_MODE_OFFSET,
+        gr32(g_device + DEVICE_CLIP_LIMIT_OFFSET), NVN_ST_DEVICE_WINDOW_ORIGIN_OFFSET,
+        gr32(g_device + NVN_ST_DEVICE_WINDOW_ORIGIN_OFFSET), DEVICE_DEPTH_MODE_OFFSET,
         gr32(g_device + DEVICE_DEPTH_MODE_OFFSET));
     case_device_get_integer(c, &run);
     case_texture_builder(c, &run);
     nvn_selftest_object_cases(c, &run);
     nvn_selftest_resource_cases(c, &run);
+    nvn_selftest_command_cases(c, &run);
     LOG("selftest: %u cases, %u failed, %u skipped, arena used %" PRIu64 " of %u bytes\n", run.cases, run.failed,
         run.skipped, run.arena.high_water, ARENA_BYTES);
 }

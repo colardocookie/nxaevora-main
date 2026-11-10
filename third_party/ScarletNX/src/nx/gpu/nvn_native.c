@@ -553,6 +553,45 @@ static int queue_init_build(CPU* c, const NvnQueueBuilder* b, u64 queue_addr, Qu
     return 1;
 }
 
+/* The selftest's channels are fresh and have no macro code, but a command buffer's ClearColor is a macro call. This
+   builds the queue init stream that a real channel runs first: the library builders on the host arena, as the frame
+   job does. The selftest has no device record (nvn_native=0), so its device supplies the two words instead. */
+int nvn_native_selftest_init_words(CPU* c, uint32_t window_origin, uint32_t depth_mode, uint32_t** words,
+                                   uint32_t* count) {
+    *words = NULL;
+    *count = 0;
+    int ok = 0;
+    pm_lock(&builder_lock);
+    BuilderArena arena;
+    if (!builder_arena_get(&arena)) goto out;
+    const NvnQueueBuilder builder = {.priority = NVN_QUEUE_PRIORITY_DEFAULT};
+    if (!builder_images(&arena, &builder, &nvn_queue_device_words, window_origin, depth_mode)) goto out;
+    if (!builder_call(c, NVN_QUEUE_POOL_BUILDER_ADDRESS, arena.queue + NVN_QUEUE_POOL_OBJECT_OFFSET, arena.device,
+                      arena.builder, arena.stack_top))
+        goto out;
+    const uint64_t pool_size = gr32(arena.queue + NVN_QUEUE_POOL_SIZE_OFFSET);
+    if (!pool_size || pool_size > NVN_QUEUE_POOL_MAX_BYTES) {
+        LOG("nvn-native: selftest queue init: pool size=%llu is not in [1, %u]\n", (unsigned long long)pool_size,
+            NVN_QUEUE_POOL_MAX_BYTES);
+        goto out;
+    }
+    uint64_t storage = 0, gpu = 0;
+    if (!queue_pool_create(pool_size, &storage, &gpu)) goto out;
+    (void)storage; /* the selftest never submits work that reads the pool; it lives like a queue's pool does */
+    gw64(arena.queue + NVN_QUEUE_POOL_OBJECT_OFFSET + NVN_QUEUE_POOL_GPU_OFFSET, gpu);
+    if (!builder_call(c, NVN_QUEUE_INIT_BUILDER_ADDRESS, arena.queue, 0, 0, arena.stack_top)) goto out;
+    if (!builder_read_words(arena.command, gr64(arena.queue + NVN_QUEUE_CURSOR_OFFSET), words, count)) goto out;
+    if (!*count) {
+        LOG("nvn-native: selftest queue init: the builders wrote no words\n");
+        goto out;
+    }
+    LOG("nvn-native: selftest queue init words=%u\n", *count);
+    ok = 1;
+out:
+    pm_unlock(&builder_lock);
+    return ok;
+}
+
 /* nvnQueueInitialize(queue, builder): runs the library builders, records the builder and opens the private channel
    of the frame jobs. A failed builder stage leaves the macro code empty. */
 static void h_queue_initialize(CPU* c, u64 entry) {
@@ -6457,6 +6496,30 @@ static void frame_replay_lists(const FrameJob* job, NvnReplayStats* stats, uint6
     }
     if (dispatches) *dispatches = host.dispatches;
     if (dispatch_refusals) *dispatch_refusals = host.dispatch_refusals;
+}
+/* The selftest replays one command list on its private channel. The host state is large, so it lives on the heap for
+   this one call. GPU thread only. */
+int nvn_native_selftest_replay(GpuChannel* ch, uint64_t handle, int window_origin_flip, NvnReplayStats* stats) {
+    NvnNativeReplayHost* host = calloc(1, sizeof *host);
+    if (!host) {
+        LOG("nvn-native: selftest replay: out of memory for the host state\n");
+        return -1;
+    }
+    host->channel = ch;
+    host->clip_limit = NVN_REPLAY_CLIP_LIMIT;
+    NvnReplayEnv env;
+    nvn_native_replay_env(host, window_origin_flip, &env);
+    pm_lock(&objs_lock);
+    const NvnOpList* list = nvn_list_find(&lists, handle);
+    pm_unlock(&objs_lock);
+    if (!list) {
+        LOG("nvn-native: selftest replay: handle=%llx is not a live list\n", (unsigned long long)handle);
+        free(host);
+        return -1;
+    }
+    nvn_replay_list(&env, list, stats);
+    free(host);
+    return 0;
 }
 static void frame_end(const FrameJob* job) {
     r3d_const_flush(job->channel);

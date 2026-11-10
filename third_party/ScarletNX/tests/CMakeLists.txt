@@ -810,6 +810,10 @@ snx_test_target(snx-test-nvn-selftest-rec 11)
 target_include_directories(snx-test-nvn-selftest-rec PRIVATE "${PROJECT_BINARY_DIR}/generated")
 add_test(NAME nvn_selftest_rec COMMAND snx-test-nvn-selftest-rec)
 
+add_executable(snx-test-nvn-selftest-dec nvn_selftest_dec.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_dec.c")
+snx_test_target(snx-test-nvn-selftest-dec 11)
+add_test(NAME nvn_selftest_dec COMMAND snx-test-nvn-selftest-dec)
+
 if(TARGET SDL3::SDL3)
     add_executable(snx-test-keybind keybind.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/backend/keybind.c")
     snx_test_target(snx-test-keybind 11)

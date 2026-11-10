@@ -73,5 +73,13 @@ typedef struct {
 /* Fills env for the replay of host lists. The callbacks read the records of the host under its lock and write
    methods on host->channel. window_origin_flip is 1 when the device window origin mode is 1. */
 void nvn_native_replay_env(NvnNativeReplayHost* host, int window_origin_flip, NvnReplayEnv* env);
+/* Replays the ops of the live command list that handle names on ch, with a host state of its own (the selftest). GPU
+   thread only. 0, or -1 when the handle is not a live list, or the host state cannot be allocated */
+int nvn_native_selftest_replay(GpuChannel* ch, uint64_t handle, int window_origin_flip, NvnReplayStats* stats);
+/* Builds the queue init stream for the selftest's private channels, with the library's queue builders on a host arena
+   (the macro code and the default state that a command buffer runs on). The selftest has no device record, so the
+   window origin and the depth mode come from its device. Guest thread. The caller frees *words. 1 on success */
+int nvn_native_selftest_init_words(CPU* c, uint32_t window_origin, uint32_t depth_mode, uint32_t** words,
+                                   uint32_t* count);
 
 #endif
