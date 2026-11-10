@@ -4,11 +4,18 @@ param(
     [Parameter(Mandatory)][string]$Game,
     [ValidateSet('Native','DLSS','FSR','RR')][string]$Backend='Native',
     [switch]$RayTracing,
+    [ValidateSet('4K','1440p')][string]$Display='4K',
     [string]$Terrain
 )
 $ErrorActionPreference='Stop'
+# Render scale of the docked 1920x1080 guest. 4/3 renders 2560x1440 natively instead of 4K shrunk to the screen.
+$resolutionScale=@{'4K'='2.0';'1440p'='1.3333333333333333'}[$Display]
 if($Backend -eq 'RR' -and !$RayTracing){
     throw 'Ray Reconstruction requires -RayTracing. Use -Backend DLSS for Super Resolution alone.'
+}
+# The traced renderer and both upscalers build a 3840x2160 scene, so they need 4K output.
+if($Display -ne '4K' -and ($RayTracing -or $Backend -ne 'Native')){
+    throw 'Ray tracing, DLSS, FSR and Ray Reconstruction need -Display 4K.'
 }
 if($RayTracing -and $Backend -eq 'Native'){$Backend='FSR'}
 $program=(Resolve-Path -LiteralPath $Executable).Path
@@ -26,6 +33,10 @@ if($PSBoundParameters.ContainsKey('Backend')){
 if($PSBoundParameters.ContainsKey('RayTracing')){
     $env:ARCEUS_RAY_TRACING=if($RayTracing){'1'}else{'0'}
 }
+if($Display -ne '4K'){
+    # Saved menu choices would otherwise turn them on. They return with -Display 4K.
+    $env:ARCEUS_UPSCALER='Native';$env:ARCEUS_NGX='0';$env:ARCEUS_DLSS_RR='0';$env:ARCEUS_RAY_TRACING='0'
+}
 $env:ARCEUS_PT_FILTER='1'
 $env:SNX_ARCEUS_FIXED_RESOLUTION='1'
 $env:SNX_ARCEUS_SCREEN_FETCH='1'
@@ -42,6 +53,6 @@ $env:SNX_ARCEUS_BLINK_FIX='1'
 $env:SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS='1'
 Push-Location -LiteralPath $gamePath
 try {
-    & $program "--game=$gamePath" --nvn_native=0 --native_bc=1 --fps_limit=game --fullscreen=1 --log=1 --seconds=0 --gamepad_background=1 --docked=1 --resolution=2.0
+    & $program "--game=$gamePath" --nvn_native=0 --native_bc=1 --fps_limit=game --fullscreen=1 --log=1 --seconds=0 --gamepad_background=1 --docked=1 "--resolution=$resolutionScale"
     exit $LASTEXITCODE
 } finally {Pop-Location}
