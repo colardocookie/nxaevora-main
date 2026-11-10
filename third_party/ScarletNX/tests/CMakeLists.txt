@@ -792,6 +792,10 @@ if(NOT WIN32)
 endif()
 add_test(NAME nvn_params COMMAND snx-test-nvn-params)
 
+add_executable(snx-test-nvn-enum-trace nvn_enum_trace.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_enum_trace.c")
+snx_test_target(snx-test-nvn-enum-trace 11)
+add_test(NAME nvn_enum_trace COMMAND snx-test-nvn-enum-trace)
+
 add_executable(snx-test-nvn-selftest-cmp nvn_selftest_cmp.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_cmp.c")
 snx_test_target(snx-test-nvn-selftest-cmp 11)
 add_test(NAME nvn_selftest_cmp COMMAND snx-test-nvn-selftest-cmp)

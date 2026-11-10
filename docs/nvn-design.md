@@ -741,6 +741,9 @@ functions that no run reached stay `implemented` plus `unit`, `selftest` or `exe
   separate columns for `selftest`, `exec` and `seen`. Done 2026-11-06 except the trace of the argument values: the tool
   reads the 523 names and addresses from the sdk module (`--sdk`) or a trace log (`--log`). The first file has 274 host
   handlers and 249 missing-function handlers, and every one of the 242 functions of `nvn-calls.md` has a host handler.
+  The trace of the argument values is in `gpu/nvn_enum_trace.c` (2026-11-10): with `nvn_trace=1`, each new value of an
+  enum or flag register of 63 observed functions gives one line `nvn-enum: <function> w<N>=<hex>`, at most 64 for each
+  function. Not yet read from a game run.
 - 4-u2: the reading of the library for the 281 functions, in groups (events and fences, copies, transform feedback, tessellation
   and raster extras, the rest), one commit for each group, with the unit tests and the cases that the selftest takes.
 - 4-u3: the selftest cases for the rest of the functions that a test can make, by group, and the execution test for events and

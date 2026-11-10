@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is U1 step b3 (md5 76d641aa), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the enum trace build (md5 95cfea4d), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=0`, `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -64,10 +64,10 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: enum trace (4-u1), step (c). Steps (a) and (b) done (`OLD-WORK_PLAN.md`, last two sections).
-    Patch `patches/enum-b-1.patch` (6 files, `git apply --check` passes), brief `reports/brief-enum-b.md` (the decisions),
-    report `reports/writer-enum-b-1.md`. Step (c): read the whole patch, build, `ctest`, mutant of each new test, commit (with
-    the OpenCode line). Step (d): one user run with `nvn_trace=1`, read the `nvn-enum:` lines. Then U2 step (a).
+  Current step: enum trace (4-u1), step (d). Step (c) done 2026-11-10: patch committed, `ctest` passes except `tracked_material`,
+    3 mutants caught, exe md5 95cfea4d copied to the 3 places. Step (d): the user sets `nvn_trace=1` in the `.ini`, runs the update
+    program to the field, closes. Read the `nvn-enum:` lines (63 functions, `gpu/nvn_enum_trace.c`), then set `nvn_trace=0` again.
+    Then U2 step (a).
   - Rows near U1 that stay in other groups: EventGetMemoryPool, EventGetMemoryOffset, EventGetValue (U2). CommandBuffer
     Get/SetCopyRowStride and Get/SetCopyImageStride (U3, copies). CommandBuffer command and control memory getters, memory
     callback getters (U5). ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).
