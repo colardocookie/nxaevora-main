@@ -2276,3 +2276,10 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 - Handler writer (opencode, DeepSeek V4.1 Flash): patch `patches/u1-b3-1.patch` (4 files, +241/-2), report
   `reports/writer-u1-b3-1.md`. The caller read the whole patch and found no fault. The patch also moves the sample divisors
   of `nvn_texture_layout` to `texture_sample_x` and `texture_sample_y`. Worktree removed. Commit `01c2ecd`.
+
+## Task (u) U1 step (b3) done (2026-11-10, moved from WORK_PLAN.md)
+
+- Commit `c590af9`: the handlers of nvnTextureBuilderGetSparseTileLayout, nvnTextureGetSparseTileLayout and nvnTextureGetViewOffset
+  (patch `patches/u1-b3-1.patch`). Build OK, `ctest` passes except `tracked_material` (known). Mutants: sparse 3D z exponent 4->3
+  and view 3D layer shift 9->8, both caught by `nvn_params`. `nvn-coverage.md`: G10 144 implemented, 137 stub-log. Exe md5 76d641aa.
+  No game run (no selftest or exectest case).
