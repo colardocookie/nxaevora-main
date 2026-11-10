@@ -67,7 +67,9 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   reached are written as "not verified in the game".
   Decision of the user (2026-11-09): the trace of the enum argument values (the missing part of 4-u1) comes after U1.
   Current step: enum trace (4-u1). Step (a) done (`OLD-WORK_PLAN.md`, last section; table `reports/analyst-enum-1.md`).
-    Next session: step (b), brief for the code writer (template `reports/brief-u1-b3.md`), launch it.
+    Step (b) done: brief `reports/brief-enum-b.md`, patch `patches/enum-b-1.patch` (6 files, `git apply --check` passes),
+    report `reports/writer-enum-b-1.md`. Next session: step (c), read the whole patch, build, `ctest`, mutant of each new test,
+    commit (with the OpenCode line). Then step (d): one user run with `nvn_trace=1`, read the `nvn-enum:` lines.
     Decisions: in `nvn_trace.c`, a new value op that keys on (register, value) and logs each distinct value once
     (`nvn-enum: <name> wN=<value>`), from a table of Table 1 rows (enum and flags, not the bool enables `tst #0xff`). Table 2
     (struct fields) is not traced: the setters of those records are traced. Then U2 step (a).
