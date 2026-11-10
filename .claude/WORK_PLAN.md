@@ -56,15 +56,10 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U5 step (a), the library analyst table of U5 (debug and the rest).
-  - U4 regression run (2026-11-10, build 194dc0f-dirty = `1218e3d`): 85 s, normal exit, no crash, 0 JIT misses, 0 failed
-    shaders, 30 fps, program sets refused=0, `522 resolved addresses, 44 without a handler, 0 of them called`. No table C
-    function was called (not verified in the game).
-  - U4 patch 2 is done (`1218e3d`): ctest passes except `tracked_material`, the mutant (shift 16) of
-    `test_separate_handles` fails as expected. Decisions: `OLD-WORK_PLAN.md`, "U4 patch 2 step (b)".
+  Current step: U5 step (a), the library analyst table of U5 (debug and the rest). U4 is done (`OLD-WORK_PLAN.md`,
+    "U4 patch 2 and the U4 regression run"). Brief templates: `reports/brief-6a.md` and `reports/brief-analyst-u4-common.md`.
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
-  - Rows near U1 that stay in other groups: CommandBuffer command and control memory getters, memory callback getters (U5).
-    ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).
+  - U5 also has the CommandBuffer command and control memory getters and the memory callback getters.
 - Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
   buffer overflow in the init builders would crash).
 - Diagnostic code: `patches/diag-taskB.patch`. Apply it only for a diagnostic run, and remove it before a commit.

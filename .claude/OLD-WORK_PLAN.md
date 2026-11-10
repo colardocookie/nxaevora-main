@@ -2500,3 +2500,16 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
       with the table and the existing BindTexture path.
   - Step (b): brief `reports/brief-writer-u4-2.md`, handler writer (opencode) done, patch `patches/writer-u4-2.patch`,
     report `reports/writer-u4-2.md`. The writer says: all 16 functions done, no open questions (not checked yet).
+
+## U4 patch 2 and the U4 regression run (2026-11-10, moved from WORK_PLAN.md)
+
+- U4 patch 2 (table C, 16 functions) is commit `1218e3d`. The handler writer wrote it from `reports/brief-writer-u4-2.md`.
+  SEND: BindTextures (one bind per entry, stride 8), ProgramSetShaders (16-byte entries, no control). VALUE: the 3 handle
+  getters, SetSubroutineLinkage returns 0. NO-OP: tiled cache action and tile size, SetSampleShading, a coverage table of 0.
+  REFUSE: the 4 separate binds, SetProgramSubroutines, SetShaderScratchMemory, a coverage table that is not 0.
+- Checks: the handle formulas agree with the analyst table (`reports/analyst-u4-C-1.md`). ctest passes except
+  `tracked_material`. The mutant (shift 16) of `test_separate_handles` fails as expected. `nvn-coverage.md`: 45 rows of G10
+  are `stub-log`.
+- Regression run (build 194dc0f-dirty = `1218e3d`, exe md5 0c3bdc15): 85 s, normal exit, no crash, 0 JIT misses, 0 failed
+  shaders, 30 fps, program sets refused=0, `522 resolved addresses, 44 without a handler, 0 of them called`. No table C
+  function was called (not verified in the game).
