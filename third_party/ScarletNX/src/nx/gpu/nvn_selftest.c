@@ -7,6 +7,7 @@
 #include "nx/gpu/nvn_selftest.h"
 #include "nx/gpu/nvn_native.h"
 #include "nx/gpu/nvn_selftest_cmp.h"
+#include "nx/gpu/nvn_selftest_int.h"
 #include "nx/gpu/nvn_selftest_mem.h"
 #include "nx/gpu/nvn_trace.h"
 #include "nx/memory/mem.h"
@@ -33,18 +34,9 @@ static int g_ran;
 
 void nvn_selftest_note_device(uint64_t device) { g_device = device; }
 
-/* One side of a comparison: the function, its address, and the name for the report. */
-typedef struct {
-    GuestFn fn;
-    u64 entry;
-} Callee;
+uint64_t nvn_st_device(void) { return g_device; }
 
-typedef struct {
-    Callee lib, host;
-    const char* name;
-} Proc;
-
-static int proc_find(Proc* p, const char* name) {
+int nvn_st_proc_find(NvnStProc* p, const char* name) {
     p->name = name;
     if (!nvn_trace_library(name, &p->lib.fn, &p->lib.entry)) return 0;
     p->host.fn = nvn_native_handler(name);
@@ -52,27 +44,21 @@ static int proc_find(Proc* p, const char* name) {
     return p->host.fn != NULL;
 }
 
-/* x0..x4 are the arguments. Returns x0. The whole context is restored, so the caller's thread goes on as before. */
-static uint64_t call(CPU* c, const Callee* f, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
+/* x0..x5 are the arguments, and s0..s3 the float arguments. Returns x0. The whole context is restored, so the
+   caller's thread goes on as before; a float result is copied out before the restore. */
+uint64_t nvn_st_call(CPU* c, const NvnStCallee* f, const NvnStCall* a) {
     CPU saved = *c;
-    c->x[0] = a0;
-    c->x[1] = a1;
-    c->x[2] = a2;
-    c->x[3] = a3;
-    c->x[4] = a4;
+    for (unsigned i = 0; i < 6; i++) c->x[i] = a->x[i];
+    for (unsigned i = 0; i < a->n_s; i++) SNX_VSET_S(c->v[i], 0, a->s[i]);
     f->fn(c, f->entry);
     uint64_t r = c->x[0];
+    if (a->s0_out) *a->s0_out = SNX_VS(c->v[0], 0);
     *c = saved;
     return r;
 }
 
-typedef struct {
-    unsigned cases, failed, skipped;
-    NvnStArena arena;
-} Run;
-
 /* The report of one comparison: the line, and the first difference of each failed kind with both values. */
-static void report(Run* run, const char* name, const char* args, const NvnStRec* ref, const NvnStDiff* d) {
+void nvn_st_report(NvnStRun* run, const char* name, const char* args, const NvnStRec* ref, const NvnStDiff* d) {
     char line[256];
     nvn_st_format_line(line, sizeof line, name, args, ref, d);
     run->cases++;
@@ -87,9 +73,9 @@ static void report(Run* run, const char* name, const char* args, const NvnStRec*
 static const uint32_t device_what[] = {4,  15, 16, 17, 18, 19, 20, 40, 41, 42, 50, 59, 66, 67,
                                        68, 69, 71, 72, 73, 74, 75, 76, 82, 85, 87, 90, 92};
 
-static void case_device_get_integer(CPU* c, Run* run) {
-    Proc p;
-    if (!proc_find(&p, "nvnDeviceGetInteger")) {
+static void case_device_get_integer(CPU* c, NvnStRun* run) {
+    NvnStProc p;
+    if (!nvn_st_proc_find(&p, "nvnDeviceGetInteger")) {
         run->skipped++;
         LOG("selftest: nvnDeviceGetInteger skipped (the game did not resolve it, or the host has no handler)\n");
         return;
@@ -100,10 +86,10 @@ static void case_device_get_integer(CPU* c, Run* run) {
     for (size_t i = 0; region && i < sizeof device_what / sizeof device_what[0]; i++) {
         uint8_t lib_bytes[REGION], host_bytes[REGION];
         memset(GP(region), OUT_FILL, REGION); /* the word must be overwritten, the guards must not */
-        call(c, &p.lib, g_device, device_what[i], out, 0, 0);
+        nvn_st_call(c, &p.lib, &(NvnStCall){.x = {g_device, device_what[i], out}});
         memcpy(lib_bytes, GP(region), REGION);
         memset(GP(region), OUT_FILL, REGION);
-        call(c, &p.host, g_device, device_what[i], out, 0, 0);
+        nvn_st_call(c, &p.host, &(NvnStCall){.x = {g_device, device_what[i], out}});
         memcpy(host_bytes, GP(region), REGION);
         NvnStRec ref = {0}, got = {0};
         NvnStDiff d;
@@ -112,7 +98,7 @@ static void case_device_get_integer(CPU* c, Run* run) {
         nvn_st_compare(&ref, &got, &d);
         char args[32];
         snprintf(args, sizeof args, "what=%u", device_what[i]);
-        report(run, p.name, args, &ref, &d);
+        nvn_st_report(run, p.name, args, &ref, &d);
     }
 }
 
@@ -120,22 +106,22 @@ static void case_device_get_integer(CPU* c, Run* run) {
    storage queries and the getters answer. Sets are formats, sizes, levels and flags that the game used (flags 9, formats
    0x25 and 0x26), the target 1 (2D). */
 typedef struct {
-    Proc set_device, set_defaults, set_flags, set_target, set_size, set_levels, set_format;
-    Proc get_size, get_align, get_width, get_height;
+    NvnStProc set_device, set_defaults, set_flags, set_target, set_size, set_levels, set_format;
+    NvnStProc get_size, get_align, get_width, get_height;
 } TexProcs;
 
 static int tex_procs_find(TexProcs* t) {
-    return proc_find(&t->set_device, "nvnTextureBuilderSetDevice") &&
-           proc_find(&t->set_defaults, "nvnTextureBuilderSetDefaults") &&
-           proc_find(&t->set_flags, "nvnTextureBuilderSetFlags") &&
-           proc_find(&t->set_target, "nvnTextureBuilderSetTarget") &&
-           proc_find(&t->set_size, "nvnTextureBuilderSetSize2D") &&
-           proc_find(&t->set_levels, "nvnTextureBuilderSetLevels") &&
-           proc_find(&t->set_format, "nvnTextureBuilderSetFormat") &&
-           proc_find(&t->get_size, "nvnTextureBuilderGetStorageSize") &&
-           proc_find(&t->get_align, "nvnTextureBuilderGetStorageAlignment") &&
-           proc_find(&t->get_width, "nvnTextureBuilderGetWidth") &&
-           proc_find(&t->get_height, "nvnTextureBuilderGetHeight");
+    return nvn_st_proc_find(&t->set_device, "nvnTextureBuilderSetDevice") &&
+           nvn_st_proc_find(&t->set_defaults, "nvnTextureBuilderSetDefaults") &&
+           nvn_st_proc_find(&t->set_flags, "nvnTextureBuilderSetFlags") &&
+           nvn_st_proc_find(&t->set_target, "nvnTextureBuilderSetTarget") &&
+           nvn_st_proc_find(&t->set_size, "nvnTextureBuilderSetSize2D") &&
+           nvn_st_proc_find(&t->set_levels, "nvnTextureBuilderSetLevels") &&
+           nvn_st_proc_find(&t->set_format, "nvnTextureBuilderSetFormat") &&
+           nvn_st_proc_find(&t->get_size, "nvnTextureBuilderGetStorageSize") &&
+           nvn_st_proc_find(&t->get_align, "nvnTextureBuilderGetStorageAlignment") &&
+           nvn_st_proc_find(&t->get_width, "nvnTextureBuilderGetWidth") &&
+           nvn_st_proc_find(&t->get_height, "nvnTextureBuilderGetHeight");
 }
 
 typedef struct {
@@ -144,24 +130,24 @@ typedef struct {
 
 static void tex_set(CPU* c, const TexProcs* t, int host, uint64_t b, const TexCase* k) {
 #define SIDE(p) (host ? &(p).host : &(p).lib)
-    call(c, SIDE(t->set_defaults), b, 0, 0, 0, 0);
-    call(c, SIDE(t->set_device), b, g_device, 0, 0, 0);
-    call(c, SIDE(t->set_flags), b, k->flags, 0, 0, 0);
-    call(c, SIDE(t->set_target), b, 1, 0, 0, 0);
-    call(c, SIDE(t->set_size), b, k->width, k->height, 0, 0);
-    call(c, SIDE(t->set_levels), b, k->levels, 0, 0, 0);
-    call(c, SIDE(t->set_format), b, k->format, 0, 0, 0);
+    nvn_st_call(c, SIDE(t->set_defaults), &(NvnStCall){.x = {b}});
+    nvn_st_call(c, SIDE(t->set_device), &(NvnStCall){.x = {b, g_device}});
+    nvn_st_call(c, SIDE(t->set_flags), &(NvnStCall){.x = {b, k->flags}});
+    nvn_st_call(c, SIDE(t->set_target), &(NvnStCall){.x = {b, 1}});
+    nvn_st_call(c, SIDE(t->set_size), &(NvnStCall){.x = {b, k->width, k->height}});
+    nvn_st_call(c, SIDE(t->set_levels), &(NvnStCall){.x = {b, k->levels}});
+    nvn_st_call(c, SIDE(t->set_format), &(NvnStCall){.x = {b, k->format}});
 }
 
 static void tex_query(CPU* c, const TexProcs* t, int host, uint64_t b, NvnStRec* rec) {
-    nvn_st_add_ret(rec, "size", call(c, SIDE(t->get_size), b, 0, 0, 0, 0));
-    nvn_st_add_ret(rec, "alignment", call(c, SIDE(t->get_align), b, 0, 0, 0, 0));
-    nvn_st_add_ret(rec, "width", (uint32_t)call(c, SIDE(t->get_width), b, 0, 0, 0, 0));
-    nvn_st_add_ret(rec, "height", (uint32_t)call(c, SIDE(t->get_height), b, 0, 0, 0, 0));
+    nvn_st_add_ret(rec, "size", nvn_st_call(c, SIDE(t->get_size), &(NvnStCall){.x = {b}}));
+    nvn_st_add_ret(rec, "alignment", nvn_st_call(c, SIDE(t->get_align), &(NvnStCall){.x = {b}}));
+    nvn_st_add_ret(rec, "width", (uint32_t)nvn_st_call(c, SIDE(t->get_width), &(NvnStCall){.x = {b}}));
+    nvn_st_add_ret(rec, "height", (uint32_t)nvn_st_call(c, SIDE(t->get_height), &(NvnStCall){.x = {b}}));
 }
 #undef SIDE
 
-static void case_texture_builder(CPU* c, Run* run) {
+static void case_texture_builder(CPU* c, NvnStRun* run) {
     TexProcs t;
     if (!tex_procs_find(&t)) {
         run->skipped++;
@@ -188,7 +174,7 @@ static void case_texture_builder(CPU* c, Run* run) {
                     char args[96];
                     snprintf(args, sizeof args, "flags=%u fmt=0x%x %ux%u levels=%u", k.flags, k.format, k.width, k.height,
                              k.levels);
-                    report(run, "nvnTextureBuilderStorage", args, &ref, &d);
+                    nvn_st_report(run, "nvnTextureBuilderStorage", args, &ref, &d);
                 }
 }
 
@@ -202,7 +188,7 @@ void nvn_selftest_run(CPU* c) {
         LOG("selftest: not run, the game made no device before nvnQueueInitialize\n");
         return;
     }
-    Run run = {0};
+    NvnStRun run = {0};
     u64 base = kmem_alloc(ARENA_BYTES, MS_STATIC, PERM_RW);
     nvn_st_arena_init(&run.arena, base, ARENA_BYTES);
     LOG("selftest: start, device=%" PRIx64 ", arena=%" PRIx64 "+%x\n", g_device, base, ARENA_BYTES);
@@ -215,6 +201,7 @@ void nvn_selftest_run(CPU* c) {
         gr32(g_device + DEVICE_DEPTH_MODE_OFFSET));
     case_device_get_integer(c, &run);
     case_texture_builder(c, &run);
+    nvn_selftest_object_cases(c, &run);
     LOG("selftest: %u cases, %u failed, %u skipped, arena used %" PRIu64 " of %u bytes\n", run.cases, run.failed,
         run.skipped, run.arena.high_water, ARENA_BYTES);
 }
