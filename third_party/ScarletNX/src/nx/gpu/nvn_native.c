@@ -203,6 +203,19 @@ static void h_device_get_image_handle(CPU* c, u64 entry) {
     (void)entry;
     c->x[0] = nvn_image_handle((u32)c->x[1]);
 }
+/* nvnDeviceGetSeparateTextureHandle and nvnDeviceGetTexelFetchHandle: both are the combined handle with sampler 0. */
+static void h_device_get_separate_texture_handle(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = nvn_texture_handle((u32)c->x[1], 0);
+}
+static void h_device_get_texel_fetch_handle(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = nvn_texture_handle((u32)c->x[1], 0);
+}
+static void h_device_get_separate_sampler_handle(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = nvn_separate_sampler_handle((u32)c->x[1]);
+}
 
 /* G1: queue builder and queue */
 static void h_queue_builder_set_device(CPU* c, u64 entry) {
@@ -1674,6 +1687,7 @@ static void* known_record(u64 addr, NvnObjKind kind) {
    copies the control block at set time. No draw uses the record in this step. */
 #define PROGRAM_LOG_LIMIT 64u           /* log lines for the faults of the program functions */
 #define PROGRAM_ENTRY_BYTES 0x18u       /* one SetShadersExt entry: word, header pointer, control pointer */
+#define PROGRAM_ENTRY_BYTES_PLAIN 0x10u /* one SetShaders entry: ignored word, header pointer */
 #define PROGRAM_HEADER_READ_BYTES (NVN_PROGRAM_STAGE_OFFSET + 4u) /* the header words up to the stage word */
 #define PROGRAM_CONTROL_BYTES 0x18u     /* the control block that the host copies */
 #define PROGRAM_HEADER_ALIGNMENT 8u
@@ -1739,23 +1753,32 @@ static const NvnProgramDeviceIn program_device_words = {
     .d1a70 = 1u, .d1a74 = 0x20806080u, .d94 = 2u, .da4 = 0u,
 };
 
+/* The layout of one SetShaders entry. Ext: word, header pointer, control pointer. Plain: the word is ignored and
+   there is no control pointer. */
+typedef struct {
+    uint32_t bytes;  /* the size of one entry */
+    int has_control; /* 1 when the entry has a control pointer */
+} ProgramEntryLayout;
+static const ProgramEntryLayout program_entry_ext = {PROGRAM_ENTRY_BYTES, 1};
+static const ProgramEntryLayout program_entry_plain = {PROGRAM_ENTRY_BYTES_PLAIN, 0};
+
 /* Caller holds objs_lock. Reads one entry and its header. On a refusal returns 0 and sets *reason. */
-static int program_read_entry(u64 entries, int32_t index, ProgramStageRec* out, uint32_t* stage_index,
-                              const char** reason) {
-    u64 offset = (u64)(uint32_t)index * PROGRAM_ENTRY_BYTES;
+static int program_read_entry(u64 entries, int32_t index, const ProgramEntryLayout* layout, ProgramStageRec* out,
+                              uint32_t* stage_index, const char** reason) {
+    u64 offset = (u64)(uint32_t)index * layout->bytes;
     if (entries > UINT64_MAX - offset) {
         *reason = PROGRAM_REFUSAL_ENTRY_UNREADABLE;
         return 0;
     }
     u64 at = entries + offset;
-    if (!native_guest_readable(at, PROGRAM_ENTRY_BYTES)) {
+    if (!native_guest_readable(at, layout->bytes)) {
         *reason = PROGRAM_REFUSAL_ENTRY_UNREADABLE;
         return 0;
     }
-    uint64_t entry_word = gr64(at);
+    uint64_t entry_word = layout->has_control ? gr64(at) : 0;
     uint64_t header = gr64(at + 8);
-    uint64_t control = gr64(at + 0x10);
-    if (!entry_word) {
+    uint64_t control = layout->has_control ? gr64(at + 0x10) : 0;
+    if (layout->has_control && !entry_word) {
         *reason = PROGRAM_REFUSAL_WORD_ZERO;
         return 0;
     }
@@ -1910,10 +1933,9 @@ static int program_append_xfb_words(u64 header, uint32_t* words, uint32_t max, u
     return nvn_program_xfb_words(blob, words, max, count, reason);
 }
 
-/* nvnProgramSetShadersExt(prog, count, entries). All entries must be valid: the host writes the new stage table only
+/* nvnProgramSetShadersExt and nvnProgramSetShaders. All entries must be valid: the host writes the new stage table only
    then, and keeps the old content on a refusal. */
-static void h_program_set_shaders_ext(CPU* c, u64 entry) {
-    (void)entry;
+static void program_set_shaders(CPU* c, const ProgramEntryLayout* layout) {
     pm_lock(&objs_lock);
     u64 addr = c->x[0], entries = c->x[2];
     int32_t count = (int32_t)c->x[1];
@@ -1941,7 +1963,7 @@ static void h_program_set_shaders_ext(CPU* c, u64 entry) {
         LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: entries is null\n",
                   (unsigned long long)addr);
         ok = 0;
-    } else if (count > 0 && !native_guest_readable(entries, (u64)count * PROGRAM_ENTRY_BYTES)) {
+    } else if (count > 0 && !native_guest_readable(entries, (u64)count * layout->bytes)) {
         LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: entries=%llx is unreadable\n",
                   (unsigned long long)addr, (unsigned long long)entries);
         ok = 0;
@@ -1950,7 +1972,7 @@ static void h_program_set_shaders_ext(CPU* c, u64 entry) {
         ProgramStageRec stage;
         uint32_t stage_index = 0;
         const char* reason = NULL;
-        if (!program_read_entry(entries, i, &stage, &stage_index, &reason)) {
+        if (!program_read_entry(entries, i, layout, &stage, &stage_index, &reason)) {
             LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx entry=%d refused: %s\n",
                       (unsigned long long)addr, i, reason);
             ok = 0;
@@ -2065,6 +2087,36 @@ static void h_program_set_shaders_ext(CPU* c, u64 entry) {
     }
     if (program_sets_total % PROGRAM_SUMMARY_INTERVAL == 0) log_program_set_summary();
     pm_unlock(&objs_lock);
+}
+static void h_program_set_shaders_ext(CPU* c, u64 entry) {
+    (void)entry;
+    program_set_shaders(c, &program_entry_ext);
+}
+static void h_program_set_shaders(CPU* c, u64 entry) {
+    (void)entry;
+    program_set_shaders(c, &program_entry_plain);
+}
+/* nvnProgramSetSampleShading(prog, value): the host renders one sample, so the value has no effect. */
+static void h_program_set_sample_shading(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    u64 addr = c->x[0];
+    if (known_record(addr, NVN_OBJ_PROGRAM))
+        LOG_LIMIT(1, "nvn-native: nvnProgramSetSampleShading is a logged no-op: "
+                     "the host renders one sample, so sample shading has no effect\n");
+    else
+        LOG_LIMIT(1, "nvn-native: program set sample shading %llx is not a live program\n",
+                  (unsigned long long)addr);
+    pm_unlock(&objs_lock);
+}
+/* nvnProgramSetSubroutineLinkage(program, count, maps): the host has no subroutine table, so it returns 0. */
+static void h_program_set_subroutine_linkage(CPU* c, u64 entry) {
+    (void)entry;
+    LOG_LIMIT(1, "nvn-native: nvnProgramSetSubroutineLinkage refused: the host has no subroutine table "
+                 "(program=%llx count=%llx maps=%llx)\n",
+              (unsigned long long)c->x[0], (unsigned long long)c->x[1],
+              (unsigned long long)c->x[2]);
+    c->x[0] = 0;
 }
 
 /* nvnProgramFinalize(prog): the library does not check the object, and neither does the host. */
@@ -3060,6 +3112,16 @@ COMMAND_REFUSE_HANDLER(draw_texture, "nvnCommandBufferDrawTexture",
                        "it needs the driver program at device+0x1b00, which the host does not have")
 COMMAND_REFUSE_HANDLER(draw_transform_feedback, "nvnCommandBufferDrawTransformFeedback",
                        "it reads byte counts that the GPU writes, and the renderer does not write them")
+#define SEPARATE_BIND_REFUSAL "the host has only the combined texture table (128 slots), no separate texture or sampler table"
+COMMAND_REFUSE_HANDLER(bind_separate_texture, "nvnCommandBufferBindSeparateTexture", SEPARATE_BIND_REFUSAL)
+COMMAND_REFUSE_HANDLER(bind_separate_textures, "nvnCommandBufferBindSeparateTextures", SEPARATE_BIND_REFUSAL)
+COMMAND_REFUSE_HANDLER(bind_separate_sampler, "nvnCommandBufferBindSeparateSampler", SEPARATE_BIND_REFUSAL)
+COMMAND_REFUSE_HANDLER(bind_separate_samplers, "nvnCommandBufferBindSeparateSamplers", SEPARATE_BIND_REFUSAL)
+COMMAND_REFUSE_HANDLER(set_program_subroutines, "nvnCommandBufferSetProgramSubroutines",
+                       "the words of the subroutine rewrite (d855880) are not known")
+COMMAND_REFUSE_HANDLER(set_shader_scratch_memory, "nvnCommandBufferSetShaderScratchMemory",
+                       "two SDK constants of the 0x1E4 block are not known and the host has no shader scratch state")
+#undef SEPARATE_BIND_REFUSAL
 #undef COMMAND_REFUSE_HANDLER
 /* A command whose effect the host keeps with another rule: nothing is recorded, and the library words are not
    needed. Each handler has its own LOG_LIMIT counter. */
@@ -3082,7 +3144,25 @@ COMMAND_NO_OP_HANDLER(set_color_reduction_thresholds, "nvnCommandBufferSetColorR
                       "the host keeps full color precision")
 COMMAND_NO_OP_HANDLER(set_subpixel_precision_bias, "nvnCommandBufferSetSubpixelPrecisionBias",
                       "the host uses the device subpixel grid")
+COMMAND_NO_OP_HANDLER(set_tiled_cache_action, "nvnCommandBufferSetTiledCacheAction",
+                      "the host has no tiled cache, the hint does not change the image")
+COMMAND_NO_OP_HANDLER(set_tiled_cache_tile_size, "nvnCommandBufferSetTiledCacheTileSize",
+                      "the host has no tiled cache, the hint does not change the image")
 #undef COMMAND_NO_OP_HANDLER
+/* nvnCommandBufferBindCoverageModulationTable(cb, table): only the disable form is a no-op. The host has no coverage
+   modulation, and a non-identity table changes the image. */
+static void h_command_buffer_bind_coverage_modulation_table(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferBindCoverageModulationTable";
+    pm_lock(&objs_lock);
+    if (command_buffer(c->x[0], name)) {
+        if (c->x[1])
+            command_refused(c, name, "the host has no coverage modulation, and the identity table is not verified");
+        else
+            LOG_LIMIT(1, "nvn-native: %s is a logged no-op: the table is disabled\n", name);
+    }
+    pm_unlock(&objs_lock);
+}
 #define COMMAND_POOL_HANDLER(name, operation, kind, code)                                                   \
     static void h_command_buffer_##name(CPU* c, u64 entry) {                                                \
         (void)entry;                                                                                        \
@@ -3227,6 +3307,27 @@ static void h_command_buffer_set_scissor(CPU* c, u64 entry) {
                         (int32_t)c->x[4]);
     pm_unlock(&objs_lock);
 }
+/* The size of one entry of a plural bind array: a buffer entry holds an address and a size, a texture entry one
+   handle. */
+#define COMMAND_BIND_BUFFER_BYTES 16u
+#define COMMAND_BIND_TEXTURE_BYTES 8u
+/* The range checks of a plural bind, done before any entry is read. 1 when the call can be recorded. */
+static int command_bind_range_ok(CommandBufferRec* cb, const char* operation, uint32_t stage, uint32_t first,
+                                 int32_t count, u64 array, uint32_t slot_max, uint32_t entry_bytes) {
+    if (stage > NVN_BIND_STAGE_MAX) {
+        command_dropped(cb, operation, "stage outside the bind stages", stage);
+        return 0;
+    }
+    if ((u64)first + (u64)count > slot_max) {
+        command_dropped(cb, operation, "range outside the bind slots", ((u64)first << 32) | (u32)count);
+        return 0;
+    }
+    if (!native_guest_readable(array, (u64)count * entry_bytes)) {
+        command_dropped(cb, operation, "unreadable array", array);
+        return 0;
+    }
+    return 1;
+}
 /* nvnCommandBufferBindTexture(cb, stage, slot, handle). The library checks neither the stage nor the slot; the host
    refuses a value that its bind table cannot hold. */
 static void h_command_buffer_bind_texture(CPU* c, u64 entry) {
@@ -3244,6 +3345,27 @@ static void h_command_buffer_bind_texture(CPU* c, u64 entry) {
         command_record(cb, c->x[0], name, NVN_OP_BIND_TEXTURE, &op, sizeof op);
     pm_unlock(&objs_lock);
 }
+/* nvnCommandBufferBindTextures(cb, stage, first, count, handles): one combined texture bind per entry. The handles are
+   read before the first record. */
+static void h_command_buffer_bind_textures(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnCommandBufferBindTextures";
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], name);
+    uint32_t stage = (u32)c->x[1], first = (u32)c->x[2];
+    int32_t count = (int32_t)c->x[3];
+    u64 array = c->x[4];
+    if (cb && count > 0 &&
+        command_bind_range_ok(cb, name, stage, first, count, array, NVN_BIND_SLOT_MAX, COMMAND_BIND_TEXTURE_BYTES)) {
+        uint64_t handles[NVN_BIND_SLOT_MAX];
+        for (uint32_t i = 0; i < (uint32_t)count; i++) handles[i] = gr64(array + (u64)i * COMMAND_BIND_TEXTURE_BYTES);
+        for (uint32_t i = 0; i < (uint32_t)count; i++) {
+            NvnOpBindTexture op = {stage, first + i, handles[i]};
+            command_record(cb, c->x[0], name, NVN_OP_BIND_TEXTURE, &op, sizeof op);
+        }
+    }
+    pm_unlock(&objs_lock);
+}
 /* One buffer bind: the stage, the slot limit and the bind table are the host's; the library checks none of them. */
 static void command_bind_buffer(CommandBufferRec* cb, u64 addr, const char* operation, NvnBindKind kind,
                                 uint32_t stage, uint32_t slot, uint32_t slot_max, uint64_t buffer, uint64_t size) {
@@ -3255,29 +3377,12 @@ static void command_bind_buffer(CommandBufferRec* cb, u64 addr, const char* oper
     else
         command_record(cb, addr, operation, NVN_OP_BIND_BUFFER, &op, sizeof op);
 }
-/* The range checks of a plural bind, done before any entry is read. 1 when the call can be recorded. */
-static int command_bind_range_ok(CommandBufferRec* cb, const char* operation, uint32_t stage, uint32_t first,
-                                 int32_t count, u64 array, uint32_t slot_max) {
-    if (stage > NVN_BIND_STAGE_MAX) {
-        command_dropped(cb, operation, "stage outside the bind stages", stage);
-        return 0;
-    }
-    if ((u64)first + (u64)count > slot_max) {
-        command_dropped(cb, operation, "range outside the bind slots", ((u64)first << 32) | (u32)count);
-        return 0;
-    }
-    if (!native_guest_readable(array, (u64)count * 16)) {
-        command_dropped(cb, operation, "unreadable array", array);
-        return 0;
-    }
-    return 1;
-}
 /* A plural bind whose array entry is {u64 addr; u32 size; u32 pad}. */
 static void command_bind_buffers_sized(CommandBufferRec* cb, u64 addr, const char* operation, NvnBindKind kind,
                                        uint32_t stage, uint32_t first, int32_t count, u64 array, uint32_t slot_max) {
-    if (!command_bind_range_ok(cb, operation, stage, first, count, array, slot_max)) return;
+    if (!command_bind_range_ok(cb, operation, stage, first, count, array, slot_max, COMMAND_BIND_BUFFER_BYTES)) return;
     for (uint32_t i = 0; i < (uint32_t)count; i++) {
-        u64 at = array + (u64)i * 16;
+        u64 at = array + (u64)i * COMMAND_BIND_BUFFER_BYTES;
         NvnOpBindBuffer op = {kind, stage, first + i, 0, gr64(at), (uint32_t)gr32(at + 8)};
         command_record(cb, addr, operation, NVN_OP_BIND_BUFFER, &op, sizeof op);
     }
@@ -3285,9 +3390,9 @@ static void command_bind_buffers_sized(CommandBufferRec* cb, u64 addr, const cha
 /* A plural bind whose array entry is {u64 addr; u64 size}. The vertex and transform feedback binds have no stage. */
 static void command_bind_buffers_full(CommandBufferRec* cb, u64 addr, const char* operation, NvnBindKind kind,
                                       uint32_t first, int32_t count, u64 array, uint32_t slot_max) {
-    if (!command_bind_range_ok(cb, operation, 0, first, count, array, slot_max)) return;
+    if (!command_bind_range_ok(cb, operation, 0, first, count, array, slot_max, COMMAND_BIND_BUFFER_BYTES)) return;
     for (uint32_t i = 0; i < (uint32_t)count; i++) {
-        u64 at = array + (u64)i * 16;
+        u64 at = array + (u64)i * COMMAND_BIND_BUFFER_BYTES;
         NvnOpBindBuffer op = {kind, 0, first + i, 0, gr64(at), gr64(at + 8)};
         command_record(cb, addr, operation, NVN_OP_BIND_BUFFER, &op, sizeof op);
     }
@@ -6603,6 +6708,9 @@ static const NativeProc native_procs[] = {
     {"nvnDeviceGetTimestampInNanoseconds", h_device_get_timestamp_ns},
     {"nvnDeviceGetTextureHandle", h_device_get_texture_handle},
     {"nvnDeviceGetImageHandle", h_device_get_image_handle},
+    {"nvnDeviceGetSeparateSamplerHandle", h_device_get_separate_sampler_handle},
+    {"nvnDeviceGetSeparateTextureHandle", h_device_get_separate_texture_handle},
+    {"nvnDeviceGetTexelFetchHandle", h_device_get_texel_fetch_handle},
     {"nvnDeviceFinalize", h_device_finalize},
     {"nvnDeviceApplyDeferredFinalizes", h_device_apply_deferred_finalizes},
     {"nvnDeviceFinalizeCommandHandle", h_device_finalize_command_handle},
@@ -6846,6 +6954,9 @@ static const NativeProc native_procs[] = {
     {"nvnSamplerPoolSetDebugLabel", h_set_debug_label},
     {"nvnProgramInitialize", h_program_initialize},
     {"nvnProgramSetShadersExt", h_program_set_shaders_ext},
+    {"nvnProgramSetShaders", h_program_set_shaders},
+    {"nvnProgramSetSampleShading", h_program_set_sample_shading},
+    {"nvnProgramSetSubroutineLinkage", h_program_set_subroutine_linkage},
     {"nvnProgramFinalize", h_program_finalize},
     {"nvnCommandBufferInitialize", h_command_buffer_initialize},
     {"nvnCommandBufferFinalize", h_command_buffer_finalize},
@@ -6864,6 +6975,16 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferSetTexturePool", h_command_buffer_set_texture_pool},
     {"nvnCommandBufferSetSamplerPool", h_command_buffer_set_sampler_pool},
     {"nvnCommandBufferBindTexture", h_command_buffer_bind_texture},
+    {"nvnCommandBufferBindTextures", h_command_buffer_bind_textures},
+    {"nvnCommandBufferBindSeparateTexture", h_command_buffer_bind_separate_texture},
+    {"nvnCommandBufferBindSeparateTextures", h_command_buffer_bind_separate_textures},
+    {"nvnCommandBufferBindSeparateSampler", h_command_buffer_bind_separate_sampler},
+    {"nvnCommandBufferBindSeparateSamplers", h_command_buffer_bind_separate_samplers},
+    {"nvnCommandBufferBindCoverageModulationTable", h_command_buffer_bind_coverage_modulation_table},
+    {"nvnCommandBufferSetProgramSubroutines", h_command_buffer_set_program_subroutines},
+    {"nvnCommandBufferSetShaderScratchMemory", h_command_buffer_set_shader_scratch_memory},
+    {"nvnCommandBufferSetTiledCacheAction", h_command_buffer_set_tiled_cache_action},
+    {"nvnCommandBufferSetTiledCacheTileSize", h_command_buffer_set_tiled_cache_tile_size},
     {"nvnCommandBufferBindUniformBuffer", h_command_buffer_bind_uniform_buffer},
     {"nvnCommandBufferBindStorageBuffer", h_command_buffer_bind_storage_buffer},
     {"nvnCommandBufferBindVertexBuffer", h_command_buffer_bind_vertex_buffer},

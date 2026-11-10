@@ -30,8 +30,8 @@ tool keeps them.
 | G7 | 4 | 4 | 0 | 4 | 0 |
 | G8 | 112 | 112 | 0 | 112 | 0 |
 | G9 | 43 | 43 | 0 | 43 | 0 |
-| G10 | 281 | 220 | 61 | 0 | 0 |
-| all | 523 | 462 | 61 | 242 | 0 |
+| G10 | 281 | 236 | 45 | 0 | 0 |
+| all | 523 | 478 | 45 | 242 | 0 |
 
 ## Functions
 
@@ -295,14 +295,14 @@ tool keeps them.
 | `nvnBufferGetMemoryOffset` | G10 | d823c50 | 0 | implemented |  |  |  |
 | `nvnBufferGetMemoryPool` | G10 | d823c40 | 0 | implemented |  |  |  |
 | `nvnBufferInvalidateMappedRange` | G10 | d823c20 | 0 | implemented |  |  |  |
-| `nvnCommandBufferBindCoverageModulationTable` | G10 | d84cd20 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferBindCoverageModulationTable` | G10 | d84cd20 | 0 | implemented | |  | no-op for table 0 (disable), refused for a table: identity not verified |
 | `nvnCommandBufferBindImages` | G10 | d849430 | 0 | implemented |  |  |  |
-| `nvnCommandBufferBindSeparateSampler` | G10 | d848ad0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferBindSeparateSamplers` | G10 | d848d40 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferBindSeparateTexture` | G10 | d848620 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferBindSeparateTextures` | G10 | d848890 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferBindSeparateSampler` | G10 | d848ad0 | 0 | implemented | |  | refused: the host has only the combined texture table |
+| `nvnCommandBufferBindSeparateSamplers` | G10 | d848d40 | 0 | implemented | |  | refused: the host has only the combined texture table |
+| `nvnCommandBufferBindSeparateTexture` | G10 | d848620 | 0 | implemented | |  | refused: the host has only the combined texture table |
+| `nvnCommandBufferBindSeparateTextures` | G10 | d848890 | 0 | implemented | |  | refused: the host has only the combined texture table |
 | `nvnCommandBufferBindStorageBuffers` | G10 | d8481d0 | 0 | implemented |  |  |  |
-| `nvnCommandBufferBindTextures` | G10 | d848f80 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferBindTextures` | G10 | d848f80 | 0 | implemented | |  | one combined texture bind per entry (stride 8) |
 | `nvnCommandBufferBindTransformFeedbackBuffers` | G10 | d84b4d0 | 0 | implemented | unit (nvn_params) |  | library read: sent at the bind, not at the draw |
 | `nvnCommandBufferBindUniformBuffers` | G10 | d847e00 | 0 | implemented |  |  |  |
 | `nvnCommandBufferBindVertexBuffers` | G10 | d847a80 | 0 | implemented |  |  |  |
@@ -366,16 +366,16 @@ tool keeps them.
 | `nvnCommandBufferSetOuterTessellationLevels` | G10 | d84b380 | 0 | implemented | unit (nvn_params) |  | library read: sent as draw state at the next draw |
 | `nvnCommandBufferSetPatchSize` | G10 | d84b2b0 | 0 | implemented | unit (nvn_params) |  | library read: sent as draw state at the next draw, no mask |
 | `nvnCommandBufferSetPrimitiveRestart` | G10 | d84a370 | 0 | implemented | unit (nvn_params) |  | library read: sent as draw state at the next draw |
-| `nvnCommandBufferSetProgramSubroutines` | G10 | d826180 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferSetProgramSubroutines` | G10 | d826180 | 0 | implemented | |  | refused: the words of the subroutine rewrite are not known |
 | `nvnCommandBufferSetRenderEnable` | G10 | d856bb0 | 0 | implemented | unit (nvn_params) |  | library read: one draw state with the conditional form (both write 0x556) |
 | `nvnCommandBufferSetRenderEnableConditional` | G10 | d856c20 | 0 | implemented | unit (nvn_params) |  | library read: condition 0 or 1, another value is a logged no-op |
 | `nvnCommandBufferSetSampleMask` | G10 | d84a800 | 0 | implemented | |  | logged no-op: the host renders one sample |
 | `nvnCommandBufferSetScissor` | G10 | d84b280 | 0 | implemented | |  | library read: the SetScissors op with index 0 |
-| `nvnCommandBufferSetShaderScratchMemory` | G10 | d825f10 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferSetShaderScratchMemory` | G10 | d825f10 | 0 | implemented | |  | refused: two SDK constants are not known, no host scratch state |
 | `nvnCommandBufferSetStencilCullCriteria` | G10 | d84d600 | 0 | implemented | |  | logged no-op: the host has no stencil cull |
 | `nvnCommandBufferSetSubpixelPrecisionBias` | G10 | d84c770 | 0 | implemented | |  | logged no-op: the device subpixel grid is used |
-| `nvnCommandBufferSetTiledCacheAction` | G10 | d84bf30 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferSetTiledCacheTileSize` | G10 | d84c000 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferSetTiledCacheAction` | G10 | d84bf30 | 0 | implemented | |  | no-op: the host has no tiled cache |
+| `nvnCommandBufferSetTiledCacheTileSize` | G10 | d84c000 | 0 | implemented | |  | no-op: the host has no tiled cache |
 | `nvnCommandBufferSetViewport` | G10 | d84ae60 | 0 | implemented | |  | library read: the SetViewports op with index 0 |
 | `nvnCommandBufferSetViewportSwizzles` | G10 | d84afe0 | 0 | implemented | unit (nvn_params) |  | logged no-op for identity entries, else refused |
 | `nvnCommandBufferSignalEvent` | G10 | d832ef0 | 0 | implemented | unit |  |  |
@@ -392,9 +392,9 @@ tool keeps them.
 | `nvnDeviceGetCurrentTimestampInNanoseconds` | G10 | d82cff0 | 0 | stub-log |  |  |  |
 | `nvnDeviceGetDepthMode` | G10 | d82d040 | 0 | implemented |  |  |  |
 | `nvnDeviceGetProcAddress` | G10 | d82d090 | 0 | stub-log |  |  |  |
-| `nvnDeviceGetSeparateSamplerHandle` | G10 | d82d0a0 | 0 | stub-log |  |  |  |
-| `nvnDeviceGetSeparateTextureHandle` | G10 | d82d0b0 | 0 | stub-log |  |  |  |
-| `nvnDeviceGetTexelFetchHandle` | G10 | d82d0c0 | 0 | stub-log |  |  |  |
+| `nvnDeviceGetSeparateSamplerHandle` | G10 | d82d0a0 | 0 | implemented | unit (nvn_params) |  | (int64)(int32)index << 20, no tag |
+| `nvnDeviceGetSeparateTextureHandle` | G10 | d82d0b0 | 0 | implemented | unit (nvn_params) |  | nvn_texture_handle(index, 0) |
+| `nvnDeviceGetTexelFetchHandle` | G10 | d82d0c0 | 0 | implemented | unit (nvn_params) |  | nvn_texture_handle(index, 0) |
 | `nvnDeviceGetWindowOriginMode` | G10 | d82d100 | 0 | implemented |  |  |  |
 | `nvnDeviceInstallDebugCallback` | G10 | d82ccb0 | 0 | stub-log |  |  |  |
 | `nvnDeviceIsExternalDebuggerAttached` | G10 | d82d120 | 0 | stub-log |  |  |  |
@@ -434,9 +434,9 @@ tool keeps them.
 | `nvnMultisampleStateGetSampleLocationsGridEnable` | G10 | d83b520 | 0 | implemented |  |  |  |
 | `nvnMultisampleStateSetSampleLocations` | G10 | d83b530 | 0 | implemented |  |  |  |
 | `nvnProgramSetDebugLabel` | G10 | d82cd00 | 0 | implemented |  |  |  |
-| `nvnProgramSetSampleShading` | G10 | d837180 | 0 | stub-log |  |  |  |
-| `nvnProgramSetShaders` | G10 | d836760 | 0 | stub-log |  |  |  |
-| `nvnProgramSetSubroutineLinkage` | G10 | d836e90 | 0 | stub-log |  |  |  |
+| `nvnProgramSetSampleShading` | G10 | d837180 | 0 | implemented | |  | no-op: the host renders one sample |
+| `nvnProgramSetShaders` | G10 | d836760 | 0 | implemented | |  | SetShadersExt path with 16-byte entries, no control |
+| `nvnProgramSetSubroutineLinkage` | G10 | d836e90 | 0 | implemented | |  | returns 0: the host has no subroutine table |
 | `nvnQueueAcquireTexture` | G10 | d83eed0 | 0 | stub-log |  |  |  |
 | `nvnQueueBuilderGetCommandFlushThreshold` | G10 | d838540 | 0 | implemented |  |  |  |
 | `nvnQueueBuilderGetCommandMemorySize` | G10 | d838510 | 0 | implemented |  |  |  |

@@ -1163,6 +1163,16 @@ static void test_handles(void) {
     CHECK(nvn_image_handle(0x80000000u) == 0xFFFFFFFF80000000ull);
 }
 
+static void test_separate_handles(void) {
+    CHECK(nvn_texture_handle(5, 0) == 0x100000005ull);
+    CHECK(nvn_texture_handle(0xFFFFFFFFu, 0) == 0xFFFFFFFFFFFFFFFFull);
+    CHECK(nvn_separate_sampler_handle(0) == 0);
+    CHECK(nvn_separate_sampler_handle(1) == 0x100000ull);
+    CHECK(nvn_separate_sampler_handle(0xFFFFF) == 0xFFFFF00000ull);
+    CHECK(nvn_separate_sampler_handle(0x80000000u) == 0xFFF8000000000000ull);
+    CHECK(nvn_separate_sampler_handle(0xFFFFFFFFu) == 0xFFFFFFFFFFF00000ull);
+}
+
 static void test_bind_buffer_active(void) {
     CHECK(!nvn_bind_buffer_active(NVN_BIND_UNIFORM, 0x400000000ull, 0));
     CHECK(nvn_bind_buffer_active(NVN_BIND_UNIFORM, 0x400000000ull, 16));
@@ -3334,6 +3344,7 @@ int main(int argc, char** argv) {
     test_program_words_decode();
     test_program_disable();
     test_handles();
+    test_separate_handles();
     test_bind_buffer_active();
     test_state_insert_and_flag();
     test_state_setters();

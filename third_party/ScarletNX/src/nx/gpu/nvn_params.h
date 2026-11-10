@@ -67,6 +67,8 @@ uint64_t nvn_timestamp_ns(uint64_t ticks);
 #define NVN_TEXTURE_HANDLE_TAG   0x100000000ull
 uint64_t nvn_texture_handle(uint32_t texture_index, uint32_t sampler_index);
 uint64_t nvn_image_handle(uint32_t image_index);
+/* nvnDeviceGetSeparateSamplerHandle: the sampler field alone, sign extended and shifted, with no tag. */
+uint64_t nvn_separate_sampler_handle(uint32_t sampler_index);
 
 /* The four kinds of buffer bind of a command buffer. A uniform and a vertex bind are active with a nonzero size, a
    transform feedback bind with a nonzero address, and a storage bind is always active. */

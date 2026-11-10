@@ -112,6 +112,13 @@ uint64_t nvn_texture_handle(uint32_t texture_index, uint32_t sampler_index) {
 
 uint64_t nvn_image_handle(uint32_t image_index) { return (uint64_t)(int64_t)(int32_t)image_index; }
 
+/* The separate sampler handle is the sampler field of a combined handle: index bit 31 sign extends, then the u64
+   shifts into the sampler field. No tag. */
+uint64_t nvn_separate_sampler_handle(uint32_t sampler_index) {
+    uint64_t extended = (uint64_t)(int64_t)(int32_t)sampler_index;
+    return extended << NVN_HANDLE_SAMPLER_SHIFT;
+}
+
 int nvn_bind_buffer_active(NvnBindKind kind, uint64_t addr, uint64_t size) {
     switch (kind) {
     case NVN_BIND_UNIFORM: return size != 0;
