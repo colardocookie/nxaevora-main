@@ -21,6 +21,7 @@ static void test_args(void) {
     CHECK(nvn_enum_args("nvnDepthStencilStateSetStencilOp")->regs == 0x1e);
     CHECK(nvn_enum_args("nvnQueueFenceSync")->regs == 0x08);
     CHECK(nvn_enum_args("nvnCommandBufferClearColor")->regs == 0x0a);
+    CHECK(nvn_enum_args("nvnCommandBufferDrawElements")->regs == 0x06);
     CHECK(nvn_enum_args("nvnSamplerBuilderSetCompare")->regs == 0x02);
     CHECK(nvn_enum_args("nvnChannelMaskStateSetChannelMask")->regs == 0x02);
     CHECK(nvn_enum_args("nvnSamplerBuilderSetWrapMode")->regs == 0x0e);

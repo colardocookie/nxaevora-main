@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the enum trace build (md5 95cfea4d), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the enum trace build with the DrawElements mask fix (md5 25d58048), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=1` (for the enum trace run), `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -65,9 +65,7 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
   Current step: enum trace (4-u1), step (d) fix. Step (c) and run 1: `OLD-WORK_PLAN.md`, last section.
-    Fix (light edit by the caller, agreed with the user): in `gpu/nvn_enum_trace.c` set the mask of DrawElements,
-    DrawElementsInstanced and DrawElementsBaseVertex to 0x06 (w1 mode, w2 index type; w3 is the count). Add a test row
-    (`nvnCommandBufferDrawElements` 0x06), build, `ctest`, mutant, copy the exe, commit. Then run 2 by the user (`nvn_trace=1`
+    Fix DONE: the DrawElements masks are 0x06, test row added, `ctest` and mutant checked, exe copied. NOW: run 2 by the user (`nvn_trace=1`
     is still set in the `.ini`), read the `nvn-enum:` lines, compare with `analysis/enum-run1.txt`, write the values found in
     `docs/nvn-design.md` (4-u1), and ask the user to set `nvn_trace=0`. Then U2 step (a).
   - Rows near U1 that stay in other groups: EventGetMemoryPool, EventGetMemoryOffset, EventGetValue (U2). CommandBuffer
