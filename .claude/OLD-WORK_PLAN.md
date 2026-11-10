@@ -2513,3 +2513,22 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
 - Regression run (build 194dc0f-dirty = `1218e3d`, exe md5 0c3bdc15): 85 s, normal exit, no crash, 0 JIT misses, 0 failed
   shaders, 30 fps, program sets refused=0, `522 resolved addresses, 44 without a handler, 0 of them called`. No table C
   function was called (not verified in the game).
+
+## U5 (debug and the rest) and the U5 regression run (2026-11-10, moved from WORK_PLAN.md)
+
+- Step (a): library analyst tables `reports/analyst-u5-{A,B,C}-1.md` (45 functions). Checked in the disassembly: the cb
+  memory getters d824080..d8240e0, checkpoints d823c80 (`mov w0,#1; ret`), d82d120 (returns 0), PopDebugGroup d84cfc0,
+  reserve d8243d0, queue getters d83a080..d83a0f0, pool finalizers (bare `ret`), fast clear thunks d82d130..d82d160,
+  d82d180 (bare `ret`). The real end of cb command memory is cb+0x28 (cb+0x20 is the soft limit of the markers).
+- Step (b): brief `reports/brief-writer-u5-1.md`, report `reports/writer-u5-1.md`. Decisions: the 5 command and control
+  memory getters (not ControlMemorySize) and the 3 queue usage getters refuse with x0 = 0 (the host has no cursor, a value
+  would be a faked success). ControlMemorySize = chunk size, 0x10 before the first Add. Fast clear returns 1, and 0 outside
+  formats 10..156 (float) and 11..120 (int) (checked d852338, d853f98). QueueAcquireTexture shares the image pick of
+  WindowAcquireTexture (`window_acquire_texture`). WindowFinalize removes the host record (frame jobs look it up by
+  generation). GetProcAddress d82d090 has no handler.
+- Step (c): commit `11978be`, 44 handlers. The caller fixed one writer fault: `has_sync` came from sync 0, so a
+  WindowAcquireTexture with sync 0 passed. ctest passes except `tracked_material` (`driver_workflow` passes alone). 3
+  mutants caught (`!adds`, float max 155, int min 10). `nvn-coverage.md`: 1 row `stub-log` (GetProcAddress).
+- Regression run (exe md5 a1870e3a): 57 s, normal exit, no crash, 0 JIT misses, 0 failed shaders, 30 fps, no
+  `AcquireTexture failed`, `522 resolved addresses, 0 without a handler, 0 of them called`. The user saw a normal image in
+  the field and a menu. No U5 function was called (not verified in the game).
