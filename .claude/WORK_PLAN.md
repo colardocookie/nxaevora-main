@@ -12,7 +12,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - The exe in `game/` is the enum trace build with the DrawElements mask fix (md5 25d58048), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
-  `nvn_trace=1` (for the enum trace run), `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
+  `nvn_trace=0` (the user was asked to set it on 2026-11-10, check it), `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
 - GitHub PRs #2 to #6 (opt-in 60/120 fps clocks, colardocookie) and issue #7 (a contributor offer): ON HOLD, frame rate is later
   work. The user replies to them. Facts: `OLD-WORK_PLAN.md`, section "PR #1 NVN part taken".
 - Scratchpad: `C:/Users/Azunel/AppData/Roaming/orca/chat-scratch/f41e32fc08995f90ab471cdfd0b7bdb8` (`analysis/` holds disassembly
@@ -64,11 +64,8 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: enum trace (4-u1), step (d) fix. Step (c) and run 1: `OLD-WORK_PLAN.md`, last section.
-    Fix DONE. Run 2 DONE (`analysis/enum-run2.txt`, result in `docs/nvn-design.md` 4-u1). NOW: the user sets `nvn_trace=0`,
-    then U2 step (a). Old text: run 2 by the user (`nvn_trace=1`
-    is still set in the `.ini`), read the `nvn-enum:` lines, compare with `analysis/enum-run1.txt`, write the values found in
-    `docs/nvn-design.md` (4-u1), and ask the user to set `nvn_trace=0`. Then U2 step (a).
+  Current step: U2 step (a), the library analyst table of the events and sync functions. The enum trace (4-u1) is done:
+    `OLD-WORK_PLAN.md`, last section. Its values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
   - Rows near U1 that stay in other groups: EventGetMemoryPool, EventGetMemoryOffset, EventGetValue (U2). CommandBuffer
     Get/SetCopyRowStride and Get/SetCopyImageStride (U3, copies). CommandBuffer command and control memory getters, memory
     callback getters (U5). ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).

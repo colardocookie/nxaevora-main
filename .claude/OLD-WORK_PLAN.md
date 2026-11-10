@@ -2318,3 +2318,10 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 - Error of the analyst table: DrawElements, DrawElementsInstanced and DrawElementsBaseVertex have mode w1, index type w2, count
   w3 (log values 6, 0x21c, 0x204; host handler `nvn_native.c:3426` reads type x[2], count x[3]). The mask 0x0a logs the count
   and fills the seen set of DrawElements (one "seen set full" line). The index type is not logged.
+
+## Enum argument trace (4-u1) fix and second run (2026-11-10, moved from WORK_PLAN.md)
+
+- Commit `6f98b42`: DrawElements, DrawElementsInstanced and DrawElementsBaseVertex masks 0x0a to 0x06, test row
+  `nvnCommandBufferDrawElements` 0x06. `ctest` passes except `tracked_material`, the mutant (0x0a) is caught. Exe md5 25d58048.
+- Run 2 (user, update program, `nvn_trace=1`, no crash line): 277 distinct values, all 63 functions. Same set as run 1 except
+  DrawElements: mode 4 and index type 1 only. Saved in `analysis/enum-run2.txt`. Result in `docs/nvn-design.md` 4-u1 (commit `6f09358`).
