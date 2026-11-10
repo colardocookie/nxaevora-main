@@ -2422,3 +2422,14 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   refusal), Downsample lacked the close marker 0x91000002, the buffer side depth word was 0, two test headers had count 4
   for 6 words, a missing include in `tests/nvn_replay.c`. 7 mutants failed. `ctest` passes except `tracked_material`.
 - Not verified in the game: no `main` caller of the 6 functions.
+
+## U3 patch 3 (2026-11-10, moved from WORK_PLAN.md)
+
+- Brief `reports/brief-writer-u3-3.md`, patch `patches/writer-u3-3.patch`, report `reports/writer-u3-3.md`. Row:
+  nvnMemoryPoolMapVirtual. Virtual pools (flag 0x200, storage 0, size a multiple of 64 KiB) are accepted.
+- Change of design item 4: the host maps each 64 KiB page with `nvn_gpu_map_range`, not `as_remap` (host pools have no
+  nvmap handle). The pool record keeps the CPU address of each page. Finalize unmaps them.
+- `gmmu_map`/`gmmu_unmap` call `vkr_mapping_begin`/`end` and `gpu_mem_written`, so the renderer caches see a changed page.
+- Caller fix: the virtual range starts on a 64 KiB page (the writer used 4 KiB). 3 mutants failed. `ctest` passes except
+  `tracked_material` (`gui_sdl_events` timed out in the parallel run and passes alone).
+- Not handled: a physical pool finalized under a mapping. Not verified in the game: no `main` caller.

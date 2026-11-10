@@ -355,6 +355,8 @@ uint32_t nvn_queue_init_device_words(const NvnQueueDeviceWords* dev, uint32_t wi
 #define NVN_POOL_PAGE_SIZE NVN_POOL_STORAGE_ALIGNMENT
 #define NVN_POOL_GPU_BASE 0x400000000ull
 #define NVN_POOL_GPU_END (1ull << 40)
+/* A virtual pool maps pages of the library's page size (the NvRm device's 64 KiB), not the storage alignment. */
+#define NVN_POOL_VIRTUAL_PAGE_SIZE 0x10000ull
 
 typedef struct {
     uint64_t device, storage, size;
@@ -388,6 +390,32 @@ int nvn_pool_gpu_allocate(uint64_t cursor, uint64_t size, uint64_t page_size,
                           uint64_t* address, uint64_t* next);
 uint64_t nvn_memory_pool_map(uint32_t flags, uint64_t storage);
 uint32_t nvn_memory_pool_flags(uint32_t flags);
+
+/* nvnMemoryPoolMapVirtual: requests of stride 0x28, at most 0x200 in one batch (the library's remap limit). */
+#define NVN_POOL_MAP_VIRTUAL_BATCH 0x200u
+#define NVN_POOL_MAP_VIRTUAL_REQUEST_BYTES 0x28u
+/* One NVNmappingRequest: the physical pool (0 unmaps), the physical offset, the virtual offset, the size and the
+   storage class. The host ignores the storage class. */
+typedef struct {
+    uint64_t physical_pool, physical_offset, virtual_offset, size;
+    uint32_t storage_class;
+} NvnMapVirtualRequest;
+typedef enum {
+    NVN_MAP_VIRTUAL_OK = 0,
+    NVN_MAP_VIRTUAL_SKIP,       /* the size is 0 after the 64 KiB truncation: the request changes nothing */
+    NVN_MAP_VIRTUAL_BAD_VIRTUAL /* the virtual range does not fit the virtual pool */
+} NvnMapVirtualResult;
+/* One checked request, in 64 KiB pages. physical_base is 0 for an unmap and otherwise set by the handler, which checks
+   the physical pool's record and range with nvn_pool_range_fits. */
+typedef struct {
+    uint64_t physical_pool, physical_offset, physical_base, virtual_base, size;
+    uint32_t pages;
+} NvnMapVirtualRange;
+/* Truncates the request to 64 KiB pages, as the library shifts by 16, and checks the virtual range. */
+NvnMapVirtualResult nvn_memory_pool_map_virtual_range(const NvnMapVirtualRequest* request, uint64_t virtual_base,
+                                                      uint64_t virtual_size, NvnMapVirtualRange* range);
+/* The request count of the next batch after done requests; 0 when done has reached count. */
+uint32_t nvn_pool_map_virtual_batch(uint32_t count, uint32_t done);
 
 #define NVN_SAMPLER_FILTER_DEFAULT 1u
 #define NVN_SAMPLER_WRAP_DEFAULT 1u

@@ -30,8 +30,8 @@ tool keeps them.
 | G7 | 4 | 4 | 0 | 4 | 0 |
 | G8 | 112 | 112 | 0 | 112 | 0 |
 | G9 | 43 | 43 | 0 | 43 | 0 |
-| G10 | 281 | 192 | 89 | 0 | 0 |
-| all | 523 | 434 | 89 | 242 | 0 |
+| G10 | 281 | 193 | 88 | 0 | 0 |
+| all | 523 | 435 | 88 | 242 | 0 |
 
 ## Functions
 
@@ -428,7 +428,7 @@ tool keeps them.
 | `nvnMemoryPoolFlushMappedRange` | G10 | d833ee0 | 0 | implemented |  |  |  |
 | `nvnMemoryPoolGetSize` | G10 | d833f80 | 0 | implemented |  |  |  |
 | `nvnMemoryPoolInvalidateMappedRange` | G10 | d833ef0 | 0 | implemented |  |  |  |
-| `nvnMemoryPoolMapVirtual` | G10 | d833f10 | 0 | stub-log |  |  |  |
+| `nvnMemoryPoolMapVirtual` | G10 | d833f10 | 0 | implemented | unit |  |  |
 | `nvnMultisampleStateGetSampleLocationsEnable` | G10 | d83b470 | 0 | implemented |  |  |  |
 | `nvnMultisampleStateGetSampleLocationsGrid` | G10 | d83b480 | 0 | implemented |  |  |  |
 | `nvnMultisampleStateGetSampleLocationsGridEnable` | G10 | d83b520 | 0 | implemented |  |  |  |

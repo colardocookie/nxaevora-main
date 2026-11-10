@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the U3 patch 2 build (md5 27d2edfa), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the U3 patch 3 build (md5 a2321187), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=0` (the user was asked to set it on 2026-11-10, check it), `nvn_native=0` (the user must set 1 for the next native run), `nvn_selftest=0`. After each build: `tasklist` shows no game, then copy the exe.
@@ -62,10 +62,9 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U3 step (b3), patch 3 of 3: MapVirtual (design item 4). Write the brief (template
-    `reports/brief-writer-u3-2.md`), make a worktree, launch the code writer. Patch 2 is committed (record in
-    `OLD-WORK_PLAN.md`, "U3 patch 2"). Design: `docs/nvn-design.md`, "U3 design of the open items". U2 exectest
-    cases come in 4-u3.
+  Current step: U4 step (a), the library analyst tables of the draw extras. U3 is done (3 patches, records in
+    `OLD-WORK_PLAN.md`, "U3 patch 3"). Templates: `reports/brief-analyst-u3-common.md`, `brief-analyst-u3-A.md`.
+    U2 and U3 exectest cases come in 4-u3.
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
   - Rows near U1 that stay in other groups: CommandBuffer command and control memory getters, memory callback getters (U5).
     ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).

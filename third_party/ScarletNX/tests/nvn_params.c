@@ -221,8 +221,8 @@ static void test_memory_pool_params(void) {
     CHECK(flags == (NVN_POOL_PHYSICAL | 2 | 8));
     b.size = 0x10000;
     CHECK(nvn_memory_pool_params(&b, 0x10000, &flags) == NVN_POOL_OK);
-    b.flags = NVN_POOL_VIRTUAL | 0x3f;
-    CHECK(nvn_memory_pool_params(&b, 0x10000, &flags) == NVN_POOL_UNSUPPORTED_VIRTUAL);
+    b.flags = NVN_POOL_VIRTUAL | 0x3f; /* a virtual pool takes no storage; this one still has 0x1000 */
+    CHECK(nvn_memory_pool_params(&b, 0x10000, &flags) == NVN_POOL_INVALID_STORAGE);
     CHECK(flags == (NVN_POOL_VIRTUAL | 1 | 32));
     b.flags = NVN_POOL_IMPORT;
     CHECK(nvn_memory_pool_params(&b, 0x10000, &flags) == NVN_POOL_UNSUPPORTED_IMPORT);
@@ -263,6 +263,63 @@ static void test_pool_gpu_allocate(void) {
     CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_BASE, 0x1000, 0x800, &address, &next));
     CHECK(!nvn_pool_gpu_allocate(NVN_POOL_GPU_BASE - 1, 0x1000, 0x1000, &address, &next));
     CHECK(address == 7 && next == 9);
+}
+
+static void test_memory_pool_virtual_params(void) {
+    NvnMemoryPoolBuilder b = {.storage = 0, .size = 0x20000, .flags = NVN_POOL_VIRTUAL};
+    uint32_t flags;
+    CHECK(nvn_memory_pool_params(&b, NVN_POOL_PAGE_SIZE, &flags) == NVN_POOL_OK);
+    CHECK(flags == (NVN_POOL_VIRTUAL | NVN_POOL_CPU_NO_ACCESS | NVN_POOL_GPU_CACHED));
+    b.storage = 0x1000;
+    CHECK(nvn_memory_pool_params(&b, NVN_POOL_PAGE_SIZE, &flags) == NVN_POOL_INVALID_STORAGE);
+    b.storage = 0;
+    b.size = 0;
+    CHECK(nvn_memory_pool_params(&b, NVN_POOL_PAGE_SIZE, &flags) == NVN_POOL_INVALID_STORAGE);
+    b.size = 0x18000;
+    CHECK(nvn_memory_pool_params(&b, NVN_POOL_PAGE_SIZE, &flags) == NVN_POOL_INVALID_STORAGE);
+}
+
+static void test_map_virtual_range(void) {
+    NvnMapVirtualRequest req;
+    NvnMapVirtualRange r;
+    /* (a) both offsets and the size truncate to the 64 KiB page, as the library shifts by 16. */
+    req = (NvnMapVirtualRequest){.physical_pool = 0x1000, .physical_offset = 0x1FFFF,
+                                 .virtual_offset = 0x1FFFF, .size = 0x2FFFF};
+    CHECK(nvn_memory_pool_map_virtual_range(&req, 0x400000000ull, 0x40000, &r) == NVN_MAP_VIRTUAL_OK);
+    CHECK(r.physical_pool == 0x1000 && r.physical_offset == 0x10000);
+    CHECK(r.virtual_base == 0x400000000ull + 0x10000 && r.size == 0x20000 && r.pages == 2);
+    /* (b) a size below one page changes nothing. */
+    req = (NvnMapVirtualRequest){.size = 0xFFFF};
+    CHECK(nvn_memory_pool_map_virtual_range(&req, 0x400000000ull, 0x40000, &r) == NVN_MAP_VIRTUAL_SKIP);
+    /* (c) the virtual range must fit the virtual pool. */
+    req = (NvnMapVirtualRequest){.virtual_offset = 0x30000, .size = 0x20000};
+    CHECK(nvn_memory_pool_map_virtual_range(&req, 0x400000000ull, 0x40000, &r) == NVN_MAP_VIRTUAL_BAD_VIRTUAL);
+    /* (d) the physical range must fit the physical pool, checked by the handler with nvn_pool_range_fits. */
+    req = (NvnMapVirtualRequest){.physical_pool = 0x1000, .physical_offset = 0x30000, .size = 0x20000};
+    CHECK(nvn_memory_pool_map_virtual_range(&req, 0x400000000ull, 0x40000, &r) == NVN_MAP_VIRTUAL_OK);
+    CHECK(!nvn_pool_range_fits(0x40000, r.physical_offset, r.size));
+    /* (e) handle 0 unmaps and needs no physical range. */
+    req = (NvnMapVirtualRequest){.virtual_offset = 0x10000, .size = 0x10000};
+    CHECK(nvn_memory_pool_map_virtual_range(&req, 0x400000000ull, 0x40000, &r) == NVN_MAP_VIRTUAL_OK);
+    CHECK(r.physical_pool == 0 && r.pages == 1);
+    /* (f) an offset plus size that passes the u64 range is refused. */
+    req = (NvnMapVirtualRequest){.virtual_offset = 0xFFFFFFFFFFFF0000ull, .size = 0x20000};
+    CHECK(nvn_memory_pool_map_virtual_range(&req, 0, UINT64_MAX, &r) == NVN_MAP_VIRTUAL_BAD_VIRTUAL);
+}
+
+static void test_map_virtual_batches(void) {
+    uint32_t done = 0, batches = 0, first = 0, second = 0, third = 0;
+    while (done < 0x401) {
+        const uint32_t n = nvn_pool_map_virtual_batch(0x401, done);
+        CHECK(n != 0 && n <= NVN_POOL_MAP_VIRTUAL_BATCH);
+        if (batches == 0) first = n;
+        else if (batches == 1) second = n;
+        else if (batches == 2) third = n;
+        done += n;
+        batches++;
+    }
+    CHECK(batches == 3 && first == 0x200 && second == 0x200 && third == 1);
+    CHECK(nvn_pool_map_virtual_batch(0x401, 0x401) == 0);
 }
 
 
@@ -3182,6 +3239,9 @@ int main(int argc, char** argv) {
     test_memory_pool_defaults();
     test_memory_pool_params();
     test_pool_gpu_allocate();
+    test_memory_pool_virtual_params();
+    test_map_virtual_range();
+    test_map_virtual_batches();
     test_descriptor_offset();
     test_pool_range_fits();
     test_buffer_check();

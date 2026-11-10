@@ -599,6 +599,10 @@ static QueueRec* queue_rec(u64 addr, const char* operation) {
 typedef struct {
     uint64_t device, storage, size, gpu_address;
     uint32_t flags;
+    /* A virtual pool owns one entry for each 64 KiB page: the CPU address that the page maps, 0 unmapped.
+       A normal pool has no table (page_cpu NULL, page_count 0). */
+    uint64_t* page_cpu;
+    uint32_t page_count;
 } MemoryPoolRec;
 typedef struct {
     uint64_t memory_pool, offset;
@@ -711,11 +715,34 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
         return;
     }
     uint64_t address, next;
-    if (!nvn_pool_gpu_allocate(pool_gpu_cursor, b.size, NVN_POOL_PAGE_SIZE, &address, &next)) {
+    /* MapVirtual maps whole 64 KiB pages, so a virtual range starts on one. */
+    const uint64_t gpu_page = (flags & NVN_POOL_VIRTUAL) ? NVN_POOL_VIRTUAL_PAGE_SIZE : NVN_POOL_PAGE_SIZE;
+    if (!nvn_pool_gpu_allocate(pool_gpu_cursor, b.size, gpu_page, &address, &next)) {
         LOG("nvn-native: MemoryPoolInitialize pool=%llx size=%llx GPU address allocation failed\n",
             (unsigned long long)c->x[0], (unsigned long long)b.size);
         nvn_objtab_remove(&objs, c->x[0]);
         c->x[0] = 0;
+        pm_unlock(&objs_lock);
+        return;
+    }
+    MemoryPoolRec* p = o->data;
+    if (flags & NVN_POOL_VIRTUAL) {
+        /* A virtual pool reserves the range and maps nothing: nvnMemoryPoolMapVirtual fills the pages. */
+        const uint32_t pages = (uint32_t)(b.size / NVN_POOL_VIRTUAL_PAGE_SIZE);
+        uint64_t* table = calloc(pages ? pages : 1, sizeof *table);
+        if (!table) {
+            LOG("nvn-native: MemoryPoolInitialize pool=%llx virtual page table of %u pages cannot be allocated\n",
+                (unsigned long long)c->x[0], pages);
+            nvn_objtab_remove(&objs, c->x[0]);
+            c->x[0] = 0;
+            pm_unlock(&objs_lock);
+            return;
+        }
+        *p = (MemoryPoolRec){.device = b.device, .storage = 0, .size = b.size,
+                             .gpu_address = address, .flags = flags,
+                             .page_cpu = table, .page_count = pages};
+        pool_gpu_cursor = next;
+        c->x[0] = 1;
         pm_unlock(&objs_lock);
         return;
     }
@@ -728,7 +755,6 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
         pm_unlock(&objs_lock);
         return;
     }
-    MemoryPoolRec* p = o->data;
     *p = (MemoryPoolRec){.device = b.device, .storage = b.storage, .size = b.size,
                          .gpu_address = address, .flags = flags};
     pool_gpu_cursor = next;
@@ -741,8 +767,17 @@ static void h_memory_pool_finalize(CPU* c, u64 entry) {
     pm_lock(&objs_lock);
     NvnObj* o = nvn_objtab_find(&objs, c->x[0]);
     if (o && o->kind == NVN_OBJ_MEMORY_POOL) {
-        const MemoryPoolRec* p = o->data;
-        nvn_gpu_unmap_range(p->gpu_address, p->storage, p->size);
+        MemoryPoolRec* p = o->data;
+        if (p->page_cpu) {
+            /* A physical pool finalized while a virtual pool maps it stays mapped here, as the library does not check it. */
+            for (uint32_t i = 0; i < p->page_count; i++)
+                if (p->page_cpu[i])
+                    nvn_gpu_unmap_range(p->gpu_address + (u64)i * NVN_POOL_VIRTUAL_PAGE_SIZE, p->page_cpu[i],
+                                        NVN_POOL_VIRTUAL_PAGE_SIZE);
+            free(p->page_cpu);
+        } else {
+            nvn_gpu_unmap_range(p->gpu_address, p->storage, p->size);
+        }
         nvn_objtab_remove(&objs, c->x[0]);
     }
     pm_unlock(&objs_lock);
@@ -763,6 +798,112 @@ static void h_memory_pool_get_size(CPU* c, u64 entry) {
     (void)entry;
     pm_lock(&objs_lock);
     c->x[0] = memory_pool_rec(c->x[0])->size;
+    pm_unlock(&objs_lock);
+}
+
+/* U3: nvnMemoryPoolMapVirtual. A virtual pool maps 64 KiB pages of a physical pool, or unmaps them when the request
+   names no physical pool. The handler owns the page table that finalize clears. */
+#define POOL_MAP_VIRTUAL_LOG_LIMIT 32u /* log lines for the faults of nvnMemoryPoolMapVirtual */
+
+/* Caller holds objs_lock. Applies one checked request to the page table and the GPU page table. */
+static int apply_virtual_range(MemoryPoolRec* pool, const NvnMapVirtualRange* range) {
+    static const char* const name = "nvnMemoryPoolMapVirtual";
+    for (uint32_t i = 0; i < range->pages; i++) {
+        const uint64_t offset = (uint64_t)i * NVN_POOL_VIRTUAL_PAGE_SIZE;
+        const uint64_t gva = range->virtual_base + offset;
+        uint64_t* slot = &pool->page_cpu[(gva - pool->gpu_address) / NVN_POOL_VIRTUAL_PAGE_SIZE];
+        if (*slot) {
+            nvn_gpu_unmap_range(gva, *slot, NVN_POOL_VIRTUAL_PAGE_SIZE);
+            *slot = 0;
+        }
+        if (range->physical_base) {
+            const uint64_t cpu = range->physical_base + offset;
+            if (!nvn_gpu_map_range(gva, cpu, NVN_POOL_VIRTUAL_PAGE_SIZE)) {
+                LOG_LIMIT(POOL_MAP_VIRTUAL_LOG_LIMIT, "nvn-native: %s gva=%llx cpu=%llx cannot be mapped\n",
+                          name, (unsigned long long)gva, (unsigned long long)cpu);
+                return 0;
+            }
+            *slot = cpu;
+        }
+    }
+    return 1;
+}
+
+/* Caller holds objs_lock and confirmed that requests[0, batch) is readable. Checks the whole batch before it changes a
+   page, so a bad request leaves the batch unapplied; batches before it stay. */
+static int map_virtual_batch(MemoryPoolRec* pool, u64 pool_addr, u64 requests, u32 batch, u32 first_index) {
+    static const char* const name = "nvnMemoryPoolMapVirtual";
+    NvnMapVirtualRange ranges[NVN_POOL_MAP_VIRTUAL_BATCH];
+    for (u32 i = 0; i < batch; i++) {
+        const u64 at = requests + (u64)i * NVN_POOL_MAP_VIRTUAL_REQUEST_BYTES;
+        const NvnMapVirtualRequest request = {
+            gr64(at), gr64(at + 8), gr64(at + 0x10), gr64(at + 0x18), gr32(at + 0x20)
+        };
+        const NvnMapVirtualResult result =
+            nvn_memory_pool_map_virtual_range(&request, pool->gpu_address, pool->size, &ranges[i]);
+        if (result == NVN_MAP_VIRTUAL_SKIP) continue;
+        if (result != NVN_MAP_VIRTUAL_OK) {
+            LOG_LIMIT(POOL_MAP_VIRTUAL_LOG_LIMIT,
+                      "nvn-native: %s pool=%llx request=%u physical=%llx offset=%llx virtual=%llx size=%llx "
+                      "result=%u\n",
+                      name, (unsigned long long)pool_addr, first_index + i, (unsigned long long)request.physical_pool,
+                      (unsigned long long)request.physical_offset, (unsigned long long)request.virtual_offset,
+                      (unsigned long long)request.size, (unsigned)result);
+            return 0;
+        }
+        if (!ranges[i].physical_pool) continue;
+        const MemoryPoolRec* physical = known_record(ranges[i].physical_pool, NVN_OBJ_MEMORY_POOL);
+        if (!physical || (physical->flags & NVN_POOL_VIRTUAL)) {
+            LOG_LIMIT(POOL_MAP_VIRTUAL_LOG_LIMIT,
+                      "nvn-native: %s pool=%llx request=%u physical=%llx is not a physical pool\n",
+                      name, (unsigned long long)pool_addr, first_index + i, (unsigned long long)ranges[i].physical_pool);
+            return 0;
+        }
+        if (!nvn_pool_range_fits(physical->size, ranges[i].physical_offset, ranges[i].size)) {
+            LOG_LIMIT(POOL_MAP_VIRTUAL_LOG_LIMIT,
+                      "nvn-native: %s pool=%llx request=%u physical=%llx offset=%llx size=%llx does not fit its "
+                      "pool of %llx bytes\n",
+                      name, (unsigned long long)pool_addr, first_index + i, (unsigned long long)ranges[i].physical_pool,
+                      (unsigned long long)ranges[i].physical_offset, (unsigned long long)ranges[i].size,
+                      (unsigned long long)physical->size);
+            return 0;
+        }
+        ranges[i].physical_base = physical->storage + ranges[i].physical_offset;
+    }
+    for (u32 i = 0; i < batch; i++)
+        if (ranges[i].pages && !apply_virtual_range(pool, &ranges[i])) return 0;
+    return 1;
+}
+
+static void h_memory_pool_map_virtual(CPU* c, u64 entry) {
+    (void)entry;
+    static const char* const name = "nvnMemoryPoolMapVirtual";
+    pm_lock(&objs_lock);
+    NvnObj* o = nvn_objtab_find(&objs, c->x[0]);
+    MemoryPoolRec* pool = o && o->kind == NVN_OBJ_MEMORY_POOL ? o->data : NULL;
+    const u32 count = (u32)c->x[1];
+    const u64 requests = c->x[2];
+    int ok = 1;
+    /* A count of 0 gives true for a virtual pool, as the library's loop does. A normal pool returns false. */
+    if (!pool || !(pool->flags & NVN_POOL_VIRTUAL)) {
+        LOG_LIMIT(POOL_MAP_VIRTUAL_LOG_LIMIT, "nvn-native: %s pool=%llx is not a virtual pool\n",
+                  name, (unsigned long long)c->x[0]);
+        ok = 0;
+    }
+    for (u32 done = 0; ok && done < count;) {
+        const u32 batch = nvn_pool_map_virtual_batch(count, done);
+        const u64 at = requests + (u64)done * NVN_POOL_MAP_VIRTUAL_REQUEST_BYTES;
+        if (!native_guest_readable(at, (u64)batch * NVN_POOL_MAP_VIRTUAL_REQUEST_BYTES)) {
+            LOG_LIMIT(POOL_MAP_VIRTUAL_LOG_LIMIT,
+                      "nvn-native: %s pool=%llx requests=%llx count=%u are unreadable\n",
+                      name, (unsigned long long)c->x[0], (unsigned long long)at, batch);
+            ok = 0;
+            break;
+        }
+        ok = map_virtual_batch(pool, c->x[0], at, batch, done);
+        done += batch;
+    }
+    c->x[0] = (u64)ok;
     pm_unlock(&objs_lock);
 }
 
@@ -6248,6 +6389,7 @@ static const NativeProc native_procs[] = {
     {"nvnMemoryPoolFlushMappedRange", h_memory_pool_flush_mapped_range},
     {"nvnMemoryPoolInvalidateMappedRange", h_memory_pool_invalidate_mapped_range},
     {"nvnMemoryPoolMap", h_memory_pool_map},
+    {"nvnMemoryPoolMapVirtual", h_memory_pool_map_virtual},
     {"nvnMemoryPoolGetFlags", h_memory_pool_get_flags},
     {"nvnMemoryPoolGetSize", h_memory_pool_get_size},
     {"nvnMemoryPoolGetBufferAddress", h_memory_pool_get_buffer_address},

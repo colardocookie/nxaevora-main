@@ -795,10 +795,13 @@ The host replays NVN through the Eden based engines (`maxwell/dma.c`, `fermi2d.c
    the host adds none.
 4. MemoryPoolMapVirtual. Today the host refuses a pool with flag 0x200 (`NVN_POOL_UNSUPPORTED_VIRTUAL`). The host makes a virtual
    pool as a reserved GPU address range without storage (size a multiple of 64 KiB, storage NULL, as vtbl[0] d83ff88 checks).
-   MapVirtual does what vtbl[0x60] does: batches of at most 0x200 requests of stride 0x28, each turned into a remap entry
-   (64 KiB pages, low bits truncated), given to the remap code of `nvdrv.c` (`as_remap`, exported as a helper). A failed batch
-   returns false. A page outside every request stays unmapped, and an engine access to it gets the existing log line of an
-   unmapped address.
+   MapVirtual does what vtbl[0x60] does: batches of at most 0x200 requests of stride 0x28 (+0 physical pool, 0 unmaps,
+   +8 physical offset, +0x10 virtual offset, +0x18 size, +0x20 storage class, ignored), in 64 KiB pages with the low bits
+   truncated. Host pools have no nvmap handle, so the host does not use `as_remap`: it maps each page with
+   `nvn_gpu_map_range` and keeps the mapped CPU address of each page in the pool record, which finalize unmaps. The
+   virtual range starts on a 64 KiB page. The whole batch is checked before a page changes. A bad request returns false,
+   and the batches before it stay, as in the library. A page outside every request stays unmapped, and an engine access
+   to it gets the existing log line of an unmapped address. A physical pool finalized under a mapping is not handled.
 5. DiscardColor and DiscardDepthStencil. Method 0x3DE makes the contents of the target undefined. Keeping the contents is one
    allowed result, so the handler is a no-op with one log line. The gate `device+0xA8` is 0, so the library always emits the
    word. The index of DiscardColor is checked (0 to 7) as the library masks it.

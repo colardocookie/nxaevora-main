@@ -502,8 +502,11 @@ NvnPoolResult nvn_memory_pool_params(const NvnMemoryPoolBuilder* b, uint64_t pag
     if (f & NVN_POOL_PHYSICAL) gpu = NVN_POOL_GPU_NO_ACCESS;
     *flags = (f & ~(NVN_POOL_CPU_NO_ACCESS | NVN_POOL_CPU_UNCACHED | NVN_POOL_CPU_CACHED |
                     NVN_POOL_GPU_NO_ACCESS | NVN_POOL_GPU_UNCACHED | NVN_POOL_GPU_CACHED)) | cpu | gpu;
-    if (f & NVN_POOL_VIRTUAL) return NVN_POOL_UNSUPPORTED_VIRTUAL;
     if (f & NVN_POOL_IMPORT) return NVN_POOL_UNSUPPORTED_IMPORT;
+    /* A virtual pool reserves GPU addresses only: no storage, a whole number of 64 KiB pages (vtbl[0] d83ff88). */
+    if (f & NVN_POOL_VIRTUAL)
+        return b->storage || !b->size || b->size % NVN_POOL_VIRTUAL_PAGE_SIZE ? NVN_POOL_INVALID_STORAGE
+                                                                              : NVN_POOL_OK;
     if (!b->storage || !b->size || b->storage % NVN_POOL_STORAGE_ALIGNMENT ||
         b->size % NVN_POOL_STORAGE_ALIGNMENT) return NVN_POOL_INVALID_STORAGE;
     if (page_size < NVN_POOL_STORAGE_ALIGNMENT || page_size % NVN_POOL_STORAGE_ALIGNMENT ||
@@ -549,6 +552,34 @@ uint64_t nvn_memory_pool_map(uint32_t flags, uint64_t storage) {
 }
 
 uint32_t nvn_memory_pool_flags(uint32_t flags) { return flags & NVN_POOL_PUBLIC_FLAGS; }
+
+NvnMapVirtualResult nvn_memory_pool_map_virtual_range(const NvnMapVirtualRequest* request, uint64_t virtual_base,
+                                                      uint64_t virtual_size, NvnMapVirtualRange* range) {
+    const uint64_t page = NVN_POOL_VIRTUAL_PAGE_SIZE;
+    const uint64_t virtual_offset = request->virtual_offset & ~(page - 1);
+    const uint64_t size = request->size & ~(page - 1);
+    uint64_t pages;
+    range->physical_pool = request->physical_pool;
+    range->physical_offset = request->physical_offset & ~(page - 1);
+    range->physical_base = 0;
+    range->virtual_base = 0;
+    range->size = size;
+    range->pages = 0;
+    if (!size) return NVN_MAP_VIRTUAL_SKIP;
+    if (!nvn_pool_range_fits(virtual_size, virtual_offset, size)) return NVN_MAP_VIRTUAL_BAD_VIRTUAL;
+    pages = size / page;
+    if (pages > UINT32_MAX) return NVN_MAP_VIRTUAL_BAD_VIRTUAL;
+    range->virtual_base = virtual_base + virtual_offset;
+    range->pages = (uint32_t)pages;
+    return NVN_MAP_VIRTUAL_OK;
+}
+
+uint32_t nvn_pool_map_virtual_batch(uint32_t count, uint32_t done) {
+    uint32_t left;
+    if (done >= count) return 0;
+    left = count - done;
+    return left < NVN_POOL_MAP_VIRTUAL_BATCH ? left : NVN_POOL_MAP_VIRTUAL_BATCH;
+}
 
 const NvnSamplerDeviceWords nvn_sampler_device_words = {
     NVN_SAMPLER_DEVICE_LOD_BIAS, NVN_SAMPLER_DEVICE_FILTER_FLAGS
