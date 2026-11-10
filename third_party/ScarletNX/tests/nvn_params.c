@@ -133,6 +133,24 @@ static void test_timestamp(void) {
         CHECK(nvn_timestamp_ns(samples[i]) == (uint64_t)((unsigned __int128)samples[i] * 625 / 384));
 }
 
+static void test_u5_control_memory_size(void) {
+    CHECK(nvn_control_memory_size(0, 0, 0) == NVN_CONTROL_MEMORY_RESERVE);
+    CHECK(nvn_control_memory_size(0x1000, 0x2000, 1) == 0x1000);
+    CHECK(nvn_control_memory_size(0x1000, 0x1000, 1) == 0);
+}
+
+static void test_u5_fast_clear_format(void) {
+    CHECK(!nvn_fast_clear_color_format_ok(NVN_FAST_CLEAR_KIND_FLOAT, 9));
+    CHECK(nvn_fast_clear_color_format_ok(NVN_FAST_CLEAR_KIND_FLOAT, 10));
+    CHECK(nvn_fast_clear_color_format_ok(NVN_FAST_CLEAR_KIND_FLOAT, 156));
+    CHECK(!nvn_fast_clear_color_format_ok(NVN_FAST_CLEAR_KIND_FLOAT, 157));
+    CHECK(!nvn_fast_clear_color_format_ok(NVN_FAST_CLEAR_KIND_FLOAT, 0xFFFFFFFFu));
+    CHECK(!nvn_fast_clear_color_format_ok(NVN_FAST_CLEAR_KIND_INT, 10));
+    CHECK(nvn_fast_clear_color_format_ok(NVN_FAST_CLEAR_KIND_INT, 11));
+    CHECK(nvn_fast_clear_color_format_ok(NVN_FAST_CLEAR_KIND_INT, 120));
+    CHECK(!nvn_fast_clear_color_format_ok(NVN_FAST_CLEAR_KIND_INT, 121));
+}
+
 /* the builder that the game made in the run: flags 0, command 0x20000, compute 0x40000, control 0x20000 */
 static void test_queue_memory(void) {
     NvnQueueBuilder b;
@@ -3312,6 +3330,8 @@ int main(int argc, char** argv) {
     if (argc == 2) test_texture_queries(argv[1]);
     test_device_integer();
     test_timestamp();
+    test_u5_control_memory_size();
+    test_u5_fast_clear_format();
     test_queue_memory();
     test_queue_init_device_words();
     test_queue_defaults();

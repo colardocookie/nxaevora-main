@@ -103,6 +103,21 @@ uint64_t nvn_timestamp_ns(uint64_t ticks) {
     return whole * TIMESTAMP_NUM + rest * TIMESTAMP_NUM / TIMESTAMP_DEN;
 }
 
+/* nvnCommandBufferGetControlMemorySize: the library reads the limit at cb+0x40 and the base at cb+0x60 and adds the
+   reserve that AddControlMemory subtracts. Before any Add both fields are 0 and the result is the reserve alone. */
+uint64_t nvn_control_memory_size(uint64_t begin, uint64_t end, uint32_t adds) {
+    if (!adds) return NVN_CONTROL_MEMORY_RESERVE;
+    return end - begin;
+}
+
+/* nvnDeviceRegisterFastClearColor: the library takes a format in w2 and accepts the float range 10..156. The Colori and
+   Colorui forms use 11..120. Outside the range the library returns 0 and makes no driver call. */
+int nvn_fast_clear_color_format_ok(NvnFastClearKind kind, uint32_t format) {
+    if (kind == NVN_FAST_CLEAR_KIND_INT)
+        return format >= NVN_FAST_CLEAR_COLORI_FORMAT_MIN && format <= NVN_FAST_CLEAR_COLORI_FORMAT_MAX;
+    return format >= NVN_FAST_CLEAR_COLOR_FORMAT_MIN && format <= NVN_FAST_CLEAR_COLOR_FORMAT_MAX;
+}
+
 /* The library masks no index and sign extends index bit 31: texture bits above 0xFFFFF spill into the sampler field and
    a high index reaches the tag. Both are kept, so a handle matches the library. An image handle has no tag. */
 uint64_t nvn_texture_handle(uint32_t texture_index, uint32_t sampler_index) {

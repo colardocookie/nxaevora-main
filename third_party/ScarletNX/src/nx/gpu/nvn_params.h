@@ -48,6 +48,11 @@ int64_t nvn_wait_remaining_ns(NvnWaitDeadline limit, uint64_t now_ns);
 NvnWindowCrop nvn_window_crop(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
                               uint32_t texture_width, uint32_t texture_height);
 
+/* nvnCommandBufferGetControlMemorySize: the last control chunk, with the reserve that the library keeps at the end of
+   a control memory chunk. Before any AddControlMemory the library returns the reserve alone. */
+#define NVN_CONTROL_MEMORY_RESERVE 0x10u
+uint64_t nvn_control_memory_size(uint64_t begin, uint64_t end, uint32_t adds);
+
 /* The pure parts of the host's device, queue and pool functions (docs/nvn-design.md, 3b-3). The game's NVN library computes
    these from device fields that it fills at DeviceInitialize. The host has no device object, so it uses the values that
    a run of the library showed (the "3b-2 Result" and "3b-3 Result" sections). */
@@ -60,6 +65,15 @@ int nvn_device_integer(uint32_t what, int32_t* value);
 /* nvnDeviceGetTimestampInNanoseconds: the GPU ticks of a counter report as nanoseconds. Same integer steps as the
    library, so the results match to the last digit and a large tick count does not overflow. */
 uint64_t nvn_timestamp_ns(uint64_t ticks);
+
+/* nvnDeviceRegisterFastClearColor accepts the float format range 10..156. The Colori and Colorui forms accept 11..120.
+   Outside the range the library returns 0 without a driver call. The depth form has no format check. */
+#define NVN_FAST_CLEAR_COLOR_FORMAT_MIN  10u
+#define NVN_FAST_CLEAR_COLOR_FORMAT_MAX  156u
+#define NVN_FAST_CLEAR_COLORI_FORMAT_MIN 11u
+#define NVN_FAST_CLEAR_COLORI_FORMAT_MAX 120u
+typedef enum { NVN_FAST_CLEAR_KIND_FLOAT = 0, NVN_FAST_CLEAR_KIND_INT } NvnFastClearKind;
+int nvn_fast_clear_color_format_ok(NvnFastClearKind kind, uint32_t format);
 
 /* The NVN texture and image handles (sdk d82d0d0, d82d050). The library masks no index: a texture index above 0xFFFFF
    spills into the sampler field, and index bit 31 is sign extended. Both properties are kept. */

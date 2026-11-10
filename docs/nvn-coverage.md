@@ -30,8 +30,8 @@ tool keeps them.
 | G7 | 4 | 4 | 0 | 4 | 0 |
 | G8 | 112 | 112 | 0 | 112 | 0 |
 | G9 | 43 | 43 | 0 | 43 | 0 |
-| G10 | 281 | 236 | 45 | 0 | 0 |
-| all | 523 | 478 | 45 | 242 | 0 |
+| G10 | 281 | 280 | 1 | 0 | 0 |
+| all | 523 | 522 | 1 | 242 | 0 |
 
 ## Functions
 
@@ -325,30 +325,30 @@ tool keeps them.
 | `nvnCommandBufferDrawTexture` | G10 | d84cad0 | 0 | implemented | |  | refused: needs the driver program at device+0x1b00 |
 | `nvnCommandBufferDrawTransformFeedback` | G10 | d84bb40 | 0 | implemented | |  | refused: the renderer does not write the byte counts |
 | `nvnCommandBufferFenceSync` | G10 | d825a80 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferGetCommandMemoryFree` | G10 | d8240a0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferGetCommandMemorySize` | G10 | d824080 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferGetCommandMemoryUsed` | G10 | d824090 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferGetControlMemoryFree` | G10 | d8240e0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferGetControlMemorySize` | G10 | d8240b0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferGetControlMemoryUsed` | G10 | d8240d0 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferGetCommandMemoryFree` | G10 | d8240a0 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory |
+| `nvnCommandBufferGetCommandMemorySize` | G10 | d824080 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory |
+| `nvnCommandBufferGetCommandMemoryUsed` | G10 | d824090 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory |
+| `nvnCommandBufferGetControlMemoryFree` | G10 | d8240e0 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory |
+| `nvnCommandBufferGetControlMemorySize` | G10 | d8240b0 | 0 | implemented | unit (nvn_params) |  | chunk size, 0x10 before the first Add |
+| `nvnCommandBufferGetControlMemoryUsed` | G10 | d8240d0 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory |
 | `nvnCommandBufferGetCopyImageStride` | G10 | d82cb60 | 0 | implemented |  |  |  |
 | `nvnCommandBufferGetCopyRowStride` | G10 | d82cb50 | 0 | implemented |  |  |  |
-| `nvnCommandBufferGetMemoryCallback` | G10 | d823d70 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferGetMemoryCallbackData` | G10 | d823d80 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferInsertCheckpointDynamic` | G10 | d823c90 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferInsertCheckpointStatic` | G10 | d823c80 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferInsertDebugMarker` | G10 | d84d190 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferInsertDebugMarkerDynamic` | G10 | d84d3b0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferInsertDebugMarkerStatic` | G10 | d84d200 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferIsRecording` | G10 | d826400 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferGetMemoryCallback` | G10 | d823d70 | 0 | implemented |  |  | host record value |
+| `nvnCommandBufferGetMemoryCallbackData` | G10 | d823d80 | 0 | implemented |  |  | host record value |
+| `nvnCommandBufferInsertCheckpointDynamic` | G10 | d823c90 | 0 | implemented |  |  | returns 1, as the library body |
+| `nvnCommandBufferInsertCheckpointStatic` | G10 | d823c80 | 0 | implemented |  |  | returns 1, as the library body |
+| `nvnCommandBufferInsertDebugMarker` | G10 | d84d190 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
+| `nvnCommandBufferInsertDebugMarkerDynamic` | G10 | d84d3b0 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
+| `nvnCommandBufferInsertDebugMarkerStatic` | G10 | d84d200 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
+| `nvnCommandBufferIsRecording` | G10 | d826400 | 0 | implemented |  |  | host record value |
 | `nvnCommandBufferMultiDrawArraysIndirectCount` | G10 | d849dd0 | 0 | implemented | |  | refused: the record feed of the macro is not known |
 | `nvnCommandBufferMultiDrawElementsIndirectCount` | G10 | d84a230 | 0 | implemented | |  | refused: the record feed of the macro is not known |
 | `nvnCommandBufferPauseTransformFeedback` | G10 | d84b6f0 | 0 | implemented | unit (nvn_params) |  | library read: End words, address 0 sends only the disable |
-| `nvnCommandBufferPopDebugGroup` | G10 | d84cfc0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferPopDebugGroupId` | G10 | d84d030 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferPushDebugGroup` | G10 | d84d0a0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferPushDebugGroupDynamic` | G10 | d84d280 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferPushDebugGroupStatic` | G10 | d84d110 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferPopDebugGroup` | G10 | d84cfc0 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
+| `nvnCommandBufferPopDebugGroupId` | G10 | d84d030 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
+| `nvnCommandBufferPushDebugGroup` | G10 | d84d0a0 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
+| `nvnCommandBufferPushDebugGroupDynamic` | G10 | d84d280 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
+| `nvnCommandBufferPushDebugGroupStatic` | G10 | d84d110 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
 | `nvnCommandBufferReportValue` | G10 | d856ab0 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferResolveDepthBuffer` | G10 | d84ce80 | 0 | implemented |  |  |  |
 | `nvnCommandBufferRestoreZCullData` | G10 | d84c8e0 | 0 | implemented | |  | logged no-op: the host has no ZCull |
@@ -356,7 +356,7 @@ tool keeps them.
 | `nvnCommandBufferSaveZCullData` | G10 | d84c840 | 0 | implemented | |  | logged no-op: the host has no ZCull |
 | `nvnCommandBufferSetColorReductionEnable` | G10 | d84d4e0 | 0 | implemented | |  | logged no-op: full color precision is kept |
 | `nvnCommandBufferSetColorReductionThresholds` | G10 | d84d550 | 0 | implemented | |  | logged no-op: full color precision is kept |
-| `nvnCommandBufferSetCommandMemoryCallbackEnabled` | G10 | d823d90 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferSetCommandMemoryCallbackEnabled` | G10 | d823d90 | 0 | implemented |  |  | no-op: the host never calls the memory callback |
 | `nvnCommandBufferSetConservativeRasterDilate` | G10 | d84c6c0 | 0 | implemented | unit (nvn_params) |  | logged no-op for level 0, else refused |
 | `nvnCommandBufferSetConservativeRasterEnable` | G10 | d84c630 | 0 | implemented | |  | logged no-op for disable, enable is refused |
 | `nvnCommandBufferSetCopyImageStride` | G10 | d82cb40 | 0 | implemented |  |  |  |
@@ -388,28 +388,28 @@ tool keeps them.
 | `nvnDeviceBuilderGetFlags` | G10 | d82cde0 | 0 | implemented |  |  |  |
 | `nvnDeviceFinalize` | G10 | d82ce10 | 0 | implemented |  |  |  |
 | `nvnDeviceFinalizeCommandHandle` | G10 | d826410 | 0 | implemented |  |  |  |
-| `nvnDeviceGenerateDebugDomainId` | G10 | d82cfd0 | 0 | stub-log |  |  |  |
-| `nvnDeviceGetCurrentTimestampInNanoseconds` | G10 | d82cff0 | 0 | stub-log |  |  |  |
+| `nvnDeviceGenerateDebugDomainId` | G10 | d82cfd0 | 0 | implemented |  |  | one process counter, returns the old value |
+| `nvnDeviceGetCurrentTimestampInNanoseconds` | G10 | d82cff0 | 0 | implemented | unit (nvn_params, timestamp) |  | nvn_timestamp_ns(gpu_ticks()) |
 | `nvnDeviceGetDepthMode` | G10 | d82d040 | 0 | implemented |  |  |  |
-| `nvnDeviceGetProcAddress` | G10 | d82d090 | 0 | stub-log |  |  |  |
+| `nvnDeviceGetProcAddress` | G10 | d82d090 | 0 | stub-log |  |  | not handled: the game resolves names through d832940, which the hook covers |
 | `nvnDeviceGetSeparateSamplerHandle` | G10 | d82d0a0 | 0 | implemented | unit (nvn_params) |  | (int64)(int32)index << 20, no tag |
 | `nvnDeviceGetSeparateTextureHandle` | G10 | d82d0b0 | 0 | implemented | unit (nvn_params) |  | nvn_texture_handle(index, 0) |
 | `nvnDeviceGetTexelFetchHandle` | G10 | d82d0c0 | 0 | implemented | unit (nvn_params) |  | nvn_texture_handle(index, 0) |
 | `nvnDeviceGetWindowOriginMode` | G10 | d82d100 | 0 | implemented |  |  |  |
-| `nvnDeviceInstallDebugCallback` | G10 | d82ccb0 | 0 | stub-log |  |  |  |
-| `nvnDeviceIsExternalDebuggerAttached` | G10 | d82d120 | 0 | stub-log |  |  |  |
-| `nvnDeviceRegisterFastClearColor` | G10 | d82d130 | 0 | stub-log |  |  |  |
-| `nvnDeviceRegisterFastClearColori` | G10 | d82d140 | 0 | stub-log |  |  |  |
-| `nvnDeviceRegisterFastClearColorui` | G10 | d82d150 | 0 | stub-log |  |  |  |
-| `nvnDeviceRegisterFastClearDepth` | G10 | d82d160 | 0 | stub-log |  |  |  |
-| `nvnDeviceSetAutomaticCheckpointsByDebugGroup` | G10 | d823cc0 | 0 | stub-log |  |  |  |
-| `nvnDeviceSetAutomaticCheckpointsEnable` | G10 | d823ca0 | 0 | stub-log |  |  |  |
-| `nvnDeviceSetAutomaticCheckpointsSamplingInterval` | G10 | d823cb0 | 0 | stub-log |  |  |  |
-| `nvnDeviceSetCheckpointCallStacksEnable` | G10 | d823cd0 | 0 | stub-log |  |  |  |
-| `nvnDeviceSetCheckpointMaxCallStacksDepth` | G10 | d823ce0 | 0 | stub-log |  |  |  |
+| `nvnDeviceInstallDebugCallback` | G10 | d82ccb0 | 0 | implemented |  |  | the library body is one ret |
+| `nvnDeviceIsExternalDebuggerAttached` | G10 | d82d120 | 0 | implemented |  |  | returns 0, as the library |
+| `nvnDeviceRegisterFastClearColor` | G10 | d82d130 | 0 | implemented | unit (nvn_params) |  | no-op returning 1, 0 for a format outside the library range |
+| `nvnDeviceRegisterFastClearColori` | G10 | d82d140 | 0 | implemented | unit (nvn_params) |  | no-op returning 1, 0 for a format outside the library range |
+| `nvnDeviceRegisterFastClearColorui` | G10 | d82d150 | 0 | implemented | unit (nvn_params) |  | no-op returning 1, 0 for a format outside the library range |
+| `nvnDeviceRegisterFastClearDepth` | G10 | d82d160 | 0 | implemented |  |  | no-op returning 1: the host clear reads its value |
+| `nvnDeviceSetAutomaticCheckpointsByDebugGroup` | G10 | d823cc0 | 0 | implemented |  |  | returns 1, as the library body |
+| `nvnDeviceSetAutomaticCheckpointsEnable` | G10 | d823ca0 | 0 | implemented |  |  | returns 1, as the library body |
+| `nvnDeviceSetAutomaticCheckpointsSamplingInterval` | G10 | d823cb0 | 0 | implemented |  |  | returns 1, as the library body |
+| `nvnDeviceSetCheckpointCallStacksEnable` | G10 | d823cd0 | 0 | implemented |  |  | returns 1, as the library body |
+| `nvnDeviceSetCheckpointMaxCallStacksDepth` | G10 | d823ce0 | 0 | implemented |  |  | returns 1, as the library body |
 | `nvnDeviceSetDebugLabel` | G10 | d82cce0 | 0 | implemented |  |  |  |
-| `nvnDeviceSetIntermediateShaderCache` | G10 | d82d180 | 0 | stub-log |  |  |  |
-| `nvnDeviceWalkDebugDatabase` | G10 | d82d1a0 | 0 | stub-log |  |  |  |
+| `nvnDeviceSetIntermediateShaderCache` | G10 | d82d180 | 0 | implemented |  |  | the library body is one ret |
+| `nvnDeviceWalkDebugDatabase` | G10 | d82d1a0 | 0 | implemented |  |  | the library body is one ret |
 | `nvnEventBuilderGetMemoryOffset` | G10 | d832d30 | 0 | implemented |  |  |  |
 | `nvnEventBuilderGetMemoryPool` | G10 | d832d20 | 0 | implemented |  |  |  |
 | `nvnEventBuilderGetStorage` | G10 | d832d10 | 0 | implemented |  |  |  |
@@ -437,7 +437,7 @@ tool keeps them.
 | `nvnProgramSetSampleShading` | G10 | d837180 | 0 | implemented | |  | no-op: the host renders one sample |
 | `nvnProgramSetShaders` | G10 | d836760 | 0 | implemented | |  | SetShadersExt path with 16-byte entries, no control |
 | `nvnProgramSetSubroutineLinkage` | G10 | d836e90 | 0 | implemented | |  | returns 0: the host has no subroutine table |
-| `nvnQueueAcquireTexture` | G10 | d83eed0 | 0 | stub-log |  |  |  |
+| `nvnQueueAcquireTexture` | G10 | d83eed0 | 0 | implemented |  |  | shares the pick of nvnWindowAcquireTexture, no sync |
 | `nvnQueueBuilderGetCommandFlushThreshold` | G10 | d838540 | 0 | implemented |  |  |  |
 | `nvnQueueBuilderGetCommandMemorySize` | G10 | d838510 | 0 | implemented |  |  |  |
 | `nvnQueueBuilderGetComputeMemorySize` | G10 | d838520 | 0 | implemented |  |  |  |
@@ -451,11 +451,11 @@ tool keeps them.
 | `nvnQueueFinalize` | G10 | d8393d0 | 0 | implemented |  |  |  |
 | `nvnQueueFinish` | G10 | d839480 | 0 | implemented |  |  |  |
 | `nvnQueueFlush` | G10 | d83a070 | 0 | implemented |  |  |  |
-| `nvnQueueGetError` | G10 | d839560 | 0 | stub-log |  |  |  |
-| `nvnQueueGetTotalCommandMemoryUsed` | G10 | d83a080 | 0 | stub-log |  |  |  |
-| `nvnQueueGetTotalComputeMemoryUsed` | G10 | d83a0e0 | 0 | stub-log |  |  |  |
-| `nvnQueueGetTotalControlMemoryUsed` | G10 | d83a0a0 | 0 | stub-log |  |  |  |
-| `nvnQueueResetMemoryUsageCounts` | G10 | d83a0f0 | 0 | stub-log |  |  |  |
+| `nvnQueueGetError` | G10 | d839560 | 0 | implemented |  |  | returns 0: the host has no channel error notification |
+| `nvnQueueGetTotalCommandMemoryUsed` | G10 | d83a080 | 0 | implemented |  |  | refused, returns 0: the host has no usage count |
+| `nvnQueueGetTotalComputeMemoryUsed` | G10 | d83a0e0 | 0 | implemented |  |  | refused, returns 0: the host has no usage count |
+| `nvnQueueGetTotalControlMemoryUsed` | G10 | d83a0a0 | 0 | implemented |  |  | refused, returns 0: the host has no usage count |
+| `nvnQueueResetMemoryUsageCounts` | G10 | d83a0f0 | 0 | implemented |  |  | no-op: the host has no usage counters |
 | `nvnQueueSetDebugLabel` | G10 | d82cd10 | 0 | implemented |  |  |  |
 | `nvnQueueWaitSync` | G10 | d83bfa0 | 0 | implemented |  |  |  |
 | `nvnSamplerBuilderGetBorderColor` | G10 | d83a4b0 | 0 | implemented |  |  |  |
@@ -483,7 +483,7 @@ tool keeps them.
 | `nvnSamplerGetMinMagFilter` | G10 | d83a5c0 | 0 | implemented |  |  |  |
 | `nvnSamplerGetReductionFilter` | G10 | d83a6f0 | 0 | implemented |  |  |  |
 | `nvnSamplerGetWrapMode` | G10 | d83a5e0 | 0 | implemented |  |  |  |
-| `nvnSamplerPoolFinalize` | G10 | d83a9d0 | 0 | stub-log |  |  |  |
+| `nvnSamplerPoolFinalize` | G10 | d83a9d0 | 0 | implemented |  |  | the library body is one ret |
 | `nvnSamplerPoolGetMemoryOffset` | G10 | d83aac0 | 0 | implemented |  |  |  |
 | `nvnSamplerPoolGetMemoryPool` | G10 | d83aab0 | 0 | implemented |  |  |  |
 | `nvnSamplerPoolRegisterSamplerBuilder` | G10 | d83a9e0 | 0 | implemented |  |  |  |
@@ -533,7 +533,7 @@ tool keeps them.
 | `nvnTextureGetViewOffset` | G10 | d83d810 | 0 | implemented |  |  |  |
 | `nvnTextureGetZCullStorageSize` | G10 | d83d7b0 | 0 | implemented |  |  |  |
 | `nvnTextureInvalidateTexels` | G10 | d83e300 | 0 | implemented |  |  |  |
-| `nvnTexturePoolFinalize` | G10 | d83d940 | 0 | stub-log |  |  |  |
+| `nvnTexturePoolFinalize` | G10 | d83d940 | 0 | implemented |  |  | the library body is one ret |
 | `nvnTexturePoolGetMemoryOffset` | G10 | d83dc80 | 0 | implemented |  |  |  |
 | `nvnTexturePoolGetMemoryPool` | G10 | d83dc70 | 0 | implemented |  |  |  |
 | `nvnTexturePoolSetDebugLabel` | G10 | d82cd60 | 0 | implemented |  |  |  |
@@ -552,7 +552,7 @@ tool keeps them.
 | `nvnWindowBuilderGetTexture` | G10 | d83e5f0 | 0 | implemented |  |  |  |
 | `nvnWindowBuilderSetNumActiveTextures` | G10 | d83e5c0 | 0 | implemented |  |  |  |
 | `nvnWindowBuilderSetPresentInterval` | G10 | d83e5b0 | 0 | implemented |  |  |  |
-| `nvnWindowFinalize` | G10 | d83ea90 | 0 | stub-log |  |  |  |
+| `nvnWindowFinalize` | G10 | d83ea90 | 0 | implemented |  |  | removes the host window record |
 | `nvnWindowGetCrop` | G10 | d83eba0 | 0 | implemented |  |  |  |
 | `nvnWindowGetNativeWindow` | G10 | d83eb10 | 0 | implemented |  |  |  |
 | `nvnWindowGetNumActiveTextures` | G10 | d83ebe0 | 0 | implemented |  |  |  |

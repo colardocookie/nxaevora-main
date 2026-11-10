@@ -1288,10 +1288,63 @@ static void h_buffer_set_debug_label(CPU* c, u64 entry) {
     (void)c;
     (void)entry; /* the library stores no label */
 }
-/* Every other SetDebugLabel is one `ret` in the library. */
-static void h_set_debug_label(CPU* c, u64 entry) {
+/* The library functions whose body is one `ret`, which leaves x0 and the object words as they are. */
+static void h_library_ret(CPU* c, u64 entry) {
     (void)c;
     (void)entry;
+}
+
+/* U5: debug, checkpoint and fast clear functions of the device. The library body of a checkpoint is `mov w0, #1; ret`:
+   the debugger part is absent. The ZBC table that a fast clear fills is hardware state, and the host clear reads its
+   value argument, so a registered color is a logged no-op. */
+static void h_debug_checkpoint(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = 1;
+}
+/* The library's domain id is one process-global counter that all devices share (0xe0f1438). */
+static uint32_t debug_domain_id;
+static void h_device_generate_debug_domain_id(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = __atomic_fetch_add(&debug_domain_id, 1, __ATOMIC_RELAXED);
+}
+static void h_device_is_external_debugger_attached(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = 0; /* the library body is `mov w0, wzr`, as in the release */
+}
+/* The library converts the GPU timer of the device; the host maps it to the same 614.4 MHz guest clock. */
+static void h_device_get_current_timestamp_ns(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = nvn_timestamp_ns(gpu_ticks());
+}
+#define FAST_CLEAR_NO_OP_REASON "the ZBC table of the library is hardware state, and the host clear reads its value argument"
+/* RegisterFastClearColor takes the format in w2. The library accepts 10..156 for the float form and 11..120 for the
+   integer forms, and returns 0 outside that range without a driver call. The depth form has no format check. */
+static void fast_clear_color(CPU* c, const char* operation, NvnFastClearKind kind) {
+    const uint32_t format = (uint32_t)c->x[2];
+    if (!nvn_fast_clear_color_format_ok(kind, format)) {
+        LOG_LIMIT(1, "nvn-native: %s format=%u is outside the library range, returns 0\n", operation, format);
+        c->x[0] = 0;
+        return;
+    }
+    LOG_LIMIT(1, "nvn-native: %s is a logged no-op: %s\n", operation, FAST_CLEAR_NO_OP_REASON);
+    c->x[0] = 1;
+}
+static void h_device_register_fast_clear_color(CPU* c, u64 entry) {
+    (void)entry;
+    fast_clear_color(c, "nvnDeviceRegisterFastClearColor", NVN_FAST_CLEAR_KIND_FLOAT);
+}
+static void h_device_register_fast_clear_colori(CPU* c, u64 entry) {
+    (void)entry;
+    fast_clear_color(c, "nvnDeviceRegisterFastClearColori", NVN_FAST_CLEAR_KIND_INT);
+}
+static void h_device_register_fast_clear_colorui(CPU* c, u64 entry) {
+    (void)entry;
+    fast_clear_color(c, "nvnDeviceRegisterFastClearColorui", NVN_FAST_CLEAR_KIND_INT);
+}
+static void h_device_register_fast_clear_depth(CPU* c, u64 entry) {
+    (void)entry;
+    LOG_LIMIT(1, "nvn-native: nvnDeviceRegisterFastClearDepth is a logged no-op: %s\n", FAST_CLEAR_NO_OP_REASON);
+    c->x[0] = 1;
 }
 
 /* G3 and G5: the sampler and texture records are independent of the guest allocation sizes. */
@@ -2953,6 +3006,23 @@ static void h_command_buffer_set_memory_callback_data(CPU* c, u64 entry) {
     if (cb) cb->callback_data = c->x[1];
     pm_unlock(&objs_lock);
 }
+/* U5: the pure getters of a command buffer. The host record holds the last-chunk values that the library reads; an
+   unknown command buffer answers 0 after the command_buffer log line. */
+#define COMMAND_GETTER_HANDLER(handler, operation, expression)                                     \
+    static void h_command_buffer_##handler(CPU* c, u64 entry) {                                    \
+        (void)entry;                                                                               \
+        pm_lock(&objs_lock);                                                                       \
+        const CommandBufferRec* cb = command_buffer(c->x[0], operation);                           \
+        c->x[0] = cb ? (expression) : 0;                                                           \
+        pm_unlock(&objs_lock);                                                                     \
+    }
+COMMAND_GETTER_HANDLER(get_memory_callback, "nvnCommandBufferGetMemoryCallback", cb->callback)
+COMMAND_GETTER_HANDLER(get_memory_callback_data, "nvnCommandBufferGetMemoryCallbackData", cb->callback_data)
+COMMAND_GETTER_HANDLER(is_recording, "nvnCommandBufferIsRecording", cb->recording != 0)
+/* The library returns 0x10 before any AddControlMemory and the chunk size after one. */
+COMMAND_GETTER_HANDLER(get_control_memory_size, "nvnCommandBufferGetControlMemorySize",
+                       nvn_control_memory_size(cb->control_begin, cb->control_end, cb->control_adds))
+#undef COMMAND_GETTER_HANDLER
 static void h_command_buffer_add_command_memory(CPU* c, u64 entry) {
     (void)entry;
     pm_lock(&objs_lock);
@@ -3123,6 +3193,31 @@ COMMAND_REFUSE_HANDLER(set_shader_scratch_memory, "nvnCommandBufferSetShaderScra
                        "two SDK constants of the 0x1E4 block are not known and the host has no shader scratch state")
 #undef SEPARATE_BIND_REFUSAL
 #undef COMMAND_REFUSE_HANDLER
+/* U5: the memory accounting getters. The host keeps no cursor and no used or free count, and it never writes the command
+   or control memory of the game. The library also subtracts a reserve at cb+0x74 from its command size, which the host
+   record does not hold. */
+#define COMMAND_MEMORY_REFUSAL "the host does not write the command or control memory of the game, so it has no used or free count"
+#define COMMAND_REFUSE_VALUE_HANDLER(handler, operation, reason)                                   \
+    static void h_command_buffer_##handler(CPU* c, u64 entry) {                                    \
+        (void)entry;                                                                               \
+        pm_lock(&objs_lock);                                                                       \
+        CommandBufferRec* cb = command_buffer(c->x[0], operation);                                 \
+        if (cb) command_refused(c, operation, reason);                                             \
+        c->x[0] = 0;                                                                               \
+        pm_unlock(&objs_lock);                                                                     \
+    }
+COMMAND_REFUSE_VALUE_HANDLER(get_command_memory_size, "nvnCommandBufferGetCommandMemorySize",
+                             COMMAND_MEMORY_REFUSAL)
+COMMAND_REFUSE_VALUE_HANDLER(get_command_memory_used, "nvnCommandBufferGetCommandMemoryUsed",
+                             COMMAND_MEMORY_REFUSAL)
+COMMAND_REFUSE_VALUE_HANDLER(get_command_memory_free, "nvnCommandBufferGetCommandMemoryFree",
+                             COMMAND_MEMORY_REFUSAL)
+COMMAND_REFUSE_VALUE_HANDLER(get_control_memory_used, "nvnCommandBufferGetControlMemoryUsed",
+                             COMMAND_MEMORY_REFUSAL)
+COMMAND_REFUSE_VALUE_HANDLER(get_control_memory_free, "nvnCommandBufferGetControlMemoryFree",
+                             COMMAND_MEMORY_REFUSAL)
+#undef COMMAND_MEMORY_REFUSAL
+#undef COMMAND_REFUSE_VALUE_HANDLER
 /* A command whose effect the host keeps with another rule: nothing is recorded, and the library words are not
    needed. Each handler has its own LOG_LIMIT counter. */
 #define COMMAND_NO_OP_HANDLER(handler, operation, reason)                                      \
@@ -3148,6 +3243,18 @@ COMMAND_NO_OP_HANDLER(set_tiled_cache_action, "nvnCommandBufferSetTiledCacheActi
                       "the host has no tiled cache, the hint does not change the image")
 COMMAND_NO_OP_HANDLER(set_tiled_cache_tile_size, "nvnCommandBufferSetTiledCacheTileSize",
                       "the host has no tiled cache, the hint does not change the image")
+COMMAND_NO_OP_HANDLER(set_command_memory_callback_enabled, "nvnCommandBufferSetCommandMemoryCallbackEnabled",
+                      "the host never calls the memory callback")
+#define DEBUG_MARKER_REASON "a debug marker for an external debugger, the image does not depend on it"
+COMMAND_NO_OP_HANDLER(insert_debug_marker, "nvnCommandBufferInsertDebugMarker", DEBUG_MARKER_REASON)
+COMMAND_NO_OP_HANDLER(insert_debug_marker_dynamic, "nvnCommandBufferInsertDebugMarkerDynamic", DEBUG_MARKER_REASON)
+COMMAND_NO_OP_HANDLER(insert_debug_marker_static, "nvnCommandBufferInsertDebugMarkerStatic", DEBUG_MARKER_REASON)
+COMMAND_NO_OP_HANDLER(push_debug_group, "nvnCommandBufferPushDebugGroup", DEBUG_MARKER_REASON)
+COMMAND_NO_OP_HANDLER(push_debug_group_dynamic, "nvnCommandBufferPushDebugGroupDynamic", DEBUG_MARKER_REASON)
+COMMAND_NO_OP_HANDLER(push_debug_group_static, "nvnCommandBufferPushDebugGroupStatic", DEBUG_MARKER_REASON)
+COMMAND_NO_OP_HANDLER(pop_debug_group, "nvnCommandBufferPopDebugGroup", DEBUG_MARKER_REASON)
+COMMAND_NO_OP_HANDLER(pop_debug_group_id, "nvnCommandBufferPopDebugGroupId", DEBUG_MARKER_REASON)
+#undef DEBUG_MARKER_REASON
 #undef COMMAND_NO_OP_HANDLER
 /* nvnCommandBufferBindCoverageModulationTable(cb, table): only the disable form is a no-op. The host has no coverage
    modulation, and a non-identity table changes the image. */
@@ -5969,6 +6076,16 @@ static void h_window_initialize(CPU* c, u64 entry) {
     c->x[0] = 1;
     pm_unlock(&objs_lock);
 }
+/* The library frees the image syncs and the native window; the host owns none of them and removes only its record. */
+static void h_window_finalize(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    if (known_record(c->x[0], NVN_OBJ_WINDOW))
+        nvn_objtab_remove(&objs, c->x[0]);
+    else
+        LOG("nvn-native: nvnWindowFinalize unknown window=%llx\n", (unsigned long long)c->x[0]);
+    pm_unlock(&objs_lock);
+}
 static void h_window_set_present_interval(CPU* c, u64 entry) {
     (void)entry; pm_lock(&objs_lock);
     WindowRec* w = known_record(c->x[0], NVN_OBJ_WINDOW);
@@ -6062,22 +6179,30 @@ static void h_sync_create_gl_sync(CPU* c, u64 entry) {
 }
 
 enum { NVN_ACQUIRE_OK = 0, NVN_ACQUIRE_FAILED = 1 };
-/* Ends a failed nvnWindowAcquireTexture: the reason, the invalid index and the result. objs_lock is held. */
-static void window_acquire_failed(CPU* c, u64 window_addr, u64 sync_addr, u64 index_addr, const char* reason) {
-    LOG("nvn-native: nvnWindowAcquireTexture failed: %s (window=%llx sync=%llx index=%llx)\n",
-        reason, (unsigned long long)window_addr, (unsigned long long)sync_addr, (unsigned long long)index_addr);
+/* Ends a failed acquire: the operation, the reason, the addresses and the result. objs_lock is held. */
+static void window_acquire_failed(CPU* c, const char* operation, u64 queue_addr, u64 window_addr, u64 sync_addr,
+                                  u64 index_addr, const char* reason) {
+    LOG("nvn-native: %s failed: %s (queue=%llx window=%llx sync=%llx index=%llx)\n", operation, reason,
+        (unsigned long long)queue_addr, (unsigned long long)window_addr, (unsigned long long)sync_addr,
+        (unsigned long long)index_addr);
     if (native_guest_writable(index_addr, sizeof(uint32_t))) gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
     c->x[0] = NVN_ACQUIRE_FAILED;
 }
-static void h_window_acquire_texture(CPU* c, u64 entry) {
-    (void)entry;
-    const u64 window_addr = c->x[0], sync_addr = c->x[1], index_addr = c->x[2];
+/* The pick and state part of nvnWindowAcquireTexture and nvnQueueAcquireTexture. operation goes into the log lines,
+   queue_addr is 0 for a window acquire and sync_addr is 0 for a queue acquire. The library makes the queue wait for the
+   image at the GPU; the host picks only an image whose frame job has finished, so it records no wait op. */
+static void window_acquire_texture(CPU* c, u64 queue_addr, u64 window_addr, u64 sync_addr, u64 index_addr,
+                                   const char* operation) {
+    const int has_queue = queue_addr != 0;
+    const int has_sync = !has_queue; /* a window acquire needs its sync, a queue acquire has none */
     pm_lock(&objs_lock);
+    const int queue_ok = !has_queue || known_record(queue_addr, NVN_OBJ_QUEUE) != NULL;
     WindowRec* window = known_record(window_addr, NVN_OBJ_WINDOW);
-    SyncRec* sync = known_record(sync_addr, NVN_OBJ_SYNC);
-    if (!window || !sync || !native_guest_writable(index_addr, sizeof(uint32_t))) {
-        const char* reason = !window ? "unknown window" : !sync ? "unknown sync" : "unwritable index";
-        window_acquire_failed(c, window_addr, sync_addr, index_addr, reason);
+    SyncRec* sync = has_sync ? known_record(sync_addr, NVN_OBJ_SYNC) : NULL;
+    if (!queue_ok || !window || (has_sync && !sync) || !native_guest_writable(index_addr, sizeof(uint32_t))) {
+        const char* reason = !queue_ok ? "unknown queue" : !window ? "unknown window"
+                           : has_sync && !sync ? "unknown sync" : "unwritable index";
+        window_acquire_failed(c, operation, queue_addr, window_addr, sync_addr, index_addr, reason);
         pm_unlock(&objs_lock);
         return;
     }
@@ -6086,10 +6211,10 @@ static void h_window_acquire_texture(CPU* c, u64 entry) {
     present_pace(interval);
     pm_lock(&objs_lock);
     window = known_record(window_addr, NVN_OBJ_WINDOW);
-    sync = known_record(sync_addr, NVN_OBJ_SYNC);
-    if (!window || !sync || !native_guest_writable(index_addr, sizeof(uint32_t))) {
-        const char* reason = !window ? "window changed" : !sync ? "sync changed" : "index changed";
-        window_acquire_failed(c, window_addr, sync_addr, index_addr, reason);
+    sync = has_sync ? known_record(sync_addr, NVN_OBJ_SYNC) : NULL;
+    if (!window || (has_sync && !sync) || !native_guest_writable(index_addr, sizeof(uint32_t))) {
+        const char* reason = !window ? "window changed" : has_sync && !sync ? "sync changed" : "index changed";
+        window_acquire_failed(c, operation, queue_addr, window_addr, sync_addr, index_addr, reason);
         pm_unlock(&objs_lock);
         return;
     }
@@ -6098,18 +6223,19 @@ static void h_window_acquire_texture(CPU* c, u64 entry) {
     while (index < 0 && nvn_window_has_presented(window->states, window->texture_count)) {
         kthread_wait(&frame_done_cv, &objs_lock, -1);
         window = known_record(window_addr, NVN_OBJ_WINDOW);
-        sync = known_record(sync_addr, NVN_OBJ_SYNC);
-        if (!window || !sync || !native_guest_writable(index_addr, sizeof(uint32_t))) {
-            const char* reason = !window ? "window changed" : !sync ? "sync changed" : "index changed";
-            window_acquire_failed(c, window_addr, sync_addr, index_addr, reason);
+        sync = has_sync ? known_record(sync_addr, NVN_OBJ_SYNC) : NULL;
+        if (!window || (has_sync && !sync) || !native_guest_writable(index_addr, sizeof(uint32_t))) {
+            const char* reason = !window ? "window changed" : has_sync && !sync ? "sync changed" : "index changed";
+            window_acquire_failed(c, operation, queue_addr, window_addr, sync_addr, index_addr, reason);
             pm_unlock(&objs_lock);
             return;
         }
         index = nvn_window_pick_image(window->states, window->texture_count, window->last_index);
     }
     if (index < 0) {
-        LOG("nvn-native: nvnWindowAcquireTexture failed: no free window image (window=%llx states=%u,%u,%u,%u)\n",
-            (unsigned long long)window_addr, window->states[0], window->states[1], window->states[2], window->states[3]);
+        LOG("nvn-native: %s failed: no free window image (window=%llx states=%u,%u,%u,%u)\n", operation,
+            (unsigned long long)window_addr, window->states[0], window->states[1], window->states[2],
+            window->states[3]);
         gw32(index_addr, NVN_WINDOW_INVALID_INDEX);
         c->x[0] = NVN_ACQUIRE_FAILED;
         pm_unlock(&objs_lock);
@@ -6118,11 +6244,19 @@ static void h_window_acquire_texture(CPU* c, u64 entry) {
     window->states[index] = NVN_IMAGE_ACQUIRED;
     window->last_index = index;
     /* A free image means its previous frame job has finished. */
-    sync->state = NVN_SYNC_SIGNALED;
+    if (sync) sync->state = NVN_SYNC_SIGNALED;
     gw32(index_addr, (uint32_t)index);
     c->x[0] = NVN_ACQUIRE_OK;
     frame_acquires++;
     pm_unlock(&objs_lock);
+}
+static void h_window_acquire_texture(CPU* c, u64 entry) {
+    (void)entry;
+    window_acquire_texture(c, 0, c->x[0], c->x[1], c->x[2], "nvnWindowAcquireTexture");
+}
+static void h_queue_acquire_texture(CPU* c, u64 entry) {
+    (void)entry;
+    window_acquire_texture(c, c->x[0], c->x[1], 0, c->x[2], "nvnQueueAcquireTexture");
 }
 static void h_sync_wait(CPU* c, u64 entry) {
     (void)entry;
@@ -6633,6 +6767,30 @@ static void h_queue_finalize(CPU* c, u64 entry) {
     LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: nvnQueueFinalize queue=%llx is not supported, the record stays\n",
               (unsigned long long)c->x[0]);
 }
+/* U5: the queue usage getters. The host has no cursor and no running counter over the queue memory of the game, so
+   every usage getter refuses with 0 instead of an invented number. */
+static void h_queue_get_error(CPU* c, u64 entry) {
+    (void)entry;
+    pm_lock(&objs_lock);
+    (void)queue_rec(c->x[0], "nvnQueueGetError");
+    c->x[0] = 0; /* the host has no channel error notification, and x1 is not written */
+    pm_unlock(&objs_lock);
+}
+#define QUEUE_USAGE_REFUSAL "the host does not use the game's queue memory, so it has no usage count"
+#define QUEUE_USAGE_REFUSE_HANDLER(handler, operation)                                             \
+    static void h_queue_##handler(CPU* c, u64 entry) {                                             \
+        (void)entry;                                                                               \
+        pm_lock(&objs_lock);                                                                       \
+        if (queue_rec(c->x[0], operation))                                                         \
+            LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s refused: %s\n", operation, QUEUE_USAGE_REFUSAL); \
+        c->x[0] = 0;                                                                               \
+        pm_unlock(&objs_lock);                                                                     \
+    }
+QUEUE_USAGE_REFUSE_HANDLER(get_total_command_memory_used, "nvnQueueGetTotalCommandMemoryUsed")
+QUEUE_USAGE_REFUSE_HANDLER(get_total_control_memory_used, "nvnQueueGetTotalControlMemoryUsed")
+QUEUE_USAGE_REFUSE_HANDLER(get_total_compute_memory_used, "nvnQueueGetTotalComputeMemoryUsed")
+#undef QUEUE_USAGE_REFUSAL
+#undef QUEUE_USAGE_REFUSE_HANDLER
 
 /* nvnQueuePresentTexture(queue, window, index): closes the pending frame and hands it to the GPU (decision 11). A
    present that names an image that is not ACQUIRED is a fault of the game: nothing is shown and the frame stays. */
@@ -6706,6 +6864,21 @@ static const NativeProc native_procs[] = {
     {"nvnDeviceGetDepthMode", h_device_get_depth_mode},
     {"nvnDeviceGetInteger", h_device_get_integer},
     {"nvnDeviceGetTimestampInNanoseconds", h_device_get_timestamp_ns},
+    {"nvnDeviceGetCurrentTimestampInNanoseconds", h_device_get_current_timestamp_ns},
+    {"nvnDeviceGenerateDebugDomainId", h_device_generate_debug_domain_id},
+    {"nvnDeviceIsExternalDebuggerAttached", h_device_is_external_debugger_attached},
+    {"nvnDeviceInstallDebugCallback", h_library_ret},
+    {"nvnDeviceWalkDebugDatabase", h_library_ret},
+    {"nvnDeviceSetIntermediateShaderCache", h_library_ret},
+    {"nvnDeviceSetAutomaticCheckpointsByDebugGroup", h_debug_checkpoint},
+    {"nvnDeviceSetAutomaticCheckpointsEnable", h_debug_checkpoint},
+    {"nvnDeviceSetAutomaticCheckpointsSamplingInterval", h_debug_checkpoint},
+    {"nvnDeviceSetCheckpointCallStacksEnable", h_debug_checkpoint},
+    {"nvnDeviceSetCheckpointMaxCallStacksDepth", h_debug_checkpoint},
+    {"nvnDeviceRegisterFastClearColor", h_device_register_fast_clear_color},
+    {"nvnDeviceRegisterFastClearColori", h_device_register_fast_clear_colori},
+    {"nvnDeviceRegisterFastClearColorui", h_device_register_fast_clear_colorui},
+    {"nvnDeviceRegisterFastClearDepth", h_device_register_fast_clear_depth},
     {"nvnDeviceGetTextureHandle", h_device_get_texture_handle},
     {"nvnDeviceGetImageHandle", h_device_get_image_handle},
     {"nvnDeviceGetSeparateSamplerHandle", h_device_get_separate_sampler_handle},
@@ -6741,6 +6914,12 @@ static const NativeProc native_procs[] = {
     {"nvnQueueFinish", h_queue_finish},
     {"nvnQueueFinalize", h_queue_finalize},
     {"nvnQueuePresentTexture", h_queue_present_texture},
+    {"nvnQueueAcquireTexture", h_queue_acquire_texture},
+    {"nvnQueueGetError", h_queue_get_error},
+    {"nvnQueueGetTotalCommandMemoryUsed", h_queue_get_total_command_memory_used},
+    {"nvnQueueGetTotalControlMemoryUsed", h_queue_get_total_control_memory_used},
+    {"nvnQueueGetTotalComputeMemoryUsed", h_queue_get_total_compute_memory_used},
+    {"nvnQueueResetMemoryUsageCounts", h_library_ret},
     {"nvnMemoryPoolBuilderSetDefaults", h_memory_pool_builder_set_defaults},
     {"nvnMemoryPoolBuilderSetDevice", h_memory_pool_builder_set_device},
     {"nvnMemoryPoolBuilderSetFlags", h_memory_pool_builder_set_flags},
@@ -6759,8 +6938,10 @@ static const NativeProc native_procs[] = {
     {"nvnMemoryPoolGetSize", h_memory_pool_get_size},
     {"nvnMemoryPoolGetBufferAddress", h_memory_pool_get_buffer_address},
     {"nvnTexturePoolInitialize", h_texture_pool_initialize},
+    {"nvnTexturePoolFinalize", h_library_ret},
     {"nvnTexturePoolGetSize", h_texture_pool_get_size},
     {"nvnSamplerPoolInitialize", h_sampler_pool_initialize},
+    {"nvnSamplerPoolFinalize", h_library_ret},
     {"nvnSamplerPoolGetSize", h_sampler_pool_get_size},
     {"nvnSamplerBuilderSetDevice", h_sampler_builder_set_device},
     {"nvnSamplerBuilderSetDefaults", h_sampler_builder_set_defaults},
@@ -6863,6 +7044,7 @@ static const NativeProc native_procs[] = {
     {"nvnWindowBuilderGetPresentInterval", h_window_builder_get_present_interval},
     {"nvnWindowBuilderGetTexture", h_window_builder_get_texture},
     {"nvnWindowInitialize", h_window_initialize},
+    {"nvnWindowFinalize", h_window_finalize},
     {"nvnWindowSetPresentInterval", h_window_set_present_interval},
     {"nvnWindowSetCrop", h_window_set_crop},
     {"nvnWindowSetNumActiveTextures", h_window_set_num_active_textures},
@@ -6941,17 +7123,17 @@ static const NativeProc native_procs[] = {
     {"nvnBufferGetMemoryPool", h_buffer_get_memory_pool},
     {"nvnBufferGetMemoryOffset", h_buffer_get_memory_offset},
     {"nvnBufferSetDebugLabel", h_buffer_set_debug_label},
-    {"nvnDeviceSetDebugLabel", h_set_debug_label},
-    {"nvnCommandBufferSetDebugLabel", h_set_debug_label},
-    {"nvnMemoryPoolSetDebugLabel", h_set_debug_label},
-    {"nvnProgramSetDebugLabel", h_set_debug_label},
-    {"nvnQueueSetDebugLabel", h_set_debug_label},
-    {"nvnSamplerSetDebugLabel", h_set_debug_label},
-    {"nvnSyncSetDebugLabel", h_set_debug_label},
-    {"nvnTextureSetDebugLabel", h_set_debug_label},
-    {"nvnWindowSetDebugLabel", h_set_debug_label},
-    {"nvnTexturePoolSetDebugLabel", h_set_debug_label},
-    {"nvnSamplerPoolSetDebugLabel", h_set_debug_label},
+    {"nvnDeviceSetDebugLabel", h_library_ret},
+    {"nvnCommandBufferSetDebugLabel", h_library_ret},
+    {"nvnMemoryPoolSetDebugLabel", h_library_ret},
+    {"nvnProgramSetDebugLabel", h_library_ret},
+    {"nvnQueueSetDebugLabel", h_library_ret},
+    {"nvnSamplerSetDebugLabel", h_library_ret},
+    {"nvnSyncSetDebugLabel", h_library_ret},
+    {"nvnTextureSetDebugLabel", h_library_ret},
+    {"nvnWindowSetDebugLabel", h_library_ret},
+    {"nvnTexturePoolSetDebugLabel", h_library_ret},
+    {"nvnSamplerPoolSetDebugLabel", h_library_ret},
     {"nvnProgramInitialize", h_program_initialize},
     {"nvnProgramSetShadersExt", h_program_set_shaders_ext},
     {"nvnProgramSetShaders", h_program_set_shaders},
@@ -6972,6 +7154,18 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferSetCopyImageStride", h_command_buffer_set_copy_image_stride},
     {"nvnCommandBufferGetCopyRowStride", h_command_buffer_get_copy_row_stride},
     {"nvnCommandBufferGetCopyImageStride", h_command_buffer_get_copy_image_stride},
+    {"nvnCommandBufferGetMemoryCallback", h_command_buffer_get_memory_callback},
+    {"nvnCommandBufferGetMemoryCallbackData", h_command_buffer_get_memory_callback_data},
+    {"nvnCommandBufferIsRecording", h_command_buffer_is_recording},
+    {"nvnCommandBufferGetControlMemorySize", h_command_buffer_get_control_memory_size},
+    {"nvnCommandBufferSetCommandMemoryCallbackEnabled", h_command_buffer_set_command_memory_callback_enabled},
+    {"nvnCommandBufferGetCommandMemorySize", h_command_buffer_get_command_memory_size},
+    {"nvnCommandBufferGetCommandMemoryUsed", h_command_buffer_get_command_memory_used},
+    {"nvnCommandBufferGetCommandMemoryFree", h_command_buffer_get_command_memory_free},
+    {"nvnCommandBufferGetControlMemoryUsed", h_command_buffer_get_control_memory_used},
+    {"nvnCommandBufferGetControlMemoryFree", h_command_buffer_get_control_memory_free},
+    {"nvnCommandBufferInsertCheckpointDynamic", h_debug_checkpoint},
+    {"nvnCommandBufferInsertCheckpointStatic", h_debug_checkpoint},
     {"nvnCommandBufferSetTexturePool", h_command_buffer_set_texture_pool},
     {"nvnCommandBufferSetSamplerPool", h_command_buffer_set_sampler_pool},
     {"nvnCommandBufferBindTexture", h_command_buffer_bind_texture},
@@ -6985,6 +7179,14 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferSetShaderScratchMemory", h_command_buffer_set_shader_scratch_memory},
     {"nvnCommandBufferSetTiledCacheAction", h_command_buffer_set_tiled_cache_action},
     {"nvnCommandBufferSetTiledCacheTileSize", h_command_buffer_set_tiled_cache_tile_size},
+    {"nvnCommandBufferInsertDebugMarker", h_command_buffer_insert_debug_marker},
+    {"nvnCommandBufferInsertDebugMarkerDynamic", h_command_buffer_insert_debug_marker_dynamic},
+    {"nvnCommandBufferInsertDebugMarkerStatic", h_command_buffer_insert_debug_marker_static},
+    {"nvnCommandBufferPushDebugGroup", h_command_buffer_push_debug_group},
+    {"nvnCommandBufferPushDebugGroupDynamic", h_command_buffer_push_debug_group_dynamic},
+    {"nvnCommandBufferPushDebugGroupStatic", h_command_buffer_push_debug_group_static},
+    {"nvnCommandBufferPopDebugGroup", h_command_buffer_pop_debug_group},
+    {"nvnCommandBufferPopDebugGroupId", h_command_buffer_pop_debug_group_id},
     {"nvnCommandBufferBindUniformBuffer", h_command_buffer_bind_uniform_buffer},
     {"nvnCommandBufferBindStorageBuffer", h_command_buffer_bind_storage_buffer},
     {"nvnCommandBufferBindVertexBuffer", h_command_buffer_bind_vertex_buffer},
