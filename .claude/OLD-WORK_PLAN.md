@@ -2601,3 +2601,13 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   scratch are never freed. Build ok, ctest ok except `tracked_material`. Commit `8a440fd` (selftest code and fixes).
 - Step (e) run 21:56 (`nvn_native=0`, `nvn_trace=1`, `nvn_selftest=1`, exe md5 a78c5b74): no svcBreak, 247 cases,
   2 failed. All pool cases (flags 0x24, 0x22, 0x12, 0x21, MapVirtual) ok. The 2 failures: see `WORK_PLAN.md`.
+- Step (f) (2026-11-10): run 21:56 failed 2 cases, `nvnTexture block fmt=0x25/0x26 32x32` R: the texture address
+  relative to the pool buffer address was library 0x14000 / 0x18000, host 0x4000 / 0x8000 (0x10000 = pool size).
+  Explorer `reports/explorer-u3-2f-1.md` (checked d83d920, d83f474..d83f4b4, d83fa00..d83fa7c, d83d650): a non-virtual
+  pool (d83f9ac) maps the same storage at range 0 (kind 0, base pool+0x40, GetBufferAddress) and range 1 (device kind
+  d950f80, base +0x50), each of the rounded pool size. Range 2 (+0x60) only when the pool kind has bit 7 (flag 0xa1).
+  A texture with flags&0x50 or target BUFFER gets range 0, other textures range 1 (d83f418). A virtual pool has one range.
+  Fix: brief `reports/brief-u3-2f-writer.md`, patch `patches/writer-u3-2f-1.patch`: a normal pool allocates one GPU
+  range of 2*size, range 0 and range 1 = range 0 + size map the same storage. `nvn_texture_uses_pitch_range` with a
+  test (mutant caught). No third range (open if a texture of a bit-7 pool needs it). Commit `8db7485`.
+  Selftest run 23:48 (exe md5 9fc85bdc): 247 cases, 0 failed.
