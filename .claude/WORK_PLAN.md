@@ -56,8 +56,10 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   `nvn-coverage.md`, commit. (d) for selftest or exectest cases: one user run, read the log.
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
-  Current step: U4 step (d), one user run (`nvn_native=1`, update program, wait 10 seconds, close) as a regression check
-    of U4 patch 2. Read the log with `nx-log-read`: no new `not implemented` lines, no crash, the table C names. Then U5 step (a).
+  Current step: U5 step (a), the library analyst table of U5 (debug and the rest).
+  - U4 regression run (2026-11-10, build 194dc0f-dirty = `1218e3d`): 85 s, normal exit, no crash, 0 JIT misses, 0 failed
+    shaders, 30 fps, program sets refused=0, `522 resolved addresses, 44 without a handler, 0 of them called`. No table C
+    function was called (not verified in the game).
   - U4 patch 2 is done (`1218e3d`): ctest passes except `tracked_material`, the mutant (shift 16) of
     `test_separate_handles` fails as expected. Decisions: `OLD-WORK_PLAN.md`, "U4 patch 2 step (b)".
   - The enum trace values (`analysis/enum-run1.txt`, `enum-run2.txt`) are the observed scope of each function.
