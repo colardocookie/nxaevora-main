@@ -1,0 +1,360 @@
+{
+  "date": "2026-11-06",
+  "gameplay_changes_this_pass": "None. Launcher/controller support improved; next candidate adds one sampled read-only postsolve serial.",
+  "files": {
+    "runtime_source": {
+      "path": "C:\\Users\\brett\\Documents\\Codex\\work\\nvn-src\\src\\nx\\runtime\\arceus_clock.c",
+      "sha256": "3339e9e1fcc88932a4d1c1761360f2c6152e5bc6de3adc7b7b337290184c7f0d"
+    },
+    "runtime_mirror": {
+      "path": "C:\\Users\\brett\\Documents\\Codex\\2026-11-06\\files-pasted-by-the-user-project\\work\\nxaevora-main\\third_party\\ScarletNX\\src\\nx\\runtime\\arceus_clock.c",
+      "sha256": "3339e9e1fcc88932a4d1c1761360f2c6152e5bc6de3adc7b7b337290184c7f0d"
+    },
+    "candidate_next_launch": {
+      "path": "C:\\Users\\brett\\Documents\\Codex\\2026-11-06\\recompiled-game-folder-c-users-brett\\work\\ArceusEngineCandidate-runtime.exe",
+      "sha256": "c88b5a620f1f627a2a07bc695eca49dc05dfddebecddc708d020a2c7d610a5df"
+    },
+    "candidate_tested_and_preserved": {
+      "path": "C:\\Users\\brett\\Documents\\Codex\\2026-11-06\\recompiled-game-folder-c-users-brett\\work\\ArceusEngineCandidate-before-pass6-runtime.exe",
+      "sha256": "c2b2be0b146d3c801a9e1e801243ca60d17965bdd363af8da5c746464b6753c1"
+    },
+    "installed_tested_game_runtime": {
+      "path": "C:\\Users\\brett\\Documents\\Codex\\work\\arceus-games\\ArceusTest\\ArceusTest.exe",
+      "sha256": "c2b2be0b146d3c801a9e1e801243ca60d17965bdd363af8da5c746464b6753c1"
+    },
+    "regular_runtime_unchanged": {
+      "path": "C:\\Users\\brett\\Documents\\Codex\\2026-11-06\\recompiled-game-folder-c-users-brett\\work\\ArceusClockExperiment-runtime.exe",
+      "sha256": "69b7c027fafc35c2af8270cdcbf01b666e8931cf0c81e39f170193a19f64ddaf"
+    },
+    "desktop_launcher": {
+      "path": "C:\\Users\\brett\\Documents\\Codex\\2026-11-06\\recompiled-game-folder-c-users-brett\\outputs\\Arceus-Controller-Test.exe",
+      "sha256": "7c1852f87451e6679590f15dcccf4de2e304ba2c18bb194cb33c772a88b36344"
+    },
+    "log_summary": {
+      "path": "C:\\Users\\brett\\Documents\\Codex\\2026-11-06\\recompiled-game-folder-c-users-brett\\outputs\\summarize-arceus-research.py",
+      "sha256": "7f50cdaeabf69f2d07677257b7a7c48725d30b73e05e637e05762b09f9c7ee05"
+    }
+  },
+  "test_capture": "C:\\Users\\brett\\Documents\\Codex\\work\\arceus-runs\\timing-20261106-163108-125",
+  "counts": {
+    "AI": 9843,
+    "message": 1752,
+    "resolution": 1307,
+    "total": 12902,
+    "failures": 0,
+    "compiled_entries": 49
+  },
+  "fixtures": {
+    "AI": {
+      "main_sha256": "d13df31aef8e3bdf9dce8fcb12518900218091b8f33a6880b36cfaaf2acf44c0",
+      "sdk_sha256": "390d5149120bfe5d17784a26eaa8097c566219fce3a69c205f64b43bc6d4aeac",
+      "ranges": [
+        {
+          "name": "initkey",
+          "module": "main",
+          "start": "0xb32a78",
+          "end_exclusive": "0xb32c88",
+          "substitutions": [
+            {
+              "address": "0xb32c84",
+              "original": "0xf94007f3",
+              "replacement": "0xd65f03c0",
+              "reason": "Return at extracted continuation"
+            }
+          ]
+        },
+        {
+          "name": "initturn",
+          "module": "main",
+          "start": "0xb335ec",
+          "end_exclusive": "0xb337ec",
+          "substitutions": [
+            {
+              "address": "0xb33760",
+              "original": "0xf9402ec0",
+              "replacement": "0xd65f03c0",
+              "reason": "Return at extracted continuation"
+            }
+          ]
+        },
+        {
+          "name": "motionkey",
+          "module": "main",
+          "start": "0xb32e34",
+          "end_exclusive": "0xb32fc0",
+          "substitutions": [
+            {
+              "address": "0xb32fbc",
+              "original": "0x943948fb",
+              "replacement": "0xd65f03c0",
+              "reason": "Return at extracted continuation"
+            }
+          ]
+        },
+        {
+          "name": "motionturn",
+          "module": "main",
+          "start": "0xb33ad4",
+          "end_exclusive": "0xb33c60",
+          "substitutions": [
+            {
+              "address": "0xb33c5c",
+              "original": "0x943945d3",
+              "replacement": "0xd65f03c0",
+              "reason": "Return at extracted continuation"
+            }
+          ]
+        },
+        {
+          "name": "countkey",
+          "module": "main",
+          "start": "0xb32e00",
+          "end_exclusive": "0xb32e10",
+          "substitutions": [
+            {
+              "address": "0xb32e0c",
+              "original": "0xf9400bf7",
+              "replacement": "0xd65f03c0",
+              "reason": "Return at extracted continuation"
+            }
+          ]
+        },
+        {
+          "name": "countturn",
+          "module": "main",
+          "start": "0xb33aa0",
+          "end_exclusive": "0xb33ab0",
+          "substitutions": [
+            {
+              "address": "0xb33aac",
+              "original": "0xf9400bf7",
+              "replacement": "0xd65f03c0",
+              "reason": "Return at extracted continuation"
+            }
+          ]
+        },
+        {
+          "name": "endkey",
+          "module": "main",
+          "start": "0xb32fc0",
+          "end_exclusive": "0xb32fe8",
+          "substitutions": [
+            {
+              "address": "0xb32fe4",
+              "original": "0xf9402ea0",
+              "replacement": "0xd61f0380",
+              "reason": "Return at slice continuation; BR X28 uses zero sentinel after helper BL"
+            }
+          ]
+        },
+        {
+          "name": "endturn",
+          "module": "main",
+          "start": "0xb33c60",
+          "end_exclusive": "0xb33cac",
+          "substitutions": [
+            {
+              "address": "0xb33c7c",
+              "original": "0xf9402ea0",
+              "replacement": "0xd61f0380",
+              "reason": "Return at slice continuation; BR X28 uses zero sentinel after helper BL"
+            }
+          ]
+        },
+        {
+          "name": "direction",
+          "module": "main",
+          "start": "0x19853a8",
+          "end_exclusive": "0x19856a8",
+          "substitutions": []
+        },
+        {
+          "name": "success",
+          "module": "main",
+          "start": "0xbd4380",
+          "end_exclusive": "0xbd438c",
+          "substitutions": []
+        },
+        {
+          "name": "running",
+          "module": "main",
+          "start": "0xbd43a4",
+          "end_exclusive": "0xbd43b0",
+          "substitutions": []
+        },
+        {
+          "name": "acosplt",
+          "module": "main",
+          "start": "0x32a30b0",
+          "end_exclusive": "0x32a30c0",
+          "substitutions": []
+        },
+        {
+          "name": "acos",
+          "module": "sdk",
+          "start": "0x5295f0",
+          "end_exclusive": "0x529870",
+          "substitutions": []
+        }
+      ],
+      "main_constants": [
+        "0x3788000",
+        "0x378b000"
+      ],
+      "sdk_constants": [
+        {
+          "got": "0x4272ce0",
+          "symbol": "_ZN2nn4util6detail14FloatDegree180E",
+          "sdk_offset": "0xab3aa0",
+          "size": 4,
+          "synthetic_address": "0x4208000"
+        },
+        {
+          "got": "0x4272cf0",
+          "symbol": "_ZN2nn4util6detail7FloatPiE",
+          "sdk_offset": "0xab3a8c",
+          "size": 4,
+          "synthetic_address": "0x4208040"
+        },
+        {
+          "got": "0x4272d20",
+          "symbol": "_ZN2nn4util6detail16Float1Divided2PiE",
+          "sdk_offset": "0xab3a9c",
+          "size": 4,
+          "synthetic_address": "0x4208080"
+        },
+        {
+          "got": "0x4272d28",
+          "symbol": "_ZN2nn4util6detail15SinCoefficientsE",
+          "sdk_offset": "0xab263c",
+          "size": 20,
+          "synthetic_address": "0x42080c0"
+        },
+        {
+          "got": "0x4272d30",
+          "symbol": "_ZN2nn4util6detail8Float2PiE",
+          "sdk_offset": "0xab3a90",
+          "size": 4,
+          "synthetic_address": "0x4208100"
+        },
+        {
+          "got": "0x4272d38",
+          "symbol": "_ZN2nn4util6detail15FloatPiDivided2E",
+          "sdk_offset": "0xab3a94",
+          "size": 4,
+          "synthetic_address": "0x4208140"
+        },
+        {
+          "got": "0x4272d40",
+          "symbol": "_ZN2nn4util6detail15CosCoefficientsE",
+          "sdk_offset": "0xab2650",
+          "size": 20,
+          "synthetic_address": "0x4208180"
+        },
+        {
+          "got": "0x427a118",
+          "symbol": "_ZN2nn4util6detail22FloatQuaternionEpsilonE",
+          "sdk_offset": "0xab3aa4",
+          "size": 4,
+          "synthetic_address": "0x42081c0"
+        }
+      ],
+      "status_globals": {
+        "0x40e7bf8": 1,
+        "0x40e7c04": 4,
+        "verified_original": true
+      },
+      "stubs": {
+        "0x8c69bc": "Controlled actor-component acquire: writes COMPONENT into [X8]. Reference +58 points to REF whose +C is reset to2 before setter call; original release then decrements to1, never destroys.",
+        "0x0": "Recognized extraction stop marker for completion slices BR X28 with X28=0; not a game function."
+      },
+      "addresses": "All main instruction addresses retained. sdk acos runs at its sdk-relative address in otherwise unused synthetic memory; it uses no PC-relative data. Its fallback sqrt helper is unprovided and any execution is an unexpected failure. Constants from sdk are copied to synthetic addresses and original main GOT slots point there.",
+      "scope": "Original init arithmetic (not entry resources/config lookup); separate original count/motion/completion slices; full direction setter with real SDK acos and controlled component acquisition; host proposed fractional progress simulation is explicitly separate from original code. SIM/SMALL/HITCH/RESIDUAL schedules and float progress are host-controlled models; original full action acquisition and scheduler are not executed."
+    },
+    "message": {
+      "main_sha256": "d13df31aef8e3bdf9dce8fcb12518900218091b8f33a6880b36cfaaf2acf44c0",
+      "functions": {
+        "wrapper": [
+          "0xfbfbd0",
+          "0xfbfd2c"
+        ],
+        "advance_sound": [
+          "0xfc1078",
+          "0xfc10e4"
+        ],
+        "advance": [
+          "0xfc10e4",
+          "0xfc1130"
+        ],
+        "rate_set": [
+          "0x2b320c4",
+          "0x2b320d0"
+        ],
+        "rate_get": [
+          "0x2b320d0",
+          "0x2b320dc"
+        ],
+        "base": [
+          "0x2b315e8",
+          "0x2b31fac"
+        ],
+        "colors": [
+          "0x2b31fac",
+          "0x2b320c4"
+        ],
+        "parent": [
+          "0x27379b8",
+          "0x2737abc"
+        ],
+        "drain": [
+          "0x2737abc",
+          "0x2737bec"
+        ],
+        "state": [
+          "0x2737d94",
+          "0x2737e70"
+        ],
+        "timed_close": [
+          "0x2485390",
+          "0x24853e0"
+        ],
+        "close_forward": [
+          "0x2484ecc",
+          "0x2484ed8"
+        ]
+      },
+      "tables": {
+        "base_tables": [
+          "0x39847f8",
+          "0x3984812"
+        ],
+        "owner_tables": [
+          "0x397e422",
+          "0x397e434"
+        ]
+      },
+      "changes": "None; every byte copied unchanged at original main-relative address.",
+      "stubs": "Color query virtual+78 returns false; virtual+80 post-layout noop; owner animation/start/cursor callbacks controlled. Sound is not exercised (empty event string). Timed-close target2737C00 is a stub checking receiver/close request and setting message state5. Full glyph parsing/rendering, close sound/animation and resource setup not exercised.",
+      "scope": "Original state/status handling, input predicate/latch, automatic-delay counter, parent/drain ordering, selected terminal text-boundary paths and timed-subtype post-completion counter. Synthetic object fields; no live objects or game process."
+    },
+    "resolution": {
+      "main_sha256": "d13df31aef8e3bdf9dce8fcb12518900218091b8f33a6880b36cfaaf2acf44c0",
+      "unmodified_ranges": {
+        "code": [
+          "0xcc386c",
+          "0xcc3e88"
+        ],
+        "constants": [
+          "0x3978732",
+          "0x3978778"
+        ],
+        "names": [
+          "0x3982428",
+          "0x3982468"
+        ]
+      },
+      "external_stubs": "Parameter service: read descriptor and float writes; no real GPU or render targets"
+    }
+  },
+  "limits": "Original guest snippets/full selected methods with declared stubs; host-controlled proposed AI schedules; no new gameplay patch tested. Private extracted code/assets stay local."
+}

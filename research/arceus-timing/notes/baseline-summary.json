@@ -1,0 +1,18 @@
+{
+  "measurement": "Vulkan API submission, not display completion",
+  "failed_calls": 0,
+  "swapchains": {
+    "1943736748752": {
+      "accepted_calls": 106,
+      "sampled_calls": 0
+    },
+    "1943847689424": {
+      "accepted_calls": 912,
+      "sampled_calls": 611,
+      "mean_interval_ms": 33.33363557377049,
+      "median_interval_ms": 33.3389,
+      "p95_interval_ms": 33.9056,
+      "mean_api_duration_ms": 0.1587
+    }
+  }
+}

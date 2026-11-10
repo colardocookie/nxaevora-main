@@ -1,0 +1,57 @@
+ARCEUS 1.1.1 ENGINE RESEARCH - PASS 7
+2026-11-08. Ball-flight test review, AI navigation measurement, cadence census build.
+Addresses are main-relative. No game data, saves or disassembly listings are included.
+
+1. BALL-FLIGHT TEST (timing-20261108-022813-722, about 63-90 FPS, exit 0)
+Wrapper installed with correct=1 beside the physics timestep fix. User: better than the
+step fix alone, but balls still stay in the air slightly too long.
+Measured: in-flight timer +618 now advances with real time (example: 0.81 s real time,
++618 = 0.81). implied S = 1.0 throughout. Authored drag +5A0 = 0.04, lift +5A4 = 0.01
+for every logged throw. Planned flight time +61C was 1.27-1.96 s.
+Flights end through state 2 -> 3, set outside 1A7191C (hit or stop), not through the
+timer test inside the call, so no 1 -> 2 transition appears in the wrapper's log.
+Conclusion: timer, drag and lift now follow real time. The residual long hang time is not
+explained by them. Remaining suspects inside the same update: the +640 and +660 controllers
+(vtable +18, called every update with the projectile), and body-side settings such as
+gravity factor or damping. Not traced further at the user's request.
+
+2. AI NAVIGATION STEPS 1/30 PER RENDERED FRAME (MEASURED)
+Timing-research probe on 2795204 (hkaiWorld::stepWorld path), same run:
+navigation and main physics calls have identical counts (6900 each by 98 s), both from
+caller 2968538, i.e. once per rendered frame. variable_mode (+150) stayed 0 for the whole
+run, so the fixed 1/30 step was selected every frame while the elapsed input was
+0.008-0.016 s. At about 66 FPS AI navigation therefore advances about 2.2x real time.
+This is the same defect as the main physics world before SNX_ARCEUS_PHYSICS_TIMESTEP_FIX.
+Not yet corrected. Note: the FCSEL is at 2795204+0x40 but, unlike the physics wrapper,
+this path has no zero-step gate, so a min(1/30, elapsed) rewrite must also handle a zero
+or tiny elapsed input before it is safe. Visible effect (wild Pokemon and NPC path
+following, steering) still to be confirmed in gameplay.
+
+3. CADENCE CENSUS (BUILT, NOT YET RUN)
+Purpose: the pass-1 audit lists 58 fixed-step sites but could not establish whether each
+owner runs once per rendered frame (a high-FPS bug) or on a 30 Hz schedule (fine).
+SNX_ARCEUS_CADENCE_CENSUS=1 (requires SNX_ARCEUS_TIMING_RESEARCH=1) wraps 32 owner
+functions with one read-only counting wrapper. Each uses the existing equivalent
+B -> CBZ XZR rewrite at an in-function branch, with head-word and branch-word guards and
+an exact function-length match. Owners already wrapped by other fixes are excluded
+(capture sequence 180C338, transform timers 1D482B0/1D49144, blink, camera, water,
+navigation, physics, ball flight).
+Every 5 s it logs "arceus-cadence:" lines: frames_per_s (main-world physics calls) and, per
+owner, calls_per_s plus object_calls_per_s for one sampled x0 object. Reading the result:
+  object rate ~ frames_per_s  -> per-frame owner: its fixed step is a real high-FPS bug
+  object rate ~ 30            -> scheduled at 30 Hz: no correction needed
+  totals large, object small  -> many objects; use the object rate
+x0 is not always an object (helpers), so treat helper rows with care.
+Owners covered: player controller and movement (1A08560, 1A0D9DC, 1A0E0EC, 1A0F278,
+1A14F80, 1A173B0, 1A19654, 1D1B454), shared character movement (1982408, 19843A0,
+198D7E4, 198EB04), orientation helpers (1717594, 1727DF4), Pokemon/ride movement
+(2527E8C, 252B124, 252D448, 257ABB4, 257AF70, 25A8A84, 25ABD58), script character motion
+AFB898, event coordination (167F988, 168300C, 1683528), world time (1D5D59C, 24AC8C4),
+weather blend 1B47D10, cave light 1E1A25C, countdown 1AAB534, credits 13B32FC,
+movie skip fade 1458300.
+Runtime SHA256 1bd849313ec92ae01c4e9022bfe711f09b4c1df44f4c6626e94e68996a325c16.
+Build compiled cleanly. Previous builds kept as physics-stage\ArceusTest.ball-flight.exe.bak
+and ArceusTest.first-physics.exe.bak.
+
+Useful census test: walk, run and jump for a while; ride if available; stand near wild
+Pokemon; let time of day pass; enter a cave if convenient. Then save and close.

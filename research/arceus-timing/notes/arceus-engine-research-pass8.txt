@@ -1,0 +1,91 @@
+ARCEUS 1.1.1 ENGINE RESEARCH - PASS 8
+2026-11-08. Cadence census results, owner traces, three PR branches.
+Addresses are main-relative. No game data, saves or disassembly listings are included.
+
+1. CENSUS RUNS
+timing-20261108-034616-983: about 2.5 min, 48-60 FPS, exit 0, 32 of 32 counters installed.
+timing-20261108-034905-810: about 2 min, about 65 FPS, exit 0, 9 ball throws.
+Summariser: scratchpad census_report.py (median object calls/s against frames/s).
+Once per rendered frame (object rate / frame rate = 1.00 in both runs):
+  167F988 event coordinator      1982408 shared char move     198D7E4 shared char accel
+  1A08560 player controller      1A0F278 player method        1B47D10 weather blend
+  1D5D59C world time feed        1E1A25C cave light easing    24AC8C4 day clock (most windows)
+Short bursts only (no sustained cadence seen, no riding in either run): 19843A0, 198EB04,
+1A0E0EC, 252D448, 257ABB4, 257AF70. Movie skip fade 1458300 ran per frame while a movie played.
+Not called in either run: the other 16 owners, including credits, countdown 1AAB534 and the
+ride gravity and Pokemon motion functions. They remain unresolved.
+
+2. OWNER TRACES
+Day clock. 1D5D59C calls 24AC8C4(obj, 1/30) when obj+70 (a time controller) is absent.
+24AC8C4 adds s0 to a double at +70 counting in-game minutes (hour index +78, 60 per hour,
+wraps at 1440) while +68 is set and +7C/+7D are clear. Authored rate: 1 in-game minute per
+real second at 30 FPS, 24 min per day. At 60 FPS the day passed in 12 min. HIGH-FPS BUG.
+
+Event hold timers. 167F988 (x19 = x0) adds 1/30 to +190 while 168038C is true, caps it at a
+configured threshold and resets it to 0 otherwise; the comparison feeds 168790C. Callees
+168300C (+1A0 two-second check, +198 six-second threshold) and 1683528 (+19C) keep the same
+kind of timer and are reached only through 167F988 -> 168790C. HIGH-FPS BUG.
+
+Weather blend. 1B47D10 keeps three blend values at +24C/+250/+254 clamped 0..1. Fades add
+-rate*1/30 (rate from 1B49780) at 1B47F5C/F94/FCC. Rises add config_rate*1/30 at 1B48A48,
+1B48A94, 1B49004, 1B493F4, inside the direct-set branches through +220/+230. HIGH-FPS BUG.
+
+Cave light. 1E1A25C (cave_light_change_easing) record x0+5E640: target +0, active +4,
+progress +8, increment +C. A change stores increment 1/120 and adds it every call until
+progress reaches 1: 4 s at 30 FPS, 2 s at 60. HIGH-FPS BUG.
+
+Shared character movement 1982408 (1982930): displacement = velocity * rate * 1/30, then a
+collision-aware sweep 19835E0, then * 29.99999 back to a velocity submitted through vtable
++100. The 1/30 is a probe horizon and cancels out. NOT A SPEED BUG. This is why player
+movement looks right at high FPS.
+
+Shared acceleration 198D7E4: returns a large structure through x8 (Havok character input
+style: defaults 1.0/100.0, up and forward vectors, result vector at +40). In the airborne
+branch it builds -g(413A0F8) * factor(+BE8) * rate(198E188) / 30, adds an accel term *
+1/30 * rate and clamps against +698. Whether +40 is a new velocity or a change in velocity
+was not settled. UNRESOLVED. Next: a read-only probe logging out+40 and obj+6B0 per frame
+while falling, at two frame rates.
+
+Player controller 1A08560 and method 1A0F278: acceleration * 1/30 added to velocity with a
+max-speed clamp, and 1/30 passed to helper 1713904. Effect likely limited to reaching top
+speed or turning sooner. UNRESOLVED, not reported by the user.
+
+3. FIXES BUILT (all opt-in, off by default)
+SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX=1: 2795244 FCSEL s8,s1,s0,eq -> FMINNM s8,s1,s0. Input is
+clock channel 1, from arceus_step, which is never zero. Caller tail branch 279A71C guarded.
+SNX_ARCEUS_WORLD_TIMERS_FIX=1: a page cell holds min(1/30, step) at +0 and its negation at +4,
+written with the water cell each frame. The twelve MOV/MOVK W8 pairs above become ADRP X8 and
+LDR W8 [X8,#0 or #4]. Cave light: wrapper (B at +11C -> CBZ XZR) scales +C by step*30 for
+each active call and restores it. Census skips owners a fix wraps and logs world_minutes.
+Encodings checked by disassembly. Runtime SHA256
+efedbc6d1c91abde94bab00b79c400a38ee32ae1d960c49e54657e70958bb750, staged as
+physics-stage\ArceusTest.exe. Previous census build kept as ArceusTest.census.exe.bak.
+The test helper now enables physics, ball, navigation and world timers plus the census.
+It verifies the new hash (--verify-only exit 0). Not launched.
+
+4. BRANCHES (pushed, PRs not yet opened; stacked in this order)
+experiment/arceus-elapsed-physics       6f0dcd6  physics step, ball flight, census
+experiment/arceus-elapsed-navigation    cc62619  AI navigation step
+experiment/arceus-elapsed-world-timers  96d8023  day clock, event timers, weather, cave light
+Prefilled PR links and descriptions: nxaevora-main\PR-DRAFTS.md (excluded from git).
+
+5. NEXT TEST
+Run the staged helper. Check the log for arceus-navigation-timestep and "arceus-world-timers:
+EXPERIMENT: 12 of 12 ... cave light=1". In game: let time of day pass (world_minutes should
+rise about 5 per 5 s window), watch wild Pokemon path-following speed, enter a cave, and stand
+in rain or snow if available. Then save and close.
+
+6. GRAVITY PROBE (added after the night pass, branch experiment/arceus-gravity-probe)
+198D7E4 inputs: x1+120 is the velocity it starts from (sp+40 default), x2+0 a vec3 also
+copied to obj+710 (likely position), x8 the result. Airborne branch result y =
+-g(413A0F8) * factor(+BE8) * rate(198E188) / 30, clamped to -max_fall (obj+5C0 -> +80),
+then minus y * damping(+920). It never adds the current velocity, so the caller decides.
+SNX_ARCEUS_GRAVITY_PROBE=1 (needs the census) logs arceus-gravity start/end and one line
+per call for one object while out+44 < 0: t, v_in, pos, out. Segment cap 4 s, object then
+skipped 10 s, 40000 lines total. Read-only.
+Runtime SHA256 d75ec3fe6b90b180f9cd6bfa0105b79f730805f40d0b588685c0e3ebea4483cc, staged as
+physics-stage\ArceusTest.exe (previous kept as ArceusTest.world-timers.exe.bak). Helper sets
+the probe and verifies the hash. Save backed up to arceus-runs\save-before-gravity-probe-20261108.
+Analysis: if v_in.y(n+1) - v_in.y(n) ~= out.y per call, gravity is per frame (FPS/30 bug).
+Fit pos.y against t for the real acceleration and compare with g * factor.
+In game: jump a few times and drop off a ledge.

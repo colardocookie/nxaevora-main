@@ -1,0 +1,92 @@
+ARCEUS 1.1.1 THROWN-BALL FLIGHT TRACE
+2026-11-07. Static trace of the local main.bin plus one gameplay report. Addresses are
+main-relative. No game data, saves or disassembly listings are included here.
+
+TEST THAT PROMPTED THIS
+Run timing-20261107-142847-568, branch experiment/arceus-elapsed-physics, about 71 FPS.
+SNX_ARCEUS_PHYSICS_TIMESTEP_FIX=1 made the main rigid-body step min(1/30, elapsed):
+input_seconds was about 0.012 and the world ran about 71 solves a second.
+User report: thrown Poke Balls moved in extreme slow motion in the air.
+Earlier report without the fix: ball flight too fast.
+
+ESTABLISHED FROM CODE
+1. The thrown object is a real physics body, driven through a physics component.
+   2ADB238 queues linear velocity (+3E0, flag +3D0) and angular velocity (+400, flag +3F0).
+   2ADB28C queues linear velocity only. 2ADBCE0 reads the current velocity.
+   All three require component +7C == 2.
+   2AD30B8, the pre-physics component job, applies the queued values through world vtable+190.
+   Pass 6 showed that job runs before the main physics job.
+
+2. 1A7191C is a projectile update (per-update behaviour inferred from its role and state
+   machine; its call cadence has not been measured). State field +5F8:
+   Launch: sets velocity from +580/+590, clears elapsed +618 and stores
+   +61C = +3FC / |+580|, a planned flight time in seconds.
+   Flight (+5F8 == 1), each call:
+     +618 += S / 30                                       (1A71A6C..1A71A94, 1A71ABC..1A71AEC)
+     v = current velocity
+     v += constant_vector * (+5A4 * horizontal_speed) * S (1A71BD0..1A71BE0)
+     v *= 1 - S * (+5A0)                                  (1A71BE4..1A71BF0)
+     queue v through 2ADB28C
+   +618 / +61C > 1 sets the flag that calls +660's vtable+50.
+   Reading of the fields: +5A0 drag, +5A4 a lift-like term. The constant vector at 378A140
+   was not decoded and is presumed to be up.
+
+3. S comes from vtable+30 of the object behind weak pointer +2E0 (type-checked by 1A7236C).
+   With no object, S is exactly 1.0 (1A71D4C).
+   1A75DFC calls the same slot and tests the result against 0.9999999, so the value is a ratio
+   with nominal 1, not a time delta. If it scaled with elapsed time, that test would fail at
+   high FPS. The implementing class has not been identified and S has not been sampled live.
+
+CONCLUSION
+Drag, lift and the flight timer are authored per update at 30 Hz, with no elapsed-time input.
+
+Without the fix, one update also meant one 1/30 s solver step. Everything stayed in proportion,
+so the whole flight simply ran at FPS/30 speed: the fast ball.
+
+With the fix, position and gravity follow real time, but drag and lift still apply per update.
+At FPS f, velocity decays f/30 times as much per real second and lift accumulates f/30 times
+as fast. That is the likely cause of the slow ball. The flight timer also expires 30/f of the
+planned time early.
+
+NOT ESTABLISHED
+- Values of +5A0 and +5A4 for a Poke Ball. They come from configuration (candidate writers
+  1912A08, 192D780, 194C750) and were not resolved, so the size of the effect is not computed.
+- That this routine is the one a normal Poke Ball uses. Its vtables were not tied to a ball
+  type. Support: flyby-sound and after-hit code share the 1A6E000..1A83000 range.
+- Whether +660 vtable+50 causes the slow look or something else, such as stopping or dropping.
+- Other per-update flight code: controllers at +640/+660 (vtable+18), 1A74AF4 and 1A75B94.
+- The value of S during flight, and the body's own damping and gravity settings.
+- Other dynamic bodies. Direct velocity writers beyond this code include 19BDDB4 and 1D4A0DC,
+  and other systems may have the same dependence.
+
+CORRECTION (BUILT 2026-11-08, NOT YET TESTED IN GAMEPLAY)
+The end-of-flight test (+618/+61C > 1, result w21 -> +660 vtable+50) runs inside the call, so
+correcting +618 only afterwards would still end flights early. The built wrapper instead uses
+r = clamp(step_ns / 33.33 ms, 1/16, 1), and while +5F8 == 1 and r < 1, for that call only:
+  +618 := +618 / r and +61C := +61C / r   (guest end test then sees (old + r*S/30) / T)
+  +5A0 := 1 - (1 - drag)^r                 (exact per-second decay for S = 1)
+  +5A4 := lift * r
+After the call each field is restored only if it still holds the value written, and +618 is
+multiplied back by r. Guards: prologue, the +618 load/store, the +61C load, the drag and lift
+loads, the drag multiply, and the B at +FC, which is rewritten to an equivalent CBZ XZR before
+the body is compiled. With the timestep fix off and timing research on, the wrapper only logs.
+Runtime SHA256 260e25451127840dda84bc46ba29c82b0a65d86229d1cb2d9114fffcee1335c8.
+
+Offline model (illustrative drag 0.02, lift 0.01, planned 1.2 s; not game data):
+  FPS   original fixed step   step fix only      step fix + ball correction
+  30    1.20 s, 16.9 m        same               same
+  71    0.51 s, 16.9 m        0.51 s, 7.1 m      1.21 s, 17.1 m
+  120   0.30 s, 16.9 m        0.30 s, 4.2 m      1.21 s, 17.1 m
+The model reproduces both reports (fast flight before, short and slow flight after) and shows
+the correction restoring the 30 FPS flight to within about 1-4 percent.
+
+MEASUREMENT BUILT WITH IT
+arceus-ball-flight lines log every launch (state 0->1) and end (1->other), the first 600
+in-flight calls and then 1 in 30: ns, state, step_ns, r, physics_input, +618 before/after,
++61C, implied S (30 x the guest's timer increment), and drag and lift as authored and as seen.
+Velocity and position are not logged; the physics component is only reachable inside the call.
+Check: real time between launch and end should match +61C, and implied_s should be about 1.
+
+FOLLOW-UP RISK
+Other physics-driven objects may need matching corrections. Per-frame logic elsewhere may also
+be sensitive to the changed step, so this is not yet a general route to high-FPS physics.

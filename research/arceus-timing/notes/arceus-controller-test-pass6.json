@@ -1,0 +1,753 @@
+{
+  "source": "C:\\Users\\brett\\Documents\\Codex\\work\\arceus-runs\\timing-20261106-163108-125\\game-err.txt",
+  "guard_failures": [],
+  "sampling_note": "Counts are cumulative; intervals can include pauses, menus, and inactive camera modes. No displayed-FPS claim.",
+  "camera": {
+    "observed_settings": [
+      1.0
+    ],
+    "sampled_calls": 59,
+    "highest_call_count": 3060,
+    "speed_multipliers": [
+      2.2
+    ],
+    "input_callers": [
+      "main+19350c0",
+      "main+193d1ac"
+    ]
+  },
+  "physics_navigation": {
+    "navigation": {
+      "sampled_calls": 71,
+      "mode_flags": [
+        0
+      ],
+      "incoming_dt_range": [
+        0.0079493,
+        0.1
+      ],
+      "wrapper_calls_per_second_min_median_max": [
+        58.765386247254185,
+        95.02930295845135,
+        120.05007048339722
+      ],
+      "cadence_note": "Wrapper-entry cadence, not displayed FPS or solver execution. Suppressed for multiple sampled objects."
+    },
+    "rigid_body": {
+      "sampled_calls": 66,
+      "mode_flags": [
+        0
+      ],
+      "incoming_dt_range": [
+        0.0078611,
+        0.1
+      ],
+      "wrapper_calls_per_second_min_median_max": [
+        27.177854817131628,
+        93.12510724908185,
+        120.05261185662005
+      ],
+      "cadence_note": "Wrapper-entry cadence, not displayed FPS or solver execution. Suppressed for multiple sampled objects."
+    }
+  },
+  "engine_clocks": {
+    "script_frames": {
+      "sampled_calls": 0,
+      "highest_call_count": 0,
+      "callers": [],
+      "sampled_objects": 0,
+      "frames_per_elapsed_second_range": null,
+      "per_caller": {},
+      "note": "Paired accumulated context frames/seconds; not displayed FPS. Repeated reads are not summed."
+    },
+    "ride_blink": {
+      "sampled_calls": 8,
+      "highest_call_count": 8,
+      "callers": [
+        "main+2549fe4",
+        "main+256c3c4",
+        "main+25a0548",
+        "main+294d1d0"
+      ],
+      "sampled_objects": 5
+    },
+    "ride_blink_subobject": {
+      "sampled_calls": 0,
+      "highest_call_count": 0,
+      "callers": [],
+      "sampled_objects": 0
+    }
+  },
+  "physics_step": {
+    "sampled_calls": 303,
+    "highest_call_count": 88500,
+    "step_seconds_range": [
+      0.0079509,
+      0.0333333
+    ],
+    "callers": [
+      "main+2af2ab8",
+      "main+2cd701c"
+    ],
+    "note": "StepInfo passed to Havok collision task setup. Does not alone prove how every body is integrated."
+  },
+  "physics_solver": {
+    "sampled_calls": 303,
+    "normal_world_samples": 303,
+    "alternate_world_samples": 0,
+    "stored_seconds_range": [
+      0.0079509,
+      0.0333333
+    ],
+    "substep_seconds_range": [
+      0.00397545,
+      0.0145802
+    ],
+    "substeps": [
+      2,
+      4
+    ],
+    "input_storage_mismatches": 0,
+    "note": "Post-call world fields; alternate-world samples excluded from comparisons. Not proof of body trajectories."
+  },
+  "physics_simulation": {
+    "sampled_calls": 303,
+    "normal_world_paths": [
+      "multi",
+      "single"
+    ],
+    "normal_world_samples_by_path": {
+      "multi": 69,
+      "single": 234
+    },
+    "normal_world_tags": [
+      0,
+      1
+    ],
+    "alternate_world_samples": 0,
+    "note": "Implementation identity observed after collision setup. Single-threaded solving can occur inline before task submission; this does not count completed solves."
+  },
+  "physics_worlds": [
+    {
+      "world": "145172000",
+      "caller": "main+2af2ab8",
+      "step_samples": 69,
+      "step_seconds_range": [
+        0.0333333,
+        0.0333333
+      ],
+      "matched_solver_samples": 69,
+      "normal_stored_seconds_range": [
+        0.0333333,
+        0.0333333
+      ],
+      "normal_substeps": [
+        4
+      ],
+      "matched_simulation_samples": 69,
+      "normal_paths": [
+        "multi"
+      ],
+      "normal_simulation_objects": [
+        "1454bf800"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "147281000",
+      "caller": "main+2cd701c",
+      "step_samples": 53,
+      "step_seconds_range": [
+        0.0080738,
+        0.018102
+      ],
+      "matched_solver_samples": 53,
+      "normal_stored_seconds_range": [
+        0.0080738,
+        0.018102
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 53,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "1510e1560"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "151d7a000",
+      "caller": "main+2cd701c",
+      "step_samples": 68,
+      "step_seconds_range": [
+        0.0079509,
+        0.0234855
+      ],
+      "matched_solver_samples": 68,
+      "normal_stored_seconds_range": [
+        0.0079509,
+        0.0234855
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 68,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "1510e0ba0"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "15201c000",
+      "caller": "main+2cd701c",
+      "step_samples": 7,
+      "step_seconds_range": [
+        0.0080813,
+        0.0086249
+      ],
+      "matched_solver_samples": 7,
+      "normal_stored_seconds_range": [
+        0.0080813,
+        0.0086249
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 7,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "15327a780"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "15752d000",
+      "caller": "main+2cd701c",
+      "step_samples": 13,
+      "step_seconds_range": [
+        0.0080898,
+        0.0087045
+      ],
+      "matched_solver_samples": 13,
+      "normal_stored_seconds_range": [
+        0.0080898,
+        0.0087045
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 13,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "15327a940"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "159881000",
+      "caller": "main+2cd701c",
+      "step_samples": 1,
+      "step_seconds_range": [
+        0.0088154,
+        0.0088154
+      ],
+      "matched_solver_samples": 1,
+      "normal_stored_seconds_range": [
+        0.0088154,
+        0.0088154
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 1,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "15327b1c0"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "15abbb000",
+      "caller": "main+2cd701c",
+      "step_samples": 1,
+      "step_seconds_range": [
+        0.008555,
+        0.008555
+      ],
+      "matched_solver_samples": 1,
+      "normal_stored_seconds_range": [
+        0.008555,
+        0.008555
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 1,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "15327b820"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "15b08c000",
+      "caller": "main+2cd701c",
+      "step_samples": 14,
+      "step_seconds_range": [
+        0.0088578,
+        0.0159491
+      ],
+      "matched_solver_samples": 14,
+      "normal_stored_seconds_range": [
+        0.0088578,
+        0.0159491
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 14,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "15d4cedc0"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "15fc2d000",
+      "caller": "main+2cd701c",
+      "step_samples": 27,
+      "step_seconds_range": [
+        0.0089855,
+        0.0185042
+      ],
+      "matched_solver_samples": 27,
+      "normal_stored_seconds_range": [
+        0.0089855,
+        0.0185042
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 27,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "15d4cf780"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "16001c000",
+      "caller": "main+2cd701c",
+      "step_samples": 10,
+      "step_seconds_range": [
+        0.0089448,
+        0.02077
+      ],
+      "matched_solver_samples": 10,
+      "normal_stored_seconds_range": [
+        0.0089448,
+        0.02077
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 10,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "160034340"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "1602c9000",
+      "caller": "main+2cd701c",
+      "step_samples": 7,
+      "step_seconds_range": [
+        0.0093198,
+        0.0291604
+      ],
+      "matched_solver_samples": 7,
+      "normal_stored_seconds_range": [
+        0.0093198,
+        0.0291604
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 7,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "160034ae0"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "1605e3000",
+      "caller": "main+2cd701c",
+      "step_samples": 11,
+      "step_seconds_range": [
+        0.0090672,
+        0.0164866
+      ],
+      "matched_solver_samples": 11,
+      "normal_stored_seconds_range": [
+        0.0090672,
+        0.0164866
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 11,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "160035140"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "165037000",
+      "caller": "main+2cd701c",
+      "step_samples": 2,
+      "step_seconds_range": [
+        0.0086825,
+        0.0115469
+      ],
+      "matched_solver_samples": 2,
+      "normal_stored_seconds_range": [
+        0.0086825,
+        0.0115469
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 2,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "164ad3920"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "16612c000",
+      "caller": "main+2cd701c",
+      "step_samples": 1,
+      "step_seconds_range": [
+        0.0091442,
+        0.0091442
+      ],
+      "matched_solver_samples": 1,
+      "normal_stored_seconds_range": [
+        0.0091442,
+        0.0091442
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 1,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "164ad3d60"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "166ad1000",
+      "caller": "main+2cd701c",
+      "step_samples": 14,
+      "step_seconds_range": [
+        0.0113665,
+        0.0150966
+      ],
+      "matched_solver_samples": 14,
+      "normal_stored_seconds_range": [
+        0.0113665,
+        0.0150966
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 14,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "164ad4fc0",
+        "1675c72e0"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    },
+    {
+      "world": "16b042000",
+      "caller": "main+2cd701c",
+      "step_samples": 5,
+      "step_seconds_range": [
+        0.0108368,
+        0.0190204
+      ],
+      "matched_solver_samples": 5,
+      "normal_stored_seconds_range": [
+        0.0108368,
+        0.0190204
+      ],
+      "normal_substeps": [
+        2
+      ],
+      "matched_simulation_samples": 5,
+      "normal_paths": [
+        "single"
+      ],
+      "normal_simulation_objects": [
+        "166b25ac0"
+      ],
+      "alternate_solver_samples": 0,
+      "ambiguous_solver_matches": 0,
+      "ambiguous_simulation_matches": 0,
+      "postsolve_observations": [],
+      "postsolve_note": "Raw exact-joined observations only. Serial is uint32 and wraps; a world/simulation address pair can be reused. No automatic rate or lifetime inference.",
+      "note": "Exact count/ns/world joins. Addresses may be reused; these groups are not lifetime identities. Global sample counts do not establish per-world solve cadence."
+    }
+  ],
+  "frame_timers": {
+    "camera_recenter": {
+      "sampled_changes": 2,
+      "highest_call_count": 3637,
+      "highest_change_count": 2,
+      "states": [
+        0
+      ],
+      "delta_range": [
+        1.0,
+        1.0
+      ],
+      "callers": [
+        "main+1935024"
+      ],
+      "note": "Only changed fields sampled; resets may be included. Call counts may span inactive states and multiple objects."
+    },
+    "battle_idle": {
+      "sampled_changes": 0,
+      "highest_call_count": 0,
+      "highest_change_count": 0,
+      "states": [],
+      "delta_range": null,
+      "callers": [],
+      "note": "Only changed fields sampled; resets may be included. Call counts may span inactive states and multiple objects."
+    },
+    "throwable_state_1": {
+      "sampled_changes": 0,
+      "highest_call_count": 0,
+      "highest_change_count": 0,
+      "states": [],
+      "delta_range": null,
+      "callers": [],
+      "note": "Only changed fields sampled; resets may be included. Call counts may span inactive states and multiple objects."
+    },
+    "throwable_state_2": {
+      "sampled_changes": 0,
+      "highest_call_count": 0,
+      "highest_change_count": 0,
+      "states": [],
+      "delta_range": null,
+      "callers": [],
+      "note": "Only changed fields sampled; resets may be included. Call counts may span inactive states and multiple objects."
+    },
+    "throwable_state_3": {
+      "sampled_changes": 0,
+      "highest_call_count": 0,
+      "highest_change_count": 0,
+      "states": [],
+      "delta_range": null,
+      "callers": [],
+      "note": "Only changed fields sampled; resets may be included. Call counts may span inactive states and multiple objects."
+    }
+  },
+  "ui_animation_clock": {
+    "sampled_calls": 255,
+    "modes": [
+      1
+    ],
+    "frame_nanoseconds": [
+      33333333
+    ],
+    "normalized_progress_range": [
+      0.22979100229791002,
+      2.5321170253211704
+    ],
+    "unknown_denominator_samples": 0,
+    "note": "Elapsed duration divided by the selected authored-frame duration, before per-animation speed. Multiple UI owners may share one clock."
+  },
+  "sequence_clocks": {
+    "common_fade": {
+      "sampled_calls": 104,
+      "highest_call_count": 40200,
+      "sampled_objects": 2,
+      "states": [
+        1,
+        2,
+        3
+      ],
+      "modes": [
+        0
+      ],
+      "authored_durations": [
+        0,
+        2,
+        6,
+        8,
+        9,
+        10,
+        15,
+        16,
+        30
+      ],
+      "sampled_transitions": 18,
+      "same_stage_delta_range": [
+        0,
+        1
+      ],
+      "callers": [
+        "main+c92cec",
+        "main+c92d00"
+      ],
+      "note": "Before/after one callback; stage, mode and duration changes excluded from delta range. Counts include multiple objects and inactive calls; no rate inferred."
+    },
+    "capture_director": {
+      "sampled_calls": 0,
+      "highest_call_count": 0,
+      "sampled_objects": 0,
+      "states": [],
+      "modes": [],
+      "authored_durations": [],
+      "sampled_transitions": 0,
+      "same_stage_delta_range": null,
+      "callers": [],
+      "note": "Before/after one callback; stage, mode and duration changes excluded from delta range. Counts include multiple objects and inactive calls; no rate inferred."
+    }
+  },
+  "capture_status": "completed; user manually closed; exit0",
+  "log_sha256": "1848dd2f06052ba6186a6ec478b1f950145a83290c7d3af21559795d7ede8b52",
+  "controller_lines": [
+    "input: gamepad DualSense Edge Wireless Controller (id 5, GUID 0300e0274c050000f20d000000016800, ps5)",
+    "input: enabled accelerometer sensor on DualSense Edge Wireless Controller",
+    "input: enabled gyroscope sensor on DualSense Edge Wireless Controller"
+  ],
+  "settings": {
+    "target_fps": 120,
+    "camera_speed": 2.2,
+    "menu_repeat": true,
+    "resolution_scale_override": 0,
+    "resolution_trace": false,
+    "fixed_scene_resolution": false,
+    "screen_fetch_fix": false,
+    "engine_candidate": true,
+    "fullscreen": false,
+    "controller_background": true,
+    "desktop_launcher": true,
+    "seconds": 0
+  },
+  "user_feedback": "Camera speed and menu scrolling all felt good and better than previously; no visual problems, below1440p, no previous distorted appearance.",
+  "postsolve_probe_present": false
+}

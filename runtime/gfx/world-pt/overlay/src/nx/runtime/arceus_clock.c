@@ -10,6 +10,8 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include <math.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -27,9 +29,12 @@ static int clocks_installed;
 static u64 blink_remainder;
 static unsigned blink_ticks;
 
+/* Experiment: SNX_ARCEUS_WATER_SCALE multiplies the water step, to test whether the
+   water, cloud and cloud shadow motion is driven by WaterCurrentTime at all. */
+static float water_scale = 1.0f;
 static void water_step_write(u64 ns) {
     if (!water_step_address) return;
-    float seconds = (float)((double)ns / 1000000000.0);
+    float seconds = (float)((double)ns / 1000000000.0) * water_scale;
     u32 bits;
     memcpy(&bits, &seconds, sizeof bits);
     gw32(water_step_address, bits);
@@ -221,6 +226,12 @@ static void water_fix_init(void) {
     if (!address || mem_map(address, 4096, MS_STATIC, PERM_RW)) {
         WARN("arceus-water: could not allocate elapsed-time cell\n");
         return;
+    }
+    const char* scale = getenv("SNX_ARCEUS_WATER_SCALE");
+    if (scale && *scale) {
+        const float value = strtof(scale, NULL);
+        if (value > 0.0f && value <= 4.0f) water_scale = value;
+        LOG("arceus-water: EXPERIMENT: water step scale %g\n", (double)water_scale);
     }
     water_step_address = address;
     water_step_write(step.initial_ns);
@@ -824,6 +835,73 @@ static void frame_timer_research_init(void) {
    State transitions can reset/reload these clocks, so log both sides. */
 static GuestFn sequence_clock_original[2];
 static u64 sequence_clock_calls[2], sequence_clock_changes[2];
+static int sequence_clock_logging, capture_fix_active;
+/* Capture waiting stages 3, 5, 7, 8, 9, 14 and 16 subtract one from +1DC per call.
+   With the fix, a call only counts down once 1/30 s of frame steps has built up for
+   that object. Otherwise +1DC is raised by one first so the call leaves it unchanged. */
+#define CAPTURE_SLOTS 8
+#define CAPTURE_TICK_NS 33333333ll
+static struct { u64 object; int64_t ns; } capture_slots[CAPTURE_SLOTS];
+static unsigned capture_next_slot;
+static int capture_waiting(u32 stage) {
+    return stage == 3 || stage == 5 || stage == 7 || stage == 8 || stage == 9 || stage == 14 || stage == 16;
+}
+/* The director skips its body until every enabled effect handle pair is ready, the same
+   checks as 180C558 to 180C614. Their start-up takes a fixed number of frames. */
+static int capture_ready(u64 object) {
+    static const u32 flags[4] = {0x210, 0x248, 0x280, 0x2b8}, pairs[4] = {0x1e0, 0x218, 0x250, 0x288};
+    if (!readable(object, 0x2c0)) return 1;
+    for (unsigned k = 0; k < 4; k++) {
+        if (!*GP(object + flags[k])) continue;
+        for (u32 h = pairs[k]; h <= pairs[k] + 0x10; h += 0x10) {
+            const u64 p = gr64(object + h);
+            if (!p || !readable(p + 0xc, 4) || !gr32(p + 0xc)) return 0;
+        }
+    }
+    return 1;
+}
+/* A not-ready call counts as one whole 1/30 s frame, as it takes at 30 FPS, so the
+   countdown afterwards waits until elapsed time catches up. The debt is capped at 1 s. */
+static int capture_tick(u64 object, int ready) {
+    pm_lock(&step_lock);
+    const int64_t ns = (int64_t)(step.step ? step.step : step.initial_ns);
+    pm_unlock(&step_lock);
+    unsigned k = 0;
+    while (k < CAPTURE_SLOTS && capture_slots[k].object != object) k++;
+    if (k == CAPTURE_SLOTS) {
+        k = capture_next_slot++ % CAPTURE_SLOTS;
+        capture_slots[k].object = object;
+        capture_slots[k].ns = 0;
+    }
+    capture_slots[k].ns += ready ? ns : ns - CAPTURE_TICK_NS;
+    if (capture_slots[k].ns < -1000000000ll) capture_slots[k].ns = -1000000000ll;
+    if (!ready || capture_slots[k].ns < CAPTURE_TICK_NS) return 0;
+    capture_slots[k].ns -= CAPTURE_TICK_NS;
+    if (capture_slots[k].ns >= CAPTURE_TICK_NS) capture_slots[k].ns = 0;
+    return 1;
+}
+/* Read-only: stages 3, 5 and 7 hold for about 10 calls at any FPS while the director
+   skips its body until the handles below report ready at +0xC. Log the gates per call. */
+static int capture_wait_logging;
+static void capture_wait_log(u64 object, u32 stage, u32 timer, u64 count) {
+    static const u32 flags[4] = {0x210, 0x248, 0x280, 0x2b8};
+    static const u32 handles[8] = {0x1e0, 0x1f0, 0x218, 0x228, 0x250, 0x260, 0x288, 0x298};
+    if (!readable(object, 0x2c0)) return;
+    char text[1024];
+    int n = snprintf(text, sizeof text, "arceus-capture-wait: count=%llu ns=%llu object=%llx stage=%u timer=%u flags=%u%u%u%u",
+        (unsigned long long)count, (unsigned long long)plat_ns(), (unsigned long long)object, stage, timer,
+        *(const u8*)GP(object + flags[0]), *(const u8*)GP(object + flags[1]), *(const u8*)GP(object + flags[2]), *(const u8*)GP(object + flags[3]));
+    for (unsigned k = 0; k < 8 && n > 0 && n < (int)sizeof text; k++) {
+        const u64 p = gr64(object + handles[k]);
+        const int ok = p && readable(p, 0x14);
+        const u64 head = ok ? gr64(p) : 0;
+        n += snprintf(text + n, sizeof text - n, " h%x=%llx:%s%llx:%x:%x:%x", handles[k], (unsigned long long)p,
+            head >= g_code_lo && head < g_code_hi ? "main+" : "",
+            (unsigned long long)(head >= g_code_lo && head < g_code_hi ? head - main_base : head),
+            ok ? gr32(p + 8) : 0, ok ? gr32(p + 0xc) : 0, ok ? gr32(p + 0x10) : 0);
+    }
+    LOG("%s\n", text);
+}
 static void sequence_clock_probe(CPU* c, u64 entry, unsigned kind) {
     const u64 object = kind ? (readable(c->x[1], 8) ? gr64(c->x[1]) : 0) : c->x[0];
     const u64 caller = c->x[30];
@@ -837,8 +915,16 @@ static void sequence_clock_probe(CPU* c, u64 entry, unsigned kind) {
     const u32 mode_before = valid && !kind ? gr32(object + 0x500) : 0;
     const u64 count = __atomic_add_fetch(&sequence_clock_calls[kind], 1, __ATOMIC_RELAXED);
     const u64 now = valid ? plat_ns() : 0;
+    if (kind && capture_wait_logging && valid && (state_before == 3 || state_before == 5 || state_before == 7))
+        capture_wait_log(object, state_before, before, count);
+    const int hold = kind && capture_fix_active && valid && before && capture_waiting(state_before) &&
+                     !capture_tick(object, capture_ready(object));
+    if (hold) gw32(object + timer, before + 1);
     sequence_clock_original[kind](c, entry);
-    if (!valid || c->pc != caller || !readable(object, extent)) return;
+    if (hold && readable(object, extent) && gr32(object + state) == state_before &&
+        gr32(object + timer) == before + 1)
+        gw32(object + timer, before);
+    if (!sequence_clock_logging || !valid || c->pc != caller || !readable(object, extent)) return;
     const u32 after = gr32(object + timer), state_after = gr32(object + state);
     const u32 duration_after = gr32(object + duration);
     const u32 mode_after = !kind ? gr32(object + 0x500) : 0;
@@ -853,32 +939,259 @@ static void sequence_clock_probe(CPU* c, u64 entry, unsigned kind) {
 }
 static void fade_sequence_probe(CPU* c, u64 e) { sequence_clock_probe(c, e, 0); }
 static void capture_sequence_probe(CPU* c, u64 e) { sequence_clock_probe(c, e, 1); }
-static void sequence_clock_research_init(void) {
+static int sequence_clock_install(unsigned k) {
     static const struct { u64 offset; u32 size,head,patch,word,replacement,extra,extra_word; } sites[2]={
         /* Equivalent MOV Xd,X0 -> ADD Xd,X0,#0 selects an independent JIT body. */
         {0xc21490,0x300,0xd10143ff,0x3c,0xaa0003f3,0x91000013,0xd0,0x1100054a},
         {0x180c338,0x427c,0x6db82beb,0x30,0xaa0003f6,0x91000016,0x61c,0x71000508}
     };
     const GuestFn wrappers[2]={fade_sequence_probe,capture_sequence_probe};
-    for (unsigned k=0;k<2;k++) {
-        const u64 pc=main_base+sites[k].offset;
-        int covered=0;
-        for (u32 i=0;i<g_mod->nfns;i++)
-            if (g_mod->fn_lo[i]==pc && g_mod->fn_len[i]==sites[k].size) covered=1;
-        if (!covered || pc<g_code_lo || pc+sites[k].size>g_code_hi || !readable(pc,sites[k].size) ||
-            gr32(pc)!=sites[k].head || gr32(pc+sites[k].patch)!=sites[k].word ||
-            gr32(pc+sites[k].extra)!=sites[k].extra_word) {
-            WARN("arceus-sequence-clock: refused instruction/function guard kind=%u\n",k);continue;
-        }
-        gw32(pc+sites[k].patch,sites[k].replacement);
-        jit_code_changed(pc,sites[k].size);
-        sequence_clock_original[k]=jit_wait(pc);
-        if (!sequence_clock_original[k]) {
-            WARN("arceus-sequence-clock: compile failed kind=%u\n",k);continue;
-        }
-        __atomic_store_n(&g_disp[(pc-g_code_lo)/4],wrappers[k],__ATOMIC_RELEASE);
-        LOG("arceus-sequence-clock: observation probe installed kind=%u\n",k);
+    if (sequence_clock_original[k]) return 1;
+    const u64 pc=main_base+sites[k].offset;
+    int covered=0;
+    for (u32 i=0;i<g_mod->nfns;i++)
+        if (g_mod->fn_lo[i]==pc && g_mod->fn_len[i]==sites[k].size) covered=1;
+    if (!covered || pc<g_code_lo || pc+sites[k].size>g_code_hi || !readable(pc,sites[k].size) ||
+        gr32(pc)!=sites[k].head || gr32(pc+sites[k].patch)!=sites[k].word ||
+        gr32(pc+sites[k].extra)!=sites[k].extra_word) {
+        WARN("arceus-sequence-clock: refused instruction/function guard kind=%u\n",k);return 0;
     }
+    gw32(pc+sites[k].patch,sites[k].replacement);
+    jit_code_changed(pc,sites[k].size);
+    sequence_clock_original[k]=jit_wait(pc);
+    if (!sequence_clock_original[k]) {
+        WARN("arceus-sequence-clock: compile failed kind=%u\n",k);return 0;
+    }
+    __atomic_store_n(&g_disp[(pc-g_code_lo)/4],wrappers[k],__ATOMIC_RELEASE);
+    return 1;
+}
+static void sequence_clock_research_init(void) {
+    sequence_clock_logging = 1;
+    const char* wait = getenv("SNX_ARCEUS_CAPTURE_WAIT_PROBE");
+    if (wait && !strcmp(wait, "1")) {
+        capture_wait_logging = 1;
+        LOG("arceus-capture-wait: read-only gate probe on for capture stages 3, 5 and 7\n");
+    }
+    for (unsigned k=0;k<2;k++)
+        if (sequence_clock_install(k)) LOG("arceus-sequence-clock: observation probe installed kind=%u\n",k);
+}
+/* Runs after the research probes, so it reuses the capture wrapper when they installed it. */
+static void capture_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_CAPTURE_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-capture-fix: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    if (!sequence_clock_install(1)) return;
+    capture_fix_active = 1;
+    LOG("arceus-capture-fix: EXPERIMENT: capture waiting stages count down at 30 per second of elapsed time\n");
+}
+/* Battle effect sequences (the .wbin player, update 9DBEAC) add their speed at +F0 to the
+   frame at +E8 once per call, so they ran 4 times fast at 120 FPS. The fix passes speed x 30
+   x elapsed, cut so the frame lands exactly on each whole frame for the exact command-end
+   compares. Speeds outside (0, 4] only update once 1/30 s has built up. */
+#define SEQUENCE_SLOTS 64
+static GuestFn battle_sequence_original;
+static PMutex battle_sequence_lock = PMUTEX_INIT;
+static struct { u64 object; u64 ns; float pending; } sequence_slots[SEQUENCE_SLOTS];
+static unsigned sequence_next_slot;
+static u64 battle_sequence_calls, battle_sequence_skips, battle_sequence_partial;
+/* Read-only research: playing calls per speed, to see how many sequences still step whole frames. */
+#define SEQUENCE_SPEEDS 8
+static struct { float speed; u64 calls; } sequence_speeds[SEQUENCE_SPEEDS];
+static u64 sequence_speed_other;
+/* The largest step not past the next whole frame, nudged so frame + step rounds onto it. */
+static float sequence_step(float frame, float want) {
+    const float whole = floorf(frame) + 1.0f;
+    if (frame + want < whole) return want;
+    float step = whole - frame;
+    for (unsigned i = 0; i < 4 && frame + step != whole; i++)
+        step = nextafterf(step, frame + step < whole ? INFINITY : 0.0f);
+    return step;
+}
+static int battle_sequence_playing(u64 o) {
+    return readable(o, 0x308) && *GP(o + 0x302) && *GP(o + 0x301) && *GP(o + 0x303) &&
+           guest_float(o + 0xf0) != 0.0f && guest_float(o + 0xe8) < guest_float(o + 0xec);
+}
+static void battle_sequence_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    const u64 count = __atomic_add_fetch(&battle_sequence_calls, 1, __ATOMIC_RELAXED);
+    int skip = 0;
+    float speed = 0.0f, partial = 0.0f;
+    if (battle_sequence_playing(object)) {
+        pm_lock(&step_lock);
+        const u64 ns = step.step ? step.step : step.initial_ns;
+        pm_unlock(&step_lock);
+        speed = guest_float(object + 0xf0);
+        pm_lock(&battle_sequence_lock);
+        unsigned s = 0;
+        while (s < SEQUENCE_SPEEDS && sequence_speeds[s].calls && sequence_speeds[s].speed != speed) s++;
+        if (s == SEQUENCE_SPEEDS) sequence_speed_other++;
+        else sequence_speeds[s].speed = speed, sequence_speeds[s].calls++;
+        unsigned k = 0;
+        while (k < SEQUENCE_SLOTS && sequence_slots[k].object != object) k++;
+        if (k == SEQUENCE_SLOTS) {
+            k = sequence_next_slot++ % SEQUENCE_SLOTS;
+            sequence_slots[k].object = object;
+            sequence_slots[k].ns = 0;
+            sequence_slots[k].pending = 0.0f;
+        }
+        if (speed > 0.0f && speed <= 4.0f) {
+            float pending = sequence_slots[k].pending + speed * (float)ns / 33333333.0f;
+            if (pending > 2.0f * fmaxf(speed, 1.0f)) pending = 2.0f * fmaxf(speed, 1.0f);
+            partial = sequence_step(guest_float(object + 0xe8), pending);
+            sequence_slots[k].pending = pending - partial;
+            if (partial <= 0.0f) skip = 1, partial = 0.0f;
+        } else {
+            sequence_slots[k].ns += ns;
+            if (sequence_slots[k].ns < 33333333ull) skip = 1;
+            else {
+                sequence_slots[k].ns -= 33333333ull;
+                if (sequence_slots[k].ns >= 33333333ull) sequence_slots[k].ns = 0;
+            }
+        }
+        pm_unlock(&battle_sequence_lock);
+    }
+    if (skip) {
+        __atomic_add_fetch(&battle_sequence_skips, 1, __ATOMIC_RELAXED);
+        c->x[0] = 0;
+        c->pc = c->x[30];
+    } else if (partial > 0.0f) {
+        /* Speed is read only at 9DC3E0 inside the update, so pass the step there and restore it. */
+        __atomic_add_fetch(&battle_sequence_partial, 1, __ATOMIC_RELAXED);
+        guest_float_write(object + 0xf0, partial);
+        battle_sequence_original(c, entry);
+        if (readable(object, 0x308) && guest_float(object + 0xf0) == partial)
+            guest_float_write(object + 0xf0, speed);
+    } else battle_sequence_original(c, entry);
+    if (count <= 4 || count % 2000 == 0) {
+        char speeds[256];
+        int n = 0;
+        speeds[0] = 0;
+        pm_lock(&battle_sequence_lock);
+        for (unsigned s = 0; s < SEQUENCE_SPEEDS && sequence_speeds[s].calls && n >= 0 && n < (int)sizeof speeds; s++)
+            n += snprintf(speeds + n, sizeof speeds - n, " %g:%llu", sequence_speeds[s].speed,
+                          (unsigned long long)sequence_speeds[s].calls);
+        const u64 other = sequence_speed_other;
+        pm_unlock(&battle_sequence_lock);
+        LOG("arceus-battle-sequence: calls=%llu partial=%llu skipped=%llu speeds=[%s ] other=%llu\n",
+            (unsigned long long)count,
+            (unsigned long long)__atomic_load_n(&battle_sequence_partial, __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&battle_sequence_skips, __ATOMIC_RELAXED),
+            speeds, (unsigned long long)other);
+    }
+}
+static void battle_sequence_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-battle-sequence: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x9dbeac;
+    int covered = 0;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == 0x598) covered = 1;
+    if (!covered || pc < g_code_lo || pc + 0x598 > g_code_hi || !readable(pc, 0x598) ||
+        gr32(pc) != 0x6db923e9 || gr32(pc + 0x2c) != 0xaa0003f3 ||
+        gr32(pc + 0x534) != 0xbd40f262 || gr32(pc + 0x538) != 0x1e222821) {
+        WARN("arceus-battle-sequence: refused instruction/function guard\n");
+        return;
+    }
+    /* Equivalent MOV X19,X0 -> ADD X19,X0,#0 selects an independent JIT body. */
+    gw32(pc + 0x2c, 0x91000013);
+    jit_code_changed(pc, 0x598);
+    battle_sequence_original = jit_wait(pc);
+    if (!battle_sequence_original) {
+        WARN("arceus-battle-sequence: compile failed\n");
+        return;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], battle_sequence_update, __ATOMIC_RELEASE);
+    LOG("arceus-battle-sequence: EXPERIMENT: battle effect sequences advance 30 frames per second of elapsed time\n");
+}
+/* Map cursors 120F1F4 (field map) and 1245DB8 (world map) add stick x speed to the position
+   per call and count held frames in two counters up to 9. The fix scales the speed by
+   elapsed / (1/30) for the call and lets the counters rise only once 1/30 s has built up. */
+typedef struct { u32 offset, size, head, mov, speed_at, speed_word, speed, held; const char* label; } MapCursorSite;
+static const MapCursorSite map_cursor_sites[2] = {
+    {0x120f1f4, 0x55c, 0xd101c3ff, 0x54, 0x270, 0xbd4d7262, 0xd70, 0xd78, "field map"},
+    {0x1245db8, 0x828, 0xfc1a0fea, 0x5c, 0x518, 0xbd497262, 0x970, 0x978, "world map"},
+};
+static GuestFn map_cursor_original[2];
+static PMutex map_cursor_lock = PMUTEX_INIT;
+static u64 map_cursor_object[2], map_cursor_ns[2], map_cursor_calls[2];
+static void map_cursor_update(CPU* c, u64 entry, unsigned kind) {
+    const MapCursorSite* s = &map_cursor_sites[kind];
+    const u64 object = c->x[0];
+    const u64 count = __atomic_add_fetch(&map_cursor_calls[kind], 1, __ATOMIC_RELAXED);
+    if (!readable(object, s->held + 8)) {
+        map_cursor_original[kind](c, entry);
+        return;
+    }
+    pm_lock(&step_lock);
+    const u64 ns = step.step ? step.step : step.initial_ns;
+    pm_unlock(&step_lock);
+    pm_lock(&map_cursor_lock);
+    if (map_cursor_object[kind] != object) map_cursor_object[kind] = object, map_cursor_ns[kind] = 0;
+    map_cursor_ns[kind] += ns;
+    const int tick = map_cursor_ns[kind] >= 33333333ull;
+    if (tick) {
+        map_cursor_ns[kind] -= 33333333ull;
+        if (map_cursor_ns[kind] >= 33333333ull) map_cursor_ns[kind] = 0;
+    }
+    pm_unlock(&map_cursor_lock);
+    const float speed = guest_float(object + s->speed), scaled = speed * (float)ns / 33333333.0f;
+    const u32 held_a = gr32(object + s->held), held_b = gr32(object + s->held + 4);
+    guest_float_write(object + s->speed, scaled);
+    map_cursor_original[kind](c, entry);
+    if (!readable(object, s->held + 8)) return;
+    if (guest_float(object + s->speed) == scaled) guest_float_write(object + s->speed, speed);
+    if (!tick) {
+        if (gr32(object + s->held) == held_a + 1) gw32(object + s->held, held_a);
+        if (gr32(object + s->held + 4) == held_b + 1) gw32(object + s->held + 4, held_b);
+    }
+    if (count <= 2 || count % 6000 == 0)
+        LOG("arceus-map-cursor: %s calls=%llu speed=%g scaled=%g\n", s->label, (unsigned long long)count,
+            (double)speed, (double)scaled);
+}
+static void field_map_cursor_update(CPU* c, u64 e) { map_cursor_update(c, e, 0); }
+static void world_map_cursor_update(CPU* c, u64 e) { map_cursor_update(c, e, 1); }
+static void map_cursor_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_MAP_CURSOR_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-map-cursor: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const GuestFn wrappers[2] = {field_map_cursor_update, world_map_cursor_update};
+    unsigned installed = 0;
+    for (unsigned k = 0; k < 2; k++) {
+        const MapCursorSite* s = &map_cursor_sites[k];
+        const u64 pc = main_base + s->offset;
+        int covered = 0;
+        for (u32 i = 0; i < g_mod->nfns; i++)
+            if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == s->size) covered = 1;
+        if (!covered || pc < g_code_lo || pc + s->size > g_code_hi || !readable(pc, s->size) ||
+            gr32(pc) != s->head || gr32(pc + s->mov) != 0xaa0003f3 || gr32(pc + s->speed_at) != s->speed_word) {
+            WARN("arceus-map-cursor: refused %s guard\n", s->label);
+            continue;
+        }
+        /* Equivalent MOV X19,X0 -> ADD X19,X0,#0 selects an independent JIT body. */
+        gw32(pc + s->mov, 0x91000013);
+        jit_code_changed(pc, s->size);
+        map_cursor_original[k] = jit_wait(pc);
+        if (!map_cursor_original[k]) {
+            WARN("arceus-map-cursor: %s compile failed\n", s->label);
+            continue;
+        }
+        __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
+        installed++;
+    }
+    LOG("arceus-map-cursor: EXPERIMENT: %u of 2 map cursors follow elapsed time\n", installed);
 }
 static void timing_research_init(void) {
     const char* enabled = getenv("SNX_ARCEUS_TIMING_RESEARCH");
@@ -1017,7 +1330,8 @@ static void navigation_timestep_init(void) {
    +/-1/30 s per call: the day clock feed (in-game minutes), event hold timers and
    weather blends. Each builds the constant with MOV/MOVK W8, which becomes ADRP X8 and
    LDR W8 from the frame-step cell, as for the water clock. */
-static const struct { u32 owner, size, head, site; u8 negative; const char* label; } frame_step_sites[] = {
+typedef struct { u32 owner, size, head, site; u8 negative; const char* label; } FrameStepSite;
+static const FrameStepSite frame_step_sites[] = {
     {0x1d5d59c,0x528,0xd10203ff,0x1d5d684,0,"world time"},
     {0x167f988,0x650,0xd103c3ff,0x167ff0c,0,"event hold +190"},
     {0x168300c,0x51c,0xd10383ff,0x16832c0,0,"event timer +1A0"},
@@ -1076,24 +1390,39 @@ static void cave_light_update(CPU* c, u64 entry) {
     if (gr32(record + 0xc) == seen) gw32(record + 0xc, authored);
 }
 
-static unsigned frame_step_sites_init(void) {
+static unsigned frame_step_sites_init(const FrameStepSite* sites, unsigned n, const char* tag) {
     unsigned installed = 0;
-    for (unsigned k = 0; k < FRAME_STEP_SITES; k++) {
-        const u64 owner = main_base + frame_step_sites[k].owner, pc = main_base + frame_step_sites[k].site;
-        const u32 movk = frame_step_sites[k].negative ? 0x72b7a108 : 0x72a7a108;
-        if (!covers_exactly(owner, frame_step_sites[k].size) || !readable(owner, frame_step_sites[k].size) ||
-            gr32(owner) != frame_step_sites[k].head || gr32(pc) != 0x52911128 || gr32(pc + 4) != movk) {
-            WARN("arceus-world-timers: refused guard %s at main+%x\n", frame_step_sites[k].label, frame_step_sites[k].site);
+    for (unsigned k = 0; k < n; k++) {
+        const u64 owner = main_base + sites[k].owner, pc = main_base + sites[k].site;
+        const u32 movk = sites[k].negative ? 0x72b7a108 : 0x72a7a108;
+        if (!covers_exactly(owner, sites[k].size) || !readable(owner, sites[k].size) ||
+            gr32(owner) != sites[k].head || gr32(pc) != 0x52911128 || gr32(pc + 4) != movk) {
+            WARN("%s: refused guard %s at main+%x\n", tag, sites[k].label, sites[k].site);
             continue;
         }
         /* ADRP X8, cell; LDR W8, [X8, #0 or #4]. The next instruction moves W8 to a float. */
         const u64 pages = ((frame_step_address >> 12) - (pc >> 12)) & 0x1fffff;
         gw32(pc, 0x90000008 | (u32)((pages & 3) << 29) | (u32)((pages >> 2) << 5));
-        gw32(pc + 4, frame_step_sites[k].negative ? 0xb9400508 : 0xb9400108);
+        gw32(pc + 4, sites[k].negative ? 0xb9400508 : 0xb9400108);
         jit_code_changed(pc, 8);
         installed++;
     }
     return installed;
+}
+
+/* One page holds the frame-step cell for every fix that loads it. The first user maps it. */
+static int frame_step_cell_init(const char* tag) {
+    if (frame_step_address) return 1;
+    const u64 address = mem_find_free(main_base + 0x5000000, main_base + 0x40000000, 4096, 4096);
+    if (!address || mem_map(address, 4096, MS_STATIC, PERM_RW)) {
+        WARN("%s: could not allocate the frame-step cell\n", tag);
+        return 0;
+    }
+    pm_lock(&step_lock);
+    frame_step_address = address;
+    frame_step_write(step.step ? step.step : step.initial_ns);
+    pm_unlock(&step_lock);
+    return 1;
 }
 
 static int cave_light_init(void) {
@@ -1125,19 +1454,73 @@ static void world_timers_init(void) {
         return;
     }
     if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
-    const u64 address = mem_find_free(main_base + 0x5000000, main_base + 0x40000000, 4096, 4096);
-    if (!address || mem_map(address, 4096, MS_STATIC, PERM_RW)) {
-        WARN("arceus-world-timers: could not allocate the frame-step cell\n");
-        return;
-    }
-    pm_lock(&step_lock);
-    frame_step_address = address;
-    frame_step_write(step.step ? step.step : step.initial_ns);
-    pm_unlock(&step_lock);
-    const unsigned sites = frame_step_sites_init();
+    if (!frame_step_cell_init("arceus-world-timers")) return;
+    const unsigned sites = frame_step_sites_init(frame_step_sites, FRAME_STEP_SITES, "arceus-world-timers");
     const int cave = cave_light_init();
     LOG("arceus-world-timers: EXPERIMENT: %u of %u fixed-step sites and cave light=%d use min(1/30, elapsed), cell=%llx\n",
-        sites, (unsigned)FRAME_STEP_SITES, cave, (unsigned long long)address);
+        sites, (unsigned)FRAME_STEP_SITES, cave, (unsigned long long)frame_step_address);
+}
+
+/* 198D7E4 airborne branch: the velocity gains -g x factor x rate x 1/30 per call, and the
+   census and gravity probe saw one call per rendered frame, so falls sped up with FPS.
+   The -1/30 is built with MOV/MOVK W8 and moved to S1 at +2B4. Load the negated
+   frame step instead, as the world timers do. */
+static const FrameStepSite gravity_sites[] = {
+    {0x198d7e4,0x998,0xd10503ff,0x198da8c,1,"airborne gravity"},
+};
+/* Character movement steps that add accel x 1/30 (or subtract x/30) once per call, which
+   runs once per rendered frame. Gravity alone was fixed, so airborne sideways motion stayed
+   4 times fast at 120 FPS and jumps looked floaty. Each pair is a MOV/MOVK W8 of +-1/30. */
+static const FrameStepSite movement_sites[] = {
+    {0x198d7e4,0x998,0xd10503ff,0x198e020,0,"shared airborne force"},
+    {0x19843a0,0xb18,0xd102c3ff,0x1984a70,1,"shared vertical"},
+    {0x1a08560,0x4bb0,0xd103c3ff,0x1a0bee4,0,"player velocity accel"},
+    {0x1a08560,0x4bb0,0xd103c3ff,0x1a0baf0,0,"player speed accel"},
+    {0x1a08560,0x4bb0,0xd103c3ff,0x1a0b3ac,1,"player countdown +750"},
+    {0x1a0e0ec,0x118c,0xa9ba6ffc,0x1a0eea0,0,"player airborne force"},
+    {0x1a14f80,0xc54,0xd10283ff,0x1a158c8,1,"player vertical"},
+    {0x1a173b0,0x22a4,0xfc180fea,0x1a17b10,0,"player state accel"},
+    {0x1a173b0,0x22a4,0xfc180fea,0x1a17f3c,0,"player state force"},
+};
+#define MOVEMENT_SITES (sizeof movement_sites / sizeof movement_sites[0])
+static void movement_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_MOVEMENT_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-movement-fix: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    if (!frame_step_cell_init("arceus-movement-fix")) return;
+    /* Optional hex mask over movement_sites (bit 0 is the first) to test sites one by one. */
+    const char* mask_text = getenv("SNX_ARCEUS_MOVEMENT_SITES");
+    const unsigned long mask = mask_text && *mask_text ? strtoul(mask_text, NULL, 16) : ~0ul;
+    FrameStepSite chosen[MOVEMENT_SITES];
+    unsigned n = 0;
+    for (unsigned k = 0; k < MOVEMENT_SITES; k++)
+        if (mask >> k & 1) chosen[n++] = movement_sites[k];
+    const unsigned sites = frame_step_sites_init(chosen, n, "arceus-movement-fix");
+    LOG("arceus-movement-fix: EXPERIMENT: %u of %u character movement sites (mask %lx) use min(1/30, elapsed), cell=%llx\n",
+        sites, (unsigned)MOVEMENT_SITES, mask, (unsigned long long)frame_step_address);
+}
+static void gravity_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_GRAVITY_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-gravity-fix: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    /* FMOV S1, W8 right after the pair, so only the constant changes. */
+    const u64 next = main_base + gravity_sites[0].site + 0xc;
+    if (!readable(next, 4) || gr32(next) != 0x1e270101) {
+        WARN("arceus-gravity-fix: refused guard at main+%x\n", gravity_sites[0].site + 0xc);
+        return;
+    }
+    if (!frame_step_cell_init("arceus-gravity-fix")) return;
+    const unsigned sites = frame_step_sites_init(gravity_sites, 1, "arceus-gravity-fix");
+    LOG("arceus-gravity-fix: EXPERIMENT: %u of 1 airborne gravity sites use min(1/30, elapsed), cell=%llx\n",
+        sites, (unsigned long long)frame_step_address);
 }
 
 /* 1A7191C is a thrown-object flight update, a virtual shared by three classes
@@ -1301,7 +1684,41 @@ static int gravity_probe_active;
 static u64 gravity_object, gravity_skip, gravity_skip_ns, gravity_start_ns, gravity_calls, gravity_lines;
 #define GRAVITY_SEGMENT_NS 4000000000ull
 #define GRAVITY_LINE_LIMIT 40000ull
+/* Read-only: hex words of the object (+0..+C00) and of x1 (+0..+200) at the start and end
+   of a segment, so the offline report can find the position that the velocity moves. */
+static u64 gravity_input, gravity_last_ns;
+static void gravity_dump(const char* when, const char* what, u64 base, u32 bytes) {
+    if (!base || !readable(base, bytes)) return;
+    /* Log lines hold 2048 characters, so 0x200 bytes per line. */
+    for (u32 at = 0; at < bytes; at += 0x200) {
+        char line[1200];
+        int n = snprintf(line, sizeof line, "arceus-gravity-dump: %s %s base=%llx at=%x words=", when, what,
+                         (unsigned long long)base, at);
+        for (u32 k = at; k < at + 0x200 && k < bytes && n > 0 && n < (int)sizeof line - 10; k += 4)
+            n += snprintf(line + n, sizeof line - n, "%08x", gr32(base + k));
+        LOG("%s\n", line);
+    }
+}
+/* Read-only: the airborne rate from 198E188 is 1 without a link at object+260, else the float
+   that 1D431D0 reads at singleton->+230 +124 (guard at GOT 427A648, instance at 427A650).
+   -1 when the guard is unset or a pointer is not readable. */
+static float gravity_time_scale(void) {
+    const u64 guard = readable(main_base + 0x427a648, 8) ? gr64(main_base + 0x427a648) : 0;
+    if (!guard || !readable(guard, 4) || !(gr32(guard) & 1)) return -1.0f;
+    const u64 slot = readable(main_base + 0x427a650, 8) ? gr64(main_base + 0x427a650) : 0;
+    const u64 single = slot && readable(slot, 8) ? gr64(slot) : 0;
+    const u64 world = single && readable(single + 0x230, 8) ? gr64(single + 0x230) : 0;
+    return world && readable(world + 0x124, 4) ? guest_float(world + 0x124) : -1.0f;
+}
+/* The rate a call applied: its vertical change over -g x factor x the frame step */
+static float gravity_implied_rate(u64 object, float v_in, float v_out) {
+    const float step = frame_step_address ? guest_float(frame_step_address) : NOMINAL_STEP_SECONDS;
+    const float per_rate = guest_float(main_base + 0x413a0f8) * guest_float(object + 0xbe8) * step;
+    return per_rate > 0.0f ? (v_in - v_out) / per_rate : 0.0f;
+}
 static void gravity_end(u64 object, u64 now, const char* why) {
+    gravity_dump("end", "object", object, 0xc00);
+    gravity_dump("end", "input", gravity_input, 0x200);
     LOG("arceus-gravity: end object=%llx calls=%llu seconds=%.4f reason=%s\n", (unsigned long long)object,
         (unsigned long long)gravity_calls, (double)(now - gravity_start_ns) / 1e9, why);
     __atomic_store_n(&gravity_object, 0, __ATOMIC_RELEASE);
@@ -1317,9 +1734,17 @@ static void gravity_probe(CPU* c, u64 entry, GuestFn original) {
     original(c, entry);
     if (!inputs || !out || !readable(out + 0x40, 12)) return;
     u64 owner = __atomic_load_n(&gravity_object, __ATOMIC_ACQUIRE);
-    if (owner && owner != object) return;
-    const float ox = guest_float(out + 0x40), oy = guest_float(out + 0x44), oz = guest_float(out + 0x48);
     const u64 now = plat_ns();
+    /* An owner that stopped calling (despawned, unloaded) would block every later segment. */
+    if (owner && owner != object) {
+        if (now - __atomic_load_n(&gravity_last_ns, __ATOMIC_RELAXED) < 500000000ull) return;
+        LOG("arceus-gravity: end object=%llx calls=%llu seconds=%.4f reason=lost\n", (unsigned long long)owner,
+            (unsigned long long)gravity_calls, (double)(now - gravity_start_ns) / 1e9);
+        if (!__atomic_compare_exchange_n(&gravity_object, &owner, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return;
+        owner = 0;
+    }
+    __atomic_store_n(&gravity_last_ns, now, __ATOMIC_RELAXED);
+    const float ox = guest_float(out + 0x40), oy = guest_float(out + 0x44), oz = guest_float(out + 0x48);
     if (!(oy < 0.0f)) {
         if (owner) gravity_end(object, now, "landed");
         return;
@@ -1333,17 +1758,23 @@ static void gravity_probe(CPU* c, u64 entry, GuestFn original) {
         gravity_start_ns = now;
         gravity_calls = 0;
         const u64 config = readable(object + 0x5c0, 8) ? gr64(object + 0x5c0) : 0;
-        LOG("arceus-gravity: start object=%llx g=%g factor=%g max_fall=%g damping=%g\n",
+        const int linked = readable(object + 0x260, 16);
+        LOG("arceus-gravity: start object=%llx g=%g factor=%g max_fall=%g damping=%g link=%llx:%llx scale=%g\n",
             (unsigned long long)object, (double)guest_float(main_base + 0x413a0f8),
             (double)guest_float(object + 0xbe8),
             config && readable(config + 0x80, 4) ? (double)guest_float(config + 0x80) : 0.0,
-            (double)guest_float(object + 0x920));
+            (double)guest_float(object + 0x920), linked ? (unsigned long long)gr64(object + 0x260) : 0ull,
+            linked ? (unsigned long long)gr64(object + 0x268) : 0ull, (double)gravity_time_scale());
+        gravity_input = in;
+        gravity_dump("start", "object", object, 0xc00);
+        gravity_dump("start", "input", in, 0x200);
     }
     gravity_calls++;
     __atomic_add_fetch(&gravity_lines, 1, __ATOMIC_RELAXED);
-    LOG("arceus-gravity: t=%.6f call=%llu v_in=%g,%g,%g pos=%g,%g,%g out=%g,%g,%g\n",
+    LOG("arceus-gravity: t=%.6f call=%llu v_in=%g,%g,%g pos=%g,%g,%g out=%g,%g,%g rate=%g scale=%g\n",
         (double)(now - gravity_start_ns) / 1e9, (unsigned long long)gravity_calls, (double)v[0], (double)v[1],
-        (double)v[2], (double)p[0], (double)p[1], (double)p[2], (double)ox, (double)oy, (double)oz);
+        (double)v[2], (double)p[0], (double)p[1], (double)p[2], (double)ox, (double)oy, (double)oz,
+        (double)gravity_implied_rate(object, v[1], oy), (double)gravity_time_scale());
     if (now - gravity_start_ns >= GRAVITY_SEGMENT_NS) {
         gravity_skip = object;
         gravity_skip_ns = now;
@@ -1443,6 +1874,95 @@ static void cadence_census_init(void) {
     LOG("arceus-gravity: read-only probe %s\n", gravity_probe_active ? "installed" : "unavailable");
 }
 
+/* Read-only: calls per second of 29FA554, which adds one frame step to WaterCurrentTime per
+   call. Installed after the water fix so the compiled body keeps its patch. */
+static GuestFn scene_params_original;
+static u64 scene_params_calls, scene_params_window_ns, scene_params_window_calls;
+static double scene_params_water;
+static void scene_params_counter(CPU* c, u64 entry) {
+    const u64 count = __atomic_add_fetch(&scene_params_calls, 1, __ATOMIC_RELAXED);
+    const u64 now = plat_ns();
+    if (!scene_params_window_ns) scene_params_window_ns = now;
+    scene_params_window_calls++;
+    /* The water cell holds the step each call adds, so its sum is water seconds. */
+    if (water_step_address && readable(water_step_address, 4)) scene_params_water += guest_float(water_step_address);
+    if (now - scene_params_window_ns >= 5000000000ull) {
+        const double real = (double)(now - scene_params_window_ns) / 1e9;
+        LOG("arceus-scene-params: calls=%llu rate=%.1f per s water_seconds_per_s=%.3f\n", (unsigned long long)count,
+            (double)scene_params_window_calls / real, scene_params_water / real);
+        scene_params_window_ns = now;
+        scene_params_window_calls = 0;
+        scene_params_water = 0;
+    }
+    scene_params_original(c, entry);
+}
+static void scene_params_counter_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_CADENCE_CENSUS");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x29fa554;
+    int covered = 0;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == 0x3020) covered = 1;
+    if (!covered || pc < g_code_lo || pc + 0x3020 > g_code_hi || !readable(pc, 0x3020) ||
+        gr32(pc) != 0xd10683ff || gr32(pc + 0x8c) != 0x14000007) {
+        WARN("arceus-scene-params: refused guard\n");
+        return;
+    }
+    gw32(pc + 0x8c, 0xb40000ff); /* Equivalent B -> CBZ XZR to pc+0xa8. */
+    jit_code_changed(pc, 0x3020);
+    scene_params_original = jit_wait(pc);
+    if (!scene_params_original) {
+        WARN("arceus-scene-params: compile failed\n");
+        return;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], scene_params_counter, __ATOMIC_RELEASE);
+    LOG("arceus-scene-params: read-only call counter installed\n");
+}
+/* Experiment: 29BB420 (sky parameters) copies WaterCurrentTime to sky +8C4. With
+   SNX_ARCEUS_SKY_TIME_SCALE the copy is scaled after the call, to test whether the
+   clouds and their shadows run on it while the water keeps its own clock. */
+static GuestFn sky_params_original;
+static float sky_time_scale = 1.0f;
+static u64 sky_params_calls;
+static void sky_params_update(CPU* c, u64 entry) {
+    const u64 holder = c->x[0];
+    const u64 sky = readable(holder + 0x58, 8) ? gr64(holder + 0x58) : 0;
+    sky_params_original(c, entry);
+    if (!sky || !readable(sky + 0x8c4, 4)) return;
+    const float time = guest_float(sky + 0x8c4);
+    guest_float_write(sky + 0x8c4, time * sky_time_scale);
+    const u64 count = __atomic_add_fetch(&sky_params_calls, 1, __ATOMIC_RELAXED);
+    if (count <= 2 || count % 6000 == 0)
+        LOG("arceus-sky-time: calls=%llu water_time=%g sky_time=%g\n", (unsigned long long)count, (double)time,
+            (double)(time * sky_time_scale));
+}
+static void sky_time_scale_init(void) {
+    const char* scale = getenv("SNX_ARCEUS_SKY_TIME_SCALE");
+    if (!main_base || !scale || !*scale) return;
+    const float value = strtof(scale, NULL);
+    if (!(value > 0.0f && value <= 4.0f)) return;
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x29bb420;
+    int covered = 0;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == 0x1ee4) covered = 1;
+    if (!covered || pc < g_code_lo || pc + 0x1ee4 > g_code_hi || !readable(pc, 0x1ee4) ||
+        gr32(pc) != 0xd10503ff || gr32(pc + 0x20) != 0xaa0003f5) {
+        WARN("arceus-sky-time: refused guard\n");
+        return;
+    }
+    sky_time_scale = value;
+    gw32(pc + 0x20, 0x91000015); /* Equivalent MOV X21,X0 -> ADD X21,X0,#0. */
+    jit_code_changed(pc, 0x1ee4);
+    sky_params_original = jit_wait(pc);
+    if (!sky_params_original) {
+        WARN("arceus-sky-time: compile failed\n");
+        return;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], sky_params_update, __ATOMIC_RELEASE);
+    LOG("arceus-sky-time: EXPERIMENT: sky copy of WaterCurrentTime scaled by %g\n", (double)sky_time_scale);
+}
 void arceus_clock_post_jit(void) {
     fixed_resolution_init();
     /* Before the research probe, which compiles and keeps this wrapper's body. */
@@ -1450,8 +1970,13 @@ void arceus_clock_post_jit(void) {
     navigation_timestep_init();
     /* Before the census, which then skips the owner this wraps. */
     world_timers_init();
+    gravity_fix_init();
+    movement_fix_init();
     ball_flight_init();
     timing_research_init();
+    capture_fix_init();
+    battle_sequence_fix_init();
+    map_cursor_fix_init();
     cadence_census_init();
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     if (main_base && !experimental && probe && !strcmp(probe, "1")) {
@@ -1461,9 +1986,15 @@ void arceus_clock_post_jit(void) {
         return;
     }
     const char* enabled = getenv("SNX_ARCEUS_TIMING_FIXES");
-    if (!enabled || strcmp(enabled, "1") || !clocks_installed) return;
+    if (!enabled || strcmp(enabled, "1") || !clocks_installed) {
+        /* Baseline: count 29FA554 calls too, to compare with the fixed runs. */
+        scene_params_counter_init();
+        return;
+    }
     water_fix_init();
     effects_fix_init();
+    scene_params_counter_init();
+    sky_time_scale_init();
     event_camera_init();
     blink_fix_init();
     pad_repeat_init();

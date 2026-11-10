@@ -1,0 +1,177 @@
+{
+  "dialogue": {
+    "main_sha256": "d13df31aef8e3bdf9dce8fcb12518900218091b8f33a6880b36cfaaf2acf44c0",
+    "addressing": "main-relative; all original PC-relative code/data locations retained",
+    "ranges": [
+      {
+        "name": "update",
+        "start": "0xfbfbd0",
+        "size": "0x15c"
+      },
+      {
+        "name": "advance",
+        "start": "0xfc10e4",
+        "size": "0x4c"
+      },
+      {
+        "name": "advance_sound",
+        "start": "0xfc1078",
+        "size": "0x6c"
+      },
+      {
+        "name": "tag",
+        "start": "0xfc1170",
+        "size": "0x90"
+      },
+      {
+        "name": "get_rate",
+        "start": "0x2b320d0",
+        "size": "0x14"
+      },
+      {
+        "name": "set_rate",
+        "start": "0x2b320c4",
+        "size": "0xc"
+      },
+      {
+        "name": "base_step",
+        "start": "0x2b315e8",
+        "size": "0x9c4"
+      },
+      {
+        "name": "drain",
+        "start": "0x2737abc",
+        "size": "0x130"
+      }
+    ],
+    "alterations": [
+      {
+        "pc": "0xfbfc20",
+        "original": "0x946dc672",
+        "change": "BL relocation to external host fixture",
+        "target": "0x7000"
+      },
+      {
+        "pc": "0xfc10cc",
+        "original": "0x945dd0f9",
+        "change": "BL relocation to external host fixture",
+        "target": "0x7010"
+      }
+    ],
+    "host_stubs": {
+      "0x7000": "Base text step: records byte delay/quota; configured bounded status/return sequence; defaults out-status1/W0=4",
+      "0x7010": "Sound event observer",
+      "0x7020": "External wait condition: returns configured busy flag"
+    },
+    "scope": "Full selected wrapper/tag/advance/drain methods. Original full base text method executed only on non-parsing delay paths. Inner-loop tests supply explicit sequential base-step statuses/returns. Text glyph rendering, full message UI, input collector, live scheduling and asset/event callbacks not executed."
+  },
+  "AI scheduler": {
+    "main_sha256": "d13df31aef8e3bdf9dce8fcb12518900218091b8f33a6880b36cfaaf2acf44c0",
+    "slices": {
+      "round": {
+        "original_start": "0x1051784",
+        "original_end_exclusive": "0x1051798",
+        "ret_substitution": null,
+        "appended_ret": true
+      },
+      "bucket": {
+        "original_start": "0x10517c0",
+        "original_end_exclusive": "0x10517e0",
+        "ret_substitution": null,
+        "appended_ret": true
+      },
+      "context": {
+        "original_start": "0x1051830",
+        "original_end_exclusive": "0x10518e0",
+        "ret_substitution": "0x1051880",
+        "appended_ret": false
+      }
+    },
+    "relocation": "round -> 0x1000; bucket -> 0x2000; context -> 0x3000; original internal relative branches preserved",
+    "stubs": "None. Context slice returns before reference-release instructions; pointer +58 is supplied readable controlled memory.",
+    "scope": "Only round-robin index, bucket current/previous flag selection, and context reset/accumulation. No task queue, actor action, resources, or game process."
+  },
+  "event clocks": {
+    "wait": {
+      "start": "0x167fc90",
+      "end_exclusive": "0x167ff30",
+      "entry": "0x167ff0c",
+      "changes": {
+        "0x167fca0": {
+          "original": "0x97d1967d",
+          "replacement": "0xd65f03c0",
+          "reason": "Return before unrelated position-cache work"
+        }
+      }
+    },
+    "recovery": {
+      "start": "0x16832a4",
+      "end_exclusive": "0x1683458",
+      "entry": "0x16832a4",
+      "changes": {
+        "0x1683304": {
+          "original": "0xf94023f4",
+          "replacement": "0xd61f0380",
+          "reason": "Return at extracted continuation; BR X28 uses preserved zero sentinel after BL"
+        },
+        "0x168343c": {
+          "original": "0xf94023f4",
+          "replacement": "0xd61f0380",
+          "reason": "Return at extracted continuation; BR X28 uses preserved zero sentinel after BL"
+        },
+        "0x168344c": {
+          "original": "0xf94023f4",
+          "replacement": "0xd61f0380",
+          "reason": "Return at extracted continuation; BR X28 uses preserved zero sentinel after BL"
+        }
+      }
+    },
+    "fallback": {
+      "start": "0x1683528",
+      "end_exclusive": "0x1683884",
+      "entry": "0x1683528",
+      "changes": {}
+    },
+    "reset": {
+      "start": "0x1682f70",
+      "end_exclusive": "0x168300c",
+      "entry": "0x1682f70",
+      "changes": {}
+    },
+    "fade_constant": {
+      "start": "0x378a290",
+      "end_exclusive": "0x378a2a0",
+      "changes": {}
+    },
+    "fallback_jump": {
+      "start": "0x397c590",
+      "end_exclusive": "0x397c594",
+      "changes": {}
+    }
+  },
+  "physics dispatch": {
+    "functions": [
+      {
+        "name": "ready",
+        "main_offset": "0x296863c",
+        "length": "0x1e4",
+        "fixture_address": "0x1000",
+        "instruction_modifications": 0
+      },
+      {
+        "name": "invoke",
+        "main_offset": "0x29684dc",
+        "length": "0x160",
+        "fixture_address": "0x3000",
+        "instruction_modifications": 0
+      }
+    ],
+    "stubs": [
+      "clock virtual0",
+      "listener2968A08",
+      "enqueue296B764",
+      "physics callback virtual70"
+    ],
+    "tested_path": "No optional owner; dependency list has only cardinality, downstream list empty"
+  }
+}
