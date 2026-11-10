@@ -2283,3 +2283,9 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   (patch `patches/u1-b3-1.patch`). Build OK, `ctest` passes except `tracked_material` (known). Mutants: sparse 3D z exponent 4->3
   and view 3D layer shift 9->8, both caught by `nvn_params`. `nvn-coverage.md`: G10 144 implemented, 137 stub-log. Exe md5 76d641aa.
   No game run (no selftest or exectest case).
+
+## Task (u) U1 closed (2026-11-10, moved from WORK_PLAN.md)
+
+- No getter or builder of Sampler, Texture, Buffer, MemoryPool, Window, the pools, BlendState or MultisampleState is still
+  stub-log in `nvn-coverage.md`. The remaining rows of these objects are texel IO, mapped ranges, MapVirtual (U3), finalizers and
+  GL sync (U5). No step b4 was necessary.

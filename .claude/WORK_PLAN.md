@@ -49,8 +49,7 @@ below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
   4-u4. `docs/nvn-coverage.md`: 249 rows of G10 are `stub-log`. Groups (one commit each), in this order:
-  - U1 getters and builders (about 110): Sampler, Texture, Buffer, MemoryPool, Window, pool and Event getters and builders,
-    BlendState advanced, MultisampleState sample locations. Pure: a unit test checks each getter against its setter.
+  - U1 getters and builders: CLOSED (2026-11-10, history in `OLD-WORK_PLAN.md`, sections "Task (u) U1").
   - U2 events and sync (about 20): Event*, CommandBuffer SignalEvent, WaitEvent, WaitSync, FenceSync, ReportValue, Queue
     WaitSync, Finish, Flush, Finalize, Sync*. Check with `nvn_exectest`.
   - U3 copies, clears, texel IO (about 25): CopyBufferTo*, CopyTextureToBuffer, ClearBuffer, ClearColori/ui, Downsample*,
@@ -67,9 +66,10 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
   Decision of the user (2026-11-09): the trace of the enum argument values (the missing part of 4-u1) comes after U1.
-  Current step: U1 steps b1 to b3 are done (history: `OLD-WORK_PLAN.md`, sections "Task (u) U1"). Next session: list the U1 rows
-    that are still stub-log in `nvn-coverage.md` (the getters and builders of the U1 list above), then do step b4 (a) for them, or close U1.
-  - EventGetMemoryPool and EventGetMemoryOffset are in U2 (they need Event Initialize).
+  Current step: U1 is closed. Next session: the trace of the enum argument values (4-u1, decision above), then U2 step (a).
+  - Rows near U1 that stay in other groups: EventGetMemoryPool, EventGetMemoryOffset, EventGetValue (U2). CommandBuffer
+    Get/SetCopyRowStride and Get/SetCopyImageStride (U3, copies). CommandBuffer command and control memory getters, memory
+    callback getters (U5). ProgramSetShaders, SetSampleShading, SetSubroutineLinkage (U4).
 - Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
   buffer overflow in the init builders would crash).
 - Diagnostic code: `patches/diag-taskB.patch`. Apply it only for a diagnostic run, and remove it before a commit.
