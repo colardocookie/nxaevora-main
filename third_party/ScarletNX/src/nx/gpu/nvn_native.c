@@ -1373,6 +1373,12 @@ static int native_guest_access(u64 addr, u64 size, int perm) {
 }
 static int native_guest_readable(u64 addr, u64 size) { return native_guest_access(addr, size, PERM_R); }
 static int native_guest_writable(u64 addr, u64 size) { return native_guest_access(addr, size, PERM_W); }
+/* A sparse tile layout goes to CPU memory of the caller, not to the GPU address space (gmem_write). */
+static int native_write_tile_layout(u64 dst, const uint32_t out[4]) {
+    if (!native_guest_writable(dst, 4 * sizeof(uint32_t))) return 0;
+    for (unsigned i = 0; i < 4; i++) gw32(dst + 4 * i, out[i]);
+    return 1;
+}
 static float native_float_arg(const CPU* c, unsigned index) {
     uint32_t bits = SNX_VS(c->v[index], 0);
     float value;
@@ -1702,7 +1708,7 @@ static void h_texture_builder_get_sparse_tile_layout(CPU* c, u64 entry) {
         LOG("nvn-native: %s invalid format=%x\n", name, b->format);
     }
     pm_unlock(&objs_lock);
-    if (computed && gmem_write(dst, out, sizeof out) < 0)
+    if (computed && !native_write_tile_layout(dst, out))
         LOG("nvn-native: %s unwritable output=%llx\n", name, (unsigned long long)dst);
 }
 
@@ -2425,7 +2431,7 @@ static void h_texture_get_sparse_tile_layout(CPU* c, u64 entry) {
         LOG("nvn-native: %s invalid format=%x\n", name, t->builder.format);
     }
     pm_unlock(&objs_lock);
-    if (computed && gmem_write(dst, out, sizeof out) < 0)
+    if (computed && !native_write_tile_layout(dst, out))
         LOG("nvn-native: %s unwritable output=%llx\n", name, (unsigned long long)dst);
 }
 static void h_texture_get_view_offset(CPU* c, u64 entry) {

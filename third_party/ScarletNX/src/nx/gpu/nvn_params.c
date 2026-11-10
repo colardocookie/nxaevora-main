@@ -224,7 +224,7 @@ void nvn_color_state_defaults(uint32_t* words) { words[0] = 0x08030000u; }
 
 void nvn_depth_stencil_state_defaults(uint32_t* words) {
     words[0] = 0x00000022u;
-    words[1] = 0x11180118u;
+    words[1] = 0x11181118u;
 }
 
 void nvn_blend_state_defaults(uint32_t* words) {
@@ -785,8 +785,11 @@ uint64_t nvn_texture_storage_alignment(const NvnTextureBuilder* b, const NvnText
     if (b->flags & NVN_TEXTURE_FLAG_LINEAR_RENDER_TARGET) return NVN_TEXTURE_LINEAR_RT_ALIGNMENT;
     if (b->flags & NVN_TEXTURE_FLAG_LINEAR) return NVN_TEXTURE_LINEAR_ALIGNMENT;
     TextureFormat f;
-    if (!texture_format(b->format, &f)) return 0;
-    return texture_alignment(b, dev, f);
+    if (texture_format(b->format, &f)) return texture_alignment(b, dev, f);
+    /* d83c4c0 does not check the format. Kind 0 (no format) gives the GOB size, a buffer uses the table bytes (0). */
+    if (b->target != NVN_TEXTURE_TARGET_BUFFER) return NVN_TEXTURE_GOB_BYTES;
+    uint32_t kind = dev->w1b18 & 255u;
+    return kind != 0 && kind != NVN_TEXTURE_KIND_PITCH ? dev->wac : 0;
 }
 
 /* The kind byte of d83563c: kind table de7f0b1, chip 0x12b. One array for each sample column (1 or 2, 4, 8, other).
@@ -1056,8 +1059,10 @@ int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* 
 int nvn_texture_sparse_layout(const NvnTextureBuilder* b, uint32_t out[4]) {
     if (!b || !out) return 0;
     TextureFormat f;
-    if (!texture_format(b->format, &f)) return 0;
+    /* Format 0 has table bytes 0 and the library writes zeros (selftest of 2026-11-10). Other unknown formats stay refused. */
+    if (b->format != 0 && !texture_format(b->format, &f)) return 0;
     out[0] = out[1] = out[2] = out[3] = 0;
+    if (b->format == 0) return 1;
     if (b->target > NVN_TEXTURE_TARGET_BUFFER || b->target == NVN_TEXTURE_TARGET_1D ||
         b->target == NVN_TEXTURE_TARGET_1D_ARRAY || b->target == NVN_TEXTURE_TARGET_BUFFER || f.bytes == 12 ||
         (b->flags & NVN_TEXTURE_SPARSE_TILE_MASK) != NVN_TEXTURE_FLAG_SPARSE)

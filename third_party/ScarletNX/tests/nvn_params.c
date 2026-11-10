@@ -489,6 +489,12 @@ static void test_texture_layout(void) {
     CHECK(!nvn_texture_layout(&b, &dev, &l) && !l.size);
     b.flags = 0x10;
     CHECK(nvn_texture_storage_alignment(&b, &dev) == 0x20);
+    b.flags = 0; b.format = 0;
+    CHECK(nvn_texture_storage_alignment(&b, &dev) == 0);
+    dev.w1b18 = 7;
+    CHECK(nvn_texture_storage_alignment(&b, &dev) == 0x10000);
+    b.target = NVN_TEXTURE_TARGET_2D;
+    CHECK(nvn_texture_storage_alignment(&b, &dev) == 0x200);
 }
 
 static void test_texture_level(void) {
@@ -577,6 +583,9 @@ static void test_u1_sparse_layout(void) {
     out[0] = out[1] = out[2] = out[3] = 7;
     CHECK(!nvn_texture_sparse_layout(&b, out));
     CHECK(out[0] == 7 && out[1] == 7 && out[2] == 7 && out[3] == 7);
+    b.format = 0;
+    CHECK(nvn_texture_sparse_layout(&b, out));
+    CHECK(!out[0] && !out[1] && !out[2] && !out[3]);
 }
 
 static void test_u1_view_offset(void) {
@@ -1260,7 +1269,7 @@ static void test_state_defaults(void) {
     nvn_color_state_defaults(w);
     CHECK(w[0] == 0x08030000u);
     nvn_depth_stencil_state_defaults(w);
-    CHECK(w[0] == 0x00000022u && w[1] == 0x11180118u);
+    CHECK(w[0] == 0x00000022u && w[1] == 0x11181118u);
     nvn_blend_state_defaults(w);
     CHECK(w[0] == 0x110C0000u && w[1] == 0x01020102u);
     nvn_polygon_state_defaults(w);
