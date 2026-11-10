@@ -53,4 +53,42 @@ uint32_t nvn_rt_copy_texture_words(const NvnRtCopyEnv* env, const NvnTexture* sr
                                    const uint32_t dst_region[6], uint32_t flags, int* nothing,
                                    uint32_t* out);
 
+/* The copy flags of NVN (public NVNcopyFlags). Bits 1 to 4 select the route and the flips; bit 0 is not read. */
+#define NVN_COPY_FLAG_LINEAR_FILTER 0x1u
+#define NVN_COPY_FLAG_ENGINE_2D     0x2u
+#define NVN_COPY_FLAG_MIRROR_X      0x4u
+#define NVN_COPY_FLAG_MIRROR_Y      0x8u
+#define NVN_COPY_FLAG_MIRROR_Z      0x10u
+
+/* The DMA route of CopyBufferToTexture and CopyTextureToBuffer (the library block d82b0f0). One launch copies one
+   region row stack or one layer. The builder writes the words of launch index; *launch_count is the number of
+   launches. A refusal returns 0, calls fault once and writes no part of out. An empty region returns 0 with
+   *launch_count 0 and no fault. */
+#define NVN_RT_DMA_LAUNCH_WORDS 25u
+uint32_t nvn_rt_copy_dma_words(const NvnRtCopyEnv* env, const NvnTexture* texture, const NvnTextureView* view,
+                               uint64_t buffer, const uint32_t region[6], uint32_t flags,
+                               uint32_t row_stride, uint32_t image_stride, int to_texture,
+                               uint32_t launch_index, uint32_t* launch_count, uint32_t* out, uint32_t cap);
+/* The record-time check of the same route: the region against the level and the strides. 1 when the copy can be
+   recorded. *nothing is 1 for an empty region (the library writes no copy). */
+int nvn_rt_copy_dma_check(const NvnRtCopyEnv* env, const NvnTexture* texture, const NvnTextureView* view,
+                          uint64_t buffer, const uint32_t region[6], uint32_t row_stride, uint32_t image_stride,
+                          int to_texture, int* nothing);
+
+/* The 2D route of CopyBufferToTexture (B2T with ENGINE_2D): one 2D block for each layer, the source is the
+   buffer with the row stride as its pitch. Returns the word count; a refusal returns 0 and writes no part of out. */
+#define NVN_RT_COPY_2D_WORDS_MAX (47u + 23u * (NVN_RT_COPY_LAYERS_MAX - 1u))
+uint32_t nvn_rt_copy_buffer_texture_2d_words(const NvnRtCopyEnv* env, const NvnTexture* texture,
+                                             const NvnTextureView* view, uint64_t buffer,
+                                             const uint32_t region[6], uint32_t flags,
+                                             uint32_t row_stride, uint32_t image_stride, uint32_t* out);
+
+/* Downsample and TiledDownsample: one 2D block from the source level to the destination level. tiled selects the
+   whole-level ratio (the tiled form); otherwise the source sample count gives the factors. *ratio_not_two is set
+   for a tiled size ratio that is not 2. Returns the word count; a refusal returns 0 and writes no part of out. */
+#define NVN_RT_DOWNSAMPLE_WORDS_MAX 47u
+uint32_t nvn_rt_downsample_words(const NvnRtCopyEnv* env, const NvnTexture* src, const NvnTextureView* src_view,
+                                 const NvnTexture* dst, const NvnTextureView* dst_view, int tiled,
+                                 int* ratio_not_two, uint32_t* out);
+
 #endif

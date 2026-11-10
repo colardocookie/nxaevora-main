@@ -49,6 +49,8 @@ typedef enum {
     NVN_OP_COPY_BUFFER,
     NVN_OP_CLEAR_BUFFER,
     NVN_OP_UPDATE_UNIFORM,
+    NVN_OP_COPY_BUFFER_TEXTURE,
+    NVN_OP_DOWNSAMPLE,
     NVN_OP_COUNT
 } NvnOpCode;
 
@@ -166,6 +168,19 @@ typedef struct {
     uint32_t size256, offset, words, reserved;
     uint32_t data[];
 } NvnOpUpdateUniform;
+/* CopyBufferToTexture and CopyTextureToBuffer in one op: to_texture is 1 for buffer to texture. The region keeps
+   the game's six words. The strides are cb+0x88 and cb+0x8C at record time; 0 is the tight stride. */
+typedef struct {
+    uint64_t buffer;
+    NvnOpTarget target;
+    uint32_t region[6];
+    uint32_t flags, row_stride, image_stride, to_texture, reserved;
+} NvnOpCopyBufferTexture;
+/* Downsample and DownsampleTextureView; the tiled forms set tiled. The views are copied at record time. */
+typedef struct {
+    NvnOpTarget src, dst;
+    uint32_t tiled, reserved;
+} NvnOpDownsample;
 
 _Static_assert(sizeof(NvnOpClearDepthStencil) <= NVN_OP_MAX_PAYLOAD, "NvnOpClearDepthStencil fits an op payload");
 _Static_assert(sizeof(NvnOpClearTexture) <= NVN_OP_MAX_PAYLOAD, "NvnOpClearTexture fits an op payload");
@@ -182,6 +197,8 @@ _Static_assert(sizeof(NvnOpWaitSync) <= NVN_OP_MAX_PAYLOAD, "NvnOpWaitSync fits 
 _Static_assert(sizeof(NvnOpCopyBuffer) <= NVN_OP_MAX_PAYLOAD, "NvnOpCopyBuffer fits an op payload");
 _Static_assert(sizeof(NvnOpClearBuffer) <= NVN_OP_MAX_PAYLOAD, "NvnOpClearBuffer fits an op payload");
 _Static_assert(sizeof(NvnOpUpdateUniform) <= NVN_OP_MAX_PAYLOAD, "NvnOpUpdateUniform fits an op payload");
+_Static_assert(sizeof(NvnOpCopyBufferTexture) <= NVN_OP_MAX_PAYLOAD, "NvnOpCopyBufferTexture fits an op payload");
+_Static_assert(sizeof(NvnOpDownsample) <= NVN_OP_MAX_PAYLOAD, "NvnOpDownsample fits an op payload");
 _Static_assert(4u * NVN_UPDATE_UNIFORM_DATA_WORDS <= NVN_OP_MAX_PAYLOAD - sizeof(NvnOpUpdateUniform),
                "the update data words of one op fit its payload");
 _Static_assert(sizeof(NvnOpBindProgram) <= NVN_OP_MAX_PAYLOAD, "NvnOpBindProgram fits an op payload");

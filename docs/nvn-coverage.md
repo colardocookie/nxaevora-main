@@ -30,8 +30,8 @@ tool keeps them.
 | G7 | 4 | 4 | 0 | 4 | 0 |
 | G8 | 112 | 112 | 0 | 112 | 0 |
 | G9 | 43 | 43 | 0 | 43 | 0 |
-| G10 | 281 | 186 | 95 | 0 | 0 |
-| all | 523 | 428 | 95 | 242 | 0 |
+| G10 | 281 | 192 | 89 | 0 | 0 |
+| all | 523 | 434 | 89 | 242 | 0 |
 
 ## Functions
 
@@ -312,14 +312,14 @@ tool keeps them.
 | `nvnCommandBufferClearTexturei` | G10 | d857a10 | 0 | implemented |  |  |  |
 | `nvnCommandBufferClearTextureui` | G10 | d857e10 | 0 | implemented |  |  |  |
 | `nvnCommandBufferCopyBufferToBuffer` | G10 | d82be80 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferCopyBufferToTexture` | G10 | d82b510 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferCopyBufferToTexture` | G10 | d82b510 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferCopyCommands` | G10 | d825a30 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferCopyTextureToBuffer` | G10 | d82bb70 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferCopyTextureToBuffer` | G10 | d82bb70 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferDiscardColor` | G10 | d8564c0 | 0 | implemented |  |  |  |
 | `nvnCommandBufferDiscardDepthStencil` | G10 | d856530 | 0 | implemented |  |  |  |
 | `nvnCommandBufferDispatchComputeIndirect` | G10 | d84dc60 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferDownsample` | G10 | d82cb10 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferDownsampleTextureView` | G10 | d82cb20 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferDownsample` | G10 | d82cb10 | 0 | implemented | unit |  |  |
+| `nvnCommandBufferDownsampleTextureView` | G10 | d82cb20 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferDrawArraysIndirect` | G10 | d849a00 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferDrawElementsIndirect` | G10 | d849bd0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferDrawTexture` | G10 | d84cad0 | 0 | stub-log |  |  |  |
@@ -379,8 +379,8 @@ tool keeps them.
 | `nvnCommandBufferSetViewport` | G10 | d84ae60 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferSetViewportSwizzles` | G10 | d84afe0 | 0 | stub-log |  |  |  |
 | `nvnCommandBufferSignalEvent` | G10 | d832ef0 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferTiledDownsample` | G10 | d8575f0 | 0 | stub-log |  |  |  |
-| `nvnCommandBufferTiledDownsampleTextureView` | G10 | d857600 | 0 | stub-log |  |  |  |
+| `nvnCommandBufferTiledDownsample` | G10 | d8575f0 | 0 | implemented | unit |  |  |
+| `nvnCommandBufferTiledDownsampleTextureView` | G10 | d857600 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferUpdateUniformBuffer` | G10 | d84c980 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferWaitEvent` | G10 | d832e30 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferWaitSync` | G10 | d825ce0 | 0 | implemented | unit |  |  |

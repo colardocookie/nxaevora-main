@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 #include "nx/gpu/nvn_rt.h"
+#include <string.h>
 
 /* Maxwell 3D methods and values of nvnCommandBufferSetRenderTargets (d855da0). */
 #define NVN_RT_CONTROL_METHOD       0x487u
@@ -674,6 +675,606 @@ uint32_t nvn_rt_copy_texture_words(const NvnRtCopyEnv* env, const NvnTexture* sr
         out[at++] = w6 << NVN_RT_COPY_OFFSET_SHIFT;
         out[at++] = (uint32_t)((int32_t)w6 >> NVN_RT_COPY_OFFSET_RIGHT);
     }
+    out[at++] = NVN_RT_COPY_CLOSE;
+    return at;
+}
+
+/* ---- CopyBufferToTexture and CopyTextureToBuffer: the DMA route of d82b0f0 (docs/nvn-design.md, U3 item 1).
+   A launch copies one row stack of one layer. MIRROR_Y makes one launch for each row and MIRROR_Z reverses the
+   layers on the buffer side: dma.c keeps the pitch as u32, so the negative pitch of the library is not possible. */
+
+#define NVN_DMA_METHOD_OFFSET     0x100u /* OffsetIn upper/lower and OffsetOut upper/lower */
+#define NVN_DMA_METHOD_PITCH      0x104u /* PitchIn, PitchOut, LineLengthIn, LineCount */
+#define NVN_DMA_METHOD_DST_PARAMS 0x1C3u /* block size, width, height, depth, layer, origin */
+#define NVN_DMA_METHOD_SRC_PARAMS 0x1CAu
+#define NVN_DMA_METHOD_LAUNCH     0x0C0u
+#define NVN_DMA_OFFSET_WORDS      4u
+#define NVN_DMA_PITCH_WORDS       4u
+#define NVN_DMA_PARAMS_WORDS      6u
+#define NVN_DMA_SUBCHANNEL        4u
+#define NVN_DMA_COPY_TYPE         2u
+#define NVN_DMA_FLUSH             0x4u
+#define NVN_DMA_LAYOUT_PITCH      0x80u /* source bit 7 */
+#define NVN_DMA_LAYOUT_BLOCK      0u
+#define NVN_DMA_LAYOUT_DST_PITCH  0x100u /* destination bit 8 */
+#define NVN_DMA_MULTI_LINE        0x200u /* bit 9: LineCount rows */
+#define NVN_RT_SUBCHANNEL_SHIFT   13u    /* the method word header, the pushbuffer header's subchannel field */
+#define NVN_RT_ORIGIN_MASK        0xFFFFu
+
+typedef struct {
+    const NvnTexture* texture;
+    int is_3d;
+    int linear;
+    int multisample;
+    uint32_t row_bytes;          /* region row bytes after whole blocks */
+    uint32_t rows;               /* region rows in block rows */
+    uint32_t layers;
+    uint32_t x_bytes;            /* first byte of the row on the texture side */
+    uint32_t y_first;            /* first block row of the level */
+    uint32_t region_layer;       /* the region's first layer word */
+    uint32_t layer_first;        /* first layer or slice, view base included */
+    uint32_t surface_row_bytes;  /* the block linear surface row, padded */
+    uint32_t surface_rows;
+    uint32_t surface_depth;
+    uint32_t block_size;
+    uint32_t tile;
+    uint32_t depth_word;
+    uint32_t level_width;        /* level size in texels, before the sample scale */
+    uint32_t level_height;
+    uint32_t aligned_width;      /* level size for the 2D block */
+    uint32_t aligned_height;
+    uint64_t level_offset;
+    uint64_t row_stride;         /* the buffer row stride */
+    uint64_t image_stride;       /* the buffer image stride */
+    uint64_t tex_pitch;          /* the texture side pitch, a linear texture */
+} NvnRtCopyPlan;
+
+static uint32_t rt_mip_dimension(uint32_t n, uint32_t level) {
+    n >>= level & 31u;
+    return n ? n : 1u;
+}
+static uint32_t rt_ceil_div(uint32_t n, uint32_t d) { return (n + d - 1u) / d; }
+static int rt_add_u64(uint64_t a, uint64_t b, uint64_t* out) {
+    if (a > UINT64_MAX - b) return 0;
+    *out = a + b;
+    return 1;
+}
+static int rt_mul_u64(uint64_t a, uint64_t b, uint64_t* out) {
+    if (a && b > UINT64_MAX / a) return 0;
+    *out = a * b;
+    return 1;
+}
+
+/* The level geometry of a block linear texture, also for a multisample texture (its level is level 0). 0 after a
+   fault: the texture has no block level at this base level. */
+static int rt_copy_level(const NvnRtCopyEnv* env, const NvnTexture* texture, uint32_t base_level,
+                         NvnTextureLevel* level) {
+    const NvnTextureLayout* l = &texture->layout;
+    if (l->sample_x == 1u && l->sample_y == 1u) {
+        if (!nvn_texture_level(texture, base_level, level)) {
+            env->base.fault(env->base.ctx, "copy level", base_level);
+            return 0;
+        }
+        return 1;
+    }
+    memset(level, 0, sizeof *level);
+    uint32_t width = rt_mip_dimension(l->width, base_level) * l->sample_x;
+    uint32_t height = rt_mip_dimension(l->height, base_level) * l->sample_y;
+    uint32_t blocks = rt_ceil_div(width, l->block_width);
+    uint32_t row_bytes = blocks * l->bytes_per_block;
+    uint32_t factor = rt_tile_factor(l, width, height, l->depth);
+    level->gobs_x = rt_align_up(rt_ceil_div(row_bytes, NVN_TEXTURE_GOB_WIDTH), factor);
+    level->rows = rt_ceil_div(height, l->block_height);
+    level->depth = l->dim == 3u ? l->depth : 1u;
+    level->block_height_log2 = l->tile_y & NVN_RT_SHIFT_MASK;
+    level->depth_log2 = l->tile_z & NVN_RT_SHIFT_MASK;
+    return 1;
+}
+
+/* The geometry and the checks of one texture copy. The buffer holds the region only: its rows are row_stride
+   bytes apart and the first byte is the start. 0 after a fault; *nothing is 1 for an empty region. */
+static int rt_copy_plan(const NvnRtCopyEnv* env, const NvnTexture* texture, const NvnTextureView* view,
+                        const uint32_t region[6], uint32_t row_stride, uint32_t image_stride,
+                        NvnRtCopyPlan* p, int* nothing) {
+    memset(p, 0, sizeof *p);
+    *nothing = 0;
+    const NvnTextureLayout* l = &texture->layout;
+    uint32_t target = view && (view->flags & NVN_VIEW_TARGET) ? view->target : texture->builder.target;
+    int one_d_array = target == NVN_TEXTURE_TARGET_1D_ARRAY;
+    uint32_t x = region[0];
+    uint32_t y = one_d_array ? 0u : region[1];
+    uint32_t layer = one_d_array ? region[1] : region[2];
+    uint32_t width = region[3];
+    uint32_t height = one_d_array ? 1u : region[4];
+    uint32_t layers = one_d_array ? region[4] : region[5];
+    if (!width || !height || !layers) {
+        *nothing = 1;
+        return 0;
+    }
+    if (target == NVN_TEXTURE_TARGET_BUFFER) {
+        env->base.fault(env->base.ctx, "copy target", target);
+        return 0;
+    }
+    uint32_t base_level = view && (view->flags & NVN_VIEW_LEVELS) ? view->base_level : 0u;
+    uint32_t base_layer = view && (view->flags & NVN_VIEW_LAYERS) ? view->base_layer : 0u;
+    p->texture = texture;
+    p->linear = (texture->builder.flags & NVN_TEXTURE_LINEAR_FLAGS) != 0u;
+    p->multisample = l->sample_x != 1u || l->sample_y != 1u;
+
+    p->level_width = rt_mip_dimension(l->width, base_level);
+    p->level_height = rt_mip_dimension(l->height, base_level);
+    if ((uint64_t)x + width > p->level_width || (uint64_t)y + height > p->level_height) {
+        env->base.fault(env->base.ctx, "copy region", texture->address);
+        return 0;
+    }
+    uint64_t max_layers;
+    if (p->linear) {
+        max_layers = l->depth ? l->depth : 1u;
+    } else {
+        NvnTextureLevel level;
+        if (!rt_copy_level(env, texture, base_level, &level)) return 0;
+        p->is_3d = l->dim == 3u;
+        max_layers = p->is_3d ? level.depth : (l->depth ? l->depth : 1u);
+        p->surface_row_bytes = level.gobs_x * NVN_TEXTURE_GOB_WIDTH;
+        p->surface_rows = level.rows;
+        p->surface_depth = p->is_3d ? level.depth : 1u;
+        p->block_size = ((uint32_t)level.block_height_log2 << 4) |
+                        ((uint32_t)level.depth_log2 << 8);
+        p->tile = rt_tile_word(l);
+        uint32_t tile_depth = 1u << (l->tile_z & NVN_RT_SHIFT_MASK);
+        p->depth_word = (l->depth ? l->depth : 1u) < tile_depth ? (l->depth ? l->depth : 1u) : tile_depth;
+        uint32_t gob_blocks = NVN_TEXTURE_GOB_WIDTH / l->bytes_per_block;
+        uint32_t factor = rt_tile_factor(l, p->level_width * l->sample_x, p->level_height * l->sample_y,
+                                         l->depth);
+        p->aligned_width = rt_align_up(p->level_width * l->sample_x, factor * gob_blocks);
+        p->aligned_height = p->level_height * l->sample_y;
+        uint64_t view_offset = 0;
+        if (!nvn_texture_view_offset(texture, view, &view_offset)) {
+            env->base.fault(env->base.ctx, "copy level", base_level);
+            return 0;
+        }
+        p->level_offset = p->is_3d ? level.offset : view_offset;
+    }
+    if (p->linear) {
+        p->level_offset = 0u;
+        p->surface_row_bytes = l->linear_stride;
+        p->surface_rows = p->level_height;
+        p->surface_depth = 1u;
+        p->tile = 0u;
+        p->depth_word = 1u;
+        p->aligned_width = p->level_width;
+        p->aligned_height = p->level_height;
+        p->tex_pitch = l->linear_stride ? l->linear_stride : (uint64_t)p->level_width * l->bytes_per_block;
+    }
+    if ((uint64_t)layer + layers > max_layers) {
+        env->base.fault(env->base.ctx, "copy layers", layer);
+        return 0;
+    }
+    p->layers = layers;
+    p->region_layer = layer;
+    p->layer_first = base_layer + layer;
+    uint32_t bw = l->block_width ? l->block_width : 1u;
+    uint32_t bh = l->block_height ? l->block_height : 1u;
+    p->x_bytes = rt_ceil_div(x, bw) * l->bytes_per_block;
+    p->row_bytes = rt_ceil_div(width, bw) * l->bytes_per_block;
+    p->y_first = rt_ceil_div(y, bh);
+    p->rows = rt_ceil_div(height, bh);
+    if (p->linear) {
+        p->x_bytes = x * l->bytes_per_block;
+        p->row_bytes = width * l->bytes_per_block;
+        p->y_first = y;
+        p->rows = height;
+    }
+    /* The DMA origin holds 16 bits for x bytes and y rows: a larger start cannot be addressed. */
+    if (p->x_bytes > NVN_RT_ORIGIN_MASK || p->y_first + p->rows - 1u > NVN_RT_ORIGIN_MASK) {
+        env->base.fault(env->base.ctx, "copy origin", p->x_bytes);
+        return 0;
+    }
+    uint64_t tight_image;
+    if (row_stride && row_stride < p->row_bytes) {
+        env->base.fault(env->base.ctx, "copy row stride", row_stride);
+        return 0;
+    }
+    p->row_stride = row_stride ? row_stride : p->row_bytes;
+    if (!rt_mul_u64(p->row_stride, p->rows, &tight_image)) {
+        env->base.fault(env->base.ctx, "copy image stride", image_stride);
+        return 0;
+    }
+    if (image_stride && image_stride < tight_image) {
+        env->base.fault(env->base.ctx, "copy image stride", image_stride);
+        return 0;
+    }
+    p->image_stride = image_stride ? image_stride : tight_image;
+    return 1;
+}
+
+int nvn_rt_copy_dma_check(const NvnRtCopyEnv* env, const NvnTexture* texture, const NvnTextureView* view,
+                          uint64_t buffer, const uint32_t region[6], uint32_t row_stride, uint32_t image_stride,
+                          int to_texture, int* nothing) {
+    (void)to_texture;
+    if (nothing) *nothing = 0;
+    if (!env || !env->base.fault || !nothing || !texture || !region) return 0;
+    NvnRtCopyPlan p;
+    if (!rt_copy_plan(env, texture, view, region, row_stride, image_stride, &p, nothing)) return 0;
+    /* The last byte of the buffer: (layers - 1) image strides, (rows - 1) row strides and one row. */
+    uint64_t span = 0, part = 0, end = 0;
+    if (!rt_mul_u64((uint64_t)(p.layers - 1u), p.image_stride, &span) ||
+        !rt_mul_u64((uint64_t)(p.rows - 1u), p.row_stride, &part) ||
+        !rt_add_u64(span, part, &span) || !rt_add_u64(span, p.row_bytes, &span) ||
+        !rt_add_u64(buffer, span, &end)) {
+        env->base.fault(env->base.ctx, "copy buffer range", buffer);
+        return 0;
+    }
+    return 1;
+}
+
+uint32_t nvn_rt_copy_dma_words(const NvnRtCopyEnv* env, const NvnTexture* texture, const NvnTextureView* view,
+                               uint64_t buffer, const uint32_t region[6], uint32_t flags,
+                               uint32_t row_stride, uint32_t image_stride, int to_texture,
+                               uint32_t launch_index, uint32_t* launch_count, uint32_t* out, uint32_t cap) {
+    if (launch_count) *launch_count = 0;
+    if (!env || !env->base.fault || !launch_count || !out || !texture || !region) return 0;
+    int nothing = 0;
+    NvnRtCopyPlan p;
+    if (!rt_copy_plan(env, texture, view, region, row_stride, image_stride, &p, &nothing)) return 0;
+    if (nothing) return 0;
+    int mirror_y = (flags & NVN_COPY_FLAG_MIRROR_Y) != 0;
+    int mirror_z = (flags & NVN_COPY_FLAG_MIRROR_Z) != 0;
+    uint32_t launches_per_layer = mirror_y ? p.rows : 1u;
+    uint64_t total = (uint64_t)p.layers * launches_per_layer;
+    if (total > UINT32_MAX) {
+        env->base.fault(env->base.ctx, "copy launches", total);
+        return 0;
+    }
+    *launch_count = (uint32_t)total;
+    if (launch_index >= *launch_count || cap < NVN_RT_DMA_LAUNCH_WORDS) return 0;
+    uint32_t layer_index = launch_index / launches_per_layer;
+    uint32_t row_part = launch_index % launches_per_layer;
+    uint32_t buffer_layer = mirror_z ? p.layers - 1u - layer_index : layer_index;
+    uint32_t line_rows = mirror_y ? 1u : p.rows;
+    uint32_t origin_y = p.y_first + (mirror_y ? row_part : 0u);
+    uint64_t buffer_offset;
+    if (!rt_mul_u64(buffer_layer, p.image_stride, &buffer_offset)) {
+        env->base.fault(env->base.ctx, "copy buffer range", buffer);
+        return 0;
+    }
+    uint64_t row_offset = mirror_y ? (uint64_t)(p.rows - 1u - row_part) * p.row_stride : 0u;
+    if (!rt_add_u64(buffer_offset, row_offset, &buffer_offset) ||
+        !rt_add_u64(buffer_offset, buffer, &buffer_offset)) {
+        env->base.fault(env->base.ctx, "copy buffer range", buffer);
+        return 0;
+    }
+
+    uint64_t texture_offset;
+    uint32_t layer_field = 0;
+    if (p.linear) {
+        uint64_t layer_offset;
+        if (!rt_mul_u64(p.layer_first + layer_index, texture->layout.layer_stride, &layer_offset) ||
+            !rt_add_u64(texture->address, layer_offset, &layer_offset) ||
+            !rt_mul_u64(origin_y, p.tex_pitch, &texture_offset) ||
+            !rt_add_u64(layer_offset, texture_offset, &texture_offset) ||
+            !rt_add_u64(texture_offset, p.x_bytes, &texture_offset)) {
+            env->base.fault(env->base.ctx, "copy address", texture->address);
+            return 0;
+        }
+    } else if (p.is_3d) {
+        texture_offset = texture->address + p.level_offset;
+        layer_field = p.layer_first + layer_index;
+    } else {
+        uint64_t layer_offset;
+        if (!rt_mul_u64(p.region_layer + layer_index, texture->layout.layer_stride, &layer_offset) ||
+            !rt_add_u64(texture->address + p.level_offset, layer_offset, &texture_offset)) {
+            env->base.fault(env->base.ctx, "copy address", texture->address);
+            return 0;
+        }
+    }
+
+    uint64_t linear_addr = buffer_offset;
+    uint64_t block_addr = texture_offset;
+    uint64_t in_addr = to_texture ? linear_addr : block_addr;
+    uint64_t out_addr = to_texture ? block_addr : linear_addr;
+    uint32_t linear_pitch = (uint32_t)p.row_stride;
+    uint32_t texture_pitch = p.linear ? (uint32_t)p.tex_pitch : (uint32_t)p.row_stride;
+    uint32_t src_pitch = to_texture ? linear_pitch : texture_pitch;
+    uint32_t dst_pitch = to_texture ? texture_pitch : linear_pitch;
+    int src_block = to_texture ? 0 : !p.linear;
+    int dst_block = to_texture ? !p.linear : 0;
+    uint32_t launch = NVN_DMA_COPY_TYPE | NVN_DMA_FLUSH | NVN_DMA_MULTI_LINE |
+                      (src_block ? NVN_DMA_LAYOUT_BLOCK : NVN_DMA_LAYOUT_PITCH) |
+                      (dst_block ? NVN_DMA_LAYOUT_BLOCK : NVN_DMA_LAYOUT_DST_PITCH);
+    uint32_t block_size = p.linear ? 0u : p.block_size;
+    uint32_t surface_row_bytes = p.linear ? (uint32_t)p.tex_pitch : p.surface_row_bytes;
+    uint32_t surface_rows = p.linear ? p.level_height : p.surface_rows;
+    uint32_t surface_depth = p.linear ? 1u : p.surface_depth;
+    uint32_t origin = (p.x_bytes & NVN_RT_ORIGIN_MASK) | ((origin_y & NVN_RT_ORIGIN_MASK) << 16);
+    uint32_t block_params[NVN_DMA_PARAMS_WORDS] = {block_size, surface_row_bytes, surface_rows,
+                                                   surface_depth, layer_field, origin};
+
+    uint32_t at = 0;
+    out[at++] = NVN_RT_HEADER_INCREASING | (NVN_DMA_OFFSET_WORDS << NVN_RT_HEADER_COUNT_SHIFT) |
+                (NVN_DMA_SUBCHANNEL << NVN_RT_SUBCHANNEL_SHIFT) | NVN_DMA_METHOD_OFFSET;
+    out[at++] = (uint32_t)(in_addr >> 32);
+    out[at++] = (uint32_t)in_addr;
+    out[at++] = (uint32_t)(out_addr >> 32);
+    out[at++] = (uint32_t)out_addr;
+    out[at++] = NVN_RT_HEADER_INCREASING | (NVN_DMA_PITCH_WORDS << NVN_RT_HEADER_COUNT_SHIFT) |
+                (NVN_DMA_SUBCHANNEL << NVN_RT_SUBCHANNEL_SHIFT) | NVN_DMA_METHOD_PITCH;
+    out[at++] = src_pitch;
+    out[at++] = dst_pitch;
+    out[at++] = p.row_bytes;
+    out[at++] = line_rows;
+    for (uint32_t side = 0; side < 2; side++) {
+        uint32_t method = side == 0 ? NVN_DMA_METHOD_DST_PARAMS : NVN_DMA_METHOD_SRC_PARAMS;
+        int is_block = side == 0 ? dst_block : src_block;
+        out[at++] = NVN_RT_HEADER_INCREASING | (NVN_DMA_PARAMS_WORDS << NVN_RT_HEADER_COUNT_SHIFT) |
+                    (NVN_DMA_SUBCHANNEL << NVN_RT_SUBCHANNEL_SHIFT) | method;
+        if (is_block) {
+            for (uint32_t i = 0; i < NVN_DMA_PARAMS_WORDS; i++) out[at++] = block_params[i];
+        } else {
+            for (uint32_t i = 0; i < NVN_DMA_PARAMS_WORDS; i++) out[at++] = 0u;
+        }
+    }
+    out[at++] = NVN_RT_HEADER_INLINE | (launch << NVN_RT_HEADER_COUNT_SHIFT) |
+                (NVN_DMA_SUBCHANNEL << NVN_RT_SUBCHANNEL_SHIFT) | NVN_DMA_METHOD_LAUNCH;
+    return at;
+}
+
+/* ---- the 2D block of CopyBufferToTexture, Downsample and TiledDownsample (d82c5d0). Each side is one surface: a
+   block linear level, or the buffer of a copy with the row stride as its pitch. */
+typedef struct {
+    uint32_t format_word, linear, tile, depth_word;
+    uint32_t surface_width, surface_height; /* the size registers, aligned for a block surface */
+    uint32_t level_width, level_height;     /* the sampled level size, before the tile alignment */
+    uint32_t pitch;                         /* a pitch linear surface */
+    uint64_t address;
+} NvnRt2dSide;
+
+#define NVN_RT_2D_OPEN_COPY        0x91010002u
+#define NVN_RT_2D_OPEN_DOWNSAMPLE  0x91050002u
+#define NVN_RT_2D_OPEN_TILED       0x91060002u
+#define NVN_RT_2D_SAMPLE_CENTER    0u
+#define NVN_RT_2D_SAMPLE_BILINEAR  0x10u /* bit 4 of SAMPLE_MODE, the filter of TiledDownsample (design item 2) */
+#define NVN_RT_2D_UNIT             0x100000000ull
+#define NVN_RT_2D_NEGATIVE_UNIT    0xFFFFFFFF00000000ull
+#define NVN_RT_2D_SRC_PITCH_METHOD 0x6090u /* subchannel 3, methods 0x090 LAYER and 0x091 PITCH */
+#define NVN_RT_2D_DST_WORDS        6u      /* format, linear, block size, depth, layer, pitch */
+#define NVN_RT_2D_PITCH_WORDS      2u
+
+static uint32_t rt_2d_emit(const NvnRt2dSide* src, const NvnRt2dSide* dst, int first, uint32_t open,
+                           uint32_t sample_mode, const uint32_t rect[4], const uint32_t scale[4],
+                           const uint32_t origin[4], uint32_t* out) {
+    uint32_t at = 0;
+    if (first) {
+        out[at++] = open;
+        out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_SRC_METHOD, NVN_RT_COPY_SRC_WORDS);
+        out[at++] = src->format_word;
+        out[at++] = src->linear;
+        out[at++] = src->tile;
+        out[at++] = src->depth_word;
+        out[at++] = NVN_RT_COPY_RUN(NVN_RT_2D_SRC_PITCH_METHOD, NVN_RT_2D_PITCH_WORDS);
+        out[at++] = 0u;
+        out[at++] = src->pitch;
+        out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_SRC_SIZE_METHOD, NVN_RT_COPY_PAIR_WORDS);
+        out[at++] = src->surface_width;
+        out[at++] = src->surface_height;
+        out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_ADDRESS_METHOD, NVN_RT_COPY_PAIR_WORDS);
+        out[at++] = (uint32_t)(src->address >> 32);
+        out[at++] = (uint32_t)src->address;
+        out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_DST_METHOD, NVN_RT_2D_DST_WORDS);
+        out[at++] = dst->format_word;
+        out[at++] = dst->linear;
+        out[at++] = dst->tile;
+        out[at++] = dst->depth_word;
+        out[at++] = 0u;
+        out[at++] = dst->pitch;
+        out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_DST_SIZE_METHOD, NVN_RT_COPY_PAIR_WORDS);
+        out[at++] = dst->surface_width;
+        out[at++] = dst->surface_height;
+        out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_DST_ADDR_METHOD, NVN_RT_COPY_PAIR_WORDS);
+        out[at++] = (uint32_t)(dst->address >> 32);
+        out[at++] = (uint32_t)dst->address;
+        out[at++] = NVN_RT_COPY_VALUE(NVN_RT_COPY_IMMD_METHOD, NVN_RT_COPY_IMMD_VALUE);
+    } else {
+        out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_ADDRESS_METHOD, NVN_RT_COPY_PAIR_WORDS);
+        out[at++] = (uint32_t)(src->address >> 32);
+        out[at++] = (uint32_t)src->address;
+        out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_DST_ADDR_METHOD, NVN_RT_COPY_PAIR_WORDS);
+        out[at++] = (uint32_t)(dst->address >> 32);
+        out[at++] = (uint32_t)dst->address;
+    }
+    out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_FLAGS_METHOD, NVN_RT_COPY_FLAGS_WORDS);
+    out[at++] = sample_mode;
+    out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_RECT_METHOD, NVN_RT_COPY_RECT_WORDS);
+    out[at++] = rect[0];
+    out[at++] = rect[1];
+    out[at++] = rect[2];
+    out[at++] = rect[3];
+    out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_SCALE_METHOD, NVN_RT_COPY_RECT_WORDS);
+    for (uint32_t i = 0; i < NVN_RT_COPY_RECT_WORDS; i++) out[at++] = scale[i];
+    out[at++] = NVN_RT_COPY_RUN(NVN_RT_COPY_OFFSET_METHOD, NVN_RT_COPY_RECT_WORDS);
+    for (uint32_t i = 0; i < NVN_RT_COPY_RECT_WORDS; i++) out[at++] = origin[i];
+    return at;
+}
+
+/* The 2D surface of one texture level. A multisample texture is its level 0 with the sample scale. 0 after a fault. */
+static int rt_2d_surface(const NvnRtCopyEnv* env, const NvnTexture* texture, const NvnTextureView* view,
+                         NvnRt2dSide* s) {
+    memset(s, 0, sizeof *s);
+    const NvnTextureLayout* l = &texture->layout;
+    uint32_t target = view && (view->flags & NVN_VIEW_TARGET) ? view->target : texture->builder.target;
+    if (target != NVN_TEXTURE_TARGET_2D && target != NVN_TEXTURE_TARGET_2D_ARRAY &&
+        target != NVN_TEXTURE_TARGET_2D_MS && target != NVN_TEXTURE_TARGET_2D_MS_ARRAY &&
+        target != NVN_TEXTURE_TARGET_RECTANGLE) {
+        env->base.fault(env->base.ctx, "copy 2d target", target);
+        return 0;
+    }
+    uint32_t format = view && (view->flags & NVN_VIEW_FORMAT) ? view->format : texture->builder.format;
+    if (!env->format_word) {
+        env->base.fault(env->base.ctx, "copy 2d format", format);
+        return 0;
+    }
+    uint32_t word = env->format_word(env->base.ctx, format);
+    if (!word) {
+        env->base.fault(env->base.ctx, "copy 2d format", format);
+        return 0;
+    }
+    s->format_word = word;
+    if (l->block_width != 1u || l->block_height != 1u) {
+        env->base.fault(env->base.ctx, "copy 2d block", format);
+        return 0;
+    }
+    s->linear = (texture->builder.flags & NVN_TEXTURE_LINEAR_FLAGS) != 0u;
+    s->tile = rt_tile_word(l);
+    uint32_t tile_depth = 1u << (l->tile_z & NVN_RT_SHIFT_MASK);
+    uint32_t depth = l->depth ? l->depth : 1u;
+    s->depth_word = depth < tile_depth ? depth : tile_depth;
+    uint32_t base_level = view && (view->flags & NVN_VIEW_LEVELS) ? view->base_level : 0u;
+    uint32_t base_layer = view && (view->flags & NVN_VIEW_LAYERS) ? view->base_layer : 0u;
+    uint64_t offset = 0;
+    if (!nvn_texture_view_offset(texture, view, &offset)) {
+        env->base.fault(env->base.ctx, "copy 2d level", base_level);
+        return 0;
+    }
+    s->address = texture->address + offset;
+    if (s->linear) {
+        s->address = texture->address + (uint64_t)base_layer * l->layer_stride;
+        s->surface_width = l->width;
+        s->surface_height = l->height;
+        s->level_width = l->width;
+        s->level_height = l->height;
+        s->pitch = l->linear_stride;
+        return 1;
+    }
+    uint32_t width = rt_mip_dimension(l->width, base_level);
+    uint32_t height = rt_mip_dimension(l->height, base_level);
+    uint32_t gob_blocks = NVN_TEXTURE_GOB_WIDTH / l->bytes_per_block;
+    if (l->sample_x != 1u || l->sample_y != 1u) {
+        width *= l->sample_x;
+        height *= l->sample_y;
+    }
+    uint32_t factor = rt_tile_factor(l, width, height, l->depth);
+    s->level_width = width;
+    s->level_height = height;
+    s->surface_width = rt_align_up(width, factor * gob_blocks);
+    s->surface_height = height;
+    return 1;
+}
+
+uint32_t nvn_rt_copy_buffer_texture_2d_words(const NvnRtCopyEnv* env, const NvnTexture* texture,
+                                             const NvnTextureView* view, uint64_t buffer,
+                                             const uint32_t region[6], uint32_t flags,
+                                             uint32_t row_stride, uint32_t image_stride, uint32_t* out) {
+    if (!env || !env->base.fault || !env->format_word || !out || !texture || !region) return 0;
+    int nothing = 0;
+    NvnRtCopyPlan p;
+    if (!rt_copy_plan(env, texture, view, region, row_stride, image_stride, &p, &nothing)) return 0;
+    if (nothing) return 0;
+    if (p.layers > NVN_RT_COPY_LAYERS_MAX) {
+        env->base.fault(env->base.ctx, "copy layers", p.layers);
+        return 0;
+    }
+    if (p.linear) {
+        env->base.fault(env->base.ctx, "copy 2d linear", texture->address);
+        return 0;
+    }
+    if (p.is_3d) {
+        env->base.fault(env->base.ctx, "copy 2d target", NVN_TEXTURE_TARGET_3D);
+        return 0;
+    }
+    NvnRt2dSide dst;
+    if (!rt_2d_surface(env, texture, view, &dst)) return 0;
+    uint32_t width = region[3];
+    uint32_t one_d = (view && (view->flags & NVN_VIEW_TARGET) ? view->target : texture->builder.target) ==
+                     NVN_TEXTURE_TARGET_1D_ARRAY;
+    uint32_t height = one_d ? 1u : region[4];
+    uint32_t rect[4] = {region[0], one_d ? 0u : region[1], width, height};
+    uint64_t du = (flags & NVN_COPY_FLAG_MIRROR_X) ? NVN_RT_2D_NEGATIVE_UNIT : NVN_RT_2D_UNIT;
+    uint64_t dv = (flags & NVN_COPY_FLAG_MIRROR_Y) ? NVN_RT_2D_NEGATIVE_UNIT : NVN_RT_2D_UNIT;
+    uint32_t scale[4] = {(uint32_t)du, (uint32_t)(du >> 32), (uint32_t)dv, (uint32_t)(dv >> 32)};
+    /* 32.32 fixed point, as the step: a mirrored side starts at its far edge */
+    uint64_t sx = (flags & NVN_COPY_FLAG_MIRROR_X) ? (uint64_t)width << 32 : 0u;
+    uint64_t sy = (flags & NVN_COPY_FLAG_MIRROR_Y) ? (uint64_t)height << 32 : 0u;
+    uint32_t origin[4] = {(uint32_t)sx, (uint32_t)(sx >> 32), (uint32_t)sy, (uint32_t)(sy >> 32)};
+    NvnRt2dSide src = {0};
+    src.format_word = dst.format_word;
+    src.linear = 1u;
+    src.depth_word = 1u; /* the buffer is one pitch surface */
+    src.surface_width = width;
+    src.surface_height = height;
+    src.level_width = width;
+    src.level_height = height;
+    src.pitch = (uint32_t)p.row_stride;
+    /* The addresses of all layers are made first, so that a late refusal writes no part of out. */
+    uint64_t src_addr[NVN_RT_COPY_LAYERS_MAX], dst_addr[NVN_RT_COPY_LAYERS_MAX];
+    for (uint32_t i = 0; i < p.layers; i++) {
+        uint32_t buffer_layer = (flags & NVN_COPY_FLAG_MIRROR_Z) ? p.layers - 1u - i : i;
+        if (!rt_mul_u64(buffer_layer, p.image_stride, &src_addr[i]) ||
+            !rt_add_u64(buffer, src_addr[i], &src_addr[i]))
+            return 0;
+        if (!rt_mul_u64(p.region_layer + i, texture->layout.layer_stride, &dst_addr[i]) ||
+            !rt_add_u64(texture->address + p.level_offset, dst_addr[i], &dst_addr[i]))
+            return 0;
+    }
+    uint32_t at = 0;
+    for (uint32_t i = 0; i < p.layers; i++) {
+        src.address = src_addr[i];
+        dst.address = dst_addr[i];
+        at += rt_2d_emit(&src, &dst, i == 0u, NVN_RT_2D_OPEN_COPY, NVN_RT_2D_SAMPLE_CENTER, rect, scale, origin,
+                         out + at);
+    }
+    if (at < NVN_RT_COPY_2D_WORDS_MAX) out[at++] = NVN_RT_COPY_CLOSE;
+    return at;
+}
+
+/* ---- Downsample and TiledDownsample. The factors come from the sample count of the source texture: the library
+   index is ror32(texture record +0x68, 1) - 1, and that word is the sample count of the record (d83d3c0). */
+static const uint32_t downsample_factor_x[8] = {2u, 2u, 1u, 4u, 1u, 1u, 1u, 4u};
+static const uint32_t downsample_factor_y[8] = {1u, 2u, 1u, 2u, 1u, 1u, 1u, 4u};
+
+static void rt_downsample_factors(const NvnTexture* src, uint32_t* xf, uint32_t* yf) {
+    uint32_t word = src->layout.samples ? src->layout.samples : 1u;
+    uint32_t index = ((word >> 1) | ((word & 1u) << 31)) - 1u; /* ror32(word, 1) - 1 */
+    *xf = 1u;
+    *yf = 1u;
+    if (index <= 7u) {
+        *xf = downsample_factor_x[index];
+        *yf = downsample_factor_y[index];
+    }
+}
+
+uint32_t nvn_rt_downsample_words(const NvnRtCopyEnv* env, const NvnTexture* src, const NvnTextureView* src_view,
+                                 const NvnTexture* dst, const NvnTextureView* dst_view, int tiled,
+                                 int* ratio_not_two, uint32_t* out) {
+    if (ratio_not_two) *ratio_not_two = 0;
+    if (!env || !env->base.fault || !env->format_word || !out || !src || !dst) return 0;
+    NvnRt2dSide s, d;
+    if (!rt_2d_surface(env, src, src_view, &s) || !rt_2d_surface(env, dst, dst_view, &d)) return 0;
+    if (!d.level_width || !d.level_height) {
+        env->base.fault(env->base.ctx, "downsample size", dst->address);
+        return 0;
+    }
+    uint32_t rect[4] = {0u, 0u, d.level_width, d.level_height};
+    uint64_t du, dv;
+    if (tiled) {
+        if (!s.level_width || !s.level_height) {
+            env->base.fault(env->base.ctx, "downsample size", src->address);
+            return 0;
+        }
+        du = ((uint64_t)s.level_width << 32) / d.level_width;
+        dv = ((uint64_t)s.level_height << 32) / d.level_height;
+        if ((uint64_t)s.level_width != 2ull * d.level_width || (uint64_t)s.level_height != 2ull * d.level_height)
+            if (ratio_not_two) *ratio_not_two = 1;
+    } else {
+        uint32_t xf, yf;
+        rt_downsample_factors(src, &xf, &yf);
+        du = (uint64_t)xf << 32;
+        dv = (uint64_t)yf << 32;
+    }
+    uint32_t scale[4] = {(uint32_t)du, (uint32_t)(du >> 32), (uint32_t)dv, (uint32_t)(dv >> 32)};
+    uint32_t origin[4] = {0u, 0u, 0u, 0u};
+    uint32_t at = rt_2d_emit(&s, &d, 1, tiled ? NVN_RT_2D_OPEN_TILED : NVN_RT_2D_OPEN_DOWNSAMPLE,
+                             tiled ? NVN_RT_2D_SAMPLE_BILINEAR : NVN_RT_2D_SAMPLE_CENTER, rect, scale, origin,
+                             out);
     out[at++] = NVN_RT_COPY_CLOSE;
     return at;
 }

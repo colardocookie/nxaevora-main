@@ -3,6 +3,7 @@
 /* The replay of the host's NVN command lists (gpu/nvn_replay.c): the method word of each op, the faults, and the
    statistics. Each expected word below is computed by hand from analyst-3c-C-1.md. */
 #include "nx/gpu/nvn_replay.h"
+#include "nx/gpu/nvn_rt.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -80,6 +81,8 @@ typedef struct {
     NvnOpTransformFeedback gpu_xfb;
     NvnOpCopyBuffer gpu_copy_buffer;
     NvnOpClearBuffer gpu_clear_buffer;
+    NvnOpCopyBufferTexture gpu_copy_buffer_texture;
+    NvnOpDownsample gpu_downsample;
     struct { uint64_t address; uint32_t size256, offset, words; uint32_t data[8]; } gpu_update_uniform;
     uint32_t fault_count;
     const char* last_fault;
@@ -237,6 +240,12 @@ static int mock_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
         break;
     case NVN_OP_CLEAR_BUFFER:
         k->gpu_clear_buffer = *(const NvnOpClearBuffer*)payload;
+        break;
+    case NVN_OP_COPY_BUFFER_TEXTURE:
+        k->gpu_copy_buffer_texture = *(const NvnOpCopyBufferTexture*)payload;
+        break;
+    case NVN_OP_DOWNSAMPLE:
+        k->gpu_downsample = *(const NvnOpDownsample*)payload;
         break;
     case NVN_OP_UPDATE_UNIFORM: {
         const NvnOpUpdateUniform* op = payload;
@@ -1647,6 +1656,56 @@ static void test_u3_copy_clear_update_ops(void) {
     nvn_oplist_free(&l);
 }
 
+static void test_u3_copy_buffer_texture_and_downsample_ops(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    k.gpu_op_ok = 1;
+    NvnOpCopyBufferTexture copy = {0};
+    copy.buffer = 0x400001000ull;
+    copy.target.texture = 0x1234u;
+    copy.target.generation = 7u;
+    copy.region[0] = 2u;
+    copy.region[3] = 32u;
+    copy.region[4] = 16u;
+    copy.region[5] = 1u;
+    copy.flags = NVN_COPY_FLAG_MIRROR_Y;
+    copy.row_stride = 256u;
+    copy.image_stride = 0u;
+    copy.to_texture = 1u;
+    NvnOpDownsample down = {0};
+    down.src.texture = 0x2345u;
+    down.src.generation = 3u;
+    down.dst.texture = 0x3456u;
+    down.dst.generation = 4u;
+    down.tiled = 1u;
+    CHECK(nvn_oplist_append(&l, NVN_OP_COPY_BUFFER_TEXTURE, &copy, sizeof copy));
+    CHECK(nvn_oplist_append(&l, NVN_OP_DOWNSAMPLE, &down, sizeof down));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 0 && k.gpu_op_calls == 2);
+    CHECK(!memcmp(&k.gpu_copy_buffer_texture, &copy, sizeof copy));
+    CHECK(!memcmp(&k.gpu_downsample, &down, sizeof down));
+    CHECK(st.replayed[NVN_OP_COPY_BUFFER_TEXTURE] == 1 && st.replayed[NVN_OP_DOWNSAMPLE] == 1);
+    nvn_oplist_free(&l);
+}
+
+static void test_u3_copy_buffer_texture_bad_payload(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    uint32_t small[2] = {0u, 0u};
+    k.gpu_op_ok = 1;
+    CHECK(nvn_oplist_append(&l, NVN_OP_COPY_BUFFER_TEXTURE, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_DOWNSAMPLE, small, sizeof small));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 2 && k.gpu_op_calls == 0);
+    CHECK(st.replayed[NVN_OP_COPY_BUFFER_TEXTURE] == 0 && st.replayed[NVN_OP_DOWNSAMPLE] == 0);
+    CHECK(k.last_fault && !strcmp(k.last_fault, "op size") && k.last_fault_value == NVN_OP_DOWNSAMPLE);
+    nvn_oplist_free(&l);
+}
+
 int main(void) {
     test_viewport();
     test_viewport_flip();
@@ -1684,6 +1743,8 @@ int main(void) {
     test_gpu_ops_reach_callback();
     test_u2_event_and_sync_ops();
     test_u3_copy_clear_update_ops();
+    test_u3_copy_buffer_texture_and_downsample_ops();
+    test_u3_copy_buffer_texture_bad_payload();
     test_u2_event_and_sync_bad_payload();
     test_gpu_ops_null_callback();
     test_transform_feedback_op();

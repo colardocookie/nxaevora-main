@@ -2406,3 +2406,19 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   owner reference of a list, a joined test line. 6 mutants failed. `ctest` passes except `tracked_material`.
 - Trap: `git worktree remove` needs `--force` when the writer left edits (the patch file has them). The coverage file is LF;
   its checks cells have two spaces when empty (`|  |`).
+
+## U3 patch 2 (2026-11-10, moved from WORK_PLAN.md)
+
+- Brief `reports/brief-writer-u3-2.md`, patch `patches/writer-u3-2.patch` (writer), `patches/writer-u3-2-fixed.patch`
+  (with the caller fixes), report `reports/writer-u3-2.md`. 6 rows: CopyBufferToTexture, CopyTextureToBuffer, Downsample,
+  DownsampleTextureView, TiledDownsample, TiledDownsampleTextureView. New ops `NVN_OP_COPY_BUFFER_TEXTURE`, `NVN_OP_DOWNSAMPLE`.
+  New pure functions `nvn_rt_copy_dma_words`, `nvn_rt_copy_dma_check`, `nvn_rt_copy_buffer_texture_2d_words`, `nvn_rt_downsample_words`.
+- Downsample and TiledDownsample use the 2D block (fermi2d, then the renderer blit). The tiled form sets SAMPLE_MODE bit 4
+  (bilinear). The renderer blit is linear only for a live render target source with other sizes, else `f2d_blit_memory`
+  point samples. A negative step goes to the memory path (`vk_blit2d` returns 0).
+- Downsample factors: index ror32(samples, 1) - 1 gives 2x1, 2x2, 4x2, 4x4 for 2, 4, 8, 16 samples (writer's inference from
+  d83d3c0: record +0x68 holds the sample pattern).
+- Caller fixes: the 2D source start of a mirror was not 32.32 fixed point, a DMA origin over 16 bits was cut silently (now a
+  refusal), Downsample lacked the close marker 0x91000002, the buffer side depth word was 0, two test headers had count 4
+  for 6 words, a missing include in `tests/nvn_replay.c`. 7 mutants failed. `ctest` passes except `tracked_material`.
+- Not verified in the game: no `main` caller of the 6 functions.

@@ -1141,6 +1141,166 @@ static void test_copy_refusals(void) {
     CHECK(nothing == 0 && fault_is(&k, "copy format") && k.last_fault_value == 0x25u);
 }
 
+static void test_copy_dma_block_linear(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture t = make_texture(0x25, 64, 64, 0x1000);
+    uint32_t region[6] = {0, 0, 0, 64, 64, 1};
+    uint32_t words[NVN_RT_DMA_LAUNCH_WORDS];
+    uint32_t launches = 0;
+    uint32_t count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, 0u, 0u, 0u, 1, 0u, &launches, words,
+                                           NVN_RT_DMA_LAUNCH_WORDS);
+    CHECK(count == 25 && launches == 1 && k.fault_count == 0);
+    CHECK(words[0] == 0x20048100u);
+    CHECK(words[1] == 0u && words[2] == 0x200000u && words[3] == 0u && words[4] == 0x1000u);
+    CHECK(words[5] == 0x20048104u);
+    CHECK(words[6] == 256u && words[7] == 256u && words[8] == 256u && words[9] == 64u);
+    CHECK(words[10] == 0x200681C3u);
+    CHECK(words[11] == 0x30u && words[12] == 256u && words[13] == 64u && words[14] == 1u);
+    CHECK(words[15] == 0u && words[16] == 0u);
+    CHECK(words[17] == 0x200681CAu);
+    for (unsigned i = 18; i < 24; i++) CHECK(words[i] == 0u);
+    CHECK(words[24] == 0x828680C0u); /* type 2, flush, multi-line, src pitch, dst block */
+
+    memset(&k, 0, sizeof k);
+    launches = 0;
+    count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, 0u, 512u, 0u, 1, 0u, &launches, words,
+                                  NVN_RT_DMA_LAUNCH_WORDS);
+    CHECK(count == 25 && launches == 1 && k.fault_count == 0);
+    CHECK(words[6] == 512u && words[7] == 512u && words[8] == 256u && words[9] == 64u);
+}
+
+static void test_copy_dma_mirror_y(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture t = make_texture(0x25, 64, 64, 0x1000);
+    uint32_t region[6] = {0, 0, 0, 64, 2, 1};
+    uint32_t words[NVN_RT_DMA_LAUNCH_WORDS];
+    uint32_t launches = 0;
+    uint32_t count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, NVN_COPY_FLAG_MIRROR_Y, 0u, 0u, 1,
+                                           0u, &launches, words, NVN_RT_DMA_LAUNCH_WORDS);
+    CHECK(count == 25 && launches == 2 && k.fault_count == 0);
+    CHECK(words[2] == 0x200100u && words[4] == 0x1000u && words[9] == 1u && words[16] == 0u);
+    count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, NVN_COPY_FLAG_MIRROR_Y, 0u, 0u, 1, 1u,
+                                  &launches, words, NVN_RT_DMA_LAUNCH_WORDS);
+    CHECK(count == 25 && launches == 2 && k.fault_count == 0);
+    CHECK(words[2] == 0x200000u && words[4] == 0x1000u && words[9] == 1u && words[16] == 0x10000u);
+}
+
+static void test_copy_dma_mirror_z(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture t = make_array_texture(0x25, 64, 64, 4, 0x2000);
+    uint32_t region[6] = {0, 0, 1, 64, 64, 2};
+    uint32_t words[NVN_RT_DMA_LAUNCH_WORDS];
+    uint32_t launches = 0;
+    uint32_t stride = (uint32_t)t.layout.layer_stride;
+    uint32_t count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, NVN_COPY_FLAG_MIRROR_Z, 0u, 0u, 1,
+                                           0u, &launches, words, NVN_RT_DMA_LAUNCH_WORDS);
+    CHECK(count == 25 && launches == 2 && k.fault_count == 0);
+    CHECK(words[2] == 0x200000u + stride && words[4] == 0x2000u + stride && words[15] == 0u);
+    count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, NVN_COPY_FLAG_MIRROR_Z, 0u, 0u, 1, 1u,
+                                  &launches, words, NVN_RT_DMA_LAUNCH_WORDS);
+    CHECK(count == 25 && launches == 2 && k.fault_count == 0);
+    CHECK(words[2] == 0x200000u && words[4] == 0x2000u + 2u * stride && words[15] == 0u);
+}
+
+static void test_copy_dma_block_compressed(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture t = make_texture(0x41, 8, 8, 0x1000); /* BC1: 4x4 blocks, 8 bytes a block */
+    uint32_t region[6] = {0, 0, 0, 6, 6, 1};
+    uint32_t words[NVN_RT_DMA_LAUNCH_WORDS];
+    uint32_t launches = 0;
+    uint32_t count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, 0u, 0u, 0u, 1, 0u, &launches, words,
+                                           NVN_RT_DMA_LAUNCH_WORDS);
+    CHECK(count == 25 && launches == 1 && k.fault_count == 0);
+    CHECK(words[8] == 16u && words[9] == 2u); /* the 6x6 region is 2x2 whole blocks */
+    CHECK(words[12] == 64u && words[13] == 2u && words[14] == 1u);
+}
+
+static void test_copy_dma_region_refused(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture t = make_texture(0x25, 64, 64, 0x1000);
+    uint32_t region[6] = {0, 0, 0, 128, 64, 1};
+    uint32_t words[NVN_RT_DMA_LAUNCH_WORDS];
+    for (unsigned i = 0; i < NVN_RT_DMA_LAUNCH_WORDS; i++) words[i] = 0xAAAAAAAAu;
+    uint32_t launches = 9;
+    uint32_t count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, 0u, 0u, 0u, 1, 0u, &launches, words,
+                                           NVN_RT_DMA_LAUNCH_WORDS);
+    CHECK(count == 0 && launches == 0 && k.fault_count == 1);
+    CHECK(fault_is(&k, "copy region"));
+    CHECK(words[0] == 0xAAAAAAAAu);
+}
+
+static void test_copy_2d_buffer(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture t = make_texture(0x25, 64, 64, 0x1000);
+    uint32_t region[6] = {8, 4, 0, 16, 8, 1};
+    uint32_t words[NVN_RT_COPY_2D_WORDS_MAX];
+    uint32_t count = nvn_rt_copy_buffer_texture_2d_words(&env, &t, NULL, 0x300000, region, NVN_COPY_FLAG_MIRROR_X,
+                                                         0u, 0u, words);
+    CHECK(count == 47 && k.fault_count == 0);
+    CHECK(words[0] == 0x91010002u);
+    CHECK(words[1] == 0x2004608Cu);
+    CHECK(words[2] == 0x5025u && words[3] == 1u && words[4] == 0u && words[5] == 1u);
+    CHECK(words[6] == 0x20026090u && words[7] == 0u && words[8] == 64u);
+    CHECK(words[9] == 0x20026092u && words[10] == 16u && words[11] == 8u);
+    CHECK(words[12] == 0x20026094u && words[13] == 0u && words[14] == 0x300000u);
+    CHECK(words[15] == 0x20066080u && words[16] == 0x5025u && words[17] == 0u && words[18] == 0x30u);
+    CHECK(words[19] == 1u && words[20] == 0u && words[21] == 0u);
+    CHECK(words[22] == 0x20026086u && words[23] == 64u && words[24] == 64u);
+    CHECK(words[25] == 0x20026088u && words[26] == 0u && words[27] == 0x1000u);
+    CHECK(words[28] == 0x800160B5u);
+    CHECK(words[31] == 0x2004622Cu && words[32] == 8u && words[33] == 4u && words[34] == 16u && words[35] == 8u);
+    CHECK(words[36] == 0x20046230u && words[37] == 0u && words[38] == 0xFFFFFFFFu && words[39] == 0u &&
+          words[40] == 1u);
+    CHECK(words[41] == 0x20046234u && words[42] == 0u && words[43] == 16u && words[44] == 0u && words[45] == 0u);
+    CHECK(words[46] == 0x91000002u);
+}
+
+static void test_downsample_factors(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture dst = make_texture(0x25, 64, 64, 0x1000);
+    NvnTexture two = make_texture_with(0x25, 64, 64, 0x2000, 0u, 2u);
+    NvnTexture four = make_texture_with(0x25, 64, 64, 0x2000, 0u, 4u);
+    NvnTexture one = make_texture_with(0x25, 64, 64, 0x2000, 0u, 0u);
+    uint32_t words[NVN_RT_DOWNSAMPLE_WORDS_MAX];
+    int ratio_not_two = 1;
+    uint32_t count = nvn_rt_downsample_words(&env, &two, NULL, &dst, NULL, 0, &ratio_not_two, words);
+    CHECK(count == 47 && ratio_not_two == 0 && k.fault_count == 0);
+    CHECK(words[0] == 0x91050002u);
+    CHECK(words[37] == 0u && words[38] == 2u && words[39] == 0u && words[40] == 1u); /* 2 x 1 */
+    CHECK(words[32] == 0u && words[33] == 0u && words[34] == 64u && words[35] == 64u);
+    count = nvn_rt_downsample_words(&env, &four, NULL, &dst, NULL, 0, &ratio_not_two, words);
+    CHECK(count == 47 && k.fault_count == 0);
+    CHECK(words[38] == 2u && words[40] == 2u); /* 2 x 2 */
+    count = nvn_rt_downsample_words(&env, &one, NULL, &dst, NULL, 0, &ratio_not_two, words);
+    CHECK(count == 47 && k.fault_count == 0);
+    CHECK(words[38] == 1u && words[40] == 1u); /* the word is outside the table: factor 1 */
+}
+
+static void test_tiled_downsample_ratio(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture src = make_texture(0x25, 64, 64, 0x2000);
+    NvnTexture dst = make_texture(0x25, 32, 32, 0x1000);
+    uint32_t words[NVN_RT_DOWNSAMPLE_WORDS_MAX];
+    int ratio_not_two = 0;
+    uint32_t count = nvn_rt_downsample_words(&env, &src, NULL, &dst, NULL, 1, &ratio_not_two, words);
+    CHECK(count == 47 && ratio_not_two == 0 && k.fault_count == 0);
+    CHECK(words[0] == 0x91060002u);
+    CHECK(words[30] == 0x10u && words[46] == 0x91000002u);
+    CHECK(words[38] == 2u && words[40] == 2u);
+    NvnTexture three = make_texture(0x25, 96, 96, 0x2000);
+    count = nvn_rt_downsample_words(&env, &three, NULL, &dst, NULL, 1, &ratio_not_two, words);
+    CHECK(count == 47 && ratio_not_two == 1 && k.fault_count == 0);
+    CHECK(words[38] == 3u && words[40] == 3u);
+}
+
 int main(void) {
     test_one_target();
     test_null_slot_zero();
@@ -1176,6 +1336,14 @@ int main(void) {
     test_copy_format_change();
     test_copy_nothing();
     test_copy_refusals();
+    test_copy_dma_block_linear();
+    test_copy_dma_mirror_y();
+    test_copy_dma_mirror_z();
+    test_copy_dma_block_compressed();
+    test_copy_dma_region_refused();
+    test_copy_2d_buffer();
+    test_downsample_factors();
+    test_tiled_downsample_ratio();
     test_depth_linear();
     test_2d_array_target();
     test_refusals();

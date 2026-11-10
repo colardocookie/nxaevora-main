@@ -4056,6 +4056,117 @@ static void h_command_buffer_copy_texture_to_texture(CPU* c, u64 entry) {
     }
     pm_unlock(&objs_lock);
 }
+/* The log of a refused copy region: the function name and the texture address, as decision 5 asks. */
+typedef struct {
+    const char* operation;
+    uint64_t texture;
+} CopyRegionFault;
+static void copy_region_fault(void* ctx, const char* what, uint64_t value) {
+    (void)value;
+    const CopyRegionFault* f = ctx;
+    LOG_LIMIT(COMMAND_LOG_LIMIT, "nvn-native: %s region refused: %s texture=%llx\n", f->operation, what,
+              (unsigned long long)f->texture);
+}
+/* CopyBufferToTexture and CopyTextureToBuffer share the record. The region and the copy strides are read at call
+   time; the words are built at replay. A zero height writes no copy in the library, so no op is recorded. */
+static void command_copy_buffer_texture(CPU* c, const char* operation, int to_texture) {
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], operation);
+    NvnOpCopyBufferTexture op = {0};
+    op.to_texture = to_texture ? 1u : 0u;
+    uint64_t texture_addr = to_texture ? c->x[2] : c->x[1];
+    uint64_t view_addr = to_texture ? c->x[3] : c->x[2];
+    uint64_t region_addr = to_texture ? c->x[4] : c->x[3];
+    op.buffer = to_texture ? c->x[1] : c->x[4];
+    op.flags = (uint32_t)c->x[5];
+    if (!cb) {
+        pm_unlock(&objs_lock);
+        return;
+    }
+    if (!texture_addr) {
+        command_dropped(cb, operation, "null texture", 0);
+        goto done;
+    }
+    if (!command_target(texture_addr, view_addr, &op.target, cb, operation)) goto done;
+    if (!native_guest_readable(region_addr, sizeof op.region)) {
+        command_dropped(cb, operation, "unreadable region", region_addr);
+        goto done;
+    }
+    for (u32 i = 0; i < 6; i++) op.region[i] = gr32(region_addr + (u64)i * 4);
+    const TextureRec* texture = known_record(texture_addr, NVN_OBJ_TEXTURE);
+    if (!texture) goto done;
+    uint32_t target = op.target.has_view && (op.target.view.flags & NVN_VIEW_TARGET) ? op.target.view.target
+                                                                                    : texture->builder.target;
+    int one_d_array = target == NVN_TEXTURE_TARGET_1D_ARRAY;
+    uint32_t width = op.region[3];
+    uint32_t height = one_d_array ? 1u : op.region[4];
+    uint32_t layers = one_d_array ? op.region[4] : op.region[5];
+    if (height == 0) goto done;
+    if (!width || !layers) {
+        command_dropped(cb, operation, "empty region", texture->address);
+        goto done;
+    }
+    CopyRegionFault fault = {operation, texture->address};
+    NvnRtCopyEnv env = {{&fault, NULL, copy_region_fault}, NULL};
+    int nothing = 0;
+    if (!nvn_rt_copy_dma_check(&env, texture, op.target.has_view ? &op.target.view : NULL, op.buffer, op.region,
+                               cb->copy_row_stride, cb->copy_image_stride, to_texture, &nothing)) {
+        if (!nothing) {
+            cb->dropped_ops++;
+            __atomic_fetch_add(&dropped_ops, 1, __ATOMIC_RELAXED);
+        }
+        goto done;
+    }
+    op.row_stride = cb->copy_row_stride;
+    op.image_stride = cb->copy_image_stride;
+    command_record(cb, c->x[0], operation, NVN_OP_COPY_BUFFER_TEXTURE, &op, sizeof op);
+done:
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_copy_buffer_to_texture(CPU* c, u64 entry) {
+    (void)entry;
+    command_copy_buffer_texture(c, "nvnCommandBufferCopyBufferToTexture", 1);
+}
+static void h_command_buffer_copy_texture_to_buffer(CPU* c, u64 entry) {
+    (void)entry;
+    command_copy_buffer_texture(c, "nvnCommandBufferCopyTextureToBuffer", 0);
+}
+/* Downsample and the tiled forms share the record. The view forms take the views; the plain forms pass NULL. */
+static void command_downsample(CPU* c, const char* operation, int tiled, int has_views) {
+    pm_lock(&objs_lock);
+    CommandBufferRec* cb = command_buffer(c->x[0], operation);
+    NvnOpDownsample op = {0};
+    op.tiled = tiled ? 1u : 0u;
+    uint64_t src = c->x[1];
+    uint64_t src_view = has_views ? c->x[2] : 0;
+    uint64_t dst = has_views ? c->x[3] : c->x[2];
+    uint64_t dst_view = has_views ? c->x[4] : 0;
+    if (!cb) {
+    } else if (!src || !dst) {
+        command_dropped(cb, operation, "null texture", src ? dst : src);
+    } else if (!command_target(src, src_view, &op.src, cb, operation)) {
+    } else if (!command_target(dst, dst_view, &op.dst, cb, operation)) {
+    } else {
+        command_record(cb, c->x[0], operation, NVN_OP_DOWNSAMPLE, &op, sizeof op);
+    }
+    pm_unlock(&objs_lock);
+}
+static void h_command_buffer_downsample(CPU* c, u64 entry) {
+    (void)entry;
+    command_downsample(c, "nvnCommandBufferDownsample", 0, 0);
+}
+static void h_command_buffer_downsample_texture_view(CPU* c, u64 entry) {
+    (void)entry;
+    command_downsample(c, "nvnCommandBufferDownsampleTextureView", 0, 1);
+}
+static void h_command_buffer_tiled_downsample(CPU* c, u64 entry) {
+    (void)entry;
+    command_downsample(c, "nvnCommandBufferTiledDownsample", 1, 0);
+}
+static void h_command_buffer_tiled_downsample_texture_view(CPU* c, u64 entry) {
+    (void)entry;
+    command_downsample(c, "nvnCommandBufferTiledDownsampleTextureView", 1, 1);
+}
 static void h_command_buffer_report_counter(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnCommandBufferReportCounter";
@@ -5081,6 +5192,97 @@ static int replay_host_copy_texture(NvnNativeReplayHost* host, const NvnOpCopyTe
     return 1;
 }
 
+/* CopyBufferToTexture and CopyTextureToBuffer: one texture record and the buffer range (nvn_rt.c, DMA and 2D
+   routes). The record is copied under the lock, so that the words are made without it. */
+static int replay_host_copy_buffer_texture(NvnNativeReplayHost* host, const NvnOpCopyBufferTexture* op) {
+    NvnTexture texture = {0};
+    int found = 0;
+    pm_lock(&objs_lock);
+    const TextureRec* t = op->target.texture &&
+                          nvn_objtab_valid(&objs, op->target.texture, op->target.generation)
+                              ? known_record(op->target.texture, NVN_OBJ_TEXTURE) : NULL;
+    if (t) {
+        texture = *t;
+        found = 1;
+    }
+    pm_unlock(&objs_lock);
+    if (!found) {
+        replay_bind_refuse(host, "copy buffer texture", -1, -1, (uint32_t)op->target.texture);
+        return 1;
+    }
+    NvnRtCopyEnv env = {{host, replay_host_method, replay_host_rt_fault}, copy_format_word_cb};
+    const NvnTextureView* view = op->target.has_view ? &op->target.view : NULL;
+    if (op->to_texture && (op->flags & NVN_COPY_FLAG_ENGINE_2D)) {
+        uint32_t words[NVN_RT_COPY_2D_WORDS_MAX];
+        uint32_t count = nvn_rt_copy_buffer_texture_2d_words(&env, &texture, view, op->buffer, op->region,
+                                                             op->flags, op->row_stride, op->image_stride, words);
+        if (!count || !replay_bind_send(host, words, count))
+            replay_bind_refuse(host, "copy buffer texture", -1, -1, (uint32_t)op->target.texture);
+        return 1;
+    }
+    uint32_t words[NVN_RT_DMA_LAUNCH_WORDS];
+    uint32_t launches = 0;
+    int nothing = 0;
+    if (!nvn_rt_copy_dma_check(&env, &texture, view, op->buffer, op->region, op->row_stride, op->image_stride,
+                               op->to_texture, &nothing)) {
+        if (!nothing) replay_bind_refuse(host, "copy buffer texture", -1, -1, (uint32_t)op->target.texture);
+        return 1;
+    }
+    if (nothing) return 1;
+    uint32_t count = nvn_rt_copy_dma_words(&env, &texture, view, op->buffer, op->region, op->flags, op->row_stride,
+                                           op->image_stride, op->to_texture, 0u, &launches, words,
+                                           NVN_RT_DMA_LAUNCH_WORDS);
+    if (!count || launches == 0) {
+        replay_bind_refuse(host, "copy buffer texture", -1, -1, (uint32_t)op->target.texture);
+        return 1;
+    }
+    for (uint32_t i = 0; i < launches; i++) {
+        if (i > 0)
+            count = nvn_rt_copy_dma_words(&env, &texture, view, op->buffer, op->region, op->flags, op->row_stride,
+                                          op->image_stride, op->to_texture, i, &launches, words,
+                                          NVN_RT_DMA_LAUNCH_WORDS);
+        if (!count || !replay_bind_send(host, words, count)) {
+            replay_bind_refuse(host, "copy buffer texture", -1, -1, (uint32_t)op->target.texture);
+            return 1;
+        }
+    }
+    return 1;
+}
+
+/* Downsample and the tiled form: one 2D block from the source level to the destination level. */
+static int replay_host_downsample(NvnNativeReplayHost* host, const NvnOpDownsample* op) {
+    NvnTexture src = {0}, dst = {0};
+    int found = 0;
+    pm_lock(&objs_lock);
+    const TextureRec* s = op->src.texture &&
+                          nvn_objtab_valid(&objs, op->src.texture, op->src.generation)
+                              ? known_record(op->src.texture, NVN_OBJ_TEXTURE) : NULL;
+    const TextureRec* d = op->dst.texture &&
+                          nvn_objtab_valid(&objs, op->dst.texture, op->dst.generation)
+                              ? known_record(op->dst.texture, NVN_OBJ_TEXTURE) : NULL;
+    if (s && d) {
+        src = *s;
+        dst = *d;
+        found = 1;
+    }
+    pm_unlock(&objs_lock);
+    if (!found) {
+        replay_bind_refuse(host, "downsample", -1, -1, (uint32_t)op->src.texture);
+        return 1;
+    }
+    uint32_t words[NVN_RT_DOWNSAMPLE_WORDS_MAX];
+    int ratio_not_two = 0;
+    NvnRtCopyEnv env = {{host, replay_host_method, replay_host_rt_fault}, copy_format_word_cb};
+    uint32_t count = nvn_rt_downsample_words(&env, &src, op->src.has_view ? &op->src.view : NULL, &dst,
+                                             op->dst.has_view ? &op->dst.view : NULL, (int)op->tiled,
+                                             &ratio_not_two, words);
+    if (ratio_not_two)
+        LOG_LIMIT(REPLAY_LOG_LIMIT, "nvn-native: TiledDownsample: ratio is not 2, linear blit result\n");
+    if (!count || !replay_bind_send(host, words, count))
+        replay_bind_refuse(host, "downsample", -1, -1, (uint32_t)op->src.texture);
+    return 1;
+}
+
 /* The words of one DMA send: a larger copy op is split here, not in the op. */
 #define NVN_REPLAY_SEND_WORDS_MAX 256u
 /* The DMA words of CopyBufferToBuffer and ClearBuffer, and the 3D words of UpdateUniformBuffer (analyst-u3-A-1.md). */
@@ -5144,6 +5346,10 @@ static int replay_host_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
         return replay_host_clear_texture(host, (const NvnOpClearTexture*)payload);
     if (code == NVN_OP_COPY_TEXTURE)
         return replay_host_copy_texture(host, (const NvnOpCopyTexture*)payload);
+    if (code == NVN_OP_COPY_BUFFER_TEXTURE)
+        return replay_host_copy_buffer_texture(host, (const NvnOpCopyBufferTexture*)payload);
+    if (code == NVN_OP_DOWNSAMPLE)
+        return replay_host_downsample(host, (const NvnOpDownsample*)payload);
     if (code == NVN_OP_COPY_BUFFER)
         return replay_host_copy_buffer(host, (const NvnOpCopyBuffer*)payload);
     if (code == NVN_OP_CLEAR_BUFFER)
@@ -6398,6 +6604,12 @@ static const NativeProc native_procs[] = {
     {"nvnCommandBufferClearTexturei", h_command_buffer_clear_texturei},
     {"nvnCommandBufferClearTextureui", h_command_buffer_clear_textureui},
     {"nvnCommandBufferCopyTextureToTexture", h_command_buffer_copy_texture_to_texture},
+    {"nvnCommandBufferCopyBufferToTexture", h_command_buffer_copy_buffer_to_texture},
+    {"nvnCommandBufferCopyTextureToBuffer", h_command_buffer_copy_texture_to_buffer},
+    {"nvnCommandBufferDownsample", h_command_buffer_downsample},
+    {"nvnCommandBufferDownsampleTextureView", h_command_buffer_downsample_texture_view},
+    {"nvnCommandBufferTiledDownsample", h_command_buffer_tiled_downsample},
+    {"nvnCommandBufferTiledDownsampleTextureView", h_command_buffer_tiled_downsample_texture_view},
     {"nvnCommandBufferCopyBufferToBuffer", h_command_buffer_copy_buffer_to_buffer},
     {"nvnCommandBufferClearBuffer", h_command_buffer_clear_buffer},
     {"nvnCommandBufferResolveDepthBuffer", h_command_buffer_resolve_depth_buffer},

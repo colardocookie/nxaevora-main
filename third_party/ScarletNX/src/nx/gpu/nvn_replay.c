@@ -538,6 +538,20 @@ static void replay_op(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnO
         }
         ok = replay_gpu_op(env, stats, NVN_OP_COPY_TEXTURE, payload);
         break;
+    case NVN_OP_COPY_BUFFER_TEXTURE:
+        if (!payload_matches(header, sizeof(NvnOpCopyBufferTexture))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_COPY_BUFFER_TEXTURE, payload);
+        break;
+    case NVN_OP_DOWNSAMPLE:
+        if (!payload_matches(header, sizeof(NvnOpDownsample))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_DOWNSAMPLE, payload);
+        break;
     case NVN_OP_REPORT_COUNTER:
         if (!payload_matches(header, sizeof(NvnOpReportCounter))) {
             replay_fault(env, stats, "op size", header->code);
