@@ -67,8 +67,8 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   After U5: 4-u3 (the remaining selftest and exectest cases), then 4-u4 (`nvn_native_missing` default to stop). Rows that no run
   reached are written as "not verified in the game".
   Decision of the user (2026-11-09): the trace of the enum argument values (the missing part of 4-u1) comes after U1.
-  Current step: U1 steps b1 to b3 are done (b3 commit: `OLD-WORK_PLAN.md`, last section). Next: list the U1 rows that are
-    still stub-log in `nvn-coverage.md` (the getters and builders of the U1 list above), then do step b4 (a) for them, or close U1.
+  Current step: U1 steps b1 to b3 are done (history: `OLD-WORK_PLAN.md`, sections "Task (u) U1"). Next session: list the U1 rows
+    that are still stub-log in `nvn-coverage.md` (the getters and builders of the U1 list above), then do step b4 (a) for them, or close U1.
   - EventGetMemoryPool and EventGetMemoryOffset are in U2 (they need Event Initialize).
 - Open: 0xD23/0xD27 get 0x230/0x430 (offsets of driver programs that the host does not have). queue+0x16C0 stays zero (a command
   buffer overflow in the init builders would crash).
