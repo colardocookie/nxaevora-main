@@ -1292,7 +1292,8 @@ static void navigation_timestep_init(void) {
    +/-1/30 s per call: the day clock feed (in-game minutes), event hold timers and
    weather blends. Each builds the constant with MOV/MOVK W8, which becomes ADRP X8 and
    LDR W8 from the frame-step cell, as for the water clock. */
-static const struct { u32 owner, size, head, site; u8 negative; const char* label; } frame_step_sites[] = {
+typedef struct { u32 owner, size, head, site; u8 negative; const char* label; } FrameStepSite;
+static const FrameStepSite frame_step_sites[] = {
     {0x1d5d59c,0x528,0xd10203ff,0x1d5d684,0,"world time"},
     {0x167f988,0x650,0xd103c3ff,0x167ff0c,0,"event hold +190"},
     {0x168300c,0x51c,0xd10383ff,0x16832c0,0,"event timer +1A0"},
@@ -1351,24 +1352,39 @@ static void cave_light_update(CPU* c, u64 entry) {
     if (gr32(record + 0xc) == seen) gw32(record + 0xc, authored);
 }
 
-static unsigned frame_step_sites_init(void) {
+static unsigned frame_step_sites_init(const FrameStepSite* sites, unsigned n, const char* tag) {
     unsigned installed = 0;
-    for (unsigned k = 0; k < FRAME_STEP_SITES; k++) {
-        const u64 owner = main_base + frame_step_sites[k].owner, pc = main_base + frame_step_sites[k].site;
-        const u32 movk = frame_step_sites[k].negative ? 0x72b7a108 : 0x72a7a108;
-        if (!covers_exactly(owner, frame_step_sites[k].size) || !readable(owner, frame_step_sites[k].size) ||
-            gr32(owner) != frame_step_sites[k].head || gr32(pc) != 0x52911128 || gr32(pc + 4) != movk) {
-            WARN("arceus-world-timers: refused guard %s at main+%x\n", frame_step_sites[k].label, frame_step_sites[k].site);
+    for (unsigned k = 0; k < n; k++) {
+        const u64 owner = main_base + sites[k].owner, pc = main_base + sites[k].site;
+        const u32 movk = sites[k].negative ? 0x72b7a108 : 0x72a7a108;
+        if (!covers_exactly(owner, sites[k].size) || !readable(owner, sites[k].size) ||
+            gr32(owner) != sites[k].head || gr32(pc) != 0x52911128 || gr32(pc + 4) != movk) {
+            WARN("%s: refused guard %s at main+%x\n", tag, sites[k].label, sites[k].site);
             continue;
         }
         /* ADRP X8, cell; LDR W8, [X8, #0 or #4]. The next instruction moves W8 to a float. */
         const u64 pages = ((frame_step_address >> 12) - (pc >> 12)) & 0x1fffff;
         gw32(pc, 0x90000008 | (u32)((pages & 3) << 29) | (u32)((pages >> 2) << 5));
-        gw32(pc + 4, frame_step_sites[k].negative ? 0xb9400508 : 0xb9400108);
+        gw32(pc + 4, sites[k].negative ? 0xb9400508 : 0xb9400108);
         jit_code_changed(pc, 8);
         installed++;
     }
     return installed;
+}
+
+/* One page holds the frame-step cell for every fix that loads it. The first user maps it. */
+static int frame_step_cell_init(const char* tag) {
+    if (frame_step_address) return 1;
+    const u64 address = mem_find_free(main_base + 0x5000000, main_base + 0x40000000, 4096, 4096);
+    if (!address || mem_map(address, 4096, MS_STATIC, PERM_RW)) {
+        WARN("%s: could not allocate the frame-step cell\n", tag);
+        return 0;
+    }
+    pm_lock(&step_lock);
+    frame_step_address = address;
+    frame_step_write(step.step ? step.step : step.initial_ns);
+    pm_unlock(&step_lock);
+    return 1;
 }
 
 static int cave_light_init(void) {
@@ -1400,19 +1416,38 @@ static void world_timers_init(void) {
         return;
     }
     if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
-    const u64 address = mem_find_free(main_base + 0x5000000, main_base + 0x40000000, 4096, 4096);
-    if (!address || mem_map(address, 4096, MS_STATIC, PERM_RW)) {
-        WARN("arceus-world-timers: could not allocate the frame-step cell\n");
-        return;
-    }
-    pm_lock(&step_lock);
-    frame_step_address = address;
-    frame_step_write(step.step ? step.step : step.initial_ns);
-    pm_unlock(&step_lock);
-    const unsigned sites = frame_step_sites_init();
+    if (!frame_step_cell_init("arceus-world-timers")) return;
+    const unsigned sites = frame_step_sites_init(frame_step_sites, FRAME_STEP_SITES, "arceus-world-timers");
     const int cave = cave_light_init();
     LOG("arceus-world-timers: EXPERIMENT: %u of %u fixed-step sites and cave light=%d use min(1/30, elapsed), cell=%llx\n",
-        sites, (unsigned)FRAME_STEP_SITES, cave, (unsigned long long)address);
+        sites, (unsigned)FRAME_STEP_SITES, cave, (unsigned long long)frame_step_address);
+}
+
+/* 198D7E4 airborne branch: the velocity gains -g x factor x rate x 1/30 per call, and the
+   census and gravity probe saw one call per rendered frame, so falls sped up with FPS.
+   The -1/30 is built with MOV/MOVK W8 and moved to S1 at +2B4. Load the negated
+   frame step instead, as the world timers do. */
+static const FrameStepSite gravity_sites[] = {
+    {0x198d7e4,0x998,0xd10503ff,0x198da8c,1,"airborne gravity"},
+};
+static void gravity_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_GRAVITY_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-gravity-fix: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    /* FMOV S1, W8 right after the pair, so only the constant changes. */
+    const u64 next = main_base + gravity_sites[0].site + 0xc;
+    if (!readable(next, 4) || gr32(next) != 0x1e270101) {
+        WARN("arceus-gravity-fix: refused guard at main+%x\n", gravity_sites[0].site + 0xc);
+        return;
+    }
+    if (!frame_step_cell_init("arceus-gravity-fix")) return;
+    const unsigned sites = frame_step_sites_init(gravity_sites, 1, "arceus-gravity-fix");
+    LOG("arceus-gravity-fix: EXPERIMENT: %u of 1 airborne gravity sites use min(1/30, elapsed), cell=%llx\n",
+        sites, (unsigned long long)frame_step_address);
 }
 
 /* 1A7191C is a thrown-object flight update, a virtual shared by three classes
@@ -1725,6 +1760,7 @@ void arceus_clock_post_jit(void) {
     navigation_timestep_init();
     /* Before the census, which then skips the owner this wraps. */
     world_timers_init();
+    gravity_fix_init();
     ball_flight_init();
     timing_research_init();
     capture_fix_init();

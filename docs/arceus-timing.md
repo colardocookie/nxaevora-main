@@ -120,3 +120,11 @@ position once per call, and count held frames in two counters up to 9, so the fa
 fast at 120 FPS. With a target rate, `SNX_ARCEUS_MAP_CURSOR_FIX=1` scales the speed by the elapsed time over 1/30
 second for the call and restores it, and lets the counters rise only once a whole 1/30 second has built up. The
 `arceus-map-cursor` line says how many of the two cursors it covers.
+
+## Gravity fix
+
+The gravity probe showed that the airborne branch of `main+198D7E4` runs once per rendered frame and adds gravity
+times a factor, a rate and 1/30 second to the velocity on each call, so falls accelerated at FPS/30 times gravity.
+With a target rate, `SNX_ARCEUS_GRAVITY_FIX=1` makes that constant the negated frame step: the MOV/MOVK pair at
+`main+198DA8C` loads it from the frame-step cell of the world timers. The cell setup is now shared by every fix
+that loads it, and the first one maps it. The `arceus-gravity-fix` line confirms the fix.
