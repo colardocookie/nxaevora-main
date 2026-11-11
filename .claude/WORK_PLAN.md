@@ -57,7 +57,13 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
     stream, before each case. The fix is committed (`st_channel_reset`, writer patch `writer-u3-3c-1`), the exe is copied.
     Verified 2026-11-11 11:43: no mutation 257 cases, 0 failed. Mutation SetViewports: 1 failed (only SetViewports,
     S vp0.translate_x). Step (c) is done. NEXT: step (d).
-    Step (d): the other command buffer rows in groups (114 of 146 rows had no check). Then 4-u3-4 (exectest). The `unit`
+    Step (d): the other command buffer rows in groups (114 of 146 rows had no check). Groups: d1 fixed-function
+    state (29 rows), d2 binds and resources, d3 draws, clears, copies, dispatch, d4 CPU side (queries, callbacks,
+    debug markers). d1 (2026-11-11): brief `reports/brief-u3-3d1-writer.md` (S snapshot becomes a register diff
+    against the base). Patch `patches/writer-u3-3d1-1.patch` committed (caller fix: `near`/`far` are Windows macros).
+    ctest OK except `tracked_material`, mutant of `nvn_selftest_regdiff` fails. Exe copied (md5 2fff8b9c).
+    NEXT: a selftest run (`nvn_trace=1`, `nvn_selftest=1`, mutation empty, title), then read: 29 new cases, S1 and Y
+    still pass with the register diff. The 7 no-op rows may fail: judge each register. Then one mutation run. Then 4-u3-4 (exectest). The `unit`
     scope is not in the checks column yet.
   - Open for 4-u4: the design asks for no `stub-log` row, but `nvnDeviceGetProcAddress` stays `stub-log` by decision (the
     game resolves names through d832940, which the hook covers). Decide the row (a handler that calls the resolver, or an

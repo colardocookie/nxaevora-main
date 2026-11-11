@@ -630,6 +630,40 @@ int nvn_st_sampler_build(CPU* c, uint64_t builder, uint64_t sampler, uint64_t da
                                  &(NvnStCall){.x = {sampler, builder}}) != 0;
 }
 
+/* The state objects of the command buffer Bind cases: the default and one setter that the object cases use. The first
+   value after the object is the one that a mutation changes. */
+typedef struct {
+    const char* defaults;
+    const char* setter;
+    uint64_t x[6];
+} NvnStStateSpec;
+
+static const NvnStStateSpec state_specs[NVN_ST_STATE_COUNT] = {
+    [NVN_ST_STATE_BLEND] = {"nvnBlendStateSetDefaults", "nvnBlendStateSetBlendFunc", {0, 8, 4, 10, 6}},
+    [NVN_ST_STATE_COLOR] = {"nvnColorStateSetDefaults", "nvnColorStateSetLogicOp", {0, 3}},
+    [NVN_ST_STATE_CHANNEL_MASK] = {"nvnChannelMaskStateSetDefaults", "nvnChannelMaskStateSetChannelMask",
+                                   {0, 3, 0, 1, 0, 1}},
+    [NVN_ST_STATE_DEPTH_STENCIL] = {"nvnDepthStencilStateSetDefaults", "nvnDepthStencilStateSetDepthFunc", {0, 2}},
+    [NVN_ST_STATE_MULTISAMPLE] = {"nvnMultisampleStateSetDefaults", "nvnMultisampleStateSetSamples", {0, 4}},
+    [NVN_ST_STATE_POLYGON] = {"nvnPolygonStateSetDefaults", "nvnPolygonStateSetCullFace", {0, 2}},
+};
+
+int nvn_st_state_build(CPU* c, unsigned kind, int host, uint64_t obj, uint32_t xor_value) {
+    if (kind >= NVN_ST_STATE_COUNT) return 0;
+    const NvnStStateSpec* s = &state_specs[kind];
+    NvnStProc defaults = {0}, setter = {0};
+    if (!nvn_st_proc_find(&defaults, s->defaults) || !nvn_st_proc_find(&setter, s->setter)) {
+        LOG("selftest: %s or %s skipped, not resolved\n", s->defaults, s->setter);
+        return 0;
+    }
+    memset(GP(obj), 0, NVN_ST_OBJ_BYTES);
+    nvn_st_call(c, host ? &defaults.host : &defaults.lib, &(NvnStCall){.x = {obj}});
+    NvnStCall a = {.x = {obj, s->x[1], s->x[2], s->x[3], s->x[4], s->x[5]}};
+    a.x[1] ^= xor_value;
+    nvn_st_call(c, host ? &setter.host : &setter.lib, &a);
+    return 1;
+}
+
 static void run_getter(CPU* c, const NvnStProc* p, int host, uint64_t obj, uint64_t out, const NvnStGet* g,
                        NvnStRec* rec) {
     NvnStCall a = {.x = {obj}};

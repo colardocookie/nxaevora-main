@@ -2,14 +2,14 @@
    Copyright 2026 the NXAevora contributors */
 /* The command buffer cases of the NVN selftest (docs/nvn-design.md, "The selftest") for step 4-u3-3: the same calls go
    to the library's command buffer and to the host's, the library recording is decoded into push buffer words, and both
-   sides run on a private channel of their own in one GPU call. The records compare kinds S (the state at the clear) and Y
-   (the order of the sync operations). */
+   sides run on a private channel of their own in one GPU call. The records compare kinds S (the registers at the clear)
+   and Y (the order of the sync operations). */
 #include "nx/gpu/nvn_selftest_int.h"
 #include "nx/gpu/nvn_selftest_dec.h"
 #include "nx/gpu/nvn_selftest_rec.h"
+#include "nx/gpu/nvn_selftest_regdiff.h"
 #include "nx/gpu/nvn_native.h"
 #include "nx/gpu/gpu.h"
-#include "nx/gpu/maxwell/maxwell_3d_regs.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
@@ -31,11 +31,11 @@
 #define ST_SCISSORS 2u
 #define ST_CLEAR_MASK 0xFu
 #define ST_BARRIERS 9u
-#define ST_CASE_COUNT (1u + ST_BARRIERS)
+#define ST_STATE_CASES 29u
+#define ST_CASE_COUNT (1u + ST_BARRIERS + ST_STATE_CASES)
 
-/* Eden's Regs::scissor_test, clear_color: not in maxwell_3d_regs.h */
-#define MAXWELL3D_SCISSOR_TEST 0x380u
-#define MAXWELL3D_CLEAR_COLOR 0x360u
+/* The work calls of one side: the registers at the clear. A later call means that the case cannot be compared. */
+#define ST_MAX_WORKS 2u
 
 /* The device word that SetRenderTargets compares with 0x08c8b771 (nvn_selftest.c's DEVICE_DEPTH_MODE_OFFSET). */
 #define ST_DEVICE_DEPTH_MODE_OFFSET 0x1a04u
@@ -45,13 +45,18 @@
 #define ST_CLEAR_LAYER_COUNT_REG 0x206u
 #define ST_CLEAR_LAYER_COUNT 1u
 
-/* The argument block of the S cases, in the arena: the same values for the library, a changed copy for a mutation. */
-#define ST_ARG_VP_LIB 0x00u
-#define ST_ARG_VP_HOST 0x20u
-#define ST_ARG_SC_LIB 0x40u
-#define ST_ARG_SC_HOST 0x60u
-#define ST_ARG_COLOR 0x80u
-#define ST_ARG_BYTES 0x90u
+/* The argument block of the cases, in the arena: the same values for the library, a changed copy for a mutation. Each
+   region is 16-byte aligned. */
+#define ST_ARG_VP_LIB 0x000u
+#define ST_ARG_VP_HOST 0x020u
+#define ST_ARG_SC_LIB 0x040u
+#define ST_ARG_SC_HOST 0x060u
+#define ST_ARG_COLOR 0x080u
+#define ST_ARG_ARRAY_LIB 0x090u /* the floats of an array argument: a blend color or a depth range pair */
+#define ST_ARG_ARRAY_HOST 0x0A0u
+#define ST_ARG_STATE_LIB 0x0B0u /* one state object for each side of the Bind cases */
+#define ST_ARG_STATE_HOST 0x2B0u
+#define ST_ARG_BYTES 0x4B0u
 
 #define ST_CLEAR_INDEX 0u
 #define ST_MUTATE_VIEWPORT_WORD 0u /* the x of viewport 0 */
@@ -61,32 +66,93 @@ static const float st_viewports[8] = {0.0f, 0.0f, 1280.0f, 720.0f, 16.0f, 32.0f,
 static const int32_t st_scissors[8] = {0, 0, 1280, 720, 8, 8, 100, 50};
 static const float st_clear[4] = {0.25f, 0.5f, 0.75f, 1.0f};
 
-/* The state that the 3c functions set, at the clear. 2 * (6 viewport transform words + 4 viewport words + 3 scissor
-   words) + 4 clear words = 30 fields, and the recorder adds 2 for the clear itself. */
-static const char* const st_vp_names[2][6] = {
-    {"vp0.scale_x", "vp0.scale_y", "vp0.scale_z", "vp0.translate_x", "vp0.translate_y", "vp0.translate_z"},
-    {"vp1.scale_x", "vp1.scale_y", "vp1.scale_z", "vp1.translate_x", "vp1.translate_y", "vp1.translate_z"},
-};
-static const char* const st_viewport_names[2][4] = {
-    {"vp0.x", "vp0.y", "vp0.width", "vp0.height"},
-    {"vp1.x", "vp1.y", "vp1.width", "vp1.height"},
-};
-static const char* const st_scissor_names[2][3] = {
-    {"sc0.enable", "sc0.horizontal", "sc0.vertical"},
-    {"sc1.enable", "sc1.horizontal", "sc1.vertical"},
-};
-static const char* const st_clear_names[4] = {"clear.r", "clear.g", "clear.b", "clear.a"};
+typedef struct {
+    NvnStProc initialize, finalize, add_command_memory, add_control_memory, begin, end;
+    NvnStProc set_viewports, set_scissors, clear_color, barrier;
+    NvnStProc free_bytes; /* optional: without it the command memory is refilled before each case */
+} StCmdProcs;
 
-static void st_command_snapshot(GpuChannel* ch, NvnStRec* rec) {
-    for (unsigned i = 0; i < 2; i++) {
-        const u32* vp = &ch->r3d[MAXWELL3D_VIEWPORT_TRANSFORM + MAXWELL3D_VIEWPORT_TRANSFORM_STRIDE * i];
-        for (unsigned k = 0; k < 6; k++) nvn_st_add_state(rec, st_vp_names[i][k], vp[k]);
-        const u32* view = &ch->r3d[MAXWELL3D_VIEWPORTS + MAXWELL3D_VIEWPORT_STRIDE * i];
-        for (unsigned k = 0; k < 4; k++) nvn_st_add_state(rec, st_viewport_names[i][k], view[k]);
-        const u32* sc = &ch->r3d[MAXWELL3D_SCISSOR_TEST + 4u * i];
-        for (unsigned k = 0; k < 3; k++) nvn_st_add_state(rec, st_scissor_names[i][k], sc[k]);
+/* One GPU job: both channels, the decoded ranges of the library recording, one record of each side, and the register
+   copies of each work call. The copies are large, so they live in this heap object (the job is calloc'd). */
+typedef struct {
+    GpuChannel* lib;
+    GpuChannel* host;
+    const char* name;
+    NvnStRange ranges[ST_MAX_RANGES];
+    unsigned n_ranges;
+    uint64_t host_handle;
+    int window_origin_flip;
+    const u32* init_words; /* the queue init stream: the channels run it once, before the first case */
+    GpuChannel* base;       /* the channel state after the init stream, which each case starts from */
+    unsigned init_count;
+    int channels_ready;
+    int init_failed; /* the init stream ended inside a header: no case runs on these channels */
+    u32 lib_regs[ST_MAX_WORKS][MAXWELL3D_NUM_REGS];
+    u32 host_regs[ST_MAX_WORKS][MAXWELL3D_NUM_REGS];
+    unsigned lib_works, host_works;
+    int work_overflow; /* a side had a third work call */
+    NvnStRec* ref;
+    NvnStRec* got;
+    NvnStRec lib_rec, host_rec;
+    int status; /* 0, or -1 when a side could not run */
+    int done;
+    PMutex lock;
+    PCond cv;
+} StCmdJob;
+
+/* The recorder calls the snapshot on the GPU thread, and one job runs at a time on that thread (one guest thread runs
+   the selftest). */
+static StCmdJob* st_snapshot_job;
+
+/* The snapshot of one work call: copy the 3D registers (not the macro area) of the side, for the diff after both
+   sides ran. It adds no field, because a register that both sides left as the base is not a difference. */
+static void st_snapshot_regs(GpuChannel* ch, NvnStRec* rec) {
+    (void)rec;
+    StCmdJob* job = st_snapshot_job;
+    if (!job) return;
+    const int lib = ch == job->lib;
+    if (!lib && ch != job->host) return;
+    unsigned* count = lib ? &job->lib_works : &job->host_works;
+    if (*count >= ST_MAX_WORKS) {
+        if (!job->work_overflow)
+            LOG("selftest: %s: more than %u work calls on the %s side\n", job->name, ST_MAX_WORKS,
+                lib ? "library" : "host");
+        job->work_overflow = 1;
+        return;
     }
-    for (unsigned k = 0; k < 4; k++) nvn_st_add_state(rec, st_clear_names[k], ch->r3d[MAXWELL3D_CLEAR_COLOR + k]);
+    u32* const dst = lib ? job->lib_regs[*count] : job->host_regs[*count];
+    memcpy(dst, ch->r3d, MAXWELL3D_NUM_REGS * sizeof dst[0]);
+    (*count)++;
+}
+
+/* Adds one S field for each register that a side left different from the base, in register order. The fields go to both
+   records, with the value of each side, so a mutation shows as a difference and an equal write does not show. */
+static void st_add_regdiff(StCmdJob* job) {
+    if (!job->base) return;
+    if (job->work_overflow) {
+        /* The copies are incomplete, so the record cannot be compared: a full table is a fail as well. */
+        job->lib_rec.overflow |= NVN_ST_S;
+        job->host_rec.overflow |= NVN_ST_S;
+        return;
+    }
+    if (job->lib_works != job->host_works) {
+        LOG("selftest: %s: %u library work calls, %u host work calls\n", job->name, job->lib_works,
+            job->host_works);
+        return;
+    }
+    u32 regs[NVN_ST_MAX_FIELDS];
+    for (unsigned w = 0; w < job->lib_works; w++) {
+        int more = 0;
+        const unsigned n = nvn_st_regdiff(job->base->r3d, job->lib_regs[w], job->host_regs[w], MAXWELL3D_NUM_REGS,
+                                          regs, NVN_ST_MAX_FIELDS, &more);
+        for (unsigned i = 0; i < n; i++) {
+            const unsigned r = regs[i];
+            const char* const name = nvn_st_reg_name(r);
+            nvn_st_add_state(&job->lib_rec, name, job->lib_regs[w][r]);
+            nvn_st_add_state(&job->host_rec, name, job->host_regs[w][r]);
+        }
+        if (more) LOG("selftest: %s: more than %u changed registers\n", job->name, NVN_ST_MAX_FIELDS);
+    }
 }
 
 /* The id and the heap buffers belong to the channel: the base shares neither. */
@@ -108,40 +174,28 @@ static void st_channel_reset(GpuChannel* ch, const GpuChannel* base) {
 }
 
 typedef struct {
-    NvnStProc initialize, finalize, add_command_memory, add_control_memory, begin, end;
-    NvnStProc set_viewports, set_scissors, clear_color, barrier;
-    NvnStProc free_bytes; /* optional: without it the command memory is refilled before each case */
-} StCmdProcs;
-
-/* One GPU job: both channels, the decoded ranges of the library recording and one record of each side. */
-typedef struct {
-    GpuChannel* lib;
-    GpuChannel* host;
-    const char* name;
-    NvnStRange ranges[ST_MAX_RANGES];
-    unsigned n_ranges;
-    uint64_t host_handle;
-    int window_origin_flip;
-    const u32* init_words; /* the queue init stream: the channels run it once, before the first case */
-    GpuChannel* base;       /* the channel state after the init stream, which each case starts from */
-    unsigned init_count;
-    int channels_ready;
-    int init_failed; /* the init stream ended inside a header: no case runs on these channels */
-    NvnStRec* ref;
-    NvnStRec* got;
-    NvnStRec lib_rec, host_rec;
-    int status; /* 0, or -1 when a side could not run */
-    int done;
-    PMutex lock;
-    PCond cv;
-} StCmdJob;
-
-typedef struct {
     const NvnStArena* arena;
 } StReadCtx;
 
 #define ST_CALL(c, p, side, ...) \
     nvn_st_call((c), (side) ? &(p)->host : &(p)->lib, &(NvnStCall){.x = {__VA_ARGS__}})
+
+static uint32_t st_f2b(float v) {
+    uint32_t b;
+    memcpy(&b, &v, sizeof b);
+    return b;
+}
+
+static float st_b2f(uint32_t b) {
+    float v;
+    memcpy(&v, &b, sizeof v);
+    return v;
+}
+
+/* A call with integer and float arguments: ST_CALL passes x only, and the float values are bit patterns in s. */
+static void st_call_proc(CPU* c, const NvnStProc* p, int host, const NvnStCall* a) {
+    nvn_st_call(c, host ? &p->host : &p->lib, a);
+}
 
 static const void* st_guest_read(void* ctx, uint64_t addr, size_t size) {
     const StReadCtx* r = ctx;
@@ -193,7 +247,11 @@ static void st_gpu_fn(void* arg) {
         st_channel_reset(job->host, job->base);
     }
     if (job->init_failed) job->status = -1;
-    nvn_st_renderer_begin(job->ref, st_command_snapshot);
+    job->lib_works = 0;
+    job->host_works = 0;
+    job->work_overflow = 0;
+    st_snapshot_job = job;
+    nvn_st_renderer_begin(job->ref, st_snapshot_regs);
     for (unsigned i = 0; i < job->n_ranges && job->status == 0; i++) {
         const u32* words = (const u32*)GP(job->ranges[i].cpu_start);
         if (gpu_channel_words(job->lib, words, job->ranges[i].words)) {
@@ -202,13 +260,15 @@ static void st_gpu_fn(void* arg) {
         }
     }
     nvn_st_renderer_end();
-    nvn_st_renderer_begin(job->got, st_command_snapshot);
+    nvn_st_renderer_begin(job->got, st_snapshot_regs);
     NvnReplayStats stats = {0};
     if (nvn_native_selftest_replay(job->host, job->host_handle, job->window_origin_flip, &stats)) {
         LOG("selftest: %s: the host replay failed\n", job->name);
         job->status = -1;
     }
     nvn_st_renderer_end();
+    st_snapshot_job = NULL;
+    st_add_regdiff(job);
     g_renderer = prev;
     pm_lock(&job->lock);
     job->done = 1;
@@ -291,19 +351,40 @@ static int st_setup_lists(CPU* c, StCmdProcs* p, NvnStResCache* cache, NvnStRun*
     return 1;
 }
 
-/* Runs the calls of one side, then the calls of the other side, one recording each, and compares the two records. */
-typedef void (*StScript)(CPU* c, const StCmdProcs* p, int host, uint64_t cb, uint64_t args, uint64_t param);
+/* The work point of every case: the clear that ends the calls of the script. */
+static void st_clear_work(CPU* c, const StCmdProcs* p, int host, uint64_t cb, uint64_t args) {
+    ST_CALL(c, &p->clear_color, host, cb, ST_CLEAR_INDEX, args + ST_ARG_COLOR, ST_CLEAR_MASK);
+}
+
+/* The mutation of one case. The rule is the one that the case's table row names. */
+enum {
+    ST_MUT_NONE,   /* the argument has no value to change (a NULL pointer) */
+    ST_MUT_FLOAT,  /* the first float argument + 1.0f */
+    ST_MUT_INT,    /* the first integer value argument XOR 1 */
+    ST_MUT_ARRAY,  /* the first float of an array argument + 1.0f */
+    ST_MUT_SETTER, /* the first setter value of an object argument XOR 1 */
+};
+
+/* Runs the calls of one side, then the calls of the other side, one recording each, and compares the two records.
+   A script returns 1, or 0 when a function of its case was not resolved: the case is then skipped, not failed. */
+typedef int (*StScript)(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb, uint64_t args,
+                        uint64_t param, unsigned rule);
 
 static void st_case(CPU* c, NvnStRun* run, StCmdProcs* p, StCmdJob* job, uint64_t lib_cb, uint64_t host_cb,
                     uint64_t lib_pool, uint64_t host_pool, uint64_t args, const char* name, const char* text,
-                    StScript script, uint64_t param, int* stop) {
+                    StScript script, const NvnStProc* fn, uint64_t param, unsigned rule, int* stop) {
     st_refill(c, p, lib_cb, host_cb, lib_pool, host_pool);
     ST_CALL(c, &p->begin, 0, lib_cb);
-    script(c, p, 0, lib_cb, args, param);
+    const int lib_script = script(c, p, fn, 0, lib_cb, args, param, rule);
     const uint64_t lib_handle = ST_CALL(c, &p->end, 0, lib_cb);
     ST_CALL(c, &p->begin, 1, host_cb);
-    script(c, p, 1, host_cb, args, param);
+    const int host_script = script(c, p, fn, 1, host_cb, args, param, rule);
     const uint64_t host_handle = ST_CALL(c, &p->end, 1, host_cb);
+    if (!lib_script || !host_script) {
+        run->skipped++;
+        LOG("selftest: %s skipped, not resolved\n", name);
+        return;
+    }
 
     unsigned n = 0;
     NvnStDecodeFault fault;
@@ -352,18 +433,26 @@ static void st_case(CPU* c, NvnStRun* run, StCmdProcs* p, StCmdJob* job, uint64_
     nvn_st_report(run, name, text, &job->lib_rec, &diff);
 }
 
-static void st_script_viewports(CPU* c, const StCmdProcs* p, int host, uint64_t cb, uint64_t args, uint64_t param) {
+static int st_script_viewports(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                               uint64_t args, uint64_t param, unsigned rule) {
+    (void)fn;
     (void)param;
+    (void)rule;
     ST_CALL(c, &p->set_viewports, host, cb, 0, ST_VIEWPORTS, args + (host ? ST_ARG_VP_HOST : ST_ARG_VP_LIB));
     ST_CALL(c, &p->set_scissors, host, cb, 0, ST_SCISSORS, args + (host ? ST_ARG_SC_HOST : ST_ARG_SC_LIB));
-    ST_CALL(c, &p->clear_color, host, cb, ST_CLEAR_INDEX, args + ST_ARG_COLOR, ST_CLEAR_MASK);
+    st_clear_work(c, p, host, cb, args);
+    return 1;
 }
 
 /* The library bits are in the low word of param, the host's (a mutation's) in the high word. */
-static void st_script_barrier(CPU* c, const StCmdProcs* p, int host, uint64_t cb, uint64_t args, uint64_t param) {
+static int st_script_barrier(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                             uint64_t args, uint64_t param, unsigned rule) {
+    (void)fn;
+    (void)rule;
     const uint32_t bits = host ? (uint32_t)(param >> 32) : (uint32_t)param;
     ST_CALL(c, &p->barrier, host, cb, bits);
-    ST_CALL(c, &p->clear_color, host, cb, ST_CLEAR_INDEX, args + ST_ARG_COLOR, ST_CLEAR_MASK);
+    st_clear_work(c, p, host, cb, args);
+    return 1;
 }
 
 static void st_fill_s_args(uint64_t args, int mutate) {
@@ -378,6 +467,226 @@ static void st_fill_s_args(uint64_t args, int mutate) {
         memcpy(GP(args + ST_ARG_VP_HOST + ST_MUTATE_VIEWPORT_WORD * sizeof(float)), &x, sizeof x);
     }
 }
+
+/* One float argument. param holds its bit pattern. */
+static int st_script_float_arg(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                               uint64_t args, uint64_t param, unsigned rule) {
+    uint32_t bits = (uint32_t)param;
+    if (host && rule == ST_MUT_FLOAT) bits = st_f2b(st_b2f(bits) + 1.0f);
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb}, .s = {bits}, .n_s = 1});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* One integer argument. param holds its value. */
+static int st_script_int_arg(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb, uint64_t args,
+                             uint64_t param, unsigned rule) {
+    uint32_t value = (uint32_t)param;
+    if (host && rule == ST_MUT_INT) value ^= 1u;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, value}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* SetStencilMask, SetStencilRef and SetStencilValueMask: face in the low word of param, value in the high word. */
+static int st_script_stencil(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb, uint64_t args,
+                             uint64_t param, unsigned rule) {
+    uint32_t face = (uint32_t)param;
+    const uint32_t value = (uint32_t)(param >> 32);
+    if (host && rule == ST_MUT_INT) face ^= 1u;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, face, value}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_blend_color(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                 uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    float v[4] = {0.1f, 0.2f, 0.3f, 0.4f};
+    if (host && rule == ST_MUT_ARRAY) v[0] += 1.0f;
+    const uint64_t addr = args + (host ? ST_ARG_ARRAY_HOST : ST_ARG_ARRAY_LIB);
+    memcpy(GP(addr), v, sizeof v);
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, addr}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* SetDepthRange: the near value in the low word of param, the far value in the high word (bit patterns). */
+static int st_script_depth_range(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                 uint64_t args, uint64_t param, unsigned rule) {
+    uint32_t near_bits = (uint32_t)param;
+    const uint32_t far_bits = (uint32_t)(param >> 32);
+    if (host && rule == ST_MUT_FLOAT) near_bits = st_f2b(st_b2f(near_bits) + 1.0f);
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb}, .s = {near_bits, far_bits}, .n_s = 2});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_depth_bounds(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                  uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    NvnStCall a = {.x = {cb, 1}, .s = {st_f2b(0.25f), st_f2b(0.75f)}, .n_s = 2};
+    if (host && rule == ST_MUT_FLOAT) a.s[0] = st_f2b(0.25f + 1.0f);
+    st_call_proc(c, fn, host, &a);
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* SetDepthRanges: first 0, count 2, and two pairs of floats in the array region. */
+static int st_script_depth_ranges(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                  uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    float v[4] = {0.1f, 0.9f, 0.2f, 0.8f};
+    if (host && rule == ST_MUT_ARRAY) v[0] += 1.0f;
+    const uint64_t addr = args + (host ? ST_ARG_ARRAY_HOST : ST_ARG_ARRAY_LIB);
+    memcpy(GP(addr), v, sizeof v);
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 0, 2, addr}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_polygon_offset(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                    uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    NvnStCall a = {.x = {cb}, .s = {st_f2b(1.0f), st_f2b(2.0f), st_f2b(0.5f)}, .n_s = 3};
+    if (host && rule == ST_MUT_FLOAT) a.s[0] = st_f2b(1.0f + 1.0f);
+    st_call_proc(c, fn, host, &a);
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_viewport(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb, uint64_t args,
+                              uint64_t param, unsigned rule) {
+    (void)param;
+    uint32_t x = 16u;
+    if (host && rule == ST_MUT_INT) x ^= 1u;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, x, 32u, 640u, 360u}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_scissor(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb, uint64_t args,
+                             uint64_t param, unsigned rule) {
+    (void)param;
+    uint32_t x = 8u;
+    if (host && rule == ST_MUT_INT) x ^= 1u;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, x, 8u, 100u, 50u}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* A Bind case: each side builds its own state object, then binds it. The host object layout may differ from the
+   library's, so the two sides never share an object. param is the NVN_ST_STATE_* kind. */
+static int st_script_bind_state(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                uint64_t args, uint64_t param, unsigned rule) {
+    const uint64_t obj = args + (host ? ST_ARG_STATE_HOST : ST_ARG_STATE_LIB);
+    if (!nvn_st_state_build(c, (unsigned)param, host, obj, host && rule == ST_MUT_SETTER ? 1u : 0u)) return 0;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, obj}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* SetStencilCullCriteria: func 8, ref 0, mask 0xFF. */
+static int st_script_stencil_cull(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                  uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    uint32_t func = 8u;
+    if (host && rule == ST_MUT_INT) func ^= 1u;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, func, 0u, 0xFFu}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* SetColorReductionThresholds: format class 0, then the values 1 and 2. */
+static int st_script_thresholds(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    uint32_t cls = 0u;
+    if (host && rule == ST_MUT_INT) cls ^= 1u;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, cls, 1u, 2u}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* Two integer arguments: the first in the low word of param, the second in the high word. */
+static int st_script_two_ints(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb, uint64_t args,
+                              uint64_t param, unsigned rule) {
+    uint32_t first = (uint32_t)param;
+    const uint32_t second = (uint32_t)(param >> 32);
+    if (host && rule == ST_MUT_INT) first ^= 1u;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, first, second}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* BindCoverageModulationTable: the NULL (disable) form. A table is a refusal of the host and out of scope, so a
+   mutation leaves the argument NULL. */
+static int st_script_coverage_table(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                    uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    (void)rule;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 0}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* The 29 cases of decision 3. `rule` is the mutation rule of the row. The no-op rows (COMMAND_NO_OP_HANDLER:
+   SetSampleMask, SetStencilCullCriteria, SetColorReductionEnable, SetColorReductionThresholds,
+   SetSubpixelPrecisionBias, SetTiledCacheAction, SetTiledCacheTileSize) may fail on purpose. A mutation changes
+   nothing on the host side for them, because the library writes registers that the host does not. */
+static const struct {
+    const char* name;
+    const char* text;
+    StScript script;
+    uint64_t param;
+    unsigned rule;
+} st_state_cases[] = {
+    {"nvnCommandBufferSetAlphaRef", "value=0.5", st_script_float_arg, 0x3F000000u, ST_MUT_FLOAT},
+    {"nvnCommandBufferSetBlendColor", "color=0.1,0.2,0.3,0.4", st_script_blend_color, 0, ST_MUT_ARRAY},
+    {"nvnCommandBufferSetDepthBounds", "enable=1 near=0.25 far=0.75", st_script_depth_bounds, 0, ST_MUT_FLOAT},
+    {"nvnCommandBufferSetDepthClamp", "enable=1", st_script_int_arg, 1, ST_MUT_INT},
+    {"nvnCommandBufferSetDepthRange", "near=0.1 far=0.9", st_script_depth_range,
+     (uint64_t)0x3DCCCCCDu | ((uint64_t)0x3F666666u << 32), ST_MUT_FLOAT},
+    {"nvnCommandBufferSetDepthRanges", "first=0 count=2 ranges=0.1,0.9,0.2,0.8", st_script_depth_ranges, 0,
+     ST_MUT_ARRAY},
+    {"nvnCommandBufferSetLineWidth", "width=2.0", st_script_float_arg, 0x40000000u, ST_MUT_FLOAT},
+    {"nvnCommandBufferSetPolygonOffsetClamp", "factor=1.0 units=2.0 clamp=0.5", st_script_polygon_offset, 0,
+     ST_MUT_FLOAT},
+    {"nvnCommandBufferSetRasterizerDiscard", "discard=1", st_script_int_arg, 1, ST_MUT_INT},
+    {"nvnCommandBufferSetStencilMask", "face=3 value=0x5a", st_script_stencil,
+     (uint64_t)3u | ((uint64_t)0x5Au << 32), ST_MUT_INT},
+    {"nvnCommandBufferSetStencilRef", "face=3 value=0x5a", st_script_stencil,
+     (uint64_t)3u | ((uint64_t)0x5Au << 32), ST_MUT_INT},
+    {"nvnCommandBufferSetStencilValueMask", "face=3 value=0x5a", st_script_stencil,
+     (uint64_t)3u | ((uint64_t)0x5Au << 32), ST_MUT_INT},
+    {"nvnCommandBufferSetViewport", "x=16 y=32 w=640 h=360", st_script_viewport, 0, ST_MUT_INT},
+    {"nvnCommandBufferSetScissor", "x=8 y=8 w=100 h=50", st_script_scissor, 0, ST_MUT_INT},
+    {"nvnCommandBufferBindBlendState", "state=blend func=8,4,10,6", st_script_bind_state, NVN_ST_STATE_BLEND,
+     ST_MUT_SETTER},
+    {"nvnCommandBufferBindChannelMaskState", "state=channel mask target=3 0,1,0,1", st_script_bind_state,
+     NVN_ST_STATE_CHANNEL_MASK, ST_MUT_SETTER},
+    {"nvnCommandBufferBindColorState", "state=color logicOp=3", st_script_bind_state, NVN_ST_STATE_COLOR,
+     ST_MUT_SETTER},
+    {"nvnCommandBufferBindDepthStencilState", "state=depth stencil depthFunc=2", st_script_bind_state,
+     NVN_ST_STATE_DEPTH_STENCIL, ST_MUT_SETTER},
+    {"nvnCommandBufferBindMultisampleState", "state=multisample samples=4", st_script_bind_state,
+     NVN_ST_STATE_MULTISAMPLE, ST_MUT_SETTER},
+    {"nvnCommandBufferBindPolygonState", "state=polygon cullFace=2", st_script_bind_state, NVN_ST_STATE_POLYGON,
+     ST_MUT_SETTER},
+    {"nvnCommandBufferSetSampleMask", "mask=0x1", st_script_int_arg, 1, ST_MUT_INT},
+    {"nvnCommandBufferSetStencilCullCriteria", "func=8 ref=0 mask=0xff", st_script_stencil_cull, 0, ST_MUT_INT},
+    {"nvnCommandBufferSetColorReductionEnable", "enable=1", st_script_int_arg, 1, ST_MUT_INT},
+    {"nvnCommandBufferSetColorReductionThresholds", "class=0 t0=1 t1=2", st_script_thresholds, 0, ST_MUT_INT},
+    {"nvnCommandBufferSetSubpixelPrecisionBias", "x=2 y=3", st_script_two_ints,
+     (uint64_t)2u | ((uint64_t)3u << 32), ST_MUT_INT},
+    {"nvnCommandBufferSetTiledCacheAction", "action=1", st_script_int_arg, 1, ST_MUT_INT},
+    {"nvnCommandBufferSetTiledCacheTileSize", "width=64 height=64", st_script_two_ints,
+     (uint64_t)64u | ((uint64_t)64u << 32), ST_MUT_INT},
+    {"nvnCommandBufferSetConservativeRasterEnable", "enable=0", st_script_int_arg, 0, ST_MUT_INT},
+    {"nvnCommandBufferBindCoverageModulationTable", "table=null", st_script_coverage_table, 0, ST_MUT_NONE},
+};
+
+_Static_assert(sizeof st_state_cases / sizeof st_state_cases[0] == ST_STATE_CASES, "the state case count");
 
 void nvn_selftest_command_cases(CPU* c, NvnStRun* run) {
     StCmdProcs procs = {0};
@@ -473,14 +782,27 @@ void nvn_selftest_command_cases(CPU* c, NvnStRun* run) {
     st_fill_s_args(args, mutate[0] && !strcmp(mutate, "nvnCommandBufferSetViewports"));
     int stop = 0;
     st_case(c, run, &procs, job, lib_cb, host_cb, lib_pool.pool, host_pool.pool, args, "nvnCommandBufferSetViewports",
-            "viewports=0,2 scissors=0,2 clear=0", st_script_viewports, 0, &stop);
+            "viewports=0,2 scissors=0,2 clear=0", st_script_viewports, NULL, 0, ST_MUT_NONE, &stop);
     for (unsigned k = 0; k < ST_BARRIERS && !stop; k++) {
         const uint32_t bits = 1u << k;
         const uint32_t host_bits = mutate[0] && !strcmp(mutate, "nvnCommandBufferBarrier") ? bits ^ 1u : bits;
         char text[32];
         snprintf(text, sizeof text, "bits=0x%x", bits);
         st_case(c, run, &procs, job, lib_cb, host_cb, lib_pool.pool, host_pool.pool, args, "nvnCommandBufferBarrier",
-                text, st_script_barrier, (uint64_t)bits | ((uint64_t)host_bits << 32), &stop);
+                text, st_script_barrier, NULL, (uint64_t)bits | ((uint64_t)host_bits << 32), ST_MUT_NONE, &stop);
+    }
+    for (unsigned i = 0; i < ST_STATE_CASES && !stop; i++) {
+        const char* const name = st_state_cases[i].name;
+        NvnStProc fn = {0};
+        if (!nvn_st_proc_find(&fn, name)) {
+            run->skipped++;
+            LOG("selftest: %s skipped, not resolved\n", name);
+            continue;
+        }
+        const unsigned rule =
+            mutate[0] && !strcmp(mutate, name) ? st_state_cases[i].rule : (unsigned)ST_MUT_NONE;
+        st_case(c, run, &procs, job, lib_cb, host_cb, lib_pool.pool, host_pool.pool, args, name,
+                st_state_cases[i].text, st_state_cases[i].script, &fn, st_state_cases[i].param, rule, &stop);
     }
 
     if (stop) {

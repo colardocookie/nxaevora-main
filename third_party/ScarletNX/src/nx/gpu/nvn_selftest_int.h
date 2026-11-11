@@ -84,4 +84,17 @@ void nvn_selftest_command_cases(CPU* c, NvnStRun* run);
    makes the sampler different from variant 0. 1 when every function was found. */
 int nvn_st_sampler_build(CPU* c, uint64_t builder, uint64_t sampler, uint64_t data, int host, unsigned variant);
 
+/* The state objects that the command buffer Bind cases build, one for each side. `xor_value` changes the first setter
+   value (1 for the host's copy of a mutation). 1 when every function was found. */
+enum {
+    NVN_ST_STATE_BLEND,
+    NVN_ST_STATE_COLOR,
+    NVN_ST_STATE_CHANNEL_MASK,
+    NVN_ST_STATE_DEPTH_STENCIL,
+    NVN_ST_STATE_MULTISAMPLE,
+    NVN_ST_STATE_POLYGON,
+    NVN_ST_STATE_COUNT
+};
+int nvn_st_state_build(CPU* c, unsigned kind, int host, uint64_t obj, uint32_t xor_value);
+
 #endif
