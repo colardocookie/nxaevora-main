@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The command buffer cases of the NVN selftest (docs/nvn-design.md, "The selftest") for step 4-u3-3: the same calls go
+/* The command buffer cases of the NVN selftest (nvn-design.md, "The selftest") for step 4-u3-3: the same calls go
    to the library's command buffer and to the host's, the library recording is decoded into push buffer words, and both
    sides run on a private channel of their own in one GPU call. The records compare kinds S (the registers at the clear)
    and Y (the order of the sync operations). */
@@ -25,7 +25,7 @@
 #define ST_CMD_BYTES 0x1000u
 #define ST_CONTROL_BYTES 0x800u
 #define ST_CMD_REFILL_BYTES 0x400u
-#define ST_CB_OBJ_BYTES 0x200u /* the NVN part of a game command buffer is at most 0xE0 (docs/nvn-design.md) */
+#define ST_CB_OBJ_BYTES 0x200u /* the NVN part of a game command buffer is at most 0xE0 (docs/graphics/nvn-design.md) */
 #define ST_MAX_RANGES 64u
 #define ST_VIEWPORTS 2u
 #define ST_SCISSORS 2u

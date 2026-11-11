@@ -5,7 +5,7 @@
 #include "nx/gpu/nvn_cmdlist.h"
 #include <stdint.h>
 
-/* The replay of a command list (docs/nvn-design.md, "3c Host design decisions", decision 6). The module walks the ops
+/* The replay of a command list (nvn-design.md, "3c Host design decisions", decision 6). The module walks the ops
    of a list and turns each op into Maxwell 3D methods. It reaches the outside only through NvnReplayEnv, so a host
    test can run it. It has no lock, no global state and no allocation. */
 

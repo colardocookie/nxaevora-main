@@ -53,7 +53,7 @@ NvnWindowCrop nvn_window_crop(uint32_t x, uint32_t y, uint32_t width, uint32_t h
 #define NVN_CONTROL_MEMORY_RESERVE 0x10u
 uint64_t nvn_control_memory_size(uint64_t begin, uint64_t end, uint32_t adds);
 
-/* The pure parts of the host's device, queue and pool functions (docs/nvn-design.md, 3b-3). The game's NVN library computes
+/* The pure parts of the host's device, queue and pool functions (nvn-design.md, 3b-3). The game's NVN library computes
    these from device fields that it fills at DeviceInitialize. The host has no device object, so it uses the values that
    a run of the library showed (the "3b-2 Result" and "3b-3 Result" sections). */
 
@@ -876,7 +876,7 @@ int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint
 /* 1 when no run is left open (remaining 0), so the array ended on a method call. */
 int nvn_word_stream_complete(const NvnWordStream* s);
 
-/* The words that nvnCommandBufferBarrier writes, in order (docs/nvn-design.md, decision 6, item "Barrier"). The bit 3
+/* The words that nvnCommandBufferBarrier writes, in order (nvn-design.md, decision 6, item "Barrier"). The bit 3
    range records are not words: they split the library's command memory, not this stream. Bits 9 to 31 are ignored. */
 #define NVN_BARRIER_WORDS_MAX 14u
 /* Fills words with at most cap words and returns the count. Returns 0 and writes nothing when words is NULL or cap is

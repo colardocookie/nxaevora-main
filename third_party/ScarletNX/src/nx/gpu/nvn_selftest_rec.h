@@ -3,7 +3,7 @@
 #ifndef SNX_NVN_SELFTEST_REC_H
 #define SNX_NVN_SELFTEST_REC_H
 
-/* The recording Renderer of the NVN selftest (docs/nvn-design.md, "The selftest"): a test double that logs the engine's
+/* The recording Renderer of the NVN selftest (nvn-design.md, "The selftest"): a test double that logs the engine's
    calls instead of drawing. The selftest makes it the g_renderer while it runs on its private channel, so the stream of
    the library and the replay of the host both end here and their records can be compared (kinds S and Y). */
 

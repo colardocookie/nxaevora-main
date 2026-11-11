@@ -8,6 +8,10 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
+- `docs/` has subfolders since 2026-11-11 (index: `docs/README.md`). Older commits and the history in `OLD-WORK_PLAN.md`
+  before that day used `docs/<name>.md`. Code comments that would pass 120 columns name the file only (`nvn-design.md`).
+  Open (user agreed): split `docs/graphics/nvn-design.md` (1178 lines) into the decisions and the unobserved functions
+  (steps 4-u). Do it before the d2 step 2.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
 - The exe in `game/` is the build of the d2 commit `29a6b6e` (md5 beb09c7b), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
@@ -44,24 +48,29 @@ The native plan (decision of the user, 2026-11-02, `ROADMAP.md` phases 6 to 10),
 Vulkan (no GPU command stream), 2. input and camera, 3. host replacement of SDK functions, 4. shaders and pipelines, 5. extracted
 RomFS and a file layer for mods.
 
-Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 to 3 are done except the open steps
-below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
+Phase 6 (graphics) follows `docs/graphics/nvn-plan.md` (five stages) and `docs/graphics/nvn-design.md`. Stages 1 to 3 are done except the open steps
+below. Design of 3c: `docs/graphics/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
-  4-u4. `docs/nvn-coverage.md`: 1 row of G10 is `stub-log` (`nvnDeviceGetProcAddress`, by decision) after U5 (`11978be`).
+NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/graphics/nvn-design.md`, "Unobserved functions", steps 4-u2 to
+  4-u4. `docs/graphics/nvn-coverage.md`: 1 row of G10 is `stub-log` (`nvnDeviceGetProcAddress`, by decision) after U5 (`11978be`).
   Current step: 4-u3-3 step (d), group d2 fixes (history: `OLD-WORK_PLAN.md`, last section "group d2").
     Groups of (d): d1 fixed-function state (DONE), d2 binds and resources (commit `29a6b6e`), d3 draws, clears, copies,
     dispatch, d4 CPU side (queries, callbacks, debug markers). Then 4-u3-4 (exectest). The `unit` scope is not in the
-    checks column yet. d1 and d2 rows are not yet in the checks column of `docs/nvn-coverage.md`: add them when d2 passes.
+    checks column yet. d1 and d2 rows are not yet in the checks column of `docs/graphics/nvn-coverage.md`: add them when d2 passes.
     The `.ini` has `nvn_selftest_mutate=` (empty).
     d2 run (exe beb09c7b): 299 cases, 3 failed, 2 skipped. NEXT (one session each, in this order):
-    1. Game explorer or caller (at most 3 disassembly calls each): the cause of the 3 fails.
-       - BindVertexAttribState 0x458: library 0x13a00000, host 0x3a400040 (the default word). The library result has no
-         bit 6, so the argument layout of the analyst row (u32 array, bit 6 = enabled) is probably wrong. Read d855340.
-       - BindVertexStreamState 0x621: library 1, host 0. The divisor of stream 1 does not reach the host. Read the host
-         handler (`nvn_native.c` ~4318) and d8554b0 for the entry layout.
-       - BindStorageBuffers 0x8E3: library 0x130, host 0x120 (= one entry sent). Guess: the host sends only slot 0, or
-         the slot 1 packet is lost. Check `replay_bind_send_storages` and the dirty flags.
+    1. DONE (2026-11-11, caller, no disassembly): the causes of the 3 fails.
+       - BindStorageBuffers (host fault): the log has `bind storage buffer refused stage=0 slot=0` and `slot=1`.
+         `nvn_word_stream_next` (`nvn_params.c` ~1866) refuses a mode 3 header (non-increasing), so `replay_bind_send`
+         returns 0 for the plural form of `nvn_bind_storage_buffers_words`. Fix: accept mode 3 in the stream decoder,
+         and add a unit test that sends that form through the decoder.
+       - BindVertexAttribState and BindVertexStreamState (selftest fault): the host handlers read the host records
+         (`vertex_attrib_words`, `vertex_stream_words`, `rec_get`, `nvn_native.c` ~4070). The selftest scripts
+         (`nvn_selftest_cmd.c` ~758, ~771) only `memcpy` raw words to guest memory, so the host records stay zero:
+         the default attribute word and divisor 0. Fix: build each array element on each side with the procs
+         (attrib: SetDefaults, SetFormat, SetStreamIndex at 4 bytes per element; stream: SetDefaults, SetStride,
+         SetDivisor at 8 bytes), as `nvn_st_state_build` does (`nvn_selftest_obj.c` ~651). Then the analyst layout
+         of the raw words does not matter.
     2. The 2 skips: the selftest decoder (`nvn_selftest_dec.c`) stops at control record ops 19 and 20 (texture and
        sampler pool). Expand them as the interpreter does (d84c120, d84c3b0), or run the library interpreter.
     3. Writer patch for 1 and 2, then a selftest run. Then the mutation run of d2. Then group d3.
@@ -106,7 +115,7 @@ Notes:
 
 ## Phase 7 input (the native keyboard and mouse input is done in the field, scenes left to test)
 
-Facts: `docs/input-analysis.md`, `docs/camera-analysis.md`.
+Facts: `docs/input/input-analysis.md`, `docs/input/camera-analysis.md`.
 
 - Not tested: the native mouse look in cutscenes, dialogs, menus, battles and the other camera modes. The mod adds the mouse to the
   setter whenever it runs, so a scene whose camera the player does not control may move. If it does, gate the stub on a game state (a
@@ -120,9 +129,9 @@ Facts: `docs/input-analysis.md`, `docs/camera-analysis.md`.
 - Test the scenes that are not tested: video (movies), battles against wild Pokemon of the later areas. Read the logs of each run for
   misses (`nx-log-read`).
 - Game enhancements such as the frame rate are later work (the user's decision). Do not start them now. Facts: the game asks for the
-  swap interval 2 (`docs/stutter-analysis.md`), the GPU uses about 6 ms of 33 ms.
+  swap interval 2 (`docs/analysis/stutter-analysis.md`), the GPU uses about 6 ms of 33 ms.
 - Not explained: the pcs 0x8cbe780 (main) and 0xd92f310 (sdk), the cause of the PLT-stub misses (none seen in the last runs), and the
-  slow frames of 50 to 85 ms (stopped by the user, `docs/stutter-analysis.md`).
+  slow frames of 50 to 85 ms (stopped by the user, `docs/analysis/stutter-analysis.md`).
 - Optional: the patch that turns the JIT off, to check that no miss is hidden.
 - Phase 11 (launcher, Tauri) and phase 12 (release): not started.
 
@@ -140,9 +149,9 @@ Facts: `docs/input-analysis.md`, `docs/camera-analysis.md`.
 - Run `ctest` and every other CMake command only in the MSYS2 CLANG64 shell (the script below). In Git Bash, the test `runtime_architecture`
   configures `build/default` again with the wrong compiler, and the CMake cache is lost (no `-mcx16`, other LLVM tools, 1481 steps to
   build again). Repair: delete `build/default/CMakeCache.txt` and `build/default/CMakeFiles/4.*`, then run the configure command of
-  `docs/SCARLETNX_BUILD-NOTES.md` section 3 with `-DCMAKE_C_COMPILER=C:/msys64/clang64/bin/clang.exe` and `-DCMAKE_CXX_COMPILER=C:/msys64/clang64/bin/clang++.exe`
+  `docs/build/SCARLETNX_BUILD-NOTES.md` section 3 with `-DCMAKE_C_COMPILER=C:/msys64/clang64/bin/clang.exe` and `-DCMAKE_CXX_COMPILER=C:/msys64/clang64/bin/clang++.exe`
   added. FFmpeg and OpenSSL are not built again. The configure takes 2 minutes and the build about 10.
-- Build: in the MSYS2 CLANG64 shell (`docs/SCARLETNX_BUILD-NOTES.md`). Write a script to `C:\msys64\tmp\x.sh` and run it from Git Bash
+- Build: in the MSYS2 CLANG64 shell (`docs/build/SCARLETNX_BUILD-NOTES.md`). Write a script to `C:\msys64\tmp\x.sh` and run it from Git Bash
   with `MSYSTEM=CLANG64 CHERE_INVOKING=1 /c/msys64/usr/bin/bash.exe -l /tmp/x.sh`. The script does `cd
   /d/.Developments/nxaevora/project-main/third_party/ScarletNX`, `cmake --build --preset default`, and `ctest --test-dir build/default -j4`
   with `export APPDATA=$(cygpath -w /tmp/snx-appdata)` set first (or two tests fail). A full ctest run takes about 1 minute.

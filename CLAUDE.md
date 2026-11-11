@@ -52,12 +52,12 @@ This file holds the rules that sessions get wrong, and the steps to build, recom
 ## Environment
 
 - Platform: Windows 11 x64.
-- ScarletNX builds in the MSYS2 CLANG64 shell. See `docs/SCARLETNX_BUILD-NOTES.md`.
+- ScarletNX builds in the MSYS2 CLANG64 shell. See `docs/build/SCARLETNX_BUILD-NOTES.md`.
 - Put temporary files in the session scratchpad, never in the repository root.
 
 ## Build and run
 
-- Build ScarletNX: `docs/SCARLETNX_BUILD-NOTES.md`.
+- Build ScarletNX: `docs/build/SCARLETNX_BUILD-NOTES.md`.
 - Recompile the game: the skill `nx-recompile`. Before the recompile of the update, make the hints with
   `tools/jump_table_scan.py --hints FILE --merge`. The recompile takes about 11 minutes with these hints.
 - The user starts the update program from `game/recompiled/<id>/`. Read the result with the skill `nx-log-read`.
@@ -85,7 +85,13 @@ project-main/
     gfx/                    graphics bridge and shader translation
   launcher/                 Tauri launcher
   tools/                    helper scripts (classify_hints.py, jump_table_scan.py)
-  docs/                     notes (SCARLETNX_BUILD-NOTES.md, jit-analysis.md, stutter-analysis.md)
+  docs/                     notes, index in docs/README.md
+    build/                  build steps, the list of runtime changes
+    graphics/               NVN plan, design, coverage, shaders
+    input/                  input and camera analysis
+    ui/                     ImGui window plan
+    analysis/               JIT, stutter and crash analysis
+    archive/                finished reviews
   .github/workflows/        CI
   game/                     not in git: dumps, generated code, build output
 ```
@@ -110,7 +116,7 @@ The upstream skills of ScarletNX are not in the copy. They were written for Linu
 ## Git
 
 - `third_party/ScarletNX` is part of this repository (vendored from upstream commit 8efbf9c4, no submodule, no
-  patch files). Edit it like other source. The changes are listed in `docs/runtime-changes.md`. The upstream
+  patch files). Edit it like other source. The changes are listed in `docs/build/runtime-changes.md`. The upstream
   `CLAUDE.md`, `.claude/`, `.github/` and `.mcp.json` are not in the copy.
 - Push only when the user asks. Never force-push a pushed branch.
 - Stage files by name. Check the staged diff before a commit.

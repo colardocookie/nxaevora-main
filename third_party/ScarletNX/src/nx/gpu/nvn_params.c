@@ -1874,7 +1874,7 @@ int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint
 
 int nvn_word_stream_complete(const NvnWordStream* s) { return s && s->remaining == 0; }
 
-/* The words of nvnCommandBufferBarrier (sdk d856590), in order (docs/nvn-design.md, decision 6, item "Barrier"). */
+/* The words of nvnCommandBufferBarrier (sdk d856590), in order (nvn-design.md, decision 6, item "Barrier"). */
 #define NVN_BARRIER_WORD_FIRST        0x910E0002u
 #define NVN_BARRIER_WORD_LAST         0x91000002u
 #define NVN_BARRIER_WORD_REF_CNT      0x80000014u

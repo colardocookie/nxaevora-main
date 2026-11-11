@@ -114,7 +114,7 @@ brief. The brief must contain these items:
 
 1. The function names, and the module of the NVN library (`main` or `sdk`). The agent finds the addresses with the
    resolved addresses in the log (`nvn: <name> -> <address>`) or with `tools/symbols.py`.
-2. The tools and notes: `tools/disasm.py`, `tools/find_callers.py`, and `docs/nvn-design.md` (sections 2-6 and "3a
+2. The tools and notes: `tools/disasm.py`, `tools/find_callers.py`, and `docs/graphics/nvn-design.md` (sections 2-6 and "3a
    Result"). The agent checks the layout of the program before the analysis.
 3. The task: for each function, read the library code and tell which words of the object it reads and writes (offset and
    size), what it does with the other arguments, what it returns, which state outside the object it changes (a lock, a
@@ -149,7 +149,7 @@ repository. The brief must contain these items:
 ## Brief: code writer
 
 Use it for one task of a design that is written and decided (for example one step of the 3c work order in
-`docs/nvn-design.md`). The agent writes code, so it must not touch the repository. Give one task for each brief. A task
+`docs/graphics/nvn-design.md`). The agent writes code, so it must not touch the repository. Give one task for each brief. A task
 is one module or one handler group with its tests. The brief must contain these items:
 
 1. The task in 1 to 3 sentences, and the design text to follow (the file and the numbers of the decisions). The caller

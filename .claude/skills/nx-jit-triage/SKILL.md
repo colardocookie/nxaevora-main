@@ -1,6 +1,6 @@
 ---
 name: nx-jit-triage
-description: Find why the recompiled game reached code that the AOT module lacks (JIT misses). Use it with a .hints file, when you classify the missed pcs, name them, disassemble them, or write the result in docs/jit-analysis.md.
+description: Find why the recompiled game reached code that the AOT module lacks (JIT misses). Use it with a .hints file, when you classify the missed pcs, name them, disassemble them, or write the result in docs/analysis/jit-analysis.md.
 ---
 
 # Triage of JIT misses
@@ -42,7 +42,7 @@ module bases. A disassembly of pcs from the base program against the update modu
 
    Start 8 to 12 bytes before the pc, so that you see the instruction before it.
 4. For each pc, write what the instruction before it is and what kind of place it is (see the table below).
-5. Write the result in `docs/jit-analysis.md`.
+5. Write the result in `docs/analysis/jit-analysis.md`.
 
 ## Jump-table scan
 
@@ -54,7 +54,7 @@ pc. Run it first. A pc that is a target of a table is explained, and the next st
 ## Check each pc
 
 - The return site of a BL is the address of the BL plus 4. A pc that is two or more instructions later is not a
-  return site. This was wrong once in `docs/jit-analysis.md`.
+  return site. This was wrong once in `docs/analysis/jit-analysis.md`.
 - A symbol name of a pc is not reliable when `symbols.py` says `past MAX_DISTANCE`. Such a pc is in code without
   symbols.
 - A return site should be a leader. A miss at a return site means that the caller function was not in the AOT module.

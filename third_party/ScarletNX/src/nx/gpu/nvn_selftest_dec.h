@@ -3,7 +3,7 @@
 #ifndef SNX_NVN_SELFTEST_DEC_H
 #define SNX_NVN_SELFTEST_DEC_H
 
-/* The decoder of a library command buffer recording (docs/nvn-design.md, "The selftest"). It is a pure part: it reads
+/* The decoder of a library command buffer recording (nvn-design.md, "The selftest"). It is a pure part: it reads
    the control memory behind an nvnCommandBufferEndRecording handle and gives the ranges of push buffer words. It does
    not read the words and has no game state, so host tests can run it. */
 

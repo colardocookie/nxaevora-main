@@ -77,7 +77,7 @@ Result: native mouse look cannot be given to the game as a mouse. The mouse move
 
 The first check searched for direct calls to the SDK functions and found none. That was wrong. The game calls the SDK
 through PLT stubs in `main`, so a direct search misses every call. With the stub names resolved from the relocation
-table (see `docs/camera-analysis.md`) the game does call `GetSixAxisSensorState(s)` (one call site each, at 0x8ca6210
+table (see `docs/input/camera-analysis.md`) the game does call `GetSixAxisSensorState(s)` (one call site each, at 0x8ca6210
 and 0x8ca62a0) and `GetNpadState` for each pad style. It has no stub for `GetMouseState` or `GetKeyboardState`, so
 the earlier result for the mouse and the keyboard stands. The game reads the gyro, and its use (camera, aim) is not
 known yet.
@@ -136,7 +136,7 @@ frees a button (`None`).
 ## Native mouse look (done, 2026-10-31)
 
 The stick based mouse look below answered late: a big move of the mouse turned the camera slowly, because the game limits
-the camera's speed. The camera code was found (`docs/camera-analysis.md`) and the mouse now adds its motion to the
+the camera's speed. The camera code was found (`docs/input/camera-analysis.md`) and the mouse now adds its motion to the
 camera's yaw and pitch directly (patch `0012` and the mod `native-mouse-look.pchtxt`, `mouse_native_address=160708992`).
 The user tested it in the field and it works. The settings are `mouse_native_yaw`, `mouse_native_pitch`, `mouse_invert_x`
 and `mouse_invert_y`. With `mouse_native_address=0` the old stick based version runs. Not tested: cutscenes, dialogs,
@@ -148,6 +148,6 @@ menus, battles.
   last input). A fast flick cannot turn the camera faster than a full stick, because the game turns the stick value into a
   rotation speed with a top speed and a ramp. Allowing a stick value past the range (`mouse_overdrive`) and removing the
   clamp of the input manager did not change this.
-- A real fix needs a patch of the game's camera code, which is not found yet (`docs/camera-analysis.md`). It is later
+- A real fix needs a patch of the game's camera code, which is not found yet (`docs/input/camera-analysis.md`). It is later
   work. Until then the mouse look stays stick based. The settings `mouse_sensitivity`, `mouse_curve` and
   `mouse_dead_zone_offset` tune it.

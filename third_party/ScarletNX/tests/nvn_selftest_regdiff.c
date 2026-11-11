@@ -2,7 +2,7 @@
    Copyright 2026 the NXAevora contributors */
 /* The register diff of the NVN selftest command buffer cases (gpu/nvn_selftest_regdiff.c): equal arrays, one change
    on one side, one change on each side in order, a change in both at one index, a value that returned to the base, and
-   a cap that overflows. Each expected value comes from the rule of docs/nvn-design.md, "The selftest". */
+   a cap that overflows. Each expected value comes from the rule of docs/graphics/nvn-design.md, "The selftest". */
 #include "nx/gpu/nvn_selftest_regdiff.h"
 #include <stdio.h>
 #include <string.h>

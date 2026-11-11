@@ -84,7 +84,7 @@ static NvProc* proc_find(u64 addr) {
     return NULL;
 }
 
-/* The texture builder is read as raw words: its layout is not known (docs/nvn-design.md, 2-1). The size is the
+/* The texture builder is read as raw words: its layout is not known (docs/graphics/nvn-design.md, 2-1). The size is the
    public NVN header's 64 bytes, not verified, so a few words more are read when they are readable. */
 #define SIZE_TRACE_COUNT 40       /* queries logged, over both functions */
 #define SIZE_TRACE_BUILDER_WORDS 32 /* words of the builder shown */
@@ -102,7 +102,7 @@ static void size_query_trace(CPU* c, u64 entry, NvProc* p) {
 }
 
 /* The queries (other than nvnDeviceGetInteger) whose arguments and results are logged. The host layer must give the
-   same answers (docs/nvn-design.md, 2-6, G1 to G5). */
+   same answers (docs/graphics/nvn-design.md, 2-6, G1 to G5). */
 static int value_query_name(const char* name) {
     static const char* const names[] = {
         "nvnQueueBuilderGetQueueMemorySize", "nvnTexturePoolGetSize", "nvnSamplerPoolGetSize",
@@ -119,7 +119,7 @@ static int value_query_name(const char* name) {
 static u32 word_at(u64 addr) { return addr < AS_SIZE - 4 && readable(addr) && readable(addr + 3) ? gr32(addr) : 0xDEADBEEF; }
 
 /* The words of the device and builder objects that the library reads for the two queries below. The host keeps no
-   device object, so these values become constants of its handlers (docs/nvn-design.md, 3b-3). */
+   device object, so these values become constants of its handlers (docs/graphics/nvn-design.md, 3b-3). */
 static void object_words_trace(const char* name, u64 object) {
     if (!strcmp(name, "nvnDeviceGetTimestampInNanoseconds")) {
         LOG("nvn-value: device %llx +58=%x +5c=%x +19d8=%x +19dc=%x\n", (unsigned long long)object,
@@ -165,7 +165,7 @@ static void value_query_trace(CPU* c, u64 entry, NvProc* p) {
             (unsigned long long)a2, (unsigned long long)a3, (unsigned long long)c->x[0]);
 }
 
-/* The enum and flag arguments of the observed functions: one line for each new value (docs/nvn-design.md,
+/* The enum and flag arguments of the observed functions: one line for each new value (docs/graphics/nvn-design.md,
    "Unobserved functions", "Rules", item 3). It reads registers only, so the original call runs unchanged. */
 static void enum_args_trace(CPU* c, NvProc* p) {
     int full = 0;

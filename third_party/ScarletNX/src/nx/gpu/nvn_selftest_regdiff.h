@@ -3,7 +3,7 @@
 #ifndef SNX_NVN_SELFTEST_REGDIFF_H
 #define SNX_NVN_SELFTEST_REGDIFF_H
 
-/* The register diff of the command buffer selftest (docs/nvn-design.md, "The selftest"), a pure part: it names the
+/* The register diff of the command buffer selftest (nvn-design.md, "The selftest"), a pure part: it names the
    registers that the two sides left different from the channel's base state, so the snapshot adds one field for each
    of them. It has no game state, so host tests can run it. */
 

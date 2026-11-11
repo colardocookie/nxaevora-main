@@ -37,17 +37,17 @@ NXAevora is in alpha. It is not ready for general use.
 - The static recompile covers all the code that these scenes reach. The ScarletNX runtime can still compile code at
   run time (the JIT) when the game reaches code that the recompiler missed. NXAevora keeps this as a safety net.
   The JIT was not needed in any of the tested scenes after the jump-table fix. See [ROADMAP.md](ROADMAP.md) and
-  [docs/jit-analysis.md](docs/jit-analysis.md).
+  [docs/analysis/jit-analysis.md](docs/analysis/jit-analysis.md).
 - A native graphics path is under construction (phase 6 of the roadmap). With the setting `nvn_native=1`, the NVN
   calls of the game go to code on the PC and the game's own NVN library does not run. On this path the game now draws
   and runs at a steady 30 frames each second, but character models are not shown or show with broken vertices, and
   11 vertex shaders are not translated. The default is still the old path (`nvn_native=0`). The plan is in
-  [docs/nvn-plan.md](docs/nvn-plan.md).
+  [docs/graphics/nvn-plan.md](docs/graphics/nvn-plan.md).
 - Not tested yet: video, long play in the open areas, the native mouse look in cutscenes, menus and battles, and
   battles against wild Pokemon of the later areas.
 - Known problems: a stop of about 1.3 seconds right after the start (the game's own loading loop, so there is no fix),
   and about 10 frames a minute that take 50 to 85 ms (the cause is not found, see
-  [docs/stutter-analysis.md](docs/stutter-analysis.md)). The log of the last run lists 79 of 1787 shader programs as
+  [docs/analysis/stutter-analysis.md](docs/analysis/stutter-analysis.md)). The log of the last run lists 79 of 1787 shader programs as
   not translated. No visible fault from them has been seen. With `async_pipelines=1` the game does not stutter while
   you walk, and no late appearing objects were seen.
 - The launcher does not exist yet.
@@ -65,7 +65,7 @@ NXAevora is in alpha. It is not ready for general use.
   processor, the memory and the frame times. The name entry of the game is a window too.
 - Settings are saved in the game's `.ini` file. A setting that needs a restart says so.
 
-The list of the changes in the runtime is in [docs/runtime-changes.md](docs/runtime-changes.md).
+The list of the changes in the runtime is in [docs/build/runtime-changes.md](docs/build/runtime-changes.md).
 
 ## What you need
 
@@ -84,7 +84,7 @@ Clone the repository. ScarletNX is part of it (`third_party/ScarletNX`, copied f
 git clone <this repository>
 ```
 
-The build steps for Windows are in [docs/SCARLETNX_BUILD-NOTES.md](docs/SCARLETNX_BUILD-NOTES.md). They use MSYS2
+The build steps for Windows are in [docs/build/SCARLETNX_BUILD-NOTES.md](docs/build/SCARLETNX_BUILD-NOTES.md). They use MSYS2
 and the CLANG64 environment.
 
 ## Legal

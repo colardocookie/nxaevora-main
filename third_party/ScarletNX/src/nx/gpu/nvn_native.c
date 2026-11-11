@@ -2,7 +2,7 @@
    Copyright 2026 the NXAevora contributors */
 /* nvn_native=1: the host answers the NVN functions that the game resolves through nvnBootstrapLoader and
    nvnDeviceGetProcAddress. Each resolved address gets a host handler in its dispatch slot. A function without a
-   handler logs its first call and returns 0. The hook order and the trace are in docs/nvn-design.md, 2-3 and 2-6. */
+   handler logs its first call and returns 0. The hook order and the trace are in nvn-design.md, 2-3 and 2-6. */
 #include "nx/gpu/nvn_native.h"
 #include "nx/gpu/nvn_cmdlist.h"
 #include "nx/gpu/nvn_frame.h"
@@ -26,7 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The host's records of the NVN objects. The game's object memory is never written (docs/nvn-design.md, 2-1). Handlers
+/* The host's records of the NVN objects. The game's object memory is never written (nvn-design.md, 2-1). Handlers
    take objs_lock for the whole call, and their pointers into a record end with the call. */
 static NvnObjTab objs;
 static PMutex objs_lock = PMUTEX_INIT;
@@ -106,7 +106,7 @@ static int native_guest_readable(u64 addr, u64 size);
 static int native_guest_writable(u64 addr, u64 size);
 static NvnQueueBuilder* queue_builder(u64 addr) { return rec_get(addr, NVN_OBJ_QUEUE_BUILDER, sizeof(NvnQueueBuilder)); }
 
-/* G1: device builder and device (docs/nvn-design.md, 2-6). The library's functions are plain field accesses. */
+/* G1: device builder and device (nvn-design.md, 2-6). The library's functions are plain field accesses. */
 static void h_device_builder_set_defaults(CPU* c, u64 entry) {
     (void)entry;
     pm_lock(&objs_lock);
@@ -6973,7 +6973,7 @@ static void h_queue_present_texture(CPU* c, u64 entry) {
     gpu_call(frame_run, dispatched, NULL, 0);
 }
 
-/* The host handlers by NVN function name. Later steps add their entries here (G2 to G5 of docs/nvn-design.md, 2-6). */
+/* The host handlers by NVN function name. Later steps add their entries here (G2 to G5 of nvn-design.md, 2-6). */
 typedef struct {
     const char* name;
     GuestFn handler;
@@ -7597,7 +7597,7 @@ static void install(const char* name, u64 addr) {
 }
 
 /* nvnDeviceGetProcAddress(device, name). The library's own function runs for the lookup: it returns the address, and
-   the host puts its handler there. Open (docs/nvn-design.md, 2-3, item 6): if it reads the device object, which the
+   the host puts its handler there. Open (nvn-design.md, 2-3, item 6): if it reads the device object, which the
    library never initialized in this mode. The first run shows it. */
 static void getproc_native(CPU* c, u64 entry) {
     char name[128];

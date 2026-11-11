@@ -1,7 +1,7 @@
 # Stutter analysis
 
 Subject: the short stops that the user sees in the recompiled game. Data: the logs of the runs F to J (see
-`docs/jit-analysis.md`).
+`docs/analysis/jit-analysis.md`).
 
 ## What ScarletNX does already
 

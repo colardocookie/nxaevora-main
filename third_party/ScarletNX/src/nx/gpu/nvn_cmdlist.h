@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The host's command lists (docs/nvn-design.md, "3c Host design decisions", decisions 3 to 5). A command buffer records
+/* The host's command lists (nvn-design.md, "3c Host design decisions", decisions 3 to 5). A command buffer records
    ops into an NvnOpList. EndRecording publishes the list in an NvnListStore and gives the game a handle. The list is
    immutable after that. Submit and Call hold a reference, so a list lives until its last reference goes. The module
    has no locking: the owner serializes the calls, and a reader of a list holds a reference. */

@@ -10,7 +10,7 @@ description: Recompile Pokemon Legends Arceus (base game and update) with the po
 1. Look for a running recompile: `Get-Process scarletnx -ErrorAction SilentlyContinue`. If one runs, wait. Never
    start a second recompile. Two recompiles write the same files and can damage them.
 2. The portable program is `game/scarletnx/bin/scarletnx.exe`. If ScarletNX was built again, make the portable
-   copy again (`docs/SCARLETNX_BUILD-NOTES.md`).
+   copy again (`docs/build/SCARLETNX_BUILD-NOTES.md`).
 3. The dumps are outside the repository. Ask the user for the paths if you do not know them.
 
 ## Command

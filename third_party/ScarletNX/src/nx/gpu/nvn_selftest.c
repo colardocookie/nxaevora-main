@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The NVN selftest (docs/nvn-design.md, "The selftest"). The first cases are kinds R and M of the object layer:
+/* The NVN selftest (nvn-design.md, "The selftest"). The first cases are kinds R and M of the object layer:
    nvnDeviceGetInteger (the word the call writes, kind M), and the texture builder storage queries and getters (kind R).
    The calls run on the guest thread that triggers the run, with the CPU context saved and restored around each call.
    Nothing here writes an object of the game: the builders are in the arena of the selftest. */

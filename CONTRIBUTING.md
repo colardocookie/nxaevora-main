@@ -39,7 +39,7 @@ disassembly of the game.
 
 `third_party/ScarletNX` is a copy of the upstream project (commit 8efbf9c4), kept in this repository. Edit it like
 any other source. It does not follow the upstream project, so a fix that helps every game can also be sent upstream.
-The changes of NXAevora are listed in `docs/runtime-changes.md`.
+The changes of NXAevora are listed in `docs/build/runtime-changes.md`.
 
 ## Code
 

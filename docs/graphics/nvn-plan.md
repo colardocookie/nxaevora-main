@@ -38,7 +38,7 @@ Substeps:
   This is read from the code and the disassembly. The game does not run.
 - 1-4 Inline work and extra queue commands: the descriptors that the CPU writes for the GPU, and the commands that the
   library adds by itself (fences, flushes, present). Also read from the code.
-- 1-5 Summary: `docs/nvn-survey.md`, with the parts that are hard to replace, as input for stage 2.
+- 1-5 Summary: `docs/graphics/nvn-survey.md`, with the parts that are hard to replace, as input for stage 2.
 
 Exit condition: all drawing paths that the hook does not catch are known.
 
@@ -54,9 +54,9 @@ Content: compare two ways, and decide.
 For each way, write what is replaced, what stays, the size of the work, the risk of visual faults and the patch size
 against upstream.
 
-The comparison and the recommendation are in `docs/nvn-design.md`. Decision of the user: way A.
+The comparison and the recommendation are in `docs/graphics/nvn-design.md`. Decision of the user: way A.
 
-Substeps (the game does not run in 2-1 to 2-5, the results go to `docs/nvn-design.md`):
+Substeps (the game does not run in 2-1 to 2-5, the results go to `docs/graphics/nvn-design.md`):
 
 - 2-1 Raw reads: find the code of the game that reads or writes the memory of a buffer, texture, command buffer, memory pool
   or window object without a call. Method: the call sites in the layer a9b82e0 to ac8714c, and the stores and loads through
@@ -80,12 +80,12 @@ Substeps (the game does not run in 2-1 to 2-5, the results go to `docs/nvn-desig
   The user accepts the result before stage 3 starts.
 
 Decision of the user (2026-11-02): the handlers write the engine methods on a private channel and call the existing `Renderer`
-(choice 1 of `docs/nvn-design.md`, section 2-4). The native draw interface (choice 2) is a candidate for a later clean-up,
+(choice 1 of `docs/graphics/nvn-design.md`, section 2-4). The native draw interface (choice 2) is a candidate for a later clean-up,
 judged after stage 4. The rules for the side effects of the register path, the update notifications, the lifetime and the
 synchronization of resources, and the taps for per-draw information (TAA and other effects) are in that section. Stages 3 and 4
 follow them.
 
-Step 2-6 is written in `docs/nvn-design.md` (section 2-6). The user accepted it on 2026-11-02, so stage 2 is finished and stage
+Step 2-6 is written in `docs/graphics/nvn-design.md` (section 2-6). The user accepted it on 2026-11-02, so stage 2 is finished and stage
 3 starts with step 3a.
 
 Exit condition: the range that is replaced and the work that remains are explained.
@@ -103,7 +103,7 @@ Content: connect initialization, a screen clear, one simple draw and the present
 - Start the selftest (`nvn_selftest`, adopted 2026-11-02) with a few representative functions in 3b, 3c and 3d, and show with a
   deliberate mutation that it finds a wrong handler. The selftest and the execution test use their own objects and memory and
   never touch the queue or the state of the game. A pass is recorded as `selftest` or `exec`, separate from `seen` (a game run).
-  The rules are in `docs/nvn-design.md`, section "Unobserved functions", part "The selftest".
+  The rules are in `docs/graphics/nvn-design.md`, section "Unobserved functions", part "The selftest".
 
 - Code review (decided by the user, 2026-11-02): use the "code reviewer" agent of the skill `orca-agents` after step 3b and after
   step 3c, and after 3d when the change is large. Check at 3b: the life of objects, the generation check, the GPU address rule,
@@ -123,7 +123,7 @@ Content: textures, compute, synchronization (fences and events) and memory shari
   `ROADMAP.md` phase 3 and read the logs (`nx-log-read`).
 - Shaders and pipelines keep the existing path until phase 9 moves them.
 - The 242 functions that the survey run called are not the limit. All 523 resolved functions get a handler, and the argument
-  values that no scene used are checked. The plan, the coverage file and the checks are in `docs/nvn-design.md`, section
+  values that no scene used are checked. The plan, the coverage file and the checks are in `docs/graphics/nvn-design.md`, section
   "Unobserved functions".
 
 Exit condition: in the target scenes, the drawing and the behavior match the old path in a comparison, and each of the 523
@@ -145,4 +145,4 @@ Exit condition: the effect and the limits of the replacement are confirmed. Then
 - A fix explains the mechanism. No tuning of delays, no retries, no special cases.
 - Nothing of the game goes into git (dumps, frame dumps, shader dumps, logs).
 - The 30 frames each second and 0 JIT misses are the baseline. A stage must not make them worse.
-- A change in `third_party/ScarletNX` goes to `docs/runtime-changes.md`.
+- A change in `third_party/ScarletNX` goes to `docs/build/runtime-changes.md`.

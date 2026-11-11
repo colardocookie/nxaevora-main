@@ -679,7 +679,7 @@ uint32_t nvn_rt_copy_texture_words(const NvnRtCopyEnv* env, const NvnTexture* sr
     return at;
 }
 
-/* ---- CopyBufferToTexture and CopyTextureToBuffer: the DMA route of d82b0f0 (docs/nvn-design.md, U3 item 1).
+/* ---- CopyBufferToTexture and CopyTextureToBuffer: the DMA route of d82b0f0 (docs/graphics/nvn-design.md, U3 item 1).
    A launch copies one row stack of one layer. MIRROR_Y makes one launch for each row and MIRROR_Z reverses the
    layers on the buffer side: dma.c keeps the pitch as u32, so the negative pitch of the library is not possible. */
 

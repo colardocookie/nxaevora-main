@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the NXAevora contributors
-"""Writes docs/nvn-coverage.md: one row for each NVN function that the game resolves (step 4-u1 of docs/nvn-design.md).
+"""Writes nvn-coverage.md: one row for each NVN function that the game resolves (step 4-u1 of nvn-design.md).
 
     python tools/nvn_coverage.py [--log RUN.log] [--sdk game/work/Arceus/exefs/sdk] [--check]
 
 The names and addresses come from, in this order: the `nvn: <name> -> <address>` lines of a log with nvn_trace=1
 (--log), the name table of the NVN library in the sdk module of the ExeFS (--sdk), or the rows of the coverage file that
-exists. The calls come from the `nvn-used:` lines of the log, else from docs/nvn-calls.md. The handler state comes from
+exists. The calls come from the `nvn-used:` lines of the log, else from nvn-calls.md. The handler state comes from
 the table native_procs of nvn_native.c. The columns checks, seen and notes are written by hand and kept.
 With --check nothing is written, and the exit code is 1 when the file would change. Nothing of the game is written.
 """
@@ -19,8 +19,8 @@ import struct
 import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
-COVERAGE = os.path.join(ROOT, 'docs', 'nvn-coverage.md')
-CALLS = os.path.join(ROOT, 'docs', 'nvn-calls.md')
+COVERAGE = os.path.join(ROOT, 'docs', 'graphics', 'nvn-coverage.md')
+CALLS = os.path.join(ROOT, 'docs', 'graphics', 'nvn-calls.md')
 NATIVE = os.path.join(ROOT, 'third_party', 'ScarletNX', 'src', 'nx', 'gpu', 'nvn_native.c')
 SDK_BASE = 0xd3c7000  # the address of the sdk module in the update program (the addresses that docs/ quote)
 MANUAL = ('checks', 'seen', 'notes')
@@ -174,7 +174,7 @@ def from_log(path):
 
 
 def calls_doc(path):
-    """{name: calls} from the list in docs/nvn-calls.md"""
+    """{name: calls} from the list in docs/graphics/nvn-calls.md"""
     calls = {}
     with open(path, encoding='utf-8') as f:
         for line in f:
@@ -207,7 +207,7 @@ def existing_rows(path):
     return rows
 
 
-# --- the groups of docs/nvn-design.md (2-6). A function that no run called is G10. ---
+# --- the groups of docs/graphics/nvn-design.md (2-6). A function that no run called is G10. ---
 
 G6 = {'Initialize', 'Finalize', 'AddCommandMemory', 'AddControlMemory', 'SetMemoryCallback', 'SetMemoryCallbackData',
       'BeginRecording', 'EndRecording', 'CallCommands', 'SetTexturePool', 'SetSamplerPool', 'SetRenderTargets',
@@ -264,14 +264,14 @@ HEADER = """<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
 # NVN coverage of the host layer
 
-Made by `tools/nvn_coverage.py` (step 4-u1 of `docs/nvn-design.md`, section "Unobserved functions"). Do not edit the
+Made by `tools/nvn_coverage.py` (step 4-u1 of `nvn-design.md`, section "Unobserved functions"). Do not edit the
 columns function to handler by hand: run the tool again. The columns checks, seen and notes are written by hand and the
 tool keeps them.
 
 - function, address: the {count} functions that the game resolves, from the `nvn:` lines of a log with `nvn_trace=1` or
   from the name table of the NVN library in the sdk module. The address is the guest address in the update program of
   update 1.1.1.
-- group: G1 to G9 as in `docs/nvn-design.md`, section 2-6. G10 is a function that no run called.
+- group: G1 to G9 as in `docs/graphics/nvn-design.md`, section 2-6. G10 is a function that no run called.
 - calls: the calls of {calls_source}, through the dispatch table and with the library (`nvn_native=0`).
 - handler: `implemented` when `native_procs` of `nvn_native.c` has a host handler, `stub-log` when the missing-function
   handler answers (the first call is logged and 0 is returned).
@@ -334,7 +334,7 @@ def main():
     if used is not None:
         calls, calls_source = used, 'the `nvn-used:` lines of the log'
     else:
-        calls, calls_source = calls_doc(CALLS), 'the run in `docs/nvn-calls.md`'
+        calls, calls_source = calls_doc(CALLS), 'the run in `docs/graphics/nvn-calls.md`'
     unknown = sorted(set(calls) - set(resolved))
     if unknown:
         raise SystemExit('called but not resolved: %s' % ', '.join(unknown))

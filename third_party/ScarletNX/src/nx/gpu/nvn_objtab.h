@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The host's records of the NVN objects, keyed by the guest address of the object (docs/nvn-design.md, 2-1). The guest
+/* The host's records of the NVN objects, keyed by the guest address of the object (nvn-design.md, 2-1). The guest
    memory of an object is never written: the game allocates it, and the host keeps its own state here. The table does
    no locking; the owner serializes the calls. */
 

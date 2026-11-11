@@ -42,7 +42,7 @@ tasks are in `WORK_PLAN.md`. The rules of the project are in `CLAUDE.md`.
 - Made the repository, the `.gitignore` (`.claude/`, `CLAUDE.md`, `AGENTS.md`, `game/`) and the folder layout.
 - Added ScarletNX as a submodule (upstream URL, pinned commit 8efbf9c). Not changed.
 - Built ScarletNX on Windows with MSYS2 CLANG64. Needed `-DCMAKE_C_FLAGS=-mcx16` (two test targets failed without it).
-  Notes: `docs/SCARLETNX_BUILD-NOTES.md`.
+  Notes: `docs/build/SCARLETNX_BUILD-NOTES.md`.
 - Made a portable copy of the program (`game/scarletnx/`) with the 7 DLLs.
 
 ### 2. First recompile and run (done)
@@ -69,7 +69,7 @@ tasks are in `WORK_PLAN.md`. The rules of the project are in `CLAUDE.md`.
 - Result: 0 misses in all later runs: the opening scene at sea (252 s, before: 114 misses), name entry with the
   software keyboard, saving, loading, a capture, the village entry (420 s), a battle against an NPC up to the point
   before the Obsidian Fieldlands (794 s), and the Obsidian Fieldlands (252 s). All at 30 fps.
-- Details: `docs/jit-analysis.md`.
+- Details: `docs/analysis/jit-analysis.md`.
 
 ### 4. Decisions (done)
 
@@ -82,7 +82,7 @@ tasks are in `WORK_PLAN.md`. The rules of the project are in `CLAUDE.md`.
 ### 5. Documents and tools (done, committed)
 
 - `README.md` (the user edited the badges and the logo), `CONTRIBUTING.md`, `LICENSE` (GPL-3.0), `ROADMAP.md`,
-  `docs/SCARLETNX_BUILD-NOTES.md`, `docs/jit-analysis.md`, `docs/stutter-analysis.md`.
+  `docs/build/SCARLETNX_BUILD-NOTES.md`, `docs/analysis/jit-analysis.md`, `docs/analysis/stutter-analysis.md`.
 - `tools/classify_hints.py` (sorts hints by module), `tools/jump_table_scan.py`.
 - Logo in `assets/` (normal and dark variant).
 - Skills in `.claude/skills/`: `nx-recompile`, `nx-log-read`, `nx-jit-triage`.
@@ -100,7 +100,7 @@ tasks are in `WORK_PLAN.md`. The rules of the project are in `CLAUDE.md`.
   The user did not say yet whether late appearing objects were seen.
 - Not explained: a stop of 1.2 to 1.4 s that every run has 11 to 18 s after the start (GPU idle, no pipeline, no
   upload, so it is on the CPU side), and other slow frames in groups (for example 176 s to 177.7 s in one run).
-- Details: `docs/stutter-analysis.md`.
+- Details: `docs/analysis/stutter-analysis.md`.
 
 ### 7. Found at the end of this session
 
@@ -122,20 +122,20 @@ e587d40, 750a34a, 1bdb641, 4f0a181, 69a17d7 and older.
 ### Crash of 2026-10-31 00:50:22 (closed by the user)
 
 - 1 of 5 runs crashed at the start (invalid memory access in a97a858, release of a handle-table entry). The cause is
-  not found. The user said that this rare crash at start can be ignored. Notes: `docs/crash-analysis.md`.
+  not found. The user said that this rare crash at start can be ignored. Notes: `docs/analysis/crash-analysis.md`.
 - Open it again only if the crash comes back.
 
 ### Profile run (done)
 
 - Run L (90 s, `profile=1`, `vk_gpu_profile=1`): 95% of the CPU samples are waits, the GPU uses 6 ms of 33 ms, the user
-  saw no stutter while walking. Details in `docs/stutter-analysis.md`. The settings are back to 0.
+  saw no stutter while walking. Details in `docs/analysis/stutter-analysis.md`. The settings are back to 0.
 
 ### Native replacement plan (done)
 
 - Decision: replace a layer only with a measured problem. Video is out (the movies are in-engine cutscenes). Files are
   out for now (run M). Graphics, memory and audio are not started. Input is the one layer to replace, with the
   keyboard and mouse as native input (the user asked for it because the mouse look is poor). `ROADMAP.md` has the
-  new "Decision" section. Details: `docs/input-analysis.md`.
+  new "Decision" section. Details: `docs/input/input-analysis.md`.
 - Run M made a second game folder in `%APPDATA%\scarletnx
 ecompiled` (12.3 GB). The user allowed the deletion and it
   was deleted. A start through `scarletnx.exe <dump>` uses that folder, not the project folder.
@@ -153,7 +153,7 @@ ecompiled` (12.3 GB). The user allowed the deletion and it
 
 ### Keyboard remap (done, 2026-10-31)
 
-- Patch `0009` adds the setting `keyboard_map` (`Button:Key` words, `docs/input-analysis.md`). The user tested it
+- Patch `0009` adds the setting `keyboard_map` (`Button:Key` words, `docs/input/input-analysis.md`). The user tested it
   (`keyboard_map=ZL:Q A:F`) and the keys changed as set.
 - The first test lost the line. The store of the `.ini` (`STORE_MAX` in `options.c`) held 128 keys and the file had 129 (the
   log said `more than 128 keys, renderdoc_frames and those after it are left out`). A key after the 128th is dropped at the
@@ -167,7 +167,7 @@ ecompiled` (12.3 GB). The user allowed the deletion and it
 - The user found the stick based mouse look slow to answer: a big move turned the camera late, because the game turns the
   stick into a speed with a top speed. The camera search was opened again and ended in four runs of the angle search
   (patch `0011`, after `0003`): run 1 and 2 gave copies and no proof, run 3 with an x only and a y only hold named the
-  yaw (-3.742 rad, 2.1 rad a second at 0.61 of the stick) and its writer 0x99437c0. Details in `docs/camera-analysis.md`.
+  yaw (-3.742 rad, 2.1 rad a second at 0.61 of the stick) and its writer 0x99437c0. Details in `docs/input/camera-analysis.md`.
 - The camera controller's angle setter 0x99437c0 takes the angle in `s0`, `this` in `x0`, and keeps the yaw at `+0x360` and
   `+0xdd80` and the pitch as a double `t` (0 to 1, the position on the camera's arc) at `+0x700`.
 - The mod `native-mouse-look.pchtxt` adds the mouse to both at the start of the setter. The runtime (patch `0012`) adds
@@ -187,7 +187,7 @@ ecompiled` (12.3 GB). The user allowed the deletion and it
 - The 30 frames each second come from the game: it sets a swap interval of 2. The native replacement review found no
   layer with a measured problem (`ROADMAP.md`, "Decision"). The stop of 1.3 s at the start stays open. The user said it
   is not needed now.
-- The 80 failed shaders were 11 by hash (`docs/shader-analysis.md`). 6 vertex programs wait for their first draw, 4 hit
+- The 80 failed shaders were 11 by hash (`docs/graphics/shader-analysis.md`). 6 vertex programs wait for their first draw, 4 hit
   data that looks like a jump table (not verified), and 1 fragment program had `RED.E.ADD.64`.
 - Patch `0002-global-red-add-u64.patch` adds `RED.E.ADD.64` (Int64Atomics, a 64-bit view of each global buffer, the
   feature `shaderBufferInt64Atomics`). The run of 157 s showed 0 skipped draws (600 in each 20 s before), no crash, and
@@ -199,7 +199,7 @@ ecompiled` (12.3 GB). The user allowed the deletion and it
   change). The 4 programs with "unknown opcode" are jump table data after the code (the same form in `main.data`, which the module
   dump showed). `tools/maxwell_label.py` was written for it.
 - Crashes at 13:49:56 and 13:57:43 on 2026-10-31 (invalid memory access) are in `scarletnx-error.log`. Their logs are
-  gone, so they are not analyzed. Open `docs/crash-analysis.md` again if a crash comes back.
+  gone, so they are not analyzed. Open `docs/analysis/crash-analysis.md` again if a crash comes back.
 - The 4 shader programs with "unknown opcode" were jump table data (the table follows the code, and the length scan of
   the pass before the start runs into it). A run of 681 s with the bag, the box, the clothes, the battle introduction
   and a large part of the open areas had no failed shader at a first draw, no skipped draw, no crash, and 0 JIT misses
@@ -212,7 +212,7 @@ ecompiled` (12.3 GB). The user allowed the deletion and it
   and the pointers of a stop). The stop is a loop of the game's main thread (guest `a7678f0`): 39 pooled objects, each started
   by its first poll (the done-check function `8c3d488` is a state machine), and a `svcSleepThread` of 16 ms between polls.
   The sleeps took 15.7 to 16.5 ms each, no other guest thread was busy, no RomFS read took 50 ms, the GPU thread was idle.
-  About 185 ms of each 400 ms was the main thread's own work (about 8 ms for each entry). Details: `docs/stutter-analysis.md`.
+  About 185 ms of each 400 ms was the main thread's own work (about 8 ms for each entry). Details: `docs/analysis/stutter-analysis.md`.
 - Mistakes to remember: an estimate of one sleep from the time between two dumps was wrong (38 ms), because the dump takes time
   and the main thread works between sleeps. The per-call time (requested and taken) from the dump was the right measure.
   A search of the files with `rm` of the hitch files before they were copied lost the data of the last run: copy first.
@@ -221,7 +221,7 @@ ecompiled` (12.3 GB). The user allowed the deletion and it
   that are not tested yet.
 
 
-## In-game ImGui windows, steps 1 to 9 (done, details in `docs/imgui-plan.md`)
+## In-game ImGui windows, steps 1 to 9 (done, details in `docs/ui/imgui-plan.md`)
 
 - Patches `0013` to `0020` in `recomp/patches/`. ImGui 1.93.0 (MIT) is a pinned CPM package. Roboto and Noto Sans JP are
   in `assets/fonts` (SIL OFL 1.1) and are copied to `fonts/` in each game data folder (the runtime reads them there; the
@@ -242,7 +242,7 @@ ecompiled` (12.3 GB). The user allowed the deletion and it
 
 ### ImGui code review fixes and test cleanup (done, 2026-11-01)
 
-- The 23 findings of the review (`docs/imgui-review.md`) are fixed and run by the user: the name input (group 1), the input
+- The 23 findings of the review (`docs/archive/imgui-review.md`) are fixed and run by the user: the name input (group 1), the input
   queue, Alt, the Vulkan result check (group 2), the NVML loader, the Debug window and the code rules (group 3), the refresh
   of the windows while the game presents nothing (15) and the fallback to the old menu by the backend's state (8).
 - The three failing tests had two causes. `native_recompiler` and `llvm_module` need `APPDATA` in the MSYS2 shell. `gui_sdl_events`
@@ -256,7 +256,7 @@ ecompiled` (12.3 GB). The user allowed the deletion and it
   A sampling profile that kept the slow frames apart showed all threads in an OS wait in them. A log of the frontend's
   vsync ticks and the pace sleeps showed them on time (worst 2.2 ms late, longest gap 18.3 ms). The display runs at 179 Hz.
   The frames come in multiples of 16.7 ms: the game misses a vsync event. Not found: which guest wait. The diagnostics
-  (profile, `pace:` line, `hitch_dump` with 40 files) were removed again. Details: `docs/stutter-analysis.md`.
+  (profile, `pace:` line, `hitch_dump` with 40 files) were removed again. Details: `docs/analysis/stutter-analysis.md`.
 - Mistakes to remember: `Set-Content -Encoding utf8` on the `.ini` in PowerShell 5.1 adds a BOM (use `sed`); a `git apply`
   of a patch can turn a CRLF file into LF (make the diff from copies with the line ends made equal).
 
@@ -274,7 +274,7 @@ ecompiled` (12.3 GB). The user allowed the deletion and it
   unit). The window asks for the keyboard with `SetNextFrameWantCaptureKeyboard`.
 - New defaults: A F, B Left Shift, X R, Y Space, L3 Left Ctrl, L Q, R E, Plus G, Minus M, arrow keys for the D-pad, W A S D for
   the left stick. `mouse_native_pitch` 500. F1's help text follows.
-- Review by the code reviewer agent (GPT-6.1-Sol): 15 findings, 12 fixed (`docs/controller-keyboard-review.md`).
+- Review by the code reviewer agent (GPT-6.1-Sol): 15 findings, 12 fixed (`docs/archive/controller-keyboard-review.md`).
 - Two faults found in the user's runs: (1) a combo closed at once, because `bar_wanted` brought the menu bar up for any popup
   and the bar took the focus (`g_bar_shown` was cleared before `bar_wanted`, so "the cursor is on the bar" never held). The
   bar now stays only if it showed in the last frame. (2) The bar showed at start with the cursor outside the window, because
@@ -303,7 +303,7 @@ ecompiled` (12.3 GB). The user allowed the deletion and it
 - The HUD ghosting with mailbox and immediate: the game's final target keeps alpha below 1 where its HUD passes blend, the blit copies
   it, and the display used it. The fix draws one quad over the picture with a pipeline that writes only alpha (`g_pipe_alpha` in `ui.c`).
   Found with the game's frame saved by `--shot` (clean) against a Windows screenshot (ghosts). Not the cause: ImGui (`imgui=0`),
-  G-Sync, the GPU running ahead (a `vk_finish` each present), a swapchain rebuild with the same mode. See `docs/present-alpha.md`.
+  G-Sync, the GPU running ahead (a `vk_finish` each present), a swapchain rebuild with the same mode. See `docs/graphics/present-alpha.md`.
 - The freeze at the start with `fullscreen=1` was `resolution=16`: `VK_ERROR_OUT_OF_DEVICE_MEMORY` 94 times and 0 frames a second. The
   user's `.ini` was reset to the defaults (a backup was in the scratchpad, which does not last).
 - Mistakes to remember: I read the user's "prepare the agent's short replies" as "start the review" and launched agents. Do what
@@ -315,7 +315,7 @@ ecompiled` (12.3 GB). The user allowed the deletion and it
   no follow of the upstream). The upstream `CLAUDE.md`, `.claude/`, `.github/` and `.mcp.json` are not in the copy. The test
   `claude_ste100` was removed from `tests/CMakeLists.txt` (it checked the upstream Claude files).
 - The patches `0001`, `0002`, `0009`, `0010`, `0012` to `0017` are in the source and their files are deleted. Their text is in
-  `docs/runtime-changes.md`. `recomp/patches/` keeps `native-mouse-look.pchtxt`, `camera-unclamp.pchtxt` and `diagnostics/`
+  `docs/build/runtime-changes.md`. `recomp/patches/` keeps `native-mouse-look.pchtxt`, `camera-unclamp.pchtxt` and `diagnostics/`
   (made against the old source, not applied).
 - Order that works: copy the work tree away, take the pinned files from `git archive` BEFORE the removal of `.git/modules`, then
   remove the submodule. Mistake of this session: the removal of `.git/modules` first made `git archive` fail. The pinned files came
@@ -426,7 +426,7 @@ Result of the last runs:
 
 ## SMAA (done 2026-11-02, not committed at the end of the session)
 
-- Setting `anti_aliasing`: 0 Off, 1 FXAA, 2 SMAA. Row 0020 in `docs/runtime-changes.md`, credits in `docs/CREDITS.md`.
+- Setting `anti_aliasing`: 0 Off, 1 FXAA, 2 SMAA. Row 0020 in `docs/build/runtime-changes.md`, credits in `docs/CREDITS.md`.
 - `shaders/smaa.frag` is a GLSL port of SMAA 1x of SMAA.hlsl (iryoku/smaa, MIT), preset HIGH (threshold 0.1, 16 steps, 8 diagonal steps,
   corner rounding 25), luma edges, no predication and no temporal parts. One file, three builds by the macros `SMAA_PASS_EDGES`,
   `SMAA_PASS_WEIGHTS` and `SMAA_PASS_BLEND`. The edge pass takes luma in gamma space (pow 1/2.2) when the frame decodes sRGB.
@@ -446,7 +446,7 @@ Result of the last runs:
 
 ## NVN survey, stage 1 of phase 6 (done 2026-11-02, commit 526d0e0)
 
-- Files: `docs/nvn-survey.md`, `docs/nvn-calls.md`, `docs/nvn-plan.md`. Runtime change 0021 (`nvn_trace=1` logs the first 40 GPFIFO
+- Files: `docs/graphics/nvn-survey.md`, `docs/graphics/nvn-calls.md`, `docs/graphics/nvn-plan.md`. Runtime change 0021 (`nvn_trace=1` logs the first 40 GPFIFO
   submissions as `gpu-submit:` lines).
 - Run of 302 s (boot, title, village, wild area, battle, menus): 522 addresses resolved, 242 functions called, 8919 frames, 30 frames
   a second, 0 JIT misses. A frame is acquire, submit 77 command buffers, fence, present. The submit sends 0 GPFIFO entries. The present
@@ -457,14 +457,14 @@ Result of the last runs:
 - Cleanup of the game folder (the user agreed): `game/work/Arceus/romfs`, `game/backup`, the hitch and profile files and old logs were
   deleted. About 1.9 GB are left in `game/`.
 
-## NVN design, stage 2 steps 2-1 to 2-5 (done 2026-11-02, text in `docs/nvn-design.md`, not committed at the end of the session)
+## NVN design, stage 2 steps 2-1 to 2-5 (done 2026-11-02, text in `docs/graphics/nvn-design.md`, not committed at the end of the session)
 
 Moved from WORK_PLAN on 2026-11-02. The decisions of the user: way A (replace NVN completely), choice 1 (the host handlers write
 the engine methods on a private channel and call the existing `Renderer`), choice 2 (a native draw interface) is a candidate for a
 later clean-up and is judged after stage 4. `.gitattributes` makes GitHub count ScarletNX in the language statistics (committed in
 7d6d383).
 
-Facts found (details and addresses are in `docs/nvn-design.md`):
+Facts found (details and addresses are in `docs/graphics/nvn-design.md`):
 
 - 2-1: the game wraps NVN in one layer of small functions (about 440 call sites, aa81d54 to aac7de4, grouped by object type, the
   shape of `nn::gfx`). The wrapper allocates the NVN object itself and passes the pointer. In the `Initialize` wrappers read, the game
@@ -511,36 +511,36 @@ Tools and traps of this work:
 
 - Decided by the user (2026-11-02): way A, choice 1 (reuse `Renderer` and the engine state update code), the old path as a
   comparison target selected for each launch, and all 523 resolved functions as the goal (the 242 are not the limit; plan in
-  `docs/nvn-design.md` "Unobserved functions").
+  `docs/graphics/nvn-design.md` "Unobserved functions").
 - The user adopted `nvn_selftest`: comparison of return values, memory writes, state at draw, clear and compute, and the order of
   sync operations. It has its own objects and memory. The fence and visibility checks are in a separate `nvn_exectest`. It starts
   in stage 3 with a few functions and a mutation check. `selftest`, `exec` and `seen` are recorded apart.
-- The user accepted step 2-6 (`docs/nvn-design.md` section 2-6: groups G1 to G10, files, steps 3a to 3d, test plan). Stage 2 is
-  finished. Steps 2-1 to 2-6 are in `docs/nvn-design.md`.
+- The user accepted step 2-6 (`docs/graphics/nvn-design.md` section 2-6: groups G1 to G10, files, steps 3a to 3d, test plan). Stage 2 is
+  finished. Steps 2-1 to 2-6 are in `docs/graphics/nvn-design.md`.
 - The Orca "code reviewer" (skill `orca-agents`) reviews the code after 3b and 3c (and after 3d if it is large); see
-  `docs/nvn-plan.md` stage 3. For 3b it reviews 3b-1 to 3b-7 together, after 3b-7.
+  `docs/graphics/nvn-plan.md` stage 3. For 3b it reviews 3b-1 to 3b-7 together, after 3b-7.
 - Facts to keep: object memory is not used by the host (a side table keyed by address); the texture handle is `texture | sampler
   << 20 | 1 << 32`; the rules for side effects, notifications, lifetime and the taps for TAA are in section 2-4. Choice 2 (a
   native draw interface) is a candidate for a later clean-up, judged after stage 4.
 - Step 3a done: the `gpu-submit:` and `nvn-size:` diagnostics (runtime change 0022) and the run of the user. The result is in
-  `docs/nvn-design.md`, section "3a Result". The shadow RAM assumption of 2-5 (b) was wrong (the library moves the mode 2, 3, 1 in
+  `docs/graphics/nvn-design.md`, section "3a Result". The shadow RAM assumption of 2-5 (b) was wrong (the library moves the mode 2, 3, 1 in
   the tail of each frame) and is corrected there. The log of that run is replaced by later runs.
 - Part 3b-1 written and built: the setting `nvn_native`, `gpu/nvn_native.c` (loader hooks below the trace hooks, the
   missing-function handler, the exit report), `gpu/nvn_objtab.c` (test `nvn_objtab`), and the `nvn-value:` trace (runtime changes
   0023 and 0024). The full `ctest` run: all pass except `tracked_material`, which fails on the two SMAA `.dds` files of an
   earlier commit (not caused by 3b-1; not fixed). Not run in the game with `nvn_native=1`.
-- Staging done for the user: the stage 2 text (`docs/nvn-design.md` without the sections "3a Result" and "3b Progress", and
-  `docs/nvn-plan.md` as it was then) was added to the index for a commit. The user commits.
+- Staging done for the user: the stage 2 text (`docs/graphics/nvn-design.md` without the sections "3a Result" and "3b Progress", and
+  `docs/graphics/nvn-plan.md` as it was then) was added to the index for a commit. The user commits.
 
 ## NVN stage 3, parts 3b-2 and 3b-3 (2026-11-02, moved from WORK_PLAN on 2026-11-02)
 
 Done:
 
-- 3b-2: one run to the title (`nvn_trace=1`, `nvn_native=0`). The values are in `docs/nvn-design.md`, "3b-2 Result". Committed (c088362).
+- 3b-2: one run to the title (`nvn_trace=1`, `nvn_native=0`). The values are in `docs/graphics/nvn-design.md`, "3b-2 Result". Committed (c088362).
 - 3b-3: the host handlers of G1 (device builder, device, queue builder, queue: 30 functions in `native_procs` of `gpu/nvn_native.c`)
   and the pure parts in `gpu/nvn_params.c` and `gpu/nvn_params.h` (the `GetInteger` table, the timestamp ratio 625 / 384, the
   queue memory size). Test `nvn_params` passes. `ctest` has one failure, `tracked_material` (two SMAA `.dds` files, not caused by
-  this work). Runtime changes 0025 to 0027 are in `docs/runtime-changes.md`.
+  this work). Runtime changes 0025 to 0027 are in `docs/build/runtime-changes.md`.
 - Facts from the library (update 1.1.1, `sdk` module): `nvnDeviceGetTimestampInNanoseconds` is at d82d0e0 and uses the device
   words +0x58 = 0x271 and +0x5c = 0x180. `nvnQueueBuilderGetQueueMemorySize` is at d8383f0. It reads six device words (+0x8c = 0x80,
   +0x94 = 2, +0x98 = 1, +0xe0 = 1, +0xe4 = 0x1000, +0x1af4 = 0). The port gives 0x8a000 for the game's builder, the same as the
@@ -558,7 +558,7 @@ Tools and traps learned:
 - Check the program with `tasklist` before the copy to the three places.
 
 State at the end of the session: the first run with `nvn_native=1` hangs at the first call of `nvnDeviceBuilderSetDefaults`
-(see "3b-3 First run" in `docs/nvn-design.md`). The diagnostic of change 0027 is built and copied. The user has not yet run it.
+(see "3b-3 First run" in `docs/graphics/nvn-design.md`). The diagnostic of change 0027 is built and copied. The user has not yet run it.
 ## NVN stage 3, part 3b-3 finished (2026-11-02, moved from WORK_PLAN on 2026-11-02)
 
 - Cause of the hang of the first run with `nvn_native=1`: the host handlers did not set `c->pc`. A guest function ends with RET, which
@@ -572,7 +572,7 @@ State at the end of the session: the first run with `nvn_native=1` hangs at the 
   aa926ec (`main`): a null pointer plus 0x30, the result of the pool allocator aa969bc. It follows from the missing handlers.
   Values of the first calls: `MemoryPoolBuilderSetStorage` x1=9270eb000 x2=12c00000, `TexturePoolInitialize` x2=12bc0000 x3=2000,
   `SamplerPoolInitialize` x2=12bbc000 x3=200.
-- The text is in `docs/nvn-design.md` ("3b-3 First run", "3b-3 Second run") and `docs/runtime-changes.md` (row 0028).
+- The text is in `docs/graphics/nvn-design.md` ("3b-3 First run", "3b-3 Second run") and `docs/build/runtime-changes.md` (row 0028).
 - The commit message of 3b-3 was given to the user. The user commits.
 - Setup of the session: `.claude/settings.json` (not in git) denies the unused skills and the tool `Agent` (Claude Code subagents are
   not used). `orca-native-chat:orca-chat-visuals` is allowed. `.claude/skills/orca-agents/SKILL.md` has four agents now: code
@@ -672,8 +672,8 @@ State at the end of the session: the first run with `nvn_native=1` hangs at the 
 
 ## NVN stage 3, part 3b-7 finished (2026-11-03, commit fd2bea5)
 
-- Done: the selftest harness and its first cases of the kinds R and M (row 0034 of `docs/runtime-changes.md`, design table of
-  `docs/nvn-design.md` row 3b-7). The new setting is `nvn_selftest`. It needs `nvn_trace=1` and `nvn_native=0`.
+- Done: the selftest harness and its first cases of the kinds R and M (row 0034 of `docs/build/runtime-changes.md`, design table of
+  `docs/graphics/nvn-design.md` row 3b-7). The new setting is `nvn_selftest`. It needs `nvn_trace=1` and `nvn_native=0`.
 - Files (all in `third_party/ScarletNX`): `src/nx/gpu/nvn_selftest_cmp.c` (the comparer: R, M, S and Y, the first difference of each
   kind, an ignore mask for M, a full table is a fail), `nvn_selftest_mem.c` (the arena over one address range), `nvn_selftest_rec.c`
   (the recording `Renderer` `nvn_st_renderer`, with a snapshot hook that 3c fills), `nvn_selftest.c` (the cases and the run).
@@ -699,7 +699,7 @@ State at the end of the session: the first run with `nvn_native=1` hangs at the 
 ## NVN stage 3, review of 3b-1 to 3b-7 (2026-11-03, commits eb7f721 and e0567f8, not pushed)
 
 The Orca code reviewer (Sol) made 17 findings. The report was `reports/review-nvn-3b.md` in the scratchpad. The commits fix
-findings 1 to 14. Findings 15 to 17 (P3) are open (see WORK_PLAN). Rows 0035 and 0036 of `docs/runtime-changes.md` list the changes.
+findings 1 to 14. Findings 15 to 17 (P3) are open (see WORK_PLAN). Rows 0035 and 0036 of `docs/build/runtime-changes.md` list the changes.
 
 - P1 (eb7f721). Finding 1: with `nvn_native=1` and `nvn_trace=1` the two resolver hooks of `nvnDeviceGetProcAddress` called each
   other after the second bootstrap lookup. Each hook now installs once (it tests its own `getproc_original`). It has no host test:
@@ -717,7 +717,7 @@ findings 1 to 14. Findings 15 to 17 (P3) are open (see WORK_PLAN). Rows 0035 and
   this on purpose (comment in `nvn_params.c`). Finding 7 (multisample array): the behavior was right, the names were wrong. The
   library numbers are 5 multisample, 6 multisample array, 7 rectangle. `nvn_params.h` now uses them.
 - The library maps a swizzle above 5 to component 0 and the host now refuses it. The host result differs from the library for this
-  unsupported input, by decision (rule of `docs/nvn-design.md`).
+  unsupported input, by decision (rule of `docs/graphics/nvn-design.md`).
 - The compression switch (device +0x1b1c, `NVN_TEXTURE_DEVICE_COMPRESSION_ENABLE`) stays 1 and unverified. The 40 archived size
   queries need it non-zero. The only store found for the range is `str wzr, [x19, #0x1b18]` at d831c0c (4 bytes, does not reach
   +0x1b1c), so the old claim "device initialization clears it" was wrong. The selftest now logs `selftest: device texture words
@@ -729,7 +729,7 @@ findings 1 to 14. Findings 15 to 17 (P3) are open (see WORK_PLAN). Rows 0035 and
 
 - P3 findings 15 to 17 fixed (7d7532e): the tile thresholds of `texture_choose_tile` are named constants
   (`NVN_TEXTURE_AUTO_TILE_DEPTH_*` and `_ROWS_*` in `nvn_params.h`), the first comment of `nvn_native.c` has 4 lines (the text is in
-  `docs/nvn-design.md` 2-3), and the 3b row of the selftest table lists the real cases. Build ok, `ctest` ok except `tracked_material`.
+  `docs/graphics/nvn-design.md` 2-3), and the 3b row of the selftest table lists the real cases. Build ok, `ctest` ok except `tracked_material`.
 - Selftest run of 2026-11-03 16:54 (update program, `nvn_native=0`, `nvn_trace=1`, `nvn_selftest=1`, title scene, about 41 s, 30 fps,
   no crash): 51 cases, 0 failed, 0 skipped (27 `DeviceGetInteger` M cases, 24 texture builder R cases), arena 560 of 65536 bytes.
   The game device has `+1b18=0` and `+1b1c=1`. `NVN_TEXTURE_DEVICE_COMPRESSION_ENABLE` stays 1 (4f25979). The store of the byte is
@@ -752,12 +752,12 @@ findings 1 to 14. Findings 15 to 17 (P3) are open (see WORK_PLAN). Rows 0035 and
   (d83915c) and builds the entries. The explorer decoded the four entries (caches, empty, pools, fence and window image). `ClearColor`
   runs macro 1 (0xE02) with `(target << 6) | (mask << 2)`. The macro body is not read. The format word of a render target comes from
   the table at `[0xe03fd40] + format*0x30 + 0x1c`. `nvnDeviceFinalizeCommandHandle` is not in the call list.
-- Design decisions of 3c: `docs/nvn-design.md`, section "3c Host design decisions" (13 decisions and the work order).
+- Design decisions of 3c: `docs/graphics/nvn-design.md`, section "3c Host design decisions" (13 decisions and the work order).
 
 ## NVN stage 3, 3c steps 1 to 4a finished (2026-11-03, commits 5b6455c, 7163d63 and 77ec6f7, not pushed)
 
 Scope: the design section 3c, the pool mapping, the Buffer handlers, the two analysis tasks and the command buffer recorder. No game
-run was made for any of it. Host tests: `nvdrv_service`, `nvn_params`, `nvn_cmdlist`. Rows 0037 to 0039 of `docs/runtime-changes.md`.
+run was made for any of it. Host tests: `nvdrv_service`, `nvn_params`, `nvn_cmdlist`. Rows 0037 to 0039 of `docs/build/runtime-changes.md`.
 
 - Pool mapping (0037): `nvn_gpu_map_range(gva, cpu, size)` and `nvn_gpu_unmap_range(gva, cpu, size)` in `nvdrv`. Map needs page
   aligned arguments inside the 40 bit space and no mapped page in the range (else 0). Unmap clears only the pages that still show the
@@ -809,7 +809,7 @@ run was made for any of it. Host tests: `nvdrv_service`, `nvn_params`, `nvn_cmdl
 
 - RT format table: `nvn_rt_format_word(format)` in `gpu/nvn_params.c` and `.h`. 66 rows from the section "Format table", all other
   rows 0, an index above 0xa0 gives 0 (0 means a fault of the caller). Test: `test_rt_format_word` in `tests/nvn_params.c`.
-- 2a: `gpu_channel_open(id)` in `gpu.c` and `gpu.h` (row 0040 of `docs/runtime-changes.md`). It makes the `GpuChannel` of a syncpoint
+- 2a: `gpu_channel_open(id)` in `gpu.c` and `gpu.h` (row 0040 of `docs/build/runtime-changes.md`). It makes the `GpuChannel` of a syncpoint
   id with the reset state and no submission. Take the id from `syncpt_alloc()`: the renderer uses `ch->id` for the query counters
   (`vk_query_*`) and for `g_draw.ch_id`, so two channels must not share an id. `gpu_call(fn, arg, NULL, 0)` runs `fn` on the GPU thread in
   order with the other calls. The save state code walks `g_gpu.chan`: a channel without jobs is fine for it (not tested).
@@ -1024,7 +1024,7 @@ being `nvnDeviceGetTextureHandle`. The analyst/writer method of 3b applies. Ask 
   `NVN_OP_BIND_TEXTURE` (stage 0 to 5, slot below 128, host rule), the env callback `bind_texture`, the table
   `texture_handle[6][128]` in `NvnNativeReplayHost` (per frame job, on the stack of `frame_replay_lists`, not cleared between lists).
   No Maxwell method is written. Tests added in `nvn_params`, `nvn_cmdlist`, `nvn_replay`. Build and ctest pass.
-- Run of `2b33574` (update program, 34 s): no crash, 30.0 fps, `faults=0`, no JIT miss, 105 missing functions. `docs/nvn-design.md`
+- Run of `2b33574` (update program, 34 s): no crash, 30.0 fps, `faults=0`, no JIT miss, 105 missing functions. `docs/graphics/nvn-design.md`
   2-3 was corrected (the image handle has no tag).
 
 ## Group 1 and the lost code (2026-11-04, commits ab78933 and 70b9a42, not pushed)
@@ -1044,7 +1044,7 @@ command buffer. Method of 3b-4 (analyst table, brief with decisions, code writer
 - Commit `ab78933`: ops `NVN_OP_SET_STENCIL`, `NVN_OP_SET_BLEND_COLOR`, `NVN_OP_SET_ALPHA_REF`, handlers in `nvn_native.c` (macro
   `COMMAND_STENCIL_HANDLER`), replay in `nvn_replay.c`, tests in `tests/nvn_replay.c`. The brief is `reports/brief-writer-g1-raster.md`.
 - Run of `ab78933` (18:42): 992 frames, 30 fps, no crash, `faults=0`, 0 JIT misses. The five setters left the missing list.
-- Problem found in that run: commit `2b33574` held only a change of `docs/nvn-design.md`. The code of the texture handles and
+- Problem found in that run: commit `2b33574` held only a change of `docs/graphics/nvn-design.md`. The code of the texture handles and
   `NVN_OP_BIND_TEXTURE` had never been committed (the exe of that time had it). The writer patch `patches/writer-3d-texhandle-1b.patch`
   was merged by hand (`git apply --3way`, two "keep both" conflicts in `nvn_cmdlist.h` and `nvn_replay.c`) and committed as `70b9a42`.
   Rule: after each commit run `git show --stat` and compare it with the files of the change.
@@ -1133,7 +1133,7 @@ The native plan (decision of the user, 2026-11-02, `ROADMAP.md` phases 6 to 10),
 Vulkan (no GPU command stream), 2. input and camera, 3. host replacement of SDK functions, 4. shaders and pipelines, 5. extracted
 RomFS and a file layer for mods.
 
-Phase 6 (graphics) follows `docs/nvn-plan.md` (five stages) and `docs/nvn-design.md`. Stages 1 and 2 are done. Stage 3 has the steps
+Phase 6 (graphics) follows `docs/graphics/nvn-plan.md` (five stages) and `docs/graphics/nvn-design.md`. Stages 1 and 2 are done. Stage 3 has the steps
 3a and 3b-1 to 3b-7 (done), 3c and 3d. The review of 3b is done. The selftest run of 2026-11-03 passed (51 cases, twice).
 
 Task now (decision of the user, 2026-11-04): remove the "missing" functions in the order of the call count, largest first. Groups, each one
@@ -1160,7 +1160,7 @@ Black screen: expected (no vertex binding, no shader and pipeline, stage 4). Do 
 Done in 3d: `OLD-WORK_PLAN.md`, the last sections. Open facts: method 0x68B (device+0x1a00 bit 0) and macro 7 (stage 4). A writer
 patch can come as UTF-16 (PowerShell redirect): regenerate it with `git diff` in the worktree and `git apply --check` it.
 
-Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
+Design of 3c: `docs/graphics/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
 The crash is solved. Open steps (one step for each request, the code writer writes the code):
 1. Not checked yet: the assumption `NVN_REPLAY_CLIP_LIMIT 0x4000` and the present arguments (`fmt` 1, `layout` 3, `bhl` from
@@ -1389,7 +1389,7 @@ library does it at d85f0d0, caller unknown). Then ask the user for a run: no cra
 
 - The task "remove the missing functions" is DONE (groups 1 to 7, 2026-11-05). The run shows `missing=0`.
 - DECIDED (user, 2026-11-05): the 3D `WriteTexels` goes to stage 4 (step 5). The renderer stays the existing Maxwell layer
-  (shaders and pipelines move in phase 9, `docs/nvn-plan.md`).
+  (shaders and pipelines move in phase 9, `docs/graphics/nvn-plan.md`).
 - Stage 4 step 1 (program bind) is DONE (1a builder, 1b summary, 1c replay, commit `4c279e4`; history in section "Stage 4 step 1c").
   Still refused: stages 2..4, VertexA, transform feedback.
 - Task A step 1 (explorer, 2026-11-05): the builder sdk 0xD84F800 (called by nvnQueueInitialize 0xD839360) writes the initial command
@@ -1575,7 +1575,7 @@ Old State text (2026-11-06):
   `first draw sent`, `first compute dispatch sent`, `dispatch_refusals=0`, no crash, black screen.
 - Old rule: `CLAUDE.md` named GPT-6-Luna (Codex) for the explorer, analyst and writers. The real model of these agents is OpenCode with
   DeepSeek V4.1 Flash (user, 2026-11-07). Commit line used: `Co-Authored-By: OpenCode (DeepSeek V4.1 Flash) <noreply@opencode.ai>`.
-- Old NEXT text: "first task: find why the screen is black. Read the log and `docs/nvn-design.md`, tell if the Vulkan side builds a shader
+- Old NEXT text: "first task: find why the screen is black. Read the log and `docs/graphics/nvn-design.md`, tell if the Vulkan side builds a shader
   and a pipeline from the program words." Answer: the translator exists and runs, the first shader fails (see above).
 
 ## Stage 4 step 4b ClearTexture done and state text of 2026-11-07 (moved from WORK_PLAN.md on 2026-11-07)
@@ -1661,7 +1661,7 @@ Text moved from the state and next lines:
   misses, 30 fps after the first 5 s (14 fps while loading). `WriteTexels` ran once, no `is 3D` line. Seen: `nvnSyncWait sync=14482da50
   state=2 timeout=ffffffffffffffff is not signaled, fails` 21 times, `nvnWindowAcquireTexture failed: no free window image
   (states=2,2,0,0)` 18 times and `nvnQueuePresentTexture failed: index outside the window textures (index=-1)` 18 times, all between
-  3.90 s and 4.50 s, then no more. The design (`docs/nvn-design.md` line 860) calls the acquire stop "intended until" the frame job frees
+  3.90 s and 4.50 s, then no more. The design (`docs/graphics/nvn-design.md` line 860) calls the acquire stop "intended until" the frame job frees
   the image. Not known: whether the three lines were in the runs of 4c (those logs were not kept). The cause of the SyncWait failure is
   not found. 80 shaders are `not translated` (a jump table in a constant buffer, unknown opcode, `missing exit`).
 - Open from the reports: a 3D write through a view with the layers flag (`base_layer` is added, not checked in the disassembly);
@@ -1683,7 +1683,7 @@ writer made the patch (brief `reports/brief-a-syncwait.md`), the caller read it 
 
 Run after the fix (2026-11-07 21:35, 58 s): `faults=0`, no crash, 0 JIT misses, 30 fps, 0 `no free window image`, 1 SyncWait
 failure (3.57 s, sync=14482da50, state=0), first frame line at 4.02 s, 80 shaders not translated. Log copy: scratchpad
-`runs/run-syncwait-fix.log`. Docs: `docs/nvn-design.md` near line 863.
+`runs/run-syncwait-fix.log`. Docs: `docs/graphics/nvn-design.md` near line 863.
 
 ## Stage 4 task A2 SyncWait failure at 3.57 s (2026-11-07, closed by the user)
 
@@ -2001,7 +2001,7 @@ Code writer 7c (brief `reports/brief-7c.md`, worktree `wt-7c`) wrote `patches/7c
   (kinds 1 and 3 return, kind 5 increments shader_generation). So on the native path the XFB write and the later vertex read have
   no Vulkan barrier. User 2026-11-09: change decision 6, send the library words of each bit.
 - Task (b) step 1, DONE 2026-11-09 (not committed with the `settings.txt:764` help fix of `nvn_native`). The words of each bit are
-  in `docs/nvn-design.md` decision 6, "Barrier". Sources: `analysis/d_barrier.txt` (d856590) and `analysis/d859710.txt`. The
+  in `docs/graphics/nvn-design.md` decision 6, "Barrier". Sources: `analysis/d_barrier.txt` (d856590) and `analysis/d859710.txt`. The
   explorer list was right, but it did not have: bit 4 (0x3DD after bit 1 or 2, else 0x4A2), the priority of bits 3, 0, 1, 2 (only
   the first set bit is sent), the 0x80000040 after the type 1 record of bit 3, and the words of d859710 (cb, 1, 1): 0x8000C014,
   then 0x2001C00B 0x80000000 when the device byte +0x60 is not 0, then 0x2001C00B 0x70000000. These are puller writes on
@@ -2015,7 +2015,7 @@ Code writer 7c (brief `reports/brief-7c.md`, worktree `wt-7c`) wrote `patches/7c
    Task (b) characters missing (cause found, user agreed 2026-11-09): change 3c decision 6. `replay_barrier`
    (nvn_replay.c:189) only counts the bits, so no WAIT_FOR_IDLE reaches the renderer and the transform feedback write (skinning
    VS 24ba3b3c) has no Vulkan barrier before the vertex read. Steps, one per session:
-   (1) DONE: the words are in `docs/nvn-design.md` decision 6, "Barrier". Facts: `OLD-WORK_PLAN.md`, last section.
+   (1) DONE: the words are in `docs/graphics/nvn-design.md` decision 6, "Barrier". Facts: `OLD-WORK_PLAN.md`, last section.
    (2) DONE: `nvn_barrier_words` (nvn_params.c, pure, max 14 words) and `replay_barrier` sends the words: method < 0x40 to the new env callback `puller_method` (`gpu_channel_method`), else `replay_method`. Build OK, ctest OK except `tracked_material`, two mutants caught (`nvn_params`, `nvn_replay`). `wt-7b` removed. The brief said 13 words: wrong, 14 is right.
    (3) DONE: the user ran into the field, the characters are shown. Log 15:46: no replay fault, no crash. Task (b) is finished:
        move it to `OLD-WORK_PLAN.md` at the start of the next session. Next: task (a) or the open items below (ask the user).
@@ -2324,7 +2324,7 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 - Commit `6f98b42`: DrawElements, DrawElementsInstanced and DrawElementsBaseVertex masks 0x0a to 0x06, test row
   `nvnCommandBufferDrawElements` 0x06. `ctest` passes except `tracked_material`, the mutant (0x0a) is caught. Exe md5 25d58048.
 - Run 2 (user, update program, `nvn_trace=1`, no crash line): 277 distinct values, all 63 functions. Same set as run 1 except
-  DrawElements: mode 4 and index type 1 only. Saved in `analysis/enum-run2.txt`. Result in `docs/nvn-design.md` 4-u1 (commit `6f09358`).
+  DrawElements: mode 4 and index type 1 only. Saved in `analysis/enum-run2.txt`. Result in `docs/graphics/nvn-design.md` 4-u1 (commit `6f09358`).
 
 ## U2 events and sync, step (a) and task 1 (2026-11-10, moved from WORK_PLAN.md)
 
@@ -2336,7 +2336,7 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
   QueueWaitSync appends GPU waits and does not block. Sync kind 4 is a GL sync.
 - Task 1, commit `94754a7`: 18 CPU side handlers by the code writer (brief `reports/brief-writer-u2-1.md`, report
   `writer-u2-1.md`). New `NVN_OBJ_EVENT`, `EventRec`, `event_value_address`, `nvn_event_signal_value` (unit test),
-  `frames_in_flight` (+1 at the present post, -1 in `frame_finish`). Decisions: `docs/nvn-design.md` 4-u2.
+  `frames_in_flight` (+1 at the present post, -1 in `frame_finish`). Decisions: `docs/graphics/nvn-design.md` 4-u2.
 - Checks: the whole patch read, `ctest` passes except `tracked_material` (`driver_workflow` passes alone), the mutant of the
   signal rule is caught. `nvn-coverage.md`: G10 has 119 `stub-log` rows. Exe md5 878c4351 in the 3 places. No game run.
 
@@ -2393,7 +2393,7 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 
 ## U3 design and patch 1 (2026-11-10, moved from WORK_PLAN.md)
 
-- Step (b2): the design of the 7 open items is in `docs/nvn-design.md`, "U3 design of the open items" (`acec5d0`, approved
+- Step (b2): the design of the 7 open items is in `docs/graphics/nvn-design.md`, "U3 design of the open items" (`acec5d0`, approved
   by the user). MIRROR_Y/Z: one DMA launch for each row or layer, because `dma.c` keeps the pitch as u32. TiledDownsample:
   `vkCmdBlitImage` linear. MapVirtual: virtual pool and `as_remap` of `nvdrv.c`. Discard, ResolveDepthBuffer: logged no-ops.
 - Patch 1 (`c4f60c5`): 19 rows. Brief `reports/brief-writer-u3-1.md`, patch `patches/writer-u3-1.patch`, report
@@ -2456,8 +2456,8 @@ NEXT, task (d) step 3: the characters are missing because NO transform feedback 
 Commit `b74abf3`: tables A and B, 27 rows. Writer patch `patches/writer-u4-1.patch`, brief
 `reports/brief-writer-u4-1.md`, report `reports/writer-u4-1.md`. The text of the plan at that time:
 
-NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
-  4-u4. `docs/nvn-coverage.md`: 88 rows of G10 are `stub-log` (after U3). Groups left, in this order:
+NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/graphics/nvn-design.md`, "Unobserved functions", steps 4-u2 to
+  4-u4. `docs/graphics/nvn-coverage.md`: 88 rows of G10 are `stub-log` (after U3). Groups left, in this order:
   - U4 draw extras (about 40): indirect draws, DrawTransformFeedback, Pause/ResumeTransformFeedback, tessellation, conservative
     raster, SetScissor, SetViewport, PrimitiveRestart, SampleMask, ViewportSwizzles, RenderEnable, ZCull, separate sampler and
     texture binds, BindTextures, subroutines, scratch memory, coverage modulation, tiled cache, color reduction.
@@ -2535,7 +2535,7 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
 
 ## Task (u) 4-u3-1: selftest of builders and states (2026-11-10)
 
-- Current step: 4-u3 step (a), plan the selftest and exectest cases (`docs/nvn-design.md`, "Unobserved functions", 4-u3:
+- Current step: 4-u3 step (a), plan the selftest and exectest cases (`docs/graphics/nvn-design.md`, "Unobserved functions", 4-u3:
   the selftest cases for the rest of the functions that a test can make, by group, and the exectest for events and
   `WaitSync`). First list the rows of `nvn-coverage.md` without `unit`, `selftest` or `exec` in the checks column, by
   group, and decide which a selftest can make. U1 to U5 are done (`OLD-WORK_PLAN.md`, last sections).
@@ -2655,7 +2655,7 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
 
 - Current step: 4-u3-3 (S/Y harness, mutation, command buffer). 4-u3-2 is done (history: `OLD-WORK_PLAN.md`, last section).
   Steps (a) and (b) are done, the decoder fix is done (history: `OLD-WORK_PLAN.md`, last section "4-u3-3").
-  Step (c), runs of 2026-11-11 11:32: run 1 has 257 cases, 0 failed (recorded in `docs/nvn-coverage.md`). Run 2
+  Step (c), runs of 2026-11-11 11:32: run 1 has 257 cases, 0 failed (recorded in `docs/graphics/nvn-coverage.md`). Run 2
   (mutation SetViewports) fails SetViewports on S (vp0.translate_x) and also the 9 Barrier cases: the private channels
   keep the registers between cases. Fix A (user, 2026-11-11): reset both channels to a base copy made after the init
   stream, before each case. The fix is committed (`st_channel_reset`, writer patch `writer-u3-3c-1`), the exe is copied.
@@ -2740,7 +2740,7 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
     d1 DONE (2026-11-11, exe 4750291d): 286 cases, 0 failed, 8 expected no-op, 0 skipped. History: `OLD-WORK_PLAN.md`,
     section "d1 faults fixed". Next: group d2 (binds and resources), first a library analyst table of the d2 rows.
     The `.ini` has `nvn_selftest_mutate=` (empty) now.
-    d1 rows are not yet in the checks column of `docs/nvn-coverage.md`: add them with the d2 result.
+    d1 rows are not yet in the checks column of `docs/graphics/nvn-coverage.md`: add them with the d2 result.
     d2 step (a) DONE (2026-11-11): analyst tables `reports/analyst-d2a-1.md` (pools, render targets, program, vertex) and
     `analyst-d2b-1.md` (texture, image, uniform, storage binds). Caller checked TexturePool, VertexBuffer, VertexStream,
     UniformBuffer, BindTextures, BindStorageBuffers. Not in d2: the 4 separate binds, SetProgramSubroutines,

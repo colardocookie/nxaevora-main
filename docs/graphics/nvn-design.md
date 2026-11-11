@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 # NVN design: the choice of the way (phase 6, stage 2)
 
-This file compares the two ways of `docs/nvn-plan.md` and holds the design of the chosen way. The input is
-`docs/nvn-survey.md` (section 1-5). Nothing here is built yet.
+This file compares the two ways of `docs/graphics/nvn-plan.md` and holds the design of the chosen way. The input is
+`docs/graphics/nvn-survey.md` (section 1-5). Nothing here is built yet.
 
 **Decided by the user (2026-11-02):**
 
@@ -399,7 +399,7 @@ rewrite of the `r3d` readers in `vk/`. Until then choice 2 is a candidate for cl
 
 ## 2-5 Design of the three hard parts (2026-11-02)
 
-Method: the numbers of the survey (`docs/nvn-calls.md`), `gpu/gpu.c` (`gpu_call`, `gpu_submit`), `runtime/present.c` and
+Method: the numbers of the survey (`docs/graphics/nvn-calls.md`), `gpu/gpu.c` (`gpu_call`, `gpu_submit`), `runtime/present.c` and
 `hle/services/vi.c` (the present path now), and the rules of section 2-4. Nothing here ran. Each assumption that needs a run is
 listed at the end, as the first work of stage 3.
 
@@ -517,7 +517,7 @@ Assumptions to confirm in stage 3 (each is a plain yes or no from the first runs
 
 ## 2-6 Order of the work of stage 3, files and test plan (2026-11-02)
 
-Source: the 242 functions of `docs/nvn-calls.md` and the design of 2-1 to 2-5. The call counts do not show the order of the
+Source: the 242 functions of `docs/graphics/nvn-calls.md` and the design of 2-1 to 2-5. The call counts do not show the order of the
 calls, so the groups below follow the dependencies. The user accepts this section before stage 3 starts.
 
 ### Rule for the unknown
@@ -562,7 +562,7 @@ Files (new unless it says changed). The names are a proposal, the split follows 
 - `nvn_selftest.c` (new): the selftest and the execution test ("The selftest" below), with the recording `Renderer` backend and
   the comparer. The comparer is a separate pure part, so that host tests can use it.
 - `tests/nvn_native.c` (new) and `CMakeLists.txt` (changed): the tests below.
-- `docs/runtime-changes.md` (changed): one row for each commit that touches the runtime.
+- `docs/build/runtime-changes.md` (changed): one row for each commit that touches the runtime.
 
 Steps. Each step is one commit. The game is not started by the agent.
 
@@ -621,7 +621,7 @@ functions did not get in the run.
 
 ### The coverage file
 
-`docs/nvn-coverage.md` (new, made by a script `tools/nvn_coverage.py` from the resolved names and the call counts of the trace)
+`docs/graphics/nvn-coverage.md` (new, made by a script `tools/nvn_coverage.py` from the resolved names and the call counts of the trace)
 has one row for each of the 523 functions: name, group (G1 to G10), calls in the last run, and the state of the handler. The
 states, in order: `none`, `stub-log` (the missing handler), `implemented` (read from the disassembly, written), `unit`
 (a host test passes), `selftest` (the comparison below passes), `exec` (the execution test below passes), `seen` (a game run
@@ -737,7 +737,7 @@ functions that no run reached stay `implemented` plus `unit`, `selftest` or `exe
 
 ### Steps in stage 4 for this part
 
-- 4-u1: the tool `tools/nvn_coverage.py` and the first `docs/nvn-coverage.md`, with the trace of the argument values and the
+- 4-u1: the tool `tools/nvn_coverage.py` and the first `docs/graphics/nvn-coverage.md`, with the trace of the argument values and the
   separate columns for `selftest`, `exec` and `seen`. Done 2026-11-06 except the trace of the argument values: the tool
   reads the 523 names and addresses from the sdk module (`--sdk`) or a trace log (`--log`). The first file has 274 host
   handlers and 249 missing-function handlers, and every one of the 242 functions of `nvn-calls.md` has a host handler.
@@ -819,7 +819,7 @@ The host replays NVN through the Eden based engines (`maxwell/dma.c`, `fermi2d.c
 
 Run: update program, 43.4 s, 1149 frames at 30 frames a second, 0 JIT misses, no crash. The user ran to the title scene once. The
 log has 40 `gpu-submit:` blocks and 40 `nvn-size:` queries. The window had 1 call of each builder function (the same as the run of
-`docs/nvn-calls.md`), 1149 calls of the four frame functions, and 432 calls of `SetMemoryCallback`.
+`docs/graphics/nvn-calls.md`), 1149 calls of the four frame functions, and 432 calls of `SetMemoryCallback`.
 
 ### The library entries of a submission
 
@@ -1137,7 +1137,7 @@ unknown part stops with a log line.
      constant 1.
 7. **Pool mapping.** The renderer reads render targets and textures by GPU address, so every pool needs a page table entry from the
    first use. `gmmu_map` is public in `nvdrv.h`. The unmap (`gmmu_unmap` plus `gmap_cut` and the allocator) is not. Decision: add one
-   small function pair to `nvdrv` (`nvn_gpu_map_range`, `nvn_gpu_unmap_range`) with a row in `docs/runtime-changes.md`. The host
+   small function pair to `nvdrv` (`nvn_gpu_map_range`, `nvn_gpu_unmap_range`) with a row in `docs/build/runtime-changes.md`. The host
    keeps the bump allocator from 0x400000000 and maps at `MemoryPoolInitialize`, unmaps at `Finalize`. Overlap with a game mapping
    fails the initialize with a log line. This is the first work of 3c, because the clear needs it.
 8. **Queue and frame.** `QueueRec` gets the pending frame: the lists of `Submit` (the handle array is copied at once), the tokens of

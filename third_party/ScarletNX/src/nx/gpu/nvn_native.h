@@ -8,7 +8,7 @@
 #include "nx/gpu/nvn_replay.h"
 
 /* nvn_native=1: the host answers the NVN functions that the game resolves, and the game's NVN library does not run
-   (docs/nvn-design.md). Init runs once the game's symbols and dispatch table are loaded, before nvn_trace_init and
+   (nvn-design.md). Init runs once the game's symbols and dispatch table are loaded, before nvn_trace_init and
    before any guest thread starts. */
 void nvn_native_init(void);
 /* at a clean exit: the functions that the game called and the host does not have */
@@ -26,7 +26,7 @@ typedef struct { uint64_t addr, size; uint8_t bound, plural; } NvnBindEntry;
 typedef struct { uint32_t w[NVN_STATE_WORDS_MAX]; uint8_t bound; } NvnBoundState;
 /* The value of a bind dirty flag: the bind stored new state that the next draw has not sent yet. */
 #define NVN_BIND_DIRTY 1u
-/* The state behind the callbacks of a replay (docs/nvn-design.md, 3c decision 6). The frame job owns it for one replay. */
+/* The state behind the callbacks of a replay (nvn-design.md, 3c decision 6). The frame job owns it for one replay. */
 typedef struct {
     GpuChannel* channel; /* the private channel that the methods go to, used on the GPU thread only */
     uint32_t clip_limit; /* the device word at +0x18: 0 until its source is known, then SetRenderTargets is refused */

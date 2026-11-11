@@ -4,7 +4,7 @@
 #define SNX_NVN_SELFTEST_H
 
 /* nvn_selftest=1: the same scripted call goes to the game's NVN library and to the host handler, and the results are
-   compared (docs/nvn-design.md, "The selftest"). It needs nvn_trace=1 (the trace holds the library's entries) and
+   compared (nvn-design.md, "The selftest"). It needs nvn_trace=1 (the trace holds the library's entries) and
    nvn_native=0 (the library must run). The objects and memory of the selftest are its own. */
 
 #include "common/cpu/aarch64/cpu.h"

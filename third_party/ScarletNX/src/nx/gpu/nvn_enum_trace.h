@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 /* The enum and flag arguments of the observed NVN functions, and the set of values that the trace logged
-   (docs/nvn-design.md, "Unobserved functions", "Rules", item 3). This part has no guest memory, no log and no lock,
+   (nvn-design.md, "Unobserved functions", "Rules", item 3). This part has no guest memory, no log and no lock,
    so a host test can link it alone. */
 
 #define NVN_ENUM_SEEN_MAX 64
