@@ -68,7 +68,9 @@ jobs:
           clang --version
           llvm-config --version
           cmake --version
-          echo "clang=$(clang --version | head -n1 | tr -c 'A-Za-z0-9.\n' '-')" >> "$GITHUB_OUTPUT"
+          clang="$(clang --version | head -n1 | tr -c 'A-Za-z0-9.\n' '-')"
+          # The prefix of the FFmpeg and OpenSSL cache keys. The saved keys add the folders in use (see the save step).
+          echo "deps=ffmpeg-openssl-windows-$clang-${{ hashFiles('third_party/ScarletNX/cmake/dependencies.cmake', 'third_party/ScarletNX/cmake/ffmpeg*', 'third_party/ScarletNX/cmake/openssl.cmake', 'third_party/ScarletNX/cmake/deps_*.cmake') }}" >> "$GITHUB_OUTPUT"
           # FFmpeg and OpenSSL are built once per toolchain and reused (cmake/deps_cache.cmake). CMake wants / here.
           echo "SNX_DEPS_CACHE=$(cygpath -m "$PWD/.cache/deps")" >> "$GITHUB_ENV"
           appdata="$(cygpath -u "$RUNNER_TEMP")/snx-appdata"
@@ -83,12 +85,14 @@ jobs:
           key: cpm-windows-${{ hashFiles('third_party/ScarletNX/cmake/dependencies.cmake') }}
 
       # The FFmpeg and OpenSSL builds. The cache folder checks its own inputs, so a stale entry is rebuilt, not used.
+      # No saved key equals the prefix itself, so this restores the newest entry of the prefix.
       - name: Restore the FFmpeg and OpenSSL builds
         id: deps
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: third_party/ScarletNX/.cache/deps
-          key: deps-windows-${{ steps.toolchain.outputs.clang }}-${{ hashFiles('third_party/ScarletNX/cmake/dependencies.cmake', 'third_party/ScarletNX/cmake/ffmpeg*', 'third_party/ScarletNX/cmake/openssl.cmake', 'third_party/ScarletNX/cmake/deps_*.cmake') }}
+          key: ${{ steps.toolchain.outputs.deps }}
+          restore-keys: ${{ steps.toolchain.outputs.deps }}-
 
       # -mcx16: the 16-byte atomics of two test targets fail -Werror without it (SCARLETNX_BUILD-NOTES.md).
       # SNX_DEPLOY=OFF: CI has no recompiled game to copy the runtime to.
@@ -109,12 +113,26 @@ jobs:
         id: build
         run: cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
 
+      # Each folder name holds the hash of the build's inputs (with the system headers), and snx-deps/*.dir names the
+      # folders this build used. A rebuild after an MSYS2 update gives a new name, so a new key, and the entry is saved.
+      # Folders the build did not use are removed first, so old builds do not pile up in the entry.
+      - name: Keep only the FFmpeg and OpenSSL builds in use
+        id: deps-used
+        if: steps.build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          used="$(cat build/default/snx-deps/*.dir | tr -d '\r' | LC_ALL=C sort)"
+          for dir in .cache/deps/*; do
+            grep -qxF "$(basename "$dir")" <<< "$used" || rm -rf "$dir"
+          done
+          echo "key=${{ steps.toolchain.outputs.deps }}-$(sha256sum <<< "$used" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
       - name: Save the FFmpeg and OpenSSL builds
-        if: steps.deps.outputs.cache-hit != 'true' && steps.build.outcome == 'success'
+        if: steps.deps-used.outcome == 'success' && steps.deps-used.outputs.key != steps.deps.outputs.cache-matched-key
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: third_party/ScarletNX/.cache/deps
-          key: ${{ steps.deps.outputs.cache-primary-key }}
+          key: ${{ steps.deps-used.outputs.key }}
 
       - name: Check the executable starts
         run: build/default/scarletnx.exe --help > /dev/null

@@ -77,9 +77,10 @@ attached to the run.
 
 The check does not run the game and has no GPU. It does not show that a scene works. The test `tracked_material` is
 left out because it fails on two SMAA `.dds` files under `src/nx/gpu/vk/shaders/smaa/`. Put it back when that is
-fixed. The tests `qemu_ref_selftest` and `gdb_jit` skip themselves, also on a local build. The runner has no Vulkan
-driver, so `3ds_vk_transfer`, `3ds_vk_y2r`, `3ds_vk_draw` and `3ds_gsp_gpu` skip there too. The list of skipped tests is
-at the end of the step `Run ctest`.
+fixed. `qemu_ref_selftest` runs only on a Linux build with Clang, `ld.lld` and `qemu-aarch64`, and `gdb_jit` does not
+run on Windows, so both skip on the runner and on a local Windows build. The runner has no Vulkan driver, so
+`3ds_vk_transfer`, `3ds_vk_y2r`, `3ds_vk_draw` and `3ds_gsp_gpu` skip there too. The list of skipped tests is at the
+end of the step `Run ctest`.
 
 ## Commits and documents
 
