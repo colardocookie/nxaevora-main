@@ -821,6 +821,125 @@ static void frame_timer_research_init(void) {
         LOG("arceus-frame-timer: observation probe installed kind=%u\n",k);
     }
 }
+/* Common fade C21490, mode 0 (linear color). Each active call adds one to frame +538 and the
+   delta +550 to color +540, so fades ran 4x fast at 120 FPS. With SNX_ARCEUS_FADE_FIX a call
+   adds delta x elapsed x 30, and the frame only advances once a whole 1/30 s has built up,
+   by staging +538 one lower. Completion, snaps and callbacks stay the original's. */
+static int writable(u64 address, u64 size);
+#define FADE_SLOTS 16
+static int fade_fix_active;
+static PMutex fade_lock = PMUTEX_INIT;
+/* generation counts the fade starts seen for the object, so a call that a start interrupted
+   leaves the new fade's history and delta alone. */
+static struct { u64 object; float progress; u32 frame, duration, state, generation; } fade_slots[FADE_SLOTS];
+static u64 fade_calls, fade_staged, fade_full;
+typedef struct { u64 object; int slot, staged_delta; u32 delta[4], staged[4], generation; float progress; } FadeStage;
+static float fade_word_float(u32 bits) {
+    float f;
+    memcpy(&f, &bits, 4);
+    return f;
+}
+/* The object's slot or a free one, -1 when all are in use (the call then runs as it is).
+   A slot that no longer matches the fade (start, completion, other writer) starts at zero. */
+static int fade_slot(u64 object, u32 frame, u32 duration, u32 state, float* progress) {
+    int found = -1, free_slot = -1;
+    for (int k = 0; k < FADE_SLOTS && found < 0; k++) {
+        if (fade_slots[k].object == object) found = k;
+        if (!fade_slots[k].object && free_slot < 0) free_slot = k;
+    }
+    if (found < 0) {
+        if (free_slot < 0) return -1;
+        found = free_slot;
+        fade_slots[found].object = object;
+        fade_slots[found].progress = 0.0f;
+        fade_slots[found].frame = ~0u;
+        fade_slots[found].generation = 0;
+    }
+    if (fade_slots[found].frame != frame || fade_slots[found].duration != duration ||
+        fade_slots[found].state != state)
+        fade_slots[found].progress = 0.0f;
+    *progress = fade_slots[found].progress;
+    return found;
+}
+static void fade_before(u64 object, FadeStage* st) {
+    st->slot = -1;
+    st->staged_delta = 0;
+    if (!fade_fix_active || !writable(object, 0x570) || gr32(object + 0x500) != 0) return;
+    const u32 state = gr32(object + 0x504);
+    if (state != 2 && state != 3) return;
+    /* The cell holds min(elapsed, 1/30), so want is at most 1. */
+    const float want = guest_float(frame_step_address) / NOMINAL_STEP_SECONDS;
+    if (!(want > 0.0f && want <= 1.0f)) return;
+    const int32_t frame = (int32_t)gr32(object + 0x538), duration = (int32_t)gr32(object + 0x53c);
+    /* A fade-in at its end only resets and republishes the target: leave that call alone. */
+    if (frame >= duration && state == 2) return;
+    pm_lock(&fade_lock);
+    float progress = 0.0f;
+    st->slot = fade_slot(object, (u32)frame, (u32)duration, state, &progress);
+    if (st->slot >= 0) st->generation = fade_slots[st->slot].generation;
+    else fade_full++;
+    pm_unlock(&fade_lock);
+    if (st->slot < 0) return;
+    st->object = object;
+    st->progress = progress + want;
+    const int whole = st->progress >= 1.0f;
+    for (unsigned k = 0; k < 4; k++) st->delta[k] = gr32(object + 0x550 + 4 * k);
+    if (frame < duration) {
+        /* Each call adds its share of the delta, only up to the end on the last frame.
+           Only a call that completes a frame advances it. */
+        const float share = whole && frame + 1 >= duration ? 1.0f - progress : want;
+        for (unsigned k = 0; k < 4; k++) {
+            const float scaled = fade_word_float(st->delta[k]) * share;
+            memcpy(&st->staged[k], &scaled, 4);
+        }
+        if (!whole) gw32(object + 0x538, (u32)(frame - 1));
+    } else {
+        /* Fade-out finishes one frame after its last: hold it with a zero step until then. */
+        if (whole) return;
+        memset(st->staged, 0, sizeof st->staged);
+        gw32(object + 0x538, (u32)(duration - 1));
+    }
+    for (unsigned k = 0; k < 4; k++) gw32(object + 0x550 + 4 * k, st->staged[k]);
+    st->staged_delta = 1;
+    __atomic_add_fetch(&fade_staged, 1, __ATOMIC_RELAXED);
+}
+static void fade_after(const FadeStage* st) {
+    if (st->slot < 0) return;
+    const u64 object = st->object;
+    const u64 calls = __atomic_add_fetch(&fade_calls, 1, __ATOMIC_RELAXED);
+    pm_lock(&fade_lock);
+    const int current = fade_slots[st->slot].object == object &&
+                        fade_slots[st->slot].generation == st->generation;
+    pm_unlock(&fade_lock);
+    /* A fade start during the call owns the object now: no restore, no history. */
+    if (!current || !writable(object, 0x570)) return;
+    if (st->staged_delta) {
+        /* Restore the authored delta unless the call (or a callback) replaced it. */
+        int ours = 1;
+        for (unsigned k = 0; k < 4; k++)
+            if (gr32(object + 0x550 + 4 * k) != st->staged[k]) ours = 0;
+        if (ours)
+            for (unsigned k = 0; k < 4; k++) gw32(object + 0x550 + 4 * k, st->delta[k]);
+    }
+    const u32 frame = gr32(object + 0x538), duration = gr32(object + 0x53c), state = gr32(object + 0x504);
+    pm_lock(&fade_lock);
+    if (fade_slots[st->slot].object == object && fade_slots[st->slot].generation == st->generation) {
+        if (state != 2 && state != 3) {
+            fade_slots[st->slot].object = 0; /* Finished: the slot is free again. */
+        } else {
+            fade_slots[st->slot].progress = st->progress >= 1.0f ? st->progress - 1.0f : st->progress;
+            fade_slots[st->slot].frame = frame;
+            fade_slots[st->slot].duration = duration;
+            fade_slots[st->slot].state = state;
+        }
+    }
+    pm_unlock(&fade_lock);
+    if (calls <= 4 || calls % 1200 == 0)
+        LOG("arceus-fade: calls=%llu staged=%llu full=%llu object=%llx frame=%d duration=%d state=%u progress=%g\n",
+            (unsigned long long)calls, (unsigned long long)__atomic_load_n(&fade_staged, __ATOMIC_RELAXED),
+            (unsigned long long)fade_full, (unsigned long long)object, (int)frame, (int)duration, state,
+            (double)st->progress);
+}
 /* Common fades and capture stages have separate integer clocks. Capture's X0
    is its manager; X1 points to the holder of the actual sequence object.
    State transitions can reset/reload these clocks, so log both sides. */
@@ -887,7 +1006,11 @@ static void sequence_clock_probe(CPU* c, u64 entry, unsigned kind) {
     const int hold = kind && capture_fix_active && valid && before && capture_waiting(state_before) &&
                      !capture_tick(object, capture_ready(object));
     if (hold) gw32(object + timer, before + 1);
+    FadeStage fade;
+    fade.slot = -1;
+    if (!kind && valid) fade_before(object, &fade);
     sequence_clock_original[kind](c, entry);
+    if (!kind) fade_after(&fade);
     if (hold && readable(object, extent) && gr32(object + state) == state_before &&
         gr32(object + timer) == before + 1)
         gw32(object + timer, before);
@@ -1485,6 +1608,66 @@ static void gravity_fix_init(void) {
         sites, (unsigned long long)frame_step_address);
 }
 
+/* C21D00 (fade in) and C227BC (fade out) start a fade: its fractional progress starts over. */
+static GuestFn fade_start_original[2];
+static void fade_start_update(CPU* c, u64 entry, unsigned kind) {
+    const u64 object = c->x[0];
+    fade_start_original[kind](c, entry);
+    pm_lock(&fade_lock);
+    for (int k = 0; k < FADE_SLOTS; k++)
+        if (fade_slots[k].object == object) {
+            fade_slots[k].frame = ~0u;
+            fade_slots[k].progress = 0.0f;
+            fade_slots[k].generation++;
+        }
+    pm_unlock(&fade_lock);
+}
+static void fade_in_start(CPU* c, u64 e) { fade_start_update(c, e, 0); }
+static void fade_out_start(CPU* c, u64 e) { fade_start_update(c, e, 1); }
+static void fade_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_FADE_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-fade: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    /* The mode 0 step words: LDR W10 +538, ADD W10 #1, LDR Q1 +550, FADD, STR W10 +538. */
+    const u64 update = main_base + 0xc21490;
+    if (!readable(update, 0x300) || gr32(update + 0x44) != 0xb9453a6a || gr32(update + 0xd0) != 0x1100054a ||
+        gr32(update + 0xd8) != 0x3dc15661 || gr32(update + 0xdc) != 0x4e21d400 || gr32(update + 0xe4) != 0xb9053a6a) {
+        WARN("arceus-fade: refused update guard\n");
+        return;
+    }
+    static const struct { u32 offset, size, head, mov; const char* label; } starts[2] = {
+        {0xc21d00, 0xa50, 0xd10203ff, 0x2c, "fade in C21D00"},
+        {0xc227bc, 0x888, 0xd101c3ff, 0x20, "fade out C227BC"},
+    };
+    const GuestFn wrappers[2] = {fade_in_start, fade_out_start};
+    for (unsigned k = 0; k < 2; k++) {
+        const u64 pc = main_base + starts[k].offset;
+        if (!covers_exactly(pc, starts[k].size) || pc < g_code_lo || pc + starts[k].size > g_code_hi ||
+            !readable(pc, starts[k].size) || gr32(pc) != starts[k].head || gr32(pc + starts[k].mov) != 0xaa0003f3) {
+            WARN("arceus-fade: refused %s guard\n", starts[k].label);
+            return;
+        }
+    }
+    if (!frame_step_cell_init("arceus-fade") || !sequence_clock_install(0)) return;
+    for (unsigned k = 0; k < 2; k++) {
+        const u64 pc = main_base + starts[k].offset;
+        /* Equivalent MOV X19,X0 -> ADD X19,X0,#0 selects an independent JIT body. */
+        gw32(pc + starts[k].mov, 0x91000013);
+        jit_code_changed(pc, starts[k].size);
+        fade_start_original[k] = jit_wait(pc);
+        if (!fade_start_original[k]) {
+            WARN("arceus-fade: %s compile failed\n", starts[k].label);
+            return;
+        }
+        __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
+    }
+    fade_fix_active = 1;
+    LOG("arceus-fade: EXPERIMENT: common fades (mode 0) follow elapsed time\n");
+}
 /* 1A7191C is a thrown-object flight update, a virtual shared by three classes
    (vtables 41375C0, 413C5D0, 4141950). In flight (+5F8 == 1) each call adds S/30
    to elapsed +618, ends the planned flight when +618/+61C exceeds 1, then
@@ -1802,6 +1985,7 @@ void arceus_clock_post_jit(void) {
     capture_fix_init();
     battle_sequence_fix_init();
     map_cursor_fix_init();
+    fade_fix_init();
     cadence_census_init();
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     if (main_base && !experimental && probe && !strcmp(probe, "1")) {
