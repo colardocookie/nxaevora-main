@@ -2729,3 +2729,41 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
     each side in `st_gpu_fn` (caller edit). Exe md5 4750291d copied, ctest ok except `tracked_material`. Next step: the user runs the
     selftest (nvn_selftest=1), then read the log. Expect: 0 failed, 8 expected no-op. Risk: the draw words of the
     library and the host may differ (DrawArrays mode 4 = triangles); then that is a d3 fact, not a fault of the bind.
+
+
+## 4-u3-3 step (d), group d2 (2026-11-11)
+
+  Current step: 4-u3-3 step (d), group d2 (d1 history: `OLD-WORK_PLAN.md`, last section "4-u3-3 step (c) and d1").
+    Groups of (d): d1 fixed-function state (29 rows, committed `writer-u3-3d1`), d2 binds and resources, d3 draws,
+    clears, copies, dispatch, d4 CPU side (queries, callbacks, debug markers). Then 4-u3-4 (exectest). The `unit`
+    scope is not in the checks column yet.
+    d1 DONE (2026-11-11, exe 4750291d): 286 cases, 0 failed, 8 expected no-op, 0 skipped. History: `OLD-WORK_PLAN.md`,
+    section "d1 faults fixed". Next: group d2 (binds and resources), first a library analyst table of the d2 rows.
+    The `.ini` has `nvn_selftest_mutate=` (empty) now.
+    d1 rows are not yet in the checks column of `docs/nvn-coverage.md`: add them with the d2 result.
+    d2 step (a) DONE (2026-11-11): analyst tables `reports/analyst-d2a-1.md` (pools, render targets, program, vertex) and
+    `analyst-d2b-1.md` (texture, image, uniform, storage binds). Caller checked TexturePool, VertexBuffer, VertexStream,
+    UniformBuffer, BindTextures, BindStorageBuffers. Not in d2: the 4 separate binds, SetProgramSubroutines,
+    SetShaderScratchMemory (host refuses them). Host faults CONFIRMED in the disassembly:
+    1. SetTexturePool: op 0x13 also writes inline 0xE20=0x40 and run 0x8E4/0x8E5 = base low, high (words de141a0). Host does not.
+    2. BindTextures: mode-5 run, 2 words (low, high) per handle at 8-byte stride. Host writes one low word per handle.
+    3. BindStorageBuffers: mode-3 run, 4 words per entry (lo, hi, size, 0). Host writes 3 words per entry.
+    4. BindImages: same memory, other stream form (r3d 0x8E4/0x8E5 differ). Decide if the host copies the library form.
+    Design points for the writer brief: the two sides have separate pools, so address words differ (shared address or a
+    skip list); the binds are sent at a draw, not at the ClearColor work point (a draw work point is needed); cbuf memory
+    writes are invisible to the r3d diff; clip limit 0x3FD/0x3FE depends on device+0x18; BindProgram needs program words.
+    Decisions (user, 2026-11-11): fix faults 1-4 in the d2 writer patch (host copies the library form; a `plural` flag
+    per op), literal shared addresses where possible, an ignore list only for the pool and render target address
+    registers, draw work point. BindProgram is not in d2. Writer launched: brief `reports/brief-u3-3d2-writer.md`,
+    worktree `wt-u3-3d2`, patch `patches/writer-u3-3d2-1.patch`, report `reports/writer-u3-3d2-1.md`.
+    d2 step (b) DONE: patch read in full, caller fix (two test initializers of `NvnOpBindTexture`), build OK, ctest OK
+    except `tracked_material`, 3 mutants (storage pad word, texture packet, image stage map) fail `nvn_params`. Exe md5
+    beb09c7b copied. Known minor: a partial `st_bind_res_setup` failure does not free the pools it made.
+    NEXT: selftest run by the user (`nvn_trace=1`, `nvn_selftest=1`, mutation empty, title). Expect 54+ cases. Judge the
+    open rows: SetRenderTargets 0x3FD/0x3FE (device+0x18 clip limit), BindVertexAttribState mask, the 0xE0E macro words.
+- d2 step (c), run of 2026-11-11 16:25 (exe beb09c7b): 299 cases, 3 failed, 8 expected no-op, 2 skipped.
+  Pass: SetRenderTargets (4 ignored; clip 0x3FD/0x3FE equal, so the clip limit question is closed), BindVertexBuffer(s),
+  BindUniformBuffer(s), BindStorageBuffer, BindTexture(s), BindImage(s) (the 0xE0E macro words are equal).
+  Fail (first difference, library/host): BindVertexAttribState r3d.0x458 0x13a00000/0x3a400040, BindVertexStreamState
+  r3d.0x621 1/0, BindStorageBuffers r3d.0x8e3 0x130/0x120. Skipped: SetSamplerPool and SetTexturePool, "record op 20/19"
+  (the selftest decoder does not expand the pool control records ops 0x13/0x14).

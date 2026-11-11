@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the build of the d1 fix commit (md5 4750291d), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the build of the d2 commit `29a6b6e` (md5 beb09c7b), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=1`, `nvn_native=0`, `nvn_selftest=1` (the selftest run of 2026-11-10). After each build: `tasklist` shows no game, then copy the exe.
@@ -49,34 +49,23 @@ below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
   4-u4. `docs/nvn-coverage.md`: 1 row of G10 is `stub-log` (`nvnDeviceGetProcAddress`, by decision) after U5 (`11978be`).
-  Current step: 4-u3-3 step (d), group d2 (d1 history: `OLD-WORK_PLAN.md`, last section "4-u3-3 step (c) and d1").
-    Groups of (d): d1 fixed-function state (29 rows, committed `writer-u3-3d1`), d2 binds and resources, d3 draws,
-    clears, copies, dispatch, d4 CPU side (queries, callbacks, debug markers). Then 4-u3-4 (exectest). The `unit`
-    scope is not in the checks column yet.
-    d1 DONE (2026-11-11, exe 4750291d): 286 cases, 0 failed, 8 expected no-op, 0 skipped. History: `OLD-WORK_PLAN.md`,
-    section "d1 faults fixed". Next: group d2 (binds and resources), first a library analyst table of the d2 rows.
-    The `.ini` has `nvn_selftest_mutate=` (empty) now.
-    d1 rows are not yet in the checks column of `docs/nvn-coverage.md`: add them with the d2 result.
-    d2 step (a) DONE (2026-11-11): analyst tables `reports/analyst-d2a-1.md` (pools, render targets, program, vertex) and
-    `analyst-d2b-1.md` (texture, image, uniform, storage binds). Caller checked TexturePool, VertexBuffer, VertexStream,
-    UniformBuffer, BindTextures, BindStorageBuffers. Not in d2: the 4 separate binds, SetProgramSubroutines,
-    SetShaderScratchMemory (host refuses them). Host faults CONFIRMED in the disassembly:
-    1. SetTexturePool: op 0x13 also writes inline 0xE20=0x40 and run 0x8E4/0x8E5 = base low, high (words de141a0). Host does not.
-    2. BindTextures: mode-5 run, 2 words (low, high) per handle at 8-byte stride. Host writes one low word per handle.
-    3. BindStorageBuffers: mode-3 run, 4 words per entry (lo, hi, size, 0). Host writes 3 words per entry.
-    4. BindImages: same memory, other stream form (r3d 0x8E4/0x8E5 differ). Decide if the host copies the library form.
-    Design points for the writer brief: the two sides have separate pools, so address words differ (shared address or a
-    skip list); the binds are sent at a draw, not at the ClearColor work point (a draw work point is needed); cbuf memory
-    writes are invisible to the r3d diff; clip limit 0x3FD/0x3FE depends on device+0x18; BindProgram needs program words.
-    Decisions (user, 2026-11-11): fix faults 1-4 in the d2 writer patch (host copies the library form; a `plural` flag
-    per op), literal shared addresses where possible, an ignore list only for the pool and render target address
-    registers, draw work point. BindProgram is not in d2. Writer launched: brief `reports/brief-u3-3d2-writer.md`,
-    worktree `wt-u3-3d2`, patch `patches/writer-u3-3d2-1.patch`, report `reports/writer-u3-3d2-1.md`.
-    d2 step (b) DONE: patch read in full, caller fix (two test initializers of `NvnOpBindTexture`), build OK, ctest OK
-    except `tracked_material`, 3 mutants (storage pad word, texture packet, image stage map) fail `nvn_params`. Exe md5
-    beb09c7b copied. Known minor: a partial `st_bind_res_setup` failure does not free the pools it made.
-    NEXT: selftest run by the user (`nvn_trace=1`, `nvn_selftest=1`, mutation empty, title). Expect 54+ cases. Judge the
-    open rows: SetRenderTargets 0x3FD/0x3FE (device+0x18 clip limit), BindVertexAttribState mask, the 0xE0E macro words.
+  Current step: 4-u3-3 step (d), group d2 fixes (history: `OLD-WORK_PLAN.md`, last section "group d2").
+    Groups of (d): d1 fixed-function state (DONE), d2 binds and resources (commit `29a6b6e`), d3 draws, clears, copies,
+    dispatch, d4 CPU side (queries, callbacks, debug markers). Then 4-u3-4 (exectest). The `unit` scope is not in the
+    checks column yet. d1 and d2 rows are not yet in the checks column of `docs/nvn-coverage.md`: add them when d2 passes.
+    The `.ini` has `nvn_selftest_mutate=` (empty).
+    d2 run (exe beb09c7b): 299 cases, 3 failed, 2 skipped. NEXT (one session each, in this order):
+    1. Game explorer or caller (at most 3 disassembly calls each): the cause of the 3 fails.
+       - BindVertexAttribState 0x458: library 0x13a00000, host 0x3a400040 (the default word). The library result has no
+         bit 6, so the argument layout of the analyst row (u32 array, bit 6 = enabled) is probably wrong. Read d855340.
+       - BindVertexStreamState 0x621: library 1, host 0. The divisor of stream 1 does not reach the host. Read the host
+         handler (`nvn_native.c` ~4318) and d8554b0 for the entry layout.
+       - BindStorageBuffers 0x8E3: library 0x130, host 0x120 (= one entry sent). Guess: the host sends only slot 0, or
+         the slot 1 packet is lost. Check `replay_bind_send_storages` and the dirty flags.
+    2. The 2 skips: the selftest decoder (`nvn_selftest_dec.c`) stops at control record ops 19 and 20 (texture and
+       sampler pool). Expand them as the interpreter does (d84c120, d84c3b0), or run the library interpreter.
+    3. Writer patch for 1 and 2, then a selftest run. Then the mutation run of d2. Then group d3.
+    Known minor: a partial `st_bind_res_setup` failure does not free the pools it made.
   - Open for 4-u4: the design asks for no `stub-log` row, but `nvnDeviceGetProcAddress` stays `stub-log` by decision (the
     game resolves names through d832940, which the hook covers). Decide the row (a handler that calls the resolver, or an
     explicit exception in the design) before 4-u4.
