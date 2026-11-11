@@ -87,17 +87,6 @@ git clone <this repository>
 The build steps for Windows are in [docs/SCARLETNX_BUILD-NOTES.md](docs/SCARLETNX_BUILD-NOTES.md). They use MSYS2
 and the CLANG64 environment.
 
-## Repository layout
-
-| Folder                     | Content                                                |
-| -------------------------- | ------------------------------------------------------ |
-| `third_party/ScarletNX/` | The recompiler and the Switch runtime (vendored, changed for this game) |
-| `recomp/`                | Settings and game code patches for this game          |
-| `runtime/`               | Parts of the runtime that ScarletNX does not have      |
-| `launcher/`              | The launcher (planned)                                 |
-| `tools/`                 | Helper scripts for the analysis of the recompiled game |
-| `docs/`                  | Notes and analysis                                     |
-
 ## Legal
 
 NXAevora is an independent project. It is not affiliated with or endorsed by Nintendo, The Pokemon Company or Game
@@ -111,7 +100,3 @@ game and are for your own use. Do not distribute them.
 NXAevora is free software under the GNU General Public License, version 3 or later. See [LICENSE](LICENSE).
 ScarletNX is also GPL-3.0. Its license and the list of the projects that it builds on are in
 `third_party/ScarletNX/`. The credits of NXAevora are in [docs/CREDITS.md](docs/CREDITS.md).
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
