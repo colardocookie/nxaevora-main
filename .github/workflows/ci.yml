@@ -27,7 +27,8 @@ jobs:
   windows:
     name: Windows build and test
     runs-on: windows-2025
-    timeout-minutes: 150
+    # A run without caches took 16 minutes (2026-11-11). The limit leaves room for a slow runner.
+    timeout-minutes: 60
     defaults:
       run:
         shell: msys2 {0}
