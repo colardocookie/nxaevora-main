@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -824,6 +825,51 @@ static void frame_timer_research_init(void) {
    State transitions can reset/reload these clocks, so log both sides. */
 static GuestFn sequence_clock_original[2];
 static u64 sequence_clock_calls[2], sequence_clock_changes[2];
+static int sequence_clock_logging, capture_fix_active;
+/* Capture waiting stages 3, 5, 7, 8, 9, 14 and 16 subtract one from +1DC per call.
+   With the fix, a call only counts down once 1/30 s of frame steps has built up for
+   that object. Otherwise +1DC is raised by one first so the call leaves it unchanged. */
+#define CAPTURE_SLOTS 8
+#define CAPTURE_TICK_NS 33333333ll
+static struct { u64 object; int64_t ns; } capture_slots[CAPTURE_SLOTS];
+static unsigned capture_next_slot;
+static int capture_waiting(u32 stage) {
+    return stage == 3 || stage == 5 || stage == 7 || stage == 8 || stage == 9 || stage == 14 || stage == 16;
+}
+/* The director skips its body until every enabled effect handle pair is ready, the same
+   checks as 180C558 to 180C614. Their start-up takes a fixed number of frames. */
+static int capture_ready(u64 object) {
+    static const u32 flags[4] = {0x210, 0x248, 0x280, 0x2b8}, pairs[4] = {0x1e0, 0x218, 0x250, 0x288};
+    if (!readable(object, 0x2c0)) return 1;
+    for (unsigned k = 0; k < 4; k++) {
+        if (!*GP(object + flags[k])) continue;
+        for (u32 h = pairs[k]; h <= pairs[k] + 0x10; h += 0x10) {
+            const u64 p = gr64(object + h);
+            if (!p || !readable(p + 0xc, 4) || !gr32(p + 0xc)) return 0;
+        }
+    }
+    return 1;
+}
+/* A not-ready call counts as one whole 1/30 s frame, as it takes at 30 FPS, so the
+   countdown afterwards waits until elapsed time catches up. The debt is capped at 1 s. */
+static int capture_tick(u64 object, int ready) {
+    pm_lock(&step_lock);
+    const int64_t ns = (int64_t)(step.step ? step.step : step.initial_ns);
+    pm_unlock(&step_lock);
+    unsigned k = 0;
+    while (k < CAPTURE_SLOTS && capture_slots[k].object != object) k++;
+    if (k == CAPTURE_SLOTS) {
+        k = capture_next_slot++ % CAPTURE_SLOTS;
+        capture_slots[k].object = object;
+        capture_slots[k].ns = 0;
+    }
+    capture_slots[k].ns += ready ? ns : ns - CAPTURE_TICK_NS;
+    if (capture_slots[k].ns < -1000000000ll) capture_slots[k].ns = -1000000000ll;
+    if (!ready || capture_slots[k].ns < CAPTURE_TICK_NS) return 0;
+    capture_slots[k].ns -= CAPTURE_TICK_NS;
+    if (capture_slots[k].ns >= CAPTURE_TICK_NS) capture_slots[k].ns = 0;
+    return 1;
+}
 static void sequence_clock_probe(CPU* c, u64 entry, unsigned kind) {
     const u64 object = kind ? (readable(c->x[1], 8) ? gr64(c->x[1]) : 0) : c->x[0];
     const u64 caller = c->x[30];
@@ -837,8 +883,14 @@ static void sequence_clock_probe(CPU* c, u64 entry, unsigned kind) {
     const u32 mode_before = valid && !kind ? gr32(object + 0x500) : 0;
     const u64 count = __atomic_add_fetch(&sequence_clock_calls[kind], 1, __ATOMIC_RELAXED);
     const u64 now = valid ? plat_ns() : 0;
+    const int hold = kind && capture_fix_active && valid && before && capture_waiting(state_before) &&
+                     !capture_tick(object, capture_ready(object));
+    if (hold) gw32(object + timer, before + 1);
     sequence_clock_original[kind](c, entry);
-    if (!valid || c->pc != caller || !readable(object, extent)) return;
+    if (hold && readable(object, extent) && gr32(object + state) == state_before &&
+        gr32(object + timer) == before + 1)
+        gw32(object + timer, before);
+    if (!sequence_clock_logging || !valid || c->pc != caller || !readable(object, extent)) return;
     const u32 after = gr32(object + timer), state_after = gr32(object + state);
     const u32 duration_after = gr32(object + duration);
     const u32 mode_after = !kind ? gr32(object + 0x500) : 0;
@@ -853,32 +905,49 @@ static void sequence_clock_probe(CPU* c, u64 entry, unsigned kind) {
 }
 static void fade_sequence_probe(CPU* c, u64 e) { sequence_clock_probe(c, e, 0); }
 static void capture_sequence_probe(CPU* c, u64 e) { sequence_clock_probe(c, e, 1); }
-static void sequence_clock_research_init(void) {
+static int sequence_clock_install(unsigned k) {
     static const struct { u64 offset; u32 size,head,patch,word,replacement,extra,extra_word; } sites[2]={
         /* Equivalent MOV Xd,X0 -> ADD Xd,X0,#0 selects an independent JIT body. */
         {0xc21490,0x300,0xd10143ff,0x3c,0xaa0003f3,0x91000013,0xd0,0x1100054a},
         {0x180c338,0x427c,0x6db82beb,0x30,0xaa0003f6,0x91000016,0x61c,0x71000508}
     };
     const GuestFn wrappers[2]={fade_sequence_probe,capture_sequence_probe};
-    for (unsigned k=0;k<2;k++) {
-        const u64 pc=main_base+sites[k].offset;
-        int covered=0;
-        for (u32 i=0;i<g_mod->nfns;i++)
-            if (g_mod->fn_lo[i]==pc && g_mod->fn_len[i]==sites[k].size) covered=1;
-        if (!covered || pc<g_code_lo || pc+sites[k].size>g_code_hi || !readable(pc,sites[k].size) ||
-            gr32(pc)!=sites[k].head || gr32(pc+sites[k].patch)!=sites[k].word ||
-            gr32(pc+sites[k].extra)!=sites[k].extra_word) {
-            WARN("arceus-sequence-clock: refused instruction/function guard kind=%u\n",k);continue;
-        }
-        gw32(pc+sites[k].patch,sites[k].replacement);
-        jit_code_changed(pc,sites[k].size);
-        sequence_clock_original[k]=jit_wait(pc);
-        if (!sequence_clock_original[k]) {
-            WARN("arceus-sequence-clock: compile failed kind=%u\n",k);continue;
-        }
-        __atomic_store_n(&g_disp[(pc-g_code_lo)/4],wrappers[k],__ATOMIC_RELEASE);
-        LOG("arceus-sequence-clock: observation probe installed kind=%u\n",k);
+    if (sequence_clock_original[k]) return 1;
+    const u64 pc=main_base+sites[k].offset;
+    int covered=0;
+    for (u32 i=0;i<g_mod->nfns;i++)
+        if (g_mod->fn_lo[i]==pc && g_mod->fn_len[i]==sites[k].size) covered=1;
+    if (!covered || pc<g_code_lo || pc+sites[k].size>g_code_hi || !readable(pc,sites[k].size) ||
+        gr32(pc)!=sites[k].head || gr32(pc+sites[k].patch)!=sites[k].word ||
+        gr32(pc+sites[k].extra)!=sites[k].extra_word) {
+        WARN("arceus-sequence-clock: refused instruction/function guard kind=%u\n",k);return 0;
     }
+    gw32(pc+sites[k].patch,sites[k].replacement);
+    jit_code_changed(pc,sites[k].size);
+    sequence_clock_original[k]=jit_wait(pc);
+    if (!sequence_clock_original[k]) {
+        WARN("arceus-sequence-clock: compile failed kind=%u\n",k);return 0;
+    }
+    __atomic_store_n(&g_disp[(pc-g_code_lo)/4],wrappers[k],__ATOMIC_RELEASE);
+    return 1;
+}
+static void sequence_clock_research_init(void) {
+    sequence_clock_logging = 1;
+    for (unsigned k=0;k<2;k++)
+        if (sequence_clock_install(k)) LOG("arceus-sequence-clock: observation probe installed kind=%u\n",k);
+}
+/* Runs after the research probes, so it reuses the capture wrapper when they installed it. */
+static void capture_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_CAPTURE_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-capture-fix: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    if (!sequence_clock_install(1)) return;
+    capture_fix_active = 1;
+    LOG("arceus-capture-fix: EXPERIMENT: capture waiting stages count down at 30 per second of elapsed time\n");
 }
 static void timing_research_init(void) {
     const char* enabled = getenv("SNX_ARCEUS_TIMING_RESEARCH");
@@ -1452,6 +1521,7 @@ void arceus_clock_post_jit(void) {
     world_timers_init();
     ball_flight_init();
     timing_research_init();
+    capture_fix_init();
     cadence_census_init();
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     if (main_base && !experimental && probe && !strcmp(probe, "1")) {

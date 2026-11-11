@@ -88,3 +88,17 @@ logs `arceus-gravity` lines. While that term is negative, it follows one charact
 call logs the velocity the function read, the position it was given and its result, with real time. If the velocity
 gains the vertical term on every call, gravity runs at FPS/30 speed, and the positions give the real acceleration.
 It only observes.
+
+## Capture fix
+
+The capture director at `main+180C338` counts its waiting stages in calls. It runs once per rendered frame, so at
+120 FPS a field catch took about 3.0 seconds against 6.1 at 30 FPS. With a target rate, `SNX_ARCEUS_CAPTURE_FIX=1`
+keeps a sum of frame steps for each capture object. In stages 3, 5, 7, 8, 9, 14 and 16, a call only counts the
+stage timer at `+1DC` down once a whole 1/30 second has built up. Otherwise the timer is raised by one before the
+call and put back after it, so the call leaves it unchanged. Stage 8 moves from that timer, so its motion updates
+at 30 Hz.
+
+Before stages 3, 5 and 7 count, the director waits until its effect handles are ready, which takes a fixed number
+of calls. The fix repeats the director's checks of those handles. A call that waits counts as one whole 1/30
+second, as it takes at 30 FPS, so the countdown afterwards waits until the elapsed time catches up. That debt is
+capped at one second. The `arceus-capture-fix` line confirms the fix.
