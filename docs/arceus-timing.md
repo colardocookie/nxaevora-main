@@ -112,3 +112,11 @@ back after it. The step is cut so the frame lands exactly on each whole frame, b
 end on exact float compares. The rest carries over to the next call, up to two frames. Speeds outside (0, 4] only
 update once a whole 1/30 second has built up. `arceus-battle-sequence` lines count the calls, the partial steps,
 the skipped calls and the speeds seen.
+
+## Map cursor fix
+
+The map cursors at `main+120F1F4` (field map) and `main+1245DB8` (world map) add stick times speed to the cursor
+position once per call, and count held frames in two counters up to 9, so the fast-travel cursor ran four times
+fast at 120 FPS. With a target rate, `SNX_ARCEUS_MAP_CURSOR_FIX=1` scales the speed by the elapsed time over 1/30
+second for the call and restores it, and lets the counters rise only once a whole 1/30 second has built up. The
+`arceus-map-cursor` line says how many of the two cursors it covers.

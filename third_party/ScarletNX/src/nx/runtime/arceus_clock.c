@@ -1074,6 +1074,87 @@ static void battle_sequence_fix_init(void) {
     __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], battle_sequence_update, __ATOMIC_RELEASE);
     LOG("arceus-battle-sequence: EXPERIMENT: battle effect sequences advance 30 frames per second of elapsed time\n");
 }
+/* Map cursors 120F1F4 (field map) and 1245DB8 (world map) add stick x speed to the position
+   per call and count held frames in two counters up to 9. The fix scales the speed by
+   elapsed / (1/30) for the call and lets the counters rise only once 1/30 s has built up. */
+typedef struct { u32 offset, size, head, mov, speed_at, speed_word, speed, held; const char* label; } MapCursorSite;
+static const MapCursorSite map_cursor_sites[2] = {
+    {0x120f1f4, 0x55c, 0xd101c3ff, 0x54, 0x270, 0xbd4d7262, 0xd70, 0xd78, "field map"},
+    {0x1245db8, 0x828, 0xfc1a0fea, 0x5c, 0x518, 0xbd497262, 0x970, 0x978, "world map"},
+};
+static GuestFn map_cursor_original[2];
+static PMutex map_cursor_lock = PMUTEX_INIT;
+static u64 map_cursor_object[2], map_cursor_ns[2], map_cursor_calls[2];
+static void map_cursor_update(CPU* c, u64 entry, unsigned kind) {
+    const MapCursorSite* s = &map_cursor_sites[kind];
+    const u64 object = c->x[0];
+    const u64 count = __atomic_add_fetch(&map_cursor_calls[kind], 1, __ATOMIC_RELAXED);
+    if (!readable(object, s->held + 8)) {
+        map_cursor_original[kind](c, entry);
+        return;
+    }
+    pm_lock(&step_lock);
+    const u64 ns = step.step ? step.step : step.initial_ns;
+    pm_unlock(&step_lock);
+    pm_lock(&map_cursor_lock);
+    if (map_cursor_object[kind] != object) map_cursor_object[kind] = object, map_cursor_ns[kind] = 0;
+    map_cursor_ns[kind] += ns;
+    const int tick = map_cursor_ns[kind] >= 33333333ull;
+    if (tick) {
+        map_cursor_ns[kind] -= 33333333ull;
+        if (map_cursor_ns[kind] >= 33333333ull) map_cursor_ns[kind] = 0;
+    }
+    pm_unlock(&map_cursor_lock);
+    const float speed = guest_float(object + s->speed), scaled = speed * (float)ns / 33333333.0f;
+    const u32 held_a = gr32(object + s->held), held_b = gr32(object + s->held + 4);
+    guest_float_write(object + s->speed, scaled);
+    map_cursor_original[kind](c, entry);
+    if (!readable(object, s->held + 8)) return;
+    if (guest_float(object + s->speed) == scaled) guest_float_write(object + s->speed, speed);
+    if (!tick) {
+        if (gr32(object + s->held) == held_a + 1) gw32(object + s->held, held_a);
+        if (gr32(object + s->held + 4) == held_b + 1) gw32(object + s->held + 4, held_b);
+    }
+    if (count <= 2 || count % 6000 == 0)
+        LOG("arceus-map-cursor: %s calls=%llu speed=%g scaled=%g\n", s->label, (unsigned long long)count,
+            (double)speed, (double)scaled);
+}
+static void field_map_cursor_update(CPU* c, u64 e) { map_cursor_update(c, e, 0); }
+static void world_map_cursor_update(CPU* c, u64 e) { map_cursor_update(c, e, 1); }
+static void map_cursor_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_MAP_CURSOR_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-map-cursor: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const GuestFn wrappers[2] = {field_map_cursor_update, world_map_cursor_update};
+    unsigned installed = 0;
+    for (unsigned k = 0; k < 2; k++) {
+        const MapCursorSite* s = &map_cursor_sites[k];
+        const u64 pc = main_base + s->offset;
+        int covered = 0;
+        for (u32 i = 0; i < g_mod->nfns; i++)
+            if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == s->size) covered = 1;
+        if (!covered || pc < g_code_lo || pc + s->size > g_code_hi || !readable(pc, s->size) ||
+            gr32(pc) != s->head || gr32(pc + s->mov) != 0xaa0003f3 || gr32(pc + s->speed_at) != s->speed_word) {
+            WARN("arceus-map-cursor: refused %s guard\n", s->label);
+            continue;
+        }
+        /* Equivalent MOV X19,X0 -> ADD X19,X0,#0 selects an independent JIT body. */
+        gw32(pc + s->mov, 0x91000013);
+        jit_code_changed(pc, s->size);
+        map_cursor_original[k] = jit_wait(pc);
+        if (!map_cursor_original[k]) {
+            WARN("arceus-map-cursor: %s compile failed\n", s->label);
+            continue;
+        }
+        __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
+        installed++;
+    }
+    LOG("arceus-map-cursor: EXPERIMENT: %u of 2 map cursors follow elapsed time\n", installed);
+}
 static void timing_research_init(void) {
     const char* enabled = getenv("SNX_ARCEUS_TIMING_RESEARCH");
     if (!main_base || !enabled || strcmp(enabled,"1")) return;
@@ -1648,6 +1729,7 @@ void arceus_clock_post_jit(void) {
     timing_research_init();
     capture_fix_init();
     battle_sequence_fix_init();
+    map_cursor_fix_init();
     cadence_census_init();
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     if (main_base && !experimental && probe && !strcmp(probe, "1")) {
