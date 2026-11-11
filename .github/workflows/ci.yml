@@ -4,7 +4,7 @@
 # Build ScarletNX for Windows in MSYS2 CLANG64 (docs/build/SCARLETNX_BUILD-NOTES.md) and run its ctest suite.
 # No game file, key or save is used: the tests need none, and a hosted runner has no GPU, so the game is never run.
 # The job name "Windows build and test" is the check name to require on main. Keep it stable.
-name: CI
+name: Build NXAevora (Windows)
 
 on:
   pull_request:
