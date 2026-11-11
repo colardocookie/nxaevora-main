@@ -2671,3 +2671,33 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   scope is not in the checks column yet.
 - d1 step (b): patch read in full, caller fix `near`/`far` (Windows macros), build and ctest OK except
   `tracked_material`, mutant of the regdiff test fails. Committed with the agent line. Worktree removed.
+
+## Task (u) 4-u3-3 step (d): the 0x49 fault of the d1 run (2026-11-11)
+
+- History of the run of 13:06 and the fix (moved from the work plan):
+    Run of 2026-11-11 13:06 (exe md5 2fff8b9c, no mutation): two faults, both must be fixed before the d1 result counts.
+    1. EVERY S/Y case (S1, the 9 Barrier cases, all d1 cases) fails S with first difference `r3d.0x049`: library 0x2,
+       host 0x1. Before the register diff S1 and Barrier passed, so 0x49 is a channel-wide divergence, not a case
+       fault. The report gives only the first difference, so the per-case results are hidden. Next: find what 0x49 is
+       (Eden Maxwell3D regs, near the MME load registers 0x45..0x48) and which side writes it (library words or the host
+       replay or the init stream). Decide from the mechanism: a host fault, or a register that neither side's renderer
+       consumes (then an explicit ignore entry with the reason). Consider a diagnostic that logs all differing registers.
+       RESULT (explorer 2026-11-11, `reports/explore-0x49.md`): 0x49 = SET_MME_SHADOW_RAM_CONTROL. Library ClearColor
+       (sdk d84a870) sends 0x360 x4, 0x49=2, 0x3ED=0, macro 1 (only CLEAR_SURFACE), 0x49=3, 0x3ED=0, 0x49=1 (constants
+       de13e48, de14198 checked). Host `replay_clear` sends no 0x49/0x3ED: a host fault. Next: make replay_clear send
+       the same words around CLEAR_SURFACE (also check that 0x3ED in replay mode takes the shadow value).
+       DONE in the working tree (not committed): `replay_clear` sends the words, `tests/nvn_replay.c` checks the order.
+       ctest passes (except tracked_material). Exe md5 166e98a1. Run 2026-11-11 14:03: 0x49 is gone. S1, 9 Barrier and
+       14 d1 cases pass S. 11 d1 cases fail S (first difference): DepthRange/DepthRanges 0x282, BindBlendState 0x782,
+       ChannelMask 0x680, Multisample 0x478, Polygon 0x646, SampleMask 0x3ef, StencilCull 0x376, ColorReduction
+       0x367, Thresholds 0x433, SubpixelBias 0x287. Fault 2 (abort after case 26) is unchanged. Next: fault 2, then
+       the 11 cases (an analyst table of the library words of each).
+    2. The game stopped (svcBreak, `nn::diag::detail::Abort`) after case 26 (SetSubpixelPrecisionBias). The abort comes
+       from sdk d8243d0, inside nvnCommandBufferEndRecording (d824348..). Cases TiledCacheAction, TiledCacheTileSize,
+       ConservativeRasterEnable, BindCoverageModulationTable and the totals line did not run. Likely cause (not
+       verified): the control memory (0x800, `ST_CONTROL_BYTES`) is never refilled, only the command memory is, so the
+       library runs out after about 36 recordings, has no memory callback, and aborts. Check the abort condition at
+       d8243d0 in the disassembly, then refill the control memory as the command memory is refilled.
+- Commit: "Send the shadow RAM words around the replayed color clear" (replay_clear sends 0x49=2, 0x3ED=0,
+  CLEAR_SURFACE, 0x49=3, 0x3ED=0, 0x49=1, as sdk d84a870 does; test checks the order). Explorer report:
+  `reports/explore-0x49.md` (macro 1 at sdk de86704 sends only CLEAR_SURFACE; init stream ends with 0x49=1).
