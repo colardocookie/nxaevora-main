@@ -89,6 +89,24 @@ static void st_command_snapshot(GpuChannel* ch, NvnStRec* rec) {
     for (unsigned k = 0; k < 4; k++) nvn_st_add_state(rec, st_clear_names[k], ch->r3d[MAXWELL3D_CLEAR_COLOR + k]);
 }
 
+/* The id and the heap buffers belong to the channel: the base shares neither. */
+static void st_channel_reset(GpuChannel* ch, const GpuChannel* base) {
+    const u32 id = ch->id;
+    u32* const inline_indices = ch->inline_indices;
+    const u32 inline_cap = ch->inline_cap;
+    u8* const i2m_buffer = ch->i2m.inner_buffer;
+    const u32 i2m_capacity = ch->i2m.capacity;
+    *ch = *base;
+    ch->id = id;
+    ch->inline_indices = inline_indices;
+    ch->inline_cap = inline_cap;
+    ch->inline_n = 0;
+    ch->i2m.inner_buffer = i2m_buffer;
+    ch->i2m.capacity = i2m_capacity;
+    ch->i2m.copy_size = 0;
+    ch->i2m.write_offset = 0;
+}
+
 typedef struct {
     NvnStProc initialize, finalize, add_command_memory, add_control_memory, begin, end;
     NvnStProc set_viewports, set_scissors, clear_color, barrier;
@@ -105,6 +123,7 @@ typedef struct {
     uint64_t host_handle;
     int window_origin_flip;
     const u32* init_words; /* the queue init stream: the channels run it once, before the first case */
+    GpuChannel* base;       /* the channel state after the init stream, which each case starts from */
     unsigned init_count;
     int channels_ready;
     int init_failed; /* the init stream ended inside a header: no case runs on these channels */
@@ -159,6 +178,19 @@ static void st_gpu_fn(void* arg) {
         job->channels_ready = 1;
         job->init_failed = failed != 0;
         if (failed) LOG("selftest: the queue init stream ends inside a header\n");
+        if (!failed) {
+            job->base = malloc(sizeof *job->base);
+            if (!job->base) {
+                LOG("selftest: out of memory for the channel base copy\n");
+                job->init_failed = 1;
+            } else {
+                memcpy(job->base, job->lib, sizeof *job->base);
+            }
+        }
+    }
+    if (!job->init_failed) {
+        st_channel_reset(job->lib, job->base);
+        st_channel_reset(job->host, job->base);
     }
     if (job->init_failed) job->status = -1;
     nvn_st_renderer_begin(job->ref, st_command_snapshot);
@@ -464,6 +496,7 @@ void nvn_selftest_command_cases(CPU* c, NvnStRun* run) {
     syncpt_free(ids[0]);
     syncpt_free(ids[1]);
     free(init_words);
+    free(job->base);
     pm_destroy(&job->lock);
     free(job);
 }
