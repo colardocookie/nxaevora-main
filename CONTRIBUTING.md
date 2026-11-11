@@ -66,6 +66,19 @@ A build is not a test. To verify a change to the runtime, run the game through t
 The pull request tells what you ran. If a change fixes a crash, run the game many times. One good run does not prove
 the fix of an intermittent crash.
 
+### Automatic checks
+
+Each pull request to `main`, each push to `main` and each manual run starts the workflow `CI`
+(`.github/workflows/ci.yml`). Its check `Windows build and test` builds `third_party/ScarletNX` in MSYS2 CLANG64 with
+the steps of `docs/build/SCARLETNX_BUILD-NOTES.md`, starts `scarletnx.exe --help` and runs `ctest`. It uses no game
+data and no secrets, so it also runs for a pull request from a fork. The result is on the Checks tab of the pull
+request. When a test fails, its output is in the log of the step `Run ctest`, and the file `LastTest.log` is
+attached to the run.
+
+The check does not run the game and has no GPU. It does not show that a scene works. The test `tracked_material` is
+left out because it fails on two SMAA `.dds` files under `src/nx/gpu/vk/shaders/smaa/`. Put it back when that is
+fixed. The tests `qemu_ref_selftest` and `gdb_jit` skip themselves, also on a local build.
+
 ## Commits and documents
 
 - A commit has a short subject in the imperative. The body says why, and how you verified the change.
