@@ -102,3 +102,13 @@ Before stages 3, 5 and 7 count, the director waits until its effect handles are 
 of calls. The fix repeats the director's checks of those handles. A call that waits counts as one whole 1/30
 second, as it takes at 30 FPS, so the countdown afterwards waits until the elapsed time catches up. That debt is
 capped at one second. The `arceus-capture-fix` line confirms the fix.
+
+## Battle sequence fix
+
+Battle effect sequences, the `.wbin` player whose update is `main+9DBEAC`, add their speed at `+F0` to the frame at
+`+E8` once per call, so captures in battle and battle moves ran four times fast at 120 FPS. With a target rate,
+`SNX_ARCEUS_BATTLE_SEQUENCE_FIX=1` passes speed times 30 times the elapsed time for the call and puts the speed
+back after it. The step is cut so the frame lands exactly on each whole frame, because the commands of a sequence
+end on exact float compares. The rest carries over to the next call, up to two frames. Speeds outside (0, 4] only
+update once a whole 1/30 second has built up. `arceus-battle-sequence` lines count the calls, the partial steps,
+the skipped calls and the speeds seen.

@@ -11,6 +11,7 @@
 #include "nx/runtime/platform/plat.h"
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -949,6 +950,130 @@ static void capture_fix_init(void) {
     capture_fix_active = 1;
     LOG("arceus-capture-fix: EXPERIMENT: capture waiting stages count down at 30 per second of elapsed time\n");
 }
+/* Battle effect sequences (the .wbin player, update 9DBEAC) add their speed at +F0 to the
+   frame at +E8 once per call, so they ran 4 times fast at 120 FPS. The fix passes speed x 30
+   x elapsed, cut so the frame lands exactly on each whole frame for the exact command-end
+   compares. Speeds outside (0, 4] only update once 1/30 s has built up. */
+#define SEQUENCE_SLOTS 64
+static GuestFn battle_sequence_original;
+static PMutex battle_sequence_lock = PMUTEX_INIT;
+static struct { u64 object; u64 ns; float pending; } sequence_slots[SEQUENCE_SLOTS];
+static unsigned sequence_next_slot;
+static u64 battle_sequence_calls, battle_sequence_skips, battle_sequence_partial;
+/* Read-only research: playing calls per speed, to see how many sequences still step whole frames. */
+#define SEQUENCE_SPEEDS 8
+static struct { float speed; u64 calls; } sequence_speeds[SEQUENCE_SPEEDS];
+static u64 sequence_speed_other;
+/* The largest step not past the next whole frame, nudged so frame + step rounds onto it. */
+static float sequence_step(float frame, float want) {
+    const float whole = floorf(frame) + 1.0f;
+    if (frame + want < whole) return want;
+    float step = whole - frame;
+    for (unsigned i = 0; i < 4 && frame + step != whole; i++)
+        step = nextafterf(step, frame + step < whole ? INFINITY : 0.0f);
+    return step;
+}
+static int battle_sequence_playing(u64 o) {
+    return readable(o, 0x308) && *GP(o + 0x302) && *GP(o + 0x301) && *GP(o + 0x303) &&
+           guest_float(o + 0xf0) != 0.0f && guest_float(o + 0xe8) < guest_float(o + 0xec);
+}
+static void battle_sequence_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    const u64 count = __atomic_add_fetch(&battle_sequence_calls, 1, __ATOMIC_RELAXED);
+    int skip = 0;
+    float speed = 0.0f, partial = 0.0f;
+    if (battle_sequence_playing(object)) {
+        pm_lock(&step_lock);
+        const u64 ns = step.step ? step.step : step.initial_ns;
+        pm_unlock(&step_lock);
+        speed = guest_float(object + 0xf0);
+        pm_lock(&battle_sequence_lock);
+        unsigned s = 0;
+        while (s < SEQUENCE_SPEEDS && sequence_speeds[s].calls && sequence_speeds[s].speed != speed) s++;
+        if (s == SEQUENCE_SPEEDS) sequence_speed_other++;
+        else sequence_speeds[s].speed = speed, sequence_speeds[s].calls++;
+        unsigned k = 0;
+        while (k < SEQUENCE_SLOTS && sequence_slots[k].object != object) k++;
+        if (k == SEQUENCE_SLOTS) {
+            k = sequence_next_slot++ % SEQUENCE_SLOTS;
+            sequence_slots[k].object = object;
+            sequence_slots[k].ns = 0;
+            sequence_slots[k].pending = 0.0f;
+        }
+        if (speed > 0.0f && speed <= 4.0f) {
+            float pending = sequence_slots[k].pending + speed * (float)ns / 33333333.0f;
+            if (pending > 2.0f * fmaxf(speed, 1.0f)) pending = 2.0f * fmaxf(speed, 1.0f);
+            partial = sequence_step(guest_float(object + 0xe8), pending);
+            sequence_slots[k].pending = pending - partial;
+            if (partial <= 0.0f) skip = 1, partial = 0.0f;
+        } else {
+            sequence_slots[k].ns += ns;
+            if (sequence_slots[k].ns < 33333333ull) skip = 1;
+            else {
+                sequence_slots[k].ns -= 33333333ull;
+                if (sequence_slots[k].ns >= 33333333ull) sequence_slots[k].ns = 0;
+            }
+        }
+        pm_unlock(&battle_sequence_lock);
+    }
+    if (skip) {
+        __atomic_add_fetch(&battle_sequence_skips, 1, __ATOMIC_RELAXED);
+        c->x[0] = 0;
+        c->pc = c->x[30];
+    } else if (partial > 0.0f) {
+        /* Speed is read only at 9DC3E0 inside the update, so pass the step there and restore it. */
+        __atomic_add_fetch(&battle_sequence_partial, 1, __ATOMIC_RELAXED);
+        guest_float_write(object + 0xf0, partial);
+        battle_sequence_original(c, entry);
+        if (readable(object, 0x308) && guest_float(object + 0xf0) == partial)
+            guest_float_write(object + 0xf0, speed);
+    } else battle_sequence_original(c, entry);
+    if (count <= 4 || count % 2000 == 0) {
+        char speeds[256];
+        int n = 0;
+        speeds[0] = 0;
+        pm_lock(&battle_sequence_lock);
+        for (unsigned s = 0; s < SEQUENCE_SPEEDS && sequence_speeds[s].calls && n >= 0 && n < (int)sizeof speeds; s++)
+            n += snprintf(speeds + n, sizeof speeds - n, " %g:%llu", sequence_speeds[s].speed,
+                          (unsigned long long)sequence_speeds[s].calls);
+        const u64 other = sequence_speed_other;
+        pm_unlock(&battle_sequence_lock);
+        LOG("arceus-battle-sequence: calls=%llu partial=%llu skipped=%llu speeds=[%s ] other=%llu\n",
+            (unsigned long long)count,
+            (unsigned long long)__atomic_load_n(&battle_sequence_partial, __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&battle_sequence_skips, __ATOMIC_RELAXED),
+            speeds, (unsigned long long)other);
+    }
+}
+static void battle_sequence_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-battle-sequence: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x9dbeac;
+    int covered = 0;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == 0x598) covered = 1;
+    if (!covered || pc < g_code_lo || pc + 0x598 > g_code_hi || !readable(pc, 0x598) ||
+        gr32(pc) != 0x6db923e9 || gr32(pc + 0x2c) != 0xaa0003f3 ||
+        gr32(pc + 0x534) != 0xbd40f262 || gr32(pc + 0x538) != 0x1e222821) {
+        WARN("arceus-battle-sequence: refused instruction/function guard\n");
+        return;
+    }
+    /* Equivalent MOV X19,X0 -> ADD X19,X0,#0 selects an independent JIT body. */
+    gw32(pc + 0x2c, 0x91000013);
+    jit_code_changed(pc, 0x598);
+    battle_sequence_original = jit_wait(pc);
+    if (!battle_sequence_original) {
+        WARN("arceus-battle-sequence: compile failed\n");
+        return;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], battle_sequence_update, __ATOMIC_RELEASE);
+    LOG("arceus-battle-sequence: EXPERIMENT: battle effect sequences advance 30 frames per second of elapsed time\n");
+}
 static void timing_research_init(void) {
     const char* enabled = getenv("SNX_ARCEUS_TIMING_RESEARCH");
     if (!main_base || !enabled || strcmp(enabled,"1")) return;
@@ -1522,6 +1647,7 @@ void arceus_clock_post_jit(void) {
     ball_flight_init();
     timing_research_init();
     capture_fix_init();
+    battle_sequence_fix_init();
     cadence_census_init();
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     if (main_base && !experimental && probe && !strcmp(probe, "1")) {
