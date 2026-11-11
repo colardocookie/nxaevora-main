@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the NXAevora contributors
-"""Writes nvn-coverage.md: one row for each NVN function that the game resolves (step 4-u1 of nvn-design.md).
+"""Writes nvn-coverage.md: one row for each NVN function that the game resolves (step 4-u1 of nvn-unobserved.md).
 
     python tools/nvn_coverage.py [--log RUN.log] [--sdk game/work/Arceus/exefs/sdk] [--check]
 
@@ -264,7 +264,7 @@ HEADER = """<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
 # NVN coverage of the host layer
 
-Made by `tools/nvn_coverage.py` (step 4-u1 of `nvn-design.md`, section "Unobserved functions"). Do not edit the
+Made by `tools/nvn_coverage.py` (step 4-u1 of `nvn-unobserved.md`). Do not edit the
 columns function to handler by hand: run the tool again. The columns checks, seen and notes are written by hand and the
 tool keeps them.
 

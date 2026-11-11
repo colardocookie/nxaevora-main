@@ -17,6 +17,8 @@ The notes of NXAevora, by subject. Each line names the file and its state. Until
 
 - [nvn-plan.md](graphics/nvn-plan.md): the five stages of phase 6, NVN on the host drawn with Vulkan.
 - [nvn-design.md](graphics/nvn-design.md): the design of the host NVN layer and its decisions. Active.
+- [nvn-unobserved.md](graphics/nvn-unobserved.md): the plan for the NVN functions and values that no scene called
+  (coverage, selftest, execution test, steps 4-u1 to 4-u4). Active.
 - [nvn-coverage.md](graphics/nvn-coverage.md): one row for each NVN function the game resolves. Made by
   `tools/nvn_coverage.py`. Active.
 - [nvn-calls.md](graphics/nvn-calls.md): the NVN functions that one run called, with the call counts.

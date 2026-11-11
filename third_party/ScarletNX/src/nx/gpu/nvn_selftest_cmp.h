@@ -3,7 +3,7 @@
 #ifndef SNX_NVN_SELFTEST_CMP_H
 #define SNX_NVN_SELFTEST_CMP_H
 
-/* The comparer of the NVN selftest (nvn-design.md, "The selftest"). It is a pure part: it compares two recorded
+/* The comparer of the NVN selftest (nvn-unobserved.md, "The selftest"). It is a pure part: it compares two recorded
    results of the same scripted call, one from the library and one from the host handler. It has no game state, so host
    tests can run it. */
 

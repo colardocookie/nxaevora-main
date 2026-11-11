@@ -10,8 +10,8 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
   `OLD-WORK_PLAN.md`, last sections.
 - `docs/` has subfolders since 2026-11-11 (index: `docs/README.md`). Older commits and the history in `OLD-WORK_PLAN.md`
   before that day used `docs/<name>.md`. Code comments that would pass 120 columns name the file only (`nvn-design.md`).
-  Open (user agreed): split `docs/graphics/nvn-design.md` (1178 lines) into the decisions and the unobserved functions
-  (steps 4-u). Do it before the d2 step 2.
+  The plan of the unobserved functions (steps 4-u, "The selftest", U3) is in `docs/graphics/nvn-unobserved.md` since
+  2026-11-11 (split from `nvn-design.md`). Older commits and history name `nvn-design.md`, "Unobserved functions".
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
 - The exe in `game/` is the build of the d2 commit `29a6b6e` (md5 beb09c7b), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
@@ -51,7 +51,7 @@ RomFS and a file layer for mods.
 Phase 6 (graphics) follows `docs/graphics/nvn-plan.md` (five stages) and `docs/graphics/nvn-design.md`. Stages 1 to 3 are done except the open steps
 below. Design of 3c: `docs/graphics/nvn-design.md`, "3c Host design decisions", decisions 6 to 13.
 
-NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/graphics/nvn-design.md`, "Unobserved functions", steps 4-u2 to
+NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/graphics/nvn-unobserved.md`, steps 4-u2 to
   4-u4. `docs/graphics/nvn-coverage.md`: 1 row of G10 is `stub-log` (`nvnDeviceGetProcAddress`, by decision) after U5 (`11978be`).
   Current step: 4-u3-3 step (d), group d2 fixes (history: `OLD-WORK_PLAN.md`, last section "group d2").
     Groups of (d): d1 fixed-function state (DONE), d2 binds and resources (commit `29a6b6e`), d3 draws, clears, copies,

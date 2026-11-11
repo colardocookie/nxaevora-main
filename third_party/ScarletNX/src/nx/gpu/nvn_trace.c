@@ -165,8 +165,8 @@ static void value_query_trace(CPU* c, u64 entry, NvProc* p) {
             (unsigned long long)a2, (unsigned long long)a3, (unsigned long long)c->x[0]);
 }
 
-/* The enum and flag arguments of the observed functions: one line for each new value (docs/graphics/nvn-design.md,
-   "Unobserved functions", "Rules", item 3). It reads registers only, so the original call runs unchanged. */
+/* The enum and flag arguments of the observed functions: one line for each new value (docs/graphics/nvn-unobserved.md,
+   "Rules", item 3). It reads registers only, so the original call runs unchanged. */
 static void enum_args_trace(CPU* c, NvProc* p) {
     int full = 0;
     for (u32 r = 0; r < NVN_ENUM_REGS_BITS; r++) {

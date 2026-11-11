@@ -103,7 +103,7 @@ Content: connect initialization, a screen clear, one simple draw and the present
 - Start the selftest (`nvn_selftest`, adopted 2026-11-02) with a few representative functions in 3b, 3c and 3d, and show with a
   deliberate mutation that it finds a wrong handler. The selftest and the execution test use their own objects and memory and
   never touch the queue or the state of the game. A pass is recorded as `selftest` or `exec`, separate from `seen` (a game run).
-  The rules are in `docs/graphics/nvn-design.md`, section "Unobserved functions", part "The selftest".
+  The rules are in `docs/graphics/nvn-unobserved.md`, section "The selftest".
 
 - Code review (decided by the user, 2026-11-02): use the "code reviewer" agent of the skill `orca-agents` after step 3b and after
   step 3c, and after 3d when the change is large. Check at 3b: the life of objects, the generation check, the GPU address rule,
@@ -123,8 +123,8 @@ Content: textures, compute, synchronization (fences and events) and memory shari
   `ROADMAP.md` phase 3 and read the logs (`nx-log-read`).
 - Shaders and pipelines keep the existing path until phase 9 moves them.
 - The 242 functions that the survey run called are not the limit. All 523 resolved functions get a handler, and the argument
-  values that no scene used are checked. The plan, the coverage file and the checks are in `docs/graphics/nvn-design.md`, section
-  "Unobserved functions".
+  values that no scene used are checked. The plan, the coverage file and the checks are in
+  `docs/graphics/nvn-unobserved.md`.
 
 Exit condition: in the target scenes, the drawing and the behavior match the old path in a comparison, and each of the 523
 functions is implemented and checked as the coverage file says.

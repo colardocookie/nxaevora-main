@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The builder and state object cases of the NVN selftest (nvn-design.md, "The selftest"). One table holds the
+/* The builder and state object cases of the NVN selftest (nvn-unobserved.md, "The selftest"). One table holds the
    setters, the value sets and the getters; one runner sends the same script to the library and to the host handler.
    The object bytes are not compared, because the host keeps the values in its own records: the getters are the check
    (kind R), and a getter with a pointer output is compared as a blob with guard bytes (kind M). */

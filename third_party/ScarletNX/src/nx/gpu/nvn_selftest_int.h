@@ -3,7 +3,7 @@
 #ifndef SNX_NVN_SELFTEST_INT_H
 #define SNX_NVN_SELFTEST_INT_H
 
-/* The internal parts of the NVN selftest (nvn-design.md, "The selftest"): one side of a comparison, the call of
+/* The internal parts of the NVN selftest (nvn-unobserved.md, "The selftest"): one side of a comparison, the call of
    a library function or of its host handler, the report of one case, and the object cases that nvn_selftest_obj.c
    adds. The public entry stays in nvn_selftest.h. */
 

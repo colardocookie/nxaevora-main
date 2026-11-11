@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The resource object cases of the NVN selftest (nvn-design.md, "The selftest") for step 4-u3-2: the memory
+/* The resource object cases of the NVN selftest (nvn-unobserved.md, "The selftest") for step 4-u3-2: the memory
    pools, buffers, textures, texture and sampler pools, samplers, programs, the device queries and the builder setters
    that take a pool, a texture or an address. Each script goes to the library and to the host handler for the same
    values. A side has its own object and storage blocks, because the library maps its storage and the host keeps a

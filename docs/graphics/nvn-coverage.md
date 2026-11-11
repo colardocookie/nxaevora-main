@@ -3,7 +3,7 @@
 
 # NVN coverage of the host layer
 
-Made by `tools/nvn_coverage.py` (step 4-u1 of `docs/graphics/nvn-design.md`, section "Unobserved functions"). Do not edit the
+Made by `tools/nvn_coverage.py` (step 4-u1 of `docs/graphics/nvn-unobserved.md`). Do not edit the
 columns function to handler by hand: run the tool again. The columns checks, seen and notes are written by hand and the
 tool keeps them.
 
