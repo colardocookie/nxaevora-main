@@ -2,28 +2,17 @@
 
 <!-- Copyright 2026 the NXAevora contributors -->
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/aevora-logo-dark.png">
-    <img alt="aevora-icon" src="assets/aevora-logo.png" width="300px">
-  </picture>
-</p>
-<p align="center">
-  <img src="https://img.shields.io/badge/platform-windows%20x64-blue?style=for-the-badge&logo=gitforwindows" alt="Badge">
-  <img src="https://img.shields.io/badge/recompile%20type-static%20aot-b84b3a?style=for-the-badge&logo=ebox" alt="Badge">
-  <img src="https://img.shields.io/badge/status-alpha-orange?style=for-the-badge&logo=penpot" alt="Badge">
-  <img src="https://img.shields.io/badge/main%20language-c%20%7C%20rust-purple?style=for-the-badge&logo=c" alt="Badge">
-  <img src="https://img.shields.io/badge/ui%20framework-tauri-8069ff?style=for-the-badge&logo=tauri" alt="Badge">
-  <img src="https://img.shields.io/badge/license-GPL--3.0%20(v3)-lightgrey?style=for-the-badge&logo=unlicense" alt="Badge">
-</p>
-<p align="center">
+<img alt="aevora-icon" src="assets/nxaevora-banner.png"><br>
+<img src="https://img.shields.io/badge/Platform-Windows%20x64-blue?style=flat" alt="Platform: Windows x64">
+<img src="https://img.shields.io/badge/Status-work%20in%20progress%20(alpha%20stage)-orange?style=flat" alt="Status: work in progress (alpha stage)">
+<img src="https://img.shields.io/badge/License-GPL--3.0%20(v3)-lightgrey?style=flat" alt="License: GPL-3.0 (v3)">
+
 NXAevora is a project to run Pokemon Legends Arceus natively on a Windows PC. The code of the game is translated
-ahead of time from ARM64 to x86-64 with the static recompiler <a href="https://github.com/scarletnx/ScarletNX">ScarletNX</a>.<br>
+ahead of time from ARM64 to x86-64 with the static recompiler <a href="https://github.com/scarletnx/ScarletNX">ScarletNX</a>.
 NXAevora adds the settings, game code patches, runtime changes and tools that are specific to this game, and a launcher is planned.
-</p>
 
 > [!IMPORTANT]
-> At Aevora, we utilize AI-powered coding (including so-called "vibe coding"). Our development is guided by human review and real-world testing, prioritizing code that is easy for humans to understand and maintain. We do not consider AI-generated code or successful compilation alone to be proof that the game is functioning correctly. If you disagree with the use of AI or do not trust AI-written code, that is your right. I do not disagree with or find those opinions unfair.
+> At Aevora, we utilize AI-powered coding (including so-called "vibe coding"). Our development is guided by human review and real-world testing, prioritizing code that is easy for humans to understand and maintain. We do not consider AI-generated code or successful compilation alone to be proof that the game is functioning correctly.
 
 ## Status
 
