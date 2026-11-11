@@ -1430,6 +1430,41 @@ static void world_timers_init(void) {
 static const FrameStepSite gravity_sites[] = {
     {0x198d7e4,0x998,0xd10503ff,0x198da8c,1,"airborne gravity"},
 };
+/* Character movement steps that add accel x 1/30 (or subtract x/30) once per call, which
+   runs once per rendered frame. Gravity alone was fixed, so airborne sideways motion stayed
+   4 times fast at 120 FPS and jumps looked floaty. Each pair is a MOV/MOVK W8 of +-1/30. */
+static const FrameStepSite movement_sites[] = {
+    {0x198d7e4,0x998,0xd10503ff,0x198e020,0,"shared airborne force"},
+    {0x19843a0,0xb18,0xd102c3ff,0x1984a70,1,"shared vertical"},
+    {0x1a08560,0x4bb0,0xd103c3ff,0x1a0bee4,0,"player velocity accel"},
+    {0x1a08560,0x4bb0,0xd103c3ff,0x1a0baf0,0,"player speed accel"},
+    {0x1a08560,0x4bb0,0xd103c3ff,0x1a0b3ac,1,"player countdown +750"},
+    {0x1a0e0ec,0x118c,0xa9ba6ffc,0x1a0eea0,0,"player airborne force"},
+    {0x1a14f80,0xc54,0xd10283ff,0x1a158c8,1,"player vertical"},
+    {0x1a173b0,0x22a4,0xfc180fea,0x1a17b10,0,"player state accel"},
+    {0x1a173b0,0x22a4,0xfc180fea,0x1a17f3c,0,"player state force"},
+};
+#define MOVEMENT_SITES (sizeof movement_sites / sizeof movement_sites[0])
+static void movement_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_MOVEMENT_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-movement-fix: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    if (!frame_step_cell_init("arceus-movement-fix")) return;
+    /* Optional hex mask over movement_sites (bit 0 is the first) to test sites one by one. */
+    const char* mask_text = getenv("SNX_ARCEUS_MOVEMENT_SITES");
+    const unsigned long mask = mask_text && *mask_text ? strtoul(mask_text, NULL, 16) : ~0ul;
+    FrameStepSite chosen[MOVEMENT_SITES];
+    unsigned n = 0;
+    for (unsigned k = 0; k < MOVEMENT_SITES; k++)
+        if (mask >> k & 1) chosen[n++] = movement_sites[k];
+    const unsigned sites = frame_step_sites_init(chosen, n, "arceus-movement-fix");
+    LOG("arceus-movement-fix: EXPERIMENT: %u of %u character movement sites (mask %lx) use min(1/30, elapsed), cell=%llx\n",
+        sites, (unsigned)MOVEMENT_SITES, mask, (unsigned long long)frame_step_address);
+}
 static void gravity_fix_init(void) {
     const char* enabled = getenv("SNX_ARCEUS_GRAVITY_FIX");
     if (!main_base || !enabled || strcmp(enabled, "1")) return;
@@ -1761,6 +1796,7 @@ void arceus_clock_post_jit(void) {
     /* Before the census, which then skips the owner this wraps. */
     world_timers_init();
     gravity_fix_init();
+    movement_fix_init();
     ball_flight_init();
     timing_research_init();
     capture_fix_init();

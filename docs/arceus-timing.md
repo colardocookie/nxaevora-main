@@ -128,3 +128,25 @@ times a factor, a rate and 1/30 second to the velocity on each call, so falls ac
 With a target rate, `SNX_ARCEUS_GRAVITY_FIX=1` makes that constant the negated frame step: the MOV/MOVK pair at
 `main+198DA8C` loads it from the frame-step cell of the world timers. The cell setup is now shared by every fix
 that loads it, and the first one maps it. The `arceus-gravity-fix` line confirms the fix.
+
+## Movement fix
+
+With only gravity on the elapsed time, sideways motion in the air still ran four times fast against the fall,
+because other character movement steps add acceleration times 1/30 once per call. With a target rate,
+`SNX_ARCEUS_MOVEMENT_FIX=1` makes nine of those constants load the frame step from the same cell. Each is a
+MOV/MOVK pair of plus or minus 1/30:
+
+| Bit | Site | Owner |
+| --- | --- | --- |
+| 0 | `main+198E020` | shared airborne force (`main+198D7E4`), used by the player and Pokémon |
+| 1 | `main+1984A70` | shared vertical (`main+19843A0`) |
+| 2 | `main+1A0BEE4` | player velocity acceleration (`main+1A08560`) |
+| 3 | `main+1A0BAF0` | player speed acceleration (`main+1A08560`) |
+| 4 | `main+1A0B3AC` | player countdown `+750` (`main+1A08560`) |
+| 5 | `main+1A0EEA0` | player airborne force (`main+1A0E0EC`) |
+| 6 | `main+1A158C8` | player vertical (`main+1A14F80`) |
+| 7 | `main+1A17B10` | player state acceleration (`main+1A173B0`) |
+| 8 | `main+1A17F3C` | player state force (`main+1A173B0`) |
+
+`SNX_ARCEUS_MOVEMENT_SITES` is an optional hex mask over these bits, to test the sites one by one. Without it all
+nine are on. The `arceus-movement-fix` line gives the number installed and the mask.
