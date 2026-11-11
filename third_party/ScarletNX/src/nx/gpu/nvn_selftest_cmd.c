@@ -98,6 +98,7 @@ typedef struct {
     int done;
     PMutex lock;
     PCond cv;
+    uint64_t lib_control, host_control; /* the control memory of each command buffer, given again each case */
 } StCmdJob;
 
 /* The recorder calls the snapshot on the GPU thread, and one job runs at a time on that thread (one guest thread runs
@@ -374,6 +375,10 @@ static void st_case(CPU* c, NvnStRun* run, StCmdProcs* p, StCmdJob* job, uint64_
                     uint64_t lib_pool, uint64_t host_pool, uint64_t args, const char* name, const char* text,
                     StScript script, const NvnStProc* fn, uint64_t param, unsigned rule, int* stop) {
     st_refill(c, p, lib_cb, host_cb, lib_pool, host_pool);
+    /* Each EndRecording uses control memory. When it runs out, the library calls the out-of-memory callback,
+       which the selftest does not set, and aborts (sdk d8243b8). The records of the last case are done. */
+    ST_CALL(c, &p->add_control_memory, 0, lib_cb, job->lib_control, ST_CONTROL_BYTES);
+    ST_CALL(c, &p->add_control_memory, 1, host_cb, job->host_control, ST_CONTROL_BYTES);
     ST_CALL(c, &p->begin, 0, lib_cb);
     const int lib_script = script(c, p, fn, 0, lib_cb, args, param, rule);
     const uint64_t lib_handle = ST_CALL(c, &p->end, 0, lib_cb);
@@ -723,6 +728,8 @@ void nvn_selftest_command_cases(CPU* c, NvnStRun* run) {
         free(job);
         return;
     }
+    job->lib_control = lib_control;
+    job->host_control = host_control;
     NvnStResPool lib_pool = {0}, host_pool = {0};
     const int lib_ok = st_setup_lists(c, &procs, &cache, run, 0, lib_cb, lib_control, &lib_pool);
     const int host_ok = st_setup_lists(c, &procs, &cache, run, 1, host_cb, host_control, &host_pool);

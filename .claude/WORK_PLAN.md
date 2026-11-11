@@ -53,15 +53,10 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
     Groups of (d): d1 fixed-function state (29 rows, committed `writer-u3-3d1`), d2 binds and resources, d3 draws,
     clears, copies, dispatch, d4 CPU side (queries, callbacks, debug markers). Then 4-u3-4 (exectest). The `unit`
     scope is not in the checks column yet.
-    Run of 2026-11-11 14:03 (exe md5 166e98a1, commit after 07bb885, 0x49 fault fixed): S1, 9 Barrier and 14 d1
-    cases pass S. Two open faults:
-    1. Fault 2 (do it first): the game stops (svcBreak, `nn::diag::detail::Abort`) after case 26
-       (SetSubpixelPrecisionBias). The abort comes from sdk d8243d0, inside nvnCommandBufferEndRecording (d824348..).
-       Cases TiledCacheAction, TiledCacheTileSize, ConservativeRasterEnable, BindCoverageModulationTable and the totals
-       line did not run. Likely cause (not verified): the control memory (0x800, `ST_CONTROL_BYTES`) is never refilled,
-       only the command memory is. Check the abort condition at d8243d0, then refill the control memory as the command
-       memory is refilled.
-    2. 11 d1 cases fail S (first difference, library/host): DepthRange and DepthRanges 0x282 (0x3f4ccccc/0x3ecccccc),
+    Run of 2026-11-11 (exe md5 f685c195, control memory fix): no abort, all d1 cases ran. Totals: 286 cases,
+    13 failed, 0 skipped. The abort (sdk d8243b8, "CommandBuffer out-of-memory callback didn't add") was the
+    control memory that the selftest did not give again. Fixed and committed. One open fault:
+    1. 13 d1 cases fail S (also TiledCacheAction 0x3d8 (1/0), TiledCacheTileSize 0x3d9 (0x400040/0)). Earlier 11 (first difference, library/host): DepthRange and DepthRanges 0x282 (0x3f4ccccc/0x3ecccccc),
        BindBlendState 0x782 (8/2), BindChannelMaskState 0x680 (0x1111/0x11111111), BindMultisampleState 0x478
        (0xeaa26e26/0), BindPolygonState 0x646 (1/0), SetSampleMask 0x3ef (1/0xffff), SetStencilCullCriteria 0x376
        (0xff000007/0xff000005), SetColorReductionEnable 0x367 (1/0), SetColorReductionThresholds 0x433 (0x10002/0),
