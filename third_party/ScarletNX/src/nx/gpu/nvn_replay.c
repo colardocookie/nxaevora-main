@@ -34,6 +34,13 @@
 #define NVN_REPLAY_CLEAR_ARG_TARGET_SHIFT  6u
 #define NVN_REPLAY_CLEAR_ARG_MASK_SHIFT    2u
 #define NVN_REPLAY_CLEAR_ARG_FIELD_MASK    0xFu
+/* ClearColor (sdk d84a870) sends the clear in passthrough mode, so the shadow RAM keeps the draw state. Then it
+   replays 0x3ED from the shadow RAM and returns to track mode (words de13e48, de14198, d84a904). */
+#define NVN_REPLAY_SHADOW_RAM_CONTROL      0x049u
+#define NVN_REPLAY_SHADOW_PASSTHROUGH      2u
+#define NVN_REPLAY_SHADOW_REPLAY           3u
+#define NVN_REPLAY_SHADOW_TRACK_FILTER     1u
+#define NVN_REPLAY_CLEAR_SHADOWED_REG      0x3EDu
 
 #define NVN_REPLAY_CLIP_LO_MAX 0xFFFEu
 #define NVN_REPLAY_CLIP_HI_MAX 0xFFFFu
@@ -185,8 +192,13 @@ static int replay_clear(const NvnReplayEnv* env, NvnReplayStats* stats, const Nv
     }
     uint32_t arg = ((op->index & NVN_REPLAY_CLEAR_ARG_FIELD_MASK) << NVN_REPLAY_CLEAR_ARG_TARGET_SHIFT) |
                    ((op->mask & NVN_REPLAY_CLEAR_ARG_FIELD_MASK) << NVN_REPLAY_CLEAR_ARG_MASK_SHIFT);
+    replay_method(env, stats, NVN_REPLAY_SHADOW_RAM_CONTROL, NVN_REPLAY_SHADOW_PASSTHROUGH);
+    replay_method(env, stats, NVN_REPLAY_CLEAR_SHADOWED_REG, 0u);
     for (uint32_t layer = 0; layer < layers; layer++)
         replay_method(env, stats, NVN_REPLAY_CLEAR_SURFACE, arg + NVN_REPLAY_CLEAR_LAYER_STRIDE * layer);
+    replay_method(env, stats, NVN_REPLAY_SHADOW_RAM_CONTROL, NVN_REPLAY_SHADOW_REPLAY);
+    replay_method(env, stats, NVN_REPLAY_CLEAR_SHADOWED_REG, 0u); /* the shadow RAM's value replaces the 0 */
+    replay_method(env, stats, NVN_REPLAY_SHADOW_RAM_CONTROL, NVN_REPLAY_SHADOW_TRACK_FILTER);
     return 1;
 }
 

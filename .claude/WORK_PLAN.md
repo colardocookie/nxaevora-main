@@ -60,6 +60,16 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
        (Eden Maxwell3D regs, near the MME load registers 0x45..0x48) and which side writes it (library words or the host
        replay or the init stream). Decide from the mechanism: a host fault, or a register that neither side's renderer
        consumes (then an explicit ignore entry with the reason). Consider a diagnostic that logs all differing registers.
+       RESULT (explorer 2026-11-11, `reports/explore-0x49.md`): 0x49 = SET_MME_SHADOW_RAM_CONTROL. Library ClearColor
+       (sdk d84a870) sends 0x360 x4, 0x49=2, 0x3ED=0, macro 1 (only CLEAR_SURFACE), 0x49=3, 0x3ED=0, 0x49=1 (constants
+       de13e48, de14198 checked). Host `replay_clear` sends no 0x49/0x3ED: a host fault. Next: make replay_clear send
+       the same words around CLEAR_SURFACE (also check that 0x3ED in replay mode takes the shadow value).
+       DONE in the working tree (not committed): `replay_clear` sends the words, `tests/nvn_replay.c` checks the order.
+       ctest passes (except tracked_material). Exe md5 166e98a1. Run 2026-11-11 14:03: 0x49 is gone. S1, 9 Barrier and
+       14 d1 cases pass S. 11 d1 cases fail S (first difference): DepthRange/DepthRanges 0x282, BindBlendState 0x782,
+       ChannelMask 0x680, Multisample 0x478, Polygon 0x646, SampleMask 0x3ef, StencilCull 0x376, ColorReduction
+       0x367, Thresholds 0x433, SubpixelBias 0x287. Fault 2 (abort after case 26) is unchanged. Next: fault 2, then
+       the 11 cases (an analyst table of the library words of each).
     2. The game stopped (svcBreak, `nn::diag::detail::Abort`) after case 26 (SetSubpixelPrecisionBias). The abort comes
        from sdk d8243d0, inside nvnCommandBufferEndRecording (d824348..). Cases TiledCacheAction, TiledCacheTileSize,
        ConservativeRasterEnable, BindCoverageModulationTable and the totals line did not run. Likely cause (not

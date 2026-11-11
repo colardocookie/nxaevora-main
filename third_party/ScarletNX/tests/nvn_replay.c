@@ -403,7 +403,7 @@ static void test_scissor_clamp(void) {
 
 static void test_clear_layers(void) {
     NvnOpClearColor op = {0, 0xFu, {0x3F800000u, 0x40000000u, 0x40400000u, 0x40800000u}};
-    /* no layer: the four color words only */
+    /* no layer: the four color words and the shadow RAM words, no CLEAR_SURFACE */
     Mock k = {0};
     NvnReplayEnv env = make_env(&k);
     NvnOpList l = {0};
@@ -413,7 +413,7 @@ static void test_clear_layers(void) {
     nvn_replay_list(&env, &l, &st);
     CHECK(has_write(&k, 0x360, 0x3F800000u) && has_write(&k, 0x363, 0x40800000u));
     CHECK(!has_method(&k, 0x674));
-    CHECK(st.replayed[NVN_OP_CLEAR_COLOR] == 1 && st.methods == 4 && st.faults == 0);
+    CHECK(st.replayed[NVN_OP_CLEAR_COLOR] == 1 && st.methods == 9 && st.faults == 0);
     nvn_oplist_free(&l);
 
     /* one layer: arg = 1<<6 | 5<<2 = 0x54 */
@@ -426,7 +426,11 @@ static void test_clear_layers(void) {
     CHECK(nvn_oplist_append(&l1, NVN_OP_CLEAR_COLOR, &op1, sizeof op1));
     nvn_replay_list(&env1, &l1, &st1);
     CHECK(has_write(&k1, 0x674, 0x54u));
-    CHECK(st1.methods == 5 && st1.faults == 0);
+    CHECK(st1.methods == 10 && st1.faults == 0);
+    /* the words of ClearColor (sdk d84a870) after the colors: passthrough around the clear, then 0x3ED replayed */
+    static const MockWrite shadow_words[] = {{0x049, 2u}, {0x3ED, 0u}, {0x674, 0x54u},
+                                             {0x049, 3u}, {0x3ED, 0u}, {0x049, 1u}};
+    CHECK(k1.write_count == 10 && !memcmp(&k1.writes[4], shadow_words, sizeof shadow_words));
     nvn_oplist_free(&l1);
 
     /* three layers: arg = 2<<6 | 0xA<<2 = 0xA8, plus 0x400 for each layer */
@@ -441,7 +445,7 @@ static void test_clear_layers(void) {
     CHECK(has_write(&k3, 0x674, 0xA8u));
     CHECK(has_write(&k3, 0x674, 0x4A8u));
     CHECK(has_write(&k3, 0x674, 0x8A8u));
-    CHECK(st3.methods == 7 && st3.faults == 0);
+    CHECK(st3.methods == 12 && st3.faults == 0);
     nvn_oplist_free(&l3);
 }
 
