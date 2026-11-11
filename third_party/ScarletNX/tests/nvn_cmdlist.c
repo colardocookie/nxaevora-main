@@ -55,7 +55,7 @@ static void test_append_refused(void) {
 
 static void test_bind_texture(void) {
     NvnOpList l = {0};
-    NvnOpBindTexture bind = {2, 7, 0x100000004ull};
+    NvnOpBindTexture bind = {2, 7, 0x100000004ull, 0};
     CHECK(nvn_oplist_append(&l, NVN_OP_BIND_TEXTURE, &bind, sizeof bind));
     CHECK(l.ops == 1);
     size_t pos = 0;

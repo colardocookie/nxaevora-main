@@ -2754,24 +2754,77 @@ static void test_bind_image(void) {
         0x80000E0Eu, 0x200308E3u, 0x150u, 0x76543210u, 0xFEDCBA98u,
     };
     uint32_t out[NVN_BIND_IMAGE_WORDS_MAX];
-    uint32_t count = nvn_bind_image_words(0, 5, 1, handles, 0, out);
+    uint32_t count = nvn_bind_image_words(0, 5, 1, handles, 0, 0, out);
     check_bind_words(out, count, stage0, 5);
-    count = nvn_bind_image_words(4, 5, 1, handles, 0, out);
+    count = nvn_bind_image_words(4, 5, 1, handles, 0, 0, out);
     check_bind_words(out, count, stage4, 5);
-    count = nvn_bind_image_words(0, 5, 1, handles, 1, out);
+    count = nvn_bind_image_words(0, 5, 1, handles, 1, 0, out);
     check_bind_words(out, count, descriptor, 6);
-    count = nvn_bind_image_words(0, 5, 2, handles, 0, out);
+    count = nvn_bind_image_words(0, 5, 2, handles, 0, 0, out);
     check_bind_words(out, count, two, 10);
     bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
-    CHECK(nvn_bind_image_words(5, 5, 1, handles, 0, out) == 0);
+    CHECK(nvn_bind_image_words(5, 5, 1, handles, 0, 0, out) == 0);
     check_bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
-    CHECK(nvn_bind_image_words(0, 5, 0, handles, 0, out) == 0);
+    CHECK(nvn_bind_image_words(0, 5, 0, handles, 0, 0, out) == 0);
     check_bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
-    CHECK(nvn_bind_image_words(0, 5, 17, handles, 0, out) == 0);
+    CHECK(nvn_bind_image_words(0, 5, 17, handles, 0, 0, out) == 0);
     check_bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
-    CHECK(nvn_bind_image_words(0, 5, 1, NULL, 0, out) == 0);
+    CHECK(nvn_bind_image_words(0, 5, 1, NULL, 0, 0, out) == 0);
     check_bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
-    CHECK(nvn_bind_image_words(0, 5, 1, handles, 0, NULL) == 0);
+    CHECK(nvn_bind_image_words(0, 5, 1, handles, 0, 0, NULL) == 0);
+}
+
+static void test_bind_images(void) {
+    const uint64_t handles[2] = {0x200000003ull, 0x200000007ull};
+    /* Stage 2 has table value 3; first 1 is 0x120 + 8, then the low and high word of each handle. */
+    static const uint32_t want[] = {0x80030E0Eu, 0x8000068Bu, 0xA00508E3u, 0x128u, 0x3u, 0x2u, 0x7u, 0x2u};
+    uint32_t out[NVN_BIND_IMAGE_WORDS_MAX];
+    uint32_t count = nvn_bind_image_words(2, 1, 2, handles, 1, 1, out);
+    check_bind_words(out, count, want, 8);
+    bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
+    CHECK(nvn_bind_image_words(5, 1, 2, handles, 1, 1, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
+    CHECK(nvn_bind_image_words(2, 1, 2, NULL, 1, 1, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_IMAGE_WORDS_MAX);
+    CHECK(nvn_bind_image_words(2, 1, 2, handles, 1, 1, NULL) == 0);
+}
+
+static void test_bind_textures(void) {
+    const uint64_t handles[2] = {0x100000005ull, 0x100000007ull};
+    /* Stage 2 has table value 3; first 1 is 0x20 + 8, then the low and high word of each handle. */
+    static const uint32_t want[] = {0x80030E0Eu, 0x8000068Bu, 0xA00508E3u, 0x28u, 0x5u, 0x1u, 0x7u, 0x1u};
+    uint32_t out[NVN_BIND_TEXTURES_WORDS_MAX];
+    uint32_t count = nvn_bind_textures_words(2, 1, 2, handles, 1, out);
+    check_bind_words(out, count, want, 8);
+    bind_sentinel(out, NVN_BIND_TEXTURES_WORDS_MAX);
+    CHECK(nvn_bind_textures_words(5, 1, 2, handles, 1, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_TEXTURES_WORDS_MAX);
+    CHECK(nvn_bind_textures_words(2, 127, 2, handles, 1, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_TEXTURES_WORDS_MAX);
+    CHECK(nvn_bind_textures_words(2, 1, 0, handles, 1, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_TEXTURES_WORDS_MAX);
+    CHECK(nvn_bind_textures_words(2, 1, 2, NULL, 1, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_TEXTURES_WORDS_MAX);
+    CHECK(nvn_bind_textures_words(2, 1, 2, handles, 1, NULL) == 0);
+}
+
+static void test_bind_storage_buffers(void) {
+    static const uint64_t entries[4] = {0x100003000ull, 0x100ull, 0x100004000ull, 0x80ull};
+    /* Stage 0 has base 0x11: 4 * 0x11 = 0x44 in the inline field, then a mode 3 run of eight words. */
+    static const uint32_t want[] = {0x80440E20u, 0x600808E4u, 0x3000u, 0x1u, 0x100u, 0u, 0x4000u, 0x1u, 0x80u, 0u};
+    uint32_t out[NVN_BIND_STORAGE_BUFFERS_WORDS_MAX];
+    uint32_t count = nvn_bind_storage_buffers_words(0, 0, 2, entries, out);
+    check_bind_words(out, count, want, 10);
+    bind_sentinel(out, NVN_BIND_STORAGE_BUFFERS_WORDS_MAX);
+    CHECK(nvn_bind_storage_buffers_words(5, 0, 2, entries, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_STORAGE_BUFFERS_WORDS_MAX);
+    CHECK(nvn_bind_storage_buffers_words(0, 127, 2, entries, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_STORAGE_BUFFERS_WORDS_MAX);
+    CHECK(nvn_bind_storage_buffers_words(0, 0, 0, entries, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_STORAGE_BUFFERS_WORDS_MAX);
+    CHECK(nvn_bind_storage_buffers_words(0, 0, 2, NULL, out) == 0);
+    check_bind_sentinel(out, NVN_BIND_STORAGE_BUFFERS_WORDS_MAX);
+    CHECK(nvn_bind_storage_buffers_words(0, 0, 2, entries, NULL) == 0);
 }
 
 static void test_clear_depth_stencil_words(void) {
@@ -3389,6 +3442,9 @@ int main(int argc, char** argv) {
     test_bind_uniform_buffer();
     test_bind_storage_buffer();
     test_bind_texture();
+    test_bind_images();
+    test_bind_textures();
+    test_bind_storage_buffers();
     test_draw_words();
     test_report_counter_words();
     test_report_value_words();

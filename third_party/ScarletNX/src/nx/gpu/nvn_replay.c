@@ -11,6 +11,12 @@
 #define NVN_REPLAY_SAMPLER_POOL_HI    0x557u
 #define NVN_REPLAY_SAMPLER_POOL_LO    0x558u
 #define NVN_REPLAY_SAMPLER_POOL_LIMIT 0x559u
+/* SetTexturePool also selects the texture pool in the driver constants buffer (macro 0xE20, argument 0x40) and writes
+   the pool base at 0x8E4 and 0x8E5 (sdk d84c1c4-d84c1cc). */
+#define NVN_REPLAY_TEX_POOL_SELECT       0xE20u
+#define NVN_REPLAY_TEX_POOL_SELECT_VALUE 0x40u
+#define NVN_REPLAY_TEX_POOL_OFFSET       0x8E4u
+#define NVN_REPLAY_TEX_POOL_OFFSET_HI    0x8E5u
 
 #define NVN_REPLAY_VIEWPORT_SCALE_X     0x280u
 #define NVN_REPLAY_VIEWPORT_SCALE_Y     0x281u
@@ -128,6 +134,11 @@ static int replay_pool(const NvnReplayEnv* env, NvnReplayStats* stats, NvnOpCode
     replay_method(env, stats, method_hi, (uint32_t)(base >> 32));
     replay_method(env, stats, method_lo, (uint32_t)base);
     replay_method(env, stats, method_limit, count - 1u);
+    if (code == NVN_OP_SET_TEXTURE_POOL) {
+        replay_method(env, stats, NVN_REPLAY_TEX_POOL_SELECT, NVN_REPLAY_TEX_POOL_SELECT_VALUE);
+        replay_method(env, stats, NVN_REPLAY_TEX_POOL_OFFSET, (uint32_t)base);
+        replay_method(env, stats, NVN_REPLAY_TEX_POOL_OFFSET_HI, (uint32_t)(base >> 32));
+    }
     return 1;
 }
 
@@ -281,7 +292,9 @@ static int replay_alpha_ref(const NvnReplayEnv* env, NvnReplayStats* stats, cons
 }
 
 static int replay_bind_texture(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpBindTexture* op) {
-    if (!env->bind_texture || !env->bind_texture(env->ctx, op->stage, op->slot, op->handle)) {
+    int (*bind)(void*, uint32_t, uint32_t, uint64_t) =
+        op->plural ? env->bind_texture_plural : env->bind_texture;
+    if (!bind || !bind(env->ctx, op->stage, op->slot, op->handle)) {
         replay_fault(env, stats, "bind texture", op->handle);
         return 0;
     }

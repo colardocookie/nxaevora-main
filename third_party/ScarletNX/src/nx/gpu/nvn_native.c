@@ -3523,7 +3523,7 @@ static void h_command_buffer_bind_texture(CPU* c, u64 entry) {
     static const char* const name = "nvnCommandBufferBindTexture";
     pm_lock(&objs_lock);
     CommandBufferRec* cb = command_buffer(c->x[0], name);
-    NvnOpBindTexture op = {(u32)c->x[1], (u32)c->x[2], c->x[3]};
+    NvnOpBindTexture op = {.stage = (u32)c->x[1], .slot = (u32)c->x[2], .handle = c->x[3], .plural = 0};
     if (!cb) {
     } else if (op.stage > NVN_BIND_STAGE_MAX)
         command_dropped(cb, name, "stage outside the bind stages", op.stage);
@@ -3548,7 +3548,7 @@ static void h_command_buffer_bind_textures(CPU* c, u64 entry) {
         uint64_t handles[NVN_BIND_SLOT_MAX];
         for (uint32_t i = 0; i < (uint32_t)count; i++) handles[i] = gr64(array + (u64)i * COMMAND_BIND_TEXTURE_BYTES);
         for (uint32_t i = 0; i < (uint32_t)count; i++) {
-            NvnOpBindTexture op = {stage, first + i, handles[i]};
+            NvnOpBindTexture op = {.stage = stage, .slot = first + i, .handle = handles[i], .plural = 1};
             command_record(cb, c->x[0], name, NVN_OP_BIND_TEXTURE, &op, sizeof op);
         }
     }
@@ -3556,8 +3556,9 @@ static void h_command_buffer_bind_textures(CPU* c, u64 entry) {
 }
 /* One buffer bind: the stage, the slot limit and the bind table are the host's; the library checks none of them. */
 static void command_bind_buffer(CommandBufferRec* cb, u64 addr, const char* operation, NvnBindKind kind,
-                                uint32_t stage, uint32_t slot, uint32_t slot_max, uint64_t buffer, uint64_t size) {
-    NvnOpBindBuffer op = {kind, stage, slot, 0, buffer, size};
+                                uint32_t stage, uint32_t slot, uint32_t slot_max, uint64_t buffer, uint64_t size,
+                                uint32_t plural) {
+    NvnOpBindBuffer op = {kind, stage, slot, plural, buffer, size};
     if (stage > NVN_BIND_STAGE_MAX)
         command_dropped(cb, operation, "stage outside the bind stages", stage);
     else if (slot >= slot_max)
@@ -3567,11 +3568,12 @@ static void command_bind_buffer(CommandBufferRec* cb, u64 addr, const char* oper
 }
 /* A plural bind whose array entry is {u64 addr; u32 size; u32 pad}. */
 static void command_bind_buffers_sized(CommandBufferRec* cb, u64 addr, const char* operation, NvnBindKind kind,
-                                       uint32_t stage, uint32_t first, int32_t count, u64 array, uint32_t slot_max) {
+                                       uint32_t stage, uint32_t first, int32_t count, u64 array, uint32_t slot_max,
+                                       uint32_t plural) {
     if (!command_bind_range_ok(cb, operation, stage, first, count, array, slot_max, COMMAND_BIND_BUFFER_BYTES)) return;
     for (uint32_t i = 0; i < (uint32_t)count; i++) {
         u64 at = array + (u64)i * COMMAND_BIND_BUFFER_BYTES;
-        NvnOpBindBuffer op = {kind, stage, first + i, 0, gr64(at), (uint32_t)gr32(at + 8)};
+        NvnOpBindBuffer op = {kind, stage, first + i, plural, gr64(at), (uint32_t)gr32(at + 8)};
         command_record(cb, addr, operation, NVN_OP_BIND_BUFFER, &op, sizeof op);
     }
 }
@@ -3591,7 +3593,7 @@ static void h_command_buffer_bind_uniform_buffer(CPU* c, u64 entry) {
     pm_lock(&objs_lock);
     CommandBufferRec* cb = command_buffer(c->x[0], name);
     if (cb) command_bind_buffer(cb, c->x[0], name, NVN_BIND_UNIFORM, (u32)c->x[1], (u32)c->x[2],
-                                NVN_UNIFORM_SLOT_MAX, c->x[3], (uint32_t)c->x[4]);
+                                NVN_UNIFORM_SLOT_MAX, c->x[3], (uint32_t)c->x[4], 0);
     pm_unlock(&objs_lock);
 }
 static void h_command_buffer_bind_storage_buffer(CPU* c, u64 entry) {
@@ -3600,7 +3602,7 @@ static void h_command_buffer_bind_storage_buffer(CPU* c, u64 entry) {
     pm_lock(&objs_lock);
     CommandBufferRec* cb = command_buffer(c->x[0], name);
     if (cb) command_bind_buffer(cb, c->x[0], name, NVN_BIND_STORAGE, (u32)c->x[1], (u32)c->x[2],
-                                NVN_STORAGE_SLOT_MAX, c->x[3], (uint32_t)c->x[4]);
+                                NVN_STORAGE_SLOT_MAX, c->x[3], (uint32_t)c->x[4], 0);
     pm_unlock(&objs_lock);
 }
 static void h_command_buffer_bind_vertex_buffer(CPU* c, u64 entry) {
@@ -3609,7 +3611,7 @@ static void h_command_buffer_bind_vertex_buffer(CPU* c, u64 entry) {
     pm_lock(&objs_lock);
     CommandBufferRec* cb = command_buffer(c->x[0], name);
     if (cb) command_bind_buffer(cb, c->x[0], name, NVN_BIND_VERTEX, 0, (u32)c->x[1], NVN_VERTEX_SLOT_MAX,
-                                c->x[2], c->x[3]);
+                                c->x[2], c->x[3], 0);
     pm_unlock(&objs_lock);
 }
 static void h_command_buffer_bind_transform_feedback_buffer(CPU* c, u64 entry) {
@@ -3618,7 +3620,7 @@ static void h_command_buffer_bind_transform_feedback_buffer(CPU* c, u64 entry) {
     pm_lock(&objs_lock);
     CommandBufferRec* cb = command_buffer(c->x[0], name);
     if (cb) command_bind_buffer(cb, c->x[0], name, NVN_BIND_TRANSFORM_FEEDBACK, 0, (u32)c->x[1], NVN_XFB_SLOT_MAX,
-                                c->x[2], c->x[3]);
+                                c->x[2], c->x[3], 0);
     pm_unlock(&objs_lock);
 }
 static void h_command_buffer_bind_uniform_buffers(CPU* c, u64 entry) {
@@ -3629,7 +3631,7 @@ static void h_command_buffer_bind_uniform_buffers(CPU* c, u64 entry) {
     int32_t count = (int32_t)c->x[3];
     if (cb && count > 0)
         command_bind_buffers_sized(cb, c->x[0], name, NVN_BIND_UNIFORM, (u32)c->x[1], (u32)c->x[2], count,
-                                   c->x[4], NVN_UNIFORM_SLOT_MAX);
+                                   c->x[4], NVN_UNIFORM_SLOT_MAX, 0);
     pm_unlock(&objs_lock);
 }
 static void h_command_buffer_bind_storage_buffers(CPU* c, u64 entry) {
@@ -3640,7 +3642,7 @@ static void h_command_buffer_bind_storage_buffers(CPU* c, u64 entry) {
     int32_t count = (int32_t)c->x[3];
     if (cb && count > 0)
         command_bind_buffers_sized(cb, c->x[0], name, NVN_BIND_STORAGE, (u32)c->x[1], (u32)c->x[2], count,
-                                   c->x[4], NVN_STORAGE_SLOT_MAX);
+                                   c->x[4], NVN_STORAGE_SLOT_MAX, 1);
     pm_unlock(&objs_lock);
 }
 static void h_command_buffer_bind_vertex_buffers(CPU* c, u64 entry) {
@@ -5025,9 +5027,10 @@ static void h_command_buffer_reset_counter(CPU* c, u64 entry) {
     }
     pm_unlock(&objs_lock);
 }
-/* One BindImage or BindImages call. A NULL host_handles reads the guest array at guest_handles. */
+/* One BindImage or BindImages call. A NULL host_handles reads the guest array at guest_handles. plural keeps the
+   library's mode 5 packet form of BindImages. */
 static void command_bind_image(CommandBufferRec* cb, u64 addr, const char* operation, uint32_t stage, uint32_t first,
-                               int32_t count, u64 guest_handles, const uint64_t* host_handles) {
+                               int32_t count, u64 guest_handles, const uint64_t* host_handles, uint32_t plural) {
     if (count < 1) return;
     uint32_t n = (uint32_t)count;
     if (stage > NVN_BIND_STAGE_MAX) {
@@ -5042,7 +5045,7 @@ static void command_bind_image(CommandBufferRec* cb, u64 addr, const char* opera
         command_dropped(cb, operation, "unreadable handles", guest_handles);
         return;
     }
-    NvnOpBindImage op = {.stage = stage, .first = first, .count = n};
+    NvnOpBindImage op = {.stage = stage, .first = first, .count = n, .plural = plural};
     for (uint32_t i = 0; i < n; i++)
         op.handle[i] = host_handles ? host_handles[i] : gr64(guest_handles + (u64)i * 8);
     command_record(cb, addr, operation, NVN_OP_BIND_IMAGE, &op, sizeof op);
@@ -5052,7 +5055,7 @@ static void h_command_buffer_bind_image(CPU* c, u64 entry) {
     static const char* const name = "nvnCommandBufferBindImage";
     pm_lock(&objs_lock);
     CommandBufferRec* cb = command_buffer(c->x[0], name);
-    if (cb) command_bind_image(cb, c->x[0], name, (uint32_t)c->x[1], (uint32_t)c->x[2], 1, 0, &c->x[3]);
+    if (cb) command_bind_image(cb, c->x[0], name, (uint32_t)c->x[1], (uint32_t)c->x[2], 1, 0, &c->x[3], 0);
     pm_unlock(&objs_lock);
 }
 static void h_command_buffer_bind_images(CPU* c, u64 entry) {
@@ -5061,7 +5064,8 @@ static void h_command_buffer_bind_images(CPU* c, u64 entry) {
     pm_lock(&objs_lock);
     CommandBufferRec* cb = command_buffer(c->x[0], name);
     if (cb)
-        command_bind_image(cb, c->x[0], name, (uint32_t)c->x[1], (uint32_t)c->x[2], (int32_t)c->x[3], c->x[4], NULL);
+        command_bind_image(cb, c->x[0], name, (uint32_t)c->x[1], (uint32_t)c->x[2], (int32_t)c->x[3], c->x[4], NULL,
+                           1);
     pm_unlock(&objs_lock);
 }
 
@@ -5091,13 +5095,20 @@ static const NvnOpList* replay_host_find_list(void* ctx, uint64_t handle) {
 }
 /* The replay thread owns the bind table; no lock is needed. A bind is state of the command buffer in the game, so the
    table is not cleared between the command lists of one frame job. */
-static int replay_host_bind_texture(void* ctx, uint32_t stage, uint32_t slot, uint64_t handle) {
-    NvnNativeReplayHost* host = ctx;
+static int replay_host_bind_texture_store(NvnNativeReplayHost* host, uint32_t stage, uint32_t slot, uint64_t handle,
+                                          uint32_t plural) {
     if (stage > NVN_BIND_STAGE_MAX || slot >= NVN_BIND_SLOT_MAX) return 0;
     host->texture_handle[stage][slot] = handle;
     host->texture_bound[stage][slot] = 1;
+    host->texture_plural[stage][slot] = (uint8_t)plural;
     host->texture_dirty[stage][slot] = NVN_BIND_DIRTY;
     return 1;
+}
+static int replay_host_bind_texture(void* ctx, uint32_t stage, uint32_t slot, uint64_t handle) {
+    return replay_host_bind_texture_store(ctx, stage, slot, handle, 0);
+}
+static int replay_host_bind_texture_plural(void* ctx, uint32_t stage, uint32_t slot, uint64_t handle) {
+    return replay_host_bind_texture_store(ctx, stage, slot, handle, 1);
 }
 static void replay_bind_refuse(NvnNativeReplayHost* host, const char* group, int32_t stage, int32_t slot, uint32_t word);
 static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, uint32_t count);
@@ -5144,6 +5155,7 @@ static int replay_host_bind_buffer(void* ctx, const NvnOpBindBuffer* op) {
     entry->addr = op->addr;
     entry->size = op->size;
     entry->bound = (uint8_t)nvn_bind_buffer_active((NvnBindKind)op->kind, op->addr, op->size);
+    entry->plural = (uint8_t)(op->plural != 0);
     if (dirty) *dirty = NVN_BIND_DIRTY;
     if (op->kind == NVN_BIND_TRANSFORM_FEEDBACK) return replay_host_send_xfb_bind(host, op);
     return 1;
@@ -5292,7 +5304,8 @@ static void replay_bind_send_uniforms(NvnNativeReplayHost* host) {
         }
     }
 }
-/* A size 0 storage bind is always sent: the builder writes its parameter word and a zero data block. */
+/* A size 0 storage bind is always sent: the builder writes its parameter word and a zero data block. A slot that came
+   from BindStorageBuffers keeps the plural mode 3 form. */
 static void replay_bind_send_storages(NvnNativeReplayHost* host) {
     for (uint32_t stage = 0; stage < NVN_BIND_STAGE_COMPUTE; stage++) {
         for (uint32_t slot = 0; slot < NVN_STORAGE_SLOT_MAX; slot++) {
@@ -5303,9 +5316,14 @@ static void replay_bind_send_storages(NvnNativeReplayHost* host) {
                 replay_bind_refuse(host, "storage buffer", (int32_t)stage, (int32_t)slot, (uint32_t)entry->addr);
                 continue;
             }
-            uint32_t out[NVN_BIND_STORAGE_BUFFER_WORDS_MAX];
-            uint32_t words =
-                nvn_bind_storage_buffer_words(stage, slot, entry->addr, (uint32_t)entry->size, out);
+            uint32_t out[NVN_BIND_STORAGE_BUFFERS_WORDS_MAX];
+            uint32_t words;
+            if (entry->plural) {
+                const uint64_t range[2] = {entry->addr, entry->size};
+                words = nvn_bind_storage_buffers_words(stage, slot, 1, range, out);
+            } else {
+                words = nvn_bind_storage_buffer_words(stage, slot, entry->addr, (uint32_t)entry->size, out);
+            }
             if (!words || !replay_bind_send(host, out, words))
                 replay_bind_refuse(host, "storage buffer", (int32_t)stage, (int32_t)slot, (uint32_t)entry->addr);
         }
@@ -5317,8 +5335,10 @@ static void replay_bind_send_textures(NvnNativeReplayHost* host) {
             if (!host->texture_dirty[stage][slot]) continue;
             host->texture_dirty[stage][slot] = 0;
             uint64_t handle = host->texture_handle[stage][slot];
-            uint32_t out[NVN_BIND_TEXTURE_WORDS_MAX];
-            uint32_t words = nvn_bind_texture_words(stage, slot, handle, NVN_TEXTURE_DESCRIPTOR_FLAG, out);
+            uint32_t out[NVN_BIND_TEXTURES_WORDS_MAX];
+            uint32_t words = host->texture_plural[stage][slot]
+                                 ? nvn_bind_textures_words(stage, slot, 1, &handle, NVN_TEXTURE_DESCRIPTOR_FLAG, out)
+                                 : nvn_bind_texture_words(stage, slot, handle, NVN_TEXTURE_DESCRIPTOR_FLAG, out);
             if (!words || !replay_bind_send(host, out, words))
                 replay_bind_refuse(host, "texture", (int32_t)stage, (int32_t)slot, (uint32_t)handle);
         }
@@ -5781,7 +5801,7 @@ static int replay_host_wait_event(NvnNativeReplayHost* host, const NvnOpWaitEven
 static int replay_host_bind_image(NvnNativeReplayHost* host, const NvnOpBindImage* op) {
     uint32_t words[NVN_BIND_IMAGE_WORDS_MAX];
     uint32_t count = nvn_bind_image_words(op->stage, op->first, op->count, op->handle,
-                                          NVN_TEXTURE_DESCRIPTOR_FLAG, words);
+                                          NVN_TEXTURE_DESCRIPTOR_FLAG, (int)op->plural, words);
     if (!count || !replay_bind_send(host, words, count)) {
         replay_bind_refuse(host, "image bind", (int32_t)op->stage, (int32_t)op->first, op->count);
         return 1;
@@ -6055,7 +6075,9 @@ static void replay_host_fault(void* ctx, const char* what, uint64_t value) {
 void nvn_native_replay_env(NvnNativeReplayHost* host, int window_origin_flip, NvnReplayEnv* env) {
     *env = (NvnReplayEnv){.ctx = host, .method = replay_host_method, .read_register = replay_host_read_register,
                           .find_list = replay_host_find_list, .descriptor_pool = replay_host_descriptor_pool,
-                          .bind_texture = replay_host_bind_texture, .bind_buffer = replay_host_bind_buffer,
+                          .bind_texture = replay_host_bind_texture,
+                          .bind_texture_plural = replay_host_bind_texture_plural,
+                          .bind_buffer = replay_host_bind_buffer,
                           .bind_state = replay_host_bind_state, .draw = replay_host_draw,
                           .dispatch = replay_host_dispatch, .bind_program = replay_host_bind_program,
                           .bind_vertex_attrib = replay_host_bind_vertex_attrib,

@@ -478,7 +478,7 @@ static void test_pool(void) {
     CHECK(has_write(&k, 0x55D, 0x12u));
     CHECK(has_write(&k, 0x55E, 0x3456789Au));
     CHECK(has_write(&k, 0x55F, 4u));
-    CHECK(st.replayed[NVN_OP_SET_TEXTURE_POOL] == 1 && st.methods == 3 && st.faults == 0);
+    CHECK(st.replayed[NVN_OP_SET_TEXTURE_POOL] == 1 && st.methods == 6 && st.faults == 0);
     nvn_oplist_free(&l);
 
     /* the sampler pool is found: base 0xABCDEF0123, 1 descriptor */
@@ -550,7 +550,7 @@ static void test_render_targets(void) {
 }
 
 static void test_bind_texture(void) {
-    NvnOpBindTexture bind = {3, 11, 0x110000147ull};
+    NvnOpBindTexture bind = {3, 11, 0x110000147ull, 0};
     Mock k = {0};
     NvnReplayEnv env = make_env(&k);
     NvnOpList l = {0};
@@ -587,7 +587,7 @@ static void test_bind_texture(void) {
     NvnReplayEnv envs = make_env(&ks);
     NvnOpList ls = {0};
     NvnReplayStats sts = {0};
-    uint8_t too_big[24] = {0};
+    uint8_t too_big[sizeof(uint64_t) * 2u] = {0};
     CHECK(nvn_oplist_append(&ls, NVN_OP_BIND_TEXTURE, too_big, sizeof too_big));
     nvn_replay_list(&envs, &ls, &sts);
     CHECK(sts.faults == 1 && ks.last_fault && !strcmp(ks.last_fault, "op size"));

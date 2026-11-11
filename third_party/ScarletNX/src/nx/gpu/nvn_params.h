@@ -270,6 +270,8 @@ uint8_t nvn_multisample_sample_location(float x, float y);
 #define NVN_BIND_UNIFORM_BUFFER_WORDS_MAX 5u
 #define NVN_BIND_STORAGE_BUFFER_WORDS_MAX 5u
 #define NVN_BIND_TEXTURE_WORDS_MAX 6u
+#define NVN_BIND_TEXTURES_WORDS_MAX 260u          /* three header words, one slot word, two words for each of 128 */
+#define NVN_BIND_STORAGE_BUFFERS_WORDS_MAX 515u   /* three header words and four words for each of 128 entries */
 
 uint32_t nvn_bind_color_words(uint32_t w0, uint32_t* out);
 uint32_t nvn_bind_channel_mask_words(uint32_t w0, uint32_t* out);
@@ -282,7 +284,13 @@ uint32_t nvn_bind_vertex_stream_words(uint32_t count, const uint32_t* stride, co
 uint32_t nvn_bind_vertex_buffer_words(uint32_t index, uint64_t addr, uint64_t size, uint32_t* out);
 uint32_t nvn_bind_uniform_buffer_words(uint32_t stage, uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out);
 uint32_t nvn_bind_storage_buffer_words(uint32_t stage, uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out);
+/* The plural forms of BindTextures and BindStorageBuffers: the entries are address and size pairs for the storage
+   bind, and 64-bit handles for the texture bind. */
+uint32_t nvn_bind_storage_buffers_words(uint32_t stage, uint32_t first, uint32_t count, const uint64_t* entries,
+                                        uint32_t* out);
 uint32_t nvn_bind_texture_words(uint32_t stage, uint32_t slot, uint64_t handle, int descriptor_flag, uint32_t* out);
+uint32_t nvn_bind_textures_words(uint32_t stage, uint32_t first, uint32_t count, const uint64_t* handles,
+                                 int descriptor_flag, uint32_t* out);
 
 /* The update ops that the host sends as words: a report counter, an image bind of one or more handles, and a clear of
    the depth and stencil buffer (analyst-s4-4.md, sections 1, 4 and 5). The count is 0 on a refusal with nothing
@@ -296,7 +304,7 @@ uint32_t nvn_report_counter_words(uint32_t type, uint64_t address, uint32_t* out
    (0x800003E0) is not sent: method 0x3E0 has no action in the host model. 0 for a null out. */
 uint32_t nvn_report_value_words(uint32_t value, uint64_t address, uint32_t* out);
 uint32_t nvn_bind_image_words(uint32_t stage, uint32_t first, uint32_t count, const uint64_t* handles,
-                              int descriptor_flag, uint32_t* out);
+                              int descriptor_flag, int plural, uint32_t* out);
 int nvn_clear_depth_stencil_nothing(uint32_t depth_enable, uint32_t stencil_mask);
 uint32_t nvn_clear_depth_stencil_words(uint32_t depth_bits, uint32_t depth_enable, uint32_t stencil,
                                        uint32_t stencil_mask, int zcull_clear, int use_macro_e26, uint32_t* out);

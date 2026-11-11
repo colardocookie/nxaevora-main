@@ -1503,6 +1503,7 @@ int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_wo
 /* The Maxwell header word (analyst-prog-builder-1.md, section 1): mode in bits 29..31, count or value in bits 16..28,
    method in bits 0..11. */
 #define NVN_PROGRAM_MODE_INCREASING 0x20000000u    /* mode 1: count data words follow */
+#define NVN_PROGRAM_MODE_NON_INCREASING 0x60000000u /* mode 3: every data word goes to the same method */
 #define NVN_PROGRAM_MODE_INLINE 0x80000000u        /* mode 4: the value is in the count field, no data word follows */
 #define NVN_PROGRAM_MODE_INCREASE_ONCE 0xA0000000u /* mode 5: a fixed macro of count data words follows */
 #define NVN_PROGRAM_IMMEDIATE_VALUE_MAX 0x1FFFu    /* the 13 bits of an inline value */
@@ -2073,6 +2074,10 @@ static void bind_run(NvnBindWriter* w, uint32_t method, uint32_t count) {
     bind_word(w, NVN_PROGRAM_MODE_INCREASING | (count << NVN_PROGRAM_COUNT_SHIFT) | method);
 }
 
+static void bind_fixed(NvnBindWriter* w, uint32_t method, uint32_t count) {
+    bind_word(w, NVN_PROGRAM_MODE_NON_INCREASING | (count << NVN_PROGRAM_COUNT_SHIFT) | method);
+}
+
 static void bind_value(NvnBindWriter* w, uint32_t method, uint32_t value) {
     bind_word(w, NVN_PROGRAM_MODE_INLINE | ((value & NVN_PROGRAM_IMMEDIATE_VALUE_MAX) << NVN_PROGRAM_COUNT_SHIFT) |
                      method);
@@ -2080,6 +2085,12 @@ static void bind_value(NvnBindWriter* w, uint32_t method, uint32_t value) {
 
 static void bind_macro(NvnBindWriter* w, uint32_t method, uint32_t count) {
     bind_word(w, NVN_PROGRAM_MODE_INCREASE_ONCE | (count << NVN_PROGRAM_COUNT_SHIFT) | method);
+}
+
+/* The mode 5 packet of a bind: the header, the first data word, then the caller's words at method + 1. */
+static void bind_macro_first(NvnBindWriter* w, uint32_t method, uint32_t count, uint32_t first) {
+    bind_macro(w, method, count);
+    bind_word(w, first);
 }
 
 #define NVN_BIND_COLOR_LOGIC_SHIFT 16u
@@ -2387,6 +2398,27 @@ uint32_t nvn_bind_storage_buffer_words(uint32_t stage, uint32_t slot, uint64_t a
     return w.at;
 }
 
+/* BindStorageBuffers: one parameter word for the first slot, then the mode 3 run of four words for each entry. */
+uint32_t nvn_bind_storage_buffers_words(uint32_t stage, uint32_t first, uint32_t count, const uint64_t* entries,
+                                        uint32_t* out) {
+    if (!out || !entries || !count || stage >= NVN_BIND_STAGE_COUNT) return 0;
+    if ((uint64_t)first + count > NVN_BIND_STORAGE_SLOT_COUNT) return 0;
+    uint32_t param = NVN_BIND_STORAGE_PARAM_SCALE * (bind_storage_stage_base[stage] + first);
+    if (param > NVN_PROGRAM_IMMEDIATE_VALUE_MAX) return 0;
+    if (NVN_BIND_STORAGE_PARAM_SCALE * count > NVN_PROGRAM_IMMEDIATE_VALUE_MAX) return 0;
+    NvnBindWriter w = {out, 0};
+    bind_value(&w, NVN_BIND_STORAGE_METHOD_PARAM, param);
+    bind_fixed(&w, NVN_BIND_STORAGE_METHOD_DATA, NVN_BIND_STORAGE_PARAM_SCALE * count);
+    for (uint32_t i = 0; i < count; i++) {
+        const uint64_t addr = entries[2u * i];
+        bind_word(&w, (uint32_t)addr);
+        bind_word(&w, (uint32_t)(addr >> 32));
+        bind_word(&w, (uint32_t)entries[2u * i + 1u]);
+        bind_word(&w, 0);
+    }
+    return w.at;
+}
+
 #define NVN_BIND_TEXTURE_SLOT_COUNT 128u
 #define NVN_BIND_TEXTURE_SLOT_STEP 8u
 #define NVN_BIND_TEXTURE_SLOT_BASE 0x20u
@@ -2407,6 +2439,25 @@ uint32_t nvn_bind_texture_words(uint32_t stage, uint32_t slot, uint64_t handle, 
     bind_run(&w, NVN_BIND_TEXTURE_METHOD_HANDLE, NVN_BIND_TEXTURE_HANDLE_COUNT);
     bind_word(&w, slot * NVN_BIND_TEXTURE_SLOT_STEP + NVN_BIND_TEXTURE_SLOT_BASE);
     bind_word(&w, (uint32_t)handle);
+    return w.at;
+}
+
+/* BindTextures: the slot word and the two words of each handle in one mode 5 packet, as the library sends it. */
+uint32_t nvn_bind_textures_words(uint32_t stage, uint32_t first, uint32_t count, const uint64_t* handles,
+                                 int descriptor_flag, uint32_t* out) {
+    if (!out || !handles || !count || stage >= NVN_BIND_STAGE_COUNT) return 0;
+    if ((uint64_t)first + count > NVN_BIND_TEXTURE_SLOT_COUNT) return 0;
+    const uint32_t words = 2u * count + 1u;
+    if (words > NVN_PROGRAM_IMMEDIATE_VALUE_MAX) return 0;
+    NvnBindWriter w = {out, 0};
+    bind_value(&w, NVN_BIND_TEXTURE_METHOD_PARAM, bind_texture_stage_map[stage]);
+    if (descriptor_flag) bind_value(&w, NVN_BIND_TEXTURE_METHOD_DESCRIPTOR, 0);
+    bind_macro_first(&w, NVN_BIND_TEXTURE_METHOD_HANDLE, words,
+                     first * NVN_BIND_TEXTURE_SLOT_STEP + NVN_BIND_TEXTURE_SLOT_BASE);
+    for (uint32_t i = 0; i < count; i++) {
+        bind_word(&w, (uint32_t)handles[i]);
+        bind_word(&w, (uint32_t)(handles[i] >> 32));
+    }
     return w.at;
 }
 
@@ -2475,8 +2526,8 @@ uint32_t nvn_report_value_words(uint32_t value, uint64_t address, uint32_t* out)
     return w.at;
 }
 
-/* BindImage: one stage macro and the slot and two handle words for each handle. Stage 5 is the compute record and is
-   not a method, so a stage above 4 is a refusal. */
+/* BindImage: one stage macro and the slot and two handle words for each handle. BindImages sends these words in one
+   mode 5 packet. Stage 5 is the compute record and is not a method, so a stage above 4 is a refusal. */
 #define NVN_BIND_IMAGE_METHOD_PARAM 0xE0Eu
 #define NVN_BIND_IMAGE_METHOD_DESCRIPTOR 0x68Bu
 #define NVN_BIND_IMAGE_METHOD_HANDLE 0x8E3u
@@ -2485,9 +2536,20 @@ uint32_t nvn_report_value_words(uint32_t value, uint64_t address, uint32_t* out)
 #define NVN_BIND_IMAGE_SLOT_BASE 0x120u
 
 uint32_t nvn_bind_image_words(uint32_t stage, uint32_t first, uint32_t count, const uint64_t* handles,
-                              int descriptor_flag, uint32_t* out) {
+                              int descriptor_flag, int plural, uint32_t* out) {
     if (!out || !handles || !count || count > NVN_IMAGE_BINDS_MAX || stage >= NVN_BIND_STAGE_COUNT) return 0;
     NvnBindWriter w = {out, 0};
+    if (plural) {
+        bind_value(&w, NVN_BIND_IMAGE_METHOD_PARAM, bind_texture_stage_map[stage]);
+        if (descriptor_flag) bind_value(&w, NVN_BIND_IMAGE_METHOD_DESCRIPTOR, 0);
+        bind_macro_first(&w, NVN_BIND_IMAGE_METHOD_HANDLE, 2u * count + 1u,
+                         first * NVN_BIND_IMAGE_SLOT_STEP + NVN_BIND_IMAGE_SLOT_BASE);
+        for (uint32_t i = 0; i < count; i++) {
+            bind_word(&w, (uint32_t)handles[i]);
+            bind_word(&w, (uint32_t)(handles[i] >> 32));
+        }
+        return w.at;
+    }
     for (uint32_t i = 0; i < count; i++) {
         bind_value(&w, NVN_BIND_IMAGE_METHOD_PARAM, bind_texture_stage_map[stage]);
         if (descriptor_flag) bind_value(&w, NVN_BIND_IMAGE_METHOD_DESCRIPTOR, 0);

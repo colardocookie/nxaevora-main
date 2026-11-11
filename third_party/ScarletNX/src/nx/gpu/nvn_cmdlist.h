@@ -87,8 +87,9 @@ typedef struct { uint32_t which, face, value, reserved; } NvnOpStencil;
 typedef struct { uint32_t color[4]; } NvnOpBlendColor; /* the float bits as the game gave them */
 typedef struct { uint32_t bits, reserved; } NvnOpAlphaRef;
 typedef struct { uint64_t handle; } NvnOpCall;
-typedef struct { uint32_t stage, slot; uint64_t handle; } NvnOpBindTexture;
-typedef struct { uint32_t kind, stage, slot, reserved; uint64_t addr, size; } NvnOpBindBuffer;
+/* plural: 1 when the bind came from BindTextures and keeps the library's mode 5 packet form. */
+typedef struct { uint32_t stage, slot; uint64_t handle; uint32_t plural; } NvnOpBindTexture;
+typedef struct { uint32_t kind, stage, slot, plural; uint64_t addr, size; } NvnOpBindBuffer;
 typedef struct { uint32_t kind, words; uint32_t w[NVN_STATE_WORDS_MAX]; } NvnOpBindState;
 /* The raw draw arguments, as the library copies them. Unused fields are zero and a non-instanced draw has instances 1. */
 typedef struct {
@@ -148,7 +149,7 @@ typedef struct { uint32_t type, reserved; uint64_t address; } NvnOpReportCounter
 typedef struct { uint32_t type, reserved; } NvnOpResetCounter; /* the counter type as the game gave it */
 typedef struct { uint32_t kind, reserved; uint64_t address; } NvnOpTransformFeedback; /* kind: NvnXfbKind */
 typedef struct {
-    uint32_t stage, first, count, reserved;
+    uint32_t stage, first, count, plural;
     uint64_t handle[NVN_IMAGE_BINDS_MAX];
 } NvnOpBindImage;
 /* The event and sync ops keep the generation that the record had at record time (analyst-u2-A-1.md, analyst-u2-B-1.md). */

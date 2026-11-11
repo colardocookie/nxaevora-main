@@ -32,7 +32,9 @@
 #define ST_CLEAR_MASK 0xFu
 #define ST_BARRIERS 9u
 #define ST_STATE_CASES 29u
-#define ST_CASE_COUNT (1u + ST_BARRIERS + ST_STATE_CASES)
+#define ST_BIND_CASES 15u
+#define ST_CASE_COUNT (1u + ST_BARRIERS + ST_STATE_CASES + ST_BIND_CASES)
+#define ST_IGNORE_MAX 8u
 
 /* The work calls of one side: the registers at the clear. A later call means that the case cannot be compared. */
 #define ST_MAX_WORKS 2u
@@ -51,6 +53,19 @@
 #define ST_DRAW_FIRST 0u
 #define ST_DRAW_COUNT 3u
 
+/* The d2 descriptor pools and render targets: one memory pool of each side holds the texture table at 0, the sampler
+   table at 0x4000 and two 32x32 textures. */
+#define ST_BIND_OBJ_BYTES 0x1000u
+#define ST_BIND_POOL_BYTES 0x10000u
+#define ST_BIND_ENTRIES 512u
+#define ST_BIND_TEXTURE_POOL_OFFSET 0u
+#define ST_BIND_SAMPLER_POOL_OFFSET 0x4000u
+#define ST_BIND_TEX_OFFSET_A 0x8000u
+#define ST_BIND_TEX_OFFSET_B 0x9000u
+#define ST_BIND_TEX_SIDE 32u
+#define ST_BIND_TEX_FORMAT 0x25u
+#define ST_RT_COUNT 2u
+
 /* The argument block of the cases, in the arena: the same values for the library, a changed copy for a mutation. Each
    region is 16-byte aligned. */
 #define ST_ARG_VP_LIB 0x000u
@@ -62,7 +77,23 @@
 #define ST_ARG_ARRAY_HOST 0x0A0u
 #define ST_ARG_STATE_LIB 0x0B0u /* one state object for each side of the Bind cases */
 #define ST_ARG_STATE_HOST 0x2B0u
-#define ST_ARG_BYTES 0x4B0u
+#define ST_ARG_ATTRIB_LIB 0x4B0u /* the Bind case arrays: a lib copy and a host copy of each */
+#define ST_ARG_ATTRIB_HOST 0x4C0u
+#define ST_ARG_STREAM_LIB 0x4D0u
+#define ST_ARG_STREAM_HOST 0x4E0u
+#define ST_ARG_VBUF_LIB 0x4F0u
+#define ST_ARG_VBUF_HOST 0x510u
+#define ST_ARG_UBUF_LIB 0x530u
+#define ST_ARG_UBUF_HOST 0x550u
+#define ST_ARG_SBUF_LIB 0x570u
+#define ST_ARG_SBUF_HOST 0x590u
+#define ST_ARG_TEX_LIB 0x5B0u
+#define ST_ARG_TEX_HOST 0x5C0u
+#define ST_ARG_IMG_LIB 0x5D0u
+#define ST_ARG_IMG_HOST 0x5E0u
+#define ST_ARG_RT_LIB 0x5F0u
+#define ST_ARG_RT_HOST 0x600u
+#define ST_ARG_BYTES 0x610u
 
 #define ST_CLEAR_INDEX 0u
 #define ST_MUTATE_VIEWPORT_WORD 0u /* the x of viewport 0 */
@@ -97,6 +128,8 @@ typedef struct {
     u32 host_regs[ST_MAX_WORKS][MAXWELL3D_NUM_REGS];
     unsigned lib_works, host_works;
     int work_overflow; /* a side had a third work call */
+    const uint32_t* ignore; /* the registers that the diff leaves out of this case */
+    unsigned n_ignore;
     NvnStRec* ref;
     NvnStRec* got;
     NvnStRec lib_rec, host_rec;
@@ -132,6 +165,13 @@ static void st_snapshot_regs(GpuChannel* ch, NvnStRec* rec) {
     (*count)++;
 }
 
+/* 1 when the case's list leaves this register out: its value is a per-side pool or texture address. */
+static int st_reg_ignored(const StCmdJob* job, unsigned reg) {
+    for (unsigned i = 0; i < job->n_ignore; i++)
+        if (job->ignore[i] == reg) return 1;
+    return 0;
+}
+
 /* Adds one S field for each register that a side left different from the base, in register order. The fields go to both
    records, with the value of each side, so a mutation shows as a difference and an equal write does not show. */
 static void st_add_regdiff(StCmdJob* job) {
@@ -148,18 +188,24 @@ static void st_add_regdiff(StCmdJob* job) {
         return;
     }
     u32 regs[NVN_ST_MAX_FIELDS];
+    unsigned ignored = 0;
     for (unsigned w = 0; w < job->lib_works; w++) {
         int more = 0;
         const unsigned n = nvn_st_regdiff(job->base->r3d, job->lib_regs[w], job->host_regs[w], MAXWELL3D_NUM_REGS,
                                           regs, NVN_ST_MAX_FIELDS, &more);
         for (unsigned i = 0; i < n; i++) {
             const unsigned r = regs[i];
+            if (st_reg_ignored(job, r)) {
+                ignored++;
+                continue;
+            }
             const char* const name = nvn_st_reg_name(r);
             nvn_st_add_state(&job->lib_rec, name, job->lib_regs[w][r]);
             nvn_st_add_state(&job->host_rec, name, job->host_regs[w][r]);
         }
         if (more) LOG("selftest: %s: more than %u changed registers\n", job->name, NVN_ST_MAX_FIELDS);
     }
+    if (ignored) LOG("selftest: %s: %u registers ignored (per-side addresses)\n", job->name, ignored);
 }
 
 /* The id and the heap buffers belong to the channel: the base shares neither. */
@@ -393,7 +439,7 @@ typedef int (*StScript)(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int ho
 static void st_case(CPU* c, NvnStRun* run, StCmdProcs* p, StCmdJob* job, uint64_t lib_cb, uint64_t host_cb,
                     uint64_t lib_pool, uint64_t host_pool, uint64_t args, const char* name, const char* text,
                     StScript script, const NvnStProc* fn, uint64_t param, unsigned rule, int expect_noop,
-                    int* stop) {
+                    int* stop, const uint32_t* ignore, unsigned n_ignore) {
     st_refill(c, p, lib_cb, host_cb, lib_pool, host_pool);
     /* Each EndRecording uses control memory. When it runs out, the library calls the out-of-memory callback,
        which the selftest does not set, and aborts (sdk d8243b8). The records of the last case are done. */
@@ -432,6 +478,8 @@ static void st_case(CPU* c, NvnStRun* run, StCmdProcs* p, StCmdJob* job, uint64_
     job->name = name;
     job->n_ranges = n;
     job->host_handle = host_handle;
+    job->ignore = ignore;
+    job->n_ignore = n_ignore;
     job->window_origin_flip = gr32(nvn_st_device() + NVN_ST_DEVICE_WINDOW_ORIGIN_OFFSET) == 1;
     job->ref = &job->lib_rec;
     job->got = &job->host_rec;
@@ -670,6 +718,236 @@ static int st_script_coverage_table(CPU* c, const StCmdProcs* p, const NvnStProc
     return 1;
 }
 
+/* The per-side objects of the three d2 resource cases, read by their scripts. */
+typedef struct {
+    uint64_t sampler_pool[2], texture_pool[2];
+} StBindCtx;
+static const StBindCtx* st_bind_ctx;
+
+static int st_script_render_targets(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                    uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    (void)rule;
+    const uint64_t textures = args + (host ? ST_ARG_RT_HOST : ST_ARG_RT_LIB);
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, ST_RT_COUNT, textures, 0, 0, 0}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_sampler_pool(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                  uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    (void)rule;
+    const uint64_t pool = st_bind_ctx ? st_bind_ctx->sampler_pool[host] : 0;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, pool}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_texture_pool(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                  uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    (void)rule;
+    const uint64_t pool = st_bind_ctx ? st_bind_ctx->texture_pool[host] : 0;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, pool}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* BindVertexAttribState: count 2, then the two state words of the row. */
+static int st_script_bind_vertex_attrib(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                        uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    uint32_t states[2] = {0x00200040u, 0x00400040u};
+    if (host && rule == ST_MUT_INT) states[0] ^= 1u;
+    const uint64_t at = args + (host ? ST_ARG_ATTRIB_HOST : ST_ARG_ATTRIB_LIB);
+    memcpy(GP(at), states, sizeof states);
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 2u, at}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* BindVertexStreamState: count 2, then the stride and divisor pairs of the row. */
+static int st_script_bind_vertex_stream(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                        uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    struct { uint32_t stride, divisor; } states[2] = {{0x10u, 0u}, {0x20u, 1u}};
+    if (host && rule == ST_MUT_INT) states[0].stride ^= 1u;
+    const uint64_t at = args + (host ? ST_ARG_STREAM_HOST : ST_ARG_STREAM_LIB);
+    memcpy(GP(at), states, sizeof states);
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 2u, at}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_bind_vertex_buffer(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                        uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    uint32_t index = 1u;
+    if (host && rule == ST_MUT_INT) index ^= 1u;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, index, 0x12340000ull, 0x1000ull}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_bind_vertex_buffers(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                         uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    uint64_t entries[4] = {0x12340000ull, 0x1000ull, 0x22340000ull, 0x2000ull};
+    if (host && rule == ST_MUT_INT) entries[0] ^= 0x1000u;
+    const uint64_t at = args + (host ? ST_ARG_VBUF_HOST : ST_ARG_VBUF_LIB);
+    memcpy(GP(at), entries, sizeof entries);
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 0u, 2u, at}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_bind_uniform_buffer(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                         uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    uint32_t slot = 1u;
+    if (host && rule == ST_MUT_INT) slot ^= 1u;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 0u, slot, 0x100002000ull, 0x180ull}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_bind_uniform_buffers(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                          uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    uint32_t first = 0u;
+    uint64_t entries[4] = {0x100002000ull, 0x200ull, 0x100004000ull, 0x100ull};
+    if (host && rule == ST_MUT_INT) first ^= 1u;
+    const uint64_t at = args + (host ? ST_ARG_UBUF_HOST : ST_ARG_UBUF_LIB);
+    memcpy(GP(at), entries, sizeof entries);
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 0u, first, 2u, at}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_bind_storage_buffer(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                         uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    uint32_t slot = 0u;
+    if (host && rule == ST_MUT_INT) slot ^= 1u;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 1u, slot, 0x100003000ull, 0x100ull}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_bind_storage_buffers(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                          uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    uint32_t first = 0u;
+    uint64_t entries[4] = {0x100003000ull, 0x100ull, 0x100004000ull, 0x80ull};
+    if (host && rule == ST_MUT_INT) first ^= 1u;
+    const uint64_t at = args + (host ? ST_ARG_SBUF_HOST : ST_ARG_SBUF_LIB);
+    memcpy(GP(at), entries, sizeof entries);
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 0u, first, 2u, at}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_bind_texture(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                  uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    uint32_t slot = 1u;
+    if (host && rule == ST_MUT_INT) slot ^= 1u;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 1u, slot, 0x100000005ull}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_bind_textures(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                   uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    uint32_t first = 1u;
+    uint64_t handles[2] = {0x100000005ull, 0x100000007ull};
+    if (host && rule == ST_MUT_INT) first ^= 1u;
+    const uint64_t at = args + (host ? ST_ARG_TEX_HOST : ST_ARG_TEX_LIB);
+    memcpy(GP(at), handles, sizeof handles);
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 2u, first, 2u, at}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_bind_image(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    uint32_t slot = 1u;
+    if (host && rule == ST_MUT_INT) slot ^= 1u;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 1u, slot, 0x200000003ull}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_bind_images(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                 uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    uint32_t first = 1u;
+    uint64_t handles[2] = {0x200000003ull, 0x200000007ull};
+    if (host && rule == ST_MUT_INT) first ^= 1u;
+    const uint64_t at = args + (host ? ST_ARG_IMG_HOST : ST_ARG_IMG_LIB);
+    memcpy(GP(at), handles, sizeof handles);
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 2u, first, 2u, at}});
+    st_draw_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* The registers that only hold a per-side pool or texture address. */
+static const uint32_t st_ignore_render_targets[] = {0x200u, 0x201u, 0x210u, 0x211u};
+static const uint32_t st_ignore_sampler_pool[] = {0x557u, 0x558u};
+static const uint32_t st_ignore_texture_pool[] = {0x55Du, 0x55Eu, 0x8E4u, 0x8E5u};
+
+#define ST_IGNORE_N(a) ((unsigned)(sizeof(a) / sizeof((a)[0])))
+_Static_assert(ST_IGNORE_N(st_ignore_render_targets) <= ST_IGNORE_MAX, "the render target ignore list");
+_Static_assert(ST_IGNORE_N(st_ignore_sampler_pool) <= ST_IGNORE_MAX, "the sampler pool ignore list");
+_Static_assert(ST_IGNORE_N(st_ignore_texture_pool) <= ST_IGNORE_MAX, "the texture pool ignore list");
+
+/* The 15 d2 cases: the binds and the resources. All compare at a draw, except that a pool and a render target write
+   their methods at the op. needs_res marks the cases that use the per-side descriptor pools and textures. */
+static const struct {
+    const char* name;
+    const char* text;
+    StScript script;
+    unsigned rule;
+    const uint32_t* ignore;
+    unsigned n_ignore;
+    int needs_res;
+} st_bind_cases[] = {
+    {"nvnCommandBufferSetRenderTargets", "count=2 32x32 fmt=0x25", st_script_render_targets, ST_MUT_NONE,
+     st_ignore_render_targets, ST_IGNORE_N(st_ignore_render_targets), 1},
+    {"nvnCommandBufferSetSamplerPool", "pool=512 entries", st_script_sampler_pool, ST_MUT_NONE,
+     st_ignore_sampler_pool, ST_IGNORE_N(st_ignore_sampler_pool), 1},
+    {"nvnCommandBufferSetTexturePool", "pool=512 entries", st_script_texture_pool, ST_MUT_NONE,
+     st_ignore_texture_pool, ST_IGNORE_N(st_ignore_texture_pool), 1},
+    {"nvnCommandBufferBindVertexAttribState", "count=2 states=0x200040,0x400040", st_script_bind_vertex_attrib,
+     ST_MUT_INT, NULL, 0, 0},
+    {"nvnCommandBufferBindVertexStreamState", "count=2 stride=0x10,0x20", st_script_bind_vertex_stream,
+     ST_MUT_INT, NULL, 0, 0},
+    {"nvnCommandBufferBindVertexBuffer", "index=1 addr=0x12340000 size=0x1000", st_script_bind_vertex_buffer,
+     ST_MUT_INT, NULL, 0, 0},
+    {"nvnCommandBufferBindVertexBuffers", "first=0 count=2 addr=0x12340000,0x22340000",
+     st_script_bind_vertex_buffers, ST_MUT_INT, NULL, 0, 0},
+    {"nvnCommandBufferBindUniformBuffer", "stage=0 slot=1 addr=0x100002000 size=0x180",
+     st_script_bind_uniform_buffer, ST_MUT_INT, NULL, 0, 0},
+    {"nvnCommandBufferBindUniformBuffers", "stage=0 first=0 count=2", st_script_bind_uniform_buffers, ST_MUT_INT,
+     NULL, 0, 0},
+    {"nvnCommandBufferBindStorageBuffer", "stage=1 slot=0 addr=0x100003000 size=0x100",
+     st_script_bind_storage_buffer, ST_MUT_INT, NULL, 0, 0},
+    {"nvnCommandBufferBindStorageBuffers", "stage=0 first=0 count=2", st_script_bind_storage_buffers, ST_MUT_INT,
+     NULL, 0, 0},
+    {"nvnCommandBufferBindTexture", "stage=1 slot=1 handle=0x100000005", st_script_bind_texture, ST_MUT_INT, NULL, 0,
+     0},
+    {"nvnCommandBufferBindTextures", "stage=2 first=1 count=2 handles=0x100000005,0x100000007",
+     st_script_bind_textures, ST_MUT_INT, NULL, 0, 0},
+    {"nvnCommandBufferBindImage", "stage=1 slot=1 handle=0x200000003", st_script_bind_image, ST_MUT_INT, NULL, 0, 0},
+    {"nvnCommandBufferBindImages", "stage=2 first=1 count=2 handles=0x200000003,0x200000007",
+     st_script_bind_images, ST_MUT_INT, NULL, 0, 0},
+};
+
+_Static_assert(sizeof st_bind_cases / sizeof st_bind_cases[0] == ST_BIND_CASES, "the bind case count");
+
 /* The 29 cases of decision 3. `rule` is the mutation rule of the row. `expect_noop` marks a host handler that is a
    logged no-op by design (COMMAND_NO_OP_HANDLER: SetSampleMask, SetStencilCullCriteria, SetColorReductionEnable,
    SetColorReductionThresholds, SetSubpixelPrecisionBias, SetTiledCacheAction, SetTiledCacheTileSize) and
@@ -728,6 +1006,96 @@ static const struct {
 };
 
 _Static_assert(sizeof st_state_cases / sizeof st_state_cases[0] == ST_STATE_CASES, "the state case count");
+
+/* The descriptor pools and the two textures of the three d2 resource cases, one set for each side. */
+typedef struct {
+    NvnStResPool memory[2];
+    uint64_t sampler_pool[2], texture_pool[2];
+    uint64_t texture[2][2];
+} StBindRes;
+
+/* Builds one side's memory pool, its two descriptor pools and its two render target textures. The texture pool table
+   is at 0, the sampler pool table at 0x4000 and the textures at 0x8000 and 0x9000. */
+static int st_bind_res_setup(CPU* c, NvnStRun* run, NvnStResCache* cache, StBindRes* res, uint64_t args) {
+    for (int host = 0; host < 2; host++) {
+        if (!nvn_st_res_pool_create(c, run, cache, host, &res->memory[host], NVN_ST_RES_POOL_CPU_CACHED,
+                                    ST_BIND_POOL_BYTES))
+            return 0;
+        res->texture_pool[host] = nvn_st_arena_alloc(&run->arena, ST_BIND_OBJ_BYTES, 16);
+        res->sampler_pool[host] = nvn_st_arena_alloc(&run->arena, ST_BIND_OBJ_BYTES, 16);
+        const uint64_t builder = nvn_st_arena_alloc(&run->arena, ST_BIND_OBJ_BYTES, 16);
+        res->texture[host][0] = nvn_st_arena_alloc(&run->arena, ST_BIND_OBJ_BYTES, 16);
+        res->texture[host][1] = nvn_st_arena_alloc(&run->arena, ST_BIND_OBJ_BYTES, 16);
+        if (!res->texture_pool[host] || !res->sampler_pool[host] || !builder || !res->texture[host][0] ||
+            !res->texture[host][1])
+            return 0;
+        memset(GP(res->texture_pool[host]), 0, ST_BIND_OBJ_BYTES);
+        memset(GP(res->sampler_pool[host]), 0, ST_BIND_OBJ_BYTES);
+        if (!nvn_st_descriptor_pool_build(c, cache, host, res->texture_pool[host], &res->memory[host],
+                                          ST_BIND_TEXTURE_POOL_OFFSET, ST_BIND_ENTRIES, 0) ||
+            !nvn_st_descriptor_pool_build(c, cache, host, res->sampler_pool[host], &res->memory[host],
+                                          ST_BIND_SAMPLER_POOL_OFFSET, ST_BIND_ENTRIES, 1))
+            return 0;
+        memset(GP(builder), 0, ST_BIND_OBJ_BYTES);
+        if (!nvn_st_texture_build(c, cache, host, builder, res->texture[host][0], &res->memory[host],
+                                  ST_BIND_TEX_OFFSET_A, ST_BIND_TEX_SIDE, ST_BIND_TEX_SIDE, ST_BIND_TEX_FORMAT))
+            return 0;
+        memset(GP(builder), 0, ST_BIND_OBJ_BYTES);
+        if (!nvn_st_texture_build(c, cache, host, builder, res->texture[host][1], &res->memory[host],
+                                  ST_BIND_TEX_OFFSET_B, ST_BIND_TEX_SIDE, ST_BIND_TEX_SIDE, ST_BIND_TEX_FORMAT))
+            return 0;
+        const uint64_t at = args + (host ? ST_ARG_RT_HOST : ST_ARG_RT_LIB);
+        gw64(at, res->texture[host][0]);
+        gw64(at + 8u, res->texture[host][1]);
+    }
+    return 1;
+}
+
+static void st_bind_res_destroy(CPU* c, NvnStResCache* cache, StBindRes* res) {
+    NvnStProc texture_final = {0}, texture_pool_final = {0}, sampler_pool_final = {0};
+    nvn_st_proc_find(&texture_final, "nvnTextureFinalize");
+    nvn_st_proc_find(&texture_pool_final, "nvnTexturePoolFinalize");
+    nvn_st_proc_find(&sampler_pool_final, "nvnSamplerPoolFinalize");
+    for (int host = 0; host < 2; host++) {
+        const NvnStCallee* texture_fin = host ? &texture_final.host : &texture_final.lib;
+        const NvnStCallee* texture_pool_fin = host ? &texture_pool_final.host : &texture_pool_final.lib;
+        const NvnStCallee* sampler_pool_fin = host ? &sampler_pool_final.host : &sampler_pool_final.lib;
+        if (texture_fin->fn) {
+            nvn_st_call(c, texture_fin, &(NvnStCall){.x = {res->texture[host][0]}});
+            nvn_st_call(c, texture_fin, &(NvnStCall){.x = {res->texture[host][1]}});
+        }
+        if (texture_pool_fin->fn) nvn_st_call(c, texture_pool_fin, &(NvnStCall){.x = {res->texture_pool[host]}});
+        if (sampler_pool_fin->fn) nvn_st_call(c, sampler_pool_fin, &(NvnStCall){.x = {res->sampler_pool[host]}});
+    }
+    nvn_st_res_pool_destroy(c, cache, 0, &res->memory[0]);
+    nvn_st_res_pool_destroy(c, cache, 1, &res->memory[1]);
+}
+
+static void st_run_bind_cases(CPU* c, NvnStRun* run, StCmdProcs* p, StCmdJob* job, uint64_t lib_cb, uint64_t host_cb,
+                              uint64_t lib_pool, uint64_t host_pool, uint64_t args, const char* mutate,
+                              const StBindCtx* ctx, int res_ok, int* stop) {
+    st_bind_ctx = ctx;
+    for (unsigned i = 0; i < ST_BIND_CASES && !*stop; i++) {
+        const char* const name = st_bind_cases[i].name;
+        if (st_bind_cases[i].needs_res && !res_ok) {
+            run->skipped++;
+            LOG("selftest: %s skipped, the descriptor pool or texture was not made\n", name);
+            continue;
+        }
+        NvnStProc fn = {0};
+        if (!nvn_st_proc_find(&fn, name)) {
+            run->skipped++;
+            LOG("selftest: %s skipped, not resolved\n", name);
+            continue;
+        }
+        const unsigned rule =
+            mutate[0] && !strcmp(mutate, name) ? st_bind_cases[i].rule : (unsigned)ST_MUT_NONE;
+        st_case(c, run, p, job, lib_cb, host_cb, lib_pool, host_pool, args, name, st_bind_cases[i].text,
+                st_bind_cases[i].script, &fn, 0, rule, 0, stop, st_bind_cases[i].ignore,
+                st_bind_cases[i].n_ignore);
+    }
+    st_bind_ctx = NULL;
+}
 
 /* With nvn_native=0 the game's depth mode went to the library, so the host device record still reads 0. The depth
    range handlers read that record: copy the library value into the host. The library setter is not called, because
@@ -842,14 +1210,15 @@ void nvn_selftest_command_cases(CPU* c, NvnStRun* run) {
     st_fill_s_args(args, mutate[0] && !strcmp(mutate, "nvnCommandBufferSetViewports"));
     int stop = 0;
     st_case(c, run, &procs, job, lib_cb, host_cb, lib_pool.pool, host_pool.pool, args, "nvnCommandBufferSetViewports",
-            "viewports=0,2 scissors=0,2 clear=0", st_script_viewports, NULL, 0, ST_MUT_NONE, 0, &stop);
+            "viewports=0,2 scissors=0,2 clear=0", st_script_viewports, NULL, 0, ST_MUT_NONE, 0, &stop, NULL, 0);
     for (unsigned k = 0; k < ST_BARRIERS && !stop; k++) {
         const uint32_t bits = 1u << k;
         const uint32_t host_bits = mutate[0] && !strcmp(mutate, "nvnCommandBufferBarrier") ? bits ^ 1u : bits;
         char text[32];
         snprintf(text, sizeof text, "bits=0x%x", bits);
         st_case(c, run, &procs, job, lib_cb, host_cb, lib_pool.pool, host_pool.pool, args, "nvnCommandBufferBarrier",
-                text, st_script_barrier, NULL, (uint64_t)bits | ((uint64_t)host_bits << 32), ST_MUT_NONE, 0, &stop);
+                text, st_script_barrier, NULL, (uint64_t)bits | ((uint64_t)host_bits << 32), ST_MUT_NONE, 0, &stop,
+                NULL, 0);
     }
     st_sync_host_depth_mode(c);
     for (unsigned i = 0; i < ST_STATE_CASES && !stop; i++) {
@@ -864,13 +1233,31 @@ void nvn_selftest_command_cases(CPU* c, NvnStRun* run) {
             mutate[0] && !strcmp(mutate, name) ? st_state_cases[i].rule : (unsigned)ST_MUT_NONE;
         st_case(c, run, &procs, job, lib_cb, host_cb, lib_pool.pool, host_pool.pool, args, name,
                 st_state_cases[i].text, st_state_cases[i].script, &fn, st_state_cases[i].param, rule,
-                st_state_cases[i].expect_noop, &stop);
+                st_state_cases[i].expect_noop, &stop, NULL, 0);
+    }
+
+    StBindCtx bind_ctx = {0};
+    StBindRes bind_res = {0};
+    int bind_res_ok = 0;
+    if (!stop) {
+        bind_res_ok = st_bind_res_setup(c, run, &cache, &bind_res, args);
+        if (!bind_res_ok)
+            LOG("selftest: the descriptor pool and texture cases are skipped, a pool or a texture was not made\n");
+        if (bind_res_ok) {
+            for (int host = 0; host < 2; host++) {
+                bind_ctx.sampler_pool[host] = bind_res.sampler_pool[host];
+                bind_ctx.texture_pool[host] = bind_res.texture_pool[host];
+            }
+        }
+        st_run_bind_cases(c, run, &procs, job, lib_cb, host_cb, lib_pool.pool, host_pool.pool, args, mutate, &bind_ctx,
+                          bind_res_ok, &stop);
     }
 
     if (stop) {
         LOG("selftest: the command cases stopped, the channels and the job stay (the GPU thread may still use them)\n");
         return;
     }
+    if (bind_res_ok) st_bind_res_destroy(c, &cache, &bind_res);
     ST_CALL(c, &procs.finalize, 0, lib_cb);
     ST_CALL(c, &procs.finalize, 1, host_cb);
     nvn_st_res_pool_destroy(c, &cache, 0, &lib_pool);

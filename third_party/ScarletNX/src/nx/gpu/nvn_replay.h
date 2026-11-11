@@ -24,6 +24,8 @@ typedef struct NvnReplayEnv {
     int (*descriptor_pool)(void* ctx, NvnOpCode op, const NvnOpPool* pool, uint64_t* gpu_base, uint32_t* count);
     /* The bind state of one stage and slot. 1 when stored, 0 when refused (the host reports the cause). */
     int (*bind_texture)(void* ctx, uint32_t stage, uint32_t slot, uint64_t handle);
+    /* The same for a bind that came from BindTextures: the host keeps the library's mode 5 packet form. */
+    int (*bind_texture_plural)(void* ctx, uint32_t stage, uint32_t slot, uint64_t handle);
     /* The bind state of one buffer slot. 1 when stored, 0 when refused (the host reports the cause). */
     int (*bind_buffer)(void* ctx, const NvnOpBindBuffer* op);
     /* The bind state of one state object. 1 when stored, 0 when refused (the host reports the cause). */

@@ -30,6 +30,7 @@ typedef struct {
 #define NVN_ST_DEVICE_WINDOW_ORIGIN_OFFSET 0x19d8u
 
 /* The memory pool flags of the resource and command buffer cases (analysis/enum-run2.txt). */
+#define NVN_ST_RES_POOL_CPU_CACHED 0x24u /* CPU cached, GPU cached */
 #define NVN_ST_RES_POOL_CPU_UNCACHED_GPU_CACHED 0x22u
 
 /* The memory pool of one side of a resource or command buffer script, with its builder object and storage block. */
@@ -98,5 +99,12 @@ enum {
     NVN_ST_STATE_COUNT
 };
 int nvn_st_state_build(CPU* c, unsigned kind, int host, uint64_t obj, uint32_t xor_value);
+
+/* One 2D texture of the command buffer cases in the side's pool at offset, and one descriptor pool of entries at
+   offset. 1 when every function was found and the object was made. */
+int nvn_st_texture_build(CPU* c, NvnStResCache* cache, int host, uint64_t builder, uint64_t texture,
+                         const NvnStResPool* pool, uint64_t offset, uint32_t width, uint32_t height, uint32_t format);
+int nvn_st_descriptor_pool_build(CPU* c, NvnStResCache* cache, int host, uint64_t pool_obj,
+                                 const NvnStResPool* memory, uint64_t offset, uint32_t entries, int sampler);
 
 #endif

@@ -136,6 +136,39 @@ void nvn_st_res_pool_destroy(CPU* c, NvnStResCache* cache, int host, const NvnSt
     if (finalize) RES_CALL(c, finalize, host, mp->pool);
 }
 
+/* One 2D texture of the command buffer cases: level 1, the format, and the side's pool at the offset. The caller
+   clears the builder and gives the builder and texture objects. */
+int nvn_st_texture_build(CPU* c, NvnStResCache* cache, int host, uint64_t builder, uint64_t texture,
+                         const NvnStResPool* pool, uint64_t offset, uint32_t width, uint32_t height,
+                         uint32_t format) {
+    NvnStProc* defaults = nvn_st_res_proc(cache, "nvnTextureBuilderSetDefaults");
+    NvnStProc* device = nvn_st_res_proc(cache, "nvnTextureBuilderSetDevice");
+    NvnStProc* target = nvn_st_res_proc(cache, "nvnTextureBuilderSetTarget");
+    NvnStProc* size = nvn_st_res_proc(cache, "nvnTextureBuilderSetSize2D");
+    NvnStProc* levels = nvn_st_res_proc(cache, "nvnTextureBuilderSetLevels");
+    NvnStProc* fmt = nvn_st_res_proc(cache, "nvnTextureBuilderSetFormat");
+    NvnStProc* storage = nvn_st_res_proc(cache, "nvnTextureBuilderSetStorage");
+    NvnStProc* initialize = nvn_st_res_proc(cache, "nvnTextureInitialize");
+    if (!defaults || !device || !target || !size || !levels || !fmt || !storage || !initialize) return 0;
+    RES_CALL(c, defaults, host, builder);
+    RES_CALL(c, device, host, builder, nvn_st_device());
+    RES_CALL(c, target, host, builder, RES_TEX_TARGET_2D);
+    RES_CALL(c, size, host, builder, width, height);
+    RES_CALL(c, levels, host, builder, 1);
+    RES_CALL(c, fmt, host, builder, format);
+    RES_CALL(c, storage, host, builder, pool->pool, offset);
+    return (uint32_t)RES_CALL(c, initialize, host, texture, builder) != 0;
+}
+
+/* One texture or sampler pool of the command buffer cases at the offset of the side's memory pool. */
+int nvn_st_descriptor_pool_build(CPU* c, NvnStResCache* cache, int host, uint64_t pool_obj,
+                                 const NvnStResPool* memory, uint64_t offset, uint32_t entries, int sampler) {
+    NvnStProc* initialize =
+        nvn_st_res_proc(cache, sampler ? "nvnSamplerPoolInitialize" : "nvnTexturePoolInitialize");
+    if (!initialize) return 0;
+    return (uint32_t)RES_CALL(c, initialize, host, pool_obj, memory->pool, offset, (uint64_t)entries) != 0;
+}
+
 /* The memory pool: the builder setters and getters, then Initialize and the pool getters (decision 3). */
 static const uint32_t res_pool_flags[] = {RES_POOL_CPU_CACHED, RES_POOL_CPU_UNCACHED_GPU_CACHED,
                                           RES_POOL_CPU_UNCACHED_GPU_UNCACHED, RES_POOL_CPU_NO_ACCESS};

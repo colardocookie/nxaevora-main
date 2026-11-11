@@ -19,8 +19,9 @@ int nvn_native_active(void);
    library). It does not need nvn_native=1. */
 GuestFn nvn_native_handler(const char* name);
 
-/* The bind state of one buffer slot. bound follows the library: a size 0 uniform or vertex bind is stored but not active. */
-typedef struct { uint64_t addr, size; uint8_t bound; } NvnBindEntry;
+/* The bind state of one buffer slot. bound follows the library: a size 0 uniform or vertex bind is stored but not active.
+   plural is 1 when the bind came from a plural function and keeps the library's packet form at the draw. */
+typedef struct { uint64_t addr, size; uint8_t bound, plural; } NvnBindEntry;
 /* The state of one state-object bind, stored by the replay from the bind state op. */
 typedef struct { uint32_t w[NVN_STATE_WORDS_MAX]; uint8_t bound; } NvnBoundState;
 /* The value of a bind dirty flag: the bind stored new state that the next draw has not sent yet. */
@@ -33,6 +34,7 @@ typedef struct {
        struct starts zeroed at each frame job, and the table is not cleared between the command lists of one job. */
     uint64_t texture_handle[NVN_BIND_STAGE_MAX + 1u][NVN_BIND_SLOT_MAX];
     uint8_t texture_bound[NVN_BIND_STAGE_MAX + 1u][NVN_BIND_SLOT_MAX];
+    uint8_t texture_plural[NVN_BIND_STAGE_MAX + 1u][NVN_BIND_SLOT_MAX];
     uint8_t texture_dirty[NVN_BIND_STAGE_MAX + 1u][NVN_BIND_SLOT_MAX];
     /* The buffer binds of one frame job, written by the replay and read by the shader and pipeline stage later. */
     NvnBindEntry uniform[NVN_BIND_STAGE_MAX + 1u][NVN_UNIFORM_SLOT_MAX];
