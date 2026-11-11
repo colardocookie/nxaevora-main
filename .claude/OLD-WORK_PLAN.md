@@ -2650,3 +2650,24 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   range 4 * count bytes too early (zero words in case 1, the previous case's words later). Fixed in the decoder and its
   test. Mutant (+8 -> +0) fails the test. ctest OK except `tracked_material`.
 - Runs of 11:25 and 11:26: `nvn_trace=0`, the selftest did not run. No result for the fix yet.
+
+### 4-u3-3 step (c) and d1, 2026-11-11
+
+- Current step: 4-u3-3 (S/Y harness, mutation, command buffer). 4-u3-2 is done (history: `OLD-WORK_PLAN.md`, last section).
+  Steps (a) and (b) are done, the decoder fix is done (history: `OLD-WORK_PLAN.md`, last section "4-u3-3").
+  Step (c), runs of 2026-11-11 11:32: run 1 has 257 cases, 0 failed (recorded in `docs/nvn-coverage.md`). Run 2
+  (mutation SetViewports) fails SetViewports on S (vp0.translate_x) and also the 9 Barrier cases: the private channels
+  keep the registers between cases. Fix A (user, 2026-11-11): reset both channels to a base copy made after the init
+  stream, before each case. The fix is committed (`st_channel_reset`, writer patch `writer-u3-3c-1`), the exe is copied.
+  Verified 2026-11-11 11:43: no mutation 257 cases, 0 failed. Mutation SetViewports: 1 failed (only SetViewports,
+  S vp0.translate_x). Step (c) is done. NEXT: step (d).
+  Step (d): the other command buffer rows in groups (114 of 146 rows had no check). Groups: d1 fixed-function
+  state (29 rows), d2 binds and resources, d3 draws, clears, copies, dispatch, d4 CPU side (queries, callbacks,
+  debug markers). d1 (2026-11-11): brief `reports/brief-u3-3d1-writer.md` (S snapshot becomes a register diff
+  against the base). Patch `patches/writer-u3-3d1-1.patch` committed (caller fix: `near`/`far` are Windows macros).
+  ctest OK except `tracked_material`, mutant of `nvn_selftest_regdiff` fails. Exe copied (md5 2fff8b9c).
+  NEXT: a selftest run (`nvn_trace=1`, `nvn_selftest=1`, mutation empty, title), then read: 29 new cases, S1 and Y
+  still pass with the register diff. The 7 no-op rows may fail: judge each register. Then one mutation run. Then 4-u3-4 (exectest). The `unit`
+  scope is not in the checks column yet.
+- d1 step (b): patch read in full, caller fix `near`/`far` (Windows macros), build and ctest OK except
+  `tracked_material`, mutant of the regdiff test fails. Committed with the agent line. Worktree removed.

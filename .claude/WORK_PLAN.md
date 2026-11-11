@@ -49,22 +49,24 @@ below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
   4-u4. `docs/nvn-coverage.md`: 1 row of G10 is `stub-log` (`nvnDeviceGetProcAddress`, by decision) after U5 (`11978be`).
-  Current step: 4-u3-3 (S/Y harness, mutation, command buffer). 4-u3-2 is done (history: `OLD-WORK_PLAN.md`, last section).
-    Steps (a) and (b) are done, the decoder fix is done (history: `OLD-WORK_PLAN.md`, last section "4-u3-3").
-    Step (c), runs of 2026-11-11 11:32: run 1 has 257 cases, 0 failed (recorded in `docs/nvn-coverage.md`). Run 2
-    (mutation SetViewports) fails SetViewports on S (vp0.translate_x) and also the 9 Barrier cases: the private channels
-    keep the registers between cases. Fix A (user, 2026-11-11): reset both channels to a base copy made after the init
-    stream, before each case. The fix is committed (`st_channel_reset`, writer patch `writer-u3-3c-1`), the exe is copied.
-    Verified 2026-11-11 11:43: no mutation 257 cases, 0 failed. Mutation SetViewports: 1 failed (only SetViewports,
-    S vp0.translate_x). Step (c) is done. NEXT: step (d).
-    Step (d): the other command buffer rows in groups (114 of 146 rows had no check). Groups: d1 fixed-function
-    state (29 rows), d2 binds and resources, d3 draws, clears, copies, dispatch, d4 CPU side (queries, callbacks,
-    debug markers). d1 (2026-11-11): brief `reports/brief-u3-3d1-writer.md` (S snapshot becomes a register diff
-    against the base). Patch `patches/writer-u3-3d1-1.patch` committed (caller fix: `near`/`far` are Windows macros).
-    ctest OK except `tracked_material`, mutant of `nvn_selftest_regdiff` fails. Exe copied (md5 2fff8b9c).
-    NEXT: a selftest run (`nvn_trace=1`, `nvn_selftest=1`, mutation empty, title), then read: 29 new cases, S1 and Y
-    still pass with the register diff. The 7 no-op rows may fail: judge each register. Then one mutation run. Then 4-u3-4 (exectest). The `unit`
+  Current step: 4-u3-3 step (d), group d1 (history: `OLD-WORK_PLAN.md`, last section "4-u3-3 step (c) and d1").
+    Groups of (d): d1 fixed-function state (29 rows, committed `writer-u3-3d1`), d2 binds and resources, d3 draws,
+    clears, copies, dispatch, d4 CPU side (queries, callbacks, debug markers). Then 4-u3-4 (exectest). The `unit`
     scope is not in the checks column yet.
+    Run of 2026-11-11 13:06 (exe md5 2fff8b9c, no mutation): two faults, both must be fixed before the d1 result counts.
+    1. EVERY S/Y case (S1, the 9 Barrier cases, all d1 cases) fails S with first difference `r3d.0x049`: library 0x2,
+       host 0x1. Before the register diff S1 and Barrier passed, so 0x49 is a channel-wide divergence, not a case
+       fault. The report gives only the first difference, so the per-case results are hidden. Next: find what 0x49 is
+       (Eden Maxwell3D regs, near the MME load registers 0x45..0x48) and which side writes it (library words or the host
+       replay or the init stream). Decide from the mechanism: a host fault, or a register that neither side's renderer
+       consumes (then an explicit ignore entry with the reason). Consider a diagnostic that logs all differing registers.
+    2. The game stopped (svcBreak, `nn::diag::detail::Abort`) after case 26 (SetSubpixelPrecisionBias). The abort comes
+       from sdk d8243d0, inside nvnCommandBufferEndRecording (d824348..). Cases TiledCacheAction, TiledCacheTileSize,
+       ConservativeRasterEnable, BindCoverageModulationTable and the totals line did not run. Likely cause (not
+       verified): the control memory (0x800, `ST_CONTROL_BYTES`) is never refilled, only the command memory is, so the
+       library runs out after about 36 recordings, has no memory callback, and aborts. Check the abort condition at
+       d8243d0 in the disassembly, then refill the control memory as the command memory is refilled.
+    The `.ini` has `nvn_selftest_mutate=` (empty) now.
   - Open for 4-u4: the design asks for no `stub-log` row, but `nvnDeviceGetProcAddress` stays `stub-log` by decision (the
     game resolves names through d832940, which the hook covers). Decide the row (a handler that calls the resolver, or an
     explicit exception in the design) before 4-u4.
