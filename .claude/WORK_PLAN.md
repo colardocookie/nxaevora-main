@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the build of the 4-u3-3b commit, no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the build of the decoder fix commit (after `9ca707c`), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=1`, `nvn_native=0`, `nvn_selftest=1` (the selftest run of 2026-11-10). After each build: `tasklist` shows no game, then copy the exe.
@@ -50,17 +50,15 @@ below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
   4-u4. `docs/nvn-coverage.md`: 1 row of G10 is `stub-log` (`nvnDeviceGetProcAddress`, by decision) after U5 (`11978be`).
   Current step: 4-u3-3 (S/Y harness, mutation, command buffer). 4-u3-2 is done (history: `OLD-WORK_PLAN.md`, last section).
-    Step (a) is done (facts: `OLD-WORK_PLAN.md`, last section "4-u3-3").
-    Step (b) is done (2026-11-11): patch `writer-u3-3b-1` committed with caller fixes (a macro argument named `host`, a missing
-    include, the settings field name `nvn_selftest_mutation`, a failed init stream now stops every case). Judged correct: the
-    queue init stream (a real channel runs it before any command buffer, and ClearColor is macro 1). Fixture assumption: reg
-    0x206 (layer count) = 1 on both channels, because the cases do not call SetRenderTargets. Decoder mutant (word count
-    offset) fails the test. Nothing ran yet. Next: (c) the user runs the selftest (`nvn_selftest=1`, `nvn_native=0`) once
-    without and once with `nvn_selftest_mutate=nvnCommandBufferSetViewports`, then read the `selftest:` lines.
-    Contents of (b): writer brief (`reports/brief-6a.md` is the template): harness (decoder of ops 03/04/end, refuse other ops with a log line and skip the case),
-    host replay on its own private channel, `g_renderer` swap in a `gpu_call`, snapshot of the 3D registers, mutation,
-    the 3c/3d cases (no FenceSync). (c) run with a mutation. (d) the other command buffer rows in groups.
-    Then: 4-u3-4 (exectest). The `unit` scope is not in the checks column yet.
+    Steps (a) and (b) are done, the decoder fix is done (history: `OLD-WORK_PLAN.md`, last section "4-u3-3").
+    Step (c), NEXT: verify the run. The two user runs of 2026-11-11 11:25 had `nvn_trace=0`, so the selftest did not run
+    (log: `nvn-selftest: it needs nvn_trace=1`). Ask the user for 2 runs with `nvn_trace=1`, `nvn_native=0`,
+    `nvn_selftest=1`: run 1 with `nvn_selftest_mutate=` empty, run 2 with `nvnCommandBufferSetViewports`. The first log is
+    in `logs/`, the second in `<id>.log`. Expected: run 1 has 257 cases, 0 failed. Run 2 has a `mutation` line and only
+    the SetViewports case fails (S: vp0.x or vp0.translate_x). If run 1 still fails, the next suspects are the reg 0x206
+    fixture and the queue init stream (both are in `nvn_selftest_cmd.c`). Then record the result in `docs/nvn-coverage.md`.
+    Step (d): the other command buffer rows in groups (114 of 146 rows had no check). Then 4-u3-4 (exectest). The `unit`
+    scope is not in the checks column yet.
   - Open for 4-u4: the design asks for no `stub-log` row, but `nvnDeviceGetProcAddress` stays `stub-log` by decision (the
     game resolves names through d832940, which the hook covers). Decide the row (a handler that calls the resolver, or an
     explicit exception in the design) before 4-u4.

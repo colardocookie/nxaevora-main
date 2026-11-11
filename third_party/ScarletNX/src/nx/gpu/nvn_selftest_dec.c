@@ -40,17 +40,18 @@ static int read_at(Decoder* d, uint64_t addr, size_t size, const uint8_t** out) 
     return 1;
 }
 
-/* One entry of an entry table, or one record entry: {u64 gpu_start, u64 cpu_end, u32 word_count, u8 type}. */
+/* One entry of an entry table, or one record entry: {u64 gpu_start, u64 cpu_start, u32 word_count, u8 type}. The
+   run log of 2026-11-11 shows +8 equal to the command memory storage for the first range, so it is the start. */
 static int add_entry(Decoder* d, const uint8_t* entry, uint64_t addr) {
-    const uint64_t cpu_end = rd64(entry + 8);
+    const uint64_t cpu_start = rd64(entry + 8);
     const uint32_t words = rd32(entry + REC_ENTRY_WORD_COUNT_OFFSET);
-    if (!words || cpu_end < (uint64_t)words * 4u) {
+    if (!words || cpu_start > UINT64_MAX - (uint64_t)words * 4u) {
         d->fault->op = 0;
         d->fault->addr = addr;
         return NVN_ST_DEC_BAD_ENTRY;
     }
     if (d->n >= d->cap) return NVN_ST_DEC_TOO_MANY_RANGES;
-    d->out[d->n].cpu_start = cpu_end - (uint64_t)words * 4u;
+    d->out[d->n].cpu_start = cpu_start;
     d->out[d->n].words = words;
     d->n++;
     return NVN_ST_DEC_OK;

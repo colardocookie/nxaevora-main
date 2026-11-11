@@ -19,7 +19,7 @@ enum {
     NVN_ST_DEC_REFUSED_OP,      /* a record op that the decoder does not read (05 to 0x16) */
     NVN_ST_DEC_TOO_MANY_RANGES, /* more ranges than the caller's cap */
     NVN_ST_DEC_TOO_MANY_JUMPS,  /* more jumps than NVN_ST_DEC_MAX_JUMPS: a cycle */
-    NVN_ST_DEC_BAD_ENTRY,       /* word_count is 0, or cpu_end is below 4 * word_count */
+    NVN_ST_DEC_BAD_ENTRY,       /* word_count is 0, or the range wraps the address space */
     NVN_ST_DEC_READ_FAILED,     /* the read callback gave NULL */
 };
 

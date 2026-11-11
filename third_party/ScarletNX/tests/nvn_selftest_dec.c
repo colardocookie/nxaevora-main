@@ -31,10 +31,10 @@ static void put32(uint64_t off, uint32_t value) {
     for (unsigned i = 0; i < 4; i++) fake[off + i] = (uint8_t)(value >> (8u * i));
 }
 
-/* {u64 gpu_start, u64 cpu_end, u32 word_count, u8 type} */
-static void put_entry(uint64_t off, uint64_t gpu_start, uint64_t cpu_end, uint32_t words) {
+/* {u64 gpu_start, u64 cpu_start, u32 word_count, u8 type} */
+static void put_entry(uint64_t off, uint64_t gpu_start, uint64_t cpu_start, uint32_t words) {
     put64(off, gpu_start);
-    put64(off + 8, cpu_end);
+    put64(off + 8, cpu_start);
     put32(off + 16, words);
     fake[off + 20] = 0;
 }
@@ -63,8 +63,8 @@ static void test_handle_entries(void) {
     const int status = nvn_st_decode_recording(handle, fake_read, NULL, ranges, 4, &n, &fault);
     CHECK(status == NVN_ST_DEC_OK);
     CHECK(n == 2);
-    CHECK(ranges[0].cpu_start == 0x400 - 4u * 4u && ranges[0].words == 4); /* 0x3f0 */
-    CHECK(ranges[1].cpu_start == 0x800 - 4u * 8u && ranges[1].words == 8); /* 0x7e0 */
+    CHECK(ranges[0].cpu_start == 0x400 && ranges[0].words == 4);
+    CHECK(ranges[1].cpu_start == 0x800 && ranges[1].words == 8);
 }
 
 static void test_records_and_jump(void) {
@@ -82,8 +82,8 @@ static void test_records_and_jump(void) {
     const int status = nvn_st_decode_recording(FAKE_BASE, fake_read, NULL, ranges, 4, &n, &fault);
     CHECK(status == NVN_ST_DEC_OK);
     CHECK(n == 2);
-    CHECK(ranges[0].cpu_start == 0x100 - 4u && ranges[0].words == 1); /* 0xfc */
-    CHECK(ranges[1].cpu_start == 0x200 - 8u && ranges[1].words == 2); /* 0x1f8 */
+    CHECK(ranges[0].cpu_start == 0x100 && ranges[0].words == 1);
+    CHECK(ranges[1].cpu_start == 0x200 && ranges[1].words == 2);
 }
 
 static void test_refused_op(void) {

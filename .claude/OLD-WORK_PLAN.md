@@ -2633,3 +2633,20 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
   command 0x1000). The recording calls write only the command buffer and its memory.
 - Y hooks: Barrier gives `method_barrier` (0x44, 0x378, 0x3DF, 0x3DD, 0x369, 0x50A/0x509). SignalEvent WRITE and
   ReportCounter give `release_write`. WaitEvent parks the stream (no hook, do not use it in a case).
+
+### 4-u3-3 steps (b) and (c), 2026-11-11
+
+- (b): writer patch `patches/writer-u3-3b-1.patch` (brief `reports/brief-u3-3b-writer.md`), committed as `9ca707c`. Caller
+  fixes: a macro argument named `host` (it replaced the member name), a missing `nvn_native.h` include, the settings field
+  name (settingsgen names it from the title: `nvn_selftest_mutation`, the key stays `nvn_selftest_mutate`), and a failed
+  init stream now stops every later case. `nvn_selftest_res.c` changes are renames and shared helpers only (checked).
+- Judged: the queue init stream on both channels is correct (a real channel runs it first, ClearColor is macro 1).
+  Fixture assumption: reg 0x206 (layer count) = 1 on both channels, because the cases do not call SetRenderTargets.
+- Run 1 (logs 11:15, 11:16): 257 cases, 10 failed (all new S/Y cases). SetViewports S count library 0, host 32. Barrier
+  cases library vp0.scale_x 0x3f000000, host 0x44200000. One `pushbuffer header 0000003c of mode 0 is skipped`.
+- Diagnostic run (`patches/diag-u3-3c.patch`, log 11:20): record `03` entry = {u64 GPU start, u64 CPU START, u32 word
+  count, u8 type}. Proof: entry +8 = 0x1380103000 = the command pool storage, the GPU start 0x559630000, and both move by
+  0x90 in the next case. The explorer report `explorer-u3-3-1.md` says "CPU end": that is wrong. The decoder read the
+  range 4 * count bytes too early (zero words in case 1, the previous case's words later). Fixed in the decoder and its
+  test. Mutant (+8 -> +0) fails the test. ctest OK except `tracked_material`.
+- Runs of 11:25 and 11:26: `nvn_trace=0`, the selftest did not run. No result for the fix yet.
