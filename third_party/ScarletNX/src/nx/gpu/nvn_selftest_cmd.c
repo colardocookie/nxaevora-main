@@ -45,6 +45,12 @@
 #define ST_CLEAR_LAYER_COUNT_REG 0x206u
 #define ST_CLEAR_LAYER_COUNT 1u
 
+/* The work call of a Bind case that the host sends at a draw: mode 4 is NVN triangles (an assumption that the caller
+   checks), the first vertex is 0 and the count is 3. */
+#define ST_DRAW_MODE 4u
+#define ST_DRAW_FIRST 0u
+#define ST_DRAW_COUNT 3u
+
 /* The argument block of the cases, in the arena: the same values for the library, a changed copy for a mutation. Each
    region is 16-byte aligned. */
 #define ST_ARG_VP_LIB 0x000u
@@ -68,7 +74,7 @@ static const float st_clear[4] = {0.25f, 0.5f, 0.75f, 1.0f};
 
 typedef struct {
     NvnStProc initialize, finalize, add_command_memory, add_control_memory, begin, end;
-    NvnStProc set_viewports, set_scissors, clear_color, barrier;
+    NvnStProc set_viewports, set_scissors, clear_color, barrier, draw_arrays;
     NvnStProc free_bytes; /* optional: without it the command memory is refilled before each case */
 } StCmdProcs;
 
@@ -214,7 +220,8 @@ static int st_procs_find(StCmdProcs* p) {
         !nvn_st_proc_find(&p->set_viewports, "nvnCommandBufferSetViewports") ||
         !nvn_st_proc_find(&p->set_scissors, "nvnCommandBufferSetScissors") ||
         !nvn_st_proc_find(&p->clear_color, "nvnCommandBufferClearColor") ||
-        !nvn_st_proc_find(&p->barrier, "nvnCommandBufferBarrier"))
+        !nvn_st_proc_find(&p->barrier, "nvnCommandBufferBarrier") ||
+        !nvn_st_proc_find(&p->draw_arrays, "nvnCommandBufferDrawArrays"))
         return 0;
     nvn_st_proc_find(&p->free_bytes, "nvnCommandBufferGetCommandMemoryFree");
     return 1;
@@ -260,6 +267,8 @@ static void st_gpu_fn(void* arg) {
             job->status = -1;
         }
     }
+    /* The front end holds a draw for merging (r3d_pending_flush): a stream that ends in a draw must give it here. */
+    r3d_pending_flush();
     nvn_st_renderer_end();
     nvn_st_renderer_begin(job->got, st_snapshot_regs);
     NvnReplayStats stats = {0};
@@ -267,6 +276,7 @@ static void st_gpu_fn(void* arg) {
         LOG("selftest: %s: the host replay failed\n", job->name);
         job->status = -1;
     }
+    r3d_pending_flush();
     nvn_st_renderer_end();
     st_snapshot_job = NULL;
     st_add_regdiff(job);
@@ -352,9 +362,18 @@ static int st_setup_lists(CPU* c, StCmdProcs* p, NvnStResCache* cache, NvnStRun*
     return 1;
 }
 
+/* The work call that ends the calls of a case's script. */
+typedef void (*StWork)(CPU* c, const StCmdProcs* p, int host, uint64_t cb, uint64_t args);
+
 /* The work point of every case: the clear that ends the calls of the script. */
 static void st_clear_work(CPU* c, const StCmdProcs* p, int host, uint64_t cb, uint64_t args) {
     ST_CALL(c, &p->clear_color, host, cb, ST_CLEAR_INDEX, args + ST_ARG_COLOR, ST_CLEAR_MASK);
+}
+
+/* The host sends the BLEND, CHANNEL_MASK and POLYGON binds only at a draw, so a clear leaves its registers unchanged. */
+static void st_draw_work(CPU* c, const StCmdProcs* p, int host, uint64_t cb, uint64_t args) {
+    (void)args;
+    ST_CALL(c, &p->draw_arrays, host, cb, ST_DRAW_MODE, ST_DRAW_FIRST, ST_DRAW_COUNT);
 }
 
 /* The mutation of one case. The rule is the one that the case's table row names. */
@@ -373,7 +392,8 @@ typedef int (*StScript)(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int ho
 
 static void st_case(CPU* c, NvnStRun* run, StCmdProcs* p, StCmdJob* job, uint64_t lib_cb, uint64_t host_cb,
                     uint64_t lib_pool, uint64_t host_pool, uint64_t args, const char* name, const char* text,
-                    StScript script, const NvnStProc* fn, uint64_t param, unsigned rule, int* stop) {
+                    StScript script, const NvnStProc* fn, uint64_t param, unsigned rule, int expect_noop,
+                    int* stop) {
     st_refill(c, p, lib_cb, host_cb, lib_pool, host_pool);
     /* Each EndRecording uses control memory. When it runs out, the library calls the out-of-memory callback,
        which the selftest does not set, and aborts (sdk d8243b8). The records of the last case are done. */
@@ -435,7 +455,10 @@ static void st_case(CPU* c, NvnStRun* run, StCmdProcs* p, StCmdJob* job, uint64_
     }
     NvnStDiff diff;
     nvn_st_compare(&job->lib_rec, &job->host_rec, &diff);
-    nvn_st_report(run, name, text, &job->lib_rec, &diff);
+    if (expect_noop)
+        nvn_st_report_noop(run, name, text, &job->lib_rec, &diff);
+    else
+        nvn_st_report(run, name, text, &job->lib_rec, &diff);
 }
 
 static int st_script_viewports(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
@@ -581,14 +604,26 @@ static int st_script_scissor(CPU* c, const StCmdProcs* p, const NvnStProc* fn, i
 }
 
 /* A Bind case: each side builds its own state object, then binds it. The host object layout may differ from the
-   library's, so the two sides never share an object. param is the NVN_ST_STATE_* kind. */
-static int st_script_bind_state(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
-                                uint64_t args, uint64_t param, unsigned rule) {
+   library's, so the two sides never share an object. param is the NVN_ST_STATE_* kind. `work` ends the script. */
+static int st_script_bind_state_work(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                     uint64_t args, uint64_t param, unsigned rule, StWork work) {
     const uint64_t obj = args + (host ? ST_ARG_STATE_HOST : ST_ARG_STATE_LIB);
     if (!nvn_st_state_build(c, (unsigned)param, host, obj, host && rule == ST_MUT_SETTER ? 1u : 0u)) return 0;
     st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, obj}});
-    st_clear_work(c, p, host, cb, args);
+    work(c, p, host, cb, args);
     return 1;
+}
+
+static int st_script_bind_state(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                uint64_t args, uint64_t param, unsigned rule) {
+    return st_script_bind_state_work(c, p, fn, host, cb, args, param, rule, st_clear_work);
+}
+
+/* The host sends the BLEND, CHANNEL_MASK and POLYGON binds only at a draw (replay_host_draw in nvn_native.c), so a
+   clear would leave the host registers unchanged and the case would fail. */
+static int st_script_bind_state_draw(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                     uint64_t args, uint64_t param, unsigned rule) {
+    return st_script_bind_state_work(c, p, fn, host, cb, args, param, rule, st_draw_work);
 }
 
 /* SetStencilCullCriteria: func 8, ref 0, mask 0xFF. */
@@ -635,63 +670,81 @@ static int st_script_coverage_table(CPU* c, const StCmdProcs* p, const NvnStProc
     return 1;
 }
 
-/* The 29 cases of decision 3. `rule` is the mutation rule of the row. The no-op rows (COMMAND_NO_OP_HANDLER:
-   SetSampleMask, SetStencilCullCriteria, SetColorReductionEnable, SetColorReductionThresholds,
-   SetSubpixelPrecisionBias, SetTiledCacheAction, SetTiledCacheTileSize) may fail on purpose. A mutation changes
-   nothing on the host side for them, because the library writes registers that the host does not. */
+/* The 29 cases of decision 3. `rule` is the mutation rule of the row. `expect_noop` marks a host handler that is a
+   logged no-op by design (COMMAND_NO_OP_HANDLER: SetSampleMask, SetStencilCullCriteria, SetColorReductionEnable,
+   SetColorReductionThresholds, SetSubpixelPrecisionBias, SetTiledCacheAction, SetTiledCacheTileSize) and
+   BindMultisampleState, whose replay returns at NVN_STATE_MULTISAMPLE. A difference there is expected, not a fail. */
 static const struct {
     const char* name;
     const char* text;
     StScript script;
     uint64_t param;
     unsigned rule;
+    int expect_noop;
 } st_state_cases[] = {
-    {"nvnCommandBufferSetAlphaRef", "value=0.5", st_script_float_arg, 0x3F000000u, ST_MUT_FLOAT},
-    {"nvnCommandBufferSetBlendColor", "color=0.1,0.2,0.3,0.4", st_script_blend_color, 0, ST_MUT_ARRAY},
-    {"nvnCommandBufferSetDepthBounds", "enable=1 near=0.25 far=0.75", st_script_depth_bounds, 0, ST_MUT_FLOAT},
-    {"nvnCommandBufferSetDepthClamp", "enable=1", st_script_int_arg, 1, ST_MUT_INT},
+    {"nvnCommandBufferSetAlphaRef", "value=0.5", st_script_float_arg, 0x3F000000u, ST_MUT_FLOAT, 0},
+    {"nvnCommandBufferSetBlendColor", "color=0.1,0.2,0.3,0.4", st_script_blend_color, 0, ST_MUT_ARRAY, 0},
+    {"nvnCommandBufferSetDepthBounds", "enable=1 near=0.25 far=0.75", st_script_depth_bounds, 0, ST_MUT_FLOAT, 0},
+    {"nvnCommandBufferSetDepthClamp", "enable=1", st_script_int_arg, 1, ST_MUT_INT, 0},
     {"nvnCommandBufferSetDepthRange", "near=0.1 far=0.9", st_script_depth_range,
-     (uint64_t)0x3DCCCCCDu | ((uint64_t)0x3F666666u << 32), ST_MUT_FLOAT},
+     (uint64_t)0x3DCCCCCDu | ((uint64_t)0x3F666666u << 32), ST_MUT_FLOAT, 0},
     {"nvnCommandBufferSetDepthRanges", "first=0 count=2 ranges=0.1,0.9,0.2,0.8", st_script_depth_ranges, 0,
-     ST_MUT_ARRAY},
-    {"nvnCommandBufferSetLineWidth", "width=2.0", st_script_float_arg, 0x40000000u, ST_MUT_FLOAT},
+     ST_MUT_ARRAY, 0},
+    {"nvnCommandBufferSetLineWidth", "width=2.0", st_script_float_arg, 0x40000000u, ST_MUT_FLOAT, 0},
     {"nvnCommandBufferSetPolygonOffsetClamp", "factor=1.0 units=2.0 clamp=0.5", st_script_polygon_offset, 0,
-     ST_MUT_FLOAT},
-    {"nvnCommandBufferSetRasterizerDiscard", "discard=1", st_script_int_arg, 1, ST_MUT_INT},
+     ST_MUT_FLOAT, 0},
+    {"nvnCommandBufferSetRasterizerDiscard", "discard=1", st_script_int_arg, 1, ST_MUT_INT, 0},
     {"nvnCommandBufferSetStencilMask", "face=3 value=0x5a", st_script_stencil,
-     (uint64_t)3u | ((uint64_t)0x5Au << 32), ST_MUT_INT},
+     (uint64_t)3u | ((uint64_t)0x5Au << 32), ST_MUT_INT, 0},
     {"nvnCommandBufferSetStencilRef", "face=3 value=0x5a", st_script_stencil,
-     (uint64_t)3u | ((uint64_t)0x5Au << 32), ST_MUT_INT},
+     (uint64_t)3u | ((uint64_t)0x5Au << 32), ST_MUT_INT, 0},
     {"nvnCommandBufferSetStencilValueMask", "face=3 value=0x5a", st_script_stencil,
-     (uint64_t)3u | ((uint64_t)0x5Au << 32), ST_MUT_INT},
-    {"nvnCommandBufferSetViewport", "x=16 y=32 w=640 h=360", st_script_viewport, 0, ST_MUT_INT},
-    {"nvnCommandBufferSetScissor", "x=8 y=8 w=100 h=50", st_script_scissor, 0, ST_MUT_INT},
-    {"nvnCommandBufferBindBlendState", "state=blend func=8,4,10,6", st_script_bind_state, NVN_ST_STATE_BLEND,
-     ST_MUT_SETTER},
-    {"nvnCommandBufferBindChannelMaskState", "state=channel mask target=3 0,1,0,1", st_script_bind_state,
-     NVN_ST_STATE_CHANNEL_MASK, ST_MUT_SETTER},
+     (uint64_t)3u | ((uint64_t)0x5Au << 32), ST_MUT_INT, 0},
+    {"nvnCommandBufferSetViewport", "x=16 y=32 w=640 h=360", st_script_viewport, 0, ST_MUT_INT, 0},
+    {"nvnCommandBufferSetScissor", "x=8 y=8 w=100 h=50", st_script_scissor, 0, ST_MUT_INT, 0},
+    {"nvnCommandBufferBindBlendState", "state=blend func=8,4,10,6", st_script_bind_state_draw, NVN_ST_STATE_BLEND,
+     ST_MUT_SETTER, 0},
+    {"nvnCommandBufferBindChannelMaskState", "state=channel mask target=3 0,1,0,1", st_script_bind_state_draw,
+     NVN_ST_STATE_CHANNEL_MASK, ST_MUT_SETTER, 0},
     {"nvnCommandBufferBindColorState", "state=color logicOp=3", st_script_bind_state, NVN_ST_STATE_COLOR,
-     ST_MUT_SETTER},
+     ST_MUT_SETTER, 0},
     {"nvnCommandBufferBindDepthStencilState", "state=depth stencil depthFunc=2", st_script_bind_state,
-     NVN_ST_STATE_DEPTH_STENCIL, ST_MUT_SETTER},
+     NVN_ST_STATE_DEPTH_STENCIL, ST_MUT_SETTER, 0},
     {"nvnCommandBufferBindMultisampleState", "state=multisample samples=4", st_script_bind_state,
-     NVN_ST_STATE_MULTISAMPLE, ST_MUT_SETTER},
-    {"nvnCommandBufferBindPolygonState", "state=polygon cullFace=2", st_script_bind_state, NVN_ST_STATE_POLYGON,
-     ST_MUT_SETTER},
-    {"nvnCommandBufferSetSampleMask", "mask=0x1", st_script_int_arg, 1, ST_MUT_INT},
-    {"nvnCommandBufferSetStencilCullCriteria", "func=8 ref=0 mask=0xff", st_script_stencil_cull, 0, ST_MUT_INT},
-    {"nvnCommandBufferSetColorReductionEnable", "enable=1", st_script_int_arg, 1, ST_MUT_INT},
-    {"nvnCommandBufferSetColorReductionThresholds", "class=0 t0=1 t1=2", st_script_thresholds, 0, ST_MUT_INT},
+     NVN_ST_STATE_MULTISAMPLE, ST_MUT_SETTER, 1},
+    {"nvnCommandBufferBindPolygonState", "state=polygon cullFace=2", st_script_bind_state_draw, NVN_ST_STATE_POLYGON,
+     ST_MUT_SETTER, 0},
+    {"nvnCommandBufferSetSampleMask", "mask=0x1", st_script_int_arg, 1, ST_MUT_INT, 1},
+    {"nvnCommandBufferSetStencilCullCriteria", "func=8 ref=0 mask=0xff", st_script_stencil_cull, 0, ST_MUT_INT, 1},
+    {"nvnCommandBufferSetColorReductionEnable", "enable=1", st_script_int_arg, 1, ST_MUT_INT, 1},
+    {"nvnCommandBufferSetColorReductionThresholds", "class=0 t0=1 t1=2", st_script_thresholds, 0, ST_MUT_INT, 1},
     {"nvnCommandBufferSetSubpixelPrecisionBias", "x=2 y=3", st_script_two_ints,
-     (uint64_t)2u | ((uint64_t)3u << 32), ST_MUT_INT},
-    {"nvnCommandBufferSetTiledCacheAction", "action=1", st_script_int_arg, 1, ST_MUT_INT},
+     (uint64_t)2u | ((uint64_t)3u << 32), ST_MUT_INT, 1},
+    {"nvnCommandBufferSetTiledCacheAction", "action=1", st_script_int_arg, 1, ST_MUT_INT, 1},
     {"nvnCommandBufferSetTiledCacheTileSize", "width=64 height=64", st_script_two_ints,
-     (uint64_t)64u | ((uint64_t)64u << 32), ST_MUT_INT},
-    {"nvnCommandBufferSetConservativeRasterEnable", "enable=0", st_script_int_arg, 0, ST_MUT_INT},
-    {"nvnCommandBufferBindCoverageModulationTable", "table=null", st_script_coverage_table, 0, ST_MUT_NONE},
+     (uint64_t)64u | ((uint64_t)64u << 32), ST_MUT_INT, 1},
+    {"nvnCommandBufferSetConservativeRasterEnable", "enable=0", st_script_int_arg, 0, ST_MUT_INT, 0},
+    {"nvnCommandBufferBindCoverageModulationTable", "table=null", st_script_coverage_table, 0, ST_MUT_NONE, 0},
 };
 
 _Static_assert(sizeof st_state_cases / sizeof st_state_cases[0] == ST_STATE_CASES, "the state case count");
+
+/* With nvn_native=0 the game's depth mode went to the library, so the host device record still reads 0. The depth
+   range handlers read that record: copy the library value into the host. The library setter is not called, because
+   it would change the game device. */
+static void st_sync_host_depth_mode(CPU* c) {
+    NvnStProc get_depth, set_depth;
+    if (!nvn_st_proc_find(&get_depth, "nvnDeviceGetDepthMode")) {
+        LOG("selftest: depth mode sync skipped, nvnDeviceGetDepthMode not resolved\n");
+        return;
+    }
+    if (!nvn_st_proc_find(&set_depth, "nvnDeviceSetDepthMode")) {
+        LOG("selftest: depth mode sync skipped, nvnDeviceSetDepthMode not resolved\n");
+        return;
+    }
+    const uint64_t mode = nvn_st_call(c, &get_depth.lib, &(NvnStCall){.x = {nvn_st_device()}});
+    nvn_st_call(c, &set_depth.host, &(NvnStCall){.x = {nvn_st_device(), mode}});
+}
 
 void nvn_selftest_command_cases(CPU* c, NvnStRun* run) {
     StCmdProcs procs = {0};
@@ -789,15 +842,16 @@ void nvn_selftest_command_cases(CPU* c, NvnStRun* run) {
     st_fill_s_args(args, mutate[0] && !strcmp(mutate, "nvnCommandBufferSetViewports"));
     int stop = 0;
     st_case(c, run, &procs, job, lib_cb, host_cb, lib_pool.pool, host_pool.pool, args, "nvnCommandBufferSetViewports",
-            "viewports=0,2 scissors=0,2 clear=0", st_script_viewports, NULL, 0, ST_MUT_NONE, &stop);
+            "viewports=0,2 scissors=0,2 clear=0", st_script_viewports, NULL, 0, ST_MUT_NONE, 0, &stop);
     for (unsigned k = 0; k < ST_BARRIERS && !stop; k++) {
         const uint32_t bits = 1u << k;
         const uint32_t host_bits = mutate[0] && !strcmp(mutate, "nvnCommandBufferBarrier") ? bits ^ 1u : bits;
         char text[32];
         snprintf(text, sizeof text, "bits=0x%x", bits);
         st_case(c, run, &procs, job, lib_cb, host_cb, lib_pool.pool, host_pool.pool, args, "nvnCommandBufferBarrier",
-                text, st_script_barrier, NULL, (uint64_t)bits | ((uint64_t)host_bits << 32), ST_MUT_NONE, &stop);
+                text, st_script_barrier, NULL, (uint64_t)bits | ((uint64_t)host_bits << 32), ST_MUT_NONE, 0, &stop);
     }
+    st_sync_host_depth_mode(c);
     for (unsigned i = 0; i < ST_STATE_CASES && !stop; i++) {
         const char* const name = st_state_cases[i].name;
         NvnStProc fn = {0};
@@ -809,7 +863,8 @@ void nvn_selftest_command_cases(CPU* c, NvnStRun* run) {
         const unsigned rule =
             mutate[0] && !strcmp(mutate, name) ? st_state_cases[i].rule : (unsigned)ST_MUT_NONE;
         st_case(c, run, &procs, job, lib_cb, host_cb, lib_pool.pool, host_pool.pool, args, name,
-                st_state_cases[i].text, st_state_cases[i].script, &fn, st_state_cases[i].param, rule, &stop);
+                st_state_cases[i].text, st_state_cases[i].script, &fn, st_state_cases[i].param, rule,
+                st_state_cases[i].expect_noop, &stop);
     }
 
     if (stop) {

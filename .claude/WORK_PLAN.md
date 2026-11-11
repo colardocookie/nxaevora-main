@@ -9,7 +9,7 @@ Read `CLAUDE.md`, then this file. Read `OLD-WORK_PLAN.md` only when you need a f
 - PUSHED: `c5fe2db` and older. Commits after `c5fe2db` are not pushed. History:
   `OLD-WORK_PLAN.md`, last sections.
 - `CLAUDE.md` and `.claude/` are in git (`1c5cfea`). Local paths in these files become public at the push.
-- The exe in `game/` is the build of the shadow RAM clear commit (md5 166e98a1, HEAD before this handover), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
+- The exe in `game/` is the build of the d1 fix commit (md5 4750291d), no diagnostic. The diagnostic code of task B is saved as `patches/diag-taskB.patch`
   (lines `diag-present`, `diag-rt`, `diag-last`, `diag-skip`).
   `ctest` passes except `tracked_material` (known; `driver_workflow` can fail in a parallel run). The `.ini` of the game has
   `nvn_trace=1`, `nvn_native=0`, `nvn_selftest=1` (the selftest run of 2026-11-10). After each build: `tasklist` shows no game, then copy the exe.
@@ -49,19 +49,12 @@ below. Design of 3c: `docs/nvn-design.md`, "3c Host design decisions", decisions
 
 NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-design.md`, "Unobserved functions", steps 4-u2 to
   4-u4. `docs/nvn-coverage.md`: 1 row of G10 is `stub-log` (`nvnDeviceGetProcAddress`, by decision) after U5 (`11978be`).
-  Current step: 4-u3-3 step (d), group d1 (history: `OLD-WORK_PLAN.md`, last section "4-u3-3 step (c) and d1").
+  Current step: 4-u3-3 step (d), group d2 (d1 history: `OLD-WORK_PLAN.md`, last section "4-u3-3 step (c) and d1").
     Groups of (d): d1 fixed-function state (29 rows, committed `writer-u3-3d1`), d2 binds and resources, d3 draws,
     clears, copies, dispatch, d4 CPU side (queries, callbacks, debug markers). Then 4-u3-4 (exectest). The `unit`
     scope is not in the checks column yet.
-    Run of 2026-11-11 (exe md5 f685c195, control memory fix): no abort, all d1 cases ran. Totals: 286 cases,
-    13 failed, 0 skipped. The abort (sdk d8243b8, "CommandBuffer out-of-memory callback didn't add") was the
-    control memory that the selftest did not give again. Fixed and committed. One open fault:
-    1. 13 d1 cases fail S (also TiledCacheAction 0x3d8 (1/0), TiledCacheTileSize 0x3d9 (0x400040/0)). Earlier 11 (first difference, library/host): DepthRange and DepthRanges 0x282 (0x3f4ccccc/0x3ecccccc),
-       BindBlendState 0x782 (8/2), BindChannelMaskState 0x680 (0x1111/0x11111111), BindMultisampleState 0x478
-       (0xeaa26e26/0), BindPolygonState 0x646 (1/0), SetSampleMask 0x3ef (1/0xffff), SetStencilCullCriteria 0x376
-       (0xff000007/0xff000005), SetColorReductionEnable 0x367 (1/0), SetColorReductionThresholds 0x433 (0x10002/0),
-       SetSubpixelPrecisionBias 0x287 (0x302/0). Only the first difference shows. Plan: a library analyst table of
-       the words of each function, check 3 rows, then fix the host (or a test value) from the mechanism.
+    d1 DONE (2026-11-11, exe 4750291d): 286 cases, 0 failed, 8 expected no-op, 0 skipped. History: `OLD-WORK_PLAN.md`,
+    section "d1 faults fixed". Next: group d2 (binds and resources), first a library analyst table of the d2 rows.
     The `.ini` has `nvn_selftest_mutate=` (empty) now.
   - Open for 4-u4: the design asks for no `stub-log` row, but `nvnDeviceGetProcAddress` stays `stub-log` by decision (the
     game resolves names through d832940, which the hook covers). Decide the row (a handler that calls the resolver, or an

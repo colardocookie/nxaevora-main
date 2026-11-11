@@ -68,6 +68,24 @@ void nvn_st_report(NvnStRun* run, const char* name, const char* args, const NvnS
         if (d->failed & (1u << k)) LOG("selftest:   first difference (%c): %s\n", "RMSY"[k], d->first[k]);
 }
 
+/* The report of a case whose host handler is a logged no-op by design: a difference is expected here. A case with no
+   difference is a fail, because the host changed and the row must be checked again. */
+void nvn_st_report_noop(NvnStRun* run, const char* name, const char* args, const NvnStRec* ref, const NvnStDiff* d) {
+    char line[256];
+    run->cases++;
+    if (!d->failed) {
+        run->failed++;
+        LOG("selftest: %s expected a no-op difference, none seen\n", name);
+        return;
+    }
+    run->expected++;
+    const int n = nvn_st_format_line(line, sizeof line, name, args, ref, d);
+    if (n > 0 && (size_t)n < sizeof line) snprintf(line + n, sizeof line - (size_t)n, " (expected no-op)");
+    LOG("%s\n", line);
+    for (int k = 0; k < NVN_ST_KINDS; k++)
+        if (d->failed & (1u << k)) LOG("selftest:   first difference (%c): %s\n", "RMSY"[k], d->first[k]);
+}
+
 /* nvnDeviceGetInteger(device, what, int* out): the call writes one word into memory that the game can see (kind M).
    The values are the ones that the run of 2026-11-02 asked for; an unobserved value is a later step. */
 static const uint32_t device_what[] = {4,  15, 16, 17, 18, 19, 20, 40, 41, 42, 50, 59, 66, 67,
@@ -204,6 +222,6 @@ void nvn_selftest_run(CPU* c) {
     nvn_selftest_object_cases(c, &run);
     nvn_selftest_resource_cases(c, &run);
     nvn_selftest_command_cases(c, &run);
-    LOG("selftest: %u cases, %u failed, %u skipped, arena used %" PRIu64 " of %u bytes\n", run.cases, run.failed,
-        run.skipped, run.arena.high_water, ARENA_BYTES);
+    LOG("selftest: %u cases, %u failed, %u expected no-op, %u skipped, arena used %" PRIu64 " of %u bytes\n",
+        run.cases, run.failed, run.expected, run.skipped, run.arena.high_water, ARENA_BYTES);
 }

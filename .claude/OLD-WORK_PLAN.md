@@ -2701,3 +2701,31 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
 - Commit: "Send the shadow RAM words around the replayed color clear" (replay_clear sends 0x49=2, 0x3ED=0,
   CLEAR_SURFACE, 0x49=3, 0x3ED=0, 0x49=1, as sdk d84a870 does; test checks the order). Explorer report:
   `reports/explore-0x49.md` (macro 1 at sdk de86704 sends only CLEAR_SURFACE; init stream ends with 0x49=1).
+
+## d1 faults fixed (2026-11-11)
+
+- Run 2 (exe 4750291d): 286 cases, 0 failed, 8 expected no-op.
+    Run of 2026-11-11 (exe md5 f685c195, control memory fix): no abort, all d1 cases ran. Totals: 286 cases,
+    13 failed, 0 skipped. The abort (sdk d8243b8, "CommandBuffer out-of-memory callback didn't add") was the
+    control memory that the selftest did not give again. Fixed and committed. One open fault:
+    1. 13 d1 cases fail S (also TiledCacheAction 0x3d8 (1/0), TiledCacheTileSize 0x3d9 (0x400040/0)). Earlier 11 (first difference, library/host): DepthRange and DepthRanges 0x282 (0x3f4ccccc/0x3ecccccc),
+       BindBlendState 0x782 (8/2), BindChannelMaskState 0x680 (0x1111/0x11111111), BindMultisampleState 0x478
+       (0xeaa26e26/0), BindPolygonState 0x646 (1/0), SetSampleMask 0x3ef (1/0xffff), SetStencilCullCriteria 0x376
+       (0xff000007/0xff000005), SetColorReductionEnable 0x367 (1/0), SetColorReductionThresholds 0x433 (0x10002/0),
+       SetSubpixelPrecisionBias 0x287 (0x302/0). Only the first difference shows. Plan: a library analyst table of
+       the words of each function, check 3 rows, then fix the host (or a test value) from the mechanism.
+    Analyst table: `reports/analyst-d1-1.md` (rows SampleMask, ColorReductionEnable, DepthRange checked by the caller).
+    Three causes: (A) 8 host handlers are logged no-ops by design (SampleMask, StencilCullCriteria, ColorReduction x2,
+    SubpixelPrecisionBias, TiledCache x2): USER DECIDED (2026-11-11) mark these cases as expected no-op in the selftest. (B) Blend,
+    ChannelMask, Polygon binds: CHECKED, `replay_bind_send_all` runs only in `replay_host_draw` (nvn_native.c ~5353),
+    `replay_clear` does not send binds. The selftest work call is a clear. Plan: these cases use a draw as work call.
+    Multisample: CHECKED, `replay_bind_send_state` returns for NVN_STATE_MULTISAMPLE (logged only, by design). Plan: an
+    expected no-op case, as (A). (C) DepthRange: CHECKED, a selftest setup fault. With nvn_native=0 the game's
+    nvnDeviceSetDepthMode goes to the library, so the host DeviceRec keeps depth_mode 0 (handlers 4344/4358 read it).
+    Plan: before the d1 cases, set the host depth mode to the library value (library GetDepthMode, host SetDepthMode).
+    Done: code writer patch `patches/writer-d1fix-1.patch` (brief `reports/brief-d1fix.md`), read fully, applied, NOT
+    committed. Run 1 (24a63bcb): 4 failed, 8 expected no-op, DepthRange ok. The 4 fails: the front end holds the last
+    draw for merging (`r3d_pending_flush`, engines.c 246), so the host draw ran in the next case. Fix: flush after
+    each side in `st_gpu_fn` (caller edit). Exe md5 4750291d copied, ctest ok except `tracked_material`. Next step: the user runs the
+    selftest (nvn_selftest=1), then read the log. Expect: 0 failed, 8 expected no-op. Risk: the draw words of the
+    library and the host may differ (DrawArrays mode 4 = triangles); then that is a d3 fact, not a fault of the bind.

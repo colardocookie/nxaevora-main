@@ -22,7 +22,7 @@ typedef struct {
 } NvnStProc;
 
 typedef struct {
-    unsigned cases, failed, skipped;
+    unsigned cases, failed, expected, skipped;
     NvnStArena arena;
 } NvnStRun;
 
@@ -68,6 +68,8 @@ typedef struct {
 int nvn_st_proc_find(NvnStProc* p, const char* name);
 uint64_t nvn_st_call(CPU* c, const NvnStCallee* f, const NvnStCall* a);
 void nvn_st_report(NvnStRun* run, const char* name, const char* args, const NvnStRec* ref, const NvnStDiff* d);
+/* A case of a handler that is a logged no-op by design: a difference is expected, and no difference is a fail. */
+void nvn_st_report_noop(NvnStRun* run, const char* name, const char* args, const NvnStRec* ref, const NvnStDiff* d);
 /* The device that the game made, for the builders that need one. */
 uint64_t nvn_st_device(void);
 
