@@ -106,10 +106,10 @@ tool keeps them.
 | `nvnTexturePoolInitialize` | G5 | d83d930 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnCommandBufferAddCommandMemory` | G6 | d823db0 | 1766963 | implemented |  |  |  |
 | `nvnCommandBufferAddControlMemory` | G6 | d823fa0 | 1473674 | implemented |  |  |  |
-| `nvnCommandBufferBarrier` | G6 | d856590 | 740540 | implemented |  |  |  |
+| `nvnCommandBufferBarrier` | G6 | d856590 | 740540 | implemented | selftest S/Y (update 1.1.1, 2026-11-11) |  |  |
 | `nvnCommandBufferBeginRecording` | G6 | d8240f0 | 1333339 | implemented |  |  |  |
 | `nvnCommandBufferCallCommands` | G6 | d8259e0 | 4340061 | implemented |  |  |  |
-| `nvnCommandBufferClearColor` | G6 | d84a870 | 7235 | implemented |  |  |  |
+| `nvnCommandBufferClearColor` | G6 | d84a870 | 7235 | implemented | selftest S (update 1.1.1, 2026-11-11) |  |  |
 | `nvnCommandBufferEndRecording` | G6 | d8241a0 | 1333339 | implemented |  |  |  |
 | `nvnCommandBufferFinalize` | G6 | d823d40 | 29629 | implemented |  |  |  |
 | `nvnCommandBufferInitialize` | G6 | d823cf0 | 32971 | implemented |  |  |  |
@@ -117,9 +117,9 @@ tool keeps them.
 | `nvnCommandBufferSetMemoryCallbackData` | G6 | d823d60 | 32971 | implemented |  |  |  |
 | `nvnCommandBufferSetRenderTargets` | G6 | d855da0 | 383398 | implemented |  |  |  |
 | `nvnCommandBufferSetSamplerPool` | G6 | d84c470 | 8919 | implemented |  |  |  |
-| `nvnCommandBufferSetScissors` | G6 | d84b140 | 616033 | implemented |  |  |  |
+| `nvnCommandBufferSetScissors` | G6 | d84b140 | 616033 | implemented | selftest S (update 1.1.1, 2026-11-11) |  |  |
 | `nvnCommandBufferSetTexturePool` | G6 | d84c1f0 | 8919 | implemented |  |  |  |
-| `nvnCommandBufferSetViewports` | G6 | d84acb0 | 383398 | implemented |  |  |  |
+| `nvnCommandBufferSetViewports` | G6 | d84acb0 | 383398 | implemented | selftest S (update 1.1.1, 2026-11-11) |  |  |
 | `nvnQueueFenceSync` | G7 | d83bbf0 | 8919 | implemented |  |  |  |
 | `nvnQueuePresentTexture` | G7 | d83ef40 | 8919 | implemented |  |  |  |
 | `nvnQueueSubmitCommands` | G7 | d839ff0 | 8919 | implemented |  |  |  |
