@@ -55,7 +55,8 @@ NEXT: task (u), the unobserved functions (user, 2026-11-09). Plan: `docs/nvn-des
     (mutation SetViewports) fails SetViewports on S (vp0.translate_x) and also the 9 Barrier cases: the private channels
     keep the registers between cases. Fix A (user, 2026-11-11): reset both channels to a base copy made after the init
     stream, before each case. The fix is committed (`st_channel_reset`, writer patch `writer-u3-3c-1`), the exe is copied.
-    NEXT: read the user's mutation run again (expected: 257 cases, 1 failed, only SetViewports), then run 1 once more.
+    Verified 2026-11-11 11:43: no mutation 257 cases, 0 failed. Mutation SetViewports: 1 failed (only SetViewports,
+    S vp0.translate_x). Step (c) is done. NEXT: step (d).
     Step (d): the other command buffer rows in groups (114 of 146 rows had no check). Then 4-u3-4 (exectest). The `unit`
     scope is not in the checks column yet.
   - Open for 4-u4: the design asks for no `stub-log` row, but `nvnDeviceGetProcAddress` stays `stub-log` by decision (the
