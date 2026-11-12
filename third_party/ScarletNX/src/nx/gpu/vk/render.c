@@ -1383,6 +1383,12 @@ static int is_target(Surf* s, Surf** rt, Surf* zt, u32 n) {
     if (s == zt) return 1;
     for (u32 i = 0; i < n; i++)
         if (rt[i] == s) return 1;
+    /* a group is written through its members: it is a target when one of them is bound */
+    if (s->member) {
+        if (zt && zt->group == s) return 1;
+        for (u32 i = 0; i < n; i++)
+            if (rt[i] && rt[i]->group == s) return 1;
+    }
     return 0;
 }
 
@@ -1732,16 +1738,22 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
             view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
             if (view) *fb |= slots;
         } else if (t && is_target(t, rt, zt, n) && !depth_ro) {
-            /* The guest reads the target's previous contents during a draw that writes it. Without a feedback loop
-               Vulkan can't bind one image for both uses here, so copy it before the draw starts and sample that
-               copy. */
-            Surf* snap = vk_rt_snapshot(t);
-            if (snap != t) {
-                t = snap;
-                view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
-                g_vk_rt_copies++;
-            } else
-                LOG_LIMIT(1, "vulkan: a draw samples a target it renders to (read as empty)\n");
+            if (t->member) {
+                /* a snapshot of a whole group would crop the members' pixels: read as empty instead */
+                LOG_LIMIT(1, "vulkan: a draw samples a group of targets that it renders to (not bound): %llx\n",
+                          (unsigned long long)t->gva);
+            } else {
+                /* The guest reads the target's previous contents during a draw that writes it. Without a feedback loop
+                   Vulkan can't bind one image for both uses here, so copy it before the draw starts and sample that
+                   copy. */
+                Surf* snap = vk_rt_snapshot(t);
+                if (snap != t) {
+                    t = snap;
+                    view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
+                    g_vk_rt_copies++;
+                } else
+                    LOG_LIMIT(1, "vulkan: a draw samples a target it renders to (read as empty)\n");
+            }
         } else
             view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
         const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */
@@ -3294,6 +3306,20 @@ void vk_render_draw_texture(GpuChannel* ch) {
         return;
     }
     Surf* d = rt[0];
+    /* a group (2D array of scaled targets) draws its layer 0: that member keeps the layout, gw and read check */
+    if (t->member) {
+        Surf* m = t->member[0];
+        if (!m) {
+            LOG_LIMIT(1, "vulkan: a draw texture of the group at %llx has no member in layer 0 (not drawn)\n",
+                      (unsigned long long)t->gva);
+            return;
+        }
+        t = m;
+    }
+    if (t->img == d->img && t->base_layer == d->base_layer) {
+        LOG_LIMIT(1, "vulkan: a draw texture reads the layer that it writes (not drawn)\n");
+        return;
+    }
     if (t->f.depth || d->f.depth || t->f.is_int != d->f.is_int ||
         !format_has(t->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !format_has(d->f.vk, VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
         LOG_LIMIT(1, "vulkan: a draw texture between formats %d and %d can't be blitted (not drawn)\n", (int)t->f.vk,
@@ -3303,9 +3329,9 @@ void vk_render_draw_texture(GpuChannel* ch) {
     /* in the images' pixels: a target is scaled, and a texture made from one is too */
     float tsx = (float)t->sw / (float)t->w, tsy = (float)t->sh / (float)t->h;
     VkImageBlit b = {
-        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, t->base_layer, 1},
         .srcOffsets = {{(i32)(sx0 * tsx), (i32)(sy0 * tsy), 0}, {(i32)(sx1 * tsx), (i32)(sy1 * tsy), 1}},
-        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, d->base_layer, 1},
         .dstOffsets = {{(i32)vk_scf(x0), (i32)vk_scf(y0), 0}, {(i32)vk_scf(x0 + w), (i32)vk_scf(y0 + h), 1}}};
     int linear =
         (x.tsc[1] & 3) == 2 && !t->f.is_int && format_has(t->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);

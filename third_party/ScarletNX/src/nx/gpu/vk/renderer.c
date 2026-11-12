@@ -466,6 +466,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
                                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                     .dstOffsets = {{dx, dy, 0}, {dx + (i32)dw, dy + (i32)dh, 1}}};
                 flip_src(&blit, transform); /* render targets stay in guest order */
+                if (blit_from == src->img) blit.srcSubresource.baseArrayLayer = src->base_layer;
                 if (scaled) {
                     float uv[4] = {(float)blit.srcOffsets[0].x / (float)src->sw, (float)blit.srcOffsets[0].y / (float)src->sh,
                                    (float)blit.srcOffsets[1].x / (float)src->sw, (float)blit.srcOffsets[1].y / (float)src->sh};
@@ -743,7 +744,7 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     vk_barrier(cb, tmp, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, s->base_layer, 1},
                         .srcOffsets = {{(i32)x, (i32)y, 0}, {(i32)(x + w), (i32)(y + h), 1}},
                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .dstOffsets = {{0, 0, 0}, {(i32)dw, (i32)dh, 1}}};

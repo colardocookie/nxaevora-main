@@ -2839,6 +2839,16 @@ static void scaled_texel_fetch(void) {
                   count_opcode(code, words, 141, 0xffffffffu) == 2 && has_builtin(code, words, 15),
               "fragment TLD 2D takes x and y at the scale its texture's bit selects");
     free(code);
+    /* a 2D array (ty 3) is read from a group of scaled targets: the same scale on x and y, not on the layer */
+    const u64 tld_array[] = {(tld_2d[0] & ~(7ull << 28)) | 3ull << 28};
+    code = translate(tld_array, 1, ST_FS, &info, &words, 0);
+    check_translated(code, &info, "fragment TLD 2D array translates");
+    if (code)
+        check(count_opcode(code, words, 111, 0xffffffffu) == 2 && count_opcode(code, words, 110, 0xffffffffu) == 2 &&
+                  count_opcode(code, words, 169, 0xffffffffu) == 3 &&
+                  count_opcode(code, words, 141, 0xffffffffu) == 2 && has_builtin(code, words, 15),
+              "fragment TLD 2D array takes x and y at the scale its texture's bit selects");
+    free(code);
     code = translate(txq_2d, 3, ST_FS, &info, &words, 0);
     check_translated(code, &info, "fragment TXQ translates");
     if (code)
