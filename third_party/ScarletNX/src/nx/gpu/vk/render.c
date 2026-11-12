@@ -17,6 +17,7 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/scale.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/runtime/platform/tracy.h"
@@ -1569,6 +1570,13 @@ static u64 dset_mix(u64 h, u64 v, u64 m) {
     h = (h ^ v) * m;
     return h ^ (h >> 29);
 }
+/* the first bound color target, else the depth target, as Ryujinx's GetAnyRenderTarget: a slot can be empty (not
+   bound, or taken out by render_draw because the fragment shader samples it) */
+static const Surf* any_target(Surf** rt, u32 n, const Surf* zt) {
+    for (u32 i = 0; rt && i < n; i++)
+        if (rt[i]) return rt[i];
+    return zt;
+}
 static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites* d) {
     static struct {
         u64 h1, h2, frame;
@@ -1610,17 +1618,21 @@ static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites*
     return set;
 }
 static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
-                                  u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images);
-/* scaled: a bit for each texture slot bound to a scaled render target (scaled_coords in spirv_translate.c) */
+                                  u32* fb, u64* scaled, u64* aspect, TexRes* res, const VkDrawStorage* draw,
+                                  DrawImages* images);
+/* scaled: a bit for each texture slot bound to a scaled render target; aspect: the same for the slots at the
+   target's aspect ratio (scaled_coords in spirv_translate.c) */
 static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro, u32* fb,
-                                 u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images) {
+                                 u64* scaled, u64* aspect, TexRes* res, const VkDrawStorage* draw,
+                                 DrawImages* images) {
     SNX_ZONE(z, "stage set");
-    VkDescriptorSet set = stage_set_(ch, stage, s, rt, zt, n, zt_ro, fb, scaled, res, draw, images);
+    VkDescriptorSet set = stage_set_(ch, stage, s, rt, zt, n, zt_ro, fb, scaled, aspect, res, draw, images);
     SNX_ZONE_END(z);
     return set;
 }
 static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
-                                  u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images) {
+                                  u32* fb, u64* scaled, u64* aspect, TexRes* res, const VkDrawStorage* draw,
+                                  DrawImages* images) {
     u32* r = ch->r3d;
     VkDescriptorSetLayout layout = g_vk_dslayout[s->indexed][shader_vk_set(stage)];
     VkDescriptorSet set = VK_NULL_HANDLE; /* the writes take it once their contents are known (desc_set_cached) */
@@ -1656,6 +1668,8 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
     if (stage == 4 && frame_consts(&cb, &co))
         dw_buffer(&d, set, SNX_VKB_RS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, cb, co, 16);
     u32 tcb = r[0x982];
+    /* Ryujinx (TextureBindingsManager): a fragment texture takes the target's scale only at its aspect ratio */
+    const Surf* target = any_target(rt, n, zt);
     int nt = s->si.ntex > SH_MAXTEX ? SH_MAXTEX : s->si.ntex;
     int table_first[SH_INDEXED_TABLES] = {0}, table_count = 0;
     for (int i = 0; i < nt; i++) {
@@ -1733,6 +1747,9 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */
         if (scaled && sampled && (sampled->sw != sampled->w || sampled->sh != sampled->h))
             *scaled |= 1ull << i;
+        if (aspect && scaled && (*scaled & (1ull << i)) && sampled && target &&
+            vk_scale_same_aspect(sampled->w, sampled->h, target->w, target->h))
+            *aspect |= 1ull << i;
         if (view && depth_ro) {
             *zt_ro = 1; /* render_begin moves it to the read-only layout */
             layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
@@ -2750,11 +2767,12 @@ retry:
     }
     int zt_ro = 0;
     u32 fb = 0;
-    u64 scaled = 0;
+    u64 scaled = 0, aspect = 0;
     DrawImages images = {0};
-    VkDescriptorSet vset = stage_set(ch, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images);
+    VkDescriptorSet vset = stage_set(ch, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, NULL, &storage, &images);
     VkDescriptorSet fset =
-        fs ? stage_set(ch, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, fres, &storage, &images) : VK_NULL_HANDLE;
+        fs ? stage_set(ch, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, &aspect, fres, &storage, &images)
+           : VK_NULL_HANDLE;
     /* the sets of the stages between, at their stage's index (shader_vk_set) */
     between[0] = tcs;
     between[1] = tes;
@@ -2768,7 +2786,7 @@ retry:
             bset_ok = 0;
             break;
         }
-        bset[b] = stage_set(ch, b + 1, between[b], rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, NULL);
+        bset[b] = stage_set(ch, b + 1, between[b], rt, zt, n, &zt_ro, NULL, NULL, NULL, NULL, &storage, NULL);
         if (!bset[b]) bset_ok = 0;
     }
     if (!vset || (fs && !fset) || !bset_ok) {
@@ -3197,6 +3215,8 @@ retry:
     }
     u32 scaled_words[2] = {(u32)scaled, (u32)(scaled >> 32)};
     memcpy(&pc[8], scaled_words, sizeof scaled_words);
+    u32 aspect_words[2] = {(u32)aspect, (u32)(aspect >> 32)};
+    memcpy(&pc[10], aspect_words, sizeof aspect_words);
     rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof pc, pc);
 
     vk_query_draw(cb, ch->id, r[0x574]); /* counted by the channel's samples-passed counter when it runs */

@@ -1032,6 +1032,10 @@ uint32_t spv_emit_fmul(SpvEmitter* e, uint32_t f32_type, uint32_t left, uint32_t
     return binary(e, SPV_OP_F_MUL, f32_type, left, right);
 }
 
+uint32_t spv_emit_fmod(SpvEmitter* e, uint32_t f32_type, uint32_t left, uint32_t right) {
+    return binary(e, SPV_OP_F_MOD, f32_type, left, right);
+}
+
 uint32_t spv_emit_i_equal(SpvEmitter* e, uint32_t bool_type, uint32_t left, uint32_t right) {
     return binary(e, SPV_OP_I_EQUAL, bool_type, left, right);
 }
