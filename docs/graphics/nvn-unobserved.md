@@ -157,6 +157,14 @@ functions that no run reached stay `implemented` plus `unit`, `selftest` or `exe
   FenceSync, WaitSync).
 - 4-u3: the selftest cases for the rest of the functions that a test can make, by group, and the execution test for events and
   `WaitSync`. Each run is reported with the passed scope.
+  4-u3-3 (d), the command buffer cases in groups. d1 is the fixed-function state, d2 the binds and resources. The S check
+  compares a register diff against a base copy of each channel. Eight host handlers are logged no-ops by design and their
+  cases are marked expected no-op. The d2 fixes (2026-11-12): the word stream reads the mode 3 header (BindStorageBuffers),
+  the vertex state cases build each element with the state setters of their side, and the decoder reads the pool records
+  0x13 and 0x14, which the selftest expands as the library does at submission (d84c120, d84c3b0). Run of 2026-11-12
+  (update program to the title): 301 cases, 0 failed, 8 expected no-op, 0 skipped. Mutation run with
+  BindVertexAttribState: only that case fails, at r3d.0x458 (the stream index of attrib 0). The rows are in
+  `nvn-coverage.md`. Next groups: d3 (draws, clears, copies, dispatch) and d4 (CPU side).
 - 4-u4: the change of the default of `nvn_native_missing` to stop, when no row is `none` or `stub-log`.
 
 Exit condition of this part: every one of the 523 rows is `implemented` and has `unit`, `selftest` or `exec` with its scope. The
