@@ -802,6 +802,10 @@ if(NOT WIN32)
 endif()
 add_test(NAME nvn_params COMMAND snx-test-nvn-params)
 
+add_executable(snx-test-nvn-enum-trace nvn_enum_trace.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_enum_trace.c")
+snx_test_target(snx-test-nvn-enum-trace 11)
+add_test(NAME nvn_enum_trace COMMAND snx-test-nvn-enum-trace)
+
 add_executable(snx-test-nvn-selftest-cmp nvn_selftest_cmp.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_cmp.c")
 snx_test_target(snx-test-nvn-selftest-cmp 11)
 add_test(NAME nvn_selftest_cmp COMMAND snx-test-nvn-selftest-cmp)
@@ -815,6 +819,15 @@ add_executable(snx-test-nvn-selftest-rec nvn_selftest_rec.c "${PROJECT_SOURCE_DI
 snx_test_target(snx-test-nvn-selftest-rec 11)
 target_include_directories(snx-test-nvn-selftest-rec PRIVATE "${PROJECT_BINARY_DIR}/generated")
 add_test(NAME nvn_selftest_rec COMMAND snx-test-nvn-selftest-rec)
+
+add_executable(snx-test-nvn-selftest-dec nvn_selftest_dec.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_dec.c")
+snx_test_target(snx-test-nvn-selftest-dec 11)
+add_test(NAME nvn_selftest_dec COMMAND snx-test-nvn-selftest-dec)
+
+add_executable(snx-test-nvn-selftest-regdiff nvn_selftest_regdiff.c
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_regdiff.c")
+snx_test_target(snx-test-nvn-selftest-regdiff 11)
+add_test(NAME nvn_selftest_regdiff COMMAND snx-test-nvn-selftest-regdiff)
 
 if(TARGET SDL3::SDL3)
     add_executable(snx-test-keybind keybind.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/backend/keybind.c")

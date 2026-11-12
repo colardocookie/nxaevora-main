@@ -3,6 +3,7 @@
 /* The replay of the host's NVN command lists (gpu/nvn_replay.c): the method word of each op, the faults, and the
    statistics. Each expected word below is computed by hand from analyst-3c-C-1.md. */
 #include "nx/gpu/nvn_replay.h"
+#include "nx/gpu/nvn_rt.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -23,12 +24,15 @@ enum {
 };
 
 typedef struct { uint32_t method, value; } MockWrite;
+typedef struct { uint32_t subchannel, method, value; } MockPuller;
 typedef struct { uint64_t handle; const NvnOpList* list; } MockList;
 typedef struct { NvnOpCode op; uint64_t pool, base; uint32_t count; } MockPool;
 
 typedef struct {
     MockWrite writes[MOCK_MAX_WRITES];
     uint32_t write_count;
+    MockPuller pullers[MOCK_MAX_WRITES];
+    uint32_t puller_count;
     uint32_t reg;
     int render_targets_ok;
     MockList lists[MOCK_MAX_LISTS];
@@ -70,7 +74,16 @@ typedef struct {
     NvnOpClearTexture gpu_clear_texture;
     NvnOpCopyTexture gpu_copy_texture;
     NvnOpReportCounter gpu_report;
+    NvnOpReportValue gpu_report_value;
+    NvnOpSignalEvent gpu_signal_event;
+    NvnOpWaitEvent gpu_wait_event;
     NvnOpBindImage gpu_bind_image;
+    NvnOpTransformFeedback gpu_xfb;
+    NvnOpCopyBuffer gpu_copy_buffer;
+    NvnOpClearBuffer gpu_clear_buffer;
+    NvnOpCopyBufferTexture gpu_copy_buffer_texture;
+    NvnOpDownsample gpu_downsample;
+    struct { uint64_t address; uint32_t size256, offset, words; uint32_t data[8]; } gpu_update_uniform;
     uint32_t fault_count;
     const char* last_fault;
     uint64_t last_fault_value;
@@ -80,6 +93,12 @@ static void mock_method(void* ctx, uint32_t method, uint32_t value) {
     Mock* k = ctx;
     if (k->write_count < MOCK_MAX_WRITES)
         k->writes[k->write_count++] = (MockWrite){method, value};
+}
+
+static void mock_puller_method(void* ctx, uint32_t subchannel, uint32_t method, uint32_t value) {
+    Mock* k = ctx;
+    if (k->puller_count < MOCK_MAX_WRITES)
+        k->pullers[k->puller_count++] = (MockPuller){subchannel, method, value};
 }
 
 static uint32_t mock_read_register(void* ctx, uint32_t method) {
@@ -201,9 +220,42 @@ static int mock_gpu_op(void* ctx, NvnOpCode code, const void* payload) {
     case NVN_OP_REPORT_COUNTER:
         k->gpu_report = *(const NvnOpReportCounter*)payload;
         break;
+    case NVN_OP_REPORT_VALUE:
+        k->gpu_report_value = *(const NvnOpReportValue*)payload;
+        break;
+    case NVN_OP_SIGNAL_EVENT:
+        k->gpu_signal_event = *(const NvnOpSignalEvent*)payload;
+        break;
+    case NVN_OP_WAIT_EVENT:
+        k->gpu_wait_event = *(const NvnOpWaitEvent*)payload;
+        break;
     case NVN_OP_BIND_IMAGE:
         k->gpu_bind_image = *(const NvnOpBindImage*)payload;
         break;
+    case NVN_OP_TRANSFORM_FEEDBACK:
+        k->gpu_xfb = *(const NvnOpTransformFeedback*)payload;
+        break;
+    case NVN_OP_COPY_BUFFER:
+        k->gpu_copy_buffer = *(const NvnOpCopyBuffer*)payload;
+        break;
+    case NVN_OP_CLEAR_BUFFER:
+        k->gpu_clear_buffer = *(const NvnOpClearBuffer*)payload;
+        break;
+    case NVN_OP_COPY_BUFFER_TEXTURE:
+        k->gpu_copy_buffer_texture = *(const NvnOpCopyBufferTexture*)payload;
+        break;
+    case NVN_OP_DOWNSAMPLE:
+        k->gpu_downsample = *(const NvnOpDownsample*)payload;
+        break;
+    case NVN_OP_UPDATE_UNIFORM: {
+        const NvnOpUpdateUniform* op = payload;
+        k->gpu_update_uniform.address = op->address;
+        k->gpu_update_uniform.size256 = op->size256;
+        k->gpu_update_uniform.offset = op->offset;
+        k->gpu_update_uniform.words = op->words;
+        for (uint32_t i = 0; i < op->words && i < 8u; i++) k->gpu_update_uniform.data[i] = op->data[i];
+        break;
+    }
     default:
         return 0;
     }
@@ -222,6 +274,7 @@ static NvnReplayEnv make_env(Mock* k) {
     memset(&env, 0, sizeof env);
     env.ctx = k;
     env.method = mock_method;
+    env.channel_method = mock_puller_method;
     env.read_register = mock_read_register;
     env.find_list = mock_find_list;
     env.descriptor_pool = mock_descriptor_pool;
@@ -350,7 +403,7 @@ static void test_scissor_clamp(void) {
 
 static void test_clear_layers(void) {
     NvnOpClearColor op = {0, 0xFu, {0x3F800000u, 0x40000000u, 0x40400000u, 0x40800000u}};
-    /* no layer: the four color words only */
+    /* no layer: the four color words and the shadow RAM words, no CLEAR_SURFACE */
     Mock k = {0};
     NvnReplayEnv env = make_env(&k);
     NvnOpList l = {0};
@@ -360,7 +413,7 @@ static void test_clear_layers(void) {
     nvn_replay_list(&env, &l, &st);
     CHECK(has_write(&k, 0x360, 0x3F800000u) && has_write(&k, 0x363, 0x40800000u));
     CHECK(!has_method(&k, 0x674));
-    CHECK(st.replayed[NVN_OP_CLEAR_COLOR] == 1 && st.methods == 4 && st.faults == 0);
+    CHECK(st.replayed[NVN_OP_CLEAR_COLOR] == 1 && st.methods == 9 && st.faults == 0);
     nvn_oplist_free(&l);
 
     /* one layer: arg = 1<<6 | 5<<2 = 0x54 */
@@ -373,7 +426,11 @@ static void test_clear_layers(void) {
     CHECK(nvn_oplist_append(&l1, NVN_OP_CLEAR_COLOR, &op1, sizeof op1));
     nvn_replay_list(&env1, &l1, &st1);
     CHECK(has_write(&k1, 0x674, 0x54u));
-    CHECK(st1.methods == 5 && st1.faults == 0);
+    CHECK(st1.methods == 10 && st1.faults == 0);
+    /* the words of ClearColor (sdk d84a870) after the colors: passthrough around the clear, then 0x3ED replayed */
+    static const MockWrite shadow_words[] = {{0x049, 2u}, {0x3ED, 0u}, {0x674, 0x54u},
+                                             {0x049, 3u}, {0x3ED, 0u}, {0x049, 1u}};
+    CHECK(k1.write_count == 10 && !memcmp(&k1.writes[4], shadow_words, sizeof shadow_words));
     nvn_oplist_free(&l1);
 
     /* three layers: arg = 2<<6 | 0xA<<2 = 0xA8, plus 0x400 for each layer */
@@ -388,7 +445,7 @@ static void test_clear_layers(void) {
     CHECK(has_write(&k3, 0x674, 0xA8u));
     CHECK(has_write(&k3, 0x674, 0x4A8u));
     CHECK(has_write(&k3, 0x674, 0x8A8u));
-    CHECK(st3.methods == 7 && st3.faults == 0);
+    CHECK(st3.methods == 12 && st3.faults == 0);
     nvn_oplist_free(&l3);
 }
 
@@ -421,7 +478,11 @@ static void test_pool(void) {
     CHECK(has_write(&k, 0x55D, 0x12u));
     CHECK(has_write(&k, 0x55E, 0x3456789Au));
     CHECK(has_write(&k, 0x55F, 4u));
-    CHECK(st.replayed[NVN_OP_SET_TEXTURE_POOL] == 1 && st.methods == 3 && st.faults == 0);
+    CHECK(st.replayed[NVN_OP_SET_TEXTURE_POOL] == 1 && st.methods == 9 && st.faults == 0);
+    CHECK(k.puller_count == 3);
+    CHECK(k.pullers[0].subchannel == 1 && k.pullers[0].method == 0x55Du && k.pullers[0].value == 0x12u);
+    CHECK(k.pullers[1].subchannel == 1 && k.pullers[1].method == 0x55Eu && k.pullers[1].value == 0x3456789Au);
+    CHECK(k.pullers[2].subchannel == 1 && k.pullers[2].method == 0x55Fu && k.pullers[2].value == 4u);
     nvn_oplist_free(&l);
 
     /* the sampler pool is found: base 0xABCDEF0123, 1 descriptor */
@@ -436,8 +497,27 @@ static void test_pool(void) {
     CHECK(has_write(&ks, 0x557, 0xABu));
     CHECK(has_write(&ks, 0x558, 0xCDEF0123u));
     CHECK(has_write(&ks, 0x559, 0u));
-    CHECK(sts.methods == 3 && sts.faults == 0);
+    CHECK(sts.methods == 6 && sts.faults == 0);
+    CHECK(ks.puller_count == 3);
+    CHECK(ks.pullers[0].subchannel == 1 && ks.pullers[0].method == 0x557u && ks.pullers[0].value == 0xABu);
+    CHECK(ks.pullers[1].subchannel == 1 && ks.pullers[1].method == 0x558u && ks.pullers[1].value == 0xCDEF0123u);
+    CHECK(ks.pullers[2].subchannel == 1 && ks.pullers[2].method == 0x559u && ks.pullers[2].value == 0u);
     nvn_oplist_free(&ls);
+
+    /* the compute engine writer is missing: no write, one fault */
+    Mock kn = {0};
+    NvnReplayEnv envn = make_env(&kn);
+    envn.channel_method = NULL;
+    NvnOpList ln = {0};
+    NvnReplayStats stn = {0};
+    NvnOpPool null_pool = {0x5000u, 3u, 0u};
+    mock_add_pool(&kn, NVN_OP_SET_TEXTURE_POOL, 0x5000u, 0x123456789Aull, 5u);
+    CHECK(nvn_oplist_append(&ln, NVN_OP_SET_TEXTURE_POOL, &null_pool, sizeof null_pool));
+    nvn_replay_list(&envn, &ln, &stn);
+    CHECK(stn.faults == 1 && stn.methods == 0 && kn.write_count == 0 && kn.fault_count == 1);
+    CHECK(stn.replayed[NVN_OP_SET_TEXTURE_POOL] == 0 && kn.last_fault_value == 0x5000u);
+    CHECK(kn.last_fault && !strcmp(kn.last_fault, "pool compute"));
+    nvn_oplist_free(&ln);
 
     /* the pool object is gone */
     Mock kg = {0};
@@ -493,7 +573,7 @@ static void test_render_targets(void) {
 }
 
 static void test_bind_texture(void) {
-    NvnOpBindTexture bind = {3, 11, 0x110000147ull};
+    NvnOpBindTexture bind = {3, 11, 0x110000147ull, 0};
     Mock k = {0};
     NvnReplayEnv env = make_env(&k);
     NvnOpList l = {0};
@@ -530,7 +610,7 @@ static void test_bind_texture(void) {
     NvnReplayEnv envs = make_env(&ks);
     NvnOpList ls = {0};
     NvnReplayStats sts = {0};
-    uint8_t too_big[24] = {0};
+    uint8_t too_big[sizeof(uint64_t) * 2u] = {0};
     CHECK(nvn_oplist_append(&ls, NVN_OP_BIND_TEXTURE, too_big, sizeof too_big));
     nvn_replay_list(&envs, &ls, &sts);
     CHECK(sts.faults == 1 && ks.last_fault && !strcmp(ks.last_fault, "op size"));
@@ -642,7 +722,57 @@ static void test_barrier(void) {
     nvn_replay_list(&env, &l, &st);
     CHECK(st.barrier_bits[0] == 1 && st.barrier_bits[3] == 1 && st.barrier_bits[8] == 1);
     CHECK(st.barrier_bits[1] == 0 && st.barrier_bits[7] == 0);
+    /* bit 3 sends REF_CNT (puller) and method 0x40 (3D); bit 8 sends puller words only */
+    CHECK(st.replayed[NVN_OP_BARRIER] == 1 && st.methods == 1 && st.faults == 0);
+    CHECK(k.puller_count == 6);
+    nvn_oplist_free(&l);
+}
+
+static void test_barrier_bit0(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpBarrier op = {1u << 0, 0u};
+    CHECK(nvn_oplist_append(&l, NVN_OP_BARRIER, &op, sizeof op));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.replayed[NVN_OP_BARRIER] == 1 && st.methods == 1 && st.faults == 0);
+    CHECK(has_write(&k, 0x44u, 0u));
+    CHECK(k.puller_count == 2);
+    CHECK(k.pullers[0].subchannel == 0 && k.pullers[0].method == 2u && k.pullers[0].value == 0x110Eu);
+    CHECK(k.pullers[1].subchannel == 0 && k.pullers[1].method == 2u && k.pullers[1].value == 0x1100u);
+    nvn_oplist_free(&l);
+}
+
+static void test_barrier_bit8(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpBarrier op = {1u << 8, 0u};
+    CHECK(nvn_oplist_append(&l, NVN_OP_BARRIER, &op, sizeof op));
+    nvn_replay_list(&env, &l, &st);
     CHECK(st.replayed[NVN_OP_BARRIER] == 1 && st.methods == 0 && st.faults == 0);
+    CHECK(k.puller_count == 5);
+    CHECK(k.pullers[0].subchannel == 0 && k.pullers[0].method == 2u);
+    CHECK(k.pullers[1].subchannel == 6 && k.pullers[1].method == 0x14u);
+    CHECK(k.pullers[2].subchannel == 6 && k.pullers[2].method == 0x0Bu && k.pullers[2].value == 0x80000000u);
+    CHECK(k.pullers[3].subchannel == 6 && k.pullers[3].method == 0x0Bu && k.pullers[3].value == 0x70000000u);
+    CHECK(k.pullers[4].subchannel == 0 && k.pullers[4].method == 2u);
+    nvn_oplist_free(&l);
+}
+
+static void test_barrier_null_puller(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpBarrier op = {1u << 0, 0u};
+    env.channel_method = NULL;
+    CHECK(nvn_oplist_append(&l, NVN_OP_BARRIER, &op, sizeof op));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.replayed[NVN_OP_BARRIER] == 0 && st.faults == 1 && st.barrier_bits[0] == 1);
+    CHECK(k.last_fault && !strcmp(k.last_fault, "barrier puller"));
     nvn_oplist_free(&l);
 }
 
@@ -927,6 +1057,28 @@ static void test_raster_methods(void) {
     nvn_oplist_free(&lu);
 }
 
+static void test_reset_counter(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    NvnOpResetCounter samples = {1u, 0u}, primitives = {14u, 0u}, bad = {17u, 0u};
+    NvnOpRaster point = {NVN_RASTER_POINT_SIZE, {0x40800000u, 0u, 0u}};
+    CHECK(nvn_oplist_append(&l, NVN_OP_RESET_COUNTER, &samples, sizeof samples));
+    CHECK(nvn_oplist_append(&l, NVN_OP_RESET_COUNTER, &bad, sizeof bad));
+    CHECK(nvn_oplist_append(&l, NVN_OP_RESET_COUNTER, &primitives, sizeof primitives));
+    CHECK(nvn_oplist_append(&l, NVN_OP_SET_RASTER, &point, sizeof point));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.write_count == 4);
+    CHECK(k.writes[0].method == 0x54C && k.writes[0].value == 0x01u);
+    CHECK(k.writes[1].method == 0x54C && k.writes[1].value == 0x10u);
+    CHECK(k.writes[2].method == 0x546 && k.writes[2].value == 0x40800000u);
+    CHECK(k.writes[3].method == 0x68B && k.writes[3].value == 0u);
+    CHECK(st.replayed[NVN_OP_RESET_COUNTER] == 2 && st.replayed[NVN_OP_SET_RASTER] == 1);
+    CHECK(st.faults == 1 && k.last_fault && !strcmp(k.last_fault, "counter type") && k.last_fault_value == 17u);
+    nvn_oplist_free(&l);
+}
+
 static void test_raster_bad_payload(void) {
     Mock k = {0};
     NvnReplayEnv env = make_env(&k);
@@ -1199,7 +1351,7 @@ static void test_call_live(void) {
     mock_add_list(&k, 0x100u, &target);
     nvn_replay_list(&env, &top, &st);
     CHECK(st.replayed[NVN_OP_CALL] == 1 && st.replayed[NVN_OP_BARRIER] == 1);
-    CHECK(st.faults == 0 && st.methods == 0);
+    CHECK(st.faults == 0 && st.methods == 1);
     nvn_oplist_free(&top);
     nvn_oplist_free(&target);
 }
@@ -1370,6 +1522,69 @@ static void test_gpu_ops_reach_callback(void) {
     nvn_oplist_free(&l);
 }
 
+static void test_u2_event_and_sync_ops(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    k.gpu_op_ok = 1;
+    NvnOpSignalEvent signal = {0x400001000ull, 9u, NVN_EVENT_SIGNAL_ADD, 0x1234u, 2u};
+    NvnOpWaitEvent wait = {0x400001000ull, 9u, NVN_EVENT_WAIT_GEQUAL_WRAP, 0x1234u, 0u};
+    NvnOpReportValue value = {0xABCDEF01u, 0u, 0x400002000ull};
+    NvnOpFenceSync fence = {0x400003000ull, 4u, NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE};
+    NvnOpWaitSync wait_sync = {0x400003000ull, 4u, 0u};
+    CHECK(nvn_oplist_append(&l, NVN_OP_SIGNAL_EVENT, &signal, sizeof signal));
+    CHECK(nvn_oplist_append(&l, NVN_OP_WAIT_EVENT, &wait, sizeof wait));
+    CHECK(nvn_oplist_append(&l, NVN_OP_REPORT_VALUE, &value, sizeof value));
+    CHECK(nvn_oplist_append(&l, NVN_OP_FENCE_SYNC, &fence, sizeof fence));
+    CHECK(nvn_oplist_append(&l, NVN_OP_WAIT_SYNC, &wait_sync, sizeof wait_sync));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 0 && st.methods == 0);
+    CHECK(k.gpu_op_calls == 3 && k.gpu_op_code == NVN_OP_REPORT_VALUE);
+    CHECK(!memcmp(&k.gpu_signal_event, &signal, sizeof signal));
+    CHECK(!memcmp(&k.gpu_wait_event, &wait, sizeof wait));
+    CHECK(!memcmp(&k.gpu_report_value, &value, sizeof value));
+    CHECK(st.replayed[NVN_OP_SIGNAL_EVENT] == 1 && st.replayed[NVN_OP_WAIT_EVENT] == 1);
+    CHECK(st.replayed[NVN_OP_REPORT_VALUE] == 1 && st.replayed[NVN_OP_FENCE_SYNC] == 1);
+    CHECK(st.replayed[NVN_OP_WAIT_SYNC] == 1);
+    nvn_oplist_free(&l);
+}
+
+static void test_u2_event_and_sync_bad_payload(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    uint8_t small[8] = {0};
+    k.gpu_op_ok = 1;
+    CHECK(nvn_oplist_append(&l, NVN_OP_SIGNAL_EVENT, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_WAIT_EVENT, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_REPORT_VALUE, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_FENCE_SYNC, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_WAIT_SYNC, small, sizeof small));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 5 && k.gpu_op_calls == 0);
+    CHECK(k.last_fault && !strcmp(k.last_fault, "op size") && k.last_fault_value == NVN_OP_WAIT_SYNC);
+    nvn_oplist_free(&l);
+}
+
+static void test_transform_feedback_op(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    k.gpu_op_ok = 1;
+    NvnOpTransformFeedback end = {NVN_XFB_END, 0u, 0x400002000ull}, bad = {NVN_XFB_KIND_COUNT, 0u, 0x10ull};
+    CHECK(nvn_oplist_append(&l, NVN_OP_TRANSFORM_FEEDBACK, &bad, sizeof bad));
+    CHECK(nvn_oplist_append(&l, NVN_OP_TRANSFORM_FEEDBACK, &end, sizeof end));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(k.gpu_op_calls == 1 && k.gpu_op_code == NVN_OP_TRANSFORM_FEEDBACK);
+    CHECK(k.gpu_xfb.kind == NVN_XFB_END && k.gpu_xfb.address == 0x400002000ull);
+    CHECK(st.replayed[NVN_OP_TRANSFORM_FEEDBACK] == 1 && st.faults == 1);
+    CHECK(k.last_fault && !strcmp(k.last_fault, "transform feedback kind") && k.last_fault_value == NVN_XFB_KIND_COUNT);
+    nvn_oplist_free(&l);
+}
+
 static void test_gpu_ops_null_callback(void) {
     Mock k = {0};
     NvnReplayEnv env = make_env(&k);
@@ -1440,6 +1655,84 @@ static void test_gpu_ops_range_checks(void) {
     nvn_oplist_free(&l);
 }
 
+static void test_u3_copy_clear_update_ops(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    k.gpu_op_ok = 1;
+    NvnOpCopyBuffer copy = {0x400001000ull, 0x400002000ull, 0x3000u};
+    NvnOpClearBuffer clear = {0x400003000ull, 0x10u, 0x11223344u, 0u};
+    struct {
+        uint64_t address;
+        uint32_t size256, offset, words, reserved;
+        uint32_t data[3];
+    } update = {0x400004000ull, 256u, 8u, 3u, 0u, {7u, 8u, 9u}};
+    CHECK(nvn_oplist_append(&l, NVN_OP_COPY_BUFFER, &copy, sizeof copy));
+    CHECK(nvn_oplist_append(&l, NVN_OP_CLEAR_BUFFER, &clear, sizeof clear));
+    CHECK(nvn_oplist_append(&l, NVN_OP_UPDATE_UNIFORM, &update, sizeof update));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 0 && k.gpu_op_calls == 3 && k.gpu_op_code == NVN_OP_UPDATE_UNIFORM);
+    CHECK(!memcmp(&k.gpu_copy_buffer, &copy, sizeof copy));
+    CHECK(!memcmp(&k.gpu_clear_buffer, &clear, sizeof clear));
+    CHECK(k.gpu_update_uniform.address == update.address);
+    CHECK(k.gpu_update_uniform.size256 == update.size256 && k.gpu_update_uniform.offset == update.offset);
+    CHECK(k.gpu_update_uniform.words == update.words && !memcmp(k.gpu_update_uniform.data, update.data, 12u));
+    CHECK(st.replayed[NVN_OP_COPY_BUFFER] == 1 && st.replayed[NVN_OP_CLEAR_BUFFER] == 1);
+    CHECK(st.replayed[NVN_OP_UPDATE_UNIFORM] == 1);
+    nvn_oplist_free(&l);
+}
+
+static void test_u3_copy_buffer_texture_and_downsample_ops(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    k.gpu_op_ok = 1;
+    NvnOpCopyBufferTexture copy = {0};
+    copy.buffer = 0x400001000ull;
+    copy.target.texture = 0x1234u;
+    copy.target.generation = 7u;
+    copy.region[0] = 2u;
+    copy.region[3] = 32u;
+    copy.region[4] = 16u;
+    copy.region[5] = 1u;
+    copy.flags = NVN_COPY_FLAG_MIRROR_Y;
+    copy.row_stride = 256u;
+    copy.image_stride = 0u;
+    copy.to_texture = 1u;
+    NvnOpDownsample down = {0};
+    down.src.texture = 0x2345u;
+    down.src.generation = 3u;
+    down.dst.texture = 0x3456u;
+    down.dst.generation = 4u;
+    down.tiled = 1u;
+    CHECK(nvn_oplist_append(&l, NVN_OP_COPY_BUFFER_TEXTURE, &copy, sizeof copy));
+    CHECK(nvn_oplist_append(&l, NVN_OP_DOWNSAMPLE, &down, sizeof down));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 0 && k.gpu_op_calls == 2);
+    CHECK(!memcmp(&k.gpu_copy_buffer_texture, &copy, sizeof copy));
+    CHECK(!memcmp(&k.gpu_downsample, &down, sizeof down));
+    CHECK(st.replayed[NVN_OP_COPY_BUFFER_TEXTURE] == 1 && st.replayed[NVN_OP_DOWNSAMPLE] == 1);
+    nvn_oplist_free(&l);
+}
+
+static void test_u3_copy_buffer_texture_bad_payload(void) {
+    Mock k = {0};
+    NvnReplayEnv env = make_env(&k);
+    NvnOpList l = {0};
+    NvnReplayStats st = {0};
+    uint32_t small[2] = {0u, 0u};
+    k.gpu_op_ok = 1;
+    CHECK(nvn_oplist_append(&l, NVN_OP_COPY_BUFFER_TEXTURE, small, sizeof small));
+    CHECK(nvn_oplist_append(&l, NVN_OP_DOWNSAMPLE, small, sizeof small));
+    nvn_replay_list(&env, &l, &st);
+    CHECK(st.faults == 2 && k.gpu_op_calls == 0);
+    CHECK(st.replayed[NVN_OP_COPY_BUFFER_TEXTURE] == 0 && st.replayed[NVN_OP_DOWNSAMPLE] == 0);
+    CHECK(k.last_fault && !strcmp(k.last_fault, "op size") && k.last_fault_value == NVN_OP_DOWNSAMPLE);
+    nvn_oplist_free(&l);
+}
+
 int main(void) {
     test_viewport();
     test_viewport_flip();
@@ -1454,6 +1747,9 @@ int main(void) {
     test_bind_buffer();
     test_bind_state();
     test_barrier();
+    test_barrier_bit0();
+    test_barrier_bit8();
+    test_barrier_null_puller();
     test_stencil_ref();
     test_stencil_face_and_value_mask();
     test_stencil_kinds();
@@ -1465,13 +1761,20 @@ int main(void) {
     test_bind_program();
     test_draw_path_bad_payload();
     test_raster_methods();
+    test_reset_counter();
     test_raster_bad_payload();
     test_bind_vertex_attrib();
     test_bind_vertex_stream();
     test_depth_range_op();
     test_vertex_ops_bad_payload();
     test_gpu_ops_reach_callback();
+    test_u2_event_and_sync_ops();
+    test_u3_copy_clear_update_ops();
+    test_u3_copy_buffer_texture_and_downsample_ops();
+    test_u3_copy_buffer_texture_bad_payload();
+    test_u2_event_and_sync_bad_payload();
     test_gpu_ops_null_callback();
+    test_transform_feedback_op();
     test_gpu_ops_refused();
     test_gpu_ops_bad_payload();
     test_gpu_ops_range_checks();

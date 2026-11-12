@@ -246,6 +246,9 @@ void r3d_const_upload(GpuChannel* ch, u32 v, int last) {
 void r3d_const_flush(GpuChannel* ch) {
     if (!ch->cb_n) return;
     snx_le32_array(ch->cb_words, ch->cb_n); /* guest memory's order: the words aren't read again */
-    gmem_write(ch->cb_addr, ch->cb_words, (u64)ch->cb_n * 4);
+    if (g_renderer->engine_write)
+        g_renderer->engine_write(ch->cb_addr, ch->cb_words, (u64)ch->cb_n * 4);
+    else
+        gmem_write(ch->cb_addr, ch->cb_words, (u64)ch->cb_n * 4);
     ch->cb_n = 0;
 }

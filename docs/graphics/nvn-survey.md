@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 # NVN survey (phase 6, stage 1)
 
-Status: started on 2026-11-02. This file grows with the substeps of `docs/nvn-plan.md`. A line marked "verified" was read
+Status: started on 2026-11-02. This file grows with the substeps of `docs/graphics/nvn-plan.md`. A line marked "verified" was read
 in the source of `third_party/ScarletNX`. A line marked "open" is not checked yet.
 
 ## What the runtime does now (verified from the headers)
@@ -31,7 +31,7 @@ in the source of `third_party/ScarletNX`. A line marked "open" is not checked ye
 ## 1-1 List of functions
 
 Run of 2026-11-02 (`nvn_trace=1`, update program, 302.75 s, 8900 frames, 30 frames a second, 0 JIT misses, no crash).
-The full list is in `docs/nvn-calls.md`. 522 addresses were resolved and 242 functions were called.
+The full list is in `docs/graphics/nvn-calls.md`. 522 addresses were resolved and 242 functions were called.
 
 Calls by group (functions called): command buffer 57, texture and texture view or builder 80 in all, multisample state 19,
 sampler 18 or more, queue 13, depth-stencil 13, memory pool 10, buffer 10 or more, vertex state 10, polygon state 9,
@@ -89,7 +89,7 @@ Resolved and not called in this run (so not shown by the scenes that were played
 tessellation levels, the conservative raster calls, the Event object (`nvnEvent*`, `nvnCommandBufferSignalEvent`,
 `WaitEvent`), `nvnCommandBufferFenceSync` and `WaitSync`, `nvnQueueFlush`, `nvnQueueWaitSync`, the buffer copies
 (`CopyBufferToBuffer`, `CopyBufferToTexture`), `BindImages`, and the mapped range flushes. The full list is the difference
-between the resolved names in the log and `docs/nvn-calls.md`. The host NVN must still answer them. A call that nothing
+between the resolved names in the log and `docs/graphics/nvn-calls.md`. The host NVN must still answer them. A call that nothing
 used so far can be a stub that stops with a clear message when it is reached.
 
 ## Direct callers in the code (check of 2026-11-02)
@@ -103,7 +103,7 @@ This agrees with step 1-2. The NVN code is in the `sdk` module (the functions ar
 
 ## 1-3 State of the objects
 
-Method: the API list of 1-1 (`docs/nvn-calls.md`). This part is read from the names and the counts. The disassembly of the
+Method: the API list of 1-1 (`docs/graphics/nvn-calls.md`). This part is read from the names and the counts. The disassembly of the
 game's own reads of an object is not done.
 
 Result so far:

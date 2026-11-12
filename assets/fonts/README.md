@@ -3,7 +3,7 @@
 
 # Fonts of the in-game windows
 
-These fonts are for the Dear ImGui windows (`docs/imgui-plan.md`). They are not data of the game. Each font is under
+These fonts are for the Dear ImGui windows (`docs/ui/imgui-plan.md`). They are not data of the game. Each font is under
 the SIL Open Font License 1.1, and its license text is in this folder. The fonts are not changed.
 
 | File | Font | Source | SHA-256 |

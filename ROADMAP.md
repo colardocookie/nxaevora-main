@@ -10,7 +10,7 @@ ScarletNX runtime compiles the code at that moment (the JIT). A fully static bui
 ## Phase 0: Foundation (done)
 
 - The repository, the vendored ScarletNX and the folder layout are in place.
-- ScarletNX builds on Windows with MSYS2 CLANG64. The steps are in `docs/SCARLETNX_BUILD-NOTES.md`.
+- ScarletNX builds on Windows with MSYS2 CLANG64. The steps are in `docs/build/SCARLETNX_BUILD-NOTES.md`.
 - A portable copy of the recompiler runs without MSYS2.
 - The base game and update 1.1.1 recompile in a few minutes.
 - The recompiled game boots to the language selection screen and runs without a crash for 45 seconds.
@@ -20,7 +20,7 @@ ScarletNX runtime compiles the code at that moment (the JIT). A fully static bui
 The update program had 17 different misses in a run of 84 seconds, and the base program had 19 in the boot. Most
 are inside functions. A few are PLT stubs.
 
-- Done: read how ScarletNX decides where a miss can happen (`docs/jit-analysis.md`).
+- Done: read how ScarletNX decides where a miss can happen (`docs/analysis/jit-analysis.md`).
 - Done: verify one miss as a jump-table target. The recompiler does not read the entries of a jump table.
 - Done: scan the jump tables of all modules. 49 of the 51 pcs that are not PLT stubs are targets of a table.
 - Open: 2 pcs are not explained (0x8cbe780 in main and 0xd92f310 in sdk), and the cause of the PLT-stub misses is not
@@ -103,7 +103,7 @@ Exit condition: the decision above is recorded. The optional check can be done a
   2`, one change at about 2 s). The setting `fps_limit=game` makes the runtime hold each frame for 2 refreshes of 60 Hz,
   which is 30 frames each second. The GPU needs about 6 ms of the 33 ms, so the hardware is not the limit. A higher
   rate is a game enhancement (later work) and needs the game's own timing to change with it.
-- Shaders: by hash, 11 of the 1379 programs that the game ships fail (see `docs/shader-analysis.md`). The old figure of
+- Shaders: by hash, 11 of the 1379 programs that the game ships fail (see `docs/graphics/shader-analysis.md`). The old figure of
   80 counted the same program once for each archive. Six wait for their first draw, because their translation reads a
   constant buffer. Four hit the data of a jump table that follows the program (checked in the files). The last one has the instruction `RED`, and the
   count of skipped draws grew by one in each frame. Patch `0002` adds the form, and a run of 157 s then showed 0
@@ -115,12 +115,12 @@ Exit condition: the decision above is recorded. The optional check can be done a
 - Stutter: the only visible problem so far is a stutter when a pipeline is made for the first time. A run of 420 s
   made 100 pipelines (3.8 s making, 2.5 s of waiting). The runtime keeps its pipelines in `shader_cache/` and makes
   them again in the background at the next start. A run of 794 s made 67 new pipelines (2.1 s of waiting). The
-  analysis is in `docs/stutter-analysis.md`: ScarletNX already prepares the shaders ahead of time, and the pipelines
+  analysis is in `docs/analysis/stutter-analysis.md`: ScarletNX already prepares the shaders ahead of time, and the pipelines
   for new draw states cannot be made before the game uses them. Most slow frames are not from pipelines. The setting
   `async_pipelines=1` removed the wait for pipelines (0 ms in 375 s, with an empty cache), and the user reports clearly
   less stutter. The stop of about 1.2 s to 1.4 s at the start is the game's own loading loop: its main thread starts 39
   pooled objects one after the other and waits for each with a sleep of 16 ms, with no other thread busy and no slow file
-  read (see `docs/stutter-analysis.md`, the hitch runs). The runtime's sleeps are exact, so no fix is planned. The cause of
+  read (see `docs/analysis/stutter-analysis.md`, the hitch runs). The runtime's sleeps are exact, so no fix is planned. The cause of
   the other slow frames is not known.
 - Audio and save data.
 - Services of the console that Arceus needs and ScarletNX does not have yet (`runtime/hle`).
@@ -146,7 +146,7 @@ stream, interpretation by ScarletNX, Vulkan.
 Goal: game, NVN implementation on the host, Vulkan. The NVN calls of the game go to code on the PC that calls Vulkan
 directly, and the command stream is gone.
 
-The plan is in `docs/nvn-plan.md`. It has five stages:
+The plan is in `docs/graphics/nvn-plan.md`. It has five stages:
 1. Survey the paths of Arceus (the NVN API, inline work, extra queue commands). Exit: the paths that the hook does not catch are known.
 2. Choose the way: replace NVN completely, or replace the existing Maxwell layer in part. Exit: the range and the remaining work are explained.
 3. Smallest drawing path: initialization, clear, one simple draw and present. Exit: the result matches the old path.
@@ -160,7 +160,7 @@ Exit condition: the covered scenes draw the same as before with no command strea
 
 ## Phase 7: Input and camera
 
-Facts are in `docs/input-analysis.md` and `docs/camera-analysis.md`.
+Facts are in `docs/input/input-analysis.md` and `docs/input/camera-analysis.md`.
 
 - Finish the direct mouse look (the mod `native-mouse-look`). Test it in cutscenes, dialogs, menus, battles and the
   other camera modes. If a scene whose camera the player does not control moves, gate the stub on a game state.
@@ -181,11 +181,11 @@ Exit condition: the replaced functions are listed in `docs/`, each has a test ru
 ## Phase 9: Shaders and pipelines
 
 Use the existing preparation (shaders made ahead of time, `shader_cache/`, `async_pipelines`, see
-`docs/stutter-analysis.md`) and build it into the new graphics layer of phase 6. Pipelines for new draw states cannot be
+`docs/analysis/stutter-analysis.md`) and build it into the new graphics layer of phase 6. Pipelines for new draw states cannot be
 made before the game uses them, so the aim is to prepare as many as possible before play and to hide the rest.
 
 Exit condition: the stutter at the first use of a pipeline is gone in the covered scenes, and the shaders that fail
-now (11 of 1379, see `docs/shader-analysis.md`) are handled.
+now (11 of 1379, see `docs/graphics/shader-analysis.md`) are handled.
 
 ## Phase 10: Extracted RomFS and a file layer for mods
 

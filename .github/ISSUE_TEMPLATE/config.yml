@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the NXAevora contributors
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and help
+    url: https://github.com/nxaevora/nxaevora-main/discussions
+    about: Ask how to build or run NXAevora, or offer to help with the project. We do not answer how to get the game, keys or dumps.

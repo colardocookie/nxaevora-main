@@ -403,7 +403,7 @@ index 0000000..07898ca
 @@ -0,0 +1,15 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later
 +   Copyright 2026 the NXAevora contributors */
-+/* The stick trace: a diagnostic that finds the guest code reading the right stick (docs/camera-analysis.md) */
++/* The stick trace: a diagnostic that finds the guest code reading the right stick (docs/input/camera-analysis.md) */
 +#ifndef SNX_GTRACE_H
 +#define SNX_GTRACE_H
 +#include "common/cpu/aarch64/cpu.h"

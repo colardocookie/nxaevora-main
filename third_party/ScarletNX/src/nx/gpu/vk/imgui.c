@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* Dear ImGui's windows over the presented image (docs/imgui-plan.md). ImGui's backend calls Vulkan directly, so the
+/* Dear ImGui's windows over the presented image (docs/ui/imgui-plan.md). ImGui's backend calls Vulkan directly, so the
    recording ring is drained first (vk_rec_sync, under vk_lock), and ImGui records into the frame's command buffer in
    order with the commands queued after it. A frame is drawn only while a window shows. */
 #include <stdio.h>
