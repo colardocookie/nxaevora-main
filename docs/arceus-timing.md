@@ -205,3 +205,13 @@ counts it down by one each update. At 120 FPS the wait took 0.125 second instead
 `main+2335E5C`, from `main+2331B64`) converts the value of a write to that key, and the write steps the count down
 by one, the conversion returns the old value unless the call completes a whole 1/30 second. The fraction is kept
 for each object, up to four. Any other write, such as the set to 15, starts it over.
+
+Climbing over a ledge onto the ground is driven by the ride state script. The script ends the climb with the native
+`EndClimbing` (`main+2553EE0`) with type 0, then moves Sneasler up and over the top by setting its position once per
+script update, waiting 6 updates and then moving over 15. It ends with `EndClimbingEnd` (`main+2554008`). The script
+runs once per rendered frame through `RideNyuuraStatePreUpdate` (`main+26163E0`) and `PostUpdate` (`main+2616AB0`),
+so the move took 175 ms at 120 FPS instead of 700. With a target rate, `SNX_ARCEUS_LEDGE_FIX=1` wraps all four. The
+state object whose script calls `EndClimbing(0)` owns a window until `EndClimbingEnd`, another end type of the same
+controller, or 2 seconds. In the window its updates run only on calls that complete a whole 1/30 second. A skipped
+update returns at once, as both functions do when no script is bound. A PostUpdate follows the PreUpdate of the same
+main-loop frame. Other states are not affected. On its own this places the ride 30 times a second during the move.

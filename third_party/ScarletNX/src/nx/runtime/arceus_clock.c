@@ -41,8 +41,11 @@ static void water_step_write(u64 ns) {
    negation. Patched sites load it in place of their authored +/-1/30 constants. */
 #define NOMINAL_STEP_SECONDS (1.0f / 30.0f)
 static u64 frame_step_address;
+/* One per main-loop frame: an engine frame identity for per-frame pairing. */
+static u64 frame_step_frames;
 static void frame_step_write(u64 ns) {
     if (!frame_step_address) return;
+    __atomic_add_fetch(&frame_step_frames, 1, __ATOMIC_RELEASE);
     float seconds = ns ? (float)((double)ns / 1000000000.0) : NOMINAL_STEP_SECONDS;
     if (!(seconds < NOMINAL_STEP_SECONDS)) seconds = NOMINAL_STEP_SECONDS;
     const float negative = -seconds;
@@ -2226,6 +2229,139 @@ static void wall_jump_fix_init(void) {
     LOG("arceus-wall-jump: EXPERIMENT: Sneasler wall jump wait counts down 30 times per second\n");
 }
 
+/* Sneasler ledge: the ride state script, run by RideNyuuraStatePreUpdate 26163E0 and PostUpdate
+   2616AB0 once per update, steps the move over the top after EndClimbing(0) 2553EE0 per run, so
+   it took 175 ms at 120 FPS instead of 700. With SNX_ARCEUS_LEDGE_FIX=1 the state whose script
+   ends the climb runs its updates only on calls completing a whole 1/30 s, until EndClimbingEnd. */
+typedef struct {
+    u64 owner, controller, opened, frame;
+    float progress;
+    int open, pending, skip;
+} LedgeWindow;
+static void ledge_retire(LedgeWindow* w) { *w = (LedgeWindow){0}; }
+static void ledge_open(LedgeWindow* w, u64 owner, u64 controller, u64 now) {
+    ledge_retire(w);
+    if (!owner) return;
+    w->owner = owner;
+    w->controller = controller;
+    w->opened = now;
+    w->open = 1;
+}
+/* PreUpdate of object in engine frame: 1 to skip. The decision, a pass-through included, is
+   kept for one PostUpdate of the same object in the same frame. A window over 2 s is retired. */
+static int ledge_pre(LedgeWindow* w, u64 object, u64 now, float want, u64 frame) {
+    if (!w->open || object != w->owner) return 0;
+    if (now < w->opened || now - w->opened >= 2000000000ull) {
+        ledge_retire(w);
+        return 0;
+    }
+    w->pending = 1;
+    w->frame = frame;
+    w->skip = 0;
+    if (!(want > 0.0f && want <= 1.0f)) return 0;
+    float progress = w->progress + want;
+    w->skip = progress < 1.0f;
+    if (!w->skip) progress -= 1.0f;
+    w->progress = progress;
+    return w->skip;
+}
+static int ledge_post(LedgeWindow* w, u64 object, u64 frame) {
+    if (!w->open || !w->pending || object != w->owner) return 0;
+    /* A decision from another frame is stale: drop it and run. */
+    w->pending = 0;
+    return w->frame == frame && w->skip;
+}
+/* EndClimbing(type) or EndClimbingEnd (type -1) of controller, called from the script of state
+   object current (0 outside any Pre/PostUpdate). Only type 0, the ledge, opens a window. */
+static void ledge_end_call(LedgeWindow* w, u64 controller, int type, u64 current, u64 now) {
+    if (w->open && w->controller == controller) ledge_retire(w);
+    if (type == 0) ledge_open(w, current, controller, now);
+}
+static PMutex ledge_lock = PMUTEX_INIT;
+static LedgeWindow ledge_window;
+static _Thread_local u64 ledge_current_state;
+static GuestFn ledge_originals[2], ledge_end_originals[2];
+static void ledge_update(CPU* c, u64 entry, unsigned post) {
+    const u64 object = c->x[0];
+    const float want = readable(object + 0x68, 8) ? guest_float(frame_step_address) / NOMINAL_STEP_SECONDS : -1.0f;
+    pm_lock(&ledge_lock);
+    const u64 frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
+    const int skip = post ? ledge_post(&ledge_window, object, frame)
+                          : ledge_pre(&ledge_window, object, plat_ns(), want, frame);
+    pm_unlock(&ledge_lock);
+    /* Both functions return +6C at once when no script is bound: a skipped update does the same. */
+    if (skip) {
+        c->x[0] = gr32(object + 0x6c);
+        c->pc = c->x[30];
+        return;
+    }
+    const u64 outer = ledge_current_state;
+    ledge_current_state = object;
+    ledge_originals[post](c, entry);
+    ledge_current_state = outer;
+}
+static void ledge_pre_update(CPU* c, u64 entry) { ledge_update(c, entry, 0); }
+static void ledge_post_update(CPU* c, u64 entry) { ledge_update(c, entry, 1); }
+static void ledge_end(CPU* c, u64 entry, unsigned finish) {
+    const u64 controller = c->x[0];
+    const int type = finish ? -1 : (int)(u32)c->x[1];
+    ledge_end_originals[finish](c, entry);
+    pm_lock(&ledge_lock);
+    ledge_end_call(&ledge_window, controller, type, ledge_current_state, plat_ns());
+    pm_unlock(&ledge_lock);
+}
+static void ledge_end_start(CPU* c, u64 entry) { ledge_end(c, entry, 0); }
+static void ledge_end_finish(CPU* c, u64 entry) { ledge_end(c, entry, 1); }
+static void ledge_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_LEDGE_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-ledge: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    /* PreUpdate and PostUpdate: SUB SP,#0x60, the script check load, the no-script +6C load and
+       MOV X20,X0. EndClimbing and EndClimbingEnd: the head, a MOV of X0 and the self load after it. */
+    static const u32 offsets[4] = {0x26163e0, 0x2616ab0, 0x2553ee0, 0x2554008};
+    static const u32 sizes[4] = {0x234, 0x234, 0x128, 0xe0};
+    static const u32 heads[4] = {0xd10183ff, 0xd10183ff, 0xd100c3ff, 0xd10083ff};
+    static const u32 moves[4] = {0x40, 0x40, 0x10, 0xc};
+    static const u32 words[4] = {0xaa0003f4, 0xaa0003f4, 0xaa0003f3, 0xaa0003e9};
+    static const u32 adds[4] = {0x91000014, 0x91000014, 0x91000013, 0x91000009};
+    static const GuestFn wrappers[4] = {ledge_pre_update, ledge_post_update, ledge_end_start, ledge_end_finish};
+    for (unsigned k = 0; k < 4; k++) {
+        const u64 pc = main_base + offsets[k];
+        int ok = covers_exactly(pc, sizes[k]) && readable(pc, sizes[k]) && gr32(pc) == heads[k] &&
+                 gr32(pc + moves[k]) == words[k];
+        if (ok && k < 2) ok = gr32(pc + 0x14) == 0xf9402449 && gr32(pc + 0x20) == 0xb9406c13;
+        if (ok && k == 2) ok = gr32(pc + 0x14) == 0xf942e400;
+        if (ok && k == 3) ok = gr32(pc + 0x10) == 0xf9460800;
+        if (!ok) {
+            WARN("arceus-ledge: refused guard at main+%x\n", offsets[k]);
+            return;
+        }
+    }
+    if (!frame_step_cell_init("arceus-ledge")) return;
+    GuestFn originals[4];
+    for (unsigned k = 0; k < 4; k++) {
+        const u64 pc = main_base + offsets[k];
+        gw32(pc + moves[k], adds[k]); /* Equivalent MOV -> ADD #0, for a body of its own. */
+        jit_code_changed(pc, sizes[k]);
+        originals[k] = jit_wait(pc);
+        if (!originals[k]) {
+            WARN("arceus-ledge: compile failed at main+%x\n", offsets[k]);
+            return;
+        }
+    }
+    ledge_originals[0] = originals[0];
+    ledge_originals[1] = originals[1];
+    ledge_end_originals[0] = originals[2];
+    ledge_end_originals[1] = originals[3];
+    for (unsigned k = 0; k < 4; k++)
+        __atomic_store_n(&g_disp[(main_base + offsets[k] - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
+    LOG("arceus-ledge: EXPERIMENT: Sneasler ledge move script runs 30 times per second\n");
+}
+
 void arceus_clock_post_jit(void) {
     fixed_resolution_init();
     /* Before the research probe, which compiles and keeps this wrapper's body. */
@@ -2243,6 +2379,7 @@ void arceus_clock_post_jit(void) {
     fade_fix_init();
     climb_step_init();
     wall_jump_fix_init();
+    ledge_fix_init();
     cadence_census_init();
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     if (main_base && !experimental && probe && !strcmp(probe, "1")) {

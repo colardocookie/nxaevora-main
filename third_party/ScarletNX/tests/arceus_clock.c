@@ -324,6 +324,94 @@ static void test_wall_jump(void) {
     main_base = 0;
     frame_step_address = 0;
 }
+/* The ledge throttle through the real wrappers: a stub state script that ends the climb from its
+   PreUpdate (so the window's owner comes from the wrapper), then 1/120 s frames. */
+static const u64 ledge_state = 0x500, ledge_other = 0x540, ledge_controller = 0x600;
+static unsigned ledge_runs[2], ledge_other_runs, ledge_script_step;
+static int ledge_end_at, ledge_finish_at;
+static void ledge_state_original(CPU* c, u64 entry, unsigned post) {
+    (void)entry;
+    if (c->x[0] == ledge_other) {
+        ledge_other_runs++;
+        c->x[0] = 1;
+        return;
+    }
+    ledge_runs[post]++;
+    c->x[0] = 1;
+    if (post) return;
+    ledge_script_step++;
+    CPU end = {.x = {[0] = ledge_controller, [1] = 0}};
+    if ((int)ledge_script_step == ledge_end_at) ledge_end_start(&end, 0x2553ee0);
+    if ((int)ledge_script_step == ledge_finish_at) ledge_end_finish(&end, 0x2554008);
+}
+static void ledge_pre_original(CPU* c, u64 entry) { ledge_state_original(c, entry, 0); }
+static void ledge_post_original(CPU* c, u64 entry) { ledge_state_original(c, entry, 1); }
+static void ledge_end_original(CPU* c, u64 entry) { (void)c; (void)entry; }
+/* One engine frame: a new frame id, then Pre and Post of object. Returns 1 when Pre ran. */
+static int ledge_frame(u64 object, float step) {
+    __atomic_add_fetch(&frame_step_frames, 1, __ATOMIC_RELEASE);
+    guest_float_write(cell, step);
+    const unsigned before = ledge_runs[0];
+    for (unsigned post = 0; post < 2; post++) {
+        CPU cpu = {.x = {[0] = object, [30] = return_pc}, .pc = 16};
+        if (post) ledge_post_update(&cpu, 0x2616ab0);
+        else ledge_pre_update(&cpu, 0x26163e0);
+        assert(cpu.pc == return_pc || cpu.x[0] == 1);
+        if (cpu.x[0] != 1) assert(cpu.x[0] == 7);
+    }
+    return ledge_runs[0] != before;
+}
+static void test_ledge(void) {
+    memset(memory, 0, sizeof memory);
+    ledge_retire(&ledge_window);
+    frame_step_address = cell;
+    gw32(ledge_state + 0x6c, 7);
+    gw32(ledge_other + 0x6c, 7);
+    ledge_originals[0] = ledge_pre_original;
+    ledge_originals[1] = ledge_post_original;
+    ledge_end_originals[0] = ledge_end_original;
+    ledge_end_originals[1] = ledge_end_original;
+    ledge_end_at = 1;
+    ledge_finish_at = -1;
+    /* The frame that ends the climb runs. Then 84 frames at 120 run the script 21 times, as 0.7 s at 30. */
+    assert(ledge_frame(ledge_state, 1.0f / 120) && ledge_window.open && ledge_window.owner == ledge_state);
+    unsigned runs = 0;
+    for (unsigned i = 0; i < 84; i++) {
+        const unsigned post_before = ledge_runs[1];
+        const int ran = ledge_frame(ledge_state, 1.0f / 120);
+        assert((ledge_runs[1] != post_before) == ran);
+        runs += (unsigned)ran;
+        /* An unrelated state is never held back. */
+        ledge_frame(ledge_other, 1.0f / 120);
+    }
+    assert(runs == 21 && ledge_other_runs == 168);
+    /* EndClimbingEnd from the script closes the window, and every update runs again. */
+    ledge_finish_at = (int)ledge_script_step + 1;
+    while (ledge_window.open) ledge_frame(ledge_state, 1.0f / 120);
+    for (unsigned i = 0; i < 4; i++) assert(ledge_frame(ledge_state, 1.0f / 120));
+    /* At 30 FPS nothing is skipped. */
+    ledge_retire(&ledge_window);
+    ledge_end_at = (int)ledge_script_step + 1;
+    ledge_finish_at = -1;
+    for (unsigned i = 0; i < 20; i++) assert(ledge_frame(ledge_state, 1.0f / 30));
+    /* An end call outside any state update opens nothing. */
+    ledge_retire(&ledge_window);
+    CPU end = {.x = {[0] = ledge_controller, [1] = 0}};
+    ledge_end_start(&end, 0x2553ee0);
+    assert(!ledge_window.open);
+    /* The pure rules: a skipped Pre whose Post never came is not applied in a later frame, a
+       window expires after 2 s, and another end type of the controller retires it. */
+    LedgeWindow w;
+    ledge_open(&w, ledge_state, ledge_controller, 1000000000);
+    assert(ledge_pre(&w, ledge_state, 1008333333, .25f, 1));
+    assert(!ledge_post(&w, ledge_state, 2));
+    assert(ledge_pre(&w, ledge_state, 1016666666, .25f, 3) && ledge_post(&w, ledge_state, 3));
+    assert(!ledge_pre(&w, ledge_state, 3100000000ull, .25f, 4) && !w.open);
+    ledge_open(&w, ledge_state, ledge_controller, 1000000000);
+    ledge_end_call(&w, ledge_controller, 3, ledge_state, 1000000000);
+    assert(!w.open);
+    frame_step_address = 0;
+}
 int main(void) {
     const char* disabled[] = {"SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60", "SNX_ARCEUS_CLOCK_TRACE",
         "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_CAMERA_TRACE",
@@ -334,6 +422,7 @@ int main(void) {
     test_climb_adrp();
     test_climb_stop();
     test_wall_jump();
+    test_ledge();
     test_target();
     puts("arceus_clock: all checks passed");
     return 0;
