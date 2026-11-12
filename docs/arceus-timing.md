@@ -197,3 +197,11 @@ frames, so at 120 FPS the stop lasted a quarter of its time. A call that does no
 gets the count staged one lower, so it rises 30 times a second. The fraction is kept for each climbing object, up
 to four, and starts over with each stop or when the count is not what the last call left. The wrapper's guard
 checks the state test, the count's load, add and store, and the compare that ends the stop.
+
+After a jump up the wall, the ride script waits on `climbingJumpWaitCount`. The script runs on the game's Lua 5.3
+VM and sets that bound field, `+F4` of the object its `RideNyuuraStateContext` userdata points to, to 15, then
+counts it down by one each update. At 120 FPS the wait took 0.125 second instead of 0.5. With a target rate,
+`SNX_ARCEUS_WALL_JUMP_FIX=1` wraps `lua_tointegerx` (`main+50BA0`). When the ride's field setter (the C closure at
+`main+2335E5C`, from `main+2331B64`) converts the value of a write to that key, and the write steps the count down
+by one, the conversion returns the old value unless the call completes a whole 1/30 second. The fraction is kept
+for each object, up to four. Any other write, such as the set to 15, starts it over.

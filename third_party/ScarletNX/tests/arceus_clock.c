@@ -254,6 +254,76 @@ static void test_climb_stop(void) {
     climb_stop_fix = 0;
     frame_step_address = 0;
 }
+/* The wall jump wait: a fake Lua state whose stack holds the setter closure, the context
+   userdata, the key and the value, run as the ride setter converts and stores each write. */
+static const u64 lua_L = 0x200, lua_ci = 0x300, lua_func = 0x400, lua_closure = 0x600, lua_udata = 0x700,
+                 lua_key = 0x800, jumper = 0x900, fake_main = 0x100000;
+static void lua_value(u64 at, u64 value, u32 tag) {
+    gw64(at, value);
+    gw32(at + 8, tag);
+}
+static void wall_jump_conversion(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = gr64(lua_func + 0x30);
+}
+static void fake_lua(const char* key) {
+    gw64(lua_L + 0x10, lua_func + 0x40);
+    gw64(lua_L + 0x20, lua_ci);
+    gw64(lua_ci, lua_func);
+    lua_value(lua_func, lua_closure, 0x66);
+    lua_value(lua_func + 0x10, lua_udata, 0x47);
+    lua_value(lua_func + 0x20, lua_key, 0x44);
+    gw64(lua_closure + 0x18, fake_main + 0x2335e5c);
+    gw64(lua_udata + 0x28, jumper);
+    const u32 length = (u32)strlen(key);
+    gw32(lua_key + 8, 4 | length << 24);
+    memcpy(GP(lua_key + 0x18), key, length);
+}
+/* One script write of value through the wrapper; returns what the setter stores. */
+static int wall_jump_write(long long value, u64 caller) {
+    lua_value(lua_func + 0x30, (u64)value, 0x13);
+    CPU cpu = {.x = {[0] = lua_L, [1] = 3, [30] = caller}};
+    wall_jump_update(&cpu, 0x50ba0);
+    gw32(jumper + 0xf4, (u32)cpu.x[0]);
+    return (int)cpu.x[0];
+}
+static unsigned wall_jump_countdown(float step) {
+    guest_float_write(cell, step);
+    wall_jump_write(15, fake_main + 0x2331b64);
+    unsigned updates = 0;
+    while ((int)gr32(jumper + 0xf4) > 0 && updates < 1000) {
+        wall_jump_write((int)gr32(jumper + 0xf4) - 1, fake_main + 0x2331b64);
+        updates++;
+    }
+    return updates;
+}
+static void test_wall_jump(void) {
+    memset(memory, 0, sizeof memory);
+    memset(wall_jump_slots, 0, sizeof wall_jump_slots);
+    frame_step_address = cell;
+    main_base = fake_main;
+    wall_jump_original = wall_jump_conversion;
+    fake_lua("climbingJumpWaitCount");
+    assert(wall_jump_countdown(1.0f / 30) == 15);
+    assert(wall_jump_countdown(1.0f / 120) == 60);
+    assert(wall_jump_countdown(1.0f / 1000) >= 495 && wall_jump_countdown(1.0f / 1000) <= 505);
+    /* Another caller or another key is never held. */
+    guest_float_write(cell, 1.0f / 120);
+    gw32(jumper + 0xf4, 10);
+    assert(wall_jump_write(9, fake_main + 0x2331b00) == 9);
+    fake_lua("climbingJumpWaitCoun_");
+    gw32(jumper + 0xf4, 10);
+    assert(wall_jump_write(9, fake_main + 0x2331b64) == 9);
+    /* A full step keeps its carry: .25 .25 .25 1 .25 from 5 ends at 3 with no fraction left. */
+    memset(wall_jump_slots, 0, sizeof wall_jump_slots);
+    const float wants[] = {.25f, .25f, .25f, 1, .25f};
+    int value = 5;
+    for (unsigned i = 0; i < 5; i++)
+        if (!wall_jump_hold(jumper, value, value - 1, wants[i])) value--;
+    assert(value == 3 && wall_jump_slots[0].progress == 0.0f);
+    main_base = 0;
+    frame_step_address = 0;
+}
 int main(void) {
     const char* disabled[] = {"SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60", "SNX_ARCEUS_CLOCK_TRACE",
         "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_CAMERA_TRACE",
@@ -263,6 +333,7 @@ int main(void) {
     test_diagnostics();
     test_climb_adrp();
     test_climb_stop();
+    test_wall_jump();
     test_target();
     puts("arceus_clock: all checks passed");
     return 0;

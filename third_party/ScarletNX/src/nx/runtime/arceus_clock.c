@@ -2134,6 +2134,98 @@ static void climb_step_init(void) {
         anim_ok ? "on" : "off", climb_stop_fix ? "on" : "off");
 }
 
+/* Sneasler wall jump: the ride script (Lua 5.3) sets climbingJumpWaitCount, the bound field +F4
+   of the object its RideNyuuraStateContext userdata points to, to 15 and counts it down one per
+   update, so the wait after a jump up the wall took a quarter of its 0.5 s at 120 FPS. With
+   SNX_ARCEUS_WALL_JUMP_FIX=1 a one-step countdown write converts as the old value until 1/30 s. */
+#define WALL_JUMP_SLOTS 4
+static GuestFn wall_jump_original;
+static struct { u64 object; float progress; int value; } wall_jump_slots[WALL_JUMP_SLOTS];
+/* 1 when a write of next over old should keep old: a step down that does not complete a whole
+   1/30 s. Any other write (the set to 15, 0 to 0) ends the object's fraction. */
+static int wall_jump_hold(u64 object, int old, int next, float want) {
+    int slot = -1;
+    for (int k = 0; k < WALL_JUMP_SLOTS && slot < 0; k++)
+        if (wall_jump_slots[k].object == object) slot = k;
+    if (old <= 0 || next != old - 1) {
+        if (slot >= 0) wall_jump_slots[slot].object = 0;
+        return 0;
+    }
+    for (int k = 0; k < WALL_JUMP_SLOTS && slot < 0; k++)
+        if (!wall_jump_slots[k].object) slot = k;
+    if (slot < 0 || !(want > 0.0f && want <= 1.0f)) return 0;
+    /* A new countdown, or another writer changed the field: start the fraction over. */
+    if (wall_jump_slots[slot].object != object || wall_jump_slots[slot].value != old) {
+        wall_jump_slots[slot].object = object;
+        wall_jump_slots[slot].progress = 0.0f;
+    }
+    float progress = wall_jump_slots[slot].progress + want;
+    const int hold = progress < 1.0f;
+    if (!hold) progress -= 1.0f;
+    wall_jump_slots[slot].progress = progress;
+    wall_jump_slots[slot].value = hold ? old : next;
+    return hold;
+}
+/* A short Lua string (TString tag 4 at +8, length at +B, bytes at +18) equal to text. */
+static int lua_short_string_is(u64 ts, const char* text, u32 length) {
+    if (!readable(ts, 0x18 + length + 3) || (gr32(ts + 8) & 0xff) != 4 || ((gr32(ts + 8) >> 24) & 0xff) != length)
+        return 0;
+    for (u32 k = 0; k < length; k++)
+        if ((gr32(ts + 0x18 + k) & 0xff) != (u8)text[k]) return 0;
+    return 1;
+}
+/* lua_tointegerx 50BA0 (L, index, isnum). The ride setter (caller 2331B64 in the C closure
+   2335E5C) converts the value, stack slot 3, of a write whose key in slot 2 is the counter. */
+static void wall_jump_update(CPU* c, u64 entry) {
+    const u64 L = c->x[0], caller = c->x[30];
+    const int index = (int)(u32)c->x[1];
+    wall_jump_original(c, entry);
+    if (caller != main_base + 0x2331b64 || !(index == 3 || (index < 0 && index >= -8))) return;
+    if (!readable(L + 0x10, 0x18) || !readable(gr64(L + 0x20), 8)) return;
+    const u64 func = gr64(gr64(L + 0x20)), top = gr64(L + 0x10);
+    const u64 slot = index > 0 ? func + 0x10 * (u64)index : top - 0x10 * (u64)(-index);
+    if (slot != func + 0x30 || top < func + 0x40 || !readable(func, 0x40) || (gr32(func + 8) & 0xff) != 0x66) return;
+    const u64 closure = gr64(func);
+    if (!readable(closure + 0x18, 8) || gr64(closure + 0x18) != main_base + 0x2335e5c) return;
+    if ((gr32(func + 0x28) & 0xff) != 0x44 || !lua_short_string_is(gr64(func + 0x20), "climbingJumpWaitCount", 21))
+        return;
+    /* Slot 1 is the full userdata (tag 0x47) whose block holds the object pointer. */
+    if ((gr32(func + 0x18) & 0xff) != 0x47) return;
+    const u64 block = gr64(func + 0x10) + 0x28;
+    const u64 object = readable(block, 8) ? gr64(block) : 0;
+    const long long next = (long long)c->x[0];
+    if (!object || !readable(object + 0xf4, 4) || next < -1 || next > 0x7fffffff) return;
+    const int old = (int)gr32(object + 0xf4);
+    if (wall_jump_hold(object, old, (int)next, guest_float(frame_step_address) / NOMINAL_STEP_SECONDS))
+        c->x[0] = (u64)(long long)old;
+}
+static void wall_jump_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_WALL_JUMP_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-wall-jump: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x50ba0;
+    /* STR X19,[SP,#-0x20]!, the ci load and MOV X19,X2 of the verified lapi.c body. */
+    if (!covers_exactly(pc, 0x114) || !readable(pc, 0x114) || gr32(pc) != 0xf81e0ff3 || gr32(pc + 0xc) != 0xf9401009 ||
+        gr32(pc + 0x10) != 0xaa0203f3) {
+        WARN("arceus-wall-jump: refused guard\n");
+        return;
+    }
+    if (!frame_step_cell_init("arceus-wall-jump")) return;
+    gw32(pc + 0x10, 0x91000053); /* Equivalent MOV X19,X2 -> ADD X19,X2,#0. */
+    jit_code_changed(pc, 0x114);
+    wall_jump_original = jit_wait(pc);
+    if (!wall_jump_original) {
+        WARN("arceus-wall-jump: compile failed\n");
+        return;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], wall_jump_update, __ATOMIC_RELEASE);
+    LOG("arceus-wall-jump: EXPERIMENT: Sneasler wall jump wait counts down 30 times per second\n");
+}
+
 void arceus_clock_post_jit(void) {
     fixed_resolution_init();
     /* Before the research probe, which compiles and keeps this wrapper's body. */
@@ -2150,6 +2242,7 @@ void arceus_clock_post_jit(void) {
     map_cursor_fix_init();
     fade_fix_init();
     climb_step_init();
+    wall_jump_fix_init();
     cadence_census_init();
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     if (main_base && !experimental && probe && !strcmp(probe, "1")) {
