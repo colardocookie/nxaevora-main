@@ -128,6 +128,11 @@ VkImageAspectFlags vk_aspect(const VkFmt* f) {
     return VK_IMAGE_ASPECT_DEPTH_BIT | (f->stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
 }
 
+/* the barrier range of a surface: the whole image unless the surface is a range of a shared one */
+static u32 surf_layer_count(const Surf* s) {
+    return s->base_layer == 0 ? VK_REMAINING_ARRAY_LAYERS : s->layers;
+}
+
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage,
                  VkAccessFlags2 access) {
     int writes = (access & (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
@@ -142,16 +147,18 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
            extends that visibility to it */
         if (stage & ~s->stage) {
             vk_render_end();
-            vk_barrier(cb, s->img, vk_aspect(&s->f), s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                       layout, stage, access, layout);
+            vk_barrier_layers(cb, s->img, vk_aspect(&s->f), s->base_layer, surf_layer_count(s),
+                              s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, layout, stage, access,
+                              layout);
         }
         s->stage |= stage;
         s->access |= access;
         return;
     }
     vk_render_end(); /* no barriers on images inside a rendering pass */
-    vk_barrier(cb, s->img, vk_aspect(&s->f), s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->access,
-               s->layout, stage, access, layout);
+    vk_barrier_layers(cb, s->img, vk_aspect(&s->f), s->base_layer, surf_layer_count(s),
+                      s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->access, s->layout, stage, access,
+                      layout);
     s->layout = layout;
     s->stage = stage;
     s->access = access;
@@ -220,7 +227,7 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
                                 .image = s->img,
                                 .viewType = s->type,
                                 .format = f.vk,
-                                .subresourceRange = {vk_aspect(&f), 0, 1, 0, layers}};
+                                .subresourceRange = {vk_aspect(&f), 0, 1, s->base_layer, layers}};
     VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &s->att));
     u32 k = hkey(gva);
     s->next = g_surfh[k];
@@ -247,7 +254,7 @@ VkImageView vk_rt_attachment(Surf* s, int srgb_write) {
                                     .image = s->img,
                                     .viewType = s->type,
                                     .format = linear,
-                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, s->layers}};
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, s->base_layer, s->layers}};
         VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &s->att_linear));
     }
     return s->att_linear;
@@ -418,7 +425,7 @@ static void rt_load_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 off, u32
     for (u32 layer = 0; layer < s->layers; layer++) {
         VkBufferImageCopy c = {.bufferOffset = off + (u64)layer * slice,
                                .bufferRowLength = pitch / s->f.bpp,
-                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
+                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer + s->base_layer, 1},
                                .imageExtent = {s->w, s->h, 1}};
         VmaAllocation tm;
         VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : vk_unscaled_image(s, 1, &tm);
@@ -433,7 +440,7 @@ static void rt_load_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 off, u32
             vk_barrier(cb, t, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                        VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            scale_blit(cb, t, s->w, s->h, 0, s->img, s->sw, s->sh, layer, s->f.is_int);
+            scale_blit(cb, t, s->w, s->h, 0, s->img, s->sw, s->sh, s->base_layer + layer, s->f.is_int);
             vk_defer_image(t, tm, VK_NULL_HANDLE, VK_NULL_HANDLE);
         }
     }
@@ -543,7 +550,8 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
         VkBufferImageCopy c = {
             .bufferOffset = at + (u64)layer * slice,
             .bufferRowLength = pitch / s->f.bpp,
-            .imageSubresource = {s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
+            .imageSubresource = {s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                 layer + s->base_layer, 1},
             .imageExtent = {s->w, s->h, depth}};
         VmaAllocation tm;
         VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : vk_unscaled_image(s, 1, &tm);
@@ -554,7 +562,7 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
             vk_barrier(cb, t, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
                        VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-            scale_blit(cb, s->img, s->sw, s->sh, layer, t, s->w, s->h, 0, s->f.is_int);
+            scale_blit(cb, s->img, s->sw, s->sh, s->base_layer + layer, t, s->w, s->h, 0, s->f.is_int);
             vk_barrier(cb, t, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                        VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -910,8 +918,8 @@ static int rt_take_pixels(Surf* to, Surf* from, int fresh) {
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     vk_surf_use(cb, to, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, to->layers},
-                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, to->layers},
+    VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, from->base_layer, to->layers},
+                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, to->base_layer, to->layers},
                      .extent = {to->sw, to->sh, 1}};
     rec_CmdCopyImage(cb, from->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, to->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                      1, &c);
@@ -1508,9 +1516,9 @@ static int blit_depth(Surf* st, const Surf2D* s, const Surf2D* d, int dx, int dy
     vk_surf_use(cb, dt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     /* one aspect a region; nearest, as filtering packed depth and stencil bits as color would only mix them */
-    VkImageBlit b[2] = {{.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+    VkImageBlit b[2] = {{.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, st->base_layer, 1},
                          .srcOffsets = {{x0, y0, 0}, {x1, y1, 1}},
-                         .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                         .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, dt->base_layer, 1},
                          .dstOffsets = {{dx, dy, 0}, {X1, Y1, 1}}}};
     b[1] = b[0];
     b[1].srcSubresource.aspectMask = b[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
@@ -1560,9 +1568,9 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     vk_surf_use(cb, dt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+    VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, st->base_layer, 1},
                      .srcOffsets = {{x0, y0, 0}, {x1, y1, 1}},
-                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, dt->base_layer, 1},
                      .dstOffsets = {{dx, dy, 0}, {X1, Y1, 1}}};
     int linear = scaled && !st->f.is_int && blit_ok(st->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
     rec_CmdBlitImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
@@ -1642,7 +1650,7 @@ static void zt_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, int out) 
         for (layer = 0; layer < s->layers; layer++) {
             VkBufferImageCopy c = {.bufferOffset = at,
                                    .imageSubresource = {a ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, 0,
-                                                        layer, 1},
+                                                        layer + s->base_layer, 1},
                                    .imageExtent = {s->sw, s->sh, 1}};
             if (out)
                 rec_CmdCopyImageToBuffer(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);

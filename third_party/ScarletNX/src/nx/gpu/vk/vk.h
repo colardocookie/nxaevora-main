@@ -231,6 +231,9 @@ void vk_land_through(u64 value); /* the results of the submissions up to value, 
 void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPipelineStageFlags2 src_stage,
                 VkAccessFlags2 src_access, VkImageLayout from, VkPipelineStageFlags2 dst_stage,
                 VkAccessFlags2 dst_access, VkImageLayout to);
+void vk_barrier_layers(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, u32 base, u32 count,
+                       VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access, VkImageLayout from,
+                       VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access, VkImageLayout to);
 /* a descriptor set from the current frame's pools, freed when the frame is reused */
 VkDescriptorSet vk_desc_alloc(VkDescriptorSetLayout layout);
 VkDescriptorPool vk_desc_pool_new(void); /* a pool for 1024 sets of the stage layouts */
@@ -414,6 +417,7 @@ typedef struct {
 typedef struct Surf {
     u64 gva;
     u32 w, h, layers, levels;
+    u32 base_layer; /* the first layer of img that is layer 0 of this surface (a member of a shared array image) */
     u32 sw, sh;  /* the image's size: render targets are w x h times the resolution scale */
     u32 depth3d; /* 3D textures: depth (layers is 1) */
     u32 fkey;    /* render targets: guest format | 0x10000 for depth. Textures: TIC word 0's format bits (0x7FFFF), sRGB

@@ -3303,9 +3303,9 @@ void vk_render_draw_texture(GpuChannel* ch) {
     /* in the images' pixels: a target is scaled, and a texture made from one is too */
     float tsx = (float)t->sw / (float)t->w, tsy = (float)t->sh / (float)t->h;
     VkImageBlit b = {
-        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, t->base_layer, 1},
         .srcOffsets = {{(i32)(sx0 * tsx), (i32)(sy0 * tsy), 0}, {(i32)(sx1 * tsx), (i32)(sy1 * tsy), 1}},
-        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, d->base_layer, 1},
         .dstOffsets = {{(i32)vk_scf(x0), (i32)vk_scf(y0), 0}, {(i32)vk_scf(x0 + w), (i32)vk_scf(y0 + h), 1}}};
     int linear =
         (x.tsc[1] & 3) == 2 && !t->f.is_int && format_has(t->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
