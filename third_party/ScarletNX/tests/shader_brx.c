@@ -97,6 +97,56 @@ int main(void) {
     hash_words(code, sizeof code, &len);
     check(len == 13 * 8, "unresolved BRX ends at the zero padding before the next program");
 
+    /* The compiler ends a program with an always-run EXIT, an always-run BRA to itself (its end loop), then
+       inline data: with an unreadable table the self-BRA ends the scan at that EXIT */
+    memset(code, 0, sizeof code);
+    code[10] = SCHED;
+    code[11] = 0xe250000000070d0full; /* unresolved BRX */
+    code[12] = EXIT;                  /* always-run EXIT before the end loop */
+    code[13] = 0xe2400fffff87000full; /* BRA 13: the compiler's end loop */
+    code[15] = 0x0000033000000330ull; /* inline jump table after the end loop */
+    code[16] = 0x0000033000000330ull;
+    hash_words(code, sizeof code, &len);
+    check(len == 13 * 8, "an unresolved BRX ends at the EXIT before the end loop");
+
+    memset(code, 0, sizeof code);
+    code[10] = SCHED;
+    code[11] = 0xe250000000070d0full; /* unresolved BRX */
+    code[12] = EXIT;
+    code[13] = NOP;
+    code[14] = SCHED;                 /* a scheduling word between the EXIT and the end loop */
+    code[15] = 0xe2400fffff87000full; /* BRA 15: the compiler's end loop */
+    code[16] = 0x0000033000000330ull;
+    code[17] = 0x0000033000000330ull;
+    hash_words(code, sizeof code, &len);
+    check(len == 13 * 8, "the end loop is found across a scheduling word");
+
+    memset(code, 0, sizeof code);
+    code[10] = SCHED;
+    code[11] = 0xe250000000070d0full; /* unresolved BRX */
+    code[12] = 0xe30000000000000full; /* @P0 EXIT: not always run */
+    code[13] = 0xe2400fffff87000full; /* BRA 13 */
+    code[15] = 0x0000033000000330ull;
+    code[16] = 0x0000033000000330ull;
+    hash_words(code, sizeof code, &len);
+    check(len == 17 * 8, "a predicated EXIT leaves the unresolved-BRX scan unchanged");
+
+    /* A resolved table keeps its own end rule: the scan does not stop at the earlier EXIT */
+    memset(code, 0, sizeof code);
+    code[10] = SCHED;
+    code[11] = 0x3820000000170b0bull; /* IMNMX R11, R11, 1: two entries */
+    code[12] = 0x3848000000270b0dull; /* SHL R13, R11, 2 */
+    code[13] = 0xef94000000070d0dull; /* LDC.B32 R13, c[0][R13] */
+    code[14] = SCHED;
+    code[15] = 0xe250000000070d0full; /* BRX R13 */
+    code[16] = EXIT;
+    code[17] = 0xe2400fffff87000full; /* BRA 17: the end loop after the EXIT */
+    code[19] = EXIT;                  /* the table's target */
+    g_shader_cb_read = table;
+    hash_words(code, sizeof code, &len);
+    check(len == 20 * 8, "a resolved BRX ends at its own EXIT past the end loop");
+    g_shader_cb_read = NULL;
+
     u64 distant[64] = {0};
     for (u32 i = 10; i <= 49; i++) distant[i] = (i - 10) % 4 ? NOP : SCHED;
     distant[11] = 0x3820000000170b0bull; /* clamp R11 to two entries */

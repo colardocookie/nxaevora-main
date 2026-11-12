@@ -55,7 +55,7 @@ static void test_append_refused(void) {
 
 static void test_bind_texture(void) {
     NvnOpList l = {0};
-    NvnOpBindTexture bind = {2, 7, 0x100000004ull};
+    NvnOpBindTexture bind = {2, 7, 0x100000004ull, 0};
     CHECK(nvn_oplist_append(&l, NVN_OP_BIND_TEXTURE, &bind, sizeof bind));
     CHECK(l.ops == 1);
     size_t pos = 0;
@@ -124,7 +124,7 @@ static void test_draw_path_ops(void) {
     const NvnOpDispatch* got_dispatch = p;
     CHECK(got_dispatch->x == 8 && got_dispatch->y == 4 && got_dispatch->z == 2 && got_dispatch->reserved == 0);
 
-    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_BIND_PROGRAM && h.bytes == 152u);
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_BIND_PROGRAM && h.bytes == 736u);
     const NvnOpBindProgram* got_program = p;
     CHECK(got_program->program == 0x400002000ull && got_program->stage_mask == 0x21u);
     CHECK(got_program->program_mask == 0u && got_program->word_count == 0u && got_program->words[0] == 0u);
@@ -251,6 +251,49 @@ static void test_gpu_ops(void) {
     CHECK(got_images->stage == 4 && got_images->first == 7 && got_images->count == 2);
     CHECK(got_images->handle[0] == 0x100000001ull && got_images->handle[1] == 0x200000002ull);
     CHECK(got_images->handle[2] == 0);
+    CHECK(!nvn_oplist_next(&l, &pos, &h, &p));
+    nvn_oplist_free(&l);
+}
+
+static void test_u2_event_and_sync_ops(void) {
+    CHECK(NVN_OP_SIGNAL_EVENT < NVN_OP_COUNT && NVN_OP_WAIT_SYNC < NVN_OP_COUNT);
+    NvnOpList l = {0};
+    NvnOpSignalEvent signal = {0x400001000ull, 9u, NVN_EVENT_SIGNAL_WRITE, 0x1234u, 1u};
+    NvnOpWaitEvent wait = {0x400001000ull, 9u, NVN_EVENT_WAIT_EQUAL, 0x1234u, 0u};
+    NvnOpReportValue value = {0xABCDEF01u, 0u, 0x400002000ull};
+    NvnOpFenceSync fence = {0x400003000ull, 4u, NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE};
+    NvnOpWaitSync wait_sync = {0x400003000ull, 4u, 0u};
+    CHECK(nvn_oplist_append(&l, NVN_OP_SIGNAL_EVENT, &signal, sizeof signal));
+    CHECK(nvn_oplist_append(&l, NVN_OP_WAIT_EVENT, &wait, sizeof wait));
+    CHECK(nvn_oplist_append(&l, NVN_OP_REPORT_VALUE, &value, sizeof value));
+    CHECK(nvn_oplist_append(&l, NVN_OP_FENCE_SYNC, &fence, sizeof fence));
+    CHECK(nvn_oplist_append(&l, NVN_OP_WAIT_SYNC, &wait_sync, sizeof wait_sync));
+    CHECK(l.ops == 5);
+
+    size_t pos = 0;
+    NvnOpHeader h;
+    const void* p;
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_SIGNAL_EVENT && h.bytes == sizeof signal);
+    const NvnOpSignalEvent* got_signal = p;
+    CHECK(got_signal->event == 0x400001000ull && got_signal->generation == 9u && got_signal->mode == 0u);
+    CHECK(got_signal->value == 0x1234u && got_signal->location == 1u);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_WAIT_EVENT && h.bytes == sizeof wait);
+    const NvnOpWaitEvent* got_wait = p;
+    CHECK(got_wait->event == 0x400001000ull && got_wait->generation == 9u && got_wait->mode == 0u);
+    CHECK(got_wait->value == 0x1234u && got_wait->reserved == 0u);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_REPORT_VALUE && h.bytes == sizeof value);
+    const NvnOpReportValue* got_value = p;
+    CHECK(got_value->value == 0xABCDEF01u && got_value->address == 0x400002000ull);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_FENCE_SYNC && h.bytes == sizeof fence);
+    const NvnOpFenceSync* got_fence = p;
+    CHECK(got_fence->sync == 0x400003000ull && got_fence->generation == 4u && got_fence->condition == 0u);
+
+    CHECK(nvn_oplist_next(&l, &pos, &h, &p) && h.code == NVN_OP_WAIT_SYNC && h.bytes == sizeof wait_sync);
+    const NvnOpWaitSync* got_wait_sync = p;
+    CHECK(got_wait_sync->sync == 0x400003000ull && got_wait_sync->generation == 4u && got_wait_sync->reserved == 0u);
     CHECK(!nvn_oplist_next(&l, &pos, &h, &p));
     nvn_oplist_free(&l);
 }
@@ -387,6 +430,50 @@ static void test_many_lists(void) {
     nvn_list_store_free(&s);
 }
 
+static void test_oplist_copy(void) {
+    NvnListStore s = {0};
+    NvnOpList inner = {0}, src = {0}, dst = {0};
+    NvnOpBarrier barrier = {7u, 0};
+    NvnOpClearColor color = {1u, 3u, {1u, 2u, 3u, 4u}};
+    CHECK(nvn_oplist_append(&inner, NVN_OP_BARRIER, &barrier, sizeof barrier));
+    uint64_t inner_handle = nvn_list_publish(&s, &inner);
+    CHECK(inner_handle && nvn_list_live(&s) == 1);
+    CHECK(nvn_oplist_append(&src, NVN_OP_CLEAR_COLOR, &color, sizeof color));
+    CHECK(nvn_list_ref(&s, inner_handle)); /* as CallCommands does for the CALL it records */
+    NvnOpCall call = {inner_handle};
+    CHECK(nvn_oplist_append(&src, NVN_OP_CALL, &call, sizeof call));
+    CHECK(nvn_oplist_append(&src, NVN_OP_BARRIER, &barrier, sizeof barrier));
+    uint64_t src_handle = nvn_list_publish(&s, &src);
+    CHECK(src_handle);
+
+    uint64_t failed = 1;
+    CHECK(nvn_oplist_copy(&dst, nvn_list_find(&s, src_handle), &s, &failed) && !failed);
+    size_t pa = 0, pb = 0;
+    NvnOpHeader ha, hb;
+    const void* x;
+    const void* y;
+    uint32_t ops = 0;
+    for (;;) {
+        int a = nvn_oplist_next(nvn_list_find(&s, src_handle), &pa, &ha, &x);
+        int b = nvn_oplist_next(&dst, &pb, &hb, &y);
+        CHECK(a == b);
+        if (!a) break;
+        CHECK(ha.code == hb.code && ha.bytes == hb.bytes && !memcmp(x, y, ha.bytes));
+        ops++;
+    }
+    CHECK(ops == 3);
+
+    /* The copied CALL holds its own reference, so the source can go. */
+    nvn_list_unref(&s, src_handle);
+    CHECK(nvn_list_find(&s, inner_handle) != NULL && nvn_list_live(&s) == 1);
+    uint64_t dst_handle = nvn_list_publish(&s, &dst);
+    nvn_list_unref(&s, inner_handle); /* the owner's reference of the inner list */
+    CHECK(nvn_list_find(&s, inner_handle) != NULL);
+    nvn_list_unref(&s, dst_handle);
+    CHECK(!nvn_list_find(&s, inner_handle) && nvn_list_live(&s) == 0 && !s.leaked);
+    nvn_list_store_free(&s);
+}
+
 int main(void) {
     test_append_next();
     test_append_refused();
@@ -396,10 +483,12 @@ int main(void) {
     test_draw_path_ops();
     test_vertex_state_and_depth_ops();
     test_gpu_ops();
+    test_u2_event_and_sync_ops();
     test_growth();
     test_handles();
     test_find_pointer_stable();
     test_call_release();
+    test_oplist_copy();
     test_deep_chain();
     test_many_lists();
     if (failures) {

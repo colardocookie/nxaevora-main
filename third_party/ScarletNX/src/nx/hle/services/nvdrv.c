@@ -996,6 +996,23 @@ static u32 ioctl_nvmap(u32 cmd, u8* d, u32 n) {
 
 /* /dev/nvhost-as-gpu. The caller holds nv.aslock, which covers nv.gmaps and the VA allocator */
 static int pow2(u64 v) { return !(v & (v - 1)); }
+/* A GPU range for the NVN host's pool mappings, from the same allocator as ALLOC_SPACE and MAP_BUFFER_EX, so the two
+   allocators never hand out one range twice. 0 when the size is 0, the alignment is not a power of two, the size is
+   past the GPU address space, or no room is left; the caller logs the failure. Takes nv.aslock itself. From any
+   thread */
+u64 nvn_gpu_va_alloc(u64 size, u64 align) {
+    if (!size || !align || !pow2(align) || size > VA_END) return 0;
+    pm_lock(&g_host.nvdrv.aslock);
+    u64 gva = va_alloc(size, align);
+    pm_unlock(&g_host.nvdrv.aslock);
+    return gva;
+}
+/* Gives back a range that nvn_gpu_va_alloc returned, with the size it was allocated for */
+void nvn_gpu_va_free(u64 gva, u64 size) {
+    pm_lock(&g_host.nvdrv.aslock);
+    va_free(gva, size);
+    pm_unlock(&g_host.nvdrv.aslock);
+}
 /* ALLOC_SPACE: reserves GPU VA, at the address with NVHOST_AS_MAP_FIXED, else wherever the allocator finds room at
    the alignment (at least the page size), which goes back in the offset field */
 static u32 as_alloc_space(u8* d) {

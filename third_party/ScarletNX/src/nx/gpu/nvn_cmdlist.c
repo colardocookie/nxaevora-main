@@ -39,6 +39,30 @@ int nvn_oplist_next(const NvnOpList* list, size_t* pos, NvnOpHeader* header, con
     return 1;
 }
 
+int nvn_oplist_copy(NvnOpList* dst, const NvnOpList* src, NvnListStore* store, uint64_t* failed) {
+    if (!dst || !src || !store || !failed) return 0;
+    *failed = 0;
+    size_t pos = 0;
+    NvnOpHeader header;
+    const void* payload;
+    while (nvn_oplist_next(src, &pos, &header, &payload)) {
+        uint64_t call = 0;
+        if (header.code == NVN_OP_CALL) {
+            if (header.bytes < sizeof(NvnOpCall)) return 0;
+            memcpy(&call, payload, sizeof call);
+            if (!nvn_list_ref(store, call)) {
+                *failed = call;
+                return 0;
+            }
+        }
+        if (!nvn_oplist_append(dst, (NvnOpCode)header.code, payload, header.bytes)) {
+            if (header.code == NVN_OP_CALL) nvn_list_unref(store, call);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 void nvn_oplist_free(NvnOpList* list) {
     free(list->data);
     *list = (NvnOpList){0};

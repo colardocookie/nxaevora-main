@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The host's command lists (docs/nvn-design.md, "3c Host design decisions", decisions 3 to 5). A command buffer records
+/* The host's command lists (nvn-design.md, "3c Host design decisions", decisions 3 to 5). A command buffer records
    ops into an NvnOpList. EndRecording publishes the list in an NvnListStore and gives the game a handle. The list is
    immutable after that. Submit and Call hold a reference, so a list lives until its last reference goes. The module
    has no locking: the owner serializes the calls, and a reader of a list holds a reference. */
@@ -39,10 +39,22 @@ typedef enum {
     NVN_OP_COPY_TEXTURE,
     NVN_OP_REPORT_COUNTER,
     NVN_OP_BIND_IMAGE,
+    NVN_OP_RESET_COUNTER,
+    NVN_OP_TRANSFORM_FEEDBACK,
+    NVN_OP_SIGNAL_EVENT,
+    NVN_OP_WAIT_EVENT,
+    NVN_OP_REPORT_VALUE,
+    NVN_OP_FENCE_SYNC,
+    NVN_OP_WAIT_SYNC,
+    NVN_OP_COPY_BUFFER,
+    NVN_OP_CLEAR_BUFFER,
+    NVN_OP_UPDATE_UNIFORM,
+    NVN_OP_COPY_BUFFER_TEXTURE,
+    NVN_OP_DOWNSAMPLE,
     NVN_OP_COUNT
 } NvnOpCode;
 
-#define NVN_OP_MAX_PAYLOAD   512u /* bytes; the largest payload is NvnOpRenderTargets */
+#define NVN_OP_MAX_PAYLOAD   768u /* bytes; the largest payload is NvnOpBindProgram with the transform feedback words */
 #define NVN_OP_ALIGN         8u
 #define NVN_RENDER_TARGETS_MAX 8u
 #define NVN_VIEWPORTS_MAX    16u /* viewports and scissors, as the engine has */
@@ -75,8 +87,9 @@ typedef struct { uint32_t which, face, value, reserved; } NvnOpStencil;
 typedef struct { uint32_t color[4]; } NvnOpBlendColor; /* the float bits as the game gave them */
 typedef struct { uint32_t bits, reserved; } NvnOpAlphaRef;
 typedef struct { uint64_t handle; } NvnOpCall;
-typedef struct { uint32_t stage, slot; uint64_t handle; } NvnOpBindTexture;
-typedef struct { uint32_t kind, stage, slot, reserved; uint64_t addr, size; } NvnOpBindBuffer;
+/* plural: 1 when the bind came from BindTextures and keeps the library's mode 5 packet form. */
+typedef struct { uint32_t stage, slot; uint64_t handle; uint32_t plural; } NvnOpBindTexture;
+typedef struct { uint32_t kind, stage, slot, plural; uint64_t addr, size; } NvnOpBindBuffer;
 typedef struct { uint32_t kind, words; uint32_t w[NVN_STATE_WORDS_MAX]; } NvnOpBindState;
 /* The raw draw arguments, as the library copies them. Unused fields are zero and a non-instanced draw has instances 1. */
 typedef struct {
@@ -133,16 +146,62 @@ typedef struct {
     uint32_t src_region[6];
 } NvnOpCopyTexture;
 typedef struct { uint32_t type, reserved; uint64_t address; } NvnOpReportCounter;
+typedef struct { uint32_t type, reserved; } NvnOpResetCounter; /* the counter type as the game gave it */
+typedef struct { uint32_t kind, reserved; uint64_t address; } NvnOpTransformFeedback; /* kind: NvnXfbKind */
 typedef struct {
-    uint32_t stage, first, count, reserved;
+    uint32_t stage, first, count, plural;
     uint64_t handle[NVN_IMAGE_BINDS_MAX];
 } NvnOpBindImage;
+/* The event and sync ops keep the generation that the record had at record time (analyst-u2-A-1.md, analyst-u2-B-1.md). */
+typedef struct { uint64_t event; uint32_t generation, mode, value, location; } NvnOpSignalEvent;
+typedef struct { uint64_t event; uint32_t generation, mode, value, reserved; } NvnOpWaitEvent;
+typedef struct { uint32_t value, reserved; uint64_t address; } NvnOpReportValue;
+typedef struct { uint64_t sync; uint32_t generation, condition; } NvnOpFenceSync;
+typedef struct { uint64_t sync; uint32_t generation, reserved; } NvnOpWaitSync;
+/* CopyBufferToBuffer and ClearBuffer: the library words are built at replay (nvn_copy_buffer_words and
+   nvn_clear_buffer_words). */
+typedef struct { uint64_t src, dst, size; } NvnOpCopyBuffer;
+typedef struct { uint64_t dst, size; uint32_t value, reserved; } NvnOpClearBuffer;
+/* UpdateUniformBuffer: the (bytes >> 2) words copied from the guest at record time. A copy over the payload limit is
+   split into ops in order, each with its own offset. */
+typedef struct {
+    uint64_t address;
+    uint32_t size256, offset, words, reserved;
+    uint32_t data[];
+} NvnOpUpdateUniform;
+/* CopyBufferToTexture and CopyTextureToBuffer in one op: to_texture is 1 for buffer to texture. The region keeps
+   the game's six words. The strides are cb+0x88 and cb+0x8C at record time; 0 is the tight stride. */
+typedef struct {
+    uint64_t buffer;
+    NvnOpTarget target;
+    uint32_t region[6];
+    uint32_t flags, row_stride, image_stride, to_texture, reserved;
+} NvnOpCopyBufferTexture;
+/* Downsample and DownsampleTextureView; the tiled forms set tiled. The views are copied at record time. */
+typedef struct {
+    NvnOpTarget src, dst;
+    uint32_t tiled, reserved;
+} NvnOpDownsample;
 
 _Static_assert(sizeof(NvnOpClearDepthStencil) <= NVN_OP_MAX_PAYLOAD, "NvnOpClearDepthStencil fits an op payload");
 _Static_assert(sizeof(NvnOpClearTexture) <= NVN_OP_MAX_PAYLOAD, "NvnOpClearTexture fits an op payload");
 _Static_assert(sizeof(NvnOpCopyTexture) <= NVN_OP_MAX_PAYLOAD, "NvnOpCopyTexture fits an op payload");
 _Static_assert(sizeof(NvnOpReportCounter) <= NVN_OP_MAX_PAYLOAD, "NvnOpReportCounter fits an op payload");
+_Static_assert(sizeof(NvnOpResetCounter) <= NVN_OP_MAX_PAYLOAD, "NvnOpResetCounter fits an op payload");
+_Static_assert(sizeof(NvnOpTransformFeedback) <= NVN_OP_MAX_PAYLOAD, "NvnOpTransformFeedback fits an op payload");
 _Static_assert(sizeof(NvnOpBindImage) <= NVN_OP_MAX_PAYLOAD, "NvnOpBindImage fits an op payload");
+_Static_assert(sizeof(NvnOpSignalEvent) <= NVN_OP_MAX_PAYLOAD, "NvnOpSignalEvent fits an op payload");
+_Static_assert(sizeof(NvnOpWaitEvent) <= NVN_OP_MAX_PAYLOAD, "NvnOpWaitEvent fits an op payload");
+_Static_assert(sizeof(NvnOpReportValue) <= NVN_OP_MAX_PAYLOAD, "NvnOpReportValue fits an op payload");
+_Static_assert(sizeof(NvnOpFenceSync) <= NVN_OP_MAX_PAYLOAD, "NvnOpFenceSync fits an op payload");
+_Static_assert(sizeof(NvnOpWaitSync) <= NVN_OP_MAX_PAYLOAD, "NvnOpWaitSync fits an op payload");
+_Static_assert(sizeof(NvnOpCopyBuffer) <= NVN_OP_MAX_PAYLOAD, "NvnOpCopyBuffer fits an op payload");
+_Static_assert(sizeof(NvnOpClearBuffer) <= NVN_OP_MAX_PAYLOAD, "NvnOpClearBuffer fits an op payload");
+_Static_assert(sizeof(NvnOpUpdateUniform) <= NVN_OP_MAX_PAYLOAD, "NvnOpUpdateUniform fits an op payload");
+_Static_assert(sizeof(NvnOpCopyBufferTexture) <= NVN_OP_MAX_PAYLOAD, "NvnOpCopyBufferTexture fits an op payload");
+_Static_assert(sizeof(NvnOpDownsample) <= NVN_OP_MAX_PAYLOAD, "NvnOpDownsample fits an op payload");
+_Static_assert(4u * NVN_UPDATE_UNIFORM_DATA_WORDS <= NVN_OP_MAX_PAYLOAD - sizeof(NvnOpUpdateUniform),
+               "the update data words of one op fit its payload");
 _Static_assert(sizeof(NvnOpBindProgram) <= NVN_OP_MAX_PAYLOAD, "NvnOpBindProgram fits an op payload");
 
 typedef struct { uint32_t code, bytes; } NvnOpHeader; /* bytes: the payload size, a multiple of NVN_OP_ALIGN */
@@ -182,6 +241,10 @@ int nvn_list_ref(NvnListStore* store, uint64_t handle);
 /* One reference less. The last one frees the list and gives up the references of its CALL ops. A handle that is not
    live is ignored. */
 void nvn_list_unref(NvnListStore* store, uint64_t handle);
+/* Copies the ops of src into dst with their payloads. A CALL takes a new reference in store before the copy, so dst
+   does not depend on src. 1 when copied whole. 0 when dst cannot take an op or a CALL target is gone (the ops before it
+   stay, and *failed is the target or 0). */
+int nvn_oplist_copy(NvnOpList* dst, const NvnOpList* src, NvnListStore* store, uint64_t* failed);
 uint32_t nvn_list_live(const NvnListStore* store);
 void nvn_list_store_free(NvnListStore* store);
 

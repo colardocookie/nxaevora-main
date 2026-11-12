@@ -179,7 +179,7 @@ Checks without a separate finding: vk_ui_draw leaves TRANSFER_DST_OPTIMAL. vk_re
 
 ## 18. [P2] Focused regression tests and edge-case scenes are missing
 
-**File and line:** src/nx/CMakeLists.txt:107-116; tests/CMakeLists.txt:745-754; project docs/imgui-plan.md, Progress and Verification.
+**File and line:** src/nx/CMakeLists.txt:107-116; tests/CMakeLists.txt:745-754; project docs/ui/imgui-plan.md, Progress and Verification.
 
 **Fault:** Patches 0013-0019 add no tests. Existing overlay/AM tests do not execute the new context, queue, SDL gateway, or NVML loader. Successful font display and basic name entry do not verify ownership transitions, length limits, input pairing, or presentation recovery. A build and unrelated shader/settings tests cannot verify those behaviors.
 
