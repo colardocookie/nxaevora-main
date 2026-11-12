@@ -649,9 +649,9 @@ void vk_defer_call(void (*fn)(void*), void* arg) {
     dead_push(&g_fr[g_cur], (Dead){.fn = fn, .arg = arg});
 }
 
-void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPipelineStageFlags2 src_stage,
-                VkAccessFlags2 src_access, VkImageLayout from, VkPipelineStageFlags2 dst_stage,
-                VkAccessFlags2 dst_access, VkImageLayout to) {
+void vk_barrier_layers(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, u32 base, u32 count,
+                       VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access, VkImageLayout from,
+                       VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access, VkImageLayout to) {
     VkImageMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                                .srcStageMask = src_stage,
                                .srcAccessMask = src_access,
@@ -662,10 +662,16 @@ void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPi
                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .image = img,
-                               .subresourceRange = {aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
+                               .subresourceRange = {aspect, 0, VK_REMAINING_MIP_LEVELS, base, count}};
     VkDependencyInfo d = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b};
     rec_CmdPipelineBarrier2(cb, &d);
+}
+void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPipelineStageFlags2 src_stage,
+                VkAccessFlags2 src_access, VkImageLayout from, VkPipelineStageFlags2 dst_stage,
+                VkAccessFlags2 dst_access, VkImageLayout to) {
+    vk_barrier_layers(cb, img, aspect, 0, VK_REMAINING_ARRAY_LAYERS, src_stage, src_access, from, dst_stage,
+                      dst_access, to);
 }
 
 /* one buffer the GPU copies into for the host to read: vk_readback_buffer before recording the copy, vk_finish,

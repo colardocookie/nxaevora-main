@@ -7,8 +7,8 @@
    SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project (GPL-2.0-or-later) */
 /* hid and hid:sys: the controllers as the game reads them from the shared memory (hid_layout.h). Each of the
    frontend's eight players (g_hle.hid.pad1, pad_extra) is the Npad with its number, with exactly one style, the one its
-   controller is that the game supports; the handheld Npad mirrors player 1 while undocked. A host's combined Joy-Cons
-   can be split into two Npads, and two single Joy-Cons merged into one, as the game asks */
+   controller is that the game supports. A host's combined Joy-Cons can be split into two Npads, and two single Joy-Cons
+   merged into one, as the game asks */
 #include "nx/hle/hle.h"
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/services/hid.h"
@@ -36,7 +36,7 @@
 #define STICK_PRESS   0x4000       /* a stick past half its travel presses its direction */
 
 /* where an Npad's input comes from */
-enum { SRC_NONE, SRC_PAD, SRC_LEFT_HALF, SRC_RIGHT_HALF, SRC_MERGED, SRC_HANDHELD };
+enum { SRC_NONE, SRC_PAD, SRC_LEFT_HALF, SRC_RIGHT_HALF, SRC_MERGED };
 typedef struct {
     int kind;
     int p, q; /* the player (the left Joy-Con when merged), and the right Joy-Con's when merged */
@@ -85,7 +85,6 @@ static void hid_sources(HidSource src[HID_ENTRIES]) {
             src[p].p = p;
         }
     }
-    if (!g_settings.tv_mode) src[8].kind = SRC_HANDHELD;
 }
 /* the one style an Npad has: its controller's when the game supports it, else the nearest the game does */
 static u32 hid_style_of(int e, const HidSource* s) {
@@ -104,7 +103,6 @@ static u32 hid_style_of(int e, const HidSource* s) {
     case SRC_LEFT_HALF: return ok & STYLE_JOY_LEFT;
     case SRC_RIGHT_HALF: return ok & STYLE_JOY_RIGHT;
     case SRC_MERGED: return ok & STYLE_JOY_DUAL;
-    case SRC_HANDHELD: return ok & STYLE_HANDHELD;
     default: return 0;
     }
 }
@@ -145,11 +143,6 @@ static void hid_write_header(int e, u32 style) {
         device = 1u << 0;
         props = 1u << 11 | 1u << 13 | 1u << 14;
         footer = 12; /* SwitchProController */
-        break;
-    case STYLE_HANDHELD:
-        device = 1u << 2 | 1u << 3;
-        props = 1u << 11 | 1u << 13 | 1u << 14 | 1u << 15;
-        footer = 4; /* HandheldJoyConLeftJoyConRight */
         break;
     case STYLE_JOY_DUAL:
         device = 1u << 4 | 1u << 5;
@@ -273,7 +266,6 @@ static void hid_npad_state(const HidSource* s, u32 style, u8* out) {
     if (!style) return;
     switch (s->kind) {
     case SRC_PAD:
-    case SRC_HANDHELD:
         buttons = a->buttons;
         st[0] = a->lx, st[1] = a->ly, st[2] = a->rx, st[3] = a->ry;
         if (style == STYLE_JOY_LEFT) {
@@ -309,7 +301,6 @@ static void hid_npad_state(const HidSource* s, u32 style, u8* out) {
     buttons |= stick_buttons(st[0], st[1], 16) | stick_buttons(st[2], st[3], 20);
     /* NpadAttribute: connected, wired, and each Joy-Con's */
     switch (style) {
-    case STYLE_HANDHELD: attr = 0x3f; break;
     case STYLE_JOY_DUAL: attr = 1 | 4 | 16; break;
     case STYLE_JOY_LEFT: attr = 1 | 4; break;
     case STYLE_JOY_RIGHT: attr = 1 | 16; break;
@@ -328,10 +319,6 @@ static int hid_device(const HidSource* s, int dev, int* p, int* sensor) {
     case SRC_PAD:
         *p = s->p;
         *sensor = hid_single(s->p) ? 0 : dev;
-        return 1;
-    case SRC_HANDHELD:
-        *p = 0;
-        *sensor = dev;
         return 1;
     case SRC_LEFT_HALF:
     case SRC_RIGHT_HALF:
@@ -400,10 +387,9 @@ void hid_update(void) {
         hid_npad_state(&src[e], style, state);
         memset(none, 0, sizeof none);
         snx_st_le64(none, g_hle.hid.samp);
-        /* the handheld Npad's full-key LIFO carries its state too, for a game reading it as a full-key one */
+        /* each style's own LIFO carries its state */
         for (i = 0; i < 5; i++)
-            hid_lifo_push(n + lifos[i], HS_HidNpadCommonStateAtomicStorage,
-                          style == 1u << i || (i == 0 && style == STYLE_HANDHELD) ? state : none,
+            hid_lifo_push(n + lifos[i], HS_HidNpadCommonStateAtomicStorage, style == 1u << i ? state : none,
                           HS_HidNpadCommonState);
         hid_lifo_push(n + HO_HidNpadInternalState_palma_lifo, HS_HidNpadCommonStateAtomicStorage, none,
                       HS_HidNpadCommonState);
@@ -412,9 +398,6 @@ void hid_update(void) {
         switch (style) {
         case STYLE_FULL_KEY:
             hid_six_axis(e, HO_HidNpadInternalState_full_key_six_axis_sensor_lifo, &src[e], 0, dt);
-            break;
-        case STYLE_HANDHELD:
-            hid_six_axis(e, HO_HidNpadInternalState_handheld_six_axis_sensor_lifo, &src[e], 0, dt);
             break;
         case STYLE_JOY_DUAL:
             hid_six_axis(e, HO_HidNpadInternalState_joy_dual_left_six_axis_sensor_lifo, &src[e], 0, dt);

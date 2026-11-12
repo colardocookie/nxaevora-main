@@ -35,7 +35,9 @@ renderer=opengl
 | `.ini` key `audio_device` | [gpu/audio] Fix viewport flips and audio playback | playback follows the system's default | the same |
 | `.ini` key `forced_vsync` | Remove the OpenGL renderer | `vsync` | the same |
 | `.ini` keys `touch_controls`, `touch_controls_opacity` | [runtime] Isolate shared core and NX runtime | `controls`, `controls_opacity` | the same |
-| `.ini` keys `modo_tv`, `idioma`, `resolucion`, `sombras`, `perfil` (the settings' first, Spanish names) | #185 | `docked`, `language`, `resolution`, `shadows`, `profile` | the same |
+| `.ini` keys `idioma`, `sombras`, `perfil` (the settings' first, Spanish names) | #185 | `language`, `shadows`, `profile` | the same |
+| `.ini` keys `docked` (1 TV mode, 0 handheld) and `modo_tv` (its first, Spanish name) | NXAevora: TV mode always on | nothing: the runtime is always in TV mode | the same |
+| `.ini` keys `resolution` (a scale, 0.25 to 16) and `resolucion` (its first, Spanish name) | NXAevora: render resolution choices | `render_resolution`: 720p, 1080p, 1440p or 2160p | the same |
 | `.ini` key `gamepad_buttons` (A B X Y by position, by label or the map) | Swap A/B in place of the A B X Y presets | `gamepad_swap_ab`; `gamepad_map` always applies | the same |
 | `.ini` key `cpu_fallback` (the interpreter or the JIT for code the recompiler missed) | [recompiler] Replace the interpreter with the runtime JIT | nothing: the runtime JIT compiles that code | under `[Deprecated]`, named once a run |
 | `--keep-c` | Replace Python pipeline with a C90 driver | `--keep-ir` | still taken, said on stderr each time |
