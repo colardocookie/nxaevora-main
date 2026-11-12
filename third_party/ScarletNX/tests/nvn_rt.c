@@ -1162,7 +1162,7 @@ static void test_copy_dma_block_linear(void) {
     CHECK(words[5] == 0x20018104u);
     CHECK(words[6] == 256u);
     CHECK(words[7] == 0x200681C3u);
-    CHECK(words[8] == 0x30u && words[9] == 256u && words[10] == 64u && words[11] == 1u);
+    CHECK(words[8] == 0x1030u && words[9] == 256u && words[10] == 64u && words[11] == 1u);
     CHECK(words[12] == 0u && words[13] == 0u);
     CHECK(words[14] == 0x20028106u && words[15] == 256u && words[16] == 64u);
     CHECK(words[17] == 0x828680C0u); /* type 2, flush, multi-line, src pitch, dst block */
@@ -1251,7 +1251,7 @@ static void test_copy_dma_to_buffer(void) {
                                            NVN_RT_DMA_LAUNCH_WORDS);
     CHECK(count == 18 && launches == 1 && k.fault_count == 0);
     CHECK(words[5] == 0x200681CAu);
-    CHECK(words[6] == 0x30u && words[7] == 256u && words[8] == 64u && words[9] == 1u);
+    CHECK(words[6] == 0x1030u && words[7] == 256u && words[8] == 64u && words[9] == 1u);
     CHECK(words[10] == 0u && words[11] == 0u);
     CHECK(words[12] == 0x20018105u && words[13] == 256u);
     CHECK(words[14] == 0x20028106u && words[15] == 256u && words[16] == 64u);
@@ -1296,10 +1296,13 @@ static void test_copy_2d_buffer(void) {
     CHECK(words[22] == 0x20026086u && words[23] == 64u && words[24] == 64u);
     CHECK(words[25] == 0x20026088u && words[26] == 0u && words[27] == 0x1000u);
     CHECK(words[28] == 0x800160B5u);
+    CHECK(words[29] == 0x20016223u && words[30] == 0x1u); /* corner, point: flags are not read (d82ba04) */
     CHECK(words[31] == 0x2004622Cu && words[32] == 8u && words[33] == 4u && words[34] == 16u && words[35] == 8u);
     CHECK(words[36] == 0x20046230u && words[37] == 0u && words[38] == 0xFFFFFFFFu && words[39] == 0u &&
           words[40] == 1u);
-    CHECK(words[41] == 0x20046234u && words[42] == 0u && words[43] == 16u && words[44] == 0u && words[45] == 0u);
+    /* x starts at 16 - 0.5 (mirrored), y at 0.5: half a step in, as the library (d82b9a8-d82b9d4) */
+    CHECK(words[41] == 0x20046234u && words[42] == 0x80000000u && words[43] == 15u && words[44] == 0x80000000u &&
+          words[45] == 0u);
     CHECK(words[46] == 0x91000002u);
 }
 
@@ -1315,6 +1318,7 @@ static void test_downsample_factors(void) {
     uint32_t count = nvn_rt_downsample_words(&env, &two, NULL, &dst, NULL, 0, &ratio_not_two, words);
     CHECK(count == 47 && ratio_not_two == 0 && k.fault_count == 0);
     CHECK(words[0] == 0x91050002u);
+    CHECK(words[29] == 0x20016223u && words[30] == 0x10u); /* center, bilinear (d82ca3c-d82ca90) */
     CHECK(words[37] == 0u && words[38] == 2u && words[39] == 0u && words[40] == 1u); /* 2 x 1 */
     CHECK(words[32] == 0u && words[33] == 0u && words[34] == 64u && words[35] == 64u);
     count = nvn_rt_downsample_words(&env, &four, NULL, &dst, NULL, 0, &ratio_not_two, words);

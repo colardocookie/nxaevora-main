@@ -701,6 +701,7 @@ uint32_t nvn_rt_copy_texture_words(const NvnRtCopyEnv* env, const NvnTexture* sr
 #define NVN_DMA_LAYOUT_BLOCK      0u
 #define NVN_DMA_LAYOUT_DST_PITCH  0x100u /* destination bit 8 */
 #define NVN_DMA_MULTI_LINE        0x200u /* bit 9: LineCount rows */
+#define NVN_DMA_GOB_HEIGHT_FERMI  0x1000u /* block size bits 12-15: 1 = 8-row GOB, the library ORs it (d82b34c, d82b3d0) */
 #define NVN_RT_SUBCHANNEL_SHIFT   13u    /* the method word header, the pushbuffer header's subchannel field */
 #define NVN_RT_ORIGIN_MASK        0xFFFFu
 
@@ -822,7 +823,7 @@ static int rt_copy_plan(const NvnRtCopyEnv* env, const NvnTexture* texture, cons
         p->surface_rows = level.rows;
         p->surface_depth = p->is_3d ? level.depth : 1u;
         p->block_size = ((uint32_t)level.block_height_log2 << 4) |
-                        ((uint32_t)level.depth_log2 << 8);
+                        ((uint32_t)level.depth_log2 << 8) | NVN_DMA_GOB_HEIGHT_FERMI;
         p->tile = rt_tile_word(l);
         uint32_t tile_depth = 1u << (l->tile_z & NVN_RT_SHIFT_MASK);
         p->depth_word = (l->depth ? l->depth : 1u) < tile_depth ? (l->depth ? l->depth : 1u) : tile_depth;
@@ -1041,8 +1042,10 @@ typedef struct {
 #define NVN_RT_2D_OPEN_COPY        0x91010002u
 #define NVN_RT_2D_OPEN_DOWNSAMPLE  0x91050002u
 #define NVN_RT_2D_OPEN_TILED       0x91060002u
-#define NVN_RT_2D_SAMPLE_CENTER    0u
-#define NVN_RT_2D_SAMPLE_BILINEAR  0x10u /* bit 4 of SAMPLE_MODE, the filter of TiledDownsample (design item 2) */
+/* SAMPLE_MODE: bit 0 origin (1 corner), bit 4 filter (1 bilinear). The 2D route of CopyBufferToTexture is corner and
+   point (d82ba04-d82ba3c), the downsamples are center and bilinear (d82ca3c-d82ca90, design item 2). */
+#define NVN_RT_2D_SAMPLE_CORNER    0x1u
+#define NVN_RT_2D_SAMPLE_BILINEAR  0x10u
 #define NVN_RT_2D_UNIT             0x100000000ull
 #define NVN_RT_2D_NEGATIVE_UNIT    0xFFFFFFFF00000000ull
 #define NVN_RT_2D_SRC_PITCH_METHOD 0x6090u /* subchannel 3, methods 0x090 LAYER and 0x091 PITCH */
@@ -1200,9 +1203,10 @@ uint32_t nvn_rt_copy_buffer_texture_2d_words(const NvnRtCopyEnv* env, const NvnT
     uint64_t du = (flags & NVN_COPY_FLAG_MIRROR_X) ? NVN_RT_2D_NEGATIVE_UNIT : NVN_RT_2D_UNIT;
     uint64_t dv = (flags & NVN_COPY_FLAG_MIRROR_Y) ? NVN_RT_2D_NEGATIVE_UNIT : NVN_RT_2D_UNIT;
     uint32_t scale[4] = {(uint32_t)du, (uint32_t)(du >> 32), (uint32_t)dv, (uint32_t)(dv >> 32)};
-    /* 32.32 fixed point, as the step: a mirrored side starts at its far edge */
-    uint64_t sx = (flags & NVN_COPY_FLAG_MIRROR_X) ? (uint64_t)width << 32 : 0u;
-    uint64_t sy = (flags & NVN_COPY_FLAG_MIRROR_Y) ? (uint64_t)height << 32 : 0u;
+    /* 32.32 fixed point, as the step: a mirrored side starts at its far edge. With the corner origin the library starts
+       half a step in (d82b9a8-d82b9d4), so the engine samples the texel centers. */
+    uint64_t sx = ((flags & NVN_COPY_FLAG_MIRROR_X) ? (uint64_t)width << 32 : 0u) + (uint64_t)((int64_t)du / 2);
+    uint64_t sy = ((flags & NVN_COPY_FLAG_MIRROR_Y) ? (uint64_t)height << 32 : 0u) + (uint64_t)((int64_t)dv / 2);
     uint32_t origin[4] = {(uint32_t)sx, (uint32_t)(sx >> 32), (uint32_t)sy, (uint32_t)(sy >> 32)};
     NvnRt2dSide src = {0};
     src.format_word = dst.format_word;
@@ -1228,7 +1232,7 @@ uint32_t nvn_rt_copy_buffer_texture_2d_words(const NvnRtCopyEnv* env, const NvnT
     for (uint32_t i = 0; i < p.layers; i++) {
         src.address = src_addr[i];
         dst.address = dst_addr[i];
-        at += rt_2d_emit(&src, &dst, i == 0u, NVN_RT_2D_OPEN_COPY, NVN_RT_2D_SAMPLE_CENTER, rect, scale, origin,
+        at += rt_2d_emit(&src, &dst, i == 0u, NVN_RT_2D_OPEN_COPY, NVN_RT_2D_SAMPLE_CORNER, rect, scale, origin,
                          out + at);
     }
     if (at < NVN_RT_COPY_2D_WORDS_MAX) out[at++] = NVN_RT_COPY_CLOSE;
@@ -1282,7 +1286,7 @@ uint32_t nvn_rt_downsample_words(const NvnRtCopyEnv* env, const NvnTexture* src,
     uint32_t scale[4] = {(uint32_t)du, (uint32_t)(du >> 32), (uint32_t)dv, (uint32_t)(dv >> 32)};
     uint32_t origin[4] = {0u, 0u, 0u, 0u};
     uint32_t at = rt_2d_emit(&s, &d, 1, tiled ? NVN_RT_2D_OPEN_TILED : NVN_RT_2D_OPEN_DOWNSAMPLE,
-                             tiled ? NVN_RT_2D_SAMPLE_BILINEAR : NVN_RT_2D_SAMPLE_CENTER, rect, scale, origin,
+                             NVN_RT_2D_SAMPLE_BILINEAR, rect, scale, origin,
                              out);
     out[at++] = NVN_RT_COPY_CLOSE;
     return at;
