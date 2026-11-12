@@ -2038,6 +2038,53 @@ static u32 climb_adrp(u64 pc, u32 rd) {
     const u64 pages = ((frame_step_address >> 12) - (pc >> 12)) & 0x1fffff;
     return 0x90000000 | rd | (u32)((pages & 3) << 29) | (u32)((pages >> 2) << 5);
 }
+/* SNX_ARCEUS_CLIMB_STEP=2 also fixes the climb's stop: in state +D00 == 2 the animation adds one
+   to +D04 per call and eases over climbing_move_stop_frame calls. A call that does not complete
+   a whole 1/30 s gets +D04 staged one lower, so the stop lasts its authored time. The fraction
+   is kept per object and starts over with each stop, or when another writer changed +D04. */
+#define CLIMB_STOP_SLOTS 4
+static GuestFn climb_anim_original;
+static int climb_stop_fix;
+static struct { u64 object; float progress; u32 frame; } climb_stop_slots[CLIMB_STOP_SLOTS];
+static int climb_stopping(u64 object) { return readable(object + 0xd00, 8) && gr32(object + 0xd00) == 2; }
+/* Before the call: the object's slot when it was staged or counted, else -1. */
+static int climb_stop_before(u64 object, float want) {
+    if (!climb_stopping(object)) {
+        for (int k = 0; k < CLIMB_STOP_SLOTS; k++)
+            if (climb_stop_slots[k].object == object) climb_stop_slots[k].object = 0;
+        return -1;
+    }
+    if (!writable(object + 0xd00, 8) || !(want > 0.0f && want <= 1.0f)) return -1;
+    int slot = -1;
+    for (int k = 0; k < CLIMB_STOP_SLOTS && slot < 0; k++)
+        if (climb_stop_slots[k].object == object) slot = k;
+    for (int k = 0; k < CLIMB_STOP_SLOTS && slot < 0; k++)
+        if (!climb_stop_slots[k].object) slot = k;
+    if (slot < 0) return -1;
+    const u32 frame = gr32(object + 0xd04);
+    if (climb_stop_slots[slot].object != object || climb_stop_slots[slot].frame != frame) {
+        climb_stop_slots[slot].object = object;
+        climb_stop_slots[slot].progress = 0.0f;
+    }
+    float progress = climb_stop_slots[slot].progress + want;
+    if (progress < 1.0f) gw32(object + 0xd04, frame - 1);
+    else progress -= 1.0f;
+    climb_stop_slots[slot].progress = progress;
+    return slot;
+}
+/* After the call: remember the count it left, or free the slot once the stop ended. */
+static void climb_stop_after(u64 object, int slot) {
+    if (slot < 0) return;
+    if (climb_stopping(object)) climb_stop_slots[slot].frame = gr32(object + 0xd04);
+    else climb_stop_slots[slot].object = 0;
+}
+static void climb_anim_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    const int slot = climb_stop_fix ? climb_stop_before(object, guest_float(frame_step_address) / NOMINAL_STEP_SECONDS)
+                                    : -1;
+    climb_anim_original(c, entry);
+    climb_stop_after(object, slot);
+}
 static void climb_step_init(void) {
     const char* enabled = getenv("SNX_ARCEUS_CLIMB_STEP");
     if (!main_base || !enabled || (strcmp(enabled, "1") && strcmp(enabled, "2"))) return;
@@ -2065,12 +2112,26 @@ static void climb_step_init(void) {
     for (unsigned k = 0; anim_ok && k < 8; k++) anim_ok = gr32(at + 4 * k) == climb_anim_words[k];
     if (anim_ok) {
         for (unsigned k = 0; k < 8; k++) gw32(at + 4 * k, k == 3 ? climb_adrp(at + 12, 9) : climb_anim_patched[k]);
+        /* The state 2 check, the +D04 load, add and store, and the reload and signed compare before the finish. */
+        const int stop_ok = !strcmp(enabled, "2") && gr32(anim + 0x1e4) == 0x7100091f &&
+                            gr32(anim + 0x1ec) == 0xb94d0668 && gr32(anim + 0x1f0) == 0x11000508 &&
+                            gr32(anim + 0x1f4) == 0xb90d0668 && gr32(anim + 0x308) == 0xb94d0668 &&
+                            gr32(anim + 0x30c) == 0x6b14011f;
+        if (!strcmp(enabled, "2") && !stop_ok) WARN("arceus-climb: refused stop guard\n");
+        if (stop_ok) gw32(anim + 0x38, 0x91000013); /* Equivalent MOV X19,X0 -> ADD X19,X0,#0. */
         jit_code_changed(anim, 0xef4);
+        if (stop_ok) {
+            climb_anim_original = jit_wait(anim);
+            if (climb_anim_original) {
+                climb_stop_fix = 1;
+                __atomic_store_n(&g_disp[(anim - g_code_lo) / 4], climb_anim_update, __ATOMIC_RELEASE);
+            }
+        }
     } else {
         WARN("arceus-climb: refused animation guard\n");
     }
-    LOG("arceus-climb: EXPERIMENT: Sneasler climb distance uses min(1/30, elapsed), animation ratio %s\n",
-        anim_ok ? "on" : "off");
+    LOG("arceus-climb: EXPERIMENT: Sneasler climb distance uses min(1/30, elapsed), animation ratio %s, stop %s\n",
+        anim_ok ? "on" : "off", climb_stop_fix ? "on" : "off");
 }
 
 void arceus_clock_post_jit(void) {

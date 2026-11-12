@@ -195,6 +195,65 @@ static void test_climb_adrp(void) {
     assert(climb_adrp(0x10000123, 9) == 0xf0003fe9);
     frame_step_address = 0;
 }
+/* The climb stop: the stub adds one to +D04 in state 2 and finishes at stop_frames, as the
+   animation does. Staging holds the count to whole 1/30 s steps. */
+static const u64 climber = 128, cell = 3840;
+static u32 stop_frames;
+static unsigned stop_calls;
+static void climb_original(CPU* c, u64 entry) {
+    (void)c; (void)entry;
+    stop_calls++;
+    if (gr32(climber + 0xd00) != 2) return;
+    const u32 frame = gr32(climber + 0xd04) + 1;
+    gw32(climber + 0xd04, frame);
+    if ((int)frame >= (int)stop_frames) gw32(climber + 0xd00, 1);
+}
+static double climb_stop_seconds(const float* steps, unsigned n) {
+    gw32(climber + 0xd00, 2);
+    gw32(climber + 0xd04, 0);
+    stop_calls = 0;
+    double seconds = 0;
+    for (unsigned i = 0; gr32(climber + 0xd00) == 2 && i < 10000; i++) {
+        guest_float_write(cell, steps[i % n]);
+        seconds += steps[i % n];
+        CPU cpu = {.x = {[0] = climber}};
+        climb_anim_update(&cpu, 0);
+    }
+    assert(gr32(climber + 0xd00) == 1);
+    return seconds;
+}
+static void test_climb_stop(void) {
+    memset(memory, 0, sizeof memory);
+    memset(climb_stop_slots, 0, sizeof climb_stop_slots);
+    frame_step_address = cell;
+    climb_anim_original = climb_original;
+    climb_stop_fix = 1;
+    stop_frames = 3;
+    const float at30 = 1.0f / 30, at120 = 1.0f / 120, at1000 = 1.0f / 1000;
+    climb_stop_seconds(&at30, 1);
+    assert(stop_calls == 3);
+    climb_stop_seconds(&at120, 1);
+    assert(stop_calls == 12);
+    climb_stop_seconds(&at1000, 1);
+    assert(stop_calls >= 99 && stop_calls <= 101);
+    /* Mixed steps end once three whole 1/30 s have passed, within one call. */
+    const float mixed[] = {1.0f / 144, 1.0f / 60, 1.0f / 240, 1.0f / 90, 1.0f / 30};
+    const double seconds = climb_stop_seconds(mixed, 5);
+    assert(seconds >= 0.1 - 1e-6 && seconds < 0.1 + 1.0 / 30);
+    /* An interrupted stop frees the slot, and the next stop starts from zero. */
+    gw32(climber + 0xd00, 2);
+    gw32(climber + 0xd04, 0);
+    guest_float_write(cell, at120);
+    CPU cpu = {.x = {[0] = climber}};
+    climb_anim_update(&cpu, 0);
+    gw32(climber + 0xd00, 1);
+    climb_anim_update(&cpu, 0);
+    assert(!climb_stop_slots[0].object);
+    climb_stop_seconds(&at120, 1);
+    assert(stop_calls == 12);
+    climb_stop_fix = 0;
+    frame_step_address = 0;
+}
 int main(void) {
     const char* disabled[] = {"SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60", "SNX_ARCEUS_CLOCK_TRACE",
         "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_CAMERA_TRACE",
@@ -203,6 +262,7 @@ int main(void) {
     test_sequence();
     test_diagnostics();
     test_climb_adrp();
+    test_climb_stop();
     test_target();
     puts("arceus_clock: all checks passed");
     return 0;

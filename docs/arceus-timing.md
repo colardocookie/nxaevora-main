@@ -190,3 +190,10 @@ and playback ratio. With the mover fixed that ratio was 1/4 at 120 FPS, which lo
 the same switch replaces its `FMOV #30` and `FDIV` at `+950` with the frame step times the speed. The room comes
 from an `MVN` and `AND` pair becoming one `BIC`. If this part's guard fails, the mover fix stays and the log says
 the animation ratio is off.
+
+With `SNX_ARCEUS_CLIMB_STEP=2` a wrapper on the climb animation also fixes the climb's stop. In stop state (`+D00`
+is 2) the animation adds one to the count at `+D04` on each call and eases the stop over its authored number of
+frames, so at 120 FPS the stop lasted a quarter of its time. A call that does not complete a whole 1/30 second now
+gets the count staged one lower, so it rises 30 times a second. The fraction is kept for each climbing object, up
+to four, and starts over with each stop or when the count is not what the last call left. The wrapper's guard
+checks the state test, the count's load, add and store, and the compare that ends the stop.
