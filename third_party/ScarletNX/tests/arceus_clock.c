@@ -471,6 +471,7 @@ static void smooth_start(void) {
     ledge_end_originals[1] = ledge_end_original;
     ledge_set_position_original = ride_set_original;
     ride_y = 0;
+    ride_sets = 0;
     smooth_step = 0;
     smooth_end_at = 1;
     smooth_finish_at = -1;
@@ -492,6 +493,8 @@ static void test_ledge_smoothing(void) {
         last = ride_y;
     }
     assert(frames > 40 && moved * 4 >= frames * 3);
+    /* The skipped frames are placed through the original setter, not only the script's runs. */
+    assert(ride_sets > 2 * smooth_step);
     /* The script finishes inside a run while the ride is a step behind: it settles on 15. */
     smooth_finish_at = (int)smooth_step + 1;
     while (ledge_window.open) smooth_frame(1.0f / 120);
