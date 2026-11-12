@@ -23,7 +23,9 @@ int main(void) {
     assert(!strcmp(ini_deprecated("touch_controls"), "now controls") &&
            !strcmp(ini_deprecated("docked"), "the runtime is always in TV mode") &&
            !strcmp(ini_deprecated("modo_tv"), "the runtime is always in TV mode"));
-    assert(!ini_deprecated("resolution") && !ini_deprecated("controls") && !ini_deprecated(""));
+    assert(!strcmp(ini_deprecated("resolution"), "now render_resolution, a choice of 720p, 1080p, 1440p or 2160p") &&
+           !strcmp(ini_deprecated("resolucion"), "now render_resolution, a choice of 720p, 1080p, 1440p or 2160p"));
+    assert(!ini_deprecated("render_resolution") && !ini_deprecated("controls") && !ini_deprecated(""));
     /* the section, word for word */
     f = tmpfile();
     assert(f);

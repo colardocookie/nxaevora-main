@@ -93,16 +93,16 @@ static void vkr_mapping_end(void) {
 /* 0 when Vulkan can't run here */
 static int vkr_start(void) {
     if (!vk_init()) return 0;
-    g_vk_scale = g_settings.resolution_scale;       /* the .ini keeps resolution within 0.25 to 16 (options.c) */
+    g_vk_scale = vk_render_scale(g_settings.render_resolution); /* render_resolution is a choice of sizes (settings.txt) */
     g_vk_anisotropy = g_settings.anisotropic_filtering; /* the sampler table keeps what it makes: anisotropy applies at start */
     if (g_vk_anisotropy > 1 && !g_vk.feat.samplerAnisotropy)
         LOG("vulkan: this GPU has no anisotropic filtering, so anisotropy=%d does nothing\n", g_vk_anisotropy);
-    if (g_vk_scale != 1.0f) LOG("vulkan: render targets at %.2fx\n", g_vk_scale);
+    LOG("vulkan: render resolution %s (%.2fx)\n", vk_render_word(g_settings.render_resolution), g_vk_scale);
     if (!vk_scale_fits(g_vk_scale)) {
         u64 usage, budget;
         vk_mem_use(&usage, &budget);
         LOG("vulkan: WARNING: render targets at %.2fx need about %llu MB and the GPU memory budget is %llu MB: the game "
-            "may run out of memory (set resolution lower)\n",
+            "may run out of memory (set render_resolution lower)\n",
             g_vk_scale, (unsigned long long)vk_scale_memory_mb(g_vk_scale), (unsigned long long)(budget >> 20));
     }
     vk_cmd_init();

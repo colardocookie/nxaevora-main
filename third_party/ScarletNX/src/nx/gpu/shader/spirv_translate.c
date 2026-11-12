@@ -982,7 +982,7 @@ static void alpha_test(DirectCtx* c, u32 push, u32 push_pointer, u32 alpha) {
     spv_emit_label(&c->emit, merge);
 }
 
-/* Fragment fetches from a scaled render target (resolution=): texel p is at (p + 0.5) * scale, and TXQ answers the
+/* Fragment fetches from a scaled render target (render_resolution=): texel p is at (p + 0.5) * scale, and TXQ answers the
    size over the scale. The texture's bit is in the push constants' uvec4, x for slots 0-31, y for 32-63 */
 _Static_assert(SH_MAXTEX <= 64, "the scaled textures' mask has a bit a slot");
 static void scaled_coords(DirectCtx* c, u32 push, int slot, int size, u32 i32_type, u32* x, u32* y) {
