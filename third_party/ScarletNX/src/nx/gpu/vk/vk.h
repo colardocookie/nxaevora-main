@@ -418,6 +418,9 @@ typedef struct Surf {
     u64 gva;
     u32 w, h, layers, levels;
     u32 base_layer; /* the first layer of img that is layer 0 of this surface (a member of a shared array image) */
+    struct Surf* group;   /* a member: the group whose image img is (its layer is base_layer), else NULL */
+    struct Surf** member; /* a group: the member of each layer (layers entries), NULL in a slot after its member left */
+    u32 nmember;          /* a group: the members left; the group and its image go with the last one */
     u32 sw, sh;  /* the image's size: render targets are w x h times the resolution scale */
     u32 depth3d; /* 3D textures: depth (layers is 1) */
     u32 fkey;    /* render targets: guest format | 0x10000 for depth. Textures: TIC word 0's format bits (0x7FFFF), sRGB
@@ -491,6 +494,10 @@ float vk_scf(float v); /* the same for viewport values */
 /* w in pixels; pitch: bytes per row of a pitch-linear target (the register holds it in place of the width) */
 Surf* vk_rt(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32 pitch);
 Surf* vk_rt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 pitch, u32 layers, u64 layer_size, int volume);
+/* one array image whose layers are the images of n single-layer render targets, each moved into its layer: NULL
+   when they can't share one (the reason is logged) */
+#define VK_RT_GROUP_MAX 64
+Surf* vk_rt_group_make(Surf* const* members, u32 n);
 Surf* vk_zt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 layers, u64 layer_size);
 Surf* vk_rt_find(u64 gva);
 Surf* vk_rt_snapshot(Surf* rt);                  /* copy a target so a draw can sample its contents while writing it */
