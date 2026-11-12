@@ -490,6 +490,7 @@ uint32_t spv_emit_load(SpvEmitter* e, uint32_t result_type, uint32_t pointer);
 uint32_t spv_emit_bitcast(SpvEmitter* e, uint32_t result_type, uint32_t value);
 uint32_t spv_emit_fadd(SpvEmitter* e, uint32_t f32_type, uint32_t left, uint32_t right);
 uint32_t spv_emit_fmul(SpvEmitter* e, uint32_t f32_type, uint32_t left, uint32_t right);
+uint32_t spv_emit_fmod(SpvEmitter* e, uint32_t f32_type, uint32_t left, uint32_t right);
 uint32_t spv_emit_i_equal(SpvEmitter* e, uint32_t bool_type, uint32_t left, uint32_t right);
 uint32_t spv_emit_i_not_equal(SpvEmitter* e, uint32_t bool_type, uint32_t left, uint32_t right);
 uint32_t spv_emit_u_less(SpvEmitter* e, uint32_t bool_type, uint32_t left, uint32_t right);

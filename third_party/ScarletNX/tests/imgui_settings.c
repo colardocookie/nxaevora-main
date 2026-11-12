@@ -143,6 +143,11 @@ int main(void) {
               (unsigned)(1920 * vk_render_scale(3) + 0.5f) == 3840 && (unsigned)(1080 * vk_render_scale(3) + 0.5f) == 2160,
           "the 720p and 2160p sizes");
 
+    /* scaled texel fetches keep the fragment's position only at the target's aspect ratio (scale.h) */
+    check(vk_scale_same_aspect(1920, 1080, 1920, 1080) && vk_scale_same_aspect(960, 540, 1920, 1080) &&
+              !vk_scale_same_aspect(1024, 1024, 1920, 1080) && !vk_scale_same_aspect(0, 1080, 1920, 1080),
+          "equal and half sizes match, a different ratio and a zero size do not");
+
     /* a startup setting that this run changed shows the saved value and says that it waits for a start */
     g_saved_key = "render_resolution";
     g_saved_value = "3";

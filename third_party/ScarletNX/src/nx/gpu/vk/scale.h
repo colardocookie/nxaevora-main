@@ -18,6 +18,12 @@ static inline const char* vk_render_word(int choice) {
     static const char* const words[VK_RENDER_CHOICES] = {"720p", "1080p", "1440p", "2160p"};
     return choice >= 0 && choice < VK_RENDER_CHOICES ? words[choice] : words[1];
 }
+/* As Ryujinx's TextureBindingsManager: a scaled fetch keeps the fragment's position (spirv_translate.c,
+   scaled_coords) only when the texture has the bound target's aspect ratio, in guest pixels. A zero size never does */
+static inline int vk_scale_same_aspect(uint32_t tex_w, uint32_t tex_h, uint32_t target_w, uint32_t target_h) {
+    if (!tex_w || !tex_h || !target_w || !target_h) return 0;
+    return (uint64_t)target_w * tex_h == (uint64_t)target_h * tex_w;
+}
 
 /* the heap memory (MB) the game needs with the render targets at this scale, and whether it fits the heap's budget
    (1 too when the budget is not known). An estimate from the logs, for a warning: the targets are made as the game asks */
