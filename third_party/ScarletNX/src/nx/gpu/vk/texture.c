@@ -834,6 +834,11 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
                   "is loaded from memory\n",
                   f.bpp, (unsigned long long)gva, rt->f.bpp);
     }
+    /* a 2D array texture whose layers are scaled targets of their own: one image, drawn at its scaled size */
+    if (!raw && !storage && type == 5 && vt == VK_IMAGE_VIEW_TYPE_2D_ARRAY && levels == 1 && d3 == 1) {
+        Surf* g = vk_rt_group_for(gva, stride, layers, w, h, &f);
+        if (g) return g;
+    }
 texture_from_memory:
     /* loaded from memory, with what render targets drew into its layers and levels copied in after (tex_take_drawn) */
     /* what the device can make */

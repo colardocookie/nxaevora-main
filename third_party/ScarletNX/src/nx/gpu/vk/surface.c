@@ -427,6 +427,48 @@ Surf* vk_rt_group_make(Surf* const* members, u32 n) {
     return g;
 }
 
+/* At most this many missing or stale members a run: a game that asks for an unwanted array texture does so every
+   frame */
+#define VK_RT_GROUP_MISS_LOGS 16
+
+/* The group of scaled targets at the layers of a 2D array texture, made or found again: NULL when the texture keeps
+   the present path (a member is missing, unfit or stale). Called by tex_from_tic under vk_lock. */
+Surf* vk_rt_group_for(u64 gva, u64 stride, u32 layers, u32 w, u32 h, const VkFmt* f) {
+    if (layers < 2 || layers > VK_RT_GROUP_MAX || !stride) return NULL;
+    Surf* members[VK_RT_GROUP_MAX];
+    for (u32 i = 0; i < layers; i++) {
+        u64 at = gva + (u64)i * stride;
+        Surf* m = vk_rt_find(at);
+        /* layer 0 decides whether this is an ordinary array texture: no log and no reload for one */
+        if (i == 0 && vk_rt_group_member_unfit(m, w, h, f)) return NULL;
+        if (m) vk_rt_note_read(m);
+        const char* why = vk_rt_group_member_unfit(m, w, h, f);
+        if (why) {
+            LOG_LIMIT(VK_RT_GROUP_MISS_LOGS,
+                      "vulkan: no group for the %ux%ux%u texture at %llx: layer %u (target %llx) is %s\n", w, h,
+                      layers, (unsigned long long)gva, i, (unsigned long long)at, why);
+            return NULL;
+        }
+        if (!vk_rt_drawn_fresh(m)) {
+            LOG_LIMIT(VK_RT_GROUP_MISS_LOGS,
+                      "vulkan: no group for the %ux%ux%u texture at %llx: layer %u (target %llx) is stale\n", w, h,
+                      layers, (unsigned long long)gva, i, (unsigned long long)at);
+            return NULL;
+        }
+        members[i] = m;
+    }
+    Surf* g = vk_rt_group_current(members, layers);
+    if (g) return g;
+    for (u32 i = 0; i < layers; i++)
+        if (members[i]->group) {
+            LOG_LIMIT(VK_RT_GROUP_MISS_LOGS,
+                      "vulkan: the %ux%ux%u texture at %llx makes its group again (a member still holds another)\n", w,
+                      h, layers, (unsigned long long)gva);
+            break;
+        }
+    return vk_rt_group_make(members, layers);
+}
+
 Surf* vk_surf_first(u64 gva) { return g_surfh[hkey(gva)]; }
 u32 g_vk_surf_epoch;
 void vk_surf_add(Surf* s) {

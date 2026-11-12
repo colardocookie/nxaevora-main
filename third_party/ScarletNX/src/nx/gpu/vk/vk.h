@@ -498,6 +498,12 @@ Surf* vk_rt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 pitch, u32 layer
    when they can't share one (the reason is logged) */
 #define VK_RT_GROUP_MAX 64
 Surf* vk_rt_group_make(Surf* const* members, u32 n);
+/* why m can't be a layer of a w x h texture of f, or NULL when it can (gpu/vk/rt_group.c) */
+const char* vk_rt_group_member_unfit(const Surf* m, u32 w, u32 h, const VkFmt* f);
+/* the group that already holds exactly these members, else NULL (gpu/vk/rt_group.c) */
+Surf* vk_rt_group_current(Surf* const* members, u32 n);
+/* a 2D array texture whose layers are groups of scaled targets: NULL when they can't be one (gpu/vk/surface.c) */
+Surf* vk_rt_group_for(u64 gva, u64 stride, u32 layers, u32 w, u32 h, const VkFmt* f);
 Surf* vk_zt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 layers, u64 layer_size);
 Surf* vk_rt_find(u64 gva);
 Surf* vk_rt_snapshot(Surf* rt);                  /* copy a target so a draw can sample its contents while writing it */

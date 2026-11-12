@@ -1383,6 +1383,12 @@ static int is_target(Surf* s, Surf** rt, Surf* zt, u32 n) {
     if (s == zt) return 1;
     for (u32 i = 0; i < n; i++)
         if (rt[i] == s) return 1;
+    /* a group is written through its members: it is a target when one of them is bound */
+    if (s->member) {
+        if (zt && zt->group == s) return 1;
+        for (u32 i = 0; i < n; i++)
+            if (rt[i] && rt[i]->group == s) return 1;
+    }
     return 0;
 }
 
@@ -1732,16 +1738,22 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
             view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
             if (view) *fb |= slots;
         } else if (t && is_target(t, rt, zt, n) && !depth_ro) {
-            /* The guest reads the target's previous contents during a draw that writes it. Without a feedback loop
-               Vulkan can't bind one image for both uses here, so copy it before the draw starts and sample that
-               copy. */
-            Surf* snap = vk_rt_snapshot(t);
-            if (snap != t) {
-                t = snap;
-                view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
-                g_vk_rt_copies++;
-            } else
-                LOG_LIMIT(1, "vulkan: a draw samples a target it renders to (read as empty)\n");
+            if (t->member) {
+                /* a snapshot of a whole group would crop the members' pixels: read as empty instead */
+                LOG_LIMIT(1, "vulkan: a draw samples a group of targets that it renders to (not bound): %llx\n",
+                          (unsigned long long)t->gva);
+            } else {
+                /* The guest reads the target's previous contents during a draw that writes it. Without a feedback loop
+                   Vulkan can't bind one image for both uses here, so copy it before the draw starts and sample that
+                   copy. */
+                Surf* snap = vk_rt_snapshot(t);
+                if (snap != t) {
+                    t = snap;
+                    view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
+                    g_vk_rt_copies++;
+                } else
+                    LOG_LIMIT(1, "vulkan: a draw samples a target it renders to (read as empty)\n");
+            }
         } else
             view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
         const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */
