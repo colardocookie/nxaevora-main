@@ -71,7 +71,9 @@ static void update(void) {
     assert(cpu.x[0] == calls);
 }
 static void test_sequence(void) {
-    for (unsigned fps = 60; fps <= 120; fps *= 2) {
+    static const unsigned rates[] = {60, 120, 144, 240, 500, 1000};
+    for (unsigned r = 0; r < sizeof rates / sizeof rates[0]; r++) {
+        const unsigned fps = rates[r];
         for (float speed = .25f; speed <= 4; speed *= 2) {
             reset(0, speed, 1000000000 / fps);
             for (unsigned i = 0; i < fps; i++) update();
@@ -116,7 +118,8 @@ static void test_sequence(void) {
     update();
     assert(calls == 2 && guest_float(object + 0xe8) > 1.98f);
     /* Changing frame intervals carry elapsed budget rather than a fixed FPS ratio. */
-    const u64 intervals[] = {8333333, 16666667, 11111111, 25000000, 10000000, 100000000};
+    const u64 intervals[] = {8333333, 16666667, 11111111, 25000000, 10000000, 100000000,
+                             1000000, 4166667, 2777778, 6944444, 1000000, 50000000};
     for (float speed = .25f; speed <= 4; speed *= 2) {
         reset(0, speed, 1);
         u64 elapsed = 0;
@@ -157,6 +160,30 @@ static void test_diagnostics(void) {
         flag(flags[i], "0");
     }
 }
+/* SNX_ARCEUS_TARGET_FPS=unlocked or 0 reaches the build check like 60 and 120, and any other
+   value is refused before it. */
+static void test_target(void) {
+    SnxModInfo main_mod = {.name = "main", .base = 4096,
+        .build_id = {0xae,0xe8,0xf1,0x50,0xdd,0xa1,0xb5,0xa8,0x38,0x80,0x6e,0x1a,0x5e,0xa6,0x82,0x7a,
+                     0xd9,0xf3,0xc5,0x1e}};
+    SnxModule module = {.nmods = 1, .mods = &main_mod};
+    g_mod = &module;
+    const char* accepted[] = {"unlocked", "0", "60", "120"};
+    for (unsigned i = 0; i < 4; i++) {
+        flag("SNX_ARCEUS_TARGET_FPS", accepted[i]);
+        main_base = 0;
+        arceus_clock_init();
+        assert(main_base == main_mod.base);
+    }
+    const char* refused[] = {"144", "unlimited", "-1"};
+    for (unsigned i = 0; i < 3; i++) {
+        flag("SNX_ARCEUS_TARGET_FPS", refused[i]);
+        main_base = 0;
+        arceus_clock_init();
+        assert(main_base == 0);
+    }
+    flag("SNX_ARCEUS_TARGET_FPS", "");
+}
 int main(void) {
     const char* disabled[] = {"SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60", "SNX_ARCEUS_CLOCK_TRACE",
         "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_CAMERA_TRACE",
@@ -164,6 +191,7 @@ int main(void) {
     for (unsigned i = 0; i < sizeof disabled / sizeof disabled[0]; i++) flag(disabled[i], "");
     test_sequence();
     test_diagnostics();
+    test_target();
     puts("arceus_clock: all checks passed");
     return 0;
 }

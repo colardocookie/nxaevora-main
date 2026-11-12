@@ -5,6 +5,10 @@
 #include <stdint.h>
 #define ARCEUS_INITIAL_STEP_NS UINT64_C(16666667)
 #define ARCEUS_MAX_STEP_NS UINT64_C(100000000)
+/* SNX_ARCEUS_TARGET_FPS=unlocked has no rate to start from, so it assumes 1/120 s. */
+#define ARCEUS_UNLOCKED_INITIAL_STEP_NS UINT64_C(8333333)
+/* The smallest step / (1/30) a ratio is clamped to: 1/1000, about 30000 FPS. */
+#define ARCEUS_MIN_STEP_RATIO 0.001f
 typedef struct {
     uint64_t last, object, step, initial_ns;
     unsigned next_channel;
