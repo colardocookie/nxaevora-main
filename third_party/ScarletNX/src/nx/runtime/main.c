@@ -4,6 +4,7 @@
    order they depend on each other, the shaders made before the game draws (prepare_wait), the game's main thread;
    then the frontend's loop at the display's rate until the run ends, saving what outlives it */
 #include "nx/runtime/main.h"
+#include "nx/runtime/arceus_clock.h"
 #include "common/cpu/recompiler/llvm/gdb_jit.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/utilities/build_info.h"
@@ -954,9 +955,11 @@ int snx_main(int argc, char** argv) {
     kernel_load_symbols();
     nvn_native_init(); /* before the trace, which wraps the slots that the native layer fills */
     nvn_trace_init();
+    arceus_clock_init();
     /* after the trace, which says whether calls must go through the slots it wraps. The JIT compiles A64: a 32-bit
        game's blocks are arm.c's, and its hints are A32 block keys the JIT must not warm-compile */
     if (!g_arm_mod) jit_init();
+    if (!g_arm_mod) arceus_clock_post_jit();
     read_npdm();
     svc_core_init();
     {
