@@ -1241,6 +1241,11 @@ if(NOT SNX_TOOLS_ONLY)
     target_compile_definitions(snx-test-tex-upload-rows PRIVATE SNX_TEST_VMA_STUBS=1)
     target_link_libraries(snx-test-tex-upload-rows PRIVATE snx_nx_flags)
     add_test(NAME tex_upload_rows COMMAND snx-test-tex-upload-rows)
+    # the rules of a group of scaled render targets that one 2D array texture samples (gpu/vk/rt_group.c)
+    add_executable(snx-test-rt-group rt_group.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/rt_group.c")
+    snx_test_target(snx-test-rt-group 23)
+    target_link_libraries(snx-test-rt-group PRIVATE snx_nx_flags)
+    add_test(NAME rt_group COMMAND snx-test-rt-group)
     # the file of shaders and pipelines kept across runs (gpu/vk/pipeline_file.c): records back as written, pipelines
     # by their shaders' records (a shipped shader's reference among them), a cut or changed record ending the reading,
     # another key starting over, a full file; and the shipped shaders' file read through its mapping

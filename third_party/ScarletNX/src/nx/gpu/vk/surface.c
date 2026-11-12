@@ -128,8 +128,29 @@ VkImageAspectFlags vk_aspect(const VkFmt* f) {
     return VK_IMAGE_ASPECT_DEPTH_BIT | (f->stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
 }
 
+/* the barrier range of a surface: the whole image unless the surface is a range of a shared one */
+static u32 surf_layer_count(const Surf* s) {
+    return s->group ? s->layers : VK_REMAINING_ARRAY_LAYERS;
+}
+
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage,
                  VkAccessFlags2 access) {
+    if (s->member) {
+        /* one barrier a member's layer, and the members bound now stay */
+        for (u32 i = 0; i < s->layers; i++) {
+            Surf* m = s->member[i];
+            if (!m) {
+                LOG_LIMIT(8, "vulkan: the group at %llx has no member in layer %u\n", (unsigned long long)s->gva, i);
+                continue;
+            }
+            vk_surf_use(cb, m, layout, stage, access);
+            vk_surf_touch(m);
+        }
+        s->layout = layout;
+        s->stage = stage;
+        s->access = access;
+        return;
+    }
     int writes = (access & (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
                             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)) != 0;
@@ -142,16 +163,18 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
            extends that visibility to it */
         if (stage & ~s->stage) {
             vk_render_end();
-            vk_barrier(cb, s->img, vk_aspect(&s->f), s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                       layout, stage, access, layout);
+            vk_barrier_layers(cb, s->img, vk_aspect(&s->f), s->base_layer, surf_layer_count(s),
+                              s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, layout, stage, access,
+                              layout);
         }
         s->stage |= stage;
         s->access |= access;
         return;
     }
     vk_render_end(); /* no barriers on images inside a rendering pass */
-    vk_barrier(cb, s->img, vk_aspect(&s->f), s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->access,
-               s->layout, stage, access, layout);
+    vk_barrier_layers(cb, s->img, vk_aspect(&s->f), s->base_layer, surf_layer_count(s),
+                      s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->access, s->layout, stage, access,
+                      layout);
     s->layout = layout;
     s->stage = stage;
     s->access = access;
@@ -166,6 +189,36 @@ float vk_scf(float v) { return v * g_vk_scale; }
 
 static u64 g_rt_made; /* for the stats line */
 u64 vk_rt_made(void) { return g_rt_made; }
+/* The image of a render target (surf_create) or of a group of them (vk_rt_group_make): attachment and sampled
+   usage, the feedback loop where the device has it, storage where the format allows it, and the sRGB views of the
+   format */
+static void rt_image_info(VkImageCreateInfo* ii, VkViewFormats* vf, VkFmt f, u32 w, u32 h, u32 layers, int is_rt,
+                          int* storage) {
+    VkImageUsageFlags usage =
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (is_rt) usage |= f.depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    /* the draws rendering to a color target can sample it, in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL (gpu/vk/render.c) */
+    if (is_rt && !f.depth && g_vk.has_feedback) usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
+    VkFormatProperties format_props;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, f.vk, &format_props);
+    if (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) {
+        usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        *storage = 1;
+    }
+    *ii = (VkImageCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                              .imageType = VK_IMAGE_TYPE_2D,
+                              .format = f.vk,
+                              .extent = {w, h, 1},
+                              .mipLevels = 1,
+                              .arrayLayers = layers,
+                              .samples = VK_SAMPLE_COUNT_1_BIT,
+                              .tiling = VK_IMAGE_TILING_OPTIMAL,
+                              .usage = usage,
+                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                              .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    /* sRGB and linear views */
+    vk_view_formats(ii, vf);
+}
 static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 bh, u32 pitch, int is_rt, u32 layers) {
     Surf* s = calloc(1, sizeof *s);
     if (!s) return NULL;
@@ -185,31 +238,10 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
     if (is_rt) g_rt_made++;
     if (is_rt) s->layer_size = bl ? bl_size(w * f.bpp, h, bh) : (u64)pitch * h;
     s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkImageUsageFlags usage =
-        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if (is_rt) usage |= f.depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    /* the draws rendering to a color target can sample it, in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL (gpu/vk/render.c) */
-    if (is_rt && !f.depth && g_vk.has_feedback) usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
-    VkFormatProperties format_props;
-    vkGetPhysicalDeviceFormatProperties(g_vk.phys, f.vk, &format_props);
-    if (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) {
-        usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-        s->storage_capable = 1;
-    }
     s->type = layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
-    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                            .imageType = VK_IMAGE_TYPE_2D,
-                            .format = f.vk,
-                            .extent = {s->sw, s->sh, 1},
-                            .mipLevels = 1,
-                            .arrayLayers = layers,
-                            .samples = VK_SAMPLE_COUNT_1_BIT,
-                            .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = usage,
-                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    VkImageCreateInfo ii;
     VkViewFormats vf; /* sRGB and linear views */
-    vk_view_formats(&ii, &vf);
+    rt_image_info(&ii, &vf, f, s->sw, s->sh, layers, is_rt, &s->storage_capable);
     /* a scaled target can pass the allocation cap (4x of 4K is 506 MiB in RGBA8). Room is made for it under the
        budget: the caller holds only surfaces it used this present, which stay */
     if (!vk_cache_image_create(&ii, &s->img, &s->mem, &s->bytes)) {
@@ -220,7 +252,7 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
                                 .image = s->img,
                                 .viewType = s->type,
                                 .format = f.vk,
-                                .subresourceRange = {vk_aspect(&f), 0, 1, 0, layers}};
+                                .subresourceRange = {vk_aspect(&f), 0, 1, s->base_layer, layers}};
     VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &s->att));
     u32 k = hkey(gva);
     s->next = g_surfh[k];
@@ -247,10 +279,194 @@ VkImageView vk_rt_attachment(Surf* s, int srgb_write) {
                                     .image = s->img,
                                     .viewType = s->type,
                                     .format = linear,
-                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, s->layers}};
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, s->base_layer, s->layers}};
         VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &s->att_linear));
     }
     return s->att_linear;
+}
+
+/* a member gives up its own views of its layer; the image stays with its group */
+static void member_drop_views(Surf* m) {
+    for (int i = 0; i < m->nsv; i++) vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, m->sv[i].v, VK_NULL_HANDLE);
+    m->nsv = 0;
+    vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, m->att, m->att_linear);
+    m->att = VK_NULL_HANDLE;
+    m->att_linear = VK_NULL_HANDLE;
+}
+/* m leaves its group; the last member frees the group with its image and returns the bytes that releases */
+static u64 group_leave(Surf* m) {
+    Surf* g = m->group;
+    if (!g) return 0;
+    g->member[m->base_layer] = NULL;
+    g->nmember--;
+    m->group = NULL;
+    if (g->nmember) return 0;
+    for (int i = 0; i < g->nsv; i++) vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, g->sv[i].v, VK_NULL_HANDLE);
+    vk_defer_image(g->img, g->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    u64 bytes = g->bytes;
+    free(g->member);
+    free(g);
+    return bytes;
+}
+/* why the members can't share one array image, or NULL when they can */
+static const char* group_refuse(Surf* const* members, u32 n) {
+    if (!members) return "no member list";
+    if (n < 2) return "fewer than two members";
+    if (n > VK_RT_GROUP_MAX) return "more members than a group takes";
+    for (u32 i = 0; i < n; i++) {
+        Surf* m = members[i];
+        if (!m) return "a NULL member";
+        for (u32 j = 0; j < i; j++)
+            if (members[j] == m) return "a member twice";
+        if (!m->is_rt) return "a member that is not a render target";
+        if (m->gva >> 63) return "a parked member";
+        if (m->layers != 1 || m->levels != 1 || m->volume || m->type != VK_IMAGE_VIEW_TYPE_2D)
+            return "a member that is not one 2D layer";
+        if (vk_gfx_image_holds(m)) return "a member with a storage result waiting";
+        const Surf* a = members[0];
+        if (m->w != a->w || m->h != a->h || m->sw != a->sw || m->sh != a->sh || m->f.vk != a->f.vk ||
+            m->fkey != a->fkey || m->bl != a->bl || m->bh != a->bh || m->pitch != a->pitch)
+            return "a member of another size, format or memory layout";
+    }
+    return NULL;
+}
+/* member m into layer i of group g: its pixels copied into that layer, then the old image and views released */
+static void group_move(Surf* g, Surf* m, u32 i) {
+    int was_member = m->group != NULL;
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    if (m->layout != VK_IMAGE_LAYOUT_UNDEFINED) {
+        vk_surf_use(cb, m, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+        vk_barrier_layers(cb, g->img, vk_aspect(&g->f), i, 1, VK_PIPELINE_STAGE_2_NONE, 0,
+                          VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        /* one aspect a region: a depth target's depth, and its stencil in a second region when it has one */
+        VkImageSubresourceLayers from = {m->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                         m->base_layer, 1};
+        VkImageSubresourceLayers to = {from.aspectMask, 0, i, 1};
+        u32 regions = m->f.stencil ? 2 : 1;
+        VkImageCopy c[2] = {{.srcSubresource = from, .dstSubresource = to, .extent = {m->sw, m->sh, 1}}};
+        c[1] = c[0];
+        c[1].srcSubresource.aspectMask = c[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+        rec_CmdCopyImage(cb, m->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g->img,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, regions, c);
+        m->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        m->stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+        m->access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    } else {
+        m->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        m->stage = 0;
+        m->access = 0;
+    }
+    /* a member of an older group shares that group's image, which its other members keep */
+    if (!was_member) vk_defer_image(m->img, m->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    member_drop_views(m);
+    if (was_member) group_leave(m);
+    m->img = g->img;
+    m->mem = VK_NULL_HANDLE;
+    m->base_layer = i;
+    m->group = g;
+    g->member[i] = m;
+    g->nmember++;
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                .image = g->img,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                .format = m->f.vk,
+                                .subresourceRange = {vk_aspect(&m->f), 0, 1, i, 1}};
+    VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &m->att));
+}
+/* the group's image, with each member's pixels copied into its layer; NULL when the image can't be made */
+static Surf* group_make(Surf* const* members, u32 n) {
+    Surf* a = members[0];
+    Surf* g = calloc(1, sizeof *g);
+    if (!g) return NULL;
+    g->gva = a->gva;
+    g->w = a->w;
+    g->h = a->h;
+    g->sw = a->sw;
+    g->sh = a->sh;
+    g->f = a->f;
+    g->fkey = a->fkey;
+    g->bl = a->bl;
+    g->bh = a->bh;
+    g->pitch = a->pitch;
+    g->layer_size = a->layer_size;
+    g->is_rt = 1;
+    g->layers = n;
+    g->levels = 1;
+    g->type = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    g->layout = VK_IMAGE_LAYOUT_UNDEFINED; /* a summary that only vk_surf_use writes: no reader gets a group */
+    g->member = calloc(n, sizeof *g->member);
+    if (!g->member) {
+        free(g);
+        return NULL;
+    }
+    VkImageCreateInfo ii;
+    VkViewFormats vf; /* sRGB and linear views */
+    rt_image_info(&ii, &vf, g->f, g->sw, g->sh, n, 1, &g->storage_capable);
+    if (!vk_cache_image_create(&ii, &g->img, &g->mem, &g->bytes)) {
+        LOG_LIMIT(8, "vulkan: no image for a group of %u render targets at %llx\n", n,
+                  (unsigned long long)g->gva);
+        free(g->member);
+        free(g);
+        return NULL;
+    }
+    for (u32 i = 0; i < n; i++) group_move(g, members[i], i);
+    return g;
+}
+Surf* vk_rt_group_make(Surf* const* members, u32 n) {
+    const char* why = group_refuse(members, n);
+    if (why) {
+        u64 at = members && n && members[0] ? members[0]->gva & ~(1ull << 63) : 0;
+        LOG_LIMIT(8, "vulkan: no group of %u render targets at %llx: %s\n", n, (unsigned long long)at, why);
+        return NULL;
+    }
+    Surf* g = group_make(members, n);
+    if (g) g_vk_surf_epoch++;
+    return g;
+}
+
+/* At most this many missing or stale members a run: a game that asks for an unwanted array texture does so every
+   frame */
+#define VK_RT_GROUP_MISS_LOGS 16
+
+/* The group of scaled targets at the layers of a 2D array texture, made or found again: NULL when the texture keeps
+   the present path (a member is missing, unfit or stale). Called by tex_from_tic under vk_lock. */
+Surf* vk_rt_group_for(u64 gva, u64 stride, u32 layers, u32 w, u32 h, const VkFmt* f) {
+    if (layers < 2 || layers > VK_RT_GROUP_MAX || !stride) return NULL;
+    Surf* members[VK_RT_GROUP_MAX];
+    for (u32 i = 0; i < layers; i++) {
+        u64 at = gva + (u64)i * stride;
+        Surf* m = vk_rt_find(at);
+        /* layer 0 decides whether this is an ordinary array texture: no log and no reload for one */
+        if (i == 0 && vk_rt_group_member_unfit(m, w, h, f)) return NULL;
+        if (m) vk_rt_note_read(m);
+        const char* why = vk_rt_group_member_unfit(m, w, h, f);
+        if (why) {
+            LOG_LIMIT(VK_RT_GROUP_MISS_LOGS,
+                      "vulkan: no group for the %ux%ux%u texture at %llx: layer %u (target %llx) is %s\n", w, h,
+                      layers, (unsigned long long)gva, i, (unsigned long long)at, why);
+            return NULL;
+        }
+        if (!vk_rt_drawn_fresh(m)) {
+            LOG_LIMIT(VK_RT_GROUP_MISS_LOGS,
+                      "vulkan: no group for the %ux%ux%u texture at %llx: layer %u (target %llx) is stale\n", w, h,
+                      layers, (unsigned long long)gva, i, (unsigned long long)at);
+            return NULL;
+        }
+        members[i] = m;
+    }
+    Surf* g = vk_rt_group_current(members, layers);
+    if (g) return g;
+    for (u32 i = 0; i < layers; i++)
+        if (members[i]->group) {
+            LOG_LIMIT(VK_RT_GROUP_MISS_LOGS,
+                      "vulkan: the %ux%ux%u texture at %llx makes its group again (a member still holds another)\n", w,
+                      h, layers, (unsigned long long)gva);
+            break;
+        }
+    return vk_rt_group_make(members, layers);
 }
 
 Surf* vk_surf_first(u64 gva) { return g_surfh[hkey(gva)]; }
@@ -418,7 +634,7 @@ static void rt_load_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 off, u32
     for (u32 layer = 0; layer < s->layers; layer++) {
         VkBufferImageCopy c = {.bufferOffset = off + (u64)layer * slice,
                                .bufferRowLength = pitch / s->f.bpp,
-                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
+                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer + s->base_layer, 1},
                                .imageExtent = {s->w, s->h, 1}};
         VmaAllocation tm;
         VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : vk_unscaled_image(s, 1, &tm);
@@ -433,7 +649,7 @@ static void rt_load_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 off, u32
             vk_barrier(cb, t, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                        VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            scale_blit(cb, t, s->w, s->h, 0, s->img, s->sw, s->sh, layer, s->f.is_int);
+            scale_blit(cb, t, s->w, s->h, 0, s->img, s->sw, s->sh, s->base_layer + layer, s->f.is_int);
             vk_defer_image(t, tm, VK_NULL_HANDLE, VK_NULL_HANDLE);
         }
     }
@@ -543,7 +759,8 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
         VkBufferImageCopy c = {
             .bufferOffset = at + (u64)layer * slice,
             .bufferRowLength = pitch / s->f.bpp,
-            .imageSubresource = {s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
+            .imageSubresource = {s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                 layer + s->base_layer, 1},
             .imageExtent = {s->w, s->h, depth}};
         VmaAllocation tm;
         VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : vk_unscaled_image(s, 1, &tm);
@@ -554,7 +771,7 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
             vk_barrier(cb, t, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
                        VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-            scale_blit(cb, s->img, s->sw, s->sh, layer, t, s->w, s->h, 0, s->f.is_int);
+            scale_blit(cb, s->img, s->sw, s->sh, s->base_layer + layer, t, s->w, s->h, 0, s->f.is_int);
             vk_barrier(cb, t, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                        VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -910,8 +1127,8 @@ static int rt_take_pixels(Surf* to, Surf* from, int fresh) {
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     vk_surf_use(cb, to, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, to->layers},
-                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, to->layers},
+    VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, from->base_layer, to->layers},
+                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, to->base_layer, to->layers},
                      .extent = {to->sw, to->sh, 1}};
     rec_CmdCopyImage(cb, from->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, to->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                      1, &c);
@@ -1261,8 +1478,9 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
     return n;
 }
 
-/* a surface's image and views go when the frame being recorded is done (descriptors in it may name them) */
-static void surf_free(Surf* s) {
+/* A surface's image and views go when the frame being recorded is done (descriptors in it may name them). Returns
+   the device bytes that go now: a member's image goes with its group, and only the last member frees it */
+static u64 surf_free(Surf* s) {
     g_vk_surf_epoch++;
     if (s->lru) {
         g_held[lru_kind(s)].n--;
@@ -1281,9 +1499,17 @@ static void surf_free(Surf* s) {
         }
         pend_add_va(&g_drawn_pages, s->drawn_from, 1, -1);
     }
+    if (s->group) {
+        member_drop_views(s);
+        u64 bytes = group_leave(s);
+        free(s);
+        return bytes;
+    }
     for (int i = 0; i < s->nsv; i++) vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, s->sv[i].v, VK_NULL_HANDLE);
     vk_defer_image(s->img, s->mem, s->att, s->att_linear);
+    u64 bytes = s->bytes;
     free(s);
+    return bytes;
 }
 /* a target holding a draw that memory doesn't have: it stays while its address is its own and memory wasn't written
    over it since, as a texture made there later takes its pixels (tex_take_drawn) and freeing it would lose them. Depth
@@ -1310,13 +1536,12 @@ static u64 surf_evict(Surf* s) {
             *pp = s->next;
             break;
         }
-    u64 bytes = s->bytes;
+    u64 bytes = 0;
     for (Surf *c = s->crop, *n; c; c = n) {
         n = c->next;
-        bytes += c->bytes;
-        surf_free(c);
+        bytes += surf_free(c);
     }
-    surf_free(s);
+    bytes += surf_free(s);
     vk_defer_bytes(bytes);
     return bytes;
 }
@@ -1508,9 +1733,9 @@ static int blit_depth(Surf* st, const Surf2D* s, const Surf2D* d, int dx, int dy
     vk_surf_use(cb, dt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     /* one aspect a region; nearest, as filtering packed depth and stencil bits as color would only mix them */
-    VkImageBlit b[2] = {{.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+    VkImageBlit b[2] = {{.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, st->base_layer, 1},
                          .srcOffsets = {{x0, y0, 0}, {x1, y1, 1}},
-                         .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                         .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, dt->base_layer, 1},
                          .dstOffsets = {{dx, dy, 0}, {X1, Y1, 1}}}};
     b[1] = b[0];
     b[1].srcSubresource.aspectMask = b[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
@@ -1560,9 +1785,9 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     vk_surf_use(cb, dt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+    VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, st->base_layer, 1},
                      .srcOffsets = {{x0, y0, 0}, {x1, y1, 1}},
-                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, dt->base_layer, 1},
                      .dstOffsets = {{dx, dy, 0}, {X1, Y1, 1}}};
     int linear = scaled && !st->f.is_int && blit_ok(st->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
     rec_CmdBlitImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
@@ -1642,7 +1867,7 @@ static void zt_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, int out) 
         for (layer = 0; layer < s->layers; layer++) {
             VkBufferImageCopy c = {.bufferOffset = at,
                                    .imageSubresource = {a ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, 0,
-                                                        layer, 1},
+                                                        layer + s->base_layer, 1},
                                    .imageExtent = {s->sw, s->sh, 1}};
             if (out)
                 rec_CmdCopyImageToBuffer(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);

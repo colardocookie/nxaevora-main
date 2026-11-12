@@ -162,7 +162,6 @@ static u32 transact(u32 code, const void* payload, u32 n) {
 
 
 int main(void) {
-    g_settings.tv_mode = 0; /* handheld, as the test was written for */
     hle_init();
     u8 gbuf[VI_GBUF], req[4 + 4 + 8 + VI_GBUF], q[4 + 8 + VI_QBI];
     u32 v, n;
@@ -172,6 +171,15 @@ int main(void) {
     IpcBuf window = {0x1000, 0x100, 0};
     g_mem = calloc(1, 0x10000);
     svc_vi_init();
+
+    /* the TV's display mode, while GetDisplayResolution stays 1280 x 720 as on the console */
+    {
+        nn_vi_DisplayModeInfo mode;
+        i64 w = 0, h = 0;
+        CHECK(nn_visrv_sf_ISystemDisplayService_GetDisplayMode(NULL, 0, &mode) == 0);
+        CHECK(mode.width == 1920 && mode.height == 1080);
+        CHECK(nn_visrv_sf_IApplicationDisplayService_GetDisplayResolution(NULL, 0, &w, &h) == 0 && w == 1280 && h == 720);
+    }
 
     /* the native window: a parcel with one flattened binder, id 1 */
     memset(&name, 0, sizeof name);

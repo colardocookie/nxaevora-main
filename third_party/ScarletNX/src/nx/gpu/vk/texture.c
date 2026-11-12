@@ -596,8 +596,10 @@ static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) {
         VkImageAspectFlags a = rt->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         memset(r, 0, sizeof r);
         r[0].srcSubresource.aspectMask = a;
+        r[0].srcSubresource.baseArrayLayer = rt->base_layer;
         r[0].srcSubresource.layerCount = rt->layers;
         r[0].dstSubresource.aspectMask = a;
+        r[0].dstSubresource.baseArrayLayer = c->base_layer;
         r[0].dstSubresource.layerCount = rt->layers;
         r[0].extent.width = c->sw;
         r[0].extent.height = c->sh;
@@ -832,6 +834,11 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
                   "is loaded from memory\n",
                   f.bpp, (unsigned long long)gva, rt->f.bpp);
     }
+    /* a 2D array texture whose layers are scaled targets of their own: one image, drawn at its scaled size */
+    if (!raw && !storage && type == 5 && vt == VK_IMAGE_VIEW_TYPE_2D_ARRAY && levels == 1 && d3 == 1) {
+        Surf* g = vk_rt_group_for(gva, stride, layers, w, h, &f);
+        if (g) return g;
+    }
 texture_from_memory:
     /* loaded from memory, with what render targets drew into its layers and levels copied in after (tex_take_drawn) */
     /* what the device can make */
@@ -915,7 +922,7 @@ static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkCom
                                 .subresourceRange = {stencil      ? VK_IMAGE_ASPECT_STENCIL_BIT
                                                      : s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT
                                                                   : VK_IMAGE_ASPECT_COLOR_BIT,
-                                                     0, levels, 0, layers}};
+                                                     0, levels, s->base_layer, layers}};
     /* a view in the image's sRGB twin is sampled only: storage, which a render target may have, has no sRGB format */
     VkImageViewUsageCreateInfo vu = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
                                      .usage = VK_IMAGE_USAGE_SAMPLED_BIT};
@@ -1173,7 +1180,7 @@ static void mark_copied(Surf* s, Surf* t) {
     s->copied[0].wgen = s->wgen;
     s->copied[0].tgen = t->wgen;
 }
-/* a scaled target (resolution= other than 1) reaches a texture by a blit, which f's tiling has to take both ways */
+/* a scaled target (render_resolution= other than 1) reaches a texture by a blit, which f's tiling has to take both ways */
 static int can_blit(VkFormat f) {
     VkFormatProperties p = {0};
     VkFormatFeatureFlags need = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
@@ -1195,9 +1202,9 @@ static VkCommandBuffer copy_begin(Surf* s, Surf* t) {
    a scaled s goes into slices one at a time (count 1: layered targets take vk_unscaled_image's way there) */
 static void copy_layers(VkCommandBuffer cb, Surf* s, Surf* t, u32 l, u32 dst, u32 count, u32 w, u32 h, int z) {
     /* a region takes one aspect: a depth target's depth, and its stencil in a second region when it has one */
-    VkImageSubresourceLayers from = {t->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, 0,
-                                     z ? 1 : count};
-    VkImageSubresourceLayers to = {from.aspectMask, l, z ? 0 : dst, z ? 1 : count};
+    VkImageSubresourceLayers from = {t->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                     s->base_layer, z ? 1 : count};
+    VkImageSubresourceLayers to = {from.aspectMask, l, t->base_layer + (z ? 0 : dst), z ? 1 : count};
     u32 regions = t->f.depth && t->f.stencil ? 2 : 1;
     i32 dz = z ? (i32)dst : 0;
     if (s->sw == s->w && s->sh == s->h) { /* layers into layers, or into as many slices */
@@ -1280,7 +1287,9 @@ static void tex_take_drawn(Surf* t) {
                     LOG_LIMIT(40, "vulkan: a scaled render target at %llx is copied down to %ux%u, nearest, as slices\n",
                               (unsigned long long)s->gva, t->w, t->h);
                     VkImageSubresourceLayers all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, t->depth3d};
-                    VkImageBlit b = {.srcSubresource = all,
+                    VkImageSubresourceLayers from = all;
+                    from.baseArrayLayer = s->base_layer;
+                    VkImageBlit b = {.srcSubresource = from,
                                      .srcOffsets = {{0, 0, 0}, {(i32)vk_sc(t->w), (i32)vk_sc(t->h), 1}},
                                      .dstSubresource = all,
                                      .dstOffsets = {{0, 0, 0}, {(i32)t->w, (i32)t->h, 1}}};
@@ -1295,7 +1304,7 @@ static void tex_take_drawn(Surf* t) {
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
                     /* layer z into slice z, all in one region */
                     VkImageCopy c = {.srcSubresource = all,
-                                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, t->base_layer, 1},
                                      .extent = {t->w, t->h, t->depth3d}};
                     rec_CmdCopyImage(cb, mid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img,
                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);

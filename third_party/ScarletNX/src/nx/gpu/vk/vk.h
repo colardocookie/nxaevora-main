@@ -231,6 +231,9 @@ void vk_land_through(u64 value); /* the results of the submissions up to value, 
 void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPipelineStageFlags2 src_stage,
                 VkAccessFlags2 src_access, VkImageLayout from, VkPipelineStageFlags2 dst_stage,
                 VkAccessFlags2 dst_access, VkImageLayout to);
+void vk_barrier_layers(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, u32 base, u32 count,
+                       VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access, VkImageLayout from,
+                       VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access, VkImageLayout to);
 /* a descriptor set from the current frame's pools, freed when the frame is reused */
 VkDescriptorSet vk_desc_alloc(VkDescriptorSetLayout layout);
 VkDescriptorPool vk_desc_pool_new(void); /* a pool for 1024 sets of the stage layouts */
@@ -414,6 +417,10 @@ typedef struct {
 typedef struct Surf {
     u64 gva;
     u32 w, h, layers, levels;
+    u32 base_layer; /* the first layer of img that is layer 0 of this surface (a member of a shared array image) */
+    struct Surf* group;   /* a member: the group whose image img is (its layer is base_layer), else NULL */
+    struct Surf** member; /* a group: the member of each layer (layers entries), NULL in a slot after its member left */
+    u32 nmember;          /* a group: the members left; the group and its image go with the last one */
     u32 sw, sh;  /* the image's size: render targets are w x h times the resolution scale */
     u32 depth3d; /* 3D textures: depth (layers is 1) */
     u32 fkey;    /* render targets: guest format | 0x10000 for depth. Textures: TIC word 0's format bits (0x7FFFF), sRGB
@@ -480,13 +487,23 @@ typedef struct Surf {
     int pred_undefined;
 } Surf;
 enum { VK_LRU_NONE, VK_LRU_TEX, VK_LRU_RT };
-/* resolution= in the .ini: render targets are made this much bigger (read once, at startup) */
+/* render_resolution= in the .ini: render targets are made this much bigger (read once, at startup) */
 extern float g_vk_scale;
 u32 vk_sc(u32 v);      /* a size or coordinate scaled, at least 1 */
 float vk_scf(float v); /* the same for viewport values */
 /* w in pixels; pitch: bytes per row of a pitch-linear target (the register holds it in place of the width) */
 Surf* vk_rt(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32 pitch);
 Surf* vk_rt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 pitch, u32 layers, u64 layer_size, int volume);
+/* one array image whose layers are the images of n single-layer render targets, each moved into its layer: NULL
+   when they can't share one (the reason is logged) */
+#define VK_RT_GROUP_MAX 64
+Surf* vk_rt_group_make(Surf* const* members, u32 n);
+/* why m can't be a layer of a w x h texture of f, or NULL when it can (gpu/vk/rt_group.c) */
+const char* vk_rt_group_member_unfit(const Surf* m, u32 w, u32 h, const VkFmt* f);
+/* the group that already holds exactly these members, else NULL (gpu/vk/rt_group.c) */
+Surf* vk_rt_group_current(Surf* const* members, u32 n);
+/* a 2D array texture whose layers are groups of scaled targets: NULL when they can't be one (gpu/vk/surface.c) */
+Surf* vk_rt_group_for(u64 gva, u64 stride, u32 layers, u32 w, u32 h, const VkFmt* f);
 Surf* vk_zt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 layers, u64 layer_size);
 Surf* vk_rt_find(u64 gva);
 Surf* vk_rt_snapshot(Surf* rt);                  /* copy a target so a draw can sample its contents while writing it */

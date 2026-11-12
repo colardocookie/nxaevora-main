@@ -17,6 +17,7 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/scale.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/runtime/platform/tracy.h"
@@ -1382,6 +1383,12 @@ static int is_target(Surf* s, Surf** rt, Surf* zt, u32 n) {
     if (s == zt) return 1;
     for (u32 i = 0; i < n; i++)
         if (rt[i] == s) return 1;
+    /* a group is written through its members: it is a target when one of them is bound */
+    if (s->member) {
+        if (zt && zt->group == s) return 1;
+        for (u32 i = 0; i < n; i++)
+            if (rt[i] && rt[i]->group == s) return 1;
+    }
     return 0;
 }
 
@@ -1569,6 +1576,13 @@ static u64 dset_mix(u64 h, u64 v, u64 m) {
     h = (h ^ v) * m;
     return h ^ (h >> 29);
 }
+/* the first bound color target, else the depth target, as Ryujinx's GetAnyRenderTarget: a slot can be empty (not
+   bound, or taken out by render_draw because the fragment shader samples it) */
+static const Surf* any_target(Surf** rt, u32 n, const Surf* zt) {
+    for (u32 i = 0; rt && i < n; i++)
+        if (rt[i]) return rt[i];
+    return zt;
+}
 static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites* d) {
     static struct {
         u64 h1, h2, frame;
@@ -1610,17 +1624,21 @@ static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites*
     return set;
 }
 static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
-                                  u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images);
-/* scaled: a bit for each texture slot bound to a scaled render target (scaled_coords in spirv_translate.c) */
+                                  u32* fb, u64* scaled, u64* aspect, TexRes* res, const VkDrawStorage* draw,
+                                  DrawImages* images);
+/* scaled: a bit for each texture slot bound to a scaled render target; aspect: the same for the slots at the
+   target's aspect ratio (scaled_coords in spirv_translate.c) */
 static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro, u32* fb,
-                                 u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images) {
+                                 u64* scaled, u64* aspect, TexRes* res, const VkDrawStorage* draw,
+                                 DrawImages* images) {
     SNX_ZONE(z, "stage set");
-    VkDescriptorSet set = stage_set_(ch, stage, s, rt, zt, n, zt_ro, fb, scaled, res, draw, images);
+    VkDescriptorSet set = stage_set_(ch, stage, s, rt, zt, n, zt_ro, fb, scaled, aspect, res, draw, images);
     SNX_ZONE_END(z);
     return set;
 }
 static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
-                                  u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images) {
+                                  u32* fb, u64* scaled, u64* aspect, TexRes* res, const VkDrawStorage* draw,
+                                  DrawImages* images) {
     u32* r = ch->r3d;
     VkDescriptorSetLayout layout = g_vk_dslayout[s->indexed][shader_vk_set(stage)];
     VkDescriptorSet set = VK_NULL_HANDLE; /* the writes take it once their contents are known (desc_set_cached) */
@@ -1656,6 +1674,8 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
     if (stage == 4 && frame_consts(&cb, &co))
         dw_buffer(&d, set, SNX_VKB_RS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, cb, co, 16);
     u32 tcb = r[0x982];
+    /* Ryujinx (TextureBindingsManager): a fragment texture takes the target's scale only at its aspect ratio */
+    const Surf* target = any_target(rt, n, zt);
     int nt = s->si.ntex > SH_MAXTEX ? SH_MAXTEX : s->si.ntex;
     int table_first[SH_INDEXED_TABLES] = {0}, table_count = 0;
     for (int i = 0; i < nt; i++) {
@@ -1718,21 +1738,30 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
             view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
             if (view) *fb |= slots;
         } else if (t && is_target(t, rt, zt, n) && !depth_ro) {
-            /* The guest reads the target's previous contents during a draw that writes it. Without a feedback loop
-               Vulkan can't bind one image for both uses here, so copy it before the draw starts and sample that
-               copy. */
-            Surf* snap = vk_rt_snapshot(t);
-            if (snap != t) {
-                t = snap;
-                view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
-                g_vk_rt_copies++;
-            } else
-                LOG_LIMIT(1, "vulkan: a draw samples a target it renders to (read as empty)\n");
+            if (t->member) {
+                /* a snapshot of a whole group would crop the members' pixels: read as empty instead */
+                LOG_LIMIT(1, "vulkan: a draw samples a group of targets that it renders to (not bound): %llx\n",
+                          (unsigned long long)t->gva);
+            } else {
+                /* The guest reads the target's previous contents during a draw that writes it. Without a feedback loop
+                   Vulkan can't bind one image for both uses here, so copy it before the draw starts and sample that
+                   copy. */
+                Surf* snap = vk_rt_snapshot(t);
+                if (snap != t) {
+                    t = snap;
+                    view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
+                    g_vk_rt_copies++;
+                } else
+                    LOG_LIMIT(1, "vulkan: a draw samples a target it renders to (read as empty)\n");
+            }
         } else
             view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
         const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */
         if (scaled && sampled && (sampled->sw != sampled->w || sampled->sh != sampled->h))
             *scaled |= 1ull << i;
+        if (aspect && scaled && (*scaled & (1ull << i)) && sampled && target &&
+            vk_scale_same_aspect(sampled->w, sampled->h, target->w, target->h))
+            *aspect |= 1ull << i;
         if (view && depth_ro) {
             *zt_ro = 1; /* render_begin moves it to the read-only layout */
             layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
@@ -2750,11 +2779,12 @@ retry:
     }
     int zt_ro = 0;
     u32 fb = 0;
-    u64 scaled = 0;
+    u64 scaled = 0, aspect = 0;
     DrawImages images = {0};
-    VkDescriptorSet vset = stage_set(ch, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images);
+    VkDescriptorSet vset = stage_set(ch, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, NULL, &storage, &images);
     VkDescriptorSet fset =
-        fs ? stage_set(ch, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, fres, &storage, &images) : VK_NULL_HANDLE;
+        fs ? stage_set(ch, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, &aspect, fres, &storage, &images)
+           : VK_NULL_HANDLE;
     /* the sets of the stages between, at their stage's index (shader_vk_set) */
     between[0] = tcs;
     between[1] = tes;
@@ -2768,7 +2798,7 @@ retry:
             bset_ok = 0;
             break;
         }
-        bset[b] = stage_set(ch, b + 1, between[b], rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, NULL);
+        bset[b] = stage_set(ch, b + 1, between[b], rt, zt, n, &zt_ro, NULL, NULL, NULL, NULL, &storage, NULL);
         if (!bset[b]) bset_ok = 0;
     }
     if (!vset || (fs && !fset) || !bset_ok) {
@@ -3197,6 +3227,8 @@ retry:
     }
     u32 scaled_words[2] = {(u32)scaled, (u32)(scaled >> 32)};
     memcpy(&pc[8], scaled_words, sizeof scaled_words);
+    u32 aspect_words[2] = {(u32)aspect, (u32)(aspect >> 32)};
+    memcpy(&pc[10], aspect_words, sizeof aspect_words);
     rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof pc, pc);
 
     vk_query_draw(cb, ch->id, r[0x574]); /* counted by the channel's samples-passed counter when it runs */
@@ -3274,6 +3306,20 @@ void vk_render_draw_texture(GpuChannel* ch) {
         return;
     }
     Surf* d = rt[0];
+    /* a group (2D array of scaled targets) draws its layer 0: that member keeps the layout, gw and read check */
+    if (t->member) {
+        Surf* m = t->member[0];
+        if (!m) {
+            LOG_LIMIT(1, "vulkan: a draw texture of the group at %llx has no member in layer 0 (not drawn)\n",
+                      (unsigned long long)t->gva);
+            return;
+        }
+        t = m;
+    }
+    if (t->img == d->img && t->base_layer == d->base_layer) {
+        LOG_LIMIT(1, "vulkan: a draw texture reads the layer that it writes (not drawn)\n");
+        return;
+    }
     if (t->f.depth || d->f.depth || t->f.is_int != d->f.is_int ||
         !format_has(t->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !format_has(d->f.vk, VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
         LOG_LIMIT(1, "vulkan: a draw texture between formats %d and %d can't be blitted (not drawn)\n", (int)t->f.vk,
@@ -3283,9 +3329,9 @@ void vk_render_draw_texture(GpuChannel* ch) {
     /* in the images' pixels: a target is scaled, and a texture made from one is too */
     float tsx = (float)t->sw / (float)t->w, tsy = (float)t->sh / (float)t->h;
     VkImageBlit b = {
-        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, t->base_layer, 1},
         .srcOffsets = {{(i32)(sx0 * tsx), (i32)(sy0 * tsy), 0}, {(i32)(sx1 * tsx), (i32)(sy1 * tsy), 1}},
-        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, d->base_layer, 1},
         .dstOffsets = {{(i32)vk_scf(x0), (i32)vk_scf(y0), 0}, {(i32)vk_scf(x0 + w), (i32)vk_scf(y0 + h), 1}}};
     int linear =
         (x.tsc[1] & 3) == 2 && !t->f.is_int && format_has(t->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
