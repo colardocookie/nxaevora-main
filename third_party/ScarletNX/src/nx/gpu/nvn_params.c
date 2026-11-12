@@ -1863,7 +1863,9 @@ int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint
         *last = 1;
         return 1;
     }
-    if (mode != NVN_WORD_MODE_INCREASING && mode != NVN_WORD_MODE_INCREASE_ONCE) return -1;
+    if (mode != NVN_WORD_MODE_INCREASING && mode != NVN_WORD_MODE_NON_INCREASING &&
+        mode != NVN_WORD_MODE_INCREASE_ONCE)
+        return -1;
     if (!count) return -1;
     s->mode = mode;
     s->method = header_method;

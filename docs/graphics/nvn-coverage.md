@@ -115,10 +115,10 @@ tool keeps them.
 | `nvnCommandBufferInitialize` | G6 | d823cf0 | 32971 | implemented |  |  |  |
 | `nvnCommandBufferSetMemoryCallback` | G6 | d823d50 | 32971 | implemented |  |  |  |
 | `nvnCommandBufferSetMemoryCallbackData` | G6 | d823d60 | 32971 | implemented |  |  |  |
-| `nvnCommandBufferSetRenderTargets` | G6 | d855da0 | 383398 | implemented |  |  |  |
-| `nvnCommandBufferSetSamplerPool` | G6 | d84c470 | 8919 | implemented |  |  |  |
+| `nvnCommandBufferSetRenderTargets` | G6 | d855da0 | 383398 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferSetSamplerPool` | G6 | d84c470 | 8919 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | selftest: the pool base registers are not compared (per-side addresses) |
 | `nvnCommandBufferSetScissors` | G6 | d84b140 | 616033 | implemented | selftest S (update 1.1.1, 2026-11-11) |  |  |
-| `nvnCommandBufferSetTexturePool` | G6 | d84c1f0 | 8919 | implemented |  |  |  |
+| `nvnCommandBufferSetTexturePool` | G6 | d84c1f0 | 8919 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | selftest: the pool base registers are not compared (per-side addresses) |
 | `nvnCommandBufferSetViewports` | G6 | d84acb0 | 383398 | implemented | selftest S (update 1.1.1, 2026-11-11) |  |  |
 | `nvnQueueFenceSync` | G7 | d83bbf0 | 8919 | implemented |  |  |  |
 | `nvnQueuePresentTexture` | G7 | d83ef40 | 8919 | implemented |  |  |  |
@@ -151,37 +151,37 @@ tool keeps them.
 | `nvnColorStateSetBlendEnable` | G8 | d83ae80 | 857 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnColorStateSetDefaults` | G8 | d83ae70 | 828 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnColorStateSetLogicOp` | G8 | d83aec0 | 4 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
-| `nvnCommandBufferBindBlendState` | G8 | d858670 | 1125187 | implemented |  |  |  |
-| `nvnCommandBufferBindChannelMaskState` | G8 | d847340 | 1028726 | implemented |  |  |  |
-| `nvnCommandBufferBindColorState` | G8 | d8472e0 | 1354349 | implemented |  |  |  |
-| `nvnCommandBufferBindDepthStencilState` | G8 | d8473a0 | 966264 | implemented |  |  |  |
-| `nvnCommandBufferBindMultisampleState` | G8 | d847460 | 830653 | implemented |  |  |  |
-| `nvnCommandBufferBindPolygonState` | G8 | d847400 | 1114717 | implemented |  |  |  |
+| `nvnCommandBufferBindBlendState` | G8 | d858670 | 1125187 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferBindChannelMaskState` | G8 | d847340 | 1028726 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferBindColorState` | G8 | d8472e0 | 1354349 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferBindDepthStencilState` | G8 | d8473a0 | 966264 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferBindMultisampleState` | G8 | d847460 | 830653 | implemented |  |  | selftest: expected no-op, the host replay logs the multisample state only (2026-11-11) |
+| `nvnCommandBufferBindPolygonState` | G8 | d847400 | 1114717 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferBindProgram` | G8 | d8474d0 | 528702 | implemented |  |  |  |
-| `nvnCommandBufferBindStorageBuffer` | G8 | d847f70 | 267197 | implemented |  |  |  |
-| `nvnCommandBufferBindTexture` | G8 | d8483b0 | 2397725 | implemented |  |  |  |
-| `nvnCommandBufferBindUniformBuffer` | G8 | d847b70 | 2805883 | implemented |  |  |  |
-| `nvnCommandBufferBindVertexAttribState` | G8 | d855340 | 485209 | implemented |  |  |  |
-| `nvnCommandBufferBindVertexBuffer` | G8 | d8479d0 | 1131889 | implemented |  |  |  |
-| `nvnCommandBufferBindVertexStreamState` | G8 | d8554b0 | 485209 | implemented |  |  |  |
+| `nvnCommandBufferBindStorageBuffer` | G8 | d847f70 | 267197 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferBindTexture` | G8 | d8483b0 | 2397725 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferBindUniformBuffer` | G8 | d847b70 | 2805883 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferBindVertexAttribState` | G8 | d855340 | 485209 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | selftest mutation: only this row fails (S, r3d.0x458 stream index, 2026-11-12) |
+| `nvnCommandBufferBindVertexBuffer` | G8 | d8479d0 | 1131889 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferBindVertexStreamState` | G8 | d8554b0 | 485209 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferDrawArrays` | G8 | d849670 | 15896 | implemented |  |  |  |
 | `nvnCommandBufferDrawArraysInstanced` | G8 | d849890 | 772558 | implemented |  |  |  |
 | `nvnCommandBufferDrawElements` | G8 | d8496e0 | 47293 | implemented |  |  |  |
 | `nvnCommandBufferDrawElementsBaseVertex` | G8 | d849770 | 491647 | implemented |  |  |  |
 | `nvnCommandBufferDrawElementsInstanced` | G8 | d849930 | 131190 | implemented |  |  |  |
-| `nvnCommandBufferSetAlphaRef` | G8 | d84a790 | 441654 | implemented |  |  |  |
-| `nvnCommandBufferSetBlendColor` | G8 | d84a580 | 1425748 | implemented |  |  |  |
-| `nvnCommandBufferSetDepthBounds` | G8 | d84b0b0 | 640478 | implemented |  |  |  |
-| `nvnCommandBufferSetDepthClamp` | G8 | d84bec0 | 498092 | implemented |  |  |  |
-| `nvnCommandBufferSetDepthRange` | G8 | d84afb0 | 26954 | implemented |  |  |  |
-| `nvnCommandBufferSetDepthRanges` | G8 | d84aea0 | 356444 | implemented |  |  |  |
-| `nvnCommandBufferSetLineWidth` | G8 | d84a680 | 776 | implemented |  |  |  |
+| `nvnCommandBufferSetAlphaRef` | G8 | d84a790 | 441654 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferSetBlendColor` | G8 | d84a580 | 1425748 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferSetDepthBounds` | G8 | d84b0b0 | 640478 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferSetDepthClamp` | G8 | d84bec0 | 498092 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferSetDepthRange` | G8 | d84afb0 | 26954 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferSetDepthRanges` | G8 | d84aea0 | 356444 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferSetLineWidth` | G8 | d84a680 | 776 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferSetPointSize` | G8 | d84a600 | 13670 | implemented | unit (nvn_params, nvn_replay) |  | library read: 0x546, then 0 to 0x68B |
-| `nvnCommandBufferSetPolygonOffsetClamp` | G8 | d84a6f0 | 498092 | implemented |  |  |  |
-| `nvnCommandBufferSetRasterizerDiscard` | G8 | d84be50 | 525432 | implemented |  |  |  |
-| `nvnCommandBufferSetStencilMask` | G8 | d84a480 | 1571050 | implemented |  |  |  |
-| `nvnCommandBufferSetStencilRef` | G8 | d84a500 | 2446866 | implemented |  |  |  |
-| `nvnCommandBufferSetStencilValueMask` | G8 | d84a400 | 1571050 | implemented |  |  |  |
+| `nvnCommandBufferSetPolygonOffsetClamp` | G8 | d84a6f0 | 498092 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferSetRasterizerDiscard` | G8 | d84be50 | 525432 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferSetStencilMask` | G8 | d84a480 | 1571050 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferSetStencilRef` | G8 | d84a500 | 2446866 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferSetStencilValueMask` | G8 | d84a400 | 1571050 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnDepthStencilStateGetDepthFunc` | G8 | d83b150 | 23879 | implemented |  |  |  |
 | `nvnDepthStencilStateGetDepthTestEnable` | G8 | d83b130 | 66275 | implemented |  |  |  |
 | `nvnDepthStencilStateGetDepthWriteEnable` | G8 | d83b140 | 47691 | implemented |  |  |  |
@@ -237,7 +237,7 @@ tool keeps them.
 | `nvnVertexStreamStateSetDivisor` | G8 | d83afd0 | 1801 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnVertexStreamStateSetStride` | G8 | d83afc0 | 1801 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnCommandBufferBeginTransformFeedback` | G9 | d84b5a0 | 13670 | implemented | unit (nvn_params, nvn_replay) |  | library read: macro 0 with the address |
-| `nvnCommandBufferBindImage` | G9 | d8491c0 | 2 | implemented |  |  |  |
+| `nvnCommandBufferBindImage` | G9 | d8491c0 | 2 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferBindTransformFeedbackBuffer` | G9 | d84b400 | 41010 | implemented | unit (nvn_params) |  | library read: sent at the bind, not at the draw |
 | `nvnCommandBufferClearDepthStencil` | G9 | d84aae0 | 17178 | implemented |  |  |  |
 | `nvnCommandBufferClearTexture` | G9 | d857610 | 2290 | implemented |  |  |  |
@@ -295,17 +295,17 @@ tool keeps them.
 | `nvnBufferGetMemoryOffset` | G10 | d823c50 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnBufferGetMemoryPool` | G10 | d823c40 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnBufferInvalidateMappedRange` | G10 | d823c20 | 0 | implemented |  |  |  |
-| `nvnCommandBufferBindCoverageModulationTable` | G10 | d84cd20 | 0 | implemented | |  | no-op for table 0 (disable), refused for a table: identity not verified |
-| `nvnCommandBufferBindImages` | G10 | d849430 | 0 | implemented |  |  |  |
+| `nvnCommandBufferBindCoverageModulationTable` | G10 | d84cd20 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | no-op for table 0 (disable), refused for a table: identity not verified |
+| `nvnCommandBufferBindImages` | G10 | d849430 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferBindSeparateSampler` | G10 | d848ad0 | 0 | implemented | |  | refused: the host has only the combined texture table |
 | `nvnCommandBufferBindSeparateSamplers` | G10 | d848d40 | 0 | implemented | |  | refused: the host has only the combined texture table |
 | `nvnCommandBufferBindSeparateTexture` | G10 | d848620 | 0 | implemented | |  | refused: the host has only the combined texture table |
 | `nvnCommandBufferBindSeparateTextures` | G10 | d848890 | 0 | implemented | |  | refused: the host has only the combined texture table |
-| `nvnCommandBufferBindStorageBuffers` | G10 | d8481d0 | 0 | implemented |  |  |  |
-| `nvnCommandBufferBindTextures` | G10 | d848f80 | 0 | implemented | |  | one combined texture bind per entry (stride 8) |
+| `nvnCommandBufferBindStorageBuffers` | G10 | d8481d0 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferBindTextures` | G10 | d848f80 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | one combined texture bind per entry (stride 8) |
 | `nvnCommandBufferBindTransformFeedbackBuffers` | G10 | d84b4d0 | 0 | implemented | unit (nvn_params) |  | library read: sent at the bind, not at the draw |
-| `nvnCommandBufferBindUniformBuffers` | G10 | d847e00 | 0 | implemented |  |  |  |
-| `nvnCommandBufferBindVertexBuffers` | G10 | d847a80 | 0 | implemented |  |  |  |
+| `nvnCommandBufferBindUniformBuffers` | G10 | d847e00 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferBindVertexBuffers` | G10 | d847a80 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferClearBuffer` | G10 | d84cee0 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferClearColori` | G10 | d84a940 | 0 | implemented |  |  |  |
 | `nvnCommandBufferClearColorui` | G10 | d84aa10 | 0 | implemented |  |  |  |
@@ -354,11 +354,11 @@ tool keeps them.
 | `nvnCommandBufferRestoreZCullData` | G10 | d84c8e0 | 0 | implemented | |  | logged no-op: the host has no ZCull |
 | `nvnCommandBufferResumeTransformFeedback` | G10 | d84b810 | 0 | implemented | unit (nvn_params) |  | library read: address 0 sends the enable; an address is refused |
 | `nvnCommandBufferSaveZCullData` | G10 | d84c840 | 0 | implemented | |  | logged no-op: the host has no ZCull |
-| `nvnCommandBufferSetColorReductionEnable` | G10 | d84d4e0 | 0 | implemented | |  | logged no-op: full color precision is kept |
-| `nvnCommandBufferSetColorReductionThresholds` | G10 | d84d550 | 0 | implemented | |  | logged no-op: full color precision is kept |
+| `nvnCommandBufferSetColorReductionEnable` | G10 | d84d4e0 | 0 | implemented |  |  | logged no-op: full color precision is kept; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
+| `nvnCommandBufferSetColorReductionThresholds` | G10 | d84d550 | 0 | implemented |  |  | logged no-op: full color precision is kept; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
 | `nvnCommandBufferSetCommandMemoryCallbackEnabled` | G10 | d823d90 | 0 | implemented |  |  | no-op: the host never calls the memory callback |
 | `nvnCommandBufferSetConservativeRasterDilate` | G10 | d84c6c0 | 0 | implemented | unit (nvn_params) |  | logged no-op for level 0, else refused |
-| `nvnCommandBufferSetConservativeRasterEnable` | G10 | d84c630 | 0 | implemented | |  | logged no-op for disable, enable is refused |
+| `nvnCommandBufferSetConservativeRasterEnable` | G10 | d84c630 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | logged no-op for disable, enable is refused |
 | `nvnCommandBufferSetCopyImageStride` | G10 | d82cb40 | 0 | implemented |  |  |  |
 | `nvnCommandBufferSetCopyRowStride` | G10 | d82cb30 | 0 | implemented |  |  |  |
 | `nvnCommandBufferSetDebugLabel` | G10 | d82ccd0 | 0 | implemented |  |  |  |
@@ -369,14 +369,14 @@ tool keeps them.
 | `nvnCommandBufferSetProgramSubroutines` | G10 | d826180 | 0 | implemented | |  | refused: the words of the subroutine rewrite are not known |
 | `nvnCommandBufferSetRenderEnable` | G10 | d856bb0 | 0 | implemented | unit (nvn_params) |  | library read: one draw state with the conditional form (both write 0x556) |
 | `nvnCommandBufferSetRenderEnableConditional` | G10 | d856c20 | 0 | implemented | unit (nvn_params) |  | library read: condition 0 or 1, another value is a logged no-op |
-| `nvnCommandBufferSetSampleMask` | G10 | d84a800 | 0 | implemented | |  | logged no-op: the host renders one sample |
-| `nvnCommandBufferSetScissor` | G10 | d84b280 | 0 | implemented | |  | library read: the SetScissors op with index 0 |
+| `nvnCommandBufferSetSampleMask` | G10 | d84a800 | 0 | implemented |  |  | logged no-op: the host renders one sample; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
+| `nvnCommandBufferSetScissor` | G10 | d84b280 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | library read: the SetScissors op with index 0 |
 | `nvnCommandBufferSetShaderScratchMemory` | G10 | d825f10 | 0 | implemented | |  | refused: two SDK constants are not known, no host scratch state |
-| `nvnCommandBufferSetStencilCullCriteria` | G10 | d84d600 | 0 | implemented | |  | logged no-op: the host has no stencil cull |
-| `nvnCommandBufferSetSubpixelPrecisionBias` | G10 | d84c770 | 0 | implemented | |  | logged no-op: the device subpixel grid is used |
-| `nvnCommandBufferSetTiledCacheAction` | G10 | d84bf30 | 0 | implemented | |  | no-op: the host has no tiled cache |
-| `nvnCommandBufferSetTiledCacheTileSize` | G10 | d84c000 | 0 | implemented | |  | no-op: the host has no tiled cache |
-| `nvnCommandBufferSetViewport` | G10 | d84ae60 | 0 | implemented | |  | library read: the SetViewports op with index 0 |
+| `nvnCommandBufferSetStencilCullCriteria` | G10 | d84d600 | 0 | implemented |  |  | logged no-op: the host has no stencil cull; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
+| `nvnCommandBufferSetSubpixelPrecisionBias` | G10 | d84c770 | 0 | implemented |  |  | logged no-op: the device subpixel grid is used; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
+| `nvnCommandBufferSetTiledCacheAction` | G10 | d84bf30 | 0 | implemented |  |  | no-op: the host has no tiled cache; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
+| `nvnCommandBufferSetTiledCacheTileSize` | G10 | d84c000 | 0 | implemented |  |  | no-op: the host has no tiled cache; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
+| `nvnCommandBufferSetViewport` | G10 | d84ae60 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | library read: the SetViewports op with index 0 |
 | `nvnCommandBufferSetViewportSwizzles` | G10 | d84afe0 | 0 | implemented | unit (nvn_params) |  | logged no-op for identity entries, else refused |
 | `nvnCommandBufferSignalEvent` | G10 | d832ef0 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferTiledDownsample` | G10 | d8575f0 | 0 | implemented | unit |  |  |
