@@ -175,3 +175,12 @@ measured frame step, whatever the rate. The shared step keeps its rules: it is n
 480 FPS. It is now 1/1000 and only keeps the ratio above zero. The thrown-object flight keeps its own floor. Tests
 `arceus_timing` and `arceus_clock` check the shared step and the fixes with variable and jittered steps up to
 1000 FPS.
+
+## Sneasler climb
+
+The Sneasler wall climb mover, `main+25540E8`, moves the climber by its direction times the climb speed divided by
+30 on each call. That is a fixed distance per rendered frame, so at 120 FPS Sneasler climbed four times as fast.
+With a target rate, `SNX_ARCEUS_CLIMB_STEP=1` (or `2`, below) replaces its `FMOV #30` and `FDIV` at `+2F4` with a
+load of the frame step and a multiply, so each call moves speed times the elapsed time. The patch makes room by
+storing the `+D20` copy with a second `STUR` instead of an `LDP`/`STP` pair. It checks the function, the speed load
+and all twelve words it replaces, and refuses otherwise.

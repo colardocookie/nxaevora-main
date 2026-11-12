@@ -184,6 +184,17 @@ static void test_target(void) {
     }
     flag("SNX_ARCEUS_TARGET_FPS", "");
 }
+/* The climb fix's cell load: ADRP X9 to the frame-step cell's page from the patched word,
+   checked against llvm-mc encodings of adrp x9 at +0x3000, -0x5000 and +0x7FF000. */
+static void test_climb_adrp(void) {
+    frame_step_address = 0x10003000;
+    assert(climb_adrp(0x10000ffc, 9) == 0xf0000009);
+    frame_step_address = 0x0fffb000;
+    assert(climb_adrp(0x10000000, 9) == 0xf0ffffc9);
+    frame_step_address = 0x107ff000;
+    assert(climb_adrp(0x10000123, 9) == 0xf0003fe9);
+    frame_step_address = 0;
+}
 int main(void) {
     const char* disabled[] = {"SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60", "SNX_ARCEUS_CLOCK_TRACE",
         "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_CAMERA_TRACE",
@@ -191,6 +202,7 @@ int main(void) {
     for (unsigned i = 0; i < sizeof disabled / sizeof disabled[0]; i++) flag(disabled[i], "");
     test_sequence();
     test_diagnostics();
+    test_climb_adrp();
     test_target();
     puts("arceus_clock: all checks passed");
     return 0;

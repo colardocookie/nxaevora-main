@@ -2011,6 +2011,47 @@ static void cadence_census_init(void) {
     LOG("arceus-gravity: read-only probe %s\n", gravity_probe_active ? "installed" : "unavailable");
 }
 
+/* Sneasler wall climb: the climb mover 25540E8 moves direction x speed/30 per call, a cast
+   distance with no elapsed time, so climbing ran four times fast at 120 FPS. With
+   SNX_ARCEUS_CLIMB_STEP=1 its FMOV #30 and FDIV become a frame-step cell load and FMUL, room
+   made by storing the +D20 copy with a second STUR instead of an LDP/STP pair through X9/X8. */
+static const u32 climb_original_words[12] = {
+    0x1e27d000, 0x1e201900, 0x3cd503a1, 0x4f809020, 0xaa1303e0, 0x3c9503a0,
+    0x3d8027e0, 0x3dc34a60, 0x3c9403a0, 0xa97423a9, 0xa93323a9, 0x910d83e8,
+};
+/* ADRP X9 (filled in), LDR S0,[X9], FMUL S0,S8,S0, then the original stores and the +D20 copy. */
+static const u32 climb_patched_words[12] = {
+    0x90000009, 0xbd400120, 0x1e200900, 0x3cd503a1, 0x4f809020, 0xaa1303e0,
+    0x3c9503a0, 0x3d8027e0, 0x3dc34a60, 0x3c9403a0, 0x3c9303a0, 0x910d83e8,
+};
+/* The ADRP of a frame-step cell load at pc, for register rd. */
+static u32 climb_adrp(u64 pc, u32 rd) {
+    const u64 pages = ((frame_step_address >> 12) - (pc >> 12)) & 0x1fffff;
+    return 0x90000000 | rd | (u32)((pages & 3) << 29) | (u32)((pages >> 2) << 5);
+}
+static void climb_step_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_CLIMB_STEP");
+    if (!main_base || !enabled || (strcmp(enabled, "1") && strcmp(enabled, "2"))) return;
+    if (!clocks_installed) {
+        WARN("arceus-climb: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    /* The function head, the speed load before the pair, the BL after the twelve words and the words themselves. */
+    const u64 owner = main_base + 0x25540e8, pc = owner + 0x2f4;
+    int ok = covers_exactly(owner, 0x2c38) && readable(owner, 0x2c38) && gr32(owner) == 0x6db63bef &&
+             gr32(owner + 0x2dc) == 0xbd403188 && (gr32(pc + 0x30) & 0xfc000000) == 0x94000000;
+    for (unsigned k = 0; ok && k < 12; k++) ok = gr32(pc + 4 * k) == climb_original_words[k];
+    if (!ok) {
+        WARN("arceus-climb: refused mover guard\n");
+        return;
+    }
+    if (!frame_step_cell_init("arceus-climb")) return;
+    for (unsigned k = 0; k < 12; k++) gw32(pc + 4 * k, k ? climb_patched_words[k] : climb_adrp(pc, 9));
+    jit_code_changed(pc, 0x30);
+    LOG("arceus-climb: EXPERIMENT: Sneasler climb distance uses min(1/30, elapsed)\n");
+}
+
 void arceus_clock_post_jit(void) {
     fixed_resolution_init();
     /* Before the research probe, which compiles and keeps this wrapper's body. */
@@ -2026,6 +2067,7 @@ void arceus_clock_post_jit(void) {
     battle_sequence_fix_init();
     map_cursor_fix_init();
     fade_fix_init();
+    climb_step_init();
     cadence_census_init();
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     if (main_base && !experimental && probe && !strcmp(probe, "1")) {
