@@ -31,7 +31,7 @@ A window that the Debug menu opens. The concept has these parts, from the top:
    total and the game's own use.
 2. Frame: FPS, frame time and the maximum frame time, and a graph of the last frames.
 3. Timings: CPU frame preparation, CPU busy time per frame, pipeline waits (ms) and texture uploads per frame.
-4. Display settings: window size, game resolution scale, scaling, anti-aliasing, frame limit and V-sync.
+4. Display settings: window size, render resolution (720p, 1080p, 1440p or 2160p), scaling, anti-aliasing, frame limit and V-sync.
 
 Sources to find in step 1 (a value that no source gives shows as `?`, as the stats box of ScarletNX does):
 
@@ -138,7 +138,7 @@ Sources to find in step 1 (a value that no source gives shows as `?`, as the sta
 - **Counters.** FPS, frame time and process CPU and memory exist in `stats.c` (the CPU value is the process share of the
   machine). Pipeline waits (`pipeline.c`) and texture upload counts (`texture.c`) exist as cumulative counters. CPU
   frame preparation and CPU busy time per frame do not exist and need new timers.
-- **Settings.** `resolution`, `fps_limit` and `vsync` exist. Window size, scaling filter and anti-aliasing do not.
+- **Settings.** `render_resolution`, `fps_limit` and `vsync` exist. Window size, scaling filter and anti-aliasing do not.
 - **Defect found.** `renderer.c:463` and `:491`: the Tracy plot "texture uploads" uses the byte counter, not the count.
 
 ## Decisions after step 1

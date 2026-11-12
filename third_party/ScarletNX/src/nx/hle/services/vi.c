@@ -49,6 +49,8 @@ enum {
 #define VI_FENCE    36    /* android::Fence: a count and four NvFences */
 #define VI_WIDTH    1280
 #define VI_HEIGHT   720
+#define VI_TV_WIDTH  1920 /* the TV's DisplayModeInfo: 1920 x 1080 */
+#define VI_TV_HEIGHT 1080
 #define VI_STRAY_ID 0x10000u /* vi's own layer ids, apart from am's managed ones */
 /* the layer the display shows. There's no compositor: only the first layer, the one a game opens for its window (and
    opens again into the same place after closing it), is shown and paced. Another layer's frames come free once their
@@ -583,7 +585,7 @@ static int nn_visrv_sf_IApplicationDisplayService_OpenDefaultDisplay(SvcObj* sel
     *display_id = 0;
     R_SUCCEED();
 }
-/* fixed, docked or not, as on the console */
+/* fixed 1280 x 720 in TV mode too, as on the console */
 static int nn_visrv_sf_IApplicationDisplayService_GetDisplayResolution(SvcObj* self, u64 display_id, i64* width,
                                                                        i64* height) {
     (void)self, (void)display_id;
@@ -677,8 +679,8 @@ static int nn_visrv_sf_ISystemDisplayService_GetDisplayLogicalResolution(SvcObj*
 }
 static int nn_visrv_sf_ISystemDisplayService_GetDisplayMode(SvcObj* self, u64 display_id, nn_vi_DisplayModeInfo* mode) {
     (void)self, (void)display_id;
-    mode->width = g_settings.tv_mode ? 1920 : VI_WIDTH;
-    mode->height = g_settings.tv_mode ? 1080 : VI_HEIGHT;
+    mode->width = VI_TV_WIDTH;
+    mode->height = VI_TV_HEIGHT;
     mode->refresh_rate = (float)VI_REFRESH_HZ;
     mode->unknown = 0;
     R_SUCCEED();

@@ -34,6 +34,12 @@
 #define AM_MSG_STARTUP_LOGO_GONE        95 /* StartupLogoDisappeared, after EnableStartupLogoDisappearedMessage */
 #define AM_FOCUS_IN                1 /* nn::am::service::FocusState::InFocus */
 
+/* the runtime is always in TV mode, the console docked */
+#define AM_OPERATION_MODE_CONSOLE 1 /* nn::oe::OperationMode Console */
+#define AM_PERFORMANCE_MODE_BOOST 1 /* nn::oe::PerformanceMode Boost */
+#define AM_DISPLAY_WIDTH          1920 /* the TV's resolution: 1920 x 1080 */
+#define AM_DISPLAY_HEIGHT         1080
+
 /* the AppletIds of the library applets that answer with data */
 #define AM_APPLET_CONTROLLER     0x0c
 #define AM_APPLET_PROFILE_SELECT 0x10
@@ -254,12 +260,12 @@ static int nn_am_service_ICommonStateGetter_ReceiveMessage(SvcObj* self, nn_am_A
 }
 static int nn_am_service_ICommonStateGetter_GetOperationMode(SvcObj* self, u8* mode) {
     (void)self;
-    *mode = g_settings.tv_mode ? 1 : 0; /* nn::oe::OperationMode: Handheld, Console */
+    *mode = AM_OPERATION_MODE_CONSOLE;
     R_SUCCEED();
 }
 static int nn_am_service_ICommonStateGetter_GetPerformanceMode(SvcObj* self, u32* mode) {
     (void)self;
-    *mode = g_settings.tv_mode ? 1 : 0; /* Boost when docked, as apm says */
+    *mode = AM_PERFORMANCE_MODE_BOOST;
     R_SUCCEED();
 }
 static int nn_am_service_ICommonStateGetter_GetCurrentFocusState(SvcObj* self, u8* state) {
@@ -362,8 +368,8 @@ static int nn_am_service_ICommonStateGetter_EndVrModeEx(SvcObj* self) {
 
 static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolution(SvcObj* self, i32* width, i32* height) {
     (void)self;
-    *width = g_settings.tv_mode ? 1920 : 1280;
-    *height = g_settings.tv_mode ? 1080 : 720;
+    *width = AM_DISPLAY_WIDTH;
+    *height = AM_DISPLAY_HEIGHT;
     R_SUCCEED();
 }
 static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolutionChangeEvent(SvcObj* self, u32* event) {
@@ -385,7 +391,7 @@ static int nn_am_service_ICommonStateGetter_GetHdcpAuthenticationState(SvcObj* s
 /* apm's configuration of the mode the console runs in */
 static int nn_am_service_ICommonStateGetter_GetCurrentPerformanceConfiguration(SvcObj* self, u32* configuration) {
     (void)self;
-    *configuration = apm_configuration(g_settings.tv_mode ? 1 : 0);
+    *configuration = apm_configuration(AM_PERFORMANCE_MODE_BOOST);
     R_SUCCEED();
 }
 /* the clocks a game asks for around its loading screens, which apm keeps as Boost mode's configuration */

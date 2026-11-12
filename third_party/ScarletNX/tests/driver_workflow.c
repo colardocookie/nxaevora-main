@@ -464,7 +464,7 @@ static void run(const char* exe, const char* repo, const char* dump, const char*
 }
 /* the runtime's settings (runtime/options.c): those this test gives */
 int snx_setting_known(const char* key) {
-    static const char* const known[] = {"touch", "controls", "resolution", "controls_a", "seconds", "slp_vectorizer"};
+    static const char* const known[] = {"touch", "controls", "render_resolution", "controls_a", "seconds", "slp_vectorizer"};
     size_t i;
     for (i = 0; i < sizeof known / sizeof *known; ++i)
         if (!strcmp(key, known[i])) return 1;
@@ -774,7 +774,7 @@ int main(int argc, char** argv) {
         run(exe, repo, dump, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_FLAGS", "--controls=1");
         run(exe, repo, dump, log, 0, "G", NULL);
-        set_env("SNX_WORKFLOW_FLAGS", "--resolution=2");
+        set_env("SNX_WORKFLOW_FLAGS", "--render_resolution=3");
         run(exe, repo, dump, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_FLAGS", "--seconds=5");
         run(exe, repo, dump, log, 0, "G", NULL);

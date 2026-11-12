@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# snx_smaa_tables(target): the two lookup textures of SMAA (Jimenez et al., MIT, src/nx/gpu/vk/shaders/smaa/LICENSE.txt)
+# snx_smaa_tables(target): the two lookup textures of SMAA (Jimenez et al., MIT, dist/smaa/LICENSE.txt)
 # compiled into target. They are the DX9 area texture (160 x 560, two 8-bit channels) and the search texture
 # (64 x 16, one channel) of the SMAA repository, each after the 128 bytes of its DDS header.
 include_guard(GLOBAL)
 
 function(snx_smaa_embed target file name offset)
-    set(path "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/shaders/smaa/${file}")
+    set(path "${PROJECT_SOURCE_DIR}/dist/smaa/${file}")
     set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${path}")
     file(READ "${path}" hex HEX OFFSET ${offset})
     string(LENGTH "${hex}" size)

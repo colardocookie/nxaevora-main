@@ -103,13 +103,6 @@ setting Save state backup
     help 1 = the game is saved to the auto slot before each save state is loaded over it, so a load can be undone
 
 table g_display_ini
-setting TV mode
-    key docked
-    int 0 1
-    default 1
-    startup
-    words Off|On
-    help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720)
 setting Fullscreen
     key fullscreen
     int 0 1
@@ -158,12 +151,13 @@ setting Stats corner
     help The corner stats draws in, as showcase_corner's; in showcase's own corner it goes beside showcase's box
 
 table g_graphics_ini
-setting Resolution scale
-    key resolution
-    float 0.25 16
+setting Render resolution
+    key render_resolution
+    int 0 3
     default 1
     startup
-    help The scale of the game's 3D rendering, 0.25 to 16: 1 = the console's, 2 = double, 0.5 = half
+    words 720p|1080p|1440p|2160p
+    help The size the game's 3D renders at: 720p (1280 x 720), 1080p (1920 x 1080, the console's), 1440p (2560 x 1440), 2160p (3840 x 2160)
 setting Shadows
     key shadows
     int 0 1

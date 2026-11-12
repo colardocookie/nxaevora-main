@@ -3889,8 +3889,7 @@ int main(int argc, char** argv) {
     assert(setting_is(&app, "resolution", "1"));
     render(&app);
     shows(&app, "- resolution    1", yellow); /* the default itself, not [default] */
-    /* past the range: refused, OK leaving its dialog up, saying the value typed and the range, the row as it was;
-       past 4x and under 0.5x in the range: the row's own warning line */
+    /* past the range: refused, OK leaving its dialog up, saying the value typed and the range, the row as it was */
     key(&app, SDLK_RETURN);
     key(&app, SDLK_BACKSPACE);
     typed(&app, "20");
@@ -3899,29 +3898,8 @@ int main(int argc, char** argv) {
     assert(!strcmp(app.editor.note, "20 is not a number from 0.25 to 16, two decimals at most"));
     render(&app);
     shows(&app, app.editor.note, rgb(app.theme.warning)); /* in its dialog */
-    key(&app, SDLK_BACKSPACE);
-    key(&app, SDLK_BACKSPACE);
-    typed(&app, "8");
-    key(&app, SDLK_RETURN);
-    assert(!app.editor.typing && setting_is(&app, "resolution", "8") && strstr(app.editor.note, "Over 4x"));
-    render(&app); /* the row in its warning flash */
-    key(&app, SDLK_RETURN);
-    key(&app, SDLK_BACKSPACE);
-    typed(&app, "0.05");
-    key(&app, SDLK_RETURN);
-    assert(app.editor.typing && setting_is(&app, "resolution", "8") && strstr(app.editor.note, "0.05 is not a number"));
-    for (int i = 0; i < 4; ++i) key(&app, SDLK_BACKSPACE);
-    typed(&app, "0.3");
-    key(&app, SDLK_RETURN);
-    assert(setting_is(&app, "resolution", "0.3") && strstr(app.editor.note, "Under 0.5x"));
-    render(&app);
-    /* a scale that is no whole number and does not halve to 1 gets Eden's line */
-    key(&app, SDLK_RETURN);
-    for (int i = 0; i < 4; ++i) key(&app, SDLK_BACKSPACE);
-    typed(&app, "1.61");
-    key(&app, SDLK_RETURN);
-    assert(setting_is(&app, "resolution", "1.61") && strstr(app.editor.note, "Non-standard resolution"));
-    render(&app);
+    key(&app, SDLK_ESCAPE); /* the dialog */
+    assert(!app.editor.typing && setting_is(&app, "resolution", "1"));
     key(&app, SDLK_ESCAPE);
     /* the game's menu's settings, named and worded as it shows them; a page's row opens the page, All first */
     {
