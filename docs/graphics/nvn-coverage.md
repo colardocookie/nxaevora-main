@@ -164,11 +164,11 @@ tool keeps them.
 | `nvnCommandBufferBindVertexAttribState` | G8 | d855340 | 485209 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | selftest mutation: only this row fails (S, r3d.0x458 stream index, 2026-11-12) |
 | `nvnCommandBufferBindVertexBuffer` | G8 | d8479d0 | 1131889 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferBindVertexStreamState` | G8 | d8554b0 | 485209 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
-| `nvnCommandBufferDrawArrays` | G8 | d849670 | 15896 | implemented |  |  |  |
-| `nvnCommandBufferDrawArraysInstanced` | G8 | d849890 | 772558 | implemented |  |  |  |
-| `nvnCommandBufferDrawElements` | G8 | d8496e0 | 47293 | implemented |  |  |  |
-| `nvnCommandBufferDrawElementsBaseVertex` | G8 | d849770 | 491647 | implemented |  |  |  |
-| `nvnCommandBufferDrawElementsInstanced` | G8 | d849930 | 131190 | implemented |  |  |  |
+| `nvnCommandBufferDrawArrays` | G8 | d849670 | 15896 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferDrawArraysInstanced` | G8 | d849890 | 772558 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferDrawElements` | G8 | d8496e0 | 47293 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferDrawElementsBaseVertex` | G8 | d849770 | 491647 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferDrawElementsInstanced` | G8 | d849930 | 131190 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferSetAlphaRef` | G8 | d84a790 | 441654 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferSetBlendColor` | G8 | d84a580 | 1425748 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferSetDepthBounds` | G8 | d84b0b0 | 640478 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
@@ -239,9 +239,9 @@ tool keeps them.
 | `nvnCommandBufferBeginTransformFeedback` | G9 | d84b5a0 | 13670 | implemented | unit (nvn_params, nvn_replay) |  | library read: macro 0 with the address |
 | `nvnCommandBufferBindImage` | G9 | d8491c0 | 2 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferBindTransformFeedbackBuffer` | G9 | d84b400 | 41010 | implemented | unit (nvn_params) |  | library read: sent at the bind, not at the draw |
-| `nvnCommandBufferClearDepthStencil` | G9 | d84aae0 | 17178 | implemented |  |  |  |
-| `nvnCommandBufferClearTexture` | G9 | d857610 | 2290 | implemented |  |  |  |
-| `nvnCommandBufferCopyTextureToTexture` | G9 | d82bfd0 | 150 | implemented |  |  |  |
+| `nvnCommandBufferClearDepthStencil` | G9 | d84aae0 | 17178 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferClearTexture` | G9 | d857610 | 2290 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | selftest: the render target address registers (r3d.0x200, 0x201) are not compared |
+| `nvnCommandBufferCopyTextureToTexture` | G9 | d82bfd0 | 150 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | selftest: the per-side texture address registers are not compared |
 | `nvnCommandBufferDispatchCompute` | G9 | d84da90 | 41793 | implemented |  |  |  |
 | `nvnCommandBufferEndTransformFeedback` | G9 | d84b610 | 13670 | implemented | unit (nvn_params, nvn_replay) |  | library read: 0x1D1 off, four reports |
 | `nvnCommandBufferReportCounter` | G9 | d856900 | 37762 | implemented |  |  |  |
@@ -306,20 +306,20 @@ tool keeps them.
 | `nvnCommandBufferBindTransformFeedbackBuffers` | G10 | d84b4d0 | 0 | implemented | unit (nvn_params) |  | library read: sent at the bind, not at the draw |
 | `nvnCommandBufferBindUniformBuffers` | G10 | d847e00 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferBindVertexBuffers` | G10 | d847a80 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
-| `nvnCommandBufferClearBuffer` | G10 | d84cee0 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferClearColori` | G10 | d84a940 | 0 | implemented |  |  |  |
-| `nvnCommandBufferClearColorui` | G10 | d84aa10 | 0 | implemented |  |  |  |
-| `nvnCommandBufferClearTexturei` | G10 | d857a10 | 0 | implemented |  |  |  |
-| `nvnCommandBufferClearTextureui` | G10 | d857e10 | 0 | implemented |  |  |  |
-| `nvnCommandBufferCopyBufferToBuffer` | G10 | d82be80 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferCopyBufferToTexture` | G10 | d82b510 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferCopyCommands` | G10 | d825a30 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferCopyTextureToBuffer` | G10 | d82bb70 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferDiscardColor` | G10 | d8564c0 | 0 | implemented |  |  |  |
-| `nvnCommandBufferDiscardDepthStencil` | G10 | d856530 | 0 | implemented |  |  |  |
+| `nvnCommandBufferClearBuffer` | G10 | d84cee0 | 0 | implemented | unit, selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferClearColori` | G10 | d84a940 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferClearColorui` | G10 | d84aa10 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferClearTexturei` | G10 | d857a10 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | selftest: the render target address registers (r3d.0x200, 0x201) are not compared |
+| `nvnCommandBufferClearTextureui` | G10 | d857e10 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | selftest: the render target address registers (r3d.0x200, 0x201) are not compared |
+| `nvnCommandBufferCopyBufferToBuffer` | G10 | d82be80 | 0 | implemented | unit, selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferCopyBufferToTexture` | G10 | d82b510 | 0 | implemented | unit, selftest S (update 1.1.1, 2026-11-12) |  | selftest: the per-side texture address registers are not compared; selftest mutation: the host region is one texel narrower, only this function's rows fail (S, rdma.0x104 and r2d.0x091, 2026-11-12) |
+| `nvnCommandBufferCopyCommands` | G10 | d825a30 | 0 | implemented | unit, selftest S (update 1.1.1, 2026-11-12) |  |  |
+| `nvnCommandBufferCopyTextureToBuffer` | G10 | d82bb70 | 0 | implemented | unit, selftest S (update 1.1.1, 2026-11-12) |  | selftest: the per-side texture address registers are not compared; selftest mutation: the host region is one texel narrower, only this function's rows fail (S, rdma.0x105, 2026-11-12) |
+| `nvnCommandBufferDiscardColor` | G10 | d8564c0 | 0 | implemented |  |  | selftest: expected no-op, the host handler is a logged no-op by design (2026-11-12) |
+| `nvnCommandBufferDiscardDepthStencil` | G10 | d856530 | 0 | implemented |  |  | selftest: expected no-op, the host handler is a logged no-op by design (2026-11-12) |
 | `nvnCommandBufferDispatchComputeIndirect` | G10 | d84dc60 | 0 | implemented | |  | refused: no host path for a QMD at a GPU address |
-| `nvnCommandBufferDownsample` | G10 | d82cb10 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferDownsampleTextureView` | G10 | d82cb20 | 0 | implemented | unit |  |  |
+| `nvnCommandBufferDownsample` | G10 | d82cb10 | 0 | implemented | unit, selftest S (update 1.1.1, 2026-11-12) |  | selftest: the per-side texture address registers are not compared |
+| `nvnCommandBufferDownsampleTextureView` | G10 | d82cb20 | 0 | implemented | unit, selftest S (update 1.1.1, 2026-11-12) |  | selftest: the per-side texture address registers are not compared |
 | `nvnCommandBufferDrawArraysIndirect` | G10 | d849a00 | 0 | implemented | |  | refused: the GPU reads the record at draw time, the replay has no fetch |
 | `nvnCommandBufferDrawElementsIndirect` | G10 | d849bd0 | 0 | implemented | |  | refused: the GPU reads the record at draw time, the replay has no fetch |
 | `nvnCommandBufferDrawTexture` | G10 | d84cad0 | 0 | implemented | |  | refused: needs the driver program at device+0x1b00 |
@@ -350,7 +350,7 @@ tool keeps them.
 | `nvnCommandBufferPushDebugGroupDynamic` | G10 | d84d280 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
 | `nvnCommandBufferPushDebugGroupStatic` | G10 | d84d110 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
 | `nvnCommandBufferReportValue` | G10 | d856ab0 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferResolveDepthBuffer` | G10 | d84ce80 | 0 | implemented |  |  |  |
+| `nvnCommandBufferResolveDepthBuffer` | G10 | d84ce80 | 0 | implemented |  |  | selftest: expected no-op, the host handler is a logged no-op by design (2026-11-12) |
 | `nvnCommandBufferRestoreZCullData` | G10 | d84c8e0 | 0 | implemented | |  | logged no-op: the host has no ZCull |
 | `nvnCommandBufferResumeTransformFeedback` | G10 | d84b810 | 0 | implemented | unit (nvn_params) |  | library read: address 0 sends the enable; an address is refused |
 | `nvnCommandBufferSaveZCullData` | G10 | d84c840 | 0 | implemented | |  | logged no-op: the host has no ZCull |
@@ -379,9 +379,9 @@ tool keeps them.
 | `nvnCommandBufferSetViewport` | G10 | d84ae60 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | library read: the SetViewports op with index 0 |
 | `nvnCommandBufferSetViewportSwizzles` | G10 | d84afe0 | 0 | implemented | unit (nvn_params) |  | logged no-op for identity entries, else refused |
 | `nvnCommandBufferSignalEvent` | G10 | d832ef0 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferTiledDownsample` | G10 | d8575f0 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferTiledDownsampleTextureView` | G10 | d857600 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferUpdateUniformBuffer` | G10 | d84c980 | 0 | implemented | unit |  |  |
+| `nvnCommandBufferTiledDownsample` | G10 | d8575f0 | 0 | implemented | unit |  | selftest: skipped, the library recording has record op 21, which the decoder does not read (2026-11-12) |
+| `nvnCommandBufferTiledDownsampleTextureView` | G10 | d857600 | 0 | implemented | unit |  | selftest: skipped, the library recording has record op 21, which the decoder does not read (2026-11-12) |
+| `nvnCommandBufferUpdateUniformBuffer` | G10 | d84c980 | 0 | implemented | unit, selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferWaitEvent` | G10 | d832e30 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferWaitSync` | G10 | d825ce0 | 0 | implemented | unit |  |  |
 | `nvnDeviceApplyDeferredFinalizes` | G10 | d82cdd0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |

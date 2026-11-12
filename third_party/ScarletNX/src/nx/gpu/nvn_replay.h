@@ -44,8 +44,9 @@ typedef struct NvnReplayEnv {
     /* a bad part: a short text and one value. The module then skips the op and goes on. */
     void (*fault)(void* ctx, const char* what, uint64_t value);
     int window_origin_flip; /* 1 when the device window origin mode is 1: the viewport Y scale is negative */
-    /* a puller method (below 0x40) of any subchannel: the caller binds it to gpu_channel_method. */
-    void (*puller_method)(void* ctx, uint32_t subchannel, uint32_t m, uint32_t v);
+    /* a method of a given subchannel: a puller method below 0x40 on any subchannel, or a method of the compute
+       engine on subchannel 1. The caller binds it to gpu_channel_method. */
+    void (*channel_method)(void* ctx, uint32_t subchannel, uint32_t m, uint32_t v);
 } NvnReplayEnv;
 
 typedef struct {

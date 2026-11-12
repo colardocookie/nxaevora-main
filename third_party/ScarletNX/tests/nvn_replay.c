@@ -274,7 +274,7 @@ static NvnReplayEnv make_env(Mock* k) {
     memset(&env, 0, sizeof env);
     env.ctx = k;
     env.method = mock_method;
-    env.puller_method = mock_puller_method;
+    env.channel_method = mock_puller_method;
     env.read_register = mock_read_register;
     env.find_list = mock_find_list;
     env.descriptor_pool = mock_descriptor_pool;
@@ -478,7 +478,11 @@ static void test_pool(void) {
     CHECK(has_write(&k, 0x55D, 0x12u));
     CHECK(has_write(&k, 0x55E, 0x3456789Au));
     CHECK(has_write(&k, 0x55F, 4u));
-    CHECK(st.replayed[NVN_OP_SET_TEXTURE_POOL] == 1 && st.methods == 6 && st.faults == 0);
+    CHECK(st.replayed[NVN_OP_SET_TEXTURE_POOL] == 1 && st.methods == 9 && st.faults == 0);
+    CHECK(k.puller_count == 3);
+    CHECK(k.pullers[0].subchannel == 1 && k.pullers[0].method == 0x55Du && k.pullers[0].value == 0x12u);
+    CHECK(k.pullers[1].subchannel == 1 && k.pullers[1].method == 0x55Eu && k.pullers[1].value == 0x3456789Au);
+    CHECK(k.pullers[2].subchannel == 1 && k.pullers[2].method == 0x55Fu && k.pullers[2].value == 4u);
     nvn_oplist_free(&l);
 
     /* the sampler pool is found: base 0xABCDEF0123, 1 descriptor */
@@ -493,8 +497,27 @@ static void test_pool(void) {
     CHECK(has_write(&ks, 0x557, 0xABu));
     CHECK(has_write(&ks, 0x558, 0xCDEF0123u));
     CHECK(has_write(&ks, 0x559, 0u));
-    CHECK(sts.methods == 3 && sts.faults == 0);
+    CHECK(sts.methods == 6 && sts.faults == 0);
+    CHECK(ks.puller_count == 3);
+    CHECK(ks.pullers[0].subchannel == 1 && ks.pullers[0].method == 0x557u && ks.pullers[0].value == 0xABu);
+    CHECK(ks.pullers[1].subchannel == 1 && ks.pullers[1].method == 0x558u && ks.pullers[1].value == 0xCDEF0123u);
+    CHECK(ks.pullers[2].subchannel == 1 && ks.pullers[2].method == 0x559u && ks.pullers[2].value == 0u);
     nvn_oplist_free(&ls);
+
+    /* the compute engine writer is missing: no write, one fault */
+    Mock kn = {0};
+    NvnReplayEnv envn = make_env(&kn);
+    envn.channel_method = NULL;
+    NvnOpList ln = {0};
+    NvnReplayStats stn = {0};
+    NvnOpPool null_pool = {0x5000u, 3u, 0u};
+    mock_add_pool(&kn, NVN_OP_SET_TEXTURE_POOL, 0x5000u, 0x123456789Aull, 5u);
+    CHECK(nvn_oplist_append(&ln, NVN_OP_SET_TEXTURE_POOL, &null_pool, sizeof null_pool));
+    nvn_replay_list(&envn, &ln, &stn);
+    CHECK(stn.faults == 1 && stn.methods == 0 && kn.write_count == 0 && kn.fault_count == 1);
+    CHECK(stn.replayed[NVN_OP_SET_TEXTURE_POOL] == 0 && kn.last_fault_value == 0x5000u);
+    CHECK(kn.last_fault && !strcmp(kn.last_fault, "pool compute"));
+    nvn_oplist_free(&ln);
 
     /* the pool object is gone */
     Mock kg = {0};
@@ -745,7 +768,7 @@ static void test_barrier_null_puller(void) {
     NvnOpList l = {0};
     NvnReplayStats st = {0};
     NvnOpBarrier op = {1u << 0, 0u};
-    env.puller_method = NULL;
+    env.channel_method = NULL;
     CHECK(nvn_oplist_append(&l, NVN_OP_BARRIER, &op, sizeof op));
     nvn_replay_list(&env, &l, &st);
     CHECK(st.replayed[NVN_OP_BARRIER] == 0 && st.faults == 1 && st.barrier_bits[0] == 1);
