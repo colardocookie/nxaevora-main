@@ -5079,7 +5079,7 @@ static void h_command_buffer_bind_images(CPU* c, u64 entry) {
 static void replay_host_method(void* ctx, uint32_t m, uint32_t v) {
     maxwell3d_method(((NvnNativeReplayHost*)ctx)->channel, m, v, REPLAY_METHOD_LAST);
 }
-static void replay_host_puller_method(void* ctx, uint32_t sub, uint32_t m, uint32_t v) {
+static void replay_host_channel_method(void* ctx, uint32_t sub, uint32_t m, uint32_t v) {
     gpu_channel_method(((NvnNativeReplayHost*)ctx)->channel, sub, m, v, REPLAY_METHOD_LAST);
 }
 static uint32_t replay_host_read_register(void* ctx, uint32_t m) {
@@ -5183,6 +5183,14 @@ static void replay_bind_refuse(NvnNativeReplayHost* host, const char* group, int
     host->bind_refusals++;
     LOG_LIMIT(REPLAY_LOG_LIMIT, "nvn-native: bind %s refused stage=%d slot=%d word=%08x\n", group, stage, slot, word);
 }
+/* One method of a host built stream, routed as gpu.c's method_call does: a puller method (below 0x40) of any
+   subchannel goes to the puller, and the other methods of subchannel 0 go to the 3D engine. */
+static void replay_stream_method(GpuChannel* ch, uint32_t subchannel, uint32_t method, uint32_t value, int last) {
+    if (subchannel || method < PULLER_NON_PULLER_METHODS)
+        gpu_channel_method(ch, subchannel, method, value, last);
+    else
+        maxwell3d_method(ch, method, value, last);
+}
 /* Sends the builder words of one bind group. A damaged stream is a refusal, and the words sent before it stay. */
 static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, uint32_t count) {
     NvnWordStream stream = {0};
@@ -5192,11 +5200,7 @@ static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, ui
         int result = nvn_word_stream_next(&stream, words[i], &method, &value, &last);
         if (result < 0) return 0;
         if (result == 1) {
-            /* The copy words name the 2D engine (subchannel 3): its methods must not reach the 3D registers. */
-            if (stream.subchannel)
-                gpu_channel_method(host->channel, stream.subchannel, method, value, last);
-            else
-                maxwell3d_method(host->channel, method, value, last);
+            replay_stream_method(host->channel, stream.subchannel, method, value, last);
             host->bind_methods++;
         }
     }
@@ -6084,7 +6088,7 @@ void nvn_native_replay_env(NvnNativeReplayHost* host, int window_origin_flip, Nv
                           .bind_vertex_stream = replay_host_bind_vertex_stream,
                           .render_targets = replay_host_render_targets, .gpu_op = replay_host_gpu_op,
                           .fault = replay_host_fault, .window_origin_flip = window_origin_flip,
-                          .puller_method = replay_host_puller_method};
+                          .channel_method = replay_host_channel_method};
 }
 
 /* G4: window and sync state stays in host records; guest object bytes stay untouched. */
@@ -6646,10 +6650,7 @@ static void frame_replay_init(const FrameJob* job) {
             return;
         }
         if (result == 0) continue; /* a header word: its data words follow */
-        if (stream.subchannel)
-            gpu_channel_method(job->channel, stream.subchannel, method, value, last);
-        else
-            maxwell3d_method(job->channel, method, value, last);
+        replay_stream_method(job->channel, stream.subchannel, method, value, last);
         methods++;
     }
     if (!nvn_word_stream_complete(&stream)) {

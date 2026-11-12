@@ -1064,10 +1064,12 @@ static const uint32_t st_ignore_render_targets[] = {
     ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x200u), ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x201u),
     ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x210u), ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x211u)};
 static const uint32_t st_ignore_sampler_pool[] = {
-    ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x557u), ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x558u)};
+    ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x557u), ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x558u),
+    ST_IGNORE_REG(NVN_ST_ENGINE_RCOMP, 0x557u), ST_IGNORE_REG(NVN_ST_ENGINE_RCOMP, 0x558u)};
 static const uint32_t st_ignore_texture_pool[] = {
     ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x55Du), ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x55Eu),
-    ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x8E4u), ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x8E5u)};
+    ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x8E4u), ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x8E5u),
+    ST_IGNORE_REG(NVN_ST_ENGINE_RCOMP, 0x55Du), ST_IGNORE_REG(NVN_ST_ENGINE_RCOMP, 0x55Eu)};
 
 /* The 3D clear of a texture writes the per-layer address into render target 0. */
 static const uint32_t st_ignore_clear_texture[] = {

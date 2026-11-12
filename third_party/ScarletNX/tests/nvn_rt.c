@@ -93,6 +93,12 @@ static int fault_is(const Mock* k, const char* what) {
     return k->fault_count == 1 && k->last_fault && strcmp(k->last_fault, what) == 0;
 }
 
+static int words_have(const uint32_t* words, uint32_t count, uint32_t value) {
+    for (uint32_t i = 0; i < count; i++)
+        if (words[i] == value) return 1;
+    return 0;
+}
+
 static NvnTexture make_texture_with(uint32_t format, uint32_t width, uint32_t height, uint64_t address,
                                     uint16_t tile, uint32_t samples) {
     NvnTexture t;
@@ -1150,24 +1156,24 @@ static void test_copy_dma_block_linear(void) {
     uint32_t launches = 0;
     uint32_t count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, 0u, 0u, 0u, 1, 0u, &launches, words,
                                            NVN_RT_DMA_LAUNCH_WORDS);
-    CHECK(count == 25 && launches == 1 && k.fault_count == 0);
+    CHECK(count == 18 && launches == 1 && k.fault_count == 0);
     CHECK(words[0] == 0x20048100u);
     CHECK(words[1] == 0u && words[2] == 0x200000u && words[3] == 0u && words[4] == 0x1000u);
-    CHECK(words[5] == 0x20048104u);
-    CHECK(words[6] == 256u && words[7] == 256u && words[8] == 256u && words[9] == 64u);
-    CHECK(words[10] == 0x200681C3u);
-    CHECK(words[11] == 0x30u && words[12] == 256u && words[13] == 64u && words[14] == 1u);
-    CHECK(words[15] == 0u && words[16] == 0u);
-    CHECK(words[17] == 0x200681CAu);
-    for (unsigned i = 18; i < 24; i++) CHECK(words[i] == 0u);
-    CHECK(words[24] == 0x828680C0u); /* type 2, flush, multi-line, src pitch, dst block */
+    CHECK(words[5] == 0x20018104u);
+    CHECK(words[6] == 256u);
+    CHECK(words[7] == 0x200681C3u);
+    CHECK(words[8] == 0x30u && words[9] == 256u && words[10] == 64u && words[11] == 1u);
+    CHECK(words[12] == 0u && words[13] == 0u);
+    CHECK(words[14] == 0x20028106u && words[15] == 256u && words[16] == 64u);
+    CHECK(words[17] == 0x828680C0u); /* type 2, flush, multi-line, src pitch, dst block */
+    CHECK(!words_have(words, count, 0x20018105u) && !words_have(words, count, 0x200681CAu));
 
     memset(&k, 0, sizeof k);
     launches = 0;
     count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, 0u, 512u, 0u, 1, 0u, &launches, words,
                                   NVN_RT_DMA_LAUNCH_WORDS);
-    CHECK(count == 25 && launches == 1 && k.fault_count == 0);
-    CHECK(words[6] == 512u && words[7] == 512u && words[8] == 256u && words[9] == 64u);
+    CHECK(count == 18 && launches == 1 && k.fault_count == 0);
+    CHECK(words[6] == 512u && words[9] == 256u && words[15] == 256u && words[16] == 64u);
 }
 
 static void test_copy_dma_mirror_y(void) {
@@ -1179,12 +1185,12 @@ static void test_copy_dma_mirror_y(void) {
     uint32_t launches = 0;
     uint32_t count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, NVN_COPY_FLAG_MIRROR_Y, 0u, 0u, 1,
                                            0u, &launches, words, NVN_RT_DMA_LAUNCH_WORDS);
-    CHECK(count == 25 && launches == 2 && k.fault_count == 0);
-    CHECK(words[2] == 0x200100u && words[4] == 0x1000u && words[9] == 1u && words[16] == 0u);
+    CHECK(count == 18 && launches == 2 && k.fault_count == 0);
+    CHECK(words[2] == 0x200100u && words[4] == 0x1000u && words[16] == 1u && words[13] == 0u);
     count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, NVN_COPY_FLAG_MIRROR_Y, 0u, 0u, 1, 1u,
                                   &launches, words, NVN_RT_DMA_LAUNCH_WORDS);
-    CHECK(count == 25 && launches == 2 && k.fault_count == 0);
-    CHECK(words[2] == 0x200000u && words[4] == 0x1000u && words[9] == 1u && words[16] == 0x10000u);
+    CHECK(count == 18 && launches == 2 && k.fault_count == 0);
+    CHECK(words[2] == 0x200000u && words[4] == 0x1000u && words[16] == 1u && words[13] == 0x10000u);
 }
 
 static void test_copy_dma_mirror_z(void) {
@@ -1197,12 +1203,12 @@ static void test_copy_dma_mirror_z(void) {
     uint32_t stride = (uint32_t)t.layout.layer_stride;
     uint32_t count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, NVN_COPY_FLAG_MIRROR_Z, 0u, 0u, 1,
                                            0u, &launches, words, NVN_RT_DMA_LAUNCH_WORDS);
-    CHECK(count == 25 && launches == 2 && k.fault_count == 0);
-    CHECK(words[2] == 0x200000u + stride && words[4] == 0x2000u + stride && words[15] == 0u);
+    CHECK(count == 18 && launches == 2 && k.fault_count == 0);
+    CHECK(words[2] == 0x200000u + stride && words[4] == 0x2000u + stride && words[12] == 0u);
     count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, NVN_COPY_FLAG_MIRROR_Z, 0u, 0u, 1, 1u,
                                   &launches, words, NVN_RT_DMA_LAUNCH_WORDS);
-    CHECK(count == 25 && launches == 2 && k.fault_count == 0);
-    CHECK(words[2] == 0x200000u && words[4] == 0x2000u + 2u * stride && words[15] == 0u);
+    CHECK(count == 18 && launches == 2 && k.fault_count == 0);
+    CHECK(words[2] == 0x200000u && words[4] == 0x2000u + 2u * stride && words[12] == 0u);
 }
 
 static void test_copy_dma_block_compressed(void) {
@@ -1214,9 +1220,9 @@ static void test_copy_dma_block_compressed(void) {
     uint32_t launches = 0;
     uint32_t count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, 0u, 0u, 0u, 1, 0u, &launches, words,
                                            NVN_RT_DMA_LAUNCH_WORDS);
-    CHECK(count == 25 && launches == 1 && k.fault_count == 0);
-    CHECK(words[8] == 16u && words[9] == 2u); /* the 6x6 region is 2x2 whole blocks */
-    CHECK(words[12] == 64u && words[13] == 2u && words[14] == 1u);
+    CHECK(count == 18 && launches == 1 && k.fault_count == 0);
+    CHECK(words[15] == 16u && words[16] == 2u); /* the 6x6 region is 2x2 whole blocks */
+    CHECK(words[9] == 64u && words[10] == 2u && words[11] == 1u);
 }
 
 static void test_copy_dma_region_refused(void) {
@@ -1232,6 +1238,42 @@ static void test_copy_dma_region_refused(void) {
     CHECK(count == 0 && launches == 0 && k.fault_count == 1);
     CHECK(fault_is(&k, "copy region"));
     CHECK(words[0] == 0xAAAAAAAAu);
+}
+
+static void test_copy_dma_to_buffer(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture t = make_texture(0x25, 64, 64, 0x1000);
+    uint32_t region[6] = {0, 0, 0, 64, 64, 1};
+    uint32_t words[NVN_RT_DMA_LAUNCH_WORDS];
+    uint32_t launches = 0;
+    uint32_t count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, 0u, 0u, 0u, 0, 0u, &launches, words,
+                                           NVN_RT_DMA_LAUNCH_WORDS);
+    CHECK(count == 18 && launches == 1 && k.fault_count == 0);
+    CHECK(words[5] == 0x200681CAu);
+    CHECK(words[6] == 0x30u && words[7] == 256u && words[8] == 64u && words[9] == 1u);
+    CHECK(words[10] == 0u && words[11] == 0u);
+    CHECK(words[12] == 0x20018105u && words[13] == 256u);
+    CHECK(words[14] == 0x20028106u && words[15] == 256u && words[16] == 64u);
+    CHECK(words[17] == 0x830680C0u); /* type 2, flush, multi-line, src block, dst pitch */
+    CHECK(!words_have(words, count, 0x20018104u));
+}
+
+static void test_copy_dma_linear_texture(void) {
+    Mock k = {0};
+    NvnRtCopyEnv env = make_copy_env(&k, copy_format_word_stub);
+    NvnTexture t = make_linear_texture(0x25, 64, 64, 0x1000);
+    uint32_t region[6] = {0, 0, 0, 64, 64, 1};
+    uint32_t words[NVN_RT_DMA_LAUNCH_WORDS];
+    uint32_t launches = 0;
+    uint32_t count = nvn_rt_copy_dma_words(&env, &t, NULL, 0x200000, region, 0u, 0u, 0u, 1, 0u, &launches, words,
+                                           NVN_RT_DMA_LAUNCH_WORDS);
+    CHECK(count == 13 && launches == 1 && k.fault_count == 0);
+    CHECK(words[5] == 0x20018104u && words[6] == 256u);
+    CHECK(words[7] == 0x20018105u && words[8] == 256u);
+    CHECK(words[9] == 0x20028106u && words[10] == 256u && words[11] == 64u);
+    CHECK(words[12] == 0x838680C0u); /* type 2, flush, multi-line, src pitch, dst pitch */
+    CHECK(!words_have(words, count, 0x200681C3u) && !words_have(words, count, 0x200681CAu));
 }
 
 static void test_copy_2d_buffer(void) {
@@ -1341,6 +1383,8 @@ int main(void) {
     test_copy_dma_mirror_z();
     test_copy_dma_block_compressed();
     test_copy_dma_region_refused();
+    test_copy_dma_to_buffer();
+    test_copy_dma_linear_texture();
     test_copy_2d_buffer();
     test_downsample_factors();
     test_tiled_downsample_ratio();

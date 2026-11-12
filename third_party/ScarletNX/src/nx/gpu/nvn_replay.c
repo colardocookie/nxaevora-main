@@ -11,6 +11,8 @@
 #define NVN_REPLAY_SAMPLER_POOL_HI    0x557u
 #define NVN_REPLAY_SAMPLER_POOL_LO    0x558u
 #define NVN_REPLAY_SAMPLER_POOL_LIMIT 0x559u
+#define NVN_REPLAY_COMPUTE_SUBCHANNEL 1u
+#define NVN_REPLAY_POOL_WORDS         3u
 /* SetTexturePool also selects the texture pool in the driver constants buffer (macro 0xE20, argument 0x40) and writes
    the pool base at 0x8E4 and 0x8E5 (sdk d84c1c4-d84c1cc). */
 #define NVN_REPLAY_TEX_POOL_SELECT       0xE20u
@@ -119,6 +121,14 @@ static uint32_t scissor_axis_word(int32_t origin, int32_t size, int* empty) {
     return *empty ? 0u : ((uint32_t)lo | ((uint32_t)hi << 16));
 }
 
+static void replay_pool_compute(const NvnReplayEnv* env, NvnReplayStats* stats, uint32_t method_hi,
+                                uint32_t method_lo, uint32_t method_limit, uint64_t base, uint32_t count) {
+    env->channel_method(env->ctx, NVN_REPLAY_COMPUTE_SUBCHANNEL, method_hi, (uint32_t)(base >> 32));
+    env->channel_method(env->ctx, NVN_REPLAY_COMPUTE_SUBCHANNEL, method_lo, (uint32_t)base);
+    env->channel_method(env->ctx, NVN_REPLAY_COMPUTE_SUBCHANNEL, method_limit, count - 1u);
+    stats->methods += NVN_REPLAY_POOL_WORDS;
+}
+
 static int replay_pool(const NvnReplayEnv* env, NvnReplayStats* stats, NvnOpCode code, const NvnOpPool* op,
                        uint32_t method_hi, uint32_t method_lo, uint32_t method_limit) {
     uint64_t base = 0;
@@ -131,6 +141,10 @@ static int replay_pool(const NvnReplayEnv* env, NvnReplayStats* stats, NvnOpCode
         replay_fault(env, stats, "pool empty", op->pool);
         return 0;
     }
+    if (!env->channel_method) {
+        replay_fault(env, stats, "pool compute", op->pool);
+        return 0;
+    }
     replay_method(env, stats, method_hi, (uint32_t)(base >> 32));
     replay_method(env, stats, method_lo, (uint32_t)base);
     replay_method(env, stats, method_limit, count - 1u);
@@ -139,6 +153,7 @@ static int replay_pool(const NvnReplayEnv* env, NvnReplayStats* stats, NvnOpCode
         replay_method(env, stats, NVN_REPLAY_TEX_POOL_OFFSET, (uint32_t)base);
         replay_method(env, stats, NVN_REPLAY_TEX_POOL_OFFSET_HI, (uint32_t)(base >> 32));
     }
+    replay_pool_compute(env, stats, method_hi, method_lo, method_limit, base, count);
     return 1;
 }
 
@@ -216,7 +231,7 @@ static int replay_clear(const NvnReplayEnv* env, NvnReplayStats* stats, const Nv
 static int replay_barrier(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpBarrier* op) {
     for (uint32_t bit = 0; bit < NVN_REPLAY_BARRIER_BITS; bit++)
         if (op->bits & (1u << bit)) stats->barrier_bits[bit]++;
-    if (!env->puller_method) {
+    if (!env->channel_method) {
         replay_fault(env, stats, "barrier puller", op->bits);
         return 0;
     }
@@ -237,7 +252,7 @@ static int replay_barrier(const NvnReplayEnv* env, NvnReplayStats* stats, const 
         }
         if (result == 0) continue;
         if (method < NVN_REPLAY_PULLER_METHOD_LIMIT)
-            env->puller_method(env->ctx, stream.subchannel, method, value);
+            env->channel_method(env->ctx, stream.subchannel, method, value);
         else
             replay_method(env, stats, method, value);
     }

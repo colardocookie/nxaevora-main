@@ -684,12 +684,15 @@ uint32_t nvn_rt_copy_texture_words(const NvnRtCopyEnv* env, const NvnTexture* sr
    layers on the buffer side: dma.c keeps the pitch as u32, so the negative pitch of the library is not possible. */
 
 #define NVN_DMA_METHOD_OFFSET     0x100u /* OffsetIn upper/lower and OffsetOut upper/lower */
-#define NVN_DMA_METHOD_PITCH      0x104u /* PitchIn, PitchOut, LineLengthIn, LineCount */
+#define NVN_DMA_METHOD_SRC_PITCH  0x104u /* PitchIn */
+#define NVN_DMA_METHOD_DST_PITCH  0x105u /* PitchOut */
+#define NVN_DMA_METHOD_LINE       0x106u /* LineLengthIn, LineCount */
 #define NVN_DMA_METHOD_DST_PARAMS 0x1C3u /* block size, width, height, depth, layer, origin */
 #define NVN_DMA_METHOD_SRC_PARAMS 0x1CAu
 #define NVN_DMA_METHOD_LAUNCH     0x0C0u
 #define NVN_DMA_OFFSET_WORDS      4u
-#define NVN_DMA_PITCH_WORDS       4u
+#define NVN_DMA_PITCH_WORDS       1u
+#define NVN_DMA_LINE_WORDS        2u
 #define NVN_DMA_PARAMS_WORDS      6u
 #define NVN_DMA_SUBCHANNEL        4u
 #define NVN_DMA_COPY_TYPE         2u
@@ -908,6 +911,21 @@ int nvn_rt_copy_dma_check(const NvnRtCopyEnv* env, const NvnTexture* texture, co
     return 1;
 }
 
+/* The words of one DMA side: the block parameters of a block linear side, or the pitch word of a pitch side. */
+static uint32_t dma_side_words(uint32_t* out, uint32_t at, uint32_t block_method, uint32_t pitch_method,
+                               int is_block, uint32_t pitch, const uint32_t block_params[NVN_DMA_PARAMS_WORDS]) {
+    if (is_block) {
+        out[at++] = NVN_RT_HEADER_INCREASING | (NVN_DMA_PARAMS_WORDS << NVN_RT_HEADER_COUNT_SHIFT) |
+                    (NVN_DMA_SUBCHANNEL << NVN_RT_SUBCHANNEL_SHIFT) | block_method;
+        for (uint32_t i = 0; i < NVN_DMA_PARAMS_WORDS; i++) out[at++] = block_params[i];
+    } else {
+        out[at++] = NVN_RT_HEADER_INCREASING | (NVN_DMA_PITCH_WORDS << NVN_RT_HEADER_COUNT_SHIFT) |
+                    (NVN_DMA_SUBCHANNEL << NVN_RT_SUBCHANNEL_SHIFT) | pitch_method;
+        out[at++] = pitch;
+    }
+    return at;
+}
+
 uint32_t nvn_rt_copy_dma_words(const NvnRtCopyEnv* env, const NvnTexture* texture, const NvnTextureView* view,
                                uint64_t buffer, const uint32_t region[6], uint32_t flags,
                                uint32_t row_stride, uint32_t image_stride, int to_texture,
@@ -997,23 +1015,14 @@ uint32_t nvn_rt_copy_dma_words(const NvnRtCopyEnv* env, const NvnTexture* textur
     out[at++] = (uint32_t)in_addr;
     out[at++] = (uint32_t)(out_addr >> 32);
     out[at++] = (uint32_t)out_addr;
-    out[at++] = NVN_RT_HEADER_INCREASING | (NVN_DMA_PITCH_WORDS << NVN_RT_HEADER_COUNT_SHIFT) |
-                (NVN_DMA_SUBCHANNEL << NVN_RT_SUBCHANNEL_SHIFT) | NVN_DMA_METHOD_PITCH;
-    out[at++] = src_pitch;
-    out[at++] = dst_pitch;
+    at = dma_side_words(out, at, NVN_DMA_METHOD_SRC_PARAMS, NVN_DMA_METHOD_SRC_PITCH, src_block, src_pitch,
+                        block_params);
+    at = dma_side_words(out, at, NVN_DMA_METHOD_DST_PARAMS, NVN_DMA_METHOD_DST_PITCH, dst_block, dst_pitch,
+                        block_params);
+    out[at++] = NVN_RT_HEADER_INCREASING | (NVN_DMA_LINE_WORDS << NVN_RT_HEADER_COUNT_SHIFT) |
+                (NVN_DMA_SUBCHANNEL << NVN_RT_SUBCHANNEL_SHIFT) | NVN_DMA_METHOD_LINE;
     out[at++] = p.row_bytes;
     out[at++] = line_rows;
-    for (uint32_t side = 0; side < 2; side++) {
-        uint32_t method = side == 0 ? NVN_DMA_METHOD_DST_PARAMS : NVN_DMA_METHOD_SRC_PARAMS;
-        int is_block = side == 0 ? dst_block : src_block;
-        out[at++] = NVN_RT_HEADER_INCREASING | (NVN_DMA_PARAMS_WORDS << NVN_RT_HEADER_COUNT_SHIFT) |
-                    (NVN_DMA_SUBCHANNEL << NVN_RT_SUBCHANNEL_SHIFT) | method;
-        if (is_block) {
-            for (uint32_t i = 0; i < NVN_DMA_PARAMS_WORDS; i++) out[at++] = block_params[i];
-        } else {
-            for (uint32_t i = 0; i < NVN_DMA_PARAMS_WORDS; i++) out[at++] = 0u;
-        }
-    }
     out[at++] = NVN_RT_HEADER_INLINE | (launch << NVN_RT_HEADER_COUNT_SHIFT) |
                 (NVN_DMA_SUBCHANNEL << NVN_RT_SUBCHANNEL_SHIFT) | NVN_DMA_METHOD_LAUNCH;
     return at;

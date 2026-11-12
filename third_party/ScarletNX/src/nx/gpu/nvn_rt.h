@@ -64,7 +64,8 @@ uint32_t nvn_rt_copy_texture_words(const NvnRtCopyEnv* env, const NvnTexture* sr
    region row stack or one layer. The builder writes the words of launch index; *launch_count is the number of
    launches. A refusal returns 0, calls fault once and writes no part of out. An empty region returns 0 with
    *launch_count 0 and no fault. */
-#define NVN_RT_DMA_LAUNCH_WORDS 25u
+/* The largest launch: 5 offset words, 7 block parameters, 2 pitch, 3 line and 1 launch word (18). */
+#define NVN_RT_DMA_LAUNCH_WORDS 18u
 uint32_t nvn_rt_copy_dma_words(const NvnRtCopyEnv* env, const NvnTexture* texture, const NvnTextureView* view,
                                uint64_t buffer, const uint32_t region[6], uint32_t flags,
                                uint32_t row_stride, uint32_t image_stride, int to_texture,
