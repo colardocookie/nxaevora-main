@@ -81,6 +81,9 @@ typedef struct Renderer {
     void (*release_write)(u64 gva, const void* data, u32 len);
     /* the stream reads or writes [a, a + n): a release still waiting to write there happens first */
     void (*release_need)(u64 a, u64 n);
+    /* a write of the front end to guest memory (a constant buffer upload, an inline-to-memory upload), data in guest
+       byte order. NULL: the front end writes it now. Set: the renderer owns the write. */
+    void (*engine_write)(u64 gva, const void* data, u64 len);
     /* the stream reads [a, a + n) as it stands after every release before it: 1 when it read guest memory with the
        payloads of the releases queued over it, without waiting for them; 0 when no queued release is there (the caller
        reads as usual, nothing to wait for from them); -1 when one is there that can't be read past now (a samples-passed

@@ -195,6 +195,7 @@ typedef struct {
     PCond cv;
     uint64_t lib_control, host_control; /* the control memory of each command buffer, given again each case */
     uint64_t pool_scratch;              /* the push buffer words of the expanded pool records, one block per item */
+    uint64_t texture_pool_gva[2];       /* the GPU address of each side's texture pool, for the write records */
 } StCmdJob;
 
 /* The recorder calls the snapshot on the GPU thread, and one job runs at a time on that thread (one guest thread runs
@@ -384,6 +385,7 @@ static void st_gpu_fn(void* arg) {
     job->work_overflow = 0;
     st_snapshot_job = job;
     nvn_st_renderer_begin(job->ref, st_snapshot_regs);
+    nvn_st_renderer_set_texture_pool(job->texture_pool_gva[0]);
     for (unsigned i = 0; i < job->n_ranges && job->status == 0; i++) {
         const u32* words = (const u32*)GP(job->ranges[i].cpu_start);
         if (gpu_channel_words(job->lib, words, job->ranges[i].words)) {
@@ -395,6 +397,7 @@ static void st_gpu_fn(void* arg) {
     r3d_pending_flush();
     nvn_st_renderer_end();
     nvn_st_renderer_begin(job->got, st_snapshot_regs);
+    nvn_st_renderer_set_texture_pool(job->texture_pool_gva[1]);
     NvnReplayStats stats = {0};
     if (nvn_native_selftest_replay(job->host, job->host_handle, job->window_origin_flip, &stats)) {
         LOG("selftest: %s: the host replay failed\n", job->name);
@@ -863,6 +866,7 @@ static int st_script_coverage_table(CPU* c, const StCmdProcs* p, const NvnStProc
    EndRecording handle of each side's CopyCommands source list; copy_ok is 0 when that list was not made. */
 typedef struct {
     uint64_t sampler_pool[2], texture_pool[2];
+    uint64_t texture_pool_gva[2];
     uint64_t texture[2][2];
     uint64_t copy_handle[2];
     int copy_ok;
@@ -1634,16 +1638,23 @@ _Static_assert(sizeof st_state_cases / sizeof st_state_cases[0] == ST_STATE_CASE
 typedef struct {
     NvnStResPool memory[2];
     uint64_t sampler_pool[2], texture_pool[2];
+    uint64_t texture_pool_gva[2];
     uint64_t texture[2][2];
 } StBindRes;
 
 /* Builds one side's memory pool, its two descriptor pools and its two render target textures. The texture pool table
    is at 0, the sampler pool table at 0x4000 and the textures at 0x8000 and 0x9000. */
 static int st_bind_res_setup(CPU* c, NvnStRun* run, NvnStResCache* cache, StBindRes* res, uint64_t args) {
+    NvnStProc get_address = {0};
+    if (!nvn_st_proc_find(&get_address, "nvnMemoryPoolGetBufferAddress")) return 0;
     for (int host = 0; host < 2; host++) {
         if (!nvn_st_res_pool_create(c, run, cache, host, &res->memory[host], NVN_ST_RES_POOL_CPU_CACHED,
                                     ST_BIND_POOL_BYTES))
             return 0;
+        const uint64_t pool_gva =
+            nvn_st_call(c, host ? &get_address.host : &get_address.lib, &(NvnStCall){.x = {res->memory[host].pool}});
+        if (!pool_gva) return 0;
+        res->texture_pool_gva[host] = pool_gva + ST_BIND_TEXTURE_POOL_OFFSET;
         res->texture_pool[host] = nvn_st_arena_alloc(&run->arena, ST_BIND_OBJ_BYTES, 16);
         res->sampler_pool[host] = nvn_st_arena_alloc(&run->arena, ST_BIND_OBJ_BYTES, 16);
         const uint64_t builder = nvn_st_arena_alloc(&run->arena, ST_BIND_OBJ_BYTES, 16);
@@ -1699,6 +1710,7 @@ static void st_run_case_table(CPU* c, NvnStRun* run, StCmdProcs* p, StCmdJob* jo
                               const char* mutate, const StBindCtx* ctx, int res_ok, int* stop,
                               const StCaseRow* cases, unsigned n_cases) {
     st_bind_ctx = ctx;
+    for (int h = 0; h < 2; h++) job->texture_pool_gva[h] = ctx ? ctx->texture_pool_gva[h] : 0;
     for (unsigned i = 0; i < n_cases && !*stop; i++) {
         const StCaseRow* const row = &cases[i];
         if (row->needs_res && !res_ok) {
@@ -1717,6 +1729,8 @@ static void st_run_case_table(CPU* c, NvnStRun* run, StCmdProcs* p, StCmdJob* jo
                 rule, row->expect_noop, stop, row->ignore, row->n_ignore);
     }
     st_bind_ctx = NULL;
+    job->texture_pool_gva[0] = 0;
+    job->texture_pool_gva[1] = 0;
 }
 
 /* The source command buffer of CopyCommands, one for each side: its own command memory pool and control memory, and
@@ -1920,6 +1934,7 @@ void nvn_selftest_command_cases(CPU* c, NvnStRun* run) {
             for (int host = 0; host < 2; host++) {
                 bind_ctx.sampler_pool[host] = bind_res.sampler_pool[host];
                 bind_ctx.texture_pool[host] = bind_res.texture_pool[host];
+                bind_ctx.texture_pool_gva[host] = bind_res.texture_pool_gva[host];
                 bind_ctx.texture[host][0] = bind_res.texture[host][0];
                 bind_ctx.texture[host][1] = bind_res.texture[host][1];
             }

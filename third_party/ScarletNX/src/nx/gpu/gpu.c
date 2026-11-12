@@ -342,6 +342,10 @@ void i2m_data(GpuChannel* ch, u32 v) {
     memcpy(t->inner_buffer + t->write_offset, b, n);
     t->write_offset += n;
     if (t->write_offset < t->copy_size) return;
+    if (g_renderer->engine_write) {
+        g_renderer->engine_write(t->regs.dest.address, t->inner_buffer, t->copy_size);
+        return;
+    }
     if (t->is_linear)
         upload_linear(t);
     else
