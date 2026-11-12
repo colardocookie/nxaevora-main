@@ -164,7 +164,22 @@ functions that no run reached stay `implemented` plus `unit`, `selftest` or `exe
   0x13 and 0x14, which the selftest expands as the library does at submission (d84c120, d84c3b0). Run of 2026-11-12
   (update program to the title): 301 cases, 0 failed, 8 expected no-op, 0 skipped. Mutation run with
   BindVertexAttribState: only that case fails, at r3d.0x458 (the stream index of attrib 0). The rows are in
-  `nvn-coverage.md`. Next groups: d3 (draws, clears, copies, dispatch) and d4 (CPU side).
+  `nvn-coverage.md`.
+  d3 is the draws, clears, copies, downsamples and the uniform upload (30 cases, no DispatchCompute case). The S check also
+  compares the 2D, DMA and compute engines, with per-engine ignore lists for the per-side texture addresses. The d3 fixes
+  (2026-11-12): the replay sends the 2D open and close words of subchannel 0 to the puller, the pool binds also write the
+  compute engine, a DMA copy writes the pitch only for the pitch side and the surface params only for the block linear
+  side (d82b0f0), the DMA block size has the 8-row GOB height (0x1000), the 2D route of CopyBufferToTexture uses the corner
+  origin and starts the source half a texel in, and Downsample uses the center origin with the bilinear filter. Run of
+  2026-11-12 (update program, exe of `10c6c46`): 329 cases, 0 failed, 11 expected no-op (DiscardColor,
+  DiscardDepthStencil and ResolveDepthBuffer are new), 2 skipped (TiledDownsample and its texture view form: the library
+  recording has op 21, which the decoder does not read, and the host has no driver program for it and uses the 2D engine).
+  Mutation runs: the copy mutation makes the host region one texel narrower, because no side reads the filter bit of a DMA
+  copy or of the 2D route of CopyBufferToTexture. CopyBufferToTexture fails its two rows (rdma.0x104, r2d.0x091) and CopyTextureToBuffer its row
+  (rdma.0x105), and all other rows match the clean run. Open, with no failing case: the library writes no 0x1CE and a
+  constant 0 to 0x1C7 (d82b3c4) while the host writes the layer field of a 3D texture, and the library aligns the
+  CopyBufferToTexture buffer address down and adds the remainder in elements to the source x (d82b73c-d82b750) while the
+  host passes the address as it is. Next group: d4 (CPU side).
 - 4-u4: the change of the default of `nvn_native_missing` to stop, when no row is `none` or `stub-log`.
 
 Exit condition of this part: every one of the 523 rows is `implemented` and has `unit`, `selftest` or `exec` with its scope. The
