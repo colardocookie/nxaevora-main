@@ -1651,6 +1651,142 @@ static void gravity_fix_init(void) {
         sites, (unsigned long long)frame_step_address);
 }
 
+/* 19843A0 queues a replacement velocity with one -g*factor/30 contribution.
+   Adjust only that contribution on a new queue for the player and ride classes.
+   Other classes, unchanged queues and the horizontal components keep their values. */
+static GuestFn capped_fall_original;
+static u64 capped_fall_calls, capped_fall_adjusted;
+/* 19843A0 queues direction x config+D8 x stick at +6F0 (flag +6E0) and the consumer adds
+   it to the velocity once. The only caller seen, the script native at 1FF4F44, calls it
+   once per frame, so air steering accelerated with the frame rate. Scale a new queue entry
+   by step / (1/30). An entry this call did not write keeps its value. */
+#define AIR_STEERING_CALLER 0x1ff4f44
+/* Ride table 41629B8 has its own slot +128, 252B124, which calls 19843A0 at 252B970. */
+#define AIR_STEERING_RIDE_CALLER 0x252b974
+static int capped_fall_fix, air_steering_fix;
+static u64 air_steering_adjusted;
+static int air_steering_scale(u64 object, int queued, const u32 previous[3], float seconds) {
+    if (!(gr32(object + 0x6e0) & 0xff) || !(seconds > 0.0f) || seconds >= NOMINAL_STEP_SECONDS) return 0;
+    int changed = !queued;
+    float value[3];
+    for (unsigned k = 0; k < 3; k++) {
+        if (previous[k] != gr32(object + 0x6f0 + 4 * k)) changed = 1;
+        value[k] = guest_float(object + 0x6f0 + 4 * k);
+        if (!isfinite(value[k])) return 0;
+    }
+    if (!changed) return 0;
+    for (unsigned k = 0; k < 3; k++)
+        guest_float_write(object + 0x6f0 + 4 * k, value[k] * (seconds / NOMINAL_STEP_SECONDS));
+    return 1;
+}
+static int capped_fall_class(u64 object) {
+    if (!readable(object, 8)) return 0;
+    const u64 table = gr64(object);
+    if (!readable(table, 0x3c0)) return 0;
+    if (table == main_base + 0x413db58)
+        return gr64(table + 0x128) == main_base + 0x19843a0 &&
+               gr64(table + 0x270) == main_base + 0x1a145ac &&
+               gr64(table + 0x2a0) == main_base + 0x1a08560;
+    const u32 ride_tables[] = {0x41629b8, 0x41642a0, 0x4164dc0, 0x4165cd0, 0x4166ff8};
+    for (unsigned k = 0; k < sizeof ride_tables / sizeof ride_tables[0]; k++)
+        if (table == main_base + ride_tables[k])
+            return gr64(table + 0x270) == main_base + 0x198d7e4 &&
+                   gr64(table + 0x2a0) == main_base + 0x257af70 &&
+                   gr64(table + 0x3b8) == main_base + 0x257abb4;
+    return 0;
+}
+static void capped_fall_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    const int eligible = capped_fall_class(object) && writable(object, 0xbec);
+    const int queued = eligible && (gr32(object + 0x6a0) & 0xff);
+    u32 previous[4] = {0};
+    for (unsigned k = 0; eligible && k < 4; k++) previous[k] = gr32(object + 0x6b0 + 4 * k);
+    const float factor = eligible ? guest_float(object + 0xbe8) : 0.0f;
+    const float seconds = guest_float(frame_step_address);
+    const int steering = air_steering_fix && eligible && (c->x[30] == main_base + AIR_STEERING_CALLER ||
+                                                          c->x[30] == main_base + AIR_STEERING_RIDE_CALLER);
+    const int steering_queued = steering && (gr32(object + 0x6e0) & 0xff);
+    u32 steering_previous[3] = {0};
+    for (unsigned k = 0; steering && k < 3; k++) steering_previous[k] = gr32(object + 0x6f0 + 4 * k);
+    capped_fall_original(c, entry);
+    const u64 calls = __atomic_add_fetch(&capped_fall_calls, 1, __ATOMIC_RELAXED);
+    if (steering && capped_fall_class(object) && writable(object, 0xbec) &&
+        air_steering_scale(object, steering_queued, steering_previous, seconds)) {
+        const u64 adjusted = __atomic_add_fetch(&air_steering_adjusted, 1, __ATOMIC_RELAXED);
+        if (adjusted <= 4 || adjusted % 1000 == 0)
+            LOG("arceus-air-steering-fix: adjusted=%llu object=%llx table=main+%llx xz=%g,%g step=%g\n",
+                (unsigned long long)adjusted, (unsigned long long)object,
+                (unsigned long long)(gr64(object) - main_base), (double)guest_float(object + 0x6f0),
+                (double)guest_float(object + 0x6f8), (double)seconds);
+    }
+    if (capped_fall_fix && eligible && capped_fall_class(object) && writable(object, 0xbec) &&
+        (gr32(object + 0x6a0) & 0xff) && guest_float(object + 0xbe8) == factor) {
+        const float g = guest_float(main_base + 0x413a0f8);
+        const float y = guest_float(object + 0x6b4);
+        int changed = !queued;
+        for (unsigned k = 0; k < 4; k++)
+            if (previous[k] != gr32(object + 0x6b0 + 4 * k)) changed = 1;
+        if (changed && isfinite(y) && isfinite(g) && isfinite(factor) && g > 0.0f && factor > 0.0f &&
+            seconds > 0.0f && seconds <= NOMINAL_STEP_SECONDS) {
+            guest_float_write(object + 0x6b4, y + (g * factor) * (NOMINAL_STEP_SECONDS - seconds));
+            const u64 adjusted = __atomic_add_fetch(&capped_fall_adjusted, 1, __ATOMIC_RELAXED);
+            if (adjusted <= 4 || adjusted % 1000 == 0)
+                LOG("arceus-capped-fall: adjusted=%llu object=%llx table=main+%llx factor=%g queued_y=%g step=%g\n",
+                    (unsigned long long)adjusted, (unsigned long long)object,
+                    (unsigned long long)(gr64(object) - main_base), (double)factor, (double)y, (double)seconds);
+        }
+    }
+    if (calls <= 4 || calls % 1000 == 0)
+        LOG("arceus-capped-fall: calls=%llu adjusted=%llu object=%llx eligible=%d step=%g\n",
+            (unsigned long long)calls,
+            (unsigned long long)__atomic_load_n(&capped_fall_adjusted, __ATOMIC_RELAXED),
+            (unsigned long long)object, eligible, (double)seconds);
+}
+static void capped_fall_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_CAPPED_FALL_FIX");
+    const char* movement = getenv("SNX_ARCEUS_MOVEMENT_FIX");
+    const char* mask = getenv("SNX_ARCEUS_MOVEMENT_SITES");
+    /* Explicit mask bit 9 also enables this fix through an existing launcher setting. */
+    const int selected = movement && !strcmp(movement, "1") && mask &&
+                         (strtoul(mask, NULL, 16) & 0x200ul);
+    const char* steering = getenv("SNX_ARCEUS_AIR_STEERING_FIX");
+    const int steer = steering && !strcmp(steering, "1");
+    const int fall = (enabled && !strcmp(enabled, "1")) || selected;
+    if (!main_base || (!fall && !steer)) return;
+    if (!clocks_installed) {
+        WARN("arceus-capped-fall: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x19843a0;
+    if (!covers_exactly(pc, 0xb18) || pc < g_code_lo || pc + 0xb18 > g_code_hi ||
+        !readable(pc, 0xb18) || gr32(pc) != 0xd102c3ff ||
+        gr32(pc + 0xfc) != 0x14000002 || gr32(pc + 0x6d0) != 0x52911128 ||
+        gr32(pc + 0x6d4) != 0x72b7a108 || gr32(pc + 0x700) != 0x3d81ae60 ||
+        gr32(pc + 0x70c) != 0x391a8268) {
+        WARN("arceus-capped-fall: refused guard (movement bit 1 must be off)\n");
+        return;
+    }
+    if (!frame_step_cell_init("arceus-capped-fall")) return;
+    /* Match the census marker so it leaves this wrapper in place. */
+    gw32(pc + 0xfc, 0xb400005f);
+    jit_code_changed(pc, 0xb18);
+    capped_fall_original = jit_wait(pc);
+    if (!capped_fall_original) {
+        WARN("arceus-capped-fall: compile failed\n");
+        return;
+    }
+    capped_fall_fix = fall;
+    air_steering_fix = steer;
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], capped_fall_update, __ATOMIC_RELEASE);
+    if (fall)
+        LOG("arceus-capped-fall: EXPERIMENT: player/ride queued gravity uses elapsed time, other classes unchanged\n");
+    if (steer)
+        LOG("arceus-air-steering-fix: EXPERIMENT: player/ride air steering from main+%x follows elapsed time\n",
+            AIR_STEERING_CALLER);
+}
+
+
 /* C21D00 (fade in) and C227BC (fade out) start a fade: its fractional progress starts over. */
 static GuestFn fade_start_original[2];
 static void fade_start_update(CPU* c, u64 entry, unsigned kind) {
@@ -2538,6 +2674,7 @@ void arceus_clock_post_jit(void) {
     world_timers_init();
     gravity_fix_init();
     movement_fix_init();
+    capped_fall_init();
     ball_flight_init();
     timing_research_init();
     capture_fix_init();

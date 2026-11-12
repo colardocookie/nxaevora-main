@@ -140,6 +140,46 @@ static void flag(const char* name, const char* value) {
     assert(!setenv(name, value, 1));
 #endif
 }
+/* A new air steering entry is scaled by step / (1/30). One second of entries sums to 30 authored ones. */
+static void test_air_steering(void) {
+    const u32 none[3] = {0};
+    const float authored[3] = {0.25f, 0.0f, -0.1f};
+    const float steps[4][2] = {{1.0f / 60, 1.0f / 60}, {1.0f / 120, 1.0f / 120}, {0.012f, 0.020f}, {0.008f, 0.030f}};
+    memset(memory, 0, sizeof memory);
+    for (unsigned k = 0; k < 3; k++) guest_float_write(object + 0x6f0 + 4 * k, authored[k]);
+    /* No flag, a full 1/30 step and a slower frame leave the entry bit exact. */
+    assert(!air_steering_scale(object, 0, none, 1.0f / 60));
+    *GP(object + 0x6e0) = 1;
+    assert(!air_steering_scale(object, 0, none, NOMINAL_STEP_SECONDS));
+    assert(!air_steering_scale(object, 0, none, 0.05f));
+    assert(!air_steering_scale(object, 0, none, 0.0f));
+    for (unsigned k = 0; k < 3; k++) assert(guest_float(object + 0x6f0 + 4 * k) == authored[k]);
+    for (unsigned schedule = 0; schedule < 4; schedule++) {
+        double elapsed = 0, sum[3] = {0};
+        for (unsigned call = 0; elapsed < 1.0; call++) {
+            const float seconds = steps[schedule][call & 1];
+            for (unsigned k = 0; k < 3; k++) guest_float_write(object + 0x6f0 + 4 * k, authored[k]);
+            assert(air_steering_scale(object, 0, none, seconds));
+            for (unsigned k = 0; k < 3; k++) sum[k] += guest_float(object + 0x6f0 + 4 * k);
+            elapsed += seconds;
+        }
+        for (unsigned k = 0; k < 3; k++) assert(fabs(sum[k] - authored[k] * elapsed * 30) < 1e-4);
+    }
+    /* An entry still queued and not rewritten by this call is not scaled again. */
+    u32 previous[3];
+    for (unsigned k = 0; k < 3; k++) previous[k] = gr32(object + 0x6f0 + 4 * k);
+    assert(!air_steering_scale(object, 1, previous, 1.0f / 60));
+    for (unsigned k = 0; k < 3; k++) assert(gr32(object + 0x6f0 + 4 * k) == previous[k]);
+    /* A rewritten entry on a queue that was already set is scaled. */
+    guest_float_write(object + 0x6f0, authored[0]);
+    assert(air_steering_scale(object, 1, previous, 1.0f / 60));
+    assert(fabsf(guest_float(object + 0x6f0) - authored[0] / 2) < 1e-7f);
+    /* A value that is not finite is left alone. */
+    guest_float_write(object + 0x6f8, NAN);
+    guest_float_write(object + 0x6f0, authored[0]);
+    assert(!air_steering_scale(object, 0, none, 1.0f / 60));
+    assert(guest_float(object + 0x6f0) == authored[0]);
+}
 static void test_diagnostics(void) {
     SnxModInfo main_mod = {.name = "main", .base = 4096,
         .build_id = {0xae,0xe8,0xf1,0x50,0xdd,0xa1,0xb5,0xa8,0x38,0x80,0x6e,0x1a,0x5e,0xa6,0x82,0x7a,
@@ -516,6 +556,7 @@ static void test_ledge_smoothing(void) {
     frame_step_address = 0;
 }
 int main(void) {
+    test_air_steering();
     const char* disabled[] = {"SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60", "SNX_ARCEUS_CLOCK_TRACE",
         "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_CAMERA_TRACE",
         "SNX_ARCEUS_TIMING_RESEARCH"};

@@ -223,3 +223,18 @@ elapsed time has reached, so it moves every frame about 1/30 second behind the s
 ride is put back on the script's own last target, so the script only reads positions it set. A window that closes
 while the ride is behind places it on the last target, unless the script set a newer position first. A set position
 on the ride from any other caller ends the steering, so movement from elsewhere is never overwritten.
+
+## Capped falls and air steering
+
+At capped horizontal speed a fall takes its vertical term from the queue that `main+19843A0` fills: it holds one
+-g x factor x 1/30 contribution, added to the velocity once per call, and the call runs once per rendered frame. With
+a target rate, `SNX_ARCEUS_CAPPED_FALL_FIX=1` (or bit 9 of `SNX_ARCEUS_MOVEMENT_SITES` with the movement fix on)
+corrects that contribution on a new queue entry to the elapsed step, for the player and the five ride classes whose
+slots point at the shared consumer `main+198D7E4`. Other classes and unchanged queues keep their values.
+
+The same function queues an air steering increment, direction x config x stick at `+6F0`, which the consumer also
+adds to the velocity once. The script native at `main+1FF4F44`, and for one ride class `main+252B974`, call it once
+per frame, so air acceleration doubled at 60 FPS and quadrupled at 120. `SNX_ARCEUS_AIR_STEERING_FIX=1` scales a new
+steering entry by the step over 1/30 second. At 30 FPS or slower nothing is written. Both switches share one wrapper on
+`main+19843A0`, and `arceus-capped-fall` and `arceus-air-steering-fix` lines count what they change. Test
+`arceus_clock` checks that one second of steering entries sums to 30 authored ones at 60, 120 and uneven steps.
