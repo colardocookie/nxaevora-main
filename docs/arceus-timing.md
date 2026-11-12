@@ -16,17 +16,19 @@ The switches are environment variables. A switch is on when its value is `1`.
 | Switch | What it does |
 | --- | --- |
 | `SNX_ARCEUS_TARGET_FPS` | `60` or `120`. The four main-loop duration writes take the elapsed time of the frame instead of 1/30 second, and the runtime's frame limit is set to this rate. Another value is refused. `SNX_ARCEUS_FPS60=1` is the older form of `60`. |
-| `SNX_ARCEUS_TIMING_FIXES` | With a target rate, the fixes of the clocks that do not use the main-loop duration: the water animation, fractional effect progress, the event camera, eye blinks, menu button repeat and the camera stick response. |
+| `SNX_ARCEUS_TIMING_FIXES` | With a target rate, enables water animation and fractional effect progress. Also a prerequisite for the individual event-camera, blink, menu-repeat and camera switches below. It does not enable those hooks on its own. |
 | `SNX_ARCEUS_CAMERA_INPUT_FIX` | Part of the timing fixes. The camera stick keeps its 30 FPS response at any frame rate. |
 | `SNX_ARCEUS_CAMERA_SPEED` | With the camera fix, a multiplier of the manual camera rotation speed. |
-| `SNX_ARCEUS_EVENT_CAMERA_FIX`, `SNX_ARCEUS_BLINK_FIX`, `SNX_ARCEUS_MENU_REPEAT_FIX` | Parts of the timing fixes that can be turned off one by one. |
+| `SNX_ARCEUS_EVENT_CAMERA_FIX`, `SNX_ARCEUS_BLINK_FIX`, `SNX_ARCEUS_MENU_REPEAT_FIX` | Set each to `1` to enable its timing fix, with a target rate and `SNX_ARCEUS_TIMING_FIXES=1`. |
 | `SNX_ARCEUS_FIXED_RESOLUTION` | Skips the game's automatic 3D resolution governor, which lowers the scene size against a 33.3 ms GPU budget. Explicit scene modes stay. |
 | `SNX_ARCEUS_CLOCK_TRACE` | Logs the main-loop clock calls without changing them. |
 | `SNX_ARCEUS_TIMING_RESEARCH` | Read-only counters on other fixed-step owners (physics worlds, frame timers, fades). |
 | `SNX_ARCEUS_CAMERA_TRACE`, `SNX_ARCEUS_DIALOGUE_TRACE` | Read-only traces of the camera input and the message view. |
 
-A typical run at 120 FPS sets `SNX_ARCEUS_TARGET_FPS=120`, `SNX_ARCEUS_TIMING_FIXES=1` and
-`SNX_ARCEUS_CAMERA_SPEED=2.2`.
+A typical run at 120 FPS sets `SNX_ARCEUS_TARGET_FPS=120`, `SNX_ARCEUS_TIMING_FIXES=1`,
+`SNX_ARCEUS_CAMERA_INPUT_FIX=1`, `SNX_ARCEUS_EVENT_CAMERA_FIX=1`, `SNX_ARCEUS_BLINK_FIX=1`,
+`SNX_ARCEUS_MENU_REPEAT_FIX=1` and `SNX_ARCEUS_CAMERA_SPEED=2.2`. The camera speed multiplier takes effect
+only when the camera hook is enabled.
 
 ## The shared step
 
@@ -109,7 +111,9 @@ Battle effect sequences, the `.wbin` player whose update is `main+9DBEAC`, add t
 `+E8` once per call, so captures in battle and battle moves ran four times fast at 120 FPS. With a target rate,
 `SNX_ARCEUS_BATTLE_SEQUENCE_FIX=1` passes speed times 30 times the elapsed time for the call and puts the speed
 back after it. The step is cut so the frame lands exactly on each whole frame, because the commands of a sequence
-end on exact float compares. The rest carries over to the next call, up to two frames. Speeds outside (0, 4] only
+end on exact float compares. Each call processes the elapsed budget through as many whole-frame boundary updates
+as needed, up to 32 updates. A fractional tail waits for the next rendered update so command callbacks are not
+immediately repeated for a tiny leftover step. Any remaining budget carries over without being discarded. Speeds outside (0, 4] only
 update once a whole 1/30 second has built up. `arceus-battle-sequence` lines count the calls, the partial steps,
 the skipped calls and the speeds seen.
 

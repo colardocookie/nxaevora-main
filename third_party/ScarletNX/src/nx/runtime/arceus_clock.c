@@ -162,7 +162,10 @@ void arceus_clock_init(void) {
     tracing = enabled && !strcmp(enabled, "1");
     experimental = target_fps != 0;
     const char *fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
-    if (!tracing && !experimental && !message_trace && !(fixed && !strcmp(fixed, "1"))) return;
+    const char *camera = getenv("SNX_ARCEUS_CAMERA_TRACE");
+    const char *research = getenv("SNX_ARCEUS_TIMING_RESEARCH");
+    if (!tracing && !experimental && !message_trace && !(fixed && !strcmp(fixed, "1")) &&
+        !(camera && !strcmp(camera, "1")) && !(research && !strcmp(research, "1"))) return;
     for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
         if (!strcmp(g_mod->mods[i].name, "main")) mod = &g_mod->mods[i];
     if (!mod || memcmp(mod->build_id, id, sizeof id)) {
@@ -955,6 +958,9 @@ static void capture_fix_init(void) {
    x elapsed, cut so the frame lands exactly on each whole frame for the exact command-end
    compares. Speeds outside (0, 4] only update once 1/30 s has built up. */
 #define SEQUENCE_SLOTS 64
+/* A clamped 100 ms step at speed 4 needs at most 13 boundary updates.
+   Allow extra catch-up work, retaining excess budget if the guard is reached. */
+#define SEQUENCE_MAX_UPDATES 32
 static GuestFn battle_sequence_original;
 static PMutex battle_sequence_lock = PMUTEX_INIT;
 static struct { u64 object; u64 ns; float pending; } sequence_slots[SEQUENCE_SLOTS];
@@ -982,6 +988,7 @@ static void battle_sequence_update(CPU* c, u64 entry) {
     const u64 count = __atomic_add_fetch(&battle_sequence_calls, 1, __ATOMIC_RELAXED);
     int skip = 0;
     float speed = 0.0f, partial = 0.0f;
+    unsigned slot = SEQUENCE_SLOTS;
     if (battle_sequence_playing(object)) {
         pm_lock(&step_lock);
         const u64 ns = step.step ? step.step : step.initial_ns;
@@ -1002,9 +1009,9 @@ static void battle_sequence_update(CPU* c, u64 entry) {
         }
         if (speed > 0.0f && speed <= 4.0f) {
             float pending = sequence_slots[k].pending + speed * (float)ns / 33333333.0f;
-            if (pending > 2.0f * fmaxf(speed, 1.0f)) pending = 2.0f * fmaxf(speed, 1.0f);
             partial = sequence_step(guest_float(object + 0xe8), pending);
             sequence_slots[k].pending = pending - partial;
+            slot = k;
             if (partial <= 0.0f) skip = 1, partial = 0.0f;
         } else {
             sequence_slots[k].ns += ns;
@@ -1022,11 +1029,36 @@ static void battle_sequence_update(CPU* c, u64 entry) {
         c->pc = c->x[30];
     } else if (partial > 0.0f) {
         /* Speed is read only at 9DC3E0 inside the update, so pass the step there and restore it. */
-        __atomic_add_fetch(&battle_sequence_partial, 1, __ATOMIC_RELAXED);
-        guest_float_write(object + 0xf0, partial);
-        battle_sequence_original(c, entry);
-        if (readable(object, 0x308) && guest_float(object + 0xf0) == partial)
+        const u64 return_pc = c->x[30];
+        /* The update takes only this in X0. Re-enter with the same argument and
+           return address; leave the final call's return registers intact. */
+        for (unsigned updates = 0; updates < SEQUENCE_MAX_UPDATES; updates++) {
+            const float before = guest_float(object + 0xe8);
+            __atomic_add_fetch(&battle_sequence_partial, 1, __ATOMIC_RELAXED);
+            guest_float_write(object + 0xf0, partial);
+            battle_sequence_original(c, entry);
+            if (!readable(object, 0x308) || guest_float(object + 0xf0) != partial) break;
             guest_float_write(object + 0xf0, speed);
+            if (c->pc != return_pc || !battle_sequence_playing(object) ||
+                !(guest_float(object + 0xe8) > before) || updates + 1 == SEQUENCE_MAX_UPDATES) break;
+            pm_lock(&battle_sequence_lock);
+            /* A slot evicted by another sequence no longer owns our budget. */
+            if (sequence_slots[slot].object == object) {
+                const float frame = guest_float(object + 0xe8);
+                const float pending = sequence_slots[slot].pending;
+                /* Catch up whole boundaries only. A fractional tail waits for
+                   the next rendered update, preserving the original cadence of
+                   command callbacks rather than immediately updating them again. */
+                partial = frame + pending >= floorf(frame) + 1.0f ? sequence_step(frame, pending) : 0.0f;
+                sequence_slots[slot].pending = pending - partial;
+            } else partial = 0.0f;
+            pm_unlock(&battle_sequence_lock);
+            if (!(partial > 0.0f)) break;
+            c->x[0] = object;
+            c->x[30] = return_pc;
+            c->pc = entry;
+        }
+        /* The iteration guard retains any unconsumed budget in the slot. */
     } else battle_sequence_original(c, entry);
     if (count <= 4 || count % 2000 == 0) {
         char speeds[256];
