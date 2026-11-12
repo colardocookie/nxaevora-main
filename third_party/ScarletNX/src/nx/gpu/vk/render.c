@@ -3306,6 +3306,20 @@ void vk_render_draw_texture(GpuChannel* ch) {
         return;
     }
     Surf* d = rt[0];
+    /* a group (2D array of scaled targets) draws its layer 0: that member keeps the layout, gw and read check */
+    if (t->member) {
+        Surf* m = t->member[0];
+        if (!m) {
+            LOG_LIMIT(1, "vulkan: a draw texture of the group at %llx has no member in layer 0 (not drawn)\n",
+                      (unsigned long long)t->gva);
+            return;
+        }
+        t = m;
+    }
+    if (t->img == d->img && t->base_layer == d->base_layer) {
+        LOG_LIMIT(1, "vulkan: a draw texture reads the layer that it writes (not drawn)\n");
+        return;
+    }
     if (t->f.depth || d->f.depth || t->f.is_int != d->f.is_int ||
         !format_has(t->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !format_has(d->f.vk, VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
         LOG_LIMIT(1, "vulkan: a draw texture between formats %d and %d can't be blitted (not drawn)\n", (int)t->f.vk,

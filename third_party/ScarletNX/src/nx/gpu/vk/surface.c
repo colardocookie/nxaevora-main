@@ -396,7 +396,7 @@ static Surf* group_make(Surf* const* members, u32 n) {
     g->layers = n;
     g->levels = 1;
     g->type = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    g->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    g->layout = VK_IMAGE_LAYOUT_UNDEFINED; /* a summary that only vk_surf_use writes: no reader gets a group */
     g->member = calloc(n, sizeof *g->member);
     if (!g->member) {
         free(g);
