@@ -527,11 +527,17 @@ static void test_cpu_boost(void) {
     u32 config = 0;
     CHECK(nn_am_service_ICommonStateGetter_SetCpuBoostMode(NULL, 1) == 0 && g_test_apm_boost == 1);
     CHECK(nn_am_service_ICommonStateGetter_GetCurrentPerformanceConfiguration(NULL, &config) == 0 &&
-          config == 0x00020003u);
-    g_settings.tv_mode = 1;
-    CHECK(nn_am_service_ICommonStateGetter_GetCurrentPerformanceConfiguration(NULL, &config) == 0 &&
           config == 0x92220009u);
-    g_settings.tv_mode = 0;
+}
+
+/* the runtime is always in TV mode: Console, Boost and the TV's 1920 x 1080 */
+static void test_tv_mode(void) {
+    u8 op = 0;
+    u32 perf = 0;
+    i32 w = 0, h = 0;
+    CHECK(nn_am_service_ICommonStateGetter_GetOperationMode(NULL, &op) == 0 && op == 1);
+    CHECK(nn_am_service_ICommonStateGetter_GetPerformanceMode(NULL, &perf) == 0 && perf == 1);
+    CHECK(nn_am_service_ICommonStateGetter_GetDefaultDisplayResolution(NULL, &w, &h) == 0 && w == 1920 && h == 1080);
 }
 
 /* a lock accessor from GetHomeButtonReaderLockAccessor (30) and GetReaderLockAccessorEx (31): its event signaled
@@ -813,7 +819,6 @@ static void test_am_command_replies(void) {
 }
 
 int main(void) {
-    g_settings.tv_mode = 0; /* handheld, as the test was written for */
     hle_init();
     g_hle.kernel.title_id = 0x0100BF00112C0000ull; /* the title the test was written for */
     test_mii_edit();
@@ -829,6 +834,7 @@ int main(void) {
     test_swkbd();
     test_lock_event();
     test_cpu_boost();
+    test_tv_mode();
     test_am_command_replies();
     test_applets();
     CHECK(test_objects == 0 && test_kobjs == 0);

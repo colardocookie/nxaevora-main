@@ -137,15 +137,12 @@ jobs:
       - name: Check the executable starts
         run: build/default/scarletnx.exe --help > /dev/null
 
-      # tracked_material is excluded: it fails on two SMAA .dds files under src/nx/gpu/vk/shaders/smaa/ (a known
-      # failure, the fix waits for a decision). Remove the -E option when it is fixed. APPDATA gives the tests that
-      # write settings a clean folder of their own.
+      # APPDATA gives the tests that write settings a clean folder of their own.
       - name: Run ctest
         run: |
           set -euo pipefail
           export APPDATA="$SNX_CI_APPDATA"
-          ctest --test-dir build/default --output-on-failure --no-tests=error --timeout 900 --parallel 4 \
-            --exclude-regex '^tracked_material$'
+          ctest --test-dir build/default --output-on-failure --no-tests=error --timeout 900 --parallel 4
 
       - name: Upload the ctest log
         if: failure()

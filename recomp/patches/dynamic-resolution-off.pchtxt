@@ -1,0 +1,16 @@
+@nsobid-AEE8F150DDA1B5A838806E1A5EA6827AD9F3C51E
+
+@flag offset_shift 0x100
+
+// The dynamic resolution of update 1.1.1. Its state is the object at [render_system+0x110] (render_system at guest
+// 0xc2f4568). The per-frame update 0x8cc85a4 adds the measured frame time (ns at [render_system+0x158]) and moves the
+// level 0..3 (+0x34) up or down. Each level sets the shader parameters 3DBufferWidthScale and 3DBufferHeightScale
+// (1.0/1.0, 0.9/0.85, 0.85/0.8, 0.8/0.7).
+// The update returns at once, so the level that the mode set stays.
+@enabled
+00CC35A4 C0035FD6
+
+// The mode selector 0x8cc8888 sets fixed scales for the modes 2 to 7 (0.9/0.85 down to 0.5/0.5, and 0.0009/0.00085 in
+// mode 5). Its range check always jumps to the default block (1.0/1.0, level 0).
+@enabled
+00CC38BC 3F000014

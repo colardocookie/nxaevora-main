@@ -2523,18 +2523,6 @@ msgid "Looking for controllers..."
 msgstr ""
 
 #: src/gui/main.c
-msgid "Over 4x: this takes a lot of GPU memory, and a game may slow down or crash. Beyond this, severe graphical issues may occur"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Under 0.5x: the picture may look very low quality. Beyond this, severe graphical issues may occur"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Non-standard resolution, experimental."
-msgstr ""
-
-#: src/gui/main.c
 #, c-format
 msgid "%s is not a nickname: %s"
 msgstr ""
