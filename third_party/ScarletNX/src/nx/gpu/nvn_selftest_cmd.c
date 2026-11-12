@@ -75,6 +75,7 @@
 #define ST_D3_REGION_Y 0u
 #define ST_D3_REGION_LAYER 0u
 #define ST_D3_REGION_WIDTH 32u
+#define ST_D3_REGION_WIDTH_OFFSET 0x0cu
 #define ST_D3_REGION_HEIGHT 32u
 #define ST_D3_REGION_LAYERS 1u
 #define ST_D3_COPY_COMMANDS 1u
@@ -1174,6 +1175,12 @@ static void st_d3_fill_region(uint64_t at) {
     memcpy(GP(at), region, sizeof region);
 }
 
+/* A DMA copy and the 2D route of CopyBufferToTexture do not read the filter bit (flags bit 0) on either side, so the
+   mutation of such a copy makes the host's region one texel narrower (a wider one is outside texture A and refused). */
+static void st_d3_mutate_region_width(uint64_t region, int host, unsigned rule) {
+    if (host && rule == ST_MUT_INT) gw32(region + ST_D3_REGION_WIDTH_OFFSET, ST_D3_REGION_WIDTH - 1u);
+}
+
 static void st_d3_fill_color(uint64_t at, const uint32_t color[4]) {
     memcpy(GP(at), color, 4u * sizeof color[0]);
 }
@@ -1401,7 +1408,7 @@ static int st_copy_buffer_to_texture(CPU* c, const StCmdProcs* p, const NvnStPro
     if (!tex) return 0;
     const uint64_t region = st_d3_region(args, host);
     st_d3_fill_region(region);
-    if (host && rule == ST_MUT_INT) flags ^= 1u;
+    st_d3_mutate_region_width(region, host, rule);
     st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, ST_D3_BUFFER_A, tex, 0u, region, flags}});
     st_clear_work(c, p, host, cb, args);
     return 1;
@@ -1426,9 +1433,8 @@ static int st_script_copy_texture_to_buffer(CPU* c, const StCmdProcs* p, const N
     if (!tex) return 0;
     const uint64_t region = st_d3_region(args, host);
     st_d3_fill_region(region);
-    uint32_t flags = 0u;
-    if (host && rule == ST_MUT_INT) flags ^= 1u;
-    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, tex, 0u, region, ST_D3_BUFFER_B, flags}});
+    st_d3_mutate_region_width(region, host, rule);
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, tex, 0u, region, ST_D3_BUFFER_B, 0u}});
     st_clear_work(c, p, host, cb, args);
     return 1;
 }
