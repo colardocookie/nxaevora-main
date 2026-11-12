@@ -103,13 +103,6 @@ setting Save state backup
     help 1 = the game is saved to the auto slot before each save state is loaded over it, so a load can be undone
 
 table g_display_ini
-setting TV mode
-    key docked
-    int 0 1
-    default 1
-    startup
-    words Off|On
-    help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720)
 setting Fullscreen
     key fullscreen
     int 0 1

@@ -21,7 +21,8 @@ int main(void) {
     assert(!strcmp(ini_deprecated("renderer"), "Vulkan is the only renderer"));
     assert(!strcmp(ini_deprecated("lsfg_flow"), "LSFG went with the OpenGL renderer"));
     assert(!strcmp(ini_deprecated("touch_controls"), "now controls") &&
-           !strcmp(ini_deprecated("modo_tv"), "now docked"));
+           !strcmp(ini_deprecated("docked"), "the runtime is always in TV mode") &&
+           !strcmp(ini_deprecated("modo_tv"), "the runtime is always in TV mode"));
     assert(!ini_deprecated("resolution") && !ini_deprecated("controls") && !ini_deprecated(""));
     /* the section, word for word */
     f = tmpfile();

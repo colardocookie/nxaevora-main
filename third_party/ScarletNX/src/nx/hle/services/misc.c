@@ -29,6 +29,7 @@
 static const u32 apm_known[] = {0x00010000u, 0x00010001u, 0x00010002u, 0x00020000u, 0x00020001u, 0x00020002u,
                                 0x00020003u, 0x00020004u, 0x00020005u, 0x00020006u, 0x92220007u, 0x92220008u,
                                 0x92220009u, 0x9222000Au, 0x9222000Bu, 0x9222000Cu};
+#define APM_MODE_BOOST 1 /* nn::apm::PerformanceMode Boost */
 /* each mode's configuration, as a session or SetCpuBoostMode last set it: g_hle.misc.apm_config */
 
 u32 apm_configuration(u32 mode) { return mode < APM_MODES ? g_hle.misc.apm_config[mode] : APM_CONFIGURATION; }
@@ -60,10 +61,10 @@ static int nn_apm_IManager_OpenSession(SvcObj* self, SvcObj** session) {
     *session = nn_apm_ISession_new();
     R_SUCCEED();
 }
-/* Boost when docked, Normal in handheld mode */
+/* Boost mode, as in TV mode */
 static int nn_apm_IManager_GetPerformanceMode(SvcObj* self, nn_apm_PerformanceMode* mode) {
     (void)self;
-    *mode = g_settings.tv_mode ? 1 : 0;
+    *mode = APM_MODE_BOOST;
     R_SUCCEED();
 }
 static int nn_apm_ISession_SetPerformanceConfiguration(SvcObj* self, nn_apm_PerformanceMode mode,
