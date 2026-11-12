@@ -276,8 +276,11 @@ static void st_add_regdiff(StCmdJob* job) {
                 nvn_st_add_state(&job->lib_rec, name, job->lib_regs[w][e][r]);
                 nvn_st_add_state(&job->host_rec, name, job->host_regs[w][e][r]);
             }
-            if (more) LOG("selftest: %s: more than %u changed %s registers\n", job->name, NVN_ST_MAX_FIELDS,
-                          engine->name);
+            if (!more) continue;
+            /* Ignored registers free fields, so a dropped difference could pass: the case fails instead. */
+            LOG("selftest: %s: more than %u changed %s registers\n", job->name, NVN_ST_MAX_FIELDS, engine->name);
+            job->lib_rec.overflow |= NVN_ST_S;
+            job->host_rec.overflow |= NVN_ST_S;
         }
     }
     if (ignored) LOG("selftest: %s: %u registers ignored (per-side addresses)\n", job->name, ignored);
@@ -1495,7 +1498,8 @@ static int st_script_update_uniform_buffer(CPU* c, const StCmdProcs* p, const Nv
     const uint64_t data = args + (host ? ST_ARG_DATA_HOST : ST_ARG_DATA_LIB);
     st_d3_fill_data(data);
     uint32_t size = ST_D3_UNIFORM_SIZE;
-    if (host && rule == ST_MUT_INT) size ^= 1u;
+    /* The host rounds the size up to 256 bytes, so only a step of 0x100 changes the emitted words. */
+    if (host && rule == ST_MUT_INT) size += 0x100u;
     st_call_proc(c, fn, host,
                  &(NvnStCall){.x = {cb, ST_D3_UNIFORM_ADDRESS, size, ST_D3_UNIFORM_OFFSET, ST_D3_UNIFORM_BYTES,
                                    data}});
