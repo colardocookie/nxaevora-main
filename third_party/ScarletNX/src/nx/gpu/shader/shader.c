@@ -320,12 +320,14 @@ int shader_brx_targets(const u64* words, u32 index, u32 count, u32* targets, int
    ends the scan before it, as it does in every case. That word is no Maxwell instruction, so control never reaches
    it, and the compiler fills bundles with NOPs, leaving zeros only as the padding after a program. NVN packs
    programs into one pool, so the window goes on past that padding into the next program, which an unknown jump
-   table would otherwise take for its own code. */
+   table would otherwise take for its own code. An always-run EXIT followed by an always-run BRA to itself is the
+   compiler's end loop: when a jump table is unresolved, that EXIT ends the program, since nothing after the loop
+   is reached. */
 u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len) {
     const u64* words;
     u64* copy;
     u32 n = max_bytes / 8, i, last = 10, furthest = 0, len;
-    int resolved = 1, calls = 0;
+    int resolved = 1, calls = 0, last_exit = -1;
     u64 h = 1469598103934665603ull;
     if (n > SH_SCAN_WORDS) n = SH_SCAN_WORDS;
     words = shader_words(code, n * 8, &copy);
@@ -349,6 +351,13 @@ u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len) {
             case O_PBK:
             case O_PCNT:
                 t = bra_target(w, i);
+                /* the always-run self-BRA the compiler puts after the last EXIT is its end loop: inline
+                   data follows it, so the program ends at that EXIT when no table gave every target */
+                if (op->id == O_BRA && !resolved && flow_always(w) && t == i && i >= furthest &&
+                    last_exit >= 0 && (u32)last_exit >= furthest) {
+                    last = (u32)last_exit;
+                    goto done;
+                }
                 if (t < n && t > furthest) furthest = t;
                 if (op->id == O_BRA && resolved && flow_always(w) && t <= i && i >= furthest) goto done;
                 break;
@@ -361,7 +370,9 @@ u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len) {
                 break;
             }
             case O_EXIT:
-                if (flow_always(w) && i >= furthest && resolved) goto done;
+                if (!flow_always(w)) break;
+                last_exit = (int)i;
+                if (i >= furthest && resolved) goto done;
                 break;
             case O_RET:
                 if (calls && resolved && flow_always(w) && i >= furthest) goto done;

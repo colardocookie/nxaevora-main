@@ -4,7 +4,7 @@
 Source: `nvn_trace=1`, update program, 302.75 s, 8900 frames shown, 30 frames a second, 0 JIT misses. 522 addresses were
 resolved and 242 functions were called. Each line is the function and the number of calls through the dispatch table.
 The names are public NVN API names. The calls that the game makes by direct branch are not counted (see
-`docs/nvn-survey.md`, step 1-2). The run covered the boot, title, village, wild area, battle and menu scenes (the user's report).
+`docs/graphics/nvn-survey.md`, step 1-2). The run covered the boot, title, village, wild area, battle and menu scenes (the user's report).
 
 ```
 nvnCommandBufferCallCommands 4340061

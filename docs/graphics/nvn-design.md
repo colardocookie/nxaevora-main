@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 # NVN design: the choice of the way (phase 6, stage 2)
 
-This file compares the two ways of `docs/nvn-plan.md` and holds the design of the chosen way. The input is
-`docs/nvn-survey.md` (section 1-5). Nothing here is built yet.
+This file compares the two ways of `docs/graphics/nvn-plan.md` and holds the design of the chosen way. The input is
+`docs/graphics/nvn-survey.md` (section 1-5). Nothing here is built yet.
 
 **Decided by the user (2026-11-02):**
 
@@ -11,7 +11,7 @@ This file compares the two ways of `docs/nvn-plan.md` and holds the design of th
    existing `Renderer` and its state update code are reused.
 3. The old path stays as a comparison target and is selected for each launch.
 4. The 242 functions that the played scenes called are not the limit of the work. The goal is all 523 functions that the
-   game resolves, with a plan to check the ones that no scene has called (section "Unobserved functions").
+   game resolves, with a plan to check the ones that no scene has called (`docs/graphics/nvn-unobserved.md`).
 
 ## The two ways
 
@@ -29,7 +29,7 @@ This file compares the two ways of `docs/nvn-plan.md` and holds the design of th
 
 | | Way A | Way B |
 | --- | --- | --- |
-| Entry points | All 523 resolved functions get a host handler. The 242 that scenes called are done first. The other 281 follow the plan in "Unobserved functions". | None. The table stays as it is. |
+| Entry points | All 523 resolved functions get a host handler. The 242 that scenes called are done first. The other 281 follow the plan in `nvn-unobserved.md`. | None. The table stays as it is. |
 | Library code in `sdk` | Not run. | Runs in full. |
 | Command stream (pushbuffer, GPFIFO, macros) | The library's stream is gone. The host writes engine methods on a private channel, and no GPU command buffer is parsed. | Stays. It is decoded, and a part of it is grouped. |
 | Drawing output | The existing `Renderer` and the state update code of the engine (choice 1). | The same, fed by the decoder. |
@@ -84,7 +84,7 @@ Way A, built in this order so that the old path stays:
    pools. Object memory is the open point, so stage 3 begins with the raw-read question. The first scene shows a
    wrong field at once.
 3. Then the queue, the window and the command buffer with replay, with the frame prologue and epilogue done by the host.
-4. The 281 functions that the played scenes did not reach are implemented in stage 4 and checked as "Unobserved functions"
+4. The 281 functions that the played scenes did not reach are implemented in stage 4 and checked as in `nvn-unobserved.md`
    says. Until then they use the missing-function handler of section 2-6.
 
 Mixing the two paths inside one frame (some objects native, some from the library) is not possible for command buffers,
@@ -399,7 +399,7 @@ rewrite of the `r3d` readers in `vk/`. Until then choice 2 is a candidate for cl
 
 ## 2-5 Design of the three hard parts (2026-11-02)
 
-Method: the numbers of the survey (`docs/nvn-calls.md`), `gpu/gpu.c` (`gpu_call`, `gpu_submit`), `runtime/present.c` and
+Method: the numbers of the survey (`docs/graphics/nvn-calls.md`), `gpu/gpu.c` (`gpu_call`, `gpu_submit`), `runtime/present.c` and
 `hle/services/vi.c` (the present path now), and the rules of section 2-4. Nothing here ran. Each assumption that needs a run is
 listed at the end, as the first work of stage 3.
 
@@ -517,7 +517,7 @@ Assumptions to confirm in stage 3 (each is a plain yes or no from the first runs
 
 ## 2-6 Order of the work of stage 3, files and test plan (2026-11-02)
 
-Source: the 242 functions of `docs/nvn-calls.md` and the design of 2-1 to 2-5. The call counts do not show the order of the
+Source: the 242 functions of `docs/graphics/nvn-calls.md` and the design of 2-1 to 2-5. The call counts do not show the order of the
 calls, so the groups below follow the dependencies. The user accepts this section before stage 3 starts.
 
 ### Rule for the unknown
@@ -526,7 +526,7 @@ The target is all 523 resolved functions, not the 242 of the run. Every function
 host handler yet goes to the missing-function handler (2-3). It logs the name and the arguments once and returns zero. A
 command buffer op that the replay does not know yet is recorded, counted by opcode, and skipped. The counts print at the end
 of each frame for the first 10 frames and then once a second. So a run shows what is still missing, and the agent reads it from
-the log. This lenient mode is for stages 3 and 4 only. When the plan "Unobserved functions" is done, the setting
+the log. This lenient mode is for stages 3 and 4 only. When the plan of `nvn-unobserved.md` is done, the setting
 `nvn_native_missing` changes the default to stop (fatal error with the function name), because a silent zero can hide a fault.
 
 ### Groups of functions (the numbers are the counts of functions of `nvn-calls.md`)
@@ -543,7 +543,7 @@ the log. This lenient mode is for stages 3 and 4 only. When the plan "Unobserved
 | G8 One draw (title scene) | `Buffer*` (9), `Program{Initialize,SetShadersExt,Finalize}`, the state setters and getters (blend, color, polygon, depth stencil, multisample, channel mask, vertex attrib, vertex stream), `CommandBuffer{Bind*,Set*,Draw*}` | 3d |
 | G9 Later (stage 4) | `Texture{Pool,View}*`, `Sampler*`, `TextureHandle`, `ClearTexture`, `ClearDepthStencil`, `CopyTextureToTexture`, `DispatchCompute`, transform feedback, `ReportCounter`, `ResetCounter`, `Image` functions, `TextureWriteTexels`, `TextureFlushTexels` | stage 4 |
 
-| G10 Not observed | The 281 resolved functions that no scene called: transform feedback extras, tessellation, conservative raster, `Event*`, `FenceSync`, `WaitSync`, `QueueFlush`, `QueueWaitSync`, buffer copies, `BindImages`, mapped range flushes, and the others | stage 4, "Unobserved functions" |
+| G10 Not observed | The 281 resolved functions that no scene called: transform feedback extras, tessellation, conservative raster, `Event*`, `FenceSync`, `WaitSync`, `QueueFlush`, `QueueWaitSync`, buffer copies, `BindImages`, mapped range flushes, and the others | stage 4, `nvn-unobserved.md` |
 
 G1 to G5 hold about 70 of the 242 observed functions. G6 and G7 add 20. The sets are not final: step 3a (the diagnostic run) and the
 first runs of 3b and 3c can move a function from one group to another.
@@ -559,10 +559,10 @@ Files (new unless it says changed). The names are a proposal, the split follows 
 - `nvn_native_cmd.c`: G6, the recorder and the replay (2-5 a).
 - `nvn_native_state.c`: the state objects of G8 (step 3d).
 - `nvn_trace.c` (changed): the diagnostic of 3a, and the switch to the host table.
-- `nvn_selftest.c` (new): the selftest and the execution test ("The selftest" below), with the recording `Renderer` backend and
+- `nvn_selftest.c` (new): the selftest and the execution test (`nvn-unobserved.md`, "The selftest"), with the recording `Renderer` backend and
   the comparer. The comparer is a separate pure part, so that host tests can use it.
 - `tests/nvn_native.c` (new) and `CMakeLists.txt` (changed): the tests below.
-- `docs/runtime-changes.md` (changed): one row for each commit that touches the runtime.
+- `docs/build/runtime-changes.md` (changed): one row for each commit that touches the runtime.
 
 Steps. Each step is one commit. The game is not started by the agent.
 
@@ -601,159 +601,16 @@ each "not implemented" function (once), the per frame summary (frame number, lis
 opcode), and the fatal errors with the stage name (object layer, recorder, replay, present). The agent reads them with the
 skill `nx-log-read` and reports the result. The user is only asked for what is on the screen.
 
-## Unobserved functions: coverage and checks (decided 2026-11-02, plan for stage 4)
+## Unobserved functions
 
-The run of 2026-11-02 called 242 of the 523 resolved functions, and the scenes were the ones that the user played. A function
-that no scene called is not a function that the game never calls. The host layer must answer all 523, and the work has two
-parts: the 281 functions that no scene called, and the argument values (formats, targets, flags, modes) that the 242 observed
-functions did not get in the run.
-
-### Rules
-
-- Mechanism first. A handler follows what the library function does, read from the disassembly of the `sdk` module (which
-  object fields it writes and which engine methods it emits) and from the public NVN API behavior. It does not follow a guess
-  from the name. The result of the reading goes into the coverage file below.
-- An enum or flag argument that the handler does not support goes to the missing-function handler with the function name and
-  the value. It is never mapped to a default. This covers the unobserved values of observed functions.
-- The trace (`nvn_trace=1`) logs the set of distinct values of the enum arguments of the observed functions (target, format,
-  filter, wrap, compare, blend, topology, index type, and similar). The set is the first input for the check of the argument
-  values. The agent reads it from the log of any run.
-
-### The coverage file
-
-`docs/nvn-coverage.md` (new, made by a script `tools/nvn_coverage.py` from the resolved names and the call counts of the trace)
-has one row for each of the 523 functions: name, group (G1 to G10), calls in the last run, and the state of the handler. The
-states, in order: `none`, `stub-log` (the missing handler), `implemented` (read from the disassembly, written), `unit`
-(a host test passes), `selftest` (the comparison below passes), `exec` (the execution test below passes), `seen` (a game run
-called it and the result was read). A row can hold more than one state.
-
-Two rules for the record:
-
-- A passed selftest is not a check in the game. `selftest` and `exec` never set `seen`, and `seen` is set only from a game run
-  that the agent read (`nx-log-read`). The file keeps the two in separate columns, and the final report names each one. A
-  function with `selftest` and without `seen` is written as "not verified in the game".
-- The `selftest` state names its scope: the kinds of comparison that passed (return value `R`, memory writes `M`, state at a
-  draw, clear or compute `S`, order of the sync operations `Y`), the argument sets that were used, and the build of the
-  library (build ID of the `sdk` module). A change of the build or of the handler clears the state.
-
-### Checks that need no scene
-
-1. Unit tests on the host for every pure part: object setters and getters, enum range checks, size and alignment functions,
-   the encoders. A getter is tested against what its setter stored.
-2. The comparison against the library (`nvn_selftest`, adopted by the user on 2026-11-02, a diagnostic setting, off by
-   default). It runs in one launch of the old path (`nvn_native=0`). The user starts the game, and the agent reads the result in
-   the log. See "The selftest" below.
-3. The agent reads the library disassembly of each function in G10 and writes in the coverage file what it emits. This is the
-   source of the handler and the reference of the selftest.
-
-### The selftest
-
-Idea: the same scripted call goes to the library function and to the host handler. The two results are compared. The library is
-the reference, because the real game was made for it.
-
-Isolation (rules, not options):
-
-- The selftest has its own objects and its own memory: a memory area that the host reserves (not the heap of the game), its
-  own pools, buffers, textures, samplers, programs, command buffers and state objects. It may read the game's device object
-  (for example `GetInteger`), and it does not write any game object.
-- It never submits to the queue of the game. A comparison that needs a queue uses its own queue with its own queue memory
-  (open point: whether the library lets a second queue exist, checked in step 3b). A comparison that only needs the recorded
-  words does not submit at all.
-- It never changes the state of the game: the private channel and a recording `Renderer` backend (a test double that logs the
-  calls instead of drawing) take the output, and not the channels and the renderer of the game. The selftest runs once, after
-  the device exists and before the first frame of the game, and it ends before the first game submission. A failure of the
-  selftest is logged and does not stop the game, unless `nvn_selftest_fatal=1`.
-- The scripted calls use no game input and draw nothing on the screen.
-
-What is compared, for each function in the scope:
-
-1. The return values (`R`): the result of the call and of the getters of the object that the call changed, for example the
-   storage size and alignment, addresses, handles, the values of the status queries.
-2. The memory writes (`M`): the bytes that the call wrote into the memory that the game can see. These are the object memory,
-   the pool memory (TIC and TSC entries, the descriptors) and mapped buffers. The library's private fields are on an ignore
-   list in the coverage file, and each entry on it needs the reason that the game never reads it (2-1).
-3. The state at the point of work (`S`): at a draw, a clear and a compute dispatch, the library's stream is decoded with the
-   existing engine into the recording backend, and the host replay goes into the same backend. The two lists of backend calls and
-   the state at each call (targets, viewports, blend, depth, stencil, vertex state, bound textures and buffers, shader program,
-   the dispatch size) are compared. This is the check of the result at the time of work, and it does not require the same words.
-4. The order of the sync operations (`Y`): the sequence of fences, semaphores, report counters, barriers, waits and signals. The
-   library side is read from its decoded stream. The host side is the log of its token and barrier calls. The order must be
-   equal. The timing is not compared here (see the execution test).
-5. The raw method stream (`W`) is compared as a help for the diagnosis only: a different stream with the same `S` is not a fail.
-   The words that differ are shown in the report. A difference in `S`, `R`, `M` or `Y` is a fail.
-
-Report: one line for each function and each argument set (`selftest: <name> <args> R:ok M:ok S:ok Y:ok`), the first difference with
-both values for each fail, and the totals. The agent copies the passed scope into the coverage file.
-
-Test of the test: the selftest must show that it can see a wrong handler.
-
-- The comparer has host tests (no game) with pairs of recorded results that differ in one return value, one byte, one state
-  field, and the order of two sync operations. Each pair must give a fail with the right kind.
-- A setting `nvn_selftest_mutate=<name>` makes the host handler of that one function wrong on purpose (an argument changed). The
-  live run must fail for this function and pass for the others. The first run in stage 3 includes this mutation.
-
-### Checks that need a running queue (the execution test)
-
-The selftest does not prove that a fence completes or that the CPU sees the result of the GPU. A separate test does
-(`nvn_exectest`, a diagnostic setting, off by default, its own launch, with its own queue and memory and the same isolation rules).
-It runs real work on the host path and compares the result with a value that the CPU computes:
-
-- A fence after a clear: `QueueFenceSync` and `SyncWait` return in the time limit, and the order of the signal and the wait is as
-  the call order says.
-- A clear of a texture and a copy to a mapped buffer: the CPU reads the expected bytes after the wait (the visibility from the
-  GPU to the CPU).
-- A write by the CPU into a mapped buffer and a dispatch or draw that reads it: the result shows the CPU data (the visibility from
-  the CPU to the GPU, with `gpu_mem_written`, `FlushMappedRange` and `InvalidateMappedRange`).
-- A wait with a time limit that must run out (a fence that never signals) returns the timeout code.
-- Events and `WaitSync` between two queues, when the functions exist in G10.
-
-A pass sets `exec` for the functions in the test. It does not set `seen` either.
-
-### Introduction in stage 3 (a few representative functions)
-
-The selftest starts in stage 3 with a few functions, so that the harness is proven before 523 functions use it. The set covers
-each kind of comparison:
-
-| Step | Functions | Kinds |
-| --- | --- | --- |
-| 3b | `DeviceGetInteger` (the device-integer case) and the texture builder case (`TextureBuilderGetStorageSize`, `TextureBuilderGetStorageAlignment`, `TextureBuilderGetWidth` and `GetHeight`) | `R`, `M` |
-|  | `BufferGetAddress`, the vertex-format functions and `BlendStateSetBlendFunc` have no case yet. They follow with the buffer functions in 3c. | |
-| 3c | `CommandBufferSetViewports`, `SetScissors`, `ClearColor`, `Barrier`, `QueueFenceSync` | `S`, `Y` |
-| 3d | `CommandBufferBindBlendState`, `DrawArrays` | `S` for a draw |
-
-Each of the three steps ends with a selftest run, and the step that has `S` also runs the mutation. The execution test starts in
-3c (fence and clear), with the first run on the title scene. The selftest and the execution test are a launch of their own: the
-user starts it once for each step, and the agent reads the log. The first launch of the selftest can also settle the open point of
-the second queue.
-
-### Checks that need a scene
-
-A function that needs a real workload that a test cannot make (transform feedback with a real shader, tessellation, conservative
-raster, the copies of real game textures) gets the state `seen` only from a game run. The first call of each function is logged
-once with its arguments (`nvn-native: first call <name>`), so the agent finds out from the logs which function a scene reached.
-The scenes are the ones that ROADMAP.md lists as not tested. The full playthrough comes last (decision of the user), so the
-functions that no run reached stay `implemented` plus `unit`, `selftest` or `exec`, and they are written in the coverage file as
-"not verified in the game".
-
-### Steps in stage 4 for this part
-
-- 4-u1: the tool `tools/nvn_coverage.py` and the first `docs/nvn-coverage.md`, with the trace of the argument values and the
-  separate columns for `selftest`, `exec` and `seen`.
-- 4-u2: the reading of the library for the 281 functions, in groups (events and fences, copies, transform feedback, tessellation
-  and raster extras, the rest), one commit for each group, with the unit tests and the cases that the selftest takes.
-- 4-u3: the selftest cases for the rest of the functions that a test can make, by group, and the execution test for events and
-  `WaitSync`. Each run is reported with the passed scope.
-- 4-u4: the change of the default of `nvn_native_missing` to stop, when no row is `none` or `stub-log`.
-
-Exit condition of this part: every one of the 523 rows is `implemented` and has `unit`, `selftest` or `exec` with its scope. The
-rows that no game run reached are listed as "not verified in the game". The default of missing functions is stop. A function with a
-check that no test can make has the reason in the file.
+The plan for the functions and argument values that no scene called (coverage file, selftest, execution test, steps
+4-u1 to 4-u4 and the U3 design) is in `docs/graphics/nvn-unobserved.md`.
 
 ## 3a Result of the diagnostic run (2026-11-02)
 
 Run: update program, 43.4 s, 1149 frames at 30 frames a second, 0 JIT misses, no crash. The user ran to the title scene once. The
 log has 40 `gpu-submit:` blocks and 40 `nvn-size:` queries. The window had 1 call of each builder function (the same as the run of
-`docs/nvn-calls.md`), 1149 calls of the four frame functions, and 432 calls of `SetMemoryCallback`.
+`docs/graphics/nvn-calls.md`), 1149 calls of the four frame functions, and 432 calls of `SetMemoryCallback`.
 
 ### The library entries of a submission
 
@@ -1046,11 +903,32 @@ unknown part stops with a log line.
      table is the first thing to read before this op (a new analyst task).
    - Clear color: write 0x360 to 0x363 and run the clear of one target with the channel mask. The macro 1 body is not read. The host
      calls the renderer clear for the bound target instead of the macro, and the clear covers the whole target.
-   - Barrier: no method for bits 0 to 2 and 4 to 8 in 3c (the host has no L2 and no cache of its own that the game needs here, one
-     counter for the log). Bit 3 and 8 are logged with their count. The range records of bit 3 are not decoded.
+   - Barrier (changed 2026-11-09, task (b)): the replay sends the words of `nvnCommandBufferBarrier` (sdk d856590, read in the
+     disassembly). The old rule (no method, one counter for each bit) gave the transform feedback write of the skinning shader no
+     Vulkan barrier before the vertex read, because `WAIT_FOR_IDLE` did not reach `vkr_method_barrier`. The words, in this order:
+     1. Always first: `0x910E0002` (puller NOP, data 0x110E).
+     2. One of these, the first set bit wins: bit 3 `0x80000014` (puller `REF_CNT` 0), then the range record of type 1, then
+        `0x80000040` (3D method 0x40). Else bit 0 `0x80000044` (`WAIT_FOR_IDLE`). Else bit 1 `0x80000378` (`FRAGMENT_BARRIER`).
+        Else bit 2 `0x800003DF` (`TILED_CACHE_BARRIER`). Bits 0 to 2 are not sent when bit 3 is set.
+     3. Bit 4: `0x800003DD` (`INVALIDATE_TEXTURE_DATA_CACHE`) when step 2 sent bit 1 or bit 2, else `0x800004A2` (method 0x4A2,
+        no name in `maxwell_3d_regs.h`, no action in `maxwell3d_method`).
+     4. Bit 5: `0x90110369` (`INVALIDATE_SHADER_CACHE_NO_WFI`, data 0x1011). Bit 6: `0x8000050A` then `0x80000509` (texture
+        header cache, then sampler cache, both `NO_WFI`). Bit 7: `0x801904B2` (method 0x4B2, data 0x19).
+     5. Bit 8: the words of sdk d859710 (cb, 1, 1): `0x8000C014` (subchannel 6, puller `REF_CNT` 0). Then, when the device byte
+        +0x60 is not 0, `0x2001C00B 0x80000000` (`MEM_OP_B`, operation 16). Then `0x2001C00B 0x70000000` (`MEM_OP_B`, operation
+        14). These are puller register writes only: `puller_method` keeps them and does nothing more.
+     6. Bit 3 again: the range record of type 7. Always last: `0x91000002` (puller NOP, data 0x1100).
+
+     The builder is a pure function in `nvn_params.c` (bits in, words out) with a test. The host sends a word with a method below
+     0x40 to the puller (`gpu_channel_method`), on any subchannel, and a 3D method to `maxwell3d_method`. The range records of bit 3
+     are not words: they split the command memory of the library into GPFIFO entries. The host has no GPFIFO on this path, so it
+     does not make them. The bit counters for the log stay. The device byte +0x60 is always 1: device init calls d835630 at d831164,
+     which fills a stack record (d8358c4 writes 1 at +0x60 at d835980, with no branch), and copies record +0x0 to +0x6F to the
+     device (`stp q3, q2, [x19, #0x50]` at d8311b8). So bit 8 always sends the two `MEM_OP_B` pairs. The host uses a named
+     constant 1.
 7. **Pool mapping.** The renderer reads render targets and textures by GPU address, so every pool needs a page table entry from the
    first use. `gmmu_map` is public in `nvdrv.h`. The unmap (`gmmu_unmap` plus `gmap_cut` and the allocator) is not. Decision: add one
-   small function pair to `nvdrv` (`nvn_gpu_map_range`, `nvn_gpu_unmap_range`) with a row in `docs/runtime-changes.md`. The host
+   small function pair to `nvdrv` (`nvn_gpu_map_range`, `nvn_gpu_unmap_range`) with a row in `docs/build/runtime-changes.md`. The host
    keeps the bump allocator from 0x400000000 and maps at `MemoryPoolInitialize`, unmaps at `Finalize`. Overlap with a game mapping
    fails the initialize with a log line. This is the first work of 3c, because the clear needs it.
 8. **Queue and frame.** `QueueRec` gets the pending frame: the lists of `Submit` (the handle array is copied at once), the tokens of

@@ -5,7 +5,7 @@
 #include "nx/gpu/nvn_cmdlist.h"
 #include <stdint.h>
 
-/* The pending frame of a queue (docs/nvn-design.md, 3c decisions 4, 8 and 11). A frame holds one reference of each
+/* The pending frame of a queue (nvn-design.md, 3c decisions 4, 8 and 11). A frame holds one reference of each
    submitted list and the tokens that FenceSync named. The module has no locking: the owner serializes the calls. */
 
 #define NVN_FRAME_LISTS_MAX   65536u /* handles in one frame */

@@ -3,7 +3,7 @@
 #ifndef SNX_NVN_SELFTEST_MEM_H
 #define SNX_NVN_SELFTEST_MEM_H
 
-/* The isolated memory of the NVN selftest (docs/nvn-design.md, "The selftest", isolation). The selftest has its own
+/* The isolated memory of the NVN selftest (nvn-unobserved.md, "The selftest", isolation). The selftest has its own
    area, not the heap of the game. This part is the allocator over one range of addresses. It does not map memory, so
    host tests can run it: nvn_selftest.c gives it a guest range from kmem_alloc, a test gives it any range. */
 

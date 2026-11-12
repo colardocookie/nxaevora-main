@@ -11,6 +11,14 @@
 #define NVN_REPLAY_SAMPLER_POOL_HI    0x557u
 #define NVN_REPLAY_SAMPLER_POOL_LO    0x558u
 #define NVN_REPLAY_SAMPLER_POOL_LIMIT 0x559u
+#define NVN_REPLAY_COMPUTE_SUBCHANNEL 1u
+#define NVN_REPLAY_POOL_WORDS         3u
+/* SetTexturePool also selects the texture pool in the driver constants buffer (macro 0xE20, argument 0x40) and writes
+   the pool base at 0x8E4 and 0x8E5 (sdk d84c1c4-d84c1cc). */
+#define NVN_REPLAY_TEX_POOL_SELECT       0xE20u
+#define NVN_REPLAY_TEX_POOL_SELECT_VALUE 0x40u
+#define NVN_REPLAY_TEX_POOL_OFFSET       0x8E4u
+#define NVN_REPLAY_TEX_POOL_OFFSET_HI    0x8E5u
 
 #define NVN_REPLAY_VIEWPORT_SCALE_X     0x280u
 #define NVN_REPLAY_VIEWPORT_SCALE_Y     0x281u
@@ -34,11 +42,22 @@
 #define NVN_REPLAY_CLEAR_ARG_TARGET_SHIFT  6u
 #define NVN_REPLAY_CLEAR_ARG_MASK_SHIFT    2u
 #define NVN_REPLAY_CLEAR_ARG_FIELD_MASK    0xFu
+/* ClearColor (sdk d84a870) sends the clear in passthrough mode, so the shadow RAM keeps the draw state. Then it
+   replays 0x3ED from the shadow RAM and returns to track mode (words de13e48, de14198, d84a904). */
+#define NVN_REPLAY_SHADOW_RAM_CONTROL      0x049u
+#define NVN_REPLAY_SHADOW_PASSTHROUGH      2u
+#define NVN_REPLAY_SHADOW_REPLAY           3u
+#define NVN_REPLAY_SHADOW_TRACK_FILTER     1u
+#define NVN_REPLAY_CLEAR_SHADOWED_REG      0x3EDu
 
 #define NVN_REPLAY_CLIP_LO_MAX 0xFFFEu
 #define NVN_REPLAY_CLIP_HI_MAX 0xFFFFu
 
 #define NVN_REPLAY_BARRIER_BITS 9u
+/* The device byte at +0x60 is always 1: device init writes it at d835980 and no branch changes it. */
+#define NVN_REPLAY_BARRIER_DEVICE_BYTE 1u
+/* The first method that is not a puller method (gpu.c's PULLER_NON_PULLER_METHODS, in a private header). */
+#define NVN_REPLAY_PULLER_METHOD_LIMIT 0x40u
 
 #define NVN_REPLAY_STENCIL_REF_FRONT        0x4E5u
 #define NVN_REPLAY_STENCIL_REF_BACK         0x3D5u
@@ -102,6 +121,14 @@ static uint32_t scissor_axis_word(int32_t origin, int32_t size, int* empty) {
     return *empty ? 0u : ((uint32_t)lo | ((uint32_t)hi << 16));
 }
 
+static void replay_pool_compute(const NvnReplayEnv* env, NvnReplayStats* stats, uint32_t method_hi,
+                                uint32_t method_lo, uint32_t method_limit, uint64_t base, uint32_t count) {
+    env->channel_method(env->ctx, NVN_REPLAY_COMPUTE_SUBCHANNEL, method_hi, (uint32_t)(base >> 32));
+    env->channel_method(env->ctx, NVN_REPLAY_COMPUTE_SUBCHANNEL, method_lo, (uint32_t)base);
+    env->channel_method(env->ctx, NVN_REPLAY_COMPUTE_SUBCHANNEL, method_limit, count - 1u);
+    stats->methods += NVN_REPLAY_POOL_WORDS;
+}
+
 static int replay_pool(const NvnReplayEnv* env, NvnReplayStats* stats, NvnOpCode code, const NvnOpPool* op,
                        uint32_t method_hi, uint32_t method_lo, uint32_t method_limit) {
     uint64_t base = 0;
@@ -114,9 +141,19 @@ static int replay_pool(const NvnReplayEnv* env, NvnReplayStats* stats, NvnOpCode
         replay_fault(env, stats, "pool empty", op->pool);
         return 0;
     }
+    if (!env->channel_method) {
+        replay_fault(env, stats, "pool compute", op->pool);
+        return 0;
+    }
     replay_method(env, stats, method_hi, (uint32_t)(base >> 32));
     replay_method(env, stats, method_lo, (uint32_t)base);
     replay_method(env, stats, method_limit, count - 1u);
+    if (code == NVN_OP_SET_TEXTURE_POOL) {
+        replay_method(env, stats, NVN_REPLAY_TEX_POOL_SELECT, NVN_REPLAY_TEX_POOL_SELECT_VALUE);
+        replay_method(env, stats, NVN_REPLAY_TEX_POOL_OFFSET, (uint32_t)base);
+        replay_method(env, stats, NVN_REPLAY_TEX_POOL_OFFSET_HI, (uint32_t)(base >> 32));
+    }
+    replay_pool_compute(env, stats, method_hi, method_lo, method_limit, base, count);
     return 1;
 }
 
@@ -181,15 +218,48 @@ static int replay_clear(const NvnReplayEnv* env, NvnReplayStats* stats, const Nv
     }
     uint32_t arg = ((op->index & NVN_REPLAY_CLEAR_ARG_FIELD_MASK) << NVN_REPLAY_CLEAR_ARG_TARGET_SHIFT) |
                    ((op->mask & NVN_REPLAY_CLEAR_ARG_FIELD_MASK) << NVN_REPLAY_CLEAR_ARG_MASK_SHIFT);
+    replay_method(env, stats, NVN_REPLAY_SHADOW_RAM_CONTROL, NVN_REPLAY_SHADOW_PASSTHROUGH);
+    replay_method(env, stats, NVN_REPLAY_CLEAR_SHADOWED_REG, 0u);
     for (uint32_t layer = 0; layer < layers; layer++)
         replay_method(env, stats, NVN_REPLAY_CLEAR_SURFACE, arg + NVN_REPLAY_CLEAR_LAYER_STRIDE * layer);
+    replay_method(env, stats, NVN_REPLAY_SHADOW_RAM_CONTROL, NVN_REPLAY_SHADOW_REPLAY);
+    replay_method(env, stats, NVN_REPLAY_CLEAR_SHADOWED_REG, 0u); /* the shadow RAM's value replaces the 0 */
+    replay_method(env, stats, NVN_REPLAY_SHADOW_RAM_CONTROL, NVN_REPLAY_SHADOW_TRACK_FILTER);
     return 1;
 }
 
 static int replay_barrier(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpBarrier* op) {
-    (void)env;
     for (uint32_t bit = 0; bit < NVN_REPLAY_BARRIER_BITS; bit++)
         if (op->bits & (1u << bit)) stats->barrier_bits[bit]++;
+    if (!env->channel_method) {
+        replay_fault(env, stats, "barrier puller", op->bits);
+        return 0;
+    }
+    uint32_t words[NVN_BARRIER_WORDS_MAX];
+    uint32_t count = nvn_barrier_words(op->bits, NVN_REPLAY_BARRIER_DEVICE_BYTE, words, NVN_BARRIER_WORDS_MAX);
+    if (!count) {
+        replay_fault(env, stats, "barrier words", op->bits);
+        return 0;
+    }
+    NvnWordStream stream = {0};
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t method, value;
+        int last;
+        int result = nvn_word_stream_next(&stream, words[i], &method, &value, &last);
+        if (result < 0) {
+            replay_fault(env, stats, "barrier stream", i);
+            return 0;
+        }
+        if (result == 0) continue;
+        if (method < NVN_REPLAY_PULLER_METHOD_LIMIT)
+            env->channel_method(env->ctx, stream.subchannel, method, value);
+        else
+            replay_method(env, stats, method, value);
+    }
+    if (!nvn_word_stream_complete(&stream)) {
+        replay_fault(env, stats, "barrier open", 0);
+        return 0;
+    }
     return 1;
 }
 
@@ -237,7 +307,9 @@ static int replay_alpha_ref(const NvnReplayEnv* env, NvnReplayStats* stats, cons
 }
 
 static int replay_bind_texture(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnOpBindTexture* op) {
-    if (!env->bind_texture || !env->bind_texture(env->ctx, op->stage, op->slot, op->handle)) {
+    int (*bind)(void*, uint32_t, uint32_t, uint64_t) =
+        op->plural ? env->bind_texture_plural : env->bind_texture;
+    if (!bind || !bind(env->ctx, op->stage, op->slot, op->handle)) {
         replay_fault(env, stats, "bind texture", op->handle);
         return 0;
     }
@@ -506,6 +578,20 @@ static void replay_op(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnO
         }
         ok = replay_gpu_op(env, stats, NVN_OP_COPY_TEXTURE, payload);
         break;
+    case NVN_OP_COPY_BUFFER_TEXTURE:
+        if (!payload_matches(header, sizeof(NvnOpCopyBufferTexture))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_COPY_BUFFER_TEXTURE, payload);
+        break;
+    case NVN_OP_DOWNSAMPLE:
+        if (!payload_matches(header, sizeof(NvnOpDownsample))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_DOWNSAMPLE, payload);
+        break;
     case NVN_OP_REPORT_COUNTER:
         if (!payload_matches(header, sizeof(NvnOpReportCounter))) {
             replay_fault(env, stats, "op size", header->code);
@@ -516,6 +602,31 @@ static void replay_op(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnO
             return;
         }
         ok = replay_gpu_op(env, stats, NVN_OP_REPORT_COUNTER, payload);
+        break;
+    case NVN_OP_RESET_COUNTER: {
+        uint32_t word;
+        if (!payload_matches(header, sizeof(NvnOpResetCounter))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        if (!nvn_reset_counter_word(((const NvnOpResetCounter*)payload)->type, &word)) {
+            replay_fault(env, stats, "counter type", ((const NvnOpResetCounter*)payload)->type);
+            return;
+        }
+        replay_method(env, stats, NVN_RESET_COUNTER_METHOD, word);
+        ok = 1;
+        break;
+    }
+    case NVN_OP_TRANSFORM_FEEDBACK:
+        if (!payload_matches(header, sizeof(NvnOpTransformFeedback))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        if (((const NvnOpTransformFeedback*)payload)->kind >= NVN_XFB_KIND_COUNT) {
+            replay_fault(env, stats, "transform feedback kind", ((const NvnOpTransformFeedback*)payload)->kind);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_TRANSFORM_FEEDBACK, payload);
         break;
     case NVN_OP_BIND_IMAGE:
         if (!payload_matches(header, sizeof(NvnOpBindImage))) {
@@ -528,6 +639,74 @@ static void replay_op(const NvnReplayEnv* env, NvnReplayStats* stats, const NvnO
         }
         ok = replay_gpu_op(env, stats, NVN_OP_BIND_IMAGE, payload);
         break;
+    case NVN_OP_SIGNAL_EVENT:
+        if (!payload_matches(header, sizeof(NvnOpSignalEvent))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_SIGNAL_EVENT, payload);
+        break;
+    case NVN_OP_WAIT_EVENT:
+        if (!payload_matches(header, sizeof(NvnOpWaitEvent))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_WAIT_EVENT, payload);
+        break;
+    case NVN_OP_REPORT_VALUE:
+        if (!payload_matches(header, sizeof(NvnOpReportValue))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_REPORT_VALUE, payload);
+        break;
+    /* The fence and the wait are actions of submit, not of the replay: a fence becomes a frame token and a wait is a
+       check in the serial order (nvn_native.c, h_queue_submit_commands). */
+    case NVN_OP_FENCE_SYNC:
+        if (!payload_matches(header, sizeof(NvnOpFenceSync))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = 1;
+        break;
+    case NVN_OP_WAIT_SYNC:
+        if (!payload_matches(header, sizeof(NvnOpWaitSync))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = 1;
+        break;
+    case NVN_OP_COPY_BUFFER:
+        if (!payload_matches(header, sizeof(NvnOpCopyBuffer))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_COPY_BUFFER, payload);
+        break;
+    case NVN_OP_CLEAR_BUFFER:
+        if (!payload_matches(header, sizeof(NvnOpClearBuffer))) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_CLEAR_BUFFER, payload);
+        break;
+    case NVN_OP_UPDATE_UNIFORM: {
+        const NvnOpUpdateUniform* op = payload;
+        if (header->bytes < sizeof *op) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        if (op->words > NVN_UPDATE_UNIFORM_DATA_WORDS) {
+            replay_fault(env, stats, "update words", op->words);
+            return;
+        }
+        if (header->bytes != padded_payload(sizeof *op + (size_t)op->words * 4u)) {
+            replay_fault(env, stats, "op size", header->code);
+            return;
+        }
+        ok = replay_gpu_op(env, stats, NVN_OP_UPDATE_UNIFORM, payload);
+        break;
+    }
     case NVN_OP_CALL:
         if (!payload_matches(header, sizeof(NvnOpCall))) {
             replay_fault(env, stats, "op size", header->code);

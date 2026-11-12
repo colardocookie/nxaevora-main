@@ -339,6 +339,9 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans);
    with maxwell3d_method on the GPU thread). The caller takes the id from syncpt_alloc. gpu_channel_close ends it */
 GpuChannel* gpu_channel_open(u32 channel);
 void gpu_channel_method(GpuChannel* ch, u32 sub, u32 m, u32 v, int last); /* to the engine bound to the subchannel */
+/* Runs a decoded range of push buffer words with a local decode state, as the channel's own stream runs its words (the
+   selftest). GPU thread only. 0, or -1 when the words end while a header still owes data words */
+int gpu_channel_words(GpuChannel* ch, const u32* words, u32 n);
 void gpu_channel_close(u32 channel);  /* nvdrv closed the channel: a new one with the same id starts from reset */
 void gpu_release_retire(u32 channel); /* complete pending syncpoint releases before nvdrv reuses its id */
 /* the channel's stream waits for the u32 at GPU address addr (a syncpoint's id for the syncpoint kinds) to equal val,
