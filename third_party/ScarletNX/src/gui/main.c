@@ -423,10 +423,6 @@ typedef struct App {
     int size_pick, size_was;
     Uint64 size_until;
     char size_line[128];
-    /* a resolution past 4x or under 0.25x: its row flashes in the warning colour and the foot says why, until
-       warn_until; warn_key is its .ini key, empty for none */
-    char warn_key[64];
-    Uint64 warn_until;
     SDL_Texture* users_pictures[SNX_USERS_MAX]; /* theirs, users_side pixels square, made as the box is drawn */
     int users_side;
     /* the box opening a game with updates, DLCs or mods beside it shows (addons_open): a box to check each of them
@@ -8305,8 +8301,6 @@ static void settings_reset_ask(App* app);
 /* ---- UI scale: picked in a dialog over the App's rows, on its slider's steps, then used on OK and kept once said so,
    else back by itself after a while, as a screen mode is: a size can leave the menu too small or too big ---- */
 #define GUI_TEXT_KEEP_MS 15000
-#define GUI_WARN_MS       3500 /* a resolution warning's line and its row's flash */
-#define GUI_WARN_BLINK_MS 150  /* the flash's on and off, the row in the warning colour then its own */
 #define GUI_SIZE_BAR      19   /* the slider's columns where they fit: six a step, and the knob's */
 /* the dialog's choices while it picks, then while it asks */
 static const char* const size_choices[2][2] = {{SNX_TR_NOOP("OK"), SNX_TR_NOOP("Cancel")},
@@ -9051,37 +9045,9 @@ static void render_pad(App* app) {
                              : "",
          rgb(app->editor.note[0] ? theme->failure : theme->soft), keys);
 }
-/* a resolution past 4x, under 0.5x, or one that is no whole number: its row flashes in the warning colour and the
-   foot says why, for a moment; one that is no whole number says Eden's line as well */
-static void resolution_warn(App* app, int why, int experimental) {
-    const char* base = why == 0 ? snx_tr("Over 4x: this takes a lot of GPU memory, and a game may slow down or crash. "
-                                         "Beyond this, severe graphical issues may occur")
-                      : why == 1 ? snx_tr("Under 0.5x: the picture may look very low quality. Beyond this, severe "
-                                          "graphical issues may occur")
-                                 : "";
-    app->warn_until = now_ms(app) + GUI_WARN_MS;
-    snprintf(app->warn_key, sizeof app->warn_key, "%s", "resolution");
-    if (experimental)
-        snprintf(app->editor.note, sizeof app->editor.note, "%s%s%s", base, base[0] ? ". " : "",
-                 snx_tr("Non-standard resolution, experimental."));
-    else
-        snprintf(app->editor.note, sizeof app->editor.note, "%s", base);
-}
-
-/* the warning's second over: its line goes and its row keeps its own colour */
-static void warn_tick(App* app) {
-    if (!app->warn_until || now_ms(app) < app->warn_until) return;
-    app->warn_until = 0;
-    app->warn_key[0] = 0;
-    app->editor.note[0] = 0;
-}
 static void typed_keyboard(App* app);
 static void editor_key(App* app, GuiKey key) {
     GuiEditorDo what;
-    int was_typing = app->editor.typing;
-    if (app->warn_until) app->editor.note[0] = 0;
-    app->warn_until = 0;
-    app->warn_key[0] = 0;
     if (app->form == GUI_FORM_USERS && app->editor.typing && key == GUI_SELECT && app->editor.row > 0 &&
         !snx_users_nickname_valid(app->editor.text)) { /* a nickname refused in its dialog, which goes on */
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s is not a nickname: %s"), app->editor.text,
@@ -9101,22 +9067,6 @@ static void editor_key(App* app, GuiKey key) {
         return;
     }
     what = gui_editor_key(&app->editor, key);
-    if (key == GUI_SELECT && was_typing && !app->editor.typing && app->form == GUI_FORM_GROUP &&
-        app->editor.object == (char*)app->settings.values) {
-        int row = setting_of(app, app->editor.row);
-        const char* setting = row >= 0 && row < app->settings.count ? app->settings.values[row].key : NULL;
-        if (setting && !strcmp(setting, "resolution")) {
-            const char* chosen = gui_settings_value(&app->settings, "resolution");
-            double value = chosen ? strtod(chosen, NULL) : 0;
-            int whole = value == (double)(long long)value;
-            if (value > 4.0)
-                resolution_warn(app, 0, !whole);
-            else if (value < 0.5)
-                resolution_warn(app, 1, !whole);
-            else if (!whole) /* any scale in the range that is no whole number */
-                resolution_warn(app, 2, 1);
-        }
-    }
     if (what == GUI_EDITOR_ACTION && app->form == GUI_FORM_SETTINGS && !app->editor.step) {
         open_group(app, app->editor.row);
         return;
@@ -9486,13 +9436,6 @@ static bool form_row_info(App* app, const GuiEditor* e, size_t r, int labels, in
     }
     info->label = line + strlen(app->theme.marker); /* ui_draw_row puts the marker */
     if (form_row_off(app, e, (int)r)) info->attr |= UI_ATTR_OFF;
-    if (app->warn_until && now_ms(app) < app->warn_until && app->warn_key[0] &&
-        e->object == (char*)app->settings.values) {
-        int row = setting_of(app, (int)r);
-        if (row >= 0 && row < app->settings.count && app->settings.values[row].key &&
-            !strcmp(app->settings.values[row].key, app->warn_key) && (now_ms(app) / GUI_WARN_BLINK_MS) % 2 == 0)
-            info->attr |= UI_ATTR_WARNING;
-    }
     return true;
 }
 /* FormList's row: the theme editor's keys; else the groups, the one open beside them in the focus's look */
@@ -9534,10 +9477,7 @@ bool ui_form_side_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* 
 static const char* form_about(const App* app, SDL_Color* color) {
     const GuiEditor* e = &app->editor;
     const GuiThemeKey* k = gui_editor_key_of(e, e->row);
-    *color = rgb(e->note[0] ? (app->warn_until ? app->theme.warning
-                             : e->leaving ? app->theme.failure
-                                          : app->theme.focus)
-                            : app->theme.ink);
+    *color = rgb(e->note[0] ? (e->leaving ? app->theme.failure : app->theme.focus) : app->theme.ink);
     if (e->note[0]) return e->note;
     if (k) return snx_tr(k->about);
     if (app->form == GUI_FORM_FOLDERS) return snx_tr("Nothing is moved"); /* Reset to Defaults: what, under the boxes */
@@ -11486,7 +11426,6 @@ static void pump(App* app) {
     keys_left(app);
     text_left(app);
     setup_keyboard(app);
-    warn_tick(app);
     job_pump(app);
 #ifdef SDL_PLATFORM_IOS
     icons_pump(app);

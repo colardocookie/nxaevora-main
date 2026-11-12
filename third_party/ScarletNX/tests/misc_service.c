@@ -623,18 +623,12 @@ static void test_hid(void) {
         hid_update();
         check_npad_latest_sample(0, HO_HidNpadInternalState_full_key_lifo, g_hle.hid.samp);
     }
-    CHECK(npad_style_at(8) == 1u << 1);
-    g_settings.tv_mode = 1;
-    hid_update();
-    CHECK(npad_style_at(8) == 0);
-    g_settings.tv_mode = 0;
-    hid_update();
-    CHECK(npad_style_at(8) == 1u << 1);
-    /* the handheld Npad's full-key LIFO carries No1's state too */
+    CHECK(npad_style_at(8) == 0); /* in TV mode the handheld Npad has no source */
+    /* the handheld Npad's LIFOs carry no state */
     g_hle.hid.pad1.buttons = 1ull << 3;
     hid_update();
-    CHECK(npad_latest_buttons(8, HO_HidNpadInternalState_handheld_lifo) == 1ull << 3);
-    CHECK(npad_latest_buttons(8, HO_HidNpadInternalState_full_key_lifo) == 1ull << 3);
+    CHECK(npad_latest_buttons(8, HO_HidNpadInternalState_handheld_lifo) == 0);
+    CHECK(npad_latest_buttons(8, HO_HidNpadInternalState_full_key_lifo) == 0);
     g_hle.hid.pad1.buttons = 0;
     CHECK(get_styles(h) == 0x7F); /* every style until the game says which it takes */
     CHECK(no1_style() == 1);      /* No1 is a Pro Controller */
@@ -754,7 +748,9 @@ static void apm_set(SvcObj* s, u32 mode, u32 config) {
 }
 static void test_apm(void) {
     SvcObj* apm = new_apm();
+    nn_apm_PerformanceMode mode = 0;
     Request r;
+    CHECK(nn_apm_IManager_GetPerformanceMode(NULL, &mode) == 0 && mode == 1); /* Boost, as in TV mode */
     request(&r, 0);
     call(apm, &r);
     CHECK(r.c.nout_objs == 1);
@@ -1384,7 +1380,6 @@ static void test_mii_latest(void) {
 
 
 int main(void) {
-    g_settings.tv_mode = 0; /* handheld, as the test was written for */
     hle_init();
     g_hle.kernel.title_id = 0x0100BF00112C0000ull; /* the title the test was written for */
     g_mem = calloc(1, 0x10000);

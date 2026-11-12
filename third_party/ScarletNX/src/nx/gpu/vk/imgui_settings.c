@@ -28,10 +28,8 @@ static const Page PAGES[] = {{"Mouse", IMGUI_WINDOW_INPUT},       {"Keyboard", I
                              {"Graphics", IMGUI_WINDOW_DISPLAY}, {"Performance", IMGUI_WINDOW_DISPLAY}};
 enum { PAGE_COUNT = sizeof PAGES / sizeof PAGES[0] };
 
-/* Settings that the window shows as a choice from a list, not a slider. A value in the .ini that is not in the list
-   (resolution 16) shows as custom. The label gives the render size docked / handheld: the game renders 1920 x 1080
-   docked and two thirds of that handheld (the log of resolution 16 has targets of 30720 x 17280). Every step costs the
-   square of its scale in GPU memory */
+/* Settings that the window shows as a choice from a list, not a slider: the anisotropic filtering and the FPS limit. A
+   value in the .ini that is not in the list shows as custom. */
 typedef struct {
     const char* key;
     const char* value;
@@ -39,14 +37,6 @@ typedef struct {
     double number; /* the row's value with this preset on: fps_limit's "game" is SNX_FPS_GAME */
 } Preset;
 static const Preset PRESETS[] = {
-    {"resolution", "0.5", "0.5x (960 x 540 / 640 x 360)", 0.5},
-    {"resolution", "0.75", "0.75x (1440 x 810 / 960 x 540)", 0.75},
-    {"resolution", "1", "1x (1920 x 1080 / 1280 x 720)", 1},
-    {"resolution", "1.333333", "1.33x (2560 x 1440 / 1707 x 960)", 1.333333},
-    {"resolution", "1.5", "1.5x (2880 x 1620 / 1920 x 1080)", 1.5},
-    {"resolution", "2", "2x (3840 x 2160 / 2560 x 1440)", 2},
-    {"resolution", "3", "3x (5760 x 3240 / 3840 x 2160)", 3},
-    {"resolution", "4", "4x (7680 x 4320 / 5120 x 2880)", 4},
     {"anisotropy", "0", "Game's", 0},
     {"anisotropy", "2", "2x", 2},
     {"anisotropy", "4", "4x", 4},
@@ -121,11 +111,11 @@ static int preset_count(const char* key) {
     return n;
 }
 
-#define RESOLUTION_KEY "resolution"
+#define RESOLUTION_KEY "render_resolution"
 #define NO_MEMORY_NOTE " - too much GPU memory"
 
 int imgui_settings_fits(const char* key, double number) {
-    return strcmp(key, RESOLUTION_KEY) ? 1 : vk_scale_fits((float)number);
+    return strcmp(key, RESOLUTION_KEY) ? 1 : vk_scale_fits(vk_render_scale((int)number));
 }
 
 int imgui_settings_preset(const char* key, int i, char* value, size_t vn, char* label, size_t ln, double* number) {
@@ -239,10 +229,12 @@ int imgui_settings_text_word(const char* key, int i, char* value, size_t vn, cha
 
 void imgui_settings_word(const char* key, int v, char* out, size_t n) {
     const IniOpt* o = find(key);
-    if (o)
-        ini_word(o, v, out, n);
-    else
+    if (!o) {
         out[0] = 0;
+        return;
+    }
+    ini_word(o, v, out, n);
+    if (!imgui_settings_fits(key, v) && strlen(out) + sizeof NO_MEMORY_NOTE <= n) strcat(out, NO_MEMORY_NOTE);
 }
 
 void imgui_settings_set(const char* key, const char* value) { backend_setting_request(key, value); }

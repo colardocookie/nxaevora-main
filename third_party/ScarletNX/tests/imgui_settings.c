@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* The Settings window's view of the .ini's tables (gpu/vk/imgui_settings.c), on small tables of its own: which rows show,
-   the choice lists (the resolution, the anisotropic filtering, the FPS limit), the text rows (a choice of words, a
+   the choice lists (the render resolution, the anisotropic filtering, the FPS limit), the text rows (a choice of words, a
    number of megabytes), and the saved value that a startup setting shows after a change. */
 #include "nx/gpu/vk/imgui_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "nx/gpu/vk/scale.h"
 #include "nx/runtime/ini.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/backend.h"
@@ -34,8 +35,7 @@ void backend_padmap_view(BackendPadMap* v) { (void)v; }
 void backend_padmap_request(int control, int bit) { (void)control, (void)bit; }
 
 /* ---- the tables ---- */
-static int g_showcase, g_fullscreen = 1, g_language, g_vsync = 1, g_aniso;
-static float g_resolution = 1.0f;
+static int g_showcase, g_fullscreen = 1, g_language, g_vsync = 1, g_aniso, g_resolution = 1;
 static char g_fps_text[16] = "game", g_heap_text[32] = "512", g_jit_text[2] = "2";
 
 #define NO_SET NULL
@@ -48,7 +48,8 @@ static const IniOpt DISPLAY[] = {
      0, sizeof g_jit_text},
     {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
 static const IniOpt GRAPHICS[] = {
-    {"resolution", "1", "the scale", INI_FLOAT, INI_STARTUP, &g_resolution, 0.25, 16, NULL, "Resolution scale", NULL, 0, 0, 0},
+    {"render_resolution", "1", "the size", INI_INT, INI_STARTUP, &g_resolution, 0, 3, NULL, "Render resolution",
+     "720p|1080p|1440p|2160p", 0, 0, 0},
     {"anisotropy", "0", "filtering", INI_INT, INI_STARTUP, &g_aniso, 0, 16, NULL, "Anisotropic filtering", "Game's|#x", 0, 0, 0},
     {"vsync", "1", "sync", INI_INT, 0, &g_vsync, 0, 2, NULL, "VSync", "Off|On (FIFO)|On (Mailbox)", 0, 0, 0},
     {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
@@ -110,49 +111,45 @@ int main(void) {
               !imgui_settings_row(-1, 0, &r),
           "the end of a page");
 
-    /* an int with words, a float with presets */
+    /* an int with words, an int with presets */
     check(row_of("Display", "fullscreen", &r) && r.type == IMGUI_SETTING_INT && r.has_words && r.ivalue == 1 &&
               !r.presets && !(r.flags & IMGUI_SETTING_STARTUP),
           "a choice of words");
-    check(row_of("Graphics", "resolution", &r) && r.type == IMGUI_SETTING_FLOAT && r.presets == 8 &&
-              r.fvalue == 1.0f && (r.flags & IMGUI_SETTING_STARTUP) && !(r.flags & IMGUI_SETTING_RESTART),
-          "the resolution row");
+    check(row_of("Graphics", "render_resolution", &r) && r.type == IMGUI_SETTING_INT && r.has_words && r.ivalue == 1 &&
+              r.presets == 0 && (r.flags & IMGUI_SETTING_STARTUP) && !(r.flags & IMGUI_SETTING_RESTART),
+          "the render resolution row");
     check(row_of("Graphics", "anisotropy", &r) && r.presets == 5 && !r.has_words, "the anisotropy row: a number with presets");
 
-    /* the presets, their numbers, and the note on a scale that does not fit */
-    check(imgui_settings_preset("resolution", 0, value, sizeof value, label, sizeof label, &number) &&
-              !strcmp(value, "0.5") && number == 0.5 && strstr(label, "0.5x") && !strstr(label, "too much"),
-          "the first resolution");
-    check(imgui_settings_preset("resolution", 3, value, sizeof value, label, sizeof label, &number) &&
-              !strcmp(value, "1.333333") && strstr(label, "2560 x 1440") && number > 1.3333 && number < 1.3334,
-          "the 2560 x 1440 resolution");
-    check(imgui_settings_preset("resolution", 7, value, sizeof value, label, sizeof label, &number) && number == 4 &&
-              !strstr(label, "too much") && !imgui_settings_preset("resolution", 8, value, sizeof value, label, sizeof label, &number),
-          "the last resolution and the end");
+    /* the render resolution's words, and the note on a choice that needs too much GPU memory */
     g_scale_limit_x100 = 150;
-    check(imgui_settings_preset("resolution", 4, value, sizeof value, label, sizeof label, &number) && number == 1.5 &&
-              !strstr(label, "too much"),
-          "1.5x fits a limit of 1.5");
-    check(imgui_settings_preset("resolution", 5, value, sizeof value, label, sizeof label, &number) && number == 2 &&
-              strstr(label, "too much GPU memory") && strlen(label) < sizeof label,
-          "2x does not fit a limit of 1.5");
-    check(imgui_settings_fits("resolution", 2.0) == 0 && imgui_settings_fits("resolution", 1.0) == 1 &&
+    static const char* const want[] = {"720p", "1080p", "1440p", "2160p - too much GPU memory"};
+    for (int c = 0; c < 4; c++) {
+        imgui_settings_word("render_resolution", c, value, sizeof value);
+        check(!strcmp(value, want[c]), "the word and the note of each choice at a limit of 1.5");
+    }
+    check(imgui_settings_fits("render_resolution", 3) == 0 && imgui_settings_fits("render_resolution", 1) == 1 &&
               imgui_settings_fits("anisotropy", 16.0) == 1,
-          "only the resolution is checked");
+          "only the render resolution is checked");
     g_scale_limit_x100 = 400;
     check(imgui_settings_preset("anisotropy", 0, value, sizeof value, label, sizeof label, &number) &&
               !strcmp(label, "Game's") && number == 0 && !imgui_settings_preset("nothing", 0, value, sizeof value, label, sizeof label, &number),
           "other lists, and a key with none");
 
+    /* the scale of each choice, a choice outside 0..3, and the sizes the game renders at */
+    check(vk_render_scale(0) == 2.0f / 3.0f && vk_render_scale(1) == 1.0f && vk_render_scale(2) == 4.0f / 3.0f &&
+              vk_render_scale(3) == 2.0f && vk_render_scale(-1) == 1.0f && vk_render_scale(4) == 1.0f,
+          "the scales of the choices");
+    check((unsigned)(1920 * (2.0f / 3.0f) + 0.5f) == 1280 && (unsigned)(1080 * (2.0f / 3.0f) + 0.5f) == 720 &&
+              (unsigned)(1920 * vk_render_scale(3) + 0.5f) == 3840 && (unsigned)(1080 * vk_render_scale(3) + 0.5f) == 2160,
+          "the 720p and 2160p sizes");
+
     /* a startup setting that this run changed shows the saved value and says that it waits for a start */
-    g_saved_key = "resolution";
-    g_saved_value = "2";
-    check(row_of("Graphics", "resolution", &r) && r.fvalue == 2.0f && (r.flags & IMGUI_SETTING_RESTART), "a saved float");
+    g_saved_key = "render_resolution";
+    g_saved_value = "3";
+    check(row_of("Graphics", "render_resolution", &r) && r.ivalue == 3 && (r.flags & IMGUI_SETTING_RESTART), "a saved int");
     g_saved_value = "1";
-    check(row_of("Graphics", "resolution", &r) && r.fvalue == 1.0f && !(r.flags & IMGUI_SETTING_RESTART),
-          "a saved float that is the running one");
-    g_saved_value = "1.0000001";
-    check(row_of("Graphics", "resolution", &r) && !(r.flags & IMGUI_SETTING_RESTART), "a saved float that is as near");
+    check(row_of("Graphics", "render_resolution", &r) && r.ivalue == 1 && !(r.flags & IMGUI_SETTING_RESTART),
+          "a saved int that is the running one");
     g_saved_key = "anisotropy";
     g_saved_value = "8";
     check(row_of("Graphics", "anisotropy", &r) && r.ivalue == 8 && (r.flags & IMGUI_SETTING_RESTART), "a saved int");

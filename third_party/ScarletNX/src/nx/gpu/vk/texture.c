@@ -1173,7 +1173,7 @@ static void mark_copied(Surf* s, Surf* t) {
     s->copied[0].wgen = s->wgen;
     s->copied[0].tgen = t->wgen;
 }
-/* a scaled target (resolution= other than 1) reaches a texture by a blit, which f's tiling has to take both ways */
+/* a scaled target (render_resolution= other than 1) reaches a texture by a blit, which f's tiling has to take both ways */
 static int can_blit(VkFormat f) {
     VkFormatProperties p = {0};
     VkFormatFeatureFlags need = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
