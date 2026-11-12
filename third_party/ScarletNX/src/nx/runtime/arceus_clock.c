@@ -1794,6 +1794,141 @@ static void capped_fall_init(void) {
             AIR_STEERING_CALLER);
 }
 
+/* The AI context scheduler 1050E00 adds 1 to every script context's frame count +88 per
+   pass, so wild Pokemon vigilance, hunger, sleep, WaitFrame and turns ran 2x fast at 60 FPS.
+   With SNX_ARCEUS_AI_TICK_FIX=1 a pass adds 1 only when 1/30 s has built up, else 0. */
+#define AI_TICK_NS 33333333ll
+#define AI_TICK_SLOTS 8
+static GuestFn ai_tick_original, ai_turn_original[2];
+static PMutex ai_tick_lock = PMUTEX_INIT;
+static struct { u64 scheduler; int64_t ns; } ai_tick_slots[AI_TICK_SLOTS];
+static unsigned ai_tick_next_slot, ai_tick_inflight;
+static u64 ai_tick_calls, ai_tick_ticks, ai_tick_overlaps, ai_turn_holds[2];
+/* A step of 30 ms or more is one whole tick, so 30 FPS keeps one per pass. Shorter steps
+   add up. A tick may come up to 1 ms early and owes that time, which keeps 0,1,0,1 at a
+   jittery 60 FPS. */
+static unsigned ai_tick_count(u64 scheduler, u64 ns) {
+    unsigned n = 0;
+    pm_lock(&ai_tick_lock);
+    unsigned k = 0;
+    while (k < AI_TICK_SLOTS && ai_tick_slots[k].scheduler != scheduler) k++;
+    if (k == AI_TICK_SLOTS) {
+        k = ai_tick_next_slot++ % AI_TICK_SLOTS;
+        ai_tick_slots[k].scheduler = scheduler;
+        ai_tick_slots[k].ns = 0;
+    }
+    if (ns >= 30000000) n = 1;
+    else {
+        ai_tick_slots[k].ns += (int64_t)ns;
+        if (ai_tick_slots[k].ns >= AI_TICK_NS - 1000000) n = 1, ai_tick_slots[k].ns -= AI_TICK_NS;
+    }
+    pm_unlock(&ai_tick_lock);
+    return n;
+}
+static void ai_tick_update(CPU* c, u64 entry) {
+    pm_lock(&step_lock);
+    const u64 ns = step.step ? step.step : step.initial_ns;
+    pm_unlock(&step_lock);
+    const unsigned n = ai_tick_count(c->x[0], ns);
+    /* The patched body adds V9.S[1] to +88. 1050E00 uses no D9, and callees keep it. */
+    const u32 saved[2] = {c->v[9].s[0], c->v[9].s[1]};
+    c->v[9].s[0] = 0;
+    c->v[9].s[1] = n;
+    if (__atomic_add_fetch(&ai_tick_inflight, 1, __ATOMIC_RELAXED) > 1)
+        __atomic_add_fetch(&ai_tick_overlaps, 1, __ATOMIC_RELAXED);
+    ai_tick_original(c, entry);
+    __atomic_sub_fetch(&ai_tick_inflight, 1, __ATOMIC_RELAXED);
+    c->v[9].s[0] = saved[0];
+    c->v[9].s[1] = saved[1];
+    const u64 ticks = __atomic_add_fetch(&ai_tick_ticks, n, __ATOMIC_RELAXED);
+    const u64 calls = __atomic_add_fetch(&ai_tick_calls, 1, __ATOMIC_RELAXED);
+    if (calls <= 4 || calls % 1800 == 0) {
+        unsigned schedulers = 0;
+        pm_lock(&ai_tick_lock);
+        for (unsigned k = 0; k < AI_TICK_SLOTS; k++) schedulers += ai_tick_slots[k].scheduler != 0;
+        pm_unlock(&ai_tick_lock);
+        LOG("arceus-ai-tick: calls=%llu ticks=%llu ns=%llu schedulers=%u overlaps=%llu turn_holds=%llu turnkey_holds=%llu\n",
+            (unsigned long long)calls, (unsigned long long)ticks, (unsigned long long)plat_ns(), schedulers,
+            (unsigned long long)__atomic_load_n(&ai_tick_overlaps, __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&ai_turn_holds[0], __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&ai_turn_holds[1], __ATOMIC_RELAXED));
+    }
+}
+/* Turn B338DC and TurnKey B32CD4 turn one whole step per call and finish by the frame
+   count. On a pass without a tick they return the running status and do not turn. */
+static void ai_turn_update(CPU* c, u64 entry, unsigned kind) {
+    const u64 node = c->x[0], out = c->x[8], status = main_base + 0x40e7c04;
+    const u64 owner = readable(node, 0x148) ? gr64(node + 0x58) : 0;
+    const u64 context = readable(owner, 0x98) ? gr64(owner + 0x90) : 0;
+    if (context && readable(context, 0x8c) && gr32(node + (kind ? 0x140 : 0x130)) && !gr32(context + 0x88) &&
+        readable(out, 4) && readable(status, 4) && gr32(status) == 4) {
+        __atomic_add_fetch(&ai_turn_holds[kind], 1, __ATOMIC_RELAXED);
+        gw32(out, 4);
+        c->pc = c->x[30];
+        return;
+    }
+    ai_turn_original[kind](c, entry);
+}
+static void ai_turn(CPU* c, u64 entry) { ai_turn_update(c, entry, 0); }
+static void ai_turn_key(CPU* c, u64 entry) { ai_turn_update(c, entry, 1); }
+static void ai_tick_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_AI_TICK_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-ai-tick: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    /* LDR S0 +84, LDR W8 +88, ADD W8 #1, FADD S0 S8, STR W8 +88, LDR X8 +58, ADD X9, STR S0 +84. */
+    static const u32 old[8] = {0xbd408400, 0xb9408808, 0x11000508, 0x1e282800,
+                               0xb9008808, 0xf9402c08, 0x91003109, 0xbd008400};
+    /* The same with MOV V0.S[1],W8, ADD V0.2S,V0.2S,V9.2S and one STUR D0 +84 as the store. */
+    static const u32 new[8] = {0xbd408400, 0x1e282800, 0xb9408808, 0x4e0c1d00,
+                               0x0ea98400, 0xfc084000, 0xf9402c08, 0x91003109};
+    /* Each turn guard: size, the duration load at +24, the count add, MOV X19,X8 at +20. */
+    static const struct { u64 offset; u32 size, duration, add; } turns[2] = {
+        {0xb338dc, 0x5a8, 0xb9413008, 0x1c8}, {0xb32cd4, 0x510, 0xb9414008, 0x130}};
+    const u64 pc = main_base + 0x1050e00, site = pc + 0xa60;
+    int ok = covers_exactly(pc, 0x2508) && pc >= g_code_lo && pc + 0x2508 <= g_code_hi && readable(pc, 0x2508) &&
+             gr32(pc) == 0xd106c3ff && gr32(pc + 0x54) == 0x1e624008;
+    for (unsigned k = 0; ok && k < 8; k++) ok = gr32(site + 4 * k) == old[k];
+    for (unsigned k = 0; ok && k < 2; k++) {
+        const u64 at = main_base + turns[k].offset;
+        ok = covers_exactly(at, turns[k].size) && at >= g_code_lo && at + turns[k].size <= g_code_hi &&
+             readable(at, turns[k].size) && gr32(at) == 0xd10243ff && gr32(at + 0x20) == 0xaa0803f3 &&
+             gr32(at + 0x24) == turns[k].duration && gr32(at + turns[k].add) == 0x0b000108;
+    }
+    if (!ok || !readable(main_base + 0x40e7c04, 4)) {
+        WARN("arceus-ai-tick: refused instruction/function guard\n");
+        return;
+    }
+    const GuestFn wrappers[2] = {ai_turn, ai_turn_key};
+    GuestFn compiled[2];
+    for (unsigned k = 0; k < 2; k++) {
+        const u64 at = main_base + turns[k].offset;
+        /* Equivalent MOV X19,X8 -> ADD X19,X8,#0 selects an independent JIT body. */
+        gw32(at + 0x20, 0x91000113);
+        jit_code_changed(at, turns[k].size);
+        compiled[k] = jit_wait(at);
+    }
+    for (unsigned k = 0; k < 8; k++) gw32(site + 4 * k, new[k]);
+    jit_code_changed(pc, 0x2508);
+    const GuestFn body = jit_wait(pc);
+    if (!body || !compiled[0] || !compiled[1]) {
+        /* Without its wrapper the new body would add a stray V9, so put the old words back. */
+        for (unsigned k = 0; k < 8; k++) gw32(site + 4 * k, old[k]);
+        jit_code_changed(pc, 0x2508);
+        WARN("arceus-ai-tick: compile failed\n");
+        return;
+    }
+    ai_tick_original = body;
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], ai_tick_update, __ATOMIC_RELEASE);
+    for (unsigned k = 0; k < 2; k++) {
+        ai_turn_original[k] = compiled[k];
+        __atomic_store_n(&g_disp[(main_base + turns[k].offset - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
+    }
+    LOG("arceus-ai-tick: EXPERIMENT: AI script context frames count 30 per second of elapsed time\n");
+}
 
 
 /* C21D00 (fade in) and C227BC (fade out) start a fade: its fractional progress starts over. */
@@ -2687,6 +2822,7 @@ void arceus_clock_post_jit(void) {
     gravity_fix_init();
     movement_fix_init();
     capped_fall_init();
+    ai_tick_fix_init();
     ball_flight_init();
     timing_research_init();
     capture_fix_init();

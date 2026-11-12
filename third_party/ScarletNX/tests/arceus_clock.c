@@ -181,6 +181,22 @@ static void test_air_steering(void) {
     assert(guest_float(object + 0x6f0) == authored[0]);
 }
 /* The three requested schedules are replayed through the real cell and wrappers. */
+/* The mock stands for the patched 1050E00 body: every context gains V9.S[1] frames. */
+static unsigned ai_frames, ai_passes, ai_turns;
+static void ai_tick_mock(CPU* c, u64 entry) {
+    (void)entry;
+    assert(c->v[9].s[0] == 0 && c->v[9].s[1] <= 1);
+    ai_frames += c->v[9].s[1];
+    gw32(object + 0x88, gr32(object + 0x88) + c->v[9].s[1]);
+    ai_passes++;
+    c->pc = c->x[30];
+}
+static void ai_turn_mock(CPU* c, u64 entry) {
+    (void)entry;
+    ai_turns++;
+    gw32(c->x[8], 1);
+    c->pc = c->x[30];
+}
 static u64 audit_step(unsigned schedule, unsigned i) {
     if (!schedule) return 16666667;
     if (schedule == 1) return i & 1 ? 20000000 : 12000000;
@@ -244,6 +260,68 @@ static void test_timer_carry(void) {
     /* The cursor mock ran and moved the cursor. */
     assert(audit_cursor_distance > 0);
     timer_carry_fix = 0;
+}
+static void test_ai_tick(void) {
+    const u64 saved_base = main_base;
+    const u64 node = 512, owner = 1024, out = 2048;
+    ai_tick_original = ai_tick_mock;
+    ai_turn_original[0] = ai_turn_original[1] = ai_turn_mock;
+    /* Schedules: 30 FPS, 30 FPS with jitter, 60, 120, 12/20 ms, 8..40 ms with stalls. */
+    for (unsigned schedule = 0; schedule < 6; schedule++) {
+        memset(memory, 0, sizeof memory);
+        memset(ai_tick_slots, 0, sizeof ai_tick_slots);
+        ai_frames = ai_passes = ai_turns = 0;
+        ai_turn_holds[0] = ai_turn_holds[1] = 0;
+        main_base = 3072 - 0x40e7c04;
+        gw32(3072, 4);
+        gw32(node + 0x130, 30);
+        gw32(node + 0x140, 30);
+        gw64(node + 0x58, owner);
+        gw64(owner + 0x90, object);
+        double want = 0;
+        for (unsigned i = 0; i < 2000; i++) {
+            const u64 ns = schedule == 0 ? 33333333 : schedule == 1 ? 31000000 + i * 7919 % 5000000 :
+                           schedule == 2 ? 16666667 : schedule == 3 ? 8333333 : audit_step(schedule - 3, i);
+            step.step = ns;
+            want += ns >= 30000000 ? 1 : ns / 33333333.0;
+            CPU c = {.x = {[0] = 128, [30] = 32}};
+            c.v[9].s[0] = 0x11111111;
+            c.v[9].s[1] = 0x22222222;
+            gw32(object + 0x88, 0);
+            ai_tick_update(&c, entry_pc);
+            assert(c.pc == return_pc && c.v[9].s[0] == 0x11111111 && c.v[9].s[1] == 0x22222222);
+            /* At 30 FPS, even or uneven, every pass ticks as in the game. */
+            if (schedule < 2) assert(ai_frames == i + 1);
+            if (schedule == 2) assert(ai_frames == (i + 1) / 2);
+            assert(fabs(ai_frames - want) < 1.04);
+            /* A turn runs on a pass with a tick and is held on one without. */
+            for (unsigned kind = 0; kind < 2; kind++) {
+                const unsigned before = ai_turns;
+                CPU t = {.x = {[0] = node, [8] = out, [30] = 32}};
+                gw32(out, 99);
+                ai_turn_update(&t, entry_pc, kind);
+                assert(t.pc == return_pc);
+                assert(ai_turns - before == gr32(object + 0x88));
+                assert(gr32(out) == (gr32(object + 0x88) ? 1u : 4u));
+            }
+        }
+        assert(ai_passes == 2000 && ai_turns == 2 * ai_frames);
+        assert(ai_turn_holds[0] == 2000 - ai_frames && ai_turn_holds[1] == 2000 - ai_frames);
+    }
+    /* A zero duration and a missing context both reach the original. */
+    gw32(object + 0x88, 0);
+    gw32(node + 0x130, 0);
+    CPU t = {.x = {[0] = node, [8] = out, [30] = 32}};
+    ai_turns = 0;
+    ai_turn_update(&t, entry_pc, 0);
+    gw64(owner + 0x90, 0);
+    ai_turn_update(&t, entry_pc, 1);
+    assert(ai_turns == 2);
+    /* Two schedulers keep separate tick phases. */
+    memset(ai_tick_slots, 0, sizeof ai_tick_slots);
+    assert(!ai_tick_count(1, 16666667) && !ai_tick_count(2, 16666667));
+    assert(ai_tick_count(1, 16666667) && ai_tick_count(2, 16666667));
+    main_base = saved_base;
 }
 static void test_diagnostics(void) {
     SnxModInfo main_mod = {.name = "main", .base = 4096,
@@ -622,6 +700,7 @@ static void test_ledge_smoothing(void) {
 }
 int main(void) {
     test_timer_carry();
+    test_ai_tick();
     test_air_steering();
     const char* disabled[] = {"SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60", "SNX_ARCEUS_CLOCK_TRACE",
         "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_CAMERA_TRACE",

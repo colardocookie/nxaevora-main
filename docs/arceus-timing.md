@@ -247,3 +247,13 @@ dropped the whole remainder when one step held more than a tick. After a 100 ms 
 `SNX_ARCEUS_TIMER_CARRY_FIX=1` keeps the remainder, capped at one second, and later calls catch up one tick at a
 time. No game call is replayed. Test `arceus_clock` runs 300 frames of 8 to 40 ms with 100 ms stalls and checks that
 the ticks equal the elapsed time over 1/30 with the exact remainder.
+
+## AI frame count
+
+The AI context scheduler `main+1050E00` adds 1 to every script context's frame count at `+88` per pass, and it runs
+once per rendered frame. Wild Pokémon vigilance, hunger, sleep, look-around waits and AI turns read that count, so at
+60 FPS they ran twice as fast: wild Pokémon noticed the player twice as quickly. With a target rate,
+`SNX_ARCEUS_AI_TICK_FIX=1` makes a pass add 1 only once a 1/30 second has built up for that scheduler, else 0. The count
+travels in a callee-saved vector lane of the calling thread, and eight words at `main+1051860` are rewritten in place,
+so no shared state is needed. The AI Turn and TurnKey actions hold on passes without a tick. `arceus-ai-tick` lines count
+the passes and ticks.
