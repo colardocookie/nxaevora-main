@@ -12,7 +12,7 @@ typedef enum { NVN_SYNC_WAIT_SIGNALED = 0, NVN_SYNC_WAIT_SATISFIED = 1,
                NVN_SYNC_WAIT_TIMEOUT = 2, NVN_SYNC_WAIT_FAILED = 3 } NvnSyncWaitResult;
 typedef struct {
     uint64_t device, native_window, textures;
-    uint32_t texture_count, interval;
+    uint32_t texture_count, interval, active_texture_count;
 } NvnWindowBuilder;
 typedef struct { uint32_t x, y, width, height; } NvnWindowCrop;
 typedef enum { NVN_SYNC_UNSIGNALED = 0, NVN_SYNC_SIGNALED = 1, NVN_SYNC_FENCED = 2 } NvnSyncState;
@@ -23,6 +23,11 @@ void nvn_window_builder_set_device(NvnWindowBuilder* b, uint64_t device);
 void nvn_window_builder_set_native_window(NvnWindowBuilder* b, uint64_t native_window);
 void nvn_window_builder_set_textures(NvnWindowBuilder* b, uint32_t count, uint64_t textures);
 void nvn_window_builder_set_interval(NvnWindowBuilder* b, uint32_t interval);
+void nvn_window_builder_set_active_textures(NvnWindowBuilder* b, uint32_t count);
+/* The host keeps the interval itself. The library stores interval - 1 and its getter adds 1. */
+uint32_t nvn_window_builder_present_interval(const NvnWindowBuilder* b);
+/* The library setter has no range check: the active texture count is every 32-bit value. */
+uint32_t nvn_window_active_textures(uint32_t count);
 int nvn_window_initialize_check(uint32_t texture_count);
 int32_t nvn_window_pick_image(const uint8_t* states, uint32_t count, int32_t last);
 /* 1 when at least one image of the window waits for its frame job. */
@@ -43,7 +48,12 @@ int64_t nvn_wait_remaining_ns(NvnWaitDeadline limit, uint64_t now_ns);
 NvnWindowCrop nvn_window_crop(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
                               uint32_t texture_width, uint32_t texture_height);
 
-/* The pure parts of the host's device, queue and pool functions (docs/nvn-design.md, 3b-3). The game's NVN library computes
+/* nvnCommandBufferGetControlMemorySize: the last control chunk, with the reserve that the library keeps at the end of
+   a control memory chunk. Before any AddControlMemory the library returns the reserve alone. */
+#define NVN_CONTROL_MEMORY_RESERVE 0x10u
+uint64_t nvn_control_memory_size(uint64_t begin, uint64_t end, uint32_t adds);
+
+/* The pure parts of the host's device, queue and pool functions (nvn-design.md, 3b-3). The game's NVN library computes
    these from device fields that it fills at DeviceInitialize. The host has no device object, so it uses the values that
    a run of the library showed (the "3b-2 Result" and "3b-3 Result" sections). */
 
@@ -56,12 +66,23 @@ int nvn_device_integer(uint32_t what, int32_t* value);
    library, so the results match to the last digit and a large tick count does not overflow. */
 uint64_t nvn_timestamp_ns(uint64_t ticks);
 
+/* nvnDeviceRegisterFastClearColor accepts the float format range 10..156. The Colori and Colorui forms accept 11..120.
+   Outside the range the library returns 0 without a driver call. The depth form has no format check. */
+#define NVN_FAST_CLEAR_COLOR_FORMAT_MIN  10u
+#define NVN_FAST_CLEAR_COLOR_FORMAT_MAX  156u
+#define NVN_FAST_CLEAR_COLORI_FORMAT_MIN 11u
+#define NVN_FAST_CLEAR_COLORI_FORMAT_MAX 120u
+typedef enum { NVN_FAST_CLEAR_KIND_FLOAT = 0, NVN_FAST_CLEAR_KIND_INT } NvnFastClearKind;
+int nvn_fast_clear_color_format_ok(NvnFastClearKind kind, uint32_t format);
+
 /* The NVN texture and image handles (sdk d82d0d0, d82d050). The library masks no index: a texture index above 0xFFFFF
    spills into the sampler field, and index bit 31 is sign extended. Both properties are kept. */
 #define NVN_HANDLE_SAMPLER_SHIFT 20u
 #define NVN_TEXTURE_HANDLE_TAG   0x100000000ull
 uint64_t nvn_texture_handle(uint32_t texture_index, uint32_t sampler_index);
 uint64_t nvn_image_handle(uint32_t image_index);
+/* nvnDeviceGetSeparateSamplerHandle: the sampler field alone, sign extended and shifted, with no tag. */
+uint64_t nvn_separate_sampler_handle(uint32_t sampler_index);
 
 /* The four kinds of buffer bind of a command buffer. A uniform and a vertex bind are active with a nonzero size, a
    transform feedback bind with a nonzero address, and a storage bind is always active. */
@@ -93,6 +114,7 @@ typedef enum {
     NVN_RASTER_POLYGON_OFFSET_CLAMP,
     NVN_RASTER_DEPTH_CLAMP,
     NVN_RASTER_LINE_WIDTH,
+    NVN_RASTER_POINT_SIZE,
     NVN_RASTER_KIND_COUNT
 } NvnRasterKind;
 
@@ -107,6 +129,9 @@ typedef enum {
 #define NVN_RASTER_METHOD_DEPTH_CLAMP          0x64Fu
 #define NVN_RASTER_METHOD_LINE_WIDTH           0x4ECu
 #define NVN_RASTER_METHOD_LINE_WIDTH_ALIAS     0x4EDu
+#define NVN_RASTER_METHOD_POINT_SIZE           0x546u
+/* SetPointSize (d84a600) writes 0 here after the size, BindTexture writes the same word under a flag. Not decoded. */
+#define NVN_RASTER_METHOD_POINT_SIZE_FOLLOW    0x68Bu
 #define NVN_RASTER_DEPTH_CLAMP_NEAR            0x101Au
 #define NVN_RASTER_DEPTH_CLAMP_FAR             0x181Du
 #define NVN_RASTER_METHODS_MAX 3u
@@ -135,7 +160,9 @@ typedef struct { uint32_t method, value; } NvnDepthRangeMethod;
 void nvn_depth_range_methods(uint32_t index, uint32_t depth_mode, float near_value, float far_value,
                              NvnDepthRangeMethod out[NVN_DEPTH_RANGE_METHODS_MAX]);
 
-/* The six state objects of a command buffer. The order is the kind word of the bind state op. */
+/* The state objects of a command buffer and the argument kinds of the U4 draw state setters. The order is the kind
+   word of the bind state op, so the six object kinds stay first. Only the object kinds have a state record. */
+#define NVN_STATE_OBJECT_COUNT 6u
 typedef enum {
     NVN_STATE_COLOR = 0,
     NVN_STATE_DEPTH_STENCIL,
@@ -143,6 +170,11 @@ typedef enum {
     NVN_STATE_POLYGON,
     NVN_STATE_MULTISAMPLE,
     NVN_STATE_CHANNEL_MASK,
+    NVN_STATE_PATCH_SIZE,
+    NVN_STATE_INNER_TESSELLATION,
+    NVN_STATE_OUTER_TESSELLATION,
+    NVN_STATE_PRIMITIVE_RESTART,
+    NVN_STATE_RENDER_ENABLE, /* both setters write 0x556, so one kind keeps their order */
     NVN_STATE_COUNT
 } NvnStateKind;
 
@@ -163,6 +195,14 @@ uint32_t nvn_depth_stencil_state_set_stencil_op(uint32_t word, uint32_t face, ui
                                                 uint32_t zpass);
 uint32_t nvn_vertex_attrib_state_set_format(uint32_t word, uint32_t format, uint32_t relative_offset);
 uint32_t nvn_vertex_attrib_state_set_stream_index(uint32_t word, uint32_t stream_index);
+/* The library getters (d83af80, d83afa0): format bits 21-30, relative offset bits 7-20, stream index bits 0-4. */
+void nvn_vertex_attrib_state_get_format(uint32_t word, uint32_t* format, uint64_t* relative_offset);
+uint32_t nvn_vertex_attrib_state_get_stream_index(uint32_t word);
+
+/* ResetCounter (d856b40) writes CLEAR_REPORT_VALUE with a word of a table that the counter type indexes. 1 and the
+   word for a type of 0 to 16. The library has no range check. 0 for any other type. */
+#define NVN_RESET_COUNTER_METHOD 0x54Cu
+int nvn_reset_counter_word(uint32_t type, uint32_t* word);
 
 void nvn_color_state_defaults(uint32_t* words);
 void nvn_depth_stencil_state_defaults(uint32_t* words);
@@ -197,6 +237,24 @@ uint32_t nvn_polygon_state_get_polygon_offset_enables(uint32_t word);
 void nvn_depth_stencil_state_get_stencil_op(uint32_t word, uint32_t face, uint32_t out[3]);
 void nvn_blend_state_get_blend_equation(uint32_t word, uint32_t* rgb, uint32_t* alpha);
 
+/* The advanced blend fields of word 0. The setters clear only their own field, so a value with high bits spills as in
+   the library. */
+uint32_t nvn_blend_state_get_advanced_mode(uint32_t word);
+uint32_t nvn_blend_state_get_advanced_overlap(uint32_t word);
+uint32_t nvn_blend_state_get_advanced_premultiplied_src(uint32_t word);
+uint32_t nvn_blend_state_get_advanced_normalized_dst(uint32_t word);
+uint32_t nvn_blend_state_set_advanced_mode(uint32_t word, uint32_t value);
+uint32_t nvn_blend_state_set_advanced_overlap(uint32_t word, uint32_t value);
+uint32_t nvn_blend_state_set_advanced_premultiplied_src(uint32_t word, uint32_t value);
+uint32_t nvn_blend_state_set_advanced_normalized_dst(uint32_t word, uint32_t value);
+
+/* The sample locations of a multisample state (sdk d83b470..d83b560). The grid is a table of the count that the
+   library takes as the larger of the two sample fields. */
+uint32_t nvn_multisample_state_get_sample_locations_enable(uint32_t word);
+uint32_t nvn_multisample_state_get_sample_locations_grid_enable(uint32_t word);
+int nvn_multisample_state_sample_grid(uint32_t samples, uint32_t raster_samples, uint32_t* x, uint32_t* y);
+uint8_t nvn_multisample_sample_location(float x, float y);
+
 /* The pushbuffer words that the library writes for the command buffer bind functions (analyst-s2-A-1.md). Each builder
    writes the same words as the library. The caller supplies room for the named maximum, and the count is 0 on a refusal
    with nothing written. The host rules refuse a stage above 4, a slot outside its range, a polygon mode of 3, advanced
@@ -212,6 +270,8 @@ void nvn_blend_state_get_blend_equation(uint32_t word, uint32_t* rgb, uint32_t* 
 #define NVN_BIND_UNIFORM_BUFFER_WORDS_MAX 5u
 #define NVN_BIND_STORAGE_BUFFER_WORDS_MAX 5u
 #define NVN_BIND_TEXTURE_WORDS_MAX 6u
+#define NVN_BIND_TEXTURES_WORDS_MAX 260u          /* three header words, one slot word, two words for each of 128 */
+#define NVN_BIND_STORAGE_BUFFERS_WORDS_MAX 515u   /* three header words and four words for each of 128 entries */
 
 uint32_t nvn_bind_color_words(uint32_t w0, uint32_t* out);
 uint32_t nvn_bind_channel_mask_words(uint32_t w0, uint32_t* out);
@@ -224,20 +284,92 @@ uint32_t nvn_bind_vertex_stream_words(uint32_t count, const uint32_t* stride, co
 uint32_t nvn_bind_vertex_buffer_words(uint32_t index, uint64_t addr, uint64_t size, uint32_t* out);
 uint32_t nvn_bind_uniform_buffer_words(uint32_t stage, uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out);
 uint32_t nvn_bind_storage_buffer_words(uint32_t stage, uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out);
+/* The plural forms of BindTextures and BindStorageBuffers: the entries are address and size pairs for the storage
+   bind, and 64-bit handles for the texture bind. */
+uint32_t nvn_bind_storage_buffers_words(uint32_t stage, uint32_t first, uint32_t count, const uint64_t* entries,
+                                        uint32_t* out);
 uint32_t nvn_bind_texture_words(uint32_t stage, uint32_t slot, uint64_t handle, int descriptor_flag, uint32_t* out);
+uint32_t nvn_bind_textures_words(uint32_t stage, uint32_t first, uint32_t count, const uint64_t* handles,
+                                 int descriptor_flag, uint32_t* out);
 
 /* The update ops that the host sends as words: a report counter, an image bind of one or more handles, and a clear of
    the depth and stencil buffer (analyst-s4-4.md, sections 1, 4 and 5). The count is 0 on a refusal with nothing
    written. A clear with neither the depth nor the stencil enabled writes nothing and is not a refusal. */
 #define NVN_REPORT_WORDS_MAX 21u
+#define NVN_REPORT_VALUE_WORDS_MAX 5u
 #define NVN_BIND_IMAGE_WORDS_MAX 96u
 #define NVN_CLEAR_DEPTH_STENCIL_WORDS_MAX 12u
 uint32_t nvn_report_counter_words(uint32_t type, uint64_t address, uint32_t* out);
+/* ReportValue: the report of one value at the address, in the shape of a type 0 report. The library's trigger word
+   (0x800003E0) is not sent: method 0x3E0 has no action in the host model. 0 for a null out. */
+uint32_t nvn_report_value_words(uint32_t value, uint64_t address, uint32_t* out);
 uint32_t nvn_bind_image_words(uint32_t stage, uint32_t first, uint32_t count, const uint64_t* handles,
-                              int descriptor_flag, uint32_t* out);
+                              int descriptor_flag, int plural, uint32_t* out);
 int nvn_clear_depth_stencil_nothing(uint32_t depth_enable, uint32_t stencil_mask);
 uint32_t nvn_clear_depth_stencil_words(uint32_t depth_bits, uint32_t depth_enable, uint32_t stencil,
                                        uint32_t stencil_mask, int zcull_clear, int use_macro_e26, uint32_t* out);
+
+/* CopyBufferToBuffer and ClearBuffer (analyst-u3-A-1.md): the DMA words of the library. The copy splits at 0x3FFFFF
+   bytes a chunk and returns 0 when cap cannot hold the chunks. The clear of size 0 writes nothing. The library markers
+   (method 2 of subchannel 0) are left out. */
+#define NVN_COPY_BUFFER_CHUNK_BYTES       0x3FFFFFull
+#define NVN_COPY_BUFFER_WORDS_PER_CHUNK   9u
+#define NVN_COPY_BUFFER_MAX_WORDS         288u /* 32 chunks; a larger copy is split by the replay */
+#define NVN_CLEAR_BUFFER_WORDS_MAX        16u
+uint32_t nvn_copy_buffer_words(uint64_t src, uint64_t dst, uint64_t size, uint32_t* out, uint32_t cap);
+uint32_t nvn_clear_buffer_words(uint64_t dst, uint64_t size, uint32_t value, uint32_t* out);
+
+/* UpdateUniformBuffer (analyst-u3-A-1.md): the size word rounds up to 256 with a minimum of 256. One op holds at most
+   NVN_UPDATE_UNIFORM_DATA_WORDS words; the builder writes the 0x8E0 run, the 0x68B PipeNop and mode 3 data chunks of
+   at most 127 words. 0 for a null out or data. */
+#define NVN_UPDATE_UNIFORM_CHUNK_WORDS 127u
+#define NVN_UPDATE_UNIFORM_DATA_WORDS  186u /* (768 - 24) / 4: one op payload after its 24-byte header */
+#define NVN_UPDATE_UNIFORM_WORDS_MAX   (6u + 2u + NVN_UPDATE_UNIFORM_DATA_WORDS)
+uint32_t nvn_update_uniform_size256(uint32_t size);
+uint32_t nvn_update_uniform_words(uint64_t address, uint32_t size256, uint32_t offset, const uint32_t* data,
+                                  uint32_t words, uint32_t* out);
+
+/* Transform feedback (sdk d84b400 to d84b6e4). A buffer bind is the enable, address and size run of its slot, or an
+   inline 0 there for address 0. Begin calls macro 0 with the control address. End disables the feedback and writes
+   the four stream byte counts to address + 4 to + 16 with report semaphores. Pause with an address writes the End
+   words and with address 0 only the disable. Resume writes only the enable and needs address 0. 0 for a bad slot or
+   kind. */
+#define NVN_XFB_BUFFER_COUNT 4u
+#define NVN_BIND_XFB_WORDS_MAX 5u
+#define NVN_XFB_WORDS_MAX 21u
+typedef enum { NVN_XFB_BEGIN = 0, NVN_XFB_END, NVN_XFB_PAUSE, NVN_XFB_RESUME, NVN_XFB_KIND_COUNT } NvnXfbKind;
+uint32_t nvn_bind_xfb_words(uint32_t slot, uint64_t addr, uint32_t size, uint32_t* out);
+uint32_t nvn_xfb_words(uint32_t kind, uint64_t addr, uint32_t* out);
+
+/* The draw state of the U4 tessellation, primitive restart and render enable setters (analyst-u4-A-1.md,
+   analyst-u4-B-1.md). Each builder writes the library words for the arguments of one setter. 0 for an argument
+   that has no library form. */
+#define NVN_PATCH_SIZE_WORDS_MAX 1u
+#define NVN_TESS_INNER_LEVEL_COUNT 2u
+#define NVN_TESS_OUTER_LEVEL_COUNT 4u
+#define NVN_TESS_INNER_LEVELS_WORDS_MAX 3u
+#define NVN_TESS_OUTER_LEVELS_WORDS_MAX 5u
+#define NVN_PRIMITIVE_RESTART_WORDS_MAX 3u
+#define NVN_RENDER_ENABLE_WORDS_MAX 1u
+#define NVN_RENDER_ENABLE_CONDITIONAL_WORDS_MAX 4u
+uint32_t nvn_patch_size_words(uint32_t patches, uint32_t* out);
+uint32_t nvn_inner_tessellation_levels_words(const uint32_t bits[2], uint32_t* out);
+uint32_t nvn_outer_tessellation_levels_words(const uint32_t bits[4], uint32_t* out);
+uint32_t nvn_primitive_restart_words(uint32_t enable, uint32_t index, uint32_t* out);
+uint32_t nvn_render_enable_words(uint32_t enable, uint32_t* out);
+#define NVN_RENDER_ENABLE_CONDITION_COUNT 2u /* the library writes a word for condition 0 and 1 only */
+/* Render enable state words: form, then the enable (form VALUE) or condition, sync high, sync low (form CONDITIONAL). */
+#define NVN_RENDER_ENABLE_FORM_VALUE 0u
+#define NVN_RENDER_ENABLE_FORM_CONDITIONAL 1u
+#define NVN_RENDER_ENABLE_STATE_WORDS 4u
+uint32_t nvn_render_enable_conditional_words(uint32_t condition, uint64_t sync, uint32_t* out);
+/* SetConservativeRasterDilate: clamp(ceil(4 * s), 0, 3); a NaN or a negative value gives 0. Pure. */
+uint32_t nvn_conservative_raster_dilate_level(float dilate);
+/* SetViewportSwizzles: the packed word of one entry, and 1 when every entry is the identity.
+   MAXWELL3D_VIEWPORT_SWIZZLE_IDENTITY of maxwell/maxwell_3d_regs.h packs to 0x6420. Pure. */
+#define NVN_VIEWPORT_SWIZZLE_ENTRY_BYTES 16u /* four u32 per entry */
+uint32_t nvn_viewport_swizzle_word(const uint32_t entry[4]);
+int nvn_viewport_swizzles_identity(const uint32_t* words, uint32_t count);
 /* The 10-bit format index that the host uses to read the format word of one vertex attribute state. */
 uint32_t nvn_vertex_attrib_format_index(uint32_t s);
 /* The count to pass to a builder for a table of enabled flags: the highest set index plus one, or 0 when none is set. */
@@ -262,6 +394,14 @@ void nvn_queue_builder_defaults(NvnQueueBuilder* b);
 /* The bytes of memory that a queue with this builder needs: the answer of nvnQueueBuilderGetQueueMemorySize */
 uint64_t nvn_queue_memory_size(const NvnQueueBuilder* b, const NvnQueueDeviceWords* dev);
 
+/* One word of the queue init device image: its byte offset and its value. */
+typedef struct { uint32_t offset, value; } NvnQueueInitWord;
+#define NVN_QUEUE_INIT_DEVICE_WORD_COUNT 16u
+/* The device image words of the queue init builders, in the order they are written. Returns the count, or 0 when
+   max is below the count (nothing is written then). */
+uint32_t nvn_queue_init_device_words(const NvnQueueDeviceWords* dev, uint32_t window_origin, uint32_t depth_mode,
+                                     NvnQueueInitWord* out, uint32_t max);
+
 #define NVN_POOL_CPU_NO_ACCESS 0x1u
 #define NVN_POOL_CPU_UNCACHED 0x2u
 #define NVN_POOL_CPU_CACHED 0x4u
@@ -277,7 +417,8 @@ uint64_t nvn_queue_memory_size(const NvnQueueBuilder* b, const NvnQueueDeviceWor
 /* The host device uses the minimum page size. No NvRm device is constructed. */
 #define NVN_POOL_PAGE_SIZE NVN_POOL_STORAGE_ALIGNMENT
 #define NVN_POOL_GPU_BASE 0x400000000ull
-#define NVN_POOL_GPU_END (1ull << 40)
+/* A virtual pool maps pages of the library's page size (the NvRm device's 64 KiB), not the storage alignment. */
+#define NVN_POOL_VIRTUAL_PAGE_SIZE 0x10000ull
 
 typedef struct {
     uint64_t device, storage, size;
@@ -301,16 +442,42 @@ NvnPoolResult nvn_memory_pool_params(const NvnMemoryPoolBuilder* b, uint64_t pag
    descriptor range [pool_offset, pool_offset + count * entry_bytes) does not fit in the memory pool. */
 /* 1 when [offset, offset + size) lies inside a memory pool of pool_size bytes, without overflow. */
 int nvn_pool_range_fits(uint64_t pool_size, uint64_t offset, uint64_t size);
+/* 1 when a texture gets the pitch range of its pool, 0 for the block linear range (d83f418). */
+int nvn_texture_uses_pitch_range(uint32_t texture_flags, uint32_t target);
 typedef enum { NVN_BUFFER_OK = 0, NVN_BUFFER_PHYSICAL_POOL, NVN_BUFFER_OUT_OF_POOL } NvnBufferResult;
 /* The library fails BufferInitialize only for a physical pool (flag 0x100). The range check is the host's: the library
    has none, and the replay reads the buffer's bytes from the pool. */
 NvnBufferResult nvn_buffer_check(uint32_t pool_flags, uint64_t pool_size, uint64_t offset, uint64_t size);
 int nvn_descriptor_offset(uint64_t pool_offset, uint32_t count, uint64_t memory_size, uint32_t entry_bytes,
                           int32_t index, uint64_t* offset);
-int nvn_pool_gpu_allocate(uint64_t cursor, uint64_t size, uint64_t page_size,
-                          uint64_t* address, uint64_t* next);
 uint64_t nvn_memory_pool_map(uint32_t flags, uint64_t storage);
 uint32_t nvn_memory_pool_flags(uint32_t flags);
+
+/* nvnMemoryPoolMapVirtual: requests of stride 0x28, at most 0x200 in one batch (the library's remap limit). */
+#define NVN_POOL_MAP_VIRTUAL_BATCH 0x200u
+#define NVN_POOL_MAP_VIRTUAL_REQUEST_BYTES 0x28u
+/* One NVNmappingRequest: the physical pool (0 unmaps), the physical offset, the virtual offset, the size and the
+   storage class. The host ignores the storage class. */
+typedef struct {
+    uint64_t physical_pool, physical_offset, virtual_offset, size;
+    uint32_t storage_class;
+} NvnMapVirtualRequest;
+typedef enum {
+    NVN_MAP_VIRTUAL_OK = 0,
+    NVN_MAP_VIRTUAL_SKIP,       /* the size is 0 after the 64 KiB truncation: the request changes nothing */
+    NVN_MAP_VIRTUAL_BAD_VIRTUAL /* the virtual range does not fit the virtual pool */
+} NvnMapVirtualResult;
+/* One checked request, in 64 KiB pages. physical_base is 0 for an unmap and otherwise set by the handler, which checks
+   the physical pool's record and range with nvn_pool_range_fits. */
+typedef struct {
+    uint64_t physical_pool, physical_offset, physical_base, virtual_base, size;
+    uint32_t pages;
+} NvnMapVirtualRange;
+/* Truncates the request to 64 KiB pages, as the library shifts by 16, and checks the virtual range. */
+NvnMapVirtualResult nvn_memory_pool_map_virtual_range(const NvnMapVirtualRequest* request, uint64_t virtual_base,
+                                                      uint64_t virtual_size, NvnMapVirtualRange* range);
+/* The request count of the next batch after done requests; 0 when done has reached count. */
+uint32_t nvn_pool_map_virtual_batch(uint32_t count, uint32_t done);
 
 #define NVN_SAMPLER_FILTER_DEFAULT 1u
 #define NVN_SAMPLER_WRAP_DEFAULT 1u
@@ -337,6 +504,8 @@ extern const NvnSamplerDeviceWords nvn_sampler_device_words;
 void nvn_sampler_defaults(NvnSampler* s);
 /* 1 when every field is equal; a NaN float is unequal to itself, as the library fcmp. Pure. */
 int nvn_sampler_equal(const NvnSampler* a, const NvnSampler* b);
+/* The four border words are raw bits, with no float conversion. */
+void nvn_sampler_border(const NvnSampler* s, uint32_t out[4]);
 float nvn_sampler_snap_bias(uint32_t index);
 /* 0 (out unchanged) when a wrap enum is above 7: the library reads its table unchecked. NaN anisotropy has no defined
    library result. */
@@ -349,6 +518,11 @@ int nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* dev
 #define NVN_TEXTURE_FLAG_SPARSE 0x20u
 #define NVN_TEXTURE_FLAG_LINEAR_RENDER_TARGET 0x40u
 #define NVN_TEXTURE_FLAG_ADAPTIVE_TILE 0x200u
+/* Bits that only the storage class and ZCull paths read. */
+#define NVN_TEXTURE_FLAG_ZCULL_INFO 0x80u         /* bit 7: the device ZCull info path, not implemented */
+#define NVN_TEXTURE_FLAG_KIND_MINUS_FIVE 0x100u   /* bit 8: the kind of the 32 row is five lower */
+#define NVN_TEXTURE_FLAG_ZCULL_STENCIL 0x400u     /* bit 10: a stencil-only format has a ZCull size */
+#define NVN_TEXTURE_FLAG_KIND_S4_PLUS_TWO 0x1000u /* bit 12: the kind of two S 4 rows is two higher */
 #define NVN_TEXTURE_POOL_STORAGE_FLAGS 0x280u
 #define NVN_TEXTURE_SPARSE_TILE_MASK 0x32u
 #define NVN_TEXTURE_KIND_PITCH 0xfeu
@@ -395,6 +569,20 @@ int nvn_sampler_descriptor(const NvnSampler* s, const NvnSamplerDeviceWords* dev
 #define NVN_TEXTURE_DEVICE_QUALITY 0u
 #define NVN_TEXTURE_DEVICE_QUALITY_OVERRIDE 0xffffffffu
 #define NVN_TEXTURE_DEVICE_DESCRIPTOR_ROW 2u
+/* The GM20B ZCULL words of the device: these must stay equal to the gm20b_zcull_info reply and to the context size
+   in src/nx/hle/services/nvdrv.c. */
+#define NVN_ZCULL_WIDTH_ALIGN_PIXELS 0x20u
+#define NVN_ZCULL_HEIGHT_ALIGN_PIXELS 0x20u
+#define NVN_ZCULL_PIXEL_SQUARES_BY_ALIQUOTS 0x400u
+#define NVN_ZCULL_ALIQUOT_TOTAL 0x800u
+#define NVN_ZCULL_REGION_BYTE_MULTIPLIER 0x20u
+#define NVN_ZCULL_REGION_HEADER_SIZE 0x20u
+#define NVN_ZCULL_SUBREGION_HEADER_SIZE 0xc0u
+#define NVN_ZCULL_SUBREGION_COUNT 0x10u
+#define NVN_ZCULL_SUBREGION_WIDTH_ALIGN_PIXELS 0x20u
+#define NVN_ZCULL_SUBREGION_HEIGHT_ALIGN_PIXELS 0x40u
+#define NVN_ZCULL_CTX_SIZE 1u
+#define NVN_ZCULL_CTX_ALIGN 0x1000u
 
 typedef struct {
     uint64_t device, pool, offset, packaged;
@@ -407,6 +595,13 @@ typedef struct {
     uint32_t w08, w1a48, w1a4c, w1a50, w1a54, w1a88;
 } NvnTextureDeviceWords;
 extern const NvnTextureDeviceWords nvn_texture_device_words;
+/* The device words at +0xb8..+0xe4, in the order of that block. */
+typedef struct {
+    uint32_t width_align_pixels, height_align_pixels, pixel_squares_by_aliquots, aliquot_total;
+    uint32_t region_byte_multiplier, region_header_size, subregion_header_size, subregion_count;
+    uint32_t subregion_width_align_pixels, subregion_height_align_pixels, ctx_size, ctx_align;
+} NvnZcullDeviceWords;
+extern const NvnZcullDeviceWords nvn_zcull_device_words;
 typedef struct {
     uint64_t size, alignment, layer_stride;
     uint32_t linear_stride, samples, width, height, depth;
@@ -417,6 +612,9 @@ void nvn_texture_builder_defaults(NvnTextureBuilder* b);
 uint64_t nvn_texture_storage_alignment(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev);
 /* Returns 0 for unsupported formats. GL imports have size 0 but retain alignment. Kind stays 0. */
 int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev, NvnTextureLayout* out);
+/* The sparse tile layout of d822538: level count, tile width, tile height, tile depth. 0 (out unchanged) for an
+   invalid format. A zero level count is the library result, not a refusal. */
+int nvn_texture_sparse_layout(const NvnTextureBuilder* b, uint32_t out[4]);
 
 #define NVN_TEXTURE_DESCRIPTOR_WORDS 8u
 #define NVN_TEXTURE_DESCRIPTOR_BYTES 32u
@@ -426,6 +624,7 @@ int nvn_texture_layout(const NvnTextureBuilder* b, const NvnTextureDeviceWords* 
 #define NVN_VIEW_SWIZZLE 0x8u
 #define NVN_VIEW_DEPTH_STENCIL_MODE 0x10u
 #define NVN_VIEW_TARGET 0x20u
+#define NVN_VIEW_COMPARE_MASK 0x3Fu /* the library compares only these flag bits */
 
 typedef struct {
     uint8_t flags, base_level, level_count;
@@ -437,6 +636,27 @@ typedef struct {
     NvnTextureLayout layout;
     uint64_t address;
 } NvnTexture;
+/* The getters of the builder and object records. The packaged layout word is the inverse of the setter; the raw
+   storage class comes from the flags and the format only. */
+#define NVN_TEXTURE_RAW_STORAGE_FORMAT_LAST 0x36u
+uint32_t nvn_texture_packaged_layout(uint16_t tile, uint32_t* layout);
+uint32_t nvn_texture_raw_storage_class(uint32_t flags, uint32_t format);
+uint32_t nvn_texture_storage_size(const NvnTexture* t);
+/* The library result 0x100 | kind. An invalid format record gives kind 0, which is not a refusal. */
+#define NVN_TEXTURE_STORAGE_CLASS_BASE 0x100u
+uint32_t nvn_texture_storage_class(const NvnTextureBuilder* b, const NvnTextureDeviceWords* dev);
+/* 1 fills the size, 0 leaves it 0 for a format without a ZCull surface, and a refusal means flags bit 7 or a zero
+   device divisor. The library returns a u32; the host returns its low 32 bits. */
+#define NVN_TEXTURE_ZCULL_REFUSAL (-1)
+int nvn_texture_zcull_size(const NvnTextureBuilder* b, const NvnZcullDeviceWords* zdev, uint32_t* size);
+/* The fields that nvnTextureCompare compares (sdk d83e3a0). The builder packaged data, tile, stride and GL name are
+   inputs and stay out, and so does the layout alignment. Pure. */
+int nvn_texture_equal(const NvnTexture* a, const NvnTexture* b);
+/* The optional fields of a view are compared only when the same flag bit is set in both views (sdk d83c9a0). Pure. */
+int nvn_texture_view_equal(const NvnTextureView* a, const NvnTextureView* b);
+/* The view offset of d83d01c: the level offset plus the layer offset. 0 (out unchanged) when a block linear
+   base level reaches 32, which wraps the library shift count. Linear and BUFFER textures give 0. */
+int nvn_texture_view_offset(const NvnTexture* t, const NvnTextureView* v, uint64_t* out);
 /* One mip level of a block linear texture: the offset and bytes of the level in one layer, the block columns (GOBs
    across), the block rows, the level depth, the trimmed block height exponent (2^bh GOBs high) and the trimmed
    depth exponent (2^bd slices deep). */
@@ -453,6 +673,11 @@ int nvn_texture_level(const NvnTexture* t, uint32_t level, NvnTextureLevel* out)
 int nvn_texture_write_rows(uint8_t* level_base, const NvnTextureLevel* lv, uint32_t x_start, uint32_t x_end,
                            uint32_t row_start, uint32_t row_end, const uint8_t* src, uint64_t src_stride,
                            uint32_t z);
+/* The reverse of nvn_texture_write_rows: the bytes [x_start, x_end) of the block linear rows [row_start, row_end) of
+   slice z of one level go to the linear rows of dst at dst_stride. 0 with no write when z is outside the level depth,
+   the region leaves the level or an offset would pass the size of the level. */
+int nvn_texture_read_rows(const uint8_t* level_base, const NvnTextureLevel* lv, uint32_t x_start, uint32_t x_end,
+                          uint32_t row_start, uint32_t row_end, uint8_t* dst, uint64_t dst_stride, uint32_t z);
 /* seed is the u32 at byte offset 0x24, not u32 array index 0x24 (d858d28). */
 typedef struct {
     uint32_t seed;
@@ -494,6 +719,15 @@ int nvn_window_present_args(const NvnTexture* t, uint64_t pool_storage, const Nv
 /* The sync state after one token of a frame job: fences goes down by one when it is above 0, and the state is
    SIGNALED at 0. Pure. */
 NvnSyncState nvn_sync_after_token(NvnSyncState state, uint32_t* fences);
+/* nvnEventSignal: mode 0 writes the value, mode 1 adds it to the old word. Any other mode writes, as in the library.
+   The add wraps at 32 bits. Pure. */
+#define NVN_EVENT_SIGNAL_WRITE 0u
+#define NVN_EVENT_SIGNAL_ADD   1u
+uint32_t nvn_event_signal_value(uint32_t mode, uint32_t old, uint32_t value);
+/* nvnCommandBufferWaitEvent: mode 1 is GEQUAL with a 32-bit wrap, any other mode is EQUAL, as in the library. Pure. */
+#define NVN_EVENT_WAIT_EQUAL       0u
+#define NVN_EVENT_WAIT_GEQUAL_WRAP 1u
+int nvn_event_wait_met(uint32_t mode, uint32_t word, uint32_t value);
 
 /* The pipeline stages of a program: 0 vertex, 1 fragment (the only two the game uses), 2 to 5 accepted by the library. */
 #define NVN_PROGRAM_STAGES 6u
@@ -513,10 +747,15 @@ int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_wo
                              uint32_t stage_word, uint32_t* index_out);
 
 /* The Maxwell command words that nvnProgramSetShadersExt builds for the shaders of a program. The host builds them
-   because it has no library. Stage 0 (vertex, no VertexA), stage 1 (fragment) and stage 5 (compute) are built. The
-   other stages and the transform feedback are not ported. A compute stage cannot share a program with vertex or
-   fragment: the library crashes for that case. */
-#define NVN_PROGRAM_WORDS_MAX 32u       /* compute 18 alone, or vertex 8 + fragment 22 = 30 */
+   because it has no library. Stage 0 (vertex, no VertexA), stage 1 (fragment), stage 5 (compute) and the transform
+   feedback block of the vertex stage are built. Stages 2 to 4 are not ported. A compute stage cannot share a program
+   with vertex or fragment: the library crashes for that case. */
+#define NVN_PROGRAM_XFB_BLOB_BYTES 0x612u      /* the transform feedback blob that follows the vertex header */
+#define NVN_PROGRAM_XFB_HEADER_OFFSET 0xDCu    /* the blob starts at the vertex header plus this offset */
+#define NVN_PROGRAM_XFB_STREAMS 4u
+#define NVN_PROGRAM_XFB_LAYOUT_WORDS_MAX 32u   /* the method range 0xA00+0x20i holds 32 words */
+#define NVN_PROGRAM_XFB_WORDS_MAX (NVN_PROGRAM_XFB_STREAMS * (4u + 1u + NVN_PROGRAM_XFB_LAYOUT_WORDS_MAX))
+#define NVN_PROGRAM_WORDS_MAX (30u + NVN_PROGRAM_XFB_WORDS_MAX) /* graphics 30, then the transform feedback block */
 #define NVN_PROGRAM_VERTEX_WORDS 8u
 #define NVN_PROGRAM_FRAGMENT_WORDS 17u
 #define NVN_PROGRAM_COMPUTE_WORDS 18u
@@ -574,8 +813,8 @@ typedef struct {
     NvnComputeBindEntry storage[NVN_COMPUTE_STORAGE_SLOTS];
 } NvnComputeBinds;
 
-/* Builds the 64-word launch description. Returns 0 on a refusal (a grid dimension above its field or a size above 32
-   bits). Uniform slots 0 to 4 become QMD constant buffers 3 to 7, the other slots only reach the driver block. Pure. */
+/* Builds the 64-word launch description. Returns 0 on a refusal and leaves qmd unchanged. QMD sizes must fit in 17
+   bits after padding. Uniform slots 0 to 4 become QMD constant buffers 3 to 7, the others use 32-bit driver sizes. Pure. */
 int nvn_compute_qmd_build(const NvnProgramComputeIn* prog, uint32_t x, uint32_t y, uint32_t z,
                           const NvnComputeBinds* binds, uint32_t qmd[NVN_COMPUTE_QMD_WORDS]);
 /* Why nvn_compute_qmd_build refuses. NVN_QMD_OK means that it builds. */
@@ -586,9 +825,10 @@ enum {
     NVN_QMD_GRID_Y,
     NVN_QMD_GRID_Z,
     NVN_QMD_CBUF1_SIZE,
-    NVN_QMD_UNIFORM_SIZE /* a bound uniform slot with a size above 32 bits */
+    NVN_QMD_UNIFORM_SIZE, /* a bound uniform slot with a size above 32 bits */
+    NVN_QMD_UNIFORM_QBUF_SIZE /* a rounded uniform size above the QMD field */
 };
-/* The refusal check of nvn_compute_qmd_build. *detail gets the uniform slot of NVN_QMD_UNIFORM_SIZE, else 0. Pure. */
+/* The refusal check of nvn_compute_qmd_build. *detail gets the slot for either uniform size refusal, else 0. Pure. */
 uint32_t nvn_compute_qmd_check(const NvnProgramComputeIn* prog, uint32_t x, uint32_t y, uint32_t z,
                                const NvnComputeBinds* binds, uint32_t* detail);
 const char* nvn_compute_qmd_reason_name(uint32_t reason);
@@ -620,6 +860,12 @@ int nvn_program_build_words(const NvnProgramComputeIn* compute, const NvnProgram
    argument is null. Pure. */
 int nvn_program_compute_from_words(const uint32_t* words, uint32_t count, NvnProgramComputeIn* out);
 
+/* Builds the transform feedback block that the library appends after the graphics words, from the 0x612-byte blob
+   at vertex header + 0xDC. Returns 1 with *count = 0 when the blob is disabled, and 1 with the words when it is
+   good. Returns 0 with a static *reason on a refusal: a comps above 0x80, an id outside the table, a layout above
+   32 words or above the stride allocation, or a word array that is too small. Writes at most max words. Pure. */
+int nvn_program_xfb_words(const uint8_t* blob, uint32_t* words, uint32_t max, uint32_t* count, const char** reason);
+
 /* The pushbuffer stream of the method words of a program (gpu.c's pb_decode). Mode 1 increments the method for each
    data word, mode 5 sends the first word to the header method and the rest to the next one, and mode 4 carries its value in the count field. A macro call gets last only on its
    last data word. Pure: the struct holds the state between the words. */
@@ -629,6 +875,13 @@ typedef struct { uint32_t mode, method, remaining, subchannel; } NvnWordStream;
 int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint32_t* value, int* last);
 /* 1 when no run is left open (remaining 0), so the array ended on a method call. */
 int nvn_word_stream_complete(const NvnWordStream* s);
+
+/* The words that nvnCommandBufferBarrier writes, in order (nvn-design.md, decision 6, item "Barrier"). The bit 3
+   range records are not words: they split the library's command memory, not this stream. Bits 9 to 31 are ignored. */
+#define NVN_BARRIER_WORDS_MAX 14u
+/* Fills words with at most cap words and returns the count. Returns 0 and writes nothing when words is NULL or cap is
+   too small. device_byte is the device byte at +0x60. Pure. */
+uint32_t nvn_barrier_words(uint32_t bits, uint32_t device_byte, uint32_t* words, uint32_t cap);
 
 /* The pushbuffer stream of a command image (the library's macro code of a queue). Calls callback for each method
    word. Only subchannel 0 is accepted. Returns 0 when the words are exactly used up, or -1 with the index of the

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* The Settings window's view of g_ini_sections (imgui_settings.h). Only the pages in PAGES show; the rest of the
-   sections wait for their own work (docs/imgui-plan.md). A row of the game's own (INI_IN_GAME) is left out. */
+   sections wait for their own work (docs/ui/imgui-plan.md). A row of the game's own (INI_IN_GAME) is left out. */
 #include "nx/gpu/vk/imgui_settings.h"
 #include <ctype.h>
 #include <math.h>

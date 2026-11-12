@@ -5,7 +5,7 @@
 #include "nx/gpu/nvn_cmdlist.h"
 #include <stdint.h>
 
-/* The replay of a command list (docs/nvn-design.md, "3c Host design decisions", decision 6). The module walks the ops
+/* The replay of a command list (nvn-design.md, "3c Host design decisions", decision 6). The module walks the ops
    of a list and turns each op into Maxwell 3D methods. It reaches the outside only through NvnReplayEnv, so a host
    test can run it. It has no lock, no global state and no allocation. */
 
@@ -24,6 +24,8 @@ typedef struct NvnReplayEnv {
     int (*descriptor_pool)(void* ctx, NvnOpCode op, const NvnOpPool* pool, uint64_t* gpu_base, uint32_t* count);
     /* The bind state of one stage and slot. 1 when stored, 0 when refused (the host reports the cause). */
     int (*bind_texture)(void* ctx, uint32_t stage, uint32_t slot, uint64_t handle);
+    /* The same for a bind that came from BindTextures: the host keeps the library's mode 5 packet form. */
+    int (*bind_texture_plural)(void* ctx, uint32_t stage, uint32_t slot, uint64_t handle);
     /* The bind state of one buffer slot. 1 when stored, 0 when refused (the host reports the cause). */
     int (*bind_buffer)(void* ctx, const NvnOpBindBuffer* op);
     /* The bind state of one state object. 1 when stored, 0 when refused (the host reports the cause). */
@@ -42,6 +44,9 @@ typedef struct NvnReplayEnv {
     /* a bad part: a short text and one value. The module then skips the op and goes on. */
     void (*fault)(void* ctx, const char* what, uint64_t value);
     int window_origin_flip; /* 1 when the device window origin mode is 1: the viewport Y scale is negative */
+    /* a method of a given subchannel: a puller method below 0x40 on any subchannel, or a method of the compute
+       engine on subchannel 1. The caller binds it to gpu_channel_method. */
+    void (*channel_method)(void* ctx, uint32_t subchannel, uint32_t m, uint32_t v);
 } NvnReplayEnv;
 
 typedef struct {

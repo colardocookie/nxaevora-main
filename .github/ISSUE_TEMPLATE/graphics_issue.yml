@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the NXAevora contributors
+name: Graphics problem
+description: Something on the screen is missing, wrong, black or flickers.
+labels: ["graphics"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Screenshots of the game are welcome. Do not attach or link keys, dumps, extracted game files, saves, or shader and texture dumps.
+  - type: checkboxes
+    id: game-data
+    attributes:
+      label: Game data
+      options:
+        - label: This report has no keys, dumps, extracted game files, saves, shader or texture dumps, or links to them.
+          required: true
+  - type: dropdown
+    id: game-version
+    attributes:
+      label: Game version
+      options:
+        - Update 1.1.1
+        - Base game (1.0.0)
+        - Other (write it below)
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: NXAevora commit
+      description: The commit that you built, for example the output of `git rev-parse --short HEAD`.
+    validations:
+      required: true
+  - type: textarea
+    id: system
+    attributes:
+      label: System
+      description: OS, CPU, GPU and the GPU driver version. The GPU vendor and driver matter for graphics problems.
+      placeholder: |
+        OS: Windows 11 24H2
+        CPU: Intel Core i5-13600K
+        GPU: AMD Radeon RX 7800 XT, driver 24.12.1
+    validations:
+      required: true
+  - type: textarea
+    id: settings
+    attributes:
+      label: Settings
+      description: The lines of the `.ini` file that you changed, for example `nvn_native`.
+      render: ini
+  - type: textarea
+    id: scene
+    attributes:
+      label: Scene
+      description: Where in the game you see the problem, and how to get there.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: What is wrong
+      description: What you see, and what you expected. Add screenshots here.
+    validations:
+      required: true
+  - type: input
+    id: rate
+    attributes:
+      label: How often
+      description: Every time, or how many runs out of how many.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log lines
+      description: The lines with `not implemented` or `not translated` from `<id>.log`, as text. Do not attach the whole log.
+      render: text

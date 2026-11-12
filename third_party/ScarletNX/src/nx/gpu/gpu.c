@@ -342,6 +342,10 @@ void i2m_data(GpuChannel* ch, u32 v) {
     memcpy(t->inner_buffer + t->write_offset, b, n);
     t->write_offset += n;
     if (t->write_offset < t->copy_size) return;
+    if (g_renderer->engine_write) {
+        g_renderer->engine_write(t->regs.dest.address, t->inner_buffer, t->copy_size);
+        return;
+    }
     if (t->is_linear)
         upload_linear(t);
     else
@@ -571,6 +575,20 @@ static void method_call(GpuChannel* ch, u32 sub, u32 m, u32 v, int last) {
 /* One method to the engine that the channel binds to the subchannel, as the stream of the channel does (GPU thread). */
 void gpu_channel_method(GpuChannel* ch, u32 sub, u32 m, u32 v, int last) {
     if (sub < GPU_SUBCHANNELS) method_call(ch, sub, m, v, last);
+}
+/* A recording is not part of the channel's own stream, so the decode state is local and zeroed. GPU thread only. */
+int gpu_channel_words(GpuChannel* ch, const u32* words, u32 n) {
+    PbState pb = {0};
+    for (u32 i = 0; i < n; i++) {
+        u32 sub, m, v;
+        int last;
+        if (pb_decode(&pb, words[i], &sub, &m, &v, &last) && sub < GPU_SUBCHANNELS) method_call(ch, sub, m, v, last);
+    }
+    if (pb.method_count) {
+        LOG("gpu: channel %u: a word range ends with %u data words owed\n", ch->id, pb.method_count);
+        return -1;
+    }
+    return 0;
 }
 
 /* ------------------------------------------------------------ waits */
