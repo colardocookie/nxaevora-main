@@ -2235,29 +2235,43 @@ static void wall_jump_fix_init(void) {
    ends the climb runs its updates only on calls completing a whole 1/30 s, until EndClimbingEnd. */
 typedef struct {
     u64 owner, controller, opened, frame;
-    float progress;
-    int open, pending, skip;
+    float progress, want, previous[4], target[4], direction[4];
+    int open, pending, skip, positions, lagged;
 } LedgeWindow;
-static void ledge_retire(LedgeWindow* w) { *w = (LedgeWindow){0}; }
+/* A script target still owed to the controller after its window closed. */
+typedef struct { u64 controller; float target[4], direction[4]; int valid; } LedgeFlush;
+static void ledge_retire_into(LedgeWindow* w, LedgeFlush* flush) {
+    if (flush && w->open && w->positions && w->lagged) {
+        flush->controller = w->controller;
+        for (int k = 0; k < 4; k++) {
+            flush->target[k] = w->target[k];
+            flush->direction[k] = w->direction[k];
+        }
+        flush->valid = 1;
+    }
+    *w = (LedgeWindow){0};
+}
 static void ledge_open(LedgeWindow* w, u64 owner, u64 controller, u64 now) {
-    ledge_retire(w);
+    *w = (LedgeWindow){0};
     if (!owner) return;
     w->owner = owner;
     w->controller = controller;
     w->opened = now;
     w->open = 1;
 }
+static void ledge_retire(LedgeWindow* w) { ledge_retire_into(w, NULL); }
 /* PreUpdate of object in engine frame: 1 to skip. The decision, a pass-through included, is
    kept for one PostUpdate of the same object in the same frame. A window over 2 s is retired. */
-static int ledge_pre(LedgeWindow* w, u64 object, u64 now, float want, u64 frame) {
+static int ledge_pre(LedgeWindow* w, LedgeFlush* flush, u64 object, u64 now, float want, u64 frame) {
     if (!w->open || object != w->owner) return 0;
     if (now < w->opened || now - w->opened >= 2000000000ull) {
-        ledge_retire(w);
+        ledge_retire_into(w, flush);
         return 0;
     }
     w->pending = 1;
     w->frame = frame;
     w->skip = 0;
+    w->want = want;
     if (!(want > 0.0f && want <= 1.0f)) return 0;
     float progress = w->progress + want;
     w->skip = progress < 1.0f;
@@ -2271,34 +2285,143 @@ static int ledge_post(LedgeWindow* w, u64 object, u64 frame) {
     w->pending = 0;
     return w->frame == frame && w->skip;
 }
-/* EndClimbing(type) or EndClimbingEnd (type -1) of controller, called from the script of state
-   object current (0 outside any Pre/PostUpdate). Only type 0, the ledge, opens a window. */
-static void ledge_end_call(LedgeWindow* w, u64 controller, int type, u64 current, u64 now) {
+/* The script's set position on a run. On a short frame (more updates follow before the next
+   run) the ride is placed at the previous script target and the new one is kept to blend
+   toward. On a full 1/30 s frame it is placed at the request. Returns 1 when out is set. */
+static int ledge_script_position(LedgeWindow* w, const float in[4], const float direction[4], float out[4]) {
+    if (!w->open) return 0;
+    const int lag = w->positions && w->want > 0.0f && w->want < 1.0f;
+    for (int k = 0; k < 4; k++) {
+        w->previous[k] = lag ? w->target[k] : in[k];
+        w->target[k] = in[k];
+        w->direction[k] = direction[k];
+        out[k] = w->previous[k];
+    }
+    w->positions = 1;
+    w->lagged = lag;
+    return 1;
+}
+/* Before the owner's script runs: the target it last set, so it reads its own position. The
+   ride now stands on it, so a blend before the next request starts there too. */
+static int ledge_authoritative(LedgeWindow* w, u64 object, float out[4], float direction[4]) {
+    if (!w->open || object != w->owner || !w->positions || !w->lagged) return 0;
+    for (int k = 0; k < 4; k++) {
+        out[k] = w->previous[k] = w->target[k];
+        direction[k] = w->direction[k];
+    }
+    w->lagged = 0;
+    return 1;
+}
+/* On a skipped update: the point the accumulated fraction has reached between the two. */
+static int ledge_blend(const LedgeWindow* w, float out[4], float direction[4]) {
+    if (!w->open || !w->positions) return 0;
+    const float f = w->progress < 0.0f ? 0.0f : w->progress > 1.0f ? 1.0f : w->progress;
+    for (int k = 0; k < 4; k++) {
+        out[k] = k < 3 ? w->previous[k] + (w->target[k] - w->previous[k]) * f : w->target[k];
+        direction[k] = w->direction[k];
+    }
+    return 1;
+}
+/* Around a running owner PostUpdate: the script target to show it, and afterwards the point
+   the ride is presented at (previous), so the frame keeps its place on the delayed path. */
+static int ledge_post_positions(const LedgeWindow* w, u64 object, float target[4], float presented[4],
+                                float direction[4]) {
+    if (!w->open || object != w->owner || !w->positions || !w->lagged) return 0;
+    for (int k = 0; k < 4; k++) {
+        target[k] = w->target[k];
+        presented[k] = w->previous[k];
+        direction[k] = w->direction[k];
+    }
+    return 1;
+}
+/* A set position on controller from anything but the script: the game moved the ride itself,
+   so an open window stops steering (no flush) and an owed target is dropped. */
+static void ledge_foreign_position(LedgeWindow* w, LedgeFlush* flush, u64 controller) {
     if (w->open && w->controller == controller) ledge_retire(w);
+    if (flush->valid && flush->controller == controller) flush->valid = 0;
+}
+/* EndClimbing(type) or EndClimbingEnd (type -1) of controller, called from the script of
+   state object current (0 outside any Pre/PostUpdate). */
+static void ledge_end_call(LedgeWindow* w, LedgeFlush* flush, u64 controller, int type, u64 current, u64 now) {
+    if (w->open && w->controller == controller) ledge_retire_into(w, flush);
     if (type == 0) ledge_open(w, current, controller, now);
 }
 static PMutex ledge_lock = PMUTEX_INIT;
 static LedgeWindow ledge_window;
+static LedgeFlush ledge_flush;
 static _Thread_local u64 ledge_current_state;
-static GuestFn ledge_originals[2], ledge_end_originals[2];
+static GuestFn ledge_originals[2], ledge_end_originals[2], ledge_set_position_original;
+/* Calls the original set position 1983770 on controller from inside a wrapper, keeping every
+   register and pc as they were, so the wrapper's own call goes on unchanged. The arguments go
+   through the frame-step page, +100 and +110. */
+static void ledge_place(CPU* c, u64 controller, const float position[4], const float direction[4]) {
+    if (!ledge_set_position_original || !controller || !frame_step_address) return;
+    u64 x[32];
+    V128 v[32];
+    const u64 pc = c->pc;
+    memcpy(x, c->x, sizeof x);
+    memcpy(v, c->v, sizeof v);
+    const u64 scratch = frame_step_address + 0x100;
+    for (int k = 0; k < 4; k++) {
+        guest_float_write(scratch + 4 * k, position[k]);
+        guest_float_write(scratch + 0x10 + 4 * k, direction[k]);
+    }
+    c->x[0] = controller;
+    c->x[1] = scratch;
+    c->x[2] = scratch + 0x10;
+    c->pc = main_base + 0x1983770;
+    ledge_set_position_original(c, main_base + 0x1983770);
+    memcpy(c->x, x, sizeof x);
+    memcpy(c->v, v, sizeof v);
+    c->pc = pc;
+}
+static int ledge_take_flush(LedgeFlush* out) {
+    pm_lock(&ledge_lock);
+    const int valid = ledge_flush.valid;
+    if (valid) *out = ledge_flush;
+    ledge_flush.valid = 0;
+    pm_unlock(&ledge_lock);
+    return valid;
+}
 static void ledge_update(CPU* c, u64 entry, unsigned post) {
     const u64 object = c->x[0];
     const float want = readable(object + 0x68, 8) ? guest_float(frame_step_address) / NOMINAL_STEP_SECONDS : -1.0f;
+    float position[4], direction[4], presented[4];
+    int blend = 0, authoritative = 0, post_target = 0;
     pm_lock(&ledge_lock);
     const u64 frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
     const int skip = post ? ledge_post(&ledge_window, object, frame)
-                          : ledge_pre(&ledge_window, object, plat_ns(), want, frame);
+                          : ledge_pre(&ledge_window, &ledge_flush, object, plat_ns(), want, frame);
+    const u64 controller = ledge_window.controller;
+    if (skip && !post) blend = ledge_blend(&ledge_window, position, direction);
+    if (!skip && !post) authoritative = ledge_authoritative(&ledge_window, object, position, direction);
+    if (!skip && post) post_target = ledge_post_positions(&ledge_window, object, position, presented, direction);
     pm_unlock(&ledge_lock);
-    /* Both functions return +6C at once when no script is bound: a skipped update does the same. */
+    /* A target owed by a window that just expired goes first. */
+    LedgeFlush owed;
+    if (ledge_take_flush(&owed)) ledge_place(c, owed.controller, owed.target, owed.direction);
+    /* Both functions return +6C at once when no script is bound: a skipped update does the same,
+       after placing the ride on the blended point. */
     if (skip) {
+        if (blend) ledge_place(c, controller, position, direction);
         c->x[0] = gr32(object + 0x6c);
         c->pc = c->x[30];
         return;
     }
+    if (authoritative || post_target) ledge_place(c, controller, position, direction);
     const u64 outer = ledge_current_state;
     ledge_current_state = object;
     ledge_originals[post](c, entry);
     ledge_current_state = outer;
+    /* Back to the presented point after a PostUpdate that saw the target, if still behind. */
+    if (post_target) {
+        pm_lock(&ledge_lock);
+        const int again = ledge_post_positions(&ledge_window, object, position, presented, direction);
+        pm_unlock(&ledge_lock);
+        if (again) ledge_place(c, controller, presented, direction);
+    }
+    /* The script closed its window during this run: settle the ride on its last target. */
+    if (ledge_take_flush(&owed)) ledge_place(c, owed.controller, owed.target, owed.direction);
 }
 static void ledge_pre_update(CPU* c, u64 entry) { ledge_update(c, entry, 0); }
 static void ledge_post_update(CPU* c, u64 entry) { ledge_update(c, entry, 1); }
@@ -2307,8 +2430,40 @@ static void ledge_end(CPU* c, u64 entry, unsigned finish) {
     const int type = finish ? -1 : (int)(u32)c->x[1];
     ledge_end_originals[finish](c, entry);
     pm_lock(&ledge_lock);
-    ledge_end_call(&ledge_window, controller, type, ledge_current_state, plat_ns());
+    ledge_end_call(&ledge_window, &ledge_flush, controller, type, ledge_current_state, plat_ns());
     pm_unlock(&ledge_lock);
+    /* Outside any state update nothing else would settle it: place the owed target now. */
+    LedgeFlush owed;
+    if (!ledge_current_state && ledge_take_flush(&owed)) ledge_place(c, owed.controller, owed.target, owed.direction);
+}
+/* The shared set position and rotation 1983770 (object, position, direction; 16 bytes each).
+   The ledge script's calls come from the Lua binding at main+1FF6B5C. On a run in the window the
+   ride goes to the previous script target, and any other caller on the controller ends steering. */
+static void ledge_set_position(CPU* c, u64 entry) {
+    const u64 object = c->x[0], caller = c->x[30];
+    if (caller != main_base + 0x1ff6b5c) {
+        pm_lock(&ledge_lock);
+        ledge_foreign_position(&ledge_window, &ledge_flush, object);
+        pm_unlock(&ledge_lock);
+    } else if (readable(c->x[1], 16) && readable(c->x[2], 16)) {
+        float in[4], direction[4], out[4];
+        for (int k = 0; k < 4; k++) {
+            in[k] = guest_float(c->x[1] + 4 * k);
+            direction[k] = guest_float(c->x[2] + 4 * k);
+        }
+        pm_lock(&ledge_lock);
+        const int replace =
+            ledge_window.controller == object && ledge_script_position(&ledge_window, in, direction, out);
+        /* A newer script position after a window closed supersedes the owed target. */
+        if (!replace && ledge_flush.valid && ledge_flush.controller == object) ledge_flush.valid = 0;
+        pm_unlock(&ledge_lock);
+        if (replace) {
+            const u64 scratch = frame_step_address + 0x120;
+            for (int k = 0; k < 4; k++) guest_float_write(scratch + 4 * k, out[k]);
+            c->x[1] = scratch;
+        }
+    }
+    ledge_set_position_original(c, entry);
 }
 static void ledge_end_start(CPU* c, u64 entry) { ledge_end(c, entry, 0); }
 static void ledge_end_finish(CPU* c, u64 entry) { ledge_end(c, entry, 1); }
@@ -2357,9 +2512,21 @@ static void ledge_fix_init(void) {
     ledge_originals[1] = originals[1];
     ledge_end_originals[0] = originals[2];
     ledge_end_originals[1] = originals[3];
+    /* SUB SP,SP,#0xC0, then MOV X19,X0 and the +628 load after it. */
+    const u64 set = main_base + 0x1983770;
+    if (covers_exactly(set, 0xb88) && readable(set, 0xb88) && gr32(set) == 0xd10303ff &&
+        gr32(set + 0x20) == 0xaa0003f3 && gr32(set + 0x24) == 0xf9431400) {
+        gw32(set + 0x20, 0x91000013); /* Equivalent MOV X19,X0 -> ADD X19,X0,#0. */
+        jit_code_changed(set, 0xb88);
+        ledge_set_position_original = jit_wait(set);
+    }
+    if (!ledge_set_position_original) WARN("arceus-ledge: smoothing refused set position guard\n");
     for (unsigned k = 0; k < 4; k++)
         __atomic_store_n(&g_disp[(main_base + offsets[k] - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
-    LOG("arceus-ledge: EXPERIMENT: Sneasler ledge move script runs 30 times per second\n");
+    if (ledge_set_position_original)
+        __atomic_store_n(&g_disp[(set - g_code_lo) / 4], ledge_set_position, __ATOMIC_RELEASE);
+    LOG("arceus-ledge: EXPERIMENT: Sneasler ledge move script runs 30 times per second, smoothing %s\n",
+        ledge_set_position_original ? "on" : "off");
 }
 
 void arceus_clock_post_jit(void) {

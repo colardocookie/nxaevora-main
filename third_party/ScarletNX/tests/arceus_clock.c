@@ -403,13 +403,113 @@ static void test_ledge(void) {
        window expires after 2 s, and another end type of the controller retires it. */
     LedgeWindow w;
     ledge_open(&w, ledge_state, ledge_controller, 1000000000);
-    assert(ledge_pre(&w, ledge_state, 1008333333, .25f, 1));
+    assert(ledge_pre(&w, NULL, ledge_state, 1008333333, .25f, 1));
     assert(!ledge_post(&w, ledge_state, 2));
-    assert(ledge_pre(&w, ledge_state, 1016666666, .25f, 3) && ledge_post(&w, ledge_state, 3));
-    assert(!ledge_pre(&w, ledge_state, 3100000000ull, .25f, 4) && !w.open);
+    assert(ledge_pre(&w, NULL, ledge_state, 1016666666, .25f, 3) && ledge_post(&w, ledge_state, 3));
+    assert(!ledge_pre(&w, NULL, ledge_state, 3100000000ull, .25f, 4) && !w.open);
     ledge_open(&w, ledge_state, ledge_controller, 1000000000);
-    ledge_end_call(&w, ledge_controller, 3, ledge_state, 1000000000);
+    ledge_end_call(&w, NULL, ledge_controller, 3, ledge_state, 1000000000);
     assert(!w.open);
+    frame_step_address = 0;
+}
+/* Ledge smoothing through the real wrappers: the stub script reads the ride's height and asks
+   for one more through the set position wrapper, as the Lua binding at 1FF6B5C does, up to 15. */
+static const u64 ride_request = 0x700, ride_direction = 0x710;
+static float ride_y, post_read, last_request;
+static unsigned ride_sets;
+static int smooth_end_at, smooth_finish_at;
+static unsigned smooth_step;
+static void ride_set_original(CPU* c, u64 entry) {
+    (void)entry;
+    ride_y = guest_float(c->x[1] + 4);
+    ride_sets++;
+}
+static void ride_script_set(float y, u64 caller) {
+    guest_float_write(ride_request + 4, y);
+    CPU set = {.x = {[0] = ledge_controller, [1] = ride_request, [2] = ride_direction, [30] = caller}};
+    ledge_set_position(&set, fake_main + 0x1983770);
+}
+static void smooth_original(CPU* c, u64 entry, unsigned post) {
+    (void)entry;
+    c->x[0] = 1;
+    if (post) {
+        post_read = ride_y;
+        return;
+    }
+    smooth_step++;
+    CPU end = {.x = {[0] = ledge_controller, [1] = 0}};
+    if ((int)smooth_step == smooth_end_at) ledge_end_start(&end, 0x2553ee0);
+    if (ledge_window.open && ride_y < 15) {
+        last_request = ride_y + 1;
+        ride_script_set(last_request, fake_main + 0x1ff6b5c);
+    }
+    if ((int)smooth_step == smooth_finish_at) ledge_end_finish(&end, 0x2554008);
+}
+static void smooth_pre(CPU* c, u64 entry) { smooth_original(c, entry, 0); }
+static void smooth_post(CPU* c, u64 entry) { smooth_original(c, entry, 1); }
+static int smooth_frame(float step) {
+    __atomic_add_fetch(&frame_step_frames, 1, __ATOMIC_RELEASE);
+    guest_float_write(frame_step_address, step);
+    const unsigned before = smooth_step;
+    CPU pre = {.x = {[0] = ledge_state, [30] = return_pc}};
+    ledge_pre_update(&pre, 0x26163e0);
+    CPU post = {.x = {[0] = ledge_state, [30] = return_pc}};
+    ledge_post_update(&post, 0x2616ab0);
+    return smooth_step != before;
+}
+static void smooth_start(void) {
+    memset(memory, 0, sizeof memory);
+    ledge_retire(&ledge_window);
+    ledge_flush.valid = 0;
+    frame_step_address = 0xc00;
+    main_base = fake_main;
+    gw32(ledge_state + 0x6c, 7);
+    guest_float_write(ride_direction + 8, 1);
+    ledge_originals[0] = smooth_pre;
+    ledge_originals[1] = smooth_post;
+    ledge_end_originals[0] = ledge_end_original;
+    ledge_end_originals[1] = ledge_end_original;
+    ledge_set_position_original = ride_set_original;
+    ride_y = 0;
+    smooth_step = 0;
+    smooth_end_at = 1;
+    smooth_finish_at = -1;
+}
+static void test_ledge_smoothing(void) {
+    smooth_start();
+    float last = 0;
+    unsigned moved = 0, frames = 0;
+    for (unsigned guard = 0; smooth_step < 30 && guard < 400; guard++) {
+        const int ran = smooth_frame(1.0f / 120);
+        /* A running Post reads the script's own latest request, never the delayed point. */
+        if (ran && smooth_step > 1 && ride_y < 15) assert(post_read == last_request);
+        assert(ride_y >= last);
+        /* While the ride is on its way up it moves on most frames, not only every fourth. */
+        if (last_request < 15 && smooth_step > 2) {
+            moved += ride_y != last;
+            frames++;
+        }
+        last = ride_y;
+    }
+    assert(frames > 40 && moved * 4 >= frames * 3);
+    /* The script finishes inside a run while the ride is a step behind: it settles on 15. */
+    smooth_finish_at = (int)smooth_step + 1;
+    while (ledge_window.open) smooth_frame(1.0f / 120);
+    assert(ride_y == 15 && !ledge_flush.valid);
+    /* At 30 FPS the ride stands on each request at once. */
+    smooth_start();
+    for (unsigned i = 0; i < 10; i++) {
+        smooth_frame(1.0f / 30);
+        if (i) assert(ride_y == last_request && post_read == last_request);
+    }
+    /* Movement from anything but the script ends the steering and is kept. */
+    smooth_start();
+    for (unsigned i = 0; i < 12; i++) smooth_frame(1.0f / 120);
+    assert(ledge_window.open);
+    ride_script_set(50, fake_main + 0x1234);
+    assert(!ledge_window.open && ride_y == 50);
+    ledge_set_position_original = NULL;
+    main_base = 0;
     frame_step_address = 0;
 }
 int main(void) {
@@ -423,6 +523,7 @@ int main(void) {
     test_climb_stop();
     test_wall_jump();
     test_ledge();
+    test_ledge_smoothing();
     test_target();
     puts("arceus_clock: all checks passed");
     return 0;

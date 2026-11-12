@@ -215,3 +215,11 @@ state object whose script calls `EndClimbing(0)` owns a window until `EndClimbin
 controller, or 2 seconds. In the window its updates run only on calls that complete a whole 1/30 second. A skipped
 update returns at once, as both functions do when no script is bound. A PostUpdate follows the PreUpdate of the same
 main-loop frame. Other states are not affected. On its own this places the ride 30 times a second during the move.
+
+To keep the move smooth, the same switch also wraps the shared set position (`main+1983770`). When the script sets
+the ride's position in the window on a frame shorter than 1/30 second, the ride is placed at the script's previous
+target and the new one is kept. On the updates in between, the ride is placed on the point between the two that the
+elapsed time has reached, so it moves every frame about 1/30 second behind the script. Before each script run the
+ride is put back on the script's own last target, so the script only reads positions it set. A window that closes
+while the ride is behind places it on the last target, unless the script set a newer position first. A set position
+on the ride from any other caller ends the steering, so movement from elsewhere is never overwritten.
