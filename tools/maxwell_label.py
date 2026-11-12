@@ -6,7 +6,7 @@
 
 The opcode names come from ScarletNX's maxwell_opcodes.def (the top 16 bits of a word, no operands). The file is read as a
 Yaz0 or SARC container (nested ones too), and each place where the word is found is printed with the words around it.
-Nothing is written to disk. Use it on the files of your own extracted RomFS. See docs/shader-analysis.md for what it found.
+Nothing is written to disk. Use it on the files of your own extracted RomFS. See shader-analysis.md for what it found.
 """
 import os
 import re

@@ -7,6 +7,7 @@
    --hook-direct-calls: the counts are lower bounds otherwise. The original functions always run, so the GPU path is
    unchanged. */
 #include "nx/gpu/nvn_trace.h"
+#include "nx/gpu/nvn_enum_trace.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn_selftest.h"
 #include "nx/runtime/loader.h"
@@ -31,6 +32,9 @@ typedef struct {
     int value_op; /* VALUE_*: a query whose distinct arguments and results are logged (the data of a host handler) */
     u64 seen[VALUE_SEEN_MAX]; /* the keys of the queries logged so far */
     u32 nseen;
+    const NvnEnumArgs* enum_args; /* the enum and flag arguments of the function, or NULL */
+    NvnEnumSeen enum_seen;        /* the register values logged so far */
+    int enum_full_logged;         /* the seen set became full and the one line about it is written */
     char name[128];
 } NvProc;
 #define NVN_PROC_SLOTS 1024
@@ -80,7 +84,7 @@ static NvProc* proc_find(u64 addr) {
     return NULL;
 }
 
-/* The texture builder is read as raw words: its layout is not known (docs/nvn-design.md, 2-1). The size is the
+/* The texture builder is read as raw words: its layout is not known (docs/graphics/nvn-design.md, 2-1). The size is the
    public NVN header's 64 bytes, not verified, so a few words more are read when they are readable. */
 #define SIZE_TRACE_COUNT 40       /* queries logged, over both functions */
 #define SIZE_TRACE_BUILDER_WORDS 32 /* words of the builder shown */
@@ -98,7 +102,7 @@ static void size_query_trace(CPU* c, u64 entry, NvProc* p) {
 }
 
 /* The queries (other than nvnDeviceGetInteger) whose arguments and results are logged. The host layer must give the
-   same answers (docs/nvn-design.md, 2-6, G1 to G5). */
+   same answers (docs/graphics/nvn-design.md, 2-6, G1 to G5). */
 static int value_query_name(const char* name) {
     static const char* const names[] = {
         "nvnQueueBuilderGetQueueMemorySize", "nvnTexturePoolGetSize", "nvnSamplerPoolGetSize",
@@ -115,7 +119,7 @@ static int value_query_name(const char* name) {
 static u32 word_at(u64 addr) { return addr < AS_SIZE - 4 && readable(addr) && readable(addr + 3) ? gr32(addr) : 0xDEADBEEF; }
 
 /* The words of the device and builder objects that the library reads for the two queries below. The host keeps no
-   device object, so these values become constants of its handlers (docs/nvn-design.md, 3b-3). */
+   device object, so these values become constants of its handlers (docs/graphics/nvn-design.md, 3b-3). */
 static void object_words_trace(const char* name, u64 object) {
     if (!strcmp(name, "nvnDeviceGetTimestampInNanoseconds")) {
         LOG("nvn-value: device %llx +58=%x +5c=%x +19d8=%x +19dc=%x\n", (unsigned long long)object,
@@ -161,6 +165,25 @@ static void value_query_trace(CPU* c, u64 entry, NvProc* p) {
             (unsigned long long)a2, (unsigned long long)a3, (unsigned long long)c->x[0]);
 }
 
+/* The enum and flag arguments of the observed functions: one line for each new value (docs/graphics/nvn-unobserved.md,
+   "Rules", item 3). It reads registers only, so the original call runs unchanged. */
+static void enum_args_trace(CPU* c, NvProc* p) {
+    int full = 0;
+    for (u32 r = 0; r < NVN_ENUM_REGS_BITS; r++) {
+        if (!(p->enum_args->regs & (1u << r))) continue;
+        u32 value = (u32)c->x[r];
+        pm_lock(&procs_lock);
+        int result = nvn_enum_seen_add(&p->enum_seen, r, value);
+        pm_unlock(&procs_lock);
+        if (result > 0)
+            LOG("nvn-enum: %s w%u=%x\n", p->name, r, value);
+        else if (result < 0)
+            full = 1;
+    }
+    if (full && !__atomic_exchange_n(&p->enum_full_logged, 1, __ATOMIC_RELAXED))
+        LOG("nvn-enum: %s seen set full, more values not logged\n", p->name);
+}
+
 static void proc_trace(CPU* c, u64 entry) {
     NvProc* p = proc_find(entry);
     if (!p) { /* generated code reads g_disp without ordering: on a weakly ordered host the lock gives it */
@@ -172,6 +195,7 @@ static void proc_trace(CPU* c, u64 entry) {
     __atomic_fetch_add(&p->calls, 1, __ATOMIC_RELAXED);
     if (p->selftest_hook == SELFTEST_DEVICE_INIT) nvn_selftest_note_device(c->x[0]);
     if (p->selftest_hook == SELFTEST_QUEUE_INIT) nvn_selftest_run(c);
+    if (p->enum_args) enum_args_trace(c, p);
     if (p->size_op) {
         size_query_trace(c, entry, p);
         return;
@@ -224,6 +248,7 @@ static void trace_proc(u64 addr, const char* name) {
                       : !strcmp(name, "nvnDeviceGetTimestampInNanoseconds") ? VALUE_ARGS
                       : value_query_name(name)                              ? VALUE_RESULT
                                                                             : VALUE_NONE;
+        p->enum_args = nvn_enum_args(name);
         __atomic_store_n(&p->addr, addr, __ATOMIC_RELEASE);
         nprocs++;
         __atomic_store_n(dispatch, proc_trace, __ATOMIC_RELEASE);

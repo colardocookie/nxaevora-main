@@ -6,7 +6,7 @@ motion to the camera angle directly. Status: paused. The path of the stick from 
 ## Why a patch of the game is needed
 
 The runtime can only give the game stick values. The game turns a stick value into a rotation speed with a maximum, so a
-fast flick of the mouse cannot turn the view faster than the full stick. See `docs/input-analysis.md`.
+fast flick of the mouse cannot turn the view faster than the full stick. See `docs/input/input-analysis.md`.
 
 ## How to read the imports of the game (a correction)
 

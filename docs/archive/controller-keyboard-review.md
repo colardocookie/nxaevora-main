@@ -117,7 +117,7 @@ Paths below are relative to `third_party/ScarletNX`. This is a source review of 
 
 ## 12. [P2] Focused tests and boundary scenes are missing
 
-**File and line:** `src/nx/runtime/platform/backend/sdl3.c:658-679`, `src/nx/CMakeLists.txt:107`, `tests/CMakeLists.txt:756-759`; project `docs/imgui-plan.md`, Verification and Progress.
+**File and line:** `src/nx/runtime/platform/backend/sdl3.c:658-679`, `src/nx/CMakeLists.txt:107`, `tests/CMakeLists.txt:756-759`; project `docs/ui/imgui-plan.md`, Verification and Progress.
 
 **Fault:** Patch 0016 adds no tests. The existing `imgui_input` test checks the event queue, not map editing, capture ownership, or renderer-side setting changes. The recorded general window run does not establish these boundary results.
 

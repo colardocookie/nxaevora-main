@@ -192,6 +192,13 @@ static int sh_merge_dual(const u8* a, const u8* b, u8* m, VkCbReader read) {
     pm_unlock(&g_xlate_lock);
     return merged;
 }
+/* 1 when no constant buffer read of the translation succeeded: a shipped result without a successful read is kept, so
+   vk_cb_reads_hold matches every draw and ship_record takes it */
+static int cb_reads_none_ok(const VkCbReads* reads) {
+    for (u32 i = 0; i < reads->n; i++)
+        if (reads->r[i].ok) return 0;
+    return 1;
+}
 int vk_cb_reads_hold(const VkCbReads* reads, VkCbReader read) {
     for (u32 i = 0; i < reads->n; i++) {
         const VkCbRead* c = &reads->r[i];
@@ -426,8 +433,9 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
 /* s for its key, from code (SH_CODE bytes: the merged program, for VertexA and VertexB) whose whole code hashes to h,
    each part with its length and hash, translated: its SPIR-V (malloc'd, nw words), the constant buffers the
    translation read through read in s->cbr. NULL when it can't be (si.first_unsupported says why). shipped: a program
-   the game ships, translated before any draw (ship_make), which fails when its translation read a constant buffer: a
-   draw's lookup checks those reads against its own buffers, which no read without them matches */
+   the game ships, translated before any draw (ship_make). A shipped result is kept, without its reads, when none of
+   its reads succeeded: a draw's lookup then checks no read and matches. It is dropped when one read succeeded, since a
+   draw's lookup cannot match those reads without them */
 static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[20], u32 len, u64 qh, u32 len_a,
                      u64 qh_a, const ShXfb* xfb, VkCbReader read, int shipped, size_t* nw) {
     s->shipped = shipped;
@@ -447,9 +455,15 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[2
     SNX_ZONE_END(z_translate);
     for (int i = 0; i < s->si.ntex; i++) s->indexed |= (s->si.tex[i].flags & SNX_TEX_INDEXED) != 0;
     if (spv && shipped && s->cbr.n) {
-        free(spv);
-        spv = NULL;
-        snprintf(s->si.first_unsupported, sizeof s->si.first_unsupported, "a jump table in a constant buffer");
+        if (cb_reads_none_ok(&s->cbr)) {
+            free(s->cbr.r);
+            s->cbr.r = NULL;
+            s->cbr.n = 0;
+        } else {
+            free(spv);
+            spv = NULL;
+            snprintf(s->si.first_unsupported, sizeof s->si.first_unsupported, "a jump table in a constant buffer");
+        }
     }
     if (spv && s->si.nimg) {
         u32 image_slots = g_vk.props.limits.maxPerStageDescriptorStorageImages;

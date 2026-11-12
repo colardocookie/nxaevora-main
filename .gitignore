@@ -1,4 +1,6 @@
-.claude/
-CLAUDE.md
-AGENTS.md
 game/
+tools/__pycache__/
+# Local agent instructions and work plans, not part of the project
+/CLAUDE.md
+/AGENTS.md
+/.claude/
