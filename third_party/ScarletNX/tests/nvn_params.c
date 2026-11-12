@@ -1972,6 +1972,12 @@ static void test_word_stream(void) {
         CHECK(last == (i == 4u));
     }
     CHECK(nvn_word_stream_complete(&s));
+    /* Mode 3: the method does not change, so both data words go to 0x8E4. */
+    s = (NvnWordStream){0};
+    CHECK(nvn_word_stream_next(&s, 0x600208E4u, &m, &v, &last) == 0);
+    CHECK(nvn_word_stream_next(&s, 0x11u, &m, &v, &last) == 1 && m == 0x8E4u && v == 0x11u && last == 0);
+    CHECK(nvn_word_stream_next(&s, 0x22u, &m, &v, &last) == 1 && m == 0x8E4u && v == 0x22u && last == 1);
+    CHECK(nvn_word_stream_complete(&s));
     /* Inline: the count field is the value. */
     s = (NvnWordStream){0};
     CHECK(nvn_word_stream_next(&s, 0x80300830u, &m, &v, &last) == 1 && m == 0x830u && v == 0x30u && last == 1);
@@ -1997,6 +2003,25 @@ static void test_word_stream(void) {
     CHECK(!nvn_word_stream_complete(&s));
     CHECK(!nvn_word_stream_complete(NULL));
     CHECK(nvn_word_stream_next(NULL, 0, &m, &v, &last) == -1);
+    /* (3) The BindStorageBuffers stream: one inline 0xE20, then the mode 3 run of 0x8E4. */
+    {
+        const uint64_t entries[4] = {0x100003000ull, 0x100ull, 0x100004000ull, 0x80ull};
+        uint32_t words[16];
+        const uint32_t n = nvn_bind_storage_buffers_words(0, 0, 2, entries, words);
+        CHECK(n == 10u);
+        NvnWordStream b = {0};
+        unsigned sent = 0, e20 = 0, e8e4 = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            const int r = nvn_word_stream_next(&b, words[i], &m, &v, &last);
+            CHECK(r >= 0);
+            if (r != 1) continue;
+            sent++;
+            if (m == 0xE20u) e20++;
+            else if (m == 0x8E4u) e8e4++;
+            else CHECK(0);
+        }
+        CHECK(sent == 9u && e20 == 1u && e8e4 == 8u && nvn_word_stream_complete(&b));
+    }
 }
 
 static void test_barrier_words(void) {

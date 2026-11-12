@@ -5,12 +5,16 @@
 /* The record ops of the library's interpreter (d839d20). */
 #define REC_OP_RANGES 0x03u
 #define REC_OP_JUMP 0x04u
+#define REC_OP_TEXTURE_POOL 0x13u
+#define REC_OP_SAMPLER_POOL 0x14u
 #define REC_OP_END_MAX 0x02u
 #define REC_HEADER_BYTES 8u
 #define REC_JUMP_BYTES 0x10u
 #define REC_ENTRY_BYTES 0x18u
 #define REC_ENTRY_WORD_COUNT_OFFSET 16u
 #define REC_JUMP_NEXT_OFFSET 8u
+#define REC_POOL_BYTES 0x10u
+#define REC_POOL_OBJECT_OFFSET 8u
 #define REC_HANDLE_ADDRESS_MASK 0xFFFFFFFFFFFFull
 #define REC_HANDLE_TAG_SHIFT 48u
 #define REC_HANDLE_ENTRY_BIT 1ull
@@ -53,6 +57,8 @@ static int add_entry(Decoder* d, const uint8_t* entry, uint64_t addr) {
     if (d->n >= d->cap) return NVN_ST_DEC_TOO_MANY_RANGES;
     d->out[d->n].cpu_start = cpu_start;
     d->out[d->n].words = words;
+    d->out[d->n].pool_op = 0;
+    d->out[d->n].pool = 0;
     d->n++;
     return NVN_ST_DEC_OK;
 }
@@ -118,6 +124,23 @@ static int decode_records(Decoder* d, uint64_t addr) {
             addr += REC_HEADER_BYTES + (uint64_t)count * REC_ENTRY_BYTES;
             continue;
         }
+        if (op == REC_OP_TEXTURE_POOL || op == REC_OP_SAMPLER_POOL) {
+            if (d->n >= d->cap) {
+                d->fault->op = op;
+                d->fault->addr = addr;
+                return NVN_ST_DEC_TOO_MANY_RANGES;
+            }
+            const uint8_t* record;
+            if (!read_at(d, addr, REC_POOL_BYTES, &record)) return NVN_ST_DEC_READ_FAILED;
+            NvnStRange* r = &d->out[d->n];
+            r->cpu_start = 0;
+            r->words = 0;
+            r->pool_op = op;
+            r->pool = rd64(record + REC_POOL_OBJECT_OFFSET);
+            d->n++;
+            addr += REC_POOL_BYTES;
+            continue;
+        }
         d->fault->op = op;
         d->fault->addr = addr;
         return NVN_ST_DEC_REFUSED_OP;
@@ -142,4 +165,42 @@ int nvn_st_decode_recording(uint64_t handle, const void* (*read)(void* ctx, uint
     if (status == NVN_ST_DEC_OK) d.fault->addr = 0;
     *n = d.n;
     return status;
+}
+
+/* The words of one expanded pool record: the library interpreter does this at submission (d84c120 for op 0x13, d84c3b0
+   for op 0x14, the constants at de141a0). The second run is the same header on subchannel 1. */
+#define POOL_OP_TEXTURE_BASE 0x2003055Du /* mode 1, count 3, method 0x55D */
+#define POOL_OP_SAMPLER_BASE 0x20030557u /* mode 1, count 3, method 0x557 */
+#define POOL_OP_SUBCHANNEL1 0x2000u      /* bit 13 of the header: subchannel 1 */
+#define POOL_TEXTURE_SELECT 0x80400E20u  /* mode 4, value 0x40, method 0xE20 */
+#define POOL_TEXTURE_OFFSET 0x200208E4u  /* mode 1, count 2, method 0x8E4 */
+#define POOL_TEXTURE_WORDS 12u
+#define POOL_SAMPLER_WORDS 8u
+
+uint32_t nvn_st_pool_words(uint32_t op, uint64_t base, uint32_t size, uint32_t* out, uint32_t cap) {
+    if (!out) return 0;
+    const uint32_t header = op == REC_OP_TEXTURE_POOL ? POOL_OP_TEXTURE_BASE
+                            : op == REC_OP_SAMPLER_POOL ? POOL_OP_SAMPLER_BASE
+                                                        : 0u;
+    if (!header) return 0;
+    const uint32_t count = op == REC_OP_TEXTURE_POOL ? POOL_TEXTURE_WORDS : POOL_SAMPLER_WORDS;
+    if (cap < count) return 0;
+    const uint32_t hi = (uint32_t)(base >> 32);
+    const uint32_t lo = (uint32_t)base;
+    const uint32_t limit = size - 1u; /* a 32-bit wrap: size 0 gives 0xFFFFFFFF */
+    out[0] = header;
+    out[1] = hi;
+    out[2] = lo;
+    out[3] = limit;
+    out[4] = header | POOL_OP_SUBCHANNEL1;
+    out[5] = hi;
+    out[6] = lo;
+    out[7] = limit;
+    if (op == REC_OP_TEXTURE_POOL) {
+        out[8] = POOL_TEXTURE_SELECT;
+        out[9] = POOL_TEXTURE_OFFSET;
+        out[10] = lo;
+        out[11] = hi;
+    }
+    return count;
 }

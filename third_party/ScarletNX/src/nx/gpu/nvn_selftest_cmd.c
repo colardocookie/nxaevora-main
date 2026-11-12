@@ -66,6 +66,15 @@
 #define ST_BIND_TEX_FORMAT 0x25u
 #define ST_RT_COUNT 2u
 
+/* A pool record (0x13 texture pool, 0x14 sampler pool) names the pool object at +0, the base offset at +8 and the size
+   at +0x10. The object's second pointer holds the virtual function at +0x38 that gives the base of the pool memory. */
+#define ST_POOL_READ_BYTES 0x14u
+#define ST_POOL_BASE_OFFSET 0x08u
+#define ST_POOL_SIZE_OFFSET 0x10u
+#define ST_POOL_VT_FN_OFFSET 0x38u
+#define ST_POOL_ITEMS_MAX 4u
+#define ST_POOL_ITEM_WORDS 12u
+
 /* The argument block of the cases, in the arena: the same values for the library, a changed copy for a mutation. Each
    region is 16-byte aligned. */
 #define ST_ARG_VP_LIB 0x000u
@@ -94,6 +103,12 @@
 #define ST_ARG_RT_LIB 0x5F0u
 #define ST_ARG_RT_HOST 0x600u
 #define ST_ARG_BYTES 0x610u
+
+/* The vertex arrays of the two Bind cases: two elements in each 16-byte argument region. */
+#define ST_ATTRIB_ELEM_BYTES 4u
+#define ST_ATTRIB_ELEMENTS 2u
+#define ST_STREAM_ELEM_BYTES 8u
+#define ST_STREAM_ELEMENTS 2u
 
 #define ST_CLEAR_INDEX 0u
 #define ST_MUTATE_VIEWPORT_WORD 0u /* the x of viewport 0 */
@@ -138,6 +153,7 @@ typedef struct {
     PMutex lock;
     PCond cv;
     uint64_t lib_control, host_control; /* the control memory of each command buffer, given again each case */
+    uint64_t pool_scratch;              /* the push buffer words of the expanded pool records, one block per item */
 } StCmdJob;
 
 /* The recorder calls the snapshot on the GPU thread, and one job runs at a time on that thread (one guest thread runs
@@ -436,6 +452,68 @@ enum {
 typedef int (*StScript)(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb, uint64_t args,
                         uint64_t param, unsigned rule);
 
+/* Expands the pool records of a decoded recording (decision A, part C). The decoder stays pure, so the CPU thread
+   reads the pool object and calls the virtual function that gives its base, then writes the words that the library
+   interpreter writes at submission. 1 when every pool item was expanded, 0 when the case must be skipped. */
+static int st_expand_pools(CPU* c, NvnStRun* run, StCmdJob* job, NvnStRange* ranges, unsigned n, const char* name,
+                           const char* text) {
+    unsigned pools = 0;
+    for (unsigned i = 0; i < n; i++) {
+        NvnStRange* const r = &ranges[i];
+        if (!r->pool_op) continue;
+        if (pools >= ST_POOL_ITEMS_MAX) {
+            run->skipped++;
+            LOG("selftest: %s %s skipped, more than %u pool records\n", name, text, ST_POOL_ITEMS_MAX);
+            return 0;
+        }
+        const uint64_t pool = r->pool;
+        if (!nvn_st_arena_contains(&run->arena, pool, ST_POOL_READ_BYTES)) {
+            run->skipped++;
+            LOG("selftest: %s %s skipped, pool record op %u at %llx is outside the arena\n", name, text, r->pool_op,
+                (unsigned long long)pool);
+            return 0;
+        }
+        const uint64_t mp = gr64(pool);
+        /* The selftest makes its memory pools in the arena: another address is not a pool of this run. */
+        if (!nvn_st_arena_contains(&run->arena, mp, sizeof(uint64_t))) {
+            run->skipped++;
+            LOG("selftest: %s %s skipped, pool record op %u at %llx has memory pool %llx outside the arena\n", name,
+                text, r->pool_op, (unsigned long long)pool, (unsigned long long)mp);
+            return 0;
+        }
+        const uint64_t vt = gr64(mp);
+        if (!vt) {
+            run->skipped++;
+            LOG("selftest: %s %s skipped, pool record op %u at %llx has no vtable\n", name, text, r->pool_op,
+                (unsigned long long)pool);
+            return 0;
+        }
+        const uint64_t fn = gr64(vt + ST_POOL_VT_FN_OFFSET);
+        if (!fn) {
+            run->skipped++;
+            LOG("selftest: %s %s skipped, pool record op %u at %llx has no base function\n", name, text, r->pool_op,
+                (unsigned long long)pool);
+            return 0;
+        }
+        const NvnStCallee callee = {snx_lookup(c, fn), fn};
+        const uint64_t base = nvn_st_call(c, &callee, &(NvnStCall){.x = {mp}}) + gr64(pool + ST_POOL_BASE_OFFSET);
+        const uint64_t at = job->pool_scratch + (uint64_t)pools * ST_POOL_ITEM_WORDS * 4u;
+        const uint32_t words = nvn_st_pool_words(r->pool_op, base, gr32(pool + ST_POOL_SIZE_OFFSET), (uint32_t*)GP(at),
+                                                 ST_POOL_ITEM_WORDS);
+        if (!words) {
+            run->skipped++;
+            LOG("selftest: %s %s skipped, pool record op %u at %llx did not expand\n", name, text, r->pool_op,
+                (unsigned long long)pool);
+            return 0;
+        }
+        r->cpu_start = at;
+        r->words = words;
+        r->pool_op = 0;
+        pools++;
+    }
+    return 1;
+}
+
 static void st_case(CPU* c, NvnStRun* run, StCmdProcs* p, StCmdJob* job, uint64_t lib_cb, uint64_t host_cb,
                     uint64_t lib_pool, uint64_t host_pool, uint64_t args, const char* name, const char* text,
                     StScript script, const NvnStProc* fn, uint64_t param, unsigned rule, int expect_noop,
@@ -466,6 +544,7 @@ static void st_case(CPU* c, NvnStRun* run, StCmdProcs* p, StCmdJob* job, uint64_
         st_skip(run, name, text, status, &fault);
         return;
     }
+    if (!st_expand_pools(c, run, job, job->ranges, n, name, text)) return;
     for (unsigned i = 0; i < n; i++) {
         const uint64_t bytes = (uint64_t)job->ranges[i].words * 4u;
         if (nvn_st_arena_contains(&run->arena, job->ranges[i].cpu_start, bytes)) continue;
@@ -754,28 +833,52 @@ static int st_script_texture_pool(CPU* c, const StCmdProcs* p, const NvnStProc* 
     return 1;
 }
 
-/* BindVertexAttribState: count 2, then the two state words of the row. */
+/* BindVertexAttribState: count 2, and each element built with the state setters of its side. The host handler reads a
+   record of each element, so raw words would leave that record zero. */
 static int st_script_bind_vertex_attrib(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
                                         uint64_t args, uint64_t param, unsigned rule) {
     (void)param;
-    uint32_t states[2] = {0x00200040u, 0x00400040u};
-    if (host && rule == ST_MUT_INT) states[0] ^= 1u;
+    NvnStProc defaults = {0}, format = {0}, stream_index = {0};
+    if (!nvn_st_proc_find(&defaults, "nvnVertexAttribStateSetDefaults") ||
+        !nvn_st_proc_find(&format, "nvnVertexAttribStateSetFormat") ||
+        !nvn_st_proc_find(&stream_index, "nvnVertexAttribStateSetStreamIndex"))
+        return 0;
+    static const uint32_t formats[ST_ATTRIB_ELEMENTS] = {0x25u, 0x26u};
+    static const uint32_t offsets[ST_ATTRIB_ELEMENTS] = {0u, 4u};
+    static const uint32_t streams[ST_ATTRIB_ELEMENTS] = {0u, 1u};
     const uint64_t at = args + (host ? ST_ARG_ATTRIB_HOST : ST_ARG_ATTRIB_LIB);
-    memcpy(GP(at), states, sizeof states);
-    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 2u, at}});
+    for (unsigned i = 0; i < ST_ATTRIB_ELEMENTS; i++) {
+        const uint64_t elem = at + (uint64_t)i * ST_ATTRIB_ELEM_BYTES;
+        const uint32_t stream = streams[i] ^ (host && rule == ST_MUT_INT && i == 0 ? 1u : 0u);
+        nvn_st_call(c, host ? &defaults.host : &defaults.lib, &(NvnStCall){.x = {elem}});
+        nvn_st_call(c, host ? &format.host : &format.lib, &(NvnStCall){.x = {elem, formats[i], offsets[i]}});
+        nvn_st_call(c, host ? &stream_index.host : &stream_index.lib, &(NvnStCall){.x = {elem, stream}});
+    }
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, ST_ATTRIB_ELEMENTS, at}});
     st_draw_work(c, p, host, cb, args);
     return 1;
 }
 
-/* BindVertexStreamState: count 2, then the stride and divisor pairs of the row. */
+/* BindVertexStreamState: count 2, and each element built with the state setters of its side. */
 static int st_script_bind_vertex_stream(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
                                         uint64_t args, uint64_t param, unsigned rule) {
     (void)param;
-    struct { uint32_t stride, divisor; } states[2] = {{0x10u, 0u}, {0x20u, 1u}};
-    if (host && rule == ST_MUT_INT) states[0].stride ^= 1u;
+    NvnStProc defaults = {0}, stride = {0}, divisor = {0};
+    if (!nvn_st_proc_find(&defaults, "nvnVertexStreamStateSetDefaults") ||
+        !nvn_st_proc_find(&stride, "nvnVertexStreamStateSetStride") ||
+        !nvn_st_proc_find(&divisor, "nvnVertexStreamStateSetDivisor"))
+        return 0;
+    static const uint32_t strides[ST_STREAM_ELEMENTS] = {0x10u, 0x20u};
+    static const uint32_t divisors[ST_STREAM_ELEMENTS] = {0u, 1u};
     const uint64_t at = args + (host ? ST_ARG_STREAM_HOST : ST_ARG_STREAM_LIB);
-    memcpy(GP(at), states, sizeof states);
-    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, 2u, at}});
+    for (unsigned i = 0; i < ST_STREAM_ELEMENTS; i++) {
+        const uint64_t elem = at + (uint64_t)i * ST_STREAM_ELEM_BYTES;
+        const uint32_t value = strides[i] ^ (host && rule == ST_MUT_INT && i == 0 ? 1u : 0u);
+        nvn_st_call(c, host ? &defaults.host : &defaults.lib, &(NvnStCall){.x = {elem}});
+        nvn_st_call(c, host ? &stride.host : &stride.lib, &(NvnStCall){.x = {elem, value}});
+        nvn_st_call(c, host ? &divisor.host : &divisor.lib, &(NvnStCall){.x = {elem, divisors[i]}});
+    }
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, ST_STREAM_ELEMENTS, at}});
     st_draw_work(c, p, host, cb, args);
     return 1;
 }
@@ -921,10 +1024,10 @@ static const struct {
      st_ignore_sampler_pool, ST_IGNORE_N(st_ignore_sampler_pool), 1},
     {"nvnCommandBufferSetTexturePool", "pool=512 entries", st_script_texture_pool, ST_MUT_NONE,
      st_ignore_texture_pool, ST_IGNORE_N(st_ignore_texture_pool), 1},
-    {"nvnCommandBufferBindVertexAttribState", "count=2 states=0x200040,0x400040", st_script_bind_vertex_attrib,
-     ST_MUT_INT, NULL, 0, 0},
-    {"nvnCommandBufferBindVertexStreamState", "count=2 stride=0x10,0x20", st_script_bind_vertex_stream,
-     ST_MUT_INT, NULL, 0, 0},
+    {"nvnCommandBufferBindVertexAttribState", "count=2 fmt=0x25,0x26 off=0,4 stream=0,1",
+     st_script_bind_vertex_attrib, ST_MUT_INT, NULL, 0, 0},
+    {"nvnCommandBufferBindVertexStreamState", "count=2 stride=0x10,0x20 divisor=0,1",
+     st_script_bind_vertex_stream, ST_MUT_INT, NULL, 0, 0},
     {"nvnCommandBufferBindVertexBuffer", "index=1 addr=0x12340000 size=0x1000", st_script_bind_vertex_buffer,
      ST_MUT_INT, NULL, 0, 0},
     {"nvnCommandBufferBindVertexBuffers", "first=0 count=2 addr=0x12340000,0x22340000",
@@ -1143,7 +1246,9 @@ void nvn_selftest_command_cases(CPU* c, NvnStRun* run) {
     const uint64_t lib_control = nvn_st_arena_alloc(&run->arena, ST_CONTROL_BYTES, 0x1000);
     const uint64_t host_control = nvn_st_arena_alloc(&run->arena, ST_CONTROL_BYTES, 0x1000);
     const uint64_t args = nvn_st_arena_alloc(&run->arena, ST_ARG_BYTES, 16);
-    if (!lib_cb || !host_cb || !lib_control || !host_control || !args) {
+    const uint64_t pool_scratch =
+        nvn_st_arena_alloc(&run->arena, ST_POOL_ITEMS_MAX * ST_POOL_ITEM_WORDS * 4u, 16);
+    if (!lib_cb || !host_cb || !lib_control || !host_control || !args || !pool_scratch) {
         st_skip_all(run, "the arena is full");
         pm_destroy(&job->lock);
         free(job);
@@ -1151,6 +1256,7 @@ void nvn_selftest_command_cases(CPU* c, NvnStRun* run) {
     }
     job->lib_control = lib_control;
     job->host_control = host_control;
+    job->pool_scratch = pool_scratch;
     NvnStResPool lib_pool = {0}, host_pool = {0};
     const int lib_ok = st_setup_lists(c, &procs, &cache, run, 0, lib_cb, lib_control, &lib_pool);
     const int host_ok = st_setup_lists(c, &procs, &cache, run, 1, host_cb, host_control, &host_pool);
