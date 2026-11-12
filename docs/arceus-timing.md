@@ -238,3 +238,12 @@ per frame, so air acceleration doubled at 60 FPS and quadrupled at 120. `SNX_ARC
 steering entry by the step over 1/30 second. At 30 FPS or slower nothing is written. Both switches share one wrapper on
 `main+19843A0`, and `arceus-capped-fall` and `arceus-air-steering-fix` lines count what they change. Test
 `arceus_clock` checks that one second of steering entries sums to 30 authored ones at 60, 120 and uneven steps.
+
+## Timer carry
+
+The capture stage countdown and the map cursor's held-frame counters tick once per 1/30 second of built-up time, but
+dropped the whole remainder when one step held more than a tick. After a 100 ms frame one tick was used and about
+67 ms lost, so after slow or uneven frames these timers fell behind for good. With a target rate,
+`SNX_ARCEUS_TIMER_CARRY_FIX=1` keeps the remainder, capped at one second, and later calls catch up one tick at a
+time. No game call is replayed. Test `arceus_clock` runs 300 frames of 8 to 40 ms with 100 ms stalls and checks that
+the ticks equal the elapsed time over 1/30 with the exact remainder.

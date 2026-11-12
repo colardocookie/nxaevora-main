@@ -26,6 +26,9 @@ static GuestFn message_original;
 static u64 message_count;
 static u64 water_step_address;
 static int clocks_installed;
+/* Optional catch-up for integer timers. Bound recovery to one second after sustained slow frames. */
+#define TIMER_CARRY_LIMIT_NS UINT64_C(1000000000)
+static int timer_carry_fix;
 static u64 blink_remainder;
 static unsigned blink_ticks;
 
@@ -1000,7 +1003,10 @@ static int capture_tick(u64 object, int ready) {
     if (capture_slots[k].ns < -1000000000ll) capture_slots[k].ns = -1000000000ll;
     if (!ready || capture_slots[k].ns < CAPTURE_TICK_NS) return 0;
     capture_slots[k].ns -= CAPTURE_TICK_NS;
-    if (capture_slots[k].ns >= CAPTURE_TICK_NS) capture_slots[k].ns = 0;
+    if (timer_carry_fix) {
+        if (capture_slots[k].ns > (int64_t)TIMER_CARRY_LIMIT_NS)
+            capture_slots[k].ns = (int64_t)TIMER_CARRY_LIMIT_NS;
+    } else if (capture_slots[k].ns >= CAPTURE_TICK_NS) capture_slots[k].ns = 0;
     return 1;
 }
 static void sequence_clock_probe(CPU* c, u64 entry, unsigned kind) {
@@ -1267,7 +1273,9 @@ static void map_cursor_update(CPU* c, u64 entry, unsigned kind) {
     const int tick = map_cursor_ns[kind] >= 33333333ull;
     if (tick) {
         map_cursor_ns[kind] -= 33333333ull;
-        if (map_cursor_ns[kind] >= 33333333ull) map_cursor_ns[kind] = 0;
+        if (timer_carry_fix) {
+            if (map_cursor_ns[kind] > TIMER_CARRY_LIMIT_NS) map_cursor_ns[kind] = TIMER_CARRY_LIMIT_NS;
+        } else if (map_cursor_ns[kind] >= 33333333ull) map_cursor_ns[kind] = 0;
     }
     pm_unlock(&map_cursor_lock);
     const float speed = guest_float(object + s->speed), scaled = speed * (float)ns / 33333333.0f;
@@ -1785,6 +1793,7 @@ static void capped_fall_init(void) {
         LOG("arceus-air-steering-fix: EXPERIMENT: player/ride air steering from main+%x follows elapsed time\n",
             AIR_STEERING_CALLER);
 }
+
 
 
 /* C21D00 (fade in) and C227BC (fade out) start a fade: its fractional progress starts over. */
@@ -2666,6 +2675,9 @@ static void ledge_fix_init(void) {
 }
 
 void arceus_clock_post_jit(void) {
+    const char* carry = getenv("SNX_ARCEUS_TIMER_CARRY_FIX");
+    timer_carry_fix = clocks_installed && carry && !strcmp(carry, "1");
+    if (timer_carry_fix) LOG("arceus-timer-carry: integer timer catch-up enabled, backlog capped at 1 second\n");
     fixed_resolution_init();
     /* Before the research probe, which compiles and keeps this wrapper's body. */
     physics_timestep_init();

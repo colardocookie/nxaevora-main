@@ -180,6 +180,71 @@ static void test_air_steering(void) {
     assert(!air_steering_scale(object, 0, none, 1.0f / 60));
     assert(guest_float(object + 0x6f0) == authored[0]);
 }
+/* The three requested schedules are replayed through the real cell and wrappers. */
+static u64 audit_step(unsigned schedule, unsigned i) {
+    if (!schedule) return 16666667;
+    if (schedule == 1) return i & 1 ? 20000000 : 12000000;
+    return i % 31 == 30 ? 100000000 : 8000000 + (i * 1103515245u + 12345u) % 32000001;
+}
+static double audit_cursor_distance;
+static void audit_map_original(CPU* c, u64 entry) {
+    (void)entry;
+    const MapCursorSite* site = &map_cursor_sites[0];
+    audit_cursor_distance += guest_float(c->x[0] + site->speed);
+    for (unsigned k = 0; k < 2; k++) {
+        u64 at = c->x[0] + site->held + 4 * k;
+        if (gr32(at) < 9) gw32(at, gr32(at) + 1);
+    }
+    c->pc = c->x[30];
+}
+/* Recover long-frame tick budget on later calls without replaying game callbacks. */
+static void test_timer_carry(void) {
+    for (unsigned enabled = 0; enabled < 2; enabled++) {
+        timer_carry_fix = (int)enabled;
+        memset(memory, 0, sizeof memory);
+        memset(capture_slots, 0, sizeof capture_slots);
+        capture_next_slot = 0;
+        memset(map_cursor_object, 0, sizeof map_cursor_object);
+        memset(map_cursor_ns, 0, sizeof map_cursor_ns);
+        map_cursor_original[0] = audit_map_original;
+        guest_float_write(object + map_cursor_sites[0].speed, 1);
+        u64 elapsed = 0;
+        unsigned captures = 0, holds = 0;
+        for (unsigned i = 0; i < 420; i++) {
+            const u64 ns = i < 300 ? audit_step(2, i) : 12000000;
+            step.step = ns;
+            elapsed += ns;
+            captures += capture_tick(object, 1);
+            /* A fresh held counter makes every retained tick observable. */
+            gw32(object + map_cursor_sites[0].held, 0);
+            gw32(object + map_cursor_sites[0].held + 4, 0);
+            CPU c = {.x = {[0] = 128, [30] = 32}};
+            field_map_cursor_update(&c, entry_pc);
+            holds += gr32(object + map_cursor_sites[0].held);
+        }
+        if (enabled) {
+            assert(captures == elapsed / CAPTURE_TICK_NS);
+            assert(holds == elapsed / 33333333ull);
+            assert(capture_slots[0].ns == (int64_t)(elapsed % CAPTURE_TICK_NS));
+            assert(map_cursor_ns[0] == elapsed % 33333333ull);
+        } else {
+            assert(captures < elapsed / CAPTURE_TICK_NS);
+            assert(holds < elapsed / 33333333ull);
+        }
+    }
+    /* Repeated slow calls cannot grow an unbounded recovery delay. */
+    for (unsigned i = 0; i < 100; i++) {
+        step.step = 100000000;
+        (void)capture_tick(object, 1);
+        CPU c = {.x = {[0] = 128, [30] = 32}};
+        field_map_cursor_update(&c, entry_pc);
+    }
+    assert(capture_slots[0].ns <= (int64_t)TIMER_CARRY_LIMIT_NS);
+    assert(map_cursor_ns[0] <= TIMER_CARRY_LIMIT_NS);
+    /* The cursor mock ran and moved the cursor. */
+    assert(audit_cursor_distance > 0);
+    timer_carry_fix = 0;
+}
 static void test_diagnostics(void) {
     SnxModInfo main_mod = {.name = "main", .base = 4096,
         .build_id = {0xae,0xe8,0xf1,0x50,0xdd,0xa1,0xb5,0xa8,0x38,0x80,0x6e,0x1a,0x5e,0xa6,0x82,0x7a,
@@ -556,6 +621,7 @@ static void test_ledge_smoothing(void) {
     frame_step_address = 0;
 }
 int main(void) {
+    test_timer_carry();
     test_air_steering();
     const char* disabled[] = {"SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60", "SNX_ARCEUS_CLOCK_TRACE",
         "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_CAMERA_TRACE",
