@@ -91,12 +91,39 @@ static void test_cap_overflow(void) {
     CHECK(out[0] == 2);
 }
 
+static void test_engine_names(void) {
+    CHECK(!strcmp(nvn_st_engine_reg_name(NVN_ST_ENGINE_R3D, 0x47fu), "r3d.0x47f"));
+    CHECK(!strcmp(nvn_st_engine_reg_name(NVN_ST_ENGINE_R2D, 0x080u), "r2d.0x080"));
+    CHECK(!strcmp(nvn_st_engine_reg_name(NVN_ST_ENGINE_RDMA, 0x0c0u), "rdma.0x0c0"));
+    CHECK(!strcmp(nvn_st_engine_reg_name(NVN_ST_ENGINE_RCOMP, 0x0b4u), "rcomp.0x0b4"));
+}
+
+static void test_engine_name_pointer(void) {
+    CHECK(nvn_st_engine_reg_name(NVN_ST_ENGINE_R2D, 0x081u) ==
+          nvn_st_engine_reg_name(NVN_ST_ENGINE_R2D, 0x081u));
+}
+
+static void test_engine_name_out_of_range(void) {
+    CHECK(!strcmp(nvn_st_engine_reg_name(NVN_ST_ENGINE_COUNT, 0u), "reg.out_of_range"));
+    for (unsigned e = 0; e < NVN_ST_ENGINE_COUNT; e++)
+        CHECK(!strcmp(nvn_st_engine_reg_name(e, nvn_st_engines[e].count), "reg.out_of_range"));
+}
+
+static void test_reg_name_is_r3d(void) {
+    for (unsigned r = 0; r < N; r++)
+        CHECK(!strcmp(nvn_st_reg_name(r), nvn_st_engine_reg_name(NVN_ST_ENGINE_R3D, r)));
+}
+
 int main(void) {
     test_equal();
     test_one_each_in_order();
     test_both_at_one_index();
     test_returned_to_base();
     test_cap_overflow();
+    test_engine_names();
+    test_engine_name_pointer();
+    test_engine_name_out_of_range();
+    test_reg_name_is_r3d();
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;
