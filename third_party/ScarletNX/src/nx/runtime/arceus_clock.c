@@ -1929,6 +1929,64 @@ static void ai_tick_fix_init(void) {
     }
     LOG("arceus-ai-tick: EXPERIMENT: AI script context frames count 30 per second of elapsed time\n");
 }
+/* The orientation helper 1727DF4 turns a character by slerp(current, target, t) once per
+   call, t = turn rate +268 x (1/30) / duration S0, so turning was 2x fast at 60 FPS. With
+   SNX_ARCEUS_TURN_FIX=1 the call gets the duration that gives 1 - (1 - t)^(step x 30). */
+static GuestFn turn_original;
+static u64 turn_calls, turn_scaled;
+static float turn_duration(float rate, float duration, float frames) {
+    const float t = rate * NOMINAL_STEP_SECONDS / duration;
+    /* A whole step (33333333 ns rounds just below 1), a snap (t >= 1) and the helper's own
+       early outs stay as authored. */
+    if (!(frames > 0.0f && frames < 0.999f) || !(duration >= 0x1p-23f) || !(t > 0.0f && t < 1.0f)) return duration;
+    const float wanted = 1.0f - powf(1.0f - t, frames);
+    return wanted > 0.0f ? rate * NOMINAL_STEP_SECONDS / wanted : duration;
+}
+static void turn_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    const float authored = c->v[0].f[0];
+    if (readable(object, 0x26c) && isfinite(authored)) {
+        const float frames = guest_float(frame_step_address) / NOMINAL_STEP_SECONDS;
+        c->v[0].f[0] = turn_duration(guest_float(object + 0x268), authored, frames);
+    }
+    const float passed = c->v[0].f[0];
+    if (passed != authored) __atomic_add_fetch(&turn_scaled, 1, __ATOMIC_RELAXED);
+    turn_original(c, entry);
+    const u64 calls = __atomic_add_fetch(&turn_calls, 1, __ATOMIC_RELAXED);
+    if (calls <= 4 || calls % 6000 == 0)
+        LOG("arceus-turn: calls=%llu scaled=%llu object=%llx caller=main+%llx rate=%g duration=%g passed=%g\n",
+            (unsigned long long)calls, (unsigned long long)__atomic_load_n(&turn_scaled, __ATOMIC_RELAXED),
+            (unsigned long long)object, (unsigned long long)(c->x[30] - main_base),
+            readable(object, 0x26c) ? (double)guest_float(object + 0x268) : -1.0, (double)authored, (double)passed);
+}
+static void turn_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_TURN_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-turn: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x1727df4;
+    /* MOV/MOVK W8 of 1/30 at +260, LDR S0,[X19,#0x268] at +2FC, FDIV S0,S0,S8 at +304. */
+    if (!covers_exactly(pc, 0x3ec) || pc < g_code_lo || pc + 0x3ec > g_code_hi || !readable(pc, 0x3ec) ||
+        gr32(pc) != 0xd10143ff || gr32(pc + 0x260) != 0x52911128 || gr32(pc + 0x264) != 0x72a7a108 ||
+        gr32(pc + 0x2fc) != 0xbd426a60 || gr32(pc + 0x304) != 0x1e281800 || gr32(pc + 0x36c) != 0x17ffffe8) {
+        WARN("arceus-turn: refused instruction/function guard\n");
+        return;
+    }
+    if (!frame_step_cell_init("arceus-turn")) return;
+    /* The census's equivalent B -> CBZ XZR, so it sees this owner as wrapped. */
+    gw32(pc + 0x36c, 0xb4fffd1f);
+    jit_code_changed(pc, 0x3ec);
+    turn_original = jit_wait(pc);
+    if (!turn_original) {
+        WARN("arceus-turn: compile failed\n");
+        return;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], turn_update, __ATOMIC_RELEASE);
+    LOG("arceus-turn: EXPERIMENT: character turns ease by elapsed time\n");
+}
 
 
 /* C21D00 (fade in) and C227BC (fade out) start a fade: its fractional progress starts over. */
@@ -2823,6 +2881,7 @@ void arceus_clock_post_jit(void) {
     movement_fix_init();
     capped_fall_init();
     ai_tick_fix_init();
+    turn_fix_init();
     ball_flight_init();
     timing_research_init();
     capture_fix_init();

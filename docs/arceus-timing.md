@@ -257,3 +257,11 @@ once per rendered frame. Wild Pokémon vigilance, hunger, sleep, look-around wai
 travels in a callee-saved vector lane of the calling thread, and eight words at `main+1051860` are rewritten in place,
 so no shared state is needed. The AI Turn and TurnKey actions hold on passes without a tick. `arceus-ai-tick` lines count
 the passes and ticks.
+
+## Turn easing
+
+The orientation helper `main+1727DF4` turns a character by a slerp from its current orientation toward the target
+with a fixed fraction of the remaining angle per call, and the player and ride updates call it once per rendered frame,
+so turning eased faster with the frame rate. With a target rate, `SNX_ARCEUS_TURN_FIX=1` changes the duration argument
+so the fraction becomes 1 - (1 - t)^(step x 30), the share a 30 FPS sequence covers in the same time. The 1/30 that two
+callers pass as a duration stays as it is, and AI turns go through another function, so nothing is scaled twice.

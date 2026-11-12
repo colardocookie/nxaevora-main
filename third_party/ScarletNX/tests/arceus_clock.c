@@ -197,6 +197,15 @@ static void ai_turn_mock(CPU* c, u64 entry) {
     gw32(c->x[8], 1);
     c->pc = c->x[30];
 }
+/* The mock stands for 1727DF4: one slerp step toward the target with the game's fraction. */
+static float turn_angle, turn_passed;
+static void turn_mock(CPU* c, u64 entry) {
+    (void)entry;
+    turn_passed = c->v[0].f[0];
+    const float t = guest_float(c->x[0] + 0x268) * NOMINAL_STEP_SECONDS / turn_passed;
+    turn_angle += (1 - turn_angle) * (t < 1 ? t : 1);
+    c->pc = c->x[30];
+}
 static u64 audit_step(unsigned schedule, unsigned i) {
     if (!schedule) return 16666667;
     if (schedule == 1) return i & 1 ? 20000000 : 12000000;
@@ -322,6 +331,40 @@ static void test_ai_tick(void) {
     assert(!ai_tick_count(1, 16666667) && !ai_tick_count(2, 16666667));
     assert(ai_tick_count(1, 16666667) && ai_tick_count(2, 16666667));
     main_base = saved_base;
+}
+static void test_turn(void) {
+    /* Rate and duration pairs: a 1/30 s duration as 1A19104 passes, a looked-up one, a snap. */
+    static const float cases[3][2] = {{.2f, 1.0f / 30}, {3, .5f}, {2, 1.0f / 30}};
+    memset(memory, 0, sizeof memory);
+    frame_step_address = 0xf00;
+    turn_original = turn_mock;
+    for (unsigned k = 0; k < 3; k++) {
+        float reached[4];
+        guest_float_write(object + 0x268, cases[k][0]);
+        /* 0.8 s at 30, 60 and 120 FPS and at 12/20 ms: 24, 48, 96 and 50 calls. */
+        for (unsigned schedule = 0; schedule < 4; schedule++) {
+            static const unsigned calls_for[4] = {24, 48, 96, 50};
+            turn_angle = 0;
+            for (unsigned i = 0; i < calls_for[schedule]; i++) {
+                const u64 ns = schedule == 0 ? 33333333 : schedule == 1 ? 16666667 : schedule == 2 ? 8333333 :
+                               i & 1 ? 20000000 : 12000000;
+                frame_step_write(ns);
+                CPU c = {.x = {[0] = 128, [30] = 32}};
+                c.v[0].f[0] = cases[k][1];
+                turn_update(&c, entry_pc);
+                assert(c.pc == return_pc);
+                /* 30 FPS and a snap pass the authored duration through, bit for bit. */
+                if (!schedule || k == 2) assert(turn_passed == cases[k][1]);
+                else assert(turn_passed > cases[k][1]);
+            }
+            reached[schedule] = turn_angle;
+            assert(fabsf(reached[schedule] - reached[0]) < 1e-4f);
+        }
+        assert(k == 2 ? reached[0] == 1 : reached[0] > .9f && reached[0] < 1);
+    }
+    /* The helper's early out for a tiny duration and a zero rate stay untouched. */
+    assert(turn_duration(.2f, 1e-8f, .5f) == 1e-8f && turn_duration(0, .5f, .5f) == .5f);
+    frame_step_address = 0;
 }
 static void test_diagnostics(void) {
     SnxModInfo main_mod = {.name = "main", .base = 4096,
@@ -701,6 +744,7 @@ static void test_ledge_smoothing(void) {
 int main(void) {
     test_timer_carry();
     test_ai_tick();
+    test_turn();
     test_air_steering();
     const char* disabled[] = {"SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60", "SNX_ARCEUS_CLOCK_TRACE",
         "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_CAMERA_TRACE",
