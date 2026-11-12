@@ -1570,6 +1570,13 @@ static u64 dset_mix(u64 h, u64 v, u64 m) {
     h = (h ^ v) * m;
     return h ^ (h >> 29);
 }
+/* the first bound color target, else the depth target, as Ryujinx's GetAnyRenderTarget: a slot can be empty (not
+   bound, or taken out by render_draw because the fragment shader samples it) */
+static const Surf* any_target(Surf** rt, u32 n, const Surf* zt) {
+    for (u32 i = 0; rt && i < n; i++)
+        if (rt[i]) return rt[i];
+    return zt;
+}
 static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites* d) {
     static struct {
         u64 h1, h2, frame;
@@ -1662,7 +1669,7 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         dw_buffer(&d, set, SNX_VKB_RS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, cb, co, 16);
     u32 tcb = r[0x982];
     /* Ryujinx (TextureBindingsManager): a fragment texture takes the target's scale only at its aspect ratio */
-    const Surf* target = rt && n && rt[0] ? rt[0] : zt;
+    const Surf* target = any_target(rt, n, zt);
     int nt = s->si.ntex > SH_MAXTEX ? SH_MAXTEX : s->si.ntex;
     int table_first[SH_INDEXED_TABLES] = {0}, table_count = 0;
     for (int i = 0; i < nt; i++) {
