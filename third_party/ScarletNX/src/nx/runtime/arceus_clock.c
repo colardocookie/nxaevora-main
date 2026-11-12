@@ -2024,6 +2024,15 @@ static const u32 climb_patched_words[12] = {
     0x90000009, 0xbd400120, 0x1e200900, 0x3cd503a1, 0x4f809020, 0xaa1303e0,
     0x3c9503a0, 0x3d8027e0, 0x3dc34a60, 0x3c9403a0, 0x3c9303a0, 0x910d83e8,
 };
+/* The climb animation 2549FA0 divides the eased distance |+D50| by speed/30 for its blend and
+   playback ratio. At 254A8E0 FCMEQ, MVN, FSQRT, AND, FMOV #30, FDIV, FMOV #1, FDIV become FCMEQ,
+   BIC (AND with NOT), FSQRT, ADRP X9, LDR S2, FMUL S2,S8,S2, FMOV #1, FDIV: speed x step. */
+static const u32 climb_anim_words[8] = {
+    0x4ea0d822, 0x6e205842, 0x6ea1f821, 0x4e221c00, 0x1e27d002, 0x1e221902, 0x1e2e1008, 0x1e22182a,
+};
+static const u32 climb_anim_patched[8] = {
+    0x4ea0d822, 0x4e621c00, 0x6ea1f821, 0x90000009, 0xbd400122, 0x1e220902, 0x1e2e1008, 0x1e22182a,
+};
 /* The ADRP of a frame-step cell load at pc, for register rd. */
 static u32 climb_adrp(u64 pc, u32 rd) {
     const u64 pages = ((frame_step_address >> 12) - (pc >> 12)) & 0x1fffff;
@@ -2049,7 +2058,19 @@ static void climb_step_init(void) {
     if (!frame_step_cell_init("arceus-climb")) return;
     for (unsigned k = 0; k < 12; k++) gw32(pc + 4 * k, k ? climb_patched_words[k] : climb_adrp(pc, 9));
     jit_code_changed(pc, 0x30);
-    LOG("arceus-climb: EXPERIMENT: Sneasler climb distance uses min(1/30, elapsed)\n");
+    /* Without the animation ratio fix the ratio would be 1/4 at 120 FPS, a near-still blend. */
+    const u64 anim = main_base + 0x2549fa0, at = anim + 0x940;
+    int anim_ok = covers_exactly(anim, 0xef4) && readable(anim, 0xef4) && gr32(anim) == 0xd10303ff &&
+                  gr32(anim + 0x38) == 0xaa0003f3 && gr32(anim + 0x880) == 0xbd403188;
+    for (unsigned k = 0; anim_ok && k < 8; k++) anim_ok = gr32(at + 4 * k) == climb_anim_words[k];
+    if (anim_ok) {
+        for (unsigned k = 0; k < 8; k++) gw32(at + 4 * k, k == 3 ? climb_adrp(at + 12, 9) : climb_anim_patched[k]);
+        jit_code_changed(anim, 0xef4);
+    } else {
+        WARN("arceus-climb: refused animation guard\n");
+    }
+    LOG("arceus-climb: EXPERIMENT: Sneasler climb distance uses min(1/30, elapsed), animation ratio %s\n",
+        anim_ok ? "on" : "off");
 }
 
 void arceus_clock_post_jit(void) {

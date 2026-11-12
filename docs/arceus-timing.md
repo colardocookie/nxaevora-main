@@ -184,3 +184,9 @@ With a target rate, `SNX_ARCEUS_CLIMB_STEP=1` (or `2`, below) replaces its `FMOV
 load of the frame step and a multiply, so each call moves speed times the elapsed time. The patch makes room by
 storing the `+D20` copy with a second `STUR` instead of an `LDP`/`STP` pair. It checks the function, the speed load
 and all twelve words it replaces, and refuses otherwise.
+
+The climb animation, `main+2549FA0`, divides the eased distance at `+D50` by the speed divided by 30 for its blend
+and playback ratio. With the mover fixed that ratio was 1/4 at 120 FPS, which looked like a nearly still climb, so
+the same switch replaces its `FMOV #30` and `FDIV` at `+950` with the frame step times the speed. The room comes
+from an `MVN` and `AND` pair becoming one `BIC`. If this part's guard fails, the mover fix stays and the log says
+the animation ratio is off.
