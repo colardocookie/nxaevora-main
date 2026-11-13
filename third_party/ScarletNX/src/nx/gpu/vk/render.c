@@ -730,6 +730,175 @@ typedef struct {
     u32 tic[8], tsc[8];
     Surf* t;
 } TexRes;
+
+/* The frame pass census (SNX_PASS_CENSUS=1), read-only: what one frame is made of, for placing an upscaler. A pass
+   here is a run of draws on one set of targets. Every 1200 presents from the 900th, up to 20 times, the passes of
+   one frame are logged in order: targets with guest and image sizes and formats, the draw count, the first draw's
+   viewport and shader hashes, and the textures the fragment programs sampled. Marks: PRESENT the first pass that
+   writes the surface shown last frame, HISTORY a sampled address that was a target last frame and not yet in this
+   one, VELOCITY? a two-channel target written with a depth target bound, DEPTHREAD a sampled depth format that was
+   a target this frame. Nothing is drawn differently. */
+#define CENSUS_PASSES 384
+#define CENSUS_SAMPLED 12
+#define CENSUS_SEEN 96
+typedef struct {
+    u64 gva;
+    u32 w, h, sw, sh, format;
+} CensusTarget;
+typedef struct {
+    CensusTarget color[8], depth;
+    u32 n, writes, draws, fs_others, kind; /* kind: 0 draws, 1 a draw texture */
+    int has_depth, depth_written, depth_ro;
+    u64 vs, fs;
+    float vw, vh;
+    struct {
+        CensusTarget t;
+        u8 depth, history, target, rt;
+    } sampled[CENSUS_SAMPLED];
+    u32 nsampled;
+} CensusPass;
+static struct {
+    int on, capturing;
+    u32 next, captures, count, dropped;
+    u64 shown; /* the address of the surface shown last frame */
+    u64 written[CENSUS_SEEN], before[CENSUS_SEEN];
+    u32 nwritten, nbefore;
+    CensusPass pass[CENSUS_PASSES];
+} g_census = {.on = -1};
+static int census_on(void) {
+    if (g_census.on < 0) {
+        const char* e = getenv("SNX_PASS_CENSUS");
+        g_census.on = e && !strcmp(e, "1");
+        g_census.next = 900;
+        if (g_census.on) LOG("arceus-pass: read-only frame pass census on, a frame every 1200 presents from the 900th\n");
+    }
+    return g_census.on;
+}
+static CensusTarget census_target(const Surf* s) {
+    return (CensusTarget){s->gva, s->w, s->h, s->sw, s->sh, (u32)s->f.vk};
+}
+static int census_has(const u64* list, u32 n, u64 gva) {
+    for (u32 i = 0; i < n; i++)
+        if (list[i] == gva) return 1;
+    return 0;
+}
+static void census_wrote(u64 gva) {
+    if (g_census.nwritten < CENSUS_SEEN && !census_has(g_census.written, g_census.nwritten, gva))
+        g_census.written[g_census.nwritten++] = gva;
+}
+/* one draw: its targets as the pass has them, what it writes, its programs and the fragment program's textures */
+static void census_draw(Surf* const* rt, u32 n, u32 writes, const Surf* zt, int zt_ro, int zt_wrote, const VkSh* vs,
+                        const VkSh* fs, const TexRes* fres, const VkViewport* vp, u32 kind) {
+    if (!census_on()) return;
+    if (g_census.capturing) {
+        CensusPass* p = g_census.count ? &g_census.pass[g_census.count - 1] : NULL;
+        int same = p && p->kind == kind && p->n == n && p->has_depth == (zt != NULL) &&
+                   (!zt || p->depth.gva == zt->gva);
+        for (u32 i = 0; same && i < n; i++) same = p->color[i].gva == (rt[i] ? rt[i]->gva : 0);
+        if (!same) {
+            if (g_census.count == CENSUS_PASSES) {
+                g_census.dropped++;
+                p = NULL;
+            } else {
+                p = &g_census.pass[g_census.count++];
+                memset(p, 0, sizeof *p);
+                p->kind = kind;
+                p->n = n;
+                for (u32 i = 0; i < n; i++)
+                    if (rt[i]) p->color[i] = census_target(rt[i]);
+                p->has_depth = zt != NULL;
+                if (zt) p->depth = census_target(zt);
+                p->vs = vs ? vs->hash : 0;
+                p->fs = fs ? fs->hash : 0;
+                if (vp) p->vw = vp->width, p->vh = vp->height < 0 ? -vp->height : vp->height;
+            }
+        }
+        if (p) {
+            p->draws++;
+            p->writes |= writes;
+            p->depth_ro |= zt_ro;
+            p->depth_written |= zt_wrote;
+            if (fs && fs->hash != p->fs) p->fs_others++;
+            int nt = fs && fres ? (fs->si.ntex > SH_MAXTEX ? SH_MAXTEX : fs->si.ntex) : kind == 1 && fres ? 1 : 0;
+            for (int i = 0; i < nt; i++) {
+                const Surf* t = fres[i].t;
+                if (!t) continue;
+                u32 k = 0;
+                while (k < p->nsampled && p->sampled[k].t.gva != t->gva) k++;
+                if (k < p->nsampled || p->nsampled == CENSUS_SAMPLED) continue;
+                int target = census_has(g_census.written, g_census.nwritten, t->gva);
+                /* textures that never were a target (the game's own art) are left out */
+                if (!t->is_rt && !target && !census_has(g_census.before, g_census.nbefore, t->gva)) continue;
+                p->sampled[k].t = census_target(t);
+                p->sampled[k].depth = t->f.depth;
+                p->sampled[k].rt = (u8)t->is_rt;
+                p->sampled[k].target = (u8)target;
+                p->sampled[k].history = (u8)(!target && census_has(g_census.before, g_census.nbefore, t->gva));
+                p->nsampled++;
+            }
+        }
+    }
+    for (u32 i = 0; i < n; i++)
+        if (rt[i] && (writes >> i & 1)) census_wrote(rt[i]->gva);
+    if (zt && zt_wrote) census_wrote(zt->gva);
+}
+static int census_two_channel(u32 format) {
+    return format == VK_FORMAT_R16G16_SFLOAT || format == VK_FORMAT_R32G32_SFLOAT || format == VK_FORMAT_R16G16_UNORM ||
+           format == VK_FORMAT_R16G16_SNORM || format == VK_FORMAT_R8G8_UNORM || format == VK_FORMAT_R8G8_SNORM;
+}
+/* a frame was shown: a captured one is logged, the addresses written become last frame's, and the next capture is
+   armed when its present comes */
+void vk_pass_census_present(const Surf* shown) {
+    if (!census_on()) return;
+    if (g_census.capturing) {
+        int first = 1;
+        LOG("arceus-pass: frame present=%u passes=%u dropped=%u shown_last=%llx scale=%.3f\n", g_vk_present,
+            g_census.count, g_census.dropped, (unsigned long long)g_census.shown, (double)g_vk_scale);
+        for (u32 k = 0; k < g_census.count; k++) {
+            const CensusPass* p = &g_census.pass[k];
+            char line[1400];
+            int at = 0, present = 0, velocity = 0, history = 0, depthread = 0;
+            #define CENSUS_ADD(...) (at += at < (int)sizeof line ? snprintf(line + at, sizeof line - (size_t)at, __VA_ARGS__) : 0)
+            for (u32 i = 0; i < p->n; i++) {
+                const CensusTarget* t = &p->color[i];
+                if (!t->gva) continue;
+                CENSUS_ADD(" c%u=%llx:%ux%u(%ux%u)f%u%s", i, (unsigned long long)t->gva, t->w, t->h, t->sw, t->sh,
+                           t->format, p->writes >> i & 1 ? "" : "-");
+                if (t->gva == g_census.shown && (p->writes >> i & 1)) present = 1;
+                if (census_two_channel(t->format) && p->has_depth && (p->writes >> i & 1)) velocity = 1;
+            }
+            if (p->has_depth)
+                CENSUS_ADD(" z=%llx:%ux%u(%ux%u)f%u%s", (unsigned long long)p->depth.gva, p->depth.w, p->depth.h,
+                           p->depth.sw, p->depth.sh, p->depth.format, p->depth_written ? "" : p->depth_ro ? "ro" : "-");
+            CENSUS_ADD(" vp=%.0fx%.0f vs=%llx fs=%llx+%u samples=", (double)p->vw, (double)p->vh,
+                       (unsigned long long)p->vs, (unsigned long long)p->fs, p->fs_others);
+            for (u32 i = 0; i < p->nsampled; i++) {
+                const CensusTarget* t = &p->sampled[i].t;
+                CENSUS_ADD("%s%llx:%ux%uf%u%s%s%s", i ? "," : "", (unsigned long long)t->gva, t->w, t->h, t->format,
+                           p->sampled[i].depth ? "D" : "", p->sampled[i].history ? "H" : "",
+                           p->sampled[i].target ? "T" : "");
+                history |= p->sampled[i].history;
+                depthread |= p->sampled[i].depth && p->sampled[i].target;
+            }
+            #undef CENSUS_ADD
+            LOG("arceus-pass: present=%u pass=%u kind=%s draws=%u%s marks=%s%s%s%s\n", g_vk_present, k,
+                p->kind ? "drawtexture" : "draw", p->draws, line, present && first ? "PRESENT " : present ? "present " : "",
+                history ? "HISTORY " : "", velocity ? "VELOCITY? " : "", depthread ? "DEPTHREAD" : "");
+            if (present) first = 0;
+        }
+        g_census.capturing = 0;
+        g_census.captures++;
+        g_census.next = g_vk_present + 1200;
+    }
+    memcpy(g_census.before, g_census.written, sizeof g_census.before);
+    g_census.nbefore = g_census.nwritten;
+    g_census.nwritten = 0;
+    g_census.shown = shown ? shown->gva : 0;
+    if (g_census.captures < 20 && g_vk_present >= g_census.next) {
+        g_census.capturing = 1;
+        g_census.count = g_census.dropped = 0;
+    }
+}
 /* What a texture handle resolved to, kept while nothing it came from can have changed: the pools' addresses, the
    surface table (g_vk_surf_epoch), the CPU's writes the stream can see (vk_ww_epoch), the results pending over guest
    memory (none was added: g_pend_any.adds) and the GPU's writes to the two headers. A draw resolved each of its
@@ -3272,9 +3441,16 @@ retry:
     if (fb) g_vk_fb_draws++;
     for (u32 i = 0; i < n; i++)
         if (writes >> i & 1) target_written(g_rp.rt[i]);
+    int census_z = 0;
     if (zt && !zt_ro && (r[0x4BA] || (r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF))))) &&
-        zt_written(zt, ch->render_pred, zt_undefined))
+        zt_written(zt, ch->render_pred, zt_undefined)) {
         target_written(zt);
+        census_z = 1;
+    }
+    if (g_census.on) {
+        VkViewport census_vp = vk_render_viewport(r);
+        census_draw(g_rp.rt, n, writes, zt, zt_ro, census_z, vs, fs, fres, &census_vp, 0);
+    }
     g_vk_drawn++;
 }
 
@@ -3348,4 +3524,9 @@ void vk_render_draw_texture(GpuChannel* ch) {
     vk_surf_wrote(d);
     vk_rt_drawn(d);
     vk_surf_touch(d);
+    if (g_census.on) {
+        TexRes census_from = {.t = t};
+        Surf* const census_to[1] = {d};
+        census_draw(census_to, 1, 1, NULL, 0, 0, NULL, NULL, &census_from, NULL, 1);
+    }
 }

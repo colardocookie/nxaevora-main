@@ -691,6 +691,7 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
         g_last_h = (u32)((u64)src->sh * y1 / src->h) - g_last_y;
     }
     show(src, x1 - x0, y1 - y0, transform, 1);
+    vk_pass_census_present(src);
     __atomic_store_n(&g_shown_ns, plat_ns(), __ATOMIC_RELAXED);
     vk_unlock();
 }
