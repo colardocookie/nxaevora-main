@@ -286,10 +286,15 @@ static void ai_tick_mock(CPU* c, u64 entry) {
     ai_passes++;
     c->pc = c->x[30];
 }
+/* The mock stands for Turn and TurnKey: add the context's frames, turn one step, finish
+   by the count. */
 static void ai_turn_mock(CPU* c, u64 entry) {
     (void)entry;
+    const u64 node = c->x[0], at = node + (gr32(node + 0x130) ? 0x134 : 0x144);
+    const u32 duration = gr32(node + 0x130) ? gr32(node + 0x130) : gr32(node + 0x140);
     ai_turns++;
-    gw32(c->x[8], 1);
+    if (duration) gw32(at, gr32(at) + gr32(object + 0x88));
+    gw32(c->x[8], duration && gr32(at) < duration ? 4 : 1);
     c->pc = c->x[30];
 }
 /* The mock stands for 1727DF4: one slerp step toward the target with the game's fraction. */
@@ -398,26 +403,72 @@ static void test_ai_tick(void) {
             if (schedule < 2) assert(ai_frames == i + 1);
             if (schedule == 2) assert(ai_frames == (i + 1) / 2);
             assert(fabs(ai_frames - want) < 1.04);
-            /* A turn runs on a pass with a tick and is held on one without. */
-            for (unsigned kind = 0; kind < 2; kind++) {
-                const unsigned before = ai_turns;
-                CPU t = {.x = {[0] = node, [8] = out, [30] = 32}};
-                gw32(out, 99);
-                ai_turn_update(&t, entry_pc, kind);
-                assert(t.pc == return_pc);
-                assert(ai_turns - before == gr32(object + 0x88));
-                assert(gr32(out) == (gr32(object + 0x88) ? 1u : 4u));
-            }
         }
-        assert(ai_passes == 2000 && ai_turns == 2 * ai_frames);
-        assert(ai_turn_holds[0] == 2000 - ai_frames && ai_turn_holds[1] == 2000 - ai_frames);
+        assert(ai_passes == 2000);
     }
+    /* A turn of 30 frames on a context the actor reads every pass (forced) and on one it
+       reads every 4th pass, which then holds the frames of all 4. Both kinds. */
+    unsigned reference[2] = {0, 0};
+    for (unsigned every = 1; every <= 4; every += 3)
+        for (unsigned schedule = 0; schedule < 6; schedule++)
+            for (unsigned kind = 0; kind < 2; kind++) {
+                memset(memory, 0, sizeof memory);
+                memset(ai_tick_slots, 0, sizeof ai_tick_slots);
+                memset(ai_turn_nodes, 0, sizeof ai_turn_nodes);
+                ai_pass_total = ai_tick_total = 0;
+                ai_turns = 0;
+                ai_turn_holds[kind] = ai_turn_runs[kind] = 0;
+                gw32(3072, 4);
+                gw32(node + (kind ? 0x140 : 0x130), 30);
+                gw64(node + 0x58, owner);
+                gw64(owner + 0x90, object);
+                memory[object + 0x81] = every == 1;
+                unsigned calls = 0, ticks = 0, last_run = 0, done = 0;
+                for (unsigned i = 0; !done; i++) {
+                    assert(i < 4000);
+                    step.step = schedule == 0 ? 33333333 : schedule == 1 ? 31000000 + i * 7919 % 5000000 :
+                                schedule == 2 ? 16666667 : schedule == 3 ? 8333333 : audit_step(schedule - 3, i);
+                    /* The pass after the actor's read starts the context's count again. */
+                    if (i % every == 0) gw32(object + 0x88, 0);
+                    CPU c = {.x = {[0] = 128, [30] = 32}};
+                    const unsigned before = ai_frames;
+                    ai_tick_update(&c, entry_pc);
+                    ticks += ai_frames - before;
+                    if (i % every != every - 1) continue;
+                    const unsigned ran = ai_turns;
+                    CPU t = {.x = {[0] = node, [8] = out, [30] = 32}};
+                    gw32(out, 99);
+                    ai_turn_update(&t, entry_pc, kind);
+                    assert(t.pc == return_pc && (gr32(out) == 4 || gr32(out) == 1));
+                    calls++;
+                    done = gr32(out) == 1;
+                    /* The first call runs. A held call reports running and does not turn. */
+                    if (calls == 1) assert(ai_turns == 1);
+                    if (ai_turns == ran) assert(gr32(out) == 4);
+                    /* 30 FPS never holds. At 60 and 120 a step comes every 2nd and 4th call. */
+                    if (schedule < 2) assert(ai_turns == calls);
+                    if (ai_turns != ran && ai_turns > 2 && (schedule == 2 || schedule == 3))
+                        assert(calls - last_run == (schedule == 2 ? 2u : 4u));
+                    if (ai_turns != ran) last_run = calls;
+                }
+                /* The same number of steps, so the same angle, and the same length in ticks. */
+                if (schedule == 0) reference[every == 4] = ai_turns;
+                assert(reference[every == 4] == (every == 1 ? 30u : 8u));
+                if (schedule < 4) assert(ai_turns == reference[every == 4]);
+                assert(ai_turns + 1 >= reference[every == 4] && ai_turns <= reference[every == 4] + 1);
+                assert(ticks >= 30 && ticks <= 30 + every);
+                assert(gr32(node + (kind ? 0x144 : 0x134)) >= 30);
+                assert(ai_turn_runs[kind] == ai_turns && ai_turn_holds[kind] == calls - ai_turns);
+            }
     /* A zero duration and a missing context both reach the original. */
-    gw32(object + 0x88, 0);
-    gw32(node + 0x130, 0);
+    memset(memory, 0, sizeof memory);
+    gw32(3072, 4);
+    gw64(node + 0x58, owner);
+    gw64(owner + 0x90, object);
     CPU t = {.x = {[0] = node, [8] = out, [30] = 32}};
     ai_turns = 0;
     ai_turn_update(&t, entry_pc, 0);
+    gw32(node + 0x140, 30);
     gw64(owner + 0x90, 0);
     ai_turn_update(&t, entry_pc, 1);
     assert(ai_turns == 2);
@@ -914,14 +965,24 @@ static void test_fade_slots_free(void) {
     fade_fix_active = 0;
     frame_step_address = 0;
 }
-/* The capped-fall guard accepts the game's 1/30 words and the movement bit 1 patch of them. */
+/* The capped-fall guard only accepts a bit-1 patch loading this cell's negative step word. */
 static void test_capped_fall_body(void) {
-    assert(capped_fall_body(0x52911128, 0x72b7a108) == 1);
-    /* ADRP X8 with any page, then LDR W8 [X8,#4] of the negative step. */
-    assert(capped_fall_body(0x90000008 | (1u << 29) | (0x1234u << 5), 0xb9400508) == 2);
-    assert(capped_fall_body(0x90000008, 0xb9400108) == 0);
-    assert(capped_fall_body(0x90000009, 0xb9400508) == 0);
-    assert(capped_fall_body(0x52911128, 0xb9400508) == 0);
+    const u64 pc = 0x10001234;
+    frame_step_address = 0x10003000;
+    assert(capped_fall_body(pc, 0x52911128, 0x72b7a108) == 1);
+    assert(capped_fall_body(pc, climb_adrp(pc, 8), 0xb9400508) == 2);
+    assert(capped_fall_body(pc, climb_adrp(pc, 8), 0xb9400108) == 0);
+    assert(capped_fall_body(pc, climb_adrp(pc, 8), 0xb9400908) == 0);
+    assert(capped_fall_body(pc, climb_adrp(pc, 9), 0xb9400508) == 0);
+    const u32 wrong_page = climb_adrp(pc, 8);
+    frame_step_address = 0x10004000;
+    assert(capped_fall_body(pc, wrong_page, 0xb9400508) == 0);
+    frame_step_address = 0x10003000;
+    assert(capped_fall_body(pc, climb_adrp(pc, 8), 0xb9400108) == 0);
+    const u64 negative_pc = 0x10006000;
+    assert(capped_fall_body(negative_pc, climb_adrp(negative_pc, 8), 0xb9400508) == 2);
+    frame_step_address = 0;
+    assert(capped_fall_body(pc, climb_adrp(pc, 8), 0xb9400508) == 0);
 }
 /* The ride controller's waits under the swap fix: a stub that counts +3C0 down per call
    and skips +2BC. A wait of 20 calls must last 20 thirtieths at every frame rate. */
