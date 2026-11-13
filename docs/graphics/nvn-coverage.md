@@ -41,7 +41,7 @@ tool keeps them.
 | `nvnDeviceBuilderSetFlags` | G1 | d82ce00 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnDeviceGetInteger` | G1 | d82d060 | 127349 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
 | `nvnDeviceGetTimestampInNanoseconds` | G1 | d82d0e0 | 341922 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
-| `nvnDeviceInitialize` | G1 | d82d110 | 1 | implemented |  |  |  |
+| `nvnDeviceInitialize` | G1 | d82d110 | 1 | implemented |  |  | no check: copies the builder flags into a new host record, no pure part; the selftest makes no second library device |
 | `nvnDeviceSetDepthMode` | G1 | d82d170 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnDeviceSetWindowOriginMode` | G1 | d82d190 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnQueueBuilderGetQueueMemorySize` | G1 | d8383f0 | 1 | implemented | exec (update 1.1.1, 2026-11-13) |  |  |
@@ -97,9 +97,9 @@ tool keeps them.
 | `nvnWindowBuilderSetDevice` | G4 | d83e570 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnWindowBuilderSetNativeWindow` | G4 | d83e590 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnWindowBuilderSetTextures` | G4 | d83e5a0 | 1 | implemented | unit (2026-11-13) test_window_params |  |  |
-| `nvnWindowInitialize` | G4 | d83e7d0 | 1 | implemented |  |  |  |
+| `nvnWindowInitialize` | G4 | d83e7d0 | 1 | implemented | unit (2026-11-13) test_window_params (nvn_window_initialize_check, nvn_window_crop) |  | the rest of the record fill is direct copies; the selftest makes no library window |
 | `nvnWindowSetCrop` | G4 | d83eb30 | 8919 | implemented | unit (2026-11-13) test_window_params (nvn_window_crop) |  |  |
-| `nvnWindowSetPresentInterval` | G4 | d83ea40 | 1 | implemented |  |  |  |
+| `nvnWindowSetPresentInterval` | G4 | d83ea40 | 1 | implemented |  |  | no check: a direct store of a host record field, no pure part; the selftest makes no library window |
 | `nvnSamplerPoolGetSize` | G5 | d83aad0 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnSamplerPoolInitialize` | G5 | d83a700 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTexturePoolGetSize` | G5 | d83dc90 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
@@ -121,9 +121,9 @@ tool keeps them.
 | `nvnCommandBufferSetTexturePool` | G6 | d84c1f0 | 8919 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | selftest: the pool base registers are not compared (per-side addresses) |
 | `nvnCommandBufferSetViewports` | G6 | d84acb0 | 383398 | implemented | selftest S (update 1.1.1, 2026-11-11) |  |  |
 | `nvnQueueFenceSync` | G7 | d83bbf0 | 8919 | implemented | exec (update 1.1.1, 2026-11-13) |  |  |
-| `nvnQueuePresentTexture` | G7 | d83ef40 | 8919 | implemented |  |  |  |
+| `nvnQueuePresentTexture` | G7 | d83ef40 | 8919 | implemented | unit (2026-11-13) test_present_refusal |  | no selftest case: the selftest makes no library window |
 | `nvnQueueSubmitCommands` | G7 | d839ff0 | 8919 | implemented | exec (update 1.1.1, 2026-11-13) |  |  |
-| `nvnWindowAcquireTexture` | G7 | d83ecb0 | 8920 | implemented |  |  |  |
+| `nvnWindowAcquireTexture` | G7 | d83ecb0 | 8920 | implemented | unit (2026-11-13) test_window_acquire_helpers, test_window_sync_cycle_params |  | no selftest case: the selftest makes no library window |
 | `nvnBlendStateGetBlendEquation` | G8 | d83ad70 | 52 | implemented | selftest R/M (update 1.1.1, 2026-11-13) |  |  |
 | `nvnBlendStateGetBlendFunc` | G8 | d83ad30 | 130 | implemented | selftest R/M (update 1.1.1, 2026-11-13) |  |  |
 | `nvnBlendStateGetBlendTarget` | G8 | d83ad20 | 436 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
@@ -157,7 +157,7 @@ tool keeps them.
 | `nvnCommandBufferBindDepthStencilState` | G8 | d8473a0 | 966264 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferBindMultisampleState` | G8 | d847460 | 830653 | implemented |  |  | selftest: expected no-op, the host replay logs the multisample state only (2026-11-11) |
 | `nvnCommandBufferBindPolygonState` | G8 | d847400 | 1114717 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
-| `nvnCommandBufferBindProgram` | G8 | d8474d0 | 528702 | implemented |  |  |  |
+| `nvnCommandBufferBindProgram` | G8 | d8474d0 | 528702 | implemented | unit (2026-11-13) test_bind_program_words |  | no selftest case: needs shader code |
 | `nvnCommandBufferBindStorageBuffer` | G8 | d847f70 | 267197 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferBindTexture` | G8 | d8483b0 | 2397725 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferBindUniformBuffer` | G8 | d847b70 | 2805883 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
@@ -225,7 +225,7 @@ tool keeps them.
 | `nvnPolygonStateSetPolygonOffsetEnables` | G8 | d83b250 | 818 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnProgramFinalize` | G8 | d836330 | 384 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
 | `nvnProgramInitialize` | G8 | d8362a0 | 5179 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
-| `nvnProgramSetShadersExt` | G8 | d836da0 | 5179 | implemented |  |  |  |
+| `nvnProgramSetShadersExt` | G8 | d836da0 | 5179 | implemented | unit (2026-11-13) test_program_set_helpers, test_program_header_stage, test_program_build_*, test_program_xfb_* |  | no selftest case: needs shader code |
 | `nvnVertexAttribStateGetFormat` | G8 | d83af80 | 4172578 | implemented | unit (nvn_params) |  | library read: field bits 21-30 and 7-20 |
 | `nvnVertexAttribStateGetStreamIndex` | G8 | d83afa0 | 4188266 | implemented | unit (nvn_params) |  | library read: bits 0-4 |
 | `nvnVertexAttribStateSetDefaults` | G8 | d83af30 | 2291 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
@@ -242,7 +242,7 @@ tool keeps them.
 | `nvnCommandBufferClearDepthStencil` | G9 | d84aae0 | 17178 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferClearTexture` | G9 | d857610 | 2290 | implemented | selftest S (update 1.1.1, 2026-11-12), exec (update 1.1.1, 2026-11-13) |  | selftest: the render target address registers (r3d.0x200, 0x201) are not compared |
 | `nvnCommandBufferCopyTextureToTexture` | G9 | d82bfd0 | 150 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | selftest: the per-side texture address registers are not compared |
-| `nvnCommandBufferDispatchCompute` | G9 | d84da90 | 41793 | implemented |  |  |  |
+| `nvnCommandBufferDispatchCompute` | G9 | d84da90 | 41793 | implemented |  |  | no check: packs the three group counts into the op, no pure part; the replay of the op: test_dispatch (tests/nvn_replay.c) |
 | `nvnCommandBufferEndTransformFeedback` | G9 | d84b610 | 13670 | implemented | unit (nvn_params, nvn_replay) |  | library read: 0x1D1 off, four reports |
 | `nvnCommandBufferReportCounter` | G9 | d856900 | 37762 | implemented | exec (update 1.1.1, 2026-11-13) |  |  |
 | `nvnCommandBufferResetCounter` | G9 | d856b40 | 9962 | implemented | unit (nvn_params, nvn_replay) |  | library read: 0x54C from the table at de877bc |
@@ -387,7 +387,7 @@ tool keeps them.
 | `nvnDeviceApplyDeferredFinalizes` | G10 | d82cdd0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnDeviceBuilderGetFlags` | G10 | d82cde0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
 | `nvnDeviceFinalize` | G10 | d82ce10 | 0 | implemented |  |  | refused, logged: the host keeps the records to the process end; no check: no pure part |
-| `nvnDeviceFinalizeCommandHandle` | G10 | d826410 | 0 | implemented |  |  |  |
+| `nvnDeviceFinalizeCommandHandle` | G10 | d826410 | 0 | implemented |  |  | the library body is one ret (sdk d826410); no check: the host handler is the same ret |
 | `nvnDeviceGenerateDebugDomainId` | G10 | d82cfd0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  | one process counter, returns the old value |
 | `nvnDeviceGetCurrentTimestampInNanoseconds` | G10 | d82cff0 | 0 | implemented | unit (nvn_params, timestamp), selftest R (update 1.1.1, 2026-11-10) |  | nvn_timestamp_ns(gpu_ticks()) |
 | `nvnDeviceGetDepthMode` | G10 | d82d040 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
@@ -432,10 +432,10 @@ tool keeps them.
 | `nvnMultisampleStateGetSampleLocationsEnable` | G10 | d83b470 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
 | `nvnMultisampleStateGetSampleLocationsGrid` | G10 | d83b480 | 0 | implemented | selftest R/M (update 1.1.1, 2026-11-13) |  |  |
 | `nvnMultisampleStateGetSampleLocationsGridEnable` | G10 | d83b520 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
-| `nvnMultisampleStateSetSampleLocations` | G10 | d83b530 | 0 | implemented |  |  |  |
+| `nvnMultisampleStateSetSampleLocations` | G10 | d83b530 | 0 | implemented | unit (2026-11-13) test_multisample_locations_fit, test_u1_multisample_locations |  |  |
 | `nvnProgramSetDebugLabel` | G10 | d82cd00 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | the resource case calls it with label 0 and the getters after it match |
 | `nvnProgramSetSampleShading` | G10 | d837180 | 0 | implemented | |  | no-op: the host renders one sample |
-| `nvnProgramSetShaders` | G10 | d836760 | 0 | implemented | |  | SetShadersExt path with 16-byte entries, no control |
+| `nvnProgramSetShaders` | G10 | d836760 | 0 | implemented | unit (2026-11-13) test_program_set_helpers, test_program_header_stage, test_program_build_*, test_program_xfb_* |  | SetShadersExt path with 16-byte entries, no control |
 | `nvnProgramSetSubroutineLinkage` | G10 | d836e90 | 0 | implemented | |  | returns 0: the host has no subroutine table |
 | `nvnQueueAcquireTexture` | G10 | d83eed0 | 0 | implemented |  |  | shares the pick of nvnWindowAcquireTexture, no sync |
 | `nvnQueueBuilderGetCommandFlushThreshold` | G10 | d838540 | 0 | implemented | selftest R/M (update 1.1.1, 2026-11-13) |  |  |
@@ -549,14 +549,14 @@ tool keeps them.
 | `nvnWindowBuilderGetNumActiveTextures` | G10 | d83e620 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
 | `nvnWindowBuilderGetNumTextures` | G10 | d83e5e0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
 | `nvnWindowBuilderGetPresentInterval` | G10 | d83e610 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
-| `nvnWindowBuilderGetTexture` | G10 | d83e5f0 | 0 | implemented |  |  |  |
+| `nvnWindowBuilderGetTexture` | G10 | d83e5f0 | 0 | implemented | unit (2026-11-13) test_window_texture_slot |  | no selftest case: the selftest makes no library window |
 | `nvnWindowBuilderSetNumActiveTextures` | G10 | d83e5c0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnWindowBuilderSetPresentInterval` | G10 | d83e5b0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnWindowFinalize` | G10 | d83ea90 | 0 | implemented |  |  | removes the host window record |
-| `nvnWindowGetCrop` | G10 | d83eba0 | 0 | implemented |  |  |  |
-| `nvnWindowGetNativeWindow` | G10 | d83eb10 | 0 | implemented |  |  |  |
-| `nvnWindowGetNumActiveTextures` | G10 | d83ebe0 | 0 | implemented |  |  |  |
-| `nvnWindowGetNumTextures` | G10 | d83ebd0 | 0 | implemented |  |  |  |
-| `nvnWindowGetPresentInterval` | G10 | d83eb20 | 0 | implemented |  |  |  |
+| `nvnWindowGetCrop` | G10 | d83eba0 | 0 | implemented |  |  | no check: four direct stores of the host record crop, no pure part; the crop value: test_window_params |
+| `nvnWindowGetNativeWindow` | G10 | d83eb10 | 0 | implemented |  |  | no check: a direct read of a host record field, no pure part; the selftest makes no library window |
+| `nvnWindowGetNumActiveTextures` | G10 | d83ebe0 | 0 | implemented |  |  | no check: a direct read of a host record field, no pure part; the selftest makes no library window |
+| `nvnWindowGetNumTextures` | G10 | d83ebd0 | 0 | implemented |  |  | no check: a direct read of a host record field, no pure part; the selftest makes no library window |
+| `nvnWindowGetPresentInterval` | G10 | d83eb20 | 0 | implemented |  |  | no check: a direct read of a host record field, no pure part; the selftest makes no library window |
 | `nvnWindowSetDebugLabel` | G10 | d82cd50 | 0 | implemented |  |  | the library body is one ret; no check: the host handler is the same ret |
 | `nvnWindowSetNumActiveTextures` | G10 | d83ea30 | 0 | implemented | unit (2026-11-13) test_u1_window_fields |  |  |
