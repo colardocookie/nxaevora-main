@@ -12,6 +12,7 @@
 #include "nx/gpu/renderer.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/temporal_math.h"
 #include "nx/memory/own.h"
 #include "nx/runtime/platform/tracy.h"
 
@@ -1030,6 +1031,8 @@ static VkSamplerAddressMode wrap(u32 m) {
 /* tsc[0] bit 9 compare, bits 10-12 the compare function; tsc[1] filters (gpu/vk/render.c forces nearest for integer
    textures and the compare mode the shader declares) */
 int g_vk_anisotropy;
+/* the shift of the samplers made with raise bit 1: one value for the run (temporal.c reads it from a switch) */
+float g_vk_sampler_shift;
 VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     /* samplers are kept for good, and a device allows at least 4000 (maxSamplerAllocationCount): past 3072, a quarter
        of the table left free for probing, new sampler states get the first sampler made */
@@ -1058,12 +1061,24 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     float lb = (float)bias / 256.f, lbmax = g_vk.props.limits.maxSamplerLodBias;
     if (lb > lbmax) lb = lbmax;
     if (lb < -lbmax) lb = -lbmax;
+    /* a mipmapped, linearly filtered sampler of a scene draw takes the temporal passes' shift on top of its own */
+    if ((raise & 2) && ((tsc[1] >> 4) & 3) == 2 && (tsc[1] & 3) == 2 && ((tsc[1] >> 6) & 3) >= 2 &&
+        !((tsc[0] >> 9) & 1)) {
+        if (lb != 0.0f)
+            LOG_LIMIT(1, "arceus-temporal: the game sets a level bias of its own (%.3f on this sampler), ours is "
+                         "added\n",
+                      (double)lb);
+        else
+            LOG_LIMIT(1, "arceus-temporal: a sampler without a level bias of its own takes ours (%.2f)\n",
+                      (double)g_vk_sampler_shift);
+        lb = temporal_mip_bias(lb, g_vk_sampler_shift, lbmax);
+    }
     static const float aniso_lut[8] = {1, 2, 4, 6, 8, 10, 12, 16}; /* Ryujinx's SamplerDescriptor */
     u32 aniso = (tsc[0] >> 20) & 7;
     float af = aniso_lut[aniso];
     /* anisotropy=N raises a mipmapped 2D texture's linear filtering (raise), a 3D scene's surfaces, to N. Nearest
        filtering (2D art, the HUD), samplers without a mip filter and depth compares (shadow maps) keep the game's */
-    if (raise && (float)g_vk_anisotropy > af && min == 2 && mag == 2 && mip >= 2 && !((tsc[0] >> 9) & 1))
+    if ((raise & 1) && (float)g_vk_anisotropy > af && min == 2 && mag == 2 && mip >= 2 && !((tsc[0] >> 9) & 1))
         af = (float)g_vk_anisotropy;
     /* tsc[1] bits 10-11: the least (1) or the greatest (2) of the texels the filter reads, not their weighted average
        (0), which vk_tex_bind_sampler leaves only where the view's format and the device take it */

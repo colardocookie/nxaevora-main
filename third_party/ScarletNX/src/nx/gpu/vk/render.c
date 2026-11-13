@@ -1260,6 +1260,8 @@ static int tex_map_identity(VkComponentMapping map) {
 
 /* the texture (NULL for none) and the view type say whether anisotropy= may raise its filtering: 2D textures with
    mipmaps only, as the yuzu family and Ryujinx do (a cube, a 3D LUT or a copied target keeps the game's) */
+/* the level shift of the draw whose textures are being bound: vk_temporal_mip_bias for a scene draw, else 0 */
+static float g_scene_shift;
 VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, int num, const Surf* tex,
                               VkImageViewType want) {
     u32 tc[8];
@@ -1318,6 +1320,12 @@ VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, i
     /* raised only with anisotropy= set: without it the cache keeps one sampler per TSC */
     int raise = g_vk_anisotropy > 1 && tex && tex->levels > 1 &&
                 (want == VK_IMAGE_VIEW_TYPE_2D || want == VK_IMAGE_VIEW_TYPE_2D_ARRAY);
+    /* a scene draw's material textures (mipmapped, not a render target) with the temporal passes' level shift */
+    if (g_scene_shift < 0.0f && tex && tex->levels > 1 && !tex->is_rt &&
+        (want == VK_IMAGE_VIEW_TYPE_2D || want == VK_IMAGE_VIEW_TYPE_2D_ARRAY)) {
+        g_vk_sampler_shift = g_scene_shift;
+        raise |= 2;
+    }
     return vk_sampler(tc, raise, num != 0);
 }
 
@@ -3051,6 +3059,7 @@ retry:
     u32 fb = 0;
     u64 scaled = 0, aspect = 0;
     DrawImages images = {0};
+    g_scene_shift = vk_temporal_enabled() ? vk_temporal_mip_bias(zt) : 0.0f;
     VkDescriptorSet vset = stage_set(ch, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, NULL, &storage, &images);
     VkDescriptorSet fset =
         fs ? stage_set(ch, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, &aspect, fres, &storage, &images)
@@ -3071,6 +3080,7 @@ retry:
         bset[b] = stage_set(ch, b + 1, between[b], rt, zt, n, &zt_ro, NULL, NULL, NULL, NULL, &storage, NULL);
         if (!bset[b]) bset_ok = 0;
     }
+    g_scene_shift = 0.0f; /* the draw's textures are bound */
     if (!vset || (fs && !fset) || !bset_ok) {
         draw_images_discard(&images);
         g_vk_skipped++;

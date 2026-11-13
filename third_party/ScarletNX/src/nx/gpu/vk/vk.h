@@ -753,7 +753,9 @@ VkImageView vk_tex_storage_view(Surf* s, VkImageViewType type);
 VkImageView vk_null_view(VkImageViewType type, int num);
 /* the sampler for a TSC: raise lets anisotropy= raise its filtering (a 2D texture with mipmaps), integer gives its
    border color as integers (an integer texture) */
+/* raise: bit 0 anisotropy raised to the setting, bit 1 the level bias shifted by g_vk_sampler_shift */
 VkSampler vk_sampler(const u32* tsc, int raise, int integer);
+extern float g_vk_sampler_shift;
 extern int g_vk_anisotropy; /* anisotropy=, read once at start: the sampler table keeps the samplers it made */
 void vk_tex_frame(void);    /* a frame was presented: evicts what wasn't used for a while */
 
@@ -1073,6 +1075,8 @@ typedef struct {
     VkFormat format;
 } VkTemporalObject;
 int vk_temporal_objects(void);
+/* SNX_ARCEUS_TEMPORAL_MIPBIAS: the level shift for material textures of a draw into the scene, 0 for other draws */
+float vk_temporal_mip_bias(const Surf* zt);
 int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* out);
 int vk_temporal_object_begin(VkCommandBuffer cb, const VkRenderingAttachmentInfo* depth, int stencil);
 void vk_temporal_object_pipeline(void);

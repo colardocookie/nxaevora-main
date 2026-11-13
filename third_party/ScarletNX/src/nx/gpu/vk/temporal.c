@@ -88,6 +88,7 @@ static struct {
     /* object vectors: the target, the frame it was last drawn in, and the counts of the stats line */
     int objects;
     float sharpen;  /* 0 off, to 1: the sharpen after the resolve */
+    float mip_bias; /* 0 off, negative: added to the level bias of material textures on scene draws */
     VkPipeline sharpen_pipe;
     VkFormat sharpen_format;
     /* the resolve's: 1 Catmull-Rom history, 2 variance clip, 4 weight by motion and clip, 8 the nearest depth's
@@ -138,10 +139,17 @@ static int temporal_on(void) {
                 g_t.options & 4 ? "by motion and clip" : "fixed", g_t.options & 8 ? "of the nearest depth" : "own",
                 g_t.options & 16 ? "by brightness" : "plain");
         const char* sharpen = getenv("SNX_ARCEUS_TEMPORAL_SHARPEN");
+        const char* mip_bias = getenv("SNX_ARCEUS_TEMPORAL_MIPBIAS");
         g_t.sharpen = g_t.mode == MODE_TAA && sharpen ? strtof(sharpen, NULL) : 0.0f;
         if (!(g_t.sharpen > 0.0f)) g_t.sharpen = 0.0f;
         if (g_t.sharpen > 1.0f) g_t.sharpen = 1.0f;
+        g_t.mip_bias = g_t.mode == MODE_TAA && mip_bias ? strtof(mip_bias, NULL) : 0.0f;
+        if (!(g_t.mip_bias < 0.0f)) g_t.mip_bias = 0.0f;
+        if (g_t.mip_bias < -2.0f) g_t.mip_bias = -2.0f;
         if (g_t.sharpen > 0.0f) LOG("arceus-temporal: sharpen %.2f after the resolve\n", (double)g_t.sharpen);
+        if (g_t.mip_bias < 0.0f)
+            LOG("arceus-temporal: texture level bias %.2f on the scene draws' material textures\n",
+                (double)g_t.mip_bias);
         const char* vectors = getenv("SNX_ARCEUS_TEMPORAL_VECTORS");
         g_t.objects = g_t.mode && vectors && !strcmp(vectors, "object");
         if (g_t.objects) LOG("arceus-temporal: objects that moved get their own vectors\n");
@@ -709,6 +717,11 @@ static Object* object_slot(u64 key, u32 frame, int make) {
 }
 
 int vk_temporal_objects(void) { return temporal_on() && g_t.objects; }
+
+/* The texture level shift for a draw into the scene (its depth target is the scene's), 0 for any other draw */
+float vk_temporal_mip_bias(const Surf* zt) {
+    return temporal_on() && g_t.mip_bias < 0.0f && zt && zt == g_t.depth_rt ? g_t.mip_bias : 0.0f;
+}
 
 static void objects_log(u32 frame) {
     if (g_t.object_frame == frame) return;

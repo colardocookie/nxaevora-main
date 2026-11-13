@@ -239,6 +239,14 @@ static void test_sharpen(void) {
     assert(close_to(temporal_sharpen(0.6f, 0.0f + 1.0f + 0.5f + 0.5f, 0.0f, 1.0f, 1.0f), 0.6, 1e-6));
 }
 
+static void test_mip_bias(void) {
+    assert(close_to(temporal_mip_bias(0.0f, -0.5f, 15.0f), -0.5, 1e-6));  /* ours alone */
+    assert(close_to(temporal_mip_bias(-0.25f, -0.5f, 15.0f), -0.75, 1e-6)); /* added to the game's */
+    assert(close_to(temporal_mip_bias(1.0f, -0.5f, 15.0f), 0.5, 1e-6));
+    assert(close_to(temporal_mip_bias(-3.9f, -0.5f, 4.0f), -4.0, 1e-6)); /* within what the device takes */
+    assert(close_to(temporal_mip_bias(5.0f, 0.0f, 4.0f), 4.0, 1e-6));
+}
+
 int main(void) {
     test_jitter();
     test_jitter_matrices();
@@ -248,6 +256,7 @@ int main(void) {
     test_clip();
     test_weights();
     test_sharpen();
+    test_mip_bias();
     puts("temporal_math: ok");
     return 0;
 }

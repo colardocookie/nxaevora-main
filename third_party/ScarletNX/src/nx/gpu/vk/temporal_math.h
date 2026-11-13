@@ -137,4 +137,11 @@ static inline float temporal_sharpen(float c, float cross, float least, float gr
     if (sharp > greatest) sharp = greatest;
     return sharp;
 }
+/* the texture level shift a sampler gets: the game's own plus ours, within what the device takes */
+static inline float temporal_mip_bias(float own, float shift, float device_most) {
+    float bias = own + shift;
+    if (bias > device_most) bias = device_most;
+    if (bias < -device_most) bias = -device_most;
+    return bias;
+}
 #endif
