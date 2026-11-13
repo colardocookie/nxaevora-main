@@ -129,8 +129,11 @@ static void frame_step_cell_write(float seconds) {
     gw32(frame_step_address, bits);
     memcpy(&bits, &negative, sizeof bits);
     gw32(frame_step_address + 4, bits);
-    /* Derived words for the sky cloud fix: -step/10 at +8, pi at +16 and 1/(30 x step) at +20. */
-    const float derived[3] = {-seconds / 10.0f, 3.14159274f, 1.0f / (30.0f * seconds)};
+    /* Derived words for the sky cloud fix: -10/step at +8, pi at +16 and 1/(30 x step) at +20.
+       At the game's own step they are the game's constants, -300 and 1, so its results are
+       the same bit for bit. */
+    const float derived[3] = {seconds == NOMINAL_STEP_SECONDS ? -300.0f : -10.0f / seconds, 3.14159274f,
+                              1.0f / (30.0f * seconds)};
     const u32 at[3] = {8, 16, 20};
     for (unsigned k = 0; k < 3; k++) {
         memcpy(&bits, &derived[k], sizeof bits);
@@ -3878,7 +3881,7 @@ SCRIPT_TICK_BRIDGES(5) SCRIPT_TICK_BRIDGES(6) SCRIPT_TICK_BRIDGES(7) SCRIPT_TICK
 /* Sky clouds: 29BFDAC (vtable 41823B0) adds param/-300 to sky +614 and subtracts
    sin/(param x 30) from +64C and cos/(param x 30) from +650 on every call, so the
    cloud layers moved 4x per second at 120 FPS. With SNX_ARCEUS_CLOUD_FIX=1 these steps
-   use min(1/30, elapsed): -step/10 at +614, and s11 = param/step for the other two. */
+   use min(1/30, elapsed): the divisor -10/step at +614, and s11 = param/step for the other two. */
 /* CLOUD_FIX=2, the default, also scales the four wrapped phase increments the original
    adds at 30 Hz. Keep full-step output bit exact and leave a replaced sky block alone. */
 static GuestFn cloud_phase_original;
@@ -3946,11 +3949,11 @@ static void cloud_fix_init(void) {
     if (!frame_step_cell_init("arceus-cloud")) return;
     const u64 page_one = ((frame_step_address >> 12) - (one >> 12)) & 0x1fffff;
     const u64 page_two = ((frame_step_address >> 12) - (two >> 12)) & 0x1fffff;
-    /* ADRP X8, cell; LDR S1,[X8,#8] (-step/10); LDR S0 param; FMUL S0,S0,S1. X8 is reloaded at +1BAC. */
+    /* ADRP X8, cell; LDR S1,[X8,#8] (-10/step); LDR S0 param. The game's FDIV S0,S0,S1 stays.
+       X8 is reloaded at +1BAC. */
     gw32(one, 0x90000008 | (u32)((page_one & 3) << 29) | (u32)((page_one >> 2) << 5));
     gw32(one + 4, 0xbd400901);
     gw32(one + 8, 0xbd403160);
-    gw32(one + 12, 0x1e210800);
     /* ADRP X8, cell; LDP S1,S2,[X8,#16] (pi, 1/(30 x step)); FMUL S11,S11,S2. The FMUL S8 stays. */
     gw32(two, 0x90000008 | (u32)((page_two & 3) << 29) | (u32)((page_two >> 2) << 5));
     gw32(two + 4, 0x2d420901);
@@ -3960,7 +3963,6 @@ static void cloud_fix_init(void) {
         gw32(extra, 0x90000008 | (u32)((pages & 3) << 29) | (u32)((pages >> 2) << 5));
         gw32(extra + 4, 0xbd400901);
         gw32(extra + 8, 0xbd403160);
-        gw32(extra + 12, 0x1e210800);
     }
     jit_code_changed(owner, 0x3060);
     if (expanded) {

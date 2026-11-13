@@ -1610,9 +1610,16 @@ static unsigned tick_frame(u64 ns, int trigger) {
     frame_step_write(ns);
     *GP(fields + 2) = (u8)trigger;
     const u32 before = gr32(frame_step_address), derived = gr32(frame_step_address + 8);
-    /* The derived words follow the step: -step/10 and 1/(30 x step). */
-    assert(guest_float(frame_step_address + 8) == -guest_float(frame_step_address) / 10.0f &&
-           guest_float(frame_step_address + 20) == 1.0f / (30.0f * guest_float(frame_step_address)));
+    /* The derived words follow the step: -10/step and 1/(30 x step). */
+    const float seconds = guest_float(frame_step_address);
+    assert(guest_float(frame_step_address + 8) == (seconds == NOMINAL_STEP_SECONDS ? -300.0f : -10.0f / seconds) &&
+           guest_float(frame_step_address + 20) == 1.0f / (30.0f * seconds));
+    /* At the game's own step they are the game's constants, so its division and product give
+       the game's values: -300 where the game divides by -300, and 1. */
+    frame_step_cell_write(NOMINAL_STEP_SECONDS);
+    assert(guest_float(frame_step_address + 8) == -300.0f && guest_float(frame_step_address + 20) == 1.0f &&
+           gr32(frame_step_address + 16) == 0x40490fdb);
+    frame_step_cell_write(seconds);
     for (unsigned post = 0; post < 2; post++) {
         CPU cpu = {.x = {[0] = 128, [2] = context, [30] = 64}, .pc = 16};
         const unsigned runs = tick_runs[post];

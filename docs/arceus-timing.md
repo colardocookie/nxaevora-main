@@ -242,10 +242,12 @@ the original. The other fade modes are unchanged. `arceus-fade` lines count the 
 
 The sky update `main+29BFDAC` advances eight fields of the sky block once per call, so the cloud layers and their
 ground shadows moved 2 times fast at 60 FPS and 4 times at 120. `SNX_ARCEUS_CLOUD_FIX=1` makes three of them use the
-elapsed time by loading derived words of the frame-step cell: `+614` adds its parameter times minus step/10, and
+elapsed time by loading derived words of the frame-step cell: `+614` divides its parameter by minus 10/step where the
+game divides by minus 300, and
 `+64C` and `+650` divide by the parameter times 30 times the step. The default, `2`, also covers `+5DC` in the same
 way and wraps the function to scale the four phase increments at `+604` to `+610` by the frame's share of 1/30 s.
-A full 1/30 s step gives the game's own values bit for bit, and a sky block that the call replaced is left alone.
+At the game's own step the derived words are the game's constants (minus 300 and 1), so all eight fields get the
+game's own values bit for bit, and a sky block that the call replaced is left alone.
 The fix patches game code only and needs nothing from the renderer.
 
 Played: at 30 FPS the clouds and their shadows look normal and at 120 FPS both were too fast. With value 1 the user
