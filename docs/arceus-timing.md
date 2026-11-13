@@ -24,7 +24,7 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | `SNX_ARCEUS_WORLD_TIMERS_FIX` | on | Leaves world timers at their authored rates. |
 | `SNX_ARCEUS_GRAVITY_FIX` | on | Leaves gravity integration at its authored rate. |
 | `SNX_ARCEUS_CAPTURE_FIX` | on | Leaves capture timing at its authored rate. |
-| `SNX_ARCEUS_BATTLE_SEQUENCE_FIX` | on (2) | Leaves battle sequence timing at its authored rate. `2` is the even landing, `1` the earlier landing, `0` off. |
+| `SNX_ARCEUS_BATTLE_SEQUENCE_FIX` | on | Leaves battle sequence timing at its authored rate. |
 | `SNX_ARCEUS_MAP_CURSOR_FIX` | on | Leaves map cursor movement at its authored rate. |
 | `SNX_ARCEUS_FADE_FIX` | on | Leaves fade timing at its authored rate. |
 | `SNX_ARCEUS_EVENT_CAMERA_FIX` | on | Leaves event camera timing at its authored rate. |
@@ -136,12 +136,11 @@ Battle effect sequences, the `.wbin` player whose update is `main+9DBEAC`, add t
 back after it. The step is cut so the frame lands exactly on each whole frame, because the commands of a sequence
 end on exact float compares. Each call processes the elapsed budget through as many whole-frame boundary updates
 as needed, up to 32 updates. A fractional tail waits for the next rendered update so command callbacks are not
-immediately repeated for a tiny leftover step. Any remaining budget carries over without being discarded. That is the
-earlier landing, still selectable with `SNX_ARCEUS_BATTLE_SEQUENCE_FIX=1`. At exactly 60 FPS it moves the frame unevenly
-(8.50, 8.99, 9.00, 10.00), which the battle send-out and recall camera shows as stepping. The default is the even landing
-(unset or `2`): a step that ends within a small window before a whole frame goes onto it with a signed carry, and after a
-whole frame the wrapper adds the rest of the step to `+E8` itself, without a second update. It was played at 60 FPS and
-unlocked: the camera is smooth and a capture in battle is as before. Speeds outside (0, 4] only
+immediately repeated for a tiny leftover step. Any remaining budget carries over without being discarded. At exactly 60 FPS that rule
+moves the frame unevenly (8.50, 8.99, 9.00, 10.00), which the battle send-out and recall camera shows as stepping.
+`SNX_ARCEUS_BATTLE_SEQUENCE_FIX=2` selects the even landing: a step that ends within a small window before a whole frame
+goes onto it with a signed carry, and after a whole frame the wrapper adds the rest of the step to `+E8` itself, without a
+second update. Speeds outside (0, 4] only
 update once a whole 1/30 second has built up. `arceus-battle-sequence` lines count the calls, the partial steps,
 the skipped calls and the speeds seen.
 
