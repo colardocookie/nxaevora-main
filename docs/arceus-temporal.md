@@ -94,3 +94,27 @@ Limits. The vectors are the camera's only, so a moving character or Pokémon dra
 clamped away, and grass in the wind blurs. Thin bright details can flicker where the clamp cuts them. The resolve
 runs once per frame of the game, also where the scene is not the field (it is skipped when the composite is not
 found).
+
+## Object vectors (`SNX_ARCEUS_TEMPORAL_VECTORS=object`)
+
+With `probe` or `taa`. The camera vectors are right for what stands still. An object that moves gets its own:
+
+- Each G-buffer draw binds the object's constant block (bank 6, its world matrix at +0). The matrix is kept in a
+  table, keyed by the lower of the two slots the game writes the block to in turn.
+- When the matrix differs from the one kept a frame ago, the draw is made once more right after the game's: the
+  game's vertex program and state, a fragment program of ours, the vector target as its only colour target and the
+  scene depth tested for equal and not written. So it covers the pixels the object owns.
+- The fragment program takes the pixel and its depth and one matrix per draw, composed in double: this frame's clip
+  as drawn, without the jitter, to the world, to the object, to its world a frame ago, to last frame's clip. The
+  vector is the unjittered position now minus the position before. Blue keeps the depth it was drawn at.
+- The camera vector pass takes an object's vector where the scene's final depth still is that depth, and the camera
+  vector elsewhere. So something drawn in front later keeps its own.
+
+Not drawn again: objects that did not move, new objects, instanced draws, draws with tessellation or a geometry
+stage, draws under a predicate, draws without depth write unless they test for equal, and more than 256 a frame.
+A skinned character gets the motion of its world matrix, not of its limbs. Each new combination of state makes one
+pipeline, compiled when first needed.
+
+`arceus-temporal-objects` every 600 frames: G-buffer draws with an object block, new, moved, drawn again, over the
+cap, not an affine matrix, pipelines made.
+

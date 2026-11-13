@@ -1062,6 +1062,20 @@ void vk_temporal_draw(GpuChannel* ch, const VkSh* fs0, Surf* const* sampled, int
 void vk_temporal_before(u64 fs0_hash);
 /* the scene camera's constant block with this frame's jitter in place of the guest's, 1 when buffer and offset are set */
 int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer, u64* offset);
+/* Object vectors (SNX_ARCEUS_TEMPORAL_VECTORS=object). vk_temporal_object: 1 when the draw's object (constant bank
+   6) moved since the frame before, with the fragment program and its constant block for the draw that writes its
+   vector. vk_temporal_object_begin then begins that draw's pass, outside any other: the vector target and depth. */
+typedef struct {
+    VkShaderModule fs;
+    VkBuffer block;
+    u64 offset;
+    u32 size;
+    VkFormat format;
+} VkTemporalObject;
+int vk_temporal_objects(void);
+int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* out);
+int vk_temporal_object_begin(VkCommandBuffer cb, const VkRenderingAttachmentInfo* depth, int stencil);
+void vk_temporal_object_pipeline(void);
 void vk_temporal_multiply(const float a[16], const float b[16], float out[16]);
 /* gpu/vk/render.c: the read-only frame pass census (SNX_PASS_CENSUS=1) hears of each frame shown */
 void vk_pass_census_present(const Surf* shown);

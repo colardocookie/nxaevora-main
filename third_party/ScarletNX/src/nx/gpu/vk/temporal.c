@@ -21,6 +21,10 @@
 #define HISTORY_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
 #define JITTERS 8          /* the offsets of the jitter, a Halton (2, 3) sequence */
 #define FRAME_WEIGHT 0.1f  /* the frame's share in the blend with the history */
+#define OBJECT_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
+#define OBJECT_BANK 6      /* the object's constant block: its world matrix at +0, row vectors */
+#define OBJECTS 8192       /* slots of the table of world matrices */
+#define OBJECT_DRAWS 256   /* extra draws a frame at most */
 #define MODE_PROBE 1
 #define MODE_TAA 2
 #define SETS_BINDINGS 6
@@ -80,6 +84,13 @@ static struct {
     u32 miss_at;
     u64 miss_ahead, miss_other;
     u8 jitter_source[0x1000]; /* the guest's bytes the copy was made from */
+    /* object vectors: the target, the frame it was last drawn in, and the counts of the stats line */
+    int objects;
+    Image object;
+    VkShaderModule object_fs;
+    u32 object_at, object_frame, object_draws;
+    u64 object_seen, object_moved, object_drawn, object_capped, object_new, object_odd, object_pipelines,
+        object_frames;
     u64 other_cameras;
     u32 jitter_index, jitter_size, camera_read; /* camera_read: the most bytes a program read of the block */
     VkBuffer jitter_buffer;
@@ -100,6 +111,9 @@ static int temporal_on(void) {
         g_t.view = view && view[0] >= '1' && view[0] <= '4' && !view[1] ? view[0] - '0' : 0;
         /* the probe has views 1 and 2, the anti-aliasing 3 and 4 */
         if ((g_t.mode == MODE_PROBE && g_t.view > 2) || (g_t.mode == MODE_TAA && g_t.view < 3)) g_t.view = 0;
+        const char* vectors = getenv("SNX_ARCEUS_TEMPORAL_VECTORS");
+        g_t.objects = g_t.mode && vectors && !strcmp(vectors, "object");
+        if (g_t.objects) LOG("arceus-temporal: objects that moved get their own vectors\n");
         if (g_t.mode)
             LOG("arceus-temporal: %s on, view %d (0 none, 1 motion vectors, 2 reprojection error, 3 history weight, "
                 "4 jittered frame alone)\n",
@@ -620,6 +634,200 @@ void vk_temporal_draw(GpuChannel* ch, const VkSh* fs0, Surf* const* sampled, int
 /* Before the draw whose fragment program is the scene colour's first reader: the probe's passes. Once a frame. */
 int vk_temporal_enabled(void) { return temporal_on(); }
 
+/* Object vectors. The world matrix of each object block that a G-buffer draw binds is kept in a table. The game
+   writes a block to two slots in turn, so the key is the lower slot of the pair. The slot beside it is not read: the
+   game may have filled it for the next frame already. */
+typedef struct {
+    u64 key;
+    u32 at, before_at; /* the frames world and before were taken in */
+    float world[16], before[16];
+} Object;
+static Object g_objects[OBJECTS];
+
+static Object* object_slot(u64 key, u32 frame) {
+    Object* oldest = NULL;
+    for (u32 i = 0; i < 8; i++) {
+        Object* o = &g_objects[((key >> 8) * 0x9E3779B1u + i) % OBJECTS];
+        if (o->key == key) return o;
+        if (!oldest || o->at < oldest->at) oldest = o;
+    }
+    /* a slot not used for ten seconds may go */
+    if (oldest->key && oldest->at + 600 > frame) return NULL;
+    memset(oldest, 0, sizeof *oldest);
+    oldest->key = key;
+    return oldest;
+}
+
+static void multiply_d(const double a[16], const double b[16], double out[16]) {
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) {
+            double sum = 0;
+            for (int k = 0; k < 4; k++) sum += a[4 * r + k] * b[4 * k + c];
+            out[4 * r + c] = sum;
+        }
+}
+/* the inverse of an affine matrix with row vectors (the translation in row 3): 0 when it has no volume */
+static int affine_inverse_d(const double m[16], double out[16]) {
+    const double a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8], h = m[9], i = m[10];
+    const double det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if (!(fabs(det) > 1e-30)) return 0;
+    const double r[9] = {(e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det,
+                         (f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det,
+                         (d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det};
+    memset(out, 0, 16 * sizeof *out);
+    for (int row = 0; row < 3; row++)
+        for (int col = 0; col < 3; col++) out[4 * row + col] = r[3 * row + col];
+    for (int col = 0; col < 3; col++)
+        out[12 + col] = -(m[12] * r[col] + m[13] * r[3 + col] + m[14] * r[6 + col]);
+    out[15] = 1;
+    return 1;
+}
+
+int vk_temporal_objects(void) { return temporal_on() && g_t.objects; }
+
+static void objects_log(u32 frame) {
+    if (g_t.object_frame == frame) return;
+    g_t.object_frame = frame;
+    g_t.object_draws = 0;
+    if (++g_t.object_frames % 600) return;
+    LOG("arceus-temporal-objects: in 600 frames, G-buffer draws with an object block %llu, new %llu, moved %llu, "
+        "drawn again %llu, over the cap of %d a frame %llu, not an affine matrix %llu, pipelines made %llu\n",
+        (unsigned long long)g_t.object_seen, (unsigned long long)g_t.object_new,
+        (unsigned long long)g_t.object_moved, (unsigned long long)g_t.object_drawn, OBJECT_DRAWS,
+        (unsigned long long)g_t.object_capped, (unsigned long long)g_t.object_odd,
+        (unsigned long long)g_t.object_pipelines);
+    g_t.object_seen = g_t.object_new = g_t.object_moved = g_t.object_drawn = g_t.object_capped = g_t.object_odd = 0;
+}
+
+int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* out) {
+    const u32 frame = g_vk_present + 1;
+    const u64 address = ch->cbind[ST_VS][OBJECT_BANK];
+    const u32 size = ch->cbind_size[ST_VS][OBJECT_BANK];
+    if (!g_t.objects || g_t.camera_at != frame || zt != g_t.depth_rt || !address || size < 64 || size > 0x10000)
+        return 0;
+    objects_log(frame);
+    g_t.object_seen++;
+    float world[16];
+    block_read(address, world);
+    if (world[3] != 0.0f || world[7] != 0.0f || world[11] != 0.0f || world[15] != 1.0f) {
+        g_t.object_odd++;
+        return 0;
+    }
+    /* the pair's lower slot, when the size is a power of two (it is 0x200 for the blocks seen) */
+    const u64 key = size & (size - 1) ? address : address & ~(2ull * size - 1);
+    Object* o = object_slot(key, frame);
+    if (!o) return 0;
+    if (o->at != frame) { /* several draws may bind one block: the first of a frame moves the matrices on */
+        memcpy(o->before, o->world, sizeof o->before);
+        o->before_at = o->at;
+        memcpy(o->world, world, sizeof o->world);
+        o->at = frame;
+    }
+    if (!o->before_at || o->before_at + 1 != frame) {
+        g_t.object_new++;
+        return 0;
+    }
+    if (!memcmp(o->before, world, sizeof world) || !g_t.have_before) return 0;
+    g_t.object_moved++;
+    if (g_t.object_draws >= OBJECT_DRAWS) {
+        g_t.object_capped++;
+        return 0;
+    }
+    /* this frame's clip as drawn -> without jitter -> world -> the object -> its world before -> the clip before,
+       composed in double. With row vectors the jitter J adds jitter x w to x and y, its inverse takes it off. */
+    double unjitter[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    if (g_t.mode == MODE_TAA && zt->sw && zt->sh) {
+        float pixels[2];
+        jitter_offset(g_vk_present % JITTERS, pixels);
+        unjitter[12] = -2.0 * (double)pixels[0] / (double)zt->sw;
+        unjitter[13] = -2.0 * (double)pixels[1] / (double)zt->sh;
+    }
+    double inverse[16], now[16], was[16], before[16], back[16], a[16], b[16];
+    for (int i = 0; i < 16; i++) {
+        inverse[i] = (double)g_t.inverse[i];
+        now[i] = (double)world[i];
+        was[i] = (double)o->before[i];
+        before[i] = (double)g_t.before[i];
+    }
+    if (!affine_inverse_d(now, back)) {
+        g_t.object_odd++;
+        return 0;
+    }
+    multiply_d(unjitter, inverse, a);
+    multiply_d(a, back, b);
+    multiply_d(b, was, a);
+    multiply_d(a, before, b);
+    struct {
+        float before[16], now[16], viewport[4], depth[4], size[4];
+    } block;
+    for (int i = 0; i < 16; i++) {
+        block.before[i] = (float)b[i];
+        block.now[i] = (float)unjitter[i];
+    }
+    block.viewport[0] = g_t.viewport.x;
+    block.viewport[1] = g_t.viewport.y;
+    block.viewport[2] = g_t.viewport.width;
+    block.viewport[3] = g_t.viewport.height;
+    block.depth[0] = g_t.depth_translate;
+    block.depth[1] = g_t.depth_scale;
+    block.depth[2] = block.depth[3] = 0;
+    block.size[0] = (float)zt->sw;
+    block.size[1] = (float)zt->sh;
+    block.size[2] = block.size[3] = 0;
+    if (!(block.depth[1] != 0.0f) || !(block.viewport[2] != 0.0f) || !(block.viewport[3] != 0.0f)) return 0;
+    if (!g_t.object_fs) {
+        VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                       .codeSize = temporal_object_fs_spv_size,
+                                       .pCode = temporal_object_fs_spv};
+        if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &g_t.object_fs))) {
+            g_t.object_fs = VK_NULL_HANDLE;
+            return 0;
+        }
+    }
+    if (!image_ensure(&g_t.object, OBJECT_FORMAT, zt->sw, zt->sh,
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "object vector"))
+        return 0;
+    u8* bytes = vk_stage(sizeof block, vk_stage_align(), &out->block, &out->offset);
+    if (!bytes) return 0;
+    memcpy(bytes, &block, sizeof block);
+    out->size = sizeof block;
+    out->fs = g_t.object_fs;
+    out->format = OBJECT_FORMAT;
+    return 1;
+}
+
+/* Begins the pass of one object's extra draw: the vector target, cleared at the frame's first, and the scene depth
+   as the caller attaches it. The caller ends it. */
+int vk_temporal_object_begin(VkCommandBuffer cb, const VkRenderingAttachmentInfo* depth, int stencil) {
+    const u32 frame = g_vk_present + 1;
+    const int first = g_t.object_at != frame;
+    VkRenderingAttachmentInfo at = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                    .imageView = g_t.object.view,
+                                    .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                    .loadOp = first ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+                                    .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                    .clearValue = {.color = {.float32 = {0.0f, 0.0f, -1.0f, 0.0f}}}};
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                          .renderArea = {{0, 0}, {g_t.object.w, g_t.object.h}},
+                          .layerCount = 1,
+                          .colorAttachmentCount = 1,
+                          .pColorAttachments = &at,
+                          .pDepthAttachment = depth,
+                          .pStencilAttachment = stencil ? depth : NULL};
+    if (!g_t.object.view) return 0;
+    if (first)
+        vk_barrier(cb, g_t.object.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
+                   VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    g_t.object_at = frame;
+    g_t.object_draws++;
+    g_t.object_drawn++;
+    rec_CmdBeginRendering(cb, &ri);
+    return 1;
+}
+
+void vk_temporal_object_pipeline(void) { g_t.object_pipelines++; }
+
 void vk_temporal_before(u64 fs0_hash) {
     if (!temporal_on() || !g_t.reader || fs0_hash != g_t.reader) return;
     const u32 frame = g_vk_present + 1;
@@ -670,13 +878,23 @@ void vk_temporal_before(u64 fs0_hash) {
                VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     {
-        const VkImageView views[SETS_BINDINGS] = {depth_view, depth_view, depth_view,
-                                                  depth_view, depth_view, depth_view};
+        /* objects that moved were drawn into their own target this frame: the pass takes their vectors from it */
+        const int objects = g_t.objects && g_t.object_at == frame && g_t.object.view &&
+                            g_t.object.w == g_t.motion.w && g_t.object.h == g_t.motion.h;
+        Constants mc = pc;
+        mc.depth[3] = objects ? 1.0f : 0.0f;
+        if (objects)
+            vk_barrier(cb, g_t.object.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        const VkImageView views[SETS_BINDINGS] = {depth_view, objects ? g_t.object.view : depth_view, depth_view,
+                                                  depth_view, depth_view,                             depth_view};
         const VkSampler samplers[SETS_BINDINGS] = {g_t.point, g_t.point, g_t.point,
                                                    g_t.point, g_t.point, g_t.point};
         const VkDescriptorSet set = set_make(views, samplers);
         if (!set) return;
-        fullscreen(cb, g_t.motion.view, g_t.motion.w, g_t.motion.h, g_t.motion_pipe, set, &pc);
+        fullscreen(cb, g_t.motion.view, g_t.motion.w, g_t.motion.h, g_t.motion_pipe, set, &mc);
     }
     vk_barrier(cb, g_t.motion.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,

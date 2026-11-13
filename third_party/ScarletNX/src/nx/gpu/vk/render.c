@@ -3536,6 +3536,76 @@ retry:
         ch->xfb_reload = (u8)(ch->xfb_reload & ~xbound);
         vk_render_end(); /* the next capture's begin waits for this end outside a pass, and readers for its writes */
     }
+    /* An object that moved since the last frame is drawn once more for its motion vector (vk_temporal_object):
+       the same vertex stage and state, another fragment program, onto the pixels whose depth it wrote. Only plain
+       G-buffer draws: three colour targets or more, one instance, depth tested and written (or tested for equal,
+       after a depth pass), no stages between, no capture, no predicate. */
+    if (vk_temporal_objects() && n >= 3 && zt && !zt_ro && !xcount && instances == 1 && !tcs && !tes && !gs &&
+        !ch->render_pred && r[0x4B3] && (r[0x4BA] || cmp_op(r[0x4C3]) == VK_COMPARE_OP_EQUAL)) {
+        VkTemporalObject object;
+        if (vk_temporal_object(ch, zt, &object)) {
+            static struct {
+                PipeKey k;
+                VkPipeline pipe;
+            } made[64];
+            static u32 made_n;
+            PipeKey ok = *k;
+            VkPipeline opipe = VK_NULL_HANDLE;
+            ok.fs = object.fs;
+            ok.ncolor = 1;
+            memset(ok.color, 0, sizeof ok.color);
+            ok.color[0] = object.format;
+            memset(ok.blend, 0, sizeof ok.blend);
+            ok.blend[0].mask = 0xF;
+            ok.feedback = ok.logic_op = ok.alpha_to_coverage = 0;
+            for (u32 i = 0; i < made_n && !opipe; i++)
+                if (!memcmp(&made[i].k, &ok, sizeof ok)) opipe = made[i].pipe;
+            if (!opipe && made_n < 64 && (opipe = vk_pipeline_get(&ok))) {
+                made[made_n].k = ok;
+                made[made_n++].pipe = opipe;
+                vk_temporal_object_pipeline();
+            }
+            /* its constant block is the fragment set's first constant buffer */
+            const int fset_index = shader_vk_set(ST_FS);
+            DescWrites od;
+            od.n = 0;
+            dw_buffer(&od, VK_NULL_HANDLE, SNX_VKB_CB, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, object.block, object.offset,
+                      object.size);
+            VkDescriptorSet oset =
+                opipe ? desc_set_cached(g_vk_dslayout[(k->arrays >> fset_index) & 1][fset_index], &od)
+                      : VK_NULL_HANDLE;
+            if (opipe && oset) {
+                VkRenderingAttachmentInfo oz = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                                .imageView = zt->att,
+                                                .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                                .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                                .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+                vk_render_end();
+                vk_surf_use(cb, zt, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+                if (vk_temporal_object_begin(cb, &oz, zt->f.stencil)) {
+                    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, opipe);
+                    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, (u32)fset_index, 1, &oset, 0,
+                                              NULL);
+                    if (g_vk.has_feedback_dynamic) rec_CmdSetAttachmentFeedbackLoopEnableEXT(cb, VK_IMAGE_ASPECT_NONE);
+                    rec_CmdSetDepthTestEnable(cb, 1);
+                    rec_CmdSetDepthWriteEnable(cb, 0);
+                    rec_CmdSetDepthCompareOp(cb, VK_COMPARE_OP_EQUAL);
+                    rec_CmdSetStencilTestEnable(cb, 0);
+                    if (indexed)
+                        rec_CmdDrawIndexed(cb, icount, 1, 0, indexed == 2 && !quads_indexed ? 0 : (i32)base_vertex,
+                                           base_instance);
+                    else
+                        rec_CmdDraw(cb, count, 1, first, base_instance);
+                    rec_CmdEndRendering(cb);
+                }
+                /* the next draw sets its pipeline, sets and state again */
+                memset(&g_dyn, 0, sizeof g_dyn);
+            }
+        }
+    }
     vk_buf_writable_commit();
     draw_images_commit(&images);
     feedback_done(fb, writes);
