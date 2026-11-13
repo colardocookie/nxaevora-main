@@ -1177,10 +1177,12 @@ static float sequence_step(float frame, float want) {
    that gave the frame 8.50, 8.99, 9.00, 10.00: a hold and a jump on every second rendered
    frame, which the battle camera shows (its commands are stepped from +E8 by 9DB748). With
    value 2 a step that ends within a small window before a whole frame goes onto it and the
-   difference is carried, signed. A step that passes a whole frame still lands on it, so the
-   update runs there for its exact compares. The rest of the step is then added to +E8 by
-   the wrapper without a second update, so commands are still called once per rendered frame.
-   It is not added while a track waits (+B0 differs from +B8) or when it would reach the end. */
+   difference is carried, signed. A step that passes a whole frame still lands on it, and the
+   rest of the step goes to a second update in the same call. That update is entered on the
+   whole frame, which is where the game does its whole-frame work: a finished command's end
+   check (table +60) is only made when frame - start equals its length exactly, and it can
+   hold the frame. A first form added the rest to +E8 in the wrapper and skipped that entry,
+   so sequences did not wait where they should and send-outs failed. */
 static int battle_sequence_even;
 #define SEQUENCE_SNAP_SHARE 0.2f
 #define SEQUENCE_SNAP_MAX 0.05f
@@ -1268,20 +1270,11 @@ static void battle_sequence_update(CPU* c, u64 entry) {
                    command callbacks rather than immediately updating them again. */
                 if (!battle_sequence_even)
                     partial = frame + pending >= floorf(frame) + 1.0f ? sequence_step(frame, pending) : 0.0f;
-                else if (frame + pending >= floorf(frame) + 1.0f - snap && pending > snap)
-                    /* Another whole frame is due in this call (a long frame): land on it too. */
-                    partial = sequence_even_step(frame, pending, snap);
-                else {
-                    /* The rest after a whole frame. Inside the window it stays as the carry. */
-                    partial = 0.0f;
-                    if (pending > snap && frame == floorf(frame) && frame + pending < guest_float(object + 0xec) &&
-                        gr64(object + 0xb0) == gr64(object + 0xb8)) {
-                        guest_float_write(object + 0xe8, frame + pending);
-                        sequence_slots[slot].pending = 0.0f;
-                        pm_unlock(&battle_sequence_lock);
-                        break;
-                    }
-                }
+                else
+                    /* After a whole frame the rest of the step follows in a second update, or the
+                       next whole frame if a long frame is due one. A rest inside the window stays
+                       as the carry. A step that ended on a fraction left none. */
+                    partial = pending > snap ? sequence_even_step(frame, pending, snap) : 0.0f;
                 sequence_slots[slot].pending = pending - partial;
             } else partial = 0.0f;
             pm_unlock(&battle_sequence_lock);
