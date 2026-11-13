@@ -249,6 +249,22 @@ static void test_defaults_on(void) {
     assert(config.master && !config.invalid && config.mode == 0 && !config.write_fps && config.skip_runtime_limit);
     assert(config.initial_ns == (UINT64_C(1000000000) + 15) / 30);
     assert(g_opt_fps == SNX_FPS_GAME && !clocks_installed && !timing_enabled);
+    flag("SNX_ARCEUS_TARGET_FPS", "game");
+    config = arceus_clock_config(g_opt_fps);
+    assert(!config.invalid && !config.write_fps && config.runtime_rate_override && !config.skip_runtime_limit &&
+           config.initial_ns == (UINT64_C(1000000000) + 15) / 30);
+    arceus_clock_config_apply(config);
+    assert(g_opt_fps == SNX_FPS_GAME && clocks_installed && timing_enabled);
+    timing_enabled = clocks_installed = experimental = tracing = 0;
+    g_opt_fps = 30;
+    config = arceus_clock_config(g_opt_fps);
+    assert(!config.invalid && !config.write_fps && config.runtime_rate_override && !config.skip_runtime_limit &&
+           config.initial_ns == (UINT64_C(1000000000) + 15) / 30);
+    arceus_clock_config_apply(config);
+    assert(g_opt_fps == 30 && clocks_installed && timing_enabled);
+    timing_enabled = clocks_installed = experimental = tracing = 0;
+    g_opt_fps = SNX_FPS_GAME;
+    flag("SNX_ARCEUS_TARGET_FPS", "");
     const char* const enabled[] = {
         "SNX_ARCEUS_PHYSICS_TIMESTEP_FIX", "SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX", "SNX_ARCEUS_WORLD_TIMERS_FIX",
         "SNX_ARCEUS_GRAVITY_FIX", "SNX_ARCEUS_CAPTURE_FIX", "SNX_ARCEUS_BATTLE_SEQUENCE_FIX",
@@ -658,8 +674,8 @@ static void test_target(void) {
                      0xd9,0xf3,0xc5,0x1e}};
     SnxModule module = {.nmods = 1, .mods = &main_mod};
     g_mod = &module;
-    const char* accepted[] = {"unlocked", "0", "60", "120"};
-    for (unsigned i = 0; i < 4; i++) {
+    const char* accepted[] = {"game", "unlocked", "0", "60", "120"};
+    for (unsigned i = 0; i < 5; i++) {
         flag("SNX_ARCEUS_TARGET_FPS", accepted[i]);
         main_base = 0;
         arceus_clock_init();

@@ -35,7 +35,7 @@ static u64 blink_remainder;
 static unsigned blink_ticks;
 
 typedef struct {
-    int master, invalid, mode, target_fps, write_fps, skip_runtime_limit;
+    int master, invalid, mode, target_fps, write_fps, runtime_rate_override, skip_runtime_limit;
     u64 initial_ns;
 } ArceusClockConfig;
 
@@ -83,9 +83,12 @@ static ArceusClockConfig arceus_clock_config(int runtime_fps) {
             config.mode = 1, config.target_fps = atoi(target), config.write_fps = 1;
         else if (!strcmp(target, "unlocked") || !strcmp(target, "0"))
             config.mode = 2, config.target_fps = 0, config.write_fps = 1;
+        else if (!strcmp(target, "game"))
+            config.mode = 0, config.runtime_rate_override = 1;
         else config.invalid = 1;
     }
     config.skip_runtime_limit = !config.invalid && !config.write_fps &&
+        !config.runtime_rate_override &&
         (runtime_fps == SNX_FPS_GAME || (runtime_fps > 0 && runtime_fps <= 30));
     if (!config.invalid)
         config.initial_ns = config.mode == 2 ? ARCEUS_UNLOCKED_INITIAL_STEP_NS
@@ -269,6 +272,9 @@ void arceus_clock_init(void) {
     arceus_clock_config_apply(config);
     if (config.mode == 2)
         LOG("arceus-clock: Arceus 1.1.1 EXPERIMENT: elapsed-time clocks, target_fps=unlocked, tracing=%d\n", tracing);
+    else if (config.mode == 0 && config.runtime_rate_override)
+        LOG("arceus-clock: Arceus 1.1.1 EXPERIMENT: elapsed-time clocks, target_fps=game, fps_limit=%d, tracing=%d\n",
+            __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED), tracing);
     else if (config.mode == 0)
         LOG("arceus-clock: Arceus 1.1.1 EXPERIMENT: elapsed-time clocks, fps_limit=%d, tracing=%d\n",
             __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED), tracing);
