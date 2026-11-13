@@ -449,7 +449,7 @@ tool keeps them.
 | `nvnQueueBuilderGetQueuePriority` | G10 | d8385a0 | 0 | implemented |  |  |  |
 | `nvnQueueBuilderSetCommandFlushThreshold` | G10 | d838180 | 0 | implemented | selftest R/M (update 1.1.1, 2026-11-10) |  |  |
 | `nvnQueueFinalize` | G10 | d8393d0 | 0 | implemented |  |  |  |
-| `nvnQueueFinish` | G10 | d839480 | 0 | implemented | exec (update 1.1.1, 2026-11-13) |  |  |
+| `nvnQueueFinish` | G10 | d839480 | 0 | implemented | exec (update 1.1.1, 2026-11-13) |  | exec covers only an idle queue: E6 calls it after a bounded wait, since its own wait has no limit and no watchdog |
 | `nvnQueueFlush` | G10 | d83a070 | 0 | implemented | exec (update 1.1.1, 2026-11-13) |  |  |
 | `nvnQueueGetError` | G10 | d839560 | 0 | implemented |  |  | returns 0: the host has no channel error notification |
 | `nvnQueueGetTotalCommandMemoryUsed` | G10 | d83a080 | 0 | implemented |  |  | refused, returns 0: the host has no usage count |

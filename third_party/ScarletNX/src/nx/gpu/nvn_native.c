@@ -6765,7 +6765,8 @@ static int queue_origin_flip(const QueueRec* q) {
     return device && device->window_origin == 1;
 }
 /* Posts the pending frame of a queue as a job: one syncpoint increment, the value to the newest fence of each token,
-   the init words once. Caller holds objs_lock and calls gpu_call with the result after the unlock. */
+   the init words once. Caller holds objs_lock and calls gpu_call with the result before the unlock, so the fence and
+   its job enter the GPU queue in that order. Lock order: objs_lock, then g_qlk; never take objs_lock with g_qlk held. */
 static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget* target) {
     FrameJob* job = malloc(sizeof *job);
     if (!job) fatal("nvn-native: out of memory for the frame job of a queue\n");
@@ -6932,8 +6933,8 @@ static void h_queue_submit_commands(CPU* c, u64 entry) {
         }
     }
     free(handles);
-    pm_unlock(&objs_lock);
     if (job) gpu_call(frame_run, job, NULL, 0);
+    pm_unlock(&objs_lock);
 }
 
 /* nvnQueueFenceSync(queue, sync, condition, flags): a token in the pending frame, or the syncpoint value of the
@@ -6984,9 +6985,10 @@ static void h_queue_fence_sync(CPU* c, u64 entry) {
         sync->syncpoint = q->channel_id;
         sync->value = nvn_sync_fence_value(q->has_posted, q->last_posted, syncpt_read(q->channel_id));
         sync->state = NVN_SYNC_FENCED;
+        pc_broadcast(&frame_done_cv); /* a PENDING waiter of an older token now sees the fence */
     }
-    pm_unlock(&objs_lock);
     if (job) gpu_call(frame_run, job, NULL, 0);
+    pm_unlock(&objs_lock);
 }
 
 /* nvnQueueWaitSync(queue, sync): the host has one GPU worker (gpu.c, gpu_call), and the frame jobs and calls run on it
@@ -7031,8 +7033,8 @@ static void h_queue_flush(CPU* c, u64 entry) {
         const FrameTarget target = {.kind = NVN_FRAME_FLUSH};
         job = queue_post_frame(c->x[0], q, &target);
     }
-    pm_unlock(&objs_lock);
     if (job) gpu_call(frame_run, job, NULL, 0);
+    pm_unlock(&objs_lock);
 }
 /* nvnQueueFinish: posts the pending frame and waits for the last posted syncpoint value, so the GPU work and its
    releases are done. The wait runs without objs_lock. */
@@ -7053,8 +7055,8 @@ static void h_queue_finish(CPU* c, u64 entry) {
         value = q->last_posted;
         wait = 1;
     }
-    pm_unlock(&objs_lock);
     if (job) gpu_call(frame_run, job, NULL, 0);
+    pm_unlock(&objs_lock);
     if (wait) syncpt_wait(id, value, -1);
 }
 /* QueueFinalize would destroy the queue and its channel; the host keeps the record to the process end. */
@@ -7125,8 +7127,8 @@ static void h_queue_present_texture(CPU* c, u64 entry) {
     const DeviceRec* device = known_record(window->device, NVN_OBJ_DEVICE);
     target.window_origin_flip = device && device->window_origin == 1;
     FrameJob* job = queue_post_frame(queue_addr, q, &target);
-    pm_unlock(&objs_lock);
     gpu_call(frame_run, job, NULL, 0);
+    pm_unlock(&objs_lock);
 }
 
 /* The host handlers by NVN function name. Later steps add their entries here (G2 to G5 of nvn-design.md, 2-6). */

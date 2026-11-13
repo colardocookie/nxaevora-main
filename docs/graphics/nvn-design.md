@@ -990,7 +990,9 @@ from `syncpt_alloc`), and the replay skips the library's own syncpoint methods (
 1. **Post.** One helper posts the pending frame of a queue: Present (with the window), `QueueFlush`, `QueueFinish` and
    `QueueFenceSync` with the flag `FLUSH_FOR_CPU` (bit 0) (without a window). It takes the pending frame, carries the init words
    once, promises one increment (`syncpt_promise(id, 1)`), keeps the value as the last posted value of the queue, gives this value
-   to every sync whose newest token is in the frame, and calls `gpu_call`. Present always posts. A flush, a finish or a fence with
+   to every sync whose newest token is in the frame, and calls `gpu_call` before it releases `objs_lock`. So no other thread can
+   see the fence and queue a job that waits on it before this job is in the GPU queue (lock order `objs_lock`, then `g_qlk`;
+   `gpu_call` only appends, and the GPU thread runs calls without `g_qlk`). Present always posts. A flush, a finish or a fence with
    an empty pending frame posts nothing: the last posted value already covers all the work of the queue.
 2. **Job end.** After the replay and the flush of the 3D state, and before `stream_end`, the job increments the syncpoint through
    the stream (`stream_incr`, the order of `job_end` in `gpu.c`). The renderer performs this increment after the releases of the
@@ -1000,7 +1002,8 @@ from `syncpt_alloc`), and the replay skips the library's own syncpoint methods (
    channel state between submissions. Its log line says `flush`, and a missing image is not abnormal for it.
 4. **Sync.** States: `UNSIGNALED`, `PENDING` (a token in a pending frame, no value yet), `FENCED` (syncpoint id and value) and
    `SIGNALED` (window acquire). A new fence of a sync replaces the old one (a serial in the token). `QueueFenceSync` with an empty
-   pending frame uses the last posted value of the queue, or the current syncpoint value when the queue never posted.
+   pending frame uses the last posted value of the queue, or the current syncpoint value when the queue never posted, and wakes
+   the waiters on `frame_done_cv` (a waiter of an older token of the sync waits there).
 5. **SyncWait.** `UNSIGNALED` gives 3. `SIGNALED`, or `FENCED` with the value reached at the call, gives 0. Otherwise the caller
    waits outside `objs_lock`: first on `frame_done_cv` while the sync is `PENDING` (a post broadcasts), then `syncpt_wait` with
    the time that is left. Reached after a wait gives 1, the end of the time gives 2.

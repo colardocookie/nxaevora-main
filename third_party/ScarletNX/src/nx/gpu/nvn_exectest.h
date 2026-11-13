@@ -6,7 +6,7 @@
 /* nvn_exectest=1: the execution test of the NVN host path (nvn-unobserved.md, "Design of 4-u3-4"). It runs real work
    through the host handlers on its own queues and checks the result in memory. It needs nvn_trace=1 and nvn_native=1.
    The pure parts are here, so a host test can run them: the clear bytes, the comparison and its text, the pass rules
-   of E1, E4, E7 and E8, the stall result, and the mutation name. */
+   of E1, E4, E7 and E8, the stall result, the cleanup drain rule, and the mutation name. */
 
 #include "common/cpu/aarch64/cpu.h"
 #include <inttypes.h>
@@ -107,6 +107,12 @@ static inline int nvn_ex_e8_ok(uint64_t wait) { return wait == NVN_EX_SYNC_FAILE
 
 /* 1 when a bounded wait that must signal ran out: the GPU job that it waits for is still running. */
 static inline int nvn_ex_wait_stalled(uint64_t result) { return result == NVN_EX_SYNC_TIMEOUT; }
+
+/* 1 when the cleanup drain can run on this queue: the queue exists and the queue and sync handlers of a fence and a
+   wait are present. A queue that cannot drain must keep its objects. */
+static inline int nvn_ex_drain_ok(const char* missing_qops, const char* missing_sync, uint64_t queue) {
+    return queue != 0 && !missing_qops && !missing_sync;
+}
 
 /* Runs the execution test once, after the game's first nvnQueueInitialize (nvn_trace.c). The queue is the one of the
    game, read only: the test makes its own queues. The CPU context is restored when it returns. */

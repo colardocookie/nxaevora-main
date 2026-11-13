@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* The pure parts of the NVN execution test (gpu/nvn_exectest.c): the RGBA8 clear bytes, the byte comparison and its
-   text, the pass rules of E1, E4, E7 and E8, the stall result, and the mutation names. The expected values come from
-   the design, not from the code under test. */
+   text, the pass rules of E1, E4, E7 and E8, the stall result, the cleanup drain rule, and the mutation names. The
+   expected values come from the design, not from the code under test. */
 #include "nx/gpu/nvn_exectest.h"
 #include <stdio.h>
 #include <string.h>
@@ -66,6 +66,13 @@ static void test_decisions(void) {
     CHECK(!nvn_ex_wait_stalled(NVN_EX_SYNC_FAILED));
 }
 
+static void test_drain(void) {
+    CHECK(nvn_ex_drain_ok(NULL, NULL, 0x1000)); /* a queue with every handler */
+    CHECK(!nvn_ex_drain_ok(NULL, NULL, 0));     /* no queue, so nothing to drain */
+    CHECK(!nvn_ex_drain_ok("nvnQueueFenceSync", NULL, 0x1000));
+    CHECK(!nvn_ex_drain_ok(NULL, "nvnSyncInitialize", 0x1000));
+}
+
 static void test_names(void) {
     CHECK(nvn_ex_case_from_name("exec_fence_order") == NVN_EX_CASE_FENCE_ORDER);
     CHECK(nvn_ex_case_from_name("exec_gpu_to_cpu") == NVN_EX_CASE_GPU_TO_CPU);
@@ -87,6 +94,7 @@ int main(void) {
     test_rgba8();
     test_compare();
     test_decisions();
+    test_drain();
     test_names();
     if (failures) {
         printf("%d failure(s)\n", failures);

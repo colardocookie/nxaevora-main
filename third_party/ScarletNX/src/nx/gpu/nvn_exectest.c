@@ -925,7 +925,34 @@ static void ex_setup(ExState* s) {
     if (!s->missing_pool) s->data_gpu = EX_CALL(s, s->pool_address, s->data_pool.pool);
 }
 
+/* One drain step before the finalize. A fence with FLUSH_FOR_CPU posts every pending frame of the queue, and an empty
+   frame takes the last posted value, so the wait covers all work submitted to the queue. A queue that cannot drain
+   keeps its objects: a missing handler or a wait that runs out sets the stall flag. */
+static void ex_drain(ExState* s) {
+    if (s->stalled) return;
+    const uint64_t queues[2] = {s->q1, s->q2};
+    const char* const names[2] = {"q1 drain", "q2 drain"};
+    for (unsigned i = 0; i < 2; i++) {
+        if (!queues[i]) continue;
+        if (!nvn_ex_drain_ok(s->missing_qops, s->missing_sync, queues[i])) {
+            s->stalled = 1;
+            LOG("exectest: cleanup cannot drain queue=%" PRIx64 ": %s is missing\n", queues[i],
+                s->missing_qops ? s->missing_qops : s->missing_sync);
+            continue;
+        }
+        const uint64_t sync = ex_sync_new(s);
+        if (!sync) {
+            s->stalled = 1;
+            LOG("exectest: cleanup cannot drain queue=%" PRIx64 ": a sync was not made\n", queues[i]);
+            continue;
+        }
+        ex_fence(s, queues[i], sync, NVN_EX_FENCE_FLUSH_FOR_CPU);
+        (void)ex_wait(s, "cleanup", names[i], sync);
+    }
+}
+
 static void ex_cleanup(ExState* s) {
+    ex_drain(s);
     for (unsigned i = 0; i < s->sync_count; i++)
         if (s->sync.finalize.host.fn) EX_CALL(s, s->sync.finalize, s->sync_list[i]);
     if (s->stalled) {
