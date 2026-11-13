@@ -20,6 +20,7 @@ static u64 counts[3];
 static u64 main_base;
 static int experimental, tracing, research_observing;
 static int timing_enabled;
+static int target_fps_explicit;
 static u64 ui_clock_research_calls;
 static ArceusStep step;
 static PMutex step_lock = PMUTEX_INIT;
@@ -218,6 +219,7 @@ void arceus_clock_init(void) {
     static const GuestFn wrappers[3] = {read_clock, set_mode, set_duration};
     const ArceusClockConfig config = arceus_clock_config(__atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED));
     timing_enabled = clocks_installed = experimental = tracing = 0;
+    target_fps_explicit = config.write_fps;
     if (!config.master) return;
     if (config.invalid) {
         WARN("arceus-clock: refused unsupported target FPS (use 60, 120 or unlocked)\n");
@@ -229,11 +231,6 @@ void arceus_clock_init(void) {
     const SnxModInfo* mod = NULL;
     tracing = enabled && !strcmp(enabled, "1");
     experimental = 1;
-    const char *fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
-    const char *camera = getenv("SNX_ARCEUS_CAMERA_TRACE");
-    const char *research = getenv("SNX_ARCEUS_TIMING_RESEARCH");
-    if (!tracing && !experimental && !message_trace && !(fixed && !strcmp(fixed, "1")) &&
-        !(camera && !strcmp(camera, "1")) && !(research && !strcmp(research, "1"))) return;
     for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
         if (!strcmp(g_mod->mods[i].name, "main")) mod = &g_mod->mods[i];
     if (!mod || memcmp(mod->build_id, id, sizeof id)) {
@@ -250,7 +247,6 @@ void arceus_clock_init(void) {
             LOG("arceus-message: read-only candidate MessageView probe installed\n");
         } else WARN("arceus-message: refused missing or changed MessageView entry\n");
     }
-    if (!tracing && !experimental) return;
     for (unsigned i = 0; i < 3; i++) {
         u64 pc = mod->base + offsets[i];
         if (pc < g_code_lo || pc >= g_code_hi || !readable(pc, 4) || gr32(pc) != words[i] ||
@@ -2968,6 +2964,8 @@ static void ledge_fix_init(void) {
 
 void arceus_clock_post_jit(void) {
     if (!timing_enabled || !clocks_installed) return;
+    const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
+    camera_trace_only = main_base && !target_fps_explicit && probe && !strcmp(probe, "1");
     timer_carry_fix = arceus_switch_enabled("SNX_ARCEUS_TIMER_CARRY_FIX", 1);
     if (timer_carry_fix) LOG("arceus-timer-carry: integer timer catch-up enabled, backlog capped at 1 second\n");
     fixed_resolution_init();
@@ -2992,13 +2990,6 @@ void arceus_clock_post_jit(void) {
     wall_jump_fix_init();
     ledge_fix_init();
     cadence_census_init();
-    const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
-    if (main_base && !experimental && probe && !strcmp(probe, "1")) {
-        camera_trace_only = 1;
-        camera_input_init();
-        camera_rate_init();
-        return;
-    }
     water_fix_init();
     effects_fix_init();
     event_camera_init();
