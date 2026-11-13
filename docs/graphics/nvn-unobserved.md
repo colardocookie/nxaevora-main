@@ -179,7 +179,18 @@ functions that no run reached stay `implemented` plus `unit`, `selftest` or `exe
   (rdma.0x105), and all other rows match the clean run. Open, with no failing case: the library writes no 0x1CE and a
   constant 0 to 0x1C7 (d82b3c4) while the host writes the layer field of a 3D texture, and the library aligns the
   CopyBufferToTexture buffer address down and adds the remainder in elements to the source x (d82b73c-d82b750) while the
-  host passes the address as it is. Next group: d4 (CPU side).
+  host passes the address as it is.
+  d4 is the CPU side of the command buffer (`nvn_selftest_cbstate.c` for the R cases, `st_d4_cases` for the S cases). The
+  host keeps a host record and does not write the game's command buffer object or its control memory, so d4 has no M
+  case. The R cases make a new command buffer on each side and compare the getters after Initialize and after each
+  setter, IsRecording around BeginRecording and EndRecording (the handle only as nonzero), EndRecording outside a
+  recording, the checkpoints and SetDebugLabel. The five refused memory getters are expected refusals. The S cases are
+  CallCommands (the source list of CopyCommands), the eight debug marker and group functions, and the two ZCull
+  functions, which are expected no-ops (the library writes r3d 0x1FA..0x1FD). SetCommandMemoryCallbackEnabled has no
+  case, because no getter reads its flag. Run of 2026-11-13 (update program, the code of `1024810`): 356 cases, 0
+  failed, 18 expected no-op, 2 skipped. The debug marker and group calls are 3D macro calls that change no compared
+  register. Mutation runs: SetCopyRowStride fails only its case (R GetCopyRowStride, library 0x1400, host 0x1401), and
+  CallCommands with count 0 fails only its case (r3d.0x4ec, the line width of the source list). Next: 4-u3-4.
 - 4-u4: the change of the default of `nvn_native_missing` to stop, when no row is `none` or `stub-log`.
 
 Exit condition of this part: every one of the 523 rows is `implemented` and has `unit`, `selftest` or `exec` with its scope. The

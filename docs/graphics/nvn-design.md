@@ -285,7 +285,7 @@ Two choices for the handlers:
 | Work | The register encoding of NVN state (the macros in `mme_hle.c` show each one), the TIC/TSC descriptor encoding, and the memory pool mapping in the GPU address space. | All of choice 1's state work, and the rewrite. |
 | Remaining Maxwell | Inside the renderer only (registers as a state format). | None at the draw. |
 
-Recommendation: choice 1 for stages 3 and 4, choice 2 later, as part of phase 9 (shaders and pipelines), when the new path
+Recommendation: choice 1 for stages 3 and 4, choice 2 later, as part of phase 8 (shaders and pipelines), when the new path
 matches the old one. The command stream and the decode (the goal of phase 6) are gone with choice 1. The state format that the
 renderer reads is not changed by this phase.
 

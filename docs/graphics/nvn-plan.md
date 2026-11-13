@@ -121,7 +121,7 @@ Content: textures, compute, synchronization (fences and events) and memory shari
 
 - Add the features in the order that the survey gives, one scene each. After each one, run the scenes of
   `ROADMAP.md` phase 3 and read the logs (`nx-log-read`).
-- Shaders and pipelines keep the existing path until phase 9 moves them.
+- Shaders and pipelines keep the existing path until phase 8 moves them.
 - The 242 functions that the survey run called are not the limit. All 523 resolved functions get a handler, and the argument
   values that no scene used are checked. The plan, the coverage file and the checks are in
   `docs/graphics/nvn-unobserved.md`.
