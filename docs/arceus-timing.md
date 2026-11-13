@@ -175,3 +175,51 @@ measured frame step, whatever the rate. The shared step keeps its rules: it is n
 480 FPS. It is now 1/1000 and only keeps the ratio above zero. The thrown-object flight keeps its own floor. Tests
 `arceus_timing` and `arceus_clock` check the shared step and the fixes with variable and jittered steps up to
 1000 FPS.
+
+## Sneasler climb
+
+The Sneasler wall climb mover, `main+25540E8`, moves the climber by its direction times the climb speed divided by
+30 on each call. That is a fixed distance per rendered frame, so at 120 FPS Sneasler climbed four times as fast.
+With a target rate, `SNX_ARCEUS_CLIMB_STEP=1` (or `2`, below) replaces its `FMOV #30` and `FDIV` at `+2F4` with a
+load of the frame step and a multiply, so each call moves speed times the elapsed time. The patch makes room by
+storing the `+D20` copy with a second `STUR` instead of an `LDP`/`STP` pair. It checks the function, the speed load
+and all twelve words it replaces, and refuses otherwise.
+
+The climb animation, `main+2549FA0`, divides the eased distance at `+D50` by the speed divided by 30 for its blend
+and playback ratio. With the mover fixed that ratio was 1/4 at 120 FPS, which looked like a nearly still climb, so
+the same switch replaces its `FMOV #30` and `FDIV` at `+950` with the frame step times the speed. The room comes
+from an `MVN` and `AND` pair becoming one `BIC`. If this part's guard fails, the mover fix stays and the log says
+the animation ratio is off.
+
+With `SNX_ARCEUS_CLIMB_STEP=2` a wrapper on the climb animation also fixes the climb's stop. In stop state (`+D00`
+is 2) the animation adds one to the count at `+D04` on each call and eases the stop over its authored number of
+frames, so at 120 FPS the stop lasted a quarter of its time. A call that does not complete a whole 1/30 second now
+gets the count staged one lower, so it rises 30 times a second. The fraction is kept for each climbing object, up
+to four, and starts over with each stop or when the count is not what the last call left. The wrapper's guard
+checks the state test, the count's load, add and store, and the compare that ends the stop.
+
+After a jump up the wall, the ride script waits on `climbingJumpWaitCount`. The script runs on the game's Lua 5.3
+VM and sets that bound field, `+F4` of the object its `RideNyuuraStateContext` userdata points to, to 15, then
+counts it down by one each update. At 120 FPS the wait took 0.125 second instead of 0.5. With a target rate,
+`SNX_ARCEUS_WALL_JUMP_FIX=1` wraps `lua_tointegerx` (`main+50BA0`). When the ride's field setter (the C closure at
+`main+2335E5C`, from `main+2331B64`) converts the value of a write to that key, and the write steps the count down
+by one, the conversion returns the old value unless the call completes a whole 1/30 second. The fraction is kept
+for each object, up to four. Any other write, such as the set to 15, starts it over.
+
+Climbing over a ledge onto the ground is driven by the ride state script. The script ends the climb with the native
+`EndClimbing` (`main+2553EE0`) with type 0, then moves Sneasler up and over the top by setting its position once per
+script update, waiting 6 updates and then moving over 15. It ends with `EndClimbingEnd` (`main+2554008`). The script
+runs once per rendered frame through `RideNyuuraStatePreUpdate` (`main+26163E0`) and `PostUpdate` (`main+2616AB0`),
+so the move took 175 ms at 120 FPS instead of 700. With a target rate, `SNX_ARCEUS_LEDGE_FIX=1` wraps all four. The
+state object whose script calls `EndClimbing(0)` owns a window until `EndClimbingEnd`, another end type of the same
+controller, or 2 seconds. In the window its updates run only on calls that complete a whole 1/30 second. A skipped
+update returns at once, as both functions do when no script is bound. A PostUpdate follows the PreUpdate of the same
+main-loop frame. Other states are not affected. On its own this places the ride 30 times a second during the move.
+
+To keep the move smooth, the same switch also wraps the shared set position (`main+1983770`). When the script sets
+the ride's position in the window on a frame shorter than 1/30 second, the ride is placed at the script's previous
+target and the new one is kept. On the updates in between, the ride is placed on the point between the two that the
+elapsed time has reached, so it moves every frame about 1/30 second behind the script. Before each script run the
+ride is put back on the script's own last target, so the script only reads positions it set. A window that closes
+while the ride is behind places it on the last target, unless the script set a newer position first. A set position
+on the ride from any other caller ends the steering, so movement from elsewhere is never overwritten.

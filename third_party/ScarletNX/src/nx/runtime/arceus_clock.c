@@ -41,8 +41,11 @@ static void water_step_write(u64 ns) {
    negation. Patched sites load it in place of their authored +/-1/30 constants. */
 #define NOMINAL_STEP_SECONDS (1.0f / 30.0f)
 static u64 frame_step_address;
+/* One per main-loop frame: an engine frame identity for per-frame pairing. */
+static u64 frame_step_frames;
 static void frame_step_write(u64 ns) {
     if (!frame_step_address) return;
+    __atomic_add_fetch(&frame_step_frames, 1, __ATOMIC_RELEASE);
     float seconds = ns ? (float)((double)ns / 1000000000.0) : NOMINAL_STEP_SECONDS;
     if (!(seconds < NOMINAL_STEP_SECONDS)) seconds = NOMINAL_STEP_SECONDS;
     const float negative = -seconds;
@@ -2011,6 +2014,521 @@ static void cadence_census_init(void) {
     LOG("arceus-gravity: read-only probe %s\n", gravity_probe_active ? "installed" : "unavailable");
 }
 
+/* Sneasler wall climb: the climb mover 25540E8 moves direction x speed/30 per call, a cast
+   distance with no elapsed time, so climbing ran four times fast at 120 FPS. With
+   SNX_ARCEUS_CLIMB_STEP=1 its FMOV #30 and FDIV become a frame-step cell load and FMUL, room
+   made by storing the +D20 copy with a second STUR instead of an LDP/STP pair through X9/X8. */
+static const u32 climb_original_words[12] = {
+    0x1e27d000, 0x1e201900, 0x3cd503a1, 0x4f809020, 0xaa1303e0, 0x3c9503a0,
+    0x3d8027e0, 0x3dc34a60, 0x3c9403a0, 0xa97423a9, 0xa93323a9, 0x910d83e8,
+};
+/* ADRP X9 (filled in), LDR S0,[X9], FMUL S0,S8,S0, then the original stores and the +D20 copy. */
+static const u32 climb_patched_words[12] = {
+    0x90000009, 0xbd400120, 0x1e200900, 0x3cd503a1, 0x4f809020, 0xaa1303e0,
+    0x3c9503a0, 0x3d8027e0, 0x3dc34a60, 0x3c9403a0, 0x3c9303a0, 0x910d83e8,
+};
+/* The climb animation 2549FA0 divides the eased distance |+D50| by speed/30 for its blend and
+   playback ratio. At 254A8E0 FCMEQ, MVN, FSQRT, AND, FMOV #30, FDIV, FMOV #1, FDIV become FCMEQ,
+   BIC (AND with NOT), FSQRT, ADRP X9, LDR S2, FMUL S2,S8,S2, FMOV #1, FDIV: speed x step. */
+static const u32 climb_anim_words[8] = {
+    0x4ea0d822, 0x6e205842, 0x6ea1f821, 0x4e221c00, 0x1e27d002, 0x1e221902, 0x1e2e1008, 0x1e22182a,
+};
+static const u32 climb_anim_patched[8] = {
+    0x4ea0d822, 0x4e621c00, 0x6ea1f821, 0x90000009, 0xbd400122, 0x1e220902, 0x1e2e1008, 0x1e22182a,
+};
+/* The ADRP of a frame-step cell load at pc, for register rd. */
+static u32 climb_adrp(u64 pc, u32 rd) {
+    const u64 pages = ((frame_step_address >> 12) - (pc >> 12)) & 0x1fffff;
+    return 0x90000000 | rd | (u32)((pages & 3) << 29) | (u32)((pages >> 2) << 5);
+}
+/* SNX_ARCEUS_CLIMB_STEP=2 also fixes the climb's stop: in state +D00 == 2 the animation adds one
+   to +D04 per call and eases over climbing_move_stop_frame calls. A call that does not complete
+   a whole 1/30 s gets +D04 staged one lower, so the stop lasts its authored time. The fraction
+   is kept per object and starts over with each stop, or when another writer changed +D04. */
+#define CLIMB_STOP_SLOTS 4
+static GuestFn climb_anim_original;
+static int climb_stop_fix;
+static struct { u64 object; float progress; u32 frame; } climb_stop_slots[CLIMB_STOP_SLOTS];
+static int climb_stopping(u64 object) { return readable(object + 0xd00, 8) && gr32(object + 0xd00) == 2; }
+/* Before the call: the object's slot when it was staged or counted, else -1. */
+static int climb_stop_before(u64 object, float want) {
+    if (!climb_stopping(object)) {
+        for (int k = 0; k < CLIMB_STOP_SLOTS; k++)
+            if (climb_stop_slots[k].object == object) climb_stop_slots[k].object = 0;
+        return -1;
+    }
+    if (!writable(object + 0xd00, 8) || !(want > 0.0f && want <= 1.0f)) return -1;
+    int slot = -1;
+    for (int k = 0; k < CLIMB_STOP_SLOTS && slot < 0; k++)
+        if (climb_stop_slots[k].object == object) slot = k;
+    for (int k = 0; k < CLIMB_STOP_SLOTS && slot < 0; k++)
+        if (!climb_stop_slots[k].object) slot = k;
+    if (slot < 0) return -1;
+    const u32 frame = gr32(object + 0xd04);
+    if (climb_stop_slots[slot].object != object || climb_stop_slots[slot].frame != frame) {
+        climb_stop_slots[slot].object = object;
+        climb_stop_slots[slot].progress = 0.0f;
+    }
+    float progress = climb_stop_slots[slot].progress + want;
+    if (progress < 1.0f) gw32(object + 0xd04, frame - 1);
+    else progress -= 1.0f;
+    climb_stop_slots[slot].progress = progress;
+    return slot;
+}
+/* After the call: remember the count it left, or free the slot once the stop ended. */
+static void climb_stop_after(u64 object, int slot) {
+    if (slot < 0) return;
+    if (climb_stopping(object)) climb_stop_slots[slot].frame = gr32(object + 0xd04);
+    else climb_stop_slots[slot].object = 0;
+}
+static void climb_anim_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    const int slot = climb_stop_fix ? climb_stop_before(object, guest_float(frame_step_address) / NOMINAL_STEP_SECONDS)
+                                    : -1;
+    climb_anim_original(c, entry);
+    climb_stop_after(object, slot);
+}
+static void climb_step_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_CLIMB_STEP");
+    if (!main_base || !enabled || (strcmp(enabled, "1") && strcmp(enabled, "2"))) return;
+    if (!clocks_installed) {
+        WARN("arceus-climb: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    /* The function head, the speed load before the pair, the BL after the twelve words and the words themselves. */
+    const u64 owner = main_base + 0x25540e8, pc = owner + 0x2f4;
+    int ok = covers_exactly(owner, 0x2c38) && readable(owner, 0x2c38) && gr32(owner) == 0x6db63bef &&
+             gr32(owner + 0x2dc) == 0xbd403188 && (gr32(pc + 0x30) & 0xfc000000) == 0x94000000;
+    for (unsigned k = 0; ok && k < 12; k++) ok = gr32(pc + 4 * k) == climb_original_words[k];
+    if (!ok) {
+        WARN("arceus-climb: refused mover guard\n");
+        return;
+    }
+    if (!frame_step_cell_init("arceus-climb")) return;
+    for (unsigned k = 0; k < 12; k++) gw32(pc + 4 * k, k ? climb_patched_words[k] : climb_adrp(pc, 9));
+    jit_code_changed(pc, 0x30);
+    /* Without the animation ratio fix the ratio would be 1/4 at 120 FPS, a near-still blend. */
+    const u64 anim = main_base + 0x2549fa0, at = anim + 0x940;
+    int anim_ok = covers_exactly(anim, 0xef4) && readable(anim, 0xef4) && gr32(anim) == 0xd10303ff &&
+                  gr32(anim + 0x38) == 0xaa0003f3 && gr32(anim + 0x880) == 0xbd403188;
+    for (unsigned k = 0; anim_ok && k < 8; k++) anim_ok = gr32(at + 4 * k) == climb_anim_words[k];
+    if (anim_ok) {
+        for (unsigned k = 0; k < 8; k++) gw32(at + 4 * k, k == 3 ? climb_adrp(at + 12, 9) : climb_anim_patched[k]);
+        /* The state 2 check, the +D04 load, add and store, and the reload and signed compare before the finish. */
+        const int stop_ok = !strcmp(enabled, "2") && gr32(anim + 0x1e4) == 0x7100091f &&
+                            gr32(anim + 0x1ec) == 0xb94d0668 && gr32(anim + 0x1f0) == 0x11000508 &&
+                            gr32(anim + 0x1f4) == 0xb90d0668 && gr32(anim + 0x308) == 0xb94d0668 &&
+                            gr32(anim + 0x30c) == 0x6b14011f;
+        if (!strcmp(enabled, "2") && !stop_ok) WARN("arceus-climb: refused stop guard\n");
+        if (stop_ok) gw32(anim + 0x38, 0x91000013); /* Equivalent MOV X19,X0 -> ADD X19,X0,#0. */
+        jit_code_changed(anim, 0xef4);
+        if (stop_ok) {
+            climb_anim_original = jit_wait(anim);
+            if (climb_anim_original) {
+                climb_stop_fix = 1;
+                __atomic_store_n(&g_disp[(anim - g_code_lo) / 4], climb_anim_update, __ATOMIC_RELEASE);
+            }
+        }
+    } else {
+        WARN("arceus-climb: refused animation guard\n");
+    }
+    LOG("arceus-climb: EXPERIMENT: Sneasler climb distance uses min(1/30, elapsed), animation ratio %s, stop %s\n",
+        anim_ok ? "on" : "off", climb_stop_fix ? "on" : "off");
+}
+
+/* Sneasler wall jump: the ride script (Lua 5.3) sets climbingJumpWaitCount, the bound field +F4
+   of the object its RideNyuuraStateContext userdata points to, to 15 and counts it down one per
+   update, so the wait after a jump up the wall took a quarter of its 0.5 s at 120 FPS. With
+   SNX_ARCEUS_WALL_JUMP_FIX=1 a one-step countdown write converts as the old value until 1/30 s. */
+#define WALL_JUMP_SLOTS 4
+static GuestFn wall_jump_original;
+static struct { u64 object; float progress; int value; } wall_jump_slots[WALL_JUMP_SLOTS];
+/* 1 when a write of next over old should keep old: a step down that does not complete a whole
+   1/30 s. Any other write (the set to 15, 0 to 0) ends the object's fraction. */
+static int wall_jump_hold(u64 object, int old, int next, float want) {
+    int slot = -1;
+    for (int k = 0; k < WALL_JUMP_SLOTS && slot < 0; k++)
+        if (wall_jump_slots[k].object == object) slot = k;
+    if (old <= 0 || next != old - 1) {
+        if (slot >= 0) wall_jump_slots[slot].object = 0;
+        return 0;
+    }
+    for (int k = 0; k < WALL_JUMP_SLOTS && slot < 0; k++)
+        if (!wall_jump_slots[k].object) slot = k;
+    if (slot < 0 || !(want > 0.0f && want <= 1.0f)) return 0;
+    /* A new countdown, or another writer changed the field: start the fraction over. */
+    if (wall_jump_slots[slot].object != object || wall_jump_slots[slot].value != old) {
+        wall_jump_slots[slot].object = object;
+        wall_jump_slots[slot].progress = 0.0f;
+    }
+    float progress = wall_jump_slots[slot].progress + want;
+    const int hold = progress < 1.0f;
+    if (!hold) progress -= 1.0f;
+    wall_jump_slots[slot].progress = progress;
+    wall_jump_slots[slot].value = hold ? old : next;
+    return hold;
+}
+/* A short Lua string (TString tag 4 at +8, length at +B, bytes at +18) equal to text. */
+static int lua_short_string_is(u64 ts, const char* text, u32 length) {
+    if (!readable(ts, 0x18 + length + 3) || (gr32(ts + 8) & 0xff) != 4 || ((gr32(ts + 8) >> 24) & 0xff) != length)
+        return 0;
+    for (u32 k = 0; k < length; k++)
+        if ((gr32(ts + 0x18 + k) & 0xff) != (u8)text[k]) return 0;
+    return 1;
+}
+/* lua_tointegerx 50BA0 (L, index, isnum). The ride setter (caller 2331B64 in the C closure
+   2335E5C) converts the value, stack slot 3, of a write whose key in slot 2 is the counter. */
+static void wall_jump_update(CPU* c, u64 entry) {
+    const u64 L = c->x[0], caller = c->x[30];
+    const int index = (int)(u32)c->x[1];
+    wall_jump_original(c, entry);
+    if (caller != main_base + 0x2331b64 || !(index == 3 || (index < 0 && index >= -8))) return;
+    if (!readable(L + 0x10, 0x18) || !readable(gr64(L + 0x20), 8)) return;
+    const u64 func = gr64(gr64(L + 0x20)), top = gr64(L + 0x10);
+    const u64 slot = index > 0 ? func + 0x10 * (u64)index : top - 0x10 * (u64)(-index);
+    if (slot != func + 0x30 || top < func + 0x40 || !readable(func, 0x40) || (gr32(func + 8) & 0xff) != 0x66) return;
+    const u64 closure = gr64(func);
+    if (!readable(closure + 0x18, 8) || gr64(closure + 0x18) != main_base + 0x2335e5c) return;
+    if ((gr32(func + 0x28) & 0xff) != 0x44 || !lua_short_string_is(gr64(func + 0x20), "climbingJumpWaitCount", 21))
+        return;
+    /* Slot 1 is the full userdata (tag 0x47) whose block holds the object pointer. */
+    if ((gr32(func + 0x18) & 0xff) != 0x47) return;
+    const u64 block = gr64(func + 0x10) + 0x28;
+    const u64 object = readable(block, 8) ? gr64(block) : 0;
+    const long long next = (long long)c->x[0];
+    if (!object || !readable(object + 0xf4, 4) || next < -1 || next > 0x7fffffff) return;
+    const int old = (int)gr32(object + 0xf4);
+    if (wall_jump_hold(object, old, (int)next, guest_float(frame_step_address) / NOMINAL_STEP_SECONDS))
+        c->x[0] = (u64)(long long)old;
+}
+static void wall_jump_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_WALL_JUMP_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-wall-jump: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x50ba0;
+    /* STR X19,[SP,#-0x20]!, the ci load and MOV X19,X2 of the verified lapi.c body. */
+    if (!covers_exactly(pc, 0x114) || !readable(pc, 0x114) || gr32(pc) != 0xf81e0ff3 || gr32(pc + 0xc) != 0xf9401009 ||
+        gr32(pc + 0x10) != 0xaa0203f3) {
+        WARN("arceus-wall-jump: refused guard\n");
+        return;
+    }
+    if (!frame_step_cell_init("arceus-wall-jump")) return;
+    gw32(pc + 0x10, 0x91000053); /* Equivalent MOV X19,X2 -> ADD X19,X2,#0. */
+    jit_code_changed(pc, 0x114);
+    wall_jump_original = jit_wait(pc);
+    if (!wall_jump_original) {
+        WARN("arceus-wall-jump: compile failed\n");
+        return;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], wall_jump_update, __ATOMIC_RELEASE);
+    LOG("arceus-wall-jump: EXPERIMENT: Sneasler wall jump wait counts down 30 times per second\n");
+}
+
+/* Sneasler ledge: the ride state script, run by RideNyuuraStatePreUpdate 26163E0 and PostUpdate
+   2616AB0 once per update, steps the move over the top after EndClimbing(0) 2553EE0 per run, so
+   it took 175 ms at 120 FPS instead of 700. With SNX_ARCEUS_LEDGE_FIX=1 the state whose script
+   ends the climb runs its updates only on calls completing a whole 1/30 s, until EndClimbingEnd. */
+typedef struct {
+    u64 owner, controller, opened, frame;
+    float progress, want, previous[4], target[4], direction[4];
+    int open, pending, skip, positions, lagged;
+} LedgeWindow;
+/* A script target still owed to the controller after its window closed. */
+typedef struct { u64 controller; float target[4], direction[4]; int valid; } LedgeFlush;
+static void ledge_retire_into(LedgeWindow* w, LedgeFlush* flush) {
+    if (flush && w->open && w->positions && w->lagged) {
+        flush->controller = w->controller;
+        for (int k = 0; k < 4; k++) {
+            flush->target[k] = w->target[k];
+            flush->direction[k] = w->direction[k];
+        }
+        flush->valid = 1;
+    }
+    *w = (LedgeWindow){0};
+}
+static void ledge_open(LedgeWindow* w, u64 owner, u64 controller, u64 now) {
+    *w = (LedgeWindow){0};
+    if (!owner) return;
+    w->owner = owner;
+    w->controller = controller;
+    w->opened = now;
+    w->open = 1;
+}
+static void ledge_retire(LedgeWindow* w) { ledge_retire_into(w, NULL); }
+/* PreUpdate of object in engine frame: 1 to skip. The decision, a pass-through included, is
+   kept for one PostUpdate of the same object in the same frame. A window over 2 s is retired. */
+static int ledge_pre(LedgeWindow* w, LedgeFlush* flush, u64 object, u64 now, float want, u64 frame) {
+    if (!w->open || object != w->owner) return 0;
+    if (now < w->opened || now - w->opened >= 2000000000ull) {
+        ledge_retire_into(w, flush);
+        return 0;
+    }
+    w->pending = 1;
+    w->frame = frame;
+    w->skip = 0;
+    w->want = want;
+    if (!(want > 0.0f && want <= 1.0f)) return 0;
+    float progress = w->progress + want;
+    w->skip = progress < 1.0f;
+    if (!w->skip) progress -= 1.0f;
+    w->progress = progress;
+    return w->skip;
+}
+static int ledge_post(LedgeWindow* w, u64 object, u64 frame) {
+    if (!w->open || !w->pending || object != w->owner) return 0;
+    /* A decision from another frame is stale: drop it and run. */
+    w->pending = 0;
+    return w->frame == frame && w->skip;
+}
+/* The script's set position on a run. On a short frame (more updates follow before the next
+   run) the ride is placed at the previous script target and the new one is kept to blend
+   toward. On a full 1/30 s frame it is placed at the request. Returns 1 when out is set. */
+static int ledge_script_position(LedgeWindow* w, const float in[4], const float direction[4], float out[4]) {
+    if (!w->open) return 0;
+    const int lag = w->positions && w->want > 0.0f && w->want < 1.0f;
+    for (int k = 0; k < 4; k++) {
+        w->previous[k] = lag ? w->target[k] : in[k];
+        w->target[k] = in[k];
+        w->direction[k] = direction[k];
+        out[k] = w->previous[k];
+    }
+    w->positions = 1;
+    w->lagged = lag;
+    return 1;
+}
+/* Before the owner's script runs: the target it last set, so it reads its own position. The
+   ride now stands on it, so a blend before the next request starts there too. */
+static int ledge_authoritative(LedgeWindow* w, u64 object, float out[4], float direction[4]) {
+    if (!w->open || object != w->owner || !w->positions || !w->lagged) return 0;
+    for (int k = 0; k < 4; k++) {
+        out[k] = w->previous[k] = w->target[k];
+        direction[k] = w->direction[k];
+    }
+    w->lagged = 0;
+    return 1;
+}
+/* On a skipped update: the point the accumulated fraction has reached between the two. */
+static int ledge_blend(const LedgeWindow* w, float out[4], float direction[4]) {
+    if (!w->open || !w->positions) return 0;
+    const float f = w->progress < 0.0f ? 0.0f : w->progress > 1.0f ? 1.0f : w->progress;
+    for (int k = 0; k < 4; k++) {
+        out[k] = k < 3 ? w->previous[k] + (w->target[k] - w->previous[k]) * f : w->target[k];
+        direction[k] = w->direction[k];
+    }
+    return 1;
+}
+/* Around a running owner PostUpdate: the script target to show it, and afterwards the point
+   the ride is presented at (previous), so the frame keeps its place on the delayed path. */
+static int ledge_post_positions(const LedgeWindow* w, u64 object, float target[4], float presented[4],
+                                float direction[4]) {
+    if (!w->open || object != w->owner || !w->positions || !w->lagged) return 0;
+    for (int k = 0; k < 4; k++) {
+        target[k] = w->target[k];
+        presented[k] = w->previous[k];
+        direction[k] = w->direction[k];
+    }
+    return 1;
+}
+/* A set position on controller from anything but the script: the game moved the ride itself,
+   so an open window stops steering (no flush) and an owed target is dropped. */
+static void ledge_foreign_position(LedgeWindow* w, LedgeFlush* flush, u64 controller) {
+    if (w->open && w->controller == controller) ledge_retire(w);
+    if (flush->valid && flush->controller == controller) flush->valid = 0;
+}
+/* EndClimbing(type) or EndClimbingEnd (type -1) of controller, called from the script of
+   state object current (0 outside any Pre/PostUpdate). */
+static void ledge_end_call(LedgeWindow* w, LedgeFlush* flush, u64 controller, int type, u64 current, u64 now) {
+    if (w->open && w->controller == controller) ledge_retire_into(w, flush);
+    if (type == 0) ledge_open(w, current, controller, now);
+}
+static PMutex ledge_lock = PMUTEX_INIT;
+static LedgeWindow ledge_window;
+static LedgeFlush ledge_flush;
+static _Thread_local u64 ledge_current_state;
+static GuestFn ledge_originals[2], ledge_end_originals[2], ledge_set_position_original;
+/* Calls the original set position 1983770 on controller from inside a wrapper, keeping every
+   register and pc as they were, so the wrapper's own call goes on unchanged. The arguments go
+   through the frame-step page, +100 and +110. */
+static void ledge_place(CPU* c, u64 controller, const float position[4], const float direction[4]) {
+    if (!ledge_set_position_original || !controller || !frame_step_address) return;
+    u64 x[32];
+    V128 v[32];
+    const u64 pc = c->pc;
+    memcpy(x, c->x, sizeof x);
+    memcpy(v, c->v, sizeof v);
+    const u64 scratch = frame_step_address + 0x100;
+    for (int k = 0; k < 4; k++) {
+        guest_float_write(scratch + 4 * k, position[k]);
+        guest_float_write(scratch + 0x10 + 4 * k, direction[k]);
+    }
+    c->x[0] = controller;
+    c->x[1] = scratch;
+    c->x[2] = scratch + 0x10;
+    c->pc = main_base + 0x1983770;
+    ledge_set_position_original(c, main_base + 0x1983770);
+    memcpy(c->x, x, sizeof x);
+    memcpy(c->v, v, sizeof v);
+    c->pc = pc;
+}
+static int ledge_take_flush(LedgeFlush* out) {
+    pm_lock(&ledge_lock);
+    const int valid = ledge_flush.valid;
+    if (valid) *out = ledge_flush;
+    ledge_flush.valid = 0;
+    pm_unlock(&ledge_lock);
+    return valid;
+}
+static void ledge_update(CPU* c, u64 entry, unsigned post) {
+    const u64 object = c->x[0];
+    const float want = readable(object + 0x68, 8) ? guest_float(frame_step_address) / NOMINAL_STEP_SECONDS : -1.0f;
+    float position[4], direction[4], presented[4];
+    int blend = 0, authoritative = 0, post_target = 0;
+    pm_lock(&ledge_lock);
+    const u64 frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
+    const int skip = post ? ledge_post(&ledge_window, object, frame)
+                          : ledge_pre(&ledge_window, &ledge_flush, object, plat_ns(), want, frame);
+    const u64 controller = ledge_window.controller;
+    if (skip && !post) blend = ledge_blend(&ledge_window, position, direction);
+    if (!skip && !post) authoritative = ledge_authoritative(&ledge_window, object, position, direction);
+    if (!skip && post) post_target = ledge_post_positions(&ledge_window, object, position, presented, direction);
+    pm_unlock(&ledge_lock);
+    /* A target owed by a window that just expired goes first. */
+    LedgeFlush owed;
+    if (ledge_take_flush(&owed)) ledge_place(c, owed.controller, owed.target, owed.direction);
+    /* Both functions return +6C at once when no script is bound: a skipped update does the same,
+       after placing the ride on the blended point. */
+    if (skip) {
+        if (blend) ledge_place(c, controller, position, direction);
+        c->x[0] = gr32(object + 0x6c);
+        c->pc = c->x[30];
+        return;
+    }
+    if (authoritative || post_target) ledge_place(c, controller, position, direction);
+    const u64 outer = ledge_current_state;
+    ledge_current_state = object;
+    ledge_originals[post](c, entry);
+    ledge_current_state = outer;
+    /* Back to the presented point after a PostUpdate that saw the target, if still behind. */
+    if (post_target) {
+        pm_lock(&ledge_lock);
+        const int again = ledge_post_positions(&ledge_window, object, position, presented, direction);
+        pm_unlock(&ledge_lock);
+        if (again) ledge_place(c, controller, presented, direction);
+    }
+    /* The script closed its window during this run: settle the ride on its last target. */
+    if (ledge_take_flush(&owed)) ledge_place(c, owed.controller, owed.target, owed.direction);
+}
+static void ledge_pre_update(CPU* c, u64 entry) { ledge_update(c, entry, 0); }
+static void ledge_post_update(CPU* c, u64 entry) { ledge_update(c, entry, 1); }
+static void ledge_end(CPU* c, u64 entry, unsigned finish) {
+    const u64 controller = c->x[0];
+    const int type = finish ? -1 : (int)(u32)c->x[1];
+    ledge_end_originals[finish](c, entry);
+    pm_lock(&ledge_lock);
+    ledge_end_call(&ledge_window, &ledge_flush, controller, type, ledge_current_state, plat_ns());
+    pm_unlock(&ledge_lock);
+    /* Outside any state update nothing else would settle it: place the owed target now. */
+    LedgeFlush owed;
+    if (!ledge_current_state && ledge_take_flush(&owed)) ledge_place(c, owed.controller, owed.target, owed.direction);
+}
+/* The shared set position and rotation 1983770 (object, position, direction; 16 bytes each).
+   The ledge script's calls come from the Lua binding at main+1FF6B5C. On a run in the window the
+   ride goes to the previous script target, and any other caller on the controller ends steering. */
+static void ledge_set_position(CPU* c, u64 entry) {
+    const u64 object = c->x[0], caller = c->x[30];
+    if (caller != main_base + 0x1ff6b5c) {
+        pm_lock(&ledge_lock);
+        ledge_foreign_position(&ledge_window, &ledge_flush, object);
+        pm_unlock(&ledge_lock);
+    } else if (readable(c->x[1], 16) && readable(c->x[2], 16)) {
+        float in[4], direction[4], out[4];
+        for (int k = 0; k < 4; k++) {
+            in[k] = guest_float(c->x[1] + 4 * k);
+            direction[k] = guest_float(c->x[2] + 4 * k);
+        }
+        pm_lock(&ledge_lock);
+        const int replace =
+            ledge_window.controller == object && ledge_script_position(&ledge_window, in, direction, out);
+        /* A newer script position after a window closed supersedes the owed target. */
+        if (!replace && ledge_flush.valid && ledge_flush.controller == object) ledge_flush.valid = 0;
+        pm_unlock(&ledge_lock);
+        if (replace) {
+            const u64 scratch = frame_step_address + 0x120;
+            for (int k = 0; k < 4; k++) guest_float_write(scratch + 4 * k, out[k]);
+            c->x[1] = scratch;
+        }
+    }
+    ledge_set_position_original(c, entry);
+}
+static void ledge_end_start(CPU* c, u64 entry) { ledge_end(c, entry, 0); }
+static void ledge_end_finish(CPU* c, u64 entry) { ledge_end(c, entry, 1); }
+static void ledge_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_LEDGE_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-ledge: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    /* PreUpdate and PostUpdate: SUB SP,#0x60, the script check load, the no-script +6C load and
+       MOV X20,X0. EndClimbing and EndClimbingEnd: the head, a MOV of X0 and the self load after it. */
+    static const u32 offsets[4] = {0x26163e0, 0x2616ab0, 0x2553ee0, 0x2554008};
+    static const u32 sizes[4] = {0x234, 0x234, 0x128, 0xe0};
+    static const u32 heads[4] = {0xd10183ff, 0xd10183ff, 0xd100c3ff, 0xd10083ff};
+    static const u32 moves[4] = {0x40, 0x40, 0x10, 0xc};
+    static const u32 words[4] = {0xaa0003f4, 0xaa0003f4, 0xaa0003f3, 0xaa0003e9};
+    static const u32 adds[4] = {0x91000014, 0x91000014, 0x91000013, 0x91000009};
+    static const GuestFn wrappers[4] = {ledge_pre_update, ledge_post_update, ledge_end_start, ledge_end_finish};
+    for (unsigned k = 0; k < 4; k++) {
+        const u64 pc = main_base + offsets[k];
+        int ok = covers_exactly(pc, sizes[k]) && readable(pc, sizes[k]) && gr32(pc) == heads[k] &&
+                 gr32(pc + moves[k]) == words[k];
+        if (ok && k < 2) ok = gr32(pc + 0x14) == 0xf9402449 && gr32(pc + 0x20) == 0xb9406c13;
+        if (ok && k == 2) ok = gr32(pc + 0x14) == 0xf942e400;
+        if (ok && k == 3) ok = gr32(pc + 0x10) == 0xf9460800;
+        if (!ok) {
+            WARN("arceus-ledge: refused guard at main+%x\n", offsets[k]);
+            return;
+        }
+    }
+    if (!frame_step_cell_init("arceus-ledge")) return;
+    GuestFn originals[4];
+    for (unsigned k = 0; k < 4; k++) {
+        const u64 pc = main_base + offsets[k];
+        gw32(pc + moves[k], adds[k]); /* Equivalent MOV -> ADD #0, for a body of its own. */
+        jit_code_changed(pc, sizes[k]);
+        originals[k] = jit_wait(pc);
+        if (!originals[k]) {
+            WARN("arceus-ledge: compile failed at main+%x\n", offsets[k]);
+            return;
+        }
+    }
+    ledge_originals[0] = originals[0];
+    ledge_originals[1] = originals[1];
+    ledge_end_originals[0] = originals[2];
+    ledge_end_originals[1] = originals[3];
+    /* SUB SP,SP,#0xC0, then MOV X19,X0 and the +628 load after it. */
+    const u64 set = main_base + 0x1983770;
+    if (covers_exactly(set, 0xb88) && readable(set, 0xb88) && gr32(set) == 0xd10303ff &&
+        gr32(set + 0x20) == 0xaa0003f3 && gr32(set + 0x24) == 0xf9431400) {
+        gw32(set + 0x20, 0x91000013); /* Equivalent MOV X19,X0 -> ADD X19,X0,#0. */
+        jit_code_changed(set, 0xb88);
+        ledge_set_position_original = jit_wait(set);
+    }
+    if (!ledge_set_position_original) WARN("arceus-ledge: smoothing refused set position guard\n");
+    for (unsigned k = 0; k < 4; k++)
+        __atomic_store_n(&g_disp[(main_base + offsets[k] - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
+    if (ledge_set_position_original)
+        __atomic_store_n(&g_disp[(set - g_code_lo) / 4], ledge_set_position, __ATOMIC_RELEASE);
+    LOG("arceus-ledge: EXPERIMENT: Sneasler ledge move script runs 30 times per second, smoothing %s\n",
+        ledge_set_position_original ? "on" : "off");
+}
+
 void arceus_clock_post_jit(void) {
     fixed_resolution_init();
     /* Before the research probe, which compiles and keeps this wrapper's body. */
@@ -2026,6 +2544,9 @@ void arceus_clock_post_jit(void) {
     battle_sequence_fix_init();
     map_cursor_fix_init();
     fade_fix_init();
+    climb_step_init();
+    wall_jump_fix_init();
+    ledge_fix_init();
     cadence_census_init();
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     if (main_base && !experimental && probe && !strcmp(probe, "1")) {
