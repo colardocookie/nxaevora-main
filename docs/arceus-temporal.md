@@ -83,7 +83,9 @@ Views. `SNX_ARCEUS_TEMPORAL_VIEW=3` shows the frame's weight in the blend (white
 
 Numbers. The `arceus-temporal-stats` line then gives, by depth band, `dropped`, the share of pixels whose history
 was dropped, and `far_from_frame`, the share whose resolved colour differs from the frame's own by more than a
-quarter of its brightness. Trails behind things that move show in the second.
+quarter of its brightness. Trails behind things that move show in the second. `frame_to_frame` is the share of
+pixels that differ by more than a quarter from the frame before as it was drawn, before the resolve. With a still
+camera it shows the jitter at work: edges change from frame to frame. Without jitter it is near zero.
 
 Limits. The vectors are the camera's only, so a moving character or Pokémon drags a trail until the history is
 clamped away, and grass in the wind blurs. Thin bright details can flicker where the clamp cuts them. The resolve

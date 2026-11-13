@@ -19,6 +19,7 @@ layout(push_constant) uniform Constants {
     vec4 size;  // image width, height, view, gain
 } pc;
 layout(set = 0, binding = 3) uniform sampler2D u_depth;
+layout(set = 0, binding = 4) uniform sampler2D u_last; // the frame before, as it was drawn
 float relative(vec3 a, vec3 b) {
     vec3 e = abs(a - b) / (max(a, b) + 0.05);
     return max(e.r, max(e.g, e.b));
@@ -32,7 +33,9 @@ void main() {
     vec2 from = uv - motion;
     o_stats = vec4(0.0, relative(now, textureLod(u_before, uv, 0.0).rgb), length(motion * pc.size.xy), z);
     if (pc.depth.z > 0.5) {
-        o_stats.r = texelFetch(u_before, pixel, 0).a < 0.0 ? 1.0 : 0.0;
+        // two marks in one number: 1 the history was dropped, 2 the pixel changed since the frame before
+        o_stats.r = (texelFetch(u_before, pixel, 0).a < 0.0 ? 1.0 : 0.0) +
+                    (relative(now, texelFetch(u_last, pixel, 0).rgb) > 0.25 ? 2.0 : 0.0);
         if (z <= 0.0) o_stats.a = -1.0;
         return;
     }
