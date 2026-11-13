@@ -143,8 +143,10 @@ as needed, up to 32 updates. A fractional tail waits for the next rendered updat
 immediately repeated for a tiny leftover step. Any remaining budget carries over without being discarded. At exactly 60 FPS that rule
 moves the frame unevenly (8.50, 8.99, 9.00, 10.00), which the battle send-out and recall camera shows as stepping.
 `SNX_ARCEUS_BATTLE_SEQUENCE_FIX=2` selects the even landing: a step that ends within a small window before a whole frame
-goes onto it with a signed carry, and after a whole frame the wrapper adds the rest of the step to `+E8` itself, without a
-second update. Speeds outside (0, 4] only
+goes onto it with a signed carry, and after a whole frame the rest of the step goes to a second update in the same call.
+That update is entered on the whole frame, where the game makes a finished command's end check, which can make a track
+wait. A first form of value 2 added the rest in the wrapper and skipped that entry: sequences did not wait and thrown
+balls came back before the Pokémon was out. The repaired form is not played yet and is not the default. Speeds outside (0, 4] only
 update once a whole 1/30 second has built up. `arceus-battle-sequence` lines count the calls, the partial steps,
 the skipped calls and the speeds seen.
 
