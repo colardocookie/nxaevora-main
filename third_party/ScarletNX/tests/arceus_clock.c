@@ -140,6 +140,90 @@ static void flag(const char* name, const char* value) {
     assert(!setenv(name, value, 1));
 #endif
 }
+static void unset_flag(const char* name) {
+#ifdef _WIN32
+    assert(!_putenv_s(name, ""));
+#else
+    assert(!unsetenv(name));
+#endif
+}
+static void test_defaults_on(void) {
+    static const char* const all[] = {
+        "SNX_ARCEUS_TIMING_FIXES", "SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60",
+        "SNX_ARCEUS_PHYSICS_TIMESTEP_FIX", "SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX", "SNX_ARCEUS_WORLD_TIMERS_FIX",
+        "SNX_ARCEUS_GRAVITY_FIX", "SNX_ARCEUS_CAPTURE_FIX", "SNX_ARCEUS_BATTLE_SEQUENCE_FIX",
+        "SNX_ARCEUS_MAP_CURSOR_FIX", "SNX_ARCEUS_FADE_FIX", "SNX_ARCEUS_EVENT_CAMERA_FIX",
+        "SNX_ARCEUS_BLINK_FIX", "SNX_ARCEUS_CAMERA_INPUT_FIX", "SNX_ARCEUS_MENU_REPEAT_FIX",
+        "SNX_ARCEUS_TIMER_CARRY_FIX", "SNX_ARCEUS_AI_TICK_FIX", "SNX_ARCEUS_TURN_FIX",
+        "SNX_ARCEUS_LIST_SCROLL_FIX", "SNX_ARCEUS_WALL_JUMP_FIX", "SNX_ARCEUS_LEDGE_FIX",
+        "SNX_ARCEUS_CLIMB_STEP", "SNX_ARCEUS_MOVEMENT_FIX", "SNX_ARCEUS_CAPPED_FALL_FIX",
+        "SNX_ARCEUS_AIR_STEERING_FIX", "SNX_ARCEUS_MOVEMENT_SITES", "SNX_ARCEUS_CAMERA_SPEED",
+        "SNX_ARCEUS_CLOCK_TRACE", "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_CAMERA_TRACE",
+        "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE",
+        "SNX_ARCEUS_FIXED_RESOLUTION"
+    };
+    for (unsigned i = 0; i < sizeof all / sizeof all[0]; i++) unset_flag(all[i]);
+    int saved_fps = g_opt_fps;
+    g_opt_fps = SNX_FPS_GAME;
+    ArceusClockConfig config = arceus_clock_config(g_opt_fps);
+    assert(config.master && !config.invalid && config.mode == 0 && !config.write_fps);
+    assert(config.initial_ns == (UINT64_C(1000000000) + 15) / 30);
+    arceus_clock_config_apply(config);
+    assert(g_opt_fps == SNX_FPS_GAME && clocks_installed && timing_enabled);
+    const char* const enabled[] = {
+        "SNX_ARCEUS_PHYSICS_TIMESTEP_FIX", "SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX", "SNX_ARCEUS_WORLD_TIMERS_FIX",
+        "SNX_ARCEUS_GRAVITY_FIX", "SNX_ARCEUS_CAPTURE_FIX", "SNX_ARCEUS_BATTLE_SEQUENCE_FIX",
+        "SNX_ARCEUS_MAP_CURSOR_FIX", "SNX_ARCEUS_FADE_FIX", "SNX_ARCEUS_EVENT_CAMERA_FIX",
+        "SNX_ARCEUS_BLINK_FIX", "SNX_ARCEUS_CAMERA_INPUT_FIX", "SNX_ARCEUS_MENU_REPEAT_FIX",
+        "SNX_ARCEUS_TIMER_CARRY_FIX", "SNX_ARCEUS_AI_TICK_FIX", "SNX_ARCEUS_TURN_FIX",
+        "SNX_ARCEUS_LIST_SCROLL_FIX", "SNX_ARCEUS_WALL_JUMP_FIX", "SNX_ARCEUS_LEDGE_FIX",
+        "SNX_ARCEUS_MOVEMENT_FIX", "SNX_ARCEUS_CAPPED_FALL_FIX", "SNX_ARCEUS_AIR_STEERING_FIX"
+    };
+    for (unsigned i = 0; i < sizeof enabled / sizeof enabled[0]; i++)
+        assert(arceus_switch_enabled(enabled[i], 1));
+    assert(movement_mask_value() == 0x1fcul && climb_step_value() == 2);
+    static const char* const probes[] = {
+        "SNX_ARCEUS_CLOCK_TRACE", "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_CAMERA_TRACE",
+        "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE",
+        "SNX_ARCEUS_FIXED_RESOLUTION"
+    };
+    for (unsigned i = 0; i < sizeof probes / sizeof probes[0]; i++)
+        assert(!arceus_switch_enabled(probes[i], 0));
+    int invalid = 0;
+    assert(camera_speed_value(&invalid) == 1.0f && !invalid);
+    flag("SNX_ARCEUS_TARGET_FPS", "120");
+    config = arceus_clock_config(g_opt_fps);
+    assert(!config.invalid && config.write_fps && config.target_fps == 120 && config.initial_ns == 8333333);
+    flag("SNX_ARCEUS_TARGET_FPS", "");
+    g_opt_fps = 120;
+    config = arceus_clock_config(g_opt_fps);
+    assert(!config.write_fps && config.initial_ns == 8333333);
+    g_opt_fps = 0;
+    config = arceus_clock_config(g_opt_fps);
+    assert(!config.write_fps && config.initial_ns == ARCEUS_UNLOCKED_INITIAL_STEP_NS);
+    flag("SNX_ARCEUS_MOVEMENT_SITES", "7fc");
+    assert(movement_mask_value() == 0x7fcul && (movement_mask_value() & 0x1fcul) == 0x1fcul &&
+           (movement_mask_value() & 0x200ul));
+    for (unsigned i = 0; i < sizeof enabled / sizeof enabled[0]; i++) {
+        flag(enabled[i], "0");
+        assert(!arceus_switch_enabled(enabled[i], 1));
+        unset_flag(enabled[i]);
+    }
+    flag("SNX_ARCEUS_CLIMB_STEP", "0");
+    assert(climb_step_value() == 0);
+    flag("SNX_ARCEUS_TIMING_FIXES", "0");
+    config = arceus_clock_config(g_opt_fps);
+    assert(!config.master);
+    timing_enabled = clocks_installed = 0;
+    arceus_clock_config_apply(config);
+    assert(!timing_enabled && !clocks_installed);
+    timer_carry_fix = 0;
+    arceus_clock_post_jit();
+    assert(!timer_carry_fix);
+    g_opt_fps = saved_fps;
+    for (unsigned i = 0; i < sizeof all / sizeof all[0]; i++) unset_flag(all[i]);
+    timing_enabled = clocks_installed = experimental = tracing = 0;
+}
 /* A new air steering entry is scaled by step / (1/30). One second of entries sums to 30 authored ones. */
 static void test_air_steering(void) {
     const u32 none[3] = {0};
@@ -414,42 +498,6 @@ static void test_list_scroll(void) {
             else assert(rows > 2.0f);
         }
     blink_ticks = 0;
-}
-/* The ride controller's waits under the swap fix: a stub that counts +3C0 down per call
-   and skips +2BC. A wait of 20 calls must last 20 thirtieths at every frame rate. */
-static void swap_native(CPU* c, u64 entry) {
-    (void)entry;
-    const int wait = (int)gr32(c->x[0] + 0x3c0);
-    if (wait > 0) gw32(c->x[0] + 0x3c0, (u32)(wait - 1));
-}
-static void test_ride_swap(void) {
-    static const u64 steps[5] = {33333334, 16666667, 8333333, 5000000, 11111111};
-    const u64 object = 1024;
-    ride_swap_original = swap_native;
-    for (unsigned k = 0; k < 5; k++) {
-        memset(memory, 0, sizeof memory);
-        ride_swap_fix = 1;
-        ride_swap_fraction = 0;
-        ride_swap_frame = ~0ull;
-        step.step = steps[k];
-        gw32(object + 0x3c0, 20);
-        gw32(object + 0x2bc, 7);
-        u64 elapsed = 0;
-        while (gr32(object + 0x3c0)) {
-            frame_step_frames++;
-            CPU cpu = {.x = {[0] = object}};
-            ride_swap_update(&cpu, 16);
-            ride_swap_update(&cpu, 16);
-            elapsed += steps[k];
-            assert(elapsed < 2000000000);
-        }
-        /* Two calls in a frame share its decision, so a counting frame counts twice. */
-        assert(elapsed >= 333333340 - steps[k] && elapsed <= 333333340 + steps[k]);
-        /* The count the call never touched is as the game left it. */
-        assert(gr32(object + 0x2bc) == 7);
-    }
-    ride_swap_fix = 0;
-    ride_swap_original = NULL;
 }
 static void test_diagnostics(void) {
     SnxModInfo main_mod = {.name = "main", .base = 4096,
@@ -864,10 +912,47 @@ static void test_capped_fall_body(void) {
     assert(capped_fall_body(0x90000009, 0xb9400508) == 0);
     assert(capped_fall_body(0x52911128, 0xb9400508) == 0);
 }
+/* The ride controller's waits under the swap fix: a stub that counts +3C0 down per call
+   and skips +2BC. A wait of 20 calls must last 20 thirtieths at every frame rate. */
+static void swap_native(CPU* c, u64 entry) {
+    (void)entry;
+    const int wait = (int)gr32(c->x[0] + 0x3c0);
+    if (wait > 0) gw32(c->x[0] + 0x3c0, (u32)(wait - 1));
+}
+static void test_ride_swap(void) {
+    static const u64 steps[5] = {33333334, 16666667, 8333333, 5000000, 11111111};
+    const u64 object = 1024;
+    ride_swap_original = swap_native;
+    for (unsigned k = 0; k < 5; k++) {
+        memset(memory, 0, sizeof memory);
+        ride_swap_fix = 1;
+        ride_swap_fraction = 0;
+        ride_swap_frame = ~0ull;
+        step.step = steps[k];
+        gw32(object + 0x3c0, 20);
+        gw32(object + 0x2bc, 7);
+        u64 elapsed = 0;
+        while (gr32(object + 0x3c0)) {
+            frame_step_frames++;
+            CPU cpu = {.x = {[0] = object}};
+            ride_swap_update(&cpu, 16);
+            ride_swap_update(&cpu, 16);
+            elapsed += steps[k];
+            assert(elapsed < 2000000000);
+        }
+        /* Two calls in a frame share its decision, so a counting frame counts twice. */
+        assert(elapsed >= 333333340 - steps[k] && elapsed <= 333333340 + steps[k]);
+        /* The count the call never touched is as the game left it. */
+        assert(gr32(object + 0x2bc) == 7);
+    }
+    ride_swap_fix = 0;
+    ride_swap_original = NULL;
+}
 int main(void) {
+    test_ride_swap();
+    test_defaults_on();
     test_capped_fall_body();
     test_fade_slots_free();
-    test_ride_swap();
     test_list_scroll();
     test_timer_carry();
     test_ai_tick();
