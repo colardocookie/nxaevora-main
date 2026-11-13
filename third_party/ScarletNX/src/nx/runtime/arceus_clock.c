@@ -1168,6 +1168,32 @@ static float sequence_step(float frame, float want) {
         step = nextafterf(step, frame + step < whole ? INFINITY : 0.0f);
     return step;
 }
+/* The even landing, the default (SNX_ARCEUS_BATTLE_SEQUENCE_FIX unset or 2). Value 1 keeps
+   the rule above for comparison: it cuts a step at the next
+   whole frame and keeps the rest for the next call. At 60 FPS, where a step is half a frame,
+   that gave the frame 8.50, 8.99, 9.00, 10.00: a hold and a jump on every second rendered
+   frame, which the battle camera shows (its commands are stepped from +E8 by 9DB748). With
+   the even landing a step that ends within a small window before a whole frame goes onto it and the
+   difference is carried, signed. A step that passes a whole frame still lands on it, so the
+   update runs there for its exact compares. The rest of the step is then added to +E8 by
+   the wrapper without a second update, so commands are still called once per rendered frame.
+   It is not added while a track waits (+B0 differs from +B8) or when it would reach the end. */
+static int battle_sequence_even;
+/* 2 the even landing (also when unset), 1 the earlier landing, 0 off. */
+static int battle_sequence_value(void) {
+    const char* value = getenv("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
+    if (!value || !strcmp(value, "2")) return 2;
+    return !strcmp(value, "1");
+}
+#define SEQUENCE_SNAP_SHARE 0.2f
+#define SEQUENCE_SNAP_MAX 0.05f
+/* The step from frame for a budget of want: onto the next whole frame when the budget
+   reaches it or ends within snap before it, else the budget itself. */
+static float sequence_even_step(float frame, float want, float snap) {
+    const float whole = floorf(frame) + 1.0f;
+    if (frame + want < whole - snap) return want;
+    return sequence_step(frame, whole - frame + 1.0f);
+}
 static int battle_sequence_playing(u64 o) {
     return readable(o, 0x308) && *GP(o + 0x302) && *GP(o + 0x301) && *GP(o + 0x303) &&
            guest_float(o + 0xf0) != 0.0f && guest_float(o + 0xe8) < guest_float(o + 0xec);
@@ -1176,7 +1202,7 @@ static void battle_sequence_update(CPU* c, u64 entry) {
     const u64 object = c->x[0];
     const u64 count = __atomic_add_fetch(&battle_sequence_calls, 1, __ATOMIC_RELAXED);
     int skip = 0;
-    float speed = 0.0f, partial = 0.0f;
+    float speed = 0.0f, partial = 0.0f, snap = 0.0f;
     unsigned slot = SEQUENCE_SLOTS;
     if (battle_sequence_playing(object)) {
         pm_lock(&step_lock);
@@ -1197,8 +1223,13 @@ static void battle_sequence_update(CPU* c, u64 entry) {
             sequence_slots[k].pending = 0.0f;
         }
         if (speed > 0.0f && speed <= 4.0f) {
-            float pending = sequence_slots[k].pending + speed * (float)ns / 33333333.0f;
-            partial = sequence_step(guest_float(object + 0xe8), pending);
+            const float advance = speed * (float)ns / 33333333.0f;
+            float pending = sequence_slots[k].pending + advance;
+            if (battle_sequence_even) {
+                snap = SEQUENCE_SNAP_SHARE * advance < SEQUENCE_SNAP_MAX ? SEQUENCE_SNAP_SHARE * advance : SEQUENCE_SNAP_MAX;
+                partial = sequence_even_step(guest_float(object + 0xe8), pending, snap);
+            } else
+                partial = sequence_step(guest_float(object + 0xe8), pending);
             sequence_slots[k].pending = pending - partial;
             slot = k;
             if (partial <= 0.0f) skip = 1, partial = 0.0f;
@@ -1238,7 +1269,22 @@ static void battle_sequence_update(CPU* c, u64 entry) {
                 /* Catch up whole boundaries only. A fractional tail waits for
                    the next rendered update, preserving the original cadence of
                    command callbacks rather than immediately updating them again. */
-                partial = frame + pending >= floorf(frame) + 1.0f ? sequence_step(frame, pending) : 0.0f;
+                if (!battle_sequence_even)
+                    partial = frame + pending >= floorf(frame) + 1.0f ? sequence_step(frame, pending) : 0.0f;
+                else if (frame + pending >= floorf(frame) + 1.0f - snap && pending > snap)
+                    /* Another whole frame is due in this call (a long frame): land on it too. */
+                    partial = sequence_even_step(frame, pending, snap);
+                else {
+                    /* The rest after a whole frame. Inside the window it stays as the carry. */
+                    partial = 0.0f;
+                    if (pending > snap && frame == floorf(frame) && frame + pending < guest_float(object + 0xec) &&
+                        gr64(object + 0xb0) == gr64(object + 0xb8)) {
+                        guest_float_write(object + 0xe8, frame + pending);
+                        sequence_slots[slot].pending = 0.0f;
+                        pm_unlock(&battle_sequence_lock);
+                        break;
+                    }
+                }
                 sequence_slots[slot].pending = pending - partial;
             } else partial = 0.0f;
             pm_unlock(&battle_sequence_lock);
@@ -1267,7 +1313,9 @@ static void battle_sequence_update(CPU* c, u64 entry) {
     }
 }
 static void battle_sequence_fix_init(void) {
-    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_BATTLE_SEQUENCE_FIX", 1)) return;
+    const int value = battle_sequence_value();
+    if (!main_base || !value) return;
+    battle_sequence_even = value == 2;
     if (!clocks_installed) {
         WARN("arceus-battle-sequence: refused without elapsed-time clocks\n");
         return;
@@ -1292,7 +1340,8 @@ static void battle_sequence_fix_init(void) {
         return;
     }
     __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], battle_sequence_update, __ATOMIC_RELEASE);
-    LOG("arceus-battle-sequence: EXPERIMENT: battle effect sequences advance 30 frames per second of elapsed time\n");
+    LOG("arceus-battle-sequence: EXPERIMENT: battle effect sequences advance 30 frames per second of elapsed time%s\n",
+        battle_sequence_even ? ", even landing" : "");
 }
 /* Map cursors 120F1F4 (field map) and 1245DB8 (world map) add stick x speed to the position
    per call and count held frames in two counters up to 9. The fix scales the speed by
