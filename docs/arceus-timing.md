@@ -236,5 +236,7 @@ The same function queues an air steering increment, direction x config x stick a
 adds to the velocity once. The script native at `main+1FF4F44`, and for one ride class `main+252B974`, call it once
 per frame, so air acceleration doubled at 60 FPS and quadrupled at 120. `SNX_ARCEUS_AIR_STEERING_FIX=1` scales a new
 steering entry by the step over 1/30 second. At 30 FPS or slower nothing is written. Both switches share one wrapper on
-`main+19843A0`, and `arceus-capped-fall` and `arceus-air-steering-fix` lines count what they change. Test
+`main+19843A0`, and `arceus-capped-fall` and `arceus-air-steering-fix` lines count what they change. With movement
+bit 1 on, which already loads the frame step into the same gravity term, the capped fall correction stays off with a
+warning and air steering still installs. Test
 `arceus_clock` checks that one second of steering entries sums to 30 authored ones at 60, 120 and uneven steps.

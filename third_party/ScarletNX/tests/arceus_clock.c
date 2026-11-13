@@ -555,7 +555,17 @@ static void test_ledge_smoothing(void) {
     main_base = 0;
     frame_step_address = 0;
 }
+/* The capped-fall guard accepts the game's 1/30 words and the movement bit 1 patch of them. */
+static void test_capped_fall_body(void) {
+    assert(capped_fall_body(0x52911128, 0x72b7a108) == 1);
+    /* ADRP X8 with any page, then LDR W8 [X8,#4] of the negative step. */
+    assert(capped_fall_body(0x90000008 | (1u << 29) | (0x1234u << 5), 0xb9400508) == 2);
+    assert(capped_fall_body(0x90000008, 0xb9400108) == 0);
+    assert(capped_fall_body(0x90000009, 0xb9400508) == 0);
+    assert(capped_fall_body(0x52911128, 0xb9400508) == 0);
+}
 int main(void) {
+    test_capped_fall_body();
     test_air_steering();
     const char* disabled[] = {"SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60", "SNX_ARCEUS_CLOCK_TRACE",
         "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_CAMERA_TRACE",
