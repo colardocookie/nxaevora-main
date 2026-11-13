@@ -15,7 +15,7 @@ layout(set = 0, binding = 2) uniform sampler2D u_before;
 layout(push_constant) uniform Constants {
     mat4 reproject;
     vec4 viewport;
-    vec4 depth; // depth translate, depth scale, 1 with anti-aliasing on, unused
+    vec4 depth; // depth translate, depth scale, 1 with anti-aliasing on, 1 when u_shown holds object vectors
     vec4 size;  // image width, height, view, gain
 } pc;
 layout(set = 0, binding = 3) uniform sampler2D u_depth;
@@ -45,6 +45,22 @@ void main() {
                     (shown > 0.05 ? 8.0 : 0.0) + (shown > 0.02 ? 16.0 : 0.0);
         if (z <= 0.0) o_stats.a = -1.0;
         return;
+    }
+    if (pc.depth.w > 0.5) {
+        // The probe with object vectors: u_shown is the objects' target. On a pixel that took an object's vector,
+        // blue gains 1000, and 2000 more when the camera vector alone would have been wrong there.
+        vec4 object = texelFetch(u_shown, pixel, 0);
+        float stored = texelFetch(u_depth, pixel, 0).r;
+        if (object.b >= 0.0 && abs(object.b - stored) <= 0.002 * stored + 0.0000002) {
+            vec2 ndc = (vec2(pixel) + 0.5 - pc.viewport.xy) / pc.viewport.zw * 2.0 - 1.0;
+            vec4 before = pc.reproject * vec4(ndc, max(z, 0.0), 1.0);
+            float camera = 1.0;
+            if (before.w > 0.0) {
+                vec2 was = (before.xy / before.w * 0.5 + 0.5) * pc.viewport.zw + pc.viewport.xy;
+                camera = relative(now, textureLod(u_before, was / pc.size.xy, 0.0).rgb);
+            }
+            o_stats.b = min(o_stats.b, 990.0) + 1000.0 + (camera > 0.25 ? 2000.0 : 0.0);
+        }
     }
     if (z <= 0.0) {
         o_stats.a = -1.0;

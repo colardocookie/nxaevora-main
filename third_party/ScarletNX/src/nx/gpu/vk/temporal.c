@@ -504,11 +504,16 @@ static void stats_log(void) {
     static const char* const names[3] = {"near", "mid", "far"};
     unsigned n[3] = {0, 0, 0}, wrong[3] = {0, 0, 0}, wrong_still[3] = {0, 0, 0}, sky = 0, off = 0, changed = 0;
     unsigned shown = 0, shown_fine[2] = {0, 0}, still_fine[2] = {0, 0};
+    unsigned object_n = 0, object_wrong = 0, object_camera = 0, object_still = 0;
     const int taa = g_t.mode == MODE_TAA;
     double length = 0, longest = 0;
     for (u32 i = 0; i < STATS_W * STATS_H; i++) {
         const float moved = half_float(g_t.stats_words[4 * i]), still = half_float(g_t.stats_words[4 * i + 1]);
-        const float vector = half_float(g_t.stats_words[4 * i + 2]), z = half_float(g_t.stats_words[4 * i + 3]);
+        float vector = half_float(g_t.stats_words[4 * i + 2]);
+        const float z = half_float(g_t.stats_words[4 * i + 3]);
+        /* the probe marks a pixel that took an object's vector in the thousands of the length (temporal_stats.frag) */
+        const int object_marks = vector >= 1000.0f ? (int)(vector / 1000.0f) : 0;
+        vector -= 1000.0f * (float)object_marks;
         if (z == -1.0f) {
             sky++;
             continue;
@@ -529,13 +534,19 @@ static void stats_log(void) {
         shown_fine[0] += marks >> 3 & 1;
         shown_fine[1] += marks >> 4 & 1;
         wrong_still[band] += still > STATS_ERROR;
+        if (object_marks & 1) {
+            object_n++;
+            object_wrong += moved > STATS_ERROR;
+            object_camera += object_marks >> 1 & 1;
+            object_still += still > STATS_ERROR;
+        }
         still_fine[0] += still > 0.05f;
         still_fine[1] += still > 0.02f;
         length += vector;
         if (vector > longest) longest = vector;
     }
     const unsigned all = n[0] + n[1] + n[2];
-    char bands[400];
+    char bands[520];
     int at = 0;
     /* with anti-aliasing on, the first number is where the history was dropped and the second where the resolved
        colour is far from the frame's own: trails behind what moves show there. frame_to_frame is the share of
@@ -561,8 +572,14 @@ static void stats_log(void) {
     /* the probe: the frame as drawn against the one before at the finer steps too, the base for the same shares
        of the resolved picture */
     if (!taa && at < (int)sizeof bands)
-        snprintf(bands + at, sizeof bands - (size_t)at, " frame_to_frame_above_0.05=%.1f%% above_0.02=%.1f%%",
-                 all ? 100.0 * still_fine[0] / all : 0.0, all ? 100.0 * still_fine[1] / all : 0.0);
+        at += snprintf(bands + at, sizeof bands - (size_t)at, " frame_to_frame_above_0.05=%.1f%% above_0.02=%.1f%%",
+                       all ? 100.0 * still_fine[0] / all : 0.0, all ? 100.0 * still_fine[1] / all : 0.0);
+    /* the pixels that took an object's vector: wrong with it, with the camera's vector, with none */
+    if (!taa && g_t.objects && at < (int)sizeof bands)
+        snprintf(bands + at, sizeof bands - (size_t)at,
+                 " object_pixels n=%u wrong=%.1f%% with_camera_vectors=%.1f%% without_vectors=%.1f%%", object_n,
+                 object_n ? 100.0 * object_wrong / object_n : 0.0, object_n ? 100.0 * object_camera / object_n : 0.0,
+                 object_n ? 100.0 * object_still / object_n : 0.0);
     LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px vector_max=%.2f px sky=%u off_screen=%u%s\n",
         (unsigned long long)g_t.stats_run, all ? length / all : 0.0, longest, sky, off, bands);
 }
@@ -888,6 +905,9 @@ void vk_temporal_before(u64 fs0_hash) {
 
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
+    /* objects that moved were drawn into their own target this frame: the vector pass takes their vectors from it */
+    const int objects = g_t.objects && g_t.object_at == frame && g_t.object.view && g_t.object.w == scene->sw &&
+                        g_t.object.h == scene->sh;
     /* the vectors: depth sampled, the motion image written */
     vk_surf_use(cb, depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
@@ -895,9 +915,6 @@ void vk_temporal_before(u64 fs0_hash) {
                VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     {
-        /* objects that moved were drawn into their own target this frame: the pass takes their vectors from it */
-        const int objects = g_t.objects && g_t.object_at == frame && g_t.object.view &&
-                            g_t.object.w == g_t.motion.w && g_t.object.h == g_t.motion.h;
         Constants mc = pc;
         mc.depth[3] = objects ? 1.0f : 0.0f;
         if (objects)
@@ -1013,6 +1030,11 @@ void vk_temporal_before(u64 fs0_hash) {
     }
 
     /* without a frame before (the first one, or after a gap) the frame is compared with itself */
+    /* the probe's numbers also look at the pixels that took an object's vector */
+    if (!taa && objects) {
+        shown_before = g_t.object.view;
+        pc.depth[3] = 1.0f;
+    }
     const VkImageView views[SETS_BINDINGS] = {
         g_t.motion.view, now->view, numbers_before, depth_view, last_frame,
         shown_before ? shown_before : numbers_before};
