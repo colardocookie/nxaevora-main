@@ -202,8 +202,9 @@ that loads it, and the first one maps it. The `arceus-gravity-fix` line confirms
 ## Movement fix
 
 With only gravity on the elapsed time, sideways motion in the air still ran four times fast against the fall,
-because other character movement steps add acceleration times 1/30 once per call. The default-on `SNX_ARCEUS_MOVEMENT_FIX` makes nine of those constants load the frame step from the same cell. Each is a
-MOV/MOVK pair of plus or minus 1/30:
+because other character movement steps add acceleration times 1/30 once per call. The default-on `SNX_ARCEUS_MOVEMENT_FIX` covers ten of those constants and can make each load the frame step from the
+same cell. By default it turns on eight of them (bits 2 to 8 and 10, the player sites). Bits 0 and 1, the shared sites, turn on
+only when an explicit mask sets them. Each is a MOV/MOVK pair of plus or minus 1/30:
 
 | Bit | Site | Owner |
 | --- | --- | --- |
@@ -223,7 +224,8 @@ Bit 10 is a different kind of step. `main+1A0D9DC` sets the player's position fr
 on every call, after its caller has integrated the acceleration, so without it that displacement is 2 times too long
 at 60 FPS. It was on (mask `7fc`) in 59 play sessions at 60, 120 and unlocked frame rates. No session isolates it.
 
-`SNX_ARCEUS_MOVEMENT_SITES` is an optional hex mask over these bits, to test the sites one by one. The
+`SNX_ARCEUS_MOVEMENT_SITES` is an optional hex mask over these bits, to test the sites one by one. Without it the
+default `0x5fc` turns on the eight sites of bits 2 to 8 and 10. An empty value turns on all ten. The
 `arceus-movement-fix` line gives the number installed and the mask.
 
 ## Fade fix
@@ -436,8 +438,9 @@ on every frame as before. In play the slow throw came out every time in four ses
 
 Limits. The other ride bits were never played and are off. The player bits as a plain mask (`0x380`) made strafing
 and rolling choppy, which is why the throw uses a window. The Sneasler bit refuses while the ledge fix owns the same
-two bridges. During a ticked script run the shared frame-step cell holds 1/30 s. A patched site that ran on another
-thread in that moment would take a full step. This was never seen and never measured. Only the rotation that
+two bridges. During a ticked script run the shared frame-step cell holds 1/30 s. The game runs its frame on three
+threads, so another reader could meet 1/30 s. In 1844 ticked runs the day clock never did. No other reader is
+measured. Only the rotation that
 `main+25AB490` sets is blended. The throw wait is the only window, and other waits counted in script updates may
 exist. The kept release event is asked for again only while the same state object is updated on consecutive frames
 and the object's first word is unchanged. An earlier form that asked more queries crashed on a released object.
