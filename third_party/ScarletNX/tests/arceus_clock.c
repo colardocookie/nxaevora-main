@@ -2,6 +2,7 @@
    Copyright 2026 the NXAevora contributors */
 /* Exercise the real wrappers with an asset-free guest sequence and host stubs. */
 #include "nx/runtime/arceus_clock.c"
+#include "arceus_steps_30.h"
 #include <assert.h>
 
 static u8 memory[4096];
@@ -126,8 +127,42 @@ static void test_sequence(void) {
     assert(calls == 2 && guest_float(object + 0xe8) == 2 && fabsf(sequence_slots[0].pending - .5f) < .001f);
     reset(0, 4, 16666667);
     stop_at = 1;
+    battle_sequence_ended = 0;
     update();
     assert(calls == 1 && guest_float(object + 0xe8) == 1);
+    /* The sequence stopped playing in that call: it is counted as ended, once, and its slot
+       starts a new count. */
+    assert(battle_sequence_ended == 1 && !sequence_slots[0].calls);
+    /* The dispatch watch: once a second, and it counts the seconds in which the entry of 9DBEAC
+       is not the wrapper. */
+    {
+        static GuestFn table[8];
+        GuestFn* const saved_disp = g_disp;
+        const u64 saved_lo = g_code_lo, saved_base = main_base;
+        const int saved_research = research_observing;
+        g_disp = table, main_base = 0x100000, g_code_lo = main_base + 0x9dbeac - 16, research_observing = 1;
+        battle_sequence_watch_ns = battle_sequence_watch_lines = battle_sequence_displaced = 0;
+        table[4] = battle_sequence_update;
+        battle_sequence_dispatch_watch(5000000000ull);
+        battle_sequence_dispatch_watch(5500000000ull);
+        assert(battle_sequence_watch_lines == 1 && !battle_sequence_displaced);
+        table[4] = sequence_original;
+        battle_sequence_dispatch_watch(6000000000ull);
+        battle_sequence_dispatch_watch(7000000000ull);
+        assert(battle_sequence_watch_lines == 3 && battle_sequence_displaced == 2);
+        /* Without the research switch it does nothing. */
+        research_observing = 0;
+        battle_sequence_dispatch_watch(9000000000ull);
+        assert(battle_sequence_watch_lines == 3);
+        g_disp = saved_disp, g_code_lo = saved_lo, main_base = saved_base, research_observing = saved_research;
+    }
+    /* A sequence that runs to its end frame is counted with the calls it took. */
+    reset(8, 1, 16666667);
+    guest_float_write(object + 0xec, 10);
+    for (unsigned i = 0; i < 3; i++) update();
+    assert(battle_sequence_ended == 1 && sequence_slots[0].calls == 3);
+    update();
+    assert(battle_sequence_ended == 2 && guest_float(object + 0xe8) == 10 && !sequence_slots[0].calls);
     reset(0, 4, 16666667);
     change_speed = 1;
     update();
@@ -257,6 +292,22 @@ static void test_defaults_on(void) {
     assert(config.master && !config.invalid && config.mode == 0 && !config.write_fps && config.skip_runtime_limit);
     assert(config.initial_ns == (UINT64_C(1000000000) + 15) / 30);
     assert(g_opt_fps == SNX_FPS_GAME && !clocks_installed && !timing_enabled);
+    flag("SNX_ARCEUS_TARGET_FPS", "game");
+    config = arceus_clock_config(g_opt_fps);
+    assert(!config.invalid && !config.write_fps && config.runtime_rate_override && !config.skip_runtime_limit &&
+           config.initial_ns == (UINT64_C(1000000000) + 15) / 30);
+    arceus_clock_config_apply(config);
+    assert(g_opt_fps == SNX_FPS_GAME && clocks_installed && timing_enabled);
+    timing_enabled = clocks_installed = experimental = tracing = 0;
+    g_opt_fps = 30;
+    config = arceus_clock_config(g_opt_fps);
+    assert(!config.invalid && !config.write_fps && config.runtime_rate_override && !config.skip_runtime_limit &&
+           config.initial_ns == (UINT64_C(1000000000) + 15) / 30);
+    arceus_clock_config_apply(config);
+    assert(g_opt_fps == 30 && clocks_installed && timing_enabled);
+    timing_enabled = clocks_installed = experimental = tracing = 0;
+    g_opt_fps = SNX_FPS_GAME;
+    flag("SNX_ARCEUS_TARGET_FPS", "");
     const char* const enabled[] = {
         "SNX_ARCEUS_PHYSICS_TIMESTEP_FIX", "SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX", "SNX_ARCEUS_WORLD_TIMERS_FIX",
         "SNX_ARCEUS_GRAVITY_FIX", "SNX_ARCEUS_CAPTURE_FIX", "SNX_ARCEUS_BATTLE_SEQUENCE_FIX",
@@ -294,6 +345,18 @@ static void test_defaults_on(void) {
     assert(script_tick_wanted() == 0x44);
     unset_flag("SNX_ARCEUS_SCRIPT_TICK");
     unset_flag("SNX_ARCEUS_SCRIPT_WINDOWS");
+    /* The battle sequence fix: unset is the even landing, 1 the plain landing, 0 off, and
+       anything else is off too. */
+    assert(battle_sequence_value() == 2);
+    flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX", "2");
+    assert(battle_sequence_value() == 2);
+    flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX", "1");
+    assert(battle_sequence_value() == 1);
+    flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX", "0");
+    assert(battle_sequence_value() == 0);
+    flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX", "3");
+    assert(battle_sequence_value() == 0);
+    unset_flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
     static const char* const probes[] = {
         "SNX_ARCEUS_CLOCK_TRACE", "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_CAMERA_TRACE",
         "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE",
@@ -550,12 +613,12 @@ static void test_timer_carry(void) {
         }
         if (enabled) {
             assert(captures == elapsed / CAPTURE_TICK_NS);
-            assert(holds == elapsed / 33333333ull);
+            assert(holds == elapsed / ARCEUS_WHOLE_STEP_NS);
             assert(capture_slots[0].ns == (int64_t)(elapsed % CAPTURE_TICK_NS));
-            assert(map_cursor_ns[0] == elapsed % 33333333ull);
+            assert(map_cursor_ns[0] == elapsed % ARCEUS_WHOLE_STEP_NS);
         } else {
             assert(captures < elapsed / CAPTURE_TICK_NS);
-            assert(holds < elapsed / 33333333ull);
+            assert(holds < elapsed / ARCEUS_WHOLE_STEP_NS);
         }
     }
     /* Repeated slow calls cannot grow an unbounded recovery delay. */
@@ -740,9 +803,9 @@ static void test_list_scroll(void) {
             while (elapsed < 1000000000ull) {
                 const u64 ns = 1000000000ull / rates[r];
                 elapsed += ns;
-                remainder += ns * 30;
-                blink_ticks = (unsigned)(remainder / 1000000000);
-                remainder %= 1000000000;
+                remainder += ns;
+                blink_ticks = (unsigned)(remainder / ARCEUS_WHOLE_STEP_NS);
+                remainder %= ARCEUS_WHOLE_STEP_NS;
                 const int held = elapsed <= 100000000ull;
                 /* The list: a finished ease with the direction still held starts the free scroll, a release ends it. */
                 if (!gr32(object + 0x1b8) && !eased) {
@@ -790,8 +853,8 @@ static void test_target(void) {
                      0xd9,0xf3,0xc5,0x1e}};
     SnxModule module = {.nmods = 1, .mods = &main_mod};
     g_mod = &module;
-    const char* accepted[] = {"unlocked", "0", "60", "120"};
-    for (unsigned i = 0; i < 4; i++) {
+    const char* accepted[] = {"game", "unlocked", "0", "60", "120"};
+    for (unsigned i = 0; i < 5; i++) {
         flag("SNX_ARCEUS_TARGET_FPS", accepted[i]);
         main_base = 0;
         arceus_clock_init();
@@ -1949,6 +2012,350 @@ static void test_fail_safe(void) {
 }
 /* A fade-in's last call frees the object's slot, so fades of more than FADE_SLOTS objects
    in a session all keep a slot instead of running unfixed. */
+/* The game's own pace. A frame goes through the real clock entry with a measured step near
+   1/30 s, then one wrapper runs. Its guest memory and return registers must equal, call for
+   call, those of the game's function called with no wrapper. */
+static u64 whole_hash;
+static void whole_mix(u64 value) { whole_hash = (whole_hash ^ value) * 0x100000001b3ull; }
+static void whole_cpu(const CPU* c) { whole_mix(c->x[0]), whole_mix(c->pc), whole_mix(c->v[0].s[0]); }
+static void whole_frame(u64 elapsed) {
+    static const u64 callers[4] = {0x278150c, 0x2781540, 0x2781574, 0x27815a8};
+    host_ns += elapsed;
+    for (unsigned channel = 0; channel < 4; channel++) {
+        CPU c = {.x = {[0] = 4000, [1] = channel, [2] = 33333334, [30] = main_base + callers[channel]}};
+        adjust_duration(&c);
+        assert(c.x[2] == ARCEUS_WHOLE_STEP_NS);
+    }
+    assert(step.step == ARCEUS_WHOLE_STEP_NS && blink_ticks == 1 && blink_remainder == 0);
+    assert(guest_float(frame_step_address) == NOMINAL_STEP_SECONDS && frame_step_ratio() == 1.0f);
+}
+static float whole_speed;
+static unsigned whole_count;
+static void whole_sequence_stock(CPU* c, u64 entry) {
+    (void)entry;
+    guest_float_write(c->x[0] + 0xe8, guest_float(c->x[0] + 0xe8) + guest_float(c->x[0] + 0xf0));
+    c->x[0] = ++whole_count;
+    c->pc = c->x[30];
+}
+static void whole_sequence_setup(void) {
+    reset(0, whole_speed, 0);
+    guest_float_write(object + 0xec, 100000);
+    battle_sequence_original = whole_sequence_stock;
+    whole_count = 0;
+}
+static void whole_sequence(unsigned i, int stock) {
+    (void)i;
+    CPU c = {.x = {[0] = object, [30] = 32}, .pc = 16};
+    if (stock) whole_sequence_stock(&c, 16);
+    else battle_sequence_update(&c, 16);
+    whole_cpu(&c);
+}
+static void whole_countdown_stock(CPU* c, u64 entry) {
+    (void)entry;
+    const u64 director = gr64(c->x[1]);
+    if (gr32(director + 0x1dc)) gw32(director + 0x1dc, gr32(director + 0x1dc) - 1);
+    else gw32(director + 0xf0, gr32(director + 0xf0) == 3 ? 5 : 3), gw32(director + 0x1dc, 12);
+    c->pc = c->x[30];
+}
+static void whole_capture_setup(void) {
+    memset(memory, 0, sizeof memory);
+    memset(capture_slots, 0, sizeof capture_slots);
+    capture_next_slot = 0;
+    capture_fix_active = 1;
+    sequence_clock_original[1] = whole_countdown_stock;
+    gw64(3000, 1024);
+    gw32(1024 + 0xf0, 3);
+    gw32(1024 + 0x1dc, 12);
+}
+static void whole_capture(unsigned i, int stock) {
+    (void)i;
+    CPU c = {.x = {[1] = 3000, [30] = 32}, .pc = 16};
+    if (stock) whole_countdown_stock(&c, 16);
+    else capture_sequence_probe(&c, 16);
+    whole_cpu(&c);
+}
+static void whole_cursor_stock(CPU* c, u64 entry) {
+    (void)entry;
+    const MapCursorSite* site = &map_cursor_sites[0];
+    guest_float_write(c->x[0] + 0x40, guest_float(c->x[0] + 0x40) + guest_float(c->x[0] + site->speed));
+    for (unsigned k = 0; k < 2; k++)
+        if (gr32(c->x[0] + site->held + 4 * k) < 9)
+            gw32(c->x[0] + site->held + 4 * k, gr32(c->x[0] + site->held + 4 * k) + 1);
+    c->pc = c->x[30];
+}
+static void whole_cursor_setup(void) {
+    memset(memory, 0, sizeof memory);
+    memset(map_cursor_object, 0, sizeof map_cursor_object);
+    memset(map_cursor_ns, 0, sizeof map_cursor_ns);
+    map_cursor_original[0] = whole_cursor_stock;
+    guest_float_write(object + map_cursor_sites[0].speed, 0.37f);
+}
+static void whole_cursor(unsigned i, int stock) {
+    /* The stick is let go now and then, which starts the held counts again. */
+    if (i % 23 == 0) gw32(object + map_cursor_sites[0].held, 0), gw32(object + map_cursor_sites[0].held + 4, 0);
+    CPU c = {.x = {[0] = object, [30] = 32}, .pc = 16};
+    if (stock) whole_cursor_stock(&c, 16);
+    else field_map_cursor_update(&c, 16);
+    whole_cpu(&c);
+}
+static unsigned whole_every;
+static void whole_ai_setup(void) {
+    memset(memory, 0, sizeof memory);
+    memset(ai_tick_slots, 0, sizeof ai_tick_slots);
+    memset(ai_turn_nodes, 0, sizeof ai_turn_nodes);
+    ai_pass_total = ai_tick_total = 0;
+    ai_tick_original = ai_tick_mock;
+    ai_turn_original[0] = ai_turn_original[1] = ai_turn_mock;
+    main_base = 3072 - 0x40e7c04;
+    gw32(3072, 4);
+    gw32(512 + 0x130, 30);
+    gw64(512 + 0x58, 1024);
+    gw64(1024 + 0x90, object);
+    memory[object + 0x81] = whole_every == 1;
+}
+/* One scheduler pass and the actor's read of the context, every pass or every 4th. */
+static void whole_ai(unsigned i, int stock) {
+    if (i % whole_every == 0) gw32(object + 0x88, 0);
+    CPU c = {.x = {[0] = object, [30] = 32}};
+    if (stock) c.v[9].s[1] = 1, ai_tick_mock(&c, 16), c.v[9].s[1] = 0;
+    else ai_tick_update(&c, 16);
+    whole_cpu(&c);
+    if (i % whole_every != whole_every - 1) return;
+    CPU t = {.x = {[0] = 512, [8] = 2048, [30] = 32}};
+    gw32(2048, 99);
+    if (stock) ai_turn_mock(&t, 16);
+    else ai_turn_update(&t, 16, 0);
+    whole_cpu(&t);
+    /* A finished turn starts again. */
+    if (gr32(2048) == 1) gw32(512 + 0x134, 0);
+}
+static void whole_turn_setup(void) {
+    memset(memory, 0, sizeof memory);
+    turn_original = turn_mock;
+    turn_angle = 0;
+    guest_float_write(object + 0x268, .2f);
+}
+static void whole_turn(unsigned i, int stock) {
+    CPU c = {.x = {[0] = object, [30] = 32}};
+    c.v[0].f[0] = i % 3 ? 1.0f / 30 : .5f;
+    if (stock) turn_mock(&c, 16);
+    else turn_update(&c, 16);
+    whole_cpu(&c);
+    u32 passed, angle;
+    memcpy(&passed, &turn_passed, 4), memcpy(&angle, &turn_angle, 4);
+    whole_mix(passed), whole_mix(angle);
+}
+static void whole_list_setup(void) {
+    memset(memory, 0, sizeof memory);
+    list_scroll_original = list_scroll_mock;
+    gw32(object + 0x1b8, 1);
+    guest_float_write(object + 0x1d8, 0.25f);
+}
+static void whole_list(unsigned i, int stock) {
+    /* An ease, then the free scroll, then a new ease. */
+    if (!gr32(object + 0x1b8)) gw32(object + 0x1b8, 4);
+    if (i % 40 == 39) gw32(object + 0x1b8, 1), gw32(object + 0x1bc, 0);
+    CPU c = {.x = {[0] = object, [30] = 64}, .pc = 16};
+    if (stock) list_scroll_mock(&c, 16);
+    else list_scroll_update(&c, 16);
+    whole_cpu(&c);
+}
+static void whole_blink_stock(CPU* c, u64 entry) {
+    (void)entry;
+    if (gr32(c->x[0] + 0x10)) gw32(c->x[0] + 0x10, gr32(c->x[0] + 0x10) - 1);
+    else gw32(c->x[0] + 0x10, 90), gw32(c->x[0] + 0x14, gr32(c->x[0] + 0x14) + 1);
+    c->pc = c->x[30];
+}
+static void whole_blink_setup(void) {
+    memset(memory, 0, sizeof memory);
+    blink_original[0] = whole_blink_stock;
+    gw32(object + 0x10, 90);
+}
+static void whole_blink(unsigned i, int stock) {
+    (void)i;
+    CPU c = {.x = {[0] = object, [30] = 32}, .pc = 16};
+    if (stock) whole_blink_stock(&c, 16);
+    else blink_primary(&c, 16);
+    whole_cpu(&c);
+}
+/* The collector counts +18 down and sets the repeat mask +B8 when it reaches 0. */
+static void whole_pad_stock(CPU* c, u64 entry) {
+    (void)entry;
+    const u64 pad = c->x[0];
+    gw32(pad + 0x18, gr32(pad + 0x18) - 1);
+    gw64(pad + 0xb8, 0);
+    if (!gr32(pad + 0x18)) gw32(pad + 0x18, 3), gw64(pad + 0xb8, 0x10);
+    c->pc = c->x[30];
+}
+static void whole_pad_setup(void) {
+    memset(memory, 0, sizeof memory);
+    pad_repeat_original = whole_pad_stock;
+    gw32(object + 0x18, 10);
+}
+static void whole_pad(unsigned i, int stock) {
+    (void)i;
+    CPU c = {.x = {[0] = object, [30] = 32}, .pc = 16};
+    if (stock) whole_pad_stock(&c, 16);
+    else pad_repeat_update(&c, 16);
+    whole_cpu(&c);
+}
+static void whole_event_camera_stock(CPU* c, u64 entry) {
+    (void)entry;
+    guest_float_write(c->x[0] + 0x4b0, guest_float(c->x[0] + 0x4b0) + guest_float(c->x[0] + 0x4b4));
+    c->pc = c->x[30];
+}
+static void whole_event_camera_setup(void) {
+    memset(memory, 0, sizeof memory);
+    event_camera_original = whole_event_camera_stock;
+    gw32(object + 0x3e4, 1);
+    guest_float_write(object + 0x4b4, 0.0137f);
+}
+static void whole_event_camera(unsigned i, int stock) {
+    (void)i;
+    CPU c = {.x = {[0] = object, [30] = 32}, .pc = 16};
+    if (stock) whole_event_camera_stock(&c, 16);
+    else event_camera_update(&c, 16);
+    whole_cpu(&c);
+}
+static void whole_camera_rate_stock(CPU* c, u64 entry) {
+    (void)entry;
+    c->v[0].f[0] = 0.0663225f;
+    c->pc = c->x[30];
+}
+static void whole_camera_rate_setup(void) {
+    memset(memory, 0, sizeof memory);
+    camera_rate_original = whole_camera_rate_stock;
+    camera_speed = 1.0f, camera_trace_only = 0;
+}
+static void whole_camera_rate(unsigned i, int stock) {
+    (void)i;
+    CPU c = {.x = {[19] = object, [30] = 32}, .pc = 16};
+    if (stock) whole_camera_rate_stock(&c, 16);
+    else camera_rate_update(&c, 16);
+    whole_cpu(&c);
+}
+static void whole_cave_stock(CPU* c, u64 entry) {
+    (void)entry;
+    const u64 record = c->x[0] + CAVE_LIGHT_RECORD;
+    guest_float_write(record + 8, guest_float(record + 8) + guest_float(record + 0xc));
+    c->pc = c->x[30];
+}
+static void whole_cave_setup(void) {
+    memset(memory, 0, sizeof memory);
+    cave_light_original = whole_cave_stock;
+    gw32(2048 + 4, 1);
+    guest_float_write(2048 + 0xc, 1.0f / 120);
+}
+static void whole_cave(unsigned i, int stock) {
+    (void)i;
+    CPU c = {.x = {[0] = 2048 - CAVE_LIGHT_RECORD, [30] = 32}, .pc = 16};
+    if (stock) whole_cave_stock(&c, 16);
+    else cave_light_update(&c, 16);
+    whole_cpu(&c);
+}
+static void test_whole_step(void) {
+    static const struct {
+        const char* name;
+        void (*setup)(void);
+        void (*frame)(unsigned, int);
+        float speed;
+        unsigned n;
+    } cases[] = {
+        {"sequence", whole_sequence_setup, whole_sequence, 1.0f, 0},
+        {"sequence at speed 0.2", whole_sequence_setup, whole_sequence, 0.2f, 0},
+        {"sequence at speed 0.5", whole_sequence_setup, whole_sequence, 0.5f, 0},
+        {"sequence at speed 2", whole_sequence_setup, whole_sequence, 2.0f, 0},
+        {"sequence at speed 6", whole_sequence_setup, whole_sequence, 6.0f, 0},
+        {"capture", whole_capture_setup, whole_capture, 0, 0},
+        {"map cursor", whole_cursor_setup, whole_cursor, 0, 0},
+        {"AI tick, turn every pass", whole_ai_setup, whole_ai, 0, 1},
+        {"AI tick, turn every 4th pass", whole_ai_setup, whole_ai, 0, 4},
+        {"turn", whole_turn_setup, whole_turn, 0, 0},
+        {"list scroll", whole_list_setup, whole_list, 0, 0},
+        {"blink", whole_blink_setup, whole_blink, 0, 0},
+        {"pad repeat", whole_pad_setup, whole_pad, 0, 0},
+        {"event camera", whole_event_camera_setup, whole_event_camera, 0, 0},
+        {"camera rate", whole_camera_rate_setup, whole_camera_rate, 0, 0},
+        {"cave light", whole_cave_setup, whole_cave, 0, 0},
+    };
+    enum { FRAMES = 3000 };
+    unsigned failed = 0;
+    static u64 seen[2][FRAMES];
+    const u64 saved_base = main_base, saved_cell = frame_step_address, saved_frames = frame_step_frames;
+    const ArceusStep saved_step = step;
+    const int saved_experimental = experimental;
+    /* Two series: the played one without its five steps outside the window, and 33.0 to 33.6 ms. */
+    for (unsigned series = 0; series < 2; series++)
+        for (unsigned k = 0; k < sizeof cases / sizeof cases[0]; k++)
+            for (int stock = 0; stock < 2; stock++) {
+                whole_speed = cases[k].speed, whole_every = cases[k].n;
+                main_base = 0;
+                cases[k].setup();
+                experimental = 1;
+                frame_step_address = 3900;
+                frame_step_frames = 0;
+                blink_remainder = 0;
+                host_ns = 1000000000;
+                step = (ArceusStep){.initial_ns = arceus_whole_step(33333333)};
+                whole_hash = 0xcbf29ce484222325ull;
+                for (unsigned i = 0, at = 0; i < FRAMES; i++, at++) {
+                    while (arceus_whole_step(arceus_steps_30[at % ARCEUS_STEPS_30]) != ARCEUS_WHOLE_STEP_NS) at++;
+                    whole_frame(series ? 33000000 + (i * 2654435761u >> 8) % 600001 : arceus_steps_30[at % ARCEUS_STEPS_30]);
+                    cases[k].frame(i, stock);
+                    for (unsigned b = 0; b < sizeof memory; b += 8) whole_mix(gr64(b ? b : 8));
+                    seen[stock][i] = whole_hash;
+                    if (stock && seen[0][i] != seen[1][i]) {
+                        fprintf(stderr, "arceus_clock: %s differs from the game at frame %u of series %u\n",
+                                cases[k].name, i, series);
+                        failed++;
+                        break;
+                    }
+                }
+            }
+    assert(!failed);
+    /* A short frame between whole ones holds the 30 Hz gates once and leaves nothing behind. */
+    static const u64 callers[4] = {0x278150c, 0x2781540, 0x2781574, 0x27815a8};
+    main_base = 0, experimental = 1;
+    for (unsigned i = 0; i < 40; i++) {
+        const u64 elapsed = i % 4 == 1 ? 30912500 : 33200000;
+        host_ns += elapsed;
+        for (unsigned channel = 0; channel < 4; channel++) {
+            CPU c = {.x = {[0] = 4000, [1] = channel, [2] = 33333334, [30] = callers[channel]}};
+            adjust_duration(&c);
+            assert(c.x[2] == (i % 4 == 1 ? elapsed : ARCEUS_WHOLE_STEP_NS));
+        }
+        assert(blink_ticks == (i % 4 != 1) && blink_remainder == (i % 4 == 1 ? elapsed : 0));
+    }
+    /* The played steps with the five outside the window: the sequence still runs at most one
+       update per rendered frame, ends on every whole frame and loses under one frame in 96. */
+    for (unsigned speed = 0; speed < 2; speed++) {
+        reset(0, speed ? 0.5f : 1.0f, 0);
+        guest_float_write(object + 0xec, 100000);
+        step = (ArceusStep){.initial_ns = arceus_whole_step(33333333)};
+        host_ns = 1000000000;
+        double frames = 0;
+        float last = 0;
+        for (unsigned i = 0; i < 20 * ARCEUS_STEPS_30; i++) {
+            u64 ns = 0;
+            host_ns += arceus_steps_30[i % ARCEUS_STEPS_30];
+            assert(arceus_step(&step, host_ns, 1, 0, &ns));
+            frames += (speed ? 0.5 : 1.0) * (double)ns / (double)ARCEUS_WHOLE_STEP_NS;
+            update();
+            const float frame = guest_float(object + 0xe8);
+            assert(calls_this_render <= 1 && frame >= last && frame <= floorf(last) + 1);
+            last = frame;
+        }
+        assert(boundaries == (unsigned)last && frames - last < 20 && frames - last > -1);
+    }
+    /* Off, the step is the measured one. */
+    step = (ArceusStep){.measured_only = 1};
+    u64 out = 0;
+    assert(arceus_step(&step, 1000000000, 1, 0, &out) && arceus_step(&step, 1033000000, 1, 0, &out) && out == 33000000);
+    main_base = saved_base, frame_step_address = saved_cell, frame_step_frames = saved_frames;
+    step = saved_step, experimental = saved_experimental;
+    blink_ticks = 0, blink_remainder = 0;
+    capture_fix_active = 0;
+}
 int main(void) {
     test_ride_swap();
     test_defaults_on();
@@ -1983,6 +2390,7 @@ int main(void) {
     test_field_waza();
     test_waza_object();
     test_waza_shot();
+    test_whole_step();
     puts("arceus_clock: all checks passed");
     return 0;
 }

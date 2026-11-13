@@ -5,6 +5,7 @@
    and jittering rates. */
 #include "nx/runtime/arceus_step.h"
 #include "nx/runtime/arceus_camera.h"
+#include "arceus_steps_30.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -71,7 +72,7 @@ static void test_unlocked(void) {
         assert(total == now - 1000000000);
     }
     ArceusStep state = {.initial_ns = ARCEUS_UNLOCKED_INITIAL_STEP_NS};
-    uint64_t now = 1000000000, total = 0, dropped = 0;
+    uint64_t now = 1000000000, total = 0, dropped = 0, whole = 0;
     batch(&state, now, ARCEUS_UNLOCKED_INITIAL_STEP_NS);
     srand(11);
     for (unsigned i = 0; i < 20000; i++) {
@@ -85,14 +86,56 @@ static void test_unlocked(void) {
             uint64_t same;
             assert(arceus_step(&state, now + channel, 123, channel, &same) && same == result);
         }
+        /* A step near 1/30 s is reported as the game's own, so it counts as measured here. */
+        if (result == ARCEUS_WHOLE_STEP_NS && elapsed <= ARCEUS_MAX_STEP_NS) result = elapsed, whole++;
         total += result;
         if (elapsed > ARCEUS_MAX_STEP_NS) dropped += elapsed - ARCEUS_MAX_STEP_NS;
     }
-    assert(total + dropped == now - 1000000000);
+    assert(total + dropped == now - 1000000000 && whole > 0);
     /* A repeated timestamp gives the initial step, not zero. */
     assert(arceus_step(&state, now, 123, 0, &result) && result == ARCEUS_UNLOCKED_INITIAL_STEP_NS);
     /* The clamped ratio stays above zero far beyond unlocked rates. */
     assert(ARCEUS_MIN_STEP_RATIO > 0.0f && ARCEUS_MIN_STEP_RATIO * 33333334.0 < 1000000000.0 / 20000);
+}
+
+/* The game's own pace: a measured step within 1/32 of 1/30 s is reported as exactly the
+   33333334 ns the game passes its clocks, on all four channels. Steps outside are measured. */
+static void test_whole_step(void) {
+    const uint64_t window = ARCEUS_WHOLE_STEP_NS / 32;
+    assert(arceus_whole_step(ARCEUS_WHOLE_STEP_NS - window) == ARCEUS_WHOLE_STEP_NS);
+    assert(arceus_whole_step(ARCEUS_WHOLE_STEP_NS + window) == ARCEUS_WHOLE_STEP_NS);
+    assert(arceus_whole_step(ARCEUS_WHOLE_STEP_NS - window - 1) == ARCEUS_WHOLE_STEP_NS - window - 1);
+    assert(arceus_whole_step(ARCEUS_WHOLE_STEP_NS + window + 1) == ARCEUS_WHOLE_STEP_NS + window + 1);
+    assert(arceus_whole_step(33333333) == ARCEUS_WHOLE_STEP_NS && arceus_whole_step(16666667) == 16666667);
+    assert(arceus_whole_step(8333333) == 8333333 && arceus_whole_step(ARCEUS_MAX_STEP_NS) == ARCEUS_MAX_STEP_NS);
+    /* 29 and 31 FPS are not the game's pace. */
+    assert(arceus_whole_step(1000000000 / 29) == 1000000000 / 29 && arceus_whole_step(1000000000 / 31) == 1000000000 / 31);
+    ArceusStep state = {.initial_ns = arceus_whole_step(33333333)};
+    uint64_t now = 1000000000;
+    batch(&state, now, ARCEUS_WHOLE_STEP_NS);
+    /* 33.0 to 33.6 ms. */
+    for (unsigned i = 0; i < 9000; i++) {
+        now += 33000000 + (i * 2654435761u >> 8) % 600001;
+        batch(&state, now, ARCEUS_WHOLE_STEP_NS);
+    }
+    /* The played session: 91 steps are the game's own and the five outside are as measured. */
+    unsigned outside = 0;
+    for (unsigned i = 0; i < 10 * ARCEUS_STEPS_30; i++) {
+        const uint64_t elapsed = arceus_steps_30[i % ARCEUS_STEPS_30];
+        const int own = elapsed >= ARCEUS_WHOLE_STEP_NS - window && elapsed <= ARCEUS_WHOLE_STEP_NS + window;
+        now += elapsed;
+        batch(&state, now, own ? ARCEUS_WHOLE_STEP_NS : elapsed);
+        outside += !own;
+    }
+    assert(outside == 50);
+    /* Switched off, every step is the measured one. */
+    state = (ArceusStep){.measured_only = 1};
+    now = 1000000000;
+    batch(&state, now, ARCEUS_INITIAL_STEP_NS);
+    for (unsigned i = 0; i < ARCEUS_STEPS_30; i++) {
+        now += arceus_steps_30[i];
+        batch(&state, now, arceus_steps_30[i]);
+    }
 }
 
 static void test_camera(void) {
@@ -131,6 +174,7 @@ static void test_camera(void) {
 int main(void) {
     test_step();
     test_unlocked();
+    test_whole_step();
     test_camera();
     puts("arceus_timing: all checks passed");
     return 0;
