@@ -2,7 +2,8 @@
    Copyright 2026 the NXAevora contributors */
 /* nvn_native=1: the host answers the NVN functions that the game resolves through nvnBootstrapLoader and
    nvnDeviceGetProcAddress. Each resolved address gets a host handler in its dispatch slot. A function without a
-   handler logs its first call and returns 0. The hook order and the trace are in nvn-design.md, 2-3 and 2-6. */
+   handler stops the game unless nvn_native_missing=0. The hook order and the trace are in nvn-design.md, 2-3 and
+   2-6. */
 #include "nx/gpu/nvn_native.h"
 #include "nx/gpu/nvn_cmdlist.h"
 #include "nx/gpu/nvn_frame.h"
@@ -36,7 +37,7 @@ static NvnListStore lists; /* the command lists of the game, guarded by objs_loc
 /* The frame line counters (3c decision 12). The four guarded by objs_lock are read and written with it; the other two
    are atomic because missing_handler and the recorder run without it. */
 static uint32_t frame_acquires, frame_submitted_lists, frame_skipped_lists, frame_unmet_event_waits;
-static uint32_t frames_in_flight; /* frame jobs that a present posted and frame_finish has not ended */
+static uint32_t frames_in_flight; /* frame jobs that a post made and frame_finish has not ended */
 static uint32_t missing_calls, dropped_ops;
 
 typedef struct {
@@ -55,6 +56,8 @@ typedef struct {
     uint32_t init_word_count;
     uint64_t pool_storage, pool_size, pool_gpu; /* the queue pool of the init words, mapped once and kept */
     uint8_t init_replayed; /* a frame job took the words: the record hands them out once */
+    uint32_t last_posted;  /* the syncpoint value that the last posted frame job reaches */
+    uint8_t has_posted;    /* a frame job was posted: last_posted has a value */
 } QueueRec;
 typedef struct {
     uint64_t device, native_window, textures[NVN_WINDOW_MAX_TEXTURES];
@@ -63,7 +66,15 @@ typedef struct {
     uint8_t states[NVN_WINDOW_MAX_TEXTURES];
     int32_t last_index;
 } WindowRec;
-typedef struct { uint64_t device; NvnSyncState state; uint32_t fences; } SyncRec;
+typedef struct {
+    uint64_t device;
+    NvnSyncState state;
+    uint32_t syncpoint; /* the syncpoint id of the queue with the newest fence */
+    uint32_t value;     /* what that queue promises to reach for the newest fence */
+    uint32_t serial;    /* the newest fence of this sync */
+} SyncRec;
+/* nvnQueueFenceSync flag bit 0: the call also posts the pending frame. Other bits have no host meaning. */
+#define NVN_QUEUE_FENCE_FLUSH_FOR_CPU 1u
 /* The program records: the shader header stays in the game's memory, and the host copies the small control block.
    SetShadersExt validates all entries before it replaces the table. */
 typedef struct {
@@ -592,6 +603,22 @@ out:
     return ok;
 }
 
+/* Fails the syncs of the tokens of a frame that a new QueueInitialize drops: a dropped frame never posts, so a waiter
+   must not stay PENDING (SyncWait then refuses with 3). A token names a sync only when its generation and its serial
+   still match. Caller holds objs_lock. */
+static void queue_drop_frame_syncs(u64 queue_addr, const NvnPendingFrame* frame) {
+    for (uint32_t i = 0; i < frame->token_count; i++) {
+        const NvnFrameToken* token = &frame->tokens[i];
+        NvnObj* so = nvn_objtab_valid(&objs, token->sync, token->generation)
+                         ? nvn_objtab_find(&objs, token->sync) : NULL;
+        if (!so || so->kind != NVN_OBJ_SYNC) continue;
+        SyncRec* sync = so->data;
+        if (!nvn_frame_token_matches(token, so->generation, sync->serial)) continue;
+        sync->state = NVN_SYNC_UNSIGNALED;
+        LOG("nvn-native: queue=%llx drops the fence of sync=%llx, the queue is initialized again\n",
+            (unsigned long long)queue_addr, (unsigned long long)token->sync);
+    }
+}
 /* nvnQueueInitialize(queue, builder): runs the library builders, records the builder and opens the private channel
    of the frame jobs. A failed builder stage leaves the macro code empty. */
 static void h_queue_initialize(CPU* c, u64 entry) {
@@ -609,7 +636,9 @@ static void h_queue_initialize(CPU* c, u64 entry) {
     uint32_t channel_id = 0;
     GpuChannel* channel = NULL;
     if (old) { /* initialized again without Finalize */
+        queue_drop_frame_syncs(queue_addr, &old->pending);
         nvn_frame_release(&old->pending, &lists);
+        pc_broadcast(&frame_done_cv); /* a waiter of a dropped fence must see its state */
         channel_id = old->channel_id;
         channel = old->channel;
         free(old->init_words);
@@ -644,6 +673,14 @@ static QueueRec* queue_rec(u64 addr, const char* operation) {
     QueueRec* q = known_record(addr, NVN_OBJ_QUEUE);
     if (!q) LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s unknown queue=%llx\n", operation, (unsigned long long)addr);
     return q;
+}
+/* The device of the queue record, for the execution test (nvn_exectest.c). 0 when the queue is unknown. */
+uint64_t nvn_native_queue_device(uint64_t queue) {
+    pm_lock(&objs_lock);
+    const QueueRec* q = known_record(queue, NVN_OBJ_QUEUE);
+    const uint64_t device = q ? q->builder.device : 0;
+    pm_unlock(&objs_lock);
+    return device;
 }
 
 /* G2 and G5: pool state stays in host records. A pool maps its storage at its GPU address from Initialize to
@@ -1817,24 +1854,12 @@ static void* known_record(u64 addr, NvnObjKind kind) {
 #define PROGRAM_ENTRY_BYTES_PLAIN 0x10u /* one SetShaders entry: ignored word, header pointer */
 #define PROGRAM_HEADER_READ_BYTES (NVN_PROGRAM_STAGE_OFFSET + 4u) /* the header words up to the stage word */
 #define PROGRAM_CONTROL_BYTES 0x18u     /* the control block that the host copies */
-#define PROGRAM_HEADER_ALIGNMENT 8u
 
 #define PROGRAM_REFUSAL_ENTRY_UNREADABLE "entry is unreadable"
-#define PROGRAM_REFUSAL_WORD_ZERO "entry word is zero"
-#define PROGRAM_REFUSAL_HEADER_NULL "header is null"
-#define PROGRAM_REFUSAL_HEADER_UNALIGNED "header is not aligned"
 #define PROGRAM_REFUSAL_HEADER_UNREADABLE "header is unreadable"
 #define PROGRAM_REFUSAL_HEADER_BAD "header is not a shader"
 #define PROGRAM_REFUSAL_STAGE_REPEATED "stage is repeated"
 #define PROGRAM_REFUSAL_CONTROL_UNREADABLE "control is unreadable"
-
-/* The host builder builds stage 0 (vertex, no VertexA), stage 1 (fragment), stage 5 (compute) and the transform
-   feedback block of the vertex stage. Stages 2 to 4 and VertexA are not ported, so a program with any of them is
-   refused. */
-#define PROGRAM_STAGE_VERTEX 0u
-#define PROGRAM_STAGE_FRAGMENT 1u
-#define PROGRAM_STAGE_COMPUTE 5u
-#define PROGRAM_STAGE_SUPPORTED_MASK 0x23u
 
 #define PROGRAM_BUILD_HEADER_BYTES 0x76Cu /* the header bytes that the word builder reads, up to h+0x76b */
 #define PROGRAM_HEADER_CB_OFFSET 0x700u
@@ -1905,16 +1930,9 @@ static int program_read_entry(u64 entries, int32_t index, const ProgramEntryLayo
     uint64_t entry_word = layout->has_control ? gr64(at) : 0;
     uint64_t header = gr64(at + 8);
     uint64_t control = layout->has_control ? gr64(at + 0x10) : 0;
-    if (layout->has_control && !entry_word) {
-        *reason = PROGRAM_REFUSAL_WORD_ZERO;
-        return 0;
-    }
-    if (!header) {
-        *reason = PROGRAM_REFUSAL_HEADER_NULL;
-        return 0;
-    }
-    if (header & (PROGRAM_HEADER_ALIGNMENT - 1u)) {
-        *reason = PROGRAM_REFUSAL_HEADER_UNALIGNED;
+    const char* refusal = nvn_program_entry_refusal(layout->has_control, entry_word, header);
+    if (refusal) {
+        *reason = refusal;
         return 0;
     }
     if (!native_guest_readable(header, PROGRAM_HEADER_READ_BYTES)) {
@@ -2002,14 +2020,6 @@ static int program_read_compute_in(const ProgramStageRec* rec, NvnProgramCompute
     return 1;
 }
 
-/* The lowest stage above stage 1 that is present and not supported, or -1. */
-static int program_unsupported_stage(uint32_t stage_mask) {
-    uint32_t unsupported = stage_mask & ~PROGRAM_STAGE_SUPPORTED_MASK;
-    for (uint32_t stage = PROGRAM_STAGE_FRAGMENT + 1u; stage < NVN_PROGRAM_STAGES; stage++)
-        if (unsupported & (1u << stage)) return (int)stage;
-    return -1;
-}
-
 /* nvnProgramInitialize(prog, device): the host keeps the device link and writes nothing into the game memory. */
 static void h_program_initialize(CPU* c, u64 entry) {
     (void)entry;
@@ -2078,17 +2088,24 @@ static void program_set_shaders(CPU* c, const ProgramEntryLayout* layout) {
     next.stage_mask = 0;
     memset(next.stage, 0, sizeof next.stage);
     int ok = 1;
-    if (count < 0) {
-        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: count=%d is negative\n",
-                  (unsigned long long)addr, count);
-        ok = 0;
-    } else if ((uint32_t)count > NVN_PROGRAM_STAGES) {
-        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: count=%d is above %u\n",
-                  (unsigned long long)addr, count, (unsigned)NVN_PROGRAM_STAGES);
-        ok = 0;
-    } else if (count > 0 && !entries) {
-        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: entries is null\n",
-                  (unsigned long long)addr);
+    const NvnProgramCountCheck count_check = nvn_program_count_check(count, entries);
+    if (count_check != NVN_PROGRAM_COUNT_OK) {
+        switch (count_check) {
+        case NVN_PROGRAM_COUNT_NEGATIVE:
+            LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: count=%d is negative\n",
+                      (unsigned long long)addr, count);
+            break;
+        case NVN_PROGRAM_COUNT_ABOVE:
+            LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: count=%d is above %u\n",
+                      (unsigned long long)addr, count, (unsigned)NVN_PROGRAM_STAGES);
+            break;
+        case NVN_PROGRAM_COUNT_ENTRIES_NULL:
+            LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: entries is null\n",
+                      (unsigned long long)addr);
+            break;
+        case NVN_PROGRAM_COUNT_OK:
+            break;
+        }
         ok = 0;
     } else if (count > 0 && !native_guest_readable(entries, (u64)count * layout->bytes)) {
         LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: entries=%llx is unreadable\n",
@@ -2105,17 +2122,16 @@ static void program_set_shaders(CPU* c, const ProgramEntryLayout* layout) {
             ok = 0;
             break;
         }
-        if (next.stage_mask & (1u << stage_index)) {
+        if (!nvn_program_stage_add(&next.stage_mask, stage_index)) {
             LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx entry=%d refused: %s\n",
                       (unsigned long long)addr, i, PROGRAM_REFUSAL_STAGE_REPEATED);
             ok = 0;
             break;
         }
         next.stage[stage_index] = stage;
-        next.stage_mask |= 1u << stage_index;
     }
     if (ok) {
-        int stage = program_unsupported_stage(next.stage_mask);
+        int stage = nvn_program_unsupported_stage(next.stage_mask);
         if (stage >= 0) {
             LOG_LIMIT(PROGRAM_LOG_LIMIT,
                       "nvn-native: program %llx refused: stage %d is not supported by the host builder\n",
@@ -2130,44 +2146,44 @@ static void program_set_shaders(CPU* c, const ProgramEntryLayout* layout) {
         const NvnProgramStageIn* vertex = NULL;
         const NvnProgramStageIn* fragment = NULL;
         const NvnProgramComputeIn* compute = NULL;
-        if (next.stage_mask & (1u << PROGRAM_STAGE_VERTEX)) {
-            if (!program_read_stage_in(&next.stage[PROGRAM_STAGE_VERTEX], &vertex_in)) {
+        if (next.stage_mask & (1u << NVN_PROGRAM_STAGE_VERTEX)) {
+            if (!program_read_stage_in(&next.stage[NVN_PROGRAM_STAGE_VERTEX], &vertex_in)) {
                 LOG_LIMIT(PROGRAM_LOG_LIMIT,
                           "nvn-native: program %llx stage=%u refused: header is too short for the word array\n",
-                          (unsigned long long)addr, (unsigned)PROGRAM_STAGE_VERTEX);
+                          (unsigned long long)addr, (unsigned)NVN_PROGRAM_STAGE_VERTEX);
                 ok = 0;
             } else {
                 vertex = &vertex_in;
             }
         }
-        if (ok && (next.stage_mask & (1u << PROGRAM_STAGE_FRAGMENT))) {
-            if (!program_read_stage_in(&next.stage[PROGRAM_STAGE_FRAGMENT], &fragment_in)) {
+        if (ok && (next.stage_mask & (1u << NVN_PROGRAM_STAGE_FRAGMENT))) {
+            if (!program_read_stage_in(&next.stage[NVN_PROGRAM_STAGE_FRAGMENT], &fragment_in)) {
                 LOG_LIMIT(PROGRAM_LOG_LIMIT,
                           "nvn-native: program %llx stage=%u refused: header is too short for the word array\n",
-                          (unsigned long long)addr, (unsigned)PROGRAM_STAGE_FRAGMENT);
+                          (unsigned long long)addr, (unsigned)NVN_PROGRAM_STAGE_FRAGMENT);
                 ok = 0;
             } else {
                 fragment = &fragment_in;
                 frag.present = 1;
-                program_read_fragment_in(next.stage[PROGRAM_STAGE_FRAGMENT].header, &frag);
+                program_read_fragment_in(next.stage[NVN_PROGRAM_STAGE_FRAGMENT].header, &frag);
             }
         }
-        if (ok && (next.stage_mask & (1u << PROGRAM_STAGE_COMPUTE))) {
-            if (!program_read_compute_in(&next.stage[PROGRAM_STAGE_COMPUTE], &compute_in)) {
+        if (ok && (next.stage_mask & (1u << NVN_PROGRAM_STAGE_COMPUTE))) {
+            if (!program_read_compute_in(&next.stage[NVN_PROGRAM_STAGE_COMPUTE], &compute_in)) {
                 LOG_LIMIT(PROGRAM_LOG_LIMIT,
                           "nvn-native: program %llx stage=%u refused: header is too short for the word array\n",
-                          (unsigned long long)addr, (unsigned)PROGRAM_STAGE_COMPUTE);
+                          (unsigned long long)addr, (unsigned)NVN_PROGRAM_STAGE_COMPUTE);
                 ok = 0;
             } else {
                 compute = &compute_in;
             }
         }
         if (ok && compute && (vertex || fragment)) {
-            uint32_t other = vertex ? PROGRAM_STAGE_VERTEX : PROGRAM_STAGE_FRAGMENT;
+            uint32_t other = vertex ? NVN_PROGRAM_STAGE_VERTEX : NVN_PROGRAM_STAGE_FRAGMENT;
             LOG_LIMIT(PROGRAM_LOG_LIMIT,
                       "nvn-native: program %llx refused: compute stage %u with stage %u is not supported by the host "
                       "builder\n",
-                      (unsigned long long)addr, (unsigned)PROGRAM_STAGE_COMPUTE, (unsigned)other);
+                      (unsigned long long)addr, (unsigned)NVN_PROGRAM_STAGE_COMPUTE, (unsigned)other);
             ok = 0;
         }
         uint32_t program_id = 0;
@@ -2187,10 +2203,10 @@ static void program_set_shaders(CPU* c, const ProgramEntryLayout* layout) {
             ok = 0;
         }
         /* The transform feedback block follows all graphics words. Only the vertex stage has a blob. */
-        if (ok && (next.stage_mask & (1u << PROGRAM_STAGE_VERTEX))) {
+        if (ok && (next.stage_mask & (1u << NVN_PROGRAM_STAGE_VERTEX))) {
             const char* reason = NULL;
             uint32_t xfb_count = 0;
-            if (!program_append_xfb_words(next.stage[PROGRAM_STAGE_VERTEX].header, next.words + next.word_count,
+            if (!program_append_xfb_words(next.stage[NVN_PROGRAM_STAGE_VERTEX].header, next.words + next.word_count,
                                           NVN_PROGRAM_WORDS_MAX - next.word_count, &xfb_count, &reason)) {
                 LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: %s\n", (unsigned long long)addr,
                           reason);
@@ -3934,7 +3950,6 @@ static void h_multisample_state_get_sample_locations_grid(CPU* c, u64 entry) {
     }
     pm_unlock(&objs_lock);
 }
-#define MULTISAMPLE_LOCATION_BYTES 16u /* the four sample location words of the record, guest bytes 4..19 */
 static void h_multisample_state_set_sample_locations(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnMultisampleStateSetSampleLocations";
@@ -3947,7 +3962,7 @@ static void h_multisample_state_set_sample_locations(CPU* c, u64 entry) {
     }
     /* The library writes past its record when index + count leaves 16. The host refuses that write. */
     if (!native_guest_readable(c->x[3], (u64)count * 2u * sizeof(uint32_t)) ||
-        index > MULTISAMPLE_LOCATION_BYTES || count > MULTISAMPLE_LOCATION_BYTES - index) {
+        !nvn_multisample_locations_fit(index, count)) {
         LOG("nvn-native: %s skipped index=%u count=%u\n", name, index, count);
         pm_unlock(&objs_lock);
         return;
@@ -4230,13 +4245,8 @@ static void h_command_buffer_bind_program(CPU* c, u64 entry) {
                 command_dropped(cb, name, "unknown program", op.program);
             else {
                 op.program_mask = program->stage_mask;
-                if (program->stage_mask & (1u << NVN_PROGRAM_STAGE_COMPUTE)) {
-                    op.word_count = NVN_PROGRAM_COMPUTE_WORDS;
-                    memcpy(op.words, program->words, NVN_PROGRAM_COMPUTE_WORDS * sizeof op.words[0]);
-                } else {
-                    op.word_count = program->word_count;
-                    memcpy(op.words, program->words, sizeof op.words);
-                }
+                op.word_count = nvn_bind_program_words(program->stage_mask, program->words, program->word_count,
+                                                       op.words);
                 command_record(cb, c->x[0], name, NVN_OP_BIND_PROGRAM, &op, sizeof op);
             }
         }
@@ -4755,7 +4765,7 @@ static void h_command_buffer_fence_sync(CPU* c, u64 entry) {
     static const char* const name = "nvnCommandBufferFenceSync";
     pm_lock(&objs_lock);
     CommandBufferRec* cb = command_buffer(c->x[0], name);
-    NvnOpFenceSync op = {c->x[1], 0, (uint32_t)c->x[2]};
+    NvnOpFenceSync op = {c->x[1], 0, (uint32_t)c->x[2], (uint32_t)c->x[3] & NVN_QUEUE_FENCE_FLUSH_FOR_CPU};
     if (!cb) {
     } else if (!command_object(op.sync, NVN_OBJ_SYNC, &op.generation)) {
         command_dropped(cb, name, "unknown sync", op.sync);
@@ -4764,8 +4774,8 @@ static void h_command_buffer_fence_sync(CPU* c, u64 entry) {
         __atomic_fetch_add(&dropped_ops, 1, __ATOMIC_RELAXED);
         COMMAND_LOG("nvn-native: %s condition=%u is not supported\n", name, op.condition);
     } else {
-        if (c->x[3])
-            LOG_LIMIT(8, "nvn-native: %s flags=%llx (bit 0 FLUSH_FOR_CPU is done by the host)\n",
+        if (c->x[3] & ~NVN_QUEUE_FENCE_FLUSH_FOR_CPU)
+            LOG_LIMIT(8, "nvn-native: %s flags=%llx has bits other than FLUSH_FOR_CPU\n",
                       name, (unsigned long long)c->x[3]);
         command_record(cb, c->x[0], name, NVN_OP_FENCE_SYNC, &op, sizeof op);
     }
@@ -6127,9 +6137,9 @@ static void h_window_builder_get_texture(CPU* c, u64 entry) {
     pm_lock(&objs_lock);
     NvnWindowBuilder* b = rec_get(c->x[0], NVN_OBJ_WINDOW_BUILDER, sizeof *b);
     const int32_t index = (int32_t)c->x[1];
-    const uint64_t at = b->textures + (uint64_t)((int64_t)index * (int64_t)sizeof(uint64_t));
+    uint64_t at = 0;
     uint64_t texture = 0;
-    if ((int32_t)b->texture_count <= index) {
+    if (!nvn_window_texture_slot(b->textures, b->texture_count, index, &at)) {
         c->x[0] = 0;
     } else if (!native_guest_readable(at, sizeof(uint64_t))) {
         LOG("nvn-native: nvnWindowBuilderGetTexture unreadable index=%d address=%llx\n",
@@ -6254,7 +6264,11 @@ static void h_window_get_crop(CPU* c, u64 entry) {
 static void h_sync_initialize(CPU* c, u64 entry) {
     (void)entry; pm_lock(&objs_lock);
     SyncRec* s = rec_get(c->x[0], NVN_OBJ_SYNC, sizeof *s);
-    s->device = c->x[1]; s->state = NVN_SYNC_UNSIGNALED; s->fences = 0;
+    s->device = c->x[1];
+    s->state = NVN_SYNC_UNSIGNALED;
+    s->syncpoint = 0;
+    s->value = 0;
+    s->serial = 0;
     c->x[0] = 1; pm_unlock(&objs_lock);
 }
 static void h_sync_finalize(CPU* c, u64 entry) {
@@ -6304,9 +6318,9 @@ static void window_acquire_texture(CPU* c, u64 queue_addr, u64 window_addr, u64 
     const int queue_ok = !has_queue || known_record(queue_addr, NVN_OBJ_QUEUE) != NULL;
     WindowRec* window = known_record(window_addr, NVN_OBJ_WINDOW);
     SyncRec* sync = has_sync ? known_record(sync_addr, NVN_OBJ_SYNC) : NULL;
-    if (!queue_ok || !window || (has_sync && !sync) || !native_guest_writable(index_addr, sizeof(uint32_t))) {
-        const char* reason = !queue_ok ? "unknown queue" : !window ? "unknown window"
-                           : has_sync && !sync ? "unknown sync" : "unwritable index";
+    const char* reason = nvn_window_acquire_refusal(0, queue_ok, window != NULL, !has_sync || sync != NULL,
+                                                    native_guest_writable(index_addr, sizeof(uint32_t)));
+    if (reason) {
         window_acquire_failed(c, operation, queue_addr, window_addr, sync_addr, index_addr, reason);
         pm_unlock(&objs_lock);
         return;
@@ -6317,8 +6331,9 @@ static void window_acquire_texture(CPU* c, u64 queue_addr, u64 window_addr, u64 
     pm_lock(&objs_lock);
     window = known_record(window_addr, NVN_OBJ_WINDOW);
     sync = has_sync ? known_record(sync_addr, NVN_OBJ_SYNC) : NULL;
-    if (!window || (has_sync && !sync) || !native_guest_writable(index_addr, sizeof(uint32_t))) {
-        const char* reason = !window ? "window changed" : has_sync && !sync ? "sync changed" : "index changed";
+    reason = nvn_window_acquire_refusal(1, 1, window != NULL, !has_sync || sync != NULL,
+                                        native_guest_writable(index_addr, sizeof(uint32_t)));
+    if (reason) {
         window_acquire_failed(c, operation, queue_addr, window_addr, sync_addr, index_addr, reason);
         pm_unlock(&objs_lock);
         return;
@@ -6329,8 +6344,9 @@ static void window_acquire_texture(CPU* c, u64 queue_addr, u64 window_addr, u64 
         kthread_wait(&frame_done_cv, &objs_lock, -1);
         window = known_record(window_addr, NVN_OBJ_WINDOW);
         sync = has_sync ? known_record(sync_addr, NVN_OBJ_SYNC) : NULL;
-        if (!window || (has_sync && !sync) || !native_guest_writable(index_addr, sizeof(uint32_t))) {
-            const char* reason = !window ? "window changed" : has_sync && !sync ? "sync changed" : "index changed";
+        reason = nvn_window_acquire_refusal(1, 1, window != NULL, !has_sync || sync != NULL,
+                                            native_guest_writable(index_addr, sizeof(uint32_t)));
+        if (reason) {
             window_acquire_failed(c, operation, queue_addr, window_addr, sync_addr, index_addr, reason);
             pm_unlock(&objs_lock);
             return;
@@ -6346,8 +6362,7 @@ static void window_acquire_texture(CPU* c, u64 queue_addr, u64 window_addr, u64 
         pm_unlock(&objs_lock);
         return;
     }
-    window->states[index] = NVN_IMAGE_ACQUIRED;
-    window->last_index = index;
+    nvn_window_acquire_take(window->states, &window->last_index, index);
     /* A free image means its previous frame job has finished. */
     if (sync) sync->state = NVN_SYNC_SIGNALED;
     gw32(index_addr, (uint32_t)index);
@@ -6363,6 +6378,10 @@ static void h_queue_acquire_texture(CPU* c, u64 entry) {
     (void)entry;
     window_acquire_texture(c, c->x[0], c->x[1], 0, c->x[2], "nvnQueueAcquireTexture");
 }
+/* 1 when the syncpoint has reached value, across the 32-bit wrap (the look of syncpt_wait with a 0 timeout). */
+static int syncpoint_reached(u32 id, u32 value) { return (int32_t)(syncpt_read(id) - value) >= 0; }
+/* nvnSyncWait: PENDING waits for the frame's post, then the syncpoint of the queue is the fence. The syncpoint wait
+   runs without objs_lock, so the GPU thread can post and finish jobs meanwhile. */
 static void h_sync_wait(CPU* c, u64 entry) {
     (void)entry;
     const u64 sync_addr = c->x[0];
@@ -6375,23 +6394,36 @@ static void h_sync_wait(CPU* c, u64 entry) {
         pm_unlock(&objs_lock);
         return;
     }
-    NvnSyncAction action = nvn_sync_wait_action(sync->state);
-    if (action == NVN_SYNC_ACTION_REFUSE) {
-        LOG_LIMIT(32, "nvn-native: nvnSyncWait sync=%llx state=%u timeout=%llx is not signaled, fails (caller lr=%llx)\n",
-                  (unsigned long long)sync_addr, (unsigned)sync->state, (unsigned long long)c->x[1],
-                  (unsigned long long)c->x[30]);
-        c->x[0] = NVN_SYNC_WAIT_FAILED;
-        pm_unlock(&objs_lock);
-        return;
-    }
-    NvnSyncWaitResult result = NVN_SYNC_WAIT_SIGNALED;
-    while (action == NVN_SYNC_ACTION_WAIT) {
-        i64 left = nvn_wait_remaining_ns(limit, plat_ns());
+    NvnSyncWaitResult result = NVN_SYNC_WAIT_FAILED;
+    int waited = 0;
+    for (;;) {
+        const int reached = sync->state == NVN_SYNC_FENCED ? syncpoint_reached(sync->syncpoint, sync->value) : 0;
+        const NvnSyncAction action = nvn_sync_wait_action(sync->state, reached);
+        if (action == NVN_SYNC_ACTION_SIGNALED) {
+            result = waited ? NVN_SYNC_WAIT_SATISFIED : NVN_SYNC_WAIT_SIGNALED;
+            break;
+        }
+        if (action == NVN_SYNC_ACTION_REFUSE) {
+            LOG_LIMIT(32, "nvn-native: nvnSyncWait sync=%llx state=%u timeout=%llx is not signaled, fails (caller lr=%llx)\n",
+                      (unsigned long long)sync_addr, (unsigned)sync->state, (unsigned long long)c->x[1],
+                      (unsigned long long)c->x[30]);
+            result = NVN_SYNC_WAIT_FAILED;
+            break;
+        }
+        const i64 left = nvn_wait_remaining_ns(limit, plat_ns());
         if (left == 0) {
             result = NVN_SYNC_WAIT_TIMEOUT;
             break;
         }
-        int timed_out = kthread_wait(&frame_done_cv, &objs_lock, left);
+        if (action == NVN_SYNC_ACTION_WAIT_FRAME) {
+            kthread_wait(&frame_done_cv, &objs_lock, left);
+        } else {
+            const uint32_t id = sync->syncpoint, value = sync->value;
+            pm_unlock(&objs_lock);
+            syncpt_wait(id, value, left);
+            pm_lock(&objs_lock);
+        }
+        waited = 1;
         sync = known_record(sync_addr, NVN_OBJ_SYNC);
         if (!sync) {
             LOG_LIMIT(32, "nvn-native: nvnSyncWait sync=%llx is gone while it waited, fails\n",
@@ -6399,30 +6431,17 @@ static void h_sync_wait(CPU* c, u64 entry) {
             result = NVN_SYNC_WAIT_FAILED;
             break;
         }
-        action = nvn_sync_wait_action(sync->state);
-        if (action == NVN_SYNC_ACTION_SIGNALED) {
-            result = NVN_SYNC_WAIT_SIGNALED;
-            break;
-        }
-        if (action == NVN_SYNC_ACTION_REFUSE) {
-            LOG_LIMIT(32, "nvn-native: nvnSyncWait sync=%llx state=%u is not fenced after the wait, fails\n",
-                      (unsigned long long)sync_addr, (unsigned)sync->state);
-            result = NVN_SYNC_WAIT_FAILED;
-            break;
-        }
-        if (timed_out) {
-            result = NVN_SYNC_WAIT_TIMEOUT;
-            break;
-        }
     }
     c->x[0] = result;
     pm_unlock(&objs_lock);
 }
 
-/* The frame that Present closes (decision 8). The GPU thread replays it on the private channel, shows the window
-   image, frees it and signals the tokens (decisions 9 to 12). */
+/* The frame that Present, a flush, a finish or a fenced flush closes (decisions 8 and 10). The GPU thread replays it
+   on the private channel, shows the window image of a present, frees it and increments the queue's syncpoint. */
+typedef enum { NVN_FRAME_PRESENT = 0, NVN_FRAME_FLUSH } NvnFrameKind;
 typedef struct {
     NvnPendingFrame frame;
+    NvnFrameKind kind;
     uint64_t queue, window, texture;
     uint32_t window_generation, texture_generation, index;
     int window_origin_flip;
@@ -6430,7 +6449,15 @@ typedef struct {
     uint32_t* init_words; /* the queue's macro code, copied so that it outlives the record */
     uint32_t init_word_count;
 } FrameJob;
+/* What a post takes from the caller; a flush leaves the window fields zero. */
+typedef struct {
+    NvnFrameKind kind;
+    uint64_t window, texture;
+    uint32_t window_generation, texture_generation, index;
+    int window_origin_flip;
+} FrameTarget;
 #define FRAME_LOG_LIMIT 4u           /* log lines for the faults of the frame job */
+#define NVN_FLUSH_LOG_LIMIT 4u       /* the first flush jobs of a run, each logged */
 #define NVN_FRAME_ABNORMAL_LIMIT 200u /* abnormal frame lines, so that a broken frame does not flood the log */
 /* The device word at +0x18 was 0x4000 in one run; its source is not found.
    The selftest S case of step 4 checks it. */
@@ -6550,6 +6577,8 @@ int nvn_native_selftest_replay(GpuChannel* ch, uint64_t handle, int window_origi
 static void frame_end(const FrameJob* job) {
     r3d_const_flush(job->channel);
     r3d_pending_flush();
+    /* The job's syncpoint increment follows the releases of its reports, as the console's fence does. */
+    gpu_stream_incr(job->channel->id);
     if (g_renderer->stream_end) g_renderer->stream_end();
     if (g_renderer->stream_run) g_renderer->stream_run(0);
 }
@@ -6575,17 +6604,12 @@ static int frame_show(const FrameJob* job, const FrameParts* parts) {
 }
 static void frame_finish(FrameJob* job) {
     pm_lock(&objs_lock);
-    NvnObj* wo = nvn_objtab_valid(&objs, job->window, job->window_generation) ? nvn_objtab_find(&objs, job->window) : NULL;
-    WindowRec* window = wo && wo->kind == NVN_OBJ_WINDOW ? wo->data : NULL;
-    if (window && job->index < window->texture_count && window->states[job->index] == NVN_IMAGE_PRESENTED)
-        window->states[job->index] = NVN_IMAGE_FREE;
-    for (uint32_t i = 0; i < job->frame.token_count; i++) {
-        const NvnFrameToken* token = &job->frame.tokens[i];
-        NvnObj* so = nvn_objtab_valid(&objs, token->sync, token->generation)
-                         ? nvn_objtab_find(&objs, token->sync) : NULL;
-        if (!so || so->kind != NVN_OBJ_SYNC) continue;
-        SyncRec* sync = so->data;
-        sync->state = nvn_sync_after_token(sync->state, &sync->fences);
+    if (job->kind == NVN_FRAME_PRESENT) {
+        NvnObj* wo = nvn_objtab_valid(&objs, job->window, job->window_generation)
+                         ? nvn_objtab_find(&objs, job->window) : NULL;
+        WindowRec* window = wo && wo->kind == NVN_OBJ_WINDOW ? wo->data : NULL;
+        if (window && job->index < window->texture_count && window->states[job->index] == NVN_IMAGE_PRESENTED)
+            window->states[job->index] = NVN_IMAGE_FREE;
     }
     nvn_frame_release(&job->frame, &lists);
     frames_in_flight--;
@@ -6593,13 +6617,32 @@ static void frame_finish(FrameJob* job) {
     pm_unlock(&objs_lock);
 }
 static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int shown, uint32_t fences,
-                       uint32_t frame_number, uint64_t dispatches, uint32_t dispatch_refusals) {
+                       uint32_t list_count, uint32_t frame_number, uint64_t dispatches, uint32_t dispatch_refusals) {
     uint32_t ops = 0;
     for (uint32_t i = 0; i < NVN_OP_COUNT; i++) ops += stats->replayed[i];
     uint32_t missing = __atomic_load_n(&missing_calls, __ATOMIC_RELAXED);
     uint32_t dropped = __atomic_load_n(&dropped_ops, __ATOMIC_RELAXED);
     static uint32_t last_missing_calls, last_dropped_ops; /* only the GPU thread runs the frame jobs */
     uint32_t missing_delta = missing - last_missing_calls, dropped_delta = dropped - last_dropped_ops;
+    /* A flush has no window, so a missing image is normal for it. */
+    const int flush = job->kind == NVN_FRAME_FLUSH;
+    int abnormal = stats->faults != 0 || dropped_delta != 0 || missing_delta != 0 || (!shown && !flush);
+    if (flush) {
+        if (!abnormal && frame_number > NVN_FLUSH_LOG_LIMIT) return;
+        char causes[256];
+        replay_causes_take(causes, sizeof causes);
+        if (causes[0]) LOG("nvn-native: flush %u refusals: %s\n", frame_number, causes);
+        last_missing_calls = missing;
+        last_dropped_ops = dropped;
+        LOG_LIMIT(NVN_FRAME_ABNORMAL_LIMIT,
+                  "nvn-native: flush %u queue=%llx lists=%u tokens=%u ops=%u faults=%u methods=%u draws=%u "
+                  "missing=%u dropped=%u\n",
+                  frame_number, (unsigned long long)job->queue, list_count, fences, ops, stats->faults, stats->methods,
+                  stats->replayed[NVN_OP_DRAW], missing_delta, dropped_delta);
+        return;
+    }
+    char causes[256];
+    replay_causes_take(causes, sizeof causes);
     pm_lock(&objs_lock);
     uint32_t submitted = frame_submitted_lists, skipped = frame_skipped_lists, acquires = frame_acquires;
     uint32_t unmet_event_waits = frame_unmet_event_waits;
@@ -6608,9 +6651,6 @@ static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int sho
     uint32_t gops = stats->replayed[NVN_OP_CLEAR_DEPTH_STENCIL] + stats->replayed[NVN_OP_CLEAR_TEXTURE] +
                     stats->replayed[NVN_OP_COPY_TEXTURE] + stats->replayed[NVN_OP_REPORT_COUNTER] +
                     stats->replayed[NVN_OP_BIND_IMAGE];
-    int abnormal = stats->faults != 0 || dropped_delta != 0 || missing_delta != 0 || !shown;
-    char causes[256];
-    replay_causes_take(causes, sizeof causes);
     if ((abnormal && nvn_frame_log_due(frame_number, 1)) || (!abnormal && nvn_frame_log_due(frame_number, 0))) {
         if (causes[0]) LOG("nvn-native: frame %u refusals: %s\n", frame_number, causes);
         last_missing_calls = missing; /* the deltas of the next line are from this one */
@@ -6661,35 +6701,95 @@ static void frame_replay_init(const FrameJob* job) {
     LOG("nvn-native: queue init stream replayed methods=%u\n", methods);
 }
 
-/* Runs on the GPU thread: it frees the job that Present made. */
+/* Runs on the GPU thread: it frees the job that a post made. A flush has no window: it replays the lists and ends. */
 static void frame_run(void* arg) {
     FrameJob* job = arg;
-    static uint32_t frame_jobs; /* only the GPU thread runs the frame jobs */
+    static uint32_t frame_jobs, flush_jobs; /* only the GPU thread runs the frame jobs */
+    const int flush = job->kind == NVN_FRAME_FLUSH;
     frame_begin();
-    FrameParts parts;
-    frame_read_parts(job, &parts);
-    frame_first_log(job, &parts);
+    FrameParts parts = {0};
+    if (!flush) {
+        frame_read_parts(job, &parts);
+        frame_first_log(job, &parts);
+    }
     frame_replay_init(job);
-    frame_set_target(job, &parts);
+    if (!flush) frame_set_target(job, &parts);
     NvnReplayStats stats = {0};
     uint64_t dispatches = 0;
     uint32_t dispatch_refusals = 0;
     frame_replay_lists(job, &stats, &dispatches, &dispatch_refusals);
     frame_end(job);
-    int shown = frame_show(job, &parts);
+    int shown = flush ? 0 : frame_show(job, &parts);
+    uint32_t list_count = job->frame.handle_count;
     uint32_t fences = job->frame.token_count;
-    uint32_t frame_number = ++frame_jobs;
+    uint32_t frame_number = flush ? ++flush_jobs : ++frame_jobs;
     frame_finish(job);
-    frame_line(job, &stats, shown, fences, frame_number, dispatches, dispatch_refusals);
+    frame_line(job, &stats, shown, fences, list_count, frame_number, dispatches, dispatch_refusals);
     free(job->init_words);
     free(job);
 }
 
-/* Follows the fence, wait and CALL ops of one submitted list. A fence becomes a frame token, and its signal is at the
-   end of the frame, later than in the library: a waiter waits longer, never shorter. A wait only checks what the serial
-   order has reached. Called with objs_lock held, after the lists were added to the pending frame. */
+/* The serial that the next fence of a sync takes. Commit it only when the token that carries it is stored. */
+static uint32_t fence_serial_next(const SyncRec* sync) {
+    const uint32_t serial = sync->serial + 1;
+    return serial ? serial : 1;
+}
+/* The device window origin of the queue, for a job without a window. Caller holds objs_lock. */
+static int queue_origin_flip(const QueueRec* q) {
+    const DeviceRec* device = known_record(q->builder.device, NVN_OBJ_DEVICE);
+    return device && device->window_origin == 1;
+}
+/* Posts the pending frame of a queue as a job: one syncpoint increment, the value to the newest fence of each token,
+   the init words once. Caller holds objs_lock and calls gpu_call with the result before the unlock, so the fence and
+   its job enter the GPU queue in that order. Lock order: objs_lock, then g_qlk; never take objs_lock with g_qlk held. */
+static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget* target) {
+    FrameJob* job = malloc(sizeof *job);
+    if (!job) fatal("nvn-native: out of memory for the frame job of a queue\n");
+    *job = (FrameJob){0};
+    job->frame = nvn_frame_take(&q->pending);
+    job->kind = target->kind;
+    job->queue = queue_addr;
+    job->window = target->window;
+    job->window_generation = target->window_generation;
+    job->texture = target->texture;
+    job->texture_generation = target->texture_generation;
+    job->index = target->index;
+    job->window_origin_flip = target->kind == NVN_FRAME_PRESENT ? target->window_origin_flip : queue_origin_flip(q);
+    job->channel = q->channel;
+    if (!q->init_replayed) {
+        if (q->init_word_count) {
+            job->init_words = malloc((size_t)q->init_word_count * sizeof *job->init_words);
+            if (!job->init_words) fatal("nvn-native: out of memory for the macro code of a frame job\n");
+            memcpy(job->init_words, q->init_words, (size_t)q->init_word_count * sizeof *job->init_words);
+            job->init_word_count = q->init_word_count;
+        }
+        q->init_replayed = 1; /* this job carries the replay, even when the builder left nothing */
+    }
+    const uint32_t value = syncpt_promise(q->channel_id, 1);
+    q->last_posted = value;
+    q->has_posted = 1;
+    for (uint32_t i = 0; i < job->frame.token_count; i++) {
+        const NvnFrameToken* token = &job->frame.tokens[i];
+        NvnObj* so = nvn_objtab_valid(&objs, token->sync, token->generation)
+                         ? nvn_objtab_find(&objs, token->sync) : NULL;
+        if (!so || so->kind != NVN_OBJ_SYNC) continue;
+        SyncRec* sync = so->data;
+        if (sync->serial != token->serial) continue; /* a newer fence of this sync is in another frame */
+        sync->syncpoint = q->channel_id;
+        sync->value = value;
+        sync->state = NVN_SYNC_FENCED;
+    }
+    frames_in_flight++;
+    pc_broadcast(&frame_done_cv); /* a PENDING waiter now has a fence to wait on */
+    return job;
+}
+
+/* Follows the fence, wait and CALL ops of one submitted list. A fence becomes a token of the pending frame with the
+   serial of that sync, so a newer fence replaces it. Its signal is at the end of the frame job, later than in the
+   library: a waiter waits longer, never shorter. A wait only checks what the serial order has reached. *flush is set
+   to 1 when a fence token has FLUSH_FOR_CPU. Called with objs_lock held, after the lists were added to the frame. */
 static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const NvnOpList* list, uint64_t list_handle,
-                            uint32_t depth) {
+                            uint32_t depth, int* flush) {
     size_t pos = 0;
     NvnOpHeader header;
     const void* payload;
@@ -6701,15 +6801,20 @@ static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const
                 LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx sync=%llx generation=%u is gone\n",
                           name, (unsigned long long)queue_addr, (unsigned long long)list_handle,
                           (unsigned long long)op->sync, op->generation);
-            } else if (!nvn_frame_add_token(&q->pending, op->sync, op->generation)) {
-                LOG_LIMIT(QUEUE_LOG_LIMIT,
-                          "nvn-native: %s queue=%llx list=%llx sync=%llx does not fit in the pending frame\n", name,
-                          (unsigned long long)queue_addr, (unsigned long long)list_handle,
-                          (unsigned long long)op->sync);
             } else {
                 SyncRec* sync = so->data;
-                sync->fences++;
-                sync->state = NVN_SYNC_FENCED;
+                const uint32_t serial = fence_serial_next(sync);
+                if (!nvn_frame_add_token(&q->pending, op->sync, op->generation, serial)) {
+                    LOG_LIMIT(QUEUE_LOG_LIMIT,
+                              "nvn-native: %s queue=%llx list=%llx sync=%llx does not fit in the pending frame\n", name,
+                              (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                              (unsigned long long)op->sync);
+                } else {
+                    sync->serial = serial;
+                    sync->syncpoint = q->channel_id;
+                    sync->state = NVN_SYNC_PENDING;
+                    if (op->flags & NVN_QUEUE_FENCE_FLUSH_FOR_CPU) *flush = 1;
+                }
             }
         } else if (header.code == NVN_OP_WAIT_SYNC) {
             const NvnOpWaitSync* op = payload;
@@ -6719,7 +6824,9 @@ static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const
                 LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx sync=%llx generation=%u is gone\n",
                           name, (unsigned long long)queue_addr, (unsigned long long)list_handle,
                           (unsigned long long)op->sync, op->generation);
-            } else if (sync->state == NVN_SYNC_UNSIGNALED) {
+            } else if (sync->state == NVN_SYNC_UNSIGNALED ||
+                       (sync->state == NVN_SYNC_PENDING && sync->syncpoint != q->channel_id)) {
+                /* a PENDING fence of this queue is earlier in the same pending frame, so it is in order */
                 LOG_LIMIT(QUEUE_LOG_LIMIT,
                           "nvn-native: %s queue=%llx list=%llx sync=%llx is not reached before the wait\n", name,
                           (unsigned long long)queue_addr, (unsigned long long)list_handle,
@@ -6740,16 +6847,18 @@ static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const
                           (unsigned long long)op->handle);
                 continue;
             }
-            queue_scan_list(queue_addr, q, name, target, op->handle, depth + 1);
+            queue_scan_list(queue_addr, q, name, target, op->handle, depth + 1, flush);
         }
     }
 }
 
 /* nvnQueueSubmitCommands(queue, count, handles): copies the handle array at once and adds the lists to the pending
-   frame (decision 8). The game alternates two arrays and reuses them, so the copy is not optional. */
+   frame (decision 8). The game alternates two arrays and reuses them, so the copy is not optional. A fence op with
+   FLUSH_FOR_CPU posts the frame after the scan. */
 static void h_queue_submit_commands(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueueSubmitCommands";
+    FrameJob* job = NULL;
     pm_lock(&objs_lock);
     QueueRec* q = queue_rec(c->x[0], name);
     int32_t count = (int32_t)c->x[1];
@@ -6783,25 +6892,33 @@ static void h_queue_submit_commands(CPU* c, u64 entry) {
         LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx count=%u does not fit in the pending frame\n",
                   name, (unsigned long long)c->x[0], handle_count);
     } else {
+        int flush = 0;
         if (skipped)
             LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx skipped %u handles that are not live lists\n",
                       name, (unsigned long long)c->x[0], skipped);
         for (uint32_t i = 0; i < handle_count; i++) {
             const NvnOpList* list = nvn_list_find(&lists, handles[i]);
-            if (list) queue_scan_list(c->x[0], q, name, list, handles[i], 0);
+            if (list) queue_scan_list(c->x[0], q, name, list, handles[i], 0, &flush);
         }
         frame_submitted_lists += handle_count - skipped;
         frame_skipped_lists += skipped;
+        if (flush && !nvn_frame_is_empty(&q->pending)) {
+            const FrameTarget target = {.kind = NVN_FRAME_FLUSH};
+            job = queue_post_frame(c->x[0], q, &target);
+        }
     }
     free(handles);
+    if (job) gpu_call(frame_run, job, NULL, 0);
     pm_unlock(&objs_lock);
 }
 
-/* nvnQueueFenceSync(queue, sync, condition, flags): the sync is signaled when the pending frame job runs, or at once
-   when the queue has no pending list (decision 10). */
+/* nvnQueueFenceSync(queue, sync, condition, flags): a token in the pending frame, or the syncpoint value of the
+   queue when it has no pending list (decisions 8 and 10). Bit 0 also posts the pending frame. */
 static void h_queue_fence_sync(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueueFenceSync";
+    const uint32_t flags = (uint32_t)c->x[3];
+    FrameJob* job = NULL;
     pm_lock(&objs_lock);
     QueueRec* q = queue_rec(c->x[0], name);
     if (!q) {
@@ -6820,23 +6937,39 @@ static void h_queue_fence_sync(CPU* c, u64 entry) {
         pm_unlock(&objs_lock);
         return;
     }
-    if (c->x[3])
-        LOG_LIMIT(8, "nvn-native: %s flags=%llx (bit 0 FLUSH_FOR_CPU is done by the host)\n",
-                  name, (unsigned long long)c->x[3]);
-    if (nvn_frame_is_empty(&q->pending)) {
-        sync->state = NVN_SYNC_SIGNALED; /* no GPU work of this queue waits for the sync */
-    } else if (nvn_frame_add_token(&q->pending, c->x[1], so->generation)) {
-        sync->fences++;
-        sync->state = NVN_SYNC_FENCED;
+    if (flags & ~NVN_QUEUE_FENCE_FLUSH_FOR_CPU)
+        LOG_LIMIT(8, "nvn-native: %s flags=%llx has bits other than FLUSH_FOR_CPU\n", name,
+                  (unsigned long long)flags);
+    if (!nvn_frame_is_empty(&q->pending)) {
+        const uint32_t serial = fence_serial_next(sync);
+        if (!nvn_frame_add_token(&q->pending, c->x[1], so->generation, serial)) {
+            LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s sync=%llx does not fit in the pending frame\n",
+                      name, (unsigned long long)c->x[1]);
+            pm_unlock(&objs_lock);
+            return;
+        }
+        sync->serial = serial;
+        sync->syncpoint = q->channel_id;
+        sync->state = NVN_SYNC_PENDING;
+        if (flags & NVN_QUEUE_FENCE_FLUSH_FOR_CPU) {
+            const FrameTarget target = {.kind = NVN_FRAME_FLUSH};
+            job = queue_post_frame(c->x[0], q, &target);
+        }
     } else {
-        LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s sync=%llx does not fit in the pending frame\n",
-                  name, (unsigned long long)c->x[1]);
+        sync->serial = fence_serial_next(sync); /* a newer fence replaces a token that another frame still holds */
+        sync->syncpoint = q->channel_id;
+        sync->value = nvn_sync_fence_value(q->has_posted, q->last_posted, syncpt_read(q->channel_id));
+        sync->state = NVN_SYNC_FENCED;
+        pc_broadcast(&frame_done_cv); /* a PENDING waiter of an older token now sees the fence */
     }
+    if (job) gpu_call(frame_run, job, NULL, 0);
     pm_unlock(&objs_lock);
 }
 
 /* nvnQueueWaitSync(queue, sync): the host has one GPU worker (gpu.c, gpu_call), and the frame jobs and calls run on it
-   in order, so a sync that a queue fenced is reached before later work of any queue. The library appends GPU waits. */
+   in order, so a sync that a queue fenced is reached before later work of any queue. A PENDING fence of another queue
+   is not posted yet, and the host cannot park a job: the call returns 0 with a log line. A PENDING fence of the same
+   queue is earlier in the same frame, so it returns 1. The library appends GPU waits. */
 static void h_queue_wait_sync(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueueWaitSync";
@@ -6844,48 +6977,62 @@ static void h_queue_wait_sync(CPU* c, u64 entry) {
     pm_lock(&objs_lock);
     QueueRec* q = queue_rec(c->x[0], name);
     const SyncRec* sync = q ? known_record(sync_addr, NVN_OBJ_SYNC) : NULL;
+    const int cross = sync && q && sync->state == NVN_SYNC_PENDING && sync->syncpoint != q->channel_id;
     if (q && !sync)
         LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s unknown sync=%llx\n", name, (unsigned long long)sync_addr);
+    if (cross)
+        LOG_LIMIT(QUEUE_LOG_LIMIT,
+                  "nvn-native: %s queue=%llx sync=%llx: a cross-queue wait on a pending fence is not supported\n",
+                  name, (unsigned long long)c->x[0], (unsigned long long)sync_addr);
+    else if (sync && sync->state == NVN_SYNC_PENDING)
+        LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s sync=%llx is pending: its frame is not posted yet\n", name,
+                  (unsigned long long)sync_addr);
     if (!q || !sync || sync->state == NVN_SYNC_UNSIGNALED) {
-        if (sync)
+        if (sync && sync->state == NVN_SYNC_UNSIGNALED)
             LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s sync=%llx is not signaled\n", name,
                       (unsigned long long)sync_addr);
         c->x[0] = 0;
     } else {
-        c->x[0] = 1;
+        c->x[0] = cross ? 0 : 1;
     }
     pm_unlock(&objs_lock);
 }
-/* nvnQueueFlush: the host hands a pending frame to the GPU only at Present (nvn-design.md, 3c decision 11). A flush of
-   a partial frame has no meaning here. */
+/* nvnQueueFlush: the pending frame goes to the GPU as a job without a window. An empty frame posts nothing. */
 static void h_queue_flush(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueueFlush";
+    FrameJob* job = NULL;
     pm_lock(&objs_lock);
     QueueRec* q = queue_rec(c->x[0], name);
-    if (q && !nvn_frame_is_empty(&q->pending))
-        LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx with %u pending lists is not supported\n", name,
-                  (unsigned long long)c->x[0], q->pending.handle_count);
+    if (q && !nvn_frame_is_empty(&q->pending)) {
+        const FrameTarget target = {.kind = NVN_FRAME_FLUSH};
+        job = queue_post_frame(c->x[0], q, &target);
+    }
+    if (job) gpu_call(frame_run, job, NULL, 0);
     pm_unlock(&objs_lock);
 }
-/* nvnQueueFinish: waits until every posted frame job has ended. A pending frame that no present took cannot finish. */
+/* nvnQueueFinish: posts the pending frame and waits for the last posted syncpoint value, so the GPU work and its
+   releases are done. The wait runs without objs_lock. */
 static void h_queue_finish(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueueFinish";
+    FrameJob* job = NULL;
+    uint32_t id = 0, value = 0;
+    int wait = 0;
     pm_lock(&objs_lock);
     QueueRec* q = queue_rec(c->x[0], name);
-    if (!q) {
-        pm_unlock(&objs_lock);
-        return;
+    if (q && !nvn_frame_is_empty(&q->pending)) {
+        const FrameTarget target = {.kind = NVN_FRAME_FLUSH};
+        job = queue_post_frame(c->x[0], q, &target);
     }
-    if (!nvn_frame_is_empty(&q->pending)) {
-        LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx has %u lists that no present took, returns\n", name,
-                  (unsigned long long)c->x[0], q->pending.handle_count);
-        pm_unlock(&objs_lock);
-        return;
+    if (q && q->has_posted) {
+        id = q->channel_id;
+        value = q->last_posted;
+        wait = 1;
     }
-    while (frames_in_flight) kthread_wait(&frame_done_cv, &objs_lock, -1);
+    if (job) gpu_call(frame_run, job, NULL, 0);
     pm_unlock(&objs_lock);
+    if (wait) syncpt_wait(id, value, -1);
 }
 /* QueueFinalize would destroy the queue and its channel; the host keeps the record to the process end. */
 static void h_queue_finalize(CPU* c, u64 entry) {
@@ -6929,15 +7076,9 @@ static void h_queue_present_texture(CPU* c, u64 entry) {
     QueueRec* q = known_record(queue_addr, NVN_OBJ_QUEUE);
     NvnObj* wo = nvn_objtab_find(&objs, window_addr);
     WindowRec* window = wo && wo->kind == NVN_OBJ_WINDOW ? wo->data : NULL;
-    const char* reason = NULL;
-    if (!q)
-        reason = "unknown queue";
-    else if (!window)
-        reason = "unknown window";
-    else if (index < 0 || (uint32_t)index >= window->texture_count)
-        reason = "index outside the window textures";
-    else if (window->states[index] != NVN_IMAGE_ACQUIRED)
-        reason = "window image is not acquired";
+    const char* reason = nvn_present_refusal(q != NULL, window != NULL, index,
+                                             window ? window->texture_count : 0,
+                                             window ? window->states : NULL);
     if (reason) {
         LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s failed: %s (queue=%llx window=%llx index=%d)\n",
                   name, reason, (unsigned long long)queue_addr, (unsigned long long)window_addr, index);
@@ -6945,33 +7086,18 @@ static void h_queue_present_texture(CPU* c, u64 entry) {
         return;
     }
     window->states[index] = NVN_IMAGE_PRESENTED;
-    FrameJob job = {0};
-    job.frame = nvn_frame_take(&q->pending);
-    job.queue = queue_addr;
-    job.window = window_addr;
-    job.window_generation = wo->generation;
-    job.texture = window->textures[index];
-    NvnObj* to = nvn_objtab_find(&objs, job.texture);
-    job.texture_generation = to ? to->generation : 0;
-    job.index = (uint32_t)index;
-    job.channel = q->channel;
-    if (!q->init_replayed) {
-        if (q->init_word_count) {
-            job.init_words = malloc((size_t)q->init_word_count * sizeof *job.init_words);
-            if (!job.init_words) fatal("nvn-native: out of memory for the macro code of a frame job\n");
-            memcpy(job.init_words, q->init_words, (size_t)q->init_word_count * sizeof *job.init_words);
-            job.init_word_count = q->init_word_count;
-        }
-        q->init_replayed = 1; /* this job carries the replay, even when the builder left nothing */
-    }
+    FrameTarget target = {.kind = NVN_FRAME_PRESENT};
+    target.window = window_addr;
+    target.window_generation = wo->generation;
+    target.texture = window->textures[index];
+    NvnObj* to = nvn_objtab_find(&objs, target.texture);
+    target.texture_generation = to ? to->generation : 0;
+    target.index = (uint32_t)index;
     const DeviceRec* device = known_record(window->device, NVN_OBJ_DEVICE);
-    job.window_origin_flip = device && device->window_origin == 1;
-    FrameJob* dispatched = malloc(sizeof *dispatched);
-    if (!dispatched) fatal("nvn-native: out of memory for the frame job of a queue\n");
-    *dispatched = job;
-    frames_in_flight++;
+    target.window_origin_flip = device && device->window_origin == 1;
+    FrameJob* job = queue_post_frame(queue_addr, q, &target);
+    gpu_call(frame_run, job, NULL, 0);
     pm_unlock(&objs_lock);
-    gpu_call(frame_run, dispatched, NULL, 0);
 }
 
 /* The host handlers by NVN function name. Later steps add their entries here (G2 to G5 of nvn-design.md, 2-6). */
@@ -7517,10 +7643,103 @@ static u32 nslots;
 /* Registration takes the lock and publishes a slot (addr, release ordering) once it is filled in. Calls read the slots
    without the lock. */
 static PMutex slots_lock = PMUTEX_INIT;
-static GuestFn bootstrap_original, getproc_original;
 static u64 getproc_addr; /* the address of nvnDeviceGetProcAddress, hooked */
 static int active;
 static void getproc_native(CPU* c, u64 entry);
+
+/* The NVN library of the sdk module of update 1.1.1: the one build whose name and address tables the host knows. The
+   names have no "nvn" prefix, are sorted, and have one guest address each. */
+#define NVN_PROC_NAME_BYTES 128u
+typedef struct {
+    u8 build_id[32]; /* the sdk module's build ID, the first 20 bytes, then zero */
+    u32 count;       /* 523 names and 523 addresses */
+    u32 off_offsets; /* 0xABE798: 523 u32 offsets from off_strings, guest 0xDE85798 */
+    u32 off_strings; /* 0xABAFD5: the NUL-terminated names, guest 0xDE81FD5 */
+    u32 off_addrs;   /* 0xC63E58: 523 u64 guest addresses, guest 0xE02AE58 */
+} NvnLibrary;
+static const NvnLibrary known_library = {
+    .build_id = {0xb3, 0x9a, 0xdd, 0x63, 0x42, 0x1b, 0xe5, 0x25, 0xd3, 0x52,
+                 0xe5, 0x76, 0xda, 0xb4, 0x38, 0xd3, 0x81, 0x2e, 0xfd, 0xf0},
+    .count = 523u,
+    .off_offsets = 0xABE798u,
+    .off_strings = 0xABAFD5u,
+    .off_addrs = 0xC63E58u,
+};
+/* The host's copy of the known library's tables. It lives until exit and is filled once, under slots_lock. */
+typedef struct {
+    char* storage;      /* count names of NVN_PROC_NAME_BYTES, without the "nvn" prefix */
+    const char** names; /* storage + index * NVN_PROC_NAME_BYTES */
+    u64* addrs;
+} ProcTable;
+static ProcTable proc_table;
+static int proc_table_ready;
+
+/* Reads the known library's tables once. Called under slots_lock. Each failure is fatal: a build without the tables
+   cannot answer a lookup, and a faked address would run the wrong function. */
+static void proc_table_build(void) {
+    const SnxModInfo* sdk = NULL;
+    for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
+        if (!strcmp(g_mod->mods[i].name, "sdk")) sdk = &g_mod->mods[i];
+    if (!sdk) fatal("nvn-native: the game has no sdk module, so the NVN name table is unknown\n");
+    if (memcmp(sdk->build_id, known_library.build_id, sizeof sdk->build_id))
+        fatal("nvn-native: the sdk build is not the one the NVN name table was read from\n");
+    u64 text_lo = sdk->base + sdk->text_off;
+    u64 text_hi = text_lo + sdk->text_size;
+    u64 ro_lo = sdk->base + sdk->ro_off;
+    u64 ro_hi = ro_lo + sdk->ro_size;
+    u64 data_lo = sdk->base + sdk->data_off;
+    u64 data_hi = data_lo + sdk->data_size;
+    u64 strings = sdk->base + known_library.off_strings;
+    u64 offsets = sdk->base + known_library.off_offsets;
+    u64 address_table = sdk->base + known_library.off_addrs;
+    if (!nvn_span_inside(offsets, 4ull * known_library.count, ro_lo, ro_hi))
+        fatal("nvn-native: the NVN name offset table is not inside the sdk rodata\n");
+    if (!nvn_span_inside(address_table, 8ull * known_library.count, data_lo, data_hi))
+        fatal("nvn-native: the NVN address table is not inside the sdk data\n");
+    char* storage = calloc(known_library.count, NVN_PROC_NAME_BYTES);
+    const char** names = calloc(known_library.count, sizeof *names);
+    u64* addrs = calloc(known_library.count, sizeof *addrs);
+    if (!storage || !names || !addrs) fatal("nvn-native: cannot allocate the NVN name table\n");
+    for (u32 n = 0; n < known_library.count; n++) {
+        u32 offset = gr32(offsets + 4ull * n);
+        u64 name_at = strings + offset;
+        names[n] = storage + (u64)n * NVN_PROC_NAME_BYTES;
+        if (!nvn_span_inside(name_at, 1, ro_lo, ro_hi))
+            fatal("nvn-native: name %u of the NVN library is outside the sdk rodata\n", n);
+        NvnNameRead result = nvn_guest_name_read(name_at, (char*)names[n]);
+        if (result != NVN_NAME_OK)
+            fatal("nvn-native: name %u of the NVN library is not usable (result %d)\n", n, (int)result);
+        if (!nvn_span_inside(name_at, strlen(names[n]) + 1, ro_lo, ro_hi))
+            fatal("nvn-native: name %u of the NVN library is not inside the sdk rodata\n", n);
+        addrs[n] = gr64(address_table + 8ull * n);
+    }
+    int bad = nvn_proc_table_check(names, addrs, known_library.count, text_lo, text_hi);
+    if (bad >= 0)
+        fatal("nvn-native: NVN name %d (%s) or its address is bad\n", bad, names[bad] ? names[bad] : "empty");
+    proc_table.storage = storage;
+    proc_table.names = names;
+    proc_table.addrs = addrs;
+    __atomic_store_n(&proc_table_ready, 1, __ATOMIC_RELEASE);
+}
+
+/* The guest address of the NVN function name in the known library, or 0 when the library does not have it. */
+static u64 host_lookup(const char* name) {
+    if (!__atomic_load_n(&proc_table_ready, __ATOMIC_ACQUIRE)) {
+        pm_lock(&slots_lock);
+        if (!proc_table_ready) proc_table_build();
+        pm_unlock(&slots_lock);
+    }
+    int index = nvn_proc_name_index(proc_table.names, known_library.count, name);
+    return index < 0 ? 0 : proc_table.addrs[index];
+}
+
+/* The known library has no function under the name (the library would try its NVX extension list next). Any answer
+   but 0 would be invented, so the host stops unless nvn_native_missing=0. */
+static void lookup_missing(const char* name) {
+    if (g_settings.nvn_native_missing)
+        fatal("nvn-native: the game asked for \"%s\", which the NVN library of this build does not have\n", name);
+    LOG_LIMIT(16, "nvn-native: the game asked for \"%s\", which the NVN library of this build does not have\n", name);
+}
 
 static u32 slot_hash(u64 addr) { return (u32)((addr >> 2) * 2654435761u) & (NATIVE_SLOTS - 1); }
 static NativeSlot* slot_find(u64 addr) {
@@ -7548,10 +7767,15 @@ static void missing_handler(CPU* c, u64 entry) {
     if (!s) fatal("nvn-native: the missing-function handler runs for an address it never registered (%llx)\n",
                   (unsigned long long)entry);
     __atomic_fetch_add(&missing_calls, 1, __ATOMIC_RELAXED);
-    if (!__atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED)) /* the first call: what the game asked for */
+    if (!__atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED)) { /* the first call: what the game asked for */
+        if (g_settings.nvn_native_missing)
+            fatal("nvn-native: not implemented: %s (x0=%llx x1=%llx x2=%llx x3=%llx)\n", s->name,
+                  (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2],
+                  (unsigned long long)c->x[3]);
         LOG("nvn-native: not implemented: %s (x0=%llx x1=%llx x2=%llx x3=%llx), returns 0\n", s->name,
             (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2],
             (unsigned long long)c->x[3]);
+    }
     c->x[0] = 0;
 }
 
@@ -7597,34 +7821,48 @@ static void install(const char* name, u64 addr) {
     pm_unlock(&slots_lock);
 }
 
-/* nvnDeviceGetProcAddress(device, name). The library's own function runs for the lookup: it returns the address, and
-   the host puts its handler there. Open (nvn-design.md, 2-3, item 6): if it reads the device object, which the
-   library never initialized in this mode. The first run shows it. */
-static void getproc_native(CPU* c, u64 entry) {
-    char name[128];
-    int valid = nvn_guest_name(c->x[1], name);
-    GuestFn original = __atomic_load_n(&getproc_original, __ATOMIC_ACQUIRE);
-    if (!original) fatal("nvn-native: the nvnDeviceGetProcAddress hook runs before its original is known\n");
-    original(c, entry);
-    if (valid && c->x[0]) install(name, c->x[0]);
+/* One lookup hook: answers the name at pointer from the host table in x0 and returns to the caller. The hooks sit in
+   g_disp themselves (no native_call) and run no guest code, so they set c->pc to x30 as a guest RET does. The address,
+   or 0 when the library does not have the name. */
+static u64 answer_lookup(CPU* c, const char* hook, u64 pointer, char name[128]) {
+    NvnNameRead result = pointer ? nvn_guest_name_read(pointer, name) : NVN_NAME_UNREADABLE;
+    if (result == NVN_NAME_UNREADABLE)
+        fatal("nvn-native: %s name (%llx) is null or unreadable\n", hook, (unsigned long long)pointer);
+    /* An empty or overlong name is not in the table. The library would also find nothing. */
+    u64 addr = result == NVN_NAME_OK ? host_lookup(name) : 0;
+    if (!addr) lookup_missing(name);
+    c->x[0] = addr;
+    c->pc = c->x[30];
+    return addr;
 }
 
-static void bootstrap_native(CPU* c, u64 entry) {
+/* nvnDeviceGetProcAddress(device, name). The device is not read: the host answers from the name table, so the library
+   lookup never runs (nvn-design.md, 2-3, item 6). The bootstrap hook put this function in the resolver's slot. */
+static void getproc_native(CPU* c, u64 entry) {
+    (void)entry;
     char name[128];
-    int valid = nvn_guest_name(c->x[0], name); /* nvnBootstrapLoader(name) */
-    bootstrap_original(c, entry);
-    if (!valid || !c->x[0]) return;
+    u64 addr = answer_lookup(c, "nvnDeviceGetProcAddress", c->x[1], name);
+    if (addr && strcmp(name, "nvnDeviceGetProcAddress")) install(name, addr);
+}
+
+/* nvnBootstrapLoader(name) */
+static void bootstrap_native(CPU* c, u64 entry) {
+    (void)entry;
+    char name[128];
+    u64 addr = answer_lookup(c, "nvnBootstrapLoader", c->x[0], name);
+    if (!addr) return;
     if (strcmp(name, "nvnDeviceGetProcAddress")) {
-        install(name, c->x[0]);
+        install(name, addr);
         return;
     }
-    u64 resolver = c->x[0];
-    if (resolver < g_code_lo || resolver >= g_code_hi || (resolver & 3)) return;
     pm_lock(&slots_lock);
-    GuestFn* slot = &g_disp[(resolver - g_code_lo) / 4];
-    if (*slot && !getproc_original) { /* hook once: with nvn_trace the slot may hold the trace hook, which calls back here */
-        __atomic_store_n(&getproc_original, *slot, __ATOMIC_RELEASE);
-        getproc_addr = resolver;
+    GuestFn* slot = &g_disp[(addr - g_code_lo) / 4];
+    if (!*slot) {
+        pm_unlock(&slots_lock);
+        fatal("nvn-native: the nvnDeviceGetProcAddress entry at %llx is empty\n", (unsigned long long)addr);
+    }
+    if (!getproc_addr) { /* hook once; nvn_trace wraps this slot after the first lookup returns */
+        getproc_addr = addr;
         __atomic_store_n(slot, getproc_native, __ATOMIC_RELEASE);
     }
     pm_unlock(&slots_lock);
@@ -7643,7 +7881,6 @@ void nvn_native_init(void) {
         WARN("nvn-native: bootstrap loader has no recompiled entry\n");
         return;
     }
-    bootstrap_original = *slot;
     *slot = bootstrap_native; /* before any guest thread runs */
     active = 1;
     LOG("nvn-native: on, the host answers the NVN functions that the game resolves (%u handlers)\n",

@@ -42,9 +42,13 @@ static void test_window_sync_cycle_params(void) {
     CHECK(nvn_window_pick_image(presented2, 2, -1) == -1);
     CHECK(nvn_window_pick_image(presented2, 2, 0) == -1);
     CHECK(nvn_window_pick_image(presented4, 4, -1) == -1);
-    CHECK(nvn_sync_wait_action(NVN_SYNC_SIGNALED) == NVN_SYNC_ACTION_SIGNALED);
-    CHECK(nvn_sync_wait_action(NVN_SYNC_UNSIGNALED) == NVN_SYNC_ACTION_REFUSE);
-    CHECK(nvn_sync_wait_action(NVN_SYNC_FENCED) == NVN_SYNC_ACTION_WAIT);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_SIGNALED, 0) == NVN_SYNC_ACTION_SIGNALED);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_SIGNALED, 1) == NVN_SYNC_ACTION_SIGNALED);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_UNSIGNALED, 0) == NVN_SYNC_ACTION_REFUSE);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_FENCED, 1) == NVN_SYNC_ACTION_SIGNALED);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_FENCED, 0) == NVN_SYNC_ACTION_WAIT_FENCE);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_PENDING, 0) == NVN_SYNC_ACTION_WAIT_FRAME);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_PENDING, 1) == NVN_SYNC_ACTION_WAIT_FRAME);
     CHECK(nvn_window_has_presented(presented2, 2));
 }
 
@@ -1137,16 +1141,11 @@ static void test_window_present_args(void) {
     CHECK(!nvn_window_present_args(&t, 1, &crop, &args));
 }
 
-static void test_sync_after_token(void) {
-    uint32_t fences = 2;
-    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_FENCED && fences == 1);
-    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_SIGNALED && fences == 0);
-    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_SIGNALED && fences == 0);
-    CHECK(nvn_sync_after_token(NVN_SYNC_SIGNALED, &fences) == NVN_SYNC_SIGNALED && fences == 0);
-    CHECK(nvn_sync_after_token(NVN_SYNC_UNSIGNALED, &fences) == NVN_SYNC_SIGNALED && fences == 0);
-    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, NULL) == NVN_SYNC_FENCED);
-    fences = 3;
-    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_FENCED && fences == 2);
+static void test_sync_fence_value(void) {
+    CHECK(nvn_sync_fence_value(1, 7, 9) == 7);
+    CHECK(nvn_sync_fence_value(0, 7, 9) == 9);
+    CHECK(nvn_sync_fence_value(1, 0, 3) == 0);
+    CHECK(nvn_sync_fence_value(0, 7, 0) == 0);
 }
 
 static void test_u2_event_signal_value(void) {
@@ -3369,13 +3368,216 @@ static void test_u1_multisample_locations(void) {
     CHECK(nvn_multisample_sample_location(NAN, 0) == 0x0f); /* fminnm takes 0.9375 for a NaN */
 }
 
+static void test_window_texture_slot(void) {
+    const uint64_t textures = 0x2000u;
+    uint64_t at = 99;
+    CHECK(nvn_window_texture_slot(textures, 4, 0, &at) == 1 && at == 0x2000u);
+    CHECK(nvn_window_texture_slot(textures, 4, 3, &at) == 1 && at == 0x2018u);
+    CHECK(nvn_window_texture_slot(textures, 4, 4, &at) == 0 && at == 0x2018u); /* index == count: not written */
+    CHECK(nvn_window_texture_slot(textures, 4, -1, &at) == 1 && at == 0x1FF8u); /* a negative index is not refused */
+    CHECK(nvn_window_texture_slot(textures, 0, 0, &at) == 0); /* count 0 */
+    CHECK(nvn_window_texture_slot(textures, 0, -1, &at) == 1 && at == 0x1FF8u);
+    CHECK(nvn_window_texture_slot(0x100002000ull, 2, 1, &at) == 1 && at == 0x100002008ull);
+    CHECK(nvn_window_texture_slot(textures, 0x80000001u, 0, &at) == 0); /* a negative count as int32_t */
+    CHECK(nvn_window_texture_slot(0, 4, INT32_MIN, &at) == 1 && at == 0xFFFFFFFC00000000ull); /* 64-bit product */
+    CHECK(nvn_window_texture_slot(UINT64_MAX - 7u, 4, 1, &at) == 1 && at == 0); /* the address wraps */
+}
+
+static void test_window_acquire_helpers(void) {
+    CHECK(nvn_window_acquire_refusal(0, 1, 1, 1, 1) == NULL);
+    CHECK(strcmp(nvn_window_acquire_refusal(0, 0, 1, 1, 1), "unknown queue") == 0);
+    CHECK(strcmp(nvn_window_acquire_refusal(0, 1, 0, 1, 1), "unknown window") == 0);
+    CHECK(strcmp(nvn_window_acquire_refusal(0, 1, 1, 0, 1), "unknown sync") == 0);
+    CHECK(strcmp(nvn_window_acquire_refusal(0, 1, 1, 1, 0), "unwritable index") == 0);
+    CHECK(strcmp(nvn_window_acquire_refusal(0, 0, 0, 0, 0), "unknown queue") == 0); /* the first reason */
+    CHECK(strcmp(nvn_window_acquire_refusal(0, 1, 0, 0, 0), "unknown window") == 0);
+    CHECK(strcmp(nvn_window_acquire_refusal(0, 1, 1, 0, 0), "unknown sync") == 0);
+    CHECK(nvn_window_acquire_refusal(1, 0, 1, 1, 1) == NULL); /* the recheck ignores the queue */
+    CHECK(strcmp(nvn_window_acquire_refusal(1, 1, 0, 0, 0), "window changed") == 0);
+    CHECK(strcmp(nvn_window_acquire_refusal(1, 1, 1, 0, 0), "sync changed") == 0);
+    CHECK(strcmp(nvn_window_acquire_refusal(1, 1, 1, 1, 0), "index changed") == 0);
+    CHECK(nvn_window_acquire_refusal(1, 1, 1, 1, 1) == NULL);
+
+    uint8_t states[4] = {NVN_IMAGE_FREE, NVN_IMAGE_FREE, NVN_IMAGE_ACQUIRED, NVN_IMAGE_PRESENTED};
+    int32_t last = -1;
+    nvn_window_acquire_take(states, &last, 2);
+    CHECK(states[0] == NVN_IMAGE_FREE && states[1] == NVN_IMAGE_FREE && states[2] == NVN_IMAGE_ACQUIRED);
+    CHECK(states[3] == NVN_IMAGE_PRESENTED && last == 2);
+    nvn_window_acquire_take(states, &last, 1);
+    CHECK(states[1] == NVN_IMAGE_ACQUIRED && last == 1);
+}
+
+static void test_present_refusal(void) {
+    const uint8_t states[4] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_PRESENTED, NVN_IMAGE_FREE, NVN_IMAGE_ACQUIRED};
+    CHECK(nvn_present_refusal(1, 1, 0, 4, states) == NULL);
+    CHECK(nvn_present_refusal(1, 1, 3, 4, states) == NULL);
+    CHECK(strcmp(nvn_present_refusal(0, 1, 0, 4, states), "unknown queue") == 0);
+    CHECK(strcmp(nvn_present_refusal(1, 0, 0, 4, states), "unknown window") == 0);
+    CHECK(strcmp(nvn_present_refusal(0, 0, 0, 4, states), "unknown queue") == 0); /* the first reason */
+    CHECK(strcmp(nvn_present_refusal(0, 0, 9, 0, NULL), "unknown queue") == 0);
+    CHECK(strcmp(nvn_present_refusal(1, 0, -1, 0, NULL), "unknown window") == 0); /* before the index */
+    CHECK(strcmp(nvn_present_refusal(1, 1, -1, 4, states), "index outside the window textures") == 0);
+    CHECK(strcmp(nvn_present_refusal(1, 1, 4, 4, states), "index outside the window textures") == 0);
+    CHECK(strcmp(nvn_present_refusal(1, 1, 0, 0, states), "index outside the window textures") == 0);
+    CHECK(strcmp(nvn_present_refusal(1, 1, 1, 4, states), "window image is not acquired") == 0);
+    CHECK(strcmp(nvn_present_refusal(1, 1, 2, 4, states), "window image is not acquired") == 0);
+    /* states is read only after the index check passed */
+    CHECK(strcmp(nvn_present_refusal(1, 1, 4, 4, NULL), "index outside the window textures") == 0);
+}
+
+static void test_multisample_locations_fit(void) {
+    CHECK(NVN_MULTISAMPLE_LOCATION_BYTES == 16u);
+    CHECK(nvn_multisample_locations_fit(0, 0));
+    CHECK(nvn_multisample_locations_fit(0, 16));
+    CHECK(nvn_multisample_locations_fit(16, 0));
+    CHECK(!nvn_multisample_locations_fit(16, 1));
+    CHECK(!nvn_multisample_locations_fit(17, 0));
+    CHECK(nvn_multisample_locations_fit(4, 12));
+    CHECK(!nvn_multisample_locations_fit(4, 13));
+    CHECK(nvn_multisample_locations_fit(1, 1));
+    CHECK(!nvn_multisample_locations_fit(UINT32_MAX, 0));
+    CHECK(!nvn_multisample_locations_fit(1, UINT32_MAX)); /* index + count wraps */
+    CHECK(!nvn_multisample_locations_fit(UINT32_MAX, 1));
+}
+
+static void test_bind_program_words(void) {
+    uint32_t src[NVN_PROGRAM_WORDS_MAX];
+    uint32_t out[NVN_PROGRAM_WORDS_MAX];
+    for (uint32_t i = 0; i < NVN_PROGRAM_WORDS_MAX; i++) src[i] = 0x1000u + i;
+    for (uint32_t i = 0; i < NVN_PROGRAM_WORDS_MAX; i++) out[i] = 0xDEADBEEFu;
+
+    CHECK(nvn_bind_program_words(1u << NVN_PROGRAM_STAGE_COMPUTE, src, 30, out) == NVN_PROGRAM_COMPUTE_WORDS);
+    for (uint32_t i = 0; i < NVN_PROGRAM_COMPUTE_WORDS; i++) CHECK(out[i] == src[i]);
+    CHECK(out[NVN_PROGRAM_COMPUTE_WORDS] == 0xDEADBEEFu); /* the compute words alone are copied */
+
+    for (uint32_t i = 0; i < NVN_PROGRAM_WORDS_MAX; i++) out[i] = 0xDEADBEEFu;
+    CHECK(nvn_bind_program_words(0x3u, src, 25, out) == 25u);
+    for (uint32_t i = 0; i < NVN_PROGRAM_WORDS_MAX; i++) CHECK(out[i] == src[i]); /* every word is copied */
+
+    CHECK(nvn_bind_program_words(1u << NVN_PROGRAM_STAGE_COMPUTE | 1u << NVN_PROGRAM_STAGE_VERTEX, src, 25, out) ==
+          NVN_PROGRAM_COMPUTE_WORDS); /* a set compute bit wins */
+}
+
+static void test_program_set_helpers(void) {
+    CHECK(nvn_program_count_check(0, 0) == NVN_PROGRAM_COUNT_OK);
+    CHECK(nvn_program_count_check(0, 0x1000) == NVN_PROGRAM_COUNT_OK);
+    CHECK(nvn_program_count_check(1, 0x1000) == NVN_PROGRAM_COUNT_OK);
+    CHECK(nvn_program_count_check((int32_t)NVN_PROGRAM_STAGES, 0x1000) == NVN_PROGRAM_COUNT_OK);
+    CHECK(nvn_program_count_check((int32_t)NVN_PROGRAM_STAGES + 1, 0x1000) == NVN_PROGRAM_COUNT_ABOVE);
+    CHECK(nvn_program_count_check(1, 0) == NVN_PROGRAM_COUNT_ENTRIES_NULL);
+    CHECK(nvn_program_count_check(-1, 0x1000) == NVN_PROGRAM_COUNT_NEGATIVE);
+    CHECK(nvn_program_count_check(-1, 0) == NVN_PROGRAM_COUNT_NEGATIVE); /* the count comes first */
+    CHECK(nvn_program_count_check((int32_t)NVN_PROGRAM_STAGES + 1, 0) == NVN_PROGRAM_COUNT_ABOVE);
+    CHECK(nvn_program_count_check(INT32_MIN, 0) == NVN_PROGRAM_COUNT_NEGATIVE);
+
+    /* literal texts: the log lines of the handler must not change with the macros */
+    CHECK(strcmp(nvn_program_entry_refusal(1, 0, 0), "entry word is zero") == 0);
+    CHECK(strcmp(nvn_program_entry_refusal(1, 0, 0x1000), "entry word is zero") == 0); /* first */
+    CHECK(strcmp(nvn_program_entry_refusal(0, 0, 0), "header is null") == 0); /* no word check */
+    CHECK(strcmp(nvn_program_entry_refusal(1, 5, 0), "header is null") == 0);
+    CHECK(strcmp(nvn_program_entry_refusal(1, 5, 4), "header is not aligned") == 0); /* header 4 */
+    CHECK(strcmp(nvn_program_entry_refusal(1, 5, 2), "header is not aligned") == 0);
+    CHECK(strcmp(nvn_program_entry_refusal(1, 5, 1), "header is not aligned") == 0);
+    CHECK(strcmp(nvn_program_entry_refusal(0, 0, 4), "header is not aligned") == 0);
+    CHECK(nvn_program_entry_refusal(1, 5, 8) == NULL);
+    CHECK(nvn_program_entry_refusal(1, 5, 0x1008) == NULL);
+    CHECK(nvn_program_entry_refusal(0, 0, 8) == NULL); /* a plain entry has no word */
+
+    uint32_t mask = 0;
+    CHECK(nvn_program_stage_add(&mask, NVN_PROGRAM_STAGE_VERTEX) == 1 && mask == 0x1u);
+    CHECK(nvn_program_stage_add(&mask, NVN_PROGRAM_STAGE_VERTEX) == 0 && mask == 0x1u); /* repeated */
+    CHECK(nvn_program_stage_add(&mask, NVN_PROGRAM_STAGE_COMPUTE) == 1 && mask == 0x21u);
+    CHECK(nvn_program_stage_add(&mask, NVN_PROGRAM_STAGE_COMPUTE) == 0 && mask == 0x21u);
+    for (uint32_t stage = 0; stage < NVN_PROGRAM_STAGES; stage++) {
+        uint32_t one = 0;
+        CHECK(nvn_program_stage_add(&one, stage) == 1 && one == 1u << stage);
+        CHECK(nvn_program_stage_add(&one, stage) == 0 && one == 1u << stage);
+    }
+
+    CHECK(nvn_program_unsupported_stage(0) == -1);
+    CHECK(nvn_program_unsupported_stage(0x1u) == -1);
+    CHECK(nvn_program_unsupported_stage(1u << NVN_PROGRAM_STAGE_COMPUTE) == -1);
+    CHECK(nvn_program_unsupported_stage(NVN_PROGRAM_STAGE_SUPPORTED_MASK) == -1);
+    CHECK(nvn_program_unsupported_stage(0x2u) == -1); /* fragment */
+    CHECK(nvn_program_unsupported_stage(0x4u) == 2);
+    CHECK(nvn_program_unsupported_stage(0x1Eu) == 2); /* the lowest of the unsupported stages */
+    CHECK(nvn_program_unsupported_stage(0x18u) == 3);
+    CHECK(nvn_program_unsupported_stage(0x10u) == 4); /* the last stage below compute */
+    CHECK(nvn_program_unsupported_stage(0x3Fu) == 2);
+    CHECK(nvn_program_unsupported_stage(0x100u) == -1); /* bits above stage 5 are not stages */
+}
+
+static void test_span_inside(void) {
+    CHECK(nvn_span_inside(0x1004, 4, 0x1000, 0x1014) == 1); /* inside */
+    CHECK(nvn_span_inside(0x1000, 4, 0x1000, 0x1014) == 1); /* at lo */
+    CHECK(nvn_span_inside(0x1010, 4, 0x1000, 0x1014) == 1); /* end equal to hi */
+    CHECK(nvn_span_inside(0x1011, 4, 0x1000, 0x1014) == 0); /* one byte past hi */
+    CHECK(nvn_span_inside(0xffc, 4, 0x1000, 0x1014) == 0);  /* at below lo */
+    CHECK(nvn_span_inside(0x1015, 4, 0x1000, 0x1014) == 0); /* at above hi */
+    CHECK(nvn_span_inside(0x1014, 0, 0x1000, 0x1014) == 1); /* size 0 at hi */
+    CHECK(nvn_span_inside(UINT64_MAX - 2, 8, 0x1000, UINT64_MAX) == 0); /* no overflow */
+}
+
+static void test_proc_name_index(void) {
+    const char* const names[] = {"A", "BufferMap", "Queue", "QueueFinish", "Window"};
+    for (int i = 0; i < 5; i++) {
+        char query[32];
+        snprintf(query, sizeof query, "nvn%s", names[i]);
+        CHECK(nvn_proc_name_index(names, 5, query) == i);
+    }
+    CHECK(nvn_proc_name_index(names, 5, "nvnA") == 0);
+    CHECK(nvn_proc_name_index(names, 5, "nvnWindow") == 4);
+    CHECK(nvn_proc_name_index(names, 5, "nvnQueue") == 2);
+    CHECK(nvn_proc_name_index(names, 5, "nvnQueueFinish") == 3);
+    CHECK(nvn_proc_name_index(names, 5, "nvnQueueF") == -1); /* a prefix of an entry is not an entry */
+    CHECK(nvn_proc_name_index(names, 5, "nvnAA") == -1);
+    CHECK(nvn_proc_name_index(names, 5, "nvnMissing") == -1);
+    CHECK(nvn_proc_name_index(names, 5, "Queue") == -1); /* no prefix */
+    CHECK(nvn_proc_name_index(names, 5, "nvn") == -1);   /* nothing after the prefix */
+    CHECK(nvn_proc_name_index(names, 5, "NVNQueue") == -1);
+    CHECK(nvn_proc_name_index(names, 0, "nvnA") == -1);
+    CHECK(nvn_proc_name_index(names, 5, NULL) == -1);
+    CHECK(nvn_proc_name_index(NULL, 5, "nvnA") == -1);
+    const char* const with_null[] = {NULL};
+    CHECK(nvn_proc_name_index(with_null, 1, "nvnA") == -1); /* a NULL entry must not crash */
+    /* strcmp compares as unsigned char: 0x5A ("Z") is below 0x80 */
+    const char* const high[] = {"Z", "\x80" "A"};
+    CHECK(nvn_proc_name_index(high, 2, "nvnZ") == 0);
+    CHECK(nvn_proc_name_index(high, 2, "nvn\x80" "A") == 1);
+}
+
+static void test_proc_table_check(void) {
+    const char* const names[] = {"A", "BufferMap", "Queue", "QueueFinish", "Window"};
+    const uint64_t addrs[] = {0x1000, 0x1004, 0x1008, 0x100c, 0x1010};
+    CHECK(nvn_proc_table_check(names, addrs, 5, 0x1000, 0x1014) == -1);
+    CHECK(nvn_proc_table_check(names, addrs, 0, 0x1000, 0x1014) == -1);
+    const char* const unsorted[] = {"A", "Queue", "BufferMap", "QueueFinish", "Window"};
+    CHECK(nvn_proc_table_check(unsorted, addrs, 5, 0x1000, 0x1014) == 2);
+    const char* const duplicate[] = {"A", "BufferMap", "Queue", "Queue", "Window"};
+    CHECK(nvn_proc_table_check(duplicate, addrs, 5, 0x1000, 0x1014) == 3);
+    const char* const empty[] = {"A", "BufferMap", "", "QueueFinish", "Window"};
+    CHECK(nvn_proc_table_check(empty, addrs, 5, 0x1000, 0x1014) == 2);
+    const uint64_t below[] = {0x1000, 0xffc, 0x1008, 0x100c, 0x1010};
+    CHECK(nvn_proc_table_check(names, below, 5, 0x1000, 0x1014) == 1);
+    const uint64_t at_hi[] = {0x1000, 0x1004, 0x1014, 0x100c, 0x1010};
+    CHECK(nvn_proc_table_check(names, at_hi, 5, 0x1000, 0x1014) == 2);
+    const uint64_t unaligned[] = {0x1000, 0x1004, 0x1006, 0x100c, 0x1010};
+    CHECK(nvn_proc_table_check(names, unaligned, 5, 0x1000, 0x1014) == 2);
+    CHECK(nvn_proc_table_check(NULL, addrs, 5, 0x1000, 0x1014) == 0);
+    CHECK(nvn_proc_table_check(names, NULL, 5, 0x1000, 0x1014) == 0);
+    const char* const null_entry[] = {"A", NULL, "Queue", "QueueFinish", "Window"};
+    CHECK(nvn_proc_table_check(null_entry, addrs, 5, 0x1000, 0x1014) == 1);
+    const char* const first_bad[] = {"", "BufferMap", "Queue", "QueueFinish", "Window"};
+    CHECK(nvn_proc_table_check(first_bad, addrs, 5, 0x1000, 0x1014) == 0);
+}
+
 int main(int argc, char** argv) {
     test_compute_qmd_size_limits();
     test_window_params();
     test_window_sync_cycle_params();
     test_sync_wait_limit();
     test_window_present_args();
-    test_sync_after_token();
+    test_sync_fence_value();
     test_u2_event_signal_value();
     test_u2_event_wait_met();
     test_sampler();
@@ -3479,6 +3681,15 @@ int main(int argc, char** argv) {
     test_bind_image();
     test_clear_depth_stencil_words();
     test_highest_enabled_index();
+    test_window_texture_slot();
+    test_window_acquire_helpers();
+    test_present_refusal();
+    test_multisample_locations_fit();
+    test_bind_program_words();
+    test_program_set_helpers();
+    test_span_inside();
+    test_proc_name_index();
+    test_proc_table_check();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

@@ -18,6 +18,8 @@ int nvn_native_active(void);
 /* the host handler of an NVN function by name, or NULL when the host has none (the selftest compares it with the
    library). It does not need nvn_native=1. */
 GuestFn nvn_native_handler(const char* name);
+/* The device of the host record of a queue, for the execution test. 0 when the queue has no record. */
+uint64_t nvn_native_queue_device(uint64_t queue);
 
 /* The bind state of one buffer slot. bound follows the library: a size 0 uniform or vertex bind is stored but not active.
    plural is 1 when the bind came from a plural function and keeps the library's packet form at the draw. */

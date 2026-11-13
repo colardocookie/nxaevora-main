@@ -156,7 +156,8 @@ typedef struct {
 typedef struct { uint64_t event; uint32_t generation, mode, value, location; } NvnOpSignalEvent;
 typedef struct { uint64_t event; uint32_t generation, mode, value, reserved; } NvnOpWaitEvent;
 typedef struct { uint32_t value, reserved; uint64_t address; } NvnOpReportValue;
-typedef struct { uint64_t sync; uint32_t generation, condition; } NvnOpFenceSync;
+/* flags: the QueueFenceSync flag word of the call; bit 0 (FLUSH_FOR_CPU) also posts the pending frame at submit. */
+typedef struct { uint64_t sync; uint32_t generation, condition, flags; } NvnOpFenceSync;
 typedef struct { uint64_t sync; uint32_t generation, reserved; } NvnOpWaitSync;
 /* CopyBufferToBuffer and ClearBuffer: the library words are built at replay (nvn_copy_buffer_words and
    nvn_clear_buffer_words). */
