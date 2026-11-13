@@ -1009,5 +1009,7 @@ from `syncpt_alloc`), and the replay skips the library's own syncpoint methods (
 7. **QueueWaitSync.** Unchanged: the one GPU thread runs the jobs in the order of the posts. A `PENDING` sync of another queue is
    not posted yet, so the order can be wrong: a log line names it.
 
-Open, the title run answers it: whether Arceus calls `QueueFlush` or `QueueFinish` with pending lists. The first flush jobs write a
-log line each.
+Answered by the title run (2026-11-13, update 1.1.1, `nvn_native=1`): Arceus calls no `QueueFlush`, `QueueFinish` or
+`QueueWaitSync` up to the title. It submits, fences and presents (469 each in a run of 15 s) and waits with `SyncWait` (938). The
+flush jobs of that run all come from the execution test. Seen once in each run: the game calls `SyncWait` with no limit on a sync that
+it never fenced (caller lr `aac7d20`). The host returns 3 (failed) and the game goes on. Open: what the game expects there.

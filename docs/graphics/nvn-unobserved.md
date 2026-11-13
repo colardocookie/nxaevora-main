@@ -135,6 +135,12 @@ a fault fails the case and does not stop the game. Mutation: `nvn_selftest_mutat
 The GL sync rows (`SyncCreateGLSync`, `SyncInitializeFromFencedGLSync`) fail with "no backend" by design: they get a reason, not a
 case.
 
+Result of 4-u3-4 (2026-11-13, update 1.1.1, update program to the title, `nvn_native=1`, `nvn_exectest=1`): 6 cases, 0 failed,
+0 skipped, and the game reaches the title at 30 frames a second. The first two runs crashed on a null host handler: the test did
+not resolve the event functions, `QueueWaitSync` and `QueueFinish` (fixed in `1546797`). Mutation run with `exec_gpu_to_cpu`: E2
+fails ("byte 1: expected ff, actual 00", the clear is left out) and the other five pass. The 61 functions that the test calls have
+`exec` in `nvn-coverage.md`.
+
 ### Introduction in stage 3 (a few representative functions)
 
 The selftest starts in stage 3 with a few functions, so that the harness is proven before 523 functions use it. The set covers
