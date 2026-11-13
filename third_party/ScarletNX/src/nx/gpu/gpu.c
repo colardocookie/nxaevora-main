@@ -240,7 +240,7 @@ static void may_have_changed(void) {
     if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
 }
 /* a syncpoint increment of the stream, after the work before it */
-static void stream_incr(u32 id) {
+void gpu_stream_incr(u32 id) {
     if (g_renderer->stream_incr) {
         g_renderer->stream_incr(id);
         return;
@@ -531,7 +531,7 @@ static void process_semaphore_trigger(GpuChannel* ch, u32 v) {
 static void process_fence_action(GpuChannel* ch, u32 v) {
     u32 id = puller_syncpoint_id(v);
     if (puller_syncpoint_increment(v)) {
-        stream_incr(id);
+        gpu_stream_incr(id);
         return;
     }
     /* results in flight land before the stream waits on something else (the CPU may read them before it increments
@@ -768,7 +768,7 @@ static void job_end(const GpuItem* j, GpuChannel* ch) {
        was a full GPU wait at the end of each submission, about 2 ms a frame in one game */
     if (!g_renderer->stream_incr) gpu_signal_point();
     dma_snap_finish(j->chan, j->id);
-    for (i = 0; i < j->incs; i++) stream_incr(j->chan);
+    for (i = 0; i < j->incs; i++) gpu_stream_incr(j->chan);
     if (g_renderer->stream_end) g_renderer->stream_end();
     v = g_renderer->release_value ? g_renderer->release_value(j->chan) : syncpt_read(j->chan);
     if ((i32)(v - j->expect) < 0)

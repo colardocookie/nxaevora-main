@@ -29,7 +29,7 @@ int nvn_frame_add_lists(NvnPendingFrame* frame, NvnListStore* store, const uint6
     return NVN_FRAME_ADDED;
 }
 
-int nvn_frame_add_token(NvnPendingFrame* frame, uint64_t sync, uint32_t generation) {
+int nvn_frame_add_token(NvnPendingFrame* frame, uint64_t sync, uint32_t generation, uint32_t serial) {
     if (frame->token_count >= NVN_FRAME_TOKENS_MAX) return 0;
     if (frame->token_count == frame->token_cap) {
         uint32_t cap = frame->token_cap ? frame->token_cap * 2 : NVN_FRAME_TOKEN_CAP;
@@ -39,7 +39,7 @@ int nvn_frame_add_token(NvnPendingFrame* frame, uint64_t sync, uint32_t generati
         frame->tokens = fresh;
         frame->token_cap = cap;
     }
-    frame->tokens[frame->token_count++] = (NvnFrameToken){sync, generation};
+    frame->tokens[frame->token_count++] = (NvnFrameToken){sync, generation, serial};
     return 1;
 }
 

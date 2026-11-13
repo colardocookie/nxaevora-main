@@ -44,12 +44,16 @@ int nvn_window_has_presented(const uint8_t* states, uint32_t count) {
         if (states[i] == NVN_IMAGE_PRESENTED) return 1;
     return 0;
 }
-NvnSyncAction nvn_sync_wait_action(NvnSyncState state) {
+NvnSyncAction nvn_sync_wait_action(NvnSyncState state, int reached) {
     switch (state) {
     case NVN_SYNC_SIGNALED: return NVN_SYNC_ACTION_SIGNALED;
-    case NVN_SYNC_FENCED: return NVN_SYNC_ACTION_WAIT;
+    case NVN_SYNC_PENDING: return NVN_SYNC_ACTION_WAIT_FRAME;
+    case NVN_SYNC_FENCED: return reached ? NVN_SYNC_ACTION_SIGNALED : NVN_SYNC_ACTION_WAIT_FENCE;
     default: return NVN_SYNC_ACTION_REFUSE; /* UNSIGNALED never gets a frame job */
     }
+}
+uint32_t nvn_sync_fence_value(int has_posted, uint32_t last_posted, uint32_t syncpoint_now) {
+    return has_posted ? last_posted : syncpoint_now;
 }
 NvnWaitDeadline nvn_wait_deadline(uint64_t timeout_ns, uint64_t now_ns) {
     if (timeout_ns == NVN_SYNC_WAIT_NO_LIMIT) return (NvnWaitDeadline){0, 0};
@@ -1473,12 +1477,6 @@ int nvn_window_present_args(const NvnTexture* t, uint64_t pool_storage, const Nv
     args.crop[3] = (int32_t)(crop->y + crop->height);
     *out = args;
     return 1;
-}
-
-NvnSyncState nvn_sync_after_token(NvnSyncState state, uint32_t* fences) {
-    if (!fences) return state;
-    if (*fences > 0) (*fences)--;
-    return *fences == 0 ? NVN_SYNC_SIGNALED : state;
 }
 
 uint32_t nvn_event_signal_value(uint32_t mode, uint32_t old, uint32_t value) {

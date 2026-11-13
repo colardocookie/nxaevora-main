@@ -82,10 +82,11 @@ static void test_take_and_release(void) {
     NvnPendingFrame f = {0};
     uint32_t skipped = 0;
     CHECK(nvn_frame_add_lists(&f, &s, &h, 1, &skipped) == NVN_FRAME_ADDED);
-    CHECK(nvn_frame_add_token(&f, 0x1234, 5));
+    CHECK(nvn_frame_add_token(&f, 0x1234, 5, 42));
     NvnPendingFrame taken = nvn_frame_take(&f);
     CHECK(nvn_frame_is_empty(&f) && !f.handles && !f.tokens && f.handle_count == 0);
     CHECK(taken.handle_count == 1 && taken.token_count == 1 && taken.tokens[0].sync == 0x1234);
+    CHECK(taken.tokens[0].generation == 5 && taken.tokens[0].serial == 42);
     nvn_list_unref(&s, h); /* the owner goes: the frame still holds one */
     CHECK(nvn_list_live(&s) == 1);
     nvn_frame_release(&taken, &s);
@@ -97,8 +98,9 @@ static void test_take_and_release(void) {
 
 static void test_token_limit(void) {
     NvnPendingFrame f = {0};
-    for (uint32_t i = 0; i < NVN_FRAME_TOKENS_MAX; i++) CHECK(nvn_frame_add_token(&f, i, 1));
-    CHECK(!nvn_frame_add_token(&f, 1, 1) && f.token_count == NVN_FRAME_TOKENS_MAX);
+    for (uint32_t i = 0; i < NVN_FRAME_TOKENS_MAX; i++) CHECK(nvn_frame_add_token(&f, i, 1, i + 1));
+    CHECK(!nvn_frame_add_token(&f, 1, 1, 1) && f.token_count == NVN_FRAME_TOKENS_MAX);
+    CHECK(f.tokens[NVN_FRAME_TOKENS_MAX - 1].serial == NVN_FRAME_TOKENS_MAX);
     nvn_frame_release(&f, NULL); /* no handle, so the store is not read */
     CHECK(f.token_count == 0 && !f.tokens);
 }

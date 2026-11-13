@@ -23,6 +23,7 @@
 typedef struct {
     uint64_t sync;       /* the guest address of the sync */
     uint32_t generation; /* the record generation that FenceSync named */
+    uint32_t serial;     /* the newest fence of that sync when the token was made */
 } NvnFrameToken;
 
 typedef struct {
@@ -39,7 +40,7 @@ typedef struct {
 int nvn_frame_add_lists(NvnPendingFrame* frame, NvnListStore* store, const uint64_t* handles, uint32_t count,
                         uint32_t* skipped);
 /* Adds a token. 0 when the token list is full or memory is out. */
-int nvn_frame_add_token(NvnPendingFrame* frame, uint64_t sync, uint32_t generation);
+int nvn_frame_add_token(NvnPendingFrame* frame, uint64_t sync, uint32_t generation, uint32_t serial);
 /* 1 when the frame has no lists. A token only exists after a non-empty frame, so tokens are not counted. */
 int nvn_frame_is_empty(const NvnPendingFrame* frame);
 /* The frame moves to the result and the source is empty. */

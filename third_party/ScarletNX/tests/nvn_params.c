@@ -42,9 +42,13 @@ static void test_window_sync_cycle_params(void) {
     CHECK(nvn_window_pick_image(presented2, 2, -1) == -1);
     CHECK(nvn_window_pick_image(presented2, 2, 0) == -1);
     CHECK(nvn_window_pick_image(presented4, 4, -1) == -1);
-    CHECK(nvn_sync_wait_action(NVN_SYNC_SIGNALED) == NVN_SYNC_ACTION_SIGNALED);
-    CHECK(nvn_sync_wait_action(NVN_SYNC_UNSIGNALED) == NVN_SYNC_ACTION_REFUSE);
-    CHECK(nvn_sync_wait_action(NVN_SYNC_FENCED) == NVN_SYNC_ACTION_WAIT);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_SIGNALED, 0) == NVN_SYNC_ACTION_SIGNALED);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_SIGNALED, 1) == NVN_SYNC_ACTION_SIGNALED);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_UNSIGNALED, 0) == NVN_SYNC_ACTION_REFUSE);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_FENCED, 1) == NVN_SYNC_ACTION_SIGNALED);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_FENCED, 0) == NVN_SYNC_ACTION_WAIT_FENCE);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_PENDING, 0) == NVN_SYNC_ACTION_WAIT_FRAME);
+    CHECK(nvn_sync_wait_action(NVN_SYNC_PENDING, 1) == NVN_SYNC_ACTION_WAIT_FRAME);
     CHECK(nvn_window_has_presented(presented2, 2));
 }
 
@@ -1137,16 +1141,11 @@ static void test_window_present_args(void) {
     CHECK(!nvn_window_present_args(&t, 1, &crop, &args));
 }
 
-static void test_sync_after_token(void) {
-    uint32_t fences = 2;
-    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_FENCED && fences == 1);
-    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_SIGNALED && fences == 0);
-    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_SIGNALED && fences == 0);
-    CHECK(nvn_sync_after_token(NVN_SYNC_SIGNALED, &fences) == NVN_SYNC_SIGNALED && fences == 0);
-    CHECK(nvn_sync_after_token(NVN_SYNC_UNSIGNALED, &fences) == NVN_SYNC_SIGNALED && fences == 0);
-    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, NULL) == NVN_SYNC_FENCED);
-    fences = 3;
-    CHECK(nvn_sync_after_token(NVN_SYNC_FENCED, &fences) == NVN_SYNC_FENCED && fences == 2);
+static void test_sync_fence_value(void) {
+    CHECK(nvn_sync_fence_value(1, 7, 9) == 7);
+    CHECK(nvn_sync_fence_value(0, 7, 9) == 9);
+    CHECK(nvn_sync_fence_value(1, 0, 3) == 0);
+    CHECK(nvn_sync_fence_value(0, 7, 0) == 0);
 }
 
 static void test_u2_event_signal_value(void) {
@@ -3375,7 +3374,7 @@ int main(int argc, char** argv) {
     test_window_sync_cycle_params();
     test_sync_wait_limit();
     test_window_present_args();
-    test_sync_after_token();
+    test_sync_fence_value();
     test_u2_event_signal_value();
     test_u2_event_wait_met();
     test_sampler();
