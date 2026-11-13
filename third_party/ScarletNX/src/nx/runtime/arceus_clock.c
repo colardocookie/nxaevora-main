@@ -1842,10 +1842,19 @@ static void capped_fall_update(CPU* c, u64 entry) {
             (unsigned long long)object, eligible, (double)seconds);
 }
 /* The two words at +6D0 that build the queued -1/30: 1 when they are the game's own, 2 when movement
-   bit 1 already loads the frame step there (ADRP X8 and LDR W8 [X8,#4]), 0 otherwise. */
-static int capped_fall_body(u32 first, u32 second) {
+   bit 1 loads the negative frame step from this cell, 0 otherwise. */
+static int capped_fall_body(u64 pc, u32 first, u32 second) {
     if (first == 0x52911128 && second == 0x72b7a108) return 1;
-    if ((first & 0x9f00001f) == 0x90000008 && second == 0xb9400508) return 2;
+    if (!frame_step_address || (first & 0x9f00001f) != 0x90000008 ||
+        (second & 0xffc003ff) != 0xb9400108) return 0;
+    const u64 immlo = (first >> 29) & 3;
+    const u64 immhi = (first >> 5) & 0x7ffff;
+    const u32 imm21 = (u32)((immhi << 2) | immlo);
+    const int64_t pages = (imm21 & 0x100000) ? (int64_t)imm21 - 0x200000 : (int64_t)imm21;
+    const int64_t page_delta = pages * 4096;
+    const u64 page = (pc & ~UINT64_C(0xfff)) + (u64)page_delta;
+    const u64 offset = (u64)((second >> 10) & 0xfff) * 4;
+    if (page + offset == frame_step_address + 4) return 2;
     return 0;
 }
 static void capped_fall_init(void) {
@@ -1866,13 +1875,13 @@ static void capped_fall_init(void) {
     const u64 pc = main_base + 0x19843a0;
     if (!covers_exactly(pc, 0xb18) || pc < g_code_lo || pc + 0xb18 > g_code_hi ||
         !readable(pc, 0xb18) || gr32(pc) != 0xd102c3ff ||
-        gr32(pc + 0xfc) != 0x14000002 || !capped_fall_body(gr32(pc + 0x6d0), gr32(pc + 0x6d4)) ||
+        gr32(pc + 0xfc) != 0x14000002 || !capped_fall_body(pc + 0x6d0, gr32(pc + 0x6d0), gr32(pc + 0x6d4)) ||
         gr32(pc + 0x700) != 0x3d81ae60 || gr32(pc + 0x70c) != 0x391a8268) {
         WARN("arceus-capped-fall: refused guard\n");
         return;
     }
     /* Movement bit 1 already steps this queued gravity, so only air steering is installed then. */
-    if (fall && capped_fall_body(gr32(pc + 0x6d0), gr32(pc + 0x6d4)) == 2) {
+    if (fall && capped_fall_body(pc + 0x6d0, gr32(pc + 0x6d0), gr32(pc + 0x6d4)) == 2) {
         WARN("arceus-capped-fall: off, movement bit 1 already steps the queued gravity\n");
         fall = 0;
         if (!steer) return;
@@ -1905,7 +1914,11 @@ static GuestFn ai_tick_original, ai_turn_original[2];
 static PMutex ai_tick_lock = PMUTEX_INIT;
 static struct { u64 scheduler; int64_t ns; } ai_tick_slots[AI_TICK_SLOTS];
 static unsigned ai_tick_next_slot, ai_tick_inflight;
-static u64 ai_tick_calls, ai_tick_ticks, ai_tick_overlaps, ai_turn_holds[2];
+static u64 ai_tick_calls, ai_tick_ticks, ai_tick_overlaps, ai_turn_holds[2], ai_turn_runs[2];
+/* Passes and ticks of every scheduler so far. */
+static u64 ai_pass_total, ai_tick_total;
+#define AI_TURN_NODES 32
+static struct { u64 node, passes, ticks; u32 count, pending, first; float share, credit; } ai_turn_nodes[AI_TURN_NODES];
 /* A step of 30 ms or more is one whole tick, so 30 FPS keeps one per pass. Shorter steps
    add up. A tick may come up to 1 ms early and owes that time, which keeps 0,1,0,1 at a
    jittery 60 FPS. */
@@ -1924,6 +1937,8 @@ static unsigned ai_tick_count(u64 scheduler, u64 ns) {
         ai_tick_slots[k].ns += (int64_t)ns;
         if (ai_tick_slots[k].ns >= AI_TICK_NS - 1000000) n = 1, ai_tick_slots[k].ns -= AI_TICK_NS;
     }
+    ai_pass_total++;
+    ai_tick_total += n;
     pm_unlock(&ai_tick_lock);
     return n;
 }
@@ -1949,25 +1964,75 @@ static void ai_tick_update(CPU* c, u64 entry) {
         pm_lock(&ai_tick_lock);
         for (unsigned k = 0; k < AI_TICK_SLOTS; k++) schedulers += ai_tick_slots[k].scheduler != 0;
         pm_unlock(&ai_tick_lock);
-        LOG("arceus-ai-tick: calls=%llu ticks=%llu ns=%llu schedulers=%u overlaps=%llu turn_holds=%llu turnkey_holds=%llu\n",
+        LOG("arceus-ai-tick: calls=%llu ticks=%llu ns=%llu schedulers=%u overlaps=%llu turn_holds=%llu turnkey_holds=%llu turn_runs=%llu turnkey_runs=%llu\n",
             (unsigned long long)calls, (unsigned long long)ticks, (unsigned long long)plat_ns(), schedulers,
             (unsigned long long)__atomic_load_n(&ai_tick_overlaps, __ATOMIC_RELAXED),
             (unsigned long long)__atomic_load_n(&ai_turn_holds[0], __ATOMIC_RELAXED),
-            (unsigned long long)__atomic_load_n(&ai_turn_holds[1], __ATOMIC_RELAXED));
+            (unsigned long long)__atomic_load_n(&ai_turn_holds[1], __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&ai_turn_runs[0], __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&ai_turn_runs[1], __ATOMIC_RELAXED));
     }
 }
 /* Turn B338DC and TurnKey B32CD4 turn one whole step per call and finish by the frame
-   count. On a pass without a tick they return the running status and do not turn. */
+   count. The actor calls them once per pass on a forced context and once per bucket round
+   otherwise, outside 1050E00. A call earns ticks / passes since the node's last call, and
+   the original runs when a whole step is earned. Held frames are added before that run. */
+static int ai_turn_step(u64 node, u32 count, u32 frames, int forced, u32* pending) {
+    pm_lock(&ai_tick_lock);
+    unsigned k = 0, oldest = 0;
+    for (; k < AI_TURN_NODES && ai_turn_nodes[k].node != node; k++)
+        if (ai_turn_nodes[k].passes < ai_turn_nodes[oldest].passes) oldest = k;
+    const int known = k < AI_TURN_NODES && ai_turn_nodes[k].count == count &&
+                      ai_pass_total - ai_turn_nodes[k].passes <= 64;
+    if (k == AI_TURN_NODES) k = oldest;
+    /* A forced context is reset every pass, so its frames are this pass's own tick. */
+    float share = forced ? (frames ? 1.0f : 0.0f) : known ? ai_turn_nodes[k].share : 1.0f;
+    if (!forced && known && ai_pass_total != ai_turn_nodes[k].passes)
+        share = (float)(ai_tick_total - ai_turn_nodes[k].ticks) / (float)(ai_pass_total - ai_turn_nodes[k].passes);
+    if (!known) {
+        ai_turn_nodes[k].node = node;
+        ai_turn_nodes[k].pending = 0;
+        ai_turn_nodes[k].credit = 0.0f;
+    }
+    /* A turn's first call runs, as at 30 FPS, and owes the part of a step it had not earned.
+       An ordinary context's first share is not known yet, so the next call's stands for it. */
+    if (!known) ai_turn_nodes[k].credit = forced ? share : 1.0f;
+    else if (ai_turn_nodes[k].first) ai_turn_nodes[k].credit += 2.0f * share - 1.0f;
+    else ai_turn_nodes[k].credit += share;
+    ai_turn_nodes[k].first = !known && !forced;
+    ai_turn_nodes[k].share = share;
+    ai_turn_nodes[k].passes = ai_pass_total;
+    ai_turn_nodes[k].ticks = ai_tick_total;
+    const int run = !known || ai_turn_nodes[k].credit >= 0.999f;
+    if (run) {
+        ai_turn_nodes[k].credit -= 1.0f;
+        *pending = ai_turn_nodes[k].pending;
+        ai_turn_nodes[k].pending = 0;
+        ai_turn_nodes[k].count = count + *pending + frames;
+    } else {
+        ai_turn_nodes[k].pending += frames;
+        ai_turn_nodes[k].count = count;
+    }
+    pm_unlock(&ai_tick_lock);
+    return run;
+}
 static void ai_turn_update(CPU* c, u64 entry, unsigned kind) {
     const u64 node = c->x[0], out = c->x[8], status = main_base + 0x40e7c04;
     const u64 owner = readable(node, 0x148) ? gr64(node + 0x58) : 0;
     const u64 context = readable(owner, 0x98) ? gr64(owner + 0x90) : 0;
-    if (context && readable(context, 0x8c) && gr32(node + (kind ? 0x140 : 0x130)) && !gr32(context + 0x88) &&
+    if (context && readable(context, 0x8c) && gr32(node + (kind ? 0x140 : 0x130)) &&
         readable(out, 4) && readable(status, 4) && gr32(status) == 4) {
-        __atomic_add_fetch(&ai_turn_holds[kind], 1, __ATOMIC_RELAXED);
-        gw32(out, 4);
-        c->pc = c->x[30];
-        return;
+        const u64 at = node + (kind ? 0x144 : 0x134);
+        const int forced = gr16(context + 0x81) != 0;
+        u32 pending = 0;
+        if (!ai_turn_step(node, gr32(at), gr32(context + 0x88), forced, &pending)) {
+            __atomic_add_fetch(&ai_turn_holds[kind], 1, __ATOMIC_RELAXED);
+            gw32(out, 4);
+            c->pc = c->x[30];
+            return;
+        }
+        __atomic_add_fetch(&ai_turn_runs[kind], 1, __ATOMIC_RELAXED);
+        if (pending) gw32(at, gr32(at) + pending);
     }
     ai_turn_original[kind](c, entry);
 }

@@ -285,8 +285,10 @@ The AI context scheduler `main+1050E00` adds 1 to every script context's frame c
 once per rendered frame. Wild Pokémon vigilance, hunger, sleep, look-around waits and AI turns read that count, so at
 60 FPS they ran twice as fast: wild Pokémon noticed the player twice as quickly. The default-on `SNX_ARCEUS_AI_TICK_FIX` makes a pass add 1 only once a 1/30 second has built up for that scheduler, else 0. The count
 travels in a callee-saved vector lane of the calling thread, and eight words at `main+1051860` are rewritten in place,
-so no shared state is needed. The AI Turn and TurnKey actions hold on passes without a tick. `arceus-ai-tick` lines count
-the passes and ticks.
+so no shared state is needed. The AI Turn and TurnKey actions turn one whole step per call, and the actor calls them outside the
+scheduler pass: every pass on a forced context, every few passes otherwise. Each call earns the ticks per pass since the
+node's last call, and the action runs when a whole step is earned, so a turn makes the same number of steps as at
+30 FPS. The first call always runs. `arceus-ai-tick` lines count the passes, ticks, held and run turn calls.
 
 ## Turn easing
 
