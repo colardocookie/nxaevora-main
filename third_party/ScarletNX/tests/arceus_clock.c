@@ -14,7 +14,11 @@ u64 g_code_lo, g_code_hi;
 int g_opt_fps;
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
-void logf_(int level, const char* fmt, ...) { (void)level; (void)fmt; }
+static unsigned waza_dependency_warnings;
+void logf_(int level, const char* fmt, ...) {
+    if (level == 0 && strstr(fmt, "arceus-waza-shot: enabled without WAZA_OBJECT_FIX"))
+        waza_dependency_warnings++;
+}
 u64 plat_ns(void) { return 1000000000; }
 void mem_query(u64 address, MemBlock* out) {
     (void)address;
@@ -160,7 +164,8 @@ static void test_defaults_on(void) {
         "SNX_ARCEUS_AIR_STEERING_FIX", "SNX_ARCEUS_MOVEMENT_SITES", "SNX_ARCEUS_CAMERA_SPEED",
         "SNX_ARCEUS_CLOCK_TRACE", "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_CAMERA_TRACE",
         "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE",
-        "SNX_ARCEUS_FIXED_RESOLUTION"
+        "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_DIRECT_MOVE_FIX", "SNX_ARCEUS_FIELD_WAZA_FIX",
+        "SNX_ARCEUS_WAZA_OBJECT_FIX", "SNX_ARCEUS_WAZA_SHOT_FIX"
     };
     for (unsigned i = 0; i < sizeof all / sizeof all[0]; i++) unset_flag(all[i]);
     int saved_fps = g_opt_fps;
@@ -177,10 +182,12 @@ static void test_defaults_on(void) {
         "SNX_ARCEUS_BLINK_FIX", "SNX_ARCEUS_CAMERA_INPUT_FIX", "SNX_ARCEUS_MENU_REPEAT_FIX",
         "SNX_ARCEUS_TIMER_CARRY_FIX", "SNX_ARCEUS_AI_TICK_FIX", "SNX_ARCEUS_TURN_FIX",
         "SNX_ARCEUS_LIST_SCROLL_FIX", "SNX_ARCEUS_WALL_JUMP_FIX", "SNX_ARCEUS_LEDGE_FIX",
-        "SNX_ARCEUS_MOVEMENT_FIX", "SNX_ARCEUS_CAPPED_FALL_FIX", "SNX_ARCEUS_AIR_STEERING_FIX"
+        "SNX_ARCEUS_MOVEMENT_FIX", "SNX_ARCEUS_CAPPED_FALL_FIX", "SNX_ARCEUS_AIR_STEERING_FIX",
+        "SNX_ARCEUS_DIRECT_MOVE_FIX", "SNX_ARCEUS_FIELD_WAZA_FIX", "SNX_ARCEUS_WAZA_OBJECT_FIX"
     };
     for (unsigned i = 0; i < sizeof enabled / sizeof enabled[0]; i++)
         assert(arceus_switch_enabled(enabled[i], 1));
+    assert(waza_shot_mode_value() == 2);
     assert(movement_mask_value() == 0x1fcul && climb_step_value() == 2);
     static const char* const probes[] = {
         "SNX_ARCEUS_CLOCK_TRACE", "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_CAMERA_TRACE",
@@ -209,6 +216,28 @@ static void test_defaults_on(void) {
         assert(!arceus_switch_enabled(enabled[i], 1));
         unset_flag(enabled[i]);
     }
+    flag("SNX_ARCEUS_WAZA_SHOT_FIX", "1");
+    assert(waza_shot_mode_value() == 1);
+    flag("SNX_ARCEUS_WAZA_SHOT_FIX", "2");
+    assert(waza_shot_mode_value() == 2);
+    flag("SNX_ARCEUS_WAZA_SHOT_FIX", "0");
+    assert(waza_shot_mode_value() == 0);
+    unset_flag("SNX_ARCEUS_WAZA_SHOT_FIX");
+    flag("SNX_ARCEUS_WAZA_OBJECT_FIX", "0");
+    const u64 saved_main_base = main_base;
+    const int saved_clocks_installed = clocks_installed;
+    main_base = 1;
+    clocks_installed = 0;
+    waza_dependency_warnings = 0;
+    waza_shot_dependency_warned = 0;
+    waza_shot_init();
+    waza_shot_init();
+    assert(waza_dependency_warnings == 1);
+    waza_shot_dependency_warned = 0;
+    waza_dependency_warnings = 0;
+    main_base = saved_main_base;
+    clocks_installed = saved_clocks_installed;
+    unset_flag("SNX_ARCEUS_WAZA_OBJECT_FIX");
     flag("SNX_ARCEUS_CLIMB_STEP", "0");
     assert(climb_step_value() == 0);
     flag("SNX_ARCEUS_TIMING_FIXES", "0");
@@ -218,8 +247,9 @@ static void test_defaults_on(void) {
     arceus_clock_config_apply(config);
     assert(!timing_enabled && !clocks_installed);
     timer_carry_fix = 0;
+    direct_move_fix = field_waza_fix = waza_object_fix = waza_shot_fix = 0;
     arceus_clock_post_jit();
-    assert(!timer_carry_fix);
+    assert(!timer_carry_fix && !direct_move_fix && !field_waza_fix && !waza_object_fix && !waza_shot_fix);
     g_opt_fps = saved_fps;
     for (unsigned i = 0; i < sizeof all / sizeof all[0]; i++) unset_flag(all[i]);
     timing_enabled = clocks_installed = experimental = tracing = 0;

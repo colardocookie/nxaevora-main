@@ -3078,8 +3078,7 @@ static void ledge_fix_init(void) {
 }
 
 static void direct_move_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_DIRECT_MOVE_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_DIRECT_MOVE_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-direct-move: refused without elapsed-time clocks\n");
         return;
@@ -3142,8 +3141,7 @@ static void field_waza_update(CPU* c, u64 entry) {
             gw32(object + countdowns[k], (u32)before[k]);
 }
 static void field_waza_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_FIELD_WAZA_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_FIELD_WAZA_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-field-waza: fix refused without elapsed-time clocks\n");
         return;
@@ -3199,8 +3197,7 @@ static void waza_object_update(CPU* c, u64 entry) {
     else waza_object_held(c, entry, object);
 }
 static void waza_object_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_WAZA_OBJECT_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_WAZA_OBJECT_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-waza-object: fix refused without elapsed-time clocks\n");
         return;
@@ -3230,6 +3227,12 @@ static ShotObject shot_objects[SHOT_OBJECTS];
 static PMutex shot_lock = PMUTEX_INIT;
 static GuestFn waza_shot_original;
 static int waza_shot_fix;
+static int waza_shot_dependency_warned;
+static int waza_shot_mode_value(void) {
+    const char* value = getenv("SNX_ARCEUS_WAZA_SHOT_FIX");
+    if (!value) return 2;
+    return !strcmp(value, "1") ? 1 : !strcmp(value, "2") ? 2 : 0;
+}
 static ShotObject* shot_slot(u64 object, u64 now) {
     ShotObject* oldest = &shot_objects[0];
     for (unsigned k = 0; k < SHOT_OBJECTS; k++) {
@@ -3290,8 +3293,12 @@ static void waza_shot_update(CPU* c, u64 entry) {
     }
 }
 static void waza_shot_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_WAZA_SHOT_FIX");
-    if (!main_base || !enabled || (strcmp(enabled, "1") && strcmp(enabled, "2"))) return;
+    const int mode = waza_shot_mode_value();
+    if (!main_base || !mode) return;
+    if (!arceus_switch_enabled("SNX_ARCEUS_WAZA_OBJECT_FIX", 1) && !waza_shot_dependency_warned) {
+        WARN("arceus-waza-shot: enabled without WAZA_OBJECT_FIX; shots may end at the muzzle\n");
+        waza_shot_dependency_warned = 1;
+    }
     if (!clocks_installed) {
         WARN("arceus-waza-shot: fix refused without elapsed-time clocks\n");
         return;
@@ -3310,7 +3317,7 @@ static void waza_shot_init(void) {
         WARN("arceus-waza-shot: compile failed\n");
         return;
     }
-    waza_shot_fix = enabled[0] == '2' ? 2 : 1;
+    waza_shot_fix = mode;
     __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], waza_shot_update, __ATOMIC_RELEASE);
     LOG("arceus-waza-shot: EXPERIMENT: shot update uses 30 Hz time, drawing %s\n",
         waza_shot_fix == 2 ? "between ticks" : "at the tick rate");
