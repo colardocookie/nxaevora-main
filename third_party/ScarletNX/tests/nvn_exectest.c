@@ -71,6 +71,10 @@ static void test_drain(void) {
     CHECK(!nvn_ex_drain_ok(NULL, NULL, 0));     /* no queue, so nothing to drain */
     CHECK(!nvn_ex_drain_ok("nvnQueueFenceSync", NULL, 0x1000));
     CHECK(!nvn_ex_drain_ok(NULL, "nvnSyncInitialize", 0x1000));
+    CHECK(nvn_ex_drain_done(NVN_EX_SYNC_SIGNALED));
+    CHECK(nvn_ex_drain_done(NVN_EX_SYNC_SATISFIED));
+    CHECK(!nvn_ex_drain_done(NVN_EX_SYNC_TIMEOUT));
+    CHECK(!nvn_ex_drain_done(NVN_EX_SYNC_FAILED)); /* a refused fence leaves the sync unsignaled */
 }
 
 static void test_names(void) {

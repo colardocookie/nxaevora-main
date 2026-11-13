@@ -927,7 +927,7 @@ static void ex_setup(ExState* s) {
 
 /* One drain step before the finalize. A fence with FLUSH_FOR_CPU posts every pending frame of the queue, and an empty
    frame takes the last posted value, so the wait covers all work submitted to the queue. A queue that cannot drain
-   keeps its objects: a missing handler or a wait that runs out sets the stall flag. */
+   keeps its objects: a missing handler, a refused fence or a wait that runs out sets the stall flag. */
 static void ex_drain(ExState* s) {
     if (s->stalled) return;
     const uint64_t queues[2] = {s->q1, s->q2};
@@ -947,7 +947,11 @@ static void ex_drain(ExState* s) {
             continue;
         }
         ex_fence(s, queues[i], sync, NVN_EX_FENCE_FLUSH_FOR_CPU);
-        (void)ex_wait(s, "cleanup", names[i], sync);
+        const uint64_t wait = ex_wait(s, "cleanup", names[i], sync);
+        if (nvn_ex_drain_done(wait) || nvn_ex_wait_stalled(wait)) continue; /* ex_wait logs a timeout */
+        s->stalled = 1;
+        LOG("exectest: cleanup drain of queue=%" PRIx64 " sync=%" PRIx64 " gave %" PRIu64 ", the fence was refused\n",
+            queues[i], sync, wait);
     }
 }
 

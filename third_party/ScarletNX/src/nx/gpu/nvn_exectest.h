@@ -108,6 +108,11 @@ static inline int nvn_ex_e8_ok(uint64_t wait) { return wait == NVN_EX_SYNC_FAILE
 /* 1 when a bounded wait that must signal ran out: the GPU job that it waits for is still running. */
 static inline int nvn_ex_wait_stalled(uint64_t result) { return result == NVN_EX_SYNC_TIMEOUT; }
 
+/* 1 when a drain wait proves that the queue's work ended. Any other result (a refused fence gives 3) proves nothing. */
+static inline int nvn_ex_drain_done(uint64_t wait) {
+    return wait == NVN_EX_SYNC_SIGNALED || wait == NVN_EX_SYNC_SATISFIED;
+}
+
 /* 1 when the cleanup drain can run on this queue: the queue exists and the queue and sync handlers of a fence and a
    wait are present. A queue that cannot drain must keep its objects. */
 static inline int nvn_ex_drain_ok(const char* missing_qops, const char* missing_sync, uint64_t queue) {

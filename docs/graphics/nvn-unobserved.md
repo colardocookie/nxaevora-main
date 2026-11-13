@@ -140,7 +140,8 @@ a fault fails the case and does not stop the game. Mutation: `nvn_selftest_mutat
 A wait that must signal and runs out of time means that a GPU job may still use the test objects. The later cases are then
 skipped, and the cleanup keeps the objects and the pools (the arena is never freed). A case can also stop early after a submit
 with no wait, so the cleanup first drains both queues: a fence with `FLUSH_FOR_CPU` and a bounded wait on each. A drain that runs
-out, or that cannot run (a missing handler, no sync left), keeps the objects in the same way.
+out, that ends with any result other than 0 or 1 (a refused fence leaves the sync unsignaled, so the wait gives 3), or that
+cannot run (a missing handler, no sync left), keeps the objects in the same way.
 
 The GL sync rows (`SyncCreateGLSync`, `SyncInitializeFromFencedGLSync`) fail with "no backend" by design: they get a reason, not a
 case.
