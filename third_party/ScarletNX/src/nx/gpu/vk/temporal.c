@@ -23,7 +23,7 @@
 #define FRAME_WEIGHT 0.1f  /* the frame's share in the blend with the history */
 #define MODE_PROBE 1
 #define MODE_TAA 2
-#define SETS_BINDINGS 5
+#define SETS_BINDINGS 6
 #define STATS_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
 #define STATS_W 96u /* the numbers' image: one texel a sampled pixel */
 #define STATS_H 54u
@@ -489,6 +489,7 @@ static float half_float(u16 h) {
 static void stats_log(void) {
     static const char* const names[3] = {"near", "mid", "far"};
     unsigned n[3] = {0, 0, 0}, wrong[3] = {0, 0, 0}, wrong_still[3] = {0, 0, 0}, sky = 0, off = 0, changed = 0;
+    unsigned shown = 0;
     const int taa = g_t.mode == MODE_TAA;
     double length = 0, longest = 0;
     for (u32 i = 0; i < STATS_W * STATS_H; i++) {
@@ -505,22 +506,27 @@ static void stats_log(void) {
         /* the projection gives z = 0.1 / distance: nearer than 10, to 100, beyond */
         const int band = z > 0.01f ? 0 : z > 0.001f ? 1 : 2;
         n[band]++;
-        /* with anti-aliasing on the first number is two marks: 1 history dropped, 2 changed since the last frame */
-        wrong[band] += taa ? ((int)(moved + 0.5f) & 1) : moved > STATS_ERROR;
-        changed += taa && moved > 1.5f;
+        /* with anti-aliasing on the first number is three marks: 1 history dropped, 2 the frame as drawn changed
+           since the last one, 4 the resolved picture changed since the last one */
+        const int marks = taa ? (int)(moved + 0.5f) : 0;
+        wrong[band] += taa ? marks & 1 : moved > STATS_ERROR;
+        changed += marks >> 1 & 1;
+        shown += marks >> 2 & 1;
         wrong_still[band] += still > STATS_ERROR;
         length += vector;
         if (vector > longest) longest = vector;
     }
     const unsigned all = n[0] + n[1] + n[2];
-    char bands[280];
+    char bands[320];
     int at = 0;
     /* with anti-aliasing on, the first number is where the history was dropped and the second where the resolved
        colour is far from the frame's own: trails behind what moves show there. frame_to_frame is the share of
-       pixels that differ from the frame before as drawn: with a still camera, the jitter at work on the edges. */
+       pixels that differ from the frame before as drawn: with a still camera, the jitter at work on the edges.
+       shown_frame_to_frame is the same for the resolved picture, where the jitter should be gone. */
     if (taa)
-        at += snprintf(bands, sizeof bands, " frame_to_frame=%.1f%%",
-                       n[0] + n[1] + n[2] ? 100.0 * changed / (n[0] + n[1] + n[2]) : 0.0);
+        at += snprintf(bands, sizeof bands, " frame_to_frame=%.1f%% shown_frame_to_frame=%.1f%%",
+                       n[0] + n[1] + n[2] ? 100.0 * changed / (n[0] + n[1] + n[2]) : 0.0,
+                       n[0] + n[1] + n[2] ? 100.0 * shown / (n[0] + n[1] + n[2]) : 0.0);
     for (int b = 0; b < 3; b++)
         at += snprintf(bands + at, sizeof bands - (size_t)at, taa ? " %s n=%u dropped=%.1f%% far_from_frame=%.1f%%"
                                                                : " %s n=%u wrong=%.1f%% without_vectors=%.1f%%",
@@ -654,8 +660,10 @@ void vk_temporal_before(u64 fs0_hash) {
                VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     {
-        const VkImageView views[SETS_BINDINGS] = {depth_view, depth_view, depth_view, depth_view, depth_view};
-        const VkSampler samplers[SETS_BINDINGS] = {g_t.point, g_t.point, g_t.point, g_t.point, g_t.point};
+        const VkImageView views[SETS_BINDINGS] = {depth_view, depth_view, depth_view,
+                                                  depth_view, depth_view, depth_view};
+        const VkSampler samplers[SETS_BINDINGS] = {g_t.point, g_t.point, g_t.point,
+                                                   g_t.point, g_t.point, g_t.point};
         const VkDescriptorSet set = set_make(views, samplers);
         if (!set) return;
         fullscreen(cb, g_t.motion.view, g_t.motion.w, g_t.motion.h, g_t.motion_pipe, set, &pc);
@@ -696,10 +704,12 @@ void vk_temporal_before(u64 fs0_hash) {
         g_t.history_at = frame;
     }
     const int taa = g_t.mode == MODE_TAA;
-    const VkSampler samplers[SETS_BINDINGS] = {g_t.point, g_t.point, g_t.linear, g_t.point, g_t.point};
+    const VkSampler samplers[SETS_BINDINGS] = {g_t.point, g_t.point, g_t.linear, g_t.point, g_t.point, g_t.point};
     /* the frame before as it was drawn, for the numbers: with jitter its edges differ from this frame's */
     const VkImageView last_frame = history ? before->view : now->view;
     VkImageView numbers_before = last_frame;
+    /* the picture shown a frame ago, for the numbers: the resolved one with anti-aliasing on */
+    VkImageView shown_before = VK_NULL_HANDLE;
     int numbers = history;
     if (taa && g_t.view != 4) {
         /* the resolve: the scene colour and the new history are written, the old history and this frame's copy
@@ -729,7 +739,7 @@ void vk_temporal_before(u64 fs0_hash) {
         rc.depth[3] = usable ? 0.0f : 1.0f;
         rc.size[3] = FRAME_WEIGHT;
         const VkImageView views[SETS_BINDINGS] = {g_t.motion.view, now->view, usable ? kept->view : now->view,
-                                                  depth_view, last_frame};
+                                                  depth_view, last_frame, last_frame};
         const VkDescriptorSet set = set_make(views, samplers);
         if (!set) return;
         vk_barrier(cb, made->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
@@ -748,6 +758,7 @@ void vk_temporal_before(u64 fs0_hash) {
         g_t.resolved_at = frame;
         /* the numbers then compare the frame with what the resolve made of it */
         numbers_before = made->view;
+        shown_before = usable ? kept->view : made->view;
         numbers = 1;
         pc.depth[2] = 1.0f;
     } else if (taa) {
@@ -757,7 +768,9 @@ void vk_temporal_before(u64 fs0_hash) {
     }
 
     /* without a frame before (the first one, or after a gap) the frame is compared with itself */
-    const VkImageView views[SETS_BINDINGS] = {g_t.motion.view, now->view, numbers_before, depth_view, last_frame};
+    const VkImageView views[SETS_BINDINGS] = {
+        g_t.motion.view, now->view, numbers_before, depth_view, last_frame,
+        shown_before ? shown_before : numbers_before};
     const VkDescriptorSet set = set_make(views, samplers);
     if (!set) return;
 
