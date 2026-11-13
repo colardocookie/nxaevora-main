@@ -19,6 +19,8 @@ static GuestFn originals[3];
 static u64 counts[3];
 static u64 main_base;
 static int experimental, tracing, research_observing;
+static int timing_enabled;
+static int target_fps_explicit;
 static u64 ui_clock_research_calls;
 static ArceusStep step;
 static PMutex step_lock = PMUTEX_INIT;
@@ -26,8 +28,92 @@ static GuestFn message_original;
 static u64 message_count;
 static u64 water_step_address;
 static int clocks_installed;
+/* Optional catch-up for integer timers. Bound recovery to one second after sustained slow frames. */
+#define TIMER_CARRY_LIMIT_NS UINT64_C(1000000000)
+static int timer_carry_fix;
+/* Nanoseconds below one whole step (ARCEUS_WHOLE_STEP_NS), not seconds. */
 static u64 blink_remainder;
 static unsigned blink_ticks;
+/* Shared 30-Hz cadence for the isolated integer blink state machine and the shot blend. The
+   game's own step is one tick and leaves no part of one behind. */
+static void blink_cadence_add(u64 ns) {
+    blink_remainder = ns == ARCEUS_WHOLE_STEP_NS ? ns : blink_remainder + ns;
+    blink_ticks = (unsigned)(blink_remainder / ARCEUS_WHOLE_STEP_NS);
+    blink_remainder %= ARCEUS_WHOLE_STEP_NS;
+}
+
+typedef struct {
+    int master, invalid, mode, target_fps, write_fps, runtime_rate_override, skip_runtime_limit;
+    u64 initial_ns;
+} ArceusClockConfig;
+
+static int arceus_switch_enabled(const char* name, int default_on) {
+    const char* value = getenv(name);
+    return value ? !strcmp(value, "1") : default_on;
+}
+static unsigned long movement_mask_value(void) {
+    const char* value = getenv("SNX_ARCEUS_MOVEMENT_SITES");
+    if (!value) return 0x1fcul;
+    return *value ? strtoul(value, NULL, 16) : ~0ul;
+}
+static int climb_step_value(void) {
+    const char* value = getenv("SNX_ARCEUS_CLIMB_STEP");
+    if (!value) return 2;
+    return !strcmp(value, "1") ? 1 : !strcmp(value, "2") ? 2 : 0;
+}
+static float camera_speed_value(int* invalid) {
+    const char* speed = getenv("SNX_ARCEUS_CAMERA_SPEED");
+    if (invalid) *invalid = 0;
+    if (!speed || !*speed) return 1.0f;
+    char* end;
+    const float value = strtof(speed, &end);
+    if (*end || !isfinite(value) || value < 0.25f || value > 4.0f) {
+        if (invalid) *invalid = 1;
+        return 1.0f;
+    }
+    return value;
+}
+static u64 initial_step_for_limit(int fps) {
+    if (fps == 0) return ARCEUS_UNLOCKED_INITIAL_STEP_NS;
+    if (fps == SNX_FPS_GAME) fps = 30;
+    if (fps < 1 || fps > 1000) return ARCEUS_INITIAL_STEP_NS;
+    return (UINT64_C(1000000000) + (u64)fps / 2) / (u64)fps;
+}
+static ArceusClockConfig arceus_clock_config(int runtime_fps) {
+    ArceusClockConfig config = {.master = arceus_switch_enabled("SNX_ARCEUS_TIMING_FIXES", 1)};
+    if (!config.master) return config;
+    const char* legacy = getenv("SNX_ARCEUS_FPS60");
+    const char* target = getenv("SNX_ARCEUS_TARGET_FPS");
+    config.mode = 0;
+    if (legacy && !strcmp(legacy, "1")) config.mode = 1, config.target_fps = 60, config.write_fps = 1;
+    if (target && *target) {
+        if (!strcmp(target, "60") || !strcmp(target, "120"))
+            config.mode = 1, config.target_fps = atoi(target), config.write_fps = 1;
+        else if (!strcmp(target, "unlocked") || !strcmp(target, "0"))
+            config.mode = 2, config.target_fps = 0, config.write_fps = 1;
+        else if (!strcmp(target, "game"))
+            /* The runtime's own limit stays, even with the legacy SNX_ARCEUS_FPS60=1. */
+            config.mode = 0, config.target_fps = 0, config.write_fps = 0, config.runtime_rate_override = 1;
+        else config.invalid = 1;
+    }
+    config.skip_runtime_limit = !config.invalid && !config.write_fps &&
+        !config.runtime_rate_override &&
+        (runtime_fps == SNX_FPS_GAME || (runtime_fps > 0 && runtime_fps <= 30));
+    if (!config.invalid)
+        config.initial_ns = config.mode == 2 ? ARCEUS_UNLOCKED_INITIAL_STEP_NS
+                            : config.mode == 1 ? initial_step_for_limit(config.target_fps)
+                                               : initial_step_for_limit(runtime_fps);
+    return config;
+}
+static void arceus_clock_config_apply(ArceusClockConfig config) {
+    if (!config.master || config.invalid || config.skip_runtime_limit) return;
+    /* On by default: a measured step near 1/30 s is reported as the game's own step. */
+    step.measured_only = !arceus_switch_enabled("SNX_ARCEUS_WHOLE_STEP", 1);
+    step.initial_ns = step.measured_only ? config.initial_ns : arceus_whole_step(config.initial_ns);
+    if (config.write_fps) __atomic_store_n(&g_opt_fps, config.target_fps, __ATOMIC_RELAXED);
+    experimental = 1;
+    clocks_installed = timing_enabled = 1;
+}
 
 static void water_step_write(u64 ns) {
     if (!water_step_address) return;
@@ -43,11 +129,8 @@ static void water_step_write(u64 ns) {
 static u64 frame_step_address;
 /* One per main-loop frame: an engine frame identity for per-frame pairing. */
 static u64 frame_step_frames;
-static void frame_step_write(u64 ns) {
-    if (!frame_step_address) return;
-    __atomic_add_fetch(&frame_step_frames, 1, __ATOMIC_RELEASE);
-    float seconds = ns ? (float)((double)ns / 1000000000.0) : NOMINAL_STEP_SECONDS;
-    if (!(seconds < NOMINAL_STEP_SECONDS)) seconds = NOMINAL_STEP_SECONDS;
+/* The cell's two words: the step in seconds and its negative. */
+static void frame_step_cell_write(float seconds) {
     const float negative = -seconds;
     u32 bits;
     memcpy(&bits, &seconds, sizeof bits);
@@ -55,7 +138,15 @@ static void frame_step_write(u64 ns) {
     memcpy(&bits, &negative, sizeof bits);
     gw32(frame_step_address + 4, bits);
 }
+static void frame_step_write(u64 ns) {
+    if (!frame_step_address) return;
+    __atomic_add_fetch(&frame_step_frames, 1, __ATOMIC_RELEASE);
+    float seconds = ns ? (float)((double)ns / 1000000000.0) : NOMINAL_STEP_SECONDS;
+    if (!(seconds < NOMINAL_STEP_SECONDS)) seconds = NOMINAL_STEP_SECONDS;
+    frame_step_cell_write(seconds);
+}
 
+static void battle_sequence_dispatch_watch(u64 now);
 static void adjust_duration(CPU* c) {
     static const u64 callers[4] = {0x278150c, 0x2781540, 0x2781574, 0x27815a8};
     unsigned channel = (unsigned)c->x[1];
@@ -69,12 +160,10 @@ static void adjust_duration(CPU* c) {
     if (arceus_step(&step, plat_ns(), c->x[0], channel, &value)) {
         c->x[2] = value;
         if (channel == 0) {
+            battle_sequence_dispatch_watch(plat_ns());
             water_step_write(value);
             frame_step_write(value);
-            /* Shared 30-Hz cadence for the isolated integer blink state machine. */
-            blink_remainder += value * 30;
-            blink_ticks = (unsigned)(blink_remainder / 1000000000);
-            blink_remainder %= 1000000000;
+            blink_cadence_add(value);
         }
     }
     else WARN_LIMIT(4, "arceus-clock: clock update order changed, left unchanged\n");
@@ -147,30 +236,25 @@ void arceus_clock_init(void) {
     static const u64 offsets[3] = {0x278303c, 0x2783048, 0x277bef4};
     static const u32 words[3] = {0x8b21d008, 0xf0008fc8, 0x8b21d008};
     static const GuestFn wrappers[3] = {read_clock, set_mode, set_duration};
-    const char* enabled = getenv("SNX_ARCEUS_CLOCK_TRACE");
-    const char* fps60 = getenv("SNX_ARCEUS_FPS60");
-    const char* target = getenv("SNX_ARCEUS_TARGET_FPS");
-    int target_fps = fps60 && !strcmp(fps60, "1") ? 60 : 0, unlocked = 0;
-    if (target && *target) {
-        if (!strcmp(target, "60")) target_fps = 60;
-        else if (!strcmp(target, "120")) target_fps = 120;
-        /* No frame limit: every fix follows the measured step, whatever the rate. */
-        else if (!strcmp(target, "unlocked") || !strcmp(target, "0")) unlocked = 1;
-        else {
-            WARN("arceus-clock: refused unsupported target FPS (use 60, 120 or unlocked)\n");
-            return;
-        }
+    const ArceusClockConfig config = arceus_clock_config(__atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED));
+    timing_enabled = clocks_installed = experimental = tracing = 0;
+    target_fps_explicit = config.write_fps;
+    if (!config.master) return;
+    if (config.invalid) {
+        WARN("arceus-clock: refused unsupported target FPS (use 60, 120 or unlocked)\n");
+        return;
     }
+    if (config.skip_runtime_limit) {
+        LOG("arceus-clock: timing layer skipped at fps_limit=%d (game pace or 30 FPS and below)\n",
+            __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED));
+        return;
+    }
+    const char* enabled = getenv("SNX_ARCEUS_CLOCK_TRACE");
     const char* message_flag = getenv("SNX_ARCEUS_DIALOGUE_TRACE");
     int message_trace = message_flag && !strcmp(message_flag, "1");
     const SnxModInfo* mod = NULL;
     tracing = enabled && !strcmp(enabled, "1");
-    experimental = target_fps != 0 || unlocked;
-    const char *fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
-    const char *camera = getenv("SNX_ARCEUS_CAMERA_TRACE");
-    const char *research = getenv("SNX_ARCEUS_TIMING_RESEARCH");
-    if (!tracing && !experimental && !message_trace && !(fixed && !strcmp(fixed, "1")) &&
-        !(camera && !strcmp(camera, "1")) && !(research && !strcmp(research, "1"))) return;
+    experimental = 1;
     for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
         if (!strcmp(g_mod->mods[i].name, "main")) mod = &g_mod->mods[i];
     if (!mod || memcmp(mod->build_id, id, sizeof id)) {
@@ -187,7 +271,6 @@ void arceus_clock_init(void) {
             LOG("arceus-message: read-only candidate MessageView probe installed\n");
         } else WARN("arceus-message: refused missing or changed MessageView entry\n");
     }
-    if (!tracing && !experimental) return;
     for (unsigned i = 0; i < 3; i++) {
         u64 pc = mod->base + offsets[i];
         if (pc < g_code_lo || pc >= g_code_hi || !readable(pc, 4) || gr32(pc) != words[i] ||
@@ -200,18 +283,18 @@ void arceus_clock_init(void) {
     main_base = mod->base;
     for (unsigned i = 0; i < 3; i++)
         g_disp[(main_base + offsets[i] - g_code_lo) / 4] = wrappers[i];
-    if (experimental) {
-        /* Unlocked starts from a 1/120 s step until the first measured one. 0 lifts the limit. */
-        step.initial_ns = unlocked ? ARCEUS_UNLOCKED_INITIAL_STEP_NS
-                                   : (UINT64_C(1000000000) + target_fps / 2) / target_fps;
-        __atomic_store_n(&g_opt_fps, unlocked ? 0 : target_fps, __ATOMIC_RELAXED);
-        clocks_installed = 1;
-    }
-    if (unlocked)
+    arceus_clock_config_apply(config);
+    if (config.mode == 2)
         LOG("arceus-clock: Arceus 1.1.1 EXPERIMENT: elapsed-time clocks, target_fps=unlocked, tracing=%d\n", tracing);
+    else if (config.mode == 0 && config.runtime_rate_override)
+        LOG("arceus-clock: Arceus 1.1.1 EXPERIMENT: elapsed-time clocks, target_fps=game, fps_limit=%d, tracing=%d\n",
+            __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED), tracing);
+    else if (config.mode == 0)
+        LOG("arceus-clock: Arceus 1.1.1 EXPERIMENT: elapsed-time clocks, fps_limit=%d, tracing=%d\n",
+            __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED), tracing);
     else
         LOG("arceus-clock: Arceus 1.1.1 %s, target_fps=%d, tracing=%d\n",
-            experimental ? "EXPERIMENT: elapsed-time clocks" : "read-only probe", target_fps, tracing);
+            "EXPERIMENT: elapsed-time clocks", config.target_fps, tracing);
 }
 
 /* WaterCurrentTime's verified update adds 1/30 second per rendered frame. Replace
@@ -308,8 +391,7 @@ static void event_camera_update(CPU* c, u64 entry) {
 }
 
 static void event_camera_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_EVENT_CAMERA_FIX");
-    if (!enabled || strcmp(enabled, "1")) return;
+    if ( !arceus_switch_enabled("SNX_ARCEUS_EVENT_CAMERA_FIX", 1)) return;
     u64 pc = main_base + 0x19b2140;
     if (pc < g_code_lo || pc + 0x198 > g_code_hi || !readable(pc, 0x198) ||
         gr32(pc) != 0xd101c3ff || gr32(pc + 0x34) != 0xbd44b400 ||
@@ -373,8 +455,7 @@ static void blink_inlined(CPU* c, u64 entry) { blink_update(c, entry, 2); }
    accepting the base subobject at +48. Only this small state machine is paced;
    the skeletal/face animation system continues to update every rendered frame. */
 static void blink_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_BLINK_FIX");
-    if (!enabled || strcmp(enabled, "1")) return;
+    if ( !arceus_switch_enabled("SNX_ARCEUS_BLINK_FIX", 1)) return;
     const u64 offsets[3] = {0x194f110, 0x194f20c, 0x1aaf0b4};
     const u32 sizes[3] = {0xfc, 0x100, 0x2a0};
     const u32 prologues[3] = {0xf81e0ff3, 0xa9be4ff4, 0xa9ba6ffc};
@@ -466,8 +547,7 @@ static void camera_input_update(CPU* c, u64 entry) {
             (double)guest_float(object + 0x428), (double)guest_float(object + 0x430));
 }
 static void camera_input_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_CAMERA_INPUT_FIX");
-    if ((!enabled || strcmp(enabled, "1")) && !camera_trace_only) return;
+    if (!arceus_switch_enabled("SNX_ARCEUS_CAMERA_INPUT_FIX", 1) && !camera_trace_only) return;
     u64 pc = main_base + 0x193c04c;
     int covered = 0;
     if (!g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
@@ -517,15 +597,10 @@ static void camera_rate_update(CPU* c, u64 entry) {
     }
 }
 static void camera_rate_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_CAMERA_INPUT_FIX");
-    if ((!enabled || strcmp(enabled, "1")) && !camera_trace_only) return;
-    const char* speed = getenv("SNX_ARCEUS_CAMERA_SPEED");
-    if (speed && *speed) {
-        char* end; float value = strtof(speed, &end);
-        if (*end || !isfinite(value) || value < 0.25f || value > 4.0f)
-            WARN("arceus-camera-rate: invalid camera speed, using 1\n");
-        else camera_speed = value;
-    }
+    if (!arceus_switch_enabled("SNX_ARCEUS_CAMERA_INPUT_FIX", 1) && !camera_trace_only) return;
+    int invalid_speed;
+    camera_speed = camera_speed_value(&invalid_speed);
+    if (invalid_speed) WARN("arceus-camera-rate: invalid camera speed, using 1\n");
     u64 pc = main_base + 0x193c2c4;
     int covered = 0;
     if (!g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
@@ -574,8 +649,7 @@ static void pad_repeat_update(CPU* c, u64 entry) {
             (unsigned long long)gr64(object+0xb8));
 }
 static void pad_repeat_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_MENU_REPEAT_FIX");
-    if (!enabled || strcmp(enabled,"1")) return;
+    if ( !arceus_switch_enabled("SNX_ARCEUS_MENU_REPEAT_FIX", 1)) return;
     u64 pc = main_base + 0xc9a9b4;
     int covered = 0;
     if (!g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
@@ -884,8 +958,15 @@ static void fade_before(u64 object, FadeStage* st) {
     const float want = guest_float(frame_step_address) / NOMINAL_STEP_SECONDS;
     if (!(want > 0.0f && want <= 1.0f)) return;
     const int32_t frame = (int32_t)gr32(object + 0x538), duration = (int32_t)gr32(object + 0x53c);
-    /* A fade-in at its end only resets and republishes the target: leave that call alone. */
-    if (frame >= duration && state == 2) return;
+    /* A fade-in at its end only resets and republishes the target: leave that call alone.
+       The object goes idle in it, so free its slot here, as no later call will. */
+    if (frame >= duration && state == 2) {
+        pm_lock(&fade_lock);
+        for (int k = 0; k < FADE_SLOTS; k++)
+            if (fade_slots[k].object == object) fade_slots[k].object = 0;
+        pm_unlock(&fade_lock);
+        return;
+    }
     pm_lock(&fade_lock);
     float progress = 0.0f;
     st->slot = fade_slot(object, (u32)frame, (u32)duration, state, &progress);
@@ -963,7 +1044,7 @@ static int sequence_clock_logging, capture_fix_active;
    With the fix, a call only counts down once 1/30 s of frame steps has built up for
    that object. Otherwise +1DC is raised by one first so the call leaves it unchanged. */
 #define CAPTURE_SLOTS 8
-#define CAPTURE_TICK_NS 33333333ll
+#define CAPTURE_TICK_NS ((int64_t)ARCEUS_WHOLE_STEP_NS)
 static struct { u64 object; int64_t ns; } capture_slots[CAPTURE_SLOTS];
 static unsigned capture_next_slot;
 static int capture_waiting(u32 stage) {
@@ -1000,7 +1081,10 @@ static int capture_tick(u64 object, int ready) {
     if (capture_slots[k].ns < -1000000000ll) capture_slots[k].ns = -1000000000ll;
     if (!ready || capture_slots[k].ns < CAPTURE_TICK_NS) return 0;
     capture_slots[k].ns -= CAPTURE_TICK_NS;
-    if (capture_slots[k].ns >= CAPTURE_TICK_NS) capture_slots[k].ns = 0;
+    if (timer_carry_fix) {
+        if (capture_slots[k].ns > (int64_t)TIMER_CARRY_LIMIT_NS)
+            capture_slots[k].ns = (int64_t)TIMER_CARRY_LIMIT_NS;
+    } else if (capture_slots[k].ns >= CAPTURE_TICK_NS) capture_slots[k].ns = 0;
     return 1;
 }
 static void sequence_clock_probe(CPU* c, u64 entry, unsigned kind) {
@@ -1075,8 +1159,7 @@ static void sequence_clock_research_init(void) {
 }
 /* Runs after the research probes, so it reuses the capture wrapper when they installed it. */
 static void capture_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_CAPTURE_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_CAPTURE_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-capture-fix: refused without elapsed-time clocks\n");
         return;
@@ -1093,10 +1176,13 @@ static void capture_fix_init(void) {
 #define SEQUENCE_SLOTS 64
 /* A clamped 100 ms step at speed 4 needs at most 13 boundary updates.
    Allow extra catch-up work, retaining excess budget if the guard is reached. */
-#define SEQUENCE_MAX_UPDATES 32
 static GuestFn battle_sequence_original;
 static PMutex battle_sequence_lock = PMUTEX_INIT;
-static struct { u64 object; u64 ns; float pending; } sequence_slots[SEQUENCE_SLOTS];
+/* cut: the sequence has had a step that was not the game's own, so its frame may be cut. */
+/* calls, start_ns and first follow one sequence from its first playing call to its end. */
+static struct { u64 object; u64 ns; float pending; int cut; u32 calls; u64 start_ns; float first; }
+    sequence_slots[SEQUENCE_SLOTS];
+static u64 battle_sequence_ended;
 static unsigned sequence_next_slot;
 static u64 battle_sequence_calls, battle_sequence_skips, battle_sequence_partial;
 /* Read-only research: playing calls per speed, to see how many sequences still step whole frames. */
@@ -1112,6 +1198,27 @@ static float sequence_step(float frame, float want) {
         step = nextafterf(step, frame + step < whole ? INFINITY : 0.0f);
     return step;
 }
+/* The even landing, the default (SNX_ARCEUS_BATTLE_SEQUENCE_FIX unset or 2). Value 1 keeps
+   the plain landing for comparison. The rule above cuts a step at the next
+   whole frame and keeps the rest for the next call. At 60 FPS, where a step is half a frame,
+   that gave the frame 8.50, 8.99, 9.00, 10.00: a hold and a jump on every second rendered
+   frame, which the battle camera shows (its commands are stepped from +E8 by 9DB748). With
+   value 2 a step that would end within half an advance before a whole frame goes onto it
+   and the difference is carried, signed. Nothing else changes: a step still ends on every
+   whole frame and the rest waits for the next rendered frame. The game needs both. The
+   commands' step slot (9DB748, once per rendered frame) acts on exact frames it must see,
+   and the update makes its end checks when it is entered on one. Two earlier forms moved on
+   from the whole frame in the same rendered frame and broke one or the other. */
+static int battle_sequence_even;
+#define SEQUENCE_SNAP_SHARE 0.5f
+#define SEQUENCE_SNAP_MAX 0.5f
+/* The step from frame for a budget of want: onto the next whole frame when the budget
+   reaches it or ends within snap before it, else the budget itself. */
+static float sequence_even_step(float frame, float want, float snap) {
+    const float whole = floorf(frame) + 1.0f;
+    if (frame + want < whole - snap) return want;
+    return sequence_step(frame, whole - frame + 1.0f);
+}
 static int battle_sequence_playing(u64 o) {
     return readable(o, 0x308) && *GP(o + 0x302) && *GP(o + 0x301) && *GP(o + 0x303) &&
            guest_float(o + 0xf0) != 0.0f && guest_float(o + 0xe8) < guest_float(o + 0xec);
@@ -1120,7 +1227,7 @@ static void battle_sequence_update(CPU* c, u64 entry) {
     const u64 object = c->x[0];
     const u64 count = __atomic_add_fetch(&battle_sequence_calls, 1, __ATOMIC_RELAXED);
     int skip = 0;
-    float speed = 0.0f, partial = 0.0f;
+    float speed = 0.0f, partial = 0.0f, snap = 0.0f;
     unsigned slot = SEQUENCE_SLOTS;
     if (battle_sequence_playing(object)) {
         pm_lock(&step_lock);
@@ -1139,19 +1246,40 @@ static void battle_sequence_update(CPU* c, u64 entry) {
             sequence_slots[k].object = object;
             sequence_slots[k].ns = 0;
             sequence_slots[k].pending = 0.0f;
+            sequence_slots[k].calls = 0;
+            /* A sequence first seen between two whole frames was cut before. */
+            sequence_slots[k].cut = guest_float(object + 0xe8) != floorf(guest_float(object + 0xe8));
         }
-        if (speed > 0.0f && speed <= 4.0f) {
-            float pending = sequence_slots[k].pending + speed * (float)ns / 33333333.0f;
-            partial = sequence_step(guest_float(object + 0xe8), pending);
+        if (!sequence_slots[k].calls++) {
+            sequence_slots[k].start_ns = plat_ns();
+            sequence_slots[k].first = guest_float(object + 0xe8);
+        }
+        slot = k;
+        if (ns != ARCEUS_WHOLE_STEP_NS) sequence_slots[k].cut = 1;
+        /* At the game's own step a sequence that was never cut runs the game's update as it is. */
+        const int cut = sequence_slots[k].cut;
+        if (cut && speed > 0.0f && speed <= 4.0f) {
+            const float advance = speed * (float)((double)ns / (double)ARCEUS_WHOLE_STEP_NS);
+            /* The game steps once per update, by the speed. The budget keeps at most one such
+               step beyond this frame's own, so a hitch is not caught up, as in the game. */
+            const float cap = (speed > 1.0f ? speed : 1.0f) + advance;
+            float pending = sequence_slots[k].pending + advance;
+            if (pending > cap) pending = cap;
+            if (battle_sequence_even) {
+                snap = SEQUENCE_SNAP_SHARE * advance < SEQUENCE_SNAP_MAX ? SEQUENCE_SNAP_SHARE * advance : SEQUENCE_SNAP_MAX;
+                partial = sequence_even_step(guest_float(object + 0xe8), pending, snap);
+            } else
+                partial = sequence_step(guest_float(object + 0xe8), pending);
+            /* A skipped update keeps the whole budget, a negative carry from an earlier snap too. */
+            if (partial <= 0.0f) skip = 1, partial = 0.0f;
             sequence_slots[k].pending = pending - partial;
             slot = k;
-            if (partial <= 0.0f) skip = 1, partial = 0.0f;
-        } else {
+        } else if (cut) {
             sequence_slots[k].ns += ns;
-            if (sequence_slots[k].ns < 33333333ull) skip = 1;
+            if (sequence_slots[k].ns < ARCEUS_WHOLE_STEP_NS) skip = 1;
             else {
-                sequence_slots[k].ns -= 33333333ull;
-                if (sequence_slots[k].ns >= 33333333ull) sequence_slots[k].ns = 0;
+                sequence_slots[k].ns -= ARCEUS_WHOLE_STEP_NS;
+                if (sequence_slots[k].ns >= ARCEUS_WHOLE_STEP_NS) sequence_slots[k].ns = 0;
             }
         }
         pm_unlock(&battle_sequence_lock);
@@ -1165,15 +1293,22 @@ static void battle_sequence_update(CPU* c, u64 entry) {
         const u64 return_pc = c->x[30];
         /* The update takes only this in X0. Re-enter with the same argument and
            return address; leave the final call's return registers intact. */
-        for (unsigned updates = 0; updates < SEQUENCE_MAX_UPDATES; updates++) {
+        /* No more updates than whole frames in the game's own step. With a speed up to 1 that is
+           one: a second update would pass a whole frame that no rendered frame ended on, and
+           the commands' step slot (9DB748, once per rendered frame) would never see it. At
+           30 FPS, where a step is a hair under or over a frame, that happened all the time. */
+        const unsigned limit = speed > 1.0f ? (unsigned)ceilf(speed) : 1;
+        for (unsigned updates = 0; updates < limit; updates++) {
             const float before = guest_float(object + 0xe8);
+            const u64 first = gr64(object);
             __atomic_add_fetch(&battle_sequence_partial, 1, __ATOMIC_RELAXED);
             guest_float_write(object + 0xf0, partial);
             battle_sequence_original(c, entry);
-            if (!readable(object, 0x308) || guest_float(object + 0xf0) != partial) break;
+            /* An object the update let go of, or one with another first word, is not ours. */
+            if (!readable(object, 0x308) || gr64(object) != first || guest_float(object + 0xf0) != partial) break;
             guest_float_write(object + 0xf0, speed);
             if (c->pc != return_pc || !battle_sequence_playing(object) ||
-                !(guest_float(object + 0xe8) > before) || updates + 1 == SEQUENCE_MAX_UPDATES) break;
+                !(guest_float(object + 0xe8) > before) || updates + 1 == limit) break;
             pm_lock(&battle_sequence_lock);
             /* A slot evicted by another sequence no longer owns our budget. */
             if (sequence_slots[slot].object == object) {
@@ -1193,7 +1328,26 @@ static void battle_sequence_update(CPU* c, u64 entry) {
         }
         /* The iteration guard retains any unconsumed budget in the slot. */
     } else battle_sequence_original(c, entry);
-    if (count <= 4 || count % 2000 == 0) {
+    /* A sequence that was playing and is not any more has ended. With the research switch one
+       line says how long it took: an authored frame is 1/30 s at any frame rate. */
+    if (slot < SEQUENCE_SLOTS && !battle_sequence_playing(object)) {
+        pm_lock(&battle_sequence_lock);
+        const int ours = sequence_slots[slot].object == object && sequence_slots[slot].calls;
+        const u32 slot_calls = sequence_slots[slot].calls;
+        const u64 start_ns = sequence_slots[slot].start_ns;
+        const float first = sequence_slots[slot].first;
+        if (ours) sequence_slots[slot].calls = 0;
+        pm_unlock(&battle_sequence_lock);
+        if (ours) {
+            __atomic_add_fetch(&battle_sequence_ended, 1, __ATOMIC_RELAXED);
+            if (research_observing && readable(object, 0x308))
+                LOG("arceus-battle-sequence: ended object=%llx frames=%.2f end=%.2f calls=%u seconds=%.3f landing=%d speed=%g total_calls=%llu\n",
+                    (unsigned long long)object, (double)(guest_float(object + 0xe8) - first),
+                    (double)guest_float(object + 0xec), slot_calls, (double)(plat_ns() - start_ns) / 1e9,
+                    battle_sequence_even ? 2 : 1, (double)speed, (unsigned long long)count);
+        }
+    }
+    if (count <= 4 || count % 2000 == 0 || (research_observing && count % 250 == 0)) {
         char speeds[256];
         int n = 0;
         speeds[0] = 0;
@@ -1210,9 +1364,33 @@ static void battle_sequence_update(CPU* c, u64 entry) {
             speeds, (unsigned long long)other);
     }
 }
+/* With the research switch, once a second from the frame clock: whether the dispatch entry of
+   9DBEAC still is the wrapper. If something replaced it the sequences run the game's update
+   with no fix, and no line of the wrapper would say so. */
+static u64 battle_sequence_watch_ns, battle_sequence_watch_lines, battle_sequence_displaced;
+static void battle_sequence_dispatch_watch(u64 now) {
+    if (!research_observing || !battle_sequence_original || !main_base) return;
+    if (now - battle_sequence_watch_ns < 1000000000ull) return;
+    battle_sequence_watch_ns = now;
+    const GuestFn entry = __atomic_load_n(&g_disp[(main_base + 0x9dbeac - g_code_lo) / 4], __ATOMIC_ACQUIRE);
+    const int ours = entry == battle_sequence_update;
+    if (!ours) battle_sequence_displaced++;
+    if (++battle_sequence_watch_lines <= 900)
+        LOG("arceus-battle-sequence: dispatch=%s calls=%llu ended=%llu displaced_seconds=%llu ns=%llu\n",
+            ours ? "wrapper" : "OTHER", (unsigned long long)__atomic_load_n(&battle_sequence_calls, __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&battle_sequence_ended, __ATOMIC_RELAXED),
+            (unsigned long long)battle_sequence_displaced, (unsigned long long)now);
+}
+/* 2 the even landing (also when unset), 1 the plain landing, 0 off. */
+static int battle_sequence_value(void) {
+    const char* value = getenv("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
+    if (!value || !strcmp(value, "2")) return 2;
+    return !strcmp(value, "1");
+}
 static void battle_sequence_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    const int value = battle_sequence_value();
+    if (!main_base || !value) return;
+    battle_sequence_even = value == 2;
     if (!clocks_installed) {
         WARN("arceus-battle-sequence: refused without elapsed-time clocks\n");
         return;
@@ -1237,7 +1415,8 @@ static void battle_sequence_fix_init(void) {
         return;
     }
     __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], battle_sequence_update, __ATOMIC_RELEASE);
-    LOG("arceus-battle-sequence: EXPERIMENT: battle effect sequences advance 30 frames per second of elapsed time\n");
+    LOG("arceus-battle-sequence: EXPERIMENT: battle effect sequences advance 30 frames per second of elapsed time%s\n",
+        battle_sequence_even ? ", even landing" : "");
 }
 /* Map cursors 120F1F4 (field map) and 1245DB8 (world map) add stick x speed to the position
    per call and count held frames in two counters up to 9. The fix scales the speed by
@@ -1264,13 +1443,16 @@ static void map_cursor_update(CPU* c, u64 entry, unsigned kind) {
     pm_lock(&map_cursor_lock);
     if (map_cursor_object[kind] != object) map_cursor_object[kind] = object, map_cursor_ns[kind] = 0;
     map_cursor_ns[kind] += ns;
-    const int tick = map_cursor_ns[kind] >= 33333333ull;
+    const int tick = map_cursor_ns[kind] >= ARCEUS_WHOLE_STEP_NS;
     if (tick) {
-        map_cursor_ns[kind] -= 33333333ull;
-        if (map_cursor_ns[kind] >= 33333333ull) map_cursor_ns[kind] = 0;
+        map_cursor_ns[kind] -= ARCEUS_WHOLE_STEP_NS;
+        if (timer_carry_fix) {
+            if (map_cursor_ns[kind] > TIMER_CARRY_LIMIT_NS) map_cursor_ns[kind] = TIMER_CARRY_LIMIT_NS;
+        } else if (map_cursor_ns[kind] >= ARCEUS_WHOLE_STEP_NS) map_cursor_ns[kind] = 0;
     }
     pm_unlock(&map_cursor_lock);
-    const float speed = guest_float(object + s->speed), scaled = speed * (float)ns / 33333333.0f;
+    const float speed = guest_float(object + s->speed);
+    const float scaled = speed * (float)((double)ns / (double)ARCEUS_WHOLE_STEP_NS);
     const u32 held_a = gr32(object + s->held), held_b = gr32(object + s->held + 4);
     guest_float_write(object + s->speed, scaled);
     map_cursor_original[kind](c, entry);
@@ -1287,8 +1469,7 @@ static void map_cursor_update(CPU* c, u64 entry, unsigned kind) {
 static void field_map_cursor_update(CPU* c, u64 e) { map_cursor_update(c, e, 0); }
 static void world_map_cursor_update(CPU* c, u64 e) { map_cursor_update(c, e, 1); }
 static void map_cursor_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_MAP_CURSOR_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_MAP_CURSOR_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-map-cursor: refused without elapsed-time clocks\n");
         return;
@@ -1391,8 +1572,7 @@ static void fixed_resolution_init(void) {
    falls back to 1/30, and the existing 2^-23 gate at 2AF2A20 still skips the
    solve for a zero step. Worlds stepped through other callers are not touched. */
 static void physics_timestep_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_PHYSICS_TIMESTEP_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_PHYSICS_TIMESTEP_FIX", 1)) return;
     const u64 pc = main_base + 0x2af25b4;
     int covered = 0;
     if (!clocks_installed) {
@@ -1424,8 +1604,7 @@ static void physics_timestep_init(void) {
    min(1/30, elapsed) like the physics step. arceus_step never yields a zero step and
    FMINNM maps NaN to 1/30. A nonzero mode, never observed, would also be capped. */
 static void navigation_timestep_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX", 1)) return;
     const u64 pc = main_base + 0x2795204, caller = main_base + 0x279a6d0;
     int covered = 0;
     if (!clocks_installed) {
@@ -1575,8 +1754,7 @@ static int cave_light_init(void) {
 }
 
 static void world_timers_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_WORLD_TIMERS_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_WORLD_TIMERS_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-world-timers: refused without elapsed-time clocks\n");
         return;
@@ -1612,8 +1790,7 @@ static const FrameStepSite movement_sites[] = {
 };
 #define MOVEMENT_SITES (sizeof movement_sites / sizeof movement_sites[0])
 static void movement_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_MOVEMENT_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_MOVEMENT_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-movement-fix: refused without elapsed-time clocks\n");
         return;
@@ -1621,8 +1798,7 @@ static void movement_fix_init(void) {
     if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
     if (!frame_step_cell_init("arceus-movement-fix")) return;
     /* Optional hex mask over movement_sites (bit 0 is the first) to test sites one by one. */
-    const char* mask_text = getenv("SNX_ARCEUS_MOVEMENT_SITES");
-    const unsigned long mask = mask_text && *mask_text ? strtoul(mask_text, NULL, 16) : ~0ul;
+    const unsigned long mask = movement_mask_value();
     FrameStepSite chosen[MOVEMENT_SITES];
     unsigned n = 0;
     for (unsigned k = 0; k < MOVEMENT_SITES; k++)
@@ -1632,8 +1808,7 @@ static void movement_fix_init(void) {
         sites, (unsigned)MOVEMENT_SITES, mask, (unsigned long long)frame_step_address);
 }
 static void gravity_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_GRAVITY_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_GRAVITY_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-gravity-fix: refused without elapsed-time clocks\n");
         return;
@@ -1650,6 +1825,531 @@ static void gravity_fix_init(void) {
     LOG("arceus-gravity-fix: EXPERIMENT: %u of 1 airborne gravity sites use min(1/30, elapsed), cell=%llx\n",
         sites, (unsigned long long)frame_step_address);
 }
+
+/* 19843A0 queues a replacement velocity with one -g*factor/30 contribution.
+   Adjust only that contribution on a new queue for the player and ride classes.
+   Other classes, unchanged queues and the horizontal components keep their values. */
+static GuestFn capped_fall_original;
+static u64 capped_fall_calls, capped_fall_adjusted;
+/* 19843A0 queues direction x config+D8 x stick at +6F0 (flag +6E0) and the consumer adds
+   it to the velocity once. The only caller seen, the script native at 1FF4F44, calls it
+   once per frame, so air steering accelerated with the frame rate. Scale a new queue entry
+   by step / (1/30). An entry this call did not write keeps its value. */
+#define AIR_STEERING_CALLER 0x1ff4f44
+/* Ride table 41629B8 has its own slot +128, 252B124, which calls 19843A0 at 252B970. */
+#define AIR_STEERING_RIDE_CALLER 0x252b974
+static int capped_fall_fix, air_steering_fix;
+static u64 air_steering_adjusted;
+static int air_steering_scale(u64 object, int queued, const u32 previous[3], float seconds) {
+    if (!(gr32(object + 0x6e0) & 0xff) || !(seconds > 0.0f) || seconds >= NOMINAL_STEP_SECONDS) return 0;
+    int changed = !queued;
+    float value[3];
+    for (unsigned k = 0; k < 3; k++) {
+        if (previous[k] != gr32(object + 0x6f0 + 4 * k)) changed = 1;
+        value[k] = guest_float(object + 0x6f0 + 4 * k);
+        if (!isfinite(value[k])) return 0;
+    }
+    if (!changed) return 0;
+    for (unsigned k = 0; k < 3; k++)
+        guest_float_write(object + 0x6f0 + 4 * k, value[k] * (seconds / NOMINAL_STEP_SECONDS));
+    return 1;
+}
+static int capped_fall_class(u64 object) {
+    if (!readable(object, 8)) return 0;
+    const u64 table = gr64(object);
+    if (!readable(table, 0x3c0)) return 0;
+    if (table == main_base + 0x413db58)
+        return gr64(table + 0x128) == main_base + 0x19843a0 &&
+               gr64(table + 0x270) == main_base + 0x1a145ac &&
+               gr64(table + 0x2a0) == main_base + 0x1a08560;
+    const u32 ride_tables[] = {0x41629b8, 0x41642a0, 0x4164dc0, 0x4165cd0, 0x4166ff8};
+    for (unsigned k = 0; k < sizeof ride_tables / sizeof ride_tables[0]; k++)
+        if (table == main_base + ride_tables[k])
+            return gr64(table + 0x270) == main_base + 0x198d7e4 &&
+                   gr64(table + 0x2a0) == main_base + 0x257af70 &&
+                   gr64(table + 0x3b8) == main_base + 0x257abb4;
+    return 0;
+}
+static void capped_fall_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    const int eligible = capped_fall_class(object) && writable(object, 0xbec);
+    const int queued = eligible && (gr32(object + 0x6a0) & 0xff);
+    u32 previous[4] = {0};
+    for (unsigned k = 0; eligible && k < 4; k++) previous[k] = gr32(object + 0x6b0 + 4 * k);
+    const float factor = eligible ? guest_float(object + 0xbe8) : 0.0f;
+    const float seconds = guest_float(frame_step_address);
+    const int steering = air_steering_fix && eligible && (c->x[30] == main_base + AIR_STEERING_CALLER ||
+                                                          c->x[30] == main_base + AIR_STEERING_RIDE_CALLER);
+    const int steering_queued = steering && (gr32(object + 0x6e0) & 0xff);
+    u32 steering_previous[3] = {0};
+    for (unsigned k = 0; steering && k < 3; k++) steering_previous[k] = gr32(object + 0x6f0 + 4 * k);
+    capped_fall_original(c, entry);
+    const u64 calls = __atomic_add_fetch(&capped_fall_calls, 1, __ATOMIC_RELAXED);
+    if (steering && capped_fall_class(object) && writable(object, 0xbec) &&
+        air_steering_scale(object, steering_queued, steering_previous, seconds)) {
+        const u64 adjusted = __atomic_add_fetch(&air_steering_adjusted, 1, __ATOMIC_RELAXED);
+        if (adjusted <= 4 || adjusted % 1000 == 0)
+            LOG("arceus-air-steering-fix: adjusted=%llu object=%llx table=main+%llx xz=%g,%g step=%g\n",
+                (unsigned long long)adjusted, (unsigned long long)object,
+                (unsigned long long)(gr64(object) - main_base), (double)guest_float(object + 0x6f0),
+                (double)guest_float(object + 0x6f8), (double)seconds);
+    }
+    if (capped_fall_fix && eligible && capped_fall_class(object) && writable(object, 0xbec) &&
+        (gr32(object + 0x6a0) & 0xff) && guest_float(object + 0xbe8) == factor) {
+        const float g = guest_float(main_base + 0x413a0f8);
+        const float y = guest_float(object + 0x6b4);
+        int changed = !queued;
+        for (unsigned k = 0; k < 4; k++)
+            if (previous[k] != gr32(object + 0x6b0 + 4 * k)) changed = 1;
+        if (changed && isfinite(y) && isfinite(g) && isfinite(factor) && g > 0.0f && factor > 0.0f &&
+            seconds > 0.0f && seconds <= NOMINAL_STEP_SECONDS) {
+            guest_float_write(object + 0x6b4, y + (g * factor) * (NOMINAL_STEP_SECONDS - seconds));
+            const u64 adjusted = __atomic_add_fetch(&capped_fall_adjusted, 1, __ATOMIC_RELAXED);
+            if (adjusted <= 4 || adjusted % 1000 == 0)
+                LOG("arceus-capped-fall: adjusted=%llu object=%llx table=main+%llx factor=%g queued_y=%g step=%g\n",
+                    (unsigned long long)adjusted, (unsigned long long)object,
+                    (unsigned long long)(gr64(object) - main_base), (double)factor, (double)y, (double)seconds);
+        }
+    }
+    if (calls <= 4 || calls % 1000 == 0)
+        LOG("arceus-capped-fall: calls=%llu adjusted=%llu object=%llx eligible=%d step=%g\n",
+            (unsigned long long)calls,
+            (unsigned long long)__atomic_load_n(&capped_fall_adjusted, __ATOMIC_RELAXED),
+            (unsigned long long)object, eligible, (double)seconds);
+}
+/* The two words at +6D0 that build the queued -1/30: 1 when they are the game's own, 2 when movement
+   bit 1 loads the negative frame step from this cell, 0 otherwise. */
+static int capped_fall_body(u64 pc, u32 first, u32 second) {
+    if (first == 0x52911128 && second == 0x72b7a108) return 1;
+    if (!frame_step_address || (first & 0x9f00001f) != 0x90000008 ||
+        (second & 0xffc003ff) != 0xb9400108) return 0;
+    const u64 immlo = (first >> 29) & 3;
+    const u64 immhi = (first >> 5) & 0x7ffff;
+    const u32 imm21 = (u32)((immhi << 2) | immlo);
+    const int64_t pages = (imm21 & 0x100000) ? (int64_t)imm21 - 0x200000 : (int64_t)imm21;
+    const int64_t page_delta = pages * 4096;
+    const u64 page = (pc & ~UINT64_C(0xfff)) + (u64)page_delta;
+    const u64 offset = (u64)((second >> 10) & 0xfff) * 4;
+    if (page + offset == frame_step_address + 4) return 2;
+    return 0;
+}
+static void capped_fall_init(void) {
+    const int enabled = arceus_switch_enabled("SNX_ARCEUS_CAPPED_FALL_FIX", 1);
+    const int movement = arceus_switch_enabled("SNX_ARCEUS_MOVEMENT_FIX", 1);
+    const unsigned long mask = movement_mask_value();
+    /* Explicit mask bit 9 also enables this fix through an existing launcher setting. */
+    const char* mask_text = getenv("SNX_ARCEUS_MOVEMENT_SITES");
+    const int selected = movement && mask_text && (mask & 0x200ul);
+    const int steer = arceus_switch_enabled("SNX_ARCEUS_AIR_STEERING_FIX", 1);
+    int fall = enabled || selected;
+    if (!main_base || (!fall && !steer)) return;
+    if (!clocks_installed) {
+        WARN("arceus-capped-fall: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x19843a0;
+    if (!covers_exactly(pc, 0xb18) || pc < g_code_lo || pc + 0xb18 > g_code_hi ||
+        !readable(pc, 0xb18) || gr32(pc) != 0xd102c3ff ||
+        gr32(pc + 0xfc) != 0x14000002 || !capped_fall_body(pc + 0x6d0, gr32(pc + 0x6d0), gr32(pc + 0x6d4)) ||
+        gr32(pc + 0x700) != 0x3d81ae60 || gr32(pc + 0x70c) != 0x391a8268) {
+        WARN("arceus-capped-fall: refused guard\n");
+        return;
+    }
+    /* Movement bit 1 already steps this queued gravity, so only air steering is installed then. */
+    if (fall && capped_fall_body(pc + 0x6d0, gr32(pc + 0x6d0), gr32(pc + 0x6d4)) == 2) {
+        WARN("arceus-capped-fall: off, movement bit 1 already steps the queued gravity\n");
+        fall = 0;
+        if (!steer) return;
+    }
+    if (!frame_step_cell_init("arceus-capped-fall")) return;
+    /* Match the census marker so it leaves this wrapper in place. */
+    gw32(pc + 0xfc, 0xb400005f);
+    jit_code_changed(pc, 0xb18);
+    capped_fall_original = jit_wait(pc);
+    if (!capped_fall_original) {
+        WARN("arceus-capped-fall: compile failed\n");
+        return;
+    }
+    capped_fall_fix = fall;
+    air_steering_fix = steer;
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], capped_fall_update, __ATOMIC_RELEASE);
+    if (fall)
+        LOG("arceus-capped-fall: EXPERIMENT: player/ride queued gravity uses elapsed time, other classes unchanged\n");
+    if (steer)
+        LOG("arceus-air-steering-fix: EXPERIMENT: player/ride air steering from main+%x follows elapsed time\n",
+            AIR_STEERING_CALLER);
+}
+
+/* The AI context scheduler 1050E00 adds 1 to every script context's frame count +88 per
+   pass, so wild Pokemon vigilance, hunger, sleep, WaitFrame and turns ran 2x fast at 60 FPS.
+   With SNX_ARCEUS_AI_TICK_FIX=1 a pass adds 1 only when 1/30 s has built up, else 0. */
+#define AI_TICK_NS 33333333ll
+#define AI_TICK_SLOTS 8
+static GuestFn ai_tick_original, ai_turn_original[2];
+static PMutex ai_tick_lock = PMUTEX_INIT;
+static struct { u64 scheduler; int64_t ns; } ai_tick_slots[AI_TICK_SLOTS];
+static unsigned ai_tick_next_slot, ai_tick_inflight;
+static u64 ai_tick_calls, ai_tick_ticks, ai_tick_overlaps, ai_turn_holds[2], ai_turn_runs[2];
+/* Passes and ticks of every scheduler so far. */
+static u64 ai_pass_total, ai_tick_total;
+#define AI_TURN_NODES 32
+static struct { u64 node, passes, ticks; u32 count, pending, first; float share, credit; } ai_turn_nodes[AI_TURN_NODES];
+/* A step of 30 ms or more is one whole tick, so 30 FPS keeps one per pass. Shorter steps
+   add up. A tick may come up to 1 ms early and owes that time, which keeps 0,1,0,1 at a
+   jittery 60 FPS. */
+static unsigned ai_tick_count(u64 scheduler, u64 ns) {
+    unsigned n = 0;
+    pm_lock(&ai_tick_lock);
+    unsigned k = 0;
+    while (k < AI_TICK_SLOTS && ai_tick_slots[k].scheduler != scheduler) k++;
+    if (k == AI_TICK_SLOTS) {
+        k = ai_tick_next_slot++ % AI_TICK_SLOTS;
+        ai_tick_slots[k].scheduler = scheduler;
+        ai_tick_slots[k].ns = 0;
+    }
+    if (ns >= 30000000) n = 1;
+    else {
+        ai_tick_slots[k].ns += (int64_t)ns;
+        if (ai_tick_slots[k].ns >= AI_TICK_NS - 1000000) n = 1, ai_tick_slots[k].ns -= AI_TICK_NS;
+    }
+    ai_pass_total++;
+    ai_tick_total += n;
+    pm_unlock(&ai_tick_lock);
+    return n;
+}
+static void ai_tick_update(CPU* c, u64 entry) {
+    pm_lock(&step_lock);
+    const u64 ns = step.step ? step.step : step.initial_ns;
+    pm_unlock(&step_lock);
+    const unsigned n = ai_tick_count(c->x[0], ns);
+    /* The patched body adds V9.S[1] to +88. 1050E00 uses no D9, and callees keep it. */
+    const u32 saved[2] = {c->v[9].s[0], c->v[9].s[1]};
+    c->v[9].s[0] = 0;
+    c->v[9].s[1] = n;
+    if (__atomic_add_fetch(&ai_tick_inflight, 1, __ATOMIC_RELAXED) > 1)
+        __atomic_add_fetch(&ai_tick_overlaps, 1, __ATOMIC_RELAXED);
+    ai_tick_original(c, entry);
+    __atomic_sub_fetch(&ai_tick_inflight, 1, __ATOMIC_RELAXED);
+    c->v[9].s[0] = saved[0];
+    c->v[9].s[1] = saved[1];
+    const u64 ticks = __atomic_add_fetch(&ai_tick_ticks, n, __ATOMIC_RELAXED);
+    const u64 calls = __atomic_add_fetch(&ai_tick_calls, 1, __ATOMIC_RELAXED);
+    if (calls <= 4 || calls % 1800 == 0) {
+        unsigned schedulers = 0;
+        pm_lock(&ai_tick_lock);
+        for (unsigned k = 0; k < AI_TICK_SLOTS; k++) schedulers += ai_tick_slots[k].scheduler != 0;
+        pm_unlock(&ai_tick_lock);
+        LOG("arceus-ai-tick: calls=%llu ticks=%llu ns=%llu schedulers=%u overlaps=%llu turn_holds=%llu turnkey_holds=%llu turn_runs=%llu turnkey_runs=%llu\n",
+            (unsigned long long)calls, (unsigned long long)ticks, (unsigned long long)plat_ns(), schedulers,
+            (unsigned long long)__atomic_load_n(&ai_tick_overlaps, __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&ai_turn_holds[0], __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&ai_turn_holds[1], __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&ai_turn_runs[0], __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&ai_turn_runs[1], __ATOMIC_RELAXED));
+    }
+}
+/* Turn B338DC and TurnKey B32CD4 turn one whole step per call and finish by the frame
+   count. The actor calls them once per pass on a forced context and once per bucket round
+   otherwise, outside 1050E00. A call earns ticks / passes since the node's last call, and
+   the original runs when a whole step is earned. Held frames are added before that run. */
+static int ai_turn_step(u64 node, u32 count, u32 frames, int forced, u32* pending) {
+    pm_lock(&ai_tick_lock);
+    unsigned k = 0, oldest = 0;
+    for (; k < AI_TURN_NODES && ai_turn_nodes[k].node != node; k++)
+        if (ai_turn_nodes[k].passes < ai_turn_nodes[oldest].passes) oldest = k;
+    const int known = k < AI_TURN_NODES && ai_turn_nodes[k].count == count &&
+                      ai_pass_total - ai_turn_nodes[k].passes <= 64;
+    if (k == AI_TURN_NODES) k = oldest;
+    /* A forced context is reset every pass, so its frames are this pass's own tick. */
+    float share = forced ? (frames ? 1.0f : 0.0f) : known ? ai_turn_nodes[k].share : 1.0f;
+    if (!forced && known && ai_pass_total != ai_turn_nodes[k].passes)
+        share = (float)(ai_tick_total - ai_turn_nodes[k].ticks) / (float)(ai_pass_total - ai_turn_nodes[k].passes);
+    if (!known) {
+        ai_turn_nodes[k].node = node;
+        ai_turn_nodes[k].pending = 0;
+        ai_turn_nodes[k].credit = 0.0f;
+    }
+    /* A turn's first call runs, as at 30 FPS, and owes the part of a step it had not earned.
+       An ordinary context's first share is not known yet, so the next call's stands for it. */
+    if (!known) ai_turn_nodes[k].credit = forced ? share : 1.0f;
+    else if (ai_turn_nodes[k].first) ai_turn_nodes[k].credit += 2.0f * share - 1.0f;
+    else ai_turn_nodes[k].credit += share;
+    ai_turn_nodes[k].first = !known && !forced;
+    ai_turn_nodes[k].share = share;
+    ai_turn_nodes[k].passes = ai_pass_total;
+    ai_turn_nodes[k].ticks = ai_tick_total;
+    const int run = !known || ai_turn_nodes[k].credit >= 0.999f;
+    if (run) {
+        ai_turn_nodes[k].credit -= 1.0f;
+        *pending = ai_turn_nodes[k].pending;
+        ai_turn_nodes[k].pending = 0;
+        ai_turn_nodes[k].count = count + *pending + frames;
+    } else {
+        ai_turn_nodes[k].pending += frames;
+        ai_turn_nodes[k].count = count;
+    }
+    pm_unlock(&ai_tick_lock);
+    return run;
+}
+static void ai_turn_update(CPU* c, u64 entry, unsigned kind) {
+    const u64 node = c->x[0], out = c->x[8], status = main_base + 0x40e7c04;
+    const u64 owner = readable(node, 0x148) ? gr64(node + 0x58) : 0;
+    const u64 context = readable(owner, 0x98) ? gr64(owner + 0x90) : 0;
+    if (context && readable(context, 0x8c) && gr32(node + (kind ? 0x140 : 0x130)) &&
+        readable(out, 4) && readable(status, 4) && gr32(status) == 4) {
+        const u64 at = node + (kind ? 0x144 : 0x134);
+        const int forced = gr16(context + 0x81) != 0;
+        u32 pending = 0;
+        if (!ai_turn_step(node, gr32(at), gr32(context + 0x88), forced, &pending)) {
+            __atomic_add_fetch(&ai_turn_holds[kind], 1, __ATOMIC_RELAXED);
+            gw32(out, 4);
+            c->pc = c->x[30];
+            return;
+        }
+        __atomic_add_fetch(&ai_turn_runs[kind], 1, __ATOMIC_RELAXED);
+        if (pending) gw32(at, gr32(at) + pending);
+    }
+    ai_turn_original[kind](c, entry);
+}
+static void ai_turn(CPU* c, u64 entry) { ai_turn_update(c, entry, 0); }
+static void ai_turn_key(CPU* c, u64 entry) { ai_turn_update(c, entry, 1); }
+static void ai_tick_fix_init(void) {
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_AI_TICK_FIX", 1)) return;
+    if (!clocks_installed) {
+        WARN("arceus-ai-tick: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    /* LDR S0 +84, LDR W8 +88, ADD W8 #1, FADD S0 S8, STR W8 +88, LDR X8 +58, ADD X9, STR S0 +84. */
+    static const u32 old[8] = {0xbd408400, 0xb9408808, 0x11000508, 0x1e282800,
+                               0xb9008808, 0xf9402c08, 0x91003109, 0xbd008400};
+    /* The same with MOV V0.S[1],W8, ADD V0.2S,V0.2S,V9.2S and one STUR D0 +84 as the store. */
+    static const u32 new[8] = {0xbd408400, 0x1e282800, 0xb9408808, 0x4e0c1d00,
+                               0x0ea98400, 0xfc084000, 0xf9402c08, 0x91003109};
+    /* Each turn guard: size, the duration load at +24, the count add, MOV X19,X8 at +20. */
+    static const struct { u64 offset; u32 size, duration, add; } turns[2] = {
+        {0xb338dc, 0x5a8, 0xb9413008, 0x1c8}, {0xb32cd4, 0x510, 0xb9414008, 0x130}};
+    const u64 pc = main_base + 0x1050e00, site = pc + 0xa60;
+    int ok = covers_exactly(pc, 0x2508) && pc >= g_code_lo && pc + 0x2508 <= g_code_hi && readable(pc, 0x2508) &&
+             gr32(pc) == 0xd106c3ff && gr32(pc + 0x54) == 0x1e624008;
+    for (unsigned k = 0; ok && k < 8; k++) ok = gr32(site + 4 * k) == old[k];
+    for (unsigned k = 0; ok && k < 2; k++) {
+        const u64 at = main_base + turns[k].offset;
+        ok = covers_exactly(at, turns[k].size) && at >= g_code_lo && at + turns[k].size <= g_code_hi &&
+             readable(at, turns[k].size) && gr32(at) == 0xd10243ff && gr32(at + 0x20) == 0xaa0803f3 &&
+             gr32(at + 0x24) == turns[k].duration && gr32(at + turns[k].add) == 0x0b000108;
+    }
+    if (!ok || !readable(main_base + 0x40e7c04, 4)) {
+        WARN("arceus-ai-tick: refused instruction/function guard\n");
+        return;
+    }
+    const GuestFn wrappers[2] = {ai_turn, ai_turn_key};
+    GuestFn compiled[2];
+    for (unsigned k = 0; k < 2; k++) {
+        const u64 at = main_base + turns[k].offset;
+        /* Equivalent MOV X19,X8 -> ADD X19,X8,#0 selects an independent JIT body. */
+        gw32(at + 0x20, 0x91000113);
+        jit_code_changed(at, turns[k].size);
+        compiled[k] = jit_wait(at);
+    }
+    for (unsigned k = 0; k < 8; k++) gw32(site + 4 * k, new[k]);
+    jit_code_changed(pc, 0x2508);
+    const GuestFn body = jit_wait(pc);
+    if (!body || !compiled[0] || !compiled[1]) {
+        /* Without its wrapper the new body would add a stray V9, so put the old words back. */
+        for (unsigned k = 0; k < 8; k++) gw32(site + 4 * k, old[k]);
+        jit_code_changed(pc, 0x2508);
+        WARN("arceus-ai-tick: compile failed\n");
+        return;
+    }
+    ai_tick_original = body;
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], ai_tick_update, __ATOMIC_RELEASE);
+    for (unsigned k = 0; k < 2; k++) {
+        ai_turn_original[k] = compiled[k];
+        __atomic_store_n(&g_disp[(main_base + turns[k].offset - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
+    }
+    LOG("arceus-ai-tick: EXPERIMENT: AI script context frames count 30 per second of elapsed time\n");
+}
+/* The orientation helper 1727DF4 turns a character by slerp(current, target, t) once per
+   call, t = turn rate +268 x (1/30) / duration S0, so turning was 2x fast at 60 FPS. With
+   SNX_ARCEUS_TURN_FIX=1 the call gets the duration that gives 1 - (1 - t)^(step x 30). */
+static GuestFn turn_original;
+static u64 turn_calls, turn_scaled;
+static float turn_duration(float rate, float duration, float frames) {
+    const float t = rate * NOMINAL_STEP_SECONDS / duration;
+    /* A whole step (33333333 ns rounds just below 1), a snap (t >= 1) and the helper's own
+       early outs stay as authored. */
+    if (!(frames > 0.0f && frames < 0.999f) || !(duration >= 0x1p-23f) || !(t > 0.0f && t < 1.0f)) return duration;
+    const float wanted = 1.0f - powf(1.0f - t, frames);
+    return wanted > 0.0f ? rate * NOMINAL_STEP_SECONDS / wanted : duration;
+}
+static void turn_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    const float authored = c->v[0].f[0];
+    if (readable(object, 0x26c) && isfinite(authored)) {
+        const float frames = guest_float(frame_step_address) / NOMINAL_STEP_SECONDS;
+        c->v[0].f[0] = turn_duration(guest_float(object + 0x268), authored, frames);
+    }
+    const float passed = c->v[0].f[0];
+    if (passed != authored) __atomic_add_fetch(&turn_scaled, 1, __ATOMIC_RELAXED);
+    turn_original(c, entry);
+    const u64 calls = __atomic_add_fetch(&turn_calls, 1, __ATOMIC_RELAXED);
+    if (calls <= 4 || calls % 6000 == 0)
+        LOG("arceus-turn: calls=%llu scaled=%llu object=%llx caller=main+%llx rate=%g duration=%g passed=%g\n",
+            (unsigned long long)calls, (unsigned long long)__atomic_load_n(&turn_scaled, __ATOMIC_RELAXED),
+            (unsigned long long)object, (unsigned long long)(c->x[30] - main_base),
+            readable(object, 0x26c) ? (double)guest_float(object + 0x268) : -1.0, (double)authored, (double)passed);
+}
+static void turn_fix_init(void) {
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_TURN_FIX", 1)) return;
+    if (!clocks_installed) {
+        WARN("arceus-turn: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x1727df4;
+    /* MOV/MOVK W8 of 1/30 at +260, LDR S0,[X19,#0x268] at +2FC, FDIV S0,S0,S8 at +304. */
+    if (!covers_exactly(pc, 0x3ec) || pc < g_code_lo || pc + 0x3ec > g_code_hi || !readable(pc, 0x3ec) ||
+        gr32(pc) != 0xd10143ff || gr32(pc + 0x260) != 0x52911128 || gr32(pc + 0x264) != 0x72a7a108 ||
+        gr32(pc + 0x2fc) != 0xbd426a60 || gr32(pc + 0x304) != 0x1e281800 || gr32(pc + 0x36c) != 0x17ffffe8) {
+        WARN("arceus-turn: refused instruction/function guard\n");
+        return;
+    }
+    if (!frame_step_cell_init("arceus-turn")) return;
+    /* The census's equivalent B -> CBZ XZR, so it sees this owner as wrapped. */
+    gw32(pc + 0x36c, 0xb4fffd1f);
+    jit_code_changed(pc, 0x3ec);
+    turn_original = jit_wait(pc);
+    if (!turn_original) {
+        WARN("arceus-turn: compile failed\n");
+        return;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], turn_update, __ATOMIC_RELEASE);
+    LOG("arceus-turn: EXPERIMENT: character turns ease by elapsed time\n");
+}
+
+/* The scrolling list keeps a scroller at +7F8 and updates it in 272F150 once per rendered frame.
+   A scroll of one row is an ease counted in updates (+1BC up to +1C0), and when it ends with the
+   direction still held, the list starts a free scroll that adds a speed (+1D8) per update. At
+   150 FPS the ease ends inside one tap, so each tap ran the free scroll and jumped several rows. */
+/* With SNX_ARCEUS_LIST_SCROLL_FIX=1 the scroller updates only on frames with a 30 Hz tick. */
+static GuestFn list_scroll_original;
+static u64 list_scroll_calls, list_scroll_held;
+static void list_scroll_update(CPU* c, u64 entry) {
+    pm_lock(&step_lock);
+    const unsigned ticks = blink_ticks;
+    pm_unlock(&step_lock);
+    const u64 calls = __atomic_add_fetch(&list_scroll_calls, 1, __ATOMIC_RELAXED);
+    if (!ticks) {
+        const u64 held = __atomic_add_fetch(&list_scroll_held, 1, __ATOMIC_RELAXED);
+        if (held <= 2 || held % 6000 == 0)
+            LOG("arceus-list-scroll: calls=%llu held=%llu\n", (unsigned long long)calls, (unsigned long long)held);
+        c->pc = c->x[30];
+        return;
+    }
+    list_scroll_original(c, entry);
+}
+static void list_scroll_init(void) {
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_LIST_SCROLL_FIX", 1)) return;
+    if (!clocks_installed) {
+        WARN("arceus-list-scroll: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x272f150;
+    /* STR X19,[SP,#-0x20]! at +0, LDRB W8,[X0,#0x1B4] at +C, MOV X19,X0 at +6C. */
+    if (!covers_exactly(pc, 0xa0) || pc < g_code_lo || pc + 0xa0 > g_code_hi || !readable(pc, 0xa0) ||
+        gr32(pc) != 0xf81e0ff3 || gr32(pc + 0xc) != 0x3946d008 || gr32(pc + 0x6c) != 0xaa0003f3) {
+        WARN("arceus-list-scroll: refused instruction/function guard\n");
+        return;
+    }
+    /* Equivalent MOV X19,X0 -> ADD X19,X0,#0 selects an independent JIT body. */
+    gw32(pc + 0x6c, 0x91000013);
+    jit_code_changed(pc, 0xa0);
+    list_scroll_original = jit_wait(pc);
+    if (!list_scroll_original) {
+        WARN("arceus-list-scroll: compile failed\n");
+        return;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], list_scroll_update, __ATOMIC_RELEASE);
+    LOG("arceus-list-scroll: EXPERIMENT: UI list scroller steps 30 times per second of elapsed time\n");
+}
+
+/* The ride controller's update 2537B28 (table 4163488 slot +90) runs once per rendered frame
+   and counts five waits down by one per call: +2BC, +4A0, +2C0, +3C0 (set from a config
+   count by 2542834) and +2A8 (set to 15). SNX_ARCEUS_RIDE_SWAP_FIX=1 lets them count 30
+   times a second: on the other frames a running count goes in one higher and comes out as
+   it was. Counts set or ended by a call are logged, at most 600 lines. */
+static const u32 ride_swap_fields[5] = {0x2bc, 0x4a0, 0x2c0, 0x3c0, 0x2a8};
+static GuestFn ride_swap_original;
+static int ride_swap_fix, ride_swap_holding;
+static float ride_swap_fraction;
+static u64 ride_swap_frame = ~0ull, ride_swap_calls, ride_swap_held, ride_swap_lines;
+/* 1 on a frame whose calls must not count. One decision per engine frame. */
+static int ride_swap_hold(u64 frame, float r) {
+    if (frame == ride_swap_frame) return ride_swap_holding;
+    ride_swap_frame = frame;
+    ride_swap_fraction += r;
+    ride_swap_holding = ride_swap_fraction < 0.9999f;
+    if (!ride_swap_holding) ride_swap_fraction = ride_swap_fraction > 1.0f ? ride_swap_fraction - 1.0f : 0.0f;
+    return ride_swap_holding;
+}
+static void ride_swap_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    const int known = writable(object, 0x4a4);
+    const int hold = ride_swap_fix && known &&
+        ride_swap_hold(__atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE), frame_step_ratio());
+    int before[5] = {0, 0, 0, 0, 0};
+    for (unsigned k = 0; known && k < 5; k++) {
+        before[k] = (int)gr32(object + ride_swap_fields[k]);
+        if (hold && before[k] > 0) gw32(object + ride_swap_fields[k], (u32)(before[k] + 1));
+    }
+    ride_swap_original(c, entry);
+    __atomic_add_fetch(&ride_swap_calls, 1, __ATOMIC_RELAXED);
+    if (hold) __atomic_add_fetch(&ride_swap_held, 1, __ATOMIC_RELAXED);
+    if (!known || !writable(object, 0x4a4)) return;
+    for (unsigned k = 0; k < 5; k++) {
+        int after = (int)gr32(object + ride_swap_fields[k]);
+        /* A path that did not count leaves the raised value. Put the game's own back. */
+        if (hold && before[k] > 0 && after == before[k] + 1) gw32(object + ride_swap_fields[k], (u32)(after = before[k]));
+        if ((after > before[k] || (!after && before[k] > 0)) &&
+            __atomic_add_fetch(&ride_swap_lines, 1, __ATOMIC_RELAXED) <= 600)
+            LOG("arceus-ride-swap: field=+%x before=%d after=%d ns=%llu frame=%llu calls=%llu held=%llu\n",
+                ride_swap_fields[k], before[k], after, (unsigned long long)plat_ns(),
+                (unsigned long long)__atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE),
+                (unsigned long long)__atomic_load_n(&ride_swap_calls, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&ride_swap_held, __ATOMIC_RELAXED));
+    }
+}
+static void ride_swap_init(void) {
+    const u64 pc = main_base + 0x2537b28;
+    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_RIDE_SWAP_FIX", 1)) return;
+    if (!clocks_installed) {
+        WARN("arceus-ride-swap: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    /* STR D8,[SP,#-0x70]! at the head, the first count's LDR W8,[X19,#0x2BC] and SUBS at +148
+       and +14C, the +3C0 load at +390, and MOV X19,X0 at +48 swapped for an equal ADD. */
+    if (ride_swap_original || !covers_exactly(pc, 0x7964) || !readable(pc, 0x7964) || gr32(pc) != 0xfc190fe8 ||
+        gr32(pc + 0x48) != 0xaa0003f3 || gr32(pc + 0x148) != 0xb942be68 || gr32(pc + 0x14c) != 0x71000508 ||
+        gr32(pc + 0x390) != 0xb943c268) {
+        WARN("arceus-ride-swap: refused guard at main+2537b28\n");
+        return;
+    }
+    gw32(pc + 0x48, 0x91000013);
+    jit_code_changed(pc, 0x7964);
+    ride_swap_original = jit_wait(pc);
+    if (!ride_swap_original) {
+        WARN("arceus-ride-swap: compile failed at main+2537b28\n");
+        return;
+    }
+    ride_swap_fix = 1;
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], ride_swap_update, __ATOMIC_RELEASE);
+    LOG("arceus-ride-swap: EXPERIMENT: the ride controller's frame waits count 30 times per second\n");
+}
+
 
 /* C21D00 (fade in) and C227BC (fade out) start a fade: its fractional progress starts over. */
 static GuestFn fade_start_original[2];
@@ -1668,8 +2368,7 @@ static void fade_start_update(CPU* c, u64 entry, unsigned kind) {
 static void fade_in_start(CPU* c, u64 e) { fade_start_update(c, e, 0); }
 static void fade_out_start(CPU* c, u64 e) { fade_start_update(c, e, 1); }
 static void fade_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_FADE_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_FADE_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-fade: refused without elapsed-time clocks\n");
         return;
@@ -2089,8 +2788,8 @@ static void climb_anim_update(CPU* c, u64 entry) {
     climb_stop_after(object, slot);
 }
 static void climb_step_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_CLIMB_STEP");
-    if (!main_base || !enabled || (strcmp(enabled, "1") && strcmp(enabled, "2"))) return;
+    const int enabled = climb_step_value();
+    if (!main_base || !enabled) return;
     if (!clocks_installed) {
         WARN("arceus-climb: refused without elapsed-time clocks\n");
         return;
@@ -2116,11 +2815,11 @@ static void climb_step_init(void) {
     if (anim_ok) {
         for (unsigned k = 0; k < 8; k++) gw32(at + 4 * k, k == 3 ? climb_adrp(at + 12, 9) : climb_anim_patched[k]);
         /* The state 2 check, the +D04 load, add and store, and the reload and signed compare before the finish. */
-        const int stop_ok = !strcmp(enabled, "2") && gr32(anim + 0x1e4) == 0x7100091f &&
+        const int stop_ok = enabled == 2 && gr32(anim + 0x1e4) == 0x7100091f &&
                             gr32(anim + 0x1ec) == 0xb94d0668 && gr32(anim + 0x1f0) == 0x11000508 &&
                             gr32(anim + 0x1f4) == 0xb90d0668 && gr32(anim + 0x308) == 0xb94d0668 &&
                             gr32(anim + 0x30c) == 0x6b14011f;
-        if (!strcmp(enabled, "2") && !stop_ok) WARN("arceus-climb: refused stop guard\n");
+        if (enabled == 2 && !stop_ok) WARN("arceus-climb: refused stop guard\n");
         if (stop_ok) gw32(anim + 0x38, 0x91000013); /* Equivalent MOV X19,X0 -> ADD X19,X0,#0. */
         jit_code_changed(anim, 0xef4);
         if (stop_ok) {
@@ -2203,8 +2902,7 @@ static void wall_jump_update(CPU* c, u64 entry) {
         c->x[0] = (u64)(long long)old;
 }
 static void wall_jump_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_WALL_JUMP_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_WALL_JUMP_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-wall-jump: refused without elapsed-time clocks\n");
         return;
@@ -2351,6 +3049,24 @@ static LedgeWindow ledge_window;
 static LedgeFlush ledge_flush;
 static _Thread_local u64 ledge_current_state;
 static GuestFn ledge_originals[2], ledge_end_originals[2], ledge_set_position_original;
+static int ledge_fix_enabled;
+/* Only the ground move's direct position branch uses speed/30 as a position delta. */
+#define DIRECT_MOVE_RETURN 0x1982e70
+static int direct_move_fix;
+static u64 trajectory_transform(u64 object) {
+    if (!readable(object + 0x1a8, 8)) return 0;
+    const u64 handle = gr64(object + 0x1a8);
+    if (!handle || !readable(handle, 0x20) || !gr32(handle + 0xc)) return 0;
+    const u64 target = gr64(handle + 0x18);
+    return target > 0x50 && readable(target - 0x50, 0x180) ? target - 0x50 : 0;
+}
+static int direct_move_scale(const float current[3], const float requested[3], float ratio, float out[3]) {
+    const float d[3] = {requested[0] - current[0], requested[1] - current[1], requested[2] - current[2]};
+    const float length = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (!(ratio > 0.0f) || !(ratio < 1.0f) || !isfinite(length) || !(length < 2.0f)) return 0;
+    for (int k = 0; k < 3; k++) out[k] = current[k] + d[k] * ratio;
+    return 1;
+}
 /* Calls the original set position 1983770 on controller from inside a wrapper, keeping every
    register and pc as they were, so the wrapper's own call goes on unchanged. The arguments go
    through the frame-step page, +100 and +110. */
@@ -2382,6 +3098,20 @@ static int ledge_take_flush(LedgeFlush* out) {
     ledge_flush.valid = 0;
     pm_unlock(&ledge_lock);
     return valid;
+}
+static void ledge_set_position(CPU* c, u64 entry);
+static int set_position_wrap_init(void) {
+    if (ledge_set_position_original) return 1;
+    /* SUB SP,SP,#0xC0, then MOV X19,X0 and the +628 load after it. */
+    const u64 set = main_base + 0x1983770;
+    if (!covers_exactly(set, 0xb88) || !readable(set, 0xb88) || gr32(set) != 0xd10303ff ||
+        gr32(set + 0x20) != 0xaa0003f3 || gr32(set + 0x24) != 0xf9431400) return 0;
+    gw32(set + 0x20, 0x91000013);
+    jit_code_changed(set, 0xb88);
+    ledge_set_position_original = jit_wait(set);
+    if (!ledge_set_position_original) return 0;
+    __atomic_store_n(&g_disp[(set - g_code_lo) / 4], ledge_set_position, __ATOMIC_RELEASE);
+    return 1;
 }
 static void ledge_update(CPU* c, u64 entry, unsigned post) {
     const u64 object = c->x[0];
@@ -2441,11 +3171,11 @@ static void ledge_end(CPU* c, u64 entry, unsigned finish) {
    ride goes to the previous script target, and any other caller on the controller ends steering. */
 static void ledge_set_position(CPU* c, u64 entry) {
     const u64 object = c->x[0], caller = c->x[30];
-    if (caller != main_base + 0x1ff6b5c) {
+    if (ledge_fix_enabled && caller != main_base + 0x1ff6b5c) {
         pm_lock(&ledge_lock);
         ledge_foreign_position(&ledge_window, &ledge_flush, object);
         pm_unlock(&ledge_lock);
-    } else if (readable(c->x[1], 16) && readable(c->x[2], 16)) {
+    } else if (ledge_fix_enabled && readable(c->x[1], 16) && readable(c->x[2], 16)) {
         float in[4], direction[4], out[4];
         for (int k = 0; k < 4; k++) {
             in[k] = guest_float(c->x[1] + 4 * k);
@@ -2463,13 +3193,29 @@ static void ledge_set_position(CPU* c, u64 entry) {
             c->x[1] = scratch;
         }
     }
+    const u64 position = c->x[1], caller_pc = c->x[30];
+    u32 saved[3];
+    int scaled = 0;
+    if (direct_move_fix && caller_pc == main_base + DIRECT_MOVE_RETURN && readable(position, 12) && writable(position, 12)) {
+        const u64 transform = trajectory_transform(object);
+        float current[3], requested[3], out[3];
+        for (int k = 0; transform && k < 3; k++) {
+            current[k] = guest_float(transform + 0xd0 + 4 * k);
+            requested[k] = guest_float(position + 4 * k);
+        }
+        scaled = transform && direct_move_scale(current, requested, frame_step_ratio(), out);
+        for (int k = 0; scaled && k < 3; k++) {
+            saved[k] = gr32(position + 4 * k);
+            guest_float_write(position + 4 * k, out[k]);
+        }
+    }
     ledge_set_position_original(c, entry);
+    for (int k = 0; scaled && k < 3; k++) gw32(position + 4 * k, saved[k]);
 }
 static void ledge_end_start(CPU* c, u64 entry) { ledge_end(c, entry, 0); }
 static void ledge_end_finish(CPU* c, u64 entry) { ledge_end(c, entry, 1); }
 static void ledge_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_LEDGE_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_LEDGE_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-ledge: refused without elapsed-time clocks\n");
         return;
@@ -2512,24 +3258,909 @@ static void ledge_fix_init(void) {
     ledge_originals[1] = originals[1];
     ledge_end_originals[0] = originals[2];
     ledge_end_originals[1] = originals[3];
-    /* SUB SP,SP,#0xC0, then MOV X19,X0 and the +628 load after it. */
-    const u64 set = main_base + 0x1983770;
-    if (covers_exactly(set, 0xb88) && readable(set, 0xb88) && gr32(set) == 0xd10303ff &&
-        gr32(set + 0x20) == 0xaa0003f3 && gr32(set + 0x24) == 0xf9431400) {
-        gw32(set + 0x20, 0x91000013); /* Equivalent MOV X19,X0 -> ADD X19,X0,#0. */
-        jit_code_changed(set, 0xb88);
-        ledge_set_position_original = jit_wait(set);
-    }
-    if (!ledge_set_position_original) WARN("arceus-ledge: smoothing refused set position guard\n");
+    ledge_fix_enabled = 1;
+    if (!set_position_wrap_init()) WARN("arceus-ledge: smoothing refused set position guard\n");
     for (unsigned k = 0; k < 4; k++)
         __atomic_store_n(&g_disp[(main_base + offsets[k] - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
-    if (ledge_set_position_original)
-        __atomic_store_n(&g_disp[(set - g_code_lo) / 4], ledge_set_position, __ATOMIC_RELEASE);
     LOG("arceus-ledge: EXPERIMENT: Sneasler ledge move script runs 30 times per second, smoothing %s\n",
         ledge_set_position_original ? "on" : "off");
 }
 
+/* Script tick. The player, buddy and ride state scripts get no time: they count their own
+   updates and call natives that apply a fixed amount per call, and each state class runs
+   them once per rendered frame through its PreUpdate and PostUpdate bridge.
+   SNX_ARCEUS_SCRIPT_TICK is a hex mask of state classes whose bridges then run only when a
+   whole 1/30 s has built up: bit 0 Sneasler, 1 Ursaluna, 2 Braviary, 3 Basculegion,
+   4 and 5 Wyrdeer's second and first class, 6 the buddy, 7 to 9 the three player classes.
+   Unset it is 4, Braviary alone, which is the one bit that was played. The Sneasler bit
+   refuses while the ledge fix owns its two bridges. */
+#define SCRIPT_TICK_NS 33333334ll
+/* One bridge: its size and first word, the load of the current state index +6C that it
+   returns without a script, an optional third word, and a register move to swap for an
+   equal ADD so the wrapper gets its own compiled body. */
+typedef struct { u32 address, size, head, load_at, load, extra_at, extra, swap_at, swap_old, swap_new; } ScriptTickBridge;
+/* input is the offset of PlayerInputInfo in the context x2, 0 when the context has none. */
+typedef struct { ScriptTickBridge bridge[2]; u32 input; const char* name; } ScriptTickClass;
+#define SCRIPT_TICK_RIDE(address, size, script) \
+    {address, size, 0xd10183ff, 0x20, 0xb9406c13, 0x14, script, 0x40, 0xaa0003f4, 0x91000014}
+/* Besides the script call the ride bridges do nothing. The buddy, player and first Wyrdeer
+   ones also hold a reference to [x2] and check for a state change request, with no float
+   work and no store to an object field, so a skipped call only delays that check. */
+static const ScriptTickClass script_tick_classes[] = {
+    {{SCRIPT_TICK_RIDE(0x26163e0, 0x234, 0xf9402449), SCRIPT_TICK_RIDE(0x2616ab0, 0x234, 0xf9402449)}, 0xf8, "Sneasler"},
+    {{SCRIPT_TICK_RIDE(0x26203f8, 0x234, 0xf9402449), SCRIPT_TICK_RIDE(0x2620ac8, 0x234, 0xf9402449)}, 0xd8, "Ursaluna"},
+    {{SCRIPT_TICK_RIDE(0x2624ddc, 0x234, 0xf9402449), SCRIPT_TICK_RIDE(0x26254ac, 0x234, 0xf9402449)}, 0xc8, "Braviary"},
+    {{SCRIPT_TICK_RIDE(0x2611b18, 0x234, 0xf9400049), SCRIPT_TICK_RIDE(0x26121e8, 0x234, 0xf9400049)}, 0xa8, "Basculegion"},
+    {{SCRIPT_TICK_RIDE(0x261cfb0, 0x250, 0xf9402449), SCRIPT_TICK_RIDE(0x261d200, 0x250, 0xf9402449)}, 0xb0, "Wyrdeer B"},
+    {{SCRIPT_TICK_RIDE(0x261898c, 0x250, 0xf9402449),
+      {0x2618d50, 0x3fc, 0xd10243ff, 0x3c, 0xb9406d33, 0, 0, 0x24, 0xaa0003e9, 0x91000009}}, 0xb0, "Wyrdeer A"},
+    {{{0x17ec138, 0x2f4, 0xd10203ff, 0x70, 0xb9406e73, 0, 0, 0x14, 0xaa0003f3, 0x91000013},
+      {0x17ec8ac, 0x1d8, 0xd101c3ff, 0x60, 0xb9406e73, 0, 0, 0x10, 0xaa0003f3, 0x91000013}}, 0, "buddy"},
+    {{{0x1d15900, 0xd4, 0xd10143ff, 0x18, 0xb9406c00, 0, 0, 0x34, 0xaa0903e0, 0x91000120},
+      {0x1d15b48, 0x2a4, 0xd101c3ff, 0x30, 0xb9406c14, 0, 0, 0x1c, 0xaa0203f4, 0x91000054}}, 0x14c, "player 1"},
+    {{{0x1d20e10, 0xd4, 0xd10143ff, 0x18, 0xb9406c00, 0, 0, 0x34, 0xaa0903e0, 0x91000120},
+      {0x1d20ee4, 0x39c, 0xd101c3ff, 0x30, 0xb9406c13, 0, 0, 0x1c, 0xaa0203f4, 0x91000054}}, 0x14c, "player 2"},
+    {{{0x1d21894, 0x460, 0xd101c3ff, 0xc4, 0xb9406e75, 0, 0, 0x18, 0xaa0003f3, 0x91000013},
+      {0x1d21cf4, 0x2a8, 0xd101c3ff, 0x30, 0xb9406c14, 0, 0, 0x1c, 0xaa0203f4, 0x91000054}}, 0x14c, "player 3"},
+};
+#define SCRIPT_TICK_CLASSES (sizeof script_tick_classes / sizeof script_tick_classes[0])
+/* Indexes in script_tick_classes: the rides come first, then the buddy, then the player. */
+#define SCRIPT_TICK_BUDDY 6
+#define SCRIPT_TICK_PLAYER 7
+/* The class (index + 1) and the state object (x0) of the bridge that is running, for the
+   window that one of its script's natives opens. */
+static _Thread_local unsigned script_class_running;
+static _Thread_local u64 script_class_object;
+static void script_class_run(CPU* c, u64 entry, unsigned class_index, GuestFn original) {
+    const unsigned outer = script_class_running;
+    const u64 outer_object = script_class_object;
+    script_class_running = class_index + 1;
+    script_class_object = c->x[0];
+    original(c, entry);
+    script_class_running = outer;
+    script_class_object = outer_object;
+}
+/* The byte fields of PlayerInputInfo that are true for one frame (names ending in Trigger
+   or Release in its binding 227BC90). */
+static const u8 script_tick_edges[] = {1, 2, 4, 6, 8, 9, 10, 11, 15, 16, 17, 19, 23, 24, 26, 27, 28, 29, 30, 31, 33, 34};
+#define SCRIPT_TICK_EDGES (sizeof script_tick_edges / sizeof script_tick_edges[0])
+typedef struct { u64 frame; int64_t budget; int decided, tick; u64 frames, ticks; } ScriptTick;
+typedef struct { u64 context, applied; u8 held[SCRIPT_TICK_EDGES]; } ScriptTickInput;
+static unsigned long script_tick_mask, script_tick_wrapped;
+static GuestFn script_tick_originals[SCRIPT_TICK_CLASSES][2];
+static ScriptTick script_tick;
+static ScriptTickInput script_tick_inputs[4];
+static PMutex script_tick_lock = PMUTEX_INIT;
+static u64 script_tick_ran, script_tick_skipped, script_tick_latched;
+static _Thread_local unsigned script_tick_depth;
+static unsigned long script_tick_wanted(void) {
+    const char* value = getenv("SNX_ARCEUS_SCRIPT_TICK");
+    if (!value) return 4;
+    return *value ? strtoul(value, NULL, 16) & ((1ul << SCRIPT_TICK_CLASSES) - 1) : 0;
+}
+/* One decision per engine frame, shared by every bridge: the step, at most 1/30 s, is added
+   to a budget and a tick takes 1/30 s from it. A slow frame gives one tick, never two. The
+   tick comes on the frame nearest to the moment the budget is full: on the frame that brings
+   it within half a step. Waiting for the full budget made a frame of 16.5 ms miss by a hair
+   on every second frame, so at 60 FPS the runs came 3 and 1 frames apart instead of 2 and 2. */
+static int script_tick_decide(ScriptTick* t, u64 frame, u64 step_ns) {
+    if (t->decided && t->frame == frame) return t->tick;
+    /* A frame within 3 % of 1/30 s counts as a whole tick, so at 30 FPS with its jitter every
+       frame runs the script once, as the game does, and the budget cannot drift into a skip. */
+    const int64_t step = (int64_t)step_ns < SCRIPT_TICK_NS - SCRIPT_TICK_NS / 32 ? (int64_t)step_ns : SCRIPT_TICK_NS;
+    t->budget += step;
+    t->tick = t->budget + step / 2 >= SCRIPT_TICK_NS;
+    if (t->tick) {
+        t->budget -= SCRIPT_TICK_NS;
+        t->ticks++;
+    }
+    t->frames++;
+    t->frame = frame;
+    t->decided = 1;
+    return t->tick;
+}
+/* The edge fields of one context. On a frame without a tick they are kept. Before a ticked
+   bridge the kept ones are written into the fields (seen, for the caller to undo), and the
+   first call of a later frame forgets them. Returns the number of fields changed. */
+static unsigned script_tick_input(ScriptTickInput* slots, u64 context, u64 fields, u64 frame, int tick,
+                                  u8 seen[SCRIPT_TICK_EDGES], u8 current[SCRIPT_TICK_EDGES]) {
+    ScriptTickInput* slot = NULL;
+    for (unsigned k = 0; k < 4 && !slot; k++)
+        if (slots[k].context == context) slot = &slots[k];
+    for (unsigned k = 0; k < 4 && !slot; k++)
+        if (!slots[k].context) {
+            slot = &slots[k];
+            *slot = (ScriptTickInput){.context = context};
+        }
+    if (!slot) return 0;
+    if (slot->applied && slot->applied != frame) {
+        memset(slot->held, 0, sizeof slot->held);
+        slot->applied = 0;
+    }
+    unsigned changed = 0;
+    for (unsigned k = 0; k < SCRIPT_TICK_EDGES; k++) {
+        current[k] = *GP(fields + script_tick_edges[k]);
+        if (!tick) {
+            if (current[k]) slot->held[k] = current[k];
+            continue;
+        }
+        seen[k] = current[k] ? current[k] : slot->held[k];
+        if (seen[k] != current[k]) {
+            *GP(fields + script_tick_edges[k]) = seen[k];
+            changed++;
+        }
+    }
+    if (tick) slot->applied = frame;
+    return changed;
+}
+/* Rotation blend for a ticked ride. Braviary's flight script computes its turn per update
+   and hands the finished rotation to SetSwoopingRotation 25AB490, which copies it to the
+   transform +C0 (25AB908). Set 30 times a second it steps. So between ticks the host shows
+   slerp(R0, R1, elapsed / time to the next run): R1 is the script's last rotation, R0 what
+   was shown when it came. Before a ticked run the object is put on R1, so the script reads its own value. A
+   rotation that another writer changed ends the blend. At 30 FPS nothing is written. */
+#define ROTATION_BLEND_CLASS 2
+typedef struct { u64 object, frame; int64_t elapsed; int active; float from[4], to[4]; u32 shown[4]; } RotationBlend;
+static RotationBlend rotation_blends[2];
+static GuestFn rotation_blend_original;
+static u64 rotation_blend_writes, rotation_blend_foreign, rotation_blend_dropped;
+static u64 rotation_blend_frame, rotation_blend_state;
+/* out = slerp(a, b, t) on the shorter arc. Close rotations are blended linearly. */
+static void rotation_slerp(const float a[4], const float b[4], float t, float out[4]) {
+    float dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3], sign = 1.0f;
+    if (dot < 0.0f) {
+        dot = -dot;
+        sign = -1.0f;
+    }
+    float wa = 1.0f - t, wb = t;
+    if (dot < 0.9995f) {
+        const float angle = acosf(dot), inverse = 1.0f / sinf(angle);
+        wa = sinf((1.0f - t) * angle) * inverse;
+        wb = sinf(t * angle) * inverse;
+    }
+    float length = 0.0f;
+    for (unsigned k = 0; k < 4; k++) {
+        out[k] = wa * a[k] + wb * sign * b[k];
+        length += out[k] * out[k];
+    }
+    length = length > 0.0f ? 1.0f / sqrtf(length) : 1.0f;
+    for (unsigned k = 0; k < 4; k++) out[k] *= length;
+}
+/* How far the blend is on a frame without a run: the time since the script's run against
+   that time plus the time to its next run. The next run comes after as many frames of this
+   step as the tick budget still needs. Taking 1/30 s less the budget as the whole interval
+   ended the blend a frame early at 60 FPS, where the budget misses a tick by a hair on every
+   second frame, and the turn was drawn as a jump and a hold. */
+static float rotation_blend_progress(const RotationBlend* b, int64_t budget, u64 step_ns) {
+    const int64_t step = step_ns && (int64_t)step_ns < SCRIPT_TICK_NS ? (int64_t)step_ns : SCRIPT_TICK_NS;
+    /* As script_tick_decide: the run comes on the frame that brings the budget within half a step. */
+    const int64_t need = SCRIPT_TICK_NS - step / 2 - budget;
+    const int64_t frames = need > 0 ? (need + step - 1) / step : 1;
+    const double whole = (double)b->elapsed + (double)(frames * step);
+    const float progress = whole > 0.0 ? (float)((double)b->elapsed / whole) : 1.0f;
+    return progress < 1.0f ? progress : 1.0f;
+}
+/* Writes the script's rotation (target) or the blended one to the transform, with the
+   dirty byte as 25AB914 sets it. The transform must still hold what was written last. */
+static void rotation_blend_place(RotationBlend* b, int target, float progress) {
+    const u64 transform = b->active ? trajectory_transform(b->object) : 0;
+    if (!b->active) return;
+    if (!transform || !writable(transform + 0xc0, 0x24)) {
+        b->active = 0;
+        return;
+    }
+    for (unsigned k = 0; k < 4; k++)
+        if (gr32(transform + 0xc0 + 4 * k) != b->shown[k]) {
+            __atomic_add_fetch(&rotation_blend_foreign, 1, __ATOMIC_RELAXED);
+            b->active = 0;
+            return;
+        }
+    float q[4];
+    if (target || progress >= 1.0f) memcpy(q, b->to, sizeof q);
+    else rotation_slerp(b->from, b->to, progress, q);
+    for (unsigned k = 0; k < 4; k++) {
+        b->shown[k] = float_bits(q[k]);
+        gw32(transform + 0xc0 + 4 * k, b->shown[k]);
+    }
+    *GP(transform + 0xe0) = 1;
+    __atomic_add_fetch(&rotation_blend_writes, 1, __ATOMIC_RELAXED);
+}
+/* Called with script_tick_lock held, once per bridge call of the blended class. stage 0:
+   a frame without a tick, 1: before a ticked run, 2: after it. */
+static void rotation_blend_bridge(u64 frame, u64 step_ns, int stage, u64 state) {
+    /* A blend belongs to the state that set it, on consecutive frames. After a frame without
+       a bridge call or under another state object the ride may be gone: let go, write nothing. */
+    const int stale = frame > rotation_blend_frame + 1 || state != rotation_blend_state;
+    rotation_blend_frame = frame;
+    rotation_blend_state = state;
+    for (unsigned k = 0; k < 2; k++) {
+        RotationBlend* b = &rotation_blends[k];
+        if (!b->active) continue;
+        if (stale) {
+            b->active = 0;
+            __atomic_add_fetch(&rotation_blend_dropped, 1, __ATOMIC_RELAXED);
+            continue;
+        }
+        if (b->frame != frame) {
+            b->frame = frame;
+            b->elapsed += (int64_t)step_ns;
+        }
+        rotation_blend_place(b, stage == 1, rotation_blend_progress(b, script_tick.budget, step_ns));
+        /* Before a later run the object is on the target. If that run sets no new rotation it
+           stays there. The PostUpdate of the frame that set the rotation is not a later run. */
+        if (stage == 1 && b->elapsed > 0) memcpy(b->from, b->to, sizeof b->from);
+    }
+}
+/* 25AB490 (x0 object, x1 quaternion). Inside a ticked run above 30 FPS its rotation becomes
+   the new target and what was shown becomes the start. Otherwise the object is let go. */
+static void rotation_blend_set(CPU* c, u64 entry) {
+    const u64 object = c->x[0], argument = c->x[1];
+    const u64 transform = trajectory_transform(object);
+    /* No blend when every frame is a run, with the tolerance script_tick_decide has for a
+       frame near 1/30 s. A blend there would draw each rotation one run late. */
+    const int blend = script_tick_depth && frame_step_ratio() < 1.0f - 1.0f / 32 && readable(argument, 16) && transform;
+    float to[4] = {0, 0, 0, 0}, from[4] = {0, 0, 0, 0};
+    RotationBlend* slot = NULL;
+    pm_lock(&script_tick_lock);
+    for (unsigned k = 0; k < 2 && !slot; k++)
+        if (rotation_blends[k].object == object) slot = &rotation_blends[k];
+    for (unsigned k = 0; blend && k < 2 && !slot; k++)
+        if (!rotation_blends[k].active) slot = &rotation_blends[k];
+    if (blend && slot) {
+        for (unsigned k = 0; k < 4; k++) to[k] = guest_float(argument + 4 * k);
+        /* A new rotation only comes in a run, and before the run the object was put on the old
+           target. So the new blend starts from there. */
+        if (slot->object == object && slot->active) memcpy(from, slot->to, sizeof from);
+        else
+            for (unsigned k = 0; k < 4; k++) from[k] = guest_float(transform + 0xc0 + 4 * k);
+    }
+    pm_unlock(&script_tick_lock);
+    rotation_blend_original(c, entry);
+    pm_lock(&script_tick_lock);
+    if (slot && !blend) slot->active = 0;
+    if (slot && blend) {
+        slot->object = object;
+        slot->frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
+        slot->elapsed = 0;
+        memcpy(slot->from, from, sizeof from);
+        memcpy(slot->to, to, sizeof to);
+        slot->active = 1;
+        /* The native has just written the target. If it did not, there is nothing to blend. */
+        for (unsigned k = 0; k < 4; k++) {
+            slot->shown[k] = float_bits(to[k]);
+            if (gr32(transform + 0xc0 + 4 * k) != slot->shown[k]) slot->active = 0;
+        }
+    }
+    pm_unlock(&script_tick_lock);
+}
+static int rotation_blend_init(void) {
+    const u64 pc = main_base + 0x25ab490;
+    /* SUB SP,#0x90, MOV X19,X1, MOV X20,X0, and the copy of the argument to transform +C0. */
+    if (!covers_exactly(pc, 0x65c) || !readable(pc, 0x65c) || gr32(pc) != 0xd10243ff || gr32(pc + 0x2c) != 0xaa0103f3 ||
+        gr32(pc + 0x30) != 0xaa0003f4 || gr32(pc + 0x478) != 0xa9402668 || gr32(pc + 0x47c) != 0xa90c2408) {
+        WARN("arceus-script-tick: refused rotation blend guard at main+25ab490\n");
+        return 0;
+    }
+    gw32(pc + 0x30, 0x91000014); /* Equivalent MOV X20,X0 -> ADD X20,X0,#0. */
+    jit_code_changed(pc, 0x65c);
+    rotation_blend_original = jit_wait(pc);
+    if (!rotation_blend_original) {
+        WARN("arceus-script-tick: compile failed at main+25ab490\n");
+        return 0;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], rotation_blend_set, __ATOMIC_RELEASE);
+    return 1;
+}
+/* One-frame answers. A ticked script asks its questions 30 times a second, so an answer
+   that is only true for some frames between two runs would be missed: the release event of
+   a throw (CheckThrowEvent, which the throw script waits for during 19 updates). For the
+   native in this table, on frames without a run the host asks again for the object the
+   script asked at its latest run, and the next run is told yes if any of those answers was
+   yes. It is a read of one byte, without side effects.
+   The host only asks while the object can be taken as alive: the same state object is
+   bridged on consecutive frames since the script asked, and the object's first word is what
+   it was then. An earlier form also asked for a roll and a turn trigger and crashed on an
+   object of an earlier throw that had been released. Those two are not asked again. */
+typedef struct { u32 address, size, head, second_at, second; int windowed; const char* name; } ScriptQuery;
+static const ScriptQuery script_queries[] = {
+    {0x1955fe0, 0x8, 0x3966e000, 4, 0xd65f03c0, 1, "CheckThrowEvent"}, /* LDRB W0,[X0,#0x9B8], RET */
+};
+#define SCRIPT_QUERIES (sizeof script_queries / sizeof script_queries[0])
+typedef struct { GuestFn original; u64 object, word, asked, shown, filled; int held; } ScriptQueryState;
+static ScriptQueryState script_query_states[SCRIPT_QUERIES];
+static u64 script_query_run, script_query_last, script_query_state, script_query_dropped;
+/* The script's own call. Inside a ticked run it is told yes when a skipped frame said yes. */
+static void script_query_check(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    unsigned k = 0;
+    while (k < SCRIPT_QUERIES - 1 && entry != main_base + script_queries[k].address) k++;
+    ScriptQueryState* q = &script_query_states[k];
+    q->original(c, entry);
+    if (!script_tick_depth) return;
+    pm_lock(&script_tick_lock);
+    q->object = readable(object, 8) ? object : 0;
+    q->word = q->object ? gr64(object) : 0;
+    q->asked = script_query_run;
+    if (q->held && !(c->x[0] & 1)) {
+        c->x[0] = 1;
+        q->filled++;
+    }
+    pm_unlock(&script_tick_lock);
+}
+/* From a player or buddy bridge outside any run. run is 1 before a ticked run. On other
+   frames each query the script asked at its latest run is asked again, with every register
+   put back afterwards. An answer shown to a run is forgotten on the next frame. windowed:
+   the class is only ticked by a window. */
+static void script_query_frame(CPU* c, u64 frame, int run, int windowed) {
+    const u64 state = c->x[0];
+    pm_lock(&script_tick_lock);
+    /* Not the frame after the last one, or another state object: nothing asked before counts. */
+    if (frame > script_query_last + 1 || (!run && state != script_query_state)) {
+        for (unsigned k = 0; k < SCRIPT_QUERIES; k++) {
+            ScriptQueryState* q = &script_query_states[k];
+            if (q->object) script_query_dropped++;
+            q->object = q->word = q->shown = 0;
+            q->held = 0;
+        }
+    }
+    script_query_last = frame;
+    if (run) script_query_state = state;
+    pm_unlock(&script_tick_lock);
+    for (unsigned k = 0; k < SCRIPT_QUERIES; k++) {
+        ScriptQueryState* q = &script_query_states[k];
+        if (!q->original) continue;
+        pm_lock(&script_tick_lock);
+        if (q->shown && q->shown != frame) {
+            q->held = 0;
+            q->shown = 0;
+        }
+        if (run && q->held) q->shown = frame;
+        u64 object = !run && q->asked == script_query_run && (!windowed || script_queries[k].windowed) ? q->object : 0;
+        /* A released object does not keep its first word for long. */
+        if (object && (!readable(object, 0xe00) || gr64(object) != q->word)) {
+            q->object = object = 0;
+            script_query_dropped++;
+        }
+        pm_unlock(&script_tick_lock);
+        if (!object) continue;
+        u64 x[32];
+        V128 v[32];
+        const u64 pc = c->pc;
+        memcpy(x, c->x, sizeof x);
+        memcpy(v, c->v, sizeof v);
+        c->x[0] = object;
+        c->pc = main_base + script_queries[k].address;
+        q->original(c, main_base + script_queries[k].address);
+        const int yes = (int)(c->x[0] & 1);
+        memcpy(c->x, x, sizeof x);
+        memcpy(c->v, v, sizeof v);
+        c->pc = pc;
+        if (!yes) continue;
+        pm_lock(&script_tick_lock);
+        q->held = 1;
+        pm_unlock(&script_tick_lock);
+    }
+    if (run) {
+        pm_lock(&script_tick_lock);
+        script_query_run = frame;
+        pm_unlock(&script_tick_lock);
+    }
+}
+/* The natives are reached from scripts through the binding's indirect call only, so their
+   dispatch entries are wrapped without changing a word. */
+static void script_query_init(void) {
+    for (unsigned k = 0; k < SCRIPT_QUERIES; k++) {
+        const ScriptQuery* row = &script_queries[k];
+        const u64 pc = main_base + row->address;
+        if (script_query_states[k].original) continue;
+        if (!covers_exactly(pc, row->size) || !readable(pc, row->size) || gr32(pc) != row->head ||
+            gr32(pc + row->second_at) != row->second || !g_disp[(pc - g_code_lo) / 4]) {
+            WARN("arceus-script-tick: refused query guard %s at main+%x\n", row->name, row->address);
+            continue;
+        }
+        script_query_states[k].original = g_disp[(pc - g_code_lo) / 4];
+        __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], script_query_check, __ATOMIC_RELEASE);
+        LOG("arceus-script-tick: EXPERIMENT: %s is kept for the script's next run\n", row->name);
+    }
+}
+/* Script windows: a class is ticked only while a named part of its script runs, as the ledge
+   fix does for the ledge move. SNX_ARCEUS_SCRIPT_WINDOWS is a hex mask of windows.
+   Bit 0, the throw: the player's throw script waits for the release event of the throw
+   animation for 19 updates and then gives the throw up, so above 30 FPS a slow throw never
+   leaves the hand. The window opens when the script calls OnStartThrow 1A91624 and closes
+   at ThrowObject 1A8EBA4 or OnEndThrowStance 1A91370, or after 1 s. Inside it the three
+   player classes run 30 times a second. Outside it they run on every frame as before. */
+#define SCRIPT_WINDOW_NS 1000000000ull
+typedef struct { u32 address, size, head, second; int window, open; const char* name; } ScriptWindowEvent;
+static const ScriptWindowEvent script_window_events[] = {
+    {0x1a91624, 0x4, 0xd65f03c0, 0, 0, 1, "OnStartThrow"},              /* RET alone */
+    {0x1a8eba4, 0x26b0, 0x6db63bef, 0x6d0133ed, 0, 0, "ThrowObject"},   /* STP D15,D14,[SP,#-0xA0]!, STP D13,D12 */
+    {0x1a91370, 0x1bc, 0xf81c0ff7, 0xa90157f6, 0, 0, "OnEndThrowStance"}, /* STR X23,[SP,#-0x40]!, STP X22,X21 */
+};
+#define SCRIPT_WINDOW_EVENTS (sizeof script_window_events / sizeof script_window_events[0])
+/* The classes each window ticks, as a mask over script_tick_classes. */
+static const unsigned long script_window_classes[] = {0x380};
+#define SCRIPT_WINDOWS (sizeof script_window_classes / sizeof script_window_classes[0])
+typedef struct { int open; unsigned owner; u64 state, seen_frame, opened_ns, opened_frame, opens, expired, interrupted; } ScriptWindow;
+static ScriptWindow script_windows[SCRIPT_WINDOWS];
+static GuestFn script_window_originals[SCRIPT_WINDOW_EVENTS];
+static unsigned long script_windows_mask;
+static u64 script_window_lines;
+/* With the research switch, one line per closed window: what closed it and how long it was
+   open. Lock held. */
+static void script_window_closed(unsigned window, const char* by, u64 frame, u64 now) {
+    const ScriptWindow* w = &script_windows[window];
+    if (!research_observing || ++script_window_lines > 400) return;
+    LOG("arceus-script-window: window=%u closed_by=%s frames=%llu seconds=%.3f owner=%u opens=%llu expired=%llu interrupted=%llu answers_dropped=%llu\n",
+        window, by, (unsigned long long)(frame - w->opened_frame), (double)(now - w->opened_ns) / 1e9, w->owner,
+        (unsigned long long)w->opens, (unsigned long long)w->expired, (unsigned long long)w->interrupted,
+        (unsigned long long)script_query_dropped);
+}
+static unsigned long script_windows_wanted(void) {
+    const char* value = getenv("SNX_ARCEUS_SCRIPT_WINDOWS");
+    if (!value) return 1;
+    return *value ? strtoul(value, NULL, 16) & ((1ul << SCRIPT_WINDOWS) - 1) : 0;
+}
+/* Whether a window ticks this class on this frame. A window counts from the frame after it
+   opened, so the PreUpdate and PostUpdate of the opening frame both run. A window lives
+   with the state whose script opened it: once that state object has not been bridged for a
+   frame (a hit or anything else changed the state) the window is closed. Lock held. */
+static int script_window_active(unsigned class_index, u64 frame, u64 now, u64 state) {
+    int active = 0;
+    for (unsigned k = 0; k < SCRIPT_WINDOWS; k++) {
+        ScriptWindow* w = &script_windows[k];
+        if (!w->open) continue;
+        if (now - w->opened_ns > SCRIPT_WINDOW_NS) {
+            w->open = 0;
+            w->expired++;
+            script_window_closed(k, "expired", frame, now);
+            continue;
+        }
+        if (w->owner == class_index + 1 && w->state == state) w->seen_frame = frame;
+        else if (w->owner && frame > w->seen_frame + 1) {
+            w->open = 0;
+            w->interrupted++;
+            script_window_closed(k, "interrupted", frame, now);
+            continue;
+        }
+        if ((script_window_classes[k] >> class_index & 1) && frame > w->opened_frame) active = 1;
+    }
+    return active;
+}
+/* The script's call of a native that opens or closes a window. */
+static void script_window_event(CPU* c, u64 entry) {
+    unsigned k = 0;
+    while (k < SCRIPT_WINDOW_EVENTS - 1 && entry != main_base + script_window_events[k].address) k++;
+    const ScriptWindowEvent* e = &script_window_events[k];
+    pm_lock(&script_tick_lock);
+    ScriptWindow* w = &script_windows[e->window];
+    if (e->open && !w->open) {
+        w->open = 1;
+        w->opened_ns = plat_ns();
+        w->opened_frame = w->seen_frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
+        w->owner = script_class_running;
+        w->state = script_class_object;
+        w->opens++;
+    } else if (!e->open && w->open) {
+        w->open = 0;
+        script_window_closed((unsigned)e->window, e->name, __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE), plat_ns());
+    }
+    pm_unlock(&script_tick_lock);
+    script_window_originals[k](c, entry);
+}
+/* Wraps the dispatch entries of one window's natives. All or none. */
+static int script_window_init(unsigned window) {
+    for (unsigned k = 0; k < SCRIPT_WINDOW_EVENTS; k++) {
+        const ScriptWindowEvent* e = &script_window_events[k];
+        const u64 pc = main_base + e->address;
+        if (e->window != (int)window) continue;
+        if (!covers_exactly(pc, e->size) || !readable(pc, e->size) || gr32(pc) != e->head ||
+            (e->second && gr32(pc + 4) != e->second) || !g_disp[(pc - g_code_lo) / 4]) {
+            WARN("arceus-script-window: refused guard %s at main+%x\n", e->name, e->address);
+            return 0;
+        }
+    }
+    for (unsigned k = 0; k < SCRIPT_WINDOW_EVENTS; k++) {
+        const u64 pc = main_base + script_window_events[k].address;
+        if (script_window_events[k].window != (int)window) continue;
+        script_window_originals[k] = g_disp[(pc - g_code_lo) / 4];
+        __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], script_window_event, __ATOMIC_RELEASE);
+    }
+    return 1;
+}
+static void script_tick_bridge(CPU* c, u64 entry, unsigned class_index, unsigned post) {
+    const ScriptTickClass* cls = &script_tick_classes[class_index];
+    /* A class that is only ticked inside a window runs on every other frame as it always did. */
+    if (!(script_tick_mask >> class_index & 1)) {
+        pm_lock(&script_tick_lock);
+        const int active = script_window_active(class_index, __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE), plat_ns(), c->x[0]);
+        pm_unlock(&script_tick_lock);
+        if (!active) {
+            script_class_run(c, entry, class_index, script_tick_originals[class_index][post]);
+            return;
+        }
+    }
+    const u64 object = c->x[0], context = c->x[2], fields = context + cls->input;
+    const int usable = readable(object + 0x68, 8) && (!cls->input || writable(fields, 0x24));
+    u8 seen[SCRIPT_TICK_EDGES], current[SCRIPT_TICK_EDGES];
+    unsigned changed = 0;
+    pm_lock(&step_lock);
+    const u64 ns = step.step ? step.step : step.initial_ns;
+    pm_unlock(&step_lock);
+    pm_lock(&script_tick_lock);
+    const u64 frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
+    /* A bridge called from inside a ticked one runs with it. */
+    const int tick = !usable || script_tick_depth || script_tick_decide(&script_tick, frame, ns);
+    if (usable && cls->input)
+        changed = script_tick_input(script_tick_inputs, context, fields, frame, tick, seen, current);
+    const int blended = usable && class_index == ROTATION_BLEND_CLASS && rotation_blend_original && !script_tick_depth;
+    if (blended && (tick || !post)) rotation_blend_bridge(frame, ns, tick, object);
+    const u64 frames = script_tick.frames, ticks = script_tick.ticks;
+    pm_unlock(&script_tick_lock);
+    if (usable && class_index >= SCRIPT_TICK_BUDDY && !script_tick_depth && !post)
+        script_query_frame(c, frame, tick, !(script_tick_mask >> class_index & 1));
+    if (!tick) {
+        /* What the bridge returns without a script: the current state index. */
+        const u64 skipped = __atomic_add_fetch(&script_tick_skipped, 1, __ATOMIC_RELAXED);
+        if (research_observing && skipped % 7200 == 1)
+            LOG("arceus-script-tick: frames=%llu ticks=%llu ran=%llu skipped=%llu latched=%llu blend_writes=%llu blend_foreign=%llu answers_kept=%llu windows=%llu expired=%llu interrupted=%llu answers_dropped=%llu blend_dropped=%llu\n",
+                (unsigned long long)frames, (unsigned long long)ticks,
+                (unsigned long long)__atomic_load_n(&script_tick_ran, __ATOMIC_RELAXED), (unsigned long long)skipped,
+                (unsigned long long)__atomic_load_n(&script_tick_latched, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&rotation_blend_writes, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&rotation_blend_foreign, __ATOMIC_RELAXED),
+                (unsigned long long)script_query_states[0].filled,
+                (unsigned long long)script_windows[0].opens, (unsigned long long)script_windows[0].expired,
+                (unsigned long long)script_windows[0].interrupted, (unsigned long long)script_query_dropped,
+                (unsigned long long)__atomic_load_n(&rotation_blend_dropped, __ATOMIC_RELAXED));
+        c->x[0] = gr32(object + 0x6c);
+        c->pc = c->x[30];
+        return;
+    }
+    __atomic_add_fetch(&script_tick_ran, 1, __ATOMIC_RELAXED);
+    if (changed) __atomic_add_fetch(&script_tick_latched, changed, __ATOMIC_RELAXED);
+    /* Everything the script calls sees a whole 1/30 s in the frame step cell. */
+    u32 cell[2];
+    const int outer = usable && !script_tick_depth;
+    if (outer) {
+        for (unsigned k = 0; k < 2; k++) cell[k] = gr32(frame_step_address + 4 * k);
+        frame_step_cell_write(NOMINAL_STEP_SECONDS);
+    }
+    script_tick_depth++;
+    script_class_run(c, entry, class_index, script_tick_originals[class_index][post]);
+    script_tick_depth--;
+    if (outer)
+        for (unsigned k = 0; k < 2; k++) gw32(frame_step_address + 4 * k, cell[k]);
+    if (blended) {
+        pm_lock(&script_tick_lock);
+        rotation_blend_bridge(frame, ns, 2, object);
+        pm_unlock(&script_tick_lock);
+    }
+    /* A field the script or its natives changed keeps its new value. */
+    for (unsigned k = 0; changed && k < SCRIPT_TICK_EDGES && writable(fields, 0x24); k++)
+        if (seen[k] != current[k] && *GP(fields + script_tick_edges[k]) == seen[k])
+            *GP(fields + script_tick_edges[k]) = current[k];
+}
+#define SCRIPT_TICK_BRIDGES(n) \
+    static void script_tick_pre_##n(CPU* c, u64 entry) { script_tick_bridge(c, entry, n, 0); } \
+    static void script_tick_post_##n(CPU* c, u64 entry) { script_tick_bridge(c, entry, n, 1); }
+SCRIPT_TICK_BRIDGES(0) SCRIPT_TICK_BRIDGES(1) SCRIPT_TICK_BRIDGES(2) SCRIPT_TICK_BRIDGES(3) SCRIPT_TICK_BRIDGES(4)
+SCRIPT_TICK_BRIDGES(5) SCRIPT_TICK_BRIDGES(6) SCRIPT_TICK_BRIDGES(7) SCRIPT_TICK_BRIDGES(8) SCRIPT_TICK_BRIDGES(9)
+static void script_tick_init(void) {
+    static const GuestFn wrappers[SCRIPT_TICK_CLASSES][2] = {
+        {script_tick_pre_0, script_tick_post_0}, {script_tick_pre_1, script_tick_post_1},
+        {script_tick_pre_2, script_tick_post_2}, {script_tick_pre_3, script_tick_post_3},
+        {script_tick_pre_4, script_tick_post_4}, {script_tick_pre_5, script_tick_post_5},
+        {script_tick_pre_6, script_tick_post_6}, {script_tick_pre_7, script_tick_post_7},
+        {script_tick_pre_8, script_tick_post_8}, {script_tick_pre_9, script_tick_post_9}};
+    const unsigned long ticked = script_tick_wanted(), windows = script_windows_wanted();
+    unsigned long wanted = ticked;
+    for (unsigned k = 0; k < SCRIPT_WINDOWS; k++)
+        if (windows >> k & 1) wanted |= script_window_classes[k];
+    if (!main_base || !wanted) return;
+    if (!clocks_installed) {
+        WARN("arceus-script-tick: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    if (!frame_step_cell_init("arceus-script-tick")) return;
+    for (unsigned k = 0; k < SCRIPT_TICK_CLASSES; k++) {
+        const ScriptTickClass* cls = &script_tick_classes[k];
+        const u32 offsets[2] = {cls->bridge[0].address, cls->bridge[1].address};
+        int ok = wanted >> k & 1;
+        for (unsigned b = 0; ok && b < 2; b++) {
+            const ScriptTickBridge* g = &cls->bridge[b];
+            const u64 pc = main_base + g->address;
+            ok = covers_exactly(pc, g->size) && readable(pc, g->size) && gr32(pc) == g->head &&
+                 gr32(pc + g->load_at) == g->load && (!g->extra_at || gr32(pc + g->extra_at) == g->extra) &&
+                 gr32(pc + g->swap_at) == g->swap_old;
+            if (!ok) WARN("arceus-script-tick: refused guard %s at main+%x\n", cls->name, g->address);
+        }
+        for (unsigned b = 0; ok && b < 2; b++) {
+            const ScriptTickBridge* g = &cls->bridge[b];
+            const u64 pc = main_base + g->address;
+            gw32(pc + g->swap_at, g->swap_new); /* An equal ADD Xd,Xm,#0 for the MOV Xd,Xm. */
+            jit_code_changed(pc, g->size);
+            script_tick_originals[k][b] = jit_wait(pc);
+            if (!script_tick_originals[k][b]) {
+                WARN("arceus-script-tick: compile failed %s at main+%x\n", cls->name, g->address);
+                ok = 0;
+            }
+        }
+        if (!ok) continue;
+        for (unsigned b = 0; b < 2; b++)
+            __atomic_store_n(&g_disp[(main_base + offsets[b] - g_code_lo) / 4], wrappers[k][b], __ATOMIC_RELEASE);
+        if (ticked >> k & 1) script_tick_mask |= 1ul << k;
+        script_tick_wrapped |= 1ul << k;
+        const int windowed = (windows & 1) && (script_window_classes[0] >> k & 1);
+        LOG("arceus-script-tick: %s state script runs 30 times per second%s\n", cls->name,
+            ticked >> k & 1 ? "" : " inside its windows only");
+        if (k == ROTATION_BLEND_CLASS && (ticked >> k & 1) && rotation_blend_init())
+            LOG("arceus-script-tick: the rotation set by main+25ab490 is blended between runs\n");
+        if (k >= SCRIPT_TICK_BUDDY && (ticked >> k & 1 || windowed)) script_query_init();
+    }
+    for (unsigned k = 0; k < SCRIPT_WINDOWS; k++) {
+        if (!(windows >> k & 1)) continue;
+        if ((script_tick_wrapped & script_window_classes[k]) != script_window_classes[k] || !script_window_init(k)) {
+            WARN("arceus-script-window: window %u is off, its classes then run on every frame\n", k);
+            continue;
+        }
+        script_windows_mask |= 1ul << k;
+        LOG("arceus-script-window: window %u ticks classes %lx between its natives\n", k, script_window_classes[k]);
+    }
+}
+static void direct_move_fix_init(void) {
+    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_DIRECT_MOVE_FIX", 1)) return;
+    if (!clocks_installed) {
+        WARN("arceus-direct-move: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 owner = main_base + 0x1982408, site = main_base + 0x1982e6c, step = main_base + 0x1982930;
+    if (!covers_exactly(owner, 0xdd4) || !readable(owner, 0xdd4) || gr32(site) != 0x94000241 ||
+        gr32(step) != 0x52911128 || gr32(step + 4) != 0x72a7a108 || gr32(owner + 0x54c) != 0x94000323 ||
+        gr32(owner + 0xa08) != 0x394183e8) {
+        WARN("arceus-direct-move: refused instruction guard\n");
+        return;
+    }
+    if (!set_position_wrap_init()) {
+        WARN("arceus-direct-move: refused, set position 1983770 is not wrapped\n");
+        return;
+    }
+    __atomic_store_n(&direct_move_fix, 1, __ATOMIC_RELEASE);
+    LOG("arceus-direct-move: EXPERIMENT: the ground move's direct position step follows elapsed time\n");
+}
+
+static GuestFn field_waza_original;
+static int field_waza_fix, field_waza_holding;
+static float field_waza_fraction;
+static u64 field_waza_frame = ~0ull;
+static int field_waza_hold(u64 frame, float ratio) {
+    if (frame == field_waza_frame) return field_waza_holding;
+    field_waza_frame = frame;
+    field_waza_fraction += ratio;
+    field_waza_holding = field_waza_fraction < 0.9999f;
+    if (!field_waza_holding) field_waza_fraction = field_waza_fraction > 1.0f ? field_waza_fraction - 1.0f : 0.0f;
+    return field_waza_holding;
+}
+static void field_waza_update(CPU* c, u64 entry) {
+    static const u32 countdowns[2] = {0x218, 0x3b0};
+    const u64 object = c->x[0];
+    const int known = writable(object, 0x3b8);
+    const float ratio = frame_step_ratio();
+    const int scale = field_waza_fix && known && ratio < 1.0f;
+    const int hold = scale && field_waza_hold(__atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE), ratio);
+    int before[2] = {0, 0};
+    u32 count = 0, turn = 0, shown = 0;
+    if (known) {
+        count = gr32(object + 0x370);
+        turn = gr32(object + 0x3ac);
+    }
+    for (unsigned k = 0; known && k < 2; k++) {
+        before[k] = (int)gr32(object + countdowns[k]);
+        if (hold && before[k] > 0) gw32(object + countdowns[k], (u32)(before[k] + 1));
+    }
+    if (scale) {
+        shown = float_bits(guest_float(object + 0x3ac) * ratio);
+        gw32(object + 0x3ac, shown);
+    }
+    field_waza_original(c, entry);
+    if (!known || !writable(object, 0x3b8)) return;
+    if (scale && gr32(object + 0x3ac) == shown) gw32(object + 0x3ac, turn);
+    if (hold && gr32(object + 0x370) == count + 1) gw32(object + 0x370, count);
+    for (unsigned k = 0; k < 2; k++)
+        if (hold && before[k] > 0 && gr32(object + countdowns[k]) == (u32)(before[k] + 1))
+            gw32(object + countdowns[k], (u32)before[k]);
+}
+static void field_waza_init(void) {
+    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_FIELD_WAZA_FIX", 1)) return;
+    if (!clocks_installed) {
+        WARN("arceus-field-waza: fix refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x1dc32c0;
+    if (!covers_exactly(pc, 0x26c0) || !readable(pc, 0x26c0) || gr32(pc) != 0x6db63bef ||
+        gr32(pc + 0x34) != 0xaa0003f3 || gr32(pc + 0x30c) != 0xb943b268 || gr32(pc + 0x310) != 0x71000508 ||
+        gr32(pc + 0x3b8) != 0xb9437269 || gr32(pc + 0xf4c) != 0xb9421a69 || gr32(pc + 0xf7c) != 0xbd43ae60 ||
+        gr32(pc + 0xf8c) != 0x51000528) {
+        WARN("arceus-field-waza: refused guard at main+1dc32c0\n");
+        return;
+    }
+    if (!frame_step_cell_init("arceus-field-waza")) return;
+    gw32(pc + 0x34, 0x91000013);
+    jit_code_changed(pc, 0x26c0);
+    field_waza_original = jit_wait(pc);
+    if (!field_waza_original) {
+        WARN("arceus-field-waza: compile failed at main+1dc32c0\n");
+        return;
+    }
+    field_waza_fix = 1;
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], field_waza_update, __ATOMIC_RELEASE);
+    LOG("arceus-field-waza: EXPERIMENT: field move timers and turns use 30 Hz time\n");
+}
+
+static GuestFn waza_object_original;
+static int waza_object_fix;
+static void waza_object_held(CPU* c, u64 entry, u64 object) {
+    static const u32 counters[2] = {0x5e4, 0x5e8};
+    u32 was[2];
+    for (unsigned k = 0; k < 2; k++) {
+        was[k] = gr32(object + counters[k]);
+        if (was[k]) gw32(object + counters[k], was[k] - 1);
+    }
+    const u32 terrain = gr32(object + 0x5f0);
+    if (terrain && terrain != ~0u) gw32(object + 0x5f0, terrain + 1);
+    waza_object_original(c, entry);
+    if (!writable(object, 0x5f4)) return;
+    if (terrain && terrain != ~0u && gr32(object + 0x5f0) == terrain + 1) gw32(object + 0x5f0, terrain);
+    for (unsigned k = 0; k < 2; k++) {
+        const u32 now = gr32(object + counters[k]);
+        if (was[k] && now == was[k] - 1) gw32(object + counters[k], was[k]);
+        else if (!was[k] && now == 1) gw32(object + counters[k], 0);
+    }
+}
+static void waza_object_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    pm_lock(&step_lock);
+    const unsigned ticks = blink_ticks;
+    pm_unlock(&step_lock);
+    if (!waza_object_fix || ticks || !writable(object, 0x5f4)) waza_object_original(c, entry);
+    else waza_object_held(c, entry, object);
+}
+static void waza_object_init(void) {
+    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_WAZA_OBJECT_FIX", 1)) return;
+    if (!clocks_installed) {
+        WARN("arceus-waza-object: fix refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x1d91df4;
+    if (!covers_exactly(pc, 0x6478) || !readable(pc, 0x6478) || gr32(pc) != 0x6db63bef ||
+        gr32(pc + 0x30) != 0xb945ec08 || gr32(pc + 0x34) != 0xaa0003f3) {
+        WARN("arceus-waza-object: refused instruction/function guard\n");
+        return;
+    }
+    gw32(pc + 0x34, 0x91000013);
+    jit_code_changed(pc, 0x6478);
+    waza_object_original = jit_wait(pc);
+    if (!waza_object_original) {
+        WARN("arceus-waza-object: compile failed\n");
+        return;
+    }
+    waza_object_fix = 1;
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], waza_object_update, __ATOMIC_RELEASE);
+    LOG("arceus-waza-object: EXPERIMENT: field attack counters and terrain hit hold use 30 Hz time\n");
+}
+
+#define SHOT_OBJECTS 8
+typedef struct { u64 object, seen_ns; float from[3], to[3]; int runs; } ShotObject;
+static ShotObject shot_objects[SHOT_OBJECTS];
+static PMutex shot_lock = PMUTEX_INIT;
+static GuestFn waza_shot_original;
+static int waza_shot_fix;
+static int waza_shot_dependency_warned;
+static int waza_shot_mode_value(void) {
+    const char* value = getenv("SNX_ARCEUS_WAZA_SHOT_FIX");
+    if (!value) return 2;
+    return !strcmp(value, "1") ? 1 : !strcmp(value, "2") ? 2 : 0;
+}
+static ShotObject* shot_slot(u64 object, u64 now) {
+    ShotObject* oldest = &shot_objects[0];
+    for (unsigned k = 0; k < SHOT_OBJECTS; k++) {
+        if (shot_objects[k].object == object && now - shot_objects[k].seen_ns < 500000000ull) return &shot_objects[k];
+        if (shot_objects[k].seen_ns < oldest->seen_ns) oldest = &shot_objects[k];
+    }
+    *oldest = (ShotObject){.object = object};
+    return oldest;
+}
+static void shot_between(const ShotObject* o, float share, float out[3]) {
+    float d[3], length = 0.0f;
+    for (int k = 0; k < 3; k++) d[k] = o->to[k] - o->from[k], length += d[k] * d[k];
+    if (!(share >= 0.0f)) share = 0.0f;
+    if (share > 1.0f || o->runs < 2 || !(length < 25.0f)) share = 1.0f;
+    for (int k = 0; k < 3; k++) out[k] = o->from[k] + d[k] * share;
+}
+static void shot_transform_write(u64 transform, const float pos[3]) {
+    for (int k = 0; k < 3; k++) guest_float_write(transform + 0xd0 + 4 * k, pos[k]);
+    *GP(transform + 0xe0) = 1;
+}
+static void waza_shot_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0], return_pc = c->x[30];
+    pm_lock(&step_lock);
+    const unsigned ticks = blink_ticks;
+    const float share = (float)blink_remainder / (float)ARCEUS_WHOLE_STEP_NS;
+    pm_unlock(&step_lock);
+    const int hold = waza_shot_fix && !ticks;
+    const u64 now = plat_ns();
+    u64 transform = waza_shot_fix == 2 ? trajectory_transform(object) : 0;
+    if (transform && !writable(transform, 0xe4)) transform = 0;
+    if (transform && !hold) {
+        pm_lock(&shot_lock);
+        ShotObject* o = shot_slot(object, now);
+        const int have = o->runs > 0;
+        float real[3];
+        for (int k = 0; !have && k < 3; k++) o->to[k] = guest_float(transform + 0xd0 + 4 * k);
+        if (!have) o->runs = 1, o->seen_ns = now;
+        memcpy(real, o->to, sizeof real);
+        pm_unlock(&shot_lock);
+        if (have) shot_transform_write(transform, real);
+    }
+    if (hold) c->pc = return_pc;
+    else waza_shot_original(c, entry);
+    if (transform && readable(transform, 0xe4)) {
+        float drawn[3];
+        pm_lock(&shot_lock);
+        ShotObject* o = shot_slot(object, now);
+        const int have = o->runs > 0;
+        if (!hold) {
+            memcpy(o->from, o->to, sizeof o->from);
+            for (int k = 0; k < 3; k++) o->to[k] = guest_float(transform + 0xd0 + 4 * k);
+            if (o->runs < 2) o->runs++;
+        }
+        o->seen_ns = now;
+        shot_between(o, share, drawn);
+        pm_unlock(&shot_lock);
+        if (have) shot_transform_write(transform, drawn);
+    }
+}
+static void waza_shot_init(void) {
+    const int mode = waza_shot_mode_value();
+    if (!main_base || !mode) return;
+    if (!arceus_switch_enabled("SNX_ARCEUS_WAZA_OBJECT_FIX", 1) && !waza_shot_dependency_warned) {
+        WARN("arceus-waza-shot: enabled without WAZA_OBJECT_FIX; shots may end at the muzzle\n");
+        waza_shot_dependency_warned = 1;
+    }
+    if (!clocks_installed) {
+        WARN("arceus-waza-shot: fix refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x1dbf4f4;
+    if (!covers_exactly(pc, 0x2c90) || !readable(pc, 0x2c90) || gr32(pc) != 0xd10783ff ||
+        gr32(pc + 0x24) != 0xb946c008 || gr32(pc + 0x28) != 0xaa0003f3) {
+        WARN("arceus-waza-shot: refused instruction/function guard\n");
+        return;
+    }
+    gw32(pc + 0x28, 0x91000013);
+    jit_code_changed(pc, 0x2c90);
+    waza_shot_original = jit_wait(pc);
+    if (!waza_shot_original) {
+        WARN("arceus-waza-shot: compile failed\n");
+        return;
+    }
+    waza_shot_fix = mode;
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], waza_shot_update, __ATOMIC_RELEASE);
+    LOG("arceus-waza-shot: EXPERIMENT: shot update uses 30 Hz time, drawing %s\n",
+        waza_shot_fix == 2 ? "between ticks" : "at the tick rate");
+}
+
 void arceus_clock_post_jit(void) {
+    if (!timing_enabled || !clocks_installed) return;
+    const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
+    camera_trace_only = main_base && !target_fps_explicit && probe && !strcmp(probe, "1");
+    timer_carry_fix = arceus_switch_enabled("SNX_ARCEUS_TIMER_CARRY_FIX", 1);
+    if (timer_carry_fix) LOG("arceus-timer-carry: integer timer catch-up enabled, backlog capped at 1 second\n");
     fixed_resolution_init();
     /* Before the research probe, which compiles and keeps this wrapper's body. */
     physics_timestep_init();
@@ -2538,6 +4169,11 @@ void arceus_clock_post_jit(void) {
     world_timers_init();
     gravity_fix_init();
     movement_fix_init();
+    capped_fall_init();
+    ai_tick_fix_init();
+    turn_fix_init();
+    list_scroll_init();
+    ride_swap_init();
     ball_flight_init();
     timing_research_init();
     capture_fix_init();
@@ -2547,16 +4183,13 @@ void arceus_clock_post_jit(void) {
     climb_step_init();
     wall_jump_fix_init();
     ledge_fix_init();
+    /* After the ledge fix, which owns the Sneasler bridges. */
+    script_tick_init();
+    direct_move_fix_init();
+    field_waza_init();
+    waza_object_init();
+    waza_shot_init();
     cadence_census_init();
-    const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
-    if (main_base && !experimental && probe && !strcmp(probe, "1")) {
-        camera_trace_only = 1;
-        camera_input_init();
-        camera_rate_init();
-        return;
-    }
-    const char* enabled = getenv("SNX_ARCEUS_TIMING_FIXES");
-    if (!enabled || strcmp(enabled, "1") || !clocks_installed) return;
     water_fix_init();
     effects_fix_init();
     event_camera_init();
