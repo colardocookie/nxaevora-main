@@ -494,34 +494,6 @@ static void test_target(void) {
         assert(main_base == 0);
     }
     flag("SNX_ARCEUS_TARGET_FPS", "");
-/* A fade-in's last call frees the object's slot, so fades of more than FADE_SLOTS objects
-   in a session all keep a slot instead of running unfixed. */
-static void test_fade_slots_free(void) {
-    memset(memory, 0, sizeof memory);
-    memset(fade_slots, 0, sizeof fade_slots);
-    fade_full = 0;
-    fade_fix_active = 1;
-    frame_step_address = 4000;
-    guest_float_write(frame_step_address, 1.0f / 120);
-    for (unsigned k = 0; k < 3 * FADE_SLOTS; k++) {
-        const u64 o = 128 + 8 * k;
-        FadeStage st;
-        gw32(o + 0x500, 0);
-        gw32(o + 0x504, 2);
-        gw32(o + 0x538, 3);
-        gw32(o + 0x53c, 8);
-        fade_before(o, &st);
-        assert(st.slot >= 0);
-        fade_after(&st);
-        /* The fade-in reaches its end: the call is left alone and the slot is released. */
-        gw32(o + 0x538, 8);
-        fade_before(o, &st);
-        assert(st.slot < 0);
-    }
-    assert(fade_full == 0);
-    for (unsigned k = 0; k < FADE_SLOTS; k++) assert(fade_slots[k].object == 0);
-    fade_fix_active = 0;
-    frame_step_address = 0;
 }
 /* The climb fix's cell load: ADRP X9 to the frame-step cell's page from the patched word,
    checked against llvm-mc encodings of adrp x9 at +0x3000, -0x5000 and +0x7FF000. */
@@ -854,6 +826,35 @@ static void test_ledge_smoothing(void) {
     main_base = 0;
     frame_step_address = 0;
 }
+/* A fade-in's last call frees the object's slot, so fades of more than FADE_SLOTS objects
+   in a session all keep a slot instead of running unfixed. */
+static void test_fade_slots_free(void) {
+    memset(memory, 0, sizeof memory);
+    memset(fade_slots, 0, sizeof fade_slots);
+    fade_full = 0;
+    fade_fix_active = 1;
+    frame_step_address = 4000;
+    guest_float_write(frame_step_address, 1.0f / 120);
+    for (unsigned k = 0; k < 3 * FADE_SLOTS; k++) {
+        const u64 o = 128 + 8 * k;
+        FadeStage st;
+        gw32(o + 0x500, 0);
+        gw32(o + 0x504, 2);
+        gw32(o + 0x538, 3);
+        gw32(o + 0x53c, 8);
+        fade_before(o, &st);
+        assert(st.slot >= 0);
+        fade_after(&st);
+        /* The fade-in reaches its end: the call is left alone and the slot is released. */
+        gw32(o + 0x538, 8);
+        fade_before(o, &st);
+        assert(st.slot < 0);
+    }
+    assert(fade_full == 0);
+    for (unsigned k = 0; k < FADE_SLOTS; k++) assert(fade_slots[k].object == 0);
+    fade_fix_active = 0;
+    frame_step_address = 0;
+}
 /* The capped-fall guard accepts the game's 1/30 words and the movement bit 1 patch of them. */
 static void test_capped_fall_body(void) {
     assert(capped_fall_body(0x52911128, 0x72b7a108) == 1);
@@ -864,14 +865,14 @@ static void test_capped_fall_body(void) {
     assert(capped_fall_body(0x52911128, 0xb9400508) == 0);
 }
 int main(void) {
+    test_capped_fall_body();
+    test_fade_slots_free();
     test_ride_swap();
     test_list_scroll();
     test_timer_carry();
     test_ai_tick();
     test_turn();
-    test_capped_fall_body();
     test_air_steering();
-    test_fade_slots_free();
     const char* disabled[] = {"SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60", "SNX_ARCEUS_CLOCK_TRACE",
         "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_CAMERA_TRACE",
         "SNX_ARCEUS_TIMING_RESEARCH"};
