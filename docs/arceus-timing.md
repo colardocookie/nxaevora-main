@@ -275,3 +275,11 @@ At 150 FPS it ends inside the tap, so a single D-pad press ran the free scroll a
 target rate, `SNX_ARCEUS_LIST_SCROLL_FIX=1` runs the scroller only on frames that complete a 1/30 second tick, so the
 ease takes its 30 FPS time. Every list that scrolls through this function steps 30 times a second, which can look less
 smooth than the frame rate. Test `arceus_clock` checks that a 100 ms tap scrolls one row at 30, 60, 150 and 300 FPS.
+
+## Ride swap
+
+The ride controller's update `main+2537B28` runs once per rendered frame and counts five waits down by one per call
+(`+2BC`, `+4A0`, `+2C0`, `+3C0` and `+2A8`). The wait before a quick swap to another ride is 18 to 20 of those calls, so
+the swap that takes about 0.6 s at 30 FPS took 0.17 to 0.24 s unlocked. With a target rate, `SNX_ARCEUS_RIDE_SWAP_FIX=1`
+lets the waits count 30 times a second: on the other frames a running count goes in one higher and comes out as it was.
+A count the call did not touch is left as the game set it. `arceus-ride-swap` lines log counts that start or end.

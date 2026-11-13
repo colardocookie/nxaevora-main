@@ -415,6 +415,42 @@ static void test_list_scroll(void) {
         }
     blink_ticks = 0;
 }
+/* The ride controller's waits under the swap fix: a stub that counts +3C0 down per call
+   and skips +2BC. A wait of 20 calls must last 20 thirtieths at every frame rate. */
+static void swap_native(CPU* c, u64 entry) {
+    (void)entry;
+    const int wait = (int)gr32(c->x[0] + 0x3c0);
+    if (wait > 0) gw32(c->x[0] + 0x3c0, (u32)(wait - 1));
+}
+static void test_ride_swap(void) {
+    static const u64 steps[5] = {33333334, 16666667, 8333333, 5000000, 11111111};
+    const u64 object = 1024;
+    ride_swap_original = swap_native;
+    for (unsigned k = 0; k < 5; k++) {
+        memset(memory, 0, sizeof memory);
+        ride_swap_fix = 1;
+        ride_swap_fraction = 0;
+        ride_swap_frame = ~0ull;
+        step.step = steps[k];
+        gw32(object + 0x3c0, 20);
+        gw32(object + 0x2bc, 7);
+        u64 elapsed = 0;
+        while (gr32(object + 0x3c0)) {
+            frame_step_frames++;
+            CPU cpu = {.x = {[0] = object}};
+            ride_swap_update(&cpu, 16);
+            ride_swap_update(&cpu, 16);
+            elapsed += steps[k];
+            assert(elapsed < 2000000000);
+        }
+        /* Two calls in a frame share its decision, so a counting frame counts twice. */
+        assert(elapsed >= 333333340 - steps[k] && elapsed <= 333333340 + steps[k]);
+        /* The count the call never touched is as the game left it. */
+        assert(gr32(object + 0x2bc) == 7);
+    }
+    ride_swap_fix = 0;
+    ride_swap_original = NULL;
+}
 static void test_diagnostics(void) {
     SnxModInfo main_mod = {.name = "main", .base = 4096,
         .build_id = {0xae,0xe8,0xf1,0x50,0xdd,0xa1,0xb5,0xa8,0x38,0x80,0x6e,0x1a,0x5e,0xa6,0x82,0x7a,
@@ -791,6 +827,7 @@ static void test_ledge_smoothing(void) {
     frame_step_address = 0;
 }
 int main(void) {
+    test_ride_swap();
     test_list_scroll();
     test_timer_carry();
     test_ai_tick();

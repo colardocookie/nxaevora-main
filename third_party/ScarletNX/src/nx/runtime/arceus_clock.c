@@ -2036,6 +2036,81 @@ static void list_scroll_init(void) {
     LOG("arceus-list-scroll: EXPERIMENT: UI list scroller steps 30 times per second of elapsed time\n");
 }
 
+/* The ride controller's update 2537B28 (table 4163488 slot +90) runs once per rendered frame
+   and counts five waits down by one per call: +2BC, +4A0, +2C0, +3C0 (set from a config
+   count by 2542834) and +2A8 (set to 15). SNX_ARCEUS_RIDE_SWAP_FIX=1 lets them count 30
+   times a second: on the other frames a running count goes in one higher and comes out as
+   it was. Counts set or ended by a call are logged, at most 600 lines. */
+static const u32 ride_swap_fields[5] = {0x2bc, 0x4a0, 0x2c0, 0x3c0, 0x2a8};
+static GuestFn ride_swap_original;
+static int ride_swap_fix, ride_swap_holding;
+static float ride_swap_fraction;
+static u64 ride_swap_frame = ~0ull, ride_swap_calls, ride_swap_held, ride_swap_lines;
+/* 1 on a frame whose calls must not count. One decision per engine frame. */
+static int ride_swap_hold(u64 frame, float r) {
+    if (frame == ride_swap_frame) return ride_swap_holding;
+    ride_swap_frame = frame;
+    ride_swap_fraction += r;
+    ride_swap_holding = ride_swap_fraction < 0.9999f;
+    if (!ride_swap_holding) ride_swap_fraction = ride_swap_fraction > 1.0f ? ride_swap_fraction - 1.0f : 0.0f;
+    return ride_swap_holding;
+}
+static void ride_swap_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    const int known = writable(object, 0x4a4);
+    const int hold = ride_swap_fix && known &&
+        ride_swap_hold(__atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE), frame_step_ratio());
+    int before[5] = {0, 0, 0, 0, 0};
+    for (unsigned k = 0; known && k < 5; k++) {
+        before[k] = (int)gr32(object + ride_swap_fields[k]);
+        if (hold && before[k] > 0) gw32(object + ride_swap_fields[k], (u32)(before[k] + 1));
+    }
+    ride_swap_original(c, entry);
+    __atomic_add_fetch(&ride_swap_calls, 1, __ATOMIC_RELAXED);
+    if (hold) __atomic_add_fetch(&ride_swap_held, 1, __ATOMIC_RELAXED);
+    if (!known || !writable(object, 0x4a4)) return;
+    for (unsigned k = 0; k < 5; k++) {
+        int after = (int)gr32(object + ride_swap_fields[k]);
+        /* A path that did not count leaves the raised value. Put the game's own back. */
+        if (hold && before[k] > 0 && after == before[k] + 1) gw32(object + ride_swap_fields[k], (u32)(after = before[k]));
+        if ((after > before[k] || (!after && before[k] > 0)) &&
+            __atomic_add_fetch(&ride_swap_lines, 1, __ATOMIC_RELAXED) <= 600)
+            LOG("arceus-ride-swap: field=+%x before=%d after=%d ns=%llu frame=%llu calls=%llu held=%llu\n",
+                ride_swap_fields[k], before[k], after, (unsigned long long)plat_ns(),
+                (unsigned long long)__atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE),
+                (unsigned long long)__atomic_load_n(&ride_swap_calls, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&ride_swap_held, __ATOMIC_RELAXED));
+    }
+}
+static void ride_swap_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_RIDE_SWAP_FIX");
+    const u64 pc = main_base + 0x2537b28;
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-ride-swap: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    /* STR D8,[SP,#-0x70]! at the head, the first count's LDR W8,[X19,#0x2BC] and SUBS at +148
+       and +14C, the +3C0 load at +390, and MOV X19,X0 at +48 swapped for an equal ADD. */
+    if (ride_swap_original || !covers_exactly(pc, 0x7964) || !readable(pc, 0x7964) || gr32(pc) != 0xfc190fe8 ||
+        gr32(pc + 0x48) != 0xaa0003f3 || gr32(pc + 0x148) != 0xb942be68 || gr32(pc + 0x14c) != 0x71000508 ||
+        gr32(pc + 0x390) != 0xb943c268) {
+        WARN("arceus-ride-swap: refused guard at main+2537b28\n");
+        return;
+    }
+    gw32(pc + 0x48, 0x91000013);
+    jit_code_changed(pc, 0x7964);
+    ride_swap_original = jit_wait(pc);
+    if (!ride_swap_original) {
+        WARN("arceus-ride-swap: compile failed at main+2537b28\n");
+        return;
+    }
+    ride_swap_fix = 1;
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], ride_swap_update, __ATOMIC_RELEASE);
+    LOG("arceus-ride-swap: EXPERIMENT: the ride controller's frame waits count 30 times per second\n");
+}
+
 
 /* C21D00 (fade in) and C227BC (fade out) start a fade: its fractional progress starts over. */
 static GuestFn fade_start_original[2];
@@ -2931,6 +3006,7 @@ void arceus_clock_post_jit(void) {
     ai_tick_fix_init();
     turn_fix_init();
     list_scroll_init();
+    ride_swap_init();
     ball_flight_init();
     timing_research_init();
     capture_fix_init();
