@@ -248,6 +248,11 @@ Design of the attachment:
    checks the sdk build ID and the table (`nvn_proc_table_check`), and answers both functions. The library lookup never
    runs. An unknown build, a NULL name or a bad table stops the game. A name that is not in the list (the library would
    try its 30 NVX extension names next) follows `nvn_native_missing`.
+   The skipped setup changes no state that other code reads. `nvnDeviceInitialize` still runs d82cd80 (d831e74) and copies
+   the table 0xe0f2988 to the thunk table 0xe0f03e0 (d831e8c). 0xe0f2988 stays zero, because d861ff0 and d859ba0 run only
+   when two flags are set (d861f14, d864698) whose setters (d861f20, d861880) have no caller. So the library lookup also
+   copied zeros. No code branches to the 523 thunks d82d1b0..d82f250, and `main` and `subsdk0` import only
+   `nvnBootstrapLoader`. The thunk path d82f260 needs `[0xe0f1470]` >= 1, which the game does not set.
 
 Facts found on the way (from the disassembly of the `sdk` module):
 

@@ -3232,6 +3232,10 @@ int nvn_compute_cbuf0_build(const NvnComputeBindEntry* uniform, const NvnCompute
     return 1;
 }
 
+int nvn_span_inside(uint64_t at, uint64_t size, uint64_t lo, uint64_t hi) {
+    return at >= lo && at <= hi && size <= hi - at;
+}
+
 /* The library's list is sorted by strcmp and holds the names without the "nvn" prefix. A binary search needs no other
    check: the table check rejects a list that is not sorted. */
 int nvn_proc_name_index(const char* const* names, uint32_t count, const char* name) {

@@ -7683,25 +7683,37 @@ static void proc_table_build(void) {
     if (!sdk) fatal("nvn-native: the game has no sdk module, so the NVN name table is unknown\n");
     if (memcmp(sdk->build_id, known_library.build_id, sizeof sdk->build_id))
         fatal("nvn-native: the sdk build is not the one the NVN name table was read from\n");
+    u64 text_lo = sdk->base + sdk->text_off;
+    u64 text_hi = text_lo + sdk->text_size;
+    u64 ro_lo = sdk->base + sdk->ro_off;
+    u64 ro_hi = ro_lo + sdk->ro_size;
+    u64 data_lo = sdk->base + sdk->data_off;
+    u64 data_hi = data_lo + sdk->data_size;
+    u64 strings = sdk->base + known_library.off_strings;
+    u64 offsets = sdk->base + known_library.off_offsets;
+    u64 address_table = sdk->base + known_library.off_addrs;
+    if (!nvn_span_inside(offsets, 4ull * known_library.count, ro_lo, ro_hi))
+        fatal("nvn-native: the NVN name offset table is not inside the sdk rodata\n");
+    if (!nvn_span_inside(address_table, 8ull * known_library.count, data_lo, data_hi))
+        fatal("nvn-native: the NVN address table is not inside the sdk data\n");
     char* storage = calloc(known_library.count, NVN_PROC_NAME_BYTES);
     const char** names = calloc(known_library.count, sizeof *names);
     u64* addrs = calloc(known_library.count, sizeof *addrs);
     if (!storage || !names || !addrs) fatal("nvn-native: cannot allocate the NVN name table\n");
-    u64 strings = sdk->base + known_library.off_strings;
-    u64 offsets = sdk->base + known_library.off_offsets;
-    u64 address_table = sdk->base + known_library.off_addrs;
     for (u32 n = 0; n < known_library.count; n++) {
-        if (!native_guest_readable(offsets + 4ull * n, sizeof(u32)))
-            fatal("nvn-native: name offset %u of the NVN library is unreadable\n", n);
         u32 offset = gr32(offsets + 4ull * n);
+        u64 name_at = strings + offset;
         names[n] = storage + (u64)n * NVN_PROC_NAME_BYTES;
-        if (!nvn_guest_name(strings + offset, (char*)names[n]))
-            fatal("nvn-native: name %u of the NVN library is unreadable\n", n);
-        if (!native_guest_readable(address_table + 8ull * n, sizeof(u64)))
-            fatal("nvn-native: address %u of the NVN library is unreadable\n", n);
+        if (!nvn_span_inside(name_at, 1, ro_lo, ro_hi))
+            fatal("nvn-native: name %u of the NVN library is outside the sdk rodata\n", n);
+        NvnNameRead result = nvn_guest_name_read(name_at, (char*)names[n]);
+        if (result != NVN_NAME_OK)
+            fatal("nvn-native: name %u of the NVN library is not usable (result %d)\n", n, (int)result);
+        if (!nvn_span_inside(name_at, strlen(names[n]) + 1, ro_lo, ro_hi))
+            fatal("nvn-native: name %u of the NVN library is not inside the sdk rodata\n", n);
         addrs[n] = gr64(address_table + 8ull * n);
     }
-    int bad = nvn_proc_table_check(names, addrs, known_library.count, g_code_lo, g_code_hi);
+    int bad = nvn_proc_table_check(names, addrs, known_library.count, text_lo, text_hi);
     if (bad >= 0)
         fatal("nvn-native: NVN name %d (%s) or its address is bad\n", bad, names[bad] ? names[bad] : "empty");
     proc_table.storage = storage;
@@ -7725,8 +7737,8 @@ static u64 host_lookup(const char* name) {
    but 0 would be invented, so the host stops unless nvn_native_missing=0. */
 static void lookup_missing(const char* name) {
     if (g_settings.nvn_native_missing)
-        fatal("nvn-native: the game asked for %s, which the NVN library of this build does not have\n", name);
-    LOG_LIMIT(16, "nvn-native: the game asked for %s, which the NVN library of this build does not have\n", name);
+        fatal("nvn-native: the game asked for \"%s\", which the NVN library of this build does not have\n", name);
+    LOG_LIMIT(16, "nvn-native: the game asked for \"%s\", which the NVN library of this build does not have\n", name);
 }
 
 static u32 slot_hash(u64 addr) { return (u32)((addr >> 2) * 2654435761u) & (NATIVE_SLOTS - 1); }
@@ -7813,9 +7825,11 @@ static void install(const char* name, u64 addr) {
    g_disp themselves (no native_call) and run no guest code, so they set c->pc to x30 as a guest RET does. The address,
    or 0 when the library does not have the name. */
 static u64 answer_lookup(CPU* c, const char* hook, u64 pointer, char name[128]) {
-    if (!pointer || !nvn_guest_name(pointer, name))
+    NvnNameRead result = pointer ? nvn_guest_name_read(pointer, name) : NVN_NAME_UNREADABLE;
+    if (result == NVN_NAME_UNREADABLE)
         fatal("nvn-native: %s name (%llx) is null or unreadable\n", hook, (unsigned long long)pointer);
-    u64 addr = host_lookup(name);
+    /* An empty or overlong name is not in the table. The library would also find nothing. */
+    u64 addr = result == NVN_NAME_OK ? host_lookup(name) : 0;
     if (!addr) lookup_missing(name);
     c->x[0] = addr;
     c->pc = c->x[30];

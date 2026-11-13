@@ -763,7 +763,8 @@ setting NVN native missing
     startup
     words Log|Stop
     help 1 = a call of an NVN function that the host does not have, or a lookup of a name that the NVN library does not
-    help have, stops the game with the function name. 0 = it is logged once and returns 0. Only with nvn_native=1
+    help have, stops the game with the function name. 0 = it returns 0 and is logged (each missing function at its first
+    help call, the first 16 missing names). Only with nvn_native=1
 setting NVN selftest
     key nvn_selftest
     int 0 1
