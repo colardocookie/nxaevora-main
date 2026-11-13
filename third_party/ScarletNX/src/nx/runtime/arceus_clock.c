@@ -98,7 +98,9 @@ static ArceusClockConfig arceus_clock_config(int runtime_fps) {
 }
 static void arceus_clock_config_apply(ArceusClockConfig config) {
     if (!config.master || config.invalid || config.skip_runtime_limit) return;
-    step.initial_ns = config.initial_ns;
+    /* On by default: a measured step near 1/30 s is reported as the game's own step. */
+    step.measured_only = !arceus_switch_enabled("SNX_ARCEUS_WHOLE_STEP", 1);
+    step.initial_ns = step.measured_only ? config.initial_ns : arceus_whole_step(config.initial_ns);
     if (config.write_fps) __atomic_store_n(&g_opt_fps, config.target_fps, __ATOMIC_RELAXED);
     experimental = 1;
     clocks_installed = timing_enabled = 1;
@@ -147,9 +149,10 @@ static void adjust_duration(CPU* c) {
             water_step_write(value);
             frame_step_write(value);
             /* Shared 30-Hz cadence for the isolated integer blink state machine. */
-            blink_remainder += value * 30;
-            blink_ticks = (unsigned)(blink_remainder / 1000000000);
-            blink_remainder %= 1000000000;
+            /* The game's own step is one tick and leaves no part of one behind. */
+            blink_remainder = value == ARCEUS_WHOLE_STEP_NS ? value : blink_remainder + value;
+            blink_ticks = (unsigned)(blink_remainder / ARCEUS_WHOLE_STEP_NS);
+            blink_remainder %= ARCEUS_WHOLE_STEP_NS;
         }
     }
     else WARN_LIMIT(4, "arceus-clock: clock update order changed, left unchanged\n");
@@ -1030,7 +1033,7 @@ static int sequence_clock_logging, capture_fix_active;
    With the fix, a call only counts down once 1/30 s of frame steps has built up for
    that object. Otherwise +1DC is raised by one first so the call leaves it unchanged. */
 #define CAPTURE_SLOTS 8
-#define CAPTURE_TICK_NS 33333333ll
+#define CAPTURE_TICK_NS ((int64_t)ARCEUS_WHOLE_STEP_NS)
 static struct { u64 object; int64_t ns; } capture_slots[CAPTURE_SLOTS];
 static unsigned capture_next_slot;
 static int capture_waiting(u32 stage) {
@@ -1164,7 +1167,8 @@ static void capture_fix_init(void) {
    Allow extra catch-up work, retaining excess budget if the guard is reached. */
 static GuestFn battle_sequence_original;
 static PMutex battle_sequence_lock = PMUTEX_INIT;
-static struct { u64 object; u64 ns; float pending; } sequence_slots[SEQUENCE_SLOTS];
+/* cut: the sequence has had a step that was not the game's own, so its frame may be cut. */
+static struct { u64 object; u64 ns; float pending; int cut; } sequence_slots[SEQUENCE_SLOTS];
 static unsigned sequence_next_slot;
 static u64 battle_sequence_calls, battle_sequence_skips, battle_sequence_partial;
 /* Read-only research: playing calls per speed, to see how many sequences still step whole frames. */
@@ -1227,9 +1231,14 @@ static void battle_sequence_update(CPU* c, u64 entry) {
             sequence_slots[k].object = object;
             sequence_slots[k].ns = 0;
             sequence_slots[k].pending = 0.0f;
+            /* A sequence first seen between two whole frames was cut before. */
+            sequence_slots[k].cut = guest_float(object + 0xe8) != floorf(guest_float(object + 0xe8));
         }
-        if (speed > 0.0f && speed <= 4.0f) {
-            const float advance = speed * (float)ns / 33333333.0f;
+        if (ns != ARCEUS_WHOLE_STEP_NS) sequence_slots[k].cut = 1;
+        /* At the game's own step a sequence that was never cut runs the game's update as it is. */
+        const int cut = sequence_slots[k].cut;
+        if (cut && speed > 0.0f && speed <= 4.0f) {
+            const float advance = speed * (float)((double)ns / (double)ARCEUS_WHOLE_STEP_NS);
             /* The game steps once per update, by the speed. The budget keeps at most one such
                step beyond this frame's own, so a hitch is not caught up, as in the game. */
             const float cap = (speed > 1.0f ? speed : 1.0f) + advance;
@@ -1243,12 +1252,12 @@ static void battle_sequence_update(CPU* c, u64 entry) {
             sequence_slots[k].pending = pending - partial;
             slot = k;
             if (partial <= 0.0f) skip = 1, partial = 0.0f;
-        } else {
+        } else if (cut) {
             sequence_slots[k].ns += ns;
-            if (sequence_slots[k].ns < 33333333ull) skip = 1;
+            if (sequence_slots[k].ns < ARCEUS_WHOLE_STEP_NS) skip = 1;
             else {
-                sequence_slots[k].ns -= 33333333ull;
-                if (sequence_slots[k].ns >= 33333333ull) sequence_slots[k].ns = 0;
+                sequence_slots[k].ns -= ARCEUS_WHOLE_STEP_NS;
+                if (sequence_slots[k].ns >= ARCEUS_WHOLE_STEP_NS) sequence_slots[k].ns = 0;
             }
         }
         pm_unlock(&battle_sequence_lock);
@@ -1371,15 +1380,16 @@ static void map_cursor_update(CPU* c, u64 entry, unsigned kind) {
     pm_lock(&map_cursor_lock);
     if (map_cursor_object[kind] != object) map_cursor_object[kind] = object, map_cursor_ns[kind] = 0;
     map_cursor_ns[kind] += ns;
-    const int tick = map_cursor_ns[kind] >= 33333333ull;
+    const int tick = map_cursor_ns[kind] >= ARCEUS_WHOLE_STEP_NS;
     if (tick) {
-        map_cursor_ns[kind] -= 33333333ull;
+        map_cursor_ns[kind] -= ARCEUS_WHOLE_STEP_NS;
         if (timer_carry_fix) {
             if (map_cursor_ns[kind] > TIMER_CARRY_LIMIT_NS) map_cursor_ns[kind] = TIMER_CARRY_LIMIT_NS;
-        } else if (map_cursor_ns[kind] >= 33333333ull) map_cursor_ns[kind] = 0;
+        } else if (map_cursor_ns[kind] >= ARCEUS_WHOLE_STEP_NS) map_cursor_ns[kind] = 0;
     }
     pm_unlock(&map_cursor_lock);
-    const float speed = guest_float(object + s->speed), scaled = speed * (float)ns / 33333333.0f;
+    const float speed = guest_float(object + s->speed);
+    const float scaled = speed * (float)((double)ns / (double)ARCEUS_WHOLE_STEP_NS);
     const u32 held_a = gr32(object + s->held), held_b = gr32(object + s->held + 4);
     guest_float_write(object + s->speed, scaled);
     map_cursor_original[kind](c, entry);

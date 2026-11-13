@@ -19,6 +19,7 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | `SNX_ARCEUS_TIMING_FIXES` | on | Installs nothing and suppresses the traces, research probes and fixed-resolution hook too. |
 | `SNX_ARCEUS_TARGET_FPS` | runtime setting | Not a boolean: unset or empty keeps the runtime's `fps_limit` and does not write `g_opt_fps` (unless legacy `FPS60=1` is set). At game pace or 30 FPS and below, nothing installs and one reason line is logged. Above 30 FPS or at 0 (unlimited), clocks and defaults install. `game` is a test value that installs at the current runtime pace without changing the limit. This choice is made at startup. `60`, `120`, `unlocked` or `0` set the limit; other values are refused. |
 | `SNX_ARCEUS_FPS60` | off | Legacy alias; `=1` selects 60 FPS. |
+| `SNX_ARCEUS_WHOLE_STEP` | on | Reports a measured step near 1/30 second as measured, not as the game's own step. |
 | `SNX_ARCEUS_PHYSICS_TIMESTEP_FIX` | on | Leaves the physics step at its authored value. |
 | `SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX` | on | Leaves AI navigation at its authored step. |
 | `SNX_ARCEUS_WORLD_TIMERS_FIX` | on | Leaves world timers at their authored rates. |
@@ -59,6 +60,19 @@ The four main-loop clocks are updated one after another on each frame. `arceus_s
 for the four updates, so they always agree. The step is never zero: a clock that did not move gives the initial
 step of the target rate. A stall longer than 0.1 second is cut to 0.1 second, so the world does not jump. Test
 `arceus_timing` checks this and the camera stick update of `arceus_camera.h`.
+
+A measured step within 1/32 of 1/30 second (32.3 to 34.4 ms) is the game's own pace with the jitter of a real
+frame. It is reported as exactly the 33333334 ns the game passes its clocks, unless `SNX_ARCEUS_WHOLE_STEP=0`.
+A played session at the game's pace with no frame limit set measured steps of 32.8 to 33.8 ms, half of them a
+hair under 1/30 second. On about 7 % of the frames the 30 Hz gates then skipped the frame and did two frames of
+work on a later one, and the battle sequence player ran two whole frames in one call, so the once-per-frame step
+of its commands never saw the first. In that session models disappeared, health bars did not move and moves did
+not play, while the unchanged game at the same pace was fine.
+With the whole step every gate ticks once per frame and every scaled value is the authored one. Test
+`arceus_clock` runs 16 wrapper cases on that session's steps and on 33.0 to 33.6 ms and compares guest memory
+and return registers with the game's function called alone, call for call. Game time at 29.1 to 31 FPS then
+follows the frame count, as in the unchanged game, and is up to 3 % off the wall clock. A step outside the
+window is still the measured one.
 
 ## Physics step
 
@@ -152,7 +166,8 @@ value 2 moved on from the whole frame in the same rendered frame, one by writing
 second update. The first skipped the end checks, so thrown balls came back before the Pokémon was out, and both hid
 the whole frame from the step slot. This form is not played yet and is not the default. Speeds outside (0, 4] only
 update once a whole 1/30 second has built up. `arceus-battle-sequence` lines count the calls, the partial steps,
-the skipped calls and the speeds seen.
+the skipped calls and the speeds seen. A sequence that has only had the game's own step (see the shared step)
+runs the game's update unchanged, at any speed. Its first other step starts the cutting.
 
 ## Map cursor fix
 
