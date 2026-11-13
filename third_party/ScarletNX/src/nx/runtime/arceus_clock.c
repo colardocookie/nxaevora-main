@@ -2133,9 +2133,8 @@ static void ride_swap_update(CPU* c, u64 entry) {
     }
 }
 static void ride_swap_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_RIDE_SWAP_FIX");
     const u64 pc = main_base + 0x2537b28;
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_RIDE_SWAP_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-ride-swap: refused without elapsed-time clocks\n");
         return;
