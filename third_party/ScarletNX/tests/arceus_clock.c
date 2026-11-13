@@ -31,7 +31,11 @@ int mem_map(u64 address, u64 size, u32 state, u32 perm) {
 void jit_code_changed(u64 pc, u64 size) { (void)pc; (void)size; assert(0); }
 GuestFn jit_wait(u64 pc) { (void)pc; assert(0); return NULL; }
 
-static unsigned calls, boundaries, calls_this_render;
+static unsigned calls, boundaries, calls_this_render, entered_whole;
+/* A command's end check as the game makes it: only in an update entered with the frame on
+   hold_at exactly. While hold_left is not 0 it holds the frame, as a waiting track does. */
+static float hold_at;
+static unsigned hold_left, hold_checks;
 static int stop_at, change_speed, divert, no_progress;
 static const u64 object = 128, entry_pc = 16, return_pc = 32;
 static void sequence_original(CPU* c, u64 entry) {
@@ -40,8 +44,21 @@ static void sequence_original(CPU* c, u64 entry) {
     const float after = before + guest_float(object + 0xf0);
     /* Every integer command-end comparison must be visited, never crossed. */
     assert(after <= floorf(before) + 1);
-    /* Extra calls may catch up complete boundaries, never a fractional tail. */
-    if (calls_this_render++) assert(after == floorf(before) + 1);
+    /* Extra calls may catch up complete boundaries, never a fractional tail. The even landing
+       is the exception: the rest of a step follows the whole frame in a second update. */
+    if (calls_this_render++ && !battle_sequence_even) assert(after == floorf(before) + 1);
+    /* The game does its whole-frame work in the update that is entered on the whole frame. */
+    if (before == floorf(before)) entered_whole++;
+    if (hold_at && before == hold_at) {
+        hold_checks++;
+        if (hold_left) {
+            hold_left--;
+            c->x[0] = ++calls;
+            c->x[30] = 999;
+            c->pc = return_pc;
+            return;
+        }
+    }
     if (after == floorf(before) + 1) boundaries++;
     if (!no_progress) guest_float_write(object + 0xe8, after);
     if (stop_at && after == stop_at) *GP(object + 0x301) = 0;
@@ -995,7 +1012,7 @@ static void test_sequence_even(void) {
                 const float speed = speeds[s];
                 reset(8, speed, 1);
                 battle_sequence_even = (int)even;
-                boundaries = 0;
+                boundaries = entered_whole = 0;
                 u64 elapsed = 0;
                 unsigned renders = 0, held = 0, jumped = 0;
                 for (unsigned i = 0; i < 960; i++) {
@@ -1011,20 +1028,39 @@ static void test_sequence_even(void) {
                     if (share > 1.3f) jumped++;
                     /* The mock asserts that no whole frame is crossed, so this counts skips and repeats. */
                     assert(boundaries == (unsigned)floorf(frame) - 8);
+                    /* Every whole frame the sequence has left was entered by an update, once. The one
+                       it stands on now is entered by the next update. */
+                    assert(entered_whole == (unsigned)floorf(frame) - 8 + (frame != floorf(frame)));
                     const double expected = 8 + speed * (double)elapsed / 33333333.0;
                     assert(fabs(frame + sequence_slots[0].pending - expected) < .004);
                     assert(sequence_slots[0].pending < 1 && sequence_slots[0].pending > -SEQUENCE_SNAP_MAX - .001f);
                 }
                 if (even) {
-                    /* Every rendered frame moves by 0.7 to 1.3 of its share, with one update per
-                       rendered frame as before (the mock refuses a second one for a rest). At
-                       speed 2 a rendered frame can hold two whole frames, each with its update. */
+                    /* Every rendered frame moves by 0.7 to 1.3 of its share. A whole frame passed
+                       in mid step costs a second update, at most one for every whole frame. */
                     assert(!held && !jumped);
-                    assert(calls <= (speed > 1 ? renders + renders / 2 : renders + renders / 50));
+                    assert(calls <= renders + (unsigned)floorf(guest_float(object + 0xe8)) - 8 + 1);
                 } else if (set == 0 && speed == 1)
                     /* The old rule on the same 60 FPS times: about a quarter held and a quarter jumped. */
                     assert(held > renders / 5 && jumped > renders / 5);
             }
+    /* An end check on frame 12 that holds the sequence for five updates. It has to be made, on
+       every one of those updates, with the old landing and with the even one, at 60 FPS and
+       unlocked frame times. A landing that never enters frame 12 would make none. */
+    for (unsigned even = 0; even < 2; even++)
+        for (unsigned set = 0; set < 2; set++) {
+            reset(8, 1, 1);
+            battle_sequence_even = (int)even;
+            hold_at = 12;
+            hold_left = 5;
+            hold_checks = 0;
+            for (unsigned i = 0; i < 300; i++) {
+                step.step = set ? unlocked[i % 48] : sixty[i % 48];
+                update();
+            }
+            assert(hold_checks == 6 && !hold_left && guest_float(object + 0xe8) > 13);
+        }
+    hold_at = 0;
     battle_sequence_even = 0;
 }
 int main(void) {
