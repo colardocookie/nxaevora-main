@@ -15,8 +15,11 @@ typedef struct {
     uint32_t texture_count, interval, active_texture_count;
 } NvnWindowBuilder;
 typedef struct { uint32_t x, y, width, height; } NvnWindowCrop;
-typedef enum { NVN_SYNC_UNSIGNALED = 0, NVN_SYNC_SIGNALED = 1, NVN_SYNC_FENCED = 2 } NvnSyncState;
-/* nvnQueueFenceSync condition: the only value that the game used. A frame job signals the sync after all its work. */
+typedef enum {
+    NVN_SYNC_UNSIGNALED = 0, NVN_SYNC_SIGNALED = 1, NVN_SYNC_FENCED = 2,
+    NVN_SYNC_PENDING = 3 /* a token in a pending frame: no syncpoint value yet */
+} NvnSyncState;
+/* nvnQueueFenceSync condition: the only value that the game used. The job's syncpoint increment follows its work. */
 #define NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE 0u
 void nvn_window_builder_defaults(NvnWindowBuilder* b);
 void nvn_window_builder_set_device(NvnWindowBuilder* b, uint64_t device);
@@ -34,9 +37,16 @@ int32_t nvn_window_pick_image(const uint8_t* states, uint32_t count, int32_t las
 int nvn_window_has_presented(const uint8_t* states, uint32_t count);
 /* nvnSyncWait of the game: this timeout waits without limit. */
 #define NVN_SYNC_WAIT_NO_LIMIT UINT64_MAX
-typedef enum { NVN_SYNC_ACTION_SIGNALED = 0, NVN_SYNC_ACTION_WAIT, NVN_SYNC_ACTION_REFUSE } NvnSyncAction;
-/* What nvnSyncWait does at once for a sync state: return 0, wait for the frame job, or return 3. */
-NvnSyncAction nvn_sync_wait_action(NvnSyncState state);
+typedef enum {
+    NVN_SYNC_ACTION_SIGNALED = 0, NVN_SYNC_ACTION_WAIT_FRAME, NVN_SYNC_ACTION_WAIT_FENCE,
+    NVN_SYNC_ACTION_REFUSE
+} NvnSyncAction;
+/* What nvnSyncWait does at once: return 0, wait for the frame's post or for the syncpoint, or return 3. reached is
+   the answer for a FENCED sync's value. Pure. */
+NvnSyncAction nvn_sync_wait_action(NvnSyncState state, int reached);
+/* The value of a fence on an empty pending frame: the last posted value, or the syncpoint value when the queue never
+   posted. Pure. */
+uint32_t nvn_sync_fence_value(int has_posted, uint32_t last_posted, uint32_t syncpoint_now);
 /* The limit of a wait in host nanoseconds. */
 typedef struct {
     uint64_t deadline_ns;
@@ -716,9 +726,6 @@ typedef struct {
 /* The arguments of present_buffer for the window image in texture t, its storage in pool_storage. 0 with out
    unchanged when the format is not RGBA8, the address sum overflows or a crop value does not fit int32_t. Pure. */
 int nvn_window_present_args(const NvnTexture* t, uint64_t pool_storage, const NvnWindowCrop* crop, NvnPresentArgs* out);
-/* The sync state after one token of a frame job: fences goes down by one when it is above 0, and the state is
-   SIGNALED at 0. Pure. */
-NvnSyncState nvn_sync_after_token(NvnSyncState state, uint32_t* fences);
 /* nvnEventSignal: mode 0 writes the value, mode 1 adds it to the old word. Any other mode writes, as in the library.
    The add wraps at 32 bits. Pure. */
 #define NVN_EVENT_SIGNAL_WRITE 0u

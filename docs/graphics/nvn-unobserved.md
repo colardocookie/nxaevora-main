@@ -110,6 +110,52 @@ It runs real work on the host path and compares the result with a value that the
 
 A pass sets `exec` for the functions in the test. It does not set `seen` either.
 
+Design of 4-u3-4 (2026-11-13). The test needs `nvn_native=1` (the host queue records, the frame jobs), so it is a separate launch
+from the selftest (which refuses `nvn_native=1`). It uses the queue fences and flush jobs of `nvn-design.md`, "Queue fences and
+flush jobs (4-u3-4)". It starts once, on the game thread, after the first `nvnQueueInitialize` of the game made its host record
+(the device is that of the game queue, read only), before the first game submission. It makes its own queues, pools, buffers,
+textures, events, syncs and command buffers in its own arena, and calls the host handlers directly. Each wait has a time limit, so
+a fault fails the case and does not stop the game. Mutation: `nvn_selftest_mutate` set to a case name changes one host argument.
+
+- E1 fence order: two lists (each a clear of an own texture), a `QueueFenceSync` after each, then `QueueFlush`. `SyncWait` on the
+  second fence returns 0 or 1 in the limit, then `SyncWait` on the first with limit 0 returns 0.
+- E2 GPU to CPU: a clear with a known color, `CopyTextureToBuffer` into a mapped buffer, fence, flush, wait,
+  `BufferInvalidateMappedRange`: the CPU reads the bytes that it computes from the color and the format.
+- E3 CPU to GPU: the CPU writes a pattern into a mapped buffer, `BufferFlushMappedRange` (and the pool form),
+  `CopyBufferToBuffer` to a second buffer, fence, flush, wait, invalidate: the CPU reads the pattern from the second buffer.
+- E4 timeout and failure: a fence behind a pending list without a flush, `SyncWait` with a short limit returns 2. Then
+  `QueueFlush`, and `SyncWait` returns 0 or 1 (the job can end before the call). A sync that was never fenced returns 3.
+- E5 events and reports: command buffer `SignalEvent` (mode write, then mode add), `ReportValue` and `ReportCounter` (the
+  timestamp) into a mapped buffer, fence, flush, wait. `EventGetValue` gives the sum, the report words hold the value and a
+  timestamp that is not 0. This case checks the order of the reports and the fence. The CPU `EventSignal` and the event getters
+  are checked on the side.
+- E6 two queues: queue 1 clears and fences, queue 2 does `QueueWaitSync` on that fence, copies the cleared texture into a buffer,
+  then fences with `FLUSH_FOR_CPU` and waits with the limit. Only after that wait passes, `QueueFinish` (which has no limit in
+  the host) is called. After the finish, the copy is in the buffer without a further `SyncWait`.
+- E7 command buffer fence flush: one list clears a texture and fences a sync inside the list with `FLUSH_FOR_CPU`. The list is
+  submitted without `QueueFlush`, and `SyncWait` returns 0 or 1 in the limit.
+- E8 queue initialized again: a list on queue 2 and a fence without a flush, then `QueueInitialize` of queue 2 again. The fence
+  of the dropped frame fails: `SyncWait` returns 3.
+
+A wait that must signal and runs out of time means that a GPU job may still use the test objects. The later cases are then
+skipped, and the cleanup keeps the objects and the pools (the arena is never freed). A case can also stop early after a submit
+with no wait, so the cleanup first drains both queues: a fence with `FLUSH_FOR_CPU` and a bounded wait on each. A drain that runs
+out, that ends with any result other than 0 or 1 (a refused fence leaves the sync unsignaled, so the wait gives 3), or that
+cannot run (a missing handler, no sync left), keeps the objects in the same way.
+
+The GL sync rows (`SyncCreateGLSync`, `SyncInitializeFromFencedGLSync`) fail with "no backend" by design: they get a reason, not a
+case.
+
+Result of 4-u3-4 (2026-11-13, update 1.1.1, update program to the title, `nvn_native=1`, `nvn_exectest=1`): 6 cases, 0 failed,
+0 skipped, and the game reaches the title at 30 frames a second. The first two runs crashed on a null host handler: the test did
+not resolve the event functions, `QueueWaitSync` and `QueueFinish` (fixed in `1546797`). Mutation run with `exec_gpu_to_cpu`: E2
+fails ("byte 1: expected ff, actual 00", the clear is left out) and the other five pass. The 61 functions that the test calls have
+`exec` in `nvn-coverage.md`.
+
+After the review fixes (`a4b5af4`, same run setup): 8 cases, 0 failed, 0 skipped. Mutation `exec_cb_fence_flush`: E7 fails
+(the wait gives 2), E8 is skipped because of that stall, the other six pass. Mutation `exec_queue_reinit`: E8 fails ("expected
+3, actual 2"), the other seven pass.
+
 ### Introduction in stage 3 (a few representative functions)
 
 The selftest starts in stage 3 with a few functions, so that the harness is proven before 523 functions use it. The set covers

@@ -770,8 +770,19 @@ setting NVN selftest mutation
     text 64
     default ""
     startup
-    help The name of one NVN function whose host call gets a changed argument in the selftest command buffer cases:
-    help a test of the comparison. Empty: none (gpu/nvn_selftest_cmd.c)
+    help The name of one NVN function whose host call gets a changed argument in the selftest command buffer cases, or
+    help one execution test case (exec_fence_order, exec_gpu_to_cpu, exec_cpu_to_gpu, exec_timeout, exec_event_report,
+    help exec_two_queues, exec_cb_fence_flush, exec_queue_reinit). A test of the comparison. Empty: none
+    help (gpu/nvn_selftest_cmd.c, gpu/nvn_exectest.c)
+setting NVN exectest
+    key nvn_exectest
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = at the first nvnQueueInitialize, the execution test runs real work through the host handlers on its own
+    help queues and checks the result in memory (gpu/nvn_exectest.c). The result is in the log. It needs nvn_trace=1 and
+    help nvn_native=1. A diagnostic: it draws nothing and writes no object of the game
 setting Shader corpus
     key shader_corpus
     text 1024
