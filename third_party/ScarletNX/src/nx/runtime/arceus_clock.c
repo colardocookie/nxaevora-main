@@ -1168,16 +1168,23 @@ static float sequence_step(float frame, float want) {
         step = nextafterf(step, frame + step < whole ? INFINITY : 0.0f);
     return step;
 }
-/* SNX_ARCEUS_BATTLE_SEQUENCE_FIX=2, the even landing. The rule above cuts a step at the next
+/* The even landing, the default (SNX_ARCEUS_BATTLE_SEQUENCE_FIX unset or 2). Value 1 keeps
+   the rule above for comparison: it cuts a step at the next
    whole frame and keeps the rest for the next call. At 60 FPS, where a step is half a frame,
    that gave the frame 8.50, 8.99, 9.00, 10.00: a hold and a jump on every second rendered
    frame, which the battle camera shows (its commands are stepped from +E8 by 9DB748). With
-   value 2 a step that ends within a small window before a whole frame goes onto it and the
+   the even landing a step that ends within a small window before a whole frame goes onto it and the
    difference is carried, signed. A step that passes a whole frame still lands on it, so the
    update runs there for its exact compares. The rest of the step is then added to +E8 by
    the wrapper without a second update, so commands are still called once per rendered frame.
    It is not added while a track waits (+B0 differs from +B8) or when it would reach the end. */
 static int battle_sequence_even;
+/* 2 the even landing (also when unset), 1 the earlier landing, 0 off. */
+static int battle_sequence_value(void) {
+    const char* value = getenv("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
+    if (!value || !strcmp(value, "2")) return 2;
+    return !strcmp(value, "1");
+}
 #define SEQUENCE_SNAP_SHARE 0.2f
 #define SEQUENCE_SNAP_MAX 0.05f
 /* The step from frame for a budget of want: onto the next whole frame when the budget
@@ -1306,10 +1313,9 @@ static void battle_sequence_update(CPU* c, u64 entry) {
     }
 }
 static void battle_sequence_fix_init(void) {
-    /* On by default. Value 2 selects the even landing. */
-    const char* enabled = getenv("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
-    if (!main_base || (enabled && strcmp(enabled, "1") && strcmp(enabled, "2"))) return;
-    battle_sequence_even = enabled && !strcmp(enabled, "2");
+    const int value = battle_sequence_value();
+    if (!main_base || !value) return;
+    battle_sequence_even = value == 2;
     if (!clocks_installed) {
         WARN("arceus-battle-sequence: refused without elapsed-time clocks\n");
         return;

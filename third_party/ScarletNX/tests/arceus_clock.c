@@ -182,6 +182,15 @@ static void test_defaults_on(void) {
     for (unsigned i = 0; i < sizeof enabled / sizeof enabled[0]; i++)
         assert(arceus_switch_enabled(enabled[i], 1));
     assert(movement_mask_value() == 0x1fcul && climb_step_value() == 2);
+    /* The battle sequence fix: unset is the even landing, 1 the earlier landing, 0 off. */
+    assert(battle_sequence_value() == 2);
+    flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX", "1");
+    assert(battle_sequence_value() == 1);
+    flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX", "2");
+    assert(battle_sequence_value() == 2);
+    flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX", "0");
+    assert(battle_sequence_value() == 0);
+    unset_flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
     static const char* const probes[] = {
         "SNX_ARCEUS_CLOCK_TRACE", "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_CAMERA_TRACE",
         "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE",
