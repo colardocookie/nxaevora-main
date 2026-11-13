@@ -109,6 +109,11 @@ Each is its own switch, off unless set, so they can be compared one at a time. T
 | `SNX_ARCEUS_TEMPORAL_SHARPEN=<0 to 1>` | A light sharpen in a pass of its own after the resolve. It reads the resolved picture from the history image and writes the scene colour only, so the history stays unsharpened. The amount falls where the neighbourhood already has contrast and the result stays within the 3 x 3 neighbourhood's least and greatest |
 | `SNX_ARCEUS_TEMPORAL_MIPBIAS=<0 to -2>` | A texture level shift for the material textures (mipmapped, linearly filtered, not render targets) of draws into the scene, added to the game's own bias. Sharper textures under jitter. One value for the run |
 
+Any other value leaves an option off, so a run can name each one either way: `NEAREST=0`, `HISTORY=linear`,
+`CLAMP=minmax`, `BLEND=fixed`, `LUMA=0`, `SHARPEN=0`, `MIPBIAS=0`, and `SNX_ARCEUS_TEMPORAL_VECTORS=camera`,
+`SNX_ARCEUS_TEMPORAL_VIEW=0`, `SNX_ARCEUS_TEMPORAL=off`. The first `arceus-temporal` lines of a run state every
+option as it runs.
+
 The formulas are in `gpu/vk/temporal_math.h` with a host test (`tests/temporal_math.c`), and again in GLSL in
 `shaders/temporal_resolve.frag`. None of the options has been played.
 

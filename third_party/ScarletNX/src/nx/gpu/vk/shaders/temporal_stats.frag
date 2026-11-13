@@ -52,6 +52,8 @@ void main() {
         // blue gains 1000, and 2000 more when the camera vector alone would have been wrong there.
         vec4 object = texelFetch(u_shown, pixel, 0);
         float stored = texelFetch(u_depth, pixel, 0).r;
+        // 4000 more where a skinned character's extra draw missed the scene depth by a little (blue -2)
+        if (object.b < -1.5) o_stats.b += 4000.0;
         if (object.b >= 0.0 && abs(object.b - stored) <= 0.002 * stored + 0.0000002) {
             vec2 ndc = (vec2(pixel) + 0.5 - pc.viewport.xy) / pc.viewport.zw * 2.0 - 1.0;
             vec4 before = pc.reproject * vec4(ndc, max(z, 0.0), 1.0);

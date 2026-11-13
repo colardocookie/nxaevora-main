@@ -104,7 +104,7 @@ static struct {
         object_frames, object_far, object_same, object_never, object_older, object_skinned, skinned_lines;
     /* skinned characters: our vertex and fragment programs, and the counts of the stats line */
     VkShaderModule skin_vs, skin_fs;
-    u64 skin_kept, skin_drawn, skin_first;
+    u64 skin_kept, skin_drawn, skin_first, skin_twice;
     /* the transform feedback outputs of this frame, for finding the draws that read them */
     struct {
         u64 address;
@@ -139,11 +139,6 @@ static int temporal_on(void) {
         g_t.options = (history && !strcmp(history, "catmull") ? 1 : 0) |
                       (clamp && !strcmp(clamp, "variance") ? 2 : 0) | (blend && !strcmp(blend, "adaptive") ? 4 : 0) |
                       (nearest && !strcmp(nearest, "1") ? 8 : 0) | (luma && !strcmp(luma, "1") ? 16 : 0);
-        if (g_t.mode == MODE_TAA && g_t.options)
-            LOG("arceus-temporal: resolve options: history %s, clamp %s, weight %s, vector %s, blend %s\n",
-                g_t.options & 1 ? "Catmull-Rom" : "linear", g_t.options & 2 ? "variance clip" : "min and max",
-                g_t.options & 4 ? "by motion and clip" : "fixed", g_t.options & 8 ? "of the nearest depth" : "own",
-                g_t.options & 16 ? "by brightness" : "plain");
         const char* sharpen = getenv("SNX_ARCEUS_TEMPORAL_SHARPEN");
         const char* mip_bias = getenv("SNX_ARCEUS_TEMPORAL_MIPBIAS");
         g_t.sharpen = g_t.mode == MODE_TAA && sharpen ? strtof(sharpen, NULL) : 0.0f;
@@ -152,13 +147,21 @@ static int temporal_on(void) {
         g_t.mip_bias = g_t.mode == MODE_TAA && mip_bias ? strtof(mip_bias, NULL) : 0.0f;
         if (!(g_t.mip_bias < 0.0f)) g_t.mip_bias = 0.0f;
         if (g_t.mip_bias < -2.0f) g_t.mip_bias = -2.0f;
-        if (g_t.sharpen > 0.0f) LOG("arceus-temporal: sharpen %.2f after the resolve\n", (double)g_t.sharpen);
-        if (g_t.mip_bias < 0.0f)
-            LOG("arceus-temporal: texture level bias %.2f on the scene draws' material textures\n",
-                (double)g_t.mip_bias);
         const char* vectors = getenv("SNX_ARCEUS_TEMPORAL_VECTORS");
         g_t.objects = g_t.mode && vectors && !strcmp(vectors, "object");
-        if (g_t.objects) LOG("arceus-temporal: objects that moved get their own vectors\n");
+        /* Every option's state, on or off, in each run's log. A value other than the one named leaves an option
+           off: NEAREST and LUMA take 1, HISTORY catmull, CLAMP variance, BLEND adaptive, VECTORS object, SHARPEN
+           a number above 0, MIPBIAS one below 0. */
+        if (g_t.mode)
+            LOG("arceus-temporal: vectors %s\n", g_t.objects ? "of the camera and of objects that moved (object)"
+                                                             : "of the camera only");
+        if (g_t.mode == MODE_TAA)
+            LOG("arceus-temporal: resolve options: history %s, clamp %s, weight %s, vector %s, blend %s, sharpen "
+                "%.2f, texture level bias %.2f\n",
+                g_t.options & 1 ? "Catmull-Rom (catmull)" : "linear", g_t.options & 2 ? "variance clip" : "min and max",
+                g_t.options & 4 ? "by motion and clip (adaptive)" : "fixed",
+                g_t.options & 8 ? "of the nearest depth" : "own", g_t.options & 16 ? "by brightness (luma)" : "plain",
+                (double)g_t.sharpen, (double)g_t.mip_bias);
         if (g_t.mode)
             LOG("arceus-temporal: %s on, view %d (0 none, 1 motion vectors, 2 reprojection error, 3 history weight, "
                 "4 jittered frame alone)\n",
@@ -543,7 +546,7 @@ static void stats_log(void) {
     static const char* const names[3] = {"near", "mid", "far"};
     unsigned n[3] = {0, 0, 0}, wrong[3] = {0, 0, 0}, wrong_still[3] = {0, 0, 0}, sky = 0, off = 0, changed = 0;
     unsigned shown = 0, shown_fine[2] = {0, 0}, still_fine[2] = {0, 0};
-    unsigned object_n = 0, object_wrong = 0, object_camera = 0, object_still = 0;
+    unsigned object_n = 0, object_wrong = 0, object_camera = 0, object_still = 0, skin_near = 0;
     const int taa = g_t.mode == MODE_TAA;
     double length = 0, longest = 0;
     for (u32 i = 0; i < STATS_W * STATS_H; i++) {
@@ -573,6 +576,7 @@ static void stats_log(void) {
         shown_fine[0] += marks >> 3 & 1;
         shown_fine[1] += marks >> 4 & 1;
         wrong_still[band] += still > STATS_ERROR;
+        skin_near += object_marks >> 2 & 1;
         if (object_marks & 1) {
             object_n++;
             object_wrong += moved > STATS_ERROR;
@@ -585,7 +589,7 @@ static void stats_log(void) {
         if (vector > longest) longest = vector;
     }
     const unsigned all = n[0] + n[1] + n[2];
-    char bands[520];
+    char bands[600];
     int at = 0;
     /* with anti-aliasing on, the first number is where the history was dropped and the second where the resolved
        colour is far from the frame's own: trails behind what moves show there. frame_to_frame is the share of
@@ -616,9 +620,11 @@ static void stats_log(void) {
     /* the pixels that took an object's vector: wrong with it, with the camera's vector, with none */
     if (!taa && g_t.objects && at < (int)sizeof bands)
         snprintf(bands + at, sizeof bands - (size_t)at,
-                 " object_pixels n=%u wrong=%.1f%% with_camera_vectors=%.1f%% without_vectors=%.1f%%", object_n,
-                 object_n ? 100.0 * object_wrong / object_n : 0.0, object_n ? 100.0 * object_camera / object_n : 0.0,
-                 object_n ? 100.0 * object_still / object_n : 0.0);
+                 " object_pixels n=%u wrong=%.1f%% with_camera_vectors=%.1f%% without_vectors=%.1f%% "
+                 "skinned_depth_near_miss n=%u",
+                 object_n, object_n ? 100.0 * object_wrong / object_n : 0.0,
+                 object_n ? 100.0 * object_camera / object_n : 0.0, object_n ? 100.0 * object_still / object_n : 0.0,
+                 skin_near);
     LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px vector_max=%.2f px sky=%u off_screen=%u%s\n",
         (unsigned long long)g_t.stats_run, all ? length / all : 0.0, longest, sky, off, bands);
 }
@@ -737,8 +743,8 @@ static void objects_log(u32 frame) {
     LOG("arceus-temporal-objects: in 600 frames, G-buffer draws with an object block %llu, without a block a frame "
         "ago %llu (never seen %llu, seen two frames ago or more %llu), found at the same address %llu, reading a "
         "feedback buffer %llu, jumped too far %llu, moved %llu, drawn again %llu, over the cap of %d a frame %llu, not "
-        "an affine matrix %llu, pipelines made %llu, skinned: buffers kept %llu, drawn again %llu, without last "
-        "frame's buffer %llu\n",
+        "an affine matrix %llu, pipelines made %llu, skinned: buffers kept %llu (a second time in a frame %llu), "
+        "drawn again %llu, without last frame's buffer %llu\n",
         (unsigned long long)g_t.object_seen, (unsigned long long)g_t.object_new,
         (unsigned long long)g_t.object_never, (unsigned long long)g_t.object_older,
         (unsigned long long)g_t.object_same, (unsigned long long)g_t.object_skinned,
@@ -746,8 +752,8 @@ static void objects_log(u32 frame) {
         (unsigned long long)g_t.object_moved, (unsigned long long)g_t.object_drawn, OBJECT_DRAWS,
         (unsigned long long)g_t.object_capped, (unsigned long long)g_t.object_odd,
         (unsigned long long)g_t.object_pipelines, (unsigned long long)g_t.skin_kept,
-        (unsigned long long)g_t.skin_drawn, (unsigned long long)g_t.skin_first);
-    g_t.skin_kept = g_t.skin_drawn = g_t.skin_first = 0;
+        (unsigned long long)g_t.skin_twice, (unsigned long long)g_t.skin_drawn, (unsigned long long)g_t.skin_first);
+    g_t.skin_kept = g_t.skin_drawn = g_t.skin_first = g_t.skin_twice = 0;
     g_t.object_seen = g_t.object_new = g_t.object_moved = g_t.object_drawn = g_t.object_capped = g_t.object_odd = 0;
     g_t.object_far = g_t.object_same = g_t.object_never = g_t.object_older = g_t.object_skinned = 0;
 }
@@ -913,6 +919,7 @@ void vk_temporal_skin_keep(VkCommandBuffer cb, u64 address, u32 size, VkBuffer s
         if (!s->capacity) return;
     }
     const int turn = (int)(frame & 1);
+    if (s->at[turn] == frame) g_t.skin_twice++; /* a second capture to this address in one frame */
     /* the capture's writes before the copy reads them, the copy's before a draw reads the vertices */
     VkMemoryBarrier2 before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                                .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT,
