@@ -1189,7 +1189,8 @@ static float sequence_step(float frame, float want) {
         step = nextafterf(step, frame + step < whole ? INFINITY : 0.0f);
     return step;
 }
-/* SNX_ARCEUS_BATTLE_SEQUENCE_FIX=2, the even landing. The rule above cuts a step at the next
+/* The even landing, the default (SNX_ARCEUS_BATTLE_SEQUENCE_FIX unset or 2). Value 1 keeps
+   the plain landing for comparison. The rule above cuts a step at the next
    whole frame and keeps the rest for the next call. At 60 FPS, where a step is half a frame,
    that gave the frame 8.50, 8.99, 9.00, 10.00: a hold and a jump on every second rendered
    frame, which the battle camera shows (its commands are stepped from +E8 by 9DB748). With
@@ -1370,11 +1371,16 @@ static void battle_sequence_dispatch_watch(u64 now) {
             (unsigned long long)__atomic_load_n(&battle_sequence_ended, __ATOMIC_RELAXED),
             (unsigned long long)battle_sequence_displaced, (unsigned long long)now);
 }
+/* 2 the even landing (also when unset), 1 the plain landing, 0 off. */
+static int battle_sequence_value(void) {
+    const char* value = getenv("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
+    if (!value || !strcmp(value, "2")) return 2;
+    return !strcmp(value, "1");
+}
 static void battle_sequence_fix_init(void) {
-    /* On by default. Value 2 selects the even landing. */
-    const char* enabled = getenv("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
-    if (!main_base || (enabled && strcmp(enabled, "1") && strcmp(enabled, "2"))) return;
-    battle_sequence_even = enabled && !strcmp(enabled, "2");
+    const int value = battle_sequence_value();
+    if (!main_base || !value) return;
+    battle_sequence_even = value == 2;
     if (!clocks_installed) {
         WARN("arceus-battle-sequence: refused without elapsed-time clocks\n");
         return;

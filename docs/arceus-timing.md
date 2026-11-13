@@ -25,7 +25,7 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | `SNX_ARCEUS_WORLD_TIMERS_FIX` | on | Leaves world timers at their authored rates. |
 | `SNX_ARCEUS_GRAVITY_FIX` | on | Leaves gravity integration at its authored rate. |
 | `SNX_ARCEUS_CAPTURE_FIX` | on | Leaves capture timing at its authored rate. |
-| `SNX_ARCEUS_BATTLE_SEQUENCE_FIX` | on | Leaves battle sequence timing at its authored rate. |
+| `SNX_ARCEUS_BATTLE_SEQUENCE_FIX` | on (2) | Leaves battle sequence timing at its authored rate. `2` is the even landing, `1` the plain landing. |
 | `SNX_ARCEUS_MAP_CURSOR_FIX` | on | Leaves map cursor movement at its authored rate. |
 | `SNX_ARCEUS_FADE_FIX` | on | Leaves fade timing at its authored rate. |
 | `SNX_ARCEUS_EVENT_CAMERA_FIX` | on | Leaves event camera timing at its authored rate. |
@@ -159,12 +159,15 @@ the same call. At 30 FPS, where a rendered frame is a hair under or over one seq
 no rendered frame ended on: character models stayed hidden and moves did not play.
 
 At exactly 60 FPS the cut moves the frame unevenly (8.50, 8.99, 9.00, 10.00), which the battle send-out and recall
-camera shows as stepping. `SNX_ARCEUS_BATTLE_SEQUENCE_FIX=2` selects the even landing: a step that would end within
+camera shows as stepping. The default is the even landing (unset or `2`, with `1` for the plain cut): a step that would end within
 half an advance before a whole frame goes onto it and the difference is carried, signed. Nothing else changes. On
 frame times of a 60 FPS session every rendered frame then moves by 0.7 to 1.3 of its share. Two earlier forms of
 value 2 moved on from the whole frame in the same rendered frame, one by writing the rest to `+E8` and one with a
 second update. The first skipped the end checks, so thrown balls came back before the Pokémon was out, and both hid
-the whole frame from the step slot. This form is not played yet and is not the default. Speeds outside (0, 4] only
+the whole frame from the step slot. The present form was played at 60 FPS, where the camera is smooth, and unlocked,
+where the user found everything normal. In a 60 FPS session 52 sequences ended at their authored length (81 frames in
+2.68 s) with two calls per sequence frame.
+Speeds outside (0, 4] only
 update once a whole 1/30 second has built up. `arceus-battle-sequence` lines count the calls, the partial steps,
 the skipped calls and the speeds seen. With `SNX_ARCEUS_TIMING_RESEARCH=1` that line comes every 250 calls, each
 sequence that ends logs its frames, calls and seconds (81 frames must take about 2.7 s at any frame rate), and once a
