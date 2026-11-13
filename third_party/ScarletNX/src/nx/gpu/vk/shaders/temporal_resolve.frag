@@ -2,7 +2,8 @@
 // Copyright 2026 the NXAevora contributors
 // Temporal anti-aliasing at the scene's size, in linear HDR (gpu/vk/temporal.c). The frame was drawn with a sub-pixel
 // jitter. Its colour is blended with our history, fetched through the camera motion vector, clamped to the frame's
-// 3x3 neighbourhood in YCoCg and dropped where its depth is not the depth this pixel's point had a frame ago.
+// 3x3 neighbourhood in YCoCg and dropped where the depth this pixel's point had a frame ago is outside the depths the
+// history held around that place.
 // Output 0 is the scene colour, output 1 the new history with the pixel's depth in alpha (negative when dropped).
 #version 450
 layout(location = 0) in vec2 v_uv;
@@ -34,9 +35,18 @@ void main() {
     vec4 before = pc.reproject * vec4(ndc, z, 1.0);
     bool dropped = pc.depth.w > 0.5 || before.w <= 0.0 || from.x < 0.0 || from.y < 0.0 || from.x > 1.0 || from.y > 1.0;
     vec4 history = textureLod(u_history, from, 0.0);
-    if (!dropped && z > 0.0) {
-        float expected = before.z / before.w, had = abs(history.a);
-        dropped = abs(had - expected) > 0.1 * max(had, expected) + 0.00001;
+    if (!dropped) {
+        // The history's depths around the place, each read whole: the sign of alpha is a mark, and an edge moves by
+        // the jitter, so the depth must only lie within what the 3x3 texels there held, a tenth wider.
+        float expected = max(before.z / before.w, 0.0), nearest = 1e9, farthest = 0.0;
+        ivec2 place = clamp(ivec2(from * pc.size.xy), ivec2(0), last);
+        for (int y = -1; y <= 1; y++)
+            for (int x = -1; x <= 1; x++) {
+                float had = abs(texelFetch(u_history, clamp(place + ivec2(x, y), ivec2(0), last), 0).a);
+                nearest = min(nearest, had);
+                farthest = max(farthest, had);
+            }
+        dropped = expected < nearest * 0.9 - 0.00001 || expected > farthest * 1.1 + 0.00001;
     }
     // the frame's neighbourhood bounds the history
     vec3 low = to_ycocg(now), high = low;
@@ -50,6 +60,6 @@ void main() {
     vec3 kept = from_ycocg(clamp(to_ycocg(history.rgb), low, high));
     float weight = dropped ? 1.0 : pc.size.w;
     vec3 result = max(mix(kept, now, weight), vec3(0.0));
-    o_history = vec4(result, dropped ? -max(z, 0.000001) : z);
+    o_history = vec4(result, dropped ? -max(z, 0.0000001) : z);
     o_color = pc.size.z > 2.5 && pc.size.z < 3.5 ? vec4(vec3(weight), 1.0) : vec4(result, 1.0);
 }

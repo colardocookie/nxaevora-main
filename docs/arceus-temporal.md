@@ -72,8 +72,9 @@ have no jitter, and so does the neighbouring slot with last frame's block.
 
 Resolve. At the probe's place, before the scene colour is first read, the scene colour is replaced by a blend of the
 frame (a tenth) and our history (nine tenths) in linear HDR. The history is fetched through the camera motion vector,
-clamped to the frame's 3 x 3 neighbourhood in YCoCg, and dropped where the depth it was stored with is more than a
-tenth away from the depth this pixel's point had a frame ago, where the point was off screen, on the first frame,
+clamped to the frame's 3 x 3 neighbourhood in YCoCg, and dropped where the depth this pixel's point had a frame ago
+lies outside the depths the history held in the 3 x 3 texels around that place, widened by a tenth,
+where the point was off screen, on the first frame,
 after a gap, after a change of size and after a camera cut. The game's bloom, exposure and tone mapping then work on
 the resolved picture.
 
