@@ -135,7 +135,11 @@ Battle effect sequences, the `.wbin` player whose update is `main+9DBEAC`, add t
 back after it. The step is cut so the frame lands exactly on each whole frame, because the commands of a sequence
 end on exact float compares. Each call processes the elapsed budget through as many whole-frame boundary updates
 as needed, up to 32 updates. A fractional tail waits for the next rendered update so command callbacks are not
-immediately repeated for a tiny leftover step. Any remaining budget carries over without being discarded. Speeds outside (0, 4] only
+immediately repeated for a tiny leftover step. Any remaining budget carries over without being discarded. At exactly 60 FPS that rule
+moves the frame unevenly (8.50, 8.99, 9.00, 10.00), which the battle send-out and recall camera shows as stepping.
+`SNX_ARCEUS_BATTLE_SEQUENCE_FIX=2` selects the even landing: a step that ends within a small window before a whole frame
+goes onto it with a signed carry, and after a whole frame the wrapper adds the rest of the step to `+E8` itself, without a
+second update. Speeds outside (0, 4] only
 update once a whole 1/30 second has built up. `arceus-battle-sequence` lines count the calls, the partial steps,
 the skipped calls and the speeds seen.
 
