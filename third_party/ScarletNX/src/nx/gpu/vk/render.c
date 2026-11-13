@@ -766,7 +766,8 @@ static struct {
 static int census_on(void) {
     if (g_census.on < 0) {
         const char* e = getenv("SNX_PASS_CENSUS");
-        g_census.on = e && !strcmp(e, "1");
+        const char* a = getenv("SNX_ARCEUS_PASS_CENSUS"); /* the name the test launcher accepts */
+        g_census.on = (e && !strcmp(e, "1")) || (a && !strcmp(a, "1"));
         g_census.next = 900;
         if (g_census.on)
             LOG("arceus-pass: read-only frame pass census on, two frames in a row every 1200 presents from the 900th\n");
