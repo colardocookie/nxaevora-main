@@ -63,6 +63,9 @@ void main() {
     vec3 now = texelFetch(u_now, pixel, 0).rgb;
     float z = max((texelFetch(u_depth, pixel, 0).r - pc.depth.x) / pc.depth.y, 0.0);
     vec2 motion = texelFetch(u_motion, pixel, 0).rg;
+    // the surface the vector belongs to: this pixel's, or with option 8 the nearest one's around it
+    vec2 surface = gl_FragCoord.xy;
+    float surface_z = z;
     if ((options & 8) != 0) {
         // the vector of the nearest surface in the 3x3 (reversed depth: the largest), so an edge's own pixels and
         // the background pixels beside it follow the thing in front
@@ -74,13 +77,15 @@ void main() {
                 if (d > nearest) {
                     nearest = d;
                     motion = texelFetch(u_motion, at, 0).rg;
+                    surface = vec2(at) + 0.5;
+                    surface_z = max((d - pc.depth.x) / pc.depth.y, 0.0);
                 }
             }
     }
     vec2 from = uv - motion;
-    // the depth this pixel's point had in the frame before
-    vec2 ndc = (gl_FragCoord.xy - pc.viewport.xy) / pc.viewport.zw * 2.0 - 1.0;
-    vec4 before = pc.reproject * vec4(ndc, z, 1.0);
+    // the depth that surface's point had in the frame before: what the history must hold at the place fetched
+    vec2 ndc = (surface - pc.viewport.xy) / pc.viewport.zw * 2.0 - 1.0;
+    vec4 before = pc.reproject * vec4(ndc, surface_z, 1.0);
     bool dropped = pc.depth.w > 0.5 || before.w <= 0.0 || from.x < 0.0 || from.y < 0.0 || from.x > 1.0 || from.y > 1.0;
     vec3 history = (options & 1) != 0 ? history_sharp(from) : textureLod(u_history, from, 0.0).rgb;
     if (!dropped) {
