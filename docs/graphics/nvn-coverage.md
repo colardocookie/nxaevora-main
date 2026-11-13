@@ -104,17 +104,17 @@ tool keeps them.
 | `nvnSamplerPoolInitialize` | G5 | d83a700 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTexturePoolGetSize` | G5 | d83dc90 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTexturePoolInitialize` | G5 | d83d930 | 1 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
-| `nvnCommandBufferAddCommandMemory` | G6 | d823db0 | 1766963 | implemented |  |  |  |
-| `nvnCommandBufferAddControlMemory` | G6 | d823fa0 | 1473674 | implemented |  |  |  |
+| `nvnCommandBufferAddCommandMemory` | G6 | d823db0 | 1766963 | implemented |  |  | no own selftest case: every command buffer case calls it |
+| `nvnCommandBufferAddControlMemory` | G6 | d823fa0 | 1473674 | implemented |  |  | no own selftest case: every command buffer case calls it |
 | `nvnCommandBufferBarrier` | G6 | d856590 | 740540 | implemented | selftest S/Y (update 1.1.1, 2026-11-11) |  |  |
-| `nvnCommandBufferBeginRecording` | G6 | d8240f0 | 1333339 | implemented |  |  |  |
-| `nvnCommandBufferCallCommands` | G6 | d8259e0 | 4340061 | implemented |  |  |  |
+| `nvnCommandBufferBeginRecording` | G6 | d8240f0 | 1333339 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
+| `nvnCommandBufferCallCommands` | G6 | d8259e0 | 4340061 | implemented | selftest S (update 1.1.1, 2026-11-13) |  |  |
 | `nvnCommandBufferClearColor` | G6 | d84a870 | 7235 | implemented | selftest S (update 1.1.1, 2026-11-11) |  |  |
-| `nvnCommandBufferEndRecording` | G6 | d8241a0 | 1333339 | implemented |  |  |  |
-| `nvnCommandBufferFinalize` | G6 | d823d40 | 29629 | implemented |  |  |  |
-| `nvnCommandBufferInitialize` | G6 | d823cf0 | 32971 | implemented |  |  |  |
-| `nvnCommandBufferSetMemoryCallback` | G6 | d823d50 | 32971 | implemented |  |  |  |
-| `nvnCommandBufferSetMemoryCallbackData` | G6 | d823d60 | 32971 | implemented |  |  |  |
+| `nvnCommandBufferEndRecording` | G6 | d8241a0 | 1333339 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | R compares the handle as nonzero only: its value differs by design (nvn-design.md, 3c decision 4) |
+| `nvnCommandBufferFinalize` | G6 | d823d40 | 29629 | implemented |  |  | no own selftest case: every command buffer case calls it |
+| `nvnCommandBufferInitialize` | G6 | d823cf0 | 32971 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
+| `nvnCommandBufferSetMemoryCallback` | G6 | d823d50 | 32971 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
+| `nvnCommandBufferSetMemoryCallbackData` | G6 | d823d60 | 32971 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
 | `nvnCommandBufferSetRenderTargets` | G6 | d855da0 | 383398 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferSetSamplerPool` | G6 | d84c470 | 8919 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | selftest: the pool base registers are not compared (per-side addresses) |
 | `nvnCommandBufferSetScissors` | G6 | d84b140 | 616033 | implemented | selftest S (update 1.1.1, 2026-11-11) |  |  |
@@ -325,43 +325,43 @@ tool keeps them.
 | `nvnCommandBufferDrawTexture` | G10 | d84cad0 | 0 | implemented | |  | refused: needs the driver program at device+0x1b00 |
 | `nvnCommandBufferDrawTransformFeedback` | G10 | d84bb40 | 0 | implemented | |  | refused: the renderer does not write the byte counts |
 | `nvnCommandBufferFenceSync` | G10 | d825a80 | 0 | implemented | unit |  |  |
-| `nvnCommandBufferGetCommandMemoryFree` | G10 | d8240a0 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory |
-| `nvnCommandBufferGetCommandMemorySize` | G10 | d824080 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory |
-| `nvnCommandBufferGetCommandMemoryUsed` | G10 | d824090 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory |
-| `nvnCommandBufferGetControlMemoryFree` | G10 | d8240e0 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory |
+| `nvnCommandBufferGetCommandMemoryFree` | G10 | d8240a0 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory; selftest: expected refusal, the library gives the real value and the host 0 (2026-11-13) |
+| `nvnCommandBufferGetCommandMemorySize` | G10 | d824080 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory; selftest: expected refusal, the library gives the real value and the host 0 (2026-11-13) |
+| `nvnCommandBufferGetCommandMemoryUsed` | G10 | d824090 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory; selftest: expected refusal, the library gives the real value and the host 0 (2026-11-13) |
+| `nvnCommandBufferGetControlMemoryFree` | G10 | d8240e0 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory; selftest: expected refusal, the library gives the real value and the host 0 (2026-11-13) |
 | `nvnCommandBufferGetControlMemorySize` | G10 | d8240b0 | 0 | implemented | unit (nvn_params) |  | chunk size, 0x10 before the first Add |
-| `nvnCommandBufferGetControlMemoryUsed` | G10 | d8240d0 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory |
-| `nvnCommandBufferGetCopyImageStride` | G10 | d82cb60 | 0 | implemented |  |  |  |
-| `nvnCommandBufferGetCopyRowStride` | G10 | d82cb50 | 0 | implemented |  |  |  |
-| `nvnCommandBufferGetMemoryCallback` | G10 | d823d70 | 0 | implemented |  |  | host record value |
-| `nvnCommandBufferGetMemoryCallbackData` | G10 | d823d80 | 0 | implemented |  |  | host record value |
-| `nvnCommandBufferInsertCheckpointDynamic` | G10 | d823c90 | 0 | implemented |  |  | returns 1, as the library body |
-| `nvnCommandBufferInsertCheckpointStatic` | G10 | d823c80 | 0 | implemented |  |  | returns 1, as the library body |
-| `nvnCommandBufferInsertDebugMarker` | G10 | d84d190 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
-| `nvnCommandBufferInsertDebugMarkerDynamic` | G10 | d84d3b0 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
-| `nvnCommandBufferInsertDebugMarkerStatic` | G10 | d84d200 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
-| `nvnCommandBufferIsRecording` | G10 | d826400 | 0 | implemented |  |  | host record value |
+| `nvnCommandBufferGetControlMemoryUsed` | G10 | d8240d0 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory; selftest: expected refusal, the library gives the real value and the host 0 (2026-11-13) |
+| `nvnCommandBufferGetCopyImageStride` | G10 | d82cb60 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
+| `nvnCommandBufferGetCopyRowStride` | G10 | d82cb50 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
+| `nvnCommandBufferGetMemoryCallback` | G10 | d823d70 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | host record value |
+| `nvnCommandBufferGetMemoryCallbackData` | G10 | d823d80 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | host record value |
+| `nvnCommandBufferInsertCheckpointDynamic` | G10 | d823c90 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | returns 1, as the library body |
+| `nvnCommandBufferInsertCheckpointStatic` | G10 | d823c80 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | returns 1, as the library body |
+| `nvnCommandBufferInsertDebugMarker` | G10 | d84d190 | 0 | implemented | selftest S (update 1.1.1, 2026-11-13) |  | no-op: debug marker for an external debugger; selftest: the library macro call changes no compared register (2026-11-13) |
+| `nvnCommandBufferInsertDebugMarkerDynamic` | G10 | d84d3b0 | 0 | implemented | selftest S (update 1.1.1, 2026-11-13) |  | no-op: debug marker for an external debugger; selftest: the library macro call changes no compared register (2026-11-13) |
+| `nvnCommandBufferInsertDebugMarkerStatic` | G10 | d84d200 | 0 | implemented | selftest S (update 1.1.1, 2026-11-13) |  | no-op: debug marker for an external debugger; selftest: the library macro call changes no compared register (2026-11-13) |
+| `nvnCommandBufferIsRecording` | G10 | d826400 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | host record value |
 | `nvnCommandBufferMultiDrawArraysIndirectCount` | G10 | d849dd0 | 0 | implemented | |  | refused: the record feed of the macro is not known |
 | `nvnCommandBufferMultiDrawElementsIndirectCount` | G10 | d84a230 | 0 | implemented | |  | refused: the record feed of the macro is not known |
 | `nvnCommandBufferPauseTransformFeedback` | G10 | d84b6f0 | 0 | implemented | unit (nvn_params) |  | library read: End words, address 0 sends only the disable |
-| `nvnCommandBufferPopDebugGroup` | G10 | d84cfc0 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
-| `nvnCommandBufferPopDebugGroupId` | G10 | d84d030 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
-| `nvnCommandBufferPushDebugGroup` | G10 | d84d0a0 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
-| `nvnCommandBufferPushDebugGroupDynamic` | G10 | d84d280 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
-| `nvnCommandBufferPushDebugGroupStatic` | G10 | d84d110 | 0 | implemented |  |  | no-op: debug marker for an external debugger |
+| `nvnCommandBufferPopDebugGroup` | G10 | d84cfc0 | 0 | implemented | selftest S (update 1.1.1, 2026-11-13) |  | no-op: debug marker for an external debugger; selftest: the library macro call changes no compared register (2026-11-13) |
+| `nvnCommandBufferPopDebugGroupId` | G10 | d84d030 | 0 | implemented | selftest S (update 1.1.1, 2026-11-13) |  | no-op: debug marker for an external debugger; selftest: the library macro call changes no compared register (2026-11-13) |
+| `nvnCommandBufferPushDebugGroup` | G10 | d84d0a0 | 0 | implemented | selftest S (update 1.1.1, 2026-11-13) |  | no-op: debug marker for an external debugger; selftest: the library macro call changes no compared register (2026-11-13) |
+| `nvnCommandBufferPushDebugGroupDynamic` | G10 | d84d280 | 0 | implemented | selftest S (update 1.1.1, 2026-11-13) |  | no-op: debug marker for an external debugger; selftest: the library macro call changes no compared register (2026-11-13) |
+| `nvnCommandBufferPushDebugGroupStatic` | G10 | d84d110 | 0 | implemented | selftest S (update 1.1.1, 2026-11-13) |  | no-op: debug marker for an external debugger; selftest: the library macro call changes no compared register (2026-11-13) |
 | `nvnCommandBufferReportValue` | G10 | d856ab0 | 0 | implemented | unit |  |  |
 | `nvnCommandBufferResolveDepthBuffer` | G10 | d84ce80 | 0 | implemented |  |  | selftest: expected no-op, the host handler is a logged no-op by design (2026-11-12) |
-| `nvnCommandBufferRestoreZCullData` | G10 | d84c8e0 | 0 | implemented | |  | logged no-op: the host has no ZCull |
+| `nvnCommandBufferRestoreZCullData` | G10 | d84c8e0 | 0 | implemented | |  | logged no-op: the host has no ZCull; selftest: expected no-op, the library writes r3d 0x1FA..0x1FD (2026-11-13) |
 | `nvnCommandBufferResumeTransformFeedback` | G10 | d84b810 | 0 | implemented | unit (nvn_params) |  | library read: address 0 sends the enable; an address is refused |
-| `nvnCommandBufferSaveZCullData` | G10 | d84c840 | 0 | implemented | |  | logged no-op: the host has no ZCull |
+| `nvnCommandBufferSaveZCullData` | G10 | d84c840 | 0 | implemented | |  | logged no-op: the host has no ZCull; selftest: expected no-op, the library writes r3d 0x1FA..0x1FD (2026-11-13) |
 | `nvnCommandBufferSetColorReductionEnable` | G10 | d84d4e0 | 0 | implemented |  |  | logged no-op: full color precision is kept; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
 | `nvnCommandBufferSetColorReductionThresholds` | G10 | d84d550 | 0 | implemented |  |  | logged no-op: full color precision is kept; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
-| `nvnCommandBufferSetCommandMemoryCallbackEnabled` | G10 | d823d90 | 0 | implemented |  |  | no-op: the host never calls the memory callback |
+| `nvnCommandBufferSetCommandMemoryCallbackEnabled` | G10 | d823d90 | 0 | implemented |  |  | no-op: the host never calls the memory callback; no selftest case: no getter reads the flag |
 | `nvnCommandBufferSetConservativeRasterDilate` | G10 | d84c6c0 | 0 | implemented | unit (nvn_params) |  | logged no-op for level 0, else refused |
 | `nvnCommandBufferSetConservativeRasterEnable` | G10 | d84c630 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | logged no-op for disable, enable is refused |
-| `nvnCommandBufferSetCopyImageStride` | G10 | d82cb40 | 0 | implemented |  |  |  |
-| `nvnCommandBufferSetCopyRowStride` | G10 | d82cb30 | 0 | implemented |  |  |  |
-| `nvnCommandBufferSetDebugLabel` | G10 | d82ccd0 | 0 | implemented |  |  |  |
+| `nvnCommandBufferSetCopyImageStride` | G10 | d82cb40 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
+| `nvnCommandBufferSetCopyRowStride` | G10 | d82cb30 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
+| `nvnCommandBufferSetDebugLabel` | G10 | d82ccd0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
 | `nvnCommandBufferSetInnerTessellationLevels` | G10 | d84b310 | 0 | implemented | unit (nvn_params) |  | library read: sent as draw state at the next draw |
 | `nvnCommandBufferSetOuterTessellationLevels` | G10 | d84b380 | 0 | implemented | unit (nvn_params) |  | library read: sent as draw state at the next draw |
 | `nvnCommandBufferSetPatchSize` | G10 | d84b2b0 | 0 | implemented | unit (nvn_params) |  | library read: sent as draw state at the next draw, no mask |
