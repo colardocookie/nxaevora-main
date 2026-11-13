@@ -3,7 +3,8 @@
 // The motion vector of an object that moved (gpu/vk/temporal.c). A G-buffer draw is drawn once more with the game's
 // vertex program and this fragment program, onto the pixels the object owns. The pixel and its depth give the
 // point, and one matrix per draw takes it to where it was a frame ago. Blue keeps the depth the vector belongs to:
-// the camera vector pass takes the vector only where the scene's final depth is still that one.
+// the camera vector pass takes the vector only where the scene's final depth is still that one. Alpha keeps the
+// depth the point had a frame ago, which the resolve expects of the history there.
 #version 450
 layout(location = 0) out vec4 o_vector;
 layout(set = 1, binding = 0) uniform Block {
@@ -22,5 +23,5 @@ void main() {
     if (before.w <= 0.0 || now.w <= 0.0) return;
     vec2 was = (before.xy / before.w * 0.5 + 0.5) * u.viewport.zw + u.viewport.xy;
     vec2 is = (now.xy / now.w * 0.5 + 0.5) * u.viewport.zw + u.viewport.xy;
-    o_vector = vec4((is - was) / u.size.xy, gl_FragCoord.z, 1.0);
+    o_vector = vec4((is - was) / u.size.xy, gl_FragCoord.z, max(before.z / before.w, 0.0));
 }

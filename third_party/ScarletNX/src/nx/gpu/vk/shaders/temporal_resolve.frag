@@ -62,7 +62,8 @@ void main() {
     vec2 uv = gl_FragCoord.xy / pc.size.xy;
     vec3 now = texelFetch(u_now, pixel, 0).rgb;
     float z = max((texelFetch(u_depth, pixel, 0).r - pc.depth.x) / pc.depth.y, 0.0);
-    vec2 motion = texelFetch(u_motion, pixel, 0).rg;
+    vec4 vector = texelFetch(u_motion, pixel, 0);
+    vec2 motion = vector.rg;
     // the surface the vector belongs to: this pixel's, or with option 8 the nearest one's around it
     vec2 surface = gl_FragCoord.xy;
     float surface_z = z;
@@ -76,7 +77,8 @@ void main() {
                 float d = texelFetch(u_depth, at, 0).r;
                 if (d > nearest) {
                     nearest = d;
-                    motion = texelFetch(u_motion, at, 0).rg;
+                    vector = texelFetch(u_motion, at, 0);
+                    motion = vector.rg;
                     surface = vec2(at) + 0.5;
                     surface_z = max((d - pc.depth.x) / pc.depth.y, 0.0);
                 }
@@ -91,7 +93,9 @@ void main() {
     if (!dropped) {
         // The history's depths around the place, each read whole: the sign of alpha is a mark, and an edge moves by
         // the jitter, so the depth must only lie within what the 3x3 texels there held, a tenth wider.
-        float expected = max(before.z / before.w, 0.0), nearest = 1e9, farthest = 0.0;
+        // an object's vector comes with the depth its point had a frame ago (the camera's reprojection does not
+        // know the object moved)
+        float expected = vector.a > 0.5 ? vector.b : max(before.z / before.w, 0.0), nearest = 1e9, farthest = 0.0;
         ivec2 place = clamp(ivec2(from * pc.size.xy), ivec2(0), last);
         for (int y = -1; y <= 1; y++)
             for (int x = -1; x <= 1; x++) {

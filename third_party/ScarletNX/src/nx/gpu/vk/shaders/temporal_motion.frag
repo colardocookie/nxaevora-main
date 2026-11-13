@@ -5,7 +5,8 @@
 // point had in the frame before, zero behind the previous camera. The far plane moves as the camera turns.
 #version 450
 layout(location = 0) in vec2 v_uv;
-layout(location = 0) out vec2 o_motion;
+// Red and green: the vector. Alpha 1 where it is an object's, and blue then the depth its point had a frame ago.
+layout(location = 0) out vec4 o_motion;
 layout(set = 0, binding = 0) uniform sampler2D u_depth;
 layout(set = 0, binding = 1) uniform sampler2D u_objects; // the vectors of objects that moved, their depth in blue
 layout(set = 0, binding = 2) uniform sampler2D u_unused2;
@@ -19,12 +20,12 @@ layout(push_constant) uniform Constants {
 void main() {
     float stored = texelFetch(u_depth, ivec2(gl_FragCoord.xy), 0).r;
     float z = max((stored - pc.depth.x) / pc.depth.y, 0.0); // reversed depth: 0 is the far plane, a point at infinity
-    o_motion = vec2(0.0);
+    o_motion = vec4(0.0);
     if (pc.depth.w > 0.5) {
         // an object's vector counts where the scene's depth is still the one it was drawn at (half float steps)
         vec4 object = texelFetch(u_objects, ivec2(gl_FragCoord.xy), 0);
         if (object.b >= 0.0 && abs(object.b - stored) <= 0.002 * stored + 0.0000002) {
-            o_motion = object.rg;
+            o_motion = vec4(object.rg, object.a, 1.0);
             return;
         }
     }
@@ -32,5 +33,5 @@ void main() {
     vec4 before = pc.reproject * vec4(ndc, z, 1.0);
     if (before.w <= 0.0) return;
     vec2 pixel = (before.xy / before.w * 0.5 + 0.5) * pc.viewport.zw + pc.viewport.xy;
-    o_motion = (gl_FragCoord.xy - pixel) / pc.size.xy;
+    o_motion = vec4((gl_FragCoord.xy - pixel) / pc.size.xy, 0.0, 0.0);
 }

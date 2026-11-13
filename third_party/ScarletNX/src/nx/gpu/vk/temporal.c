@@ -18,7 +18,8 @@
 #define CAMERA_BANK 4       /* the constant bank of the camera block */
 #define CAMERA_BYTES 0x140  /* view-projection at +0x00, its inverse at +0xC0, row vectors */
 #define CAMERA_INVERSE 0xc0
-#define MOTION_FORMAT VK_FORMAT_R16G16_SFLOAT
+/* red and green the vector, alpha 1 where it is an object's and blue then the depth its point had a frame ago */
+#define MOTION_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
 #define HISTORY_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
 #define JITTERS 8          /* the offsets of the jitter, a Halton (2, 3) sequence */
 #define FRAME_WEIGHT 0.1f  /* the frame's share in the blend with the history */

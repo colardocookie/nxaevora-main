@@ -128,6 +128,10 @@ With `probe` or `taa`. The camera vectors are right for what stands still. An ob
 - The camera vector pass takes an object's vector where the scene's final depth still is that depth, and the camera
   vector elsewhere. So something drawn in front later keeps its own.
 
+The depth an object's point had a frame ago goes with its vector (the object target's alpha, the vector image's
+blue), and the resolve expects that depth of the history there. The camera's reprojection does not know the object
+moved.
+
 Not drawn again: objects that did not move, new objects, instanced draws, draws with tessellation or a geometry
 stage, draws under a predicate, draws without depth write unless they test for equal, and more than 256 a frame.
 A skinned character gets the motion of its world matrix, not of its limbs. Each new combination of state makes one
