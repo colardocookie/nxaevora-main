@@ -746,6 +746,8 @@ typedef struct {
     CensusTarget color[8], depth;
     u32 n, writes, draws, fs_others, kind; /* kind: 0 draws, 1 a draw texture */
     u32 blocks;                            /* draws whose vertex constant blocks were logged */
+    u32 vs_banks, fs_banks;                /* the constant banks its vertex and fragment programs read, all draws */
+    u64 camera[2];                         /* bank 4 of the first draw, vertex and fragment stage: the camera block */
     int has_depth, depth_written, depth_ro;
     u64 vs, fs;
     float vw, vh;
@@ -845,6 +847,7 @@ static void census_draw(const GpuChannel* ch, Surf* const* rt, u32 n, u32 writes
                 p->vs = vs ? vs->hash : 0;
                 p->fs = fs ? fs->hash : 0;
                 if (vp) p->vw = vp->width, p->vh = vp->height < 0 ? -vp->height : vp->height;
+                if (ch) p->camera[0] = ch->cbind[ST_VS][4], p->camera[1] = ch->cbind[ST_FS][4];
             }
         }
         if (p) {
@@ -853,6 +856,8 @@ static void census_draw(const GpuChannel* ch, Surf* const* rt, u32 n, u32 writes
             p->depth_ro |= zt_ro;
             p->depth_written |= zt_wrote;
             if (fs && fs->hash != p->fs) p->fs_others++;
+            if (vs) p->vs_banks |= vs->si.cbuf_mask;
+            if (fs) p->fs_banks |= fs->si.cbuf_mask;
             u32 colours = 0;
             for (u32 i = 0; i < n; i++) colours += rt[i] && (writes >> i & 1);
             if (ch && colours >= 2 && zt && p->blocks < 8 && (p->draws <= 3 || p->draws % 16 == 0)) {
@@ -937,8 +942,9 @@ void vk_pass_census_present(const Surf* shown) {
             if (p->has_depth)
                 CENSUS_ADD(" z=%llx:%ux%u(%ux%u)f%u%s", (unsigned long long)p->depth.gva, p->depth.w, p->depth.h,
                            p->depth.sw, p->depth.sh, p->depth.format, p->depth_written ? "" : p->depth_ro ? "ro" : "-");
-            CENSUS_ADD(" vp=%.0fx%.0f vs=%llx fs=%llx+%u samples=", (double)p->vw, (double)p->vh,
-                       (unsigned long long)p->vs, (unsigned long long)p->fs, p->fs_others);
+            CENSUS_ADD(" vp=%.0fx%.0f vs=%llx fs=%llx+%u vcb=%x fcb=%x cb4=%llx/%llx samples=", (double)p->vw,
+                       (double)p->vh, (unsigned long long)p->vs, (unsigned long long)p->fs, p->fs_others, p->vs_banks,
+                       p->fs_banks, (unsigned long long)p->camera[0], (unsigned long long)p->camera[1]);
             for (u32 i = 0; i < p->nsampled; i++) {
                 const CensusTarget* t = &p->sampled[i].t;
                 CENSUS_ADD("%s%llx:%ux%uf%u%s%s%s", i ? "," : "", (unsigned long long)t->gva, t->w, t->h, t->format,

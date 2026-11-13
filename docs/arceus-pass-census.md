@@ -19,6 +19,8 @@ addresses of the surfaces shown in the last two frames (the game shows two in tu
 | `z` | depth target, the same. `ro` means read-only, `-` bound and not written |
 | `vp` | the first draw's viewport in image pixels. Against the target's image size it shows the game's 3D buffer scale |
 | `vs`, `fs` | program hashes of the first draw, and how many later draws used another fragment program |
+| `vcb`, `fcb` | the constant banks the pass's vertex and fragment programs read, as bit masks over all its draws (bit 4 is the camera block) |
+| `cb4` | the guest address of bank 4 at the first draw, vertex stage and fragment stage |
 | `samples` | textures the fragment programs sampled that are or were render targets: address, guest size, format. `D` a depth format, `H` a target of last frame not yet written in this one, `T` a target written earlier in this frame |
 
 Marks: `PRESENT` on the first pass that writes a surface shown in the last two frames (`present` on later ones), `HISTORY` when a
