@@ -130,7 +130,15 @@ a fault fails the case and does not stop the game. Mutation: `nvn_selftest_mutat
   timestamp that is not 0. This case checks the order of the reports and the fence. The CPU `EventSignal` and the event getters
   are checked on the side.
 - E6 two queues: queue 1 clears and fences, queue 2 does `QueueWaitSync` on that fence, copies the cleared texture into a buffer,
-  and `QueueFinish`. After the finish, the copy is in the buffer without a `SyncWait`.
+  then fences with `FLUSH_FOR_CPU` and waits with the limit. Only after that wait passes, `QueueFinish` (which has no limit in
+  the host) is called. After the finish, the copy is in the buffer without a further `SyncWait`.
+- E7 command buffer fence flush: one list clears a texture and fences a sync inside the list with `FLUSH_FOR_CPU`. The list is
+  submitted without `QueueFlush`, and `SyncWait` returns 0 or 1 in the limit.
+- E8 queue initialized again: a list on queue 2 and a fence without a flush, then `QueueInitialize` of queue 2 again. The fence
+  of the dropped frame fails: `SyncWait` returns 3.
+
+A wait that must signal and runs out of time means that a GPU job may still use the test objects. The later cases are then
+skipped, and the cleanup keeps the objects and the pools (the arena is never freed).
 
 The GL sync rows (`SyncCreateGLSync`, `SyncInitializeFromFencedGLSync`) fail with "no backend" by design: they get a reason, not a
 case.
@@ -140,6 +148,10 @@ Result of 4-u3-4 (2026-11-13, update 1.1.1, update program to the title, `nvn_na
 not resolve the event functions, `QueueWaitSync` and `QueueFinish` (fixed in `1546797`). Mutation run with `exec_gpu_to_cpu`: E2
 fails ("byte 1: expected ff, actual 00", the clear is left out) and the other five pass. The 61 functions that the test calls have
 `exec` in `nvn-coverage.md`.
+
+After the review fixes (`a4b5af4`, same run setup): 8 cases, 0 failed, 0 skipped. Mutation `exec_cb_fence_flush`: E7 fails
+(the wait gives 2), E8 is skipped because of that stall, the other six pass. Mutation `exec_queue_reinit`: E8 fails ("expected
+3, actual 2"), the other seven pass.
 
 ### Introduction in stage 3 (a few representative functions)
 

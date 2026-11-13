@@ -1006,10 +1006,26 @@ from `syncpt_alloc`), and the replay skips the library's own syncpoint methods (
    the time that is left. Reached after a wait gives 1, the end of the time gives 2.
 6. **QueueFinish.** It posts the pending frame and waits with `syncpt_wait` for the last posted value. It waits for the GPU work
    and its releases, not only for the end of the frame jobs.
-7. **QueueWaitSync.** Unchanged: the one GPU thread runs the jobs in the order of the posts. A `PENDING` sync of another queue is
-   not posted yet, so the order can be wrong: a log line names it.
+7. **QueueWaitSync.** The one GPU thread runs the jobs in the order of the posts, so a fenced sync and a `PENDING` sync of the same
+   queue are in order. A `PENDING` sync of another queue is not posted yet, and the host cannot hold a job back until it is: the
+   call returns 0 with a log line, not a false success (review of 4-u3-4).
+8. **Command buffer fence.** `CommandBufferFenceSync` keeps its flag word in the op. When a submitted list (or a list that it
+   calls) has a fence with `FLUSH_FOR_CPU`, `QueueSubmitCommands` posts the pending frame after the scan, as a flush.
+9. **Queue initialized again.** A `QueueInitialize` on a queue that has a record drops its pending frame. A sync whose newest token
+   is in that frame can never be fenced by it, so it goes back to `UNSIGNALED` (`SyncWait` gives 3) with a log line, and the host
+   wakes the waiters on `frame_done_cv`.
 
 Answered by the title run (2026-11-13, update 1.1.1, `nvn_native=1`): Arceus calls no `QueueFlush`, `QueueFinish` or
 `QueueWaitSync` up to the title. It submits, fences and presents (469 each in a run of 15 s) and waits with `SyncWait` (938). The
 flush jobs of that run all come from the execution test. Seen once in each run: the game calls `SyncWait` with no limit on a sync that
-it never fenced (caller lr `aac7d20`). The host returns 3 (failed) and the game goes on. Open: what the game expects there.
+it never fenced (caller lr `aac7d20`). The host returns 3 (failed) and the game goes on. The SDK does the same for a sync of kind
+0: `SyncInitialize` sets kind 0 (`d83b80c`) and the `SyncWait` table entry of kind 0 (`d83be68`) gives 3 without a wait. Open:
+what the game expects there.
+
+Open after the review of 4-u3-4 (the game does not reach these paths up to the title; decision of the user: record only):
+
+- A flush job replays its lists with a new replay host (`frame_replay_lists`), so a bind that no draw used before the end of the
+  job is lost for the next job of the queue. A frame job had the same limit before the flush jobs. Fix: keep the replay state of
+  each queue across jobs, owned by the GPU thread, reset only with the queue.
+- A cross-queue wait on a `PENDING` fence (item 7, and the command buffer `WaitSync` op, which only logs) does not hold the
+  consumer back. Fix: keep the dependency and park the dependent job until the producer job ends.

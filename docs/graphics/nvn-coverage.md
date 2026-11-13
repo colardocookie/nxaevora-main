@@ -324,7 +324,7 @@ tool keeps them.
 | `nvnCommandBufferDrawElementsIndirect` | G10 | d849bd0 | 0 | implemented | |  | refused: the GPU reads the record at draw time, the replay has no fetch |
 | `nvnCommandBufferDrawTexture` | G10 | d84cad0 | 0 | implemented | |  | refused: needs the driver program at device+0x1b00 |
 | `nvnCommandBufferDrawTransformFeedback` | G10 | d84bb40 | 0 | implemented | |  | refused: the renderer does not write the byte counts |
-| `nvnCommandBufferFenceSync` | G10 | d825a80 | 0 | implemented | unit |  |  |
+| `nvnCommandBufferFenceSync` | G10 | d825a80 | 0 | implemented | unit, exec (update 1.1.1, 2026-11-13) |  |  |
 | `nvnCommandBufferGetCommandMemoryFree` | G10 | d8240a0 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory; selftest: expected refusal, the library gives the real value and the host 0 (2026-11-13) |
 | `nvnCommandBufferGetCommandMemorySize` | G10 | d824080 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory; selftest: expected refusal, the library gives the real value and the host 0 (2026-11-13) |
 | `nvnCommandBufferGetCommandMemoryUsed` | G10 | d824090 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory; selftest: expected refusal, the library gives the real value and the host 0 (2026-11-13) |
