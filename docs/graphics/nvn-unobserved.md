@@ -237,8 +237,9 @@ functions that no run reached stay `implemented` plus `unit`, `selftest` or `exe
   failed, 18 expected no-op, 2 skipped. The debug marker and group calls are 3D macro calls that change no compared
   register. Mutation runs: SetCopyRowStride fails only its case (R GetCopyRowStride, library 0x1400, host 0x1401), and
   CallCommands with count 0 fails only its case (r3d.0x4ec, the line width of the source list). Next: 4-u3-4.
-  4-u3-5 (2026-11-13): the rows without a check. 92 getters, debug labels and texel flushes were already called by
-  the passed selftest cases (the getters are the R or M check of each setter case) and get that scope. The checks
+  4-u3-5 (2026-11-13): the rows without a check. 82 getters were already compared by the passed selftest cases (the
+  getters are the R or M check of each setter case) and get that scope. Seven debug labels, the two texel flushes and
+  ProgramFinalize are only called by the cases, with no compare after them: they get a reason, not a check. The checks
   of six handlers move into pure functions with host tests (`unit`, ten mutants of the helpers fail the tests). The
   other rows get the reason: no pure part (a direct record field, an empty body, a library body of one ret), no
   library window or second device in the selftest, or no shader code for a case. No row is left without a check or

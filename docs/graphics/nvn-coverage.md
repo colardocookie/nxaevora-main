@@ -63,7 +63,7 @@ tool keeps them.
 | `nvnMemoryPoolGetFlags` | G2 | d833f90 | 909 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnMemoryPoolInitialize` | G2 | d833ce0 | 3231 | implemented | selftest R (update 1.1.1, 2026-11-10), exec (update 1.1.1, 2026-11-13) |  |  |
 | `nvnMemoryPoolMap` | G2 | d833ed0 | 3485 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
-| `nvnMemoryPoolSetDebugLabel` | G2 | d82ccf0 | 67 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | the resource case calls it with label 0 and the getters after it match |
+| `nvnMemoryPoolSetDebugLabel` | G2 | d82ccf0 | 67 | implemented |  |  | the library body is one ret; no check: the host handler is the same ret, the selftest calls it but compares nothing after it |
 | `nvnTextureBuilderGetHeight` | G3 | d83c3a0 | 291 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTextureBuilderGetStorageAlignment` | G3 | d83c4c0 | 295 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTextureBuilderGetStorageSize` | G3 | d83d350 | 292 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
@@ -140,7 +140,7 @@ tool keeps them.
 | `nvnBufferGetSize` | G8 | d823c60 | 1055626 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnBufferInitialize` | G8 | d823b20 | 48878 | implemented | selftest R (update 1.1.1, 2026-11-10), exec (update 1.1.1, 2026-11-13) |  |  |
 | `nvnBufferMap` | G8 | d823b80 | 2291052 | implemented | selftest R (update 1.1.1, 2026-11-10), exec (update 1.1.1, 2026-11-13) |  |  |
-| `nvnBufferSetDebugLabel` | G8 | d82ccc0 | 164 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | the resource case calls it with label 0 and the getters after it match |
+| `nvnBufferSetDebugLabel` | G8 | d82ccc0 | 164 | implemented |  |  | the library stores no label; no check: the host handler does nothing, the buffer case calls it but compares nothing after it |
 | `nvnChannelMaskStateGetChannelMask` | G8 | d83ae30 | 25 | implemented | selftest R/M (update 1.1.1, 2026-11-13) |  |  |
 | `nvnChannelMaskStateSetChannelMask` | G8 | d83ade0 | 841 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
 | `nvnChannelMaskStateSetDefaults` | G8 | d83add0 | 826 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
@@ -223,7 +223,7 @@ tool keeps them.
 | `nvnPolygonStateSetFrontFace` | G8 | d83b210 | 818 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnPolygonStateSetPolygonMode` | G8 | d83b230 | 818 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnPolygonStateSetPolygonOffsetEnables` | G8 | d83b250 | 818 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
-| `nvnProgramFinalize` | G8 | d836330 | 384 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
+| `nvnProgramFinalize` | G8 | d836330 | 384 | implemented |  |  | no check: the host removes the program record, no getter shows it; the program case calls it but compares nothing after it |
 | `nvnProgramInitialize` | G8 | d8362a0 | 5179 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnProgramSetShadersExt` | G8 | d836da0 | 5179 | implemented | unit (2026-11-13) test_program_set_helpers, test_program_header_stage, test_program_build_*, test_program_xfb_* |  | no selftest case: needs shader code |
 | `nvnVertexAttribStateGetFormat` | G8 | d83af80 | 4172578 | implemented | unit (nvn_params) |  | library read: field bits 21-30 and 7-20 |
@@ -263,8 +263,8 @@ tool keeps them.
 | `nvnSamplerFinalize` | G9 | d83a5b0 | 30 | implemented |  |  | library read: one ret, the record stays |
 | `nvnSamplerInitialize` | G9 | d83a570 | 168 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnSamplerPoolRegisterSampler` | G9 | d83a910 | 82 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
-| `nvnSamplerSetDebugLabel` | G9 | d82cd20 | 85 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | the resource case calls it with label 0 and the getters after it match |
-| `nvnTextureFlushTexels` | G9 | d83e290 | 1 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
+| `nvnSamplerSetDebugLabel` | G9 | d82cd20 | 85 | implemented |  |  | the library body is one ret; no check: the host handler is the same ret, the selftest calls it but compares nothing after it |
+| `nvnTextureFlushTexels` | G9 | d83e290 | 1 | implemented |  |  | no check: a logged no-op (the renderer reads the same host memory); the texture case calls it but compares nothing after it |
 | `nvnTexturePoolRegisterImage` | G9 | d83dae0 | 1 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTexturePoolRegisterTexture` | G9 | d83d950 | 6443 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTextureViewGetFormat` | G9 | d83c8f0 | 6 | implemented | selftest R/M (update 1.1.1, 2026-11-13) |  |  |
@@ -433,7 +433,7 @@ tool keeps them.
 | `nvnMultisampleStateGetSampleLocationsGrid` | G10 | d83b480 | 0 | implemented | selftest R/M (update 1.1.1, 2026-11-13) |  |  |
 | `nvnMultisampleStateGetSampleLocationsGridEnable` | G10 | d83b520 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
 | `nvnMultisampleStateSetSampleLocations` | G10 | d83b530 | 0 | implemented | unit (2026-11-13) test_multisample_locations_fit, test_u1_multisample_locations |  |  |
-| `nvnProgramSetDebugLabel` | G10 | d82cd00 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | the resource case calls it with label 0 and the getters after it match |
+| `nvnProgramSetDebugLabel` | G10 | d82cd00 | 0 | implemented |  |  | the library body is one ret; no check: the host handler is the same ret, the selftest calls it but compares nothing after it |
 | `nvnProgramSetSampleShading` | G10 | d837180 | 0 | implemented | |  | no-op: the host renders one sample |
 | `nvnProgramSetShaders` | G10 | d836760 | 0 | implemented | unit (2026-11-13) test_program_set_helpers, test_program_header_stage, test_program_build_*, test_program_xfb_* |  | SetShadersExt path with 16-byte entries, no control |
 | `nvnProgramSetSubroutineLinkage` | G10 | d836e90 | 0 | implemented | |  | returns 0: the host has no subroutine table |
@@ -487,7 +487,7 @@ tool keeps them.
 | `nvnSamplerPoolGetMemoryOffset` | G10 | d83aac0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnSamplerPoolGetMemoryPool` | G10 | d83aab0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnSamplerPoolRegisterSamplerBuilder` | G10 | d83a9e0 | 0 | implemented | selftest M (update 1.1.1, 2026-11-10) |  |  |
-| `nvnSamplerPoolSetDebugLabel` | G10 | d82cd70 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | the resource case calls it with label 0 and the getters after it match |
+| `nvnSamplerPoolSetDebugLabel` | G10 | d82cd70 | 0 | implemented |  |  | the library body is one ret; no check: the host handler is the same ret, the selftest calls it but compares nothing after it |
 | `nvnSyncCreateGLSync` | G10 | d83c0a0 | 0 | implemented |  |  | fails with the library result for no backend (4-u2); no check: a constant result, no GL backend |
 | `nvnSyncFinalize` | G10 | d83b860 | 0 | implemented | exec (update 1.1.1, 2026-11-13) |  |  |
 | `nvnSyncInitializeFromFencedGLSync` | G10 | d83bfb0 | 0 | implemented |  |  | fails with the library result for no backend (4-u2); no check: a constant result, no GL backend |
@@ -532,14 +532,14 @@ tool keeps them.
 | `nvnTextureGetTextureAddress` | G10 | d83d920 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTextureGetViewOffset` | G10 | d83d810 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTextureGetZCullStorageSize` | G10 | d83d7b0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
-| `nvnTextureInvalidateTexels` | G10 | d83e300 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
+| `nvnTextureInvalidateTexels` | G10 | d83e300 | 0 | implemented |  |  | no check: a logged no-op (the renderer reads the same host memory); the texture case calls it but compares nothing after it |
 | `nvnTexturePoolFinalize` | G10 | d83d940 | 0 | implemented |  |  | the library body is one ret |
 | `nvnTexturePoolGetMemoryOffset` | G10 | d83dc80 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTexturePoolGetMemoryPool` | G10 | d83dc70 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
-| `nvnTexturePoolSetDebugLabel` | G10 | d82cd60 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | the resource case calls it with label 0 and the getters after it match |
+| `nvnTexturePoolSetDebugLabel` | G10 | d82cd60 | 0 | implemented |  |  | the library body is one ret; no check: the host handler is the same ret, the selftest calls it but compares nothing after it |
 | `nvnTextureReadTexels` | G10 | d83e280 | 0 | implemented | unit, selftest M (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTextureReadTexelsStrided` | G10 | d83e030 | 0 | implemented | unit, selftest M (update 1.1.1, 2026-11-10) |  |  |
-| `nvnTextureSetDebugLabel` | G10 | d82cd40 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | the resource case calls it with label 0 and the getters after it match |
+| `nvnTextureSetDebugLabel` | G10 | d82cd40 | 0 | implemented |  |  | the library body is one ret; no check: the host handler is the same ret, the selftest calls it but compares nothing after it |
 | `nvnTextureViewCompare` | G10 | d83c9a0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
 | `nvnTextureViewGetDepthStencilMode` | G10 | d83c940 | 0 | implemented | selftest R/M (update 1.1.1, 2026-11-13) |  |  |
 | `nvnTextureViewGetSwizzle` | G10 | d83c910 | 0 | implemented | selftest R/M (update 1.1.1, 2026-11-13) |  |  |

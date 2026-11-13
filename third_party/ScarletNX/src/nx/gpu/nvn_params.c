@@ -46,7 +46,7 @@ int nvn_window_has_presented(const uint8_t* states, uint32_t count) {
 }
 int nvn_window_texture_slot(uint64_t textures, uint32_t texture_count, int32_t index, uint64_t* at) {
     if ((int32_t)texture_count <= index) return 0;
-    *at = textures + (uint64_t)((int64_t)index * 8);
+    *at = textures + (uint64_t)((int64_t)index * (int64_t)sizeof(uint64_t));
     return 1;
 }
 const char* nvn_window_acquire_refusal(int recheck, int queue_ok, int window_ok, int sync_ok, int index_writable) {
