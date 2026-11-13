@@ -1600,6 +1600,18 @@ static void test_rotation_blend(void) {
         }
         assert(!rotation_blend_foreign && (mode == 4 ? outside * 12 < frames : !outside));
     }
+    /* 30 FPS with jitter: every frame is a run and draws the rotation that run set, not the
+       one before it. */
+    {
+        static const u64 jitter[8] = {33000000, 33600000, 33200000, 33500000, 33100000, 33600000, 33050000, 33400000};
+        blend_reset();
+        float before = 0;
+        for (unsigned k = 0; k < 240; k++) {
+            const float shown = blend_frame(jitter[k % 8]);
+            if (k) assert(fabsf(shown - before - 0.01f) < 1e-5f);
+            before = shown;
+        }
+    }
     /* Another writer ends the blend: the host does not write that transform again. */
     blend_reset();
     for (unsigned k = 0; k < 20; k++) blend_frame(8333333);

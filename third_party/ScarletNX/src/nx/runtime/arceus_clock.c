@@ -3411,7 +3411,9 @@ static void rotation_blend_bridge(u64 frame, u64 step_ns, int stage, u64 state) 
 static void rotation_blend_set(CPU* c, u64 entry) {
     const u64 object = c->x[0], argument = c->x[1];
     const u64 transform = trajectory_transform(object);
-    const int blend = script_tick_depth && frame_step_ratio() < 1.0f && readable(argument, 16) && transform;
+    /* No blend when every frame is a run, with the tolerance script_tick_decide has for a
+       frame near 1/30 s. A blend there would draw each rotation one run late. */
+    const int blend = script_tick_depth && frame_step_ratio() < 1.0f - 1.0f / 32 && readable(argument, 16) && transform;
     float to[4] = {0, 0, 0, 0}, from[4] = {0, 0, 0, 0};
     RotationBlend* slot = NULL;
     pm_lock(&script_tick_lock);
