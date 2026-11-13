@@ -14,7 +14,7 @@ layout(set = 0, binding = 0) uniform Block {
     mat4 now;      // position to this frame's clip without jitter
     mat4 before;   // last frame's position to last frame's clip without jitter
     vec4 viewport; // x, y, width, height of the scene's viewport in image pixels
-    vec4 depth;    // depth translate, depth scale, 1 when clip z runs from -w to w
+    vec4 depth;    // depth translate, depth scale, 1 when clip z runs from -w to w, 1 to mark near misses
     vec4 size;     // image width, height
 } u;
 void main() {

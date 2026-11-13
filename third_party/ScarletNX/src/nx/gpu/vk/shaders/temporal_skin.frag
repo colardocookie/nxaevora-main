@@ -25,7 +25,7 @@ void main() {
         // Between 0.3 and 3 % off is not another surface but ours drawn a little differently than the game drew
         // it: left as a mark (blue -2, no vector) for the numbers. Many of them mean the game's vertex program
         // does more than position x world x view-projection.
-        if (off > 0.03 * stored) discard;
+        if (off > 0.03 * stored || u.depth.w < 0.5) discard; // marked in the probe only
         o_vector = vec4(0.0, 0.0, -2.0, 0.0);
         return;
     }

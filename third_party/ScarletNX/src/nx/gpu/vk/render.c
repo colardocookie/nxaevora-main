@@ -3585,7 +3585,9 @@ retry:
            three floats 12 bytes apart at the start of a binding. It is drawn with a vertex program of ours that
            takes last frame's positions from a second binding, and the scene depth sampled, not attached. */
         int skinned = 0;
-        for (u32 q = 0; q < nvq && !skinned && k->nbind < 33; q++) {
+        /* one more vertex binding must fit the key and the device */
+        const int room = k->nbind < 32 && k->nbind < g_vk.props.limits.maxVertexInputBindings;
+        for (u32 q = 0; q < nvq && !skinned && room; q++) {
             const u32 vb = vq[q].b;
             u32 xindex, xlen, position = ~0u;
             u64 xat;

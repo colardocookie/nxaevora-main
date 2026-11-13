@@ -1012,7 +1012,9 @@ int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, Vk
     block.depth[0] = g_t.depth_translate;
     block.depth[1] = g_t.depth_scale;
     block.depth[2] = g_t.depth_zero_to_one ? 0.0f : 1.0f;
-    block.depth[3] = 0;
+    /* near misses of the depth tolerance are marked for the numbers in the probe only: a mark takes the place of
+       a vector another draw may have left on that pixel */
+    block.depth[3] = g_t.mode == MODE_PROBE ? 1.0f : 0.0f;
     block.size[0] = (float)zt->sw;
     block.size[1] = (float)zt->sh;
     block.size[2] = block.size[3] = 0;
