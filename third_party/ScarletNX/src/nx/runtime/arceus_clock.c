@@ -19,6 +19,7 @@ static GuestFn originals[3];
 static u64 counts[3];
 static u64 main_base;
 static int experimental, tracing, research_observing;
+static int timing_enabled;
 static u64 ui_clock_research_calls;
 static ArceusStep step;
 static PMutex step_lock = PMUTEX_INIT;
@@ -31,6 +32,71 @@ static int clocks_installed;
 static int timer_carry_fix;
 static u64 blink_remainder;
 static unsigned blink_ticks;
+
+typedef struct {
+    int master, invalid, mode, target_fps, write_fps;
+    u64 initial_ns;
+} ArceusClockConfig;
+
+static int arceus_switch_enabled(const char* name, int default_on) {
+    const char* value = getenv(name);
+    return value ? !strcmp(value, "1") : default_on;
+}
+static unsigned long movement_mask_value(void) {
+    const char* value = getenv("SNX_ARCEUS_MOVEMENT_SITES");
+    if (!value) return 0x1fcul;
+    return *value ? strtoul(value, NULL, 16) : ~0ul;
+}
+static int climb_step_value(void) {
+    const char* value = getenv("SNX_ARCEUS_CLIMB_STEP");
+    if (!value) return 2;
+    return !strcmp(value, "1") ? 1 : !strcmp(value, "2") ? 2 : 0;
+}
+static float camera_speed_value(int* invalid) {
+    const char* speed = getenv("SNX_ARCEUS_CAMERA_SPEED");
+    if (invalid) *invalid = 0;
+    if (!speed || !*speed) return 1.0f;
+    char* end;
+    const float value = strtof(speed, &end);
+    if (*end || !isfinite(value) || value < 0.25f || value > 4.0f) {
+        if (invalid) *invalid = 1;
+        return 1.0f;
+    }
+    return value;
+}
+static u64 initial_step_for_limit(int fps) {
+    if (fps == 0) return ARCEUS_UNLOCKED_INITIAL_STEP_NS;
+    if (fps == SNX_FPS_GAME) fps = 30;
+    if (fps < 1 || fps > 1000) return ARCEUS_INITIAL_STEP_NS;
+    return (UINT64_C(1000000000) + (u64)fps / 2) / (u64)fps;
+}
+static ArceusClockConfig arceus_clock_config(int runtime_fps) {
+    ArceusClockConfig config = {.master = arceus_switch_enabled("SNX_ARCEUS_TIMING_FIXES", 1)};
+    if (!config.master) return config;
+    const char* legacy = getenv("SNX_ARCEUS_FPS60");
+    const char* target = getenv("SNX_ARCEUS_TARGET_FPS");
+    config.mode = 0;
+    if (legacy && !strcmp(legacy, "1")) config.mode = 1, config.target_fps = 60, config.write_fps = 1;
+    if (target && *target) {
+        if (!strcmp(target, "60") || !strcmp(target, "120"))
+            config.mode = 1, config.target_fps = atoi(target), config.write_fps = 1;
+        else if (!strcmp(target, "unlocked") || !strcmp(target, "0"))
+            config.mode = 2, config.target_fps = 0, config.write_fps = 1;
+        else config.invalid = 1;
+    }
+    if (!config.invalid)
+        config.initial_ns = config.mode == 2 ? ARCEUS_UNLOCKED_INITIAL_STEP_NS
+                            : config.mode == 1 ? initial_step_for_limit(config.target_fps)
+                                               : initial_step_for_limit(runtime_fps);
+    return config;
+}
+static void arceus_clock_config_apply(ArceusClockConfig config) {
+    if (!config.master || config.invalid) return;
+    step.initial_ns = config.initial_ns;
+    if (config.write_fps) __atomic_store_n(&g_opt_fps, config.target_fps, __ATOMIC_RELAXED);
+    experimental = 1;
+    clocks_installed = timing_enabled = 1;
+}
 
 static void water_step_write(u64 ns) {
     if (!water_step_address) return;
@@ -150,25 +216,19 @@ void arceus_clock_init(void) {
     static const u64 offsets[3] = {0x278303c, 0x2783048, 0x277bef4};
     static const u32 words[3] = {0x8b21d008, 0xf0008fc8, 0x8b21d008};
     static const GuestFn wrappers[3] = {read_clock, set_mode, set_duration};
-    const char* enabled = getenv("SNX_ARCEUS_CLOCK_TRACE");
-    const char* fps60 = getenv("SNX_ARCEUS_FPS60");
-    const char* target = getenv("SNX_ARCEUS_TARGET_FPS");
-    int target_fps = fps60 && !strcmp(fps60, "1") ? 60 : 0, unlocked = 0;
-    if (target && *target) {
-        if (!strcmp(target, "60")) target_fps = 60;
-        else if (!strcmp(target, "120")) target_fps = 120;
-        /* No frame limit: every fix follows the measured step, whatever the rate. */
-        else if (!strcmp(target, "unlocked") || !strcmp(target, "0")) unlocked = 1;
-        else {
-            WARN("arceus-clock: refused unsupported target FPS (use 60, 120 or unlocked)\n");
-            return;
-        }
+    const ArceusClockConfig config = arceus_clock_config(__atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED));
+    timing_enabled = clocks_installed = experimental = tracing = 0;
+    if (!config.master) return;
+    if (config.invalid) {
+        WARN("arceus-clock: refused unsupported target FPS (use 60, 120 or unlocked)\n");
+        return;
     }
+    const char* enabled = getenv("SNX_ARCEUS_CLOCK_TRACE");
     const char* message_flag = getenv("SNX_ARCEUS_DIALOGUE_TRACE");
     int message_trace = message_flag && !strcmp(message_flag, "1");
     const SnxModInfo* mod = NULL;
     tracing = enabled && !strcmp(enabled, "1");
-    experimental = target_fps != 0 || unlocked;
+    experimental = 1;
     const char *fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
     const char *camera = getenv("SNX_ARCEUS_CAMERA_TRACE");
     const char *research = getenv("SNX_ARCEUS_TIMING_RESEARCH");
@@ -203,18 +263,15 @@ void arceus_clock_init(void) {
     main_base = mod->base;
     for (unsigned i = 0; i < 3; i++)
         g_disp[(main_base + offsets[i] - g_code_lo) / 4] = wrappers[i];
-    if (experimental) {
-        /* Unlocked starts from a 1/120 s step until the first measured one. 0 lifts the limit. */
-        step.initial_ns = unlocked ? ARCEUS_UNLOCKED_INITIAL_STEP_NS
-                                   : (UINT64_C(1000000000) + target_fps / 2) / target_fps;
-        __atomic_store_n(&g_opt_fps, unlocked ? 0 : target_fps, __ATOMIC_RELAXED);
-        clocks_installed = 1;
-    }
-    if (unlocked)
+    arceus_clock_config_apply(config);
+    if (config.mode == 2)
         LOG("arceus-clock: Arceus 1.1.1 EXPERIMENT: elapsed-time clocks, target_fps=unlocked, tracing=%d\n", tracing);
+    else if (config.mode == 0)
+        LOG("arceus-clock: Arceus 1.1.1 EXPERIMENT: elapsed-time clocks, fps_limit=%d, tracing=%d\n",
+            __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED), tracing);
     else
         LOG("arceus-clock: Arceus 1.1.1 %s, target_fps=%d, tracing=%d\n",
-            experimental ? "EXPERIMENT: elapsed-time clocks" : "read-only probe", target_fps, tracing);
+            "EXPERIMENT: elapsed-time clocks", config.target_fps, tracing);
 }
 
 /* WaterCurrentTime's verified update adds 1/30 second per rendered frame. Replace
@@ -311,8 +368,7 @@ static void event_camera_update(CPU* c, u64 entry) {
 }
 
 static void event_camera_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_EVENT_CAMERA_FIX");
-    if (!enabled || strcmp(enabled, "1")) return;
+    if ( !arceus_switch_enabled("SNX_ARCEUS_EVENT_CAMERA_FIX", 1)) return;
     u64 pc = main_base + 0x19b2140;
     if (pc < g_code_lo || pc + 0x198 > g_code_hi || !readable(pc, 0x198) ||
         gr32(pc) != 0xd101c3ff || gr32(pc + 0x34) != 0xbd44b400 ||
@@ -376,8 +432,7 @@ static void blink_inlined(CPU* c, u64 entry) { blink_update(c, entry, 2); }
    accepting the base subobject at +48. Only this small state machine is paced;
    the skeletal/face animation system continues to update every rendered frame. */
 static void blink_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_BLINK_FIX");
-    if (!enabled || strcmp(enabled, "1")) return;
+    if ( !arceus_switch_enabled("SNX_ARCEUS_BLINK_FIX", 1)) return;
     const u64 offsets[3] = {0x194f110, 0x194f20c, 0x1aaf0b4};
     const u32 sizes[3] = {0xfc, 0x100, 0x2a0};
     const u32 prologues[3] = {0xf81e0ff3, 0xa9be4ff4, 0xa9ba6ffc};
@@ -469,8 +524,7 @@ static void camera_input_update(CPU* c, u64 entry) {
             (double)guest_float(object + 0x428), (double)guest_float(object + 0x430));
 }
 static void camera_input_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_CAMERA_INPUT_FIX");
-    if ((!enabled || strcmp(enabled, "1")) && !camera_trace_only) return;
+    if (!arceus_switch_enabled("SNX_ARCEUS_CAMERA_INPUT_FIX", 1) && !camera_trace_only) return;
     u64 pc = main_base + 0x193c04c;
     int covered = 0;
     if (!g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
@@ -520,15 +574,10 @@ static void camera_rate_update(CPU* c, u64 entry) {
     }
 }
 static void camera_rate_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_CAMERA_INPUT_FIX");
-    if ((!enabled || strcmp(enabled, "1")) && !camera_trace_only) return;
-    const char* speed = getenv("SNX_ARCEUS_CAMERA_SPEED");
-    if (speed && *speed) {
-        char* end; float value = strtof(speed, &end);
-        if (*end || !isfinite(value) || value < 0.25f || value > 4.0f)
-            WARN("arceus-camera-rate: invalid camera speed, using 1\n");
-        else camera_speed = value;
-    }
+    if (!arceus_switch_enabled("SNX_ARCEUS_CAMERA_INPUT_FIX", 1) && !camera_trace_only) return;
+    int invalid_speed;
+    camera_speed = camera_speed_value(&invalid_speed);
+    if (invalid_speed) WARN("arceus-camera-rate: invalid camera speed, using 1\n");
     u64 pc = main_base + 0x193c2c4;
     int covered = 0;
     if (!g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
@@ -577,8 +626,7 @@ static void pad_repeat_update(CPU* c, u64 entry) {
             (unsigned long long)gr64(object+0xb8));
 }
 static void pad_repeat_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_MENU_REPEAT_FIX");
-    if (!enabled || strcmp(enabled,"1")) return;
+    if ( !arceus_switch_enabled("SNX_ARCEUS_MENU_REPEAT_FIX", 1)) return;
     u64 pc = main_base + 0xc9a9b4;
     int covered = 0;
     if (!g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
@@ -1088,8 +1136,7 @@ static void sequence_clock_research_init(void) {
 }
 /* Runs after the research probes, so it reuses the capture wrapper when they installed it. */
 static void capture_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_CAPTURE_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_CAPTURE_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-capture-fix: refused without elapsed-time clocks\n");
         return;
@@ -1224,8 +1271,7 @@ static void battle_sequence_update(CPU* c, u64 entry) {
     }
 }
 static void battle_sequence_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_BATTLE_SEQUENCE_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-battle-sequence: refused without elapsed-time clocks\n");
         return;
@@ -1302,8 +1348,7 @@ static void map_cursor_update(CPU* c, u64 entry, unsigned kind) {
 static void field_map_cursor_update(CPU* c, u64 e) { map_cursor_update(c, e, 0); }
 static void world_map_cursor_update(CPU* c, u64 e) { map_cursor_update(c, e, 1); }
 static void map_cursor_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_MAP_CURSOR_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_MAP_CURSOR_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-map-cursor: refused without elapsed-time clocks\n");
         return;
@@ -1406,8 +1451,7 @@ static void fixed_resolution_init(void) {
    falls back to 1/30, and the existing 2^-23 gate at 2AF2A20 still skips the
    solve for a zero step. Worlds stepped through other callers are not touched. */
 static void physics_timestep_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_PHYSICS_TIMESTEP_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_PHYSICS_TIMESTEP_FIX", 1)) return;
     const u64 pc = main_base + 0x2af25b4;
     int covered = 0;
     if (!clocks_installed) {
@@ -1439,8 +1483,7 @@ static void physics_timestep_init(void) {
    min(1/30, elapsed) like the physics step. arceus_step never yields a zero step and
    FMINNM maps NaN to 1/30. A nonzero mode, never observed, would also be capped. */
 static void navigation_timestep_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX", 1)) return;
     const u64 pc = main_base + 0x2795204, caller = main_base + 0x279a6d0;
     int covered = 0;
     if (!clocks_installed) {
@@ -1590,8 +1633,7 @@ static int cave_light_init(void) {
 }
 
 static void world_timers_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_WORLD_TIMERS_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_WORLD_TIMERS_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-world-timers: refused without elapsed-time clocks\n");
         return;
@@ -1627,8 +1669,7 @@ static const FrameStepSite movement_sites[] = {
 };
 #define MOVEMENT_SITES (sizeof movement_sites / sizeof movement_sites[0])
 static void movement_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_MOVEMENT_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_MOVEMENT_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-movement-fix: refused without elapsed-time clocks\n");
         return;
@@ -1636,8 +1677,7 @@ static void movement_fix_init(void) {
     if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
     if (!frame_step_cell_init("arceus-movement-fix")) return;
     /* Optional hex mask over movement_sites (bit 0 is the first) to test sites one by one. */
-    const char* mask_text = getenv("SNX_ARCEUS_MOVEMENT_SITES");
-    const unsigned long mask = mask_text && *mask_text ? strtoul(mask_text, NULL, 16) : ~0ul;
+    const unsigned long mask = movement_mask_value();
     FrameStepSite chosen[MOVEMENT_SITES];
     unsigned n = 0;
     for (unsigned k = 0; k < MOVEMENT_SITES; k++)
@@ -1647,8 +1687,7 @@ static void movement_fix_init(void) {
         sites, (unsigned)MOVEMENT_SITES, mask, (unsigned long long)frame_step_address);
 }
 static void gravity_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_GRAVITY_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_GRAVITY_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-gravity-fix: refused without elapsed-time clocks\n");
         return;
@@ -1765,15 +1804,14 @@ static int capped_fall_body(u32 first, u32 second) {
     return 0;
 }
 static void capped_fall_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_CAPPED_FALL_FIX");
-    const char* movement = getenv("SNX_ARCEUS_MOVEMENT_FIX");
-    const char* mask = getenv("SNX_ARCEUS_MOVEMENT_SITES");
+    const int enabled = arceus_switch_enabled("SNX_ARCEUS_CAPPED_FALL_FIX", 1);
+    const int movement = arceus_switch_enabled("SNX_ARCEUS_MOVEMENT_FIX", 1);
+    const unsigned long mask = movement_mask_value();
     /* Explicit mask bit 9 also enables this fix through an existing launcher setting. */
-    const int selected = movement && !strcmp(movement, "1") && mask &&
-                         (strtoul(mask, NULL, 16) & 0x200ul);
-    const char* steering = getenv("SNX_ARCEUS_AIR_STEERING_FIX");
-    const int steer = steering && !strcmp(steering, "1");
-    int fall = (enabled && !strcmp(enabled, "1")) || selected;
+    const char* mask_text = getenv("SNX_ARCEUS_MOVEMENT_SITES");
+    const int selected = movement && mask_text && (mask & 0x200ul);
+    const int steer = arceus_switch_enabled("SNX_ARCEUS_AIR_STEERING_FIX", 1);
+    int fall = enabled || selected;
     if (!main_base || (!fall && !steer)) return;
     if (!clocks_installed) {
         WARN("arceus-capped-fall: refused without elapsed-time clocks\n");
@@ -1891,8 +1929,7 @@ static void ai_turn_update(CPU* c, u64 entry, unsigned kind) {
 static void ai_turn(CPU* c, u64 entry) { ai_turn_update(c, entry, 0); }
 static void ai_turn_key(CPU* c, u64 entry) { ai_turn_update(c, entry, 1); }
 static void ai_tick_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_AI_TICK_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_AI_TICK_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-ai-tick: refused without elapsed-time clocks\n");
         return;
@@ -1979,8 +2016,7 @@ static void turn_update(CPU* c, u64 entry) {
             readable(object, 0x26c) ? (double)guest_float(object + 0x268) : -1.0, (double)authored, (double)passed);
 }
 static void turn_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_TURN_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_TURN_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-turn: refused without elapsed-time clocks\n");
         return;
@@ -2029,8 +2065,7 @@ static void list_scroll_update(CPU* c, u64 entry) {
     list_scroll_original(c, entry);
 }
 static void list_scroll_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_LIST_SCROLL_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_LIST_SCROLL_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-list-scroll: refused without elapsed-time clocks\n");
         return;
@@ -2073,8 +2108,7 @@ static void fade_start_update(CPU* c, u64 entry, unsigned kind) {
 static void fade_in_start(CPU* c, u64 e) { fade_start_update(c, e, 0); }
 static void fade_out_start(CPU* c, u64 e) { fade_start_update(c, e, 1); }
 static void fade_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_FADE_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_FADE_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-fade: refused without elapsed-time clocks\n");
         return;
@@ -2494,8 +2528,8 @@ static void climb_anim_update(CPU* c, u64 entry) {
     climb_stop_after(object, slot);
 }
 static void climb_step_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_CLIMB_STEP");
-    if (!main_base || !enabled || (strcmp(enabled, "1") && strcmp(enabled, "2"))) return;
+    const int enabled = climb_step_value();
+    if (!main_base || !enabled) return;
     if (!clocks_installed) {
         WARN("arceus-climb: refused without elapsed-time clocks\n");
         return;
@@ -2521,11 +2555,11 @@ static void climb_step_init(void) {
     if (anim_ok) {
         for (unsigned k = 0; k < 8; k++) gw32(at + 4 * k, k == 3 ? climb_adrp(at + 12, 9) : climb_anim_patched[k]);
         /* The state 2 check, the +D04 load, add and store, and the reload and signed compare before the finish. */
-        const int stop_ok = !strcmp(enabled, "2") && gr32(anim + 0x1e4) == 0x7100091f &&
+        const int stop_ok = enabled == 2 && gr32(anim + 0x1e4) == 0x7100091f &&
                             gr32(anim + 0x1ec) == 0xb94d0668 && gr32(anim + 0x1f0) == 0x11000508 &&
                             gr32(anim + 0x1f4) == 0xb90d0668 && gr32(anim + 0x308) == 0xb94d0668 &&
                             gr32(anim + 0x30c) == 0x6b14011f;
-        if (!strcmp(enabled, "2") && !stop_ok) WARN("arceus-climb: refused stop guard\n");
+        if (enabled == 2 && !stop_ok) WARN("arceus-climb: refused stop guard\n");
         if (stop_ok) gw32(anim + 0x38, 0x91000013); /* Equivalent MOV X19,X0 -> ADD X19,X0,#0. */
         jit_code_changed(anim, 0xef4);
         if (stop_ok) {
@@ -2608,8 +2642,7 @@ static void wall_jump_update(CPU* c, u64 entry) {
         c->x[0] = (u64)(long long)old;
 }
 static void wall_jump_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_WALL_JUMP_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_WALL_JUMP_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-wall-jump: refused without elapsed-time clocks\n");
         return;
@@ -2873,8 +2906,7 @@ static void ledge_set_position(CPU* c, u64 entry) {
 static void ledge_end_start(CPU* c, u64 entry) { ledge_end(c, entry, 0); }
 static void ledge_end_finish(CPU* c, u64 entry) { ledge_end(c, entry, 1); }
 static void ledge_fix_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_LEDGE_FIX");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_LEDGE_FIX", 1)) return;
     if (!clocks_installed) {
         WARN("arceus-ledge: refused without elapsed-time clocks\n");
         return;
@@ -2935,8 +2967,8 @@ static void ledge_fix_init(void) {
 }
 
 void arceus_clock_post_jit(void) {
-    const char* carry = getenv("SNX_ARCEUS_TIMER_CARRY_FIX");
-    timer_carry_fix = clocks_installed && carry && !strcmp(carry, "1");
+    if (!timing_enabled || !clocks_installed) return;
+    timer_carry_fix = arceus_switch_enabled("SNX_ARCEUS_TIMER_CARRY_FIX", 1);
     if (timer_carry_fix) LOG("arceus-timer-carry: integer timer catch-up enabled, backlog capped at 1 second\n");
     fixed_resolution_init();
     /* Before the research probe, which compiles and keeps this wrapper's body. */
@@ -2967,8 +2999,6 @@ void arceus_clock_post_jit(void) {
         camera_rate_init();
         return;
     }
-    const char* enabled = getenv("SNX_ARCEUS_TIMING_FIXES");
-    if (!enabled || strcmp(enabled, "1") || !clocks_installed) return;
     water_fix_init();
     effects_fix_init();
     event_camera_init();
