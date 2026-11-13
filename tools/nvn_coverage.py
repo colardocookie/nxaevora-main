@@ -275,7 +275,10 @@ tool keeps them.
 - calls: the calls of {calls_source}, through the dispatch table and with the library (`nvn_native=0`).
 - handler: `implemented` when `native_procs` of `nvn_native.c` has a host handler, `stub-log` when the missing-function
   handler answers (the first call is logged and 0 is returned).
-- checks: the checks that passed, with their scope (`unit`, `selftest R/M/S/Y` with the build, `exec`). seen: a game run
+- checks: the checks that passed, with their scope (`unit`, `selftest R/M/S/Y` with the build, `exec`). The build
+  `update 1.1.1` is the library of that update: the `sdk` module with the build ID
+  `B39ADD63421BE525D352E576DAB438D3812EDFF0`. The argument sets of a selftest check are the cases of the function in
+  `third_party/ScarletNX/src/nx/gpu/nvn_selftest*.c`, and each case line of the selftest log names its arguments. seen: a game run
   with `nvn_native=1` that called it and was read. A function with checks and without seen is not verified in the game.
 
 ## Summary

@@ -3368,6 +3368,145 @@ static void test_u1_multisample_locations(void) {
     CHECK(nvn_multisample_sample_location(NAN, 0) == 0x0f); /* fminnm takes 0.9375 for a NaN */
 }
 
+static void test_window_texture_slot(void) {
+    const uint64_t textures = 0x2000u;
+    uint64_t at = 99;
+    CHECK(nvn_window_texture_slot(textures, 4, 0, &at) == 1 && at == 0x2000u);
+    CHECK(nvn_window_texture_slot(textures, 4, 3, &at) == 1 && at == 0x2018u);
+    CHECK(nvn_window_texture_slot(textures, 4, 4, &at) == 0 && at == 0x2018u); /* index == count: not written */
+    CHECK(nvn_window_texture_slot(textures, 4, -1, &at) == 1 && at == 0x1FF8u); /* a negative index is not refused */
+    CHECK(nvn_window_texture_slot(textures, 0, 0, &at) == 0); /* count 0 */
+    CHECK(nvn_window_texture_slot(textures, 0, -1, &at) == 1 && at == 0x1FF8u);
+    CHECK(nvn_window_texture_slot(0x100002000ull, 2, 1, &at) == 1 && at == 0x100002008ull);
+    CHECK(nvn_window_texture_slot(textures, 0x80000001u, 0, &at) == 0); /* a negative count as int32_t */
+    CHECK(nvn_window_texture_slot(0, 4, INT32_MIN, &at) == 1 && at == 0xFFFFFFFC00000000ull); /* 64-bit product */
+    CHECK(nvn_window_texture_slot(UINT64_MAX - 7u, 4, 1, &at) == 1 && at == 0); /* the address wraps */
+}
+
+static void test_window_acquire_helpers(void) {
+    CHECK(nvn_window_acquire_refusal(0, 1, 1, 1, 1) == NULL);
+    CHECK(strcmp(nvn_window_acquire_refusal(0, 0, 1, 1, 1), "unknown queue") == 0);
+    CHECK(strcmp(nvn_window_acquire_refusal(0, 1, 0, 1, 1), "unknown window") == 0);
+    CHECK(strcmp(nvn_window_acquire_refusal(0, 1, 1, 0, 1), "unknown sync") == 0);
+    CHECK(strcmp(nvn_window_acquire_refusal(0, 1, 1, 1, 0), "unwritable index") == 0);
+    CHECK(strcmp(nvn_window_acquire_refusal(0, 0, 0, 0, 0), "unknown queue") == 0); /* the first reason */
+    CHECK(strcmp(nvn_window_acquire_refusal(0, 1, 0, 0, 0), "unknown window") == 0);
+    CHECK(strcmp(nvn_window_acquire_refusal(0, 1, 1, 0, 0), "unknown sync") == 0);
+    CHECK(nvn_window_acquire_refusal(1, 0, 1, 1, 1) == NULL); /* the recheck ignores the queue */
+    CHECK(strcmp(nvn_window_acquire_refusal(1, 1, 0, 0, 0), "window changed") == 0);
+    CHECK(strcmp(nvn_window_acquire_refusal(1, 1, 1, 0, 0), "sync changed") == 0);
+    CHECK(strcmp(nvn_window_acquire_refusal(1, 1, 1, 1, 0), "index changed") == 0);
+    CHECK(nvn_window_acquire_refusal(1, 1, 1, 1, 1) == NULL);
+
+    uint8_t states[4] = {NVN_IMAGE_FREE, NVN_IMAGE_FREE, NVN_IMAGE_ACQUIRED, NVN_IMAGE_PRESENTED};
+    int32_t last = -1;
+    nvn_window_acquire_take(states, &last, 2);
+    CHECK(states[0] == NVN_IMAGE_FREE && states[1] == NVN_IMAGE_FREE && states[2] == NVN_IMAGE_ACQUIRED);
+    CHECK(states[3] == NVN_IMAGE_PRESENTED && last == 2);
+    nvn_window_acquire_take(states, &last, 1);
+    CHECK(states[1] == NVN_IMAGE_ACQUIRED && last == 1);
+}
+
+static void test_present_refusal(void) {
+    const uint8_t states[4] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_PRESENTED, NVN_IMAGE_FREE, NVN_IMAGE_ACQUIRED};
+    CHECK(nvn_present_refusal(1, 1, 0, 4, states) == NULL);
+    CHECK(nvn_present_refusal(1, 1, 3, 4, states) == NULL);
+    CHECK(strcmp(nvn_present_refusal(0, 1, 0, 4, states), "unknown queue") == 0);
+    CHECK(strcmp(nvn_present_refusal(1, 0, 0, 4, states), "unknown window") == 0);
+    CHECK(strcmp(nvn_present_refusal(0, 0, 0, 4, states), "unknown queue") == 0); /* the first reason */
+    CHECK(strcmp(nvn_present_refusal(0, 0, 9, 0, NULL), "unknown queue") == 0);
+    CHECK(strcmp(nvn_present_refusal(1, 0, -1, 0, NULL), "unknown window") == 0); /* before the index */
+    CHECK(strcmp(nvn_present_refusal(1, 1, -1, 4, states), "index outside the window textures") == 0);
+    CHECK(strcmp(nvn_present_refusal(1, 1, 4, 4, states), "index outside the window textures") == 0);
+    CHECK(strcmp(nvn_present_refusal(1, 1, 0, 0, states), "index outside the window textures") == 0);
+    CHECK(strcmp(nvn_present_refusal(1, 1, 1, 4, states), "window image is not acquired") == 0);
+    CHECK(strcmp(nvn_present_refusal(1, 1, 2, 4, states), "window image is not acquired") == 0);
+    /* states is read only after the index check passed */
+    CHECK(strcmp(nvn_present_refusal(1, 1, 4, 4, NULL), "index outside the window textures") == 0);
+}
+
+static void test_multisample_locations_fit(void) {
+    CHECK(NVN_MULTISAMPLE_LOCATION_BYTES == 16u);
+    CHECK(nvn_multisample_locations_fit(0, 0));
+    CHECK(nvn_multisample_locations_fit(0, 16));
+    CHECK(nvn_multisample_locations_fit(16, 0));
+    CHECK(!nvn_multisample_locations_fit(16, 1));
+    CHECK(!nvn_multisample_locations_fit(17, 0));
+    CHECK(nvn_multisample_locations_fit(4, 12));
+    CHECK(!nvn_multisample_locations_fit(4, 13));
+    CHECK(nvn_multisample_locations_fit(1, 1));
+    CHECK(!nvn_multisample_locations_fit(UINT32_MAX, 0));
+    CHECK(!nvn_multisample_locations_fit(1, UINT32_MAX)); /* index + count wraps */
+    CHECK(!nvn_multisample_locations_fit(UINT32_MAX, 1));
+}
+
+static void test_bind_program_words(void) {
+    uint32_t src[NVN_PROGRAM_WORDS_MAX];
+    uint32_t out[NVN_PROGRAM_WORDS_MAX];
+    for (uint32_t i = 0; i < NVN_PROGRAM_WORDS_MAX; i++) src[i] = 0x1000u + i;
+    for (uint32_t i = 0; i < NVN_PROGRAM_WORDS_MAX; i++) out[i] = 0xDEADBEEFu;
+
+    CHECK(nvn_bind_program_words(1u << NVN_PROGRAM_STAGE_COMPUTE, src, 30, out) == NVN_PROGRAM_COMPUTE_WORDS);
+    for (uint32_t i = 0; i < NVN_PROGRAM_COMPUTE_WORDS; i++) CHECK(out[i] == src[i]);
+    CHECK(out[NVN_PROGRAM_COMPUTE_WORDS] == 0xDEADBEEFu); /* the compute words alone are copied */
+
+    for (uint32_t i = 0; i < NVN_PROGRAM_WORDS_MAX; i++) out[i] = 0xDEADBEEFu;
+    CHECK(nvn_bind_program_words(0x3u, src, 25, out) == 25u);
+    for (uint32_t i = 0; i < NVN_PROGRAM_WORDS_MAX; i++) CHECK(out[i] == src[i]); /* every word is copied */
+
+    CHECK(nvn_bind_program_words(1u << NVN_PROGRAM_STAGE_COMPUTE | 1u << NVN_PROGRAM_STAGE_VERTEX, src, 25, out) ==
+          NVN_PROGRAM_COMPUTE_WORDS); /* a set compute bit wins */
+}
+
+static void test_program_set_helpers(void) {
+    CHECK(nvn_program_count_check(0, 0) == NVN_PROGRAM_COUNT_OK);
+    CHECK(nvn_program_count_check(0, 0x1000) == NVN_PROGRAM_COUNT_OK);
+    CHECK(nvn_program_count_check(1, 0x1000) == NVN_PROGRAM_COUNT_OK);
+    CHECK(nvn_program_count_check((int32_t)NVN_PROGRAM_STAGES, 0x1000) == NVN_PROGRAM_COUNT_OK);
+    CHECK(nvn_program_count_check((int32_t)NVN_PROGRAM_STAGES + 1, 0x1000) == NVN_PROGRAM_COUNT_ABOVE);
+    CHECK(nvn_program_count_check(1, 0) == NVN_PROGRAM_COUNT_ENTRIES_NULL);
+    CHECK(nvn_program_count_check(-1, 0x1000) == NVN_PROGRAM_COUNT_NEGATIVE);
+    CHECK(nvn_program_count_check(-1, 0) == NVN_PROGRAM_COUNT_NEGATIVE); /* the count comes first */
+    CHECK(nvn_program_count_check((int32_t)NVN_PROGRAM_STAGES + 1, 0) == NVN_PROGRAM_COUNT_ABOVE);
+    CHECK(nvn_program_count_check(INT32_MIN, 0) == NVN_PROGRAM_COUNT_NEGATIVE);
+
+    /* literal texts: the log lines of the handler must not change with the macros */
+    CHECK(strcmp(nvn_program_entry_refusal(1, 0, 0), "entry word is zero") == 0);
+    CHECK(strcmp(nvn_program_entry_refusal(1, 0, 0x1000), "entry word is zero") == 0); /* first */
+    CHECK(strcmp(nvn_program_entry_refusal(0, 0, 0), "header is null") == 0); /* no word check */
+    CHECK(strcmp(nvn_program_entry_refusal(1, 5, 0), "header is null") == 0);
+    CHECK(strcmp(nvn_program_entry_refusal(1, 5, 4), "header is not aligned") == 0); /* header 4 */
+    CHECK(strcmp(nvn_program_entry_refusal(1, 5, 2), "header is not aligned") == 0);
+    CHECK(strcmp(nvn_program_entry_refusal(1, 5, 1), "header is not aligned") == 0);
+    CHECK(strcmp(nvn_program_entry_refusal(0, 0, 4), "header is not aligned") == 0);
+    CHECK(nvn_program_entry_refusal(1, 5, 8) == NULL);
+    CHECK(nvn_program_entry_refusal(1, 5, 0x1008) == NULL);
+    CHECK(nvn_program_entry_refusal(0, 0, 8) == NULL); /* a plain entry has no word */
+
+    uint32_t mask = 0;
+    CHECK(nvn_program_stage_add(&mask, NVN_PROGRAM_STAGE_VERTEX) == 1 && mask == 0x1u);
+    CHECK(nvn_program_stage_add(&mask, NVN_PROGRAM_STAGE_VERTEX) == 0 && mask == 0x1u); /* repeated */
+    CHECK(nvn_program_stage_add(&mask, NVN_PROGRAM_STAGE_COMPUTE) == 1 && mask == 0x21u);
+    CHECK(nvn_program_stage_add(&mask, NVN_PROGRAM_STAGE_COMPUTE) == 0 && mask == 0x21u);
+    for (uint32_t stage = 0; stage < NVN_PROGRAM_STAGES; stage++) {
+        uint32_t one = 0;
+        CHECK(nvn_program_stage_add(&one, stage) == 1 && one == 1u << stage);
+        CHECK(nvn_program_stage_add(&one, stage) == 0 && one == 1u << stage);
+    }
+
+    CHECK(nvn_program_unsupported_stage(0) == -1);
+    CHECK(nvn_program_unsupported_stage(0x1u) == -1);
+    CHECK(nvn_program_unsupported_stage(1u << NVN_PROGRAM_STAGE_COMPUTE) == -1);
+    CHECK(nvn_program_unsupported_stage(NVN_PROGRAM_STAGE_SUPPORTED_MASK) == -1);
+    CHECK(nvn_program_unsupported_stage(0x2u) == -1); /* fragment */
+    CHECK(nvn_program_unsupported_stage(0x4u) == 2);
+    CHECK(nvn_program_unsupported_stage(0x1Eu) == 2); /* the lowest of the unsupported stages */
+    CHECK(nvn_program_unsupported_stage(0x18u) == 3);
+    CHECK(nvn_program_unsupported_stage(0x10u) == 4); /* the last stage below compute */
+    CHECK(nvn_program_unsupported_stage(0x3Fu) == 2);
+    CHECK(nvn_program_unsupported_stage(0x100u) == -1); /* bits above stage 5 are not stages */
+}
+
 int main(int argc, char** argv) {
     test_compute_qmd_size_limits();
     test_window_params();
@@ -3478,6 +3617,12 @@ int main(int argc, char** argv) {
     test_bind_image();
     test_clear_depth_stencil_words();
     test_highest_enabled_index();
+    test_window_texture_slot();
+    test_window_acquire_helpers();
+    test_present_refusal();
+    test_multisample_locations_fit();
+    test_bind_program_words();
+    test_program_set_helpers();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

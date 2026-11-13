@@ -1853,24 +1853,12 @@ static void* known_record(u64 addr, NvnObjKind kind) {
 #define PROGRAM_ENTRY_BYTES_PLAIN 0x10u /* one SetShaders entry: ignored word, header pointer */
 #define PROGRAM_HEADER_READ_BYTES (NVN_PROGRAM_STAGE_OFFSET + 4u) /* the header words up to the stage word */
 #define PROGRAM_CONTROL_BYTES 0x18u     /* the control block that the host copies */
-#define PROGRAM_HEADER_ALIGNMENT 8u
 
 #define PROGRAM_REFUSAL_ENTRY_UNREADABLE "entry is unreadable"
-#define PROGRAM_REFUSAL_WORD_ZERO "entry word is zero"
-#define PROGRAM_REFUSAL_HEADER_NULL "header is null"
-#define PROGRAM_REFUSAL_HEADER_UNALIGNED "header is not aligned"
 #define PROGRAM_REFUSAL_HEADER_UNREADABLE "header is unreadable"
 #define PROGRAM_REFUSAL_HEADER_BAD "header is not a shader"
 #define PROGRAM_REFUSAL_STAGE_REPEATED "stage is repeated"
 #define PROGRAM_REFUSAL_CONTROL_UNREADABLE "control is unreadable"
-
-/* The host builder builds stage 0 (vertex, no VertexA), stage 1 (fragment), stage 5 (compute) and the transform
-   feedback block of the vertex stage. Stages 2 to 4 and VertexA are not ported, so a program with any of them is
-   refused. */
-#define PROGRAM_STAGE_VERTEX 0u
-#define PROGRAM_STAGE_FRAGMENT 1u
-#define PROGRAM_STAGE_COMPUTE 5u
-#define PROGRAM_STAGE_SUPPORTED_MASK 0x23u
 
 #define PROGRAM_BUILD_HEADER_BYTES 0x76Cu /* the header bytes that the word builder reads, up to h+0x76b */
 #define PROGRAM_HEADER_CB_OFFSET 0x700u
@@ -1941,16 +1929,9 @@ static int program_read_entry(u64 entries, int32_t index, const ProgramEntryLayo
     uint64_t entry_word = layout->has_control ? gr64(at) : 0;
     uint64_t header = gr64(at + 8);
     uint64_t control = layout->has_control ? gr64(at + 0x10) : 0;
-    if (layout->has_control && !entry_word) {
-        *reason = PROGRAM_REFUSAL_WORD_ZERO;
-        return 0;
-    }
-    if (!header) {
-        *reason = PROGRAM_REFUSAL_HEADER_NULL;
-        return 0;
-    }
-    if (header & (PROGRAM_HEADER_ALIGNMENT - 1u)) {
-        *reason = PROGRAM_REFUSAL_HEADER_UNALIGNED;
+    const char* refusal = nvn_program_entry_refusal(layout->has_control, entry_word, header);
+    if (refusal) {
+        *reason = refusal;
         return 0;
     }
     if (!native_guest_readable(header, PROGRAM_HEADER_READ_BYTES)) {
@@ -2038,14 +2019,6 @@ static int program_read_compute_in(const ProgramStageRec* rec, NvnProgramCompute
     return 1;
 }
 
-/* The lowest stage above stage 1 that is present and not supported, or -1. */
-static int program_unsupported_stage(uint32_t stage_mask) {
-    uint32_t unsupported = stage_mask & ~PROGRAM_STAGE_SUPPORTED_MASK;
-    for (uint32_t stage = PROGRAM_STAGE_FRAGMENT + 1u; stage < NVN_PROGRAM_STAGES; stage++)
-        if (unsupported & (1u << stage)) return (int)stage;
-    return -1;
-}
-
 /* nvnProgramInitialize(prog, device): the host keeps the device link and writes nothing into the game memory. */
 static void h_program_initialize(CPU* c, u64 entry) {
     (void)entry;
@@ -2114,17 +2087,24 @@ static void program_set_shaders(CPU* c, const ProgramEntryLayout* layout) {
     next.stage_mask = 0;
     memset(next.stage, 0, sizeof next.stage);
     int ok = 1;
-    if (count < 0) {
-        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: count=%d is negative\n",
-                  (unsigned long long)addr, count);
-        ok = 0;
-    } else if ((uint32_t)count > NVN_PROGRAM_STAGES) {
-        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: count=%d is above %u\n",
-                  (unsigned long long)addr, count, (unsigned)NVN_PROGRAM_STAGES);
-        ok = 0;
-    } else if (count > 0 && !entries) {
-        LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: entries is null\n",
-                  (unsigned long long)addr);
+    const NvnProgramCountCheck count_check = nvn_program_count_check(count, entries);
+    if (count_check != NVN_PROGRAM_COUNT_OK) {
+        switch (count_check) {
+        case NVN_PROGRAM_COUNT_NEGATIVE:
+            LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: count=%d is negative\n",
+                      (unsigned long long)addr, count);
+            break;
+        case NVN_PROGRAM_COUNT_ABOVE:
+            LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: count=%d is above %u\n",
+                      (unsigned long long)addr, count, (unsigned)NVN_PROGRAM_STAGES);
+            break;
+        case NVN_PROGRAM_COUNT_ENTRIES_NULL:
+            LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: entries is null\n",
+                      (unsigned long long)addr);
+            break;
+        case NVN_PROGRAM_COUNT_OK:
+            break;
+        }
         ok = 0;
     } else if (count > 0 && !native_guest_readable(entries, (u64)count * layout->bytes)) {
         LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: entries=%llx is unreadable\n",
@@ -2141,17 +2121,16 @@ static void program_set_shaders(CPU* c, const ProgramEntryLayout* layout) {
             ok = 0;
             break;
         }
-        if (next.stage_mask & (1u << stage_index)) {
+        if (!nvn_program_stage_add(&next.stage_mask, stage_index)) {
             LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx entry=%d refused: %s\n",
                       (unsigned long long)addr, i, PROGRAM_REFUSAL_STAGE_REPEATED);
             ok = 0;
             break;
         }
         next.stage[stage_index] = stage;
-        next.stage_mask |= 1u << stage_index;
     }
     if (ok) {
-        int stage = program_unsupported_stage(next.stage_mask);
+        int stage = nvn_program_unsupported_stage(next.stage_mask);
         if (stage >= 0) {
             LOG_LIMIT(PROGRAM_LOG_LIMIT,
                       "nvn-native: program %llx refused: stage %d is not supported by the host builder\n",
@@ -2166,44 +2145,44 @@ static void program_set_shaders(CPU* c, const ProgramEntryLayout* layout) {
         const NvnProgramStageIn* vertex = NULL;
         const NvnProgramStageIn* fragment = NULL;
         const NvnProgramComputeIn* compute = NULL;
-        if (next.stage_mask & (1u << PROGRAM_STAGE_VERTEX)) {
-            if (!program_read_stage_in(&next.stage[PROGRAM_STAGE_VERTEX], &vertex_in)) {
+        if (next.stage_mask & (1u << NVN_PROGRAM_STAGE_VERTEX)) {
+            if (!program_read_stage_in(&next.stage[NVN_PROGRAM_STAGE_VERTEX], &vertex_in)) {
                 LOG_LIMIT(PROGRAM_LOG_LIMIT,
                           "nvn-native: program %llx stage=%u refused: header is too short for the word array\n",
-                          (unsigned long long)addr, (unsigned)PROGRAM_STAGE_VERTEX);
+                          (unsigned long long)addr, (unsigned)NVN_PROGRAM_STAGE_VERTEX);
                 ok = 0;
             } else {
                 vertex = &vertex_in;
             }
         }
-        if (ok && (next.stage_mask & (1u << PROGRAM_STAGE_FRAGMENT))) {
-            if (!program_read_stage_in(&next.stage[PROGRAM_STAGE_FRAGMENT], &fragment_in)) {
+        if (ok && (next.stage_mask & (1u << NVN_PROGRAM_STAGE_FRAGMENT))) {
+            if (!program_read_stage_in(&next.stage[NVN_PROGRAM_STAGE_FRAGMENT], &fragment_in)) {
                 LOG_LIMIT(PROGRAM_LOG_LIMIT,
                           "nvn-native: program %llx stage=%u refused: header is too short for the word array\n",
-                          (unsigned long long)addr, (unsigned)PROGRAM_STAGE_FRAGMENT);
+                          (unsigned long long)addr, (unsigned)NVN_PROGRAM_STAGE_FRAGMENT);
                 ok = 0;
             } else {
                 fragment = &fragment_in;
                 frag.present = 1;
-                program_read_fragment_in(next.stage[PROGRAM_STAGE_FRAGMENT].header, &frag);
+                program_read_fragment_in(next.stage[NVN_PROGRAM_STAGE_FRAGMENT].header, &frag);
             }
         }
-        if (ok && (next.stage_mask & (1u << PROGRAM_STAGE_COMPUTE))) {
-            if (!program_read_compute_in(&next.stage[PROGRAM_STAGE_COMPUTE], &compute_in)) {
+        if (ok && (next.stage_mask & (1u << NVN_PROGRAM_STAGE_COMPUTE))) {
+            if (!program_read_compute_in(&next.stage[NVN_PROGRAM_STAGE_COMPUTE], &compute_in)) {
                 LOG_LIMIT(PROGRAM_LOG_LIMIT,
                           "nvn-native: program %llx stage=%u refused: header is too short for the word array\n",
-                          (unsigned long long)addr, (unsigned)PROGRAM_STAGE_COMPUTE);
+                          (unsigned long long)addr, (unsigned)NVN_PROGRAM_STAGE_COMPUTE);
                 ok = 0;
             } else {
                 compute = &compute_in;
             }
         }
         if (ok && compute && (vertex || fragment)) {
-            uint32_t other = vertex ? PROGRAM_STAGE_VERTEX : PROGRAM_STAGE_FRAGMENT;
+            uint32_t other = vertex ? NVN_PROGRAM_STAGE_VERTEX : NVN_PROGRAM_STAGE_FRAGMENT;
             LOG_LIMIT(PROGRAM_LOG_LIMIT,
                       "nvn-native: program %llx refused: compute stage %u with stage %u is not supported by the host "
                       "builder\n",
-                      (unsigned long long)addr, (unsigned)PROGRAM_STAGE_COMPUTE, (unsigned)other);
+                      (unsigned long long)addr, (unsigned)NVN_PROGRAM_STAGE_COMPUTE, (unsigned)other);
             ok = 0;
         }
         uint32_t program_id = 0;
@@ -2223,10 +2202,10 @@ static void program_set_shaders(CPU* c, const ProgramEntryLayout* layout) {
             ok = 0;
         }
         /* The transform feedback block follows all graphics words. Only the vertex stage has a blob. */
-        if (ok && (next.stage_mask & (1u << PROGRAM_STAGE_VERTEX))) {
+        if (ok && (next.stage_mask & (1u << NVN_PROGRAM_STAGE_VERTEX))) {
             const char* reason = NULL;
             uint32_t xfb_count = 0;
-            if (!program_append_xfb_words(next.stage[PROGRAM_STAGE_VERTEX].header, next.words + next.word_count,
+            if (!program_append_xfb_words(next.stage[NVN_PROGRAM_STAGE_VERTEX].header, next.words + next.word_count,
                                           NVN_PROGRAM_WORDS_MAX - next.word_count, &xfb_count, &reason)) {
                 LOG_LIMIT(PROGRAM_LOG_LIMIT, "nvn-native: program %llx refused: %s\n", (unsigned long long)addr,
                           reason);
@@ -3970,7 +3949,6 @@ static void h_multisample_state_get_sample_locations_grid(CPU* c, u64 entry) {
     }
     pm_unlock(&objs_lock);
 }
-#define MULTISAMPLE_LOCATION_BYTES 16u /* the four sample location words of the record, guest bytes 4..19 */
 static void h_multisample_state_set_sample_locations(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnMultisampleStateSetSampleLocations";
@@ -3983,7 +3961,7 @@ static void h_multisample_state_set_sample_locations(CPU* c, u64 entry) {
     }
     /* The library writes past its record when index + count leaves 16. The host refuses that write. */
     if (!native_guest_readable(c->x[3], (u64)count * 2u * sizeof(uint32_t)) ||
-        index > MULTISAMPLE_LOCATION_BYTES || count > MULTISAMPLE_LOCATION_BYTES - index) {
+        !nvn_multisample_locations_fit(index, count)) {
         LOG("nvn-native: %s skipped index=%u count=%u\n", name, index, count);
         pm_unlock(&objs_lock);
         return;
@@ -4266,13 +4244,8 @@ static void h_command_buffer_bind_program(CPU* c, u64 entry) {
                 command_dropped(cb, name, "unknown program", op.program);
             else {
                 op.program_mask = program->stage_mask;
-                if (program->stage_mask & (1u << NVN_PROGRAM_STAGE_COMPUTE)) {
-                    op.word_count = NVN_PROGRAM_COMPUTE_WORDS;
-                    memcpy(op.words, program->words, NVN_PROGRAM_COMPUTE_WORDS * sizeof op.words[0]);
-                } else {
-                    op.word_count = program->word_count;
-                    memcpy(op.words, program->words, sizeof op.words);
-                }
+                op.word_count = nvn_bind_program_words(program->stage_mask, program->words, program->word_count,
+                                                       op.words);
                 command_record(cb, c->x[0], name, NVN_OP_BIND_PROGRAM, &op, sizeof op);
             }
         }
@@ -6163,9 +6136,9 @@ static void h_window_builder_get_texture(CPU* c, u64 entry) {
     pm_lock(&objs_lock);
     NvnWindowBuilder* b = rec_get(c->x[0], NVN_OBJ_WINDOW_BUILDER, sizeof *b);
     const int32_t index = (int32_t)c->x[1];
-    const uint64_t at = b->textures + (uint64_t)((int64_t)index * (int64_t)sizeof(uint64_t));
+    uint64_t at = 0;
     uint64_t texture = 0;
-    if ((int32_t)b->texture_count <= index) {
+    if (!nvn_window_texture_slot(b->textures, b->texture_count, index, &at)) {
         c->x[0] = 0;
     } else if (!native_guest_readable(at, sizeof(uint64_t))) {
         LOG("nvn-native: nvnWindowBuilderGetTexture unreadable index=%d address=%llx\n",
@@ -6344,9 +6317,9 @@ static void window_acquire_texture(CPU* c, u64 queue_addr, u64 window_addr, u64 
     const int queue_ok = !has_queue || known_record(queue_addr, NVN_OBJ_QUEUE) != NULL;
     WindowRec* window = known_record(window_addr, NVN_OBJ_WINDOW);
     SyncRec* sync = has_sync ? known_record(sync_addr, NVN_OBJ_SYNC) : NULL;
-    if (!queue_ok || !window || (has_sync && !sync) || !native_guest_writable(index_addr, sizeof(uint32_t))) {
-        const char* reason = !queue_ok ? "unknown queue" : !window ? "unknown window"
-                           : has_sync && !sync ? "unknown sync" : "unwritable index";
+    const char* reason = nvn_window_acquire_refusal(0, queue_ok, window != NULL, !has_sync || sync != NULL,
+                                                    native_guest_writable(index_addr, sizeof(uint32_t)));
+    if (reason) {
         window_acquire_failed(c, operation, queue_addr, window_addr, sync_addr, index_addr, reason);
         pm_unlock(&objs_lock);
         return;
@@ -6357,8 +6330,9 @@ static void window_acquire_texture(CPU* c, u64 queue_addr, u64 window_addr, u64 
     pm_lock(&objs_lock);
     window = known_record(window_addr, NVN_OBJ_WINDOW);
     sync = has_sync ? known_record(sync_addr, NVN_OBJ_SYNC) : NULL;
-    if (!window || (has_sync && !sync) || !native_guest_writable(index_addr, sizeof(uint32_t))) {
-        const char* reason = !window ? "window changed" : has_sync && !sync ? "sync changed" : "index changed";
+    reason = nvn_window_acquire_refusal(1, 1, window != NULL, !has_sync || sync != NULL,
+                                        native_guest_writable(index_addr, sizeof(uint32_t)));
+    if (reason) {
         window_acquire_failed(c, operation, queue_addr, window_addr, sync_addr, index_addr, reason);
         pm_unlock(&objs_lock);
         return;
@@ -6369,8 +6343,9 @@ static void window_acquire_texture(CPU* c, u64 queue_addr, u64 window_addr, u64 
         kthread_wait(&frame_done_cv, &objs_lock, -1);
         window = known_record(window_addr, NVN_OBJ_WINDOW);
         sync = has_sync ? known_record(sync_addr, NVN_OBJ_SYNC) : NULL;
-        if (!window || (has_sync && !sync) || !native_guest_writable(index_addr, sizeof(uint32_t))) {
-            const char* reason = !window ? "window changed" : has_sync && !sync ? "sync changed" : "index changed";
+        reason = nvn_window_acquire_refusal(1, 1, window != NULL, !has_sync || sync != NULL,
+                                            native_guest_writable(index_addr, sizeof(uint32_t)));
+        if (reason) {
             window_acquire_failed(c, operation, queue_addr, window_addr, sync_addr, index_addr, reason);
             pm_unlock(&objs_lock);
             return;
@@ -6386,8 +6361,7 @@ static void window_acquire_texture(CPU* c, u64 queue_addr, u64 window_addr, u64 
         pm_unlock(&objs_lock);
         return;
     }
-    window->states[index] = NVN_IMAGE_ACQUIRED;
-    window->last_index = index;
+    nvn_window_acquire_take(window->states, &window->last_index, index);
     /* A free image means its previous frame job has finished. */
     if (sync) sync->state = NVN_SYNC_SIGNALED;
     gw32(index_addr, (uint32_t)index);
@@ -7101,15 +7075,9 @@ static void h_queue_present_texture(CPU* c, u64 entry) {
     QueueRec* q = known_record(queue_addr, NVN_OBJ_QUEUE);
     NvnObj* wo = nvn_objtab_find(&objs, window_addr);
     WindowRec* window = wo && wo->kind == NVN_OBJ_WINDOW ? wo->data : NULL;
-    const char* reason = NULL;
-    if (!q)
-        reason = "unknown queue";
-    else if (!window)
-        reason = "unknown window";
-    else if (index < 0 || (uint32_t)index >= window->texture_count)
-        reason = "index outside the window textures";
-    else if (window->states[index] != NVN_IMAGE_ACQUIRED)
-        reason = "window image is not acquired";
+    const char* reason = nvn_present_refusal(q != NULL, window != NULL, index,
+                                             window ? window->texture_count : 0,
+                                             window ? window->states : NULL);
     if (reason) {
         LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s failed: %s (queue=%llx window=%llx index=%d)\n",
                   name, reason, (unsigned long long)queue_addr, (unsigned long long)window_addr, index);

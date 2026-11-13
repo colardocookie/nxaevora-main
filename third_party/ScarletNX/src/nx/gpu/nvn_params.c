@@ -44,6 +44,28 @@ int nvn_window_has_presented(const uint8_t* states, uint32_t count) {
         if (states[i] == NVN_IMAGE_PRESENTED) return 1;
     return 0;
 }
+int nvn_window_texture_slot(uint64_t textures, uint32_t texture_count, int32_t index, uint64_t* at) {
+    if ((int32_t)texture_count <= index) return 0;
+    *at = textures + (uint64_t)((int64_t)index * (int64_t)sizeof(uint64_t));
+    return 1;
+}
+const char* nvn_window_acquire_refusal(int recheck, int queue_ok, int window_ok, int sync_ok, int index_writable) {
+    if (recheck) {
+        if (!window_ok) return "window changed";
+        if (!sync_ok) return "sync changed";
+        if (!index_writable) return "index changed";
+        return NULL;
+    }
+    if (!queue_ok) return "unknown queue";
+    if (!window_ok) return "unknown window";
+    if (!sync_ok) return "unknown sync";
+    if (!index_writable) return "unwritable index";
+    return NULL;
+}
+void nvn_window_acquire_take(uint8_t* states, int32_t* last_index, int32_t index) {
+    states[index] = NVN_IMAGE_ACQUIRED;
+    *last_index = index;
+}
 NvnSyncAction nvn_sync_wait_action(NvnSyncState state, int reached) {
     switch (state) {
     case NVN_SYNC_SIGNALED: return NVN_SYNC_ACTION_SIGNALED;
@@ -352,6 +374,10 @@ static uint32_t sample_location_nibble(float value) {
 
 uint8_t nvn_multisample_sample_location(float x, float y) {
     return (uint8_t)((sample_location_nibble(y) << 4) | sample_location_nibble(x));
+}
+
+int nvn_multisample_locations_fit(uint32_t index, uint32_t count) {
+    return index <= NVN_MULTISAMPLE_LOCATION_BYTES && count <= NVN_MULTISAMPLE_LOCATION_BYTES - index;
 }
 
 static uint32_t float_bits(float value) {
@@ -1479,6 +1505,15 @@ int nvn_window_present_args(const NvnTexture* t, uint64_t pool_storage, const Nv
     return 1;
 }
 
+const char* nvn_present_refusal(int queue_ok, int window_ok, int32_t index, uint32_t texture_count,
+                                const uint8_t* states) {
+    if (!queue_ok) return "unknown queue";
+    if (!window_ok) return "unknown window";
+    if (index < 0 || (uint32_t)index >= texture_count) return "index outside the window textures";
+    if (states[index] != NVN_IMAGE_ACQUIRED) return "window image is not acquired";
+    return NULL;
+}
+
 uint32_t nvn_event_signal_value(uint32_t mode, uint32_t old, uint32_t value) {
     return mode == NVN_EVENT_SIGNAL_ADD ? old + value : value;
 }
@@ -1496,6 +1531,44 @@ int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_wo
         return 0;
     *index_out = stage_word;
     return 1;
+}
+
+NvnProgramCountCheck nvn_program_count_check(int32_t count, uint64_t entries) {
+    if (count < 0) return NVN_PROGRAM_COUNT_NEGATIVE;
+    if ((uint32_t)count > NVN_PROGRAM_STAGES) return NVN_PROGRAM_COUNT_ABOVE;
+    if (count > 0 && !entries) return NVN_PROGRAM_COUNT_ENTRIES_NULL;
+    return NVN_PROGRAM_COUNT_OK;
+}
+
+const char* nvn_program_entry_refusal(int has_control, uint64_t entry_word, uint64_t header) {
+    if (has_control && !entry_word) return NVN_PROGRAM_REFUSAL_WORD_ZERO;
+    if (!header) return NVN_PROGRAM_REFUSAL_HEADER_NULL;
+    if (header & (NVN_PROGRAM_HEADER_ALIGNMENT - 1u)) return NVN_PROGRAM_REFUSAL_HEADER_UNALIGNED;
+    return NULL;
+}
+
+int nvn_program_stage_add(uint32_t* stage_mask, uint32_t stage_index) {
+    const uint32_t bit = 1u << stage_index;
+    if (*stage_mask & bit) return 0;
+    *stage_mask |= bit;
+    return 1;
+}
+
+int nvn_program_unsupported_stage(uint32_t stage_mask) {
+    uint32_t unsupported = stage_mask & ~NVN_PROGRAM_STAGE_SUPPORTED_MASK;
+    for (uint32_t stage = NVN_PROGRAM_STAGE_FRAGMENT + 1u; stage < NVN_PROGRAM_STAGES; stage++)
+        if (unsupported & (1u << stage)) return (int)stage;
+    return -1;
+}
+
+uint32_t nvn_bind_program_words(uint32_t program_mask, const uint32_t* program_words, uint32_t program_word_count,
+                                uint32_t* out_words) {
+    if (program_mask & (1u << NVN_PROGRAM_STAGE_COMPUTE)) {
+        memcpy(out_words, program_words, NVN_PROGRAM_COMPUTE_WORDS * sizeof out_words[0]);
+        return NVN_PROGRAM_COMPUTE_WORDS;
+    }
+    memcpy(out_words, program_words, NVN_PROGRAM_WORDS_MAX * sizeof out_words[0]);
+    return program_word_count;
 }
 
 /* The Maxwell header word (analyst-prog-builder-1.md, section 1): mode in bits 29..31, count or value in bits 16..28,
