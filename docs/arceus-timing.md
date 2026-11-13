@@ -163,7 +163,7 @@ to the color at `+540` on each active call, so fades ran four times fast at 120 
 The frame only advances once a whole 1/30 second has built up, by staging `+538` one lower before the call. The
 call that completes the last frame adds only the share up to the end, so a fade-out does not overshoot while it
 waits to finish, and the authored delta is put back after each call unless the call replaced it. The fraction is
-kept for each fade object, up to 16. It starts over when the fade starts again (`main+C21D00` and `main+C227BC`)
+kept for each fade object, up to 16. A fade-in frees its slot on the call that ends it. It starts over when the fade starts again (`main+C21D00` and `main+C227BC`)
 or when the frame, duration or state differ from what the last call left. With all slots in use a call runs as
 the original. The other fade modes are unchanged. `arceus-fade` lines count the calls.
 

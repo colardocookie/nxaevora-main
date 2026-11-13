@@ -881,8 +881,15 @@ static void fade_before(u64 object, FadeStage* st) {
     const float want = guest_float(frame_step_address) / NOMINAL_STEP_SECONDS;
     if (!(want > 0.0f && want <= 1.0f)) return;
     const int32_t frame = (int32_t)gr32(object + 0x538), duration = (int32_t)gr32(object + 0x53c);
-    /* A fade-in at its end only resets and republishes the target: leave that call alone. */
-    if (frame >= duration && state == 2) return;
+    /* A fade-in at its end only resets and republishes the target: leave that call alone.
+       The object goes idle in it, so free its slot here, as no later call will. */
+    if (frame >= duration && state == 2) {
+        pm_lock(&fade_lock);
+        for (int k = 0; k < FADE_SLOTS; k++)
+            if (fade_slots[k].object == object) fade_slots[k].object = 0;
+        pm_unlock(&fade_lock);
+        return;
+    }
     pm_lock(&fade_lock);
     float progress = 0.0f;
     st->slot = fade_slot(object, (u32)frame, (u32)duration, state, &progress);
