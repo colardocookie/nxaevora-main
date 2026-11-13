@@ -242,7 +242,9 @@ functions that no run reached stay `implemented` plus `unit`, `selftest` or `exe
   of six handlers move into pure functions with host tests (`unit`, ten mutants of the helpers fail the tests). The
   other rows get the reason: no pure part (a direct record field, an empty body, a library body of one ret), no
   library window or second device in the selftest, or no shader code for a case. No row is left without a check or
-  a reason. A selftest run of this build is still to do.
+  a reason. Runs of 2026-11-13 (update program to the title, the code of `00d7f62`): with `nvn_native=1`, 600 frames
+  with no fault, drop or refusal, and 3840 program sets with 0 refused. The selftest: 356 cases, 0 failed, 18 expected
+  no-op, 2 skipped, each case line the same as in the run of d4.
 - 4-u4: the change of the default of `nvn_native_missing` to stop, when no row is `none` or `stub-log`.
 
 Exit condition of this part: every one of the 523 rows is `implemented` and has `unit`, `selftest` or `exec` with its scope. The
