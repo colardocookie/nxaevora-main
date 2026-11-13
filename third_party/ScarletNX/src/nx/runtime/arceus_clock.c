@@ -3260,7 +3260,9 @@ static unsigned long script_tick_wanted(void) {
    on every second frame, so at 60 FPS the runs came 3 and 1 frames apart instead of 2 and 2. */
 static int script_tick_decide(ScriptTick* t, u64 frame, u64 step_ns) {
     if (t->decided && t->frame == frame) return t->tick;
-    const int64_t step = (int64_t)step_ns < SCRIPT_TICK_NS ? (int64_t)step_ns : SCRIPT_TICK_NS;
+    /* A frame within 3 % of 1/30 s counts as a whole tick, so at 30 FPS with its jitter every
+       frame runs the script once, as the game does, and the budget cannot drift into a skip. */
+    const int64_t step = (int64_t)step_ns < SCRIPT_TICK_NS - SCRIPT_TICK_NS / 32 ? (int64_t)step_ns : SCRIPT_TICK_NS;
     t->budget += step;
     t->tick = t->budget + step / 2 >= SCRIPT_TICK_NS;
     if (t->tick) {

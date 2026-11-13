@@ -1518,6 +1518,22 @@ static float blend_frame(u64 ns) {
     }
     return blend_yaw(blend_transform + 0xc0);
 }
+/* At 30 FPS with real jitter every frame runs the script exactly once: no skip, no double. */
+static void test_script_tick_30(void) {
+    static const u64 jitter[8] = {33000000, 33600000, 33200000, 33500000, 33100000, 33600000, 33050000, 33400000};
+    ScriptTick tick;
+    for (unsigned set = 0; set < 3; set++) {
+        memset(&tick, 0, sizeof tick);
+        for (unsigned k = 0; k < 9000; k++) {
+            /* Uneven around 1/30 s, always a little short, and always a little long. */
+            const u64 ns = set == 0 ? jitter[k % 8] : set == 1 ? 33000000 : 33600000;
+            assert(script_tick_decide(&tick, k + 1, ns) == 1);
+            /* The same frame asked again gives the same answer and no second tick. */
+            assert(script_tick_decide(&tick, k + 1, ns) == 1);
+        }
+        assert(tick.ticks == 9000 && tick.frames == 9000);
+    }
+}
 static void test_rotation_blend(void) {
     /* At 30 FPS nothing is written: the transform is the script's rotation on every frame. */
     blend_reset();
@@ -1753,6 +1769,7 @@ int main(void) {
     test_sequence();
     test_sequence_even();
     test_script_tick();
+    test_script_tick_30();
     test_rotation_blend();
     test_script_window();
     test_fail_safe();
