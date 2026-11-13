@@ -285,3 +285,28 @@ The ride controller's update `main+2537B28` runs once per rendered frame and cou
 the swap that takes about 0.6 s at 30 FPS took 0.17 to 0.24 s unlocked. With a target rate, `SNX_ARCEUS_RIDE_SWAP_FIX=1`
 lets the waits count 30 times a second: on the other frames a running count goes in one higher and comes out as it was.
 A count the call did not touch is left as the game set it. `arceus-ride-swap` lines log counts that start or end.
+
+## Wild Pokémon attacks
+
+The ground movement helper `main+1982408` has a direct-position branch that sets the probed position by speed/30 on
+every rendered frame. With a target rate, `SNX_ARCEUS_DIRECT_MOVE_FIX=1` scales that position step by the elapsed
+frame time. It only changes short steps from the guarded branch. The host test compares a half-second, 10-unit/s move
+at 30, 60, 190 and 300 FPS.
+
+Wild field moves update at `main+1DC32C0`. The observed attack uses the wait at `+3B0` and frame count at `+370`;
+`SNX_ARCEUS_FIELD_WAZA_FIX=1` holds them on frames without a 30 Hz tick. The measured 35-frame wait and 75-frame
+count lasted about 1.13 s and 2.47 s unlocked, close to their authored 1.17 s and 2.5 s. The wrapper also holds
+`+218` and scales the turn at `+3AC`, based on static code reading and host tests. Those states were not observed in
+the six play sessions, so that part has not been gameplay-validated.
+
+The field attack object update at `main+1D91DF4` counts the warning and attack life in `+5E4` and `+5E8` calls.
+`SNX_ARCEUS_WAZA_OBJECT_FIX=1` advances those counters on 30 Hz ticks. It also holds `+5F0`, the terrain-hit
+countdown, at the same rate. The host test checks 9- and 15-frame waits and the 6-frame terrain hold at 30, 60, 190
+and 300 FPS. In play, the fix restored Luxio's warning before its shot.
+
+The field shot update at `main+1DBF4F4` moves a projectile or places it according to whole frame counters. With a
+target rate, `SNX_ARCEUS_WAZA_SHOT_FIX=1` runs that update on 30 Hz ticks. Value `2` also blends the drawn transform
+between those updates, with a position up to one tick behind the game state. Value `1` produced the expected speed
+but visibly stepped at high frame rates. Value `2` flew smoothly and left Luxio cleanly in the test session. A later
+30 FPS comparison found that its target tracking may be weaker at unlocked rates, so tracking parity remains to be
+confirmed.

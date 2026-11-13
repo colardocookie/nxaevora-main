@@ -2831,6 +2831,24 @@ static LedgeWindow ledge_window;
 static LedgeFlush ledge_flush;
 static _Thread_local u64 ledge_current_state;
 static GuestFn ledge_originals[2], ledge_end_originals[2], ledge_set_position_original;
+static int ledge_fix_enabled;
+/* Only the ground move's direct position branch uses speed/30 as a position delta. */
+#define DIRECT_MOVE_RETURN 0x1982e70
+static int direct_move_fix;
+static u64 trajectory_transform(u64 object) {
+    if (!readable(object + 0x1a8, 8)) return 0;
+    const u64 handle = gr64(object + 0x1a8);
+    if (!handle || !readable(handle, 0x20) || !gr32(handle + 0xc)) return 0;
+    const u64 target = gr64(handle + 0x18);
+    return target > 0x50 && readable(target - 0x50, 0x180) ? target - 0x50 : 0;
+}
+static int direct_move_scale(const float current[3], const float requested[3], float ratio, float out[3]) {
+    const float d[3] = {requested[0] - current[0], requested[1] - current[1], requested[2] - current[2]};
+    const float length = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (!(ratio > 0.0f) || !(ratio < 1.0f) || !isfinite(length) || !(length < 2.0f)) return 0;
+    for (int k = 0; k < 3; k++) out[k] = current[k] + d[k] * ratio;
+    return 1;
+}
 /* Calls the original set position 1983770 on controller from inside a wrapper, keeping every
    register and pc as they were, so the wrapper's own call goes on unchanged. The arguments go
    through the frame-step page, +100 and +110. */
@@ -2862,6 +2880,20 @@ static int ledge_take_flush(LedgeFlush* out) {
     ledge_flush.valid = 0;
     pm_unlock(&ledge_lock);
     return valid;
+}
+static void ledge_set_position(CPU* c, u64 entry);
+static int set_position_wrap_init(void) {
+    if (ledge_set_position_original) return 1;
+    /* SUB SP,SP,#0xC0, then MOV X19,X0 and the +628 load after it. */
+    const u64 set = main_base + 0x1983770;
+    if (!covers_exactly(set, 0xb88) || !readable(set, 0xb88) || gr32(set) != 0xd10303ff ||
+        gr32(set + 0x20) != 0xaa0003f3 || gr32(set + 0x24) != 0xf9431400) return 0;
+    gw32(set + 0x20, 0x91000013);
+    jit_code_changed(set, 0xb88);
+    ledge_set_position_original = jit_wait(set);
+    if (!ledge_set_position_original) return 0;
+    __atomic_store_n(&g_disp[(set - g_code_lo) / 4], ledge_set_position, __ATOMIC_RELEASE);
+    return 1;
 }
 static void ledge_update(CPU* c, u64 entry, unsigned post) {
     const u64 object = c->x[0];
@@ -2921,11 +2953,11 @@ static void ledge_end(CPU* c, u64 entry, unsigned finish) {
    ride goes to the previous script target, and any other caller on the controller ends steering. */
 static void ledge_set_position(CPU* c, u64 entry) {
     const u64 object = c->x[0], caller = c->x[30];
-    if (caller != main_base + 0x1ff6b5c) {
+    if (ledge_fix_enabled && caller != main_base + 0x1ff6b5c) {
         pm_lock(&ledge_lock);
         ledge_foreign_position(&ledge_window, &ledge_flush, object);
         pm_unlock(&ledge_lock);
-    } else if (readable(c->x[1], 16) && readable(c->x[2], 16)) {
+    } else if (ledge_fix_enabled && readable(c->x[1], 16) && readable(c->x[2], 16)) {
         float in[4], direction[4], out[4];
         for (int k = 0; k < 4; k++) {
             in[k] = guest_float(c->x[1] + 4 * k);
@@ -2943,7 +2975,24 @@ static void ledge_set_position(CPU* c, u64 entry) {
             c->x[1] = scratch;
         }
     }
+    const u64 position = c->x[1], caller_pc = c->x[30];
+    u32 saved[3];
+    int scaled = 0;
+    if (direct_move_fix && caller_pc == main_base + DIRECT_MOVE_RETURN && readable(position, 12) && writable(position, 12)) {
+        const u64 transform = trajectory_transform(object);
+        float current[3], requested[3], out[3];
+        for (int k = 0; transform && k < 3; k++) {
+            current[k] = guest_float(transform + 0xd0 + 4 * k);
+            requested[k] = guest_float(position + 4 * k);
+        }
+        scaled = transform && direct_move_scale(current, requested, frame_step_ratio(), out);
+        for (int k = 0; scaled && k < 3; k++) {
+            saved[k] = gr32(position + 4 * k);
+            guest_float_write(position + 4 * k, out[k]);
+        }
+    }
     ledge_set_position_original(c, entry);
+    for (int k = 0; scaled && k < 3; k++) gw32(position + 4 * k, saved[k]);
 }
 static void ledge_end_start(CPU* c, u64 entry) { ledge_end(c, entry, 0); }
 static void ledge_end_finish(CPU* c, u64 entry) { ledge_end(c, entry, 1); }
@@ -2992,21 +3041,251 @@ static void ledge_fix_init(void) {
     ledge_originals[1] = originals[1];
     ledge_end_originals[0] = originals[2];
     ledge_end_originals[1] = originals[3];
-    /* SUB SP,SP,#0xC0, then MOV X19,X0 and the +628 load after it. */
-    const u64 set = main_base + 0x1983770;
-    if (covers_exactly(set, 0xb88) && readable(set, 0xb88) && gr32(set) == 0xd10303ff &&
-        gr32(set + 0x20) == 0xaa0003f3 && gr32(set + 0x24) == 0xf9431400) {
-        gw32(set + 0x20, 0x91000013); /* Equivalent MOV X19,X0 -> ADD X19,X0,#0. */
-        jit_code_changed(set, 0xb88);
-        ledge_set_position_original = jit_wait(set);
-    }
-    if (!ledge_set_position_original) WARN("arceus-ledge: smoothing refused set position guard\n");
+    ledge_fix_enabled = 1;
+    if (!set_position_wrap_init()) WARN("arceus-ledge: smoothing refused set position guard\n");
     for (unsigned k = 0; k < 4; k++)
         __atomic_store_n(&g_disp[(main_base + offsets[k] - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
-    if (ledge_set_position_original)
-        __atomic_store_n(&g_disp[(set - g_code_lo) / 4], ledge_set_position, __ATOMIC_RELEASE);
     LOG("arceus-ledge: EXPERIMENT: Sneasler ledge move script runs 30 times per second, smoothing %s\n",
         ledge_set_position_original ? "on" : "off");
+}
+
+static void direct_move_fix_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_DIRECT_MOVE_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-direct-move: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 owner = main_base + 0x1982408, site = main_base + 0x1982e6c, step = main_base + 0x1982930;
+    if (!covers_exactly(owner, 0xdd4) || !readable(owner, 0xdd4) || gr32(site) != 0x94000241 ||
+        gr32(step) != 0x52911128 || gr32(step + 4) != 0x72a7a108 || gr32(owner + 0x54c) != 0x94000323 ||
+        gr32(owner + 0xa08) != 0x394183e8) {
+        WARN("arceus-direct-move: refused instruction guard\n");
+        return;
+    }
+    if (!set_position_wrap_init()) {
+        WARN("arceus-direct-move: refused, set position 1983770 is not wrapped\n");
+        return;
+    }
+    __atomic_store_n(&direct_move_fix, 1, __ATOMIC_RELEASE);
+    LOG("arceus-direct-move: EXPERIMENT: the ground move's direct position step follows elapsed time\n");
+}
+
+static GuestFn field_waza_original;
+static int field_waza_fix, field_waza_holding;
+static float field_waza_fraction;
+static u64 field_waza_frame = ~0ull;
+static int field_waza_hold(u64 frame, float ratio) {
+    if (frame == field_waza_frame) return field_waza_holding;
+    field_waza_frame = frame;
+    field_waza_fraction += ratio;
+    field_waza_holding = field_waza_fraction < 0.9999f;
+    if (!field_waza_holding) field_waza_fraction = field_waza_fraction > 1.0f ? field_waza_fraction - 1.0f : 0.0f;
+    return field_waza_holding;
+}
+static void field_waza_update(CPU* c, u64 entry) {
+    static const u32 countdowns[2] = {0x218, 0x3b0};
+    const u64 object = c->x[0];
+    const int known = writable(object, 0x3b8);
+    const float ratio = frame_step_ratio();
+    const int scale = field_waza_fix && known && ratio < 1.0f;
+    const int hold = scale && field_waza_hold(__atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE), ratio);
+    int before[2] = {0, 0};
+    u32 count = 0, turn = 0, shown = 0;
+    if (known) {
+        count = gr32(object + 0x370);
+        turn = gr32(object + 0x3ac);
+    }
+    for (unsigned k = 0; known && k < 2; k++) {
+        before[k] = (int)gr32(object + countdowns[k]);
+        if (hold && before[k] > 0) gw32(object + countdowns[k], (u32)(before[k] + 1));
+    }
+    if (scale) {
+        shown = float_bits(guest_float(object + 0x3ac) * ratio);
+        gw32(object + 0x3ac, shown);
+    }
+    field_waza_original(c, entry);
+    if (!known || !writable(object, 0x3b8)) return;
+    if (scale && gr32(object + 0x3ac) == shown) gw32(object + 0x3ac, turn);
+    if (hold && gr32(object + 0x370) == count + 1) gw32(object + 0x370, count);
+    for (unsigned k = 0; k < 2; k++)
+        if (hold && before[k] > 0 && gr32(object + countdowns[k]) == (u32)(before[k] + 1))
+            gw32(object + countdowns[k], (u32)before[k]);
+}
+static void field_waza_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_FIELD_WAZA_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-field-waza: fix refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x1dc32c0;
+    if (!covers_exactly(pc, 0x26c0) || !readable(pc, 0x26c0) || gr32(pc) != 0x6db63bef ||
+        gr32(pc + 0x34) != 0xaa0003f3 || gr32(pc + 0x30c) != 0xb943b268 || gr32(pc + 0x310) != 0x71000508 ||
+        gr32(pc + 0x3b8) != 0xb9437269 || gr32(pc + 0xf4c) != 0xb9421a69 || gr32(pc + 0xf7c) != 0xbd43ae60 ||
+        gr32(pc + 0xf8c) != 0x51000528) {
+        WARN("arceus-field-waza: refused guard at main+1dc32c0\n");
+        return;
+    }
+    if (!frame_step_cell_init("arceus-field-waza")) return;
+    gw32(pc + 0x34, 0x91000013);
+    jit_code_changed(pc, 0x26c0);
+    field_waza_original = jit_wait(pc);
+    if (!field_waza_original) {
+        WARN("arceus-field-waza: compile failed at main+1dc32c0\n");
+        return;
+    }
+    field_waza_fix = 1;
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], field_waza_update, __ATOMIC_RELEASE);
+    LOG("arceus-field-waza: EXPERIMENT: field move timers and turns use 30 Hz time\n");
+}
+
+static GuestFn waza_object_original;
+static int waza_object_fix;
+static void waza_object_held(CPU* c, u64 entry, u64 object) {
+    static const u32 counters[2] = {0x5e4, 0x5e8};
+    u32 was[2];
+    for (unsigned k = 0; k < 2; k++) {
+        was[k] = gr32(object + counters[k]);
+        if (was[k]) gw32(object + counters[k], was[k] - 1);
+    }
+    const u32 terrain = gr32(object + 0x5f0);
+    if (terrain && terrain != ~0u) gw32(object + 0x5f0, terrain + 1);
+    waza_object_original(c, entry);
+    if (!writable(object, 0x5f4)) return;
+    if (terrain && terrain != ~0u && gr32(object + 0x5f0) == terrain + 1) gw32(object + 0x5f0, terrain);
+    for (unsigned k = 0; k < 2; k++) {
+        const u32 now = gr32(object + counters[k]);
+        if (was[k] && now == was[k] - 1) gw32(object + counters[k], was[k]);
+        else if (!was[k] && now == 1) gw32(object + counters[k], 0);
+    }
+}
+static void waza_object_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    pm_lock(&step_lock);
+    const unsigned ticks = blink_ticks;
+    pm_unlock(&step_lock);
+    if (!waza_object_fix || ticks || !writable(object, 0x5f4)) waza_object_original(c, entry);
+    else waza_object_held(c, entry, object);
+}
+static void waza_object_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_WAZA_OBJECT_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-waza-object: fix refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x1d91df4;
+    if (!covers_exactly(pc, 0x6478) || !readable(pc, 0x6478) || gr32(pc) != 0x6db63bef ||
+        gr32(pc + 0x30) != 0xb945ec08 || gr32(pc + 0x34) != 0xaa0003f3) {
+        WARN("arceus-waza-object: refused instruction/function guard\n");
+        return;
+    }
+    gw32(pc + 0x34, 0x91000013);
+    jit_code_changed(pc, 0x6478);
+    waza_object_original = jit_wait(pc);
+    if (!waza_object_original) {
+        WARN("arceus-waza-object: compile failed\n");
+        return;
+    }
+    waza_object_fix = 1;
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], waza_object_update, __ATOMIC_RELEASE);
+    LOG("arceus-waza-object: EXPERIMENT: field attack counters and terrain hit hold use 30 Hz time\n");
+}
+
+#define SHOT_OBJECTS 8
+typedef struct { u64 object, seen_ns; float from[3], to[3]; int runs; } ShotObject;
+static ShotObject shot_objects[SHOT_OBJECTS];
+static PMutex shot_lock = PMUTEX_INIT;
+static GuestFn waza_shot_original;
+static int waza_shot_fix;
+static ShotObject* shot_slot(u64 object, u64 now) {
+    ShotObject* oldest = &shot_objects[0];
+    for (unsigned k = 0; k < SHOT_OBJECTS; k++) {
+        if (shot_objects[k].object == object && now - shot_objects[k].seen_ns < 500000000ull) return &shot_objects[k];
+        if (shot_objects[k].seen_ns < oldest->seen_ns) oldest = &shot_objects[k];
+    }
+    *oldest = (ShotObject){.object = object};
+    return oldest;
+}
+static void shot_between(const ShotObject* o, float share, float out[3]) {
+    float d[3], length = 0.0f;
+    for (int k = 0; k < 3; k++) d[k] = o->to[k] - o->from[k], length += d[k] * d[k];
+    if (!(share >= 0.0f)) share = 0.0f;
+    if (share > 1.0f || o->runs < 2 || !(length < 25.0f)) share = 1.0f;
+    for (int k = 0; k < 3; k++) out[k] = o->from[k] + d[k] * share;
+}
+static void shot_transform_write(u64 transform, const float pos[3]) {
+    for (int k = 0; k < 3; k++) guest_float_write(transform + 0xd0 + 4 * k, pos[k]);
+    *GP(transform + 0xe0) = 1;
+}
+static void waza_shot_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0], return_pc = c->x[30];
+    pm_lock(&step_lock);
+    const unsigned ticks = blink_ticks;
+    const float share = (float)blink_remainder / 1e9f;
+    pm_unlock(&step_lock);
+    const int hold = waza_shot_fix && !ticks;
+    const u64 now = plat_ns();
+    u64 transform = waza_shot_fix == 2 ? trajectory_transform(object) : 0;
+    if (transform && !writable(transform, 0xe4)) transform = 0;
+    if (transform && !hold) {
+        pm_lock(&shot_lock);
+        ShotObject* o = shot_slot(object, now);
+        const int have = o->runs > 0;
+        float real[3];
+        for (int k = 0; !have && k < 3; k++) o->to[k] = guest_float(transform + 0xd0 + 4 * k);
+        if (!have) o->runs = 1, o->seen_ns = now;
+        memcpy(real, o->to, sizeof real);
+        pm_unlock(&shot_lock);
+        if (have) shot_transform_write(transform, real);
+    }
+    if (hold) c->pc = return_pc;
+    else waza_shot_original(c, entry);
+    if (transform && readable(transform, 0xe4)) {
+        float drawn[3];
+        pm_lock(&shot_lock);
+        ShotObject* o = shot_slot(object, now);
+        const int have = o->runs > 0;
+        if (!hold) {
+            memcpy(o->from, o->to, sizeof o->from);
+            for (int k = 0; k < 3; k++) o->to[k] = guest_float(transform + 0xd0 + 4 * k);
+            if (o->runs < 2) o->runs++;
+        }
+        o->seen_ns = now;
+        shot_between(o, share, drawn);
+        pm_unlock(&shot_lock);
+        if (have) shot_transform_write(transform, drawn);
+    }
+}
+static void waza_shot_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_WAZA_SHOT_FIX");
+    if (!main_base || !enabled || (strcmp(enabled, "1") && strcmp(enabled, "2"))) return;
+    if (!clocks_installed) {
+        WARN("arceus-waza-shot: fix refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x1dbf4f4;
+    if (!covers_exactly(pc, 0x2c90) || !readable(pc, 0x2c90) || gr32(pc) != 0xd10783ff ||
+        gr32(pc + 0x24) != 0xb946c008 || gr32(pc + 0x28) != 0xaa0003f3) {
+        WARN("arceus-waza-shot: refused instruction/function guard\n");
+        return;
+    }
+    gw32(pc + 0x28, 0x91000013);
+    jit_code_changed(pc, 0x2c90);
+    waza_shot_original = jit_wait(pc);
+    if (!waza_shot_original) {
+        WARN("arceus-waza-shot: compile failed\n");
+        return;
+    }
+    waza_shot_fix = enabled[0] == '2' ? 2 : 1;
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], waza_shot_update, __ATOMIC_RELEASE);
+    LOG("arceus-waza-shot: EXPERIMENT: shot update uses 30 Hz time, drawing %s\n",
+        waza_shot_fix == 2 ? "between ticks" : "at the tick rate");
 }
 
 void arceus_clock_post_jit(void) {
@@ -3035,6 +3314,10 @@ void arceus_clock_post_jit(void) {
     climb_step_init();
     wall_jump_fix_init();
     ledge_fix_init();
+    direct_move_fix_init();
+    field_waza_init();
+    waza_object_init();
+    waza_shot_init();
     cadence_census_init();
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     if (main_base && !experimental && probe && !strcmp(probe, "1")) {

@@ -772,6 +772,7 @@ static void smooth_start(void) {
     memset(memory, 0, sizeof memory);
     ledge_retire(&ledge_window);
     ledge_flush.valid = 0;
+    ledge_fix_enabled = 1;
     frame_step_address = 0xc00;
     main_base = fake_main;
     gw32(ledge_state + 0x6c, 7);
@@ -823,6 +824,7 @@ static void test_ledge_smoothing(void) {
     ride_script_set(50, fake_main + 0x1234);
     assert(!ledge_window.open && ride_y == 50);
     ledge_set_position_original = NULL;
+    ledge_fix_enabled = 0;
     main_base = 0;
     frame_step_address = 0;
 }
@@ -864,6 +866,174 @@ static void test_capped_fall_body(void) {
     assert(capped_fall_body(0x90000009, 0xb9400508) == 0);
     assert(capped_fall_body(0x52911128, 0xb9400508) == 0);
 }
+static void test_direct_move(void) {
+    static const unsigned rates[] = {30, 60, 190, 300};
+    for (unsigned r = 0; r < sizeof rates / sizeof rates[0]; r++) {
+        float pos[3] = {0, 0, 0};
+        const float ratio = 30.0f / rates[r];
+        for (unsigned i = 0; i < rates[r] / 2; i++) {
+            const float req[3] = {pos[0] + 10.0f / 30, 0, 0};
+            float out[3];
+            if (direct_move_scale(pos, req, ratio, out)) memcpy(pos, out, sizeof pos);
+            else { assert(rates[r] == 30); memcpy(pos, req, sizeof pos); }
+        }
+        assert(fabsf(pos[0] - 5.0f) < 0.05f);
+    }
+    const float zero[3] = {0, 0, 0}, far_point[3] = {0, 0, 2.5f};
+    float out[3];
+    assert(!direct_move_scale(zero, far_point, 0.5f, out));
+}
+
+static unsigned field_waza_attacks;
+static float field_waza_turned;
+static void field_waza_mock(CPU* c, u64 entry) {
+    (void)entry;
+    const u64 o = c->x[0];
+    const int wait = (int)gr32(o + 0x3b0) - 1;
+    if (wait >= 0) {
+        gw32(o + 0x3b0, (u32)wait);
+        if (!wait) field_waza_attacks++, gw32(o + 0x218, 20);
+    } else if (gr32(o + 0x218)) {
+        field_waza_turned += guest_float(o + 0x3ac) / 20.0f;
+        gw32(o + 0x218, gr32(o + 0x218) - 1);
+        gw32(o + 0x370, gr32(o + 0x370) + 1);
+    }
+}
+static void test_field_waza(void) {
+    static const u64 steps[] = {33333334, 16666667, 8333333, 5555556, 11111111};
+    const ArceusStep saved_step = step;
+    const u64 saved_frames = frame_step_frames;
+    field_waza_original = field_waza_mock;
+    for (unsigned k = 0; k < sizeof steps / sizeof steps[0]; k++) {
+        const u64 o = 1024;
+        memset(memory, 0, sizeof memory);
+        field_waza_fix = 1, field_waza_fraction = 0, field_waza_frame = ~0ull, frame_step_frames = 0;
+        step.step = steps[k];
+        gw32(o + 0x3b0, 15);
+        guest_float_write(o + 0x3ac, 90.0f);
+        field_waza_attacks = 0, field_waza_turned = 0;
+        u64 elapsed = 0, attack_at = 0;
+        while (gr32(o + 0x3b0) || gr32(o + 0x218)) {
+            frame_step_frames++;
+            CPU c = {.x = {[0] = o}};
+            field_waza_update(&c, 16);
+            elapsed += steps[k];
+            if (field_waza_attacks && !attack_at) attack_at = elapsed;
+            assert(elapsed < 3000000000ull);
+        }
+        assert(field_waza_attacks == 1 && attack_at >= 500000000 - steps[k] && attack_at <= 500000000 + 2 * steps[k]);
+        assert(elapsed >= 1166666700 - 2 * steps[k] && elapsed <= 1166666700 + 2 * steps[k]);
+        assert(fabsf(field_waza_turned - 90.0f) < 2.7f);
+        assert(gr32(o + 0x370) == 20 && guest_float(o + 0x3ac) == 90.0f);
+    }
+    field_waza_fix = 0;
+    step = saved_step;
+    frame_step_frames = saved_frames;
+}
+
+static void waza_counter_mock(CPU* c, u64 entry) {
+    (void)entry;
+    const u64 o = c->x[0];
+    if (gr32(o + 0x5e0) < 6) {
+        gw32(o + 0x5e4, gr32(o + 0x5e4) + 1);
+        if (gr32(o + 0x5e4) >= 9) gw32(o + 0x5e0, 6);
+    } else if (gr32(o + 0x5e0) == 6) {
+        gw32(o + 0x5e8, gr32(o + 0x5e8) + 1);
+        if (gr32(o + 0x5e8) >= 15) gw32(o + 0x5e0, 8);
+    }
+    c->pc = c->x[30];
+}
+static void waza_terrain_mock(CPU* c, u64 entry) {
+    (void)entry;
+    if (gr32(c->x[0] + 0x5f0)) gw32(c->x[0] + 0x5f0, gr32(c->x[0] + 0x5f0) - 1);
+    c->pc = c->x[30];
+}
+static void test_waza_object(void) {
+    static const unsigned rates[] = {30, 60, 190, 300};
+    for (unsigned r = 0; r < sizeof rates / sizeof rates[0]; r++) {
+        memset(memory, 0, sizeof memory);
+        waza_object_fix = 1, waza_object_original = waza_counter_mock;
+        gw32(object + 0x5e0, 4);
+        u64 rem = 0, elapsed = 0, acted = 0, ended = 0;
+        while (!ended && elapsed < 3000000000ull) {
+            const u64 ns = 1000000000ull / rates[r];
+            elapsed += ns, rem += ns * 30;
+            blink_ticks = (unsigned)(rem / 1000000000), rem %= 1000000000;
+            CPU c = {.x = {[0] = object, [30] = 64}};
+            waza_object_update(&c, entry_pc);
+            if (!acted && gr32(object + 0x5e0) == 6) acted = elapsed;
+            if (gr32(object + 0x5e0) == 8) ended = elapsed;
+        }
+        assert(fabs((double)acted / 1e9 - .3) < .04 && fabs((double)(ended - acted) / 1e9 - .5) < .04);
+        memset(memory, 0, sizeof memory);
+        waza_object_original = waza_terrain_mock;
+        gw32(object + 0x5f0, 6), rem = elapsed = 0;
+        while (gr32(object + 0x5f0)) {
+            const u64 ns = 1000000000ull / rates[r];
+            elapsed += ns, rem += ns * 30;
+            blink_ticks = (unsigned)(rem / 1000000000), rem %= 1000000000;
+            CPU c = {.x = {[0] = object, [30] = 64}};
+            waza_object_update(&c, entry_pc);
+            assert(gr32(object + 0x5f0) <= 6 && elapsed < 1000000000ull);
+        }
+        assert(fabs((double)elapsed / 1e9 - .2) < .04);
+    }
+    waza_object_fix = 0, blink_ticks = 0;
+}
+
+static void waza_shot_mock(CPU* c, u64 entry) {
+    (void)entry;
+    guest_float_write(c->x[0] + 0x6b0, guest_float(c->x[0] + 0x6b0) + .5f);
+    gw32(c->x[0] + 0x6d4, gr32(c->x[0] + 0x6d4) + 1);
+    c->pc = c->x[30];
+}
+static void waza_shot_transform_mock(CPU* c, u64 entry) {
+    (void)entry;
+    guest_float_write(3270 + 0xd0, guest_float(3270 + 0xd0) + .5f);
+    gw32(c->x[0] + 0x6d4, gr32(c->x[0] + 0x6d4) + 1);
+    c->pc = c->x[30];
+}
+static void test_waza_shot(void) {
+    static const unsigned rates[] = {30, 60, 190, 300};
+    for (unsigned fix = 1; fix <= 2; fix++)
+        for (unsigned r = 0; r < sizeof rates / sizeof rates[0]; r++) {
+            memset(memory, 0, sizeof memory), memset(shot_objects, 0, sizeof shot_objects);
+            waza_shot_fix = (int)fix, blink_remainder = 0;
+            const u64 transform = 3270;
+            if (fix == 2) {
+                const u64 handle = 3200, target = 3350;
+                memcpy(GP(object + 0x1a8), &handle, 8), memcpy(GP(handle + 0x18), &target, 8);
+                *GP(handle + 0xc) = 1, waza_shot_original = waza_shot_transform_mock;
+                assert(trajectory_transform(object) == transform);
+                guest_float_write(transform + 0xd0, 100.0f);
+                guest_float_write(transform + 0xd4, 50.0f);
+                guest_float_write(transform + 0xd8, -20.0f);
+            } else waza_shot_original = waza_shot_mock;
+            for (unsigned frame = 0; frame < rates[r]; frame++) {
+                const u64 ns = 1000000000ull / rates[r];
+                blink_remainder += ns * 30;
+                blink_ticks = (unsigned)(blink_remainder / 1000000000), blink_remainder %= 1000000000;
+                CPU c = {.x = {[0] = object, [30] = 64}};
+                waza_shot_update(&c, entry_pc);
+                assert(c.pc == 64);
+                if (fix == 2 && !frame) {
+                    assert(guest_float(transform + 0xd0) == 100.0f);
+                    assert(guest_float(transform + 0xd4) == 50.0f);
+                    assert(guest_float(transform + 0xd8) == -20.0f);
+                }
+            }
+            if (fix == 1) {
+                assert(fabsf(guest_float(object + 0x6b0) - 15.0f) <= .5f);
+                assert(gr32(object + 0x6d4) >= 29 && gr32(object + 0x6d4) <= 30);
+            } else {
+                assert(guest_float(transform + 0xd0) > 114.0f && guest_float(transform + 0xd0) < 115.1f);
+                assert(guest_float(transform + 0xd4) == 50.0f && guest_float(transform + 0xd8) == -20.0f);
+                assert(gr32(object + 0x6d4) >= 29 && gr32(object + 0x6d4) <= 30);
+            }
+        }
+    waza_shot_fix = 0, blink_ticks = 0, blink_remainder = 0;
+}
+
 int main(void) {
     test_capped_fall_body();
     test_fade_slots_free();
@@ -875,7 +1045,8 @@ int main(void) {
     test_air_steering();
     const char* disabled[] = {"SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60", "SNX_ARCEUS_CLOCK_TRACE",
         "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_CAMERA_TRACE",
-        "SNX_ARCEUS_TIMING_RESEARCH"};
+        "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_DIRECT_MOVE_FIX", "SNX_ARCEUS_FIELD_WAZA_FIX",
+        "SNX_ARCEUS_WAZA_OBJECT_FIX", "SNX_ARCEUS_WAZA_SHOT_FIX"};
     for (unsigned i = 0; i < sizeof disabled / sizeof disabled[0]; i++) flag(disabled[i], "");
     test_sequence();
     test_diagnostics();
@@ -885,6 +1056,10 @@ int main(void) {
     test_ledge();
     test_ledge_smoothing();
     test_target();
+    test_direct_move();
+    test_field_waza();
+    test_waza_object();
+    test_waza_shot();
     puts("arceus_clock: all checks passed");
     return 0;
 }
