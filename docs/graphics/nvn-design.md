@@ -933,7 +933,8 @@ unknown part stops with a log line.
    fails the initialize with a log line. This is the first work of 3c, because the clear needs it.
 8. **Queue and frame.** `QueueRec` gets the pending frame: the lists of `Submit` (the handle array is copied at once), the tokens of
    `FenceSync`, and the last pool objects. `QueuePresentTexture(queue, window, index)` closes the pending frame and calls
-   `gpu_call` once. A bad index (not ACQUIRED) fails with a log line and shows nothing.
+   `gpu_call` once. A bad index (not ACQUIRED) fails with a log line and shows nothing. Changed in 4-u3-4: `QueueFlush` and
+   `QueueFinish` also post the pending frame, as a job without a window ("Queue fences and flush jobs (4-u3-4)" below).
 9. **Frame job.** `stream_run(1)`, `mem_may_have_changed`, set the window image as color target 0 and the clip (the tail entry of the
    library does this, the game sets its own targets later), replay the lists, the last method, `stream_end`, `stream_run(0)`, show
    the image with `present_buffer` (address from the texture storage, layout from the builder fields), set the image FREE, signal
@@ -944,7 +945,8 @@ unknown part stops with a log line.
 10. **Sync.** `NVN_SYNC_UNSIGNALED`, `FENCED` (a frame will signal it) and `SIGNALED`. `FenceSync` with nothing pending signals at
     once, otherwise it attaches a token and sets `FENCED`. `SyncWait` waits on a condition variable with the timeout in
     nanoseconds (-1 no limit), outside `objs_lock`, never on the GPU thread. Results: 0 already signaled, 1 signaled after a wait,
-    2 timeout, 3 failed (a sync never fenced, as now). `Acquire` still sets the sync to `SIGNALED`.
+    2 timeout, 3 failed (a sync never fenced, as now). `Acquire` still sets the sync to `SIGNALED`. Replaced in 4-u3-4 by the
+    syncpoint fence of the queue ("Queue fences and flush jobs (4-u3-4)" below).
 11. **Window images.** The states are FREE, ACQUIRED and PRESENTED. `Present` sets PRESENTED, the frame job sets FREE. The third
     `Acquire` then finds a FREE image.
 12. **Log.** One line for each frame job: frame number, lists, ops replayed, ops of each kind skipped, missing-function calls in the
@@ -967,3 +969,45 @@ unknown part stops with a log line.
 3. Command buffer record, handles and the recorder with host tests (decisions 3 to 5).
 4. Replay and frame job (decisions 6 to 12). Run: the user starts the title scene with `nvn_native=1`.
 5. Selftest cases S and Y, the mutation, the first execution test (decision 13). Run: `nvn_selftest=1`.
+
+## Queue fences and flush jobs (4-u3-4, 2026-11-13)
+
+The analysis for the execution test found three faults in decisions 8 and 10:
+
+- The frame job signals its tokens in `frame_finish`, on the GPU thread. `ReportValue` and `ReportCounter` go through the release
+  queue (`vk/release.c`), which performs them when the GPU has finished the submit. So `SyncWait` can return before the report
+  word is in memory. On the console the fence is a release after the reports in the same stream, so the CPU sees them first.
+- `QueueFenceSync` with nothing pending signals at once, also when a posted frame job has not run yet.
+- `SyncWait` returns 0 after a real wait. NVN gives 1 (`CONDITION_SATISFIED`) when the sync was signaled during the wait.
+
+Not a fault: a GPU copy result is an owned range (`vk/dma.c`, `vk_own_publish`). A CPU access to an owned page traps and lands the
+bytes first (`memory/own.c`). Without traps the result lands at publish. So the CPU sees copy results without a host action in the
+mapped-range functions, and those stay no-ops.
+
+The new design uses the syncpoint of the queue, as the console does. Each `QueueRec` already has its own syncpoint (`channel_id`,
+from `syncpt_alloc`), and the replay skips the library's own syncpoint methods (decision 9), so the host is the only user.
+
+1. **Post.** One helper posts the pending frame of a queue: Present (with the window), `QueueFlush`, `QueueFinish` and
+   `QueueFenceSync` with the flag `FLUSH_FOR_CPU` (bit 0) (without a window). It takes the pending frame, carries the init words
+   once, promises one increment (`syncpt_promise(id, 1)`), keeps the value as the last posted value of the queue, gives this value
+   to every sync whose newest token is in the frame, and calls `gpu_call`. Present always posts. A flush, a finish or a fence with
+   an empty pending frame posts nothing: the last posted value already covers all the work of the queue.
+2. **Job end.** After the replay and the flush of the 3D state, and before `stream_end`, the job increments the syncpoint through
+   the stream (`stream_incr`, the order of `job_end` in `gpu.c`). The renderer performs this increment after the releases of the
+   job, so the reports are in memory before the fence is reached.
+3. **Job without a window.** It does not set the window target, does not show an image, does not count a frame (`g_frames`,
+   cheats) and does not free a window image. The 3D state of the channel stays as the lists left it, as the console keeps the
+   channel state between submissions. Its log line says `flush`, and a missing image is not abnormal for it.
+4. **Sync.** States: `UNSIGNALED`, `PENDING` (a token in a pending frame, no value yet), `FENCED` (syncpoint id and value) and
+   `SIGNALED` (window acquire). A new fence of a sync replaces the old one (a serial in the token). `QueueFenceSync` with an empty
+   pending frame uses the last posted value of the queue, or the current syncpoint value when the queue never posted.
+5. **SyncWait.** `UNSIGNALED` gives 3. `SIGNALED`, or `FENCED` with the value reached at the call, gives 0. Otherwise the caller
+   waits outside `objs_lock`: first on `frame_done_cv` while the sync is `PENDING` (a post broadcasts), then `syncpt_wait` with
+   the time that is left. Reached after a wait gives 1, the end of the time gives 2.
+6. **QueueFinish.** It posts the pending frame and waits with `syncpt_wait` for the last posted value. It waits for the GPU work
+   and its releases, not only for the end of the frame jobs.
+7. **QueueWaitSync.** Unchanged: the one GPU thread runs the jobs in the order of the posts. A `PENDING` sync of another queue is
+   not posted yet, so the order can be wrong: a log line names it.
+
+Open, the title run answers it: whether Arceus calls `QueueFlush` or `QueueFinish` with pending lists. The first flush jobs write a
+log line each.

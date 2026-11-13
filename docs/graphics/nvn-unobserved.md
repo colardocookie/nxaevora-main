@@ -110,6 +110,31 @@ It runs real work on the host path and compares the result with a value that the
 
 A pass sets `exec` for the functions in the test. It does not set `seen` either.
 
+Design of 4-u3-4 (2026-11-13). The test needs `nvn_native=1` (the host queue records, the frame jobs), so it is a separate launch
+from the selftest (which refuses `nvn_native=1`). It uses the queue fences and flush jobs of `nvn-design.md`, "Queue fences and
+flush jobs (4-u3-4)". It starts once, on the game thread, after the first `nvnQueueInitialize` of the game made its host record
+(the device is that of the game queue, read only), before the first game submission. It makes its own queues, pools, buffers,
+textures, events, syncs and command buffers in its own arena, and calls the host handlers directly. Each wait has a time limit, so
+a fault fails the case and does not stop the game. Mutation: `nvn_selftest_mutate` set to a case name changes one host argument.
+
+- E1 fence order: two lists (each a clear of an own texture), a `QueueFenceSync` after each, then `QueueFlush`. `SyncWait` on the
+  second fence returns 0 or 1 in the limit, then `SyncWait` on the first with limit 0 returns 0.
+- E2 GPU to CPU: a clear with a known color, `CopyTextureToBuffer` into a mapped buffer, fence, flush, wait,
+  `BufferInvalidateMappedRange`: the CPU reads the bytes that it computes from the color and the format.
+- E3 CPU to GPU: the CPU writes a pattern into a mapped buffer, `BufferFlushMappedRange` (and the pool form),
+  `CopyBufferToBuffer` to a second buffer, fence, flush, wait, invalidate: the CPU reads the pattern from the second buffer.
+- E4 timeout and failure: a fence behind a pending list without a flush, `SyncWait` with a short limit returns 2. Then
+  `QueueFlush`, and `SyncWait` returns 1. A sync that was never fenced returns 3.
+- E5 events and reports: command buffer `SignalEvent` (mode write, then mode add), `ReportValue` and `ReportCounter` (the
+  timestamp) into a mapped buffer, fence, flush, wait. `EventGetValue` gives the sum, the report words hold the value and a
+  timestamp that is not 0. This case checks the order of the reports and the fence. The CPU `EventSignal` and the event getters
+  are checked on the side.
+- E6 two queues: queue 1 clears and fences, queue 2 does `QueueWaitSync` on that fence, copies the cleared texture into a buffer,
+  and `QueueFinish`. After the finish, the copy is in the buffer without a `SyncWait`.
+
+The GL sync rows (`SyncCreateGLSync`, `SyncInitializeFromFencedGLSync`) fail with "no backend" by design: they get a reason, not a
+case.
+
 ### Introduction in stage 3 (a few representative functions)
 
 The selftest starts in stage 3 with a few functions, so that the harness is proven before 523 functions use it. The set covers
