@@ -252,6 +252,9 @@ functions that no run reached stay `implemented` plus `unit`, `selftest` or `exe
   all 523 rows are `implemented`. The setting `nvn_native_missing` exists with the default 1 (stop). Tests: `nvn_params`
   (`nvn_proc_name_index`, `nvn_proc_table_check`; mutants of the sort check, the end bound, the alignment and the search
   fail the test).
+  Run of 2026-11-13 (update program to the title, the code of `8237aff`, `nvn_native=1`, `nvn_native_missing=1`): the 523
+  name answers are the same as in the run before the change (all `nvn:` lines), 1200 frames with no fault, drop or
+  missing call, and the exit report has 522 resolved addresses with 0 without a handler.
 
 Exit condition of this part: every one of the 523 rows is `implemented` and has `unit`, `selftest` or `exec` with its scope. The
 rows that no game run reached are listed as "not verified in the game". The default of missing functions is stop. A function with a
