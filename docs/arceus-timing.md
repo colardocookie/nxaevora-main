@@ -17,7 +17,7 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | Switch | Default | What `=0` does |
 | --- | --- | --- |
 | `SNX_ARCEUS_TIMING_FIXES` | on | Installs nothing and suppresses the traces, research probes and fixed-resolution hook too. |
-| `SNX_ARCEUS_TARGET_FPS` | runtime setting | Not a boolean: unset or empty keeps the runtime's `fps_limit` and does not write `g_opt_fps`; the initial step follows that limit. `60`, `120`, `unlocked` or `0` set the limit; other values are refused. |
+| `SNX_ARCEUS_TARGET_FPS` | runtime setting | Not a boolean: unset or empty keeps the runtime's `fps_limit` and does not write `g_opt_fps` (unless legacy `FPS60=1` is set). At game pace or 30 FPS and below, nothing installs and one reason line is logged. Above 30 FPS or at 0 (unlimited), clocks and defaults install. This choice is made at startup. `60`, `120`, `unlocked` or `0` set the limit; other values are refused. |
 | `SNX_ARCEUS_FPS60` | off | Legacy alias; `=1` selects 60 FPS. |
 | `SNX_ARCEUS_PHYSICS_TIMESTEP_FIX` | on | Leaves the physics step at its authored value. |
 | `SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX` | on | Leaves AI navigation at its authored step. |

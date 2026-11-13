@@ -35,7 +35,7 @@ static u64 blink_remainder;
 static unsigned blink_ticks;
 
 typedef struct {
-    int master, invalid, mode, target_fps, write_fps;
+    int master, invalid, mode, target_fps, write_fps, skip_runtime_limit;
     u64 initial_ns;
 } ArceusClockConfig;
 
@@ -85,6 +85,8 @@ static ArceusClockConfig arceus_clock_config(int runtime_fps) {
             config.mode = 2, config.target_fps = 0, config.write_fps = 1;
         else config.invalid = 1;
     }
+    config.skip_runtime_limit = !config.invalid && !config.write_fps &&
+        (runtime_fps == SNX_FPS_GAME || (runtime_fps > 0 && runtime_fps <= 30));
     if (!config.invalid)
         config.initial_ns = config.mode == 2 ? ARCEUS_UNLOCKED_INITIAL_STEP_NS
                             : config.mode == 1 ? initial_step_for_limit(config.target_fps)
@@ -92,7 +94,7 @@ static ArceusClockConfig arceus_clock_config(int runtime_fps) {
     return config;
 }
 static void arceus_clock_config_apply(ArceusClockConfig config) {
-    if (!config.master || config.invalid) return;
+    if (!config.master || config.invalid || config.skip_runtime_limit) return;
     step.initial_ns = config.initial_ns;
     if (config.write_fps) __atomic_store_n(&g_opt_fps, config.target_fps, __ATOMIC_RELAXED);
     experimental = 1;
@@ -223,6 +225,11 @@ void arceus_clock_init(void) {
     if (!config.master) return;
     if (config.invalid) {
         WARN("arceus-clock: refused unsupported target FPS (use 60, 120 or unlocked)\n");
+        return;
+    }
+    if (config.skip_runtime_limit) {
+        LOG("arceus-clock: timing layer skipped at fps_limit=%d (game pace or 30 FPS and below)\n",
+            __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED));
         return;
     }
     const char* enabled = getenv("SNX_ARCEUS_CLOCK_TRACE");
