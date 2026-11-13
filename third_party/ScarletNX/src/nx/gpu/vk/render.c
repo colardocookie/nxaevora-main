@@ -731,13 +731,10 @@ typedef struct {
     Surf* t;
 } TexRes;
 
-/* The frame pass census (SNX_PASS_CENSUS=1), read-only: what one frame is made of, for placing an upscaler. A pass
-   here is a run of draws on one set of targets. Every 1200 presents from the 900th, up to 20 times, the passes of
-   one frame are logged in order: targets with guest and image sizes and formats, the draw count, the first draw's
-   viewport and shader hashes, and the textures the fragment programs sampled. Marks: PRESENT the first pass that
-   writes the surface shown last frame, HISTORY a sampled address that was a target last frame and not yet in this
-   one, VELOCITY? a two-channel target written with a depth target bound, DEPTHREAD a sampled depth format that was
-   a target this frame. Nothing is drawn differently. */
+/* The frame pass census (SNX_PASS_CENSUS=1), read-only: every 1200 presents from the 900th, up to 20 times, the
+   passes of one frame are logged in order (a pass is a run of draws on one set of targets). Marks: PRESENT the
+   first write to the surface shown last frame, HISTORY a sample that was a target last frame only, VELOCITY? a
+   two-channel target with depth bound, DEPTHREAD a sampled depth target of this frame (docs/arceus-pass-census.md). */
 #define CENSUS_PASSES 384
 #define CENSUS_SAMPLED 12
 #define CENSUS_SEEN 96
