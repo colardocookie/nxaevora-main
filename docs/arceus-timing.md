@@ -163,7 +163,7 @@ to the color at `+540` on each active call, so fades ran four times fast at 120 
 The frame only advances once a whole 1/30 second has built up, by staging `+538` one lower before the call. The
 call that completes the last frame adds only the share up to the end, so a fade-out does not overshoot while it
 waits to finish, and the authored delta is put back after each call unless the call replaced it. The fraction is
-kept for each fade object, up to 16. It starts over when the fade starts again (`main+C21D00` and `main+C227BC`)
+kept for each fade object, up to 16. A fade-in frees its slot on the call that ends it. It starts over when the fade starts again (`main+C21D00` and `main+C227BC`)
 or when the frame, duration or state differ from what the last call left. With all slots in use a call runs as
 the original. The other fade modes are unchanged. `arceus-fade` lines count the calls.
 
@@ -236,7 +236,9 @@ The same function queues an air steering increment, direction x config x stick a
 adds to the velocity once. The script native at `main+1FF4F44`, and for one ride class `main+252B974`, call it once
 per frame, so air acceleration doubled at 60 FPS and quadrupled at 120. `SNX_ARCEUS_AIR_STEERING_FIX=1` scales a new
 steering entry by the step over 1/30 second. At 30 FPS or slower nothing is written. Both switches share one wrapper on
-`main+19843A0`, and `arceus-capped-fall` and `arceus-air-steering-fix` lines count what they change. Test
+`main+19843A0`, and `arceus-capped-fall` and `arceus-air-steering-fix` lines count what they change. With movement
+bit 1 on, which already loads the frame step into the same gravity term, the capped fall correction stays off with a
+warning and air steering still installs. Test
 `arceus_clock` checks that one second of steering entries sums to 30 authored ones at 60, 120 and uneven steps.
 
 ## Timer carry
