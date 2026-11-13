@@ -265,3 +265,13 @@ with a fixed fraction of the remaining angle per call, and the player and ride u
 so turning eased faster with the frame rate. With a target rate, `SNX_ARCEUS_TURN_FIX=1` changes the duration argument
 so the fraction becomes 1 - (1 - t)^(step x 30), the share a 30 FPS sequence covers in the same time. The 1/30 that two
 callers pass as a duration stays as it is, and AI turns go through another function, so nothing is scaled twice.
+
+## List scroll
+
+A scrolling UI list, the satchel's item list for example, keeps a scroller at `+7F8` that `main+272F150` updates once
+per rendered frame. A one-row scroll is an ease counted in updates, and when it ends while the direction is still held
+the list starts a free scroll that adds a speed per update until release. At 30 FPS the ease lasts longer than a tap.
+At 150 FPS it ends inside the tap, so a single D-pad press ran the free scroll and jumped five to seven rows. With a
+target rate, `SNX_ARCEUS_LIST_SCROLL_FIX=1` runs the scroller only on frames that complete a 1/30 second tick, so the
+ease takes its 30 FPS time. Every list that scrolls through this function steps 30 times a second, which can look less
+smooth than the frame rate. Test `arceus_clock` checks that a 100 ms tap scrolls one row at 30, 60, 150 and 300 FPS.

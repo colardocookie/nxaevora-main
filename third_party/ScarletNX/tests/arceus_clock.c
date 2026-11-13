@@ -366,6 +366,55 @@ static void test_turn(void) {
     assert(turn_duration(.2f, 1e-8f, .5f) == 1e-8f && turn_duration(0, .5f, .5f) == .5f);
     frame_step_address = 0;
 }
+/* A model of the game's scroller: an ease of 6 updates to the next row, then a free scroll per update. */
+static void list_scroll_mock(CPU* c, u64 entry) {
+    (void)entry;
+    const u64 scroller = c->x[0];
+    const u32 state = gr32(scroller + 0x1b8);
+    if (state == 1) {
+        const u32 count = gr32(scroller + 0x1bc) + 1;
+        gw32(scroller + 0x1bc, count);
+        guest_float_write(scroller + 0x1d4, (float)count / 6);
+        if (count == 6) gw32(scroller + 0x1b8, 0);
+    } else if (state == 4)
+        guest_float_write(scroller + 0x1d4, guest_float(scroller + 0x1d4) + guest_float(scroller + 0x1d8));
+    c->pc = c->x[30];
+}
+/* A tap of 100 ms scrolls the list one row at any frame rate with the fix, and several rows without it. */
+static void test_list_scroll(void) {
+    static const unsigned rates[] = {30, 60, 150, 300};
+    list_scroll_original = list_scroll_mock;
+    for (unsigned fix = 0; fix < 2; fix++)
+        for (unsigned r = 0; r < sizeof rates / sizeof rates[0]; r++) {
+            memset(memory, 0, sizeof memory);
+            gw32(object + 0x1b8, 1);
+            u64 remainder = 0, elapsed = 0;
+            unsigned eased = 0;
+            while (elapsed < 1000000000ull) {
+                const u64 ns = 1000000000ull / rates[r];
+                elapsed += ns;
+                remainder += ns * 30;
+                blink_ticks = (unsigned)(remainder / 1000000000);
+                remainder %= 1000000000;
+                const int held = elapsed <= 100000000ull;
+                /* The list: a finished ease with the direction still held starts the free scroll, a release ends it. */
+                if (!gr32(object + 0x1b8) && !eased) {
+                    eased = 1;
+                    if (held) gw32(object + 0x1b8, 4), guest_float_write(object + 0x1d8, 0.25f);
+                }
+                if (!held && gr32(object + 0x1b8) == 4) gw32(object + 0x1b8, 0);
+                CPU c = {.x = {[0] = object, [30] = 64}, .pc = entry_pc};
+                /* Without the fix the switch installs no wrapper and the game runs its own update. */
+                if (fix) list_scroll_update(&c, entry_pc);
+                else list_scroll_mock(&c, entry_pc);
+                assert(c.pc == 64);
+            }
+            const float rows = guest_float(object + 0x1d4);
+            if (fix || rates[r] <= 60) assert(fabsf(rows - 1.0f) < 1e-4f);
+            else assert(rows > 2.0f);
+        }
+    blink_ticks = 0;
+}
 static void test_diagnostics(void) {
     SnxModInfo main_mod = {.name = "main", .base = 4096,
         .build_id = {0xae,0xe8,0xf1,0x50,0xdd,0xa1,0xb5,0xa8,0x38,0x80,0x6e,0x1a,0x5e,0xa6,0x82,0x7a,
@@ -742,6 +791,7 @@ static void test_ledge_smoothing(void) {
     frame_step_address = 0;
 }
 int main(void) {
+    test_list_scroll();
     test_timer_carry();
     test_ai_tick();
     test_turn();

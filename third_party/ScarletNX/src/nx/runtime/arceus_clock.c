@@ -1988,6 +1988,54 @@ static void turn_fix_init(void) {
     LOG("arceus-turn: EXPERIMENT: character turns ease by elapsed time\n");
 }
 
+/* The scrolling list keeps a scroller at +7F8 and updates it in 272F150 once per rendered frame.
+   A scroll of one row is an ease counted in updates (+1BC up to +1C0), and when it ends with the
+   direction still held, the list starts a free scroll that adds a speed (+1D8) per update. At
+   150 FPS the ease ends inside one tap, so each tap ran the free scroll and jumped several rows. */
+/* With SNX_ARCEUS_LIST_SCROLL_FIX=1 the scroller updates only on frames with a 30 Hz tick. */
+static GuestFn list_scroll_original;
+static u64 list_scroll_calls, list_scroll_held;
+static void list_scroll_update(CPU* c, u64 entry) {
+    pm_lock(&step_lock);
+    const unsigned ticks = blink_ticks;
+    pm_unlock(&step_lock);
+    const u64 calls = __atomic_add_fetch(&list_scroll_calls, 1, __ATOMIC_RELAXED);
+    if (!ticks) {
+        const u64 held = __atomic_add_fetch(&list_scroll_held, 1, __ATOMIC_RELAXED);
+        if (held <= 2 || held % 6000 == 0)
+            LOG("arceus-list-scroll: calls=%llu held=%llu\n", (unsigned long long)calls, (unsigned long long)held);
+        c->pc = c->x[30];
+        return;
+    }
+    list_scroll_original(c, entry);
+}
+static void list_scroll_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_LIST_SCROLL_FIX");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!clocks_installed) {
+        WARN("arceus-list-scroll: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x272f150;
+    /* STR X19,[SP,#-0x20]! at +0, LDRB W8,[X0,#0x1B4] at +C, MOV X19,X0 at +6C. */
+    if (!covers_exactly(pc, 0xa0) || pc < g_code_lo || pc + 0xa0 > g_code_hi || !readable(pc, 0xa0) ||
+        gr32(pc) != 0xf81e0ff3 || gr32(pc + 0xc) != 0x3946d008 || gr32(pc + 0x6c) != 0xaa0003f3) {
+        WARN("arceus-list-scroll: refused instruction/function guard\n");
+        return;
+    }
+    /* Equivalent MOV X19,X0 -> ADD X19,X0,#0 selects an independent JIT body. */
+    gw32(pc + 0x6c, 0x91000013);
+    jit_code_changed(pc, 0xa0);
+    list_scroll_original = jit_wait(pc);
+    if (!list_scroll_original) {
+        WARN("arceus-list-scroll: compile failed\n");
+        return;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], list_scroll_update, __ATOMIC_RELEASE);
+    LOG("arceus-list-scroll: EXPERIMENT: UI list scroller steps 30 times per second of elapsed time\n");
+}
+
 
 /* C21D00 (fade in) and C227BC (fade out) start a fade: its fractional progress starts over. */
 static GuestFn fade_start_original[2];
@@ -2882,6 +2930,7 @@ void arceus_clock_post_jit(void) {
     capped_fall_init();
     ai_tick_fix_init();
     turn_fix_init();
+    list_scroll_init();
     ball_flight_init();
     timing_research_init();
     capture_fix_init();
