@@ -137,16 +137,25 @@ capped at one second. The `arceus-capture-fix` line confirms the fix.
 
 Battle effect sequences, the `.wbin` player whose update is `main+9DBEAC`, add their speed at `+F0` to the frame at
 `+E8` once per call, so captures in battle and battle moves ran four times fast at 120 FPS. The default-on `SNX_ARCEUS_BATTLE_SEQUENCE_FIX` passes speed times 30 times the elapsed time for the call and puts the speed
-back after it. The step is cut so the frame lands exactly on each whole frame, because the commands of a sequence
-end on exact float compares. Each call processes the elapsed budget through as many whole-frame boundary updates
-as needed, up to 32 updates. A fractional tail waits for the next rendered update so command callbacks are not
-immediately repeated for a tiny leftover step. Any remaining budget carries over without being discarded. At exactly 60 FPS that rule
-moves the frame unevenly (8.50, 8.99, 9.00, 10.00), which the battle send-out and recall camera shows as stepping.
-`SNX_ARCEUS_BATTLE_SEQUENCE_FIX=2` selects the even landing: a step that ends within a small window before a whole frame
-goes onto it with a signed carry, and after a whole frame the rest of the step goes to a second update in the same call.
-That update is entered on the whole frame, where the game makes a finished command's end check, which can make a track
-wait. A first form of value 2 added the rest in the wrapper and skipped that entry: sequences did not wait and thrown
-balls came back before the Pokémon was out. The repaired form is not played yet and is not the default. Speeds outside (0, 4] only
+back after it.
+
+The game depends on whole frames in two places. The update makes a finished command's end check, which can make a
+track wait, only in the call that is entered with `+E8` on a whole frame. And the commands' step slot, called by
+`main+9DB748` once per rendered frame, has actions that fire when the frame it is given equals a whole frame exactly.
+So every whole frame has to be the value one call ends on and the value the next call is entered on. The step is
+therefore cut at the next whole frame and the rest of the budget waits for the next rendered frame. A call makes one
+update for a speed up to 1 and at most as many as whole frames in the game's own step above that, and the budget keeps
+at most one such step, so a stall is not caught up, as in the game. An earlier form caught up with further updates in
+the same call. At 30 FPS, where a rendered frame is a hair under or over one sequence frame, that passed whole frames
+no rendered frame ended on: character models stayed hidden and moves did not play.
+
+At exactly 60 FPS the cut moves the frame unevenly (8.50, 8.99, 9.00, 10.00), which the battle send-out and recall
+camera shows as stepping. `SNX_ARCEUS_BATTLE_SEQUENCE_FIX=2` selects the even landing: a step that would end within
+half an advance before a whole frame goes onto it and the difference is carried, signed. Nothing else changes. On
+frame times of a 60 FPS session every rendered frame then moves by 0.7 to 1.3 of its share. Two earlier forms of
+value 2 moved on from the whole frame in the same rendered frame, one by writing the rest to `+E8` and one with a
+second update. The first skipped the end checks, so thrown balls came back before the Pokémon was out, and both hid
+the whole frame from the step slot. This form is not played yet and is not the default. Speeds outside (0, 4] only
 update once a whole 1/30 second has built up. `arceus-battle-sequence` lines count the calls, the partial steps,
 the skipped calls and the speeds seen.
 
