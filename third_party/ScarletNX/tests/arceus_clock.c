@@ -19,7 +19,8 @@ void logf_(int level, const char* fmt, ...) {
     if (level == 0 && strstr(fmt, "arceus-waza-shot: enabled without WAZA_OBJECT_FIX"))
         waza_dependency_warnings++;
 }
-u64 plat_ns(void) { return 1000000000; }
+static u64 host_ns = 1000000000;
+u64 plat_ns(void) { return host_ns; }
 void mem_query(u64 address, MemBlock* out) {
     (void)address;
     *out = (MemBlock){.addr = 1, .size = sizeof memory - 1, .perm = PERM_RW};
@@ -166,7 +167,8 @@ static void test_defaults_on(void) {
         "SNX_ARCEUS_CLOCK_TRACE", "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_CAMERA_TRACE",
         "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE",
         "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_DIRECT_MOVE_FIX", "SNX_ARCEUS_FIELD_WAZA_FIX",
-        "SNX_ARCEUS_WAZA_OBJECT_FIX", "SNX_ARCEUS_WAZA_SHOT_FIX"
+        "SNX_ARCEUS_WAZA_OBJECT_FIX", "SNX_ARCEUS_WAZA_SHOT_FIX", "SNX_ARCEUS_SCRIPT_TICK",
+        "SNX_ARCEUS_SCRIPT_WINDOWS"
     };
     for (unsigned i = 0; i < sizeof all / sizeof all[0]; i++) unset_flag(all[i]);
     int saved_fps = g_opt_fps;
@@ -191,6 +193,16 @@ static void test_defaults_on(void) {
         assert(arceus_switch_enabled(enabled[i], 1));
     assert(waza_shot_mode_value() == 2);
     assert(movement_mask_value() == 0x1fcul && climb_step_value() == 2);
+    /* The script tick: unset is the Braviary bit and the throw window. 0 turns each off, and a
+       mask is used as given. */
+    assert(script_tick_wanted() == 4 && script_windows_wanted() == 1);
+    flag("SNX_ARCEUS_SCRIPT_TICK", "0");
+    flag("SNX_ARCEUS_SCRIPT_WINDOWS", "0");
+    assert(script_tick_wanted() == 0 && script_windows_wanted() == 0);
+    flag("SNX_ARCEUS_SCRIPT_TICK", "44");
+    assert(script_tick_wanted() == 0x44);
+    unset_flag("SNX_ARCEUS_SCRIPT_TICK");
+    unset_flag("SNX_ARCEUS_SCRIPT_WINDOWS");
     /* The battle sequence fix: unset is the even landing, 1 the earlier landing, 0 off. */
     assert(battle_sequence_value() == 2);
     flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX", "1");
@@ -259,8 +271,11 @@ static void test_defaults_on(void) {
     assert(!timing_enabled && !clocks_installed);
     timer_carry_fix = 0;
     direct_move_fix = field_waza_fix = waza_object_fix = waza_shot_fix = 0;
+    script_tick_mask = script_tick_wrapped = script_windows_mask = 0;
     arceus_clock_post_jit();
     assert(!timer_carry_fix && !direct_move_fix && !field_waza_fix && !waza_object_fix && !waza_shot_fix);
+    /* The master switch leaves the script tick and its windows uninstalled. */
+    assert(!script_tick_mask && !script_tick_wrapped && !script_windows_mask);
     g_opt_fps = saved_fps;
     for (unsigned i = 0; i < sizeof all / sizeof all[0]; i++) unset_flag(all[i]);
     timing_enabled = clocks_installed = experimental = tracing = 0;
@@ -1274,6 +1289,396 @@ static void test_sequence_even(void) {
             }
     battle_sequence_even = 0;
 }
+static void put64(u64 address, u64 value) { memcpy(GP(address), &value, 8); }
+static void put32(u64 address, u32 value) { memcpy(GP(address), &value, 4); }
+/* The script tick through its real bridge wrapper, with a stub script that records what it
+   sees: the frame step cell and the jump trigger (byte 2 of the input fields). */
+static unsigned tick_runs[2], tick_triggers, tick_class, tick_throw_events;
+static float tick_cell;
+static void throw_event_stub(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = *GP(c->x[0] + 0x9b8);
+}
+static void tick_script(CPU* c, u64 entry) {
+    /* A player script polls the throw release event of its animation controller at 256. */
+    if (tick_class >= SCRIPT_TICK_PLAYER && entry == 16 && script_query_states[0].original) {
+        CPU poll = {.x = {[0] = 256}};
+        script_query_check(&poll, main_base + 0x1955fe0);
+        tick_throw_events += poll.x[0] & 1;
+    }
+    const u64 fields = c->x[2] + script_tick_classes[tick_class].input;
+    tick_runs[entry == 32]++;
+    tick_cell = guest_float(frame_step_address);
+    if (entry == 16 && *GP(fields + 2)) tick_triggers++;
+    c->x[0] = 7;
+    c->pc = c->x[30];
+}
+static void tick_reset(void) {
+    memset(memory, 0, sizeof memory);
+    memset(&script_tick, 0, sizeof script_tick);
+    memset(script_tick_inputs, 0, sizeof script_tick_inputs);
+    memset(script_windows, 0, sizeof script_windows);
+    script_tick_mask = ~0ul; /* Every class ticked, unless a test says otherwise. */
+    script_tick_originals[tick_class][0] = script_tick_originals[tick_class][1] = tick_script;
+    tick_runs[0] = tick_runs[1] = tick_triggers = tick_throw_events = 0;
+    for (unsigned k = 0; k < SCRIPT_QUERIES; k++) {
+        const GuestFn original = script_query_states[k].original;
+        script_query_states[k] = (ScriptQueryState){.original = original};
+    }
+    script_query_run = script_query_last = script_query_state = script_query_dropped = 0;
+    frame_step_address = 3900;
+    frame_step_frames = 0;
+    put32(128 + 0x6c, 3);
+}
+/* One engine frame: the clock write, then PreUpdate and PostUpdate of the state at 128. */
+static unsigned tick_frame(u64 ns, int trigger) {
+    const u64 context = 512, fields = context + script_tick_classes[tick_class].input;
+    unsigned ran = 0;
+    step.step = ns;
+    frame_step_write(ns);
+    *GP(fields + 2) = (u8)trigger;
+    const u32 before = gr32(frame_step_address);
+    for (unsigned post = 0; post < 2; post++) {
+        CPU cpu = {.x = {[0] = 128, [2] = context, [30] = 64}, .pc = 16};
+        const unsigned runs = tick_runs[post];
+        script_tick_bridge(&cpu, post ? 32 : 16, tick_class, post);
+        assert(cpu.pc == 64 && cpu.x[0] == (tick_runs[post] > runs ? 7u : 3u));
+        ran += tick_runs[post] - runs;
+        /* A ticked script sees 1/30 s, and the cell and the field are back afterwards. */
+        if (tick_runs[post] > runs && (script_tick_mask >> tick_class & 1)) assert(tick_cell == NOMINAL_STEP_SECONDS);
+        assert(gr32(frame_step_address) == before && *GP(fields + 2) == (u8)trigger);
+    }
+    /* PreUpdate and PostUpdate of a frame share the decision. */
+    assert(ran == 0 || ran == 2);
+    return ran / 2;
+}
+static void test_script_tick(void) {
+    static const unsigned rates[] = {30, 45, 60, 72, 120, 144, 240};
+    for (unsigned r = 0; r < sizeof rates / sizeof rates[0]; r++) {
+        tick_reset();
+        unsigned ticks = 0;
+        /* 30 FPS is the game's own 33333334 ns frame. */
+        const u64 ns = rates[r] == 30 ? 33333334 : 1000000000 / rates[r];
+        for (unsigned k = 0; k < 10 * rates[r]; k++) ticks += tick_frame(ns, 0);
+        assert(ticks >= 299 && ticks <= 300);
+        /* At 30 FPS every frame runs. */
+        if (rates[r] == 30) assert(ticks == 300 && script_tick.budget == 0);
+    }
+    /* Uneven steps: 12 and 20 ms, then random 4 to 40 ms. Steps above 1/30 s count as 1/30. */
+    tick_reset();
+    unsigned ticks = 0;
+    for (unsigned k = 0; k < 625; k++) ticks += tick_frame(k % 2 ? 20000000 : 12000000, 0);
+    assert(ticks >= 299 && ticks <= 300);
+    tick_reset();
+    ticks = 0;
+    u64 seed = 12345, due = 0;
+    for (unsigned k = 0; k < 2000; k++) {
+        seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+        const u64 ns = 4000000 + (seed >> 33) % 36000001;
+        due += ns < 33333334 ? ns : 33333334;
+        ticks += tick_frame(ns, 0);
+    }
+    assert(ticks == due / 33333334 || ticks == due / 33333334 + 1);
+    /* A slow frame gives one tick and carries nothing over. */
+    tick_reset();
+    assert(tick_frame(100000000, 0) == 1 && tick_frame(100000000, 0) == 1 && script_tick.budget == 0);
+    /* A trigger on any one frame of a 120 FPS run reaches exactly one script run. */
+    for (unsigned at = 0; at < 8; at++) {
+        tick_reset();
+        for (unsigned k = 0; k < 40; k++) tick_frame(8333333, k == at);
+        assert(tick_triggers == 1);
+    }
+    /* A trigger held over three frames is still one press for the script. */
+    tick_reset();
+    for (unsigned k = 0; k < 40; k++) tick_frame(8333333, k >= 1 && k <= 3);
+    assert(tick_triggers == 1);
+    /* A player class has its input fields at context +14C. A skipped frame returns the
+       current state index 3 (checked in tick_frame), so the state machine sees no change. */
+    tick_class = 7;
+    assert(script_tick_classes[tick_class].input == 0x14c);
+    for (unsigned at = 0; at < 4; at++) {
+        tick_reset();
+        unsigned ticks = 0;
+        for (unsigned k = 0; k < 40; k++) ticks += tick_frame(8333333, k == at);
+        assert(ticks == 10 && tick_triggers == 1);
+    }
+    /* The throw release event set on any single frame reaches exactly one run of the player
+       script, also on a frame without a run. Never set, it is never seen. */
+    script_query_states[0].original = throw_event_stub;
+    for (unsigned at = 8; at < 13; at++) {
+        tick_reset();
+        for (unsigned k = 0; k < 40; k++) {
+            *GP(256 + 0x9b8) = k == at;
+            tick_frame(8333333, 0);
+        }
+        assert(tick_throw_events == 1);
+    }
+    tick_reset();
+    for (unsigned k = 0; k < 40; k++) tick_frame(8333333, 0);
+    assert(!tick_throw_events);
+    /* A query the script stopped asking is not asked for it on later frames. */
+    tick_reset();
+    for (unsigned k = 0; k < 8; k++) tick_frame(8333333, 0);
+    script_query_states[0].asked = 1;
+    *GP(256 + 0x9b8) = 1;
+    tick_frame(8333333, 0);
+    assert(!script_query_states[0].held);
+    script_query_states[0].original = NULL;
+    /* The buddy context has no input struct: its bytes are never written. */
+    tick_class = 6;
+    assert(!script_tick_classes[tick_class].input);
+    tick_reset();
+    ticks = 0;
+    for (unsigned k = 0; k < 40; k++) ticks += tick_frame(8333333, k == 1);
+    assert(ticks == 10 && tick_triggers == 0);
+    tick_class = 0;
+    script_tick_mask = 0;
+    frame_step_address = 0;
+    frame_step_frames = 0;
+}
+/* The rotation blend on the ticked class 2, with a stub script that turns by 0.01 rad per
+   run through the real setter wrapper and checks that it reads its own last rotation. */
+static const u64 blend_ride = 1024, blend_transform = 1600, blend_argument = 2048;
+static float blend_target;
+static unsigned blend_runs;
+static float blend_yaw(u64 address) { return 2.0f * atan2f(guest_float(address + 4), guest_float(address + 12)); }
+static void blend_native(CPU* c, u64 entry) {
+    (void)entry;
+    memcpy(GP(blend_transform + 0xc0), GP(c->x[1]), 16);
+    *GP(blend_transform + 0xe0) = 1;
+}
+static void blend_script(CPU* c, u64 entry) {
+    /* Both bridges see the script's own rotation, never a blended one. */
+    if (blend_runs) assert(fabsf(blend_yaw(blend_transform + 0xc0) - blend_target) < 1e-6f);
+    if (entry == 16) {
+        blend_target += 0.01f;
+        guest_float_write(blend_argument + 4, sinf(blend_target / 2));
+        guest_float_write(blend_argument + 12, cosf(blend_target / 2));
+        CPU set = {.x = {[0] = blend_ride, [1] = blend_argument, [30] = 64}, .pc = 48};
+        rotation_blend_set(&set, 48);
+        blend_runs++;
+    }
+    c->x[0] = 7;
+    c->pc = c->x[30];
+}
+static void blend_reset(void) {
+    memset(memory, 0, sizeof memory);
+    memset(&script_tick, 0, sizeof script_tick);
+    memset(script_tick_inputs, 0, sizeof script_tick_inputs);
+    memset(script_windows, 0, sizeof script_windows);
+    script_tick_mask = ~0ul; /* Every class ticked, unless a test says otherwise. */
+    memset(rotation_blends, 0, sizeof rotation_blends);
+    script_tick_originals[2][0] = script_tick_originals[2][1] = blend_script;
+    rotation_blend_original = blend_native;
+    rotation_blend_writes = rotation_blend_foreign = rotation_blend_dropped = 0;
+    rotation_blend_frame = rotation_blend_state = 0;
+    blend_target = 0;
+    blend_runs = 0;
+    frame_step_address = 3900;
+    frame_step_frames = 0;
+    put64(blend_ride + 0x1a8, 1500);
+    put32(1500 + 0xc, 1);
+    put64(1500 + 0x18, blend_transform + 0x50);
+    guest_float_write(blend_transform + 0xcc, 1);
+}
+/* One engine frame. Returns the yaw shown at its end. */
+static float blend_frame(u64 ns) {
+    step.step = ns;
+    frame_step_write(ns);
+    for (unsigned post = 0; post < 2; post++) {
+        CPU cpu = {.x = {[0] = 128, [2] = 512, [30] = 64}, .pc = 16};
+        script_tick_bridge(&cpu, post ? 32 : 16, 2, post);
+    }
+    return blend_yaw(blend_transform + 0xc0);
+}
+static void test_rotation_blend(void) {
+    /* At 30 FPS nothing is written: the transform is the script's rotation on every frame. */
+    blend_reset();
+    for (unsigned k = 0; k < 30; k++) {
+        const float shown = blend_frame(33333334);
+        assert(shown == blend_yaw(blend_argument) && !rotation_blend_writes);
+    }
+    static const u64 steps[][2] = {{16666667, 16666667}, {8333333, 8333333}, {6060606, 6060606}, {5000000, 12000000}};
+    for (unsigned r = 0; r < 4; r++) {
+        blend_reset();
+        float before = 0, reached = 0;
+        unsigned runs = 0, moved = 0, frames = 0;
+        for (unsigned k = 0; k < 600; k++) {
+            const float target_before = blend_target;
+            const float shown = blend_frame(steps[r][k % 2]);
+            if (blend_runs < 3) {
+                before = shown;
+                runs = blend_runs;
+                continue;
+            }
+            /* It never goes back, never passes the script's rotation, and moves on every frame. */
+            assert(shown >= before - 1e-6f && shown <= blend_target + 1e-6f);
+            moved += shown > before + 1e-6f;
+            frames++;
+            /* When a new rotation comes, the old one has just been reached. */
+            if (blend_runs != runs) {
+                reached = target_before - shown;
+                assert(reached < 1e-4f && reached > -1e-6f);
+                runs = blend_runs;
+            }
+            before = shown;
+        }
+        assert(moved >= frames - 2 && rotation_blend_writes && !rotation_blend_foreign);
+        /* The turn rate is the script's: 0.01 rad per 1/30 s whatever the frame rate. */
+        const float seconds = (float)(300 * (steps[r][0] + steps[r][1])) / 1e9f;
+        assert(fabsf(blend_target - 0.3f * seconds) < 0.011f);
+    }
+    /* Another writer ends the blend: the host does not write that transform again. */
+    blend_reset();
+    for (unsigned k = 0; k < 20; k++) blend_frame(8333333);
+    guest_float_write(blend_transform + 0xc4, 0.5f);
+    script_tick_originals[2][0] = script_tick_originals[2][1] = tick_script;
+    tick_class = 2;
+    const u64 writes = rotation_blend_writes;
+    for (unsigned k = 0; k < 8; k++) blend_frame(8333333);
+    assert(rotation_blend_foreign == 1 && rotation_blend_writes == writes && guest_float(blend_transform + 0xc4) == 0.5f);
+    tick_class = 0;
+    rotation_blend_original = NULL;
+    frame_step_address = 0;
+    frame_step_frames = 0;
+}
+/* The throw window: the player classes run on every frame, and 30 times a second only
+   between the script's OnStartThrow and its ThrowObject or OnEndThrowStance. */
+static void window_native(CPU* c, u64 entry) { (void)c; (void)entry; }
+static unsigned window_run(unsigned frames) {
+    unsigned ran = 0;
+    for (unsigned k = 0; k < frames; k++) ran += tick_frame(8333333, 0);
+    return ran;
+}
+static void test_script_window(void) {
+    tick_class = 7;
+    tick_reset();
+    script_tick_mask = 0;
+    for (unsigned k = 0; k < SCRIPT_WINDOW_EVENTS; k++) script_window_originals[k] = window_native;
+    CPU cpu = {.x = {[30] = 64}};
+    /* Outside a window every frame runs, at any rate, and the frame step cell is not touched. */
+    assert(window_run(40) == 40 && tick_cell != NOMINAL_STEP_SECONDS);
+    /* OnStartThrow opens it. The frame of the call still runs whole. Then 1 run in 4 frames at 120 FPS. */
+    host_ns += 1;
+    script_window_event(&cpu, main_base + 0x1a91624);
+    assert(script_windows[0].open && script_windows[0].opens == 1);
+    assert(window_run(40) == 10 && tick_cell == NOMINAL_STEP_SECONDS);
+    /* 19 script updates now take 76 frames, 0.63 s, as at 30 FPS. */
+    assert(window_run(36) == 9);
+    /* ThrowObject closes it: every frame runs again. */
+    script_window_event(&cpu, main_base + 0x1a8eba4);
+    assert(!script_windows[0].open && window_run(20) == 20);
+    /* OnEndThrowStance closes it too. */
+    script_window_event(&cpu, main_base + 0x1a91624);
+    assert(window_run(8) == 2);
+    script_window_event(&cpu, main_base + 0x1a91370);
+    assert(window_run(8) == 8);
+    /* A window nobody closes ends after 1 s. */
+    script_window_event(&cpu, main_base + 0x1a91624);
+    for (unsigned k = 0; k < 130; k++) {
+        host_ns += 8333333;
+        tick_frame(8333333, 0);
+    }
+    assert(!script_windows[0].open && script_windows[0].expired == 1 && window_run(8) == 8);
+    /* A class the window does not name is never ticked by it. */
+    tick_class = 0;
+    tick_reset();
+    script_tick_mask = 0;
+    script_window_event(&cpu, main_base + 0x1a91624);
+    assert(window_run(16) == 16);
+    script_tick_mask = 0;
+    memset(script_windows, 0, sizeof script_windows);
+    frame_step_address = 0;
+    frame_step_frames = 0;
+}
+/* Fail safe after the crash of run timing-20261112-191158-069: the host never asks a kept
+   query for an object that may be gone, a window ends when its state stops being bridged,
+   and a blend is let go after a frame without its bridge. */
+static unsigned safe_asks;
+static void safe_query_stub(CPU* c, u64 entry) {
+    (void)entry;
+    safe_asks++;
+    c->x[0] = *GP(c->x[0] + 0x9b8);
+}
+static void test_fail_safe(void) {
+    tick_class = 9;
+    tick_reset();
+    put32(160 + 0x6c, 3);
+    for (unsigned k = 0; k < SCRIPT_QUERIES; k++) script_query_states[k].original = safe_query_stub;
+    put64(256, 0xc1551a0);
+    /* The script asks at each run, and the host asks again on the three frames after the first. */
+    safe_asks = 0;
+    assert(window_run(8) == 2 && safe_asks == 2 + 3);
+    /* The object is released and its memory reused: the first word changes. No more host asks. */
+    put64(256, 0xbc59dcc7b3f81af0ull);
+    safe_asks = 0;
+    assert(tick_frame(8333333, 0) == 0 && safe_asks == 0 && script_query_dropped == 1);
+    assert(window_run(3) == 1 && safe_asks == 1);
+    /* Alive again and asked by a run. Then two frames pass without a bridge call: forgotten. */
+    assert(window_run(4) == 1);
+    frame_step_frames += 2;
+    safe_asks = 0;
+    CPU skipped = {.x = {[0] = 128, [2] = 512, [30] = 64}};
+    script_query_frame(&skipped, frame_step_frames, 0, 0);
+    assert(safe_asks == 0 && !script_query_states[0].object);
+    /* Another state object on the next frame is not asked for either. */
+    assert(window_run(4) == 1 && script_query_states[0].object == 256);
+    CPU other = {.x = {[0] = 160, [2] = 512, [30] = 64}};
+    safe_asks = 0;
+    script_query_frame(&other, frame_step_frames + 1, 0, 0);
+    assert(safe_asks == 0 && !script_query_states[0].object);
+    for (unsigned k = 0; k < SCRIPT_QUERIES; k++) script_query_states[k].original = NULL;
+    /* A window opened by the script of state 128. It ticks while that state is bridged. The
+       line per closed window needs the research switch. */
+    research_observing = 1;
+    tick_class = 7;
+    tick_reset();
+    script_tick_mask = 0;
+    put32(160 + 0x6c, 3);
+    for (unsigned k = 0; k < SCRIPT_WINDOW_EVENTS; k++) script_window_originals[k] = window_native;
+    CPU cpu = {.x = {[30] = 64}};
+    assert(window_run(4) == 4);
+    script_class_running = 8;
+    script_class_object = 128;
+    script_window_event(&cpu, main_base + 0x1a91624);
+    script_class_running = 0;
+    script_class_object = 0;
+    assert(window_run(16) == 4 && script_windows[0].open);
+    /* A hit changes the state: another state object is bridged. Its second frame closes the
+       window, and from then on the script runs on every frame again. */
+    unsigned ran = 0;
+    for (unsigned k = 0; k < 6; k++) {
+        host_ns += 8333333;
+        step.step = 8333333;
+        frame_step_write(8333333);
+        for (unsigned post = 0; post < 2; post++) {
+            CPU hit = {.x = {[0] = 160, [2] = 512, [30] = 64}, .pc = 16};
+            const unsigned runs = tick_runs[post];
+            script_tick_bridge(&hit, post ? 32 : 16, tick_class, post);
+            if (!post) ran += tick_runs[0] - runs;
+        }
+    }
+    assert(!script_windows[0].open && script_windows[0].interrupted == 1 && ran >= 5);
+    /* Each closed window wrote its line. */
+    assert(script_window_lines >= 1);
+    research_observing = 0;
+    memset(script_windows, 0, sizeof script_windows);
+    script_tick_mask = 0;
+    /* A blend whose bridge missed a frame is let go without a write. */
+    blend_reset();
+    for (unsigned k = 0; k < 8; k++) blend_frame(8333333);
+    assert(rotation_blends[0].active);
+    const u64 writes = rotation_blend_writes;
+    frame_step_frames += 3;
+    blend_frame(8333333);
+    assert(rotation_blend_dropped == 1 && rotation_blend_writes == writes);
+    tick_class = 0;
+    rotation_blend_original = NULL;
+    frame_step_address = 0;
+    frame_step_frames = 0;
+}
+/* A fade-in's last call frees the object's slot, so fades of more than FADE_SLOTS objects
+   in a session all keep a slot instead of running unfixed. */
 int main(void) {
     test_ride_swap();
     test_defaults_on();
@@ -1291,6 +1696,10 @@ int main(void) {
     for (unsigned i = 0; i < sizeof disabled / sizeof disabled[0]; i++) flag(disabled[i], "");
     test_sequence();
     test_sequence_even();
+    test_script_tick();
+    test_rotation_blend();
+    test_script_window();
+    test_fail_safe();
     test_diagnostics();
     test_climb_adrp();
     test_climb_stop();

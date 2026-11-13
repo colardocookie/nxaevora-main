@@ -48,6 +48,8 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | `SNX_ARCEUS_FIELD_WAZA_FIX` | on | Leaves field-move countdowns and turn input at their authored rates. |
 | `SNX_ARCEUS_WAZA_OBJECT_FIX` | on | Leaves attack-object timers at their authored rates; if shot fix stays on, logs one warning. |
 | `SNX_ARCEUS_WAZA_SHOT_FIX` | 2 | Disables shot timing/blending. `1` runs at tick rate; `2` also blends between ticks. |
+| `SNX_ARCEUS_SCRIPT_TICK` | `0x4` | Not a boolean: a mask of state script classes that run 30 times a second. `0` leaves every script on every frame. Explicit masks are used as provided. |
+| `SNX_ARCEUS_SCRIPT_WINDOWS` | `0x1` | Not a boolean: a mask of script windows. Bit 0 is the throw window. `0` turns it off. |
 | `SNX_ARCEUS_CLOCK_TRACE` | off | `=0` keeps the trace off; set to `1` to log clock calls. |
 | `SNX_ARCEUS_DIALOGUE_TRACE` | off | `=0` keeps the read-only trace off. |
 | `SNX_ARCEUS_CAMERA_TRACE` | off | `=0` keeps the read-only trace off. |
@@ -341,3 +343,36 @@ leaves both settings as requested. Value `1` produced the expected speed but vis
 Value `2` flew smoothly and left Luxio cleanly in the test session. Measured against a 30 FPS session, the shot turned
 1.60 (value `1`) and 1.68 (value `2`) times the change in bearing to the player, against 1.58 at 30 FPS. That is within
 the spread of 5 to 6 shots per session, so a difference under about 15 percent would not show.
+
+## Script tick
+
+The state scripts of the player, the player's own Pokémon and the rides get no time from the engine. They count
+their own updates and call natives that apply a fixed amount per call, and each state class runs its script once per
+rendered frame through a PreUpdate and a PostUpdate bridge. `SNX_ARCEUS_SCRIPT_TICK` is a hex mask of state classes
+whose two bridges run only when a whole 1/30 s has built up: bit 0 Sneasler, 1 Ursaluna, 2 Braviary, 3 Basculegion,
+4 and 5 Wyrdeer, 6 the player's Pokémon, 7 to 9 the three player classes. On the other frames a bridge returns the
+current state index, as it does without a script. One decision is made per engine frame and shared by both bridges.
+Inputs that are true for one frame are kept for the next run. While a ticked script runs, the frame-step cell holds
+1/30 s, so every fix that scales by the step sees a whole tick.
+
+The default is `0x4`, Braviary alone. Without it Braviary turns several times too fast above 30 FPS, because its
+flight script sets a new rotation on every update. The script sets that rotation through `main+25AB490`, so with
+the Braviary bit the wrapper blends the rotation from the previous one to the new one over the time to the next
+run and stops as soon as anything else writes the rotation. The user's words after the two steps: "braviary turning
+feels right now", then, with the blend, "braviary turning feels smooth now".
+
+`SNX_ARCEUS_SCRIPT_WINDOWS` is a mask of windows in which a class is ticked only while a named part of its script
+runs. Bit 0, on by default, is the throw. The player's throw script waits at most 19 updates for the release event
+of the throw animation and then gives the throw up, so above about 60 FPS a slow throw never left the hand. The
+window opens when the script calls `main+1A91624` and closes at `main+1A8EBA4` or `main+1A91370`, or after one
+second, or when the state that opened it stops being updated. Inside it the three player classes run 30 times a
+second, and the release event, a short pulse, is kept for the script's next run. Outside it the player script runs
+on every frame as before. In play the slow throw came out every time in four sessions.
+
+Limits. The other ride bits were never played and are off. The player bits as a plain mask (`0x380`) made strafing
+and rolling choppy, which is why the throw uses a window. The Sneasler bit refuses while the ledge fix owns the same
+two bridges. During a ticked script run the shared frame-step cell holds 1/30 s. A patched site that ran on another
+thread in that moment would take a full step. This was never seen and never measured. Only the rotation that
+`main+25AB490` sets is blended. The throw wait is the only window, and other waits counted in script updates may
+exist. The kept release event is asked for again only while the same state object is updated on consecutive frames
+and the object's first word is unchanged. An earlier form that asked more queries crashed on a released object.

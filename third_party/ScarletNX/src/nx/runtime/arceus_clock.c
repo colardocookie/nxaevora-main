@@ -113,17 +113,21 @@ static void water_step_write(u64 ns) {
 static u64 frame_step_address;
 /* One per main-loop frame: an engine frame identity for per-frame pairing. */
 static u64 frame_step_frames;
-static void frame_step_write(u64 ns) {
-    if (!frame_step_address) return;
-    __atomic_add_fetch(&frame_step_frames, 1, __ATOMIC_RELEASE);
-    float seconds = ns ? (float)((double)ns / 1000000000.0) : NOMINAL_STEP_SECONDS;
-    if (!(seconds < NOMINAL_STEP_SECONDS)) seconds = NOMINAL_STEP_SECONDS;
+/* The cell's two words: the step in seconds and its negative. */
+static void frame_step_cell_write(float seconds) {
     const float negative = -seconds;
     u32 bits;
     memcpy(&bits, &seconds, sizeof bits);
     gw32(frame_step_address, bits);
     memcpy(&bits, &negative, sizeof bits);
     gw32(frame_step_address + 4, bits);
+}
+static void frame_step_write(u64 ns) {
+    if (!frame_step_address) return;
+    __atomic_add_fetch(&frame_step_frames, 1, __ATOMIC_RELEASE);
+    float seconds = ns ? (float)((double)ns / 1000000000.0) : NOMINAL_STEP_SECONDS;
+    if (!(seconds < NOMINAL_STEP_SECONDS)) seconds = NOMINAL_STEP_SECONDS;
+    frame_step_cell_write(seconds);
 }
 
 static void adjust_duration(CPU* c) {
@@ -3190,6 +3194,635 @@ static void ledge_fix_init(void) {
         ledge_set_position_original ? "on" : "off");
 }
 
+/* Script tick. The player, buddy and ride state scripts get no time: they count their own
+   updates and call natives that apply a fixed amount per call, and each state class runs
+   them once per rendered frame through its PreUpdate and PostUpdate bridge.
+   SNX_ARCEUS_SCRIPT_TICK is a hex mask of state classes whose bridges then run only when a
+   whole 1/30 s has built up: bit 0 Sneasler, 1 Ursaluna, 2 Braviary, 3 Basculegion,
+   4 and 5 Wyrdeer's second and first class, 6 the buddy, 7 to 9 the three player classes.
+   Unset it is 4, Braviary alone, which is the one bit that was played. The Sneasler bit
+   refuses while the ledge fix owns its two bridges. */
+#define SCRIPT_TICK_NS 33333334ll
+/* One bridge: its size and first word, the load of the current state index +6C that it
+   returns without a script, an optional third word, and a register move to swap for an
+   equal ADD so the wrapper gets its own compiled body. */
+typedef struct { u32 address, size, head, load_at, load, extra_at, extra, swap_at, swap_old, swap_new; } ScriptTickBridge;
+/* input is the offset of PlayerInputInfo in the context x2, 0 when the context has none. */
+typedef struct { ScriptTickBridge bridge[2]; u32 input; const char* name; } ScriptTickClass;
+#define SCRIPT_TICK_RIDE(address, size, script) \
+    {address, size, 0xd10183ff, 0x20, 0xb9406c13, 0x14, script, 0x40, 0xaa0003f4, 0x91000014}
+/* Besides the script call the ride bridges do nothing. The buddy, player and first Wyrdeer
+   ones also hold a reference to [x2] and check for a state change request, with no float
+   work and no store to an object field, so a skipped call only delays that check. */
+static const ScriptTickClass script_tick_classes[] = {
+    {{SCRIPT_TICK_RIDE(0x26163e0, 0x234, 0xf9402449), SCRIPT_TICK_RIDE(0x2616ab0, 0x234, 0xf9402449)}, 0xf8, "Sneasler"},
+    {{SCRIPT_TICK_RIDE(0x26203f8, 0x234, 0xf9402449), SCRIPT_TICK_RIDE(0x2620ac8, 0x234, 0xf9402449)}, 0xd8, "Ursaluna"},
+    {{SCRIPT_TICK_RIDE(0x2624ddc, 0x234, 0xf9402449), SCRIPT_TICK_RIDE(0x26254ac, 0x234, 0xf9402449)}, 0xc8, "Braviary"},
+    {{SCRIPT_TICK_RIDE(0x2611b18, 0x234, 0xf9400049), SCRIPT_TICK_RIDE(0x26121e8, 0x234, 0xf9400049)}, 0xa8, "Basculegion"},
+    {{SCRIPT_TICK_RIDE(0x261cfb0, 0x250, 0xf9402449), SCRIPT_TICK_RIDE(0x261d200, 0x250, 0xf9402449)}, 0xb0, "Wyrdeer B"},
+    {{SCRIPT_TICK_RIDE(0x261898c, 0x250, 0xf9402449),
+      {0x2618d50, 0x3fc, 0xd10243ff, 0x3c, 0xb9406d33, 0, 0, 0x24, 0xaa0003e9, 0x91000009}}, 0xb0, "Wyrdeer A"},
+    {{{0x17ec138, 0x2f4, 0xd10203ff, 0x70, 0xb9406e73, 0, 0, 0x14, 0xaa0003f3, 0x91000013},
+      {0x17ec8ac, 0x1d8, 0xd101c3ff, 0x60, 0xb9406e73, 0, 0, 0x10, 0xaa0003f3, 0x91000013}}, 0, "buddy"},
+    {{{0x1d15900, 0xd4, 0xd10143ff, 0x18, 0xb9406c00, 0, 0, 0x34, 0xaa0903e0, 0x91000120},
+      {0x1d15b48, 0x2a4, 0xd101c3ff, 0x30, 0xb9406c14, 0, 0, 0x1c, 0xaa0203f4, 0x91000054}}, 0x14c, "player 1"},
+    {{{0x1d20e10, 0xd4, 0xd10143ff, 0x18, 0xb9406c00, 0, 0, 0x34, 0xaa0903e0, 0x91000120},
+      {0x1d20ee4, 0x39c, 0xd101c3ff, 0x30, 0xb9406c13, 0, 0, 0x1c, 0xaa0203f4, 0x91000054}}, 0x14c, "player 2"},
+    {{{0x1d21894, 0x460, 0xd101c3ff, 0xc4, 0xb9406e75, 0, 0, 0x18, 0xaa0003f3, 0x91000013},
+      {0x1d21cf4, 0x2a8, 0xd101c3ff, 0x30, 0xb9406c14, 0, 0, 0x1c, 0xaa0203f4, 0x91000054}}, 0x14c, "player 3"},
+};
+#define SCRIPT_TICK_CLASSES (sizeof script_tick_classes / sizeof script_tick_classes[0])
+/* Indexes in script_tick_classes: the rides come first, then the buddy, then the player. */
+#define SCRIPT_TICK_BUDDY 6
+#define SCRIPT_TICK_PLAYER 7
+/* The class (index + 1) and the state object (x0) of the bridge that is running, for the
+   window that one of its script's natives opens. */
+static _Thread_local unsigned script_class_running;
+static _Thread_local u64 script_class_object;
+static void script_class_run(CPU* c, u64 entry, unsigned class_index, GuestFn original) {
+    const unsigned outer = script_class_running;
+    const u64 outer_object = script_class_object;
+    script_class_running = class_index + 1;
+    script_class_object = c->x[0];
+    original(c, entry);
+    script_class_running = outer;
+    script_class_object = outer_object;
+}
+/* The byte fields of PlayerInputInfo that are true for one frame (names ending in Trigger
+   or Release in its binding 227BC90). */
+static const u8 script_tick_edges[] = {1, 2, 4, 6, 8, 9, 10, 11, 15, 16, 17, 19, 23, 24, 26, 27, 28, 29, 30, 31, 33, 34};
+#define SCRIPT_TICK_EDGES (sizeof script_tick_edges / sizeof script_tick_edges[0])
+typedef struct { u64 frame; int64_t budget; int decided, tick; u64 frames, ticks; } ScriptTick;
+typedef struct { u64 context, applied; u8 held[SCRIPT_TICK_EDGES]; } ScriptTickInput;
+static unsigned long script_tick_mask, script_tick_wrapped;
+static GuestFn script_tick_originals[SCRIPT_TICK_CLASSES][2];
+static ScriptTick script_tick;
+static ScriptTickInput script_tick_inputs[4];
+static PMutex script_tick_lock = PMUTEX_INIT;
+static u64 script_tick_ran, script_tick_skipped, script_tick_latched;
+static _Thread_local unsigned script_tick_depth;
+static unsigned long script_tick_wanted(void) {
+    const char* value = getenv("SNX_ARCEUS_SCRIPT_TICK");
+    if (!value) return 4;
+    return *value ? strtoul(value, NULL, 16) & ((1ul << SCRIPT_TICK_CLASSES) - 1) : 0;
+}
+/* One decision per engine frame, shared by every bridge: the step, at most 1/30 s, is added
+   to a budget and a tick takes 1/30 s from it. A slow frame gives one tick, never two. The
+   2 microseconds of slack let four 8333333 ns steps count as a whole tick. */
+static int script_tick_decide(ScriptTick* t, u64 frame, u64 step_ns) {
+    if (t->decided && t->frame == frame) return t->tick;
+    t->budget += (int64_t)step_ns < SCRIPT_TICK_NS ? (int64_t)step_ns : SCRIPT_TICK_NS;
+    t->tick = t->budget >= SCRIPT_TICK_NS - 2000;
+    if (t->tick) {
+        t->budget -= SCRIPT_TICK_NS;
+        t->ticks++;
+    }
+    t->frames++;
+    t->frame = frame;
+    t->decided = 1;
+    return t->tick;
+}
+/* The edge fields of one context. On a frame without a tick they are kept. Before a ticked
+   bridge the kept ones are written into the fields (seen, for the caller to undo), and the
+   first call of a later frame forgets them. Returns the number of fields changed. */
+static unsigned script_tick_input(ScriptTickInput* slots, u64 context, u64 fields, u64 frame, int tick,
+                                  u8 seen[SCRIPT_TICK_EDGES], u8 current[SCRIPT_TICK_EDGES]) {
+    ScriptTickInput* slot = NULL;
+    for (unsigned k = 0; k < 4 && !slot; k++)
+        if (slots[k].context == context) slot = &slots[k];
+    for (unsigned k = 0; k < 4 && !slot; k++)
+        if (!slots[k].context) {
+            slot = &slots[k];
+            *slot = (ScriptTickInput){.context = context};
+        }
+    if (!slot) return 0;
+    if (slot->applied && slot->applied != frame) {
+        memset(slot->held, 0, sizeof slot->held);
+        slot->applied = 0;
+    }
+    unsigned changed = 0;
+    for (unsigned k = 0; k < SCRIPT_TICK_EDGES; k++) {
+        current[k] = *GP(fields + script_tick_edges[k]);
+        if (!tick) {
+            if (current[k]) slot->held[k] = current[k];
+            continue;
+        }
+        seen[k] = current[k] ? current[k] : slot->held[k];
+        if (seen[k] != current[k]) {
+            *GP(fields + script_tick_edges[k]) = seen[k];
+            changed++;
+        }
+    }
+    if (tick) slot->applied = frame;
+    return changed;
+}
+/* Rotation blend for a ticked ride. Braviary's flight script computes its turn per update
+   and hands the finished rotation to SetSwoopingRotation 25AB490, which copies it to the
+   transform +C0 (25AB908). Set 30 times a second it steps. So between ticks the host shows
+   slerp(R0, R1, elapsed / time to the next run): R1 is the script's last rotation, R0 what
+   was shown when it came. Before a ticked run the object is put on R1, so the script reads its own value. A
+   rotation that another writer changed ends the blend. At 30 FPS nothing is written. */
+#define ROTATION_BLEND_CLASS 2
+typedef struct { u64 object, frame; int64_t elapsed, interval; int active; float from[4], to[4]; u32 shown[4]; } RotationBlend;
+static RotationBlend rotation_blends[2];
+static GuestFn rotation_blend_original;
+static u64 rotation_blend_writes, rotation_blend_foreign, rotation_blend_dropped;
+static u64 rotation_blend_frame, rotation_blend_state;
+/* out = slerp(a, b, t) on the shorter arc. Close rotations are blended linearly. */
+static void rotation_slerp(const float a[4], const float b[4], float t, float out[4]) {
+    float dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3], sign = 1.0f;
+    if (dot < 0.0f) {
+        dot = -dot;
+        sign = -1.0f;
+    }
+    float wa = 1.0f - t, wb = t;
+    if (dot < 0.9995f) {
+        const float angle = acosf(dot), inverse = 1.0f / sinf(angle);
+        wa = sinf((1.0f - t) * angle) * inverse;
+        wb = sinf(t * angle) * inverse;
+    }
+    float length = 0.0f;
+    for (unsigned k = 0; k < 4; k++) {
+        out[k] = wa * a[k] + wb * sign * b[k];
+        length += out[k] * out[k];
+    }
+    length = length > 0.0f ? 1.0f / sqrtf(length) : 1.0f;
+    for (unsigned k = 0; k < 4; k++) out[k] *= length;
+}
+static float rotation_blend_progress(const RotationBlend* b) {
+    /* interval is the time to the next run: 1/30 s less what the tick budget already holds. */
+    const float progress = (float)((double)b->elapsed / (double)b->interval);
+    return progress < 1.0f ? progress : 1.0f;
+}
+/* Writes the script's rotation (target) or the blended one to the transform, with the
+   dirty byte as 25AB914 sets it. The transform must still hold what was written last. */
+static void rotation_blend_place(RotationBlend* b, int target) {
+    const u64 transform = b->active ? trajectory_transform(b->object) : 0;
+    if (!b->active) return;
+    if (!transform || !writable(transform + 0xc0, 0x24)) {
+        b->active = 0;
+        return;
+    }
+    for (unsigned k = 0; k < 4; k++)
+        if (gr32(transform + 0xc0 + 4 * k) != b->shown[k]) {
+            __atomic_add_fetch(&rotation_blend_foreign, 1, __ATOMIC_RELAXED);
+            b->active = 0;
+            return;
+        }
+    const float progress = rotation_blend_progress(b);
+    float q[4];
+    if (target || progress >= 1.0f) memcpy(q, b->to, sizeof q);
+    else rotation_slerp(b->from, b->to, progress, q);
+    for (unsigned k = 0; k < 4; k++) {
+        b->shown[k] = float_bits(q[k]);
+        gw32(transform + 0xc0 + 4 * k, b->shown[k]);
+    }
+    *GP(transform + 0xe0) = 1;
+    __atomic_add_fetch(&rotation_blend_writes, 1, __ATOMIC_RELAXED);
+}
+/* Called with script_tick_lock held, once per bridge call of the blended class. stage 0:
+   a frame without a tick, 1: before a ticked run, 2: after it. */
+static void rotation_blend_bridge(u64 frame, u64 step_ns, int stage, u64 state) {
+    /* A blend belongs to the state that set it, on consecutive frames. After a frame without
+       a bridge call or under another state object the ride may be gone: let go, write nothing. */
+    const int stale = frame > rotation_blend_frame + 1 || state != rotation_blend_state;
+    rotation_blend_frame = frame;
+    rotation_blend_state = state;
+    for (unsigned k = 0; k < 2; k++) {
+        RotationBlend* b = &rotation_blends[k];
+        if (!b->active) continue;
+        if (stale) {
+            b->active = 0;
+            __atomic_add_fetch(&rotation_blend_dropped, 1, __ATOMIC_RELAXED);
+            continue;
+        }
+        if (b->frame != frame) {
+            b->frame = frame;
+            b->elapsed += (int64_t)step_ns;
+        }
+        rotation_blend_place(b, stage == 1);
+    }
+}
+/* 25AB490 (x0 object, x1 quaternion). Inside a ticked run above 30 FPS its rotation becomes
+   the new target and what was shown becomes the start. Otherwise the object is let go. */
+static void rotation_blend_set(CPU* c, u64 entry) {
+    const u64 object = c->x[0], argument = c->x[1];
+    const u64 transform = trajectory_transform(object);
+    const int blend = script_tick_depth && frame_step_ratio() < 1.0f && readable(argument, 16) && transform;
+    float to[4] = {0, 0, 0, 0}, from[4] = {0, 0, 0, 0};
+    RotationBlend* slot = NULL;
+    pm_lock(&script_tick_lock);
+    for (unsigned k = 0; k < 2 && !slot; k++)
+        if (rotation_blends[k].object == object) slot = &rotation_blends[k];
+    for (unsigned k = 0; blend && k < 2 && !slot; k++)
+        if (!rotation_blends[k].active) slot = &rotation_blends[k];
+    if (blend && slot) {
+        for (unsigned k = 0; k < 4; k++) to[k] = guest_float(argument + 4 * k);
+        /* The run put the object on the old target. Shown before that was the blended value. */
+        if (slot->object == object && slot->active) {
+            const float progress = rotation_blend_progress(slot);
+            if (progress >= 1.0f) memcpy(from, slot->to, sizeof from);
+            else rotation_slerp(slot->from, slot->to, progress, from);
+        } else
+            for (unsigned k = 0; k < 4; k++) from[k] = guest_float(transform + 0xc0 + 4 * k);
+    }
+    pm_unlock(&script_tick_lock);
+    rotation_blend_original(c, entry);
+    pm_lock(&script_tick_lock);
+    if (slot && !blend) slot->active = 0;
+    if (slot && blend) {
+        slot->object = object;
+        slot->frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
+        slot->elapsed = 0;
+        slot->interval = SCRIPT_TICK_NS - script_tick.budget - 2000;
+        if (slot->interval < 1000000) slot->interval = 1000000;
+        memcpy(slot->from, from, sizeof from);
+        memcpy(slot->to, to, sizeof to);
+        slot->active = 1;
+        /* The native has just written the target. If it did not, there is nothing to blend. */
+        for (unsigned k = 0; k < 4; k++) {
+            slot->shown[k] = float_bits(to[k]);
+            if (gr32(transform + 0xc0 + 4 * k) != slot->shown[k]) slot->active = 0;
+        }
+    }
+    pm_unlock(&script_tick_lock);
+}
+static int rotation_blend_init(void) {
+    const u64 pc = main_base + 0x25ab490;
+    /* SUB SP,#0x90, MOV X19,X1, MOV X20,X0, and the copy of the argument to transform +C0. */
+    if (!covers_exactly(pc, 0x65c) || !readable(pc, 0x65c) || gr32(pc) != 0xd10243ff || gr32(pc + 0x2c) != 0xaa0103f3 ||
+        gr32(pc + 0x30) != 0xaa0003f4 || gr32(pc + 0x478) != 0xa9402668 || gr32(pc + 0x47c) != 0xa90c2408) {
+        WARN("arceus-script-tick: refused rotation blend guard at main+25ab490\n");
+        return 0;
+    }
+    gw32(pc + 0x30, 0x91000014); /* Equivalent MOV X20,X0 -> ADD X20,X0,#0. */
+    jit_code_changed(pc, 0x65c);
+    rotation_blend_original = jit_wait(pc);
+    if (!rotation_blend_original) {
+        WARN("arceus-script-tick: compile failed at main+25ab490\n");
+        return 0;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], rotation_blend_set, __ATOMIC_RELEASE);
+    return 1;
+}
+/* One-frame answers. A ticked script asks its questions 30 times a second, so an answer
+   that is only true for some frames between two runs would be missed: the release event of
+   a throw (CheckThrowEvent, which the throw script waits for during 19 updates). For the
+   native in this table, on frames without a run the host asks again for the object the
+   script asked at its latest run, and the next run is told yes if any of those answers was
+   yes. It is a read of one byte, without side effects.
+   The host only asks while the object can be taken as alive: the same state object is
+   bridged on consecutive frames since the script asked, and the object's first word is what
+   it was then. An earlier form also asked for a roll and a turn trigger and crashed on an
+   object of an earlier throw that had been released. Those two are not asked again. */
+typedef struct { u32 address, size, head, second_at, second; int windowed; const char* name; } ScriptQuery;
+static const ScriptQuery script_queries[] = {
+    {0x1955fe0, 0x8, 0x3966e000, 4, 0xd65f03c0, 1, "CheckThrowEvent"}, /* LDRB W0,[X0,#0x9B8], RET */
+};
+#define SCRIPT_QUERIES (sizeof script_queries / sizeof script_queries[0])
+typedef struct { GuestFn original; u64 object, word, asked, shown, filled; int held; } ScriptQueryState;
+static ScriptQueryState script_query_states[SCRIPT_QUERIES];
+static u64 script_query_run, script_query_last, script_query_state, script_query_dropped;
+/* The script's own call. Inside a ticked run it is told yes when a skipped frame said yes. */
+static void script_query_check(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    unsigned k = 0;
+    while (k < SCRIPT_QUERIES - 1 && entry != main_base + script_queries[k].address) k++;
+    ScriptQueryState* q = &script_query_states[k];
+    q->original(c, entry);
+    if (!script_tick_depth) return;
+    pm_lock(&script_tick_lock);
+    q->object = readable(object, 8) ? object : 0;
+    q->word = q->object ? gr64(object) : 0;
+    q->asked = script_query_run;
+    if (q->held && !(c->x[0] & 1)) {
+        c->x[0] = 1;
+        q->filled++;
+    }
+    pm_unlock(&script_tick_lock);
+}
+/* From a player or buddy bridge outside any run. run is 1 before a ticked run. On other
+   frames each query the script asked at its latest run is asked again, with every register
+   put back afterwards. An answer shown to a run is forgotten on the next frame. windowed:
+   the class is only ticked by a window. */
+static void script_query_frame(CPU* c, u64 frame, int run, int windowed) {
+    const u64 state = c->x[0];
+    pm_lock(&script_tick_lock);
+    /* Not the frame after the last one, or another state object: nothing asked before counts. */
+    if (frame > script_query_last + 1 || (!run && state != script_query_state)) {
+        for (unsigned k = 0; k < SCRIPT_QUERIES; k++) {
+            ScriptQueryState* q = &script_query_states[k];
+            if (q->object) script_query_dropped++;
+            q->object = q->word = q->shown = 0;
+            q->held = 0;
+        }
+    }
+    script_query_last = frame;
+    if (run) script_query_state = state;
+    pm_unlock(&script_tick_lock);
+    for (unsigned k = 0; k < SCRIPT_QUERIES; k++) {
+        ScriptQueryState* q = &script_query_states[k];
+        if (!q->original) continue;
+        pm_lock(&script_tick_lock);
+        if (q->shown && q->shown != frame) {
+            q->held = 0;
+            q->shown = 0;
+        }
+        if (run && q->held) q->shown = frame;
+        u64 object = !run && q->asked == script_query_run && (!windowed || script_queries[k].windowed) ? q->object : 0;
+        /* A released object does not keep its first word for long. */
+        if (object && (!readable(object, 0xe00) || gr64(object) != q->word)) {
+            q->object = object = 0;
+            script_query_dropped++;
+        }
+        pm_unlock(&script_tick_lock);
+        if (!object) continue;
+        u64 x[32];
+        V128 v[32];
+        const u64 pc = c->pc;
+        memcpy(x, c->x, sizeof x);
+        memcpy(v, c->v, sizeof v);
+        c->x[0] = object;
+        c->pc = main_base + script_queries[k].address;
+        q->original(c, main_base + script_queries[k].address);
+        const int yes = (int)(c->x[0] & 1);
+        memcpy(c->x, x, sizeof x);
+        memcpy(c->v, v, sizeof v);
+        c->pc = pc;
+        if (!yes) continue;
+        pm_lock(&script_tick_lock);
+        q->held = 1;
+        pm_unlock(&script_tick_lock);
+    }
+    if (run) {
+        pm_lock(&script_tick_lock);
+        script_query_run = frame;
+        pm_unlock(&script_tick_lock);
+    }
+}
+/* The natives are reached from scripts through the binding's indirect call only, so their
+   dispatch entries are wrapped without changing a word. */
+static void script_query_init(void) {
+    for (unsigned k = 0; k < SCRIPT_QUERIES; k++) {
+        const ScriptQuery* row = &script_queries[k];
+        const u64 pc = main_base + row->address;
+        if (script_query_states[k].original) continue;
+        if (!covers_exactly(pc, row->size) || !readable(pc, row->size) || gr32(pc) != row->head ||
+            gr32(pc + row->second_at) != row->second || !g_disp[(pc - g_code_lo) / 4]) {
+            WARN("arceus-script-tick: refused query guard %s at main+%x\n", row->name, row->address);
+            continue;
+        }
+        script_query_states[k].original = g_disp[(pc - g_code_lo) / 4];
+        __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], script_query_check, __ATOMIC_RELEASE);
+        LOG("arceus-script-tick: EXPERIMENT: %s is kept for the script's next run\n", row->name);
+    }
+}
+/* Script windows: a class is ticked only while a named part of its script runs, as the ledge
+   fix does for the ledge move. SNX_ARCEUS_SCRIPT_WINDOWS is a hex mask of windows.
+   Bit 0, the throw: the player's throw script waits for the release event of the throw
+   animation for 19 updates and then gives the throw up, so above 30 FPS a slow throw never
+   leaves the hand. The window opens when the script calls OnStartThrow 1A91624 and closes
+   at ThrowObject 1A8EBA4 or OnEndThrowStance 1A91370, or after 1 s. Inside it the three
+   player classes run 30 times a second. Outside it they run on every frame as before. */
+#define SCRIPT_WINDOW_NS 1000000000ull
+typedef struct { u32 address, size, head, second; int window, open; const char* name; } ScriptWindowEvent;
+static const ScriptWindowEvent script_window_events[] = {
+    {0x1a91624, 0x4, 0xd65f03c0, 0, 0, 1, "OnStartThrow"},              /* RET alone */
+    {0x1a8eba4, 0x26b0, 0x6db63bef, 0x6d0133ed, 0, 0, "ThrowObject"},   /* STP D15,D14,[SP,#-0xA0]!, STP D13,D12 */
+    {0x1a91370, 0x1bc, 0xf81c0ff7, 0xa90157f6, 0, 0, "OnEndThrowStance"}, /* STR X23,[SP,#-0x40]!, STP X22,X21 */
+};
+#define SCRIPT_WINDOW_EVENTS (sizeof script_window_events / sizeof script_window_events[0])
+/* The classes each window ticks, as a mask over script_tick_classes. */
+static const unsigned long script_window_classes[] = {0x380};
+#define SCRIPT_WINDOWS (sizeof script_window_classes / sizeof script_window_classes[0])
+typedef struct { int open; unsigned owner; u64 state, seen_frame, opened_ns, opened_frame, opens, expired, interrupted; } ScriptWindow;
+static ScriptWindow script_windows[SCRIPT_WINDOWS];
+static GuestFn script_window_originals[SCRIPT_WINDOW_EVENTS];
+static unsigned long script_windows_mask;
+static u64 script_window_lines;
+/* With the research switch, one line per closed window: what closed it and how long it was
+   open. Lock held. */
+static void script_window_closed(unsigned window, const char* by, u64 frame, u64 now) {
+    const ScriptWindow* w = &script_windows[window];
+    if (!research_observing || ++script_window_lines > 400) return;
+    LOG("arceus-script-window: window=%u closed_by=%s frames=%llu seconds=%.3f owner=%u opens=%llu expired=%llu interrupted=%llu answers_dropped=%llu\n",
+        window, by, (unsigned long long)(frame - w->opened_frame), (double)(now - w->opened_ns) / 1e9, w->owner,
+        (unsigned long long)w->opens, (unsigned long long)w->expired, (unsigned long long)w->interrupted,
+        (unsigned long long)script_query_dropped);
+}
+static unsigned long script_windows_wanted(void) {
+    const char* value = getenv("SNX_ARCEUS_SCRIPT_WINDOWS");
+    if (!value) return 1;
+    return *value ? strtoul(value, NULL, 16) & ((1ul << SCRIPT_WINDOWS) - 1) : 0;
+}
+/* Whether a window ticks this class on this frame. A window counts from the frame after it
+   opened, so the PreUpdate and PostUpdate of the opening frame both run. A window lives
+   with the state whose script opened it: once that state object has not been bridged for a
+   frame (a hit or anything else changed the state) the window is closed. Lock held. */
+static int script_window_active(unsigned class_index, u64 frame, u64 now, u64 state) {
+    int active = 0;
+    for (unsigned k = 0; k < SCRIPT_WINDOWS; k++) {
+        ScriptWindow* w = &script_windows[k];
+        if (!w->open) continue;
+        if (now - w->opened_ns > SCRIPT_WINDOW_NS) {
+            w->open = 0;
+            w->expired++;
+            script_window_closed(k, "expired", frame, now);
+            continue;
+        }
+        if (w->owner == class_index + 1 && w->state == state) w->seen_frame = frame;
+        else if (w->owner && frame > w->seen_frame + 1) {
+            w->open = 0;
+            w->interrupted++;
+            script_window_closed(k, "interrupted", frame, now);
+            continue;
+        }
+        if ((script_window_classes[k] >> class_index & 1) && frame > w->opened_frame) active = 1;
+    }
+    return active;
+}
+/* The script's call of a native that opens or closes a window. */
+static void script_window_event(CPU* c, u64 entry) {
+    unsigned k = 0;
+    while (k < SCRIPT_WINDOW_EVENTS - 1 && entry != main_base + script_window_events[k].address) k++;
+    const ScriptWindowEvent* e = &script_window_events[k];
+    pm_lock(&script_tick_lock);
+    ScriptWindow* w = &script_windows[e->window];
+    if (e->open && !w->open) {
+        w->open = 1;
+        w->opened_ns = plat_ns();
+        w->opened_frame = w->seen_frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
+        w->owner = script_class_running;
+        w->state = script_class_object;
+        w->opens++;
+    } else if (!e->open && w->open) {
+        w->open = 0;
+        script_window_closed((unsigned)e->window, e->name, __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE), plat_ns());
+    }
+    pm_unlock(&script_tick_lock);
+    script_window_originals[k](c, entry);
+}
+/* Wraps the dispatch entries of one window's natives. All or none. */
+static int script_window_init(unsigned window) {
+    for (unsigned k = 0; k < SCRIPT_WINDOW_EVENTS; k++) {
+        const ScriptWindowEvent* e = &script_window_events[k];
+        const u64 pc = main_base + e->address;
+        if (e->window != (int)window) continue;
+        if (!covers_exactly(pc, e->size) || !readable(pc, e->size) || gr32(pc) != e->head ||
+            (e->second && gr32(pc + 4) != e->second) || !g_disp[(pc - g_code_lo) / 4]) {
+            WARN("arceus-script-window: refused guard %s at main+%x\n", e->name, e->address);
+            return 0;
+        }
+    }
+    for (unsigned k = 0; k < SCRIPT_WINDOW_EVENTS; k++) {
+        const u64 pc = main_base + script_window_events[k].address;
+        if (script_window_events[k].window != (int)window) continue;
+        script_window_originals[k] = g_disp[(pc - g_code_lo) / 4];
+        __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], script_window_event, __ATOMIC_RELEASE);
+    }
+    return 1;
+}
+static void script_tick_bridge(CPU* c, u64 entry, unsigned class_index, unsigned post) {
+    const ScriptTickClass* cls = &script_tick_classes[class_index];
+    /* A class that is only ticked inside a window runs on every other frame as it always did. */
+    if (!(script_tick_mask >> class_index & 1)) {
+        pm_lock(&script_tick_lock);
+        const int active = script_window_active(class_index, __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE), plat_ns(), c->x[0]);
+        pm_unlock(&script_tick_lock);
+        if (!active) {
+            script_class_run(c, entry, class_index, script_tick_originals[class_index][post]);
+            return;
+        }
+    }
+    const u64 object = c->x[0], context = c->x[2], fields = context + cls->input;
+    const int usable = readable(object + 0x68, 8) && (!cls->input || writable(fields, 0x24));
+    u8 seen[SCRIPT_TICK_EDGES], current[SCRIPT_TICK_EDGES];
+    unsigned changed = 0;
+    pm_lock(&step_lock);
+    const u64 ns = step.step ? step.step : step.initial_ns;
+    pm_unlock(&step_lock);
+    pm_lock(&script_tick_lock);
+    const u64 frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
+    /* A bridge called from inside a ticked one runs with it. */
+    const int tick = !usable || script_tick_depth || script_tick_decide(&script_tick, frame, ns);
+    if (usable && cls->input)
+        changed = script_tick_input(script_tick_inputs, context, fields, frame, tick, seen, current);
+    const int blended = usable && class_index == ROTATION_BLEND_CLASS && rotation_blend_original && !script_tick_depth;
+    if (blended && (tick || !post)) rotation_blend_bridge(frame, ns, tick, object);
+    const u64 frames = script_tick.frames, ticks = script_tick.ticks;
+    pm_unlock(&script_tick_lock);
+    if (usable && class_index >= SCRIPT_TICK_BUDDY && !script_tick_depth && !post)
+        script_query_frame(c, frame, tick, !(script_tick_mask >> class_index & 1));
+    if (!tick) {
+        /* What the bridge returns without a script: the current state index. */
+        const u64 skipped = __atomic_add_fetch(&script_tick_skipped, 1, __ATOMIC_RELAXED);
+        if (research_observing && skipped % 7200 == 1)
+            LOG("arceus-script-tick: frames=%llu ticks=%llu ran=%llu skipped=%llu latched=%llu blend_writes=%llu blend_foreign=%llu answers_kept=%llu windows=%llu expired=%llu interrupted=%llu answers_dropped=%llu blend_dropped=%llu\n",
+                (unsigned long long)frames, (unsigned long long)ticks,
+                (unsigned long long)__atomic_load_n(&script_tick_ran, __ATOMIC_RELAXED), (unsigned long long)skipped,
+                (unsigned long long)__atomic_load_n(&script_tick_latched, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&rotation_blend_writes, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&rotation_blend_foreign, __ATOMIC_RELAXED),
+                (unsigned long long)script_query_states[0].filled,
+                (unsigned long long)script_windows[0].opens, (unsigned long long)script_windows[0].expired,
+                (unsigned long long)script_windows[0].interrupted, (unsigned long long)script_query_dropped,
+                (unsigned long long)__atomic_load_n(&rotation_blend_dropped, __ATOMIC_RELAXED));
+        c->x[0] = gr32(object + 0x6c);
+        c->pc = c->x[30];
+        return;
+    }
+    __atomic_add_fetch(&script_tick_ran, 1, __ATOMIC_RELAXED);
+    if (changed) __atomic_add_fetch(&script_tick_latched, changed, __ATOMIC_RELAXED);
+    /* Everything the script calls sees a whole 1/30 s in the frame step cell. */
+    u32 cell[2];
+    const int outer = usable && !script_tick_depth;
+    if (outer) {
+        for (unsigned k = 0; k < 2; k++) cell[k] = gr32(frame_step_address + 4 * k);
+        frame_step_cell_write(NOMINAL_STEP_SECONDS);
+    }
+    script_tick_depth++;
+    script_class_run(c, entry, class_index, script_tick_originals[class_index][post]);
+    script_tick_depth--;
+    if (outer)
+        for (unsigned k = 0; k < 2; k++) gw32(frame_step_address + 4 * k, cell[k]);
+    if (blended) {
+        pm_lock(&script_tick_lock);
+        rotation_blend_bridge(frame, ns, 2, object);
+        pm_unlock(&script_tick_lock);
+    }
+    /* A field the script or its natives changed keeps its new value. */
+    for (unsigned k = 0; changed && k < SCRIPT_TICK_EDGES && writable(fields, 0x24); k++)
+        if (seen[k] != current[k] && *GP(fields + script_tick_edges[k]) == seen[k])
+            *GP(fields + script_tick_edges[k]) = current[k];
+}
+#define SCRIPT_TICK_BRIDGES(n) \
+    static void script_tick_pre_##n(CPU* c, u64 entry) { script_tick_bridge(c, entry, n, 0); } \
+    static void script_tick_post_##n(CPU* c, u64 entry) { script_tick_bridge(c, entry, n, 1); }
+SCRIPT_TICK_BRIDGES(0) SCRIPT_TICK_BRIDGES(1) SCRIPT_TICK_BRIDGES(2) SCRIPT_TICK_BRIDGES(3) SCRIPT_TICK_BRIDGES(4)
+SCRIPT_TICK_BRIDGES(5) SCRIPT_TICK_BRIDGES(6) SCRIPT_TICK_BRIDGES(7) SCRIPT_TICK_BRIDGES(8) SCRIPT_TICK_BRIDGES(9)
+static void script_tick_init(void) {
+    static const GuestFn wrappers[SCRIPT_TICK_CLASSES][2] = {
+        {script_tick_pre_0, script_tick_post_0}, {script_tick_pre_1, script_tick_post_1},
+        {script_tick_pre_2, script_tick_post_2}, {script_tick_pre_3, script_tick_post_3},
+        {script_tick_pre_4, script_tick_post_4}, {script_tick_pre_5, script_tick_post_5},
+        {script_tick_pre_6, script_tick_post_6}, {script_tick_pre_7, script_tick_post_7},
+        {script_tick_pre_8, script_tick_post_8}, {script_tick_pre_9, script_tick_post_9}};
+    const unsigned long ticked = script_tick_wanted(), windows = script_windows_wanted();
+    unsigned long wanted = ticked;
+    for (unsigned k = 0; k < SCRIPT_WINDOWS; k++)
+        if (windows >> k & 1) wanted |= script_window_classes[k];
+    if (!main_base || !wanted) return;
+    if (!clocks_installed) {
+        WARN("arceus-script-tick: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    if (!frame_step_cell_init("arceus-script-tick")) return;
+    for (unsigned k = 0; k < SCRIPT_TICK_CLASSES; k++) {
+        const ScriptTickClass* cls = &script_tick_classes[k];
+        const u32 offsets[2] = {cls->bridge[0].address, cls->bridge[1].address};
+        int ok = wanted >> k & 1;
+        for (unsigned b = 0; ok && b < 2; b++) {
+            const ScriptTickBridge* g = &cls->bridge[b];
+            const u64 pc = main_base + g->address;
+            ok = covers_exactly(pc, g->size) && readable(pc, g->size) && gr32(pc) == g->head &&
+                 gr32(pc + g->load_at) == g->load && (!g->extra_at || gr32(pc + g->extra_at) == g->extra) &&
+                 gr32(pc + g->swap_at) == g->swap_old;
+            if (!ok) WARN("arceus-script-tick: refused guard %s at main+%x\n", cls->name, g->address);
+        }
+        for (unsigned b = 0; ok && b < 2; b++) {
+            const ScriptTickBridge* g = &cls->bridge[b];
+            const u64 pc = main_base + g->address;
+            gw32(pc + g->swap_at, g->swap_new); /* An equal ADD Xd,Xm,#0 for the MOV Xd,Xm. */
+            jit_code_changed(pc, g->size);
+            script_tick_originals[k][b] = jit_wait(pc);
+            if (!script_tick_originals[k][b]) {
+                WARN("arceus-script-tick: compile failed %s at main+%x\n", cls->name, g->address);
+                ok = 0;
+            }
+        }
+        if (!ok) continue;
+        for (unsigned b = 0; b < 2; b++)
+            __atomic_store_n(&g_disp[(main_base + offsets[b] - g_code_lo) / 4], wrappers[k][b], __ATOMIC_RELEASE);
+        if (ticked >> k & 1) script_tick_mask |= 1ul << k;
+        script_tick_wrapped |= 1ul << k;
+        const int windowed = (windows & 1) && (script_window_classes[0] >> k & 1);
+        LOG("arceus-script-tick: %s state script runs 30 times per second%s\n", cls->name,
+            ticked >> k & 1 ? "" : " inside its windows only");
+        if (k == ROTATION_BLEND_CLASS && (ticked >> k & 1) && rotation_blend_init())
+            LOG("arceus-script-tick: the rotation set by main+25ab490 is blended between runs\n");
+        if (k >= SCRIPT_TICK_BUDDY && (ticked >> k & 1 || windowed)) script_query_init();
+    }
+    for (unsigned k = 0; k < SCRIPT_WINDOWS; k++) {
+        if (!(windows >> k & 1)) continue;
+        if ((script_tick_wrapped & script_window_classes[k]) != script_window_classes[k] || !script_window_init(k)) {
+            WARN("arceus-script-window: window %u is off, its classes then run on every frame\n", k);
+            continue;
+        }
+        script_windows_mask |= 1ul << k;
+        LOG("arceus-script-window: window %u ticks classes %lx between its natives\n", k, script_window_classes[k]);
+    }
+}
 static void direct_move_fix_init(void) {
     if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_DIRECT_MOVE_FIX", 1)) return;
     if (!clocks_installed) {
@@ -3464,6 +4097,8 @@ void arceus_clock_post_jit(void) {
     climb_step_init();
     wall_jump_fix_init();
     ledge_fix_init();
+    /* After the ledge fix, which owns the Sneasler bridges. */
+    script_tick_init();
     direct_move_fix_init();
     field_waza_init();
     waza_object_init();
