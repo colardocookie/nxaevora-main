@@ -124,8 +124,42 @@ static void test_sequence(void) {
     assert(calls == 2 && guest_float(object + 0xe8) == 2 && fabsf(sequence_slots[0].pending - .5f) < .001f);
     reset(0, 4, 16666667);
     stop_at = 1;
+    battle_sequence_ended = 0;
     update();
     assert(calls == 1 && guest_float(object + 0xe8) == 1);
+    /* The sequence stopped playing in that call: it is counted as ended, once, and its slot
+       starts a new count. */
+    assert(battle_sequence_ended == 1 && !sequence_slots[0].calls);
+    /* The dispatch watch: once a second, and it counts the seconds in which the entry of 9DBEAC
+       is not the wrapper. */
+    {
+        static GuestFn table[8];
+        GuestFn* const saved_disp = g_disp;
+        const u64 saved_lo = g_code_lo, saved_base = main_base;
+        const int saved_research = research_observing;
+        g_disp = table, main_base = 0x100000, g_code_lo = main_base + 0x9dbeac - 16, research_observing = 1;
+        battle_sequence_watch_ns = battle_sequence_watch_lines = battle_sequence_displaced = 0;
+        table[4] = battle_sequence_update;
+        battle_sequence_dispatch_watch(5000000000ull);
+        battle_sequence_dispatch_watch(5500000000ull);
+        assert(battle_sequence_watch_lines == 1 && !battle_sequence_displaced);
+        table[4] = sequence_original;
+        battle_sequence_dispatch_watch(6000000000ull);
+        battle_sequence_dispatch_watch(7000000000ull);
+        assert(battle_sequence_watch_lines == 3 && battle_sequence_displaced == 2);
+        /* Without the research switch it does nothing. */
+        research_observing = 0;
+        battle_sequence_dispatch_watch(9000000000ull);
+        assert(battle_sequence_watch_lines == 3);
+        g_disp = saved_disp, g_code_lo = saved_lo, main_base = saved_base, research_observing = saved_research;
+    }
+    /* A sequence that runs to its end frame is counted with the calls it took. */
+    reset(8, 1, 16666667);
+    guest_float_write(object + 0xec, 10);
+    for (unsigned i = 0; i < 3; i++) update();
+    assert(battle_sequence_ended == 1 && sequence_slots[0].calls == 3);
+    update();
+    assert(battle_sequence_ended == 2 && guest_float(object + 0xe8) == 10 && !sequence_slots[0].calls);
     reset(0, 4, 16666667);
     change_speed = 1;
     update();

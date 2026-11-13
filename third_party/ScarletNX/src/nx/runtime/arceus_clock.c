@@ -133,6 +133,7 @@ static void frame_step_write(u64 ns) {
     gw32(frame_step_address + 4, bits);
 }
 
+static void battle_sequence_dispatch_watch(u64 now);
 static void adjust_duration(CPU* c) {
     static const u64 callers[4] = {0x278150c, 0x2781540, 0x2781574, 0x27815a8};
     unsigned channel = (unsigned)c->x[1];
@@ -146,6 +147,7 @@ static void adjust_duration(CPU* c) {
     if (arceus_step(&step, plat_ns(), c->x[0], channel, &value)) {
         c->x[2] = value;
         if (channel == 0) {
+            battle_sequence_dispatch_watch(plat_ns());
             water_step_write(value);
             frame_step_write(value);
             /* Shared 30-Hz cadence for the isolated integer blink state machine. */
@@ -1168,7 +1170,10 @@ static void capture_fix_init(void) {
 static GuestFn battle_sequence_original;
 static PMutex battle_sequence_lock = PMUTEX_INIT;
 /* cut: the sequence has had a step that was not the game's own, so its frame may be cut. */
-static struct { u64 object; u64 ns; float pending; int cut; } sequence_slots[SEQUENCE_SLOTS];
+/* calls, start_ns and first follow one sequence from its first playing call to its end. */
+static struct { u64 object; u64 ns; float pending; int cut; u32 calls; u64 start_ns; float first; }
+    sequence_slots[SEQUENCE_SLOTS];
+static u64 battle_sequence_ended;
 static unsigned sequence_next_slot;
 static u64 battle_sequence_calls, battle_sequence_skips, battle_sequence_partial;
 /* Read-only research: playing calls per speed, to see how many sequences still step whole frames. */
@@ -1231,9 +1236,15 @@ static void battle_sequence_update(CPU* c, u64 entry) {
             sequence_slots[k].object = object;
             sequence_slots[k].ns = 0;
             sequence_slots[k].pending = 0.0f;
+            sequence_slots[k].calls = 0;
             /* A sequence first seen between two whole frames was cut before. */
             sequence_slots[k].cut = guest_float(object + 0xe8) != floorf(guest_float(object + 0xe8));
         }
+        if (!sequence_slots[k].calls++) {
+            sequence_slots[k].start_ns = plat_ns();
+            sequence_slots[k].first = guest_float(object + 0xe8);
+        }
+        slot = k;
         if (ns != ARCEUS_WHOLE_STEP_NS) sequence_slots[k].cut = 1;
         /* At the game's own step a sequence that was never cut runs the game's update as it is. */
         const int cut = sequence_slots[k].cut;
@@ -1306,7 +1317,26 @@ static void battle_sequence_update(CPU* c, u64 entry) {
         }
         /* The iteration guard retains any unconsumed budget in the slot. */
     } else battle_sequence_original(c, entry);
-    if (count <= 4 || count % 2000 == 0) {
+    /* A sequence that was playing and is not any more has ended. With the research switch one
+       line says how long it took: an authored frame is 1/30 s at any frame rate. */
+    if (slot < SEQUENCE_SLOTS && !battle_sequence_playing(object)) {
+        pm_lock(&battle_sequence_lock);
+        const int ours = sequence_slots[slot].object == object && sequence_slots[slot].calls;
+        const u32 slot_calls = sequence_slots[slot].calls;
+        const u64 start_ns = sequence_slots[slot].start_ns;
+        const float first = sequence_slots[slot].first;
+        if (ours) sequence_slots[slot].calls = 0;
+        pm_unlock(&battle_sequence_lock);
+        if (ours) {
+            __atomic_add_fetch(&battle_sequence_ended, 1, __ATOMIC_RELAXED);
+            if (research_observing && readable(object, 0x308))
+                LOG("arceus-battle-sequence: ended object=%llx frames=%.2f end=%.2f calls=%u seconds=%.3f landing=%d speed=%g total_calls=%llu\n",
+                    (unsigned long long)object, (double)(guest_float(object + 0xe8) - first),
+                    (double)guest_float(object + 0xec), slot_calls, (double)(plat_ns() - start_ns) / 1e9,
+                    battle_sequence_even ? 2 : 1, (double)speed, (unsigned long long)count);
+        }
+    }
+    if (count <= 4 || count % 2000 == 0 || (research_observing && count % 250 == 0)) {
         char speeds[256];
         int n = 0;
         speeds[0] = 0;
@@ -1322,6 +1352,23 @@ static void battle_sequence_update(CPU* c, u64 entry) {
             (unsigned long long)__atomic_load_n(&battle_sequence_skips, __ATOMIC_RELAXED),
             speeds, (unsigned long long)other);
     }
+}
+/* With the research switch, once a second from the frame clock: whether the dispatch entry of
+   9DBEAC still is the wrapper. If something replaced it the sequences run the game's update
+   with no fix, and no line of the wrapper would say so. */
+static u64 battle_sequence_watch_ns, battle_sequence_watch_lines, battle_sequence_displaced;
+static void battle_sequence_dispatch_watch(u64 now) {
+    if (!research_observing || !battle_sequence_original || !main_base) return;
+    if (now - battle_sequence_watch_ns < 1000000000ull) return;
+    battle_sequence_watch_ns = now;
+    const GuestFn entry = __atomic_load_n(&g_disp[(main_base + 0x9dbeac - g_code_lo) / 4], __ATOMIC_ACQUIRE);
+    const int ours = entry == battle_sequence_update;
+    if (!ours) battle_sequence_displaced++;
+    if (++battle_sequence_watch_lines <= 900)
+        LOG("arceus-battle-sequence: dispatch=%s calls=%llu ended=%llu displaced_seconds=%llu ns=%llu\n",
+            ours ? "wrapper" : "OTHER", (unsigned long long)__atomic_load_n(&battle_sequence_calls, __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&battle_sequence_ended, __ATOMIC_RELAXED),
+            (unsigned long long)battle_sequence_displaced, (unsigned long long)now);
 }
 static void battle_sequence_fix_init(void) {
     /* On by default. Value 2 selects the even landing. */

@@ -166,7 +166,9 @@ value 2 moved on from the whole frame in the same rendered frame, one by writing
 second update. The first skipped the end checks, so thrown balls came back before the Pokémon was out, and both hid
 the whole frame from the step slot. This form is not played yet and is not the default. Speeds outside (0, 4] only
 update once a whole 1/30 second has built up. `arceus-battle-sequence` lines count the calls, the partial steps,
-the skipped calls and the speeds seen. A sequence that has only had the game's own step (see the shared step)
+the skipped calls and the speeds seen. With `SNX_ARCEUS_TIMING_RESEARCH=1` that line comes every 250 calls, each
+sequence that ends logs its frames, calls and seconds (81 frames must take about 2.7 s at any frame rate), and once a
+second a line says whether the dispatch entry of `main+9DBEAC` still is the wrapper. A sequence that has only had the game's own step (see the shared step)
 runs the game's update unchanged, at any speed. Its first other step starts the cutting.
 
 ## Map cursor fix
