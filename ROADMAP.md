@@ -131,9 +131,12 @@ Exit condition: the covered scenes play at the speed and the quality that the us
 
 The CPU code of the game is native after the recompile. The other layers of the ScarletNX runtime still re-create the
 console. The user decided to replace them in the order below. The earlier rule "replace a layer only after a measured
-problem" no longer applies to these five steps. Each step still needs a test in the game, and the 30 frames each second
+problem" no longer applies to these steps. Each step still needs a test in the game, and the 30 frames each second
 and the 0 misses are the baseline that no step may make worse. Every step moves away from the upstream project, so a
 patch must be kept up to date or be proposed upstream.
+
+Phase 7 is not a native step. It changes how NXAevora gets the game files, and it comes right after phase 6 because
+the decryption code is a legal risk.
 
 Not in the plan: audio, memory and video. They stay as they are. Open them again only with a measured problem.
 
@@ -158,7 +161,36 @@ and a new path can add visual faults.
 
 Exit condition: the covered scenes draw the same as before with no command stream decode, at 30 frames each second.
 
-## Phase 7: Input and camera
+## Phase 7: Decrypted game files and a file layer for mods
+
+Now: ScarletNX reads NSP and XCI files and decrypts them with the keys of the console, at the recompile and at each
+start of the game. The code is a copy of hactool in `third_party/ScarletNX/src/nx/runtime/driver/hactool/`. Code that
+decrypts the game can conflict with laws against the circumvention of copy protection, such as the DMCA.
+
+Goal: NXAevora reads only game files that are already decrypted. The user makes them from their own console: the
+ExeFS of the update and one RomFS of the game with the update applied. ScarletNX has no decryption code and needs no keys.
+
+- The recompile and the runtime read normal files. The LZ4 compression of the NSO files is not encryption and stays.
+- Remove the hactool code, the reading of the keys, the NSP, XCI and NCA readers, and the settings, tests and parts of
+  the GUI that use them. List the removal in `docs/build/runtime-changes.md`.
+- Add a file layer for mods that replaces files of the game without a change to the decrypted files. Define the order
+  in which a mod overrides a game file.
+- The decrypted files are for the own use of the user only and must never be shared. They need 6 GB or more of disk
+  space, and they must be made again after an update.
+
+Exit condition: the game recompiles and runs from the decrypted files with no keys, ScarletNX has no decryption code,
+and a test mod replaces one file without a change to the decrypted files.
+
+## Phase 8: Shaders and pipelines
+
+Use the existing preparation (shaders made ahead of time, `shader_cache/`, `async_pipelines`, see
+`docs/analysis/stutter-analysis.md`) and build it into the new graphics layer of phase 6. Pipelines for new draw states cannot be
+made before the game uses them, so the aim is to prepare as many as possible before play and to hide the rest.
+
+Exit condition: the stutter at the first use of a pipeline is gone in the covered scenes, and the shaders that fail
+now (11 of 1379, see `docs/graphics/shader-analysis.md`) are handled.
+
+## Phase 9: Input and camera
 
 Facts are in `docs/input/input-analysis.md` and `docs/input/camera-analysis.md`.
 
@@ -170,7 +202,7 @@ Facts are in `docs/input/input-analysis.md` and `docs/input/camera-analysis.md`.
 
 Exit condition: the whole game is playable with the keyboard and the mouse, and the user can rebind every control.
 
-## Phase 8: Host replacement of SDK functions
+## Phase 10: Host replacement of SDK functions
 
 Replace SDK functions of the game with code on the host. Use the preparation that exists (the recompile patches in
 `recomp/patches/`, the analysis of the SDK code from the disassembly, and the HLE services in `runtime/hle`). Make the
@@ -178,45 +210,26 @@ new graphics layer of phase 6 part of it, so that the SDK calls that touch graph
 
 Exit condition: the replaced functions are listed in `docs/`, each has a test run, and the game runs with 0 misses.
 
-## Phase 9: Shaders and pipelines
-
-Use the existing preparation (shaders made ahead of time, `shader_cache/`, `async_pipelines`, see
-`docs/analysis/stutter-analysis.md`) and build it into the new graphics layer of phase 6. Pipelines for new draw states cannot be
-made before the game uses them, so the aim is to prepare as many as possible before play and to hide the rest.
-
-Exit condition: the stutter at the first use of a pipeline is gone in the covered scenes, and the shaders that fail
-now (11 of 1379, see `docs/graphics/shader-analysis.md`) are handled.
-
-## Phase 10: Extracted RomFS and a file layer for mods
-
-Extract the RomFS to the disk ahead of time (ScarletNX has an extract option) and read normal files. Add a file layer
-for mods that replaces files of the game without touching the dump.
-
-- The extracted copy is for the own use of the user only and must never be shared. It needs 6 GB or more of disk space,
-  and it must be made again after an update.
-- The launcher checks the files and the mod folder. Define the order in which a mod overrides a game file.
-
-Exit condition: the game runs from the extracted files, and a test mod replaces one file without a change to the dump.
-
 ## Phase 11: Launcher
 
 A launcher made with Tauri (`launcher/`).
 
-- The user chooses the game dump, the update and the keys. The launcher never copies or uploads them.
+- The user chooses the folders of the decrypted ExeFS and RomFS (phase 7). The launcher never copies or uploads them.
+- It checks the game files and the mod folder.
 - It starts the recompile, shows its progress and starts the game.
-- It lists the settings that matter, for example the language, the resolution and the input. It manages the extracted
-  files and the mods of phase 10.
+- It lists the settings that matter, for example the language, the resolution and the input. It manages the mods of
+  phase 7.
 - It ships with the runtime DLLs, so that no other tool must be installed.
 
-Exit condition: a user with a dump and keys goes from a fresh install to a running game without a terminal.
+Exit condition: a user with the decrypted game files goes from a fresh install to a running game without a terminal.
 
 ## Phase 12: Release
 
 - Choose and write down the license (GPL-3.0-or-later is the plan, because ScarletNX is GPL-3.0).
 - Add the credits for the projects whose code or research NXAevora uses.
 - Build the release in CI from a pinned ScarletNX commit.
-- Write the README for users, with the legal notes: the game files are not part of NXAevora and the user must dump
-  them from their own console.
+- Write the README for users, with the legal notes: the game files are not part of NXAevora, the user must dump
+  them from their own console, and NXAevora does not decrypt them.
 
 Game enhancements such as a higher frame rate are later work and are not part of this list. The full playthrough comes
 after the phases above.
