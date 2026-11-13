@@ -106,7 +106,7 @@ typedef struct {
     ExBufProcs buf;
     ExEventProcs ev;
     NvnStProc pool_address, pool_flush, pool_invalidate, texture_finalize;
-    const char *missing_queue, *missing_qops, *missing_sync, *missing_cb;
+    const char *missing_queue, *missing_qops, *missing_qcross, *missing_sync, *missing_cb;
     const char *missing_clear, *missing_copy_tex, *missing_copy_buf;
     const char *missing_event, *missing_report, *missing_buf, *missing_pool;
     uint64_t q1, q2;
@@ -146,6 +146,13 @@ static const char* ex_queue_ops_find(ExQueueOps* p) {
     if (!nvn_st_proc_find(&p->fence, "nvnQueueFenceSync")) return "nvnQueueFenceSync";
     if (!nvn_st_proc_find(&p->flush, "nvnQueueFlush")) return "nvnQueueFlush";
     if (!nvn_st_proc_find(&p->wait, "nvnSyncWait")) return "nvnSyncWait";
+    return NULL;
+}
+
+/* Only E6 uses these two, so a game that never resolved them skips E6 alone. */
+static const char* ex_queue_cross_find(ExQueueOps* p) {
+    if (!nvn_st_proc_find(&p->wait_sync, "nvnQueueWaitSync")) return "nvnQueueWaitSync";
+    if (!nvn_st_proc_find(&p->finish, "nvnQueueFinish")) return "nvnQueueFinish";
     return NULL;
 }
 
@@ -646,9 +653,10 @@ static void case_event_report(ExState* s) {
 static void case_two_queues(ExState* s) {
     const char* const name = nvn_ex_case_name(NVN_EX_CASE_TWO_QUEUES);
     if (!ex_need(s, name, s->missing_queue) || !ex_need(s, name, s->missing_qops) ||
-        !ex_need(s, name, s->missing_sync) || !ex_need(s, name, s->missing_cb) ||
-        !ex_need(s, name, s->missing_clear) || !ex_need(s, name, s->missing_copy_tex) ||
-        !ex_need(s, name, s->missing_buf) || !ex_need(s, name, s->missing_pool))
+        !ex_need(s, name, s->missing_qcross) || !ex_need(s, name, s->missing_sync) ||
+        !ex_need(s, name, s->missing_cb) || !ex_need(s, name, s->missing_clear) ||
+        !ex_need(s, name, s->missing_copy_tex) || !ex_need(s, name, s->missing_buf) ||
+        !ex_need(s, name, s->missing_pool))
         return;
     if (!s->e1_ok) {
         ex_skip(s->ctx.run, name, "E1 did not pass, so a flush job is not known to end");
@@ -741,12 +749,14 @@ static int ex_event_new(ExState* s, uint64_t* event_out, const NvnStResPool* poo
 static void ex_setup(ExState* s) {
     s->missing_queue = ex_queue_procs_find(&s->q);
     s->missing_qops = ex_queue_ops_find(&s->qops);
+    s->missing_qcross = ex_queue_cross_find(&s->qops);
     s->missing_sync = ex_sync_procs_find(&s->sync);
     s->missing_cb = ex_cb_procs_find(&s->cb);
     s->missing_clear = ex_cmd_clear_find(&s->cmd);
     s->missing_copy_tex = ex_cmd_copy_tex_find(&s->cmd);
     s->missing_copy_buf = ex_cmd_copy_buf_find(&s->cmd);
     s->missing_event = ex_cmd_event_find(&s->cmd);
+    if (!s->missing_event) s->missing_event = ex_event_procs_find(&s->ev);
     s->missing_report = ex_cmd_report_find(&s->cmd);
     s->missing_buf = ex_buf_procs_find(&s->buf);
     s->missing_pool = ex_pool_procs_find(&s->pool_address, &s->pool_flush, &s->pool_invalidate);
