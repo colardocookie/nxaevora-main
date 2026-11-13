@@ -1057,6 +1057,7 @@ void vk_imgui_swapchain_gone(void);
 void vk_render_clear(GpuChannel* ch, u32 v);
 /* gpu/vk/render.c: the read-only frame pass census (SNX_PASS_CENSUS=1) hears of each frame shown */
 void vk_pass_census_present(const Surf* shown);
+void vk_pass_census_dispatch(u64 code, const u64* address, const u32* size, int n);
 VkViewport vk_render_viewport(const u32* r);
 VkViewport vk_render_viewport_at(const u32* r, u32 index);
 int vk_render_depth_clamp(const u32* r);

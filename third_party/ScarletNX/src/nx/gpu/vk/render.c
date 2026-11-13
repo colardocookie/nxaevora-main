@@ -757,8 +757,8 @@ typedef struct {
 } CensusPass;
 static struct {
     int on, capturing; /* capturing: 2 in the first of two frames in a row, 1 in the second */
-    u32 next, captures, count, dropped;
-    u64 shown; /* the address of the surface shown last frame */
+    u32 next, captures, count, dropped, feedbacks, dispatches; /* the last two: lines logged this frame */
+    u64 shown[2]; /* the addresses of the surfaces shown in the last two frames: the game shows two in turn */
     u64 written[CENSUS_SEEN], before[CENSUS_SEEN];
     u32 nwritten, nbefore;
     CensusPass pass[CENSUS_PASSES];
@@ -787,7 +787,7 @@ static void census_wrote(u64 gva) {
         g_census.written[g_census.nwritten++] = gva;
 }
 /* The vertex stage's constant blocks of a draw into a geometry pass (two or more colour targets with depth): every
-   bound block's address and size, and the first 0x140 bytes of up to four of them. Two frames in a row are taken, so
+   bound block's address and size, and the first 0x140 bytes of up to twelve of them. Two frames in a row are taken, so
    a block that holds last frame's matrix beside this frame's shows. Draws 0, 1, 2 and every 16th, eight a pass. */
 static void census_blocks(const GpuChannel* ch, const CensusPass* p, u32 pass, const VkSh* vs) {
     char line[3200];
@@ -798,7 +798,17 @@ static void census_blocks(const GpuChannel* ch, const CensusPass* p, u32 pass, c
                            ch->cbind_size[ST_VS][b]);
     LOG("arceus-pass-blocks: present=%u pass=%u draw=%u vs=%llx%s\n", g_vk_present, pass, p->draws - 1,
         (unsigned long long)(vs ? vs->hash : 0), line);
-    for (u32 b = 0; b < 18 && dumped < 4; b++) {
+    /* the vertex streams: a skinned mesh reads positions another pass wrote into a buffer that stays */
+    at = 0;
+    line[0] = 0;
+    for (u32 v = 0; v < 32 && at < (int)sizeof line - 80; v++) {
+        const u32* va = &ch->r3d[0x700 + v * 4];
+        if (va[0] & 0x1000)
+            at += snprintf(line + at, sizeof line - (size_t)at, " v%u=%llx:%u", v,
+                           (unsigned long long)(((u64)(va[1] & 0xFF) << 32) | va[2]), va[0] & 0xFFF);
+    }
+    LOG("arceus-pass-streams: present=%u pass=%u draw=%u%s\n", g_vk_present, pass, p->draws - 1, line);
+    for (u32 b = 0; b < 18 && dumped < 12; b++) {
         const u64 a = ch->cbind[ST_VS][b];
         u32 size = ch->cbind_size[ST_VS][b];
         if (!a || size < 0x40) continue;
@@ -872,6 +882,32 @@ static void census_draw(const GpuChannel* ch, Surf* const* rt, u32 n, u32 writes
         if (rt[i] && (writes >> i & 1)) census_wrote(rt[i]->gva);
     if (zt && zt_wrote) census_wrote(zt->gva);
 }
+/* a draw that captures transform feedback while a frame is taken: its buffers (address, size, stride) */
+static void census_feedback(const GpuChannel* ch, u32 bound, const VkSh* vs) {
+    if (!g_census.capturing || !bound || g_census.feedbacks++ >= 48) return;
+    char line[400];
+    int at = 0;
+    for (int i = 0; i < 4; i++) {
+        const u32* t = &ch->r3d[0xE0 + 8 * i];
+        if (bound >> i & 1)
+            at += snprintf(line + at, sizeof line - (size_t)at, " x%d=%llx:%x:%u", i,
+                           (unsigned long long)((((u64)(t[1] & 0xFF) << 32) | t[2]) + t[4]), t[3],
+                           ch->r3d[0x1C2 + 4 * i]);
+    }
+    LOG("arceus-pass-feedback: present=%u after_pass=%u vs=%llx%s\n", g_vk_present, g_census.count,
+        (unsigned long long)(vs ? vs->hash : 0), line);
+}
+/* a compute dispatch while a frame is taken: its program and storage buffers (address and size) */
+void vk_pass_census_dispatch(u64 code, const u64* address, const u32* size, int n) {
+    if (g_census.on <= 0 || !g_census.capturing || g_census.dispatches++ >= 48) return;
+    char line[900];
+    int at = 0;
+    line[0] = 0;
+    for (int i = 0; i < n && at < (int)sizeof line - 40; i++)
+        at += snprintf(line + at, sizeof line - (size_t)at, " s%d=%llx:%x", i, (unsigned long long)address[i], size[i]);
+    LOG("arceus-pass-compute: present=%u after_pass=%u code=%llx%s\n", g_vk_present, g_census.count,
+        (unsigned long long)code, line);
+}
 static int census_two_channel(u32 format) {
     return format == VK_FORMAT_R16G16_SFLOAT || format == VK_FORMAT_R32G32_SFLOAT || format == VK_FORMAT_R16G16_UNORM ||
            format == VK_FORMAT_R16G16_SNORM || format == VK_FORMAT_R8G8_UNORM || format == VK_FORMAT_R8G8_SNORM;
@@ -882,8 +918,9 @@ void vk_pass_census_present(const Surf* shown) {
     if (!census_on()) return;
     if (g_census.capturing) {
         int first = 1;
-        LOG("arceus-pass: frame present=%u passes=%u dropped=%u shown_last=%llx scale=%.3f\n", g_vk_present,
-            g_census.count, g_census.dropped, (unsigned long long)g_census.shown, (double)g_vk_scale);
+        LOG("arceus-pass: frame present=%u passes=%u dropped=%u shown_last=%llx shown_before=%llx scale=%.3f\n",
+            g_vk_present, g_census.count, g_census.dropped, (unsigned long long)g_census.shown[0],
+            (unsigned long long)g_census.shown[1], (double)g_vk_scale);
         for (u32 k = 0; k < g_census.count; k++) {
             const CensusPass* p = &g_census.pass[k];
             char line[1400];
@@ -894,7 +931,7 @@ void vk_pass_census_present(const Surf* shown) {
                 if (!t->gva) continue;
                 CENSUS_ADD(" c%u=%llx:%ux%u(%ux%u)f%u%s", i, (unsigned long long)t->gva, t->w, t->h, t->sw, t->sh,
                            t->format, p->writes >> i & 1 ? "" : "-");
-                if (t->gva == g_census.shown && (p->writes >> i & 1)) present = 1;
+                if ((t->gva == g_census.shown[0] || t->gva == g_census.shown[1]) && (p->writes >> i & 1)) present = 1;
                 if (census_two_channel(t->format) && p->has_depth && (p->writes >> i & 1)) velocity = 1;
             }
             if (p->has_depth)
@@ -918,7 +955,7 @@ void vk_pass_census_present(const Surf* shown) {
         }
         /* the frame after a captured one is captured too, then the next comes 1200 presents on */
         g_census.capturing--;
-        g_census.count = g_census.dropped = 0;
+        g_census.count = g_census.dropped = g_census.feedbacks = g_census.dispatches = 0;
         if (!g_census.capturing) {
             g_census.captures++;
             g_census.next = g_vk_present + 1200;
@@ -927,10 +964,11 @@ void vk_pass_census_present(const Surf* shown) {
     memcpy(g_census.before, g_census.written, sizeof g_census.before);
     g_census.nbefore = g_census.nwritten;
     g_census.nwritten = 0;
-    g_census.shown = shown ? shown->gva : 0;
+    g_census.shown[1] = g_census.shown[0];
+    g_census.shown[0] = shown ? shown->gva : 0;
     if (!g_census.capturing && g_census.captures < 10 && g_vk_present >= g_census.next) {
         g_census.capturing = 2;
-        g_census.count = g_census.dropped = 0;
+        g_census.count = g_census.dropped = g_census.feedbacks = g_census.dispatches = 0;
     }
 }
 /* What a texture handle resolved to, kept while nothing it came from can have changed: the pools' addresses, the
@@ -3484,6 +3522,7 @@ retry:
     if (g_census.on) {
         VkViewport census_vp = vk_render_viewport(r);
         census_draw(ch, g_rp.rt, n, writes, zt, zt_ro, census_z, vs, fs, fres, &census_vp, 0);
+        census_feedback(ch, xbound, vs);
     }
     g_vk_drawn++;
 }

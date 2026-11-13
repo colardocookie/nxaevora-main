@@ -970,6 +970,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         ss[i] = vk_gbuf_desc(ST_CS, p->si.gbuf_cbuf_off[i], v, &sa[i]);
         need += ss[i] + vk_stage_align();
     }
+    vk_pass_census_dispatch(code, sa, ss, ng);
     for (int i = 0; i < 8; i++)
         if (p->si.cbuf_mask & (1u << i)) need += g_cbn[i] + vk_stage_align();
     /* buffer images: their headers from the compute engine's texture pool, handles from its texture bank */

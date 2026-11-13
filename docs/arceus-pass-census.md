@@ -8,7 +8,7 @@ the 900th, up to 10 times, the passes of two frames in a row are written in orde
 draws on one set of targets, so the game returning to a target starts a new pass.
 
 The header line gives the present number, the number of passes, how many were dropped (the limit is 384), the guest
-address of the surface shown last frame and the renderer's resolution scale. Then one line per pass:
+addresses of the surfaces shown in the last two frames (the game shows two in turn) and the renderer's resolution scale. Then one line per pass:
 
     arceus-pass: present=N pass=K kind=draw draws=D c0=ADDR:WxH(SWxSH)fF z=ADDR:WxH(SWxSH)fF vp=WxH vs=HASH fs=HASH+N samples=... marks=...
 
@@ -21,7 +21,7 @@ address of the surface shown last frame and the renderer's resolution scale. The
 | `vs`, `fs` | program hashes of the first draw, and how many later draws used another fragment program |
 | `samples` | textures the fragment programs sampled that are or were render targets: address, guest size, format. `D` a depth format, `H` a target of last frame not yet written in this one, `T` a target written earlier in this frame |
 
-Marks: `PRESENT` on the first pass that writes the surface shown last frame (`present` on later ones), `HISTORY` when a
+Marks: `PRESENT` on the first pass that writes a surface shown in the last two frames (`present` on later ones), `HISTORY` when a
 sample carries `H`, `VELOCITY?` when a two-channel colour target is written with a depth target bound, `DEPTHREAD` when
 a sampled depth format was a target earlier in the frame.
 
@@ -36,5 +36,18 @@ blocks are logged too, for draws 0, 1, 2 and every 16th, up to eight a pass:
     arceus-pass-block: present=N pass=K draw=D b1 words=<up to 0x140 bytes as 32-bit words in hex>
 
 The first line lists every bound block with its guest address and size in bytes. The second gives the first 0x140
-bytes of up to four blocks of at least 0x40 bytes. The two frames in a row let a block that keeps last frame's world
+bytes of up to twelve blocks of at least 0x40 bytes. The two frames in a row let a block that keeps last frame's world
 matrix beside this frame's be seen: the same draw's words in the second frame repeat a matrix of the first.
+
+## Vertex streams, transform feedback and compute
+
+With the block lines of a geometry-pass draw comes one line of its vertex streams, and while a frame is taken every
+draw that captures transform feedback and every compute dispatch is logged, up to 48 of each a frame:
+
+    arceus-pass-streams: present=N pass=K draw=D v0=ADDR:STRIDE v1=ADDR:STRIDE ...
+    arceus-pass-feedback: present=N after_pass=K vs=HASH x0=ADDR:SIZE:STRIDE ...
+    arceus-pass-compute: present=N after_pass=K code=ADDR s0=ADDR:SIZE ...
+
+A skinned mesh reads its positions from a buffer another pass wrote. If a stream address of a scene draw is a
+feedback or compute output of the same frame, and the buffer stays at that address in the next frame, last frame's
+positions can be kept for motion vectors.
