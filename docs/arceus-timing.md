@@ -43,6 +43,7 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | `SNX_ARCEUS_MOVEMENT_SITES` | `0x1fc` | Not a boolean: selects movement sites by bit mask. Explicit masks are used as provided. |
 | `SNX_ARCEUS_CAPPED_FALL_FIX` | on | Disables the capped-fall correction. |
 | `SNX_ARCEUS_AIR_STEERING_FIX` | on | Leaves air steering at its authored rate. |
+| `SNX_ARCEUS_RIDE_SWAP_FIX` | on | Leaves ride-swap countdowns at their authored rate. |
 | `SNX_ARCEUS_DIRECT_MOVE_FIX` | on | Leaves the direct ground-move step at its authored rate. |
 | `SNX_ARCEUS_FIELD_WAZA_FIX` | on | Leaves field-move countdowns and turn input at their authored rates. |
 | `SNX_ARCEUS_WAZA_OBJECT_FIX` | on | Leaves attack-object timers at their authored rates; if shot fix stays on, logs one warning. |
@@ -303,7 +304,7 @@ smooth than the frame rate. Test `arceus_clock` checks that a 100 ms tap scrolls
 
 The ride controller's update `main+2537B28` runs once per rendered frame and counts five waits down by one per call
 (`+2BC`, `+4A0`, `+2C0`, `+3C0` and `+2A8`). The wait before a quick swap to another ride is 18 to 20 of those calls, so
-the swap that takes about 0.6 s at 30 FPS took 0.17 to 0.24 s unlocked. With a target rate, `SNX_ARCEUS_RIDE_SWAP_FIX=1`
+the swap that takes about 0.6 s at 30 FPS took 0.17 to 0.24 s unlocked. The default-on `SNX_ARCEUS_RIDE_SWAP_FIX`
 lets the waits count 30 times a second: on the other frames a running count goes in one higher and comes out as it was.
 A count the call did not touch is left as the game set it. `arceus-ride-swap` lines log counts that start or end.
 
@@ -330,6 +331,6 @@ by default, `SNX_ARCEUS_WAZA_SHOT_FIX=2` runs that update on 30 Hz ticks and ble
 those updates, with a position up to one tick behind the game state. Value `1` runs at tick rate without blending;
 `0` disables the fix. If shot fix is enabled while `SNX_ARCEUS_WAZA_OBJECT_FIX=0`, the runtime logs one warning and
 leaves both settings as requested. Value `1` produced the expected speed but visibly stepped at high frame rates.
-Value `2` flew smoothly and left Luxio cleanly in the test session. A later
-30 FPS comparison found that its target tracking may be weaker at unlocked rates, so tracking parity remains to be
-confirmed.
+Value `2` flew smoothly and left Luxio cleanly in the test session. Measured against a 30 FPS session, the shot turned
+1.60 (value `1`) and 1.68 (value `2`) times the change in bearing to the player, against 1.58 at 30 FPS. That is within
+the spread of 5 to 6 shots per session, so a difference under about 15 percent would not show.
