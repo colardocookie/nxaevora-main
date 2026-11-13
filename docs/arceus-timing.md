@@ -15,7 +15,7 @@ The switches are environment variables. A switch is on when its value is `1`.
 
 | Switch | What it does |
 | --- | --- |
-| `SNX_ARCEUS_TARGET_FPS` | `60` or `120`. The four main-loop duration writes take the elapsed time of the frame instead of 1/30 second, and the runtime's frame limit is set to this rate. Another value is refused. `SNX_ARCEUS_FPS60=1` is the older form of `60`. |
+| `SNX_ARCEUS_TARGET_FPS` | `60`, `120` or `unlocked` (`0` is the same). The four main-loop duration writes take the elapsed time of the frame instead of 1/30 second, and the runtime's frame limit is set to this rate. `unlocked` lifts the frame limit and starts from a 1/120 second step until the first measured one. Another value is refused. `SNX_ARCEUS_FPS60=1` is the older form of `60`. |
 | `SNX_ARCEUS_TIMING_FIXES` | With a target rate, enables water animation and fractional effect progress. Also a prerequisite for the individual event-camera, blink, menu-repeat and camera switches below. It does not enable those hooks on its own. |
 | `SNX_ARCEUS_CAMERA_INPUT_FIX` | Part of the timing fixes. The camera stick keeps its 30 FPS response at any frame rate. |
 | `SNX_ARCEUS_CAMERA_SPEED` | With the camera fix, a multiplier of the manual camera rotation speed. |
@@ -166,3 +166,12 @@ waits to finish, and the authored delta is put back after each call unless the c
 kept for each fade object, up to 16. It starts over when the fade starts again (`main+C21D00` and `main+C227BC`)
 or when the frame, duration or state differ from what the last call left. With all slots in use a call runs as
 the original. The other fade modes are unchanged. `arceus-fade` lines count the calls.
+
+## Unlocked frame rate
+
+With `SNX_ARCEUS_TARGET_FPS=unlocked` the runtime has no frame limit, and every fix in this file follows the
+measured frame step, whatever the rate. The shared step keeps its rules: it is never zero, and a stall longer than
+0.1 second is cut to 0.1 second. The cave light ratio had a floor of 1/16 of a 1/30 second step, which bound above
+480 FPS. It is now 1/1000 and only keeps the ratio above zero. The thrown-object flight keeps its own floor. Tests
+`arceus_timing` and `arceus_clock` check the shared step and the fixes with variable and jittered steps up to
+1000 FPS.

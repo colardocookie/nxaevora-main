@@ -147,12 +147,14 @@ void arceus_clock_init(void) {
     const char* enabled = getenv("SNX_ARCEUS_CLOCK_TRACE");
     const char* fps60 = getenv("SNX_ARCEUS_FPS60");
     const char* target = getenv("SNX_ARCEUS_TARGET_FPS");
-    int target_fps = fps60 && !strcmp(fps60, "1") ? 60 : 0;
+    int target_fps = fps60 && !strcmp(fps60, "1") ? 60 : 0, unlocked = 0;
     if (target && *target) {
         if (!strcmp(target, "60")) target_fps = 60;
         else if (!strcmp(target, "120")) target_fps = 120;
+        /* No frame limit: every fix follows the measured step, whatever the rate. */
+        else if (!strcmp(target, "unlocked") || !strcmp(target, "0")) unlocked = 1;
         else {
-            WARN("arceus-clock: refused unsupported target FPS (use 60 or 120)\n");
+            WARN("arceus-clock: refused unsupported target FPS (use 60, 120 or unlocked)\n");
             return;
         }
     }
@@ -160,7 +162,7 @@ void arceus_clock_init(void) {
     int message_trace = message_flag && !strcmp(message_flag, "1");
     const SnxModInfo* mod = NULL;
     tracing = enabled && !strcmp(enabled, "1");
-    experimental = target_fps != 0;
+    experimental = target_fps != 0 || unlocked;
     const char *fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
     const char *camera = getenv("SNX_ARCEUS_CAMERA_TRACE");
     const char *research = getenv("SNX_ARCEUS_TIMING_RESEARCH");
@@ -196,12 +198,17 @@ void arceus_clock_init(void) {
     for (unsigned i = 0; i < 3; i++)
         g_disp[(main_base + offsets[i] - g_code_lo) / 4] = wrappers[i];
     if (experimental) {
-        step.initial_ns = (UINT64_C(1000000000) + target_fps / 2) / target_fps;
-        __atomic_store_n(&g_opt_fps, target_fps, __ATOMIC_RELAXED);
+        /* Unlocked starts from a 1/120 s step until the first measured one. 0 lifts the limit. */
+        step.initial_ns = unlocked ? ARCEUS_UNLOCKED_INITIAL_STEP_NS
+                                   : (UINT64_C(1000000000) + target_fps / 2) / target_fps;
+        __atomic_store_n(&g_opt_fps, unlocked ? 0 : target_fps, __ATOMIC_RELAXED);
         clocks_installed = 1;
     }
-    LOG("arceus-clock: Arceus 1.1.1 %s, target_fps=%d, tracing=%d\n",
-        experimental ? "EXPERIMENT: elapsed-time clocks" : "read-only probe", target_fps, tracing);
+    if (unlocked)
+        LOG("arceus-clock: Arceus 1.1.1 EXPERIMENT: elapsed-time clocks, target_fps=unlocked, tracing=%d\n", tracing);
+    else
+        LOG("arceus-clock: Arceus 1.1.1 %s, target_fps=%d, tracing=%d\n",
+            experimental ? "EXPERIMENT: elapsed-time clocks" : "read-only probe", target_fps, tracing);
 }
 
 /* WaterCurrentTime's verified update adds 1/30 second per rendered frame. Replace
@@ -1481,7 +1488,8 @@ static float frame_step_ratio(void) {
     pm_unlock(&step_lock);
     float r = (float)((double)ns / 33333334.0);
     if (!(r <= 1.0f)) r = 1.0f;
-    return r < 0.0625f ? 0.0625f : r;
+    /* The floor only keeps the ratio above zero. It binds above 30000 FPS, not at unlocked rates. */
+    return r < ARCEUS_MIN_STEP_RATIO ? ARCEUS_MIN_STEP_RATIO : r;
 }
 
 /* 1E1A25C eases cave lighting through record x0+5E640: target +0, active byte +4,
