@@ -75,6 +75,10 @@ static struct {
     /* anti-aliasing: the two addresses the scene camera's block takes in turn, its jittered copy for this
        submission, and our history */
     u64 camera_address[2], jitter_address, jitter_submit, jittered;
+    /* a miss of the paired slot: what the two neighbours held, to compare with the next frame's block */
+    u8 miss_bytes[2][64];
+    u32 miss_at;
+    u64 miss_ahead, miss_other;
     u8 jitter_source[0x1000]; /* the guest's bytes the copy was made from */
     u64 other_cameras;
     u32 jitter_index, jitter_size, camera_read; /* camera_read: the most bytes a program read of the block */
@@ -329,6 +333,16 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
         g_t.camera_address[0] = address;
     }
     g_t.have_before = had;
+    /* a neighbour that did not hold last frame's matrix: did it already hold this frame's? */
+    if (g_t.miss_at && g_t.miss_at + 1 == frame) {
+        if (!memcmp(g_t.miss_bytes[0], g_t.now, 64) || !memcmp(g_t.miss_bytes[1], g_t.now, 64)) g_t.miss_ahead++;
+        else g_t.miss_other++;
+        if (g_t.miss_ahead + g_t.miss_other <= 4 || (g_t.miss_ahead + g_t.miss_other) % 300 == 0)
+            LOG("arceus-temporal: when the neighbouring slot missed, it held the next frame's matrix %llu times and "
+                "something else %llu times\n",
+                (unsigned long long)g_t.miss_ahead, (unsigned long long)g_t.miss_other);
+    }
+    g_t.miss_at = 0;
     if (had) {
         int equal = 0;
         memcpy(g_t.before, g_t.kept, sizeof g_t.before);
@@ -337,7 +351,15 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
             if (other && !memcmp(other, g_t.kept, 64)) equal = 1 + side;
         }
         if (equal) g_t.pair_equal++;
-        else g_t.pair_differ++;
+        else {
+            g_t.pair_differ++;
+            for (int side = 0; side < 2; side++) {
+                const u8* other = gmem_host(side ? address + size : address - size, 64);
+                memset(g_t.miss_bytes[side], 0, 64);
+                if (other) memcpy(g_t.miss_bytes[side], other, 64);
+            }
+            g_t.miss_at = frame;
+        }
         if (g_t.pair_equal + g_t.pair_differ <= 4 || (g_t.pair_equal + g_t.pair_differ) % 1800 == 0)
             LOG("arceus-temporal: camera block %llx size %x, last frame's view-projection %s (equal %llu, not %llu)\n",
                 (unsigned long long)address, size,
