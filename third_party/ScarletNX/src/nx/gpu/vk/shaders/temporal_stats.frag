@@ -37,9 +37,12 @@ void main() {
         // three marks in one number: 1 the history was dropped, 2 the frame as drawn changed since the one before,
         // 4 the resolved picture changed since the one before
         vec4 resolved = texelFetch(u_before, pixel, 0);
+        // The blend moves a pixel by a tenth of its distance a frame, so the resolved picture is also counted at
+        // two finer steps: 8 above 0.05, 16 above 0.02.
+        float shown = relative(resolved.rgb, texelFetch(u_shown, pixel, 0).rgb);
         o_stats.r = (resolved.a < 0.0 ? 1.0 : 0.0) +
-                    (relative(now, texelFetch(u_last, pixel, 0).rgb) > 0.25 ? 2.0 : 0.0) +
-                    (relative(resolved.rgb, texelFetch(u_shown, pixel, 0).rgb) > 0.25 ? 4.0 : 0.0);
+                    (relative(now, texelFetch(u_last, pixel, 0).rgb) > 0.25 ? 2.0 : 0.0) + (shown > 0.25 ? 4.0 : 0.0) +
+                    (shown > 0.05 ? 8.0 : 0.0) + (shown > 0.02 ? 16.0 : 0.0);
         if (z <= 0.0) o_stats.a = -1.0;
         return;
     }

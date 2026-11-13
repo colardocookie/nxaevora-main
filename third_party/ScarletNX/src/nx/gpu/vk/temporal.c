@@ -489,7 +489,7 @@ static float half_float(u16 h) {
 static void stats_log(void) {
     static const char* const names[3] = {"near", "mid", "far"};
     unsigned n[3] = {0, 0, 0}, wrong[3] = {0, 0, 0}, wrong_still[3] = {0, 0, 0}, sky = 0, off = 0, changed = 0;
-    unsigned shown = 0;
+    unsigned shown = 0, shown_fine[2] = {0, 0};
     const int taa = g_t.mode == MODE_TAA;
     double length = 0, longest = 0;
     for (u32 i = 0; i < STATS_W * STATS_H; i++) {
@@ -512,21 +512,24 @@ static void stats_log(void) {
         wrong[band] += taa ? marks & 1 : moved > STATS_ERROR;
         changed += marks >> 1 & 1;
         shown += marks >> 2 & 1;
+        shown_fine[0] += marks >> 3 & 1;
+        shown_fine[1] += marks >> 4 & 1;
         wrong_still[band] += still > STATS_ERROR;
         length += vector;
         if (vector > longest) longest = vector;
     }
     const unsigned all = n[0] + n[1] + n[2];
-    char bands[320];
+    char bands[400];
     int at = 0;
     /* with anti-aliasing on, the first number is where the history was dropped and the second where the resolved
        colour is far from the frame's own: trails behind what moves show there. frame_to_frame is the share of
        pixels that differ from the frame before as drawn: with a still camera, the jitter at work on the edges.
        shown_frame_to_frame is the same for the resolved picture, where the jitter should be gone. */
     if (taa)
-        at += snprintf(bands, sizeof bands, " frame_to_frame=%.1f%% shown_frame_to_frame=%.1f%%",
-                       n[0] + n[1] + n[2] ? 100.0 * changed / (n[0] + n[1] + n[2]) : 0.0,
-                       n[0] + n[1] + n[2] ? 100.0 * shown / (n[0] + n[1] + n[2]) : 0.0);
+        at += snprintf(bands, sizeof bands,
+                       " frame_to_frame=%.1f%% shown_frame_to_frame=%.1f%% above_0.05=%.1f%% above_0.02=%.1f%%",
+                       all ? 100.0 * changed / all : 0.0, all ? 100.0 * shown / all : 0.0,
+                       all ? 100.0 * shown_fine[0] / all : 0.0, all ? 100.0 * shown_fine[1] / all : 0.0);
     for (int b = 0; b < 3; b++)
         at += snprintf(bands + at, sizeof bands - (size_t)at, taa ? " %s n=%u dropped=%.1f%% far_from_frame=%.1f%%"
                                                                : " %s n=%u wrong=%.1f%% without_vectors=%.1f%%",

@@ -87,7 +87,8 @@ quarter of its brightness. Trails behind things that move show in the second. `f
 pixels that differ by more than a quarter from the frame before as it was drawn, before the resolve. With a still
 camera it shows the jitter at work: edges change from frame to frame. Without jitter it is near zero.
 `shown_frame_to_frame` is the same share for the resolved picture against the resolved picture of the frame before.
-With a still camera it should be near what the scene does by itself: more means the jitter shows through as shimmer.
+The blend moves a pixel by a tenth of its distance each frame, so a quarter is rarely reached there: `above_0.05`
+and `above_0.02` give the same share at those finer steps. With a still camera, shimmer from the jitter shows in them.
 
 Limits. The vectors are the camera's only, so a moving character or Pokémon drags a trail until the history is
 clamped away, and grass in the wind blurs. Thin bright details can flicker where the clamp cuts them. The resolve
