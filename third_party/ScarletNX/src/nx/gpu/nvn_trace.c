@@ -9,6 +9,7 @@
 #include "nx/gpu/nvn_trace.h"
 #include "nx/gpu/nvn_enum_trace.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/nvn_exectest.h"
 #include "nx/gpu/nvn_selftest.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/options.h"
@@ -21,7 +22,7 @@
 #include <string.h>
 
 #define VALUE_SEEN_MAX 64 /* distinct queries logged for one function */
-enum { SELFTEST_NONE = 0, SELFTEST_DEVICE_INIT, SELFTEST_QUEUE_INIT };
+enum { SELFTEST_NONE = 0, SELFTEST_DEVICE_INIT, SELFTEST_QUEUE_INIT, EXECTEST_QUEUE_INIT };
 enum { VALUE_NONE = 0, VALUE_GET_INTEGER, VALUE_ARGS, VALUE_RESULT };
 typedef struct {
     u64 addr, calls;
@@ -195,6 +196,13 @@ static void proc_trace(CPU* c, u64 entry) {
     __atomic_fetch_add(&p->calls, 1, __ATOMIC_RELAXED);
     if (p->selftest_hook == SELFTEST_DEVICE_INIT) nvn_selftest_note_device(c->x[0]);
     if (p->selftest_hook == SELFTEST_QUEUE_INIT) nvn_selftest_run(c);
+    if (p->selftest_hook == EXECTEST_QUEUE_INIT) {
+        /* The test needs the host record of this queue, so it runs after the original call. x0 holds the queue. */
+        const u64 queue = c->x[0];
+        p->original(c, entry);
+        nvn_exectest_run(c, queue);
+        return;
+    }
     if (p->enum_args) enum_args_trace(c, p);
     if (p->size_op) {
         size_query_trace(c, entry, p);
@@ -240,10 +248,14 @@ static void trace_proc(u64 addr, const char* name) {
                       !strcmp(name, "nvnQueueWaitSync");
         p->size_op = !strcmp(name, "nvnTextureBuilderGetStorageSize") ||
                      !strcmp(name, "nvnTextureBuilderGetStorageAlignment");
-        if (g_settings.nvn_selftest)
-            p->selftest_hook = !strcmp(name, "nvnDeviceInitialize")  ? SELFTEST_DEVICE_INIT
-                               : !strcmp(name, "nvnQueueInitialize") ? SELFTEST_QUEUE_INIT
-                                                                     : SELFTEST_NONE;
+        /* The selftest and the execution test need opposite nvn_native values; with both on, the selftest takes the
+           queue hook, and the execution test does not run. */
+        if (g_settings.nvn_selftest || g_settings.nvn_exectest)
+            p->selftest_hook = !strcmp(name, "nvnDeviceInitialize")
+                                   ? SELFTEST_DEVICE_INIT
+                                   : !strcmp(name, "nvnQueueInitialize")
+                                         ? (g_settings.nvn_selftest ? SELFTEST_QUEUE_INIT : EXECTEST_QUEUE_INIT)
+                                         : SELFTEST_NONE;
         p->value_op = !strcmp(name, "nvnDeviceGetInteger")                  ? VALUE_GET_INTEGER
                       : !strcmp(name, "nvnDeviceGetTimestampInNanoseconds") ? VALUE_ARGS
                       : value_query_name(name)                              ? VALUE_RESULT
@@ -296,6 +308,7 @@ static void bootstrap_trace(CPU* c, u64 entry) {
 void nvn_trace_init(void) {
     tracing = g_settings.nvn_trace;
     if (!tracing && g_settings.nvn_selftest) WARN("nvn-selftest: it needs nvn_trace=1, so it does not run\n");
+    if (!tracing && g_settings.nvn_exectest) WARN("exectest: it needs nvn_trace=1, so it does not run\n");
     if (!tracing) return;
     u64 entry = kernel_find_symbol_exact("nvnBootstrapLoader");
     if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3)) {

@@ -124,7 +124,7 @@ a fault fails the case and does not stop the game. Mutation: `nvn_selftest_mutat
 - E3 CPU to GPU: the CPU writes a pattern into a mapped buffer, `BufferFlushMappedRange` (and the pool form),
   `CopyBufferToBuffer` to a second buffer, fence, flush, wait, invalidate: the CPU reads the pattern from the second buffer.
 - E4 timeout and failure: a fence behind a pending list without a flush, `SyncWait` with a short limit returns 2. Then
-  `QueueFlush`, and `SyncWait` returns 1. A sync that was never fenced returns 3.
+  `QueueFlush`, and `SyncWait` returns 0 or 1 (the job can end before the call). A sync that was never fenced returns 3.
 - E5 events and reports: command buffer `SignalEvent` (mode write, then mode add), `ReportValue` and `ReportCounter` (the
   timestamp) into a mapped buffer, fence, flush, wait. `EventGetValue` gives the sum, the report words hold the value and a
   timestamp that is not 0. This case checks the order of the reports and the fence. The CPU `EventSignal` and the event getters
