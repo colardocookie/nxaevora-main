@@ -2,7 +2,8 @@
    Copyright 2026 the NXAevora contributors */
 /* nvn_native=1: the host answers the NVN functions that the game resolves through nvnBootstrapLoader and
    nvnDeviceGetProcAddress. Each resolved address gets a host handler in its dispatch slot. A function without a
-   handler logs its first call and returns 0. The hook order and the trace are in nvn-design.md, 2-3 and 2-6. */
+   handler stops the game unless nvn_native_missing=0. The hook order and the trace are in nvn-design.md, 2-3 and
+   2-6. */
 #include "nx/gpu/nvn_native.h"
 #include "nx/gpu/nvn_cmdlist.h"
 #include "nx/gpu/nvn_frame.h"
@@ -7642,10 +7643,103 @@ static u32 nslots;
 /* Registration takes the lock and publishes a slot (addr, release ordering) once it is filled in. Calls read the slots
    without the lock. */
 static PMutex slots_lock = PMUTEX_INIT;
-static GuestFn bootstrap_original, getproc_original;
 static u64 getproc_addr; /* the address of nvnDeviceGetProcAddress, hooked */
 static int active;
 static void getproc_native(CPU* c, u64 entry);
+
+/* The NVN library of the sdk module of update 1.1.1: the one build whose name and address tables the host knows. The
+   names have no "nvn" prefix, are sorted, and have one guest address each. */
+#define NVN_PROC_NAME_BYTES 128u
+typedef struct {
+    u8 build_id[32]; /* the sdk module's build ID, the first 20 bytes, then zero */
+    u32 count;       /* 523 names and 523 addresses */
+    u32 off_offsets; /* 0xABE798: 523 u32 offsets from off_strings, guest 0xDE85798 */
+    u32 off_strings; /* 0xABAFD5: the NUL-terminated names, guest 0xDE81FD5 */
+    u32 off_addrs;   /* 0xC63E58: 523 u64 guest addresses, guest 0xE02AE58 */
+} NvnLibrary;
+static const NvnLibrary known_library = {
+    .build_id = {0xb3, 0x9a, 0xdd, 0x63, 0x42, 0x1b, 0xe5, 0x25, 0xd3, 0x52,
+                 0xe5, 0x76, 0xda, 0xb4, 0x38, 0xd3, 0x81, 0x2e, 0xfd, 0xf0},
+    .count = 523u,
+    .off_offsets = 0xABE798u,
+    .off_strings = 0xABAFD5u,
+    .off_addrs = 0xC63E58u,
+};
+/* The host's copy of the known library's tables. It lives until exit and is filled once, under slots_lock. */
+typedef struct {
+    char* storage;      /* count names of NVN_PROC_NAME_BYTES, without the "nvn" prefix */
+    const char** names; /* storage + index * NVN_PROC_NAME_BYTES */
+    u64* addrs;
+} ProcTable;
+static ProcTable proc_table;
+static int proc_table_ready;
+
+/* Reads the known library's tables once. Called under slots_lock. Each failure is fatal: a build without the tables
+   cannot answer a lookup, and a faked address would run the wrong function. */
+static void proc_table_build(void) {
+    const SnxModInfo* sdk = NULL;
+    for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
+        if (!strcmp(g_mod->mods[i].name, "sdk")) sdk = &g_mod->mods[i];
+    if (!sdk) fatal("nvn-native: the game has no sdk module, so the NVN name table is unknown\n");
+    if (memcmp(sdk->build_id, known_library.build_id, sizeof sdk->build_id))
+        fatal("nvn-native: the sdk build is not the one the NVN name table was read from\n");
+    u64 text_lo = sdk->base + sdk->text_off;
+    u64 text_hi = text_lo + sdk->text_size;
+    u64 ro_lo = sdk->base + sdk->ro_off;
+    u64 ro_hi = ro_lo + sdk->ro_size;
+    u64 data_lo = sdk->base + sdk->data_off;
+    u64 data_hi = data_lo + sdk->data_size;
+    u64 strings = sdk->base + known_library.off_strings;
+    u64 offsets = sdk->base + known_library.off_offsets;
+    u64 address_table = sdk->base + known_library.off_addrs;
+    if (!nvn_span_inside(offsets, 4ull * known_library.count, ro_lo, ro_hi))
+        fatal("nvn-native: the NVN name offset table is not inside the sdk rodata\n");
+    if (!nvn_span_inside(address_table, 8ull * known_library.count, data_lo, data_hi))
+        fatal("nvn-native: the NVN address table is not inside the sdk data\n");
+    char* storage = calloc(known_library.count, NVN_PROC_NAME_BYTES);
+    const char** names = calloc(known_library.count, sizeof *names);
+    u64* addrs = calloc(known_library.count, sizeof *addrs);
+    if (!storage || !names || !addrs) fatal("nvn-native: cannot allocate the NVN name table\n");
+    for (u32 n = 0; n < known_library.count; n++) {
+        u32 offset = gr32(offsets + 4ull * n);
+        u64 name_at = strings + offset;
+        names[n] = storage + (u64)n * NVN_PROC_NAME_BYTES;
+        if (!nvn_span_inside(name_at, 1, ro_lo, ro_hi))
+            fatal("nvn-native: name %u of the NVN library is outside the sdk rodata\n", n);
+        NvnNameRead result = nvn_guest_name_read(name_at, (char*)names[n]);
+        if (result != NVN_NAME_OK)
+            fatal("nvn-native: name %u of the NVN library is not usable (result %d)\n", n, (int)result);
+        if (!nvn_span_inside(name_at, strlen(names[n]) + 1, ro_lo, ro_hi))
+            fatal("nvn-native: name %u of the NVN library is not inside the sdk rodata\n", n);
+        addrs[n] = gr64(address_table + 8ull * n);
+    }
+    int bad = nvn_proc_table_check(names, addrs, known_library.count, text_lo, text_hi);
+    if (bad >= 0)
+        fatal("nvn-native: NVN name %d (%s) or its address is bad\n", bad, names[bad] ? names[bad] : "empty");
+    proc_table.storage = storage;
+    proc_table.names = names;
+    proc_table.addrs = addrs;
+    __atomic_store_n(&proc_table_ready, 1, __ATOMIC_RELEASE);
+}
+
+/* The guest address of the NVN function name in the known library, or 0 when the library does not have it. */
+static u64 host_lookup(const char* name) {
+    if (!__atomic_load_n(&proc_table_ready, __ATOMIC_ACQUIRE)) {
+        pm_lock(&slots_lock);
+        if (!proc_table_ready) proc_table_build();
+        pm_unlock(&slots_lock);
+    }
+    int index = nvn_proc_name_index(proc_table.names, known_library.count, name);
+    return index < 0 ? 0 : proc_table.addrs[index];
+}
+
+/* The known library has no function under the name (the library would try its NVX extension list next). Any answer
+   but 0 would be invented, so the host stops unless nvn_native_missing=0. */
+static void lookup_missing(const char* name) {
+    if (g_settings.nvn_native_missing)
+        fatal("nvn-native: the game asked for \"%s\", which the NVN library of this build does not have\n", name);
+    LOG_LIMIT(16, "nvn-native: the game asked for \"%s\", which the NVN library of this build does not have\n", name);
+}
 
 static u32 slot_hash(u64 addr) { return (u32)((addr >> 2) * 2654435761u) & (NATIVE_SLOTS - 1); }
 static NativeSlot* slot_find(u64 addr) {
@@ -7673,10 +7767,15 @@ static void missing_handler(CPU* c, u64 entry) {
     if (!s) fatal("nvn-native: the missing-function handler runs for an address it never registered (%llx)\n",
                   (unsigned long long)entry);
     __atomic_fetch_add(&missing_calls, 1, __ATOMIC_RELAXED);
-    if (!__atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED)) /* the first call: what the game asked for */
+    if (!__atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED)) { /* the first call: what the game asked for */
+        if (g_settings.nvn_native_missing)
+            fatal("nvn-native: not implemented: %s (x0=%llx x1=%llx x2=%llx x3=%llx)\n", s->name,
+                  (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2],
+                  (unsigned long long)c->x[3]);
         LOG("nvn-native: not implemented: %s (x0=%llx x1=%llx x2=%llx x3=%llx), returns 0\n", s->name,
             (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2],
             (unsigned long long)c->x[3]);
+    }
     c->x[0] = 0;
 }
 
@@ -7722,34 +7821,48 @@ static void install(const char* name, u64 addr) {
     pm_unlock(&slots_lock);
 }
 
-/* nvnDeviceGetProcAddress(device, name). The library's own function runs for the lookup: it returns the address, and
-   the host puts its handler there. Open (nvn-design.md, 2-3, item 6): if it reads the device object, which the
-   library never initialized in this mode. The first run shows it. */
-static void getproc_native(CPU* c, u64 entry) {
-    char name[128];
-    int valid = nvn_guest_name(c->x[1], name);
-    GuestFn original = __atomic_load_n(&getproc_original, __ATOMIC_ACQUIRE);
-    if (!original) fatal("nvn-native: the nvnDeviceGetProcAddress hook runs before its original is known\n");
-    original(c, entry);
-    if (valid && c->x[0]) install(name, c->x[0]);
+/* One lookup hook: answers the name at pointer from the host table in x0 and returns to the caller. The hooks sit in
+   g_disp themselves (no native_call) and run no guest code, so they set c->pc to x30 as a guest RET does. The address,
+   or 0 when the library does not have the name. */
+static u64 answer_lookup(CPU* c, const char* hook, u64 pointer, char name[128]) {
+    NvnNameRead result = pointer ? nvn_guest_name_read(pointer, name) : NVN_NAME_UNREADABLE;
+    if (result == NVN_NAME_UNREADABLE)
+        fatal("nvn-native: %s name (%llx) is null or unreadable\n", hook, (unsigned long long)pointer);
+    /* An empty or overlong name is not in the table. The library would also find nothing. */
+    u64 addr = result == NVN_NAME_OK ? host_lookup(name) : 0;
+    if (!addr) lookup_missing(name);
+    c->x[0] = addr;
+    c->pc = c->x[30];
+    return addr;
 }
 
-static void bootstrap_native(CPU* c, u64 entry) {
+/* nvnDeviceGetProcAddress(device, name). The device is not read: the host answers from the name table, so the library
+   lookup never runs (nvn-design.md, 2-3, item 6). The bootstrap hook put this function in the resolver's slot. */
+static void getproc_native(CPU* c, u64 entry) {
+    (void)entry;
     char name[128];
-    int valid = nvn_guest_name(c->x[0], name); /* nvnBootstrapLoader(name) */
-    bootstrap_original(c, entry);
-    if (!valid || !c->x[0]) return;
+    u64 addr = answer_lookup(c, "nvnDeviceGetProcAddress", c->x[1], name);
+    if (addr && strcmp(name, "nvnDeviceGetProcAddress")) install(name, addr);
+}
+
+/* nvnBootstrapLoader(name) */
+static void bootstrap_native(CPU* c, u64 entry) {
+    (void)entry;
+    char name[128];
+    u64 addr = answer_lookup(c, "nvnBootstrapLoader", c->x[0], name);
+    if (!addr) return;
     if (strcmp(name, "nvnDeviceGetProcAddress")) {
-        install(name, c->x[0]);
+        install(name, addr);
         return;
     }
-    u64 resolver = c->x[0];
-    if (resolver < g_code_lo || resolver >= g_code_hi || (resolver & 3)) return;
     pm_lock(&slots_lock);
-    GuestFn* slot = &g_disp[(resolver - g_code_lo) / 4];
-    if (*slot && !getproc_original) { /* hook once: with nvn_trace the slot may hold the trace hook, which calls back here */
-        __atomic_store_n(&getproc_original, *slot, __ATOMIC_RELEASE);
-        getproc_addr = resolver;
+    GuestFn* slot = &g_disp[(addr - g_code_lo) / 4];
+    if (!*slot) {
+        pm_unlock(&slots_lock);
+        fatal("nvn-native: the nvnDeviceGetProcAddress entry at %llx is empty\n", (unsigned long long)addr);
+    }
+    if (!getproc_addr) { /* hook once; nvn_trace wraps this slot after the first lookup returns */
+        getproc_addr = addr;
         __atomic_store_n(slot, getproc_native, __ATOMIC_RELEASE);
     }
     pm_unlock(&slots_lock);
@@ -7768,7 +7881,6 @@ void nvn_native_init(void) {
         WARN("nvn-native: bootstrap loader has no recompiled entry\n");
         return;
     }
-    bootstrap_original = *slot;
     *slot = bootstrap_native; /* before any guest thread runs */
     active = 1;
     LOG("nvn-native: on, the host answers the NVN functions that the game resolves (%u handlers)\n",

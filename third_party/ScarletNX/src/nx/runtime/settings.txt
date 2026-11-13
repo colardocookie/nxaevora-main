@@ -754,8 +754,17 @@ setting NVN native
     startup
     words Off|On
     help 1 = the host answers the NVN functions of the game (gpu/nvn_native.c) and the game's NVN library is not run. A
-    help function the host does not have yet is logged and returns 0. 0 = the library runs as always. Phase 6 of
-    help NXAevora, under construction: with 1 the game draws, but some objects such as characters are missing
+    help function the host does not have yet stops the game (nvn_native_missing). 0 = the library runs as always.
+    help Phase 6 of NXAevora, under construction: with 1 the game draws, but some objects such as characters are missing
+setting NVN native missing
+    key nvn_native_missing
+    int 0 1
+    default 1
+    startup
+    words Log|Stop
+    help 1 = a call of an NVN function that the host does not have, or a lookup of a name that the NVN library does not
+    help have, stops the game with the function name. 0 = it returns 0 and is logged (each missing function at its first
+    help call, the first 16 missing names). Only with nvn_native=1
 setting NVN selftest
     key nvn_selftest
     int 0 1

@@ -951,4 +951,15 @@ typedef struct { uint32_t method, value; } NvnProgramMethod;
 uint32_t nvn_program_disable_methods(uint32_t requested_mask, uint32_t program_mask,
                                      NvnProgramMethod out[NVN_PROGRAM_DISABLE_MAX]);
 
+/* 1 when [at, at+size) is inside [lo, hi). The comparison cannot overflow. A size of 0 is inside when lo <= at <= hi.
+   Pure. */
+int nvn_span_inside(uint64_t at, uint64_t size, uint64_t lo, uint64_t hi);
+/* The index of a name of the NVN library's sorted list (the names without the "nvn" prefix), or -1 when the name is
+   not in the list or does not start with "nvn". The list has no empty name (nvn_proc_table_check). Pure. */
+int nvn_proc_name_index(const char* const* names, uint32_t count, const char* name);
+/* -1 when the names and their address table are good, else the index of the first bad entry: an empty or unsorted name
+   (a duplicate included), or an address outside [code_lo, code_hi) or not a multiple of 4. Pure. */
+int nvn_proc_table_check(const char* const* names, const uint64_t* addrs, uint32_t count, uint64_t code_lo,
+                         uint64_t code_hi);
+
 #endif

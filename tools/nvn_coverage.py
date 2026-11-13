@@ -23,6 +23,8 @@ COVERAGE = os.path.join(ROOT, 'docs', 'graphics', 'nvn-coverage.md')
 CALLS = os.path.join(ROOT, 'docs', 'graphics', 'nvn-calls.md')
 NATIVE = os.path.join(ROOT, 'third_party', 'ScarletNX', 'src', 'nx', 'gpu', 'nvn_native.c')
 SDK_BASE = 0xd3c7000  # the address of the sdk module in the update program (the addresses that docs/ quote)
+# The lookup is not in native_procs: the bootstrap hook puts its own hook in the resolver's slot (task 4-u4)
+LOOKUP_HOOKS = {'nvnDeviceGetProcAddress': 'getproc_native'}
 MANUAL = ('checks', 'seen', 'notes')
 COLUMNS = ('function', 'group', 'address', 'calls', 'handler') + MANUAL
 
@@ -191,7 +193,11 @@ def handlers(path):
     table = re.search(r'native_procs\[\] = \{(.*?)\n\};', text, re.S)
     if not table:
         raise SystemExit('nvn_native.c has no table native_procs')
-    return dict(re.findall(r'\{"(nvn\w+)", (\w+)\}', table.group(1)))
+    found = dict(re.findall(r'\{"(nvn\w+)", (\w+)\}', table.group(1)))
+    for name, hook in LOOKUP_HOOKS.items():
+        if re.search(r'static void %s\(CPU\* c, u64 entry\) \{' % hook, text):
+            found[name] = hook
+    return found
 
 
 def existing_rows(path):
@@ -264,7 +270,7 @@ HEADER = """<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
 # NVN coverage of the host layer
 
-Made by `tools/nvn_coverage.py` (step 4-u1 of `nvn-unobserved.md`). Do not edit the
+Made by `tools/nvn_coverage.py` (step 4-u1 of `docs/graphics/nvn-unobserved.md`). Do not edit the
 columns function to handler by hand: run the tool again. The columns checks, seen and notes are written by hand and the
 tool keeps them.
 
@@ -273,8 +279,9 @@ tool keeps them.
   update 1.1.1.
 - group: G1 to G9 as in `docs/graphics/nvn-design.md`, section 2-6. G10 is a function that no run called.
 - calls: the calls of {calls_source}, through the dispatch table and with the library (`nvn_native=0`).
-- handler: `implemented` when `native_procs` of `nvn_native.c` has a host handler, `stub-log` when the missing-function
-  handler answers (the first call is logged and 0 is returned).
+- handler: `implemented` when `native_procs` of `nvn_native.c` has a host handler (or, for `nvnDeviceGetProcAddress`, the
+  host lookup hook), `stub-log` when the missing-function handler answers (it stops the game unless
+  `nvn_native_missing=0`, which logs the first call and returns 0).
 - checks: the checks that passed, with their scope (`unit`, `selftest R/M/S/Y` with the build, `exec`). The build
   `update 1.1.1` is the library of that update: the `sdk` module with the build ID
   `B39ADD63421BE525D352E576DAB438D3812EDFF0`. The argument sets of a selftest check are the cases of the function in

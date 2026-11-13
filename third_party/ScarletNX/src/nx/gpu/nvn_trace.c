@@ -56,7 +56,7 @@ static int readable(u64 addr) {
 }
 
 /* a NUL-terminated name in guest memory, checked a page at a time (memory permissions are per page) */
-static int read_name(u64 ptr, char name[128]) {
+NvnNameRead nvn_guest_name_read(u64 ptr, char name[128]) {
     u64 readable_end = 0;
     size_t i;
     for (i = 0; i < 127 && ptr + i >= ptr; i++) {
@@ -66,11 +66,13 @@ static int read_name(u64 ptr, char name[128]) {
             readable_end = (at | 0xFFF) + 1;
         }
         name[i] = *(const char*)GP(at);
-        if (!name[i]) return i != 0;
+        if (!name[i]) return i == 0 ? NVN_NAME_EMPTY : NVN_NAME_OK;
     }
     name[i] = 0;
-    return 0;
+    return i == 127 ? NVN_NAME_LONG : NVN_NAME_UNREADABLE;
 }
+
+static int read_name(u64 ptr, char name[128]) { return nvn_guest_name_read(ptr, name) == NVN_NAME_OK; }
 
 int nvn_guest_name(u64 ptr, char name[128]) { return read_name(ptr, name); }
 
