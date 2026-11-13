@@ -3209,6 +3209,7 @@ retry:
        which later draws read on the GPU until then (vk_buf_copy_writable) */
     VkBuffer xbuf[4];
     VkDeviceSize xoff[4], xsize[4];
+    u64 xaddress0 = 0; /* output 0's guest address, for the temporal passes' copy of a skinned character */
     u32 xbound = 0;
     for (int i = 0; i < 4 && xfb_on; i++) {
         const u32* t = &r[0xE0 + 8 * i];
@@ -3223,6 +3224,7 @@ retry:
         xsize[i] = (u32)size;
         xbound |= 1u << i;
         if (vk_temporal_objects()) vk_temporal_feedback(a, (u32)size, (u32)i);
+        if (!i) xaddress0 = a;
     }
     /* the feedback loop goes into the key last: stage_set found it */
     u32 feedback = fb && !g_vk.has_feedback_dynamic;
@@ -3546,6 +3548,9 @@ retry:
         ch->xfb_started = (u8)((ch->xfb_started | xbound) & 15);
         ch->xfb_reload = (u8)(ch->xfb_reload & ~xbound);
         vk_render_end(); /* the next capture's begin waits for this end outside a pass, and readers for its writes */
+        /* output 0 of a capture is kept for a frame: a skinned character's positions (vk_temporal_skin) */
+        if ((xbound & 1) && vk_temporal_objects())
+            vk_temporal_skin_keep(cb, xaddress0, (u32)xsize[0], xbuf[0], xoff[0]);
     }
     /* Read-only: a G-buffer draw whose vertex stream is a transform feedback output of this frame is a skinned
        character. Its stream, binding and attributes are logged for the first ones. */
@@ -3576,7 +3581,102 @@ retry:
     if (vk_temporal_objects() && n >= 3 && zt && !zt_ro && !xcount && instances == 1 && !tcs && !tes && !gs &&
         !ch->render_pred && r[0x4B3] && (r[0x4BA] || cmp_op(r[0x4C3]) == VK_COMPARE_OP_EQUAL)) {
         VkTemporalObject object;
-        if (vk_temporal_object(ch, zt, &object)) {
+        /* A skinned character first: a draw whose position stream is a transform feedback output of this frame,
+           three floats 12 bytes apart at the start of a binding. It is drawn with a vertex program of ours that
+           takes last frame's positions from a second binding, and the scene depth sampled, not attached. */
+        int skinned = 0;
+        for (u32 q = 0; q < nvq && !skinned && k->nbind < 33; q++) {
+            const u32 vb = vq[q].b;
+            u32 xindex, xlen, position = ~0u;
+            u64 xat;
+            VkTemporalSkin skin;
+            if (!vk_temporal_feedback_find(vq[q].gva + vq[q].base, &xindex, &xat, &xlen) || xindex != 0) continue;
+            if (pl->guest_stride[vb] || pl->stride[vb] != 12) continue;
+            for (u32 i = 0; i < k->nattr; i++)
+                if (k->attr[i].binding == vb && !k->attr[i].offset && k->attr[i].format == VK_FORMAT_R32G32B32_SFLOAT)
+                    position = i;
+            if (position == ~0u || !vk_temporal_skin(ch, zt, vq[q].gva + vq[q].base - xat, xat, &skin)) continue;
+            static struct {
+                PipeKey k;
+                VkPipeline pipe;
+            } skin_made[32];
+            static u32 skin_made_n;
+            PipeKey sk = *k;
+            VkPipeline spipe = VK_NULL_HANDLE;
+            sk.vs = skin.vs;
+            sk.fs = skin.fs;
+            memset(sk.attr, 0, sizeof sk.attr);
+            sk.nattr = 2;
+            sk.attr[0].loc = 0;
+            sk.attr[0].binding = vb;
+            sk.attr[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+            sk.attr[1].loc = 1;
+            sk.attr[1].binding = k->nbind;
+            sk.attr[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+            sk.bind[k->nbind].divisor = 0;
+            sk.bind[k->nbind].stride = g_vk.has_dynamic_stride ? 0 : 12;
+            sk.nbind = k->nbind + 1;
+            sk.ncolor = 1;
+            memset(sk.color, 0, sizeof sk.color);
+            sk.color[0] = skin.format;
+            sk.depth = sk.stencil = 0;
+            memset(sk.blend, 0, sizeof sk.blend);
+            sk.blend[0].mask = 0xF;
+            sk.feedback = sk.logic_op = sk.alpha_to_coverage = 0;
+            for (u32 i = 0; i < skin_made_n && !spipe; i++)
+                if (!memcmp(&skin_made[i].k, &sk, sizeof sk)) spipe = skin_made[i].pipe;
+            if (!spipe && (spipe = vk_pipeline_get(&sk)) && skin_made_n < 32) {
+                skin_made[skin_made_n].k = sk;
+                skin_made[skin_made_n++].pipe = spipe;
+                vk_temporal_object_pipeline();
+            }
+            /* its constant block in both stages' sets, the scene depth in the fragment set's first texture */
+            const int fset_index = shader_vk_set(ST_FS), vset_index = shader_vk_set(ST_VS);
+            DescWrites sv, sf;
+            sv.n = sf.n = 0;
+            dw_buffer(&sv, VK_NULL_HANDLE, SNX_VKB_CB, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, skin.block, skin.offset,
+                      skin.size);
+            dw_buffer(&sf, VK_NULL_HANDLE, SNX_VKB_CB, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, skin.block, skin.offset,
+                      skin.size);
+            sf.ii[0] = (VkDescriptorImageInfo){skin.sampler, skin.depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            sf.w[sf.n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                  .dstBinding = SNX_VKB_TEX,
+                                                  .descriptorCount = 1,
+                                                  .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                  .pImageInfo = &sf.ii[0]};
+            VkDescriptorSet sets2[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+            if (spipe) {
+                sets2[0] = desc_set_cached(g_vk_dslayout[(k->arrays >> vset_index) & 1][vset_index], &sv);
+                sets2[1] = desc_set_cached(g_vk_dslayout[(k->arrays >> fset_index) & 1][fset_index], &sf);
+            }
+            if (!spipe || !sets2[0] || !sets2[1]) continue;
+            vk_render_end();
+            vk_surf_use(cb, zt, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            if (vk_temporal_object_begin(cb, NULL, 0)) {
+                const VkDeviceSize before_offset = skin.before_offset, before_size = skin.before_size, stride = 12;
+                rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, spipe);
+                rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, (u32)vset_index, 1, &sets2[0],
+                                          0, NULL);
+                rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, (u32)fset_index, 1, &sets2[1],
+                                          0, NULL);
+                rec_CmdBindVertexBuffers2(cb, k->nbind, 1, &skin.before, &before_offset, &before_size,
+                                          g_vk.has_dynamic_stride ? &stride : NULL);
+                if (g_vk.has_feedback_dynamic) rec_CmdSetAttachmentFeedbackLoopEnableEXT(cb, VK_IMAGE_ASPECT_NONE);
+                rec_CmdSetDepthTestEnable(cb, 0);
+                rec_CmdSetDepthWriteEnable(cb, 0);
+                rec_CmdSetStencilTestEnable(cb, 0);
+                if (indexed)
+                    rec_CmdDrawIndexed(cb, icount, 1, 0, indexed == 2 && !quads_indexed ? 0 : (i32)base_vertex,
+                                       base_instance);
+                else
+                    rec_CmdDraw(cb, count, 1, first, base_instance);
+                rec_CmdEndRendering(cb);
+                skinned = 1;
+            }
+            memset(&g_dyn, 0, sizeof g_dyn);
+        }
+        if (!skinned && vk_temporal_object(ch, zt, &object)) {
             static struct {
                 PipeKey k;
                 VkPipeline pipe;

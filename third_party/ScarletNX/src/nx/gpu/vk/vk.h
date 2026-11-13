@@ -1074,6 +1074,20 @@ typedef struct {
     u32 size;
     VkFormat format;
 } VkTemporalObject;
+/* Skinned characters, with object vectors on. vk_temporal_skin_keep after a transform feedback draw keeps its
+   output 0. vk_temporal_skin: 1 when a draw that reads such an output can be drawn again for its vector, with our
+   two programs, their constant block, last frame's positions and the scene depth to sample. */
+typedef struct {
+    VkShaderModule vs, fs;
+    VkBuffer block, before;
+    u64 offset, before_offset, before_size;
+    u32 size;
+    VkFormat format;
+    VkImageView depth;
+    VkSampler sampler;
+} VkTemporalSkin;
+void vk_temporal_skin_keep(VkCommandBuffer cb, u64 address, u32 size, VkBuffer source, u64 offset);
+int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, VkTemporalSkin* out);
 int vk_temporal_objects(void);
 /* SNX_ARCEUS_TEMPORAL_MIPBIAS: the level shift for material textures of a draw into the scene, 0 for other draws */
 float vk_temporal_mip_bias(const Surf* zt);

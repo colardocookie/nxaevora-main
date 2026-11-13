@@ -144,6 +144,52 @@ static void test_object_matrices(void) {
     assert(!temporal_object_matrices(inverse_now, flat, world_before, vp_before, 0, 0, now, before));
 }
 
+/* A skinned vertex: its position in the object's space changed (a limb moved), the object moved and the camera
+   moved. The three matrices give where the game drew it, where it is without jitter and where it was. */
+static void test_skin_matrices(void) {
+    float vp_now[16], vp_before[16], unused[16], world_now[16], world_before[16], drawn[16], now[16], before[16];
+    camera(3, -2, 1.2f, 2.1f, vp_now, unused);
+    camera(2.6f, -1.9f, 1.2f, 2.1f, vp_before, unused);
+    world(0.70f, 1.5f, 12, -3, 40, world_now);
+    world(0.62f, 1.5f, 11.4f, -3, 40.5f, world_before);
+    const double jx = 2.0 * 0.25 / 1920.0, jy = 2.0 * -0.375 / 1080.0;
+    temporal_skin_matrices(vp_now, world_now, world_before, vp_before, jx, jy, drawn, now, before);
+    const float limb_now[4] = {0.5f, 1.0f, -0.25f, 1}, limb_before[4] = {0.42f, 1.1f, -0.2f, 1};
+    double at[4], was_at[4], plain[4], was[4], got_drawn[4], got_now[4], got_before[4];
+    transform(limb_now, world_now, at);
+    transform(limb_before, world_before, was_at);
+    const float at_f[4] = {(float)at[0], (float)at[1], (float)at[2], 1};
+    const float was_f[4] = {(float)was_at[0], (float)was_at[1], (float)was_at[2], 1};
+    transform(at_f, vp_now, plain);
+    transform(was_f, vp_before, was);
+    transform(limb_now, drawn, got_drawn);
+    transform(limb_now, now, got_now);
+    transform(limb_before, before, got_before);
+    for (int i = 0; i < 4; i++) {
+        assert(close_to(got_now[i], plain[i], 1e-4));
+        assert(close_to(got_before[i], was[i], 1e-4));
+    }
+    /* as drawn: the unjittered clip position moved by the jitter x w, depth and w untouched */
+    assert(close_to(got_drawn[0], plain[0] + jx * plain[3], 1e-4));
+    assert(close_to(got_drawn[1], plain[1] + jy * plain[3], 1e-4));
+    assert(close_to(got_drawn[2], plain[2], 1e-6) && close_to(got_drawn[3], plain[3], 1e-4));
+    /* It agrees with the rigid path: the object's matrices take the drawn clip position to the same unjittered
+       position, and for a vertex that did not move in the object's space to the same position before. */
+    float inverse_now[16], object_now[16], object_before[16];
+    camera(3, -2, 1.2f, 2.1f, unused, inverse_now);
+    assert(temporal_object_matrices(inverse_now, world_now, world_before, vp_before, jx, jy, object_now,
+                                    object_before));
+    const float clip[4] = {(float)(got_drawn[0] / got_drawn[3]), (float)(got_drawn[1] / got_drawn[3]),
+                           (float)(got_drawn[2] / got_drawn[3]), 1};
+    double rigid_now[4], rigid_before[4], still_before[4];
+    transform(clip, object_now, rigid_now);
+    transform(clip, object_before, rigid_before);
+    transform(limb_now, before, still_before);
+    assert(close_to(rigid_now[0] / rigid_now[3], got_now[0] / got_now[3], 2e-5));
+    assert(close_to(rigid_before[0] / rigid_before[3], still_before[0] / still_before[3], 2e-4));
+    assert(close_to(rigid_before[1] / rigid_before[3], still_before[1] / still_before[3], 2e-4));
+}
+
 static void test_catmull(void) {
     float w[4];
     temporal_catmull_weights(0.0f, w); /* on a texel: that texel alone */
@@ -252,6 +298,7 @@ int main(void) {
     test_jitter_matrices();
     test_affine_inverse();
     test_object_matrices();
+    test_skin_matrices();
     test_catmull();
     test_clip();
     test_weights();

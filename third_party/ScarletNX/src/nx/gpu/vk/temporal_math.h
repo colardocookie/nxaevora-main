@@ -82,6 +82,32 @@ static inline int temporal_object_matrices(const float inverse_vp[16], const flo
     return 1;
 }
 
+/* A skinned character's three matrices for its vector draw, from a position in the object's own space: drawn takes
+   it to this frame's clip with the jitter (where the game drew it), now to this frame's clip without, before takes
+   last frame's position through last frame's world matrix and view-projection. */
+static inline void temporal_skin_matrices(const float vp[16], const float world[16], const float world_before[16],
+                                          const float vp_before[16], double jx, double jy, float drawn[16],
+                                          float now[16], float before[16]) {
+    double v[16], w[16], wb[16], vb[16], a[16], b[16];
+    for (int i = 0; i < 16; i++) {
+        v[i] = (double)vp[i];
+        w[i] = (double)world[i];
+        wb[i] = (double)world_before[i];
+        vb[i] = (double)vp_before[i];
+    }
+    temporal_multiply_d(w, v, a);
+    temporal_multiply_d(wb, vb, b);
+    for (int i = 0; i < 16; i++) {
+        now[i] = (float)a[i];
+        before[i] = (float)b[i];
+    }
+    for (int r = 0; r < 4; r++) { /* a x J: clip x and y gain jitter x w */
+        a[4 * r + 0] += jx * a[4 * r + 3];
+        a[4 * r + 1] += jy * a[4 * r + 3];
+    }
+    for (int i = 0; i < 16; i++) drawn[i] = (float)a[i];
+}
+
 /* The resolve. Catmull-Rom weights of the four texels around a position f (0 to 1) past the second one. */
 static inline void temporal_catmull_weights(float f, float w[4]) {
     const float f2 = f * f, f3 = f2 * f;

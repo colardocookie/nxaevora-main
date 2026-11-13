@@ -128,15 +128,25 @@ With `probe` or `taa`. The camera vectors are right for what stands still. An ob
 - The camera vector pass takes an object's vector where the scene's final depth still is that depth, and the camera
   vector elsewhere. So something drawn in front later keeps its own.
 
+Skinned characters. The game skins a character's vertices with transform feedback into a buffer of positions in
+the object's own space, at the same address every frame, and the character's G-buffer draw reads that buffer. After
+each such draw its positions are copied into a buffer of ours, two per address in turn. A G-buffer draw whose position
+stream is such an output (three floats, 12 bytes a vertex) is then drawn again with a vertex program of ours: the
+position now from the game's binding, the position a frame ago from our copy, each through its own world and
+view-projection matrix. That program is not the game's, so its depth is not bit for bit the game's: the scene depth
+is sampled and a fragment counts when it is within 0.3 % of it. A character whose first frame it is, or whose buffer
+was not written the frame before, falls back to the motion of its world matrix.
+
 The depth an object's point had a frame ago goes with its vector (the object target's alpha, the vector image's
 blue), and the resolve expects that depth of the history there. The camera's reprojection does not know the object
 moved.
 
 Not drawn again: objects that did not move, new objects, instanced draws, draws with tessellation or a geometry
 stage, draws under a predicate, draws without depth write unless they test for equal, and more than 256 a frame.
-A skinned character gets the motion of its world matrix, not of its limbs. Each new combination of state makes one
+Each new combination of state makes one
 pipeline, compiled when first needed.
 
 `arceus-temporal-objects` every 600 frames: G-buffer draws with an object block, without a block a frame ago,
-jumped too far, moved, drawn again, over the cap, not an affine matrix, pipelines made.
+jumped too far, moved, drawn again, over the cap, not an affine matrix, pipelines made, and for the skinned
+characters: buffers kept, drawn again, without last frame's buffer.
 

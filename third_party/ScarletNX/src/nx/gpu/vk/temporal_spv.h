@@ -16,6 +16,10 @@ extern const u32 temporal_resolve_fs_spv[];
 extern const u64 temporal_resolve_fs_spv_size;
 extern const u32 temporal_sharpen_fs_spv[];
 extern const u64 temporal_sharpen_fs_spv_size;
+extern const u32 temporal_skin_vs_spv[];
+extern const u64 temporal_skin_vs_spv_size;
+extern const u32 temporal_skin_fs_spv[];
+extern const u64 temporal_skin_fs_spv_size;
 extern const u32 temporal_object_fs_spv[];
 extern const u64 temporal_object_fs_spv_size;
 

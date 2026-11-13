@@ -20,6 +20,8 @@
 #define CAMERA_INVERSE 0xc0
 /* red and green the vector, alpha 1 where it is an object's and blue then the depth its point had a frame ago */
 #define MOTION_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
+#define SKINS 512          /* slots of the table of skinned characters' position buffers */
+#define SKIN_BYTES (16u << 20) /* the largest position buffer kept */
 #define HISTORY_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
 #define JITTERS 8          /* the offsets of the jitter, a Halton (2, 3) sequence */
 #define FRAME_WEIGHT 0.1f  /* the frame's share in the blend with the history */
@@ -100,6 +102,9 @@ static struct {
     u32 object_at, object_frame, object_draws;
     u64 object_seen, object_moved, object_drawn, object_capped, object_new, object_odd, object_pipelines,
         object_frames, object_far, object_same, object_never, object_older, object_skinned, skinned_lines;
+    /* skinned characters: our vertex and fragment programs, and the counts of the stats line */
+    VkShaderModule skin_vs, skin_fs;
+    u64 skin_kept, skin_drawn, skin_first;
     /* the transform feedback outputs of this frame, for finding the draws that read them */
     struct {
         u64 address;
@@ -732,14 +737,17 @@ static void objects_log(u32 frame) {
     LOG("arceus-temporal-objects: in 600 frames, G-buffer draws with an object block %llu, without a block a frame "
         "ago %llu (never seen %llu, seen two frames ago or more %llu), found at the same address %llu, reading a "
         "feedback buffer %llu, jumped too far %llu, moved %llu, drawn again %llu, over the cap of %d a frame %llu, not "
-        "an affine matrix %llu, pipelines made %llu\n",
+        "an affine matrix %llu, pipelines made %llu, skinned: buffers kept %llu, drawn again %llu, without last "
+        "frame's buffer %llu\n",
         (unsigned long long)g_t.object_seen, (unsigned long long)g_t.object_new,
         (unsigned long long)g_t.object_never, (unsigned long long)g_t.object_older,
         (unsigned long long)g_t.object_same, (unsigned long long)g_t.object_skinned,
         (unsigned long long)g_t.object_far,
         (unsigned long long)g_t.object_moved, (unsigned long long)g_t.object_drawn, OBJECT_DRAWS,
         (unsigned long long)g_t.object_capped, (unsigned long long)g_t.object_odd,
-        (unsigned long long)g_t.object_pipelines);
+        (unsigned long long)g_t.object_pipelines, (unsigned long long)g_t.skin_kept,
+        (unsigned long long)g_t.skin_drawn, (unsigned long long)g_t.skin_first);
+    g_t.skin_kept = g_t.skin_drawn = g_t.skin_first = 0;
     g_t.object_seen = g_t.object_new = g_t.object_moved = g_t.object_drawn = g_t.object_capped = g_t.object_odd = 0;
     g_t.object_far = g_t.object_same = g_t.object_never = g_t.object_older = g_t.object_skinned = 0;
 }
@@ -850,6 +858,179 @@ int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* o
     out->size = sizeof block;
     out->fs = g_t.object_fs;
     out->format = OBJECT_FORMAT;
+    return 1;
+}
+
+/* Skinned characters. The game skins a character with transform feedback into a buffer of positions in the
+   object's own space, at the same address every frame. After each such draw the positions are copied into a buffer
+   of ours, two per address in turn, so the frame after has both this frame's and last frame's. */
+typedef struct {
+    u64 address;
+    u32 capacity, size[2], at[2]; /* at: the frame each of the two copies was made in */
+    VkBuffer buffer[2];
+    VmaAllocation memory[2];
+} Skin;
+static Skin g_skins[SKINS];
+
+static Skin* skin_slot(u64 address, u32 frame, int make) {
+    Skin* oldest = NULL;
+    for (u32 i = 0; i < 8; i++) {
+        Skin* s = &g_skins[((address >> 2) * 0x9E3779B1u + i) % SKINS];
+        if (s->address == address) return s;
+        const u32 used = s->at[0] > s->at[1] ? s->at[0] : s->at[1];
+        if (!oldest || used < (oldest->at[0] > oldest->at[1] ? oldest->at[0] : oldest->at[1])) oldest = s;
+    }
+    const u32 used = oldest->at[0] > oldest->at[1] ? oldest->at[0] : oldest->at[1];
+    if (!make || (oldest->address && used + 600 > frame)) return NULL;
+    for (int k = 0; k < 2; k++)
+        if (oldest->buffer[k]) vk_defer_buffer(oldest->buffer[k], oldest->memory[k]);
+    memset(oldest, 0, sizeof *oldest);
+    oldest->address = address;
+    return oldest;
+}
+
+/* After a transform feedback draw, outside a pass: output 0 (size bytes at address, in source at offset) is copied
+   to this frame's buffer of its address. */
+void vk_temporal_skin_keep(VkCommandBuffer cb, u64 address, u32 size, VkBuffer source, u64 offset) {
+    const u32 frame = g_vk_present + 1;
+    if (!g_t.objects || !address || !size || size > SKIN_BYTES || !source) return;
+    Skin* s = skin_slot(address, frame, 1);
+    if (!s) return;
+    if (size > s->capacity) {
+        VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                  .size = size,
+                                  .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        VmaAllocationCreateInfo bai = {.usage = VMA_MEMORY_USAGE_AUTO};
+        for (int k = 0; k < 2; k++) {
+            if (s->buffer[k]) vk_defer_buffer(s->buffer[k], s->memory[k]);
+            s->buffer[k] = VK_NULL_HANDLE;
+            s->at[k] = 0;
+            if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &bai, &s->buffer[k], &s->memory[k], NULL)))
+                s->buffer[k] = VK_NULL_HANDLE;
+        }
+        s->capacity = s->buffer[0] && s->buffer[1] ? size : 0;
+        if (!s->capacity) return;
+    }
+    const int turn = (int)(frame & 1);
+    /* the capture's writes before the copy reads them, the copy's before a draw reads the vertices */
+    VkMemoryBarrier2 before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                               .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT,
+                               .srcAccessMask = VK_ACCESS_2_TRANSFORM_FEEDBACK_WRITE_BIT_EXT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                               .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT};
+    VkMemoryBarrier2 after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                              .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                              .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                              .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT,
+                              .dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT};
+    VkDependencyInfo di = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &before};
+    const VkBufferCopy region = {.srcOffset = offset, .dstOffset = 0, .size = size};
+    rec_CmdPipelineBarrier2(cb, &di);
+    rec_CmdCopyBuffer(cb, source, s->buffer[turn], 1, &region);
+    di.pMemoryBarriers = &after;
+    rec_CmdPipelineBarrier2(cb, &di);
+    s->size[turn] = size;
+    s->at[turn] = frame;
+    g_t.skin_kept++;
+}
+
+/* The object's world matrix a frame ago for a draw that binds the block at address, or world itself when the table
+   has none (the table is brought up to date on the way, as vk_temporal_object does) */
+static const float* object_world_before(u64 address, u32 size, const float world[16], u32 frame) {
+    Object* o = object_slot(address, frame, 1);
+    if (!o) return world;
+    if (o->at != frame) {
+        memcpy(o->before, o->world, sizeof o->before);
+        o->before_at = o->at;
+        memcpy(o->world, world, sizeof o->world);
+        o->at = frame;
+    }
+    const float* was = NULL;
+    if (g_t.camera_address[0] && g_t.camera_address[1]) {
+        const Object* partner =
+            object_slot(g_t.camera_address[0] > g_t.camera_address[1] ? address - size : address + size, frame, 0);
+        if (partner && partner->at + 1 == frame) was = partner->world;
+    }
+    if (!was && o->before_at && o->before_at + 1 == frame) was = o->before;
+    if (!was) return world;
+    const float dx = world[12] - was[12], dy = world[13] - was[13], dz = world[14] - was[14];
+    return dx * dx + dy * dy + dz * dz < 25.0f ? was : world;
+}
+
+/* A G-buffer draw whose position stream starts offset bytes into the transform feedback output at address: 1 with
+   what its vector draw needs when last frame's copy of that output is there. The draw is then made with our vertex
+   and fragment programs: the position now from the game's binding, the position before from out->before. */
+int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, VkTemporalSkin* out) {
+    const u32 frame = g_vk_present + 1;
+    const u64 block_at = ch->cbind[ST_VS][OBJECT_BANK];
+    const u32 block_size = ch->cbind_size[ST_VS][OBJECT_BANK];
+    if (!g_t.objects || g_t.camera_at != frame || zt != g_t.depth_rt || !g_t.have_before || !block_at ||
+        block_size < 64 || block_size > 0x10000)
+        return 0;
+    objects_log(frame);
+    const Skin* s = skin_slot(address, frame, 0);
+    const int last = (int)((frame - 1) & 1);
+    if (!s || !s->capacity || s->at[last] + 1 != frame || offset >= s->size[last]) {
+        g_t.skin_first++;
+        return 0;
+    }
+    if (g_t.object_draws >= OBJECT_DRAWS) {
+        g_t.object_capped++;
+        return 0;
+    }
+    float world[16];
+    block_read(block_at, world);
+    if (world[3] != 0.0f || world[7] != 0.0f || world[11] != 0.0f || world[15] != 1.0f) {
+        g_t.object_odd++;
+        return 0;
+    }
+    const float* was = object_world_before(block_at, block_size, world, frame);
+    double jx = 0, jy = 0;
+    if (g_t.mode == MODE_TAA) {
+        float pixels[2];
+        temporal_jitter(g_vk_present % JITTERS, JITTERS, pixels);
+        jx = 2.0 * (double)pixels[0] / (double)jitter_width();
+        jy = 2.0 * (double)pixels[1] / (double)jitter_height();
+    }
+    struct {
+        float drawn[16], now[16], before[16], viewport[4], depth[4], size[4];
+    } block;
+    temporal_skin_matrices(g_t.now, world, was, g_t.before, jx, jy, block.drawn, block.now, block.before);
+    block.viewport[0] = g_t.viewport.x;
+    block.viewport[1] = g_t.viewport.y;
+    block.viewport[2] = g_t.viewport.width;
+    block.viewport[3] = g_t.viewport.height;
+    block.depth[0] = g_t.depth_translate;
+    block.depth[1] = g_t.depth_scale;
+    block.depth[2] = g_t.depth_zero_to_one ? 0.0f : 1.0f;
+    block.depth[3] = 0;
+    block.size[0] = (float)zt->sw;
+    block.size[1] = (float)zt->sh;
+    block.size[2] = block.size[3] = 0;
+    if (!(block.viewport[2] != 0.0f) || !(block.viewport[3] != 0.0f) || !layouts_make()) return 0;
+    if (!g_t.skin_vs) g_t.skin_vs = vk_module_spv(temporal_skin_vs_spv, (size_t)(temporal_skin_vs_spv_size / 4));
+    if (!g_t.skin_fs) g_t.skin_fs = vk_module_spv(temporal_skin_fs_spv, (size_t)(temporal_skin_fs_spv_size / 4));
+    if (!g_t.skin_vs || !g_t.skin_fs) return 0;
+    if (!image_ensure(&g_t.object, OBJECT_FORMAT, zt->sw, zt->sh,
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "object vector"))
+        return 0;
+    const VkComponentMapping identity = {0};
+    out->depth = vk_tex_view(zt, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
+    if (!out->depth) return 0;
+    u8* bytes = vk_stage(sizeof block, vk_stage_align(), &out->block, &out->offset);
+    if (!bytes) return 0;
+    memcpy(bytes, &block, sizeof block);
+    out->size = sizeof block;
+    out->vs = g_t.skin_vs;
+    out->fs = g_t.skin_fs;
+    out->format = OBJECT_FORMAT;
+    out->sampler = g_t.point;
+    out->before = s->buffer[last];
+    out->before_offset = offset;
+    out->before_size = s->size[last] - offset;
+    g_t.skin_drawn++;
     return 1;
 }
 
