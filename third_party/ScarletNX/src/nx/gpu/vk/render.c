@@ -2832,6 +2832,8 @@ retry:
     tes = sh.tes;
     gs = sh.gs;
     int xfb_on = sh.xfb_on;
+    /* the temporal probe runs before the draw that first reads the scene colour, while its textures are unresolved */
+    if (sh.fs0 && vk_temporal_enabled()) vk_temporal_before(sh.fs0->hash);
     /* the fragment shader's variant, keyed on its textures each draw: they are resolved for stage_set anyway. fres is
        filled for the fragment program's textures (each resolved, have set), and read only for them: a clear of all
        SH_MAXTEX (10 KiB) and a check of all of them against each target were per draw */
@@ -2863,6 +2865,12 @@ retry:
     Surf* zt;
     u32 n;
     read_targets(ch, rt, &zt, &n);
+    if (vk_temporal_enabled()) { /* what the temporal probe learns from a draw: its targets and sampled surfaces */
+        Surf* sampled[SH_MAXTEX];
+        int nt = sh.fs0 ? (sh.fs0->si.ntex > SH_MAXTEX ? SH_MAXTEX : sh.fs0->si.ntex) : 0;
+        for (int i = 0; i < nt; i++) sampled[i] = fres[i].t;
+        vk_temporal_draw(ch, sh.fs0, sampled, nt, rt, n, zt);
+    }
     for (u32 i = 0; i < n; i++)
         if (trace_target(rt[i]))
             LOG_LIMIT(64,

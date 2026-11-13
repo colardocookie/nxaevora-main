@@ -1055,6 +1055,12 @@ VkImageView vk_ui_swapchain_view(VkImage sc); /* the view of a swapchain image t
 void vk_imgui_draw(VkCommandBuffer cb, VkImage sc, u32 game_w, u32 game_h);
 void vk_imgui_swapchain_gone(void);
 void vk_render_clear(GpuChannel* ch, u32 v);
+/* gpu/vk/temporal.c: the temporal probe (SNX_ARCEUS_TEMPORAL=probe). A draw is shown to it before it is recorded,
+   and it runs its passes before the draw of the scene colour's first reader */
+int vk_temporal_enabled(void);
+void vk_temporal_draw(GpuChannel* ch, const VkSh* fs0, Surf* const* sampled, int nt, Surf* const* rt, u32 n, Surf* zt);
+void vk_temporal_before(u64 fs0_hash);
+void vk_temporal_multiply(const float a[16], const float b[16], float out[16]);
 /* gpu/vk/render.c: the read-only frame pass census (SNX_PASS_CENSUS=1) hears of each frame shown */
 void vk_pass_census_present(const Surf* shown);
 void vk_pass_census_dispatch(u64 code, const u64* address, const u32* size, int n);

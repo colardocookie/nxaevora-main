@@ -104,7 +104,7 @@ snx_shaderdec(snx_shader)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/rt_group.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/compute.c
                  gpu/vk/pending_pages.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c
-                 gpu/vk/ftz_probe.c gpu/vk/postfx.c gpu/vk/imgui.c gpu/vk/imgui_glue.cpp gpu/vk/imgui_style.cpp gpu/vk/imgui_input.c gpu/vk/imgui_text.c gpu/vk/imgui_events.cpp gpu/vk/imgui_ui.cpp gpu/vk/imgui_settings.c gpu/vk/debug_stats.c
+                 gpu/vk/ftz_probe.c gpu/vk/postfx.c gpu/vk/temporal.c gpu/vk/imgui.c gpu/vk/imgui_glue.cpp gpu/vk/imgui_style.cpp gpu/vk/imgui_input.c gpu/vk/imgui_text.c gpu/vk/imgui_events.cpp gpu/vk/imgui_ui.cpp gpu/vk/imgui_settings.c gpu/vk/debug_stats.c
                  "${volk_SOURCE_DIR}/volk.c"
                  "${imgui_SOURCE_DIR}/imgui.cpp" "${imgui_SOURCE_DIR}/imgui_draw.cpp"
                  "${imgui_SOURCE_DIR}/imgui_tables.cpp" "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
@@ -132,6 +132,10 @@ snx_glsl_spirv(snx_vk SOURCE gpu/vk/ftz_probe.comp NAME ftz_probe_spv HEADER nx/
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/post.vert NAME post_vs_spv HEADER nx/gpu/vk/post_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/fxaa.frag NAME fxaa_fs_spv HEADER nx/gpu/vk/post_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/bicubic.frag NAME bicubic_fs_spv HEADER nx/gpu/vk/post_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/temporal_motion.frag NAME temporal_motion_fs_spv
+               HEADER nx/gpu/vk/temporal_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/temporal_view.frag NAME temporal_view_fs_spv
+               HEADER nx/gpu/vk/temporal_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/smaa.frag NAME smaa_edges_fs_spv HEADER nx/gpu/vk/post_spv.h
                DEFINES SMAA_PASS_EDGES)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/smaa.frag NAME smaa_weights_fs_spv HEADER nx/gpu/vk/post_spv.h
