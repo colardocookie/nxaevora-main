@@ -3560,7 +3560,8 @@ retry:
             ok.feedback = ok.logic_op = ok.alpha_to_coverage = 0;
             for (u32 i = 0; i < made_n && !opipe; i++)
                 if (!memcmp(&made[i].k, &ok, sizeof ok)) opipe = made[i].pipe;
-            if (!opipe && made_n < 64 && (opipe = vk_pipeline_get(&ok))) {
+            /* past the 64 kept here the pipeline table is asked each time: it keeps every one it made */
+            if (!opipe && (opipe = vk_pipeline_get(&ok)) && made_n < 64) {
                 made[made_n].k = ok;
                 made[made_n++].pipe = opipe;
                 vk_temporal_object_pipeline();
