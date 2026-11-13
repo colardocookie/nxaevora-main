@@ -87,6 +87,9 @@ static struct {
     u8 jitter_source[0x1000]; /* the guest's bytes the copy was made from */
     /* object vectors: the target, the frame it was last drawn in, and the counts of the stats line */
     int objects;
+    /* the resolve's: 1 Catmull-Rom history, 2 variance clip, 4 weight by motion and clip, 8 the nearest depth's
+       vector, 16 blend by brightness */
+    int options;
     Image object;
     VkShaderModule object_fs;
     u32 object_at, object_frame, object_draws;
@@ -118,6 +121,19 @@ static int temporal_on(void) {
         g_t.view = view && view[0] >= '1' && view[0] <= '4' && !view[1] ? view[0] - '0' : 0;
         /* the probe has views 1 and 2, the anti-aliasing 3 and 4 */
         if ((g_t.mode == MODE_PROBE && g_t.view > 2) || (g_t.mode == MODE_TAA && g_t.view < 3)) g_t.view = 0;
+        const char* history = getenv("SNX_ARCEUS_TEMPORAL_HISTORY");
+        const char* clamp = getenv("SNX_ARCEUS_TEMPORAL_CLAMP");
+        const char* blend = getenv("SNX_ARCEUS_TEMPORAL_BLEND");
+        const char* nearest = getenv("SNX_ARCEUS_TEMPORAL_NEAREST");
+        const char* luma = getenv("SNX_ARCEUS_TEMPORAL_LUMA");
+        g_t.options = (history && !strcmp(history, "catmull") ? 1 : 0) |
+                      (clamp && !strcmp(clamp, "variance") ? 2 : 0) | (blend && !strcmp(blend, "adaptive") ? 4 : 0) |
+                      (nearest && !strcmp(nearest, "1") ? 8 : 0) | (luma && !strcmp(luma, "1") ? 16 : 0);
+        if (g_t.mode == MODE_TAA && g_t.options)
+            LOG("arceus-temporal: resolve options: history %s, clamp %s, weight %s, vector %s, blend %s\n",
+                g_t.options & 1 ? "Catmull-Rom" : "linear", g_t.options & 2 ? "variance clip" : "min and max",
+                g_t.options & 4 ? "by motion and clip" : "fixed", g_t.options & 8 ? "of the nearest depth" : "own",
+                g_t.options & 16 ? "by brightness" : "plain");
         const char* vectors = getenv("SNX_ARCEUS_TEMPORAL_VECTORS");
         g_t.objects = g_t.mode && vectors && !strcmp(vectors, "object");
         if (g_t.objects) LOG("arceus-temporal: objects that moved get their own vectors\n");
@@ -1001,6 +1017,7 @@ void vk_temporal_before(u64 fs0_hash) {
             LOG("arceus-temporal: history not used (%s), %llu times so far\n", cut ? "camera cut" : "no frame before",
                 (unsigned long long)g_t.resets);
         Constants rc = pc;
+        rc.depth[2] = (float)g_t.options;
         rc.depth[3] = usable ? 0.0f : 1.0f;
         rc.size[3] = FRAME_WEIGHT;
         const VkImageView views[SETS_BINDINGS] = {g_t.motion.view, now->view, usable ? kept->view : now->view,

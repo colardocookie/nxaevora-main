@@ -16,25 +16,73 @@ layout(set = 0, binding = 3) uniform sampler2D u_depth;
 layout(push_constant) uniform Constants {
     mat4 reproject; // clip of this frame to clip of the frame before, without jitter
     vec4 viewport;  // x, y, width, height of the scene's viewport in image pixels
-    vec4 depth;     // depth translate, depth scale, unused, 1 when there is no usable history
+    vec4 depth;     // depth translate, depth scale, options, 1 when there is no usable history
+                    // options: 1 Catmull-Rom history, 2 variance clip, 4 weight by motion and clip,
+                    // 8 the vector of the nearest depth around, 16 blend by brightness
     vec4 size;      // image width, height, view, weight of the frame in the blend
 } pc;
 vec3 to_ycocg(vec3 c) {
     return vec3(dot(c, vec3(0.25, 0.5, 0.25)), dot(c, vec3(0.5, 0.0, -0.5)), dot(c, vec3(-0.25, 0.5, -0.25)));
 }
 vec3 from_ycocg(vec3 c) { return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z); }
+// The history through a Catmull-Rom filter in five linear fetches (the four corners left out), which keeps it
+// sharper under motion than one linear fetch. The weights are temporal_catmull_weights in temporal_math.h.
+vec3 history_sharp(vec2 uv) {
+    vec2 position = uv * pc.size.xy;
+    vec2 centre = floor(position - 0.5) + 0.5;
+    vec2 f = position - centre, f2 = f * f, f3 = f2 * f;
+    vec2 w0 = -0.5 * f3 + f2 - 0.5 * f;
+    vec2 w1 = 1.5 * f3 - 2.5 * f2 + 1.0;
+    vec2 w2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+    vec2 w3 = 0.5 * f3 - 0.5 * f2;
+    vec2 w12 = w1 + w2;
+    vec2 t0 = (centre - 1.0) / pc.size.xy, t3 = (centre + 2.0) / pc.size.xy, t12 = (centre + w2 / w12) / pc.size.xy;
+    vec4 sum = vec4(textureLod(u_history, vec2(t12.x, t0.y), 0.0).rgb, 1.0) * (w12.x * w0.y) +
+               vec4(textureLod(u_history, vec2(t0.x, t12.y), 0.0).rgb, 1.0) * (w0.x * w12.y) +
+               vec4(textureLod(u_history, t12, 0.0).rgb, 1.0) * (w12.x * w12.y) +
+               vec4(textureLod(u_history, vec2(t3.x, t12.y), 0.0).rgb, 1.0) * (w3.x * w12.y) +
+               vec4(textureLod(u_history, vec2(t12.x, t3.y), 0.0).rgb, 1.0) * (w12.x * w3.y);
+    return max(sum.rgb / sum.a, vec3(0.0));
+}
+// A colour outside the box moved along the line toward the frame's colour until it is on the box
+// (temporal_clip_toward in temporal_math.h)
+vec3 clip_toward(vec3 colour, vec3 frame, vec3 low, vec3 high) {
+    vec3 inside = clamp(frame, low, high), away = colour - inside;
+    float t = 1.0;
+    for (int i = 0; i < 3; i++) {
+        if (away[i] > 0.000001) t = min(t, (high[i] - inside[i]) / away[i]);
+        if (away[i] < -0.000001) t = min(t, (low[i] - inside[i]) / away[i]);
+    }
+    return inside + away * t;
+}
 void main() {
+    int options = int(pc.depth.z + 0.5);
     ivec2 pixel = ivec2(gl_FragCoord.xy);
     ivec2 last = ivec2(pc.size.xy) - 1;
     vec2 uv = gl_FragCoord.xy / pc.size.xy;
     vec3 now = texelFetch(u_now, pixel, 0).rgb;
     float z = max((texelFetch(u_depth, pixel, 0).r - pc.depth.x) / pc.depth.y, 0.0);
-    vec2 from = uv - texelFetch(u_motion, pixel, 0).rg;
+    vec2 motion = texelFetch(u_motion, pixel, 0).rg;
+    if ((options & 8) != 0) {
+        // the vector of the nearest surface in the 3x3 (reversed depth: the largest), so an edge's own pixels and
+        // the background pixels beside it follow the thing in front
+        float nearest = texelFetch(u_depth, pixel, 0).r;
+        for (int y = -1; y <= 1; y++)
+            for (int x = -1; x <= 1; x++) {
+                ivec2 at = clamp(pixel + ivec2(x, y), ivec2(0), last);
+                float d = texelFetch(u_depth, at, 0).r;
+                if (d > nearest) {
+                    nearest = d;
+                    motion = texelFetch(u_motion, at, 0).rg;
+                }
+            }
+    }
+    vec2 from = uv - motion;
     // the depth this pixel's point had in the frame before
     vec2 ndc = (gl_FragCoord.xy - pc.viewport.xy) / pc.viewport.zw * 2.0 - 1.0;
     vec4 before = pc.reproject * vec4(ndc, z, 1.0);
     bool dropped = pc.depth.w > 0.5 || before.w <= 0.0 || from.x < 0.0 || from.y < 0.0 || from.x > 1.0 || from.y > 1.0;
-    vec4 history = textureLod(u_history, from, 0.0);
+    vec3 history = (options & 1) != 0 ? history_sharp(from) : textureLod(u_history, from, 0.0).rgb;
     if (!dropped) {
         // The history's depths around the place, each read whole: the sign of alpha is a mark, and an edge moves by
         // the jitter, so the depth must only lie within what the 3x3 texels there held, a tenth wider.
@@ -49,17 +97,45 @@ void main() {
         dropped = expected < nearest * 0.9 - 0.00001 || expected > farthest * 1.1 + 0.00001;
     }
     // the frame's neighbourhood bounds the history
-    vec3 low = to_ycocg(now), high = low;
+    vec3 low = to_ycocg(now), high = low, sum = low, squares = low * low;
     for (int y = -1; y <= 1; y++)
         for (int x = -1; x <= 1; x++) {
             if (x == 0 && y == 0) continue;
             vec3 c = to_ycocg(texelFetch(u_now, clamp(pixel + ivec2(x, y), ivec2(0), last), 0).rgb);
             low = min(low, c);
             high = max(high, c);
+            sum += c;
+            squares += c * c;
         }
-    vec3 kept = from_ycocg(clamp(to_ycocg(history.rgb), low, high));
-    float weight = dropped ? 1.0 : pc.size.w;
-    vec3 result = max(mix(kept, now, weight), vec3(0.0));
+    vec3 kept;
+    if ((options & 2) != 0) {
+        // the box of the neighbourhood's mean and 1.25 standard deviations, the history clipped toward its middle
+        vec3 mean = sum / 9.0, deviation = sqrt(max(squares / 9.0 - mean * mean, vec3(0.0)));
+        kept = from_ycocg(
+            clip_toward(to_ycocg(history), to_ycocg(now), mean - 1.25 * deviation, mean + 1.25 * deviation));
+    } else
+        kept = from_ycocg(clamp(to_ycocg(history), low, high));
+    kept = max(kept, vec3(0.0));
+    float weight = pc.size.w;
+    if ((options & 4) != 0) {
+        // 0.05 standing, 0.1 moving, up to 0.2 where the clip changed the history's brightness
+        // (temporal_frame_weight in temporal_math.h)
+        float before = dot(history, vec3(0.25, 0.5, 0.25)), after = dot(kept, vec3(0.25, 0.5, 0.25));
+        float clipped = abs(before - after) / (max(before, after) + 0.05);
+        float base = 0.05 + 0.05 * clamp(length(motion * pc.size.xy) / 2.0, 0.0, 1.0);
+        weight = base + (0.2 - base) * clamp(clipped * 2.0, 0.0, 1.0);
+    }
+    if (dropped) weight = 1.0;
+    vec3 result;
+    if ((options & 16) != 0) {
+        // each colour counts by 1 / (1 + its brightness), so a bright spark weighs no more than its neighbours
+        // (temporal_blend_by_brightness in temporal_math.h)
+        float wh = (1.0 - weight) / (1.0 + dot(kept, vec3(0.25, 0.5, 0.25)));
+        float wf = weight / (1.0 + dot(now, vec3(0.25, 0.5, 0.25)));
+        result = (kept * wh + now * wf) / (wh + wf);
+    } else
+        result = mix(kept, now, weight);
+    result = max(result, vec3(0.0));
     o_history = vec4(result, dropped ? -max(z, 0.0000001) : z);
     o_color = pc.size.z > 2.5 && pc.size.z < 3.5 ? vec4(vec3(weight), 1.0) : vec4(result, 1.0);
 }

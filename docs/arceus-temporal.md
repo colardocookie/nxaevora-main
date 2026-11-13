@@ -95,6 +95,21 @@ clamped away, and grass in the wind blurs. Thin bright details can flicker where
 runs once per frame of the game, also where the scene is not the field (it is skipped when the composite is not
 found).
 
+## Resolve options
+
+Each is its own switch, off unless set, so they can be compared one at a time. They change the resolve of `taa` only.
+
+| Switch | What it does |
+| --- | --- |
+| `SNX_ARCEUS_TEMPORAL_NEAREST=1` | A pixel takes the motion vector of the nearest surface in its 3 x 3 neighbourhood, so an edge and the background pixels beside it follow the thing in front |
+| `SNX_ARCEUS_TEMPORAL_HISTORY=catmull` | The history's colour is fetched through a Catmull-Rom filter (five linear fetches, the corners left out) in place of one linear fetch: less softening under motion. The depth kept with the history is still read texel by texel |
+| `SNX_ARCEUS_TEMPORAL_CLAMP=variance` | The history is clipped to the mean of the frame's 3 x 3 neighbourhood plus and minus 1.25 standard deviations, along the line toward the frame's colour, in place of the clamp to its minimum and maximum |
+| `SNX_ARCEUS_TEMPORAL_BLEND=adaptive` | The frame's share is 0.05 standing, 0.1 from two pixels of motion a frame on, and up to 0.2 where the clip changed the history's brightness, in place of a fixed 0.1 |
+| `SNX_ARCEUS_TEMPORAL_LUMA=1` | History and frame are blended with each weighted by 1 / (1 + its brightness), so a bright spark neither flickers in nor smears |
+
+The formulas are in `gpu/vk/temporal_math.h` with a host test (`tests/temporal_math.c`), and again in GLSL in
+`shaders/temporal_resolve.frag`. None of the options has been played.
+
 ## Object vectors (`SNX_ARCEUS_TEMPORAL_VECTORS=object`)
 
 With `probe` or `taa`. The camera vectors are right for what stands still. An object that moves gets its own:
