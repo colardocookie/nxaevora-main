@@ -887,8 +887,15 @@ static void fade_before(u64 object, FadeStage* st) {
     const float want = guest_float(frame_step_address) / NOMINAL_STEP_SECONDS;
     if (!(want > 0.0f && want <= 1.0f)) return;
     const int32_t frame = (int32_t)gr32(object + 0x538), duration = (int32_t)gr32(object + 0x53c);
-    /* A fade-in at its end only resets and republishes the target: leave that call alone. */
-    if (frame >= duration && state == 2) return;
+    /* A fade-in at its end only resets and republishes the target: leave that call alone.
+       The object goes idle in it, so free its slot here, as no later call will. */
+    if (frame >= duration && state == 2) {
+        pm_lock(&fade_lock);
+        for (int k = 0; k < FADE_SLOTS; k++)
+            if (fade_slots[k].object == object) fade_slots[k].object = 0;
+        pm_unlock(&fade_lock);
+        return;
+    }
     pm_lock(&fade_lock);
     float progress = 0.0f;
     st->slot = fade_slot(object, (u32)frame, (u32)duration, state, &progress);
@@ -1750,6 +1757,13 @@ static void capped_fall_update(CPU* c, u64 entry) {
             (unsigned long long)__atomic_load_n(&capped_fall_adjusted, __ATOMIC_RELAXED),
             (unsigned long long)object, eligible, (double)seconds);
 }
+/* The two words at +6D0 that build the queued -1/30: 1 when they are the game's own, 2 when movement
+   bit 1 already loads the frame step there (ADRP X8 and LDR W8 [X8,#4]), 0 otherwise. */
+static int capped_fall_body(u32 first, u32 second) {
+    if (first == 0x52911128 && second == 0x72b7a108) return 1;
+    if ((first & 0x9f00001f) == 0x90000008 && second == 0xb9400508) return 2;
+    return 0;
+}
 static void capped_fall_init(void) {
     const char* enabled = getenv("SNX_ARCEUS_CAPPED_FALL_FIX");
     const char* movement = getenv("SNX_ARCEUS_MOVEMENT_FIX");
@@ -1759,7 +1773,7 @@ static void capped_fall_init(void) {
                          (strtoul(mask, NULL, 16) & 0x200ul);
     const char* steering = getenv("SNX_ARCEUS_AIR_STEERING_FIX");
     const int steer = steering && !strcmp(steering, "1");
-    const int fall = (enabled && !strcmp(enabled, "1")) || selected;
+    int fall = (enabled && !strcmp(enabled, "1")) || selected;
     if (!main_base || (!fall && !steer)) return;
     if (!clocks_installed) {
         WARN("arceus-capped-fall: refused without elapsed-time clocks\n");
@@ -1769,11 +1783,16 @@ static void capped_fall_init(void) {
     const u64 pc = main_base + 0x19843a0;
     if (!covers_exactly(pc, 0xb18) || pc < g_code_lo || pc + 0xb18 > g_code_hi ||
         !readable(pc, 0xb18) || gr32(pc) != 0xd102c3ff ||
-        gr32(pc + 0xfc) != 0x14000002 || gr32(pc + 0x6d0) != 0x52911128 ||
-        gr32(pc + 0x6d4) != 0x72b7a108 || gr32(pc + 0x700) != 0x3d81ae60 ||
-        gr32(pc + 0x70c) != 0x391a8268) {
-        WARN("arceus-capped-fall: refused guard (movement bit 1 must be off)\n");
+        gr32(pc + 0xfc) != 0x14000002 || !capped_fall_body(gr32(pc + 0x6d0), gr32(pc + 0x6d4)) ||
+        gr32(pc + 0x700) != 0x3d81ae60 || gr32(pc + 0x70c) != 0x391a8268) {
+        WARN("arceus-capped-fall: refused guard\n");
         return;
+    }
+    /* Movement bit 1 already steps this queued gravity, so only air steering is installed then. */
+    if (fall && capped_fall_body(gr32(pc + 0x6d0), gr32(pc + 0x6d4)) == 2) {
+        WARN("arceus-capped-fall: off, movement bit 1 already steps the queued gravity\n");
+        fall = 0;
+        if (!steer) return;
     }
     if (!frame_step_cell_init("arceus-capped-fall")) return;
     /* Match the census marker so it leaves this wrapper in place. */
