@@ -234,7 +234,10 @@ static void test_defaults_on(void) {
     for (unsigned i = 0; i < sizeof enabled / sizeof enabled[0]; i++)
         assert(arceus_switch_enabled(enabled[i], 1));
     assert(waza_shot_mode_value() == 2);
-    assert(movement_mask_value() == 0x1fcul && climb_step_value() == 2);
+    /* Bits 2 to 8 and bit 10, the player's horizontal position step. */
+    assert(movement_mask_value() == 0x5fcul && climb_step_value() == 2);
+    assert(horizontal_move_site.owner == 0x1a0d9dc && horizontal_move_site.site == 0x1a0da20 &&
+           !horizontal_move_site.negative);
     /* The script tick: unset is the Braviary bit and the throw window. 0 turns each off, and a
        mask is used as given. */
     assert(script_tick_wanted() == 4 && script_windows_wanted() == 1);
@@ -266,8 +269,10 @@ static void test_defaults_on(void) {
     config = arceus_clock_config(g_opt_fps);
     assert(!config.write_fps && !config.skip_runtime_limit && config.initial_ns == ARCEUS_UNLOCKED_INITIAL_STEP_NS);
     flag("SNX_ARCEUS_MOVEMENT_SITES", "7fc");
-    assert(movement_mask_value() == 0x7fcul && (movement_mask_value() & 0x1fcul) == 0x1fcul &&
+    assert(movement_mask_value() == 0x7fcul && (movement_mask_value() & 0x5fcul) == 0x5fcul &&
            (movement_mask_value() & 0x200ul));
+    flag("SNX_ARCEUS_MOVEMENT_SITES", "1fc");
+    assert(movement_mask_value() == 0x1fcul);
     for (unsigned i = 0; i < sizeof enabled / sizeof enabled[0]; i++) {
         flag(enabled[i], "0");
         assert(!arceus_switch_enabled(enabled[i], 1));

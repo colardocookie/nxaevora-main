@@ -45,7 +45,7 @@ static int arceus_switch_enabled(const char* name, int default_on) {
 }
 static unsigned long movement_mask_value(void) {
     const char* value = getenv("SNX_ARCEUS_MOVEMENT_SITES");
-    if (!value) return 0x1fcul;
+    if (!value) return 0x5fcul;
     return *value ? strtoul(value, NULL, 16) : ~0ul;
 }
 static int climb_step_value(void) {
@@ -1711,6 +1711,10 @@ static const FrameStepSite movement_sites[] = {
     {0x1a173b0,0x22a4,0xfc180fea,0x1a17f3c,0,"player state force"},
 };
 #define MOVEMENT_SITES (sizeof movement_sites / sizeof movement_sites[0])
+/* Bit 9 belongs to capped_fall_init. Bit 10 changes the player's +118 horizontal
+   position step from v/30 to v*elapsed, after its caller has integrated acceleration. */
+static const FrameStepSite horizontal_move_site =
+    {0x1a0d9dc,0x11c,0xd10203ff,0x1a0da20,0,"player horizontal displacement"};
 static void movement_fix_init(void) {
     if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_MOVEMENT_FIX", 1)) return;
     if (!clocks_installed) {
@@ -1721,13 +1725,14 @@ static void movement_fix_init(void) {
     if (!frame_step_cell_init("arceus-movement-fix")) return;
     /* Optional hex mask over movement_sites (bit 0 is the first) to test sites one by one. */
     const unsigned long mask = movement_mask_value();
-    FrameStepSite chosen[MOVEMENT_SITES];
+    FrameStepSite chosen[MOVEMENT_SITES + 1];
     unsigned n = 0;
     for (unsigned k = 0; k < MOVEMENT_SITES; k++)
         if (mask >> k & 1) chosen[n++] = movement_sites[k];
+    if (mask & 0x400ul) chosen[n++] = horizontal_move_site;
     const unsigned sites = frame_step_sites_init(chosen, n, "arceus-movement-fix");
-    LOG("arceus-movement-fix: EXPERIMENT: %u of %u character movement sites (mask %lx) use min(1/30, elapsed), cell=%llx\n",
-        sites, (unsigned)MOVEMENT_SITES, mask, (unsigned long long)frame_step_address);
+    LOG("arceus-movement-fix: EXPERIMENT: %u of %u selected character movement sites (mask %lx) use min(1/30, elapsed), cell=%llx\n",
+        sites, n, mask, (unsigned long long)frame_step_address);
 }
 static void gravity_fix_init(void) {
     if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_GRAVITY_FIX", 1)) return;

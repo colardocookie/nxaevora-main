@@ -40,7 +40,7 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | `SNX_ARCEUS_LEDGE_FIX` | on | Leaves ledge movement at its authored rate. |
 | `SNX_ARCEUS_CLIMB_STEP` | 2 | Disables climb step and stop timing fixes. `1` enables the step fix only; `2` also enables the stop fix. |
 | `SNX_ARCEUS_MOVEMENT_FIX` | on | Leaves the selected character movement sites at their authored rates. |
-| `SNX_ARCEUS_MOVEMENT_SITES` | `0x1fc` | Not a boolean: selects movement sites by bit mask. Explicit masks are used as provided. |
+| `SNX_ARCEUS_MOVEMENT_SITES` | `0x5fc` | Not a boolean: selects movement sites by bit mask. Explicit masks are used as provided. |
 | `SNX_ARCEUS_CAPPED_FALL_FIX` | on | Disables the capped-fall correction. |
 | `SNX_ARCEUS_AIR_STEERING_FIX` | on | Leaves air steering at its authored rate. |
 | `SNX_ARCEUS_RIDE_SWAP_FIX` | on | Leaves ride-swap countdowns at their authored rate. |
@@ -58,7 +58,7 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | `SNX_ARCEUS_GRAVITY_PROBE` | off | `=0` keeps the read-only probe off. |
 | `SNX_ARCEUS_FIXED_RESOLUTION` | off | `=0` leaves the game's automatic 3D resolution governor enabled. |
 
-The default movement mask selects bits 2 through 8, the seven player movement sites. Bits 0 and 1 remain off. An explicit mask such as `7fc` adds bit 9's capped-fall selection while preserving the same seven sites; this branch has no bit 10 site.
+The default movement mask selects bits 2 through 8, the seven player movement sites, and bit 10, the player's horizontal position step. Bits 0 and 1 remain off. An explicit mask such as `7fc` adds bit 9's capped-fall selection while preserving the same sites. `1fc` leaves bit 10 out.
 
 ## The shared step
 
@@ -186,8 +186,14 @@ MOV/MOVK pair of plus or minus 1/30:
 | 7 | `main+1A17B10` | player state acceleration (`main+1A173B0`) |
 | 8 | `main+1A17F3C` | player state force (`main+1A173B0`) |
 
-`SNX_ARCEUS_MOVEMENT_SITES` is an optional hex mask over these bits, to test the sites one by one. Without it all
-nine are on. The `arceus-movement-fix` line gives the number installed and the mask.
+| 10 | `main+1A0DA20` | player horizontal displacement (`main+1A0D9DC`) |
+
+Bit 10 is a different kind of step. `main+1A0D9DC` sets the player's position from the velocity at `+118` times 1/30
+on every call, after its caller has integrated the acceleration, so without it that displacement is 2 times too long
+at 60 FPS. It was on (mask `7fc`) in 59 play sessions at 60, 120 and unlocked frame rates. No session isolates it.
+
+`SNX_ARCEUS_MOVEMENT_SITES` is an optional hex mask over these bits, to test the sites one by one. The
+`arceus-movement-fix` line gives the number installed and the mask.
 
 ## Fade fix
 
