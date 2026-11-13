@@ -184,6 +184,15 @@ static void test_defaults_on(void) {
     for (unsigned i = 0; i < sizeof enabled / sizeof enabled[0]; i++)
         assert(arceus_switch_enabled(enabled[i], 1));
     assert(movement_mask_value() == 0x1fcul && climb_step_value() == 2);
+    /* The battle sequence fix: unset is the even landing, 1 the earlier landing, 0 off. */
+    assert(battle_sequence_value() == 2);
+    flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX", "1");
+    assert(battle_sequence_value() == 1);
+    flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX", "2");
+    assert(battle_sequence_value() == 2);
+    flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX", "0");
+    assert(battle_sequence_value() == 0);
+    unset_flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
     static const char* const probes[] = {
         "SNX_ARCEUS_CLOCK_TRACE", "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_CAMERA_TRACE",
         "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE",
@@ -950,6 +959,60 @@ static void test_ride_swap(void) {
     ride_swap_fix = 0;
     ride_swap_original = NULL;
 }
+/* The even landing (value 2) on frame times taken from two played sessions: 60 FPS (report
+   20261113-045030-report-acf2fb) and unlocked (20261113-045201-report-e5d35e). Every rendered
+   frame must move the sequence by about its share, every whole frame must be landed on
+   exactly once, and the frame must not drift from elapsed time. */
+static void test_sequence_even(void) {
+    static const u64 sixty[48] = {16364100, 16967500, 16664300, 16735200, 16707400, 16562200, 16710600, 16710400,
+        16867000, 16200700, 16871100, 16605700, 16330200, 17052800, 16489500, 16939200, 16112400, 16784000, 17036000,
+        16528400, 16508200, 16670500, 16892700, 16645000, 16224900, 17021700, 16519600, 17740700, 15698100, 16703500,
+        16892800, 16197600, 17490400, 16167900, 16344900, 16726800, 17002600, 16793000, 16395400, 16658500, 16603700,
+        17210200, 16226200, 17037700, 16313000, 16456900, 17122100, 16258700};
+    static const u64 unlocked[48] = {4960100, 5789000, 5375700, 6016100, 5508600, 5525300, 6322800, 5306600, 5121400,
+        5043200, 5678600, 5166500, 5051000, 5798600, 5410700, 5351200, 4817000, 5503700, 5101500, 5666500, 5717000,
+        5406700, 5092000, 5788800, 5129000, 5324100, 5818500, 4590600, 5769400, 5514300, 5407300, 5278300, 5032800,
+        6133300, 6145900, 4964900, 4672100, 6117600, 5187000, 5329200, 5365900, 5247100, 5641700, 5877800, 5750900,
+        5160300, 5093300, 5754100};
+    static const float speeds[] = {1, .2f, 2};
+    for (unsigned even = 0; even < 2; even++)
+        for (unsigned set = 0; set < 3; set++)
+            for (unsigned s = 0; s < sizeof speeds / sizeof speeds[0]; s++) {
+                const float speed = speeds[s];
+                reset(8, speed, 1);
+                battle_sequence_even = (int)even;
+                boundaries = 0;
+                u64 elapsed = 0;
+                unsigned renders = 0, held = 0, jumped = 0;
+                for (unsigned i = 0; i < 960; i++) {
+                    /* Set 2 is the constant 60 FPS step. */
+                    step.step = set == 0 ? sixty[i % 48] : set == 1 ? unlocked[i % 48] : 16666667;
+                    elapsed += step.step;
+                    renders++;
+                    const float before = guest_float(object + 0xe8);
+                    update();
+                    const float frame = guest_float(object + 0xe8);
+                    const float share = (frame - before) / (speed * (float)step.step / 33333333.0f);
+                    if (share < 0.7f) held++;
+                    if (share > 1.3f) jumped++;
+                    /* The mock asserts that no whole frame is crossed, so this counts skips and repeats. */
+                    assert(boundaries == (unsigned)floorf(frame) - 8);
+                    const double expected = 8 + speed * (double)elapsed / 33333333.0;
+                    assert(fabs(frame + sequence_slots[0].pending - expected) < .004);
+                    assert(sequence_slots[0].pending < 1 && sequence_slots[0].pending > -SEQUENCE_SNAP_MAX - .001f);
+                }
+                if (even) {
+                    /* Every rendered frame moves by 0.7 to 1.3 of its share, with one update per
+                       rendered frame as before (the mock refuses a second one for a rest). At
+                       speed 2 a rendered frame can hold two whole frames, each with its update. */
+                    assert(!held && !jumped);
+                    assert(calls <= (speed > 1 ? renders + renders / 2 : renders + renders / 50));
+                } else if (set == 0 && speed == 1)
+                    /* The old rule on the same 60 FPS times: about a quarter held and a quarter jumped. */
+                    assert(held > renders / 5 && jumped > renders / 5);
+            }
+    battle_sequence_even = 0;
+}
 int main(void) {
     test_ride_swap();
     test_defaults_on();
@@ -965,6 +1028,7 @@ int main(void) {
         "SNX_ARCEUS_TIMING_RESEARCH"};
     for (unsigned i = 0; i < sizeof disabled / sizeof disabled[0]; i++) flag(disabled[i], "");
     test_sequence();
+    test_sequence_even();
     test_diagnostics();
     test_climb_adrp();
     test_climb_stop();
