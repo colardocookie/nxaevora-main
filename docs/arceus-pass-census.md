@@ -3,7 +3,7 @@
 
 # Frame pass census
 
-`SNX_PASS_CENSUS=1` makes the Vulkan renderer log what a frame is made of. It only reads. Every 1200 presents from
+`SNX_PASS_CENSUS=1` (or `SNX_ARCEUS_PASS_CENSUS=1`, the name the test launcher accepts) makes the Vulkan renderer log what a frame is made of. It only reads. Every 1200 presents from
 the 900th, up to 10 times, the passes of two frames in a row are written in order as `arceus-pass` lines. A pass is a run of
 draws on one set of targets, so the game returning to a target starts a new pass.
 
