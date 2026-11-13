@@ -5,30 +5,53 @@
 
 Pokémon Legends: Arceus 1.1.1 runs its world at 30 updates per second. Most of its clocks add a fixed 1/30 second
 on each rendered frame, so above 30 FPS the game runs fast. `src/nx/runtime/arceus_clock.c` in the vendored
-ScarletNX changes those clocks to the real elapsed time. Everything in it is off unless a switch below is set, and
-it does nothing for another game or another build. Each change first checks the build id of `main` and the
-instruction words it replaces, and it logs a refusal and changes nothing when they differ.
+ScarletNX changes those clocks to the real elapsed time. The timing fixes are on by default and can be disabled with the master or individual switches below. Setting
+the master to `0` also suppresses the opt-in traces, research probes and fixed-resolution hook. The layer does
+nothing for another game or another build. Each change first checks the build id of `main` and the instruction
+words it replaces, and it logs a refusal and changes nothing when they differ.
 
 ## Switches
 
-The switches are environment variables. A switch is on when its value is `1`.
+Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns off the entire timing layer. For every individual fix, setting its switch to `0` turns off that fix; probes and graphics settings remain opt-in.
 
-| Switch | What it does |
-| --- | --- |
-| `SNX_ARCEUS_TARGET_FPS` | `60`, `120` or `unlocked` (`0` is the same). The four main-loop duration writes take the elapsed time of the frame instead of 1/30 second, and the runtime's frame limit is set to this rate. `unlocked` lifts the frame limit and starts from a 1/120 second step until the first measured one. Another value is refused. `SNX_ARCEUS_FPS60=1` is the older form of `60`. |
-| `SNX_ARCEUS_TIMING_FIXES` | With a target rate, enables water animation and fractional effect progress. Also a prerequisite for the individual event-camera, blink, menu-repeat and camera switches below. It does not enable those hooks on its own. |
-| `SNX_ARCEUS_CAMERA_INPUT_FIX` | Part of the timing fixes. The camera stick keeps its 30 FPS response at any frame rate. |
-| `SNX_ARCEUS_CAMERA_SPEED` | With the camera fix, a multiplier of the manual camera rotation speed. |
-| `SNX_ARCEUS_EVENT_CAMERA_FIX`, `SNX_ARCEUS_BLINK_FIX`, `SNX_ARCEUS_MENU_REPEAT_FIX` | Set each to `1` to enable its timing fix, with a target rate and `SNX_ARCEUS_TIMING_FIXES=1`. |
-| `SNX_ARCEUS_FIXED_RESOLUTION` | Skips the game's automatic 3D resolution governor, which lowers the scene size against a 33.3 ms GPU budget. Explicit scene modes stay. |
-| `SNX_ARCEUS_CLOCK_TRACE` | Logs the main-loop clock calls without changing them. |
-| `SNX_ARCEUS_TIMING_RESEARCH` | Read-only counters on other fixed-step owners (physics worlds, frame timers, fades). |
-| `SNX_ARCEUS_CAMERA_TRACE`, `SNX_ARCEUS_DIALOGUE_TRACE` | Read-only traces of the camera input and the message view. |
+| Switch | Default | What `=0` does |
+| --- | --- | --- |
+| `SNX_ARCEUS_TIMING_FIXES` | on | Installs nothing and suppresses the traces, research probes and fixed-resolution hook too. |
+| `SNX_ARCEUS_TARGET_FPS` | runtime setting | Not a boolean: unset or empty keeps the runtime's `fps_limit` and does not write `g_opt_fps`; the initial step follows that limit. `60`, `120`, `unlocked` or `0` set the limit; other values are refused. |
+| `SNX_ARCEUS_FPS60` | off | Legacy alias; `=1` selects 60 FPS. |
+| `SNX_ARCEUS_PHYSICS_TIMESTEP_FIX` | on | Leaves the physics step at its authored value. |
+| `SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX` | on | Leaves AI navigation at its authored step. |
+| `SNX_ARCEUS_WORLD_TIMERS_FIX` | on | Leaves world timers at their authored rates. |
+| `SNX_ARCEUS_GRAVITY_FIX` | on | Leaves gravity integration at its authored rate. |
+| `SNX_ARCEUS_CAPTURE_FIX` | on | Leaves capture timing at its authored rate. |
+| `SNX_ARCEUS_BATTLE_SEQUENCE_FIX` | on | Leaves battle sequence timing at its authored rate. |
+| `SNX_ARCEUS_MAP_CURSOR_FIX` | on | Leaves map cursor movement at its authored rate. |
+| `SNX_ARCEUS_FADE_FIX` | on | Leaves fade timing at its authored rate. |
+| `SNX_ARCEUS_EVENT_CAMERA_FIX` | on | Leaves event camera timing at its authored rate. |
+| `SNX_ARCEUS_BLINK_FIX` | on | Leaves blink timing at its authored rate. |
+| `SNX_ARCEUS_CAMERA_INPUT_FIX` | on | Leaves camera response and manual rotation at their authored rates. |
+| `SNX_ARCEUS_CAMERA_SPEED` | 1.0 | Not a boolean: selects the default manual rotation multiplier. |
+| `SNX_ARCEUS_MENU_REPEAT_FIX` | on | Leaves menu repeat at its authored rate. |
+| `SNX_ARCEUS_TIMER_CARRY_FIX` | on | Disables bounded catch-up for integer timers. |
+| `SNX_ARCEUS_AI_TICK_FIX` | on | Leaves AI script ticks at their authored rate. |
+| `SNX_ARCEUS_TURN_FIX` | on | Leaves turn interpolation at its authored rate. |
+| `SNX_ARCEUS_LIST_SCROLL_FIX` | on | Leaves list scrolling at its authored rate. |
+| `SNX_ARCEUS_WALL_JUMP_FIX` | on | Leaves wall-jump timing at its authored rate. |
+| `SNX_ARCEUS_LEDGE_FIX` | on | Leaves ledge movement at its authored rate. |
+| `SNX_ARCEUS_CLIMB_STEP` | 2 | Disables climb step and stop timing fixes. `1` enables the step fix only; `2` also enables the stop fix. |
+| `SNX_ARCEUS_MOVEMENT_FIX` | on | Leaves the selected character movement sites at their authored rates. |
+| `SNX_ARCEUS_MOVEMENT_SITES` | `0x1fc` | Not a boolean: selects movement sites by bit mask. Explicit masks are used as provided. |
+| `SNX_ARCEUS_CAPPED_FALL_FIX` | on | Disables the capped-fall correction. |
+| `SNX_ARCEUS_AIR_STEERING_FIX` | on | Leaves air steering at its authored rate. |
+| `SNX_ARCEUS_CLOCK_TRACE` | off | `=0` keeps the trace off; set to `1` to log clock calls. |
+| `SNX_ARCEUS_DIALOGUE_TRACE` | off | `=0` keeps the read-only trace off. |
+| `SNX_ARCEUS_CAMERA_TRACE` | off | `=0` keeps the read-only trace off. |
+| `SNX_ARCEUS_TIMING_RESEARCH` | off | `=0` keeps read-only timing counters off. |
+| `SNX_ARCEUS_CADENCE_CENSUS` | off | `=0` keeps the read-only census off. |
+| `SNX_ARCEUS_GRAVITY_PROBE` | off | `=0` keeps the read-only probe off. |
+| `SNX_ARCEUS_FIXED_RESOLUTION` | off | `=0` leaves the game's automatic 3D resolution governor enabled. |
 
-A typical run at 120 FPS sets `SNX_ARCEUS_TARGET_FPS=120`, `SNX_ARCEUS_TIMING_FIXES=1`,
-`SNX_ARCEUS_CAMERA_INPUT_FIX=1`, `SNX_ARCEUS_EVENT_CAMERA_FIX=1`, `SNX_ARCEUS_BLINK_FIX=1`,
-`SNX_ARCEUS_MENU_REPEAT_FIX=1` and `SNX_ARCEUS_CAMERA_SPEED=2.2`. The camera speed multiplier takes effect
-only when the camera hook is enabled.
+The default movement mask selects bits 2 through 8, the seven player movement sites. Bits 0 and 1 remain off. An explicit mask such as `7fc` adds bit 9's capped-fall selection while preserving the same seven sites; this branch has no bit 10 site.
 
 ## The shared step
 
@@ -40,7 +63,7 @@ step of the target rate. A stall longer than 0.1 second is cut to 0.1 second, so
 ## Physics step
 
 The main rigid-body world takes one fixed 1/30 second step per rendered frame, so above 30 FPS physics runs at
-FPS/30 speed. With a target rate, `SNX_ARCEUS_PHYSICS_TIMESTEP_FIX=1` makes the step the smaller of 1/30 second and
+FPS/30 speed. The default-on `SNX_ARCEUS_PHYSICS_TIMESTEP_FIX` makes the step the smaller of 1/30 second and
 the elapsed time. The `arceus-physics-timestep` line in the log confirms it.
 
 With only the step corrected, thrown Poké Balls flew in slow motion. The flight update at `main+1A7191C` applies
@@ -57,7 +80,7 @@ of them run once per rendered frame (a high-FPS bug) and which run at 30 Hz.
 
 `main+2795204` steps the AI navigation world once per rendered frame. Its mode byte at +150 stays at the
 constructor's 0, which selects a fixed 1/30 second, so at about 66 FPS navigation advanced about 2.2 times real
-time. With a target rate, `SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX=1` turns the FCSEL at `main+2795244` into FMINNM, so
+time. The default-on `SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX` turns the FCSEL at `main+2795244` into FMINNM, so
 the step is the smaller of 1/30 second and the elapsed time. The path has no zero-step check, and the shared step
 is never zero. The `arceus-navigation-timestep` line confirms it.
 
@@ -72,7 +95,7 @@ The cadence census found these owners running once per rendered frame, each addi
 - `main+1B47D10` raises and lowers three weather blend values by a configured rate times 1/30.
 - `main+1E1A25C` adds 1/120 per call to a cave light transition.
 
-With a target rate, `SNX_ARCEUS_WORLD_TIMERS_FIX=1` gives them the smaller of 1/30 second and the elapsed time. The
+The default-on `SNX_ARCEUS_WORLD_TIMERS_FIX` gives them the smaller of 1/30 second and the elapsed time. The
 twelve constant builds load it from a cell that the runtime writes on each frame, as the water clock does. The
 cave light increment is scaled for each call and restored. The `arceus-world-timers` line confirms it. With the
 census on, `arceus-cadence: world_minutes` lines show the day clock, which should advance about five minutes in
@@ -94,7 +117,7 @@ It only observes.
 ## Capture fix
 
 The capture director at `main+180C338` counts its waiting stages in calls. It runs once per rendered frame, so at
-120 FPS a field catch took about 3.0 seconds against 6.1 at 30 FPS. With a target rate, `SNX_ARCEUS_CAPTURE_FIX=1`
+120 FPS a field catch took about 3.0 seconds against 6.1 at 30 FPS. The default-on `SNX_ARCEUS_CAPTURE_FIX`
 keeps a sum of frame steps for each capture object. In stages 3, 5, 7, 8, 9, 14 and 16, a call only counts the
 stage timer at `+1DC` down once a whole 1/30 second has built up. Otherwise the timer is raised by one before the
 call and put back after it, so the call leaves it unchanged. Stage 8 moves from that timer, so its motion updates
@@ -108,8 +131,7 @@ capped at one second. The `arceus-capture-fix` line confirms the fix.
 ## Battle sequence fix
 
 Battle effect sequences, the `.wbin` player whose update is `main+9DBEAC`, add their speed at `+F0` to the frame at
-`+E8` once per call, so captures in battle and battle moves ran four times fast at 120 FPS. With a target rate,
-`SNX_ARCEUS_BATTLE_SEQUENCE_FIX=1` passes speed times 30 times the elapsed time for the call and puts the speed
+`+E8` once per call, so captures in battle and battle moves ran four times fast at 120 FPS. The default-on `SNX_ARCEUS_BATTLE_SEQUENCE_FIX` passes speed times 30 times the elapsed time for the call and puts the speed
 back after it. The step is cut so the frame lands exactly on each whole frame, because the commands of a sequence
 end on exact float compares. Each call processes the elapsed budget through as many whole-frame boundary updates
 as needed, up to 32 updates. A fractional tail waits for the next rendered update so command callbacks are not
@@ -121,7 +143,7 @@ the skipped calls and the speeds seen.
 
 The map cursors at `main+120F1F4` (field map) and `main+1245DB8` (world map) add stick times speed to the cursor
 position once per call, and count held frames in two counters up to 9, so the fast-travel cursor ran four times
-fast at 120 FPS. With a target rate, `SNX_ARCEUS_MAP_CURSOR_FIX=1` scales the speed by the elapsed time over 1/30
+fast at 120 FPS. The default-on `SNX_ARCEUS_MAP_CURSOR_FIX` scales the speed by the elapsed time over 1/30
 second for the call and restores it, and lets the counters rise only once a whole 1/30 second has built up. The
 `arceus-map-cursor` line says how many of the two cursors it covers.
 
@@ -129,15 +151,14 @@ second for the call and restores it, and lets the counters rise only once a whol
 
 The gravity probe showed that the airborne branch of `main+198D7E4` runs once per rendered frame and adds gravity
 times a factor, a rate and 1/30 second to the velocity on each call, so falls accelerated at FPS/30 times gravity.
-With a target rate, `SNX_ARCEUS_GRAVITY_FIX=1` makes that constant the negated frame step: the MOV/MOVK pair at
+The default-on `SNX_ARCEUS_GRAVITY_FIX` makes that constant the negated frame step: the MOV/MOVK pair at
 `main+198DA8C` loads it from the frame-step cell of the world timers. The cell setup is now shared by every fix
 that loads it, and the first one maps it. The `arceus-gravity-fix` line confirms the fix.
 
 ## Movement fix
 
 With only gravity on the elapsed time, sideways motion in the air still ran four times fast against the fall,
-because other character movement steps add acceleration times 1/30 once per call. With a target rate,
-`SNX_ARCEUS_MOVEMENT_FIX=1` makes nine of those constants load the frame step from the same cell. Each is a
+because other character movement steps add acceleration times 1/30 once per call. The default-on `SNX_ARCEUS_MOVEMENT_FIX` makes nine of those constants load the frame step from the same cell. Each is a
 MOV/MOVK pair of plus or minus 1/30:
 
 | Bit | Site | Owner |
@@ -159,7 +180,7 @@ nine are on. The `arceus-movement-fix` line gives the number installed and the m
 
 The common fade at `main+C21490`, in its linear color mode, adds one to the frame at `+538` and the delta at `+550`
 to the color at `+540` on each active call, so fades ran four times fast at 120 FPS: an eight-frame fade ended in
-67 ms. With a target rate, `SNX_ARCEUS_FADE_FIX=1` makes each call add the delta times the elapsed time times 30.
+67 ms. The default-on `SNX_ARCEUS_FADE_FIX` makes each call add the delta times the elapsed time times 30.
 The frame only advances once a whole 1/30 second has built up, by staging `+538` one lower before the call. The
 call that completes the last frame adds only the share up to the end, so a fade-out does not overshoot while it
 waits to finish, and the authored delta is put back after each call unless the call replaced it. The fraction is
@@ -180,7 +201,7 @@ measured frame step, whatever the rate. The shared step keeps its rules: it is n
 
 The Sneasler wall climb mover, `main+25540E8`, moves the climber by its direction times the climb speed divided by
 30 on each call. That is a fixed distance per rendered frame, so at 120 FPS Sneasler climbed four times as fast.
-With a target rate, `SNX_ARCEUS_CLIMB_STEP=1` (or `2`, below) replaces its `FMOV #30` and `FDIV` at `+2F4` with a
+By default, `SNX_ARCEUS_CLIMB_STEP=2`; setting it to `1` replaces its `FMOV #30` and `FDIV` at `+2F4` with a
 load of the frame step and a multiply, so each call moves speed times the elapsed time. The patch makes room by
 storing the `+D20` copy with a second `STUR` instead of an `LDP`/`STP` pair. It checks the function, the speed load
 and all twelve words it replaces, and refuses otherwise.
@@ -200,8 +221,7 @@ checks the state test, the count's load, add and store, and the compare that end
 
 After a jump up the wall, the ride script waits on `climbingJumpWaitCount`. The script runs on the game's Lua 5.3
 VM and sets that bound field, `+F4` of the object its `RideNyuuraStateContext` userdata points to, to 15, then
-counts it down by one each update. At 120 FPS the wait took 0.125 second instead of 0.5. With a target rate,
-`SNX_ARCEUS_WALL_JUMP_FIX=1` wraps `lua_tointegerx` (`main+50BA0`). When the ride's field setter (the C closure at
+counts it down by one each update. At 120 FPS the wait took 0.125 second instead of 0.5. The default-on `SNX_ARCEUS_WALL_JUMP_FIX` wraps `lua_tointegerx` (`main+50BA0`). When the ride's field setter (the C closure at
 `main+2335E5C`, from `main+2331B64`) converts the value of a write to that key, and the write steps the count down
 by one, the conversion returns the old value unless the call completes a whole 1/30 second. The fraction is kept
 for each object, up to four. Any other write, such as the set to 15, starts it over.
@@ -210,7 +230,7 @@ Climbing over a ledge onto the ground is driven by the ride state script. The sc
 `EndClimbing` (`main+2553EE0`) with type 0, then moves Sneasler up and over the top by setting its position once per
 script update, waiting 6 updates and then moving over 15. It ends with `EndClimbingEnd` (`main+2554008`). The script
 runs once per rendered frame through `RideNyuuraStatePreUpdate` (`main+26163E0`) and `PostUpdate` (`main+2616AB0`),
-so the move took 175 ms at 120 FPS instead of 700. With a target rate, `SNX_ARCEUS_LEDGE_FIX=1` wraps all four. The
+so the move took 175 ms at 120 FPS instead of 700. The default-on `SNX_ARCEUS_LEDGE_FIX` wraps all four. The
 state object whose script calls `EndClimbing(0)` owns a window until `EndClimbingEnd`, another end type of the same
 controller, or 2 seconds. In the window its updates run only on calls that complete a whole 1/30 second. A skipped
 update returns at once, as both functions do when no script is bound. A PostUpdate follows the PreUpdate of the same
@@ -228,13 +248,13 @@ on the ride from any other caller ends the steering, so movement from elsewhere 
 
 At capped horizontal speed a fall takes its vertical term from the queue that `main+19843A0` fills: it holds one
 -g x factor x 1/30 contribution, added to the velocity once per call, and the call runs once per rendered frame. With
-a target rate, `SNX_ARCEUS_CAPPED_FALL_FIX=1` (or bit 9 of `SNX_ARCEUS_MOVEMENT_SITES` with the movement fix on)
+The default-on `SNX_ARCEUS_CAPPED_FALL_FIX` (or bit 9 of `SNX_ARCEUS_MOVEMENT_SITES` with the movement fix on)
 corrects that contribution on a new queue entry to the elapsed step, for the player and the five ride classes whose
 slots point at the shared consumer `main+198D7E4`. Other classes and unchanged queues keep their values.
 
 The same function queues an air steering increment, direction x config x stick at `+6F0`, which the consumer also
 adds to the velocity once. The script native at `main+1FF4F44`, and for one ride class `main+252B974`, call it once
-per frame, so air acceleration doubled at 60 FPS and quadrupled at 120. `SNX_ARCEUS_AIR_STEERING_FIX=1` scales a new
+per frame, so air acceleration doubled at 60 FPS and quadrupled at 120. The default-on `SNX_ARCEUS_AIR_STEERING_FIX` scales a new
 steering entry by the step over 1/30 second. At 30 FPS or slower nothing is written. Both switches share one wrapper on
 `main+19843A0`, and `arceus-capped-fall` and `arceus-air-steering-fix` lines count what they change. With movement
 bit 1 on, which already loads the frame step into the same gravity term, the capped fall correction stays off with a
@@ -245,8 +265,7 @@ warning and air steering still installs. Test
 
 The capture stage countdown and the map cursor's held-frame counters tick once per 1/30 second of built-up time, but
 dropped the whole remainder when one step held more than a tick. After a 100 ms frame one tick was used and about
-67 ms lost, so after slow or uneven frames these timers fell behind for good. With a target rate,
-`SNX_ARCEUS_TIMER_CARRY_FIX=1` keeps the remainder, capped at one second, and later calls catch up one tick at a
+67 ms lost, so after slow or uneven frames these timers fell behind for good. The default-on `SNX_ARCEUS_TIMER_CARRY_FIX` keeps the remainder, capped at one second, and later calls catch up one tick at a
 time. No game call is replayed. Test `arceus_clock` runs 300 frames of 8 to 40 ms with 100 ms stalls and checks that
 the ticks equal the elapsed time over 1/30 with the exact remainder.
 
@@ -254,8 +273,7 @@ the ticks equal the elapsed time over 1/30 with the exact remainder.
 
 The AI context scheduler `main+1050E00` adds 1 to every script context's frame count at `+88` per pass, and it runs
 once per rendered frame. Wild Pokémon vigilance, hunger, sleep, look-around waits and AI turns read that count, so at
-60 FPS they ran twice as fast: wild Pokémon noticed the player twice as quickly. With a target rate,
-`SNX_ARCEUS_AI_TICK_FIX=1` makes a pass add 1 only once a 1/30 second has built up for that scheduler, else 0. The count
+60 FPS they ran twice as fast: wild Pokémon noticed the player twice as quickly. The default-on `SNX_ARCEUS_AI_TICK_FIX` makes a pass add 1 only once a 1/30 second has built up for that scheduler, else 0. The count
 travels in a callee-saved vector lane of the calling thread, and eight words at `main+1051860` are rewritten in place,
 so no shared state is needed. The AI Turn and TurnKey actions hold on passes without a tick. `arceus-ai-tick` lines count
 the passes and ticks.
@@ -264,7 +282,7 @@ the passes and ticks.
 
 The orientation helper `main+1727DF4` turns a character by a slerp from its current orientation toward the target
 with a fixed fraction of the remaining angle per call, and the player and ride updates call it once per rendered frame,
-so turning eased faster with the frame rate. With a target rate, `SNX_ARCEUS_TURN_FIX=1` changes the duration argument
+so turning eased faster with the frame rate. The default-on `SNX_ARCEUS_TURN_FIX` changes the duration argument
 so the fraction becomes 1 - (1 - t)^(step x 30), the share a 30 FPS sequence covers in the same time. The 1/30 that two
 callers pass as a duration stays as it is, and AI turns go through another function, so nothing is scaled twice.
 
@@ -273,8 +291,7 @@ callers pass as a duration stays as it is, and AI turns go through another funct
 A scrolling UI list, the satchel's item list for example, keeps a scroller at `+7F8` that `main+272F150` updates once
 per rendered frame. A one-row scroll is an ease counted in updates, and when it ends while the direction is still held
 the list starts a free scroll that adds a speed per update until release. At 30 FPS the ease lasts longer than a tap.
-At 150 FPS it ends inside the tap, so a single D-pad press ran the free scroll and jumped five to seven rows. With a
-target rate, `SNX_ARCEUS_LIST_SCROLL_FIX=1` runs the scroller only on frames that complete a 1/30 second tick, so the
+At 150 FPS it ends inside the tap, so a single D-pad press ran the free scroll and jumped five to seven rows. The default-on `SNX_ARCEUS_LIST_SCROLL_FIX` runs the scroller only on frames that complete a 1/30 second tick, so the
 ease takes its 30 FPS time. Every list that scrolls through this function steps 30 times a second, which can look less
 smooth than the frame rate. Test `arceus_clock` checks that a 100 ms tap scrolls one row at 30, 60, 150 and 300 FPS.
 
