@@ -100,8 +100,9 @@ found).
 With `probe` or `taa`. The camera vectors are right for what stands still. An object that moves gets its own:
 
 - Each G-buffer draw binds the object's constant block (bank 6, its world matrix at +0). The matrix is kept in a
-  table, keyed by the lower of the two slots the game writes the block to in turn.
-- When the matrix differs from the one kept a frame ago, the draw is made once more right after the game's: the
+  table by the block's address. The game writes a block to two slots in turn, one bound size apart, and all blocks
+  take the same turn as the camera's block. Last frame's matrix is the entry of the other slot.
+- When the matrix differs from that one, and by less than 5 units of position, the draw is made once more right after the game's: the
   game's vertex program and state, a fragment program of ours, the vector target as its only colour target and the
   scene depth tested for equal and not written. So it covers the pixels the object owns.
 - The fragment program takes the pixel and its depth and one matrix per draw, composed in double: this frame's clip
@@ -115,6 +116,6 @@ stage, draws under a predicate, draws without depth write unless they test for e
 A skinned character gets the motion of its world matrix, not of its limbs. Each new combination of state makes one
 pipeline, compiled when first needed.
 
-`arceus-temporal-objects` every 600 frames: G-buffer draws with an object block, new, moved, drawn again, over the
-cap, not an affine matrix, pipelines made.
+`arceus-temporal-objects` every 600 frames: G-buffer draws with an object block, without a block a frame ago,
+jumped too far, moved, drawn again, over the cap, not an affine matrix, pipelines made.
 

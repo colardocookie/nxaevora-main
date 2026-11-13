@@ -90,7 +90,7 @@ static struct {
     VkShaderModule object_fs;
     u32 object_at, object_frame, object_draws;
     u64 object_seen, object_moved, object_drawn, object_capped, object_new, object_odd, object_pipelines,
-        object_frames;
+        object_frames, object_far;
     u64 other_cameras;
     u32 jitter_index, jitter_size, camera_read; /* camera_read: the most bytes a program read of the block */
     VkBuffer jitter_buffer;
@@ -503,7 +503,7 @@ static float half_float(u16 h) {
 static void stats_log(void) {
     static const char* const names[3] = {"near", "mid", "far"};
     unsigned n[3] = {0, 0, 0}, wrong[3] = {0, 0, 0}, wrong_still[3] = {0, 0, 0}, sky = 0, off = 0, changed = 0;
-    unsigned shown = 0, shown_fine[2] = {0, 0};
+    unsigned shown = 0, shown_fine[2] = {0, 0}, still_fine[2] = {0, 0};
     const int taa = g_t.mode == MODE_TAA;
     double length = 0, longest = 0;
     for (u32 i = 0; i < STATS_W * STATS_H; i++) {
@@ -529,6 +529,8 @@ static void stats_log(void) {
         shown_fine[0] += marks >> 3 & 1;
         shown_fine[1] += marks >> 4 & 1;
         wrong_still[band] += still > STATS_ERROR;
+        still_fine[0] += still > 0.05f;
+        still_fine[1] += still > 0.02f;
         length += vector;
         if (vector > longest) longest = vector;
     }
@@ -556,6 +558,11 @@ static void stats_log(void) {
                                                                : " %s n=%u wrong=%.1f%% without_vectors=%.1f%%",
                        names[b], n[b], n[b] ? 100.0 * wrong[b] / n[b] : 0.0,
                        n[b] ? 100.0 * wrong_still[b] / n[b] : 0.0);
+    /* the probe: the frame as drawn against the one before at the finer steps too, the base for the same shares
+       of the resolved picture */
+    if (!taa && at < (int)sizeof bands)
+        snprintf(bands + at, sizeof bands - (size_t)at, " frame_to_frame_above_0.05=%.1f%% above_0.02=%.1f%%",
+                 all ? 100.0 * still_fine[0] / all : 0.0, all ? 100.0 * still_fine[1] / all : 0.0);
     LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px vector_max=%.2f px sky=%u off_screen=%u%s\n",
         (unsigned long long)g_t.stats_run, all ? length / all : 0.0, longest, sky, off, bands);
 }
@@ -634,17 +641,18 @@ void vk_temporal_draw(GpuChannel* ch, const VkSh* fs0, Surf* const* sampled, int
 /* Before the draw whose fragment program is the scene colour's first reader: the probe's passes. Once a frame. */
 int vk_temporal_enabled(void) { return temporal_on(); }
 
-/* Object vectors. The world matrix of each object block that a G-buffer draw binds is kept in a table. The game
-   writes a block to two slots in turn, so the key is the lower slot of the pair. The slot beside it is not read: the
-   game may have filled it for the next frame already. */
+/* Object vectors. The world matrix of each object block that a G-buffer draw binds is kept in a table by its
+   address. The game writes a block to two slots in turn, one bound size apart, and every block of a frame takes the
+   same turn as the camera's. So last frame's matrix is the table's entry for the other slot, the one the camera's
+   step points back to. The slot itself is not read: the game may have filled it for the next frame already. */
 typedef struct {
     u64 key;
-    u32 at, before_at; /* the frames world and before were taken in */
-    float world[16], before[16];
+    u32 at; /* the frame world was taken in */
+    float world[16];
 } Object;
 static Object g_objects[OBJECTS];
 
-static Object* object_slot(u64 key, u32 frame) {
+static Object* object_slot(u64 key, u32 frame, int make) {
     Object* oldest = NULL;
     for (u32 i = 0; i < 8; i++) {
         Object* o = &g_objects[((key >> 8) * 0x9E3779B1u + i) % OBJECTS];
@@ -652,7 +660,7 @@ static Object* object_slot(u64 key, u32 frame) {
         if (!oldest || o->at < oldest->at) oldest = o;
     }
     /* a slot not used for ten seconds may go */
-    if (oldest->key && oldest->at + 600 > frame) return NULL;
+    if (!make || (oldest->key && oldest->at + 600 > frame)) return NULL;
     memset(oldest, 0, sizeof *oldest);
     oldest->key = key;
     return oldest;
@@ -690,13 +698,15 @@ static void objects_log(u32 frame) {
     g_t.object_frame = frame;
     g_t.object_draws = 0;
     if (++g_t.object_frames % 600) return;
-    LOG("arceus-temporal-objects: in 600 frames, G-buffer draws with an object block %llu, new %llu, moved %llu, "
-        "drawn again %llu, over the cap of %d a frame %llu, not an affine matrix %llu, pipelines made %llu\n",
-        (unsigned long long)g_t.object_seen, (unsigned long long)g_t.object_new,
+    LOG("arceus-temporal-objects: in 600 frames, G-buffer draws with an object block %llu, without a block a frame "
+        "ago %llu, jumped too far %llu, moved %llu, drawn again %llu, over the cap of %d a frame %llu, not an affine "
+        "matrix %llu, pipelines made %llu\n",
+        (unsigned long long)g_t.object_seen, (unsigned long long)g_t.object_new, (unsigned long long)g_t.object_far,
         (unsigned long long)g_t.object_moved, (unsigned long long)g_t.object_drawn, OBJECT_DRAWS,
         (unsigned long long)g_t.object_capped, (unsigned long long)g_t.object_odd,
         (unsigned long long)g_t.object_pipelines);
     g_t.object_seen = g_t.object_new = g_t.object_moved = g_t.object_drawn = g_t.object_capped = g_t.object_odd = 0;
+    g_t.object_far = 0;
 }
 
 int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* out) {
@@ -713,21 +723,28 @@ int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* o
         g_t.object_odd++;
         return 0;
     }
-    /* the pair's lower slot, when the size is a power of two (it is 0x200 for the blocks seen) */
-    const u64 key = size & (size - 1) ? address : address & ~(2ull * size - 1);
-    Object* o = object_slot(key, frame);
+    Object* o = object_slot(address, frame, 1);
     if (!o) return 0;
-    if (o->at != frame) { /* several draws may bind one block: the first of a frame moves the matrices on */
-        memcpy(o->before, o->world, sizeof o->before);
-        o->before_at = o->at;
-        memcpy(o->world, world, sizeof o->world);
-        o->at = frame;
-    }
-    if (!o->before_at || o->before_at + 1 != frame) {
+    memcpy(o->world, world, sizeof o->world);
+    o->at = frame;
+    /* the slot this block had a frame ago: the camera's block went the same way */
+    if (!g_t.camera_address[0] || !g_t.camera_address[1]) return 0;
+    const Object* was_at =
+        object_slot(g_t.camera_address[0] > g_t.camera_address[1] ? address - size : address + size, frame, 0);
+    if (!was_at || was_at->at + 1 != frame) {
         g_t.object_new++;
         return 0;
     }
-    if (!memcmp(o->before, world, sizeof world) || !g_t.have_before) return 0;
+    if (!memcmp(was_at->world, world, sizeof world) || !g_t.have_before) return 0;
+    /* another object may have taken the slot: a jump of more than 5 units in a frame is not a move */
+    {
+        const float dx = world[12] - was_at->world[12], dy = world[13] - was_at->world[13],
+                    dz = world[14] - was_at->world[14];
+        if (!(dx * dx + dy * dy + dz * dz < 25.0f)) {
+            g_t.object_far++;
+            return 0;
+        }
+    }
     g_t.object_moved++;
     if (g_t.object_draws >= OBJECT_DRAWS) {
         g_t.object_capped++;
@@ -746,7 +763,7 @@ int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* o
     for (int i = 0; i < 16; i++) {
         inverse[i] = (double)g_t.inverse[i];
         now[i] = (double)world[i];
-        was[i] = (double)o->before[i];
+        was[i] = (double)was_at->world[i];
         before[i] = (double)g_t.before[i];
     }
     if (!affine_inverse_d(now, back)) {
