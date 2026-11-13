@@ -525,6 +525,13 @@ static void stats_log(void) {
        colour is far from the frame's own: trails behind what moves show there. frame_to_frame is the share of
        pixels that differ from the frame before as drawn: with a still camera, the jitter at work on the edges.
        shown_frame_to_frame is the same for the resolved picture, where the jitter should be gone. */
+    if (taa && g_t.view == 4) {
+        /* the jittered frame alone: nothing is resolved, so only the frame as drawn has a number */
+        LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px frame_to_frame=%.1f%% (view 4: no resolve, no "
+            "numbers for the shown picture)\n",
+            (unsigned long long)g_t.stats_run, all ? length / all : 0.0, all ? 100.0 * changed / all : 0.0);
+        return;
+    }
     if (taa)
         at += snprintf(bands, sizeof bands,
                        " frame_to_frame=%.1f%% shown_frame_to_frame=%.1f%% above_0.05=%.1f%% above_0.02=%.1f%%",
