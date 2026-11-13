@@ -15,9 +15,12 @@ int g_opt_fps;
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 static unsigned waza_dependency_warnings;
+static unsigned low_fps_skip_logs;
 void logf_(int level, const char* fmt, ...) {
     if (level == 0 && strstr(fmt, "arceus-waza-shot: enabled without WAZA_OBJECT_FIX"))
         waza_dependency_warnings++;
+    if (level == 1 && strstr(fmt, "arceus-clock: timing layer skipped at fps_limit="))
+        low_fps_skip_logs++;
 }
 static u64 host_ns = 1000000000;
 u64 plat_ns(void) { return host_ns; }
@@ -189,12 +192,34 @@ static void test_defaults_on(void) {
     };
     for (unsigned i = 0; i < sizeof all / sizeof all[0]; i++) unset_flag(all[i]);
     int saved_fps = g_opt_fps;
+    static const int runtime_limits[] = {SNX_FPS_GAME, 30, 31, 60, 0};
+    for (unsigned i = 0; i < sizeof runtime_limits / sizeof runtime_limits[0]; i++) {
+        const int fps = runtime_limits[i];
+        g_opt_fps = fps;
+        main_base = 0;
+        timing_enabled = clocks_installed = experimental = tracing = 0;
+        low_fps_skip_logs = 0;
+        ArceusClockConfig rate = arceus_clock_config(g_opt_fps);
+        const int skip = fps == SNX_FPS_GAME || (fps > 0 && fps <= 30);
+        assert(rate.master && !rate.invalid && !rate.write_fps && rate.skip_runtime_limit == skip);
+        if (skip) {
+            arceus_clock_init();
+            assert(g_opt_fps == fps && main_base == 0 && !clocks_installed && !timing_enabled);
+            assert(low_fps_skip_logs == 1);
+        } else {
+            arceus_clock_config_apply(rate);
+            assert(g_opt_fps == fps && clocks_installed && timing_enabled);
+            assert(low_fps_skip_logs == 0);
+        }
+    }
     g_opt_fps = SNX_FPS_GAME;
+    main_base = 0;
+    timing_enabled = clocks_installed = experimental = tracing = 0;
+    low_fps_skip_logs = 0;
     ArceusClockConfig config = arceus_clock_config(g_opt_fps);
-    assert(config.master && !config.invalid && config.mode == 0 && !config.write_fps);
+    assert(config.master && !config.invalid && config.mode == 0 && !config.write_fps && config.skip_runtime_limit);
     assert(config.initial_ns == (UINT64_C(1000000000) + 15) / 30);
-    arceus_clock_config_apply(config);
-    assert(g_opt_fps == SNX_FPS_GAME && clocks_installed && timing_enabled);
+    assert(g_opt_fps == SNX_FPS_GAME && !clocks_installed && !timing_enabled);
     const char* const enabled[] = {
         "SNX_ARCEUS_PHYSICS_TIMESTEP_FIX", "SNX_ARCEUS_NAVIGATION_TIMESTEP_FIX", "SNX_ARCEUS_WORLD_TIMERS_FIX",
         "SNX_ARCEUS_GRAVITY_FIX", "SNX_ARCEUS_CAPTURE_FIX", "SNX_ARCEUS_BATTLE_SEQUENCE_FIX",
@@ -231,14 +256,15 @@ static void test_defaults_on(void) {
     assert(camera_speed_value(&invalid) == 1.0f && !invalid);
     flag("SNX_ARCEUS_TARGET_FPS", "120");
     config = arceus_clock_config(g_opt_fps);
-    assert(!config.invalid && config.write_fps && config.target_fps == 120 && config.initial_ns == 8333333);
+    assert(!config.invalid && !config.skip_runtime_limit && config.write_fps && config.target_fps == 120 &&
+           config.initial_ns == 8333333);
     flag("SNX_ARCEUS_TARGET_FPS", "");
     g_opt_fps = 120;
     config = arceus_clock_config(g_opt_fps);
-    assert(!config.write_fps && config.initial_ns == 8333333);
+    assert(!config.write_fps && !config.skip_runtime_limit && config.initial_ns == 8333333);
     g_opt_fps = 0;
     config = arceus_clock_config(g_opt_fps);
-    assert(!config.write_fps && config.initial_ns == ARCEUS_UNLOCKED_INITIAL_STEP_NS);
+    assert(!config.write_fps && !config.skip_runtime_limit && config.initial_ns == ARCEUS_UNLOCKED_INITIAL_STEP_NS);
     flag("SNX_ARCEUS_MOVEMENT_SITES", "7fc");
     assert(movement_mask_value() == 0x7fcul && (movement_mask_value() & 0x1fcul) == 0x1fcul &&
            (movement_mask_value() & 0x200ul));
