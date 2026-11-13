@@ -37,6 +37,13 @@ blocks are logged too, for draws 0, 1, 2 and every 16th, up to eight a pass:
     arceus-pass-blocks: present=N pass=K draw=D vs=HASH b0=ADDR:SIZE b1=ADDR:SIZE ...
     arceus-pass-block: present=N pass=K draw=D b1 words=<up to 0x140 bytes as 32-bit words in hex>
 
+For banks 4, 6 and 9 (camera, object and per-draw data) the two neighbouring slots, one bound size below and above,
+are logged as well:
+
+    arceus-pass-pair: present=N pass=K draw=D b4 side=minus at=ADDR words=...
+
+The engine writes these blocks to two addresses in turn, so the other slot still holds last frame's block.
+
 The first line lists every bound block with its guest address and size in bytes. The second gives the first 0x140
 bytes of up to twelve blocks of at least 0x40 bytes. The two frames in a row let a block that keeps last frame's world
 matrix beside this frame's be seen: the same draw's words in the second frame repeat a matrix of the first.

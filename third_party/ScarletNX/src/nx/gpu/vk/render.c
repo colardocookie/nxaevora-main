@@ -819,6 +819,18 @@ static void census_blocks(const GpuChannel* ch, const CensusPass* p, u32 pass, c
         for (u32 w = 0; w < size / 4; w++) at += snprintf(line + at, sizeof line - (size_t)at, "%08x", gmem_r32(a + 4 * w));
         LOG("arceus-pass-block: present=%u pass=%u draw=%u b%u words=%s\n", g_vk_present, pass, p->draws - 1, b, line);
         dumped++;
+        /* The camera, object and per-draw blocks take two addresses in turn, one bound size apart. The other slot
+           then still holds last frame's block: both neighbours are logged, read without touching the trackers. */
+        for (int side = 0; side < 2 && (b == 4 || b == 6 || b == 9); side++) {
+            const u64 other = side ? a + ch->cbind_size[ST_VS][b] : a - ch->cbind_size[ST_VS][b];
+            const u8* bytes = gmem_host(other, size);
+            at = 0;
+            line[0] = 0;
+            for (u32 w = 0; bytes && w < size / 4; w++)
+                at += snprintf(line + at, sizeof line - (size_t)at, "%08x", snx_ld_le32(bytes + 4 * w));
+            LOG("arceus-pass-pair: present=%u pass=%u draw=%u b%u side=%s at=%llx words=%s\n", g_vk_present, pass,
+                p->draws - 1, b, side ? "plus" : "minus", (unsigned long long)other, bytes ? line : "unmapped");
+        }
     }
 }
 /* one draw: its targets as the pass has them, what it writes, its programs and the fragment program's textures */
