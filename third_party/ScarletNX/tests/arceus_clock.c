@@ -183,6 +183,7 @@ static void test_defaults_on(void) {
         "SNX_ARCEUS_LIST_SCROLL_FIX", "SNX_ARCEUS_WALL_JUMP_FIX", "SNX_ARCEUS_LEDGE_FIX",
         "SNX_ARCEUS_CLIMB_STEP", "SNX_ARCEUS_MOVEMENT_FIX", "SNX_ARCEUS_CAPPED_FALL_FIX",
         "SNX_ARCEUS_AIR_STEERING_FIX", "SNX_ARCEUS_RIDE_SWAP_FIX", "SNX_ARCEUS_MOVEMENT_SITES",
+        "SNX_ARCEUS_RIDE_RAMP_FIX",
         "SNX_ARCEUS_CAMERA_SPEED",
         "SNX_ARCEUS_CLOCK_TRACE", "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_CAMERA_TRACE",
         "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE",
@@ -228,7 +229,7 @@ static void test_defaults_on(void) {
         "SNX_ARCEUS_TIMER_CARRY_FIX", "SNX_ARCEUS_AI_TICK_FIX", "SNX_ARCEUS_TURN_FIX",
         "SNX_ARCEUS_LIST_SCROLL_FIX", "SNX_ARCEUS_WALL_JUMP_FIX", "SNX_ARCEUS_LEDGE_FIX",
         "SNX_ARCEUS_MOVEMENT_FIX", "SNX_ARCEUS_CAPPED_FALL_FIX", "SNX_ARCEUS_AIR_STEERING_FIX",
-        "SNX_ARCEUS_RIDE_SWAP_FIX",
+        "SNX_ARCEUS_RIDE_SWAP_FIX", "SNX_ARCEUS_RIDE_RAMP_FIX",
         "SNX_ARCEUS_DIRECT_MOVE_FIX", "SNX_ARCEUS_FIELD_WAZA_FIX", "SNX_ARCEUS_WAZA_OBJECT_FIX"
     };
     for (unsigned i = 0; i < sizeof enabled / sizeof enabled[0]; i++)
@@ -236,6 +237,8 @@ static void test_defaults_on(void) {
     assert(waza_shot_mode_value() == 2);
     /* Bits 2 to 8 and bit 10, the player's horizontal position step. */
     assert(movement_mask_value() == 0x5fcul && climb_step_value() == 2);
+    assert(ride_ramp_sites[0].owner == 0x257af70 && ride_ramp_sites[0].site == 0x257c9f4 &&
+           !ride_ramp_sites[0].negative);
     assert(horizontal_move_site.owner == 0x1a0d9dc && horizontal_move_site.site == 0x1a0da20 &&
            !horizontal_move_site.negative);
     /* The script tick: unset is the Braviary bit and the throw window. 0 turns each off, and a

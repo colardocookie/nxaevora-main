@@ -44,6 +44,7 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | `SNX_ARCEUS_CAPPED_FALL_FIX` | on | Disables the capped-fall correction. |
 | `SNX_ARCEUS_AIR_STEERING_FIX` | on | Leaves air steering at its authored rate. |
 | `SNX_ARCEUS_RIDE_SWAP_FIX` | on | Leaves ride-swap countdowns at their authored rate. |
+| `SNX_ARCEUS_RIDE_RAMP_FIX` | on | Leaves the ride controller's angle ramp at its authored rate. |
 | `SNX_ARCEUS_DIRECT_MOVE_FIX` | on | Leaves the direct ground-move step at its authored rate. |
 | `SNX_ARCEUS_FIELD_WAZA_FIX` | on | Leaves field-move countdowns and turn input at their authored rates. |
 | `SNX_ARCEUS_WAZA_OBJECT_FIX` | on | Leaves attack-object timers at their authored rates; if shot fix stays on, logs one warning. |
@@ -323,6 +324,14 @@ The ride controller's update `main+2537B28` runs once per rendered frame and cou
 the swap that takes about 0.6 s at 30 FPS took 0.17 to 0.24 s unlocked. The default-on `SNX_ARCEUS_RIDE_SWAP_FIX`
 lets the waits count 30 times a second: on the other frames a running count goes in one higher and comes out as it was.
 A count the call did not touch is left as the game set it. `arceus-ride-swap` lines log counts that start or end.
+
+## Ride angle ramp
+
+The ride controller update `main+257AF70` advances an angle at `+324` by a parameter times 1/30 on every call, up to
+the limit at `+690`. The default-on `SNX_ARCEUS_RIDE_RAMP_FIX` makes the constant at `main+257C9F4` load the frame
+step, so the ramp keeps its authored rate and its limit. Nothing else in the function is changed. It refuses unless
+the next use of the constant is the float move it expects. The fix was on in 58 play sessions at 60, 120 and
+unlocked frame rates. No session isolates it.
 
 ## Wild Pokémon attacks
 

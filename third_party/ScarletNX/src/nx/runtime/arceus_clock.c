@@ -1734,6 +1734,28 @@ static void movement_fix_init(void) {
     LOG("arceus-movement-fix: EXPERIMENT: %u of %u selected character movement sites (mask %lx) use min(1/30, elapsed), cell=%llx\n",
         sites, n, mask, (unsigned long long)frame_step_address);
 }
+/* 257AF70 advances a controller angle by param/30 up to +690 each call.
+   Change only that accumulator's step, preserving the authored rate and cap. */
+static const FrameStepSite ride_ramp_sites[] = {
+    {0x257af70,0x20d0,0xd10383ff,0x257c9f4,0,"ride angle ramp"},
+};
+static void ride_ramp_fix_init(void) {
+    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_RIDE_RAMP_FIX", 1)) return;
+    if (!clocks_installed) {
+        WARN("arceus-ride-ramp: refused without elapsed-time clocks\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    /* The constant feeds FMOV S0,W8, without changing a pointer. */
+    if (!readable(main_base + 0x257c9fc, 4) || gr32(main_base + 0x257c9fc) != 0x1e270100) {
+        WARN("arceus-ride-ramp: refused float-use guard\n");
+        return;
+    }
+    if (!frame_step_cell_init("arceus-ride-ramp")) return;
+    const unsigned sites = frame_step_sites_init(ride_ramp_sites, 1, "arceus-ride-ramp");
+    LOG("arceus-ride-ramp: EXPERIMENT: %u of 1 ride angle ramp sites use min(1/30, elapsed), cell=%llx\n",
+        sites, (unsigned long long)frame_step_address);
+}
 static void gravity_fix_init(void) {
     if (!main_base ||  !arceus_switch_enabled("SNX_ARCEUS_GRAVITY_FIX", 1)) return;
     if (!clocks_installed) {
@@ -4096,6 +4118,7 @@ void arceus_clock_post_jit(void) {
     world_timers_init();
     gravity_fix_init();
     movement_fix_init();
+    ride_ramp_fix_init();
     capped_fall_init();
     ai_tick_fix_init();
     turn_fix_init();
