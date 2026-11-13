@@ -45,6 +45,7 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | `SNX_ARCEUS_AIR_STEERING_FIX` | on | Leaves air steering at its authored rate. |
 | `SNX_ARCEUS_RIDE_SWAP_FIX` | on | Leaves ride-swap countdowns at their authored rate. |
 | `SNX_ARCEUS_RIDE_RAMP_FIX` | on | Leaves the ride controller's angle ramp at its authored rate. |
+| `SNX_ARCEUS_CLOUD_FIX` | 2 | Leaves the sky cloud layers at their authored rates. `1` fixes three of the eight fields; `2` all eight. |
 | `SNX_ARCEUS_DIRECT_MOVE_FIX` | on | Leaves the direct ground-move step at its authored rate. |
 | `SNX_ARCEUS_FIELD_WAZA_FIX` | on | Leaves field-move countdowns and turn input at their authored rates. |
 | `SNX_ARCEUS_WAZA_OBJECT_FIX` | on | Leaves attack-object timers at their authored rates; if shot fix stays on, logs one warning. |
@@ -207,6 +208,20 @@ waits to finish, and the authored delta is put back after each call unless the c
 kept for each fade object, up to 16. A fade-in frees its slot on the call that ends it. It starts over when the fade starts again (`main+C21D00` and `main+C227BC`)
 or when the frame, duration or state differ from what the last call left. With all slots in use a call runs as
 the original. The other fade modes are unchanged. `arceus-fade` lines count the calls.
+
+## Sky clouds
+
+The sky update `main+29BFDAC` advances eight fields of the sky block once per call, so the cloud layers and their
+ground shadows moved 2 times fast at 60 FPS and 4 times at 120. `SNX_ARCEUS_CLOUD_FIX=1` makes three of them use the
+elapsed time by loading derived words of the frame-step cell: `+614` adds its parameter times minus step/10, and
+`+64C` and `+650` divide by the parameter times 30 times the step. The default, `2`, also covers `+5DC` in the same
+way and wraps the function to scale the four phase increments at `+604` to `+610` by the frame's share of 1/30 s.
+A full 1/30 s step gives the game's own values bit for bit, and a sky block that the call replaced is left alone.
+The fix patches game code only and needs nothing from the renderer.
+
+Played: at 30 FPS the clouds and their shadows look normal and at 120 FPS both were too fast. With value 1 the user
+called the clouds normal. Value 2 followed after a measurement showed five fields still stepping per call (2.04 times
+at 60 FPS, 4.08 at 120) and was on in 39 play sessions.
 
 ## Unlocked frame rate
 
