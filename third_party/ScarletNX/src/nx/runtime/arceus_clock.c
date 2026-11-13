@@ -3255,11 +3255,14 @@ static unsigned long script_tick_wanted(void) {
 }
 /* One decision per engine frame, shared by every bridge: the step, at most 1/30 s, is added
    to a budget and a tick takes 1/30 s from it. A slow frame gives one tick, never two. The
-   2 microseconds of slack let four 8333333 ns steps count as a whole tick. */
+   tick comes on the frame nearest to the moment the budget is full: on the frame that brings
+   it within half a step. Waiting for the full budget made a frame of 16.5 ms miss by a hair
+   on every second frame, so at 60 FPS the runs came 3 and 1 frames apart instead of 2 and 2. */
 static int script_tick_decide(ScriptTick* t, u64 frame, u64 step_ns) {
     if (t->decided && t->frame == frame) return t->tick;
-    t->budget += (int64_t)step_ns < SCRIPT_TICK_NS ? (int64_t)step_ns : SCRIPT_TICK_NS;
-    t->tick = t->budget >= SCRIPT_TICK_NS - 2000;
+    const int64_t step = (int64_t)step_ns < SCRIPT_TICK_NS ? (int64_t)step_ns : SCRIPT_TICK_NS;
+    t->budget += step;
+    t->tick = t->budget + step / 2 >= SCRIPT_TICK_NS;
     if (t->tick) {
         t->budget -= SCRIPT_TICK_NS;
         t->ticks++;
@@ -3310,7 +3313,7 @@ static unsigned script_tick_input(ScriptTickInput* slots, u64 context, u64 field
    was shown when it came. Before a ticked run the object is put on R1, so the script reads its own value. A
    rotation that another writer changed ends the blend. At 30 FPS nothing is written. */
 #define ROTATION_BLEND_CLASS 2
-typedef struct { u64 object, frame; int64_t elapsed, interval; int active; float from[4], to[4]; u32 shown[4]; } RotationBlend;
+typedef struct { u64 object, frame; int64_t elapsed; int active; float from[4], to[4]; u32 shown[4]; } RotationBlend;
 static RotationBlend rotation_blends[2];
 static GuestFn rotation_blend_original;
 static u64 rotation_blend_writes, rotation_blend_foreign, rotation_blend_dropped;
@@ -3336,14 +3339,23 @@ static void rotation_slerp(const float a[4], const float b[4], float t, float ou
     length = length > 0.0f ? 1.0f / sqrtf(length) : 1.0f;
     for (unsigned k = 0; k < 4; k++) out[k] *= length;
 }
-static float rotation_blend_progress(const RotationBlend* b) {
-    /* interval is the time to the next run: 1/30 s less what the tick budget already holds. */
-    const float progress = (float)((double)b->elapsed / (double)b->interval);
+/* How far the blend is on a frame without a run: the time since the script's run against
+   that time plus the time to its next run. The next run comes after as many frames of this
+   step as the tick budget still needs. Taking 1/30 s less the budget as the whole interval
+   ended the blend a frame early at 60 FPS, where the budget misses a tick by a hair on every
+   second frame, and the turn was drawn as a jump and a hold. */
+static float rotation_blend_progress(const RotationBlend* b, int64_t budget, u64 step_ns) {
+    const int64_t step = step_ns && (int64_t)step_ns < SCRIPT_TICK_NS ? (int64_t)step_ns : SCRIPT_TICK_NS;
+    /* As script_tick_decide: the run comes on the frame that brings the budget within half a step. */
+    const int64_t need = SCRIPT_TICK_NS - step / 2 - budget;
+    const int64_t frames = need > 0 ? (need + step - 1) / step : 1;
+    const double whole = (double)b->elapsed + (double)(frames * step);
+    const float progress = whole > 0.0 ? (float)((double)b->elapsed / whole) : 1.0f;
     return progress < 1.0f ? progress : 1.0f;
 }
 /* Writes the script's rotation (target) or the blended one to the transform, with the
    dirty byte as 25AB914 sets it. The transform must still hold what was written last. */
-static void rotation_blend_place(RotationBlend* b, int target) {
+static void rotation_blend_place(RotationBlend* b, int target, float progress) {
     const u64 transform = b->active ? trajectory_transform(b->object) : 0;
     if (!b->active) return;
     if (!transform || !writable(transform + 0xc0, 0x24)) {
@@ -3356,7 +3368,6 @@ static void rotation_blend_place(RotationBlend* b, int target) {
             b->active = 0;
             return;
         }
-    const float progress = rotation_blend_progress(b);
     float q[4];
     if (target || progress >= 1.0f) memcpy(q, b->to, sizeof q);
     else rotation_slerp(b->from, b->to, progress, q);
@@ -3387,7 +3398,10 @@ static void rotation_blend_bridge(u64 frame, u64 step_ns, int stage, u64 state) 
             b->frame = frame;
             b->elapsed += (int64_t)step_ns;
         }
-        rotation_blend_place(b, stage == 1);
+        rotation_blend_place(b, stage == 1, rotation_blend_progress(b, script_tick.budget, step_ns));
+        /* Before a later run the object is on the target. If that run sets no new rotation it
+           stays there. The PostUpdate of the frame that set the rotation is not a later run. */
+        if (stage == 1 && b->elapsed > 0) memcpy(b->from, b->to, sizeof b->from);
     }
 }
 /* 25AB490 (x0 object, x1 quaternion). Inside a ticked run above 30 FPS its rotation becomes
@@ -3405,12 +3419,10 @@ static void rotation_blend_set(CPU* c, u64 entry) {
         if (!rotation_blends[k].active) slot = &rotation_blends[k];
     if (blend && slot) {
         for (unsigned k = 0; k < 4; k++) to[k] = guest_float(argument + 4 * k);
-        /* The run put the object on the old target. Shown before that was the blended value. */
-        if (slot->object == object && slot->active) {
-            const float progress = rotation_blend_progress(slot);
-            if (progress >= 1.0f) memcpy(from, slot->to, sizeof from);
-            else rotation_slerp(slot->from, slot->to, progress, from);
-        } else
+        /* A new rotation only comes in a run, and before the run the object was put on the old
+           target. So the new blend starts from there. */
+        if (slot->object == object && slot->active) memcpy(from, slot->to, sizeof from);
+        else
             for (unsigned k = 0; k < 4; k++) from[k] = guest_float(transform + 0xc0 + 4 * k);
     }
     pm_unlock(&script_tick_lock);
@@ -3421,8 +3433,6 @@ static void rotation_blend_set(CPU* c, u64 entry) {
         slot->object = object;
         slot->frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
         slot->elapsed = 0;
-        slot->interval = SCRIPT_TICK_NS - script_tick.budget - 2000;
-        if (slot->interval < 1000000) slot->interval = 1000000;
         memcpy(slot->from, from, sizeof from);
         memcpy(slot->to, to, sizeof to);
         slot->active = 1;

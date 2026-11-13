@@ -1555,6 +1555,35 @@ static void test_rotation_blend(void) {
         const float seconds = (float)(300 * (steps[r][0] + steps[r][1])) / 1e9f;
         assert(fabsf(blend_target - 0.3f * seconds) < 0.011f);
     }
+    /* Real frame times of a 60 FPS session, a step just under 1/60 s, 72 and 90 FPS, and real
+       unlocked frame times (about 185 FPS, uneven). The tick budget used to miss a tick by a
+       hair on some frames at 60 FPS. The drawn turn must move on every frame by 0.6 to 1.5 of
+       the frame's share, never back and never twice the same. With the uneven unlocked times
+       the next run cannot be told to the frame, so a few frames move less or more. */
+    static const u64 uneven[24] = {4960100, 5789000, 5375700, 6016100, 5508600, 5525300, 6322800, 5306600, 5121400,
+        5043200, 5678600, 5166500, 5051000, 5798600, 5410700, 5351200, 4817000, 5503700, 5101500, 5666500, 5717000,
+        5406700, 5092000, 5788800};
+    static const u64 sixty[24] = {16364100, 16967500, 16664300, 16735200, 16707400, 16562200, 16710600, 16710400,
+        16867000, 16200700, 16871100, 16605700, 16330200, 17052800, 16489500, 16939200, 16112400, 16784000, 17036000,
+        16528400, 16508200, 16670500, 16892700, 16645000};
+    for (unsigned mode = 0; mode < 5; mode++) {
+        blend_reset();
+        float before = 0;
+        unsigned outside = 0, frames = 0;
+        for (unsigned k = 0; k < 960; k++) {
+            const u64 ns = mode == 0 ? sixty[k % 24] : mode == 1 ? 16500000 : mode == 2 ? 13888889 :
+                           mode == 3 ? 11111111 : uneven[k % 24];
+            const float shown = blend_frame(ns);
+            if (blend_runs >= 3) {
+                const float share = (shown - before) / (0.01f * (float)ns / 33333333.0f);
+                assert(share > 0.1f && share < 1.9f);
+                outside += !(share > 0.6f && share < 1.5f);
+                frames++;
+            }
+            before = shown;
+        }
+        assert(!rotation_blend_foreign && (mode == 4 ? outside * 12 < frames : !outside));
+    }
     /* Another writer ends the blend: the host does not write that transform again. */
     blend_reset();
     for (unsigned k = 0; k < 20; k++) blend_frame(8333333);

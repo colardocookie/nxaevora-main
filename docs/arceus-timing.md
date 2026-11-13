@@ -353,13 +353,16 @@ rendered frame through a PreUpdate and a PostUpdate bridge. `SNX_ARCEUS_SCRIPT_T
 whose two bridges run only when a whole 1/30 s has built up: bit 0 Sneasler, 1 Ursaluna, 2 Braviary, 3 Basculegion,
 4 and 5 Wyrdeer, 6 the player's Pokémon, 7 to 9 the three player classes. On the other frames a bridge returns the
 current state index, as it does without a script. One decision is made per engine frame and shared by both bridges.
+The tick comes on the frame nearest to the moment a whole 1/30 s is due (the frame that brings the budget within half
+a step), so at 60 FPS the script runs on every second frame even when a frame is a little shorter than 1/60 s.
 Inputs that are true for one frame are kept for the next run. While a ticked script runs, the frame-step cell holds
 1/30 s, so every fix that scales by the step sees a whole tick.
 
 The default is `0x4`, Braviary alone. Without it Braviary turns several times too fast above 30 FPS, because its
 flight script sets a new rotation on every update. The script sets that rotation through `main+25AB490`, so with
 the Braviary bit the wrapper blends the rotation from the previous one to the new one over the time to the next
-run and stops as soon as anything else writes the rotation. The user's words after the two steps: "braviary turning
+run and stops as soon as anything else writes the rotation. The time to the next run is taken from the tick budget by
+the same rule as the tick itself. An earlier form ended the blend a frame early at 60 FPS and the turn was drawn in steps. The user's words after the two steps: "braviary turning
 feels right now", then, with the blend, "braviary turning feels smooth now".
 
 `SNX_ARCEUS_SCRIPT_WINDOWS` is a mask of windows in which a class is ticked only while a named part of its script
