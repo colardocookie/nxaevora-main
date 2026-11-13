@@ -3212,6 +3212,7 @@ retry:
         }
         xsize[i] = (u32)size;
         xbound |= 1u << i;
+        if (vk_temporal_objects()) vk_temporal_feedback(a, (u32)size, (u32)i);
     }
     /* the feedback loop goes into the key last: stage_set found it */
     u32 feedback = fb && !g_vk.has_feedback_dynamic;
@@ -3536,6 +3537,28 @@ retry:
         ch->xfb_reload = (u8)(ch->xfb_reload & ~xbound);
         vk_render_end(); /* the next capture's begin waits for this end outside a pass, and readers for its writes */
     }
+    /* Read-only: a G-buffer draw whose vertex stream is a transform feedback output of this frame is a skinned
+       character. Its stream, binding and attributes are logged for the first ones. */
+    if (vk_temporal_objects() && n >= 3 && zt && !xcount)
+        for (u32 q = 0; q < nvq; q++) {
+            u32 xindex, xlen, vb = vq[q].b;
+            u64 xat;
+            if (!vk_temporal_feedback_find(vq[q].gva + vq[q].base, &xindex, &xat, &xlen)) continue;
+            if (xindex != 0 || !vk_temporal_skinned_line()) continue;
+            char attrs[200];
+            int at = 0;
+            attrs[0] = 0;
+            for (u32 i = 0; i < k->nattr && at < (int)sizeof attrs - 24; i++)
+                if (k->attr[i].binding == vb)
+                    at += snprintf(attrs + at, sizeof attrs - (size_t)at, " loc%u:format%u:+%u", k->attr[i].loc,
+                                   k->attr[i].format, k->attr[i].offset);
+            LOG("arceus-temporal-skinned: vs=%llx binding %u reads feedback output 0 at +%llx of %x bytes (stream "
+                "base %u, len %llx, stride %llu, guest stride %u, %u bindings, %u attributes), its attributes:%s, "
+                "object block %llx, instances %u, depth write %u compare %x\n",
+                (unsigned long long)vs->hash, vb, (unsigned long long)xat, xlen, vq[q].base,
+                (unsigned long long)vq[q].len, (unsigned long long)pl->stride[vb], pl->guest_stride[vb], k->nbind,
+                k->nattr, attrs, (unsigned long long)ch->cbind[0][6], instances, r[0x4BA], r[0x4C3]);
+        }
     /* An object that moved since the last frame is drawn once more for its motion vector (vk_temporal_object):
        the same vertex stage and state, another fragment program, onto the pixels whose depth it wrote. Only plain
        G-buffer draws: three colour targets or more, one instance, depth tested and written (or tested for equal,

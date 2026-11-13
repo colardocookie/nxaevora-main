@@ -90,7 +90,13 @@ static struct {
     VkShaderModule object_fs;
     u32 object_at, object_frame, object_draws;
     u64 object_seen, object_moved, object_drawn, object_capped, object_new, object_odd, object_pipelines,
-        object_frames, object_far;
+        object_frames, object_far, object_same, object_never, object_older, object_skinned, skinned_lines;
+    /* the transform feedback outputs of this frame, for finding the draws that read them */
+    struct {
+        u64 address;
+        u32 size, index;
+    } feedback[256];
+    u32 feedback_n, feedback_frame, far_logged_at;
     u64 other_cameras;
     u32 jitter_index, jitter_size, camera_read; /* camera_read: the most bytes a program read of the block */
     VkBuffer jitter_buffer;
@@ -664,8 +670,8 @@ int vk_temporal_enabled(void) { return temporal_on(); }
    step points back to. The slot itself is not read: the game may have filled it for the next frame already. */
 typedef struct {
     u64 key;
-    u32 at; /* the frame world was taken in */
-    float world[16];
+    u32 at, before_at; /* the frames world and before were taken in */
+    float world[16], before[16]; /* before: what this same address held the last time it was bound */
 } Object;
 static Object g_objects[OBJECTS];
 
@@ -716,14 +722,18 @@ static void objects_log(u32 frame) {
     g_t.object_draws = 0;
     if (++g_t.object_frames % 600) return;
     LOG("arceus-temporal-objects: in 600 frames, G-buffer draws with an object block %llu, without a block a frame "
-        "ago %llu, jumped too far %llu, moved %llu, drawn again %llu, over the cap of %d a frame %llu, not an affine "
-        "matrix %llu, pipelines made %llu\n",
-        (unsigned long long)g_t.object_seen, (unsigned long long)g_t.object_new, (unsigned long long)g_t.object_far,
+        "ago %llu (never seen %llu, seen two frames ago or more %llu), found at the same address %llu, reading a "
+        "feedback buffer %llu, jumped too far %llu, moved %llu, drawn again %llu, over the cap of %d a frame %llu, not "
+        "an affine matrix %llu, pipelines made %llu\n",
+        (unsigned long long)g_t.object_seen, (unsigned long long)g_t.object_new,
+        (unsigned long long)g_t.object_never, (unsigned long long)g_t.object_older,
+        (unsigned long long)g_t.object_same, (unsigned long long)g_t.object_skinned,
+        (unsigned long long)g_t.object_far,
         (unsigned long long)g_t.object_moved, (unsigned long long)g_t.object_drawn, OBJECT_DRAWS,
         (unsigned long long)g_t.object_capped, (unsigned long long)g_t.object_odd,
         (unsigned long long)g_t.object_pipelines);
     g_t.object_seen = g_t.object_new = g_t.object_moved = g_t.object_drawn = g_t.object_capped = g_t.object_odd = 0;
-    g_t.object_far = 0;
+    g_t.object_far = g_t.object_same = g_t.object_never = g_t.object_older = g_t.object_skinned = 0;
 }
 
 int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* out) {
@@ -742,23 +752,43 @@ int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* o
     }
     Object* o = object_slot(address, frame, 1);
     if (!o) return 0;
-    memcpy(o->world, world, sizeof o->world);
-    o->at = frame;
+    if (o->at != frame) { /* several draws may bind one block: the first of a frame moves the matrix on */
+        memcpy(o->before, o->world, sizeof o->before);
+        o->before_at = o->at;
+        memcpy(o->world, world, sizeof o->world);
+        o->at = frame;
+    }
     /* the slot this block had a frame ago: the camera's block went the same way */
     if (!g_t.camera_address[0] || !g_t.camera_address[1]) return 0;
-    const Object* was_at =
+    const Object* partner =
         object_slot(g_t.camera_address[0] > g_t.camera_address[1] ? address - size : address + size, frame, 0);
-    if (!was_at || was_at->at + 1 != frame) {
+    const float* was_world;
+    if (partner && partner->at + 1 == frame)
+        was_world = partner->world;
+    else if (o->before_at && o->before_at + 1 == frame) {
+        /* a block that does not take turns: this address held it a frame ago */
+        g_t.object_same++;
+        was_world = o->before;
+    } else {
         g_t.object_new++;
+        if (!o->before_at) g_t.object_never++;
+        else g_t.object_older++;
         return 0;
     }
-    if (!memcmp(was_at->world, world, sizeof world) || !g_t.have_before) return 0;
+    if (!memcmp(was_world, world, sizeof world) || !g_t.have_before) return 0;
     /* another object may have taken the slot: a jump of more than 5 units in a frame is not a move */
     {
-        const float dx = world[12] - was_at->world[12], dy = world[13] - was_at->world[13],
-                    dz = world[14] - was_at->world[14];
-        if (!(dx * dx + dy * dy + dz * dz < 25.0f)) {
+        const float dx = world[12] - was_world[12], dy = world[13] - was_world[13], dz = world[14] - was_world[14];
+        const float distance = dx * dx + dy * dy + dz * dz;
+        if (!(distance < 25.0f)) {
             g_t.object_far++;
+            if (g_t.far_logged_at + 60 <= frame) { /* one example a second */
+                g_t.far_logged_at = frame;
+                LOG("arceus-temporal-objects: jump of %.2f units at block %llx: now %.2f %.2f %.2f, a frame ago "
+                    "%.2f %.2f %.2f\n",
+                    sqrt((double)distance), (unsigned long long)address, (double)world[12], (double)world[13],
+                    (double)world[14], (double)was_world[12], (double)was_world[13], (double)was_world[14]);
+            }
             return 0;
         }
     }
@@ -780,7 +810,7 @@ int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* o
     for (int i = 0; i < 16; i++) {
         inverse[i] = (double)g_t.inverse[i];
         now[i] = (double)world[i];
-        was[i] = (double)was_at->world[i];
+        was[i] = (double)was_world[i];
         before[i] = (double)g_t.before[i];
     }
     if (!affine_inverse_d(now, back)) {
@@ -861,6 +891,36 @@ int vk_temporal_object_begin(VkCommandBuffer cb, const VkRenderingAttachmentInfo
 }
 
 void vk_temporal_object_pipeline(void) { g_t.object_pipelines++; }
+
+/* Read-only, for the skinned characters. A transform feedback draw's output is noted, and a G-buffer draw whose
+   vertex stream starts inside one of this frame's outputs is counted, the first ones with a line. */
+void vk_temporal_feedback(u64 address, u32 size, u32 index) {
+    const u32 frame = g_vk_present + 1;
+    if (g_t.feedback_frame != frame) {
+        g_t.feedback_frame = frame;
+        g_t.feedback_n = 0;
+    }
+    if (g_t.feedback_n < 256) {
+        g_t.feedback[g_t.feedback_n].address = address;
+        g_t.feedback[g_t.feedback_n].size = size;
+        g_t.feedback[g_t.feedback_n++].index = index;
+    }
+}
+int vk_temporal_feedback_find(u64 address, u32* index, u64* offset, u32* size) {
+    if (g_t.feedback_frame != g_vk_present + 1) return 0;
+    for (u32 i = 0; i < g_t.feedback_n; i++)
+        if (address >= g_t.feedback[i].address && address < g_t.feedback[i].address + g_t.feedback[i].size) {
+            *index = g_t.feedback[i].index;
+            *offset = address - g_t.feedback[i].address;
+            *size = g_t.feedback[i].size;
+            return 1;
+        }
+    return 0;
+}
+int vk_temporal_skinned_line(void) {
+    g_t.object_skinned++;
+    return g_t.skinned_lines++ < 24;
+}
 
 void vk_temporal_before(u64 fs0_hash) {
     if (!temporal_on() || !g_t.reader || fs0_hash != g_t.reader) return;

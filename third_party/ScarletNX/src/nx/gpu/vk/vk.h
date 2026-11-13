@@ -1076,6 +1076,10 @@ int vk_temporal_objects(void);
 int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* out);
 int vk_temporal_object_begin(VkCommandBuffer cb, const VkRenderingAttachmentInfo* depth, int stencil);
 void vk_temporal_object_pipeline(void);
+/* read-only: this frame's transform feedback outputs and the draws that read them */
+void vk_temporal_feedback(u64 address, u32 size, u32 index);
+int vk_temporal_feedback_find(u64 address, u32* index, u64* offset, u32* size);
+int vk_temporal_skinned_line(void);
 void vk_temporal_multiply(const float a[16], const float b[16], float out[16]);
 /* gpu/vk/render.c: the read-only frame pass census (SNX_PASS_CENSUS=1) hears of each frame shown */
 void vk_pass_census_present(const Surf* shown);
