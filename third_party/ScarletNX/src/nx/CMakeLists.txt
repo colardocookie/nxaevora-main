@@ -136,6 +136,8 @@ snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/temporal_motion.frag NAME temporal_m
                HEADER nx/gpu/vk/temporal_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/temporal_view.frag NAME temporal_view_fs_spv
                HEADER nx/gpu/vk/temporal_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/temporal_stats.frag NAME temporal_stats_fs_spv
+               HEADER nx/gpu/vk/temporal_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/smaa.frag NAME smaa_edges_fs_spv HEADER nx/gpu/vk/post_spv.h
                DEFINES SMAA_PASS_EDGES)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/smaa.frag NAME smaa_weights_fs_spv HEADER nx/gpu/vk/post_spv.h

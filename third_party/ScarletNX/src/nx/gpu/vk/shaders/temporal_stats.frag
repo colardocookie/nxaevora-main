@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 the NXAevora contributors
+// The temporal probe's numbers (gpu/vk/temporal.c): a small image whose texels each sample one pixel of the scene.
+// Red: the relative colour error against last frame fetched through the motion vector. Green: the same without the
+// vector. Blue: the vector's length in pixels. Alpha: the pixel's depth as the game's projection gives it (1 near,
+// 0 far), -1 for the far plane, -2 where last frame's pixel is off screen.
+#version 450
+layout(location = 0) in vec2 v_uv;
+layout(location = 0) out vec4 o_stats;
+layout(set = 0, binding = 0) uniform sampler2D u_motion;
+layout(set = 0, binding = 1) uniform sampler2D u_now;
+layout(set = 0, binding = 2) uniform sampler2D u_before;
+layout(push_constant) uniform Constants {
+    mat4 reproject;
+    vec4 viewport;
+    vec4 depth; // depth translate, depth scale, unused, unused
+    vec4 size;  // image width, height, view, gain
+} pc;
+layout(set = 0, binding = 3) uniform sampler2D u_depth;
+float relative(vec3 a, vec3 b) {
+    vec3 e = abs(a - b) / (max(a, b) + 0.05);
+    return max(e.r, max(e.g, e.b));
+}
+void main() {
+    ivec2 pixel = ivec2(v_uv * pc.size.xy);
+    vec2 uv = (vec2(pixel) + 0.5) / pc.size.xy;
+    float z = (texelFetch(u_depth, pixel, 0).r - pc.depth.x) / pc.depth.y;
+    vec2 motion = texelFetch(u_motion, pixel, 0).rg;
+    vec3 now = texelFetch(u_now, pixel, 0).rgb;
+    vec2 from = uv - motion;
+    o_stats = vec4(0.0, relative(now, textureLod(u_before, uv, 0.0).rgb), length(motion * pc.size.xy), z);
+    if (z <= 0.0) {
+        o_stats.a = -1.0;
+        return;
+    }
+    if (from.x < 0.0 || from.y < 0.0 || from.x > 1.0 || from.y > 1.0) {
+        o_stats.a = -2.0;
+        return;
+    }
+    o_stats.r = relative(now, textureLod(u_before, from, 0.0).rgb);
+}

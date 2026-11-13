@@ -27,5 +27,8 @@ void main() {
         o_color = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
-    o_color = vec4(abs(texelFetch(u_now, ivec2(gl_FragCoord.xy), 0).rgb - textureLod(u_before, from, 0.0).rgb), 1.0);
+    // relative to the brightness, so that a bright edge does not light up on a sub-pixel error
+    vec3 now = texelFetch(u_now, ivec2(gl_FragCoord.xy), 0).rgb;
+    vec3 before = textureLod(u_before, from, 0.0).rgb;
+    o_color = vec4(abs(now - before) / (max(now, before) + 0.05), 1.0);
 }

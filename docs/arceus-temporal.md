@@ -25,9 +25,22 @@ It changes nothing in the picture unless a view is chosen. Unset, none of it run
 
 `SNX_ARCEUS_TEMPORAL_VIEW=1` draws the vectors over the scene colour: red for motion across, green for motion down,
 with a little blue where either is negative. `SNX_ARCEUS_TEMPORAL_VIEW=2` draws the difference between this frame's
-colour and last frame's colour fetched through the vectors. With a still camera both are black. While the camera pans
+colour and last frame's colour fetched through the vectors, relative to their brightness. With a still camera both are black. While the camera pans
 over terrain, view 2 stays near black on static geometry and lights up on what moves by itself: characters, Pokémon,
 particles and water. The game's own bloom, exposure and tone mapping then run on the view, so bright spots glow.
+
+## Numbers
+
+So that nobody has to judge the views by eye, the probe measures itself. Every 60 runs it samples 96 x 54 pixels of
+the scene and compares each with last frame's colour, once fetched through the motion vector and once at the same
+place. A pixel counts as wrong when the colours differ by more than a quarter of their brightness. One
+`arceus-temporal-stats` line a second gives the mean and longest vector in pixels and, for three depth bands (nearer
+than 10, to 100, beyond), the share of wrong pixels with the vectors and without them. With a still camera both
+shares are near zero. While the camera pans over static ground the vectors are long, the share without vectors is
+high and the share with them must stay low. If it does not, the depth or screen convention is wrong.
+
+Depth is taken as the viewport stores it: stored depth = translate + scale x the projection's z, which holds for both
+depth modes of the guest GPU. The first runs log the two values and the mode.
 
 ## Log lines
 

@@ -12,12 +12,12 @@ layout(set = 0, binding = 2) uniform sampler2D u_unused2;
 layout(push_constant) uniform Constants {
     mat4 reproject; // clip of this frame to clip of the frame before
     vec4 viewport;  // x, y, width, height of the scene's viewport in image pixels (height may be negative)
-    vec4 depth;     // viewport minDepth, maxDepth, unused, unused
+    vec4 depth;     // the viewport's depth translate and scale: stored depth = translate + scale x z, both depth modes
     vec4 size;      // image width, height, view, gain
 } pc;
 void main() {
     float stored = texelFetch(u_depth, ivec2(gl_FragCoord.xy), 0).r;
-    float z = (stored - pc.depth.x) / (pc.depth.y - pc.depth.x);
+    float z = (stored - pc.depth.x) / pc.depth.y;
     o_motion = vec2(0.0);
     if (z <= 0.0) return; // reversed depth: the far plane
     vec2 ndc = (gl_FragCoord.xy - pc.viewport.xy) / pc.viewport.zw * 2.0 - 1.0;
