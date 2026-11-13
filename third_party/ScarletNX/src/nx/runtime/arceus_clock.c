@@ -1156,7 +1156,6 @@ static void capture_fix_init(void) {
 #define SEQUENCE_SLOTS 64
 /* A clamped 100 ms step at speed 4 needs at most 13 boundary updates.
    Allow extra catch-up work, retaining excess budget if the guard is reached. */
-#define SEQUENCE_MAX_UPDATES 32
 static GuestFn battle_sequence_original;
 static PMutex battle_sequence_lock = PMUTEX_INIT;
 static struct { u64 object; u64 ns; float pending; } sequence_slots[SEQUENCE_SLOTS];
@@ -1179,16 +1178,15 @@ static float sequence_step(float frame, float want) {
    whole frame and keeps the rest for the next call. At 60 FPS, where a step is half a frame,
    that gave the frame 8.50, 8.99, 9.00, 10.00: a hold and a jump on every second rendered
    frame, which the battle camera shows (its commands are stepped from +E8 by 9DB748). With
-   value 2 a step that ends within a small window before a whole frame goes onto it and the
-   difference is carried, signed. A step that passes a whole frame still lands on it, and the
-   rest of the step goes to a second update in the same call. That update is entered on the
-   whole frame, which is where the game does its whole-frame work: a finished command's end
-   check (table +60) is only made when frame - start equals its length exactly, and it can
-   hold the frame. A first form added the rest to +E8 in the wrapper and skipped that entry,
-   so sequences did not wait where they should and send-outs failed. */
+   value 2 a step that would end within half an advance before a whole frame goes onto it
+   and the difference is carried, signed. Nothing else changes: a step still ends on every
+   whole frame and the rest waits for the next rendered frame. The game needs both. The
+   commands' step slot (9DB748, once per rendered frame) acts on exact frames it must see,
+   and the update makes its end checks when it is entered on one. Two earlier forms moved on
+   from the whole frame in the same rendered frame and broke one or the other. */
 static int battle_sequence_even;
-#define SEQUENCE_SNAP_SHARE 0.2f
-#define SEQUENCE_SNAP_MAX 0.05f
+#define SEQUENCE_SNAP_SHARE 0.5f
+#define SEQUENCE_SNAP_MAX 0.5f
 /* The step from frame for a budget of want: onto the next whole frame when the budget
    reaches it or ends within snap before it, else the budget itself. */
 static float sequence_even_step(float frame, float want, float snap) {
@@ -1226,7 +1224,11 @@ static void battle_sequence_update(CPU* c, u64 entry) {
         }
         if (speed > 0.0f && speed <= 4.0f) {
             const float advance = speed * (float)ns / 33333333.0f;
+            /* The game steps once per update, by the speed. The budget keeps at most one such
+               step beyond this frame's own, so a hitch is not caught up, as in the game. */
+            const float cap = (speed > 1.0f ? speed : 1.0f) + advance;
             float pending = sequence_slots[k].pending + advance;
+            if (pending > cap) pending = cap;
             if (battle_sequence_even) {
                 snap = SEQUENCE_SNAP_SHARE * advance < SEQUENCE_SNAP_MAX ? SEQUENCE_SNAP_SHARE * advance : SEQUENCE_SNAP_MAX;
                 partial = sequence_even_step(guest_float(object + 0xe8), pending, snap);
@@ -1254,15 +1256,22 @@ static void battle_sequence_update(CPU* c, u64 entry) {
         const u64 return_pc = c->x[30];
         /* The update takes only this in X0. Re-enter with the same argument and
            return address; leave the final call's return registers intact. */
-        for (unsigned updates = 0; updates < SEQUENCE_MAX_UPDATES; updates++) {
+        /* No more updates than whole frames in the game's own step. With a speed up to 1 that is
+           one: a second update would pass a whole frame that no rendered frame ended on, and
+           the commands' step slot (9DB748, once per rendered frame) would never see it. At
+           30 FPS, where a step is a hair under or over a frame, that happened all the time. */
+        const unsigned limit = speed > 1.0f ? (unsigned)ceilf(speed) : 1;
+        for (unsigned updates = 0; updates < limit; updates++) {
             const float before = guest_float(object + 0xe8);
+            const u64 first = gr64(object);
             __atomic_add_fetch(&battle_sequence_partial, 1, __ATOMIC_RELAXED);
             guest_float_write(object + 0xf0, partial);
             battle_sequence_original(c, entry);
-            if (!readable(object, 0x308) || guest_float(object + 0xf0) != partial) break;
+            /* An object the update let go of, or one with another first word, is not ours. */
+            if (!readable(object, 0x308) || gr64(object) != first || guest_float(object + 0xf0) != partial) break;
             guest_float_write(object + 0xf0, speed);
             if (c->pc != return_pc || !battle_sequence_playing(object) ||
-                !(guest_float(object + 0xe8) > before) || updates + 1 == SEQUENCE_MAX_UPDATES) break;
+                !(guest_float(object + 0xe8) > before) || updates + 1 == limit) break;
             pm_lock(&battle_sequence_lock);
             /* A slot evicted by another sequence no longer owns our budget. */
             if (sequence_slots[slot].object == object) {
@@ -1271,13 +1280,7 @@ static void battle_sequence_update(CPU* c, u64 entry) {
                 /* Catch up whole boundaries only. A fractional tail waits for
                    the next rendered update, preserving the original cadence of
                    command callbacks rather than immediately updating them again. */
-                if (!battle_sequence_even)
-                    partial = frame + pending >= floorf(frame) + 1.0f ? sequence_step(frame, pending) : 0.0f;
-                else
-                    /* After a whole frame the rest of the step follows in a second update, or the
-                       next whole frame if a long frame is due one. A rest inside the window stays
-                       as the carry. A step that ended on a fraction left none. */
-                    partial = pending > snap ? sequence_even_step(frame, pending, snap) : 0.0f;
+                partial = frame + pending >= floorf(frame) + 1.0f ? sequence_step(frame, pending) : 0.0f;
                 sequence_slots[slot].pending = pending - partial;
             } else partial = 0.0f;
             pm_unlock(&battle_sequence_lock);

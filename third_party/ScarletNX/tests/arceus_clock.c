@@ -40,7 +40,7 @@ static unsigned calls, boundaries, calls_this_render, entered_whole;
    hold_at exactly. While hold_left is not 0 it holds the frame, as a waiting track does. */
 static float hold_at;
 static unsigned hold_left, hold_checks;
-static int stop_at, change_speed, divert, no_progress;
+static int stop_at, change_speed, divert, no_progress, reuse;
 static const u64 object = 128, entry_pc = 16, return_pc = 32;
 static void sequence_original(CPU* c, u64 entry) {
     assert(entry == entry_pc && c->x[0] == object && c->x[30] == return_pc);
@@ -48,9 +48,8 @@ static void sequence_original(CPU* c, u64 entry) {
     const float after = before + guest_float(object + 0xf0);
     /* Every integer command-end comparison must be visited, never crossed. */
     assert(after <= floorf(before) + 1);
-    /* Extra calls may catch up complete boundaries, never a fractional tail. The even landing
-       is the exception: the rest of a step follows the whole frame in a second update. */
-    if (calls_this_render++ && !battle_sequence_even) assert(after == floorf(before) + 1);
+    /* Extra calls may catch up complete boundaries, never a fractional tail. */
+    if (calls_this_render++) assert(after == floorf(before) + 1);
     /* The game does its whole-frame work in the update that is entered on the whole frame. */
     if (before == floorf(before)) entered_whole++;
     if (hold_at && before == hold_at) {
@@ -67,6 +66,8 @@ static void sequence_original(CPU* c, u64 entry) {
     if (!no_progress) guest_float_write(object + 0xe8, after);
     if (stop_at && after == stop_at) *GP(object + 0x301) = 0;
     if (change_speed) guest_float_write(object + 0xf0, 0);
+    /* The object is let go and its memory holds something else that looks like a sequence. */
+    if (reuse) gw64(object, gr64(object) + 0x118);
     c->x[0] = ++calls;
     c->x[30] = 999; /* The wrapper must restore the caller on re-entry. */
     c->pc = divert ? 64 : return_pc;
@@ -76,7 +77,7 @@ static void reset(float frame, float speed, u64 ns) {
     memset(sequence_slots, 0, sizeof sequence_slots);
     sequence_next_slot = 0;
     calls = boundaries = 0;
-    stop_at = change_speed = divert = no_progress = 0;
+    stop_at = change_speed = divert = no_progress = reuse = 0;
     guest_float_write(object + 0xe8, frame);
     guest_float_write(object + 0xec, 10000);
     guest_float_write(object + 0xf0, speed);
@@ -102,12 +103,23 @@ static void test_sequence(void) {
             assert(sequence_slots[0].pending < 1);
         }
     }
-    reset(.25f, 4, 100000000); /* A clamped stall needs twelve authored frames. */
+    /* A stall of 100 ms at speed 4 is twelve authored frames. The game would step once, by 4,
+       so the call makes four updates and the rest is not caught up beyond one more step. */
+    reset(.25f, 4, 100000000);
     update();
-    assert(calls == 12 && boundaries == 12);
-    assert(guest_float(object + 0xe8) == 12);
-    assert(fabsf(sequence_slots[0].pending - .25f) < .00001f);
+    assert(calls == 4 && boundaries == 4);
+    assert(guest_float(object + 0xe8) == 4);
     assert(guest_float(object + 0xf0) == 4);
+    step.step = 16666667;
+    update();
+    assert(calls == 8 && guest_float(object + 0xe8) == 8 && sequence_slots[0].pending < 2.01f);
+    /* At speed 1 a stall gets one update, and one frame of it is kept. */
+    reset(0, 1, 100000000);
+    update();
+    assert(calls == 1 && guest_float(object + 0xe8) == 1);
+    step.step = 16666667;
+    update();
+    assert(calls == 2 && guest_float(object + 0xe8) == 2 && fabsf(sequence_slots[0].pending - .5f) < .001f);
     reset(0, 4, 16666667);
     stop_at = 1;
     update();
@@ -124,13 +136,29 @@ static void test_sequence(void) {
     no_progress = 1;
     update();
     assert(calls == 1);
+    /* Each of these would get a second update (speed 4 at 60 FPS is two frames a call) if the
+       first had left the object as it found it. With another first word it gets none, with
+       either landing. */
+    for (int even = 0; even < 2; even++) {
+        reset(0, 4, 16666667);
+        battle_sequence_even = even;
+        update();
+        assert(calls == 2);
+        reset(0, 4, 16666667);
+        battle_sequence_even = even;
+        reuse = 1;
+        update();
+        assert(calls == 1);
+    }
+    battle_sequence_even = 0;
     reset(0, 4, 16666667);
     sequence_slots[0].object = object;
     sequence_slots[0].pending = 40;
+    /* A budget from before is cut to one step of the game. */
     update();
-    assert(calls == 32 && sequence_slots[0].pending >= 9.99f);
+    assert(calls == 4 && fabsf(sequence_slots[0].pending - 2) < .001f);
     update();
-    assert(fabsf(guest_float(object + 0xe8) - 44) < .0001f);
+    assert(calls == 8 && fabsf(guest_float(object + 0xe8) - 8) < .0001f);
     /* A nearly complete frame must not cause a second, tiny callback this render. */
     reset(.99f, 1, 16666667);
     update();
@@ -141,18 +169,26 @@ static void test_sequence(void) {
     /* Changing frame intervals carry elapsed budget rather than a fixed FPS ratio. */
     const u64 intervals[] = {8333333, 16666667, 11111111, 25000000, 10000000, 100000000,
                              1000000, 4166667, 2777778, 6944444, 1000000, 50000000};
-    for (float speed = .25f; speed <= 4; speed *= 2) {
-        reset(0, speed, 1);
-        u64 elapsed = 0;
-        for (unsigned i = 0; i < 120; i++) {
-            step.step = intervals[i % (sizeof intervals / sizeof intervals[0])];
-            elapsed += step.step;
-            update();
-            const double expected = speed * (double)elapsed / 33333333.0;
-            assert(fabs(guest_float(object + 0xe8) + sequence_slots[0].pending - expected) < .002);
-            assert(sequence_slots[0].pending < 1);
+    /* Without the two stalls (100 and 50 ms) nothing is lost. With them the sequence falls
+       behind, as the game does, and is never ahead. */
+    for (unsigned stalls = 0; stalls < 2; stalls++)
+        for (float speed = .25f; speed <= 4; speed *= 2) {
+            reset(0, speed, 1);
+            u64 elapsed = 0;
+            for (unsigned i = 0; i < 120; i++) {
+                step.step = intervals[i % (sizeof intervals / sizeof intervals[0])];
+                if (!stalls && step.step > 25000000) step.step = 5000000;
+                elapsed += step.step;
+                update();
+                const double expected = speed * (double)elapsed / 33333333.0;
+                const double have = guest_float(object + 0xe8) + sequence_slots[0].pending;
+                /* What is left is at most one step of the game beyond this frame's own advance. */
+                if (stalls)
+                    assert(have < expected + .002 && sequence_slots[0].pending <
+                           (speed > 1 ? speed : 1) + speed * (float)step.step / 33333333.0f + .001f);
+                else assert(fabs(have - expected) < .002 && sequence_slots[0].pending < 1);
+            }
         }
-    }
 }
 static void flag(const char* name, const char* value) {
 #ifdef _WIN32
@@ -1032,57 +1068,91 @@ static void test_sequence_even(void) {
         5406700, 5092000, 5788800, 5129000, 5324100, 5818500, 4590600, 5769400, 5514300, 5407300, 5278300, 5032800,
         6133300, 6145900, 4964900, 4672100, 6117600, 5187000, 5329200, 5365900, 5247100, 5641700, 5877800, 5750900,
         5160300, 5093300, 5754100};
+    /* Frame steps of the session in which the first even landing lost its send-outs. */
+    static const u64 spu[48] = {3345200, 3203100, 9137600, 5501200, 5695200, 6108100, 6939500, 5918200, 5781600,
+        6107900, 6859100, 6766400, 5807100, 4755800, 4936500, 5262900, 4755600, 5163200, 5906700, 5942400, 6067000,
+        6440100, 8208800, 6142000, 6122600, 6295300, 6152500, 6620000, 6051100, 6590000, 6093800, 5837600, 6110000,
+        5912200, 5845500, 5525700, 5938500, 6426300, 5606400, 5944700, 6263300, 8191400, 6161800, 5608700, 5519500,
+        6544500, 7586900, 5517500};
+    /* Frame steps of a session at the game's own 30 FPS. A step is a hair under or over a frame. */
+    static const u64 thirty[48] = {33288000, 33208000, 33210700, 33187600, 33262200, 33479000, 33373300, 33396900,
+        33703200, 33519700, 32979300, 33523500, 33086100, 33300700, 33718300, 32919100, 33582000, 33252300, 33631600,
+        33158800, 33184800, 33292200, 33374500, 33210600, 33419700, 33337900, 33506800, 33415800, 33479300, 32795400,
+        33475100, 33413900, 33238700, 33499200, 32911800, 33776300, 33438700, 33505900, 33407300, 33310200, 33084900,
+        33273900, 33588000, 33260900, 33394800, 33114400, 33209700, 33257500};
     static const float speeds[] = {1, .2f, 2};
     for (unsigned even = 0; even < 2; even++)
-        for (unsigned set = 0; set < 3; set++)
+        for (unsigned set = 0; set < 5; set++)
             for (unsigned s = 0; s < sizeof speeds / sizeof speeds[0]; s++) {
                 const float speed = speeds[s];
                 reset(8, speed, 1);
                 battle_sequence_even = (int)even;
                 boundaries = entered_whole = 0;
                 u64 elapsed = 0;
-                unsigned renders = 0, held = 0, jumped = 0;
+                unsigned renders = 0, held = 0, jumped = 0, low = 0, high = 0, ended_whole = 0;
+                float last_whole = 8;
                 for (unsigned i = 0; i < 960; i++) {
                     /* Set 2 is the constant 60 FPS step. */
-                    step.step = set == 0 ? sixty[i % 48] : set == 1 ? unlocked[i % 48] : 16666667;
+                    step.step = set == 0 ? sixty[i % 48] : set == 1 ? unlocked[i % 48] : set == 2 ? 16666667 :
+                                set == 3 ? spu[i % 48] : thirty[i % 48];
                     elapsed += step.step;
                     renders++;
                     const float before = guest_float(object + 0xe8);
                     update();
                     const float frame = guest_float(object + 0xe8);
                     const float share = (frame - before) / (speed * (float)step.step / 33333333.0f);
-                    if (share < 0.7f) held++;
-                    if (share > 1.3f) jumped++;
+                    /* The first frames start from a budget of nothing. */
+                    if (i > 2 && share < 0.7f) held++;
+                    if (i > 2 && share > 1.3f) jumped++;
+                    if (i > 2 && share < 0.45f) low++;
+                    if (i > 2 && share > 1.55f) high++;
                     /* The mock asserts that no whole frame is crossed, so this counts skips and repeats. */
                     assert(boundaries == (unsigned)floorf(frame) - 8);
-                    /* Every whole frame the sequence has left was entered by an update, once. The one
-                       it stands on now is entered by the next update. */
+                    /* Both sides of the game's rule. Every whole frame the sequence has left was
+                       entered by an update, once (the one it stands on is entered by the next). And
+                       every whole frame was the value a rendered frame ended on, once, which is what
+                       the commands' step slot sees. A step of more than a frame may pass one. */
                     assert(entered_whole == (unsigned)floorf(frame) - 8 + (frame != floorf(frame)));
+                    if (frame == floorf(frame) && frame != last_whole) ended_whole++, last_whole = frame;
+                    if (speed <= 1) assert(ended_whole == (unsigned)floorf(frame) - 8);
                     const double expected = 8 + speed * (double)elapsed / 33333333.0;
-                    assert(fabs(frame + sequence_slots[0].pending - expected) < .004);
-                    assert(sequence_slots[0].pending < 1 && sequence_slots[0].pending > -SEQUENCE_SNAP_MAX - .001f);
+                    /* Nothing is gained. The old landing at 30 FPS loses a little where its budget
+                       is cut to one frame. The budget stays inside one step of the game beyond the
+                       frame's own advance, and the even landing owes at most half an advance. */
+                    const double have = frame + sequence_slots[0].pending;
+                    const float advance = speed * (float)step.step / 33333333.0f;
+                    assert(have < expected + .004 && have > expected - (set == 4 && !even ? .02 : .004));
+                    assert(sequence_slots[0].pending < (speed > 1 ? speed : 1) + advance + .001f &&
+                           sequence_slots[0].pending > -SEQUENCE_SNAP_SHARE * advance - .001f);
                 }
+                /* One update per rendered frame at these speeds: no rest gets a second one. */
+                if (speed <= 1) assert(calls <= renders);
                 if (even) {
-                    /* Every rendered frame moves by 0.7 to 1.3 of its share. A whole frame passed
-                       in mid step costs a second update, at most one for every whole frame. */
-                    assert(!held && !jumped);
-                    assert(calls <= renders + (unsigned)floorf(guest_float(object + 0xe8)) - 8 + 1);
+                    /* At 60 FPS, where the landing keeps the frame on wholes and halves, rendered
+                       frames move by 0.7 to 1.3 of their share (one of 960 real ones is at 1.30, after
+                       a 17.7 ms frame). With uneven unlocked frame times a few frames fall outside half
+                       to one and a half, when a long frame follows a short one at a landing. */
+                    if (set == 0 || set == 2) assert(held + jumped <= 1 && !low && !high);
+                    else assert((low + high) * 40 < renders && (held + jumped) * 3 < renders);
                 } else if (set == 0 && speed == 1)
                     /* The old rule on the same 60 FPS times: about a quarter held and a quarter jumped. */
                     assert(held > renders / 5 && jumped > renders / 5);
+                else if (set == 1 && speed == 1)
+                    /* And on unlocked times it leaves more frames far off their share than the even one. */
+                    assert((low + high) * 40 > renders);
             }
     /* An end check on frame 12 that holds the sequence for five updates. It has to be made, on
        every one of those updates, with the old landing and with the even one, at 60 FPS and
        unlocked frame times. A landing that never enters frame 12 would make none. */
     for (unsigned even = 0; even < 2; even++)
-        for (unsigned set = 0; set < 2; set++) {
+        for (unsigned set = 0; set < 3; set++) {
             reset(8, 1, 1);
             battle_sequence_even = (int)even;
             hold_at = 12;
             hold_left = 5;
             hold_checks = 0;
             for (unsigned i = 0; i < 300; i++) {
-                step.step = set ? unlocked[i % 48] : sixty[i % 48];
+                step.step = set == 0 ? sixty[i % 48] : set == 1 ? unlocked[i % 48] : spu[i % 48];
                 update();
             }
             assert(hold_checks == 6 && !hold_left && guest_float(object + 0xe8) > 13);
