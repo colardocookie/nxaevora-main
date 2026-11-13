@@ -221,6 +221,7 @@ void nvn_selftest_run(CPU* c) {
     case_texture_builder(c, &run);
     nvn_selftest_object_cases(c, &run);
     nvn_selftest_resource_cases(c, &run);
+    nvn_selftest_command_state_cases(c, &run);
     nvn_selftest_command_cases(c, &run);
     LOG("selftest: %u cases, %u failed, %u expected no-op, %u skipped, arena used %" PRIu64 " of %u bytes\n",
         run.cases, run.failed, run.expected, run.skipped, run.arena.high_water, ARENA_BYTES);

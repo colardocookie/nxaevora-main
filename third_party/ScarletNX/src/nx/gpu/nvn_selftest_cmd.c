@@ -34,7 +34,8 @@
 #define ST_STATE_CASES 29u
 #define ST_BIND_CASES 15u
 #define ST_D3_CASES 30u
-#define ST_CASE_COUNT (1u + ST_BARRIERS + ST_STATE_CASES + ST_BIND_CASES + ST_D3_CASES)
+#define ST_D4_CASES 11u
+#define ST_CASE_COUNT (1u + ST_BARRIERS + ST_STATE_CASES + ST_BIND_CASES + ST_D3_CASES + ST_D4_CASES)
 #define ST_IGNORE_MAX 12u
 
 /* The work calls of one side: the registers at the clear. A later call means that the case cannot be compared. */
@@ -85,6 +86,15 @@
 #define ST_D3_STENCIL 0x5Au
 #define ST_D3_STENCIL_MASK 0xFFu
 #define ST_D3_MASK 0xFu
+
+/* The d4 calls: the debug description literal, the text of the two Dynamic functions, the ZCull range and the group
+   id. A description literal is the same on both sides, so neither side needs a per-side address. */
+#define ST_D4_DESCRIPTION 0x1122334455667788ull
+#define ST_D4_DESC_LENGTH 0x10u
+#define ST_D4_MARKER_ID 7u
+#define ST_D4_ZCULL_ADDRESS 0x12340000u
+#define ST_D4_ZCULL_SIZE 0x1000u
+#define ST_D4_TEXT "abc"
 
 /* The d2 descriptor pools and render targets: one memory pool of each side holds the texture table at 0, the sampler
    table at 0x4000 and two 32x32 textures. */
@@ -143,7 +153,8 @@
 #define ST_ARG_DATA_HOST 0x6B0u
 #define ST_ARG_HANDLE_LIB 0x6F0u /* the one source handle of CopyCommands, one for each side */
 #define ST_ARG_HANDLE_HOST 0x6F8u
-#define ST_ARG_BYTES 0x700u
+#define ST_ARG_TEXT 0x700u /* the "abc" text of the two Dynamic debug functions, the same on both sides */
+#define ST_ARG_BYTES 0x710u
 
 /* The vertex arrays of the two Bind cases: two elements in each 16-byte argument region. */
 #define ST_ATTRIB_ELEM_BYTES 4u
@@ -1389,7 +1400,7 @@ static int st_script_discard_color(CPU* c, const StCmdProcs* p, const NvnStProc*
     return 1;
 }
 
-/* DiscardDepthStencil and ResolveDepthBuffer take the command buffer only and then compare at a clear. */
+/* DiscardDepthStencil, ResolveDepthBuffer and PopDebugGroup take the command buffer only and then compare at a clear. */
 static int st_script_cb_only(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb, uint64_t args,
                              uint64_t param, unsigned rule) {
     (void)param;
@@ -1574,6 +1585,79 @@ static const StCaseRow st_d3_cases[] = {
 };
 
 _Static_assert(sizeof st_d3_cases / sizeof st_d3_cases[0] == ST_D3_CASES, "the d3 case count");
+
+/* ---- the d4 cases: the call reference, the debug markers and groups, and the ZCull ranges ---- */
+
+/* One u64 argument: the description literal of a debug marker or group. */
+static int st_script_description(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                 uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    (void)rule;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, ST_D4_DESCRIPTION}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* The two Dynamic forms: the id, then the same "abc" text for both sides. */
+static int st_script_id_text(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb, uint64_t args,
+                             uint64_t param, unsigned rule) {
+    (void)param;
+    (void)rule;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, ST_D4_MARKER_ID, args + ST_ARG_TEXT}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* The two Static forms: the length, then the description literal. */
+static int st_script_len_description(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb,
+                                     uint64_t args, uint64_t param, unsigned rule) {
+    (void)param;
+    (void)rule;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, ST_D4_DESC_LENGTH, ST_D4_DESCRIPTION}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+static int st_script_group_id(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb, uint64_t args,
+                              uint64_t param, unsigned rule) {
+    (void)param;
+    (void)rule;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, ST_D4_MARKER_ID}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* The two ZCull ranges: the address and the size in bytes. */
+static int st_script_zcull(CPU* c, const StCmdProcs* p, const NvnStProc* fn, int host, uint64_t cb, uint64_t args,
+                           uint64_t param, unsigned rule) {
+    (void)param;
+    (void)rule;
+    st_call_proc(c, fn, host, &(NvnStCall){.x = {cb, ST_D4_ZCULL_ADDRESS, ST_D4_ZCULL_SIZE}});
+    st_clear_work(c, p, host, cb, args);
+    return 1;
+}
+
+/* The 11 d4 cases. The markers compare at a clear: whether their macro words change a register is what the run shows.
+   The ZCull rows expect their difference: the host has no ZCull and answers with a logged no-op. CallCommands takes
+   the handle of its own side's source list, made by st_d3_copy_source_setup. */
+static const StCaseRow st_d4_cases[] = {
+    {"nvnCommandBufferCallCommands", "count=1 src=SetLineWidth", st_script_copy_commands, ST_MUT_INT, NULL, 0, 0, 0},
+    {"nvnCommandBufferInsertDebugMarker", "desc=0x1122334455667788", st_script_description, ST_MUT_NONE, NULL, 0, 0,
+     0},
+    {"nvnCommandBufferInsertDebugMarkerDynamic", "id=7 text=abc", st_script_id_text, ST_MUT_NONE, NULL, 0, 0, 0},
+    {"nvnCommandBufferInsertDebugMarkerStatic", "len=16 desc=0x1122334455667788", st_script_len_description,
+     ST_MUT_NONE, NULL, 0, 0, 0},
+    {"nvnCommandBufferPushDebugGroup", "desc=0x1122334455667788", st_script_description, ST_MUT_NONE, NULL, 0, 0, 0},
+    {"nvnCommandBufferPushDebugGroupDynamic", "id=7 text=abc", st_script_id_text, ST_MUT_NONE, NULL, 0, 0, 0},
+    {"nvnCommandBufferPushDebugGroupStatic", "len=16 desc=0x1122334455667788", st_script_len_description, ST_MUT_NONE,
+     NULL, 0, 0, 0},
+    {"nvnCommandBufferPopDebugGroup", "", st_script_cb_only, ST_MUT_NONE, NULL, 0, 0, 0},
+    {"nvnCommandBufferPopDebugGroupId", "id=7", st_script_group_id, ST_MUT_NONE, NULL, 0, 0, 0},
+    {"nvnCommandBufferSaveZCullData", "addr=0x12340000 size=0x1000", st_script_zcull, ST_MUT_NONE, NULL, 0, 0, 1},
+    {"nvnCommandBufferRestoreZCullData", "addr=0x12340000 size=0x1000", st_script_zcull, ST_MUT_NONE, NULL, 0, 0, 1},
+};
+
+_Static_assert(sizeof st_d4_cases / sizeof st_d4_cases[0] == ST_D4_CASES, "the d4 case count");
 
 /* The 29 cases of decision 3. `rule` is the mutation rule of the row. `expect_noop` marks a host handler that is a
    logged no-op by design (COMMAND_NO_OP_HANDLER: SetSampleMask, SetStencilCullCriteria, SetColorReductionEnable,
@@ -1893,6 +1977,8 @@ void nvn_selftest_command_cases(CPU* c, NvnStRun* run) {
     job->init_count = init_count;
 
     memcpy(GP(args + ST_ARG_COLOR), st_clear, sizeof st_clear);
+    memset(GP(args + ST_ARG_TEXT), 0, 8);
+    memcpy(GP(args + ST_ARG_TEXT), ST_D4_TEXT, sizeof ST_D4_TEXT);
     st_fill_s_args(args, mutate[0] && !strcmp(mutate, "nvnCommandBufferSetViewports"));
     int stop = 0;
     st_case(c, run, &procs, job, lib_cb, host_cb, lib_pool.pool, host_pool.pool, args, "nvnCommandBufferSetViewports",
@@ -1945,6 +2031,8 @@ void nvn_selftest_command_cases(CPU* c, NvnStRun* run) {
             st_d3_copy_source_setup(c, &procs, &cache, run, &bind_ctx, &copy_source);
             st_run_case_table(c, run, &procs, job, lib_cb, host_cb, lib_pool.pool, host_pool.pool, args, mutate,
                               &bind_ctx, bind_res_ok, &stop, st_d3_cases, ST_D3_CASES);
+            st_run_case_table(c, run, &procs, job, lib_cb, host_cb, lib_pool.pool, host_pool.pool, args, mutate,
+                              &bind_ctx, bind_res_ok, &stop, st_d4_cases, ST_D4_CASES);
         }
     }
 
