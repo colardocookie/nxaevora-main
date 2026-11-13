@@ -75,7 +75,9 @@ static struct {
     /* anti-aliasing: the two addresses the scene camera's block takes in turn, its jittered copy for this
        submission, and our history */
     u64 camera_address[2], jitter_address, jitter_submit, jittered;
-    u32 jitter_index, jitter_size;
+    u8 jitter_source[0x1000]; /* the guest's bytes the copy was made from */
+    u64 other_cameras;
+    u32 jitter_index, jitter_size, camera_read; /* camera_read: the most bytes a program read of the block */
     VkBuffer jitter_buffer;
     u64 jitter_offset;
     VkPipeline resolve_pipe;
@@ -389,13 +391,30 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
         (address != g_t.camera_address[0] && address != g_t.camera_address[1]))
         return 0;
     if (bound > 0x1000 || bound < CAMERA_BYTES || size > bound) return 0;
+    /* only +0x00, +0x80 and +0xC0 are shifted: a program that reads further is worth knowing about */
+    if (size > g_t.camera_read) {
+        g_t.camera_read = size;
+        LOG("arceus-temporal: a program reads %u of the camera block's %u bytes\n", size, bound);
+    }
     const u32 index = g_vk_present % JITTERS;
+    /* the guest's bytes now: the copy is remade when they differ from the ones it was made from */
+    u8 source[0x1000];
+    gmem_read(address, source, bound);
+    /* once this frame's scene camera is known, a block with another view-projection is another camera in the slot.
+       Before that (the depth pre-pass) the address alone decides. */
+    if (g_t.camera_at == g_vk_present + 1 && memcmp(source, g_t.now, sizeof g_t.now)) {
+        if (g_t.other_cameras++ < 4 || g_t.other_cameras % 3600 == 0)
+            LOG("arceus-temporal: another camera at %llx is drawn without jitter, %llu draws so far\n",
+                (unsigned long long)address, (unsigned long long)g_t.other_cameras);
+        return 0;
+    }
     if (g_t.jitter_address != address || g_t.jitter_submit != vk_submit_number() || g_t.jitter_index != index ||
-        g_t.jitter_size != bound) {
+        g_t.jitter_size != bound || memcmp(source, g_t.jitter_source, bound)) {
         u8* bytes = vk_stage(bound, vk_stage_align(), &g_t.jitter_buffer, &g_t.jitter_offset);
         float pixels[2], m[16], shifted[16];
         if (!bytes) return 0;
-        gmem_read(address, bytes, bound);
+        memcpy(bytes, source, bound);
+        memcpy(g_t.jitter_source, source, bound);
         jitter_offset(index, pixels);
         const float jx = 2.0f * pixels[0] / (float)g_t.motion.w, jy = 2.0f * pixels[1] / (float)g_t.motion.h;
         /* M x J: column 0 gains jx x column 3, column 1 gains jy x column 3 */
@@ -417,6 +436,17 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
         g_t.jitter_submit = vk_submit_number();
         g_t.jitter_index = index;
         g_t.jitter_size = bound;
+        if (!g_t.jittered && bound >= CAMERA_BYTES + 16) {
+            /* once, the words after the matrices we know, as the game wrote them */
+            char line[1024];
+            int at = 0;
+            for (u32 o = CAMERA_BYTES; o + 4 <= bound && at < (int)sizeof line - 12; o += 4) {
+                u32 word;
+                memcpy(&word, bytes + o, 4);
+                at += snprintf(line + at, sizeof line - (size_t)at, " %08x", word);
+            }
+            LOG("arceus-temporal: camera block from +0x%x:%s\n", CAMERA_BYTES, line);
+        }
         if (g_t.jittered++ < 3)
             LOG("arceus-temporal: camera block %llx drawn with jitter %g,%g pixels (offset %u of %d)\n",
                 (unsigned long long)address, (double)pixels[0], (double)pixels[1], index, JITTERS);
