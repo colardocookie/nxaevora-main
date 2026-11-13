@@ -912,14 +912,24 @@ static void test_fade_slots_free(void) {
     fade_fix_active = 0;
     frame_step_address = 0;
 }
-/* The capped-fall guard accepts the game's 1/30 words and the movement bit 1 patch of them. */
+/* The capped-fall guard only accepts a bit-1 patch loading this cell's negative step word. */
 static void test_capped_fall_body(void) {
-    assert(capped_fall_body(0x52911128, 0x72b7a108) == 1);
-    /* ADRP X8 with any page, then LDR W8 [X8,#4] of the negative step. */
-    assert(capped_fall_body(0x90000008 | (1u << 29) | (0x1234u << 5), 0xb9400508) == 2);
-    assert(capped_fall_body(0x90000008, 0xb9400108) == 0);
-    assert(capped_fall_body(0x90000009, 0xb9400508) == 0);
-    assert(capped_fall_body(0x52911128, 0xb9400508) == 0);
+    const u64 pc = 0x10001234;
+    frame_step_address = 0x10003000;
+    assert(capped_fall_body(pc, 0x52911128, 0x72b7a108) == 1);
+    assert(capped_fall_body(pc, climb_adrp(pc, 8), 0xb9400508) == 2);
+    assert(capped_fall_body(pc, climb_adrp(pc, 8), 0xb9400108) == 0);
+    assert(capped_fall_body(pc, climb_adrp(pc, 8), 0xb9400908) == 0);
+    assert(capped_fall_body(pc, climb_adrp(pc, 9), 0xb9400508) == 0);
+    const u32 wrong_page = climb_adrp(pc, 8);
+    frame_step_address = 0x10004000;
+    assert(capped_fall_body(pc, wrong_page, 0xb9400508) == 0);
+    frame_step_address = 0x10003000;
+    assert(capped_fall_body(pc, climb_adrp(pc, 8), 0xb9400108) == 0);
+    const u64 negative_pc = 0x10006000;
+    assert(capped_fall_body(negative_pc, climb_adrp(negative_pc, 8), 0xb9400508) == 2);
+    frame_step_address = 0;
+    assert(capped_fall_body(pc, climb_adrp(pc, 8), 0xb9400508) == 0);
 }
 /* The even landing (value 2) on frame times taken from two played sessions: 60 FPS (report
    20261113-045030-report-acf2fb) and unlocked (20261113-045201-report-e5d35e). Every rendered

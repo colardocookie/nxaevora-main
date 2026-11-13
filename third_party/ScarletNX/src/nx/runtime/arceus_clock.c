@@ -1842,10 +1842,19 @@ static void capped_fall_update(CPU* c, u64 entry) {
             (unsigned long long)object, eligible, (double)seconds);
 }
 /* The two words at +6D0 that build the queued -1/30: 1 when they are the game's own, 2 when movement
-   bit 1 already loads the frame step there (ADRP X8 and LDR W8 [X8,#4]), 0 otherwise. */
-static int capped_fall_body(u32 first, u32 second) {
+   bit 1 loads the negative frame step from this cell, 0 otherwise. */
+static int capped_fall_body(u64 pc, u32 first, u32 second) {
     if (first == 0x52911128 && second == 0x72b7a108) return 1;
-    if ((first & 0x9f00001f) == 0x90000008 && second == 0xb9400508) return 2;
+    if (!frame_step_address || (first & 0x9f00001f) != 0x90000008 ||
+        (second & 0xffc003ff) != 0xb9400108) return 0;
+    const u64 immlo = (first >> 29) & 3;
+    const u64 immhi = (first >> 5) & 0x7ffff;
+    const u32 imm21 = (u32)((immhi << 2) | immlo);
+    const int64_t pages = (imm21 & 0x100000) ? (int64_t)imm21 - 0x200000 : (int64_t)imm21;
+    const int64_t page_delta = pages * 4096;
+    const u64 page = (pc & ~UINT64_C(0xfff)) + (u64)page_delta;
+    const u64 offset = (u64)((second >> 10) & 0xfff) * 4;
+    if (page + offset == frame_step_address + 4) return 2;
     return 0;
 }
 static void capped_fall_init(void) {
@@ -1866,13 +1875,13 @@ static void capped_fall_init(void) {
     const u64 pc = main_base + 0x19843a0;
     if (!covers_exactly(pc, 0xb18) || pc < g_code_lo || pc + 0xb18 > g_code_hi ||
         !readable(pc, 0xb18) || gr32(pc) != 0xd102c3ff ||
-        gr32(pc + 0xfc) != 0x14000002 || !capped_fall_body(gr32(pc + 0x6d0), gr32(pc + 0x6d4)) ||
+        gr32(pc + 0xfc) != 0x14000002 || !capped_fall_body(pc + 0x6d0, gr32(pc + 0x6d0), gr32(pc + 0x6d4)) ||
         gr32(pc + 0x700) != 0x3d81ae60 || gr32(pc + 0x70c) != 0x391a8268) {
         WARN("arceus-capped-fall: refused guard\n");
         return;
     }
     /* Movement bit 1 already steps this queued gravity, so only air steering is installed then. */
-    if (fall && capped_fall_body(gr32(pc + 0x6d0), gr32(pc + 0x6d4)) == 2) {
+    if (fall && capped_fall_body(pc + 0x6d0, gr32(pc + 0x6d0), gr32(pc + 0x6d4)) == 2) {
         WARN("arceus-capped-fall: off, movement bit 1 already steps the queued gravity\n");
         fall = 0;
         if (!steer) return;
