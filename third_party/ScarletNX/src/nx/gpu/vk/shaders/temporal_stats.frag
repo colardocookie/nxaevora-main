@@ -4,6 +4,8 @@
 // Red: the relative colour error against last frame fetched through the motion vector. Green: the same without the
 // vector. Blue: the vector's length in pixels. Alpha: the pixel's depth as the game's projection gives it (1 near,
 // 0 far), -1 for the far plane, -2 where last frame's pixel is off screen.
+// With anti-aliasing on (depth.z is 1) u_before is the resolved frame: red is 1 where the history was dropped, green
+// how far the resolved colour is from the frame's own.
 #version 450
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 o_stats;
@@ -13,7 +15,7 @@ layout(set = 0, binding = 2) uniform sampler2D u_before;
 layout(push_constant) uniform Constants {
     mat4 reproject;
     vec4 viewport;
-    vec4 depth; // depth translate, depth scale, unused, unused
+    vec4 depth; // depth translate, depth scale, 1 with anti-aliasing on, unused
     vec4 size;  // image width, height, view, gain
 } pc;
 layout(set = 0, binding = 3) uniform sampler2D u_depth;
@@ -29,6 +31,11 @@ void main() {
     vec3 now = texelFetch(u_now, pixel, 0).rgb;
     vec2 from = uv - motion;
     o_stats = vec4(0.0, relative(now, textureLod(u_before, uv, 0.0).rgb), length(motion * pc.size.xy), z);
+    if (pc.depth.z > 0.5) {
+        o_stats.r = texelFetch(u_before, pixel, 0).a < 0.0 ? 1.0 : 0.0;
+        if (z <= 0.0) o_stats.a = -1.0;
+        return;
+    }
     if (z <= 0.0) {
         o_stats.a = -1.0;
         return;

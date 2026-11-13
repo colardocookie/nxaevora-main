@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The temporal probe for Pokemon Legends: Arceus (SNX_ARCEUS_TEMPORAL=probe), the first step toward temporal
-   anti-aliasing and upscaling. It finds the scene colour and depth of a frame, keeps the camera's matrices, and at the
-   moment between the last write to the scene colour and its first read makes camera motion vectors from depth. With
-   SNX_ARCEUS_TEMPORAL_VIEW it draws them, or the reprojection error, over the scene. Unset, nothing here runs. */
+/* Temporal passes for Pokemon Legends: Arceus (SNX_ARCEUS_TEMPORAL). "probe" finds the scene colour and depth of a
+   frame, keeps the camera's matrices and makes camera motion vectors between the scene colour's last write and first
+   read. "taa" also gives the scene's camera a sub-pixel jitter and resolves the scene there with a history of its
+   own. SNX_ARCEUS_TEMPORAL_VIEW draws what they see (docs/arceus-temporal.md). Unset, nothing here runs. */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +18,11 @@
 #define CAMERA_BYTES 0x140  /* view-projection at +0x00, its inverse at +0xC0, row vectors */
 #define CAMERA_INVERSE 0xc0
 #define MOTION_FORMAT VK_FORMAT_R16G16_SFLOAT
+#define HISTORY_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
+#define JITTERS 8          /* the offsets of the jitter, a Halton (2, 3) sequence */
+#define FRAME_WEIGHT 0.1f  /* the frame's share in the blend with the history */
+#define MODE_PROBE 1
+#define MODE_TAA 2
 #define SETS_BINDINGS 4
 #define STATS_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
 #define STATS_W 96u /* the numbers' image: one texel a sampled pixel */
@@ -41,8 +46,8 @@ typedef struct {
 } Constants;
 
 static struct {
-    int mode; /* -1 not read yet, 0 off, 1 probe */
-    int view; /* 0 none, 1 the vectors, 2 the reprojection error */
+    int mode; /* -1 not read yet, 0 off, MODE_PROBE, MODE_TAA */
+    int view; /* 0 none, 1 the vectors, 2 the reprojection error, 3 the history weight, 4 the jittered frame alone */
     /* what a frame taught: the scene colour and depth targets' guest addresses, and the fragment program of the first
        draw that samples the scene colour */
     u64 scene, depth, reader;
@@ -67,16 +72,32 @@ static struct {
     VkFormat view_format;
     Image motion, colour[2];
     int newest; /* which of colour[] holds the newer frame */
+    /* anti-aliasing: the two addresses the scene camera's block takes in turn, its jittered copy for this
+       submission, and our history */
+    u64 camera_address[2], jitter_address, jitter_submit, jittered;
+    u32 jitter_index, jitter_size;
+    VkBuffer jitter_buffer;
+    u64 jitter_offset;
+    VkPipeline resolve_pipe;
+    VkFormat resolve_format;
+    Image history[2];
+    int history_newest;
+    u32 resolved_at;
+    u64 resets;
 } g_t = {.mode = -1};
 
 static int temporal_on(void) {
     if (g_t.mode < 0) {
         const char* mode = getenv("SNX_ARCEUS_TEMPORAL");
         const char* view = getenv("SNX_ARCEUS_TEMPORAL_VIEW");
-        g_t.mode = mode && !strcmp(mode, "probe");
-        g_t.view = view && (!strcmp(view, "1") || !strcmp(view, "2")) ? view[0] - '0' : 0;
+        g_t.mode = !mode ? 0 : !strcmp(mode, "probe") ? MODE_PROBE : !strcmp(mode, "taa") ? MODE_TAA : 0;
+        g_t.view = view && view[0] >= '1' && view[0] <= '4' && !view[1] ? view[0] - '0' : 0;
+        /* the probe has views 1 and 2, the anti-aliasing 3 and 4 */
+        if ((g_t.mode == MODE_PROBE && g_t.view > 2) || (g_t.mode == MODE_TAA && g_t.view < 3)) g_t.view = 0;
         if (g_t.mode)
-            LOG("arceus-temporal: probe on, view %d (0 none, 1 motion vectors, 2 reprojection error)\n", g_t.view);
+            LOG("arceus-temporal: %s on, view %d (0 none, 1 motion vectors, 2 reprojection error, 3 history weight, "
+                "4 jittered frame alone)\n",
+                g_t.mode == MODE_TAA ? "anti-aliasing" : "probe", g_t.view);
     }
     return g_t.mode;
 }
@@ -152,7 +173,13 @@ static int layouts_make(void) {
 }
 
 /* a pipeline of one fragment shader with the post passes' fullscreen triangle, for one colour format */
+static VkPipeline pipeline_make_n(const VkFormat* formats, u32 count, const u32* fs_words, u64 fs_bytes,
+                                  const char* what);
 static VkPipeline pipeline_make(VkFormat format, const u32* fs_words, u64 fs_bytes, const char* what) {
+    return pipeline_make_n(&format, 1, fs_words, fs_bytes, what);
+}
+static VkPipeline pipeline_make_n(const VkFormat* formats, u32 count, const u32* fs_words, u64 fs_bytes,
+                                  const char* what) {
     VkPipelineShaderStageCreateInfo st[2] = {{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                               .stage = VK_SHADER_STAGE_VERTEX_BIT,
                                               .pName = "main"},
@@ -170,15 +197,16 @@ static VkPipeline pipeline_make(VkFormat format, const u32* fs_words, u64 fs_byt
                                                  .lineWidth = 1};
     VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
-    VkPipelineColorBlendAttachmentState ba = {.colorWriteMask = 0xF};
-    VkPipelineColorBlendStateCreateInfo cb = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &ba};
+    VkPipelineColorBlendAttachmentState ba[2] = {{.colorWriteMask = 0xF}, {.colorWriteMask = 0xF}};
+    VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                              .attachmentCount = count,
+                                              .pAttachments = ba};
     VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo ds = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn};
     VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-                                        .colorAttachmentCount = 1,
-                                        .pColorAttachmentFormats = &format};
+                                        .colorAttachmentCount = count,
+                                        .pColorAttachmentFormats = formats};
     VkGraphicsPipelineCreateInfo gci = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
                                         .pNext = &ri,
                                         .stageCount = 2,
@@ -200,7 +228,8 @@ static VkPipeline pipeline_make(VkFormat format, const u32* fs_words, u64 fs_byt
         pipe = VK_NULL_HANDLE;
     if (vs) vkDestroyShaderModule(g_vk.dev, vs, NULL);
     if (fs) vkDestroyShaderModule(g_vk.dev, fs, NULL);
-    if (!pipe) LOG_LIMIT(1, "arceus-temporal: the %s pipeline for format %d could not be made\n", what, (int)format);
+    if (!pipe)
+        LOG_LIMIT(1, "arceus-temporal: the %s pipeline for format %d could not be made\n", what, (int)formats[0]);
     return pipe;
 }
 
@@ -223,18 +252,23 @@ static VkDescriptorSet set_make(const VkImageView views[SETS_BINDINGS], const Vk
 }
 
 /* one fullscreen triangle into view (w x h, in COLOR_ATTACHMENT_OPTIMAL), every pixel written */
-static void fullscreen(VkCommandBuffer cb, VkImageView view, u32 w, u32 h, VkPipeline pipe, VkDescriptorSet set,
-                       const Constants* pc) {
-    VkRenderingAttachmentInfo at = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                                    .imageView = view,
-                                    .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                    .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                                    .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+static void fullscreen2(VkCommandBuffer cb, VkImageView view, VkImageView second, u32 w, u32 h, VkPipeline pipe,
+                        VkDescriptorSet set, const Constants* pc) {
+    VkRenderingAttachmentInfo at[2] = {{.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                        .imageView = view,
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                        .storeOp = VK_ATTACHMENT_STORE_OP_STORE},
+                                       {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                        .imageView = second,
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                        .storeOp = VK_ATTACHMENT_STORE_OP_STORE}};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
                           .renderArea = {{0, 0}, {w, h}},
                           .layerCount = 1,
-                          .colorAttachmentCount = 1,
-                          .pColorAttachments = &at};
+                          .colorAttachmentCount = second ? 2 : 1,
+                          .pColorAttachments = at};
     VkViewport vp = {0, 0, (float)w, (float)h, 0, 1};
     VkRect2D sc = {{0, 0}, {w, h}};
     rec_CmdBeginRendering(cb, &ri);
@@ -246,6 +280,10 @@ static void fullscreen(VkCommandBuffer cb, VkImageView view, u32 w, u32 h, VkPip
     rec_CmdPushConstants(cb, g_t.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof *pc, pc);
     rec_CmdDraw(cb, 3, 1, 0, 0);
     rec_CmdEndRendering(cb);
+}
+static void fullscreen(VkCommandBuffer cb, VkImageView view, u32 w, u32 h, VkPipeline pipe, VkDescriptorSet set,
+                       const Constants* pc) {
+    fullscreen2(cb, view, VK_NULL_HANDLE, w, h, pipe, set, pc);
 }
 
 /* out = a x b for 4 x 4 matrices in memory order. With the game's row vectors, a then b */
@@ -284,6 +322,10 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
     if (had) memcpy(g_t.kept, g_t.now, sizeof g_t.kept);
     block_read(address, g_t.now);
     block_read(address + CAMERA_INVERSE, g_t.inverse);
+    if (address != g_t.camera_address[0]) {
+        g_t.camera_address[1] = g_t.camera_address[0];
+        g_t.camera_address[0] = address;
+    }
     g_t.have_before = had;
     if (had) {
         int equal = 0;
@@ -324,6 +366,66 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
     g_t.camera_at = frame;
 }
 
+/* offset k of the jitter in pixels, within half a pixel each way: Halton bases 2 and 3 */
+static void jitter_offset(u32 k, float out[2]) {
+    static const u32 bases[2] = {2, 3};
+    for (int axis = 0; axis < 2; axis++) {
+        float f = 1.0f, value = 0.0f;
+        for (u32 i = k % JITTERS + 1; i; i /= bases[axis]) {
+            f /= (float)bases[axis];
+            value += f * (float)(i % bases[axis]);
+        }
+        out[axis] = value - 0.5f;
+    }
+}
+
+/* A draw binds constant bank 4: when it is the scene camera's block and anti-aliasing is on, the draw gets a copy
+   whose projection is shifted by this frame's jitter. Guest memory is not written, so the game and our own matrices
+   keep the block without jitter. The copy is made once a submission in the frame's staging. With row vectors a shift
+   of clip x and y by jitter x w is the matrix times J, which has the jitter in its fourth row: view-projection x J at
+   +0x00, projection x J at +0x80, and J's inverse x the inverse view-projection at +0xC0. */
+int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer, u64* offset) {
+    if (g_t.mode != MODE_TAA || !address || !g_t.motion.w ||
+        (address != g_t.camera_address[0] && address != g_t.camera_address[1]))
+        return 0;
+    if (bound > 0x1000 || bound < CAMERA_BYTES || size > bound) return 0;
+    const u32 index = g_vk_present % JITTERS;
+    if (g_t.jitter_address != address || g_t.jitter_submit != vk_submit_number() || g_t.jitter_index != index ||
+        g_t.jitter_size != bound) {
+        u8* bytes = vk_stage(bound, vk_stage_align(), &g_t.jitter_buffer, &g_t.jitter_offset);
+        float pixels[2], m[16], shifted[16];
+        if (!bytes) return 0;
+        gmem_read(address, bytes, bound);
+        jitter_offset(index, pixels);
+        const float jx = 2.0f * pixels[0] / (float)g_t.motion.w, jy = 2.0f * pixels[1] / (float)g_t.motion.h;
+        /* M x J: column 0 gains jx x column 3, column 1 gains jy x column 3 */
+        static const u32 forward[2] = {0x00, 0x80};
+        for (int k = 0; k < 2; k++) {
+            memcpy(m, bytes + forward[k], sizeof m);
+            for (int r = 0; r < 4; r++) {
+                m[4 * r + 0] += jx * m[4 * r + 3];
+                m[4 * r + 1] += jy * m[4 * r + 3];
+            }
+            memcpy(bytes + forward[k], m, sizeof m);
+        }
+        /* inverse of J x M: row 3 loses jx x row 0 and jy x row 1 */
+        memcpy(m, bytes + CAMERA_INVERSE, sizeof m);
+        memcpy(shifted, m, sizeof shifted);
+        for (int c = 0; c < 4; c++) shifted[12 + c] = m[12 + c] - jx * m[c] - jy * m[4 + c];
+        memcpy(bytes + CAMERA_INVERSE, shifted, sizeof shifted);
+        g_t.jitter_address = address;
+        g_t.jitter_submit = vk_submit_number();
+        g_t.jitter_index = index;
+        g_t.jitter_size = bound;
+        if (g_t.jittered++ < 3)
+            LOG("arceus-temporal: camera block %llx drawn with jitter %g,%g pixels (offset %u of %d)\n",
+                (unsigned long long)address, (double)pixels[0], (double)pixels[1], index, JITTERS);
+    }
+    *buffer = g_t.jitter_buffer;
+    *offset = g_t.jitter_offset;
+    return 1;
+}
+
 static float half_float(u16 h) {
     const int e = h >> 10 & 31, m = h & 1023;
     const float v = e == 0 ? ldexpf((float)m, -24) : e == 31 ? (m ? NAN : INFINITY) : ldexpf((float)(m + 1024), e - 25);
@@ -350,7 +452,7 @@ static void stats_log(void) {
         /* the projection gives z = 0.1 / distance: nearer than 10, to 100, beyond */
         const int band = z > 0.01f ? 0 : z > 0.001f ? 1 : 2;
         n[band]++;
-        wrong[band] += moved > STATS_ERROR;
+        wrong[band] += moved > (g_t.mode == MODE_TAA ? 0.5f : STATS_ERROR);
         wrong_still[band] += still > STATS_ERROR;
         length += vector;
         if (vector > longest) longest = vector;
@@ -358,9 +460,14 @@ static void stats_log(void) {
     const unsigned all = n[0] + n[1] + n[2];
     char bands[240];
     int at = 0;
+    /* with anti-aliasing on, the first number is where the history was dropped and the second where the resolved
+       colour is far from the frame's own: trails behind what moves show there */
+    const int taa = g_t.mode == MODE_TAA;
     for (int b = 0; b < 3; b++)
-        at += snprintf(bands + at, sizeof bands - (size_t)at, " %s n=%u wrong=%.1f%% without_vectors=%.1f%%", names[b], n[b],
-                       n[b] ? 100.0 * wrong[b] / n[b] : 0.0, n[b] ? 100.0 * wrong_still[b] / n[b] : 0.0);
+        at += snprintf(bands + at, sizeof bands - (size_t)at, taa ? " %s n=%u dropped=%.1f%% far_from_frame=%.1f%%"
+                                                               : " %s n=%u wrong=%.1f%% without_vectors=%.1f%%",
+                       names[b], n[b], n[b] ? 100.0 * wrong[b] / n[b] : 0.0,
+                       n[b] ? 100.0 * wrong_still[b] / n[b] : 0.0);
     LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px vector_max=%.2f px sky=%u off_screen=%u%s\n",
         (unsigned long long)g_t.stats_run, all ? length / all : 0.0, longest, sky, off, bands);
 }
@@ -455,13 +562,14 @@ void vk_temporal_before(u64 fs0_hash) {
     if (!layouts_make()) return;
     if (!g_t.motion_pipe)
         g_t.motion_pipe = pipeline_make(MOTION_FORMAT, temporal_motion_fs_spv, temporal_motion_fs_spv_size, "motion");
-    if (g_t.view && (!g_t.view_pipe || g_t.view_format != scene->f.vk)) {
+    const int probe_view = g_t.mode == MODE_PROBE && g_t.view;
+    if (probe_view && (!g_t.view_pipe || g_t.view_format != scene->f.vk)) {
         g_t.view_pipe = pipeline_make(scene->f.vk, temporal_view_fs_spv, temporal_view_fs_spv_size, "view");
         g_t.view_format = scene->f.vk;
     }
     const VkImageUsageFlags target = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     const VkImageUsageFlags copy = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    if (!g_t.motion_pipe || (g_t.view && !g_t.view_pipe) ||
+    if (!g_t.motion_pipe || (probe_view && !g_t.view_pipe) ||
         !image_ensure(&g_t.motion, MOTION_FORMAT, scene->sw, scene->sh, target, "motion"))
         return;
     if (!g_t.stats_pipe)
@@ -529,16 +637,70 @@ void vk_temporal_before(u64 fs0_hash) {
         g_t.newest = !g_t.newest;
         g_t.history_at = frame;
     }
-    /* without a frame before (the first one, or after a gap) the frame is compared with itself */
-    const VkImageView views[SETS_BINDINGS] = {g_t.motion.view, now->view, history ? before->view : now->view,
-                                              depth_view};
+    const int taa = g_t.mode == MODE_TAA;
     const VkSampler samplers[SETS_BINDINGS] = {g_t.point, g_t.point, g_t.linear, g_t.point};
+    VkImageView numbers_before = history ? before->view : now->view;
+    int numbers = history;
+    if (taa && g_t.view != 4) {
+        /* the resolve: the scene colour and the new history are written, the old history and this frame's copy
+           read. No history is used on the first frame, after a gap, after a change of size or a camera cut. */
+        const VkFormat formats[2] = {scene->f.vk, HISTORY_FORMAT};
+        if (!g_t.resolve_pipe || g_t.resolve_format != scene->f.vk) {
+            g_t.resolve_pipe =
+                pipeline_make_n(formats, 2, temporal_resolve_fs_spv, temporal_resolve_fs_spv_size, "resolve");
+            g_t.resolve_format = scene->f.vk;
+        }
+        if (g_t.history[0].w != scene->sw || g_t.history[0].h != scene->sh) g_t.resolved_at = 0;
+        if (!g_t.resolve_pipe ||
+            !image_ensure(&g_t.history[0], HISTORY_FORMAT, scene->sw, scene->sh, target, "history") ||
+            !image_ensure(&g_t.history[1], HISTORY_FORMAT, scene->sw, scene->sh, target, "history"))
+            return;
+        Image* kept = &g_t.history[g_t.history_newest];
+        Image* made = &g_t.history[!g_t.history_newest];
+        /* a cut: the screen's middle at a depth of ten moved by more than a quarter of the screen */
+        const float* m = pc.reproject;
+        const float w = 0.01f * m[11] + m[15], x = 0.01f * m[8] + m[12], y = 0.01f * m[9] + m[13];
+        const int cut = !(w > 0.0f) || fabsf(x) > 0.5f * w || fabsf(y) > 0.5f * w;
+        const int usable = g_t.resolved_at + 1 == frame && !cut;
+        if (!usable && (g_t.resets++ < 4 || g_t.resets % 600 == 0))
+            LOG("arceus-temporal: history not used (%s), %llu times so far\n", cut ? "camera cut" : "no frame before",
+                (unsigned long long)g_t.resets);
+        Constants rc = pc;
+        rc.depth[3] = usable ? 0.0f : 1.0f;
+        rc.size[3] = FRAME_WEIGHT;
+        const VkImageView views[SETS_BINDINGS] = {g_t.motion.view, now->view, usable ? kept->view : now->view,
+                                                  depth_view};
+        const VkDescriptorSet set = set_make(views, samplers);
+        if (!set) return;
+        vk_barrier(cb, made->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
+                   VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        fullscreen2(cb, scene->att, made->view, scene->sw, scene->sh, g_t.resolve_pipe, set, &rc);
+        vk_barrier(cb, made->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        vk_surf_wrote(scene);
+        vk_rt_drawn(scene);
+        g_t.history_newest = !g_t.history_newest;
+        g_t.resolved_at = frame;
+        /* the numbers then compare the frame with what the resolve made of it */
+        numbers_before = made->view;
+        numbers = 1;
+        pc.depth[2] = 1.0f;
+    } else if (taa)
+        numbers = 0;
+
+    /* without a frame before (the first one, or after a gap) the frame is compared with itself */
+    const VkImageView views[SETS_BINDINGS] = {g_t.motion.view, now->view, numbers_before, depth_view};
     const VkDescriptorSet set = set_make(views, samplers);
     if (!set) return;
 
     /* the numbers: every STATS_EVERY runs the small image is drawn and copied to memory, and the copy made that
        many runs ago, long finished, is read and logged */
-    if (history && g_t.runs % STATS_EVERY == 0 && g_t.stats_pipe && stats_ready() &&
+    if (numbers && g_t.runs % STATS_EVERY == 0 && g_t.stats_pipe && stats_ready() &&
         image_ensure(&g_t.stats, STATS_FORMAT, STATS_W, STATS_H,
                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, "numbers")) {
         const VkBufferImageCopy out = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
@@ -555,8 +717,8 @@ void vk_temporal_before(u64 fs0_hash) {
         rec_CmdCopyImageToBuffer(cb, g_t.stats.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_t.stats_buffer, 1, &out);
         g_t.stats_run = g_t.runs;
     }
-    if (!g_t.view) return;
-    /* a view, drawn over the scene */
+    if (taa || !g_t.view) return;
+    /* a view of the probe, drawn over the scene */
     vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     fullscreen(cb, scene->att, scene->sw, scene->sh, g_t.view_pipe, set, &pc);

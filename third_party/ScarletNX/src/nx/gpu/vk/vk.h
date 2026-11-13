@@ -1060,6 +1060,8 @@ void vk_render_clear(GpuChannel* ch, u32 v);
 int vk_temporal_enabled(void);
 void vk_temporal_draw(GpuChannel* ch, const VkSh* fs0, Surf* const* sampled, int nt, Surf* const* rt, u32 n, Surf* zt);
 void vk_temporal_before(u64 fs0_hash);
+/* the scene camera's constant block with this frame's jitter in place of the guest's, 1 when buffer and offset are set */
+int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer, u64* offset);
 void vk_temporal_multiply(const float a[16], const float b[16], float out[16]);
 /* gpu/vk/render.c: the read-only frame pass census (SNX_PASS_CENSUS=1) hears of each frame shown */
 void vk_pass_census_present(const Surf* shown);

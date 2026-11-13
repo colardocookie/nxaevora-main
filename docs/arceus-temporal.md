@@ -1,10 +1,16 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Copyright 2026 the NXAevora contributors -->
 
-# Temporal probe
+# Temporal passes
 
-`SNX_ARCEUS_TEMPORAL=probe` is the first step toward temporal anti-aliasing and upscaling in Pokémon Legends: Arceus.
-It changes nothing in the picture unless a view is chosen. Unset, none of it runs.
+`SNX_ARCEUS_TEMPORAL` adds temporal passes to Pokémon Legends: Arceus in the Vulkan renderer. Unset, none of it runs.
+
+| Value | What it does |
+| --- | --- |
+| `probe` | Finds the scene, makes camera motion vectors and measures them. The picture is unchanged unless a view is chosen |
+| `taa` | Also jitters the scene's camera by a sub-pixel offset each frame and resolves the scene with a history: temporal anti-aliasing at the scene's size |
+
+## Probe
 
 ## What it does
 
@@ -53,3 +59,32 @@ with the viewport and depth range used. Skipped frames are counted with the reas
 The vectors describe the camera only. A moving object has the vector of the background behind its depth. The depth
 convention and the direction of the screen's y axis come from the scene's viewport, and view 2 is the check that they
 are right. Cutscenes and menus with another frame layout are skipped when the composite is not found.
+
+## Anti-aliasing (`taa`)
+
+Jitter. Each frame the scene is drawn with one of 8 sub-pixel offsets (a Halton sequence, within half a pixel each
+way). The game's memory is not changed. A draw that binds the scene camera's block (constant bank 4 at one of the two
+addresses the block takes in turn) gets a copy from the frame's staging memory in which the view-projection and the
+projection are shifted and the inverse view-projection is shifted back. So the depth pre-pass, the G-buffer, the
+lighting and the forward passes all see the same jittered camera, while the shadow maps, the probes and the UI, which
+bind other blocks, see none. The motion vectors and the history use the matrices read from the game's memory, which
+have no jitter, and so does the neighbouring slot with last frame's block.
+
+Resolve. At the probe's place, before the scene colour is first read, the scene colour is replaced by a blend of the
+frame (a tenth) and our history (nine tenths) in linear HDR. The history is fetched through the camera motion vector,
+clamped to the frame's 3 x 3 neighbourhood in YCoCg, and dropped where the depth it was stored with is more than a
+tenth away from the depth this pixel's point had a frame ago, where the point was off screen, on the first frame,
+after a gap, after a change of size and after a camera cut. The game's bloom, exposure and tone mapping then work on
+the resolved picture.
+
+Views. `SNX_ARCEUS_TEMPORAL_VIEW=3` shows the frame's weight in the blend (white where the history was dropped) and
+`4` the jittered frame without the resolve. Views 1 and 2 belong to the probe.
+
+Numbers. The `arceus-temporal-stats` line then gives, by depth band, `dropped`, the share of pixels whose history
+was dropped, and `far_from_frame`, the share whose resolved colour differs from the frame's own by more than a
+quarter of its brightness. Trails behind things that move show in the second.
+
+Limits. The vectors are the camera's only, so a moving character or Pokémon drags a trail until the history is
+clamped away, and grass in the wind blurs. Thin bright details can flicker where the clamp cuts them. The resolve
+runs once per frame of the game, also where the scene is not the field (it is skipped when the composite is not
+found).

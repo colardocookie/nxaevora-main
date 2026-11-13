@@ -1909,6 +1909,9 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         VkBuffer b;
         u64 o;
         if (!cb_get(ch, stage, i, sz, &b, &o)) return VK_NULL_HANDLE;
+        /* the scene camera's block with this frame's jitter, when temporal anti-aliasing is on */
+        if (i == 4 && vk_temporal_enabled())
+            vk_temporal_camera_block(ch->cbind[stage][i], ch->cbind_size[stage][i], sz, &b, &o);
         dw_buffer(&d, set, SNX_VKB_CB + i, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, sz);
     }
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
