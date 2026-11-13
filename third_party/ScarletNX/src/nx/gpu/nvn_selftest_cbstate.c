@@ -25,6 +25,8 @@
 #define CB_COPY_ROW_STRIDE 0x1400u
 #define CB_COPY_IMAGE_STRIDE 0x96000u
 #define CB_LINE_WIDTH_BITS 0x40000000u /* the bit pattern of 2.0f */
+/* What a refused memory getter answers on the host (COMMAND_REFUSE_VALUE_HANDLER in nvn_native.c). */
+#define CB_HOST_REFUSED_VALUE 0u
 
 /* The functions of the group, resolved once. A missing name skips the cases that need it. */
 enum {
@@ -87,7 +89,7 @@ typedef struct {
 } CbCase;
 
 /* Makes one side's command buffer, zeroed, with its memory pool and control block when the case needs them, then calls
-   Initialize. 0 when the arena is full, a pool was not made, or Initialize did not answer 1. */
+   Initialize. 0 when the arena is full or a pool was not made. The Initialize result is in *init: the caller compares it. */
 static int cb_side_make(CPU* c, NvnStRun* run, NvnStResCache* cache, const CbProcs* p, int host, int memory,
                         CbSide* s, uint64_t* init) {
     s->cb = nvn_st_arena_alloc(&run->arena, CB_OBJ_BYTES, 16);
@@ -103,7 +105,7 @@ static int cb_side_make(CPU* c, NvnStRun* run, NvnStResCache* cache, const CbPro
     }
     *init = nvn_st_call(c, CB_SIDE(p, host, CBP_INITIALIZE), &(NvnStCall){.x = {s->cb, nvn_st_device()}});
     s->initialized = *init != 0;
-    return s->initialized;
+    return 1;
 }
 
 /* Finalizes the command buffer and destroys its pool, also after a step that failed. */
@@ -359,6 +361,47 @@ static const CbCase cb_cases[] = {
      .steps = cb_step_refused_getter},
 };
 
+/* Initialize answered differently on the two sides: the case fails on the Initialize result, and its steps do not
+   run, because they need an initialized command buffer on both sides. */
+static void cb_report_init_mismatch(NvnStRun* run, const CbCase* row, const uint64_t init[2]) {
+    NvnStRec ref = {0}, got = {0};
+    nvn_st_add_ret(&ref, "nvnCommandBufferInitialize", init[0]);
+    nvn_st_add_ret(&got, "nvnCommandBufferInitialize", init[1]);
+    NvnStDiff diff;
+    nvn_st_compare(&ref, &got, &diff);
+    nvn_st_report(run, row->name, row->args, &ref, &diff);
+}
+
+/* A refused getter must still answer the refusal value on the host. Another host value is a fail even though it
+   differs from the library, because the host handler then changed and the row must be checked again. */
+static int cb_refusal_kept(NvnStRun* run, const CbCase* row, const NvnStRec* got) {
+    if (got->n_ret == 1 && got->ret[0].value == CB_HOST_REFUSED_VALUE) return 1;
+    run->cases++;
+    run->failed++;
+    LOG("selftest: %s expected the host refusal value %#x, host gave %#llx\n", row->name, CB_HOST_REFUSED_VALUE,
+        got->n_ret ? (unsigned long long)got->ret[0].value : 0ull);
+    return 0;
+}
+
+/* Runs the steps of one case on both sides and compares the two records. */
+static void cb_run_steps(CPU* c, NvnStRun* run, const CbProcs* p, const CbCase* row, const CbSide side[2],
+                         const uint64_t init[2]) {
+    const int mutation = row->setter && !strcmp(g_settings.nvn_selftest_mutation, row->setter);
+    NvnStRec ref = {0}, got = {0};
+    for (int host = 0; host < 2; host++) {
+        NvnStRec* const rec = host ? &got : &ref;
+        const uint64_t change = mutation && host ? 1u : 0u;
+        row->steps(c, p, host, &side[host], init[host], change, row->param, rec);
+    }
+    NvnStDiff diff;
+    nvn_st_compare(&ref, &got, &diff);
+    if (!row->expect_noop) {
+        nvn_st_report(run, row->name, row->args, &ref, &diff);
+        return;
+    }
+    if (cb_refusal_kept(run, row, &got)) nvn_st_report_noop(run, row->name, row->args, &ref, &diff);
+}
+
 /* Runs one case: a fresh command buffer on each side, the same steps, and the comparison of the two records. */
 static void cb_case(CPU* c, NvnStRun* run, NvnStResCache* cache, const CbProcs* p, const CbCase* row) {
     CbSide side[2] = {{0}};
@@ -369,21 +412,13 @@ static void cb_case(CPU* c, NvnStRun* run, NvnStResCache* cache, const CbProcs* 
     if (!ok) {
         run->skipped++;
         LOG("selftest: %s skipped, a command buffer or its memory was not made\n", row->name);
+    } else if (init[0] != init[1]) {
+        cb_report_init_mismatch(run, row, init);
+    } else if (!init[0]) {
+        run->skipped++;
+        LOG("selftest: %s skipped, Initialize answered 0 on both sides\n", row->name);
     } else {
-        const int mutation =
-            row->setter && !strcmp(g_settings.nvn_selftest_mutation, row->setter);
-        NvnStRec ref = {0}, got = {0};
-        for (int host = 0; host < 2; host++) {
-            NvnStRec* const rec = host ? &got : &ref;
-            const uint64_t change = mutation && host ? 1u : 0u;
-            row->steps(c, p, host, &side[host], init[host], change, row->param, rec);
-        }
-        NvnStDiff diff;
-        nvn_st_compare(&ref, &got, &diff);
-        if (row->expect_noop)
-            nvn_st_report_noop(run, row->name, row->args, &ref, &diff);
-        else
-            nvn_st_report(run, row->name, row->args, &ref, &diff);
+        cb_run_steps(c, run, p, row, side, init);
     }
     for (int host = 0; host < 2; host++)
         cb_side_destroy(c, cache, p, host, row->needs_memory, &side[host]);
