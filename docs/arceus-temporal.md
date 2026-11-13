@@ -106,6 +106,7 @@ Each is its own switch, off unless set, so they can be compared one at a time. T
 | `SNX_ARCEUS_TEMPORAL_CLAMP=variance` | The history is clipped to the mean of the frame's 3 x 3 neighbourhood plus and minus 1.25 standard deviations, along the line toward the frame's colour, in place of the clamp to its minimum and maximum |
 | `SNX_ARCEUS_TEMPORAL_BLEND=adaptive` | The frame's share is 0.05 standing, 0.1 from two pixels of motion a frame on, and up to 0.2 where the clip changed the history's brightness, in place of a fixed 0.1 |
 | `SNX_ARCEUS_TEMPORAL_LUMA=1` | History and frame are blended with each weighted by 1 / (1 + its brightness), so a bright spark neither flickers in nor smears |
+| `SNX_ARCEUS_TEMPORAL_SHARPEN=<0 to 1>` | A light sharpen in a pass of its own after the resolve. It reads the resolved picture from the history image and writes the scene colour only, so the history stays unsharpened. The amount falls where the neighbourhood already has contrast and the result stays within the 3 x 3 neighbourhood's least and greatest |
 
 The formulas are in `gpu/vk/temporal_math.h` with a host test (`tests/temporal_math.c`), and again in GLSL in
 `shaders/temporal_resolve.frag`. None of the options has been played.

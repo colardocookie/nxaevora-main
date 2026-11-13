@@ -87,6 +87,9 @@ static struct {
     u8 jitter_source[0x1000]; /* the guest's bytes the copy was made from */
     /* object vectors: the target, the frame it was last drawn in, and the counts of the stats line */
     int objects;
+    float sharpen;  /* 0 off, to 1: the sharpen after the resolve */
+    VkPipeline sharpen_pipe;
+    VkFormat sharpen_format;
     /* the resolve's: 1 Catmull-Rom history, 2 variance clip, 4 weight by motion and clip, 8 the nearest depth's
        vector, 16 blend by brightness */
     int options;
@@ -134,6 +137,11 @@ static int temporal_on(void) {
                 g_t.options & 1 ? "Catmull-Rom" : "linear", g_t.options & 2 ? "variance clip" : "min and max",
                 g_t.options & 4 ? "by motion and clip" : "fixed", g_t.options & 8 ? "of the nearest depth" : "own",
                 g_t.options & 16 ? "by brightness" : "plain");
+        const char* sharpen = getenv("SNX_ARCEUS_TEMPORAL_SHARPEN");
+        g_t.sharpen = g_t.mode == MODE_TAA && sharpen ? strtof(sharpen, NULL) : 0.0f;
+        if (!(g_t.sharpen > 0.0f)) g_t.sharpen = 0.0f;
+        if (g_t.sharpen > 1.0f) g_t.sharpen = 1.0f;
+        if (g_t.sharpen > 0.0f) LOG("arceus-temporal: sharpen %.2f after the resolve\n", (double)g_t.sharpen);
         const char* vectors = getenv("SNX_ARCEUS_TEMPORAL_VECTORS");
         g_t.objects = g_t.mode && vectors && !strcmp(vectors, "object");
         if (g_t.objects) LOG("arceus-temporal: objects that moved get their own vectors\n");
@@ -1046,6 +1054,23 @@ void vk_temporal_before(u64 fs0_hash) {
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        /* the sharpen: the resolved picture read from the new history, the scene colour written again. Not with
+           the weight view, which is no picture. */
+        if (g_t.sharpen > 0.0f && g_t.view != 3) {
+            if (!g_t.sharpen_pipe || g_t.sharpen_format != scene->f.vk) {
+                g_t.sharpen_pipe =
+                    pipeline_make(scene->f.vk, temporal_sharpen_fs_spv, temporal_sharpen_fs_spv_size, "sharpen");
+                g_t.sharpen_format = scene->f.vk;
+            }
+            const VkImageView sharpen_views[SETS_BINDINGS] = {made->view, made->view, made->view,
+                                                              made->view, made->view, made->view};
+            const VkDescriptorSet sharpen_set = g_t.sharpen_pipe ? set_make(sharpen_views, samplers) : VK_NULL_HANDLE;
+            if (sharpen_set) {
+                Constants sc = pc;
+                sc.size[3] = g_t.sharpen;
+                fullscreen(cb, scene->att, scene->sw, scene->sh, g_t.sharpen_pipe, sharpen_set, &sc);
+            }
+        }
         vk_surf_wrote(scene);
         vk_rt_drawn(scene);
         g_t.history_newest = !g_t.history_newest;

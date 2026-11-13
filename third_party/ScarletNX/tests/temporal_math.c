@@ -218,6 +218,27 @@ static void test_weights(void) {
     assert(close_to(out[0], 12.28, 0.05));
 }
 
+static void test_sharpen(void) {
+    /* a flat place stays as it is, whatever the amount */
+    assert(close_to(temporal_sharpen(0.4f, 1.6f, 0.4f, 0.4f, 1.0f), 0.4, 1e-6));
+    /* amount 0 changes nothing */
+    assert(close_to(temporal_sharpen(0.5f, 1.2f, 0.2f, 0.6f, 0.0f), 0.5, 1e-6));
+    /* a pixel brighter than its neighbours gets brighter, a darker one darker, more with more amount */
+    const float bright_half = temporal_sharpen(0.5f, 4 * 0.4f, 0.4f, 0.6f, 0.5f);
+    const float bright_full = temporal_sharpen(0.5f, 4 * 0.4f, 0.4f, 0.6f, 1.0f);
+    assert(bright_half > 0.5f && bright_full > bright_half);
+    assert(temporal_sharpen(0.4f, 4 * 0.5f, 0.3f, 0.5f, 1.0f) < 0.4f);
+    /* never outside the neighbourhood's least and greatest */
+    for (int i = 0; i <= 10; i++) {
+        const float c = (float)i / 10.0f;
+        const float least = c < 0.3f ? c : 0.3f, greatest = c > 0.7f ? c : 0.7f;
+        const float out = temporal_sharpen(c, 4 * 0.5f, least, greatest, 1.0f);
+        assert(out >= least && out <= greatest);
+    }
+    /* a neighbourhood that already spans the range (a hard edge) is left alone */
+    assert(close_to(temporal_sharpen(0.6f, 0.0f + 1.0f + 0.5f + 0.5f, 0.0f, 1.0f, 1.0f), 0.6, 1e-6));
+}
+
 int main(void) {
     test_jitter();
     test_jitter_matrices();
@@ -226,6 +247,7 @@ int main(void) {
     test_catmull();
     test_clip();
     test_weights();
+    test_sharpen();
     puts("temporal_math: ok");
     return 0;
 }

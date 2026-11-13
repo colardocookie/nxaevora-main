@@ -123,4 +123,18 @@ static inline void temporal_blend_by_brightness(const float history[3], const fl
     const float wh = (1.0f - weight) / (1.0f + lh), wf = weight / (1.0f + lf);
     for (int i = 0; i < 3; i++) out[i] = (history[i] * wh + frame[i] * wf) / (wh + wf);
 }
+/* The sharpen after the resolve, for one colour channel already taken to 0..1: the middle c, the sum of its four
+   direct neighbours, the least and greatest of the 3 x 3, the amount 0 to 1. The neighbours count with a negative
+   weight that falls with the room the neighbourhood leaves to the ends of the range, and the result stays within
+   least and greatest. */
+static inline float temporal_sharpen(float c, float cross, float least, float greatest, float amount) {
+    float room = (least < 1.0f - greatest ? least : 1.0f - greatest) / (greatest > 0.0001f ? greatest : 0.0001f);
+    if (room < 0.0f) room = 0.0f;
+    if (room > 1.0f) room = 1.0f;
+    const float w = -sqrtf(room) * 0.2f * amount;
+    float sharp = (c + cross * w) / (1.0f + 4.0f * w);
+    if (sharp < least) sharp = least;
+    if (sharp > greatest) sharp = greatest;
+    return sharp;
+}
 #endif
