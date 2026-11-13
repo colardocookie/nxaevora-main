@@ -602,6 +602,22 @@ out:
     return ok;
 }
 
+/* Fails the syncs of the tokens of a frame that a new QueueInitialize drops: a dropped frame never posts, so a waiter
+   must not stay PENDING (SyncWait then refuses with 3). A token names a sync only when its generation and its serial
+   still match. Caller holds objs_lock. */
+static void queue_drop_frame_syncs(u64 queue_addr, const NvnPendingFrame* frame) {
+    for (uint32_t i = 0; i < frame->token_count; i++) {
+        const NvnFrameToken* token = &frame->tokens[i];
+        NvnObj* so = nvn_objtab_valid(&objs, token->sync, token->generation)
+                         ? nvn_objtab_find(&objs, token->sync) : NULL;
+        if (!so || so->kind != NVN_OBJ_SYNC) continue;
+        SyncRec* sync = so->data;
+        if (!nvn_frame_token_matches(token, so->generation, sync->serial)) continue;
+        sync->state = NVN_SYNC_UNSIGNALED;
+        LOG("nvn-native: queue=%llx drops the fence of sync=%llx, the queue is initialized again\n",
+            (unsigned long long)queue_addr, (unsigned long long)token->sync);
+    }
+}
 /* nvnQueueInitialize(queue, builder): runs the library builders, records the builder and opens the private channel
    of the frame jobs. A failed builder stage leaves the macro code empty. */
 static void h_queue_initialize(CPU* c, u64 entry) {
@@ -619,7 +635,9 @@ static void h_queue_initialize(CPU* c, u64 entry) {
     uint32_t channel_id = 0;
     GpuChannel* channel = NULL;
     if (old) { /* initialized again without Finalize */
+        queue_drop_frame_syncs(queue_addr, &old->pending);
         nvn_frame_release(&old->pending, &lists);
+        pc_broadcast(&frame_done_cv); /* a waiter of a dropped fence must see its state */
         channel_id = old->channel_id;
         channel = old->channel;
         free(old->init_words);
@@ -654,6 +672,14 @@ static QueueRec* queue_rec(u64 addr, const char* operation) {
     QueueRec* q = known_record(addr, NVN_OBJ_QUEUE);
     if (!q) LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s unknown queue=%llx\n", operation, (unsigned long long)addr);
     return q;
+}
+/* The device of the queue record, for the execution test (nvn_exectest.c). 0 when the queue is unknown. */
+uint64_t nvn_native_queue_device(uint64_t queue) {
+    pm_lock(&objs_lock);
+    const QueueRec* q = known_record(queue, NVN_OBJ_QUEUE);
+    const uint64_t device = q ? q->builder.device : 0;
+    pm_unlock(&objs_lock);
+    return device;
 }
 
 /* G2 and G5: pool state stays in host records. A pool maps its storage at its GPU address from Initialize to
@@ -4765,7 +4791,7 @@ static void h_command_buffer_fence_sync(CPU* c, u64 entry) {
     static const char* const name = "nvnCommandBufferFenceSync";
     pm_lock(&objs_lock);
     CommandBufferRec* cb = command_buffer(c->x[0], name);
-    NvnOpFenceSync op = {c->x[1], 0, (uint32_t)c->x[2]};
+    NvnOpFenceSync op = {c->x[1], 0, (uint32_t)c->x[2], (uint32_t)c->x[3] & NVN_QUEUE_FENCE_FLUSH_FOR_CPU};
     if (!cb) {
     } else if (!command_object(op.sync, NVN_OBJ_SYNC, &op.generation)) {
         command_dropped(cb, name, "unknown sync", op.sync);
@@ -4776,9 +4802,6 @@ static void h_command_buffer_fence_sync(CPU* c, u64 entry) {
     } else {
         if (c->x[3] & ~NVN_QUEUE_FENCE_FLUSH_FOR_CPU)
             LOG_LIMIT(8, "nvn-native: %s flags=%llx has bits other than FLUSH_FOR_CPU\n",
-                      name, (unsigned long long)c->x[3]);
-        if (c->x[3] & NVN_QUEUE_FENCE_FLUSH_FOR_CPU)
-            LOG_LIMIT(8, "nvn-native: %s flags=%llx: FLUSH_FOR_CPU of a command buffer op has no effect\n",
                       name, (unsigned long long)c->x[3]);
         command_record(cb, c->x[0], name, NVN_OP_FENCE_SYNC, &op, sizeof op);
     }
@@ -6787,10 +6810,10 @@ static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget
 
 /* Follows the fence, wait and CALL ops of one submitted list. A fence becomes a token of the pending frame with the
    serial of that sync, so a newer fence replaces it. Its signal is at the end of the frame job, later than in the
-   library: a waiter waits longer, never shorter. A wait only checks what the serial order has reached. Called with
-   objs_lock held, after the lists were added to the pending frame. */
+   library: a waiter waits longer, never shorter. A wait only checks what the serial order has reached. *flush is set
+   to 1 when a fence token has FLUSH_FOR_CPU. Called with objs_lock held, after the lists were added to the frame. */
 static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const NvnOpList* list, uint64_t list_handle,
-                            uint32_t depth) {
+                            uint32_t depth, int* flush) {
     size_t pos = 0;
     NvnOpHeader header;
     const void* payload;
@@ -6814,6 +6837,7 @@ static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const
                     sync->serial = serial;
                     sync->syncpoint = q->channel_id;
                     sync->state = NVN_SYNC_PENDING;
+                    if (op->flags & NVN_QUEUE_FENCE_FLUSH_FOR_CPU) *flush = 1;
                 }
             }
         } else if (header.code == NVN_OP_WAIT_SYNC) {
@@ -6847,16 +6871,18 @@ static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const
                           (unsigned long long)op->handle);
                 continue;
             }
-            queue_scan_list(queue_addr, q, name, target, op->handle, depth + 1);
+            queue_scan_list(queue_addr, q, name, target, op->handle, depth + 1, flush);
         }
     }
 }
 
 /* nvnQueueSubmitCommands(queue, count, handles): copies the handle array at once and adds the lists to the pending
-   frame (decision 8). The game alternates two arrays and reuses them, so the copy is not optional. */
+   frame (decision 8). The game alternates two arrays and reuses them, so the copy is not optional. A fence op with
+   FLUSH_FOR_CPU posts the frame after the scan. */
 static void h_queue_submit_commands(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueueSubmitCommands";
+    FrameJob* job = NULL;
     pm_lock(&objs_lock);
     QueueRec* q = queue_rec(c->x[0], name);
     int32_t count = (int32_t)c->x[1];
@@ -6890,18 +6916,24 @@ static void h_queue_submit_commands(CPU* c, u64 entry) {
         LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx count=%u does not fit in the pending frame\n",
                   name, (unsigned long long)c->x[0], handle_count);
     } else {
+        int flush = 0;
         if (skipped)
             LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx skipped %u handles that are not live lists\n",
                       name, (unsigned long long)c->x[0], skipped);
         for (uint32_t i = 0; i < handle_count; i++) {
             const NvnOpList* list = nvn_list_find(&lists, handles[i]);
-            if (list) queue_scan_list(c->x[0], q, name, list, handles[i], 0);
+            if (list) queue_scan_list(c->x[0], q, name, list, handles[i], 0, &flush);
         }
         frame_submitted_lists += handle_count - skipped;
         frame_skipped_lists += skipped;
+        if (flush && !nvn_frame_is_empty(&q->pending)) {
+            const FrameTarget target = {.kind = NVN_FRAME_FLUSH};
+            job = queue_post_frame(c->x[0], q, &target);
+        }
     }
     free(handles);
     pm_unlock(&objs_lock);
+    if (job) gpu_call(frame_run, job, NULL, 0);
 }
 
 /* nvnQueueFenceSync(queue, sync, condition, flags): a token in the pending frame, or the syncpoint value of the
@@ -6958,7 +6990,9 @@ static void h_queue_fence_sync(CPU* c, u64 entry) {
 }
 
 /* nvnQueueWaitSync(queue, sync): the host has one GPU worker (gpu.c, gpu_call), and the frame jobs and calls run on it
-   in order, so a sync that a queue fenced is reached before later work of any queue. The library appends GPU waits. */
+   in order, so a sync that a queue fenced is reached before later work of any queue. A PENDING fence of another queue
+   is not posted yet, and the host cannot park a job: the call returns 0 with a log line. A PENDING fence of the same
+   queue is earlier in the same frame, so it returns 1. The library appends GPU waits. */
 static void h_queue_wait_sync(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueueWaitSync";
@@ -6966,18 +7000,23 @@ static void h_queue_wait_sync(CPU* c, u64 entry) {
     pm_lock(&objs_lock);
     QueueRec* q = queue_rec(c->x[0], name);
     const SyncRec* sync = q ? known_record(sync_addr, NVN_OBJ_SYNC) : NULL;
+    const int cross = sync && q && sync->state == NVN_SYNC_PENDING && sync->syncpoint != q->channel_id;
     if (q && !sync)
         LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s unknown sync=%llx\n", name, (unsigned long long)sync_addr);
-    if (sync && sync->state == NVN_SYNC_PENDING)
+    if (cross)
+        LOG_LIMIT(QUEUE_LOG_LIMIT,
+                  "nvn-native: %s queue=%llx sync=%llx: a cross-queue wait on a pending fence is not supported\n",
+                  name, (unsigned long long)c->x[0], (unsigned long long)sync_addr);
+    else if (sync && sync->state == NVN_SYNC_PENDING)
         LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s sync=%llx is pending: its frame is not posted yet\n", name,
                   (unsigned long long)sync_addr);
     if (!q || !sync || sync->state == NVN_SYNC_UNSIGNALED) {
-        if (sync)
+        if (sync && sync->state == NVN_SYNC_UNSIGNALED)
             LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s sync=%llx is not signaled\n", name,
                       (unsigned long long)sync_addr);
         c->x[0] = 0;
     } else {
-        c->x[0] = 1;
+        c->x[0] = cross ? 0 : 1;
     }
     pm_unlock(&objs_lock);
 }

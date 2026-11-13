@@ -105,6 +105,14 @@ static void test_token_limit(void) {
     CHECK(f.token_count == 0 && !f.tokens);
 }
 
+static void test_token_matches(void) {
+    const NvnFrameToken token = {0x1234, 5, 42};
+    CHECK(nvn_frame_token_matches(&token, 5, 42));
+    CHECK(!nvn_frame_token_matches(&token, 6, 42)); /* another record generation */
+    CHECK(!nvn_frame_token_matches(&token, 5, 43)); /* a newer fence of the same sync */
+    CHECK(!nvn_frame_token_matches(&token, 6, 43));
+}
+
 static void test_log_due(void) {
     CHECK(nvn_frame_log_due(1, 0));
     CHECK(nvn_frame_log_due(NVN_FRAME_LOG_FIRST, 0));
@@ -123,6 +131,7 @@ int main(void) {
     test_limit();
     test_take_and_release();
     test_token_limit();
+    test_token_matches();
     test_log_due();
     if (failures) {
         printf("%d failures\n", failures);

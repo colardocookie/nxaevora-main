@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* The pure parts of the NVN execution test (gpu/nvn_exectest.c): the RGBA8 clear bytes, the byte comparison and its
-   text, the pass rules of E1 and E4, and the mutation name. The expected values come from the design, not from the code
-   under test. */
+   text, the pass rules of E1, E4, E7 and E8, the stall result, and the mutation names. The expected values come from
+   the design, not from the code under test. */
 #include "nx/gpu/nvn_exectest.h"
 #include <stdio.h>
 #include <string.h>
@@ -52,6 +52,18 @@ static void test_decisions(void) {
     CHECK(nvn_ex_e4_ok(NVN_EX_SYNC_TIMEOUT, NVN_EX_SYNC_SIGNALED, NVN_EX_SYNC_FAILED));
     CHECK(!nvn_ex_e4_ok(NVN_EX_SYNC_TIMEOUT, NVN_EX_SYNC_TIMEOUT, NVN_EX_SYNC_FAILED));
     CHECK(!nvn_ex_e4_ok(NVN_EX_SYNC_TIMEOUT, NVN_EX_SYNC_SATISFIED, NVN_EX_SYNC_SIGNALED));
+    CHECK(nvn_ex_e7_ok(NVN_EX_SYNC_SIGNALED));
+    CHECK(nvn_ex_e7_ok(NVN_EX_SYNC_SATISFIED));
+    CHECK(!nvn_ex_e7_ok(NVN_EX_SYNC_TIMEOUT));
+    CHECK(!nvn_ex_e7_ok(NVN_EX_SYNC_FAILED));
+    CHECK(nvn_ex_e8_ok(NVN_EX_SYNC_FAILED));
+    CHECK(!nvn_ex_e8_ok(NVN_EX_SYNC_TIMEOUT));
+    CHECK(!nvn_ex_e8_ok(NVN_EX_SYNC_SATISFIED));
+    CHECK(!nvn_ex_e8_ok(NVN_EX_SYNC_SIGNALED));
+    CHECK(nvn_ex_wait_stalled(NVN_EX_SYNC_TIMEOUT));
+    CHECK(!nvn_ex_wait_stalled(NVN_EX_SYNC_SIGNALED));
+    CHECK(!nvn_ex_wait_stalled(NVN_EX_SYNC_SATISFIED));
+    CHECK(!nvn_ex_wait_stalled(NVN_EX_SYNC_FAILED));
 }
 
 static void test_names(void) {
@@ -61,10 +73,14 @@ static void test_names(void) {
     CHECK(nvn_ex_case_from_name("exec_timeout") == NVN_EX_CASE_TIMEOUT);
     CHECK(nvn_ex_case_from_name("exec_event_report") == NVN_EX_CASE_EVENT_REPORT);
     CHECK(nvn_ex_case_from_name("exec_two_queues") == NVN_EX_CASE_TWO_QUEUES);
+    CHECK(nvn_ex_case_from_name("exec_cb_fence_flush") == NVN_EX_CASE_CB_FENCE_FLUSH);
+    CHECK(nvn_ex_case_from_name("exec_queue_reinit") == NVN_EX_CASE_QUEUE_REINIT);
     CHECK(nvn_ex_case_from_name("") == NVN_EX_CASE_COUNT);
     CHECK(nvn_ex_case_from_name("exec_unknown") == NVN_EX_CASE_COUNT);
     CHECK(nvn_ex_case_from_name(NULL) == NVN_EX_CASE_COUNT);
     CHECK(!strcmp(nvn_ex_case_name(NVN_EX_CASE_GPU_TO_CPU), "exec_gpu_to_cpu"));
+    CHECK(!strcmp(nvn_ex_case_name(NVN_EX_CASE_CB_FENCE_FLUSH), "exec_cb_fence_flush"));
+    CHECK(!strcmp(nvn_ex_case_name(NVN_EX_CASE_QUEUE_REINIT), "exec_queue_reinit"));
 }
 
 int main(void) {

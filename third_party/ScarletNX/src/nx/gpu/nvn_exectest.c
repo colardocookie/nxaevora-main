@@ -1,10 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The NVN execution test (nvn-unobserved.md, "Design of 4-u3-4"). It runs real work on the host path and checks the
-   result in memory: fences and waits, a clear and a copy to the CPU, a CPU write read by the GPU, a timeout, events and
-   reports, and two queues. The queues, pools, buffers, textures, events, syncs and command buffers are its own and live
-   in one arena. It writes no object of the game. Each wait has a limit; only QueueFinish of E6 waits without one, as the
-   design says. The calls are the host handlers, on the thread that called nvnQueueInitialize. */
+/* The NVN execution test (nvn-unobserved.md, "Design of 4-u3-4"). It runs real work on the host path and checks
+   the result in memory: fences and waits, clears, copies, the CPU read and write, a timeout, events and reports,
+   two queues, a fence flush inside a command buffer, and a queue that is initialized again. Its own queues, pools,
+   buffers, textures, events, syncs and command buffers live in one arena, and it writes no object of the game. */
 #include "nx/gpu/nvn_exectest.h"
 #include "nx/gpu/nvn_cmdlist.h"
 #include "nx/gpu/nvn_native.h"
@@ -23,6 +22,8 @@
 #define NVN_EX_CONTROL_BYTES 0x800u
 #define NVN_EX_COMMAND_BYTES 0x1000u
 #define NVN_EX_POOL_ALIGN 0x1000u
+#define NVN_EX_OBJ_ALIGN 16u
+#define NVN_EX_CONTROL_ALIGN 0x100u
 #define NVN_EX_TEX_POOL_BYTES 0x10000u
 #define NVN_EX_DATA_POOL_BYTES 0x4000u
 #define NVN_EX_CMD_POOL_BYTES 0x1000u
@@ -33,6 +34,9 @@
 /* The waits: the limit of every SyncWait, and the short limit of E4 only. */
 #define NVN_EX_WAIT_NS 2000000000ull
 #define NVN_EX_SHORT_WAIT_NS 1000000ull
+
+/* NvnOpFenceSync flags bit 0 (nvn_native.c, NVN_QUEUE_FENCE_FLUSH_FOR_CPU): the fence also posts the pending frame. */
+#define NVN_EX_FENCE_FLUSH_FOR_CPU 1u
 
 /* One 32x32 RGBA8 unorm texture and the buffer region of its copy: 4096 bytes. The clear color is exact in this format
    (0.0 and 1.0 only), so the CPU bytes are exact too. */
@@ -73,7 +77,7 @@ typedef struct {
 } ExSyncProcs;
 
 typedef struct {
-    NvnStProc initialize, finalize, add_command, add_control, begin, end;
+    NvnStProc initialize, finalize, add_command, add_control, begin, end, fence;
 } ExCbProcs;
 
 typedef struct {
@@ -106,10 +110,11 @@ typedef struct {
     ExBufProcs buf;
     ExEventProcs ev;
     NvnStProc pool_address, pool_flush, pool_invalidate, texture_finalize;
-    const char *missing_queue, *missing_qops, *missing_qcross, *missing_sync, *missing_cb;
+    const char *missing_queue, *missing_qops, *missing_qcross, *missing_sync, *missing_cb, *missing_cb_fence;
     const char *missing_clear, *missing_copy_tex, *missing_copy_buf;
     const char *missing_event, *missing_report, *missing_buf, *missing_pool;
     uint64_t q1, q2;
+    uint64_t q2_builder; /* the builder of q2, for the new initialize of E8 */
     NvnStResPool tex_pool, data_pool, cmd_pool;
     uint64_t tex_a, tex_b, tex_c;
     uint64_t buf_a, buf_b;
@@ -119,7 +124,7 @@ typedef struct {
     unsigned cb_count;
     uint64_t sync_list[NVN_EX_LISTS_MAX];
     unsigned sync_count;
-    int e1_ok; /* E6 calls QueueFinish without a limit only when E1 showed that a flush job ends */
+    int stalled; /* a bounded wait that must signal ran out: a GPU job may still use the objects */
 } ExState;
 
 typedef struct {
@@ -171,6 +176,12 @@ static const char* ex_cb_procs_find(ExCbProcs* p) {
         return "nvnCommandBufferAddControlMemory";
     if (!nvn_st_proc_find(&p->begin, "nvnCommandBufferBeginRecording")) return "nvnCommandBufferBeginRecording";
     if (!nvn_st_proc_find(&p->end, "nvnCommandBufferEndRecording")) return "nvnCommandBufferEndRecording";
+    return NULL;
+}
+
+/* Only E7 uses this one, so a game that never resolved it skips E7 alone. */
+static const char* ex_cb_fence_find(ExCbProcs* p) {
+    if (!nvn_st_proc_find(&p->fence, "nvnCommandBufferFenceSync")) return "nvnCommandBufferFenceSync";
     return NULL;
 }
 
@@ -256,8 +267,28 @@ static int ex_need(ExState* s, const char* name, const char* missing) {
     return 0;
 }
 
+/* 1 when no earlier bounded wait ran out, else a skip line for this case. A case must not use objects that a GPU job
+   may still read. */
+static int ex_not_stalled(ExState* s, const char* name) {
+    if (!s->stalled) return 1;
+    ex_skip(s->ctx.run, name, "an earlier GPU job did not end");
+    return 0;
+}
+
+/* A bounded wait that must signal. A 2 (TIMEOUT) sets the stall flag, so later cases and the cleanup keep the objects.
+   E4's never-fenced wait and E8's wait do not use this: a non-signal result is their expectation. */
+static uint64_t ex_wait(ExState* s, const char* name, const char* what, uint64_t sync) {
+    const uint64_t result = EX_CALL(s, s->qops.wait, sync, NVN_EX_WAIT_NS);
+    if (nvn_ex_wait_stalled(result)) {
+        s->stalled = 1;
+        LOG("exectest: %s wait %s sync=%" PRIx64 " gave %" PRIu64 ", an earlier GPU job did not end\n", name, what,
+            sync, result);
+    }
+    return result;
+}
+
 static uint64_t ex_obj(ExCtx* x) {
-    uint64_t at = nvn_st_arena_alloc(&x->run->arena, NVN_EX_OBJ_BYTES, 16);
+    uint64_t at = nvn_st_arena_alloc(&x->run->arena, NVN_EX_OBJ_BYTES, NVN_EX_OBJ_ALIGN);
     if (at) memset(GP(at), 0, NVN_EX_OBJ_BYTES);
     return at;
 }
@@ -286,7 +317,8 @@ static void ex_check_signal(ExCheck* k, const char* field, uint64_t result) {
     k->failed = 1;
 }
 
-static int ex_queue_new(ExState* s, uint64_t* queue_out) {
+/* Makes a queue and its builder in the arena. *builder_out, when not NULL, keeps the builder for a new initialize. */
+static int ex_queue_new(ExState* s, uint64_t* queue_out, uint64_t* builder_out) {
     const uint64_t builder = ex_obj(&s->ctx), queue = ex_obj(&s->ctx);
     if (!builder || !queue) return 0;
     EX_CALL(s, s->q.defaults, builder);
@@ -299,6 +331,7 @@ static int ex_queue_new(ExState* s, uint64_t* queue_out) {
     EX_CALL(s, s->q.memory, builder, memory, bytes);
     if (!EX_CALL(s, s->q.initialize, queue, builder)) return 0;
     *queue_out = queue;
+    if (builder_out) *builder_out = builder;
     return 1;
 }
 
@@ -311,8 +344,8 @@ static uint64_t ex_sync_new(ExState* s) {
     return sync;
 }
 
-static void ex_fence(ExState* s, uint64_t queue, uint64_t sync) {
-    EX_CALL(s, s->qops.fence, queue, sync, NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE, 0);
+static void ex_fence(ExState* s, uint64_t queue, uint64_t sync, uint32_t flags) {
+    EX_CALL(s, s->qops.fence, queue, sync, NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE, flags);
 }
 
 static int ex_list_begin(ExState* s, const char* name, uint64_t* cb_out, uint64_t* control_out) {
@@ -320,7 +353,7 @@ static int ex_list_begin(ExState* s, const char* name, uint64_t* cb_out, uint64_
         ex_skip(s->ctx.run, name, "too many command buffers");
         return 0;
     }
-    const uint64_t cb = ex_obj(&s->ctx), control = ex_alloc(&s->ctx, NVN_EX_CONTROL_BYTES, 0x100);
+    const uint64_t cb = ex_obj(&s->ctx), control = ex_alloc(&s->ctx, NVN_EX_CONTROL_BYTES, NVN_EX_CONTROL_ALIGN);
     if (!cb || !control) {
         ex_skip(s->ctx.run, name, "the arena is full");
         return 0;
@@ -350,7 +383,8 @@ static int ex_submit(ExState* s, const char* name, uint64_t queue, uint64_t hand
 }
 
 static int ex_region_color(ExState* s, const char* name, uint64_t* region_out, uint64_t* color_out) {
-    const uint64_t region = ex_alloc(&s->ctx, 6 * 4, 16), color = ex_alloc(&s->ctx, 4 * 4, 16);
+    const uint64_t region = ex_alloc(&s->ctx, 6 * 4, NVN_EX_OBJ_ALIGN);
+    const uint64_t color = ex_alloc(&s->ctx, 4 * 4, NVN_EX_OBJ_ALIGN);
     if (!region || !color) {
         ex_skip(s->ctx.run, name, "the arena is full");
         return 0;
@@ -381,6 +415,7 @@ static int ex_clear_list(ExState* s, const char* name, uint64_t texture, const f
    wait runs out (2) and the case fails. */
 static void case_fence_order(ExState* s) {
     const char* const name = nvn_ex_case_name(NVN_EX_CASE_FENCE_ORDER);
+    if (!ex_not_stalled(s, name)) return;
     if (!ex_need(s, name, s->missing_queue) || !ex_need(s, name, s->missing_qops) ||
         !ex_need(s, name, s->missing_sync) || !ex_need(s, name, s->missing_cb) ||
         !ex_need(s, name, s->missing_clear))
@@ -398,7 +433,7 @@ static void case_fence_order(ExState* s) {
         ex_skip(s->ctx.run, name, "a sync was not made");
         return;
     }
-    ex_fence(s, s->q1, first);
+    ex_fence(s, s->q1, first, 0);
     if (!ex_clear_list(s, name, s->tex_b, color, &h2)) return;
     if (!ex_submit(s, name, s->q1, h2)) return;
     const uint64_t second = ex_sync_new(s);
@@ -406,9 +441,9 @@ static void case_fence_order(ExState* s) {
         ex_skip(s->ctx.run, name, "a sync was not made");
         return;
     }
-    ex_fence(s, s->q1, second);
+    ex_fence(s, s->q1, second, 0);
     if (!ex_case_mutated(&s->ctx, NVN_EX_CASE_FENCE_ORDER)) EX_CALL(s, s->qops.flush, s->q1);
-    const uint64_t wait_second = EX_CALL(s, s->qops.wait, second, NVN_EX_WAIT_NS);
+    const uint64_t wait_second = ex_wait(s, name, "second fence", second);
     const uint64_t wait_first = EX_CALL(s, s->qops.wait, first, 0);
     char text[NVN_EX_DETAIL_MAX];
     const int ok = nvn_ex_e1_ok(wait_second, wait_first);
@@ -420,7 +455,6 @@ static void case_fence_order(ExState* s) {
     } else {
         snprintf(text, sizeof text, "wait2=%" PRIu64 " wait1=%" PRIu64, wait_second, wait_first);
     }
-    s->e1_ok = ok;
     ex_report(s->ctx.run, name, ok, text);
 }
 
@@ -428,6 +462,7 @@ static void case_fence_order(ExState* s) {
    channel is 0, so the bytes differ. */
 static void case_gpu_to_cpu(ExState* s) {
     const char* const name = nvn_ex_case_name(NVN_EX_CASE_GPU_TO_CPU);
+    if (!ex_not_stalled(s, name)) return;
     if (!ex_need(s, name, s->missing_queue) || !ex_need(s, name, s->missing_qops) ||
         !ex_need(s, name, s->missing_sync) || !ex_need(s, name, s->missing_cb) ||
         !ex_need(s, name, s->missing_clear) || !ex_need(s, name, s->missing_copy_tex) ||
@@ -461,9 +496,9 @@ static void case_gpu_to_cpu(ExState* s) {
         ex_skip(s->ctx.run, name, "a sync was not made");
         return;
     }
-    ex_fence(s, s->q1, fence);
+    ex_fence(s, s->q1, fence, 0);
     EX_CALL(s, s->qops.flush, s->q1);
-    const uint64_t wait = EX_CALL(s, s->qops.wait, fence, NVN_EX_WAIT_NS);
+    const uint64_t wait = ex_wait(s, name, "fence", fence);
     EX_CALL(s, s->buf.invalidate, s->buf_a, 0, NVN_EX_TEXTURE_BYTES);
     EX_CALL(s, s->pool_invalidate, s->data_pool.pool, NVN_EX_BUF_OFFSET_A, NVN_EX_TEXTURE_BYTES);
     const uint64_t cpu = EX_CALL(s, s->buf.map, s->buf_a);
@@ -485,6 +520,7 @@ static void case_gpu_to_cpu(ExState* s) {
    buffer's bytes. Under the mutation the copy is half, so its second half differs. */
 static void case_cpu_to_gpu(ExState* s) {
     const char* const name = nvn_ex_case_name(NVN_EX_CASE_CPU_TO_GPU);
+    if (!ex_not_stalled(s, name)) return;
     if (!ex_need(s, name, s->missing_queue) || !ex_need(s, name, s->missing_qops) ||
         !ex_need(s, name, s->missing_sync) || !ex_need(s, name, s->missing_cb) ||
         !ex_need(s, name, s->missing_copy_buf) || !ex_need(s, name, s->missing_buf) ||
@@ -526,9 +562,9 @@ static void case_cpu_to_gpu(ExState* s) {
         ex_skip(s->ctx.run, name, "a sync was not made");
         return;
     }
-    ex_fence(s, s->q1, fence);
+    ex_fence(s, s->q1, fence, 0);
     EX_CALL(s, s->qops.flush, s->q1);
-    const uint64_t wait = EX_CALL(s, s->qops.wait, fence, NVN_EX_WAIT_NS);
+    const uint64_t wait = ex_wait(s, name, "fence", fence);
     EX_CALL(s, s->buf.invalidate, s->buf_b, 0, NVN_EX_TEXTURE_BYTES);
     EX_CALL(s, s->pool_invalidate, s->data_pool.pool, NVN_EX_BUF_OFFSET_B, NVN_EX_TEXTURE_BYTES);
     const uint64_t dst_cpu = EX_CALL(s, s->buf.map, s->buf_b);
@@ -546,6 +582,7 @@ static void case_cpu_to_gpu(ExState* s) {
    the mutation the flush comes before the short wait, so it is not 2. */
 static void case_timeout(ExState* s) {
     const char* const name = nvn_ex_case_name(NVN_EX_CASE_TIMEOUT);
+    if (!ex_not_stalled(s, name)) return;
     if (!ex_need(s, name, s->missing_queue) || !ex_need(s, name, s->missing_qops) ||
         !ex_need(s, name, s->missing_sync) || !ex_need(s, name, s->missing_cb) ||
         !ex_need(s, name, s->missing_clear))
@@ -563,17 +600,17 @@ static void case_timeout(ExState* s) {
         ex_skip(s->ctx.run, name, "a sync was not made");
         return;
     }
-    ex_fence(s, s->q1, fence);
+    ex_fence(s, s->q1, fence, 0);
     if (ex_case_mutated(&s->ctx, NVN_EX_CASE_TIMEOUT)) EX_CALL(s, s->qops.flush, s->q1);
     const uint64_t short_wait = EX_CALL(s, s->qops.wait, fence, NVN_EX_SHORT_WAIT_NS);
     EX_CALL(s, s->qops.flush, s->q1);
-    const uint64_t after_flush = EX_CALL(s, s->qops.wait, fence, NVN_EX_WAIT_NS);
+    const uint64_t after_flush = ex_wait(s, name, "fence after the flush", fence);
     const uint64_t never_fenced = ex_sync_new(s);
     if (!never_fenced) {
         ex_skip(s->ctx.run, name, "a sync was not made");
         return;
     }
-    const uint64_t never_wait = EX_CALL(s, s->qops.wait, never_fenced, NVN_EX_WAIT_NS);
+    const uint64_t never_wait = EX_CALL(s, s->qops.wait, never_fenced, NVN_EX_WAIT_NS); /* must fail, not a stall */
     ExCheck check = {0};
     const int ok = nvn_ex_e4_ok(short_wait, after_flush, never_wait);
     if (!ok) {
@@ -598,6 +635,7 @@ static void case_timeout(ExState* s) {
    CPU event side. Under the mutation the add value is one higher, so the event sum differs. */
 static void case_event_report(ExState* s) {
     const char* const name = nvn_ex_case_name(NVN_EX_CASE_EVENT_REPORT);
+    if (!ex_not_stalled(s, name)) return;
     if (!ex_need(s, name, s->missing_queue) || !ex_need(s, name, s->missing_qops) ||
         !ex_need(s, name, s->missing_sync) || !ex_need(s, name, s->missing_cb) ||
         !ex_need(s, name, s->missing_event) || !ex_need(s, name, s->missing_report) ||
@@ -625,9 +663,9 @@ static void case_event_report(ExState* s) {
         ex_skip(s->ctx.run, name, "a sync was not made");
         return;
     }
-    ex_fence(s, s->q1, fence);
+    ex_fence(s, s->q1, fence, 0);
     EX_CALL(s, s->qops.flush, s->q1);
-    const uint64_t wait = EX_CALL(s, s->qops.wait, fence, NVN_EX_WAIT_NS);
+    const uint64_t wait = ex_wait(s, name, "fence", fence);
     ExCheck check = {0};
     ex_check_signal(&check, "wait", wait);
     const uint64_t event = EX_CALL(s, s->ev.value, s->ev_a);
@@ -647,21 +685,18 @@ static void case_event_report(ExState* s) {
     ex_report(s->ctx.run, name, !check.failed, check.failed ? check.text : "the events, reports and order match");
 }
 
-/* E6: queue 1 clears and fences, queue 2 waits for that fence, copies and finishes; the bytes are read with no
-   SyncWait. Under the mutation queue 2 copies a texture that was never cleared. The queue records stay in the host: the
-   host has no QueueFinalize handler, so the two queues live to the end of the process. */
+/* E6: queue 1 clears and fences, queue 2 waits for that fence, copies, fences with FLUSH_FOR_CPU and finishes; the
+   bytes are read with no SyncWait. Under the mutation queue 2 copies a texture that was never cleared. The queue
+   records stay in the host: the host has no QueueFinalize handler, so the two queues live to the end of the process. */
 static void case_two_queues(ExState* s) {
     const char* const name = nvn_ex_case_name(NVN_EX_CASE_TWO_QUEUES);
+    if (!ex_not_stalled(s, name)) return;
     if (!ex_need(s, name, s->missing_queue) || !ex_need(s, name, s->missing_qops) ||
         !ex_need(s, name, s->missing_qcross) || !ex_need(s, name, s->missing_sync) ||
         !ex_need(s, name, s->missing_cb) || !ex_need(s, name, s->missing_clear) ||
         !ex_need(s, name, s->missing_copy_tex) || !ex_need(s, name, s->missing_buf) ||
         !ex_need(s, name, s->missing_pool))
         return;
-    if (!s->e1_ok) {
-        ex_skip(s->ctx.run, name, "E1 did not pass, so a flush job is not known to end");
-        return;
-    }
     if (!s->q1 || !s->q2 || !s->tex_a || !s->tex_c || !s->buf_b) {
         ex_skip(s->ctx.run, name, "a queue or an object was not made");
         return;
@@ -675,7 +710,7 @@ static void case_two_queues(ExState* s) {
         ex_skip(s->ctx.run, name, "a sync was not made");
         return;
     }
-    ex_fence(s, s->q1, fence);
+    ex_fence(s, s->q1, fence, 0);
     EX_CALL(s, s->qops.flush, s->q1);
     const uint64_t wait_sync = EX_CALL(s, s->qops.wait_sync, s->q2, fence);
     uint64_t region, color_at, cb, control;
@@ -695,7 +730,20 @@ static void case_two_queues(ExState* s) {
         return;
     }
     if (!ex_submit(s, name, s->q2, copy)) return;
-    EX_CALL(s, s->qops.finish, s->q2); /* the one wait without a limit, as the design says */
+    const uint64_t copy_sync = ex_sync_new(s);
+    if (!copy_sync) {
+        ex_skip(s->ctx.run, name, "a sync was not made");
+        return;
+    }
+    ex_fence(s, s->q2, copy_sync, NVN_EX_FENCE_FLUSH_FOR_CPU);
+    const uint64_t copy_wait = ex_wait(s, name, "copy fence", copy_sync);
+    if (copy_wait != NVN_EX_SYNC_SIGNALED && copy_wait != NVN_EX_SYNC_SATISFIED) {
+        char text[NVN_EX_DETAIL_MAX];
+        snprintf(text, sizeof text, "wait before QueueFinish: expected 0 or 1, actual %" PRIu64, copy_wait);
+        ex_report(s->ctx.run, name, 0, text);
+        return;
+    }
+    EX_CALL(s, s->qops.finish, s->q2); /* the last posted value is reached, so it returns at once */
     const uint64_t cpu = EX_CALL(s, s->buf.map, s->buf_b);
     if (!cpu) {
         ex_skip(s->ctx.run, name, "the buffer has no CPU address");
@@ -709,6 +757,86 @@ static void case_two_queues(ExState* s) {
     ex_check_u64(&check, "QueueWaitSync", 1, wait_sync);
     ex_check_bytes(&check, expected, GP(cpu), NVN_EX_TEXTURE_BYTES);
     ex_report(s->ctx.run, name, !check.failed, check.failed ? check.text : "the second queue's copy matches");
+}
+
+/* E7: one list clears texture B and fences a new sync inside the list with FLUSH_FOR_CPU, without QueueFlush. The
+   submit posts the frame through the fence flag, so the wait is reached (0 or 1). Under the mutation the flag is 0, so
+   nothing posts the frame and the wait runs out (2). */
+static void case_cb_fence_flush(ExState* s) {
+    const char* const name = nvn_ex_case_name(NVN_EX_CASE_CB_FENCE_FLUSH);
+    if (!ex_not_stalled(s, name)) return;
+    if (!ex_need(s, name, s->missing_queue) || !ex_need(s, name, s->missing_qops) ||
+        !ex_need(s, name, s->missing_sync) || !ex_need(s, name, s->missing_cb) ||
+        !ex_need(s, name, s->missing_cb_fence) || !ex_need(s, name, s->missing_clear))
+        return;
+    if (!s->q1 || !s->tex_b) {
+        ex_skip(s->ctx.run, name, "a queue or a texture was not made");
+        return;
+    }
+    const float color[4] = {0.0f, 0.0f, 1.0f, 0.0f};
+    uint64_t region, color_at, cb, control;
+    if (!ex_region_color(s, name, &region, &color_at)) return;
+    memcpy(GP(color_at), color, sizeof color);
+    if (!ex_list_begin(s, name, &cb, &control)) return;
+    EX_CALL(s, s->cmd.clear, cb, s->tex_b, 0, region, color_at, NVN_EX_CLEAR_MASK);
+    const uint64_t fence = ex_sync_new(s);
+    if (!fence) {
+        ex_skip(s->ctx.run, name, "a sync was not made");
+        return;
+    }
+    const uint64_t flags = ex_case_mutated(&s->ctx, NVN_EX_CASE_CB_FENCE_FLUSH) ? 0u : NVN_EX_FENCE_FLUSH_FOR_CPU;
+    EX_CALL(s, s->cb.fence, cb, fence, NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE, flags);
+    const uint64_t handle = EX_CALL(s, s->cb.end, cb);
+    if (!handle) {
+        ex_skip(s->ctx.run, name, "the command list was not published");
+        return;
+    }
+    if (!ex_submit(s, name, s->q1, handle)) return;
+    const uint64_t wait = ex_wait(s, name, "command buffer fence", fence);
+    const int ok = nvn_ex_e7_ok(wait);
+    char text[NVN_EX_DETAIL_MAX];
+    if (ok)
+        snprintf(text, sizeof text, "wait=%" PRIu64, wait);
+    else
+        snprintf(text, sizeof text, "wait: expected 0 or 1, actual %" PRIu64, wait);
+    ex_report(s->ctx.run, name, ok, text);
+}
+
+/* E8: a list on queue 2 and a fence with flags 0, then the queue is initialized again. The dropped frame leaves the
+   fence UNSIGNALED, so the wait fails (3). Under the mutation no initialize comes, so the wait runs out (2). That wait
+   is not the stall helper: a timeout is the expected result there, not a stalled job of the host. */
+static void case_queue_reinit(ExState* s) {
+    const char* const name = nvn_ex_case_name(NVN_EX_CASE_QUEUE_REINIT);
+    if (!ex_not_stalled(s, name)) return;
+    if (!ex_need(s, name, s->missing_queue) || !ex_need(s, name, s->missing_qops) ||
+        !ex_need(s, name, s->missing_sync) || !ex_need(s, name, s->missing_cb) ||
+        !ex_need(s, name, s->missing_clear))
+        return;
+    if (!s->q2 || !s->tex_c || !s->q2_builder) {
+        ex_skip(s->ctx.run, name, "a queue or a texture was not made");
+        return;
+    }
+    const float color[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+    uint64_t handle;
+    if (!ex_clear_list(s, name, s->tex_c, color, &handle)) return;
+    if (!ex_submit(s, name, s->q2, handle)) return;
+    const uint64_t fence = ex_sync_new(s);
+    if (!fence) {
+        ex_skip(s->ctx.run, name, "a sync was not made");
+        return;
+    }
+    ex_fence(s, s->q2, fence, 0);
+    if (!ex_case_mutated(&s->ctx, NVN_EX_CASE_QUEUE_REINIT))
+        EX_CALL(s, s->q.initialize, s->q2, s->q2_builder);
+    const uint64_t wait = EX_CALL(s, s->qops.wait, fence, NVN_EX_WAIT_NS);
+    const int ok = nvn_ex_e8_ok(wait);
+    char text[NVN_EX_DETAIL_MAX];
+    if (ok)
+        snprintf(text, sizeof text, "wait=%" PRIu64, wait);
+    else
+        snprintf(text, sizeof text, "wait of the dropped fence: expected %u, actual %" PRIu64, NVN_EX_SYNC_FAILED,
+                 wait);
+    ex_report(s->ctx.run, name, ok, text);
 }
 
 static int ex_pool_new(ExState* s, NvnStResPool* pool, uint32_t flags, uint64_t bytes) {
@@ -752,6 +880,7 @@ static void ex_setup(ExState* s) {
     s->missing_qcross = ex_queue_cross_find(&s->qops);
     s->missing_sync = ex_sync_procs_find(&s->sync);
     s->missing_cb = ex_cb_procs_find(&s->cb);
+    s->missing_cb_fence = ex_cb_fence_find(&s->cb);
     s->missing_clear = ex_cmd_clear_find(&s->cmd);
     s->missing_copy_tex = ex_cmd_copy_tex_find(&s->cmd);
     s->missing_copy_buf = ex_cmd_copy_buf_find(&s->cmd);
@@ -764,7 +893,7 @@ static void ex_setup(ExState* s) {
 
     if (s->missing_queue) {
         LOG("exectest: the queues are not made, %s is missing\n", s->missing_queue);
-    } else if (!ex_queue_new(s, &s->q1) || !ex_queue_new(s, &s->q2)) {
+    } else if (!ex_queue_new(s, &s->q1, NULL) || !ex_queue_new(s, &s->q2, &s->q2_builder)) {
         LOG("exectest: a queue was not made\n");
     }
     if (!ex_pool_new(s, &s->tex_pool, NVN_ST_RES_POOL_CPU_CACHED, NVN_EX_TEX_POOL_BYTES)) {
@@ -797,10 +926,16 @@ static void ex_setup(ExState* s) {
 }
 
 static void ex_cleanup(ExState* s) {
-    for (unsigned i = 0; i < s->cb_count; i++)
-        if (s->cb.finalize.host.fn) EX_CALL(s, s->cb.finalize, s->cb_list[i]);
     for (unsigned i = 0; i < s->sync_count; i++)
         if (s->sync.finalize.host.fn) EX_CALL(s, s->sync.finalize, s->sync_list[i]);
+    if (s->stalled) {
+        /* The job that ran out of time replays its lists and reads its textures, buffers and events. The arena is
+           never freed, so those objects stay valid without a finalize. */
+        LOG("exectest: objects and pools kept, a GPU job did not end\n");
+        return;
+    }
+    for (unsigned i = 0; i < s->cb_count; i++)
+        if (s->cb.finalize.host.fn) EX_CALL(s, s->cb.finalize, s->cb_list[i]);
     if (s->texture_finalize.host.fn) {
         if (s->tex_a) EX_CALL(s, s->texture_finalize, s->tex_a);
         if (s->tex_b) EX_CALL(s, s->texture_finalize, s->tex_b);
@@ -827,8 +962,9 @@ void nvn_exectest_run(CPU* c, uint64_t game_queue) {
         LOG("exectest: not run, nvn_native=0\n");
         return;
     }
-    if (!nvn_st_device()) {
-        LOG("exectest: not run, the game's device is unknown\n");
+    const uint64_t device = nvn_native_queue_device(game_queue);
+    if (!device) {
+        LOG("exectest: not run, the game queue has no host record\n");
         return;
     }
     const uint64_t base = kmem_alloc(NVN_EX_ARENA_BYTES, MS_NORMAL, PERM_RW);
@@ -842,7 +978,7 @@ void nvn_exectest_run(CPU* c, uint64_t game_queue) {
     ExState state = {0};
     state.ctx.c = c;
     state.ctx.run = &run;
-    state.ctx.device = nvn_st_device();
+    state.ctx.device = device;
     state.ctx.mutate = nvn_ex_case_from_name(g_settings.nvn_selftest_mutation);
     LOG("exectest: start, device=%" PRIx64 " game_queue=%" PRIx64 " arena=%" PRIx64 "+%x\n", state.ctx.device,
         game_queue, base, NVN_EX_ARENA_BYTES);
@@ -853,6 +989,8 @@ void nvn_exectest_run(CPU* c, uint64_t game_queue) {
     case_timeout(&state);
     case_event_report(&state);
     case_two_queues(&state);
+    case_cb_fence_flush(&state);
+    case_queue_reinit(&state);
     ex_cleanup(&state);
     LOG("exectest: %u cases, %u failed, %u skipped\n", run.cases, run.failed, run.skipped);
 }

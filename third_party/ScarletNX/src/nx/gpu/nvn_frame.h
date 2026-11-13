@@ -41,6 +41,8 @@ int nvn_frame_add_lists(NvnPendingFrame* frame, NvnListStore* store, const uint6
                         uint32_t* skipped);
 /* Adds a token. 0 when the token list is full or memory is out. */
 int nvn_frame_add_token(NvnPendingFrame* frame, uint64_t sync, uint32_t generation, uint32_t serial);
+/* 1 when the token names the newest fence of its sync record: the record generation and the serial both match. Pure. */
+int nvn_frame_token_matches(const NvnFrameToken* token, uint32_t generation, uint32_t serial);
 /* 1 when the frame has no lists. A token only exists after a non-empty frame, so tokens are not counted. */
 int nvn_frame_is_empty(const NvnPendingFrame* frame);
 /* The frame moves to the result and the source is empty. */

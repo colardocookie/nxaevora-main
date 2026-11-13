@@ -1531,7 +1531,7 @@ static void test_u2_event_and_sync_ops(void) {
     NvnOpSignalEvent signal = {0x400001000ull, 9u, NVN_EVENT_SIGNAL_ADD, 0x1234u, 2u};
     NvnOpWaitEvent wait = {0x400001000ull, 9u, NVN_EVENT_WAIT_GEQUAL_WRAP, 0x1234u, 0u};
     NvnOpReportValue value = {0xABCDEF01u, 0u, 0x400002000ull};
-    NvnOpFenceSync fence = {0x400003000ull, 4u, NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE};
+    NvnOpFenceSync fence = {0x400003000ull, 4u, NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE, 0u};
     NvnOpWaitSync wait_sync = {0x400003000ull, 4u, 0u};
     CHECK(nvn_oplist_append(&l, NVN_OP_SIGNAL_EVENT, &signal, sizeof signal));
     CHECK(nvn_oplist_append(&l, NVN_OP_WAIT_EVENT, &wait, sizeof wait));

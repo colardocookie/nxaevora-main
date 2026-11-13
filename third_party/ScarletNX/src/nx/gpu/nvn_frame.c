@@ -45,6 +45,10 @@ int nvn_frame_add_token(NvnPendingFrame* frame, uint64_t sync, uint32_t generati
 
 int nvn_frame_is_empty(const NvnPendingFrame* frame) { return frame->handle_count == 0; }
 
+int nvn_frame_token_matches(const NvnFrameToken* token, uint32_t generation, uint32_t serial) {
+    return token->generation == generation && token->serial == serial;
+}
+
 NvnPendingFrame nvn_frame_take(NvnPendingFrame* frame) {
     NvnPendingFrame taken = *frame;
     *frame = (NvnPendingFrame){0};

@@ -6,7 +6,7 @@
 /* nvn_exectest=1: the execution test of the NVN host path (nvn-unobserved.md, "Design of 4-u3-4"). It runs real work
    through the host handlers on its own queues and checks the result in memory. It needs nvn_trace=1 and nvn_native=1.
    The pure parts are here, so a host test can run them: the clear bytes, the comparison and its text, the pass rules
-   of E1 and E4, and the mutation name. */
+   of E1, E4, E7 and E8, the stall result, and the mutation name. */
 
 #include "common/cpu/aarch64/cpu.h"
 #include <inttypes.h>
@@ -30,13 +30,15 @@ typedef enum {
     NVN_EX_CASE_TIMEOUT,         /* E4 */
     NVN_EX_CASE_EVENT_REPORT,    /* E5 */
     NVN_EX_CASE_TWO_QUEUES,      /* E6 */
+    NVN_EX_CASE_CB_FENCE_FLUSH,  /* E7 */
+    NVN_EX_CASE_QUEUE_REINIT,    /* E8 */
     NVN_EX_CASE_COUNT
 } NvnExCase;
 
 static inline const char* nvn_ex_case_name(unsigned kase) {
     static const char* const names[NVN_EX_CASE_COUNT] = {
-        "exec_fence_order", "exec_gpu_to_cpu", "exec_cpu_to_gpu",
-        "exec_timeout",     "exec_event_report", "exec_two_queues",
+        "exec_fence_order", "exec_gpu_to_cpu", "exec_cpu_to_gpu", "exec_timeout",
+        "exec_event_report", "exec_two_queues", "exec_cb_fence_flush", "exec_queue_reinit",
     };
     return kase < NVN_EX_CASE_COUNT ? names[kase] : "?";
 }
@@ -94,6 +96,17 @@ static inline int nvn_ex_e4_ok(uint64_t short_wait, uint64_t after_flush, uint64
            (after_flush == NVN_EX_SYNC_SIGNALED || after_flush == NVN_EX_SYNC_SATISFIED) &&
            never_fenced == NVN_EX_SYNC_FAILED;
 }
+
+/* E7: the fence inside the list posted its frame, so the wait is reached (0 or 1). */
+static inline int nvn_ex_e7_ok(uint64_t wait) {
+    return wait == NVN_EX_SYNC_SIGNALED || wait == NVN_EX_SYNC_SATISFIED;
+}
+
+/* E8: the new QueueInitialize dropped the pending frame, so its fence fails (3). */
+static inline int nvn_ex_e8_ok(uint64_t wait) { return wait == NVN_EX_SYNC_FAILED; }
+
+/* 1 when a bounded wait that must signal ran out: the GPU job that it waits for is still running. */
+static inline int nvn_ex_wait_stalled(uint64_t result) { return result == NVN_EX_SYNC_TIMEOUT; }
 
 /* Runs the execution test once, after the game's first nvnQueueInitialize (nvn_trace.c). The queue is the one of the
    game, read only: the test makes its own queues. The CPU context is restored when it returns. */
