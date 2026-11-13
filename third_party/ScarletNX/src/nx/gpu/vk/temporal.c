@@ -12,6 +12,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/post_spv.h"
 #include "nx/gpu/vk/temporal_spv.h"
+#include "nx/gpu/vk/temporal_math.h"
 #include "nx/runtime/platform/log.h"
 
 #define CAMERA_BANK 4       /* the constant bank of the camera block */
@@ -410,19 +411,6 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
     g_t.camera_at = frame;
 }
 
-/* offset k of the jitter in pixels, within half a pixel each way: Halton bases 2 and 3 */
-static void jitter_offset(u32 k, float out[2]) {
-    static const u32 bases[2] = {2, 3};
-    for (int axis = 0; axis < 2; axis++) {
-        float f = 1.0f, value = 0.0f;
-        for (u32 i = k % JITTERS + 1; i; i /= bases[axis]) {
-            f /= (float)bases[axis];
-            value += f * (float)(i % bases[axis]);
-        }
-        out[axis] = value - 0.5f;
-    }
-}
-
 /* A draw binds constant bank 4: when it is the scene camera's block and anti-aliasing is on, the draw gets a copy
    whose projection is shifted by this frame's jitter. Guest memory is not written, so the game and our own matrices
    keep the block without jitter. The copy is made once a submission in the frame's staging. With row vectors a shift
@@ -453,27 +441,22 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
     if (g_t.jitter_address != address || g_t.jitter_submit != vk_submit_number() || g_t.jitter_index != index ||
         g_t.jitter_size != bound || memcmp(source, g_t.jitter_source, bound)) {
         u8* bytes = vk_stage(bound, vk_stage_align(), &g_t.jitter_buffer, &g_t.jitter_offset);
-        float pixels[2], m[16], shifted[16];
+        float pixels[2], m[16];
         if (!bytes) return 0;
         memcpy(bytes, source, bound);
         memcpy(g_t.jitter_source, source, bound);
-        jitter_offset(index, pixels);
+        temporal_jitter(index, JITTERS, pixels);
         const float jx = 2.0f * pixels[0] / (float)g_t.motion.w, jy = 2.0f * pixels[1] / (float)g_t.motion.h;
-        /* M x J: column 0 gains jx x column 3, column 1 gains jy x column 3 */
+        /* the view-projection and the projection x J, and J's inverse x the inverse view-projection */
         static const u32 forward[2] = {0x00, 0x80};
         for (int k = 0; k < 2; k++) {
             memcpy(m, source + forward[k], sizeof m);
-            for (int r = 0; r < 4; r++) {
-                m[4 * r + 0] += jx * m[4 * r + 3];
-                m[4 * r + 1] += jy * m[4 * r + 3];
-            }
+            temporal_jitter_forward(m, jx, jy);
             memcpy(bytes + forward[k], m, sizeof m);
         }
-        /* inverse of J x M: row 3 loses jx x row 0 and jy x row 1 */
         memcpy(m, source + CAMERA_INVERSE, sizeof m);
-        memcpy(shifted, m, sizeof shifted);
-        for (int c = 0; c < 4; c++) shifted[12 + c] = m[12 + c] - jx * m[c] - jy * m[4 + c];
-        memcpy(bytes + CAMERA_INVERSE, shifted, sizeof shifted);
+        temporal_jitter_inverse(m, jx, jy);
+        memcpy(bytes + CAMERA_INVERSE, m, sizeof m);
         g_t.jitter_address = address;
         g_t.jitter_submit = vk_submit_number();
         g_t.jitter_index = index;
@@ -689,31 +672,6 @@ static Object* object_slot(u64 key, u32 frame, int make) {
     return oldest;
 }
 
-static void multiply_d(const double a[16], const double b[16], double out[16]) {
-    for (int r = 0; r < 4; r++)
-        for (int c = 0; c < 4; c++) {
-            double sum = 0;
-            for (int k = 0; k < 4; k++) sum += a[4 * r + k] * b[4 * k + c];
-            out[4 * r + c] = sum;
-        }
-}
-/* the inverse of an affine matrix with row vectors (the translation in row 3): 0 when it has no volume */
-static int affine_inverse_d(const double m[16], double out[16]) {
-    const double a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8], h = m[9], i = m[10];
-    const double det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-    if (!(fabs(det) > 1e-30)) return 0;
-    const double r[9] = {(e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det,
-                         (f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det,
-                         (d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det};
-    memset(out, 0, 16 * sizeof *out);
-    for (int row = 0; row < 3; row++)
-        for (int col = 0; col < 3; col++) out[4 * row + col] = r[3 * row + col];
-    for (int col = 0; col < 3; col++)
-        out[12 + col] = -(m[12] * r[col] + m[13] * r[3 + col] + m[14] * r[6 + col]);
-    out[15] = 1;
-    return 1;
-}
-
 int vk_temporal_objects(void) { return temporal_on() && g_t.objects; }
 
 static void objects_log(u32 frame) {
@@ -798,35 +756,20 @@ int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* o
         return 0;
     }
     /* this frame's clip as drawn -> without jitter -> world -> the object -> its world before -> the clip before,
-       composed in double. With row vectors the jitter J adds jitter x w to x and y, its inverse takes it off. */
-    double unjitter[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+       composed in double (temporal_object_matrices) */
+    double jx = 0, jy = 0;
     if (g_t.mode == MODE_TAA && zt->sw && zt->sh) {
         float pixels[2];
-        jitter_offset(g_vk_present % JITTERS, pixels);
-        unjitter[12] = -2.0 * (double)pixels[0] / (double)zt->sw;
-        unjitter[13] = -2.0 * (double)pixels[1] / (double)zt->sh;
+        temporal_jitter(g_vk_present % JITTERS, JITTERS, pixels);
+        jx = 2.0 * (double)pixels[0] / (double)zt->sw;
+        jy = 2.0 * (double)pixels[1] / (double)zt->sh;
     }
-    double inverse[16], now[16], was[16], before[16], back[16], a[16], b[16];
-    for (int i = 0; i < 16; i++) {
-        inverse[i] = (double)g_t.inverse[i];
-        now[i] = (double)world[i];
-        was[i] = (double)was_world[i];
-        before[i] = (double)g_t.before[i];
-    }
-    if (!affine_inverse_d(now, back)) {
-        g_t.object_odd++;
-        return 0;
-    }
-    multiply_d(unjitter, inverse, a);
-    multiply_d(a, back, b);
-    multiply_d(b, was, a);
-    multiply_d(a, before, b);
     struct {
         float before[16], now[16], viewport[4], depth[4], size[4];
     } block;
-    for (int i = 0; i < 16; i++) {
-        block.before[i] = (float)b[i];
-        block.now[i] = (float)unjitter[i];
+    if (!temporal_object_matrices(g_t.inverse, world, was_world, g_t.before, jx, jy, block.now, block.before)) {
+        g_t.object_odd++;
+        return 0;
     }
     block.viewport[0] = g_t.viewport.x;
     block.viewport[1] = g_t.viewport.y;

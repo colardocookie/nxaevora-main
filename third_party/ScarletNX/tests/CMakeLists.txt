@@ -776,6 +776,11 @@ snx_test_target(snx-test-arceus-clock 11)
 target_link_libraries(snx-test-arceus-clock PRIVATE m)
 add_test(NAME arceus_clock COMMAND snx-test-arceus-clock)
 
+add_executable(snx-test-temporal-math temporal_math.c)
+snx_test_target(snx-test-temporal-math 11)
+target_link_libraries(snx-test-temporal-math PRIVATE m)
+add_test(NAME temporal_math COMMAND snx-test-temporal-math)
+
 add_executable(snx-test-nvn-cmdlist nvn_cmdlist.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_cmdlist.c")
 snx_test_target(snx-test-nvn-cmdlist 11)
 add_test(NAME nvn_cmdlist COMMAND snx-test-nvn-cmdlist)
