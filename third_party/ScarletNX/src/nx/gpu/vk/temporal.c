@@ -420,7 +420,7 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
         /* M x J: column 0 gains jx x column 3, column 1 gains jy x column 3 */
         static const u32 forward[2] = {0x00, 0x80};
         for (int k = 0; k < 2; k++) {
-            memcpy(m, bytes + forward[k], sizeof m);
+            memcpy(m, source + forward[k], sizeof m);
             for (int r = 0; r < 4; r++) {
                 m[4 * r + 0] += jx * m[4 * r + 3];
                 m[4 * r + 1] += jy * m[4 * r + 3];
@@ -428,7 +428,7 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
             memcpy(bytes + forward[k], m, sizeof m);
         }
         /* inverse of J x M: row 3 loses jx x row 0 and jy x row 1 */
-        memcpy(m, bytes + CAMERA_INVERSE, sizeof m);
+        memcpy(m, source + CAMERA_INVERSE, sizeof m);
         memcpy(shifted, m, sizeof shifted);
         for (int c = 0; c < 4; c++) shifted[12 + c] = m[12 + c] - jx * m[c] - jy * m[4 + c];
         memcpy(bytes + CAMERA_INVERSE, shifted, sizeof shifted);
@@ -442,7 +442,7 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
             int at = 0;
             for (u32 o = CAMERA_BYTES; o + 4 <= bound && at < (int)sizeof line - 12; o += 4) {
                 u32 word;
-                memcpy(&word, bytes + o, 4);
+                memcpy(&word, source + o, 4);
                 at += snprintf(line + at, sizeof line - (size_t)at, " %08x", word);
             }
             LOG("arceus-temporal: camera block from +0x%x:%s\n", CAMERA_BYTES, line);
