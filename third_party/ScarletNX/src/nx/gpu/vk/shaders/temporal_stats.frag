@@ -32,7 +32,8 @@ void main() {
     vec2 motion = texelFetch(u_motion, pixel, 0).rg;
     vec3 now = texelFetch(u_now, pixel, 0).rgb;
     vec2 from = uv - motion;
-    o_stats = vec4(0.0, relative(now, textureLod(u_before, uv, 0.0).rgb), length(motion * pc.size.xy), z);
+    // the length stays under 1000: the thousands are marks (below)
+    o_stats = vec4(0.0, relative(now, textureLod(u_before, uv, 0.0).rgb), min(length(motion * pc.size.xy), 990.0), z);
     if (pc.depth.z > 0.5) {
         // three marks in one number: 1 the history was dropped, 2 the frame as drawn changed since the one before,
         // 4 the resolved picture changed since the one before
@@ -59,7 +60,7 @@ void main() {
                 vec2 was = (before.xy / before.w * 0.5 + 0.5) * pc.viewport.zw + pc.viewport.xy;
                 camera = relative(now, textureLod(u_before, was / pc.size.xy, 0.0).rgb);
             }
-            o_stats.b = min(o_stats.b, 990.0) + 1000.0 + (camera > 0.25 ? 2000.0 : 0.0);
+            o_stats.b += 1000.0 + (camera > 0.25 ? 2000.0 : 0.0);
         }
     }
     if (z <= 0.0) {
