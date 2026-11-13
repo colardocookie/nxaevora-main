@@ -406,8 +406,9 @@ on every frame as before. In play the slow throw came out every time in four ses
 
 Limits. The other ride bits were never played and are off. The player bits as a plain mask (`0x380`) made strafing
 and rolling choppy, which is why the throw uses a window. The Sneasler bit refuses while the ledge fix owns the same
-two bridges. During a ticked script run the shared frame-step cell holds 1/30 s. A patched site that ran on another
-thread in that moment would take a full step. This was never seen and never measured. Only the rotation that
+two bridges. During a ticked script run the shared frame-step cell holds 1/30 s. The game runs its frame on three
+threads, so another reader could meet 1/30 s. In 1844 ticked runs the day clock never did. No other reader is
+measured. Only the rotation that
 `main+25AB490` sets is blended. The throw wait is the only window, and other waits counted in script updates may
 exist. The kept release event is asked for again only while the same state object is updated on consecutive frames
 and the object's first word is unchanged. An earlier form that asked more queries crashed on a released object.
