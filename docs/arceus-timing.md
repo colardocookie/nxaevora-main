@@ -200,8 +200,9 @@ that loads it, and the first one maps it. The `arceus-gravity-fix` line confirms
 ## Movement fix
 
 With only gravity on the elapsed time, sideways motion in the air still ran four times fast against the fall,
-because other character movement steps add acceleration times 1/30 once per call. The default-on `SNX_ARCEUS_MOVEMENT_FIX` makes nine of those constants load the frame step from the same cell. Each is a
-MOV/MOVK pair of plus or minus 1/30:
+because other character movement steps add acceleration times 1/30 once per call. The default-on `SNX_ARCEUS_MOVEMENT_FIX` covers nine of those constants and can make each load the frame step from the
+same cell. By default it turns on seven of them (bits 2 to 8, the player sites). Bits 0 and 1, the shared sites, turn on
+only when an explicit mask sets them. Each is a MOV/MOVK pair of plus or minus 1/30:
 
 | Bit | Site | Owner |
 | --- | --- | --- |
@@ -215,8 +216,9 @@ MOV/MOVK pair of plus or minus 1/30:
 | 7 | `main+1A17B10` | player state acceleration (`main+1A173B0`) |
 | 8 | `main+1A17F3C` | player state force (`main+1A173B0`) |
 
-`SNX_ARCEUS_MOVEMENT_SITES` is an optional hex mask over these bits, to test the sites one by one. Without it all
-nine are on. The `arceus-movement-fix` line gives the number installed and the mask.
+`SNX_ARCEUS_MOVEMENT_SITES` is an optional hex mask over these bits, to test the sites one by one. Without it the
+default `0x1fc` turns on the seven sites of bits 2 to 8. An empty value turns on all nine. The `arceus-movement-fix` line
+gives the number installed and the mask.
 
 ## Fade fix
 
