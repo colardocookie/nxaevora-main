@@ -12,8 +12,9 @@ tool keeps them.
   update 1.1.1.
 - group: G1 to G9 as in `docs/graphics/nvn-design.md`, section 2-6. G10 is a function that no run called.
 - calls: the calls of the run in `docs/graphics/nvn-calls.md`, through the dispatch table and with the library (`nvn_native=0`).
-- handler: `implemented` when `native_procs` of `nvn_native.c` has a host handler, `stub-log` when the missing-function
-  handler answers (the first call is logged and 0 is returned).
+- handler: `implemented` when `native_procs` of `nvn_native.c` has a host handler (or, for `nvnDeviceGetProcAddress`, the
+  host lookup hook), `stub-log` when the missing-function handler answers (it stops the game unless
+  `nvn_native_missing=0`, which logs the first call and returns 0).
 - checks: the checks that passed, with their scope (`unit`, `selftest R/M/S/Y` with the build, `exec`). The build
   `update 1.1.1` is the library of that update: the `sdk` module with the build ID
   `B39ADD63421BE525D352E576DAB438D3812EDFF0`. The argument sets of a selftest check are the cases of the function in
@@ -33,8 +34,8 @@ tool keeps them.
 | G7 | 4 | 4 | 0 | 4 | 0 |
 | G8 | 112 | 112 | 0 | 112 | 0 |
 | G9 | 43 | 43 | 0 | 43 | 0 |
-| G10 | 281 | 280 | 1 | 0 | 0 |
-| all | 523 | 522 | 1 | 242 | 0 |
+| G10 | 281 | 281 | 0 | 0 | 0 |
+| all | 523 | 523 | 0 | 242 | 0 |
 
 ## Functions
 
@@ -300,10 +301,10 @@ tool keeps them.
 | `nvnBufferInvalidateMappedRange` | G10 | d823c20 | 0 | implemented | exec (update 1.1.1, 2026-11-13) |  |  |
 | `nvnCommandBufferBindCoverageModulationTable` | G10 | d84cd20 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | no-op for table 0 (disable), refused for a table: identity not verified |
 | `nvnCommandBufferBindImages` | G10 | d849430 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
-| `nvnCommandBufferBindSeparateSampler` | G10 | d848ad0 | 0 | implemented | |  | refused: the host has only the combined texture table |
-| `nvnCommandBufferBindSeparateSamplers` | G10 | d848d40 | 0 | implemented | |  | refused: the host has only the combined texture table |
-| `nvnCommandBufferBindSeparateTexture` | G10 | d848620 | 0 | implemented | |  | refused: the host has only the combined texture table |
-| `nvnCommandBufferBindSeparateTextures` | G10 | d848890 | 0 | implemented | |  | refused: the host has only the combined texture table |
+| `nvnCommandBufferBindSeparateSampler` | G10 | d848ad0 | 0 | implemented |  |  | refused: the host has only the combined texture table |
+| `nvnCommandBufferBindSeparateSamplers` | G10 | d848d40 | 0 | implemented |  |  | refused: the host has only the combined texture table |
+| `nvnCommandBufferBindSeparateTexture` | G10 | d848620 | 0 | implemented |  |  | refused: the host has only the combined texture table |
+| `nvnCommandBufferBindSeparateTextures` | G10 | d848890 | 0 | implemented |  |  | refused: the host has only the combined texture table |
 | `nvnCommandBufferBindStorageBuffers` | G10 | d8481d0 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  |  |
 | `nvnCommandBufferBindTextures` | G10 | d848f80 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | one combined texture bind per entry (stride 8) |
 | `nvnCommandBufferBindTransformFeedbackBuffers` | G10 | d84b4d0 | 0 | implemented | unit (nvn_params) |  | library read: sent at the bind, not at the draw |
@@ -320,13 +321,13 @@ tool keeps them.
 | `nvnCommandBufferCopyTextureToBuffer` | G10 | d82bb70 | 0 | implemented | unit, selftest S (update 1.1.1, 2026-11-12), exec (update 1.1.1, 2026-11-13) |  | selftest: the per-side texture address registers are not compared; selftest mutation: the host region is one texel narrower, only this function's rows fail (S, rdma.0x105, 2026-11-12) |
 | `nvnCommandBufferDiscardColor` | G10 | d8564c0 | 0 | implemented |  |  | selftest: expected no-op, the host handler is a logged no-op by design (2026-11-12) |
 | `nvnCommandBufferDiscardDepthStencil` | G10 | d856530 | 0 | implemented |  |  | selftest: expected no-op, the host handler is a logged no-op by design (2026-11-12) |
-| `nvnCommandBufferDispatchComputeIndirect` | G10 | d84dc60 | 0 | implemented | |  | refused: no host path for a QMD at a GPU address |
+| `nvnCommandBufferDispatchComputeIndirect` | G10 | d84dc60 | 0 | implemented |  |  | refused: no host path for a QMD at a GPU address |
 | `nvnCommandBufferDownsample` | G10 | d82cb10 | 0 | implemented | unit, selftest S (update 1.1.1, 2026-11-12) |  | selftest: the per-side texture address registers are not compared |
 | `nvnCommandBufferDownsampleTextureView` | G10 | d82cb20 | 0 | implemented | unit, selftest S (update 1.1.1, 2026-11-12) |  | selftest: the per-side texture address registers are not compared |
-| `nvnCommandBufferDrawArraysIndirect` | G10 | d849a00 | 0 | implemented | |  | refused: the GPU reads the record at draw time, the replay has no fetch |
-| `nvnCommandBufferDrawElementsIndirect` | G10 | d849bd0 | 0 | implemented | |  | refused: the GPU reads the record at draw time, the replay has no fetch |
-| `nvnCommandBufferDrawTexture` | G10 | d84cad0 | 0 | implemented | |  | refused: needs the driver program at device+0x1b00 |
-| `nvnCommandBufferDrawTransformFeedback` | G10 | d84bb40 | 0 | implemented | |  | refused: the renderer does not write the byte counts |
+| `nvnCommandBufferDrawArraysIndirect` | G10 | d849a00 | 0 | implemented |  |  | refused: the GPU reads the record at draw time, the replay has no fetch |
+| `nvnCommandBufferDrawElementsIndirect` | G10 | d849bd0 | 0 | implemented |  |  | refused: the GPU reads the record at draw time, the replay has no fetch |
+| `nvnCommandBufferDrawTexture` | G10 | d84cad0 | 0 | implemented |  |  | refused: needs the driver program at device+0x1b00 |
+| `nvnCommandBufferDrawTransformFeedback` | G10 | d84bb40 | 0 | implemented |  |  | refused: the renderer does not write the byte counts |
 | `nvnCommandBufferFenceSync` | G10 | d825a80 | 0 | implemented | unit, exec (update 1.1.1, 2026-11-13) |  |  |
 | `nvnCommandBufferGetCommandMemoryFree` | G10 | d8240a0 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory; selftest: expected refusal, the library gives the real value and the host 0 (2026-11-13) |
 | `nvnCommandBufferGetCommandMemorySize` | G10 | d824080 | 0 | implemented |  |  | refused, returns 0: the host does not write the game's command memory; selftest: expected refusal, the library gives the real value and the host 0 (2026-11-13) |
@@ -344,8 +345,8 @@ tool keeps them.
 | `nvnCommandBufferInsertDebugMarkerDynamic` | G10 | d84d3b0 | 0 | implemented | selftest S (update 1.1.1, 2026-11-13) |  | no-op: debug marker for an external debugger; selftest: the library macro call changes no compared register (2026-11-13) |
 | `nvnCommandBufferInsertDebugMarkerStatic` | G10 | d84d200 | 0 | implemented | selftest S (update 1.1.1, 2026-11-13) |  | no-op: debug marker for an external debugger; selftest: the library macro call changes no compared register (2026-11-13) |
 | `nvnCommandBufferIsRecording` | G10 | d826400 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  | host record value |
-| `nvnCommandBufferMultiDrawArraysIndirectCount` | G10 | d849dd0 | 0 | implemented | |  | refused: the record feed of the macro is not known |
-| `nvnCommandBufferMultiDrawElementsIndirectCount` | G10 | d84a230 | 0 | implemented | |  | refused: the record feed of the macro is not known |
+| `nvnCommandBufferMultiDrawArraysIndirectCount` | G10 | d849dd0 | 0 | implemented |  |  | refused: the record feed of the macro is not known |
+| `nvnCommandBufferMultiDrawElementsIndirectCount` | G10 | d84a230 | 0 | implemented |  |  | refused: the record feed of the macro is not known |
 | `nvnCommandBufferPauseTransformFeedback` | G10 | d84b6f0 | 0 | implemented | unit (nvn_params) |  | library read: End words, address 0 sends only the disable |
 | `nvnCommandBufferPopDebugGroup` | G10 | d84cfc0 | 0 | implemented | selftest S (update 1.1.1, 2026-11-13) |  | no-op: debug marker for an external debugger; selftest: the library macro call changes no compared register (2026-11-13) |
 | `nvnCommandBufferPopDebugGroupId` | G10 | d84d030 | 0 | implemented | selftest S (update 1.1.1, 2026-11-13) |  | no-op: debug marker for an external debugger; selftest: the library macro call changes no compared register (2026-11-13) |
@@ -354,9 +355,9 @@ tool keeps them.
 | `nvnCommandBufferPushDebugGroupStatic` | G10 | d84d110 | 0 | implemented | selftest S (update 1.1.1, 2026-11-13) |  | no-op: debug marker for an external debugger; selftest: the library macro call changes no compared register (2026-11-13) |
 | `nvnCommandBufferReportValue` | G10 | d856ab0 | 0 | implemented | unit, exec (update 1.1.1, 2026-11-13) |  |  |
 | `nvnCommandBufferResolveDepthBuffer` | G10 | d84ce80 | 0 | implemented |  |  | selftest: expected no-op, the host handler is a logged no-op by design (2026-11-12) |
-| `nvnCommandBufferRestoreZCullData` | G10 | d84c8e0 | 0 | implemented | |  | logged no-op: the host has no ZCull; selftest: expected no-op, the library writes r3d 0x1FA..0x1FD (2026-11-13) |
+| `nvnCommandBufferRestoreZCullData` | G10 | d84c8e0 | 0 | implemented |  |  | logged no-op: the host has no ZCull; selftest: expected no-op, the library writes r3d 0x1FA..0x1FD (2026-11-13) |
 | `nvnCommandBufferResumeTransformFeedback` | G10 | d84b810 | 0 | implemented | unit (nvn_params) |  | library read: address 0 sends the enable; an address is refused |
-| `nvnCommandBufferSaveZCullData` | G10 | d84c840 | 0 | implemented | |  | logged no-op: the host has no ZCull; selftest: expected no-op, the library writes r3d 0x1FA..0x1FD (2026-11-13) |
+| `nvnCommandBufferSaveZCullData` | G10 | d84c840 | 0 | implemented |  |  | logged no-op: the host has no ZCull; selftest: expected no-op, the library writes r3d 0x1FA..0x1FD (2026-11-13) |
 | `nvnCommandBufferSetColorReductionEnable` | G10 | d84d4e0 | 0 | implemented |  |  | logged no-op: full color precision is kept; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
 | `nvnCommandBufferSetColorReductionThresholds` | G10 | d84d550 | 0 | implemented |  |  | logged no-op: full color precision is kept; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
 | `nvnCommandBufferSetCommandMemoryCallbackEnabled` | G10 | d823d90 | 0 | implemented |  |  | no-op: the host never calls the memory callback; no selftest case: no getter reads the flag |
@@ -369,12 +370,12 @@ tool keeps them.
 | `nvnCommandBufferSetOuterTessellationLevels` | G10 | d84b380 | 0 | implemented | unit (nvn_params) |  | library read: sent as draw state at the next draw |
 | `nvnCommandBufferSetPatchSize` | G10 | d84b2b0 | 0 | implemented | unit (nvn_params) |  | library read: sent as draw state at the next draw, no mask |
 | `nvnCommandBufferSetPrimitiveRestart` | G10 | d84a370 | 0 | implemented | unit (nvn_params) |  | library read: sent as draw state at the next draw |
-| `nvnCommandBufferSetProgramSubroutines` | G10 | d826180 | 0 | implemented | |  | refused: the words of the subroutine rewrite are not known |
+| `nvnCommandBufferSetProgramSubroutines` | G10 | d826180 | 0 | implemented |  |  | refused: the words of the subroutine rewrite are not known |
 | `nvnCommandBufferSetRenderEnable` | G10 | d856bb0 | 0 | implemented | unit (nvn_params) |  | library read: one draw state with the conditional form (both write 0x556) |
 | `nvnCommandBufferSetRenderEnableConditional` | G10 | d856c20 | 0 | implemented | unit (nvn_params) |  | library read: condition 0 or 1, another value is a logged no-op |
 | `nvnCommandBufferSetSampleMask` | G10 | d84a800 | 0 | implemented |  |  | logged no-op: the host renders one sample; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
 | `nvnCommandBufferSetScissor` | G10 | d84b280 | 0 | implemented | selftest S (update 1.1.1, 2026-11-12) |  | library read: the SetScissors op with index 0 |
-| `nvnCommandBufferSetShaderScratchMemory` | G10 | d825f10 | 0 | implemented | |  | refused: two SDK constants are not known, no host scratch state |
+| `nvnCommandBufferSetShaderScratchMemory` | G10 | d825f10 | 0 | implemented |  |  | refused: two SDK constants are not known, no host scratch state |
 | `nvnCommandBufferSetStencilCullCriteria` | G10 | d84d600 | 0 | implemented |  |  | logged no-op: the host has no stencil cull; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
 | `nvnCommandBufferSetSubpixelPrecisionBias` | G10 | d84c770 | 0 | implemented |  |  | logged no-op: the device subpixel grid is used; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
 | `nvnCommandBufferSetTiledCacheAction` | G10 | d84bf30 | 0 | implemented |  |  | no-op: the host has no tiled cache; selftest: expected no-op, the host handler is a logged no-op by design (2026-11-11) |
@@ -394,7 +395,7 @@ tool keeps them.
 | `nvnDeviceGenerateDebugDomainId` | G10 | d82cfd0 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  | one process counter, returns the old value |
 | `nvnDeviceGetCurrentTimestampInNanoseconds` | G10 | d82cff0 | 0 | implemented | unit (nvn_params, timestamp), selftest R (update 1.1.1, 2026-11-10) |  | nvn_timestamp_ns(gpu_ticks()) |
 | `nvnDeviceGetDepthMode` | G10 | d82d040 | 0 | implemented | selftest R (update 1.1.1, 2026-11-10) |  |  |
-| `nvnDeviceGetProcAddress` | G10 | d82d090 | 0 | stub-log |  |  | not handled: the game resolves names through d832940, which the hook covers |
+| `nvnDeviceGetProcAddress` | G10 | d82d090 | 0 | implemented | unit (`nvn_proc_name_index`, `nvn_proc_table_check`) |  | the host answers from the library's name and address tables (sdk d832940 is the library lookup, which no longer runs); `nvnBootstrapLoader` gets the same answer |
 | `nvnDeviceGetSeparateSamplerHandle` | G10 | d82d0a0 | 0 | implemented | unit (nvn_params), selftest R (update 1.1.1, 2026-11-10) |  | (int64)(int32)index << 20, no tag |
 | `nvnDeviceGetSeparateTextureHandle` | G10 | d82d0b0 | 0 | implemented | unit (nvn_params), selftest R (update 1.1.1, 2026-11-10) |  | nvn_texture_handle(index, 0) |
 | `nvnDeviceGetTexelFetchHandle` | G10 | d82d0c0 | 0 | implemented | unit (nvn_params), selftest R (update 1.1.1, 2026-11-10) |  | nvn_texture_handle(index, 0) |
@@ -437,9 +438,9 @@ tool keeps them.
 | `nvnMultisampleStateGetSampleLocationsGridEnable` | G10 | d83b520 | 0 | implemented | selftest R (update 1.1.1, 2026-11-13) |  |  |
 | `nvnMultisampleStateSetSampleLocations` | G10 | d83b530 | 0 | implemented | unit (2026-11-13) test_multisample_locations_fit, test_u1_multisample_locations |  |  |
 | `nvnProgramSetDebugLabel` | G10 | d82cd00 | 0 | implemented |  |  | the library body is one ret; no check: the host handler is the same ret, the selftest calls it but compares nothing after it |
-| `nvnProgramSetSampleShading` | G10 | d837180 | 0 | implemented | |  | no-op: the host renders one sample |
+| `nvnProgramSetSampleShading` | G10 | d837180 | 0 | implemented |  |  | no-op: the host renders one sample |
 | `nvnProgramSetShaders` | G10 | d836760 | 0 | implemented | unit (2026-11-13) test_program_set_helpers, test_program_header_stage, test_program_build_*, test_program_xfb_* |  | SetShadersExt path with 16-byte entries, no control |
-| `nvnProgramSetSubroutineLinkage` | G10 | d836e90 | 0 | implemented | |  | returns 0: the host has no subroutine table |
+| `nvnProgramSetSubroutineLinkage` | G10 | d836e90 | 0 | implemented |  |  | returns 0: the host has no subroutine table |
 | `nvnQueueAcquireTexture` | G10 | d83eed0 | 0 | implemented |  |  | shares the pick of nvnWindowAcquireTexture, no sync |
 | `nvnQueueBuilderGetCommandFlushThreshold` | G10 | d838540 | 0 | implemented | selftest R/M (update 1.1.1, 2026-11-13) |  |  |
 | `nvnQueueBuilderGetCommandMemorySize` | G10 | d838510 | 0 | implemented | selftest R/M (update 1.1.1, 2026-11-13) |  |  |

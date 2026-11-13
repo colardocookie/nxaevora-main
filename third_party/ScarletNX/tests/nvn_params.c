@@ -3507,6 +3507,42 @@ static void test_program_set_helpers(void) {
     CHECK(nvn_program_unsupported_stage(0x100u) == -1); /* bits above stage 5 are not stages */
 }
 
+static void test_proc_name_index(void) {
+    const char* const names[] = {"A", "BufferMap", "Queue", "QueueFinish", "Window"};
+    CHECK(nvn_proc_name_index(names, 5, "nvnA") == 0);
+    CHECK(nvn_proc_name_index(names, 5, "nvnWindow") == 4);
+    CHECK(nvn_proc_name_index(names, 5, "nvnQueue") == 2);
+    CHECK(nvn_proc_name_index(names, 5, "nvnQueueFinish") == 3);
+    CHECK(nvn_proc_name_index(names, 5, "nvnQueueF") == -1); /* a prefix of an entry is not an entry */
+    CHECK(nvn_proc_name_index(names, 5, "nvnAA") == -1);
+    CHECK(nvn_proc_name_index(names, 5, "nvnMissing") == -1);
+    CHECK(nvn_proc_name_index(names, 5, "Queue") == -1); /* no prefix */
+    CHECK(nvn_proc_name_index(names, 5, "nvn") == -1);   /* nothing after the prefix */
+    CHECK(nvn_proc_name_index(names, 5, "NVNQueue") == -1);
+    CHECK(nvn_proc_name_index(names, 0, "nvnA") == -1);
+    CHECK(nvn_proc_name_index(names, 5, NULL) == -1);
+    CHECK(nvn_proc_name_index(NULL, 5, "nvnA") == -1);
+}
+
+static void test_proc_table_check(void) {
+    const char* const names[] = {"A", "BufferMap", "Queue", "QueueFinish", "Window"};
+    const uint64_t addrs[] = {0x1000, 0x1004, 0x1008, 0x100c, 0x1010};
+    CHECK(nvn_proc_table_check(names, addrs, 5, 0x1000, 0x1014) == -1);
+    CHECK(nvn_proc_table_check(names, addrs, 0, 0x1000, 0x1014) == -1);
+    const char* const unsorted[] = {"A", "Queue", "BufferMap", "QueueFinish", "Window"};
+    CHECK(nvn_proc_table_check(unsorted, addrs, 5, 0x1000, 0x1014) == 2);
+    const char* const duplicate[] = {"A", "BufferMap", "Queue", "Queue", "Window"};
+    CHECK(nvn_proc_table_check(duplicate, addrs, 5, 0x1000, 0x1014) == 3);
+    const char* const empty[] = {"A", "BufferMap", "", "QueueFinish", "Window"};
+    CHECK(nvn_proc_table_check(empty, addrs, 5, 0x1000, 0x1014) == 2);
+    const uint64_t below[] = {0x1000, 0xffc, 0x1008, 0x100c, 0x1010};
+    CHECK(nvn_proc_table_check(names, below, 5, 0x1000, 0x1014) == 1);
+    const uint64_t at_hi[] = {0x1000, 0x1004, 0x1014, 0x100c, 0x1010};
+    CHECK(nvn_proc_table_check(names, at_hi, 5, 0x1000, 0x1014) == 2);
+    const uint64_t unaligned[] = {0x1000, 0x1004, 0x1006, 0x100c, 0x1010};
+    CHECK(nvn_proc_table_check(names, unaligned, 5, 0x1000, 0x1014) == 2);
+}
+
 int main(int argc, char** argv) {
     test_compute_qmd_size_limits();
     test_window_params();
@@ -3623,6 +3659,8 @@ int main(int argc, char** argv) {
     test_multisample_locations_fit();
     test_bind_program_words();
     test_program_set_helpers();
+    test_proc_name_index();
+    test_proc_table_check();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

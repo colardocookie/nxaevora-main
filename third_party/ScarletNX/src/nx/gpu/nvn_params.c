@@ -3232,3 +3232,36 @@ int nvn_compute_cbuf0_build(const NvnComputeBindEntry* uniform, const NvnCompute
     return 1;
 }
 
+/* The library's list is sorted by strcmp and holds the names without the "nvn" prefix. A binary search needs no other
+   check: the table check rejects a list that is not sorted. */
+int nvn_proc_name_index(const char* const* names, uint32_t count, const char* name) {
+    if (!names || !name || strncmp(name, "nvn", 3)) return -1;
+    name += 3;
+    uint32_t lo = 0, hi = count;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        const char* entry = names[mid];
+        if (!entry) return -1;
+        int order = strcmp(name, entry);
+        if (order < 0) hi = mid;
+        else if (order > 0) lo = mid + 1;
+        else return (int)mid;
+    }
+    return -1;
+}
+
+/* A table that fails this check cannot answer a lookup: a wrong entry would run another function or an address that is
+   not code. The first bad index is enough for the caller's fatal line. */
+int nvn_proc_table_check(const char* const* names, const uint64_t* addrs, uint32_t count, uint64_t code_lo,
+                         uint64_t code_hi) {
+    if (!count) return -1;
+    if (!names || !addrs) return 0;
+    for (uint32_t i = 0; i < count; i++) {
+        const char* entry = names[i];
+        if (!entry || !*entry) return (int)i;
+        if (i && strcmp(names[i - 1], entry) >= 0) return (int)i;
+        uint64_t addr = addrs[i];
+        if (addr < code_lo || addr >= code_hi || (addr & 3)) return (int)i;
+    }
+    return -1;
+}

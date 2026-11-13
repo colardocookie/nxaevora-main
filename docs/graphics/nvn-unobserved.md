@@ -247,6 +247,11 @@ functions that no run reached stay `implemented` plus `unit`, `selftest` or `exe
   with no fault, drop or refusal, and 3840 program sets with 0 refused. The selftest: 356 cases, 0 failed, 18 expected
   no-op, 2 skipped, each case line the same as in the run of d4.
 - 4-u4: the change of the default of `nvn_native_missing` to stop, when no row is `none` or `stub-log`.
+  4-u4 (2026-11-13): the last `stub-log` row, `nvnDeviceGetProcAddress`, was the library lookup under a host hook. The host
+  now answers it and `nvnBootstrapLoader` from the library's name and address tables (`nvn-design.md`, 2-3, item 6), so
+  all 523 rows are `implemented`. The setting `nvn_native_missing` exists with the default 1 (stop). Tests: `nvn_params`
+  (`nvn_proc_name_index`, `nvn_proc_table_check`; mutants of the sort check, the end bound, the alignment and the search
+  fail the test).
 
 Exit condition of this part: every one of the 523 rows is `implemented` and has `unit`, `selftest` or `exec` with its scope. The
 rows that no game run reached are listed as "not verified in the game". The default of missing functions is stop. A function with a

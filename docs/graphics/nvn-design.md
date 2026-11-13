@@ -241,6 +241,13 @@ Design of the attachment:
    The resolver stub is a trampoline (`adrp`, `ldr`, `ldr`, `br`: it jumps to a pointer that is filled at load). Open: if the real
    function reads the device object. The safe design is to answer `nvnDeviceGetProcAddress` in the host from the table of
    names that `nvnBootstrapLoader` gave, and to give back the same addresses as now.
+   Done in 4-u4 (2026-11-13): the real function is d832940. It binary searches 523 sorted names (without the prefix `nvn`,
+   offsets at sdk+0xABE798, strings at sdk+0xABAFD5) and returns entry n of a relocated `.data` table (sdk+0xC63E58). On
+   each call until it is set up it also runs d82cd80, which calls d861ff0 with the device. `nvnBootstrapLoader` calls the
+   same function with device 0. Now the host reads the two tables at the first lookup (after `rtld` relocated them),
+   checks the sdk build ID and the table (`nvn_proc_table_check`), and answers both functions. The library lookup never
+   runs. An unknown build, a NULL name or a bad table stops the game. A name that is not in the list (the library would
+   try its 30 NVX extension names next) follows `nvn_native_missing`.
 
 Facts found on the way (from the disassembly of the `sdk` module):
 
@@ -528,6 +535,7 @@ command buffer op that the replay does not know yet is recorded, counted by opco
 of each frame for the first 10 frames and then once a second. So a run shows what is still missing, and the agent reads it from
 the log. This lenient mode is for stages 3 and 4 only. When the plan of `nvn-unobserved.md` is done, the setting
 `nvn_native_missing` changes the default to stop (fatal error with the function name), because a silent zero can hide a fault.
+Done in 4-u4 (2026-11-13): `nvn_native_missing` (0 Log, 1 Stop, default 1). The command buffer ops above are not changed.
 
 ### Groups of functions (the numbers are the counts of functions of `nvn-calls.md`)
 
