@@ -1081,6 +1081,9 @@ void vk_temporal_before(u64 fs0_hash) {
             if (sharpen_set) {
                 Constants sc = pc;
                 sc.size[3] = g_t.sharpen;
+                /* a second write of the scene colour after the resolve's: ordered behind it */
+                vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
                 fullscreen(cb, scene->att, scene->sw, scene->sh, g_t.sharpen_pipe, sharpen_set, &sc);
             }
         }
