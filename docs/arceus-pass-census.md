@@ -3,8 +3,8 @@
 
 # Frame pass census
 
-`SNX_PASS_CENSUS=1` makes the Vulkan renderer log what one frame is made of. It only reads. Every 1200 presents from
-the 900th, up to 20 times, the passes of one frame are written in order as `arceus-pass` lines. A pass is a run of
+`SNX_PASS_CENSUS=1` makes the Vulkan renderer log what a frame is made of. It only reads. Every 1200 presents from
+the 900th, up to 10 times, the passes of two frames in a row are written in order as `arceus-pass` lines. A pass is a run of
 draws on one set of targets, so the game returning to a target starts a new pass.
 
 The header line gives the present number, the number of passes, how many were dropped (the limit is 384), the guest
@@ -26,3 +26,15 @@ sample carries `H`, `VELOCITY?` when a two-channel colour target is written with
 a sampled depth format was a target earlier in the frame.
 
 Clears are not listed. Textures that never were a render target are left out. A pass keeps at most 12 samples.
+
+## Vertex constant blocks
+
+For a draw into a geometry pass (two or more colour targets written, with a depth target) the vertex stage's constant
+blocks are logged too, for draws 0, 1, 2 and every 16th, up to eight a pass:
+
+    arceus-pass-blocks: present=N pass=K draw=D vs=HASH b0=ADDR:SIZE b1=ADDR:SIZE ...
+    arceus-pass-block: present=N pass=K draw=D b1 words=<up to 0x140 bytes as 32-bit words in hex>
+
+The first line lists every bound block with its guest address and size in bytes. The second gives the first 0x140
+bytes of up to four blocks of at least 0x40 bytes. The two frames in a row let a block that keeps last frame's world
+matrix beside this frame's be seen: the same draw's words in the second frame repeat a matrix of the first.
