@@ -427,6 +427,16 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
     g_t.camera_at = frame;
 }
 
+/* the size of a jittered pixel: the scene viewport's, the motion image's until a viewport is known */
+static float jitter_width(void) {
+    const float w = fabsf(g_t.viewport.width);
+    return w >= 1.0f ? w : (float)g_t.motion.w;
+}
+static float jitter_height(void) {
+    const float h = fabsf(g_t.viewport.height);
+    return h >= 1.0f ? h : (float)g_t.motion.h;
+}
+
 /* A draw binds constant bank 4: when it is the scene camera's block and anti-aliasing is on, the draw gets a copy
    whose projection is shifted by this frame's jitter. Guest memory is not written, so the game and our own matrices
    keep the block without jitter. The copy is made once a submission in the frame's staging. With row vectors a shift
@@ -462,7 +472,9 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
         memcpy(bytes, source, bound);
         memcpy(g_t.jitter_source, source, bound);
         temporal_jitter(index, JITTERS, pixels);
-        const float jx = 2.0f * pixels[0] / (float)g_t.motion.w, jy = 2.0f * pixels[1] / (float)g_t.motion.h;
+        /* in the scene viewport's pixels, which is the target's size only while the game draws the 3D scene at
+           full size */
+        const float jx = 2.0f * pixels[0] / jitter_width(), jy = 2.0f * pixels[1] / jitter_height();
         /* the view-projection and the projection x J, and J's inverse x the inverse view-projection */
         static const u32 forward[2] = {0x00, 0x80};
         for (int k = 0; k < 2; k++) {
@@ -777,8 +789,8 @@ int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* o
     if (g_t.mode == MODE_TAA && zt->sw && zt->sh) {
         float pixels[2];
         temporal_jitter(g_vk_present % JITTERS, JITTERS, pixels);
-        jx = 2.0 * (double)pixels[0] / (double)zt->sw;
-        jy = 2.0 * (double)pixels[1] / (double)zt->sh;
+        jx = 2.0 * (double)pixels[0] / (double)jitter_width();
+        jy = 2.0 * (double)pixels[1] / (double)jitter_height();
     }
     struct {
         float before[16], now[16], viewport[4], depth[4], size[4];
