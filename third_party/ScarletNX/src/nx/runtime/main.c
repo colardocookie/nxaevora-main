@@ -934,6 +934,18 @@ int snx_main(int argc, char** argv) {
     snx_ir_fpsr_flags(g_settings.fpsr_flags);
     snx_ir_volatile_memory(g_settings.volatile_load_stores);
 
+    /* SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>: the upscaler's self-test in place of the game. Taken here, where the
+       log is a file and nothing of the game is loaded yet: no module, no memory, no guest code. It ends the run. */
+    {
+        const char* selftest = getenv("SNX_ARCEUS_UPSCALER_SELFTEST");
+        if (selftest && selftest[0]) {
+            const int result = vk_upscaler_selftest(selftest);
+            free(keys);
+            free(title_keys);
+            fflush(NULL);
+            exit(result);
+        }
+    }
     fs_init(keys, title_keys); /* the npdm is read through it, and mem_init's layout comes before */
     npdm_layout(); /* the address space type's layout, before mem_init sizes its blocks in it */
     free(keys);

@@ -327,3 +327,49 @@ The numbers a frame would carry are made by `temporal_upscaler_frame`:
 The host tests work the places out by hand for a moved camera, an object moving against a still and a moving
 camera, jitter over a negative height, a rectangle, a resize and a reset. They cannot show that a library reads
 the signs the same way: that needs a test on a device with the library.
+
+## The upscaler's self-test (`SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>`)
+
+With this set to an adapter's name (`fsr`), the program does not load the game. Where the log has become a file
+and nothing of the game is in memory, it makes a Vulkan instance and device of its own without a window, through
+the steps the runtime will take with an adapter (`gpu/vk/upscaler_host.c`), runs the adapter on a generated scene,
+writes its lines and ends the process with 0 for a pass. Every line begins with `arceus-upscaler-selftest`. The
+adapter's own lines begin with `arceus-upscaler`.
+
+The FSR adapter (`gpu/vk/upscaler_fsr.cpp`, Windows only) needs AMD's `amd_fidelityfx_loader_vk.dll` and
+`amd_fidelityfx_upscaler_vk.dll` beside the program. They are the user's to put there and are never in this
+repository. The API headers they are called through are in `third_party/FidelityFX-SDK`. The adapter takes the
+newest version of the 3.1 line the library holds and logs what was asked for and what runs.
+
+The scene is a function of position (`gpu/vk/upscaler_selftest.h`): a far background with a checker, slanted
+edges and a fine grid, and a nearer patch with its own pattern. Its true picture at the output's size is that
+function averaged over 8 x 8 points of a pixel. A frame's input is what a rasteriser draws: at a pixel's centre,
+the scene's point at the centre's place less the frame's perturbation, in the game's formats (B10G11R11 colour,
+D24S8 depth). That file shares no arithmetic with the conversion in `temporal_math.h` or with an adapter, so a
+mistake in those cannot repeat itself in the test. The inputs of a run are made once. A variant of a run changes
+only the numbers handed to the adapter.
+
+The cases, each run with a viewport of negative and of positive height (render 320 x 180, output 480 x 270):
+1. Jitter alone over a still pattern, twice the offsets. The four combinations of the jitter's signs: the
+   configured one must have the lowest error and every other at least 1.25 times it. The error must be 1.25 times
+   lower than that of one frame scaled plainly. The change between frames over the last cycle of offsets must be
+   at most half of that over the first.
+2. A translation that differs in both axes. All sixteen combinations of the jitter's and the vector's signs.
+3. A patch moving another way over a still background. The four combinations of the vector's signs, judged
+   inside the patch. In the band the patch left in the last frame, the configured run must beat the run with the
+   depth convention turned, by the margin.
+4. The images' size changes in mid-run: the frames until the new context is ready are skipped, then frames are
+   evaluated again.
+5. A new pattern with the reset flag: the output of that frame against a context that never saw the old pattern,
+   at most 0.01 apart. Without the flag it must be at least 0.05 apart, or the control saw nothing.
+6. The content at 40, 30 of larger images of other proportions, with padding that is not the scene's, against the
+   same content at the first texel of images of its own size: at most 0.01 apart.
+7. No message of the validation layer, with its synchronisation checks on, in any case. Without the layer
+   installed the case is not run, which is not a pass.
+A case that cannot tell its variants apart fails as a test. Every number is in the log, pass or fail. The last
+line is `RESULT: PASS` or `RESULT: FAIL`.
+
+Limits. It has been built and has not run: the build machine has no run with the SDK's libraries yet. Errors are
+means over a region, so a fault in very few pixels can pass. The scene has one depth step and no transparency. A
+pass says the signs and conventions agree with the SDK on this scene. It says nothing about the game's picture.
+
