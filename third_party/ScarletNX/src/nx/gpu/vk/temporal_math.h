@@ -392,6 +392,26 @@ static inline int temporal_stream_before(const TemporalStreamCopy* now, const Te
     if (!temporal_stream_valid(now) || !temporal_stream_valid(last)) return 0;
     return temporal_stream_owned(last, pair, draw);
 }
+/* The frame of a slot's newest capture event, copied or not: what its age is told by */
+static inline unsigned temporal_stream_newest(const TemporalStreamCopy copy[2]) {
+    return copy[0].at > copy[1].at ? copy[0].at : copy[1].at;
+}
+/* Which of n candidate slots serves the address want: the one that holds it, else, when one may be made, a free
+   one or the one whose newest capture is oldest, if that is TEMPORAL_SLOT_FRAMES old. -1 for none: the address
+   then has no record and its content is unknown. A slot with a capture this frame or the last is never given
+   away, so nothing a draw of this frame relied on can be wiped before the frame's vectors are checked. */
+#define TEMPORAL_SLOT_FRAMES 600
+static inline int temporal_slot_pick(const unsigned long long* address, const unsigned* newest, int n,
+                                     unsigned long long want, unsigned frame, int make) {
+    int oldest = -1;
+    for (int i = 0; i < n; i++) {
+        if (address[i] == want) return i;
+        if (oldest < 0 || (address[oldest] && (!address[i] || newest[i] < newest[oldest]))) oldest = i;
+    }
+    if (!make || oldest < 0) return -1;
+    if (address[oldest] && newest[oldest] + TEMPORAL_SLOT_FRAMES > frame) return -1;
+    return oldest;
+}
 /* A second capture into the address after a draw of this frame already took last frame's copy: the vectors that
    draw left cannot be trusted, and the frame's object vectors are given up. */
 static inline int temporal_stream_conflict(const TemporalStreamCopy* now, unsigned frame) {

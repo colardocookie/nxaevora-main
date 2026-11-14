@@ -109,7 +109,7 @@ static struct {
         object_frames, object_far, object_same, object_never, object_older, object_skinned, skinned_lines;
     /* skinned characters: our vertex and fragment programs, and the counts of the stats line */
     VkShaderModule skin_vs, skin_fs;
-    u64 skin_kept, skin_drawn, skin_first, skin_twice, skin_changed, skin_short, skin_unowned, skin_shared, skin_uncopied;
+    u64 skin_kept, skin_drawn, skin_first, skin_twice, skin_changed, skin_short, skin_unowned, skin_shared, skin_uncopied, skin_unkept;
     /* the learned pairs: why draws got no matrix of a frame ago, what the end of each frame judged, and the frames
        whose object vectors were given up because a pair broke after its draws */
     u64 object_learning, object_other, object_rest, object_full, object_unjudged;
@@ -880,7 +880,7 @@ static void objects_log(u32 frame) {
         "given up %llu. Skinned: reading a feedback buffer %llu, buffers kept %llu (a second time in a frame "
         "%llu), drawn again %llu, without last frame's buffer %llu, with a capture of another length %llu, "
         "reading past last frame's copy %llu, last frame's copy not this draw's or not known %llu, address "
-        "captured more than once %llu, captures not copied %llu\n",
+        "captured more than once %llu, captures not copied %llu, captures without a slot %llu\n",
         (unsigned long long)g_t.object_seen, (unsigned long long)g_t.object_new,
         (unsigned long long)g_t.object_never, (unsigned long long)g_t.object_older,
         (unsigned long long)g_t.object_learning, (unsigned long long)g_t.object_other,
@@ -895,9 +895,10 @@ static void objects_log(u32 frame) {
         (unsigned long long)g_t.skin_kept, (unsigned long long)g_t.skin_twice, (unsigned long long)g_t.skin_drawn,
         (unsigned long long)g_t.skin_first, (unsigned long long)g_t.skin_changed,
         (unsigned long long)g_t.skin_short, (unsigned long long)g_t.skin_unowned,
-        (unsigned long long)g_t.skin_shared, (unsigned long long)g_t.skin_uncopied);
+        (unsigned long long)g_t.skin_shared, (unsigned long long)g_t.skin_uncopied,
+        (unsigned long long)g_t.skin_unkept);
     g_t.skin_kept = g_t.skin_drawn = g_t.skin_first = g_t.skin_twice = g_t.skin_changed = g_t.skin_short = 0;
-    g_t.skin_unowned = g_t.skin_shared = g_t.skin_uncopied = 0;
+    g_t.skin_unowned = g_t.skin_shared = g_t.skin_uncopied = g_t.skin_unkept = 0;
     g_t.object_seen = g_t.object_new = g_t.object_moved = g_t.object_drawn = g_t.object_capped = g_t.object_odd = 0;
     g_t.object_far = g_t.object_same = g_t.object_never = g_t.object_older = g_t.object_skinned = 0;
     g_t.object_learning = g_t.object_other = g_t.object_rest = g_t.object_full = g_t.object_unjudged = 0;
@@ -1192,21 +1193,26 @@ typedef struct {
 } Skin;
 static Skin g_skins[SKINS];
 
+/* The slot of an address among its eight candidates (temporal_slot_pick): a slot's age is its newest capture's,
+   copied or not, so one a draw of this frame relied on is never given away. NULL: the address has no record. */
 static Skin* skin_slot(u64 address, u32 frame, int make) {
-    Skin* oldest = NULL;
+    unsigned long long addresses[8];
+    unsigned newest[8];
+    Skin* slots[8];
     for (u32 i = 0; i < 8; i++) {
-        Skin* s = &g_skins[((address >> 2) * 0x9E3779B1u + i) % SKINS];
-        if (s->address == address) return s;
-        const u32 used = s->at[0] > s->at[1] ? s->at[0] : s->at[1];
-        if (!oldest || used < (oldest->at[0] > oldest->at[1] ? oldest->at[0] : oldest->at[1])) oldest = s;
+        slots[i] = &g_skins[((address >> 2) * 0x9E3779B1u + i) % SKINS];
+        addresses[i] = slots[i]->address;
+        newest[i] = temporal_stream_newest(slots[i]->copy);
     }
-    const u32 used = oldest->at[0] > oldest->at[1] ? oldest->at[0] : oldest->at[1];
-    if (!make || (oldest->address && used + 600 > frame)) return NULL;
+    const int pick = temporal_slot_pick(addresses, newest, 8, address, frame, make);
+    if (pick < 0) return NULL;
+    Skin* s = slots[pick];
+    if (s->address == address) return s;
     for (int k = 0; k < 2; k++)
-        if (oldest->buffer[k]) vk_defer_buffer(oldest->buffer[k], oldest->memory[k]);
-    memset(oldest, 0, sizeof *oldest);
-    oldest->address = address;
-    return oldest;
+        if (s->buffer[k]) vk_defer_buffer(s->buffer[k], s->memory[k]);
+    memset(s, 0, sizeof *s);
+    s->address = address;
+    return s;
 }
 
 /* After a transform feedback draw, outside a pass: output 0 (size bytes at address, in source at offset) is copied
@@ -1215,7 +1221,10 @@ void vk_temporal_skin_keep(VkCommandBuffer cb, u64 address, u32 size, VkBuffer s
     const u32 frame = g_vk_present + 1;
     if (!g_t.objects || !address) return;
     Skin* s = skin_slot(address, frame, 1);
-    if (!s) return;
+    if (!s) { /* no slot to be had: the address has no record, so nothing can take its content for known */
+        g_t.skin_unkept++;
+        return;
+    }
     const int turn = (int)(frame & 1);
     if (s->copy[turn].at == frame) g_t.skin_twice++; /* a second capture to this address in one frame */
     /* The capture is counted before anything below can fail: from here the copy of this turn is not known to hold
@@ -1231,19 +1240,26 @@ void vk_temporal_skin_keep(VkCommandBuffer cb, u64 address, u32 size, VkBuffer s
                                   .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                                   .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
         VmaAllocationCreateInfo bai = {.usage = VMA_MEMORY_USAGE_AUTO};
-        for (int k = 0; k < 2; k++) {
-            if (s->buffer[k]) vk_defer_buffer(s->buffer[k], s->memory[k]);
-            s->buffer[k] = VK_NULL_HANDLE;
-            s->at[k] = 0;
-            temporal_stream_poison(&s->copy[k]); /* the bytes go with the buffer, the counts stay */
-            if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &bai, &s->buffer[k], &s->memory[k], NULL)))
-                s->buffer[k] = VK_NULL_HANDLE;
-        }
-        s->capacity = s->buffer[0] && s->buffer[1] ? size : 0;
-        if (!s->capacity) {
+        /* both new buffers first: when one cannot be made the slot keeps what it had */
+        VkBuffer made[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+        VmaAllocation made_memory[2] = {NULL, NULL};
+        for (int k = 0; k < 2; k++)
+            if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &bai, &made[k], &made_memory[k], NULL)))
+                made[k] = VK_NULL_HANDLE;
+        if (!made[0] || !made[1]) {
+            for (int k = 0; k < 2; k++)
+                if (made[k]) vmaDestroyBuffer(g_vk.vma, made[k], made_memory[k]);
             g_t.skin_uncopied++;
             return;
         }
+        for (int k = 0; k < 2; k++) {
+            if (s->buffer[k]) vk_defer_buffer(s->buffer[k], s->memory[k]);
+            s->buffer[k] = made[k];
+            s->memory[k] = made_memory[k];
+            s->at[k] = 0;
+            temporal_stream_poison(&s->copy[k]); /* the bytes go with the buffer, the counts stay */
+        }
+        s->capacity = size;
     }
     /* the capture's writes before the copy reads them, the copy's before a draw reads the vertices */
     VkMemoryBarrier2 before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,

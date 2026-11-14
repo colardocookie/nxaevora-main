@@ -707,6 +707,70 @@ static void test_stream_keeping(void) {
     assert(handed > 1000); /* and copies are handed out, so the check is not empty */
 }
 
+/* The table of kept copies: a few slots that addresses share, as temporal.c's probe of eight. A capture finds its
+   slot or takes one, and when the buffers must grow and cannot, the slot stays as it was. */
+#define TEST_SLOTS 3
+typedef struct {
+    unsigned long long address[TEST_SLOTS];
+    TemporalStreamCopy copy[TEST_SLOTS][2];
+    unsigned generation[TEST_SLOTS], capacity[TEST_SLOTS];
+} TestTable;
+static int table_capture(TestTable* t, unsigned long long address, unsigned frame, unsigned size, int memory) {
+    unsigned newest[TEST_SLOTS];
+    for (int i = 0; i < TEST_SLOTS; i++) newest[i] = temporal_stream_newest(t->copy[i]);
+    const int i = temporal_slot_pick(t->address, newest, TEST_SLOTS, address, frame, 1);
+    if (i < 0) return -1;
+    if (t->address[i] != address) {
+        memset(t->copy[i], 0, sizeof t->copy[i]);
+        t->generation[i] = t->capacity[i] = 0;
+        t->address[i] = address;
+    }
+    temporal_stream_captured(&t->copy[i][frame & 1], &t->generation[i], frame);
+    if (size > t->capacity[i]) {
+        if (!memory) return i; /* the buffers could not grow: the slot keeps what it had */
+        temporal_stream_poison(&t->copy[i][0]);
+        temporal_stream_poison(&t->copy[i][1]);
+        t->capacity[i] = size;
+    }
+    temporal_stream_copied(&t->copy[i][frame & 1]);
+    return i;
+}
+
+static void test_stream_table(void) {
+    TestTable t;
+    memset(&t, 0, sizeof t);
+    /* The audit's case. A is kept at X in frames 10 and 11, and its draw of frame 11 takes frame 10's copy. Then a
+       second, larger capture into X cannot get its buffers, and a new address needs a slot. X had a capture this
+       frame, so its slot is not given away, and the late conflict is still seen. */
+    const int x = table_capture(&t, 0x1000, 10, 100, 1);
+    assert(x >= 0 && table_capture(&t, 0x1000, 11, 100, 1) == x);
+    temporal_stream_used(&t.copy[x][0], 10, 7, 77);
+    assert(temporal_stream_before(&t.copy[x][1], &t.copy[x][0], 11, 7, 77) == 1);
+    const TemporalStreamCopy* emitted = &t.copy[x][1];
+    assert(table_capture(&t, 0x1000, 11, 900, 0) == x);
+    assert(t.capacity[x] == 100 && temporal_stream_valid(&t.copy[x][0])); /* last frame's copy untouched */
+    assert(table_capture(&t, 0x2000, 11, 100, 1) != x);
+    assert(table_capture(&t, 0x3000, 11, 100, 1) != x);
+    /* the table is full of this frame's captures: a fourth address gets none, and nothing is wiped */
+    assert(table_capture(&t, 0x4000, 11, 100, 1) == -1);
+    assert(t.address[x] == 0x1000 && emitted->at == 11 && temporal_stream_conflict(emitted, 11));
+    /* nor a frame later, nor 599 frames later. After 600 frames without a capture the oldest slot goes. */
+    assert(table_capture(&t, 0x4000, 12, 100, 1) == -1);
+    assert(table_capture(&t, 0x4000, 11 + TEMPORAL_SLOT_FRAMES - 1, 100, 1) == -1);
+    const int y = table_capture(&t, 0x4000, 11 + TEMPORAL_SLOT_FRAMES, 100, 1);
+    assert(y >= 0 && t.address[y] == 0x4000 && t.copy[y][(11 + TEMPORAL_SLOT_FRAMES) & 1].captures == 1);
+    /* a capture that was never copied still counts as the slot's newest event */
+    memset(&t, 0, sizeof t);
+    const int z = table_capture(&t, 0x1000, 20, 100, 0);
+    assert(z >= 0 && !temporal_stream_valid(&t.copy[z][0]) && temporal_stream_newest(t.copy[z]) == 20);
+    table_capture(&t, 0x2000, 20, 100, 1);
+    table_capture(&t, 0x3000, 20, 100, 1);
+    assert(table_capture(&t, 0x4000, 21, 100, 1) == -1 && t.address[z] == 0x1000);
+    /* a lookup makes nothing */
+    unsigned newest[TEST_SLOTS] = {0};
+    assert(temporal_slot_pick(t.address, newest, TEST_SLOTS, 0x9000, 5000, 0) == -1);
+}
+
 static void test_origin_shift(void) {
     float vp_now[16], vp_before[16], unused[16], w_now[16], w_before[16];
     camera(0, 0, 1, 1, vp_now, unused);
@@ -805,6 +869,7 @@ int main(void) {
     test_gate();
     test_streams();
     test_stream_keeping();
+    test_stream_table();
     test_origin_shift();
     puts("temporal_math: ok");
     return 0;
