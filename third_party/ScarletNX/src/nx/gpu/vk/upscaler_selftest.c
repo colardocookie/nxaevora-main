@@ -408,13 +408,10 @@ static void offset(unsigned k, unsigned n, double out[2]) {
     }
 }
 
-/* The inputs of a run. The scene's rectangle is size[0] by size[1] at x, y inside images of w by h, whose rest
-   holds a colour, a depth and a vector that are none of the scene's, for an output of size[2] by size[3]. move:
-   the background's move a frame in render pixels (x right, y up). patch: 1 for a nearer patch that moves another
-   way. cut: 1 when the last frame shows the other pattern. up: 1 for a viewport with a negative height. edges: 1
-   for the edge picture in place of the background's patterns. ahead: 1 for a wrong run made on purpose, whose
-   images are drawn with the offset of the frame after while the jitter reported for them is the frame's own.
-   turned: 1 to negate the clip offset's y, which with the other sign of the viewport gives the same images. */
+/* A run's inputs: the scene's rectangle of size[0] by size[1] at x, y in images of w by h, padded with what is
+   none of the scene's, for an output of size[2] by size[3]. move: the background's move a frame in render pixels.
+   patch: a nearer patch moving another way. cut: the last frame has the other pattern. up: a negative viewport
+   height. edges: the edge picture. ahead: images one offset ahead of the reported jitter. turned: clip y negated. */
 static const int SIZES[4] = {RENDER_W, RENDER_H, OUT_W, OUT_H};
 static int inputs_build(Inputs* in, const int size[4], int w, int h, int x, int y, int up, const double move[2],
                         int patch, int cut, int edges, int ahead, int turned) {
@@ -1349,11 +1346,10 @@ static int native(int up) {
     return pass;
 }
 
-/* The edge case: the jitter's signs, on a still grey picture with two edges. Seven pictures of the same frozen
-   images, each run a session of its own: the configured signs twice (their difference is the run's noise), the
-   three other combinations of the jitter's signs, the jitter reported as zero while the images are jittered,
-   and one frame scaled plainly. Each is held against the reference by its edges' profiles and over the same
-   pixels (selftest_edge_judge has the conditions and the budgets). */
+/* The edge case, for the jitter's signs, on a still grey picture with two edges. Seven pictures of the same frozen
+   images, each run a session of its own: the configured signs twice (for the noise), the three other combinations,
+   the jitter reported as zero, and one frame scaled plainly. Each is held against the reference by its edges'
+   profiles and over the same pixels. selftest_edge_judge has the conditions and the budgets. */
 static const char* edge_failed(unsigned failed, char* text, size_t size) {
     static const char* const names[8] = {"the order of the errors", "a turned sign's margin",
                                          "told nothing's margin",   "the plainly scaled frame",
@@ -1466,12 +1462,10 @@ static int edge_case(int up) {
     return ok;
 }
 
-/* Log only, no verdict: the matched pair. The edge case's images with y down, and with y up and the clip
-   offset's y negated, are the same images byte for byte, and the same jitter in pixels is reported for them.
-   So the two orientations hand the adapter identical inputs through the two conversions. The images are
-   compared here and by their checksums, what each frame handed over is compared, and the two outputs and a
-   repeated run's difference are printed. Whether the outputs count as equal is not said: no number is
-   declared for that. */
+/* Log only, no verdict: the matched pair. The edge images with y down, and with y up and the clip offset's y
+   negated, are the same bytes with the same jitter in pixels, so both orientations hand the adapter identical
+   inputs. The images and what each frame handed over are compared, and the two outputs' and a repeated run's
+   differences printed. Whether the outputs count as equal is not said: no number is declared for that. */
 static void edge_matched(void) {
     static const Variant traced = {1, 1, 1, 1, 1, 1};
     static const double still[2] = {0.0, 0.0};
@@ -1576,11 +1570,10 @@ static void edge_matched(void) {
     free(regions);
 }
 
-/* Log only, exploratory, no verdict: the response table. For one axis at a time the jitter reported for that
-   axis is multiplied by a factor while the images stay as they are and the other axis is reported as
-   configured. 1 is the configured run, 0 "told nothing", -1 the turned sign. Each run's error on both edges is
-   printed. A lowest error among these factors on one picture does not name the factor a library wants: the
-   table is for looking, and nothing is tuned or judged from it. */
+/* Log only, exploratory, no verdict: the response table. For one axis at a time the jitter reported for it is
+   multiplied by a factor, the images and the other axis unchanged: 1 is configured, 0 told nothing, -1 the sign
+   turned. Each run's error on both edges is printed. A lowest error among these factors on one picture does not
+   name the factor a library wants: the table is for looking, and nothing is tuned or judged from it. */
 static void edge_response(int up) {
     static const double factors[11] = {-1.0, -0.5, 0.0, 0.5, 9.0 / 16.0, 0.75, 1.0, 1.25, 1.5, 16.0 / 9.0, 2.0};
     static const double still[2] = {0.0, 0.0};

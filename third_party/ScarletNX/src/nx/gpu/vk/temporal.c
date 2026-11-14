@@ -737,11 +737,10 @@ static void rect_watch(u32 frame) {
             (double)rg->now.fx, (double)rg->now.fy, g_t.offsets, (unsigned long long)g_t.rect_steady);
 }
 
-/* Every draw, from vk_temporal_draw, which comes before the draw's own constant blocks are bound. In a decided
-   frame the draw is watched. In an undecided one a scene draw is kept: when the next draw comes and the frame is
-   still undecided, the kept one was completed before the decision and goes to the gate as such
-   (temporal_rect_before). The draw that turns out to decide the frame is not an earlier draw of its own frame:
-   rect_decide drops it from here and watches it after its decision. */
+/* Every draw, from vk_temporal_draw, before its own constant blocks are bound. In a decided frame it is watched.
+   In an undecided one a scene draw is kept, and when the next draw comes with the frame still undecided it goes
+   to the gate as completed before the decision (temporal_rect_before). The draw that decides the frame is not
+   such a draw: rect_decide drops it from here and watches it after its decision. */
 static void rect_note(u32 frame) {
     TemporalRectGate* rg = &g_t.rect_gate;
     if (!g_t.rect) return;
@@ -889,11 +888,10 @@ void vk_temporal_camera_seen(u64 address, u32 bound, u32 size) {
     if (g_t.rect_gate.decided_at != g_vk_present + 1) rect_decide(g_vk_present + 1);
 }
 
-/* A draw binds constant bank 4: when it is the scene camera's block and anti-aliasing is on, the draw gets a copy
-   whose projection is shifted by this frame's jitter. Guest memory is not written, so the game and our own matrices
-   keep the block without jitter. The copy is made once a submission in the frame's staging. With row vectors a shift
-   of clip x and y by jitter x w is the matrix times J, which has the jitter in its fourth row: view-projection x J at
-   +0x00, projection x J at +0x80, and J's inverse x the inverse view-projection at +0xC0. */
+/* A draw binds constant bank 4: the scene camera's block, with anti-aliasing on, is replaced by a copy shifted by
+   the frame's jitter, made once a submission in the frame's staging. Guest memory is not written. With row
+   vectors a shift of clip x and y by jitter x w is the matrix times J, the jitter in its fourth row:
+   view-projection x J at +0x00, projection x J at +0x80, J's inverse x the inverse view-projection at +0xC0. */
 int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer, u64* offset) {
     /* Without the rectangle's gate no draw is jittered before our passes ran once. With it the gate's own start
        (a confirmed frame before) stands in for that, and the frame must be decided before our passes can run. */

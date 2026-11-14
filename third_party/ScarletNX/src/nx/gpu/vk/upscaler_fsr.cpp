@@ -114,11 +114,10 @@ int create(const SnxUpscalerCreate* made, SnxUpscalerTraits* traits, SnxUpscaler
     u->backend.deviceContext.vkDevice = made->device;
     u->backend.deviceContext.vkPhysicalDevice = made->physical_device;
     u->backend.deviceContext.vkDeviceProcAddr = made->device_lookup;
-    /* The versions the library holds are asked with the device. The library fills as many places as it is given
-       and says how many it wrote, so a list is known to be whole only when it wrote fewer than there was room
-       for. It is asked with room to spare, and with more room if it filled that, three times at most. The
-       newest of the 3.1 line is taken, and its name is copied at once: the strings are the library's and a
-       later query may replace them. */
+    /* The library's versions are asked with the device. It fills the places it is given and says how many it
+       wrote, so a list is whole only when it wrote fewer than there was room for: it is asked with room to spare,
+       three times at most. The newest of the 3.1 line is taken and its name copied at once, since the strings are
+       the library's and a later query may replace them. */
     uint64_t count = 0, room = 0;
     ffxQueryDescGetVersions versions = {};
     versions.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;

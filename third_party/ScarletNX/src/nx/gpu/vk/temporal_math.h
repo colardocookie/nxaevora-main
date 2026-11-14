@@ -1128,11 +1128,10 @@ static inline int temporal_upscaler_frame(const TemporalRectGate* g, unsigned fr
     if (stamp->fx != g->now.fx || stamp->fy != g->now.fy) return 0;
     return temporal_upscaler_numbers(stamp, viewport, jitter, cut || !temporal_rect_history(g, frame, stamp), out);
 }
-/* The camera's numbers out of a projection matrix in memory order, for row vectors: clip = point x matrix, so
-   clip w is z x m[11] and clip z is z x m[10] + m[14]. 1 with them when the matrix is a perspective projection
-   of the plain kind: no shear, no off-centre terms, w from z alone. The depth a point at the distance d gets is
-   a + b / d. Near is where it is 0 or 1 and far the other, the smaller distance being near, and far is infinite
-   when the depth only approaches its value there. reversed: 1 when near has the depth 1. Not used yet. */
+/* The camera's numbers out of a projection matrix in memory order, for row vectors: clip w is z x m[11], clip z
+   is z x m[10] + m[14]. 1 for a plain perspective projection: no shear, no off-centre terms, w from z alone. The
+   depth at the distance d is a + b / d. Near and far are where it is 0 and 1, near the smaller, far infinite
+   when the depth only approaches its value. reversed: near has the depth 1. Not used yet. */
 static inline int temporal_projection_camera(const float m[16], double* near_plane, double* far_plane,
                                              double* fov_y, int* reversed) {
     static const int zero[9] = {1, 2, 3, 4, 6, 7, 12, 13, 15};
@@ -1151,12 +1150,10 @@ static inline int temporal_projection_camera(const float m[16], double* near_pla
     *fov_y = 2.0 * atan(1.0 / fabs((double)m[5]));
     return isfinite(*near_plane) && *near_plane > 0.0 && *fov_y > 0.0;
 }
-/* The camera's numbers and the frame time, checked after the frame's numbers are made and before every dispatch
-   to an upscaler. out gets the four floats that are handed on: near, far, the field of view and the frame time
-   in seconds. The rules are held against those floats, since a double that passes may round to one that does
-   not. 1 when all hold: near positive, the field of view positive and below pi, the frame time positive and
-   still positive and finite in milliseconds, far beyond near, or infinite exactly when the context was made
-   for an infinite far plane. 0: the frame is not evaluated. */
+/* The camera's numbers and the frame time, checked before every dispatch to an upscaler, on the four floats that
+   are handed on (near, far, field of view, seconds), since a double that passes may round to a float that does
+   not. 1 when near is positive, the field of view positive and below pi, the frame time positive and finite in
+   milliseconds too, and far beyond near, or infinite exactly when the context was made for that. */
 static inline int temporal_upscaler_camera(double near_plane, double far_plane, double fov_y, double seconds,
                                            int far_infinite, float out[4]) {
     const double most = 3.4028234663852886e38, pi = 3.14159265358979323846;
@@ -1364,12 +1361,10 @@ static inline unsigned long long temporal_gpu_ticks(unsigned long long first, un
 static inline double temporal_gpu_turn_ns(unsigned bits, double period_ns) {
     return ldexp(period_ns, bits > 64 ? 64 : (int)bits);
 }
-/* A pair whose submission has completed leaves the ring: it gives a time, or is counted with the reason it gives
-   none, and is free again either way. ticks and available: the two results as fetched, for a pair
-   temporal_gpu_fetch named, else NULL. A time is taken only when both results are there, the host saw less
-   than half a turn of the counter pass since the first mark was recorded, and the difference is no longer than
-   that. 1 when the pair was freed, 0 when its submission has not completed, when it is begun and neither ended
-   nor given up, or when the measure is off. */
+/* A pair whose submission has completed leaves the ring: it gives a time or is counted by its reason, and is
+   free. ticks and available: its two results as fetched, when temporal_gpu_fetch named it, else NULL. A time
+   needs both results, less than half a turn of the counter on the host's clock since the first mark, and a
+   difference no longer than that. 0: not completed, begun and neither ended nor given up, or the measure off. */
 static inline int temporal_gpu_settle(TemporalGpuRing* r, int index, unsigned long long done,
                                       unsigned long long now_ns, const unsigned long long* ticks,
                                       const int* available, unsigned bits, double period_ns) {
