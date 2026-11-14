@@ -1862,24 +1862,33 @@ static void test_upscaler(void) {
             temporal_upscaler_created(&moved, &at_full, 1);
             assert(temporal_upscaler_completed(&moved, &full_rest) == TEMPORAL_UPSCALER_STALE);
             assert(!temporal_upscaler_ready(&moved, &full_rest) && temporal_upscaler_must_create(&moved, &full_rest));
-            /* A reset (the upscaler turned off, or starting again) while one context is published and one is on
+            /* A stop (the upscaler turned off, or started again) while one context is published and one is on
                its way. The published one is retired. The pending one is still owed its completion: nothing is
                made before that, and it then comes out stale, also for its own configuration, and is destroyed. */
             moved = c;
             temporal_upscaler_created(&moved, &at_full, 1);
-            assert(temporal_upscaler_reset(&moved) == 1);
+            assert(temporal_upscaler_stop(&moved) == 1);
             assert(!temporal_upscaler_ready(&moved, &at_part) && !temporal_upscaler_ready(&moved, &at_full));
             assert(!temporal_upscaler_must_create(&moved, &at_full));
             assert(!temporal_upscaler_must_create(&moved, &at_part));
             assert(temporal_upscaler_completed(&moved, &at_full) == TEMPORAL_UPSCALER_STALE && !moved.live);
             assert(temporal_upscaler_must_create(&moved, &at_full));
             assert(temporal_upscaler_completed(&moved, &at_full) == TEMPORAL_UPSCALER_NOTHING);
-            /* a reset with nothing published and a failed context held: the held one is still released */
+            /* a stop with nothing published and a failed context held: the held one is still released */
             TemporalUpscalerContexts held = {0};
             temporal_upscaler_created(&held, &at_full, 0);
-            assert(temporal_upscaler_reset(&held) == 0 && !temporal_upscaler_must_create(&held, &at_full));
+            assert(temporal_upscaler_stop(&held) == 0 && !temporal_upscaler_must_create(&held, &at_full));
             assert(temporal_upscaler_completed(&held, &at_full) == TEMPORAL_UPSCALER_RELEASE);
-            assert(temporal_upscaler_must_create(&held, &at_full) && temporal_upscaler_reset(&held) == 0);
+            assert(temporal_upscaler_must_create(&held, &at_full) && temporal_upscaler_stop(&held) == 0);
+            /* A camera cut is not a stop. It sets the frame's reset flag and nothing else: the published context
+               is still ready and nothing is to be made. */
+            TemporalRectGate cut;
+            memset(&cut, 0, sizeof cut);
+            temporal_rect_decide(&cut, 40, &scaled);
+            assert(temporal_rect_decide(&cut, 41, &scaled));
+            moved = c;
+            assert(temporal_upscaler_frame(&cut, 41, &scaled_stamp, &part, jitter, 1, &out) && out.reset);
+            assert(temporal_upscaler_ready(&moved, &at_part) && !temporal_upscaler_must_create(&moved, &at_part));
             /* the very first context, stale: nothing is published at all */
             TemporalUpscalerContexts none = {0};
             temporal_upscaler_created(&none, &at_full, 1);

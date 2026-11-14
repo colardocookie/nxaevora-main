@@ -888,7 +888,7 @@ typedef struct {
 typedef struct {
     int live;    /* a published context there is */
     /* 0 none on its way, 1 one submitted, 2 one whose prepare failed, held until it may be freed, 3 one submitted
-       and given up by a reset, whose completion is still owed */
+       and given up by a stop, whose completion is still owed */
     int pending;
     TemporalUpscalerConfig live_config, pending_config;
 } TemporalUpscalerContexts;
@@ -934,10 +934,11 @@ static inline int temporal_upscaler_completed(TemporalUpscalerContexts* c, const
     c->live_config = c->pending_config;
     return had ? TEMPORAL_UPSCALER_RETIRE : TEMPORAL_UPSCALER_PUBLISHED;
 }
-/* The upscaler is turned off or starts again: nothing is published any more. 1 when a published context goes to
-   be destroyed after its frames in flight. A context on its way is not forgotten: its completion still comes
-   (temporal_upscaler_completed) and then gives STALE or RELEASE, and no other is made before that. */
-static inline int temporal_upscaler_reset(TemporalUpscalerContexts* c) {
+/* The upscaler is turned off or started again: nothing is published any more. 1 when a published context goes to
+   be destroyed after its frames in flight. A context on its way is not forgotten: its completion still comes and
+   then gives STALE or RELEASE, and no other is made before that. A camera cut or a gap in the frames does NOT
+   call this: those only set the reset flag of a frame (temporal_upscaler_frame) and leave the contexts alone. */
+static inline int temporal_upscaler_stop(TemporalUpscalerContexts* c) {
     const int had = c->live;
     c->live = 0;
     if (c->pending == 1) c->pending = 3;
