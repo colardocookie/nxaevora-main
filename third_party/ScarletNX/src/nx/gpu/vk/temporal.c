@@ -13,6 +13,7 @@
 #include "nx/gpu/vk/post_spv.h"
 #include "nx/gpu/vk/temporal_spv.h"
 #include "nx/gpu/vk/temporal_math.h"
+#include "nx/gpu/vk/upscaler.h"
 #include "nx/runtime/platform/log.h"
 
 /* the host's monotonic clock in nanoseconds (runtime/platform/plat.h, whose Windows headers define near and far,
@@ -229,6 +230,38 @@ static struct {
     u64 resets;
 } g_t = {.mode = -1, .gputime = -1, .time_hook = -1, .time_numbers = -1};
 static TemporalGpuRing g_time_ring; /* the brackets under way and the times kept since the last line */
+/* SNX_ARCEUS_UPSCALER: the state of a library's upscaler (the functions are further down, before the hook) */
+#define UPSCALED_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
+static struct {
+    int asked; /* -1 not looked at, 0 off or not available, 1 started (and it stays 1 when it stops) */
+    const SnxUpscalerApi* api;
+    double nominal; /* the target rate's frame time in seconds, 0 without one */
+    int was_rect, was_view, was_extras; /* what the start changed, to put back if no context can be made */
+    TemporalUpscalerHealth health;
+    TemporalUpscalerContexts contexts;
+    SnxUpscaler *live, *pending;
+    u64 pending_number;    /* the submission the pending context's prepare went into */
+    int noted;             /* what a recycle noted of it (temporal_upscaler_poll) */
+    unsigned unread;       /* recycles in a row in which the timeline could not be read */
+    unsigned published, evaluated_with;
+    TemporalUpscalerMaking making;
+    unsigned long long generation;
+    TemporalUpscalerConfig wanted, decided; /* what the frames want now, and what this frame was decided with */
+    TemporalUpscalerColour colour;          /* the scene colour of the last frame that reached its hook */
+    u64 block;                              /* the camera block the frame was decided at */
+    u32 decided_at, outcome_at, evaluated_at;
+    int decision;
+    u64 evaluated_ns, unresolved, contexts_made;
+    TemporalUpscalerTally tally;
+    Image output;
+    VkPipeline write_pipe;
+    VkFormat write_format;
+} g_u = {.asked = -1};
+static void upscaler_start(void);
+static int upscaler_on(void);
+static int upscaler_jittered(u32 frame);
+static int upscaler_decide(u32 frame, int accepted);
+static void upscaler_outcome(u32 frame, int jittered, int outcome, const char* what);
 
 static int temporal_on(void) {
     if (g_t.mode < 0) {
@@ -296,6 +329,7 @@ static int temporal_on(void) {
             LOG("arceus-temporal: %s on, view %d (0 none, 1 motion vectors, 2 reprojection error, 3 history weight, "
                 "4 jittered frame alone)\n",
                 g_t.mode == MODE_TAA ? "anti-aliasing" : "probe", g_t.view);
+        upscaler_start();
     }
     return g_t.mode;
 }
@@ -678,6 +712,8 @@ static int rect_accepted(u32 frame) { return g_t.rect_gate.decided_at == frame &
    the gate accepts no frame any more this session (temporal_rect_failed). One line names what failed. */
 static void rect_fail(u32 frame, const char* what) {
     TemporalRectGate* rg = &g_t.rect_gate;
+    /* with an upscaler: a pass of ours that its hand-over needs failed in a frame drawn with jitter */
+    if (upscaler_on() && upscaler_jittered(frame)) upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_STOPPED, what);
     if (!g_t.rect || g_t.mode != MODE_TAA || rg->stopped || !rect_accepted(frame)) return;
     temporal_rect_failed(rg, frame);
     g_t.rect_stop_said = 1;
@@ -785,6 +821,7 @@ static void rect_decide(u32 frame) {
        it without being known, so this is not the frame's first such draw and the frame has no geometry. */
     if (g_t.camera_new_at == frame || !depth_draw) {
         temporal_rect_decide(rg, frame, NULL, 0);
+        if (upscaler_on()) upscaler_decide(frame, 0);
         if (g_t.camera_new_at == frame) {
             if (rect_line(++g_t.rect_gated))
                 LOG("arceus-temporal-rect: frame gated (the scene camera's block was at an address first seen in "
@@ -828,7 +865,9 @@ static void rect_decide(u32 frame) {
         const int came_early = rg->early_at == frame;
         const int on = temporal_rect_decide(rg, frame, shaped ? &geometry : NULL, refused);
         if (shaped) g_t.offsets = temporal_rect_offsets(&geometry.rect, geometry.target_w, geometry.target_h);
-        if (on && g_t.mode == MODE_TAA) {
+        /* with an upscaler a frame the gate accepts is drawn with jitter only when a context is ready for it */
+        const int taken = !upscaler_on() || upscaler_decide(frame, on);
+        if (on && taken && g_t.mode == MODE_TAA) {
             float pixels[2];
             temporal_jitter(g_vk_present % g_t.offsets, g_t.offsets, pixels);
             g_t.jitter_ndc[0] = 2.0f * pixels[0] / fabsf(v.width);
@@ -885,7 +924,7 @@ static int jitter_decide(u32 frame) {
 
 /* this frame's jitter as the draws got it, in clip units over w: 0 when the frame has none */
 static void frame_jitter(u32 frame, double* jx, double* jy) {
-    const int on = g_t.mode == MODE_TAA &&
+    const int on = g_t.mode == MODE_TAA && (!upscaler_on() || upscaler_jittered(frame)) &&
                    (g_t.rect ? rect_accepted(frame) : temporal_gate_jitter(&g_t.gate, frame));
     *jx = on ? (double)g_t.jitter_ndc[0] : 0.0;
     *jy = on ? (double)g_t.jitter_ndc[1] : 0.0;
@@ -897,7 +936,10 @@ static void frame_jitter(u32 frame, double* jx, double* jy) {
 void vk_temporal_camera_seen(u64 address, u32 bound, u32 size) {
     if (!g_t.rect || !address || (address != g_t.camera_address[0] && address != g_t.camera_address[1])) return;
     if (bound > 0x1000 || bound < CAMERA_BYTES || size > bound) return;
-    if (g_t.rect_gate.decided_at != g_vk_present + 1) rect_decide(g_vk_present + 1);
+    if (g_t.rect_gate.decided_at != g_vk_present + 1) {
+        if (upscaler_on()) g_u.block = address;
+        rect_decide(g_vk_present + 1);
+    }
 }
 
 /* A draw binds constant bank 4: the scene camera's block, with anti-aliasing on, is replaced by a copy shifted by
@@ -913,7 +955,10 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
     if (bound > 0x1000 || bound < CAMERA_BYTES || size > bound) return 0;
     /* With the rectangle's gate the frame is decided here in the probe too, which then draws without jitter. The
        renderer asks before the draw's samplers are chosen (vk_temporal_camera_seen), so this is a second look. */
-    if (g_t.rect && g_t.rect_gate.decided_at != g_vk_present + 1) rect_decide(g_vk_present + 1);
+    if (g_t.rect && g_t.rect_gate.decided_at != g_vk_present + 1) {
+        if (upscaler_on()) g_u.block = address;
+        rect_decide(g_vk_present + 1);
+    }
     if (g_t.mode != MODE_TAA) return 0;
     /* only +0x00, +0x80 and +0xC0 are shifted: a program that reads further is worth knowing about */
     if (size > g_t.camera_read) {
@@ -923,6 +968,8 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
     const u32 offsets = g_t.rect ? g_t.offsets : JITTERS, index = g_vk_present % offsets;
     if (g_t.rect) {
         if (!rect_accepted(g_vk_present + 1)) return 0;
+        /* no jitter is staged for an upscaler unless a context is ready for this frame */
+        if (upscaler_on() && !upscaler_jittered(g_vk_present + 1)) return 0;
     } else {
         if (g_t.gate.decided_at != g_vk_present + 1 && !jitter_decide(g_vk_present + 1)) return 0;
         if (!temporal_gate_jitter(&g_t.gate, g_vk_present + 1)) return 0;
@@ -1545,6 +1592,7 @@ float vk_temporal_mip_bias(const Surf* zt) {
        frame has one bias. A value that was set, 0 included, is used as it always was. */
     if (g_t.rect && g_t.mode == MODE_TAA && !g_t.mip_bias_set) {
         if (!g_t.depth || zt->gva != g_t.depth || !rect_accepted(g_vk_present + 1)) return 0.0f;
+        if (upscaler_on() && !upscaler_jittered(g_vk_present + 1)) return 0.0f;
         return temporal_rect_bias(0, 0.0f, &g_t.rect_gate.now.rect, g_t.rect_gate.now.target_w);
     }
     return g_t.mip_bias < 0.0f && zt == g_t.depth_rt ? g_t.mip_bias : 0.0f;
@@ -2423,6 +2471,434 @@ int vk_temporal_skinned_line(void) {
     return g_t.skinned_lines++ < 24;
 }
 
+/* ------------------------------------------------------------ SNX_ARCEUS_UPSCALER: a library's upscaler */
+/* Experimental, at full size only, and dormant without its switch: nothing below runs unless g_u.asked is 1, which
+   only upscaler_start sets. The rules are temporal_math.h's (temporal_upscaler_*). With it on, our own resolve,
+   sharpen, history, numbers and views never run, also after it has stopped: a stopped upscaler leaves every
+   frame as the game draws it and does not fall back to our resolve. */
+static int upscaler_on(void) { return g_u.asked == 1; }
+/* this frame is drawn with jitter for the upscaler: decided so at its first draw with the camera's block */
+static int upscaler_jittered(u32 frame) {
+    return g_u.decided_at == frame && g_u.decision == TEMPORAL_UPSCALER_JITTER;
+}
+
+/* Queued for after the frames in flight (vk_defer_call). The recorder's mark is looked at again here, when it
+   runs: once a submission did not run as recorded, nothing a submission may use is freed. */
+static void upscaler_destroy(void* context) {
+    if (vk_rec_submit_failed() || !g_u.api) return;
+    g_u.api->destroy(context);
+}
+
+/* No context could be made before any was in use: the adapter is not available on this device after all. What
+   the start changed is put back and the run goes on as without the switch. */
+static void upscaler_unavailable(const char* why) {
+    LOG("arceus-upscaler: not available (%s): the run goes on as without the switch\n", why);
+    g_t.rect = g_u.was_rect;
+    g_t.view = g_u.was_view;
+    g_t.rect_extras_off = g_u.was_extras;
+    g_u.asked = 0;
+}
+
+/* Something came of a frame (temporal_upscaler_after). jittered: it was drawn with jitter, so it counts. Never
+   called from a frame's recycle, since turning off queues the live context's destruction. */
+static void upscaler_outcome(u32 frame, int jittered, int outcome, const char* what) {
+    const int was_off = g_u.health.off;
+    if (jittered) {
+        g_u.outcome_at = frame;
+        temporal_upscaler_tallied(&g_u.tally, outcome);
+    }
+    if (outcome != TEMPORAL_UPSCALER_EVALUATED && (g_u.unresolved++ < 8 || g_u.unresolved % 600 == 0))
+        LOG("arceus-upscaler: frame %u %s (%s), %llu such so far\n", frame,
+            !jittered                              ? "had no jitter"
+            : outcome == TEMPORAL_UPSCALER_SKIPPED ? "was drawn with jitter and is left as drawn, skipped"
+            : outcome == TEMPORAL_UPSCALER_FAILED  ? "was drawn with jitter and is left as drawn, the library failed"
+                                                   : "was drawn with jitter and is left as drawn",
+            what, (unsigned long long)g_u.unresolved);
+    if (!temporal_upscaler_after(&g_u.health, jittered, outcome) || was_off) return;
+    LOG("arceus-upscaler: off for the rest of the session (%s): no frame is drawn with jitter any more, and every "
+        "frame is left as the game draws it\n",
+        g_u.health.stopped ? what : "eight frames in a row were drawn with jitter and not evaluated");
+    if (temporal_upscaler_stop(&g_u.contexts) && g_u.live) vk_defer_call(upscaler_destroy, g_u.live);
+    g_u.live = NULL;
+}
+
+/* A frame's recycle looks at the context on its way and only notes what it finds: it publishes nothing and
+   queues nothing, since queueing there would make a command in a slot that is being recycled. */
+void vk_temporal_upscaler_poll(void) {
+    u64 done = 0;
+    if (g_u.asked != 1 || !g_u.pending || g_u.noted != TEMPORAL_UPSCALER_WAIT) return;
+    const int read = vk_submit_completed(&done);
+    g_u.noted = temporal_upscaler_poll(read, done, vk_rec_submit_failed(), g_u.pending_number, &g_u.unread);
+    if (!read && g_u.unread == 1)
+        LOG("arceus-upscaler: the timeline could not be read: a context waits, and %d such reads in a row stop the "
+            "upscaler\n", TEMPORAL_UPSCALER_UNREAD);
+}
+
+/* What the recycle noted is acted on here, at a place where the runtime records as usual (the gate's draw, the
+   hook): a completed context is published, or goes unused when the frames have moved on or the upscaler is off,
+   and the one it replaces is queued for destruction. A stop keeps the context, never used and never freed. */
+static void upscaler_settle(u32 frame) {
+    if (!g_u.pending || g_u.noted == TEMPORAL_UPSCALER_WAIT) return;
+    SnxUpscaler* context = g_u.pending;
+    const int noted = g_u.noted;
+    g_u.pending = NULL;
+    g_u.noted = TEMPORAL_UPSCALER_WAIT;
+    if (noted == TEMPORAL_UPSCALER_STOP) {
+        upscaler_outcome(frame, 0, TEMPORAL_UPSCALER_STOPPED,
+                         g_u.unread >= TEMPORAL_UPSCALER_UNREAD ? "the timeline could not be read eight times in a row"
+                                                                : "a submission did not run as recorded");
+        return;
+    }
+    switch (temporal_upscaler_completed(&g_u.contexts, &g_u.wanted)) {
+    case TEMPORAL_UPSCALER_RETIRE:
+        if (g_u.live) vk_defer_call(upscaler_destroy, g_u.live);
+        /* fall through */
+    case TEMPORAL_UPSCALER_PUBLISHED:
+        g_u.live = context;
+        g_u.published++;
+        if (g_u.published <= 4)
+            LOG("arceus-upscaler: context %u is ready (%dx%d, generation %llu), from frame %u on\n", g_u.published,
+                g_u.contexts.live_config.out_w, g_u.contexts.live_config.out_h, g_u.contexts.live_config.generation,
+                frame);
+        break;
+    default: /* stale, or one whose prepare failed: its submission has completed, so it may go */
+        vk_defer_call(upscaler_destroy, context);
+        break;
+    }
+}
+
+/* The configuration a frame is evaluated with, and its camera: from the depth target, a description of the
+   colour target, and the projection of the unjittered camera block in guest memory. 0 when a part of it is not
+   known or not one this piece takes: one layer each, the same size, the formats the self-test ran, and the
+   game's form of projection. */
+static int upscaler_key(const Surf* depth, const TemporalUpscalerColour* colour, u64 block,
+                        TemporalUpscalerConfig* config, TemporalProjection* projection, u32* flags) {
+    float m[16];
+    if (!depth || !block || depth->layers != 1 || depth->group || colour->layers != 1) return 0;
+    if ((int)depth->sw != colour->w || (int)depth->sh != colour->h) return 0;
+    if (colour->format != (unsigned)VK_FORMAT_B10G11R11_UFLOAT_PACK32 || depth->f.vk != VK_FORMAT_D24_UNORM_S8_UINT)
+        return 0;
+    block_read(block + 0x80, m);
+    if (temporal_projection_camera(m, projection) != TEMPORAL_PROJECTION_OK) return 0;
+    *flags = SNX_UPSCALER_COLOUR_LINEAR_HDR | SNX_UPSCALER_DEPTH_REVERSED | SNX_UPSCALER_VECTORS_UNJITTERED |
+             SNX_UPSCALER_EXPOSURE_AUTOMATIC | (projection->far_infinite ? SNX_UPSCALER_FAR_PLANE_INFINITE : 0);
+    const TemporalUpscalerMaking making = {colour->format,           (unsigned)depth->f.vk, (unsigned)MOTION_FORMAT,
+                                           (unsigned)UPSCALED_FORMAT, colour->layers,        depth->layers,
+                                           *flags};
+    *config = (TemporalUpscalerConfig){colour->w, colour->h, colour->w, colour->h, colour->w, colour->h,
+                                       temporal_upscaler_generation(&g_u.making, &g_u.generation, &making)};
+    return 1;
+}
+
+/* At the gate's draw, after the gate's own decision and before any jitter is staged: 1 when the frame is drawn
+   with jitter (temporal_upscaler_decide). The colour target is the one thing taken from the frame before, which
+   must have reached its hook. The depth target and the projection are this draw's. */
+static int upscaler_decide(u32 frame, int accepted) {
+    const TemporalRectGate* rg = &g_t.rect_gate;
+    TemporalUpscalerConfig config = {0};
+    TemporalProjection projection;
+    u32 flags = 0;
+    /* the frame decided before was drawn with jitter and its hook was never reached: a skipped evaluate */
+    if (g_u.decided_at && g_u.decided_at != frame && g_u.decision == TEMPORAL_UPSCALER_JITTER &&
+        g_u.outcome_at != g_u.decided_at)
+        upscaler_outcome(g_u.decided_at, 1, TEMPORAL_UPSCALER_SKIPPED, "our passes were not reached in it");
+    upscaler_settle(frame);
+    /* the gate accepted the frame's geometry as the candidate's, whose fraction was confirmed a frame ago */
+    TemporalRectState now = rg->now;
+    now.fx = rg->candidate.fx;
+    now.fy = rg->candidate.fy;
+    const int whole = accepted && temporal_upscaler_whole(&now);
+    const int known = accepted && temporal_upscaler_predicted(&g_u.colour, frame) &&
+                      upscaler_key(g_t.draw_zt, &g_u.colour, g_u.block, &config, &projection, &flags);
+    g_u.decided_at = frame;
+    g_u.decided = config;
+    if (known) g_u.wanted = config;
+    g_u.decision = temporal_upscaler_decide(&g_u.health, accepted, whole, known, &g_u.contexts, &config);
+    if (temporal_upscaler_decided(&g_u.tally, g_u.decision)) {
+        const TemporalUpscalerTally* t = &g_u.tally;
+        LOG("arceus-upscaler: %u frames: %u evaluated, %u drawn with jitter and skipped, %u failed, %u stopped. "
+            "Not jittered: %u the gate, %u not the whole target, %u a part of the configuration not known, %u no "
+            "ready context, %u off\n",
+            t->frames, t->evaluated, t->skipped, t->failed, t->stopped,
+            t->not_jittered[TEMPORAL_UPSCALER_NOT_GATE], t->not_jittered[TEMPORAL_UPSCALER_NOT_WHOLE],
+            t->not_jittered[TEMPORAL_UPSCALER_NOT_KNOWN], t->not_jittered[TEMPORAL_UPSCALER_NOT_READY],
+            t->not_jittered[TEMPORAL_UPSCALER_NOT_ON]);
+        memset(&g_u.tally, 0, sizeof g_u.tally);
+    }
+    return g_u.decision == TEMPORAL_UPSCALER_JITTER;
+}
+
+/* What a call of the library is handed through vk_rec_direct. frame is NULL for a prepare. */
+typedef struct {
+    SnxUpscaler* context;
+    const SnxUpscalerFrame* frame;
+    Surf *scene, *depth;
+} UpscalerCall;
+/* What must be recorded before the library: the end of our rendering, and for an evaluate the images as the
+   library reads and writes them, in a compute shader. The scene's targets go through the renderer's own
+   tracking, so that what comes after them is ordered behind the library's reads. */
+static void upscaler_before(VkCommandBuffer cb, void* user) {
+    const UpscalerCall* c = user;
+    vk_render_end();
+    if (!c->frame) return;
+    vk_surf_use(cb, c->scene, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    vk_surf_use(cb, c->depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    vk_barrier(cb, g_t.motion.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    /* the private output: what it held is not kept, and the write-back of the frame before has read it */
+    vk_barrier(cb, g_u.output.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+               VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL);
+}
+static int upscaler_prepare(VkCommandBuffer cb, void* user) {
+    const UpscalerCall* c = user;
+    return g_u.api->prepare(c->context, cb) == SNX_UPSCALER_OK;
+}
+static int upscaler_evaluate(VkCommandBuffer cb, void* user) {
+    const UpscalerCall* c = user;
+    SnxUpscalerFrame frame = *c->frame;
+    frame.cb = cb;
+    return g_u.api->evaluate(c->context, &frame) == SNX_UPSCALER_OK;
+}
+
+/* The hook of a frame that was not drawn with jitter. Nothing of ours runs in it but this: when the frame was
+   left without jitter only because no context is ready, and what the hook sees is what the frame was decided
+   with, a context is created and its prepare recorded. It is ready a frame later at the earliest. */
+static void upscaler_warm(u32 frame, Surf* scene, Surf* depth, int steady) {
+    const TemporalUpscalerColour colour = {frame, (unsigned)scene->f.vk, scene->layers, (int)scene->sw, (int)scene->sh};
+    TemporalUpscalerConfig seen;
+    TemporalProjection projection;
+    u32 flags = 0;
+    if (g_u.health.off || g_u.decided_at != frame || g_u.decision != TEMPORAL_UPSCALER_NOT_READY || !steady) return;
+    if (!temporal_upscaler_whole(&g_t.rect_gate.now)) return;
+    if (!upscaler_key(depth, &colour, g_u.block, &seen, &projection, &flags)) return;
+    if (!temporal_upscaler_config_same(&g_u.decided, &seen)) return;
+    if (!temporal_upscaler_must_create(&g_u.contexts, &seen)) return;
+    const SnxUpscalerCreate make = {.sizes = {scene->sw, scene->sh, scene->sw, scene->sh, scene->sw, scene->sh},
+                                    .instance = g_vk.instance,
+                                    .physical_device = g_vk.phys,
+                                    .device = g_vk.dev,
+                                    .instance_lookup = vkGetInstanceProcAddr,
+                                    .device_lookup = vkGetDeviceProcAddr,
+                                    .queue = g_vk.gfx,
+                                    .queue_family = g_vk.gfx_family,
+                                    .flags = flags,
+                                    .colour_format = scene->f.vk,
+                                    .depth_format = depth->f.vk,
+                                    .motion_format = MOTION_FORMAT,
+                                    .output_format = UPSCALED_FORMAT,
+                                    .folder = "."};
+    /* what the images handed over are made with: sampled inputs, a sampled storage image for the output */
+    const VkImageUsageFlags inputs = VK_IMAGE_USAGE_SAMPLED_BIT;
+    const VkImageUsageFlags output = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+    SnxUpscalerTraits traits = {0};
+    SnxUpscaler* made = NULL;
+    const int created = g_u.api->create(&make, &traits, &made) == SNX_UPSCALER_OK && made;
+    const VkImageUsageFlags reads = traits.colour_usage | traits.depth_usage | traits.motion_usage;
+    if (!created || traits.submits_itself || (reads & ~inputs) || (traits.output_usage & ~output)) {
+        const char* why = !created              ? "a context could not be made on the game's device"
+                          : traits.submits_itself ? "the adapter submits work on its own"
+                                                  : "the adapter needs image usages the game's images do not have";
+        /* nothing was recorded for it, so it may go at once */
+        if (created) g_u.api->destroy(made);
+        if (!g_u.published) upscaler_unavailable(why);
+        else upscaler_outcome(frame, 0, TEMPORAL_UPSCALER_STOPPED, why);
+        return;
+    }
+    UpscalerCall call = {made, NULL, NULL, NULL};
+    const int recorded = vk_rec_direct(vk_cmd(), upscaler_before, upscaler_prepare, &call);
+    /* Whatever the answer, work may be recorded for the context: it is kept until the submission that work is
+       in has completed, and only then freed or published (vk_temporal_upscaler_poll, upscaler_settle). */
+    g_u.pending = made;
+    g_u.pending_number = vk_submit_number();
+    g_u.noted = TEMPORAL_UPSCALER_WAIT;
+    g_u.wanted = seen;
+    temporal_upscaler_created(&g_u.contexts, &seen, recorded == VK_REC_DIRECT_OK);
+    if (++g_u.contexts_made <= 4)
+        LOG("arceus-upscaler: context made at frame %u for %ux%u, flags 0x%x, near %.9g, far %.9g: its prepare %s\n",
+            frame, scene->sw, scene->sh, flags, projection.near_plane, projection.far_plane,
+            recorded == VK_REC_DIRECT_OK ? "is recorded" : "was not recorded");
+    if (recorded != VK_REC_DIRECT_OK)
+        upscaler_outcome(frame, 0, TEMPORAL_UPSCALER_STOPPED,
+                         recorded == VK_REC_DIRECT_REFUSED  ? "a context's prepare failed"
+                         : recorded == VK_REC_DIRECT_FAILED ? "a submission did not run as recorded"
+                                                            : "the frame's command buffer could not be used");
+}
+
+/* The hook of a frame that was drawn with jitter, after the vector pass: the scene colour, the depth and the
+   motion image are handed to the library, which writes its private image, and our write-back puts that picture
+   into the scene colour before its first reader. Whatever stops short of that leaves the frame as drawn. */
+static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* depth, VkImageView depth_view,
+                             const Constants* pc, const TemporalRect* area, const TemporalViewport* view) {
+    const TemporalRectGate* rg = &g_t.rect_gate;
+    const TemporalUpscalerColour colour = {frame, (unsigned)scene->f.vk, scene->layers, (int)scene->sw, (int)scene->sh};
+    const VkComponentMapping identity = {0};
+    TemporalUpscalerConfig seen;
+    TemporalProjection projection;
+    TemporalUpscalerFrame numbers;
+    float camera[4];
+    u32 flags = 0;
+    int fallback = 0;
+    /* What the hook sees must be what the frame was decided with: the frame's own colour target in place of the
+       predicted one, the depth target, the projection, the whole target, eight offsets, and a depth that is
+       the projection's own (a viewport depth range of 0 to 1). */
+    const char* skip = NULL;
+    if (!area || !temporal_upscaler_whole(&rg->now)) skip = "the scene is not the whole target";
+    else if (!upscaler_key(depth, &colour, g_u.block, &seen, &projection, &flags))
+        skip = "a part of the configuration is not known at the hook";
+    else if (!temporal_upscaler_hook(g_u.decision, &g_u.decided, &seen, &g_u.contexts) || !g_u.live)
+        skip = "the configuration is not the one the frame was decided with";
+    else if (g_t.offsets != 8) skip = "the jitter does not have eight offsets";
+    else if (!g_t.depth_zero_to_one || g_t.depth_translate != 0.0f || g_t.depth_scale != 1.0f)
+        skip = "the stored depth is not the projection's own";
+    else if (scene->base_layer || scene->group || depth->base_layer) skip = "a target is a layer of an array";
+    if (skip) {
+        upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_SKIPPED, skip);
+        return;
+    }
+    /* a cut, as our own resolve finds it: the screen's middle at a depth of ten moved by more than a quarter */
+    const float* m = pc->reproject;
+    const float w = 0.01f * m[11] + m[15], x = 0.01f * m[8] + m[12], y = 0.01f * m[9] + m[13];
+    const int cut = !(w > 0.0f) || fabsf(x) > 0.5f * w || fabsf(y) > 0.5f * w;
+    const TemporalRectStamp stamp = {scene->gva,     seen.generation, (int)scene->sw, (int)scene->sh,
+                                     (int)scene->sw, (int)scene->sh,  rg->now.rect,   rg->now.fx,
+                                     rg->now.fy};
+    const double jitter[2] = {(double)g_t.jitter_ndc[0], (double)g_t.jitter_ndc[1]};
+    const u64 now_ns = plat_ns();
+    const double seconds =
+        temporal_upscaler_seconds(now_ns, g_u.evaluated_ns, g_u.evaluated_at + 1 == frame, g_u.nominal, &fallback);
+    if (!temporal_upscaler_frame(rg, frame, &stamp, view, jitter, cut, &numbers) ||
+        !temporal_upscaler_camera(projection.near_plane, projection.far_plane, projection.fov_y, seconds,
+                                  projection.far_infinite, camera)) {
+        upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_SKIPPED, "a number for the library did not pass its check");
+        return;
+    }
+    /* Everything of our own that the hand-over needs is made before the library is called: the private image,
+       the write-back's pipeline and set, the scene colour's view. One that cannot be made stops the upscaler. */
+    if (!g_u.write_pipe || g_u.write_format != scene->f.vk) {
+        g_u.write_pipe =
+            pipeline_make(scene->f.vk, temporal_upscaled_fs_spv, temporal_upscaled_fs_spv_size, "write-back");
+        g_u.write_format = scene->f.vk;
+    }
+    const VkImageView scene_view = vk_tex_view(scene, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
+    const int imaged = image_ensure(&g_u.output, UPSCALED_FORMAT, scene->sw, scene->sh,
+                                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT, "upscaler's output");
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (imaged && g_u.write_pipe && scene_view) {
+        const VkImageView views[SETS_BINDINGS] = {g_u.output.view, g_u.output.view, g_u.output.view, g_u.output.view,
+                                                  g_u.output.view, g_u.output.view, g_u.output.view};
+        const VkSampler samplers[SETS_BINDINGS] = {g_t.point, g_t.point, g_t.point, g_t.point,
+                                                   g_t.point, g_t.point, g_t.point};
+        set = set_make(views, samplers);
+    }
+    if (!set) {
+        upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_STOPPED, "the write-back's image, pipeline, set or view");
+        return;
+    }
+    const SnxUpscalerFrame handed = {
+        .colour = {scene->img, scene_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, scene->f.vk, scene->sw, scene->sh},
+        .depth = {depth->img, depth_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, depth->f.vk, depth->sw, depth->sh},
+        .motion = {g_t.motion.img, g_t.motion.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, g_t.motion.format,
+                   g_t.motion.w, g_t.motion.h},
+        .output = {g_u.output.img, g_u.output.view, VK_IMAGE_LAYOUT_GENERAL, g_u.output.format, g_u.output.w,
+                   g_u.output.h},
+        .render_x = numbers.render.x,
+        .render_y = numbers.render.y,
+        .render_w = (u32)numbers.render.w,
+        .render_h = (u32)numbers.render.h,
+        .jitter = {(float)numbers.jitter[0], (float)numbers.jitter[1]},
+        .vector_scale = {(float)numbers.vector_scale[0], (float)numbers.vector_scale[1]},
+        /* the reset's causes add up: the gate's history and the cut, the time's fallback, a new context */
+        .reset = (u32)temporal_upscaler_resets(numbers.reset, fallback, g_u.published, &g_u.evaluated_with),
+        .frame_seconds = camera[3],
+        .near_plane = camera[0],
+        .far_plane = camera[1],
+        .fov_y = camera[2]};
+    UpscalerCall call = {g_u.live, &handed, scene, depth};
+    const int recorded = vk_rec_direct(cb, upscaler_before, upscaler_evaluate, &call);
+    if (recorded != VK_REC_DIRECT_OK) {
+        /* the library did not write its image: nothing is written back, the frame stays as drawn */
+        if (recorded == VK_REC_DIRECT_REFUSED)
+            upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_FAILED, "its evaluate failed");
+        else
+            upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_STOPPED,
+                             recorded == VK_REC_DIRECT_FAILED ? "a submission did not run as recorded"
+                                                              : "the frame's command buffer could not be used");
+        return;
+    }
+    /* the write-back: the library's picture read in a fragment shader, the scene colour written */
+    vk_barrier(cb, g_u.output.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+               VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    /* each channel is held to the largest finite value the scene colour holds (B10G11R11: 11, 11 and 10 bits) */
+    Constants wc = *pc;
+    wc.depth[0] = wc.depth[1] = temporal_ufloat_largest(6);
+    wc.depth[2] = temporal_ufloat_largest(5);
+    fullscreen(cb, scene->att, scene->sw, scene->sh, g_u.write_pipe, set, &wc, area);
+    vk_surf_wrote(scene);
+    vk_rt_drawn(scene);
+    temporal_rect_wrote(&g_t.rect_gate, frame, &stamp);
+    g_u.evaluated_at = frame;
+    g_u.evaluated_ns = now_ns;
+    upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_EVALUATED, "");
+}
+
+/* The switch, read once with the anti-aliasing's own (temporal_on). It needs the anti-aliasing and is refused
+   with rejected vectors. An adapter that is not there, or that names needs of the instance or the device, is
+   not available: one line, and the run goes on as without the switch. */
+static void upscaler_start(void) {
+    const char* name = getenv("SNX_ARCEUS_UPSCALER");
+    const char* target = getenv("SNX_ARCEUS_TARGET_FPS");
+    g_u.asked = 0;
+    if (!name || !name[0] || !strcmp(name, "0") || !strcmp(name, "off")) return;
+    const int start = temporal_upscaler_start(g_t.mode == MODE_TAA, g_t.reject);
+    if (start != TEMPORAL_UPSCALER_START_OK) {
+        LOG("arceus-upscaler: %s is not started: %s\n", name,
+            start == TEMPORAL_UPSCALER_START_NOT_TAA
+                ? "it needs SNX_ARCEUS_TEMPORAL=taa"
+                : "SNX_ARCEUS_TEMPORAL_REJECT=1 is set, and an upscaler has no rejected vectors");
+        return;
+    }
+    const SnxUpscalerApi* api = vk_upscaler_adapter(name);
+    SnxUpscalerExtensions instance = {0};
+    SnxUpscalerDeviceNeeds device = {0};
+    const char* why = NULL;
+    if (!api || !api->instance_extensions || !api->device_extensions || !api->create || !api->prepare ||
+        !api->evaluate || !api->destroy)
+        why = "no such adapter, or its library is not there";
+    else if (api->instance_extensions(&instance) != SNX_UPSCALER_OK ||
+             api->device_extensions(g_vk.instance, g_vk.phys, vkGetInstanceProcAddr, &device) != SNX_UPSCALER_OK)
+        why = "its needs of the instance and the device could not be asked";
+    else if (instance.count || device.extensions.count || device.features)
+        why = "it names needs of the instance or the device, which are not added to the game's device";
+    if (why) {
+        LOG("arceus-upscaler: %s is not available (%s): the run goes on as without the switch\n", name, why);
+        return;
+    }
+    const double fps = target ? strtod(target, NULL) : 0.0;
+    g_u.api = api;
+    g_u.nominal = isfinite(fps) && fps > 0.0 ? 1.0 / fps : 0.0;
+    g_u.was_rect = g_t.rect;
+    g_u.was_view = g_t.view;
+    g_u.was_extras = g_t.rect_extras_off;
+    g_u.asked = 1;
+    /* the rectangle's gate decides the frames, whatever its own switch says, and only the whole target is taken */
+    g_t.rect = 1;
+    g_t.view = 0;
+    g_t.rect_extras_off = 1;
+    LOG("arceus-upscaler: %s asked for. EXPERIMENTAL: its self-test's result is FAIL (the edge case's budgets and "
+        "case 4's comparison with a plainly scaled frame are not met), and nothing about its quality is claimed. "
+        "At full size only, in frames whose scene is the whole target\n", api->name ? api->name : name);
+    LOG("arceus-upscaler: our own resolve, sharpen, history, numbers and views do not run with it. Without effect: "
+        "SNX_ARCEUS_TEMPORAL_HISTORY, _CLAMP, _BLEND, _NEAREST, _LUMA, _SHARPEN, _VIEW and _RECT\n");
+}
+
 void vk_temporal_before(u64 fs0_hash) {
     if (!temporal_on() || !g_t.reader || fs0_hash != g_t.reader) return;
     const u32 frame = g_vk_present + 1;
@@ -2440,6 +2916,13 @@ void vk_temporal_before(u64 fs0_hash) {
         return;
     }
     g_t.ran_at = frame;
+    if (upscaler_on()) {
+        /* what the recycle noted of a context is acted on, and this frame's colour target is kept for the
+           next frame's decision: by value, with the frame it was seen in */
+        upscaler_settle(frame);
+        g_u.colour = (TemporalUpscalerColour){frame, (unsigned)scene->f.vk, scene->layers, (int)scene->sw,
+                                              (int)scene->sh};
+    }
     /* Under the rectangle's gate nothing of ours runs unless the frame was accepted at its first draw and
        confirmed by the scene block since, with the G-buffer's viewport the one decided on: no vectors, no
        resolve, no sharpen, no numbers, no view, and no history for the frame after. */
@@ -2461,6 +2944,13 @@ void vk_temporal_before(u64 fs0_hash) {
            That is a disagreement found late: the start begins again, and only a row of such frames stops the
            gate (temporal_rect_refused). */
         if (temporal_rect_steady(rg, frame)) temporal_rect_refused(&g_t.rect_gate, frame);
+        if (upscaler_on() && upscaler_jittered(frame))
+            upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_SKIPPED, "the gate did not take the frame at the hook");
+        return;
+    }
+    /* with an upscaler a frame without jitter has none of our passes: at most a context is made for it */
+    if (upscaler_on() && !upscaler_jittered(frame)) {
+        upscaler_warm(frame, scene, depth, rect_ok);
         return;
     }
     const TemporalRect* area = rect_ok ? &rg->now.rect : NULL;
@@ -2486,8 +2976,9 @@ void vk_temporal_before(u64 fs0_hash) {
     }
     if (!g_t.stats_pipe)
         g_t.stats_pipe = pipeline_make(STATS_FORMAT, temporal_stats_fs_spv, temporal_stats_fs_spv_size, "numbers");
-    if (!image_ensure(&g_t.colour[0], scene->f.vk, scene->sw, scene->sh, copy, "colour") ||
-        !image_ensure(&g_t.colour[1], scene->f.vk, scene->sw, scene->sh, copy, "colour")) {
+    /* the frame's copies are for our own resolve and numbers: an upscaler has neither */
+    if (!upscaler_on() && (!image_ensure(&g_t.colour[0], scene->f.vk, scene->sw, scene->sh, copy, "colour") ||
+                           !image_ensure(&g_t.colour[1], scene->f.vk, scene->sw, scene->sh, copy, "colour"))) {
         rect_fail(frame, "the frame's copies");
         return;
     }
@@ -2575,6 +3066,13 @@ void vk_temporal_before(u64 fs0_hash) {
             (double)g_t.depth_translate, (double)g_t.depth_scale,
             g_t.depth_zero_to_one ? "zero to one" : "minus one to one", g_t.view);
 
+    /* With an upscaler the frame goes to the library here, and nothing of our own resolve follows: no copy, no
+       resolve, no sharpen, no history, no numbers and no view. The bracket of the GPU time ends around it. */
+    if (upscaler_on()) {
+        upscaler_resolve(frame, cb, scene, depth, depth_view, &pc, area, &hook_view);
+        gputime_end(cb, &g_t.time_hook);
+        return;
+    }
     /* this frame's colour is copied aside: the numbers and the error view compare it with last frame's */
     Image* now = &g_t.colour[!g_t.newest];
     Image* before = &g_t.colour[g_t.newest];

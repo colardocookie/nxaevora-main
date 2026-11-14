@@ -482,6 +482,64 @@ that are not the frame's, and sixty frames that wrap the ring. Each scenario ass
 order and who made each, so a clean schedule under a sanitizer is not what passes it. It says nothing about a
 real driver or a real library.
 
+## An upscaler's library in the game (`SNX_ARCEUS_UPSCALER=fsr`)
+
+EXPERIMENTAL. The self-test's result for FSR is FAIL: the edge case's budgets and case 4's comparison with a
+plainly scaled frame are not met. Nothing about quality is claimed. It is off without its switch, and it is not
+to be switched on in a run before its conditions hold (the conformance of the jitter, the native self-test suite
+and case 7 with the validation layers installed, the passing cases as they are, and the fixture of
+`vk_rec_direct`). Without the switch none of what follows runs.
+
+At full size only: the library does the temporal resolve in place of ours, in frames whose scene is the whole
+target. It needs `SNX_ARCEUS_TEMPORAL=taa` and is refused with `SNX_ARCEUS_TEMPORAL_REJECT=1`, each with one line.
+An adapter that is not there, that names needs of the instance or the device, or that cannot make a context on
+the game's device before any was in use, is "not available": one line, and the run goes on as without the
+switch. With it on, our own resolve, sharpen, history, numbers and views never run, and the options that steer
+them are without effect.
+
+A frame, in order:
+1. At the frame's first draw with the scene camera's block the rectangle's gate decides as it always does
+   (whatever `SNX_ARCEUS_TEMPORAL_RECT` says). Then the upscaler decides whether the frame is drawn with jitter:
+   only when the gate accepts it, its scene is the whole target at full size, its configuration is known and a
+   context is ready for exactly that configuration. So no frame is jittered without an evaluate that can follow.
+   The configuration is the sizes, the formats, the layer counts and the create flags, with the far plane's
+   decision from the projection decoded at that draw. The depth target and the projection are this draw's. The
+   colour target is the one thing taken from the frame before, which must have reached our passes, since the
+   frame's own is not seen yet in the depth pre-pass.
+2. A frame left without jitter only because no context is ready gets one made at our passes' place: created,
+   and its prepare recorded through `vk_rec_direct`. A frame's recycle notes when that submission has completed,
+   and the context comes into use at the next gate's draw or hook. Nothing else of ours runs in such a frame.
+3. In a frame drawn with jitter the vector pass runs as always. What the hook sees (this frame's own colour
+   target, the depth, the projection, eight offsets, a stored depth that is the projection's own) must be what
+   the frame was decided with, and every number must pass its check. Then the scene colour, the depth and the
+   motion image are handed to the library through `vk_rec_direct`, it writes a private 16 bit float image, and
+   a pass of ours (`temporal_upscaled.frag`) writes that picture into the scene colour before its first reader:
+   texel for texel, negative values and values that are no number raised to 0, each channel held to the largest
+   finite value of the scene colour's format.
+4. The reset flag is set by any of: no history of the frame before or a camera cut (the gate's rules), a frame
+   before that was not evaluated (the frame time then is the nominal one of `SNX_ARCEUS_TARGET_FPS`, or a
+   sixtieth), a context that came into use since the last evaluate.
+
+What can go wrong, and what then happens. A frame drawn with jitter whose evaluate is skipped (the hook saw
+another configuration, a number failed its check, the gate did not confirm the frame) or fails (the library
+refused) is left as drawn, once, and the next evaluate has the reset. Eight such frames in a row, with frames
+without jitter between them not counting either way, turn the upscaler off for the session. It is turned off
+at once when a pass of ours that the hand-over needs cannot be made, when a submission did not run as
+recorded, when a context's prepare fails, and when the timeline cannot be read eight recycles in a row. Off is
+for good: no frame is drawn with jitter any more and every frame is left as the game draws it. It does not
+fall back to our own resolve. A context is destroyed only after the frames in flight, and never once a
+submission did not run as recorded.
+
+Limits of this piece: FSR only, the formats the self-test ran (a B10G11R11 scene colour, a D24S8 depth), one
+layer each, the game's form of projection as two cameras of one place showed it. Any other frame is left
+without jitter. The first context costs at least two frames without jitter and a create in the middle of a
+frame. A change of the colour target between two frames costs one frame drawn with jitter and left as drawn.
+
+Lines: `arceus-upscaler:` at the start (what was asked, experimental, what is without effect), for each of the
+first contexts, for the first frames left as drawn and every 600th, when it turns off, and every 600 decided
+frames the counts (evaluated, drawn with jitter and skipped or failed, and not jittered by reason: the gate, not
+the whole target, a part of the configuration not known, no ready context, off).
+
 ## The upscaler's self-test (`SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>`)
 
 With this set to an adapter's name (`fsr`), the program does not load the game. `0` and `off` leave the mode off,

@@ -1085,6 +1085,8 @@ void vk_temporal_camera_seen(u64 address, u32 bound, u32 size);
 void vk_temporal_object_failed(const char* what);
 /* SNX_ARCEUS_TEMPORAL_GPUTIME: the results of brackets whose submission has completed, without waiting */
 void vk_temporal_gputime_poll(void);
+/* SNX_ARCEUS_UPSCALER, from a frame's recycle: notes whether the context on its way has completed, and no more */
+void vk_temporal_upscaler_poll(void);
 void vk_temporal_gputime_present(void); /* right after g_vk_present is raised: the window's clock */
 /* Object vectors (SNX_ARCEUS_TEMPORAL_VECTORS=object). vk_temporal_object: 1 when the draw's object (constant bank
    6) moved since the frame before, with the fragment program and its constant block for the draw that writes its
