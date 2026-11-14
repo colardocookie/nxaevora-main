@@ -636,7 +636,11 @@ The cases, each run with a viewport of negative and of positive height (render 3
    t, or with x and two hexadecimal digits), a backslash of the text itself is doubled, and nothing is
    dropped: a printed line reads back to exactly one text. So every piece is one log line with the
    self-test's prefix, and the callback's first line says how many marks the text and the name have. The
-   counts at the end are taken at one moment, under the lock the callbacks use.
+   counts at the end are taken at one moment, under the lock the callbacks use, when the device is idle. The
+   lines of the counts, case 7's line and the RESULT all go by that one copy. A callback that arrives after
+   it is said in a line of its own and fails case 7 as well. The messenger is not destroyed in this mode, so
+   a callback that arrives later still is not counted. The layer stops reporting an id after its own limit of
+   repeats, so a count is what it reported.
 The scene's depth is made from two distances (5 for the background, 1/6 for the patch) through a projection in
 the game's form, depth = (A z + B) / (-z) with A = n / (f - n) and B = n f / (f - n). The cases above use a near
 plane of 0.1 and a far plane at infinity, with the create flag for that: their 24 bit depths are the 0.02 and

@@ -220,8 +220,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverit
     __atomic_store_n(&g_said_lock, 0, __ATOMIC_RELEASE);
     return VK_FALSE;
 }
-/* At the end: how many callbacks each message id had, the layer's own limit on repeats said beside them. It
-   answers how many callbacks its counts hold. */
+/* At the end: how many callbacks each message id had, the layer's own limit on repeats said beside them. All of
+   it from one copy taken under the callbacks' lock. It answers how many callbacks that copy holds, which is
+   the count case 7 and the RESULT go by. */
 static unsigned validation_counts(void) {
     u32 listed = 0;
     /* a callback may still arrive from a thread of the library's: the counts are taken under the callbacks' lock,
@@ -2106,12 +2107,22 @@ int vk_upscaler_selftest(const char* adapter) {
     pass = pass && idle();
     /* Case 7: no message of the validation layer in any case. Without the layer the case was not run, which is
        not a pass, and neither is a run that had to stop. */
-    (void)validation_counts();
+    /* One copy of the callbacks' counts, taken under their lock when the device is idle, is what the summary,
+       case 7's lines and the RESULT all read. A callback that arrives after it, from a thread of the library's,
+       is said in a line of its own and fails the case too: never weaker than the lines. The messenger is not
+       destroyed in this mode, so one that arrives later still is not counted. */
+    const unsigned said = validation_counts();
     if (!g.validation) LOG(ST "case 7: NOT RUN, the validation layer is %s: FAIL\n", validation_missing());
     else if (g.unknown)
-        LOG(ST "case 7: NOT JUDGED, the run stopped (%u validation messages until then): FAIL\n", g.messages);
-    else LOG(ST "case 7: %u validation messages: %s\n", g.messages, g.messages ? "FAIL" : "PASS");
-    pass = pass && g.validation && !g.messages && !g.unknown;
+        LOG(ST "case 7: NOT JUDGED, the run stopped (%u validation messages until then): FAIL\n", said);
+    else LOG(ST "case 7: %u validation messages: %s\n", said, said ? "FAIL" : "PASS");
+    while (__atomic_exchange_n(&g_said_lock, 1, __ATOMIC_ACQUIRE)) {}
+    const unsigned late = g.messages - said;
+    __atomic_store_n(&g_said_lock, 0, __ATOMIC_RELEASE);
+    if (late)
+        LOG(ST "case 7: %u more validation callbacks arrived after its count was taken. They are not in the lines "
+               "above: FAIL\n", late);
+    pass = pass && g.validation && !said && !late && !g.unknown;
     LOG(ST "RESULT: %s\n", pass ? "PASS" : "FAIL");
     return pass ? 0 : 1;
 }
