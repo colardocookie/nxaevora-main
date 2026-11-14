@@ -1154,6 +1154,7 @@ static u32 image_variant(const GpuChannel* ch, int stage, const VkSh* s, u32* si
 typedef struct {
     u64 tm, ts, dm;
     u32 rm, rs, df, unfed;
+    u32 txq[3]; /* ShaderInfo.txq_fixed: nothing sets it yet */
 } FsKey;
 /* the integer color targets (rm, signed rs) the registers name, which key the fragment shader's outputs */
 static void rt_int_targets(const u32* r, u32* rm, u32* rs) {
@@ -1207,8 +1208,9 @@ static void fs_key(GpuChannel* ch, const VkSh* s0, TexRes* res, u32 last_out, u3
 }
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
 static VkSh* fs_variant(GpuChannel* ch, u64 addr, VkSh* s0, const FsKey* fk) {
-    if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed) return s0;
-    return vk_shader_get(ch, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, NULL);
+    if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed && !fk->txq[0]) return s0;
+    return vk_shader_get(ch, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, NULL,
+                         fk->txq);
 }
 
 VkImageViewType vk_tex_view_type(const ShTex* st) {
@@ -2410,26 +2412,27 @@ static int draw_shaders(GpuChannel* ch, u32 topology, DrawShaders* o) {
     o->attr_sint = attr_sint;
     o->vs = vk_shader_get(ch, code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint, 0, 0,
                           tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0,
-                          xfb_on && !tes_on && !gs_on ? &xfb : NULL);
+                          xfb_on && !tes_on && !gs_on ? &xfb : NULL, NULL);
     /* a vertex program's images pick its variant as a fragment program's do (fs_key) */
     u32 vs_signed_images = 0;
     u32 vs_images = o->vs && !o->vs->failed && o->vs->si.nimg ? image_variant(ch, 0, o->vs, &vs_signed_images) : 0;
     if (vs_images || vs_signed_images)
         o->vs = vk_shader_get(ch, code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint,
                               vs_images << 8, vs_signed_images << 8, tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0,
-                              xfb_on && !tes_on && !gs_on ? &xfb : NULL);
+                              xfb_on && !tes_on && !gs_on ? &xfb : NULL, NULL);
     o->tcs =
-        tcs_on ? vk_shader_get(ch, code + r[0x821], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0, NULL) : NULL;
+        tcs_on ? vk_shader_get(ch, code + r[0x821], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0, NULL, NULL)
+               : NULL;
     o->tes = tes_on ? vk_shader_get(ch, code + r[0x831], 0, ST_TES, 0, 0, r[0xC8] & 0x333, 0,
-                                    gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, xfb_on && !gs_on ? &xfb : NULL)
+                                    gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, xfb_on && !gs_on ? &xfb : NULL, NULL)
                     : NULL;
     o->gs = gs_on ? vk_shader_get(ch, code + r[0x841], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, r[0xC8]),
-                                  0, clip, 0, 0, 0, xfb_on ? &xfb : NULL)
+                                  0, clip, 0, 0, 0, xfb_on ? &xfb : NULL, NULL)
                   : NULL;
     if ((tcs_on && (!o->tcs || o->tcs->failed)) || (tes_on && (!o->tes || o->tes->failed)) ||
         (gs_on && (!o->gs || o->gs->failed)) || !o->vs || o->vs->failed)
         return 0;
-    o->fs0 = (r[0x850] & 1) ? vk_shader_get(ch, code + r[0x851], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, NULL) : NULL;
+    o->fs0 = (r[0x850] & 1) ? vk_shader_get(ch, code + r[0x851], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL) : NULL;
     rt_int_targets(r, &o->rt_int, &o->rt_sint);
     return 1;
 }

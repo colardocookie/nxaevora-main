@@ -104,6 +104,9 @@ typedef struct {
     u32 early_fragment_tests;
     ShXfb xfb; /* key: transform feedback's capture of this program's outputs */
     int writes_viewport; /* the last vertex stage selects one of the 16 viewport/scissor pairs */
+    /* FS key, last (a corpus of the size before it loads with it zeroed): the size query of the one 2D slot whose
+       handle is at txq_fixed[0] - 1 words answers txq_fixed[1] x txq_fixed[2], with no scale applied. 0: none */
+    u32 txq_fixed[3];
 } ShaderInfo;
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs has room for */
 /* Each stage has a descriptor set (shader_vk_set), its bindings grouped by kind. */

@@ -8150,7 +8150,13 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 third ? spv_emit_vec4_extract(&c->emit, c->u32_type, dimensions, 2)
                       : spv_emit_constant_u32(&c->emit, c->u32_type, 1),
                 spv_emit_image_query_levels(&c->emit, c->u32_type, c->sampled_type[slot], c->sampler[slot])};
-            if (qtype == 1 && needs_texel_scale)
+            /* the keyed slot (ShaderInfo.txq_fixed): a plain 2D query answers the key's size, unscaled */
+            if (stage == ST_FS && !bindless && !indexed && qtype == 1 && !qarray && si->txq_fixed[0] &&
+                !textures[slot].bindless && !(textures[slot].flags & SNX_TEX_INDEXED) &&
+                textures[slot].cbuf_off + 1 == si->txq_fixed[0]) {
+                values[0] = spv_emit_constant_u32(&c->emit, c->u32_type, si->txq_fixed[1]);
+                values[1] = spv_emit_constant_u32(&c->emit, c->u32_type, si->txq_fixed[2]);
+            } else if (qtype == 1 && needs_texel_scale)
                 scaled_coords(c, push, slot, 1, fragcoord, i32_type, &values[0], &values[1]);
             u32 dst = d;
             for (u32 k = 0; k < 4; k++)
@@ -8502,6 +8508,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     next.tex_dc_color_mask = si->tex_dc_color_mask;
     next.tex_dc_color_funcs = si->tex_dc_color_funcs;
     next.in_unfed_mask = si->in_unfed_mask;
+    memcpy(next.txq_fixed, si->txq_fixed, sizeof next.txq_fixed);
     next.ntex = texture_count;
     next.nimg = image_info.nimg;
     memcpy(next.img, image_info.img, (size_t)image_info.nimg * sizeof image_info.img[0]);
