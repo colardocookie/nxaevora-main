@@ -158,7 +158,9 @@ static struct {
         void *slot, *other; /* the table entries its matrix of a frame ago came from */
         const TemporalStreamCopy* stream; /* a skinned draw: this frame's copy at its capture address */
     } drawn[OBJECT_DRAWS + 1], stats_drawn[OBJECT_DRAWS + 1];
-    u32 long_logged_at, stats_draws; /* stats_draws: the extra draws of the frame the numbers' image was drawn in */
+    /* stats_draws and stats_height: the extra draws and the scene's height of the frame the numbers' image was
+       drawn in */
+    u32 long_logged_at, stats_draws, stats_height;
     /* the jitter of the frame: decided at its first draw with the scene camera's block (jitter_decide) from that
        draw's depth target and registers, which vk_temporal_draw notes for every draw */
     const Surf* draw_zt;
@@ -803,15 +805,17 @@ static void stats_log(void) {
                  rejected_all, STATS_W * STATS_H, rejected, all, rejected_blind, (double)rejected_far);
     LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px vector_max=%.2f px sky=%u off_screen=%u%s%s\n",
         (unsigned long long)g_t.stats_run, all ? length / all : 0.0, longest, sky, off, bands, refused);
-    /* The probe names the draws that left a sampled vector longer than an eighth of the scene's height, four at
-       most. The length has the camera's part in it, so a fast pan names draws too. */
+    /* The probe names the draws that left a sampled vector longer than an eighth of the scene's height in that
+       frame, four at most. The length has the camera's part in it, so a fast pan names draws too and nothing here
+       says a pixel would be rejected. It is a half float, cut at 990 px by the numbers' shader. */
     int long_named = 0;
-    for (u32 d = 1; !taa && g_t.object.h && d <= g_t.stats_draws && d <= OBJECT_DRAWS && long_named < 4; d++) {
+    for (u32 d = 1; !taa && g_t.stats_height && d <= g_t.stats_draws && d <= OBJECT_DRAWS && long_named < 4; d++) {
         const struct Drawn* w = &g_t.stats_drawn[d];
-        if (!(per_draw_long[d] > (float)g_t.object.h / 8.0f)) continue;
+        if (!(per_draw_long[d] > (float)g_t.stats_height / 8.0f)) continue;
         long_named++;
         LOG("arceus-temporal-longest: run=%llu draw %u (%s, block %llx, draw %llx, matrix before from %s, origin "
-            "moved %.0f px): longest sampled vector %.0f px with the camera's part, sampled pixels n=%u wrong=%u "
+            "moved %.0f px): longest sampled vector about %.0f px with the camera's part (990 at most), sampled pixels "
+            "n=%u wrong=%u "
             "with_camera_vectors=%u\n",
             (unsigned long long)g_t.stats_run, d, w->skinned ? "skinned" : "rigid", (unsigned long long)w->block,
             (unsigned long long)w->signature,
@@ -2096,6 +2100,7 @@ void vk_temporal_before(u64 fs0_hash) {
         g_t.stats_run = g_t.runs;
         memcpy(g_t.stats_drawn, g_t.drawn, sizeof g_t.stats_drawn);
         g_t.stats_draws = g_t.object_draws;
+        g_t.stats_height = scene->sh;
     }
     if (taa || !g_t.view) return;
     /* a view of the probe, drawn over the scene */
