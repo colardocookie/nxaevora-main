@@ -18,33 +18,38 @@ enum {
     ARCEUS_SCENE_SCALE_BAD   /* below 0.5, not a number, not finite, or text after the number: refused */
 };
 #define ARCEUS_SCENE_SCALE_PARTS 64 /* the largest whole number in a scale written as p/q */
-/* A scale written as p/q: 1 with both when the text is digits, a slash and digits and nothing else, and
-   1 <= p < q <= 64. Two thirds has no short decimal, and the game draws a viewport of the target's size times
-   the scale as it is, so 0.6667 ends inside a pixel. */
+/* A scale written as p/q, or as pofq where a slash cannot be typed (a launcher's line): 1 with both when the
+   text is digits, the slash or "of", digits and nothing else, and 1 <= p < q <= 64. Two thirds has no short
+   decimal, and the game draws a viewport of the target's size times the scale as it is, so 0.6667 ends inside
+   a pixel. */
 static inline int arceus_scene_scale_parts(const char* text, int* p, int* q) {
-    int part[2] = {0, 0}, digits[2] = {0, 0}, at = 0;
-    for (const char* c = text; *c; c++) {
-        if (*c == '/' && at == 0) {
-            at = 1;
-            continue;
+    int part[2] = {0, 0};
+    const char* c = text;
+    for (int at = 0; at < 2; at++) {
+        int digits = 0;
+        for (; *c >= '0' && *c <= '9'; c++) {
+            part[at] = part[at] * 10 + (*c - '0');
+            if (++digits > 2) return 0; /* no number up to 64 has more */
         }
-        if (*c < '0' || *c > '9') return 0;
-        part[at] = part[at] * 10 + (*c - '0');
-        if (++digits[at] > 2) return 0; /* no number up to 64 has more */
+        if (!digits) return 0;
+        if (at) break;
+        if (c[0] == '/') c++;
+        else if (c[0] == 'o' && c[1] == 'f') c += 2;
+        else return 0;
     }
-    if (!at || !digits[0] || !digits[1]) return 0;
+    if (*c) return 0;
     if (part[0] < 1 || part[0] >= part[1] || part[1] > ARCEUS_SCENE_SCALE_PARTS) return 0;
     *p = part[0];
     *q = part[1];
     return 1;
 }
-/* The switch's text: a decimal number, or p/q. A value is never moved into the range, so a typing error gives no
-   scale nobody asked for. p/q is divided in double and narrowed once to the float the game is given. */
+/* The switch's text: a decimal number, or p/q, or pofq. A value is never moved into the range, so a typing error
+   gives no scale nobody asked for. p/q is divided in double and narrowed once to the float the game is given. */
 static inline int arceus_scene_scale_parse(const char* text, float* scale) {
     *scale = 1.0f;
     if (!text) return ARCEUS_SCENE_SCALE_OFF;
     for (const char* c = text; *c; c++)
-        if (*c == '/') {
+        if (*c == '/' || *c == 'o') {
             int p, q;
             if (!arceus_scene_scale_parts(text, &p, &q)) return ARCEUS_SCENE_SCALE_BAD;
             const float value = (float)((double)p / (double)q);

@@ -2428,6 +2428,26 @@ static void test_scene_scale(void) {
     assert(arceus_scene_scale_parse("63/64", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.984375f);
     assert(arceus_scene_scale_parse("32/64", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.5f);
     assert(arceus_scene_scale_parse("02/03", &scale) == ARCEUS_SCENE_SCALE_USED && scale == (float)(2.0 / 3.0));
+    /* Written as pofq, for a launcher that cannot pass a slash: the same rules, the same arithmetic and the
+       very same float. */
+    {
+        static const char* const pairs[][2] = {{"2of3", "2/3"}, {"3of4", "3/4"}, {"1of2", "1/2"}, {"63of64", "63/64"},
+                                               {"02of03", "02/03"}, {"5of8", "5/8"}};
+        for (unsigned i = 0; i < sizeof pairs / sizeof *pairs; i++) {
+            float slash = 0.0f;
+            assert(arceus_scene_scale_parse(pairs[i][0], &scale) == ARCEUS_SCENE_SCALE_USED);
+            assert(arceus_scene_scale_parse(pairs[i][1], &slash) == ARCEUS_SCENE_SCALE_USED);
+            assert(!memcmp(&scale, &slash, sizeof scale));
+        }
+        static const char* const words[] = {"2of",   "of3",   "2 of 3", "2OF3",  "2of3x", "2Of3",  "2oF3",  "2o3",
+                                            "2f3",   "2ofof3", "2of/3", "2/of3", "1of3",  "3of2",  "0of5",  "2of0",
+                                            "65of66", "2of3 ", " 2of3", "of",    "o",     "2of3of4", "002of3", "-2of3"};
+        for (unsigned i = 0; i < sizeof words / sizeof *words; i++) {
+            scale = 0.25f;
+            assert(arceus_scene_scale_parse(words[i], &scale) == ARCEUS_SCENE_SCALE_BAD);
+            assert(scale == 1.0f);
+        }
+    }
     /* refused: under 0.5, p not under q, a part of 0 or over 64, a missing part, and anything else in the value */
     static const char* const parts[] = {"1/3",  "3/2",   "3/3",  "0/5",  "2/0",   "2/3x", " 2/3", "2/3 ",  "65/66",
                                         "1/65", "31/64", "/3",   "2/",   "/",     "2//3", "2/3/4", "-2/3", "2/-3",

@@ -1578,7 +1578,7 @@ static void fixed_resolution_init(void) {
     LOG("arceus-resolution: automatic 3D resolution governor disabled; explicit scene modes unchanged\n");
 }
 
-/* SNX_ARCEUS_SCENE_SCALE=<0.5 to below 1.0, or p/q>: the game's own 3D buffer scale for its default mode. The mode
+/* SNX_ARCEUS_SCENE_SCALE=<0.5 to below 1.0, p/q or pofq>: the game's own 3D buffer scale for its default mode. The mode
    setter (CC3888) takes the default pair from a table in the game's data, and this puts the number there, both ways the
    same. Run before any guest code, so before the setter's first use. Rules and refusals: arceus_scene_scale.h. */
 static void scene_scale_init(void) {
@@ -1587,8 +1587,8 @@ static void scene_scale_init(void) {
     const int asked = arceus_scene_scale_parse(text, &scale);
     if (!main_base || asked == ARCEUS_SCENE_SCALE_OFF) return;
     if (asked == ARCEUS_SCENE_SCALE_BAD) {
-        WARN("arceus-scene-scale: refused, \"%s\" is not a number from 0.5 to below 1.0, nor p/q in that range "
-             "with whole numbers 1 <= p < q <= %d. Nothing changed\n", text, ARCEUS_SCENE_SCALE_PARTS);
+        WARN("arceus-scene-scale: refused, \"%s\" is not a number from 0.5 to below 1.0, nor p/q or pofq in that "
+             "range with whole numbers 1 <= p < q <= %d. Nothing changed\n", text, ARCEUS_SCENE_SCALE_PARTS);
         return;
     }
     const u64 table = main_base + ARCEUS_SCENE_SCALE_TABLE, pair = table + 4 * ARCEUS_SCENE_SCALE_PAIR;
