@@ -334,23 +334,28 @@ static inline int temporal_before_choice(int own_last, unsigned own_stays, int o
     if (partner_turns + 1 < TEMPORAL_PAIR_FRAMES) return TEMPORAL_BEFORE_LEARNING;
     return partner_has_draw ? TEMPORAL_BEFORE_PARTNER : TEMPORAL_BEFORE_OTHER;
 }
-/* The class of a pixel's vector, kept in the motion image's alpha. An object's vector that differs from the camera's
-   vector of the same pixel by more than a bound is a snap or a wrong guess of the object. Such a pixel is rejected:
-   it shows the frame as drawn and takes no history. The shaders hold the same three values. */
+/* The class of a pixel's vector, kept in the motion image's alpha. Where an object's own motion (its vector less the
+   camera's of the same pixel) is over a bound, whose surface the history holds cannot be verified, so history is
+   refused: the pixel is rejected and shows the frame as drawn. Valid history of fast objects is lost too. The
+   shaders hold the same three values. */
 #define TEMPORAL_CLASS_CAMERA 0
 #define TEMPORAL_CLASS_OBJECT 1
 #define TEMPORAL_CLASS_REJECTED 2
 /* the bound in pixels for a scene of this height: an eighth of it, 0 for off */
 static inline double temporal_reject_bound(int on, double height) { return on ? height / 8.0 : 0.0; }
-/* The class of a pixel. object: an object's vector owns it. The vectors are in parts of the image. Without a
-   camera vector to hold it against (camera_valid 0), an object's vector is rejected. */
+/* The class of a pixel. object: an object's vector owns it. The vectors are in parts of the image. An object's
+   vector is kept only when all of this holds: there is a camera vector (camera_valid), every number is finite and
+   the two are at most the bound apart. Anything else is rejected, a NaN included. */
 static inline int temporal_vector_class(int object, int camera_valid, const double vector[2], const double camera[2],
                                         double width, double height, double bound) {
     if (!object) return TEMPORAL_CLASS_CAMERA;
     if (!(bound > 0.0)) return TEMPORAL_CLASS_OBJECT;
     if (!camera_valid) return TEMPORAL_CLASS_REJECTED;
     const double dx = (vector[0] - camera[0]) * width, dy = (vector[1] - camera[1]) * height;
-    return dx * dx + dy * dy > bound * bound ? TEMPORAL_CLASS_REJECTED : TEMPORAL_CLASS_OBJECT;
+    const double apart = dx * dx + dy * dy;
+    const int finite = isfinite(vector[0]) && isfinite(vector[1]) && isfinite(camera[0]) && isfinite(camera[1]) &&
+                       isfinite(apart);
+    return finite && apart <= bound * bound ? TEMPORAL_CLASS_OBJECT : TEMPORAL_CLASS_REJECTED;
 }
 /* The motion image's texel: the vector, what an object's vector carries (the depth its point had a frame ago, or
    the draw's number in the probe) and the class. Only alpha says the class, whatever the other three hold. */

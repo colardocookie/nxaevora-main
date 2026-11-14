@@ -55,7 +55,7 @@ void main() {
             if (object.b >= 0.0 && abs(object.b - stored) <= 0.002 * stored + 0.0000002) o_stats.r = object.a;
         }
         // A rejected object pixel (alpha 2 of the motion image): blue is how far its vector is from the camera's
-        // in pixels, as temporal_motion.frag held it against the bound, 60000 without a camera vector.
+        // in pixels, as temporal_motion.frag held it against the bound, 60000 without a finite one.
         vec4 vector = texelFetch(u_motion, pixel, 0);
         if (vector.a > 1.5) {
             float z = max((texelFetch(u_depth, pixel, 0).r - pc.depth.x) / pc.depth.y, 0.0);
@@ -64,7 +64,8 @@ void main() {
             o_stats.b = 60000.0;
             if (before.w > 0.0) {
                 vec2 camera = (ndc - before.xy / before.w) * 0.5 * pc.viewport.zw / pc.size.xy;
-                o_stats.b = clamp(length((vector.rg - camera) * pc.size.xy), 1.0, 59000.0);
+                float apart = length((vector.rg - camera) * pc.size.xy);
+                if (!isnan(apart) && !isinf(apart)) o_stats.b = clamp(apart, 1.0, 59000.0);
             }
         }
         return;

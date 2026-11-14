@@ -645,9 +645,10 @@ static void stats_log(void) {
     double drawn_gradient = 0, shown_gradient = 0;
     u16 capped[OBJECT_DRAWS + 1];
     /* per extra draw: its sampled pixels, and those wrong with its vector, with the camera's, with none */
-    static u16 per_draw[OBJECT_DRAWS + 1][5];
+    /* and those rejected, and of them the ones without a finite distance from the camera's vector */
+    static u16 per_draw[OBJECT_DRAWS + 1][6];
     static float per_draw_far[OBJECT_DRAWS + 1];
-    unsigned rejected = 0;
+    unsigned rejected = 0, rejected_blind = 0, rejected_all = 0;
     float rejected_far = 0.0f;
     memset(per_draw_far, 0, sizeof per_draw_far);
     memset(capped, 0, sizeof capped);
@@ -663,17 +664,14 @@ static void stats_log(void) {
             drawn_gradient += (double)half_float(more[0]);
             shown_gradient += (double)half_float(more[1]);
         }
-        /* a rejected object pixel: how far its vector is from the camera's (temporal_stats.frag) */
+        /* A rejected object pixel: how far its vector is from the camera's, 60000 for no finite distance
+           (temporal_stats.frag). Sky and samples whose vector leaves the picture are not among the counted ones. */
         const float residual = half_float(more[2]);
+        const int blind = residual > 59500.0f;
         if (residual > 0.0f) {
-            rejected++;
-            if (residual > rejected_far) rejected_far = residual;
-            if (!taa) {
-                const float number = half_float(more[0]);
-                const u32 d = number >= 1.0f && number <= (float)OBJECT_DRAWS ? (u32)(number + 0.5f) : 0;
-                per_draw[d][4]++;
-                if (residual > per_draw_far[d]) per_draw_far[d] = residual;
-            }
+            rejected_all++;
+            rejected_blind += blind;
+            if (!blind && residual > rejected_far) rejected_far = residual;
         }
         /* the probe marks a pixel that took an object's vector in the thousands of the length (temporal_stats.frag) */
         const int object_marks = vector >= 1000.0f ? (int)(vector / 1000.0f) : 0;
@@ -703,6 +701,7 @@ static void stats_log(void) {
         shown_fine[0] += marks >> 3 & 1;
         shown_fine[1] += marks >> 4 & 1;
         wrong_still[band] += still > STATS_ERROR;
+        rejected += residual > 0.0f;
         skin_near += object_marks >> 2 & 1;
         if (object_marks & 1) {
             const float number = half_float(more[0]);
@@ -711,6 +710,12 @@ static void stats_log(void) {
             tally[1] += moved > STATS_ERROR;
             tally[2] += object_marks >> 1 & 1;
             tally[3] += still > STATS_ERROR;
+            if (residual > 0.0f) {
+                const u32 d = (u32)(tally - per_draw[0]) / 6;
+                tally[4]++;
+                tally[5] += blind;
+                if (!blind && residual > per_draw_far[d]) per_draw_far[d] = residual;
+            }
             object_n++;
             object_wrong += moved > STATS_ERROR;
             object_camera += object_marks >> 1 & 1;
@@ -764,10 +769,13 @@ static void stats_log(void) {
                  object_n ? 100.0 * object_camera / object_n : 0.0, object_n ? 100.0 * object_still / object_n : 0.0,
                  skin_near);
     /* rejected: counted in this sampled frame only, one frame of the numbers, not every frame */
-    char refused[96] = "";
+    /* two counts: of every sample, and of the eligible ones the shares above are taken of (not sky, the vector
+       inside the picture). The distance is the largest finite one, which the shader caps at 59000. */
+    char refused[260] = "";
     if (g_t.reject)
-        snprintf(refused, sizeof refused, " rejected_sampled n=%u largest_from_camera=%.0f px", rejected,
-                 (double)rejected_far);
+        snprintf(refused, sizeof refused, " rejected_sampled of_all n=%u of %u, of_eligible n=%u of %u, "
+                 "without_finite_camera_distance n=%u, largest_finite_distance=%.0f px (capped at 59000)",
+                 rejected_all, STATS_W * STATS_H, rejected, all, rejected_blind, (double)rejected_far);
     LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px vector_max=%.2f px sky=%u off_screen=%u%s%s\n",
         (unsigned long long)g_t.stats_run, all ? length / all : 0.0, longest, sky, off, bands, refused);
     /* the probe names the draws of the rejected samples, four at most */
@@ -781,11 +789,12 @@ static void stats_log(void) {
                 (unsigned long long)g_t.stats_run, per_draw[d][4]);
             continue;
         }
-        LOG("arceus-temporal-rejected: run=%llu draw %u (%s, block %llx, draw %llx): %u of its %u sampled pixels "
-            "rejected, the furthest %.0f px from the camera's vector, wrong with its vector %u\n",
+        LOG("arceus-temporal-rejected: run=%llu draw %u (%s, block %llx, draw %llx): %u of its %u eligible sampled "
+            "pixels rejected (%u without a finite camera distance, the largest finite one %.0f px), wrong with "
+            "its vector %u\n",
             (unsigned long long)g_t.stats_run, d, w->skinned ? "skinned" : "rigid", (unsigned long long)w->block,
-            (unsigned long long)w->signature, per_draw[d][4], per_draw[d][0], (double)per_draw_far[d],
-            per_draw[d][1]);
+            (unsigned long long)w->signature, per_draw[d][4], per_draw[d][0], per_draw[d][5],
+            (double)per_draw_far[d], per_draw[d][1]);
     }
     /* the draws whose origin moved far on screen: what the picture says of their vectors, four at most */
     int moves = 0;

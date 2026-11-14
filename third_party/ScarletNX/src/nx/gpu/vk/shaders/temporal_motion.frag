@@ -40,9 +40,13 @@ void main() {
         // an object's vector counts where the scene's depth is still the one it was drawn at (half float steps)
         vec4 object = texelFetch(u_objects, ivec2(gl_FragCoord.xy), 0);
         if (object.b >= 0.0 && abs(object.b - stored) <= 0.002 * stored + 0.0000002) {
-            // what the object adds to the camera's vector, in pixels, against the bound (temporal_vector_class)
+            // What the object adds to the camera's vector, in pixels, against the bound (temporal_vector_class).
+            // Kept only with a camera vector, finite numbers and at most the bound: a NaN is rejected.
             vec2 own = (object.rg - camera) * pc.size.xy;
-            bool rejected = pc.depth.z > 0.0 && (!camera_valid || dot(own, own) > pc.depth.z * pc.depth.z);
+            bool finite = camera_valid && !any(isnan(before)) && !any(isinf(before)) && !any(isnan(object.rg)) &&
+                          !any(isinf(object.rg)) && !any(isnan(own)) && !any(isinf(own));
+            bool kept = finite && dot(own, own) <= pc.depth.z * pc.depth.z;
+            bool rejected = pc.depth.z > 0.0 && !kept;
             o_motion = vec4(object.rg, object.a, rejected ? CLASS_REJECTED : CLASS_OBJECT);
             return;
         }

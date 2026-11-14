@@ -901,6 +901,22 @@ static void test_classes(void) {
         assert(temporal_vector_class(1, 1, out, none, w, h, bound) == TEMPORAL_CLASS_REJECTED);
         /* without a camera vector an object's pixel is rejected, however short its vector */
         assert(temporal_vector_class(1, 0, none, none, w, h, bound) == TEMPORAL_CLASS_REJECTED);
+        /* Fails closed: a NaN or an infinity in any input, and infinity less infinity, are rejected. The test
+           that keeps a vector is the positive one, so a comparison with a NaN cannot keep it. */
+        const double bad[3] = {NAN, INFINITY, -INFINITY};
+        for (int b = 0; b < 3; b++)
+            for (int slot = 0; slot < 4; slot++) {
+                double v[2] = {0.0, 0.0}, c[2] = {0.0, 0.0};
+                (slot < 2 ? v : c)[slot & 1] = bad[b];
+                assert(temporal_vector_class(1, 1, v, c, w, h, bound) == TEMPORAL_CLASS_REJECTED);
+                assert(temporal_vector_class(1, 0, v, c, w, h, bound) == TEMPORAL_CLASS_REJECTED);
+                /* the same broken number on both sides: their difference is a NaN or 0, never a reason to keep */
+                v[slot & 1] = c[slot & 1] = bad[b];
+                assert(temporal_vector_class(1, 1, v, c, w, h, bound) == TEMPORAL_CLASS_REJECTED);
+            }
+        /* finite inputs whose difference in pixels overflows */
+        const double huge[2] = {1e308, 0.0}, other[2] = {-1e308, 0.0};
+        assert(temporal_vector_class(1, 1, huge, other, w, h, bound) == TEMPORAL_CLASS_REJECTED);
         /* off: nothing is rejected. A pixel no object owns is the camera's whatever else is said. */
         assert(temporal_vector_class(1, 1, over_x, none, w, h, 0.0) == TEMPORAL_CLASS_OBJECT);
         assert(temporal_vector_class(1, 0, over_x, none, w, h, 0.0) == TEMPORAL_CLASS_OBJECT);
