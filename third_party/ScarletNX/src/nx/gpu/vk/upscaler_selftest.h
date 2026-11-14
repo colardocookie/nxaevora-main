@@ -413,9 +413,16 @@ static inline int selftest_edge_margin(double worse, double configured, double b
     if (!(margin >= SELFTEST_EDGE_NOISE * noise)) *failed |= SELFTEST_EDGE_NOISY;
     return 1;
 }
-/* 0 when the case passes, else the bits of what failed. For one orientation of the viewport. */
+/* 0 when the case passes, else the bits of what failed. For one orientation of the viewport. Every number it is
+   handed must be one, also those no condition uses (the other axis's sign on an edge, the plain frame over the
+   pixels): a run that left a number that is not finite has not been measured, and the case decides nothing. */
 static inline unsigned selftest_edge_judge(const SelftestEdgeRuns* r) {
     unsigned failed = 0;
+    const SelftestEdgeMeasure* all[7] = {r->configured, r->turned_x,     r->turned_y, r->turned_both,
+                                         r->told_nothing, r->plain,      r->noise};
+    for (int k = 0; k < 7; k++)
+        for (int e = 0; e < 2; e++)
+            if (!isfinite(all[k][e].profile) || !isfinite(all[k][e].pixels)) failed |= SELFTEST_EDGE_NUMBERS;
     for (int axis = 0; axis < 2; axis++) {
         /* the sign of this axis on the edge that lies across it */
         const SelftestEdgeMeasure turned = axis ? r->turned_y[axis] : r->turned_x[axis];

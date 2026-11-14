@@ -2666,6 +2666,25 @@ static void test_selftest_edges(void) {
             r.plain[axis].profile = NAN;
             assert(selftest_edge_judge(&r) == (SELFTEST_EDGE_NUMBERS | SELFTEST_EDGE_PLAIN));
         }
+        /* Every number handed over must be one, used by a condition or not: each of the seven runs' two
+           measures on each edge, set to no number or to infinity alone, fails the case as one that decided
+           nothing. The other axis's sign on an edge and the plain frame over the pixels are used by none. */
+        for (int k = 0; k < 7; k++)
+            for (int e = 0; e < 2; e++)
+                for (int which = 0; which < 4; which++) {
+                    r = fine;
+                    SelftestEdgeMeasure* runs[7] = {r.configured, r.turned_x,     r.turned_y, r.turned_both,
+                                                    r.told_nothing, r.plain,      r.noise};
+                    *(which & 1 ? &runs[k][e].pixels : &runs[k][e].profile) = which & 2 ? INFINITY : NAN;
+                    const unsigned failed = selftest_edge_judge(&r);
+                    assert((failed & SELFTEST_EDGE_NUMBERS) && selftest_edge_undecided(failed));
+                }
+        r = fine;
+        r.turned_x[1].pixels = NAN; /* x turned on the near-horizontal edge: no condition reads it */
+        assert(selftest_edge_judge(&r) == SELFTEST_EDGE_NUMBERS);
+        r = fine;
+        r.plain[0].pixels = NAN;
+        assert(selftest_edge_judge(&r) == SELFTEST_EDGE_NUMBERS);
         r = fine;
         r.settled = 0;
         assert(selftest_edge_judge(&r) == SELFTEST_EDGE_UNSETTLED && !selftest_edge_undecided(SELFTEST_EDGE_UNSETTLED));
