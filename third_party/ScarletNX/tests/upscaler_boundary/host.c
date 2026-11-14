@@ -1,11 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The boundary between the runtime and an upscaler's module, with no SDK and no GPU: the runtime's own loader
-   (gpu/vk/upscaler_module.c) loads five stand-in modules (standin.cpp) by their full paths. Four are refused,
-   and nothing of their tables is called: a call would end this process with 99. With the fifth, sentinel values
-   go through every call of the table and come back: needs, create, prepare, a frame, destroy, shutdown, and a
-   line through the log the host hands the module.
-   Usage: the five files' full paths, in the order answers, other version, lacks a call, no table, no export. */
+/* The runtime's loader (gpu/vk/upscaler_module.c) loads five stand-ins (standin.cpp), no SDK, no GPU. Four are
+   refused with nothing of their tables called (a call ends this process with 99). With the fifth, sentinels go
+   through every call of the table, shutdown and the host's log. Arguments: the five full paths, in the order
+   answers, other version, lacks a call, no table, no export. */
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

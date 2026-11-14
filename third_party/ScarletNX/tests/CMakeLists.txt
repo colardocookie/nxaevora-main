@@ -781,11 +781,9 @@ snx_test_target(snx-test-temporal-math 11)
 target_link_libraries(snx-test-temporal-math PRIVATE m)
 add_test(NAME temporal_math COMMAND snx-test-temporal-math)
 
-# The boundary between the runtime and an upscaler's module (src/nx/gpu/vk/upscaler.h), with no SDK and no GPU: five
-# stand-in modules, and a host that loads them through the runtime's own loader (gpu/vk/upscaler_module.c) and
-# exchanges sentinel values through every call of the table. The stand-ins use nothing of the C++ library, so that
-# they depend on no file that is not the system's. The host's name is in the temporal family, which the PC's test
-# builds run.
+# The boundary to an upscaler's module (src/nx/gpu/vk/upscaler.h), no SDK, no GPU: five stand-ins, loaded through the
+# runtime's own loader by a host that sends sentinels through every call. The stand-ins use nothing of the C++
+# library, so they depend on system files only. The host is named in the temporal family, which the PC's tests run.
 set(snx_upscaler_standins "")
 foreach(snx_kind 0 1 2 3 4)
     add_library(snx-test-upscaler-standin-${snx_kind} MODULE upscaler_boundary/standin.cpp)

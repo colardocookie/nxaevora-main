@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the NXAevora contributors
-// A stand-in for an upscaler's module (upscaler.h): ours, with no SDK and no GPU. It exports the one function
-// that returns the table, and every call checks the sentinel values it is handed, member by member, and hands
-// sentinels back. Loading it and asking for its table have no effect: no entry point of its own, no object with
-// a constructor, nothing started. Built by each compiler the boundary is to hold between.
-//
-// SNX_STANDIN picks what it is: 0 the module that answers, 1 a table of another version, 2 a table that lacks a
-// call, 3 no table, 4 no export. In 1 and 2 a call of the table that is made ends the process with 99: the host
-// must call none. The export only keeps the host's log: 0 writes one line through it, in instance_extensions.
+// A stand-in for an upscaler's module (upscaler.h), no SDK, no GPU, built by each compiler of the boundary. Every
+// call checks the sentinels it is handed and hands sentinels back. Loading it starts nothing.
+// SNX_STANDIN: 0 answers, 1 a table of another version, 2 a table without a call, 3 no table, 4 no export. In 1 and
+// 2 any call ends the process with 99. The export keeps the host's log, which 0 writes one line through.
 #include <stdlib.h>
 #include "sentinels.h"
 

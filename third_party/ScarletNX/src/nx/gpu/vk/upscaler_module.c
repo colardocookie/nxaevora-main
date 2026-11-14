@@ -1,10 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* Loading an upscaler's adapter that is a module of its own (upscaler.h, upscaler_module.h). The file is named
-   by its full path and loaded with a stated search for what it depends on: its own folder and the system's,
-   never the current folder or the search path. Nothing of the module is called here but the one function that
-   returns its table, and the table's version number is read before anything else of it. Nothing is logged
-   here: the caller says what the answer means. */
+/* Loading an upscaler's adapter that is a module of its own (upscaler.h, upscaler_module.h), by its full path, with
+   what it depends on looked for in its own folder and the system's only. Only the function that returns its table
+   is called, and the table's number is read first. Nothing is logged here: the caller says what the answer means. */
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
