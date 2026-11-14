@@ -680,9 +680,11 @@ static inline int temporal_rect_from_viewport(const TemporalViewport* v, int tar
 }
 /* the corner of the target the game puts the rectangle in, in image axes */
 enum { TEMPORAL_CORNER_TOP_LEFT, TEMPORAL_CORNER_TOP_RIGHT, TEMPORAL_CORNER_BOTTOM_LEFT, TEMPORAL_CORNER_BOTTOM_RIGHT };
-/* what two frames must have in common, and why a frame has none of it */
+/* What two frames must have in common, and why a frame has none of it. The viewport is kept as it was given,
+   with its signs: two viewports with the same rectangle and y the other way round are not the same. */
 typedef struct {
     TemporalRect rect;
+    TemporalViewport viewport;
     int target_w, target_h;
     float fx, fy; /* the used fraction as the scene block reports it */
 } TemporalRectState;
@@ -715,12 +717,12 @@ static inline int temporal_rect_structure(const TemporalViewport* v, int target_
         if (r.x != (left ? 0 : target_w - r.w) || r.y != (top ? 0 : target_h - r.h)) return TEMPORAL_RECT_SHAPE;
         if (fabs((double)r.w - want_w) > 1.0 || fabs((double)r.h - want_h) > 1.0) return TEMPORAL_RECT_SHAPE;
     }
-    *out = (TemporalRectState){r, target_w, target_h, fx, fy};
+    *out = (TemporalRectState){r, *v, target_w, target_h, fx, fy};
     return TEMPORAL_RECT_OK;
 }
 static inline int temporal_rect_state_same(const TemporalRectState* a, const TemporalRectState* b) {
-    return temporal_rect_same(&a->rect, &b->rect) && a->target_w == b->target_w && a->target_h == b->target_h &&
-           a->fx == b->fx && a->fy == b->fy;
+    return temporal_rect_same(&a->rect, &b->rect) && temporal_viewport_same(&a->viewport, &b->viewport) &&
+           a->target_w == b->target_w && a->target_h == b->target_h && a->fx == b->fx && a->fy == b->fy;
 }
 /* what a history was made from: any difference and it is not used */
 typedef struct {

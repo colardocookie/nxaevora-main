@@ -1362,7 +1362,8 @@ static void test_links(void) {
 
 /* The scene inside a rectangle of its targets. A target of 3840 by 2160 (and 1920 by 1080) with the game's scale. */
 static TemporalRectState rect_state(int w, int h, float f, int tw, int th) {
-    return (TemporalRectState){{0, 0, w, h}, tw, th, f, f};
+    /* the viewport as the game has it: y is the bottom edge and the height is negative */
+    return (TemporalRectState){{0, 0, w, h}, {0.0f, (float)h, (float)w, -(float)h}, tw, th, f, f};
 }
 /* one frame through the gate as the renderer would drive it: decided, perhaps disagreed with, resolved */
 enum { RECT_FINE, RECT_EARLY, RECT_LATE };
@@ -1370,7 +1371,9 @@ static int rect_frame(TemporalRectGate* g, unsigned frame, const TemporalRectSta
     const TemporalRectStamp stamp = {0x5508c0000ull, 1, s->target_w, s->target_h, s->target_w, s->target_h, s->rect};
     const int jitter = temporal_rect_decide(g, frame, fault == RECT_EARLY ? NULL : s);
     if (fault == RECT_LATE) {
-        const TemporalRectState other = rect_state(s->rect.w - 2, s->rect.h, s->fx, s->target_w, s->target_h);
+        TemporalRectState other = *s;
+        other.rect.w -= 2;
+        other.viewport.width -= 2.0f;
         assert(temporal_rect_late(g, frame, &other));
     } else
         assert(temporal_rect_late(g, frame, s) == (fault == RECT_EARLY)); /* the same again is no disagreement */
@@ -1497,6 +1500,35 @@ static void test_rect(void) {
             assert(rect_frame(&g, f++, &a, RECT_FINE, &history) && !history);
             assert(rect_frame(&g, f++, &a, RECT_FINE, &history) && history);
         }
+    /* The viewport's signs are part of what must stay the same. The same rectangle with y running the other way
+       gives the same pixels and the opposite jitter in y, so it is another viewport: as a late draw it makes the
+       frame not valid, and from one frame to the next it is a change, gated once and without history after. */
+    {
+        TemporalRectState up_way, down_way;
+        const TemporalViewport flipped = {0.0f, 0.0f, 2880.0f, 1620.0f};
+        assert(temporal_rect_structure(&up, 3840, 2160, 0.75f, 0.75f, 0, &up_way) == TEMPORAL_RECT_OK);
+        assert(temporal_rect_structure(&flipped, 3840, 2160, 0.75f, 0.75f, 0, &down_way) == TEMPORAL_RECT_OK);
+        assert(temporal_rect_same(&up_way.rect, &down_way.rect) && !temporal_rect_state_same(&up_way, &down_way));
+        assert(up_way.viewport.height == -1620.0f && down_way.viewport.height == 1620.0f);
+        memset(&g, 0, sizeof g);
+        for (f = 500; f < 503; f++) assert(rect_frame(&g, f, &up_way, RECT_FINE, &history) == (f > 500));
+        assert(history);
+        /* late, in a steady frame with history */
+        assert(temporal_rect_decide(&g, 503, &up_way) && temporal_rect_steady(&g, 503));
+        assert(temporal_rect_late(&g, 503, &down_way) && !temporal_rect_steady(&g, 503));
+        assert(!g.have_candidate && !g.have_stamp);
+        /* from one frame to the next */
+        memset(&g, 0, sizeof g);
+        for (f = 510; f < 513; f++) rect_frame(&g, f, &up_way, RECT_FINE, &history);
+        assert(history);
+        assert(!rect_frame(&g, 513, &down_way, RECT_FINE, &history) && !history);
+        assert(rect_frame(&g, 514, &down_way, RECT_FINE, &history) && !history);
+        assert(rect_frame(&g, 515, &down_way, RECT_FINE, &history) && history);
+        /* a moved origin with the same size and signs is another viewport as well */
+        TemporalRectState moved = up_way;
+        moved.viewport.x = 1.0f;
+        assert(!temporal_rect_state_same(&up_way, &moved));
+    }
     /* a late disagreement leaves the frame not steady even after history was read for it, and no history is kept */
     memset(&g, 0, sizeof g);
     for (f = 200; f < 203; f++) rect_frame(&g, f, &a, RECT_FINE, &history);
