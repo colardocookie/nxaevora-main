@@ -115,7 +115,7 @@ typedef struct SnxUpscaler SnxUpscaler; /* a library's context */
    prepare, the submission's completion, and only then it takes the old one's place, if the frames still have its
    configuration. Else it is destroyed unused. evaluate is only called on a context made for the frame's. One
    context is on its way at a time, and one that is replaced is destroyed after its frames in flight. */
-typedef struct {
+typedef struct SnxUpscalerApi {
     uint32_t abi;     /* SNX_UPSCALER_ABI as the library was built with */
     const char* name; /* for the log */
     /* before the instance is made: no handles */
