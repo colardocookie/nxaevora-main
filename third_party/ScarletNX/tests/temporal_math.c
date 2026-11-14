@@ -561,6 +561,69 @@ static void test_origin_shift(void) {
     assert(temporal_origin_shift(vp_now, w_now, vp_now, w_before, 1920, 1080) < 0);
 }
 
+static void camera_reference_multiply(const double a[16], const double b[16], double out[16]) {
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) {
+            out[4*r+c] = 0;
+            for (int k = 0; k < 4; k++) out[4*r+c] += a[4*r+k] * b[4*k+c];
+        }
+}
+static void camera_reference_make(double x, double y, double z, double yaw, double sx, double sy, float vp[16], float inv[16]) {
+    const double c = cos(yaw), s = sin(yaw);
+    const double t[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, -x,-y,-z,1};
+    const double ti[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1};
+    const double r[16] = {c,0,-s,0, 0,1,0,0, s,0,c,0, 0,0,0,1};
+    const double ri[16] = {c,0,s,0, 0,1,0,0, -s,0,c,0, 0,0,0,1};
+    const double p[16] = {sx,0,0,0, 0,sy,0,0, 0,0,0,1, 0,0,0.1,0};
+    const double pi[16] = {1/sx,0,0,0, 0,1/sy,0,0, 0,0,0,10, 0,0,1,0};
+    double v[16], vi[16], a[16], b[16];
+    camera_reference_multiply(t,r,v); camera_reference_multiply(ri,ti,vi);
+    camera_reference_multiply(v,p,a); camera_reference_multiply(pi,vi,b);
+    for (int i = 0; i < 16; i++) { vp[i] = (float)a[i]; inv[i] = (float)b[i]; }
+}
+static void camera_reference_project(const double point[4], const float m[16], double p[4]) {
+    for (int c = 0; c < 4; c++) {
+        p[c] = 0;
+        for (int k = 0; k < 4; k++) p[c] += point[k] * m[4*k+c];
+    }
+}
+static void test_camera_world_points(void) {
+    const double settings[4][6] = {
+        {3,-2,1,0.2,1.2,2.1}, {2.6,-1.9,1,0.2,1.2,2.1},
+        {3.5,-2.5,0.7,-0.15,2.4,1.7}, {-1,0,2,0.4,0.9,1.2}
+    };
+    const double points[3][4] = {{2,1,20,1}, {-2,-1,30,1}, {4,3,40,1}};
+    unsigned checks = 0;
+    for (int current = 0; current < 4; current++)
+        for (int previous = 0; previous < 4; previous++) {
+            float vp[16], inv[16], before_vp[16], unused[16];
+            const double *a = settings[current], *b = settings[previous];
+            camera_reference_make(a[0],a[1],a[2],a[3],a[4],a[5],vp,inv);
+            camera_reference_make(b[0],b[1],b[2],b[3],b[4],b[5],before_vp,unused);
+            for (int p = 0; p < 3; p++) {
+                double at[4], was[4];
+                camera_reference_project(points[p],vp,at); camera_reference_project(points[p],before_vp,was);
+                assert(at[3] > 0 && was[3] > 0);
+                for (int sign = -1; sign <= 1; sign += 2)
+                    for (unsigned phase = 0; phase < 8; phase++) {
+                        float jitter[2]; temporal_jitter(phase,8,jitter);
+                        const double jx = 2.0*jitter[0]/1920, jy = 2.0*jitter[1]/1080;
+                        double now[2], before[2];
+                        assert(temporal_camera_points(inv,before_vp,at[0]/at[3]+jx,at[1]/at[3]+jy,
+                                                      at[2]/at[3],jx,jy,now,before));
+                        for (int axis = 0; axis < 2; axis++) {
+                            const double viewport = axis ? sign*1080.0 : 1920.0;
+                            const double expected = (at[axis]/at[3]-was[axis]/was[3])*0.5*viewport;
+                            const double got = (now[axis]-before[axis])*0.5*viewport;
+                            assert(fabs(got-expected) < 0.002);
+                        }
+                        checks++;
+                    }
+            }
+        }
+    assert(checks == 768);
+}
+
 int main(void) {
     test_jitter();
     test_jitter_matrices();
@@ -573,6 +636,7 @@ int main(void) {
     test_sharpen();
     test_sharpen_rgb();
     test_camera_points();
+    test_camera_world_points();
     test_mip_bias();
     test_pairs();
     test_gate();
