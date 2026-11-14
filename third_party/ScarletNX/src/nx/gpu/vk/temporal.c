@@ -837,6 +837,7 @@ typedef struct {
     u32 judged_at;           /* the frame turns and stays were judged for */
     u16 turns, stays;        /* temporal_pair_judge */
     u16 n, before_n;         /* the draws that bound the block in the frames at and before_at */
+    u16 misses, said;        /* draws in a row without a matrix of a frame ago, and whether a line named the block */
     u64 sum, before_sum;     /* their signatures added up */
     u64 draws[OBJECT_SIGNATURES], before_draws[OBJECT_SIGNATURES];
     float world[16], before[16]; /* before: what this same address held the last time it was bound */
@@ -972,6 +973,58 @@ static void pairs_judge(void) {
         o->judged_at = frame;
     }
     g_t.touched_n = 0;
+}
+
+/* One line for a block whose draws stay without a matrix of a frame ago: what the table holds of it, of both
+   neighbouring slots, and of the blocks bound a frame ago that the same draws bound or that stood at the same place. */
+static void object_missed(Object* o, u32 size, u64 signature, u32 frame, int source) {
+    static u32 lines;
+    if (source == TEMPORAL_BEFORE_OWN || source == TEMPORAL_BEFORE_PARTNER) {
+        o->misses = 0;
+        return;
+    }
+    if (o->misses < 0xFFFF) o->misses++;
+    if (o->misses != 240 || o->said || lines >= 64) return;
+    o->said = 1;
+    lines++;
+    char sides[400] = "", others[300] = "";
+    int at = 0;
+    for (int side = -1; side <= 1; side += 2) {
+        const u64 key = side < 0 ? o->key - size : o->key + size;
+        const Object* q = object_slot(key, frame, 0);
+        const char* name = side < 0 ? "below" : "above";
+        if (!q || !q->at)
+            at += snprintf(sides + at, sizeof sides - (size_t)at, " %s never bound.", name);
+        else
+            at += snprintf(sides + at, sizeof sides - (size_t)at,
+                           " %s%s bound %u and %u frames ago by %u draws (%s), turns %u stays %u, matrix %s.", name,
+                           key == o->partner ? " (the partner)" : "", frame - q->at, frame - q->before_at, q->n,
+                           object_has_draw(q->draws, q->n, signature) ? "this one among them" : "others", q->turns,
+                           q->stays, memcmp(q->world, o->world, sizeof q->world) ? "another" : "equal");
+        if (at >= (int)sizeof sides) break;
+    }
+    at = 0;
+    for (u32 i = 0, found = 0; i < OBJECTS && found < 3 && at < (int)sizeof others; i++) {
+        const Object* q = &g_objects[i];
+        if (!q->key || q == o || q->at + 1 != frame) continue;
+        const float dx = q->world[12] - o->world[12], dy = q->world[13] - o->world[13];
+        const float dz = q->world[14] - o->world[14];
+        const int same = object_has_draw(q->draws, q->n, signature);
+        const int near = dx * dx + dy * dy + dz * dz < 0.0025f;
+        if (!same && !near) continue;
+        found++;
+        at += snprintf(others + at, sizeof others - (size_t)at, " %llx (%+lld bytes, %s%s%u draws)",
+                       (unsigned long long)q->key, (long long)(q->key - o->key), same ? "this draw, " : "",
+                       near ? "this place, " : "", q->n);
+    }
+    LOG("arceus-temporal-objects: block %llx size %x stays without a matrix of a frame ago (%s): draw %llx, bound "
+        "before %u frames ago by %u draws, judged %u frames ago, turns %u stays %u, matrix %s its last, origin %.2f "
+        "%.2f %.2f.%s Bound a frame ago with this draw or at this place:%s\n",
+        (unsigned long long)o->key, size, source == TEMPORAL_BEFORE_LEARNING ? "still being learned"
+                                          : source == TEMPORAL_BEFORE_OTHER  ? "another draw" : "nothing bound",
+        (unsigned long long)signature, frame - o->before_at, o->before_n, frame - o->judged_at, o->turns, o->stays,
+        memcmp(o->world, o->before, sizeof o->world) ? "not" : "equal to", (double)o->world[12],
+        (double)o->world[13], (double)o->world[14], sides, others[0] ? others : " none");
 }
 
 /* The matrix the draw's block had a frame ago, NULL for none (counted by reason), and in source and other where it
@@ -1116,6 +1169,7 @@ int vk_temporal_object_note(const GpuChannel* ch, const Surf* zt, u64 vertex, u6
     g_t.current.address = address;
     g_t.current.slot = o;
     g_t.current.was = object_before(o, signature, frame, &g_t.current.source, &other);
+    object_missed(o, size, signature, frame, g_t.current.source);
     g_t.current.signature = signature;
     g_t.current.pair = g_t.current.source == TEMPORAL_BEFORE_PARTNER && partner < address ? partner : address;
     g_t.current.other = (void*)other;
