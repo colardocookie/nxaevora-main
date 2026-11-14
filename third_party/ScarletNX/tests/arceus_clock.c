@@ -198,6 +198,16 @@ static void test_sequence(void) {
     assert(calls == 4 && fabsf(sequence_slots[0].pending - 2) < .001f);
     update();
     assert(calls == 8 && fabsf(guest_float(object + 0xe8) - 8) < .0001f);
+    /* A skipped update keeps a negative carry: the borrowed half frames are repaid first. */
+    reset(.5f, 1, 16666667);
+    sequence_slots[0].object = object;
+    sequence_slots[0].cut = 1;
+    sequence_slots[0].calls = 1;
+    sequence_slots[0].pending = -2;
+    update();
+    assert(calls == 0 && fabsf(sequence_slots[0].pending + 1.5f) < .00001f);
+    update();
+    assert(calls == 0 && fabsf(sequence_slots[0].pending + 1) < .00001f);
     /* A nearly complete frame must not cause a second, tiny callback this render. */
     reset(.99f, 1, 16666667);
     update();
@@ -299,6 +309,14 @@ static void test_defaults_on(void) {
     arceus_clock_config_apply(config);
     assert(g_opt_fps == SNX_FPS_GAME && clocks_installed && timing_enabled);
     timing_enabled = clocks_installed = experimental = tracing = 0;
+    /* `game` keeps the runtime's limit even with the legacy 60 FPS switch set. */
+    flag("SNX_ARCEUS_FPS60", "1");
+    config = arceus_clock_config(g_opt_fps);
+    assert(!config.invalid && config.mode == 0 && !config.write_fps && config.runtime_rate_override);
+    arceus_clock_config_apply(config);
+    assert(g_opt_fps == SNX_FPS_GAME && clocks_installed && timing_enabled);
+    timing_enabled = clocks_installed = experimental = tracing = 0;
+    unset_flag("SNX_ARCEUS_FPS60");
     g_opt_fps = 30;
     config = arceus_clock_config(g_opt_fps);
     assert(!config.invalid && !config.write_fps && config.runtime_rate_override && !config.skip_runtime_limit &&
@@ -1430,9 +1448,8 @@ static void test_waza_shot(void) {
                 guest_float_write(transform + 0xd8, -20.0f);
             } else waza_shot_original = waza_shot_mock;
             for (unsigned frame = 0; frame < rates[r]; frame++) {
-                const u64 ns = 1000000000ull / rates[r];
-                blink_remainder += ns * 30;
-                blink_ticks = (unsigned)(blink_remainder / 1000000000), blink_remainder %= 1000000000;
+                /* As adjust_duration feeds the cadence: a step near 1/30 s is the game's own. */
+                blink_cadence_add(arceus_whole_step(1000000000ull / rates[r]));
                 CPU c = {.x = {[0] = object, [30] = 64}};
                 waza_shot_update(&c, entry_pc);
                 assert(c.pc == 64);
@@ -1440,6 +1457,16 @@ static void test_waza_shot(void) {
                     assert(guest_float(transform + 0xd0) == 100.0f);
                     assert(guest_float(transform + 0xd4) == 50.0f);
                     assert(guest_float(transform + 0xd8) == -20.0f);
+                }
+                /* The drawn shot is the share of a whole step since the last run, between its
+                   last two runs (the blink cadence keeps nanoseconds below a whole step). */
+                const ShotObject* o = 0;
+                for (unsigned k = 0; k < SHOT_OBJECTS; k++)
+                    if (shot_objects[k].object == object) o = &shot_objects[k];
+                if (fix == 2 && o && o->runs >= 2) {
+                    const float share = (float)((double)blink_remainder / (double)ARCEUS_WHOLE_STEP_NS);
+                    const float want = o->from[0] + (o->to[0] - o->from[0]) * share;
+                    assert(fabsf(guest_float(transform + 0xd0) - want) < .001f);
                 }
             }
             if (fix == 1) {

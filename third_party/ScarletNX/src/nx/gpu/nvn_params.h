@@ -15,8 +15,11 @@ typedef struct {
     uint32_t texture_count, interval, active_texture_count;
 } NvnWindowBuilder;
 typedef struct { uint32_t x, y, width, height; } NvnWindowCrop;
-typedef enum { NVN_SYNC_UNSIGNALED = 0, NVN_SYNC_SIGNALED = 1, NVN_SYNC_FENCED = 2 } NvnSyncState;
-/* nvnQueueFenceSync condition: the only value that the game used. A frame job signals the sync after all its work. */
+typedef enum {
+    NVN_SYNC_UNSIGNALED = 0, NVN_SYNC_SIGNALED = 1, NVN_SYNC_FENCED = 2,
+    NVN_SYNC_PENDING = 3 /* a token in a pending frame: no syncpoint value yet */
+} NvnSyncState;
+/* nvnQueueFenceSync condition: the only value that the game used. The job's syncpoint increment follows its work. */
 #define NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE 0u
 void nvn_window_builder_defaults(NvnWindowBuilder* b);
 void nvn_window_builder_set_device(NvnWindowBuilder* b, uint64_t device);
@@ -32,11 +35,27 @@ int nvn_window_initialize_check(uint32_t texture_count);
 int32_t nvn_window_pick_image(const uint8_t* states, uint32_t count, int32_t last);
 /* 1 when at least one image of the window waits for its frame job. */
 int nvn_window_has_presented(const uint8_t* states, uint32_t count);
+/* The address of one texture slot of the builder. The library compares the count and the index signed and reads with a
+   sign-extended 8-byte step, so a negative index is not refused. 1 with *at written, or 0 when the index is at or
+   above the count. Pure. */
+int nvn_window_texture_slot(uint64_t textures, uint32_t texture_count, int32_t index, uint64_t* at);
+/* The refusal reason of nvnWindowAcquireTexture and nvnQueueAcquireTexture, in the order of the checks. recheck is 1
+   after the pace and after each wait, where the queue is not checked again. NULL when the call may go on. Pure. */
+const char* nvn_window_acquire_refusal(int recheck, int queue_ok, int window_ok, int sync_ok, int index_writable);
+/* Marks the picked window image acquired and keeps it as the last index. */
+void nvn_window_acquire_take(uint8_t* states, int32_t* last_index, int32_t index);
 /* nvnSyncWait of the game: this timeout waits without limit. */
 #define NVN_SYNC_WAIT_NO_LIMIT UINT64_MAX
-typedef enum { NVN_SYNC_ACTION_SIGNALED = 0, NVN_SYNC_ACTION_WAIT, NVN_SYNC_ACTION_REFUSE } NvnSyncAction;
-/* What nvnSyncWait does at once for a sync state: return 0, wait for the frame job, or return 3. */
-NvnSyncAction nvn_sync_wait_action(NvnSyncState state);
+typedef enum {
+    NVN_SYNC_ACTION_SIGNALED = 0, NVN_SYNC_ACTION_WAIT_FRAME, NVN_SYNC_ACTION_WAIT_FENCE,
+    NVN_SYNC_ACTION_REFUSE
+} NvnSyncAction;
+/* What nvnSyncWait does at once: return 0, wait for the frame's post or for the syncpoint, or return 3. reached is
+   the answer for a FENCED sync's value. Pure. */
+NvnSyncAction nvn_sync_wait_action(NvnSyncState state, int reached);
+/* The value of a fence on an empty pending frame: the last posted value, or the syncpoint value when the queue never
+   posted. Pure. */
+uint32_t nvn_sync_fence_value(int has_posted, uint32_t last_posted, uint32_t syncpoint_now);
 /* The limit of a wait in host nanoseconds. */
 typedef struct {
     uint64_t deadline_ns;
@@ -254,6 +273,9 @@ uint32_t nvn_multisample_state_get_sample_locations_enable(uint32_t word);
 uint32_t nvn_multisample_state_get_sample_locations_grid_enable(uint32_t word);
 int nvn_multisample_state_sample_grid(uint32_t samples, uint32_t raster_samples, uint32_t* x, uint32_t* y);
 uint8_t nvn_multisample_sample_location(float x, float y);
+#define NVN_MULTISAMPLE_LOCATION_BYTES 16u /* the four sample location words of the record, guest bytes 4..19 */
+/* 1 when count sample locations at index stay inside the record bytes. Pure. */
+int nvn_multisample_locations_fit(uint32_t index, uint32_t count);
 
 /* The pushbuffer words that the library writes for the command buffer bind functions (analyst-s2-A-1.md). Each builder
    writes the same words as the library. The caller supplies room for the named maximum, and the count is 0 on a refusal
@@ -716,9 +738,10 @@ typedef struct {
 /* The arguments of present_buffer for the window image in texture t, its storage in pool_storage. 0 with out
    unchanged when the format is not RGBA8, the address sum overflows or a crop value does not fit int32_t. Pure. */
 int nvn_window_present_args(const NvnTexture* t, uint64_t pool_storage, const NvnWindowCrop* crop, NvnPresentArgs* out);
-/* The sync state after one token of a frame job: fences goes down by one when it is above 0, and the state is
-   SIGNALED at 0. Pure. */
-NvnSyncState nvn_sync_after_token(NvnSyncState state, uint32_t* fences);
+/* The refusal reason of nvnQueuePresentTexture, in the order of the checks. It reads states only after the index
+   passed, so states may be NULL with an index outside the window. NULL when the present may go on. Pure. */
+const char* nvn_present_refusal(int queue_ok, int window_ok, int32_t index, uint32_t texture_count,
+                                const uint8_t* states);
 /* nvnEventSignal: mode 0 writes the value, mode 1 adds it to the old word. Any other mode writes, as in the library.
    The add wraps at 32 bits. Pure. */
 #define NVN_EVENT_SIGNAL_WRITE 0u
@@ -746,6 +769,30 @@ int nvn_event_wait_met(uint32_t mode, uint32_t word, uint32_t value);
 int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_word, uint32_t kind_word,
                              uint32_t stage_word, uint32_t* index_out);
 
+/* The stages that the host builder builds (see below) and the refusal texts of one entry. */
+#define NVN_PROGRAM_STAGE_VERTEX 0u
+#define NVN_PROGRAM_STAGE_FRAGMENT 1u
+#define NVN_PROGRAM_STAGE_SUPPORTED_MASK 0x23u /* vertex, fragment and compute */
+#define NVN_PROGRAM_HEADER_ALIGNMENT 8u
+#define NVN_PROGRAM_REFUSAL_WORD_ZERO "entry word is zero"
+#define NVN_PROGRAM_REFUSAL_HEADER_NULL "header is null"
+#define NVN_PROGRAM_REFUSAL_HEADER_UNALIGNED "header is not aligned"
+
+/* The check of the count and the entries pointer of a SetShaders call, in the order of the checks. */
+typedef enum {
+    NVN_PROGRAM_COUNT_OK = 0,
+    NVN_PROGRAM_COUNT_NEGATIVE,
+    NVN_PROGRAM_COUNT_ABOVE,
+    NVN_PROGRAM_COUNT_ENTRIES_NULL
+} NvnProgramCountCheck;
+NvnProgramCountCheck nvn_program_count_check(int32_t count, uint64_t entries);
+/* The refusal of one entry before its header is read: the word of an Ext entry, the header pointer, its alignment. */
+const char* nvn_program_entry_refusal(int has_control, uint64_t entry_word, uint64_t header);
+/* 1 when the stage bit was clear and is set now, 0 when the stage is already in the mask. */
+int nvn_program_stage_add(uint32_t* stage_mask, uint32_t stage_index);
+/* The lowest stage above fragment that the mask holds and the host does not build, or -1. */
+int nvn_program_unsupported_stage(uint32_t stage_mask);
+
 /* The Maxwell command words that nvnProgramSetShadersExt builds for the shaders of a program. The host builds them
    because it has no library. Stage 0 (vertex, no VertexA), stage 1 (fragment), stage 5 (compute) and the transform
    feedback block of the vertex stage are built. Stages 2 to 4 are not ported. A compute stage cannot share a program
@@ -759,6 +806,11 @@ int nvn_program_header_stage(uint32_t version, uint32_t layout, uint32_t size_wo
 #define NVN_PROGRAM_VERTEX_WORDS 8u
 #define NVN_PROGRAM_FRAGMENT_WORDS 17u
 #define NVN_PROGRAM_COMPUTE_WORDS 18u
+
+/* The words that nvnCommandBufferBindProgram keeps for a program: a compute program copies only its 18 words, any
+   other program copies the whole array. Returns the count that the op holds. Pure. */
+uint32_t nvn_bind_program_words(uint32_t program_mask, const uint32_t* program_words, uint32_t program_word_count,
+                                uint32_t* out_words);
 
 /* The flag bits of the compute word 16: bit n is (byte at h+0x769+n) & 1, the upper bits are 0. */
 #define NVN_PROGRAM_COMPUTE_FLAG_0 0x1u
@@ -898,5 +950,16 @@ typedef struct { uint32_t method, value; } NvnProgramMethod;
 /* Fills out and returns the count (0 to NVN_PROGRAM_DISABLE_MAX). Pure. */
 uint32_t nvn_program_disable_methods(uint32_t requested_mask, uint32_t program_mask,
                                      NvnProgramMethod out[NVN_PROGRAM_DISABLE_MAX]);
+
+/* 1 when [at, at+size) is inside [lo, hi). The comparison cannot overflow. A size of 0 is inside when lo <= at <= hi.
+   Pure. */
+int nvn_span_inside(uint64_t at, uint64_t size, uint64_t lo, uint64_t hi);
+/* The index of a name of the NVN library's sorted list (the names without the "nvn" prefix), or -1 when the name is
+   not in the list or does not start with "nvn". The list has no empty name (nvn_proc_table_check). Pure. */
+int nvn_proc_name_index(const char* const* names, uint32_t count, const char* name);
+/* -1 when the names and their address table are good, else the index of the first bad entry: an empty or unsorted name
+   (a duplicate included), or an address outside [code_lo, code_hi) or not a multiple of 4. Pure. */
+int nvn_proc_table_check(const char* const* names, const uint64_t* addrs, uint32_t count, uint64_t code_lo,
+                         uint64_t code_hi);
 
 #endif

@@ -802,6 +802,10 @@ if(NOT WIN32)
 endif()
 add_test(NAME nvn_params COMMAND snx-test-nvn-params)
 
+add_executable(snx-test-nvn-exectest nvn_exectest.c)
+snx_test_target(snx-test-nvn-exectest 11)
+add_test(NAME nvn_exectest COMMAND snx-test-nvn-exectest)
+
 add_executable(snx-test-nvn-enum-trace nvn_enum_trace.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_enum_trace.c")
 snx_test_target(snx-test-nvn-enum-trace 11)
 add_test(NAME nvn_enum_trace COMMAND snx-test-nvn-enum-trace)

@@ -280,6 +280,8 @@ void i2m_launch(GpuChannel* ch, u32* regs, int base);
 void i2m_data(GpuChannel* ch, u32 v);
 u32 gpu_color_bpp(u32 format); /* bytes per pixel of a color format (render targets and 2D surfaces share them) */
 void gpu_signal_point(void);   /* the GPU is about to do something the game can observe */
+/* A syncpoint increment of the stream, after the work before it (the order of a job's end). Runs on the GPU thread. */
+void gpu_stream_incr(u32 id);
 /* a semaphore or report payload the game can poll: it happens once everything before it in the stream is done. data is
    the bytes as guest memory gets them, so its numbers are little-endian already */
 void gpu_release_write(u64 gva, const void* data, u32 len);

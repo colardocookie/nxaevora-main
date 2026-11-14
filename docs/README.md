@@ -33,7 +33,9 @@ The notes of NXAevora, by subject. Each line names the file and its state. Until
 
 ## ui
 
-- [imgui-plan.md](ui/imgui-plan.md): the plan of the in-game Dear ImGui windows.
+- [engine-ui-plan.md](ui/engine-ui-plan.md): phase 7.5, the move to the NXAevora Engine, the CLI and the new in-game
+  UI that replaces Dear ImGui and the old UIs. Active.
+- [imgui-plan.md](ui/imgui-plan.md): the old plan of the in-game Dear ImGui windows. Replaced by `engine-ui-plan.md`.
 
 ## analysis
 

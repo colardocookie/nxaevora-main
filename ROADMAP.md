@@ -136,7 +136,8 @@ and the 0 misses are the baseline that no step may make worse. Every step moves 
 patch must be kept up to date or be proposed upstream.
 
 Phase 7 is not a native step. It changes how NXAevora gets the game files, and it comes right after phase 6 because
-the decryption code is a legal risk.
+the decryption code is a legal risk. Phase 7.5 is not a native step either. It makes the runtime the NXAevora Engine,
+started from a CLI, with one new in-game UI.
 
 Not in the plan: audio, memory and video. They stay as they are. Open them again only with a measured problem.
 
@@ -181,6 +182,39 @@ ExeFS of the update and one RomFS of the game with the update applied. ScarletNX
 Exit condition: the game recompiles and runs from the decrypted files with no keys, ScarletNX has no decryption code,
 and a test mod replaces one file without a change to the decrypted files.
 
+## Phase 7.5: NXAevora Engine, a CLI first runtime and a new UI
+
+Now: the runtime is the vendored ScarletNX in `third_party/ScarletNX/`. With no argument it opens the start GUI of
+ScarletNX, and in the game it has two UIs: the old menu of ScarletNX and the windows made with Dear ImGui.
+
+Goal: the base derived from ScarletNX becomes the NXAevora Engine in `engine/`. The Engine starts from its CLI, which
+recompiles the game and runs it, and the game window stays. SDL stays for the window and the input. The in-game UI
+uses one new UI base with the look of Material Design 3. Dear ImGui is replaced completely and does not stay for
+debug. The start GUI, the old menu and the old UI drawing base of ScarletNX are removed after their needed functions
+move. The external launcher calls the CLI and is finished in phase 11.
+
+The work has five reviewable units:
+1. Move to the Engine: the new folder and the shown name, the references in the build, CI, the tools and the docs,
+   the program name and its callers. The copyright lines, the license and the upstream commit stay recorded. A bulk
+   rename of internal identifiers is not required.
+2. Inventory: each function of the old UIs goes to the CLI, the launcher, the new in-game UI, or is deleted. This
+   includes the settings, the input maps, the name input with the Japanese IME, mods and cheats, save states,
+   progress, errors, and the statistics and diagnostics. The work under a UI and the saved settings stay.
+3. CLI: the commands, the settings file, the paths, the exit codes, and a progress and error stream that the launcher
+   reads. A normal run needs no dialog. An error before the window shows on stderr and in the log. One settings
+   definition serves the CLI, the launcher and the in-game UI.
+4. New UI base: a small prototype with RmlUi and with Flutter in the game decides the base. Then the needed in-game
+   functions move to it, with shared MD3 design values.
+5. Removal of Dear ImGui and the old UIs, with their code, settings and build dependencies.
+
+The old and the new UI can both exist during the work, but not at the end of the phase. The details, the first
+inventory and the selection checks are in `docs/ui/engine-ui-plan.md`.
+
+Exit condition: from the new layout the CLI recompiles and runs the game, the Engine does not depend on the old start
+GUI, the needed in-game UI works on the new base, Dear ImGui and the old UI code and dependencies are gone, no function
+was lost in the move, the tests, CI and runs of the target scenes pass, and the Japanese input, the switch of the
+input between the UI and the game, and the load of the new UI are checked.
+
 ## Phase 8: Shaders and pipelines
 
 Use the existing preparation (shaders made ahead of time, `shader_cache/`, `async_pipelines`, see
@@ -198,7 +232,11 @@ Facts are in `docs/input/input-analysis.md` and `docs/input/camera-analysis.md`.
   other camera modes. If a scene whose camera the player does not control moves, gate the stub on a game state.
 - Arrange the state of the controls and the remap: the mouse buttons (now fixed), the wheel, rebinding and profiles
   for the keyboard, the mouse and the pads.
-- The launcher writes the setting `mouse_native_address` and keeps the mod in the mods folder.
+- The launcher writes the setting `mouse_native_address` through the CLI and the settings definition of phase 7.5,
+  and keeps the mod in the mods folder.
+
+Phase 7.5 moves the input screens that exist now to the new UI. This phase improves the input and the camera
+themselves, and its new screens use the UI base of phase 7.5.
 
 Exit condition: the whole game is playable with the keyboard and the mouse, and the user can rebind every control.
 
@@ -212,7 +250,9 @@ Exit condition: the replaced functions are listed in `docs/`, each has a test ru
 
 ## Phase 11: Launcher
 
-A launcher made with Tauri (`launcher/`).
+A launcher made with Tauri (`launcher/`). It is a separate program that calls the Engine CLI of phase 7.5 and uses its
+exit codes, its progress stream and its settings definition. The choice of Tauri is separate from the choice of the
+in-game UI base in phase 7.5.
 
 - The user chooses the folders of the decrypted ExeFS and RomFS (phase 7). The launcher never copies or uploads them.
 - It checks the game files and the mod folder.
@@ -227,7 +267,8 @@ Exit condition: a user with the decrypted game files goes from a fresh install t
 
 - Choose and write down the license (GPL-3.0-or-later is the plan, because ScarletNX is GPL-3.0).
 - Add the credits for the projects whose code or research NXAevora uses.
-- Build the release in CI from a pinned ScarletNX commit.
+- Build the release in CI from the Engine in `engine/`, with the upstream ScarletNX commit that it derives from
+  recorded.
 - Write the README for users, with the legal notes: the game files are not part of NXAevora, the user must dump
   them from their own console, and NXAevora does not decrypt them.
 

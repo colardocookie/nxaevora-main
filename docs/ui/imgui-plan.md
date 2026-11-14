@@ -1,7 +1,11 @@
 # In-game settings UI with Dear ImGui: plan
 
-Status: plan only. No code is written. The facts about ScarletNX come from reading its source (`src/nx/runtime/platform/`,
-`src/nx/gpu/vk/ui.c`).
+Status: old plan, replaced. Phase 7.5 replaces Dear ImGui completely with a new UI base (decision of the user,
+2026-11-13). The new plan is [engine-ui-plan.md](engine-ui-plan.md). This file stays as the history of the ImGui
+windows and as a source of facts (the lock order, the draw point, the input gate, the name input). Its steps and
+decisions are no longer the plan.
+
+The facts about ScarletNX come from reading its source (`src/nx/runtime/platform/`, `src/nx/gpu/vk/ui.c`).
 
 ## Goal
 

@@ -31,8 +31,16 @@ static int clocks_installed;
 /* Optional catch-up for integer timers. Bound recovery to one second after sustained slow frames. */
 #define TIMER_CARRY_LIMIT_NS UINT64_C(1000000000)
 static int timer_carry_fix;
+/* Nanoseconds below one whole step (ARCEUS_WHOLE_STEP_NS), not seconds. */
 static u64 blink_remainder;
 static unsigned blink_ticks;
+/* Shared 30-Hz cadence for the isolated integer blink state machine and the shot blend. The
+   game's own step is one tick and leaves no part of one behind. */
+static void blink_cadence_add(u64 ns) {
+    blink_remainder = ns == ARCEUS_WHOLE_STEP_NS ? ns : blink_remainder + ns;
+    blink_ticks = (unsigned)(blink_remainder / ARCEUS_WHOLE_STEP_NS);
+    blink_remainder %= ARCEUS_WHOLE_STEP_NS;
+}
 
 typedef struct {
     int master, invalid, mode, target_fps, write_fps, runtime_rate_override, skip_runtime_limit;
@@ -84,7 +92,8 @@ static ArceusClockConfig arceus_clock_config(int runtime_fps) {
         else if (!strcmp(target, "unlocked") || !strcmp(target, "0"))
             config.mode = 2, config.target_fps = 0, config.write_fps = 1;
         else if (!strcmp(target, "game"))
-            config.mode = 0, config.runtime_rate_override = 1;
+            /* The runtime's own limit stays, even with the legacy SNX_ARCEUS_FPS60=1. */
+            config.mode = 0, config.target_fps = 0, config.write_fps = 0, config.runtime_rate_override = 1;
         else config.invalid = 1;
     }
     config.skip_runtime_limit = !config.invalid && !config.write_fps &&
@@ -165,11 +174,7 @@ static void adjust_duration(CPU* c) {
             battle_sequence_dispatch_watch(plat_ns());
             water_step_write(value);
             frame_step_write(value);
-            /* Shared 30-Hz cadence for the isolated integer blink state machine. */
-            /* The game's own step is one tick and leaves no part of one behind. */
-            blink_remainder = value == ARCEUS_WHOLE_STEP_NS ? value : blink_remainder + value;
-            blink_ticks = (unsigned)(blink_remainder / ARCEUS_WHOLE_STEP_NS);
-            blink_remainder %= ARCEUS_WHOLE_STEP_NS;
+            blink_cadence_add(value);
         }
     }
     else WARN_LIMIT(4, "arceus-clock: clock update order changed, left unchanged\n");
@@ -1276,9 +1281,10 @@ static void battle_sequence_update(CPU* c, u64 entry) {
                 partial = sequence_even_step(guest_float(object + 0xe8), pending, snap);
             } else
                 partial = sequence_step(guest_float(object + 0xe8), pending);
+            /* A skipped update keeps the whole budget, a negative carry from an earlier snap too. */
+            if (partial <= 0.0f) skip = 1, partial = 0.0f;
             sequence_slots[k].pending = pending - partial;
             slot = k;
-            if (partial <= 0.0f) skip = 1, partial = 0.0f;
         } else if (cut) {
             sequence_slots[k].ns += ns;
             if (sequence_slots[k].ns < ARCEUS_WHOLE_STEP_NS) skip = 1;
@@ -4220,7 +4226,7 @@ static void waza_shot_update(CPU* c, u64 entry) {
     const u64 object = c->x[0], return_pc = c->x[30];
     pm_lock(&step_lock);
     const unsigned ticks = blink_ticks;
-    const float share = (float)blink_remainder / 1e9f;
+    const float share = (float)blink_remainder / (float)ARCEUS_WHOLE_STEP_NS;
     pm_unlock(&step_lock);
     const int hold = waza_shot_fix && !ticks;
     const u64 now = plat_ns();
