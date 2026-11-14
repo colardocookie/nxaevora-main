@@ -99,6 +99,7 @@ static struct {
     u8 jitter_source[0x1000]; /* the guest's bytes the copy was made from */
     /* object vectors: the target, the frame it was last drawn in, and the counts of the stats line */
     int objects;
+    int reject; /* SNX_ARCEUS_TEMPORAL_REJECT: no history where an object's vector is far from the camera's */
     float sharpen;  /* 0 off, to 1: the sharpen after the resolve */
     float mip_bias; /* 0 off, negative: added to the level bias of material textures on scene draws */
     VkPipeline sharpen_pipe;
@@ -133,7 +134,7 @@ static struct {
     /* each extra draw of this frame by its number, and the same for the frame the numbers' image was drawn in:
        the probe writes the number to the vector target, so a wrong vector names its draw */
     struct Drawn {
-        u64 block, feedback;
+        u64 block, feedback, signature;
         float shift; /* the origin's move on screen in pixels */
         u8 skinned, source, far; /* far: a long move with the camera nearly still */
         void *slot, *other; /* the table entries its matrix of a frame ago came from */
@@ -191,12 +192,17 @@ static int temporal_on(void) {
         if (g_t.mip_bias < -2.0f) g_t.mip_bias = -2.0f;
         const char* vectors = getenv("SNX_ARCEUS_TEMPORAL_VECTORS");
         g_t.objects = g_t.mode && vectors && !strcmp(vectors, "object");
+        const char* reject = getenv("SNX_ARCEUS_TEMPORAL_REJECT");
+        g_t.reject = g_t.objects && reject && !strcmp(reject, "1");
         /* Every option's state, on or off, in each run's log. A value other than the one named leaves an option
            off: NEAREST and LUMA take 1, HISTORY catmull, CLAMP variance, BLEND adaptive, VECTORS object, SHARPEN
            a number above 0, MIPBIAS one below 0. */
         if (g_t.mode)
             LOG("arceus-temporal: vectors %s\n", g_t.objects ? "of the camera and of objects that moved (object)"
                                                              : "of the camera only");
+        if (g_t.mode)
+            LOG("arceus-temporal: an object's vector further than an eighth of the scene's height from the "
+                "camera's: %s\n", g_t.reject ? "rejected, the pixel takes no history (reject)" : "kept");
         if (g_t.mode == MODE_TAA)
             LOG("arceus-temporal: resolve options: history %s, clamp %s, weight %s, vector %s, blend %s, sharpen "
                 "%.2f, texture level bias %.2f\n",
@@ -639,7 +645,11 @@ static void stats_log(void) {
     double drawn_gradient = 0, shown_gradient = 0;
     u16 capped[OBJECT_DRAWS + 1];
     /* per extra draw: its sampled pixels, and those wrong with its vector, with the camera's, with none */
-    static u16 per_draw[OBJECT_DRAWS + 1][4];
+    static u16 per_draw[OBJECT_DRAWS + 1][5];
+    static float per_draw_far[OBJECT_DRAWS + 1];
+    unsigned rejected = 0;
+    float rejected_far = 0.0f;
+    memset(per_draw_far, 0, sizeof per_draw_far);
     memset(capped, 0, sizeof capped);
     memset(per_draw, 0, sizeof per_draw);
     for (u32 i = 0; i < STATS_W * STATS_H; i++) {
@@ -652,6 +662,18 @@ static void stats_log(void) {
         if (taa) {
             drawn_gradient += (double)half_float(more[0]);
             shown_gradient += (double)half_float(more[1]);
+        }
+        /* a rejected object pixel: how far its vector is from the camera's (temporal_stats.frag) */
+        const float residual = half_float(more[2]);
+        if (residual > 0.0f) {
+            rejected++;
+            if (residual > rejected_far) rejected_far = residual;
+            if (!taa) {
+                const float number = half_float(more[0]);
+                const u32 d = number >= 1.0f && number <= (float)OBJECT_DRAWS ? (u32)(number + 0.5f) : 0;
+                per_draw[d][4]++;
+                if (residual > per_draw_far[d]) per_draw_far[d] = residual;
+            }
         }
         /* the probe marks a pixel that took an object's vector in the thousands of the length (temporal_stats.frag) */
         const int object_marks = vector >= 1000.0f ? (int)(vector / 1000.0f) : 0;
@@ -741,8 +763,30 @@ static void stats_log(void) {
                  object_n, object_n ? 100.0 * object_wrong / object_n : 0.0,
                  object_n ? 100.0 * object_camera / object_n : 0.0, object_n ? 100.0 * object_still / object_n : 0.0,
                  skin_near);
-    LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px vector_max=%.2f px sky=%u off_screen=%u%s\n",
-        (unsigned long long)g_t.stats_run, all ? length / all : 0.0, longest, sky, off, bands);
+    /* rejected: counted in this sampled frame only, one frame of the numbers, not every frame */
+    char refused[96] = "";
+    if (g_t.reject)
+        snprintf(refused, sizeof refused, " rejected_sampled n=%u largest_from_camera=%.0f px", rejected,
+                 (double)rejected_far);
+    LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px vector_max=%.2f px sky=%u off_screen=%u%s%s\n",
+        (unsigned long long)g_t.stats_run, all ? length / all : 0.0, longest, sky, off, bands, refused);
+    /* the probe names the draws of the rejected samples, four at most */
+    int named = 0;
+    for (u32 d = 0; !taa && d <= OBJECT_DRAWS && named < 4; d++) {
+        const struct Drawn* w = &g_t.stats_drawn[d];
+        if (!per_draw[d][4]) continue;
+        named++;
+        if (!d || d > g_t.stats_draws) {
+            LOG("arceus-temporal-rejected: run=%llu %u sampled pixels rejected name no draw\n",
+                (unsigned long long)g_t.stats_run, per_draw[d][4]);
+            continue;
+        }
+        LOG("arceus-temporal-rejected: run=%llu draw %u (%s, block %llx, draw %llx): %u of its %u sampled pixels "
+            "rejected, the furthest %.0f px from the camera's vector, wrong with its vector %u\n",
+            (unsigned long long)g_t.stats_run, d, w->skinned ? "skinned" : "rigid", (unsigned long long)w->block,
+            (unsigned long long)w->signature, per_draw[d][4], per_draw[d][0], (double)per_draw_far[d],
+            per_draw[d][1]);
+    }
     /* the draws whose origin moved far on screen: what the picture says of their vectors, four at most */
     int moves = 0;
     for (u32 d = 1; !taa && d <= g_t.stats_draws && d <= OBJECT_DRAWS && moves < 4; d++) {
@@ -1145,6 +1189,7 @@ static u32 drawn_note(u64 block, u64 feedback, int skinned, int source, const fl
     d->stream = NULL;
     d->block = block;
     d->feedback = feedback;
+    d->signature = g_t.current.signature;
     d->skinned = (u8)skinned;
     d->source = (u8)source;
     d->shift = (float)temporal_origin_shift(g_t.now, world, g_t.before, was, (double)zt->sw, (double)zt->sh);
@@ -1589,6 +1634,7 @@ void vk_temporal_before(u64 fs0_hash) {
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     {
         Constants mc = pc;
+        mc.depth[2] = (float)temporal_reject_bound(g_t.reject, (double)scene->sh);
         mc.depth[3] = objects ? 1.0f : 0.0f;
         if (objects)
             vk_barrier(cb, g_t.object.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,

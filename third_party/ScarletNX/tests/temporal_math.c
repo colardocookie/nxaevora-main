@@ -853,6 +853,112 @@ static void test_camera_world_points(void) {
     assert(checks == 768);
 }
 
+/* The resolve's choice of a texel as the shader makes it: the pixel's own, or with the option (8) the one of the
+   nearest depth in the 3x3 around it, clamped at the image's edge (reversed depth: the largest). */
+static int class_selected(int options, const float* depth, int w, int h, int x, int y) {
+    int at = y * w + x;
+    if (!(options & 8)) return at;
+    float nearest = depth[at];
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+            const int cx = x + dx < 0 ? 0 : x + dx >= w ? w - 1 : x + dx;
+            const int cy = y + dy < 0 ? 0 : y + dy >= h ? h - 1 : y + dy;
+            if (depth[cy * w + cx] > nearest) {
+                nearest = depth[cy * w + cx];
+                at = cy * w + cx;
+            }
+        }
+    return at;
+}
+
+static void test_classes(void) {
+    const double none[2] = {0.0, 0.0};
+    /* the bound: an eighth of the height, nothing when off */
+    assert(temporal_reject_bound(1, 1080.0) == 135.0 && temporal_reject_bound(1, 2160.0) == 270.0);
+    assert(temporal_reject_bound(0, 2160.0) == 0.0);
+    for (int tall = 0; tall < 2; tall++) {
+        const double w = tall ? 3840.0 : 1920.0, h = tall ? 2160.0 : 1080.0, bound = temporal_reject_bound(1, h);
+        /* met exactly is kept, one pixel over is rejected, along either axis */
+        const double at_x[2] = {bound / w, 0.0}, over_x[2] = {(bound + 1.0) / w, 0.0};
+        const double at_y[2] = {0.0, -bound / h}, over_y[2] = {0.0, -(bound + 1.0) / h};
+        assert(temporal_vector_class(1, 1, at_x, none, w, h, bound) == TEMPORAL_CLASS_OBJECT);
+        assert(temporal_vector_class(1, 1, over_x, none, w, h, bound) == TEMPORAL_CLASS_REJECTED);
+        assert(temporal_vector_class(1, 1, at_y, none, w, h, bound) == TEMPORAL_CLASS_OBJECT);
+        assert(temporal_vector_class(1, 1, over_y, none, w, h, bound) == TEMPORAL_CLASS_REJECTED);
+        /* a pan: a camera vector of four bounds that the object shares is no reason, the object's own part is */
+        const double pan[2] = {4.0 * bound / w, 0.0}, with[2] = {(4.5 * bound) / w, 0.0};
+        const double far[2] = {(5.5 * bound) / w, 0.0};
+        assert(temporal_vector_class(1, 1, pan, pan, w, h, bound) == TEMPORAL_CLASS_OBJECT);
+        assert(temporal_vector_class(1, 1, with, pan, w, h, bound) == TEMPORAL_CLASS_OBJECT);
+        assert(temporal_vector_class(1, 1, far, pan, w, h, bound) == TEMPORAL_CLASS_REJECTED);
+        /* the length is in pixels: the same part of the image is longer across than down */
+        const double part_x[2] = {0.11, 0.0}, part_y[2] = {0.0, 0.11};
+        assert(temporal_vector_class(1, 1, part_x, none, w, h, bound) == TEMPORAL_CLASS_REJECTED); /* 0.11 w > h/8 */
+        assert(temporal_vector_class(1, 1, part_y, none, w, h, bound) == TEMPORAL_CLASS_OBJECT);   /* 0.11 h < h/8 */
+        /* a diagonal: 0.7 of the bound each way is 0.99 of it, 0.75 each way is 1.06 */
+        const double in[2] = {0.7 * bound / w, 0.7 * bound / h}, out[2] = {-0.75 * bound / w, 0.75 * bound / h};
+        assert(temporal_vector_class(1, 1, in, none, w, h, bound) == TEMPORAL_CLASS_OBJECT);
+        assert(temporal_vector_class(1, 1, out, none, w, h, bound) == TEMPORAL_CLASS_REJECTED);
+        /* without a camera vector an object's pixel is rejected, however short its vector */
+        assert(temporal_vector_class(1, 0, none, none, w, h, bound) == TEMPORAL_CLASS_REJECTED);
+        /* off: nothing is rejected. A pixel no object owns is the camera's whatever else is said. */
+        assert(temporal_vector_class(1, 1, over_x, none, w, h, 0.0) == TEMPORAL_CLASS_OBJECT);
+        assert(temporal_vector_class(1, 0, over_x, none, w, h, 0.0) == TEMPORAL_CLASS_OBJECT);
+        assert(temporal_vector_class(0, 1, over_x, none, w, h, bound) == TEMPORAL_CLASS_CAMERA);
+        assert(temporal_vector_class(0, 0, over_x, none, w, h, bound) == TEMPORAL_CLASS_CAMERA);
+    }
+    /* the three values are apart, and only alpha says the class: a depth before of 2 or draw number 2 in blue, or
+       a vector of 2, does not make an object's texel a rejected one */
+    assert(TEMPORAL_CLASS_CAMERA != TEMPORAL_CLASS_OBJECT && TEMPORAL_CLASS_OBJECT != TEMPORAL_CLASS_REJECTED &&
+           TEMPORAL_CLASS_CAMERA != TEMPORAL_CLASS_REJECTED);
+    const double two[2] = {2.0, 2.0};
+    float texel[3][4];
+    for (int c = 0; c < 3; c++) {
+        temporal_motion_texel(two, 2.0, c, texel[c]);
+        assert(temporal_motion_class(texel[c]) == c);
+        assert(texel[c][0] == 2.0f && texel[c][1] == 2.0f);
+    }
+    assert(texel[TEMPORAL_CLASS_OBJECT][2] == 2.0f && texel[TEMPORAL_CLASS_REJECTED][2] == 2.0f);
+    assert(texel[TEMPORAL_CLASS_CAMERA][2] == 0.0f);
+    /* the resolve: the pixel's own texel or the selected one rejected gives the frame as drawn, nothing else does */
+    for (int centre = 0; centre < 3; centre++)
+        for (int selected = 0; selected < 3; selected++)
+            assert(temporal_current_only(texel[centre], texel[selected]) ==
+                   (centre == TEMPORAL_CLASS_REJECTED || selected == TEMPORAL_CLASS_REJECTED));
+    /* A 3x3 image under every combination of the resolve's options. The middle is nearest. Case 0: the middle is
+       rejected. Case 1: a corner is rejected and the middle is a good object's. */
+    for (int options = 0; options < 32; options++)
+        for (int which = 0; which < 2; which++) {
+            float depth[9], image[9][4];
+            for (int i = 0; i < 9; i++) {
+                depth[i] = i == 4 ? 0.5f : 0.1f + 0.01f * (float)i;
+                temporal_motion_texel(none, 0.0, i == 4 ? TEMPORAL_CLASS_OBJECT : TEMPORAL_CLASS_CAMERA, image[i]);
+            }
+            const int marked = which ? 0 : 4;
+            temporal_motion_texel(none, 0.3, TEMPORAL_CLASS_REJECTED, image[marked]);
+            for (int y = 0; y < 3; y++)
+                for (int x = 0; x < 3; x++) {
+                    const int at = y * 3 + x, pick = class_selected(options, depth, 3, 3, x, y);
+                    const int only = temporal_current_only(image[at], image[pick]);
+                    /* with the option every pixel takes the middle's vector: a rejected middle takes them all
+                       along, a good middle never restores the history of the rejected corner */
+                    if (options & 8) assert(pick == 4);
+                    if (!which) assert(only == ((options & 8) || at == 4));
+                    else assert(only == (at == 0));
+                }
+        }
+    /* at the image's edge the clamped neighbourhood still finds the marker: a rejected corner that is nearest */
+    {
+        float depth[4] = {0.9f, 0.1f, 0.1f, 0.1f}, image[4][4];
+        for (int i = 0; i < 4; i++)
+            temporal_motion_texel(none, 0.3, i ? TEMPORAL_CLASS_CAMERA : TEMPORAL_CLASS_REJECTED, image[i]);
+        for (int at = 0; at < 4; at++) {
+            assert(temporal_current_only(image[at], image[class_selected(8, depth, 2, 2, at % 2, at / 2)]));
+            assert(temporal_current_only(image[at], image[class_selected(0, depth, 2, 2, at % 2, at / 2)]) == !at);
+        }
+    }
+}
+
 int main(void) {
     test_jitter();
     test_jitter_matrices();
@@ -873,6 +979,7 @@ int main(void) {
     test_stream_keeping();
     test_stream_table();
     test_origin_shift();
+    test_classes();
     puts("temporal_math: ok");
     return 0;
 }

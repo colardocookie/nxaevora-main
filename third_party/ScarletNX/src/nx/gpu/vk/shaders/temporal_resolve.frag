@@ -22,6 +22,7 @@ layout(push_constant) uniform Constants {
     vec4 size;      // image width, height, view, weight of the frame in the blend
     vec4 jitter;    // this frame's jitter in clip units over w
 } pc;
+const float CLASS_REJECTED = 2.0; // TEMPORAL_CLASS_REJECTED of temporal_math.h, in the motion image's alpha
 vec3 to_ycocg(vec3 c) {
     return vec3(dot(c, vec3(0.25, 0.5, 0.25)), dot(c, vec3(0.5, 0.0, -0.5)), dot(c, vec3(-0.25, 0.5, -0.25)));
 }
@@ -64,6 +65,7 @@ void main() {
     vec3 now = texelFetch(u_now, pixel, 0).rgb;
     float z = max((texelFetch(u_depth, pixel, 0).r - pc.depth.x) / pc.depth.y, 0.0);
     vec4 vector = texelFetch(u_motion, pixel, 0);
+    bool rejected = vector.a > CLASS_REJECTED - 0.5;
     vec2 motion = vector.rg;
     // the surface the vector belongs to: this pixel's, or with option 8 the nearest one's around it
     vec2 surface = gl_FragCoord.xy;
@@ -84,6 +86,13 @@ void main() {
                     surface_z = max((d - pc.depth.x) / pc.depth.y, 0.0);
                 }
             }
+    }
+    // A rejected object pixel, this one or the one whose vector it would take: the frame as drawn, before any
+    // history is fetched, and marked as dropped in the new history (temporal_current_only in temporal_math.h)
+    if (rejected || vector.a > CLASS_REJECTED - 0.5) {
+        o_history = vec4(max(now, vec3(0.0)), -max(z, 0.0000001));
+        o_color = pc.size.z > 2.5 && pc.size.z < 3.5 ? vec4(1.0) : vec4(max(now, vec3(0.0)), 1.0);
+        return;
     }
     vec2 from = uv - motion;
     // the depth that surface's point had in the frame before: what the history must hold at the place fetched

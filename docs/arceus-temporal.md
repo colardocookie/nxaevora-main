@@ -211,3 +211,30 @@ the numbers' image carries it. `arceus-temporal-long` then names, for sampled pi
 990 px cap, the draw that left it: rigid or skinned, its block, its feedback output, where its matrix of a frame
 ago came from and how far its origin moved on screen.
 
+## Rejected object vectors (`SNX_ARCEUS_TEMPORAL_REJECT=1`)
+
+Only with object vectors, off unless set to `1`. An object's vector says where the object's point was a frame ago,
+and the renderer guesses which matrix that was (see the limit above). When an object is placed somewhere else in
+one frame, or the guess is wrong, the vector is long and the history it points at is not this surface's. So where
+an object's vector differs from the camera's vector of the same pixel by more than an eighth of the scene's height
+in pixels, the pixel is rejected: it shows the frame as drawn and takes no history. The camera's part is taken off
+first, so a fast pan alone rejects nothing. A pixel with an object's vector and no camera vector to hold it
+against is rejected too.
+
+The vector pass decides it and writes a class into the motion image's alpha: 0 the camera's vector, 1 an object's,
+2 rejected. The objects' target is not changed. The resolve reads the class of the pixel and, with `NEAREST=1`, of
+the pixel whose vector it would take. If either is 2 it returns the frame's colour before any history is fetched
+and marks the new history as dropped there. A neighbour's good vector never restores a rejected pixel's history.
+The rule is `temporal_vector_class` and `temporal_current_only` in `temporal_math.h`, host-tested.
+
+The first lines of a run say whether it is on. The numbers count rejected pixels only in the sampled frame of the
+numbers, not every frame: `rejected_sampled n=` and `largest_from_camera=` on the `arceus-temporal-stats` line.
+In the probe nothing is resolved, the class is still written, and the wrong share on object pixels is still taken
+with the object's own vector, so rejecting cannot make that number look better. The probe also names the draws:
+`arceus-temporal-rejected` gives the draw, its block and signature, how many of its sampled pixels were rejected
+and how many were wrong with its vector. The `long move` line is something else: the move of a draw's origin,
+known every frame, and not a record of what was rejected.
+
+What it costs is not measured: a true fast move of an object loses its history for those frames and shows the
+jittered frame there.
+

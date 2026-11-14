@@ -334,6 +334,41 @@ static inline int temporal_before_choice(int own_last, unsigned own_stays, int o
     if (partner_turns + 1 < TEMPORAL_PAIR_FRAMES) return TEMPORAL_BEFORE_LEARNING;
     return partner_has_draw ? TEMPORAL_BEFORE_PARTNER : TEMPORAL_BEFORE_OTHER;
 }
+/* The class of a pixel's vector, kept in the motion image's alpha. An object's vector that differs from the camera's
+   vector of the same pixel by more than a bound is a snap or a wrong guess of the object. Such a pixel is rejected:
+   it shows the frame as drawn and takes no history. The shaders hold the same three values. */
+#define TEMPORAL_CLASS_CAMERA 0
+#define TEMPORAL_CLASS_OBJECT 1
+#define TEMPORAL_CLASS_REJECTED 2
+/* the bound in pixels for a scene of this height: an eighth of it, 0 for off */
+static inline double temporal_reject_bound(int on, double height) { return on ? height / 8.0 : 0.0; }
+/* The class of a pixel. object: an object's vector owns it. The vectors are in parts of the image. Without a
+   camera vector to hold it against (camera_valid 0), an object's vector is rejected. */
+static inline int temporal_vector_class(int object, int camera_valid, const double vector[2], const double camera[2],
+                                        double width, double height, double bound) {
+    if (!object) return TEMPORAL_CLASS_CAMERA;
+    if (!(bound > 0.0)) return TEMPORAL_CLASS_OBJECT;
+    if (!camera_valid) return TEMPORAL_CLASS_REJECTED;
+    const double dx = (vector[0] - camera[0]) * width, dy = (vector[1] - camera[1]) * height;
+    return dx * dx + dy * dy > bound * bound ? TEMPORAL_CLASS_REJECTED : TEMPORAL_CLASS_OBJECT;
+}
+/* The motion image's texel: the vector, what an object's vector carries (the depth its point had a frame ago, or
+   the draw's number in the probe) and the class. Only alpha says the class, whatever the other three hold. */
+static inline void temporal_motion_texel(const double vector[2], double carried, int class_, float texel[4]) {
+    texel[0] = (float)vector[0];
+    texel[1] = (float)vector[1];
+    texel[2] = class_ == TEMPORAL_CLASS_CAMERA ? 0.0f : (float)carried;
+    texel[3] = (float)class_;
+}
+static inline int temporal_motion_class(const float texel[4]) {
+    return texel[3] > 1.5f ? TEMPORAL_CLASS_REJECTED : texel[3] > 0.5f ? TEMPORAL_CLASS_OBJECT : TEMPORAL_CLASS_CAMERA;
+}
+/* The resolve: 1 when the pixel shows the frame as drawn. centre is the pixel's own texel, selected the one whose
+   vector it takes (another one only with the vector of the nearest depth). */
+static inline int temporal_current_only(const float centre[4], const float selected[4]) {
+    return temporal_motion_class(centre) == TEMPORAL_CLASS_REJECTED ||
+           temporal_motion_class(selected) == TEMPORAL_CLASS_REJECTED;
+}
 /* Whose a kept copy of skinned positions is. A copy is kept per capture address and frame, and the address does
    not say whose positions they are. So a copy is tagged with the G-buffer draws that read it, by block pair and
    signature, and a draw gets last frame's copy only with its tag on it and one capture in each frame. */

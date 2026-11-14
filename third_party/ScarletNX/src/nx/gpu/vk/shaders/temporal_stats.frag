@@ -20,6 +20,7 @@ layout(push_constant) uniform Constants {
     vec4 viewport;
     vec4 depth; // depth translate, depth scale, 1 with anti-aliasing on, 1 when u_shown holds object vectors
     vec4 size;  // image width, height, view, gain
+    vec4 jitter; // this frame's jitter in clip units over w
 } pc;
 layout(set = 0, binding = 3) uniform sampler2D u_depth;
 layout(set = 0, binding = 4) uniform sampler2D u_last; // the frame before, as it was drawn
@@ -52,6 +53,19 @@ void main() {
             vec4 object = texelFetch(u_shown, pixel, 0);
             float stored = texelFetch(u_depth, pixel, 0).r;
             if (object.b >= 0.0 && abs(object.b - stored) <= 0.002 * stored + 0.0000002) o_stats.r = object.a;
+        }
+        // A rejected object pixel (alpha 2 of the motion image): blue is how far its vector is from the camera's
+        // in pixels, as temporal_motion.frag held it against the bound, 60000 without a camera vector.
+        vec4 vector = texelFetch(u_motion, pixel, 0);
+        if (vector.a > 1.5) {
+            float z = max((texelFetch(u_depth, pixel, 0).r - pc.depth.x) / pc.depth.y, 0.0);
+            vec2 ndc = (vec2(pixel) + 0.5 - pc.viewport.xy) / pc.viewport.zw * 2.0 - 1.0 - pc.jitter.xy;
+            vec4 before = pc.reproject * vec4(ndc, z, 1.0);
+            o_stats.b = 60000.0;
+            if (before.w > 0.0) {
+                vec2 camera = (ndc - before.xy / before.w) * 0.5 * pc.viewport.zw / pc.size.xy;
+                o_stats.b = clamp(length((vector.rg - camera) * pc.size.xy), 1.0, 59000.0);
+            }
         }
         return;
     }
