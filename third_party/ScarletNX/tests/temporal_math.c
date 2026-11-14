@@ -1725,6 +1725,25 @@ static void test_rect_confirm(void) {
     assert(!temporal_rect_early(&a, &unbound) && !temporal_rect_early(&a, &lost) && !temporal_rect_early(&a, NULL));
     assert(temporal_rect_early(&whole_state, &good) && !temporal_rect_early(&whole_state, &one));
 
+    /* A stage's scene block from what the renderer knows. It reads the block when its program reads bank 3 as far
+       as the fraction's words. It is bound when a block that long is there and its words could be read. */
+    {
+        const float words[2] = {0.75f, 0.75f};
+        TemporalSceneBlock s0 = temporal_scene_block(0x3d8, 0x630, 0x512be6e00ull, 0xa00, words);
+        assert(s0.reads && s0.bound && s0.fx == 0.75f && s0.fy == 0.75f);
+        s0 = temporal_scene_block(0x3d8, 0x620, 0x512be6e00ull, 0xa00, words); /* reads less than the fraction */
+        assert(!s0.reads && s0.bound);
+        s0 = temporal_scene_block(0x350, 0x10000, 0x512be6e00ull, 0xa00, words); /* the pre-pass: bank 3 not read */
+        assert(!s0.reads && s0.bound);
+        s0 = temporal_scene_block(0x3d8, 0x10000, 0x512be6e00ull, 0x620, words); /* a block too short */
+        assert(s0.reads && !s0.bound && s0.fx == 0.0f);
+        s0 = temporal_scene_block(0x3d8, 0x630, 0, 0xa00, words); /* nothing bound */
+        assert(s0.reads && !s0.bound);
+        s0 = temporal_scene_block(0x3d8, 0x630, 0x512be6e00ull, 0x630, NULL); /* words not readable */
+        assert(s0.reads && !s0.bound);
+        s0 = temporal_scene_block(0x3d8, 0, 0x512be6e00ull, 0xa00, words); /* no read with a known place */
+        assert(!s0.reads && s0.bound);
+    }
     /* The sequence. Frame N has a new geometry: gated, and confirmed, which makes it the candidate. N+1 is
        accepted and confirmed with the same fraction: steady, it seeds the history. N+2 uses it. */
     TemporalRectStamp stamp = {0x5508c0000ull, 1, 3840, 2160, 3840, 2160, {0, 0, 2880, 1620}, 0.75f, 0.75f};

@@ -736,6 +736,20 @@ typedef struct {
     int reads, bound;
     float fx, fy;
 } TemporalSceneBlock;
+/* The scene block of one stage at a draw, from what the renderer knows. mask and extent: the constant banks the
+   stage's translated program reads and how many bytes of the scene block's bank it reads. address and size: what
+   is bound there. words: the two fraction words read from guest memory, NULL when they could not be read. */
+#define TEMPORAL_SCENE_BANK 3
+#define TEMPORAL_SCENE_FRACTION 0x628 /* the used fraction, width then height, two floats */
+#define TEMPORAL_SCENE_BYTES 0x630
+static inline TemporalSceneBlock temporal_scene_block(unsigned mask, unsigned extent, unsigned long long address,
+                                                      unsigned size, const float* words) {
+    TemporalSceneBlock b = {0, 0, 0.0f, 0.0f};
+    b.reads = (mask >> TEMPORAL_SCENE_BANK & 1u) && extent >= TEMPORAL_SCENE_BYTES;
+    b.bound = address && size >= TEMPORAL_SCENE_BYTES && words;
+    if (b.bound) b.fx = words[0], b.fy = words[1];
+    return b;
+}
 /* At the draw that decides the frame, a scene block that happens to be bound may refuse the frame early, before
    any jitter: 1 when it is bound, its fraction is finite and is not the geometry's. Bound with the geometry's
    fraction, not bound, or not finite: 0, which decides nothing. */

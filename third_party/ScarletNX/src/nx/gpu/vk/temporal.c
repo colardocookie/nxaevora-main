@@ -165,6 +165,17 @@ static struct {
        draw's depth target and registers, which vk_temporal_draw notes for every draw */
     const Surf* draw_zt;
     const u32* draw_r3d;
+    /* SNX_ARCEUS_TEMPORAL_RECT: the scene may be a rectangle of its targets, and the frame goes through the
+       rectangle's gate (temporal_math.h) in place of the whole-target one. The draw's channel and programs are
+       kept for it, as are this frame's count of offsets and the making of the images a history is tied to. */
+    int rect;
+    const GpuChannel* draw_ch;
+    const VkSh *draw_vs, *draw_fs;
+    TemporalRectGate rect_gate;
+    u32 offsets, rect_early_said;
+    u32 camera_new_at; /* the frame whose G-buffer draw showed a camera block address not known before */
+    u64 rect_generation, rect_gated, rect_seen, rect_steady, rect_spoilt, rect_left;
+    VkImage rect_images[3];
     TemporalGate gate;
     float jitter_ndc[2], jitter_made[2];
     u64 gated, mismatched, early, unsteady;
@@ -216,6 +227,9 @@ static int temporal_on(void) {
         g_t.links = g_t.objects && links && !strcmp(links, "1");
         const char* reject = getenv("SNX_ARCEUS_TEMPORAL_REJECT");
         g_t.reject = g_t.objects && reject && !strcmp(reject, "1");
+        const char* rect = getenv("SNX_ARCEUS_TEMPORAL_RECT");
+        g_t.rect = g_t.mode && rect && !strcmp(rect, "1");
+        g_t.offsets = JITTERS;
         /* Every option's state, on or off, in each run's log. A value other than the one named leaves an option
            off: NEAREST and LUMA take 1, HISTORY catmull, CLAMP variance, BLEND adaptive, VECTORS object, SHARPEN
            a number above 0, MIPBIAS one below 0. */
@@ -228,6 +242,9 @@ static int temporal_on(void) {
         if (g_t.mode)
             LOG("arceus-temporal: an object's vector further than an eighth of the scene's height from the "
                 "camera's: %s\n", g_t.reject ? "rejected, the pixel takes no history (reject)" : "kept");
+        if (g_t.mode)
+            LOG("arceus-temporal: a scene inside a rectangle of its targets: %s\n",
+                g_t.rect ? "taken when the scene block confirms it (rect)" : "refused, the whole target only");
         if (g_t.mode == MODE_TAA)
             LOG("arceus-temporal: resolve options: history %s, clamp %s, weight %s, vector %s, blend %s, sharpen "
                 "%.2f, texture level bias %.2f\n",
@@ -393,8 +410,10 @@ static VkDescriptorSet set_make(const VkImageView views[SETS_BINDINGS], const Vk
 }
 
 /* one fullscreen triangle into view (w x h, in COLOR_ATTACHMENT_OPTIMAL), every pixel written */
+/* One pass over an image of w by h. area: the scene's rectangle when the pass may write that alone, NULL for the
+   whole image. The viewport stays the image's, so a pixel keeps its place. */
 static void fullscreen2(VkCommandBuffer cb, VkImageView view, VkImageView second, u32 w, u32 h, VkPipeline pipe,
-                        VkDescriptorSet set, const Constants* pc) {
+                        VkDescriptorSet set, const Constants* pc, const TemporalRect* area) {
     VkRenderingAttachmentInfo at[2] = {{.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                         .imageView = view,
                                         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -405,13 +424,14 @@ static void fullscreen2(VkCommandBuffer cb, VkImageView view, VkImageView second
                                         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                         .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                                         .storeOp = VK_ATTACHMENT_STORE_OP_STORE}};
+    VkRect2D sc = {{0, 0}, {w, h}};
+    if (area) sc = (VkRect2D){{area->x, area->y}, {(u32)area->w, (u32)area->h}};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                          .renderArea = {{0, 0}, {w, h}},
+                          .renderArea = sc,
                           .layerCount = 1,
                           .colorAttachmentCount = second ? 2 : 1,
                           .pColorAttachments = at};
     VkViewport vp = {0, 0, (float)w, (float)h, 0, 1};
-    VkRect2D sc = {{0, 0}, {w, h}};
     rec_CmdBeginRendering(cb, &ri);
     vk_render_forget_state();
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
@@ -423,8 +443,8 @@ static void fullscreen2(VkCommandBuffer cb, VkImageView view, VkImageView second
     rec_CmdEndRendering(cb);
 }
 static void fullscreen(VkCommandBuffer cb, VkImageView view, u32 w, u32 h, VkPipeline pipe, VkDescriptorSet set,
-                       const Constants* pc) {
-    fullscreen2(cb, view, VK_NULL_HANDLE, w, h, pipe, set, pc);
+                       const Constants* pc, const TemporalRect* area) {
+    fullscreen2(cb, view, VK_NULL_HANDLE, w, h, pipe, set, pc, area);
 }
 
 /* out = a x b for 4 x 4 matrices in memory order. With the game's row vectors, a then b */
@@ -464,6 +484,7 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
     block_read(address, g_t.now);
     block_read(address + CAMERA_INVERSE, g_t.inverse);
     if (address != g_t.camera_address[0]) {
+        if (address != g_t.camera_address[1]) g_t.camera_new_at = frame;
         g_t.camera_address[1] = g_t.camera_address[0];
         g_t.camera_address[0] = address;
     }
@@ -505,7 +526,7 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
     /* The jitter was decided on another viewport than the scene's: the frame is left as drawn, so the next has no
        history, and this frame's object vectors are given up. */
     const TemporalViewport scene_view = {g_t.viewport.x, g_t.viewport.y, g_t.viewport.width, g_t.viewport.height};
-    if (g_t.mode == MODE_TAA && temporal_gate_scene(&g_t.gate, frame, &scene_view)) {
+    if (g_t.mode == MODE_TAA && !g_t.rect && temporal_gate_scene(&g_t.gate, frame, &scene_view)) {
         if (g_t.mismatched++ < 4 || g_t.mismatched % 600 == 0)
             LOG("arceus-temporal: the scene's viewport %g,%g %gx%g is not the one the jitter was decided on (%g,%g "
                 "%gx%g), %llu frames so far\n",
@@ -536,6 +557,143 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
     g_t.depth_rt = zt;
     g_t.camera_at = frame;
 }
+
+/* The scene block of one stage at the draw vk_temporal_draw noted: whether the stage's program reads it as far as
+   the fraction, and what is bound there (temporal_scene_block). */
+static TemporalSceneBlock rect_block(int stage, const VkSh* program) {
+    const GpuChannel* ch = g_t.draw_ch;
+    const u64 address = ch->cbind[stage][TEMPORAL_SCENE_BANK];
+    const u32 size = ch->cbind_size[stage][TEMPORAL_SCENE_BANK];
+    const u8* bytes = address && size >= TEMPORAL_SCENE_BYTES ? gmem_host(address + TEMPORAL_SCENE_FRACTION, 8) : NULL;
+    float words[2] = {0.0f, 0.0f};
+    if (bytes) memcpy(words, bytes, sizeof words);
+    return temporal_scene_block(program ? program->si.cbuf_mask : 0,
+                                program ? program->si.cbuf_max[TEMPORAL_SCENE_BANK] : 0, address, size,
+                                bytes ? words : NULL);
+}
+/* 1 when the draw noted goes into the scene: its depth target is the scene's */
+static int rect_scene_draw(void) {
+    return g_t.draw_zt && g_t.depth && g_t.draw_zt->gva == g_t.depth && g_t.draw_r3d && g_t.draw_ch;
+}
+/* the geometry of the draw noted, from its own viewport: 1 when it is a scene's (temporal_rect_geometry) */
+static int rect_geometry(TemporalRectState* out) {
+    const VkViewport v = vk_render_viewport(g_t.draw_r3d);
+    const TemporalViewport view = {v.x, v.y, v.width, v.height};
+    return temporal_rect_geometry(&view, (int)g_t.draw_zt->sw, (int)g_t.draw_zt->sh, TEMPORAL_CORNER_TOP_LEFT, out) ==
+           TEMPORAL_RECT_OK;
+}
+static int rect_line(u64 n) { return n <= 4 || n % 600 == 0; }
+
+/* With the rectangle's gate: every draw into the scene after the frame's decision and before our passes. The
+   first whose vertex or fragment program reads the scene block as far as the fraction confirms the frame from
+   what is bound there (temporal_rect_confirm), and it alone. Every one is held to the frame's viewport, and
+   after the confirmation to its fraction in each stage that reads the block (temporal_rect_late). */
+static void rect_watch(u32 frame) {
+    TemporalRectGate* rg = &g_t.rect_gate;
+    if (!g_t.rect || rg->decided_at != frame || g_t.ran_at == frame || !rect_scene_draw()) return;
+    if (rg->state == TEMPORAL_FRAME_NONE) return;
+    const TemporalSceneBlock vertex = rect_block(ST_VS, g_t.draw_vs), fragment = rect_block(ST_FS, g_t.draw_fs);
+    const VkViewport v = vk_render_viewport(g_t.draw_r3d);
+    TemporalRectState geometry;
+    const int shaped = rect_geometry(&geometry);
+    if (temporal_rect_late(rg, frame, shaped ? &geometry : NULL, &vertex, &fragment)) {
+        if (rect_line(++g_t.rect_spoilt))
+            LOG("arceus-temporal-rect: a later scene draw disagrees with the frame (viewport %g,%g %gx%g against "
+                "%g,%g %gx%g, scene block vertex %d/%d %g by %g, fragment %d/%d %g by %g, confirmed %g by %g): the "
+                "frame is left as drawn and the next starts again, %llu frames so far\n",
+                (double)v.x, (double)v.y, (double)v.width, (double)v.height, (double)rg->now.viewport.x,
+                (double)rg->now.viewport.y, (double)rg->now.viewport.width, (double)rg->now.viewport.height,
+                vertex.reads, vertex.bound, (double)vertex.fx, (double)vertex.fy, fragment.reads, fragment.bound,
+                (double)fragment.fx, (double)fragment.fy, (double)rg->now.fx, (double)rg->now.fy,
+                (unsigned long long)g_t.rect_spoilt);
+        return;
+    }
+    if (rg->state != TEMPORAL_FRAME_DECIDED || (!vertex.reads && !fragment.reads)) return;
+    const int was_accepted = rg->accepted;
+    const int state = temporal_rect_confirm(rg, frame, &vertex, &fragment);
+    if (state == TEMPORAL_FRAME_NONE) {
+        if (rect_line(++g_t.rect_spoilt))
+            LOG("arceus-temporal-rect: the first scene draw that reads the scene block does not confirm the frame "
+                "(vertex reads %d bound %d %g by %g, fragment reads %d bound %d %g by %g, rectangle %dx%d in "
+                "%dx%d): the frame is left as drawn and the next starts again, %llu frames so far\n",
+                vertex.reads, vertex.bound, (double)vertex.fx, (double)vertex.fy, fragment.reads, fragment.bound,
+                (double)fragment.fx, (double)fragment.fy, rg->now.rect.w, rg->now.rect.h, rg->now.target_w,
+                rg->now.target_h, (unsigned long long)g_t.rect_spoilt);
+    } else if (state == TEMPORAL_FRAME_SEEN) {
+        if (rect_line(++g_t.rect_seen))
+            LOG("arceus-temporal-rect: fraction %g by %g confirmed for a frame that is not resolved (%s): it is the "
+                "next frame's candidate, %llu frames so far\n",
+                (double)rg->now.fx, (double)rg->now.fy,
+                was_accepted ? "the fraction is new for this viewport" : "gated at its first draw",
+                (unsigned long long)g_t.rect_seen);
+    } else if (rect_line(++g_t.rect_steady))
+        LOG("arceus-temporal-rect: frame confirmed and steady: rectangle %d,%d %dx%d of %dx%d, fraction %g by %g, "
+            "%u offsets, %llu frames so far\n",
+            rg->now.rect.x, rg->now.rect.y, rg->now.rect.w, rg->now.rect.h, rg->now.target_w, rg->now.target_h,
+            (double)rg->now.fx, (double)rg->now.fy, g_t.offsets, (unsigned long long)g_t.rect_steady);
+}
+
+/* The rectangle's gate at a draw that binds the scene camera's block while the frame is undecided. The frame is
+   decided here whatever the draw is: one that is not into the scene's depth cannot be tied to the scene and
+   leaves the frame without a geometry. Else the draw's own viewport decides (temporal_rect_decide), after a scene
+   block that happens to be bound at this draw had its say (temporal_rect_early: it can only refuse). */
+static void rect_decide(u32 frame) {
+    TemporalRectGate* rg = &g_t.rect_gate;
+    g_t.jitter_ndc[0] = g_t.jitter_ndc[1] = 0;
+    /* The block's address was learned in this very frame, at its G-buffer: draws before that one may have bound
+       it without being known, so this is not the frame's first such draw and the frame has no geometry. */
+    if (g_t.camera_new_at == frame) {
+        temporal_rect_decide(rg, frame, NULL, 0);
+        if (rect_line(++g_t.rect_gated))
+            LOG("arceus-temporal-rect: frame gated (the scene camera's block was at an address first seen in this "
+                "frame, so its first draw is not known), %llu frames so far\n",
+                (unsigned long long)g_t.rect_gated);
+        return;
+    }
+    if (!rect_scene_draw()) {
+        temporal_rect_decide(rg, frame, NULL, 0);
+        if (rect_line(++g_t.early))
+            LOG("arceus-temporal: a draw with depth target %llx binds the scene camera's block before the frame's "
+                "first draw into the scene depth: no jitter this frame, %llu frames so far\n",
+                (unsigned long long)(g_t.draw_zt ? g_t.draw_zt->gva : 0), (unsigned long long)g_t.early);
+        return;
+    }
+    const VkViewport v = vk_render_viewport(g_t.draw_r3d);
+    TemporalRectState geometry;
+    const int shaped = rect_geometry(&geometry);
+    /* the scene block as bound at this draw, whether or not its programs read it: vertex stage first */
+    TemporalSceneBlock early = rect_block(ST_VS, NULL);
+    int stage = ST_VS;
+    if (!early.bound) {
+        early = rect_block(ST_FS, NULL);
+        stage = ST_FS;
+    }
+    if (!g_t.rect_early_said++)
+        LOG("arceus-temporal-rect: at the frame's first draw with the scene camera's block, a scene block of 0x%x "
+            "bytes or more is %s%s\n",
+            TEMPORAL_SCENE_BYTES, early.bound ? "bound in the " : "not bound",
+            !early.bound ? "" : stage == ST_VS ? "vertex stage" : "fragment stage");
+    const int refused = shaped && temporal_rect_early(&geometry, &early);
+    const int on = temporal_rect_decide(rg, frame, shaped ? &geometry : NULL, refused);
+    if (shaped) g_t.offsets = temporal_rect_offsets(&geometry.rect, geometry.target_w, geometry.target_h);
+    if (on && g_t.mode == MODE_TAA) {
+        float pixels[2];
+        temporal_jitter(g_vk_present % g_t.offsets, g_t.offsets, pixels);
+        g_t.jitter_ndc[0] = 2.0f * pixels[0] / fabsf(v.width);
+        g_t.jitter_ndc[1] = 2.0f * pixels[1] / fabsf(v.height);
+    } else if (!on && rect_line(++g_t.rect_gated))
+        LOG("arceus-temporal-rect: frame gated at its first draw (viewport %g,%g %gx%g in a target of %ux%u: %s), "
+            "%llu frames so far\n",
+            (double)v.x, (double)v.y, (double)v.width, (double)v.height, g_t.draw_zt->sw, g_t.draw_zt->sh,
+            !shaped   ? "not the whole target and no rectangle of a scene at its corner"
+            : refused ? "the scene block bound at this draw has another fraction"
+                      : "not the viewport of a confirmed frame before",
+            (unsigned long long)g_t.rect_gated);
+    /* this draw is a scene draw of the frame like the ones after it */
+    rect_watch(frame);
+}
+/* 1 when the rectangle's gate let this frame be drawn with jitter */
+static int rect_accepted(u32 frame) { return g_t.rect_gate.decided_at == frame && g_t.rect_gate.accepted; }
 
 /* Whether this frame is drawn with jitter (the gate of temporal_math.h), asked at a draw that binds the scene
    camera's block while the frame is undecided. A draw into the scene's depth decides it from its own viewport.
@@ -571,7 +729,8 @@ static int jitter_decide(u32 frame) {
 
 /* this frame's jitter as the draws got it, in clip units over w: 0 when the frame has none */
 static void frame_jitter(u32 frame, double* jx, double* jy) {
-    const int on = g_t.mode == MODE_TAA && temporal_gate_jitter(&g_t.gate, frame);
+    const int on = g_t.mode == MODE_TAA &&
+                   (g_t.rect ? rect_accepted(frame) : temporal_gate_jitter(&g_t.gate, frame));
     *jx = on ? (double)g_t.jitter_ndc[0] : 0.0;
     *jy = on ? (double)g_t.jitter_ndc[1] : 0.0;
 }
@@ -582,18 +741,27 @@ static void frame_jitter(u32 frame, double* jx, double* jy) {
    of clip x and y by jitter x w is the matrix times J, which has the jitter in its fourth row: view-projection x J at
    +0x00, projection x J at +0x80, and J's inverse x the inverse view-projection at +0xC0. */
 int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer, u64* offset) {
-    if (g_t.mode != MODE_TAA || !address || !g_t.motion.w ||
+    /* Without the rectangle's gate no draw is jittered before our passes ran once. With it the gate's own start
+       (a confirmed frame before) stands in for that, and the frame must be decided before our passes can run. */
+    if ((g_t.mode != MODE_TAA && !g_t.rect) || !address || (!g_t.rect && !g_t.motion.w) ||
         (address != g_t.camera_address[0] && address != g_t.camera_address[1]))
         return 0;
     if (bound > 0x1000 || bound < CAMERA_BYTES || size > bound) return 0;
+    /* With the rectangle's gate the frame is decided here in the probe too, which then draws without jitter. */
+    if (g_t.rect && g_t.rect_gate.decided_at != g_vk_present + 1) rect_decide(g_vk_present + 1);
+    if (g_t.mode != MODE_TAA) return 0;
     /* only +0x00, +0x80 and +0xC0 are shifted: a program that reads further is worth knowing about */
     if (size > g_t.camera_read) {
         g_t.camera_read = size;
         LOG("arceus-temporal: a program reads %u of the camera block's %u bytes\n", size, bound);
     }
-    const u32 index = g_vk_present % JITTERS;
-    if (g_t.gate.decided_at != g_vk_present + 1 && !jitter_decide(g_vk_present + 1)) return 0;
-    if (!temporal_gate_jitter(&g_t.gate, g_vk_present + 1)) return 0;
+    const u32 offsets = g_t.rect ? g_t.offsets : JITTERS, index = g_vk_present % offsets;
+    if (g_t.rect) {
+        if (!rect_accepted(g_vk_present + 1)) return 0;
+    } else {
+        if (g_t.gate.decided_at != g_vk_present + 1 && !jitter_decide(g_vk_present + 1)) return 0;
+        if (!temporal_gate_jitter(&g_t.gate, g_vk_present + 1)) return 0;
+    }
     /* the guest's bytes now: the copy is remade when they differ from the ones it was made from */
     u8 source[0x1000];
     gmem_read(address, source, bound);
@@ -613,7 +781,7 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
         if (!bytes) return 0;
         memcpy(bytes, source, bound);
         memcpy(g_t.jitter_source, source, bound);
-        temporal_jitter(index, JITTERS, pixels);
+        temporal_jitter(index, offsets, pixels);
         /* in the viewport's pixels the frame's jitter was decided on, which are the target's */
         const float jx = g_t.jitter_ndc[0], jy = g_t.jitter_ndc[1];
         g_t.jitter_made[0] = jx;
@@ -644,8 +812,8 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
             LOG("arceus-temporal: camera block from +0x%x:%s\n", CAMERA_BYTES, line);
         }
         if (g_t.jittered++ < 3)
-            LOG("arceus-temporal: camera block %llx drawn with jitter %g,%g pixels (offset %u of %d)\n",
-                (unsigned long long)address, (double)pixels[0], (double)pixels[1], index, JITTERS);
+            LOG("arceus-temporal: camera block %llx drawn with jitter %g,%g pixels (offset %u of %u)\n",
+                (unsigned long long)address, (double)pixels[0], (double)pixels[1], index, offsets);
     }
     *buffer = g_t.jitter_buffer;
     *offset = g_t.jitter_offset;
@@ -897,11 +1065,15 @@ static int stats_ready(void) {
 /* What a draw tells before it is recorded: the composite names the scene colour and depth, the first G-buffer draw
    of a frame has the camera, a write to the scene colour gives its surface, and the first draw that samples the
    scene colour names the program before which the probe runs from the next frame on. */
-void vk_temporal_draw(GpuChannel* ch, const VkSh* fs0, Surf* const* sampled, int nt, Surf* const* rt, u32 n,
-                      Surf* zt) {
+void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* const* sampled, int nt,
+                      Surf* const* rt, u32 n, Surf* zt) {
     const u32 frame = g_vk_present + 1;
     g_t.draw_zt = zt;
     g_t.draw_r3d = ch->r3d;
+    g_t.draw_ch = ch;
+    g_t.draw_vs = vs;
+    g_t.draw_fs = fs0;
+    rect_watch(frame);
     if (!fs0) nt = 0;
     u32 colours = 0;
     int writes_scene = 0;
@@ -987,7 +1159,11 @@ int vk_temporal_objects(void) { return temporal_on() && g_t.objects; }
 
 /* The texture level shift for a draw into the scene (its depth target is the scene's), 0 for any other draw */
 float vk_temporal_mip_bias(const Surf* zt) {
-    return temporal_on() && g_t.mip_bias < 0.0f && zt && zt == g_t.depth_rt ? g_t.mip_bias : 0.0f;
+    if (!temporal_on() || !zt || zt != g_t.depth_rt) return 0.0f;
+    if (g_t.mip_bias < 0.0f) return g_t.mip_bias;
+    /* no value set: under the rectangle's gate a jittered frame's scene draws get log2 of the scale */
+    if (!g_t.rect || g_t.mode != MODE_TAA || !rect_accepted(g_vk_present + 1)) return 0.0f;
+    return temporal_rect_bias(0, 0.0f, &g_t.rect_gate.now.rect, g_t.rect_gate.now.target_w);
 }
 
 static void pairs_judge(void);
@@ -1395,9 +1571,11 @@ static u32 drawn_note(u64 block, u64 feedback, int skinned, int source, const fl
     d->link = source == TEMPORAL_BEFORE_LINK ? g_t.current.link : 0;
     d->skinned = (u8)skinned;
     d->source = (u8)source;
-    d->shift = (float)temporal_origin_shift(g_t.now, world, g_t.before, was, (double)zt->sw, (double)zt->sh);
-    const float camera =
-        (float)temporal_origin_shift(g_t.now, world, g_t.before, world, (double)zt->sw, (double)zt->sh);
+    /* the scene's size on screen: the target's, or under the rectangle's gate the viewport's */
+    const double scene_w = g_t.rect ? fabs((double)g_t.viewport.width) : (double)zt->sw;
+    const double scene_h = g_t.rect ? fabs((double)g_t.viewport.height) : (double)zt->sh;
+    d->shift = (float)temporal_origin_shift(g_t.now, world, g_t.before, was, scene_w, scene_h);
+    const float camera = (float)temporal_origin_shift(g_t.now, world, g_t.before, world, scene_w, scene_h);
     d->far = d->shift > 100.0f && camera >= 0.0f && camera < 20.0f;
     if (d->far && g_t.long_logged_at + 60 <= frame) {
         g_t.long_logged_at = frame;
@@ -1850,6 +2028,26 @@ void vk_temporal_before(u64 fs0_hash) {
         return;
     }
     g_t.ran_at = frame;
+    /* Under the rectangle's gate nothing of ours runs unless the frame was accepted at its first draw and
+       confirmed by the scene block since, with the G-buffer's viewport the one decided on: no vectors, no
+       resolve, no sharpen, no numbers, no view, and no history for the frame after. */
+    const TemporalRectGate* rg = &g_t.rect_gate;
+    const TemporalViewport hook_view = {g_t.viewport.x, g_t.viewport.y, g_t.viewport.width, g_t.viewport.height};
+    const int rect_ok = g_t.rect && temporal_rect_steady(rg, frame) && rg->now.target_w == (int)scene->sw &&
+                        rg->now.target_h == (int)scene->sh && temporal_viewport_same(&hook_view, &rg->now.viewport);
+    if (g_t.rect && !rect_ok) {
+        if (rect_line(++g_t.rect_left))
+            LOG("arceus-temporal-rect: frame left as drawn (%s), %llu so far\n",
+                rg->decided_at != frame                 ? "not decided"
+                : !rg->accepted                         ? "gated at its first draw"
+                : rg->state == TEMPORAL_FRAME_DECIDED   ? "no draw confirmed it before our passes"
+                : rg->state == TEMPORAL_FRAME_SEEN      ? "confirmed with a new fraction"
+                : rg->state == TEMPORAL_FRAME_NONE      ? "found wrong after its decision"
+                                                        : "the G-buffer's viewport or the target is another",
+                (unsigned long long)g_t.rect_left);
+        return;
+    }
+    const TemporalRect* area = rect_ok ? &rg->now.rect : NULL;
     if (!layouts_make()) return;
     if (!g_t.motion_pipe)
         g_t.motion_pipe = pipeline_make(MOTION_FORMAT, temporal_motion_fs_spv, temporal_motion_fs_spv_size, "motion");
@@ -1881,6 +2079,7 @@ void vk_temporal_before(u64 fs0_hash) {
         frame_jitter(frame, &jx, &jy);
         pc.jitter[0] = (float)jx;
         pc.jitter[1] = (float)jy;
+        pc.jitter[2] = rect_ok ? 1.0f : 0.0f; /* the passes keep to the viewport's rectangle */
     }
     if (!(pc.depth[1] != 0.0f) || !(pc.viewport[2] != 0.0f) || !(pc.viewport[3] != 0.0f)) return;
 
@@ -1888,7 +2087,8 @@ void vk_temporal_before(u64 fs0_hash) {
     VkCommandBuffer cb = vk_cmd();
     /* objects that moved were drawn into their own target this frame: the vector pass takes their vectors from it */
     const int objects = g_t.objects && g_t.object_at == frame && g_t.object.view && g_t.object.w == scene->sw &&
-                        g_t.object.h == scene->sh && g_t.gate.mismatch_at != frame && pairs_hold(frame);
+                        g_t.object.h == scene->sh && (g_t.rect || g_t.gate.mismatch_at != frame) &&
+                        pairs_hold(frame);
     /* the vectors: depth sampled, the motion image written */
     vk_surf_use(cb, depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
@@ -1897,7 +2097,9 @@ void vk_temporal_before(u64 fs0_hash) {
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     {
         Constants mc = pc;
-        mc.depth[2] = (float)temporal_reject_bound(g_t.reject, (double)scene->sh);
+        /* the bound: an eighth of the scene's height, which under the rectangle's gate is the rectangle's */
+        mc.depth[2] = area ? (float)temporal_rect_reject_bound(g_t.reject, area)
+                           : (float)temporal_reject_bound(g_t.reject, (double)scene->sh);
         mc.depth[3] = objects ? 1.0f : 0.0f;
         if (objects)
             vk_barrier(cb, g_t.object.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1911,7 +2113,7 @@ void vk_temporal_before(u64 fs0_hash) {
                                                    g_t.point, g_t.point, g_t.point};
         const VkDescriptorSet set = set_make(views, samplers);
         if (!set) return;
-        fullscreen(cb, g_t.motion.view, g_t.motion.w, g_t.motion.h, g_t.motion_pipe, set, &mc);
+        fullscreen(cb, g_t.motion.view, g_t.motion.w, g_t.motion.h, g_t.motion_pipe, set, &mc, area);
     }
     vk_barrier(cb, g_t.motion.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -1959,7 +2161,7 @@ void vk_temporal_before(u64 fs0_hash) {
     int numbers = history, sharpened = 0;
     /* A frame without jitter (jitter_decide) or whose G-buffer viewport is not the one decided on is left as drawn:
        no resolve, no sharpen, no numbers, and no history for the frame after it. */
-    const int steady = temporal_gate_steady(&g_t.gate, frame);
+    const int steady = g_t.rect ? rect_ok : temporal_gate_steady(&g_t.gate, frame);
     if (taa && !steady) {
         if (g_t.unsteady++ < 4 || g_t.unsteady % 600 == 0)
             LOG("arceus-temporal: frame left as drawn (the viewport), %llu so far\n",
@@ -1985,7 +2187,22 @@ void vk_temporal_before(u64 fs0_hash) {
         const float* m = pc.reproject;
         const float w = 0.01f * m[11] + m[15], x = 0.01f * m[8] + m[12], y = 0.01f * m[9] + m[13];
         const int cut = !(w > 0.0f) || fabsf(x) > 0.5f * w || fabsf(y) > 0.5f * w;
-        const int usable = g_t.resolved_at + 1 == frame && !cut;
+        /* Under the rectangle's gate the history is the frame before's only if it was made from the same scene
+           image and history images, sizes, rectangle and fraction (temporal_rect_history). */
+        if (g_t.rect_images[0] != scene->img || g_t.rect_images[1] != g_t.history[0].img ||
+            g_t.rect_images[2] != g_t.history[1].img) {
+            g_t.rect_images[0] = scene->img;
+            g_t.rect_images[1] = g_t.history[0].img;
+            g_t.rect_images[2] = g_t.history[1].img;
+            g_t.rect_generation++;
+        }
+        TemporalRectStamp stamp = {0};
+        if (rect_ok)
+            stamp = (TemporalRectStamp){scene->gva,    g_t.rect_generation, (int)scene->sw, (int)scene->sh,
+                                        (int)scene->sw, (int)scene->sh,      rg->now.rect,   rg->now.fx,
+                                        rg->now.fy};
+        const int had = g_t.rect ? temporal_rect_history(rg, frame, &stamp) : g_t.resolved_at + 1 == frame;
+        const int usable = had && !cut;
         if (!usable && (g_t.resets++ < 4 || g_t.resets % 600 == 0))
             LOG("arceus-temporal: history not used (%s), %llu times so far\n", cut ? "camera cut" : "no frame before",
                 (unsigned long long)g_t.resets);
@@ -2002,7 +2219,7 @@ void vk_temporal_before(u64 fs0_hash) {
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-        fullscreen2(cb, scene->att, made->view, scene->sw, scene->sh, g_t.resolve_pipe, set, &rc);
+        fullscreen2(cb, scene->att, made->view, scene->sw, scene->sh, g_t.resolve_pipe, set, &rc, area);
         vk_barrier(cb, made->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -2024,7 +2241,7 @@ void vk_temporal_before(u64 fs0_hash) {
                 /* a second write of the scene colour after the resolve's: ordered behind it */
                 vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-                fullscreen(cb, scene->att, scene->sw, scene->sh, g_t.sharpen_pipe, sharpen_set, &sc);
+                fullscreen(cb, scene->att, scene->sw, scene->sh, g_t.sharpen_pipe, sharpen_set, &sc, area);
                 sharpened = 1;
             }
         }
@@ -2032,6 +2249,7 @@ void vk_temporal_before(u64 fs0_hash) {
         vk_rt_drawn(scene);
         g_t.history_newest = !g_t.history_newest;
         g_t.resolved_at = frame;
+        if (rect_ok) temporal_rect_wrote(&g_t.rect_gate, frame, &stamp);
         /* the numbers then compare the frame with what the resolve made of it */
         numbers_before = made->view;
         shown_before = usable ? kept->view : made->view;
@@ -2083,7 +2301,7 @@ void vk_temporal_before(u64 fs0_hash) {
         vk_barrier(cb, g_t.stats.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, 0,
                    VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        fullscreen(cb, g_t.stats.view, 2 * STATS_W, STATS_H, g_t.stats_pipe, set, &pc);
+        fullscreen(cb, g_t.stats.view, 2 * STATS_W, STATS_H, g_t.stats_pipe, set, &pc, NULL);
         vk_barrier(cb, g_t.stats.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -2104,13 +2322,13 @@ void vk_temporal_before(u64 fs0_hash) {
         g_t.stats_run = g_t.runs;
         memcpy(g_t.stats_drawn, g_t.drawn, sizeof g_t.stats_drawn);
         g_t.stats_draws = g_t.object_draws;
-        g_t.stats_height = scene->sh;
+        g_t.stats_height = area ? (u32)area->h : scene->sh;
     }
     if (taa || !g_t.view) return;
     /* a view of the probe, drawn over the scene */
     vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    fullscreen(cb, scene->att, scene->sw, scene->sh, g_t.view_pipe, set, &pc);
+    fullscreen(cb, scene->att, scene->sw, scene->sh, g_t.view_pipe, set, &pc, area);
     vk_surf_wrote(scene);
     vk_rt_drawn(scene);
 }

@@ -292,17 +292,48 @@ no matrix that a link gave one, and those it did not by reason (no link, still b
 rest alone, records not complete), the links that reached their fourth frame, the frames whose record was not
 complete by cause, and the frames whose object vectors were given up for a link.
 
+## The scene inside a rectangle (`SNX_ARCEUS_TEMPORAL_RECT=1`)
+
+With `SNX_ARCEUS_SCENE_SCALE` below 1 (`docs/arceus-timing.md`) the game draws the scene into the top left
+rectangle of its targets, which keep their size. Without this switch the temporal code takes the whole target only
+and leaves every such frame as drawn. With it, in `probe` and in `taa`, a frame goes through the rectangle's gate
+(the rules are pure functions in `temporal_math.h`, the wiring is in `gpu/vk/temporal.c`):
+
+- The frame is decided at its first draw that binds the scene camera's block, from that draw's viewport alone
+  (`rect_decide`). It is drawn with jitter only when that viewport is the one of the frame before and that frame
+  was confirmed. A draw that binds the block and does not draw into the scene's depth, or a block address first
+  seen in this frame, leaves the frame without a decision in its favour. A scene block bound at that draw is
+  read too, vertex stage first: it can only refuse the frame.
+- The frame is confirmed at the first draw into the scene's depth whose vertex or fragment program reads the
+  scene block (bank 3) as far as the used fraction at +0x628, by what the translator recorded of the program
+  (`rect_watch`). The fraction bound there must belong to the viewport and be the one of the frame before. A
+  stage that reads the block and has none bound, two stages that differ, or a fraction that does not fit leave
+  the frame as drawn, and a later draw does not mend it.
+- Every later scene draw until our passes is held to the frame's viewport and, in each stage that reads the
+  block, to the confirmed fraction.
+- Our passes run only for a frame that was accepted and confirmed (`vk_temporal_before`): vectors, resolve,
+  sharpen, numbers and views. Any other frame is left as drawn and gives the next one no history.
+- The passes write the rectangle only and read nothing outside it. A history centre outside it fetches
+  nothing. The history is used only when it was made from the same images, sizes, rectangle and fraction.
+- The rejection bound is an eighth of the rectangle's height, the numbers' lattice spans the rectangle, the
+  jitter has ceil(8 x W x H / (w x h)) offsets, and without `SNX_ARCEUS_TEMPORAL_MIPBIAS` the scene draws of a
+  jittered frame get a level bias of log2(w / W).
+
+A change of the viewport costs two frames without anti-aliasing: one gated, one that seeds the history. A change
+of the fraction alone costs one more, drawn with jitter and not resolved. Lines start with
+`arceus-temporal-rect:`. Not played yet.
+
 ## For the upscaler step: rules and an interface that nothing uses yet
 
-Two things are in the sources ahead of their use. Neither changes what the renderer does.
+Two things are in the sources ahead of their full use.
 
 The rules for a scene inside a rectangle of its targets (`SNX_ARCEUS_SCENE_SCALE`, `docs/arceus-timing.md`) are pure
 functions in `temporal_math.h` with host tests: the active rectangle of a signed viewport, a frame's geometry
 from the viewport, the fraction that belongs to a geometry, the gate with its candidate and history stamp, the
 refusal of a history fetch whose centre is outside the rectangle the history was made in, the rejection bound from
 the rectangle's height, the numbers' lattice, the jitter's offsets and the texture level shift. The game's corner
-of the target is a parameter. The renderer still uses the whole-target gate, so under a scale below 1 it refuses
-every frame.
+of the target is a parameter. The renderer uses them with `SNX_ARCEUS_TEMPORAL_RECT=1` (above). Without it the
+whole-target gate stays, so under a scale below 1 it refuses every frame.
 
 The gate works in two steps, because the frame's first draw (the depth pre-pass) has no program that reads the
 scene block. At that draw the frame is decided from its viewport alone: it is jittered when the geometry is the
