@@ -1360,6 +1360,227 @@ static void test_links(void) {
     }
 }
 
+/* The scene inside a rectangle of its targets. A target of 3840 by 2160 (and 1920 by 1080) with the game's scale. */
+static TemporalRectState rect_state(int w, int h, float f, int tw, int th) {
+    return (TemporalRectState){{0, 0, w, h}, tw, th, f, f};
+}
+/* one frame through the gate as the renderer would drive it: decided, perhaps disagreed with, resolved */
+enum { RECT_FINE, RECT_EARLY, RECT_LATE };
+static int rect_frame(TemporalRectGate* g, unsigned frame, const TemporalRectState* s, int fault, int* history) {
+    const TemporalRectStamp stamp = {0x5508c0000ull, 1, s->target_w, s->target_h, s->target_w, s->target_h, s->rect};
+    const int jitter = temporal_rect_decide(g, frame, fault == RECT_EARLY ? NULL : s);
+    if (fault == RECT_LATE) {
+        const TemporalRectState other = rect_state(s->rect.w - 2, s->rect.h, s->fx, s->target_w, s->target_h);
+        assert(temporal_rect_late(g, frame, &other));
+    } else
+        assert(temporal_rect_late(g, frame, s) == (fault == RECT_EARLY)); /* the same again is no disagreement */
+    *history = temporal_rect_history(g, frame, &stamp);
+    const int steady = temporal_rect_steady(g, frame);
+    assert(steady == (jitter && fault == RECT_FINE));
+    assert(!*history || steady);
+    temporal_rect_wrote(g, frame, &stamp);
+    return steady;
+}
+
+static void test_rect(void) {
+    TemporalRect r;
+    TemporalRectState s;
+    /* The rectangle of a signed viewport. The game's is 0,2160 3840x-2160 for a whole target: y is the bottom
+       edge and the height is negative. */
+    const TemporalViewport whole = {0.0f, 2160.0f, 3840.0f, -2160.0f};
+    assert(temporal_rect_from_viewport(&whole, 3840, 2160, &r) && r.x == 0 && r.y == 0 && r.w == 3840 && r.h == 2160);
+    const TemporalViewport up = {0.0f, 1620.0f, 2880.0f, -1620.0f}, down = {0.0f, 0.0f, 2880.0f, 1620.0f};
+    assert(temporal_rect_from_viewport(&up, 3840, 2160, &r) && r.x == 0 && r.y == 0 && r.w == 2880 && r.h == 1620);
+    assert(temporal_rect_from_viewport(&down, 3840, 2160, &r) && r.y == 0 && r.h == 1620);
+    const TemporalViewport low = {960.0f, 2160.0f, 2880.0f, -1620.0f};
+    assert(temporal_rect_from_viewport(&low, 3840, 2160, &r) && r.x == 960 && r.y == 540 && r.w == 2880 && r.h == 1620);
+    /* within 0.001 of whole numbers, else not a rectangle. Outside the target, empty, a width that is not
+       positive, not finite: none. */
+    const TemporalViewport near_whole = {0.0004f, 1620.0004f, 2879.9996f, -1620.0f};
+    assert(temporal_rect_from_viewport(&near_whole, 3840, 2160, &r) && r.w == 2880 && r.h == 1620 && r.y == 0);
+    const TemporalViewport bad[] = {
+        {0.5f, 1620.0f, 2880.0f, -1620.0f},  {0.0f, 1620.0f, 2880.25f, -1620.0f}, {0.0f, 1620.0f, 2880.0f, -1620.5f},
+        {-1.0f, 1620.0f, 2880.0f, -1620.0f}, {0.0f, 1619.0f, 2880.0f, -1620.0f},  {0.0f, 2161.0f, 3840.0f, -2160.0f},
+        {1.0f, 2160.0f, 3840.0f, -2160.0f},  {0.0f, 2160.0f, 3841.0f, -2160.0f},  {0.0f, 0.0f, 3840.0f, 2161.0f},
+        {0.0f, 0.0f, 0.0f, 2160.0f},         {0.0f, 0.0f, 3840.0f, 0.0f},         {3840.0f, 0.0f, -3840.0f, 2160.0f},
+        {NAN, 0.0f, 3840.0f, 2160.0f},       {0.0f, 0.0f, INFINITY, 2160.0f},     {0.0f, 0.0f, 3840.0f, -INFINITY},
+        {0.0f, 3e9f, 3840.0f, -3e9f}};
+    for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++)
+        assert(!temporal_rect_from_viewport(&bad[i], 3840, 2160, &r));
+
+    /* The structure of a frame. A whole target, and the game's rectangle at three scales and two target sizes. */
+    assert(temporal_rect_structure(&whole, 3840, 2160, 1.0f, 1.0f, TEMPORAL_CORNER_TOP_LEFT, &s) == TEMPORAL_RECT_OK);
+    assert(s.rect.w == 3840 && s.rect.h == 2160 && s.target_w == 3840 && s.fx == 1.0f);
+    const float scales[3] = {0.5f, 0.75f, 0.9f};
+    for (int big = 0; big < 2; big++)
+        for (int k = 0; k < 3; k++) {
+            const int tw = big ? 3840 : 1920, th = big ? 2160 : 1080;
+            const float f = scales[k], w = roundf((float)tw * f), h = roundf((float)th * f);
+            /* the rectangle in each corner of the target passes only when that corner is the game's */
+            for (int corner = 0; corner < 4; corner++) {
+                const int left = corner == TEMPORAL_CORNER_TOP_LEFT || corner == TEMPORAL_CORNER_BOTTOM_LEFT;
+                const int top = corner == TEMPORAL_CORNER_TOP_LEFT || corner == TEMPORAL_CORNER_TOP_RIGHT;
+                const TemporalViewport v = {left ? 0.0f : (float)tw - w, (top ? 0.0f : (float)th - h) + h, w, -h};
+                for (int game = 0; game < 4; game++)
+                    assert(temporal_rect_structure(&v, tw, th, f, f, game, &s) ==
+                           (game == corner ? TEMPORAL_RECT_OK : TEMPORAL_RECT_SHAPE));
+                assert(temporal_rect_structure(&v, tw, th, f, f, corner, &s) == TEMPORAL_RECT_OK);
+                assert(s.rect.w == (int)w && s.rect.h == (int)h && s.rect.x == (left ? 0 : tw - (int)w));
+                assert(s.rect.y == (top ? 0 : th - (int)h) && s.fx == f && s.fy == f);
+            }
+            /* one pixel off the fraction's size passes, two do not, on either axis */
+            const TemporalViewport one = {0.0f, h + 1.0f, w - 1.0f, -(h + 1.0f)}, two = {0.0f, h, w + 2.0f, -h};
+            const TemporalViewport tall = {0.0f, h - 2.0f, w, -(h - 2.0f)};
+            assert(temporal_rect_structure(&one, tw, th, f, f, TEMPORAL_CORNER_TOP_LEFT, &s) == TEMPORAL_RECT_OK);
+            assert(temporal_rect_structure(&two, tw, th, f, f, TEMPORAL_CORNER_TOP_LEFT, &s) == TEMPORAL_RECT_SHAPE);
+            assert(temporal_rect_structure(&tall, tw, th, f, f, TEMPORAL_CORNER_TOP_LEFT, &s) == TEMPORAL_RECT_SHAPE);
+        }
+    /* The fraction: finite and in (0, 1], both the same within 1e-6. The game's table has pairs that differ. */
+    const float fractions[] = {0.0f, -0.5f, 1.0001f, 2.0f, NAN, INFINITY, -INFINITY};
+    for (unsigned i = 0; i < sizeof fractions / sizeof *fractions; i++) {
+        assert(temporal_rect_structure(&up, 3840, 2160, fractions[i], 0.75f, 0, &s) == TEMPORAL_RECT_FRACTION);
+        assert(temporal_rect_structure(&up, 3840, 2160, 0.75f, fractions[i], 0, &s) == TEMPORAL_RECT_FRACTION);
+    }
+    assert(temporal_rect_structure(&up, 3840, 2160, 0.9f, 0.85f, 0, &s) == TEMPORAL_RECT_UNEQUAL);
+    assert(temporal_rect_structure(&up, 3840, 2160, 0.75f, 0.75001f, 0, &s) == TEMPORAL_RECT_UNEQUAL);
+    assert(temporal_rect_structure(&up, 3840, 2160, 0.75f, 0.75f, 0, &s) == TEMPORAL_RECT_OK);
+    /* a fraction that does not fit the rectangle, a viewport that is none, a target without a size */
+    assert(temporal_rect_structure(&up, 3840, 2160, 0.5f, 0.5f, 0, &s) == TEMPORAL_RECT_SHAPE);
+    assert(temporal_rect_structure(&bad[0], 3840, 2160, 0.75f, 0.75f, 0, &s) == TEMPORAL_RECT_VIEWPORT);
+    assert(temporal_rect_structure(&up, 0, 2160, 0.75f, 0.75f, 0, &s) == TEMPORAL_RECT_VIEWPORT);
+
+    /* The gate. Frame N brings a rectangle and is gated, N+1 is accepted and has no history, N+2 has it. */
+    const TemporalRectState a = rect_state(2880, 1620, 0.75f, 3840, 2160), b = rect_state(1920, 1080, 0.5f, 3840, 2160);
+    const TemporalRectState full = rect_state(3840, 2160, 1.0f, 3840, 2160);
+    TemporalRectGate g;
+    int history;
+    memset(&g, 0, sizeof g);
+    assert(!rect_frame(&g, 10, &a, RECT_FINE, &history) && !history);
+    assert(rect_frame(&g, 11, &a, RECT_FINE, &history) && !history);
+    assert(rect_frame(&g, 12, &a, RECT_FINE, &history) && history);
+    assert(rect_frame(&g, 13, &a, RECT_FINE, &history) && history);
+    /* a change from A to B and back, then the whole target and back to a rectangle: each change is gated once and
+       starts the history anew */
+    const TemporalRectState* turns[4] = {&b, &a, &full, &a};
+    unsigned f = 14;
+    for (int t = 0; t < 4; t++) {
+        assert(!rect_frame(&g, f++, turns[t], RECT_FINE, &history) && !history);
+        assert(rect_frame(&g, f++, turns[t], RECT_FINE, &history) && !history);
+        assert(rect_frame(&g, f++, turns[t], RECT_FINE, &history) && history);
+    }
+    /* the same rectangle in another target size, or with another fraction, is a change */
+    const TemporalRectState other_target = rect_state(2880, 1620, 0.75f, 3840, 2176);
+    TemporalRectState other_fraction = a;
+    other_fraction.fx = other_fraction.fy = 0.7501f;
+    assert(!rect_frame(&g, f++, &other_target, RECT_FINE, &history));
+    assert(!rect_frame(&g, f++, &other_fraction, RECT_FINE, &history));
+    /* Each of the three breaks (an unknown early binder, a late disagreement, a missing frame) at each of the
+       three positions. The frame of the break is not steady, and the frames after start again: gated, accepted
+       without history, then with it. */
+    for (int fault = 0; fault < 3; fault++)
+        for (int at = 0; at < 3; at++) {
+            memset(&g, 0, sizeof g);
+            f = 100;
+            for (int i = 0; i < at; i++) assert(rect_frame(&g, f++, &a, RECT_FINE, &history) == (i > 0));
+            if (fault == 0) assert(!rect_frame(&g, f++, &a, RECT_EARLY, &history) && !history);
+            if (fault == 1) assert(!rect_frame(&g, f++, &a, RECT_LATE, &history) && !history);
+            if (fault == 2) f++; /* a frame in which nothing was decided */
+            /* a break before anything was learned leaves nothing to lose: the sequence just starts */
+            assert(!rect_frame(&g, f++, &a, RECT_FINE, &history) && !history);
+            assert(rect_frame(&g, f++, &a, RECT_FINE, &history) && !history);
+            assert(rect_frame(&g, f++, &a, RECT_FINE, &history) && history);
+        }
+    /* a late disagreement leaves the frame not steady even after history was read for it, and no history is kept */
+    memset(&g, 0, sizeof g);
+    for (f = 200; f < 203; f++) rect_frame(&g, f, &a, RECT_FINE, &history);
+    assert(history && temporal_rect_decide(&g, 203, &a) && temporal_rect_steady(&g, 203));
+    assert(temporal_rect_late(&g, 203, &b) && !temporal_rect_steady(&g, 203) && !g.have_stamp && !g.have_candidate);
+    assert(temporal_rect_late(&g, 203, &a)); /* it stays not valid, whatever comes after */
+    /* The history's identity: another target, another making of it, another size, output size or rectangle, and
+       it is not used. The same, and it is. */
+    memset(&g, 0, sizeof g);
+    const TemporalRectStamp made = {0x5508c0000ull, 3, 3840, 2160, 3840, 2160, {0, 0, 2880, 1620}};
+    for (f = 300; f < 302; f++) temporal_rect_decide(&g, f, &a);
+    temporal_rect_wrote(&g, 301, &made);
+    assert(temporal_rect_decide(&g, 302, &a) && temporal_rect_history(&g, 302, &made));
+    TemporalRectStamp changed[6] = {made, made, made, made, made, made};
+    changed[0].target++;
+    changed[1].generation++;
+    changed[2].target_w = 1920;
+    changed[3].out_h = 1080;
+    changed[4].rect.w--;
+    changed[5].rect.y = 540;
+    for (int i = 0; i < 6; i++) assert(!temporal_rect_history(&g, 302, &changed[i]));
+    /* a gated frame writes no history */
+    memset(&g, 0, sizeof g);
+    temporal_rect_decide(&g, 400, &a);
+    temporal_rect_wrote(&g, 400, &made);
+    assert(!g.have_stamp);
+
+    /* A history fetch whose centre is outside the rectangle the history was made in is refused: the right and
+       bottom edges are outside, the left and top inside. The taps are kept inside as well, which is not that. */
+    const TemporalRect prior = {0, 0, 2880, 1620}, inset = {960, 540, 2880, 1620};
+    assert(temporal_rect_holds(&prior, 0.0, 0.0) && temporal_rect_holds(&prior, 2879.99, 1619.99));
+    assert(!temporal_rect_holds(&prior, 2880.0, 100.0) && !temporal_rect_holds(&prior, 100.0, 1620.0));
+    assert(!temporal_rect_holds(&prior, -0.01, 100.0) && !temporal_rect_holds(&prior, 100.0, -0.01));
+    assert(!temporal_rect_holds(&prior, 3000.5, 800.5) && !temporal_rect_holds(&prior, NAN, 1.0));
+    assert(!temporal_rect_holds(&prior, 1.0, INFINITY));
+    assert(temporal_rect_holds(&inset, 960.0, 540.0) && !temporal_rect_holds(&inset, 959.9, 540.0));
+    assert(!temporal_rect_holds(&inset, 3840.0, 600.0));
+    int tap[2];
+    temporal_rect_tap(&prior, 2880, 1620, tap);
+    assert(tap[0] == 2879 && tap[1] == 1619);
+    temporal_rect_tap(&inset, 0, 5000, tap);
+    assert(tap[0] == 960 && tap[1] == 2159);
+    temporal_rect_tap(&inset, 1000, 600, tap);
+    assert(tap[0] == 1000 && tap[1] == 600);
+
+    /* the bound of an object's own motion goes by the rectangle's height: 270 px whole, 202.5 at 0.75, 135 at 0.5 */
+    assert(temporal_rect_reject_bound(1, &full.rect) == 270.0 && temporal_rect_reject_bound(1, &a.rect) == 202.5);
+    assert(temporal_rect_reject_bound(1, &b.rect) == 135.0 && temporal_rect_reject_bound(0, &a.rect) == 0.0);
+
+    /* The numbers' lattice of 96 by 54 spans the rectangle: every sample inside it, the first and last cells'
+       middles where they belong, no sample twice while the rectangle has room, also away from the origin. */
+    const TemporalRect lattices[3] = {{0, 0, 3840, 2160}, {0, 0, 2880, 1620}, {960, 540, 1920, 1080}};
+    for (int k = 0; k < 3; k++) {
+        const TemporalRect* l = &lattices[k];
+        int at[2], last[2] = {-1, -1};
+        for (int j = 0; j < 54; j++)
+            for (int i = 0; i < 96; i++) {
+                temporal_rect_sample(l, i, j, 96, 54, at);
+                assert(temporal_rect_holds(l, at[0] + 0.5, at[1] + 0.5));
+                if (i) assert(at[0] > last[0]);
+                if (!i && j) assert(at[1] > last[1]);
+                last[0] = at[0];
+                last[1] = at[1];
+            }
+        temporal_rect_sample(l, 0, 0, 96, 54, at);
+        assert(at[0] == l->x + l->w / 192 && at[1] == l->y + l->h / 108);
+        temporal_rect_sample(l, 95, 53, 96, 54, at);
+        assert(at[0] == l->x + (191 * l->w) / 192 && at[1] == l->y + (107 * l->h) / 108);
+    }
+
+    /* the jitter's offsets: 8 whole, 15 at 0.75 (8 / 0.5625 = 14.2), 32 at 0.5, 10 at 0.9 (9.9) */
+    assert(temporal_rect_offsets(&full.rect, 3840, 2160) == 8 && temporal_rect_offsets(&a.rect, 3840, 2160) == 15);
+    assert(temporal_rect_offsets(&b.rect, 3840, 2160) == 32);
+    const TemporalRect nine = {0, 0, 3456, 1944};
+    assert(temporal_rect_offsets(&nine, 3840, 2160) == 10);
+    /* the texture level shift: log2 of the scale, 0 whole, and a set value wins */
+    assert(temporal_rect_bias(0, 0.0f, &full.rect, 3840) == 0.0f);
+    assert(temporal_rect_bias(0, 0.0f, &b.rect, 3840) == -1.0f);
+    assert(fabsf(temporal_rect_bias(0, 0.0f, &a.rect, 3840) - -0.41504f) < 1e-4f);
+    assert(temporal_rect_bias(1, -0.25f, &b.rect, 3840) == -0.25f);
+    assert(temporal_rect_bias(1, 0.0f, &b.rect, 3840) == 0.0f);
+    /* the jitter in pixels through the signed viewport: a quarter pixel right and up in clip is right and DOWN
+       the image by the same when the height is negative, and the rectangle's size scales it */
+    const double clip[2] = {0.5 / 2880.0, 0.5 / 1620.0};
+    double px[2];
+    temporal_jitter_pixels(clip, &up, px);
+    assert(fabs(px[0] - 0.25) < 1e-12 && fabs(px[1] - -0.25) < 1e-12);
+    temporal_jitter_pixels(clip, &down, px);
+    assert(fabs(px[0] - 0.25) < 1e-12 && fabs(px[1] - 0.25) < 1e-12);
+}
+
 int main(void) {
     test_jitter();
     test_jitter_matrices();
@@ -1382,6 +1603,7 @@ int main(void) {
     test_origin_shift();
     test_classes();
     test_links();
+    test_rect();
     puts("temporal_math: ok");
     return 0;
 }

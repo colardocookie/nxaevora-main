@@ -653,4 +653,175 @@ static inline double temporal_origin_shift(const float vp[16], const float world
     const double dy = (at[0][1] / at[0][2] - at[1][1] / at[1][2]) * 0.5 * height;
     return sqrt(dx * dx + dy * dy);
 }
+
+/* The scene inside a rectangle of its targets (the game's own 3D buffer scale): the rules of the temporal passes
+   for it, pure, not used by the renderer yet. The targets keep their size W by H. The scene is drawn into an
+   active rectangle of them, and the game's scene block reports the used fraction of each axis. */
+typedef struct {
+    int x, y, w, h; /* in pixels of the target, y down */
+} TemporalRect;
+static inline int temporal_rect_same(const TemporalRect* a, const TemporalRect* b) {
+    return a->x == b->x && a->y == b->y && a->w == b->w && a->h == b->h;
+}
+/* The active rectangle of a signed viewport, 1 when it is one: every edge finite, a whole number within 0.001,
+   and inside the target. A negative height means y is the bottom edge. A width that is not positive is refused. */
+static inline int temporal_rect_from_viewport(const TemporalViewport* v, int target_w, int target_h, TemporalRect* r) {
+    const double edge[4] = {(double)v->x, v->height < 0.0f ? (double)v->y + (double)v->height : (double)v->y,
+                            (double)v->width, fabs((double)v->height)};
+    int whole[4];
+    for (int i = 0; i < 4; i++) {
+        if (!isfinite(edge[i]) || fabs(edge[i]) > 1e9 || fabs(edge[i] - round(edge[i])) > 0.001) return 0;
+        whole[i] = (int)round(edge[i]);
+    }
+    if (whole[0] < 0 || whole[1] < 0 || whole[2] <= 0 || whole[3] <= 0) return 0;
+    if (whole[2] > target_w - whole[0] || whole[3] > target_h - whole[1]) return 0;
+    *r = (TemporalRect){whole[0], whole[1], whole[2], whole[3]};
+    return 1;
+}
+/* the corner of the target the game puts the rectangle in, in image axes */
+enum { TEMPORAL_CORNER_TOP_LEFT, TEMPORAL_CORNER_TOP_RIGHT, TEMPORAL_CORNER_BOTTOM_LEFT, TEMPORAL_CORNER_BOTTOM_RIGHT };
+/* what two frames must have in common, and why a frame has none of it */
+typedef struct {
+    TemporalRect rect;
+    int target_w, target_h;
+    float fx, fy; /* the used fraction as the scene block reports it */
+} TemporalRectState;
+enum {
+    TEMPORAL_RECT_OK,
+    TEMPORAL_RECT_FRACTION, /* a fraction not finite or not in (0, 1] */
+    TEMPORAL_RECT_UNEQUAL,  /* the two fractions more than 1e-6 apart: one scale for both axes only */
+    TEMPORAL_RECT_VIEWPORT, /* no whole rectangle inside the target */
+    TEMPORAL_RECT_SHAPE     /* not the whole target, and not the fraction's size at the game's corner */
+};
+/* A frame's structure from the viewport of the draw that decides it and the fraction read at that draw. OK with
+   the state filled in when the rectangle is the whole target, or sits at the game's corner with a size within one
+   pixel of round(W x fx) by round(H x fy). */
+static inline int temporal_rect_structure(const TemporalViewport* v, int target_w, int target_h, float fx, float fy,
+                                          int corner, TemporalRectState* out) {
+    if (!isfinite(fx) || !isfinite(fy) || !(fx > 0.0f) || !(fy > 0.0f) || fx > 1.0f || fy > 1.0f)
+        return TEMPORAL_RECT_FRACTION;
+    if (fabs((double)fx - (double)fy) > 1e-6) return TEMPORAL_RECT_UNEQUAL;
+    TemporalRect r;
+    if (target_w <= 0 || target_h <= 0 || !temporal_rect_from_viewport(v, target_w, target_h, &r))
+        return TEMPORAL_RECT_VIEWPORT;
+    const int whole = r.x == 0 && r.y == 0 && r.w == target_w && r.h == target_h;
+    if (!whole) {
+        const int left = corner == TEMPORAL_CORNER_TOP_LEFT || corner == TEMPORAL_CORNER_BOTTOM_LEFT;
+        const int top = corner == TEMPORAL_CORNER_TOP_LEFT || corner == TEMPORAL_CORNER_TOP_RIGHT;
+        const double want_w = round((double)target_w * (double)fx), want_h = round((double)target_h * (double)fy);
+        if (r.x != (left ? 0 : target_w - r.w) || r.y != (top ? 0 : target_h - r.h)) return TEMPORAL_RECT_SHAPE;
+        if (fabs((double)r.w - want_w) > 1.0 || fabs((double)r.h - want_h) > 1.0) return TEMPORAL_RECT_SHAPE;
+    }
+    *out = (TemporalRectState){r, target_w, target_h, fx, fy};
+    return TEMPORAL_RECT_OK;
+}
+static inline int temporal_rect_state_same(const TemporalRectState* a, const TemporalRectState* b) {
+    return temporal_rect_same(&a->rect, &b->rect) && a->target_w == b->target_w && a->target_h == b->target_h &&
+           a->fx == b->fx && a->fy == b->fy;
+}
+/* what a history was made from: any difference and it is not used */
+typedef struct {
+    unsigned long long target, generation; /* the scene colour's identity and which making of it */
+    int target_w, target_h, out_w, out_h;
+    TemporalRect rect;
+} TemporalRectStamp;
+static inline int temporal_rect_stamp_same(const TemporalRectStamp* a, const TemporalRectStamp* b) {
+    return a->target == b->target && a->generation == b->generation && a->target_w == b->target_w &&
+           a->target_h == b->target_h && a->out_w == b->out_w && a->out_h == b->out_h &&
+           temporal_rect_same(&a->rect, &b->rect);
+}
+/* The gate for the rectangle. The candidate is the structure of the frame before, kept whenever that frame was
+   structurally valid, also when it was gated. The stamp is set by a frame that wrote history. A frame is accepted
+   only when it equals the candidate: a new rectangle is gated once, then accepted without history, then with it.
+   A frame without structure, a late disagreement or a missing frame clears both. Frames count from 1. */
+typedef struct {
+    int have_candidate, have_stamp;
+    unsigned candidate_at, stamp_at; /* the frames they are of */
+    TemporalRectState candidate;
+    TemporalRectStamp stamp;
+    unsigned decided_at; /* the frame decided last, and what was decided */
+    int accepted;
+} TemporalRectGate;
+static inline void temporal_rect_clear(TemporalRectGate* g) { g->have_candidate = g->have_stamp = 0; }
+/* The frame is decided, once, at its first draw that binds the scene camera's block. state is its structure, NULL
+   when it has none (temporal_rect_structure refused, or an unknown draw bound the block earlier). 1: accepted,
+   the frame is jittered. 0: gated, the frame is left as drawn. */
+static inline int temporal_rect_decide(TemporalRectGate* g, unsigned frame, const TemporalRectState* state) {
+    if (g->have_candidate && g->candidate_at + 1 != frame) temporal_rect_clear(g); /* a frame is missing */
+    if (g->have_stamp && g->stamp_at + 1 != frame) g->have_stamp = 0;
+    g->decided_at = frame;
+    g->accepted = 0;
+    if (!state) {
+        temporal_rect_clear(g);
+        return 0;
+    }
+    g->accepted = g->have_candidate && temporal_rect_state_same(&g->candidate, state);
+    if (!g->accepted) g->have_stamp = 0; /* a change starts the history anew */
+    g->have_candidate = 1;
+    g->candidate_at = frame;
+    g->candidate = *state;
+    return g->accepted;
+}
+/* A later draw into the scene, or a later scene block, in the same frame: state is what it shows, NULL for none.
+   1 when it disagrees with what the frame was decided on. The frame is then not valid: left as drawn, and the
+   frames after start again. */
+static inline int temporal_rect_late(TemporalRectGate* g, unsigned frame, const TemporalRectState* state) {
+    if (g->decided_at != frame || !g->have_candidate || g->candidate_at != frame) return g->decided_at == frame;
+    if (state && temporal_rect_state_same(&g->candidate, state)) return 0;
+    temporal_rect_clear(g);
+    g->accepted = 0;
+    return 1;
+}
+/* 1 while the frame is accepted and nothing disagreed: it may be resolved */
+static inline int temporal_rect_steady(const TemporalRectGate* g, unsigned frame) {
+    return g->decided_at == frame && g->accepted && g->have_candidate && g->candidate_at == frame;
+}
+/* 1 when the history of the frame before may be used by this frame's resolve: made by that frame, from this */
+static inline int temporal_rect_history(const TemporalRectGate* g, unsigned frame, const TemporalRectStamp* now) {
+    return temporal_rect_steady(g, frame) && g->have_stamp && g->stamp_at + 1 == frame &&
+           temporal_rect_stamp_same(&g->stamp, now);
+}
+/* a steady frame wrote history */
+static inline void temporal_rect_wrote(TemporalRectGate* g, unsigned frame, const TemporalRectStamp* stamp) {
+    if (!temporal_rect_steady(g, frame)) return;
+    g->have_stamp = 1;
+    g->stamp_at = frame;
+    g->stamp = *stamp;
+}
+/* A history fetch: 1 when the centre it would fetch at, in pixels of the target, lies in the rectangle the history
+   was made in. Tested before any sampling. Clamping the taps (temporal_rect_tap) does not stand in for it. */
+static inline int temporal_rect_holds(const TemporalRect* prior, double x, double y) {
+    return isfinite(x) && isfinite(y) && x >= (double)prior->x && y >= (double)prior->y &&
+           x < (double)prior->x + (double)prior->w && y < (double)prior->y + (double)prior->h;
+}
+/* a neighbour's texel kept inside the rectangle: outside it the targets hold stale data */
+static inline void temporal_rect_tap(const TemporalRect* r, int x, int y, int out[2]) {
+    out[0] = x < r->x ? r->x : x > r->x + r->w - 1 ? r->x + r->w - 1 : x;
+    out[1] = y < r->y ? r->y : y > r->y + r->h - 1 ? r->y + r->h - 1 : y;
+}
+/* the bound of an object's own motion: an eighth of the rectangle's height, not of the target's */
+static inline double temporal_rect_reject_bound(int on, const TemporalRect* r) {
+    return temporal_reject_bound(on, (double)r->h);
+}
+/* Sample i, j of the numbers' lattice of nx by ny: the pixel at the middle of its cell of the rectangle, in whole
+   numbers as shaders/temporal_stats.frag does it. Every sample lies inside the rectangle. */
+static inline void temporal_rect_sample(const TemporalRect* r, int i, int j, int nx, int ny, int out[2]) {
+    out[0] = r->x + (int)(((long long)(2 * i + 1) * r->w) / (2LL * nx));
+    out[1] = r->y + (int)(((long long)(2 * j + 1) * r->h) / (2LL * ny));
+}
+/* the jitter's offsets: eight for a whole target, more as the rectangle is smaller, ceil(8 x W x H / (w x h)) */
+static inline unsigned temporal_rect_offsets(const TemporalRect* r, int target_w, int target_h) {
+    const long long area = (long long)r->w * r->h, whole = 8LL * target_w * target_h;
+    return area > 0 ? (unsigned)((whole + area - 1) / area) : 8u;
+}
+/* the texture level shift under a scale: log2 of it, unless a value was set, which wins. 0 for a whole target. */
+static inline float temporal_rect_bias(int set, float value, const TemporalRect* r, int target_w) {
+    if (set) return value;
+    return r->w > 0 && r->w < target_w ? (float)log2((double)r->w / (double)target_w) : 0.0f;
+}
+/* the jitter in pixels of the image: half the jitter in clip units over w times the viewport's signed size */
+static inline void temporal_jitter_pixels(const double jitter[2], const TemporalViewport* v, double out[2]) {
+    out[0] = 0.5 * jitter[0] * (double)v->width;
+    out[1] = 0.5 * jitter[1] * (double)v->height;
+}
 #endif
