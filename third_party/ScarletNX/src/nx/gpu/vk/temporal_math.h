@@ -875,6 +875,51 @@ static inline int temporal_upscaler_frame(const TemporalRectGate* g, unsigned fr
     out->reset = cut || !temporal_rect_history(g, frame, stamp);
     return 1;
 }
+/* An upscaler's contexts. A context is made for one set of sizes: created, then what it must run once is recorded
+   by its prepare step and submitted by the runtime, and when that submission has completed it is published and
+   may be used. A change of any size is a new context. One is on its way at a time, and until it is published
+   the frames of its size are not evaluated. */
+typedef struct {
+    int target_w, target_h, render_w, render_h, out_w, out_h;
+} TemporalUpscalerSizes;
+typedef struct {
+    int live;    /* a published context there is */
+    int pending; /* 0 none on its way, 1 one submitted, 2 one whose prepare failed, held until it may be freed */
+    TemporalUpscalerSizes live_sizes, pending_sizes;
+} TemporalUpscalerContexts;
+static inline int temporal_upscaler_sizes_same(const TemporalUpscalerSizes* a, const TemporalUpscalerSizes* b) {
+    return a->target_w == b->target_w && a->target_h == b->target_h && a->render_w == b->render_w &&
+           a->render_h == b->render_h && a->out_w == b->out_w && a->out_h == b->out_h;
+}
+/* 1 when the published context is for the frame's sizes: only then is the frame evaluated */
+static inline int temporal_upscaler_ready(const TemporalUpscalerContexts* c, const TemporalUpscalerSizes* sizes) {
+    return c->live && temporal_upscaler_sizes_same(&c->live_sizes, sizes);
+}
+/* 1 when a context has to be created and prepared for these sizes: none is published for them and none is on
+   its way or held */
+static inline int temporal_upscaler_must_create(const TemporalUpscalerContexts* c,
+                                                const TemporalUpscalerSizes* sizes) {
+    return !temporal_upscaler_ready(c, sizes) && !c->pending;
+}
+/* a context was created for these sizes and its prepare recorded and submitted (ok 1), or prepare failed */
+static inline void temporal_upscaler_created(TemporalUpscalerContexts* c, const TemporalUpscalerSizes* sizes,
+                                             int ok) {
+    c->pending = ok ? 1 : 2;
+    c->pending_sizes = *sizes;
+}
+/* The pending context's submission has completed, or the command buffer of a failed one was discarded. PUBLISHED:
+   it is the published context now. RETIRE: also, and the one it replaced goes to be destroyed after its frames
+   in flight. RELEASE: a failed one may be destroyed now, and nothing was published. */
+enum { TEMPORAL_UPSCALER_NOTHING, TEMPORAL_UPSCALER_PUBLISHED, TEMPORAL_UPSCALER_RETIRE, TEMPORAL_UPSCALER_RELEASE };
+static inline int temporal_upscaler_completed(TemporalUpscalerContexts* c) {
+    const int pending = c->pending, had = c->live;
+    c->pending = 0;
+    if (pending == 2) return TEMPORAL_UPSCALER_RELEASE;
+    if (pending != 1) return TEMPORAL_UPSCALER_NOTHING;
+    c->live = 1;
+    c->live_sizes = c->pending_sizes;
+    return had ? TEMPORAL_UPSCALER_RETIRE : TEMPORAL_UPSCALER_PUBLISHED;
+}
 /* The upscaler's failures in a row. A frame that fails writes no history, so the next one has the reset. 1 when
    the upscaler is to be off for the rest of the session. */
 #define TEMPORAL_UPSCALER_FAILURES 8

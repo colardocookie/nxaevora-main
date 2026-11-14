@@ -1780,6 +1780,19 @@ static void test_upscaler(void) {
     assert(temporal_upscaler_frame(&g, 16, &scaled_stamp, &part, jitter, 0, &out));
     assert(fabs(out.jitter[0]) <= 1.0 && fabs(out.jitter[1]) <= 1.0 && isfinite(out.vector_scale[0]));
     assert(isfinite((float)out.jitter[0]) && isfinite((float)out.jitter[1]) && isfinite((float)out.vector_scale[1]));
+    /* A huge viewport, put into the gate's state by hand since no structure test would let it in: it is no
+       rectangle of the target, so nothing is given, whatever the jitter. */
+    {
+        const TemporalViewport vast = {0.0f, 3e9f, 3e9f, -3e9f};
+        const TemporalRectState vast_state = {{0, 0, 1440, 810}, vast, 1920, 1080, 0.75f, 0.75f};
+        const double tiny[2] = {1e-12, 1e-12};
+        TemporalRectGate h;
+        memset(&h, 0, sizeof h);
+        temporal_rect_decide(&h, 30, &vast_state);
+        assert(temporal_rect_decide(&h, 31, &vast_state) && temporal_rect_steady(&h, 31));
+        assert(!temporal_upscaler_frame(&h, 31, &scaled_stamp, &vast, tiny, 0, &out));
+        assert(!temporal_upscaler_frame(&h, 31, &scaled_stamp, &vast, jitter, 0, &out));
+    }
     /* a history made for another output size is not used: reset */
     other = scaled_stamp;
     other.out_w = 2560;
@@ -1788,6 +1801,64 @@ static void test_upscaler(void) {
     assert(temporal_rect_late(&g, 16, &full));
     assert(!temporal_upscaler_frame(&g, 16, &scaled_stamp, &part, jitter, 0, &out));
 
+    /* The contexts. One is made for one set of sizes and may be used only when the submission of its preparation
+       has completed. A change of any size is a new context, and until that one is published the frames of the
+       new size are not evaluated, while the old one stays the published one. */
+    {
+        const TemporalUpscalerSizes at_full = {1920, 1080, 1920, 1080, 1920, 1080};
+        const TemporalUpscalerSizes at_part = {1920, 1080, 1440, 810, 1920, 1080};
+        TemporalUpscalerSizes at_other = at_part;
+        at_other.out_h = 2160;
+        TemporalUpscalerContexts c = {0};
+        assert(!temporal_upscaler_ready(&c, &at_full) && temporal_upscaler_must_create(&c, &at_full));
+        assert(temporal_upscaler_completed(&c) == TEMPORAL_UPSCALER_NOTHING);
+        temporal_upscaler_created(&c, &at_full, 1);
+        /* submitted, not completed: not ready, and no second one is made, for these sizes or others */
+        assert(!temporal_upscaler_ready(&c, &at_full) && !temporal_upscaler_must_create(&c, &at_full));
+        assert(!temporal_upscaler_must_create(&c, &at_part));
+        assert(temporal_upscaler_completed(&c) == TEMPORAL_UPSCALER_PUBLISHED);
+        assert(temporal_upscaler_ready(&c, &at_full) && !temporal_upscaler_must_create(&c, &at_full));
+        assert(temporal_upscaler_completed(&c) == TEMPORAL_UPSCALER_NOTHING);
+        /* A change of size. The frames of the new size are not ready, a new context is made, and while it is
+           on its way the old one is still the published one. When it completes the old one is retired. */
+        assert(!temporal_upscaler_ready(&c, &at_part) && temporal_upscaler_must_create(&c, &at_part));
+        temporal_upscaler_created(&c, &at_part, 1);
+        assert(!temporal_upscaler_ready(&c, &at_part) && temporal_upscaler_ready(&c, &at_full));
+        assert(!temporal_upscaler_must_create(&c, &at_part) && !temporal_upscaler_must_create(&c, &at_other));
+        assert(temporal_upscaler_completed(&c) == TEMPORAL_UPSCALER_RETIRE);
+        assert(temporal_upscaler_ready(&c, &at_part) && !temporal_upscaler_ready(&c, &at_full));
+        /* each size counts: another output height is another context */
+        assert(!temporal_upscaler_ready(&c, &at_other) && temporal_upscaler_must_create(&c, &at_other));
+        /* A prepare that fails publishes nothing. It counts as a failure like an evaluation's. The failed context
+           is held, and no new one is made, until its command buffer is gone: then it may be freed, the published
+           one is as it was, and the next frame tries again. */
+        unsigned failed = 0;
+        temporal_upscaler_created(&c, &at_other, 0);
+        assert(!temporal_upscaler_failed(&failed, 0) && failed == 1);
+        assert(!temporal_upscaler_ready(&c, &at_other) && !temporal_upscaler_must_create(&c, &at_other));
+        assert(temporal_upscaler_ready(&c, &at_part));
+        assert(temporal_upscaler_completed(&c) == TEMPORAL_UPSCALER_RELEASE);
+        assert(temporal_upscaler_ready(&c, &at_part) && temporal_upscaler_must_create(&c, &at_other));
+        /* With the gate: frames 20 and 21 are steady while the first context is on its way and are not
+           evaluated. Frame 22 is the first evaluated one and has the reset, frame 23 has not. */
+        TemporalUpscalerContexts contexts = {0};
+        memset(&g, 0, sizeof g);
+        temporal_rect_decide(&g, 19, &full);
+        for (unsigned frame = 20; frame < 24; frame++) {
+            assert(temporal_rect_decide(&g, frame, &full));
+            assert(temporal_upscaler_frame(&g, frame, &full_stamp, &whole, jitter, 0, &out));
+            const TemporalUpscalerSizes sizes = {out.target_w, out.target_h, out.render.w, out.render.h, out.out_w,
+                                                 out.out_h};
+            if (temporal_upscaler_must_create(&contexts, &sizes)) temporal_upscaler_created(&contexts, &sizes, 1);
+            const int ready = temporal_upscaler_ready(&contexts, &sizes);
+            assert(ready == (frame >= 22));
+            /* the submission made in frame 20 completes after frame 21 was looked at */
+            if (frame == 21) assert(temporal_upscaler_completed(&contexts) == TEMPORAL_UPSCALER_PUBLISHED);
+            if (!ready) continue;
+            assert(out.reset == (frame == 22));
+            temporal_rect_wrote(&g, frame, &full_stamp);
+        }
+    }
     /* failures in a row: the eighth turns the upscaler off, a success before that starts the count again */
     unsigned failures = 0;
     for (int i = 0; i < 7; i++) assert(!temporal_upscaler_failed(&failures, 0));

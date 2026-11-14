@@ -21,15 +21,18 @@ enum {
     SNX_UPSCALER_FAILED = 2   /* this call failed: its output is not used */
 };
 
-/* What the library needs of Vulkan, asked twice: before the instance is made (device is VK_NULL_HANDLE) and before
-   the device is made. The arrays and the chain stay the library's and stay valid until destroy or unload. If the
-   device cannot be made with them the upscaler is off and nothing else changes. */
+/* What the library needs of Vulkan. The arrays and the chain are the library's and stay valid until it is
+   unloaded, which the runtime does only when every context and all work in flight are gone (in this version: at
+   the end of the session). If the instance or the device cannot be made with them, it is made again without
+   them: the upscaler is off and everything else goes on as it was. */
 typedef struct {
-    uint32_t instance_extension_count, device_extension_count;
-    const char* const* instance_extensions;
-    const char* const* device_extensions;
-    const void* device_features; /* a pNext chain of feature structures to turn on, or NULL */
-} SnxUpscalerNeeds;
+    uint32_t count;
+    const char* const* names;
+} SnxUpscalerExtensions;
+typedef struct {
+    SnxUpscalerExtensions extensions;
+    const void* features; /* a pNext chain of feature structures to turn on, or NULL */
+} SnxUpscalerDeviceNeeds;
 
 /* The inputs' fixed properties. The runtime states all of them: a library that cannot take one refuses. */
 enum {
@@ -43,16 +46,23 @@ enum {
 /* The images are the runtime's own. Depth is a single channel 32 bit float image, never a depth and stencil view.
    The output has a 16 bit float format. The runtime turns it into the scene's format itself. */
 typedef struct {
-    VkInstance instance;
-    VkPhysicalDevice physical_device;
-    VkDevice device;
-    VkQueue queue; /* the runtime's one queue: evaluate records into the runtime's command buffer for it */
-    uint32_t queue_family;
-    uint32_t flags;              /* SNX_UPSCALER_* above */
     uint32_t render_w, render_h; /* the largest render rectangle */
     uint32_t image_w, image_h;   /* the size of the colour, depth and motion images, which hold the rectangle */
     uint32_t output_w, output_h;
+} SnxUpscalerSizes;
+/* A context is made for one set of sizes and keeps it. */
+typedef struct {
+    SnxUpscalerSizes sizes;
+    VkInstance instance;
+    VkPhysicalDevice physical_device;
+    VkDevice device;
+    PFN_vkGetInstanceProcAddr instance_lookup;
+    PFN_vkGetDeviceProcAddr device_lookup;
+    VkQueue queue; /* the runtime's one queue: the library records into the runtime's command buffers for it */
+    uint32_t queue_family;
+    uint32_t flags; /* SNX_UPSCALER_* above */
     VkFormat colour_format, depth_format, motion_format, output_format;
+    const char* folder; /* one the library may write to, UTF-8 */
 } SnxUpscalerCreate;
 
 /* What the library says of itself at create. One that must submit work on its own is refused by the runtime. One
@@ -91,13 +101,26 @@ typedef struct {
 
 typedef struct SnxUpscaler SnxUpscaler; /* a library's context */
 
+/* The steps, in the order the runtime takes them. A change of any size is a new context: create, prepare, the
+   submission's completion, and only then it takes the old one's place. Until then the frames of the new size are
+   not evaluated and are left as drawn. The old context is destroyed after its frames in flight. One context is
+   on its way at a time (temporal_upscaler_* in temporal_math.h has the states). */
 typedef struct {
     uint32_t abi;     /* SNX_UPSCALER_ABI as the library was built with */
     const char* name; /* for the log */
-    int (*query)(VkPhysicalDevice device, SnxUpscalerNeeds* needs);
+    /* before the instance is made: no handles */
+    int (*instance_extensions)(SnxUpscalerExtensions* out);
+    /* after the instance, before the device */
+    int (*device_extensions)(VkInstance instance, VkPhysicalDevice device, PFN_vkGetInstanceProcAddr lookup,
+                             SnxUpscalerDeviceNeeds* out);
+    /* A context for one set of sizes. No work for the GPU is done or recorded here. */
     int (*create)(const SnxUpscalerCreate* create, SnxUpscalerTraits* traits, SnxUpscaler** out);
+    /* What the context must run once is recorded into the runtime's command buffer, or nothing. The runtime
+       submits it. The context is ready, and evaluate may be called, only when that submission has completed. */
+    int (*prepare)(SnxUpscaler* upscaler, VkCommandBuffer cb);
     int (*evaluate)(SnxUpscaler* upscaler, const SnxUpscalerFrame* frame);
-    /* The runtime calls it only after every frame in flight that used the context has completed. */
+    /* The runtime calls it only after every frame in flight that used the context has completed, and for a
+       context whose prepare failed only after that command buffer was discarded or its submission completed. */
     void (*destroy)(SnxUpscaler* upscaler);
 } SnxUpscalerApi;
 
