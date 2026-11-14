@@ -3441,6 +3441,93 @@ static void test_selftest_projection(void) {
     }
 }
 
+/* The native suite's printed assertions: what a session's contexts were made with and handed, against what a
+   case expects of them. */
+static void test_selftest_proof(void) {
+    const uint32_t flag = 1u << 4, other = 0xf;
+    const double finite[2] = {5000.0, 5000.0}, mixed[2] = {5000.0, INFINITY}, back[2] = {INFINITY, 5000.0};
+    SelftestProof p = {0};
+    /* nothing happened: no count is right for it, and a count of zero is no expectation */
+    assert(selftest_proof(&p, 1, finite, flag, 7) == SELFTEST_PROOF_COUNT);
+    assert(selftest_proof(&p, 0, finite, flag, 0) == SELFTEST_PROOF_COUNT);
+    selftest_proof_frame(&p, 1, 5000.0f, 7); /* a frame with no context is no one's */
+    assert(p.frames[0] == 0 && p.depth_sum == 7);
+    /* one context made for a finite far plane, three frames, the first with the reset */
+    selftest_proof_made(&p, other);
+    assert(selftest_proof(&p, 1, finite, flag, 7) == SELFTEST_PROOF_UNUSED);
+    selftest_proof_frame(&p, 1, 5000.0f, 5);
+    selftest_proof_frame(&p, 0, 5000.0f, 6);
+    selftest_proof_frame(&p, 0, 5000.0f, 7);
+    assert(p.contexts == 1 && p.frames[0] == 3 && p.first_reset[0] == 1 && !p.far_mixed[0]);
+    assert(selftest_proof(&p, 1, finite, flag, 7) == SELFTEST_PROOF_OK);
+    assert(selftest_proof(&p, 2, finite, flag, 7) == SELFTEST_PROOF_COUNT);
+    assert(selftest_proof(&p, 1, back, flag, 7) == SELFTEST_PROOF_FLAG); /* expected at infinity, made finite */
+    assert(selftest_proof(&p, 1, finite, flag, 6) == SELFTEST_PROOF_DEPTH); /* the image of the frame before */
+    {
+        const double other_far[1] = {120.0};
+        assert(selftest_proof(&p, 1, other_far, flag, 7) == SELFTEST_PROOF_FAR);
+    }
+    /* a second context for a far plane at infinity: the flag, the value and the reset are each needed */
+    selftest_proof_made(&p, other | flag);
+    assert(selftest_proof(&p, 2, mixed, flag, 7) == SELFTEST_PROOF_UNUSED);
+    selftest_proof_frame(&p, 1, INFINITY, 9);
+    selftest_proof_frame(&p, 0, INFINITY, 9);
+    assert(selftest_proof(&p, 2, mixed, flag, 9) == SELFTEST_PROOF_OK);
+    assert(selftest_proof(&p, 2, finite, flag, 9) == SELFTEST_PROOF_FLAG);
+    assert(selftest_proof(&p, 2, back, flag, 9) == SELFTEST_PROOF_FLAG);
+    assert(selftest_proof(&p, 1, finite, flag, 9) == SELFTEST_PROOF_COUNT);
+    {
+        SelftestProof q = p;
+        q.flags[1] = other; /* made without the flag and handed infinity */
+        assert(selftest_proof(&q, 2, mixed, flag, 9) == SELFTEST_PROOF_FLAG);
+        q = p;
+        q.flags[0] = other | flag; /* made with the flag and handed 5000 */
+        assert(selftest_proof(&q, 2, mixed, flag, 9) == SELFTEST_PROOF_FLAG);
+        q = p;
+        q.far_plane[1] = 3.4028234663852886e38f; /* the largest float is not infinity */
+        assert(selftest_proof(&q, 2, mixed, flag, 9) == SELFTEST_PROOF_FAR);
+        q = p;
+        q.far_plane[1] = -INFINITY;
+        assert(selftest_proof(&q, 2, mixed, flag, 9) == SELFTEST_PROOF_FAR);
+        q = p;
+        q.far_plane[0] = NAN;
+        assert(selftest_proof(&q, 2, mixed, flag, 9) == SELFTEST_PROOF_FAR);
+        q = p;
+        q.first_reset[1] = 0; /* the new context's first evaluate without the reset */
+        assert(selftest_proof(&q, 2, mixed, flag, 9) == SELFTEST_PROOF_RESET);
+        q = p;
+        q.first_reset[0] = 0;
+        assert(selftest_proof(&q, 2, mixed, flag, 9) == SELFTEST_PROOF_RESET);
+    }
+    /* a context handed two far planes is mixed, whatever the last one was */
+    {
+        SelftestProof q = {0};
+        selftest_proof_made(&q, other);
+        selftest_proof_frame(&q, 1, 5000.0f, 1);
+        selftest_proof_frame(&q, 0, 120.0f, 1);
+        selftest_proof_frame(&q, 0, 5000.0f, 1);
+        assert(q.far_mixed[0] && selftest_proof(&q, 1, finite, flag, 1) == SELFTEST_PROOF_FAR);
+        /* a first evaluate without the reset stays without it, however many resets follow */
+        SelftestProof r = {0};
+        selftest_proof_made(&r, other);
+        selftest_proof_frame(&r, 0, 5000.0f, 1);
+        selftest_proof_frame(&r, 1, 5000.0f, 1);
+        assert(selftest_proof(&r, 1, finite, flag, 1) == SELFTEST_PROOF_RESET);
+    }
+    /* more contexts than are kept: counted, never judged as right */
+    {
+        SelftestProof q = {0};
+        const double five[5] = {5000.0, 5000.0, 5000.0, 5000.0, 5000.0};
+        for (int k = 0; k < 5; k++) {
+            selftest_proof_made(&q, other);
+            selftest_proof_frame(&q, 1, 5000.0f, 1);
+        }
+        assert(q.contexts == 5 && q.frames[3] == 1);
+        assert(selftest_proof(&q, 5, five, flag, 1) == SELFTEST_PROOF_COUNT);
+        assert(selftest_proof(&q, 4, five, flag, 1) == SELFTEST_PROOF_COUNT);
+    }
+}
+
 static void test_selftest(void) {
     const SelftestViewport down = {0, 0, 640, 360}, up = {0, 360, 640, -360};
     double n[2], p[2], a[3], b[3], depth, texel[2];
@@ -3705,6 +3792,7 @@ int main(void) {
     test_gpu_time();
     test_selftest();
     test_selftest_projection();
+    test_selftest_proof();
     test_selftest_edges();
     puts("temporal_math: ok");
     return 0;

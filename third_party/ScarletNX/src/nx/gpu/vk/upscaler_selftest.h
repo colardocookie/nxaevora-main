@@ -569,4 +569,60 @@ static inline int selftest_resized(double apart, double noise, double control) {
     return apart <= SELFTEST_RESIZED ? SELFTEST_PASS : SELFTEST_FAIL;
 }
 static inline int selftest_apart(double difference) { return isfinite(difference) && difference >= SELFTEST_APART; }
+/* What a session shows of the contexts it used, for the native suite's printed assertions: how many came into use,
+   and of the first four each one's create flags, the frames it evaluated, whether the first of them had the
+   reset, and the far plane it was handed (mixed: not the same in every frame). And the checksum of the depth
+   image of the last frame evaluated. */
+#define SELFTEST_PROOF_MOST 4
+typedef struct {
+    unsigned contexts;
+    uint32_t flags[SELFTEST_PROOF_MOST];
+    unsigned frames[SELFTEST_PROOF_MOST];
+    int first_reset[SELFTEST_PROOF_MOST], far_mixed[SELFTEST_PROOF_MOST];
+    float far_plane[SELFTEST_PROOF_MOST];
+    uint64_t depth_sum;
+} SelftestProof;
+/* a context came into use, made with these flags */
+static inline void selftest_proof_made(SelftestProof* p, uint32_t flags) {
+    if (p->contexts < SELFTEST_PROOF_MOST) p->flags[p->contexts] = flags;
+    p->contexts++;
+}
+/* a frame was evaluated on the newest context with these numbers and this depth image */
+static inline void selftest_proof_frame(SelftestProof* p, uint32_t reset, float far_plane, uint64_t depth_sum) {
+    const unsigned k = p->contexts - 1;
+    p->depth_sum = depth_sum;
+    if (!p->contexts || k >= SELFTEST_PROOF_MOST) return;
+    if (!p->frames[k]) {
+        p->first_reset[k] = reset != 0;
+        p->far_plane[k] = far_plane;
+    } else if (!(p->far_plane[k] == far_plane))
+        p->far_mixed[k] = 1;
+    p->frames[k]++;
+}
+/* The first thing that is not as a case expects, or OK. Exactly n contexts came into use and each evaluated a
+   frame. Context k was made with the far-plane flag exactly when far[k] is infinite, and was handed far[k] as a
+   float in every frame. Each context's first evaluate had the reset. The last depth image handed over has this
+   checksum. */
+enum {
+    SELFTEST_PROOF_OK,
+    SELFTEST_PROOF_COUNT,
+    SELFTEST_PROOF_UNUSED,
+    SELFTEST_PROOF_FLAG,
+    SELFTEST_PROOF_FAR,
+    SELFTEST_PROOF_RESET,
+    SELFTEST_PROOF_DEPTH
+};
+static inline int selftest_proof(const SelftestProof* p, unsigned n, const double far[], uint32_t infinite_flag,
+                                 uint64_t depth_sum) {
+    if (p->contexts != n || !n || n > SELFTEST_PROOF_MOST) return SELFTEST_PROOF_COUNT;
+    for (unsigned k = 0; k < n; k++)
+        if (!p->frames[k]) return SELFTEST_PROOF_UNUSED;
+    for (unsigned k = 0; k < n; k++)
+        if (!(p->flags[k] & infinite_flag) != !(isinf(far[k]) && far[k] > 0.0)) return SELFTEST_PROOF_FLAG;
+    for (unsigned k = 0; k < n; k++)
+        if (p->far_mixed[k] || !(p->far_plane[k] == (float)far[k])) return SELFTEST_PROOF_FAR;
+    for (unsigned k = 0; k < n; k++)
+        if (p->first_reset[k] != 1) return SELFTEST_PROOF_RESET;
+    return p->depth_sum == depth_sum ? SELFTEST_PROOF_OK : SELFTEST_PROOF_DEPTH;
+}
 #endif

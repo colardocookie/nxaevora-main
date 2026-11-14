@@ -504,14 +504,33 @@ The cases, each run with a viewport of negative and of positive height (render 3
    same content at the first texel of images of its own size: at most 0.01 apart.
 7. No message of the validation layer, with its synchronisation checks on, in any case. Without the layer
    installed the case is not run, which is not a pass.
+The scene's depth is made from two distances (5 for the background, 1/6 for the patch) through a projection in
+the game's form, depth = (A z + B) / (-z) with A = n / (f - n) and B = n f / (f - n). The cases above use a near
+plane of 0.1 and a far plane at infinity, with the create flag for that: their 24 bit depths are the 0.02 and
+0.6 they always had.
+
 The native suite, for both heights of the viewport: the render size is the output's size (480 x 270), so 8
-offsets, as the game at full size has it. Three changes are each held by one rule: the picture after the change
-against a fresh context's on the same frames, at most 0.005 apart, with the noise of two fresh contexts beside
-it and a control that is wrong on purpose and must be over the budget and over the noise, or nothing is decided.
-A reset (a new pattern with the flag, against a context that saw that frame alone, the control without the
-flag). A change of a create property with the sizes kept (a context made without the flag for linear colours
-over 1, then one with it, the control one offset ahead of the reported jitter). A change of size (320 x 180 to
-the native size, the same control). The error against the true picture is logged and has no margin.
+offsets, as the game at full size has it. It runs in two forms. The main one is the game's far plane as a run
+showed it: near 0.1, far 5000, the create flag for a far plane at infinity off, the far plane handed as a
+number. The second is the far plane at infinity with the flag on. Every change is held by one rule: the picture
+after the change against a fresh context's of the destination on the same frames, at most 0.005 apart, with the
+noise of two fresh contexts beside it and a control that is wrong on purpose and must be over the budget and
+over the noise, or nothing is decided. In each form:
+- a reset (a new pattern with the flag, against a context that saw that frame alone, the control without the
+  flag),
+- a change of a create property with the sizes kept (a context made without the flag for linear colours over 1,
+  then one with it, the control one offset ahead of the reported jitter),
+- a change of size (320 x 180 to the native size, the same control).
+Between the forms, in both directions and at the same sizes: the first frames with one far plane, then a fresh
+run's frames with the other, held against the destination form's fresh context with its noise and control.
+In the game's form, a case with two depths: the nearer patch moving over the still background, judged as case
+3 is, by the vector's signs inside the patch and by the band the patch left against the run with the depth
+convention turned, by 1.25. The patch's and the background's errors are printed.
+Each of these, and each form's fresh context, also prints what its session showed and fails when it is not what
+the case expects: how many contexts came into use, each one's create flags (the far-plane flag on or off), the
+far plane it was handed in every frame, that its first evaluate had the reset, and that the checksum of the last
+depth image handed over is that of the image generated again for the expected far plane. The error against the
+true picture is logged and has no margin.
 
 The edge case, for the jitter's signs, on a picture of its own: grey, with one near-vertical and one
 near-horizontal edge from 0.25 to 0.75 at a slope of 1 in 10, each in a region of 96 by 96 output pixels. Its

@@ -58,6 +58,7 @@ static struct {
        cases. The cases left are not run and the mode fails. */
     int unknown;
     u64 edge_sums[2][3]; /* the edge case's images by orientation: colour, depth, vectors (edges_announce) */
+    SelftestProof proof;    /* of the session closed last (session_close) */
     SelftestHanded* record; /* when set: what each frame of the inputs handed the adapter, by the frame's number */
     int record_n;
 } g;
@@ -94,7 +95,7 @@ typedef struct {
     SnxUpscaler *live, *pending;
     unsigned frame, failures, skipped, evaluated, published; /* published: contexts that came into use */
     unsigned wrote; /* the last frame an ungated run evaluated, 0 for none */
-    u32 made_flags[4]; /* the create flags of the first contexts that came into use, in their order */
+    SelftestProof proof; /* the contexts that came into use and what they were handed, for printed assertions */
     unsigned evaluated_with; /* how many contexts had come into use at the last evaluate */
     Picture colour, depth, motion, output; /* what the adapter is handed */
     Picture wide_colour, wide_depth, wide_motion; /* for inputs that sit inside larger images */
@@ -537,8 +538,10 @@ static int session_open(Session* s, const Inputs* in, const SnxUpscalerTraits* t
     return pictures_make(s, in, traits);
 }
 
-/* Once the device's state is not known a session frees nothing: the device may still be using it all. */
+/* Once the device's state is not known a session frees nothing: the device may still be using it all. What the
+   session showed of its contexts is kept for the case that ran it. */
 static void session_close(Session* s) {
+    g.proof = s->proof;
     if (!idle()) return;
     if (s->live) g.api->destroy(s->live);
     if (s->pending) g.api->destroy(s->pending);
@@ -599,7 +602,7 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
     case TEMPORAL_UPSCALER_PUBLISHED:
         s->live = s->pending;
         s->pending = NULL;
-        if (s->published < 4) s->made_flags[s->published] = flags;
+        selftest_proof_made(&s->proof, flags);
         s->published++;
         break;
     default: /* a failed or stale one: its command buffer was discarded or has completed, so it may go */
@@ -767,6 +770,8 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     else
         temporal_rect_wrote(&s->gate, s->frame, &stamp);
     s->evaluated++;
+    selftest_proof_frame(&s->proof, frame.reset, frame.far_plane,
+                         selftest_checksum(in->depth + (size_t)i * pixels, pixels * 4, SELFTEST_CHECKSUM_START));
     const u16* words = (const u16*)g.staging_bytes;
     for (size_t p = 0; p < (size_t)in->ow * in->oh; p++)
         for (int c = 0; c < 3; c++) {
@@ -1199,12 +1204,36 @@ static int resize(int up) {
     return counted && beats && settles && same == SELFTEST_PASS;
 }
 
-/* The native suite: the render size is the output's size, so 8 offsets, as the game at full size has it. A reset,
-   a changed create property and a changed size are each held by selftest_resized: the picture after the change
-   against a fresh context's on the same frames, the noise of two fresh contexts, and a control that is wrong on
-   purpose. docs/arceus-temporal.md has the three cases. The error against the true picture is only logged. */
+/* The native suite: the render size is the output's size, so 8 offsets, as the game at full size has it. Two forms:
+   the game's far plane (near 0.1, far 5000, the create flag for a far plane at infinity off) and a far plane at
+   infinity. Every comparison is selftest_resized's: against a fresh context of the destination on the same
+   frames, with the noise of two fresh contexts and a control that is wrong on purpose. The doc lists the cases. */
 #define NATIVE_W 480
 #define NATIVE_H 270
+static const int NATIVE_SIZE[4] = {NATIVE_W, NATIVE_H, NATIVE_W, NATIVE_H};
+static const SelftestProjection FINITE = {NEAR_PLANE, 5000.0};
+static const double STILL[2] = {0.0, 0.0};
+static const Variant WITHOUT_HDR = {1, 1, 1, 1, 1, 0, 1};
+static const SnxUpscalerTraits NATIVE_TRAITS = {.colour_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                                .depth_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                                .motion_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                                .output_usage =
+                                                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+enum { N_AGAIN, N_AHEAD, N_OLD, N_PLAIN, N_WORK, N_WITH, N_WITHOUT, N_ALONE, N_ALONE_AGAIN, N_OTHER, N_SCRATCH };
+typedef struct {
+    int up;
+    const char* way;
+    double *reference, *scratch[N_SCRATCH];
+    u8 *regions, *everywhere; /* each pixel's region for the still scene, and the whole picture as one region */
+} Native;
+typedef struct {
+    const SelftestProjection* form;
+    const char* name;
+    Inputs in;         /* the still scene's frames, made for the form */
+    double* fresh;     /* a fresh context's last picture */
+    double noise, off; /* two fresh contexts apart, and the control one offset ahead against the fresh one */
+    int ran;
+} NativeForm;
 static const char* native_word(int ran, int verdict) {
     return !ran                       ? "FAIL (a run could not be made)"
            : verdict == SELFTEST_PASS ? "PASS"
@@ -1212,117 +1241,178 @@ static const char* native_word(int ran, int verdict) {
                                          "is decided)"
                                        : "FAIL";
 }
-static int native(int up) {
-    static const int SIZE[4] = {NATIVE_W, NATIVE_H, NATIVE_W, NATIVE_H}, SMALL[4] = {320, 180, 320, 180};
-    static const Variant without_hdr = {1, 1, 1, 1, 1, 0, 1};
-    static const double still[2] = {0.0, 0.0};
-    const size_t pixels = (size_t)NATIVE_W * NATIVE_H, size = sizeof(double) * 3 * pixels;
-    const char* way = up ? "up" : "down";
-    SnxUpscalerTraits traits = {.colour_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
-                                .depth_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
-                                .motion_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
-                                .output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
-    enum { FRESH, AGAIN, AHEAD, OLD, CHANGED, RESIZED, WITH, WITHOUT, ALONE, ALONE_AGAIN, PLAIN, PICTURES };
-    double* picture[PICTURES] = {0};
-    double* reference = malloc(size);
-    u8* regions = malloc(pixels);
-    Inputs in, ahead, cut, small;
+
+/* The checksum of the depth image of frame i of these inputs as it is generated for a projection: made again
+   here, pixel by pixel, for the form a case expects, to be held against the checksum of what a frame handed
+   over. Not for inputs made one offset ahead. */
+static u64 depth_made(const Inputs* in, int i, const SelftestProjection* form) {
+    SelftestFrame f = in->scene[i];
+    const int x0 = (int)in->vp.x, y0 = (int)(in->vp.h < 0 ? in->vp.y + in->vp.h : in->vp.y);
+    u64 sum = SELFTEST_CHECKSUM_START;
+    f.depth[0] = selftest_depth(form, SELFTEST_FAR_DISTANCE);
+    f.depth[1] = selftest_depth(form, SELFTEST_NEAR_DISTANCE);
+    for (int py = 0; py < in->h; py++)
+        for (int qx = 0; qx < in->w; qx++) {
+            double rgb[3], z = 1.0, texel[2];
+            if (qx >= x0 && qx < x0 + in->rw && py >= y0 && py < y0 + in->rh)
+                selftest_input(&f, &in->vp, in->w, in->h, qx, py, rgb, &z, texel);
+            const u32 word = selftest_d24(z);
+            sum = selftest_checksum(&word, sizeof word, sum);
+        }
+    return sum;
+}
+
+/* A case's printed assertions (selftest_proof): the contexts a session used, against what the case expects. far:
+   the far plane each context is expected to be made for and handed. last, i, form: the inputs and the frame
+   whose depth image the last evaluate must have been handed, as generated for that form. 1 when all hold. */
+static int native_asserted(const char* name, const SelftestProof* p, unsigned contexts, const double far[],
+                           const Inputs* last, int i, const SelftestProjection* form) {
+    static const char* const words[] = {"PASS",
+                                        "FAIL (the number of contexts)",
+                                        "FAIL (a context evaluated no frame)",
+                                        "FAIL (the create flag for a far plane at infinity)",
+                                        "FAIL (the far plane handed over)",
+                                        "FAIL (a context's first evaluate had no reset)",
+                                        "FAIL (the depth image handed over)"};
+    const u64 made = depth_made(last, i, form);
+    const int reason = selftest_proof(p, contexts, far, SNX_UPSCALER_FAR_PLANE_INFINITE, made);
+    char text[640];
+    size_t at = 0;
+    text[0] = 0;
+    for (unsigned k = 0; k < p->contexts && k < SELFTEST_PROOF_MOST && at < sizeof text; k++)
+        at += (size_t)snprintf(text + at, sizeof text - at,
+                               " Context %u: flags 0x%x, made for a far plane %s, %u frames, the first %s the "
+                               "reset, far handed %.9g%s.",
+                               k + 1, p->flags[k],
+                               p->flags[k] & SNX_UPSCALER_FAR_PLANE_INFINITE ? "at infinity" : "that is finite",
+                               p->frames[k], p->first_reset[k] ? "with" : "WITHOUT", (double)p->far_plane[k],
+                               p->far_mixed[k] ? " AND OTHER VALUES" : "");
+    LOG(ST "%s, asserted: %u contexts came into use, %u expected.%s The last depth image handed over %016llx, the "
+           "one generated for a far plane of %g %016llx: %s\n",
+        name, p->contexts, contexts, text, (unsigned long long)p->depth_sum, form->far_plane,
+        (unsigned long long)made, words[reason]);
+    return reason == SELFTEST_PROOF_OK;
+}
+
+/* A form's inputs and what every case of it is held against: a fresh context's picture, its repeat for the noise
+   and the control one offset ahead. Logged only: the error against the true picture and what the flag for
+   colours over 1 changes. The fresh context itself is asserted. */
+static int native_base(Native* n, NativeForm* F) {
+    Inputs ahead;
+    char name[160];
+    double first = NAN, last = NAN;
+    snprintf(name, sizeof name, "native suite %s, %s, a fresh context", n->way, F->name);
+    memset(&ahead, 0, sizeof ahead);
+    const int made = inputs_project(&F->in, F->form, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 0, 0, 0, 0,
+                                    0) &&
+                     inputs_project(&ahead, F->form, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 0, 0, 0, 1,
+                                    0);
+    if (!made) {
+        LOG(ST "%s: could not be made: FAIL\n", name);
+        inputs_free(&ahead);
+        return 0;
+    }
+    LOG(ST "native suite %s, %s: near %g, far %g, the create flag for a far plane at infinity %s, render and "
+           "output %dx%d, %d offsets, %d frames a run\n",
+        n->way, F->name, F->form->near_plane, F->form->far_plane, isinf(F->form->far_plane) ? "on" : "off", NATIVE_W,
+        NATIVE_H, F->in.offsets, F->in.frames);
+    truth(&F->in, n->up, n->reference, n->regions);
+    F->ran = run(&F->in, &CONFIGURED, 0, F->fresh, &first, &last, n->regions, NULL);
+    const SelftestProof fresh = g.proof;
+    F->ran = F->ran && run(&F->in, &CONFIGURED, 0, n->scratch[N_AGAIN], NULL, NULL, NULL, NULL) &&
+             run(&ahead, &CONFIGURED, 0, n->scratch[N_AHEAD], NULL, NULL, NULL, NULL) &&
+             run(&F->in, &WITHOUT_HDR, 0, n->scratch[N_OLD], NULL, NULL, NULL, NULL);
+    inputs_free(&ahead);
+    if (!F->ran) {
+        LOG(ST "%s: a run could not be made: FAIL\n", name);
+        return 0;
+    }
+    F->noise = difference(&F->in, F->fresh, n->scratch[N_AGAIN], n->regions, SELFTEST_BACKGROUND);
+    F->off = difference(&F->in, n->scratch[N_AHEAD], F->fresh, n->regions, SELFTEST_BACKGROUND);
+    plain(&F->in, F->in.frames - 1, n->up, n->scratch[N_PLAIN]);
+    LOG(ST "native suite %s, %s: logged only, no margin: error against the true picture %.6f, of one frame scaled "
+           "plainly %.6f. Change a frame over the first cycle %.6f, over the last %.6f. Two fresh contexts differ "
+           "by %.6f, a context made without the flag for colours over 1 from one made with it by %.6f\n",
+        n->way, F->name, difference(&F->in, F->fresh, n->reference, n->regions, SELFTEST_BACKGROUND),
+        difference(&F->in, n->scratch[N_PLAIN], n->reference, n->regions, SELFTEST_BACKGROUND), first, last, F->noise,
+        difference(&F->in, n->scratch[N_OLD], F->fresh, n->regions, SELFTEST_BACKGROUND));
+    return native_asserted(name, &fresh, 1, &F->form->far_plane, &F->in, F->in.frames - 1, F->form);
+}
+
+/* A form's three cases: a changed create property (the flag for colours over 1), a changed size and a reset. */
+static int native_cases(Native* n, NativeForm* F) {
+    static const int SMALL[4] = {320, 180, 320, 180};
+    const double far[2] = {F->form->far_plane, F->form->far_plane};
+    const int end = F->in.frames - 1;
+    double* work = n->scratch[N_WORK];
+    char name[160];
+    Inputs cut, small;
     Session s;
     int pass = 1;
-    memset(&in, 0, sizeof in);
-    memset(&ahead, 0, sizeof ahead);
     memset(&cut, 0, sizeof cut);
     memset(&small, 0, sizeof small);
     memset(&s, 0, sizeof s);
-    int ok = !not_run("native suite", up) && reference && regions;
-    for (int k = 0; k < PICTURES; k++) ok = (picture[k] = malloc(size)) != NULL && ok;
-    ok = ok && inputs_make(&in, SIZE, NATIVE_W, NATIVE_H, 0, 0, up, still, 0, 0) &&
-         inputs_build(&ahead, SIZE, NATIVE_W, NATIVE_H, 0, 0, up, still, 0, 0, 0, 1, 0) &&
-         inputs_make(&cut, SIZE, NATIVE_W, NATIVE_H, 0, 0, up, still, 0, 1) &&
-         inputs_make(&small, SMALL, 320, 180, 0, 0, up, still, 0, 0);
-    if (!ok) {
-        LOG(ST "native suite %s: could not be made: FAIL\n", way);
-        pass = 0;
-    } else {
-        LOG(ST "native suite %s: render and output %dx%d, %d offsets, %d frames a run\n", way, NATIVE_W, NATIVE_H,
-            in.offsets, in.frames);
-        truth(&in, up, reference, regions);
-        /* the fresh context, its repeat for the noise, the control one offset ahead, and the old property alone */
-        double first = NAN, last = NAN;
-        const int ran = run(&in, &CONFIGURED, 0, picture[FRESH], &first, &last, regions, NULL) &&
-                        run(&in, &CONFIGURED, 0, picture[AGAIN], NULL, NULL, NULL, NULL) &&
-                        run(&ahead, &CONFIGURED, 0, picture[AHEAD], NULL, NULL, NULL, NULL) &&
-                        run(&in, &without_hdr, 0, picture[OLD], NULL, NULL, NULL, NULL);
-        const double noise =
-            ran ? difference(&in, picture[FRESH], picture[AGAIN], regions, SELFTEST_BACKGROUND) : NAN;
-        const double off = ran ? difference(&in, picture[AHEAD], picture[FRESH], regions, SELFTEST_BACKGROUND) : NAN;
-        if (ran) {
-            plain(&in, in.frames - 1, up, picture[PLAIN]);
-            LOG(ST "native suite %s: logged only, no margin: error against the true picture %.6f, of one frame "
-                   "scaled plainly %.6f. Change a frame over the first cycle %.6f, over the last %.6f. Two fresh "
-                   "contexts differ by %.6f, a context made without the flag for colours over 1 from one made "
-                   "with it by %.6f\n",
-                way, difference(&in, picture[FRESH], reference, regions, SELFTEST_BACKGROUND),
-                difference(&in, picture[PLAIN], reference, regions, SELFTEST_BACKGROUND), first, last, noise,
-                difference(&in, picture[OLD], picture[FRESH], regions, SELFTEST_BACKGROUND));
-        }
-        /* a change of a create property: the session's first frames without the flag, then every frame a fresh
-           run hands over (all but the gate's first) with it, on a context made anew */
-        int evaluated = 0, changed = ran && session_open(&s, &in, &traits);
-        for (int i = 0; changed && i < 9; i++)
-            changed = frame_run(&s, &in, i, &without_hdr, 0, picture[CHANGED]) >= 0;
-        const unsigned before = changed ? s.evaluated : 0;
-        for (int i = 1; changed && i < in.frames; i++) {
-            const int r = frame_run(&s, &in, i, &CONFIGURED, 0, picture[CHANGED]);
-            changed = r >= 0;
-            evaluated += r > 0;
-        }
-        /* the property really changed: two contexts came into use, the first made without the flag and the
-           second with it, and the picture compared is the second's, against a fresh context made with it */
-        const int remade = s.published == 2 && !(s.made_flags[0] & SNX_UPSCALER_COLOUR_LINEAR_HDR) &&
-                           (s.made_flags[1] & SNX_UPSCALER_COLOUR_LINEAR_HDR);
-        const int counted = changed && before == 8 && evaluated == in.frames - 1 && remade;
-        const unsigned contexts = s.published;
-        const u32 flags_before = s.made_flags[0], flags_after = s.made_flags[1];
-        session_close(&s);
-        const double apart =
-            changed ? difference(&in, picture[CHANGED], picture[FRESH], regions, SELFTEST_BACKGROUND) : NAN;
-        int verdict = changed ? selftest_resized(apart, noise, off) : SELFTEST_FAIL;
-        LOG(ST "native suite %s, a create property changed: %u frames evaluated without the flag, %d with it, %u "
-               "contexts made with the flags 0x%x and then 0x%x: %s. The remade context's picture against a fresh "
-               "context's made with the flag, on the same frames %.6f (at most %.3f), two fresh contexts %.6f, the "
-               "control one offset ahead %.6f (over %.3f and over the noise): %s\n",
-            way, before, evaluated, contexts, flags_before, flags_after, counted ? "PASS" : "FAIL", apart,
-            SELFTEST_RESIZED, noise, off, SELFTEST_RESIZED, native_word(changed, verdict));
-        pass &= counted && verdict == SELFTEST_PASS;
-        /* a change of size, on one session: the small size's frames, then the native ones */
-        memset(&s, 0, sizeof s);
-        evaluated = 0;
-        int resized = ran && session_open(&s, &small, &traits);
-        for (int i = 0; resized && i < 9; i++)
-            resized = frame_run(&s, &small, i, &CONFIGURED, 0, picture[RESIZED]) >= 0;
-        const unsigned small_frames = resized ? s.evaluated : 0;
-        resized = resized && pictures_make(&s, &in, &traits);
-        for (int i = 0; resized && i < in.frames; i++) {
-            const int r = frame_run(&s, &in, i, &CONFIGURED, 0, picture[RESIZED]);
-            resized = r >= 0;
-            evaluated += r > 0;
-        }
-        const int sized = resized && small_frames == 8 && evaluated == in.frames - 1 && s.published == 2;
-        const unsigned made = s.published;
-        session_close(&s);
-        const double moved =
-            resized ? difference(&in, picture[RESIZED], picture[FRESH], regions, SELFTEST_BACKGROUND) : NAN;
-        verdict = resized ? selftest_resized(moved, noise, off) : SELFTEST_FAIL;
-        LOG(ST "native suite %s, the size changed: %u frames evaluated at 320x180, %d at %dx%d, %u contexts made: "
-               "%s. The picture against a fresh context's on the same frames %.6f (at most %.3f), two fresh "
-               "contexts %.6f, the control one offset ahead %.6f: %s\n",
-            way, small_frames, evaluated, NATIVE_W, NATIVE_H, made, sized ? "PASS" : "FAIL", moved, SELFTEST_RESIZED,
-            noise, off, native_word(resized, verdict));
-        pass &= sized && verdict == SELFTEST_PASS;
-        /* a reset: the last frame shows the other pattern. With the flag, without it, and a context that is
-           given the gate's first frame and that frame alone, twice. */
-        Inputs alone = cut;
+    const int ran = F->ran && !g.unknown &&
+                    inputs_project(&cut, F->form, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 0, 1, 0, 0, 0) &&
+                    inputs_project(&small, F->form, SMALL, 320, 180, 0, 0, n->up, STILL, 0, 0, 0, 0, 0);
+    /* a change of a create property: the session's first frames without the flag, then every frame a fresh run
+       hands over (all but the gate's first) with it, on a context made anew */
+    snprintf(name, sizeof name, "native suite %s, %s, a create property changed", n->way, F->name);
+    int evaluated = 0, changed = ran && session_open(&s, &F->in, &NATIVE_TRAITS);
+    for (int i = 0; changed && i < 9; i++) changed = frame_run(&s, &F->in, i, &WITHOUT_HDR, 0, work) >= 0;
+    const unsigned before = changed ? s.evaluated : 0;
+    for (int i = 1; changed && i <= end; i++) {
+        const int r = frame_run(&s, &F->in, i, &CONFIGURED, 0, work);
+        changed = r >= 0;
+        evaluated += r > 0;
+    }
+    /* the property really changed: two contexts came into use, the first made without the flag and the second
+       with it, and the picture compared is the second's, against a fresh context made with it */
+    SelftestProof proof = s.proof;
+    const int remade = proof.contexts == 2 && !(proof.flags[0] & SNX_UPSCALER_COLOUR_LINEAR_HDR) &&
+                       (proof.flags[1] & SNX_UPSCALER_COLOUR_LINEAR_HDR);
+    const int counted = changed && before == 8 && evaluated == end && remade;
+    session_close(&s);
+    const double apart = changed ? difference(&F->in, work, F->fresh, n->regions, SELFTEST_BACKGROUND) : NAN;
+    int verdict = changed ? selftest_resized(apart, F->noise, F->off) : SELFTEST_FAIL;
+    LOG(ST "%s: %u frames evaluated without the flag, %d with it, %u contexts made with the flags 0x%x and then "
+           "0x%x: %s. The remade context's picture against a fresh context's made with the flag, on the same "
+           "frames %.6f (at most %.3f), two fresh contexts %.6f, the control one offset ahead %.6f (over %.3f and "
+           "over the noise): %s\n",
+        name, before, evaluated, proof.contexts, proof.flags[0], proof.flags[1], counted ? "PASS" : "FAIL", apart,
+        SELFTEST_RESIZED, F->noise, F->off, SELFTEST_RESIZED, native_word(changed, verdict));
+    pass &= counted && verdict == SELFTEST_PASS;
+    pass &= changed && native_asserted(name, &proof, 2, far, &F->in, end, F->form);
+    /* a change of size, on one session: the small size's frames, then the native ones */
+    snprintf(name, sizeof name, "native suite %s, %s, the size changed", n->way, F->name);
+    memset(&s, 0, sizeof s);
+    evaluated = 0;
+    int resized = ran && session_open(&s, &small, &NATIVE_TRAITS);
+    for (int i = 0; resized && i < 9; i++) resized = frame_run(&s, &small, i, &CONFIGURED, 0, work) >= 0;
+    const unsigned small_frames = resized ? s.evaluated : 0;
+    resized = resized && pictures_make(&s, &F->in, &NATIVE_TRAITS);
+    for (int i = 0; resized && i <= end; i++) {
+        const int r = frame_run(&s, &F->in, i, &CONFIGURED, 0, work);
+        resized = r >= 0;
+        evaluated += r > 0;
+    }
+    proof = s.proof;
+    const int sized = resized && small_frames == 8 && evaluated == end && proof.contexts == 2;
+    session_close(&s);
+    const double moved = resized ? difference(&F->in, work, F->fresh, n->regions, SELFTEST_BACKGROUND) : NAN;
+    verdict = resized ? selftest_resized(moved, F->noise, F->off) : SELFTEST_FAIL;
+    LOG(ST "%s: %u frames evaluated at 320x180, %d at %dx%d, %u contexts made: %s. The picture against a fresh "
+           "context's on the same frames %.6f (at most %.3f), two fresh contexts %.6f, the control one offset "
+           "ahead %.6f: %s\n",
+        name, small_frames, evaluated, NATIVE_W, NATIVE_H, proof.contexts, sized ? "PASS" : "FAIL", moved,
+        SELFTEST_RESIZED, F->noise, F->off, native_word(resized, verdict));
+    pass &= sized && verdict == SELFTEST_PASS;
+    pass &= resized && native_asserted(name, &proof, 2, far, &F->in, end, F->form);
+    /* a reset: the last frame shows the other pattern. With the flag, without it, and a context that is given
+       the gate's first frame and that frame alone, twice. */
+    snprintf(name, sizeof name, "native suite %s, %s, a reset", n->way, F->name);
+    Inputs alone = cut;
+    if (ran) {
         const size_t skip = (size_t)cut.frames - 2;
         alone.scene += skip;
         alone.colour += skip * cut.w * cut.h;
@@ -1330,32 +1420,136 @@ static int native(int up) {
         alone.motion += skip * cut.w * cut.h * 4;
         alone.frames = 2;
         alone.cut_at = -1;
-        u8* everywhere = malloc(pixels);
-        const int reset = everywhere && run(&cut, &CONFIGURED, 1, picture[WITH], NULL, NULL, NULL, NULL) &&
-                          run(&cut, &CONFIGURED, 0, picture[WITHOUT], NULL, NULL, NULL, NULL) &&
-                          run(&alone, &CONFIGURED, 0, picture[ALONE], NULL, NULL, NULL, NULL) &&
-                          run(&alone, &CONFIGURED, 0, picture[ALONE_AGAIN], NULL, NULL, NULL, NULL);
-        if (everywhere) memset(everywhere, SELFTEST_BACKGROUND, pixels);
-        const double same =
-            reset ? difference(&cut, picture[WITH], picture[ALONE], everywhere, SELFTEST_BACKGROUND) : NAN;
-        const double twice =
-            reset ? difference(&cut, picture[ALONE], picture[ALONE_AGAIN], everywhere, SELFTEST_BACKGROUND) : NAN;
-        const double kept =
-            reset ? difference(&cut, picture[WITHOUT], picture[ALONE], everywhere, SELFTEST_BACKGROUND) : NAN;
-        verdict = reset ? selftest_resized(same, twice, kept) : SELFTEST_FAIL;
-        LOG(ST "native suite %s, a reset: the reset frame against a fresh context's %.6f (at most %.3f), two fresh "
-               "contexts %.6f, the control without the flag %.6f (over %.3f and over the noise): %s\n",
-            way, same, SELFTEST_RESIZED, twice, kept, SELFTEST_RESIZED, native_word(reset, verdict));
-        pass &= verdict == SELFTEST_PASS;
-        free(everywhere);
     }
-    inputs_free(&in);
-    inputs_free(&ahead);
+    int reset = ran && run(&cut, &CONFIGURED, 1, n->scratch[N_WITH], NULL, NULL, NULL, NULL);
+    proof = g.proof;
+    reset = reset && run(&cut, &CONFIGURED, 0, n->scratch[N_WITHOUT], NULL, NULL, NULL, NULL) &&
+            run(&alone, &CONFIGURED, 0, n->scratch[N_ALONE], NULL, NULL, NULL, NULL) &&
+            run(&alone, &CONFIGURED, 0, n->scratch[N_ALONE_AGAIN], NULL, NULL, NULL, NULL);
+    const double same =
+        reset ? difference(&cut, n->scratch[N_WITH], n->scratch[N_ALONE], n->everywhere, SELFTEST_BACKGROUND) : NAN;
+    const double twice = !reset ? NAN
+                                : difference(&cut, n->scratch[N_ALONE], n->scratch[N_ALONE_AGAIN], n->everywhere,
+                                             SELFTEST_BACKGROUND);
+    const double kept =
+        reset ? difference(&cut, n->scratch[N_WITHOUT], n->scratch[N_ALONE], n->everywhere, SELFTEST_BACKGROUND) : NAN;
+    verdict = reset ? selftest_resized(same, twice, kept) : SELFTEST_FAIL;
+    LOG(ST "%s: the reset frame against a fresh context's %.6f (at most %.3f), two fresh contexts %.6f, the "
+           "control without the flag %.6f (over %.3f and over the noise): %s\n",
+        name, same, SELFTEST_RESIZED, twice, kept, SELFTEST_RESIZED, native_word(reset, verdict));
+    pass &= verdict == SELFTEST_PASS;
+    pass &= reset && native_asserted(name, &proof, 1, far, &cut, cut.frames - 1, F->form);
     inputs_free(&cut);
     inputs_free(&small);
-    for (int k = 0; k < PICTURES; k++) free(picture[k]);
-    free(reference);
+    return pass;
+}
+
+/* The far plane changes on one session, at the same sizes: the first frames in one form, then every frame a fresh
+   run hands over in the other, on a context made anew for it. Held against the destination's fresh context. */
+static int native_transition(Native* n, const NativeForm* from, const NativeForm* to) {
+    const double far[2] = {from->form->far_plane, to->form->far_plane};
+    const int end = to->in.frames - 1;
+    double* work = n->scratch[N_WORK];
+    char name[160];
+    Session s;
+    snprintf(name, sizeof name, "native suite %s, from %s to %s", n->way, from->name, to->name);
+    memset(&s, 0, sizeof s);
+    int evaluated = 0, changed = from->ran && to->ran && !g.unknown && session_open(&s, &from->in, &NATIVE_TRAITS);
+    for (int i = 0; changed && i < 9; i++) changed = frame_run(&s, &from->in, i, &CONFIGURED, 0, work) >= 0;
+    const unsigned before = changed ? s.evaluated : 0;
+    for (int i = 1; changed && i <= end; i++) {
+        const int r = frame_run(&s, &to->in, i, &CONFIGURED, 0, work);
+        changed = r >= 0;
+        evaluated += r > 0;
+    }
+    const SelftestProof proof = s.proof;
+    const int counted = changed && before == 8 && evaluated == end;
+    session_close(&s);
+    const double apart = changed ? difference(&to->in, work, to->fresh, n->regions, SELFTEST_BACKGROUND) : NAN;
+    const int verdict = changed ? selftest_resized(apart, to->noise, to->off) : SELFTEST_FAIL;
+    LOG(ST "%s: %u frames evaluated in the first form, %d in the second: %s. The picture against a fresh context's "
+           "of the second form, on the same frames %.6f (at most %.3f), two fresh contexts %.6f, the control one "
+           "offset ahead %.6f (over %.3f and over the noise): %s. Logged only: the two forms' fresh contexts "
+           "differ by %.6f\n",
+        name, before, evaluated, counted ? "PASS" : "FAIL", apart, SELFTEST_RESIZED, to->noise, to->off,
+        SELFTEST_RESIZED, native_word(changed, verdict),
+        changed ? difference(&to->in, from->fresh, to->fresh, n->regions, SELFTEST_BACKGROUND) : NAN);
+    return counted && verdict == SELFTEST_PASS && native_asserted(name, &proof, 2, far, &to->in, end, to->form);
+}
+
+/* Two depths, in the game's form: a nearer patch moves on its own over the still background, judged as case 3 is.
+   The vector's signs inside the patch, and the depth convention turned as the control in the band the patch
+   left. The patch's and the background's errors are printed. */
+static int native_patch(Native* n, const SelftestProjection* form, const char* form_name) {
+    static const Variant flipped = {1, 1, 1, 1, 0};
+    const size_t pixels = (size_t)NATIVE_W * NATIVE_H;
+    double *output = n->scratch[N_WORK], *other = n->scratch[N_OTHER], *reference = n->scratch[N_PLAIN];
+    u8* regions = malloc(pixels);
+    char name[160];
+    Inputs in;
+    snprintf(name, sizeof name, "native suite %s, %s, a nearer patch", n->way, form_name);
+    memset(&in, 0, sizeof in);
+    int ok = regions && !g.unknown &&
+             inputs_project(&in, form, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 1, 0, 0, 0, 0);
+    if (!ok) LOG(ST "%s: could not be made: FAIL\n", name);
+    else {
+        char signs_name[200];
+        truth(&in, n->up, reference, regions);
+        snprintf(signs_name, sizeof signs_name, "%s, vector signs in the patch", name);
+        ok = signs(signs_name, &in, 12, SELFTEST_INSIDE, reference, regions, output);
+        /* the band the patch left, over every evaluated frame after the first cycle of offsets, as in case 3 */
+        Band own_band = {n->up, 0.0, 0}, wrong_band = {n->up, 0.0, 0};
+        int ran = run(&in, &CONFIGURED, 0, output, NULL, NULL, NULL, &own_band);
+        const SelftestProof proof = g.proof;
+        ran = ran && run(&in, &flipped, 0, other, NULL, NULL, NULL, &wrong_band);
+        const int enough = own_band.pixels >= BAND_LEAST && wrong_band.pixels == own_band.pixels;
+        const double own = ran && enough ? own_band.sum / (3.0 * (double)own_band.pixels) : NAN;
+        const double wrong = ran && enough ? wrong_band.sum / (3.0 * (double)wrong_band.pixels) : NAN;
+        const int beats = ran && enough && selftest_beats(own, wrong, SELFTEST_MARGIN);
+        LOG(ST "%s: the band the patch left, %zu pixels over %d frames (at least %d): error %.6f, with the depth "
+               "convention turned %.6f (%.2f times it at least), background %.6f and with it turned %.6f, patch "
+               "%.6f and with it turned %.6f: %s\n",
+            name, own_band.pixels, in.offsets, BAND_LEAST, own, wrong, SELFTEST_MARGIN,
+            ran ? difference(&in, output, reference, regions, SELFTEST_BACKGROUND) : NAN,
+            ran ? difference(&in, other, reference, regions, SELFTEST_BACKGROUND) : NAN,
+            ran ? difference(&in, output, reference, regions, SELFTEST_INSIDE) : NAN,
+            ran ? difference(&in, other, reference, regions, SELFTEST_INSIDE) : NAN,
+            beats ? "PASS" : !ran ? "FAIL (a run could not be made)" : enough ? "FAIL" : "FAIL (too few pixels to "
+                                                                                        "judge by)");
+        ok = ok && beats;
+        ok = ran && native_asserted(name, &proof, 1, &form->far_plane, &in, in.frames - 1, form) && ok;
+    }
+    inputs_free(&in);
     free(regions);
+    return ok;
+}
+
+static int native(int up) {
+    const size_t pixels = (size_t)NATIVE_W * NATIVE_H, size = sizeof(double) * 3 * pixels;
+    Native n = {up, up ? "up" : "down", malloc(size), {0}, malloc(pixels), malloc(pixels)};
+    NativeForm forms[2] = {{&FINITE, "the far plane at 5000"}, {&INFINITE, "the far plane at infinity"}};
+    int pass = 1, ok = !not_run("native suite", up) && n.reference && n.regions && n.everywhere;
+    for (int k = 0; k < N_SCRATCH; k++) ok = (n.scratch[k] = malloc(size)) != NULL && ok;
+    for (int k = 0; k < 2; k++) ok = (forms[k].fresh = malloc(size)) != NULL && ok;
+    if (!ok) {
+        LOG(ST "native suite %s: could not be made: FAIL\n", n.way);
+        pass = 0;
+    } else {
+        memset(n.everywhere, SELFTEST_BACKGROUND, pixels);
+        for (int k = 0; k < 2; k++) pass &= native_base(&n, &forms[k]);
+        for (int k = 0; k < 2; k++) pass &= native_cases(&n, &forms[k]);
+        pass &= native_transition(&n, &forms[0], &forms[1]);
+        pass &= native_transition(&n, &forms[1], &forms[0]);
+        pass &= native_patch(&n, &FINITE, forms[0].name);
+    }
+    for (int k = 0; k < 2; k++) {
+        inputs_free(&forms[k].in);
+        free(forms[k].fresh);
+    }
+    for (int k = 0; k < N_SCRATCH; k++) free(n.scratch[k]);
+    free(n.reference);
+    free(n.regions);
+    free(n.everywhere);
     return pass;
 }
 
