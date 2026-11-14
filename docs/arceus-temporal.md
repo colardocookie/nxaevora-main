@@ -372,4 +372,3 @@ line is `RESULT: PASS` or `RESULT: FAIL`.
 Limits. It has been built and has not run: the build machine has no run with the SDK's libraries yet. Errors are
 means over a region, so a fault in very few pixels can pass. The scene has one depth step and no transparency. A
 pass says the signs and conventions agree with the SDK on this scene. It says nothing about the game's picture.
-
