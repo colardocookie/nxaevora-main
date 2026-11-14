@@ -485,6 +485,15 @@ The cases, each run with a viewport of negative and of positive height (render 3
    same content at the first texel of images of its own size: at most 0.01 apart.
 7. No message of the validation layer, with its synchronisation checks on, in any case. Without the layer
    installed the case is not run, which is not a pass.
+The native suite, for both heights of the viewport: the render size is the output's size (480 x 270), so 8
+offsets, as the game at full size has it. Three changes are each held by one rule: the picture after the change
+against a fresh context's on the same frames, at most 0.005 apart, with the noise of two fresh contexts beside
+it and a control that is wrong on purpose and must be over the budget and over the noise, or nothing is decided.
+A reset (a new pattern with the flag, against a context that saw that frame alone, the control without the
+flag). A change of a create property with the sizes kept (a context made without the flag for linear colours
+over 1, then one with it, the control one offset ahead of the reported jitter). A change of size (320 x 180 to
+the native size, the same control). The error against the true picture is logged and has no margin.
+
 The edge case, for the jitter's signs, on a picture of its own: grey, with one near-vertical and one
 near-horizontal edge from 0.25 to 0.75 at a slope of 1 in 10, each in a region of 96 by 96 output pixels. Its
 images are made, and their checksums logged, before any adapter is looked for, and the case runs only on images

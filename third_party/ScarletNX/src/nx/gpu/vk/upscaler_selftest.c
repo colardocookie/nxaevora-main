@@ -77,11 +77,12 @@ typedef struct {
 } Inputs;
 
 /* What a variant makes of the numbers handed on: the factor on the reported jitter of each axis (1 as configured,
-   -1 the sign turned, 0 told nothing), the vectors' signs, the depth convention it claims, and whether every
-   frame's inputs and dispatch are logged. */
+   -1 the sign turned, 0 told nothing), the vectors' signs, the depth convention it claims, whether every frame's
+   inputs and dispatch are logged, and a create flag left out. */
 typedef struct {
     double jitter_x, jitter_y;
     int vector_x, vector_y, depth_reversed, trace;
+    int ldr; /* 1: the context is made without the flag for linear colours over 1 (a real create property) */
 } Variant;
 static const Variant CONFIGURED = {1, 1, 1, 1, 1};
 
@@ -619,7 +620,11 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     state.fx = (float)in->rw / (float)in->w;
     state.fy = (float)in->rh / (float)in->h;
     if (!temporal_rect_from_viewport(&state.viewport, in->w, in->h, &state.rect)) return -1;
-    const TemporalRectStamp stamp = {1, g.generation, in->w, in->h, in->ow, in->oh, state.rect, state.fx, state.fy};
+    /* What a context is made with beside the sizes, as one number: the suite's generation and the variant's create
+       properties. It is the configuration's generation, and part of what a history was made from: a context of
+       another making has no history, so its first frame has the reset. */
+    const u64 making = g.generation * 4 + (u64)(v->depth_reversed ? 2 : 0) + (u64)(v->ldr ? 1 : 0);
+    const TemporalRectStamp stamp = {1, making, in->w, in->h, in->ow, in->oh, state.rect, state.fx, state.fy};
     /* the scene block as the first scene draw's fragment program would read it */
     const TemporalSceneBlock block = {1, 1, state.fx, state.fy};
     const double jitter[2] = {in->scene[i].jitter[0], in->scene[i].jitter[1]};
@@ -640,11 +645,10 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
         s->skipped++;
         return 0;
     }
-    const u32 flags = SNX_UPSCALER_COLOUR_LINEAR_HDR | SNX_UPSCALER_VECTORS_UNJITTERED |
+    const u32 flags = (v->ldr ? 0 : SNX_UPSCALER_COLOUR_LINEAR_HDR) | SNX_UPSCALER_VECTORS_UNJITTERED |
                       SNX_UPSCALER_EXPOSURE_AUTOMATIC | SNX_UPSCALER_FAR_PLANE_INFINITE |
                       (v->depth_reversed ? SNX_UPSCALER_DEPTH_REVERSED : 0);
-    const TemporalUpscalerConfig config = {in->w, in->h, in->rw, in->rh, in->ow, in->oh,
-                                           g.generation * 2 + (u64)v->depth_reversed};
+    const TemporalUpscalerConfig config = {in->w, in->h, in->rw, in->rh, in->ow, in->oh, making};
     if (!context_ready(s, in, &config, flags, &traits)) {
         s->skipped++;
         return s->contexts.pending || s->live ? 0 : -1;
@@ -1179,6 +1183,167 @@ static int resize(int up) {
     return counted && beats && settles && same == SELFTEST_PASS;
 }
 
+/* The native suite: the render size is the output's size, so 8 offsets, as the game at full size has it. Three
+   changes are held by one rule each (selftest_resized): the picture after the change against a fresh context's
+   on the same frames, at most 0.005 apart. The noise is two fresh contexts against each other. A control that
+   is wrong on purpose must be over the budget and over the noise, or the case has decided nothing.
+   - a reset: a new pattern in the last frame with the flag, against a context that saw that frame alone. The
+     control is the same without the flag.
+   - a change of a create property with the sizes kept: a session made without the flag for linear colours over
+     1, then with it, against a fresh context made with it. The control is the fresh context's frames one
+     offset ahead of the reported jitter.
+   - a change of size: 320x180 to the native size, against the same fresh context and control.
+   The error against the true picture is logged and has no margin. */
+#define NATIVE_W 480
+#define NATIVE_H 270
+static const char* native_word(int ran, int verdict) {
+    return !ran                       ? "FAIL (a run could not be made)"
+           : verdict == SELFTEST_PASS ? "PASS"
+           : verdict == SELFTEST_BLIND ? "FAIL (the control did not differ enough, or a number is not one: nothing "
+                                         "is decided)"
+                                       : "FAIL";
+}
+static int native(int up) {
+    static const int SIZE[4] = {NATIVE_W, NATIVE_H, NATIVE_W, NATIVE_H}, SMALL[4] = {320, 180, 320, 180};
+    static const Variant without_hdr = {1, 1, 1, 1, 1, 0, 1};
+    static const double still[2] = {0.0, 0.0};
+    const size_t pixels = (size_t)NATIVE_W * NATIVE_H, size = sizeof(double) * 3 * pixels;
+    const char* way = up ? "up" : "down";
+    SnxUpscalerTraits traits = {.colour_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                .depth_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                .motion_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                .output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+    enum { FRESH, AGAIN, AHEAD, OLD, CHANGED, RESIZED, WITH, WITHOUT, ALONE, ALONE_AGAIN, PLAIN, PICTURES };
+    double* picture[PICTURES] = {0};
+    double* reference = malloc(size);
+    u8* regions = malloc(pixels);
+    Inputs in, ahead, cut, small;
+    Session s;
+    int pass = 1;
+    memset(&in, 0, sizeof in);
+    memset(&ahead, 0, sizeof ahead);
+    memset(&cut, 0, sizeof cut);
+    memset(&small, 0, sizeof small);
+    memset(&s, 0, sizeof s);
+    int ok = !not_run("native suite", up) && reference && regions;
+    for (int k = 0; k < PICTURES; k++) ok = (picture[k] = malloc(size)) != NULL && ok;
+    ok = ok && inputs_make(&in, SIZE, NATIVE_W, NATIVE_H, 0, 0, up, still, 0, 0) &&
+         inputs_build(&ahead, SIZE, NATIVE_W, NATIVE_H, 0, 0, up, still, 0, 0, 0, 1, 0) &&
+         inputs_make(&cut, SIZE, NATIVE_W, NATIVE_H, 0, 0, up, still, 0, 1) &&
+         inputs_make(&small, SMALL, 320, 180, 0, 0, up, still, 0, 0);
+    if (!ok) {
+        LOG(ST "native suite %s: could not be made: FAIL\n", way);
+        pass = 0;
+    } else {
+        LOG(ST "native suite %s: render and output %dx%d, %d offsets, %d frames a run\n", way, NATIVE_W, NATIVE_H,
+            in.offsets, in.frames);
+        truth(&in, up, reference, regions);
+        /* the fresh context, its repeat for the noise, the control one offset ahead, and the old property alone */
+        double first = NAN, last = NAN;
+        const int ran = run(&in, &CONFIGURED, 0, picture[FRESH], &first, &last, regions, NULL) &&
+                        run(&in, &CONFIGURED, 0, picture[AGAIN], NULL, NULL, NULL, NULL) &&
+                        run(&ahead, &CONFIGURED, 0, picture[AHEAD], NULL, NULL, NULL, NULL) &&
+                        run(&in, &without_hdr, 0, picture[OLD], NULL, NULL, NULL, NULL);
+        const double noise =
+            ran ? difference(&in, picture[FRESH], picture[AGAIN], regions, SELFTEST_BACKGROUND) : NAN;
+        const double off = ran ? difference(&in, picture[AHEAD], picture[FRESH], regions, SELFTEST_BACKGROUND) : NAN;
+        if (ran) {
+            plain(&in, in.frames - 1, up, picture[PLAIN]);
+            LOG(ST "native suite %s: logged only, no margin: error against the true picture %.6f, of one frame "
+                   "scaled plainly %.6f. Change a frame over the first cycle %.6f, over the last %.6f. Two fresh "
+                   "contexts differ by %.6f, a context made without the flag for colours over 1 from one made "
+                   "with it by %.6f\n",
+                way, difference(&in, picture[FRESH], reference, regions, SELFTEST_BACKGROUND),
+                difference(&in, picture[PLAIN], reference, regions, SELFTEST_BACKGROUND), first, last, noise,
+                difference(&in, picture[OLD], picture[FRESH], regions, SELFTEST_BACKGROUND));
+        }
+        /* a change of a create property: the session's first frames without the flag, then every frame a fresh
+           run hands over (all but the gate's first) with it, on a context made anew */
+        int evaluated = 0, changed = ran && session_open(&s, &in, &traits);
+        for (int i = 0; changed && i < 9; i++)
+            changed = frame_run(&s, &in, i, &without_hdr, 0, picture[CHANGED]) >= 0;
+        const unsigned before = changed ? s.evaluated : 0;
+        for (int i = 1; changed && i < in.frames; i++) {
+            const int r = frame_run(&s, &in, i, &CONFIGURED, 0, picture[CHANGED]);
+            changed = r >= 0;
+            evaluated += r > 0;
+        }
+        const int counted = changed && before == 8 && evaluated == in.frames - 1 && s.published == 2;
+        const unsigned contexts = s.published;
+        session_close(&s);
+        const double apart =
+            changed ? difference(&in, picture[CHANGED], picture[FRESH], regions, SELFTEST_BACKGROUND) : NAN;
+        int verdict = changed ? selftest_resized(apart, noise, off) : SELFTEST_FAIL;
+        LOG(ST "native suite %s, a create property changed: %u frames evaluated without the flag, %d with it, %u "
+               "contexts made: %s. The picture against a fresh context's on the same frames %.6f (at most %.3f), "
+               "two fresh contexts %.6f, the control one offset ahead %.6f (over %.3f and over the noise): %s\n",
+            way, before, evaluated, contexts, counted ? "PASS" : "FAIL", apart, SELFTEST_RESIZED, noise, off,
+            SELFTEST_RESIZED, native_word(changed, verdict));
+        pass &= counted && verdict == SELFTEST_PASS;
+        /* a change of size, on one session: the small size's frames, then the native ones */
+        memset(&s, 0, sizeof s);
+        evaluated = 0;
+        int resized = ran && session_open(&s, &small, &traits);
+        for (int i = 0; resized && i < 9; i++)
+            resized = frame_run(&s, &small, i, &CONFIGURED, 0, picture[RESIZED]) >= 0;
+        const unsigned small_frames = resized ? s.evaluated : 0;
+        resized = resized && pictures_make(&s, &in, &traits);
+        for (int i = 0; resized && i < in.frames; i++) {
+            const int r = frame_run(&s, &in, i, &CONFIGURED, 0, picture[RESIZED]);
+            resized = r >= 0;
+            evaluated += r > 0;
+        }
+        const int sized = resized && small_frames == 8 && evaluated == in.frames - 1 && s.published == 2;
+        const unsigned made = s.published;
+        session_close(&s);
+        const double moved =
+            resized ? difference(&in, picture[RESIZED], picture[FRESH], regions, SELFTEST_BACKGROUND) : NAN;
+        verdict = resized ? selftest_resized(moved, noise, off) : SELFTEST_FAIL;
+        LOG(ST "native suite %s, the size changed: %u frames evaluated at 320x180, %d at %dx%d, %u contexts made: "
+               "%s. The picture against a fresh context's on the same frames %.6f (at most %.3f), two fresh "
+               "contexts %.6f, the control one offset ahead %.6f: %s\n",
+            way, small_frames, evaluated, NATIVE_W, NATIVE_H, made, sized ? "PASS" : "FAIL", moved, SELFTEST_RESIZED,
+            noise, off, native_word(resized, verdict));
+        pass &= sized && verdict == SELFTEST_PASS;
+        /* a reset: the last frame shows the other pattern. With the flag, without it, and a context that is
+           given the gate's first frame and that frame alone, twice. */
+        Inputs alone = cut;
+        const size_t skip = (size_t)cut.frames - 2;
+        alone.scene += skip;
+        alone.colour += skip * cut.w * cut.h;
+        alone.depth += skip * cut.w * cut.h;
+        alone.motion += skip * cut.w * cut.h * 4;
+        alone.frames = 2;
+        alone.cut_at = -1;
+        u8* everywhere = malloc(pixels);
+        const int reset = everywhere && run(&cut, &CONFIGURED, 1, picture[WITH], NULL, NULL, NULL, NULL) &&
+                          run(&cut, &CONFIGURED, 0, picture[WITHOUT], NULL, NULL, NULL, NULL) &&
+                          run(&alone, &CONFIGURED, 0, picture[ALONE], NULL, NULL, NULL, NULL) &&
+                          run(&alone, &CONFIGURED, 0, picture[ALONE_AGAIN], NULL, NULL, NULL, NULL);
+        if (everywhere) memset(everywhere, SELFTEST_BACKGROUND, pixels);
+        const double same =
+            reset ? difference(&cut, picture[WITH], picture[ALONE], everywhere, SELFTEST_BACKGROUND) : NAN;
+        const double twice =
+            reset ? difference(&cut, picture[ALONE], picture[ALONE_AGAIN], everywhere, SELFTEST_BACKGROUND) : NAN;
+        const double kept =
+            reset ? difference(&cut, picture[WITHOUT], picture[ALONE], everywhere, SELFTEST_BACKGROUND) : NAN;
+        verdict = reset ? selftest_resized(same, twice, kept) : SELFTEST_FAIL;
+        LOG(ST "native suite %s, a reset: the reset frame against a fresh context's %.6f (at most %.3f), two fresh "
+               "contexts %.6f, the control without the flag %.6f (over %.3f and over the noise): %s\n",
+            way, same, SELFTEST_RESIZED, twice, kept, SELFTEST_RESIZED, native_word(reset, verdict));
+        pass &= verdict == SELFTEST_PASS;
+        free(everywhere);
+    }
+    inputs_free(&in);
+    inputs_free(&ahead);
+    inputs_free(&cut);
+    inputs_free(&small);
+    for (int k = 0; k < PICTURES; k++) free(picture[k]);
+    free(reference);
+    free(regions);
+    return pass;
+}
+
 /* The edge case: the jitter's signs, on a still grey picture with two edges. Seven pictures of the same frozen
    images, each run a session of its own: the configured signs twice (their difference is the run's noise), the
    three other combinations of the jitter's signs, the jitter reported as zero while the images are jittered,
@@ -1508,6 +1673,10 @@ int vk_upscaler_selftest(const char* adapter) {
     pass &= resize(1);
     g.generation++;
     pass &= resize(0);
+    g.generation++;
+    pass &= native(1);
+    g.generation++;
+    pass &= native(0);
     g.generation++;
     pass &= edge_case(1);
     g.generation++;
