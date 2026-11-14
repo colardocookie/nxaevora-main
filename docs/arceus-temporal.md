@@ -608,19 +608,20 @@ itself (`upscaler_needs.h` has the rules, host-tested, and `upscaler_host.c` app
   structure is refused by its type or as a repeat.
 - Each bit asked for is checked against the host's own question to the physical device. A bit it does not have
   refuses. Bits not asked for stay off.
-- The adapter's storage is read and never written, linked or kept. What goes into the device is a structure of
-  the host's own, in front of the game's chain, and the host's own copies of the names behind the game's list.
-  The game's count and chain head are not changed in place.
+- The adapter's storage is read and never written, linked or kept. It is read as bytes, each field copied out at its
+  offset into a value of the host's own, and never through a structure type of the host's. What goes into the device
+  is a structure of the host's own, in front of the game's chain, and the host's own copies of the names behind the
+  game's list. The game's count and chain head are not changed in place.
 
-If anything refuses, or the instance would need something, the device is made as without the switch, with one
-line that says why. For a name that no adapter of this program has, the device's creation says nothing: the
-upscaler's start has the one line for that. If the device cannot be made with the additions, it is made once more from the game's own
-list and chain head, with one line, and the adapter is not available. Only after a device was made with the
-additions is a record written, by value: the adapter's name, every extension it named (also one the game's
-list already had) and the bits that were turned on, with the line `arceus-upscaler: the game's device is made
-with <names> ... for <adapter>`. The upscaler's start asks the adapter again and holds the answer against
-that record: the same adapter, every name in it, every bit asked for on in it. Anything else is "not
-available" with the reason, so an adapter does not start on a device that was made without what it names.
+If anything refuses, or the instance would need something, the device is made as without the switch, with one line
+that says why. For a name that no adapter of this program has, the device's creation says nothing: the upscaler's
+start has the one line for that. If the device cannot be made with the additions, it is made once more from the game's
+own list and chain head, with one line, and the adapter is not available. Only after a device was made with the
+additions is a record written, by value: the adapter's name, every extension it named (also one the game's list
+already had) and the bits that were turned on, with the line `arceus-upscaler: the game's device is made with <names>
+... for <adapter>`. The upscaler's start asks the adapter again and holds the answer against that record: the same
+adapter, every name in it, every bit asked for on in it. Anything else is "not available" with the reason, so an
+adapter does not start on a device that was made without what it names.
 
 Limits. None of this was run with the switch: the lines and the fallback after a failed creation are read
 from the code, not seen. Enabling the extension and the feature allows a shader capability and, read from the

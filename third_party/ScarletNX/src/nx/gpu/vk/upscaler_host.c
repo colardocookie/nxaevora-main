@@ -76,10 +76,14 @@ int vk_upscaler_device_needs(const SnxUpscalerApi* api, VkInstance instance, VkP
     return 1;
 }
 
-/* The game's device (upscaler_needs.h has the rules). The one structure the host accepts is Vulkan's, read
-   through the pure header's stand-in: the two must lay their members out alike. */
+/* The game's device (upscaler_needs.h has the rules). The one structure the host accepts is Vulkan's. The pure
+   header copies its fields out of the object's bytes at its stand-in's offsets, which must be Vulkan's. */
 _Static_assert(SNX_NEEDS_DERIVATIVES == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_NV,
                "the accepted structure's type");
+_Static_assert(offsetof(SnxNeedsNode, type) == offsetof(VkBaseInStructure, sType) &&
+                   offsetof(SnxNeedsNode, next) == offsetof(VkBaseInStructure, pNext) &&
+                   sizeof(((SnxNeedsNode*)0)->type) == sizeof(VkStructureType) && sizeof(VkBool32) == sizeof(uint32_t),
+               "every structure's first two members");
 _Static_assert(sizeof(SnxNeedsDerivatives) == sizeof(VkPhysicalDeviceComputeShaderDerivativesFeaturesNV) &&
                    offsetof(SnxNeedsDerivatives, next) ==
                        offsetof(VkPhysicalDeviceComputeShaderDerivativesFeaturesNV, pNext) &&
@@ -131,7 +135,8 @@ static int device_names(VkPhysicalDevice device, const char* const* names, uint3
 
 /* Before the game's device is made, with SNX_ARCEUS_UPSCALER naming an adapter: what the adapter needs of it,
    checked by the host and copied by value. 1 when the device is to be tried with it. 0 with one line, or with
-   none when there is no such adapter: the device is made as without the switch. The adapter's storage is read and never written or kept. */
+   none when there is no such adapter: the device is made as without the switch. The adapter's storage is read
+   and never written or kept. */
 int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevice device,
                            PFN_vkGetInstanceProcAddr lookup, VkUpscalerDeviceAsk* ask) {
     SnxUpscalerExtensions of_instance = {0};

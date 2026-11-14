@@ -3,8 +3,10 @@
 #ifndef SNX_VK_UPSCALER_NEEDS_H
 #define SNX_VK_UPSCALER_NEEDS_H
 /* What the host makes of an upscaler adapter's needs of a device (upscaler.h), for the game's device. Pure: no
-   Vulkan header, so that it is tested on any host. A Vulkan structure is read here by its first two members,
-   its type and its next pointer, which every such structure begins with. */
+   Vulkan header, so that it is tested on any host. A Vulkan structure is read here as bytes: its type, its next
+   pointer and the two bits are copied out at the offsets of the stand-ins below into values of our own. No
+   object of the adapter's is read through a type of ours. upscaler_host.c asserts the offsets against Vulkan's. */
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -49,12 +51,20 @@ enum {
 static inline int snx_needs_chain(const void* chain, SnxNeedsBits* asked) {
     int nodes = 0;
     *asked = (SnxNeedsBits){0, 0, 0};
-    for (const SnxNeedsNode* n = chain; n; n = n->next) {
+    const unsigned char* at = chain;
+    while (at) {
+        int32_t type;
+        const void* next;
+        uint32_t quads, linear;
         if (++nodes > SNX_NEEDS_NODES) return SNX_NEEDS_LONG;
-        if (n->type != SNX_NEEDS_DERIVATIVES) return SNX_NEEDS_TYPE;
+        memcpy(&type, at + offsetof(SnxNeedsNode, type), sizeof type);
+        memcpy(&next, at + offsetof(SnxNeedsNode, next), sizeof next);
+        if (type != SNX_NEEDS_DERIVATIVES) return SNX_NEEDS_TYPE;
         if (asked->have) return SNX_NEEDS_REPEATED;
-        const SnxNeedsDerivatives* d = (const SnxNeedsDerivatives*)n;
-        *asked = (SnxNeedsBits){1, d->quads != 0, d->linear != 0};
+        memcpy(&quads, at + offsetof(SnxNeedsDerivatives, quads), sizeof quads);
+        memcpy(&linear, at + offsetof(SnxNeedsDerivatives, linear), sizeof linear);
+        *asked = (SnxNeedsBits){1, quads != 0, linear != 0};
+        at = next;
     }
     return SNX_NEEDS_OK;
 }

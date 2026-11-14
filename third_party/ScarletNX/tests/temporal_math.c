@@ -2435,6 +2435,19 @@ static void test_upscaler_needs(void) {
     /* every answer has words of its own */
     for (int a = SNX_NEEDS_OK; a <= SNX_NEEDS_NOT_RECORDED; a++)
         for (int b = a + 1; b <= SNX_NEEDS_NOT_RECORDED; b++) assert(strcmp(snx_needs_text(a), snx_needs_text(b)));
+    /* The chain is read as bytes at the stand-ins' offsets: a structure of another type of the same layout, as
+       the adapter's Vulkan structure is, reads the same. */
+    {
+        struct Other {
+            int32_t kind;
+            const void* after;
+            uint32_t first, second;
+        } other = {SNX_NEEDS_DERIVATIVES, NULL, 0, 5};
+        assert(snx_needs_chain(&other, &asked) == SNX_NEEDS_OK && asked.have && !asked.quads && asked.linear == 1);
+        unsigned char raw[sizeof(SnxNeedsDerivatives) + 1] = {0}; /* and from an address that is not aligned */
+        memcpy(raw + 1, &other, sizeof other);
+        assert(snx_needs_chain(raw + 1, &asked) == SNX_NEEDS_OK && asked.linear == 1 && !asked.quads);
+    }
     /* the stand-in structures lay their members out as Vulkan's do: a type, a pointer, two 32 bit booleans */
     assert(offsetof(SnxNeedsDerivatives, next) == offsetof(SnxNeedsNode, next));
     assert(offsetof(SnxNeedsDerivatives, quads) == 2 * sizeof(void*));
