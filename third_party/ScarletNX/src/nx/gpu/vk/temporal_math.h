@@ -1356,6 +1356,24 @@ static inline int temporal_upscaler_whole(const TemporalRectState* s) {
 static inline int temporal_upscaler_output_fits(unsigned w, unsigned h, unsigned max_w, unsigned max_h) {
     return w > 0 && h > 0 && w <= max_w && h <= max_h;
 }
+/* For the log alone: the four images handed to the library, said when they are handed for the first time after
+   a context became ready and whenever one of the four is another image. TEMPORAL_UPSCALER_HANDED_MOST lines at
+   most, and the last of them says that it is the last. */
+#define TEMPORAL_UPSCALER_HANDED_MOST 16
+enum { TEMPORAL_UPSCALER_HANDED_QUIET, TEMPORAL_UPSCALER_HANDED_SAY, TEMPORAL_UPSCALER_HANDED_LAST };
+typedef struct {
+    unsigned long long image[4]; /* colour, depth, vectors, output, as last said */
+    unsigned context;            /* the count of contexts that became ready, as last said */
+    unsigned said;
+} TemporalUpscalerHanded;
+static inline int temporal_upscaler_handed(TemporalUpscalerHanded* h, const unsigned long long image[4],
+                                           unsigned context) {
+    const int same = h->said && h->context == context && !memcmp(h->image, image, sizeof h->image);
+    if (same || h->said >= TEMPORAL_UPSCALER_HANDED_MOST) return TEMPORAL_UPSCALER_HANDED_QUIET;
+    memcpy(h->image, image, sizeof h->image);
+    h->context = context;
+    return ++h->said == TEMPORAL_UPSCALER_HANDED_MOST ? TEMPORAL_UPSCALER_HANDED_LAST : TEMPORAL_UPSCALER_HANDED_SAY;
+}
 /* Whether the upscaler is still on in this session. off is a latch: once set, by a stop or by eight frames in a
    row that were drawn with jitter and not evaluated, nothing clears it, and only a new session starts clean. */
 typedef struct {

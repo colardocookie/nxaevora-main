@@ -498,16 +498,19 @@ to be switched on in a run before its conditions hold (the conformance of the ji
 and case 7 with the validation layers installed, the passing cases as they are, and the fixture of
 `vk_rec_direct`). Without the switch none of what follows runs.
 
-At full size only: the library does the temporal resolve in place of ours, in frames whose scene is the whole
-target. It needs `SNX_ARCEUS_TEMPORAL=taa` and is refused with `SNX_ARCEUS_TEMPORAL_REJECT=1`, each with one line.
-An adapter that is not there, that names needs of the instance, that runs on a device without that private
-image's format as a storage and sampled image together, whose needs of the device are not all in the
-record of what the game's device was made with (its own section below), or that cannot make a context on the game's
-device before any was in use, is "not available": one line, and the run goes on as without the switch. With
-it on, our own resolve, sharpen, history, numbers and views never run, and the options that steer them are
-without effect. The start's question about the private image's format also gives the largest width and
-height of such an image. Before the image is made the scene's size is held against them: a scene larger in
-either stops the upscaler with a line that names both sizes, and the driver is not asked for the image.
+At full size only: the library does the temporal resolve in place of ours, in frames whose scene is the whole target.
+It needs `SNX_ARCEUS_TEMPORAL=taa` and is refused with `SNX_ARCEUS_TEMPORAL_REJECT=1`, each with one line. An adapter
+that is not there, that names needs of the instance, that runs on a device without that private image's format as a
+storage and sampled image together, whose needs of the device are not all in the record of what the game's device was
+made with (its own section below), or that cannot make a context on the game's device before any was in use, is "not
+available": one line, and the run goes on as without the switch. With it on, our own resolve, sharpen, history,
+numbers and views never run, and the options that steer them are without effect. For the log alone, a line
+`arceus-upscaler: handed images at frame N: colour 0x.., depth 0x.., vectors 0x.., output 0x..` gives the four images'
+handles as the validation layer prints an image's, at the first hand-over after a context became ready and whenever
+one of the four is another image, sixteen lines at most with the last saying so. A message of the layer that names an
+image can be held against them. The start's question about the private image's format also gives the largest width and
+height of such an image. Before the image is made the scene's size is held against them: a scene larger in either
+stops the upscaler with a line that names both sizes, and the driver is not asked for the image.
 
 A frame, in order:
 1. At the frame's first draw with the scene camera's block the rectangle's gate decides as it always does

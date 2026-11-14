@@ -2282,6 +2282,40 @@ static void test_projection_camera(void) {
     }
 }
 
+/* the line of the images handed to the library: when it is said */
+static void test_upscaler_handed(void) {
+    TemporalUpscalerHanded h = {0};
+    unsigned long long image[4] = {0x10, 0x20, 0x30, 0x40};
+    /* the first hand-over is said, also with handles of 0 and a context count of 0 */
+    {
+        TemporalUpscalerHanded zero = {0};
+        const unsigned long long none[4] = {0, 0, 0, 0};
+        assert(temporal_upscaler_handed(&zero, none, 0) == TEMPORAL_UPSCALER_HANDED_SAY);
+        assert(temporal_upscaler_handed(&zero, none, 0) == TEMPORAL_UPSCALER_HANDED_QUIET);
+    }
+    assert(temporal_upscaler_handed(&h, image, 1) == TEMPORAL_UPSCALER_HANDED_SAY && h.said == 1);
+    assert(temporal_upscaler_handed(&h, image, 1) == TEMPORAL_UPSCALER_HANDED_QUIET && h.said == 1);
+    /* each of the four alone is a change, and so is a new context with the same four */
+    for (int k = 0; k < 4; k++) {
+        image[k]++;
+        assert(temporal_upscaler_handed(&h, image, 1) == TEMPORAL_UPSCALER_HANDED_SAY);
+        assert(h.image[k] == image[k]);
+        assert(temporal_upscaler_handed(&h, image, 1) == TEMPORAL_UPSCALER_HANDED_QUIET);
+    }
+    assert(temporal_upscaler_handed(&h, image, 2) == TEMPORAL_UPSCALER_HANDED_SAY && h.said == 6 && h.context == 2);
+    /* the sixteenth line is the last and says so, and nothing is said after it whatever changes */
+    for (unsigned n = 7; n < TEMPORAL_UPSCALER_HANDED_MOST; n++) {
+        image[1] += 2;
+        assert(temporal_upscaler_handed(&h, image, 2) == TEMPORAL_UPSCALER_HANDED_SAY && h.said == n);
+    }
+    image[1] += 2;
+    assert(temporal_upscaler_handed(&h, image, 2) == TEMPORAL_UPSCALER_HANDED_LAST);
+    assert(h.said == TEMPORAL_UPSCALER_HANDED_MOST);
+    image[1] += 2;
+    assert(temporal_upscaler_handed(&h, image, 3) == TEMPORAL_UPSCALER_HANDED_QUIET);
+    assert(h.said == TEMPORAL_UPSCALER_HANDED_MOST);
+}
+
 /* The game's validation lines (validation_lines.h). The lines go into one buffer, a line break after each. */
 static char g_lines[1 << 20];
 static size_t g_lines_at;
@@ -5049,6 +5083,7 @@ int main(void) {
     test_upscaler_needs();
     test_upscaler_output_fits();
     test_validation_lines();
+    test_upscaler_handed();
     test_upscaler_wiring();
     test_jitter_conformance();
     test_gpu_time();

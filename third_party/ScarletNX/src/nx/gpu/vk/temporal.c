@@ -266,6 +266,7 @@ static struct {
     u64 evaluated_ns, unresolved, contexts_made, strangers; /* strangers: lines of draws with another bank 4 */
     TemporalUpscalerTally tally;
     Image output;
+    TemporalUpscalerHanded handed; /* for the log: the four images as last said */
     u32 output_max[2]; /* the output's largest width and height, as the start's format question answered */
     VkPipeline write_pipe;
     VkFormat write_format;
@@ -2965,6 +2966,17 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         .near_plane = camera[0],
         .far_plane = camera[1],
         .fov_y = camera[2]};
+    /* For the log alone: the four images' handles as the validation layer prints an image's, so that a message
+       of the layer about an image can be held against them. */
+    const unsigned long long images[4] = {(unsigned long long)(uintptr_t)scene->img,
+                                          (unsigned long long)(uintptr_t)depth->img,
+                                          (unsigned long long)(uintptr_t)g_t.motion.img,
+                                          (unsigned long long)(uintptr_t)g_u.output.img};
+    const int say = temporal_upscaler_handed(&g_u.handed, images, g_u.published);
+    if (say != TEMPORAL_UPSCALER_HANDED_QUIET)
+        LOG("arceus-upscaler: handed images at frame %u: colour 0x%llx, depth 0x%llx, vectors 0x%llx, output "
+            "0x%llx%s\n", frame, images[0], images[1], images[2], images[3],
+            say == TEMPORAL_UPSCALER_HANDED_LAST ? ". The last such line: later changes are not said" : "");
     UpscalerCall call = {g_u.live, &handed, scene, depth};
     const int recorded = vk_rec_direct(cb, upscaler_before, upscaler_evaluate, &call);
     /* On every path out of a call the library was entered in, each of the four images it was handed gets a
