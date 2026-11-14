@@ -172,7 +172,7 @@ static struct {
     const GpuChannel* draw_ch;
     const VkSh *draw_vs, *draw_fs;
     TemporalRectGate rect_gate;
-    u32 offsets, rect_early_said;
+    u32 offsets, rect_early_said, rect_fraction_said;
     u32 camera_new_at; /* the frame whose G-buffer draw showed a camera block address not known before */
     /* The draw noted: whether it goes into the scene (its depth target is the scene's depth, or a colour target is
        the scene colour) and its target's size. rect_kept: a scene draw of an undecided frame (rect_note). */
@@ -731,6 +731,20 @@ static void rect_decide(u32 frame) {
         const VkViewport v = vk_render_viewport(g_t.draw_r3d);
         TemporalRectState geometry;
         const int shaped = rect_geometry(&geometry);
+        /* A viewport whose only fault is that it is not on whole pixels: said once, in words, with the scales
+           that would be for this very target. The frame is gated like any other without a geometry. */
+        const TemporalViewport asked = {v.x, v.y, v.width, v.height};
+        if (!shaped && temporal_viewport_fractional(&asked, (int)g_t.draw_w, (int)g_t.draw_h) &&
+            !g_t.rect_fraction_said++) {
+            char scales[96];
+            const int found = temporal_whole_scales((int)g_t.draw_w, (int)g_t.draw_h, scales, sizeof scales);
+            LOG("arceus-temporal-rect: the scene's viewport %g,%g %gx%g is not on whole pixels of its %ux%u target, "
+                "so no frame of it is taken: the game draws the target's size times SNX_ARCEUS_SCENE_SCALE as it "
+                "comes. Scales p/q with q up to 8 that give whole pixels in both axes of this target: %s. That is "
+                "about whole pixels only, and no promise that a frame is taken\n",
+                (double)v.x, (double)v.y, (double)v.width, (double)v.height, g_t.draw_w, g_t.draw_h,
+                found ? scales : "none");
+        }
         /* the scene block as bound at this draw, whether or not its programs read it: vertex stage first */
         TemporalSceneBlock early = rect_block(ST_VS, NULL);
         int stage = ST_VS;

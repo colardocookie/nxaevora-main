@@ -339,6 +339,11 @@ and leaves every such frame as drawn. With it, in `probe` and in `taa`, a frame 
   frame decided before the deciding draw's samplers are chosen. A number in that switch, 0 included, turns the
   automatic bias off. The options line says which: automatic, set to a value, or none.
 
+The game draws a viewport of the target's size times the scale as it comes, without rounding. A scale that does
+not give whole pixels, `0.6667` in a target of 3840 by 2160 for one, ends inside a pixel, and no frame of it is
+taken. The log says so once and lists the scales `p/q` with q up to 8 that give whole pixels in both axes of that
+very target (`SNX_ARCEUS_SCENE_SCALE` takes `2/3`). The list is about whole pixels only.
+
 A change of the viewport costs two frames without anti-aliasing: one gated, one that seeds the history. A change
 of the fraction alone costs one more, drawn with jitter and not resolved. Lines start with
 `arceus-temporal-rect:`. Not played yet.

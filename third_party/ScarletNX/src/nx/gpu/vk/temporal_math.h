@@ -6,6 +6,7 @@
 #ifndef SNX_VK_TEMPORAL_MATH_H
 #define SNX_VK_TEMPORAL_MATH_H
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 /* offset k of n of the jitter in pixels, within half a pixel each way: Halton bases 2 and 3 */
@@ -679,6 +680,61 @@ static inline int temporal_rect_from_viewport(const TemporalViewport* v, int tar
     if (whole[2] > target_w - whole[0] || whole[3] > target_h - whole[1]) return 0;
     *r = (TemporalRect){whole[0], whole[1], whole[2], whole[3]};
     return 1;
+}
+/* 1 when a viewport is refused for one reason alone: it is finite, not empty and inside the target, and an edge
+   of it is not on a whole pixel. The game draws a viewport of the target's size times its scale as it comes,
+   so a scale such as 0.6667 ends inside a pixel. Any other fault of a viewport is not this one. */
+static inline int temporal_viewport_fractional(const TemporalViewport* v, int target_w, int target_h) {
+    if (target_w <= 0 || target_h <= 0) return 0;
+    const double edge[4] = {(double)v->x, v->height < 0.0f ? (double)v->y + (double)v->height : (double)v->y,
+                            (double)v->width, fabs((double)v->height)};
+    int whole = 1;
+    for (int i = 0; i < 4; i++) {
+        if (!isfinite(edge[i]) || fabs(edge[i]) > 1e9) return 0;
+        if (fabs(edge[i] - round(edge[i])) > 0.001) whole = 0;
+    }
+    if (!(edge[2] > 0.0) || !(edge[3] > 0.0) || edge[0] < -0.001 || edge[1] < -0.001) return 0;
+    if (edge[0] + edge[2] > target_w + 0.001 || edge[1] + edge[3] > target_h + 0.001) return 0;
+    return !whole;
+}
+/* The scales p/q with q up to 8, from a half to under one, that put the scene's viewport on whole pixels in both
+   axes of this target, worked out as the game is given them: p/q divided in double, narrowed to a float, times
+   the size in single precision, within the 0.001 the rectangle's rule allows. Written into text in rising
+   order, as "1/2, 3/5". The count is returned. Advice on whole pixels and nothing more. */
+static inline int temporal_whole_scales(int target_w, int target_h, char* text, size_t size) {
+    int found = 0, ps[32], qs[32];
+    size_t at = 0;
+    if (size) text[0] = 0;
+    for (int q = 2; q <= 8; q++)
+        for (int p = 1; p < q; p++) {
+            int a = p, b = q;
+            while (b) { /* only fractions in lowest terms: 2/4 is 1/2 */
+                const int r = a % b;
+                a = b;
+                b = r;
+            }
+            const float scale = (float)((double)p / (double)q);
+            const float w = (float)target_w * scale, h = (float)target_h * scale;
+            if (a != 1 || scale < 0.5f || found >= 32) continue;
+            if (fabsf(w - roundf(w)) > 0.001f || fabsf(h - roundf(h)) > 0.001f) continue;
+            int at_place = found++;
+            while (at_place > 0 && ps[at_place - 1] * q > p * qs[at_place - 1]) { /* keep the rising order */
+                ps[at_place] = ps[at_place - 1];
+                qs[at_place] = qs[at_place - 1];
+                at_place--;
+            }
+            ps[at_place] = p;
+            qs[at_place] = q;
+        }
+    for (int i = 0; i < found && at + 1 < size; i++) {
+        const int n = snprintf(text + at, size - at, "%s%d/%d", i ? ", " : "", ps[i], qs[i]);
+        if (n < 0 || (size_t)n >= size - at) {
+            text[at] = 0;
+            break;
+        }
+        at += (size_t)n;
+    }
+    return found;
 }
 /* the corner of the target the game puts the rectangle in, in image axes */
 enum { TEMPORAL_CORNER_TOP_LEFT, TEMPORAL_CORNER_TOP_RIGHT, TEMPORAL_CORNER_BOTTOM_LEFT, TEMPORAL_CORNER_BOTTOM_RIGHT };

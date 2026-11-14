@@ -1710,6 +1710,54 @@ static void test_rect_confirm(void) {
     assert(temporal_rect_geometry(&narrow, 3840, 2160, 0, &s) == TEMPORAL_RECT_SHAPE);
     assert(temporal_rect_geometry(&off, 3840, 2160, 0, &s) == TEMPORAL_RECT_SHAPE);
     assert(temporal_rect_geometry(&up, 3840, 0, 0, &s) == TEMPORAL_RECT_VIEWPORT);
+    /* A viewport that is not on whole pixels and has no other fault: the run at 0.6667 had 0,1440.07
+       2560.13x-1440.07 in 3840 by 2160. Whole, not finite, empty, outside the target and a target without a
+       size are other things. */
+    {
+        const TemporalViewport run = {0.0f, 1440.07f, 2560.13f, -1440.07f}, flat = {0.0f, 0.0f, 2560.13f, 1440.07f};
+        const TemporalViewport part = {0.0f, 1620.0f, 2880.0f, -1620.0f}, wide = {0.0f, 100.5f, 3840.5f, -100.5f};
+        const TemporalViewport nan_one = {NAN, 0.0f, 100.5f, 100.5f}, endless = {0.0f, 0.0f, INFINITY, 100.5f};
+        const TemporalViewport none = {0.0f, 0.0f, 0.0f, 100.5f}, back = {100.5f, 0.0f, -50.5f, 100.5f};
+        const TemporalViewport left = {-0.5f, 0.0f, 100.0f, 100.0f}, low = {0.0f, 2100.5f, 100.0f, 100.0f};
+        const TemporalViewport moved = {0.5f, 0.0f, 100.0f, 100.0f}, level = {0.0f, 0.0f, 100.0f, 0.0f};
+        assert(temporal_viewport_fractional(&run, 3840, 2160) && temporal_viewport_fractional(&flat, 3840, 2160));
+        assert(temporal_viewport_fractional(&moved, 3840, 2160));
+        assert(!temporal_viewport_fractional(&part, 3840, 2160) && !temporal_viewport_fractional(&whole, 3840, 2160));
+        assert(!temporal_viewport_fractional(&wide, 3840, 2160) && !temporal_viewport_fractional(&nan_one, 3840, 2160));
+        assert(!temporal_viewport_fractional(&endless, 3840, 2160) && !temporal_viewport_fractional(&none, 3840, 2160));
+        assert(!temporal_viewport_fractional(&back, 3840, 2160) && !temporal_viewport_fractional(&left, 3840, 2160));
+        assert(!temporal_viewport_fractional(&low, 3840, 2160) && !temporal_viewport_fractional(&level, 3840, 2160));
+        assert(!temporal_viewport_fractional(&run, 0, 2160) && !temporal_viewport_fractional(&run, 3840, -1));
+        /* every such viewport is one the rectangle's rule refuses */
+        assert(!temporal_rect_from_viewport(&run, 3840, 2160, &s.rect));
+        /* The scales that give whole pixels, for the very target: worked out, none by heart. 2/3 does at
+           3840 by 2160 and not at 2560 by 1440, and at 1366 by 768 a half is the only one. */
+        char text[96];
+        assert(temporal_whole_scales(3840, 2160, text, sizeof text) == 8);
+        assert(!strcmp(text, "1/2, 3/5, 5/8, 2/3, 3/4, 4/5, 5/6, 7/8"));
+        assert(temporal_whole_scales(2560, 1440, text, sizeof text) == 6);
+        assert(!strcmp(text, "1/2, 3/5, 5/8, 3/4, 4/5, 7/8"));
+        assert(temporal_whole_scales(1366, 768, text, sizeof text) == 1 && !strcmp(text, "1/2"));
+        assert(temporal_whole_scales(1920, 1080, text, sizeof text) == 8);
+        assert(temporal_whole_scales(1365, 767, text, sizeof text) == 0 && !text[0]);
+        assert(temporal_whole_scales(7, 7, text, sizeof text) == 3 && !strcmp(text, "4/7, 5/7, 6/7"));
+        /* each one listed is what it says: the float the game is given, times the size, is whole */
+        for (int q = 2; q <= 8; q++)
+            for (int p = 1; p < q; p++) {
+                char one[8];
+                const float scale = (float)((double)p / (double)q);
+                snprintf(one, sizeof one, "%d/%d", p, q);
+                temporal_whole_scales(3840, 2160, text, sizeof text);
+                if (strstr(text, one)) {
+                    assert(scale >= 0.5f && fabsf(3840.0f * scale - roundf(3840.0f * scale)) <= 0.001f);
+                    assert(fabsf(2160.0f * scale - roundf(2160.0f * scale)) <= 0.001f);
+                }
+            }
+        /* text that is too short holds what fits, whole entries only, and the count is the true one */
+        char small[8];
+        assert(temporal_whole_scales(3840, 2160, small, sizeof small) == 8 && !strcmp(small, "1/2"));
+        assert(temporal_whole_scales(3840, 2160, small, 1) == 8 && !small[0]);
+    }
     /* The fraction of a geometry: not finite, out of (0, 1], unequal, the wrong size, 1 with a rectangle, below 1
        with the whole target. 0.75 and 0.7501 both fit 2880 by 1620. */
     assert(temporal_rect_fraction(&a, 0.75f, 0.75f) == TEMPORAL_RECT_OK);
