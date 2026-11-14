@@ -20,8 +20,31 @@ layout(push_constant) uniform Constants {
                     // options: 1 Catmull-Rom history, 2 variance clip, 4 weight by motion and clip,
                     // 8 the vector of the nearest depth around, 16 blend by brightness
     vec4 size;      // image width, height, view, weight of the frame in the blend
-    vec4 jitter;    // this frame's jitter in clip units over w
+    vec4 jitter;    // this frame's jitter in clip units over w, then 1 when the scene is a rectangle of the image
 } pc;
+// The pixels our passes may read: the whole image, or with jitter.z set the scene's rectangle of it, which is the
+// viewport's. Outside the rectangle the images hold what an earlier frame left (temporal_rect_tap in temporal_math.h).
+bool in_rectangle() { return pc.jitter.z > 0.5; }
+ivec2 first_pixel() {
+    if (!in_rectangle()) return ivec2(0);
+    return ivec2(round(vec2(pc.viewport.x, min(pc.viewport.y, pc.viewport.y + pc.viewport.w))));
+}
+ivec2 last_pixel() {
+    if (!in_rectangle()) return ivec2(pc.size.xy) - 1;
+    return first_pixel() + ivec2(round(abs(pc.viewport.zw))) - 1;
+}
+// a place for a linear fetch, in pixels, kept where the fetch reads no texel outside the rectangle
+vec2 tap(vec2 pixels) {
+    if (!in_rectangle()) return pixels;
+    return clamp(pixels, vec2(first_pixel()) + 0.5, vec2(last_pixel()) + 0.5);
+}
+// 1 when a centre to fetch at, as a place of the image from 0 to 1, lies outside the picture: outside the image,
+// or with a rectangle outside it, whose right and bottom edges are not part of it (temporal_rect_holds)
+bool outside(vec2 uv) {
+    if (!in_rectangle()) return uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0;
+    vec2 at = uv * pc.size.xy, low = vec2(first_pixel()), high = vec2(last_pixel()) + 1.0;
+    return !(at.x >= low.x && at.y >= low.y && at.x < high.x && at.y < high.y);
+}
 const float CLASS_REJECTED = 2.0; // TEMPORAL_CLASS_REJECTED of temporal_math.h, in the motion image's alpha
 vec3 to_ycocg(vec3 c) {
     return vec3(dot(c, vec3(0.25, 0.5, 0.25)), dot(c, vec3(0.5, 0.0, -0.5)), dot(c, vec3(-0.25, 0.5, -0.25)));
@@ -38,7 +61,8 @@ vec3 history_sharp(vec2 uv) {
     vec2 w2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
     vec2 w3 = 0.5 * f3 - 0.5 * f2;
     vec2 w12 = w1 + w2;
-    vec2 t0 = (centre - 1.0) / pc.size.xy, t3 = (centre + 2.0) / pc.size.xy, t12 = (centre + w2 / w12) / pc.size.xy;
+    vec2 t0 = tap(centre - 1.0) / pc.size.xy, t3 = tap(centre + 2.0) / pc.size.xy;
+    vec2 t12 = tap(centre + w2 / w12) / pc.size.xy;
     vec4 sum = vec4(textureLod(u_history, vec2(t12.x, t0.y), 0.0).rgb, 1.0) * (w12.x * w0.y) +
                vec4(textureLod(u_history, vec2(t0.x, t12.y), 0.0).rgb, 1.0) * (w0.x * w12.y) +
                vec4(textureLod(u_history, t12, 0.0).rgb, 1.0) * (w12.x * w12.y) +
@@ -60,7 +84,7 @@ vec3 clip_toward(vec3 colour, vec3 frame, vec3 low, vec3 high) {
 void main() {
     int options = int(pc.depth.z + 0.5);
     ivec2 pixel = ivec2(gl_FragCoord.xy);
-    ivec2 last = ivec2(pc.size.xy) - 1;
+    ivec2 first = first_pixel(), last = last_pixel();
     vec2 uv = gl_FragCoord.xy / pc.size.xy;
     vec3 now = texelFetch(u_now, pixel, 0).rgb;
     float z = max((texelFetch(u_depth, pixel, 0).r - pc.depth.x) / pc.depth.y, 0.0);
@@ -76,7 +100,7 @@ void main() {
         float nearest = texelFetch(u_depth, pixel, 0).r;
         for (int y = -1; y <= 1; y++)
             for (int x = -1; x <= 1; x++) {
-                ivec2 at = clamp(pixel + ivec2(x, y), ivec2(0), last);
+                ivec2 at = clamp(pixel + ivec2(x, y), first, last);
                 float d = texelFetch(u_depth, at, 0).r;
                 if (d > nearest) {
                     nearest = d;
@@ -98,18 +122,24 @@ void main() {
     // the depth that surface's point had in the frame before: what the history must hold at the place fetched
     vec2 ndc = (surface - pc.viewport.xy) / pc.viewport.zw * 2.0 - 1.0 - pc.jitter.xy; // drawn with the jitter
     vec4 before = pc.reproject * vec4(ndc, surface_z, 1.0);
-    bool dropped = pc.depth.w > 0.5 || before.w <= 0.0 || from.x < 0.0 || from.y < 0.0 || from.x > 1.0 || from.y > 1.0;
-    vec3 history = (options & 1) != 0 ? history_sharp(from) : textureLod(u_history, from, 0.0).rgb;
+    // The history's centre is tested before anything is fetched. With a rectangle a centre outside it fetches
+    // nothing at all, and the pixel shows the frame.
+    bool centre_out = outside(from);
+    bool dropped = pc.depth.w > 0.5 || before.w <= 0.0 || centre_out;
+    vec2 linear_at = in_rectangle() ? tap(from * pc.size.xy) / pc.size.xy : from;
+    vec3 history = now;
+    if (!in_rectangle() || !centre_out)
+        history = (options & 1) != 0 ? history_sharp(from) : textureLod(u_history, linear_at, 0.0).rgb;
     if (!dropped) {
         // The history's depths around the place, each read whole: the sign of alpha is a mark, and an edge moves by
         // the jitter, so the depth must only lie within what the 3x3 texels there held, a tenth wider.
         // an object's vector comes with the depth its point had a frame ago (the camera's reprojection does not
         // know the object moved)
         float expected = vector.a > 0.5 ? vector.b : max(before.z / before.w, 0.0), nearest = 1e9, farthest = 0.0;
-        ivec2 place = clamp(ivec2(from * pc.size.xy), ivec2(0), last);
+        ivec2 place = clamp(ivec2(from * pc.size.xy), first, last);
         for (int y = -1; y <= 1; y++)
             for (int x = -1; x <= 1; x++) {
-                float had = abs(texelFetch(u_history, clamp(place + ivec2(x, y), ivec2(0), last), 0).a);
+                float had = abs(texelFetch(u_history, clamp(place + ivec2(x, y), first, last), 0).a);
                 nearest = min(nearest, had);
                 farthest = max(farthest, had);
             }
@@ -120,7 +150,7 @@ void main() {
     for (int y = -1; y <= 1; y++)
         for (int x = -1; x <= 1; x++) {
             if (x == 0 && y == 0) continue;
-            vec3 c = to_ycocg(texelFetch(u_now, clamp(pixel + ivec2(x, y), ivec2(0), last), 0).rgb);
+            vec3 c = to_ycocg(texelFetch(u_now, clamp(pixel + ivec2(x, y), first, last), 0).rgb);
             low = min(low, c);
             high = max(high, c);
             sum += c;

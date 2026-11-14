@@ -13,20 +13,32 @@ layout(push_constant) uniform Constants {
     vec4 viewport;
     vec4 depth;
     vec4 size; // image width, height, unused, the amount (0 to 1)
+    vec4 jitter; // unused, unused, 1 when the scene is a rectangle of the image
 } pc;
+// The pixels our passes may read: the whole image, or with jitter.z set the scene's rectangle of it, which is the
+// viewport's. Outside the rectangle the images hold what an earlier frame left (temporal_rect_tap in temporal_math.h).
+bool in_rectangle() { return pc.jitter.z > 0.5; }
+ivec2 first_pixel() {
+    if (!in_rectangle()) return ivec2(0);
+    return ivec2(round(vec2(pc.viewport.x, min(pc.viewport.y, pc.viewport.y + pc.viewport.w))));
+}
+ivec2 last_pixel() {
+    if (!in_rectangle()) return ivec2(pc.size.xy) - 1;
+    return first_pixel() + ivec2(round(abs(pc.viewport.zw))) - 1;
+}
 // HDR to 0..1 and back, so that the contrast measure means the same in dark and bright places
 vec3 squeeze(vec3 c) { return c / (1.0 + max(c.r, max(c.g, c.b))); }
 vec3 widen(vec3 c) { return c / max(1.0 - max(c.r, max(c.g, c.b)), 0.0001); }
 void main() {
     ivec2 pixel = ivec2(gl_FragCoord.xy);
-    ivec2 last = ivec2(pc.size.xy) - 1;
+    ivec2 first = first_pixel(), last = last_pixel();
     vec3 centre = max(texelFetch(u_resolved, pixel, 0).rgb, vec3(0.0));
     vec3 c = squeeze(centre);
     vec3 low = c, high = c, cross = vec3(0.0), least = centre, greatest = centre;
     for (int y = -1; y <= 1; y++)
         for (int x = -1; x <= 1; x++) {
             if (x == 0 && y == 0) continue;
-            vec3 linear = max(texelFetch(u_resolved, clamp(pixel + ivec2(x, y), ivec2(0), last), 0).rgb, vec3(0.0));
+            vec3 linear = max(texelFetch(u_resolved, clamp(pixel + ivec2(x, y), first, last), 0).rgb, vec3(0.0));
             vec3 n = squeeze(linear);
             least = min(least, linear);
             greatest = max(greatest, linear);

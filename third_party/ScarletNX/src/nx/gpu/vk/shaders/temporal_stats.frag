@@ -20,20 +20,43 @@ layout(push_constant) uniform Constants {
     vec4 viewport;
     vec4 depth; // depth translate, depth scale, 1 with anti-aliasing on, 1 when u_shown holds object vectors
     vec4 size;  // image width, height, view, gain
-    vec4 jitter; // this frame's jitter in clip units over w
+    vec4 jitter; // this frame's jitter in clip units over w, then 1 when the scene is a rectangle of the image
 } pc;
 layout(set = 0, binding = 3) uniform sampler2D u_depth;
 layout(set = 0, binding = 4) uniform sampler2D u_last; // the frame before, as it was drawn
 layout(set = 0, binding = 5) uniform sampler2D u_shown; // the resolved picture of the frame before
 layout(set = 0, binding = 6) uniform sampler2D u_final; // the picture as shown this frame, after the sharpen
 const ivec2 SAMPLES = ivec2(96, 54); // one half of the image: STATS_W x STATS_H of temporal.c
+// The pixels our passes may read: the whole image, or with jitter.z set the scene's rectangle of it, which is the
+// viewport's. Outside the rectangle the images hold what an earlier frame left (temporal_rect_tap in temporal_math.h).
+bool in_rectangle() { return pc.jitter.z > 0.5; }
+ivec2 first_pixel() {
+    if (!in_rectangle()) return ivec2(0);
+    return ivec2(round(vec2(pc.viewport.x, min(pc.viewport.y, pc.viewport.y + pc.viewport.w))));
+}
+ivec2 last_pixel() {
+    if (!in_rectangle()) return ivec2(pc.size.xy) - 1;
+    return first_pixel() + ivec2(round(abs(pc.viewport.zw))) - 1;
+}
+// a place for a linear fetch, in pixels, kept where the fetch reads no texel outside the rectangle
+vec2 tap(vec2 pixels) {
+    if (!in_rectangle()) return pixels;
+    return clamp(pixels, vec2(first_pixel()) + 0.5, vec2(last_pixel()) + 0.5);
+}
+// 1 when a centre to fetch at, as a place of the image from 0 to 1, lies outside the picture: outside the image,
+// or with a rectangle outside it, whose right and bottom edges are not part of it (temporal_rect_holds)
+bool outside(vec2 uv) {
+    if (!in_rectangle()) return uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0;
+    vec2 at = uv * pc.size.xy, low = vec2(first_pixel()), high = vec2(last_pixel()) + 1.0;
+    return !(at.x >= low.x && at.y >= low.y && at.x < high.x && at.y < high.y);
+}
 float relative(vec3 a, vec3 b) {
     vec3 e = abs(a - b) / (max(a, b) + 0.05);
     return max(e.r, max(e.g, e.b));
 }
 // brightness brought under 1, so a few very bright pixels do not carry the sum
 float tone(sampler2D s, ivec2 pixel) {
-    float l = dot(texelFetch(s, clamp(pixel, ivec2(0), ivec2(pc.size.xy) - 1), 0).rgb, vec3(0.2126, 0.7152, 0.0722));
+    float l = dot(texelFetch(s, clamp(pixel, first_pixel(), last_pixel()), 0).rgb, vec3(0.2126, 0.7152, 0.0722));
     return l / (1.0 + l);
 }
 float gradient(sampler2D s, ivec2 pixel) {
@@ -42,10 +65,12 @@ float gradient(sampler2D s, ivec2 pixel) {
 }
 void main() {
     // Whole numbers only, so both halves sample the very same pixel: the sample's index in its half, then the
-    // pixel at the middle of its cell of the scene.
+    // pixel at the middle of its cell of the scene, which with a rectangle is that alone (temporal_rect_sample).
     ivec2 texel = ivec2(gl_FragCoord.xy);
     ivec2 sample_at = ivec2(texel.x % SAMPLES.x, texel.y);
     ivec2 pixel = ((2 * sample_at + 1) * ivec2(pc.size.xy)) / (2 * SAMPLES);
+    if (in_rectangle())
+        pixel = first_pixel() + ((2 * sample_at + 1) * (last_pixel() - first_pixel() + 1)) / (2 * SAMPLES);
     if (texel.x >= SAMPLES.x) {
         o_stats = vec4(0.0);
         if (pc.depth.z > 0.5) o_stats.rg = vec2(gradient(u_now, pixel), gradient(u_final, pixel));
@@ -103,7 +128,8 @@ void main() {
             float camera = 1.0;
             if (before.w > 0.0) {
                 vec2 was = (before.xy / before.w * 0.5 + 0.5) * pc.viewport.zw + pc.viewport.xy;
-                camera = relative(now, textureLod(u_before, was / pc.size.xy, 0.0).rgb);
+                vec2 was_at = in_rectangle() ? tap(was) / pc.size.xy : was / pc.size.xy;
+                camera = relative(now, textureLod(u_before, was_at, 0.0).rgb);
             }
             o_stats.b += 1000.0 + (camera > 0.25 ? 2000.0 : 0.0);
         }
@@ -112,9 +138,10 @@ void main() {
         o_stats.a = -1.0;
         return;
     }
-    if (from.x < 0.0 || from.y < 0.0 || from.x > 1.0 || from.y > 1.0) {
+    if (outside(from)) {
         o_stats.a = -2.0;
         return;
     }
-    o_stats.r = relative(now, textureLod(u_before, from, 0.0).rgb);
+    vec2 from_at = in_rectangle() ? tap(from * pc.size.xy) / pc.size.xy : from;
+    o_stats.r = relative(now, textureLod(u_before, from_at, 0.0).rgb);
 }
