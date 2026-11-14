@@ -25,6 +25,7 @@ layout(set = 0, binding = 3) uniform sampler2D u_depth;
 layout(set = 0, binding = 4) uniform sampler2D u_last; // the frame before, as it was drawn
 layout(set = 0, binding = 5) uniform sampler2D u_shown; // the resolved picture of the frame before
 layout(set = 0, binding = 6) uniform sampler2D u_final; // the picture as shown this frame, after the sharpen
+const ivec2 SAMPLES = ivec2(96, 54); // one half of the image: STATS_W x STATS_H of temporal.c
 float relative(vec3 a, vec3 b) {
     vec3 e = abs(a - b) / (max(a, b) + 0.05);
     return max(e.r, max(e.g, e.b));
@@ -39,8 +40,12 @@ float gradient(sampler2D s, ivec2 pixel) {
                              tone(s, pixel + ivec2(0, 1)) - tone(s, pixel - ivec2(0, 1))));
 }
 void main() {
-    ivec2 pixel = ivec2(vec2(fract(v_uv.x * 2.0), v_uv.y) * pc.size.xy);
-    if (v_uv.x >= 0.5) {
+    // Whole numbers only, so both halves sample the very same pixel: the sample's index in its half, then the
+    // pixel at the middle of its cell of the scene.
+    ivec2 texel = ivec2(gl_FragCoord.xy);
+    ivec2 sample_at = ivec2(texel.x % SAMPLES.x, texel.y);
+    ivec2 pixel = ((2 * sample_at + 1) * ivec2(pc.size.xy)) / (2 * SAMPLES);
+    if (texel.x >= SAMPLES.x) {
         o_stats = vec4(0.0);
         if (pc.depth.z > 0.5) o_stats.rg = vec2(gradient(u_now, pixel), gradient(u_final, pixel));
         else if (pc.depth.w > 0.5) {
