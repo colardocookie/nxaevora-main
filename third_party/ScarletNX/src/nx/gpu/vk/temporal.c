@@ -40,6 +40,10 @@
 /* Runs between two readings. Not a multiple of the jitter's period, so the readings walk through all its offsets:
    every 60 runs they saw two of the eight. */
 #define STATS_EVERY 61u
+/* Runs between two copies into the numbers' buffer at least. The host reads a copy at the next one, without waiting
+   for it, so the copy must be done by then: the spacing stays well above the frames in flight. */
+#define STATS_SPACING 8u
+_Static_assert(STATS_SPACING >= 4 * VK_FRAMES && 2 * STATS_SPACING < STATS_EVERY, "numbers runs too close");
 #define STATS_ERROR 0.25f  /* a relative colour error above this counts as wrong */
 
 typedef struct {
@@ -1736,11 +1740,11 @@ void vk_temporal_before(u64 fs0_hash) {
         shown_before = g_t.object.view;
         pc.depth[3] = 1.0f;
     }
-    /* A frame with a long move line has its numbers taken too, when no regular run is within eight runs: the
+    /* A frame with a long move line has its numbers taken too, when no regular run is within STATS_SPACING runs: the
        buffer is read one run of the numbers later and the copy must be finished by then. */
     const u64 phase = g_t.runs % STATS_EVERY;
-    const int moved_far = !taa && objects && g_t.long_logged_at == g_vk_present + 1 && phase >= 8 &&
-                          phase + 8 <= STATS_EVERY;
+    const int moved_far = !taa && objects && g_t.long_logged_at == g_vk_present + 1 && phase >= STATS_SPACING &&
+                          phase + STATS_SPACING <= STATS_EVERY;
     const int stats_due = numbers && (phase == 0 || moved_far);
     /* the picture as shown, for its gradient: the resolve's, or the scene colour itself after a sharpen */
     VkImageView final_view = numbers_before;
