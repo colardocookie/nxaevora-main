@@ -123,18 +123,48 @@ static struct {
         u32 count;
     } id[VALIDATION_IDS];
 } g_said;
-/* n bytes of text for one log line: a line break or another control character would end the line early and leave
-   the rest without the self-test's prefix, where a report's filter loses it. Each is shown as a space, and the
-   callback's header says how many there are. */
-static u32 validation_line(char* out, const char* text, size_t n) {
-    u32 changed = 0;
-    for (size_t i = 0; i < n; i++) {
-        const unsigned char c = (unsigned char)text[i];
-        out[i] = c < 0x20 || c == 0x7f ? ' ' : (char)c;
-        changed += c < 0x20 || c == 0x7f;
+/* A line break or another control character in a callback's text would end the log line early and leave the
+   rest without the self-test's prefix, where a report's filter loses it. Each is written out as a visible mark
+   (a backslash with n, r or t, or with x and two hexadecimal digits), so nothing is dropped. One character's
+   mark into out, at most four bytes: how many. */
+static u32 validation_mark(unsigned char c, char* out) {
+    static const char digits[] = "0123456789abcdef";
+    if (c >= 0x20 && c != 0x7f) {
+        out[0] = (char)c;
+        return 1;
     }
-    out[n] = 0;
-    return changed;
+    out[0] = '\\';
+    out[1] = c == '\n' ? 'n' : c == '\r' ? 'r' : c == '\t' ? 't' : 'x';
+    if (out[1] != 'x') return 2;
+    out[2] = digits[c >> 4];
+    out[3] = digits[c & 15];
+    return 4;
+}
+/* a message id's name for a log line: its first 127 characters with the marks. out holds 4 x 127 + 1 bytes. The
+   name itself is kept and compared as it came. */
+static void validation_name(char* out, const char* name, size_t length) {
+    size_t at = 0;
+    for (size_t i = 0; i < length && i < 127; i++) at += validation_mark((unsigned char)name[i], out + at);
+    out[at] = 0;
+}
+/* n characters of text in pieces of at most VALIDATION_PIECE bytes, no mark split between two. With print 0 the
+   pieces are only counted. Each piece is one log line with the prefix and the callback's number. */
+static u32 validation_pieces(const char* text, size_t n, u32 number, u32 pieces, int print) {
+    char line[VALIDATION_PIECE + 1], mark[4];
+    size_t at = 0;
+    u32 made = 0;
+    for (size_t i = 0; i <= n; i++) {
+        const u32 width = i < n ? validation_mark((unsigned char)text[i], mark) : 0;
+        if ((i == n && at) || at + width > VALIDATION_PIECE) {
+            line[at] = 0;
+            made++;
+            if (print) LOG(ST "validation %u, part %u of %u: %s\n", number, made, pieces, line);
+            at = 0;
+        }
+        memcpy(line + at, mark, width);
+        at += width;
+    }
+    return made;
 }
 static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                                       VkDebugUtilsMessageTypeFlagsEXT type,
@@ -166,30 +196,27 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverit
     g_said.omitted += index >= VALIDATION_KEPT;
     g_said.truncated += index < VALIDATION_KEPT && length > kept;
     if (index < VALIDATION_KEPT) {
-        const u32 pieces = (u32)((kept + VALIDATION_PIECE - 1) / VALIDATION_PIECE);
-        char line[VALIDATION_PIECE + 1], shown[128];
-        u32 breaks = 0;
+        char shown[4 * 127 + 1];
+        u32 breaks = 0, name_breaks = 0;
         for (size_t i = 0; i < kept; i++) breaks += (unsigned char)text[i] < 0x20 || text[i] == 0x7f;
-        validation_line(shown, name, name_length < 127 ? name_length : 127);
+        for (size_t i = 0; i < name_length; i++) name_breaks += (unsigned char)name[i] < 0x20 || name[i] == 0x7f;
+        validation_name(shown, name, name_length);
         /* the name is printed whole when it fits the table, else its first 127 characters, said as cut */
-        LOG(ST "validation %u: message id %s%s (%d), %zu characters%s, %u line breaks or control characters shown "
-               "as spaces\n", index + 1, shown, fits ? "" : " [the name is cut here: it is longer]", (int)number,
-            length, length > kept ? ", of which the first 4096 are printed" : "", breaks);
+        LOG(ST "validation %u: message id %s%s (%d), %zu characters%s. Line breaks or control characters, each "
+               "written out as a mark: %u in the text printed, %u in the whole name\n", index + 1, shown,
+            fits ? "" : " [the name is cut here: it is longer]", (int)number, length,
+            length > kept ? ", of which the first 4096 are printed" : "", breaks, name_breaks);
         if (!fits) LOG(ST "validation %u: its message id's name has %zu characters\n", index + 1, name_length);
-        for (u32 p = 0; p < pieces; p++) {
-            const size_t from = (size_t)p * VALIDATION_PIECE;
-            const size_t n = kept - from > VALIDATION_PIECE ? VALIDATION_PIECE : kept - from;
-            validation_line(line, text + from, n);
-            LOG(ST "validation %u, part %u of %u: %s\n", index + 1, p + 1, pieces, line);
-        }
+        validation_pieces(text, kept, index + 1, validation_pieces(text, kept, index + 1, 0, 0), 1);
     } else if (index == VALIDATION_KEPT)
         LOG(ST "more than %d validation callbacks: the ones from here on are counted by their message id and not "
                "printed\n", VALIDATION_KEPT);
     __atomic_store_n(&g_said.lock, 0, __ATOMIC_RELEASE);
     return VK_FALSE;
 }
-/* at the end: how many callbacks each message id had, the layer's own limit on repeats said beside them */
-static void validation_counts(void) {
+/* At the end: how many callbacks each message id had, the layer's own limit on repeats said beside them. It
+   answers how many callbacks its counts hold. */
+static unsigned validation_counts(void) {
     u32 listed = 0;
     /* a callback may still arrive from a thread of the library's: the counts are taken under the callbacks' lock,
        all at one moment, and printed from that copy */
@@ -197,7 +224,7 @@ static void validation_counts(void) {
     const __typeof__(g_said) said = g_said;
     const u32 received = g.messages;
     __atomic_store_n(&g_said.lock, 0, __ATOMIC_RELEASE);
-    if (!received) return;
+    if (!received) return 0;
     for (u32 k = 0; k < said.ids; k++) listed += said.id[k].count;
     LOG(ST "validation: %u callbacks at warning or above. Printed %u, of which %u with a text cut at %d characters. "
            "Not printed %u (past the first %d). Without a message id's name %u. The layer itself stops reporting "
@@ -205,9 +232,11 @@ static void validation_counts(void) {
            "reported and not how often the fault occurred\n",
         received, received - said.omitted, said.truncated, VALIDATION_TEXT, said.omitted, VALIDATION_KEPT,
         said.nameless);
-    for (u32 k = 0; k < said.ids; k++)
-        LOG(ST "validation message id %s (%d): %u callbacks\n", said.id[k].name, (int)said.id[k].number,
-            said.id[k].count);
+    for (u32 k = 0; k < said.ids; k++) {
+        char shown[4 * 127 + 1];
+        validation_name(shown, said.id[k].name, strlen(said.id[k].name));
+        LOG(ST "validation message id %s (%d): %u callbacks\n", shown, (int)said.id[k].number, said.id[k].count);
+    }
     if (said.unlisted)
         LOG(ST "validation: the table of %d message ids is full. %u callbacks of further message ids are counted "
                "here together and are not listed by id\n", VALIDATION_IDS, said.unlisted);
@@ -219,6 +248,7 @@ static void validation_counts(void) {
     LOG(ST "validation: %u callbacks listed by message id, %u past the table and %u with a name too long make %u, "
            "and %u were received: %s\n", listed, said.unlisted, said.overlong, all, received,
         all == received ? "the counts add up" : "THE COUNTS DO NOT ADD UP");
+    return received;
 }
 
 static int memory_type(u32 bits, VkMemoryPropertyFlags want) {
@@ -2070,7 +2100,7 @@ int vk_upscaler_selftest(const char* adapter) {
     pass = pass && idle();
     /* Case 7: no message of the validation layer in any case. Without the layer the case was not run, which is
        not a pass, and neither is a run that had to stop. */
-    validation_counts();
+    (void)validation_counts();
     if (!g.validation) LOG(ST "case 7: NOT RUN, the validation layer is %s: FAIL\n", validation_missing());
     else if (g.unknown)
         LOG(ST "case 7: NOT JUDGED, the run stopped (%u validation messages until then): FAIL\n", g.messages);
