@@ -1308,9 +1308,19 @@ static inline int temporal_upscaler_failed(unsigned* failures, int ok) {
     else if (*failures < TEMPORAL_UPSCALER_FAILURES) ++*failures;
     return *failures >= TEMPORAL_UPSCALER_FAILURES;
 }
-/* One channel of the write-back after an upscaler, as shaders/temporal_upscaled.frag does it: the library's value
-   as it is, and 0 for a negative one and for one that is no number, since the scene colour has no sign. */
-static inline float temporal_upscaled(float c) { return isnan(c) ? 0.0f : c > 0.0f ? c : 0.0f; }
+/* One channel of the write-back after an upscaler, as shaders/temporal_upscaled.frag does it: the library's value,
+   0 for a negative one and for one that is no number, and at most largest, the largest finite value the scene
+   colour's format holds for the channel. So nothing of a library that is not finite reaches the scene colour.
+   A very large finite value can still overflow in a later pass of the game: that is not promised. */
+static inline float temporal_upscaled(float c, float largest) {
+    if (isnan(c) || !(c > 0.0f)) return 0.0f;
+    return c < largest ? c : largest;
+}
+/* the largest finite value of an unsigned float with five bits of exponent and this many of mantissa: 65024 for
+   the 11 bit channels (6) of B10G11R11, 64512 for its 10 bit channel (5) */
+static inline float temporal_ufloat_largest(int mantissa_bits) {
+    return (2.0f - 1.0f / (float)(1 << mantissa_bits)) * 32768.0f;
+}
 /* SNX_ARCEUS_UPSCALER in the game, the pure part. Not used by the renderer yet. It starts only with the
    anti-aliasing on, whose gate and failure rules it needs, and not with rejected vectors, which it does not have. */
 enum { TEMPORAL_UPSCALER_START_OK, TEMPORAL_UPSCALER_START_NOT_TAA, TEMPORAL_UPSCALER_START_REJECT };
@@ -1406,11 +1416,18 @@ static inline int temporal_upscaler_after(TemporalUpscalerHealth* h, int jittere
 /* What a frame's recycle notes of a context on its way, and it only notes. number: the submission its prepare
    went into. done: the last one the timeline says is done, read 0 when it could not be read. failed: the
    recorder's mark, looked at after the timeline. COMPLETED: it may be published where the runtime next records.
-   STOP: a submission did not run as recorded, so the context is kept, never used and never freed. */
+   STOP: the context is kept, never used and never freed. */
+/* STOP when a submission did not run as recorded, whatever else is so, and when the timeline could not be read
+   eight times in a row (*unread counts them, and a read that works sets it to 0): without the timeline
+   nothing is ever known to have completed, and that is not waited for in silence for the whole session. */
+#define TEMPORAL_UPSCALER_UNREAD 8
 enum { TEMPORAL_UPSCALER_WAIT, TEMPORAL_UPSCALER_COMPLETED, TEMPORAL_UPSCALER_STOP };
-static inline int temporal_upscaler_poll(int read, unsigned long long done, int failed, unsigned long long number) {
+static inline int temporal_upscaler_poll(int read, unsigned long long done, int failed, unsigned long long number,
+                                         unsigned* unread) {
     if (failed) return TEMPORAL_UPSCALER_STOP;
-    return read && number && done >= number ? TEMPORAL_UPSCALER_COMPLETED : TEMPORAL_UPSCALER_WAIT;
+    if (!read) return ++*unread >= TEMPORAL_UPSCALER_UNREAD ? TEMPORAL_UPSCALER_STOP : TEMPORAL_UPSCALER_WAIT;
+    *unread = 0;
+    return number && done >= number ? TEMPORAL_UPSCALER_COMPLETED : TEMPORAL_UPSCALER_WAIT;
 }
 /* The scene colour a frame's decision counts on, before the frame's own is seen: what the frame before had at
    its hook, kept by value with that frame's number. It is no knowledge of this frame. The hook reads the

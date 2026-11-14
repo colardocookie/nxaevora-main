@@ -2281,11 +2281,26 @@ static void test_projection_camera(void) {
 
 /* The pure rules of the upscaler's wiring in the game. */
 static void test_upscaler_wiring(void) {
-    /* the write-back: a value as it is, 0 for a negative one, for minus zero and for no number */
-    assert(temporal_upscaled(0.25f) == 0.25f && temporal_upscaled(7.5f) == 7.5f && temporal_upscaled(0.0f) == 0.0f);
-    assert(temporal_upscaled(-0.25f) == 0.0f && temporal_upscaled(-INFINITY) == 0.0f && temporal_upscaled(NAN) == 0.0f);
-    assert(!signbit(temporal_upscaled(-0.0f)) && isinf(temporal_upscaled(INFINITY)));
-    assert(temporal_upscaled(1e-40f) == 1e-40f); /* a denormal is a value */
+    /* The write-back: a value as it is, 0 for a negative one, for minus zero and for no number, and no more
+       than the largest finite value of the channel, which infinity is brought down to. */
+    {
+        const float r = temporal_ufloat_largest(6), b = temporal_ufloat_largest(5);
+        assert(r == 65024.0f && b == 64512.0f); /* (1 + 63/64) x 2^15 and (1 + 31/32) x 2^15 */
+        assert(temporal_upscaled(0.25f, r) == 0.25f && temporal_upscaled(7.5f, r) == 7.5f);
+        assert(temporal_upscaled(0.0f, r) == 0.0f && !signbit(temporal_upscaled(-0.0f, r)));
+        assert(temporal_upscaled(-0.25f, r) == 0.0f && temporal_upscaled(-INFINITY, r) == 0.0f);
+        assert(temporal_upscaled(NAN, r) == 0.0f && temporal_upscaled(1e-40f, r) == 1e-40f);
+        assert(temporal_upscaled(INFINITY, r) == 65024.0f && temporal_upscaled(INFINITY, b) == 64512.0f);
+        assert(temporal_upscaled(3.0e38f, r) == 65024.0f && temporal_upscaled(65024.0f, r) == 65024.0f);
+        assert(temporal_upscaled(65023.0f, r) == 65023.0f && temporal_upscaled(65025.0f, r) == 65024.0f);
+        /* the limits are per channel: a value the red and green channels hold is over the blue one's */
+        assert(temporal_upscaled(64800.0f, r) == 64800.0f && temporal_upscaled(64800.0f, b) == 64512.0f);
+        /* and they are the format's own: the self-test's packing gives them the all-ones finite pattern */
+        assert(selftest_ufloat((double)r, 6) == ((30u << 6) | 63u));
+        assert(selftest_ufloat((double)b, 5) == ((30u << 5) | 31u));
+        assert(selftest_ufloat_value((30u << 6) | 63u, 6) == (double)r);
+        assert(selftest_ufloat_value((30u << 5) | 31u, 5) == (double)b);
+    }
     /* the start: only with the anti-aliasing on, and not with rejected vectors */
     assert(temporal_upscaler_start(1, 0) == TEMPORAL_UPSCALER_START_OK);
     assert(temporal_upscaler_start(0, 0) == TEMPORAL_UPSCALER_START_NOT_TAA);
@@ -2500,14 +2515,30 @@ static void test_upscaler_wiring(void) {
     }
     /* What a recycle notes of a context on its way: nothing until the timeline, read with success, has reached
        the prepare's submission, and a stop whenever the recorder's mark is set, reached or not. */
-    assert(temporal_upscaler_poll(1, 9, 0, 10) == TEMPORAL_UPSCALER_WAIT);
-    assert(temporal_upscaler_poll(1, 10, 0, 10) == TEMPORAL_UPSCALER_COMPLETED);
-    assert(temporal_upscaler_poll(1, 11, 0, 10) == TEMPORAL_UPSCALER_COMPLETED);
-    assert(temporal_upscaler_poll(0, 11, 0, 10) == TEMPORAL_UPSCALER_WAIT); /* the timeline could not be read */
-    assert(temporal_upscaler_poll(1, 11, 0, 0) == TEMPORAL_UPSCALER_WAIT);  /* no submission is named */
-    assert(temporal_upscaler_poll(1, 11, 1, 10) == TEMPORAL_UPSCALER_STOP);  /* signalled by the host: not run */
-    assert(temporal_upscaler_poll(1, 9, 1, 10) == TEMPORAL_UPSCALER_STOP);
-    assert(temporal_upscaler_poll(0, 0, 1, 10) == TEMPORAL_UPSCALER_STOP);
+    {
+        unsigned unread = 0;
+        assert(temporal_upscaler_poll(1, 9, 0, 10, &unread) == TEMPORAL_UPSCALER_WAIT);
+        assert(temporal_upscaler_poll(1, 10, 0, 10, &unread) == TEMPORAL_UPSCALER_COMPLETED);
+        assert(temporal_upscaler_poll(1, 11, 0, 10, &unread) == TEMPORAL_UPSCALER_COMPLETED);
+        assert(temporal_upscaler_poll(1, 11, 0, 0, &unread) == TEMPORAL_UPSCALER_WAIT);  /* no submission is named */
+        assert(temporal_upscaler_poll(1, 11, 1, 10, &unread) == TEMPORAL_UPSCALER_STOP); /* signalled by the host */
+        assert(temporal_upscaler_poll(1, 9, 1, 10, &unread) == TEMPORAL_UPSCALER_STOP && unread == 0);
+        /* the mark outranks a timeline that cannot be read and a number that is not named */
+        assert(temporal_upscaler_poll(0, 0, 1, 10, &unread) == TEMPORAL_UPSCALER_STOP && unread == 0);
+        assert(temporal_upscaler_poll(0, 0, 1, 0, &unread) == TEMPORAL_UPSCALER_STOP);
+        /* The timeline could not be read: waited for, seven times in a row, and a read that works begins the
+           count again and gives its answer. */
+        for (unsigned k = 1; k <= 7; k++)
+            assert(temporal_upscaler_poll(0, 11, 0, 10, &unread) == TEMPORAL_UPSCALER_WAIT && unread == k);
+        assert(temporal_upscaler_poll(1, 11, 0, 10, &unread) == TEMPORAL_UPSCALER_COMPLETED && unread == 0);
+        for (unsigned k = 1; k <= 7; k++)
+            assert(temporal_upscaler_poll(0, 11, 0, 10, &unread) == TEMPORAL_UPSCALER_WAIT);
+        assert(temporal_upscaler_poll(1, 9, 0, 10, &unread) == TEMPORAL_UPSCALER_WAIT && unread == 0);
+        /* eight in a row: a stop, also when the number it could not read had long been reached */
+        for (unsigned k = 1; k <= 7; k++)
+            assert(temporal_upscaler_poll(0, 11, 0, 10, &unread) == TEMPORAL_UPSCALER_WAIT);
+        assert(temporal_upscaler_poll(0, 11, 0, 10, &unread) == TEMPORAL_UPSCALER_STOP && unread == 8);
+    }
     /* The colour a decision counts on: only the frame before's, seen at its hook. */
     {
         const TemporalUpscalerColour seen = {100, 122, 1, 3840, 2160};
