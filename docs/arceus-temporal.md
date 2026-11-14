@@ -297,11 +297,22 @@ complete by cause, and the frames whose object vectors were given up for a link.
 Two things are in the sources ahead of their use. Neither changes what the renderer does.
 
 The rules for a scene inside a rectangle of its targets (`SNX_ARCEUS_SCENE_SCALE`, `docs/arceus-timing.md`) are pure
-functions in `temporal_math.h` with host tests: the active rectangle of a signed viewport, a frame's structure
-from the viewport and the used fraction, the gate with its candidate and history stamp, the refusal of a history
-fetch whose centre is outside the rectangle the history was made in, the rejection bound from the rectangle's
-height, the numbers' lattice, the jitter's offsets and the texture level shift. The game's corner of the target is
-a parameter. The renderer still uses the whole-target gate, so under a scale below 1 it refuses every frame.
+functions in `temporal_math.h` with host tests: the active rectangle of a signed viewport, a frame's geometry
+from the viewport, the fraction that belongs to a geometry, the gate with its candidate and history stamp, the
+refusal of a history fetch whose centre is outside the rectangle the history was made in, the rejection bound from
+the rectangle's height, the numbers' lattice, the jitter's offsets and the texture level shift. The game's corner
+of the target is a parameter. The renderer still uses the whole-target gate, so under a scale below 1 it refuses
+every frame.
+
+The gate works in two steps, because the frame's first draw (the depth pre-pass) has no program that reads the
+scene block. At that draw the frame is decided from its viewport alone: it is jittered when the geometry is the
+one of the frame before and that frame was confirmed. A scene block that happens to be bound there can refuse the
+frame and nothing else. The frame is confirmed at its first scene draw whose program reads the scene block: the
+used fraction must belong to the geometry and be the candidate's. Only a frame that was accepted and confirmed
+is resolved and uses or writes history. A fraction that fits and is new makes the frame the next candidate
+without resolving it. A bad binding at the confirming draw, a later draw with another viewport or fraction, or no
+confirming draw leave the picture as drawn and start the sequence again. A frame gated at its first draw stays
+gated whatever follows.
 
 `gpu/vk/upscaler.h` is the contract for an upscaler's adapter (FSR, XeSS, DLSS), which turns its steps into one
 SDK's calls. For FSR and XeSS, whose headers are MIT, the adapter can be part of the runtime and load the SDK's own

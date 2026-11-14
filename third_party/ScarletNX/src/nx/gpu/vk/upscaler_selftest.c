@@ -598,9 +598,12 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     state.fx = (float)in->rw / (float)in->w;
     state.fy = (float)in->rh / (float)in->h;
     if (!temporal_rect_from_viewport(&state.viewport, in->w, in->h, &state.rect)) return -1;
-    const TemporalRectStamp stamp = {1, g.generation, in->w, in->h, in->ow, in->oh, state.rect};
+    const TemporalRectStamp stamp = {1, g.generation, in->w, in->h, in->ow, in->oh, state.rect, state.fx, state.fy};
+    /* the scene block as the first scene draw's fragment program would read it */
+    const TemporalSceneBlock block = {1, 1, state.fx, state.fy};
     const double jitter[2] = {in->scene[i].jitter[0], in->scene[i].jitter[1]};
-    temporal_rect_decide(&s->gate, s->frame, &state);
+    temporal_rect_decide(&s->gate, s->frame, &state, 0);
+    temporal_rect_confirm(&s->gate, s->frame, NULL, &block);
     if (!temporal_upscaler_frame(&s->gate, s->frame, &stamp, &state.viewport, jitter, cut, &numbers) ||
         !temporal_upscaler_camera(NEAR_PLANE, (double)INFINITY, FOV_Y, FRAME_SECONDS, 1, camera)) {
         s->skipped++;

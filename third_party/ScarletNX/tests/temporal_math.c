@@ -1366,21 +1366,46 @@ static TemporalRectState rect_state(int w, int h, float f, int tw, int th) {
     /* the viewport as the game has it: y is the bottom edge and the height is negative */
     return (TemporalRectState){{0, 0, w, h}, {0.0f, (float)h, (float)w, -(float)h}, tw, th, f, f};
 }
-/* one frame through the gate as the renderer would drive it: decided, perhaps disagreed with, resolved */
+/* a frame's geometry and then its fraction, as the two rules give them one after the other */
+static int rect_structure(const TemporalViewport* v, int tw, int th, float fx, float fy, int corner,
+                          TemporalRectState* out) {
+    int result = temporal_rect_geometry(v, tw, th, corner, out);
+    if (result == TEMPORAL_RECT_OK) result = temporal_rect_fraction(out, fx, fy);
+    if (result == TEMPORAL_RECT_OK) out->fx = fx, out->fy = fy;
+    return result;
+}
+/* a scene block the fragment program reads, bound, with the state's fraction */
+static TemporalSceneBlock rect_block(const TemporalRectState* s) {
+    return (TemporalSceneBlock){1, 1, s->fx, s->fy};
+}
+/* a frame decided and confirmed by its own fraction. What the decision said: 1 jittered, 0 gated. */
+static int rect_go(TemporalRectGate* g, unsigned frame, const TemporalRectState* s) {
+    const TemporalSceneBlock block = rect_block(s);
+    const int jitter = temporal_rect_decide(g, frame, s, 0);
+    temporal_rect_confirm(g, frame, NULL, &block);
+    return jitter;
+}
+static TemporalRectStamp rect_stamp(const TemporalRectState* s) {
+    return (TemporalRectStamp){0x5508c0000ull, 1, s->target_w, s->target_h, s->target_w, s->target_h, s->rect, s->fx,
+                               s->fy};
+}
+/* one frame through the gate as the renderer would drive it: decided, confirmed, perhaps disagreed with, resolved */
 enum { RECT_FINE, RECT_EARLY, RECT_LATE };
 static int rect_frame(TemporalRectGate* g, unsigned frame, const TemporalRectState* s, int fault, int* history) {
-    const TemporalRectStamp stamp = {0x5508c0000ull, 1, s->target_w, s->target_h, s->target_w, s->target_h, s->rect};
-    const int jitter = temporal_rect_decide(g, frame, fault == RECT_EARLY ? NULL : s);
+    const TemporalRectStamp stamp = rect_stamp(s);
+    const TemporalSceneBlock block = rect_block(s);
+    const int jitter = temporal_rect_decide(g, frame, fault == RECT_EARLY ? NULL : s, 0);
+    temporal_rect_confirm(g, frame, NULL, &block);
     if (fault == RECT_LATE) {
         TemporalRectState other = *s;
         other.rect.w -= 2;
         other.viewport.width -= 2.0f;
-        assert(temporal_rect_late(g, frame, &other));
-    } else
-        assert(temporal_rect_late(g, frame, s) == (fault == RECT_EARLY)); /* the same again is no disagreement */
+        assert(temporal_rect_late(g, frame, &other, NULL, &block));
+    } else /* the same again is no disagreement */
+        assert(temporal_rect_late(g, frame, s, NULL, &block) == (fault == RECT_EARLY));
     *history = temporal_rect_history(g, frame, &stamp);
     const int steady = temporal_rect_steady(g, frame);
-    assert(steady == (jitter && fault == RECT_FINE));
+    assert(!steady || (jitter && fault == RECT_FINE));
     assert(!*history || steady);
     temporal_rect_wrote(g, frame, &stamp);
     return steady;
@@ -1413,15 +1438,15 @@ static void test_rect(void) {
         assert(!temporal_rect_from_viewport(&bad[i], 3840, 2160, &r));
 
     /* The structure of a frame. A whole target, and the game's rectangle at three scales and two target sizes. */
-    assert(temporal_rect_structure(&whole, 3840, 2160, 1.0f, 1.0f, TEMPORAL_CORNER_TOP_LEFT, &s) == TEMPORAL_RECT_OK);
+    assert(rect_structure(&whole, 3840, 2160, 1.0f, 1.0f, TEMPORAL_CORNER_TOP_LEFT, &s) == TEMPORAL_RECT_OK);
     assert(s.rect.w == 3840 && s.rect.h == 2160 && s.target_w == 3840 && s.fx == 1.0f);
     /* A whole target is understood only with a fraction of 1 within 1e-6. Reported as partly used it is refused,
        also at 0.9998, whose size rounds to the whole target within a pixel. */
-    assert(temporal_rect_structure(&whole, 3840, 2160, 0.9999995f, 0.9999995f, 0, &s) == TEMPORAL_RECT_OK);
-    assert(temporal_rect_structure(&whole, 3840, 2160, 0.75f, 0.75f, 0, &s) == TEMPORAL_RECT_SHAPE);
-    assert(temporal_rect_structure(&whole, 3840, 2160, 0.5f, 0.5f, 0, &s) == TEMPORAL_RECT_SHAPE);
-    assert(temporal_rect_structure(&whole, 3840, 2160, 0.9998f, 0.9998f, 0, &s) == TEMPORAL_RECT_SHAPE);
-    assert(temporal_rect_structure(&whole, 3840, 2160, 0.99999f, 0.99999f, 0, &s) == TEMPORAL_RECT_SHAPE);
+    assert(rect_structure(&whole, 3840, 2160, 0.9999995f, 0.9999995f, 0, &s) == TEMPORAL_RECT_OK);
+    assert(rect_structure(&whole, 3840, 2160, 0.75f, 0.75f, 0, &s) == TEMPORAL_RECT_SHAPE);
+    assert(rect_structure(&whole, 3840, 2160, 0.5f, 0.5f, 0, &s) == TEMPORAL_RECT_SHAPE);
+    assert(rect_structure(&whole, 3840, 2160, 0.9998f, 0.9998f, 0, &s) == TEMPORAL_RECT_SHAPE);
+    assert(rect_structure(&whole, 3840, 2160, 0.99999f, 0.99999f, 0, &s) == TEMPORAL_RECT_SHAPE);
     const float scales[3] = {0.5f, 0.75f, 0.9f};
     for (int big = 0; big < 2; big++)
         for (int k = 0; k < 3; k++) {
@@ -1433,32 +1458,32 @@ static void test_rect(void) {
                 const int top = corner == TEMPORAL_CORNER_TOP_LEFT || corner == TEMPORAL_CORNER_TOP_RIGHT;
                 const TemporalViewport v = {left ? 0.0f : (float)tw - w, (top ? 0.0f : (float)th - h) + h, w, -h};
                 for (int game = 0; game < 4; game++)
-                    assert(temporal_rect_structure(&v, tw, th, f, f, game, &s) ==
+                    assert(rect_structure(&v, tw, th, f, f, game, &s) ==
                            (game == corner ? TEMPORAL_RECT_OK : TEMPORAL_RECT_SHAPE));
-                assert(temporal_rect_structure(&v, tw, th, f, f, corner, &s) == TEMPORAL_RECT_OK);
+                assert(rect_structure(&v, tw, th, f, f, corner, &s) == TEMPORAL_RECT_OK);
                 assert(s.rect.w == (int)w && s.rect.h == (int)h && s.rect.x == (left ? 0 : tw - (int)w));
                 assert(s.rect.y == (top ? 0 : th - (int)h) && s.fx == f && s.fy == f);
             }
-            /* one pixel off the fraction's size passes, two do not, on either axis */
-            const TemporalViewport one = {0.0f, h + 1.0f, w - 1.0f, -(h + 1.0f)}, two = {0.0f, h, w + 2.0f, -h};
+            /* one pixel off the fraction's size on both axes passes, two on either do not */
+            const TemporalViewport one = {0.0f, h + 1.0f, w + 1.0f, -(h + 1.0f)}, two = {0.0f, h, w + 2.0f, -h};
             const TemporalViewport tall = {0.0f, h - 2.0f, w, -(h - 2.0f)};
-            assert(temporal_rect_structure(&one, tw, th, f, f, TEMPORAL_CORNER_TOP_LEFT, &s) == TEMPORAL_RECT_OK);
-            assert(temporal_rect_structure(&two, tw, th, f, f, TEMPORAL_CORNER_TOP_LEFT, &s) == TEMPORAL_RECT_SHAPE);
-            assert(temporal_rect_structure(&tall, tw, th, f, f, TEMPORAL_CORNER_TOP_LEFT, &s) == TEMPORAL_RECT_SHAPE);
+            assert(rect_structure(&one, tw, th, f, f, TEMPORAL_CORNER_TOP_LEFT, &s) == TEMPORAL_RECT_OK);
+            assert(rect_structure(&two, tw, th, f, f, TEMPORAL_CORNER_TOP_LEFT, &s) == TEMPORAL_RECT_SHAPE);
+            assert(rect_structure(&tall, tw, th, f, f, TEMPORAL_CORNER_TOP_LEFT, &s) == TEMPORAL_RECT_SHAPE);
         }
     /* The fraction: finite and in (0, 1], both the same within 1e-6. The game's table has pairs that differ. */
     const float fractions[] = {0.0f, -0.5f, 1.0001f, 2.0f, NAN, INFINITY, -INFINITY};
     for (unsigned i = 0; i < sizeof fractions / sizeof *fractions; i++) {
-        assert(temporal_rect_structure(&up, 3840, 2160, fractions[i], 0.75f, 0, &s) == TEMPORAL_RECT_FRACTION);
-        assert(temporal_rect_structure(&up, 3840, 2160, 0.75f, fractions[i], 0, &s) == TEMPORAL_RECT_FRACTION);
+        assert(rect_structure(&up, 3840, 2160, fractions[i], 0.75f, 0, &s) == TEMPORAL_RECT_FRACTION);
+        assert(rect_structure(&up, 3840, 2160, 0.75f, fractions[i], 0, &s) == TEMPORAL_RECT_FRACTION);
     }
-    assert(temporal_rect_structure(&up, 3840, 2160, 0.9f, 0.85f, 0, &s) == TEMPORAL_RECT_UNEQUAL);
-    assert(temporal_rect_structure(&up, 3840, 2160, 0.75f, 0.75001f, 0, &s) == TEMPORAL_RECT_UNEQUAL);
-    assert(temporal_rect_structure(&up, 3840, 2160, 0.75f, 0.75f, 0, &s) == TEMPORAL_RECT_OK);
+    assert(rect_structure(&up, 3840, 2160, 0.9f, 0.85f, 0, &s) == TEMPORAL_RECT_UNEQUAL);
+    assert(rect_structure(&up, 3840, 2160, 0.75f, 0.75001f, 0, &s) == TEMPORAL_RECT_UNEQUAL);
+    assert(rect_structure(&up, 3840, 2160, 0.75f, 0.75f, 0, &s) == TEMPORAL_RECT_OK);
     /* a fraction that does not fit the rectangle, a viewport that is none, a target without a size */
-    assert(temporal_rect_structure(&up, 3840, 2160, 0.5f, 0.5f, 0, &s) == TEMPORAL_RECT_SHAPE);
-    assert(temporal_rect_structure(&bad[0], 3840, 2160, 0.75f, 0.75f, 0, &s) == TEMPORAL_RECT_VIEWPORT);
-    assert(temporal_rect_structure(&up, 0, 2160, 0.75f, 0.75f, 0, &s) == TEMPORAL_RECT_VIEWPORT);
+    assert(rect_structure(&up, 3840, 2160, 0.5f, 0.5f, 0, &s) == TEMPORAL_RECT_SHAPE);
+    assert(rect_structure(&bad[0], 3840, 2160, 0.75f, 0.75f, 0, &s) == TEMPORAL_RECT_VIEWPORT);
+    assert(rect_structure(&up, 0, 2160, 0.75f, 0.75f, 0, &s) == TEMPORAL_RECT_VIEWPORT);
 
     /* The gate. Frame N brings a rectangle and is gated, N+1 is accepted and has no history, N+2 has it. */
     const TemporalRectState a = rect_state(2880, 1620, 0.75f, 3840, 2160), b = rect_state(1920, 1080, 0.5f, 3840, 2160);
@@ -1479,12 +1504,16 @@ static void test_rect(void) {
         assert(rect_frame(&g, f++, turns[t], RECT_FINE, &history) && !history);
         assert(rect_frame(&g, f++, turns[t], RECT_FINE, &history) && history);
     }
-    /* the same rectangle in another target size, or with another fraction, is a change */
+    /* the same rectangle with another fraction that fits it is a change found at the confirmation: the frame is
+       jittered and not resolved. In another target size it is a change at the decision. */
     const TemporalRectState other_target = rect_state(2880, 1620, 0.75f, 3840, 2176);
     TemporalRectState other_fraction = a;
     other_fraction.fx = other_fraction.fy = 0.7501f;
-    assert(!rect_frame(&g, f++, &other_target, RECT_FINE, &history));
-    assert(!rect_frame(&g, f++, &other_fraction, RECT_FINE, &history));
+    const TemporalSceneBlock other_block = rect_block(&other_fraction);
+    assert(temporal_rect_decide(&g, f, &other_fraction, 0));
+    assert(temporal_rect_confirm(&g, f, NULL, &other_block) == TEMPORAL_FRAME_SEEN && !temporal_rect_steady(&g, f));
+    f++;
+    assert(!temporal_rect_decide(&g, f++, &other_target, 0));
     /* Each of the three breaks (an unknown early binder, a late disagreement, a missing frame) at each of the
        three positions. The frame of the break is not steady, and the frames after start again: gated, accepted
        without history, then with it. */
@@ -1507,16 +1536,16 @@ static void test_rect(void) {
     {
         TemporalRectState up_way, down_way;
         const TemporalViewport flipped = {0.0f, 0.0f, 2880.0f, 1620.0f};
-        assert(temporal_rect_structure(&up, 3840, 2160, 0.75f, 0.75f, 0, &up_way) == TEMPORAL_RECT_OK);
-        assert(temporal_rect_structure(&flipped, 3840, 2160, 0.75f, 0.75f, 0, &down_way) == TEMPORAL_RECT_OK);
-        assert(temporal_rect_same(&up_way.rect, &down_way.rect) && !temporal_rect_state_same(&up_way, &down_way));
+        assert(rect_structure(&up, 3840, 2160, 0.75f, 0.75f, 0, &up_way) == TEMPORAL_RECT_OK);
+        assert(rect_structure(&flipped, 3840, 2160, 0.75f, 0.75f, 0, &down_way) == TEMPORAL_RECT_OK);
+        assert(temporal_rect_same(&up_way.rect, &down_way.rect) && !temporal_rect_geometry_same(&up_way, &down_way));
         assert(up_way.viewport.height == -1620.0f && down_way.viewport.height == 1620.0f);
         memset(&g, 0, sizeof g);
         for (f = 500; f < 503; f++) assert(rect_frame(&g, f, &up_way, RECT_FINE, &history) == (f > 500));
         assert(history);
         /* late, in a steady frame with history */
-        assert(temporal_rect_decide(&g, 503, &up_way) && temporal_rect_steady(&g, 503));
-        assert(temporal_rect_late(&g, 503, &down_way) && !temporal_rect_steady(&g, 503));
+        assert(rect_go(&g, 503, &up_way) && temporal_rect_steady(&g, 503));
+        assert(temporal_rect_late(&g, 503, &down_way, NULL, NULL) && !temporal_rect_steady(&g, 503));
         assert(!g.have_candidate && !g.have_stamp);
         /* from one frame to the next */
         memset(&g, 0, sizeof g);
@@ -1528,32 +1557,35 @@ static void test_rect(void) {
         /* a moved origin with the same size and signs is another viewport as well */
         TemporalRectState moved = up_way;
         moved.viewport.x = 1.0f;
-        assert(!temporal_rect_state_same(&up_way, &moved));
+        assert(!temporal_rect_geometry_same(&up_way, &moved));
     }
     /* a late disagreement leaves the frame not steady even after history was read for it, and no history is kept */
     memset(&g, 0, sizeof g);
     for (f = 200; f < 203; f++) rect_frame(&g, f, &a, RECT_FINE, &history);
-    assert(history && temporal_rect_decide(&g, 203, &a) && temporal_rect_steady(&g, 203));
-    assert(temporal_rect_late(&g, 203, &b) && !temporal_rect_steady(&g, 203) && !g.have_stamp && !g.have_candidate);
-    assert(temporal_rect_late(&g, 203, &a)); /* it stays not valid, whatever comes after */
-    /* The history's identity: another target, another making of it, another size, output size or rectangle, and
-       it is not used. The same, and it is. */
+    assert(history && rect_go(&g, 203, &a) && temporal_rect_steady(&g, 203));
+    assert(temporal_rect_late(&g, 203, &b, NULL, NULL) && !temporal_rect_steady(&g, 203));
+    assert(!g.have_stamp && !g.have_candidate);
+    assert(temporal_rect_late(&g, 203, &a, NULL, NULL)); /* it stays not valid, whatever comes after */
+    /* The history's identity: another target, another making of it, another size, output size, rectangle or
+       fraction, and it is not used. The same, and it is. */
     memset(&g, 0, sizeof g);
-    const TemporalRectStamp made = {0x5508c0000ull, 3, 3840, 2160, 3840, 2160, {0, 0, 2880, 1620}};
-    for (f = 300; f < 302; f++) temporal_rect_decide(&g, f, &a);
+    const TemporalRectStamp made = {0x5508c0000ull, 3, 3840, 2160, 3840, 2160, {0, 0, 2880, 1620}, 0.75f, 0.75f};
+    for (f = 300; f < 302; f++) rect_go(&g, f, &a);
     temporal_rect_wrote(&g, 301, &made);
-    assert(temporal_rect_decide(&g, 302, &a) && temporal_rect_history(&g, 302, &made));
-    TemporalRectStamp changed[6] = {made, made, made, made, made, made};
+    assert(rect_go(&g, 302, &a) && temporal_rect_history(&g, 302, &made));
+    TemporalRectStamp changed[8] = {made, made, made, made, made, made, made, made};
     changed[0].target++;
     changed[1].generation++;
     changed[2].target_w = 1920;
     changed[3].out_h = 1080;
     changed[4].rect.w--;
     changed[5].rect.y = 540;
-    for (int i = 0; i < 6; i++) assert(!temporal_rect_history(&g, 302, &changed[i]));
+    changed[6].fx = 0.7501f;
+    changed[7].fy = 0.7501f;
+    for (int i = 0; i < 8; i++) assert(!temporal_rect_history(&g, 302, &changed[i]));
     /* a gated frame writes no history */
     memset(&g, 0, sizeof g);
-    temporal_rect_decide(&g, 400, &a);
+    rect_go(&g, 400, &a);
     temporal_rect_wrote(&g, 400, &made);
     assert(!g.have_stamp);
 
@@ -1637,6 +1669,186 @@ static void motion_texel(const double now[2], const double before[2], const Temp
     texel[1] = (float)((is[1] - was[1]) / (double)h);
 }
 
+/* The rectangle's rules in two steps: the geometry at the frame's first draw, the fraction at the first scene draw
+   whose program reads the scene block. */
+static void test_rect_confirm(void) {
+    TemporalRectState s, a, whole_state;
+    TemporalRectGate g;
+    const TemporalViewport up = {0.0f, 1620.0f, 2880.0f, -1620.0f}, whole = {0.0f, 2160.0f, 3840.0f, -2160.0f};
+    /* The geometry alone. The proportions within a pixel: |w x H - h x W| <= max(W, H), the bound itself passing.
+       2880 by 1621 is the bound in a target of 3840 by 2160, 2880 by 1622 is past it. A square target takes one
+       pixel either way. Under half the target on an axis is no scene. */
+    assert(temporal_rect_geometry(&up, 3840, 2160, TEMPORAL_CORNER_TOP_LEFT, &a) == TEMPORAL_RECT_OK);
+    assert(a.rect.w == 2880 && a.rect.h == 1620 && a.fx == 0.0f && a.fy == 0.0f && a.viewport.height == -1620.0f);
+    assert(temporal_rect_geometry(&whole, 3840, 2160, TEMPORAL_CORNER_TOP_LEFT, &whole_state) == TEMPORAL_RECT_OK);
+    a.fx = a.fy = 0.75f; /* for the helpers that confirm a frame with its state's fraction */
+    const TemporalViewport bound = {0.0f, 1621.0f, 2880.0f, -1621.0f}, past = {0.0f, 1622.0f, 2880.0f, -1622.0f};
+    const TemporalViewport under = {0.0f, 1619.0f, 2880.0f, -1619.0f}, far_under = {0.0f, 1618.0f, 2880.0f, -1618.0f};
+    assert(temporal_rect_geometry(&bound, 3840, 2160, 0, &s) == TEMPORAL_RECT_OK);
+    assert(temporal_rect_geometry(&past, 3840, 2160, 0, &s) == TEMPORAL_RECT_SHAPE);
+    assert(temporal_rect_geometry(&under, 3840, 2160, 0, &s) == TEMPORAL_RECT_OK);
+    assert(temporal_rect_geometry(&far_under, 3840, 2160, 0, &s) == TEMPORAL_RECT_SHAPE);
+    const TemporalViewport square[3] = {{0.0f, 769.0f, 768.0f, -769.0f}, {0.0f, 767.0f, 768.0f, -767.0f},
+                                        {0.0f, 770.0f, 768.0f, -770.0f}};
+    assert(temporal_rect_geometry(&square[0], 1024, 1024, 0, &s) == TEMPORAL_RECT_OK);
+    assert(temporal_rect_geometry(&square[1], 1024, 1024, 0, &s) == TEMPORAL_RECT_OK);
+    assert(temporal_rect_geometry(&square[2], 1024, 1024, 0, &s) == TEMPORAL_RECT_SHAPE);
+    const TemporalViewport half = {0.0f, 1080.0f, 1920.0f, -1080.0f}, less = {0.0f, 1079.0f, 1918.0f, -1079.0f};
+    const TemporalViewport narrow = {0.0f, 2160.0f, 1900.0f, -2160.0f}, off = {8.0f, 1620.0f, 2880.0f, -1620.0f};
+    assert(temporal_rect_geometry(&half, 3840, 2160, 0, &s) == TEMPORAL_RECT_OK);
+    assert(temporal_rect_geometry(&less, 3840, 2160, 0, &s) == TEMPORAL_RECT_SHAPE);
+    assert(temporal_rect_geometry(&narrow, 3840, 2160, 0, &s) == TEMPORAL_RECT_SHAPE);
+    assert(temporal_rect_geometry(&off, 3840, 2160, 0, &s) == TEMPORAL_RECT_SHAPE);
+    assert(temporal_rect_geometry(&up, 3840, 0, 0, &s) == TEMPORAL_RECT_VIEWPORT);
+    /* The fraction of a geometry: not finite, out of (0, 1], unequal, the wrong size, 1 with a rectangle, below 1
+       with the whole target. 0.75 and 0.7501 both fit 2880 by 1620. */
+    assert(temporal_rect_fraction(&a, 0.75f, 0.75f) == TEMPORAL_RECT_OK);
+    assert(temporal_rect_fraction(&a, 0.7501f, 0.7501f) == TEMPORAL_RECT_OK);
+    assert(temporal_rect_fraction(&a, NAN, 0.75f) == TEMPORAL_RECT_FRACTION);
+    assert(temporal_rect_fraction(&a, 0.75f, INFINITY) == TEMPORAL_RECT_FRACTION);
+    assert(temporal_rect_fraction(&a, 0.0f, 0.0f) == TEMPORAL_RECT_FRACTION);
+    assert(temporal_rect_fraction(&a, 1.5f, 1.5f) == TEMPORAL_RECT_FRACTION);
+    assert(temporal_rect_fraction(&a, 0.75f, 0.7501f) == TEMPORAL_RECT_UNEQUAL);
+    assert(temporal_rect_fraction(&a, 0.7f, 0.7f) == TEMPORAL_RECT_SHAPE);
+    assert(temporal_rect_fraction(&a, 1.0f, 1.0f) == TEMPORAL_RECT_SHAPE);
+    assert(temporal_rect_fraction(&whole_state, 1.0f, 1.0f) == TEMPORAL_RECT_OK);
+    assert(temporal_rect_fraction(&whole_state, 0.9998f, 0.9998f) == TEMPORAL_RECT_SHAPE);
+    assert(temporal_rect_fraction(&whole_state, 0.75f, 0.75f) == TEMPORAL_RECT_SHAPE);
+
+    /* The scene block at the deciding draw can only refuse. Bound with a finite fraction that is not the
+       geometry's: refused. Bound and agreeing, not bound, not finite, none: nothing is decided by it. */
+    const TemporalSceneBlock good = {1, 1, 0.75f, 0.75f}, other = {1, 1, 0.7501f, 0.7501f};
+    const TemporalSceneBlock wrong = {1, 1, 0.5f, 0.5f}, unbound = {1, 0, 0.5f, 0.5f}, lost = {1, 1, NAN, 0.75f};
+    const TemporalSceneBlock unread = {0, 1, 0.5f, 0.5f}, one = {1, 1, 1.0f, 1.0f};
+    assert(temporal_rect_early(&a, &wrong) && temporal_rect_early(&a, &unread) && temporal_rect_early(&a, &one));
+    assert(!temporal_rect_early(&a, &good) && !temporal_rect_early(&a, &other));
+    assert(!temporal_rect_early(&a, &unbound) && !temporal_rect_early(&a, &lost) && !temporal_rect_early(&a, NULL));
+    assert(temporal_rect_early(&whole_state, &good) && !temporal_rect_early(&whole_state, &one));
+
+    /* The sequence. Frame N has a new geometry: gated, and confirmed, which makes it the candidate. N+1 is
+       accepted and confirmed with the same fraction: steady, it seeds the history. N+2 uses it. */
+    TemporalRectStamp stamp = {0x5508c0000ull, 1, 3840, 2160, 3840, 2160, {0, 0, 2880, 1620}, 0.75f, 0.75f};
+    memset(&g, 0, sizeof g);
+    assert(!temporal_rect_decide(&g, 10, &a, 0) && !temporal_rect_steady(&g, 10));
+    assert(temporal_rect_confirm(&g, 10, NULL, &good) == TEMPORAL_FRAME_SEEN && !temporal_rect_steady(&g, 10));
+    assert(g.have_candidate && g.candidate.fx == 0.75f && !g.have_stamp);
+    temporal_rect_wrote(&g, 10, &stamp); /* a gated frame writes nothing, confirmed or not */
+    assert(!g.have_stamp);
+    assert(temporal_rect_decide(&g, 11, &a, 0));
+    /* decided and not yet confirmed: not to be resolved, no history, nothing written */
+    assert(!temporal_rect_steady(&g, 11) && !temporal_rect_history(&g, 11, &stamp));
+    temporal_rect_wrote(&g, 11, &stamp);
+    assert(!g.have_stamp);
+    /* a draw before the confirmation is held to the geometry only */
+    assert(!temporal_rect_late(&g, 11, &a, &wrong, &wrong));
+    assert(temporal_rect_confirm(&g, 11, NULL, &good) == TEMPORAL_FRAME_STEADY && temporal_rect_steady(&g, 11));
+    assert(temporal_rect_confirm(&g, 11, NULL, &wrong) == TEMPORAL_FRAME_STEADY); /* once a frame */
+    assert(temporal_rect_confirm(&g, 12, NULL, &good) == 0);                      /* not this frame's */
+    assert(!temporal_rect_history(&g, 11, &stamp));
+    temporal_rect_wrote(&g, 11, &stamp);
+    assert(temporal_rect_decide(&g, 12, &a, 0) && !temporal_rect_history(&g, 12, &stamp));
+    assert(temporal_rect_confirm(&g, 12, &good, &good) == TEMPORAL_FRAME_STEADY); /* both stages read it and agree */
+    assert(temporal_rect_history(&g, 12, &stamp));
+    temporal_rect_wrote(&g, 12, &stamp);
+    /* Later draws of the frame are held to the confirmed fraction in each stage that reads the block. A stage
+       that does not read it may have anything bound. */
+    assert(!temporal_rect_late(&g, 12, &a, &good, &good) && !temporal_rect_late(&g, 12, &a, &unread, NULL));
+    assert(!temporal_rect_late(&g, 12, &a, NULL, NULL) && temporal_rect_steady(&g, 12));
+    for (int stage = 0; stage < 2; stage++)
+        for (int kind = 0; kind < 3; kind++) {
+            const TemporalSceneBlock gone = {1, 0, 0.75f, 0.75f}; /* not bound, whatever the words say */
+            const TemporalSceneBlock* bad[3] = {&other, &gone, &wrong};
+            TemporalRectGate h = g;
+            assert(temporal_rect_late(&h, 12, &a, stage ? &good : bad[kind], stage ? bad[kind] : &good));
+            assert(!temporal_rect_steady(&h, 12) && !h.have_candidate && !h.have_stamp);
+            assert(!temporal_rect_history(&h, 12, &stamp));
+            assert(temporal_rect_late(&h, 12, &a, &good, &good)); /* and it stays so */
+            assert(!temporal_rect_decide(&h, 13, &a, 0));
+        }
+
+    /* A frame decided and never confirmed (no reading draw came): never steady, and the next decision finds
+       nothing left of it or of the frames before. */
+    assert(temporal_rect_decide(&g, 13, &a, 0) && !temporal_rect_steady(&g, 13) && g.have_stamp);
+    assert(!temporal_rect_decide(&g, 14, &a, 0) && !g.have_candidate && !g.have_stamp);
+    assert(temporal_rect_confirm(&g, 14, NULL, &good) == TEMPORAL_FRAME_SEEN);
+    assert(rect_go(&g, 15, &a) && temporal_rect_steady(&g, 15) && !temporal_rect_history(&g, 15, &stamp));
+
+    /* The confirming draw fails, at each position of the sequence. That draw alone confirms: a later good one does
+       not mend the frame. The frame is not steady, nothing is left, and the frames after start again. */
+    const TemporalSceneBlock skew = {1, 1, 0.75f, 0.7501f}, small = {1, 1, 0.7f, 0.7f}, none = {0, 0, 0.0f, 0.0f};
+    const TemporalSceneBlock* fails[8][2] = {{NULL, &lost},  {NULL, &skew},   {NULL, &small}, {NULL, &one},
+                                             {NULL, &unbound}, {&good, &other}, {&unbound, &good}, {&none, &none}};
+    for (int kind = 0; kind < 8; kind++)
+        for (int at = 0; at < 3; at++) {
+            unsigned f = 100;
+            int history;
+            memset(&g, 0, sizeof g);
+            for (int i = 0; i < at; i++) assert(rect_frame(&g, f++, &a, RECT_FINE, &history) == (i > 0));
+            assert(temporal_rect_decide(&g, f, &a, 0) == (at > 0));
+            assert(temporal_rect_confirm(&g, f, fails[kind][0], fails[kind][1]) == TEMPORAL_FRAME_NONE);
+            assert(temporal_rect_confirm(&g, f, NULL, &good) == TEMPORAL_FRAME_NONE);
+            assert(!temporal_rect_steady(&g, f) && !temporal_rect_history(&g, f, &stamp));
+            assert(!g.have_candidate && !g.have_stamp);
+            temporal_rect_wrote(&g, f, &stamp);
+            assert(!g.have_stamp && temporal_rect_late(&g, f, &a, NULL, &good));
+            f++;
+            assert(!rect_frame(&g, f++, &a, RECT_FINE, &history) && !history);
+            assert(rect_frame(&g, f++, &a, RECT_FINE, &history) && !history);
+            assert(rect_frame(&g, f++, &a, RECT_FINE, &history) && history);
+        }
+    /* the whole target reported as partly used fails the same way */
+    memset(&g, 0, sizeof g);
+    assert(!temporal_rect_decide(&g, 150, &whole_state, 0));
+    assert(temporal_rect_confirm(&g, 150, NULL, &good) == TEMPORAL_FRAME_NONE && !g.have_candidate);
+    assert(!temporal_rect_decide(&g, 151, &whole_state, 0));
+    assert(temporal_rect_confirm(&g, 151, NULL, &one) == TEMPORAL_FRAME_SEEN && g.candidate.fx == 1.0f);
+
+    /* The fraction changes and the viewport does not: 0.75, then 0.7501, then back. The frame of the change was
+       jittered and is not resolved, uses and writes no history, and is the new candidate. The frame after seeds,
+       the one after that has history. A history made under the other fraction is not used. */
+    TemporalRectState b = a;
+    int history;
+    b.fx = b.fy = 0.7501f;
+    memset(&g, 0, sizeof g);
+    for (unsigned f = 200; f < 203; f++) rect_frame(&g, f, &a, RECT_FINE, &history);
+    assert(history && g.have_stamp);
+    const TemporalRectState* turn[2] = {&b, &a};
+    for (unsigned t = 0, f = 203; t < 2; t++, f += 3) {
+        const TemporalRectStamp now = rect_stamp(turn[t]), before = rect_stamp(turn[!t]);
+        const TemporalSceneBlock block = rect_block(turn[t]);
+        assert(temporal_rect_decide(&g, f, turn[t], 0) && g.have_stamp);
+        assert(temporal_rect_confirm(&g, f, NULL, &block) == TEMPORAL_FRAME_SEEN);
+        assert(!temporal_rect_steady(&g, f) && !g.have_stamp && g.have_candidate && g.candidate.fx == turn[t]->fx);
+        assert(!temporal_rect_history(&g, f, &now) && !temporal_rect_history(&g, f, &before));
+        temporal_rect_wrote(&g, f, &now);
+        assert(!g.have_stamp);
+        assert(rect_frame(&g, f + 1, turn[t], RECT_FINE, &history) && !history);
+        assert(temporal_rect_decide(&g, f + 2, turn[t], 0));
+        assert(temporal_rect_confirm(&g, f + 2, NULL, &block) == TEMPORAL_FRAME_STEADY);
+        assert(temporal_rect_history(&g, f + 2, &now) && !temporal_rect_history(&g, f + 2, &before));
+        temporal_rect_wrote(&g, f + 2, &now);
+    }
+    /* the change of fraction together with a late disagreement of the viewport: nothing is left */
+    assert(temporal_rect_decide(&g, 209, &b, 0));
+    assert(temporal_rect_confirm(&g, 209, NULL, &other) == TEMPORAL_FRAME_SEEN && g.have_candidate);
+    assert(temporal_rect_late(&g, 209, &whole_state, NULL, &other) && !g.have_candidate && !g.have_stamp);
+    assert(!temporal_rect_decide(&g, 210, &b, 0));
+
+    /* The early refusal gates a frame whose geometry is the candidate's. Confirmed later in the frame, it stays
+       gated: never resolved, no history written. It only makes the frame after acceptable. */
+    memset(&g, 0, sizeof g);
+    for (unsigned f = 300; f < 303; f++) rect_frame(&g, f, &a, RECT_FINE, &history);
+    assert(history && !temporal_rect_decide(&g, 303, &a, 1) && !g.have_stamp);
+    assert(temporal_rect_confirm(&g, 303, NULL, &good) == TEMPORAL_FRAME_SEEN && !temporal_rect_steady(&g, 303));
+    temporal_rect_wrote(&g, 303, &stamp);
+    assert(!g.have_stamp && !temporal_rect_history(&g, 303, &stamp));
+    assert(rect_frame(&g, 304, &a, RECT_FINE, &history) && !history);
+    assert(rect_frame(&g, 305, &a, RECT_FINE, &history) && history);
+    /* a gated frame that is not confirmed either leaves nothing */
+    assert(!temporal_rect_decide(&g, 306, &a, 1));
+    assert(temporal_rect_confirm(&g, 306, NULL, &small) == TEMPORAL_FRAME_NONE && !g.have_candidate);
+}
+
 static void test_upscaler(void) {
     const TemporalViewport whole = {0.0f, 1080.0f, 1920.0f, -1080.0f}, part = {0.0f, 810.0f, 1440.0f, -810.0f};
     float vp_now[16], inverse_now[16], vp_before[16], unused[16], texel[2];
@@ -1695,17 +1907,18 @@ static void test_upscaler(void) {
        0.5 x j x (1920, -1080) = (0.25, -0.375) px. Up in clip is up the image, so y is negative. */
     const TemporalRectState full = {{0, 0, 1920, 1080}, whole, 1920, 1080, 1.0f, 1.0f};
     const TemporalRectState scaled = {{0, 0, 1440, 810}, part, 1920, 1080, 0.75f, 0.75f};
-    const TemporalRectStamp full_stamp = {0x5508c0000ull, 1, 1920, 1080, 1920, 1080, {0, 0, 1920, 1080}};
-    const TemporalRectStamp scaled_stamp = {0x5508c0000ull, 1, 1920, 1080, 1920, 1080, {0, 0, 1440, 810}};
+    const TemporalRectStamp full_stamp = {0x5508c0000ull, 1, 1920, 1080, 1920, 1080, {0, 0, 1920, 1080}, 1.0f, 1.0f};
+    const TemporalRectStamp scaled_stamp = {0x5508c0000ull, 1,    1920,  1080,
+                                            1920,           1080, {0, 0, 1440, 810}, 0.75f, 0.75f};
     const double jitter[2] = {0.5 / 1920.0, 0.75 / 1080.0};
     TemporalRectGate g;
     TemporalUpscalerFrame out;
     memset(&g, 0, sizeof g);
     /* a gated frame is not given to the upscaler */
-    assert(!temporal_rect_decide(&g, 10, &full));
+    assert(!rect_go(&g, 10, &full));
     assert(!temporal_upscaler_frame(&g, 10, &full_stamp, &whole, jitter, 0, &out));
     /* the first accepted frame has the reset, the next has not, once the one before was evaluated with success */
-    assert(temporal_rect_decide(&g, 11, &full));
+    assert(rect_go(&g, 11, &full));
     assert(temporal_upscaler_frame(&g, 11, &full_stamp, &whole, jitter, 0, &out) && out.reset);
     assert(close_to(out.jitter[0], 0.25, 1e-12) && close_to(out.jitter[1], -0.375, 1e-12));
     {
@@ -1719,25 +1932,25 @@ static void test_upscaler(void) {
     assert(out.vector_scale[0] == -1920.0 && out.vector_scale[1] == -1080.0);
     assert(out.render.w == 1920 && out.render.h == 1080 && out.out_w == 1920 && out.out_h == 1080);
     temporal_rect_wrote(&g, 11, &full_stamp);
-    assert(temporal_rect_decide(&g, 12, &full));
+    assert(rect_go(&g, 12, &full));
     assert(temporal_upscaler_frame(&g, 12, &full_stamp, &whole, jitter, 0, &out) && !out.reset);
     /* a camera cut resets while the frame is steady */
     assert(temporal_upscaler_frame(&g, 12, &full_stamp, &whole, jitter, 1, &out) && out.reset);
     /* an evaluation that failed wrote nothing: the frame after has the reset */
-    assert(temporal_rect_decide(&g, 13, &full));
+    assert(rect_go(&g, 13, &full));
     assert(temporal_upscaler_frame(&g, 13, &full_stamp, &whole, jitter, 0, &out) && out.reset);
     temporal_rect_wrote(&g, 13, &full_stamp);
     /* A resize: the scene goes into the rectangle of 0.75. The frame of the change is not evaluated, the next has
        the reset, the rectangle, a jitter sized by the rectangle and the vector scale of the whole target still. */
-    assert(!temporal_rect_decide(&g, 14, &scaled));
+    assert(!rect_go(&g, 14, &scaled));
     assert(!temporal_upscaler_frame(&g, 14, &scaled_stamp, &part, jitter, 0, &out));
-    assert(temporal_rect_decide(&g, 15, &scaled));
+    assert(rect_go(&g, 15, &scaled));
     assert(temporal_upscaler_frame(&g, 15, &scaled_stamp, &part, jitter, 0, &out) && out.reset);
     assert(out.render.w == 1440 && out.render.h == 810 && out.target_w == 1920 && out.out_w == 1920);
     assert(close_to(out.jitter[0], 0.25 * 0.75, 1e-12) && close_to(out.jitter[1], -0.375 * 0.75, 1e-12));
     assert(out.vector_scale[0] == -1920.0 && out.vector_scale[1] == -1080.0);
     temporal_rect_wrote(&g, 15, &scaled_stamp);
-    assert(temporal_rect_decide(&g, 16, &scaled));
+    assert(rect_go(&g, 16, &scaled));
     assert(temporal_upscaler_frame(&g, 16, &scaled_stamp, &part, jitter, 0, &out) && !out.reset);
     /* a viewport that is not the frame's own, also the same rectangle with y the other way round, or a stamp of
        another rectangle or target size, gives nothing */
@@ -1789,8 +2002,8 @@ static void test_upscaler(void) {
         const double tiny[2] = {1e-12, 1e-12};
         TemporalRectGate h;
         memset(&h, 0, sizeof h);
-        temporal_rect_decide(&h, 30, &vast_state);
-        assert(temporal_rect_decide(&h, 31, &vast_state) && temporal_rect_steady(&h, 31));
+        rect_go(&h, 30, &vast_state);
+        assert(rect_go(&h, 31, &vast_state) && temporal_rect_steady(&h, 31));
         assert(!temporal_upscaler_frame(&h, 31, &scaled_stamp, &vast, tiny, 0, &out));
         assert(!temporal_upscaler_frame(&h, 31, &scaled_stamp, &vast, jitter, 0, &out));
     }
@@ -1798,8 +2011,12 @@ static void test_upscaler(void) {
     other = scaled_stamp;
     other.out_w = 2560;
     assert(temporal_upscaler_frame(&g, 16, &other, &part, jitter, 0, &out) && out.reset && out.out_w == 2560);
+    /* a stamp of another fraction than the frame's is not the frame's: nothing is given */
+    other = scaled_stamp;
+    other.fx = other.fy = 0.7501f;
+    assert(!temporal_upscaler_frame(&g, 16, &other, &part, jitter, 0, &out));
     /* a late disagreement after the numbers were made: the frame is no longer steady */
-    assert(temporal_rect_late(&g, 16, &full));
+    assert(temporal_rect_late(&g, 16, &full, NULL, NULL));
     assert(!temporal_upscaler_frame(&g, 16, &scaled_stamp, &part, jitter, 0, &out));
 
     /* The contexts. One is made for one set of sizes and may be used only when the submission of its preparation
@@ -1885,8 +2102,8 @@ static void test_upscaler(void) {
                is still ready and nothing is to be made. */
             TemporalRectGate cut;
             memset(&cut, 0, sizeof cut);
-            temporal_rect_decide(&cut, 40, &scaled);
-            assert(temporal_rect_decide(&cut, 41, &scaled));
+            rect_go(&cut, 40, &scaled);
+            assert(rect_go(&cut, 41, &scaled));
             moved = c;
             assert(temporal_upscaler_frame(&cut, 41, &scaled_stamp, &part, jitter, 1, &out) && out.reset);
             assert(temporal_upscaler_ready(&moved, &at_part) && !temporal_upscaler_must_create(&moved, &at_part));
@@ -1912,9 +2129,9 @@ static void test_upscaler(void) {
            evaluated. Frame 22 is the first evaluated one and has the reset, frame 23 has not. */
         TemporalUpscalerContexts contexts = {0};
         memset(&g, 0, sizeof g);
-        temporal_rect_decide(&g, 19, &full);
+        rect_go(&g, 19, &full);
         for (unsigned frame = 20; frame < 24; frame++) {
-            assert(temporal_rect_decide(&g, frame, &full));
+            assert(rect_go(&g, frame, &full));
             assert(temporal_upscaler_frame(&g, frame, &full_stamp, &whole, jitter, 0, &out));
             const TemporalUpscalerConfig sizes = {out.target_w, out.target_h, out.render.w, out.render.h, out.out_w,
                                                   out.out_h, 7};
@@ -2191,6 +2408,7 @@ int main(void) {
     test_classes();
     test_links();
     test_rect();
+    test_rect_confirm();
     test_upscaler();
     test_selftest();
     puts("temporal_math: ok");
