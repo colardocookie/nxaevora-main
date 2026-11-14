@@ -48,8 +48,8 @@ enum {
 
 /* The images are the runtime's own or the game's. Depth is the game's depth image where the adapter's SDK takes its
    format, and depth_format says which that is. An adapter that cannot take it refuses at create, and the runtime
-   then gives a copy in a single channel 32 bit float image. The output has a 16 bit float format, which the
-   runtime turns into the scene's format itself. */
+   then gives a copy in a single channel 32 bit float image. The output has a format of four 32 bit floats
+   (output_format says which), which the runtime turns into the scene's format itself. */
 typedef struct {
     uint32_t render_w, render_h; /* the largest render rectangle */
     uint32_t image_w, image_h;   /* the size of the colour, depth and motion images, which hold the rectangle */

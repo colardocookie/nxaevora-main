@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the NXAevora contributors
-// The write-back after an upscaler (SNX_ARCEUS_UPSCALER): the library's picture, in a private 16 bit float image, is
-// written into the scene colour in its own format, texel for texel, with one fetch. A negative value and one that
-// is no number become 0, and each channel is held to the largest finite value the scene colour's format holds:
-// nothing of a library that is not finite gets in. Later passes of the game are promised nothing (temporal_math.h).
+// The write-back after an upscaler (SNX_ARCEUS_UPSCALER): the library's picture, in a private image of four 32 bit
+// floats, is written into the scene colour in its own format, texel for texel, with one fetch. A negative value
+// and one that is no number become 0, and each channel is held to the largest finite value the scene colour's
+// format holds: nothing that is not finite gets in. Later passes of the game are promised nothing (temporal_math.h).
 #version 450
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 o_color;
