@@ -2110,8 +2110,17 @@ int vk_upscaler_selftest(const char* adapter) {
     edge_response(1);
     g.generation++;
     edge_response(0);
-    /* the wait is made whatever the cases before came to: its answer is kept on its own */
-    const int waited = idle();
+    /* The wait is made whatever the cases before came to, and its answer is kept on its own. It is idle()'s wait,
+       written out here so that a wait that was not tried (the device's state was not known before it) and one
+       that was tried and failed, with its result, can be told apart afterwards. */
+    const int was_unknown = g.unknown;
+    VkResult wait_result = VK_SUCCESS;
+    int waited = 0;
+    if (!was_unknown) {
+        wait_result = vkDeviceWaitIdle(g.device);
+        waited = VK_OK(wait_result);
+        if (!waited) unknown("waiting for the device failed");
+    }
     pass = pass && waited;
     /* Case 7: no message of the validation layer in any case. Without the layer the case was not run, which is
        not a pass, and neither is a run that had to stop. */
@@ -2130,9 +2139,12 @@ int vk_upscaler_selftest(const char* adapter) {
     if (late)
         LOG(ST "case 7: %u more validation callbacks arrived after its count was taken. They are not in the lines "
                "above: FAIL\n", late);
-    if (!waited)
-        LOG(ST "case 7: its count was taken without the device known to be idle (the wait for it %s): FAIL\n",
-            g.unknown ? "could not be made, the device's state is not known" : "failed");
+    if (!waited && was_unknown)
+        LOG(ST "case 7: its count was taken without the device known to be idle. The wait for it was not tried: "
+               "the device's state was not known before it: FAIL\n");
+    else if (!waited)
+        LOG(ST "case 7: its count was taken without the device known to be idle. The wait for it was made and "
+               "failed with the result %d: FAIL\n", (int)wait_result);
     pass = pass && g.validation && !said && !late && waited && !g.unknown;
     LOG(ST "RESULT: %s\n", pass ? "PASS" : "FAIL");
     return pass ? 0 : 1;
