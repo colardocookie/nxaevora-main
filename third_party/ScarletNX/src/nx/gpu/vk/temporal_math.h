@@ -202,6 +202,28 @@ static inline float temporal_mip_bias(float own, float shift, float device_most)
     if (bias < -device_most) bias = -device_most;
     return bias;
 }
+/* The two ends of the camera's vector for a pixel, as shaders/temporal_motion.frag makes them. ndc is the pixel's
+   place as drawn, with the jitter, and z its depth. Both ends come out without jitter: where the point is now and
+   where it was under the camera of a frame ago. 0 when it was behind that camera. */
+static inline int temporal_camera_points(const float inverse_vp[16], const float vp_before[16], double ndc_x,
+                                         double ndc_y, double z, double jx, double jy, double now[2],
+                                         double before[2]) {
+    double inverse[16], was[16], both[16];
+    for (int i = 0; i < 16; i++) {
+        inverse[i] = (double)inverse_vp[i];
+        was[i] = (double)vp_before[i];
+    }
+    temporal_multiply_d(inverse, was, both);
+    const double p[4] = {ndc_x - jx, ndc_y - jy, z, 1.0};
+    double clip[4];
+    for (int c = 0; c < 4; c++) clip[c] = p[0] * both[c] + p[1] * both[4 + c] + p[2] * both[8 + c] + p[3] * both[12 + c];
+    now[0] = p[0];
+    now[1] = p[1];
+    if (!(clip[3] > 0.0)) return 0;
+    before[0] = clip[0] / clip[3];
+    before[1] = clip[1] / clip[3];
+    return 1;
+}
 /* Which matrix an object's block had a frame ago. own is what the same address held the last time it was bound,
    own_age frames ago (0 for never). partner is what the other slot of the pair held a frame ago, NULL without one.
    A block bound at its own address a frame ago takes no turns. A block whose own matrix of two frames ago is

@@ -53,6 +53,7 @@ typedef struct {
     float viewport[4];
     float depth[4];
     float size[4];
+    float jitter[4]; /* this frame's jitter in clip units over w (x, y), which the camera's vectors take off */
 } Constants;
 
 static struct {
@@ -1298,6 +1299,12 @@ void vk_temporal_before(u64 fs0_hash) {
                     .depth = {g_t.depth_translate, g_t.depth_scale, 0, 0},
                     .size = {(float)scene->sw, (float)scene->sh, (float)g_t.view, 40.0f}};
     vk_temporal_multiply(g_t.inverse, g_t.before, pc.reproject);
+    {
+        double jx, jy;
+        frame_jitter(frame, &jx, &jy);
+        pc.jitter[0] = (float)jx;
+        pc.jitter[1] = (float)jy;
+    }
     if (!(pc.depth[1] != 0.0f) || !(pc.viewport[2] != 0.0f) || !(pc.viewport[3] != 0.0f)) return;
 
     vk_render_end();

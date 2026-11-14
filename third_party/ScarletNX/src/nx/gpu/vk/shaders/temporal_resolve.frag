@@ -20,6 +20,7 @@ layout(push_constant) uniform Constants {
                     // options: 1 Catmull-Rom history, 2 variance clip, 4 weight by motion and clip,
                     // 8 the vector of the nearest depth around, 16 blend by brightness
     vec4 size;      // image width, height, view, weight of the frame in the blend
+    vec4 jitter;    // this frame's jitter in clip units over w
 } pc;
 vec3 to_ycocg(vec3 c) {
     return vec3(dot(c, vec3(0.25, 0.5, 0.25)), dot(c, vec3(0.5, 0.0, -0.5)), dot(c, vec3(-0.25, 0.5, -0.25)));
@@ -86,7 +87,7 @@ void main() {
     }
     vec2 from = uv - motion;
     // the depth that surface's point had in the frame before: what the history must hold at the place fetched
-    vec2 ndc = (surface - pc.viewport.xy) / pc.viewport.zw * 2.0 - 1.0;
+    vec2 ndc = (surface - pc.viewport.xy) / pc.viewport.zw * 2.0 - 1.0 - pc.jitter.xy; // drawn with the jitter
     vec4 before = pc.reproject * vec4(ndc, surface_z, 1.0);
     bool dropped = pc.depth.w > 0.5 || before.w <= 0.0 || from.x < 0.0 || from.y < 0.0 || from.x > 1.0 || from.y > 1.0;
     vec3 history = (options & 1) != 0 ? history_sharp(from) : textureLod(u_history, from, 0.0).rgb;

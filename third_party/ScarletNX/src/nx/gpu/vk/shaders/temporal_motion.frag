@@ -16,6 +16,7 @@ layout(push_constant) uniform Constants {
     vec4 depth;     // the viewport's depth translate and scale (stored depth = translate + scale x z), unused,
                     // 1 when u_objects was drawn this frame
     vec4 size;      // image width, height, view, gain
+    vec4 jitter;    // this frame's jitter in clip units over w
 } pc;
 void main() {
     float stored = texelFetch(u_depth, ivec2(gl_FragCoord.xy), 0).r;
@@ -29,9 +30,12 @@ void main() {
             return;
         }
     }
-    vec2 ndc = (gl_FragCoord.xy - pc.viewport.xy) / pc.viewport.zw * 2.0 - 1.0;
+    // The pixel was drawn with the jitter. Its point's place without it, now and a frame ago: both ends of the
+    // vector are without jitter, as an object's are (temporal_camera_points in temporal_math.h).
+    vec2 ndc = (gl_FragCoord.xy - pc.viewport.xy) / pc.viewport.zw * 2.0 - 1.0 - pc.jitter.xy;
     vec4 before = pc.reproject * vec4(ndc, z, 1.0);
     if (before.w <= 0.0) return;
-    vec2 pixel = (before.xy / before.w * 0.5 + 0.5) * pc.viewport.zw + pc.viewport.xy;
-    o_motion = vec4((gl_FragCoord.xy - pixel) / pc.size.xy, 0.0, 0.0);
+    vec2 is = (ndc * 0.5 + 0.5) * pc.viewport.zw + pc.viewport.xy;
+    vec2 was = (before.xy / before.w * 0.5 + 0.5) * pc.viewport.zw + pc.viewport.xy;
+    o_motion = vec4((is - was) / pc.size.xy, 0.0, 0.0);
 }

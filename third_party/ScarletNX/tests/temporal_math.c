@@ -315,6 +315,48 @@ static void test_sharpen_rgb(void) {
     assert(out[0] > 1.0f && out[0] <= 2.0f);
 }
 
+/* The camera's vector of a pixel equals the vector of an object that stands still there, at every offset of the
+   jitter and under a camera that moved, turned its scale and changed its projection. */
+static void test_camera_points(void) {
+    float vp_now[16], inverse_now[16], vp_before[16], unused[16], still[16];
+    camera(3, -2, 1.2f, 2.1f, vp_now, inverse_now);
+    world(0.3f, 1.0f, 5, 1, 30, still);
+    const float cameras[3][4] = {{3, -2, 1.2f, 2.1f}, {2.6f, -1.9f, 1.2f, 2.1f}, {3.5f, -2.5f, 2.4f, 1.7f}};
+    for (int k = 0; k < 3; k++) {
+        camera(cameras[k][0], cameras[k][1], cameras[k][2], cameras[k][3], vp_before, unused);
+        for (unsigned phase = 0; phase < 8; phase++) {
+            float pixels[2], now_m[16], before_m[16];
+            temporal_jitter(phase, 8, pixels);
+            const double jx = 2.0 * (double)pixels[0] / 1920.0, jy = 2.0 * (double)pixels[1] / 1080.0;
+            assert(temporal_object_matrices(inverse_now, still, still, vp_before, jx, jy, now_m, before_m));
+            const float clip[4] = {0.31f, -0.44f, 0.004f, 1};
+            double a[4], b[4], now[2], before[2];
+            transform(clip, now_m, a);
+            transform(clip, before_m, b);
+            assert(temporal_camera_points(inverse_now, vp_before, clip[0], clip[1], clip[2], jx, jy, now, before));
+            assert(close_to(now[0], a[0] / a[3], 1e-6) && close_to(now[1], a[1] / a[3], 1e-6));
+            assert(close_to(before[0], b[0] / b[3], 2e-5) && close_to(before[1], b[1] / b[3], 2e-5));
+            /* a camera that did not change gives no vector, with or without jitter */
+            if (k == 0) assert(close_to(now[0], before[0], 1e-6) && close_to(now[1], before[1], 1e-6));
+            else assert(fabs(now[0] - before[0]) > 1e-3);
+        }
+    }
+    /* the audit's case: the projection doubles x, the pixel is at 0.1 without jitter, the jitter is a quarter pixel
+       of 1920. The vector is 96 pixels, not 96.25. */
+    float one[16], inverse_one[16], two[16];
+    camera(0, 0, 1, 1, one, inverse_one);
+    camera(0, 0, 2, 1, two, unused);
+    const double jx = 2.0 * 0.25 / 1920.0;
+    double now[2], before[2];
+    assert(temporal_camera_points(inverse_one, two, 0.1 + jx, 0.0, 0.01, jx, 0.0, now, before));
+    assert(close_to((now[0] - before[0]) * 0.5 * 1920.0, -96.0, 1e-3));
+    /* behind the camera of a frame ago */
+    float back[16];
+    const float turned[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, -1, 0, 0, 0.1f, 0};
+    memcpy(back, turned, sizeof back);
+    assert(!temporal_camera_points(inverse_one, back, 0.1, 0.0, 0.01, 0, 0, now, before));
+}
+
 static void test_mip_bias(void) {
     assert(close_to(temporal_mip_bias(0.0f, -0.5f, 15.0f), -0.5, 1e-6));  /* ours alone */
     assert(close_to(temporal_mip_bias(-0.25f, -0.5f, 15.0f), -0.75, 1e-6)); /* added to the game's */
@@ -373,6 +415,7 @@ int main(void) {
     test_weights();
     test_sharpen();
     test_sharpen_rgb();
+    test_camera_points();
     test_mip_bias();
     test_before_choice();
     test_origin_shift();
