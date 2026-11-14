@@ -102,9 +102,9 @@ typedef struct {
 typedef struct SnxUpscaler SnxUpscaler; /* a library's context */
 
 /* The steps, in the order the runtime takes them. A change of any size is a new context: create, prepare, the
-   submission's completion, and only then it takes the old one's place. Until then the frames of the new size are
-   not evaluated and are left as drawn. The old context is destroyed after its frames in flight. One context is
-   on its way at a time (temporal_upscaler_* in temporal_math.h has the states). */
+   submission's completion, and only then it takes the old one's place, if the frames still have its sizes. Else
+   it is destroyed unused. evaluate is only called on a context made for the frame's sizes. One context is on
+   its way at a time, and one that is replaced is destroyed after its frames in flight (temporal_math.h). */
 typedef struct {
     uint32_t abi;     /* SNX_UPSCALER_ABI as the library was built with */
     const char* name; /* for the log */

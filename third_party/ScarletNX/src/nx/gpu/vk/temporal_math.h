@@ -907,15 +907,23 @@ static inline void temporal_upscaler_created(TemporalUpscalerContexts* c, const 
     c->pending = ok ? 1 : 2;
     c->pending_sizes = *sizes;
 }
-/* The pending context's submission has completed, or the command buffer of a failed one was discarded. PUBLISHED:
-   it is the published context now. RETIRE: also, and the one it replaced goes to be destroyed after its frames
-   in flight. RELEASE: a failed one may be destroyed now, and nothing was published. */
-enum { TEMPORAL_UPSCALER_NOTHING, TEMPORAL_UPSCALER_PUBLISHED, TEMPORAL_UPSCALER_RETIRE, TEMPORAL_UPSCALER_RELEASE };
-static inline int temporal_upscaler_completed(TemporalUpscalerContexts* c) {
+/* The pending context's submission has completed, or the command buffer of a failed one was discarded. current
+   is what the frames are now. PUBLISHED: it is the published context. RETIRE: also, and the one it replaced goes
+   to be destroyed after its frames in flight. STALE: the sizes moved on meanwhile, so it is never published or
+   evaluated and goes to be destroyed. RELEASE: a failed one may be destroyed now. */
+enum {
+    TEMPORAL_UPSCALER_NOTHING,
+    TEMPORAL_UPSCALER_PUBLISHED,
+    TEMPORAL_UPSCALER_RETIRE,
+    TEMPORAL_UPSCALER_STALE,
+    TEMPORAL_UPSCALER_RELEASE
+};
+static inline int temporal_upscaler_completed(TemporalUpscalerContexts* c, const TemporalUpscalerSizes* current) {
     const int pending = c->pending, had = c->live;
     c->pending = 0;
     if (pending == 2) return TEMPORAL_UPSCALER_RELEASE;
     if (pending != 1) return TEMPORAL_UPSCALER_NOTHING;
+    if (!temporal_upscaler_sizes_same(&c->pending_sizes, current)) return TEMPORAL_UPSCALER_STALE;
     c->live = 1;
     c->live_sizes = c->pending_sizes;
     return had ? TEMPORAL_UPSCALER_RETIRE : TEMPORAL_UPSCALER_PUBLISHED;

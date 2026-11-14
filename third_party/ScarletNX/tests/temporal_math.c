@@ -1811,22 +1811,45 @@ static void test_upscaler(void) {
         at_other.out_h = 2160;
         TemporalUpscalerContexts c = {0};
         assert(!temporal_upscaler_ready(&c, &at_full) && temporal_upscaler_must_create(&c, &at_full));
-        assert(temporal_upscaler_completed(&c) == TEMPORAL_UPSCALER_NOTHING);
+        assert(temporal_upscaler_completed(&c, &at_full) == TEMPORAL_UPSCALER_NOTHING);
         temporal_upscaler_created(&c, &at_full, 1);
         /* submitted, not completed: not ready, and no second one is made, for these sizes or others */
         assert(!temporal_upscaler_ready(&c, &at_full) && !temporal_upscaler_must_create(&c, &at_full));
         assert(!temporal_upscaler_must_create(&c, &at_part));
-        assert(temporal_upscaler_completed(&c) == TEMPORAL_UPSCALER_PUBLISHED);
+        assert(temporal_upscaler_completed(&c, &at_full) == TEMPORAL_UPSCALER_PUBLISHED);
         assert(temporal_upscaler_ready(&c, &at_full) && !temporal_upscaler_must_create(&c, &at_full));
-        assert(temporal_upscaler_completed(&c) == TEMPORAL_UPSCALER_NOTHING);
+        assert(temporal_upscaler_completed(&c, &at_full) == TEMPORAL_UPSCALER_NOTHING);
         /* A change of size. The frames of the new size are not ready, a new context is made, and while it is
            on its way the old one is still the published one. When it completes the old one is retired. */
         assert(!temporal_upscaler_ready(&c, &at_part) && temporal_upscaler_must_create(&c, &at_part));
         temporal_upscaler_created(&c, &at_part, 1);
         assert(!temporal_upscaler_ready(&c, &at_part) && temporal_upscaler_ready(&c, &at_full));
         assert(!temporal_upscaler_must_create(&c, &at_part) && !temporal_upscaler_must_create(&c, &at_other));
-        assert(temporal_upscaler_completed(&c) == TEMPORAL_UPSCALER_RETIRE);
+        assert(temporal_upscaler_completed(&c, &at_part) == TEMPORAL_UPSCALER_RETIRE);
         assert(temporal_upscaler_ready(&c, &at_part) && !temporal_upscaler_ready(&c, &at_full));
+        /* The sizes move on while a context is on its way. When it completes it is stale: never published, never
+           evaluated, and the published one stays. Then the context for what the frames are now is made. */
+        {
+            TemporalUpscalerContexts moved = c; /* the context for the rectangle is published */
+            temporal_upscaler_created(&moved, &at_full, 1);
+            assert(!temporal_upscaler_must_create(&moved, &at_other)); /* one on its way at a time */
+            assert(temporal_upscaler_completed(&moved, &at_other) == TEMPORAL_UPSCALER_STALE);
+            assert(!temporal_upscaler_ready(&moved, &at_full) && !temporal_upscaler_ready(&moved, &at_other));
+            assert(temporal_upscaler_ready(&moved, &at_part) && temporal_upscaler_must_create(&moved, &at_other));
+            temporal_upscaler_created(&moved, &at_other, 1);
+            assert(temporal_upscaler_completed(&moved, &at_other) == TEMPORAL_UPSCALER_RETIRE);
+            assert(temporal_upscaler_ready(&moved, &at_other) && !temporal_upscaler_ready(&moved, &at_part));
+            /* back to the published sizes before the pending one completes: stale again, and nothing to make */
+            moved = c;
+            temporal_upscaler_created(&moved, &at_full, 1);
+            assert(temporal_upscaler_completed(&moved, &at_part) == TEMPORAL_UPSCALER_STALE);
+            assert(temporal_upscaler_ready(&moved, &at_part) && !temporal_upscaler_must_create(&moved, &at_part));
+            /* the very first context, stale: nothing is published at all */
+            TemporalUpscalerContexts none = {0};
+            temporal_upscaler_created(&none, &at_full, 1);
+            assert(temporal_upscaler_completed(&none, &at_part) == TEMPORAL_UPSCALER_STALE && !none.live);
+            assert(temporal_upscaler_must_create(&none, &at_part));
+        }
         /* each size counts: another output height is another context */
         assert(!temporal_upscaler_ready(&c, &at_other) && temporal_upscaler_must_create(&c, &at_other));
         /* A prepare that fails publishes nothing. It counts as a failure like an evaluation's. The failed context
@@ -1837,7 +1860,7 @@ static void test_upscaler(void) {
         assert(!temporal_upscaler_failed(&failed, 0) && failed == 1);
         assert(!temporal_upscaler_ready(&c, &at_other) && !temporal_upscaler_must_create(&c, &at_other));
         assert(temporal_upscaler_ready(&c, &at_part));
-        assert(temporal_upscaler_completed(&c) == TEMPORAL_UPSCALER_RELEASE);
+        assert(temporal_upscaler_completed(&c, &at_other) == TEMPORAL_UPSCALER_RELEASE);
         assert(temporal_upscaler_ready(&c, &at_part) && temporal_upscaler_must_create(&c, &at_other));
         /* With the gate: frames 20 and 21 are steady while the first context is on its way and are not
            evaluated. Frame 22 is the first evaluated one and has the reset, frame 23 has not. */
@@ -1853,7 +1876,7 @@ static void test_upscaler(void) {
             const int ready = temporal_upscaler_ready(&contexts, &sizes);
             assert(ready == (frame >= 22));
             /* the submission made in frame 20 completes after frame 21 was looked at */
-            if (frame == 21) assert(temporal_upscaler_completed(&contexts) == TEMPORAL_UPSCALER_PUBLISHED);
+            if (frame == 21) assert(temporal_upscaler_completed(&contexts, &sizes) == TEMPORAL_UPSCALER_PUBLISHED);
             if (!ready) continue;
             assert(out.reset == (frame == 22));
             temporal_rect_wrote(&g, frame, &full_stamp);
