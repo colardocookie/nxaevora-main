@@ -1762,8 +1762,24 @@ static void test_upscaler(void) {
             j[axis] = broken[i];
             assert(!temporal_upscaler_frame(&g, 16, &scaled_stamp, &part, j, 0, &out));
         }
+    /* The jitter in pixels is held to a pixel each way. A finite jitter in clip units that is huge would be
+       infinite in pixels or too big for the float it is handed on in: refused. One pixel passes, a little more
+       does not. */
+    const double huge[4] = {1.7976931348623157e308, -1e300, 3.4028234663852886e38, 1e30}; /* DBL_MAX, FLT_MAX */
+    for (int i = 0; i < 4; i++)
+        for (int axis = 0; axis < 2; axis++) {
+            double j[2] = {jitter[0], jitter[1]};
+            j[axis] = huge[i];
+            assert(!temporal_upscaler_frame(&g, 16, &scaled_stamp, &part, j, 0, &out));
+        }
+    const double one[2] = {2.0 / 1440.0, -2.0 / 810.0}, more[2] = {2.01 / 1440.0, 0.0}, tall[2] = {0.0, 2.01 / 810.0};
+    assert(temporal_upscaler_frame(&g, 16, &scaled_stamp, &part, one, 0, &out));
+    assert(out.jitter[0] == 1.0 && out.jitter[1] == 1.0);
+    assert(!temporal_upscaler_frame(&g, 16, &scaled_stamp, &part, more, 0, &out));
+    assert(!temporal_upscaler_frame(&g, 16, &scaled_stamp, &part, tall, 0, &out));
     assert(temporal_upscaler_frame(&g, 16, &scaled_stamp, &part, jitter, 0, &out));
-    assert(isfinite(out.jitter[0]) && isfinite(out.jitter[1]) && isfinite(out.vector_scale[0]));
+    assert(fabs(out.jitter[0]) <= 1.0 && fabs(out.jitter[1]) <= 1.0 && isfinite(out.vector_scale[0]));
+    assert(isfinite((float)out.jitter[0]) && isfinite((float)out.jitter[1]) && isfinite((float)out.vector_scale[1]));
     /* a history made for another output size is not used: reset */
     other = scaled_stamp;
     other.out_w = 2560;
