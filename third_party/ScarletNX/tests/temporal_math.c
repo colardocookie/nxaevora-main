@@ -285,6 +285,36 @@ static void test_sharpen(void) {
     assert(close_to(temporal_sharpen(0.6f, 0.0f + 1.0f + 0.5f + 0.5f, 0.0f, 1.0f, 1.0f), 0.6, 1e-6));
 }
 
+/* Whole colours in the picture's range: the squeeze ties the channels, so the scalar bound alone let the middle of
+   this neighbourhood come out at blue 0.83 with no blue under 1 around it. */
+static void test_sharpen_rgb(void) {
+    const float n[9][3] = {{0, 1, 20}, {4, 0, 100}, {0.1f, 4, 100}, {1, 0.5f, 1}, {20, 0, 1},
+                           {0, 0.5f, 20}, {100, 4, 4}, {4, 1, 20}, {0.1f, 0.1f, 4}};
+    float out[3];
+    temporal_sharpen_rgb(n, 1.0f, out);
+    for (int c = 0; c < 3; c++) {
+        float least = n[0][c], greatest = n[0][c];
+        for (int i = 0; i < 9; i++) {
+            least = n[i][c] < least ? n[i][c] : least;
+            greatest = n[i][c] > greatest ? n[i][c] : greatest;
+        }
+        assert(out[c] >= least && out[c] <= greatest);
+    }
+    assert(close_to(out[2], 1.0, 1e-6)); /* held at the least blue */
+    /* a flat place and amount 0 change nothing */
+    float flat[9][3];
+    for (int i = 0; i < 9; i++) flat[i][0] = 3, flat[i][1] = 0.5f, flat[i][2] = 12;
+    temporal_sharpen_rgb(flat, 1.0f, out);
+    assert(close_to(out[0], 3, 1e-4) && close_to(out[1], 0.5, 1e-4) && close_to(out[2], 12, 1e-4));
+    temporal_sharpen_rgb(n, 0.0f, out);
+    assert(close_to(out[0], 20, 1e-3) && close_to(out[1], 0, 1e-6) && close_to(out[2], 1, 1e-4));
+    /* a bright pixel among darker ones still gets brighter */
+    float spot[9][3];
+    for (int i = 0; i < 9; i++) spot[i][0] = spot[i][1] = spot[i][2] = i == 0 ? 2.0f : i == 4 ? 1.0f : 0.8f;
+    temporal_sharpen_rgb(spot, 1.0f, out);
+    assert(out[0] > 1.0f && out[0] <= 2.0f);
+}
+
 static void test_mip_bias(void) {
     assert(close_to(temporal_mip_bias(0.0f, -0.5f, 15.0f), -0.5, 1e-6));  /* ours alone */
     assert(close_to(temporal_mip_bias(-0.25f, -0.5f, 15.0f), -0.75, 1e-6)); /* added to the game's */
@@ -342,6 +372,7 @@ int main(void) {
     test_clip();
     test_weights();
     test_sharpen();
+    test_sharpen_rgb();
     test_mip_bias();
     test_before_choice();
     test_origin_shift();

@@ -163,6 +163,38 @@ static inline float temporal_sharpen(float c, float cross, float least, float gr
     if (sharp > greatest) sharp = greatest;
     return sharp;
 }
+/* The sharpen of one pixel as shaders/temporal_sharpen.frag does it: n is the 3x3 neighbourhood in rows, the pixel
+   in the middle. Each colour is squeezed under 1 by its largest channel, sharpened per channel and widened again,
+   then held to each channel's least and greatest of the neighbourhood as the picture holds them. */
+static inline void temporal_sharpen_rgb(const float n[9][3], float amount, float out[3]) {
+    float squeezed[9][3], sharp[3], top = 0;
+    for (int i = 0; i < 9; i++) {
+        float most = 0;
+        for (int c = 0; c < 3; c++) most = n[i][c] > most ? n[i][c] : most;
+        for (int c = 0; c < 3; c++) squeezed[i][c] = (n[i][c] > 0 ? n[i][c] : 0) / (1.0f + most);
+    }
+    for (int c = 0; c < 3; c++) {
+        float least = squeezed[4][c], greatest = squeezed[4][c];
+        for (int i = 0; i < 9; i++) {
+            least = squeezed[i][c] < least ? squeezed[i][c] : least;
+            greatest = squeezed[i][c] > greatest ? squeezed[i][c] : greatest;
+        }
+        const float cross = squeezed[1][c] + squeezed[3][c] + squeezed[5][c] + squeezed[7][c];
+        sharp[c] = temporal_sharpen(squeezed[4][c], cross, least, greatest, amount);
+        top = sharp[c] > top ? sharp[c] : top;
+    }
+    for (int c = 0; c < 3; c++) {
+        float least = n[4][c] > 0 ? n[4][c] : 0, greatest = least;
+        for (int i = 0; i < 9; i++) {
+            const float v = n[i][c] > 0 ? n[i][c] : 0;
+            least = v < least ? v : least;
+            greatest = v > greatest ? v : greatest;
+        }
+        out[c] = sharp[c] / (1.0f - top > 0.0001f ? 1.0f - top : 0.0001f);
+        if (out[c] < least) out[c] = least;
+        if (out[c] > greatest) out[c] = greatest;
+    }
+}
 /* the texture level shift a sampler gets: the game's own plus ours, within what the device takes */
 static inline float temporal_mip_bias(float own, float shift, float device_most) {
     float bias = own + shift;
