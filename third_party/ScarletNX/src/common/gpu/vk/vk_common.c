@@ -136,7 +136,8 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
         out->validation = true;
     }
     /* The synchronisation checks are a feature of the layer, asked for through an extension the layer itself
-       lists. A list that cannot be read, or that does not hold it, asks for nothing. */
+       lists. Found in the list, also in a part of it, is found. Not found in a list that stays incomplete is
+       not resolved: that, a list that cannot be read and a whole list without it ask for nothing. */
     const VkValidationFeatureEnableEXT enables[1] = {VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
     VkValidationFeaturesEXT checks = {.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
                                       .enabledValidationFeatureCount = 1,
@@ -149,8 +150,8 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
         out->synchronization = out->synchronization_why == SNX_VK_LAYER_HAS;
         if (out->synchronization) ext[next++] = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME;
     }
-    /* The layer stops reporting a rule after ten repeats. Asked off through the layer's own settings, with the
-       same care: only when the layer lists the extension for them. */
+    /* By its default the layer stops reporting a rule after ten repeats. Asked off through the layer's own
+       settings, with the same care: only when the layer lists the extension for them. */
 #ifdef VK_EXT_layer_settings
     const VkBool32 limit = VK_FALSE;
     const VkLayerSettingEXT setting = {"VK_LAYER_KHRONOS_validation", "enable_message_limit",

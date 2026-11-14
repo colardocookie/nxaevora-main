@@ -407,7 +407,8 @@ static int device_make(void) {
     free(have);
     if (g.validation) instance_names[instance_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     /* The synchronisation checks are asked for through an extension the layer itself lists, and only with it
-       enabled. A list that does not hold it, that cannot be read or that stays incomplete asks for nothing. */
+       enabled. A name found in a list is found, also in a part of one. One not found in a list that stays
+       incomplete is not resolved, and that, a list that cannot be read and a whole list without it ask nothing. */
     if (g.validation) {
         VkResult result = VK_SUCCESS;
         g.checks_why = snx_vk_layer_extension(layers[0], VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, &result);
@@ -427,9 +428,9 @@ static int device_make(void) {
                                       .enabledValidationFeatureCount = 1,
                                       .pEnabledValidationFeatures = enables};
     const void* instance_chain = g.checks_asked ? &checks : NULL;
-    /* Log only: the layer stops reporting a message id after ten repeats. It is asked not to, through its
-       settings at the instance's creation, where the layer offers that extension. What was asked cannot be
-       read back: the lines at the end say what the run shows. */
+    /* Log only: by its default the layer stops reporting a message id after ten repeats. It is asked not to,
+       through its settings at the instance's creation, where the layer offers that extension. What was asked
+       cannot be read back: the lines at the end say what the run shows. */
 #ifdef VK_EXT_layer_settings
     const VkBool32 limit = VK_FALSE;
     const VkLayerSettingEXT setting = {layers[0], "enable_message_limit", VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &limit};

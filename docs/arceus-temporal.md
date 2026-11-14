@@ -607,6 +607,11 @@ synchronisation checks, neither in place of the other. A line under the prefix s
 it was not and which way: the layer's list does not hold the extension, stayed incomplete, a call failed, no
 memory, or the headers the program was built with lack it. Asked is not confirmed: a setting cannot be read back.
 
+How a list is read for a name, here and in the self-test, for the loader's layers and for a layer's
+extensions: a name found in a list is found, also when the list came incomplete. Only a name that is NOT found
+in an incomplete list is unresolved: the list is asked again, three times in all, and if it is still
+incomplete without the name, nothing is asked on its account and the line says that it is not known.
+
 Each callback of the layer keeps the line it always had (`vulkan validation: ...`). Under the new prefix
 (`validation_lines.h`, host-tested):
 
@@ -639,8 +644,10 @@ What may be concluded from a log. "Only these rules, on these names" needs the t
 MET` line, and no callback without a match left unprinted. That no callback arrived needs the whole log and
 holds only for warnings and errors, the severities the callback is registered for. Callback and count lines are
 to be looked for anywhere in the log, also before the status lines. The layer itself stops reporting a rule
-after ten repeats unless that limit is off, which bounds what the tables can show: the first run of the game
-under the layer had 62 callbacks, 57 findings and 5 of the layer's stop notices.
+after a number of repeats, ten by its default, which bounds what the tables can show. That limit can be set or
+switched off from outside the program too (a settings file, the environment, the layer's configurator), so
+when the program did not ask it off the limit in effect is not known, and the line says so. The first run of
+the game under the layer had 62 callbacks, 57 findings and 5 of the layer's stop notices.
 
 ## The game's device and an adapter's needs
 
