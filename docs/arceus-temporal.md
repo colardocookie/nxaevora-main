@@ -176,6 +176,9 @@ tagged with the G-buffer draws that read it, by their block's pair and signature
 only when that copy carries its tag and the address was captured exactly once in both frames. An address captured
 more than once gives no skinned vector (counted). A second capture that arrives after a draw already took the copy
 gives up the frame's object vectors.
+Every capture into an address is counted before anything can fail, and a copy counts only while it holds the bytes
+of its frame's last capture: a capture that was too large to keep, or whose buffers could not be made, leaves the
+content unknown for that frame and the next.
 
 Limit. The renderer does not see which game object wrote a block, so a pair is a guess that 4 frames of evidence
 support. Two different things with the same mesh that swap visibility every frame and move would be taken for one

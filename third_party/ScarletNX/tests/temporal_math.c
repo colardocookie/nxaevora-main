@@ -547,13 +547,15 @@ static void test_pairs(void) {
 /* One frame at one capture address: who captures into it, in order, and each one's G-buffer draw reading the
    capture right after. Returns for character `ask` what its draw gets: 1 last frame's copy, 0 or -1 none. The
    copy kept is the last capture's, as in temporal.c. *holder says whose positions the copy of a frame ago held. */
+static unsigned stream_generation;
 static int stream_frame(TemporalStreamCopy copy[2], unsigned frame, const int* who, int count, int ask, int* held,
                         int* holder) {
     TemporalStreamCopy *now = &copy[frame & 1], *last = &copy[!(frame & 1)];
     int got = -2;
     *holder = *held;
     for (int i = 0; i < count; i++) {
-        temporal_stream_captured(now, frame);
+        temporal_stream_captured(now, &stream_generation, frame);
+        temporal_stream_copied(now);
         const unsigned long long pair = 0x1000ull * (unsigned)(who[i] + 1), draw = 77; /* one mesh: the same draw */
         temporal_stream_used(now, frame, pair, draw);
         if (who[i] == ask) got = temporal_stream_before(now, last, frame, pair, draw);
@@ -598,7 +600,8 @@ static void test_streams(void) {
        address in the same frame. That is seen before the vectors are read, and the copy is no good a frame later. */
     assert(stream_frame(copy, 40, a, 1, 0, &held, &holder) == 1);
     assert(stream_frame(copy, 41, a, 1, 0, &held, &holder) == 1 && !temporal_stream_conflict(&copy[41 & 1], 41));
-    temporal_stream_captured(&copy[41 & 1], 41);
+    temporal_stream_captured(&copy[41 & 1], &stream_generation, 41);
+    temporal_stream_copied(&copy[41 & 1]);
     temporal_stream_used(&copy[41 & 1], 41, 0x2000, 77);
     assert(temporal_stream_conflict(&copy[41 & 1], 41));
     assert(stream_frame(copy, 42, a, 1, 0, &held, &holder) == -1);
@@ -623,6 +626,85 @@ static void test_streams(void) {
         const int count = pick == 4 ? 0 : pick >= 2 ? 2 : 1;
         if (stream_frame(copy, f, who, count, ask, &held, &holder) == 1) assert(holder == ask);
     }
+}
+
+/* The keeping of copies as temporal.c does it, with the two buffers' bytes modelled by whose positions they hold
+   (-1 unknown). A capture may be too large to keep, may fail to get its buffers, or may need larger buffers, which
+   are made anew for both copies. The character's draw then reads its capture: 1 when it gets last frame's copy. */
+typedef struct {
+    TemporalStreamCopy copy[2];
+    unsigned generation, capacity;
+    int bytes[2];
+} TestKeep;
+enum { KEEP_OK, KEEP_TOO_LARGE, KEEP_NO_MEMORY };
+static int keep_capture(TestKeep* k, unsigned frame, int who, unsigned size, int outcome) {
+    const int turn = (int)(frame & 1);
+    temporal_stream_captured(&k->copy[turn], &k->generation, frame); /* before anything can fail */
+    if (outcome == KEEP_OK && size > k->capacity) {
+        for (int i = 0; i < 2; i++) {
+            temporal_stream_poison(&k->copy[i]);
+            k->bytes[i] = -1;
+        }
+        k->capacity = size;
+    }
+    if (outcome == KEEP_OK) {
+        k->bytes[turn] = who;
+        temporal_stream_copied(&k->copy[turn]);
+    }
+    const unsigned long long pair = 0x1000ull * (unsigned)(who + 1), draw = 77;
+    temporal_stream_used(&k->copy[turn], frame, pair, draw);
+    const int got = temporal_stream_before(&k->copy[turn], &k->copy[!turn], frame, pair, draw);
+    /* the one thing that must never happen: a draw handed another character's bytes, or unknown ones */
+    if (got == 1) assert(k->bytes[!turn] == who);
+    return got;
+}
+
+static void test_stream_keeping(void) {
+    TestKeep k;
+    /* A is kept for two frames. Then B's capture is too large to keep: the copy of that turn still holds A's
+       bytes of two frames ago, and B's draw must not put its tag on them. */
+    memset(&k, 0, sizeof k);
+    k.bytes[0] = k.bytes[1] = -1;
+    assert(keep_capture(&k, 10, 0, 100, KEEP_OK) == 0);
+    assert(keep_capture(&k, 11, 0, 100, KEEP_OK) == 1);
+    assert(keep_capture(&k, 12, 1, 100, KEEP_TOO_LARGE) == 0);
+    assert(k.bytes[0] == 0 && !temporal_stream_valid(&k.copy[0]) && !k.copy[0].owners);
+    /* B again, kept this time: last frame's copy is unknown, so none. And A, back a frame later, gets none of B's */
+    assert(keep_capture(&k, 13, 1, 100, KEEP_OK) == 0);
+    assert(keep_capture(&k, 14, 1, 100, KEEP_OK) == 1);
+    assert(keep_capture(&k, 15, 0, 100, KEEP_OK) == 0);
+    assert(keep_capture(&k, 16, 0, 100, KEEP_OK) == 1);
+    /* the buffers could not be made: content unknown this frame and the next */
+    assert(keep_capture(&k, 17, 0, 100, KEEP_NO_MEMORY) == 0);
+    assert(keep_capture(&k, 18, 0, 100, KEEP_OK) == 0);
+    assert(keep_capture(&k, 19, 0, 100, KEEP_OK) == 1);
+    /* Growth: A's larger capture makes both buffers anew. Last frame's bytes are gone with the old buffer, the
+       counts are not: a second capture in the same frame is still a second capture. */
+    assert(keep_capture(&k, 20, 0, 400, KEEP_OK) == 0);
+    assert(k.copy[1].at == 19 && k.copy[1].captures == 1 && !temporal_stream_valid(&k.copy[1]));
+    assert(keep_capture(&k, 21, 0, 400, KEEP_OK) == 1);
+    assert(keep_capture(&k, 22, 0, 400, KEEP_OK) == 1);
+    assert(keep_capture(&k, 22, 1, 900, KEEP_OK) == -1); /* a second capture, and it grows the buffers */
+    assert(k.copy[0].captures == 2 && temporal_stream_conflict(&k.copy[0], 22));
+    assert(keep_capture(&k, 23, 1, 900, KEEP_OK) == -1); /* last frame had two */
+    assert(keep_capture(&k, 24, 1, 900, KEEP_OK) == 1);
+    /* a failed capture after a kept one in the same frame leaves nothing to tag or use */
+    assert(keep_capture(&k, 25, 1, 900, KEEP_OK) == 1);
+    assert(keep_capture(&k, 25, 0, 900, KEEP_TOO_LARGE) == -1);
+    assert(!temporal_stream_valid(&k.copy[1]) && !k.copy[1].owners);
+    assert(keep_capture(&k, 26, 0, 900, KEEP_OK) == -1);
+    /* any order of characters, sizes and failures: the assert in keep_capture holds throughout */
+    unsigned seed = 4242, frame = 100;
+    int handed = 0;
+    for (int i = 0; i < 20000; i++) {
+        seed = seed * 1103515245u + 12345u;
+        const int who = (int)(seed >> 16) & 1, outcome = (seed >> 18) % 13 == 0 ? KEEP_TOO_LARGE
+                                                         : (seed >> 18) % 17 == 0 ? KEEP_NO_MEMORY : KEEP_OK;
+        const unsigned size = 100 + ((seed >> 8) % 7 == 0 ? k.capacity : 0);
+        frame += (seed >> 24) % 5 ? 1 : (seed >> 27) % 3; /* mostly the next frame, sometimes the same, or a gap */
+        handed += keep_capture(&k, frame, who, size, outcome) == 1;
+    }
+    assert(handed > 1000); /* and copies are handed out, so the check is not empty */
 }
 
 static void test_origin_shift(void) {
@@ -722,6 +804,7 @@ int main(void) {
     test_pairs();
     test_gate();
     test_streams();
+    test_stream_keeping();
     test_origin_shift();
     puts("temporal_math: ok");
     return 0;

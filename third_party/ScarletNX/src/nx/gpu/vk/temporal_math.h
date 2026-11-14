@@ -337,18 +337,35 @@ static inline int temporal_before_choice(int own_last, unsigned own_stays, int o
    address, and a copy is kept per address and frame. The address does not say whose positions they are: another
    character may capture into it the next frame. So a copy is tagged with the G-buffer draws that read it, each by
    its block's pair and its signature, and a draw gets last frame's copy only when that copy has its tag and the
-   address was captured exactly once in both frames. */
+   address was captured exactly once in both frames.
+   One rule keeps the tags honest. Every capture into the address is an event, counted before anything can fail:
+   it takes a new generation of the address, drops the copy's tags and leaves the copy's content unknown until the
+   bytes were really copied (temporal_stream_copied). A copy counts only while it holds the bytes of the last event
+   of its frame. Buffers that are made anew lose their content (temporal_stream_poison), never their counts. */
 #define TEMPORAL_STREAM_OWNERS 4
 typedef struct {
     unsigned at, captures, owners; /* the frame of the copy, the captures into its address in it, the tags */
+    unsigned generation, copied;   /* of the last capture in that frame, and of the bytes held (0 for none) */
     unsigned long long pair[TEMPORAL_STREAM_OWNERS], draw[TEMPORAL_STREAM_OWNERS];
 } TemporalStreamCopy;
-static inline void temporal_stream_captured(TemporalStreamCopy* c, unsigned frame) {
+static inline void temporal_stream_captured(TemporalStreamCopy* c, unsigned* generation, unsigned frame) {
     if (c->at != frame) {
         memset(c, 0, sizeof *c);
         c->at = frame;
     }
+    if (!++*generation) ++*generation; /* never 0 */
     c->captures++;
+    c->generation = *generation;
+    c->copied = 0;
+    c->owners = 0;
+}
+static inline void temporal_stream_copied(TemporalStreamCopy* c) { c->copied = c->generation; }
+static inline void temporal_stream_poison(TemporalStreamCopy* c) {
+    c->copied = 0;
+    c->owners = 0;
+}
+static inline int temporal_stream_valid(const TemporalStreamCopy* c) {
+    return c->copied != 0 && c->copied == c->generation;
 }
 static inline int temporal_stream_owned(const TemporalStreamCopy* c, unsigned long long pair,
                                         unsigned long long draw) {
@@ -356,19 +373,23 @@ static inline int temporal_stream_owned(const TemporalStreamCopy* c, unsigned lo
         if (c->pair[i] == pair && c->draw[i] == draw) return 1;
     return 0;
 }
-/* a G-buffer draw of an established pair reads this frame's copy: its tag is added, while there is room */
+/* a G-buffer draw of an established pair reads this frame's capture: its tag is added to a copy that holds that
+   capture's bytes, while there is room */
 static inline void temporal_stream_used(TemporalStreamCopy* c, unsigned frame, unsigned long long pair,
                                         unsigned long long draw) {
-    if (c->at != frame || temporal_stream_owned(c, pair, draw) || c->owners >= TEMPORAL_STREAM_OWNERS) return;
+    if (c->at != frame || !temporal_stream_valid(c) || temporal_stream_owned(c, pair, draw) ||
+        c->owners >= TEMPORAL_STREAM_OWNERS)
+        return;
     c->pair[c->owners] = pair;
     c->draw[c->owners++] = draw;
 }
-/* 1 when the draw may take last frame's copy as its positions of a frame ago, 0 when the copy is not its own, and
-   -1 when the address was captured more than once in either frame */
+/* 1 when the draw may take last frame's copy as its positions of a frame ago, 0 when there is none that is its
+   own, and -1 when the address was captured more than once in either frame */
 static inline int temporal_stream_before(const TemporalStreamCopy* now, const TemporalStreamCopy* last,
                                          unsigned frame, unsigned long long pair, unsigned long long draw) {
     if (now->at != frame || !last->at || last->at + 1 != frame) return 0;
     if (now->captures != 1 || last->captures != 1) return -1;
+    if (!temporal_stream_valid(now) || !temporal_stream_valid(last)) return 0;
     return temporal_stream_owned(last, pair, draw);
 }
 /* A second capture into the address after a draw of this frame already took last frame's copy: the vectors that
