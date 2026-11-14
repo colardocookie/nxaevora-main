@@ -504,6 +504,43 @@ static void block_read(u64 address, float out[16]) {
     }
 }
 
+/* Read only, for an upscaler to come, which must be told the camera's near plane, far plane and field of view:
+   the two matrices of the camera block that are not the view-projection or its inverse, as the game wrote
+   them, with the frame's viewport, and what temporal_projection_camera makes of each. Written when the block is
+   first seen and when the matrix at +0x80 is another than the last one written, eight times at most. Nothing
+   uses the numbers. */
+static void projection_log(u64 address, u32 size, const char* stage, u32 frame) {
+    static float last[16];
+    static u32 lines;
+    float at40[16], at80[16];
+    if (lines >= 8) return;
+    block_read(address + 0x40, at40);
+    block_read(address + 0x80, at80);
+    if (lines && !memcmp(last, at80, sizeof last)) return;
+    memcpy(last, at80, sizeof last);
+    lines++;
+    const float* both[2] = {at40, at80};
+    for (int k = 0; k < 2; k++) {
+        const float* m = both[k];
+        double near_plane = 0.0, far_plane = 0.0, fov = 0.0;
+        int reversed = 0;
+        const int read = temporal_projection_camera(m, &near_plane, &far_plane, &fov, &reversed);
+        char made[160];
+        if (read)
+            snprintf(made, sizeof made, "near %.9g, far %.9g, field of view %.9g rad (%.4f degrees), depth %s",
+                     near_plane, far_plane, fov, fov * 57.29577951308232, reversed ? "reversed" : "not reversed");
+        else snprintf(made, sizeof made, "refused: not a plain perspective projection as the decoder knows one");
+        LOG("arceus-temporal-projection: present %u, camera block %llx (%s stage, %x bytes bound), viewport %g,%g "
+            "%gx%g, matrix at +0x%x in memory order: %.9g %.9g %.9g %.9g | %.9g %.9g %.9g %.9g | %.9g %.9g %.9g "
+            "%.9g | %.9g %.9g %.9g %.9g. The decoder: %s\n",
+            frame, (unsigned long long)address, stage, size, (double)g_t.viewport.x, (double)g_t.viewport.y,
+            (double)g_t.viewport.width, (double)g_t.viewport.height, k ? 0x80 : 0x40, (double)m[0], (double)m[1],
+            (double)m[2], (double)m[3], (double)m[4], (double)m[5], (double)m[6], (double)m[7], (double)m[8],
+            (double)m[9], (double)m[10], (double)m[11], (double)m[12], (double)m[13], (double)m[14], (double)m[15],
+            made);
+    }
+}
+
 /* The camera of this frame, read at the first G-buffer draw: the view-projection and its inverse. Last frame's
    view-projection is the one in the block's neighbouring slot (the game writes the block to two slots in turn) when
    that equals the copy kept here, else the copy. */
@@ -563,6 +600,7 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
                 (unsigned long long)g_t.pair_equal, (unsigned long long)g_t.pair_differ);
     }
     g_t.viewport = vk_render_viewport(ch->r3d);
+    projection_log(address, size, address == ch->cbind[ST_FS][CAMERA_BANK] ? "fragment" : "vertex", frame);
     /* The jitter was decided on another viewport than the scene's: the frame is left as drawn, so the next has no
        history, and this frame's object vectors are given up. */
     const TemporalViewport scene_view = {g_t.viewport.x, g_t.viewport.y, g_t.viewport.width, g_t.viewport.height};
