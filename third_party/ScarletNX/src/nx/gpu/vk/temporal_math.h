@@ -322,7 +322,8 @@ enum {
     TEMPORAL_BEFORE_OWN,      /* this slot, which takes no turns */
     TEMPORAL_BEFORE_PARTNER,  /* the other slot of an established pair */
     TEMPORAL_BEFORE_LEARNING, /* not yet TEMPORAL_PAIR_FRAMES frames in a row */
-    TEMPORAL_BEFORE_OTHER     /* established, but not by this draw */
+    TEMPORAL_BEFORE_OTHER,    /* established, but not by this draw */
+    TEMPORAL_BEFORE_LINK      /* a slot that is not the neighbour, found by its draws (temporal_link_before) */
 };
 static inline int temporal_before_choice(int own_last, unsigned own_stays, int own_has_draw, int partner_last,
                                          int partner_now, unsigned partner_turns, int partner_has_draw) {
@@ -373,6 +374,172 @@ static inline int temporal_motion_class(const float texel[4]) {
 static inline int temporal_current_only(const float centre[4], const float selected[4]) {
     return temporal_motion_class(centre) == TEMPORAL_CLASS_REJECTED ||
            temporal_motion_class(selected) == TEMPORAL_CLASS_REJECTED;
+}
+/* Links: a block's other slot found by its draws where the two slots are not neighbours. Every object block a plain
+   G-buffer draw binds in a frame is recorded with its bound size, its matrix and a digest of its draws: their
+   number, the sum of their signatures and the first eight in order. Equal digests are not proof of equal draws,
+   and equal draws are not proof of one object: a link is a guess, as a pair is. */
+#define TEMPORAL_BLOCKS 4096      /* blocks recorded in a frame at most */
+#define TEMPORAL_BLOCK_SLOTS 8192 /* of the frame's index by address and of the judging's by digest */
+#define TEMPORAL_BLOCK_DRAWS 8
+typedef struct {
+    unsigned long long address, sum, link; /* link: the other slot's address as judged for this frame, 0 for none */
+    unsigned long long first[TEMPORAL_BLOCK_DRAWS];
+    unsigned size, count, turns;  /* turns: frames in a row the same two slots took turns, this one included */
+    unsigned char usable, served; /* usable: an affine matrix and one size. served: a pair or its own slot had it */
+    float world[16];
+} TemporalBlock;
+/* One frame's record. complete 0: a block or a draw was not seen, so nothing in it proves a block is the only one. */
+typedef struct {
+    unsigned frame, n;
+    int complete;
+    TemporalBlock blocks[TEMPORAL_BLOCKS];
+    unsigned short slots[TEMPORAL_BLOCK_SLOTS]; /* by address: a block's number plus one */
+} TemporalFrame;
+static inline void temporal_frame_begin(TemporalFrame* f, unsigned frame) {
+    f->frame = frame;
+    f->n = 0;
+    f->complete = 1;
+    memset(f->slots, 0, sizeof f->slots);
+}
+static inline unsigned temporal_block_slot(unsigned long long address) {
+    return (unsigned)(((address >> 8) * 0x9E3779B97F4A7C15ull) >> 40) % TEMPORAL_BLOCK_SLOTS;
+}
+static inline TemporalBlock* temporal_frame_find(const TemporalFrame* f, unsigned long long address) {
+    if (!f) return NULL;
+    for (unsigned at = temporal_block_slot(address);; at = (at + 1) % TEMPORAL_BLOCK_SLOTS) {
+        const unsigned short number = f->slots[at];
+        if (!number) return NULL;
+        if (f->blocks[number - 1].address == address) return (TemporalBlock*)&f->blocks[number - 1];
+    }
+}
+/* A draw binds a block: the block's record in this frame with the draw in its digest. NULL when the record is
+   full, and the frame is then not complete. A block bound with two sizes keeps its first and is not usable. */
+static inline TemporalBlock* temporal_frame_bind(TemporalFrame* f, unsigned long long address, unsigned size,
+                                                 const float world[16], int affine, unsigned long long signature) {
+    TemporalBlock* b = temporal_frame_find(f, address);
+    if (!b) {
+        if (f->n >= TEMPORAL_BLOCKS) {
+            f->complete = 0;
+            return NULL;
+        }
+        unsigned at = temporal_block_slot(address);
+        while (f->slots[at]) at = (at + 1) % TEMPORAL_BLOCK_SLOTS;
+        f->slots[at] = (unsigned short)(f->n + 1);
+        b = &f->blocks[f->n++];
+        memset(b, 0, sizeof *b);
+        b->address = address;
+        b->size = size;
+        b->usable = affine != 0;
+        memcpy(b->world, world, sizeof b->world);
+    }
+    if (b->size != size || !affine) b->usable = 0;
+    if (b->count < TEMPORAL_BLOCK_DRAWS) b->first[b->count] = signature;
+    if (b->count < 0xFFFFFFFFu) b->count++;
+    b->sum += signature;
+    return b;
+}
+/* the comparison a link stands on: size, number of draws, their sum and the first eight in order */
+static inline int temporal_block_same(const TemporalBlock* a, const TemporalBlock* b) {
+    if (a->size != b->size || a->count != b->count || a->sum != b->sum) return 0;
+    for (unsigned i = 0; i < a->count && i < TEMPORAL_BLOCK_DRAWS; i++)
+        if (a->first[i] != b->first[i]) return 0;
+    return 1;
+}
+typedef struct {
+    unsigned short heads[2][TEMPORAL_BLOCK_SLOTS], next[2][TEMPORAL_BLOCKS]; /* [0] this frame, [1] the one before */
+} TemporalLinkScratch;
+static inline unsigned temporal_digest_slot(const TemporalBlock* b) {
+    const unsigned long long h = (b->sum ^ ((unsigned long long)b->size << 32) ^ b->count) * 0x9E3779B97F4A7C15ull;
+    return (unsigned)(h >> 40) % TEMPORAL_BLOCK_SLOTS;
+}
+/* The blocks of a list that are the same as b by the comparison above, counted to two at most, and the first found
+   in one. Every block of the list counts, whatever else is known of it. */
+static inline unsigned temporal_link_rivals(const TemporalFrame* f, const unsigned short* heads,
+                                            const unsigned short* next, const TemporalBlock* b,
+                                            const TemporalBlock** one) {
+    unsigned count = 0;
+    for (unsigned short number = heads[temporal_digest_slot(b)]; number && count < 2; number = next[number - 1])
+        if (temporal_block_same(&f->blocks[number - 1], b) && !count++) *one = &f->blocks[number - 1];
+    return count;
+}
+/* Every block of now gets its link and turns anew. P, bound now and not the frame before, is linked to Q, bound the
+   frame before and not now, when Q is the only such block the same as P and P the only such one the same as Q,
+   both are usable, neither is served and P is not at rest alone. All counts are made before any link. Without
+   two complete records of consecutive frames nothing is linked: every link ends and the turns start again. */
+static inline void temporal_links_judge(TemporalFrame* now, const TemporalFrame* before, const TemporalFrame* older,
+                                        TemporalLinkScratch* s) {
+    for (unsigned i = 0; i < now->n; i++) now->blocks[i].link = now->blocks[i].turns = 0;
+    if (!now->complete || !before || !before->complete || before->frame + 1 != now->frame) return;
+    memset(s->heads, 0, sizeof s->heads);
+    for (int side = 0; side < 2; side++) {
+        const TemporalFrame *own = side ? before : now, *other = side ? now : before;
+        for (unsigned i = 0; i < own->n; i++) {
+            if (temporal_frame_find(other, own->blocks[i].address)) continue; /* bound in both frames: no turn */
+            const unsigned at = temporal_digest_slot(&own->blocks[i]);
+            s->next[side][i] = s->heads[side][at];
+            s->heads[side][at] = (unsigned short)(i + 1);
+        }
+    }
+    if (older && older->frame + 2 != now->frame) older = NULL;
+    for (unsigned i = 0; i < now->n; i++) {
+        TemporalBlock* p = &now->blocks[i];
+        const TemporalBlock *q = NULL, *back = NULL;
+        if (temporal_frame_find(before, p->address)) continue;
+        if (temporal_link_rivals(before, s->heads[1], s->next[1], p, &q) != 1) continue;
+        if (temporal_link_rivals(now, s->heads[0], s->next[0], q, &back) != 1 || back != p) continue;
+        if (!p->usable || !q->usable || p->served || q->served) continue;
+        const TemporalBlock* own = temporal_frame_find(older, p->address);
+        if (temporal_at_rest_alone(p->world, own ? own->world : NULL, q->world)) continue;
+        const unsigned turns = q->link == p->address ? q->turns : 0;
+        p->link = q->address;
+        p->turns = turns < 0xFFFF ? turns + 1 : turns;
+    }
+}
+/* For a draw of this frame, before the frame is complete: the record of the block's linked slot in the frame
+   before, whose matrix is the block's of a frame ago, or NULL with the reason in why. index: the draws that bound
+   the block in this frame before this one. The end of the G-buffer judges the frame again (temporal_link_holds). */
+enum {
+    TEMPORAL_LINK_USED,
+    TEMPORAL_LINK_UNKNOWN,  /* a record is not complete or not of the frame before */
+    TEMPORAL_LINK_NONE,     /* no link, or the block was bound a frame ago, or the other slot this frame already */
+    TEMPORAL_LINK_LEARNING, /* not yet TEMPORAL_PAIR_FRAMES frames in a row */
+    TEMPORAL_LINK_OTHER,    /* not the draw the other slot had at this place in its order, or past the eighth */
+    TEMPORAL_LINK_REST      /* at rest alone */
+};
+static inline const TemporalBlock* temporal_link_before(const TemporalFrame* now, const TemporalFrame* before,
+                                                        const TemporalFrame* older, unsigned long long address,
+                                                        unsigned size, unsigned index, unsigned long long signature,
+                                                        const float world[16], int* why) {
+    *why = TEMPORAL_LINK_UNKNOWN;
+    if (!now->complete || !before || !before->complete || before->frame + 1 != now->frame) return NULL;
+    if (!older || older->frame + 2 != now->frame) return NULL;
+    *why = TEMPORAL_LINK_NONE;
+    const TemporalBlock* own = temporal_frame_find(older, address);
+    if (!own || !own->link || temporal_frame_find(before, address)) return NULL;
+    const TemporalBlock* q = temporal_frame_find(before, own->link);
+    if (!q || q->link != address || !q->usable || q->size != size || temporal_frame_find(now, q->address)) return NULL;
+    *why = TEMPORAL_LINK_LEARNING;
+    if (q->turns + 1 < TEMPORAL_PAIR_FRAMES) return NULL;
+    *why = TEMPORAL_LINK_OTHER;
+    if (index >= TEMPORAL_BLOCK_DRAWS || index >= q->count || q->first[index] != signature) return NULL;
+    *why = TEMPORAL_LINK_REST;
+    if (temporal_at_rest_alone(world, own->world, q->world)) return NULL;
+    *why = TEMPORAL_LINK_USED;
+    return q;
+}
+/* After temporal_links_judge on the frame's G-buffer: 1 when the draw's block is still linked to the slot whose
+   matrix it took, with the turns a use needs. */
+static inline int temporal_link_holds(const TemporalFrame* now, unsigned long long address,
+                                      unsigned long long link) {
+    const TemporalBlock* p = temporal_frame_find(now, address);
+    return p && link && p->link == link && p->turns >= TEMPORAL_PAIR_FRAMES;
+}
+/* The key a link's skinned copies are tagged with: the lower address and the higher one turned by 32 bits. Two
+   links with the same lower slot, or the same higher one, never have the same key. Others may, it is not ruled out. */
+static inline unsigned long long temporal_link_key(unsigned long long a, unsigned long long b) {
+    const unsigned long long low = a < b ? a : b, high = a < b ? b : a;
+    return low ^ (high << 32 | high >> 32);
 }
 /* Whose a kept copy of skinned positions is. A copy is kept per capture address and frame, and the address does
    not say whose positions they are. So a copy is tagged with the G-buffer draws that read it, by block pair and

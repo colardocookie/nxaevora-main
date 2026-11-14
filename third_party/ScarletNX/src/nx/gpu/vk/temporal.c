@@ -31,6 +31,8 @@
 #define OBJECT_DRAWS 256   /* extra draws a frame at most */
 #define OBJECT_SIGNATURES 8 /* draws of one block in a frame that are kept one by one */
 #define OBJECT_TOUCHED 4096 /* blocks bound in a frame that are judged at its end */
+/* why a frame's record of blocks is not complete (the links): record full, table full, a draw before the camera */
+enum { LINK_RECORD, LINK_TABLE, LINK_EARLY };
 #define MODE_PROBE 1
 #define MODE_TAA 2
 #define SETS_BINDINGS 7
@@ -102,6 +104,12 @@ static struct {
     /* draws without a matrix of a frame ago, [0] rigid and [1] reading skinned positions: all of them, those whose
        matrix differs from what the address last held, those never bound before. Then the skinned reads' fates. */
     u64 uncovered[2][3], uncovered_blind[2], skin_plain, skin_left, skin_rigid;
+    /* SNX_ARCEUS_TEMPORAL_LINKS: a block's other slot found by its draws. link_frame: the frame being recorded.
+       Then the draws a link gave a matrix and the ones it did not by reason (TEMPORAL_LINK_*), the links that
+       reached their fourth frame, the frames not complete by cause and the frames given up for a link. */
+    int links;
+    u32 link_frame, link_unknown_at[3], link_logged_at;
+    u64 link_why[6], links_made, link_unknown_frames[3], link_early_draws, link_broke_frames;
     int reject; /* SNX_ARCEUS_TEMPORAL_REJECT: no history where an object's vector is far from the camera's */
     float sharpen;  /* 0 off, to 1: the sharpen after the resolve */
     float mip_bias; /* 0 off, negative: added to the level bias of material textures on scene draws */
@@ -132,13 +140,15 @@ static struct {
         const float* was;
         int source;
         u64 pair, signature; /* the pair's lower slot (the slot itself when it takes no turns), the draw */
+        int chosen;          /* what the pairs said of the draw, before the guards */
+        u64 link;            /* the linked slot whose matrix it took, 0 for none */
         int unskinned;       /* it reads skinned positions and was not drawn again with last frame's */
         float world[16];
     } current;
     /* each extra draw of this frame by its number, and the same for the frame the numbers' image was drawn in:
        the probe writes the number to the vector target, so a wrong vector names its draw */
     struct Drawn {
-        u64 block, feedback, signature;
+        u64 block, feedback, signature, link;
         float shift; /* the origin's move on screen in pixels */
         u8 skinned, source, far; /* far: a long move with the camera nearly still */
         void *slot, *other; /* the table entries its matrix of a frame ago came from */
@@ -196,6 +206,8 @@ static int temporal_on(void) {
         if (g_t.mip_bias < -2.0f) g_t.mip_bias = -2.0f;
         const char* vectors = getenv("SNX_ARCEUS_TEMPORAL_VECTORS");
         g_t.objects = g_t.mode && vectors && !strcmp(vectors, "object");
+        const char* links = getenv("SNX_ARCEUS_TEMPORAL_LINKS");
+        g_t.links = g_t.objects && links && !strcmp(links, "1");
         const char* reject = getenv("SNX_ARCEUS_TEMPORAL_REJECT");
         g_t.reject = g_t.objects && reject && !strcmp(reject, "1");
         /* Every option's state, on or off, in each run's log. A value other than the one named leaves an option
@@ -204,6 +216,9 @@ static int temporal_on(void) {
         if (g_t.mode)
             LOG("arceus-temporal: vectors %s\n", g_t.objects ? "of the camera and of objects that moved (object)"
                                                              : "of the camera only");
+        if (g_t.mode)
+            LOG("arceus-temporal: a block's other slot where it is not the neighbouring one: %s\n",
+                g_t.links ? "looked for by its draws (links)" : "not looked for");
         if (g_t.mode)
             LOG("arceus-temporal: an object's vector further than an eighth of the scene's height from the "
                 "camera's: %s\n", g_t.reject ? "rejected, the pixel takes no history (reject)" : "kept");
@@ -826,8 +841,10 @@ static void stats_log(void) {
             "feedback output %llx, matrix before from %s, origin moved %.1f px\n",
             (unsigned long long)g_t.stats_run, capped[d], d, w->skinned ? "skinned" : "rigid",
             (unsigned long long)w->block, (unsigned long long)w->feedback,
-            w->source == TEMPORAL_BEFORE_OWN ? "its own address" : w->source == TEMPORAL_BEFORE_PARTNER
-                                                                      ? "the other slot" : "none (this frame's)",
+            w->source == TEMPORAL_BEFORE_OWN       ? "its own address"
+            : w->source == TEMPORAL_BEFORE_PARTNER ? "the other slot"
+            : w->source == TEMPORAL_BEFORE_LINK    ? "its linked slot"
+                                                   : "none (this frame's)",
             (double)w->shift);
     }
 }
@@ -998,6 +1015,24 @@ static void objects_log(u32 frame) {
         (unsigned long long)g_t.uncovered_blind[0], (unsigned long long)g_t.uncovered_blind[1],
         (unsigned long long)g_t.skin_plain,
         (unsigned long long)g_t.skin_left, (unsigned long long)g_t.skin_rigid);
+    if (g_t.links)
+        LOG("arceus-temporal-links: in 600 frames, draws the pairs gave no matrix: a link gave one %llu, no link "
+            "%llu, link still being learned %llu, another draw than the linked slot's at that place or past the "
+            "eighth %llu, at rest alone %llu, records not complete or not of the frames before %llu. Links that "
+            "reached their fourth frame %llu. Frames whose record is not complete: record full %llu, block table "
+            "full or block not judged %llu, a draw before the camera's block %llu (%llu such draws). Frames whose "
+            "object vectors were given up for a link %llu\n",
+            (unsigned long long)g_t.link_why[TEMPORAL_LINK_USED], (unsigned long long)g_t.link_why[TEMPORAL_LINK_NONE],
+            (unsigned long long)g_t.link_why[TEMPORAL_LINK_LEARNING],
+            (unsigned long long)g_t.link_why[TEMPORAL_LINK_OTHER], (unsigned long long)g_t.link_why[TEMPORAL_LINK_REST],
+            (unsigned long long)g_t.link_why[TEMPORAL_LINK_UNKNOWN], (unsigned long long)g_t.links_made,
+            (unsigned long long)g_t.link_unknown_frames[LINK_RECORD],
+            (unsigned long long)g_t.link_unknown_frames[LINK_TABLE],
+            (unsigned long long)g_t.link_unknown_frames[LINK_EARLY], (unsigned long long)g_t.link_early_draws,
+            (unsigned long long)g_t.link_broke_frames);
+    memset(g_t.link_why, 0, sizeof g_t.link_why);
+    memset(g_t.link_unknown_frames, 0, sizeof g_t.link_unknown_frames);
+    g_t.links_made = g_t.link_early_draws = g_t.link_broke_frames = 0;
     memset(g_t.uncovered, 0, sizeof g_t.uncovered);
     g_t.uncovered_blind[0] = g_t.uncovered_blind[1] = g_t.skin_plain = g_t.skin_left = g_t.skin_rigid = 0;
 }
@@ -1074,7 +1109,7 @@ static void pairs_judge(void) {
    neighbouring slots, and of the blocks bound a frame ago that the same draws bound or that stood at the same place. */
 static void object_missed(Object* o, u32 size, u64 signature, u32 frame, int source) {
     static u32 lines;
-    if (source == TEMPORAL_BEFORE_OWN || source == TEMPORAL_BEFORE_PARTNER) {
+    if (source == TEMPORAL_BEFORE_OWN || source == TEMPORAL_BEFORE_PARTNER || source == TEMPORAL_BEFORE_LINK) {
         o->misses = 0;
         return;
     }
@@ -1135,6 +1170,7 @@ static const float* object_before(const Object* o, u64 signature, u32 frame, int
                                      object_has_draw(o->before_draws, o->before_n, signature), partner_last,
                                      partner_now, partner_then && q->judged_at == q->at ? q->turns : 0,
                                      partner_then && object_has_draw(q->draws, q->n, signature));
+    g_t.current.chosen = *source;
     if (*source == TEMPORAL_BEFORE_PARTNER &&
         temporal_at_rest_alone(o->world, o->before_at + 2 == frame ? o->before : NULL, q->world)) {
         g_t.object_rest++;
@@ -1156,15 +1192,94 @@ static const float* object_before(const Object* o, u64 signature, u32 frame, int
     return NULL;
 }
 
+/* The links (temporal_math.h). Four records in turn, one a frame: the one being filled, the two before it that a
+   draw reads and are not changed any more, and one to spare. */
+static TemporalFrame g_link_frames[4];
+static TemporalLinkScratch g_link_scratch;
+
+static TemporalFrame* link_record(u32 frame) {
+    TemporalFrame* f = &g_link_frames[frame & 3];
+    return frame && f->frame == frame ? f : NULL;
+}
+
+/* judges the frame's record as it now is against the two before it */
+static void links_judge(u32 frame) {
+    TemporalFrame* now = link_record(frame);
+    if (now) temporal_links_judge(now, link_record(frame - 1), link_record(frame - 2), &g_link_scratch);
+}
+
+/* the first draw of a frame closes the record of the frame before it, complete now, and opens its own */
+static void links_roll(u32 frame) {
+    if (g_t.link_frame == frame) return;
+    if (g_t.link_frame) {
+        const TemporalFrame* last = link_record(g_t.link_frame);
+        links_judge(g_t.link_frame);
+        for (u32 i = 0; last && i < last->n; i++) g_t.links_made += last->blocks[i].turns + 1 == TEMPORAL_PAIR_FRAMES;
+    }
+    temporal_frame_begin(&g_link_frames[frame & 3], frame);
+    g_t.link_frame = frame;
+}
+
+/* something of the frame was not seen: its record proves nothing, counted once a frame by cause */
+static void links_unknown(u32 frame, int cause) {
+    TemporalFrame* now = link_record(frame);
+    if (now) now->complete = 0;
+    if (g_t.link_unknown_at[cause] == frame) return;
+    g_t.link_unknown_at[cause] = frame;
+    g_t.link_unknown_frames[cause]++;
+}
+
+/* The draw vk_temporal_object_note is at goes into the frame's record. Where the pairs know nothing of its block,
+   a link may give the matrix of a frame ago: from the record of the frame before, which nothing changes. */
+static void link_try(u32 frame, u64 address, u32 size, u64 signature) {
+    TemporalFrame* now = link_record(frame);
+    const int chosen = g_t.current.chosen;
+    const int served =
+        chosen == TEMPORAL_BEFORE_OWN || chosen == TEMPORAL_BEFORE_PARTNER || chosen == TEMPORAL_BEFORE_OTHER;
+    if (!now) return;
+    const TemporalBlock* mine = temporal_frame_find(now, address);
+    const TemporalBlock* q = NULL;
+    int why = TEMPORAL_LINK_NONE;
+    if (!served)
+        q = temporal_link_before(now, link_record(frame - 1), link_record(frame - 2), address, size,
+                                 mine ? mine->count : 0, signature, g_t.current.world, &why);
+    TemporalBlock* b = temporal_frame_bind(now, address, size, g_t.current.world, 1, signature);
+    if (!b) {
+        links_unknown(frame, LINK_RECORD);
+        return;
+    }
+    if (served) {
+        b->served = 1;
+        return;
+    }
+    g_t.link_why[why]++;
+    if (!q) return;
+    g_t.current.was = q->world;
+    g_t.current.source = TEMPORAL_BEFORE_LINK;
+    g_t.current.link = q->address;
+    g_t.current.pair = temporal_link_key(address, q->address);
+    g_t.current.other = NULL;
+}
+
 /* After the G-buffer, before the vectors are read: 1 when every pair this frame's extra draws relied on still
    holds now that the frame's draws are known. The other slot was not bound too, and both ends have the same draws.
    Else the frame's object vectors are given up and the camera's stand. */
 static int pairs_hold(u32 frame) {
+    int judged = 0;
     for (u32 d = 1; d <= g_t.object_draws && d <= OBJECT_DRAWS; d++) {
         const struct Drawn* w = &g_t.drawn[d];
         const Object *o = w->slot, *q = w->other;
         int broke = 0;
-        if (w->source == TEMPORAL_BEFORE_PARTNER)
+        if (w->source == TEMPORAL_BEFORE_LINK) {
+            /* the links are judged again on the frame's G-buffer as it now is: the draw's must still stand */
+            const TemporalFrame* now = link_record(frame);
+            if (!judged++) links_judge(frame);
+            broke = !now || !temporal_link_holds(now, w->block, w->link);
+            if (broke && g_t.link_logged_at != frame) {
+                g_t.link_logged_at = frame;
+                g_t.link_broke_frames++;
+            }
+        } else if (w->source == TEMPORAL_BEFORE_PARTNER)
             broke = !o || !q || q->at + 1 != frame || o->n != q->n || o->sum != q->sum;
         else if (w->source == TEMPORAL_BEFORE_OWN)
             broke = !o || o->before_at + 1 != frame || o->n != o->before_n || o->sum != o->before_sum;
@@ -1177,8 +1292,9 @@ static int pairs_hold(u32 frame) {
             LOG("arceus-temporal-objects: the pair of block %llx broke after its draw (%s), the frame's object "
                 "vectors are given up, %llu frames so far\n",
                 (unsigned long long)w->block,
-                again                             ? "its positions' address was captured again"
-                : w->source == TEMPORAL_BEFORE_OWN ? "its own draws changed"
+                again                              ? "its positions' address was captured again"
+                : w->source == TEMPORAL_BEFORE_LINK ? "its link did not hold"
+                : w->source == TEMPORAL_BEFORE_OWN  ? "its own draws changed"
                 : q && q->at == frame            ? "both slots bound"
                                                  : "the draws changed",
                 (unsigned long long)g_t.broke_frames);
@@ -1217,6 +1333,7 @@ static u32 drawn_note(u64 block, u64 feedback, int skinned, int source, const fl
     d->block = block;
     d->feedback = feedback;
     d->signature = g_t.current.signature;
+    d->link = source == TEMPORAL_BEFORE_LINK ? g_t.current.link : 0;
     d->skinned = (u8)skinned;
     d->source = (u8)source;
     d->shift = (float)temporal_origin_shift(g_t.now, world, g_t.before, was, (double)zt->sw, (double)zt->sh);
@@ -1228,7 +1345,10 @@ static u32 drawn_note(u64 block, u64 feedback, int skinned, int source, const fl
         LOG("arceus-temporal-objects: long move of %.0f px (the camera alone %.0f px) at block %llx (%s, before from "
             "%s): now %.2f %.2f %.2f, a frame ago %.2f %.2f %.2f\n",
             (double)d->shift, (double)camera, (unsigned long long)block, skinned ? "skinned" : "rigid",
-            source == TEMPORAL_BEFORE_OWN ? "its own address" : "the other slot", (double)world[12],
+            source == TEMPORAL_BEFORE_OWN    ? "its own address"
+            : source == TEMPORAL_BEFORE_LINK ? "its linked slot"
+                                             : "the other slot",
+            (double)world[12],
             (double)world[13], (double)world[14], (double)was[12], (double)was[13], (double)was[14]);
     }
     return number;
@@ -1245,31 +1365,51 @@ int vk_temporal_object_note(const GpuChannel* ch, const Surf* zt, u64 vertex, u6
     g_t.current.was = NULL;
     g_t.current.slot = g_t.current.other = NULL;
     g_t.current.address = 0;
-    if (!g_t.objects || g_t.camera_at != frame || zt != g_t.depth_rt || !address || size < 64 || size > 0x10000)
-        return 0;
+    g_t.current.link = 0;
+    if (!g_t.objects || !zt || zt != g_t.depth_rt || !address || size < 64 || size > 0x10000) return 0;
+    const u64 signature = temporal_draw_signature(vertex, index, count, first, program);
+    /* the links' record must see every such draw: one before the camera's block is known is noted as not seen */
+    if (g_t.links) {
+        links_roll(frame);
+        if (g_t.camera_at != frame) {
+            g_t.link_early_draws++;
+            links_unknown(frame, LINK_EARLY);
+        }
+    }
+    if (g_t.camera_at != frame) return 0;
     objects_log(frame);
     g_t.object_seen++;
     block_read(address, g_t.current.world);
     const float* world = g_t.current.world;
     if (world[3] != 0.0f || world[7] != 0.0f || world[11] != 0.0f || world[15] != 1.0f) {
         g_t.object_odd++;
+        /* such a block is in the record all the same: it counts among the blocks with the same draws */
+        if (g_t.links && !temporal_frame_bind(link_record(frame), address, size, world, 0, signature))
+            links_unknown(frame, LINK_RECORD);
         return 0;
     }
     /* the slot this block would have had a frame ago: the camera's block went the same way */
     u64 partner = 0;
     if (g_t.camera_address[0] && g_t.camera_address[1])
         partner = g_t.camera_address[0] > g_t.camera_address[1] ? address - size : address + size;
-    const u64 signature = temporal_draw_signature(vertex, index, count, first, program);
+    const u64 unjudged = g_t.object_unjudged;
     Object* o = object_take(address, partner, world, signature, frame);
-    if (!o) return 0;
+    /* a block the table could not take or will not judge: what the pairs make of it is not known */
+    if (g_t.links && (!o || g_t.object_unjudged != unjudged)) links_unknown(frame, LINK_TABLE);
+    if (!o) {
+        if (g_t.links && !temporal_frame_bind(link_record(frame), address, size, world, 1, signature))
+            links_unknown(frame, LINK_RECORD);
+        return 0;
+    }
     const Object* other = NULL;
     g_t.current.address = address;
     g_t.current.slot = o;
     g_t.current.was = object_before(o, signature, frame, &g_t.current.source, &other);
-    object_missed(o, size, signature, frame, g_t.current.source);
     g_t.current.signature = signature;
     g_t.current.pair = g_t.current.source == TEMPORAL_BEFORE_PARTNER && partner < address ? partner : address;
     g_t.current.other = (void*)other;
+    if (g_t.links) link_try(frame, address, size, signature);
+    object_missed(o, size, signature, frame, g_t.current.source);
     if (g_t.current.was && object_jumped(address, world, g_t.current.was, frame)) g_t.current.was = NULL;
     return g_t.current.was != NULL;
 }

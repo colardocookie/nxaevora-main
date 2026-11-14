@@ -975,6 +975,354 @@ static void test_classes(void) {
     }
 }
 
+/* The links. A small scene driven the way the renderer drives the record: each draw asks for a link first, then goes
+   into the frame's record, and the frame is judged at its end. Frames count from 10. */
+static TemporalFrame g_lf[4];
+static TemporalLinkScratch g_ls;
+typedef unsigned long long ull;
+
+static TemporalFrame* lrec(unsigned f) {
+    TemporalFrame* r = &g_lf[f & 3];
+    return f && r->frame == f ? r : NULL;
+}
+static void lreset(void) { memset(g_lf, 0, sizeof g_lf); }
+static void lbegin(unsigned f) { temporal_frame_begin(&g_lf[f & 3], f); }
+static void lend(unsigned f) { temporal_links_judge(lrec(f), lrec(f - 1), lrec(f - 2), &g_ls); }
+/* one draw of a block with its origin at x. The linked slot's record when a link gives the matrix, else NULL. */
+static const TemporalBlock* ldraw(unsigned f, ull address, unsigned size, ull signature, float x, int affine,
+                                  int served, int* why) {
+    float world[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1};
+    TemporalFrame* now = lrec(f);
+    const TemporalBlock* mine = temporal_frame_find(now, address);
+    const TemporalBlock* q = NULL;
+    int reason = TEMPORAL_LINK_NONE;
+    if (!served && affine)
+        q = temporal_link_before(now, lrec(f - 1), lrec(f - 2), address, size, mine ? mine->count : 0, signature,
+                                 world, &reason);
+    TemporalBlock* b = temporal_frame_bind(now, address, size, world, affine, signature);
+    if (b && served) b->served = 1;
+    if (why) *why = reason;
+    return b ? q : NULL;
+}
+/* the plain case: one usable draw of a block that moves a tenth of a unit a frame */
+static const TemporalBlock* lmove(unsigned f, ull address, ull signature) {
+    return ldraw(f, address, 0x200, signature, 0.1f * (float)f, 1, 0, NULL);
+}
+/* the G-buffer's end: the frame judged as it is, and whether the draw's link still stands */
+static int lholds(unsigned f, ull address, const TemporalBlock* q) {
+    lend(f);
+    return q && temporal_link_holds(lrec(f), address, q->address);
+}
+
+/* the judging written the long way, to hold the indexed one against */
+static int naive_in(const TemporalFrame* f, ull address) {
+    for (unsigned i = 0; f && i < f->n; i++)
+        if (f->blocks[i].address == address) return 1;
+    return 0;
+}
+static int naive_same(const TemporalBlock* a, const TemporalBlock* b) {
+    int same = a->size == b->size && a->count == b->count && a->sum == b->sum;
+    for (unsigned i = 0; same && i < a->count && i < 8; i++) same = a->first[i] == b->first[i];
+    return same;
+}
+static void naive_judge(const TemporalFrame* now, const TemporalFrame* before, const TemporalFrame* older, ull* link,
+                        unsigned* turns) {
+    for (unsigned i = 0; i < now->n; i++) link[i] = turns[i] = 0;
+    if (!now->complete || !before || !before->complete || before->frame + 1 != now->frame) return;
+    if (older && older->frame + 2 != now->frame) older = NULL;
+    for (unsigned i = 0; i < now->n; i++) {
+        const TemporalBlock *p = &now->blocks[i], *q = NULL, *own = NULL;
+        unsigned forward = 0, back = 0;
+        if (naive_in(before, p->address)) continue;
+        for (unsigned j = 0; j < before->n; j++)
+            if (!naive_in(now, before->blocks[j].address) && naive_same(p, &before->blocks[j])) {
+                forward++;
+                q = &before->blocks[j];
+            }
+        if (forward != 1) continue;
+        for (unsigned j = 0; j < now->n; j++)
+            back += !naive_in(before, now->blocks[j].address) && naive_same(q, &now->blocks[j]);
+        if (back != 1 || !p->usable || !q->usable || p->served || q->served) continue;
+        for (unsigned j = 0; older && j < older->n; j++)
+            if (older->blocks[j].address == p->address) own = &older->blocks[j];
+        if (own && !memcmp(p->world, own->world, sizeof p->world) && memcmp(p->world, q->world, sizeof p->world))
+            continue;
+        link[i] = q->address;
+        turns[i] = (q->link == p->address ? q->turns : 0) + 1;
+    }
+}
+
+static void test_links(void) {
+    const ull A = 0x50c60fb00ull, S1 = 0x1111, S2 = 0x2222;
+    int why;
+    /* The slots seen in play: 0x300, 0x400, 0x600, 0x1b00 and about 1 MB apart. Four frames of turns, and the
+       fifth frame's draw has the other slot's matrix of the frame before. */
+    const ull apart[5] = {0x300, 0x400, 0x600, 0x1b00, 0x114a00};
+    for (int k = 0; k < 5; k++) {
+        lreset();
+        for (unsigned i = 0; i < 8; i++) {
+            const unsigned f = 10 + i;
+            const ull at = i & 1 ? A + apart[k] : A;
+            lbegin(f);
+            const TemporalBlock* q = ldraw(f, at, 0x200, S1, 0.1f * (float)f, 1, 0, &why);
+            assert((q != NULL) == (i >= 4));
+            if (i == 3) assert(why == TEMPORAL_LINK_LEARNING);
+            if (q) {
+                /* the one candidate each frame is the block's own other slot, which counts like any other */
+                assert(q->address == (i & 1 ? A : A + apart[k]));
+                assert(q->world[12] == 0.1f * (float)(f - 1)); /* the matrix of the frame before */
+                assert(lholds(f, at, q));
+            }
+            lend(f);
+        }
+    }
+    /* A stranger between the two slots: two objects two sizes apart, the other's slot one size away. Each finds
+       its own. */
+    lreset();
+    for (unsigned i = 0; i < 8; i++) {
+        const unsigned f = 10 + i;
+        lbegin(f);
+        const TemporalBlock* q1 = lmove(f, i & 1 ? A + 0x400 : A, S1);
+        const TemporalBlock* q2 = lmove(f, i & 1 ? A + 0x600 : A + 0x200, S2);
+        assert((q1 != NULL) == (i >= 4) && (q2 != NULL) == (i >= 4));
+        if (q1) assert(q1->address == (i & 1 ? A : A + 0x400) && q2->address == (i & 1 ? A + 0x200 : A + 0x600));
+        lend(f);
+    }
+    /* Two of one mesh, in step: each side sees two candidates every frame, no link ever. The same when the other
+       one is served by a pair, or has a matrix that is not affine: it still counts. */
+    for (int kind = 0; kind < 3; kind++) {
+        lreset();
+        for (unsigned i = 0; i < 12; i++) {
+            const unsigned f = 10 + i;
+            lbegin(f);
+            assert(!lmove(f, i & 1 ? A + 0x400 : A, S1));
+            assert(!ldraw(f, i & 1 ? A + 0x90400 : A + 0x90000, 0x200, S1, 7.0f + 0.1f * (float)f, kind != 2,
+                          kind == 1, NULL));
+            lend(f);
+            for (unsigned b = 0; b < lrec(f)->n; b++) assert(!lrec(f)->blocks[b].link);
+        }
+    }
+    /* a slot that is not usable never gets or gives a link, alone as it is */
+    lreset();
+    for (unsigned i = 0; i < 12; i++) {
+        lbegin(10 + i);
+        assert(!ldraw(10 + i, i & 1 ? A + 0x400 : A, 0x200, S1, 0.1f * (float)i, !(i & 1), 0, NULL));
+        lend(10 + i);
+        assert(!lrec(10 + i)->blocks[0].link);
+    }
+    /* The order of the draws in a frame does not matter: three objects, one of them with a twin, in every order */
+    for (int order = 0; order < 7; order++) {
+        lreset();
+        for (unsigned i = 0; i < 10; i++) {
+            const unsigned f = 10 + i;
+            const ull at[4] = {i & 1 ? A + 0x400 : A, i & 1 ? A + 0x600 : A + 0x200, i & 1 ? A + 0x9400 : A + 0x9000,
+                               i & 1 ? A + 0x9a00 : A + 0x9600};
+            const ull draws[4] = {S1, S2, 0x3333, 0x3333};
+            const TemporalBlock* q[4];
+            lbegin(f);
+            for (int n = 0; n < 4; n++) {
+                /* orders 0 to 5 are fixed turns of the four, order 6 changes with the frame */
+                const int which = (n * (order % 2 ? 3 : 1) + (order < 6 ? order : (int)i)) % 4;
+                q[which] = lmove(f, at[which], draws[which]);
+            }
+            assert((q[0] != NULL) == (i >= 4) && (q[1] != NULL) == (i >= 4) && !q[2] && !q[3]);
+            if (q[0]) assert(lholds(f, at[0], q[0]) && lholds(f, at[1], q[1]));
+            lend(f);
+        }
+    }
+    /* What ends a link that was used in the frame, found at the G-buffer's end. Frame 16 draws slot A with the
+       link, then: 0 nothing, 1 a second block with the same draws (two claim the other slot in 16, and that slot
+       has two candidates in 17), 2 the other slot bound too, 3 one more draw of the block, 4 the record runs
+       full, 5 and 6 the frame marked as not seen whole, which is all the table and an early draw do here. */
+    for (int late = 0; late < 7; late++) {
+        lreset();
+        for (unsigned i = 0; i < 6; i++) {
+            lbegin(10 + i);
+            lmove(10 + i, i & 1 ? A + 0x400 : A, S1);
+            lend(10 + i);
+        }
+        lbegin(16);
+        const TemporalBlock* q = lmove(16, A, S1);
+        assert(q && q->address == A + 0x400);
+        if (late == 1) lmove(16, A + 0x7000, S1);
+        if (late == 2) lmove(16, A + 0x400, S1);
+        if (late == 3) lmove(16, A, S2);
+        if (late == 4)
+            for (unsigned n = 0; n < TEMPORAL_BLOCKS; n++) lmove(16, 0x600000000ull + 0x200 * n, 0x9000 + n);
+        if (late >= 5) lrec(16)->complete = 0;
+        if (late == 4) assert(!lrec(16)->complete && lrec(16)->n == TEMPORAL_BLOCKS);
+        assert(lholds(16, A, q) == !late);
+        lend(16);
+        /* after a frame that was not seen whole every link is gone, and the turns start again from nothing */
+        if (late >= 4)
+            for (unsigned b = 0; b < lrec(16)->n; b++) assert(!lrec(16)->blocks[b].link && !lrec(16)->blocks[b].turns);
+        /* The frames after. Undisturbed the link goes on. Else it is learned again over four frames of turns, 17
+           to 20, and a draw has a link again in frame 21. */
+        for (unsigned f = 17; f < 24; f++) {
+            lbegin(f);
+            q = ldraw(f, f & 1 ? A + 0x400 : A, 0x200, S1, 0.1f * (float)f, 1, 0, &why);
+            if (f == 17 && late >= 4) assert(why == TEMPORAL_LINK_UNKNOWN);
+            assert((q != NULL) == (!late || f >= 21));
+            lend(f);
+        }
+    }
+    /* another size, another draw at that place in the order, a ninth draw: no link for the draw */
+    lreset();
+    for (unsigned i = 0; i < 6; i++) {
+        lbegin(10 + i);
+        lmove(10 + i, i & 1 ? A + 0x400 : A, S1);
+        lend(10 + i);
+    }
+    lbegin(16);
+    assert(!ldraw(16, A, 0x100, S1, 1.6f, 1, 0, &why) && why == TEMPORAL_LINK_NONE);
+    lbegin(16);
+    assert(!ldraw(16, A, 0x200, S2, 1.6f, 1, 0, &why) && why == TEMPORAL_LINK_OTHER);
+    lbegin(16);
+    assert(ldraw(16, A, 0x200, S1, 1.6f, 1, 0, &why) && why == TEMPORAL_LINK_USED);
+    assert(!ldraw(16, A, 0x200, S1, 1.6f, 1, 0, &why) && why == TEMPORAL_LINK_OTHER); /* the slot had one draw */
+    /* a missed turn: the same slot twice in a row has no link, and the turns start again */
+    lreset();
+    for (unsigned i = 0; i < 14; i++) {
+        const unsigned f = 10 + i, turn = i < 7 ? i : i - 1; /* frame 17 repeats frame 16's slot */
+        lbegin(f);
+        const TemporalBlock* q = lmove(f, turn & 1 ? A + 0x400 : A, S1);
+        assert((q != NULL) == ((i >= 4 && i < 7) || i >= 11));
+        lend(f);
+    }
+    /* At rest alone: two slots that each keep their own matrix are two things, not one that moves. One thing at
+       rest in both slots is linked, its matrix a frame ago being the same. */
+    for (int one = 0; one < 2; one++) {
+        lreset();
+        for (unsigned i = 0; i < 10; i++) {
+            lbegin(10 + i);
+            const float x = one || !(i & 1) ? 1.0f : 2.0f;
+            const TemporalBlock* q = ldraw(10 + i, i & 1 ? A + 0x400 : A, 0x200, S1, x, 1, 0, NULL);
+            assert((q != NULL) == (one && i >= 4));
+            lend(10 + i);
+        }
+    }
+    /* The other slot replaced while the link is learned: the turns with the old slot do not count for the new
+       one. Frame 13 brings another address for the second slot, and the first draw with a link is in frame 16,
+       not 14. Its skinned copies are tagged with the link's key: the copy of the frame before a link's first use
+       has no tag, so the first use is refused and the next one is owned. */
+    lreset();
+    {
+        TemporalStreamCopy copy[2];
+        unsigned generation = 0;
+        const ull B = A + 0x400, C = A + 0x2000;
+        memset(copy, 0, sizeof copy);
+        assert(temporal_link_key(A, B) != temporal_link_key(A, C));
+        assert(temporal_link_key(A, C) != temporal_link_key(B, C));
+        assert(temporal_link_key(A, B) == temporal_link_key(B, A));
+        for (unsigned i = 0; i < 9; i++) {
+            const unsigned f = 10 + i;
+            const ull at = !(i & 1) ? A : i < 3 ? B : C;
+            lbegin(f);
+            const TemporalBlock* q = lmove(f, at, S1);
+            assert((q != NULL) == (i >= 6));
+            /* the character's positions are captured and copied each frame, and the draw reads them */
+            temporal_stream_captured(&copy[f & 1], &generation, f);
+            temporal_stream_copied(&copy[f & 1]);
+            if (q) {
+                const ull key = temporal_link_key(at, q->address);
+                temporal_stream_used(&copy[f & 1], f, key, S1);
+                assert(temporal_stream_before(&copy[f & 1], &copy[!(f & 1)], f, key, S1) == (i >= 7));
+                assert(key == temporal_link_key(A, C));
+            }
+            lend(f);
+            if (i == 3) assert(lrec(f)->blocks[0].link == A && lrec(f)->blocks[0].turns == 1);
+        }
+    }
+    /* The rules held against the long way of judging, over a scene made at random: objects that share meshes, slots
+       near and far, missed frames, both slots at once, served and unusable blocks, frames not seen whole, frames
+       left out, draws in any order. Every block's link and turns must be what the rules give, and a draw's link
+       stands at the G-buffer's end exactly when the rules still give it with four turns. */
+    {
+        enum { OBJECTS = 14, FRAMES = 600 };
+        struct {
+            ull slot[2], draws[3];
+            unsigned n, size, phase;
+            float x, speed;
+            int served, affine;
+        } o[OBJECTS];
+        static ull link[TEMPORAL_BLOCKS];
+        static unsigned turns[TEMPORAL_BLOCKS];
+        unsigned seed = 12345, f = 30, used = 0, held = 0, linked = 0;
+#define RANDOM() ((seed = seed * 1103515245u + 12345u) >> 16 & 0x7FFF)
+        lreset();
+        for (int k = 0; k < OBJECTS; k++) {
+            const unsigned mesh = RANDOM() % 5;
+            o[k].slot[0] = 0x50c000000ull + 0x10000ull * (unsigned)k;
+            o[k].slot[1] = o[k].slot[0] + (RANDOM() % 2 ? 0x200 : 0x200 * (2 + RANDOM() % 9));
+            o[k].n = 1 + mesh % 3;
+            for (unsigned d = 0; d < 3; d++) o[k].draws[d] = 0x7000 + 16 * mesh + d;
+            o[k].size = mesh == 4 ? 0x100 : 0x200;
+            o[k].phase = RANDOM() % 2;
+            o[k].x = (float)(RANDOM() % 100);
+            o[k].speed = RANDOM() % 3 ? 0.05f : 0.0f;
+            o[k].served = RANDOM() % 7 == 0;
+            o[k].affine = RANDOM() % 9 != 0;
+        }
+        for (unsigned step = 0; step < FRAMES; step++) {
+            struct {
+                ull address;
+                const TemporalBlock* q;
+            } uses[OBJECTS * 3];
+            unsigned n_uses = 0;
+            f += RANDOM() % 50 ? 1 : 2; /* now and then a frame without any draw */
+            lbegin(f);
+            const unsigned first = RANDOM() % OBJECTS;
+            for (int n = 0; n < OBJECTS; n++) {
+                const int k = (int)((first + (unsigned)n * 5) % OBJECTS);
+                const unsigned chance = RANDOM() % 100;
+                if (chance < 8) continue; /* not drawn this frame */
+                if (chance < 12) o[k].phase ^= 1; /* a missed turn */
+                o[k].x += o[k].speed;
+                for (unsigned side = 0; side < (chance >= 96 ? 2u : 1u); side++) /* now and then both slots */
+                    for (unsigned d = 0; d < o[k].n; d++) {
+                        const ull at = o[k].slot[(f + o[k].phase + side) & 1];
+                        const TemporalBlock* q =
+                            ldraw(f, at, o[k].size, o[k].draws[d], o[k].x, o[k].affine, o[k].served, NULL);
+                        if (!q) continue;
+                        uses[n_uses].address = at;
+                        uses[n_uses++].q = q;
+                    }
+            }
+            if (RANDOM() % 40 == 0) lrec(f)->complete = 0;
+            lend(f);
+            naive_judge(lrec(f), lrec(f - 1), lrec(f - 2), link, turns);
+            for (unsigned b = 0; b < lrec(f)->n; b++) {
+                assert(lrec(f)->blocks[b].link == link[b] && lrec(f)->blocks[b].turns == turns[b]);
+                linked += link[b] != 0;
+            }
+            for (unsigned u = 0; u < n_uses; u++) {
+                unsigned b = 0;
+                while (lrec(f)->blocks[b].address != uses[u].address) b++;
+                const int stands = link[b] == uses[u].q->address && turns[b] >= TEMPORAL_PAIR_FRAMES;
+                assert(temporal_link_holds(lrec(f), uses[u].address, uses[u].q->address) == stands);
+                used++;
+                held += stands;
+            }
+        }
+#undef RANDOM
+        /* the scene did exercise the rules: links were made, used, and some uses did not stand */
+        assert(linked > 100 && used > 50 && held > 20 && held < used);
+    }
+    /* THE KNOWN LIMIT, not a pass: two moving things of one mesh that are seen in turns, each at its own single
+       address. To every rule they are one block taking turns between two slots, so the link is made and the draw
+       of one gets the matrix of the other. Equal draws and strict turns are evidence of one object, not proof. */
+    lreset();
+    for (unsigned i = 0; i < 8; i++) {
+        const unsigned f = 10 + i;
+        lbegin(f);
+        const TemporalBlock* q =
+            ldraw(f, i & 1 ? A + 0x5000 : A, 0x200, S1, (i & 1 ? 1.0f : 0.0f) + 0.1f * (float)f, 1, 0, NULL);
+        assert((q != NULL) == (i >= 4));
+        if (q) assert(q->world[12] == (i & 1 ? 0.0f : 1.0f) + 0.1f * (float)(f - 1)); /* the other thing's matrix */
+        lend(f);
+    }
+}
+
 int main(void) {
     test_jitter();
     test_jitter_matrices();
@@ -996,6 +1344,7 @@ int main(void) {
     test_stream_table();
     test_origin_shift();
     test_classes();
+    test_links();
     puts("temporal_math: ok");
     return 0;
 }

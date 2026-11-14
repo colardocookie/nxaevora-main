@@ -242,3 +242,48 @@ known every frame, and not a record of what was rejected.
 What it costs is not measured: an object that truly moves faster than the bound loses its history for those
 frames and shows the jittered frame there.
 
+## Links (`SNX_ARCEUS_TEMPORAL_LINKS=1`)
+
+Only with object vectors, off unless set to `1`. The learned pairs look for a block's other slot one bound size
+away. In play some blocks take turns between two slots that are further apart (0x300, 0x400, 0x600, 0x1b00 and
+about 1 MB were seen). The pairs give those no matrix of a frame ago, so they keep the camera's vectors. A link
+looks for the other slot by the draws. The pairs come first and are not changed: a link is tried only for a draw
+the pairs know nothing of.
+
+Every object block that a plain G-buffer draw binds in a frame goes into a record of that frame: its address, bound
+size, matrix, and a digest of its draws, which is their number, the sum of their signatures and the first eight in
+order. A block P that is bound in a frame and was not bound the frame before is linked to a block Q that was bound
+the frame before and is not bound now when all of this holds: Q is the only such block with P's size and digest, P
+is the only such block with Q's, both have an affine matrix and one size, neither has a matrix from the pairs, and
+P is not at rest alone. Every block of the record counts as a candidate, also one the pairs serve and one whose
+matrix is not affine. The counts are made over the whole record before any link is made. After four frames in a
+row in which the same two slots took turns this way, a draw of the fifth frame takes the other slot's matrix from
+the record of the frame before, which nothing changes any more. Its draw must be the one the other slot had at the
+same place in its order, among the first eight.
+
+A draw cannot wait for the end of its own frame. So the frames before are judged in full when the draw asks, and
+the draw's own frame is judged at the end of the G-buffer, before the vectors are read. If the draw's link does
+not stand then (a second candidate on either side, the other slot bound too, another digest or size, the record
+not complete), the frame's object vectors are given up and the camera's stand, as for a pair. Draws into the scene
+after that are seen at the frame's end and end the link from the next frame.
+
+A record that is not complete proves nothing about a block being the only one. That is so when it runs full (4096
+blocks), when the table of blocks is full or leaves a block unjudged, and when a draw with an object block comes
+before the frame's camera block is known. Such a frame ends every link, makes none, and the turns start again.
+A full table can keep it that way for up to 600 frames. The pairs are not touched by this.
+
+Skinned copies of a linked block are tagged with a key made of both addresses. The copy of the frame before a
+link's first use carries no tag, so that first use is refused and the next is owned.
+
+Limits. This is a guess of the same kind as the pairs and does not close the limit named above. Equal digests are
+not equal draws: two different sets of draws with the same number, sum and first eight pass. Equal draws and strict
+turns are not one object: two moving things of one mesh that are seen in turns, each at one address, fulfil every
+rule, and each gets the other's matrix. The host test has that case as the known limit. Two things of one mesh that
+take turns in step are ambiguous and get no link. A block bound only by other passes (a shadow pass) is not seen.
+A mesh whose vertex buffer itself takes turns never has the same digest twice in a row and gets no link.
+
+The first lines of a run say whether it is on. `arceus-temporal-links`, every 600 frames: the draws the pairs gave
+no matrix that a link gave one, and those it did not by reason (no link, still being learned, another draw, at
+rest alone, records not complete), the links that reached their fourth frame, the frames whose record was not
+complete by cause, and the frames whose object vectors were given up for a link.
+
