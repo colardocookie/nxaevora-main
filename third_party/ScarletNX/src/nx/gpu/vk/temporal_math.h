@@ -1128,25 +1128,42 @@ static inline int temporal_upscaler_frame(const TemporalRectGate* g, unsigned fr
     if (stamp->fx != g->now.fx || stamp->fy != g->now.fy) return 0;
     return temporal_upscaler_numbers(stamp, viewport, jitter, cut || !temporal_rect_history(g, frame, stamp), out);
 }
-/* The camera's numbers and the frame time, checked before every dispatch to an upscaler, on the four floats that
-   are handed on (near, far, field of view, seconds), since a double that passes may round to a float that does
-   not. 1 when near is positive, the field of view positive and below pi, the frame time positive and finite in
-   milliseconds too, and far beyond near, or infinite exactly when the context was made for that. */
-static inline int temporal_upscaler_camera(double near_plane, double far_plane, double fov_y, double seconds,
-                                           int far_infinite, float out[4]) {
+/* The camera's numbers, checked on the floats that are handed on (near, far, field of view), since a double that
+   passes may round to a float that does not. 1 when near is positive, the field of view positive and below pi,
+   and far beyond near, or infinite exactly when the context was made for that. They are known when the
+   projection is decoded, at the frame's first draw, and are checked there. */
+static inline int temporal_upscaler_planes(double near_plane, double far_plane, double fov_y, int far_infinite,
+                                           float out[3]) {
     const double most = 3.4028234663852886e38, pi = 3.14159265358979323846;
-    if (!isfinite(near_plane) || !isfinite(fov_y) || !isfinite(seconds) || isnan(far_plane)) return 0;
-    if (fabs(near_plane) > most || fabs(fov_y) > most || fabs(seconds) > most) return 0;
+    if (!isfinite(near_plane) || !isfinite(fov_y) || isnan(far_plane)) return 0;
+    if (fabs(near_plane) > most || fabs(fov_y) > most) return 0;
     if (isfinite(far_plane) && fabs(far_plane) > most) return 0;
-    const float near_f = (float)near_plane, far_f = (float)far_plane, fov_f = (float)fov_y, seconds_f = (float)seconds;
-    const float ms = seconds_f * 1000.0f;
+    const float near_f = (float)near_plane, far_f = (float)far_plane, fov_f = (float)fov_y;
     if (!(near_f > 0.0f) || !(fov_f > 0.0f) || !((double)fov_f < pi)) return 0;
-    if (!(seconds_f > 0.0f) || !isfinite(ms) || !(ms > 0.0f)) return 0;
     if (far_infinite ? !(isinf(far_f) && far_f > 0.0f) : !(isfinite(far_f) && far_f > near_f)) return 0;
     out[0] = near_f;
     out[1] = far_f;
     out[2] = fov_f;
-    out[3] = seconds_f;
+    return 1;
+}
+/* the frame time's part of that check, where a real frame time exists: at the dispatch */
+static inline int temporal_upscaler_time(double seconds, float* out) {
+    if (!isfinite(seconds) || fabs(seconds) > 3.4028234663852886e38) return 0;
+    const float seconds_f = (float)seconds, ms = seconds_f * 1000.0f;
+    if (!(seconds_f > 0.0f) || !isfinite(ms) || !(ms > 0.0f)) return 0;
+    *out = seconds_f;
+    return 1;
+}
+/* both parts, for a caller that has all four numbers at once: out is near, far, field of view, seconds */
+static inline int temporal_upscaler_camera(double near_plane, double far_plane, double fov_y, double seconds,
+                                           int far_infinite, float out[4]) {
+    float planes[3], time;
+    if (!temporal_upscaler_planes(near_plane, far_plane, fov_y, far_infinite, planes)) return 0;
+    if (!temporal_upscaler_time(seconds, &time)) return 0;
+    out[0] = planes[0];
+    out[1] = planes[1];
+    out[2] = planes[2];
+    out[3] = time;
     return 1;
 }
 /* The game's projection, as its camera block holds it at +0x80 in memory order: x scale in word 0, y scale in
@@ -1171,11 +1188,11 @@ typedef struct {
 } TemporalProjection;
 /* The first rule a matrix breaks, in the order above, or OK with the camera's numbers. No tolerance: the game's
    zeros are exact and its word 11 is exactly -1. The arithmetic goes through c = |word 11| all the same, so a
-   later widening cannot leave a wrong formula behind. The numbers must also pass temporal_upscaler_camera on
-   the narrowed floats, with a frame time that is not the projection's and is taken as a sixtieth. */
+   later widening cannot leave a wrong formula behind. The numbers must also pass temporal_upscaler_planes on
+   the narrowed floats. The frame time is no part of a projection and is checked where one exists. */
 static inline int temporal_projection_camera(const float m[16], TemporalProjection* out) {
     static const int zero[11] = {1, 2, 3, 4, 6, 7, 8, 9, 12, 13, 15};
-    float handed[4];
+    float handed[3];
     *out = (TemporalProjection){0.0, 0.0, 0.0, 0, -1};
     for (int k = 0; k < 2; k++)
         if (!isfinite(m[k ? 5 : 0]) || !(m[k ? 5 : 0] > 0.0f)) {
@@ -1201,7 +1218,7 @@ static inline int temporal_projection_camera(const float m[16], TemporalProjecti
     out->fov_y = 2.0 * atan(c / (double)m[5]);
     if (!(out->near_plane > 0.0) || !(out->far_plane > out->near_plane)) return TEMPORAL_PROJECTION_PLANES;
     if (!(out->fov_y > 0.0) || !(out->fov_y < 3.14159265358979323846)) return TEMPORAL_PROJECTION_FOV;
-    if (!temporal_upscaler_camera(out->near_plane, out->far_plane, out->fov_y, 1.0 / 60.0, out->far_infinite, handed))
+    if (!temporal_upscaler_planes(out->near_plane, out->far_plane, out->fov_y, out->far_infinite, handed))
         return TEMPORAL_PROJECTION_FLOATS;
     return TEMPORAL_PROJECTION_OK;
 }

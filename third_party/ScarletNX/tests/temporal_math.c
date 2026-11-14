@@ -2219,8 +2219,9 @@ static void test_projection_camera(void) {
     /* an orthographic matrix has a w that is not from z: refused at word 11 as well */
     const float ortho[16] = {0.01f, 0, 0, 0, 0, 0.01f, 0, 0, 0, 0, 0.001f, 0, 0, 0, 0.5f, 1};
     assert(temporal_projection_camera(ortho, &p) == TEMPORAL_PROJECTION_W);
-    /* Planes: with word 10 so large that near comes out as 0 there is nothing to hand on. A field of view of
-       pi, one the floats handed on cannot hold apart from pi, and the smallest near plane a float holds. */
+    /* Planes: with word 10 so large that 1 + A equals A in a double, near and far come out as the same number,
+       so far is not beyond near. A field of view of pi, one the floats handed on cannot hold apart from pi,
+       and the smallest near plane a float holds. */
     memcpy(m, field, sizeof m);
     m[14] = nextafterf(0.0f, 1.0f);
     m[10] = 3.0e38f;
@@ -2234,6 +2235,38 @@ static void test_projection_camera(void) {
     m[14] = nextafterf(0.0f, 1.0f);
     m[10] = 0.0f; /* near 1.4e-45 is a float, the smallest: taken, since it is above 0 */
     assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_OK && p.far_infinite);
+    /* The check on the narrowed floats in its two parts. The camera's numbers alone, as the decoder asks at the
+       frame's first draw, where no frame time exists. The frame time alone, at the dispatch. Both together
+       give what the one check gave. */
+    {
+        float planes[3], time = -1.0f, all[4];
+        assert(temporal_upscaler_planes(0.1, 5000.0, 0.8726646259971648, 0, planes));
+        assert(planes[0] == 0.1f && planes[1] == 5000.0f && planes[2] == 0.8726646259971648f);
+        assert(temporal_upscaler_planes(0.1, (double)INFINITY, 0.8726646259971648, 1, planes) && isinf(planes[1]));
+        assert(!temporal_upscaler_planes(0.1, 5000.0, 0.8726646259971648, 1, planes));
+        assert(!temporal_upscaler_planes(0.1, (double)INFINITY, 0.8726646259971648, 0, planes));
+        /* near not positive, far not beyond near (as floats too), a field of view of 0, over pi, and pi or more
+           as a float, no numbers, a near plane no float holds, a far plane over the largest float */
+        static const double refused[13][3] = {{0.0, 5000.0, 0.8},  {-0.1, 5000.0, 0.8},        {0.1, 0.1, 0.8},
+                                              {0.1, 0.05, 0.8},    {0.1, 0.1000000001, 0.8},   {0.1, 5000.0, 0.0},
+                                              {0.1, 5000.0, 3.2},  {0.1, 5000.0, 3.14159264},  {NAN, 5000.0, 0.8},
+                                              {0.1, NAN, 0.8},     {0.1, 5000.0, NAN},         {1e-50, 5000.0, 0.8},
+                                              {0.1, 1e39, 0.8}};
+        for (int k = 0; k < 13; k++)
+            assert(!temporal_upscaler_planes(refused[k][0], refused[k][1], refused[k][2], 0, planes));
+        assert(temporal_upscaler_time(1.0 / 60.0, &time) && time == (float)(1.0 / 60.0));
+        assert(temporal_upscaler_time(0.25, &time) && time == 0.25f);
+        time = -1.0f;
+        assert(!temporal_upscaler_time(0.0, &time) && !temporal_upscaler_time(-0.016, &time) && time == -1.0f);
+        assert(!temporal_upscaler_time(NAN, &time) && !temporal_upscaler_time((double)INFINITY, &time));
+        assert(!temporal_upscaler_time(1e-50, &time) && !temporal_upscaler_time(1e36, &time)); /* 0, and no ms */
+        assert(temporal_upscaler_camera(0.1, 5000.0, 0.8726646259971648, 1.0 / 60.0, 0, all));
+        assert(all[0] == 0.1f && all[1] == 5000.0f && all[2] == 0.8726646259971648f && all[3] == (float)(1.0 / 60.0));
+        assert(!temporal_upscaler_camera(0.1, 5000.0, 0.8726646259971648, 0.0, 0, all));
+        assert(!temporal_upscaler_camera(0.0, 5000.0, 0.8726646259971648, 1.0 / 60.0, 0, all));
+        /* the decoder asks for no frame time: its answer does not depend on one */
+        assert(temporal_projection_camera(field, &p) == TEMPORAL_PROJECTION_OK);
+    }
     /* what the decoder gives for the game's cameras is what the check before a dispatch takes */
     {
         float camera[4];
