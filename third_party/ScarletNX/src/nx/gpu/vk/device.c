@@ -89,6 +89,7 @@ static int create_instance(void) {
                               .extensions = be,
                               .extension_count = be ? nbe : 0,
                               .validation = g_settings.vulkan_validation_layer != 0,
+                              .synchronization = g_settings.vulkan_validation_layer != 0,
                               .portability = true,
                               .debug = debug_cb};
     SnxVkInstance made;
@@ -96,6 +97,39 @@ static int create_instance(void) {
     if (info.validation && !made.validation)
         WARN("vulkan: validation was asked for (vk_validation), but "
              "VK_LAYER_KHRONOS_validation is not installed\n");
+    /* With the validation option: what a run with it really has, each in a line of its own. That no warning
+       above is printed says nothing about a callback that works. */
+    if (info.validation && made.validation) {
+        LOG("vulkan validation: the layer VK_LAYER_KHRONOS_validation is enabled\n");
+        if (made.synchronization)
+            LOG("vulkan validation: its synchronisation checks were asked for and the instance is made with them\n");
+        else {
+            /* each way of not having them has its own words */
+            static const char* const why[] = {"",
+                                              "the layer's list of extensions, read whole, does not hold it",
+                                              "the layer's list stayed incomplete after three tries, so whether "
+                                              "it holds it is not known",
+                                              "the call for the count of the layer's extensions failed",
+                                              "the call for the list of the layer's extensions failed",
+                                              "there was no memory for the list of the layer's extensions, so "
+                                              "the call for it was not made"};
+            /* a result is printed only for a call that was made: with no memory for the list none was */
+            if (made.synchronization_why == SNX_VK_LAYER_NO_MEMORY)
+                WARN("vulkan validation: its synchronisation checks were NOT asked for (%s): %s\n",
+                     VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, why[made.synchronization_why]);
+            else
+                WARN("vulkan validation: its synchronisation checks were NOT asked for (%s): %s (the last call's "
+                     "result %s, %d)\n", VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, why[made.synchronization_why],
+                     snx_vk_result_str(made.synchronization_result), (int)made.synchronization_result);
+        }
+        if (made.messenger_asked && made.messenger_result == VK_SUCCESS)
+            LOG("vulkan validation: the message callback is ready\n");
+        else if (made.messenger_asked)
+            WARN("vulkan validation: the message callback could NOT be made (%s, %d): no message of the layer "
+                 "will be seen in this run\n", snx_vk_result_str(made.messenger_result), (int)made.messenger_result);
+        else
+            WARN("vulkan validation: no message callback was asked for: no message of the layer will be seen\n");
+    }
     g_vk.instance = made.instance;
     g_vk.debug = made.messenger;
     return 1;

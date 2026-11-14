@@ -575,6 +575,17 @@ several bytes at a piece's edge, and the 64 combinations of case 7's last lines 
 callback after) under the address and undefined-behaviour sanitizers, and a callback thread against the counts
 under the thread sanitizer.
 
+## A run of the game under the validation layer
+
+The runtime has its own option for the validation layer (the setting `vulkan_validation_layer`). With it on, the
+game's instance now also asks for the layer's synchronisation checks, through the extension the layer lists for
+its features, and the log says in lines of their own what the run really has: that the layer is enabled, whether
+the synchronisation checks were asked for and the instance is made with them (and if not, which of these it
+was: the layer's list does not hold the extension, the list stayed incomplete, a call failed, or there was no
+memory for the list), and whether the message callback is ready or could not be made, with the result. That no "not installed" warning is printed says nothing about a
+callback that works: a run counts as made under the layer only with those lines. What the layer then does with
+the checks cannot be read back. Without the option nothing changes and no line is printed.
+
 ## What the FSR adapter needs of a device
 
 A conservative policy for the one provider that was seen, and not a complete list. In a run of the self-test

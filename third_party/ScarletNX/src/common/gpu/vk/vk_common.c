@@ -47,10 +47,43 @@ bool snx_vk_has_instance_extension(const char* name) {
     return found;
 }
 
+int snx_vk_layer_extension(const char* layer, const char* name, VkResult* result) {
+    VkExtensionProperties* list = NULL;
+    uint32_t n = 0;
+    VkResult r = VK_INCOMPLETE;
+    int found = 0, why = SNX_VK_LAYER_PART;
+    /* the count can change between the two calls: an incomplete list is asked again, three times at most */
+    for (int tries = 0; tries < 3 && r == VK_INCOMPLETE; tries++) {
+        free(list);
+        list = NULL;
+        n = 0;
+        r = vkEnumerateInstanceExtensionProperties(layer, &n, NULL);
+        if (r < 0) {
+            why = SNX_VK_LAYER_COUNT_FAILED;
+            break;
+        }
+        list = calloc(n ? n : 1, sizeof *list);
+        if (!list) { /* the list's call is not made: r stays the count's result, and why says what happened */
+            why = SNX_VK_LAYER_NO_MEMORY;
+            break;
+        }
+        r = vkEnumerateInstanceExtensionProperties(layer, &n, list);
+        if (r < 0) {
+            why = SNX_VK_LAYER_LIST_FAILED;
+            break;
+        }
+        for (uint32_t i = 0; i < n; i++) found |= !strcmp(list[i].extensionName, name);
+        if (found || r == VK_SUCCESS) break;
+    }
+    free(list);
+    *result = r;
+    if (found) return SNX_VK_LAYER_HAS;
+    return r == VK_SUCCESS && why != SNX_VK_LAYER_NO_MEMORY ? SNX_VK_LAYER_LACKS : why;
+}
 VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* out) {
     *out = (SnxVkInstance){0};
-    /* the window's, then debug utils and portability enumeration */
-    const char** ext = calloc((size_t)info->extension_count + 2, sizeof *ext);
+    /* the window's, then debug utils, the validation features and portability enumeration */
+    const char** ext = calloc((size_t)info->extension_count + 3, sizeof *ext);
     if (!ext) return VK_ERROR_OUT_OF_HOST_MEMORY;
     uint32_t next = 0;
     bool asked = false; /* the window system may ask for portability enumeration itself (SDL does on Apple systems) */
@@ -65,6 +98,19 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
         ext[next++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
         out->validation = true;
     }
+    /* The synchronisation checks are a feature of the layer, asked for through an extension the layer itself
+       lists. A list that cannot be read, or that does not hold it, asks for nothing. */
+    const VkValidationFeatureEnableEXT enables[1] = {VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
+    const VkValidationFeaturesEXT checks = {.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
+                                            .enabledValidationFeatureCount = 1,
+                                            .pEnabledValidationFeatures = enables};
+    if (out->validation && info->synchronization) {
+        out->synchronization_why = snx_vk_layer_extension("VK_LAYER_KHRONOS_validation",
+                                                          VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME,
+                                                          &out->synchronization_result);
+        out->synchronization = out->synchronization_why == SNX_VK_LAYER_HAS;
+        if (out->synchronization) ext[next++] = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME;
+    }
     out->portability = asked;
     if (info->portability && !asked && snx_vk_has_instance_extension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
         ext[next++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
@@ -75,6 +121,7 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
                              .pEngineName = "ScarletNX",
                              .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                               .pNext = out->synchronization ? &checks : NULL,
                                .flags = out->portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0,
                                .pApplicationInfo = &app,
                                .enabledLayerCount = nlayers,
@@ -97,6 +144,8 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
                                                                 VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
                                                  .pfnUserCallback = info->debug};
         r = vkCreateDebugUtilsMessengerEXT(out->instance, &di, NULL, &out->messenger);
+        out->messenger_asked = true;
+        out->messenger_result = r;
         if (r != VK_SUCCESS) out->messenger = VK_NULL_HANDLE; /* the instance stands without it */
     }
     return VK_SUCCESS;
