@@ -846,7 +846,8 @@ typedef struct {
     double jitter[2], vector_scale[2];
     int reset; /* the upscaler must not use what it kept */
 } TemporalUpscalerFrame;
-/* 1 with the numbers when the frame may be given to the upscaler: it is steady and the viewport is its own.
+/* 1 with the numbers when the frame may be given to the upscaler: it is steady, the viewport is its own, the sizes
+   are positive and the jitter is finite, so every number handed on is finite.
    Reset when no history of the frame before may be used (temporal_rect_history) or the camera cut. 0: the frame is
    not evaluated and is left as drawn. Whoever evaluates with success calls temporal_rect_wrote. */
 static inline int temporal_upscaler_frame(const TemporalRectGate* g, unsigned frame, const TemporalRectStamp* stamp,
@@ -857,6 +858,7 @@ static inline int temporal_upscaler_frame(const TemporalRectGate* g, unsigned fr
     if (!temporal_rect_from_viewport(viewport, stamp->target_w, stamp->target_h, &r)) return 0;
     if (!temporal_rect_same(&r, &g->candidate.rect) || !temporal_rect_same(&r, &stamp->rect)) return 0;
     if (stamp->target_w != g->candidate.target_w || stamp->target_h != g->candidate.target_h) return 0;
+    if (stamp->out_w <= 0 || stamp->out_h <= 0 || !isfinite(jitter[0]) || !isfinite(jitter[1])) return 0;
     out->render = r;
     out->target_w = stamp->target_w;
     out->target_h = stamp->target_h;

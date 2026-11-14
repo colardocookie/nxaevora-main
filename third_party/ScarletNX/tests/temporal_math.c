@@ -1747,6 +1747,23 @@ static void test_upscaler(void) {
     TemporalRectStamp other = scaled_stamp;
     other.target_w = 3840;
     assert(!temporal_upscaler_frame(&g, 16, &other, &part, jitter, 0, &out));
+    /* An output without a size, or a jitter that is not finite, gives nothing: no number that is not finite is
+       ever handed on. */
+    other = scaled_stamp;
+    other.out_w = 0;
+    assert(!temporal_upscaler_frame(&g, 16, &other, &part, jitter, 0, &out));
+    other = scaled_stamp;
+    other.out_h = -1080;
+    assert(!temporal_upscaler_frame(&g, 16, &other, &part, jitter, 0, &out));
+    const double broken[3] = {NAN, INFINITY, -INFINITY};
+    for (int i = 0; i < 3; i++)
+        for (int axis = 0; axis < 2; axis++) {
+            double j[2] = {jitter[0], jitter[1]};
+            j[axis] = broken[i];
+            assert(!temporal_upscaler_frame(&g, 16, &scaled_stamp, &part, j, 0, &out));
+        }
+    assert(temporal_upscaler_frame(&g, 16, &scaled_stamp, &part, jitter, 0, &out));
+    assert(isfinite(out.jitter[0]) && isfinite(out.jitter[1]) && isfinite(out.vector_scale[0]));
     /* a history made for another output size is not used: reset */
     other = scaled_stamp;
     other.out_w = 2560;
