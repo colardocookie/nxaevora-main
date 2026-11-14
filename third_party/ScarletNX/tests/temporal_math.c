@@ -4,7 +4,9 @@
    resolve's filter, clip and weights. */
 #include "nx/gpu/vk/temporal_math.h"
 #include "nx/gpu/vk/upscaler_selftest.h"
+#include "nx/gpu/vk/upscaler_needs.h"
 #include <assert.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -2279,6 +2281,159 @@ static void test_projection_camera(void) {
     }
 }
 
+/* What the host makes of an adapter's needs of the game's device (upscaler_needs.h). */
+static void test_upscaler_needs(void) {
+    SnxNeedsBits asked = {9, 9, 9};
+    /* the adapter's chain: nothing, the one accepted structure, and what is refused */
+    assert(snx_needs_chain(NULL, &asked) == SNX_NEEDS_OK && !asked.have && !asked.quads && !asked.linear);
+    SnxNeedsDerivatives linear = {SNX_NEEDS_DERIVATIVES, NULL, 0, 1};
+    assert(snx_needs_chain(&linear, &asked) == SNX_NEEDS_OK && asked.have && !asked.quads && asked.linear);
+    SnxNeedsDerivatives both = {SNX_NEEDS_DERIVATIVES, NULL, 7, 1}; /* any value that is not 0 is a bit asked */
+    assert(snx_needs_chain(&both, &asked) == SNX_NEEDS_OK && asked.quads == 1 && asked.linear == 1);
+    /* the chain is read only: the adapter's structure is as it was */
+    const SnxNeedsDerivatives before = linear;
+    snx_needs_chain(&linear, &asked);
+    assert(!memcmp(&before, &linear, sizeof linear));
+    /* a core feature structure (the 1.2 features), the promoted 16 bit float features, and one that is no
+       feature structure at all: each a type the host does not accept, first in the chain or behind */
+    static const int32_t refused[4] = {51, 1000082000, 1000059000, 0};
+    for (int k = 0; k < 4; k++) {
+        SnxNeedsNode other = {refused[k], NULL};
+        assert(snx_needs_chain(&other, &asked) == SNX_NEEDS_TYPE);
+        SnxNeedsDerivatives first = {SNX_NEEDS_DERIVATIVES, &other, 0, 1};
+        assert(snx_needs_chain(&first, &asked) == SNX_NEEDS_TYPE);
+        SnxNeedsNode front = {refused[k], &linear};
+        assert(snx_needs_chain(&front, &asked) == SNX_NEEDS_TYPE);
+    }
+    /* the accepted type twice, and a structure that points at itself */
+    SnxNeedsDerivatives second = {SNX_NEEDS_DERIVATIVES, NULL, 1, 0}, first = {SNX_NEEDS_DERIVATIVES, &second, 0, 1};
+    assert(snx_needs_chain(&first, &asked) == SNX_NEEDS_REPEATED);
+    SnxNeedsDerivatives loop = {SNX_NEEDS_DERIVATIVES, NULL, 0, 1};
+    loop.next = &loop;
+    assert(snx_needs_chain(&loop, &asked) == SNX_NEEDS_REPEATED);
+    /* A null ends a chain where it stands: what is behind it is not part of the chain. And a chain of nine
+       never gets past its second structure: the bound of eight is behind the other two refusals. */
+    SnxNeedsDerivatives nine[9];
+    for (int k = 0; k < 9; k++)
+        nine[k] = (SnxNeedsDerivatives){SNX_NEEDS_DERIVATIVES, k < 8 ? &nine[k + 1] : NULL, 0, 1};
+    assert(snx_needs_chain(nine, &asked) == SNX_NEEDS_REPEATED);
+    nine[0].next = NULL;
+    assert(snx_needs_chain(nine, &asked) == SNX_NEEDS_OK && asked.linear);
+    /* each bit asked for against what the physical device has */
+    {
+        const SnxNeedsBits none = {0, 0, 0}, want_linear = {1, 0, 1}, want_both = {1, 1, 1}, want_quads = {1, 1, 0};
+        const SnxNeedsBits has_linear = {1, 0, 1}, has_both = {1, 1, 1}, has_none = {1, 0, 0}, absent = {0, 1, 1};
+        assert(snx_needs_bits(&none, &absent) == SNX_NEEDS_OK && snx_needs_bits(&none, &has_none) == SNX_NEEDS_OK);
+        assert(snx_needs_bits(&want_linear, &has_linear) == SNX_NEEDS_OK);
+        assert(snx_needs_bits(&want_linear, &has_both) == SNX_NEEDS_OK);
+        assert(snx_needs_bits(&want_both, &has_both) == SNX_NEEDS_OK);
+        assert(snx_needs_bits(&want_both, &has_linear) == SNX_NEEDS_BIT);
+        assert(snx_needs_bits(&want_quads, &has_linear) == SNX_NEEDS_BIT);
+        assert(snx_needs_bits(&want_linear, &has_none) == SNX_NEEDS_BIT);
+        assert(snx_needs_bits(&want_linear, &absent) == SNX_NEEDS_BIT); /* the structure itself was not answered */
+    }
+    /* the names against the physical device's list, which must have been read whole */
+    {
+        const char* const device[3] = {"VK_KHR_swapchain", "VK_KHR_compute_shader_derivatives", "VK_EXT_other"};
+        const char* const one[1] = {"VK_KHR_compute_shader_derivatives"};
+        const char* const two[2] = {"VK_EXT_other", "VK_KHR_missing"};
+        const char* const near[1] = {"VK_KHR_compute_shader_derivative"}; /* a prefix is another name */
+        const char* const hole[2] = {"VK_EXT_other", NULL};
+        assert(snx_needs_names(one, 1, device, 3, 1) == SNX_NEEDS_OK);
+        assert(snx_needs_names(NULL, 0, device, 3, 1) == SNX_NEEDS_OK);
+        assert(snx_needs_names(two, 2, device, 3, 1) == SNX_NEEDS_NAME);
+        assert(snx_needs_names(near, 1, device, 3, 1) == SNX_NEEDS_NAME);
+        assert(snx_needs_names(hole, 2, device, 3, 1) == SNX_NEEDS_NAME);
+        assert(snx_needs_names(one, 1, device, 0, 1) == SNX_NEEDS_NAME);
+        /* a list read in part or not at all refuses, also when it holds the name and when nothing is asked */
+        assert(snx_needs_names(one, 1, device, 3, 0) == SNX_NEEDS_LIST);
+        assert(snx_needs_names(NULL, 0, device, 3, 0) == SNX_NEEDS_LIST);
+    }
+    /* The device's list and chain: the additions are a pair of their own, and the fallback is the game's pair
+       as it was. */
+    {
+        const int game_node = 1, host_node = 2;
+        const SnxNeedsPlan with = snx_needs_plan(7, &game_node, 1, 8, &host_node);
+        assert(with.count == 8 && with.head == &host_node && with.augmented == 1);
+        const SnxNeedsPlan refused_plan = snx_needs_plan(7, &game_node, 0, 8, &host_node);
+        assert(refused_plan.count == 7 && refused_plan.head == &game_node && refused_plan.augmented == 0);
+        /* after a device that could not be made with the additions: the game's pair again */
+        const SnxNeedsPlan again = snx_needs_plan(7, &game_node, 0, with.count, with.head);
+        assert(again.count == 7 && again.head == &game_node && !again.augmented);
+    }
+    /* the record, and the start's comparison with it */
+    {
+        const char* const one[1] = {"VK_KHR_compute_shader_derivatives"};
+        const char* const two[2] = {"VK_KHR_compute_shader_derivatives", "VK_EXT_other"};
+        const SnxNeedsBits on_linear = {1, 0, 1}, on_both = {1, 1, 1}, on_none = {0, 0, 0};
+        SnxNeedsRecord r = {0};
+        /* no record: an adapter with needs is not met, whatever it asks */
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear) == SNX_NEEDS_ADAPTER);
+        assert(snx_needs_record(&r, "fsr", one, 1, &on_linear) == SNX_NEEDS_OK && r.made && r.names == 1);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "fsr", NULL, 0, NULL) == SNX_NEEDS_OK); /* asking less is met */
+        assert(snx_needs_met(&r, "xess", one, 1, &linear) == SNX_NEEDS_ADAPTER);
+        assert(snx_needs_met(&r, NULL, one, 1, &linear) == SNX_NEEDS_ADAPTER);
+        assert(snx_needs_met(&r, "fsr", two, 2, &linear) == SNX_NEEDS_NOT_RECORDED); /* one more extension */
+        assert(snx_needs_met(&r, "fsr", one, 1, &both) == SNX_NEEDS_NOT_RECORDED);   /* a bit that is not on */
+        assert(snx_needs_met(&r, "fsr", one, 1, &first) == SNX_NEEDS_REPEATED);      /* a chain the host refuses */
+        SnxNeedsNode core = {51, NULL};
+        assert(snx_needs_met(&r, "fsr", one, 1, &core) == SNX_NEEDS_TYPE);
+        /* the record is by value: the strings and the bits it was made from may go */
+        char name[40] = "VK_KHR_compute_shader_derivatives";
+        const char* gone[1] = {name};
+        SnxNeedsBits bits = on_both;
+        assert(snx_needs_record(&r, "fsr", gone, 1, &bits) == SNX_NEEDS_OK);
+        memset(name, 'x', sizeof name - 1);
+        bits = on_none;
+        assert(snx_needs_met(&r, "fsr", one, 1, &both) == SNX_NEEDS_OK);
+        /* a record with the extension and without the structure: a bit asked for is not recorded */
+        assert(snx_needs_record(&r, "fsr", one, 1, &on_none) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear) == SNX_NEEDS_NOT_RECORDED);
+        assert(snx_needs_met(&r, "fsr", one, 1, NULL) == SNX_NEEDS_OK);
+        /* each clause of the bits' comparison alone: the quad groups on and the linear ones asked, and a record
+           whose structure is not there whatever its bits say */
+        const SnxNeedsBits on_quads = {1, 1, 0}, not_there = {0, 1, 1};
+        assert(snx_needs_record(&r, "fsr", one, 1, &on_quads) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear) == SNX_NEEDS_NOT_RECORDED);
+        assert(snx_needs_record(&r, "fsr", one, 1, &not_there) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear) == SNX_NEEDS_NOT_RECORDED);
+        /* what cannot be kept whole makes no record */
+        const char* many[9] = {"a", "b", "c", "d", "e", "f", "g", "h", "i"};
+        assert(snx_needs_record(&r, "fsr", many, 9, &on_linear) == SNX_NEEDS_ROOM && !r.made);
+        char long_name[80];
+        memset(long_name, 'n', 64);
+        long_name[64] = 0;
+        const char* too_long[1] = {long_name};
+        assert(snx_needs_record(&r, "fsr", too_long, 1, &on_linear) == SNX_NEEDS_ROOM && !r.made);
+        long_name[63] = 0;
+        assert(snx_needs_record(&r, "fsr", too_long, 1, &on_linear) == SNX_NEEDS_OK && strlen(r.name[0]) == 63);
+        assert(snx_needs_record(&r, "an adapter's name of thirty-two characters", one, 1, &on_linear) ==
+               SNX_NEEDS_ROOM);
+        assert(!r.made && snx_needs_met(&r, "fsr", one, 1, &linear) == SNX_NEEDS_ADAPTER);
+    }
+    assert(snx_needs_none(0, NULL) && !snx_needs_none(1, NULL) && !snx_needs_none(0, &linear));
+    /* a bit asked for needs one of the structure's two extensions among the names */
+    {
+        const char* const khr[2] = {"VK_EXT_other", "VK_KHR_compute_shader_derivatives"};
+        const char* const nv[1] = {"VK_NV_compute_shader_derivatives"};
+        const char* const other[1] = {"VK_EXT_other"};
+        const SnxNeedsBits want = {1, 0, 1}, nothing = {0, 0, 0};
+        assert(snx_needs_owner(khr, 2, &want) == SNX_NEEDS_OK && snx_needs_owner(nv, 1, &want) == SNX_NEEDS_OK);
+        assert(snx_needs_owner(other, 1, &want) == SNX_NEEDS_OWNER);
+        assert(snx_needs_owner(NULL, 0, &want) == SNX_NEEDS_OWNER);
+        assert(snx_needs_owner(other, 1, &nothing) == SNX_NEEDS_OK);
+        assert(snx_needs_owner(NULL, 0, &nothing) == SNX_NEEDS_OK);
+    }
+    /* every answer has words of its own */
+    for (int a = SNX_NEEDS_OK; a <= SNX_NEEDS_NOT_RECORDED; a++)
+        for (int b = a + 1; b <= SNX_NEEDS_NOT_RECORDED; b++) assert(strcmp(snx_needs_text(a), snx_needs_text(b)));
+    /* the stand-in structures lay their members out as Vulkan's do: a type, a pointer, two 32 bit booleans */
+    assert(offsetof(SnxNeedsDerivatives, next) == offsetof(SnxNeedsNode, next));
+    assert(offsetof(SnxNeedsDerivatives, quads) == 2 * sizeof(void*));
+    assert(sizeof(SnxNeedsDerivatives) == 3 * sizeof(void*));
+}
+
 /* The pure rules of the upscaler's wiring in the game. */
 static void test_upscaler_wiring(void) {
     /* The write-back: a value as it is, 0 for a negative one, for minus zero and for no number, and no more
@@ -4519,6 +4674,7 @@ int main(void) {
     test_upscaler();
     test_upscaler_reset();
     test_projection_camera();
+    test_upscaler_needs();
     test_upscaler_wiring();
     test_jitter_conformance();
     test_gpu_time();
