@@ -1314,6 +1314,37 @@ static void test_links(void) {
         /* the scene did exercise the rules: links were made, used, and some uses did not stand */
         assert(linked > 100 && used > 50 && held > 20 && held < used);
     }
+    /* Which draws the record takes. Off, none at all, whatever the draw: nothing of the record runs. On, a draw
+       into the scene is recorded only when the address, the surface and the camera all say so. Any other draw
+       into the scene leaves the frame not seen whole: the case found in review is the surface still the old one
+       while the scene depth's address has moved, with the camera known. */
+    for (int bits = 0; bits < 16; bits++) {
+        const int block = bits & 1, by_address = bits >> 1 & 1, by_surface = bits >> 2 & 1, camera = bits >> 3 & 1;
+        assert(temporal_scene_gate(0, block, by_address, by_surface, camera) == TEMPORAL_SCENE_NOT);
+        const int gate = temporal_scene_gate(1, block, by_address, by_surface, camera);
+        if (!block || (!by_address && !by_surface)) assert(gate == TEMPORAL_SCENE_NOT);
+        else assert(gate == (by_address && by_surface && camera ? TEMPORAL_SCENE_SEEN : TEMPORAL_SCENE_UNSEEN));
+    }
+    assert(temporal_scene_gate(1, 1, 0, 1, 1) == TEMPORAL_SCENE_UNSEEN);
+    /* A bind without a record does nothing and says so. The renderer opens the record before every bind, and a
+       frame whose first draw is of the kind above is opened as not complete: a used link then does not stand. */
+    {
+        const float world[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        assert(!temporal_frame_bind(NULL, A, 0x200, world, 0, S1));
+        assert(!temporal_frame_find(NULL, A));
+        lreset();
+        for (unsigned i = 0; i < 6; i++) {
+            lbegin(10 + i);
+            lmove(10 + i, i & 1 ? A + 0x400 : A, S1);
+            lend(10 + i);
+        }
+        lbegin(16);
+        lrec(16)->complete = 0; /* the unseen draw came first */
+        assert(!ldraw(16, A, 0x200, S1, 1.6f, 1, 0, &why) && why == TEMPORAL_LINK_UNKNOWN);
+        assert(temporal_frame_bind(lrec(16), A + 0x9000, 0x200, world, 0, S2)); /* the later bind has its record */
+        lend(16);
+        for (unsigned b = 0; b < lrec(16)->n; b++) assert(!lrec(16)->blocks[b].link);
+    }
     /* THE KNOWN LIMIT, not a pass: two moving things of one mesh that are seen in turns, each at its own single
        address. To every rule they are one block taking turns between two slots, so the link is made and the draw
        of one gets the matrix of the other. Equal draws and strict turns are evidence of one object, not proof. */

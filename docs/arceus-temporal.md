@@ -284,6 +284,9 @@ rule, and each gets the other's matrix. The host test has that case as the known
 take turns in step are ambiguous and get no link. A block bound only by other passes (a shadow pass) is not seen.
 A mesh whose vertex buffer itself takes turns never has the same digest twice in a row and gets no link.
 
+Off, none of the record's code runs: every entry to it returns at once, and the gate that lets a draw into the
+record (`temporal_scene_gate`) takes none.
+
 The first lines of a run say whether it is on. `arceus-temporal-links`, every 600 frames: the draws the pairs gave
 no matrix that a link gave one, and those it did not by reason (no link, still being learned, another draw, at
 rest alone, records not complete), the links that reached their fourth frame, the frames whose record was not

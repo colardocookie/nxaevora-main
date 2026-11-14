@@ -1212,7 +1212,7 @@ static void links_judge(u32 frame) {
 
 /* the first draw of a frame closes the record of the frame before it, complete now, and opens its own */
 static void links_roll(u32 frame) {
-    if (g_t.link_frame == frame) return;
+    if (!g_t.links || g_t.link_frame == frame) return;
     if (g_t.link_frame) {
         const TemporalFrame* last = link_record(g_t.link_frame);
         links_judge(g_t.link_frame);
@@ -1224,6 +1224,8 @@ static void links_roll(u32 frame) {
 
 /* something of the frame was not seen: its record proves nothing, counted once a frame by cause */
 static void links_unknown(u32 frame, int cause) {
+    if (!g_t.links) return;
+    links_roll(frame);
     TemporalFrame* now = link_record(frame);
     if (now) now->complete = 0;
     if (g_t.link_unknown_at[cause] == frame) return;
@@ -1231,9 +1233,21 @@ static void links_unknown(u32 frame, int cause) {
     g_t.link_unknown_frames[cause]++;
 }
 
+/* A block bound by a draw goes into the frame's record, which is there whichever way the draw came. Without room
+   the frame is not complete. Off, nothing. */
+static TemporalBlock* link_bind(u32 frame, u64 address, u32 size, const float world[16], int affine, u64 signature) {
+    if (!g_t.links) return NULL;
+    links_roll(frame);
+    TemporalBlock* b = temporal_frame_bind(link_record(frame), address, size, world, affine, signature);
+    if (!b) links_unknown(frame, LINK_RECORD);
+    return b;
+}
+
 /* The draw vk_temporal_object_note is at goes into the frame's record. Where the pairs know nothing of its block,
    a link may give the matrix of a frame ago: from the record of the frame before, which nothing changes. */
 static void link_try(u32 frame, u64 address, u32 size, u64 signature) {
+    if (!g_t.links) return;
+    links_roll(frame);
     TemporalFrame* now = link_record(frame);
     const int chosen = g_t.current.chosen;
     const int served =
@@ -1245,11 +1259,8 @@ static void link_try(u32 frame, u64 address, u32 size, u64 signature) {
     if (!served)
         q = temporal_link_before(now, link_record(frame - 1), link_record(frame - 2), address, size,
                                  mine ? mine->count : 0, signature, g_t.current.world, &why);
-    TemporalBlock* b = temporal_frame_bind(now, address, size, g_t.current.world, 1, signature);
-    if (!b) {
-        links_unknown(frame, LINK_RECORD);
-        return;
-    }
+    TemporalBlock* b = link_bind(frame, address, size, g_t.current.world, 1, signature);
+    if (!b) return;
     if (served) {
         b->served = 1;
         return;
@@ -1371,18 +1382,17 @@ int vk_temporal_object_note(const GpuChannel* ch, const Surf* zt, u64 vertex, u6
     g_t.current.link = 0;
     if (!g_t.objects || !zt) return 0;
     const u64 signature = temporal_draw_signature(vertex, index, count, first, program);
-    /* The links' record must see every draw with an object block into the scene depth, known by its address, also
-       the ones nothing below looks at. Before the camera's block is known, or into another surface at that
-       address, the draw is noted as not seen. A block of a size the pairs leave alone is there, and not usable. */
-    if (g_t.links && address && g_t.depth && zt->gva == g_t.depth) {
+    /* The links' record must see every draw with an object block into the scene depth, by its address or by the
+       surface the pairs go by (temporal_scene_gate). Where the two do not agree, or the camera's block is not
+       known yet, the draw is noted as not seen. A block of a size the pairs leave alone is there, not usable. */
+    const int seen = temporal_scene_gate(g_t.links, address != 0, g_t.depth && zt->gva == g_t.depth,
+                                         zt == g_t.depth_rt, g_t.camera_at == frame);
+    if (seen == TEMPORAL_SCENE_UNSEEN) {
+        g_t.link_early_draws++;
+        links_unknown(frame, LINK_EARLY);
+    } else if (seen == TEMPORAL_SCENE_SEEN && (size < 64 || size > 0x10000)) {
         static const float none[16];
-        links_roll(frame);
-        if (g_t.camera_at != frame || zt != g_t.depth_rt) {
-            g_t.link_early_draws++;
-            links_unknown(frame, LINK_EARLY);
-        } else if ((size < 64 || size > 0x10000) &&
-                   !temporal_frame_bind(link_record(frame), address, size, none, 0, signature))
-            links_unknown(frame, LINK_RECORD);
+        link_bind(frame, address, size, none, 0, signature);
     }
     if (zt != g_t.depth_rt || !address || size < 64 || size > 0x10000 || g_t.camera_at != frame) return 0;
     objects_log(frame);
@@ -1392,8 +1402,7 @@ int vk_temporal_object_note(const GpuChannel* ch, const Surf* zt, u64 vertex, u6
     if (world[3] != 0.0f || world[7] != 0.0f || world[11] != 0.0f || world[15] != 1.0f) {
         g_t.object_odd++;
         /* such a block is in the record all the same: it counts among the blocks with the same draws */
-        if (g_t.links && !temporal_frame_bind(link_record(frame), address, size, world, 0, signature))
-            links_unknown(frame, LINK_RECORD);
+        link_bind(frame, address, size, world, 0, signature);
         return 0;
     }
     /* the slot this block would have had a frame ago: the camera's block went the same way */
@@ -1405,8 +1414,7 @@ int vk_temporal_object_note(const GpuChannel* ch, const Surf* zt, u64 vertex, u6
     /* a block the table could not take or will not judge: what the pairs make of it is not known */
     if (g_t.links && (!o || g_t.object_unjudged != unjudged)) links_unknown(frame, LINK_TABLE);
     if (!o) {
-        if (g_t.links && !temporal_frame_bind(link_record(frame), address, size, world, 1, signature))
-            links_unknown(frame, LINK_RECORD);
+        link_bind(frame, address, size, world, 1, signature);
         return 0;
     }
     const Object* other = NULL;
@@ -1417,7 +1425,7 @@ int vk_temporal_object_note(const GpuChannel* ch, const Surf* zt, u64 vertex, u6
     g_t.current.pair = g_t.current.source == TEMPORAL_BEFORE_PARTNER && partner < address ? partner : address;
     g_t.current.pair_other = 0;
     g_t.current.other = (void*)other;
-    if (g_t.links) link_try(frame, address, size, signature);
+    link_try(frame, address, size, signature);
     object_missed(o, size, signature, frame, g_t.current.source);
     if (g_t.current.was && object_jumped(address, world, g_t.current.was, frame)) g_t.current.was = NULL;
     return g_t.current.was != NULL;

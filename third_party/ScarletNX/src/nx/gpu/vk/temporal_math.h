@@ -413,10 +413,24 @@ static inline TemporalBlock* temporal_frame_find(const TemporalFrame* f, unsigne
         if (f->blocks[number - 1].address == address) return (TemporalBlock*)&f->blocks[number - 1];
     }
 }
-/* A draw binds a block: the block's record in this frame with the draw in its digest. NULL when the record is
-   full, and the frame is then not complete. A block bound with two sizes keeps its first and is not usable. */
+/* Whether the links' record takes a draw with an object block. by_address: its depth target is at the scene depth's
+   address. by_surface: it is the surface the pairs go by. camera: the frame's camera block is known. Off, no draw
+   is ever taken, so nothing of the record runs. */
+enum {
+    TEMPORAL_SCENE_NOT,   /* not a draw into the scene, or the links are off */
+    TEMPORAL_SCENE_SEEN,  /* recorded */
+    TEMPORAL_SCENE_UNSEEN /* a draw into the scene the record cannot place: the frame is not complete */
+};
+static inline int temporal_scene_gate(int on, int has_block, int by_address, int by_surface, int camera) {
+    if (!on || !has_block || (!by_address && !by_surface)) return TEMPORAL_SCENE_NOT;
+    return by_address && by_surface && camera ? TEMPORAL_SCENE_SEEN : TEMPORAL_SCENE_UNSEEN;
+}
+/* A draw binds a block: the block's record in this frame with the draw in its digest. NULL without a record, or
+   when it is full, and the frame is then not complete. A block bound with two sizes keeps its first and is not
+   usable. */
 static inline TemporalBlock* temporal_frame_bind(TemporalFrame* f, unsigned long long address, unsigned size,
                                                  const float world[16], int affine, unsigned long long signature) {
+    if (!f) return NULL;
     TemporalBlock* b = temporal_frame_find(f, address);
     if (!b) {
         if (f->n >= TEMPORAL_BLOCKS) {
