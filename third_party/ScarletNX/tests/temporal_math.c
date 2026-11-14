@@ -2082,14 +2082,10 @@ static void test_rect_confirm(void) {
     assert(temporal_rect_confirm(&g, 306, NULL, &small) == TEMPORAL_FRAME_NONE && !g.have_candidate);
 }
 
-/* Acceptance item: the conversion equals the SDK's documented jitter for an added clip offset.
-   AMD's document for FSR 3.1 says how an application applies a jitter of (jx, jy) pixels to its projection: x
-   gets plus 2 x jx / width and y gets minus 2 x jy / height, in a clip space whose y runs up the image. Solved by
-   hand for a clip offset (dx, dy) that is added to the clip position, which is what the camera block's jitter
-   is: jx = dx x width / 2 and jy = -dy x height / 2. A viewport of positive height turns clip y down the image,
-   so there the same offset moves the picture the other way and jy = +dy x height / 2. The numbers below are
-   those formulas worked out by hand, not by this program. The first row is the frame the device printed as
-   handed to the SDK (jitterOffset -0.25 -0.166666672 with y up). */
+/* Acceptance item: the conversion equals the SDK's documented jitter for an added clip offset. AMD's documents
+   for FSR 3.1 in the FidelityFX SDK at tag v2.4.0: projection x += 2 jx / width, y -= 2 jy / height, clip y up.
+   Solved by hand: jx = dx width / 2, jy = -dy height / 2, and +dy height / 2 for a viewport of positive height.
+   The rows are that by hand, the first two the frames the device printed as handed over. */
 static void test_jitter_conformance(void) {
     static const struct {
         double w, h, dx, dy, jx, jy_up, jy_down;
