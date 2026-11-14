@@ -2082,6 +2082,37 @@ static void test_rect_confirm(void) {
     assert(temporal_rect_confirm(&g, 306, NULL, &small) == TEMPORAL_FRAME_NONE && !g.have_candidate);
 }
 
+/* The reset of an evaluate with a context that has come into use since the last one. */
+static void test_upscaler_reset(void) {
+    unsigned last = 0;
+    /* the first context: its first evaluate has the reset whatever the frame says, the next ones the frame's */
+    assert(temporal_upscaler_reset(0, 1, &last) == 1 && last == 1);
+    assert(temporal_upscaler_reset(0, 1, &last) == 0 && temporal_upscaler_reset(1, 1, &last) == 1);
+    assert(temporal_upscaler_reset(0, 1, &last) == 0);
+    /* The audit's sequence, as a run without the gate makes its frames' reset: every frame follows an evaluated
+       one, so the frame's own reset is 0 throughout. A second context of the same sizes comes into use (a
+       create property changed) between two such frames. Its first evaluate must have the reset. */
+    {
+        unsigned wrote = 0, frame = 0, published = 1, seen = 0;
+        int resets[8];
+        for (int i = 0; i < 8; i++) {
+            frame++;
+            if (i == 4) published = 2; /* the property changed: another context, the frames go on unbroken */
+            const int own = wrote + 1 != frame; /* the ungated path's rule */
+            resets[i] = temporal_upscaler_reset(i == 0 ? 1 : own, published, &seen);
+            wrote = frame;
+        }
+        assert(resets[0] == 1 && !resets[1] && !resets[2] && !resets[3]);
+        assert(resets[4] == 1 && !resets[5] && !resets[6] && !resets[7]);
+        /* without the rule the fifth frame's own reset is 0: that was the fault */
+        assert(wrote == 8 && seen == 2);
+    }
+    /* two contexts between two evaluates still give one reset, and a count that went back gives one too */
+    last = 3;
+    assert(temporal_upscaler_reset(0, 5, &last) == 1 && temporal_upscaler_reset(0, 5, &last) == 0);
+    assert(temporal_upscaler_reset(0, 4, &last) == 1 && last == 4);
+}
+
 /* The camera's numbers out of a projection matrix, row vectors, memory order. The matrices are written out by
    hand: sy is 1 / tan(fov / 2), which for 50 degrees is 2.14450692, and sx is that over the aspect. */
 static void test_projection_camera(void) {
@@ -3497,6 +3528,7 @@ int main(void) {
     test_rect();
     test_rect_confirm();
     test_upscaler();
+    test_upscaler_reset();
     test_projection_camera();
     test_jitter_conformance();
     test_gpu_time();

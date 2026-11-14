@@ -94,6 +94,7 @@ typedef struct {
     unsigned frame, failures, skipped, evaluated, published; /* published: contexts that came into use */
     unsigned wrote; /* the last frame an ungated run evaluated, 0 for none */
     u32 made_flags[4]; /* the create flags of the first contexts that came into use, in their order */
+    unsigned evaluated_with; /* how many contexts had come into use at the last evaluate */
     Picture colour, depth, motion, output; /* what the adapter is handed */
     Picture wide_colour, wide_depth, wide_motion; /* for inputs that sit inside larger images */
 } Session;
@@ -655,6 +656,9 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
         s->skipped++;
         return s->contexts.pending || s->live ? 0 : -1;
     }
+    /* The one place for it, for a run through the gate and for one without: a context that has come into use
+       since the last evaluate has the reset on its first, whatever the frame's own history says. */
+    numbers.reset = temporal_upscaler_reset(numbers.reset, s->published, &s->evaluated_with);
     /* the frame's three images, frozen, into the pictures the adapter reads */
     memcpy(g.staging_bytes, in->colour + (size_t)i * pixels, pixels * 4);
     memcpy(g.staging_bytes + pixels * 4, in->depth + (size_t)i * pixels, pixels * 4);

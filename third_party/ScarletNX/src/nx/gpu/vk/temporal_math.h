@@ -1243,6 +1243,15 @@ static inline int temporal_upscaler_stop(TemporalUpscalerContexts* c) {
     if (c->pending == 1) c->pending = 3;
     return had;
 }
+/* The reset flag of an evaluate. A context that has come into use since the last evaluate holds nothing of the
+   frames before, whatever the frame's own history says: its first evaluate has the reset, same sizes or not.
+   published counts the contexts that came into use, last is that count at the evaluate before, and is brought
+   up to date here. Asked once for an evaluate, right before it, whichever way the frame's own reset was made. */
+static inline int temporal_upscaler_reset(int frame_reset, unsigned published, unsigned* last) {
+    const int another = published != *last;
+    *last = published;
+    return frame_reset || another;
+}
 /* The upscaler's failures in a row. A frame that fails writes no history, so the next one has the reset. 1 when
    the upscaler is to be off for the rest of the session. */
 #define TEMPORAL_UPSCALER_FAILURES 8
