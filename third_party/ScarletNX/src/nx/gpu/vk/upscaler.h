@@ -71,11 +71,15 @@ typedef struct {
     const char* folder; /* one the library may write to, UTF-8 */
 } SnxUpscalerCreate;
 
-/* What the library says of itself at create. One that must submit work on its own is refused by the runtime. One
-   that cannot take a rectangle of a larger image gets images of exactly the render size. */
+/* What the adapter says of itself at create. One that must submit work on its own is refused by the runtime. One
+   that cannot take a rectangle of a larger image gets images of exactly the render size, and one that takes a
+   rectangle only from an image's first texel gets copies whenever the rectangle starts elsewhere. The usages
+   are what each image handed to evaluate must have been made with. */
 typedef struct {
     uint32_t submits_itself;
     uint32_t takes_rectangle;
+    uint32_t rectangle_at_origin; /* 1: a rectangle only when render_x and render_y are 0 */
+    VkImageUsageFlags colour_usage, depth_usage, motion_usage, output_usage;
 } SnxUpscalerTraits;
 
 typedef struct {
