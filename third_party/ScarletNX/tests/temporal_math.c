@@ -2712,6 +2712,45 @@ static void test_upscaler_wiring(void) {
         assert(temporal_upscaler_stop(&c) == 1 && !c.live && c.pending == 3);
         assert(temporal_upscaler_completed(&c, &next) == TEMPORAL_UPSCALER_STALE && !c.live);
     }
+    /* Eight reads of the timeline fail with the mark clear: a stop, and no proof of anything. The context on its
+       way is held, with its submission's number. A later read works and shows the number reached: only then
+       is it released, once, and it is never published and the upscaler stays off. */
+    {
+        const TemporalUpscalerConfig config = {3840, 2160, 3840, 2160, 3840, 2160, 3};
+        const unsigned long long number = 20;
+        TemporalUpscalerContexts c = {0};
+        TemporalUpscalerHealth h = {0};
+        unsigned unread = 0;
+        int noted = TEMPORAL_UPSCALER_WAIT, released = 0;
+        temporal_upscaler_created(&c, &config, 1);
+        for (int k = 0; k < 8; k++) noted = temporal_upscaler_poll(0, 25, 0, number, &unread);
+        assert(temporal_upscaler_noted(noted, 0) == TEMPORAL_UPSCALER_STOP);
+        /* the stop: off, the context given up for publication and held, and no release by the stop or the count */
+        assert(!temporal_upscaler_retire(h.off, noted, 0));
+        assert(temporal_upscaler_after(&h, 0, TEMPORAL_UPSCALER_STOPPED) == 1);
+        temporal_upscaler_stop(&c);
+        assert(c.pending == 3 && !temporal_upscaler_retire(h.off, TEMPORAL_UPSCALER_STOP, 0));
+        unread = 0;
+        noted = TEMPORAL_UPSCALER_WAIT;
+        /* reads that work and do not show the number yet, and more that fail: still held */
+        noted = temporal_upscaler_poll(1, 19, 0, number, &unread);
+        assert(noted == TEMPORAL_UPSCALER_WAIT && !temporal_upscaler_retire(h.off, noted, 0) && c.pending == 3);
+        noted = temporal_upscaler_poll(0, 25, 0, number, &unread);
+        assert(noted == TEMPORAL_UPSCALER_WAIT && !temporal_upscaler_retire(h.off, noted, 0));
+        /* the read that shows it reached */
+        noted = temporal_upscaler_poll(1, 20, 0, number, &unread);
+        assert(noted == TEMPORAL_UPSCALER_COMPLETED && temporal_upscaler_retire(h.off, noted, 0));
+        if (temporal_upscaler_retire(h.off, noted, 0)) {
+            assert(temporal_upscaler_completed(&c, &config) == TEMPORAL_UPSCALER_STALE);
+            released++;
+        }
+        /* once: nothing is on its way any more, and a second completion gives nothing to release */
+        assert(released == 1 && !c.pending && !c.live);
+        assert(temporal_upscaler_completed(&c, &config) == TEMPORAL_UPSCALER_NOTHING);
+        assert(temporal_upscaler_decide(&h, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_ON);
+        /* the same, but the mark is set by the time the read works: not released */
+        assert(!temporal_upscaler_retire(h.off, temporal_upscaler_noted(TEMPORAL_UPSCALER_COMPLETED, 1), 1));
+    }
     /* The colour a decision counts on: only the frame before's, seen at its hook. */
     {
         const TemporalUpscalerColour seen = {100, 122, 1, 3840, 2160};
