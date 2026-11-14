@@ -1332,7 +1332,6 @@ static void gputime_leftover(TemporalGpuHandle* h) {
 /* Where the renderer has completed a slot's submissions and recycles it (cmd.c): every pair whose submission
    is known to have completed gives its time or is counted, and is free again. The completed number is read
    from the timeline as it stands and the results are asked for with their availability: nothing waits. */
-static void gputime_tick(void);
 void vk_temporal_gputime_poll(void) {
     if (g_t.gputime != 1) return;
     /* "Completed" is read from the timeline, and it means "ran" only while no submission has failed: the recorder
@@ -1373,8 +1372,6 @@ void vk_temporal_gputime_poll(void) {
         temporal_gpu_settle(&g_time_ring, i, done, now, fetched ? ticks : NULL, fetched ? there : NULL, g_t.time_bits,
                             g_t.time_period);
     }
-    /* the presents' clock, here because this is called once a recycled slot whether or not our passes ran */
-    gputime_tick();
 }
 /* A window's lines: under which configuration its times were taken, and for each kind of bracket how many were
    asked for, measured, still under way, and lost by each reason, with the median, the mean and the 95th
@@ -1433,10 +1430,12 @@ static void gputime_configure(const Surf* scene, const TemporalRect* area) {
     if (temporal_gpu_configure(&g_t.time_window, now, g_vk_present, before, &presents))
         gputime_window("ended by a change of configuration", before, presents);
 }
-/* The window's clock is the count of presents, looked at where the renderer recycles a slot, so that a window
-   is written after 600 presents whether or not our passes ran in them (temporal_gpu_tick). */
-static void gputime_tick(void) {
+/* The window's clock is the count of presents. Called by the renderer right after it has raised that count,
+   once a present and nowhere else, so that a window is written after 600 presents whether or not our passes
+   ran in them and whichever way the present was reached (temporal_gpu_tick). Results are not read here. */
+void vk_temporal_gputime_present(void) {
     u32 presents;
+    if (g_t.gputime != 1) return;
     if (temporal_gpu_tick(&g_t.time_window, g_vk_present, &presents))
         gputime_window("", g_t.time_window.config, presents);
 }

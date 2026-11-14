@@ -2437,6 +2437,28 @@ static void test_gpu_time(void) {
                 lines++;
             }
         assert(lines == 2 && w.began == 2200);
+        /* The tick is taken once at every present, right after the count is raised (the review's phases case:
+           a tick tied to something that can come before or after the count would see 599 and then 601). Asked
+           at each count in turn, a window is exactly 600, and a count asked twice ends nothing twice. */
+        {
+            TemporalGpuWindow phased;
+            int written = 0;
+            memset(&phased, 0, sizeof phased);
+            temporal_gpu_configure(&phased, first, 0, before, &presents);
+            for (unsigned present = 1; present <= 1800; present++) {
+                if (temporal_gpu_tick(&phased, present, &presents)) {
+                    assert(presents == TEMPORAL_GPU_SAMPLES && present % TEMPORAL_GPU_SAMPLES == 0);
+                    written++;
+                }
+                assert(!temporal_gpu_tick(&phased, present, &presents)); /* the same count again */
+            }
+            assert(written == 3);
+            /* what a tick that misses a count does, so the caller must not: it sees 601 */
+            memset(&phased, 0, sizeof phased);
+            temporal_gpu_configure(&phased, first, 0, before, &presents);
+            assert(!temporal_gpu_tick(&phased, 599, &presents) && temporal_gpu_tick(&phased, 601, &presents));
+            assert(presents == 601);
+        }
         /* The same configuration again changes nothing. Another one closes the window first, with its own
            configuration and its length so far, and the bracket begun after that is the new window's first:
            it is measured there, not retired as the old one's (the review's second case). */
