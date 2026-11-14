@@ -1942,6 +1942,9 @@ void vk_temporal_skin_keep(VkCommandBuffer cb, u64 address, u32 size, VkBuffer s
             for (int k = 0; k < 2; k++)
                 if (made[k]) vmaDestroyBuffer(g_vk.vma, made[k], made_memory[k]);
             g_t.skin_uncopied++;
+            /* memory that could not be had is not a capture too large or without a slot: under the rectangle's
+               gate it ends the object vectors (the capture stays counted, the slot keeps what it had) */
+            vk_temporal_object_failed("memory for a skinned character's positions");
             return;
         }
         for (int k = 0; k < 2; k++) {
