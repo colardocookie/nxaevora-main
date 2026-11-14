@@ -908,9 +908,13 @@ static inline void temporal_rect_refused(TemporalRectGate* g, unsigned frame) {
     temporal_rect_spoil(g);
     if (g->hooked_at == frame) g->hooked_at = 0;
 }
-/* Our passes could not be made or run in a frame that was drawn with jitter: no frame is accepted from here on.
-   The gate still decides and confirms, so its lines go on, and it refuses. */
-static inline void temporal_rect_failed(TemporalRectGate* g) { g->stopped = 1; }
+/* Our passes could not be made or run in a frame that was drawn with jitter, or one of its draws could not be
+   given the jitter: no frame is accepted from here on, and nothing is left of this one, confirmed already or
+   not. The gate still decides and confirms, so its lines go on, and it refuses. */
+static inline void temporal_rect_failed(TemporalRectGate* g, unsigned frame) {
+    g->stopped = 1;
+    if (g->decided_at == frame) temporal_rect_spoil(g);
+}
 /* The frame's confirmation, at its first scene draw whose program reads the scene block in either stage. That
    draw alone confirms: a stage that reads the block and has none bound, two stages that disagree, or a fraction
    that is not the geometry's spoil the frame, and no later draw can mend it. With the candidate's fraction an

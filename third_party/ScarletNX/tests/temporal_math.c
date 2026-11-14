@@ -2001,8 +2001,22 @@ static void test_rect_confirm(void) {
         memset(&u, 0, sizeof u);
         rect_go(&u, 800, &a);
         assert(rect_go(&u, 801, &a));
-        temporal_rect_failed(&u);
+        temporal_rect_failed(&u, 801);
+        assert(!temporal_rect_steady(&u, 801) && !u.have_candidate && !u.have_stamp);
         assert(!rect_go(&u, 802, &a) && !rect_go(&u, 803, &a) && u.stopped);
+        /* A failure before the frame is confirmed, as when its first draw gets no jittered block: the frame is
+           wrong for good, whatever a later draw shows and though our passes are reached, and the gate has
+           stopped. */
+        memset(&u, 0, sizeof u);
+        rect_go(&u, 810, &a);
+        assert(temporal_rect_decide(&u, 811, &a, 0) && u.state == TEMPORAL_FRAME_DECIDED);
+        temporal_rect_failed(&u, 811);
+        assert(u.stopped && temporal_rect_confirm(&u, 811, &good, &good) == TEMPORAL_FRAME_NONE);
+        temporal_rect_hooked(&u, 811);
+        assert(!temporal_rect_steady(&u, 811) && !temporal_rect_history(&u, 811, &stamp));
+        temporal_rect_wrote(&u, 811, &stamp);
+        assert(!u.have_stamp && temporal_rect_late(&u, 811, &a, NULL, &good));
+        assert(!rect_go(&u, 812, &a) && !rect_go(&u, 813, &a));
     }
     /* The early refusal gates a frame whose geometry is the candidate's. Confirmed later in the frame, it stays
        gated: never resolved, no history written. It only makes the frame after acceptable. */

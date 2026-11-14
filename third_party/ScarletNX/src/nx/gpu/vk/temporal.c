@@ -603,13 +603,13 @@ static int rect_line(u64 n) { return n <= 4 || n % 600 == 0; }
 /* 1 when the rectangle's gate let this frame be drawn with jitter */
 static int rect_accepted(u32 frame) { return g_t.rect_gate.decided_at == frame && g_t.rect_gate.accepted; }
 
-/* Our passes could not be made or run, or a draw could not be given its jitter, in a frame that was drawn with
-   jitter and confirmed: its picture is shown jittered and unresolved. That must not repeat, so the gate accepts
-   no frame any more this session (temporal_rect_failed). One line names what failed. */
+/* Our passes could not be made or run, or a draw could not be given its jitter, in a frame that was accepted,
+   confirmed yet or not: its picture is shown as drawn, jittered in whole or in part. That must not repeat, so
+   the gate accepts no frame any more this session (temporal_rect_failed). One line names what failed. */
 static void rect_fail(u32 frame, const char* what) {
     TemporalRectGate* rg = &g_t.rect_gate;
-    if (!g_t.rect || g_t.mode != MODE_TAA || rg->stopped || !temporal_rect_steady(rg, frame)) return;
-    temporal_rect_failed(rg);
+    if (!g_t.rect || g_t.mode != MODE_TAA || rg->stopped || !rect_accepted(frame)) return;
+    temporal_rect_failed(rg, frame);
     g_t.rect_stop_said = 1;
     LOG("arceus-temporal-rect: frame %u was drawn with jitter and the anti-aliasing passes failed (%s): no frame "
         "is drawn with jitter any more in this session\n", frame, what);
