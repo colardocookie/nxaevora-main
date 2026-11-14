@@ -672,6 +672,21 @@ D24S8 depth). That file shares no arithmetic with the conversion in `temporal_ma
 mistake in those cannot repeat itself in the test. The inputs of a run are made once. A variant of a run changes
 only the numbers handed to the adapter.
 
+The output picture is `VK_FORMAT_R32G32B32A32_SFLOAT`. A run under the validation layer reported the library's
+shader variable `rw_upscaled_output` as declared with four 32 bit floats against the 16 bit float picture the
+self-test had, at the dispatches that bind it. The format is asked of the physical device for the uses the
+picture has together (what the adapter names, storage and sampled, and the copies of the read-back) at the
+picture's size. Where it is not there the adapter is "not available" and the case is not made. The read-back is
+16 bytes a pixel, read as floats, with the staging buffer checked against a frame's uploads and the output
+before any is copied. A red, green or blue value that is not finite ends the run as before.
+
+What a later run may be read for. The numbers of the cases can move against earlier runs, and such a change is
+a finding whose cause is open: storing and reading 32 bit floats where there were 16 bit halves changes numbers
+by itself, so it does not show that the old mismatch had an effect. That the name `rw_upscaled_output` is not
+in the table of variable names counts only for a run that made the same dispatches as before to their end and
+whose table met no limit, and then as "no callback of this run named it". It says nothing about the output
+being right. The library's own images that the layer names are not touched by this.
+
 The cases, each run with a viewport of negative and of positive height (render 320 x 180, output 480 x 270):
 1. Jitter alone over a still pattern, twice the offsets. The four combinations of the jitter's signs: the
    configured one must have strictly the lowest error. The jitter's margin is the edge case's (below), since

@@ -17,6 +17,9 @@
 #include "nx/runtime/platform/log.h"
 
 #define ST "arceus-upscaler-selftest: "
+/* The output picture: four 32 bit floats, as the library's shader declares the image it writes (a run under the
+   validation layer named it against the 16 bit one this was) */
+#define OUTPUT_FORMAT VK_FORMAT_R32G32B32A32_SFLOAT
 #define RENDER_W 320
 #define RENDER_H 180
 #define OUT_W 480
@@ -852,6 +855,27 @@ static void pictures_free(Session* s) {
     picture_free(&s->wide_motion);
 }
 
+/* The output's format, asked of the physical device for the uses the picture really has together: the adapter's
+   (storage, sampled) and the copies picture_make adds for the read-back, at the picture's size. Without it the
+   adapter is not available here. The staging buffer must hold the frame's uploads and the read-back. */
+static int output_supported(const Inputs* in, VkImageUsageFlags usage) {
+    const VkImageUsageFlags all = usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VkImageFormatProperties has;
+    const VkResult r = vkGetPhysicalDeviceImageFormatProperties(g.physical, OUTPUT_FORMAT, VK_IMAGE_TYPE_2D,
+                                                                VK_IMAGE_TILING_OPTIMAL, all, 0, &has);
+    if (r != VK_SUCCESS || has.maxExtent.width < (u32)in->ow || has.maxExtent.height < (u32)in->oh) {
+        LOG(ST "the adapter is not available on this device: the output's format, four 32 bit floats, is not "
+               "there for the uses %x together at %dx%d (result %d)\n", (unsigned)all, in->ow, in->oh, (int)r);
+        return 0;
+    }
+    if (!selftest_staging_fits(g.staging_size, in->w, in->h, in->ow, in->oh)) {
+        LOG(ST "the staging buffer of %llu bytes does not hold a frame of %dx%d and an output of %dx%d\n",
+            (unsigned long long)g.staging_size, in->w, in->h, in->ow, in->oh);
+        return 0;
+    }
+    return 1;
+}
+
 /* the session's pictures for these inputs' sizes, in place of the ones it had */
 static int pictures_make(Session* s, const Inputs* in, const SnxUpscalerTraits* traits) {
     const u32 rw = (u32)in->rw, rh = (u32)in->rh;
@@ -860,7 +884,8 @@ static int pictures_make(Session* s, const Inputs* in, const SnxUpscalerTraits* 
     if (!picture_make(&s->colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, rw, rh, traits->colour_usage) ||
         !picture_make(&s->depth, VK_FORMAT_D24_UNORM_S8_UINT, rw, rh, traits->depth_usage) ||
         !picture_make(&s->motion, VK_FORMAT_R16G16B16A16_SFLOAT, rw, rh, traits->motion_usage) ||
-        !picture_make(&s->output, VK_FORMAT_R16G16B16A16_SFLOAT, (u32)in->ow, (u32)in->oh, traits->output_usage))
+        !output_supported(in, traits->output_usage) ||
+        !picture_make(&s->output, OUTPUT_FORMAT, (u32)in->ow, (u32)in->oh, traits->output_usage))
         return 0;
     if (in->w == in->rw && in->h == in->rh) return 1;
     return picture_make(&s->wide_colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, (u32)in->w, (u32)in->h, 0) &&
@@ -906,7 +931,7 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
                                     .colour_format = VK_FORMAT_B10G11R11_UFLOAT_PACK32,
                                     .depth_format = VK_FORMAT_D24_UNORM_S8_UINT,
                                     .motion_format = VK_FORMAT_R16G16B16A16_SFLOAT,
-                                    .output_format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                                    .output_format = OUTPUT_FORMAT,
                                     .folder = "."};
     /* An adapter that submits on its own is refused, and so is one that needs a usage the pictures were not made
        with: inputs sampled, the output sampled and storage, all of them copy sources and destinations. */
@@ -1107,11 +1132,12 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     s->evaluated++;
     selftest_proof_frame(&s->proof, frame.reset, frame.far_plane,
                          selftest_checksum(in->depth + (size_t)i * pixels, pixels * 4, SELFTEST_CHECKSUM_START));
-    const u16* words = (const u16*)g.staging_bytes;
+    /* 16 bytes a pixel, four floats: red, green and blue are taken, and one that is not finite ends the run */
     for (size_t p = 0; p < (size_t)in->ow * in->oh; p++)
         for (int c = 0; c < 3; c++) {
-            out[3 * p + c] = selftest_half_value(words[4 * p + c]);
-            if (!isfinite(out[3 * p + c])) return -1;
+            const float value = selftest_output_value(g.staging_bytes, p, c);
+            if (!isfinite(value)) return -1;
+            out[3 * p + c] = (double)value;
         }
     return 1;
 }

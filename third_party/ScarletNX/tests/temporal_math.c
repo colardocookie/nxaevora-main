@@ -4564,6 +4564,31 @@ static void test_selftest(void) {
     }
     assert(selftest_d24(1.0) == 0xFFFFFF && selftest_d24(0.0) == 0 && selftest_d24(0.5) == 0x800000);
     assert(selftest_d24(7.0) == 0xFFFFFF && selftest_d24(-1.0) == 0);
+    /* the output's read-back: four floats a pixel, each channel where it lies, values no half can hold kept,
+       and what is not finite still not finite when it is read */
+    {
+        const float pixels[3][4] = {{1.0f, 2.0f, 3.0f, 4.0f},
+                                    {70000.0f, 1.0e-30f, -0.5f, 0.0f},
+                                    {INFINITY, NAN, 0.0f, 1.0f}};
+        uint8_t bytes[1 + sizeof pixels]; /* from an address that is not aligned */
+        memcpy(bytes + 1, pixels, sizeof pixels);
+        assert(sizeof pixels == 3 * SELFTEST_OUTPUT_BYTES);
+        for (size_t p = 0; p < 2; p++)
+            for (int c = 0; c < 4; c++) assert(selftest_output_value(bytes + 1, p, c) == pixels[p][c]);
+        assert(isinf(selftest_output_value(bytes + 1, 2, 0)) && isnan(selftest_output_value(bytes + 1, 2, 1)));
+        assert(!isfinite((double)selftest_output_value(bytes + 1, 2, 0)));
+        assert(selftest_output_value(bytes + 1, 2, 3) == 1.0f);
+    }
+    /* the staging buffer against a frame's uploads and the read-back, at their edges */
+    assert(selftest_staging_fits(8u << 20, 480, 270, 640, 360) && selftest_staging_fits(16, 1, 1, 1, 1));
+    assert(!selftest_staging_fits(15, 1, 1, 1, 1) && !selftest_staging_fits(31, 2, 1, 1, 1));
+    assert(selftest_staging_fits(32, 2, 1, 1, 2) && !selftest_staging_fits(32, 1, 1, 3, 1));
+    assert(selftest_staging_fits(8u << 20, 1, 1, 1024, 512) && !selftest_staging_fits(8u << 20, 1, 1, 1024, 513));
+    assert(selftest_staging_fits(8u << 20, 1024, 512, 1, 1) && !selftest_staging_fits(8u << 20, 1025, 512, 1, 1));
+    assert(!selftest_staging_fits(8u << 20, 0, 1, 1, 1) && !selftest_staging_fits(8u << 20, 1, 1, 1, -1));
+    /* sizes whose 16 bytes a texel are past 64 bits do not fit the largest buffer either */
+    assert(!selftest_staging_fits(UINT64_MAX, 2147483647, 2147483647, 1, 1));
+    assert(!selftest_staging_fits(UINT64_MAX, 1, 1, 2147483647, 2147483647));
     assert(selftest_half(1.0) == 0x3C00 && selftest_half(-2.0) == 0xC000 && selftest_half(0.0) == 0);
     assert(selftest_half_value(0x3C00) == 1.0 && selftest_half_value(0x7C00) == INFINITY);
     assert(isnan(selftest_half_value(0x7E00)) && selftest_half_value(0x0001) > 0.0);

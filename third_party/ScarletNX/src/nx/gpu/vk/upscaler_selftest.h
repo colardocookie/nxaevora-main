@@ -228,7 +228,22 @@ static inline uint32_t selftest_d24(double depth) {
     const double clamped = depth < 0.0 ? 0.0 : depth > 1.0 ? 1.0 : depth;
     return (uint32_t)(clamped * 16777215.0 + 0.5);
 }
-/* a 16 bit float, as the motion image takes it and the output image gives it */
+/* The output image holds four 32 bit floats a pixel, 16 bytes, and is read back as that. One channel of one
+   pixel out of the bytes of the read-back, copied out and not read through a pointer of another type. */
+#define SELFTEST_OUTPUT_BYTES 16
+static inline float selftest_output_value(const uint8_t* bytes, size_t pixel, int channel) {
+    float value;
+    memcpy(&value, bytes + pixel * SELFTEST_OUTPUT_BYTES + (size_t)channel * sizeof value, sizeof value);
+    return value;
+}
+/* 1 when the one staging buffer holds a frame's uploads (colour and depth at 4 bytes a texel, vectors at 8) and
+   the output's read-back. Sizes that are not positive, or that do not fit a size_t's product, do not fit. */
+static inline int selftest_staging_fits(uint64_t staging, int w, int h, int ow, int oh) {
+    if (w <= 0 || h <= 0 || ow <= 0 || oh <= 0) return 0;
+    const uint64_t in = (uint64_t)w * (uint64_t)h, out = (uint64_t)ow * (uint64_t)oh;
+    return in <= staging / 16 && out <= staging / SELFTEST_OUTPUT_BYTES;
+}
+/* a 16 bit float, as the motion image takes it */
 static inline double selftest_half_value(uint16_t bits) {
     const int e = bits >> 10 & 31, mantissa = bits & 1023;
     const double sign = bits & 0x8000 ? -1.0 : 1.0;
