@@ -499,17 +499,18 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
     g_t.camera_at = frame;
 }
 
-/* Whether this frame is drawn with jitter, decided at the frame's first draw that binds the scene camera's block
-   and draws into the scene's depth (the depth pass), from that draw's own viewport. The jitter and the resolve hold
-   only while that viewport is the whole target and the one of the frame before. Else the whole frame has no jitter
-   and is left as drawn. Draws that bind the block before that one get no jitter: 0 for those. */
+/* Whether this frame is drawn with jitter (the gate of temporal_math.h), asked at a draw that binds the scene
+   camera's block while the frame is undecided. A draw into the scene's depth decides it from its own viewport.
+   Any other draw cannot be tied to the scene and gates the whole frame, so no two draws of a frame differ in
+   jitter. 1 when the frame is decided now. */
 static int jitter_decide(u32 frame) {
     const Surf* zt = g_t.draw_zt;
     if (!zt || !g_t.depth || zt->gva != g_t.depth || !g_t.draw_r3d) {
-        if (g_t.early++ < 4 || g_t.early % 36000 == 0)
-            LOG("arceus-temporal: a draw binds the scene camera's block before the frame's first draw into the "
-                "scene depth and gets no jitter, %llu so far\n",
-                (unsigned long long)g_t.early);
+        const int first = g_t.gate.early_at != frame;
+        if (temporal_gate_early(&g_t.gate, frame) && first && (g_t.early++ < 4 || g_t.early % 600 == 0))
+            LOG("arceus-temporal: a draw with depth target %llx binds the scene camera's block before the frame's "
+                "first draw into the scene depth: no jitter this frame, %llu frames so far\n",
+                (unsigned long long)(zt ? zt->gva : 0), (unsigned long long)g_t.early);
         return 0;
     }
     const VkViewport v = vk_render_viewport(g_t.draw_r3d);

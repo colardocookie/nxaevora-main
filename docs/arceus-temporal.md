@@ -98,7 +98,8 @@ same as the frame before. This is decided once a frame, at the first draw that b
 draws into the scene's depth (the depth pass), from that draw's own viewport. Otherwise the whole frame is drawn
 without jitter and left as drawn: no resolve, no sharpen, and the frame after it has no history. The same goes for
 a frame whose G-buffer viewport is not the one decided on, whose object vectors are given up too. A draw that binds
-the block before the frame's first draw into the scene depth gets no jitter. All of these are counted and logged
+the block before the frame's first draw into the scene depth cannot be tied to the scene, and no two draws of a
+frame may differ in jitter: such a frame has no jitter at all and is left as drawn. All of these are counted and logged
 (`no jitter and no history this frame`, `frame left as drawn`, `is not the one the jitter was decided on`, `binds
 the scene camera's block before`). A scene drawn smaller than its target, as the game's own dynamic scale does, is
 not supported yet.

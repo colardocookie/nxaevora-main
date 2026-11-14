@@ -226,15 +226,17 @@ static inline int temporal_camera_points(const float inverse_vp[16], const float
 }
 /* The viewport gate. The jitter and the resolve hold only while the scene's viewport is the whole target and the
    one of the frame before. A frame is decided once, by its first draw that binds the scene camera's block and draws
-   into the scene's depth, from that draw's viewport (temporal_gate_decide, 1 for jitter). The G-buffer's viewport
-   is then held against it (temporal_gate_scene, 1 for a mismatch). A frame is steady, and may be resolved and
-   kept as history, when it was decided with jitter and did not mismatch. Frames count from 1. */
+   into the scene's depth, from that draw's viewport (temporal_gate_decide, 1 for jitter). A draw that binds the
+   block before that one and cannot be tied to the scene gates the whole frame (temporal_gate_early): no draw of a
+   frame may differ from another in jitter. The G-buffer's viewport is then held against the decided one
+   (temporal_gate_scene, 1 for a mismatch). A frame is steady, and may be resolved and kept as history, when it
+   was decided with jitter and did not mismatch. Frames count from 1. */
 typedef struct {
     float x, y, width, height; /* height negative when y runs up: then y is the bottom edge */
 } TemporalViewport;
 typedef struct {
     TemporalViewport decided;
-    unsigned decided_at, mismatch_at;
+    unsigned decided_at, mismatch_at, early_at;
     int jitter;
 } TemporalGate;
 static inline int temporal_viewport_same(const TemporalViewport* a, const TemporalViewport* b) {
@@ -248,8 +250,14 @@ static inline int temporal_gate_decide(TemporalGate* g, unsigned frame, const Te
     const int same = g->decided_at && g->decided_at + 1 == frame && temporal_viewport_same(v, &g->decided);
     g->decided = *v;
     g->decided_at = frame;
-    g->jitter = whole && same;
+    g->jitter = whole && same && g->early_at != frame;
     return g->jitter;
+}
+/* a binder before the frame's decision: 1 when it gated the frame, 0 when the frame was decided already */
+static inline int temporal_gate_early(TemporalGate* g, unsigned frame) {
+    if (g->decided_at == frame) return 0;
+    g->early_at = frame;
+    return 1;
 }
 static inline int temporal_gate_jitter(const TemporalGate* g, unsigned frame) {
     return g->decided_at == frame && g->jitter;
