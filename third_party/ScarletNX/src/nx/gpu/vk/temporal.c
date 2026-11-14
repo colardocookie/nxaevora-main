@@ -1386,11 +1386,18 @@ static void readers_note(u32 frame, const GpuChannel* ch, const VkSh* vs, const 
     for (int k = 0; fs0 && !(frame % 600) && k < 4; k++)
         if ((u32)fs0->hash == programs[k]) which = k < 3 ? k : 2;
     /* A reader's draw was described and another draw begins: of another program, so that one was not recorded.
-       The same program again is the same draw set up once more, or the reader's next: it is described anew. */
+       The same program again is the same draw set up once more, or the reader's next, and which is not known
+       here: it is described anew, and the description that is replaced gets a line and is counted. */
     if (g_readers.pending && (which < 0 || g_readers.which != which || g_readers.frame != frame)) {
         LOG("arceus-temporal-readers: frame %u, program %llx: a draw of it was set up and not recorded, so nothing "
             "is said of that draw\n", g_readers.frame, (unsigned long long)g_readers.program);
         g_readers.pending = 0;
+    } else if (g_readers.pending) {
+        static u64 replaced;
+        LOG("arceus-temporal-readers: frame %u, program %llx: the description of a draw of it was replaced before "
+            "that draw was recorded, by the same draw set up again or by the program's next draw (which is not "
+            "known here), %llu such so far\n", frame, (unsigned long long)g_readers.program,
+            (unsigned long long)++replaced);
     }
     if (which < 0 || g_readers_said_at[which] == frame) return;
     memset(&g_readers, 0, sizeof g_readers);

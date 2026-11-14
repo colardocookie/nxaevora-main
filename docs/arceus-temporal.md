@@ -58,7 +58,9 @@ With `probe` or `taa`, read only and for the log alone, three readers of the sce
 frame: the copy of the scene colour, the blur's preparation and the composite, known by their fragment programs.
 For each, the first draw of that frame that is recorded. The renderer can set a draw up more than once before it
 records it, and can skip it: the lines are printed where the draw is recorded, once, and a draw that was set up
-and not recorded gets one line that says so. The lines begin with `arceus-temporal-readers:` and name the frame
+and not recorded gets one line that says so, and a description that is replaced by a new setup of the same
+program before its draw was recorded gets a line too, with a count: whether that was the same draw set up again
+or the program's next draw is not known there. The lines begin with `arceus-temporal-readers:` and name the frame
 and the program:
 
 - the draw: the vertex program, the game's registers for the viewport and the scissor (whether the test is on,
