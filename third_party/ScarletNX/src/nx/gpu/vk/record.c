@@ -234,6 +234,27 @@ void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, c
     publish(); /* the timeline value is waited for by whoever needs the work done */
 }
 
+/* ------------------------------------------------------------ a library records at once */
+/* The one way a library outside the runtime (an upscaler's prepare and evaluate) is handed the frame's command
+   buffer. All of it under vk_lock, so nobody else adds a command: before queues what must come first, the ring
+   is drained and the recording thread is at rest, direct records at once on cb, and every bound state then
+   counts as lost. cb must be the frame's command buffer, begun and not submitted, also after before. */
+int vk_rec_direct(VkCommandBuffer cb, VkRecBefore before, VkRecDirect direct, void* user) {
+    int r = VK_REC_DIRECT_NO_BUFFER;
+    vk_lock();
+    if (cb != VK_NULL_HANDLE && cb == g_rec_cb) {
+        if (before) before(cb, user);
+        vk_rec_sync();
+        /* once a begin, an end or a submission has failed, what cb holds does not run as recorded */
+        if (cb != g_rec_cb) r = VK_REC_DIRECT_NO_BUFFER;
+        else if (vk_rec_submit_failed()) r = VK_REC_DIRECT_FAILED;
+        else r = direct(cb, user) ? VK_REC_DIRECT_OK : VK_REC_DIRECT_REFUSED;
+        vk_render_forget_state();
+    }
+    vk_unlock();
+    return r;
+}
+
 /* A present, after the frame's submission. The GPU thread waited for the ring to drain before presenting, and so
    for the recording of its whole frame: a sixth of its time in one game, where it could have gone on with the next
    frame. Its result comes back at a later present (vk_rec_present) */

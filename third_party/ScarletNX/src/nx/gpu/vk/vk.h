@@ -268,6 +268,14 @@ void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, c
                    u32 ns);
 void vk_rec_sync(void);        /* until everything queued is recorded and submitted */
 void vk_rec_queue(VkQueue q);  /* before submitting to or presenting on q outside the ring (vk_lock) */
+/* A library outside the runtime records on the frame's command buffer cb at once, in one stretch under vk_lock:
+   before (may be NULL) queues what must come first, the ring is drained, direct records and says 1 when it did,
+   all bound state is forgotten. OK: direct said 1. REFUSED: it said 0. FAILED: a begin, an end or a submission
+   has failed, direct was not called. NO_BUFFER: cb is not the frame's unsubmitted buffer, nothing was called. */
+enum { VK_REC_DIRECT_OK, VK_REC_DIRECT_REFUSED, VK_REC_DIRECT_FAILED, VK_REC_DIRECT_NO_BUFFER };
+typedef void (*VkRecBefore)(VkCommandBuffer cb, void* user);
+typedef int (*VkRecDirect)(VkCommandBuffer cb, void* user);
+int vk_rec_direct(VkCommandBuffer cb, VkRecBefore before, VkRecDirect direct, void* user);
 /* presents image idx of sc once wait is signaled, in order after the submissions queued before it (vk_lock). The
    result is this present's without the recording thread, otherwise that of an earlier one which wasn't VK_SUCCESS,
    or VK_SUCCESS: a swapchain out of date shows a frame later */

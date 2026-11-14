@@ -453,6 +453,32 @@ The host tests work the places out by hand for a moved camera, an object moving 
 camera, jitter over a negative height, a rectangle, a resize and a reset. They cannot show that a library reads
 the signs the same way: that needs a test on a device with the library.
 
+## Handing a library the frame's command buffer (`vk_rec_direct`), used by nothing yet
+
+The frame's commands go through a ring to a recording thread, and an upscaler's library makes its Vulkan calls
+at once. `vk_rec_direct` in `gpu/vk/record.c` is the one way such a library gets the frame's command buffer, for
+its prepare and its evaluate alike. It is one stretch under the renderer's lock, so that no other producer adds a
+command inside it:
+1. the caller's `before` queues what must come first (the end of the runtime's rendering, the transitions of the
+   images handed over),
+2. the ring is drained to its end, so the recording thread is at rest,
+3. the recorder's failure mark is looked at again: after a failed begin, end or submission the library is not
+   called,
+4. the library records at once, on the frame's command buffer, which must be begun and not submitted,
+5. every bound state counts as lost, so the runtime binds all of it anew.
+It answers whether the library recorded, refused, was not called for the failure mark, or was not called because
+the command buffer is not the frame's unsubmitted one.
+
+`tests/vk_record/run.sh` is its fixture, for a host with gcc and pthreads (it is not part of the Windows test
+run). It compiles the recorder's own file as it is, with its ring, its thread, its drain and its mark, against
+stand-in headers for Vulkan and the renderer, with the host's own mutex, and runs eight scenarios with and
+without the recording thread, once under the address sanitizer and once under the thread sanitizer: the order
+of the commands, two other producers that try to get in during the stretch, a failed begin, a failed end and a
+failed submission of an earlier frame, a library that refuses and one that succeeds after it, command buffers
+that are not the frame's, and sixty frames that wrap the ring. Each scenario asserts the list of calls in
+order and who made each, so a clean schedule under a sanitizer is not what passes it. It says nothing about a
+real driver or a real library.
+
 ## The upscaler's self-test (`SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>`)
 
 With this set to an adapter's name (`fsr`), the program does not load the game. `0` and `off` leave the mode off,
