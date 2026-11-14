@@ -62,22 +62,33 @@ int vk_upscaler_instance_extensions(const SnxUpscalerApi* api, const char** name
     return names_add(names, count, room, &more);
 }
 
-/* After the instance, before the device: the adapter's device extensions are added to the list, and features gets
-   the chain of feature structures it wants on, or NULL. 0 as above: the device is then made without the adapter. */
+/* After the instance, before the device: the adapter's device extensions are added to the list, features gets
+   the chain of feature structures it wants on, or NULL, and core the core feature bits it needs, which the
+   caller turns on in its own structure after its own question to the physical device. An adapter of another
+   version of the contract is refused before anything of it is called, and so is a core bit the host does not
+   know. 0 as above: the device is then made without the adapter. */
 int vk_upscaler_device_needs(const SnxUpscalerApi* api, VkInstance instance, VkPhysicalDevice device,
                              PFN_vkGetInstanceProcAddr lookup, const char** names, uint32_t* count, uint32_t room,
-                             const void** features) {
+                             const void** features, uint32_t* core) {
     SnxUpscalerDeviceNeeds needs = {0};
     *features = NULL;
+    *core = 0;
     if (!api || api->abi != SNX_UPSCALER_ABI || !api->device_extensions) return 0;
     if (api->device_extensions(instance, device, lookup, &needs) != SNX_UPSCALER_OK) return 0;
+    if (needs.core & ~SNX_NEEDS_CORE_KNOWN) {
+        WARN("arceus-upscaler: the adapter asks for a core feature bit the host does not know (0x%x)\n", needs.core);
+        return 0;
+    }
     if (!names_add(names, count, room, &needs.extensions)) return 0;
     *features = needs.features;
+    *core = needs.core;
     return 1;
 }
 
 /* The game's device (upscaler_needs.h has the rules). The one structure the host accepts is Vulkan's. The pure
    header copies its fields out of the object's bytes at its stand-in's offsets, which must be Vulkan's. */
+_Static_assert(SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL == SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL,
+               "the core bit of the contract and of the pure rules");
 _Static_assert(SNX_NEEDS_DERIVATIVES == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_NV,
                "the accepted structure's type");
 _Static_assert(offsetof(SnxNeedsNode, type) == offsetof(VkBaseInStructure, sType) &&
@@ -138,7 +149,8 @@ static int device_names(VkPhysicalDevice device, const char* const* names, uint3
    none when there is no such adapter: the device is made as without the switch. The adapter's storage is read
    and never written or kept. */
 int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevice device,
-                           PFN_vkGetInstanceProcAddr lookup, VkUpscalerDeviceAsk* ask) {
+                           PFN_vkGetInstanceProcAddr lookup, int has_separate_depth_stencil,
+                           VkUpscalerDeviceAsk* ask) {
     SnxUpscalerExtensions of_instance = {0};
     SnxUpscalerDeviceNeeds needs = {0};
     SnxNeedsBits asked = {0, 0, 0}, has = {0, 0, 0};
@@ -160,7 +172,7 @@ int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevi
         device_refused(name, "it names needs of the instance, which is already made");
         return 0;
     }
-    if (snx_needs_none(needs.extensions.count, needs.features)) {
+    if (snx_needs_none(needs.extensions.count, needs.features, needs.core)) {
         device_refused(name, "it names no needs of the device");
         return 0;
     }
@@ -170,6 +182,8 @@ int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevi
     for (uint32_t i = 0; why == SNX_NEEDS_OK && i < needs.extensions.count; i++)
         if (!needs.extensions.names[i] || strlen(needs.extensions.names[i]) > SNX_NEEDS_NAME_LENGTH)
             why = SNX_NEEDS_ROOM;
+    /* the core bits against the caller's own question to the physical device */
+    if (why == SNX_NEEDS_OK) why = snx_needs_core(needs.core, has_separate_depth_stencil);
     if (why == SNX_NEEDS_OK) why = snx_needs_chain(needs.features, &asked);
     if (why == SNX_NEEDS_OK) why = snx_needs_owner(needs.extensions.names, needs.extensions.count, &asked);
     if (why == SNX_NEEDS_OK) why = device_names(device, needs.extensions.names, needs.extensions.count);
@@ -199,6 +213,7 @@ int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevi
     ask->have = asked.have;
     ask->quads = asked.quads;
     ask->linear = asked.linear;
+    ask->core = needs.core;
     /* bits the adapter does not ask for stay off. The caller sets the next pointer. */
     ask->derivatives = (VkPhysicalDeviceComputeShaderDerivativesFeaturesNV){
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_NV,
@@ -225,19 +240,21 @@ void vk_upscaler_device_failed(const VkUpscalerDeviceAsk* ask, int result) {
 void vk_upscaler_device_made(const VkUpscalerDeviceAsk* ask) {
     char names[SNX_NEEDS_NAMES * (SNX_NEEDS_NAME_LENGTH + 2) + 1] = "";
     const SnxNeedsBits on = {ask->have, ask->quads, ask->linear};
-    const int kept = snx_needs_record(&g_needs, ask->adapter, ask->names, ask->count, &on);
+    const int kept = snx_needs_record(&g_needs, ask->adapter, ask->names, ask->count, &on, ask->core);
     for (uint32_t i = 0; i < ask->count; i++) {
         if (i) strcat(names, ", ");
         strcat(names, ask->names[i]);
     }
-    LOG("arceus-upscaler: the game's device is made with %s%s%s%s for %s%s\n", ask->count ? names : "no extension",
-        ask->have ? " and the compute derivatives features" : "", ask->quads ? " (quad groups)" : "",
-        ask->linear ? " (linear groups)" : "", ask->adapter,
+    LOG("arceus-upscaler: the game's device is made with %s%s%s%s%s for %s%s\n",
+        ask->count ? names : "no extension", ask->have ? " and the compute derivatives features" : "",
+        ask->quads ? " (quad groups)" : "", ask->linear ? " (linear groups)" : "",
+        ask->core & SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL ? " and separate depth and stencil layouts" : "",
+        ask->adapter,
         kept == SNX_NEEDS_OK ? "" : ". That could NOT be recorded: the adapter stays not available");
 }
 /* At the start of the upscaler: the adapter's needs, asked again by the caller, against what the game's device
    was made with. SNX_NEEDS_OK, or the reason (snx_needs_text). */
 int vk_upscaler_device_met(const SnxUpscalerApi* api, const char* switch_name, const char* const* names,
-                           uint32_t count, const void* features) {
-    return snx_needs_met(&g_needs, adapter_name(api, switch_name), names, count, features);
+                           uint32_t count, const void* features, uint32_t core) {
+    return snx_needs_met(&g_needs, adapter_name(api, switch_name), names, count, features, core);
 }

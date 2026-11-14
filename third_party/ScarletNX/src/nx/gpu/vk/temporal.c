@@ -3045,15 +3045,17 @@ static void upscaler_start(void) {
     if (!api || !api->instance_extensions || !api->device_extensions || !api->create || !api->prepare ||
         !api->evaluate || !api->destroy)
         why = "no such adapter, or its library is not there";
+    else if (api->abi != SNX_UPSCALER_ABI) /* before anything of it is called */
+        why = "the adapter is of another version of the contract";
     else if (api->instance_extensions(&instance) != SNX_UPSCALER_OK ||
              api->device_extensions(g_vk.instance, g_vk.phys, vkGetInstanceProcAddr, &device) != SNX_UPSCALER_OK)
         why = "its needs of the instance and the device could not be asked";
     else if (instance.count)
         why = "it names needs of the instance, which are not added to the game's instance";
-    else if (!snx_needs_none(device.extensions.count, device.features)) {
+    else if (!snx_needs_none(device.extensions.count, device.features, device.core)) {
         /* asked again here, and held against what the game's device was made with: every name and every bit */
         const int met = vk_upscaler_device_met(api, name, device.extensions.names, device.extensions.count,
-                                               device.features);
+                                               device.features, device.core);
         if (met != SNX_NEEDS_OK) why = snx_needs_text(met);
     }
     /* The private output's format, for the type, tiling, uses and flags image_ensure makes it with. The largest

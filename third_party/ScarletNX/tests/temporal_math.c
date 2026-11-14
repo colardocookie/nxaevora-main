@@ -2761,51 +2761,96 @@ static void test_upscaler_needs(void) {
         const SnxNeedsBits on_linear = {1, 0, 1}, on_both = {1, 1, 1}, on_none = {0, 0, 0};
         SnxNeedsRecord r = {0};
         /* no record: an adapter with needs is not met, whatever it asks */
-        assert(snx_needs_met(&r, "fsr", one, 1, &linear) == SNX_NEEDS_ADAPTER);
-        assert(snx_needs_record(&r, "fsr", one, 1, &on_linear) == SNX_NEEDS_OK && r.made && r.names == 1);
-        assert(snx_needs_met(&r, "fsr", one, 1, &linear) == SNX_NEEDS_OK);
-        assert(snx_needs_met(&r, "fsr", NULL, 0, NULL) == SNX_NEEDS_OK); /* asking less is met */
-        assert(snx_needs_met(&r, "xess", one, 1, &linear) == SNX_NEEDS_ADAPTER);
-        assert(snx_needs_met(&r, NULL, one, 1, &linear) == SNX_NEEDS_ADAPTER);
-        assert(snx_needs_met(&r, "fsr", two, 2, &linear) == SNX_NEEDS_NOT_RECORDED); /* one more extension */
-        assert(snx_needs_met(&r, "fsr", one, 1, &both) == SNX_NEEDS_NOT_RECORDED);   /* a bit that is not on */
-        assert(snx_needs_met(&r, "fsr", one, 1, &first) == SNX_NEEDS_REPEATED);      /* a chain the host refuses */
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear, 0) == SNX_NEEDS_ADAPTER);
+        assert(snx_needs_record(&r, "fsr", one, 1, &on_linear, 0) == SNX_NEEDS_OK && r.made && r.names == 1);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear, 0) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "fsr", NULL, 0, NULL, 0) == SNX_NEEDS_OK); /* asking less is met */
+        assert(snx_needs_met(&r, "xess", one, 1, &linear, 0) == SNX_NEEDS_ADAPTER);
+        assert(snx_needs_met(&r, NULL, one, 1, &linear, 0) == SNX_NEEDS_ADAPTER);
+        assert(snx_needs_met(&r, "fsr", two, 2, &linear, 0) == SNX_NEEDS_NOT_RECORDED); /* one more extension */
+        assert(snx_needs_met(&r, "fsr", one, 1, &both, 0) == SNX_NEEDS_NOT_RECORDED);   /* a bit that is not on */
+        assert(snx_needs_met(&r, "fsr", one, 1, &first, 0) == SNX_NEEDS_REPEATED);      /* a chain the host refuses */
         SnxNeedsNode core = {51, NULL};
-        assert(snx_needs_met(&r, "fsr", one, 1, &core) == SNX_NEEDS_TYPE);
+        assert(snx_needs_met(&r, "fsr", one, 1, &core, 0) == SNX_NEEDS_TYPE);
         /* the record is by value: the strings and the bits it was made from may go */
         char name[40] = "VK_KHR_compute_shader_derivatives";
         const char* gone[1] = {name};
         SnxNeedsBits bits = on_both;
-        assert(snx_needs_record(&r, "fsr", gone, 1, &bits) == SNX_NEEDS_OK);
+        assert(snx_needs_record(&r, "fsr", gone, 1, &bits, 0) == SNX_NEEDS_OK);
         memset(name, 'x', sizeof name - 1);
         bits = on_none;
-        assert(snx_needs_met(&r, "fsr", one, 1, &both) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "fsr", one, 1, &both, 0) == SNX_NEEDS_OK);
         /* a record with the extension and without the structure: a bit asked for is not recorded */
-        assert(snx_needs_record(&r, "fsr", one, 1, &on_none) == SNX_NEEDS_OK);
-        assert(snx_needs_met(&r, "fsr", one, 1, &linear) == SNX_NEEDS_NOT_RECORDED);
-        assert(snx_needs_met(&r, "fsr", one, 1, NULL) == SNX_NEEDS_OK);
+        assert(snx_needs_record(&r, "fsr", one, 1, &on_none, 0) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear, 0) == SNX_NEEDS_NOT_RECORDED);
+        assert(snx_needs_met(&r, "fsr", one, 1, NULL, 0) == SNX_NEEDS_OK);
         /* each clause of the bits' comparison alone: the quad groups on and the linear ones asked, and a record
            whose structure is not there whatever its bits say */
         const SnxNeedsBits on_quads = {1, 1, 0}, not_there = {0, 1, 1};
-        assert(snx_needs_record(&r, "fsr", one, 1, &on_quads) == SNX_NEEDS_OK);
-        assert(snx_needs_met(&r, "fsr", one, 1, &linear) == SNX_NEEDS_NOT_RECORDED);
-        assert(snx_needs_record(&r, "fsr", one, 1, &not_there) == SNX_NEEDS_OK);
-        assert(snx_needs_met(&r, "fsr", one, 1, &linear) == SNX_NEEDS_NOT_RECORDED);
+        assert(snx_needs_record(&r, "fsr", one, 1, &on_quads, 0) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear, 0) == SNX_NEEDS_NOT_RECORDED);
+        assert(snx_needs_record(&r, "fsr", one, 1, &not_there, 0) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear, 0) == SNX_NEEDS_NOT_RECORDED);
         /* what cannot be kept whole makes no record */
         const char* many[9] = {"a", "b", "c", "d", "e", "f", "g", "h", "i"};
-        assert(snx_needs_record(&r, "fsr", many, 9, &on_linear) == SNX_NEEDS_ROOM && !r.made);
+        assert(snx_needs_record(&r, "fsr", many, 9, &on_linear, 0) == SNX_NEEDS_ROOM && !r.made);
         char long_name[80];
         memset(long_name, 'n', 64);
         long_name[64] = 0;
         const char* too_long[1] = {long_name};
-        assert(snx_needs_record(&r, "fsr", too_long, 1, &on_linear) == SNX_NEEDS_ROOM && !r.made);
+        assert(snx_needs_record(&r, "fsr", too_long, 1, &on_linear, 0) == SNX_NEEDS_ROOM && !r.made);
         long_name[63] = 0;
-        assert(snx_needs_record(&r, "fsr", too_long, 1, &on_linear) == SNX_NEEDS_OK && strlen(r.name[0]) == 63);
-        assert(snx_needs_record(&r, "an adapter's name of thirty-two characters", one, 1, &on_linear) ==
+        assert(snx_needs_record(&r, "fsr", too_long, 1, &on_linear, 0) == SNX_NEEDS_OK && strlen(r.name[0]) == 63);
+        assert(snx_needs_record(&r, "an adapter's name of thirty-two characters", one, 1, &on_linear, 0) ==
                SNX_NEEDS_ROOM);
-        assert(!r.made && snx_needs_met(&r, "fsr", one, 1, &linear) == SNX_NEEDS_ADAPTER);
+        assert(!r.made && snx_needs_met(&r, "fsr", one, 1, &linear, 0) == SNX_NEEDS_ADAPTER);
     }
-    assert(snx_needs_none(0, NULL) && !snx_needs_none(1, NULL) && !snx_needs_none(0, &linear));
+    assert(snx_needs_none(0, NULL, 0) && !snx_needs_none(1, NULL, 0) && !snx_needs_none(0, &linear, 0));
+    /* Core feature bits: a plain field, one bit known. Unknown bits refuse whatever the device has, the known one
+       needs the physical device to have it, and nothing asked is met by any device. */
+    assert(snx_needs_core(0, 0) == SNX_NEEDS_OK && snx_needs_core(0, 1) == SNX_NEEDS_OK);
+    assert(snx_needs_core(SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL, 1) == SNX_NEEDS_OK);
+    assert(snx_needs_core(SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL, 0) == SNX_NEEDS_CORE_BIT);
+    for (int bit = 1; bit < 32; bit++) {
+        assert(snx_needs_core(1u << bit, 1) == SNX_NEEDS_CORE_UNKNOWN);
+        assert(snx_needs_core(1u << bit | SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL, 1) == SNX_NEEDS_CORE_UNKNOWN);
+        assert(snx_needs_core(1u << bit | SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL, 0) == SNX_NEEDS_CORE_UNKNOWN);
+    }
+    /* the bit in a maker's own 1.2 structure: on for the creation with the additions when asked, the maker's
+       own otherwise, so the fallback has what the maker had */
+    assert(snx_needs_core_bit(0, 1, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL) == 1);
+    assert(snx_needs_core_bit(0, 0, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL) == 0);
+    assert(snx_needs_core_bit(0, 1, 0, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL) == 0);
+    assert(snx_needs_core_bit(1, 0, 0, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL) == 1);
+    assert(snx_needs_core_bit(1, 1, 0, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL) == 1);
+    assert(snx_needs_core_bit(1, 1, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL) == 1);
+    /* an answer with the core bit alone is a need: no shortcut for an adapter that names nothing else */
+    assert(!snx_needs_none(0, NULL, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL));
+    /* the record holds the bit by value and the start asks for it */
+    {
+        const char* const one[1] = {"VK_KHR_compute_shader_derivatives"};
+        const SnxNeedsBits on_linear = {1, 0, 1}, nothing = {0, 0, 0};
+        const uint32_t separate = SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL;
+        SnxNeedsRecord r = {0};
+        assert(snx_needs_record(&r, "fsr", one, 1, &on_linear, separate) == SNX_NEEDS_OK && r.core == separate);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear, separate) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear, 0) == SNX_NEEDS_OK); /* asking less is met */
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear, separate | 2u) == SNX_NEEDS_CORE_UNKNOWN);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear, 0x80000000u) == SNX_NEEDS_CORE_UNKNOWN);
+        /* a device made without the bit does not meet an adapter that asks for it */
+        assert(snx_needs_record(&r, "fsr", one, 1, &on_linear, 0) == SNX_NEEDS_OK && !r.core);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear, separate) == SNX_NEEDS_NOT_RECORDED);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear, 0) == SNX_NEEDS_OK);
+        /* a record of the core bit alone: no name, no structure */
+        assert(snx_needs_record(&r, "fsr", NULL, 0, &nothing, separate) == SNX_NEEDS_OK && r.made && !r.names);
+        assert(snx_needs_met(&r, "fsr", NULL, 0, NULL, separate) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "fsr", one, 1, NULL, separate) == SNX_NEEDS_NOT_RECORDED);
+        assert(snx_needs_met(&r, "other", NULL, 0, NULL, separate) == SNX_NEEDS_ADAPTER);
+        /* what cannot be kept makes no record, and then the bit is not met either */
+        const char* many[9] = {"a", "b", "c", "d", "e", "f", "g", "h", "i"};
+        assert(snx_needs_record(&r, "fsr", many, 9, &nothing, separate) == SNX_NEEDS_ROOM && !r.made && !r.core);
+        assert(snx_needs_met(&r, "fsr", NULL, 0, NULL, separate) == SNX_NEEDS_ADAPTER);
+    }
     /* a bit asked for needs the KHR extension among the names. The NV one alone, or beside others, is refused */
     {
         const char* const khr[2] = {"VK_EXT_other", "VK_KHR_compute_shader_derivatives"};

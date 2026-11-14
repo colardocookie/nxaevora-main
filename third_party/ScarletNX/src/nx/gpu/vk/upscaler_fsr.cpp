@@ -115,6 +115,7 @@ int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetIns
     out->extensions.count = 0;
     out->extensions.names = nullptr;
     out->features = nullptr;
+    out->core = 0;
     if (!library()) return SNX_UPSCALER_REFUSED;
     if (!instance || !device || !lookup) {
         logf_(0, "arceus-upscaler: fsr is not available: its needs of the device cannot be asked without one\n");
@@ -171,12 +172,18 @@ int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetIns
     static int said;
     if (!said++)
         logf_(1, "arceus-upscaler: fsr names its needs of the device: " FSR_DERIVATIVES " with linear derivative "
-                 "groups. The physical device %s 16 bit floats in shaders, a core feature the device's maker turns "
-                 "on where it is there. A conservative policy for the library that was seen, not a complete list\n",
+                 "groups, and separate depth and stencil layouts, a core feature the device's maker checks and "
+                 "turns on. The physical device %s 16 bit floats in shaders, a core feature the device's maker "
+                 "turns on where it is there. A conservative policy for the library that was seen, not a complete "
+                 "list\n",
               halves.shaderFloat16 ? "has" : "does not have");
     out->extensions.count = 1;
     out->extensions.names = g_device_names;
     out->features = &g_derivatives;
+    /* The SDK's published backend names the depth aspect alone in its barriers on a depth image handed to it.
+       On an image with stencil that needs separate depth and stencil layouts on the device. Named as a plain
+       core bit: no 1.2 structure is handed out, and the device's maker asks the physical device itself. */
+    out->core = SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL;
     return SNX_UPSCALER_OK;
 }
 

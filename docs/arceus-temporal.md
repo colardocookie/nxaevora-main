@@ -671,6 +671,14 @@ itself (`upscaler_needs.h` has the rules, host-tested, and `upscaler_host.c` app
   structure is refused by its type or as a repeat.
 - Each bit asked for is checked against the host's own question to the physical device. A bit it does not have
   refuses. Bits not asked for stay off.
+- A need of a core feature bit is no structure at all. The adapter's answer has a plain field for such bits
+  (since version 3 of the contract, and an adapter of another version is refused before anything of it is
+  called). One bit is defined: separate layouts for the depth and the stencil aspect, a bit of the 1.2
+  features. A bit the host does not know refuses. The known one is checked against the question the game's
+  device creation asks the physical device anyway, and a physical device without it means the adapter is not
+  available. It is turned on in the game's own 1.2 structure for the creation with the additions and put back
+  to the game's own value before a creation without them. No 1.2 structure of an adapter is ever taken or
+  chained. An answer with that bit alone is a need like any other.
 - The adapter's storage is read and never written, linked or kept. It is read as bytes, each field copied out at its
   offset into a value of the host's own, and never through a structure type of the host's. What goes into the device
   is a structure of the host's own, in front of the game's chain, and the host's own copies of the names behind the
@@ -681,16 +689,28 @@ that says why. For a name that no adapter of this program has, the device's crea
 start has the one line for that. If the device cannot be made with the additions, it is made once more from the game's
 own list and chain head, with one line, and the adapter is not available. Only after a device was made with the
 additions is a record written, by value: the adapter's name, every extension it named (also one the game's list
-already had) and the bits that were turned on, with the line `arceus-upscaler: the game's device is made with <names>
-... for <adapter>`. The upscaler's start asks the adapter again and holds the answer against that record: the same
-adapter, every name in it, every bit asked for on in it. Anything else is "not available" with the reason, so an
-adapter does not start on a device that was made without what it names.
+already had), the bits that were turned on and the core bits, with the line `arceus-upscaler: the game's device is
+made with <names> ... for <adapter>`. The upscaler's start asks the adapter again and holds the answer against that
+record: the same adapter, every name in it, every bit asked for on in it. Anything else is "not available" with the
+reason, so an adapter does not start on a device that was made without what it names.
 
-Limits. None of this was run with the switch: the lines and the fallback after a failed creation are read
-from the code, not seen. Enabling the extension and the feature allows a shader capability and, read from the
-specification, changes no existing call. No run has checked that. A run with the switch is to be made under
-the validation layer (the section above). The adapter's name is its own (`name` of the contract), or the
-switch's word when it gives none.
+Limits. One run of the game with the switch had the device made with the extension and the derivatives
+feature, before the core bit existed (report 20261114-204846-report-1d541e). The refusals, the fallback after a
+failed creation and the core bit are read from the code, not seen. Enabling the extension and the feature
+allows a shader capability and, read from the specification, changes no existing call.
+
+Why the core bit. In that run the validation layer reported barriers of the old barrier call on a `D24_UNORM_S8_UINT`
+image with the depth aspect alone (rule `VUID-VkImageMemoryBarrier-image-03320`). No barrier of the runtime or of ours
+is made with that call or names one aspect of such an image alone. The SDK's published Vulkan backend does both for a
+depth image handed to it. That is the published source's normal path, not proof of what the library that ran does: the
+line of the handed images' handles is what ties the message's image to the depth we hand over. With separate depth and
+stencil layouts on, the rule allows a depth aspect alone. The self-test's device has had that feature on all along,
+since it turns every 1.2 feature on, and never showed the rule. The proof is a run of the game under the layer in
+which rule 03320 no longer occurs and no new rule appears at barriers. After the library returns, both aspects must be
+in the layout the runtime's tracker holds: by the published source the library puts the depth aspect back to the
+layout it was handed in and never names the stencil aspect, and our barrier after the library names both aspects with
+that layout. A run with the switch is to be made under the validation layer (the section above). The adapter's name is
+its own (`name` of the contract), or the switch's word when it gives none.
 
 ## What the FSR adapter needs of a device
 
@@ -705,7 +725,11 @@ query of features that fails, or a list that stays incomplete, also means "not a
 part of a list. 16 bit floats in shaders are a core feature that whoever makes the device turns on where the physical
 device has it. The self-test's device has every feature of the physical device on, that one among them as a bit of the
 Vulkan 1.2 structure, and the adapter's own structure for the derivatives goes behind it in the chain and lives in the
-adapter. The game's device takes the same needs by its own path (the section before). It closes no condition:
+adapter. The adapter also names one core feature bit, separate depth and stencil layouts (the reason is in
+the section before). The self-test holds it against the 1.2 structure it already has, refuses a physical
+device without it, and its device line says that the device is made with it for the adapter, so the two
+makers' configurations can be compared from the logs. The game's device takes the same needs by its own path
+(the section before). It closes no condition:
 the library's own storage image messages remain.
 
 ## The upscaler's self-test (`SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>`)

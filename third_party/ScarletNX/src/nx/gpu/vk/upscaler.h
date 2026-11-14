@@ -14,7 +14,7 @@
 #include <vulkan/vulkan_core.h>
 #endif
 
-#define SNX_UPSCALER_ABI 2
+#define SNX_UPSCALER_ABI 3
 /* the one symbol a separate module exports: it returns its functions for this ABI number, or NULL */
 #define SNX_UPSCALER_ENTRY "snx_upscaler_api"
 
@@ -32,9 +32,14 @@ typedef struct {
     uint32_t count;
     const char* const* names;
 } SnxUpscalerExtensions;
+/* Core feature bits a library needs on, as a plain field and never as a structure in the chain: whoever makes
+   the device turns each on in its own structure of the core features, after its own question to the physical
+   device. One bit so far. A bit the runtime does not know refuses the adapter. */
+#define SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL 1u /* separateDepthStencilLayouts of the 1.2 features */
 typedef struct {
     SnxUpscalerExtensions extensions;
-    const void* features; /* a pNext chain of feature structures to turn on, or NULL */
+    const void* features; /* a pNext chain of feature structures to turn on, or NULL. Never a core structure */
+    uint32_t core;        /* SNX_UPSCALER_CORE_* (since ABI 3) */
 } SnxUpscalerDeviceNeeds;
 
 /* The inputs' fixed properties. The runtime states all of them: a library that cannot take one refuses. */

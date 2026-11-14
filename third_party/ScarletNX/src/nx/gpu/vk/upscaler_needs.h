@@ -42,6 +42,8 @@ enum {
     SNX_NEEDS_LIST,        /* the physical device's list of extensions was not read whole */
     SNX_NEEDS_ROOM,        /* more names than the host keeps, or a name too long to keep */
     SNX_NEEDS_OWNER,       /* a bit is asked for and VK_KHR_compute_shader_derivatives is not named */
+    SNX_NEEDS_CORE_UNKNOWN, /* a core feature bit is asked for that the host does not know */
+    SNX_NEEDS_CORE_BIT,     /* a core feature bit that is asked for is not one the physical device has */
     SNX_NEEDS_ADAPTER,     /* the record is of another adapter, or there is none */
     SNX_NEEDS_NOT_RECORDED /* an extension or a bit that is asked for is not in the record */
 };
@@ -98,6 +100,23 @@ static inline int snx_needs_owner(const char* const* names, uint32_t count, cons
     return SNX_NEEDS_OWNER;
 }
 
+/* Needs of core feature bits are no structure at all: a plain field of the adapter's answer, of which one bit
+   is defined, separate layouts for the depth and the stencil aspect (a bit of the 1.2 features). Whoever makes
+   a device turns it on in its own 1.2 structure, after its own question to the physical device. A bit the host
+   does not know refuses, and so does a known one the physical device does not have. */
+#define SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL 1u
+#define SNX_NEEDS_CORE_KNOWN SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL
+static inline int snx_needs_core(uint32_t asked, int has_separate_depth_stencil) {
+    if (asked & ~SNX_NEEDS_CORE_KNOWN) return SNX_NEEDS_CORE_UNKNOWN;
+    if ((asked & SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL) && !has_separate_depth_stencil) return SNX_NEEDS_CORE_BIT;
+    return SNX_NEEDS_OK;
+}
+/* The bit as a device's own 1.2 structure gets it for one creation: on when the additions are taken and the
+   adapter asks for it, else what the maker had. So the creation without the additions has the maker's own. */
+static inline int snx_needs_core_bit(int own, int accepted, uint32_t asked, uint32_t bit) {
+    return accepted && (asked & bit) ? 1 : own;
+}
+
 /* What a device is made with: the count of its extension names and the head of its feature chain. The game's own
    pair is never changed in place. The adapter's additions are made on a copy, and when they are refused or the
    device cannot be made with them, the device is made from the game's own pair. */
@@ -123,9 +142,10 @@ typedef struct {
     uint32_t names;
     char name[SNX_NEEDS_NAMES][SNX_NEEDS_NAME_LENGTH + 1];
     SnxNeedsBits on;
+    uint32_t core; /* the core feature bits that were turned on for the adapter */
 } SnxNeedsRecord;
 static inline int snx_needs_record(SnxNeedsRecord* r, const char* adapter, const char* const* names, uint32_t count,
-                                   const SnxNeedsBits* on) {
+                                   const SnxNeedsBits* on, uint32_t core) {
     memset(r, 0, sizeof *r);
     if (!adapter || strlen(adapter) >= sizeof r->adapter || count > SNX_NEEDS_NAMES) return SNX_NEEDS_ROOM;
     for (uint32_t i = 0; i < count; i++)
@@ -134,6 +154,7 @@ static inline int snx_needs_record(SnxNeedsRecord* r, const char* adapter, const
     for (uint32_t i = 0; i < count; i++) memcpy(r->name[i], names[i], strlen(names[i]) + 1);
     r->names = count;
     r->on = *on;
+    r->core = core;
     r->made = 1;
     return SNX_NEEDS_OK;
 }
@@ -141,9 +162,10 @@ static inline int snx_needs_record(SnxNeedsRecord* r, const char* adapter, const
    every extension it names in the record, and every bit it asks for on in the record. Anything else means the
    device was not made for what the adapter needs. */
 static inline int snx_needs_met(const SnxNeedsRecord* r, const char* adapter, const char* const* names,
-                                uint32_t count, const void* chain) {
+                                uint32_t count, const void* chain, uint32_t core) {
     SnxNeedsBits asked;
     if (!r->made || !adapter || strcmp(r->adapter, adapter)) return SNX_NEEDS_ADAPTER;
+    if (core & ~SNX_NEEDS_CORE_KNOWN) return SNX_NEEDS_CORE_UNKNOWN;
     const int walked = snx_needs_chain(chain, &asked);
     if (walked != SNX_NEEDS_OK) return walked;
     for (uint32_t i = 0; i < count; i++) {
@@ -154,6 +176,7 @@ static inline int snx_needs_met(const SnxNeedsRecord* r, const char* adapter, co
     }
     if (asked.have && (!r->on.have || (asked.quads && !r->on.quads) || (asked.linear && !r->on.linear)))
         return SNX_NEEDS_NOT_RECORDED;
+    if (core & ~r->core) return SNX_NEEDS_NOT_RECORDED; /* a core bit asked for that was not turned on */
     return SNX_NEEDS_OK;
 }
 /* a refusal in words, for the one line the switch prints */
@@ -168,10 +191,16 @@ static inline const char* snx_needs_text(int why) {
         case SNX_NEEDS_LIST: return "the physical device's list of extensions could not be read whole";
         case SNX_NEEDS_ROOM: return "it names more than the host keeps, or a name too long to keep";
         case SNX_NEEDS_OWNER: return "it asks for a feature bit and does not name VK_KHR_compute_shader_derivatives";
+        case SNX_NEEDS_CORE_UNKNOWN: return "it asks for a core feature bit the host does not know";
+        case SNX_NEEDS_CORE_BIT:
+            return "it asks for separate depth and stencil layouts, which the physical device does not have";
         case SNX_NEEDS_ADAPTER: return "the game's device was not made with the needs of this adapter";
         default: return "it names an extension or a feature bit the game's device was not made with";
     }
 }
-/* 1 when an adapter names nothing: it then needs no record, and runs on the device as the game makes it */
-static inline int snx_needs_none(uint32_t count, const void* chain) { return !count && !chain; }
+/* 1 when an adapter names nothing, no extension, no structure and no core bit: it then needs no record, and
+   runs on the device as the game makes it. A core bit alone is a need. */
+static inline int snx_needs_none(uint32_t count, const void* chain, uint32_t core) {
+    return !count && !chain && !core;
+}
 #endif

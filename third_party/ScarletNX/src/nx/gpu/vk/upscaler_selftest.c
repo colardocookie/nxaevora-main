@@ -520,8 +520,9 @@ static int device_make(void) {
     }
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(g.physical, &props);
+    u32 core = 0;
     if (!vk_upscaler_device_needs(g.api, g.instance, g.physical, vkGetInstanceProcAddr, device_names, &device_count,
-                                  64, &features)) {
+                                  64, &features, &core)) {
         LOG(ST "FAIL: the adapter is not available on this device, or its needs of it could not be taken\n");
         return 0;
     }
@@ -536,8 +537,21 @@ static int device_make(void) {
     f12.pNext = NULL;
     vkGetPhysicalDeviceFeatures2(g.physical, &f2);
     f12.pNext = (void*)features;
-    LOG(ST "the device is made with %u extensions of the adapter%s%s, and with 16 bit floats in shaders %s\n",
+    /* A core bit the adapter needs is a bit of this 1.2 structure, which has every bit the physical device has:
+       it is on by that, and here it is held against the need. A physical device without it has no adapter. */
+    const int separate = (core & SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL) != 0;
+    if (separate && !f12.separateDepthStencilLayouts) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs separate depth and stencil layouts, "
+               "which the physical device does not have\n");
+        return 0;
+    }
+    LOG(ST "the device is made with %u extensions of the adapter%s%s, with separate depth and stencil layouts %s, "
+           "and with 16 bit floats in shaders %s\n",
         device_count, device_count ? ": " : "", device_count ? device_names[0] : "",
+        separate ? "on for the adapter, which needs them"
+                 : f12.separateDepthStencilLayouts ? "on as every feature the physical device has, not asked for by "
+                                                     "the adapter"
+                                                   : "off, as the physical device has none",
         f12.shaderFloat16 ? "on, as the physical device has them" : "off, as the physical device has none");
     const float priority = 1.0f;
     const VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
