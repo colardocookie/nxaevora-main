@@ -888,9 +888,12 @@ void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d) {
     u8* q = (u8*)x + h;
     *x = (BarrierArgs){cb, d->dependencyFlags, d->memoryBarrierCount, d->bufferMemoryBarrierCount,
                        d->imageMemoryBarrierCount};
-    memcpy(q, d->pMemoryBarriers, d->memoryBarrierCount * sizeof(VkMemoryBarrier2));
-    memcpy(q + mn, d->pBufferMemoryBarriers, d->bufferMemoryBarrierCount * sizeof(VkBufferMemoryBarrier2));
-    memcpy(q + mn + bn, d->pImageMemoryBarriers, d->imageMemoryBarrierCount * sizeof(VkImageMemoryBarrier2));
+    /* an empty array may be NULL, which is not to be handed to memcpy even for no bytes */
+    if (d->memoryBarrierCount) memcpy(q, d->pMemoryBarriers, d->memoryBarrierCount * sizeof(VkMemoryBarrier2));
+    if (d->bufferMemoryBarrierCount)
+        memcpy(q + mn, d->pBufferMemoryBarriers, d->bufferMemoryBarrierCount * sizeof(VkBufferMemoryBarrier2));
+    if (d->imageMemoryBarrierCount)
+        memcpy(q + mn + bn, d->pImageMemoryBarriers, d->imageMemoryBarrierCount * sizeof(VkImageMemoryBarrier2));
     rec_commit();
 }
 

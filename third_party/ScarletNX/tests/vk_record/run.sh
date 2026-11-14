@@ -19,7 +19,7 @@ if command -v setarch >/dev/null 2>&1; then fixed="setarch $(uname -m) -R"; fi
 failed=0
 for build in asan tsan; do
     for mode in thread once; do
-        for scenario in order intruder failed-begin failed-end failed-submit refused no-buffer wrap; do
+        for scenario in order intruder failed-begin failed-end failed-submit refused no-buffer wrap barrier; do
             run="$out/vk_record_$build"
             if [ $build = tsan ]; then run="$fixed $run"; fi
             if ! TSAN_OPTIONS=halt_on_error=1 $run $mode $scenario >"$out/last.txt" 2>&1; then
@@ -30,5 +30,5 @@ for build in asan tsan; do
         done
     done
 done
-[ $failed = 0 ] && echo "vk_record: ok (8 scenarios, 2 modes, address and thread sanitizers)"
+[ $failed = 0 ] && echo "vk_record: ok (9 scenarios, 2 modes, address and thread sanitizers)"
 exit $failed

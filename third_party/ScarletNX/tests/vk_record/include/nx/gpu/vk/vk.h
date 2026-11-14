@@ -273,6 +273,7 @@ u32 vk_rec_frame_sets(u32 slot);
 void rec_CmdDraw(VkCommandBuffer cb, u32 vertices, u32 instances, u32 first_vertex, u32 first_instance);
 void rec_CmdEndRendering(VkCommandBuffer cb);
 void rec_CmdDispatch(VkCommandBuffer cb, u32 x, u32 y, u32 z);
+void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d);
 
 /* Vulkan's calls as fakes. The ones the fixture steers or reads have a function of their own. */
 VkResult vkBeginCommandBuffer(VkCommandBuffer cb, const VkCommandBufferBeginInfo* info);
@@ -284,6 +285,7 @@ VkResult vkAllocateDescriptorSets(VkDevice dev, const VkDescriptorSetAllocateInf
 VkResult vkResetDescriptorPool(VkDevice dev, VkDescriptorPool pool, VkFlags flags);
 void vkUpdateDescriptorSets(VkDevice dev, u32 n, const VkWriteDescriptorSet* writes, u32 copies, const void* none);
 void vkCmdDraw(VkCommandBuffer cb, u32 vertices, u32 instances, u32 first_vertex, u32 first_instance);
+void vkCmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d);
 /* every other command: its name on the list of what was made, its arguments taken and looked at by no one */
 void fake_command(VkCommandBuffer cb, const char* name, ...);
 #define vkCmdBeginConditionalRenderingEXT(cb, ...) \
@@ -310,7 +312,6 @@ void fake_command(VkCommandBuffer cb, const char* name, ...);
 #define vkCmdCopyQueryPoolResults(cb, ...) fake_command((cb), "vkCmdCopyQueryPoolResults", ##__VA_ARGS__)
 #define vkCmdDrawIndexed(cb, ...) fake_command((cb), "vkCmdDrawIndexed", ##__VA_ARGS__)
 #define vkCmdDispatch(cb, ...) fake_command((cb), "vkCmdDispatch", ##__VA_ARGS__)
-#define vkCmdPipelineBarrier2(cb, ...) fake_command((cb), "vkCmdPipelineBarrier2", ##__VA_ARGS__)
 #define vkCmdPushConstants(cb, ...) fake_command((cb), "vkCmdPushConstants", ##__VA_ARGS__)
 #define vkCmdBeginQuery(cb, ...) fake_command((cb), "vkCmdBeginQuery", ##__VA_ARGS__)
 #define vkCmdEndQuery(cb, ...) fake_command((cb), "vkCmdEndQuery", ##__VA_ARGS__)

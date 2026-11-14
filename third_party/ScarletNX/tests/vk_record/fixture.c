@@ -178,6 +178,16 @@ void vkCmdDraw(VkCommandBuffer cb, u32 vertices, u32 instances, u32 first_vertex
     (void)first_instance;
     note(DRAW, cb, "vkCmdDraw", vertices);
 }
+/* a barrier's tag: how many of each kind it has, and the sum of the marks the fixture put into them, so that
+   what arrives is known to be what was queued */
+void vkCmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d) {
+    u32 marks = 0;
+    for (u32 i = 0; i < d->memoryBarrierCount; i++) marks += (u32)d->pMemoryBarriers[i].sType;
+    for (u32 i = 0; i < d->bufferMemoryBarrierCount; i++) marks += (u32)d->pBufferMemoryBarriers[i].sType;
+    for (u32 i = 0; i < d->imageMemoryBarrierCount; i++) marks += (u32)d->pImageMemoryBarriers[i].sType;
+    note(COMMAND, cb, "vkCmdPipelineBarrier2",
+         d->memoryBarrierCount | d->bufferMemoryBarrierCount << 4 | d->imageMemoryBarrierCount << 8 | marks << 12);
+}
 void fake_command(VkCommandBuffer cb, const char* name, ...) { note(COMMAND, cb, name, 0); }
 void vk_render_forget_state(void) {
     assert(t_vkdepth > 0); /* inside the stretch, under the lock */
@@ -529,6 +539,49 @@ static void scenario_wrap(void) {
     CHECK(at == g_count && !vk_rec_submit_failed() && lock_is_free());
 }
 
+/* Barriers with each of the eight combinations of their three arrays present or empty, an empty one NULL: the
+   renderer's own are image barriers alone. Copying an empty array that is NULL is not a valid call, which the
+   sanitizer of undefined behaviour reports. Each barrier is made, in order, with the counts and the contents
+   it was queued with. */
+static void scenario_barrier(void) {
+    struct VkCommandBuffer_T buffer;
+    VkCommandBuffer cb = &buffer;
+    const VkMemoryBarrier2 memory[2] = {{.sType = 1}, {.sType = 2}};
+    const VkBufferMemoryBarrier2 bytes[1] = {{.sType = 16}};
+    const VkImageMemoryBarrier2 image[3] = {{.sType = 256}, {.sType = 512}, {.sType = 1024}};
+    u32 tags[8];
+    size_t at = 0;
+    vk_lock();
+    begin(cb);
+    draws(cb, 1, 2);
+    for (u32 k = 0; k < 8; k++) {
+        const VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                    .memoryBarrierCount = k & 1 ? 2 : 0,
+                                    .pMemoryBarriers = k & 1 ? memory : NULL,
+                                    .bufferMemoryBarrierCount = k & 2 ? 1 : 0,
+                                    .pBufferMemoryBarriers = k & 2 ? bytes : NULL,
+                                    .imageMemoryBarrierCount = k & 4 ? 3 : 0,
+                                    .pImageMemoryBarriers = k & 4 ? image : NULL};
+        tags[k] = d.memoryBarrierCount | d.bufferMemoryBarrierCount << 4 | d.imageMemoryBarrierCount << 8 |
+                  ((k & 1 ? 3u : 0u) + (k & 2 ? 16u : 0u) + (k & 4 ? 1792u : 0u)) << 12;
+        rec_CmdPipelineBarrier2(cb, &d);
+    }
+    draws(cb, 3, 2);
+    submit(cb, 1);
+    vk_rec_sync();
+    vk_unlock();
+    expect(&at, BEGIN, NULL, queued_by(1));
+    expect_draws(&at, cb, 1, 2, queued_by(1));
+    for (u32 k = 0; k < 8; k++) {
+        CHECK(at < g_count && g_events[at].tag == tags[k]);
+        expect(&at, COMMAND, "vkCmdPipelineBarrier2", queued_by(1));
+    }
+    expect_draws(&at, cb, 3, 2, queued_by(1));
+    expect(&at, END, NULL, queued_by(1));
+    expect(&at, SUBMIT, NULL, queued_by(1));
+    CHECK(at == g_count && lock_is_free());
+}
+
 int main(int argc, char** argv) {
     static const struct {
         const char* name;
@@ -538,7 +591,8 @@ int main(int argc, char** argv) {
                  {"failed-begin", scenario_failed_begin},
                  {"refused", scenario_refused},
                  {"no-buffer", scenario_no_buffer},
-                 {"wrap", scenario_wrap}};
+                 {"wrap", scenario_wrap},
+                 {"barrier", scenario_barrier}};
     if (argc != 3 || (strcmp(argv[1], "thread") && strcmp(argv[1], "once"))) {
         fprintf(stderr, "usage: fixture thread|once <scenario>\n");
         return 2;

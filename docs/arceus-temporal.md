@@ -474,11 +474,12 @@ that work uses stays in use. No answer means "nothing was recorded".
 
 `tests/vk_record/run.sh` is its fixture, for a host with gcc and pthreads (it is not part of the Windows test
 run). It compiles the recorder's own file as it is, with its ring, its thread, its drain and its mark, against
-stand-in headers for Vulkan and the renderer, with the host's own mutex, and runs eight scenarios with and
+stand-in headers for Vulkan and the renderer, with the host's own mutex, and runs nine scenarios with and
 without the recording thread, once under the address sanitizer and once under the thread sanitizer: the order
 of the commands, two other producers that try to get in during the stretch, a failed begin, a failed end and a
 failed submission of an earlier frame, a library that refuses and one that succeeds after it, command buffers
-that are not the frame's, and sixty frames that wrap the ring. Each scenario asserts the list of calls in
+that are not the frame's, sixty frames that wrap the ring, and barriers with each combination of their three
+arrays present or empty. Each scenario asserts the list of calls in
 order and who made each, so a clean schedule under a sanitizer is not what passes it. It says nothing about a
 real driver or a real library.
 
