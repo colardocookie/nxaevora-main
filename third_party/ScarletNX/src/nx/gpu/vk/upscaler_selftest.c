@@ -23,7 +23,7 @@
 #define OFFSETS 18              /* ceil(8 x 1.5 x 1.5): the jitter's offsets for these sizes */
 #define FRAMES (2 * OFFSETS)    /* evaluated frames of a run at these sizes: twice the offsets */
 #define SAMPLES 8               /* the reference averages 8 x 8 points of a pixel */
-#define NEAR_PLANE 0.1          /* the scene's depth is 0.1 / distance: an infinite far plane, reversed */
+#define NEAR_PLANE 0.1          /* of every scene's projection: the game's field camera has it */
 #define FOV_Y 0.8726646259971648 /* 50 degrees */
 #define FRAME_SECONDS (1.0 / 60.0)
 #define BAND_LEAST 500          /* pixels of a band under which it judges nothing */
@@ -74,6 +74,7 @@ typedef struct {
     u16* motion;
     int cut_at;          /* the frame whose pattern is new, -1 for none */
     int ungated;         /* a shape the game does not make: not put through the game's gate (frame_run) */
+    SelftestProjection form; /* the projection the depth was made with: the camera's numbers and the far-plane flag */
 } Inputs;
 
 /* What a variant makes of the numbers handed on: the factor on the reported jitter of each axis (1 as configured,
@@ -413,10 +414,12 @@ static void offset(unsigned k, unsigned n, double out[2]) {
    patch: a nearer patch moving another way. cut: the last frame has the other pattern. up: a negative viewport
    height. edges: the edge picture. ahead: images one offset ahead of the reported jitter. turned: clip y negated. */
 static const int SIZES[4] = {RENDER_W, RENDER_H, OUT_W, OUT_H};
-static int inputs_build(Inputs* in, const int size[4], int w, int h, int x, int y, int up, const double move[2],
-                        int patch, int cut, int edges, int ahead, int turned) {
+static const SelftestProjection INFINITE = {NEAR_PLANE, INFINITY}; /* a form: what the depth is made with */
+static int inputs_project(Inputs* in, const SelftestProjection* form, const int size[4], int w, int h, int x, int y,
+                          int up, const double move[2], int patch, int cut, int edges, int ahead, int turned) {
     const int RW = size[0], RH = size[1];
     memset(in, 0, sizeof *in);
+    in->form = *form;
     in->w = w;
     in->h = h;
     in->rw = RW;
@@ -449,6 +452,8 @@ static int inputs_build(Inputs* in, const int size[4], int w, int h, int x, int 
             f->shift_before[a] = step[a] * (i - 1);
         }
         f->has_patch = patch;
+        f->depth[0] = selftest_depth(form, SELFTEST_FAR_DISTANCE);
+        f->depth[1] = selftest_depth(form, SELFTEST_NEAR_DISTANCE);
         f->patch[0] = 0.15 + patch_step[0] * i;
         f->patch[1] = -0.55 + patch_step[1] * i;
         f->patch[2] = f->patch[0] + 0.5;
@@ -473,7 +478,7 @@ static int inputs_build(Inputs* in, const int size[4], int w, int h, int x, int 
                 motion[4 * at] = selftest_half(texel[0]);
                 motion[4 * at + 1] = selftest_half(texel[1]);
                 motion[4 * at + 2] = 0;
-                motion[4 * at + 3] = selftest_half(z == SELFTEST_NEAR ? 1.0 : 0.0);
+                motion[4 * at + 3] = selftest_half(patch && z == f->depth[1] ? 1.0 : 0.0);
             }
         if (ahead) { /* the images are made: from here the frame says it had its own offset */
             offset((unsigned)i, (unsigned)in->offsets, px);
@@ -482,6 +487,11 @@ static int inputs_build(Inputs* in, const int size[4], int w, int h, int x, int 
         }
     }
     return 1;
+}
+/* the same with the far plane at infinity, as every case but the native suite's finite form has it */
+static int inputs_build(Inputs* in, const int size[4], int w, int h, int x, int y, int up, const double move[2],
+                        int patch, int cut, int edges, int ahead, int turned) {
+    return inputs_project(in, &INFINITE, size, w, h, x, y, up, move, patch, cut, edges, ahead, turned);
 }
 static int inputs_make(Inputs* in, const int size[4], int w, int h, int x, int y, int up, const double move[2],
                        int patch, int cut) {
@@ -620,10 +630,12 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     state.fx = (float)in->rw / (float)in->w;
     state.fy = (float)in->rh / (float)in->h;
     if (!temporal_rect_from_viewport(&state.viewport, in->w, in->h, &state.rect)) return -1;
-    /* What a context is made with beside the sizes, as one number: the suite's generation and the variant's create
-       properties. It is the configuration's generation, and part of what a history was made from: a context of
-       another making has no history, so its first frame has the reset. */
-    const u64 making = g.generation * 4 + (u64)(v->depth_reversed ? 2 : 0) + (u64)(v->ldr ? 1 : 0);
+    /* What a context is made with beside the sizes, as one number: the suite's generation, whether the inputs' far
+       plane is finite and the variant's create properties. It is the configuration's generation, and part of what
+       a history was made from: a context of another making has no history, so its first frame has the reset. */
+    const int far_infinite = isinf(in->form.far_plane) != 0;
+    const u64 making = g.generation * 8 + (u64)(far_infinite ? 0 : 4) + (u64)(v->depth_reversed ? 2 : 0) +
+                       (u64)(v->ldr ? 1 : 0);
     const TemporalRectStamp stamp = {1, making, in->w, in->h, in->ow, in->oh, state.rect, state.fx, state.fy};
     /* the scene block as the first scene draw's fragment program would read it */
     const TemporalSceneBlock block = {1, 1, state.fx, state.fy};
@@ -641,12 +653,13 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
         temporal_rect_hooked(&s->gate, s->frame); /* the passes are reached in every frame of a run */
         given = temporal_upscaler_frame(&s->gate, s->frame, &stamp, &state.viewport, jitter, cut, &numbers);
     }
-    if (!given || !temporal_upscaler_camera(NEAR_PLANE, (double)INFINITY, FOV_Y, FRAME_SECONDS, 1, camera)) {
+    if (!given || !temporal_upscaler_camera(in->form.near_plane, in->form.far_plane, FOV_Y, FRAME_SECONDS,
+                                            far_infinite, camera)) {
         s->skipped++;
         return 0;
     }
     const u32 flags = (v->ldr ? 0 : SNX_UPSCALER_COLOUR_LINEAR_HDR) | SNX_UPSCALER_VECTORS_UNJITTERED |
-                      SNX_UPSCALER_EXPOSURE_AUTOMATIC | SNX_UPSCALER_FAR_PLANE_INFINITE |
+                      SNX_UPSCALER_EXPOSURE_AUTOMATIC | (far_infinite ? SNX_UPSCALER_FAR_PLANE_INFINITE : 0) |
                       (v->depth_reversed ? SNX_UPSCALER_DEPTH_REVERSED : 0);
     const TemporalUpscalerConfig config = {in->w, in->h, in->rw, in->rh, in->ow, in->oh, making};
     if (!context_ready(s, in, &config, flags, &traits)) {

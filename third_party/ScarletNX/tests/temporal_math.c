@@ -3370,6 +3370,77 @@ static void test_selftest_edges(void) {
     free(copy);
 }
 
+/* The depth the self-test's scene is made with, against numbers that share nothing with selftest_depth or with the
+   decoder: fractions worked out by hand from depth = n (f - d) / (d (f - n)) for near 1/10 and far 5000, and the
+   field camera's matrix as a run printed it, with a point taken through it as a row vector. */
+static void test_selftest_projection(void) {
+    const SelftestProjection finite = {0.1, 5000.0}, infinite = {0.1, INFINITY};
+    /* by hand, as fractions: at 1/10 it is 1, at 1/6 29999/49999, at 1 4999/49999, at 5 999/49999, at 100
+       49/49999, at 2500 1/49999, at 5000 it is 0 */
+    static const double by_hand[7][2] = {{0.1, 1.0},
+                                         {1.0 / 6.0, 29999.0 / 49999.0},
+                                         {1.0, 4999.0 / 49999.0},
+                                         {5.0, 999.0 / 49999.0},
+                                         {100.0, 49.0 / 49999.0},
+                                         {2500.0, 1.0 / 49999.0},
+                                         {5000.0, 0.0}};
+    /* report 20261114-110024-report-84b8be, the field camera at +0x80, memory order */
+    static const float field[16] = {1.20628512f, 0, 0, 0, 0, 2.14450693f, 0, 0, 0, 0, 2.00004015e-05f, -1, 0, 0,
+                                    0.100002006f, 0};
+    for (int k = 0; k < 7; k++) {
+        const double d = by_hand[k][0], depth = selftest_depth(&finite, d);
+        assert(close_to(depth, by_hand[k][1], 1e-12));
+        /* the point (0.3 d, -0.2 d, -d, 1) as a row vector times the matrix: clip z over clip w */
+        const double point[4] = {0.3 * d, -0.2 * d, -d, 1.0};
+        double clip[4] = {0.0, 0.0, 0.0, 0.0};
+        for (int column = 0; column < 4; column++)
+            for (int row = 0; row < 4; row++) clip[column] += point[row] * (double)field[4 * row + column];
+        assert(close_to(clip[3], d, 1e-12) && close_to(clip[2] / clip[3], depth, 2e-7));
+    }
+    assert(selftest_depth(&finite, 0.1) > selftest_depth(&finite, 0.2)); /* reversed: nearer is larger */
+    /* the far plane at infinity: n / d, 1 at the near plane, towards 0 and never 0 */
+    assert(selftest_depth(&infinite, 0.1) == 1.0 && close_to(selftest_depth(&infinite, 0.4), 0.25, 1e-15));
+    assert(selftest_depth(&infinite, 1e9) > 0.0 && selftest_depth(&infinite, 1e9) < 1e-9);
+    /* The scene's two distances. With the far plane at infinity they give the depths every case had so far, to
+       the bit of a 24 bit depth image. With the far plane at 5000 they give other bits, the patch still nearer. */
+    assert(selftest_d24(selftest_depth(&infinite, SELFTEST_FAR_DISTANCE)) == selftest_d24(SELFTEST_FAR));
+    assert(selftest_d24(selftest_depth(&infinite, SELFTEST_NEAR_DISTANCE)) == selftest_d24(SELFTEST_NEAR));
+    assert(selftest_d24(SELFTEST_FAR) == 335544u && selftest_d24(SELFTEST_NEAR) == 10066329u);
+    assert(selftest_d24(selftest_depth(&finite, SELFTEST_FAR_DISTANCE)) == 335215u);
+    assert(selftest_d24(selftest_depth(&finite, SELFTEST_NEAR_DISTANCE)) == 10066195u);
+    assert(selftest_depth(&finite, SELFTEST_NEAR_DISTANCE) > selftest_depth(&finite, SELFTEST_FAR_DISTANCE));
+    /* One more check, not the proof: the decoder reads the form back from a matrix made for it, and the depth
+       at the decoded planes is 1 and 0. */
+    {
+        TemporalProjection p;
+        float m[16];
+        projection_make(finite.near_plane, finite.far_plane, 0.8726646259971648, 16.0 / 9.0, m);
+        assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_OK && !p.far_infinite);
+        assert(close_to(selftest_depth(&finite, p.near_plane), 1.0, 1e-6));
+        assert(close_to(selftest_depth(&finite, p.far_plane), 0.0, 1e-6));
+        projection_make(infinite.near_plane, infinite.far_plane, 0.8726646259971648, 16.0 / 9.0, m);
+        assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_OK && p.far_infinite);
+        assert(close_to(selftest_depth(&infinite, p.near_plane), 1.0, 1e-6));
+    }
+    /* the scene hands a frame's two depths on as they are given */
+    {
+        SelftestFrame f = {0};
+        const SelftestViewport v = {0, 0, 640, 360};
+        double rgb[3], depth = -1.0, texel[2];
+        f.depth[0] = selftest_depth(&finite, SELFTEST_FAR_DISTANCE);
+        f.depth[1] = selftest_depth(&finite, SELFTEST_NEAR_DISTANCE);
+        selftest_input(&f, &v, 640, 360, 320, 180, rgb, &depth, texel);
+        assert(depth == f.depth[0]);
+        f.has_patch = 1;
+        f.patch[0] = f.patch[1] = f.patch_before[0] = f.patch_before[1] = -0.5;
+        f.patch[2] = f.patch[3] = f.patch_before[2] = f.patch_before[3] = 0.5;
+        selftest_input(&f, &v, 640, 360, 320, 180, rgb, &depth, texel);
+        assert(depth == f.depth[1]);
+        selftest_input(&f, &v, 640, 360, 20, 20, rgb, &depth, texel);
+        assert(depth == f.depth[0]);
+    }
+}
+
 static void test_selftest(void) {
     const SelftestViewport down = {0, 0, 640, 360}, up = {0, 360, 640, -360};
     double n[2], p[2], a[3], b[3], depth, texel[2];
@@ -3412,6 +3483,7 @@ static void test_selftest(void) {
        with the negative height that is 32 px to the right and 9 px up the image, over 640 by 360. A perturbation
        changes which point a pixel shows, not the vector of that point. */
     SelftestFrame pan = {0};
+    pan.depth[0] = SELFTEST_FAR;
     pan.shift[0] = 0.3;
     pan.shift[1] = 0.15;
     pan.shift_before[0] = 0.2;
@@ -3435,6 +3507,8 @@ static void test_selftest(void) {
        came from 0.05 further left. In the 640 by 360 picture with y up that is x 240 to 400 and y 144 to 234. */
     SelftestFrame scene = {0};
     scene.has_patch = 1;
+    scene.depth[0] = SELFTEST_FAR;
+    scene.depth[1] = SELFTEST_NEAR;
     const double rect[4] = {-0.25, -0.3, 0.25, 0.2}, rect_before[4] = {-0.3, -0.3, 0.2, 0.2};
     memcpy(scene.patch, rect, sizeof rect);
     memcpy(scene.patch_before, rect_before, sizeof rect_before);
@@ -3630,6 +3704,7 @@ int main(void) {
     test_jitter_conformance();
     test_gpu_time();
     test_selftest();
+    test_selftest_projection();
     test_selftest_edges();
     puts("temporal_math: ok");
     return 0;

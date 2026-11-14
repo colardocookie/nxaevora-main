@@ -36,6 +36,20 @@ static inline void selftest_ndc(const SelftestViewport* v, double px, double py,
    patch is a nearer rectangle with a pattern of its own that moves with it. */
 #define SELFTEST_FAR 0.02   /* reversed depth: far is near 0 */
 #define SELFTEST_NEAR 0.6
+/* The projection a scene's depth is made with, in the game's form. The stored depth of a point at the distance d
+   in front of the camera is (A z + B) / (-z) at z = -d, with A = n / (f - n) and B = n f / (f - n): 1 at the
+   near plane and 0 at the far one. With the far plane at infinity A is 0 and B is n. The scene's two distances
+   give the depths above for a near plane of 0.1 and a far plane at infinity. */
+#define SELFTEST_FAR_DISTANCE 5.0
+#define SELFTEST_NEAR_DISTANCE (1.0 / 6.0)
+typedef struct {
+    double near_plane, far_plane; /* far_plane may be INFINITY */
+} SelftestProjection;
+static inline double selftest_depth(const SelftestProjection* p, double distance) {
+    if (isinf(p->far_plane)) return p->near_plane / distance;
+    const double a = p->near_plane / (p->far_plane - p->near_plane), b = a * p->far_plane;
+    return (a * -distance + b) / distance;
+}
 static inline double selftest_fract(double a) { return a - floor(a); }
 static inline void selftest_background(int pattern, const double n[2], double rgb[3]) {
     const double cell = pattern ? 0.19 : 0.25, band = pattern ? 0.23 : 0.31, pitch = pattern ? 0.031 : 0.02;
@@ -89,6 +103,7 @@ static inline double selftest_edge_picture(double px, double py) {
 typedef struct {
     int pattern, has_patch;
     double jitter[2], shift[2], shift_before[2], patch[4], patch_before[4];
+    double depth[2];      /* the stored depth of the background and of the patch */
     SelftestViewport out; /* for the edge picture alone: the viewport that gives a point its output pixel */
 } SelftestFrame;
 static inline int selftest_in(const double r[4], const double n[2]) {
@@ -100,7 +115,7 @@ static inline void selftest_scene(const SelftestFrame* f, const double n[2], dou
     if (f->has_patch && selftest_in(f->patch, n)) {
         const double local[2] = {n[0] - f->patch[0], n[1] - f->patch[1]};
         selftest_patch(local, rgb);
-        *depth = SELFTEST_NEAR;
+        *depth = f->depth[1];
         before[0] = n[0] - (f->patch[0] - f->patch_before[0]);
         before[1] = n[1] - (f->patch[1] - f->patch_before[1]);
         return;
@@ -112,7 +127,7 @@ static inline void selftest_scene(const SelftestFrame* f, const double n[2], dou
         rgb[0] = rgb[1] = rgb[2] = selftest_edge_picture(pixel[0], pixel[1]);
     } else
         selftest_background(f->pattern, at, rgb);
-    *depth = SELFTEST_FAR;
+    *depth = f->depth[0];
     before[0] = n[0] - (f->shift[0] - f->shift_before[0]);
     before[1] = n[1] - (f->shift[1] - f->shift_before[1]);
 }
