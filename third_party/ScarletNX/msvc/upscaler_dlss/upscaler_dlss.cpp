@@ -23,26 +23,41 @@ SnxUpscalerLog g_log;
 SRWLOCK g_lock = SRWLOCK_INIT; // every call into NGX, and the module's state
 volatile LONG g_ngx_messages;
 
-// one line through the host's log, without a line break at its end
+// one line through the host's log, without a line break at its end, and one cut to fit says so at its end
 void say(const char* format, ...) {
+    static const char cut[] = " (cut)";
     char line[1024];
     va_list args;
     va_start(args, format);
     const int n = vsnprintf(line, sizeof line, format, args);
     va_end(args);
     if (n < 0 || !g_log) return;
+    if ((size_t)n >= sizeof line) memcpy(line + sizeof line - sizeof cut, cut, sizeof cut);
     size_t end = strlen(line);
     while (end && (line[end - 1] == '\n' || line[end - 1] == '\r')) line[--end] = 0;
     g_log(line);
 }
 
-// NGX's messages: from any thread, at once, and with no lock of the module taken
+// NGX's messages: from any thread, at once, and with no lock of the module taken. One longer than a line keeps its
+// first bytes up to a whole character and says how many of how many it shows.
 void NVSDK_CONV ngx_log(const char* message, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature) {
+    const size_t room = 900;
     const LONG n = InterlockedIncrement(&g_ngx_messages);
-    if ((unsigned)n <= kNgxPrinted) say("arceus-upscaler: dlss ngx: %s", message ? message : "");
-    else if ((unsigned)n == kNgxPrinted + 1)
-        say("arceus-upscaler: dlss: NGX has said %u messages, the ones after them are counted and not printed",
-            kNgxPrinted);
+    if ((unsigned)n > kNgxPrinted) {
+        if ((unsigned)n == kNgxPrinted + 1)
+            say("arceus-upscaler: dlss: NGX has said %u messages, the ones after them are counted and not printed",
+                kNgxPrinted);
+        return;
+    }
+    const char* text = message ? message : "";
+    const size_t length = strlen(text);
+    size_t shown = length;
+    if (length > room)
+        for (shown = room; shown && ((unsigned char)text[shown] & 0xC0) == 0x80;) shown--;
+    if (shown < length)
+        say("arceus-upscaler: dlss ngx: %.*s (cut: the first %zu of its %zu bytes)", (int)shown, text, shown, length);
+    else
+        say("arceus-upscaler: dlss ngx: %s", text);
 }
 
 // a path for a log line, in UTF-8
@@ -81,12 +96,18 @@ int folders() {
         return 0;
     }
     const DWORD attributes = GetFileAttributesW(g_data);
-    wchar_t probe[32768];
-    swprintf(probe, 32768, L"%ls\\snx-write-check", g_data);
-    const HANDLE file = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)
-                            ? CreateFileW(probe, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                                          FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr)
-                            : INVALID_HANDLE_VALUE;
+    // Writable: a new file of a name no other file has, made with CREATE_NEW so that nothing there is opened or
+    // replaced, and deleted when its handle closes. Only a name already taken is tried again, four times at most.
+    HANDLE file = INVALID_HANDLE_VALUE;
+    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY))
+        for (unsigned attempt = 0; attempt < 4 && file == INVALID_HANDLE_VALUE; attempt++) {
+            wchar_t probe[32768];
+            swprintf(probe, 32768, L"%ls\\snx-write-check-%lu-%llu-%u", g_data, GetCurrentProcessId(),
+                     (unsigned long long)GetTickCount64(), attempt);
+            file = CreateFileW(probe, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                               FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+            if (file == INVALID_HANDLE_VALUE && GetLastError() != ERROR_FILE_EXISTS) break;
+        }
     if (file == INVALID_HANDLE_VALUE) {
         say("arceus-upscaler: dlss is not available: NGX's data folder %s is not a folder this process can write to "
             "(%lu)", shown, GetLastError());
