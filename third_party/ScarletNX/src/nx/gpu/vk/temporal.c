@@ -2487,12 +2487,19 @@ void vk_temporal_before(u64 fs0_hash) {
                                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                                         "numbers");
     if (stats_due && !stats_made) rect_extras_off("the numbers' pipeline, buffer or image");
-    if (stats_made) {
+    /* The memory may not be coherent: what the GPU wrote is fetched before it is read. A fetch that fails logs
+       nothing. Under the rectangle's gate it also ends the numbers, and none are drawn or kept in this frame. */
+    int stats_write = stats_made;
+    if (stats_made && g_t.stats_run) {
+        if (VK_OK(vmaInvalidateAllocation(g_vk.vma, g_t.stats_memory, 0, VK_WHOLE_SIZE))) stats_log();
+        else if (g_t.rect) {
+            rect_extras_off("the read back of the numbers");
+            stats_write = 0;
+        }
+    }
+    if (stats_write) {
         const VkBufferImageCopy out = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                        .imageExtent = {2 * STATS_W, STATS_H, 1}};
-        /* the memory may not be coherent: what the GPU wrote is fetched before it is read */
-        if (g_t.stats_run && VK_OK(vmaInvalidateAllocation(g_vk.vma, g_t.stats_memory, 0, VK_WHOLE_SIZE))) stats_log();
-        else if (g_t.stats_run) rect_extras_off("the read back of the numbers"); /* nothing stale is logged */
         vk_barrier(cb, g_t.stats.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, 0,
                    VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
