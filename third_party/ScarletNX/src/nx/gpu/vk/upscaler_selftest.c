@@ -93,6 +93,7 @@ typedef struct {
     SnxUpscaler *live, *pending;
     unsigned frame, failures, skipped, evaluated, published; /* published: contexts that came into use */
     unsigned wrote; /* the last frame an ungated run evaluated, 0 for none */
+    u32 made_flags[4]; /* the create flags of the first contexts that came into use, in their order */
     Picture colour, depth, motion, output; /* what the adapter is handed */
     Picture wide_colour, wide_depth, wide_motion; /* for inputs that sit inside larger images */
 } Session;
@@ -590,6 +591,7 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
     case TEMPORAL_UPSCALER_PUBLISHED:
         s->live = s->pending;
         s->pending = NULL;
+        if (s->published < 4) s->made_flags[s->published] = flags;
         s->published++;
         break;
     default: /* a failed or stale one: its command buffer was discarded or has completed, so it may go */
@@ -1268,17 +1270,23 @@ static int native(int up) {
             changed = r >= 0;
             evaluated += r > 0;
         }
-        const int counted = changed && before == 8 && evaluated == in.frames - 1 && s.published == 2;
+        /* the property really changed: two contexts came into use, the first made without the flag and the
+           second with it, and the picture compared is the second's, against a fresh context made with it */
+        const int remade = s.published == 2 && !(s.made_flags[0] & SNX_UPSCALER_COLOUR_LINEAR_HDR) &&
+                           (s.made_flags[1] & SNX_UPSCALER_COLOUR_LINEAR_HDR);
+        const int counted = changed && before == 8 && evaluated == in.frames - 1 && remade;
         const unsigned contexts = s.published;
+        const u32 flags_before = s.made_flags[0], flags_after = s.made_flags[1];
         session_close(&s);
         const double apart =
             changed ? difference(&in, picture[CHANGED], picture[FRESH], regions, SELFTEST_BACKGROUND) : NAN;
         int verdict = changed ? selftest_resized(apart, noise, off) : SELFTEST_FAIL;
         LOG(ST "native suite %s, a create property changed: %u frames evaluated without the flag, %d with it, %u "
-               "contexts made: %s. The picture against a fresh context's on the same frames %.6f (at most %.3f), "
-               "two fresh contexts %.6f, the control one offset ahead %.6f (over %.3f and over the noise): %s\n",
-            way, before, evaluated, contexts, counted ? "PASS" : "FAIL", apart, SELFTEST_RESIZED, noise, off,
-            SELFTEST_RESIZED, native_word(changed, verdict));
+               "contexts made with the flags 0x%x and then 0x%x: %s. The remade context's picture against a fresh "
+               "context's made with the flag, on the same frames %.6f (at most %.3f), two fresh contexts %.6f, the "
+               "control one offset ahead %.6f (over %.3f and over the noise): %s\n",
+            way, before, evaluated, contexts, flags_before, flags_after, counted ? "PASS" : "FAIL", apart,
+            SELFTEST_RESIZED, noise, off, SELFTEST_RESIZED, native_word(changed, verdict));
         pass &= counted && verdict == SELFTEST_PASS;
         /* a change of size, on one session: the small size's frames, then the native ones */
         memset(&s, 0, sizeof s);
