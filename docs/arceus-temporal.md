@@ -341,7 +341,8 @@ the signs the same way: that needs a test on a device with the library.
 
 ## The upscaler's self-test (`SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>`)
 
-With this set to an adapter's name (`fsr`), the program does not load the game. The switch is the first thing the
+With this set to an adapter's name (`fsr`), the program does not load the game. `0` and `off` leave the mode off,
+like no value. The switch is the first thing the
 start looks at: before its options and their key files, the check for dumps, the menu, the guest's address space
 and the game's code. The mode's own path takes the program's folder and the run's name from the command line,
 names the folders, and makes the log the file a report of the run reads. It opens no window and no file of the

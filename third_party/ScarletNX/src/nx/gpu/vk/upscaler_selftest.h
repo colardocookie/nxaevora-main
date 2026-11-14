@@ -10,6 +10,13 @@
 #include <stdint.h>
 
 /* A viewport as Vulkan has it: a point at ndc n is at pixel (n x 0.5 + 0.5) x (w, h) + (x, y). h may be negative. */
+/* Whether the switch's value asks for the self-test: any value but none, an empty one, "0" and "off". A launcher
+   that cannot take a line back can so turn the mode off. */
+static inline int selftest_asked(const char* value) {
+    if (!value || !value[0]) return 0;
+    if (value[0] == '0' && !value[1]) return 0;
+    return !(value[0] == 'o' && value[1] == 'f' && value[2] == 'f' && !value[3]);
+}
 typedef struct {
     double x, y, w, h;
 } SelftestViewport;

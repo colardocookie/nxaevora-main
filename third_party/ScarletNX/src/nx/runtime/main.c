@@ -14,6 +14,7 @@
 #include "nx/gpu/nvn_native.h"
 #include "nx/gpu/nvn_trace.h"
 #include "nx/gpu/renderer.h"
+#include "nx/gpu/vk/upscaler_selftest.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
@@ -849,7 +850,7 @@ int snx_main(int argc, char** argv) {
        and the start goes on in the order it always had. */
     {
         const char* selftest = getenv("SNX_ARCEUS_UPSCALER_SELFTEST");
-        if (selftest && selftest[0]) {
+        if (selftest_asked(selftest)) {
             status = upscaler_selftest(selftest, argc, argv);
             goto done;
         }

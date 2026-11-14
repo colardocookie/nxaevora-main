@@ -2415,6 +2415,10 @@ static void test_selftest(void) {
     SelftestSettling none = {{0, 0}, {0, 0}};
     selftest_change(&none, 0, 18, 5.0); /* the first evaluated frame has no change into it */
     assert(none.n[0] == 0 && isnan(selftest_cycle(&none, 0)) && isnan(selftest_cycle(&none, 1)));
+    /* the switch: off without a value and with "0" or "off", on with anything else, an unknown name included */
+    assert(!selftest_asked(NULL) && !selftest_asked("") && !selftest_asked("0") && !selftest_asked("off"));
+    assert(selftest_asked("fsr") && selftest_asked("1") && selftest_asked("00") && selftest_asked("of"));
+    assert(selftest_asked("offs") && selftest_asked("OFF") && selftest_asked("o") && selftest_asked(" "));
     assert(selftest_same(0.01) && !selftest_same(0.0101) && !selftest_same(NAN));
     assert(selftest_apart(0.05) && !selftest_apart(0.0499) && !selftest_apart(NAN));
 }
