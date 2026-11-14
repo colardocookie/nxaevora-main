@@ -57,6 +57,7 @@ static struct {
        reset, submitted or freed on this device: the command buffer, the buffer and the queue are shared by all
        cases. The cases left are not run and the mode fails. */
     int unknown;
+    u64 edge_sums[2][3]; /* the edge case's images by orientation: colour, depth, vectors (edges_announce) */
 } g;
 
 /* one run's inputs, made once and never changed: a sign variant changes only the numbers handed to the adapter */
@@ -402,10 +403,11 @@ static void offset(unsigned k, unsigned n, double out[2]) {
 /* The inputs of a run. The scene's rectangle is size[0] by size[1] at x, y inside images of w by h, whose rest
    holds a colour, a depth and a vector that are none of the scene's, for an output of size[2] by size[3]. move:
    the background's move a frame in render pixels (x right, y up). patch: 1 for a nearer patch that moves another
-   way. cut: 1 when the last frame shows the other pattern. up: 1 for a viewport with a negative height. */
+   way. cut: 1 when the last frame shows the other pattern. up: 1 for a viewport with a negative height. edges: 1
+   for the edge picture in place of the background's patterns. */
 static const int SIZES[4] = {RENDER_W, RENDER_H, OUT_W, OUT_H};
-static int inputs_make(Inputs* in, const int size[4], int w, int h, int x, int y, int up, const double move[2],
-                       int patch, int cut) {
+static int inputs_build(Inputs* in, const int size[4], int w, int h, int x, int y, int up, const double move[2],
+                        int patch, int cut, int edges) {
     const int RW = size[0], RH = size[1];
     memset(in, 0, sizeof *in);
     in->w = w;
@@ -431,7 +433,8 @@ static int inputs_make(Inputs* in, const int size[4], int w, int h, int x, int y
         SelftestFrame* f = &in->scene[i];
         double px[2];
         offset((unsigned)i, (unsigned)in->offsets, px);
-        f->pattern = cut_at >= 0 && i >= cut_at;
+        f->pattern = edges ? SELFTEST_PATTERN_EDGES : cut_at >= 0 && i >= cut_at;
+        f->out = (SelftestViewport){0, up ? in->oh : 0, in->ow, up ? -in->oh : in->oh};
         f->jitter[0] = 2.0 * px[0] / RW;
         f->jitter[1] = 2.0 * px[1] / RH;
         for (int a = 0; a < 2; a++) {
@@ -467,6 +470,10 @@ static int inputs_make(Inputs* in, const int size[4], int w, int h, int x, int y
             }
     }
     return 1;
+}
+static int inputs_make(Inputs* in, const int size[4], int w, int h, int x, int y, int up, const double move[2],
+                       int patch, int cut) {
+    return inputs_build(in, size, w, h, x, y, up, move, patch, cut, 0);
 }
 
 static void inputs_free(Inputs* in) {
@@ -1057,10 +1064,48 @@ static int resize(int up) {
     return counted && beats && settles;
 }
 
+/* The edge case's images, made and named by their checksums before any adapter is looked for: they depend on no
+   library. The checksums are kept, and the case holds the images it runs on against them. The reference's two
+   profiles must be whole, or the case could compare nothing. 1 when all of it is in order. */
+static int edges_announce(void) {
+    static const double still[2] = {0.0, 0.0};
+    int ok = 1;
+    for (int up = 1; up >= 0 && ok; up--) {
+        Inputs in;
+        const size_t pixels = (size_t)RENDER_W * RENDER_H;
+        ok = inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1);
+        double* reference = ok ? malloc(sizeof(double) * 3 * OUT_W * OUT_H) : NULL;
+        if (!reference) {
+            LOG(ST "edge case %s: the images could not be made: FAIL\n", up ? "up" : "down");
+            inputs_free(&in);
+            return 0;
+        }
+        const SelftestViewport out = {0, up ? OUT_H : 0, OUT_W, up ? -OUT_H : OUT_H};
+        for (int y = 0; y < OUT_H; y++)
+            for (int x = 0; x < OUT_W; x++)
+                selftest_reference(&in.scene[0], &out, x, y, SAMPLES, &reference[3 * ((size_t)y * OUT_W + x)]);
+        SelftestProfile v, h;
+        selftest_profile_make(&SELFTEST_EDGE_V, reference, OUT_W, &v);
+        selftest_profile_make(&SELFTEST_EDGE_H, reference, OUT_W, &h);
+        g.edge_sums[up][0] = selftest_checksum(in.colour, (size_t)in.frames * pixels * 4, SELFTEST_CHECKSUM_START);
+        g.edge_sums[up][1] = selftest_checksum(in.depth, (size_t)in.frames * pixels * 4, SELFTEST_CHECKSUM_START);
+        g.edge_sums[up][2] = selftest_checksum(in.motion, (size_t)in.frames * pixels * 8, SELFTEST_CHECKSUM_START);
+        ok = selftest_profile_whole(&v) && selftest_profile_whole(&h);
+        LOG(ST "edge case %s: %d frames of %dx%d made before any adapter. Checksums: colour %016llx, depth %016llx, "
+               "vectors %016llx. The reference's two profiles hold pixels in every bin: %s\n",
+            up ? "up" : "down", in.frames, RENDER_W, RENDER_H, (unsigned long long)g.edge_sums[up][0],
+            (unsigned long long)g.edge_sums[up][1], (unsigned long long)g.edge_sums[up][2], ok ? "yes" : "NO: FAIL");
+        free(reference);
+        inputs_free(&in);
+    }
+    return ok;
+}
+
 /* The mode. The process's result: 0 when every case passed and the validation layer was there and silent. */
 int vk_upscaler_selftest(const char* adapter) {
     int pass;
     LOG(ST "started for the adapter \"%s\". No game is loaded and no window is opened\n", adapter);
+    if (!edges_announce()) return 1;
     g.api = vk_upscaler_adapter(adapter);
     if (!g.api) {
         LOG(ST "FAIL: the adapter \"%s\" is not available\n", adapter);

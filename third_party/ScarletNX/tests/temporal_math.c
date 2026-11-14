@@ -6,6 +6,7 @@
 #include "nx/gpu/vk/upscaler_selftest.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static int close_to(double a, double b, double tolerance) { return fabs(a - b) <= tolerance; }
 
@@ -2442,6 +2443,146 @@ static void st_colour(const SelftestFrame* f, const SelftestViewport* v, int x, 
     double depth, texel[2];
     selftest_input(f, v, 640, 360, x, y, rgb, &depth, texel);
 }
+/* the edge picture's reference at the output's size, as three doubles a pixel */
+#define EDGE_W 480
+#define EDGE_H 270
+static double* edge_reference(int up) {
+    SelftestFrame f;
+    double* rgb = malloc(sizeof(double) * 3 * EDGE_W * EDGE_H);
+    memset(&f, 0, sizeof f);
+    f.pattern = SELFTEST_PATTERN_EDGES;
+    f.out = (SelftestViewport){0, up ? EDGE_H : 0, EDGE_W, up ? -EDGE_H : EDGE_H};
+    assert(rgb);
+    for (int y = 0; y < EDGE_H; y++)
+        for (int x = 0; x < EDGE_W; x++) selftest_reference(&f, &f.out, x, y, 8, &rgb[3 * (y * EDGE_W + x)]);
+    return rgb;
+}
+static void edge_set(double* rgb, int x, int y, double value) {
+    for (int c = 0; c < 3; c++) rgb[3 * (y * EDGE_W + x) + c] = value;
+}
+
+/* The jitter-sign case's picture, regions, profile and measures. */
+static void test_selftest_edges(void) {
+    const SelftestEdge *v = &SELFTEST_EDGE_V, *h = &SELFTEST_EDGE_H;
+    const size_t bytes = sizeof(double) * 3 * EDGE_W * EDGE_H;
+    /* the picture: 0.5 outside the regions, 0.25 before each edge and 0.75 after it */
+    assert(selftest_edge_picture(10.0, 10.0) == 0.5 && selftest_edge_picture(59.9, 88.0) == 0.5);
+    assert(selftest_edge_picture(156.0, 88.0) == 0.5 && selftest_edge_picture(100.0, 39.9) == 0.5);
+    assert(selftest_edge_picture(108.3, 88.0) == 0.25 && selftest_edge_picture(108.4, 88.0) == 0.75);
+    assert(selftest_edge_picture(109.3, 98.0) == 0.25 && selftest_edge_picture(109.4, 98.0) == 0.75);
+    assert(selftest_edge_picture(248.0, 198.3) == 0.25 && selftest_edge_picture(248.0, 198.4) == 0.75);
+    assert(selftest_edge_picture(238.0, 197.3) == 0.25 && selftest_edge_picture(238.0, 197.4) == 0.75);
+    /* the distance along the normal: nothing on the edge, a pixel across is a pixel less the slope's share */
+    assert(close_to(selftest_edge_distance(v, 108.37, 88.0), 0.0, 1e-12));
+    assert(close_to(selftest_edge_distance(v, 109.37, 88.0), 1.0 / sqrt(1.01), 1e-12));
+    assert(close_to(selftest_edge_distance(v, 108.37, 98.0), -1.0 / sqrt(1.01), 1e-12));
+    assert(close_to(selftest_edge_distance(h, 248.0, 196.37), -2.0 / sqrt(1.01), 1e-12));
+    /* the pixels a profile uses: 4 pixels inside the region and within 4 pixels of the edge */
+    assert(selftest_edge_bin(v, 108, 88) == 16 && selftest_edge_bin(v, 107, 88) == 12);
+    assert(selftest_edge_bin(v, 104, 88) == 0 && selftest_edge_bin(v, 103, 88) == -1);
+    assert(selftest_edge_bin(v, 111, 88) == 28 && selftest_edge_bin(v, 112, 88) == -1);
+    assert(selftest_edge_bin(v, 108, 43) == -1 && selftest_edge_bin(v, 104, 44) >= 0);
+    assert(selftest_edge_bin(v, 113, 131) >= 0 && selftest_edge_bin(v, 113, 132) == -1);
+    assert(selftest_edge_bin(v, 248, 198) == -1 && selftest_edge_bin(h, 248, 198) == 16);
+    assert(selftest_edge_bin(h, 203, 194) == -1 && selftest_edge_bin(h, 204, 194) >= 0);
+
+    /* The reference's own profile, the same picture for either sign of the viewport's height: every bin holds
+       pixels, it is its own match, the edge is where it was put, a pixel wide and without overshoot. */
+    double* ref = edge_reference(0);
+    double* other = edge_reference(1);
+    double* copy = malloc(bytes);
+    assert(copy);
+    for (int i = 0; i < 3 * EDGE_W * EDGE_H; i++) assert(close_to(ref[i], other[i], 1e-9));
+    for (int which = 0; which < 2; which++) {
+        const SelftestEdge* e = which ? h : v;
+        SelftestProfile p;
+        selftest_profile_make(e, ref, EDGE_W, &p);
+        assert(selftest_profile_whole(&p));
+        for (int i = 0; i < SELFTEST_EDGE_BINS; i++) assert(p.n[i] >= 16);
+        assert(selftest_profile_apart(&p, &p) == 0.0 && selftest_edge_apart(e, ref, ref, EDGE_W) == 0.0);
+        assert(close_to(selftest_profile_mean(&p, 0), 0.25, 1e-12));
+        assert(close_to(selftest_profile_mean(&p, 31), 0.75, 1e-12));
+        assert(close_to(selftest_profile_crossing(&p, 0.5), 0.0, 0.1));
+        assert(selftest_profile_rise(&p) > 0.5 && selftest_profile_rise(&p) < 1.2);
+        assert(selftest_profile_overshoot(&p) < 1e-12);
+    }
+    /* A picture moved half a pixel in x: across the near-vertical edge the profile differs by the step times the
+       move over the window, 0.5 x 0.5 / 8, and the edge is seen half a pixel on. Along the other edge a twentieth
+       of that. Nothing is fitted, so a moved edge is an error. */
+    SelftestProfile pv, ph, rv, rh;
+    selftest_profile_make(v, ref, EDGE_W, &rv);
+    selftest_profile_make(h, ref, EDGE_W, &rh);
+    {
+        SelftestFrame f;
+        memset(&f, 0, sizeof f);
+        f.pattern = SELFTEST_PATTERN_EDGES;
+        f.out = (SelftestViewport){0, 0, EDGE_W, EDGE_H};
+        f.shift[0] = 2.0 * 0.5 / EDGE_W;
+        for (int y = 0; y < EDGE_H; y++)
+            for (int x = 0; x < EDGE_W; x++) selftest_reference(&f, &f.out, x, y, 8, &copy[3 * (y * EDGE_W + x)]);
+    }
+    selftest_profile_make(v, copy, EDGE_W, &pv);
+    selftest_profile_make(h, copy, EDGE_W, &ph);
+    assert(close_to(selftest_profile_apart(&pv, &rv), 0.5 * 0.5 / 8.0, 0.004));
+    assert(close_to(selftest_profile_crossing(&pv, 0.5) - selftest_profile_crossing(&rv, 0.5), 0.5, 0.1));
+    assert(selftest_profile_apart(&ph, &rh) < 0.004);
+    assert(selftest_edge_apart(v, copy, ref, EDGE_W) > 0.02 && selftest_edge_apart(h, copy, ref, EDGE_W) < 0.004);
+    /* A picture spread over three pixels in x, as samples put back in the wrong place in x would be: the
+       near-vertical edge is wider and differs, the near-horizontal one hardly. */
+    for (int y = 0; y < EDGE_H; y++)
+        for (int x = 0; x < EDGE_W; x++) {
+            const int l = x > 0 ? x - 1 : x, r = x < EDGE_W - 1 ? x + 1 : x;
+            edge_set(copy, x, y, (selftest_grey(ref, EDGE_W, l, y) + selftest_grey(ref, EDGE_W, x, y) +
+                                  selftest_grey(ref, EDGE_W, r, y)) / 3.0);
+        }
+    selftest_profile_make(v, copy, EDGE_W, &pv);
+    selftest_profile_make(h, copy, EDGE_W, &ph);
+    assert(selftest_profile_apart(&pv, &rv) > 0.008 && selftest_profile_apart(&ph, &rh) < 0.002);
+    assert(selftest_profile_rise(&pv) > selftest_profile_rise(&rv) + 0.8);
+    assert(selftest_profile_rise(&ph) < selftest_profile_rise(&rh) + 0.2);
+    /* Deviations of opposite sign from pixel to pixel cancel in a bin and not in the measure over the pixels. */
+    memcpy(copy, ref, bytes);
+    for (int y = 0; y < EDGE_H; y++)
+        for (int x = 0; x < EDGE_W; x++)
+            edge_set(copy, x, y, selftest_grey(ref, EDGE_W, x, y) + (((x + y) & 1) ? 0.1 : -0.1));
+    selftest_profile_make(v, copy, EDGE_W, &pv);
+    assert(close_to(selftest_edge_apart(v, copy, ref, EDGE_W), 0.1, 1e-9));
+    assert(selftest_profile_apart(&pv, &rv) < 0.04);
+    /* an overshoot beside the edge, and a loss of contrast */
+    memcpy(copy, ref, bytes);
+    for (int y = v->y0; y < v->y1; y++)
+        for (int x = v->x0; x < v->x1; x++) {
+            const int bin = selftest_edge_bin(v, x, y);
+            if (bin >= 20 && bin < 24) edge_set(copy, x, y, 0.85);
+        }
+    selftest_profile_make(v, copy, EDGE_W, &pv);
+    assert(close_to(selftest_profile_overshoot(&pv), 0.1, 1e-9) && selftest_profile_apart(&pv, &rv) > 0.01);
+    for (int i = 0; i < 3 * EDGE_W * EDGE_H; i++) copy[i] = 0.5 + 0.5 * (ref[i] - 0.5);
+    selftest_profile_make(v, copy, EDGE_W, &pv);
+    assert(selftest_profile_apart(&pv, &rv) > 0.1 && isnan(selftest_profile_rise(&pv)));
+    /* a profile with a bin that holds nothing, or a value that is not finite, is compared with nothing */
+    pv = rv;
+    pv.n[5] = 0;
+    assert(!selftest_profile_whole(&pv) && isnan(selftest_profile_apart(&pv, &rv)));
+    assert(isnan(selftest_profile_apart(&rv, &pv)));
+    pv = rv;
+    pv.sum[31] = INFINITY;
+    assert(!selftest_profile_whole(&pv) && isnan(selftest_profile_apart(&pv, &rv)));
+    memcpy(copy, ref, bytes);
+    edge_set(copy, 108, 88, NAN);
+    assert(isnan(selftest_edge_apart(v, copy, ref, EDGE_W)));
+    selftest_profile_make(v, copy, EDGE_W, &pv);
+    assert(!selftest_profile_whole(&pv));
+    /* the checksum: the published values of FNV-1a for nothing, "a" and "foobar", and it can be carried on */
+    assert(selftest_checksum("", 0, SELFTEST_CHECKSUM_START) == 0xcbf29ce484222325ull);
+    assert(selftest_checksum("a", 1, SELFTEST_CHECKSUM_START) == 0xaf63dc4c8601ec8cull);
+    assert(selftest_checksum("foobar", 6, SELFTEST_CHECKSUM_START) == 0x85944171f73967e8ull);
+    assert(selftest_checksum("bar", 3, selftest_checksum("foo", 3, SELFTEST_CHECKSUM_START)) == 0x85944171f73967e8ull);
+    free(ref);
+    free(other);
+    free(copy);
+}
+
 static void test_selftest(void) {
     const SelftestViewport down = {0, 0, 640, 360}, up = {0, 360, 640, -360};
     double n[2], p[2], a[3], b[3], depth, texel[2];
@@ -2651,6 +2792,7 @@ int main(void) {
     test_rect_confirm();
     test_upscaler();
     test_selftest();
+    test_selftest_edges();
     puts("temporal_math: ok");
     return 0;
 }

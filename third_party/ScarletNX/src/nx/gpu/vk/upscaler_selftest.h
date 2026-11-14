@@ -7,6 +7,7 @@
    BY RULE this file shares no arithmetic with what it tests: it includes nothing of temporal_math.h and calls
    nothing of the adapter. A mistake in the conversion must not be able to repeat itself here. */
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* A viewport as Vulkan has it: a point at ndc n is at pixel (n x 0.5 + 0.5) x (w, h) + (x, y). h may be negative. */
@@ -51,12 +52,43 @@ static inline void selftest_patch(const double local[2], double rgb[3]) {
     rgb[1] = 0.3;
     rgb[2] = 0.8 * stripe;
 }
+/* The edge picture, for the jitter's signs: grey, 0.5 everywhere but in two regions of 96 by 96 output pixels, each
+   with one straight edge from 0.25 to 0.75 at a slope of 1 in 10. All numbers are output pixels, a pixel's centre
+   at its number and a half, and are the same for either sign of the viewport's height. */
+typedef struct {
+    int x0, y0, x1, y1; /* the region, the last column and row not in it */
+    int across_x;       /* 1: near vertical, 0.25 left of it. 0: near horizontal, 0.25 above it */
+    double at, mid;     /* the edge is at this place across, on the line through mid along it */
+} SelftestEdge;
+#define SELFTEST_EDGE_LOW 0.25
+#define SELFTEST_EDGE_HIGH 0.75
+#define SELFTEST_EDGE_REACH 4 /* pixels: the profile's reach each side of the edge, and the region's unused rim */
+#define SELFTEST_EDGE_BINS 32 /* a quarter of a pixel each */
+static const SelftestEdge SELFTEST_EDGE_V = {60, 40, 156, 136, 1, 108.37, 88.0};
+static const SelftestEdge SELFTEST_EDGE_H = {200, 150, 296, 246, 0, 198.37, 248.0};
+/* how far the point is past the edge along its normal, in pixels: negative on the 0.25 side */
+static inline double selftest_edge_distance(const SelftestEdge* e, double px, double py) {
+    const double across = e->across_x ? px : py, along = e->across_x ? py : px;
+    return (across - (e->at + (along - e->mid) / 10.0)) / sqrt(1.01);
+}
+static inline int selftest_edge_holds(const SelftestEdge* e, double px, double py) {
+    return px >= e->x0 && px < e->x1 && py >= e->y0 && py < e->y1;
+}
+static inline double selftest_edge_picture(double px, double py) {
+    const SelftestEdge* edges[2] = {&SELFTEST_EDGE_V, &SELFTEST_EDGE_H};
+    for (int i = 0; i < 2; i++)
+        if (selftest_edge_holds(edges[i], px, py))
+            return selftest_edge_distance(edges[i], px, py) < 0.0 ? SELFTEST_EDGE_LOW : SELFTEST_EDGE_HIGH;
+    return 0.5;
+}
 /* One frame of the scene. shift: how far the background has moved since the scene's start, in ndc, and the same
    a frame ago. patch: the patch's rectangle x0, y0, x1, y1 in ndc now and a frame ago. jitter: the perturbation
    added to the clip position when the frame is drawn, in ndc. */
+#define SELFTEST_PATTERN_EDGES 2 /* the edge picture in place of the two patterns of the background */
 typedef struct {
     int pattern, has_patch;
     double jitter[2], shift[2], shift_before[2], patch[4], patch_before[4];
+    SelftestViewport out; /* for the edge picture alone: the viewport that gives a point its output pixel */
 } SelftestFrame;
 static inline int selftest_in(const double r[4], const double n[2]) {
     return n[0] >= r[0] && n[0] < r[2] && n[1] >= r[1] && n[1] < r[3];
@@ -73,7 +105,12 @@ static inline void selftest_scene(const SelftestFrame* f, const double n[2], dou
         return;
     }
     const double at[2] = {n[0] - f->shift[0], n[1] - f->shift[1]};
-    selftest_background(f->pattern, at, rgb);
+    if (f->pattern == SELFTEST_PATTERN_EDGES) {
+        double pixel[2];
+        selftest_place(&f->out, at, pixel);
+        rgb[0] = rgb[1] = rgb[2] = selftest_edge_picture(pixel[0], pixel[1]);
+    } else
+        selftest_background(f->pattern, at, rgb);
     *depth = SELFTEST_FAR;
     before[0] = n[0] - (f->shift[0] - f->shift_before[0]);
     before[1] = n[1] - (f->shift[1] - f->shift_before[1]);
@@ -248,6 +285,100 @@ static inline void selftest_change(SelftestSettling* s, int k, int offsets, doub
 /* the mean change of a cycle, not a number when it has none */
 static inline double selftest_cycle(const SelftestSettling* s, int cycle) {
     return s->n[cycle] ? s->sum[cycle] / s->n[cycle] : NAN;
+}
+/* An edge's profile in a picture: the mean value of the pixels at each distance from the edge, in bins a quarter of
+   a pixel wide from 4 pixels before it to 4 after. The bin of the output pixel x, y, or -1 when the pixel is not
+   used: outside the region, in its rim of 4 pixels, or further from the edge. Nothing is fitted or shifted. */
+static inline int selftest_edge_bin(const SelftestEdge* e, int x, int y) {
+    if (x < e->x0 + SELFTEST_EDGE_REACH || x >= e->x1 - SELFTEST_EDGE_REACH) return -1;
+    if (y < e->y0 + SELFTEST_EDGE_REACH || y >= e->y1 - SELFTEST_EDGE_REACH) return -1;
+    const double d = selftest_edge_distance(e, x + 0.5, y + 0.5);
+    if (!(d >= -SELFTEST_EDGE_REACH) || !(d < SELFTEST_EDGE_REACH)) return -1;
+    const int bin = (int)floor((d + SELFTEST_EDGE_REACH) * (SELFTEST_EDGE_BINS / (2.0 * SELFTEST_EDGE_REACH)));
+    return bin < 0 ? 0 : bin >= SELFTEST_EDGE_BINS ? SELFTEST_EDGE_BINS - 1 : bin;
+}
+typedef struct {
+    double sum[SELFTEST_EDGE_BINS];
+    int n[SELFTEST_EDGE_BINS];
+} SelftestProfile;
+/* a pixel's value in a picture of three doubles a pixel: the mean of the three, which are one in a grey picture */
+static inline double selftest_grey(const double* rgb, int w, int x, int y) {
+    const double* p = rgb + 3 * ((size_t)y * (size_t)w + (size_t)x);
+    return (p[0] + p[1] + p[2]) / 3.0;
+}
+static inline void selftest_profile_make(const SelftestEdge* e, const double* rgb, int w, SelftestProfile* p) {
+    for (int i = 0; i < SELFTEST_EDGE_BINS; i++) p->sum[i] = 0.0, p->n[i] = 0;
+    for (int y = e->y0; y < e->y1; y++)
+        for (int x = e->x0; x < e->x1; x++) {
+            const int bin = selftest_edge_bin(e, x, y);
+            if (bin < 0) continue;
+            p->sum[bin] += selftest_grey(rgb, w, x, y);
+            p->n[bin]++;
+        }
+}
+static inline double selftest_profile_mean(const SelftestProfile* p, int bin) {
+    return p->n[bin] > 0 ? p->sum[bin] / p->n[bin] : NAN;
+}
+/* 1 when every bin holds pixels and has a finite mean: a profile that is not whole is compared with nothing */
+static inline int selftest_profile_whole(const SelftestProfile* p) {
+    for (int i = 0; i < SELFTEST_EDGE_BINS; i++)
+        if (!isfinite(selftest_profile_mean(p, i))) return 0;
+    return 1;
+}
+/* The mean absolute difference of two profiles over the bins, in fixed places. A shift of the edge, a wider rise,
+   a loss of contrast and an overshoot all show in it. Not a number when either profile is not whole. */
+static inline double selftest_profile_apart(const SelftestProfile* a, const SelftestProfile* b) {
+    double sum = 0.0;
+    if (!selftest_profile_whole(a) || !selftest_profile_whole(b)) return NAN;
+    for (int i = 0; i < SELFTEST_EDGE_BINS; i++) sum += fabs(selftest_profile_mean(a, i) - selftest_profile_mean(b, i));
+    return sum / SELFTEST_EDGE_BINS;
+}
+/* The mean absolute difference of two pictures over the pixels a profile uses. Averaging in bins can cancel what
+   differs with opposite signs, this cannot. Not a number when a value is not finite or there is no pixel. */
+static inline double selftest_edge_apart(const SelftestEdge* e, const double* a, const double* b, int w) {
+    double sum = 0.0;
+    long n = 0;
+    for (int y = e->y0; y < e->y1; y++)
+        for (int x = e->x0; x < e->x1; x++) {
+            if (selftest_edge_bin(e, x, y) < 0) continue;
+            sum += fabs(selftest_grey(a, w, x, y) - selftest_grey(b, w, x, y));
+            n++;
+        }
+    return n && isfinite(sum) ? sum / (double)n : NAN;
+}
+/* For the log, not for any verdict. Where the profile first rises through a level, in pixels from the edge, taken
+   between the two bins' centres. Not a number when it never does. */
+static inline double selftest_profile_crossing(const SelftestProfile* p, double level) {
+    const double width = 2.0 * SELFTEST_EDGE_REACH / SELFTEST_EDGE_BINS;
+    for (int i = 0; i + 1 < SELFTEST_EDGE_BINS; i++) {
+        const double a = selftest_profile_mean(p, i), b = selftest_profile_mean(p, i + 1);
+        if (isfinite(a) && isfinite(b) && a < level && b >= level)
+            return -SELFTEST_EDGE_REACH + (i + 0.5 + (level - a) / (b - a)) * width;
+    }
+    return NAN;
+}
+/* the rise from 10 to 90 per cent of the step, in pixels */
+static inline double selftest_profile_rise(const SelftestProfile* p) {
+    const double step = SELFTEST_EDGE_HIGH - SELFTEST_EDGE_LOW;
+    return selftest_profile_crossing(p, SELFTEST_EDGE_LOW + 0.9 * step) -
+           selftest_profile_crossing(p, SELFTEST_EDGE_LOW + 0.1 * step);
+}
+/* how far a bin's mean lies outside the two values of the picture, at most */
+static inline double selftest_profile_overshoot(const SelftestProfile* p) {
+    double most = 0.0;
+    for (int i = 0; i < SELFTEST_EDGE_BINS; i++) {
+        const double mean = selftest_profile_mean(p, i);
+        if (mean - SELFTEST_EDGE_HIGH > most) most = mean - SELFTEST_EDGE_HIGH;
+        if (SELFTEST_EDGE_LOW - mean > most) most = SELFTEST_EDGE_LOW - mean;
+    }
+    return most;
+}
+/* a checksum of generated images, so that a log says which images a result was made from (FNV-1a, 64 bits) */
+#define SELFTEST_CHECKSUM_START 0xcbf29ce484222325ull
+static inline uint64_t selftest_checksum(const void* bytes, size_t n, uint64_t sum) {
+    const unsigned char* p = (const unsigned char*)bytes;
+    for (size_t i = 0; i < n; i++) sum = (sum ^ p[i]) * 0x100000001b3ull;
+    return sum;
 }
 static inline int selftest_same(double difference) { return isfinite(difference) && difference <= SELFTEST_SAME; }
 static inline int selftest_apart(double difference) { return isfinite(difference) && difference >= SELFTEST_APART; }
