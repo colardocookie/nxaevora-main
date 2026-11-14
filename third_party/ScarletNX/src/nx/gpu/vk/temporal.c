@@ -705,13 +705,13 @@ static void stats_log(void) {
         skin_near += object_marks >> 2 & 1;
         if (object_marks & 1) {
             const float number = half_float(more[0]);
-            u16* tally = per_draw[number >= 1.0f && number <= (float)OBJECT_DRAWS ? (u32)(number + 0.5f) : 0];
+            const u32 d = number >= 1.0f && number <= (float)OBJECT_DRAWS ? (u32)(number + 0.5f) : 0;
+            u16* tally = per_draw[d];
             tally[0]++;
             tally[1] += moved > STATS_ERROR;
             tally[2] += object_marks >> 1 & 1;
             tally[3] += still > STATS_ERROR;
             if (residual > 0.0f) {
-                const u32 d = (u32)(tally - per_draw[0]) / 6;
                 tally[4]++;
                 tally[5] += blind;
                 if (!blind && residual > per_draw_far[d]) per_draw_far[d] = residual;
@@ -774,7 +774,7 @@ static void stats_log(void) {
     char refused[260] = "";
     if (g_t.reject)
         snprintf(refused, sizeof refused, " rejected_sampled of_all n=%u of %u, of_eligible n=%u of %u, "
-                 "without_finite_camera_distance n=%u, largest_finite_distance=%.0f px (capped at 59000)",
+                 "without_finite_camera_distance n=%u, largest_finite_distance=%.0f px (a half float, capped at 59000)",
                  rejected_all, STATS_W * STATS_H, rejected, all, rejected_blind, (double)rejected_far);
     LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px vector_max=%.2f px sky=%u off_screen=%u%s%s\n",
         (unsigned long long)g_t.stats_run, all ? length / all : 0.0, longest, sky, off, bands, refused);
@@ -790,8 +790,8 @@ static void stats_log(void) {
             continue;
         }
         LOG("arceus-temporal-rejected: run=%llu draw %u (%s, block %llx, draw %llx): %u of its %u eligible sampled "
-            "pixels rejected (%u without a finite camera distance, the largest finite one %.0f px), wrong with "
-            "its vector %u\n",
+            "pixels rejected (%u without a finite camera distance, the largest finite one about %.0f px, a half "
+            "float capped at 59000), wrong with its vector %u\n",
             (unsigned long long)g_t.stats_run, d, w->skinned ? "skinned" : "rigid", (unsigned long long)w->block,
             (unsigned long long)w->signature, per_draw[d][4], per_draw[d][0], per_draw[d][5],
             (double)per_draw_far[d], per_draw[d][1]);

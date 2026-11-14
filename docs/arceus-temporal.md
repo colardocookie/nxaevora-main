@@ -231,7 +231,8 @@ The first lines of a run say whether it is on. The numbers count rejected pixels
 numbers, not every frame. The `arceus-temporal-stats` line gives two counts after `rejected_sampled`: `of_all`,
 of every sample, and `of_eligible`, of the samples the line's shares are taken of (not sky, the vector inside the
 picture). Samples rejected without a finite distance from the camera's vector are counted on their own and never
-enter `largest_finite_distance`, which the shader caps at 59000 px.
+enter `largest_finite_distance`, which the shader caps at 59000 px and which is read back as a half float, so
+it is approximate.
 In the probe nothing is resolved, the class is still written, and the wrong share on object pixels is still taken
 with the object's own vector, so rejecting cannot make that number look better. The probe also names the draws:
 `arceus-temporal-rejected` gives the draw, its block and signature, how many of its sampled pixels were rejected
