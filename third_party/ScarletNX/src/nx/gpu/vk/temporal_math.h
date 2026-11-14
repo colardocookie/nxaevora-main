@@ -691,11 +691,11 @@ enum {
     TEMPORAL_RECT_FRACTION, /* a fraction not finite or not in (0, 1] */
     TEMPORAL_RECT_UNEQUAL,  /* the two fractions more than 1e-6 apart: one scale for both axes only */
     TEMPORAL_RECT_VIEWPORT, /* no whole rectangle inside the target */
-    TEMPORAL_RECT_SHAPE     /* not the whole target, and not the fraction's size at the game's corner */
+    TEMPORAL_RECT_SHAPE     /* the whole target without a fraction of 1, or not the fraction's size at the corner */
 };
 /* A frame's structure from the viewport of the draw that decides it and the fraction read at that draw. OK with
-   the state filled in when the rectangle is the whole target, or sits at the game's corner with a size within one
-   pixel of round(W x fx) by round(H x fy). */
+   the state filled in when the rectangle is the whole target and the fraction is 1 within 1e-6, or it sits at the
+   game's corner with a size within one pixel of round(W x fx) by round(H x fy). */
 static inline int temporal_rect_structure(const TemporalViewport* v, int target_w, int target_h, float fx, float fy,
                                           int corner, TemporalRectState* out) {
     if (!isfinite(fx) || !isfinite(fy) || !(fx > 0.0f) || !(fy > 0.0f) || fx > 1.0f || fy > 1.0f)
@@ -705,7 +705,10 @@ static inline int temporal_rect_structure(const TemporalViewport* v, int target_
     if (target_w <= 0 || target_h <= 0 || !temporal_rect_from_viewport(v, target_w, target_h, &r))
         return TEMPORAL_RECT_VIEWPORT;
     const int whole = r.x == 0 && r.y == 0 && r.w == target_w && r.h == target_h;
-    if (!whole) {
+    if (whole) {
+        /* a whole target the game reports as partly used is not understood */
+        if (fabs((double)fx - 1.0) > 1e-6 || fabs((double)fy - 1.0) > 1e-6) return TEMPORAL_RECT_SHAPE;
+    } else {
         const int left = corner == TEMPORAL_CORNER_TOP_LEFT || corner == TEMPORAL_CORNER_BOTTOM_LEFT;
         const int top = corner == TEMPORAL_CORNER_TOP_LEFT || corner == TEMPORAL_CORNER_TOP_RIGHT;
         const double want_w = round((double)target_w * (double)fx), want_h = round((double)target_h * (double)fy);

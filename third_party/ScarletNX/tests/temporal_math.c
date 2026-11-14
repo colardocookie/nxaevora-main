@@ -1411,6 +1411,13 @@ static void test_rect(void) {
     /* The structure of a frame. A whole target, and the game's rectangle at three scales and two target sizes. */
     assert(temporal_rect_structure(&whole, 3840, 2160, 1.0f, 1.0f, TEMPORAL_CORNER_TOP_LEFT, &s) == TEMPORAL_RECT_OK);
     assert(s.rect.w == 3840 && s.rect.h == 2160 && s.target_w == 3840 && s.fx == 1.0f);
+    /* A whole target is understood only with a fraction of 1 within 1e-6. Reported as partly used it is refused,
+       also at 0.9998, whose size rounds to the whole target within a pixel. */
+    assert(temporal_rect_structure(&whole, 3840, 2160, 0.9999995f, 0.9999995f, 0, &s) == TEMPORAL_RECT_OK);
+    assert(temporal_rect_structure(&whole, 3840, 2160, 0.75f, 0.75f, 0, &s) == TEMPORAL_RECT_SHAPE);
+    assert(temporal_rect_structure(&whole, 3840, 2160, 0.5f, 0.5f, 0, &s) == TEMPORAL_RECT_SHAPE);
+    assert(temporal_rect_structure(&whole, 3840, 2160, 0.9998f, 0.9998f, 0, &s) == TEMPORAL_RECT_SHAPE);
+    assert(temporal_rect_structure(&whole, 3840, 2160, 0.99999f, 0.99999f, 0, &s) == TEMPORAL_RECT_SHAPE);
     const float scales[3] = {0.5f, 0.75f, 0.9f};
     for (int big = 0; big < 2; big++)
         for (int k = 0; k < 3; k++) {
