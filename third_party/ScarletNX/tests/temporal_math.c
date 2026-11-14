@@ -2865,6 +2865,53 @@ static void test_selftest(void) {
     assert(selftest_verdict(broken, 4, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);
     assert(selftest_verdict(clear, 1, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);
     assert(selftest_verdict(clear, 4, 4, SELFTEST_MARGIN) == SELFTEST_FAIL);
+    /* Cases 1 and 2: the configured signs strictly the lowest of all, and the margin only for the variants
+       marked (vector signs turned, the jitter's as configured). The device run's four jitter variants, 0.0518
+       against 0.0607, 0.0668 and 0.0753, pass this and failed the margin for all. */
+    {
+        const double jitter[4] = {0.051835, 0.060744, 0.066839, 0.075324};
+        const int none[4] = {0, 0, 0, 0}, all[4] = {0, 1, 1, 1};
+        assert(selftest_verdict(jitter, 4, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);
+        assert(selftest_signs(jitter, none, 4, 0, SELFTEST_MARGIN) == SELFTEST_PASS);
+        assert(selftest_signs(jitter, all, 4, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);
+        assert(selftest_signs(jitter, none, 4, 1, SELFTEST_MARGIN) == SELFTEST_FAIL); /* another is lower */
+        /* strictly: a variant level with the configured one fails, with or without a margin asked of it */
+        assert(selftest_signs(tied, none, 4, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);
+        assert(selftest_signs(wrong, none, 4, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);
+        /* The margin is asked where it is marked and nowhere else. Of case 2's sixteen, three turn vector
+           signs only: numbers 4, 8 and 12. */
+        double sixteen[16];
+        int marked[16];
+        for (int i = 0; i < 16; i++) {
+            sixteen[i] = i ? 0.0105 + 0.0001 * i : 0.010; /* every jitter variant a little worse */
+            marked[i] = i && !(i & 3);
+            if (marked[i]) sixteen[i] = 0.030;
+        }
+        assert(selftest_signs(sixteen, marked, 16, 0, SELFTEST_MARGIN) == SELFTEST_PASS);
+        for (int i = 4; i < 16; i += 4) {
+            double one[16];
+            memcpy(one, sixteen, sizeof one);
+            one[i] = 0.0124; /* worse than the configured one, and under 1.25 times it */
+            assert(selftest_signs(one, marked, 16, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);
+            one[i] = 0.0125;
+            assert(selftest_signs(one, marked, 16, 0, SELFTEST_MARGIN) == SELFTEST_PASS);
+        }
+        for (int i = 1; i < 16; i++) {
+            double one[16];
+            memcpy(one, sixteen, sizeof one);
+            one[i] = 0.010; /* level with the configured one */
+            assert(selftest_signs(one, marked, 16, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);
+            one[i] = 0.0099;
+            assert(selftest_signs(one, marked, 16, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);
+        }
+        /* all the same tells nothing apart, numbers that are not ones fail, as do too few and a wrong index */
+        const double same[4] = {0.02, 0.02, 0.02, 0.02};
+        assert(selftest_signs(same, none, 4, 0, SELFTEST_MARGIN) == SELFTEST_BLIND);
+        assert(selftest_signs(broken, none, 4, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);
+        assert(selftest_signs(jitter, none, 1, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);
+        assert(selftest_signs(jitter, none, 4, 4, SELFTEST_MARGIN) == SELFTEST_FAIL);
+        assert(selftest_signs(jitter, none, 4, -1, SELFTEST_MARGIN) == SELFTEST_FAIL);
+    }
     const double exact[2] = {0.008, 0.010}, under[2] = {0.008, 0.0099};
     assert(selftest_verdict(exact, 2, 0, SELFTEST_MARGIN) == SELFTEST_PASS); /* exactly 1.25 times passes */
     assert(selftest_verdict(under, 2, 0, SELFTEST_MARGIN) == SELFTEST_BLIND);

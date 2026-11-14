@@ -841,6 +841,7 @@ static const char* verdict_name(int verdict) {
 static int signs(const char* name, const Inputs* in, unsigned mask, int region, const double* reference,
                  const u8* regions, double* output) {
     double errors[16];
+    int needs[16];
     int n = 0, own = -1, ran = 1;
     for (unsigned combo = 0; combo < 16 && ran; combo++) {
         if (combo & ~mask) continue;
@@ -851,10 +852,20 @@ static int signs(const char* name, const Inputs* in, unsigned mask, int region, 
             v.jitter_y < 0 ? '-' : '+', v.vector_x < 0 ? '-' : '+', v.vector_y < 0 ? '-' : '+', errors[n],
             combo ? "" : " (configured)");
         if (!combo) own = n;
+        needs[n] = combo && !(combo & 3); /* turns vector signs and leaves the jitter's as configured */
         n++;
     }
-    const int verdict = ran ? selftest_verdict(errors, n, own, SELFTEST_MARGIN) : SELFTEST_FAIL;
-    LOG(ST "%s: %d variants, margin %.2f: %s\n", name, n, SELFTEST_MARGIN, verdict_name(verdict));
+    /* A case that turns the jitter's signs asks only that the configured ones are strictly the lowest, and the
+       margin of the variants that turn vector signs alone: the jitter's margin is the edge case's. A case of
+       vector signs alone asks the margin of every variant, as it did. */
+    const int jitter_too = (mask & 3) != 0;
+    const int verdict = !ran         ? SELFTEST_FAIL
+                        : jitter_too ? selftest_signs(errors, needs, n, own, SELFTEST_MARGIN)
+                                     : selftest_verdict(errors, n, own, SELFTEST_MARGIN);
+    if (jitter_too)
+        LOG(ST "%s: %d variants, the configured one strictly the lowest, and %.2f times it at least for those "
+               "that turn vector signs only: %s\n", name, n, SELFTEST_MARGIN, verdict_name(verdict));
+    else LOG(ST "%s: %d variants, margin %.2f: %s\n", name, n, SELFTEST_MARGIN, verdict_name(verdict));
     return verdict == SELFTEST_PASS;
 }
 

@@ -258,6 +258,26 @@ static inline int selftest_verdict(const double* errors, int n, int own, double 
         if (i != own && !(errors[i] > errors[own] && errors[i] >= margin * errors[own])) return SELFTEST_FAIL;
     return SELFTEST_PASS;
 }
+/* The verdict of a case whose variants turn the jitter's signs too (cases 1 and 2). The configured variant must
+   have strictly the lowest error of all. The margin is asked only of the variants marked in needs: those that
+   turn vector signs and leave the jitter's as configured, which the pattern excites. The jitter's own margin
+   is the edge case's. Errors that are all one and the same tell nothing apart (BLIND). */
+static inline int selftest_signs(const double* errors, const int* needs, int n, int own, double margin) {
+    double best = INFINITY, worst = 0.0;
+    for (int i = 0; i < n; i++) {
+        if (!isfinite(errors[i]) || errors[i] < 0.0) return SELFTEST_FAIL;
+        if (errors[i] < best) best = errors[i];
+        if (errors[i] > worst) worst = errors[i];
+    }
+    if (n < 2 || own < 0 || own >= n) return SELFTEST_FAIL;
+    if (!(worst > best)) return SELFTEST_BLIND;
+    for (int i = 0; i < n; i++) {
+        if (i == own) continue;
+        if (!(errors[i] > errors[own])) return SELFTEST_FAIL;
+        if (needs[i] && !(errors[i] >= margin * errors[own])) return SELFTEST_FAIL;
+    }
+    return SELFTEST_PASS;
+}
 /* a control must be a margin worse than the configured run */
 static inline int selftest_beats(double own, double control, double margin) {
     return isfinite(own) && isfinite(control) && own >= 0.0 && control > own && control >= margin * own;

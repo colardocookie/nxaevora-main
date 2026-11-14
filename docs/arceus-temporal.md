@@ -419,10 +419,12 @@ only the numbers handed to the adapter.
 
 The cases, each run with a viewport of negative and of positive height (render 320 x 180, output 480 x 270):
 1. Jitter alone over a still pattern, twice the offsets. The four combinations of the jitter's signs: the
-   configured one must have the lowest error and every other at least 1.25 times it. The error must be 1.25 times
-   lower than that of one frame scaled plainly. The change between frames over the last cycle of offsets must be
-   at most half of that over the first.
-2. A translation that differs in both axes. All sixteen combinations of the jitter's and the vector's signs.
+   configured one must have strictly the lowest error. The jitter's margin is the edge case's (below), since
+   this pattern does not tell the jitter's signs apart by much. The error must be 1.25 times lower than that of
+   one frame scaled plainly. The change between frames over the last cycle of offsets must be at most half of
+   that over the first.
+2. A translation that differs in both axes. All sixteen combinations of the jitter's and the vector's signs:
+   the configured one strictly the lowest, and the three that turn vector signs only at least 1.25 times it.
 3. A patch moving another way over a still background. The four combinations of the vector's signs, judged
    inside the patch. In the band the patch left, taken over every evaluated frame after the first cycle of
    offsets, the configured run must beat the run with the depth convention turned, by the margin. The band's
