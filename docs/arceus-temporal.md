@@ -94,11 +94,14 @@ drawn, summed over the sampled pixels on brightness brought under 1. The resolve
 so does a blur of the whole picture. It compares options on the same scene, not runs of different scenes.
 
 The viewport gate. The resolve and the jitter hold only while the scene's viewport is the whole target and the
-same as the frame before. This is decided once a frame, at the first draw that binds the scene camera's block,
-before the depth pass. Otherwise the whole frame is drawn without jitter and its history is not used, and the same
-goes for a frame whose G-buffer viewport is not the one decided on. Both are counted and logged (`no jitter and no
-history this frame`, `the scene's viewport ... is not the one the jitter was decided on`). A scene drawn smaller
-than its target, as the game's own dynamic scale does, is not supported yet.
+same as the frame before. This is decided once a frame, at the first draw that binds the scene camera's block and
+draws into the scene's depth (the depth pass), from that draw's own viewport. Otherwise the whole frame is drawn
+without jitter and left as drawn: no resolve, no sharpen, and the frame after it has no history. The same goes for
+a frame whose G-buffer viewport is not the one decided on, whose object vectors are given up too. A draw that binds
+the block before the frame's first draw into the scene depth gets no jitter. All of these are counted and logged
+(`no jitter and no history this frame`, `frame left as drawn`, `is not the one the jitter was decided on`, `binds
+the scene camera's block before`). A scene drawn smaller than its target, as the game's own dynamic scale does, is
+not supported yet.
 
 The camera's vectors have both ends without jitter, as the objects' have: the pixel's place as drawn minus the
 frame's jitter, and that point under the camera of a frame ago.
@@ -135,14 +138,21 @@ The formulas are in `gpu/vk/temporal_math.h` with a host test (`tests/temporal_m
 With `probe` or `taa`. The camera vectors are right for what stands still. An object that moves gets its own:
 
 - Each G-buffer draw binds the object's constant block (bank 6, its world matrix at +0). The matrix is kept in a
-  table by the block's address. The game writes a block to two slots in turn, one bound size apart, and all blocks
-  take the same turn as the camera's block. Last frame's matrix is the entry of the other slot.
-- Not every block takes turns. A block bound at its own address a frame ago uses that entry. A block whose own
-  matrix of two frames ago is nearer to now than the other slot's of a frame ago is not that slot's pair (another
-  object lives there) and gets no matrix of a frame ago.
-- When the matrix differs from that one, and by less than 5 units of position, the draw is made once more right after the game's: the
-  game's vertex program and state, a fragment program of ours, the vector target as its only colour target and the
-  scene depth tested for equal and not written. So it covers the pixels the object owns.
+  table by the block's address, with the draws that bound it (vertex and index buffer addresses, index count, first
+  index, vertex program). The game writes many blocks to two slots in turn, one bound size apart, in step with the
+  camera's block.
+- Which slots are such a pair is learned. Two slots are a pair once exactly one of them was bound in each of 4
+  frames in a row, in turns, by the same draws. This is judged at the end of each frame from the complete frame. A
+  pair is given up at once, and learned again, when both slots are bound in one frame, when the draws change, when
+  a turn is missed, or when a slot's matrix is bit for bit its own of two frames ago and not the other slot's (two
+  things at rest). A slot bound by the same draws 4 frames in a row takes no turns and is its own pair.
+- Only an established pair gives a matrix of a frame ago. Every other draw keeps the camera's vector, counted by
+  reason. So an object has no vector of its own for its first 4 frames.
+- When the matrix differs from that one, and by less than 5 units of position, the draw is made once more right
+  after the game's: the game's vertex program and state, a fragment program of ours, the vector target as its only
+  colour target and the scene depth tested for equal and not written. So it covers the pixels the object owns.
+- After the G-buffer the pairs the frame's extra draws relied on are checked again against the frame's draws. When
+  one broke, the frame's object vectors are given up and the camera's stand (counted).
 - The fragment program takes the pixel and its depth and one matrix per draw, composed in double: this frame's clip
   as drawn, without the jitter, to the world, to the object, to its world a frame ago, to last frame's clip. The
   vector is the unjittered position now minus the position before. Blue keeps the depth it was drawn at.
@@ -157,7 +167,13 @@ position now from the game's binding, the position a frame ago from our copy, ea
 view-projection matrix. That program is not the game's, so its depth is not bit for bit the game's: the scene depth
 is sampled and a fragment counts when it is within 0.3 % of it. A character whose first frame it is, or whose buffer
 was not written the frame before, falls back to the motion of its world matrix. So does one whose capture of this
-frame is not as long as last frame's: another mesh may have taken the address.
+frame is not as long as last frame's (another mesh may have taken the address), and one whose draw reads a vertex
+past last frame's copy. A character whose block has no established pair is not drawn again at all.
+
+Limit. The renderer does not see which game object wrote a block, so a pair is a guess that 4 frames of evidence
+support. Two different things with the same mesh that swap visibility every frame and move would be taken for one
+object. One object that truly moves there and back in two frames is taken for two things at rest and keeps the
+camera's vector. Instanced draws have no vectors of their own.
 
 The depth an object's point had a frame ago goes with its vector (the object target's alpha, the vector image's
 blue), and the resolve expects that depth of the history there. The camera's reprojection does not know the object
@@ -168,12 +184,14 @@ stage, draws under a predicate, draws without depth write unless they test for e
 Each new combination of state makes one
 pipeline, compiled when first needed.
 
-`arceus-temporal-objects` every 600 frames: G-buffer draws with an object block, without a block a frame ago,
-jumped too far, moved, drawn again, over the cap, not an affine matrix, pipelines made, and for the skinned
-characters: buffers kept, drawn again, without last frame's buffer, with a capture of another length, and the
-blocks that are not their other slot's pair. Skinned draws count in the block numbers too. One example a second
-has its own line: a jump, a block that is not its slot's pair, and a move of more than 100 px on screen while the
-camera's own is under 20 px.
+`arceus-temporal-objects` every 600 frames: the G-buffer draws with an object block, those without a matrix of a
+frame ago by reason (nothing bound a frame ago, pair still being learned, another draw than the pair's, at rest
+alone, jumped too far, table full, not judged), those with one, moved, drawn again, over the cap, pipelines made,
+what the end of the frames judged (pairs learned, slots without turns learned, pairs broken, of those at rest
+alone, frames whose object vectors were given up), and for the skinned characters: buffers kept, drawn again,
+without last frame's buffer, with a capture of another length, reading past last frame's copy. One example a
+second has its own line: a jump, a pair that broke after its draw, and a move of more than 100 px on screen while
+the camera's own is under 20 px.
 
 In the probe the extra draws write their number of the frame where the resolve would expect the depth before, and
 the numbers' image carries it. `arceus-temporal-long` then names, for sampled pixels whose object vector is at the

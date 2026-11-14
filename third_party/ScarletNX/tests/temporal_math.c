@@ -357,6 +357,57 @@ static void test_camera_points(void) {
     assert(!temporal_camera_points(inverse_one, back, 0.1, 0.0, 0.01, 0, 0, now, before));
 }
 
+/* One frame of the gate as temporal.c drives it: the draws that bind the camera's block before the depth pass
+   (early, not tied to the scene: no jitter and no decision), the depth pass's viewport (none when the frame has no
+   draw into the scene depth), the G-buffer's. Returns 4 when an early binder got jitter, else 1 jitter + 2 steady. */
+static int gate_frame(TemporalGate* g, unsigned frame, int early, const TemporalViewport* depth_pass,
+                      const TemporalViewport* gbuffer, float w, float h) {
+    if (early && temporal_gate_jitter(g, frame)) return 4;
+    int jitter = 0;
+    if (depth_pass) jitter = temporal_gate_decide(g, frame, depth_pass, w, h);
+    assert(jitter == temporal_gate_jitter(g, frame));
+    if (gbuffer) temporal_gate_scene(g, frame, gbuffer);
+    return jitter + 2 * temporal_gate_steady(g, frame);
+}
+
+static void test_gate(void) {
+    const TemporalViewport full = {0, 0, 1920, 1080}, small = {0, 0, 1440, 810}, shifted = {8, 0, 1920, 1080};
+    const TemporalViewport up = {0, 1080, 1920, -1080}, up_small = {0, 810, 1440, -810}, up_wrong = {0, 0, 1920, -1080};
+    for (int sign = 0; sign < 2; sign++) {
+        const TemporalViewport *f = sign ? &up : &full, *s = sign ? &up_small : &small;
+        TemporalGate g = {0};
+        /* the first frame has no frame before: no jitter, not steady. Then steady. */
+        assert(gate_frame(&g, 1, 0, f, f, 1920, 1080) == 0);
+        assert(gate_frame(&g, 2, 0, f, f, 1920, 1080) == 3);
+        assert(gate_frame(&g, 3, 0, f, f, 1920, 1080) == 3);
+        /* full -> 0.75 -> full: off while small, off for the first full frame after (not last frame's), then on */
+        assert(gate_frame(&g, 4, 0, s, s, 1920, 1080) == 0);
+        assert(gate_frame(&g, 5, 0, s, s, 1920, 1080) == 0);
+        assert(gate_frame(&g, 6, 0, f, f, 1920, 1080) == 0);
+        assert(gate_frame(&g, 7, 0, f, f, 1920, 1080) == 3);
+        /* a binder before the depth pass gets none, whatever the frame before was, and decides nothing */
+        assert(gate_frame(&g, 8, 1, f, f, 1920, 1080) == 3);
+        /* a frame without a draw into the scene depth: nothing decided, not steady, and the next has no last frame */
+        assert(gate_frame(&g, 9, 1, NULL, NULL, 1920, 1080) == 0);
+        assert(gate_frame(&g, 10, 0, f, f, 1920, 1080) == 0);
+        assert(gate_frame(&g, 11, 0, f, f, 1920, 1080) == 3);
+        /* the depth pass and the G-buffer disagree: jittered already, but not steady */
+        assert(gate_frame(&g, 12, 0, f, s, 1920, 1080) == 1);
+        assert(gate_frame(&g, 13, 0, f, f, 1920, 1080) == 3);
+        /* an unknown target size */
+        assert(gate_frame(&g, 14, 0, f, f, 0, 0) == 0);
+        /* a gap of a frame */
+        assert(gate_frame(&g, 15, 0, f, f, 1920, 1080) == 3);
+        assert(gate_frame(&g, 17, 0, f, f, 1920, 1080) == 0);
+    }
+    /* whole means from the origin: a shifted viewport and a flipped one from the wrong edge are not */
+    TemporalGate g = {0};
+    gate_frame(&g, 1, 0, &shifted, &shifted, 1920, 1080);
+    assert(gate_frame(&g, 2, 0, &shifted, &shifted, 1920, 1080) == 0);
+    gate_frame(&g, 3, 0, &up_wrong, &up_wrong, 1920, 1080);
+    assert(gate_frame(&g, 4, 0, &up_wrong, &up_wrong, 1920, 1080) == 0);
+}
+
 static void test_mip_bias(void) {
     assert(close_to(temporal_mip_bias(0.0f, -0.5f, 15.0f), -0.5, 1e-6));  /* ours alone */
     assert(close_to(temporal_mip_bias(-0.25f, -0.5f, 15.0f), -0.75, 1e-6)); /* added to the game's */
@@ -516,6 +567,7 @@ int main(void) {
     test_camera_points();
     test_mip_bias();
     test_pairs();
+    test_gate();
     test_origin_shift();
     puts("temporal_math: ok");
     return 0;

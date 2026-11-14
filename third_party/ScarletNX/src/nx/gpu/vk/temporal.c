@@ -137,11 +137,9 @@ static struct {
        draw's depth target and registers, which vk_temporal_draw notes for every draw */
     const Surf* draw_zt;
     const u32* draw_r3d;
-    VkViewport decided;
-    u32 decided_at, mismatch_at;
-    int jitter_on;
+    TemporalGate gate;
     float jitter_ndc[2], jitter_made[2];
-    u64 gated, mismatched;
+    u64 gated, mismatched, early, unsteady;
     /* the transform feedback outputs of this frame, for finding the draws that read them */
     struct {
         u64 address;
@@ -466,18 +464,17 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
                 (unsigned long long)g_t.pair_equal, (unsigned long long)g_t.pair_differ);
     }
     g_t.viewport = vk_render_viewport(ch->r3d);
-    /* The jitter was decided on another viewport than the scene's: the history is not used this frame and the
-       next, and this frame's object vectors are given up. */
-    if (g_t.mode == MODE_TAA && g_t.decided_at == frame && g_t.jitter_on &&
-        (g_t.viewport.x != g_t.decided.x || g_t.viewport.y != g_t.decided.y ||
-         g_t.viewport.width != g_t.decided.width || g_t.viewport.height != g_t.decided.height)) {
-        g_t.mismatch_at = frame;
+    /* The jitter was decided on another viewport than the scene's: the frame is left as drawn, so the next has no
+       history, and this frame's object vectors are given up. */
+    const TemporalViewport scene_view = {g_t.viewport.x, g_t.viewport.y, g_t.viewport.width, g_t.viewport.height};
+    if (g_t.mode == MODE_TAA && temporal_gate_scene(&g_t.gate, frame, &scene_view)) {
         if (g_t.mismatched++ < 4 || g_t.mismatched % 600 == 0)
             LOG("arceus-temporal: the scene's viewport %g,%g %gx%g is not the one the jitter was decided on (%g,%g "
                 "%gx%g), %llu frames so far\n",
                 (double)g_t.viewport.x, (double)g_t.viewport.y, (double)g_t.viewport.width,
-                (double)g_t.viewport.height, (double)g_t.decided.x, (double)g_t.decided.y,
-                (double)g_t.decided.width, (double)g_t.decided.height, (unsigned long long)g_t.mismatched);
+                (double)g_t.viewport.height, (double)g_t.gate.decided.x, (double)g_t.gate.decided.y,
+                (double)g_t.gate.decided.width, (double)g_t.gate.decided.height,
+                (unsigned long long)g_t.mismatched);
     }
     /* depth as vk_render_viewport makes its range: both depth modes store translate + scale x z */
     {
@@ -502,26 +499,23 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
     g_t.camera_at = frame;
 }
 
-/* Whether this frame is drawn with jitter, decided at the frame's first draw that binds the scene camera's block,
-   before the depth pass. The jitter and the resolve hold only while the scene's viewport is the whole target and
-   the one of the frame before. Else the whole frame has no jitter and its history is not used. The viewport is this
-   draw's when it draws into the scene's depth, the scene's last known one otherwise. */
-static void jitter_decide(u32 frame) {
+/* Whether this frame is drawn with jitter, decided at the frame's first draw that binds the scene camera's block
+   and draws into the scene's depth (the depth pass), from that draw's own viewport. The jitter and the resolve hold
+   only while that viewport is the whole target and the one of the frame before. Else the whole frame has no jitter
+   and is left as drawn. Draws that bind the block before that one get no jitter: 0 for those. */
+static int jitter_decide(u32 frame) {
     const Surf* zt = g_t.draw_zt;
-    VkViewport v = g_t.viewport;
-    float w = (float)g_t.motion.w, h = (float)g_t.motion.h;
-    if (zt && g_t.depth && zt->gva == g_t.depth && g_t.draw_r3d) {
-        v = vk_render_viewport(g_t.draw_r3d);
-        w = (float)zt->sw;
-        h = (float)zt->sh;
+    if (!zt || !g_t.depth || zt->gva != g_t.depth || !g_t.draw_r3d) {
+        if (g_t.early++ < 4 || g_t.early % 36000 == 0)
+            LOG("arceus-temporal: a draw binds the scene camera's block before the frame's first draw into the "
+                "scene depth and gets no jitter, %llu so far\n",
+                (unsigned long long)g_t.early);
+        return 0;
     }
-    const int full = v.x == 0.0f && fabsf(v.width) == w && fabsf(v.height) == h &&
-                     v.y == (v.height < 0.0f ? h : 0.0f);
-    const int same = g_t.decided_at + 1 == frame && v.x == g_t.decided.x && v.y == g_t.decided.y &&
-                     v.width == g_t.decided.width && v.height == g_t.decided.height;
-    const int on = full && same;
-    g_t.decided = v;
-    g_t.decided_at = frame;
+    const VkViewport v = vk_render_viewport(g_t.draw_r3d);
+    const float w = (float)zt->sw, h = (float)zt->sh;
+    const TemporalViewport view = {v.x, v.y, v.width, v.height};
+    const int on = temporal_gate_decide(&g_t.gate, frame, &view, w, h);
     g_t.jitter_ndc[0] = g_t.jitter_ndc[1] = 0;
     if (on) {
         float pixels[2];
@@ -529,16 +523,16 @@ static void jitter_decide(u32 frame) {
         g_t.jitter_ndc[0] = 2.0f * pixels[0] / fabsf(v.width);
         g_t.jitter_ndc[1] = 2.0f * pixels[1] / fabsf(v.height);
     } else if (g_t.gated++ < 4 || g_t.gated % 600 == 0)
-        LOG("arceus-temporal: no jitter and no history this frame (viewport %g,%g %gx%g in a target of %gx%g, %s), "
-            "%llu frames so far\n",
+        LOG("arceus-temporal: no jitter and no history this frame (viewport %g,%g %gx%g in a target of %gx%g, not "
+            "the whole target or not last frame's), %llu frames so far\n",
             (double)v.x, (double)v.y, (double)v.width, (double)v.height, (double)w, (double)h,
-            !full ? "not the whole target" : "not last frame's", (unsigned long long)g_t.gated);
-    g_t.jitter_on = on;
+            (unsigned long long)g_t.gated);
+    return 1;
 }
 
 /* this frame's jitter as the draws got it, in clip units over w: 0 when the frame has none */
 static void frame_jitter(u32 frame, double* jx, double* jy) {
-    const int on = g_t.mode == MODE_TAA && g_t.decided_at == frame && g_t.jitter_on;
+    const int on = g_t.mode == MODE_TAA && temporal_gate_jitter(&g_t.gate, frame);
     *jx = on ? (double)g_t.jitter_ndc[0] : 0.0;
     *jy = on ? (double)g_t.jitter_ndc[1] : 0.0;
 }
@@ -559,8 +553,8 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
         LOG("arceus-temporal: a program reads %u of the camera block's %u bytes\n", size, bound);
     }
     const u32 index = g_vk_present % JITTERS;
-    if (g_t.decided_at != g_vk_present + 1) jitter_decide(g_vk_present + 1);
-    if (!g_t.jitter_on) return 0;
+    if (g_t.gate.decided_at != g_vk_present + 1 && !jitter_decide(g_vk_present + 1)) return 0;
+    if (!temporal_gate_jitter(&g_t.gate, g_vk_present + 1)) return 0;
     /* the guest's bytes now: the copy is remade when they differ from the ones it was made from */
     u8 source[0x1000];
     gmem_read(address, source, bound);
@@ -1447,7 +1441,7 @@ void vk_temporal_before(u64 fs0_hash) {
     VkCommandBuffer cb = vk_cmd();
     /* objects that moved were drawn into their own target this frame: the vector pass takes their vectors from it */
     const int objects = g_t.objects && g_t.object_at == frame && g_t.object.view && g_t.object.w == scene->sw &&
-                        g_t.object.h == scene->sh && g_t.mismatch_at != frame && pairs_hold(frame);
+                        g_t.object.h == scene->sh && g_t.gate.mismatch_at != frame && pairs_hold(frame);
     /* the vectors: depth sampled, the motion image written */
     vk_surf_use(cb, depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
@@ -1515,7 +1509,15 @@ void vk_temporal_before(u64 fs0_hash) {
     /* the picture shown a frame ago, for the numbers: the resolved one with anti-aliasing on */
     VkImageView shown_before = VK_NULL_HANDLE;
     int numbers = history, sharpened = 0;
-    if (taa && g_t.view != 4) {
+    /* A frame without jitter (jitter_decide) or whose G-buffer viewport is not the one decided on is left as drawn:
+       no resolve, no sharpen, no numbers, and no history for the frame after it. */
+    const int steady = temporal_gate_steady(&g_t.gate, frame);
+    if (taa && !steady) {
+        if (g_t.unsteady++ < 4 || g_t.unsteady % 600 == 0)
+            LOG("arceus-temporal: frame left as drawn (the viewport), %llu so far\n",
+                (unsigned long long)g_t.unsteady);
+        numbers = 0;
+    } else if (taa && g_t.view != 4) {
         /* the resolve: the scene colour and the new history are written, the old history and this frame's copy
            read. No history is used on the first frame, after a gap, after a change of size or a camera cut. */
         const VkFormat formats[2] = {scene->f.vk, HISTORY_FORMAT};
@@ -1535,13 +1537,10 @@ void vk_temporal_before(u64 fs0_hash) {
         const float* m = pc.reproject;
         const float w = 0.01f * m[11] + m[15], x = 0.01f * m[8] + m[12], y = 0.01f * m[9] + m[13];
         const int cut = !(w > 0.0f) || fabsf(x) > 0.5f * w || fabsf(y) > 0.5f * w;
-        /* a frame without jitter (jitter_decide) or with another viewport than decided on has no history */
-        const int steady = g_t.decided_at == frame && g_t.jitter_on && g_t.mismatch_at != frame &&
-                           (!g_t.mismatch_at || g_t.mismatch_at + 1 != frame);
-        const int usable = g_t.resolved_at + 1 == frame && !cut && steady;
+        const int usable = g_t.resolved_at + 1 == frame && !cut;
         if (!usable && (g_t.resets++ < 4 || g_t.resets % 600 == 0))
-            LOG("arceus-temporal: history not used (%s), %llu times so far\n",
-                cut ? "camera cut" : !steady ? "the viewport" : "no frame before", (unsigned long long)g_t.resets);
+            LOG("arceus-temporal: history not used (%s), %llu times so far\n", cut ? "camera cut" : "no frame before",
+                (unsigned long long)g_t.resets);
         Constants rc = pc;
         rc.depth[2] = (float)g_t.options;
         rc.depth[3] = usable ? 0.0f : 1.0f;

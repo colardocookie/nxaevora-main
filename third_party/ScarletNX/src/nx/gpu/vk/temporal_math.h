@@ -224,6 +224,44 @@ static inline int temporal_camera_points(const float inverse_vp[16], const float
     before[1] = clip[1] / clip[3];
     return 1;
 }
+/* The viewport gate. The jitter and the resolve hold only while the scene's viewport is the whole target and the
+   one of the frame before. A frame is decided once, by its first draw that binds the scene camera's block and draws
+   into the scene's depth, from that draw's viewport (temporal_gate_decide, 1 for jitter). The G-buffer's viewport
+   is then held against it (temporal_gate_scene, 1 for a mismatch). A frame is steady, and may be resolved and
+   kept as history, when it was decided with jitter and did not mismatch. Frames count from 1. */
+typedef struct {
+    float x, y, width, height; /* height negative when y runs up: then y is the bottom edge */
+} TemporalViewport;
+typedef struct {
+    TemporalViewport decided;
+    unsigned decided_at, mismatch_at;
+    int jitter;
+} TemporalGate;
+static inline int temporal_viewport_same(const TemporalViewport* a, const TemporalViewport* b) {
+    return a->x == b->x && a->y == b->y && a->width == b->width && a->height == b->height;
+}
+static inline int temporal_gate_decide(TemporalGate* g, unsigned frame, const TemporalViewport* v, float target_width,
+                                       float target_height) {
+    const int whole = target_width > 0.0f && target_height > 0.0f && v->x == 0.0f &&
+                      fabsf(v->width) == target_width && fabsf(v->height) == target_height &&
+                      v->y == (v->height < 0.0f ? target_height : 0.0f);
+    const int same = g->decided_at && g->decided_at + 1 == frame && temporal_viewport_same(v, &g->decided);
+    g->decided = *v;
+    g->decided_at = frame;
+    g->jitter = whole && same;
+    return g->jitter;
+}
+static inline int temporal_gate_jitter(const TemporalGate* g, unsigned frame) {
+    return g->decided_at == frame && g->jitter;
+}
+static inline int temporal_gate_scene(TemporalGate* g, unsigned frame, const TemporalViewport* scene) {
+    if (!temporal_gate_jitter(g, frame) || temporal_viewport_same(scene, &g->decided)) return 0;
+    g->mismatch_at = frame;
+    return 1;
+}
+static inline int temporal_gate_steady(const TemporalGate* g, unsigned frame) {
+    return temporal_gate_jitter(g, frame) && g->mismatch_at != frame;
+}
 /* Which matrix an object's block had a frame ago. The renderer does not see which object wrote a block, so this is
    learned and stays a guess: two slots one bound size apart are a pair once exactly one of them was bound in each
    of TEMPORAL_PAIR_FRAMES frames in a row, in turns, by the same draws. A slot bound by the same draws in that many
