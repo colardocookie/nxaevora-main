@@ -592,6 +592,16 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     layout(&s->output, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     settle(); /* the staging buffer was read by the uploads and is written now */
     vkCmdCopyImageToBuffer(g.cb, s->output.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g.staging, 1, &region);
+    /* the copy's writes are made available to the host, which reads the buffer when the submission has completed */
+    const VkBufferMemoryBarrier read = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                                        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                        .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+                                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                        .buffer = g.staging,
+                                        .size = VK_WHOLE_SIZE};
+    vkCmdPipelineBarrier(g.cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &read, 0,
+                         NULL);
     const int done = submit();
     if (temporal_upscaler_failed(&s->failures, evaluated && done)) LOG(ST "the adapter failed eight times in a row\n");
     if (!evaluated || !done) return -1;
