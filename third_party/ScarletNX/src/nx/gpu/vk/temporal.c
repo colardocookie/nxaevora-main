@@ -667,7 +667,8 @@ static void stats_log(void) {
     /* per extra draw: its sampled pixels, and those wrong with its vector, with the camera's, with none */
     /* and those rejected, and of them the ones without a finite distance from the camera's vector */
     static u16 per_draw[OBJECT_DRAWS + 1][6];
-    static float per_draw_far[OBJECT_DRAWS + 1];
+    static float per_draw_far[OBJECT_DRAWS + 1], per_draw_long[OBJECT_DRAWS + 1];
+    memset(per_draw_long, 0, sizeof per_draw_long);
     unsigned rejected = 0, rejected_blind = 0, rejected_all = 0;
     float rejected_far = 0.0f;
     memset(per_draw_far, 0, sizeof per_draw_far);
@@ -731,6 +732,7 @@ static void stats_log(void) {
             tally[1] += moved > STATS_ERROR;
             tally[2] += object_marks >> 1 & 1;
             tally[3] += still > STATS_ERROR;
+            if (vector > per_draw_long[d]) per_draw_long[d] = vector;
             if (residual > 0.0f) {
                 tally[4]++;
                 tally[5] += blind;
@@ -798,6 +800,23 @@ static void stats_log(void) {
                  rejected_all, STATS_W * STATS_H, rejected, all, rejected_blind, (double)rejected_far);
     LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px vector_max=%.2f px sky=%u off_screen=%u%s%s\n",
         (unsigned long long)g_t.stats_run, all ? length / all : 0.0, longest, sky, off, bands, refused);
+    /* The probe names the draws that left a sampled vector longer than an eighth of the scene's height, four at
+       most. The length has the camera's part in it, so a fast pan names draws too. */
+    int long_named = 0;
+    for (u32 d = 1; !taa && g_t.object.h && d <= g_t.stats_draws && d <= OBJECT_DRAWS && long_named < 4; d++) {
+        const struct Drawn* w = &g_t.stats_drawn[d];
+        if (!(per_draw_long[d] > (float)g_t.object.h / 8.0f)) continue;
+        long_named++;
+        LOG("arceus-temporal-longest: run=%llu draw %u (%s, block %llx, draw %llx, matrix before from %s, origin "
+            "moved %.0f px): longest sampled vector %.0f px with the camera's part, sampled pixels n=%u wrong=%u "
+            "with_camera_vectors=%u\n",
+            (unsigned long long)g_t.stats_run, d, w->skinned ? "skinned" : "rigid", (unsigned long long)w->block,
+            (unsigned long long)w->signature,
+            w->source == TEMPORAL_BEFORE_OWN    ? "its own address"
+            : w->source == TEMPORAL_BEFORE_LINK ? "its linked slot"
+                                                : "the other slot",
+            (double)w->shift, (double)per_draw_long[d], per_draw[d][0], per_draw[d][1], per_draw[d][2]);
+    }
     /* the probe names the draws of the rejected samples, four at most */
     int named = 0;
     for (u32 d = 0; !taa && d <= OBJECT_DRAWS && named < 4; d++) {
