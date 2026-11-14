@@ -473,6 +473,14 @@ handed to the adapter, and the adapter prints the whole of what it gives its lib
 its context was made with (a `trace` flag in the frame of `gpu/vk/upscaler.h`). What a library is given is to
 be known from the log before anything is concluded about what it does with it.
 
+Two more parts are printed after the cases and judge nothing. The matched pair: the edge images with y down, and
+with y up and the clip offset's y negated, are the same bytes, so the two signs of the viewport hand the
+adapter identical inputs. The images are compared, what each frame handed over is compared, and the two
+outputs' difference is printed beside a repeated run's. The response table: for one axis at a time the reported
+jitter is multiplied by -1, -0.5, 0, 0.5, 9/16, 0.75, 1, 1.25, 1.5, 16/9 and 2 with the images unchanged, and each
+run's errors on both edges are printed. It is for looking: a lowest error among those factors on one picture
+does not name the factor a library wants.
+
 Limits. Cases 1 to 7 have run once on a device, with FSR 3.1.6, in an earlier state of the test, and failed
 on the jitter's margin of cases 1 and 2, on case 4's error and on the missing validation layer. The edge case
 has been built and has not run. Errors are

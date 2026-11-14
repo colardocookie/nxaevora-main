@@ -1396,6 +1396,52 @@ static void edge_matched(void) {
     free(regions);
 }
 
+/* Log only, exploratory, no verdict: the response table. For one axis at a time the jitter reported for that
+   axis is multiplied by a factor while the images stay as they are and the other axis is reported as
+   configured. 1 is the configured run, 0 "told nothing", -1 the turned sign. Each run's error on both edges is
+   printed. A lowest error among these factors on one picture does not name the factor a library wants: the
+   table is for looking, and nothing is tuned or judged from it. */
+static void edge_response(int up) {
+    static const double factors[11] = {-1.0, -0.5, 0.0, 0.5, 9.0 / 16.0, 0.75, 1.0, 1.25, 1.5, 16.0 / 9.0, 2.0};
+    static const double still[2] = {0.0, 0.0};
+    const SelftestEdge* edges[2] = {&SELFTEST_EDGE_V, &SELFTEST_EDGE_H};
+    const size_t pixels = (size_t)OUT_W * OUT_H, size = sizeof(double) * 3 * pixels;
+    const char* way = up ? "up" : "down";
+    double *reference = malloc(size), *picture = malloc(size);
+    u8* regions = malloc(pixels);
+    SelftestProfile truth_profile[2];
+    Inputs in;
+    memset(&in, 0, sizeof in);
+    int ok = !g.unknown && reference && picture && regions &&
+             inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1, 0, 0);
+    if (ok) {
+        truth(&in, up, reference, regions);
+        for (int e = 0; e < 2; e++) selftest_profile_make(edges[e], reference, OUT_W, &truth_profile[e]);
+    }
+    for (int axis = 0; ok && axis < 2; axis++)
+        for (int k = 0; ok && k < 11; k++) {
+            const Variant v = {axis ? 1.0 : factors[k], axis ? factors[k] : 1.0, 1, 1, 1, 0};
+            double profile[2], per_pixel[2];
+            ok = run(&in, &v, 0, picture, NULL, NULL, NULL, NULL);
+            if (!ok) break;
+            for (int e = 0; e < 2; e++) {
+                SelftestProfile p;
+                selftest_profile_make(edges[e], picture, OUT_W, &p);
+                profile[e] = selftest_profile_apart(&p, &truth_profile[e]);
+                per_pixel[e] = selftest_edge_apart(edges[e], picture, reference, OUT_W);
+            }
+            /* the edge across the axis first: the near-vertical one for x, the near-horizontal one for y */
+            LOG(ST "response table %s, exploratory, not judged: reported jitter %c times %.4f: edge across it profile "
+                   "error %.6f, per pixel %.6f. The other edge %.6f, %.6f\n",
+                way, axis ? 'y' : 'x', factors[k], profile[axis], per_pixel[axis], profile[!axis], per_pixel[!axis]);
+        }
+    if (!ok) LOG(ST "response table %s, exploratory: could not be made or finished\n", way);
+    inputs_free(&in);
+    free(reference);
+    free(picture);
+    free(regions);
+}
+
 /* The edge case's images, made and named by their checksums before any adapter is looked for: they depend on no
    library. The checksums are kept, and the case holds the images it runs on against them. The reference's two
    profiles must be whole, or the case could compare nothing. 1 when all of it is in order. */
@@ -1459,6 +1505,10 @@ int vk_upscaler_selftest(const char* adapter) {
     /* log only from here: nothing below is a case, and none of it enters the result */
     g.generation++;
     edge_matched();
+    g.generation++;
+    edge_response(1);
+    g.generation++;
+    edge_response(0);
     pass = pass && idle();
     /* Case 7: no message of the validation layer in any case. Without the layer the case was not run, which is
        not a pass, and neither is a run that had to stop. */
