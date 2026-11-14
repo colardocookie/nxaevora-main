@@ -1805,9 +1805,9 @@ static void test_upscaler(void) {
        has completed. A change of any size is a new context, and until that one is published the frames of the
        new size are not evaluated, while the old one stays the published one. */
     {
-        const TemporalUpscalerSizes at_full = {1920, 1080, 1920, 1080, 1920, 1080};
-        const TemporalUpscalerSizes at_part = {1920, 1080, 1440, 810, 1920, 1080};
-        TemporalUpscalerSizes at_other = at_part;
+        const TemporalUpscalerConfig at_full = {1920, 1080, 1920, 1080, 1920, 1080, 7};
+        const TemporalUpscalerConfig at_part = {1920, 1080, 1440, 810, 1920, 1080, 7};
+        TemporalUpscalerConfig at_other = at_part;
         at_other.out_h = 2160;
         TemporalUpscalerContexts c = {0};
         assert(!temporal_upscaler_ready(&c, &at_full) && temporal_upscaler_must_create(&c, &at_full));
@@ -1849,6 +1849,37 @@ static void test_upscaler(void) {
             temporal_upscaler_created(&moved, &at_full, 1);
             assert(temporal_upscaler_completed(&moved, &at_part) == TEMPORAL_UPSCALER_STALE);
             assert(temporal_upscaler_ready(&moved, &at_part) && !temporal_upscaler_must_create(&moved, &at_part));
+            /* The configuration is more than the sizes. The same sizes with another format, other properties,
+               another library or device (the caller's generation) are another configuration: the published
+               context does not serve it, and a pending one of the old generation is stale. */
+            TemporalUpscalerConfig other_rest = at_part;
+            other_rest.generation = 8;
+            moved = c;
+            assert(temporal_upscaler_ready(&moved, &at_part) && !temporal_upscaler_ready(&moved, &other_rest));
+            assert(temporal_upscaler_must_create(&moved, &other_rest));
+            TemporalUpscalerConfig full_rest = at_full;
+            full_rest.generation = 8;
+            temporal_upscaler_created(&moved, &at_full, 1);
+            assert(temporal_upscaler_completed(&moved, &full_rest) == TEMPORAL_UPSCALER_STALE);
+            assert(!temporal_upscaler_ready(&moved, &full_rest) && temporal_upscaler_must_create(&moved, &full_rest));
+            /* A reset (the upscaler turned off, or starting again) while one context is published and one is on
+               its way. The published one is retired. The pending one is still owed its completion: nothing is
+               made before that, and it then comes out stale, also for its own configuration, and is destroyed. */
+            moved = c;
+            temporal_upscaler_created(&moved, &at_full, 1);
+            assert(temporal_upscaler_reset(&moved) == 1);
+            assert(!temporal_upscaler_ready(&moved, &at_part) && !temporal_upscaler_ready(&moved, &at_full));
+            assert(!temporal_upscaler_must_create(&moved, &at_full));
+            assert(!temporal_upscaler_must_create(&moved, &at_part));
+            assert(temporal_upscaler_completed(&moved, &at_full) == TEMPORAL_UPSCALER_STALE && !moved.live);
+            assert(temporal_upscaler_must_create(&moved, &at_full));
+            assert(temporal_upscaler_completed(&moved, &at_full) == TEMPORAL_UPSCALER_NOTHING);
+            /* a reset with nothing published and a failed context held: the held one is still released */
+            TemporalUpscalerContexts held = {0};
+            temporal_upscaler_created(&held, &at_full, 0);
+            assert(temporal_upscaler_reset(&held) == 0 && !temporal_upscaler_must_create(&held, &at_full));
+            assert(temporal_upscaler_completed(&held, &at_full) == TEMPORAL_UPSCALER_RELEASE);
+            assert(temporal_upscaler_must_create(&held, &at_full) && temporal_upscaler_reset(&held) == 0);
             /* the very first context, stale: nothing is published at all */
             TemporalUpscalerContexts none = {0};
             temporal_upscaler_created(&none, &at_full, 1);
@@ -1875,8 +1906,8 @@ static void test_upscaler(void) {
         for (unsigned frame = 20; frame < 24; frame++) {
             assert(temporal_rect_decide(&g, frame, &full));
             assert(temporal_upscaler_frame(&g, frame, &full_stamp, &whole, jitter, 0, &out));
-            const TemporalUpscalerSizes sizes = {out.target_w, out.target_h, out.render.w, out.render.h, out.out_w,
-                                                 out.out_h};
+            const TemporalUpscalerConfig sizes = {out.target_w, out.target_h, out.render.w, out.render.h, out.out_w,
+                                                  out.out_h, 7};
             if (temporal_upscaler_must_create(&contexts, &sizes)) temporal_upscaler_created(&contexts, &sizes, 1);
             const int ready = temporal_upscaler_ready(&contexts, &sizes);
             assert(ready == (frame >= 22));

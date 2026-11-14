@@ -305,10 +305,11 @@ a parameter. The renderer still uses the whole-target gate, so under a scale bel
 
 `gpu/vk/upscaler.h` is the contract for an upscaler library (FSR, XeSS, DLSS): a separate file that the runtime
 would load by name. Its steps: `instance_extensions` without any handle, `device_extensions` with the instance
-and the physical device, `create` of a context for one set of sizes without work for the GPU, `prepare`, which
-records what the context must run once into a command buffer that the runtime submits, `evaluate` and `destroy`.
-A context may be used only when its preparation's submission has completed. A change of any size is a new
-context, and until that one is ready the frames of the new size are left as drawn. If the instance or the device
+and the physical device, `create` of a context for one configuration (sizes, formats, the inputs' properties,
+the device) without work for the GPU, `prepare`, which records what the context must run once into a command
+buffer that the runtime submits, `evaluate` and `destroy`. A context may be used only when its preparation's
+submission has completed. A change of anything in the configuration is a new context, and until that one is ready
+the frames of the new kind are left as drawn. If the instance or the device
 cannot be made with a library's extensions it is made again without them and the upscaler is off. No library is
 loaded, nothing calls it, and nothing of any SDK is in this repository. The numbers a frame would carry are made by `temporal_upscaler_frame`:
 - the vector is where the pixel's point was a frame ago less where it is now, in pixels, x to the right and y down

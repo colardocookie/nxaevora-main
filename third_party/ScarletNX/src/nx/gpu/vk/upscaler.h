@@ -50,7 +50,8 @@ typedef struct {
     uint32_t image_w, image_h;   /* the size of the colour, depth and motion images, which hold the rectangle */
     uint32_t output_w, output_h;
 } SnxUpscalerSizes;
-/* A context is made for one set of sizes and keeps it. */
+/* A context is made for one configuration, which is everything in this structure, and keeps it. A change of any
+   of it is a new context, not only a change of a size. */
 typedef struct {
     SnxUpscalerSizes sizes;
     VkInstance instance;
@@ -101,10 +102,10 @@ typedef struct {
 
 typedef struct SnxUpscaler SnxUpscaler; /* a library's context */
 
-/* The steps, in the order the runtime takes them. A change of any size is a new context: create, prepare, the
-   submission's completion, and only then it takes the old one's place, if the frames still have its sizes. Else
-   it is destroyed unused. evaluate is only called on a context made for the frame's sizes. One context is on
-   its way at a time, and one that is replaced is destroyed after its frames in flight (temporal_math.h). */
+/* The steps, in the order the runtime takes them. A change of the configuration is a new context: create,
+   prepare, the submission's completion, and only then it takes the old one's place, if the frames still have its
+   configuration. Else it is destroyed unused. evaluate is only called on a context made for the frame's. One
+   context is on its way at a time, and one that is replaced is destroyed after its frames in flight. */
 typedef struct {
     uint32_t abi;     /* SNX_UPSCALER_ABI as the library was built with */
     const char* name; /* for the log */
@@ -113,7 +114,7 @@ typedef struct {
     /* after the instance, before the device */
     int (*device_extensions)(VkInstance instance, VkPhysicalDevice device, PFN_vkGetInstanceProcAddr lookup,
                              SnxUpscalerDeviceNeeds* out);
-    /* A context for one set of sizes. No work for the GPU is done or recorded here. */
+    /* A context for one configuration. No work for the GPU is done or recorded here. */
     int (*create)(const SnxUpscalerCreate* create, SnxUpscalerTraits* traits, SnxUpscaler** out);
     /* What the context must run once is recorded into the runtime's command buffer, or nothing. The runtime
        submits it. The context is ready, and evaluate may be called, only when that submission has completed. */
