@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the NXAevora contributors
-// A light sharpen after the temporal resolve (gpu/vk/temporal.c, SNX_ARCEUS_TEMPORAL_SHARPEN). It reads the resolved
-// picture from the history image and writes the scene colour only: the history stays unsharpened, so the sharpening
-// does not build up from frame to frame. The amount falls where the neighbourhood already has contrast, and the
-// result stays within the 3x3 neighbourhood's least and greatest of each channel, as the picture holds them. The
-// whole of it is temporal_sharpen_rgb in temporal_math.h.
+// A light sharpen after the temporal resolve (SNX_ARCEUS_TEMPORAL_SHARPEN). It reads the resolved picture from the
+// history image and writes the scene colour only, so the sharpening does not build up from frame to frame. It falls
+// where the neighbourhood already has contrast and stays within each channel's 3x3 least and greatest.
+// temporal_sharpen_rgb in temporal_math.h is the whole of it.
 #version 450
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 o_color;
