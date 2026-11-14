@@ -1021,7 +1021,8 @@ static void objects_log(u32 frame) {
             "%llu, link still being learned %llu, another draw than the linked slot's at that place or past the "
             "eighth %llu, at rest alone %llu, records not complete or not of the frames before %llu. Links that "
             "reached their fourth frame %llu. Frames whose record is not complete: record full %llu, block table "
-            "full or block not judged %llu, a draw before the camera's block %llu (%llu such draws). Frames whose "
+            "full or block not judged %llu, a draw before the camera's block or into another surface of the scene "
+            "depth %llu (%llu such draws). Frames whose "
             "object vectors were given up for a link %llu\n",
             (unsigned long long)g_t.link_why[TEMPORAL_LINK_USED], (unsigned long long)g_t.link_why[TEMPORAL_LINK_NONE],
             (unsigned long long)g_t.link_why[TEMPORAL_LINK_LEARNING],
@@ -1368,17 +1369,22 @@ int vk_temporal_object_note(const GpuChannel* ch, const Surf* zt, u64 vertex, u6
     g_t.current.slot = g_t.current.other = NULL;
     g_t.current.address = 0;
     g_t.current.link = 0;
-    if (!g_t.objects || !zt || zt != g_t.depth_rt || !address || size < 64 || size > 0x10000) return 0;
+    if (!g_t.objects || !zt) return 0;
     const u64 signature = temporal_draw_signature(vertex, index, count, first, program);
-    /* the links' record must see every such draw: one before the camera's block is known is noted as not seen */
-    if (g_t.links) {
+    /* The links' record must see every draw with an object block into the scene depth, known by its address, also
+       the ones nothing below looks at. Before the camera's block is known, or into another surface at that
+       address, the draw is noted as not seen. A block of a size the pairs leave alone is there, and not usable. */
+    if (g_t.links && address && g_t.depth && zt->gva == g_t.depth) {
+        static const float none[16];
         links_roll(frame);
-        if (g_t.camera_at != frame) {
+        if (g_t.camera_at != frame || zt != g_t.depth_rt) {
             g_t.link_early_draws++;
             links_unknown(frame, LINK_EARLY);
-        }
+        } else if ((size < 64 || size > 0x10000) &&
+                   !temporal_frame_bind(link_record(frame), address, size, none, 0, signature))
+            links_unknown(frame, LINK_RECORD);
     }
-    if (g_t.camera_at != frame) return 0;
+    if (zt != g_t.depth_rt || !address || size < 64 || size > 0x10000 || g_t.camera_at != frame) return 0;
     objects_log(frame);
     g_t.object_seen++;
     block_read(address, g_t.current.world);

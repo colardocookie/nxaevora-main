@@ -269,7 +269,8 @@ after that are seen at the frame's end and end the link from the next frame.
 
 A record that is not complete proves nothing about a block being the only one. That is so when it runs full (4096
 blocks), when the table of blocks is full or leaves a block unjudged, and when a draw with an object block comes
-before the frame's camera block is known. Such a frame ends every link, makes none, and the turns start again.
+before the frame's camera block is known or goes into another surface at the scene depth's address. A block bound
+with a size the pairs leave alone (under 64 bytes or over 64 KB) is in the record as present and not usable. Such a frame ends every link, makes none, and the turns start again.
 A full table can keep it that way for up to 600 frames. The pairs are not touched by this.
 
 Skinned copies of a linked block are tagged with both of the link's addresses, the lower and the higher, where a

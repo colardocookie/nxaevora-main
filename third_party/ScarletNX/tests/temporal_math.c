@@ -1130,11 +1130,11 @@ static void test_links(void) {
             lend(f);
         }
     }
-    /* What ends a link that was used in the frame, found at the G-buffer's end. Frame 16 draws slot A with the
-       link, then: 0 nothing, 1 a second block with the same draws (two claim the other slot in 16, and that slot
-       has two candidates in 17), 2 the other slot bound too, 3 one more draw of the block, 4 the record runs
-       full, 5 and 6 the frame marked as not seen whole, which is all the table and an early draw do here. */
-    for (int late = 0; late < 7; late++) {
+    /* What ends a link that was used in frame 16, found at the G-buffer's end. After slot A's draw with the link:
+       0 nothing, 1 a second block with the same draws (two claim the other slot in 16, two candidates in 17), 2 the
+       other slot bound too, 3 one more draw of the block, 4 the record runs full, 5 and 6 the frame marked not
+       seen whole (table, early draw), 7 the other slot bound with a size the pairs leave alone, 8 the block so. */
+    for (int late = 0; late < 9; late++) {
         lreset();
         for (unsigned i = 0; i < 6; i++) {
             lbegin(10 + i);
@@ -1149,19 +1149,21 @@ static void test_links(void) {
         if (late == 3) lmove(16, A, S2);
         if (late == 4)
             for (unsigned n = 0; n < TEMPORAL_BLOCKS; n++) lmove(16, 0x600000000ull + 0x200 * n, 0x9000 + n);
-        if (late >= 5) lrec(16)->complete = 0;
+        if (late == 5 || late == 6) lrec(16)->complete = 0;
+        if (late == 7) assert(!ldraw(16, A + 0x400, 32, S1, 0.0f, 0, 0, NULL));
+        if (late == 8) assert(!ldraw(16, A, 32, S1, 0.0f, 0, 0, NULL));
         if (late == 4) assert(!lrec(16)->complete && lrec(16)->n == TEMPORAL_BLOCKS);
         assert(lholds(16, A, q) == !late);
         lend(16);
         /* after a frame that was not seen whole every link is gone, and the turns start again from nothing */
-        if (late >= 4)
+        if (late >= 4 && late <= 6)
             for (unsigned b = 0; b < lrec(16)->n; b++) assert(!lrec(16)->blocks[b].link && !lrec(16)->blocks[b].turns);
         /* The frames after. Undisturbed the link goes on. Else it is learned again over four frames of turns, 17
            to 20, and a draw has a link again in frame 21. */
         for (unsigned f = 17; f < 24; f++) {
             lbegin(f);
             q = ldraw(f, f & 1 ? A + 0x400 : A, 0x200, S1, 0.1f * (float)f, 1, 0, &why);
-            if (f == 17 && late >= 4) assert(why == TEMPORAL_LINK_UNKNOWN);
+            if (f == 17 && late >= 4 && late <= 6) assert(why == TEMPORAL_LINK_UNKNOWN);
             assert((q != NULL) == (!late || f >= 21));
             lend(f);
         }
