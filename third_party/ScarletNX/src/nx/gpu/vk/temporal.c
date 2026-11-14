@@ -1775,6 +1775,19 @@ void vk_temporal_before(u64 fs0_hash) {
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         rec_CmdCopyImageToBuffer(cb, g_t.stats.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_t.stats_buffer, 1, &out);
+        /* the copy's writes made available to the host, which reads the buffer a run of the numbers later */
+        const VkBufferMemoryBarrier2 read = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                             .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                             .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                             .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                                             .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+                                             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                             .buffer = g_t.stats_buffer,
+                                             .size = VK_WHOLE_SIZE};
+        const VkDependencyInfo host = {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &read};
+        rec_CmdPipelineBarrier2(cb, &host);
         g_t.stats_run = g_t.runs;
         memcpy(g_t.stats_drawn, g_t.drawn, sizeof g_t.stats_drawn);
         g_t.stats_draws = g_t.object_draws;
