@@ -600,6 +600,13 @@ ready or could not be made, with the result. That no "not installed" warning is 
 that works: a run counts as made under the layer only with those three lines. What the layer then does with the checks
 cannot be read back.
 
+The game's instance also asks the layer's limit of repeated messages off (the layer's setting
+`enable_message_limit`, false), as the self-test does: only when the layer lists the extension for its settings,
+which is then enabled, and with its structure in the instance's chain together with the one for the
+synchronisation checks, neither in place of the other. A line under the prefix says that it was asked, or that
+it was not and which way: the layer's list does not hold the extension, stayed incomplete, a call failed, no
+memory, or the headers the program was built with lack it. Asked is not confirmed: a setting cannot be read back.
+
 Each callback of the layer keeps the line it always had (`vulkan validation: ...`). Under the new prefix
 (`validation_lines.h`, host-tested):
 

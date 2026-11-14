@@ -28,6 +28,8 @@ typedef struct {
     bool validation, portability;
     /* with validation: the layer's synchronisation checks too, where the layer lists the extension for them */
     bool synchronization;
+    /* with validation: the layer's limit of repeated messages asked off, where the layer lists its settings */
+    bool message_limit_off;
     PFN_vkDebugUtilsMessengerCallbackEXT debug;
 } SnxVkInstanceInfo;
 typedef struct {
@@ -45,6 +47,13 @@ typedef struct {
     bool synchronization;
     int synchronization_why;
     VkResult synchronization_result;
+    /* The layer's limit of repeated messages was asked off (enable_message_limit = false) and the instance was
+       made with that. Asked, not confirmed: a setting cannot be read back. When it was wanted and not asked:
+       SNX_VK_LAYER_* of the layer's list for its settings' extension with the last call's result, or
+       limit_built false when the headers this was built with do not have the extension. */
+    bool limit_asked, limit_built;
+    int limit_why;
+    VkResult limit_result;
     bool messenger_asked;      /* a messenger was to be made: the layer is on and a callback was given */
     VkResult messenger_result; /* what making it gave: the messenger is there only with VK_SUCCESS */
 } SnxVkInstance;

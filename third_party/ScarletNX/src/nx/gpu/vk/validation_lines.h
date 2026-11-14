@@ -350,4 +350,40 @@ static inline void validation_lines_status(int layer, const char* layer_result, 
     } else
         emit(user, "no message callback was asked for: no message of the layer will be seen");
 }
+/* The layer's limit of repeated messages, after the status lines of a layer that is on. asked: it was asked
+   off with the layer's settings' extension enabled. Else why not: built 0 when the headers this was built with
+   lack the extension, or how the layer's list was read for it (VALIDATION_LIST_*) with the last call's result.
+   A setting cannot be read back: asked is not confirmed. */
+static inline void validation_lines_limit(int asked, int built, int list, const char* result, int number,
+                                          ValidationEmit emit, void* user) {
+    static const char* const how[] = {"",
+                                      "the layer's list of extensions, read whole, does not hold its settings",
+                                      "the layer's list of extensions stayed incomplete after three tries, so "
+                                      "whether it holds its settings is not known",
+                                      "the call for the count of the layer's extensions failed",
+                                      "the call for the list of the layer's extensions failed",
+                                      "there was no memory for the list of the layer's extensions, so the call for "
+                                      "it was not made"};
+    char line[512];
+    const int k = list >= VALIDATION_LIST_LACKS && list <= VALIDATION_LIST_NO_MEMORY ? list : 0;
+    if (asked) {
+        emit(user, "the layer's limit of repeated messages was asked off (enable_message_limit = false). Asked, not "
+                   "confirmed: the setting cannot be read back");
+        return;
+    }
+    if (!built)
+        snprintf(line, sizeof line, "the layer's limit of repeated messages was NOT asked off: the headers this was "
+                                    "built with do not have the layer's settings. The layer stops a rule after ten "
+                                    "repeats");
+    else if (!k)
+        snprintf(line, sizeof line, "the layer's limit of repeated messages was NOT asked off, and why was not kept "
+                                    "(%d). The layer stops a rule after ten repeats", list);
+    else if (k == VALIDATION_LIST_LACKS || k == VALIDATION_LIST_NO_MEMORY)
+        snprintf(line, sizeof line, "the layer's limit of repeated messages was NOT asked off: %s. The layer stops a "
+                                    "rule after ten repeats", how[k]);
+    else
+        snprintf(line, sizeof line, "the layer's limit of repeated messages was NOT asked off: %s (the last call's "
+                                    "result %s, %d). The layer stops a rule after ten repeats", how[k], result, number);
+    emit(user, line);
+}
 #endif

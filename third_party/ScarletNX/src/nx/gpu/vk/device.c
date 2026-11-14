@@ -113,6 +113,7 @@ static int create_instance(void) {
                               .extension_count = be ? nbe : 0,
                               .validation = g_settings.vulkan_validation_layer != 0,
                               .synchronization = g_settings.vulkan_validation_layer != 0,
+                              .message_limit_off = g_settings.vulkan_validation_layer != 0,
                               .portability = true,
                               .debug = debug_cb};
     SnxVkInstance made;
@@ -141,6 +142,10 @@ static int create_instance(void) {
                                 !made.messenger_asked ? -1 : made.messenger_result == VK_SUCCESS,
                                 snx_vk_result_str(made.messenger_result), (int)made.messenger_result,
                                 validation_line, NULL);
+        if (made.validation)
+            validation_lines_limit(made.limit_asked, made.limit_built, made.limit_why,
+                                   snx_vk_result_str(made.limit_result), (int)made.limit_result, validation_line,
+                                   NULL);
         validation_lines_unlock(&g_validation_lock);
     }
     g_vk.instance = made.instance;

@@ -115,8 +115,8 @@ int snx_vk_layer_extension(const char* layer, const char* name, VkResult* result
 }
 VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* out) {
     *out = (SnxVkInstance){0};
-    /* the window's, then debug utils, the validation features and portability enumeration */
-    const char** ext = calloc((size_t)info->extension_count + 3, sizeof *ext);
+    /* the window's, then debug utils, the validation features, the layer's settings and portability enumeration */
+    const char** ext = calloc((size_t)info->extension_count + 4, sizeof *ext);
     if (!ext) return VK_ERROR_OUT_OF_HOST_MEMORY;
     uint32_t next = 0;
     bool asked = false; /* the window system may ask for portability enumeration itself (SDL does on Apple systems) */
@@ -138,15 +138,41 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
     /* The synchronisation checks are a feature of the layer, asked for through an extension the layer itself
        lists. A list that cannot be read, or that does not hold it, asks for nothing. */
     const VkValidationFeatureEnableEXT enables[1] = {VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
-    const VkValidationFeaturesEXT checks = {.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
-                                            .enabledValidationFeatureCount = 1,
-                                            .pEnabledValidationFeatures = enables};
+    VkValidationFeaturesEXT checks = {.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
+                                      .enabledValidationFeatureCount = 1,
+                                      .pEnabledValidationFeatures = enables};
+    const void* chain = NULL;
     if (out->validation && info->synchronization) {
         out->synchronization_why = snx_vk_layer_extension("VK_LAYER_KHRONOS_validation",
                                                           VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME,
                                                           &out->synchronization_result);
         out->synchronization = out->synchronization_why == SNX_VK_LAYER_HAS;
         if (out->synchronization) ext[next++] = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME;
+    }
+    /* The layer stops reporting a rule after ten repeats. Asked off through the layer's own settings, with the
+       same care: only when the layer lists the extension for them. */
+#ifdef VK_EXT_layer_settings
+    const VkBool32 limit = VK_FALSE;
+    const VkLayerSettingEXT setting = {"VK_LAYER_KHRONOS_validation", "enable_message_limit",
+                                       VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &limit};
+    const VkLayerSettingsCreateInfoEXT settings = {
+        .sType = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT, .settingCount = 1, .pSettings = &setting};
+    out->limit_built = true;
+    if (out->validation && info->message_limit_off) {
+        out->limit_why = snx_vk_layer_extension("VK_LAYER_KHRONOS_validation", VK_EXT_LAYER_SETTINGS_EXTENSION_NAME,
+                                                &out->limit_result);
+        out->limit_asked = out->limit_why == SNX_VK_LAYER_HAS;
+        if (out->limit_asked) {
+            ext[next++] = VK_EXT_LAYER_SETTINGS_EXTENSION_NAME;
+            chain = &settings;
+        }
+    }
+#endif
+    /* The two nodes go into the chain together: the checks' in front of the settings', neither in place of the
+       other. */
+    if (out->synchronization) {
+        checks.pNext = chain;
+        chain = &checks;
     }
     out->portability = asked;
     if (info->portability && !asked && snx_vk_has_instance_extension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
@@ -158,7 +184,7 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
                              .pEngineName = "ScarletNX",
                              .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-                               .pNext = out->synchronization ? &checks : NULL,
+                               .pNext = chain,
                                .flags = out->portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0,
                                .pApplicationInfo = &app,
                                .enabledLayerCount = nlayers,

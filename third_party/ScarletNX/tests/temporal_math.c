@@ -2395,6 +2395,31 @@ static void test_validation_lines(void) {
     assert(lines_count("(VK_EXT_validation_features): no memory\n") == 1 && !lines_count("result"));
     assert(lines_count("no message callback was asked for") == 1);
 
+    /* the layer's limit of repeats: asked and not confirmed, or each way it was not asked */
+    lines_reset(&v);
+    validation_lines_limit(1, 1, VALIDATION_LIST_HAS, "VK_SUCCESS", 0, lines_emit, NULL);
+    assert(g_lines_n == 1 && lines_count("was asked off (enable_message_limit = false). Asked, not confirmed: the "
+                                         "setting cannot be read back\n") == 1 && !lines_count("NOT"));
+    lines_reset(&v);
+    validation_lines_limit(0, 0, VALIDATION_LIST_HAS, "VK_SUCCESS", 0, lines_emit, NULL);
+    assert(g_lines_n == 1 && lines_count("was NOT asked off: the headers this was built with do not have") == 1);
+    {
+        static const char* const words[6] = {"", "read whole, does not hold its settings", "stayed incomplete",
+                                             "the call for the count of the layer's extensions failed",
+                                             "the call for the list of the layer's extensions failed", "no memory"};
+        for (int state = VALIDATION_LIST_LACKS; state <= VALIDATION_LIST_NO_MEMORY; state++) {
+            lines_reset(&v);
+            validation_lines_limit(0, 1, state, "VK_RESULT_Z", -9, lines_emit, NULL);
+            assert(g_lines_n == 1 && lines_count("was NOT asked off: ") == 1 && lines_count(words[state]) == 1);
+            assert(lines_count("(the last call's result VK_RESULT_Z, -9)") ==
+                   (state != VALIDATION_LIST_LACKS && state != VALIDATION_LIST_NO_MEMORY));
+            assert(lines_count("The layer stops a rule after ten repeats\n") == 1 && !lines_count("asked off ("));
+        }
+        lines_reset(&v);
+        validation_lines_limit(0, 1, VALIDATION_LIST_HAS, "x", 0, lines_emit, NULL); /* found and not asked */
+        assert(g_lines_n == 1 && lines_count("was NOT asked off, and why was not kept (0)") == 1);
+    }
+
     /* What is printed whole: the first of a rule, the first naming a name not seen before however late, and
        the callbacks without a match up to 64. The count lines come at 1, 2, 4, 8 and so on. */
     lines_reset(&v);
