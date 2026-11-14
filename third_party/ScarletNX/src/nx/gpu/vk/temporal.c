@@ -1334,10 +1334,10 @@ static int stats_ready(void) {
    scene colour names the program before which the probe runs from the next frame on. */
 /* Read only, for the log alone, with probe or taa: what three readers of the scene are drawn with. In every
    600th frame, at the first draw of each of these fragment programs (by the low 32 bits of its hash, the
-   composite under either of its two): the viewport, the first colour target, each sampled texture, and words
-   of the scene block bound to the fragment stage. No draw is changed. */
-static void readers_note(u32 frame, const GpuChannel* ch, const VkSh* fs0, Surf* const* sampled, int nt,
-                         Surf* const* rt, u32 n) {
+   composite under either of its two): the vertex program, the viewport, the scissor, the first colour target,
+   each sampled texture, and words of the scene block bound to the fragment stage. No draw is changed. */
+static void readers_note(u32 frame, const GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* const* sampled,
+                         int nt, Surf* const* rt, u32 n) {
     static const u32 programs[4] = {0x21FBFBECu, 0xB46268ADu, 0x8A160A27u, 0x63B3848Cu};
     static const char* const names[3] = {"copy of the scene colour", "blur prepare", "composite"};
     static const u32 words[13] = {0x628, 0x62C, 0x670, 0x674, 0x710, 0x714, 0x718,
@@ -1358,10 +1358,18 @@ static void readers_note(u32 frame, const GpuChannel* ch, const VkSh* fs0, Surf*
             if (!colour) colour = rt[i];
             colours++;
         }
-    size_t at = (size_t)snprintf(line, sizeof line, "frame %u, the first draw of program %llx (%s): viewport %g,%g "
-                                                    "%gx%g, %u colour targets, the first ",
-                                 frame, (unsigned long long)fs0->hash, names[which], (double)v.x, (double)v.y,
-                                 (double)v.width, (double)v.height, colours);
+    /* The game's scissor of its first viewport, as its registers have it: whether the test is on, and the
+       rectangle in the game's own pixels, before the render scale and before a flip of the window's origin. */
+    const u32* r = ch->r3d;
+    const u32 xs = r[0x381], ys = r[0x382];
+    size_t at = (size_t)snprintf(line, sizeof line, "frame %u, the first draw of program %llx (%s) with vertex "
+                                                    "program %llx: viewport %g,%g %gx%g, scissor test %s, its "
+                                                    "rectangle x %u to %u, y %u to %u in the game's pixels%s, %u "
+                                                    "colour targets, the first ",
+                                 frame, (unsigned long long)fs0->hash, names[which],
+                                 (unsigned long long)(vs ? vs->hash : 0), (double)v.x, (double)v.y, (double)v.width,
+                                 (double)v.height, r[0x380] & 1 ? "on" : "off", xs & 0xFFFF, xs >> 16, ys & 0xFFFF,
+                                 ys >> 16, r[0x4EB] & 1 ? " (y counted from the bottom)" : "", colours);
     if (colour)
         at += (size_t)snprintf(line + at, sizeof line - at, "at %llx of %ux%u (image %ux%u)",
                                (unsigned long long)colour->gva, colour->w, colour->h, colour->sw, colour->sh);
@@ -1407,7 +1415,7 @@ void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* con
     g_t.draw_vs = vs;
     g_t.draw_fs = fs0;
     if (!fs0) nt = 0;
-    readers_note(frame, ch, fs0, sampled, nt, rt, n);
+    readers_note(frame, ch, vs, fs0, sampled, nt, rt, n);
     u32 colours = 0;
     int writes_scene = 0;
     const Surf* scene_colour = NULL;

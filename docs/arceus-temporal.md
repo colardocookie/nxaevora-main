@@ -56,7 +56,8 @@ with the viewport and depth range used. Skipped frames are counted with the reas
 
 With `probe` or `taa`, read only and for the log alone, three readers of the scene are described in every 600th
 frame, each at its first draw: the copy of the scene colour, the blur's preparation and the composite, known by
-their fragment programs. One line each begins with `arceus-temporal-readers:` and has the viewport, the first
+their fragment programs. One line each begins with `arceus-temporal-readers:` and has the vertex program, the
+viewport, whether the scissor test is on and its rectangle in the game's own pixels, the first
 colour target's address and size, each sampled texture's address and size, and thirteen words of the scene
 block bound to the fragment stage (the used fraction at +628 and +62C among them), or "not bound" or "too
 short". No draw is changed by it.
