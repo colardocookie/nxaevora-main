@@ -1064,6 +1064,114 @@ static int resize(int up) {
     return counted && beats && settles;
 }
 
+/* The edge case: the jitter's signs, on a still grey picture with two edges. Seven pictures of the same frozen
+   images, each run a session of its own: the configured signs twice (their difference is the run's noise), the
+   three other combinations of the jitter's signs, the jitter reported as zero while the images are jittered,
+   and one frame scaled plainly. Each is held against the reference by its edges' profiles and over the same
+   pixels (selftest_edge_judge has the conditions and the budgets). */
+static const char* edge_failed(unsigned failed, char* text, size_t size) {
+    static const char* const names[8] = {"the order of the errors", "a turned sign's margin",
+                                         "told nothing's margin",   "the plainly scaled frame",
+                                         "settling",                "both signs turned",
+                                         "the noise",               "a number that is not one"};
+    size_t at = 0;
+    text[0] = 0;
+    for (int bit = 0; bit < 8; bit++)
+        if ((failed >> bit & 1u) && at < size)
+            at += (size_t)snprintf(text + at, size - at, "%s%s", at ? ", " : "", names[bit]);
+    return text;
+}
+static int edge_case(int up) {
+    enum { OWN, AGAIN, TURNED_X, TURNED_Y, TURNED_BOTH, TOLD_NOTHING, PLAIN, PICTURES };
+    static const char* const names[PICTURES] = {"configured",        "configured again", "jitter x turned",
+                                                "jitter y turned",   "both turned",      "told nothing",
+                                                "one frame plainly"};
+    static const Variant variants[PLAIN] = {{1, 1, 1, 1, 1},  {1, 1, 1, 1, 1},   {-1, 1, 1, 1, 1},
+                                            {1, -1, 1, 1, 1}, {-1, -1, 1, 1, 1}, {0, 0, 1, 1, 1}};
+    static const double still[2] = {0.0, 0.0};
+    const SelftestEdge* edges[2] = {&SELFTEST_EDGE_V, &SELFTEST_EDGE_H};
+    const size_t pixels = (size_t)OUT_W * OUT_H, size = sizeof(double) * 3 * pixels;
+    const size_t texels = (size_t)RENDER_W * RENDER_H;
+    const char* way = up ? "up" : "down";
+    double* picture[PICTURES] = {0};
+    double* reference = malloc(size);
+    u8* regions = malloc(pixels);
+    SelftestProfile profile[PICTURES][2], truth_profile[2];
+    SelftestEdgeMeasure measure[PICTURES][2];
+    SelftestEdgeRuns runs;
+    double first = NAN, last = NAN;
+    Inputs in;
+    char text[256];
+    int ok = !not_run("edge case", up) && reference && regions;
+    memset(&in, 0, sizeof in);
+    for (int k = 0; k < PICTURES; k++) ok = (picture[k] = malloc(size)) != NULL && ok;
+    ok = ok && inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1);
+    if (ok) {
+        /* the images are the ones named before any adapter was looked for, or the case does not run */
+        const u64 sums[3] = {selftest_checksum(in.colour, (size_t)in.frames * texels * 4, SELFTEST_CHECKSUM_START),
+                             selftest_checksum(in.depth, (size_t)in.frames * texels * 4, SELFTEST_CHECKSUM_START),
+                             selftest_checksum(in.motion, (size_t)in.frames * texels * 8, SELFTEST_CHECKSUM_START)};
+        ok = !memcmp(sums, g.edge_sums[up], sizeof sums);
+        if (!ok) LOG(ST "edge case %s: the images are not the ones whose checksums were logged: FAIL\n", way);
+    }
+    if (ok) truth(&in, up, reference, regions);
+    for (int k = 0; ok && k < PLAIN; k++)
+        ok = run(&in, &variants[k], 0, picture[k], k == OWN ? &first : NULL, k == OWN ? &last : NULL,
+                 k == OWN ? regions : NULL, NULL);
+    if (ok) plain(&in, in.frames - 1, up, picture[PLAIN]);
+    if (!ok) {
+        LOG(ST "edge case %s: not every run could be made: FAIL\n", way);
+    } else {
+        for (int e = 0; e < 2; e++) {
+            selftest_profile_make(edges[e], reference, OUT_W, &truth_profile[e]);
+            for (int k = 0; k < PICTURES; k++) {
+                selftest_profile_make(edges[e], picture[k], OUT_W, &profile[k][e]);
+                measure[k][e].profile = selftest_profile_apart(&profile[k][e], &truth_profile[e]);
+                measure[k][e].pixels = selftest_edge_apart(edges[e], picture[k], reference, OUT_W);
+            }
+            runs.configured[e] = measure[OWN][e];
+            runs.turned_x[e] = measure[TURNED_X][e];
+            runs.turned_y[e] = measure[TURNED_Y][e];
+            runs.turned_both[e] = measure[TURNED_BOTH][e];
+            runs.told_nothing[e] = measure[TOLD_NOTHING][e];
+            runs.plain[e] = measure[PLAIN][e];
+            /* the noise is between the two configured pictures themselves, not between their errors */
+            runs.noise[e].profile = selftest_profile_apart(&profile[OWN][e], &profile[AGAIN][e]);
+            runs.noise[e].pixels = selftest_edge_apart(edges[e], picture[OWN], picture[AGAIN], OUT_W);
+        }
+        runs.settled = selftest_settles(first, last);
+        /* Each picture on each edge: the two measures that are judged, then for the log alone how far its edge
+           sits from the reference's, how wide its rise is and how far it overshoots, and its error as a multiple
+           of the configured run's. */
+        for (int k = 0; k < PICTURES; k++)
+            for (int e = 0; e < 2; e++)
+                LOG(ST "edge case %s %s, %s edge: profile error %.6f, per pixel %.6f. Logged only: edge moved %.3f px, "
+                       "rise %.3f px (reference %.3f), overshoot %.4f, %.2f times the configured profile error\n",
+                    way, names[k], e ? "near-horizontal" : "near-vertical", measure[k][e].profile,
+                    measure[k][e].pixels,
+                    selftest_profile_crossing(&profile[k][e], 0.5) - selftest_profile_crossing(&truth_profile[e], 0.5),
+                    selftest_profile_rise(&profile[k][e]), selftest_profile_rise(&truth_profile[e]),
+                    selftest_profile_overshoot(&profile[k][e]), measure[k][e].profile / measure[OWN][e].profile);
+        for (int e = 0; e < 2; e++)
+            LOG(ST "edge case %s noise, %s edge: between the two configured runs the profiles differ by %.6f and the "
+                   "pictures by %.6f per pixel\n",
+                way, e ? "near-horizontal" : "near-vertical", runs.noise[e].profile, runs.noise[e].pixels);
+        const unsigned failed = selftest_edge_judge(&runs);
+        ok = !failed;
+        LOG(ST "edge case %s: change a frame over the first cycle %.6f, over the last %.6f. A turned sign at least "
+               "%.3f worse on its edge, told nothing at least %.3f, each at least %.0f times the noise, on the "
+               "profile and per pixel: %s%s\n",
+            way, first, last, SELFTEST_EDGE_TURNED, SELFTEST_EDGE_TOLD, SELFTEST_EDGE_NOISE,
+            !failed ? "PASS" : selftest_edge_undecided(failed) ? "FAIL (the case decided nothing): " : "FAIL: ",
+            edge_failed(failed, text, sizeof text));
+    }
+    inputs_free(&in);
+    for (int k = 0; k < PICTURES; k++) free(picture[k]);
+    free(reference);
+    free(regions);
+    return ok;
+}
+
 /* The edge case's images, made and named by their checksums before any adapter is looked for: they depend on no
    library. The checksums are kept, and the case holds the images it runs on against them. The reference's two
    profiles must be whole, or the case could compare nothing. 1 when all of it is in order. */
@@ -1120,6 +1228,10 @@ int vk_upscaler_selftest(const char* adapter) {
     pass &= resize(1);
     g.generation++;
     pass &= resize(0);
+    g.generation++;
+    pass &= edge_case(1);
+    g.generation++;
+    pass &= edge_case(0);
     pass = pass && idle();
     /* Case 7: no message of the validation layer in any case. Without the layer the case was not run, which is
        not a pass, and neither is a run that had to stop. */

@@ -435,9 +435,27 @@ The cases, each run with a viewport of negative and of positive height (render 3
    same content at the first texel of images of its own size: at most 0.01 apart.
 7. No message of the validation layer, with its synchronisation checks on, in any case. Without the layer
    installed the case is not run, which is not a pass.
+The edge case, for the jitter's signs, on a picture of its own: grey, with one near-vertical and one
+near-horizontal edge from 0.25 to 0.75 at a slope of 1 in 10, each in a region of 96 by 96 output pixels. Its
+images are made, and their checksums logged, before any adapter is looked for, and the case runs only on images
+with those checksums. Seven pictures of the same frozen images: the configured signs twice, each other
+combination of the jitter's signs, the jitter reported as zero while the images are jittered ("told nothing"),
+and one frame scaled plainly. An edge's profile is the mean of the pixels at each distance from it, in 32 bins a
+quarter of a pixel wide, in fixed places: nothing is fitted or shifted. Each picture is held against the true
+picture by its profiles and by the difference over the same pixels, channel by channel. To pass, for either
+height of the viewport: on the edge across an axis the errors are in the order configured, told nothing, that
+axis's sign turned. The turned sign is worse than the configured run by 0.010 at least and told nothing by
+0.003, on both measures. Both signs turned is worse by 0.010 on each edge. Each of these margins is at least
+five times the noise of its measure, which is the difference between the two configured runs' profiles and
+pictures. The configured run beats the plainly scaled frame on both edges, and its output has stopped changing.
+If told nothing is not worse, the noise is too large or a profile has a bin without pixels, the case has
+decided nothing and fails as a test. The budgets were fixed before any run of the case.
+
 A case that cannot tell its variants apart fails as a test. Every number is in the log, pass or fail. The last
 line is `RESULT: PASS` or `RESULT: FAIL`.
 
-Limits. It has been built and has not run: the build machine has no run with the SDK's libraries yet. Errors are
+Limits. Cases 1 to 7 have run once on a device, with FSR 3.1.6, in an earlier state of the test, and failed
+on the jitter's margin of cases 1 and 2, on case 4's error and on the missing validation layer. The edge case
+has been built and has not run. Errors are
 means over a region, so a fault in very few pixels can pass. The scene has one depth step and no transparency. A
 pass says the signs and conventions agree with the SDK on this scene. It says nothing about the game's picture.

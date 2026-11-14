@@ -376,6 +376,73 @@ static inline double selftest_profile_overshoot(const SelftestProfile* p) {
     }
     return most;
 }
+/* The edge case's verdict. Each run of the case leaves, for each of the two edges, its profile's difference from
+   the reference's and its picture's difference from the reference over the same pixels. [0] is the near-vertical
+   edge, which lies across x, [1] the near-horizontal one, across y. noise: the same two measures between the two
+   configured runs, as differences of profiles and of pictures, not of errors. */
+typedef struct {
+    double profile, pixels;
+} SelftestEdgeMeasure;
+typedef struct {
+    SelftestEdgeMeasure configured[2], turned_x[2], turned_y[2], turned_both[2], told_nothing[2], plain[2];
+    SelftestEdgeMeasure noise[2];
+    int settled; /* the configured run's output has stopped changing, by case 1's rule */
+} SelftestEdgeRuns;
+#define SELFTEST_EDGE_TURNED 0.010 /* a turned sign's error over the configured one's, at least, on its edge */
+#define SELFTEST_EDGE_TOLD 0.003   /* the same for the jitter reported as zero: the case's own sensitivity */
+#define SELFTEST_EDGE_NOISE 5.0    /* every such margin is at least this many times the noise of its measure */
+/* What failed, as bits. NUMBERS, TOLD and NOISE mean the case could not decide: it fails as a test. */
+enum {
+    SELFTEST_EDGE_ORDER = 1,    /* across its axis: configured below told nothing below the turned sign */
+    SELFTEST_EDGE_MARGIN = 2,   /* a turned sign is not worse by the budget, on the profile or over the pixels */
+    SELFTEST_EDGE_BLIND = 4,    /* told nothing is not worse by its budget: no sensitivity to the jitter shown */
+    SELFTEST_EDGE_PLAIN = 8,    /* the configured run is not better than one frame scaled plainly */
+    SELFTEST_EDGE_UNSETTLED = 16,
+    SELFTEST_EDGE_BOTH = 32,    /* both signs turned is not worse by the budget on each edge */
+    SELFTEST_EDGE_NOISY = 64,   /* a margin is under five times the noise of its measure */
+    SELFTEST_EDGE_NUMBERS = 128 /* a number is not finite: a profile was not whole, or a run gave nothing */
+};
+static inline int selftest_edge_margin(double worse, double configured, double budget, double noise, unsigned miss,
+                                       unsigned* failed) {
+    const double margin = worse - configured;
+    if (!isfinite(margin) || !isfinite(noise)) {
+        *failed |= SELFTEST_EDGE_NUMBERS;
+        return 0;
+    }
+    if (!(margin >= budget)) *failed |= miss;
+    if (!(margin >= SELFTEST_EDGE_NOISE * noise)) *failed |= SELFTEST_EDGE_NOISY;
+    return 1;
+}
+/* 0 when the case passes, else the bits of what failed. For one orientation of the viewport. */
+static inline unsigned selftest_edge_judge(const SelftestEdgeRuns* r) {
+    unsigned failed = 0;
+    for (int axis = 0; axis < 2; axis++) {
+        /* the sign of this axis on the edge that lies across it */
+        const SelftestEdgeMeasure turned = axis ? r->turned_y[axis] : r->turned_x[axis];
+        const SelftestEdgeMeasure own = r->configured[axis], told = r->told_nothing[axis], noise = r->noise[axis];
+        if (!(own.profile < told.profile && told.profile < turned.profile)) failed |= SELFTEST_EDGE_ORDER;
+        selftest_edge_margin(turned.profile, own.profile, SELFTEST_EDGE_TURNED, noise.profile, SELFTEST_EDGE_MARGIN,
+                             &failed);
+        selftest_edge_margin(turned.pixels, own.pixels, SELFTEST_EDGE_TURNED, noise.pixels, SELFTEST_EDGE_MARGIN,
+                             &failed);
+        selftest_edge_margin(told.profile, own.profile, SELFTEST_EDGE_TOLD, noise.profile, SELFTEST_EDGE_BLIND,
+                             &failed);
+        selftest_edge_margin(told.pixels, own.pixels, SELFTEST_EDGE_TOLD, noise.pixels, SELFTEST_EDGE_BLIND, &failed);
+        /* on either edge: both signs turned, and the plainly scaled frame */
+        selftest_edge_margin(r->turned_both[axis].profile, own.profile, SELFTEST_EDGE_TURNED, noise.profile,
+                             SELFTEST_EDGE_BOTH, &failed);
+        selftest_edge_margin(r->turned_both[axis].pixels, own.pixels, SELFTEST_EDGE_TURNED, noise.pixels,
+                             SELFTEST_EDGE_BOTH, &failed);
+        if (!isfinite(r->plain[axis].profile)) failed |= SELFTEST_EDGE_NUMBERS;
+        if (!(own.profile < r->plain[axis].profile)) failed |= SELFTEST_EDGE_PLAIN;
+    }
+    if (!r->settled) failed |= SELFTEST_EDGE_UNSETTLED;
+    return failed;
+}
+/* 1 when what failed means the case decided nothing, which is a failure of the test and not of the signs */
+static inline int selftest_edge_undecided(unsigned failed) {
+    return (failed & (SELFTEST_EDGE_BLIND | SELFTEST_EDGE_NOISY | SELFTEST_EDGE_NUMBERS)) != 0;
+}
 /* a checksum of generated images, so that a log says which images a result was made from (FNV-1a, 64 bits) */
 #define SELFTEST_CHECKSUM_START 0xcbf29ce484222325ull
 static inline uint64_t selftest_checksum(const void* bytes, size_t n, uint64_t sum) {

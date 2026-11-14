@@ -2595,6 +2595,84 @@ static void test_selftest_edges(void) {
     assert(isnan(selftest_edge_apart(v, copy, ref, EDGE_W)));
     selftest_profile_make(v, copy, EDGE_W, &pv);
     assert(!selftest_profile_whole(&pv));
+    /* The verdict, for one orientation. A set of runs as the blur model has them: configured 0.012, told
+       nothing 0.019, a turned sign 0.035 on its own edge, both turned 0.036, one frame scaled plainly 0.030, the
+       other axis's sign leaving an edge as it is, and a noise far below the margins. */
+    {
+        const SelftestEdgeMeasure own = {0.012, 0.016}, told = {0.019, 0.024}, turned = {0.035, 0.040};
+        const SelftestEdgeMeasure both = {0.036, 0.041}, scaled = {0.030, 0.034}, quiet = {0.0002, 0.0003};
+        const SelftestEdgeRuns fine = {{own, own}, {turned, own}, {own, turned}, {both, both}, {told, told},
+                                       {scaled, scaled}, {quiet, quiet}, 1};
+        SelftestEdgeRuns r = fine;
+        assert(selftest_edge_judge(&fine) == 0 && !selftest_edge_undecided(0));
+        /* the sign of the other axis is not asked of an edge: it may even be better there */
+        r.turned_x[1] = (SelftestEdgeMeasure){0.001, 0.001};
+        r.turned_y[0] = (SelftestEdgeMeasure){0.001, 0.001};
+        assert(selftest_edge_judge(&r) == 0);
+        for (int axis = 0; axis < 2; axis++) {
+            SelftestEdgeMeasure* sign = axis ? &r.turned_y[axis] : &r.turned_x[axis];
+            /* the order: told nothing above the turned sign, or level with the configured run */
+            r = fine;
+            r.told_nothing[axis].profile = 0.0355;
+            assert(selftest_edge_judge(&r) == SELFTEST_EDGE_ORDER);
+            /* a turned sign under its budget, on the profile and over the pixels: each alone fails */
+            r = fine;
+            sign->profile = 0.0219;
+            assert(selftest_edge_judge(&r) == SELFTEST_EDGE_MARGIN);
+            sign->profile = 0.0221;
+            assert(selftest_edge_judge(&r) == 0);
+            r = fine;
+            sign->pixels = 0.0259;
+            assert(selftest_edge_judge(&r) == SELFTEST_EDGE_MARGIN);
+            /* told nothing under its budget: the case has shown no sensitivity and decides nothing */
+            r = fine;
+            r.told_nothing[axis].profile = 0.0149;
+            assert(selftest_edge_judge(&r) == SELFTEST_EDGE_BLIND && selftest_edge_undecided(SELFTEST_EDGE_BLIND));
+            r = fine;
+            r.told_nothing[axis].pixels = 0.0189;
+            assert(selftest_edge_judge(&r) == SELFTEST_EDGE_BLIND);
+            r = fine;
+            r.told_nothing[axis].profile = 0.012; /* level with the configured run: the order and the noise too */
+            assert(selftest_edge_judge(&r) == (SELFTEST_EDGE_BLIND | SELFTEST_EDGE_ORDER | SELFTEST_EDGE_NOISY));
+            /* both signs turned must be worse by the budget on each edge: not better is not enough */
+            r = fine;
+            r.turned_both[axis].profile = 0.0215;
+            assert(selftest_edge_judge(&r) == SELFTEST_EDGE_BOTH);
+            r = fine;
+            r.turned_both[axis].pixels = 0.0255;
+            assert(selftest_edge_judge(&r) == SELFTEST_EDGE_BOTH);
+            /* not better than one frame scaled plainly */
+            r = fine;
+            r.plain[axis].profile = 0.012;
+            assert(selftest_edge_judge(&r) == SELFTEST_EDGE_PLAIN);
+            /* Noise, each measure against its own: told nothing's margin of 0.007 on the profile is under five
+               times a noise of 0.0015, and so is its 0.008 over the pixels under five times 0.0017. */
+            r = fine;
+            r.noise[axis].profile = 0.0015;
+            assert(selftest_edge_judge(&r) == SELFTEST_EDGE_NOISY && selftest_edge_undecided(SELFTEST_EDGE_NOISY));
+            r.noise[axis].profile = 0.0013;
+            assert(selftest_edge_judge(&r) == 0);
+            r = fine;
+            r.noise[axis].pixels = 0.0017;
+            assert(selftest_edge_judge(&r) == SELFTEST_EDGE_NOISY);
+            /* a number that is not one: a profile that was not whole */
+            r = fine;
+            r.configured[axis].profile = NAN;
+            assert(selftest_edge_judge(&r) & SELFTEST_EDGE_NUMBERS);
+            r = fine;
+            r.noise[axis].pixels = NAN;
+            assert(selftest_edge_judge(&r) == SELFTEST_EDGE_NUMBERS);
+            r = fine;
+            r.plain[axis].profile = NAN;
+            assert(selftest_edge_judge(&r) == (SELFTEST_EDGE_NUMBERS | SELFTEST_EDGE_PLAIN));
+        }
+        r = fine;
+        r.settled = 0;
+        assert(selftest_edge_judge(&r) == SELFTEST_EDGE_UNSETTLED && !selftest_edge_undecided(SELFTEST_EDGE_UNSETTLED));
+        assert(!selftest_edge_undecided(SELFTEST_EDGE_ORDER | SELFTEST_EDGE_MARGIN | SELFTEST_EDGE_PLAIN |
+                                        SELFTEST_EDGE_BOTH));
+        assert(selftest_edge_undecided(SELFTEST_EDGE_NUMBERS));
+    }
     /* the checksum: the published values of FNV-1a for nothing, "a" and "foobar", and it can be carried on */
     assert(selftest_checksum("", 0, SELFTEST_CHECKSUM_START) == 0xcbf29ce484222325ull);
     assert(selftest_checksum("a", 1, SELFTEST_CHECKSUM_START) == 0xaf63dc4c8601ec8cull);
