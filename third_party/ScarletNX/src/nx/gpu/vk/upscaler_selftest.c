@@ -152,14 +152,17 @@ static int device_make(void) {
        then answers "incomplete": it is asked again, three times at most. */
     VkLayerProperties* have = NULL;
     VkResult counted = VK_SUCCESS, listed = VK_INCOMPLETE;
-    for (int tries = 0; tries < 3 && listed == VK_INCOMPLETE; tries++) {
+    u32 wanted = 0;
+    int asked = 1; /* the list's call was made. 0: not, the count failed. -1: not, no memory of ours for the list */
+    for (int tries = 0; tries < 3 && asked == 1 && listed == VK_INCOMPLETE; tries++) {
         free(have);
         n = 0;
         counted = vkEnumerateInstanceLayerProperties(&n, NULL);
-        have = calloc(n ? n : 1, sizeof *have);
-        if (counted < 0) listed = counted;
-        else if (!have) listed = VK_ERROR_OUT_OF_HOST_MEMORY;
-        else listed = vkEnumerateInstanceLayerProperties(&n, have);
+        wanted = n;
+        have = counted < 0 ? NULL : calloc(n ? n : 1, sizeof *have);
+        asked = counted < 0 ? 0 : have ? 1 : -1;
+        /* for a call that was not made the state is "not read": the code below is ours, no call's result */
+        listed = asked == 1 ? vkEnumerateInstanceLayerProperties(&n, have) : VK_ERROR_UNKNOWN;
     }
     g.layers = selftest_layers((int)counted, (int)listed, (int)VK_INCOMPLETE);
     for (u32 i = 0; g.layers != SELFTEST_LAYERS_UNREAD && i < n; i++)
@@ -170,9 +173,16 @@ static int device_make(void) {
            process is told to look for layers. The self-test sees the loader's list and nothing else. */
         static const char* const variables[3] = {"VK_LAYER_PATH", "VK_ADD_LAYER_PATH", "VULKAN_SDK"};
         const u32 shown = g.layers == SELFTEST_LAYERS_UNREAD ? 0 : n > 64 ? 64 : n;
-        if (g.layers == SELFTEST_LAYERS_UNREAD)
+        if (g.layers == SELFTEST_LAYERS_UNREAD && asked == 1)
             LOG(ST "the loader's list of instance layers could not be read (the count's call gave %d, the list's "
                    "%d): whether %s is installed is not known\n", (int)counted, (int)listed, layers[0]);
+        else if (g.layers == SELFTEST_LAYERS_UNREAD && asked == 0)
+            LOG(ST "the loader's list of instance layers could not be read: the count's call failed with %d, so the "
+                   "list was not asked for. Whether %s is installed is not known\n", (int)counted, layers[0]);
+        else if (g.layers == SELFTEST_LAYERS_UNREAD)
+            LOG(ST "the loader's list of instance layers could not be read: the count's call gave %d for %u layers "
+                   "and there was no memory of ours for the list, so it was not asked for. Whether %s is installed "
+                   "is not known\n", (int)counted, wanted, layers[0]);
         else
             LOG(ST "the loader's list of instance layers was read %s: %u layers, and %s is not among them%s\n",
                 g.layers == SELFTEST_LAYERS_WHOLE ? "whole" : "IN PART (still incomplete after three tries)", n,
