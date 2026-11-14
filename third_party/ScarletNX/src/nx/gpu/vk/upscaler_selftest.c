@@ -20,12 +20,13 @@
 #define RENDER_H 180
 #define OUT_W 480
 #define OUT_H 270
-#define OFFSETS 18              /* ceil(8 x 1.5 x 1.5): the jitter's offsets for this ratio */
-#define FRAMES (2 * OFFSETS)    /* evaluated frames of a run: twice the offsets */
+#define OFFSETS 18              /* ceil(8 x 1.5 x 1.5): the jitter's offsets for these sizes */
+#define FRAMES (2 * OFFSETS)    /* evaluated frames of a run at these sizes: twice the offsets */
 #define SAMPLES 8               /* the reference averages 8 x 8 points of a pixel */
 #define NEAR_PLANE 0.1          /* the scene's depth is 0.1 / distance: an infinite far plane, reversed */
 #define FOV_Y 0.8726646259971648 /* 50 degrees */
 #define FRAME_SECONDS (1.0 / 60.0)
+#define BAND_LEAST 500          /* pixels of a band under which it judges nothing */
 
 typedef struct {
     VkImage image;
@@ -57,8 +58,10 @@ static struct {
 /* one run's inputs, made once and never changed: a sign variant changes only the numbers handed to the adapter */
 typedef struct {
     int w, h;            /* the images' size */
+    int rw, rh, ow, oh;  /* the scene's rectangle in them, and the output's size */
+    int offsets;         /* of the jitter: ceil(8 x output's pixels / rectangle's pixels) */
     SelftestViewport vp; /* the scene's viewport inside them */
-    int frames;          /* with the first, which the gate does not let through */
+    int frames;          /* twice the offsets, and the first, which the gate does not let through */
     SelftestFrame* scene;
     u32 *colour, *depth;
     u16* motion;
@@ -76,7 +79,8 @@ typedef struct {
     TemporalRectGate gate;
     TemporalUpscalerContexts contexts;
     SnxUpscaler *live, *pending;
-    unsigned frame, failures, skipped, evaluated;
+    unsigned frame, failures, skipped, evaluated, published; /* published: contexts that came into use */
+    int off; /* a submission's end is not known: nothing is freed any more and nothing is evaluated */
     Picture colour, depth, motion, output; /* what the adapter is handed */
     Picture wide_colour, wide_depth, wide_motion; /* for inputs that sit inside larger images */
 } Session;
@@ -255,15 +259,17 @@ static int picture_make(Picture* p, VkFormat format, u32 w, u32 h, VkImageUsageF
     if (type < 0 || !VK_OK(vkAllocateMemory(g.device, &mi, NULL, &p->memory)) ||
         !VK_OK(vkBindImageMemory(g.device, p->image, p->memory, 0)))
         return 0;
+    p->format = format;
+    p->w = w;
+    p->h = h;
+    /* a picture that is only copied to and from has no usage a view may be made for, and needs none */
+    if (!usage) return 1;
     const VkImageViewCreateInfo vi = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = p->image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
         .format = format,
         .subresourceRange = {is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-    p->format = format;
-    p->w = w;
-    p->h = h;
     return VK_OK(vkCreateImageView(g.device, &vi, NULL, &p->view));
 }
 
@@ -310,11 +316,15 @@ static int begin(void) {
     return VK_OK(vkResetCommandBuffer(g.cb, 0)) && VK_OK(vkBeginCommandBuffer(g.cb, &bi));
 }
 
-/* the command buffer is submitted and has completed when this returns 1 */
+/* The command buffer is submitted. 1: it has completed. 0: it was not submitted, and is reset, so what it held is
+   discarded. -1: it was submitted and whether it completed is not known. */
 static int submit(void) {
     const VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &g.cb};
-    return VK_OK(vkEndCommandBuffer(g.cb)) && VK_OK(vkQueueSubmit(g.queue, 1, &si, VK_NULL_HANDLE)) &&
-           VK_OK(vkQueueWaitIdle(g.queue));
+    if (!VK_OK(vkEndCommandBuffer(g.cb)) || !VK_OK(vkQueueSubmit(g.queue, 1, &si, VK_NULL_HANDLE))) {
+        vkResetCommandBuffer(g.cb, 0);
+        return 0;
+    }
+    return VK_OK(vkQueueWaitIdle(g.queue)) ? 1 : -1;
 }
 
 /* bytes from the staging buffer at offset into a picture, which is then readable by shaders or by a copy */
@@ -347,11 +357,11 @@ static void crop(const Picture* from, const Picture* to, int x, int y) {
 
 /* The jitter's offset k in pixels, within half a pixel each way: Halton bases 2 and 3. The test's own, so that the
    perturbations are inputs it made itself. */
-static void offset(unsigned k, double out[2]) {
+static void offset(unsigned k, unsigned n, double out[2]) {
     static const unsigned bases[2] = {2, 3};
     for (int axis = 0; axis < 2; axis++) {
         double f = 1.0, value = 0.0;
-        for (unsigned i = k % OFFSETS + 1; i; i /= bases[axis]) {
+        for (unsigned i = k % n + 1; i; i /= bases[axis]) {
             f /= bases[axis];
             value += f * (i % bases[axis]);
         }
@@ -359,32 +369,41 @@ static void offset(unsigned k, double out[2]) {
     }
 }
 
-/* The inputs of a run. The scene's rectangle is RENDER_W by RENDER_H at x, y inside images of w by h, whose rest
-   holds a colour, a depth and a vector that are none of the scene's. move: the background's move a frame in render
-   pixels (x right, y up). patch: 1 for a nearer patch that moves another way. cut_at: the frame from which the
-   other pattern is shown. up: 1 for a viewport with a negative height. */
-static int inputs_make(Inputs* in, int w, int h, int x, int y, int up, const double move[2], int patch, int cut_at) {
+/* The inputs of a run. The scene's rectangle is size[0] by size[1] at x, y inside images of w by h, whose rest
+   holds a colour, a depth and a vector that are none of the scene's, for an output of size[2] by size[3]. move:
+   the background's move a frame in render pixels (x right, y up). patch: 1 for a nearer patch that moves another
+   way. cut: 1 when the last frame shows the other pattern. up: 1 for a viewport with a negative height. */
+static const int SIZES[4] = {RENDER_W, RENDER_H, OUT_W, OUT_H};
+static int inputs_make(Inputs* in, const int size[4], int w, int h, int x, int y, int up, const double move[2],
+                       int patch, int cut) {
+    const int RW = size[0], RH = size[1];
     memset(in, 0, sizeof *in);
     in->w = w;
     in->h = h;
-    in->vp = (SelftestViewport){x, up ? y + RENDER_H : y, RENDER_W, up ? -RENDER_H : RENDER_H};
-    in->frames = FRAMES + 1;
+    in->rw = RW;
+    in->rh = RH;
+    in->ow = size[2];
+    in->oh = size[3];
+    in->offsets = (int)((8LL * in->ow * in->oh + (long long)RW * RH - 1) / ((long long)RW * RH));
+    in->vp = (SelftestViewport){x, up ? y + RH : y, RW, up ? -RH : RH};
+    in->frames = 2 * in->offsets + 1;
+    const int cut_at = cut ? in->frames - 1 : -1;
     in->cut_at = cut_at;
     in->scene = calloc((size_t)in->frames, sizeof *in->scene);
     in->colour = malloc((size_t)in->frames * w * h * 4);
     in->depth = malloc((size_t)in->frames * w * h * 4);
     in->motion = malloc((size_t)in->frames * w * h * 8);
     if (!in->scene || !in->colour || !in->depth || !in->motion) return 0;
-    const double step[2] = {2.0 * move[0] / RENDER_W, 2.0 * move[1] / RENDER_H};
-    const double patch_step[2] = {2.0 * -0.9 / RENDER_W, 2.0 * 1.1 / RENDER_H};
+    const double step[2] = {2.0 * move[0] / RW, 2.0 * move[1] / RH};
+    const double patch_step[2] = {2.0 * -0.9 / RW, 2.0 * 1.1 / RH};
     const double padding[3] = {0.9, 0.0, 0.9};
     for (int i = 0; i < in->frames; i++) {
         SelftestFrame* f = &in->scene[i];
         double px[2];
-        offset((unsigned)i, px);
+        offset((unsigned)i, (unsigned)in->offsets, px);
         f->pattern = cut_at >= 0 && i >= cut_at;
-        f->jitter[0] = 2.0 * px[0] / RENDER_W;
-        f->jitter[1] = 2.0 * px[1] / RENDER_H;
+        f->jitter[0] = 2.0 * px[0] / RW;
+        f->jitter[1] = 2.0 * px[1] / RH;
         for (int a = 0; a < 2; a++) {
             f->shift[a] = step[a] * i;
             f->shift_before[a] = step[a] * (i - 1);
@@ -402,7 +421,7 @@ static int inputs_make(Inputs* in, int w, int h, int x, int y, int up, const dou
             for (int qx = 0; qx < w; qx++) {
                 double rgb[3], z, texel[2];
                 const size_t at = (size_t)py * w + qx;
-                if (qx >= x && qx < x + RENDER_W && py >= y && py < y + RENDER_H) {
+                if (qx >= x && qx < x + RW && py >= y && py < y + RH) {
                     selftest_input(f, &in->vp, w, h, qx, py, rgb, &z, texel);
                 } else {
                     memcpy(rgb, padding, sizeof rgb);
@@ -428,24 +447,7 @@ static void inputs_free(Inputs* in) {
     memset(in, 0, sizeof *in);
 }
 
-static int session_open(Session* s, const Inputs* in, const SnxUpscalerTraits* traits) {
-    const int wide = in->w != RENDER_W || in->h != RENDER_H;
-    memset(s, 0, sizeof *s);
-    if (!picture_make(&s->colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, RENDER_W, RENDER_H, traits->colour_usage) ||
-        !picture_make(&s->depth, VK_FORMAT_D24_UNORM_S8_UINT, RENDER_W, RENDER_H, traits->depth_usage) ||
-        !picture_make(&s->motion, VK_FORMAT_R16G16B16A16_SFLOAT, RENDER_W, RENDER_H, traits->motion_usage) ||
-        !picture_make(&s->output, VK_FORMAT_R16G16B16A16_SFLOAT, OUT_W, OUT_H, traits->output_usage))
-        return 0;
-    if (!wide) return 1;
-    return picture_make(&s->wide_colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, (u32)in->w, (u32)in->h, 0) &&
-           picture_make(&s->wide_depth, VK_FORMAT_D24_UNORM_S8_UINT, (u32)in->w, (u32)in->h, 0) &&
-           picture_make(&s->wide_motion, VK_FORMAT_R16G16B16A16_SFLOAT, (u32)in->w, (u32)in->h, 0);
-}
-
-static void session_close(Session* s) {
-    vkDeviceWaitIdle(g.device);
-    if (s->live) g.api->destroy(s->live);
-    if (s->pending) g.api->destroy(s->pending);
+static void pictures_free(Session* s) {
     picture_free(&s->colour);
     picture_free(&s->depth);
     picture_free(&s->motion);
@@ -453,16 +455,52 @@ static void session_close(Session* s) {
     picture_free(&s->wide_colour);
     picture_free(&s->wide_depth);
     picture_free(&s->wide_motion);
+}
+
+/* the session's pictures for these inputs' sizes, in place of the ones it had */
+static int pictures_make(Session* s, const Inputs* in, const SnxUpscalerTraits* traits) {
+    const u32 rw = (u32)in->rw, rh = (u32)in->rh;
+    vkDeviceWaitIdle(g.device);
+    pictures_free(s);
+    if (!picture_make(&s->colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, rw, rh, traits->colour_usage) ||
+        !picture_make(&s->depth, VK_FORMAT_D24_UNORM_S8_UINT, rw, rh, traits->depth_usage) ||
+        !picture_make(&s->motion, VK_FORMAT_R16G16B16A16_SFLOAT, rw, rh, traits->motion_usage) ||
+        !picture_make(&s->output, VK_FORMAT_R16G16B16A16_SFLOAT, (u32)in->ow, (u32)in->oh, traits->output_usage))
+        return 0;
+    if (in->w == in->rw && in->h == in->rh) return 1;
+    return picture_make(&s->wide_colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, (u32)in->w, (u32)in->h, 0) &&
+           picture_make(&s->wide_depth, VK_FORMAT_D24_UNORM_S8_UINT, (u32)in->w, (u32)in->h, 0) &&
+           picture_make(&s->wide_motion, VK_FORMAT_R16G16B16A16_SFLOAT, (u32)in->w, (u32)in->h, 0);
+}
+
+static int session_open(Session* s, const Inputs* in, const SnxUpscalerTraits* traits) {
+    memset(s, 0, sizeof *s);
+    return pictures_make(s, in, traits);
+}
+
+/* A session whose last submission's end is not known frees nothing: the device may still be using it all. */
+static void session_close(Session* s) {
+    if (s->off || !VK_OK(vkDeviceWaitIdle(g.device))) {
+        LOG(ST "a session is left as it is: a submission's end is not known, so nothing of it is freed\n");
+        return;
+    }
+    if (s->live) g.api->destroy(s->live);
+    if (s->pending) g.api->destroy(s->pending);
+    pictures_free(s);
     memset(s, 0, sizeof *s);
 }
 
 /* The context for a configuration, by the states the runtime will keep (temporal_upscaler_*): created, prepared into
    a command buffer that is submitted and has completed, and only then published. 1 when the frame may be
-   evaluated on s->live. */
-static int context_ready(Session* s, const TemporalUpscalerConfig* config, u32 flags, SnxUpscalerTraits* traits) {
+   evaluated on s->live. A context is freed only when its command buffer was discarded or has completed. When
+   a submission's end is not known the session is off: nothing is freed and nothing more is evaluated. */
+static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerConfig* config, u32 flags,
+                         SnxUpscalerTraits* traits) {
+    if (s->off) return 0;
     if (temporal_upscaler_ready(&s->contexts, config)) return 1;
     if (!temporal_upscaler_must_create(&s->contexts, config)) return 0;
-    const SnxUpscalerCreate make = {.sizes = {RENDER_W, RENDER_H, RENDER_W, RENDER_H, OUT_W, OUT_H},
+    const SnxUpscalerCreate make = {.sizes = {(u32)in->rw, (u32)in->rh, (u32)in->rw, (u32)in->rh, (u32)in->ow,
+                                              (u32)in->oh},
                                     .instance = g.instance,
                                     .physical_device = g.physical,
                                     .device = g.device,
@@ -487,26 +525,40 @@ static int context_ready(Session* s, const TemporalUpscalerConfig* config, u32 f
             traits->colour_usage, traits->depth_usage, traits->motion_usage, traits->output_usage);
         made = 0;
     }
-    const int begun = made && begin();
-    int ok = begun && g.api->prepare(s->pending, g.cb) == SNX_UPSCALER_OK;
-    /* the preparation's commands are submitted, and it has completed when submit returns */
-    if (begun && !submit()) ok = 0;
-    temporal_upscaler_created(&s->contexts, config, ok);
+    /* Three ends. Nothing was submitted (the command buffer is reset, what it held is discarded). It was
+       submitted and has completed. It was submitted and its end is not known. */
+    int prepared = 0, submitted = 0;
+    if (made && begin()) {
+        prepared = g.api->prepare(s->pending, g.cb) == SNX_UPSCALER_OK;
+        if (prepared) submitted = submit();
+        else vkResetCommandBuffer(g.cb, 0);
+    }
+    if (submitted < 0) {
+        s->off = 1;
+        LOG(ST "FAIL: a context's preparation was submitted and its end is not known. Nothing is freed and the "
+               "adapter is off for this run\n");
+        return 0;
+    }
+    temporal_upscaler_created(&s->contexts, config, prepared && submitted == 1);
     switch (temporal_upscaler_completed(&s->contexts, config)) {
     case TEMPORAL_UPSCALER_RETIRE:
-        vkDeviceWaitIdle(g.device);
+        if (!VK_OK(vkDeviceWaitIdle(g.device))) {
+            s->off = 1;
+            return 0;
+        }
         g.api->destroy(s->live);
         /* fall through */
     case TEMPORAL_UPSCALER_PUBLISHED:
         s->live = s->pending;
         s->pending = NULL;
+        s->published++;
         break;
-    default: /* a failed or stale one is freed now that its command buffer is done */
+    default: /* a failed or stale one: its command buffer was discarded or has completed, so it may go */
         if (s->pending) g.api->destroy(s->pending);
         s->pending = NULL;
         break;
     }
-    return ok && temporal_upscaler_ready(&s->contexts, config);
+    return temporal_upscaler_ready(&s->contexts, config);
 }
 
 /* One frame of a run through the gate, the conversion, the check and the adapter. out gets the output picture as
@@ -514,21 +566,22 @@ static int context_ready(Session* s, const TemporalUpscalerConfig* config, u32 f
    context was not ready is. -1: a failure. */
 static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int cut, double* out) {
     const size_t pixels = (size_t)in->w * in->h;
-    const int wide = in->w != RENDER_W || in->h != RENDER_H;
+    const int wide = in->w != in->rw || in->h != in->rh;
     const int x = (int)in->vp.x, y = (int)(in->vp.h < 0 ? in->vp.y + in->vp.h : in->vp.y);
     SnxUpscalerTraits traits = {0};
     TemporalRectState state = {0};
     TemporalUpscalerFrame numbers;
     float camera[4];
+    if (s->off) return -1;
     s->frame++;
     /* what the renderer would know of the frame: its viewport, the images' size, the fraction of them in use */
     state.viewport = (TemporalViewport){(float)in->vp.x, (float)in->vp.y, (float)in->vp.w, (float)in->vp.h};
     state.target_w = in->w;
     state.target_h = in->h;
-    state.fx = (float)RENDER_W / (float)in->w;
-    state.fy = (float)RENDER_H / (float)in->h;
+    state.fx = (float)in->rw / (float)in->w;
+    state.fy = (float)in->rh / (float)in->h;
     if (!temporal_rect_from_viewport(&state.viewport, in->w, in->h, &state.rect)) return -1;
-    const TemporalRectStamp stamp = {1, g.generation, in->w, in->h, OUT_W, OUT_H, state.rect};
+    const TemporalRectStamp stamp = {1, g.generation, in->w, in->h, in->ow, in->oh, state.rect};
     const double jitter[2] = {in->scene[i].jitter[0], in->scene[i].jitter[1]};
     temporal_rect_decide(&s->gate, s->frame, &state);
     if (!temporal_upscaler_frame(&s->gate, s->frame, &stamp, &state.viewport, jitter, cut, &numbers) ||
@@ -539,9 +592,9 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     const u32 flags = SNX_UPSCALER_COLOUR_LINEAR_HDR | SNX_UPSCALER_VECTORS_UNJITTERED |
                       SNX_UPSCALER_EXPOSURE_AUTOMATIC | SNX_UPSCALER_FAR_PLANE_INFINITE |
                       (v->depth_reversed ? SNX_UPSCALER_DEPTH_REVERSED : 0);
-    const TemporalUpscalerConfig config = {in->w, in->h, RENDER_W, RENDER_H, OUT_W, OUT_H,
+    const TemporalUpscalerConfig config = {in->w, in->h, in->rw, in->rh, in->ow, in->oh,
                                            g.generation * 2 + (u64)v->depth_reversed};
-    if (!context_ready(s, &config, flags, &traits)) {
+    if (!context_ready(s, in, &config, flags, &traits)) {
         s->skipped++;
         return s->contexts.pending || s->live ? 0 : -1;
     }
@@ -566,16 +619,17 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     const SnxUpscalerFrame frame = {
         .cb = g.cb,
         .colour = {s->colour.image, s->colour.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, s->colour.format,
-                   RENDER_W, RENDER_H},
-        .depth = {s->depth.image, s->depth.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, s->depth.format, RENDER_W,
-                  RENDER_H},
+                   s->colour.w, s->colour.h},
+        .depth = {s->depth.image, s->depth.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, s->depth.format,
+                  s->depth.w, s->depth.h},
         .motion = {s->motion.image, s->motion.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, s->motion.format,
-                   RENDER_W, RENDER_H},
-        .output = {s->output.image, s->output.view, VK_IMAGE_LAYOUT_GENERAL, s->output.format, OUT_W, OUT_H},
+                   s->motion.w, s->motion.h},
+        .output = {s->output.image, s->output.view, VK_IMAGE_LAYOUT_GENERAL, s->output.format, s->output.w,
+                   s->output.h},
         .render_x = 0,
         .render_y = 0,
-        .render_w = RENDER_W,
-        .render_h = RENDER_H,
+        .render_w = (u32)in->rw,
+        .render_h = (u32)in->rh,
         /* the conversion's numbers, with the variant's signs: the configured variant hands them on as they are */
         .jitter = {(float)(numbers.jitter[0] * v->jitter_x), (float)(numbers.jitter[1] * v->jitter_y)},
         .vector_scale = {(float)(numbers.vector_scale[0] * v->vector_x),
@@ -589,7 +643,7 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     const int evaluated = g.api->evaluate(s->live, &frame) == SNX_UPSCALER_OK;
     /* whatever the adapter left bound or pending: the output is taken over for the copy with a full barrier */
     const VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                      .imageExtent = {OUT_W, OUT_H, 1}};
+                                      .imageExtent = {(u32)in->ow, (u32)in->oh, 1}};
     layout(&s->output, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     settle(); /* the staging buffer was read by the uploads and is written now */
     vkCmdCopyImageToBuffer(g.cb, s->output.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g.staging, 1, &region);
@@ -604,12 +658,14 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     vkCmdPipelineBarrier(g.cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &read, 0,
                          NULL);
     const int done = submit();
-    if (temporal_upscaler_failed(&s->failures, evaluated && done)) LOG(ST "the adapter failed eight times in a row\n");
-    if (!evaluated || !done) return -1;
+    if (done < 0) s->off = 1; /* submitted, and its end is not known */
+    if (temporal_upscaler_failed(&s->failures, evaluated && done == 1))
+        LOG(ST "the adapter failed eight times in a row\n");
+    if (!evaluated || done != 1) return -1;
     temporal_rect_wrote(&s->gate, s->frame, &stamp);
     s->evaluated++;
     const u16* words = (const u16*)g.staging_bytes;
-    for (size_t p = 0; p < (size_t)OUT_W * OUT_H; p++)
+    for (size_t p = 0; p < (size_t)in->ow * in->oh; p++)
         for (int c = 0; c < 3; c++) {
             out[3 * p + c] = selftest_half_value(words[4 * p + c]);
             if (!isfinite(out[3 * p + c])) return -1;
@@ -619,10 +675,10 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
 
 /* the mean absolute difference of two pictures over the pixels of one region, per channel of a range of 1. -1 when
    the region has no pixel. */
-static double difference(const double* a, const double* b, const u8* regions, int region) {
+static double difference(const Inputs* in, const double* a, const double* b, const u8* regions, int region) {
     double sum = 0.0;
     size_t n = 0;
-    for (size_t p = 0; p < (size_t)OUT_W * OUT_H; p++) {
+    for (size_t p = 0; p < (size_t)in->ow * in->oh; p++) {
         if (regions[p] != region) continue;
         for (int c = 0; c < 3; c++) sum += fabs(a[3 * p + c] - b[3 * p + c]);
         n += 3;
@@ -632,43 +688,68 @@ static double difference(const double* a, const double* b, const u8* regions, in
 
 /* the true picture of the run's last frame at the output's size, and each pixel's region */
 static void truth(const Inputs* in, int up, double* reference, u8* regions) {
-    const SelftestViewport out = {0, up ? OUT_H : 0, OUT_W, up ? -OUT_H : OUT_H};
+    const int W = in->ow, H = in->oh;
+    const SelftestViewport out = {0, up ? H : 0, W, up ? -H : H};
     const SelftestFrame* f = &in->scene[in->frames - 1];
-    for (int y = 0; y < OUT_H; y++)
-        for (int x = 0; x < OUT_W; x++) {
-            selftest_reference(f, &out, x, y, SAMPLES, &reference[3 * ((size_t)y * OUT_W + x)]);
-            regions[(size_t)y * OUT_W + x] = (u8)selftest_region(f, &out, OUT_W, OUT_H, x, y);
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            selftest_reference(f, &out, x, y, SAMPLES, &reference[3 * ((size_t)y * W + x)]);
+            regions[(size_t)y * W + x] = (u8)selftest_region(f, &out, W, H, x, y);
+        }
+}
+
+/* The band a patch left in frame i of a run, in an output picture: the error against the true picture summed over
+   its pixels and channels, and the pixels counted. */
+typedef struct {
+    int up;
+    double sum;
+    size_t pixels;
+} Band;
+static void band_add(Band* band, const Inputs* in, int i, const double* output) {
+    const int W = in->ow, H = in->oh;
+    const SelftestViewport out = {0, band->up ? H : 0, W, band->up ? -H : H};
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            double reference[3];
+            if (selftest_region(&in->scene[i], &out, W, H, x, y) != SELFTEST_UNCOVERED) continue;
+            selftest_reference(&in->scene[i], &out, x, y, SAMPLES, reference);
+            for (int c = 0; c < 3; c++) band->sum += fabs(output[3 * ((size_t)y * W + x) + c] - reference[c]);
+            band->pixels++;
         }
 }
 
 /* One run of every frame with one variant, on a session of its own. last gets the last output. first_change and
    last_change, when asked for, get the mean change between consecutive outputs over the first and the last cycle
-   of offsets. 1 when every frame after the gate's first was evaluated. */
+   of offsets. band, when given, takes every evaluated frame after the first cycle. 1 when every frame after the
+   gate's first was evaluated. */
 static int run(const Inputs* in, const Variant* v, int use_cut, double* last, double* first_change,
-               double* last_change, const u8* regions) {
+               double* last_change, const u8* regions, Band* band) {
     Session s;
     SnxUpscalerTraits traits = {.colour_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .depth_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .motion_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
-    double* previous = malloc(sizeof(double) * 3 * OUT_W * OUT_H);
+    const size_t size = sizeof(double) * 3 * (size_t)in->ow * in->oh;
+    double* previous = malloc(size);
     double sums[2] = {0.0, 0.0};
     int counts[2] = {0, 0};
+    memset(&s, 0, sizeof s);
     int ok = previous && session_open(&s, in, &traits), evaluated = 0;
     for (int i = 0; ok && i < in->frames; i++) {
         const int r = frame_run(&s, in, i, v, use_cut && i == in->cut_at, last);
         if (r < 0) ok = 0;
         if (r <= 0) continue;
         if (evaluated && regions) {
-            const double change = difference(last, previous, regions, SELFTEST_BACKGROUND);
-            const int cycle = evaluated <= OFFSETS ? 0 : evaluated >= FRAMES - OFFSETS ? 1 : -1;
+            const double change = difference(in, last, previous, regions, SELFTEST_BACKGROUND);
+            const int cycle = evaluated <= in->offsets ? 0 : evaluated >= in->offsets ? 1 : -1;
             if (cycle >= 0) {
                 sums[cycle] += change;
                 counts[cycle]++;
             }
         }
-        memcpy(previous, last, sizeof(double) * 3 * OUT_W * OUT_H);
+        memcpy(previous, last, size);
         evaluated++;
+        if (band && evaluated > in->offsets) band_add(band, in, i, last);
     }
     if (ok && evaluated != in->frames - 1) {
         LOG(ST "a run evaluated %d of %d frames (%u skipped)\n", evaluated, in->frames - 1, s.skipped);
@@ -676,7 +757,7 @@ static int run(const Inputs* in, const Variant* v, int use_cut, double* last, do
     }
     if (first_change) *first_change = counts[0] ? sums[0] / counts[0] : NAN;
     if (last_change) *last_change = counts[1] ? sums[1] / counts[1] : NAN;
-    if (previous) session_close(&s);
+    session_close(&s);
     free(previous);
     return ok;
 }
@@ -684,10 +765,11 @@ static int run(const Inputs* in, const Variant* v, int use_cut, double* last, do
 /* one frame of the inputs scaled up plainly, with two-by-two linear filtering and no knowledge of the jitter: what
    an upscaler has to beat */
 static void plain(const Inputs* in, int i, int up, double* out) {
-    const SelftestViewport to = {0, up ? OUT_H : 0, OUT_W, up ? -OUT_H : OUT_H};
+    const int W = in->ow, H = in->oh;
+    const SelftestViewport to = {0, up ? H : 0, W, up ? -H : H};
     const u32* colour = in->colour + (size_t)i * in->w * in->h;
-    for (int y = 0; y < OUT_H; y++)
-        for (int x = 0; x < OUT_W; x++) {
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
             double n[2], at[2], sum[3] = {0, 0, 0};
             selftest_ndc(&to, x + 0.5, y + 0.5, n);
             selftest_place(&in->vp, n, at);
@@ -702,7 +784,7 @@ static void plain(const Inputs* in, int i, int up, double* out) {
                     selftest_b10g11r11_value(colour[(size_t)sy * in->w + sx], rgb);
                     for (int c = 0; c < 3; c++) sum[c] += weight * rgb[c];
                 }
-            memcpy(&out[3 * ((size_t)y * OUT_W + x)], sum, sizeof sum);
+            memcpy(&out[3 * ((size_t)y * W + x)], sum, sizeof sum);
         }
 }
 
@@ -721,8 +803,8 @@ static int signs(const char* name, const Inputs* in, unsigned mask, int region, 
     for (unsigned combo = 0; combo < 16 && ran; combo++) {
         if (combo & ~mask) continue;
         const Variant v = {combo & 1 ? -1 : 1, combo & 2 ? -1 : 1, combo & 4 ? -1 : 1, combo & 8 ? -1 : 1, 1};
-        ran = run(in, &v, 0, output, NULL, NULL, NULL);
-        errors[n] = ran ? difference(output, reference, regions, region) : NAN;
+        ran = run(in, &v, 0, output, NULL, NULL, NULL, NULL);
+        errors[n] = ran ? difference(in, output, reference, regions, region) : NAN;
         LOG(ST "%s: jitter %c%c vector %c%c error %.6f%s\n", name, v.jitter_x < 0 ? '-' : '+',
             v.jitter_y < 0 ? '-' : '+', v.vector_x < 0 ? '-' : '+', v.vector_y < 0 ? '-' : '+', errors[n],
             combo ? "" : " (configured)");
@@ -736,10 +818,10 @@ static int signs(const char* name, const Inputs* in, unsigned mask, int region, 
 
 /* the whole suite for one sign of the viewport's height: 1 when every case passed */
 static int suite(int up) {
-    const size_t size = sizeof(double) * 3 * OUT_W * OUT_H;
+    const size_t pixels = (size_t)OUT_W * OUT_H, size = sizeof(double) * 3 * pixels;
     const double still[2] = {0.0, 0.0}, pan[2] = {1.3, 0.7};
     double *reference = malloc(size), *output = malloc(size), *other = malloc(size);
-    u8* regions = malloc((size_t)OUT_W * OUT_H);
+    u8* regions = malloc(pixels);
     Inputs in;
     int pass = 1, ok;
     char name[64];
@@ -749,16 +831,16 @@ static int suite(int up) {
         FRAMES);
 
     /* Case 1: jitter alone over a still pattern. The jitter's signs, the plain scale, and settling. */
-    ok = inputs_make(&in, RENDER_W, RENDER_H, 0, 0, up, still, 0, -1);
+    ok = inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0);
     if (ok) {
         double first = 0, last = 0;
         truth(&in, up, reference, regions);
         snprintf(name, sizeof name, "case 1 %s jitter signs", up ? "up" : "down");
         ok = signs(name, &in, 3, SELFTEST_BACKGROUND, reference, regions, output);
-        const int ran = run(&in, &CONFIGURED, 0, output, &first, &last, regions);
-        const double error = ran ? difference(output, reference, regions, SELFTEST_BACKGROUND) : NAN;
+        const int ran = run(&in, &CONFIGURED, 0, output, &first, &last, regions, NULL);
+        const double error = ran ? difference(&in, output, reference, regions, SELFTEST_BACKGROUND) : NAN;
         plain(&in, in.frames - 1, up, other);
-        const double scaled = difference(other, reference, regions, SELFTEST_BACKGROUND);
+        const double scaled = difference(&in, other, reference, regions, SELFTEST_BACKGROUND);
         const int beats = ran && selftest_beats(error, scaled, SELFTEST_MARGIN);
         const int settles = selftest_settles(first, last);
         LOG(ST "case 1 %s: error %.6f against one frame scaled plainly %.6f: %s\n", up ? "up" : "down", error, scaled,
@@ -771,7 +853,7 @@ static int suite(int up) {
     inputs_free(&in);
 
     /* Case 2: a translation that is unequal in both axes. All sixteen combinations of the four signs. */
-    ok = inputs_make(&in, RENDER_W, RENDER_H, 0, 0, up, pan, 0, -1);
+    ok = inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, pan, 0, 0);
     if (ok) {
         truth(&in, up, reference, regions);
         snprintf(name, sizeof name, "case 2 %s all signs", up ? "up" : "down");
@@ -782,21 +864,27 @@ static int suite(int up) {
 
     /* Case 3: a nearer patch that moves on its own over a still background. The vector's signs inside the patch,
        and the depth convention in the band the patch left. */
-    ok = inputs_make(&in, RENDER_W, RENDER_H, 0, 0, up, still, 1, -1);
+    ok = inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 1, 0);
     if (ok) {
         const Variant flipped = {1, 1, 1, 1, 0};
         truth(&in, up, reference, regions);
         snprintf(name, sizeof name, "case 3 %s vector signs in the patch", up ? "up" : "down");
         ok = signs(name, &in, 12, SELFTEST_INSIDE, reference, regions, output);
-        const int ran = run(&in, &CONFIGURED, 0, output, NULL, NULL, NULL) &&
-                        run(&in, &flipped, 0, other, NULL, NULL, NULL);
-        const double own = ran ? difference(output, reference, regions, SELFTEST_UNCOVERED) : NAN;
-        const double wrong = ran ? difference(other, reference, regions, SELFTEST_UNCOVERED) : NAN;
-        const int beats = ran && own >= 0.0 && selftest_beats(own, wrong, SELFTEST_MARGIN);
-        LOG(ST "case 3 %s: the band the patch left: error %.6f, with the depth convention turned %.6f, background "
-               "%.6f, patch %.6f: %s\n", up ? "up" : "down", own, wrong,
-            ran ? difference(output, reference, regions, SELFTEST_BACKGROUND) : NAN,
-            ran ? difference(output, reference, regions, SELFTEST_INSIDE) : NAN, beats ? "PASS" : "FAIL");
+        /* the band the patch left, over every evaluated frame after the first cycle of offsets. Under BAND_LEAST
+           pixels it is too little to judge by, and the case fails as a test. */
+        Band own_band = {up, 0.0, 0}, wrong_band = {up, 0.0, 0};
+        const int ran = run(&in, &CONFIGURED, 0, output, NULL, NULL, NULL, &own_band) &&
+                        run(&in, &flipped, 0, other, NULL, NULL, NULL, &wrong_band);
+        const int enough = own_band.pixels >= BAND_LEAST && wrong_band.pixels == own_band.pixels;
+        const double own = ran && enough ? own_band.sum / (3.0 * (double)own_band.pixels) : NAN;
+        const double wrong = ran && enough ? wrong_band.sum / (3.0 * (double)wrong_band.pixels) : NAN;
+        const int beats = ran && enough && selftest_beats(own, wrong, SELFTEST_MARGIN);
+        LOG(ST "case 3 %s: the band the patch left, %zu pixels over %d frames (at least %d): error %.6f, with the "
+               "depth convention turned %.6f, background %.6f, patch %.6f: %s\n", up ? "up" : "down",
+            own_band.pixels, in.offsets, BAND_LEAST, own, wrong,
+            ran ? difference(&in, output, reference, regions, SELFTEST_BACKGROUND) : NAN,
+            ran ? difference(&in, output, reference, regions, SELFTEST_INSIDE) : NAN,
+            beats ? "PASS" : enough ? "FAIL" : "FAIL (too few pixels to judge by)");
         ok = ok && beats;
     }
     pass &= ok;
@@ -804,23 +892,24 @@ static int suite(int up) {
 
     /* Case 5: a new pattern with the reset flag. The output of that frame against a context that never saw the old
        pattern, and the same without the flag as the control of the test itself. */
-    ok = inputs_make(&in, RENDER_W, RENDER_H, 0, 0, up, still, 0, FRAMES);
+    ok = inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 1);
     if (ok) {
         Inputs fresh = in;
-        const int with = run(&in, &CONFIGURED, 1, output, NULL, NULL, NULL);
+        const int with = run(&in, &CONFIGURED, 1, output, NULL, NULL, NULL, NULL);
         double* without = malloc(size);
-        const int control = without && run(&in, &CONFIGURED, 0, without, NULL, NULL, NULL);
+        const int control = without && run(&in, &CONFIGURED, 0, without, NULL, NULL, NULL, NULL);
         /* the fresh context: the gate's first frame, then the frame of the cut alone */
-        fresh.scene += FRAMES - 1;
-        fresh.colour += (size_t)(FRAMES - 1) * in.w * in.h;
-        fresh.depth += (size_t)(FRAMES - 1) * in.w * in.h;
-        fresh.motion += (size_t)(FRAMES - 1) * in.w * in.h * 4;
+        const size_t skip = (size_t)in.frames - 2;
+        fresh.scene += skip;
+        fresh.colour += skip * in.w * in.h;
+        fresh.depth += skip * in.w * in.h;
+        fresh.motion += skip * in.w * in.h * 4;
         fresh.frames = 2;
         fresh.cut_at = -1;
-        memset(regions, SELFTEST_BACKGROUND, (size_t)OUT_W * OUT_H);
-        const int alone = run(&fresh, &CONFIGURED, 0, other, NULL, NULL, NULL);
-        const double same = with && alone ? difference(output, other, regions, SELFTEST_BACKGROUND) : NAN;
-        const double apart = control && alone ? difference(without, other, regions, SELFTEST_BACKGROUND) : NAN;
+        memset(regions, SELFTEST_BACKGROUND, pixels);
+        const int alone = run(&fresh, &CONFIGURED, 0, other, NULL, NULL, NULL, NULL);
+        const double same = with && alone ? difference(&in, output, other, regions, SELFTEST_BACKGROUND) : NAN;
+        const double apart = control && alone ? difference(&in, without, other, regions, SELFTEST_BACKGROUND) : NAN;
         LOG(ST "case 5 %s: the reset frame against a fresh context %.6f (at most %.2f): %s. Without the flag %.6f "
                "(at least %.2f, the test's own control): %s\n", up ? "up" : "down", same, SELFTEST_SAME,
             selftest_same(same) ? "PASS" : "FAIL", apart, SELFTEST_APART,
@@ -833,13 +922,14 @@ static int suite(int up) {
 
     /* Case 6: the same content at a place that is not the first texel of larger images of other proportions, with
        padding that is none of the scene's, against the content at the first texel of images of its own size. */
-    ok = inputs_make(&in, 400, 240, 40, 30, up, pan, 0, -1);
+    ok = inputs_make(&in, SIZES, 400, 240, 40, 30, up, pan, 0, 0);
     if (ok) {
         Inputs tight;
-        ok = inputs_make(&tight, RENDER_W, RENDER_H, 0, 0, up, pan, 0, -1) &&
-             run(&in, &CONFIGURED, 0, output, NULL, NULL, NULL) && run(&tight, &CONFIGURED, 0, other, NULL, NULL, NULL);
-        memset(regions, SELFTEST_BACKGROUND, (size_t)OUT_W * OUT_H);
-        const double same = ok ? difference(output, other, regions, SELFTEST_BACKGROUND) : NAN;
+        ok = inputs_make(&tight, SIZES, RENDER_W, RENDER_H, 0, 0, up, pan, 0, 0) &&
+             run(&in, &CONFIGURED, 0, output, NULL, NULL, NULL, NULL) &&
+             run(&tight, &CONFIGURED, 0, other, NULL, NULL, NULL, NULL);
+        memset(regions, SELFTEST_BACKGROUND, pixels);
+        const double same = ok ? difference(&in, output, other, regions, SELFTEST_BACKGROUND) : NAN;
         LOG(ST "case 6 %s: a rectangle at 40,30 of 400x240 images against the same at 0,0 of %dx%d: %.6f (at most "
                "%.2f): %s\n", up ? "up" : "down", RENDER_W, RENDER_H, same, SELFTEST_SAME,
             selftest_same(same) ? "PASS" : "FAIL");
@@ -856,35 +946,71 @@ static int suite(int up) {
     return pass;
 }
 
-/* Case 4: the size changes in mid-run. The frames until the new context is ready are skipped, and then the frames
-   are evaluated again. Run on one session with images that grow from the rectangle to a wider image around it. */
-static int resize(void) {
+/* Case 4: the sizes change in mid-run, on one session: 320x180 to 480x270, then 400x224 to 640x360, so the
+   adapter gets a context of other sizes. The frames until that one is ready are skipped. Then the still pattern
+   is measured as in case 1 against the new size's true picture: after twice the offsets the error must beat
+   one frame scaled plainly by the margin, and the output must have stopped changing. */
+static int resize(int up) {
+    static const int BIG[4] = {400, 224, 640, 360};
+    const size_t size = sizeof(double) * 3 * (size_t)BIG[2] * BIG[3];
     const double still[2] = {0.0, 0.0};
-    const Variant* v = &CONFIGURED;
     SnxUpscalerTraits traits = {.colour_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .depth_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .motion_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
-    Inputs small, wide;
+    Inputs small, big;
     Session s;
-    double* output = malloc(sizeof(double) * 3 * OUT_W * OUT_H);
-    int ok = output && inputs_make(&small, RENDER_W, RENDER_H, 0, 0, 1, still, 0, -1) &&
-             inputs_make(&wide, 400, 240, 0, 0, 1, still, 0, -1) && session_open(&s, &wide, &traits);
-    unsigned before = 0, skipped_at_change = 0, after = 0;
-    for (int i = 0; ok && i < 12; i++) ok = frame_run(&s, &small, i, v, 0, output) >= 0;
-    before = s.evaluated;
-    const unsigned skipped = s.skipped;
-    for (int i = 12; ok && i < 24; i++) ok = frame_run(&s, &wide, i, v, 0, output) >= 0;
-    skipped_at_change = s.skipped - skipped;
-    after = s.evaluated - before;
-    const int pass = ok && before == 11 && skipped_at_change >= 1 && after >= 10 && after + skipped_at_change == 12;
-    LOG(ST "case 4: %u frames evaluated before the images' size changed, %u skipped at the change, %u evaluated "
-           "after it: %s\n", before, skipped_at_change, after, pass ? "PASS" : "FAIL");
-    if (output) session_close(&s);
+    double *output = malloc(size), *previous = malloc(size), *reference = malloc(size), *scaled = malloc(size);
+    u8* regions = malloc((size_t)BIG[2] * BIG[3]);
+    double sums[2] = {0.0, 0.0};
+    int counts[2] = {0, 0}, evaluated = 0;
+    /* everything starts empty, and only what was made is freed */
+    memset(&small, 0, sizeof small);
+    memset(&big, 0, sizeof big);
+    memset(&s, 0, sizeof s);
+    int ok = output && previous && reference && scaled && regions &&
+             inputs_make(&small, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0) &&
+             inputs_make(&big, BIG, BIG[0], BIG[1], 0, 0, up, still, 0, 0) && session_open(&s, &small, &traits);
+    for (int i = 0; ok && i < 12; i++) ok = frame_run(&s, &small, i, &CONFIGURED, 0, output) >= 0;
+    const unsigned before = ok ? s.evaluated : 0, skipped = ok ? s.skipped : 0;
+    /* the change: pictures of the new sizes, and the same session, gate and contexts */
+    ok = ok && pictures_make(&s, &big, &traits);
+    if (ok) truth(&big, up, reference, regions);
+    for (int i = 0; ok && i < big.frames; i++) {
+        const int r = frame_run(&s, &big, i, &CONFIGURED, 0, output);
+        if (r < 0) ok = 0;
+        if (r <= 0) continue;
+        if (evaluated) {
+            const int cycle = evaluated <= big.offsets ? 0 : 1;
+            sums[cycle] += difference(&big, output, previous, regions, SELFTEST_BACKGROUND);
+            counts[cycle]++;
+        }
+        memcpy(previous, output, size);
+        evaluated++;
+    }
+    const unsigned skipped_at_change = ok ? s.skipped - skipped : 0;
+    const double first = counts[0] ? sums[0] / counts[0] : NAN, last = counts[1] ? sums[1] / counts[1] : NAN;
+    const double error = ok ? difference(&big, output, reference, regions, SELFTEST_BACKGROUND) : NAN;
+    if (ok) plain(&big, big.frames - 1, up, scaled);
+    const double plainly = ok ? difference(&big, scaled, reference, regions, SELFTEST_BACKGROUND) : NAN;
+    const int counted = ok && before == 11 && skipped_at_change >= 1 && evaluated == 2 * big.offsets &&
+                        s.published == 2;
+    const int beats = ok && selftest_beats(error, plainly, SELFTEST_MARGIN), settles = selftest_settles(first, last);
+    LOG(ST "case 4 %s: %u frames evaluated at %dx%d to %dx%d, %u skipped at the change, %d evaluated at %dx%d to "
+           "%dx%d, %u contexts made: %s\n", up ? "up" : "down", before, RENDER_W, RENDER_H, OUT_W, OUT_H,
+        skipped_at_change, evaluated, BIG[0], BIG[1], BIG[2], BIG[3], s.published, counted ? "PASS" : "FAIL");
+    LOG(ST "case 4 %s: after the change, error %.6f against one frame scaled plainly %.6f: %s. Change a frame over "
+           "the first cycle %.6f, over the last %.6f: %s\n", up ? "up" : "down", error, plainly,
+        beats ? "PASS" : "FAIL", first, last, settles ? "PASS" : "FAIL");
+    session_close(&s);
     inputs_free(&small);
-    inputs_free(&wide);
+    inputs_free(&big);
     free(output);
-    return pass;
+    free(previous);
+    free(reference);
+    free(scaled);
+    free(regions);
+    return counted && beats && settles;
 }
 
 /* The mode. The process's result: 0 when every case passed and the validation layer was there and silent. */
@@ -902,7 +1028,9 @@ int vk_upscaler_selftest(const char* adapter) {
     g.generation++;
     pass &= suite(0);
     g.generation++;
-    pass &= resize();
+    pass &= resize(1);
+    g.generation++;
+    pass &= resize(0);
     vkDeviceWaitIdle(g.device);
     /* Case 7: no message of the validation layer in any case. Without the layer the case was not run, which is
        not a pass. */

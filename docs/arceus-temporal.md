@@ -356,10 +356,11 @@ The cases, each run with a viewport of negative and of positive height (render 3
    at most half of that over the first.
 2. A translation that differs in both axes. All sixteen combinations of the jitter's and the vector's signs.
 3. A patch moving another way over a still background. The four combinations of the vector's signs, judged
-   inside the patch. In the band the patch left in the last frame, the configured run must beat the run with the
-   depth convention turned, by the margin.
-4. The images' size changes in mid-run: the frames until the new context is ready are skipped, then frames are
-   evaluated again.
+   inside the patch. In the band the patch left, taken over every evaluated frame after the first cycle of
+   offsets, the configured run must beat the run with the depth convention turned, by the margin. The band's
+   pixels are counted and logged, and under 500 the case fails as a test.
+4. The images' size changes in mid-run: the frames until the new context is ready are skipped. Then the still
+   pattern is measured again as in case 1: the error against one frame scaled plainly, and the settling.
 5. A new pattern with the reset flag: the output of that frame against a context that never saw the old pattern,
    at most 0.01 apart. Without the flag it must be at least 0.05 apart, or the control saw nothing.
 6. The content at 40, 30 of larger images of other proportions, with padding that is not the scene's, against the
