@@ -818,11 +818,15 @@ static int runtime_key_options(int* argc, char** argv, char** keys, char** title
     return 0;
 }
 
-/* The upscaler's self-test (gpu/vk/upscaler_selftest.c) with what little it needs of a start: where this game's
-   log goes, which is the runtime's own record of its folders, and the log as a file though no game is loaded,
-   so that the lines are where a report of the run reads them. The process's result. */
-static int upscaler_selftest(const char* adapter) {
+/* The upscaler's self-test (gpu/vk/upscaler_selftest.c) with what little it needs of a start: the program's
+   folder and the name the run goes by, taken from the command line as the start does and without opening
+   anything, the folders by the runtime's own record of them, and the log as a file though no game is loaded,
+   so that its lines are where a report of the run reads them. No key file, no check for dumps, no menu, no
+   window, no file of the game. The process's result. */
+static int upscaler_selftest(const char* adapter, int argc, char** argv) {
+    const char* game = game_option(argc, argv);
     int result;
+    name_game(game ? game : program_path(argv[0]));
     game_dirs();
     log_without_game();
     LOG("ScarletNX - upscaler self-test\n");
@@ -839,6 +843,17 @@ int snx_main(int argc, char** argv) {
     const char *game, *title;
     const SnxModule* mod;
     int status, i;
+    /* SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>: the upscaler's self-test in place of everything else, on a path of
+       its own that ends the run. It is looked at first: before the options and their key files, the check for
+       dumps, the menu, the guest's address space and the game's code. Without the switch this is one look,
+       and the start goes on in the order it always had. */
+    {
+        const char* selftest = getenv("SNX_ARCEUS_UPSCALER_SELFTEST");
+        if (selftest && selftest[0]) {
+            status = upscaler_selftest(selftest, argc, argv);
+            goto done;
+        }
+    }
     hle_init(); /* before anything, the options included, touches g_hle */
     /* The driver's dump-play options also belong to the runtime when it reads the dump in place. */
     status = runtime_key_options(&argc, argv, &keys, &title_keys);
@@ -874,17 +889,6 @@ int snx_main(int argc, char** argv) {
     if (argc == 1 && !snx_module_static && snx_menu && snx_launcher_name(g_exename) && !snx_is_file(module)) {
         status = open_menu(argv[0]);
         goto done;
-    }
-    /* SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>: the upscaler's self-test in place of the game, on a path of its own
-       that ends the run. Taken before the guest's address space is reserved and before the game's code is
-       loaded: no file of the game is opened. Without the switch this is one look at it, and the start goes on
-       in the order it always had. */
-    {
-        const char* selftest = getenv("SNX_ARCEUS_UPSCALER_SELFTEST");
-        if (selftest && selftest[0]) {
-            status = upscaler_selftest(selftest);
-            goto done;
-        }
     }
     /* the game's errors in its log, where a fatal's "the line before" is: a game's process on Android has no stderr */
     snx_error_sink(log_error_line);

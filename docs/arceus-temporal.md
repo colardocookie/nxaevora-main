@@ -330,10 +330,13 @@ the signs the same way: that needs a test on a device with the library.
 
 ## The upscaler's self-test (`SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>`)
 
-With this set to an adapter's name (`fsr`), the program does not load the game. The mode is taken at the start,
-before the guest's address space is reserved and before the game's code is loaded, on a path of its own. Of the
-game's start it runs only what names the folders, so that its log is the file a report of the run reads. Without
-the switch the start is one look at it and otherwise as before. The mode makes a Vulkan instance and device of its
+With this set to an adapter's name (`fsr`), the program does not load the game. The switch is the first thing the
+start looks at: before its options and their key files, the check for dumps, the menu, the guest's address space
+and the game's code. The mode's own path takes the program's folder and the run's name from the command line,
+names the folders, and makes the log the file a report of the run reads. It opens no window and no file of the
+game. Without the switch the start is that one look and otherwise as before. A run whose device state becomes
+unknown (a submission whose end cannot be waited for) stops using the device at once: the cases left are
+reported as not run and the result is a failure. The mode makes a Vulkan instance and device of its
 own without a window, through the steps the runtime will take with an adapter (`gpu/vk/upscaler_host.c`), runs
 the adapter on a generated scene, writes its lines and ends the process with 0 for a pass. Every line begins with `arceus-upscaler-selftest`. The
 adapter's own lines begin with `arceus-upscaler`.
