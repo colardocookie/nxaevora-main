@@ -1300,7 +1300,11 @@ static void link_try(u32 frame, u64 address, u32 size, u64 signature) {
         q = temporal_link_before(now, link_record(frame - 1), link_record(frame - 2), address, size,
                                  mine ? mine->count : 0, signature, g_t.current.world, &why);
     TemporalBlock* b = link_bind(frame, address, size, g_t.current.world, 1, signature);
-    if (!b) return;
+    if (!b) {
+        /* no room in the record: the links were asked and nothing is known */
+        if (!served) g_t.current.link_why = TEMPORAL_LINK_UNKNOWN;
+        return;
+    }
     if (served) {
         b->served = 1;
         return;
