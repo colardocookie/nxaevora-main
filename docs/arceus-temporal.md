@@ -353,10 +353,19 @@ of the fraction alone costs one more, drawn with jitter and not resolved. Lines 
 Whenever the temporal code is on, the log has lines that start with `arceus-temporal-projection:`: the two
 matrices of the scene camera's block at +0x40 and +0x80 as the game wrote them, with the frame's viewport, the
 block's address and stage and the present, and what `temporal_projection_camera` makes of each (near plane, far
-plane, vertical field of view, whether the depth is reversed) or that it refuses it. They are written when the
+plane and whether it is at infinity, vertical field of view) or the first rule by which it refuses it. They are written when the
 block is first seen and when the matrix at +0x80 changes: eight such events at most, each printing both
 matrices, so sixteen lines at most. Nothing uses the numbers: an
 upscaler has to be told them, and they are to be seen before they are relied on.
+
+What a run showed (two cameras of one place): the matrix at +0x40 is the view, the one at +0x80 the projection
+alone, with the x scale in word 0, the y scale in word 5, A in word 10, exactly -1 in word 11, B in word 14 and
+exact zeros elsewhere. The stored depth is (A z + B) / (-z) for a view depth z that is negative in front of the
+camera: reversed, 1 at the near plane, 0 at the far plane. The far plane is finite: near 0.1 and far 5000 at 50
+degrees in the field, near 0.01 and far 120 at 30 degrees in a first scene. The decoder takes that form and no
+other, without a tolerance: a scale that is not positive, a word 11 that is not exactly -1 (the same matrix
+times a factor too), a word that must be zero and is not, and numbers that the floats handed to a library
+cannot hold are each refused with their reason. It is to be widened only on the evidence of another camera.
 
 ## GPU time of our passes (`SNX_ARCEUS_TEMPORAL_GPUTIME=1`)
 

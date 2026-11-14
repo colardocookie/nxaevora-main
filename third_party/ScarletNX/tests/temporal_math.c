@@ -2113,72 +2113,136 @@ static void test_upscaler_reset(void) {
     assert(temporal_upscaler_reset(0, 4, &last) == 1 && last == 4);
 }
 
-/* The camera's numbers out of a projection matrix, row vectors, memory order. The matrices are written out by
-   hand: sy is 1 / tan(fov / 2), which for 50 degrees is 2.14450692, and sx is that over the aspect. */
+/* The game's projection decoded. A matrix of that form built from near, far and a field of view, by the
+   formulas of the form written out here: y scale 1 / tan(fov / 2), x scale that over the aspect, A = n / (f - n)
+   and B = n f / (f - n), or A = 0 and B = n for a far plane at infinity. */
+static void projection_make(double n, double f, double fov, double aspect, float m[16]) {
+    memset(m, 0, 16 * sizeof *m);
+    m[5] = (float)(1.0 / tan(0.5 * fov));
+    m[0] = (float)(1.0 / tan(0.5 * fov) / aspect);
+    m[10] = isinf(f) ? 0.0f : (float)(n / (f - n));
+    m[11] = -1.0f;
+    m[14] = isinf(f) ? (float)n : (float)(n * f / (f - n));
+}
+/* the stored depth of a point at the distance d in front of the camera, by the form: (A z + B) / (-z), z = -d */
+static double projection_depth(const float m[16], double d) {
+    return ((double)m[10] * -d + (double)m[14]) / d;
+}
 static void test_projection_camera(void) {
-    double near_plane, far_plane, fov;
-    int reversed;
-    const float sy = 2.14450692f, sx = sy * 9.0f / 16.0f;
-    /* reversed with an infinite far plane, the game's kind (depth = 0.1 / distance): w = -z, clip z = 0.1 */
-    const float game[16] = {sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, 0, -1, 0, 0, 0.1f, 0};
-    assert(temporal_projection_camera(game, &near_plane, &far_plane, &fov, &reversed));
-    assert(close_to(near_plane, 0.1, 1e-7) && isinf(far_plane) && reversed && close_to(fov, 0.8726646, 1e-6));
-    /* the same looking down +z, and with y turned: the same numbers */
-    float other[16];
-    memcpy(other, game, sizeof other);
-    other[11] = 1.0f;
-    other[5] = -sy;
-    assert(temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
-    assert(close_to(near_plane, 0.1, 1e-7) && isinf(far_plane) && reversed && close_to(fov, 0.8726646, 1e-6));
-    /* reversed with a far plane at 1000: depth 1 at 0.1 and 0 at 1000 gives m[10] = n / (f - n) and m[14] =
-       n f / (f - n), which are 0.00010001 and 0.10001 */
-    memcpy(other, game, sizeof other);
-    other[10] = 0.00010001f;
-    other[14] = 0.10001f;
-    assert(temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
-    assert(close_to(near_plane, 0.1, 1e-5) && close_to(far_plane, 1000.0, 0.5) && reversed);
-    /* not reversed: depth 0 at 0.1 and 1 at 1000 gives m[10] = -f / (f - n) and m[14] = -n f / (f - n), which
-       are -1.00010001 and -0.10001. And with the far plane at infinity: -1 and -0.1. */
-    other[10] = -1.00010001f;
-    other[14] = -0.10001f;
-    assert(temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
-    assert(close_to(near_plane, 0.1, 1e-5) && close_to(far_plane, 1000.0, 0.5) && !reversed);
-    other[10] = -1.0f;
-    other[14] = -0.1f;
-    assert(temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
-    assert(close_to(near_plane, 0.1, 1e-7) && isinf(far_plane) && !reversed);
-    /* another field of view: 90 degrees has sy 1 */
-    memcpy(other, game, sizeof other);
-    other[5] = 1.0f;
-    assert(temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
-    assert(close_to(fov, 1.5707963, 1e-6));
-    /* Refused: an orthographic matrix (w not from z), an off-centre one, a shear, a w with more in it, a number
-       that is not one, no scale, no depth term, and a depth that never is 0 or 1 in front of the camera. */
+    TemporalProjection p;
+    float m[16];
+    /* The two cameras a run printed (report 20261114-110024-report-84b8be), word for word, and what they are by
+       hand: the field camera near 0.1, far 5000, 50 degrees, the first one near 0.01, far 120, 30 degrees. */
+    const float field[16] = {1.20628512f, 0, 0, 0, 0, 2.14450693f, 0, 0, -0.0f, -0.0f, 2.00004015e-05f, -1, 0, 0,
+                             0.100002006f, 0};
+    const float first[16] = {2.09927869f, 0, 0, 0, 0, 3.7320509f, 0, 0, -0.0f, -0.0f, 8.3340281e-05f, -1, 0, 0,
+                             0.0100008333f, 0};
+    assert(temporal_projection_camera(field, &p) == TEMPORAL_PROJECTION_OK && !p.far_infinite && p.word == -1);
+    assert(close_to(p.near_plane, 0.1, 1e-7) && close_to(p.far_plane, 5000.0, 0.01));
+    assert(close_to(p.fov_y, 50.0 * 3.14159265358979323846 / 180.0, 1e-7));
+    assert(close_to(projection_depth(field, p.near_plane), 1.0, 1e-12));
+    assert(close_to(projection_depth(field, p.far_plane), 0.0, 1e-12));
+    assert(temporal_projection_camera(first, &p) == TEMPORAL_PROJECTION_OK && !p.far_infinite);
+    assert(close_to(p.near_plane, 0.01, 1e-8) && close_to(p.far_plane, 120.0, 1e-4));
+    assert(close_to(p.fov_y, 30.0 * 3.14159265358979323846 / 180.0, 1e-7));
+    /* Round trips: near, far and field of view into the form and out again, with the depth 1 at the near plane
+       and 0 at the far one, for finite far planes and a far plane at infinity, where the depth only approaches 0. */
+    static const double nears[4] = {0.01, 0.1, 0.5, 2.0}, fars[4] = {120.0, 5000.0, 60000.0, INFINITY};
+    static const double fovs[3] = {0.5235987755982988, 0.8726646259971648, 1.5707963267948966};
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++)
+            for (int k = 0; k < 3; k++) {
+                projection_make(nears[i], fars[j], fovs[k], 16.0 / 9.0, m);
+                assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_OK);
+                assert(close_to(p.near_plane, nears[i], 1e-6 * nears[i]) && close_to(p.fov_y, fovs[k], 1e-6));
+                assert(p.far_infinite == isinf(fars[j]));
+                assert(close_to(projection_depth(m, p.near_plane), 1.0, 1e-9));
+                if (isinf(fars[j])) {
+                    assert(isinf(p.far_plane) && projection_depth(m, 1e12) > 0.0 && projection_depth(m, 1e12) < 1e-9);
+                } else {
+                    assert(close_to(p.far_plane, fars[j], 2e-3 * fars[j]));
+                    assert(close_to(projection_depth(m, p.far_plane), 0.0, 1e-9));
+                }
+            }
+    /* Refusals, each by the first rule it breaks, and the word it is. A scale that is not positive, which is a
+       turned axis and another convention, or not finite. */
+    static const float bad_scales[4] = {0.0f, -2.14450693f, NAN, INFINITY};
+    for (int which = 0; which < 2; which++)
+        for (int k = 0; k < 4; k++) {
+            memcpy(m, field, sizeof m);
+            m[which ? 5 : 0] = bad_scales[k];
+            assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_SCALE && p.word == (which ? 5 : 0));
+        }
+    /* word 11 must be exactly -1: the two floats beside it, +1, 0, and the whole matrix doubled */
+    const float beside[5] = {nextafterf(-1.0f, 0.0f), nextafterf(-1.0f, -2.0f), 1.0f, 0.0f, NAN};
+    for (int k = 0; k < 5; k++) {
+        memcpy(m, field, sizeof m);
+        m[11] = beside[k];
+        assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_W && p.word == 11);
+    }
+    for (int i = 0; i < 16; i++) m[i] = field[i] * 2.0f;
+    assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_W);
+    /* word 14 positive and finite, word 10 finite and not negative */
+    static const float bad_offsets[4] = {0.0f, -0.1f, NAN, INFINITY}, bad_slopes[3] = {-2.00004015e-05f, NAN, INFINITY};
+    for (int k = 0; k < 4; k++) {
+        memcpy(m, field, sizeof m);
+        m[14] = bad_offsets[k];
+        assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_OFFSET && p.word == 14);
+    }
+    for (int k = 0; k < 3; k++) {
+        memcpy(m, field, sizeof m);
+        m[10] = bad_slopes[k];
+        assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_SLOPE && p.word == 10);
+    }
+    memcpy(m, field, sizeof m);
+    m[10] = -0.0f; /* minus zero is zero: a far plane at infinity */
+    assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_OK && p.far_infinite && isinf(p.far_plane));
+    /* Every word that must be zero, at the smallest float that is not zero, with either sign, and as no number.
+       Either sign of zero itself is taken. */
+    static const int zero[11] = {1, 2, 3, 4, 6, 7, 8, 9, 12, 13, 15};
+    for (int i = 0; i < 11; i++) {
+        const float tiny = nextafterf(0.0f, 1.0f), wrong[3] = {tiny, -tiny, NAN};
+        for (int k = 0; k < 3; k++) {
+            memcpy(m, field, sizeof m);
+            m[zero[i]] = wrong[k];
+            assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_OTHER && p.word == zero[i]);
+        }
+        memcpy(m, field, sizeof m);
+        m[zero[i]] = -0.0f;
+        assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_OK);
+    }
+    /* the view matrix the same run printed at +0x40: refused at word 11, which is 0 there */
+    const float view[16] = {0.125333071f, 0.00251713023f, 0.992111564f, 0, 0, 0.999996781f, -0.00253713643f, 0,
+                            -0.992114782f, 0.000317987171f, 0.125332713f, 0, 386.492981f, -62.9608231f, -598.443054f,
+                            1};
+    assert(temporal_projection_camera(view, &p) == TEMPORAL_PROJECTION_W && p.word == 11);
+    /* an orthographic matrix has a w that is not from z: refused at word 11 as well */
     const float ortho[16] = {0.01f, 0, 0, 0, 0, 0.01f, 0, 0, 0, 0, 0.001f, 0, 0, 0, 0.5f, 1};
-    assert(!temporal_projection_camera(ortho, &near_plane, &far_plane, &fov, &reversed));
-    static const int touched[10] = {8, 9, 1, 4, 3, 7, 15, 12, 13, 2};
-    for (int i = 0; i < 10; i++) {
-        memcpy(other, game, sizeof other);
-        other[touched[i]] = 0.25f;
-        assert(!temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
-    }
-    static const int needed[4] = {0, 5, 11, 14};
-    for (int i = 0; i < 4; i++) {
-        memcpy(other, game, sizeof other);
-        other[needed[i]] = 0.0f;
-        assert(!temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
-        other[needed[i]] = NAN;
-        assert(!temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
-    }
-    memcpy(other, game, sizeof other);
-    other[14] = -0.1f; /* the depth would be negative in front of the camera */
-    assert(!temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
-    /* what it gives passes the check before a dispatch, for the game's kind */
+    assert(temporal_projection_camera(ortho, &p) == TEMPORAL_PROJECTION_W);
+    /* Planes: with word 10 so large that near comes out as 0 there is nothing to hand on. A field of view of
+       pi, one the floats handed on cannot hold apart from pi, and the smallest near plane a float holds. */
+    memcpy(m, field, sizeof m);
+    m[14] = nextafterf(0.0f, 1.0f);
+    m[10] = 3.0e38f;
+    assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_PLANES);
+    memcpy(m, field, sizeof m);
+    m[5] = nextafterf(0.0f, 1.0f); /* a y scale next to nothing: the field of view is pi */
+    assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_FOV);
+    m[5] = 1e-8f; /* under pi by 2e-8 as a double, and pi or more as the float that is handed on */
+    assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_FLOATS && p.fov_y < 3.14159265358979323846);
+    memcpy(m, field, sizeof m);
+    m[14] = nextafterf(0.0f, 1.0f);
+    m[10] = 0.0f; /* near 1.4e-45 is a float, the smallest: taken, since it is above 0 */
+    assert(temporal_projection_camera(m, &p) == TEMPORAL_PROJECTION_OK && p.far_infinite);
+    /* what the decoder gives for the game's cameras is what the check before a dispatch takes */
     {
         float camera[4];
-        assert(temporal_projection_camera(game, &near_plane, &far_plane, &fov, &reversed));
-        assert(temporal_upscaler_camera(near_plane, far_plane, fov, 1.0 / 60.0, 1, camera));
-        assert(camera[0] == 0.1f && isinf(camera[1]));
+        assert(temporal_projection_camera(field, &p) == TEMPORAL_PROJECTION_OK);
+        assert(temporal_upscaler_camera(p.near_plane, p.far_plane, p.fov_y, 1.0 / 60.0, p.far_infinite, camera));
+        assert(close_to((double)camera[0], 0.1, 1e-7) && close_to((double)camera[1], 5000.0, 0.01));
+        /* and it would not be taken as a far plane at infinity, nor an infinite one as finite */
+        assert(!temporal_upscaler_camera(p.near_plane, p.far_plane, p.fov_y, 1.0 / 60.0, 1, camera));
+        assert(!temporal_upscaler_camera(p.near_plane, (double)INFINITY, p.fov_y, 1.0 / 60.0, 0, camera));
     }
 }
 

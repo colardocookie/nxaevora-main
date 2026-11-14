@@ -521,14 +521,26 @@ static void projection_log(u64 address, u32 size, const char* stage, u32 frame) 
     const float* both[2] = {at40, at80};
     for (int k = 0; k < 2; k++) {
         const float* m = both[k];
-        double near_plane = 0.0, far_plane = 0.0, fov = 0.0;
-        int reversed = 0;
-        const int read = temporal_projection_camera(m, &near_plane, &far_plane, &fov, &reversed);
-        char made[160];
-        if (read)
-            snprintf(made, sizeof made, "near %.9g, far %.9g, field of view %.9g rad (%.4f degrees), depth %s",
-                     near_plane, far_plane, fov, fov * 57.29577951308232, reversed ? "reversed" : "not reversed");
-        else snprintf(made, sizeof made, "refused: not a plain perspective projection as the decoder knows one");
+        static const char* const why[] = {"",
+                                          "word %d, a scale, is not finite and positive",
+                                          "word %d is not exactly -1",
+                                          "word %d is not finite and positive",
+                                          "word %d is not finite, or is negative",
+                                          "word %d must be exactly zero and is not",
+                                          "near is not above 0 or far is not beyond near",
+                                          "the field of view is not above 0 and below pi",
+                                          "the numbers do not pass the check on the floats handed on"};
+        TemporalProjection p;
+        const int read = temporal_projection_camera(m, &p);
+        char made[200], reason[96];
+        if (read == TEMPORAL_PROJECTION_OK)
+            snprintf(made, sizeof made, "near %.9g, far %.9g (%s), field of view %.9g rad (%.4f degrees)",
+                     p.near_plane, p.far_plane, p.far_infinite ? "at infinity" : "finite", p.fov_y,
+                     p.fov_y * 57.29577951308232);
+        else {
+            snprintf(reason, sizeof reason, why[read], p.word);
+            snprintf(made, sizeof made, "refused, not the game's form of projection: %s", reason);
+        }
         LOG("arceus-temporal-projection: present %u, camera block %llx (%s stage, %x bytes bound), viewport %g,%g "
             "%gx%g, matrix at +0x%x in memory order: %.9g %.9g %.9g %.9g | %.9g %.9g %.9g %.9g | %.9g %.9g %.9g "
             "%.9g | %.9g %.9g %.9g %.9g. The decoder: %s\n",

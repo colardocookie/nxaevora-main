@@ -1128,28 +1128,6 @@ static inline int temporal_upscaler_frame(const TemporalRectGate* g, unsigned fr
     if (stamp->fx != g->now.fx || stamp->fy != g->now.fy) return 0;
     return temporal_upscaler_numbers(stamp, viewport, jitter, cut || !temporal_rect_history(g, frame, stamp), out);
 }
-/* The camera's numbers out of a projection matrix in memory order, for row vectors: clip w is z x m[11], clip z
-   is z x m[10] + m[14]. 1 for a plain perspective projection: no shear, no off-centre terms, w from z alone. The
-   depth at the distance d is a + b / d. Near and far are where it is 0 and 1, near the smaller, far infinite
-   when the depth only approaches its value. reversed: near has the depth 1. Not used yet. */
-static inline int temporal_projection_camera(const float m[16], double* near_plane, double* far_plane,
-                                             double* fov_y, int* reversed) {
-    static const int zero[9] = {1, 2, 3, 4, 6, 7, 12, 13, 15};
-    for (int i = 0; i < 16; i++)
-        if (!isfinite(m[i])) return 0;
-    for (int i = 0; i < 9; i++)
-        if (m[zero[i]] != 0.0f) return 0;
-    if (m[8] != 0.0f || m[9] != 0.0f || m[0] == 0.0f || m[5] == 0.0f || m[11] == 0.0f || m[14] == 0.0f) return 0;
-    /* with z = -d or +d by the sign of m[11], the depth is m[10] / m[11] + (m[14] / |m[11]|) / d */
-    const double a = (double)m[10] / (double)m[11], b = (double)m[14] / fabs((double)m[11]);
-    const double at_one = a == 1.0 ? INFINITY : b / (1.0 - a), at_zero = a == 0.0 ? INFINITY : -b / a;
-    if (!(at_one > 0.0) || !(at_zero > 0.0) || at_one == at_zero) return 0;
-    *reversed = at_one < at_zero;
-    *near_plane = *reversed ? at_one : at_zero;
-    *far_plane = *reversed ? at_zero : at_one;
-    *fov_y = 2.0 * atan(1.0 / fabs((double)m[5]));
-    return isfinite(*near_plane) && *near_plane > 0.0 && *fov_y > 0.0;
-}
 /* The camera's numbers and the frame time, checked before every dispatch to an upscaler, on the four floats that
    are handed on (near, far, field of view, seconds), since a double that passes may round to a float that does
    not. 1 when near is positive, the field of view positive and below pi, the frame time positive and finite in
@@ -1170,6 +1148,62 @@ static inline int temporal_upscaler_camera(double near_plane, double far_plane, 
     out[2] = fov_f;
     out[3] = seconds_f;
     return 1;
+}
+/* The game's projection, as its camera block holds it at +0x80 in memory order: x scale in word 0, y scale in
+   word 5, A in word 10, -1 in word 11, B in word 14, nothing else. Clip z is A z + B and clip w is -z for a view
+   depth z that is negative in front of the camera, so the stored depth is (A z + B) / (-z): reversed, 1 at the
+   near plane. Seen in a run for two cameras. Any other form is refused, to be widened only on evidence. */
+enum {
+    TEMPORAL_PROJECTION_OK,
+    TEMPORAL_PROJECTION_SCALE,  /* word 0 or word 5 is not finite and positive (a turned axis is another convention) */
+    TEMPORAL_PROJECTION_W,      /* word 11 is not exactly -1: another form, or the same times a factor */
+    TEMPORAL_PROJECTION_OFFSET, /* word 14 is not finite and positive */
+    TEMPORAL_PROJECTION_SLOPE,  /* word 10 is not finite, or negative */
+    TEMPORAL_PROJECTION_OTHER,  /* a word that must be zero is not exactly zero: shear, off-centre, w from x or y */
+    TEMPORAL_PROJECTION_PLANES, /* near is not above 0, or far is not beyond near */
+    TEMPORAL_PROJECTION_FOV,    /* the field of view is not above 0 and below pi */
+    TEMPORAL_PROJECTION_FLOATS  /* the numbers do not pass the check on the floats that are handed on */
+};
+typedef struct {
+    double near_plane, far_plane, fov_y; /* far is infinite when word 10 is 0 */
+    int far_infinite;                    /* the decision a context is made with */
+    int word;                            /* for a refusal by one word: which */
+} TemporalProjection;
+/* The first rule a matrix breaks, in the order above, or OK with the camera's numbers. No tolerance: the game's
+   zeros are exact and its word 11 is exactly -1. The arithmetic goes through c = |word 11| all the same, so a
+   later widening cannot leave a wrong formula behind. The numbers must also pass temporal_upscaler_camera on
+   the narrowed floats, with a frame time that is not the projection's and is taken as a sixtieth. */
+static inline int temporal_projection_camera(const float m[16], TemporalProjection* out) {
+    static const int zero[11] = {1, 2, 3, 4, 6, 7, 8, 9, 12, 13, 15};
+    float handed[4];
+    *out = (TemporalProjection){0.0, 0.0, 0.0, 0, -1};
+    for (int k = 0; k < 2; k++)
+        if (!isfinite(m[k ? 5 : 0]) || !(m[k ? 5 : 0] > 0.0f)) {
+            out->word = k ? 5 : 0;
+            return TEMPORAL_PROJECTION_SCALE;
+        }
+    out->word = 11;
+    if (!(m[11] == -1.0f)) return TEMPORAL_PROJECTION_W;
+    out->word = 14;
+    if (!isfinite(m[14]) || !(m[14] > 0.0f)) return TEMPORAL_PROJECTION_OFFSET;
+    out->word = 10;
+    if (!isfinite(m[10]) || m[10] < 0.0f) return TEMPORAL_PROJECTION_SLOPE;
+    for (int i = 0; i < 11; i++)
+        if (!(m[zero[i]] == 0.0f)) {
+            out->word = zero[i];
+            return TEMPORAL_PROJECTION_OTHER;
+        }
+    out->word = -1;
+    const double c = fabs((double)m[11]);
+    out->near_plane = (double)m[14] / (c + (double)m[10]);
+    out->far_infinite = m[10] == 0.0f;
+    out->far_plane = out->far_infinite ? INFINITY : (double)m[14] / (double)m[10];
+    out->fov_y = 2.0 * atan(c / (double)m[5]);
+    if (!(out->near_plane > 0.0) || !(out->far_plane > out->near_plane)) return TEMPORAL_PROJECTION_PLANES;
+    if (!(out->fov_y > 0.0) || !(out->fov_y < 3.14159265358979323846)) return TEMPORAL_PROJECTION_FOV;
+    if (!temporal_upscaler_camera(out->near_plane, out->far_plane, out->fov_y, 1.0 / 60.0, out->far_infinite, handed))
+        return TEMPORAL_PROJECTION_FLOATS;
+    return TEMPORAL_PROJECTION_OK;
 }
 /* An upscaler's contexts. A context is made for one configuration, which is everything its creation was given:
    created, then what it must run once is recorded by its prepare step and submitted by the runtime, and when that
