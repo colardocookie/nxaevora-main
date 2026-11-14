@@ -458,5 +458,19 @@ static inline uint64_t selftest_checksum(const void* bytes, size_t n, uint64_t s
     return sum;
 }
 static inline int selftest_same(double difference) { return isfinite(difference) && difference <= SELFTEST_SAME; }
+/* A context that went through a change of size against a fresh one given the same frames: the two pictures'
+   mean absolute difference is at most this budget, half a per cent of the range. A declared number, fixed
+   before any such data existed. */
+#define SELFTEST_RESIZED 0.005
+/* apart: the resized context's picture against the fresh one's. noise: two fresh contexts on the same frames
+   against each other. control: a fresh context that was fed wrongly on purpose, against the fresh one. The
+   control must differ by more than the budget and more than the noise, or the comparison has not been shown to
+   be able to fail and the case decides nothing (BLIND). */
+static inline int selftest_resized(double apart, double noise, double control) {
+    if (!isfinite(apart) || !isfinite(noise) || !isfinite(control) || apart < 0.0 || noise < 0.0)
+        return SELFTEST_BLIND;
+    if (!(control > SELFTEST_RESIZED) || !(control > noise)) return SELFTEST_BLIND;
+    return apart <= SELFTEST_RESIZED ? SELFTEST_PASS : SELFTEST_FAIL;
+}
 static inline int selftest_apart(double difference) { return isfinite(difference) && difference >= SELFTEST_APART; }
 #endif

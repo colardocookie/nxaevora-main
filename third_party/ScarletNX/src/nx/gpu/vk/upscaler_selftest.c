@@ -404,10 +404,11 @@ static void offset(unsigned k, unsigned n, double out[2]) {
    holds a colour, a depth and a vector that are none of the scene's, for an output of size[2] by size[3]. move:
    the background's move a frame in render pixels (x right, y up). patch: 1 for a nearer patch that moves another
    way. cut: 1 when the last frame shows the other pattern. up: 1 for a viewport with a negative height. edges: 1
-   for the edge picture in place of the background's patterns. */
+   for the edge picture in place of the background's patterns. ahead: 1 for a wrong run made on purpose, whose
+   images are drawn with the offset of the frame after while the jitter reported for them is the frame's own. */
 static const int SIZES[4] = {RENDER_W, RENDER_H, OUT_W, OUT_H};
 static int inputs_build(Inputs* in, const int size[4], int w, int h, int x, int y, int up, const double move[2],
-                        int patch, int cut, int edges) {
+                        int patch, int cut, int edges, int ahead) {
     const int RW = size[0], RH = size[1];
     memset(in, 0, sizeof *in);
     in->w = w;
@@ -432,7 +433,7 @@ static int inputs_build(Inputs* in, const int size[4], int w, int h, int x, int 
     for (int i = 0; i < in->frames; i++) {
         SelftestFrame* f = &in->scene[i];
         double px[2];
-        offset((unsigned)i, (unsigned)in->offsets, px);
+        offset((unsigned)(i + (ahead ? 1 : 0)), (unsigned)in->offsets, px);
         f->pattern = edges ? SELFTEST_PATTERN_EDGES : cut_at >= 0 && i >= cut_at;
         f->out = (SelftestViewport){0, up ? in->oh : 0, in->ow, up ? -in->oh : in->oh};
         f->jitter[0] = 2.0 * px[0] / RW;
@@ -468,12 +469,17 @@ static int inputs_build(Inputs* in, const int size[4], int w, int h, int x, int 
                 motion[4 * at + 2] = 0;
                 motion[4 * at + 3] = selftest_half(z == SELFTEST_NEAR ? 1.0 : 0.0);
             }
+        if (ahead) { /* the images are made: from here the frame says it had its own offset */
+            offset((unsigned)i, (unsigned)in->offsets, px);
+            f->jitter[0] = 2.0 * px[0] / RW;
+            f->jitter[1] = 2.0 * px[1] / RH;
+        }
     }
     return 1;
 }
 static int inputs_make(Inputs* in, const int size[4], int w, int h, int x, int y, int up, const double move[2],
                        int patch, int cut) {
-    return inputs_build(in, size, w, h, x, y, up, move, patch, cut, 0);
+    return inputs_build(in, size, w, h, x, y, up, move, patch, cut, 0, 0);
 }
 
 static void inputs_free(Inputs* in) {
@@ -1011,17 +1017,20 @@ static int resize(int up) {
                                 .depth_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .motion_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
-    Inputs small, big;
+    Inputs small, big, wrong;
     Session s;
     double *output = malloc(size), *previous = malloc(size), *reference = malloc(size), *scaled = malloc(size);
+    double *fresh = malloc(size), *again = malloc(size), *control = malloc(size);
     u8* regions = malloc((size_t)BIG[2] * BIG[3]);
     SelftestSettling settling = {{0.0, 0.0}, {0, 0}};
     int evaluated = 0;
     /* everything starts empty, and only what was made is freed */
     memset(&small, 0, sizeof small);
     memset(&big, 0, sizeof big);
+    memset(&wrong, 0, sizeof wrong);
     memset(&s, 0, sizeof s);
-    int ok = !not_run("case 4", up) && output && previous && reference && scaled && regions &&
+    int ok = !not_run("case 4", up) && output && previous && reference && scaled && regions && fresh && again &&
+             control &&
              inputs_make(&small, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0) &&
              inputs_make(&big, BIG, BIG[0], BIG[1], 0, 0, up, still, 0, 0) && session_open(&s, &small, &traits);
     for (int i = 0; ok && i < 12; i++) ok = frame_run(&s, &small, i, &CONFIGURED, 0, output) >= 0;
@@ -1054,14 +1063,42 @@ static int resize(int up) {
            "the first cycle %.6f, over the last %.6f: %s\n", up ? "up" : "down", error, plainly,
         beats ? "PASS" : "FAIL", first, last, settles ? "PASS" : "FAIL");
     session_close(&s);
+    /* The picture after the change against a fresh context's, given the same frames at the new sizes: the same
+       offsets in the same phase, the reset on its first frame, the same configuration. A second fresh context
+       gives the noise. The control is a fresh context whose images are one offset ahead of the jitter reported
+       for them: it must differ, or the comparison could not have failed (selftest_resized). */
+    int same = SELFTEST_BLIND;
+    if (ok) {
+        const int ran = run(&big, &CONFIGURED, 0, fresh, NULL, NULL, NULL, NULL) &&
+                        run(&big, &CONFIGURED, 0, again, NULL, NULL, NULL, NULL) &&
+                        inputs_build(&wrong, BIG, BIG[0], BIG[1], 0, 0, up, still, 0, 0, 0, 1) &&
+                        run(&wrong, &CONFIGURED, 0, control, NULL, NULL, NULL, NULL);
+        const double apart = ran ? difference(&big, output, fresh, regions, SELFTEST_BACKGROUND) : NAN;
+        const double noise = ran ? difference(&big, fresh, again, regions, SELFTEST_BACKGROUND) : NAN;
+        const double off = ran ? difference(&big, control, fresh, regions, SELFTEST_BACKGROUND) : NAN;
+        same = ran ? selftest_resized(apart, noise, off) : SELFTEST_FAIL;
+        LOG(ST "case 4 %s: after the change, the picture against a fresh context's on the same frames %.6f (at "
+               "most %.3f). Two fresh contexts against each other %.6f. The control, images one offset ahead of "
+               "the reported jitter, against the fresh one %.6f (must be over %.3f and over the noise): %s\n",
+            up ? "up" : "down", apart, SELFTEST_RESIZED, noise, off, SELFTEST_RESIZED,
+            !ran                     ? "FAIL (a run could not be made)"
+            : same == SELFTEST_PASS  ? "PASS"
+            : same == SELFTEST_BLIND ? "FAIL (the control did not differ enough, or a number is not one: nothing "
+                                       "is decided)"
+                                     : "FAIL");
+    }
     inputs_free(&small);
     inputs_free(&big);
+    inputs_free(&wrong);
+    free(fresh);
+    free(again);
+    free(control);
     free(output);
     free(previous);
     free(reference);
     free(scaled);
     free(regions);
-    return counted && beats && settles;
+    return counted && beats && settles && same == SELFTEST_PASS;
 }
 
 /* The edge case: the jitter's signs, on a still grey picture with two edges. Seven pictures of the same frozen
@@ -1105,7 +1142,7 @@ static int edge_case(int up) {
     int ok = !not_run("edge case", up) && reference && regions;
     memset(&in, 0, sizeof in);
     for (int k = 0; k < PICTURES; k++) ok = (picture[k] = malloc(size)) != NULL && ok;
-    ok = ok && inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1);
+    ok = ok && inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1, 0);
     if (ok) {
         /* the images are the ones named before any adapter was looked for, or the case does not run */
         const u64 sums[3] = {selftest_checksum(in.colour, (size_t)in.frames * texels * 4, SELFTEST_CHECKSUM_START),
@@ -1181,7 +1218,7 @@ static int edges_announce(void) {
     for (int up = 1; up >= 0 && ok; up--) {
         Inputs in;
         const size_t pixels = (size_t)RENDER_W * RENDER_H;
-        ok = inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1);
+        ok = inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1, 0);
         double* reference = ok ? malloc(sizeof(double) * 3 * OUT_W * OUT_H) : NULL;
         if (!reference) {
             LOG(ST "edge case %s: the images could not be made: FAIL\n", up ? "up" : "down");

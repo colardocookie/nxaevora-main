@@ -2692,6 +2692,25 @@ static void test_selftest_edges(void) {
                                         SELFTEST_EDGE_BOTH));
         assert(selftest_edge_undecided(SELFTEST_EDGE_NUMBERS));
     }
+    /* Case 4's picture comparison: a resized context against a fresh one. Within the budget of 0.005 it passes,
+       the budget itself included. The control must be over the budget and over the noise, or nothing is
+       decided, however close the two pictures are. Numbers that are not ones decide nothing. */
+    assert(selftest_resized(0.0, 0.0, 0.02) == SELFTEST_PASS);
+    assert(selftest_resized(0.005, 0.0001, 0.02) == SELFTEST_PASS);
+    assert(selftest_resized(0.0051, 0.0001, 0.02) == SELFTEST_FAIL);
+    assert(selftest_resized(0.1, 0.0, 0.2) == SELFTEST_FAIL);
+    assert(selftest_resized(0.0, 0.0, 0.005) == SELFTEST_BLIND && selftest_resized(0.0, 0.0, 0.0) == SELFTEST_BLIND);
+    assert(selftest_resized(0.001, 0.03, 0.02) == SELFTEST_BLIND);
+    assert(selftest_resized(0.001, 0.02, 0.02) == SELFTEST_BLIND);
+    assert(selftest_resized(0.001, 0.019, 0.02) == SELFTEST_PASS);
+    assert(selftest_resized(0.1, 0.03, 0.02) == SELFTEST_BLIND); /* far apart, and still nothing decided */
+    assert(selftest_resized(NAN, 0.0, 0.02) == SELFTEST_BLIND);
+    assert(selftest_resized(0.0, NAN, 0.02) == SELFTEST_BLIND);
+    assert(selftest_resized(0.0, 0.0, NAN) == SELFTEST_BLIND);
+    assert(selftest_resized(0.0, 0.0, INFINITY) == SELFTEST_BLIND);
+    assert(selftest_resized(INFINITY, 0.0, 0.02) == SELFTEST_BLIND);
+    assert(selftest_resized(-0.001, 0.0, 0.02) == SELFTEST_BLIND);
+    assert(selftest_resized(0.0, -0.001, 0.02) == SELFTEST_BLIND);
     /* the checksum: the published values of FNV-1a for nothing, "a" and "foobar", and it can be carried on */
     assert(selftest_checksum("", 0, SELFTEST_CHECKSUM_START) == 0xcbf29ce484222325ull);
     assert(selftest_checksum("a", 1, SELFTEST_CHECKSUM_START) == 0xaf63dc4c8601ec8cull);
