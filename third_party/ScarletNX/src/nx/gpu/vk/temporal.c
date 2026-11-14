@@ -981,8 +981,15 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
     const u32 offsets = g_t.rect ? g_t.offsets : JITTERS, index = g_vk_present % offsets;
     if (g_t.rect) {
         if (!rect_accepted(g_vk_present + 1)) return 0;
-        /* no jitter is staged for an upscaler unless a context is ready for this frame */
-        if (upscaler_on() && !upscaler_jittered(g_vk_present + 1)) return 0;
+        /* No jitter is staged for an upscaler unless a context is ready for this frame. What the draw takes is
+           noted all the same, by value, so that the hook can confirm the frame before a context is settled. */
+        if (upscaler_on() && !upscaler_jittered(g_vk_present + 1)) {
+            float taken[0xC0 / 4];
+            gmem_read(address, taken, sizeof taken);
+            temporal_upscaler_used(&g_u.used, g_vk_present + 1, taken + 0x80 / 4);
+            temporal_upscaler_used(&g_u.used_view, g_vk_present + 1, taken);
+            return 0;
+        }
     } else {
         if (g_t.gate.decided_at != g_vk_present + 1 && !jitter_decide(g_vk_present + 1)) return 0;
         if (!temporal_gate_jitter(&g_t.gate, g_vk_present + 1)) return 0;
@@ -2561,26 +2568,34 @@ void vk_temporal_upscaler_poll(void) {
             "upscaler\n", TEMPORAL_UPSCALER_UNREAD);
 }
 
-/* What the recycle noted is acted on here, where the runtime records as usual (the gate's draw, the hook). known:
-   this frame's configuration is known and is g_u.wanted, which a completed context is held against. It is then
-   published, or goes unused when the frames have moved on, and the one it replaces is queued for destruction.
-   With an unknown configuration nothing is published. A stop keeps the context, never used and never freed. */
-static void upscaler_settle(u32 frame, int known) {
-    /* the recorder's mark is read here, context on its way or not, before anything is published or is ready */
-    const int failed = vk_rec_submit_failed();
-    const int noted = temporal_upscaler_noted(g_u.pending ? g_u.noted : TEMPORAL_UPSCALER_WAIT, failed);
-    SnxUpscaler* context = g_u.pending;
-    if (noted == TEMPORAL_UPSCALER_WAIT || (noted == TEMPORAL_UPSCALER_COMPLETED && !known)) return;
+/* At every place where the runtime records as usual (the gate's draw, the hook), before anything else of the
+   upscaler: the recorder's mark is read, context on its way or not, and a stop the recycle noted is acted on.
+   Either is a stop for the session: the context on its way is kept, never used and never freed. 1 when the
+   upscaler may go on. */
+static int upscaler_guard(u32 frame) {
+    const int noted = temporal_upscaler_noted(g_u.pending ? g_u.noted : TEMPORAL_UPSCALER_WAIT, vk_rec_submit_failed());
+    if (noted != TEMPORAL_UPSCALER_STOP) return !g_u.health.off;
     g_u.pending = NULL;
     g_u.noted = TEMPORAL_UPSCALER_WAIT;
-    if (noted == TEMPORAL_UPSCALER_STOP) {
-        /* the poll's STOP is the outcome STOPPED: nothing is published and nothing is freed */
-        if (!g_u.health.off)
-            upscaler_outcome(frame, 0, TEMPORAL_UPSCALER_STOPPED,
-                             g_u.unread >= TEMPORAL_UPSCALER_UNREAD ? "the timeline could not be read eight times"
-                                                                    : "a submission did not run as recorded");
-        return;
-    }
+    /* the poll's STOP is the outcome STOPPED: nothing is published and nothing is freed */
+    if (!g_u.health.off)
+        upscaler_outcome(frame, 0, TEMPORAL_UPSCALER_STOPPED,
+                         g_u.unread >= TEMPORAL_UPSCALER_UNREAD ? "the timeline could not be read eight times"
+                                                                : "a submission did not run as recorded");
+    return 0;
+}
+
+/* The one place a completed context is published or let go, and it takes the configuration this frame is
+   confirmed to have: at the gate's draw the one decided there, at the hook the one made from the frame's own
+   colour target, the projection its draws were given and its whole-target state. That is what the frames want
+   now. A context made for another goes unused, and the one in use stays. Without such a key nothing settles. */
+static void upscaler_settle(u32 frame, const TemporalUpscalerConfig* confirmed) {
+    if (!upscaler_guard(frame)) return;
+    g_u.wanted = *confirmed;
+    if (!g_u.pending || g_u.noted != TEMPORAL_UPSCALER_COMPLETED) return;
+    SnxUpscaler* context = g_u.pending;
+    g_u.pending = NULL;
+    g_u.noted = TEMPORAL_UPSCALER_WAIT;
     switch (temporal_upscaler_completed(&g_u.contexts, &g_u.wanted)) {
     case TEMPORAL_UPSCALER_RETIRE:
         if (g_u.live) vk_defer_call(upscaler_destroy, g_u.live);
@@ -2664,10 +2679,10 @@ static int upscaler_decide(u32 frame, int accepted) {
     g_u.decided_at = frame;
     g_u.decided = config;
     g_u.known = known;
-    /* This frame's configuration is what the frames want now. Only then is a completed context held against
-       it, so one made for frames that have moved on is not published over the one in use. */
-    if (known) g_u.wanted = config;
-    upscaler_settle(frame, known);
+    /* A completed context is held against this frame's configuration, read above, and with an unknown one
+       nothing is published: only the mark is read. */
+    if (known) upscaler_settle(frame, &config);
+    else upscaler_guard(frame);
     g_u.decision = temporal_upscaler_decide(&g_u.health, accepted, whole, known, &g_u.contexts, &config);
     temporal_upscaler_decided(&g_u.tally, g_u.decision);
     return g_u.decision == TEMPORAL_UPSCALER_JITTER;
@@ -2733,10 +2748,17 @@ static void upscaler_warm(u32 frame, Surf* scene, Surf* depth, int steady) {
     TemporalUpscalerConfig seen;
     TemporalProjection projection;
     u32 flags = 0;
-    if (g_u.health.off || g_u.decided_at != frame || g_u.decision != TEMPORAL_UPSCALER_NOT_READY || !steady) return;
+    if (g_u.health.off || g_u.decided_at != frame || !steady) return;
+    /* This frame is confirmed first: the whole target, the projection its draws took (the decision's, bit for
+       bit, and the same view), and the key from them and the frame's own colour target. Only then is a
+       completed context settled, against that key. */
     if (!temporal_upscaler_whole(&g_t.rect_gate.now)) return;
-    /* no draw was given a jittered copy in this frame, so the projection is the decision's own, by value */
-    if (!upscaler_key(depth, &colour, g_u.decided_projection, &seen, &projection, &flags)) return;
+    if (!temporal_upscaler_used_same(&g_u.used, frame, g_u.decided_projection) ||
+        !temporal_upscaler_used_same(&g_u.used_view, frame, g_u.decided_view))
+        return;
+    if (!upscaler_key(depth, &colour, g_u.used.m, &seen, &projection, &flags)) return;
+    upscaler_settle(frame, &seen);
+    if (g_u.health.off || g_u.decision != TEMPORAL_UPSCALER_NOT_READY) return;
     if (!temporal_upscaler_config_same(&g_u.decided, &seen)) return;
     if (!temporal_upscaler_must_create(&g_u.contexts, &seen)) return;
     const SnxUpscalerCreate make = {.sizes = {scene->sw, scene->sh, scene->sw, scene->sh, scene->sw, scene->sh},
@@ -2817,11 +2839,17 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         skip = "a draw took a camera block that was not the decided projection with jitter";
     else if (!upscaler_key(depth, &colour, g_u.used.m, &seen, &projection, &flags))
         skip = "a part of the configuration is not known at the hook";
-    else if (!temporal_upscaler_hook(g_u.decision, &g_u.decided, &seen, &g_u.contexts) || !g_u.live)
-        skip = "the configuration is not the one the frame was decided with";
-    else if (g_t.offsets != 8) skip = "the jitter does not have eight offsets";
-    else if (!g_t.depth_zero_to_one || g_t.depth_translate != 0.0f || g_t.depth_scale != 1.0f)
-        skip = "the stored depth is not the projection's own";
+    /* the frame is confirmed: a context that completed since the decision is settled against this key, and
+       only then is the ready one asked for */
+    if (!skip) {
+        upscaler_settle(frame, &seen);
+        if (g_u.health.off) skip = "the upscaler stopped";
+        else if (!temporal_upscaler_hook(g_u.decision, &g_u.decided, &seen, &g_u.contexts) || !g_u.live)
+            skip = "the configuration is not the one the frame was decided with";
+        else if (g_t.offsets != 8) skip = "the jitter does not have eight offsets";
+        else if (!g_t.depth_zero_to_one || g_t.depth_translate != 0.0f || g_t.depth_scale != 1.0f)
+            skip = "the stored depth is not the projection's own";
+    }
     if (skip) {
         upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_SKIPPED, skip);
         return;
@@ -2991,7 +3019,7 @@ void vk_temporal_before(u64 fs0_hash) {
         g_u.colour = temporal_upscaler_colour(frame, (unsigned)scene->f.vk, scene->layers, scene->base_layer,
                                               scene->group != NULL, (int)scene->sw, (int)scene->sh);
         if (!g_u.colour.layers && upscaler_jittered(frame)) {
-            upscaler_settle(frame, 0);
+            upscaler_guard(frame);
             upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_SKIPPED, "the scene colour is layered or part of an array");
             return;
         }
@@ -3005,8 +3033,9 @@ void vk_temporal_before(u64 fs0_hash) {
         return;
     }
     g_t.ran_at = frame;
-    /* what a recycle noted of a context on its way is acted on here, where the runtime records as usual */
-    if (upscaler_on()) upscaler_settle(frame, g_u.decided_at == frame && g_u.known);
+    /* With an upscaler only the recorder's mark is read here. A context that completed is settled further down,
+       when this frame's own configuration is confirmed (upscaler_warm, upscaler_resolve). */
+    if (upscaler_on()) upscaler_guard(frame);
     /* Under the rectangle's gate nothing of ours runs unless the frame was accepted at its first draw and
        confirmed by the scene block since, with the G-buffer's viewport the one decided on: no vectors, no
        resolve, no sharpen, no numbers, no view, and no history for the frame after. */

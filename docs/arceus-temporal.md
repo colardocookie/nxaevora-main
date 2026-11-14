@@ -511,8 +511,11 @@ A frame, in order:
    every hook, context on its way or not, before anything is published or counts as ready.
 2. A frame left without jitter only because no context is ready gets one made at our passes' place: created,
    and its prepare recorded through `vk_rec_direct`. A frame's recycle notes when that submission has completed,
-   and the context comes into use at the next gate's draw or hook, held against what the frames want then: one
-   made for frames that have moved on goes unused. Nothing else of ours runs in such a frame.
+   and the context comes into use at the next gate's draw or hook, held against the configuration that frame
+   is confirmed to have: at the gate's draw the one decided there, at the hook the one made from the frame's
+   own colour target, the projection its draws took and its whole-target state. One made for frames that have
+   moved on goes unused and the one in use stays. Where a frame has no confirmed configuration nothing is
+   published, and only the recorder's mark is read. Nothing else of ours runs in such a frame.
 3. In a frame drawn with jitter the vector pass runs as always. What the hook sees (this frame's own colour
    target, the depth, the projection, eight offsets, a stored depth that is the projection's own) must be what
    the frame was decided with, and every number must pass its check. The projection is the one the frame's

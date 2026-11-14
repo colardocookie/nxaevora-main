@@ -2636,6 +2636,29 @@ static void test_upscaler_wiring(void) {
         temporal_upscaler_used(&used, 9, other);
         assert(used.mixed);
     }
+    /* The same order at the hook. The decision predicted configuration A, which has no ready context, and the
+       frame was left without jitter. A recycle then notes that the context made for A has completed. The hook
+       sees that the frame as drawn is B, whose context is in use: settled against B, the completed one goes
+       unused and B stays. Settled against the decision's A it would replace the one in use. */
+    {
+        const TemporalUpscalerConfig a = {3840, 2160, 3840, 2160, 3840, 2160, 3};
+        const TemporalUpscalerConfig b = {3840, 2160, 3840, 2160, 3840, 2160, 4};
+        const TemporalUpscalerHealth on = {0};
+        unsigned unread = 0;
+        TemporalUpscalerContexts c = {0};
+        temporal_upscaler_created(&c, &b, 1);
+        assert(temporal_upscaler_completed(&c, &b) == TEMPORAL_UPSCALER_PUBLISHED);
+        temporal_upscaler_created(&c, &a, 1);
+        assert(temporal_upscaler_decide(&on, 1, 1, 1, &c, &a) == TEMPORAL_UPSCALER_NOT_READY);
+        const int noted = temporal_upscaler_noted(temporal_upscaler_poll(1, 20, 0, 20, &unread), 0);
+        assert(noted == TEMPORAL_UPSCALER_COMPLETED);
+        TemporalUpscalerContexts by_decision = c;
+        assert(temporal_upscaler_completed(&c, &b) == TEMPORAL_UPSCALER_STALE);
+        assert(temporal_upscaler_ready(&c, &b) && !temporal_upscaler_ready(&c, &a) && !c.pending);
+        assert(temporal_upscaler_decide(&on, 1, 1, 1, &c, &b) == TEMPORAL_UPSCALER_JITTER);
+        assert(temporal_upscaler_completed(&by_decision, &a) == TEMPORAL_UPSCALER_RETIRE);
+        assert(!temporal_upscaler_ready(&by_decision, &b));
+    }
     /* The colour a decision counts on: only the frame before's, seen at its hook. */
     {
         const TemporalUpscalerColour seen = {100, 122, 1, 3840, 2160};
