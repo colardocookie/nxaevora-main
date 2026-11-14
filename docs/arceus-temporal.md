@@ -586,29 +586,34 @@ features. Everything below is log only and under that option only. Without the o
 line is printed.
 
 A report of a run keeps the lines that begin with `arceus-`. So what a run under the layer has is said under the
-prefix `arceus-validation: `, each fact in a line of its own: that the layer is enabled (or that it is not
-installed), whether the synchronisation checks were asked for and the instance is made with them (and if not,
-which of these it was: the layer's list does not hold the extension, the list stayed incomplete, a call failed,
-or there was no memory for the list), and whether the message callback is ready or could not be made, with the
-result. That no "not installed" warning is printed says nothing about a callback that works: a run counts as
-made under the layer only with those three lines. What the layer then does with the checks cannot be read back.
+prefix `arceus-validation: `, each fact in a line of its own: that the layer is enabled (or why it is not: only the
+loader's list of layers read whole without it means "not installed", while a list that stayed incomplete, a call that
+failed or a list there was no memory for mean that it is not known), whether the synchronisation checks were asked for
+and the instance is made with them (and if not, which of these it was: the layer's list does not hold the extension,
+the list stayed incomplete, a call failed, or there was no memory for the list), and whether the message callback is
+ready or could not be made, with the result. That no "not installed" warning is printed says nothing about a callback
+that works: a run counts as made under the layer only with those three lines. What the layer then does with the checks
+cannot be read back.
 
 Each callback of the layer keeps the line it always had (`vulkan validation: ...`). Under the new prefix
 (`validation_lines.h`, host-tested):
 
-- A callback is printed whole on one line when it is the first of its rule, the first that names a variable's
+- A callback is printed on one line when it is the first of its rule, the first that names a variable's
   name not seen before, or has no match of the pattern at all (those up to 64, counted beyond). So a new rule or
   a new name is printed when it first occurs, however late in the run. Bytes outside printable ASCII and
   backslashes are written as the self-test's marks. A line holds 1800 bytes at most after the marks, and a text
-  that does not fit is cut with the cut said and what is in the line counted.
+  that does not fit is cut with the cut said and what is in the line counted. Callbacks printed whole and
+  callbacks printed with a cut are two counts. A callback without a match is lost only when it really is not
+  printed: one that is the first of a new rule is printed past the 64 too.
 - Rules are told apart by their whole name and their number, 32 of them with names up to 127 characters.
   Variable names are found by the layer's own pattern in the raw text (the word variable and a quoted name), 64
   of them up to 63 characters, in the first 1 MiB of a text. They are names of variables by a pattern. A new
   name is "a variable's name not seen before", never a new image, and a name does not show whose image is bound.
-- Every callback is counted, in 64 bits. A counter that reaches its largest value stays there and says so. Count
-  lines are written when the count reaches 1, 2, 4, 8 and so on, with the total, every limit met so far, and
-  each listed rule's count on a line of its own. The game has no orderly end at which a last count could be
-  printed, so the last count line of a log is within a factor of two of the callbacks received.
+- Every callback is counted, in 64 bits. A counter that reaches its largest value stays there and says so, and so does
+  the inherited counter of messages, which has 32 bits. Count lines are written when the count reaches 1, 2, 4, 8 and
+  so on, with the total, the two counts of printed callbacks, every limit met so far, and each listed rule's count on
+  a line of its own. The game has no orderly end at which a last count could be printed, so the last count line of a
+  log is within a factor of two of the callbacks received.
 - Each way something can be lost prints a line of its own (`LIMIT MET, first at callback N: ...`) the first time
   it happens: a rule without a name, a rule's name too long, the rules table full, a variable's name too long,
   the names table full, a quoted name that does not close, a text not looked through to its end, the first

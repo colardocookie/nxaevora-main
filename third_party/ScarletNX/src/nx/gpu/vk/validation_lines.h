@@ -32,8 +32,10 @@ enum {
     VALIDATION_LOSSES
 };
 typedef struct {
-    uint64_t callbacks, printed;   /* received, and printed whole on a line of their own */
+    uint64_t callbacks;            /* received */
+    uint64_t printed, printed_cut; /* printed on a line of their own: whole, and with a cut */
     uint64_t unmatched, unlisted;  /* without a match of the pattern, and of a rule that is not in the table */
+    uint64_t unmatched_printed;    /* of those without a match, the ones that were printed */
     uint64_t next;                 /* the count at which the next count line is due: 1, 2, 4, 8 and so on */
     unsigned rules, names;
     struct {
@@ -152,10 +154,12 @@ static inline int validation_lines_names(ValidationLines* v, const char* text, s
 static inline void validation_lines_counts(ValidationLines* v, ValidationEmit emit, void* user) {
     char line[VALIDATION_LINE + 1];
     size_t at = (size_t)snprintf(line, sizeof line,
-                                 "%llu callbacks so far, %llu of them printed whole, %u rules and %u variable names "
-                                 "listed. Written at 1, 2, 4, 8 and so on: the last such line of a log is within a "
-                                 "factor of two of the callbacks received. Limits met:",
-                                 (unsigned long long)v->callbacks, (unsigned long long)v->printed, v->rules, v->names);
+                                 "%llu callbacks so far, %llu of them printed whole and %llu printed with a cut, %u "
+                                 "rules and %u variable names listed. Written at 1, 2, 4, 8 and so on: the last "
+                                 "such line of a log is within a factor of two of the callbacks received. Limits "
+                                 "met:",
+                                 (unsigned long long)v->callbacks, (unsigned long long)v->printed,
+                                 (unsigned long long)v->printed_cut, v->rules, v->names);
     int any = 0;
     for (int k = 0; k < VALIDATION_LOSSES; k++) {
         if (!v->loss[k]) continue;
@@ -222,16 +226,17 @@ static inline void validation_lines_callback(ValidationLines* v, const char* nam
         }
     }
     const int fresh = validation_lines_names(v, text ? text : "", length, &matched, emit, user);
-    int unmatched_shown = 0;
+    /* Printed on a line of its own when it is the first of its rule, the first that names a variable's name not
+       seen before, or has no match of the pattern (those up to a count of printed ones). Whether it is printed
+       is decided first: a callback without a match is lost only when it really is not printed. */
+    const int unmatched_shown = !matched && v->unmatched_printed < VALIDATION_UNMATCHED;
+    const int shown = first || fresh || unmatched_shown;
     if (!matched) {
         validation_lines_up(v, &v->unmatched, emit, user);
-        unmatched_shown = v->unmatched <= VALIDATION_UNMATCHED;
-        if (!unmatched_shown) validation_lines_lost(v, VALIDATION_UNPRINTED, emit, user);
+        if (shown) validation_lines_up(v, &v->unmatched_printed, emit, user);
+        else validation_lines_lost(v, VALIDATION_UNPRINTED, emit, user);
     }
-    /* Printed whole when it is the first of its rule, the first that names a variable's name not seen before,
-       or has no match of the pattern (those up to a count). */
-    if (first || fresh || unmatched_shown) {
-        validation_lines_up(v, &v->printed, emit, user);
+    if (shown) {
         size_t at = (size_t)snprintf(line, sizeof line, "callback %llu, %s%s%s%s%s, rule ",
                                      (unsigned long long)v->callbacks, first ? "the first of its rule" : "",
                                      first && (fresh || unmatched_shown) ? " and " : "",
@@ -250,8 +255,10 @@ static inline void validation_lines_callback(ValidationLines* v, const char* nam
         if (put < length || !whole) {
             snprintf(line + at, sizeof line - at, " [CUT: the first %zu of %s%zu bytes of the text are in this line]",
                      put, whole ? "" : "more than ", length);
+            validation_lines_up(v, &v->printed_cut, emit, user);
             validation_lines_lost(v, VALIDATION_CUT, emit, user);
-        }
+        } else
+            validation_lines_up(v, &v->printed, emit, user);
         emit(user, line);
     }
     if (v->callbacks == v->next) {
@@ -261,7 +268,8 @@ static inline void validation_lines_callback(ValidationLines* v, const char* nam
 }
 
 /* The lock is a word of its own beside the state, never inside it: no copy of the state ever holds a lock. It
-   covers the tables, the counters and the inherited counter of messages, which goes up under it. */
+   covers the tables, the counters and the inherited counter of messages, which goes up under it. That counter
+   has 32 bits and other code reads it: it stops at its largest value too, and that is said as a loss. */
 static inline void validation_lines_lock(int* lock) {
     while (__atomic_exchange_n(lock, 1, __ATOMIC_ACQUIRE)) {
     }
@@ -270,22 +278,57 @@ static inline void validation_lines_unlock(int* lock) { __atomic_store_n(lock, 0
 static inline void validation_lines_said(int* lock, ValidationLines* v, uint32_t* inherited, const char* name,
                                          int32_t number, const char* text, ValidationEmit emit, void* user) {
     validation_lines_lock(lock);
-    if (inherited) ++*inherited;
+    const int stuck = inherited && (*inherited == UINT32_MAX || ++*inherited == UINT32_MAX);
     validation_lines_callback(v, name, number, text, emit, user);
+    if (stuck) validation_lines_lost(v, VALIDATION_SATURATED, emit, user);
     validation_lines_unlock(lock);
 }
 
-/* The status of a run under the validation option, each fact in a line of its own. layer: the layer is on.
-   checks: its synchronisation checks were asked for and the instance is made with them, else why not in words,
-   with the result of the last call when one was made (has_result). callback: 1 ready, 0 could not be made
-   (with its result's name and number), -1 none was asked for. */
-static inline void validation_lines_status(int layer, int checks, const char* why, int has_result,
-                                           const char* result, int number, int callback, const char* callback_result,
-                                           int callback_number, ValidationEmit emit, void* user) {
+/* How a list was read for a name, for the status lines: the caller's own states, in this order. Only a list
+   read whole without the name shows that the name is not there. */
+enum {
+    VALIDATION_LIST_HAS,
+    VALIDATION_LIST_LACKS,
+    VALIDATION_LIST_PART,
+    VALIDATION_LIST_COUNT_FAILED,
+    VALIDATION_LIST_LIST_FAILED,
+    VALIDATION_LIST_NO_MEMORY
+};
+/* The status of a run under the validation option, each fact in a line of its own. layer: how the loader's list
+   of layers was read for the layer, with the result of the last call (said only when a call was made and
+   failed, or the list stayed incomplete). checks: the layer's synchronisation checks were asked for and the
+   instance is made with them, else why not in words, with the result of the last call when one was made
+   (has_result). callback: 1 ready, 0 could not be made (with its result's name and number), -1 none was asked
+   for. */
+static inline void validation_lines_status(int layer, const char* layer_result, int layer_number, int checks,
+                                           const char* why, int has_result, const char* result, int number,
+                                           int callback, const char* callback_result, int callback_number,
+                                           ValidationEmit emit, void* user) {
     char line[512];
-    if (!layer) {
-        emit(user, "the layer VK_LAYER_KHRONOS_validation is NOT enabled: it is not installed. No message of the "
-                   "layer will be seen in this run");
+    if (layer != VALIDATION_LIST_HAS) {
+        static const char* const how[] = {"",
+                                          "it is not installed: the loader's list of layers, read whole, does not "
+                                          "hold it",
+                                          "the loader's list of layers stayed incomplete after three tries and the "
+                                          "part read does not hold it, so whether it is installed is not known",
+                                          "the call for the count of the loader's layers failed, so whether it is "
+                                          "installed is not known",
+                                          "the call for the loader's list of layers failed, so whether it is "
+                                          "installed is not known",
+                                          "there was no memory for the loader's list of layers, so the call for it "
+                                          "was not made and whether it is installed is not known"};
+        const int k = layer >= VALIDATION_LIST_LACKS && layer <= VALIDATION_LIST_NO_MEMORY ? layer : 0;
+        if (!k)
+            snprintf(line, sizeof line, "the layer VK_LAYER_KHRONOS_validation is NOT enabled, and why was not kept "
+                                        "(%d). No message of the layer will be seen in this run", layer);
+        else if (k == VALIDATION_LIST_LACKS || k == VALIDATION_LIST_NO_MEMORY)
+            snprintf(line, sizeof line, "the layer VK_LAYER_KHRONOS_validation is NOT enabled: %s. No message of the "
+                                        "layer will be seen in this run", how[k]);
+        else
+            snprintf(line, sizeof line, "the layer VK_LAYER_KHRONOS_validation is NOT enabled: %s (the last call's "
+                                        "result %s, %d). No message of the layer will be seen in this run",
+                     how[k], layer_result, layer_number);
+        emit(user, line);
         return;
     }
     emit(user, "the layer VK_LAYER_KHRONOS_validation is enabled");

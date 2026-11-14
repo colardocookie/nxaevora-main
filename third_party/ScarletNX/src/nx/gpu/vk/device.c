@@ -63,6 +63,12 @@ u32 g_vk_validation_messages;
 /* With the validation option, log only: what a report of a run keeps, under a prefix of its own
    (validation_lines.h). The lock is a word beside the state. It covers the tables, the counters and the
    counter above, which goes up under it. A callback can come before the status lines are written. */
+_Static_assert(VALIDATION_LIST_HAS == SNX_VK_LAYER_HAS && VALIDATION_LIST_LACKS == SNX_VK_LAYER_LACKS &&
+                   VALIDATION_LIST_PART == SNX_VK_LAYER_PART &&
+                   VALIDATION_LIST_COUNT_FAILED == SNX_VK_LAYER_COUNT_FAILED &&
+                   VALIDATION_LIST_LIST_FAILED == SNX_VK_LAYER_LIST_FAILED &&
+                   VALIDATION_LIST_NO_MEMORY == SNX_VK_LAYER_NO_MEMORY,
+               "the states of a list's reading, as the status lines take them");
 static ValidationLines g_validation;
 static int g_validation_lock;
 static void validation_line(void* user, const char* line) {
@@ -128,7 +134,8 @@ static int create_instance(void) {
                                           "call for it was not made"};
         /* a result is printed only for a call that was made: with no memory for the list none was */
         validation_lines_lock(&g_validation_lock);
-        validation_lines_status(made.validation, made.synchronization, why[made.synchronization_why],
+        validation_lines_status(made.validation_why, snx_vk_result_str(made.validation_result),
+                                (int)made.validation_result, made.synchronization, why[made.synchronization_why],
                                 made.synchronization_why != SNX_VK_LAYER_NO_MEMORY,
                                 snx_vk_result_str(made.synchronization_result), (int)made.synchronization_result,
                                 !made.messenger_asked ? -1 : made.messenger_result == VK_SUCCESS,

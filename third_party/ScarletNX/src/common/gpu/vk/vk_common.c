@@ -47,6 +47,39 @@ bool snx_vk_has_instance_extension(const char* name) {
     return found;
 }
 
+int snx_vk_layer_search(const char* name, VkResult* result) {
+    VkLayerProperties* list = NULL;
+    uint32_t n = 0;
+    VkResult r = VK_INCOMPLETE;
+    int found = 0, why = SNX_VK_LAYER_PART;
+    /* as snx_vk_layer_extension: an incomplete list is asked again, three times at most */
+    for (int tries = 0; tries < 3 && r == VK_INCOMPLETE; tries++) {
+        free(list);
+        list = NULL;
+        n = 0;
+        r = vkEnumerateInstanceLayerProperties(&n, NULL);
+        if (r < 0) {
+            why = SNX_VK_LAYER_COUNT_FAILED;
+            break;
+        }
+        list = calloc(n ? n : 1, sizeof *list);
+        if (!list) { /* the list's call is not made: r stays the count's result, and why says what happened */
+            why = SNX_VK_LAYER_NO_MEMORY;
+            break;
+        }
+        r = vkEnumerateInstanceLayerProperties(&n, list);
+        if (r < 0) {
+            why = SNX_VK_LAYER_LIST_FAILED;
+            break;
+        }
+        for (uint32_t i = 0; i < n; i++) found |= !strcmp(list[i].layerName, name);
+        if (found || r == VK_SUCCESS) break;
+    }
+    free(list);
+    *result = r;
+    if (found) return SNX_VK_LAYER_HAS;
+    return r == VK_SUCCESS && why != SNX_VK_LAYER_NO_MEMORY ? SNX_VK_LAYER_LACKS : why;
+}
 int snx_vk_layer_extension(const char* layer, const char* name, VkResult* result) {
     VkExtensionProperties* list = NULL;
     uint32_t n = 0;
@@ -93,7 +126,11 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
     }
     const char* layers[1];
     uint32_t nlayers = 0;
-    if (info->validation && snx_vk_has_layer("VK_LAYER_KHRONOS_validation")) {
+    /* One look at the loader's list decides, and its answer is kept: a list that failed, or that stayed
+       incomplete without the layer, is not a layer that is not installed. */
+    if (info->validation)
+        out->validation_why = snx_vk_layer_search("VK_LAYER_KHRONOS_validation", &out->validation_result);
+    if (info->validation && out->validation_why == SNX_VK_LAYER_HAS) {
         layers[nlayers++] = "VK_LAYER_KHRONOS_validation";
         ext[next++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
         out->validation = true;

@@ -61,7 +61,7 @@ int main(void) {
     for (size_t t = 0; t < THREADS; t++) assert(!pthread_create(&threads[t], NULL, callbacks, (void*)t));
     /* the status lines go out under the same lock, in the middle of the callbacks */
     validation_lines_lock(&g_lock);
-    validation_lines_status(1, 1, "", 0, "", 0, 1, "", 0, emit, NULL);
+    validation_lines_status(VALIDATION_LIST_HAS, "", 0, 1, "", 0, "", 0, 1, "", 0, emit, NULL);
     validation_lines_unlock(&g_lock);
     for (size_t t = 0; t < THREADS; t++) assert(!pthread_join(threads[t], NULL));
     validation_lines_lock(&g_lock);

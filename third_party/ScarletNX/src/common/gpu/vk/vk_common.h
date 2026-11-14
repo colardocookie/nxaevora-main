@@ -33,7 +33,11 @@ typedef struct {
 typedef struct {
     VkInstance instance;
     VkDebugUtilsMessengerEXT messenger;
-    bool validation;  /* the layer is on: false when it was asked for and is not installed */
+    bool validation;  /* the layer is on: false when it was asked for and was not found */
+    /* when it was asked for and is not on, why: SNX_VK_LAYER_* of the loader's list, and the last call's result.
+       Only "the whole list does not hold it" means that it is not installed. */
+    int validation_why;
+    VkResult validation_result;
     bool portability; /* VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR */
     /* the synchronisation checks were asked for and the instance was made with them. What the layer then does
        cannot be read back. When they were wanted and not asked for, why: SNX_VK_LAYER_* below, and the result
@@ -50,6 +54,8 @@ typedef struct {
 enum { SNX_VK_LAYER_HAS, SNX_VK_LAYER_LACKS, SNX_VK_LAYER_PART, SNX_VK_LAYER_COUNT_FAILED, SNX_VK_LAYER_LIST_FAILED,
        SNX_VK_LAYER_NO_MEMORY };
 int snx_vk_layer_extension(const char* layer, const char* name, VkResult* result);
+/* the same answers for a layer's own name in the loader's list of layers */
+int snx_vk_layer_search(const char* name, VkResult* result);
 VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* out);
 void snx_vk_instance_free(SnxVkInstance* instance);
 

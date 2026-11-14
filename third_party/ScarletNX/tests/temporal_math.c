@@ -2318,24 +2318,46 @@ static void test_validation_lines(void) {
     assert(v.callbacks == 1 && v.rules == 1 && v.printed == 1 && v.unmatched == 1);
     assert(lines_count("callback 1, the first of its rule and no variable's name found in it by the pattern, rule "
                        "VUID-early (7), 36 bytes of text: a message while the instance is made\n") == 1);
-    assert(lines_count("1 callbacks so far, 1 of them printed whole, 1 rules and 0 variable names listed.") == 1);
+    assert(lines_count("1 callbacks so far, 1 of them printed whole and 0 printed with a cut, 1 rules and 0 variable "
+                       "names listed.") == 1);
     assert(lines_count("Limits met: none\n") == 1);
     assert(lines_count("at 1 callbacks, rule 1 of 1: 1 callbacks of VUID-early (7)\n") == 1);
-    validation_lines_status(1, 1, "", 0, "", 0, 1, "", 0, lines_emit, NULL);
+    validation_lines_status(VALIDATION_LIST_HAS, "", 0, 1, "", 0, "", 0, 1, "", 0, lines_emit, NULL);
     assert(lines_count("the layer VK_LAYER_KHRONOS_validation is enabled\n") == 1);
     assert(lines_count("its synchronisation checks were asked for and the instance is made with them\n") == 1);
     assert(lines_count("the message callback is ready\n") == 1);
     /* the status in its other states */
     lines_reset(&v);
-    validation_lines_status(0, 0, "", 0, "", 0, -1, "", 0, lines_emit, NULL);
-    assert(g_lines_n == 1 && lines_count("is NOT enabled: it is not installed") == 1);
+    /* Only a list read whole without the layer says "not installed". The other ways of not finding it say that
+       it is not known, with a result where a call was made and failed or the list stayed incomplete. */
+    validation_lines_status(VALIDATION_LIST_LACKS, "VK_SUCCESS", 0, 0, "", 0, "", 0, -1, "", 0, lines_emit, NULL);
+    assert(g_lines_n == 1 && !lines_count("result") && !lines_count("not known"));
+    assert(lines_count("is NOT enabled: it is not installed: the loader's list of layers, read whole, does not hold "
+                       "it. No message of the layer will be seen in this run\n") == 1);
+    {
+        static const char* const words[6] = {"", "", "stayed incomplete after three tries",
+                                             "the call for the count of the loader's layers failed",
+                                             "the call for the loader's list of layers failed", "no memory"};
+        for (int state = VALIDATION_LIST_PART; state <= VALIDATION_LIST_NO_MEMORY; state++) {
+            lines_reset(&v);
+            validation_lines_status(state, "VK_RESULT_X", -7, 0, "", 0, "", 0, -1, "", 0, lines_emit, NULL);
+            assert(g_lines_n == 1 && lines_count(words[state]) == 1 && !lines_count("it is not installed"));
+            assert(lines_count("is NOT enabled: ") == 1 && lines_count("whether it is installed is not known") == 1);
+            assert(lines_count("(the last call's result VK_RESULT_X, -7)") == (state != VALIDATION_LIST_NO_MEMORY));
+            assert(lines_count("No message of the layer will be seen in this run\n") == 1);
+        }
+        lines_reset(&v);
+        validation_lines_status(77, "x", 0, 0, "", 0, "", 0, -1, "", 0, lines_emit, NULL);
+        assert(g_lines_n == 1 && lines_count("is NOT enabled, and why was not kept (77)") == 1);
+    }
     lines_reset(&v);
-    validation_lines_status(1, 0, "the call failed", 1, "VK_ERROR_X", -3, 0, "VK_ERROR_Y", -4, lines_emit, NULL);
+    validation_lines_status(VALIDATION_LIST_HAS, "", 0, 0, "the call failed", 1, "VK_ERROR_X", -3, 0, "VK_ERROR_Y", -4,
+                            lines_emit, NULL);
     assert(g_lines_n == 3 && lines_count("were NOT asked for (VK_EXT_validation_features): the call failed (the last "
                                          "call's result VK_ERROR_X, -3)\n") == 1);
     assert(lines_count("the message callback could NOT be made (VK_ERROR_Y, -4)") == 1);
     lines_reset(&v);
-    validation_lines_status(1, 0, "no memory", 0, "unused", 9, -1, "", 0, lines_emit, NULL);
+    validation_lines_status(VALIDATION_LIST_HAS, "", 0, 0, "no memory", 0, "unused", 9, -1, "", 0, lines_emit, NULL);
     assert(lines_count("(VK_EXT_validation_features): no memory\n") == 1 && !lines_count("result"));
     assert(lines_count("no message callback was asked for") == 1);
 
@@ -2351,7 +2373,8 @@ static void test_validation_lines(void) {
     assert(lines_count("callback 251, the first naming a variable's name not seen before, rule VUID-format (1), 25 "
                        "bytes of text: at variable \"rw_late\" now\n") == 1);
     assert(lines_count("callback ") == 2 + 9 * 0 && lines_count(" callbacks so far") == 9); /* 1 to 256 */
-    assert(lines_count("\n256 callbacks so far, 2 of them printed whole, 1 rules and 2 variable names listed.") == 1);
+    assert(lines_count("\n256 callbacks so far, 2 of them printed whole and 0 printed with a cut, 1 rules and 2 "
+                       "variable names listed.") == 1);
     assert(lines_count("at 256 callbacks, rule 1 of 1: 256 callbacks of VUID-format (1)\n") == 1);
     assert(!lines_count("LIMIT MET") && lines_count("Limits met: none") == 9);
     /* a new rule on known names is printed when it first occurs, and the same name with another number is
@@ -2371,14 +2394,25 @@ static void test_validation_lines(void) {
     assert(lines_count("LIMIT MET, first at callback 65: a callback without a match of the pattern that is not "
                        "printed any more.") == 1 && lines_count("LIMIT MET") == 1);
     /* the count line that follows repeats the state, the one before did not have it */
-    assert(lines_count("\n64 callbacks so far, 64 of them printed whole, 1 rules and 0 variable names listed. Written "
-                       "at 1, 2, 4, 8 and so on: the last such line of a log is within a factor of two of the "
-                       "callbacks received. Limits met: none\n") == 1);
+    assert(lines_count("\n64 callbacks so far, 64 of them printed whole and 0 printed with a cut, 1 rules and 0 "
+                       "variable names listed. Written at 1, 2, 4, 8 and so on: the last such line of a log is "
+                       "within a factor of two of the callbacks received. Limits met: none\n") == 1);
     for (int i = 70; i < 128; i++)
         validation_lines_callback(&v, "VUID-plain", 3, "nothing named here", lines_emit, NULL);
-    assert(lines_count("\n128 callbacks so far, 64 of them printed whole") == 1);
+    assert(lines_count("\n128 callbacks so far, 64 of them printed whole and 0 printed with a cut") == 1);
     assert(lines_count("Limits met: a callback without a match of the pattern that is not printed any more (64 "
                        "times).\n") == 1 && lines_count("LIMIT MET") == 1);
+    /* A callback without a match past the 64 that is the first of a new rule is printed, and so it is not
+       lost: no line of a limit, no count of one. The next one of that rule is not printed and is. */
+    lines_reset(&v);
+    for (int i = 0; i < 64; i++) validation_lines_callback(&v, "VUID-plain", 3, "nothing named here", lines_emit, NULL);
+    validation_lines_callback(&v, "VUID-new", 4, "nothing named here either", lines_emit, NULL);
+    assert(v.unmatched == 65 && v.printed == 65 && v.unmatched_printed == 65 && !v.loss[VALIDATION_UNPRINTED]);
+    assert(!lines_count("LIMIT MET") && lines_count("callback 65, the first of its rule, rule VUID-new (4)") == 1);
+    validation_lines_callback(&v, "VUID-new", 4, "nothing named here either", lines_emit, NULL);
+    assert(v.unmatched == 66 && v.printed == 65 && v.loss[VALIDATION_UNPRINTED] == 1);
+    assert(lines_count("LIMIT MET, first at callback 66: a callback without a match of the pattern that is not "
+                       "printed any more.") == 1);
 
     /* the rules table: no name, a name too long, and a 33rd rule. Each said once, at its first occurrence. */
     lines_reset(&v);
@@ -2452,7 +2486,9 @@ static void test_validation_lines(void) {
             big[i] = i % 50 == 49 ? '\n' : i % 50 == 48 ? '\\' : i % 50 == 47 ? (char)0xc3 : 'q';
         big[5000] = 0;
         validation_lines_callback(&v, "VUID-big", 1, big, lines_emit, NULL);
-        assert(v.loss[VALIDATION_CUT] == 1);
+        /* printed, with a cut: it is not among the ones printed whole, and the count line names both */
+        assert(v.loss[VALIDATION_CUT] == 1 && v.printed == 0 && v.printed_cut == 1);
+        assert(lines_count("\n1 callbacks so far, 0 of them printed whole and 1 printed with a cut, 1 rules") == 1);
         assert(lines_count("LIMIT MET, first at callback 1: a printed line that was cut.") == 1);
         assert(lines_count("\\n") >= 20 && lines_count("\\\\") >= 20 && lines_count("\\xc3") >= 20);
         const char* cut = strstr(g_lines, " [CUT: the first ");
@@ -2483,6 +2519,9 @@ static void test_validation_lines(void) {
         /* a second cut line is not said again, and is counted */
         validation_lines_callback(&v, "VUID-big2", 1, big, lines_emit, NULL);
         assert(v.loss[VALIDATION_CUT] == 2 && lines_count("LIMIT MET") == 1 && lines_count(" [CUT: ") == 2);
+        assert(v.printed == 0 && v.printed_cut == 2);
+        validation_lines_callback(&v, "VUID-small", 1, "short", lines_emit, NULL);
+        assert(v.printed == 1 && v.printed_cut == 2);
     }
     /* a text longer than what is looked through: said, and its line says more than */
     lines_reset(&v);
@@ -2539,7 +2578,18 @@ static void test_validation_lines(void) {
         int lock = 0;
         uint32_t inherited = 41;
         validation_lines_said(&lock, &v, &inherited, "VUID-l", 1, "variable \"a\"", lines_emit, NULL);
-        assert(inherited == 42 && v.callbacks == 1 && lock == 0);
+        assert(inherited == 42 && v.callbacks == 1 && lock == 0 && !lines_count("LIMIT MET"));
+        /* the inherited counter has 32 bits: it stops at its largest value, said once, and does not wrap */
+        inherited = UINT32_MAX - 1;
+        validation_lines_said(&lock, &v, &inherited, "VUID-l", 1, "variable \"a\"", lines_emit, NULL);
+        assert(inherited == UINT32_MAX && v.loss[VALIDATION_SATURATED] == 1);
+        assert(lines_count("LIMIT MET, first at callback 2: a counter that stopped at its largest value.") == 1);
+        validation_lines_said(&lock, &v, &inherited, "VUID-l", 1, "variable \"a\"", lines_emit, NULL);
+        assert(inherited == UINT32_MAX && v.loss[VALIDATION_SATURATED] == 2 && lines_count("LIMIT MET") == 1);
+        assert(v.callbacks == 3 && lock == 0);
+        /* without an inherited counter there is nothing to stop */
+        validation_lines_said(&lock, &v, NULL, "VUID-l", 1, "variable \"a\"", lines_emit, NULL);
+        assert(v.callbacks == 4 && v.loss[VALIDATION_SATURATED] == 2);
     }
 }
 
