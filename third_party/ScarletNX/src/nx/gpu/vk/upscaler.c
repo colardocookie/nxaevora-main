@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The upscaler interface (upscaler.h) is not used yet. This file only makes the build read the header, so that it
+/* The upscaler's interface (upscaler.h) is not used yet. This file only makes the build read the header, so that it
    stays a header that compiles. It defines nothing. */
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/upscaler.h"

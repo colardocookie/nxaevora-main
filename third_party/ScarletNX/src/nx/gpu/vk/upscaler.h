@@ -2,17 +2,20 @@
    Copyright 2026 the NXAevora contributors */
 #ifndef SNX_VK_UPSCALER_H
 #define SNX_VK_UPSCALER_H
-/* The interface between the runtime and an upscaler library (FSR, XeSS, DLSS). A library is a separate file that
-   the runtime loads by name. Nothing of any SDK is in this repository and nothing is linked into the runtime.
-   NOT USED YET: no library is loaded and nothing calls this. It states the contract a library is written to.
-   The numbers a frame carries are made by temporal_upscaler_frame (temporal_math.h). */
+/* The interface between the runtime and an upscaler's adapter (FSR, XeSS, DLSS). An adapter turns these steps into
+   one SDK's calls. NOT USED YET: no adapter exists, nothing is loaded and nothing calls this. It states the
+   contract an adapter is written to. The numbers a frame carries are made by temporal_upscaler_frame
+   (temporal_math.h). */
+/* Where an adapter lives is the SDK's licence's matter, not this interface's. For FSR and XeSS, whose headers are
+   MIT, it can be part of the runtime and load the SDK's own library by name. For DLSS it is a separate module
+   that the runtime loads. No SDK's library is ever in this repository: the user supplies it. */
 #include <stdint.h>
 #ifndef VULKAN_CORE_H_
 #include <vulkan/vulkan_core.h>
 #endif
 
 #define SNX_UPSCALER_ABI 1
-/* the one symbol a library exports: it returns its functions for this ABI number, or NULL */
+/* the one symbol a separate module exports: it returns its functions for this ABI number, or NULL */
 #define SNX_UPSCALER_ENTRY "snx_upscaler_api"
 
 enum {
@@ -43,8 +46,10 @@ enum {
     SNX_UPSCALER_FAR_PLANE_INFINITE = 1 << 4   /* far_plane may be INFINITY */
 };
 
-/* The images are the runtime's own. Depth is a single channel 32 bit float image, never a depth and stencil view.
-   The output has a 16 bit float format. The runtime turns it into the scene's format itself. */
+/* The images are the runtime's own or the game's. Depth is the game's depth image where the adapter's SDK takes its
+   format, and depth_format says which that is. An adapter that cannot take it refuses at create, and the runtime
+   then gives a copy in a single channel 32 bit float image. The output has a 16 bit float format, which the
+   runtime turns into the scene's format itself. */
 typedef struct {
     uint32_t render_w, render_h; /* the largest render rectangle */
     uint32_t image_w, image_h;   /* the size of the colour, depth and motion images, which hold the rectangle */

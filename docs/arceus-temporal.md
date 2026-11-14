@@ -303,15 +303,21 @@ fetch whose centre is outside the rectangle the history was made in, the rejecti
 height, the numbers' lattice, the jitter's offsets and the texture level shift. The game's corner of the target is
 a parameter. The renderer still uses the whole-target gate, so under a scale below 1 it refuses every frame.
 
-`gpu/vk/upscaler.h` is the contract for an upscaler library (FSR, XeSS, DLSS): a separate file that the runtime
-would load by name. Its steps: `instance_extensions` without any handle, `device_extensions` with the instance
-and the physical device, `create` of a context for one configuration (sizes, formats, the inputs' properties,
-the device) without work for the GPU, `prepare`, which records what the context must run once into a command
-buffer that the runtime submits, `evaluate` and `destroy`. A context may be used only when its preparation's
-submission has completed. A change of anything in the configuration is a new context, and until that one is ready
-the frames of the new kind are left as drawn. If the instance or the device
-cannot be made with a library's extensions it is made again without them and the upscaler is off. No library is
-loaded, nothing calls it, and nothing of any SDK is in this repository. The numbers a frame would carry are made by `temporal_upscaler_frame`:
+`gpu/vk/upscaler.h` is the contract for an upscaler's adapter (FSR, XeSS, DLSS), which turns its steps into one
+SDK's calls. For FSR and XeSS, whose headers are MIT, the adapter can be part of the runtime and load the SDK's own
+library by name. For DLSS it is a separate module. The depth it is given is the game's own where the SDK takes
+that format, and a copy in a 32 bit float image only where it does not.
+
+Its steps: `instance_extensions` without any handle, `device_extensions` with the instance and the physical
+device, `create` of a context for one configuration (sizes, formats, the inputs' properties, the device) without
+work for the GPU, `prepare`, which records what the context must run once into a command buffer that the runtime
+submits, `evaluate` and `destroy`. A context may be used only when its preparation's submission has completed. A
+change of anything in the configuration is a new context, and until that one is ready the frames of the new kind
+are left as drawn. If the instance or the device cannot be made with an adapter's extensions it is made again
+without them and the upscaler is off. No adapter exists yet, nothing is loaded, nothing calls the interface, and
+no SDK's library is in this repository.
+
+The numbers a frame would carry are made by `temporal_upscaler_frame`:
 - the vector is where the pixel's point was a frame ago less where it is now, in pixels, x to the right and y down
   the image, without jitter. A motion texel times minus the whole target's size gives it, also for a rectangle.
 - the jitter is the shift of the drawn image against the unjittered one in pixels of the rectangle, taken through
