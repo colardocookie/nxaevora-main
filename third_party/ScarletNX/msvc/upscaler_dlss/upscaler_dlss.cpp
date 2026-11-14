@@ -87,6 +87,15 @@ int folders() {
     DWORD cut = 0;
     for (DWORD i = 0; i < n; i++)
         if (g_folder[i] == L'\\' || g_folder[i] == L'/') cut = i;
+    // Only a folder of the form X:\folder is taken: a drive's root, a share or any other form is refused
+    const wchar_t drive = g_folder[0];
+    const int letter = (drive >= L'A' && drive <= L'Z') || (drive >= L'a' && drive <= L'z');
+    if (!letter || g_folder[1] != L':' || (g_folder[2] != L'\\' && g_folder[2] != L'/') || cut <= 2) {
+        utf8(g_folder, shown, sizeof shown);
+        say("arceus-upscaler: dlss is not available: the module is at %s, and only a module in a folder below a "
+            "drive's root (X:\\folder) is taken", shown);
+        return 0;
+    }
     g_folder[cut] = 0;
     swprintf(g_data, 32768, L"%ls\\snx-ngx-data", g_folder);
     utf8(g_data, shown, sizeof shown);
