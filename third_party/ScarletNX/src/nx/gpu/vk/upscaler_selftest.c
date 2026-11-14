@@ -56,6 +56,9 @@ static struct {
     int messenger_result; /* what making its message callback gave, when that failed */
     int validation;
     int limit_asked; /* the layer's limit of repeated messages was asked off at the instance's creation */
+    /* The synchronisation checks: 1 when they were asked for with the layer's extension for them enabled. Else
+       which way not (SNX_VK_LAYER_*, 6 for no room in our own list) and the last call's result. */
+    int checks_asked, checks_why, checks_result;
     unsigned messages;
     u64 generation; /* of the configuration: raised for every context made with other flags or formats */
     /* A submission's end is not known, or a command buffer could not be reset. From then on nothing is recorded,
@@ -376,6 +379,18 @@ static int device_make(void) {
     }
     free(have);
     if (g.validation) instance_names[instance_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    /* The synchronisation checks are asked for through an extension the layer itself lists, and only with it
+       enabled. A list that does not hold it, that cannot be read or that stays incomplete asks for nothing. */
+    if (g.validation) {
+        VkResult result = VK_SUCCESS;
+        g.checks_why = snx_vk_layer_extension(layers[0], VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, &result);
+        g.checks_result = (int)result;
+        if (g.checks_why == SNX_VK_LAYER_HAS && instance_count < 32) {
+            instance_names[instance_count++] = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME;
+            g.checks_asked = 1;
+        } else if (g.checks_why == SNX_VK_LAYER_HAS)
+            g.checks_why = 6;
+    }
     if (!vk_upscaler_instance_extensions(g.api, instance_names, &instance_count, 32)) {
         LOG(ST "FAIL: the adapter's instance extensions could not be taken\n");
         return 0;
@@ -384,6 +399,7 @@ static int device_make(void) {
     VkValidationFeaturesEXT checks = {.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
                                       .enabledValidationFeatureCount = 1,
                                       .pEnabledValidationFeatures = enables};
+    const void* instance_chain = g.checks_asked ? &checks : NULL;
     /* Log only: the layer stops reporting a message id after ten repeats. It is asked not to, through its
        settings at the instance's creation, where the layer offers that extension. What was asked cannot be
        read back: the lines at the end say what the run shows. */
@@ -406,7 +422,9 @@ static int device_make(void) {
         const int has = snx_vk_layer_extension(layers[0], VK_EXT_LAYER_SETTINGS_EXTENSION_NAME, &result);
         if (has == SNX_VK_LAYER_HAS && instance_count < 32) {
             instance_names[instance_count++] = VK_EXT_LAYER_SETTINGS_EXTENSION_NAME;
-            checks.pNext = &settings;
+            /* behind the checks' structure when that is in the chain, else the chain's only node */
+            if (g.checks_asked) checks.pNext = &settings;
+            else instance_chain = &settings;
             g.limit_asked = 1;
             LOG(ST "the layer's limit of repeated messages: asked off (enable_message_limit = false)\n");
         } else if (has == SNX_VK_LAYER_HAS)
@@ -427,7 +445,7 @@ static int device_make(void) {
                                    .pApplicationName = "scarletnx upscaler self-test",
                                    .apiVersion = VK_API_VERSION_1_2};
     const VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-                                      .pNext = g.validation ? &checks : NULL,
+                                      .pNext = instance_chain,
                                       .pApplicationInfo = &app,
                                       .enabledLayerCount = g.validation ? 1 : 0,
                                       .ppEnabledLayerNames = layers,
@@ -540,7 +558,27 @@ static int device_make(void) {
         return 0;
     g.staging_bytes = mapped;
     LOG(ST "device %s, adapter %s, validation layer %s\n", props.deviceName, g.api->name,
-        g.validation ? "on, with synchronisation checks" : validation_missing());
+        !g.validation     ? validation_missing()
+        : g.checks_asked  ? "on, its synchronisation checks asked for with the layer's extension for them enabled"
+                          : "on, WITHOUT its synchronisation checks: they were not asked for");
+    if (g.validation && !g.checks_asked) {
+        static const char* const why[] = {"",
+                                          "the layer's list of extensions, read whole, does not hold it",
+                                          "the layer's list of extensions stayed incomplete after three tries, so "
+                                          "whether it holds it is not known",
+                                          "the call for the count of the layer's extensions failed",
+                                          "the call for the list of the layer's extensions failed",
+                                          "there was no memory for the list of the layer's extensions, so the "
+                                          "call for it was not made",
+                                          "the layer lists it, and the self-test's list of instance extensions "
+                                          "has no room for one more"};
+        if (g.checks_why == SNX_VK_LAYER_NO_MEMORY || g.checks_why == 6)
+            LOG(ST "the synchronisation checks (%s): %s\n", VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME,
+                why[g.checks_why]);
+        else
+            LOG(ST "the synchronisation checks (%s): %s (the last call's result %d)\n",
+                VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, why[g.checks_why], g.checks_result);
+    }
     return 1;
 }
 

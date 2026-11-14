@@ -652,7 +652,11 @@ The cases, each run with a viewport of negative and of positive height (render 3
    at most 0.01 apart. Without the flag it must be at least 0.05 apart, or the control saw nothing.
 6. The content at 40, 30 of larger images of other proportions, with padding that is not the scene's, against the
    same content at the first texel of images of its own size: at most 0.01 apart.
-7. No message of the validation layer, with its synchronisation checks on, in any case. Without the layer
+7. No message of the validation layer, with its synchronisation checks asked for, in any case. The checks are
+   asked for with the layer's own extension for its features enabled, taken from the layer's list of extensions.
+   The device's line says whether they were asked for that way, and if not a line says which way not (the list
+   does not hold the extension, stayed incomplete, a call failed, no memory, no room). What the layer then
+   does with them cannot be read back. Without the layer
    installed the case is not run, which is not a pass. The self-test sees only the loader's list of layers, and
    says how it read it: whole and the layer is not in it, in part (asked three times, still incomplete, so
    whether the layer is installed is not known), or not at all (a call failed, with its result, or the list
