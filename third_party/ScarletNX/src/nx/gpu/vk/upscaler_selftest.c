@@ -58,6 +58,8 @@ static struct {
        cases. The cases left are not run and the mode fails. */
     int unknown;
     u64 edge_sums[2][3]; /* the edge case's images by orientation: colour, depth, vectors (edges_announce) */
+    struct Handed* record; /* when set: what each frame of the inputs handed the adapter, by the frame's number */
+    int record_n;
 } g;
 
 /* one run's inputs, made once and never changed: a sign variant changes only the numbers handed to the adapter */
@@ -74,6 +76,11 @@ typedef struct {
     int ungated;         /* a shape the game does not make: not put through the game's gate (frame_run) */
 } Inputs;
 
+/* what one frame handed the adapter beside its images, for holding two runs against each other frame by frame */
+typedef struct Handed {
+    float jitter[2], vector_scale[2], frame_seconds, near_plane, far_plane, fov_y;
+    u32 render_w, render_h, out_w, out_h, reset, flags, evaluated;
+} Handed;
 /* What a variant makes of the numbers handed on: the factor on the reported jitter of each axis (1 as configured,
    -1 the sign turned, 0 told nothing), the vectors' signs, the depth convention it claims, and whether every
    frame's inputs and dispatch are logged. */
@@ -408,10 +415,11 @@ static void offset(unsigned k, unsigned n, double out[2]) {
    the background's move a frame in render pixels (x right, y up). patch: 1 for a nearer patch that moves another
    way. cut: 1 when the last frame shows the other pattern. up: 1 for a viewport with a negative height. edges: 1
    for the edge picture in place of the background's patterns. ahead: 1 for a wrong run made on purpose, whose
-   images are drawn with the offset of the frame after while the jitter reported for them is the frame's own. */
+   images are drawn with the offset of the frame after while the jitter reported for them is the frame's own.
+   turned: 1 to negate the clip offset's y, which with the other sign of the viewport gives the same images. */
 static const int SIZES[4] = {RENDER_W, RENDER_H, OUT_W, OUT_H};
 static int inputs_build(Inputs* in, const int size[4], int w, int h, int x, int y, int up, const double move[2],
-                        int patch, int cut, int edges, int ahead) {
+                        int patch, int cut, int edges, int ahead, int turned) {
     const int RW = size[0], RH = size[1];
     memset(in, 0, sizeof *in);
     in->w = w;
@@ -440,7 +448,7 @@ static int inputs_build(Inputs* in, const int size[4], int w, int h, int x, int 
         f->pattern = edges ? SELFTEST_PATTERN_EDGES : cut_at >= 0 && i >= cut_at;
         f->out = (SelftestViewport){0, up ? in->oh : 0, in->ow, up ? -in->oh : in->oh};
         f->jitter[0] = 2.0 * px[0] / RW;
-        f->jitter[1] = 2.0 * px[1] / RH;
+        f->jitter[1] = (turned ? -2.0 : 2.0) * px[1] / RH;
         for (int a = 0; a < 2; a++) {
             f->shift[a] = step[a] * i;
             f->shift_before[a] = step[a] * (i - 1);
@@ -475,14 +483,14 @@ static int inputs_build(Inputs* in, const int size[4], int w, int h, int x, int 
         if (ahead) { /* the images are made: from here the frame says it had its own offset */
             offset((unsigned)i, (unsigned)in->offsets, px);
             f->jitter[0] = 2.0 * px[0] / RW;
-            f->jitter[1] = 2.0 * px[1] / RH;
+            f->jitter[1] = (turned ? -2.0 : 2.0) * px[1] / RH;
         }
     }
     return 1;
 }
 static int inputs_make(Inputs* in, const int size[4], int w, int h, int x, int y, int up, const double move[2],
                        int patch, int cut) {
-    return inputs_build(in, size, w, h, x, y, up, move, patch, cut, 0, 0);
+    return inputs_build(in, size, w, h, x, y, up, move, patch, cut, 0, 0, 0);
 }
 
 static void inputs_free(Inputs* in) {
@@ -689,6 +697,20 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
         .far_plane = camera[1],
         .fov_y = camera[2],
         .trace = (u32)v->trace};
+    if (g.record && i < g.record_n)
+        g.record[i] = (Handed){{frame.jitter[0], frame.jitter[1]},
+                               {frame.vector_scale[0], frame.vector_scale[1]},
+                               frame.frame_seconds,
+                               frame.near_plane,
+                               frame.far_plane,
+                               frame.fov_y,
+                               frame.render_w,
+                               frame.render_h,
+                               frame.output.w,
+                               frame.output.h,
+                               frame.reset,
+                               flags,
+                               1};
     /* log only: this frame's inputs as they are handed over, beside the adapter's own line of its dispatch */
     if (v->trace)
         LOG(ST "handed over, frame %d of the inputs: clip offset %.9g %.9g, jitter %.9g %.9g px (the variant's "
@@ -1131,7 +1153,7 @@ static int resize(int up) {
     if (ok) {
         const int ran = run(&big, &CONFIGURED, 0, fresh, NULL, NULL, NULL, NULL) &&
                         run(&big, &CONFIGURED, 0, again, NULL, NULL, NULL, NULL) &&
-                        inputs_build(&wrong, BIG, BIG[0], BIG[1], 0, 0, up, still, 0, 0, 0, 1) &&
+                        inputs_build(&wrong, BIG, BIG[0], BIG[1], 0, 0, up, still, 0, 0, 0, 1, 0) &&
                         run(&wrong, &CONFIGURED, 0, control, NULL, NULL, NULL, NULL);
         const double apart = ran ? difference(&big, output, fresh, regions, SELFTEST_BACKGROUND) : NAN;
         const double noise = ran ? difference(&big, fresh, again, regions, SELFTEST_BACKGROUND) : NAN;
@@ -1204,7 +1226,7 @@ static int edge_case(int up) {
     int ok = !not_run("edge case", up) && reference && regions;
     memset(&in, 0, sizeof in);
     for (int k = 0; k < PICTURES; k++) ok = (picture[k] = malloc(size)) != NULL && ok;
-    ok = ok && inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1, 0);
+    ok = ok && inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1, 0, 0);
     if (ok) {
         /* the images are the ones named before any adapter was looked for, or the case does not run */
         const u64 sums[3] = {selftest_checksum(in.colour, (size_t)in.frames * texels * 4, SELFTEST_CHECKSUM_START),
@@ -1278,6 +1300,102 @@ static int edge_case(int up) {
     return ok;
 }
 
+/* Log only, no verdict: the matched pair. The edge case's images with y down, and with y up and the clip
+   offset's y negated, are the same images byte for byte, and the same jitter in pixels is reported for them.
+   So the two orientations hand the adapter identical inputs through the two conversions. The images are
+   compared here and by their checksums, what each frame handed over is compared, and the two outputs and a
+   repeated run's difference are printed. Whether the outputs count as equal is not said: no number is
+   declared for that. */
+static void edge_matched(void) {
+    static const Variant traced = {1, 1, 1, 1, 1, 1};
+    static const double still[2] = {0.0, 0.0};
+    const SelftestEdge* edges[2] = {&SELFTEST_EDGE_V, &SELFTEST_EDGE_H};
+    const size_t pixels = (size_t)OUT_W * OUT_H, size = sizeof(double) * 3 * pixels;
+    const size_t texels = (size_t)RENDER_W * RENDER_H;
+    Inputs down, up;
+    double *reference = malloc(size), *picture[3] = {malloc(size), malloc(size), malloc(size)};
+    u8* regions = malloc(pixels);
+    Handed* handed[2] = {NULL, NULL};
+    memset(&down, 0, sizeof down);
+    memset(&up, 0, sizeof up);
+    int ok = !g.unknown && reference && regions && picture[0] && picture[1] && picture[2] &&
+             inputs_build(&down, SIZES, RENDER_W, RENDER_H, 0, 0, 0, still, 0, 0, 1, 0, 0) &&
+             inputs_build(&up, SIZES, RENDER_W, RENDER_H, 0, 0, 1, still, 0, 0, 1, 0, 1);
+    if (ok) {
+        handed[0] = calloc((size_t)down.frames, sizeof **handed);
+        handed[1] = calloc((size_t)down.frames, sizeof **handed);
+        ok = handed[0] && handed[1] && up.frames == down.frames;
+    }
+    if (!ok) {
+        LOG(ST "matched pair, log only: could not be made\n");
+    } else {
+        const size_t bytes[3] = {(size_t)down.frames * texels * 4, (size_t)down.frames * texels * 4,
+                                 (size_t)down.frames * texels * 8};
+        const void* images[2][3] = {{down.colour, down.depth, down.motion}, {up.colour, up.depth, up.motion}};
+        u64 sums[2][3];
+        int equal = 1;
+        for (int k = 0; k < 3; k++) {
+            for (int which = 0; which < 2; which++)
+                sums[which][k] = selftest_checksum(images[which][k], bytes[k], SELFTEST_CHECKSUM_START);
+            equal = equal && !memcmp(images[0][k], images[1][k], bytes[k]);
+        }
+        LOG(ST "matched pair, log only: %d frames. y down: colour %016llx, depth %016llx, vectors %016llx. y up with "
+               "the clip offset's y negated: colour %016llx, depth %016llx, vectors %016llx. Byte for byte the "
+               "same: %s\n",
+            down.frames, (unsigned long long)sums[0][0], (unsigned long long)sums[0][1],
+            (unsigned long long)sums[0][2], (unsigned long long)sums[1][0], (unsigned long long)sums[1][1],
+            (unsigned long long)sums[1][2], equal ? "yes" : "NO, the pair is not matched and is not run");
+        if (equal) {
+            truth(&down, 0, reference, regions);
+            g.record_n = down.frames;
+            g.record = handed[0];
+            int ran = run(&down, &traced, 0, picture[0], NULL, NULL, NULL, NULL);
+            g.record = handed[1];
+            ran = ran && run(&up, &traced, 0, picture[1], NULL, NULL, NULL, NULL);
+            g.record = NULL;
+            ran = ran && run(&down, &CONFIGURED, 0, picture[2], NULL, NULL, NULL, NULL);
+            int differs = -1;
+            for (int i = 0; i < down.frames && differs < 0; i++)
+                if (memcmp(&handed[0][i], &handed[1][i], sizeof **handed)) differs = i;
+            if (differs < 0)
+                LOG(ST "matched pair, log only: what was handed to the adapter is the same in all %d frames of the "
+                       "two runs (jitter, vector scale, sizes, reset, frame time, near, far, field of view, flags)\n",
+                    down.frames);
+            else
+                LOG(ST "matched pair, log only: what was handed to the adapter differs first in frame %d: jitter "
+                       "%.9g %.9g against %.9g %.9g, reset %u against %u, evaluated %u against %u\n",
+                    differs, (double)handed[0][differs].jitter[0], (double)handed[0][differs].jitter[1],
+                    (double)handed[1][differs].jitter[0], (double)handed[1][differs].jitter[1],
+                    handed[0][differs].reset, handed[1][differs].reset, handed[0][differs].evaluated,
+                    handed[1][differs].evaluated);
+            if (!ran) LOG(ST "matched pair, log only: a run could not be made\n");
+            else {
+                LOG(ST "matched pair, log only, not judged: the two outputs differ by %.9f over the picture, a "
+                       "repeated run of the first by %.9f\n",
+                    difference(&down, picture[0], picture[1], regions, SELFTEST_BACKGROUND),
+                    difference(&down, picture[0], picture[2], regions, SELFTEST_BACKGROUND));
+                for (int e = 0; e < 2; e++) {
+                    SelftestProfile p[3];
+                    for (int k = 0; k < 3; k++) selftest_profile_make(edges[e], picture[k], OUT_W, &p[k]);
+                    LOG(ST "matched pair, log only, not judged, %s edge: profiles differ by %.9f and pictures by "
+                           "%.9f per pixel between the two orientations, by %.9f and %.9f in the repeated run\n",
+                        e ? "near-horizontal" : "near-vertical", selftest_profile_apart(&p[0], &p[1]),
+                        selftest_edge_apart(edges[e], picture[0], picture[1], OUT_W),
+                        selftest_profile_apart(&p[0], &p[2]),
+                        selftest_edge_apart(edges[e], picture[0], picture[2], OUT_W));
+                }
+            }
+        }
+    }
+    inputs_free(&down);
+    inputs_free(&up);
+    free(handed[0]);
+    free(handed[1]);
+    for (int k = 0; k < 3; k++) free(picture[k]);
+    free(reference);
+    free(regions);
+}
+
 /* The edge case's images, made and named by their checksums before any adapter is looked for: they depend on no
    library. The checksums are kept, and the case holds the images it runs on against them. The reference's two
    profiles must be whole, or the case could compare nothing. 1 when all of it is in order. */
@@ -1287,7 +1405,7 @@ static int edges_announce(void) {
     for (int up = 1; up >= 0 && ok; up--) {
         Inputs in;
         const size_t pixels = (size_t)RENDER_W * RENDER_H;
-        ok = inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1, 0);
+        ok = inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1, 0, 0);
         double* reference = ok ? malloc(sizeof(double) * 3 * OUT_W * OUT_H) : NULL;
         if (!reference) {
             LOG(ST "edge case %s: the images could not be made: FAIL\n", up ? "up" : "down");
@@ -1338,6 +1456,9 @@ int vk_upscaler_selftest(const char* adapter) {
     pass &= edge_case(1);
     g.generation++;
     pass &= edge_case(0);
+    /* log only from here: nothing below is a case, and none of it enters the result */
+    g.generation++;
+    edge_matched();
     pass = pass && idle();
     /* Case 7: no message of the validation layer in any case. Without the layer the case was not run, which is
        not a pass, and neither is a run that had to stop. */
