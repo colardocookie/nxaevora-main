@@ -15,6 +15,10 @@
 #include "nx/gpu/vk/temporal_math.h"
 #include "nx/runtime/platform/log.h"
 
+/* the host's monotonic clock in nanoseconds (runtime/platform/plat.h, whose Windows headers define near and far,
+   which are names here) */
+u64 plat_ns(void);
+
 #define CAMERA_BANK 4       /* the constant bank of the camera block */
 #define CAMERA_BYTES 0x140  /* view-projection at +0x00, its inverse at +0xC0, row vectors */
 #define CAMERA_INVERSE 0xc0
@@ -190,6 +194,14 @@ static struct {
     int mip_bias_set; /* SNX_ARCEUS_TEMPORAL_MIPBIAS holds a number, 0 included: no automatic bias */
     int rect_extras_off; /* the numbers and the views could not be made once: none for the rest of the session */
     u32 object_failed_at; /* the frame an object pass could not get what it needs (vk_temporal_object_failed) */
+    /* SNX_ARCEUS_TEMPORAL_GPUTIME: -1 not looked at yet, 0 off or given up, 1 measuring. The pool has two queries
+       a pair of the ring. time_bits and time_period are the graphics queue's clock. */
+    int gputime;
+    VkQueryPool time_pool;
+    u32 time_bits, time_frames;
+    double time_period;
+    /* the brackets of the current run of our passes that are begun and not yet ended: -1 for none */
+    TemporalGpuHandle time_hook, time_numbers;
     u64 rect_generation, rect_gated, rect_seen, rect_steady, rect_spoilt, rect_left;
     VkImage rect_images[5];
     TemporalGate gate;
@@ -211,7 +223,8 @@ static struct {
     int history_newest;
     u32 resolved_at;
     u64 resets;
-} g_t = {.mode = -1};
+} g_t = {.mode = -1, .gputime = -1, .time_hook = -1, .time_numbers = -1};
+static TemporalGpuRing g_time_ring; /* the brackets under way and the times kept since the last line */
 
 static int temporal_on(void) {
     if (g_t.mode < 0) {
@@ -1240,6 +1253,134 @@ static u64 rect_making(const Surf* scene) {
         g_t.rect_generation++;
     }
     return g_t.rect_generation;
+}
+
+/* SNX_ARCEUS_TEMPORAL_GPUTIME=1, read only: the approximate time between two completions on the GPU's clock,
+   around our passes (temporal_math.h has the rules). Off, nothing here adds a command or a query. A failure
+   switches the measure off for the session with one line and touches nothing else. The pool is never
+   destroyed in a session: marks recorded with it may still be on their way. */
+static void gputime_off(const char* why) {
+    temporal_gpu_stop(&g_time_ring);
+    g_t.gputime = 0;
+    LOG("arceus-temporal-gputime: off for the rest of the session (%s)\n", why);
+}
+static int gputime_on(void) {
+    if (g_t.gputime >= 0) return g_t.gputime;
+    const char* asked = getenv("SNX_ARCEUS_TEMPORAL_GPUTIME");
+    g_t.gputime = 0;
+    if (!asked || strcmp(asked, "1")) return 0;
+    VkQueueFamilyProperties families[32];
+    u32 n = 32;
+    vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &n, families);
+    g_t.time_bits = g_vk.gfx_family < n ? families[g_vk.gfx_family].timestampValidBits : 0;
+    g_t.time_period = (double)g_vk.props.limits.timestampPeriod;
+    if (!temporal_gpu_usable(g_vk.props.limits.timestampComputeAndGraphics, g_t.time_bits, g_t.time_period)) {
+        LOG("arceus-temporal-gputime: not supported here (timestamps on the queue %d, %u valid bits, a period of %g "
+            "ns): nothing is added\n",
+            (int)g_vk.props.limits.timestampComputeAndGraphics, g_t.time_bits, g_t.time_period);
+        return 0;
+    }
+    const VkQueryPoolCreateInfo info = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                                        .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                        .queryCount = 2 * TEMPORAL_GPU_PAIRS};
+    if (!VK_OK(vkCreateQueryPool(g_vk.dev, &info, NULL, &g_t.time_pool))) {
+        g_t.time_pool = VK_NULL_HANDLE;
+        LOG("arceus-temporal-gputime: the query pool could not be made: nothing is added\n");
+        return 0;
+    }
+    g_t.gputime = 1;
+    LOG("arceus-temporal-gputime: on. Two timestamps at the pipeline's last stage bracket a stretch of our "
+        "commands, and their difference is the approximate time between the two completions: no exclusive time "
+        "of the stretch and no bound on it. The clock has a period of %g ns and %u valid bits\n",
+        g_t.time_period, g_t.time_bits);
+    return 1;
+}
+/* A bracket's first mark: on a free pair only, whose two queries are reset in this same command buffer just
+   before. The bracket's handle, -1 for none. */
+static TemporalGpuHandle gputime_begin(VkCommandBuffer cb, int kind) {
+    if (!gputime_on()) return -1;
+    const TemporalGpuHandle h = temporal_gpu_begin(&g_time_ring, kind, vk_submit_number(), plat_ns());
+    if (h < 0) return -1;
+    const u32 first = 2 * (u32)temporal_gpu_index(h);
+    rec_CmdResetQueryPool(cb, g_t.time_pool, first, 2);
+    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g_t.time_pool, first);
+    return h;
+}
+/* its second mark, recorded only while the submission is still the first mark's. The handle is then used up. */
+static void gputime_end(VkCommandBuffer cb, TemporalGpuHandle* h) {
+    if (*h >= 0 && gputime_on() && temporal_gpu_end(&g_time_ring, *h, vk_submit_number()))
+        rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g_t.time_pool,
+                               2 * (u32)temporal_gpu_index(*h) + 1);
+    *h = -1;
+}
+/* a bracket of an earlier run of our passes that never got its second mark (the passes returned between the
+   two) is given up, so that its pair can leave the ring */
+static void gputime_leftover(TemporalGpuHandle* h) {
+    if (*h >= 0 && gputime_on()) temporal_gpu_abandon(&g_time_ring, *h);
+    *h = -1;
+}
+/* Where the renderer has completed a slot's submissions and recycles it (cmd.c): every pair whose submission
+   is known to have completed gives its time or is counted, and is free again. The completed number is read
+   from the timeline as it stands and the results are asked for with their availability: nothing waits. */
+void vk_temporal_gputime_poll(void) {
+    if (g_t.gputime != 1) return;
+    u64 submitted = 0, done = 0;
+    vk_submit_progress(&submitted, &done);
+    const u64 now = plat_ns();
+    for (int i = 0; i < TEMPORAL_GPU_PAIRS; i++) {
+        const int state = g_time_ring.pair[i].state;
+        /* a pair that is begun stays until its own end or until it is given up */
+        if (state == TEMPORAL_GPU_FREE || state == TEMPORAL_GPU_BEGUN || done < g_time_ring.pair[i].submit) continue;
+        u64 got[4] = {0, 0, 0, 0}; /* a tick and whether it is there, twice */
+        unsigned long long ticks[2] = {0, 0};
+        int there[2] = {0, 0}, fetched = 0;
+        if (temporal_gpu_fetch(&g_time_ring, i, done)) {
+            const VkResult rc =
+                vkGetQueryPoolResults(g_vk.dev, g_t.time_pool, 2 * (u32)i, 2, sizeof got, got, 2 * sizeof(u64),
+                                      VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+            if (rc != VK_SUCCESS && rc != VK_NOT_READY) {
+                gputime_off("the results could not be asked for");
+                return;
+            }
+            ticks[0] = got[0];
+            ticks[1] = got[2];
+            there[0] = got[1] != 0;
+            there[1] = got[3] != 0;
+            fetched = 1;
+        }
+        temporal_gpu_settle(&g_time_ring, i, done, now, fetched ? ticks : NULL, fetched ? there : NULL, g_t.time_bits,
+                            g_t.time_period);
+    }
+}
+/* the line, every 600 runs of our passes: each kind's times since the last one and what gave none */
+static void gputime_line(const Surf* scene, const TemporalRect* area) {
+    static const char* const names[TEMPORAL_GPU_KINDS] = {
+        "our passes before the scene's first reader (vectors, the frame's copy, resolve, sharpen)",
+        "the numbers and the view, in the frames that have them",
+        "an empty bracket, a baseline that is subtracted from nothing"};
+    if (++g_t.time_frames < TEMPORAL_GPU_SAMPLES) return;
+    g_t.time_frames = 0;
+    LOG("arceus-temporal-gputime: approximate time between two completions, %d frames, %s, images %ux%u, scene "
+        "%dx%d. Brackets that gave no time: split between submissions %llu, begun and not ended %llu, a result "
+        "not there %llu, too old to rule out a turn of the clock %llu, longer than the host saw pass %llu, no "
+        "free pair %llu, a late end ignored %llu\n",
+        TEMPORAL_GPU_SAMPLES, g_t.mode == MODE_TAA ? "taa" : "probe", scene->sw, scene->sh,
+        area ? area->w : (int)scene->sw, area ? area->h : (int)scene->sh,
+        (unsigned long long)g_time_ring.lost[TEMPORAL_GPU_CUT],
+        (unsigned long long)g_time_ring.lost[TEMPORAL_GPU_PARTIAL],
+        (unsigned long long)g_time_ring.lost[TEMPORAL_GPU_UNAVAILABLE],
+        (unsigned long long)g_time_ring.lost[TEMPORAL_GPU_OLD],
+        (unsigned long long)g_time_ring.lost[TEMPORAL_GPU_ABSURD],
+        (unsigned long long)g_time_ring.lost[TEMPORAL_GPU_EXHAUSTED],
+        (unsigned long long)g_time_ring.lost[TEMPORAL_GPU_STALE]);
+    for (int k = 0; k < TEMPORAL_GPU_KINDS; k++) {
+        double median, mean, high;
+        const unsigned n = g_time_ring.n[k];
+        temporal_gpu_summary(g_time_ring.ms[k], n, &median, &mean, &high);
+        LOG("arceus-temporal-gputime: %s: asked %llu, measured %u, median %.4f ms, mean %.4f ms, 95th percentile "
+            "%.4f ms\n", names[k], (unsigned long long)g_time_ring.asked[k], n, median, mean, high);
+    }
+    temporal_gpu_restart(&g_time_ring);
 }
 
 /* Before the draw whose fragment program is the scene colour's first reader: the probe's passes. Once a frame. */
@@ -2277,6 +2418,10 @@ void vk_temporal_before(u64 fs0_hash) {
 
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
+    /* with SNX_ARCEUS_TEMPORAL_GPUTIME: the first mark of the bracket around our passes here, -1 without */
+    gputime_leftover(&g_t.time_hook);
+    gputime_leftover(&g_t.time_numbers);
+    g_t.time_hook = gputime_begin(cb, TEMPORAL_GPU_HOOK);
     /* objects that moved were drawn into their own target this frame: the vector pass takes their vectors from it */
     const int objects = g_t.objects && g_t.object_at == frame && g_t.object.view && g_t.object.w == scene->sw &&
                         g_t.object.h == scene->sh && (g_t.rect || g_t.gate.mismatch_at != frame) &&
@@ -2462,6 +2607,11 @@ void vk_temporal_before(u64 fs0_hash) {
         pc.depth[2] = 1.0f;
     }
 
+    /* the bracket around our passes ends here, and an empty one follows it as a baseline */
+    gputime_end(cb, &g_t.time_hook);
+    TemporalGpuHandle empty = gputime_begin(cb, TEMPORAL_GPU_EMPTY);
+    gputime_end(cb, &empty);
+    if (gputime_on()) gputime_line(scene, area);
     /* without a frame before (the first one, or after a gap) the frame is compared with itself */
     /* the probe's numbers also look at the pixels that took an object's vector */
     if (!taa && objects) {
@@ -2514,6 +2664,9 @@ void vk_temporal_before(u64 fs0_hash) {
             stats_write = 0;
         }
     }
+    /* the numbers and the view, where a frame has them, in a bracket of their own */
+    const int view_due = !taa && g_t.view && !(g_t.rect && g_t.view == 2 && !history);
+    g_t.time_numbers = stats_write || view_due ? gputime_begin(cb, TEMPORAL_GPU_NUMBERS) : -1;
     if (stats_write) {
         const VkBufferImageCopy out = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                        .imageExtent = {2 * STATS_W, STATS_H, 1}};
@@ -2543,13 +2696,17 @@ void vk_temporal_before(u64 fs0_hash) {
         g_t.stats_draws = g_t.object_draws;
         g_t.stats_height = area ? (u32)area->h : scene->sh;
     }
-    if (taa || !g_t.view) return;
-    /* under the rectangle's gate the error view needs a frame before made from the same: without one, no view */
-    if (g_t.rect && g_t.view == 2 && !history) return;
+    if (!view_due) {
+        /* no view: in taa, with none asked for, or under the rectangle's gate the error view without a frame
+           before made from the same */
+        gputime_end(cb, &g_t.time_numbers);
+        return;
+    }
     /* a view of the probe, drawn over the scene */
     vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     fullscreen(cb, scene->att, scene->sw, scene->sh, g_t.view_pipe, set, &pc, area);
     vk_surf_wrote(scene);
     vk_rt_drawn(scene);
+    gputime_end(cb, &g_t.time_numbers);
 }

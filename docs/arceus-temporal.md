@@ -348,6 +348,36 @@ A change of the viewport costs two frames without anti-aliasing: one gated, one 
 of the fraction alone costs one more, drawn with jitter and not resolved. Lines start with
 `arceus-temporal-rect:`. Not played yet.
 
+## GPU time of our passes (`SNX_ARCEUS_TEMPORAL_GPUTIME=1`)
+
+Read only, off by default, and off it adds no command and no query. With it two timestamps are written at the
+pipeline's last stage around a stretch of our commands, and every 600 runs of our passes the log gives, for each
+kind of stretch, how many were asked for and measured and the median, the mean and the 95th percentile in
+milliseconds. Lines start with `arceus-temporal-gputime:`.
+
+What the number is: the approximate time between two completions on the GPU's clock. Each mark is taken when
+the commands before it have passed through the pipeline. Work of the stretch that ran while earlier work was
+still finishing is not in it, and whatever else ran or stalled between the marks is. So it is no exclusive time
+of our commands and no bound on it either way, and it holds for this GPU at this size only. The extra draws for
+object vectors are among the game's own draws and are not in any stretch: their cost is not measured.
+
+The stretches: our passes before the scene's first reader (vectors, the frame's copy, resolve, sharpen). The
+numbers and the view, only in the frames that have them, so their count is small. And an empty bracket, two marks
+with nothing between, printed as a baseline and subtracted from nothing.
+
+Rules (`temporal_math.h`, host tested, and `gputime_begin`, `gputime_end`, `vk_temporal_gputime_poll` in
+`gpu/vk/temporal.c`): a ring of 64 pairs of queries of its own. A bracket begins only on a free pair, which is
+reset in the same command buffer just before its first mark. Both marks must be recorded in one submission,
+else the pair is split and gives no time. Results are asked for where the renderer recycles a completed slot,
+with their availability and without waiting, and only for a pair whose submission is known to have completed.
+The difference of two ticks is taken modulo the clock's valid bits, and is taken only when the host's own clock
+saw less than half a turn of that counter pass since the first mark was recorded and the difference is no
+longer than that. A bracket has a handle of its own, so an end that comes late cannot close a later bracket
+on the same pair, and a bracket that gets no second mark is given up by its caller at the next run of our
+passes. A pair is free again only after its own end or that giving up, and when its submission has completed. What gave no time is counted by
+its reason in the line. A failure switches the measure off for the session with one line and changes no frame,
+and the query pool is kept until the program ends. Not run yet.
+
 ## For the upscaler step: rules and an interface that nothing uses yet
 
 Two things are in the sources ahead of their full use.
