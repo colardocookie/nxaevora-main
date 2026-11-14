@@ -116,12 +116,26 @@ static struct {
     int lock; /* callbacks may come from a thread of the library's */
     u32 ids, unlisted; /* message ids kept, and callbacks whose id found no room in the table */
     u32 omitted, truncated, nameless; /* callbacks not printed, printed with a cut text, without an id's name */
+    u32 overlong; /* callbacks whose id's name is too long to keep whole: counted apart, never taken as one id */
     struct {
         char name[128];
         i32 number;
         u32 count;
     } id[VALIDATION_IDS];
 } g_said;
+/* n bytes of text for one log line: a line break or another control character would end the line early and leave
+   the rest without the self-test's prefix, where a report's filter loses it. Each is shown as a space, and the
+   callback's header says how many there are. */
+static u32 validation_line(char* out, const char* text, size_t n) {
+    u32 changed = 0;
+    for (size_t i = 0; i < n; i++) {
+        const unsigned char c = (unsigned char)text[i];
+        out[i] = c < 0x20 || c == 0x7f ? ' ' : (char)c;
+        changed += c < 0x20 || c == 0x7f;
+    }
+    out[n] = 0;
+    return changed;
+}
 static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                                       VkDebugUtilsMessageTypeFlagsEXT type,
                                                       const VkDebugUtilsMessengerCallbackDataEXT* data, void* user) {
@@ -134,26 +148,39 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverit
     const size_t length = strlen(text), kept = length > VALIDATION_TEXT ? VALIDATION_TEXT : length;
     while (__atomic_exchange_n(&g_said.lock, 1, __ATOMIC_ACQUIRE)) {}
     const u32 index = g.messages++;
+    /* An id is its whole name and its number. A name that does not fit the table whole is not classified: a
+       prefix is no identity. */
+    const size_t name_length = strlen(name);
+    const int fits = name_length < sizeof g_said.id[0].name;
     u32 k = 0;
-    while (k < g_said.ids && (g_said.id[k].number != number || strncmp(g_said.id[k].name, name, 127))) k++;
-    if (k == g_said.ids && k < VALIDATION_IDS) {
-        snprintf(g_said.id[k].name, sizeof g_said.id[k].name, "%s", name);
+    while (fits && k < g_said.ids && (g_said.id[k].number != number || strcmp(g_said.id[k].name, name))) k++;
+    if (fits && k == g_said.ids && k < VALIDATION_IDS) {
+        memcpy(g_said.id[k].name, name, name_length + 1);
         g_said.id[k].number = number;
         g_said.ids++;
     }
-    if (k < VALIDATION_IDS) g_said.id[k].count++;
+    if (!fits) g_said.overlong++;
+    else if (k < VALIDATION_IDS) g_said.id[k].count++;
     else g_said.unlisted++;
     g_said.nameless += !(data && data->pMessageIdName);
     g_said.omitted += index >= VALIDATION_KEPT;
     g_said.truncated += index < VALIDATION_KEPT && length > kept;
     if (index < VALIDATION_KEPT) {
         const u32 pieces = (u32)((kept + VALIDATION_PIECE - 1) / VALIDATION_PIECE);
-        LOG(ST "validation %u: message id %s (%d), %zu characters%s\n", index + 1, name, (int)number, length,
-            length > kept ? ", of which the first 4096 are printed" : "");
+        char line[VALIDATION_PIECE + 1], shown[128];
+        u32 breaks = 0;
+        for (size_t i = 0; i < kept; i++) breaks += (unsigned char)text[i] < 0x20 || text[i] == 0x7f;
+        validation_line(shown, name, name_length < 127 ? name_length : 127);
+        /* the name is printed whole when it fits the table, else its first 127 characters, said as cut */
+        LOG(ST "validation %u: message id %s%s (%d), %zu characters%s, %u line breaks or control characters shown "
+               "as spaces\n", index + 1, shown, fits ? "" : " [the name is cut here: it is longer]", (int)number,
+            length, length > kept ? ", of which the first 4096 are printed" : "", breaks);
+        if (!fits) LOG(ST "validation %u: its message id's name has %zu characters\n", index + 1, name_length);
         for (u32 p = 0; p < pieces; p++) {
             const size_t from = (size_t)p * VALIDATION_PIECE;
-            const int n = (int)(kept - from > VALIDATION_PIECE ? VALIDATION_PIECE : kept - from);
-            LOG(ST "validation %u, part %u of %u: %.*s\n", index + 1, p + 1, pieces, n, text + from);
+            const size_t n = kept - from > VALIDATION_PIECE ? VALIDATION_PIECE : kept - from;
+            validation_line(line, text + from, n);
+            LOG(ST "validation %u, part %u of %u: %s\n", index + 1, p + 1, pieces, line);
         }
     } else if (index == VALIDATION_KEPT)
         LOG(ST "more than %d validation callbacks: the ones from here on are counted by their message id and not "
@@ -164,23 +191,34 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverit
 /* at the end: how many callbacks each message id had, the layer's own limit on repeats said beside them */
 static void validation_counts(void) {
     u32 listed = 0;
-    if (!g.messages) return;
-    for (u32 k = 0; k < g_said.ids; k++) listed += g_said.id[k].count;
+    /* a callback may still arrive from a thread of the library's: the counts are taken under the callbacks' lock,
+       all at one moment, and printed from that copy */
+    while (__atomic_exchange_n(&g_said.lock, 1, __ATOMIC_ACQUIRE)) {}
+    const __typeof__(g_said) said = g_said;
+    const u32 received = g.messages;
+    __atomic_store_n(&g_said.lock, 0, __ATOMIC_RELEASE);
+    if (!received) return;
+    for (u32 k = 0; k < said.ids; k++) listed += said.id[k].count;
     LOG(ST "validation: %u callbacks at warning or above. Printed %u, of which %u with a text cut at %d characters. "
            "Not printed %u (past the first %d). Without a message id's name %u. The layer itself stops reporting "
            "a message id after its own limit of repeats (it says so in a callback), so a count is what it "
            "reported and not how often the fault occurred\n",
-        g.messages, g.messages - g_said.omitted, g_said.truncated, VALIDATION_TEXT, g_said.omitted, VALIDATION_KEPT,
-        g_said.nameless);
-    for (u32 k = 0; k < g_said.ids; k++)
-        LOG(ST "validation message id %s (%d): %u callbacks\n", g_said.id[k].name, (int)g_said.id[k].number,
-            g_said.id[k].count);
-    if (g_said.unlisted)
+        received, received - said.omitted, said.truncated, VALIDATION_TEXT, said.omitted, VALIDATION_KEPT,
+        said.nameless);
+    for (u32 k = 0; k < said.ids; k++)
+        LOG(ST "validation message id %s (%d): %u callbacks\n", said.id[k].name, (int)said.id[k].number,
+            said.id[k].count);
+    if (said.unlisted)
         LOG(ST "validation: the table of %d message ids is full. %u callbacks of further message ids are counted "
-               "here together and are not listed by id\n", VALIDATION_IDS, g_said.unlisted);
-    LOG(ST "validation: %u callbacks listed by message id and %u not listed make %u, and %u were received: %s\n",
-        listed, g_said.unlisted, listed + g_said.unlisted, g.messages,
-        listed + g_said.unlisted == g.messages ? "the counts add up" : "THE COUNTS DO NOT ADD UP");
+               "here together and are not listed by id\n", VALIDATION_IDS, said.unlisted);
+    if (said.overlong)
+        LOG(ST "validation: %u callbacks have a message id whose name is too long to classify (%zu characters or "
+               "more). They are counted here together, as one line and not as one id\n", said.overlong,
+            sizeof said.id[0].name);
+    const u32 all = listed + said.unlisted + said.overlong;
+    LOG(ST "validation: %u callbacks listed by message id, %u past the table and %u with a name too long make %u, "
+           "and %u were received: %s\n", listed, said.unlisted, said.overlong, all, received,
+        all == received ? "the counts add up" : "THE COUNTS DO NOT ADD UP");
 }
 
 static int memory_type(u32 bits, VkMemoryPropertyFlags want) {

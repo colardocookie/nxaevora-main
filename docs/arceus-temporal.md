@@ -630,7 +630,11 @@ The cases, each run with a viewport of negative and of positive height (render 3
    up to 4096 characters of a text, each cap said when it is reached. At the end one line gives the callbacks
    received, printed, cut, not printed and without an id's name, one line a message id gives its count (64 ids,
    and a line when that table is full), and a last line says whether the counts add up to the callbacks
-   received. The layer stops reporting an id after its own limit of repeats, so a count is what it reported.
+   received. A message id is its whole name and its number: a name of 128 characters or more is not
+   classified, is counted in a line of its own and is printed cut, said as cut, with its length. A line break
+   or another control character in a text or a name is shown as a space, so that every piece keeps the
+   self-test's prefix, and the callback's first line says how many there were. The counts at the end are
+   taken at one moment, under the lock the callbacks use. The layer stops reporting an id after its own limit of repeats, so a count is what it reported.
 The scene's depth is made from two distances (5 for the background, 1/6 for the patch) through a projection in
 the game's form, depth = (A z + B) / (-z) with A = n / (f - n) and B = n f / (f - n). The cases above use a near
 plane of 0.1 and a far plane at infinity, with the create flag for that: their 24 bit depths are the 0.02 and
