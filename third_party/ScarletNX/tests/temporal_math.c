@@ -2082,6 +2082,51 @@ static void test_rect_confirm(void) {
     assert(temporal_rect_confirm(&g, 306, NULL, &small) == TEMPORAL_FRAME_NONE && !g.have_candidate);
 }
 
+/* Acceptance item: the conversion equals the SDK's documented jitter for an added clip offset.
+   AMD's document for FSR 3.1 says how an application applies a jitter of (jx, jy) pixels to its projection: x
+   gets plus 2 x jx / width and y gets minus 2 x jy / height, in a clip space whose y runs up the image. Solved by
+   hand for a clip offset (dx, dy) that is added to the clip position, which is what the camera block's jitter
+   is: jx = dx x width / 2 and jy = -dy x height / 2. A viewport of positive height turns clip y down the image,
+   so there the same offset moves the picture the other way and jy = +dy x height / 2. The numbers below are
+   those formulas worked out by hand, not by this program. The first row is the frame the device printed as
+   handed to the SDK (jitterOffset -0.25 -0.166666672 with y up). */
+static void test_jitter_conformance(void) {
+    static const struct {
+        double w, h, dx, dy, jx, jy_up, jy_down;
+    } rows[] = {{320.0, 180.0, -0.0015625, 0.00185185185185185, -0.25, -0.166666666666667, 0.166666666666667},
+                {320.0, 180.0, 0.0015625, -0.00432098765432099, 0.25, 0.388888888888889, -0.388888888888889},
+                {3840.0, 2160.0, 0.000130208333333333, -0.000347222222222222, 0.25, 0.375, -0.375},
+                {2880.0, 1620.0, 0.000277777777777778, 0.000123456790123457, 0.4, -0.1, 0.1},
+                {1920.0, 1080.0, -0.000520833333333333, -0.000925925925925926, -0.5, 0.5, -0.5},
+                {400.0, 224.0, 0.001, 0.001, 0.2, -0.112, 0.112},
+                {2560.0, 1440.0, 0.0, 0.000694444444444444, 0.0, -0.5, 0.5},
+                {480.0, 270.0, -0.002, 0.0, -0.48, 0.0, 0.0}};
+    int caught[2] = {0, 0};
+    for (unsigned i = 0; i < sizeof rows / sizeof *rows; i++)
+        for (int up = 0; up < 2; up++)
+            for (int moved = 0; moved < 2; moved++) {
+                /* the viewport of the height's sign, at the image's first pixel and at 40, 30 of a larger image:
+                   where it sits does not enter */
+                const float x = moved ? 40.0f : 0.0f, y = moved ? 30.0f : 0.0f;
+                const TemporalViewport v = {x, up ? y + (float)rows[i].h : y, (float)rows[i].w,
+                                            up ? -(float)rows[i].h : (float)rows[i].h};
+                const double clip[2] = {rows[i].dx, rows[i].dy}, jy = up ? rows[i].jy_up : rows[i].jy_down;
+                double px[2];
+                temporal_jitter_pixels(clip, &v, px);
+                assert(close_to(px[0], rows[i].jx, 1e-9) && close_to(px[1], jy, 1e-9));
+                /* Two conversions that are wrong on purpose must not pass these rows: y with the other sign,
+                   and the width where the height belongs. */
+                const double turned[2] = {0.5 * clip[0] * (double)v.width, -0.5 * clip[1] * (double)v.height};
+                const double widths[2] = {0.5 * clip[0] * (double)v.width,
+                                          0.5 * clip[1] * (v.height < 0.0f ? -(double)v.width : (double)v.width)};
+                caught[0] += !close_to(turned[1], jy, 1e-9);
+                caught[1] += !close_to(widths[1], jy, 1e-9);
+            }
+    /* every row with a y offset catches the turned sign, and every such row of a target that is not square the
+       width for the height: seven rows of eight, four cases each */
+    assert(caught[0] == 28 && caught[1] == 28);
+}
+
 /* The GPU time measure's ring of pairs and its arithmetic. */
 static void test_gpu_time(void) {
     static TemporalGpuRing r;
@@ -2152,7 +2197,8 @@ static void test_gpu_time(void) {
         a = temporal_gpu_begin(&r, TEMPORAL_GPU_EMPTY, 10, t0);
         assert(temporal_gpu_index(a) == 0 && temporal_gpu_end(&r, a, 10));
         assert(temporal_gpu_settle(&r, 0, 10, t0 + 1000, which == 2 ? NULL : ticks, partly, 64, period));
-        assert(r.lost[TEMPORAL_GPU_EMPTY][TEMPORAL_GPU_UNAVAILABLE] == (unsigned)which + 1 && r.n[TEMPORAL_GPU_EMPTY] == 0);
+        assert(r.lost[TEMPORAL_GPU_EMPTY][TEMPORAL_GPU_UNAVAILABLE] == (unsigned)which + 1);
+        assert(r.n[TEMPORAL_GPU_EMPTY] == 0);
     }
     /* The ring exhausted: 64 brackets under way, the next has no pair and is counted. One settled, one free. */
     memset(&r, 0, sizeof r);
@@ -3318,6 +3364,7 @@ int main(void) {
     test_rect();
     test_rect_confirm();
     test_upscaler();
+    test_jitter_conformance();
     test_gpu_time();
     test_selftest();
     test_selftest_edges();
