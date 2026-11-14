@@ -818,6 +818,20 @@ static int runtime_key_options(int* argc, char** argv, char** keys, char** title
     return 0;
 }
 
+/* The upscaler's self-test (gpu/vk/upscaler_selftest.c) with what little it needs of a start: where this game's
+   log goes, which is the runtime's own record of its folders, and the log as a file though no game is loaded,
+   so that the lines are where a report of the run reads them. The process's result. */
+static int upscaler_selftest(const char* adapter) {
+    int result;
+    game_dirs();
+    log_without_game();
+    LOG("ScarletNX - upscaler self-test\n");
+    LOG("build: %s\n", snx_build_info());
+    result = vk_upscaler_selftest(adapter);
+    fflush(NULL);
+    return result;
+}
+
 int snx_main(int argc, char** argv) {
     char module[sizeof g_exedir + sizeof g_exename + 16], ini[sizeof g_confdir + sizeof g_exename + 8];
     char base[sizeof g_exename];
@@ -860,6 +874,17 @@ int snx_main(int argc, char** argv) {
     if (argc == 1 && !snx_module_static && snx_menu && snx_launcher_name(g_exename) && !snx_is_file(module)) {
         status = open_menu(argv[0]);
         goto done;
+    }
+    /* SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>: the upscaler's self-test in place of the game, on a path of its own
+       that ends the run. Taken before the guest's address space is reserved and before the game's code is
+       loaded: no file of the game is opened. Without the switch this is one look at it, and the start goes on
+       in the order it always had. */
+    {
+        const char* selftest = getenv("SNX_ARCEUS_UPSCALER_SELFTEST");
+        if (selftest && selftest[0]) {
+            status = upscaler_selftest(selftest);
+            goto done;
+        }
     }
     /* the game's errors in its log, where a fatal's "the line before" is: a game's process on Android has no stderr */
     snx_error_sink(log_error_line);
@@ -934,18 +959,6 @@ int snx_main(int argc, char** argv) {
     snx_ir_fpsr_flags(g_settings.fpsr_flags);
     snx_ir_volatile_memory(g_settings.volatile_load_stores);
 
-    /* SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>: the upscaler's self-test in place of the game. Taken here, where the
-       log is a file and nothing of the game is loaded yet: no module, no memory, no guest code. It ends the run. */
-    {
-        const char* selftest = getenv("SNX_ARCEUS_UPSCALER_SELFTEST");
-        if (selftest && selftest[0]) {
-            const int result = vk_upscaler_selftest(selftest);
-            free(keys);
-            free(title_keys);
-            fflush(NULL);
-            exit(result);
-        }
-    }
     fs_init(keys, title_keys); /* the npdm is read through it, and mem_init's layout comes before */
     npdm_layout(); /* the address space type's layout, before mem_init sizes its blocks in it */
     free(keys);

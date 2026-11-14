@@ -330,10 +330,12 @@ the signs the same way: that needs a test on a device with the library.
 
 ## The upscaler's self-test (`SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>`)
 
-With this set to an adapter's name (`fsr`), the program does not load the game. Where the log has become a file
-and nothing of the game is in memory, it makes a Vulkan instance and device of its own without a window, through
-the steps the runtime will take with an adapter (`gpu/vk/upscaler_host.c`), runs the adapter on a generated scene,
-writes its lines and ends the process with 0 for a pass. Every line begins with `arceus-upscaler-selftest`. The
+With this set to an adapter's name (`fsr`), the program does not load the game. The mode is taken at the start,
+before the guest's address space is reserved and before the game's code is loaded, on a path of its own. Of the
+game's start it runs only what names the folders, so that its log is the file a report of the run reads. Without
+the switch the start is one look at it and otherwise as before. The mode makes a Vulkan instance and device of its
+own without a window, through the steps the runtime will take with an adapter (`gpu/vk/upscaler_host.c`), runs
+the adapter on a generated scene, writes its lines and ends the process with 0 for a pass. Every line begins with `arceus-upscaler-selftest`. The
 adapter's own lines begin with `arceus-upscaler`.
 
 The FSR adapter (`gpu/vk/upscaler_fsr.cpp`, Windows only) needs AMD's `amd_fidelityfx_loader_vk.dll` and

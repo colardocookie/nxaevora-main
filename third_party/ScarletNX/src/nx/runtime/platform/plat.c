@@ -113,10 +113,12 @@ static void log_keep_run(const char* path, char* why, size_t size) {
 
 /* The log is made once the game's code module is loaded (g_mod), so a run that never gets that far (a mistyped
    --game, a dump given instead of a game) leaves no log behind */
+static int g_log_no_game; /* log_without_game: this run loads no game and has a log all the same */
+void log_without_game(void) { g_log_no_game = 1; }
 static void log_create_nl(void) {
     char path[1400], why[1700], out[LINE_MAX_ + 32];
     FILE* file;
-    if (g_log || g_log_gave_up || !g_mod) return;
+    if (g_log || g_log_gave_up || (!g_mod && !g_log_no_game)) return;
     snprintf(path, sizeof path, "%s%s.log", g_statedir, g_exename);
     log_keep_run(path, why, sizeof why);
     file = fopen(path, "w");
