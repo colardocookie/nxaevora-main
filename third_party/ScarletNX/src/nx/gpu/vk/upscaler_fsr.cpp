@@ -6,6 +6,7 @@
    nothing but the self-test mode so far. C++ because the SDK's Vulkan helpers are. */
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <new>
@@ -21,7 +22,6 @@ void logf_(int lvl, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 const SnxUpscalerApi* snx_upscaler_fsr(void);
 }
 #define FSR_LIBRARY "amd_fidelityfx_loader_vk.dll"
-#define FSR_VERSIONS 16
 
 namespace {
 struct Library {
@@ -114,35 +114,41 @@ int create(const SnxUpscalerCreate* made, SnxUpscalerTraits* traits, SnxUpscaler
     u->backend.deviceContext.vkDevice = made->device;
     u->backend.deviceContext.vkPhysicalDevice = made->physical_device;
     u->backend.deviceContext.vkDeviceProcAddr = made->device_lookup;
-    /* The versions the library holds are asked with the device, and the newest of the 3.1 line is taken. */
-    uint64_t count = 0, ids[FSR_VERSIONS];
-    const char* names[FSR_VERSIONS];
+    /* The versions the library holds are asked with the device: first how many, then all of them, in arrays of
+       that size. A list that grew in between is refused, never cut short. The newest of the 3.1 line is taken,
+       and its name is copied at once, since the strings are the library's and a later query may replace them. */
+    uint64_t count = 0;
     ffxQueryDescGetVersions versions = {};
     versions.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
     versions.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
     versions.device = &u->backend.deviceContext;
     versions.outputCount = &count;
     ffxReturnCode_t rc = g_library.query(nullptr, &versions.header);
-    if (rc == FFX_API_RETURN_OK && count) {
-        if (count > FSR_VERSIONS) count = FSR_VERSIONS;
+    const uint64_t offered = count;
+    uint64_t* ids = offered && offered < 4096 ? new (std::nothrow) uint64_t[offered]() : nullptr;
+    const char** names = ids ? new (std::nothrow) const char*[offered]() : nullptr;
+    long best = -1;
+    uint64_t chosen = 0;
+    char chosen_name[64] = "";
+    if (rc == FFX_API_RETURN_OK && ids && names) {
         versions.versionIds = ids;
         versions.versionNames = names;
         rc = g_library.query(nullptr, &versions.header);
-    }
-    long best = -1;
-    uint64_t chosen = 0;
-    const char* chosen_name = "";
-    for (uint64_t i = 0; rc == FFX_API_RETURN_OK && i < count; i++) {
-        const long patch = patch_of_3_1(names[i]);
-        if (patch > best) {
+        for (uint64_t i = 0; rc == FFX_API_RETURN_OK && count == offered && i < count; i++) {
+            const long patch = patch_of_3_1(names[i]);
+            if (patch <= best) continue;
             best = patch;
             chosen = ids[i];
-            chosen_name = names[i];
+            std::snprintf(chosen_name, sizeof chosen_name, "%s", names[i]);
         }
     }
-    if (best < 0) {
-        logf_(0, "arceus-upscaler: fsr is not available: the library offers no version of the 3.1 line (query %u, "
-                 "%llu versions)\n", rc, (unsigned long long)count);
+    const int complete = rc == FFX_API_RETURN_OK && ids && names && count == offered;
+    delete[] ids;
+    delete[] names;
+    if (!complete || best < 0) {
+        logf_(0, "arceus-upscaler: fsr is not available: %s (query %u, %llu versions offered, %llu returned)\n",
+              complete ? "the library offers no version of the 3.1 line" : "its versions could not be read whole",
+              rc, (unsigned long long)offered, (unsigned long long)count);
         delete u;
         return SNX_UPSCALER_REFUSED;
     }
@@ -173,13 +179,26 @@ int create(const SnxUpscalerCreate* made, SnxUpscalerTraits* traits, SnxUpscaler
         delete u;
         return SNX_UPSCALER_FAILED;
     }
-    /* what really runs, as the context itself says */
+    /* What really runs, as the context itself says. It must say so, and it must be the version asked for: a
+       context that runs anything else, or cannot tell, is destroyed and the adapter refuses. */
     ffxQueryGetProviderVersion runs = {};
     runs.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
     const ffxReturnCode_t asked = g_library.query(&u->context, &runs.header);
+    char runs_name[64] = "";
+    if (asked == FFX_API_RETURN_OK && runs.versionName)
+        std::snprintf(runs_name, sizeof runs_name, "%s", runs.versionName);
+    if (asked != FFX_API_RETURN_OK || runs.versionId != chosen || !runs_name[0]) {
+        logf_(0, "arceus-upscaler: fsr refused: asked for %s (id %llx), and the context says it runs \"%s\" (id "
+                 "%llx, query %u)\n", chosen_name, (unsigned long long)chosen, runs_name,
+              (unsigned long long)runs.versionId, asked);
+        const ffxReturnCode_t gone = g_library.destroy(&u->context, nullptr);
+        if (gone != FFX_API_RETURN_OK)
+            logf_(0, "arceus-upscaler: fsr could not destroy that context (code %u)\n", gone);
+        delete u;
+        return SNX_UPSCALER_REFUSED;
+    }
     logf_(1, "arceus-upscaler: fsr context made by %s: asked for %s (id %llx), runs %s (id %llx), %ux%u to %ux%u, "
-             "flags %x\n", FSR_LIBRARY, chosen_name, (unsigned long long)chosen,
-          asked == FFX_API_RETURN_OK && runs.versionName ? runs.versionName : "unknown",
+             "flags %x\n", FSR_LIBRARY, chosen_name, (unsigned long long)chosen, runs_name,
           (unsigned long long)runs.versionId, made->sizes.render_w, made->sizes.render_h, made->sizes.output_w,
           made->sizes.output_h, u->upscale.flags);
     traits->submits_itself = 0;
@@ -240,7 +259,9 @@ int evaluate(SnxUpscaler* u, const SnxUpscalerFrame* f) {
     d.preExposure = 1.0f;
     d.reset = f->reset != 0;
     d.cameraNear = f->near_plane;
-    /* with an infinite far plane the SDK goes by its flag: the number is the largest a float holds */
+    /* With reversed depth and an infinite far plane FSR 3.1 uses only the smaller of near and far (its source at
+       3.1.6: view depth = that over depth plus FLT_EPSILON), so far is the largest a float holds. Read for the
+       3.1 line only, which is the one this adapter asks for. */
     d.cameraFar = std::isinf(f->far_plane) ? 3.4028234663852886e38f : f->far_plane;
     d.cameraFovAngleVertical = f->fov_y;
     d.viewSpaceToMetersFactor = 1.0f;
