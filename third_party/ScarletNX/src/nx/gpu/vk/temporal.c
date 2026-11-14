@@ -109,7 +109,8 @@ static struct {
         object_frames, object_far, object_same, object_never, object_older, object_skinned, skinned_lines;
     /* skinned characters: our vertex and fragment programs, and the counts of the stats line */
     VkShaderModule skin_vs, skin_fs;
-    u64 skin_kept, skin_drawn, skin_first, skin_twice, skin_changed, skin_short, skin_unowned, skin_shared, skin_uncopied, skin_unkept;
+    u64 skin_kept, skin_drawn, skin_first, skin_twice, skin_changed, skin_short, skin_unowned, skin_shared,
+        skin_uncopied, skin_unkept;
     /* the learned pairs: why draws got no matrix of a frame ago, what the end of each frame judged, and the frames
        whose object vectors were given up because a pair broke after its draws */
     u64 object_learning, object_other, object_rest, object_full, object_unjudged;

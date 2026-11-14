@@ -481,8 +481,9 @@ static int pair_frame(TestSlot slot[2], unsigned frame, int bind0, int bind1, un
 }
 
 static void test_pairs(void) {
-    const unsigned long long mesh = temporal_draw_signature(0x50e238000ull, 0x51000000ull, 300, 0, 0xaf37fc644332986cull);
-    const unsigned long long other = temporal_draw_signature(0x50e238000ull, 0x51000000ull, 300, 300, 0xaf37fc644332986cull);
+    const unsigned long long program = 0xaf37fc644332986cull;
+    const unsigned long long mesh = temporal_draw_signature(0x50e238000ull, 0x51000000ull, 300, 0, program);
+    const unsigned long long other = temporal_draw_signature(0x50e238000ull, 0x51000000ull, 300, 300, program);
     assert(mesh && other && mesh != other);
     assert(temporal_draw_signature(0, 0, 0, 0, 0) != 0);
     assert(temporal_draw_signature(1, 2, 3, 4, 5) != temporal_draw_signature(2, 1, 3, 4, 5));
@@ -522,7 +523,8 @@ static void test_pairs(void) {
        matrix is its own of two frames ago and not the other's, so they never become a pair */
     memset(s, 0, sizeof s);
     for (unsigned f = 1; f <= 12; f++)
-        assert(pair_frame(s, f, !(f & 1), f & 1, mesh, mesh, 360.97f, 370.06f, (int)(f & 1)) != TEMPORAL_BEFORE_PARTNER);
+        assert(pair_frame(s, f, !(f & 1), f & 1, mesh, mesh, 360.97f, 370.06f, (int)(f & 1)) !=
+               TEMPORAL_BEFORE_PARTNER);
     /* The cost, expected: one object that truly moves 0, 1, 0, 1 looks the same and gets the camera's vector. */
     memset(s, 0, sizeof s);
     for (unsigned f = 1; f <= 12; f++)

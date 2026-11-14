@@ -216,7 +216,8 @@ static inline int temporal_camera_points(const float inverse_vp[16], const float
     temporal_multiply_d(inverse, was, both);
     const double p[4] = {ndc_x - jx, ndc_y - jy, z, 1.0};
     double clip[4];
-    for (int c = 0; c < 4; c++) clip[c] = p[0] * both[c] + p[1] * both[4 + c] + p[2] * both[8 + c] + p[3] * both[12 + c];
+    for (int c = 0; c < 4; c++)
+        clip[c] = p[0] * both[c] + p[1] * both[4 + c] + p[2] * both[8 + c] + p[3] * both[12 + c];
     now[0] = p[0];
     now[1] = p[1];
     if (!(clip[3] > 0.0)) return 0;
