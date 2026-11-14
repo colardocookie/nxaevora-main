@@ -170,4 +170,41 @@ static inline float temporal_mip_bias(float own, float shift, float device_most)
     if (bias < -device_most) bias = -device_most;
     return bias;
 }
+/* Which matrix an object's block had a frame ago. own is what the same address held the last time it was bound,
+   own_age frames ago (0 for never). partner is what the other slot of the pair held a frame ago, NULL without one.
+   A block bound at its own address a frame ago takes no turns. A block whose own matrix of two frames ago is
+   nearer to now than the partner's is not that slot's pair: another object lives there. */
+enum { TEMPORAL_BEFORE_NONE, TEMPORAL_BEFORE_OWN, TEMPORAL_BEFORE_PARTNER, TEMPORAL_BEFORE_UNPAIRED };
+static inline double temporal_matrix_distance(const float a[16], const float b[16]) {
+    double sum = 0;
+    for (int i = 0; i < 16; i++) sum += ((double)a[i] - (double)b[i]) * ((double)a[i] - (double)b[i]);
+    return sum;
+}
+static inline int temporal_before_choice(const float now[16], const float* partner, const float* own,
+                                         unsigned own_age) {
+    if (own && own_age == 1) return TEMPORAL_BEFORE_OWN;
+    if (!partner) return TEMPORAL_BEFORE_NONE;
+    if (own && own_age == 2 && temporal_matrix_distance(own, now) < temporal_matrix_distance(partner, now))
+        return TEMPORAL_BEFORE_UNPAIRED;
+    return TEMPORAL_BEFORE_PARTNER;
+}
+/* How far an object's origin moved on a screen of width x height pixels between the frame before and this one,
+   from its world matrices and the two view-projections. -1 when it is behind the camera in either. */
+static inline double temporal_origin_shift(const float vp[16], const float world[16], const float vp_before[16],
+                                           const float world_before[16], double width, double height) {
+    double at[2][3];
+    for (int k = 0; k < 2; k++) {
+        const float* m = k ? vp_before : vp;
+        const float* w = k ? world_before : world;
+        for (int c = 0; c < 3; c++) {
+            const int column = c == 2 ? 3 : c; /* x, y and w */
+            at[k][c] = (double)w[12] * (double)m[column] + (double)w[13] * (double)m[4 + column] +
+                       (double)w[14] * (double)m[8 + column] + (double)m[12 + column];
+        }
+        if (!(at[k][2] > 0.0)) return -1.0;
+    }
+    const double dx = (at[0][0] / at[0][2] - at[1][0] / at[1][2]) * 0.5 * width;
+    const double dy = (at[0][1] / at[0][2] - at[1][1] / at[1][2]) * 0.5 * height;
+    return sqrt(dx * dx + dy * dy);
+}
 #endif

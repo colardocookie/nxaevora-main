@@ -31,9 +31,9 @@
 #define OBJECT_DRAWS 256   /* extra draws a frame at most */
 #define MODE_PROBE 1
 #define MODE_TAA 2
-#define SETS_BINDINGS 6
+#define SETS_BINDINGS 7
 #define STATS_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
-#define STATS_W 96u /* the numbers' image: one texel a sampled pixel */
+#define STATS_W 96u /* the numbers' image: one texel a sampled pixel, in each of two halves side by side */
 #define STATS_H 54u
 #define STATS_EVERY 60u    /* runs between two readings */
 #define STATS_ERROR 0.25f  /* a relative colour error above this counts as wrong */
@@ -104,7 +104,15 @@ static struct {
         object_frames, object_far, object_same, object_never, object_older, object_skinned, skinned_lines;
     /* skinned characters: our vertex and fragment programs, and the counts of the stats line */
     VkShaderModule skin_vs, skin_fs;
-    u64 skin_kept, skin_drawn, skin_first, skin_twice;
+    u64 skin_kept, skin_drawn, skin_first, skin_twice, skin_changed, object_unpaired;
+    /* each extra draw of this frame by its number, and the same for the frame the numbers' image was drawn in:
+       the probe writes the number to the vector target, so a wrong vector names its draw */
+    struct Drawn {
+        u64 block, feedback;
+        float shift; /* the origin's move on screen in pixels */
+        u8 skinned, source;
+    } drawn[OBJECT_DRAWS + 1], stats_drawn[OBJECT_DRAWS + 1];
+    u32 unpaired_logged_at, long_logged_at;
     /* the transform feedback outputs of this frame, for finding the draws that read them */
     struct {
         u64 address;
@@ -549,13 +557,28 @@ static void stats_log(void) {
     unsigned object_n = 0, object_wrong = 0, object_camera = 0, object_still = 0, skin_near = 0;
     const int taa = g_t.mode == MODE_TAA;
     double length = 0, longest = 0;
+    double drawn_gradient = 0, shown_gradient = 0;
+    u16 capped[OBJECT_DRAWS + 1];
+    memset(capped, 0, sizeof capped);
     for (u32 i = 0; i < STATS_W * STATS_H; i++) {
-        const float moved = half_float(g_t.stats_words[4 * i]), still = half_float(g_t.stats_words[4 * i + 1]);
-        float vector = half_float(g_t.stats_words[4 * i + 2]);
-        const float z = half_float(g_t.stats_words[4 * i + 3]);
+        /* the left half's texel of this sample, then the right half's */
+        const u16* words = &g_t.stats_words[4 * (i / STATS_W * 2 * STATS_W + i % STATS_W)];
+        const u16* more = words + 4 * STATS_W;
+        const float moved = half_float(words[0]), still = half_float(words[1]);
+        float vector = half_float(words[2]);
+        const float z = half_float(words[3]);
+        if (taa) {
+            drawn_gradient += (double)half_float(more[0]);
+            shown_gradient += (double)half_float(more[1]);
+        }
         /* the probe marks a pixel that took an object's vector in the thousands of the length (temporal_stats.frag) */
         const int object_marks = vector >= 1000.0f ? (int)(vector / 1000.0f) : 0;
         vector -= 1000.0f * (float)object_marks;
+        /* an object's vector at the cap: counted for the draw that left it */
+        if ((object_marks & 1) && vector >= 989.5f) {
+            const float number = half_float(more[0]);
+            capped[number >= 1.0f && number <= (float)OBJECT_DRAWS ? (u32)(number + 0.5f) : 0]++;
+        }
         if (z == -1.0f) {
             sky++;
             continue;
@@ -602,11 +625,16 @@ static void stats_log(void) {
             (unsigned long long)g_t.stats_run, all ? length / all : 0.0, all ? 100.0 * changed / all : 0.0);
         return;
     }
+    /* sharpness: the gradient length of the picture shown over that of the frame as drawn, summed over every
+       sample. An edge the resolve smooths lowers it, and so does a blur of the whole picture. */
     if (taa)
         at += snprintf(bands, sizeof bands,
-                       " frame_to_frame=%.1f%% shown_frame_to_frame=%.1f%% above_0.05=%.1f%% above_0.02=%.1f%%",
+                       " frame_to_frame=%.1f%% shown_frame_to_frame=%.1f%% above_0.05=%.1f%% above_0.02=%.1f%% "
+                       "sharpness=%.3f (gradient drawn %.5f, shown %.5f)",
                        all ? 100.0 * changed / all : 0.0, all ? 100.0 * shown / all : 0.0,
-                       all ? 100.0 * shown_fine[0] / all : 0.0, all ? 100.0 * shown_fine[1] / all : 0.0);
+                       all ? 100.0 * shown_fine[0] / all : 0.0, all ? 100.0 * shown_fine[1] / all : 0.0,
+                       drawn_gradient > 0.0 ? shown_gradient / drawn_gradient : 0.0,
+                       drawn_gradient / (STATS_W * STATS_H), shown_gradient / (STATS_W * STATS_H));
     for (int b = 0; b < 3; b++)
         at += snprintf(bands + at, sizeof bands - (size_t)at, taa ? " %s n=%u dropped=%.1f%% far_from_frame=%.1f%%"
                                                                : " %s n=%u wrong=%.1f%% without_vectors=%.1f%%",
@@ -627,11 +655,30 @@ static void stats_log(void) {
                  skin_near);
     LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px vector_max=%.2f px sky=%u off_screen=%u%s\n",
         (unsigned long long)g_t.stats_run, all ? length / all : 0.0, longest, sky, off, bands);
+    /* the draws that left vectors at the cap, four at most */
+    int lines = 0;
+    for (u32 d = 0; d <= OBJECT_DRAWS && lines < 4; d++) {
+        const struct Drawn* w = &g_t.stats_drawn[d];
+        if (!capped[d]) continue;
+        lines++;
+        if (!d) {
+            LOG("arceus-temporal-long: run=%llu %u sampled pixels with a vector at the cap name no draw\n",
+                (unsigned long long)g_t.stats_run, capped[d]);
+            continue;
+        }
+        LOG("arceus-temporal-long: run=%llu %u sampled pixels with a vector at the cap from draw %u: %s, block %llx, "
+            "feedback output %llx, matrix before from %s, origin moved %.1f px\n",
+            (unsigned long long)g_t.stats_run, capped[d], d, w->skinned ? "skinned" : "rigid",
+            (unsigned long long)w->block, (unsigned long long)w->feedback,
+            w->source == TEMPORAL_BEFORE_OWN ? "its own address" : w->source == TEMPORAL_BEFORE_PARTNER
+                                                                      ? "the other slot" : "none (this frame's)",
+            (double)w->shift);
+    }
 }
 
 static int stats_ready(void) {
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                              .size = (u64)STATS_W * STATS_H * 8,
+                              .size = (u64)2 * STATS_W * STATS_H * 8,
                               .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo bai = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
@@ -744,7 +791,8 @@ static void objects_log(u32 frame) {
         "ago %llu (never seen %llu, seen two frames ago or more %llu), found at the same address %llu, reading a "
         "feedback buffer %llu, jumped too far %llu, moved %llu, drawn again %llu, over the cap of %d a frame %llu, not "
         "an affine matrix %llu, pipelines made %llu, skinned: buffers kept %llu (a second time in a frame %llu), "
-        "drawn again %llu, without last frame's buffer %llu\n",
+        "drawn again %llu, without last frame's buffer %llu, with a capture of another length %llu, blocks that "
+        "are not their other slot's pair %llu\n",
         (unsigned long long)g_t.object_seen, (unsigned long long)g_t.object_new,
         (unsigned long long)g_t.object_never, (unsigned long long)g_t.object_older,
         (unsigned long long)g_t.object_same, (unsigned long long)g_t.object_skinned,
@@ -752,10 +800,100 @@ static void objects_log(u32 frame) {
         (unsigned long long)g_t.object_moved, (unsigned long long)g_t.object_drawn, OBJECT_DRAWS,
         (unsigned long long)g_t.object_capped, (unsigned long long)g_t.object_odd,
         (unsigned long long)g_t.object_pipelines, (unsigned long long)g_t.skin_kept,
-        (unsigned long long)g_t.skin_twice, (unsigned long long)g_t.skin_drawn, (unsigned long long)g_t.skin_first);
-    g_t.skin_kept = g_t.skin_drawn = g_t.skin_first = g_t.skin_twice = 0;
+        (unsigned long long)g_t.skin_twice, (unsigned long long)g_t.skin_drawn, (unsigned long long)g_t.skin_first,
+        (unsigned long long)g_t.skin_changed, (unsigned long long)g_t.object_unpaired);
+    g_t.skin_kept = g_t.skin_drawn = g_t.skin_first = g_t.skin_twice = g_t.skin_changed = g_t.object_unpaired = 0;
     g_t.object_seen = g_t.object_new = g_t.object_moved = g_t.object_drawn = g_t.object_capped = g_t.object_odd = 0;
     g_t.object_far = g_t.object_same = g_t.object_never = g_t.object_older = g_t.object_skinned = 0;
+}
+
+/* The table's entry of the block at address with this frame's matrix in it. Several draws may bind one block: the
+   first of a frame moves the matrix on. */
+static Object* object_take(u64 address, const float world[16], u32 frame) {
+    Object* o = object_slot(address, frame, 1);
+    if (o && o->at != frame) {
+        memcpy(o->before, o->world, sizeof o->before);
+        o->before_at = o->at;
+        memcpy(o->world, world, sizeof o->world);
+        o->at = frame;
+    }
+    return o;
+}
+
+/* The matrix the block had a frame ago, NULL for none, and in source where it came from. The other slot of its
+   pair is the one the camera's step points back to (temporal_before_choice has the rules). */
+static const float* object_before(const Object* o, u64 address, u32 size, u32 frame, int skinned, int* source) {
+    const Object* partner = NULL;
+    if (g_t.camera_address[0] && g_t.camera_address[1]) {
+        partner =
+            object_slot(g_t.camera_address[0] > g_t.camera_address[1] ? address - size : address + size, frame, 0);
+        if (partner && partner->at + 1 != frame) partner = NULL;
+    }
+    *source = temporal_before_choice(o->world, partner ? partner->world : NULL, o->before_at ? o->before : NULL,
+                                     o->before_at ? frame - o->before_at : 0);
+    if (*source == TEMPORAL_BEFORE_OWN) {
+        g_t.object_same++;
+        return o->before;
+    }
+    if (*source == TEMPORAL_BEFORE_PARTNER) return partner->world;
+    if (*source == TEMPORAL_BEFORE_UNPAIRED) {
+        g_t.object_unpaired++;
+        if (g_t.unpaired_logged_at + 60 <= frame) { /* one example a second */
+            g_t.unpaired_logged_at = frame;
+            LOG("arceus-temporal-objects: block %llx (%s) is not the pair of its other slot: now %.2f %.2f %.2f, "
+                "two frames ago here %.2f %.2f %.2f, a frame ago there %.2f %.2f %.2f\n",
+                (unsigned long long)address, skinned ? "skinned" : "rigid", (double)o->world[12],
+                (double)o->world[13], (double)o->world[14], (double)o->before[12], (double)o->before[13],
+                (double)o->before[14], (double)partner->world[12], (double)partner->world[13],
+                (double)partner->world[14]);
+        }
+        return NULL;
+    }
+    g_t.object_new++;
+    if (!o->before_at) g_t.object_never++;
+    else g_t.object_older++;
+    return NULL;
+}
+
+/* Another object may have taken the slot: a jump of more than 5 units in a frame is not a move. 1 for a jump. */
+static int object_jumped(u64 address, const float world[16], const float was[16], u32 frame) {
+    const float dx = world[12] - was[12], dy = world[13] - was[13], dz = world[14] - was[14];
+    const float distance = dx * dx + dy * dy + dz * dz;
+    if (distance < 25.0f) return 0;
+    g_t.object_far++;
+    if (g_t.far_logged_at + 60 <= frame) { /* one example a second */
+        g_t.far_logged_at = frame;
+        LOG("arceus-temporal-objects: jump of %.2f units at block %llx: now %.2f %.2f %.2f, a frame ago "
+            "%.2f %.2f %.2f\n",
+            sqrt((double)distance), (unsigned long long)address, (double)world[12], (double)world[13],
+            (double)world[14], (double)was[12], (double)was[13], (double)was[14]);
+    }
+    return 1;
+}
+
+/* Notes the extra draw that comes next, for the numbers: its block, where its matrix of a frame ago came from and
+   how far its origin moved on screen. A long move with a still camera has a line, one a second. Returns the draw's
+   number. */
+static u32 drawn_note(u64 block, u64 feedback, int skinned, int source, const float world[16], const float* was,
+                      const Surf* zt, u32 frame) {
+    const u32 number = g_t.object_draws + 1;
+    struct Drawn* d = &g_t.drawn[number <= OBJECT_DRAWS ? number : 0];
+    d->block = block;
+    d->feedback = feedback;
+    d->skinned = (u8)skinned;
+    d->source = (u8)source;
+    d->shift = (float)temporal_origin_shift(g_t.now, world, g_t.before, was, (double)zt->sw, (double)zt->sh);
+    const float camera =
+        (float)temporal_origin_shift(g_t.now, world, g_t.before, world, (double)zt->sw, (double)zt->sh);
+    if (d->shift > 100.0f && camera >= 0.0f && camera < 20.0f && g_t.long_logged_at + 60 <= frame) {
+        g_t.long_logged_at = frame;
+        LOG("arceus-temporal-objects: long move of %.0f px (the camera alone %.0f px) at block %llx (%s, before from "
+            "%s): now %.2f %.2f %.2f, a frame ago %.2f %.2f %.2f\n",
+            (double)d->shift, (double)camera, (unsigned long long)block, skinned ? "skinned" : "rigid",
+            source == TEMPORAL_BEFORE_OWN ? "its own address" : "the other slot", (double)world[12],
+            (double)world[13], (double)world[14], (double)was[12], (double)was[13], (double)was[14]);
+    }
+    return number;
 }
 
 int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* out) {
@@ -772,48 +910,12 @@ int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* o
         g_t.object_odd++;
         return 0;
     }
-    Object* o = object_slot(address, frame, 1);
+    Object* o = object_take(address, world, frame);
     if (!o) return 0;
-    if (o->at != frame) { /* several draws may bind one block: the first of a frame moves the matrix on */
-        memcpy(o->before, o->world, sizeof o->before);
-        o->before_at = o->at;
-        memcpy(o->world, world, sizeof o->world);
-        o->at = frame;
-    }
-    /* the slot this block had a frame ago: the camera's block went the same way */
-    if (!g_t.camera_address[0] || !g_t.camera_address[1]) return 0;
-    const Object* partner =
-        object_slot(g_t.camera_address[0] > g_t.camera_address[1] ? address - size : address + size, frame, 0);
-    const float* was_world;
-    if (partner && partner->at + 1 == frame)
-        was_world = partner->world;
-    else if (o->before_at && o->before_at + 1 == frame) {
-        /* a block that does not take turns: this address held it a frame ago */
-        g_t.object_same++;
-        was_world = o->before;
-    } else {
-        g_t.object_new++;
-        if (!o->before_at) g_t.object_never++;
-        else g_t.object_older++;
-        return 0;
-    }
-    if (!memcmp(was_world, world, sizeof world) || !g_t.have_before) return 0;
-    /* another object may have taken the slot: a jump of more than 5 units in a frame is not a move */
-    {
-        const float dx = world[12] - was_world[12], dy = world[13] - was_world[13], dz = world[14] - was_world[14];
-        const float distance = dx * dx + dy * dy + dz * dz;
-        if (!(distance < 25.0f)) {
-            g_t.object_far++;
-            if (g_t.far_logged_at + 60 <= frame) { /* one example a second */
-                g_t.far_logged_at = frame;
-                LOG("arceus-temporal-objects: jump of %.2f units at block %llx: now %.2f %.2f %.2f, a frame ago "
-                    "%.2f %.2f %.2f\n",
-                    sqrt((double)distance), (unsigned long long)address, (double)world[12], (double)world[13],
-                    (double)world[14], (double)was_world[12], (double)was_world[13], (double)was_world[14]);
-            }
-            return 0;
-        }
-    }
+    int source;
+    const float* was_world = object_before(o, address, size, frame, 0, &source);
+    if (!was_world || !memcmp(was_world, world, sizeof world) || !g_t.have_before) return 0;
+    if (object_jumped(address, world, was_world, frame)) return 0;
     g_t.object_moved++;
     if (g_t.object_draws >= OBJECT_DRAWS) {
         g_t.object_capped++;
@@ -844,7 +946,10 @@ int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* o
     block.depth[2] = block.depth[3] = 0;
     block.size[0] = (float)zt->sw;
     block.size[1] = (float)zt->sh;
-    block.size[2] = block.size[3] = 0;
+    /* in the probe the draw's number takes the place of the depth before, which only the resolve reads */
+    const u32 number = drawn_note(address, 0, 0, source, world, was_world, zt, frame);
+    block.size[2] = g_t.mode == MODE_PROBE ? (float)number : 0.0f;
+    block.size[3] = 0;
     if (!(block.depth[1] != 0.0f) || !(block.viewport[2] != 0.0f) || !(block.viewport[3] != 0.0f)) return 0;
     if (!g_t.object_fs) {
         VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -943,29 +1048,6 @@ void vk_temporal_skin_keep(VkCommandBuffer cb, u64 address, u32 size, VkBuffer s
     g_t.skin_kept++;
 }
 
-/* The object's world matrix a frame ago for a draw that binds the block at address, or world itself when the table
-   has none (the table is brought up to date on the way, as vk_temporal_object does) */
-static const float* object_world_before(u64 address, u32 size, const float world[16], u32 frame) {
-    Object* o = object_slot(address, frame, 1);
-    if (!o) return world;
-    if (o->at != frame) {
-        memcpy(o->before, o->world, sizeof o->before);
-        o->before_at = o->at;
-        memcpy(o->world, world, sizeof o->world);
-        o->at = frame;
-    }
-    const float* was = NULL;
-    if (g_t.camera_address[0] && g_t.camera_address[1]) {
-        const Object* partner =
-            object_slot(g_t.camera_address[0] > g_t.camera_address[1] ? address - size : address + size, frame, 0);
-        if (partner && partner->at + 1 == frame) was = partner->world;
-    }
-    if (!was && o->before_at && o->before_at + 1 == frame) was = o->before;
-    if (!was) return world;
-    const float dx = world[12] - was[12], dy = world[13] - was[13], dz = world[14] - was[14];
-    return dx * dx + dy * dy + dz * dz < 25.0f ? was : world;
-}
-
 /* A G-buffer draw whose position stream starts offset bytes into the transform feedback output at address: 1 with
    what its vector draw needs when last frame's copy of that output is there. The draw is then made with our vertex
    and fragment programs: the position now from the game's binding, the position before from out->before. */
@@ -983,6 +1065,11 @@ int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, Vk
         g_t.skin_first++;
         return 0;
     }
+    /* another mesh may have taken the address: this frame's capture must be there and as long as last frame's */
+    if (s->at[!last] != frame || s->size[!last] != s->size[last]) {
+        g_t.skin_changed++;
+        return 0;
+    }
     if (g_t.object_draws >= OBJECT_DRAWS) {
         g_t.object_capped++;
         return 0;
@@ -993,7 +1080,15 @@ int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, Vk
         g_t.object_odd++;
         return 0;
     }
-    const float* was = object_world_before(block_at, block_size, world, frame);
+    /* the object's matrix a frame ago, or this frame's without one: the limbs' own motion stays */
+    int source = TEMPORAL_BEFORE_NONE;
+    const Object* o = object_take(block_at, world, frame);
+    g_t.object_seen++;
+    const float* was = o ? object_before(o, block_at, block_size, frame, 1, &source) : NULL;
+    if (!was || object_jumped(block_at, world, was, frame)) {
+        was = world;
+        source = TEMPORAL_BEFORE_NONE;
+    }
     double jx = 0, jy = 0;
     if (g_t.mode == MODE_TAA) {
         float pixels[2];
@@ -1017,7 +1112,9 @@ int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, Vk
     block.depth[3] = g_t.mode == MODE_PROBE ? 1.0f : 0.0f;
     block.size[0] = (float)zt->sw;
     block.size[1] = (float)zt->sh;
-    block.size[2] = block.size[3] = 0;
+    const u32 number = drawn_note(block_at, address, 1, source, world, was, zt, frame);
+    block.size[2] = g_t.mode == MODE_PROBE ? (float)number : 0.0f;
+    block.size[3] = 0;
     if (!(block.viewport[2] != 0.0f) || !(block.viewport[3] != 0.0f) || !layouts_make()) return 0;
     if (!g_t.skin_vs) g_t.skin_vs = vk_module_spv(temporal_skin_vs_spv, (size_t)(temporal_skin_vs_spv_size / 4));
     if (!g_t.skin_fs) g_t.skin_fs = vk_module_spv(temporal_skin_fs_spv, (size_t)(temporal_skin_fs_spv_size / 4));
@@ -1166,8 +1263,9 @@ void vk_temporal_before(u64 fs0_hash) {
                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         const VkImageView views[SETS_BINDINGS] = {depth_view, objects ? g_t.object.view : depth_view, depth_view,
-                                                  depth_view, depth_view,                             depth_view};
-        const VkSampler samplers[SETS_BINDINGS] = {g_t.point, g_t.point, g_t.point,
+                                                  depth_view, depth_view,                             depth_view,
+                                                  depth_view};
+        const VkSampler samplers[SETS_BINDINGS] = {g_t.point, g_t.point, g_t.point, g_t.point,
                                                    g_t.point, g_t.point, g_t.point};
         const VkDescriptorSet set = set_make(views, samplers);
         if (!set) return;
@@ -1209,13 +1307,14 @@ void vk_temporal_before(u64 fs0_hash) {
         g_t.history_at = frame;
     }
     const int taa = g_t.mode == MODE_TAA;
-    const VkSampler samplers[SETS_BINDINGS] = {g_t.point, g_t.point, g_t.linear, g_t.point, g_t.point, g_t.point};
+    const VkSampler samplers[SETS_BINDINGS] = {g_t.point, g_t.point, g_t.linear, g_t.point,
+                                               g_t.point, g_t.point, g_t.point};
     /* the frame before as it was drawn, for the numbers: with jitter its edges differ from this frame's */
     const VkImageView last_frame = history ? before->view : now->view;
     VkImageView numbers_before = last_frame;
     /* the picture shown a frame ago, for the numbers: the resolved one with anti-aliasing on */
     VkImageView shown_before = VK_NULL_HANDLE;
-    int numbers = history;
+    int numbers = history, sharpened = 0;
     if (taa && g_t.view != 4) {
         /* the resolve: the scene colour and the new history are written, the old history and this frame's copy
            read. No history is used on the first frame, after a gap, after a change of size or a camera cut. */
@@ -1245,7 +1344,7 @@ void vk_temporal_before(u64 fs0_hash) {
         rc.depth[3] = usable ? 0.0f : 1.0f;
         rc.size[3] = FRAME_WEIGHT;
         const VkImageView views[SETS_BINDINGS] = {g_t.motion.view, now->view, usable ? kept->view : now->view,
-                                                  depth_view, last_frame, last_frame};
+                                                  depth_view, last_frame, last_frame, last_frame};
         const VkDescriptorSet set = set_make(views, samplers);
         if (!set) return;
         vk_barrier(cb, made->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
@@ -1266,7 +1365,7 @@ void vk_temporal_before(u64 fs0_hash) {
                     pipeline_make(scene->f.vk, temporal_sharpen_fs_spv, temporal_sharpen_fs_spv_size, "sharpen");
                 g_t.sharpen_format = scene->f.vk;
             }
-            const VkImageView sharpen_views[SETS_BINDINGS] = {made->view, made->view, made->view,
+            const VkImageView sharpen_views[SETS_BINDINGS] = {made->view, made->view, made->view, made->view,
                                                               made->view, made->view, made->view};
             const VkDescriptorSet sharpen_set = g_t.sharpen_pipe ? set_make(sharpen_views, samplers) : VK_NULL_HANDLE;
             if (sharpen_set) {
@@ -1276,6 +1375,7 @@ void vk_temporal_before(u64 fs0_hash) {
                 vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
                 fullscreen(cb, scene->att, scene->sw, scene->sh, g_t.sharpen_pipe, sharpen_set, &sc);
+                sharpened = 1;
             }
         }
         vk_surf_wrote(scene);
@@ -1299,30 +1399,42 @@ void vk_temporal_before(u64 fs0_hash) {
         shown_before = g_t.object.view;
         pc.depth[3] = 1.0f;
     }
+    const int stats_due = numbers && g_t.runs % STATS_EVERY == 0;
+    /* the picture as shown, for its gradient: the resolve's, or the scene colour itself after a sharpen */
+    VkImageView final_view = numbers_before;
+    if (sharpened && stats_due) {
+        const VkImageView scene_view = vk_tex_view(scene, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
+        if (scene_view) {
+            vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            final_view = scene_view;
+        }
+    }
     const VkImageView views[SETS_BINDINGS] = {
         g_t.motion.view, now->view, numbers_before, depth_view, last_frame,
-        shown_before ? shown_before : numbers_before};
+        shown_before ? shown_before : numbers_before, final_view};
     const VkDescriptorSet set = set_make(views, samplers);
     if (!set) return;
 
     /* the numbers: every STATS_EVERY runs the small image is drawn and copied to memory, and the copy made that
        many runs ago, long finished, is read and logged */
-    if (numbers && g_t.runs % STATS_EVERY == 0 && g_t.stats_pipe && stats_ready() &&
-        image_ensure(&g_t.stats, STATS_FORMAT, STATS_W, STATS_H,
+    if (stats_due && g_t.stats_pipe && stats_ready() &&
+        image_ensure(&g_t.stats, STATS_FORMAT, 2 * STATS_W, STATS_H,
                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, "numbers")) {
         const VkBufferImageCopy out = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                       .imageExtent = {STATS_W, STATS_H, 1}};
+                                       .imageExtent = {2 * STATS_W, STATS_H, 1}};
         /* the memory may not be coherent: what the GPU wrote is fetched before it is read */
         if (g_t.stats_run && VK_OK(vmaInvalidateAllocation(g_vk.vma, g_t.stats_memory, 0, VK_WHOLE_SIZE))) stats_log();
         vk_barrier(cb, g_t.stats.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, 0,
                    VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        fullscreen(cb, g_t.stats.view, STATS_W, STATS_H, g_t.stats_pipe, set, &pc);
+        fullscreen(cb, g_t.stats.view, 2 * STATS_W, STATS_H, g_t.stats_pipe, set, &pc);
         vk_barrier(cb, g_t.stats.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         rec_CmdCopyImageToBuffer(cb, g_t.stats.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_t.stats_buffer, 1, &out);
         g_t.stats_run = g_t.runs;
+        memcpy(g_t.stats_drawn, g_t.drawn, sizeof g_t.stats_drawn);
     }
     if (taa || !g_t.view) return;
     /* a view of the probe, drawn over the scene */

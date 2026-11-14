@@ -293,6 +293,45 @@ static void test_mip_bias(void) {
     assert(close_to(temporal_mip_bias(5.0f, 0.0f, 4.0f), 4.0, 1e-6));
 }
 
+/* The matrix a block had a frame ago: its own when the address is bound every frame, the pair's other slot when
+   the block takes turns, none when the other slot belongs to another object. */
+static void test_before_choice(void) {
+    float now[16], near[16], far[16];
+    world(0.5f, 1, 10, 0, 40, now);
+    world(0.5f, 1, 9.9f, 0, 40, near);
+    world(0.1f, 1, 13, 0, 42, far);
+    assert(temporal_before_choice(now, NULL, NULL, 0) == TEMPORAL_BEFORE_NONE);
+    assert(temporal_before_choice(now, NULL, near, 2) == TEMPORAL_BEFORE_NONE);
+    assert(temporal_before_choice(now, far, near, 1) == TEMPORAL_BEFORE_OWN);
+    assert(temporal_before_choice(now, NULL, near, 1) == TEMPORAL_BEFORE_OWN);
+    /* a pair in steady motion: a frame ago is nearer than two frames ago */
+    assert(temporal_before_choice(now, near, far, 2) == TEMPORAL_BEFORE_PARTNER);
+    assert(temporal_before_choice(now, near, NULL, 0) == TEMPORAL_BEFORE_PARTNER);
+    assert(temporal_before_choice(now, near, far, 3) == TEMPORAL_BEFORE_PARTNER);
+    /* a still pair: both equal now, the partner stands */
+    assert(temporal_before_choice(now, now, now, 2) == TEMPORAL_BEFORE_PARTNER);
+    /* the other slot holds another still object, 3 units away, and this address held this object two frames ago */
+    assert(temporal_before_choice(now, far, now, 2) == TEMPORAL_BEFORE_UNPAIRED);
+    assert(temporal_before_choice(now, far, near, 2) == TEMPORAL_BEFORE_UNPAIRED);
+}
+
+static void test_origin_shift(void) {
+    float vp_now[16], vp_before[16], unused[16], w_now[16], w_before[16];
+    camera(0, 0, 1, 1, vp_now, unused);
+    camera(0, 0, 1, 1, vp_before, unused);
+    world(0, 1, 2, 1, 10, w_now);
+    world(0, 1, 2, 1, 10, w_before);
+    assert(close_to(temporal_origin_shift(vp_now, w_now, vp_before, w_before, 1920, 1080), 0, 1e-9));
+    /* one unit to the side at a distance of 10: 0.1 of the half width */
+    world(0, 1, 1, 1, 10, w_before);
+    assert(close_to(temporal_origin_shift(vp_now, w_now, vp_before, w_before, 1920, 1080), 96, 1e-3));
+    /* the camera moved instead, by 0.5 up */
+    camera(0, 0.5f, 1, 1, vp_before, unused);
+    assert(close_to(temporal_origin_shift(vp_now, w_now, vp_before, w_now, 1920, 1080), 27, 1e-3));
+    world(0, 1, 2, 1, -1, w_before);
+    assert(temporal_origin_shift(vp_now, w_now, vp_now, w_before, 1920, 1080) < 0);
+}
+
 int main(void) {
     test_jitter();
     test_jitter_matrices();
@@ -304,6 +343,8 @@ int main(void) {
     test_weights();
     test_sharpen();
     test_mip_bias();
+    test_before_choice();
+    test_origin_shift();
     puts("temporal_math: ok");
     return 0;
 }

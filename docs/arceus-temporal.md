@@ -89,6 +89,9 @@ camera it shows the jitter at work: edges change from frame to frame. Without ji
 `shown_frame_to_frame` is the same share for the resolved picture against the resolved picture of the frame before.
 The blend moves a pixel by a tenth of its distance each frame, so a quarter is rarely reached there: `above_0.05`
 and `above_0.02` give the same share at those finer steps. With a still camera, shimmer from the jitter shows in them.
+`sharpness` is the gradient length of the picture as shown (after the sharpen, when on) over that of the frame as
+drawn, summed over the sampled pixels on brightness brought under 1. The resolve smooths edges, which lowers it, and
+so does a blur of the whole picture. It compares options on the same scene, not runs of different scenes.
 
 Limits. The vectors are the camera's only, so a moving character or Pokémon drags a trail until the history is
 clamped away, and grass in the wind blurs. Thin bright details can flicker where the clamp cuts them. The resolve
@@ -124,6 +127,9 @@ With `probe` or `taa`. The camera vectors are right for what stands still. An ob
 - Each G-buffer draw binds the object's constant block (bank 6, its world matrix at +0). The matrix is kept in a
   table by the block's address. The game writes a block to two slots in turn, one bound size apart, and all blocks
   take the same turn as the camera's block. Last frame's matrix is the entry of the other slot.
+- Not every block takes turns. A block bound at its own address a frame ago uses that entry. A block whose own
+  matrix of two frames ago is nearer to now than the other slot's of a frame ago is not that slot's pair (another
+  object lives there) and gets no matrix of a frame ago.
 - When the matrix differs from that one, and by less than 5 units of position, the draw is made once more right after the game's: the
   game's vertex program and state, a fragment program of ours, the vector target as its only colour target and the
   scene depth tested for equal and not written. So it covers the pixels the object owns.
@@ -140,7 +146,8 @@ stream is such an output (three floats, 12 bytes a vertex) is then drawn again w
 position now from the game's binding, the position a frame ago from our copy, each through its own world and
 view-projection matrix. That program is not the game's, so its depth is not bit for bit the game's: the scene depth
 is sampled and a fragment counts when it is within 0.3 % of it. A character whose first frame it is, or whose buffer
-was not written the frame before, falls back to the motion of its world matrix.
+was not written the frame before, falls back to the motion of its world matrix. So does one whose capture of this
+frame is not as long as last frame's: another mesh may have taken the address.
 
 The depth an object's point had a frame ago goes with its vector (the object target's alpha, the vector image's
 blue), and the resolve expects that depth of the history there. The camera's reprojection does not know the object
@@ -153,5 +160,13 @@ pipeline, compiled when first needed.
 
 `arceus-temporal-objects` every 600 frames: G-buffer draws with an object block, without a block a frame ago,
 jumped too far, moved, drawn again, over the cap, not an affine matrix, pipelines made, and for the skinned
-characters: buffers kept, drawn again, without last frame's buffer.
+characters: buffers kept, drawn again, without last frame's buffer, with a capture of another length, and the
+blocks that are not their other slot's pair. Skinned draws count in the block numbers too. One example a second
+has its own line: a jump, a block that is not its slot's pair, and a move of more than 100 px on screen while the
+camera's own is under 20 px.
+
+In the probe the extra draws write their number of the frame where the resolve would expect the depth before, and
+the numbers' image carries it. `arceus-temporal-long` then names, for sampled pixels whose object vector is at the
+990 px cap, the draw that left it: rigid or skinned, its block, its feedback output, where its matrix of a frame
+ago came from and how far its origin moved on screen.
 

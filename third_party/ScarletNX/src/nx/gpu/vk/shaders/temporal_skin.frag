@@ -31,5 +31,6 @@ void main() {
     }
     vec2 is = (v_now.xy / v_now.w * 0.5 + 0.5) * u.viewport.zw + u.viewport.xy;
     vec2 was = (v_before.xy / v_before.w * 0.5 + 0.5) * u.viewport.zw + u.viewport.xy;
-    o_vector = vec4((is - was) / u.size.xy, stored, max(v_before.z / v_before.w, 0.0));
+    o_vector = vec4((is - was) / u.size.xy, stored,
+                    u.size.z > 0.5 ? u.size.z : max(v_before.z / v_before.w, 0.0)); // the probe: the draw's number
 }

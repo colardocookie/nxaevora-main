@@ -6,6 +6,9 @@
 // 0 far), -1 for the far plane, -2 where last frame's pixel is off screen.
 // With anti-aliasing on (depth.z is 1) u_before is the resolved frame: red is 1 where the history was dropped, green
 // how far the resolved colour is from the frame's own.
+// The image is two such halves side by side. The right half holds, for the same pixels: with anti-aliasing on, red
+// the gradient length of the frame as drawn and green that of the picture as shown (their ratio is how sharp the
+// shown picture is). In the probe with object vectors, red is the number of the draw that left the pixel's vector.
 #version 450
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 o_stats;
@@ -21,12 +24,32 @@ layout(push_constant) uniform Constants {
 layout(set = 0, binding = 3) uniform sampler2D u_depth;
 layout(set = 0, binding = 4) uniform sampler2D u_last; // the frame before, as it was drawn
 layout(set = 0, binding = 5) uniform sampler2D u_shown; // the resolved picture of the frame before
+layout(set = 0, binding = 6) uniform sampler2D u_final; // the picture as shown this frame, after the sharpen
 float relative(vec3 a, vec3 b) {
     vec3 e = abs(a - b) / (max(a, b) + 0.05);
     return max(e.r, max(e.g, e.b));
 }
+// brightness brought under 1, so a few very bright pixels do not carry the sum
+float tone(sampler2D s, ivec2 pixel) {
+    float l = dot(texelFetch(s, clamp(pixel, ivec2(0), ivec2(pc.size.xy) - 1), 0).rgb, vec3(0.2126, 0.7152, 0.0722));
+    return l / (1.0 + l);
+}
+float gradient(sampler2D s, ivec2 pixel) {
+    return 0.5 * length(vec2(tone(s, pixel + ivec2(1, 0)) - tone(s, pixel - ivec2(1, 0)),
+                             tone(s, pixel + ivec2(0, 1)) - tone(s, pixel - ivec2(0, 1))));
+}
 void main() {
-    ivec2 pixel = ivec2(v_uv * pc.size.xy);
+    ivec2 pixel = ivec2(vec2(fract(v_uv.x * 2.0), v_uv.y) * pc.size.xy);
+    if (v_uv.x >= 0.5) {
+        o_stats = vec4(0.0);
+        if (pc.depth.z > 0.5) o_stats.rg = vec2(gradient(u_now, pixel), gradient(u_final, pixel));
+        else if (pc.depth.w > 0.5) {
+            vec4 object = texelFetch(u_shown, pixel, 0);
+            float stored = texelFetch(u_depth, pixel, 0).r;
+            if (object.b >= 0.0 && abs(object.b - stored) <= 0.002 * stored + 0.0000002) o_stats.r = object.a;
+        }
+        return;
+    }
     vec2 uv = (vec2(pixel) + 0.5) / pc.size.xy;
     float z = (texelFetch(u_depth, pixel, 0).r - pc.depth.x) / pc.depth.y;
     vec2 motion = texelFetch(u_motion, pixel, 0).rg;
