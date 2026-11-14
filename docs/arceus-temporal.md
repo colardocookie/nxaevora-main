@@ -574,8 +574,8 @@ with the validation layer, the library's shader modules declared `SPV_KHR_comput
 linear derivative groups, and the device had been made without them. As far as the SDK's published source
 shows, the library picks its shaders by what the physical device has and not by what the device was made
 with. So the adapter names `VK_KHR_compute_shader_derivatives` with its feature for linear groups as needs of
-the device, and it is "not available" on a physical device that lacks either: the library would load the same
-shaders there. A list of extensions or a query of features that fails, or a list that stays incomplete, also
+the device, and it is "not available" on a physical device that lacks either: a conservative refusal of a
+configuration that was not seen or audited, and no claim of what the library would do there. A list of extensions or a query of features that fails, or a list that stays incomplete, also
 means "not available": nothing is taken from a part of a list. 16 bit floats in shaders are a core feature
 that whoever makes the device turns on where the physical device has it. The self-test's device has every
 feature of the physical device on, that one among them as a bit of the Vulkan 1.2 structure, and the adapter's

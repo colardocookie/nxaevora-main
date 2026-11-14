@@ -106,10 +106,10 @@ const char* const g_device_names[1] = {FSR_DERIVATIVES};
 VkPhysicalDeviceComputeShaderDerivativesFeaturesNV g_derivatives = {
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_NV, nullptr, VK_FALSE, VK_TRUE};
 
-/* The extension and its feature for linear groups are required: a device without either is refused, since the
-   library would load the same shaders there. A list or a query that fails refuses too, and nothing is taken
-   from a part of a list. 16 bit floats in shaders are a core feature that whoever makes the device turns on
-   where the physical device has it: the library picks those shaders by the physical device. It is only said. */
+/* The extension and its feature for linear groups are required. A device without either is refused: a
+   conservative refusal of a configuration that was not seen or audited, and no claim of what the library
+   would do there. A list or a query that fails refuses too, and nothing is taken from a part of a list. 16
+   bit floats in shaders are core: whoever makes the device turns them on where it has them. It is only said. */
 int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetInstanceProcAddr lookup,
                       SnxUpscalerDeviceNeeds* out) {
     out->extensions.count = 0;
@@ -152,7 +152,7 @@ int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetIns
     std::free(list);
     if (!found) {
         logf_(0, "arceus-upscaler: fsr is not available: the device has no " FSR_DERIVATIVES ", which the "
-                 "library's shaders declare\n");
+                 "library's shader modules declared in the run that was seen. Not seen or audited without it\n");
         return SNX_UPSCALER_REFUSED;
     }
     /* asked in a chain of the query's own: the derivatives' feature, and whether shaders have 16 bit floats */
@@ -164,7 +164,8 @@ int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetIns
     features(device, &asked);
     if (!has.computeDerivativeGroupLinear) {
         logf_(0, "arceus-upscaler: fsr is not available: the device has " FSR_DERIVATIVES " without linear "
-                 "derivative groups, which the library's shaders declare\n");
+                 "derivative groups, which the library's shader modules declared in the run that was seen. Not "
+                 "seen or audited without them\n");
         return SNX_UPSCALER_REFUSED;
     }
     static int said;
