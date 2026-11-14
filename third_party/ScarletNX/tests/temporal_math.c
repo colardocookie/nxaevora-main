@@ -365,26 +365,124 @@ static void test_mip_bias(void) {
     assert(close_to(temporal_mip_bias(5.0f, 0.0f, 4.0f), 4.0, 1e-6));
 }
 
-/* The matrix a block had a frame ago: its own when the address is bound every frame, the pair's other slot when
-   the block takes turns, none when the other slot belongs to another object. */
-static void test_before_choice(void) {
-    float now[16], near[16], far[16];
-    world(0.5f, 1, 10, 0, 40, now);
-    world(0.5f, 1, 9.9f, 0, 40, near);
-    world(0.1f, 1, 13, 0, 42, far);
-    assert(temporal_before_choice(now, NULL, NULL, 0) == TEMPORAL_BEFORE_NONE);
-    assert(temporal_before_choice(now, NULL, near, 2) == TEMPORAL_BEFORE_NONE);
-    assert(temporal_before_choice(now, far, near, 1) == TEMPORAL_BEFORE_OWN);
-    assert(temporal_before_choice(now, NULL, near, 1) == TEMPORAL_BEFORE_OWN);
-    /* a pair in steady motion: a frame ago is nearer than two frames ago */
-    assert(temporal_before_choice(now, near, far, 2) == TEMPORAL_BEFORE_PARTNER);
-    assert(temporal_before_choice(now, near, NULL, 0) == TEMPORAL_BEFORE_PARTNER);
-    assert(temporal_before_choice(now, near, far, 3) == TEMPORAL_BEFORE_PARTNER);
-    /* a still pair: both equal now, the partner stands */
-    assert(temporal_before_choice(now, now, now, 2) == TEMPORAL_BEFORE_PARTNER);
-    /* the other slot holds another still object, 3 units away, and this address held this object two frames ago */
-    assert(temporal_before_choice(now, far, now, 2) == TEMPORAL_BEFORE_UNPAIRED);
-    assert(temporal_before_choice(now, far, near, 2) == TEMPORAL_BEFORE_UNPAIRED);
+/* A tiny scene for the learned pairs: each frame says which of two slots is bound, by which draw, with which
+   matrix. The slots are judged at the end of each frame as temporal.c does, and the choice a draw of the frame
+   would get is returned. */
+typedef struct {
+    unsigned at, before_at, turns, stays, judged_at;
+    unsigned long long draw, before_draw;
+    float world[16], before[16];
+} TestSlot;
+static int pair_frame(TestSlot slot[2], unsigned frame, int bind0, int bind1, unsigned long long draw0,
+                      unsigned long long draw1, float x0, float x1, int ask) {
+    const int bind[2] = {bind0, bind1};
+    const unsigned long long draw[2] = {draw0, draw1};
+    const float x[2] = {x0, x1};
+    int choice = -1;
+    frame += 10; /* 0 is never */
+    for (int i = 0; i < 2; i++) {
+        if (!bind[i]) continue;
+        TestSlot *a = &slot[i], *q = &slot[!i];
+        memcpy(a->before, a->world, sizeof a->before);
+        a->before_at = a->at;
+        a->before_draw = a->draw;
+        world(0, 1, x[i], 0, 10, a->world);
+        a->at = frame;
+        a->draw = draw[i];
+        if (i != ask) continue;
+        /* the draw's choice, made before the frame is complete (slot 1 is bound after slot 0) */
+        const int own_last = a->before_at && a->before_at + 1 == frame;
+        const int partner_now = q->at == frame;
+        const int partner_last = q->at + 1 == frame || (partner_now && q->before_at + 1 == frame);
+        choice = temporal_before_choice(own_last, a->judged_at + 1 == frame ? a->stays : 0,
+                                        a->before_draw == a->draw, partner_last, partner_now,
+                                        q->judged_at + 1 == frame && q->at + 1 == frame ? q->turns : 0,
+                                        q->draw == a->draw);
+        if (choice == TEMPORAL_BEFORE_PARTNER &&
+            temporal_at_rest_alone(a->world, a->before_at + 2 == frame ? a->before : NULL, q->world))
+            choice = TEMPORAL_BEFORE_NONE;
+    }
+    for (int i = 0; i < 2; i++) {
+        TestSlot *a = &slot[i], *q = &slot[!i];
+        if (a->at != frame) continue;
+        TemporalSlotFrame f = {0};
+        f.bound_before = a->before_at && a->before_at + 1 == frame;
+        f.partner_now = q->at == frame;
+        f.partner_before = q->at + 1 == frame || (f.partner_now && q->before_at + 1 == frame);
+        f.same_as_partner = q->at + 1 == frame && q->draw == a->draw;
+        f.same_as_own = f.bound_before && a->before_draw == a->draw;
+        f.at_rest_alone = q->at + 1 == frame &&
+                          temporal_at_rest_alone(a->world, a->before_at + 2 == frame ? a->before : NULL, q->world);
+        f.partner_turns = q->judged_at + 1 == frame && q->at + 1 == frame ? q->turns : 0;
+        f.own_stays = a->judged_at + 1 == frame ? a->stays : 0;
+        temporal_pair_judge(&f, &a->turns, &a->stays);
+        a->judged_at = frame;
+    }
+    return choice;
+}
+
+static void test_pairs(void) {
+    const unsigned long long mesh = temporal_draw_signature(0x50e238000ull, 0x51000000ull, 300, 0, 0xaf37fc644332986cull);
+    const unsigned long long other = temporal_draw_signature(0x50e238000ull, 0x51000000ull, 300, 300, 0xaf37fc644332986cull);
+    assert(mesh && other && mesh != other);
+    assert(temporal_draw_signature(0, 0, 0, 0, 0) != 0);
+    assert(temporal_draw_signature(1, 2, 3, 4, 5) != temporal_draw_signature(2, 1, 3, 4, 5));
+
+    /* one object that takes turns and moves steadily: no matrix for its first four frames, the other slot's from
+       the fifth */
+    TestSlot s[2];
+    memset(s, 0, sizeof s);
+    for (unsigned f = 1; f <= 8; f++) {
+        const int slot = (int)(f & 1);
+        const int got = pair_frame(s, f, slot == 0, slot == 1, mesh, mesh, 0.1f * (float)f, 0.1f * (float)f, slot);
+        assert(got == (f <= 4 ? (f == 1 ? TEMPORAL_BEFORE_NONE : TEMPORAL_BEFORE_LEARNING) : TEMPORAL_BEFORE_PARTNER));
+    }
+    /* both slots bound in one frame: two objects. The pair is gone at once and learned again from nothing. */
+    assert(pair_frame(s, 9, 1, 1, mesh, mesh, 0.9f, 0.9f, 1) == TEMPORAL_BEFORE_NONE);
+    for (unsigned f = 10; f <= 13; f++)
+        assert(pair_frame(s, f, !(f & 1), f & 1, mesh, mesh, 0.1f * (float)f, 0.1f * (float)f, (int)(f & 1)) !=
+               TEMPORAL_BEFORE_PARTNER);
+    assert(pair_frame(s, 14, 1, 0, mesh, mesh, 1.4f, 0, 0) == TEMPORAL_BEFORE_PARTNER);
+    /* another draw in the slot: not this pair's, and the pair is learned again */
+    assert(pair_frame(s, 15, 0, 1, mesh, other, 0, 1.5f, 1) == TEMPORAL_BEFORE_OTHER);
+    assert(pair_frame(s, 16, 1, 0, other, other, 1.6f, 0, 0) == TEMPORAL_BEFORE_LEARNING);
+    /* a missed turn */
+    memset(s, 0, sizeof s);
+    for (unsigned f = 1; f <= 6; f++) pair_frame(s, f, !(f & 1), f & 1, mesh, mesh, (float)f, (float)f, 0);
+    assert(pair_frame(s, 8, 1, 0, mesh, mesh, 8, 0, 0) == TEMPORAL_BEFORE_NONE);
+    assert(pair_frame(s, 9, 0, 1, mesh, mesh, 0, 9, 1) == TEMPORAL_BEFORE_LEARNING);
+
+    /* a slot that takes no turns: its own matrix from the fifth frame, whatever the neighbour does */
+    memset(s, 0, sizeof s);
+    for (unsigned f = 1; f <= 8; f++) {
+        const int got = pair_frame(s, f, 1, f >= 6, mesh, other, 0.1f * (float)f, 5, 0);
+        assert(got == (f <= 4 ? (f == 1 ? TEMPORAL_BEFORE_NONE : TEMPORAL_BEFORE_LEARNING) : TEMPORAL_BEFORE_OWN));
+    }
+
+    /* two still things with the same mesh, each bound every other frame (the block 50d61f500 pattern): each slot's
+       matrix is its own of two frames ago and not the other's, so they never become a pair */
+    memset(s, 0, sizeof s);
+    for (unsigned f = 1; f <= 12; f++)
+        assert(pair_frame(s, f, !(f & 1), f & 1, mesh, mesh, 360.97f, 370.06f, (int)(f & 1)) != TEMPORAL_BEFORE_PARTNER);
+    /* The cost, expected: one object that truly moves 0, 1, 0, 1 looks the same and gets the camera's vector. */
+    memset(s, 0, sizeof s);
+    for (unsigned f = 1; f <= 12; f++)
+        assert(pair_frame(s, f, !(f & 1), f & 1, mesh, mesh, (float)(f & 1), (float)(f & 1), (int)(f & 1)) !=
+               TEMPORAL_BEFORE_PARTNER);
+    /* and a pair at rest (every matrix equal) stays a pair */
+    memset(s, 0, sizeof s);
+    for (unsigned f = 1; f <= 8; f++) {
+        const int got = pair_frame(s, f, !(f & 1), f & 1, mesh, mesh, 2, 2, (int)(f & 1));
+        assert((got == TEMPORAL_BEFORE_PARTNER) == (f >= 5));
+    }
+    /* The limit that stays: two different things with one mesh that swap visibility every frame and move are
+       taken for one object. Nothing at this layer tells them apart. */
+    memset(s, 0, sizeof s);
+    int fooled = 0;
+    for (unsigned f = 1; f <= 8; f++)
+        fooled |= pair_frame(s, f, !(f & 1), f & 1, mesh, mesh, 1 + 0.01f * (float)f, 3 + 0.01f * (float)f,
+                             (int)(f & 1)) == TEMPORAL_BEFORE_PARTNER;
+    assert(fooled);
 }
 
 static void test_origin_shift(void) {
@@ -417,7 +515,7 @@ int main(void) {
     test_sharpen_rgb();
     test_camera_points();
     test_mip_bias();
-    test_before_choice();
+    test_pairs();
     test_origin_shift();
     puts("temporal_math: ok");
     return 0;

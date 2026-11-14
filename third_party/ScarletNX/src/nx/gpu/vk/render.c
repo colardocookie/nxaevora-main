@@ -3581,13 +3581,17 @@ retry:
     if (vk_temporal_objects() && n >= 3 && zt && !zt_ro && !xcount && instances == 1 && !tcs && !tes && !gs &&
         !ch->render_pred && r[0x4B3] && (r[0x4BA] || cmp_op(r[0x4C3]) == VK_COMPARE_OP_EQUAL)) {
         VkTemporalObject object;
+        /* the table learns of the draw, and says whether its block has a matrix of a frame ago */
+        const int known = vk_temporal_object_note(ch, zt, nvq ? vq[0].gva + vq[0].base : 0,
+                                                  indexed && indexed != 3 ? ia : 0, initial_count, initial_first,
+                                                  vs->hash);
         /* A skinned character first: a draw whose position stream is a transform feedback output of this frame,
            three floats 12 bytes apart at the start of a binding. It is drawn with a vertex program of ours that
            takes last frame's positions from a second binding, and the scene depth sampled, not attached. */
         int skinned = 0;
         /* one more vertex binding must fit the key and the device */
         const int room = k->nbind < 32 && k->nbind < g_vk.props.limits.maxVertexInputBindings;
-        for (u32 q = 0; q < nvq && !skinned && room; q++) {
+        for (u32 q = 0; q < nvq && !skinned && room && known; q++) {
             const u32 vb = vq[q].b;
             u32 xindex, xlen, position = ~0u;
             u64 xat;
@@ -3597,7 +3601,8 @@ retry:
             for (u32 i = 0; i < k->nattr; i++)
                 if (k->attr[i].binding == vb && !k->attr[i].offset && k->attr[i].format == VK_FORMAT_R32G32B32_SFLOAT)
                     position = i;
-            if (position == ~0u || !vk_temporal_skin(ch, zt, vq[q].gva + vq[q].base - xat, xat, &skin)) continue;
+            if (position == ~0u || !vk_temporal_skin(ch, zt, vq[q].gva + vq[q].base - xat, xat, last_vertex, &skin))
+                continue;
             static struct {
                 PipeKey k;
                 VkPipeline pipe;
@@ -3678,7 +3683,7 @@ retry:
             }
             memset(&g_dyn, 0, sizeof g_dyn);
         }
-        if (!skinned && vk_temporal_object(ch, zt, &object)) {
+        if (!skinned && known && vk_temporal_object(ch, zt, &object)) {
             static struct {
                 PipeKey k;
                 VkPipeline pipe;

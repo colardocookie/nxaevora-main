@@ -29,6 +29,8 @@
 #define OBJECT_BANK 6      /* the object's constant block: its world matrix at +0, row vectors */
 #define OBJECTS 8192       /* slots of the table of world matrices */
 #define OBJECT_DRAWS 256   /* extra draws a frame at most */
+#define OBJECT_SIGNATURES 8 /* draws of one block in a frame that are kept one by one */
+#define OBJECT_TOUCHED 4096 /* blocks bound in a frame that are judged at its end */
 #define MODE_PROBE 1
 #define MODE_TAA 2
 #define SETS_BINDINGS 7
@@ -107,15 +109,30 @@ static struct {
         object_frames, object_far, object_same, object_never, object_older, object_skinned, skinned_lines;
     /* skinned characters: our vertex and fragment programs, and the counts of the stats line */
     VkShaderModule skin_vs, skin_fs;
-    u64 skin_kept, skin_drawn, skin_first, skin_twice, skin_changed, object_unpaired;
+    u64 skin_kept, skin_drawn, skin_first, skin_twice, skin_changed, skin_short;
+    /* the learned pairs: why draws got no matrix of a frame ago, what the end of each frame judged, and the frames
+       whose object vectors were given up because a pair broke after its draws */
+    u64 object_learning, object_other, object_rest, object_full, object_unjudged;
+    u64 pairs_learned, stays_learned, pairs_broken, rest_broken, broke_frames;
+    void* touched[OBJECT_TOUCHED]; /* the table entries bound in touched_frame, for the judging at its end */
+    u32 touched_n, touched_frame, broke_logged_at;
+    /* the draw render.c is at (vk_temporal_object_note): its block and what the table gave it */
+    struct {
+        u64 address;
+        void *slot, *other;
+        const float* was;
+        int source;
+        float world[16];
+    } current;
     /* each extra draw of this frame by its number, and the same for the frame the numbers' image was drawn in:
        the probe writes the number to the vector target, so a wrong vector names its draw */
     struct Drawn {
         u64 block, feedback;
         float shift; /* the origin's move on screen in pixels */
         u8 skinned, source;
+        void *slot, *other; /* the table entries its matrix of a frame ago came from */
     } drawn[OBJECT_DRAWS + 1], stats_drawn[OBJECT_DRAWS + 1];
-    u32 unpaired_logged_at, long_logged_at;
+    u32 long_logged_at;
     /* the jitter of the frame: decided at its first draw with the scene camera's block (jitter_decide) from that
        draw's depth target and registers, which vk_temporal_draw notes for every draw */
     const Surf* draw_zt;
@@ -449,7 +466,8 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
                 (unsigned long long)g_t.pair_equal, (unsigned long long)g_t.pair_differ);
     }
     g_t.viewport = vk_render_viewport(ch->r3d);
-    /* the jitter was decided on another viewport than the scene's: this frame's history is not used */
+    /* The jitter was decided on another viewport than the scene's: the history is not used this frame and the
+       next, and this frame's object vectors are given up. */
     if (g_t.mode == MODE_TAA && g_t.decided_at == frame && g_t.jitter_on &&
         (g_t.viewport.x != g_t.decided.x || g_t.viewport.y != g_t.decided.y ||
          g_t.viewport.width != g_t.decided.width || g_t.viewport.height != g_t.decided.height)) {
@@ -812,12 +830,17 @@ void vk_temporal_draw(GpuChannel* ch, const VkSh* fs0, Surf* const* sampled, int
 int vk_temporal_enabled(void) { return temporal_on(); }
 
 /* Object vectors. The world matrix of each object block that a G-buffer draw binds is kept in a table by its
-   address. The game writes a block to two slots in turn, one bound size apart, and every block of a frame takes the
-   same turn as the camera's. So last frame's matrix is the table's entry for the other slot, the one the camera's
-   step points back to. The slot itself is not read: the game may have filled it for the next frame already. */
+   address, with the draws that bound it. The game writes many blocks to two slots in turn, one bound size apart, in
+   step with the camera's block. Which slots are such a pair is learned from complete frames (temporal_math.h has
+   the rules), and only an established pair, or a slot that takes no turns, gives a matrix of a frame ago. */
 typedef struct {
-    u64 key;
-    u32 at, before_at; /* the frames world and before were taken in */
+    u64 key, partner;        /* partner: the other slot's address in the frame at, 0 for none */
+    u32 at, before_at;       /* the frames world and before were taken in */
+    u32 judged_at;           /* the frame turns and stays were judged for */
+    u16 turns, stays;        /* temporal_pair_judge */
+    u16 n, before_n;         /* the draws that bound the block in the frames at and before_at */
+    u64 sum, before_sum;     /* their signatures added up */
+    u64 draws[OBJECT_SIGNATURES], before_draws[OBJECT_SIGNATURES];
     float world[16], before[16]; /* before: what this same address held the last time it was bound */
 } Object;
 static Object g_objects[OBJECTS];
@@ -843,77 +866,173 @@ float vk_temporal_mip_bias(const Surf* zt) {
     return temporal_on() && g_t.mip_bias < 0.0f && zt && zt == g_t.depth_rt ? g_t.mip_bias : 0.0f;
 }
 
+static void pairs_judge(void);
 static void objects_log(u32 frame) {
     if (g_t.object_frame == frame) return;
+    pairs_judge();
+    g_t.touched_frame = frame;
     g_t.object_frame = frame;
     g_t.object_draws = 0;
     if (++g_t.object_frames % 600) return;
-    LOG("arceus-temporal-objects: in 600 frames, G-buffer draws with an object block %llu, without a block a frame "
-        "ago %llu (never seen %llu, seen two frames ago or more %llu), found at the same address %llu, reading a "
-        "feedback buffer %llu, jumped too far %llu, moved %llu, drawn again %llu, over the cap of %d a frame %llu, not "
-        "an affine matrix %llu, pipelines made %llu, skinned: buffers kept %llu (a second time in a frame %llu), "
-        "drawn again %llu, without last frame's buffer %llu, with a capture of another length %llu, blocks that "
-        "are not their other slot's pair %llu\n",
+    LOG("arceus-temporal-objects: in 600 frames, G-buffer draws with an object block %llu. Without a matrix of a "
+        "frame ago: nothing bound a frame ago %llu (never seen %llu, seen two frames ago or more %llu), pair still "
+        "being learned %llu, another draw than the pair's %llu, at rest alone %llu, jumped too far %llu, table full "
+        "%llu, not judged %llu, not an affine matrix %llu. With one: from its own address %llu, moved %llu, drawn "
+        "again %llu, over the cap of %d a frame %llu, pipelines made %llu. Judged: pairs learned %llu, slots "
+        "without turns learned %llu, pairs broken %llu (at rest alone %llu), frames whose object vectors were "
+        "given up %llu. Skinned: reading a feedback buffer %llu, buffers kept %llu (a second time in a frame "
+        "%llu), drawn again %llu, without last frame's buffer %llu, with a capture of another length %llu, "
+        "reading past last frame's copy %llu\n",
         (unsigned long long)g_t.object_seen, (unsigned long long)g_t.object_new,
         (unsigned long long)g_t.object_never, (unsigned long long)g_t.object_older,
-        (unsigned long long)g_t.object_same, (unsigned long long)g_t.object_skinned,
-        (unsigned long long)g_t.object_far,
+        (unsigned long long)g_t.object_learning, (unsigned long long)g_t.object_other,
+        (unsigned long long)g_t.object_rest, (unsigned long long)g_t.object_far,
+        (unsigned long long)g_t.object_full, (unsigned long long)g_t.object_unjudged,
+        (unsigned long long)g_t.object_odd, (unsigned long long)g_t.object_same,
         (unsigned long long)g_t.object_moved, (unsigned long long)g_t.object_drawn, OBJECT_DRAWS,
-        (unsigned long long)g_t.object_capped, (unsigned long long)g_t.object_odd,
-        (unsigned long long)g_t.object_pipelines, (unsigned long long)g_t.skin_kept,
-        (unsigned long long)g_t.skin_twice, (unsigned long long)g_t.skin_drawn, (unsigned long long)g_t.skin_first,
-        (unsigned long long)g_t.skin_changed, (unsigned long long)g_t.object_unpaired);
-    g_t.skin_kept = g_t.skin_drawn = g_t.skin_first = g_t.skin_twice = g_t.skin_changed = g_t.object_unpaired = 0;
+        (unsigned long long)g_t.object_capped, (unsigned long long)g_t.object_pipelines,
+        (unsigned long long)g_t.pairs_learned, (unsigned long long)g_t.stays_learned,
+        (unsigned long long)g_t.pairs_broken, (unsigned long long)g_t.rest_broken,
+        (unsigned long long)g_t.broke_frames, (unsigned long long)g_t.object_skinned,
+        (unsigned long long)g_t.skin_kept, (unsigned long long)g_t.skin_twice, (unsigned long long)g_t.skin_drawn,
+        (unsigned long long)g_t.skin_first, (unsigned long long)g_t.skin_changed,
+        (unsigned long long)g_t.skin_short);
+    g_t.skin_kept = g_t.skin_drawn = g_t.skin_first = g_t.skin_twice = g_t.skin_changed = g_t.skin_short = 0;
     g_t.object_seen = g_t.object_new = g_t.object_moved = g_t.object_drawn = g_t.object_capped = g_t.object_odd = 0;
     g_t.object_far = g_t.object_same = g_t.object_never = g_t.object_older = g_t.object_skinned = 0;
+    g_t.object_learning = g_t.object_other = g_t.object_rest = g_t.object_full = g_t.object_unjudged = 0;
+    g_t.pairs_learned = g_t.stays_learned = g_t.pairs_broken = g_t.rest_broken = g_t.broke_frames = 0;
 }
 
-/* The table's entry of the block at address with this frame's matrix in it. Several draws may bind one block: the
-   first of a frame moves the matrix on. */
-static Object* object_take(u64 address, const float world[16], u32 frame) {
+static int object_has_draw(const u64* draws, u32 n, u64 signature) {
+    for (u32 i = 0; i < n && i < OBJECT_SIGNATURES; i++)
+        if (draws[i] == signature) return 1;
+    return 0;
+}
+
+/* The table's entry of the block at address with this frame's matrix and this draw in it. Several draws may bind
+   one block: the first of a frame moves the matrix and the draws on. */
+static Object* object_take(u64 address, u64 partner, const float world[16], u64 signature, u32 frame) {
     Object* o = object_slot(address, frame, 1);
-    if (o && o->at != frame) {
+    if (!o) {
+        g_t.object_full++;
+        return NULL;
+    }
+    if (o->at != frame) {
         memcpy(o->before, o->world, sizeof o->before);
+        memcpy(o->before_draws, o->draws, sizeof o->before_draws);
         o->before_at = o->at;
+        o->before_n = o->n;
+        o->before_sum = o->sum;
         memcpy(o->world, world, sizeof o->world);
         o->at = frame;
+        o->n = 0;
+        o->sum = 0;
+        o->partner = partner;
+        /* an entry that does not fit the list is not judged, and what is not judged gives nothing */
+        if (g_t.touched_n < OBJECT_TOUCHED) g_t.touched[g_t.touched_n++] = o;
+        else g_t.object_unjudged++;
     }
+    if (o->n < OBJECT_SIGNATURES) o->draws[o->n] = signature;
+    if (o->n < 0xFFFF) o->n++;
+    o->sum += signature;
     return o;
 }
 
-/* The matrix the block had a frame ago, NULL for none, and in source where it came from. The other slot of its
-   pair is the one the camera's step points back to (temporal_before_choice has the rules). */
-static const float* object_before(const Object* o, u64 address, u32 size, u32 frame, int skinned, int* source) {
-    const Object* partner = NULL;
-    if (g_t.camera_address[0] && g_t.camera_address[1]) {
-        partner =
-            object_slot(g_t.camera_address[0] > g_t.camera_address[1] ? address - size : address + size, frame, 0);
-        if (partner && partner->at + 1 != frame) partner = NULL;
+/* The end of a frame: every block bound in it is judged from what the complete frame shows (temporal_pair_judge).
+   Run at the first object draw of a later frame, before anything of that frame is in the table. */
+static void pairs_judge(void) {
+    const u32 frame = g_t.touched_frame;
+    for (u32 i = 0; i < g_t.touched_n; i++) {
+        Object* o = g_t.touched[i];
+        if (o->at != frame) continue;
+        const Object* q = o->partner ? object_slot(o->partner, frame, 0) : NULL;
+        TemporalSlotFrame f = {0};
+        f.bound_before = o->before_at && o->before_at + 1 == frame;
+        f.partner_now = q && q->at == frame;
+        f.partner_before = q && q->at && (q->at + 1 == frame || (f.partner_now && q->before_at + 1 == frame));
+        f.same_as_partner = q && q->at + 1 == frame && q->n == o->n && q->sum == o->sum;
+        f.same_as_own = f.bound_before && o->before_n == o->n && o->before_sum == o->sum;
+        f.at_rest_alone = q && q->at + 1 == frame &&
+                          temporal_at_rest_alone(o->world, o->before_at + 2 == frame ? o->before : NULL, q->world);
+        f.partner_turns = q && q->at + 1 == frame && q->judged_at == q->at ? q->turns : 0;
+        f.own_stays = o->judged_at && o->judged_at + 1 == frame ? o->stays : 0;
+        unsigned turns, stays;
+        temporal_pair_judge(&f, &turns, &stays);
+        if (turns + 1 == TEMPORAL_PAIR_FRAMES) g_t.pairs_learned++;
+        if (stays + 1 == TEMPORAL_PAIR_FRAMES) g_t.stays_learned++;
+        if (!turns && f.partner_turns + 1 >= TEMPORAL_PAIR_FRAMES) {
+            g_t.pairs_broken++;
+            if (f.at_rest_alone) g_t.rest_broken++;
+        }
+        o->turns = (u16)(turns < 0xFFFF ? turns : 0xFFFF);
+        o->stays = (u16)(stays < 0xFFFF ? stays : 0xFFFF);
+        o->judged_at = frame;
     }
-    *source = temporal_before_choice(o->world, partner ? partner->world : NULL, o->before_at ? o->before : NULL,
-                                     o->before_at ? frame - o->before_at : 0);
+    g_t.touched_n = 0;
+}
+
+/* The matrix the draw's block had a frame ago, NULL for none (counted by reason), and in source and other where it
+   came from. A draw gets one only from an established pair or from its own slot when that takes no turns. */
+static const float* object_before(const Object* o, u64 signature, u32 frame, int* source, const Object** other) {
+    const Object* q = o->partner ? object_slot(o->partner, frame, 0) : NULL;
+    const int partner_now = q && q->at == frame;
+    const int partner_last = q && q->at && (q->at + 1 == frame || (partner_now && q->before_at + 1 == frame));
+    const int partner_then = q && q->at + 1 == frame; /* its entry still holds the frame before */
+    *other = q;
+    *source = temporal_before_choice(o->before_at && o->before_at + 1 == frame,
+                                     o->judged_at && o->judged_at + 1 == frame ? o->stays : 0,
+                                     object_has_draw(o->before_draws, o->before_n, signature), partner_last,
+                                     partner_now, partner_then && q->judged_at == q->at ? q->turns : 0,
+                                     partner_then && object_has_draw(q->draws, q->n, signature));
+    if (*source == TEMPORAL_BEFORE_PARTNER &&
+        temporal_at_rest_alone(o->world, o->before_at + 2 == frame ? o->before : NULL, q->world)) {
+        g_t.object_rest++;
+        *source = TEMPORAL_BEFORE_NONE;
+        return NULL;
+    }
     if (*source == TEMPORAL_BEFORE_OWN) {
         g_t.object_same++;
         return o->before;
     }
-    if (*source == TEMPORAL_BEFORE_PARTNER) return partner->world;
-    if (*source == TEMPORAL_BEFORE_UNPAIRED) {
-        g_t.object_unpaired++;
-        if (g_t.unpaired_logged_at + 60 <= frame) { /* one example a second */
-            g_t.unpaired_logged_at = frame;
-            LOG("arceus-temporal-objects: block %llx (%s) is not the pair of its other slot: now %.2f %.2f %.2f, "
-                "two frames ago here %.2f %.2f %.2f, a frame ago there %.2f %.2f %.2f\n",
-                (unsigned long long)address, skinned ? "skinned" : "rigid", (double)o->world[12],
-                (double)o->world[13], (double)o->world[14], (double)o->before[12], (double)o->before[13],
-                (double)o->before[14], (double)partner->world[12], (double)partner->world[13],
-                (double)partner->world[14]);
-        }
-        return NULL;
+    if (*source == TEMPORAL_BEFORE_PARTNER) return q->world;
+    if (*source == TEMPORAL_BEFORE_LEARNING) g_t.object_learning++;
+    else if (*source == TEMPORAL_BEFORE_OTHER) g_t.object_other++;
+    else {
+        g_t.object_new++;
+        if (!o->before_at) g_t.object_never++;
+        else g_t.object_older++;
     }
-    g_t.object_new++;
-    if (!o->before_at) g_t.object_never++;
-    else g_t.object_older++;
     return NULL;
+}
+
+/* After the G-buffer, before the vectors are read: 1 when every pair this frame's extra draws relied on still
+   holds now that the frame's draws are known. The other slot was not bound too, and both ends have the same draws.
+   Else the frame's object vectors are given up and the camera's stand. */
+static int pairs_hold(u32 frame) {
+    for (u32 d = 1; d <= g_t.object_draws && d <= OBJECT_DRAWS; d++) {
+        const struct Drawn* w = &g_t.drawn[d];
+        const Object *o = w->slot, *q = w->other;
+        int broke = 0;
+        if (w->source == TEMPORAL_BEFORE_PARTNER)
+            broke = !o || !q || q->at + 1 != frame || o->n != q->n || o->sum != q->sum;
+        else if (w->source == TEMPORAL_BEFORE_OWN)
+            broke = !o || o->before_at + 1 != frame || o->n != o->before_n || o->sum != o->before_sum;
+        if (!broke) continue;
+        g_t.broke_frames++;
+        if (g_t.broke_logged_at + 60 <= frame) { /* one example a second */
+            g_t.broke_logged_at = frame;
+            LOG("arceus-temporal-objects: the pair of block %llx broke after its draw (%s), the frame's object "
+                "vectors are given up, %llu frames so far\n",
+                (unsigned long long)w->block,
+                w->source == TEMPORAL_BEFORE_OWN ? "its own draws changed"
+                : q && q->at == frame            ? "both slots bound"
+                                                 : "the draws changed",
+                (unsigned long long)g_t.broke_frames);
+        }
+        return 0;
+    }
+    return 1;
 }
 
 /* Another object may have taken the slot: a jump of more than 5 units in a frame is not a move. 1 for a jump. */
@@ -939,6 +1058,8 @@ static u32 drawn_note(u64 block, u64 feedback, int skinned, int source, const fl
                       const Surf* zt, u32 frame) {
     const u32 number = g_t.object_draws + 1;
     struct Drawn* d = &g_t.drawn[number <= OBJECT_DRAWS ? number : 0];
+    d->slot = g_t.current.slot;
+    d->other = g_t.current.other;
     d->block = block;
     d->feedback = feedback;
     d->skinned = (u8)skinned;
@@ -957,26 +1078,50 @@ static u32 drawn_note(u64 block, u64 feedback, int skinned, int source, const fl
     return number;
 }
 
-int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* out) {
+/* Every plain G-buffer draw is shown here once, before its extra draw is tried: its block's matrix and the draw's
+   signature (vertex and index buffer addresses, index count, first index, vertex program) go into the table.
+   1 when the block has a matrix of a frame ago. vk_temporal_skin and vk_temporal_object then work on this draw. */
+int vk_temporal_object_note(const GpuChannel* ch, const Surf* zt, u64 vertex, u64 index, u32 count, u32 first,
+                            u64 program) {
     const u32 frame = g_vk_present + 1;
     const u64 address = ch->cbind[ST_VS][OBJECT_BANK];
     const u32 size = ch->cbind_size[ST_VS][OBJECT_BANK];
+    g_t.current.was = NULL;
+    g_t.current.slot = g_t.current.other = NULL;
+    g_t.current.address = 0;
     if (!g_t.objects || g_t.camera_at != frame || zt != g_t.depth_rt || !address || size < 64 || size > 0x10000)
         return 0;
     objects_log(frame);
     g_t.object_seen++;
-    float world[16];
-    block_read(address, world);
+    block_read(address, g_t.current.world);
+    const float* world = g_t.current.world;
     if (world[3] != 0.0f || world[7] != 0.0f || world[11] != 0.0f || world[15] != 1.0f) {
         g_t.object_odd++;
         return 0;
     }
-    Object* o = object_take(address, world, frame);
+    /* the slot this block would have had a frame ago: the camera's block went the same way */
+    u64 partner = 0;
+    if (g_t.camera_address[0] && g_t.camera_address[1])
+        partner = g_t.camera_address[0] > g_t.camera_address[1] ? address - size : address + size;
+    const u64 signature = temporal_draw_signature(vertex, index, count, first, program);
+    Object* o = object_take(address, partner, world, signature, frame);
     if (!o) return 0;
-    int source;
-    const float* was_world = object_before(o, address, size, frame, 0, &source);
-    if (!was_world || !memcmp(was_world, world, sizeof world) || !g_t.have_before) return 0;
-    if (object_jumped(address, world, was_world, frame)) return 0;
+    const Object* other = NULL;
+    g_t.current.address = address;
+    g_t.current.slot = o;
+    g_t.current.was = object_before(o, signature, frame, &g_t.current.source, &other);
+    g_t.current.other = (void*)other;
+    if (g_t.current.was && object_jumped(address, world, g_t.current.was, frame)) g_t.current.was = NULL;
+    return g_t.current.was != NULL;
+}
+
+int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* out) {
+    const u32 frame = g_vk_present + 1;
+    const u64 address = g_t.current.address;
+    const float *world = g_t.current.world, *was_world = g_t.current.was;
+    const int source = g_t.current.source;
+    (void)ch;
+    if (!address || !was_world || !memcmp(was_world, world, sizeof g_t.current.world) || !g_t.have_before) return 0;
     g_t.object_moved++;
     if (g_t.object_draws >= OBJECT_DRAWS) {
         g_t.object_capped++;
@@ -1107,14 +1252,15 @@ void vk_temporal_skin_keep(VkCommandBuffer cb, u64 address, u32 size, VkBuffer s
 /* A G-buffer draw whose position stream starts offset bytes into the transform feedback output at address: 1 with
    what its vector draw needs when last frame's copy of that output is there. The draw is then made with our vertex
    and fragment programs: the position now from the game's binding, the position before from out->before. */
-int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, VkTemporalSkin* out) {
+int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, u64 last_vertex,
+                     VkTemporalSkin* out) {
     const u32 frame = g_vk_present + 1;
-    const u64 block_at = ch->cbind[ST_VS][OBJECT_BANK];
-    const u32 block_size = ch->cbind_size[ST_VS][OBJECT_BANK];
-    if (!g_t.objects || g_t.camera_at != frame || zt != g_t.depth_rt || !g_t.have_before || !block_at ||
-        block_size < 64 || block_size > 0x10000)
-        return 0;
-    objects_log(frame);
+    const u64 block_at = g_t.current.address;
+    const float *world = g_t.current.world, *was = g_t.current.was;
+    const int source = g_t.current.source;
+    (void)ch;
+    /* the copy of a frame ago is the same character's only as far as its block's pair is known */
+    if (!block_at || !was || !g_t.have_before) return 0;
     const Skin* s = skin_slot(address, frame, 0);
     const int last = (int)((frame - 1) & 1);
     if (!s || !s->capacity || s->at[last] + 1 != frame || offset >= s->size[last]) {
@@ -1126,24 +1272,14 @@ int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, Vk
         g_t.skin_changed++;
         return 0;
     }
+    /* every vertex the draw reads must be in last frame's copy, 12 bytes each from offset on */
+    if (last_vertex == ~0ull || (last_vertex + 1) * 12 > (u64)s->size[last] - offset) {
+        g_t.skin_short++;
+        return 0;
+    }
     if (g_t.object_draws >= OBJECT_DRAWS) {
         g_t.object_capped++;
         return 0;
-    }
-    float world[16];
-    block_read(block_at, world);
-    if (world[3] != 0.0f || world[7] != 0.0f || world[11] != 0.0f || world[15] != 1.0f) {
-        g_t.object_odd++;
-        return 0;
-    }
-    /* the object's matrix a frame ago, or this frame's without one: the limbs' own motion stays */
-    int source = TEMPORAL_BEFORE_NONE;
-    const Object* o = object_take(block_at, world, frame);
-    g_t.object_seen++;
-    const float* was = o ? object_before(o, block_at, block_size, frame, 1, &source) : NULL;
-    if (!was || object_jumped(block_at, world, was, frame)) {
-        was = world;
-        source = TEMPORAL_BEFORE_NONE;
     }
     double jx, jy;
     frame_jitter(frame, &jx, &jy);
@@ -1311,7 +1447,7 @@ void vk_temporal_before(u64 fs0_hash) {
     VkCommandBuffer cb = vk_cmd();
     /* objects that moved were drawn into their own target this frame: the vector pass takes their vectors from it */
     const int objects = g_t.objects && g_t.object_at == frame && g_t.object.view && g_t.object.w == scene->sw &&
-                        g_t.object.h == scene->sh;
+                        g_t.object.h == scene->sh && g_t.mismatch_at != frame && pairs_hold(frame);
     /* the vectors: depth sampled, the motion image written */
     vk_surf_use(cb, depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
@@ -1400,7 +1536,8 @@ void vk_temporal_before(u64 fs0_hash) {
         const float w = 0.01f * m[11] + m[15], x = 0.01f * m[8] + m[12], y = 0.01f * m[9] + m[13];
         const int cut = !(w > 0.0f) || fabsf(x) > 0.5f * w || fabsf(y) > 0.5f * w;
         /* a frame without jitter (jitter_decide) or with another viewport than decided on has no history */
-        const int steady = g_t.decided_at == frame && g_t.jitter_on && g_t.mismatch_at != frame;
+        const int steady = g_t.decided_at == frame && g_t.jitter_on && g_t.mismatch_at != frame &&
+                           (!g_t.mismatch_at || g_t.mismatch_at + 1 != frame);
         const int usable = g_t.resolved_at + 1 == frame && !cut && steady;
         if (!usable && (g_t.resets++ < 4 || g_t.resets % 600 == 0))
             LOG("arceus-temporal: history not used (%s), %llu times so far\n",

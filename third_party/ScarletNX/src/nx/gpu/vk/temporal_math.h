@@ -224,23 +224,68 @@ static inline int temporal_camera_points(const float inverse_vp[16], const float
     before[1] = clip[1] / clip[3];
     return 1;
 }
-/* Which matrix an object's block had a frame ago. own is what the same address held the last time it was bound,
-   own_age frames ago (0 for never). partner is what the other slot of the pair held a frame ago, NULL without one.
-   A block bound at its own address a frame ago takes no turns. A block whose own matrix of two frames ago is
-   nearer to now than the partner's is not that slot's pair: another object lives there. */
-enum { TEMPORAL_BEFORE_NONE, TEMPORAL_BEFORE_OWN, TEMPORAL_BEFORE_PARTNER, TEMPORAL_BEFORE_UNPAIRED };
-static inline double temporal_matrix_distance(const float a[16], const float b[16]) {
-    double sum = 0;
-    for (int i = 0; i < 16; i++) sum += ((double)a[i] - (double)b[i]) * ((double)a[i] - (double)b[i]);
-    return sum;
+/* Which matrix an object's block had a frame ago. The renderer does not see which object wrote a block, so this is
+   learned and stays a guess: two slots one bound size apart are a pair once exactly one of them was bound in each
+   of TEMPORAL_PAIR_FRAMES frames in a row, in turns, by the same draws. A slot bound by the same draws in that many
+   frames in a row takes no turns and is its own. Anything else has no matrix of a frame ago. */
+#define TEMPORAL_PAIR_FRAMES 4
+/* what a draw draws with, in one number that is never 0 */
+static inline unsigned long long temporal_draw_signature(unsigned long long vertex, unsigned long long index,
+                                                         unsigned count, unsigned first,
+                                                         unsigned long long program) {
+    const unsigned long long words[5] = {vertex, index, count, first, program};
+    unsigned long long h = 0xcbf29ce484222325ull;
+    for (int i = 0; i < 5; i++) {
+        h = (h ^ words[i]) * 0x100000001b3ull;
+        h ^= h >> 29;
+    }
+    return h ? h : 1;
 }
-static inline int temporal_before_choice(const float now[16], const float* partner, const float* own,
-                                         unsigned own_age) {
-    if (own && own_age == 1) return TEMPORAL_BEFORE_OWN;
-    if (!partner) return TEMPORAL_BEFORE_NONE;
-    if (own && own_age == 2 && temporal_matrix_distance(own, now) < temporal_matrix_distance(partner, now))
-        return TEMPORAL_BEFORE_UNPAIRED;
-    return TEMPORAL_BEFORE_PARTNER;
+/* A slot whose matrix is bit for bit its own of two frames ago and not the other slot's of a frame ago: two things
+   at rest, not one that moves. A true move of 0, 1, 0 looks the same and is given up with it. */
+static inline int temporal_at_rest_alone(const float now[16], const float* own_two_ago, const float* partner) {
+    return own_two_ago && partner && !memcmp(now, own_two_ago, 16 * sizeof(float)) &&
+           memcmp(now, partner, 16 * sizeof(float)) != 0;
+}
+/* one complete frame of a slot that was bound in it */
+typedef struct {
+    int bound_before;    /* this slot was bound the frame before too */
+    int partner_now;     /* the other slot was bound this frame */
+    int partner_before;  /* the other slot was bound the frame before */
+    int same_as_partner; /* this frame's draws here are the frame before's draws there */
+    int same_as_own;     /* this frame's draws here are the frame before's draws here */
+    int at_rest_alone;   /* temporal_at_rest_alone */
+    unsigned partner_turns, own_stays; /* the other slot's turns and this slot's stays as judged a frame ago */
+} TemporalSlotFrame;
+/* The frames in a row, this one included, in which the pair took turns (turns) or the slot was bound alone by the
+   same draws (stays). Either falls to 0 at once when its rule is broken. Both count from the second frame, so
+   TEMPORAL_PAIR_FRAMES frames in a row give TEMPORAL_PAIR_FRAMES - 1. */
+static inline void temporal_pair_judge(const TemporalSlotFrame* f, unsigned* turns, unsigned* stays) {
+    const int turn =
+        !f->partner_now && f->partner_before && !f->bound_before && f->same_as_partner && !f->at_rest_alone;
+    const int stay = f->bound_before && f->same_as_own;
+    *turns = turn ? f->partner_turns + 1 : 0;
+    *stays = stay ? f->own_stays + 1 : 0;
+}
+/* For a draw of this frame, before the frame is complete: where its block's matrix of a frame ago is. own_last and
+   partner_last: bound a frame ago. partner_now: bound this frame already. own_stays and partner_turns as judged for
+   the frame before, own_has_draw and partner_has_draw: this draw was among that slot's draws a frame ago. */
+enum {
+    TEMPORAL_BEFORE_NONE,     /* nothing bound a frame ago here or there, or both slots bound */
+    TEMPORAL_BEFORE_OWN,      /* this slot, which takes no turns */
+    TEMPORAL_BEFORE_PARTNER,  /* the other slot of an established pair */
+    TEMPORAL_BEFORE_LEARNING, /* not yet TEMPORAL_PAIR_FRAMES frames in a row */
+    TEMPORAL_BEFORE_OTHER     /* established, but not by this draw */
+};
+static inline int temporal_before_choice(int own_last, unsigned own_stays, int own_has_draw, int partner_last,
+                                         int partner_now, unsigned partner_turns, int partner_has_draw) {
+    if (own_last) {
+        if (own_stays + 1 < TEMPORAL_PAIR_FRAMES) return TEMPORAL_BEFORE_LEARNING;
+        return own_has_draw ? TEMPORAL_BEFORE_OWN : TEMPORAL_BEFORE_OTHER;
+    }
+    if (!partner_last || partner_now) return TEMPORAL_BEFORE_NONE;
+    if (partner_turns + 1 < TEMPORAL_PAIR_FRAMES) return TEMPORAL_BEFORE_LEARNING;
+    return partner_has_draw ? TEMPORAL_BEFORE_PARTNER : TEMPORAL_BEFORE_OTHER;
 }
 /* How far an object's origin moved on a screen of width x height pixels between the frame before and this one,
    from its world matrices and the two view-projections. -1 when it is behind the camera in either. */

@@ -1087,7 +1087,11 @@ typedef struct {
     VkSampler sampler;
 } VkTemporalSkin;
 void vk_temporal_skin_keep(VkCommandBuffer cb, u64 address, u32 size, VkBuffer source, u64 offset);
-int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, VkTemporalSkin* out);
+int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, u64 last_vertex, VkTemporalSkin* out);
+/* every plain G-buffer draw, once, before vk_temporal_skin and vk_temporal_object: 1 when its block has a matrix of
+   a frame ago. The draw's vertex and index buffer addresses, index count, first index and vertex program name it. */
+int vk_temporal_object_note(const GpuChannel* ch, const Surf* zt, u64 vertex, u64 index, u32 count, u32 first,
+                            u64 program);
 int vk_temporal_objects(void);
 /* SNX_ARCEUS_TEMPORAL_MIPBIAS: the level shift for material textures of a draw into the scene, 0 for other draws */
 float vk_temporal_mip_bias(const Surf* zt);
