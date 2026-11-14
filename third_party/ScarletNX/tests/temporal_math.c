@@ -2626,6 +2626,24 @@ static void test_upscaler_wiring(void) {
             temporal_upscaler_poison(&zero, 30);
             assert(!temporal_upscaler_used_same(&zero, 30, none));
         }
+        /* A scene draw that reads the camera's bank with another block there. The frame was decided at block P.
+           A later draw has a third address R, which is no slot the camera is known to use: a stranger, and the
+           frame that had only the decision's projection so far is not evaluated. */
+        {
+            const unsigned long long P = 0x512ba6000ull, Q = 0x512ba7000ull, R = 0x77001000ull;
+            TemporalUpscalerUsed seen = {0};
+            temporal_upscaler_used(&seen, 40, finite);
+            assert(temporal_upscaler_used_same(&seen, 40, finite));
+            assert(!temporal_upscaler_stranger(1, P, P, 1));
+            assert(temporal_upscaler_stranger(1, R, P, 0) && temporal_upscaler_stranger(1, R, P, 1));
+            assert(temporal_upscaler_stranger(1, Q, P, 1)); /* the camera's other slot is another block too */
+            assert(temporal_upscaler_stranger(1, 0, P, 0)); /* nothing bound where the program reads */
+            if (temporal_upscaler_stranger(1, R, P, 0)) temporal_upscaler_poison(&seen, 40);
+            assert(!temporal_upscaler_used_same(&seen, 40, finite));
+            /* before the decision: a block that decides the frame is no stranger, any other is */
+            assert(!temporal_upscaler_stranger(0, P, 0, 1) && temporal_upscaler_stranger(0, R, 0, 0));
+            assert(temporal_upscaler_stranger(0, 0, 0, 0));
+        }
         /* a new frame begins clean */
         temporal_upscaler_used(&used, 9, finite);
         assert(!used.mixed && temporal_upscaler_used_same(&used, 9, finite));

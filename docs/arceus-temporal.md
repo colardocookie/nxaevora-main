@@ -521,7 +521,10 @@ A frame, in order:
    the frame was decided with, and every number must pass its check. The projection is the one the frame's
    draws were given: it is kept by value from the unjittered bytes each jittered copy was made from, all draws
    must have had the same one, and it must be the decision's bit for bit. Nothing is read again from guest
-   memory at the hook. Then the scene colour, the depth and the
+   memory at the hook. And until our passes run, every draw into the scene's targets whose program reads
+   constant bank 4, however little of it, must have the frame's decided camera block bound there: any other
+   block, at a slot the camera is known to use or anywhere else, leaves the frame unevaluated, with a line
+   naming the program and the address (eight times at most). Nothing is inferred from where a block is. Then the scene colour, the depth and the
    motion image are handed to the library through `vk_rec_direct`, it writes a private 16 bit float image, and
    a pass of ours (`temporal_upscaled.frag`) writes that picture into the scene colour before its first reader:
    texel for texel, negative values and values that are no number raised to 0, each channel held to the largest

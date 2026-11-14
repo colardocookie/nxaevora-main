@@ -259,7 +259,7 @@ static struct {
     TemporalUpscalerUsed used, used_view;   /* what the frame's jittered draws were given of both, by value */
     u32 decided_at, outcome_at, evaluated_at;
     int decision, known; /* the frame's decision, and whether its configuration was known at it */
-    u64 evaluated_ns, unresolved, contexts_made;
+    u64 evaluated_ns, unresolved, contexts_made, strangers; /* strangers: lines of draws with another bank 4 */
     TemporalUpscalerTally tally;
     Image output;
     VkPipeline write_pipe;
@@ -941,12 +941,26 @@ static void frame_jitter(u32 frame, double* jx, double* jy) {
 /* With the rectangle's gate: a stage of the draw about to be recorded reads bank 4 and this is bound there. When
    it is the scene camera's block the frame is decided now, before the draw's texture level bias is asked for and
    its samplers are chosen, so that the deciding draw has the frame's bias like every draw after it. */
-void vk_temporal_camera_seen(u64 address, u32 bound, u32 size) {
-    if (!g_t.rect || !address || (address != g_t.camera_address[0] && address != g_t.camera_address[1])) return;
-    if (bound > 0x1000 || bound < CAMERA_BYTES || size > bound) return;
-    if (g_t.rect_gate.decided_at != g_vk_present + 1) {
+void vk_temporal_camera_seen(u64 address, u32 bound, u32 size, u64 program) {
+    const u32 frame = g_vk_present + 1;
+    const int slot = address && (address == g_t.camera_address[0] || address == g_t.camera_address[1]);
+    const int taken = slot && bound <= 0x1000 && bound >= CAMERA_BYTES && size <= bound;
+    /* With an upscaler, until our passes ran: a draw into the scene's targets whose program reads bank 4, however
+       much of it, must have the frame's decided camera block there. Any other block, at a known slot or not,
+       and one that cannot decide the frame, leaves the frame's draws unaccounted for: it is not evaluated. */
+    if (upscaler_on() && g_t.draw_scene && g_t.ran_at != frame &&
+        temporal_upscaler_stranger(g_u.decided_at == frame, address, g_u.block, taken)) {
+        temporal_upscaler_poison(&g_u.used, frame);
+        if (g_u.strangers++ < 8)
+            LOG("arceus-upscaler: frame %u: a draw into the scene's targets reads %u bytes of constant bank 4 (program "
+                "%llx) bound to %llx, which is not the frame's camera block (%llx): the frame is not evaluated\n",
+                frame, size, (unsigned long long)program, (unsigned long long)address,
+                (unsigned long long)(g_u.decided_at == frame ? g_u.block : 0));
+    }
+    if (!g_t.rect || !taken) return;
+    if (g_t.rect_gate.decided_at != frame) {
         if (upscaler_on()) g_u.block = address;
-        rect_decide(g_vk_present + 1);
+        rect_decide(frame);
     }
 }
 
@@ -2928,7 +2942,8 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
     if (recorded != VK_REC_DIRECT_OK) {
-        /* the library did not write its image: nothing is written back, the frame stays as drawn */
+        /* no successful output: nothing is written back and the frame stays as drawn. What a library that
+           refused may have recorded all the same is covered by the barriers above. */
         if (recorded == VK_REC_DIRECT_REFUSED)
             upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_FAILED, "its evaluate failed");
         else

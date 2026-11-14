@@ -1082,7 +1082,7 @@ void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* con
 void vk_temporal_before(u64 fs0_hash);
 /* the scene camera's constant block with this frame's jitter in place of the guest's, 1 when buffer and offset are set */
 int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer, u64* offset);
-void vk_temporal_camera_seen(u64 address, u32 bound, u32 size);
+void vk_temporal_camera_seen(u64 address, u32 bound, u32 size, u64 program);
 void vk_temporal_object_failed(const char* what);
 /* SNX_ARCEUS_TEMPORAL_GPUTIME: the results of brackets whose submission has completed, without waiting */
 void vk_temporal_gputime_poll(void);

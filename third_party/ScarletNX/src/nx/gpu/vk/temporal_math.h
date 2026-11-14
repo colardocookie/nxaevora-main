@@ -1463,6 +1463,14 @@ static inline void temporal_upscaler_poison(TemporalUpscalerUsed* u, unsigned fr
     }
     u->mixed = 1;
 }
+/* A draw into the scene's targets whose program reads the camera's constant bank, however little of it. 1 when
+   it leaves the frame's draws unaccounted for: once the frame is decided, any block there but the decided one
+   (address against block), at a slot the camera is known to use or anywhere else. Before the decision, a
+   block that cannot decide the frame (taken 0). Nothing is inferred from where a block is. */
+static inline int temporal_upscaler_stranger(int decided, unsigned long long address, unsigned long long block,
+                                             int taken) {
+    return decided ? address != block : !taken;
+}
 /* 1 when the frame's jittered draws all used one projection and it is the decision's, bit for bit. Only then is
    the frame evaluated, with that projection's planes. Nothing is read again from guest memory at the hook. */
 static inline int temporal_upscaler_used_same(const TemporalUpscalerUsed* u, unsigned frame, const float decided[16]) {
