@@ -226,12 +226,8 @@ static inline int temporal_camera_points(const float inverse_vp[16], const float
     return 1;
 }
 /* The viewport gate. The jitter and the resolve hold only while the scene's viewport is the whole target and the
-   one of the frame before. A frame is decided once, by its first draw that binds the scene camera's block and draws
-   into the scene's depth, from that draw's viewport (temporal_gate_decide, 1 for jitter). A draw that binds the
-   block before that one and cannot be tied to the scene gates the whole frame (temporal_gate_early): no draw of a
-   frame may differ from another in jitter. The G-buffer's viewport is then held against the decided one
-   (temporal_gate_scene, 1 for a mismatch). A frame is steady, and may be resolved and kept as history, when it
-   was decided with jitter and did not mismatch. Frames count from 1. */
+   one of the frame before. Each frame is decided once (temporal_gate_decide), and a frame is steady, and may be
+   resolved and kept as history, when it was decided with jitter and its G-buffer agreed. Frames count from 1. */
 typedef struct {
     float x, y, width, height; /* height negative when y runs up: then y is the bottom edge */
 } TemporalViewport;
@@ -243,6 +239,8 @@ typedef struct {
 static inline int temporal_viewport_same(const TemporalViewport* a, const TemporalViewport* b) {
     return a->x == b->x && a->y == b->y && a->width == b->width && a->height == b->height;
 }
+/* The frame's first draw that binds the scene camera's block and draws into the scene's depth decides, from its
+   own viewport: 1 for jitter. */
 static inline int temporal_gate_decide(TemporalGate* g, unsigned frame, const TemporalViewport* v, float target_width,
                                        float target_height) {
     const int whole = target_width > 0.0f && target_height > 0.0f && v->x == 0.0f &&
@@ -254,7 +252,8 @@ static inline int temporal_gate_decide(TemporalGate* g, unsigned frame, const Te
     g->jitter = whole && same && g->early_at != frame;
     return g->jitter;
 }
-/* a binder before the frame's decision: 1 when it gated the frame, 0 when the frame was decided already */
+/* A draw that binds the block before the decision cannot be tied to the scene and gates the whole frame, since no
+   two draws of a frame may differ in jitter: 1 when it did, 0 when the frame was decided already. */
 static inline int temporal_gate_early(TemporalGate* g, unsigned frame) {
     if (g->decided_at == frame) return 0;
     g->early_at = frame;
@@ -263,6 +262,7 @@ static inline int temporal_gate_early(TemporalGate* g, unsigned frame) {
 static inline int temporal_gate_jitter(const TemporalGate* g, unsigned frame) {
     return g->decided_at == frame && g->jitter;
 }
+/* the G-buffer's viewport held against the decided one: 1 for a mismatch */
 static inline int temporal_gate_scene(TemporalGate* g, unsigned frame, const TemporalViewport* scene) {
     if (!temporal_gate_jitter(g, frame) || temporal_viewport_same(scene, &g->decided)) return 0;
     g->mismatch_at = frame;
@@ -334,21 +334,17 @@ static inline int temporal_before_choice(int own_last, unsigned own_stays, int o
     if (partner_turns + 1 < TEMPORAL_PAIR_FRAMES) return TEMPORAL_BEFORE_LEARNING;
     return partner_has_draw ? TEMPORAL_BEFORE_PARTNER : TEMPORAL_BEFORE_OTHER;
 }
-/* Whose a kept copy of skinned positions is. The game captures a character's positions into a buffer at some
-   address, and a copy is kept per address and frame. The address does not say whose positions they are: another
-   character may capture into it the next frame. So a copy is tagged with the G-buffer draws that read it, each by
-   its block's pair and its signature, and a draw gets last frame's copy only when that copy has its tag and the
-   address was captured exactly once in both frames.
-   One rule keeps the tags honest. Every capture into the address is an event, counted before anything can fail:
-   it takes a new generation of the address, drops the copy's tags and leaves the copy's content unknown until the
-   bytes were really copied (temporal_stream_copied). A copy counts only while it holds the bytes of the last event
-   of its frame. Buffers that are made anew lose their content (temporal_stream_poison), never their counts. */
+/* Whose a kept copy of skinned positions is. A copy is kept per capture address and frame, and the address does
+   not say whose positions they are. So a copy is tagged with the G-buffer draws that read it, by block pair and
+   signature, and a draw gets last frame's copy only with its tag on it and one capture in each frame. */
 #define TEMPORAL_STREAM_OWNERS 4
 typedef struct {
     unsigned at, captures, owners; /* the frame of the copy, the captures into its address in it, the tags */
     unsigned generation, copied;   /* of the last capture in that frame, and of the bytes held (0 for none) */
     unsigned long long pair[TEMPORAL_STREAM_OWNERS], draw[TEMPORAL_STREAM_OWNERS];
 } TemporalStreamCopy;
+/* Every capture into the address is an event, counted before anything can fail: it takes a new generation of the
+   address, drops the copy's tags and leaves its content unknown until the bytes were copied. */
 static inline void temporal_stream_captured(TemporalStreamCopy* c, unsigned* generation, unsigned frame) {
     if (c->at != frame) {
         memset(c, 0, sizeof *c);
@@ -361,10 +357,12 @@ static inline void temporal_stream_captured(TemporalStreamCopy* c, unsigned* gen
     c->owners = 0;
 }
 static inline void temporal_stream_copied(TemporalStreamCopy* c) { c->copied = c->generation; }
+/* buffers made anew lose their content, never their counts */
 static inline void temporal_stream_poison(TemporalStreamCopy* c) {
     c->copied = 0;
     c->owners = 0;
 }
+/* a copy counts only while it holds the bytes of its frame's last capture */
 static inline int temporal_stream_valid(const TemporalStreamCopy* c) {
     return c->copied != 0 && c->copied == c->generation;
 }
