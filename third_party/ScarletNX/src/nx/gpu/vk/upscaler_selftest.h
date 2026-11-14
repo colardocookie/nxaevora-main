@@ -224,6 +224,24 @@ static inline int selftest_settles(double first_cycle, double last_cycle) {
     return isfinite(first_cycle) && isfinite(last_cycle) && first_cycle > 0.0 && last_cycle >= 0.0 &&
            last_cycle <= 0.5 * first_cycle;
 }
+/* The changes between consecutive outputs of a run, kept apart for its two cycles of offsets. A run evaluates
+   twice the offsets frames, so it has that many less one changes. Change k is the one into the frame evaluated
+   as number k (the first evaluated frame is number 0 and has none). The first cycle is the changes below offsets
+   in number, one less than the offsets. The last cycle is the rest, the change at the boundary included. */
+typedef struct {
+    double sum[2];
+    int n[2];
+} SelftestSettling;
+static inline void selftest_change(SelftestSettling* s, int k, int offsets, double change) {
+    const int cycle = k < offsets ? 0 : 1;
+    if (k < 1) return;
+    s->sum[cycle] += change;
+    s->n[cycle]++;
+}
+/* the mean change of a cycle, not a number when it has none */
+static inline double selftest_cycle(const SelftestSettling* s, int cycle) {
+    return s->n[cycle] ? s->sum[cycle] / s->n[cycle] : NAN;
+}
 static inline int selftest_same(double difference) { return isfinite(difference) && difference <= SELFTEST_SAME; }
 static inline int selftest_apart(double difference) { return isfinite(difference) && difference >= SELFTEST_APART; }
 #endif

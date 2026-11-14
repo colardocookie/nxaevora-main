@@ -2141,6 +2141,29 @@ static void test_selftest(void) {
     assert(!selftest_beats(0.0, 0.0, SELFTEST_MARGIN) && selftest_beats(0.0, 0.001, SELFTEST_MARGIN));
     assert(selftest_settles(0.02, 0.01) && !selftest_settles(0.02, 0.0101) && !selftest_settles(0.0, 0.0));
     assert(!selftest_settles(0.02, NAN) && selftest_settles(0.02, 0.0));
+    /* Settling, for the runs' two sizes: 18 offsets (36 evaluated frames, 35 changes) and 21 (42 and 41). The
+       first cycle has one change less than the offsets, the last has the rest with the one at the boundary. A
+       big change exactly at the boundary belongs to the last cycle, so such a run has NOT stopped changing. Put
+       into the first cycle it would look settled. */
+    for (int which = 0; which < 2; which++) {
+        const int offsets = which ? 21 : 18, frames = 2 * offsets;
+        SelftestSettling calm = {{0, 0}, {0, 0}}, jolt = {{0, 0}, {0, 0}}, good = {{0, 0}, {0, 0}};
+        for (int k = 0; k < frames; k++) {
+            selftest_change(&calm, k, offsets, 1.0);
+            selftest_change(&jolt, k, offsets, k == offsets ? 100.0 : 1.0);
+            selftest_change(&good, k, offsets, k < offsets ? 1.0 : 0.25);
+        }
+        assert(calm.n[0] == offsets - 1 && calm.n[1] == offsets && calm.n[0] + calm.n[1] == frames - 1);
+        assert(selftest_cycle(&calm, 0) == 1.0 && selftest_cycle(&calm, 1) == 1.0);
+        assert(!selftest_settles(selftest_cycle(&calm, 0), selftest_cycle(&calm, 1)));
+        assert(selftest_cycle(&jolt, 0) == 1.0 && selftest_cycle(&jolt, 1) == (offsets - 1 + 100.0) / offsets);
+        assert(!selftest_settles(selftest_cycle(&jolt, 0), selftest_cycle(&jolt, 1)));
+        assert(selftest_cycle(&good, 0) == 1.0 && selftest_cycle(&good, 1) == 0.25);
+        assert(selftest_settles(selftest_cycle(&good, 0), selftest_cycle(&good, 1)));
+    }
+    SelftestSettling none = {{0, 0}, {0, 0}};
+    selftest_change(&none, 0, 18, 5.0); /* the first evaluated frame has no change into it */
+    assert(none.n[0] == 0 && isnan(selftest_cycle(&none, 0)) && isnan(selftest_cycle(&none, 1)));
     assert(selftest_same(0.01) && !selftest_same(0.0101) && !selftest_same(NAN));
     assert(selftest_apart(0.05) && !selftest_apart(0.0499) && !selftest_apart(NAN));
 }

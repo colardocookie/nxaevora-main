@@ -747,8 +747,7 @@ static int run(const Inputs* in, const Variant* v, int use_cut, double* last, do
                                 .output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
     const size_t size = sizeof(double) * 3 * (size_t)in->ow * in->oh;
     double* previous = malloc(size);
-    double sums[2] = {0.0, 0.0};
-    int counts[2] = {0, 0};
+    SelftestSettling settling = {{0.0, 0.0}, {0, 0}};
     memset(&s, 0, sizeof s);
     int ok = !g.unknown && previous && session_open(&s, in, &traits), evaluated = 0;
     for (int i = 0; ok && i < in->frames; i++) {
@@ -757,11 +756,7 @@ static int run(const Inputs* in, const Variant* v, int use_cut, double* last, do
         if (r <= 0) continue;
         if (evaluated && regions) {
             const double change = difference(in, last, previous, regions, SELFTEST_BACKGROUND);
-            const int cycle = evaluated <= in->offsets ? 0 : evaluated >= in->offsets ? 1 : -1;
-            if (cycle >= 0) {
-                sums[cycle] += change;
-                counts[cycle]++;
-            }
+            selftest_change(&settling, evaluated, in->offsets, change);
         }
         memcpy(previous, last, size);
         evaluated++;
@@ -771,8 +766,8 @@ static int run(const Inputs* in, const Variant* v, int use_cut, double* last, do
         LOG(ST "a run evaluated %d of %d frames (%u skipped)\n", evaluated, in->frames - 1, s.skipped);
         ok = 0;
     }
-    if (first_change) *first_change = counts[0] ? sums[0] / counts[0] : NAN;
-    if (last_change) *last_change = counts[1] ? sums[1] / counts[1] : NAN;
+    if (first_change) *first_change = selftest_cycle(&settling, 0);
+    if (last_change) *last_change = selftest_cycle(&settling, 1);
     session_close(&s);
     free(previous);
     return ok;
@@ -989,8 +984,8 @@ static int resize(int up) {
     Session s;
     double *output = malloc(size), *previous = malloc(size), *reference = malloc(size), *scaled = malloc(size);
     u8* regions = malloc((size_t)BIG[2] * BIG[3]);
-    double sums[2] = {0.0, 0.0};
-    int counts[2] = {0, 0}, evaluated = 0;
+    SelftestSettling settling = {{0.0, 0.0}, {0, 0}};
+    int evaluated = 0;
     /* everything starts empty, and only what was made is freed */
     memset(&small, 0, sizeof small);
     memset(&big, 0, sizeof big);
@@ -1007,16 +1002,14 @@ static int resize(int up) {
         const int r = frame_run(&s, &big, i, &CONFIGURED, 0, output);
         if (r < 0) ok = 0;
         if (r <= 0) continue;
-        if (evaluated) {
-            const int cycle = evaluated <= big.offsets ? 0 : 1;
-            sums[cycle] += difference(&big, output, previous, regions, SELFTEST_BACKGROUND);
-            counts[cycle]++;
-        }
+        if (evaluated)
+            selftest_change(&settling, evaluated, big.offsets,
+                            difference(&big, output, previous, regions, SELFTEST_BACKGROUND));
         memcpy(previous, output, size);
         evaluated++;
     }
     const unsigned skipped_at_change = ok ? s.skipped - skipped : 0;
-    const double first = counts[0] ? sums[0] / counts[0] : NAN, last = counts[1] ? sums[1] / counts[1] : NAN;
+    const double first = selftest_cycle(&settling, 0), last = selftest_cycle(&settling, 1);
     const double error = ok ? difference(&big, output, reference, regions, SELFTEST_BACKGROUND) : NAN;
     if (ok) plain(&big, big.frames - 1, up, scaled);
     const double plainly = ok ? difference(&big, scaled, reference, regions, SELFTEST_BACKGROUND) : NAN;
