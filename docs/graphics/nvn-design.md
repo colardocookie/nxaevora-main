@@ -1331,4 +1331,17 @@ the shared ones, for example `nvnMemoryPoolInitialize` (494 us per call).
 Step 3 (done 2026-11-14): 141 command buffer handlers, `nvnBufferMap` and `nvnBufferGetAddress` take the shared mode
 through `command_hold` and `command_unhold` (the owner helpers `nvn_owner_claim` and `nvn_owner_release` are in
 `nvn_cmdlist.c`). No handler of the set needed to stay exclusive. A conflict falls back to the exclusive mode and finds the
-record again, because a `Finalize` can run in the gap. Step 4 (the user runs) is open.
+record again, because a `Finalize` can run in the gap.
+
+Step 4 (user run 2026-11-15, build of step 3, 333 s, field and a battle): no crash, 30 frames each second,
+`command_conflicts=0`. The lock wait per frame fell from 2.0 to 2.4 ms to 0.09 to 0.22 ms. Takes: 43.9 M shared,
+15.2 M exclusive. The game threads waited 1109 ms behind exclusive holders and 372 ms behind shared ones. The GPU thread
+never waited in the shared mode. Top holders: `nvnMemoryPoolInitialize` (378 ms, 597 us per call),
+`nvnCommandBufferCallCommands` (245 ms), `nvnCommandBufferBindUniformBuffer` (149 ms) and `nvnBufferGetSize` (89 ms,
+173,900 waits). `nvnBufferGetSize` reads only the buffer record, like `nvnBufferGetAddress`, so it takes the shared mode
+too (after this run).
+
+Run with the shared `nvnBufferGetSize` (2026-11-15, 163 s, field and a battle): no crash, `command_conflicts=0`. The lock
+wait per frame is 0.02 to 0.11 ms after the loading. `nvnBufferGetSize` made 7.3 ms of wait (was 89 ms in 333 s). The
+game threads waited 2.0 ms each second of play (4.4 ms before). `nvnMemoryPoolInitialize` (220 ms, 488 us per call) is now
+most of the wait that is left.

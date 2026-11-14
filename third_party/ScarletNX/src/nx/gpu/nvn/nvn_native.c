@@ -1431,11 +1431,11 @@ static void h_buffer_get_address(CPU* c, u64 entry) {
 }
 static void h_buffer_get_size(CPU* c, u64 entry) {
     (void)entry;
-    objs_lock_take();
+    objs_lock_take_shared();
     const BufferRec* b = known_record(c->x[0], NVN_OBJ_BUFFER);
     if (!b) buffer_lost("BufferGetSize", c->x[0]);
     c->x[0] = b ? b->size : 0;
-    pm_unlock(&objs_lock);
+    pm_unlock_shared(&objs_lock);
 }
 static void h_buffer_get_memory_pool(CPU* c, u64 entry) {
     (void)entry;
