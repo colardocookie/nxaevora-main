@@ -2281,6 +2281,11 @@ static void test_projection_camera(void) {
 
 /* The pure rules of the upscaler's wiring in the game. */
 static void test_upscaler_wiring(void) {
+    /* the write-back: a value as it is, 0 for a negative one, for minus zero and for no number */
+    assert(temporal_upscaled(0.25f) == 0.25f && temporal_upscaled(7.5f) == 7.5f && temporal_upscaled(0.0f) == 0.0f);
+    assert(temporal_upscaled(-0.25f) == 0.0f && temporal_upscaled(-INFINITY) == 0.0f && temporal_upscaled(NAN) == 0.0f);
+    assert(!signbit(temporal_upscaled(-0.0f)) && isinf(temporal_upscaled(INFINITY)));
+    assert(temporal_upscaled(1e-40f) == 1e-40f); /* a denormal is a value */
     /* the start: only with the anti-aliasing on, and not with rejected vectors */
     assert(temporal_upscaler_start(1, 0) == TEMPORAL_UPSCALER_START_OK);
     assert(temporal_upscaler_start(0, 0) == TEMPORAL_UPSCALER_START_NOT_TAA);

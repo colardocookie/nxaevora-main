@@ -1308,6 +1308,9 @@ static inline int temporal_upscaler_failed(unsigned* failures, int ok) {
     else if (*failures < TEMPORAL_UPSCALER_FAILURES) ++*failures;
     return *failures >= TEMPORAL_UPSCALER_FAILURES;
 }
+/* One channel of the write-back after an upscaler, as shaders/temporal_upscaled.frag does it: the library's value
+   as it is, and 0 for a negative one and for one that is no number, since the scene colour has no sign. */
+static inline float temporal_upscaled(float c) { return isnan(c) ? 0.0f : c > 0.0f ? c : 0.0f; }
 /* SNX_ARCEUS_UPSCALER in the game, the pure part. Not used by the renderer yet. It starts only with the
    anti-aliasing on, whose gate and failure rules it needs, and not with rejected vectors, which it does not have. */
 enum { TEMPORAL_UPSCALER_START_OK, TEMPORAL_UPSCALER_START_NOT_TAA, TEMPORAL_UPSCALER_START_REJECT };
