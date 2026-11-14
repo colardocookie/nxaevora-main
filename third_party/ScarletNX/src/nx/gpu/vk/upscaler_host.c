@@ -17,14 +17,24 @@
 const SnxUpscalerApi* snx_upscaler_fsr(void); /* gpu/vk/upscaler_fsr.cpp */
 #endif
 
+/* built: whether an adapter of that name is part of this program at all */
+static const SnxUpscalerApi* adapter_find(const char* name, int* built) {
+    *built = 0;
+#ifdef _WIN32
+    if (name && !strcmp(name, "fsr")) {
+        *built = 1;
+        return snx_upscaler_fsr();
+    }
+#endif
+    return NULL;
+}
 /* The adapter of that name, NULL for none: one that is not built into this program, or one whose SDK library is not
    beside it. The adapter says why in a line of its own. */
 const SnxUpscalerApi* vk_upscaler_adapter(const char* name) {
-#ifdef _WIN32
-    if (name && !strcmp(name, "fsr")) return snx_upscaler_fsr();
-#endif
-    if (name) WARN("arceus-upscaler: no adapter named \"%s\" is built into this program\n", name);
-    return NULL;
+    int built = 0;
+    const SnxUpscalerApi* api = adapter_find(name, &built);
+    if (name && !built) WARN("arceus-upscaler: no adapter named \"%s\" is built into this program\n", name);
+    return api;
 }
 
 /* one more name on a list without repeats: 0 when there is no room */
@@ -120,16 +130,18 @@ static int device_names(VkPhysicalDevice device, const char* const* names, uint3
 }
 
 /* Before the game's device is made, with SNX_ARCEUS_UPSCALER naming an adapter: what the adapter needs of it,
-   checked by the host and copied by value. 1 when the device is to be tried with it. 0 with one line: the
-   device is made as without the switch. The adapter's storage is read and never written or kept. */
+   checked by the host and copied by value. 1 when the device is to be tried with it. 0 with one line, or with
+   none when there is no such adapter: the device is made as without the switch. The adapter's storage is read and never written or kept. */
 int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevice device,
                            PFN_vkGetInstanceProcAddr lookup, VkUpscalerDeviceAsk* ask) {
     SnxUpscalerExtensions of_instance = {0};
     SnxUpscalerDeviceNeeds needs = {0};
     SnxNeedsBits asked = {0, 0, 0}, has = {0, 0, 0};
     memset(ask, 0, sizeof *ask);
-    const SnxUpscalerApi* api = vk_upscaler_adapter(name);
-    if (!api) return 0; /* the lookup said why */
+    int built = 0;
+    const SnxUpscalerApi* api = adapter_find(name, &built);
+    /* No adapter: nothing is said here. The upscaler's start has the one line for a name that is not built in. */
+    if (!api) return 0;
     if (api->abi != SNX_UPSCALER_ABI || !api->instance_extensions || !api->device_extensions) {
         device_refused(name, "the adapter is of another version of the contract, or cannot be asked");
         return 0;

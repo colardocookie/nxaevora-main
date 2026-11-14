@@ -2312,7 +2312,8 @@ static void test_upscaler_needs(void) {
     loop.next = &loop;
     assert(snx_needs_chain(&loop, &asked) == SNX_NEEDS_REPEATED);
     /* A null ends a chain where it stands: what is behind it is not part of the chain. And a chain of nine
-       never gets past its second structure: the bound of eight is behind the other two refusals. */
+       never gets past its second structure. The bound of eight is the walk's guard against a chain that does
+       not end, not a first refusal that can be reached with one accepted type. */
     SnxNeedsDerivatives nine[9];
     for (int k = 0; k < 9; k++)
         nine[k] = (SnxNeedsDerivatives){SNX_NEEDS_DERIVATIVES, k < 8 ? &nine[k + 1] : NULL, 0, 1};
@@ -2413,13 +2414,19 @@ static void test_upscaler_needs(void) {
         assert(!r.made && snx_needs_met(&r, "fsr", one, 1, &linear) == SNX_NEEDS_ADAPTER);
     }
     assert(snx_needs_none(0, NULL) && !snx_needs_none(1, NULL) && !snx_needs_none(0, &linear));
-    /* a bit asked for needs one of the structure's two extensions among the names */
+    /* a bit asked for needs the KHR extension among the names. The NV one alone, or beside others, is refused */
     {
         const char* const khr[2] = {"VK_EXT_other", "VK_KHR_compute_shader_derivatives"};
         const char* const nv[1] = {"VK_NV_compute_shader_derivatives"};
         const char* const other[1] = {"VK_EXT_other"};
         const SnxNeedsBits want = {1, 0, 1}, nothing = {0, 0, 0};
-        assert(snx_needs_owner(khr, 2, &want) == SNX_NEEDS_OK && snx_needs_owner(nv, 1, &want) == SNX_NEEDS_OK);
+        const char* const nv_and[2] = {"VK_NV_compute_shader_derivatives", "VK_EXT_other"};
+        const char* const with_khr[2] = {"VK_NV_compute_shader_derivatives", "VK_KHR_compute_shader_derivatives"};
+        assert(snx_needs_owner(khr, 2, &want) == SNX_NEEDS_OK);
+        assert(snx_needs_owner(with_khr, 2, &want) == SNX_NEEDS_OK);
+        assert(snx_needs_owner(nv, 1, &want) == SNX_NEEDS_OWNER);
+        assert(snx_needs_owner(nv_and, 2, &want) == SNX_NEEDS_OWNER);
+        assert(snx_needs_owner(nv, 1, &nothing) == SNX_NEEDS_OK); /* named without a bit: only a name to check */
         assert(snx_needs_owner(other, 1, &want) == SNX_NEEDS_OWNER);
         assert(snx_needs_owner(NULL, 0, &want) == SNX_NEEDS_OWNER);
         assert(snx_needs_owner(other, 1, &nothing) == SNX_NEEDS_OK);

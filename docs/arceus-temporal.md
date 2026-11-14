@@ -602,9 +602,10 @@ itself (`upscaler_needs.h` has the rules, host-tested, and `upscaler_host.c` app
 - Exactly one feature structure is accepted from an adapter: the compute shader derivatives features, by its
   type and its two bits. Any other type refuses (a core feature structure, a promoted alias such as the 16 bit
   float features, anything else), and so does the accepted type twice, a chain that does not end within eight
-  structures, and a bit asked for without one of that structure's two extensions among the names. With one
-  accepted type the bound of eight is never the first refusal: a second structure is refused by its type or as
-  a repeat.
+  structures, and a bit asked for without `VK_KHR_compute_shader_derivatives` among the names (the NV
+  extension of the same structure is not taken as that: nobody examined it). The bound of eight is the walk's
+  guard against a chain that does not end. With one accepted type it is never the first refusal: a second
+  structure is refused by its type or as a repeat.
 - Each bit asked for is checked against the host's own question to the physical device. A bit it does not have
   refuses. Bits not asked for stay off.
 - The adapter's storage is read and never written, linked or kept. What goes into the device is a structure of
@@ -612,7 +613,8 @@ itself (`upscaler_needs.h` has the rules, host-tested, and `upscaler_host.c` app
   The game's count and chain head are not changed in place.
 
 If anything refuses, or the instance would need something, the device is made as without the switch, with one
-line that says why. If the device cannot be made with the additions, it is made once more from the game's own
+line that says why. For a name that no adapter of this program has, the device's creation says nothing: the
+upscaler's start has the one line for that. If the device cannot be made with the additions, it is made once more from the game's own
 list and chain head, with one line, and the adapter is not available. Only after a device was made with the
 additions is a record written, by value: the adapter's name, every extension it named (also one the game's
 list already had) and the bits that were turned on, with the line `arceus-upscaler: the game's device is made

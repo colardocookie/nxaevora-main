@@ -12,7 +12,9 @@
    and the NV extension share it), by its type number and its two bits. Any other type is refused: a core feature
    structure, a promoted alias such as the 16 bit float features, and anything that is no feature structure. */
 #define SNX_NEEDS_DERIVATIVES 1000201000
-#define SNX_NEEDS_NODES 8 /* a chain is walked this far and no further */
+/* The walk's guard against a chain that does not end. With one accepted type it is never the first refusal: a
+   second structure is refused by its type or as a repeat before the count gets there. */
+#define SNX_NEEDS_NODES 8
 typedef struct {
     int32_t type;
     const void* next;
@@ -37,7 +39,7 @@ enum {
     SNX_NEEDS_NAME,        /* an extension the adapter names is not in the physical device's list */
     SNX_NEEDS_LIST,        /* the physical device's list of extensions was not read whole */
     SNX_NEEDS_ROOM,        /* more names than the host keeps, or a name too long to keep */
-    SNX_NEEDS_OWNER,       /* a bit is asked for and neither extension the structure belongs to is named */
+    SNX_NEEDS_OWNER,       /* a bit is asked for and VK_KHR_compute_shader_derivatives is not named */
     SNX_NEEDS_ADAPTER,     /* the record is of another adapter, or there is none */
     SNX_NEEDS_NOT_RECORDED /* an extension or a bit that is asked for is not in the record */
 };
@@ -76,14 +78,13 @@ static inline int snx_needs_names(const char* const* names, uint32_t count, cons
     return SNX_NEEDS_OK;
 }
 
-/* The structure belongs to two extensions of one meaning. An adapter that asks for it names one of them: a
-   feature structure is not put into a device's chain without its extension enabled. */
+/* An adapter that asks for a bit of the structure names VK_KHR_compute_shader_derivatives: a feature structure
+   is not put into a device's chain without its extension enabled. The NV extension of the same structure is
+   not taken as that: a configuration nobody examined. */
 static inline int snx_needs_owner(const char* const* names, uint32_t count, const SnxNeedsBits* asked) {
     if (!asked->have) return SNX_NEEDS_OK;
     for (uint32_t i = 0; i < count; i++)
-        if (names && names[i] && (!strcmp(names[i], "VK_KHR_compute_shader_derivatives") ||
-                                  !strcmp(names[i], "VK_NV_compute_shader_derivatives")))
-            return SNX_NEEDS_OK;
+        if (names && names[i] && !strcmp(names[i], "VK_KHR_compute_shader_derivatives")) return SNX_NEEDS_OK;
     return SNX_NEEDS_OWNER;
 }
 
@@ -156,7 +157,7 @@ static inline const char* snx_needs_text(int why) {
         case SNX_NEEDS_NAME: return "an extension it names is not in the physical device's list";
         case SNX_NEEDS_LIST: return "the physical device's list of extensions could not be read whole";
         case SNX_NEEDS_ROOM: return "it names more than the host keeps, or a name too long to keep";
-        case SNX_NEEDS_OWNER: return "it asks for a feature bit and names neither extension of that structure";
+        case SNX_NEEDS_OWNER: return "it asks for a feature bit and does not name VK_KHR_compute_shader_derivatives";
         case SNX_NEEDS_ADAPTER: return "the game's device was not made with the needs of this adapter";
         default: return "it names an extension or a feature bit the game's device was not made with";
     }
