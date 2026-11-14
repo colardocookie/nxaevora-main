@@ -5,6 +5,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/arceus_step.h"
 #include "nx/runtime/arceus_camera.h"
+#include "nx/runtime/arceus_scene_scale.h"
 #include "nx/runtime/guest_jit.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
@@ -1549,6 +1550,7 @@ static void timing_research_init(void) {
    normal mode begins at 1.0/1.0, with explicit half-size/custom/special modes.
    Keep those setters intact and skip only this automatic governor's update.
    The native Vulkan render scale still controls the allocated image size. */
+static int fixed_resolution_active; /* the governor's patch went in */
 static void fixed_resolution_init(void) {
     const char* enabled = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
     if (!main_base || !enabled || strcmp(enabled, "1")) return;
@@ -1572,7 +1574,61 @@ static void fixed_resolution_init(void) {
         WARN("arceus-resolution: governor JIT failed\n");
         return;
     }
+    fixed_resolution_active = 1;
     LOG("arceus-resolution: automatic 3D resolution governor disabled; explicit scene modes unchanged\n");
+}
+
+/* SNX_ARCEUS_SCENE_SCALE=<0.5 to below 1.0>: the game's own 3D buffer scale for its default mode. The mode setter
+   (CC3888) takes the default pair from a table in the game's data, and this puts the number there, both ways the
+   same. Run before any guest code, so before the setter's first use. Rules and refusals: arceus_scene_scale.h. */
+static void scene_scale_init(void) {
+    float scale;
+    const char* text = getenv("SNX_ARCEUS_SCENE_SCALE");
+    const int asked = arceus_scene_scale_parse(text, &scale);
+    if (!main_base || asked == ARCEUS_SCENE_SCALE_OFF) return;
+    if (asked == ARCEUS_SCENE_SCALE_BAD) {
+        WARN("arceus-scene-scale: refused, \"%s\" is not a number from 0.5 to below 1.0. Nothing changed\n", text);
+        return;
+    }
+    const u64 table = main_base + ARCEUS_SCENE_SCALE_TABLE, pair = table + 4 * ARCEUS_SCENE_SCALE_PAIR;
+    /* Whether the host can write there is settled before anything is written. The table is in the game's read-only
+       data, but that is the guest's permission: the host commits every mapped guest page readable and writable
+       (mem.c commit_nl, plat_vm_commit), as the patches to the game's code here rely on. So mapped is writable,
+       and a table that is not wholly in mapped memory is refused unwritten. */
+    if (!readable(table, 4 * ARCEUS_SCENE_SCALE_WORDS)) {
+        WARN("arceus-scene-scale: refused, the table at main+%x is not in mapped memory. Nothing changed\n",
+             ARCEUS_SCENE_SCALE_TABLE);
+        return;
+    }
+    uint32_t words[ARCEUS_SCENE_SCALE_WORDS];
+    for (int i = 0; i < ARCEUS_SCENE_SCALE_WORDS; i++) words[i] = gr32(table + 4 * (u64)i);
+    const int guard = arceus_scene_scale_guard(fixed_resolution_active, words);
+    if (guard != ARCEUS_SCENE_GUARD_OK) {
+        WARN("arceus-scene-scale: refused (%s). Nothing changed. The table's words: %08x %08x, %08x %08x, %08x "
+             "%08x, %08x %08x, %08x %08x\n",
+             guard == ARCEUS_SCENE_GUARD_GOVERNOR ? "the governor is not off: it needs SNX_ARCEUS_FIXED_RESOLUTION=1"
+             : guard == ARCEUS_SCENE_GUARD_PAIR   ? "the default pair is not 1.0 and 1.0"
+                                                  : "the pair after the default one is not 0.5 and 0.5",
+             words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7], words[8], words[9]);
+        return;
+    }
+    uint32_t bits;
+    memcpy(&bits, &scale, sizeof bits);
+    gw32(pair, bits);
+    gw32(pair + 4, bits);
+    if (!arceus_scene_scale_took(bits, gr32(pair), gr32(pair + 4))) {
+        /* it did not read back: the pair goes back to 1.0 and 1.0, which the guard found there */
+        const uint32_t first = gr32(pair), second = gr32(pair + 4);
+        gw32(pair, words[ARCEUS_SCENE_SCALE_PAIR]);
+        gw32(pair + 4, words[ARCEUS_SCENE_SCALE_PAIR + 1]);
+        WARN("arceus-scene-scale: refused, the write to main+%x read back as %08x %08x. The pair is put back and "
+             "now reads %08x %08x\n",
+             ARCEUS_SCENE_SCALE_TABLE + 4 * ARCEUS_SCENE_SCALE_PAIR, first, second, gr32(pair), gr32(pair + 4));
+        return;
+    }
+    LOG("arceus-scene-scale: EXPERIMENT: asked %g, the default pair at main+%x is now %g and %g. What the game "
+        "uses of it is in the renderer's arceus-scene-scale lines\n",
+        (double)scale, ARCEUS_SCENE_SCALE_TABLE + 4 * ARCEUS_SCENE_SCALE_PAIR, (double)scale, (double)scale);
 }
 
 /* The main rigid-body wrapper runs once per rendered frame and normally selects
@@ -4299,6 +4355,7 @@ void arceus_clock_post_jit(void) {
     timer_carry_fix = arceus_switch_enabled("SNX_ARCEUS_TIMER_CARRY_FIX", 1);
     if (timer_carry_fix) LOG("arceus-timer-carry: integer timer catch-up enabled, backlog capped at 1 second\n");
     fixed_resolution_init();
+    scene_scale_init(); /* after the governor's patch, which it needs */
     /* Before the research probe, which compiles and keeps this wrapper's body. */
     physics_timestep_init();
     navigation_timestep_init();

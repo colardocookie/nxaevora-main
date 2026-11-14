@@ -3552,6 +3552,8 @@ retry:
         if ((xbound & 1) && vk_temporal_objects())
             vk_temporal_skin_keep(cb, xaddress0, (u32)xsize[0], xbuf[0], xoff[0]);
     }
+    /* Read-only, with SNX_ARCEUS_SCENE_SCALE in use: the used fraction and the viewport of a G-buffer draw */
+    if (n >= 3 && zt) vk_scene_scale_note(ch, zt, n);
     /* Read-only: a G-buffer draw whose vertex stream is a transform feedback output of this frame is a skinned
        character. Its stream, binding and attributes are logged for the first ones. */
     if (vk_temporal_objects() && n >= 3 && zt && !xcount)

@@ -1102,6 +1102,8 @@ void vk_temporal_object_pipeline(void);
 void vk_temporal_feedback(u64 address, u32 size, u32 index);
 int vk_temporal_feedback_find(u64 address, u32* index, u64* offset, u32* size);
 int vk_temporal_skinned_line(void);
+/* gpu/vk/scene_scale.c: read only, and only with SNX_ARCEUS_SCENE_SCALE in use */
+void vk_scene_scale_note(const GpuChannel* ch, const Surf* zt, u32 colours);
 void vk_temporal_object_fate(int known, int reads, int again);
 void vk_temporal_multiply(const float a[16], const float b[16], float out[16]);
 /* gpu/vk/render.c: the read-only frame pass census (SNX_PASS_CENSUS=1) hears of each frame shown */
