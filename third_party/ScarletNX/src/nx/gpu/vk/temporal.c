@@ -189,6 +189,7 @@ static struct {
     u32 rect_raw_at;
     int mip_bias_set; /* SNX_ARCEUS_TEMPORAL_MIPBIAS holds a number, 0 included: no automatic bias */
     int rect_extras_off; /* the numbers and the views could not be made once: none for the rest of the session */
+    u32 object_failed_at; /* the frame an object pass could not get what it needs (vk_temporal_object_failed) */
     u64 rect_generation, rect_gated, rect_seen, rect_steady, rect_spoilt, rect_left;
     VkImage rect_images[5];
     TemporalGate gate;
@@ -1263,6 +1264,18 @@ static Object* object_slot(u64 key, u32 frame, int make) {
 
 int vk_temporal_objects(void) { return temporal_on() && g_t.objects; }
 
+/* Under the rectangle's gate: an object pass could not get a thing it needs (a program, the target, room for its
+   block, a pipeline or a set). That is not a draw without a matrix, which falls back to the camera's vector by
+   itself. This frame's object target is given up whole, as when a pair breaks, and object vectors are off for
+   the rest of the session, with one line. The frame, its resolve and its history are not touched. */
+void vk_temporal_object_failed(const char* what) {
+    if (!g_t.rect || !g_t.objects) return;
+    g_t.object_failed_at = g_vk_present + 1;
+    g_t.objects = 0;
+    LOG("arceus-temporal-rect: object vectors are off for the rest of the session (%s could not be made): the "
+        "camera's vectors alone from here on\n", what);
+}
+
 /* The texture level shift for a draw into the scene (its depth target is the scene's), 0 for any other draw */
 float vk_temporal_mip_bias(const Surf* zt) {
     if (!temporal_on() || !zt) return 0.0f;
@@ -1838,14 +1851,20 @@ int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* o
                                        .pCode = temporal_object_fs_spv};
         if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &g_t.object_fs))) {
             g_t.object_fs = VK_NULL_HANDLE;
+            vk_temporal_object_failed("the object pass's program");
             return 0;
         }
     }
     if (!image_ensure(&g_t.object, OBJECT_FORMAT, zt->sw, zt->sh,
-                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "object vector"))
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "object vector")) {
+        vk_temporal_object_failed("the object vectors' target");
         return 0;
+    }
     u8* bytes = vk_stage(sizeof block, vk_stage_align(), &out->block, &out->offset);
-    if (!bytes) return 0;
+    if (!bytes) {
+        vk_temporal_object_failed("room for an object draw's block");
+        return 0;
+    }
     memcpy(bytes, &block, sizeof block);
     out->size = sizeof block;
     out->fs = g_t.object_fs;
@@ -2027,18 +2046,33 @@ int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, u6
     g_t.drawn[number <= OBJECT_DRAWS ? number : 0].stream = &s->copy[!last];
     block.size[2] = g_t.mode == MODE_PROBE ? (float)number : 0.0f;
     block.size[3] = 0;
-    if (!(block.viewport[2] != 0.0f) || !(block.viewport[3] != 0.0f) || !layouts_make()) return 0;
+    if (!(block.viewport[2] != 0.0f) || !(block.viewport[3] != 0.0f)) return 0;
+    if (!layouts_make()) {
+        vk_temporal_object_failed("the passes' layouts");
+        return 0;
+    }
     if (!g_t.skin_vs) g_t.skin_vs = vk_module_spv(temporal_skin_vs_spv, (size_t)(temporal_skin_vs_spv_size / 4));
     if (!g_t.skin_fs) g_t.skin_fs = vk_module_spv(temporal_skin_fs_spv, (size_t)(temporal_skin_fs_spv_size / 4));
-    if (!g_t.skin_vs || !g_t.skin_fs) return 0;
-    if (!image_ensure(&g_t.object, OBJECT_FORMAT, zt->sw, zt->sh,
-                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "object vector"))
+    if (!g_t.skin_vs || !g_t.skin_fs) {
+        vk_temporal_object_failed("the skinned pass's programs");
         return 0;
+    }
+    if (!image_ensure(&g_t.object, OBJECT_FORMAT, zt->sw, zt->sh,
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, "object vector")) {
+        vk_temporal_object_failed("the object vectors' target");
+        return 0;
+    }
     const VkComponentMapping identity = {0};
     out->depth = vk_tex_view(zt, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
-    if (!out->depth) return 0;
+    if (!out->depth) {
+        vk_temporal_object_failed("the scene depth's view for a skinned draw");
+        return 0;
+    }
     u8* bytes = vk_stage(sizeof block, vk_stage_align(), &out->block, &out->offset);
-    if (!bytes) return 0;
+    if (!bytes) {
+        vk_temporal_object_failed("room for a skinned draw's block");
+        return 0;
+    }
     memcpy(bytes, &block, sizeof block);
     out->size = sizeof block;
     out->vs = g_t.skin_vs;
@@ -2179,7 +2213,9 @@ void vk_temporal_before(u64 fs0_hash) {
     }
     const VkImageUsageFlags target = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     const VkImageUsageFlags copy = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    if (!g_t.motion_pipe || (probe_view && !g_t.view_pipe) ||
+    /* under the rectangle's gate a view that cannot be made is off for the session, and the rest goes on */
+    if (g_t.rect && probe_view && !g_t.view_pipe) rect_extras_off("the view's pipeline");
+    if (!g_t.motion_pipe || (!g_t.rect && probe_view && !g_t.view_pipe) ||
         !image_ensure(&g_t.motion, MOTION_FORMAT, scene->sw, scene->sh, target, "motion")) {
         rect_fail(frame, "the vector pass's pipeline or image");
         return;
@@ -2227,7 +2263,7 @@ void vk_temporal_before(u64 fs0_hash) {
     /* objects that moved were drawn into their own target this frame: the vector pass takes their vectors from it */
     const int objects = g_t.objects && g_t.object_at == frame && g_t.object.view && g_t.object.w == scene->sw &&
                         g_t.object.h == scene->sh && (g_t.rect || g_t.gate.mismatch_at != frame) &&
-                        pairs_hold(frame);
+                        g_t.object_failed_at != frame && pairs_hold(frame);
     /* the vectors: depth sampled, the motion image written */
     vk_surf_use(cb, depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
@@ -2420,7 +2456,7 @@ void vk_temporal_before(u64 fs0_hash) {
     const u64 phase = g_t.runs % STATS_EVERY;
     const int moved_far = !taa && objects && g_t.long_logged_at == g_vk_present + 1 && phase >= STATS_SPACING &&
                           phase + STATS_SPACING <= STATS_EVERY;
-    const int stats_due = numbers && !g_t.rect_extras_off && (phase == 0 || moved_far);
+    int stats_due = numbers && !g_t.rect_extras_off && (phase == 0 || moved_far);
     /* the picture as shown, for its gradient: the resolve's, or the scene colour itself after a sharpen */
     VkImageView final_view = numbers_before;
     if (sharpened && stats_due) {
@@ -2429,6 +2465,10 @@ void vk_temporal_before(u64 fs0_hash) {
             vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             final_view = scene_view;
+        } else if (g_t.rect) {
+            /* the sharpened picture cannot be read: no numbers of another picture in its place */
+            rect_extras_off("the sharpened picture's view");
+            stats_due = 0;
         }
     }
     const VkImageView views[SETS_BINDINGS] = {
@@ -2452,6 +2492,7 @@ void vk_temporal_before(u64 fs0_hash) {
                                        .imageExtent = {2 * STATS_W, STATS_H, 1}};
         /* the memory may not be coherent: what the GPU wrote is fetched before it is read */
         if (g_t.stats_run && VK_OK(vmaInvalidateAllocation(g_vk.vma, g_t.stats_memory, 0, VK_WHOLE_SIZE))) stats_log();
+        else if (g_t.stats_run) rect_extras_off("the read back of the numbers"); /* nothing stale is logged */
         vk_barrier(cb, g_t.stats.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, 0,
                    VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);

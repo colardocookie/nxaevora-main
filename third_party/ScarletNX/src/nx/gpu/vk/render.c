@@ -3670,7 +3670,10 @@ retry:
                 sets2[0] = desc_set_cached(g_vk_dslayout[(k->arrays >> vset_index) & 1][vset_index], &sv);
                 sets2[1] = desc_set_cached(g_vk_dslayout[(k->arrays >> fset_index) & 1][fset_index], &sf);
             }
-            if (!spipe || !sets2[0] || !sets2[1]) continue;
+            if (!spipe || !sets2[0] || !sets2[1]) {
+                vk_temporal_object_failed("a skinned draw's pipeline or sets");
+                continue;
+            }
             vk_render_end();
             vk_surf_use(cb, zt, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
@@ -3730,6 +3733,7 @@ retry:
             VkDescriptorSet oset =
                 opipe ? desc_set_cached(g_vk_dslayout[(k->arrays >> fset_index) & 1][fset_index], &od)
                       : VK_NULL_HANDLE;
+            if (!opipe || !oset) vk_temporal_object_failed("an object draw's pipeline or set");
             if (opipe && oset) {
                 VkRenderingAttachmentInfo oz = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                                 .imageView = zt->att,
