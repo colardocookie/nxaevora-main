@@ -333,16 +333,19 @@ static inline double selftest_profile_apart(const SelftestProfile* a, const Self
     for (int i = 0; i < SELFTEST_EDGE_BINS; i++) sum += fabs(selftest_profile_mean(a, i) - selftest_profile_mean(b, i));
     return sum / SELFTEST_EDGE_BINS;
 }
-/* The mean absolute difference of two pictures over the pixels a profile uses. Averaging in bins can cancel what
-   differs with opposite signs, this cannot. Not a number when a value is not finite or there is no pixel. */
+/* The mean absolute difference of two pictures over the pixels a profile uses, taken channel by channel before
+   any mean. Averaging in bins can cancel what differs with opposite signs from pixel to pixel, and a grey value
+   what differs with opposite signs between channels: this cancels neither. Not a number when a value is not
+   finite or there is no pixel. */
 static inline double selftest_edge_apart(const SelftestEdge* e, const double* a, const double* b, int w) {
     double sum = 0.0;
     long n = 0;
     for (int y = e->y0; y < e->y1; y++)
         for (int x = e->x0; x < e->x1; x++) {
             if (selftest_edge_bin(e, x, y) < 0) continue;
-            sum += fabs(selftest_grey(a, w, x, y) - selftest_grey(b, w, x, y));
-            n++;
+            const size_t at = 3 * ((size_t)y * (size_t)w + (size_t)x);
+            for (int c = 0; c < 3; c++) sum += fabs(a[at + c] - b[at + c]);
+            n += 3;
         }
     return n && isfinite(sum) ? sum / (double)n : NAN;
 }

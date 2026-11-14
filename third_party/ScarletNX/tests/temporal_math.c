@@ -2548,6 +2548,28 @@ static void test_selftest_edges(void) {
     selftest_profile_make(v, copy, EDGE_W, &pv);
     assert(close_to(selftest_edge_apart(v, copy, ref, EDGE_W), 0.1, 1e-9));
     assert(selftest_profile_apart(&pv, &rv) < 0.04);
+    /* A colour fringe, one channel up and another down by the same: the grey value and so the profile do not see
+       it, the measure over the pixels does, as two thirds of it. One channel alone counts a third. */
+    memcpy(copy, ref, bytes);
+    for (int i = 0; i < EDGE_W * EDGE_H; i++) {
+        copy[3 * i] += 0.1;
+        copy[3 * i + 2] -= 0.1;
+    }
+    selftest_profile_make(v, copy, EDGE_W, &pv);
+    assert(selftest_profile_apart(&pv, &rv) < 1e-12);
+    assert(close_to(selftest_edge_apart(v, copy, ref, EDGE_W), 0.2 / 3.0, 1e-12));
+    assert(close_to(selftest_edge_apart(h, ref, copy, EDGE_W), 0.2 / 3.0, 1e-12));
+    /* the audit's case: plus and minus an eighth in two channels is a twelfth over the three */
+    memcpy(copy, ref, bytes);
+    for (int i = 0; i < EDGE_W * EDGE_H; i++) {
+        copy[3 * i] += 0.125;
+        copy[3 * i + 1] -= 0.125;
+    }
+    assert(close_to(selftest_edge_apart(v, copy, ref, EDGE_W), 0.25 / 3.0, 1e-12));
+    assert(close_to(selftest_edge_apart(h, copy, ref, EDGE_W), 0.25 / 3.0, 1e-12));
+    memcpy(copy, ref, bytes);
+    for (int i = 0; i < EDGE_W * EDGE_H; i++) copy[3 * i + 1] += 0.03;
+    assert(close_to(selftest_edge_apart(v, copy, ref, EDGE_W), 0.01, 1e-12));
     /* an overshoot beside the edge, and a loss of contrast */
     memcpy(copy, ref, bytes);
     for (int y = v->y0; y < v->y1; y++)
