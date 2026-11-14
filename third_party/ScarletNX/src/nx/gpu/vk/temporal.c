@@ -548,9 +548,11 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
     const u32 frame = g_vk_present + 1;
     u64 address = ch->cbind[ST_FS][CAMERA_BANK];
     u32 size = ch->cbind_size[ST_FS][CAMERA_BANK];
+    const char* stage = "fragment"; /* the stage the block is taken from, for the projection's line */
     if (!address || size < CAMERA_BYTES) {
         address = ch->cbind[ST_VS][CAMERA_BANK];
         size = ch->cbind_size[ST_VS][CAMERA_BANK];
+        stage = "vertex";
     }
     if (!address || size < CAMERA_BYTES) {
         LOG_LIMIT(2, "arceus-temporal: no camera block at the G-buffer draw (bank %d size %x)\n", CAMERA_BANK, size);
@@ -600,7 +602,7 @@ static void camera_take(const GpuChannel* ch, Surf* zt) {
                 (unsigned long long)g_t.pair_equal, (unsigned long long)g_t.pair_differ);
     }
     g_t.viewport = vk_render_viewport(ch->r3d);
-    projection_log(address, size, address == ch->cbind[ST_FS][CAMERA_BANK] ? "fragment" : "vertex", frame);
+    projection_log(address, size, stage, frame);
     /* The jitter was decided on another viewport than the scene's: the frame is left as drawn, so the next has no
        history, and this frame's object vectors are given up. */
     const TemporalViewport scene_view = {g_t.viewport.x, g_t.viewport.y, g_t.viewport.width, g_t.viewport.height};
