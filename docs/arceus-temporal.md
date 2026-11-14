@@ -571,9 +571,9 @@ the whole target, a part of the configuration not known, no ready context, off).
 reviewer, for a host with python3, clang, gcc and pthreads (not part of the Windows test run). Each takes the
 callback, its counts and the self-test's last lines out of `upscaler_selftest.c` as they are and puts a test
 body around them: the ids, the caps, the marks for every byte value and their reading back, a character of
-several bytes at a piece's edge, and the 64 combinations of case 7's last lines (the wait, a count before, a
-callback after) under the address and undefined-behaviour sanitizers, and a callback thread against the counts
-under the thread sanitizer.
+several bytes at a piece's edge, and the 448 combinations of case 7's last lines (the wait, a count before, a
+callback after, the synchronisation checks asked for or each of the six ways they were not) under the address
+and undefined-behaviour sanitizers, and a callback thread against the counts under the thread sanitizer.
 
 ## A run of the game under the validation layer
 
@@ -656,7 +656,9 @@ The cases, each run with a viewport of negative and of positive height (render 3
    asked for with the layer's own extension for its features enabled, taken from the layer's list of extensions.
    The device's line says whether they were asked for that way, and if not a line says which way not (the list
    does not hold the extension, stayed incomplete, a call failed, no memory, no room). What the layer then
-   does with them cannot be read back. Without the layer
+   does with them cannot be read back. When they were not asked for, case 7 does not pass and neither does the
+   RESULT, however silent the layer was: the case's line says NOT MET, and a line of its own gives the reason,
+   also in a run that stopped. Without the layer
    installed the case is not run, which is not a pass. The self-test sees only the loader's list of layers, and
    says how it read it: whole and the layer is not in it, in part (asked three times, still incomplete, so
    whether the layer is installed is not known), or not at all (a call failed, with its result, or the list

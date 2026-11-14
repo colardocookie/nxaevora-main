@@ -306,6 +306,30 @@ static int memory_type(u32 bits, VkMemoryPropertyFlags want) {
 
 /* The instance and the device, through the steps the runtime will take with an adapter (upscaler_host.c). The
    validation layer with its synchronisation checks is asked for when it is installed. */
+/* Why the synchronisation checks were not asked for, with the layer on: which way the layer's own list of
+   extensions did not give its extension for them, or that our list had no room. A result is said only for a
+   call that was made. */
+static const char* checks_missing(void) {
+    static const char* const why[] = {"",
+                                      "the layer's list of extensions, read whole, does not hold it",
+                                      "the layer's list of extensions stayed incomplete after three tries, so "
+                                      "whether it holds it is not known",
+                                      "the call for the count of the layer's extensions failed",
+                                      "the call for the list of the layer's extensions failed",
+                                      "there was no memory for the list of the layer's extensions, so the call "
+                                      "for it was not made",
+                                      "the layer lists it, and the self-test's list of instance extensions has "
+                                      "no room for one more"};
+    static char text[320];
+    const int k = g.checks_why >= 1 && g.checks_why <= 6 ? g.checks_why : 0;
+    if (!k) snprintf(text, sizeof text, "not asked for, and the reason was not kept (%d)", g.checks_why);
+    else if (k == SNX_VK_LAYER_NO_MEMORY || k == 6)
+        snprintf(text, sizeof text, "not asked for (%s): %s", VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, why[k]);
+    else
+        snprintf(text, sizeof text, "not asked for (%s): %s (the last call's result %d)",
+                 VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, why[k], g.checks_result);
+    return text;
+}
 /* Why no validation message can be seen. Two facts kept apart: how the layer's presence was read (the list's
    three states), and, when it was listed and asked for, that its message callback could not be made. */
 static const char* validation_missing(void) {
@@ -561,24 +585,7 @@ static int device_make(void) {
         !g.validation     ? validation_missing()
         : g.checks_asked  ? "on, its synchronisation checks asked for with the layer's extension for them enabled"
                           : "on, WITHOUT its synchronisation checks: they were not asked for");
-    if (g.validation && !g.checks_asked) {
-        static const char* const why[] = {"",
-                                          "the layer's list of extensions, read whole, does not hold it",
-                                          "the layer's list of extensions stayed incomplete after three tries, so "
-                                          "whether it holds it is not known",
-                                          "the call for the count of the layer's extensions failed",
-                                          "the call for the list of the layer's extensions failed",
-                                          "there was no memory for the list of the layer's extensions, so the "
-                                          "call for it was not made",
-                                          "the layer lists it, and the self-test's list of instance extensions "
-                                          "has no room for one more"};
-        if (g.checks_why == SNX_VK_LAYER_NO_MEMORY || g.checks_why == 6)
-            LOG(ST "the synchronisation checks (%s): %s\n", VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME,
-                why[g.checks_why]);
-        else
-            LOG(ST "the synchronisation checks (%s): %s (the last call's result %d)\n",
-                VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, why[g.checks_why], g.checks_result);
-    }
+    if (g.validation && !g.checks_asked) LOG(ST "the synchronisation checks: %s\n", checks_missing());
     return 1;
 }
 
@@ -2233,8 +2240,9 @@ int vk_upscaler_selftest(const char* adapter) {
         if (!waited) unknown("waiting for the device failed");
     }
     pass = pass && waited;
-    /* Case 7: no message of the validation layer in any case. Without the layer the case was not run, which is
-       not a pass, and neither is a run that had to stop. */
+    /* Case 7: no message of the validation layer, with its synchronisation checks asked for, in any case. Without
+       the layer the case was not run, which is not a pass. Neither is a run that had to stop, nor silence of a
+       layer whose synchronisation checks were not asked for: that is not the case's condition. */
     /* One copy of the callbacks' counts, taken under their lock after the wait for the device, is what the
        summary, case 7's lines and the RESULT all read. When that wait could not be made or failed the copy is
        taken all the same, case 7's line says so, and the case fails. A callback that arrives after the copy
@@ -2243,7 +2251,13 @@ int vk_upscaler_selftest(const char* adapter) {
     if (!g.validation) LOG(ST "case 7: NOT RUN, the validation layer is %s: FAIL\n", validation_missing());
     else if (g.unknown)
         LOG(ST "case 7: NOT JUDGED, the run stopped (%u validation messages until then): FAIL\n", said);
+    else if (!g.checks_asked)
+        LOG(ST "case 7: NOT MET, %u validation messages of a layer WITHOUT its synchronisation checks. Its condition "
+               "is no message with them asked for: FAIL\n", said);
     else LOG(ST "case 7: %u validation messages: %s\n", said, said ? "FAIL" : "PASS");
+    /* said also when the run stopped: the reason is kept whatever else failed */
+    if (g.validation && !g.checks_asked)
+        LOG(ST "case 7: the synchronisation checks were %s: FAIL\n", checks_missing());
     while (__atomic_exchange_n(&g_said_lock, 1, __ATOMIC_ACQUIRE)) {}
     const unsigned late = g.messages - said;
     __atomic_store_n(&g_said_lock, 0, __ATOMIC_RELEASE);
@@ -2256,7 +2270,7 @@ int vk_upscaler_selftest(const char* adapter) {
     else if (!waited)
         LOG(ST "case 7: its count was taken without the device known to be idle. The wait for it was made and "
                "failed with the result %d: FAIL\n", (int)wait_result);
-    pass = pass && g.validation && !said && !late && waited && !g.unknown;
+    pass = pass && g.validation && g.checks_asked && !said && !late && waited && !g.unknown;
     LOG(ST "RESULT: %s\n", pass ? "PASS" : "FAIL");
     return pass ? 0 : 1;
 }

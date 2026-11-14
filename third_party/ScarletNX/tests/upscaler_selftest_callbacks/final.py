@@ -36,8 +36,10 @@ VkDebugUtilsMessengerCallbackDataEXT;
 #define VK_SUCCESS 0
 #define VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT 256
 #define VK_OK(x) ((x)==0)
+#define VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME "VK_EXT_validation_features"
+#define SNX_VK_LAYER_NO_MEMORY 5
 #define ST "arceus-upscaler-selftest: "
-static struct {u32 messages;int validation,unknown,device,limit_asked;} g;
+static struct {u32 messages;int validation,unknown,device,limit_asked,checks_asked,checks_why,checks_result;} g;
 static char output[4000000];static size_t used;static void(*hook)(const char*);
 static void log_line(const char *fmt,...){
  char line[2048];
@@ -229,18 +231,38 @@ int main(void){
  unsigned cases=0;
  for(int initial=0;initial<2;initial++)for(int validation=0;validation<2;validation++)
   for(int unknown_before=0;unknown_before<2;unknown_before++)for(int wait_ok=0;wait_ok<2;wait_ok++)
-   for(int prior=0;prior<2;prior++)for(int late=0;late<2;late++){
+   for(int prior=0;prior<2;prior++)for(int late=0;late<2;late++)for(int why=0;why<7;why++){
   reset();
   g.validation=validation;
+  /* why 0: the synchronisation checks were asked for. 1 to 6: each way they were not */
+  g.checks_asked=!why;g.checks_why=why;g.checks_result=-3;
   g.unknown=unknown_before;
   wait_result=wait_ok?0:-13;
   if(prior)emit("prior",1,"before count");
   if(late)hook=late_on_case;
-  int r=finish(initial);int expected=initial&&validation&&!unknown_before&&wait_ok&&!prior&&!late;
+  int r=finish(initial);int expected=initial&&validation&&!why&&!unknown_before&&wait_ok&&!prior&&!late;
   assert(r==!expected&&wait_calls==!unknown_before);check_lines();
   if(unknown_before)assert(strstr(output,"wait for it was not tried"));
   else if(!wait_ok)assert(strstr(output,"was made and failed with the result -13"));
   if(late)assert(strstr(output,"more validation callbacks arrived"));
+  /* The checks not asked for: never a pass in case 7's lines or the RESULT, and the reason is said, also in
+     a run that stopped. A result is said only for a call that was made. Without the layer nothing is said. */
+  static const char*const reason[7]={"","read whole, does not hold it","stayed incomplete","the count of the",
+   "the list of the layer's extensions failed","no memory","no room"};
+  const char*line=strstr(output,"case 7: the synchronisation checks were not asked for");
+  assert(!line==!(validation&&why));
+  if(line){
+   const char*end=strchr(line,'\n');
+   const char*at=strstr(line,reason[why]);
+   const char*result=strstr(line,"the last call's result -3");
+   assert(at&&at<end&&!strstr(output,": PASS")&&strstr(output,"RESULT: FAIL"));
+   assert(!(result&&result<end)==(why==5||why==6));
+   /* a wait that failed stops the run as well */
+   if(!unknown_before&&wait_ok)assert(strstr(output,"case 7: NOT MET"));
+   else assert(strstr(output,"case 7: NOT JUDGED")&&!strstr(output,"case 7: NOT MET"));
+  }
+  else assert(!strstr(output,"NOT MET"));
+  assert(!strstr(output,"RESULT: PASS")==!expected);
   cases++;
  }
  printf("%u actual finaltail controls pass: wait independent of pass, failed/skipped provenance, late FAIL and "
@@ -248,5 +270,5 @@ int main(void){
 }
 '''
 out=Path(sys.argv[2] if len(sys.argv)>2 else '/tmp/reviewer-validation-final.c')
-out.write_text(head+s[a:b]+stubs+fn('unknown')+final_tail+test)
+out.write_text(head+s[a:b]+stubs+fn('checks_missing')+fn('unknown')+final_tail+test)
 print('extracted actual callback/counts + unknown + complete final wait/case7/RESULT tail from',root)
