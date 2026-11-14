@@ -14,6 +14,7 @@
 #include "nx/gpu/vk/temporal_spv.h"
 #include "nx/gpu/vk/temporal_math.h"
 #include "nx/gpu/vk/upscaler.h"
+#include "nx/gpu/vk/upscaler_needs.h"
 #include "nx/runtime/platform/log.h"
 
 /* the host's monotonic clock in nanoseconds (runtime/platform/plat.h, whose Windows headers define near and far,
@@ -2995,8 +2996,9 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
 }
 
 /* The switch, read once with the anti-aliasing's own (temporal_on). It needs the anti-aliasing and is refused
-   with rejected vectors. An adapter that is not there, or that names needs of the instance or the device, is
-   not available: one line, and the run goes on as without the switch. */
+   with rejected vectors. An adapter that is not there, that names needs of the instance, or whose needs of the
+   device are not all in the record of what the game's device was made with (upscaler_host.c), is not available:
+   one line, and the run goes on as without the switch. */
 static void upscaler_start(void) {
     const char* name = getenv("SNX_ARCEUS_UPSCALER");
     const char* target = getenv("SNX_ARCEUS_TARGET_FPS");
@@ -3020,8 +3022,14 @@ static void upscaler_start(void) {
     else if (api->instance_extensions(&instance) != SNX_UPSCALER_OK ||
              api->device_extensions(g_vk.instance, g_vk.phys, vkGetInstanceProcAddr, &device) != SNX_UPSCALER_OK)
         why = "its needs of the instance and the device could not be asked";
-    else if (instance.count || device.extensions.count || device.features)
-        why = "it names needs of the instance or the device, which are not added to the game's device";
+    else if (instance.count)
+        why = "it names needs of the instance, which are not added to the game's instance";
+    else if (!snx_needs_none(device.extensions.count, device.features)) {
+        /* asked again here, and held against what the game's device was made with: every name and every bit */
+        const int met = vk_upscaler_device_met(api, name, device.extensions.names, device.extensions.count,
+                                               device.features);
+        if (met != SNX_NEEDS_OK) why = snx_needs_text(met);
+    }
     if (why) {
         LOG("arceus-upscaler: %s is not available (%s): the run goes on as without the switch\n", name, why);
         return;

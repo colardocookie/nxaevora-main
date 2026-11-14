@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/upscaler_needs.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
 
@@ -567,14 +568,43 @@ static int create_device(void) {
                                               .queueFamilyIndex = g_vk.video_family,
                                               .queueCount = 1,
                                               .pQueuePriorities = prio};
+    /* Only with SNX_ARCEUS_UPSCALER naming an adapter: what that adapter needs of the device, checked and copied
+       by the host (upscaler_host.c). The additions stand behind the game's own count and in front of its own
+       chain head, on copies: neither is changed in place, and without the switch nothing here runs. */
+    const char* upscaler = getenv("SNX_ARCEUS_UPSCALER");
+    VkUpscalerDeviceAsk ask;
+    const u32 room = (u32)(sizeof g_vk.dev_ext / sizeof g_vk.dev_ext[0]);
+    u32 with_count = next;
+    int accepted = 0;
+    if (upscaler && upscaler[0] && strcmp(upscaler, "0") && strcmp(upscaler, "off"))
+        accepted = vk_upscaler_device_ask(upscaler, g_vk.instance, g_vk.phys, vkGetInstanceProcAddr, &ask) &&
+                   vk_upscaler_device_names(&ask, ext, &with_count, room);
+    if (accepted && ask.have) ask.derivatives.pNext = chain;
+    const SnxNeedsPlan plan =
+        snx_needs_plan(next, chain, accepted, with_count, accepted && ask.have ? (void*)&ask.derivatives : chain);
     VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-                              .pNext = chain,
+                              .pNext = plan.head,
                               .queueCreateInfoCount = nq,
                               .pQueueCreateInfos = qci,
-                              .enabledExtensionCount = next,
+                              .enabledExtensionCount = plan.count,
                               .ppEnabledExtensionNames = ext,
                               .pEnabledFeatures = &g_vk.feat};
-    if (!VK_OK(vkCreateDevice(g_vk.phys, &dci, NULL, &g_vk.dev))) return 0;
+    int made_with = 0;
+    if (plan.augmented) {
+        const VkResult with = vkCreateDevice(g_vk.phys, &dci, NULL, &g_vk.dev);
+        made_with = with == VK_SUCCESS;
+        if (!made_with) vk_upscaler_device_failed(&ask, (int)with);
+    }
+    if (!made_with) {
+        /* as without the switch: the game's own count and chain head, and no name of an adapter behind them */
+        for (u32 i = next; i < room; i++) ext[i] = NULL;
+        dci.pNext = chain;
+        dci.enabledExtensionCount = next;
+        if (!VK_OK(vkCreateDevice(g_vk.phys, &dci, NULL, &g_vk.dev))) return 0;
+    } else {
+        next = plan.count;
+        vk_upscaler_device_made(&ask);
+    }
     g_vk.gfx_queues = second ? 2 : 1;
     g_vk.dev_ext_n = next;
     g_vk.feat11 = f11;

@@ -500,12 +500,11 @@ and case 7 with the validation layers installed, the passing cases as they are, 
 
 At full size only: the library does the temporal resolve in place of ours, in frames whose scene is the whole
 target. It needs `SNX_ARCEUS_TEMPORAL=taa` and is refused with `SNX_ARCEUS_TEMPORAL_REJECT=1`, each with one line.
-An adapter that is not there, that names needs of the instance or the device, or that cannot make a context on
-the game's device before any was in use, is "not available": one line, and the run goes on as without the
-switch. The FSR adapter names needs of the device since a run of the self-test showed them (below), and the
-game's device is not made with an adapter's needs in this piece. So with FSR the switch says "not available"
-in the game until a piece of its own adds an adapter's needs to the game's device. With it on, our own resolve, sharpen, history, numbers and views never run, and the options that steer
-them are without effect.
+An adapter that is not there, that names needs of the instance, whose needs of the device are not all in the
+record of what the game's device was made with (its own section below), or that cannot make a context on the game's
+device before any was in use, is "not available": one line, and the run goes on as without the switch. With
+it on, our own resolve, sharpen, history, numbers and views never run, and the options that steer them are
+without effect.
 
 A frame, in order:
 1. At the frame's first draw with the scene camera's block the rectangle's gate decides as it always does
@@ -587,6 +586,46 @@ no "not installed" warning is printed says nothing about a
 callback that works: a run counts as made under the layer only with those lines. What the layer then does with
 the checks cannot be read back. Without the option nothing changes and no line is printed.
 
+## The game's device and an adapter's needs
+
+Only with `SNX_ARCEUS_UPSCALER` naming an adapter that is built into the program. Without the switch the game's
+device is made from the same list of extensions and the same chain of features as before, nothing is asked and
+no line is printed. The switch's other conditions stay at the upscaler's start: the device can be made with an
+adapter's needs and the upscaler still not start.
+
+With the switch, before the device is made, the host asks the adapter what it needs and checks the answer
+itself (`upscaler_needs.h` has the rules, host-tested, and `upscaler_host.c` applies them):
+
+- Each extension the adapter names is looked up in the physical device's own list, which must have been read
+  whole (asked again when incomplete, three times at most). A name that is not there, or a list that was not
+  read whole, refuses. At most eight names of at most 63 characters, kept as the host's own copies.
+- Exactly one feature structure is accepted from an adapter: the compute shader derivatives features, by its
+  type and its two bits. Any other type refuses (a core feature structure, a promoted alias such as the 16 bit
+  float features, anything else), and so does the accepted type twice, a chain that does not end within eight
+  structures, and a bit asked for without one of that structure's two extensions among the names. With one
+  accepted type the bound of eight is never the first refusal: a second structure is refused by its type or as
+  a repeat.
+- Each bit asked for is checked against the host's own question to the physical device. A bit it does not have
+  refuses. Bits not asked for stay off.
+- The adapter's storage is read and never written, linked or kept. What goes into the device is a structure of
+  the host's own, in front of the game's chain, and the host's own copies of the names behind the game's list.
+  The game's count and chain head are not changed in place.
+
+If anything refuses, or the instance would need something, the device is made as without the switch, with one
+line that says why. If the device cannot be made with the additions, it is made once more from the game's own
+list and chain head, with one line, and the adapter is not available. Only after a device was made with the
+additions is a record written, by value: the adapter's name, every extension it named (also one the game's
+list already had) and the bits that were turned on, with the line `arceus-upscaler: the game's device is made
+with <names> ... for <adapter>`. The upscaler's start asks the adapter again and holds the answer against
+that record: the same adapter, every name in it, every bit asked for on in it. Anything else is "not
+available" with the reason, so an adapter does not start on a device that was made without what it names.
+
+Limits. None of this was run with the switch: the lines and the fallback after a failed creation are read
+from the code, not seen. Enabling the extension and the feature allows a shader capability and, read from the
+specification, changes no existing call. No run has checked that. A run with the switch is to be made under
+the validation layer (the section above). The adapter's name is its own (`name` of the contract), or the
+switch's word when it gives none.
+
 ## What the FSR adapter needs of a device
 
 A conservative policy for the one provider that was seen, and not a complete list. In a run of the self-test
@@ -600,8 +639,8 @@ query of features that fails, or a list that stays incomplete, also means "not a
 part of a list. 16 bit floats in shaders are a core feature that whoever makes the device turns on where the physical
 device has it. The self-test's device has every feature of the physical device on, that one among them as a bit of the
 Vulkan 1.2 structure, and the adapter's own structure for the derivatives goes behind it in the chain and lives in the
-adapter. This is for the self-test's device only. It closes no condition: the library's own storage image messages
-remain.
+adapter. The game's device takes the same needs by its own path (the section before). It closes no condition:
+the library's own storage image messages remain.
 
 ## The upscaler's self-test (`SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>`)
 

@@ -1136,6 +1136,21 @@ int vk_upscaler_instance_extensions(const struct SnxUpscalerApi* api, const char
 int vk_upscaler_device_needs(const struct SnxUpscalerApi* api, VkInstance instance, VkPhysicalDevice device,
                              PFN_vkGetInstanceProcAddr lookup, const char** names, u32* count, u32 room,
                              const void** features);
+/* What the game's device is tried with for an adapter, checked and copied by the host (upscaler_needs.h) */
+typedef struct {
+    char adapter[32];
+    u32 count;
+    const char* names[8]; /* the host's own copies */
+    int have, quads, linear; /* the accepted structure is asked for, and its bits to turn on */
+    VkPhysicalDeviceComputeShaderDerivativesFeaturesNV derivatives; /* the host's own structure for the chain */
+} VkUpscalerDeviceAsk;
+int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevice device,
+                           PFN_vkGetInstanceProcAddr lookup, VkUpscalerDeviceAsk* ask);
+int vk_upscaler_device_names(const VkUpscalerDeviceAsk* ask, const char** names, u32* count, u32 room);
+void vk_upscaler_device_failed(const VkUpscalerDeviceAsk* ask, int result);
+void vk_upscaler_device_made(const VkUpscalerDeviceAsk* ask);
+int vk_upscaler_device_met(const struct SnxUpscalerApi* api, const char* switch_name, const char* const* names,
+                           u32 count, const void* features);
 void vk_temporal_object_fate(int known, int reads, int again);
 void vk_temporal_multiply(const float a[16], const float b[16], float out[16]);
 /* gpu/vk/render.c: the read-only frame pass census (SNX_PASS_CENSUS=1) hears of each frame shown */
