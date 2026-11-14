@@ -1453,6 +1453,16 @@ static inline void temporal_upscaler_used(TemporalUpscalerUsed* u, unsigned fram
     } else if (memcmp(u->m, m, sizeof u->m))
         u->mixed = 1;
 }
+/* A draw of the frame took a scene camera's block that is not accounted for: another camera's, one that could
+   not be given its jittered copy, or one bound in a way that is not looked at. The frame is not evaluated,
+   whatever its other draws were given, before or after. */
+static inline void temporal_upscaler_poison(TemporalUpscalerUsed* u, unsigned frame) {
+    if (u->frame != frame) {
+        u->frame = frame;
+        memset(u->m, 0, sizeof u->m);
+    }
+    u->mixed = 1;
+}
 /* 1 when the frame's jittered draws all used one projection and it is the decision's, bit for bit. Only then is
    the frame evaluated, with that projection's planes. Nothing is read again from guest memory at the hook. */
 static inline int temporal_upscaler_used_same(const TemporalUpscalerUsed* u, unsigned frame, const float decided[16]) {

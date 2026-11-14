@@ -255,7 +255,8 @@ static struct {
     TemporalUpscalerColour colour;          /* the scene colour of the last frame that reached its hook */
     u64 block;                              /* the camera block the frame was decided at */
     float decided_projection[16];           /* its unjittered projection as read at the decision: a prediction */
-    TemporalUpscalerUsed used;              /* the projection the frame's jittered draws were given, by value */
+    float decided_view[16];                 /* and its view-projection, which tells two cameras of one lens apart */
+    TemporalUpscalerUsed used, used_view;   /* what the frame's jittered draws were given of both, by value */
     u32 decided_at, outcome_at, evaluated_at;
     int decision, known; /* the frame's decision, and whether its configuration was known at it */
     u64 evaluated_ns, unresolved, contexts_made;
@@ -959,7 +960,12 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
     if ((g_t.mode != MODE_TAA && !g_t.rect) || !address || (!g_t.rect && !g_t.motion.w) ||
         (address != g_t.camera_address[0] && address != g_t.camera_address[1]))
         return 0;
-    if (bound > 0x1000 || bound < CAMERA_BYTES || size > bound) return 0;
+    if (bound > 0x1000 || bound < CAMERA_BYTES || size > bound) {
+        /* with an upscaler: a draw took a known camera slot in a way that is not looked at, so the frame's
+           draws are not all accounted for and it is not evaluated */
+        if (upscaler_on()) temporal_upscaler_poison(&g_u.used, g_vk_present + 1);
+        return 0;
+    }
     /* With the rectangle's gate the frame is decided here in the probe too, which then draws without jitter. The
        renderer asks before the draw's samplers are chosen (vk_temporal_camera_seen), so this is a second look. */
     if (g_t.rect && g_t.rect_gate.decided_at != g_vk_present + 1) {
@@ -990,6 +996,8 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
         if (g_t.other_cameras++ < 4 || g_t.other_cameras % 3600 == 0)
             LOG("arceus-temporal: another camera at %llx is drawn without jitter, %llu draws so far\n",
                 (unsigned long long)address, (unsigned long long)g_t.other_cameras);
+        /* with an upscaler: a draw of the frame was given another camera, without jitter */
+        if (upscaler_on()) temporal_upscaler_poison(&g_u.used, g_vk_present + 1);
         return 0;
     }
     if (g_t.jitter_address != address || g_t.jitter_submit != vk_submit_number() || g_t.jitter_index != index ||
@@ -998,6 +1006,8 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
         u8* bytes = vk_stage(bound, vk_stage_align(), &g_t.jitter_buffer, &g_t.jitter_offset);
         float pixels[2], m[16];
         if (!bytes) {
+            /* with an upscaler: this draw goes without its jittered copy */
+            if (upscaler_on()) temporal_upscaler_poison(&g_u.used, g_vk_present + 1);
             rect_fail(g_vk_present + 1, "no room for the jittered camera block");
             return 0;
         }
@@ -1037,11 +1047,13 @@ int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer,
             LOG("arceus-temporal: camera block %llx drawn with jitter %g,%g pixels (offset %u of %u)\n",
                 (unsigned long long)address, (double)pixels[0], (double)pixels[1], index, offsets);
     }
-    /* with an upscaler: the unjittered projection this draw's copy was made from, kept by value */
+    /* with an upscaler: the unjittered projection and view-projection this draw's copy was made from, by value */
     if (upscaler_on()) {
-        float projection[16];
+        float projection[16], view[16];
         memcpy(projection, source + 0x80, sizeof projection);
+        memcpy(view, source, sizeof view);
         temporal_upscaler_used(&g_u.used, g_vk_present + 1, projection);
+        temporal_upscaler_used(&g_u.used_view, g_vk_present + 1, view);
     }
     *buffer = g_t.jitter_buffer;
     *offset = g_t.jitter_offset;
@@ -2642,7 +2654,11 @@ static int upscaler_decide(u32 frame, int accepted) {
     /* the projection as the block holds it at this draw, kept by value: what the draws are given is checked
        against it at the hook */
     memset(g_u.decided_projection, 0, sizeof g_u.decided_projection);
-    if (accepted && g_u.block) block_read(g_u.block + 0x80, g_u.decided_projection);
+    memset(g_u.decided_view, 0, sizeof g_u.decided_view);
+    if (accepted && g_u.block) {
+        block_read(g_u.block + 0x80, g_u.decided_projection);
+        block_read(g_u.block, g_u.decided_view);
+    }
     const int known = accepted && g_u.block && temporal_upscaler_predicted(&g_u.colour, frame) &&
                       upscaler_key(g_t.draw_zt, &g_u.colour, g_u.decided_projection, &config, &projection, &flags);
     g_u.decided_at = frame;
@@ -2796,8 +2812,9 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
        of 0 to 1). */
     const char* skip = NULL;
     if (!area || !temporal_upscaler_whole(&rg->now)) skip = "the scene is not the whole target";
-    else if (!temporal_upscaler_used_same(&g_u.used, frame, g_u.decided_projection))
-        skip = "the scene's draws were not all given the projection the frame was decided with";
+    else if (!temporal_upscaler_used_same(&g_u.used, frame, g_u.decided_projection) ||
+             !temporal_upscaler_used_same(&g_u.used_view, frame, g_u.decided_view))
+        skip = "a draw took a camera block that was not the decided projection with jitter";
     else if (!upscaler_key(depth, &colour, g_u.used.m, &seen, &projection, &flags))
         skip = "a part of the configuration is not known at the hook";
     else if (!temporal_upscaler_hook(g_u.decision, &g_u.decided, &seen, &g_u.contexts) || !g_u.live)
@@ -2869,8 +2886,9 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         .fov_y = camera[2]};
     UpscalerCall call = {g_u.live, &handed, scene, depth};
     const int recorded = vk_rec_direct(cb, upscaler_before, upscaler_evaluate, &call);
-    /* On every path out of a call the library was entered in, each image it was handed gets a barrier of its own
-       from "written by any command", so that whatever the library wrote is available to what comes next. */
+    /* On every path out of a call the library was entered in, each of the four images it was handed gets a
+       barrier of its own from "written by any command", so that whatever the library wrote is available to
+       what comes next: the scene colour, the scene depth, the motion image and the private output. */
     if (recorded == VK_REC_DIRECT_OK || recorded == VK_REC_DIRECT_REFUSED) {
         upscaler_took(cb, scene);
         upscaler_took(cb, depth);

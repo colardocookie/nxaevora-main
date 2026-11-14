@@ -2603,6 +2603,29 @@ static void test_upscaler_wiring(void) {
         assert(!temporal_upscaler_used_same(&used, 8, infinite));
         temporal_upscaler_used(&used, 8, finite);
         assert(!temporal_upscaler_used_same(&used, 8, finite));
+        /* A draw that took a camera's block which is not accounted for poisons its frame: before the draws that
+           were given the decision's projection, between them, or after them. */
+        {
+            TemporalUpscalerUsed first = {0}, between = {0}, last = {0}, zero = {0};
+            float none[16] = {0};
+            temporal_upscaler_poison(&first, 20);
+            temporal_upscaler_used(&first, 20, finite);
+            temporal_upscaler_used(&first, 20, finite);
+            assert(first.mixed && !temporal_upscaler_used_same(&first, 20, finite));
+            temporal_upscaler_used(&between, 20, finite);
+            temporal_upscaler_poison(&between, 20);
+            temporal_upscaler_used(&between, 20, finite);
+            assert(!temporal_upscaler_used_same(&between, 20, finite));
+            temporal_upscaler_used(&last, 20, finite);
+            assert(temporal_upscaler_used_same(&last, 20, finite));
+            temporal_upscaler_poison(&last, 20);
+            assert(!temporal_upscaler_used_same(&last, 20, finite));
+            /* the frame after is clean again, and a poisoned frame matches no projection, one of zeros included */
+            temporal_upscaler_used(&last, 21, finite);
+            assert(temporal_upscaler_used_same(&last, 21, finite));
+            temporal_upscaler_poison(&zero, 30);
+            assert(!temporal_upscaler_used_same(&zero, 30, none));
+        }
         /* a new frame begins clean */
         temporal_upscaler_used(&used, 9, finite);
         assert(!used.mixed && temporal_upscaler_used_same(&used, 9, finite));
