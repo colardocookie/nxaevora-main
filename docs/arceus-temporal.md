@@ -469,14 +469,16 @@ background's error was in one channel, which the single mean did not show. The l
 `RESULT: FAIL`.
 
 For the log alone as well: in the edge case's two configured runs every frame's inputs are printed as they are
-handed to the adapter, and the adapter prints the whole of what it gives its library for that frame and what
-its context was made with (a `trace` flag in the frame of `gpu/vk/upscaler.h`). What a library is given is to
+handed to the adapter, and the adapter prints the dispatch from the SDK's own structure after it is filled,
+field by field, every resource with the description and state the SDK gets and an unset one named as such (a
+`trace` flag in the frame of `gpu/vk/upscaler.h`). A further line, marked as ours, has the caller's record. What a library is given is to
 be known from the log before anything is concluded about what it does with it.
 
 Two more parts are printed after the cases and judge nothing. The matched pair: the edge images with y down, and
 with y up and the clip offset's y negated, are the same bytes, so the two signs of the viewport hand the
-adapter identical inputs. The images are compared, what each frame handed over is compared, and the two
-outputs' difference is printed beside a repeated run's. The response table: for one axis at a time the reported
+adapter identical inputs. The images are compared and what each frame handed over is compared. Only when both
+runs succeeded, each handed over every frame the gate lets through, and those are the same, the two outputs'
+difference is printed beside a repeated run's. Otherwise the line says which of these failed. The response table: for one axis at a time the reported
 jitter is multiplied by -1, -0.5, 0, 0.5, 9/16, 0.75, 1, 1.25, 1.5, 16/9 and 2 with the images unchanged, and each
 run's errors on both edges are printed. It is for looking: a lowest error among those factors on one picture
 does not name the factor a library wants.

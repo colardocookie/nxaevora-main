@@ -58,7 +58,7 @@ static struct {
        cases. The cases left are not run and the mode fails. */
     int unknown;
     u64 edge_sums[2][3]; /* the edge case's images by orientation: colour, depth, vectors (edges_announce) */
-    struct Handed* record; /* when set: what each frame of the inputs handed the adapter, by the frame's number */
+    SelftestHanded* record; /* when set: what each frame of the inputs handed the adapter, by the frame's number */
     int record_n;
 } g;
 
@@ -76,11 +76,6 @@ typedef struct {
     int ungated;         /* a shape the game does not make: not put through the game's gate (frame_run) */
 } Inputs;
 
-/* what one frame handed the adapter beside its images, for holding two runs against each other frame by frame */
-typedef struct Handed {
-    float jitter[2], vector_scale[2], frame_seconds, near_plane, far_plane, fov_y;
-    u32 render_w, render_h, out_w, out_h, reset, flags, evaluated;
-} Handed;
 /* What a variant makes of the numbers handed on: the factor on the reported jitter of each axis (1 as configured,
    -1 the sign turned, 0 told nothing), the vectors' signs, the depth convention it claims, and whether every
    frame's inputs and dispatch are logged. */
@@ -697,20 +692,17 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
         .far_plane = camera[1],
         .fov_y = camera[2],
         .trace = (u32)v->trace};
-    if (g.record && i < g.record_n)
-        g.record[i] = (Handed){{frame.jitter[0], frame.jitter[1]},
-                               {frame.vector_scale[0], frame.vector_scale[1]},
-                               frame.frame_seconds,
-                               frame.near_plane,
-                               frame.far_plane,
-                               frame.fov_y,
-                               frame.render_w,
-                               frame.render_h,
-                               frame.output.w,
-                               frame.output.h,
-                               frame.reset,
-                               flags,
-                               1};
+    /* what this frame hands over, kept for the matched pair: marked as done only when the frame has succeeded */
+    SelftestHanded handed = {{frame.jitter[0], frame.jitter[1], frame.vector_scale[0], frame.vector_scale[1],
+                              frame.frame_seconds, frame.near_plane, frame.far_plane, frame.fov_y},
+                             {(u32)frame.render_x, (u32)frame.render_y, frame.render_w, frame.render_h, frame.reset,
+                              flags, (u32)config.target_w, (u32)config.target_h, (u32)config.render_w,
+                              (u32)config.render_h, (u32)config.out_w, (u32)config.out_h,
+                              frame.colour.w, frame.colour.h, (u32)frame.colour.format, (u32)frame.colour.layout,
+                              frame.depth.w, frame.depth.h, (u32)frame.depth.format, (u32)frame.depth.layout,
+                              frame.motion.w, frame.motion.h, (u32)frame.motion.format, (u32)frame.motion.layout,
+                              frame.output.w, frame.output.h, (u32)frame.output.format, (u32)frame.output.layout},
+                             0};
     /* log only: this frame's inputs as they are handed over, beside the adapter's own line of its dispatch */
     if (v->trace)
         LOG(ST "handed over, frame %d of the inputs: clip offset %.9g %.9g, jitter %.9g %.9g px (the variant's "
@@ -746,6 +738,10 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     if (temporal_upscaler_failed(&s->failures, evaluated && done == 1))
         LOG(ST "the adapter failed eight times in a row\n");
     if (!evaluated || done != 1) return -1;
+    if (g.record && i < g.record_n) {
+        handed.done = 1;
+        g.record[i] = handed;
+    }
     if (in->ungated)
         s->wrote = s->frame;
     else
@@ -1315,7 +1311,7 @@ static void edge_matched(void) {
     Inputs down, up;
     double *reference = malloc(size), *picture[3] = {malloc(size), malloc(size), malloc(size)};
     u8* regions = malloc(pixels);
-    Handed* handed[2] = {NULL, NULL};
+    SelftestHanded* handed[2] = {NULL, NULL};
     memset(&down, 0, sizeof down);
     memset(&up, 0, sizeof up);
     int ok = !g.unknown && reference && regions && picture[0] && picture[1] && picture[2] &&
@@ -1349,27 +1345,40 @@ static void edge_matched(void) {
             truth(&down, 0, reference, regions);
             g.record_n = down.frames;
             g.record = handed[0];
-            int ran = run(&down, &traced, 0, picture[0], NULL, NULL, NULL, NULL);
+            const int ran_down = run(&down, &traced, 0, picture[0], NULL, NULL, NULL, NULL);
             g.record = handed[1];
-            ran = ran && run(&up, &traced, 0, picture[1], NULL, NULL, NULL, NULL);
+            const int ran_up = run(&up, &traced, 0, picture[1], NULL, NULL, NULL, NULL);
             g.record = NULL;
-            ran = ran && run(&down, &CONFIGURED, 0, picture[2], NULL, NULL, NULL, NULL);
-            int differs = -1;
-            for (int i = 0; i < down.frames && differs < 0; i++)
-                if (memcmp(&handed[0][i], &handed[1][i], sizeof **handed)) differs = i;
-            if (differs < 0)
-                LOG(ST "matched pair, log only: what was handed to the adapter is the same in all %d frames of the "
-                       "two runs (jitter, vector scale, sizes, reset, frame time, near, far, field of view, flags)\n",
-                    down.frames);
+            /* A run hands over every frame of its inputs but the first, which the gate does not let through. The
+               outputs are held against each other only when both runs succeeded, each handed over all of those
+               frames, and what they handed over is the same (selftest_matched). */
+            int first = -1, done[2] = {0, 0};
+            const int whole = down.frames - 1;
+            const int match = selftest_matched(handed[0], handed[1], down.frames, whole, ran_down, ran_up, &first);
+            for (int i = 0; i < down.frames; i++) {
+                done[0] += handed[0][i].done != 0;
+                done[1] += handed[1][i].done != 0;
+            }
+            if (match == SELFTEST_MATCHED)
+                LOG(ST "matched pair, log only: both runs succeeded and handed the adapter the same in %d of %d "
+                       "frames each, the first being the gate's (jitter, vector scale, frame time, near, far, field "
+                       "of view, the rectangle's origin and size, reset, flags, the context's sizes, each image's "
+                       "size, format and layout)\n", whole, down.frames);
+            else if (match == SELFTEST_MATCH_FAILED)
+                LOG(ST "matched pair, log only: a run did not succeed (y down %s, y up %s, %d and %d frames done of "
+                       "%d): the outputs are not compared\n", ran_down ? "ran" : "FAILED", ran_up ? "ran" : "FAILED",
+                    done[0], done[1], whole);
+            else if (match == SELFTEST_MATCH_SHORT)
+                LOG(ST "matched pair, log only: the runs did not hand over all frames (%d and %d done of %d, first "
+                       "frame done in one run only: %d): the outputs are not compared\n", done[0], done[1], whole,
+                    first);
             else
-                LOG(ST "matched pair, log only: what was handed to the adapter differs first in frame %d: jitter "
-                       "%.9g %.9g against %.9g %.9g, reset %u against %u, evaluated %u against %u\n",
-                    differs, (double)handed[0][differs].jitter[0], (double)handed[0][differs].jitter[1],
-                    (double)handed[1][differs].jitter[0], (double)handed[1][differs].jitter[1],
-                    handed[0][differs].reset, handed[1][differs].reset, handed[0][differs].evaluated,
-                    handed[1][differs].evaluated);
-            if (!ran) LOG(ST "matched pair, log only: a run could not be made\n");
-            else {
+                LOG(ST "matched pair, log only: what was handed to the adapter differs first in frame %d (jitter "
+                       "%.9g %.9g against %.9g %.9g, reset %u against %u): the outputs are not compared\n",
+                    first, (double)handed[0][first].f[0], (double)handed[0][first].f[1],
+                    (double)handed[1][first].f[0], (double)handed[1][first].f[1], handed[0][first].u[4],
+                    handed[1][first].u[4]);
+            if (match == SELFTEST_MATCHED && run(&down, &CONFIGURED, 0, picture[2], NULL, NULL, NULL, NULL)) {
                 LOG(ST "matched pair, log only, not judged: the two outputs differ by %.9f over the picture, a "
                        "repeated run of the first by %.9f\n",
                     difference(&down, picture[0], picture[1], regions, SELFTEST_BACKGROUND),
@@ -1384,7 +1393,8 @@ static void edge_matched(void) {
                         selftest_profile_apart(&p[0], &p[2]),
                         selftest_edge_apart(edges[e], picture[0], picture[2], OUT_W));
                 }
-            }
+            } else if (match == SELFTEST_MATCHED)
+                LOG(ST "matched pair, log only: the repeated run could not be made: the outputs are not compared\n");
         }
     }
     inputs_free(&down);

@@ -2769,6 +2769,55 @@ static void test_selftest_edges(void) {
     assert(selftest_resized(INFINITY, 0.0, 0.02) == SELFTEST_BLIND);
     assert(selftest_resized(-0.001, 0.0, 0.02) == SELFTEST_BLIND);
     assert(selftest_resized(0.0, -0.001, 0.02) == SELFTEST_BLIND);
+    /* The matched pair's records. 37 frames of inputs, of which a whole run hands over 36 (the first is the
+       gate's). Both whole and the same: matched. Nothing else is. */
+    {
+        static SelftestHanded one[37], two[37];
+        int first = 0;
+        memset(one, 0, sizeof one);
+        for (int i = 1; i < 37; i++) {
+            for (int k = 0; k < SELFTEST_HANDED_FLOATS; k++) one[i].f[k] = 0.25f * (float)(i + k);
+            for (int k = 0; k < SELFTEST_HANDED_WORDS; k++) one[i].u[k] = (uint32_t)(100 * i + k);
+            one[i].done = 1;
+        }
+        memcpy(two, one, sizeof two);
+        assert(selftest_matched(one, two, 37, 36, 1, 1, &first) == SELFTEST_MATCHED && first == -1);
+        /* a first run that failed before it recorded anything, against a whole second one, and both failed:
+           two records of nothing are not a match */
+        memset(two, 0, sizeof two);
+        assert(selftest_matched(two, one, 37, 36, 0, 1, &first) == SELFTEST_MATCH_FAILED);
+        assert(selftest_matched(two, one, 37, 36, 1, 1, &first) == SELFTEST_MATCH_SHORT && first == 1);
+        assert(selftest_matched(two, two, 37, 36, 1, 1, &first) == SELFTEST_MATCH_SHORT);
+        assert(selftest_matched(two, two, 37, 36, 0, 0, &first) == SELFTEST_MATCH_FAILED);
+        assert(selftest_matched(one, one, 37, 36, 1, 0, &first) == SELFTEST_MATCH_FAILED);
+        /* a short run: the same frames missing in both, or in one, or one frame too many */
+        memcpy(two, one, sizeof two);
+        two[36].done = 0;
+        assert(selftest_matched(one, two, 37, 36, 1, 1, &first) == SELFTEST_MATCH_SHORT && first == 36);
+        one[36].done = 0;
+        assert(selftest_matched(one, two, 37, 36, 1, 1, &first) == SELFTEST_MATCH_SHORT);
+        assert(selftest_matched(one, two, 37, 35, 1, 1, &first) == SELFTEST_MATCHED); /* when 35 is the whole */
+        one[36].done = two[36].done = 1;
+        one[0].done = two[0].done = 1;
+        assert(selftest_matched(one, two, 37, 36, 1, 1, &first) == SELFTEST_MATCH_SHORT);
+        one[0].done = two[0].done = 0;
+        assert(selftest_matched(one, two, 37, 0, 1, 1, &first) == SELFTEST_MATCH_SHORT);
+        /* every number of a frame counts, one at a time: a float by its bits, so 0 and -0 differ */
+        for (int k = 0; k < SELFTEST_HANDED_FLOATS + SELFTEST_HANDED_WORDS; k++) {
+            memcpy(two, one, sizeof two);
+            if (k < SELFTEST_HANDED_FLOATS) two[20].f[k] += 1.0f;
+            else two[20].u[k - SELFTEST_HANDED_FLOATS]++;
+            assert(selftest_matched(one, two, 37, 36, 1, 1, &first) == SELFTEST_MATCH_DIFFERS && first == 20);
+        }
+        memcpy(two, one, sizeof two);
+        one[5].f[0] = 0.0f;
+        two[5].f[0] = -0.0f;
+        assert(selftest_matched(one, two, 37, 36, 1, 1, &first) == SELFTEST_MATCH_DIFFERS && first == 5);
+        /* what a frame that was not done holds is not compared */
+        memcpy(two, one, sizeof two);
+        two[0].u[3] = 77;
+        assert(selftest_matched(one, two, 37, 36, 1, 1, &first) == SELFTEST_MATCHED);
+    }
     /* the checksum: the published values of FNV-1a for nothing, "a" and "foobar", and it can be carried on */
     assert(selftest_checksum("", 0, SELFTEST_CHECKSUM_START) == 0xcbf29ce484222325ull);
     assert(selftest_checksum("a", 1, SELFTEST_CHECKSUM_START) == 0xaf63dc4c8601ec8cull);

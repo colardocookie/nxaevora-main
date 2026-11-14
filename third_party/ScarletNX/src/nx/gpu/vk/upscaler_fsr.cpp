@@ -274,25 +274,54 @@ int evaluate(SnxUpscaler* u, const SnxUpscalerFrame* f) {
     d.cameraFar = std::isinf(f->far_plane) ? 3.4028234663852886e38f : f->far_plane;
     d.cameraFovAngleVertical = f->fov_y;
     d.viewSpaceToMetersFactor = 1.0f;
-    /* asked for by the caller: the whole of what the library is given for this frame, as it stands in the
-       structure handed over, and what the context was made with */
-    if (f->trace)
-        logf_(1, "arceus-upscaler: fsr dispatch: jitterOffset %.9g %.9g, motionVectorScale %.9g %.9g, renderSize "
-                 "%ux%u, upscaleSize %ux%u, reset %d, frameTimeDelta %.9g ms, preExposure %.9g, enableSharpening %d, "
-                 "sharpness %.9g, cameraNear %.9g, cameraFar %.9g, cameraFovAngleVertical %.9g, "
-                 "viewSpaceToMetersFactor %.9g. Context: flags 0x%x, maxRenderSize %ux%u, maxUpscaleSize %ux%u. "
-                 "Images as width x height, format, layout: colour %ux%u %d %d, depth %ux%u %d %d, vectors %ux%u "
-                 "%d %d, output %ux%u %d %d\n",
-              (double)d.jitterOffset.x, (double)d.jitterOffset.y, (double)d.motionVectorScale.x,
-              (double)d.motionVectorScale.y, d.renderSize.width, d.renderSize.height, d.upscaleSize.width,
-              d.upscaleSize.height, (int)d.reset, (double)d.frameTimeDelta, (double)d.preExposure,
-              (int)d.enableSharpening, (double)d.sharpness, (double)d.cameraNear, (double)d.cameraFar,
-              (double)d.cameraFovAngleVertical, (double)d.viewSpaceToMetersFactor, (unsigned)u->upscale.flags,
-              u->upscale.maxRenderSize.width, u->upscale.maxRenderSize.height, u->upscale.maxUpscaleSize.width,
-              u->upscale.maxUpscaleSize.height, f->colour.w, f->colour.h, (int)f->colour.format,
-              (int)f->colour.layout, f->depth.w, f->depth.h, (int)f->depth.format, (int)f->depth.layout,
-              f->motion.w, f->motion.h, (int)f->motion.format, (int)f->motion.layout, f->output.w, f->output.h,
-              (int)f->output.format, (int)f->output.layout);
+    /* Asked for by the caller: the dispatch as it stands in the SDK's own structure, read back from it field by
+       field after it is filled, every resource with the description and the state the SDK gets, an unset one
+       named as such. A third line, marked as ours, has what the caller's record said of the same images. */
+    if (f->trace) {
+        const struct {
+            const char* name;
+            const FfxApiResource* r;
+        } resources[7] = {{"color", &d.color},
+                          {"depth", &d.depth},
+                          {"motionVectors", &d.motionVectors},
+                          {"exposure", &d.exposure},
+                          {"reactive", &d.reactive},
+                          {"transparencyAndComposition", &d.transparencyAndComposition},
+                          {"output", &d.output}};
+        char text[1400];
+        size_t at = 0;
+        text[0] = 0;
+        for (const auto& one : resources) {
+            const FfxApiResourceDescription& n = one.r->description;
+            const int wrote =
+                snprintf(text + at, sizeof text - at,
+                         "%s%s %s, type %u, format %u, %ux%ux%u, mips %u, flags 0x%x, usage 0x%x, state %u",
+                         at ? ". " : "", one.name, one.r->resource ? "set" : "NOT SET (null)", n.type, n.format,
+                         n.width, n.height, n.depth, n.mipCount, n.flags, n.usage, one.r->state);
+            if (wrote < 0 || (size_t)wrote >= sizeof text - at) break;
+            at += (size_t)wrote;
+        }
+        logf_(1, "arceus-upscaler: fsr dispatch, the SDK's structure: header type 0x%llx, commandList %s, "
+                 "jitterOffset %.9g %.9g, motionVectorScale %.9g %.9g, renderSize %ux%u, upscaleSize %ux%u, "
+                 "enableSharpening %d, sharpness %.9g, frameTimeDelta %.9g ms, preExposure %.9g, reset %d, "
+                 "cameraNear %.9g, cameraFar %.9g, cameraFovAngleVertical %.9g, viewSpaceToMetersFactor %.9g, flags "
+                 "0x%x\n",
+              (unsigned long long)d.header.type, d.commandList ? "set" : "NOT SET (null)", (double)d.jitterOffset.x,
+              (double)d.jitterOffset.y, (double)d.motionVectorScale.x, (double)d.motionVectorScale.y,
+              d.renderSize.width, d.renderSize.height, d.upscaleSize.width, d.upscaleSize.height,
+              (int)d.enableSharpening, (double)d.sharpness, (double)d.frameTimeDelta, (double)d.preExposure,
+              (int)d.reset, (double)d.cameraNear, (double)d.cameraFar, (double)d.cameraFovAngleVertical,
+              (double)d.viewSpaceToMetersFactor, d.flags);
+        logf_(1, "arceus-upscaler: fsr dispatch, the SDK's resources: %s\n", text);
+        logf_(1, "arceus-upscaler: fsr dispatch, ours and not the SDK's: the context was made with flags 0x%x, "
+                 "maxRenderSize %ux%u, maxUpscaleSize %ux%u. The caller's images as width x height, Vulkan format, "
+                 "Vulkan layout: colour %ux%u %d %d, depth %ux%u %d %d, vectors %ux%u %d %d, output %ux%u %d %d\n",
+              (unsigned)u->upscale.flags, u->upscale.maxRenderSize.width, u->upscale.maxRenderSize.height,
+              u->upscale.maxUpscaleSize.width, u->upscale.maxUpscaleSize.height, f->colour.w, f->colour.h,
+              (int)f->colour.format, (int)f->colour.layout, f->depth.w, f->depth.h, (int)f->depth.format,
+              (int)f->depth.layout, f->motion.w, f->motion.h, (int)f->motion.format, (int)f->motion.layout,
+              f->output.w, f->output.h, (int)f->output.format, (int)f->output.layout);
+    }
     const ffxReturnCode_t rc = g_library.dispatch(&u->context, &d.header);
     if (rc == FFX_API_RETURN_OK) return SNX_UPSCALER_OK;
     logf_(0, "arceus-upscaler: fsr dispatch failed (code %u)\n", rc);

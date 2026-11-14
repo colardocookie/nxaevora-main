@@ -9,6 +9,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /* A viewport as Vulkan has it: a point at ndc n is at pixel (n x 0.5 + 0.5) x (w, h) + (x, y). h may be negative. */
 /* Whether the switch's value asks for the self-test: any value but none, an empty one, "0" and "off". A launcher
@@ -483,6 +484,52 @@ static inline unsigned selftest_edge_judge(const SelftestEdgeRuns* r) {
 /* 1 when what failed means the case decided nothing, which is a failure of the test and not of the signs */
 static inline int selftest_edge_undecided(unsigned failed) {
     return (failed & (SELFTEST_EDGE_BLIND | SELFTEST_EDGE_NOISY | SELFTEST_EDGE_NUMBERS)) != 0;
+}
+/* The matched pair. What one frame handed an adapter, as numbers only, so that two runs can be held against each
+   other: the jitter, the vector scale, the frame time and the camera in f, the rest in u (the rectangle's
+   origin and size, reset, flags, the sizes the context was made for, and each image's width, height, format
+   and layout). done is set only after the adapter's call and the read back of that frame succeeded. */
+#define SELFTEST_HANDED_FLOATS 8
+#define SELFTEST_HANDED_WORDS 28
+typedef struct {
+    float f[SELFTEST_HANDED_FLOATS];
+    uint32_t u[SELFTEST_HANDED_WORDS];
+    uint32_t done;
+} SelftestHanded;
+enum {
+    SELFTEST_MATCHED,      /* both runs succeeded in every expected frame and handed over the same */
+    SELFTEST_MATCH_FAILED, /* a run did not succeed */
+    SELFTEST_MATCH_SHORT,  /* a run has fewer or other frames done than expected: nothing is not a match */
+    SELFTEST_MATCH_DIFFERS /* a frame handed over something else in the two runs */
+};
+/* Two runs' records over the frames of the inputs. expected: how many frames a whole run hands over. Both runs
+   must have succeeded, each must have exactly that many frames done, the same ones, and those must be the same
+   bit for bit. first gets the first frame that is not, -1 else. Frames that were not done are not compared with
+   each other: a record of nothing equals another of nothing and says nothing. */
+static inline int selftest_matched(const SelftestHanded* a, const SelftestHanded* b, int frames, int expected,
+                                   int a_ran, int b_ran, int* first) {
+    int done[2] = {0, 0};
+    *first = -1;
+    if (!a_ran || !b_ran) return SELFTEST_MATCH_FAILED;
+    for (int i = 0; i < frames; i++) {
+        done[0] += a[i].done != 0;
+        done[1] += b[i].done != 0;
+        if (*first < 0 && (a[i].done != 0) != (b[i].done != 0)) *first = i;
+    }
+    if (expected <= 0 || done[0] != expected || done[1] != expected || *first >= 0) return SELFTEST_MATCH_SHORT;
+    for (int i = 0; i < frames; i++) {
+        if (!a[i].done) continue;
+        for (int k = 0; k < SELFTEST_HANDED_FLOATS; k++) {
+            uint32_t x, y;
+            memcpy(&x, &a[i].f[k], 4);
+            memcpy(&y, &b[i].f[k], 4);
+            if (x != y && *first < 0) *first = i;
+        }
+        for (int k = 0; k < SELFTEST_HANDED_WORDS; k++)
+            if (a[i].u[k] != b[i].u[k] && *first < 0) *first = i;
+        if (*first >= 0) return SELFTEST_MATCH_DIFFERS;
+    }
+    return SELFTEST_MATCHED;
 }
 /* a checksum of generated images, so that a log says which images a result was made from (FNV-1a, 64 bits) */
 #define SELFTEST_CHECKSUM_START 0xcbf29ce484222325ull
