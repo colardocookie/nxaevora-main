@@ -2082,6 +2082,147 @@ static void test_rect_confirm(void) {
     assert(temporal_rect_confirm(&g, 306, NULL, &small) == TEMPORAL_FRAME_NONE && !g.have_candidate);
 }
 
+/* The GPU time measure's ring of pairs and its arithmetic. */
+static void test_gpu_time(void) {
+    static TemporalGpuRing r;
+    const double period = 1.0; /* a tick is a nanosecond, as on the test machine's kind of device */
+    const unsigned long long t0 = 1000000ull;
+    double median, mean, high;
+    memset(&r, 0, sizeof r);
+    /* a bracket whose two marks are in one submission, read when that has completed: its time is kept */
+    int a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 7, t0);
+    assert(a == 0 && r.pair[0].state == TEMPORAL_GPU_BEGUN && temporal_gpu_end(&r, a, 7));
+    assert(r.pair[0].state == TEMPORAL_GPU_ENDED && !temporal_gpu_fetch(&r, a, 6) && temporal_gpu_fetch(&r, a, 7));
+    {
+        const unsigned long long ticks[2] = {500ull, 2500500ull};
+        const int there[2] = {1, 1};
+        assert(!temporal_gpu_settle(&r, a, 6, t0 + 5000000ull, ticks, there, 64, period)); /* not completed */
+        assert(r.pair[0].state == TEMPORAL_GPU_ENDED && r.n[TEMPORAL_GPU_HOOK] == 0);
+        assert(temporal_gpu_settle(&r, a, 7, t0 + 5000000ull, ticks, there, 64, period));
+        assert(r.pair[0].state == TEMPORAL_GPU_FREE && r.n[TEMPORAL_GPU_HOOK] == 1);
+        assert(r.ms[TEMPORAL_GPU_HOOK][0] == 2.5f);
+        assert(!temporal_gpu_settle(&r, a, 7, t0, ticks, there, 64, period)); /* free: nothing to settle */
+    }
+    /* split: the submission ended between the marks. The second mark is not recorded, no time is made, and the
+       pair is not free before the first mark's submission has completed. */
+    a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 8, t0);
+    assert(a == 0 && !temporal_gpu_end(&r, a, 9) && r.pair[0].state == TEMPORAL_GPU_SPLIT);
+    assert(!temporal_gpu_fetch(&r, a, 20) && !temporal_gpu_end(&r, a, 8)); /* it stays split */
+    assert(temporal_gpu_begin(&r, TEMPORAL_GPU_NUMBERS, 8, t0) == 1);      /* another pair, not this one */
+    assert(!temporal_gpu_settle(&r, 0, 7, t0, NULL, NULL, 64, period) && r.pair[0].state == TEMPORAL_GPU_SPLIT);
+    assert(temporal_gpu_settle(&r, 0, 8, t0, NULL, NULL, 64, period) && r.lost[TEMPORAL_GPU_CUT] == 1);
+    /* partial: begun and never ended, as when our passes return between the marks */
+    assert(temporal_gpu_settle(&r, 1, 8, t0, NULL, NULL, 64, period) && r.lost[TEMPORAL_GPU_PARTIAL] == 1);
+    assert(r.n[TEMPORAL_GPU_HOOK] == 1 && r.n[TEMPORAL_GPU_NUMBERS] == 0);
+    /* a result that is not there, either of the two, or none handed over: a normal loss, counted */
+    for (int which = 0; which < 3; which++) {
+        const unsigned long long ticks[2] = {10, 20};
+        const int there[2] = {which != 0, which != 1};
+        a = temporal_gpu_begin(&r, TEMPORAL_GPU_EMPTY, 10, t0);
+        assert(a == 0 && temporal_gpu_end(&r, a, 10));
+        assert(temporal_gpu_settle(&r, a, 10, t0 + 1000, which == 2 ? NULL : ticks, there, 64, period));
+        assert(r.lost[TEMPORAL_GPU_UNAVAILABLE] == (unsigned)which + 1 && r.n[TEMPORAL_GPU_EMPTY] == 0);
+    }
+    /* The ring exhausted: 64 brackets under way, the next has no pair and is counted. One settled, one free. */
+    memset(&r, 0, sizeof r);
+    for (int i = 0; i < TEMPORAL_GPU_PAIRS; i++) assert(temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 30 + i, t0) == i);
+    assert(temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 99, t0) == -1 && r.lost[TEMPORAL_GPU_EXHAUSTED] == 1);
+    assert(r.asked[TEMPORAL_GPU_HOOK] == TEMPORAL_GPU_PAIRS + 1);
+    assert(temporal_gpu_settle(&r, 17, 47, t0, NULL, NULL, 64, period));
+    assert(temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 99, t0) == 17);
+    /* The difference of two ticks on a counter of 36 bits that went round between them, and of 64 bits. */
+    assert(temporal_gpu_ticks(100, 350, 36) == 250 && temporal_gpu_ticks(100, 350, 64) == 250);
+    assert(temporal_gpu_ticks((1ull << 36) - 10, 40, 36) == 50);
+    assert(temporal_gpu_ticks(0xfffffffffffffff0ull, 0x10, 64) == 0x20);
+    assert(temporal_gpu_ticks(5, 5, 36) == 0 && temporal_gpu_ticks(0, (1ull << 36) - 1, 36) == (1ull << 36) - 1);
+    assert(temporal_gpu_ticks(7, 3, 1) == 0 && temporal_gpu_ticks(0, 1, 1) == 1);
+    assert(temporal_gpu_turn_ns(36, 1.0) == 68719476736.0 && isinf(temporal_gpu_turn_ns(64, 1.0)));
+    assert(temporal_gpu_turn_ns(32, 52.08) == 52.08 * 4294967296.0);
+    /* A wrapped counter gives its time when the host saw less than half a turn pass. With 36 bits and a
+       nanosecond a tick a turn is 68.7 s: at 34 s the pair is taken, at 35 s it is refused as too old, since a
+       whole turn more could no longer be told apart. An age that is not known is refused too. */
+    {
+        const unsigned long long ticks[2] = {(1ull << 36) - 1000ull, 2000000ull};
+        const int there[2] = {1, 1};
+        const unsigned long long ages[4] = {34000000000ull, 35000000000ull, 0, 0};
+        const unsigned long long begun[4] = {t0, t0, 0, t0 + 50};
+        const unsigned long long now[4] = {t0 + ages[0], t0 + ages[1], t0, t0};
+        memset(&r, 0, sizeof r);
+        for (int i = 0; i < 4; i++) {
+            a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 5, begun[i]);
+            assert(a == 0 && temporal_gpu_end(&r, a, 5));
+            assert(temporal_gpu_settle(&r, a, 5, now[i], ticks, there, 36, period));
+        }
+        assert(r.n[TEMPORAL_GPU_HOOK] == 1 && close_to((double)r.ms[TEMPORAL_GPU_HOOK][0], 2.001, 1e-6));
+        assert(r.lost[TEMPORAL_GPU_OLD] == 3 && r.lost[TEMPORAL_GPU_ABSURD] == 0);
+        /* a difference longer than the host saw pass is absurd and dropped: 2 ms of ticks in 1 ms of host time */
+        a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 6, t0);
+        temporal_gpu_end(&r, a, 6);
+        assert(temporal_gpu_settle(&r, a, 6, t0 + 1000000ull, ticks, there, 36, period));
+        assert(r.lost[TEMPORAL_GPU_ABSURD] == 1 && r.n[TEMPORAL_GPU_HOOK] == 1);
+        /* with all 64 bits there is no turn to fear and age only bounds the difference */
+        a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 7, t0);
+        temporal_gpu_end(&r, a, 7);
+        assert(temporal_gpu_settle(&r, a, 7, t0 + 3600000000000ull, ticks, there, 64, period));
+        assert(r.lost[TEMPORAL_GPU_ABSURD] == 2); /* 2^64 less a little is no time */
+        /* a period that is no number makes no time */
+        a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 8, t0);
+        temporal_gpu_end(&r, a, 8);
+        assert(temporal_gpu_settle(&r, a, 8, t0 + 1000, ticks, there, 64, NAN) && r.n[TEMPORAL_GPU_HOOK] == 1);
+    }
+    /* which devices can be measured on */
+    assert(temporal_gpu_usable(1, 36, 1.0) && temporal_gpu_usable(1, 64, 52.08) && !temporal_gpu_usable(0, 36, 1.0));
+    assert(!temporal_gpu_usable(1, 0, 1.0) && !temporal_gpu_usable(1, 65, 1.0) && !temporal_gpu_usable(1, 36, 0.0));
+    assert(!temporal_gpu_usable(1, 36, -1.0) && !temporal_gpu_usable(1, 36, NAN));
+    assert(!temporal_gpu_usable(1, 36, INFINITY));
+    /* Switched off: nothing begins, nothing ends, nothing recorded before is read or freed. */
+    memset(&r, 0, sizeof r);
+    a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 3, t0);
+    temporal_gpu_end(&r, a, 3);
+    {
+        const unsigned long long ticks[2] = {10, 20};
+        const int there[2] = {1, 1};
+        const int open = temporal_gpu_begin(&r, TEMPORAL_GPU_NUMBERS, 3, t0);
+        temporal_gpu_stop(&r);
+        assert(temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 4, t0) == -1 && r.asked[TEMPORAL_GPU_HOOK] == 1);
+        assert(!temporal_gpu_end(&r, open, 3) && r.pair[open].state == TEMPORAL_GPU_BEGUN);
+        assert(!temporal_gpu_fetch(&r, a, 100));
+        assert(!temporal_gpu_settle(&r, a, 100, t0 + 1000, ticks, there, 64, period));
+        assert(r.pair[a].state == TEMPORAL_GPU_ENDED && r.n[TEMPORAL_GPU_HOOK] == 0);
+    }
+    /* a kind that is none, a pair that is none */
+    memset(&r, 0, sizeof r);
+    assert(temporal_gpu_begin(&r, TEMPORAL_GPU_KINDS, 1, t0) == -1 && temporal_gpu_begin(&r, -1, 1, t0) == -1);
+    assert(!temporal_gpu_end(&r, -1, 1) && !temporal_gpu_end(&r, TEMPORAL_GPU_PAIRS, 1) && !temporal_gpu_end(&r, 0, 1));
+    /* the samples of a kind beyond the room for them are not kept and break nothing */
+    for (int i = 0; i < TEMPORAL_GPU_SAMPLES + 5; i++) {
+        const unsigned long long ticks[2] = {0, 1000000ull + (unsigned long long)i};
+        const int there[2] = {1, 1};
+        a = temporal_gpu_begin(&r, TEMPORAL_GPU_EMPTY, 2, t0);
+        temporal_gpu_end(&r, a, 2);
+        assert(temporal_gpu_settle(&r, a, 2, t0 + 9000000ull, ticks, there, 64, period));
+    }
+    assert(r.n[TEMPORAL_GPU_EMPTY] == TEMPORAL_GPU_SAMPLES && r.asked[TEMPORAL_GPU_EMPTY] == TEMPORAL_GPU_SAMPLES + 5);
+    /* the summary: median, mean and 95th percentile, of an odd and an even count, of one and of none */
+    {
+        float five[5] = {5.0f, 1.0f, 4.0f, 2.0f, 3.0f}, four[4] = {4.0f, 1.0f, 3.0f, 2.0f}, one[1] = {0.25f};
+        float hundred[100];
+        assert(temporal_gpu_summary(five, 5, &median, &mean, &high) && median == 3.0 && mean == 3.0 && high == 5.0);
+        assert(five[0] == 1.0f && five[4] == 5.0f);
+        assert(temporal_gpu_summary(four, 4, &median, &mean, &high) && median == 2.5 && mean == 2.5 && high == 4.0);
+        assert(temporal_gpu_summary(one, 1, &median, &mean, &high) && median == 0.25 && mean == 0.25 && high == 0.25);
+        for (int i = 0; i < 100; i++) hundred[i] = (float)(100 - i);
+        assert(temporal_gpu_summary(hundred, 100, &median, &mean, &high) && median == 50.5 && high == 95.0);
+        assert(!temporal_gpu_summary(one, 0, &median, &mean, &high) && median == 0.0 && mean == 0.0 && high == 0.0);
+    }
+    /* a line written: times and counts start anew, a bracket under way stays under way */
+    a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 50, t0);
+    r.lost[TEMPORAL_GPU_CUT] = 3;
+    temporal_gpu_restart(&r);
+    assert(r.n[TEMPORAL_GPU_EMPTY] == 0 && r.asked[TEMPORAL_GPU_EMPTY] == 0 && r.lost[TEMPORAL_GPU_CUT] == 0);
+    assert(r.pair[a].state == TEMPORAL_GPU_BEGUN && temporal_gpu_end(&r, a, 50));
+}
+
 static void test_upscaler(void) {
     const TemporalViewport whole = {0.0f, 1080.0f, 1920.0f, -1080.0f}, part = {0.0f, 810.0f, 1440.0f, -810.0f};
     float vp_now[16], inverse_now[16], vp_before[16], unused[16], texel[2];
@@ -3083,6 +3224,7 @@ int main(void) {
     test_rect();
     test_rect_confirm();
     test_upscaler();
+    test_gpu_time();
     test_selftest();
     test_selftest_edges();
     puts("temporal_math: ok");

@@ -1228,4 +1228,126 @@ static inline int temporal_upscaler_failed(unsigned* failures, int ok) {
     else if (*failures < TEMPORAL_UPSCALER_FAILURES) ++*failures;
     return *failures >= TEMPORAL_UPSCALER_FAILURES;
 }
+/* SNX_ARCEUS_TEMPORAL_GPUTIME, the pure part: the approximate time between two completions on the GPU's clock.
+   A bracket is two timestamps written at the pipeline's last stage, one before and one after a stretch of our
+   commands. Each is taken when the commands before it have passed through the pipeline, so their difference is
+   the time between those two completions. It is no exclusive time of the stretch and no bound on it. */
+#define TEMPORAL_GPU_PAIRS 64    /* brackets that can be under way at once */
+#define TEMPORAL_GPU_SAMPLES 600 /* times kept of a kind between two lines */
+enum { TEMPORAL_GPU_HOOK, TEMPORAL_GPU_NUMBERS, TEMPORAL_GPU_EMPTY, TEMPORAL_GPU_KINDS };
+enum {
+    TEMPORAL_GPU_FREE,  /* nothing recorded refers to it */
+    TEMPORAL_GPU_BEGUN, /* the first mark is recorded and the second is not */
+    TEMPORAL_GPU_ENDED, /* both marks are recorded, in one submission */
+    TEMPORAL_GPU_SPLIT  /* the submission ended between the marks: the second was not recorded */
+};
+/* why a bracket gave no time */
+enum {
+    TEMPORAL_GPU_EXHAUSTED,   /* no free pair to begin on */
+    TEMPORAL_GPU_CUT,         /* split between two submissions */
+    TEMPORAL_GPU_PARTIAL,     /* begun and never ended */
+    TEMPORAL_GPU_UNAVAILABLE, /* a result was not there though its submission had completed */
+    TEMPORAL_GPU_OLD,         /* too long between the first mark and the completion to rule out a turn of the clock */
+    TEMPORAL_GPU_ABSURD,      /* a difference longer than the host saw pass */
+    TEMPORAL_GPU_REASONS
+};
+typedef struct {
+    int state, kind;
+    unsigned long long submit;   /* the number of the submission both marks belong to */
+    unsigned long long begun_ns; /* the host's clock when the first mark was recorded, 0 for not known */
+} TemporalGpuPair;
+typedef struct {
+    TemporalGpuPair pair[TEMPORAL_GPU_PAIRS];
+    int off; /* switched off for the session: nothing is begun and nothing recorded earlier is read */
+    unsigned long long asked[TEMPORAL_GPU_KINDS], lost[TEMPORAL_GPU_REASONS];
+    unsigned n[TEMPORAL_GPU_KINDS];
+    float ms[TEMPORAL_GPU_KINDS][TEMPORAL_GPU_SAMPLES];
+} TemporalGpuRing;
+/* A bracket begins on a free pair only: the pair's number, or -1 when the measure is off or no pair is free.
+   The caller then records the pair's reset and its first mark, in the submission it named. */
+static inline int temporal_gpu_begin(TemporalGpuRing* r, int kind, unsigned long long submit,
+                                     unsigned long long now_ns) {
+    if (r->off || kind < 0 || kind >= TEMPORAL_GPU_KINDS) return -1;
+    r->asked[kind]++;
+    for (int i = 0; i < TEMPORAL_GPU_PAIRS; i++)
+        if (r->pair[i].state == TEMPORAL_GPU_FREE) {
+            r->pair[i] = (TemporalGpuPair){TEMPORAL_GPU_BEGUN, kind, submit, now_ns};
+            return i;
+        }
+    r->lost[TEMPORAL_GPU_EXHAUSTED]++;
+    return -1;
+}
+/* The bracket's end. 1 when the caller is to record the second mark: the submission is still the first mark's.
+   0 when it is another: the pair is split, the mark is not recorded, and no time will be made of it. */
+static inline int temporal_gpu_end(TemporalGpuRing* r, int index, unsigned long long submit) {
+    if (r->off || index < 0 || index >= TEMPORAL_GPU_PAIRS || r->pair[index].state != TEMPORAL_GPU_BEGUN) return 0;
+    r->pair[index].state = submit == r->pair[index].submit ? TEMPORAL_GPU_ENDED : TEMPORAL_GPU_SPLIT;
+    return r->pair[index].state == TEMPORAL_GPU_ENDED;
+}
+/* 1 when a pair's results are to be fetched now: both marks recorded and its submission known to have completed */
+static inline int temporal_gpu_fetch(const TemporalGpuRing* r, int index, unsigned long long done) {
+    return !r->off && r->pair[index].state == TEMPORAL_GPU_ENDED && done >= r->pair[index].submit;
+}
+/* the second tick less the first on a counter of so many valid bits, which may have gone round once between */
+static inline unsigned long long temporal_gpu_ticks(unsigned long long first, unsigned long long second,
+                                                    unsigned bits) {
+    const unsigned long long delta = second - first;
+    return bits >= 64 ? delta : delta & ((1ull << bits) - 1ull);
+}
+/* how long one turn of such a counter lasts in nanoseconds, infinite for one that does not turn in practice */
+static inline double temporal_gpu_turn_ns(unsigned bits, double period_ns) {
+    return bits >= 64 ? INFINITY : ldexp(period_ns, (int)bits);
+}
+/* A pair whose submission has completed leaves the ring: it gives a time, or is counted with the reason it gives
+   none, and is free again either way. ticks and available: the two results as fetched, for a pair
+   temporal_gpu_fetch named, else NULL. A time is taken only when both results are there, the host saw less
+   than half a turn of the counter pass since the first mark was recorded, and the difference is no longer than
+   that. 1 when the pair was freed, 0 when its submission has not completed or the measure is off. */
+static inline int temporal_gpu_settle(TemporalGpuRing* r, int index, unsigned long long done,
+                                      unsigned long long now_ns, const unsigned long long* ticks,
+                                      const int* available, unsigned bits, double period_ns) {
+    TemporalGpuPair* p = &r->pair[index];
+    if (r->off || p->state == TEMPORAL_GPU_FREE || done < p->submit) return 0;
+    if (p->state == TEMPORAL_GPU_SPLIT) r->lost[TEMPORAL_GPU_CUT]++;
+    else if (p->state == TEMPORAL_GPU_BEGUN) r->lost[TEMPORAL_GPU_PARTIAL]++;
+    else if (!ticks || !available || !available[0] || !available[1]) r->lost[TEMPORAL_GPU_UNAVAILABLE]++;
+    else {
+        const double age = p->begun_ns && now_ns >= p->begun_ns ? (double)(now_ns - p->begun_ns) : -1.0;
+        const double ns = (double)temporal_gpu_ticks(ticks[0], ticks[1], bits) * period_ns;
+        if (!(age >= 0.0) || !(age < 0.5 * temporal_gpu_turn_ns(bits, period_ns))) r->lost[TEMPORAL_GPU_OLD]++;
+        else if (!isfinite(ns) || !(ns <= age)) r->lost[TEMPORAL_GPU_ABSURD]++;
+        else if (r->n[p->kind] < TEMPORAL_GPU_SAMPLES) r->ms[p->kind][r->n[p->kind]++] = (float)(ns / 1e6);
+    }
+    p->state = TEMPORAL_GPU_FREE;
+    return 1;
+}
+/* 1 when a device's clock can be used: timestamps on the queue, some valid bits, a period that is a number */
+static inline int temporal_gpu_usable(int timestamps, unsigned bits, double period_ns) {
+    return timestamps && bits > 0 && bits <= 64 && isfinite(period_ns) && period_ns > 0.0;
+}
+/* Switched off for the session, after a failure: nothing begins and nothing recorded before is read. The pairs
+   keep their state, since what was recorded with them may still be on its way. */
+static inline void temporal_gpu_stop(TemporalGpuRing* r) { r->off = 1; }
+/* the median, the mean and the 95th percentile of a kind's times, which are sorted in place: 0 without any */
+static inline int temporal_gpu_summary(float* ms, unsigned n, double* median, double* mean, double* high) {
+    double sum = 0.0;
+    *median = *mean = *high = 0.0;
+    if (!n) return 0;
+    for (unsigned i = 1; i < n; i++) { /* few and nearly sorted is rare here, but 600 at most */
+        const float v = ms[i];
+        unsigned j = i;
+        for (; j > 0 && ms[j - 1] > v; j--) ms[j] = ms[j - 1];
+        ms[j] = v;
+    }
+    for (unsigned i = 0; i < n; i++) sum += (double)ms[i];
+    *mean = sum / (double)n;
+    *median = n & 1 ? (double)ms[n / 2] : 0.5 * ((double)ms[n / 2 - 1] + (double)ms[n / 2]);
+    *high = (double)ms[(unsigned)ceil(0.95 * (double)n) - 1];
+    return 1;
+}
+/* a line's count is done: the times and the counts start anew, the pairs under way stay */
+static inline void temporal_gpu_restart(TemporalGpuRing* r) {
+    for (int k = 0; k < TEMPORAL_GPU_KINDS; k++) r->n[k] = 0, r->asked[k] = 0;
+    for (int k = 0; k < TEMPORAL_GPU_REASONS; k++) r->lost[k] = 0;
+}
 #endif
