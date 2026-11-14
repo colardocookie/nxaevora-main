@@ -876,21 +876,27 @@ static inline int temporal_upscaler_frame(const TemporalRectGate* g, unsigned fr
     return 1;
 }
 /* The camera's numbers and the frame time, checked after the frame's numbers are made and before every dispatch
-   to an upscaler. 1 with the frame time in milliseconds when all hold: near positive, the field of view positive
-   and below pi, the frame time positive, far beyond near, or infinite exactly when the context was made for an
-   infinite far plane, and every number finite and no bigger than a float holds. 0: the frame is not evaluated. */
+   to an upscaler. out gets the four floats that are handed on: near, far, the field of view and the frame time
+   in seconds. The rules are held against those floats, since a double that passes may round to one that does
+   not. 1 when all hold: near positive, the field of view positive and below pi, the frame time positive and
+   still positive and finite in milliseconds, far beyond near, or infinite exactly when the context was made
+   for an infinite far plane. 0: the frame is not evaluated. */
 static inline int temporal_upscaler_camera(double near_plane, double far_plane, double fov_y, double seconds,
-                                           int far_infinite, float* milliseconds) {
-    const double most = 3.4028234663852886e38, ms = seconds * 1000.0, pi = 3.14159265358979323846;
-    if (!isfinite(near_plane) || !(near_plane > 0.0) || near_plane > most) return 0;
-    if (!isfinite(fov_y) || !(fov_y > 0.0) || !(fov_y < pi)) return 0;
-    if (!isfinite(seconds) || !(seconds > 0.0) || !isfinite(ms) || ms > most) return 0;
-    if (far_infinite) {
-        if (!(isinf(far_plane) && far_plane > 0.0)) return 0;
-    } else if (!isfinite(far_plane) || !(far_plane > near_plane) || far_plane > most)
-        return 0;
-    *milliseconds = (float)ms;
-    return *milliseconds > 0.0f;
+                                           int far_infinite, float out[4]) {
+    const double most = 3.4028234663852886e38, pi = 3.14159265358979323846;
+    if (!isfinite(near_plane) || !isfinite(fov_y) || !isfinite(seconds) || isnan(far_plane)) return 0;
+    if (fabs(near_plane) > most || fabs(fov_y) > most || fabs(seconds) > most) return 0;
+    if (isfinite(far_plane) && fabs(far_plane) > most) return 0;
+    const float near_f = (float)near_plane, far_f = (float)far_plane, fov_f = (float)fov_y, seconds_f = (float)seconds;
+    const float ms = seconds_f * 1000.0f;
+    if (!(near_f > 0.0f) || !(fov_f > 0.0f) || !((double)fov_f < pi)) return 0;
+    if (!(seconds_f > 0.0f) || !isfinite(ms) || !(ms > 0.0f)) return 0;
+    if (far_infinite ? !(isinf(far_f) && far_f > 0.0f) : !(isfinite(far_f) && far_f > near_f)) return 0;
+    out[0] = near_f;
+    out[1] = far_f;
+    out[2] = fov_f;
+    out[3] = seconds_f;
+    return 1;
 }
 /* An upscaler's contexts. A context is made for one configuration, which is everything its creation was given:
    created, then what it must run once is recorded by its prepare step and submitted by the runtime, and when that

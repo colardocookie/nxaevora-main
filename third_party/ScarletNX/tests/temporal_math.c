@@ -1929,38 +1929,50 @@ static void test_upscaler(void) {
         }
     }
     /* The camera's numbers and the frame time before a dispatch. A camera as the game has it: near 0.1, far at
-       infinity or at 10000, 50 degrees, a frame of 1/60 s, which is handed on as 16.67 ms. */
+       infinity or at 10000, 50 degrees, a frame of 1/60 s. What comes out are the floats that are handed on. */
     {
-        float ms = 0.0f;
+        float cam[4] = {0, 0, 0, 0};
         const double fov = 50.0 * 3.14159265358979323846 / 180.0, frame = 1.0 / 60.0, pi = 3.14159265358979323846;
-        assert(temporal_upscaler_camera(0.1, 10000.0, fov, frame, 0, &ms) && fabsf(ms - 16.666666f) < 1e-4f);
-        assert(temporal_upscaler_camera(0.1, INFINITY, fov, frame, 1, &ms) && fabsf(ms - 16.666666f) < 1e-4f);
+        assert(temporal_upscaler_camera(0.1, 10000.0, fov, frame, 0, cam));
+        assert(cam[0] == 0.1f && cam[1] == 10000.0f && cam[2] == (float)fov && cam[3] == (float)frame);
+        assert(fabsf(cam[3] * 1000.0f - 16.666666f) < 1e-4f);
+        assert(temporal_upscaler_camera(0.1, INFINITY, fov, frame, 1, cam) && isinf(cam[1]) && cam[1] > 0.0f);
         /* an infinite far plane only with a context made for one, and such a context only with it */
-        assert(!temporal_upscaler_camera(0.1, INFINITY, fov, frame, 0, &ms));
-        assert(!temporal_upscaler_camera(0.1, 10000.0, fov, frame, 1, &ms));
-        assert(!temporal_upscaler_camera(0.1, -INFINITY, fov, frame, 1, &ms));
+        assert(!temporal_upscaler_camera(0.1, INFINITY, fov, frame, 0, cam));
+        assert(!temporal_upscaler_camera(0.1, 10000.0, fov, frame, 1, cam));
+        assert(!temporal_upscaler_camera(0.1, -INFINITY, fov, frame, 1, cam));
         /* far must lie beyond near */
-        assert(!temporal_upscaler_camera(0.1, 0.1, fov, frame, 0, &ms));
-        assert(!temporal_upscaler_camera(0.1, 0.05, fov, frame, 0, &ms));
-        assert(!temporal_upscaler_camera(0.1, -5.0, fov, frame, 0, &ms));
-        /* the field of view: positive and below pi. Just under pi passes, pi does not. */
-        assert(temporal_upscaler_camera(0.1, 10000.0, pi - 1e-9, frame, 0, &ms));
-        assert(!temporal_upscaler_camera(0.1, 10000.0, pi, frame, 0, &ms));
-        assert(!temporal_upscaler_camera(0.1, 10000.0, 4.0, frame, 0, &ms));
-        assert(!temporal_upscaler_camera(0.1, 10000.0, 0.0, frame, 0, &ms));
-        assert(!temporal_upscaler_camera(0.1, 10000.0, -fov, frame, 0, &ms));
+        assert(!temporal_upscaler_camera(0.1, 0.1, fov, frame, 0, cam));
+        assert(!temporal_upscaler_camera(0.1, 0.05, fov, frame, 0, cam));
+        assert(!temporal_upscaler_camera(0.1, -5.0, fov, frame, 0, cam));
+        /* The field of view: positive and below pi. Under pi by enough to stay under as a float passes. Pi does
+           not, and neither does a double just under pi whose float is above it. */
+        assert(temporal_upscaler_camera(0.1, 10000.0, 3.1415925, frame, 0, cam) && (double)cam[2] < pi);
+        assert(!temporal_upscaler_camera(0.1, 10000.0, pi, frame, 0, cam));
+        assert(!temporal_upscaler_camera(0.1, 10000.0, pi - 1e-9, frame, 0, cam));
+        assert(!temporal_upscaler_camera(0.1, 10000.0, 4.0, frame, 0, cam));
+        assert(!temporal_upscaler_camera(0.1, 10000.0, 0.0, frame, 0, cam));
+        assert(!temporal_upscaler_camera(0.1, 10000.0, -fov, frame, 0, cam));
         /* zero, negative, not finite, or too big for a float, in each of the four numbers */
         const double bad[7] = {0.0, -1.0, NAN, INFINITY, -INFINITY, 1e39, 1.7976931348623157e308};
         for (int i = 0; i < 7; i++) {
-            assert(!temporal_upscaler_camera(bad[i], 10000.0, fov, frame, 0, &ms));
-            assert(!temporal_upscaler_camera(0.1, bad[i], fov, frame, 0, &ms));
-            assert(!temporal_upscaler_camera(0.1, 10000.0, bad[i], frame, 0, &ms));
-            assert(!temporal_upscaler_camera(0.1, 10000.0, fov, bad[i], 0, &ms));
+            assert(!temporal_upscaler_camera(bad[i], 10000.0, fov, frame, 0, cam));
+            assert(!temporal_upscaler_camera(0.1, bad[i], fov, frame, 0, cam));
+            assert(!temporal_upscaler_camera(0.1, 10000.0, bad[i], frame, 0, cam));
+            assert(!temporal_upscaler_camera(0.1, 10000.0, fov, bad[i], 0, cam));
         }
-        /* a frame time that is finite in seconds and too big in milliseconds, and one that rounds to no time */
-        assert(!temporal_upscaler_camera(0.1, 10000.0, fov, 1e36, 0, &ms));
-        assert(!temporal_upscaler_camera(0.1, 10000.0, fov, 1e-50, 0, &ms));
-        assert(temporal_upscaler_camera(0.1, 10000.0, fov, 5.0, 0, &ms) && ms == 5000.0f);
+        /* Doubles that pass as doubles and do not as the floats handed on: a near plane that rounds to 0, a far
+           plane that rounds onto the near one, a frame time that rounds to no time, in seconds or after the
+           change to milliseconds. And one that is too long in milliseconds. */
+        assert(!temporal_upscaler_camera(1e-50, 10000.0, fov, frame, 0, cam));
+        assert(!temporal_upscaler_camera(1.0, 1.0 + 1e-9, fov, frame, 0, cam));
+        assert(!temporal_upscaler_camera(0.1, 10000.0, fov, 1e-46, 0, cam));
+        assert(!temporal_upscaler_camera(0.1, 10000.0, fov, 1e-50, 0, cam));
+        assert(!temporal_upscaler_camera(0.1, 10000.0, fov, 1e36, 0, cam));
+        assert(temporal_upscaler_camera(0.1, 10000.0, fov, 5.0, 0, cam) && cam[3] * 1000.0f == 5000.0f);
+        /* a refusal leaves what was there */
+        cam[0] = cam[1] = cam[2] = cam[3] = -7.0f;
+        assert(!temporal_upscaler_camera(1e-50, 10000.0, fov, frame, 0, cam) && cam[0] == -7.0f && cam[3] == -7.0f);
     }
     /* failures in a row: the eighth turns the upscaler off, a success before that starts the count again */
     unsigned failures = 0;

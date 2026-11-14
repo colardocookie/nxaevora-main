@@ -519,7 +519,7 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     SnxUpscalerTraits traits = {0};
     TemporalRectState state = {0};
     TemporalUpscalerFrame numbers;
-    float ms;
+    float camera[4];
     s->frame++;
     /* what the renderer would know of the frame: its viewport, the images' size, the fraction of them in use */
     state.viewport = (TemporalViewport){(float)in->vp.x, (float)in->vp.y, (float)in->vp.w, (float)in->vp.h};
@@ -532,7 +532,7 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     const double jitter[2] = {in->scene[i].jitter[0], in->scene[i].jitter[1]};
     temporal_rect_decide(&s->gate, s->frame, &state);
     if (!temporal_upscaler_frame(&s->gate, s->frame, &stamp, &state.viewport, jitter, cut, &numbers) ||
-        !temporal_upscaler_camera(NEAR_PLANE, (double)INFINITY, FOV_Y, FRAME_SECONDS, 1, &ms)) {
+        !temporal_upscaler_camera(NEAR_PLANE, (double)INFINITY, FOV_Y, FRAME_SECONDS, 1, camera)) {
         s->skipped++;
         return 0;
     }
@@ -581,10 +581,11 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
         .vector_scale = {(float)(numbers.vector_scale[0] * v->vector_x),
                          (float)(numbers.vector_scale[1] * v->vector_y)},
         .reset = (u32)numbers.reset,
-        .frame_seconds = ms / 1000.0f,
-        .near_plane = (float)NEAR_PLANE,
-        .far_plane = INFINITY,
-        .fov_y = (float)FOV_Y};
+        /* the camera's numbers exactly as the check passed them */
+        .frame_seconds = camera[3],
+        .near_plane = camera[0],
+        .far_plane = camera[1],
+        .fov_y = camera[2]};
     const int evaluated = g.api->evaluate(s->live, &frame) == SNX_UPSCALER_OK;
     /* whatever the adapter left bound or pending: the output is taken over for the copy with a full barrier */
     const VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
