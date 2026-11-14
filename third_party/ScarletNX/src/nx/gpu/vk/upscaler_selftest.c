@@ -10,6 +10,7 @@
 #include <string.h>
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/vk.h"
+#include "common/gpu/vk/vk_common.h"
 #include "nx/gpu/vk/upscaler.h"
 #include "nx/gpu/vk/upscaler_selftest.h"
 #include "nx/gpu/vk/temporal_math.h"
@@ -121,7 +122,7 @@ static struct {
     u32 ids, unlisted; /* message ids kept, and callbacks whose id found no room in the table */
     u32 omitted, truncated, nameless; /* callbacks not printed, printed with a cut text, without an id's name */
     u32 overlong; /* callbacks whose id's name is too long to keep whole: counted apart, never taken as one id */
-    u32 stops;    /* callbacks whose text holds the layer's own notice that it stops reporting a message id */
+    u32 stops;    /* callbacks whose text holds the layer's own sentence of stopping an id (selftest_stop_notice) */
     SelftestVariables variables; /* the variables' names the texts hold, by the layer's pattern */
     struct {
         char name[128];
@@ -205,7 +206,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverit
     g_said.nameless += !(data && data->pMessageIdName);
     /* the raw text of every callback, before any cap on what is printed */
     selftest_variables(&g_said.variables, text, length, VALIDATION_SCAN);
-    g_said.stops += strstr(text, "duplicate_message_limit") != NULL;
+    g_said.stops += selftest_stop_notice(text);
     g_said.omitted += index >= VALIDATION_KEPT;
     g_said.truncated += index < VALIDATION_KEPT && length > kept;
     if (index < VALIDATION_KEPT) {
@@ -264,7 +265,8 @@ static unsigned validation_counts(void) {
     u32 most = 0;
     for (u32 k = 0; k < said.ids; k++) most = said.id[k].count > most ? said.id[k].count : most;
     LOG(ST "validation: the layer's limit of repeated messages was %s. The most callbacks one listed message id had "
-           "is %u. Callbacks that hold the layer's notice of stopping a message id: %u\n",
+           "is %u. Callbacks that hold the layer's sentence of stopping a message id (\"This VUID has now been "
+           "reported ... this will be the last time reporting it\"): %u\n",
         g.limit_asked ? "asked off (enable_message_limit = false), which cannot be read back" : "not asked off", most,
         said.stops);
     /* the variables' names, taken from the texts by a pattern: no identity of a resource */
@@ -279,7 +281,8 @@ static unsigned validation_counts(void) {
     for (u32 k = 0; k < v->names; k++) {
         char shown[4 * SELFTEST_VARIABLE_NAME + 1];
         size_t at = 0;
-        for (size_t i = 0; v->name[k].name[i]; i++) at += validation_mark((unsigned char)v->name[k].name[i], shown + at);
+        for (size_t i = 0; v->name[k].name[i]; i++)
+            at += validation_mark((unsigned char)v->name[k].name[i], shown + at);
         shown[at] = 0;
         LOG(ST "validation variable name %s: in %u callbacks\n", shown, v->name[k].count);
     }
@@ -390,22 +393,30 @@ static int device_make(void) {
     const VkLayerSettingsCreateInfoEXT settings = {
         .sType = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT, .settingCount = 1, .pSettings = &setting};
     if (g.validation) {
-        u32 offered = 0;
-        VkResult asked = vkEnumerateInstanceExtensionProperties(layers[0], &offered, NULL);
-        VkExtensionProperties* of_layer = asked >= 0 ? calloc(offered ? offered : 1, sizeof *of_layer) : NULL;
-        if (of_layer) asked = vkEnumerateInstanceExtensionProperties(layers[0], &offered, of_layer);
-        int has = 0;
-        for (u32 i = 0; of_layer && asked == VK_SUCCESS && i < offered; i++)
-            has |= !strcmp(of_layer[i].extensionName, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
-        free(of_layer);
-        if (has && instance_count < 32) {
+        /* each way of not asking has its own words: the layer's list of its extensions, and our own room */
+        static const char* const why[] = {"",
+                                          "the layer's list of extensions, read whole, does not hold its settings",
+                                          "the layer's list of extensions stayed incomplete after three tries, so "
+                                          "whether it holds its settings is not known",
+                                          "the call for the count of the layer's extensions failed",
+                                          "the call for the list of the layer's extensions failed",
+                                          "there was no memory for the list of the layer's extensions, so the "
+                                          "call for it was not made"};
+        VkResult result = VK_SUCCESS;
+        const int has = snx_vk_layer_extension(layers[0], VK_EXT_LAYER_SETTINGS_EXTENSION_NAME, &result);
+        if (has == SNX_VK_LAYER_HAS && instance_count < 32) {
             instance_names[instance_count++] = VK_EXT_LAYER_SETTINGS_EXTENSION_NAME;
             checks.pNext = &settings;
             g.limit_asked = 1;
-        }
-        LOG(ST "the layer's limit of repeated messages: %s\n",
-            g.limit_asked ? "asked off (enable_message_limit = false)"
-                          : "not asked off, the layer's settings extension was not found in its list");
+            LOG(ST "the layer's limit of repeated messages: asked off (enable_message_limit = false)\n");
+        } else if (has == SNX_VK_LAYER_HAS)
+            LOG(ST "the layer's limit of repeated messages: not asked off. The layer lists its settings, and the "
+                   "self-test's list of instance extensions has no room for one more\n");
+        else if (has == SNX_VK_LAYER_NO_MEMORY)
+            LOG(ST "the layer's limit of repeated messages: not asked off: %s\n", why[has]);
+        else
+            LOG(ST "the layer's limit of repeated messages: not asked off: %s (the last call's result %d)\n",
+                why[has], (int)result);
     }
 #else
     if (g.validation)

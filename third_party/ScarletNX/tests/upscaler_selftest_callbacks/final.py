@@ -166,14 +166,16 @@ int main(void){
  reset();
  emit("rule",1,"descriptor [Set 0, Binding 128, variable \"rw_a\"] and variable \"rw_b\"");
  emit("rule",1,"descriptor [variable \"rw_a\"] again");
- emit("rule",1,"(Warning - reported 10 times, which is the duplicate_message_limit value)");
+ emit("rule",1,"(Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value,"
+  " this will be the last time reporting it)");
+ emit("rule",1,"descriptor [variable \"duplicate_message_limit\"] only names something of that name");
  emit("other",2,"variable \"a\nb\" with a line break in its name");
- assert(g_said.variables.callbacks==4&&g_said.variables.names==3&&g_said.variables.unmatched==1);
+ assert(g_said.variables.callbacks==5&&g_said.variables.names==4&&g_said.variables.unmatched==1);
  assert(g_said.variables.name[0].count==2&&g_said.variables.name[1].count==1&&g_said.stops==1);
  g.limit_asked=1;
- assert(validation_counts()==4&&strstr(output,"asked off (enable_message_limit = false)"));
- assert(strstr(output,"The most callbacks one listed message id had is 3"));
- assert(strstr(output,"notice of stopping a message id: 1"));
+ assert(validation_counts()==5&&strstr(output,"asked off (enable_message_limit = false)"));
+ assert(strstr(output,"The most callbacks one listed message id had is 4"));
+ assert(strstr(output,"this will be the last time reporting it\"): 1"));
  assert(strstr(output,"validation variable name rw_a: in 2 callbacks")&&strstr(output,"No limit was met"));
  assert(strstr(output,"validation variable name a\\nb: in 1 callbacks"));
  check_lines();

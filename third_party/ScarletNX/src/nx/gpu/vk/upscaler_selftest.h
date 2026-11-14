@@ -640,6 +640,15 @@ static inline void selftest_variables(SelftestVariables* v, const char* text, si
 static inline int selftest_variables_whole(const SelftestVariables* v) {
     return !v->unscanned && !v->unclosed && !v->overlong && !v->full;
 }
+/* 1 when a callback's text holds the validation layer's own sentence that it stops reporting a message id, as a
+   run printed it: "This VUID has now been reported 10 times, which is the duplicate_message_limit value, this
+   will be the last time reporting it". The number is not part of what is matched. A text that only names
+   something called duplicate_message_limit is not that sentence. */
+static inline int selftest_stop_notice(const char* text) {
+    const char* from = strstr(text, "This VUID has now been reported ");
+    return from && strstr(from, " times, which is the duplicate_message_limit value, this will be the last time "
+                                "reporting it") != NULL;
+}
 /* What a session shows of the contexts it used, for the native suite's printed assertions: how many came into use,
    and of the first four each one's create flags, the frames it evaluated, whether the first of them had the
    reset, and the far plane it was handed (mixed: not the same in every frame). And the checksum of the depth

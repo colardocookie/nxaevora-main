@@ -582,7 +582,8 @@ game's instance now also asks for the layer's synchronisation checks, through th
 its features, and the log says in lines of their own what the run really has: that the layer is enabled, whether
 the synchronisation checks were asked for and the instance is made with them (and if not, which of these it
 was: the layer's list does not hold the extension, the list stayed incomplete, a call failed, or there was no
-memory for the list), and whether the message callback is ready or could not be made, with the result. That no "not installed" warning is printed says nothing about a
+memory for the list), and whether the message callback is ready or could not be made, with the result. That
+no "not installed" warning is printed says nothing about a
 callback that works: a run counts as made under the layer only with those lines. What the layer then does with
 the checks cannot be read back. Without the option nothing changes and no line is printed.
 
@@ -594,12 +595,13 @@ linear derivative groups, and the device had been made without them. As far as t
 shows, the library picks its shaders by what the physical device has and not by what the device was made
 with. So the adapter names `VK_KHR_compute_shader_derivatives` with its feature for linear groups as needs of
 the device, and it is "not available" on a physical device that lacks either: a conservative refusal of a
-configuration that was not seen or audited, and no claim of what the library would do there. A list of extensions or a query of features that fails, or a list that stays incomplete, also
-means "not available": nothing is taken from a part of a list. 16 bit floats in shaders are a core feature
-that whoever makes the device turns on where the physical device has it. The self-test's device has every
-feature of the physical device on, that one among them as a bit of the Vulkan 1.2 structure, and the adapter's
-own structure for the derivatives goes behind it in the chain and lives in the adapter. This is for the
-self-test's device only. It closes no condition: the library's own storage image messages remain.
+configuration that was not seen or audited, and no claim of what the library would do there. A list of extensions or a
+query of features that fails, or a list that stays incomplete, also means "not available": nothing is taken from a
+part of a list. 16 bit floats in shaders are a core feature that whoever makes the device turns on where the physical
+device has it. The self-test's device has every feature of the physical device on, that one among them as a bit of the
+Vulkan 1.2 structure, and the adapter's own structure for the derivatives goes behind it in the chain and lives in the
+adapter. This is for the self-test's device only. It closes no condition: the library's own storage image messages
+remain.
 
 ## The upscaler's self-test (`SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>`)
 
@@ -612,8 +614,8 @@ game. Without the switch the start is that one look and otherwise as before. A r
 unknown (a submission whose end cannot be waited for) stops using the device at once: the cases left are
 reported as not run and the result is a failure. The mode makes a Vulkan instance and device of its
 own without a window, through the steps the runtime will take with an adapter (`gpu/vk/upscaler_host.c`), runs
-the adapter on a generated scene, writes its lines and ends the process with 0 for a pass. Every line begins with `arceus-upscaler-selftest`. The
-adapter's own lines begin with `arceus-upscaler`.
+the adapter on a generated scene, writes its lines and ends the process with 0 for a pass. Every line begins with
+`arceus-upscaler-selftest`. The adapter's own lines begin with `arceus-upscaler`.
 
 The FSR adapter (`gpu/vk/upscaler_fsr.cpp`, Windows only) needs AMD's `amd_fidelityfx_loader_vk.dll` and
 `amd_fidelityfx_upscaler_vk.dll` beside the program. They are the user's to put there and are never in this
@@ -682,8 +684,10 @@ The cases, each run with a viewport of negative and of positive height (render 3
    so a count is what it reported.
    The self-test asks the layer to lift that limit (its setting `enable_message_limit`, false, through the layer
    settings at the instance's creation, where the layer offers them). The setting cannot be read back. Three
-   facts are printed apart: that it was asked for, the most callbacks one message id had, and how many
-   callbacks hold the layer's own notice of stopping an id. A count over ten shows only that ten was passed
+   facts are printed apart: that it was asked for (or which way it was not: the layer's list of extensions
+   without its settings, incomplete, a failed call, no memory, or no room in the self-test's own list), the most
+   callbacks one message id had, and how many callbacks hold the layer's own sentence of stopping an id, matched
+   as a run printed it and not by one word of it. A count over ten shows only that ten was passed
    in this run.
    A table lists the names of variables found in the raw text of every callback received, printed or not, by the
    pattern the layer writes (the word variable and a quoted name): whole names, at most 64 of at most 63

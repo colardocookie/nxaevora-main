@@ -4158,6 +4158,22 @@ static void test_selftest_variables(void) {
     }
 }
 
+/* the layer's own sentence of stopping a message id, and texts that only look like it */
+static void test_selftest_stop_notice(void) {
+    assert(selftest_stop_notice("(Warning - This VUID has now been reported 10 times, which is the "
+                                "duplicate_message_limit value, this will be the last time reporting it)."));
+    assert(selftest_stop_notice("x This VUID has now been reported 250 times, which is the duplicate_message_limit "
+                                "value, this will be the last time reporting it"));
+    assert(!selftest_stop_notice("the storage image descriptor [variable \"duplicate_message_limit\"] is accessed"));
+    assert(!selftest_stop_notice("duplicate_message_limit"));
+    assert(!selftest_stop_notice("This VUID has now been reported 10 times"));
+    assert(!selftest_stop_notice("which is the duplicate_message_limit value, this will be the last time reporting it"));
+    /* the two halves the wrong way round are not the sentence */
+    assert(!selftest_stop_notice(" times, which is the duplicate_message_limit value, this will be the last time "
+                                 "reporting it. This VUID has now been reported "));
+    assert(!selftest_stop_notice(""));
+}
+
 static void test_selftest_proof(void) {
     const uint32_t flag = 1u << 4, other = 0xf;
     const double finite[2] = {5000.0, 5000.0}, mixed[2] = {5000.0, INFINITY}, back[2] = {INFINITY, 5000.0};
@@ -4510,6 +4526,7 @@ int main(void) {
     test_selftest_projection();
     test_selftest_layers();
     test_selftest_variables();
+    test_selftest_stop_notice();
     test_selftest_proof();
     test_selftest_edges();
     puts("temporal_math: ok");
