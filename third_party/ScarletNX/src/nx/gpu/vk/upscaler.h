@@ -115,7 +115,7 @@ typedef struct {
     /* Diagnostic only. 1: the adapter logs, for this frame, every number it hands to its library and what its
        context was made with, in a line that begins "arceus-upscaler: <name> dispatch". With 0 nothing is
        printed, and in either case what is handed to the library and what comes back is the same. Only the
-       self-test sets it. The frame grew by it, so the ABI number is 2 and a module built for 1 is refused. */
+       self-test sets it. The frame grew by it with ABI 2. A module built for another number is refused. */
     uint32_t trace;
 } SnxUpscalerFrame;
 
