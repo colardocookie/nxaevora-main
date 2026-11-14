@@ -2878,9 +2878,14 @@ retry:
     read_targets(ch, rt, &zt, &n);
     if (vk_temporal_enabled()) { /* what the temporal probe learns from a draw: its targets and sampled surfaces */
         Surf* sampled[SH_MAXTEX];
+        const u32 *tic[SH_MAXTEX], *tsc[SH_MAXTEX]; /* the headers of each, for the probe's lines */
         int nt = sh.fs0 ? (sh.fs0->si.ntex > SH_MAXTEX ? SH_MAXTEX : sh.fs0->si.ntex) : 0;
-        for (int i = 0; i < nt; i++) sampled[i] = fres[i].t;
-        vk_temporal_draw(ch, vs, sh.fs0, sampled, nt, rt, n, zt);
+        for (int i = 0; i < nt; i++) {
+            sampled[i] = fres[i].t;
+            tic[i] = fres[i].have ? fres[i].tic : NULL;
+            tsc[i] = fres[i].have ? fres[i].tsc : NULL;
+        }
+        vk_temporal_draw(ch, vs, sh.fs0, sampled, tic, tsc, nt, rt, n, zt);
     }
     for (u32 i = 0; i < n; i++)
         if (trace_target(rt[i]))
@@ -3405,6 +3410,7 @@ retry:
         }
         scissor[i] = sc;
     }
+    if (vk_temporal_enabled()) vk_temporal_recorded(&viewport[0], &scissor[0]); /* read only, for the log */
     if (fresh || g_dyn.viewports != viewports || memcmp(g_dyn.vp, viewport, viewports * sizeof *viewport)) {
         memcpy(g_dyn.vp, viewport, viewports * sizeof *viewport);
         rec_CmdSetViewportWithCount(cb, viewports, viewport);

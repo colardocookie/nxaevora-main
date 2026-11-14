@@ -1077,8 +1077,9 @@ void vk_render_clear(GpuChannel* ch, u32 v);
 /* gpu/vk/temporal.c: the temporal probe (SNX_ARCEUS_TEMPORAL=probe). A draw is shown to it before it is recorded,
    and it runs its passes before the draw of the scene colour's first reader */
 int vk_temporal_enabled(void);
-void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* const* sampled, int nt,
-                      Surf* const* rt, u32 n, Surf* zt);
+void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* const* sampled,
+                      const u32* const* tic, const u32* const* tsc, int nt, Surf* const* rt, u32 n, Surf* zt);
+void vk_temporal_recorded(const VkViewport* viewport, const VkRect2D* scissor);
 void vk_temporal_before(u64 fs0_hash);
 /* the scene camera's constant block with this frame's jitter in place of the guest's, 1 when buffer and offset are set */
 int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer, u64* offset);

@@ -56,11 +56,21 @@ with the viewport and depth range used. Skipped frames are counted with the reas
 
 With `probe` or `taa`, read only and for the log alone, three readers of the scene are described in every 600th
 frame, each at its first draw: the copy of the scene colour, the blur's preparation and the composite, known by
-their fragment programs. One line each begins with `arceus-temporal-readers:` and has the vertex program, the
-viewport, whether the scissor test is on and its rectangle in the game's own pixels, the first
-colour target's address and size, each sampled texture's address and size, and thirteen words of the scene
-block bound to the fragment stage (the used fraction at +628 and +62C among them), or "not bound" or "too
-short". No draw is changed by it.
+their fragment programs. The lines begin with `arceus-temporal-readers:` and name the frame and the program:
+
+- the draw: the vertex program, the game's registers for the viewport and the scissor (whether the test is on,
+  and its rectangle in the game's own pixels), the count of colour targets and the first one's address and size;
+- one line for each sampled texture (sixteen at most): its address and size, and its sampler as the renderer
+  makes it from the game's header (the filters, the address modes on both axes, the level range, normalised
+  coordinates, which is the only kind the renderer makes), with the header's own words;
+- the fragment stage's scene block: thirteen words, the used fraction at +628 and +62C among them, or "not
+  bound" or "too short";
+- the vertex stage's scene block at +628 and +62C, and the first sixteen words of the vertex stage's bank 1;
+- what the draw is recorded with: Vulkan's viewport and scissor after the render scale and the turn of the
+  window's origin, in the image's pixels. That line comes from the place where the renderer makes them, so
+  the game's registers and the effective values stand side by side. A draw that never gets there says so.
+
+No draw is changed by it.
 
 ## Limits
 

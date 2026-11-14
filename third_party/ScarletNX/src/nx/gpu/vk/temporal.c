@@ -1334,22 +1334,58 @@ static int stats_ready(void) {
    scene colour names the program before which the probe runs from the next frame on. */
 /* Read only, for the log alone, with probe or taa: what three readers of the scene are drawn with. In every
    600th frame, at the first draw of each of these fragment programs (by the low 32 bits of its hash, the
-   composite under either of its two): the vertex program, the viewport, the scissor, the first colour target,
-   each sampled texture, and words of the scene block bound to the fragment stage. No draw is changed. */
+   composite under either of its two), lines that begin "arceus-temporal-readers:" and name the frame and the
+   program. No draw is changed. */
+static struct {
+    int pending; /* a reader's draw was described and what it is recorded with has not been said yet */
+    u32 frame;
+    u64 program;
+} g_readers;
+/* float words of a constant block of a stage into the line: each word, or why it cannot be read */
+static size_t readers_words(char* line, size_t at, size_t room, const GpuChannel* ch, int stage, int bank,
+                            const u32* offsets, int count) {
+    const u64 address = ch->cbind[stage][bank];
+    const u32 size = ch->cbind_size[stage][bank];
+    if (!address) return at + (size_t)snprintf(line + at, room - at, "not bound");
+    at += (size_t)snprintf(line + at, room - at, "at %llx, %u bytes bound:", (unsigned long long)address, size);
+    for (int k = 0; k < count && at + 48 < room; k++) {
+        const u8* bytes = size >= offsets[k] + 4 ? gmem_host(address + offsets[k], 4) : NULL;
+        float value = 0.0f;
+        if (bytes) memcpy(&value, bytes, sizeof value);
+        if (bytes) at += (size_t)snprintf(line + at, room - at, " +%X %.9g", offsets[k], (double)value);
+        else
+            at += (size_t)snprintf(line + at, room - at, " +%X %s", offsets[k],
+                                   size >= offsets[k] + 4 ? "not readable" : "too short");
+    }
+    return at;
+}
 static void readers_note(u32 frame, const GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* const* sampled,
-                         int nt, Surf* const* rt, u32 n) {
+                         const u32* const* tic, const u32* const* tsc, int nt, Surf* const* rt, u32 n) {
     static const u32 programs[4] = {0x21FBFBECu, 0xB46268ADu, 0x8A160A27u, 0x63B3848Cu};
     static const char* const names[3] = {"copy of the scene colour", "blur prepare", "composite"};
-    static const u32 words[13] = {0x628, 0x62C, 0x670, 0x674, 0x710, 0x714, 0x718,
+    static const u32 scene[13] = {0x628, 0x62C, 0x670, 0x674, 0x710, 0x714, 0x718,
                                   0x71C, 0x720, 0x724, 0x728, 0x794, 0x798};
+    static const u32 fraction[2] = {0x628, 0x62C};
+    static const u32 first[16] = {0x0,  0x4,  0x8,  0xC,  0x10, 0x14, 0x18, 0x1C,
+                                  0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x3C};
+    /* the address modes as the renderer's sampler takes them (texture.c), by the header's number 0 to 7 */
+    static const char* const wraps[8] = {"repeat",        "mirrored repeat", "clamp to edge",   "clamp to border",
+                                         "clamp to edge", "mirror clamp",    "clamp to border", "mirror clamp"};
     static u32 said_at[3];
-    char line[1900];
+    char line[1900], head[96];
     int which = -1;
+    /* a reader's draw that never reached the place where its viewport and scissor are recorded */
+    if (g_readers.pending) {
+        LOG("arceus-temporal-readers: frame %u, program %llx: the draw was not recorded, so no viewport and scissor "
+            "of Vulkan's can be said for it\n", g_readers.frame, (unsigned long long)g_readers.program);
+        g_readers.pending = 0;
+    }
     if (!fs0 || frame % 600) return;
     for (int k = 0; k < 4; k++)
         if ((u32)fs0->hash == programs[k]) which = k < 3 ? k : 2;
     if (which < 0 || said_at[which] == frame) return;
     said_at[which] = frame;
+    snprintf(head, sizeof head, "frame %u, program %llx", frame, (unsigned long long)fs0->hash);
     const VkViewport v = vk_render_viewport(ch->r3d);
     const Surf* colour = NULL;
     u32 colours = 0;
@@ -1362,52 +1398,79 @@ static void readers_note(u32 frame, const GpuChannel* ch, const VkSh* vs, const 
        rectangle in the game's own pixels, before the render scale and before a flip of the window's origin. */
     const u32* r = ch->r3d;
     const u32 xs = r[0x381], ys = r[0x382];
-    size_t at = (size_t)snprintf(line, sizeof line, "frame %u, the first draw of program %llx (%s) with vertex "
-                                                    "program %llx: viewport %g,%g %gx%g, scissor test %s, its "
-                                                    "rectangle x %u to %u, y %u to %u in the game's pixels%s, %u "
+    size_t at = (size_t)snprintf(line, sizeof line, "%s: the first draw of the %s, with vertex program %llx. The "
+                                                    "game's registers: viewport %g,%g %gx%g, scissor test %s, its "
+                                                    "rectangle x %u to %u, y %u to %u in the game's pixels%s. %u "
                                                     "colour targets, the first ",
-                                 frame, (unsigned long long)fs0->hash, names[which],
-                                 (unsigned long long)(vs ? vs->hash : 0), (double)v.x, (double)v.y, (double)v.width,
-                                 (double)v.height, r[0x380] & 1 ? "on" : "off", xs & 0xFFFF, xs >> 16, ys & 0xFFFF,
-                                 ys >> 16, r[0x4EB] & 1 ? " (y counted from the bottom)" : "", colours);
+                                 head, names[which], (unsigned long long)(vs ? vs->hash : 0), (double)v.x,
+                                 (double)v.y, (double)v.width, (double)v.height, r[0x380] & 1 ? "on" : "off",
+                                 xs & 0xFFFF, xs >> 16, ys & 0xFFFF, ys >> 16,
+                                 r[0x4EB] & 1 ? " (y counted from the bottom)" : "", colours);
     if (colour)
-        at += (size_t)snprintf(line + at, sizeof line - at, "at %llx of %ux%u (image %ux%u)",
-                               (unsigned long long)colour->gva, colour->w, colour->h, colour->sw, colour->sh);
+        snprintf(line + at, sizeof line - at, "at %llx of %ux%u (image %ux%u). %d sampled textures",
+                 (unsigned long long)colour->gva, colour->w, colour->h, colour->sw, colour->sh, nt);
     else
-        at += (size_t)snprintf(line + at, sizeof line - at, "none");
-    at += (size_t)snprintf(line + at, sizeof line - at, ". %d sampled textures:", nt);
-    for (int i = 0; i < nt && i < 16 && at < sizeof line - 80; i++)
+        snprintf(line + at, sizeof line - at, "none. %d sampled textures", nt);
+    LOG("arceus-temporal-readers: %s\n", line);
+    /* Each sampled texture, and its sampler as the renderer makes it from the game's header (texture.c), with
+       the header's numbers and its first three words as they are. The renderer's samplers always take
+       normalised coordinates: it makes no other kind. */
+    for (int i = 0; i < nt && i < 16; i++) {
+        const u32* t = tsc ? tsc[i] : NULL;
+        const u32* h = tic ? tic[i] : NULL;
+        at = (size_t)snprintf(line, sizeof line, "%s: texture %d ", head, i);
         if (sampled[i])
-            at += (size_t)snprintf(line + at, sizeof line - at, " [%d] at %llx of %ux%u (image %ux%u)", i,
+            at += (size_t)snprintf(line + at, sizeof line - at, "at %llx of %ux%u (image %ux%u)",
                                    (unsigned long long)sampled[i]->gva, sampled[i]->w, sampled[i]->h,
                                    sampled[i]->sw, sampled[i]->sh);
         else
-            at += (size_t)snprintf(line + at, sizeof line - at, " [%d] none", i);
-    if (nt > 16 && at < sizeof line - 80) at += (size_t)snprintf(line + at, sizeof line - at, " and %d more", nt - 16);
-    /* the scene block as it is bound to the fragment stage: each word, or why it cannot be read */
-    const u64 address = ch->cbind[ST_FS][TEMPORAL_SCENE_BANK];
-    const u32 size = ch->cbind_size[ST_FS][TEMPORAL_SCENE_BANK];
-    if (!address) at += (size_t)snprintf(line + at, sizeof line - at, ". The scene block (bank 3): not bound");
-    else {
-        at += (size_t)snprintf(line + at, sizeof line - at, ". The scene block (bank 3) at %llx, %u bytes bound, %u "
-                                                            "read by the program:",
-                               (unsigned long long)address, size, fs0->si.cbuf_max[TEMPORAL_SCENE_BANK]);
-        for (int k = 0; k < 13 && at < sizeof line - 48; k++) {
-            const u8* bytes = size >= words[k] + 4 ? gmem_host(address + words[k], 4) : NULL;
-            float value = 0.0f;
-            if (bytes) memcpy(&value, bytes, sizeof value);
-            if (bytes) at += (size_t)snprintf(line + at, sizeof line - at, " +%X %.9g", words[k], (double)value);
-            else
-                at += (size_t)snprintf(line + at, sizeof line - at, " +%X %s", words[k],
-                                       size >= words[k] + 4 ? "not readable" : "too short");
-        }
+            at += (size_t)snprintf(line + at, sizeof line - at, "none");
+        if (t)
+            at += (size_t)snprintf(line + at, sizeof line - at,
+                                   ". Sampler: mag %s (%u), min %s (%u), between levels %s (%u), x %s (%u), y %s "
+                                   "(%u), levels %g to %g, normalised coordinates (the renderer makes no other "
+                                   "sampler), header words %08x %08x %08x",
+                                   (t[1] & 3) == 2 ? "linear" : "nearest", t[1] & 3,
+                                   ((t[1] >> 4) & 3) == 2 ? "linear" : "nearest", (t[1] >> 4) & 3,
+                                   ((t[1] >> 6) & 3) == 3 ? "linear" : "nearest", (t[1] >> 6) & 3, wraps[t[0] & 7],
+                                   t[0] & 7, wraps[(t[0] >> 3) & 7], (t[0] >> 3) & 7,
+                                   (double)(t[2] & 0xFFF) / 256.0, (double)((t[2] >> 12) & 0xFFF) / 256.0, t[0],
+                                   t[1], t[2]);
+        if (h)
+            snprintf(line + at, sizeof line - at, ". Texture header words 4 and 5: %08x %08x", h[4], h[5]);
+        LOG("arceus-temporal-readers: %s\n", line);
     }
-    if (at >= sizeof line) at = sizeof line - 1;
+    if (nt > 16) LOG("arceus-temporal-readers: %s: %d more textures are not listed\n", head, nt - 16);
+    /* the blocks: the scene block of both stages, and the start of the vertex stage's bank 1 */
+    at = (size_t)snprintf(line, sizeof line, "%s: the fragment stage's scene block (bank 3), %u bytes read by the "
+                                             "program, ",
+                          head, fs0->si.cbuf_max[TEMPORAL_SCENE_BANK]);
+    readers_words(line, at, sizeof line, ch, ST_FS, TEMPORAL_SCENE_BANK, scene, 13);
     LOG("arceus-temporal-readers: %s\n", line);
+    at = (size_t)snprintf(line, sizeof line, "%s: the vertex stage's scene block (bank 3) ", head);
+    readers_words(line, at, sizeof line, ch, ST_VS, TEMPORAL_SCENE_BANK, fraction, 2);
+    LOG("arceus-temporal-readers: %s\n", line);
+    at = (size_t)snprintf(line, sizeof line, "%s: the vertex stage's bank 1, its first sixteen words, ", head);
+    readers_words(line, at, sizeof line, ch, ST_VS, 1, first, 16);
+    LOG("arceus-temporal-readers: %s\n", line);
+    g_readers.pending = 1;
+    g_readers.frame = frame;
+    g_readers.program = fs0->hash;
+}
+/* From the renderer, where a draw's first viewport and scissor are made for Vulkan: after the render scale and
+   the turn of the window's origin, as they are recorded. Said for a reader's draw described just before. */
+void vk_temporal_recorded(const VkViewport* viewport, const VkRect2D* scissor) {
+    if (!g_readers.pending) return;
+    g_readers.pending = 0;
+    LOG("arceus-temporal-readers: frame %u, program %llx: recorded with Vulkan's viewport %g,%g %gx%g, depth %g to "
+        "%g, and scissor %d,%d %ux%u, in the image's pixels\n",
+        g_readers.frame, (unsigned long long)g_readers.program, (double)viewport->x, (double)viewport->y,
+        (double)viewport->width, (double)viewport->height, (double)viewport->minDepth, (double)viewport->maxDepth,
+        scissor->offset.x, scissor->offset.y, scissor->extent.width, scissor->extent.height);
 }
 
-void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* const* sampled, int nt,
-                      Surf* const* rt, u32 n, Surf* zt) {
+void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* const* sampled,
+                      const u32* const* tic, const u32* const* tsc, int nt, Surf* const* rt, u32 n, Surf* zt) {
     const u32 frame = g_vk_present + 1;
     g_t.draw_zt = zt;
     g_t.draw_r3d = ch->r3d;
@@ -1415,7 +1478,7 @@ void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* con
     g_t.draw_vs = vs;
     g_t.draw_fs = fs0;
     if (!fs0) nt = 0;
-    readers_note(frame, ch, vs, fs0, sampled, nt, rt, n);
+    readers_note(frame, ch, vs, fs0, sampled, tic, tsc, nt, rt, n);
     u32 colours = 0;
     int writes_scene = 0;
     const Surf* scene_colour = NULL;
