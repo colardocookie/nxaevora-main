@@ -2147,8 +2147,10 @@ void vk_temporal_before(u64 fs0_hash) {
                 : rg->state == TEMPORAL_FRAME_NONE      ? "found wrong after its decision"
                                                         : "the G-buffer's viewport or the target is another",
                 (unsigned long long)g_t.rect_left);
-        /* a confirmed frame refused here was drawn with jitter and is not resolved: that must not repeat */
-        rect_fail(frame, "the G-buffer's viewport or the target is not the one the frame was decided on");
+        /* A confirmed frame refused here for its viewport or target was drawn with jitter and is not resolved.
+           That is a disagreement found late: the start begins again, and only a row of such frames stops the
+           gate (temporal_rect_refused). */
+        if (temporal_rect_steady(rg, frame)) temporal_rect_refused(&g_t.rect_gate, frame);
         return;
     }
     const TemporalRect* area = rect_ok ? &rg->now.rect : NULL;

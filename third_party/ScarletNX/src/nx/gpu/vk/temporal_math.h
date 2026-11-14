@@ -899,6 +899,15 @@ static inline void temporal_rect_before(TemporalRectGate* g, unsigned frame, con
 static inline void temporal_rect_hooked(TemporalRectGate* g, unsigned frame) {
     if (g->decided_at == frame) g->hooked_at = frame;
 }
+/* Our passes were reached and found the frame's structure not to be the decided one (the G-buffer's viewport or
+   the target). That is a disagreement found late and no failure of the passes: nothing is left of the frame,
+   and if it was drawn with jitter it counts like a frame they were not reached in. One such frame costs the
+   start-up, TEMPORAL_RECT_UNHOOKED in a row stop the gate. */
+static inline void temporal_rect_refused(TemporalRectGate* g, unsigned frame) {
+    if (g->decided_at != frame) return;
+    temporal_rect_spoil(g);
+    if (g->hooked_at == frame) g->hooked_at = 0;
+}
 /* Our passes could not be made or run in a frame that was drawn with jitter: no frame is accepted from here on.
    The gate still decides and confirms, so its lines go on, and it refuses. */
 static inline void temporal_rect_failed(TemporalRectGate* g) { g->stopped = 1; }

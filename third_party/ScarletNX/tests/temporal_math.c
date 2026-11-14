@@ -1960,6 +1960,33 @@ static void test_rect_confirm(void) {
             assert(rect_go(&u, f++, &a) && u.unhooked == 0);
         }
         assert(!u.stopped);
+        /* Our passes reached and refusing the frame for its structure: one odd frame costs the start-up and
+           stops nothing, eight in a row stop the gate, and a good frame between starts the count again. */
+        memset(&u, 0, sizeof u);
+        f = 900;
+        for (int i = 0; i < 3; i++) rect_go(&u, f++, &a);
+        assert(rect_go(&u, f, &a) && temporal_rect_steady(&u, f));
+        temporal_rect_refused(&u, f);
+        assert(!temporal_rect_steady(&u, f) && !u.have_candidate && !u.have_stamp && !u.stopped);
+        f++;
+        assert(!rect_go(&u, f++, &a) && u.unhooked == 1 && !u.stopped); /* gated: the start again */
+        assert(rect_go(&u, f++, &a));                                   /* accepted, reached, resolved */
+        assert(rect_go(&u, f++, &a) && u.unhooked == 0);
+        for (int round = 0; round < TEMPORAL_RECT_UNHOOKED; round++) {
+            assert(!u.stopped && rect_go(&u, f, &a)); /* accepted, then refused at the passes */
+            temporal_rect_refused(&u, f++);
+            assert(!rect_go(&u, f++, &a) && u.unhooked == (unsigned)round + 1); /* gated, the candidate again */
+        }
+        assert(u.stopped && !rect_go(&u, f, &a));
+        temporal_rect_refused(&u, f + 5); /* not the frame decided: nothing */
+        assert(u.state == TEMPORAL_FRAME_SEEN);
+        /* a gated frame refused there is not counted */
+        memset(&u, 0, sizeof u);
+        for (f = 950; f < 970; f++) {
+            assert(!rect_go(&u, f, &a));
+            temporal_rect_refused(&u, f);
+        }
+        assert(!u.stopped && u.unhooked == 0);
         /* a frame that was reached is not counted, and a gated frame never is */
         memset(&u, 0, sizeof u);
         for (f = 600; f < 640; f++) {
