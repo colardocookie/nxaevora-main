@@ -107,8 +107,10 @@ typedef struct {
     uint32_t reset;      /* 1: nothing kept from earlier frames may be used */
     float frame_seconds; /* since the frame before */
     float near_plane, far_plane, fov_y; /* of the scene's camera without jitter, fov in radians */
-    /* 1: the adapter logs, for this frame, every number it hands to its library and what its context was made
-       with, in a line that begins "arceus-upscaler: <name> dispatch". It changes nothing else. */
+    /* Diagnostic only. 1: the adapter logs, for this frame, every number it hands to its library and what its
+       context was made with, in a line that begins "arceus-upscaler: <name> dispatch". With 0 nothing is
+       printed, and in either case what is handed to the library and what comes back is the same. Only the
+       self-test sets it. The frame grew by it, so the ABI number is 2 and a module built for 1 is refused. */
     uint32_t trace;
 } SnxUpscalerFrame;
 
