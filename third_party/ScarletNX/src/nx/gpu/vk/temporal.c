@@ -99,6 +99,9 @@ static struct {
     u8 jitter_source[0x1000]; /* the guest's bytes the copy was made from */
     /* object vectors: the target, the frame it was last drawn in, and the counts of the stats line */
     int objects;
+    /* draws without a matrix of a frame ago, [0] rigid and [1] reading skinned positions: all of them, those whose
+       matrix differs from what the address last held, those never bound before. Then the skinned reads' fates. */
+    u64 uncovered[2][3], uncovered_blind, skin_plain, skin_left;
     int reject; /* SNX_ARCEUS_TEMPORAL_REJECT: no history where an object's vector is far from the camera's */
     float sharpen;  /* 0 off, to 1: the sharpen after the resolve */
     float mip_bias; /* 0 off, negative: added to the level bias of material textures on scene draws */
@@ -982,6 +985,17 @@ static void objects_log(u32 frame) {
     g_t.object_far = g_t.object_same = g_t.object_never = g_t.object_older = g_t.object_skinned = 0;
     g_t.object_learning = g_t.object_other = g_t.object_rest = g_t.object_full = g_t.object_unjudged = 0;
     g_t.pairs_learned = g_t.stays_learned = g_t.pairs_broken = g_t.rest_broken = g_t.broke_frames = 0;
+    LOG("arceus-temporal-uncovered: in 600 frames, plain G-buffer draws without a matrix of a frame ago: rigid %llu "
+        "(matrix not what the address last held %llu, address never bound before %llu), reading skinned positions "
+        "%llu (%llu, %llu), block not looked at %llu. Plain G-buffer draws reading skinned positions %llu: with a "
+        "matrix but not drawn again %llu (the copy's refusals above, the stream's layout, the cap)\n",
+        (unsigned long long)g_t.uncovered[0][0], (unsigned long long)g_t.uncovered[0][1],
+        (unsigned long long)g_t.uncovered[0][2], (unsigned long long)g_t.uncovered[1][0],
+        (unsigned long long)g_t.uncovered[1][1], (unsigned long long)g_t.uncovered[1][2],
+        (unsigned long long)g_t.uncovered_blind, (unsigned long long)g_t.skin_plain,
+        (unsigned long long)g_t.skin_left);
+    memset(g_t.uncovered, 0, sizeof g_t.uncovered);
+    g_t.uncovered_blind = g_t.skin_plain = g_t.skin_left = 0;
 }
 
 static int object_has_draw(const u64* draws, u32 n, u64 signature) {
@@ -1254,6 +1268,26 @@ int vk_temporal_object_note(const GpuChannel* ch, const Surf* zt, u64 vertex, u6
     g_t.current.other = (void*)other;
     if (g_t.current.was && object_jumped(address, world, g_t.current.was, frame)) g_t.current.was = NULL;
     return g_t.current.was != NULL;
+}
+
+/* For the numbers: what became of the plain G-buffer draw just shown to vk_temporal_object_note. known is its
+   answer, reads 1 when the draw reads skinned positions, again 1 when a skinned draw was drawn again. */
+void vk_temporal_object_fate(int known, int reads, int again) {
+    if (!g_t.objects || g_t.object_frame != g_vk_present + 1) return;
+    const Object* o = g_t.current.slot;
+    g_t.skin_plain += reads != 0;
+    if (known) {
+        g_t.skin_left += reads && !again;
+        return;
+    }
+    if (!o) {
+        g_t.uncovered_blind++;
+        return;
+    }
+    u64* count = g_t.uncovered[reads != 0];
+    count[0]++;
+    if (!o->before_at) count[2]++;
+    else if (memcmp(o->world, o->before, sizeof o->world)) count[1]++;
 }
 
 int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* out) {

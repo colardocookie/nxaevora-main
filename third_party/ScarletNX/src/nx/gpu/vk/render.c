@@ -3588,7 +3588,12 @@ retry:
         /* A skinned character first: a draw whose position stream is a transform feedback output of this frame,
            three floats 12 bytes apart at the start of a binding. It is drawn with a vertex program of ours that
            takes last frame's positions from a second binding, and the scene depth sampled, not attached. */
-        int skinned = 0;
+        int skinned = 0, reads = 0;
+        for (u32 q = 0; q < nvq && !reads; q++) {
+            u32 xindex, xlen;
+            u64 xat;
+            reads = vk_temporal_feedback_find(vq[q].gva + vq[q].base, &xindex, &xat, &xlen) && xindex == 0;
+        }
         /* one more vertex binding must fit the key and the device */
         const int room = k->nbind < 32 && k->nbind < g_vk.props.limits.maxVertexInputBindings;
         for (u32 q = 0; q < nvq && !skinned && room && known; q++) {
@@ -3683,6 +3688,7 @@ retry:
             }
             memset(&g_dyn, 0, sizeof g_dyn);
         }
+        vk_temporal_object_fate(known, reads, skinned);
         if (!skinned && known && vk_temporal_object(ch, zt, &object)) {
             static struct {
                 PipeKey k;
