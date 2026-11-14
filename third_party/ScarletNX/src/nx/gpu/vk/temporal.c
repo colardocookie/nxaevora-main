@@ -2739,6 +2739,7 @@ typedef struct {
     SnxUpscaler* context;
     const SnxUpscalerFrame* frame;
     Surf *scene, *depth;
+    u32 number; /* the frame's, for the log */
 } UpscalerCall;
 /* What must be recorded before the library: the end of our rendering, and for an evaluate the images as the
    library reads and writes them, in a compute shader. The scene's targets go through the renderer's own
@@ -2781,6 +2782,18 @@ static int upscaler_evaluate(VkCommandBuffer cb, void* user) {
     const UpscalerCall* c = user;
     SnxUpscalerFrame frame = *c->frame;
     frame.cb = cb;
+    /* For the log alone, here and nowhere earlier: the helper has not turned back, and the library is entered
+       next with exactly these four images. Their handles as the validation layer prints an image's, so that a
+       message of the layer about an image can be held against them. */
+    const unsigned long long images[4] = {(unsigned long long)(uintptr_t)frame.colour.image,
+                                          (unsigned long long)(uintptr_t)frame.depth.image,
+                                          (unsigned long long)(uintptr_t)frame.motion.image,
+                                          (unsigned long long)(uintptr_t)frame.output.image};
+    const int say = temporal_upscaler_handed(&g_u.handed, images, g_u.published);
+    if (say != TEMPORAL_UPSCALER_HANDED_QUIET)
+        LOG("arceus-upscaler: handed images at frame %u: colour 0x%llx, depth 0x%llx, vectors 0x%llx, output "
+            "0x%llx%s\n", c->number, images[0], images[1], images[2], images[3],
+            say == TEMPORAL_UPSCALER_HANDED_LAST ? ". The last such line: later changes are not said" : "");
     return g_u.api->evaluate(c->context, &frame) == SNX_UPSCALER_OK;
 }
 
@@ -2966,18 +2979,7 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         .near_plane = camera[0],
         .far_plane = camera[1],
         .fov_y = camera[2]};
-    /* For the log alone: the four images' handles as the validation layer prints an image's, so that a message
-       of the layer about an image can be held against them. */
-    const unsigned long long images[4] = {(unsigned long long)(uintptr_t)scene->img,
-                                          (unsigned long long)(uintptr_t)depth->img,
-                                          (unsigned long long)(uintptr_t)g_t.motion.img,
-                                          (unsigned long long)(uintptr_t)g_u.output.img};
-    const int say = temporal_upscaler_handed(&g_u.handed, images, g_u.published);
-    if (say != TEMPORAL_UPSCALER_HANDED_QUIET)
-        LOG("arceus-upscaler: handed images at frame %u: colour 0x%llx, depth 0x%llx, vectors 0x%llx, output "
-            "0x%llx%s\n", frame, images[0], images[1], images[2], images[3],
-            say == TEMPORAL_UPSCALER_HANDED_LAST ? ". The last such line: later changes are not said" : "");
-    UpscalerCall call = {g_u.live, &handed, scene, depth};
+    UpscalerCall call = {g_u.live, &handed, scene, depth, frame};
     const int recorded = vk_rec_direct(cb, upscaler_before, upscaler_evaluate, &call);
     /* On every path out of a call the library was entered in, each of the four images it was handed gets a
        barrier of its own from "written by any command", so that whatever the library wrote is available to

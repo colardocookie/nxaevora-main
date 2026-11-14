@@ -507,10 +507,12 @@ available": one line, and the run goes on as without the switch. With it on, our
 numbers and views never run, and the options that steer them are without effect. For the log alone, a line
 `arceus-upscaler: handed images at frame N: colour 0x.., depth 0x.., vectors 0x.., output 0x..` gives the four images'
 handles as the validation layer prints an image's, at the first hand-over after a context became ready and whenever
-one of the four is another image, sixteen lines at most with the last saying so. A message of the layer that names an
-image can be held against them. The start's question about the private image's format also gives the largest width and
-height of such an image. Before the image is made the scene's size is held against them: a scene larger in either
-stops the upscaler with a line that names both sizes, and the driver is not asked for the image.
+one of the four is another image, sixteen lines at most with the last saying so. It is written immediately before the
+library's evaluate is called and nowhere earlier, so a line means the library was entered with those images. A message
+of the layer that names an image can be held against them. The start's question about the private image's format also
+gives the largest width and height of such an image. Before the image is made the scene's size is held against them: a
+scene larger in either stops the upscaler with a line that names both sizes, and the driver is not asked for the
+image.
 
 A frame, in order:
 1. At the frame's first draw with the scene camera's block the rectangle's gate decides as it always does
