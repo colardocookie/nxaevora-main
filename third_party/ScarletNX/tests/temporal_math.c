@@ -5,6 +5,7 @@
 #include "nx/gpu/vk/temporal_math.h"
 #include "nx/gpu/vk/upscaler_selftest.h"
 #include "nx/gpu/vk/upscaler_needs.h"
+#include "nx/gpu/vk/validation_lines.h"
 #include <assert.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -2278,6 +2279,267 @@ static void test_projection_camera(void) {
         /* and it would not be taken as a far plane at infinity, nor an infinite one as finite */
         assert(!temporal_upscaler_camera(p.near_plane, p.far_plane, p.fov_y, 1.0 / 60.0, 1, camera));
         assert(!temporal_upscaler_camera(p.near_plane, (double)INFINITY, p.fov_y, 1.0 / 60.0, 0, camera));
+    }
+}
+
+/* The game's validation lines (validation_lines.h). The lines go into one buffer, a line break after each. */
+static char g_lines[1 << 20];
+static size_t g_lines_at;
+static unsigned g_lines_n;
+static void lines_emit(void* user, const char* line) {
+    const size_t n = strlen(line);
+    (void)user;
+    /* every line is bounded, and holds printable ASCII only */
+    assert(n <= VALIDATION_LINE && g_lines_at + n + 2 < sizeof g_lines);
+    for (size_t i = 0; i < n; i++) assert((unsigned char)line[i] >= 0x20 && (unsigned char)line[i] < 0x7f);
+    memcpy(g_lines + g_lines_at, line, n);
+    g_lines_at += n;
+    g_lines[g_lines_at++] = '\n';
+    g_lines[g_lines_at] = 0;
+    g_lines_n++;
+}
+static void lines_reset(ValidationLines* v) {
+    memset(v, 0, sizeof *v);
+    g_lines_at = 0;
+    g_lines_n = 0;
+    g_lines[0] = 0;
+}
+static unsigned lines_count(const char* what) {
+    unsigned n = 0;
+    for (const char* p = g_lines; (p = strstr(p, what)) != NULL; p += strlen(what)) n++;
+    return n;
+}
+static void test_validation_lines(void) {
+    static ValidationLines v;
+    char text[256];
+    /* a callback before the status lines: it is handled from a state of zeros, and the status follows whole */
+    lines_reset(&v);
+    validation_lines_callback(&v, "VUID-early", 7, "a message while the instance is made", lines_emit, NULL);
+    assert(v.callbacks == 1 && v.rules == 1 && v.printed == 1 && v.unmatched == 1);
+    assert(lines_count("callback 1, the first of its rule and no variable's name found in it by the pattern, rule "
+                       "VUID-early (7), 36 bytes of text: a message while the instance is made\n") == 1);
+    assert(lines_count("1 callbacks so far, 1 of them printed whole, 1 rules and 0 variable names listed.") == 1);
+    assert(lines_count("Limits met: none\n") == 1);
+    assert(lines_count("at 1 callbacks, rule 1 of 1: 1 callbacks of VUID-early (7)\n") == 1);
+    validation_lines_status(1, 1, "", 0, "", 0, 1, "", 0, lines_emit, NULL);
+    assert(lines_count("the layer VK_LAYER_KHRONOS_validation is enabled\n") == 1);
+    assert(lines_count("its synchronisation checks were asked for and the instance is made with them\n") == 1);
+    assert(lines_count("the message callback is ready\n") == 1);
+    /* the status in its other states */
+    lines_reset(&v);
+    validation_lines_status(0, 0, "", 0, "", 0, -1, "", 0, lines_emit, NULL);
+    assert(g_lines_n == 1 && lines_count("is NOT enabled: it is not installed") == 1);
+    lines_reset(&v);
+    validation_lines_status(1, 0, "the call failed", 1, "VK_ERROR_X", -3, 0, "VK_ERROR_Y", -4, lines_emit, NULL);
+    assert(g_lines_n == 3 && lines_count("were NOT asked for (VK_EXT_validation_features): the call failed (the last "
+                                         "call's result VK_ERROR_X, -3)\n") == 1);
+    assert(lines_count("the message callback could NOT be made (VK_ERROR_Y, -4)") == 1);
+    lines_reset(&v);
+    validation_lines_status(1, 0, "no memory", 0, "unused", 9, -1, "", 0, lines_emit, NULL);
+    assert(lines_count("(VK_EXT_validation_features): no memory\n") == 1 && !lines_count("result"));
+    assert(lines_count("no message callback was asked for") == 1);
+
+    /* What is printed whole: the first of a rule, the first naming a name not seen before however late, and
+       the callbacks without a match up to 64. The count lines come at 1, 2, 4, 8 and so on. */
+    lines_reset(&v);
+    for (int i = 0; i < 300; i++)
+        validation_lines_callback(&v, "VUID-format", 1,
+                                  i == 250 ? "at variable \"rw_late\" now" : "at variable \"rw_a\"", lines_emit, NULL);
+    assert(v.callbacks == 300 && v.printed == 2 && v.rules == 1 && v.names == 2 && !v.unmatched);
+    assert(lines_count("callback 1, the first of its rule and the first naming a variable's name not seen before, "
+                       "rule VUID-format (1)") == 1);
+    assert(lines_count("callback 251, the first naming a variable's name not seen before, rule VUID-format (1), 25 "
+                       "bytes of text: at variable \"rw_late\" now\n") == 1);
+    assert(lines_count("callback ") == 2 + 9 * 0 && lines_count(" callbacks so far") == 9); /* 1 to 256 */
+    assert(lines_count("\n256 callbacks so far, 2 of them printed whole, 1 rules and 2 variable names listed.") == 1);
+    assert(lines_count("at 256 callbacks, rule 1 of 1: 256 callbacks of VUID-format (1)\n") == 1);
+    assert(!lines_count("LIMIT MET") && lines_count("Limits met: none") == 9);
+    /* a new rule on known names is printed when it first occurs, and the same name with another number is
+       another rule */
+    validation_lines_callback(&v, "VUID-other", 1, "at variable \"rw_a\"", lines_emit, NULL);
+    validation_lines_callback(&v, "VUID-format", 2, "at variable \"rw_a\"", lines_emit, NULL);
+    validation_lines_callback(&v, "VUID-format", 2, "at variable \"rw_a\"", lines_emit, NULL);
+    assert(v.rules == 3 && v.printed == 4 && v.rule[2].count == 2 && v.rule[0].count == 300);
+    assert(lines_count("callback 301, the first of its rule, rule VUID-other (1)") == 1);
+    assert(lines_count("callback 302, the first of its rule, rule VUID-format (2)") == 1);
+
+    /* callbacks without a match: 64 printed, the 65th says once that they are not printed any more */
+    lines_reset(&v);
+    for (int i = 0; i < 70; i++) validation_lines_callback(&v, "VUID-plain", 3, "nothing named here", lines_emit, NULL);
+    assert(v.unmatched == 70 && v.printed == 64 && v.loss[VALIDATION_UNPRINTED] == 6);
+    assert(lines_count("no variable's name found in it by the pattern, rule VUID-plain (3)") == 64);
+    assert(lines_count("LIMIT MET, first at callback 65: a callback without a match of the pattern that is not "
+                       "printed any more.") == 1 && lines_count("LIMIT MET") == 1);
+    /* the count line that follows repeats the state, the one before did not have it */
+    assert(lines_count("\n64 callbacks so far, 64 of them printed whole, 1 rules and 0 variable names listed. Written "
+                       "at 1, 2, 4, 8 and so on: the last such line of a log is within a factor of two of the "
+                       "callbacks received. Limits met: none\n") == 1);
+    for (int i = 70; i < 128; i++)
+        validation_lines_callback(&v, "VUID-plain", 3, "nothing named here", lines_emit, NULL);
+    assert(lines_count("\n128 callbacks so far, 64 of them printed whole") == 1);
+    assert(lines_count("Limits met: a callback without a match of the pattern that is not printed any more (64 "
+                       "times).\n") == 1 && lines_count("LIMIT MET") == 1);
+
+    /* the rules table: no name, a name too long, and a 33rd rule. Each said once, at its first occurrence. */
+    lines_reset(&v);
+    for (int i = 0; i < 32; i++) {
+        snprintf(text, sizeof text, "VUID-%d", i);
+        validation_lines_callback(&v, text, i, "variable \"x\"", lines_emit, NULL);
+    }
+    assert(v.rules == 32 && !lines_count("LIMIT MET") && v.printed == 32);
+    validation_lines_callback(&v, "VUID-33rd", 0, "variable \"x\"", lines_emit, NULL);
+    validation_lines_callback(&v, "VUID-34th", 0, "variable \"x\"", lines_emit, NULL);
+    assert(v.rules == 32 && v.unlisted == 2 && v.loss[VALIDATION_RULES_FULL] == 2 && v.printed == 32);
+    assert(lines_count("LIMIT MET, first at callback 33: a rule that found no room in the table of rules.") == 1);
+    validation_lines_callback(&v, NULL, 5, "variable \"x\"", lines_emit, NULL);
+    validation_lines_callback(&v, NULL, 5, "variable \"y\"", lines_emit, NULL);
+    assert(v.loss[VALIDATION_NO_NAME] == 2 && v.unlisted == 4);
+    assert(lines_count("LIMIT MET, first at callback 35: a callback whose rule has no name") == 1);
+    assert(lines_count("callback 36, the first naming a variable's name not seen before, rule without a name (5), "
+                       "12 bytes of text: variable \"y\"\n") == 1);
+    memset(text, 'r', 128);
+    text[128] = 0;
+    validation_lines_callback(&v, text, 6, "variable \"z\"", lines_emit, NULL);
+    assert(v.loss[VALIDATION_RULE_LONG] == 1 && v.unlisted == 5 && v.rules == 32);
+    assert(lines_count("LIMIT MET, first at callback 37: a rule's name too long to list.") == 1);
+    assert(lines_count("rrrr [the name's first 127 bytes] (6), 12 bytes of text") == 1);
+    text[127] = 0; /* 127 characters are a name that is listed: but the table is full */
+    validation_lines_callback(&v, text, 6, "variable \"z\"", lines_emit, NULL);
+    assert(v.loss[VALIDATION_RULE_LONG] == 1 && v.loss[VALIDATION_RULES_FULL] == 3);
+    assert(lines_count("LIMIT MET") == 3);
+    {
+        uint64_t sum = v.unlisted;
+        for (unsigned k = 0; k < v.rules; k++) sum += v.rule[k].count;
+        assert(sum == v.callbacks && v.callbacks == 38);
+    }
+    lines_reset(&v);
+    validation_lines_callback(&v, text, 6, "variable \"z\"", lines_emit, NULL);
+    assert(v.rules == 1 && strlen(v.rule[0].name) == 127 && !lines_count("LIMIT MET"));
+
+    /* the names table: 64 names, a 65th, a name of 64 characters, a quote that does not close */
+    lines_reset(&v);
+    for (int i = 0; i < 64; i++) {
+        snprintf(text, sizeof text, "a variable \"name%d\" and variable \"name0\"", i);
+        validation_lines_callback(&v, "VUID-n", 1, text, lines_emit, NULL);
+    }
+    assert(v.names == 64 && v.printed == 64 && !lines_count("LIMIT MET"));
+    validation_lines_callback(&v, "VUID-n", 1, "variable \"one more\"", lines_emit, NULL);
+    assert(v.names == 64 && v.printed == 64 && v.loss[VALIDATION_NAMES_FULL] == 1);
+    assert(lines_count("LIMIT MET, first at callback 65: a variable's name that found no room in the table of "
+                       "names.") == 1);
+    lines_reset(&v);
+    memset(text, 0, sizeof text);
+    memcpy(text, "variable \"", 10);
+    memset(text + 10, 'v', 64);
+    text[74] = '"';
+    validation_lines_callback(&v, "VUID-n", 1, text, lines_emit, NULL);
+    assert(!v.names && v.loss[VALIDATION_NAME_LONG] == 1 && !v.unmatched && v.printed == 1);
+    assert(lines_count("LIMIT MET, first at callback 1: a variable's name too long to list.") == 1);
+    text[73] = '"'; /* 63 characters are kept */
+    text[74] = 0;
+    validation_lines_callback(&v, "VUID-n", 1, text, lines_emit, NULL);
+    assert(v.names == 1 && strlen(v.name[0]) == 63 && v.printed == 2);
+    validation_lines_callback(&v, "VUID-n", 1, "variable \"never closed", lines_emit, NULL);
+    assert(v.loss[VALIDATION_UNCLOSED] == 1 && v.names == 1 && !v.unmatched);
+    assert(lines_count("LIMIT MET, first at callback 3: a quoted variable's name that does not close") == 1);
+
+    /* A long text with line breaks, a backslash and bytes above ASCII: one line, bounded, the marks written
+       out, and the cut said with what is in the line. */
+    lines_reset(&v);
+    {
+        static char big[5001];
+        for (int i = 0; i < 5000; i++)
+            big[i] = i % 50 == 49 ? '\n' : i % 50 == 48 ? '\\' : i % 50 == 47 ? (char)0xc3 : 'q';
+        big[5000] = 0;
+        validation_lines_callback(&v, "VUID-big", 1, big, lines_emit, NULL);
+        assert(v.loss[VALIDATION_CUT] == 1);
+        assert(lines_count("LIMIT MET, first at callback 1: a printed line that was cut.") == 1);
+        assert(lines_count("\\n") >= 20 && lines_count("\\\\") >= 20 && lines_count("\\xc3") >= 20);
+        const char* cut = strstr(g_lines, " [CUT: the first ");
+        unsigned put = 0, of = 0;
+        assert(cut && sscanf(cut, " [CUT: the first %u of %u bytes of the text are in this line]", &put, &of) == 2);
+        assert(of == 5000 && put > 1000 && put < 1800);
+        /* what is in the line reads back to exactly the first put bytes */
+        const char* body = strstr(g_lines, "5000 bytes of text: ");
+        assert(body);
+        body += strlen("5000 bytes of text: ");
+        unsigned back = 0;
+        for (const char* p = body; p < cut; back++) {
+            unsigned char c = (unsigned char)*p++;
+            if (c == '\\') {
+                c = (unsigned char)*p++;
+                if (c == 'n') c = '\n';
+                else if (c == 'x') {
+                    unsigned value = 0;
+                    assert(sscanf(p, "%2x", &value) == 1);
+                    c = (unsigned char)value;
+                    p += 2;
+                } else
+                    assert(c == '\\');
+            }
+            assert(c == (unsigned char)big[back]);
+        }
+        assert(back == put);
+        /* a second cut line is not said again, and is counted */
+        validation_lines_callback(&v, "VUID-big2", 1, big, lines_emit, NULL);
+        assert(v.loss[VALIDATION_CUT] == 2 && lines_count("LIMIT MET") == 1 && lines_count(" [CUT: ") == 2);
+    }
+    /* a text longer than what is looked through: said, and its line says more than */
+    lines_reset(&v);
+    {
+        static char huge[VALIDATION_SCAN + 40];
+        memset(huge, 'h', sizeof huge - 1);
+        memcpy(huge + VALIDATION_SCAN + 2, "variable \"past the end\"", 23);
+        validation_lines_callback(&v, "VUID-huge", 1, huge, lines_emit, NULL);
+        assert(v.loss[VALIDATION_UNSCANNED] == 1 && !v.names && v.unmatched == 1);
+        assert(lines_count("LIMIT MET, first at callback 1: a text that was not looked through to its end.") == 1);
+        assert(lines_count("more than 1048576 bytes of text: hhh") == 1);
+        assert(lines_count("of more than 1048576 bytes of the text are in this line]") == 1);
+    }
+    /* no text at all */
+    lines_reset(&v);
+    validation_lines_callback(&v, "VUID-mute", 1, NULL, lines_emit, NULL);
+    assert(v.unmatched == 1 && lines_count("rule VUID-mute (1), 0 bytes of text: \n") == 1);
+    /* a rule's name with a line break is one line too */
+    validation_lines_callback(&v, "VUID\nbroken", 1, "variable \"a\\b\"", lines_emit, NULL);
+    assert(lines_count("rule VUID\\nbroken (1), 14 bytes of text: variable \"a\\\\b\"\n") == 1);
+    assert(lines_count("callbacks of VUID\\nbroken (1)\n") == 1);
+
+    /* a counter at its largest value stays there, and says so once */
+    lines_reset(&v);
+    v.callbacks = UINT64_MAX - 1;
+    v.next = 0;
+    validation_lines_callback(&v, "VUID-last", 1, "variable \"a\"", lines_emit, NULL);
+    assert(v.callbacks == UINT64_MAX && v.loss[VALIDATION_SATURATED] == 1);
+    assert(lines_count("LIMIT MET, first at callback 18446744073709551615: a counter that stopped at its largest "
+                       "value.") == 1);
+    validation_lines_callback(&v, "VUID-last", 1, "variable \"a\"", lines_emit, NULL);
+    assert(v.callbacks == UINT64_MAX && v.loss[VALIDATION_SATURATED] == 2 && lines_count("LIMIT MET") == 1);
+    {
+        uint64_t c = UINT64_MAX - 2;
+        assert(!validation_lines_count(&c) && validation_lines_count(&c) && validation_lines_count(&c));
+        assert(c == UINT64_MAX);
+    }
+    /* the count lines' doubling ends without wrapping to a count that is never reached again */
+    lines_reset(&v);
+    v.callbacks = (UINT64_MAX / 2 + 1) - 1;
+    v.next = UINT64_MAX / 2 + 1;
+    validation_lines_callback(&v, "VUID-half", 1, "variable \"a\"", lines_emit, NULL);
+    assert(lines_count("9223372036854775808 callbacks so far") == 1 && v.next == 0);
+    /* and no count line follows it: the next would be at a count a 64 bit counter does not reach */
+    validation_lines_callback(&v, "VUID-half", 1, "variable \"a\"", lines_emit, NULL);
+    assert(lines_count(" callbacks so far") == 1);
+    /* every loss has words of its own */
+    for (int a = 0; a < VALIDATION_LOSSES; a++)
+        for (int b = a + 1; b < VALIDATION_LOSSES; b++)
+            assert(strcmp(validation_lines_loss(a), validation_lines_loss(b)));
+    /* through the lock: the inherited counter goes up with the callback */
+    lines_reset(&v);
+    {
+        int lock = 0;
+        uint32_t inherited = 41;
+        validation_lines_said(&lock, &v, &inherited, "VUID-l", 1, "variable \"a\"", lines_emit, NULL);
+        assert(inherited == 42 && v.callbacks == 1 && lock == 0);
     }
 }
 
@@ -4736,6 +4998,7 @@ int main(void) {
     test_projection_camera();
     test_upscaler_needs();
     test_upscaler_output_fits();
+    test_validation_lines();
     test_upscaler_wiring();
     test_jitter_conformance();
     test_gpu_time();
