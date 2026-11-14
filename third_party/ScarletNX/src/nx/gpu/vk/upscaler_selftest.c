@@ -129,10 +129,28 @@ static int device_make(void) {
         LOG(ST "FAIL: no Vulkan loader\n");
         return 0;
     }
-    vkEnumerateInstanceLayerProperties(&n, NULL);
+    const VkResult counted = vkEnumerateInstanceLayerProperties(&n, NULL);
     VkLayerProperties* have = calloc(n ? n : 1, sizeof *have);
-    if (have) vkEnumerateInstanceLayerProperties(&n, have);
-    for (u32 i = 0; have && i < n; i++) g.validation |= !strcmp(have[i].layerName, layers[0]);
+    const VkResult listed = have ? vkEnumerateInstanceLayerProperties(&n, have) : VK_ERROR_OUT_OF_HOST_MEMORY;
+    for (u32 i = 0; have && listed >= 0 && i < n; i++) g.validation |= !strcmp(have[i].layerName, layers[0]);
+    if (!g.validation) {
+        /* Log only, once: what the loader did list, and where this process is told to look for layers. The
+           self-test sees the loader's list and nothing else, so an SDK that is installed and not listed here
+           is not found by the loader of this process. */
+        static const char* const variables[3] = {"VK_LAYER_PATH", "VK_ADD_LAYER_PATH", "VULKAN_SDK"};
+        char names[1024];
+        size_t at = 0;
+        names[0] = 0;
+        for (u32 i = 0; have && listed >= 0 && i < n && at < sizeof names - 1; i++)
+            at += (size_t)snprintf(names + at, sizeof names - at, "%s%s", i ? ", " : "", have[i].layerName);
+        LOG(ST "the layer %s is not in the loader's list. It listed %u instance layers (the count's result %d, the "
+               "list's %d): %s\n",
+            layers[0], listed >= 0 ? n : 0, (int)counted, (int)listed, names[0] ? names : "none");
+        for (int k = 0; k < 3; k++) {
+            const char* value = getenv(variables[k]);
+            LOG(ST "as this process sees it, %s is %s\n", variables[k], value && value[0] ? value : "not set");
+        }
+    }
     free(have);
     if (g.validation) instance_names[instance_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     if (!vk_upscaler_instance_extensions(g.api, instance_names, &instance_count, 32)) {
