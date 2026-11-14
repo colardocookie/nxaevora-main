@@ -322,6 +322,9 @@ and leaves every such frame as drawn. With it, in `probe` and in `taa`, a frame 
   and one line names what failed (`rect_fail`). If our passes are not reached at all in such a frame, the start
   begins again, and after 8 such frames in a row the gate stops as well. Only view 4 shows a jittered frame
   unresolved on purpose.
+- What comes after the resolve does not touch the frame or its history and does not fail in silence: a sharpen
+  that cannot be made is off for the rest of the session, and so are the numbers and the views, each with one
+  line. A view that stood in for the picture then gives way to the resolved picture.
 - The passes write the rectangle only and read nothing outside it. A history centre outside it fetches
   nothing, in the resolve and in the numbers. The history, and the copy of the frame before that the numbers
   and the error view use, are used only when they were made from the same images, sizes, rectangle and fraction.

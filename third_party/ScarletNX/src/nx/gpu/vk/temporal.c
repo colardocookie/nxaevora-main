@@ -188,6 +188,7 @@ static struct {
     TemporalRectStamp rect_raw;
     u32 rect_raw_at;
     int mip_bias_set; /* SNX_ARCEUS_TEMPORAL_MIPBIAS holds a number, 0 included: no automatic bias */
+    int rect_extras_off; /* the numbers and the views could not be made once: none for the rest of the session */
     u64 rect_generation, rect_gated, rect_seen, rect_steady, rect_spoilt, rect_left;
     VkImage rect_images[5];
     TemporalGate gate;
@@ -613,6 +614,17 @@ static void rect_fail(u32 frame, const char* what) {
     g_t.rect_stop_said = 1;
     LOG("arceus-temporal-rect: frame %u was drawn with jitter and the anti-aliasing passes failed (%s): no frame "
         "is drawn with jitter any more in this session\n", frame, what);
+}
+
+/* Under the rectangle's gate the passes after the resolve do not fail in silence, and do not come and go from
+   frame to frame. The numbers and the views: none from here on, and a view that stood in for the picture gives
+   way to the resolved picture. The frame and its history are not touched by it. */
+static void rect_extras_off(const char* what) {
+    if (!g_t.rect || g_t.rect_extras_off) return;
+    g_t.rect_extras_off = 1;
+    g_t.view = 0;
+    LOG("arceus-temporal-rect: the numbers and the views are off for the rest of the session (%s could not be "
+        "made)\n", what);
 }
 
 /* A scene draw of a decided frame, before our passes: the one vk_temporal_draw noted. The first whose vertex or
@@ -2364,6 +2376,13 @@ void vk_temporal_before(u64 fs0_hash) {
             const VkImageView sharpen_views[SETS_BINDINGS] = {made->view, made->view, made->view, made->view,
                                                               made->view, made->view, made->view};
             const VkDescriptorSet sharpen_set = g_t.sharpen_pipe ? set_make(sharpen_views, samplers) : VK_NULL_HANDLE;
+            if (!sharpen_set && g_t.rect) {
+                /* a sharpen that was asked for and cannot be made is off for the session, said once: the
+                   resolved picture and its history, written before it, stand */
+                LOG("arceus-temporal-rect: the sharpen is off for the rest of the session (its %s could not be "
+                    "made)\n", g_t.sharpen_pipe ? "set" : "pipeline");
+                g_t.sharpen = 0.0f;
+            }
             if (sharpen_set) {
                 Constants sc = pc;
                 sc.size[3] = g_t.sharpen;
@@ -2401,7 +2420,7 @@ void vk_temporal_before(u64 fs0_hash) {
     const u64 phase = g_t.runs % STATS_EVERY;
     const int moved_far = !taa && objects && g_t.long_logged_at == g_vk_present + 1 && phase >= STATS_SPACING &&
                           phase + STATS_SPACING <= STATS_EVERY;
-    const int stats_due = numbers && (phase == 0 || moved_far);
+    const int stats_due = numbers && !g_t.rect_extras_off && (phase == 0 || moved_far);
     /* the picture as shown, for its gradient: the resolve's, or the scene colour itself after a sharpen */
     VkImageView final_view = numbers_before;
     if (sharpened && stats_due) {
@@ -2416,13 +2435,19 @@ void vk_temporal_before(u64 fs0_hash) {
         g_t.motion.view, now->view, numbers_before, depth_view, last_frame,
         shown_before ? shown_before : numbers_before, final_view};
     const VkDescriptorSet set = set_make(views, samplers);
-    if (!set) return;
+    if (!set) {
+        rect_extras_off("their set");
+        return;
+    }
 
     /* the numbers: every STATS_EVERY runs the small image is drawn and copied to memory, and the copy made that
        many runs ago, long finished, is read and logged */
-    if (stats_due && g_t.stats_pipe && stats_ready() &&
-        image_ensure(&g_t.stats, STATS_FORMAT, 2 * STATS_W, STATS_H,
-                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, "numbers")) {
+    const int stats_made = stats_due && g_t.stats_pipe && stats_ready() &&
+                           image_ensure(&g_t.stats, STATS_FORMAT, 2 * STATS_W, STATS_H,
+                                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                        "numbers");
+    if (stats_due && !stats_made) rect_extras_off("the numbers' pipeline, buffer or image");
+    if (stats_made) {
         const VkBufferImageCopy out = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                        .imageExtent = {2 * STATS_W, STATS_H, 1}};
         /* the memory may not be coherent: what the GPU wrote is fetched before it is read */
