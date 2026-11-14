@@ -198,7 +198,12 @@ static struct {
        a pair of the ring. time_bits and time_period are the graphics queue's clock. */
     int gputime;
     VkQueryPool time_pool;
-    u32 time_bits, time_frames;
+    u32 time_bits;
+    /* The window the kept times belong to: what our passes were configured as when it began (whole numbers
+       only, so two can be held against each other), and the present it began at. A line is written, and a new
+       window begun, every 600 presents and whenever the configuration is another. */
+    int time_have;
+    u32 time_config[16], time_began;
     double time_period;
     /* the brackets of the current run of our passes that are begun and not yet ended: -1 for none */
     TemporalGpuHandle time_hook, time_numbers;
@@ -1369,35 +1374,72 @@ void vk_temporal_gputime_poll(void) {
                             g_t.time_period);
     }
 }
-/* the line, every 600 runs of our passes: each kind's times since the last one and what gave none */
-static void gputime_line(const Surf* scene, const TemporalRect* area) {
+/* A window's lines: under which configuration its times were taken, and for each kind of bracket how many were
+   asked for, measured, still under way, and lost by each reason, with the median, the mean and the 95th
+   percentile of the measured ones. Then the window is closed: the next begins empty, and brackets still under
+   way are retired when they complete without giving it a time. */
+static void gputime_window(const char* ended, u32 presents) {
     static const char* const names[TEMPORAL_GPU_KINDS] = {
         "our passes before the scene's first reader (vectors, the frame's copy, resolve, sharpen)",
-        "the numbers and the view, in the frames that have them",
+        "the numbers and the view, only in the frames that have them",
         "an empty bracket, a baseline that is subtracted from nothing"};
-    if (++g_t.time_frames < TEMPORAL_GPU_SAMPLES) return;
-    g_t.time_frames = 0;
-    LOG("arceus-temporal-gputime: approximate time between two completions, %d frames, %s, images %ux%u, scene "
-        "%dx%d. Brackets that gave no time: split between submissions %llu, begun and not ended %llu, a result "
-        "not there %llu, too old to rule out a turn of the clock %llu, longer than the host saw pass %llu, no "
-        "free pair %llu, a late end ignored %llu\n",
-        TEMPORAL_GPU_SAMPLES, g_t.mode == MODE_TAA ? "taa" : "probe", scene->sw, scene->sh,
-        area ? area->w : (int)scene->sw, area ? area->h : (int)scene->sh,
-        (unsigned long long)g_time_ring.lost[TEMPORAL_GPU_CUT],
-        (unsigned long long)g_time_ring.lost[TEMPORAL_GPU_PARTIAL],
-        (unsigned long long)g_time_ring.lost[TEMPORAL_GPU_UNAVAILABLE],
-        (unsigned long long)g_time_ring.lost[TEMPORAL_GPU_OLD],
-        (unsigned long long)g_time_ring.lost[TEMPORAL_GPU_ABSURD],
-        (unsigned long long)g_time_ring.lost[TEMPORAL_GPU_EXHAUSTED],
-        (unsigned long long)g_time_ring.lost[TEMPORAL_GPU_STALE]);
+    const u32* c = g_t.time_config;
+    float sharpen;
+    memcpy(&sharpen, &c[13], sizeof sharpen);
+    LOG("arceus-temporal-gputime: approximate time between two completions, a window of %u presents %s. Taken "
+        "with: %s, view %u, resolve options 0x%x, sharpen %.2f, object vectors %u, links %u, rejection %u, "
+        "rectangle gate %u, images %ux%u, scene %ux%u at %u,%u. Ends that came late for their bracket and were "
+        "ignored: %llu\n",
+        presents, ended, c[0] == MODE_TAA ? "taa" : "probe", c[1], c[2], (double)sharpen, c[3], c[4], c[5], c[6],
+        c[7], c[8], c[11], c[12], c[9], c[10], (unsigned long long)g_time_ring.late);
     for (int k = 0; k < TEMPORAL_GPU_KINDS; k++) {
         double median, mean, high;
-        const unsigned n = g_time_ring.n[k];
+        const unsigned n = g_time_ring.n[k], pending = temporal_gpu_pending(&g_time_ring, k);
+        const unsigned long long* lost = g_time_ring.lost[k];
         temporal_gpu_summary(g_time_ring.ms[k], n, &median, &mean, &high);
-        LOG("arceus-temporal-gputime: %s: asked %llu, measured %u, median %.4f ms, mean %.4f ms, 95th percentile "
-            "%.4f ms\n", names[k], (unsigned long long)g_time_ring.asked[k], n, median, mean, high);
+        LOG("arceus-temporal-gputime: %s: asked %llu, measured %u, still under way and not carried over %u, split "
+            "between submissions %llu, begun and not ended %llu, a result not there %llu, too old to rule out a "
+            "turn of the clock %llu, longer than the host saw pass %llu, no free pair %llu. Retired from an "
+            "earlier window, in no count above: %llu. Median %.4f ms, mean %.4f ms, 95th percentile %.4f ms\n",
+            names[k], (unsigned long long)g_time_ring.asked[k], n, pending, lost[TEMPORAL_GPU_CUT],
+            lost[TEMPORAL_GPU_PARTIAL], lost[TEMPORAL_GPU_UNAVAILABLE], lost[TEMPORAL_GPU_OLD],
+            lost[TEMPORAL_GPU_ABSURD], lost[TEMPORAL_GPU_EXHAUSTED], lost[TEMPORAL_GPU_OUTDATED], median, mean, high);
     }
     temporal_gpu_restart(&g_time_ring);
+}
+/* Once a run of our passes: the window's bookkeeping. Every time kept belongs to the configuration and the
+   stretch of presents it was taken in. A change of configuration ends the window at once, under its own label,
+   and 600 presents end it too. */
+static void gputime_line(const Surf* scene, const TemporalRect* area) {
+    u32 now[16] = {(u32)g_t.mode,
+                   (u32)g_t.view,
+                   (u32)g_t.options,
+                   (u32)g_t.objects,
+                   (u32)g_t.links,
+                   (u32)g_t.reject,
+                   (u32)g_t.rect,
+                   scene->sw,
+                   scene->sh,
+                   area ? (u32)area->x : 0,
+                   area ? (u32)area->y : 0,
+                   area ? (u32)area->w : scene->sw,
+                   area ? (u32)area->h : scene->sh,
+                   0,
+                   0,
+                   0};
+    memcpy(&now[13], &g_t.sharpen, sizeof g_t.sharpen);
+    if (!g_t.time_have) {
+        g_t.time_have = 1;
+        memcpy(g_t.time_config, now, sizeof now);
+        g_t.time_began = g_vk_present;
+        return;
+    }
+    const u32 presents = g_vk_present - g_t.time_began;
+    const int changed = memcmp(g_t.time_config, now, sizeof now) != 0;
+    if (!changed && presents < TEMPORAL_GPU_SAMPLES) return;
+    gputime_window(changed ? "ended by a change of configuration" : "", presents);
+    memcpy(g_t.time_config, now, sizeof now);
+    g_t.time_began = g_vk_present;
 }
 
 /* Before the draw whose fragment program is the scene colour's first reader: the probe's passes. Once a frame. */

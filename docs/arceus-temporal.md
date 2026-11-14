@@ -351,9 +351,13 @@ of the fraction alone costs one more, drawn with jitter and not resolved. Lines 
 ## GPU time of our passes (`SNX_ARCEUS_TEMPORAL_GPUTIME=1`)
 
 Read only, off by default, and off it adds no command and no query. With it two timestamps are written at the
-pipeline's last stage around a stretch of our commands, and every 600 runs of our passes the log gives, for each
-kind of stretch, how many were asked for and measured and the median, the mean and the 95th percentile in
-milliseconds. Lines start with `arceus-temporal-gputime:`.
+pipeline's last stage around a stretch of our commands. Every 600 presents, and whenever what our passes are
+configured as changes (mode, view, options, object vectors, links, rejection, the rectangle's gate, the images'
+and the scene's size), the log gives the window that ended: under which configuration it was taken and, for each
+kind of stretch, how many brackets were asked for, measured, still under way, and lost by each reason, with the
+median, the mean and the 95th percentile in milliseconds. The next window begins empty. A bracket still under way
+at that point keeps its pair until its own submission has completed and is then retired without giving the new
+window a time. Lines start with `arceus-temporal-gputime:`.
 
 What the number is: the approximate time between two completions on the GPU's clock. Each mark is taken when
 the commands before it have passed through the pipeline. Work of the stretch that ran while earlier work was
@@ -376,7 +380,11 @@ longer than that. A bracket has a handle of its own, so an end that comes late c
 on the same pair, and a bracket that gets no second mark is given up by its caller at the next run of our
 passes. A pair is free again only after its own end or that giving up, and when its submission has completed. What gave no time is counted by
 its reason in the line. A failure switches the measure off for the session with one line and changes no frame,
-and the query pool is kept until the program ends. Not run yet.
+and the query pool is kept until the program ends. "Completed" is read from the renderer's timeline, which the
+recorder also signals for a submission that was refused. So the recorder keeps a mark, set before that signal,
+for a command buffer that could not be begun or ended, a refused submission and a command pool that could not be
+reset. The measure reads the timeline, then the mark, before it asks for any result or takes a pair again, and
+with the mark set, or a timeline that cannot be read, it is off for the session. Not run yet.
 
 ## For the upscaler step: rules and an interface that nothing uses yet
 

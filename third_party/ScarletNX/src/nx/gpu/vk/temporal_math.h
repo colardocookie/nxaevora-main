@@ -1250,12 +1250,13 @@ enum {
     TEMPORAL_GPU_UNAVAILABLE, /* a result was not there though its submission had completed */
     TEMPORAL_GPU_OLD,         /* too long between the first mark and the completion to rule out a turn of the clock */
     TEMPORAL_GPU_ABSURD,      /* a difference longer than the host saw pass */
-    TEMPORAL_GPU_STALE,       /* an end or a giving up for a bracket that is no longer the pair's: ignored */
+    TEMPORAL_GPU_OUTDATED,    /* begun before the last line or under another configuration: retired, not a time */
     TEMPORAL_GPU_REASONS
 };
 typedef struct {
     int state, kind;
     unsigned generation;         /* which bracket of this pair: raised at every begin */
+    unsigned window;             /* the count of lines and changes of configuration when it began */
     unsigned long long submit;   /* the number of the submission both marks belong to */
     unsigned long long begun_ns; /* the host's clock when the first mark was recorded, 0 for not known */
 } TemporalGpuPair;
@@ -1266,7 +1267,11 @@ static inline int temporal_gpu_index(TemporalGpuHandle h) { return h < 0 ? -1 : 
 typedef struct {
     TemporalGpuPair pair[TEMPORAL_GPU_PAIRS];
     int off; /* switched off for the session: nothing is begun and nothing recorded earlier is read */
-    unsigned long long asked[TEMPORAL_GPU_KINDS], lost[TEMPORAL_GPU_REASONS];
+    /* Times and counts belong to one window: the stretch between two lines under one configuration. window
+       counts them. For each kind: brackets asked for, and those that gave no time by their reason. late: ends
+       and givings up for a bracket that was no longer its pair's, which have no kind. */
+    unsigned window;
+    unsigned long long asked[TEMPORAL_GPU_KINDS], lost[TEMPORAL_GPU_KINDS][TEMPORAL_GPU_REASONS], late;
     unsigned n[TEMPORAL_GPU_KINDS];
     float ms[TEMPORAL_GPU_KINDS][TEMPORAL_GPU_SAMPLES];
 } TemporalGpuRing;
@@ -1279,10 +1284,10 @@ static inline TemporalGpuHandle temporal_gpu_begin(TemporalGpuRing* r, int kind,
     for (int i = 0; i < TEMPORAL_GPU_PAIRS; i++)
         if (r->pair[i].state == TEMPORAL_GPU_FREE) {
             const unsigned generation = r->pair[i].generation + 1;
-            r->pair[i] = (TemporalGpuPair){TEMPORAL_GPU_BEGUN, kind, generation, submit, now_ns};
+            r->pair[i] = (TemporalGpuPair){TEMPORAL_GPU_BEGUN, kind, generation, r->window, submit, now_ns};
             return (TemporalGpuHandle)generation * TEMPORAL_GPU_PAIRS + i;
         }
-    r->lost[TEMPORAL_GPU_EXHAUSTED]++;
+    r->lost[kind][TEMPORAL_GPU_EXHAUSTED]++;
     return -1;
 }
 /* the pair of a handle when the handle is still that pair's own bracket and the bracket is begun, else NULL */
@@ -1291,7 +1296,7 @@ static inline TemporalGpuPair* temporal_gpu_own(TemporalGpuRing* r, TemporalGpuH
     if (index < 0) return NULL;
     TemporalGpuPair* p = &r->pair[index];
     if ((TemporalGpuHandle)p->generation != h / TEMPORAL_GPU_PAIRS || p->state != TEMPORAL_GPU_BEGUN) {
-        if (!r->off) r->lost[TEMPORAL_GPU_STALE]++;
+        if (!r->off) r->late++;
         return NULL;
     }
     return p;
@@ -1338,18 +1343,29 @@ static inline int temporal_gpu_settle(TemporalGpuRing* r, int index, unsigned lo
                                       const int* available, unsigned bits, double period_ns) {
     TemporalGpuPair* p = &r->pair[index];
     if (r->off || p->state == TEMPORAL_GPU_FREE || p->state == TEMPORAL_GPU_BEGUN || done < p->submit) return 0;
-    if (p->state == TEMPORAL_GPU_SPLIT) r->lost[TEMPORAL_GPU_CUT]++;
-    else if (p->state == TEMPORAL_GPU_GIVEN_UP) r->lost[TEMPORAL_GPU_PARTIAL]++;
-    else if (!ticks || !available || !available[0] || !available[1]) r->lost[TEMPORAL_GPU_UNAVAILABLE]++;
+    unsigned long long* lost = r->lost[p->kind];
+    /* A bracket of an earlier window is retired here like any other, on its own completion and not before. It
+       is no time of this window and is counted as that, whatever its results are. */
+    if (p->window != r->window) lost[TEMPORAL_GPU_OUTDATED]++;
+    else if (p->state == TEMPORAL_GPU_SPLIT) lost[TEMPORAL_GPU_CUT]++;
+    else if (p->state == TEMPORAL_GPU_GIVEN_UP) lost[TEMPORAL_GPU_PARTIAL]++;
+    else if (!ticks || !available || !available[0] || !available[1]) lost[TEMPORAL_GPU_UNAVAILABLE]++;
     else {
         const double age = p->begun_ns && now_ns >= p->begun_ns ? (double)(now_ns - p->begun_ns) : -1.0;
         const double ns = (double)temporal_gpu_ticks(ticks[0], ticks[1], bits) * period_ns;
-        if (!(age >= 0.0) || !(age < 0.5 * temporal_gpu_turn_ns(bits, period_ns))) r->lost[TEMPORAL_GPU_OLD]++;
-        else if (!isfinite(ns) || !(ns <= age)) r->lost[TEMPORAL_GPU_ABSURD]++;
+        if (!(age >= 0.0) || !(age < 0.5 * temporal_gpu_turn_ns(bits, period_ns))) lost[TEMPORAL_GPU_OLD]++;
+        else if (!isfinite(ns) || !(ns <= age)) lost[TEMPORAL_GPU_ABSURD]++;
         else if (r->n[p->kind] < TEMPORAL_GPU_SAMPLES) r->ms[p->kind][r->n[p->kind]++] = (float)(ns / 1e6);
     }
     p->state = TEMPORAL_GPU_FREE;
     return 1;
+}
+/* the brackets of a kind that began in this window and have not left the ring: asked for and not yet counted */
+static inline unsigned temporal_gpu_pending(const TemporalGpuRing* r, int kind) {
+    unsigned n = 0;
+    for (int i = 0; i < TEMPORAL_GPU_PAIRS; i++)
+        n += r->pair[i].state != TEMPORAL_GPU_FREE && r->pair[i].kind == kind && r->pair[i].window == r->window;
+    return n;
 }
 /* 1 when a device's clock can be used: timestamps on the queue, some valid bits, a period that is a number, and
    a turn of the counter that is a finite time */
@@ -1377,9 +1393,16 @@ static inline int temporal_gpu_summary(float* ms, unsigned n, double* median, do
     *high = (double)ms[(unsigned)ceil(0.95 * (double)n) - 1];
     return 1;
 }
-/* a line's count is done: the times and the counts start anew, the pairs under way stay */
+/* A window ends, at a line or at a change of configuration: the times and the counts start anew, empty. The
+   pairs under way are not touched: each stays in the ring until its own submission has completed, and is then
+   retired without giving a time to the new window. */
 static inline void temporal_gpu_restart(TemporalGpuRing* r) {
-    for (int k = 0; k < TEMPORAL_GPU_KINDS; k++) r->n[k] = 0, r->asked[k] = 0;
-    for (int k = 0; k < TEMPORAL_GPU_REASONS; k++) r->lost[k] = 0;
+    r->window++;
+    r->late = 0;
+    for (int k = 0; k < TEMPORAL_GPU_KINDS; k++) {
+        r->n[k] = 0;
+        r->asked[k] = 0;
+        for (int why = 0; why < TEMPORAL_GPU_REASONS; why++) r->lost[k][why] = 0;
+    }
 }
 #endif

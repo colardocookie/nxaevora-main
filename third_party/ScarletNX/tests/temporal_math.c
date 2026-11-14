@@ -2110,18 +2110,20 @@ static void test_gpu_time(void) {
        pair is not free before the first mark's submission has completed. */
     a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 8, t0);
     assert(temporal_gpu_index(a) == 0 && !temporal_gpu_end(&r, a, 9) && r.pair[0].state == TEMPORAL_GPU_SPLIT);
-    assert(!temporal_gpu_fetch(&r, 0, 20) && !temporal_gpu_end(&r, a, 8) && r.lost[TEMPORAL_GPU_STALE] == 1);
+    assert(!temporal_gpu_fetch(&r, 0, 20) && !temporal_gpu_end(&r, a, 8) && r.late == 1);
     TemporalGpuHandle open = temporal_gpu_begin(&r, TEMPORAL_GPU_NUMBERS, 8, t0);
     assert(temporal_gpu_index(open) == 1); /* another pair, not the split one */
     assert(!temporal_gpu_settle(&r, 0, 7, t0, NULL, NULL, 64, period) && r.pair[0].state == TEMPORAL_GPU_SPLIT);
-    assert(temporal_gpu_settle(&r, 0, 8, t0, NULL, NULL, 64, period) && r.lost[TEMPORAL_GPU_CUT] == 1);
+    assert(temporal_gpu_settle(&r, 0, 8, t0, NULL, NULL, 64, period));
+    assert(r.lost[TEMPORAL_GPU_HOOK][TEMPORAL_GPU_CUT] == 1);
     /* Given up: begun and no second mark to come, as when our passes return between the marks. Until its caller
        says so the pair stays begun and is not freed, whatever its submission did. */
     assert(!temporal_gpu_settle(&r, 1, 50, t0, NULL, NULL, 64, period) && r.pair[1].state == TEMPORAL_GPU_BEGUN);
     temporal_gpu_abandon(&r, open);
     assert(r.pair[1].state == TEMPORAL_GPU_GIVEN_UP && !temporal_gpu_end(&r, open, 8));
     assert(!temporal_gpu_settle(&r, 1, 7, t0, NULL, NULL, 64, period));
-    assert(temporal_gpu_settle(&r, 1, 8, t0, NULL, NULL, 64, period) && r.lost[TEMPORAL_GPU_PARTIAL] == 1);
+    assert(temporal_gpu_settle(&r, 1, 8, t0, NULL, NULL, 64, period));
+    assert(r.lost[TEMPORAL_GPU_NUMBERS][TEMPORAL_GPU_PARTIAL] == 1);
     assert(r.n[TEMPORAL_GPU_HOOK] == 1 && r.n[TEMPORAL_GPU_NUMBERS] == 0);
     /* An end that comes late must not close another bracket that took the pair since (the audit's case):
        a bracket in submission 10 is given up and settled, the next takes the same pair in submission 11, and
@@ -2136,10 +2138,10 @@ static void test_gpu_time(void) {
         assert(temporal_gpu_index(fresh) == temporal_gpu_index(old) && fresh != old);
         assert(!temporal_gpu_end(&r, old, 11) && r.pair[0].state == TEMPORAL_GPU_BEGUN);
         temporal_gpu_abandon(&r, old);
-        assert(r.pair[0].state == TEMPORAL_GPU_BEGUN && r.lost[TEMPORAL_GPU_STALE] == 2);
+        assert(r.pair[0].state == TEMPORAL_GPU_BEGUN && r.late == 2);
         assert(temporal_gpu_end(&r, fresh, 11) && r.pair[0].state == TEMPORAL_GPU_ENDED);
-        assert(!temporal_gpu_end(&r, fresh, 11) && r.lost[TEMPORAL_GPU_STALE] == 3); /* twice is once too many */
-        assert(!temporal_gpu_end(&r, -1, 11) && r.lost[TEMPORAL_GPU_STALE] == 3);    /* no bracket: nothing */
+        assert(!temporal_gpu_end(&r, fresh, 11) && r.late == 3); /* twice is once too many */
+        assert(!temporal_gpu_end(&r, -1, 11) && r.late == 3);    /* no bracket: nothing */
         temporal_gpu_abandon(&r, -1);
     }
     /* a result that is not there, either of the two, or none handed over: a normal loss, counted */
@@ -2150,7 +2152,7 @@ static void test_gpu_time(void) {
         a = temporal_gpu_begin(&r, TEMPORAL_GPU_EMPTY, 10, t0);
         assert(temporal_gpu_index(a) == 0 && temporal_gpu_end(&r, a, 10));
         assert(temporal_gpu_settle(&r, 0, 10, t0 + 1000, which == 2 ? NULL : ticks, partly, 64, period));
-        assert(r.lost[TEMPORAL_GPU_UNAVAILABLE] == (unsigned)which + 1 && r.n[TEMPORAL_GPU_EMPTY] == 0);
+        assert(r.lost[TEMPORAL_GPU_EMPTY][TEMPORAL_GPU_UNAVAILABLE] == (unsigned)which + 1 && r.n[TEMPORAL_GPU_EMPTY] == 0);
     }
     /* The ring exhausted: 64 brackets under way, the next has no pair and is counted. One settled, one free. */
     memset(&r, 0, sizeof r);
@@ -2158,7 +2160,8 @@ static void test_gpu_time(void) {
         a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 30 + (unsigned)i, t0);
         assert(temporal_gpu_index(a) == i && temporal_gpu_end(&r, a, 30 + (unsigned)i));
     }
-    assert(temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 99, t0) == -1 && r.lost[TEMPORAL_GPU_EXHAUSTED] == 1);
+    assert(temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 99, t0) == -1);
+    assert(r.lost[TEMPORAL_GPU_HOOK][TEMPORAL_GPU_EXHAUSTED] == 1);
     assert(r.asked[TEMPORAL_GPU_HOOK] == TEMPORAL_GPU_PAIRS + 1);
     assert(temporal_gpu_settle(&r, 17, 47, t0, NULL, NULL, 64, period));
     assert(temporal_gpu_index(temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 99, t0)) == 17);
@@ -2187,12 +2190,12 @@ static void test_gpu_time(void) {
             assert(temporal_gpu_settle(&r, 0, 5, now[i], ticks, there, 36, period));
         }
         assert(r.n[TEMPORAL_GPU_HOOK] == 1 && close_to((double)r.ms[TEMPORAL_GPU_HOOK][0], 2.001, 1e-6));
-        assert(r.lost[TEMPORAL_GPU_OLD] == 3 && r.lost[TEMPORAL_GPU_ABSURD] == 0);
+        assert(r.lost[TEMPORAL_GPU_HOOK][TEMPORAL_GPU_OLD] == 3 && r.lost[TEMPORAL_GPU_HOOK][TEMPORAL_GPU_ABSURD] == 0);
         /* a difference longer than the host saw pass is absurd and dropped: 2 ms of ticks in 1 ms of host time */
         a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 6, t0);
         temporal_gpu_end(&r, a, 6);
         assert(temporal_gpu_settle(&r, 0, 6, t0 + 1000000ull, ticks, there, 36, period));
-        assert(r.lost[TEMPORAL_GPU_ABSURD] == 1 && r.n[TEMPORAL_GPU_HOOK] == 1);
+        assert(r.lost[TEMPORAL_GPU_HOOK][TEMPORAL_GPU_ABSURD] == 1 && r.n[TEMPORAL_GPU_HOOK] == 1);
         /* The half turn holds with all 64 bits as well. At a period of a thousandth of a nanosecond a turn is
            213 days: after 100 days of host time a pair is taken, after 107 it is too old. */
         const unsigned long long day = 86400ull * 1000000000ull;
@@ -2204,13 +2207,13 @@ static void test_gpu_time(void) {
         a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 8, t0);
         temporal_gpu_end(&r, a, 8);
         assert(temporal_gpu_settle(&r, 0, 8, t0 + 107 * day, fine, there, 64, 0.001));
-        assert(r.n[TEMPORAL_GPU_HOOK] == 2 && r.lost[TEMPORAL_GPU_OLD] == 4);
+        assert(r.n[TEMPORAL_GPU_HOOK] == 2 && r.lost[TEMPORAL_GPU_HOOK][TEMPORAL_GPU_OLD] == 4);
         /* with 64 bits and a nanosecond a tick, a difference that wrapped the whole counter is longer than any
            host time and is dropped as absurd */
         a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 9, t0);
         temporal_gpu_end(&r, a, 9);
         assert(temporal_gpu_settle(&r, 0, 9, t0 + 3600000000000ull, ticks, there, 64, period));
-        assert(r.lost[TEMPORAL_GPU_ABSURD] == 2);
+        assert(r.lost[TEMPORAL_GPU_HOOK][TEMPORAL_GPU_ABSURD] == 2);
         /* a period that is no number makes no time */
         a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 10, t0);
         temporal_gpu_end(&r, a, 10);
@@ -2233,7 +2236,7 @@ static void test_gpu_time(void) {
         assert(temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 4, t0) == -1 && r.asked[TEMPORAL_GPU_HOOK] == 1);
         assert(!temporal_gpu_end(&r, open, 3) && r.pair[1].state == TEMPORAL_GPU_BEGUN);
         temporal_gpu_abandon(&r, open);
-        assert(r.pair[1].state == TEMPORAL_GPU_BEGUN && r.lost[TEMPORAL_GPU_STALE] == 0);
+        assert(r.pair[1].state == TEMPORAL_GPU_BEGUN && r.late == 0);
         assert(!temporal_gpu_fetch(&r, 0, 100));
         assert(!temporal_gpu_settle(&r, 0, 100, t0 + 1000, ticks, there, 64, period));
         assert(r.pair[0].state == TEMPORAL_GPU_ENDED && r.n[TEMPORAL_GPU_HOOK] == 0);
@@ -2241,7 +2244,7 @@ static void test_gpu_time(void) {
     /* a kind that is none */
     memset(&r, 0, sizeof r);
     assert(temporal_gpu_begin(&r, TEMPORAL_GPU_KINDS, 1, t0) == -1 && temporal_gpu_begin(&r, -1, 1, t0) == -1);
-    assert(temporal_gpu_index(-1) == -1 && !temporal_gpu_end(&r, 0, 1) && r.lost[TEMPORAL_GPU_STALE] == 1);
+    assert(temporal_gpu_index(-1) == -1 && !temporal_gpu_end(&r, 0, 1) && r.late == 1);
     /* the samples of a kind beyond the room for them are not kept and break nothing */
     for (int i = 0; i < TEMPORAL_GPU_SAMPLES + 5; i++) {
         const unsigned long long ticks[2] = {0, 1000000ull + (unsigned long long)i};
@@ -2262,12 +2265,56 @@ static void test_gpu_time(void) {
         assert(temporal_gpu_summary(hundred, 100, &median, &mean, &high) && median == 50.5 && high == 95.0);
         assert(!temporal_gpu_summary(one, 0, &median, &mean, &high) && median == 0.0 && mean == 0.0 && high == 0.0);
     }
-    /* a line written: times and counts start anew, a bracket under way stays under way and keeps its handle */
-    a = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 50, t0);
-    r.lost[TEMPORAL_GPU_CUT] = 3;
-    temporal_gpu_restart(&r);
-    assert(r.n[TEMPORAL_GPU_EMPTY] == 0 && r.asked[TEMPORAL_GPU_EMPTY] == 0 && r.lost[TEMPORAL_GPU_CUT] == 0);
-    assert(r.pair[temporal_gpu_index(a)].state == TEMPORAL_GPU_BEGUN && temporal_gpu_end(&r, a, 50));
+    /* A window ends, at a line or a change of configuration. Times and counts start anew and empty. A bracket
+       under way keeps its pair and its handle: it is not cleared and not reused. When its own submission has
+       completed it is retired without giving the new window a time, and counted as that. The audit's case: a
+       sample that was pending must not turn up as "measured 1 of asked 0". */
+    memset(&r, 0, sizeof r);
+    {
+        const unsigned long long ticks[2] = {0, 1000000ull};
+        const TemporalGpuHandle before = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 50, t0);
+        const TemporalGpuHandle open_one = temporal_gpu_begin(&r, TEMPORAL_GPU_NUMBERS, 50, t0);
+        assert(temporal_gpu_end(&r, before, 50) && temporal_gpu_pending(&r, TEMPORAL_GPU_HOOK) == 1);
+        assert(temporal_gpu_pending(&r, TEMPORAL_GPU_NUMBERS) == 1);
+        assert(temporal_gpu_pending(&r, TEMPORAL_GPU_EMPTY) == 0);
+        r.lost[TEMPORAL_GPU_HOOK][TEMPORAL_GPU_CUT] = 3;
+        r.late = 2;
+        temporal_gpu_restart(&r);
+        assert(r.window == 1 && r.asked[TEMPORAL_GPU_HOOK] == 0);
+        assert(r.lost[TEMPORAL_GPU_HOOK][TEMPORAL_GPU_CUT] == 0);
+        assert(r.late == 0 && temporal_gpu_pending(&r, TEMPORAL_GPU_HOOK) == 0); /* none of this window */
+        /* kept as they are */
+        assert(r.pair[0].state == TEMPORAL_GPU_ENDED && r.pair[1].state == TEMPORAL_GPU_BEGUN);
+        /* the pair is not free for a new bracket, which takes another */
+        const TemporalGpuHandle after = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 51, t0);
+        assert(temporal_gpu_index(after) == 2 && temporal_gpu_end(&r, after, 51));
+        /* not completed yet: nothing happens. Completed: retired, no time, counted, free. */
+        assert(!temporal_gpu_settle(&r, 0, 49, t0 + 5000000ull, ticks, there, 64, period));
+        assert(temporal_gpu_settle(&r, 0, 50, t0 + 5000000ull, ticks, there, 64, period));
+        assert(r.n[TEMPORAL_GPU_HOOK] == 0 && r.asked[TEMPORAL_GPU_HOOK] == 1);
+        assert(r.lost[TEMPORAL_GPU_HOOK][TEMPORAL_GPU_OUTDATED] == 1 && r.pair[0].state == TEMPORAL_GPU_FREE);
+        /* the old window's begun bracket still ends by its own handle, and is retired the same way */
+        assert(temporal_gpu_end(&r, open_one, 50));
+        assert(temporal_gpu_settle(&r, 1, 50, t0 + 5000000ull, ticks, there, 64, period));
+        assert(r.n[TEMPORAL_GPU_NUMBERS] == 0 && r.lost[TEMPORAL_GPU_NUMBERS][TEMPORAL_GPU_OUTDATED] == 1);
+        /* the new window's own bracket gives its time */
+        assert(temporal_gpu_settle(&r, 2, 51, t0 + 5000000ull, ticks, there, 64, period));
+        assert(r.n[TEMPORAL_GPU_HOOK] == 1 && r.asked[TEMPORAL_GPU_HOOK] == 1);
+        assert(r.ms[TEMPORAL_GPU_HOOK][0] == 1.0f);
+        /* a second change before an old bracket completed: still retired, once */
+        const TemporalGpuHandle slow = temporal_gpu_begin(&r, TEMPORAL_GPU_EMPTY, 60, t0);
+        temporal_gpu_end(&r, slow, 60);
+        temporal_gpu_restart(&r);
+        temporal_gpu_restart(&r);
+        assert(temporal_gpu_settle(&r, temporal_gpu_index(slow), 60, t0 + 5000000ull, ticks, there, 64, period));
+        assert(r.n[TEMPORAL_GPU_EMPTY] == 0 && r.lost[TEMPORAL_GPU_EMPTY][TEMPORAL_GPU_OUTDATED] == 1);
+    }
+    /* the counts are kept by kind: a loss of one kind is not another's */
+    memset(&r, 0, sizeof r);
+    a = temporal_gpu_begin(&r, TEMPORAL_GPU_NUMBERS, 5, t0);
+    assert(!temporal_gpu_end(&r, a, 6) && temporal_gpu_settle(&r, 0, 5, t0, NULL, NULL, 64, period));
+    assert(r.lost[TEMPORAL_GPU_NUMBERS][TEMPORAL_GPU_CUT] == 1 && r.lost[TEMPORAL_GPU_HOOK][TEMPORAL_GPU_CUT] == 0);
+    assert(r.lost[TEMPORAL_GPU_EMPTY][TEMPORAL_GPU_CUT] == 0 && r.asked[TEMPORAL_GPU_NUMBERS] == 1);
 }
 
 static void test_upscaler(void) {
