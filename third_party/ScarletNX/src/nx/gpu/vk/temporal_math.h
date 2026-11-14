@@ -664,8 +664,10 @@ static inline int temporal_rect_same(const TemporalRect* a, const TemporalRect* 
     return a->x == b->x && a->y == b->y && a->w == b->w && a->h == b->h;
 }
 /* The active rectangle of a signed viewport, 1 when it is one: every edge finite, a whole number within 0.001,
-   and inside the target. A negative height means y is the bottom edge. A width that is not positive is refused. */
+   and inside the target. A negative height means y is the bottom edge. A width that is not positive is refused,
+   and so is a target without a size, before anything is worked out from it. */
 static inline int temporal_rect_from_viewport(const TemporalViewport* v, int target_w, int target_h, TemporalRect* r) {
+    if (target_w <= 0 || target_h <= 0) return 0;
     const double edge[4] = {(double)v->x, v->height < 0.0f ? (double)v->y + (double)v->height : (double)v->y,
                             (double)v->width, fabs((double)v->height)};
     int whole[4];

@@ -2039,6 +2039,24 @@ static void test_upscaler(void) {
             assert(close_to(numbers.jitter[0], 0.25, 1e-9) && close_to(numbers.jitter[1], up ? -0.375 : 0.375, 1e-9));
             assert(numbers.vector_scale[0] == -400.0 && numbers.vector_scale[1] == -240.0);
         }
+        /* A target without a size, down to the lowest number there is, on either axis: refused before anything is
+           worked out from it, by the rectangle's rule and by the conversion, and what was there stays. */
+        const int sizes[4] = {0, -1, -400, (-2147483647 - 1)};
+        const TemporalUpscalerFrame kept = numbers;
+        for (int i = 0; i < 4; i++)
+            for (int axis = 0; axis < 2; axis++) {
+                TemporalRectStamp sizeless = crop_stamp;
+                TemporalRect r = {7, 7, 7, 7};
+                *(axis ? &sizeless.target_h : &sizeless.target_w) = sizes[i];
+                assert(!temporal_rect_from_viewport(&crop, sizeless.target_w, sizeless.target_h, &r));
+                assert(r.x == 7 && r.y == 7 && r.w == 7 && r.h == 7);
+                assert(!temporal_upscaler_numbers(&sizeless, &crop, crop_jitter, 0, &numbers));
+                assert(!memcmp(&numbers, &kept, sizeof kept));
+                sizeless = crop_stamp;
+                *(axis ? &sizeless.out_h : &sizeless.out_w) = sizes[i];
+                assert(!temporal_upscaler_numbers(&sizeless, &crop, crop_jitter, 0, &numbers));
+                assert(!memcmp(&numbers, &kept, sizeof kept));
+            }
         /* the conversion's own refusals: a viewport that is not the stamp's rectangle, a jitter over a pixel */
         const TemporalViewport elsewhere = {41.0f, crop.y, 320.0f, crop.height};
         const double far_jitter[2] = {4.0 / 320.0, 0.0};
