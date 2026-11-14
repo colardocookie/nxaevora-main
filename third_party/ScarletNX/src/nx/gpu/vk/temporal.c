@@ -1380,7 +1380,11 @@ int vk_temporal_object_begin(VkCommandBuffer cb, const VkRenderingAttachmentInfo
                           .pStencilAttachment = stencil ? depth : NULL};
     if (!g_t.object.view) return 0;
     if (first)
-        vk_barrier(cb, g_t.object.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
+        /* after last frame's reads by the motion pass, and after its writes when that pass did not read the
+           target (a frame whose object vectors were given up) */
+        vk_barrier(cb, g_t.object.img, VK_IMAGE_ASPECT_COLOR_BIT,
+                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                    VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     else
