@@ -4077,6 +4077,19 @@ static void test_selftest_projection(void) {
 
 /* The native suite's printed assertions: what a session's contexts were made with and handed, against what a
    case expects of them. */
+/* how the loader's list of layers was read: whole, in part, or not at all */
+static void test_selftest_layers(void) {
+    const int incomplete = 5, success = 0;
+    assert(selftest_layers(success, success, incomplete) == SELFTEST_LAYERS_WHOLE);
+    assert(selftest_layers(success, incomplete, incomplete) == SELFTEST_LAYERS_PART);
+    assert(selftest_layers(incomplete, success, incomplete) == SELFTEST_LAYERS_WHOLE); /* the count is no list */
+    assert(selftest_layers(-1, success, incomplete) == SELFTEST_LAYERS_UNREAD);
+    assert(selftest_layers(success, -3, incomplete) == SELFTEST_LAYERS_UNREAD);
+    assert(selftest_layers(-1, incomplete, incomplete) == SELFTEST_LAYERS_UNREAD); /* a failure outranks a part */
+    assert(selftest_layers(-1, -1, incomplete) == SELFTEST_LAYERS_UNREAD);
+    assert(selftest_layers(success, 1, incomplete) == SELFTEST_LAYERS_WHOLE); /* another success code */
+}
+
 static void test_selftest_proof(void) {
     const uint32_t flag = 1u << 4, other = 0xf;
     const double finite[2] = {5000.0, 5000.0}, mixed[2] = {5000.0, INFINITY}, back[2] = {INFINITY, 5000.0};
@@ -4427,6 +4440,7 @@ int main(void) {
     test_gpu_time();
     test_selftest();
     test_selftest_projection();
+    test_selftest_layers();
     test_selftest_proof();
     test_selftest_edges();
     puts("temporal_math: ok");

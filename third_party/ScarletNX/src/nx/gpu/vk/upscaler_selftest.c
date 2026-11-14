@@ -50,6 +50,7 @@ static struct {
     u8* staging_bytes;
     u64 staging_size;
     const SnxUpscalerApi* api;
+    int layers; /* how the loader's list of layers was read (selftest_layers) */
     int validation;
     unsigned messages;
     u64 generation; /* of the configuration: raised for every context made with other flags or formats */
@@ -121,6 +122,15 @@ static int memory_type(u32 bits, VkMemoryPropertyFlags want) {
 
 /* The instance and the device, through the steps the runtime will take with an adapter (upscaler_host.c). The
    validation layer with its synchronisation checks is asked for when it is installed. */
+/* why there is no validation layer, by how the loader's list was read: no message can be seen in any of them */
+static const char* validation_missing(void) {
+    return g.layers == SELFTEST_LAYERS_WHOLE  ? "NOT IN THE LOADER'S LIST, which was read whole: no validation message "
+                                                "can be seen"
+           : g.layers == SELFTEST_LAYERS_PART ? "NOT FOUND, and the loader's list was read only in part, so whether "
+                                                "it is installed is not known: no validation message can be seen"
+                                              : "NOT KNOWN, the loader's list could not be read: no validation message "
+                                                "can be seen";
+}
 static int device_make(void) {
     const char *instance_names[32], *device_names[64], *layers[1] = {"VK_LAYER_KHRONOS_validation"};
     u32 instance_count = 0, device_count = 0, n = 0;
@@ -129,23 +139,37 @@ static int device_make(void) {
         LOG(ST "FAIL: no Vulkan loader\n");
         return 0;
     }
-    const VkResult counted = vkEnumerateInstanceLayerProperties(&n, NULL);
-    VkLayerProperties* have = calloc(n ? n : 1, sizeof *have);
-    const VkResult listed = have ? vkEnumerateInstanceLayerProperties(&n, have) : VK_ERROR_OUT_OF_HOST_MEMORY;
-    for (u32 i = 0; have && listed >= 0 && i < n; i++) g.validation |= !strcmp(have[i].layerName, layers[0]);
+    /* The loader's list of instance layers. The count can change between the two calls, and the list's call
+       then answers "incomplete": it is asked again, three times at most. */
+    VkLayerProperties* have = NULL;
+    VkResult counted = VK_SUCCESS, listed = VK_INCOMPLETE;
+    for (int tries = 0; tries < 3 && listed == VK_INCOMPLETE; tries++) {
+        free(have);
+        n = 0;
+        counted = vkEnumerateInstanceLayerProperties(&n, NULL);
+        have = calloc(n ? n : 1, sizeof *have);
+        if (counted < 0) listed = counted;
+        else if (!have) listed = VK_ERROR_OUT_OF_HOST_MEMORY;
+        else listed = vkEnumerateInstanceLayerProperties(&n, have);
+    }
+    g.layers = selftest_layers((int)counted, (int)listed, (int)VK_INCOMPLETE);
+    for (u32 i = 0; g.layers != SELFTEST_LAYERS_UNREAD && i < n; i++)
+        g.validation |= !strcmp(have[i].layerName, layers[0]);
     if (!g.validation) {
-        /* Log only, once: what the loader did list, and where this process is told to look for layers. The
-           self-test sees the loader's list and nothing else, so an SDK that is installed and not listed here
-           is not found by the loader of this process. */
+        /* Log only, once: how the list was read, each layer it holds on a line of its own, and where this
+           process is told to look for layers. The self-test sees the loader's list and nothing else. */
         static const char* const variables[3] = {"VK_LAYER_PATH", "VK_ADD_LAYER_PATH", "VULKAN_SDK"};
-        char names[1024];
-        size_t at = 0;
-        names[0] = 0;
-        for (u32 i = 0; have && listed >= 0 && i < n && at < sizeof names - 1; i++)
-            at += (size_t)snprintf(names + at, sizeof names - at, "%s%s", i ? ", " : "", have[i].layerName);
-        LOG(ST "the layer %s is not in the loader's list. It listed %u instance layers (the count's result %d, the "
-               "list's %d): %s\n",
-            layers[0], listed >= 0 ? n : 0, (int)counted, (int)listed, names[0] ? names : "none");
+        const u32 shown = g.layers == SELFTEST_LAYERS_UNREAD ? 0 : n > 64 ? 64 : n;
+        if (g.layers == SELFTEST_LAYERS_UNREAD)
+            LOG(ST "the loader's list of instance layers could not be read (the count's call gave %d, the list's "
+                   "%d): whether %s is installed is not known\n", (int)counted, (int)listed, layers[0]);
+        else
+            LOG(ST "the loader's list of instance layers was read %s: %u layers, and %s is not among them%s\n",
+                g.layers == SELFTEST_LAYERS_WHOLE ? "whole" : "IN PART (still incomplete after three tries)", n,
+                layers[0], g.layers == SELFTEST_LAYERS_WHOLE ? "" : ", so whether it is installed is not known");
+        for (u32 i = 0; i < shown; i++) LOG(ST "instance layer %u of %u: %s\n", i + 1, n, have[i].layerName);
+        if (shown < n && g.layers != SELFTEST_LAYERS_UNREAD)
+            LOG(ST "%u more instance layers are not printed\n", n - shown);
         for (int k = 0; k < 3; k++) {
             const char* value = getenv(variables[k]);
             LOG(ST "as this process sees it, %s is %s\n", variables[k], value && value[0] ? value : "not set");
@@ -268,7 +292,7 @@ static int device_make(void) {
         return 0;
     g.staging_bytes = mapped;
     LOG(ST "device %s, adapter %s, validation layer %s\n", props.deviceName, g.api->name,
-        g.validation ? "on, with synchronisation checks" : "NOT INSTALLED: no validation message can be seen");
+        g.validation ? "on, with synchronisation checks" : validation_missing());
     return 1;
 }
 
@@ -1914,7 +1938,7 @@ int vk_upscaler_selftest(const char* adapter) {
     pass = pass && idle();
     /* Case 7: no message of the validation layer in any case. Without the layer the case was not run, which is
        not a pass, and neither is a run that had to stop. */
-    if (!g.validation) LOG(ST "case 7: NOT RUN, the validation layer is not installed: FAIL\n");
+    if (!g.validation) LOG(ST "case 7: NOT RUN, the validation layer is %s: FAIL\n", validation_missing());
     else if (g.unknown)
         LOG(ST "case 7: NOT JUDGED, the run stopped (%u validation messages until then): FAIL\n", g.messages);
     else LOG(ST "case 7: %u validation messages: %s\n", g.messages, g.messages ? "FAIL" : "PASS");

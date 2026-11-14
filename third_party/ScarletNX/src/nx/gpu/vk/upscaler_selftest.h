@@ -569,6 +569,14 @@ static inline int selftest_resized(double apart, double noise, double control) {
     return apart <= SELFTEST_RESIZED ? SELFTEST_PASS : SELFTEST_FAIL;
 }
 static inline int selftest_apart(double difference) { return isfinite(difference) && difference >= SELFTEST_APART; }
+/* How the loader's list of instance layers was read, from the results of the call for the count and of the call
+   for the list: whole, in part (the list's call answered "incomplete", so a layer that is not in the part read
+   may still be there), or not at all (either call failed). incomplete is Vulkan's VK_INCOMPLETE. */
+enum { SELFTEST_LAYERS_WHOLE, SELFTEST_LAYERS_PART, SELFTEST_LAYERS_UNREAD };
+static inline int selftest_layers(int counted, int listed, int incomplete) {
+    if (counted < 0 || listed < 0) return SELFTEST_LAYERS_UNREAD;
+    return listed == incomplete ? SELFTEST_LAYERS_PART : SELFTEST_LAYERS_WHOLE;
+}
 /* What a session shows of the contexts it used, for the native suite's printed assertions: how many came into use,
    and of the first four each one's create flags, the frames it evaluated, whether the first of them had the
    reset, and the far plane it was handed (mixed: not the same in every frame). And the checksum of the depth
