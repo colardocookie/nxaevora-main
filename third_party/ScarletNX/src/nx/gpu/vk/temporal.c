@@ -232,8 +232,10 @@ static struct {
 static TemporalGpuRing g_time_ring; /* the brackets under way and the times kept since the last line */
 /* SNX_ARCEUS_UPSCALER: the state of a library's upscaler (the functions are further down, before the hook) */
 #define UPSCALED_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
-/* Once a library was entered, whatever it answers, every image it was handed counts as last used by all commands,
-   reading and writing: what it recorded is not known to the runtime, and a failed call is no proof of none. */
+/* Once a library was entered, whatever it answers, every image it was handed counts as last written by any
+   command: what it recorded is not known to the runtime, and a failed call is no proof of none. A barrier after
+   it has this source, and its destination is every command, reading and writing, until the next use is known. */
+#define UPSCALER_WROTE VK_ACCESS_2_MEMORY_WRITE_BIT
 #define UPSCALER_ANY_ACCESS (VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT)
 static struct {
     int asked; /* -1 not looked at, 0 off or not available, 1 started (and it stays 1 when it stops) */
@@ -2678,9 +2680,21 @@ static void upscaler_before(VkCommandBuffer cb, void* user) {
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     /* The private output: what it held is not kept. Its last use is whatever a library recorded in an earlier
        frame, also one whose evaluate failed, so the barrier's source is every command, reading and writing. */
-    vk_barrier(cb, g_u.output.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, UPSCALER_ANY_ACCESS,
+    vk_barrier(cb, g_u.output.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, UPSCALER_WROTE,
                VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL);
+}
+/* After a call the library was entered in, for a target of the scene: an explicit barrier from "written by any
+   command" in the layout it was handed in and must be back in, and the renderer's tracker is told that state,
+   which it knows as a write. The target's next use, whatever it is, is then ordered behind the library. */
+static void upscaler_took(VkCommandBuffer cb, Surf* s) {
+    vk_barrier_layers(cb, s->img, vk_aspect(&s->f), s->base_layer, VK_REMAINING_ARRAY_LAYERS,
+                      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, UPSCALER_WROTE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, UPSCALER_ANY_ACCESS,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    s->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    s->stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    s->access = UPSCALER_ANY_ACCESS;
 }
 static int upscaler_prepare(VkCommandBuffer cb, void* user) {
     const UpscalerCall* c = user;
@@ -2855,16 +2869,16 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         .fov_y = camera[2]};
     UpscalerCall call = {g_u.live, &handed, scene, depth};
     const int recorded = vk_rec_direct(cb, upscaler_before, upscaler_evaluate, &call);
-    /* On every path out of a call the library was entered in: the images it was handed are taken over as last
-       used by all commands. The scene's targets through the renderer's tracking, so that their next use is
-       ordered behind it, and the private output for the write-back's read. */
+    /* On every path out of a call the library was entered in, each image it was handed gets a barrier of its own
+       from "written by any command", so that whatever the library wrote is available to what comes next. */
     if (recorded == VK_REC_DIRECT_OK || recorded == VK_REC_DIRECT_REFUSED) {
-        vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                    UPSCALER_ANY_ACCESS);
-        vk_surf_use(cb, depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                    UPSCALER_ANY_ACCESS);
-        vk_barrier(cb, g_u.output.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                   UPSCALER_ANY_ACCESS, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        upscaler_took(cb, scene);
+        upscaler_took(cb, depth);
+        vk_barrier(cb, g_t.motion.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, UPSCALER_WROTE,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, UPSCALER_ANY_ACCESS,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        vk_barrier(cb, g_u.output.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, UPSCALER_WROTE,
+                   VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
     if (recorded != VK_REC_DIRECT_OK) {
@@ -3082,7 +3096,7 @@ void vk_temporal_before(u64 fs0_hash) {
     /* with an upscaler the motion image was handed to a library a frame ago: its last use is every command's */
     vk_barrier(cb, g_t.motion.img, VK_IMAGE_ASPECT_COLOR_BIT,
                upscaler_on() ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-               upscaler_on() ? UPSCALER_ANY_ACCESS : 0, VK_IMAGE_LAYOUT_UNDEFINED,
+               upscaler_on() ? UPSCALER_WROTE : 0, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     {

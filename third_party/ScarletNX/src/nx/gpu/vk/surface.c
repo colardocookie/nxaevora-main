@@ -151,12 +151,13 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
         s->access = access;
         return;
     }
-    int writes = (access & (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
-                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
-                            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)) != 0;
-    int wrote = (s->access & (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
-                              VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
-                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)) != 0;
+    /* every access that writes. MEMORY_WRITE is the catch-all a caller names for work it did not record itself
+       (a library's): no use the renderer asks for by itself has it. */
+    const VkAccessFlags2 writing = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                                   VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
+                                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    int writes = (access & writing) != 0;
+    int wrote = (s->access & writing) != 0;
     if (s->layout == layout && !writes && !wrote) {
         /* read after read in the same layout needs no barrier, unless the reader is in a stage the barrier that made
            the last write visible didn't name (a copy after a blit read it): a barrier from the earlier readers
