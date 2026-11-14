@@ -2584,18 +2584,36 @@ void vk_temporal_upscaler_poll(void) {
 
 /* At every place where the runtime records as usual (the gate's draw, the hook), before anything else of the
    upscaler: the recorder's mark is read, context on its way or not, and a stop the recycle noted is acted on.
-   Either is a stop for the session: the context on its way is kept, never used and never freed. 1 when the
-   upscaler may go on. */
+   Either is a stop for the session. 1 when the upscaler may go on. When it is off this is also where a
+   context on its way is released, once its submission has completed. It publishes nothing. */
 static int upscaler_guard(u32 frame) {
-    const int noted = temporal_upscaler_noted(g_u.pending ? g_u.noted : TEMPORAL_UPSCALER_WAIT, vk_rec_submit_failed());
-    if (noted != TEMPORAL_UPSCALER_STOP) return !g_u.health.off;
-    g_u.pending = NULL;
-    g_u.noted = TEMPORAL_UPSCALER_WAIT;
-    /* the poll's STOP is the outcome STOPPED: nothing is published and nothing is freed */
-    if (!g_u.health.off)
-        upscaler_outcome(frame, 0, TEMPORAL_UPSCALER_STOPPED,
-                         g_u.unread >= TEMPORAL_UPSCALER_UNREAD ? "the timeline could not be read eight times"
-                                                                : "a submission did not run as recorded");
+    const int failed = vk_rec_submit_failed();
+    const int noted = temporal_upscaler_noted(g_u.pending ? g_u.noted : TEMPORAL_UPSCALER_WAIT, failed);
+    if (noted == TEMPORAL_UPSCALER_STOP) {
+        const char* why = failed ? "a submission did not run as recorded"
+                                 : "the timeline could not be read eight times in a row";
+        /* With the mark set the context is kept to the end of the session. When only the timeline could not
+           be read its completion is still looked for, so that it can be released once it is known. */
+        if (failed) g_u.pending = NULL;
+        g_u.noted = TEMPORAL_UPSCALER_WAIT;
+        g_u.unread = 0;
+        /* the poll's STOP is the outcome STOPPED: nothing is published and nothing is freed */
+        if (!g_u.health.off) upscaler_outcome(frame, 0, TEMPORAL_UPSCALER_STOPPED, why);
+        return 0;
+    }
+    if (!g_u.health.off) return 1;
+    /* Off: nothing is published and nothing is used. Retirement goes on: a context whose submission is noted
+       as completed, with the mark clear, is released through the queue for after the frames in flight. */
+    if (g_u.pending && temporal_upscaler_retire(1, noted, failed)) {
+        SnxUpscaler* context = g_u.pending;
+        g_u.pending = NULL;
+        g_u.noted = TEMPORAL_UPSCALER_WAIT;
+        const int fate = temporal_upscaler_completed(&g_u.contexts, &g_u.wanted);
+        /* after the stop it can only be stale or released: were it ever published, it is taken back at once */
+        if (fate == TEMPORAL_UPSCALER_PUBLISHED || fate == TEMPORAL_UPSCALER_RETIRE)
+            temporal_upscaler_stop(&g_u.contexts);
+        vk_defer_call(upscaler_destroy, context);
+    }
     return 0;
 }
 

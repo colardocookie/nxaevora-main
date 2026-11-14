@@ -1480,6 +1480,13 @@ static inline int temporal_upscaler_used_same(const TemporalUpscalerUsed* u, uns
    recorder's mark is read again there, pending context or not, and outranks the note: a context noted as
    completed is not published once a submission did not run as recorded. */
 static inline int temporal_upscaler_noted(int noted, int failed) { return failed ? TEMPORAL_UPSCALER_STOP : noted; }
+/* Off means no publication, no jitter and no evaluate. Retirement goes on: 1 when the context on its way may be
+   released while the upscaler is off, which is when its submission is noted as completed and the recorder's
+   mark is clear. With the mark set everything is kept to the end of the session. It never publishes: after
+   temporal_upscaler_stop a completion gives STALE or RELEASE only. */
+static inline int temporal_upscaler_retire(int off, int noted, int failed) {
+    return off && !failed && noted == TEMPORAL_UPSCALER_COMPLETED;
+}
 /* The colour target as a hook sees it. Only a target that may be handed to a library keeps a layer count: one
    layer, at the image's first layer, not a member of a shared array. Any other is kept with a count of 0, which
    no decision and no configuration takes. */

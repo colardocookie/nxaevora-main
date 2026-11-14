@@ -2677,6 +2677,41 @@ static void test_upscaler_wiring(void) {
         assert(temporal_upscaler_completed(&by_decision, &a) == TEMPORAL_UPSCALER_RETIRE);
         assert(!temporal_upscaler_ready(&by_decision, &b));
     }
+    /* Off, and retirement goes on. A context on its way when a stop came, and one whose prepare was refused:
+       with the mark clear and the completion noted each is released, and neither is ever published. With the
+       mark set nothing is released. While the upscaler is on this path is not taken. */
+    {
+        const TemporalUpscalerConfig config = {3840, 2160, 3840, 2160, 3840, 2160, 3};
+        assert(temporal_upscaler_retire(1, TEMPORAL_UPSCALER_COMPLETED, 0) == 1);
+        assert(temporal_upscaler_retire(1, TEMPORAL_UPSCALER_COMPLETED, 1) == 0); /* the mark: kept */
+        assert(temporal_upscaler_retire(1, temporal_upscaler_noted(TEMPORAL_UPSCALER_COMPLETED, 1), 1) == 0);
+        assert(temporal_upscaler_retire(1, TEMPORAL_UPSCALER_WAIT, 0) == 0);      /* not completed yet */
+        assert(temporal_upscaler_retire(1, TEMPORAL_UPSCALER_STOP, 0) == 0);
+        assert(temporal_upscaler_retire(0, TEMPORAL_UPSCALER_COMPLETED, 0) == 0); /* on: settled, not retired */
+        for (int refused = 0; refused < 2; refused++) {
+            TemporalUpscalerContexts c = {0};
+            TemporalUpscalerHealth h = {0};
+            temporal_upscaler_created(&c, &config, !refused);
+            assert(temporal_upscaler_after(&h, 0, TEMPORAL_UPSCALER_STOPPED) == 1);
+            assert(temporal_upscaler_stop(&c) == 0); /* nothing was in use */
+            assert(c.pending == (refused ? 2 : 3));
+            assert(temporal_upscaler_retire(h.off, TEMPORAL_UPSCALER_COMPLETED, 0));
+            /* held against the very configuration it was made for, it is still not published */
+            assert(temporal_upscaler_completed(&c, &config) ==
+                   (refused ? TEMPORAL_UPSCALER_RELEASE : TEMPORAL_UPSCALER_STALE));
+            assert(!c.live && !c.pending && !temporal_upscaler_ready(&c, &config));
+            assert(temporal_upscaler_decide(&h, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_ON);
+        }
+        /* one that was in use when the stop came goes too (the stop says so), and the one on its way after it */
+        TemporalUpscalerContexts c = {0};
+        temporal_upscaler_created(&c, &config, 1);
+        assert(temporal_upscaler_completed(&c, &config) == TEMPORAL_UPSCALER_PUBLISHED);
+        TemporalUpscalerConfig next = config;
+        next.generation = 4;
+        temporal_upscaler_created(&c, &next, 1);
+        assert(temporal_upscaler_stop(&c) == 1 && !c.live && c.pending == 3);
+        assert(temporal_upscaler_completed(&c, &next) == TEMPORAL_UPSCALER_STALE && !c.live);
+    }
     /* The colour a decision counts on: only the frame before's, seen at its hook. */
     {
         const TemporalUpscalerColour seen = {100, 122, 1, 3840, 2160};

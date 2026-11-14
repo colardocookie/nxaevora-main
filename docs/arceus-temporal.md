@@ -542,8 +542,10 @@ without jitter between them not counting either way, turn the upscaler off for t
 at once when a pass of ours that the hand-over needs cannot be made, when a submission did not run as
 recorded, when a context's prepare fails, and when the timeline cannot be read eight recycles in a row. Off is
 for good: no frame is drawn with jitter any more and every frame is left as the game draws it. It does not
-fall back to our own resolve. A context is destroyed only after the frames in flight, and never once a
-submission did not run as recorded or a wait for the timeline failed (that sets the same mark). A frame has one
+fall back to our own resolve. Off means no publication, no jitter and no evaluate. Retirement goes on: a
+context that was in use when it stopped, and one on its way once its submission has completed, are released
+after the frames in flight. Only once a submission did not run as recorded, or a wait for the timeline failed
+(that sets the same mark), is nothing destroyed any more, to the end of the session. A frame has one
 fate in the counts, the first reported for it, and is counted in one window with its decision.
 
 Limits of this piece: FSR only, the formats the self-test ran (a B10G11R11 scene colour, a D24S8 depth), one
