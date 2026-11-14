@@ -55,7 +55,8 @@ where the camera block is and whether the neighbouring slot holds last frame's v
 with the viewport and depth range used. Skipped frames are counted with the reason.
 
 With `probe` or `taa`, read only and for the log alone, three readers of the scene are described in every 600th
-frame: the copy of the scene colour, the blur's preparation and the composite, known by their fragment programs.
+frame: the copy of the scene colour, the blur's preparation and the composite, known by their fragment programs
+(the whole 64 bit hash, as the census prints it).
 For each, the first draw of that frame that is recorded. The renderer can set a draw up more than once before it
 records it, and can skip it: the lines are printed where the draw is recorded, once, and a draw that was set up
 and not recorded gets one line that says so, and a description that is replaced by a new setup of the same

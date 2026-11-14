@@ -2282,6 +2282,17 @@ static void test_projection_camera(void) {
     }
 }
 
+/* the readers' probe: its programs by their whole hashes as the census prints them, and not by either half */
+static void test_readers_program(void) {
+    assert(temporal_readers_program(0x21fbfbecbf90f4a3ull) == 0);
+    assert(temporal_readers_program(0xb46268adda62e218ull) == 1);
+    assert(temporal_readers_program(0x8a160a27d90af72dull) == 2);
+    assert(temporal_readers_program(0x63b3848c1a6e23e0ull) == 2);
+    assert(temporal_readers_program(0x21fbfbecull) == -1 && temporal_readers_program(0xbf90f4a3ull) == -1);
+    assert(temporal_readers_program(0x21fbfbec00000000ull) == -1);
+    assert(temporal_readers_program(0x21fbfbecbf90f4a2ull) == -1 && temporal_readers_program(0) == -1);
+}
+
 /* the line of the images handed to the library: when it is said */
 static void test_upscaler_handed(void) {
     TemporalUpscalerHanded h = {0};
@@ -5160,6 +5171,7 @@ int main(void) {
     test_upscaler_output_fits();
     test_validation_lines();
     test_upscaler_handed();
+    test_readers_program();
     test_upscaler_wiring();
     test_jitter_conformance();
     test_gpu_time();

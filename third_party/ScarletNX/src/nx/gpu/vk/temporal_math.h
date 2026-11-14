@@ -1374,6 +1374,16 @@ static inline int temporal_upscaler_handed(TemporalUpscalerHanded* h, const unsi
     h->context = context;
     return ++h->said == TEMPORAL_UPSCALER_HANDED_MOST ? TEMPORAL_UPSCALER_HANDED_LAST : TEMPORAL_UPSCALER_HANDED_SAY;
 }
+/* For the log alone: which of the three readers of the scene a fragment program is, by its whole 64 bit hash as
+   the census prints it, or -1. 0 the copy of the scene colour, 1 the blur's preparation, 2 the composite, which
+   has two programs. */
+static inline int temporal_readers_program(unsigned long long hash) {
+    static const unsigned long long programs[4] = {0x21fbfbecbf90f4a3ull, 0xb46268adda62e218ull,
+                                                   0x8a160a27d90af72dull, 0x63b3848c1a6e23e0ull};
+    for (int k = 0; k < 4; k++)
+        if (hash == programs[k]) return k < 3 ? k : 2;
+    return -1;
+}
 /* Whether the upscaler is still on in this session. off is a latch: once set, by a stop or by eight frames in a
    row that were drawn with jitter and not evaluated, nothing clears it, and only a new session starts clean. */
 typedef struct {

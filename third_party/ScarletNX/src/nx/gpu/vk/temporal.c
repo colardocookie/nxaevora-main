@@ -1333,9 +1333,9 @@ static int stats_ready(void) {
    of a frame has the camera, a write to the scene colour gives its surface, and the first draw that samples the
    scene colour names the program before which the probe runs from the next frame on. */
 /* Read only, for the log alone, with probe or taa: what three readers of the scene are drawn with. In every
-   600th frame, for the first draw of each of these fragment programs that is recorded (by the low 32 bits of
-   its hash, the composite under either of its two), lines that begin "arceus-temporal-readers:" and name the
-   frame and the program. No draw is changed. */
+   600th frame, for the first recorded draw of each of their fragment programs (by the whole 64 bit hash,
+   temporal_readers_program, the composite under either of its two), lines that begin "arceus-temporal-readers:"
+   and name the frame and the program. No draw is changed. */
 #define READERS_TEXTURES 16
 static struct {
     int pending, which; /* a reader's draw is described here, and whether it is recorded is not known yet */
@@ -1375,16 +1375,13 @@ static size_t readers_words(char* line, size_t at, size_t room, const GpuChannel
    (vk_temporal_recorded), for the draw that is, once. */
 static void readers_note(u32 frame, const GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* const* sampled,
                          const u32* const* tic, const u32* const* tsc, int nt, Surf* const* rt, u32 n) {
-    static const u32 programs[4] = {0x21FBFBECu, 0xB46268ADu, 0x8A160A27u, 0x63B3848Cu};
     static const char* const names[3] = {"copy of the scene colour", "blur prepare", "composite"};
     static const u32 scene[13] = {0x628, 0x62C, 0x670, 0x674, 0x710, 0x714, 0x718,
                                   0x71C, 0x720, 0x724, 0x728, 0x794, 0x798};
     static const u32 fraction[2] = {0x628, 0x62C};
     static const u32 first[16] = {0x0,  0x4,  0x8,  0xC,  0x10, 0x14, 0x18, 0x1C,
                                   0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x3C};
-    int which = -1;
-    for (int k = 0; fs0 && !(frame % 600) && k < 4; k++)
-        if ((u32)fs0->hash == programs[k]) which = k < 3 ? k : 2;
+    const int which = fs0 && !(frame % 600) ? temporal_readers_program(fs0->hash) : -1;
     /* A reader's draw was described and another draw begins: of another program, so that one was not recorded.
        The same program again is the same draw set up once more, or the reader's next, and which is not known
        here: it is described anew, and the description that is replaced gets a line and is counted. */
