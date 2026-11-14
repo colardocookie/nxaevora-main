@@ -11,6 +11,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/upscaler_needs.h"
+#include "nx/gpu/vk/validation_lines.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
 
@@ -59,16 +60,31 @@ int vk_ok_(VkResult r, const char* what, const char* file, int line) {
 }
 
 u32 g_vk_validation_messages;
+/* With the validation option, log only: what a report of a run keeps, under a prefix of its own
+   (validation_lines.h). The lock is a word beside the state. It covers the tables, the counters and the
+   counter above, which goes up under it. A callback can come before the status lines are written. */
+static ValidationLines g_validation;
+static int g_validation_lock;
+static void validation_line(void* user, const char* line) {
+    (void)user;
+    /* what was not got and what was lost are warnings, the rest are plain lines */
+    if (strstr(line, "NOT ") || !strncmp(line, "LIMIT MET", 9) || !strncmp(line, "no message callback", 19))
+        WARN("arceus-validation: %s\n", line);
+    else
+        LOG("arceus-validation: %s\n", line);
+}
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev,
                                                VkDebugUtilsMessageTypeFlagsEXT type,
                                                const VkDebugUtilsMessengerCallbackDataEXT* d, void* user) {
     (void)type;
     (void)user;
-    g_vk_validation_messages++;
+    /* the inherited line, as it was */
     if (sev & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
         WARN("vulkan validation: %s\n", d->pMessage);
     else
         LOG("vulkan validation: %s\n", d->pMessage);
+    validation_lines_said(&g_validation_lock, &g_validation, &g_vk_validation_messages, d->pMessageIdName,
+                          d->messageIdNumber, d->pMessage, validation_line, NULL);
     return VK_FALSE;
 }
 
@@ -98,38 +114,27 @@ static int create_instance(void) {
     if (info.validation && !made.validation)
         WARN("vulkan: validation was asked for (vk_validation), but "
              "VK_LAYER_KHRONOS_validation is not installed\n");
-    /* With the validation option: what a run with it really has, each in a line of its own. That no warning
-       above is printed says nothing about a callback that works. */
-    if (info.validation && made.validation) {
-        LOG("vulkan validation: the layer VK_LAYER_KHRONOS_validation is enabled\n");
-        if (made.synchronization)
-            LOG("vulkan validation: its synchronisation checks were asked for and the instance is made with them\n");
-        else {
-            /* each way of not having them has its own words */
-            static const char* const why[] = {"",
-                                              "the layer's list of extensions, read whole, does not hold it",
-                                              "the layer's list stayed incomplete after three tries, so whether "
-                                              "it holds it is not known",
-                                              "the call for the count of the layer's extensions failed",
-                                              "the call for the list of the layer's extensions failed",
-                                              "there was no memory for the list of the layer's extensions, so "
-                                              "the call for it was not made"};
-            /* a result is printed only for a call that was made: with no memory for the list none was */
-            if (made.synchronization_why == SNX_VK_LAYER_NO_MEMORY)
-                WARN("vulkan validation: its synchronisation checks were NOT asked for (%s): %s\n",
-                     VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, why[made.synchronization_why]);
-            else
-                WARN("vulkan validation: its synchronisation checks were NOT asked for (%s): %s (the last call's "
-                     "result %s, %d)\n", VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, why[made.synchronization_why],
-                     snx_vk_result_str(made.synchronization_result), (int)made.synchronization_result);
-        }
-        if (made.messenger_asked && made.messenger_result == VK_SUCCESS)
-            LOG("vulkan validation: the message callback is ready\n");
-        else if (made.messenger_asked)
-            WARN("vulkan validation: the message callback could NOT be made (%s, %d): no message of the layer "
-                 "will be seen in this run\n", snx_vk_result_str(made.messenger_result), (int)made.messenger_result);
-        else
-            WARN("vulkan validation: no message callback was asked for: no message of the layer will be seen\n");
+    /* With the validation option: what a run with it really has, each in a line of its own under the prefix a
+       report keeps. That no warning above is printed says nothing about a callback that works. */
+    if (info.validation) {
+        /* each way of not having the synchronisation checks has its own words */
+        static const char* const why[] = {"",
+                                          "the layer's list of extensions, read whole, does not hold it",
+                                          "the layer's list stayed incomplete after three tries, so whether it "
+                                          "holds it is not known",
+                                          "the call for the count of the layer's extensions failed",
+                                          "the call for the list of the layer's extensions failed",
+                                          "there was no memory for the list of the layer's extensions, so the "
+                                          "call for it was not made"};
+        /* a result is printed only for a call that was made: with no memory for the list none was */
+        validation_lines_lock(&g_validation_lock);
+        validation_lines_status(made.validation, made.synchronization, why[made.synchronization_why],
+                                made.synchronization_why != SNX_VK_LAYER_NO_MEMORY,
+                                snx_vk_result_str(made.synchronization_result), (int)made.synchronization_result,
+                                !made.messenger_asked ? -1 : made.messenger_result == VK_SUCCESS,
+                                snx_vk_result_str(made.messenger_result), (int)made.messenger_result,
+                                validation_line, NULL);
+        validation_lines_unlock(&g_validation_lock);
     }
     g_vk.instance = made.instance;
     g_vk.debug = made.messenger;

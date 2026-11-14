@@ -581,14 +581,49 @@ and undefined-behaviour sanitizers, and a callback thread against the counts und
 ## A run of the game under the validation layer
 
 The runtime has its own option for the validation layer (the setting `vulkan_validation_layer`). With it on, the
-game's instance now also asks for the layer's synchronisation checks, through the extension the layer lists for
-its features, and the log says in lines of their own what the run really has: that the layer is enabled, whether
-the synchronisation checks were asked for and the instance is made with them (and if not, which of these it
-was: the layer's list does not hold the extension, the list stayed incomplete, a call failed, or there was no
-memory for the list), and whether the message callback is ready or could not be made, with the result. That
-no "not installed" warning is printed says nothing about a
-callback that works: a run counts as made under the layer only with those lines. What the layer then does with
-the checks cannot be read back. Without the option nothing changes and no line is printed.
+game's instance also asks for the layer's synchronisation checks, through the extension the layer lists for its
+features. Everything below is log only and under that option only. Without the option nothing changes and no
+line is printed.
+
+A report of a run keeps the lines that begin with `arceus-`. So what a run under the layer has is said under the
+prefix `arceus-validation: `, each fact in a line of its own: that the layer is enabled (or that it is not
+installed), whether the synchronisation checks were asked for and the instance is made with them (and if not,
+which of these it was: the layer's list does not hold the extension, the list stayed incomplete, a call failed,
+or there was no memory for the list), and whether the message callback is ready or could not be made, with the
+result. That no "not installed" warning is printed says nothing about a callback that works: a run counts as
+made under the layer only with those three lines. What the layer then does with the checks cannot be read back.
+
+Each callback of the layer keeps the line it always had (`vulkan validation: ...`). Under the new prefix
+(`validation_lines.h`, host-tested):
+
+- A callback is printed whole on one line when it is the first of its rule, the first that names a variable's
+  name not seen before, or has no match of the pattern at all (those up to 64, counted beyond). So a new rule or
+  a new name is printed when it first occurs, however late in the run. Bytes outside printable ASCII and
+  backslashes are written as the self-test's marks. A line holds 1800 bytes at most after the marks, and a text
+  that does not fit is cut with the cut said and what is in the line counted.
+- Rules are told apart by their whole name and their number, 32 of them with names up to 127 characters.
+  Variable names are found by the layer's own pattern in the raw text (the word variable and a quoted name), 64
+  of them up to 63 characters, in the first 1 MiB of a text. They are names of variables by a pattern. A new
+  name is "a variable's name not seen before", never a new image, and a name does not show whose image is bound.
+- Every callback is counted, in 64 bits. A counter that reaches its largest value stays there and says so. Count
+  lines are written when the count reaches 1, 2, 4, 8 and so on, with the total, every limit met so far, and
+  each listed rule's count on a line of its own. The game has no orderly end at which a last count could be
+  printed, so the last count line of a log is within a factor of two of the callbacks received.
+- Each way something can be lost prints a line of its own (`LIMIT MET, first at callback N: ...`) the first time
+  it happens: a rule without a name, a rule's name too long, the rules table full, a variable's name too long,
+  the names table full, a quoted name that does not close, a text not looked through to its end, the first
+  callback without a match that is not printed any more, the first printed line that was cut, and a counter
+  that stopped. The count lines repeat the state.
+- One lock of its own, a word beside the state and never copied with it, covers the tables, the counters and
+  the inherited counter of messages. The lines are written under it. A callback that arrives before the status
+  lines, while the instance or the callback is being made, is handled like any other.
+
+What may be concluded from a log. "Only these rules, on these names" needs the three status lines, no `LIMIT
+MET` line, and no callback without a match left unprinted. That no callback arrived needs the whole log and
+holds only for warnings and errors, the severities the callback is registered for. Callback and count lines are
+to be looked for anywhere in the log, also before the status lines. The layer itself stops reporting a rule
+after ten repeats unless that limit is off, which bounds what the tables can show: the first run of the game
+under the layer had 62 callbacks, 57 findings and 5 of the layer's stop notices.
 
 ## The game's device and an adapter's needs
 
