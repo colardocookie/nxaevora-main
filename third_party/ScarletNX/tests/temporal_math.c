@@ -2011,6 +2011,40 @@ static void test_upscaler(void) {
     other = scaled_stamp;
     other.out_w = 2560;
     assert(temporal_upscaler_frame(&g, 16, &other, &part, jitter, 0, &out) && out.reset && out.out_w == 2560);
+    /* A rectangle the game does not make: 320 by 180 at 40,30 of images of 400 by 240, with either sign of the
+       height. The game's rules refuse it at every step, and stay as they are. The conversion alone takes it, so
+       a test of an adapter can hand it on without the gate. */
+    for (int up = 0; up < 2; up++) {
+        const TemporalViewport crop = {40.0f, up ? 210.0f : 30.0f, 320.0f, up ? -180.0f : 180.0f};
+        const TemporalRectStamp crop_stamp = {1, 1, 400, 240, 640, 360, {40, 30, 320, 180}, 0.8f, 0.75f};
+        const TemporalSceneBlock crop_block = {1, 1, 0.8f, 0.75f};
+        const TemporalRectState by_hand = {{40, 30, 320, 180}, crop, 400, 240, 0.8f, 0.75f};
+        const double crop_jitter[2] = {0.5 / 320.0, 0.75 / 180.0};
+        TemporalRectState crop_state;
+        TemporalRectGate h;
+        TemporalUpscalerFrame numbers;
+        assert(temporal_rect_geometry(&crop, 400, 240, TEMPORAL_CORNER_TOP_LEFT, &crop_state) == TEMPORAL_RECT_SHAPE);
+        assert(temporal_rect_fraction(&by_hand, 0.8f, 0.75f) == TEMPORAL_RECT_UNEQUAL);
+        memset(&h, 0, sizeof h);
+        for (unsigned frame = 50; frame < 54; frame++) {
+            temporal_rect_decide(&h, frame, &by_hand, 0);
+            assert(temporal_rect_confirm(&h, frame, NULL, &crop_block) == TEMPORAL_FRAME_NONE && !h.have_candidate);
+            assert(!temporal_upscaler_frame(&h, frame, &crop_stamp, &crop, crop_jitter, 0, &numbers));
+        }
+        for (int reset = 0; reset < 2; reset++) {
+            assert(temporal_upscaler_numbers(&crop_stamp, &crop, crop_jitter, reset, &numbers));
+            assert(numbers.render.x == 40 && numbers.render.y == 30 && numbers.render.w == 320);
+            assert(numbers.render.h == 180 && numbers.target_w == 400 && numbers.target_h == 240);
+            assert(numbers.out_w == 640 && numbers.out_h == 360 && numbers.reset == reset);
+            assert(close_to(numbers.jitter[0], 0.25, 1e-9) && close_to(numbers.jitter[1], up ? -0.375 : 0.375, 1e-9));
+            assert(numbers.vector_scale[0] == -400.0 && numbers.vector_scale[1] == -240.0);
+        }
+        /* the conversion's own refusals: a viewport that is not the stamp's rectangle, a jitter over a pixel */
+        const TemporalViewport elsewhere = {41.0f, crop.y, 320.0f, crop.height};
+        const double far_jitter[2] = {4.0 / 320.0, 0.0};
+        assert(!temporal_upscaler_numbers(&crop_stamp, &elsewhere, crop_jitter, 0, &numbers));
+        assert(!temporal_upscaler_numbers(&crop_stamp, &crop, far_jitter, 0, &numbers));
+    }
     /* a stamp of another fraction than the frame's is not the frame's: nothing is given */
     other = scaled_stamp;
     other.fx = other.fy = 0.7501f;

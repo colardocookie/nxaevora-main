@@ -70,6 +70,7 @@ typedef struct {
     u32 *colour, *depth;
     u16* motion;
     int cut_at;          /* the frame whose pattern is new, -1 for none */
+    int ungated;         /* a shape the game does not make: not put through the game's gate (frame_run) */
 } Inputs;
 
 /* the signs a variant turns, and the depth convention it claims */
@@ -84,6 +85,7 @@ typedef struct {
     TemporalUpscalerContexts contexts;
     SnxUpscaler *live, *pending;
     unsigned frame, failures, skipped, evaluated, published; /* published: contexts that came into use */
+    unsigned wrote; /* the last frame an ungated run evaluated, 0 for none */
     Picture colour, depth, motion, output; /* what the adapter is handed */
     Picture wide_colour, wide_depth, wide_motion; /* for inputs that sit inside larger images */
 } Session;
@@ -602,10 +604,19 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     /* the scene block as the first scene draw's fragment program would read it */
     const TemporalSceneBlock block = {1, 1, state.fx, state.fy};
     const double jitter[2] = {in->scene[i].jitter[0], in->scene[i].jitter[1]};
-    temporal_rect_decide(&s->gate, s->frame, &state, 0);
-    temporal_rect_confirm(&s->gate, s->frame, NULL, &block);
-    if (!temporal_upscaler_frame(&s->gate, s->frame, &stamp, &state.viewport, jitter, cut, &numbers) ||
-        !temporal_upscaler_camera(NEAR_PLANE, (double)INFINITY, FOV_Y, FRAME_SECONDS, 1, camera)) {
+    int given;
+    if (in->ungated) {
+        /* The game's gate takes only shapes the game makes. A rectangle elsewhere in images of other proportions
+           is for the conversion and the adapter alone, so it goes straight to them. The first frame is left out
+           and a frame after one that was not evaluated has the reset, as in a run through the gate. */
+        given = s->frame > 1 && temporal_upscaler_numbers(&stamp, &state.viewport, jitter,
+                                                          cut || s->wrote + 1 != s->frame, &numbers);
+    } else {
+        temporal_rect_decide(&s->gate, s->frame, &state, 0);
+        temporal_rect_confirm(&s->gate, s->frame, NULL, &block);
+        given = temporal_upscaler_frame(&s->gate, s->frame, &stamp, &state.viewport, jitter, cut, &numbers);
+    }
+    if (!given || !temporal_upscaler_camera(NEAR_PLANE, (double)INFINITY, FOV_Y, FRAME_SECONDS, 1, camera)) {
         s->skipped++;
         return 0;
     }
@@ -681,7 +692,10 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     if (temporal_upscaler_failed(&s->failures, evaluated && done == 1))
         LOG(ST "the adapter failed eight times in a row\n");
     if (!evaluated || done != 1) return -1;
-    temporal_rect_wrote(&s->gate, s->frame, &stamp);
+    if (in->ungated)
+        s->wrote = s->frame;
+    else
+        temporal_rect_wrote(&s->gate, s->frame, &stamp);
     s->evaluated++;
     const u16* words = (const u16*)g.staging_bytes;
     for (size_t p = 0; p < (size_t)in->ow * in->oh; p++)
@@ -950,7 +964,13 @@ static int suite(int up) {
     ok = !not_run("case 6", up) && inputs_make(&in, SIZES, 400, 240, 40, 30, up, pan, 0, 0);
     if (ok) {
         Inputs tight;
-        ok = inputs_make(&tight, SIZES, RENDER_W, RENDER_H, 0, 0, up, pan, 0, 0) &&
+        /* 320x180 at 40,30 of 400x240 is no shape of the game's, whose gate would refuse it every frame */
+        LOG(ST "case 6 %s: both runs are handed to the conversion and the adapter without the game's rectangle "
+               "gate\n", up ? "up" : "down");
+        in.ungated = 1;
+        ok = inputs_make(&tight, SIZES, RENDER_W, RENDER_H, 0, 0, up, pan, 0, 0);
+        tight.ungated = 1;
+        ok = ok &&
              run(&in, &CONFIGURED, 0, output, NULL, NULL, NULL, NULL) &&
              run(&tight, &CONFIGURED, 0, other, NULL, NULL, NULL, NULL);
         memset(regions, SELFTEST_BACKGROUND, pixels);

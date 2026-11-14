@@ -925,19 +925,14 @@ typedef struct {
     double jitter[2], vector_scale[2];
     int reset; /* the upscaler must not use what it kept */
 } TemporalUpscalerFrame;
-/* 1 with the numbers when the frame may be given to the upscaler: it is steady, the viewport is its own, the sizes
-   are positive and the jitter is finite and within a pixel each way, so every number handed on is a small one.
-   Reset when no history of the frame before may be used (temporal_rect_history) or the camera cut. 0: the frame is
-   not evaluated and is left as drawn. Whoever evaluates with success calls temporal_rect_wrote. */
-static inline int temporal_upscaler_frame(const TemporalRectGate* g, unsigned frame, const TemporalRectStamp* stamp,
-                                          const TemporalViewport* viewport, const double jitter[2], int cut,
-                                          TemporalUpscalerFrame* out) {
+/* The conversion alone, which knows nothing of the game: any rectangle of the images, from its viewport. 1 with
+   the numbers when the viewport is the stamp's rectangle, the sizes are positive and the jitter is finite and
+   within a pixel each way, so every number handed on is a small one. reset is handed on as given. */
+static inline int temporal_upscaler_numbers(const TemporalRectStamp* stamp, const TemporalViewport* viewport,
+                                            const double jitter[2], int reset, TemporalUpscalerFrame* out) {
     TemporalRect r;
-    if (!temporal_rect_steady(g, frame) || !temporal_viewport_same(viewport, &g->now.viewport)) return 0;
     if (!temporal_rect_from_viewport(viewport, stamp->target_w, stamp->target_h, &r)) return 0;
-    if (!temporal_rect_same(&r, &g->now.rect) || !temporal_rect_same(&r, &stamp->rect)) return 0;
-    if (stamp->target_w != g->now.target_w || stamp->target_h != g->now.target_h) return 0;
-    if (stamp->fx != g->now.fx || stamp->fy != g->now.fy) return 0;
+    if (!temporal_rect_same(&r, &stamp->rect)) return 0;
     if (stamp->out_w <= 0 || stamp->out_h <= 0 || !isfinite(jitter[0]) || !isfinite(jitter[1])) return 0;
     /* the jitter in pixels as well: finite, and no more than a pixel, or it is no jitter */
     double shift[2];
@@ -952,8 +947,21 @@ static inline int temporal_upscaler_frame(const TemporalRectGate* g, unsigned fr
     out->jitter[1] = shift[1];
     out->vector_scale[0] = -(double)stamp->target_w;
     out->vector_scale[1] = -(double)stamp->target_h;
-    out->reset = cut || !temporal_rect_history(g, frame, stamp);
+    out->reset = reset;
     return 1;
+}
+/* 1 with the numbers when the game's frame may be given to the upscaler: it is steady and the viewport and the
+   stamp are its own (temporal_upscaler_numbers for the rest). Reset when no history of the frame before may be
+   used (temporal_rect_history) or the camera cut. 0: the frame is not evaluated and is left as drawn. Whoever
+   evaluates with success calls temporal_rect_wrote. */
+static inline int temporal_upscaler_frame(const TemporalRectGate* g, unsigned frame, const TemporalRectStamp* stamp,
+                                          const TemporalViewport* viewport, const double jitter[2], int cut,
+                                          TemporalUpscalerFrame* out) {
+    if (!temporal_rect_steady(g, frame) || !temporal_viewport_same(viewport, &g->now.viewport)) return 0;
+    if (!temporal_rect_same(&g->now.rect, &stamp->rect)) return 0;
+    if (stamp->target_w != g->now.target_w || stamp->target_h != g->now.target_h) return 0;
+    if (stamp->fx != g->now.fx || stamp->fy != g->now.fy) return 0;
+    return temporal_upscaler_numbers(stamp, viewport, jitter, cut || !temporal_rect_history(g, frame, stamp), out);
 }
 /* The camera's numbers and the frame time, checked after the frame's numbers are made and before every dispatch
    to an upscaler. out gets the four floats that are handed on: near, far, the field of view and the frame time
