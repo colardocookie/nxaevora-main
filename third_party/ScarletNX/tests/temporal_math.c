@@ -3,6 +3,7 @@
 /* The arithmetic of the temporal passes (gpu/vk/temporal_math.h): the jitter, an object's vector matrices and the
    resolve's filter, clip and weights. */
 #include "nx/gpu/vk/temporal_math.h"
+#include "nx/gpu/vk/upscaler_selftest.h"
 #include <assert.h>
 #include <stdio.h>
 
@@ -1970,6 +1971,168 @@ static void test_upscaler(void) {
     assert(failures == TEMPORAL_UPSCALER_FAILURES);
 }
 
+/* The upscaler self-test's oracle (upscaler_selftest.h), checked against places and values worked out by hand. It
+   shares nothing with the conversion it is there to judge. */
+static void st_colour(const SelftestFrame* f, const SelftestViewport* v, int x, int y, double rgb[3]) {
+    double depth, texel[2];
+    selftest_input(f, v, 640, 360, x, y, rgb, &depth, texel);
+}
+static void test_selftest(void) {
+    const SelftestViewport down = {0, 0, 640, 360}, up = {0, 360, 640, -360};
+    double n[2], p[2], a[3], b[3], depth, texel[2];
+    /* a viewport and its inverse, with a positive and a negative height */
+    selftest_ndc(&down, 160, 90, n);
+    assert(close_to(n[0], -0.5, 1e-12) && close_to(n[1], -0.5, 1e-12));
+    selftest_ndc(&up, 160, 90, n);
+    assert(close_to(n[0], -0.5, 1e-12) && close_to(n[1], 0.5, 1e-12)); /* the upper quarter is positive ndc y */
+    selftest_place(&up, n, p);
+    assert(close_to(p[0], 160, 1e-9) && close_to(p[1], 90, 1e-9));
+
+    /* THE INPUT RULE. A frame drawn with a perturbation j shows, at a pixel's centre, the scene's point at the
+       centre's ndc LESS j. With j one pixel to the right in ndc the whole picture moves one pixel to the right:
+       pixel x shows what pixel x - 1 shows without it. Centre plus j would give pixel x + 1 and the wrong sign. */
+    SelftestFrame still = {0}, moved = {0};
+    moved.jitter[0] = 2.0 / 640.0;
+    for (int x = 20; x < 620; x += 37) {
+        st_colour(&moved, &down, x, 100, a);
+        st_colour(&still, &down, x - 1, 100, b);
+        assert(!memcmp(a, b, sizeof a));
+    }
+    /* In y the viewport's sign decides. One pixel "up" in ndc is one pixel down the image for a positive height
+       and one pixel up the image for a negative one. */
+    memset(&moved, 0, sizeof moved);
+    moved.jitter[1] = 2.0 / 360.0;
+    int differs = 0;
+    for (int y = 20; y < 340; y += 23) {
+        st_colour(&moved, &down, 300, y, a);
+        st_colour(&still, &down, 300, y - 1, b);
+        assert(!memcmp(a, b, sizeof a));
+        st_colour(&moved, &up, 300, y, a);
+        st_colour(&still, &up, 300, y + 1, b);
+        assert(!memcmp(a, b, sizeof a));
+        st_colour(&still, &up, 300, y - 1, b);
+        differs += memcmp(a, b, sizeof a) != 0;
+    }
+    assert(differs > 3); /* the two signs are told apart by the pattern */
+
+    /* The motion texel. The background moved by (0.1, 0.05) in ndc since the frame before. Through the viewport
+       with the negative height that is 32 px to the right and 9 px up the image, over 640 by 360. A perturbation
+       changes which point a pixel shows, not the vector of that point. */
+    SelftestFrame pan = {0};
+    pan.shift[0] = 0.3;
+    pan.shift[1] = 0.15;
+    pan.shift_before[0] = 0.2;
+    pan.shift_before[1] = 0.1;
+    for (int jittered = 0; jittered < 2; jittered++) {
+        pan.jitter[0] = jittered ? 0.7 / 640.0 : 0.0;
+        pan.jitter[1] = jittered ? -0.5 / 360.0 : 0.0;
+        selftest_input(&pan, &up, 640, 360, 200, 120, a, &depth, texel);
+        assert(close_to(texel[0], 32.0 / 640.0, 1e-12) && close_to(texel[1], -9.0 / 360.0, 1e-12));
+        assert(depth == SELFTEST_FAR);
+        selftest_input(&pan, &down, 640, 360, 200, 120, a, &depth, texel);
+        assert(close_to(texel[0], 32.0 / 640.0, 1e-12) && close_to(texel[1], 9.0 / 360.0, 1e-12));
+    }
+    /* the texel is over the images' size, not the viewport's: a rectangle of 320 by 180 in images of 640 by 360 */
+    const SelftestViewport part = {0, 180, 320, -180};
+    pan.jitter[0] = pan.jitter[1] = 0.0;
+    selftest_input(&pan, &part, 640, 360, 100, 60, a, &depth, texel);
+    assert(close_to(texel[0], 16.0 / 640.0, 1e-12) && close_to(texel[1], -4.5 / 360.0, 1e-12));
+
+    /* The patch: nearer, with its own pattern and its own vector. It covers ndc -0.25 to 0.25 by -0.3 to 0.2 and
+       came from 0.05 further left. In the 640 by 360 picture with y up that is x 240 to 400 and y 144 to 234. */
+    SelftestFrame scene = {0};
+    scene.has_patch = 1;
+    const double rect[4] = {-0.25, -0.3, 0.25, 0.2}, rect_before[4] = {-0.3, -0.3, 0.2, 0.2};
+    memcpy(scene.patch, rect, sizeof rect);
+    memcpy(scene.patch_before, rect_before, sizeof rect_before);
+    selftest_input(&scene, &up, 640, 360, 320, 180, a, &depth, texel);
+    assert(depth == SELFTEST_NEAR && close_to(texel[0], 16.0 / 640.0, 1e-12) && texel[1] == 0.0);
+    selftest_input(&scene, &up, 640, 360, 100, 180, b, &depth, texel);
+    assert(depth == SELFTEST_FAR && texel[0] == 0.0 && texel[1] == 0.0 && memcmp(a, b, sizeof a));
+    /* the patch's pattern goes with it: a point of the patch has the colour it had a frame ago */
+    SelftestFrame earlier = scene;
+    memcpy(earlier.patch, rect_before, sizeof rect_before);
+    st_colour(&scene, &up, 320, 180, a);
+    st_colour(&earlier, &up, 304, 180, b);
+    assert(!memcmp(a, b, sizeof a));
+    /* The regions. Border and the patch's rim are no one's. The band is exactly what the patch left this frame:
+       it moved 16 px to the right, so 16 columns of its height, 90 rows. */
+    int counts[4] = {0, 0, 0, 0}, left = 640, right = 0;
+    for (int y = 0; y < 360; y++)
+        for (int x = 0; x < 640; x++) {
+            const int region = selftest_region(&scene, &up, 640, 360, x, y);
+            counts[region]++;
+            if (region == SELFTEST_UNCOVERED) {
+                if (x < left) left = x;
+                if (x > right) right = x;
+            }
+        }
+    assert(counts[SELFTEST_UNCOVERED] == 16 * 90 && left == 224 && right == 239);
+    assert(counts[SELFTEST_INSIDE] == (160 - 16) * (90 - 16));
+    assert(selftest_region(&scene, &up, 640, 360, 3, 100) == SELFTEST_NONE);
+    assert(selftest_region(&scene, &up, 640, 360, 243, 180) == SELFTEST_NONE); /* the patch's rim */
+    assert(selftest_region(&scene, &up, 640, 360, 248, 180) == SELFTEST_INSIDE);
+    assert(selftest_region(&scene, &up, 640, 360, 100, 180) == SELFTEST_BACKGROUND);
+    assert(counts[0] + counts[1] + counts[2] + counts[3] == 640 * 360);
+    /* The reference. Inside one cell of the patterns it is the scene's colour there. The patch's edge is at
+       x 240, so pixel 240 is all patch. In a picture 641 across the edge falls inside pixel 240, and the
+       reference there is a mix of patch and background by area. */
+    selftest_reference(&scene, &up, 100, 180, 8, a);
+    st_colour(&scene, &up, 100, 180, b);
+    assert(close_to(a[0], b[0], 1e-12));
+    selftest_reference(&scene, &up, 240, 180, 8, a);
+    st_colour(&scene, &up, 240, 180, b);
+    assert(close_to(a[1], 0.3, 1e-12) && close_to(b[1], 0.3, 1e-12)); /* the patch's green */
+    const SelftestViewport odd = {0, 360, 641, -360};
+    selftest_reference(&scene, &odd, 240, 180, 8, a); /* x 240 to 241 of 641: the patch starts at 240.375 */
+    assert(a[1] > 0.2 && a[1] < 0.75 && !close_to(a[1], 0.3, 1e-3));
+
+    /* The game's formats, bit for bit where the value is exact */
+    assert(selftest_ufloat(1.0, 6) == 0x3C0 && selftest_ufloat(0.5, 6) == 0x380 && selftest_ufloat(2.0, 6) == 0x400);
+    assert(selftest_ufloat(1.5, 6) == 0x3E0 && selftest_ufloat(1.0, 5) == 0x1E0 && selftest_ufloat(0.0, 6) == 0);
+    assert(selftest_ufloat(-3.0, 6) == 0);
+    const double white[3] = {1.0, 1.0, 1.0};
+    assert(selftest_b10g11r11(white) == (0x3C0u | 0x3C0u << 11 | 0x1E0u << 22));
+    for (double value = 0.01; value < 40.0; value *= 1.37) {
+        const double rgb[3] = {value, value * 0.5, value * 0.25};
+        double back[3];
+        selftest_b10g11r11_value(selftest_b10g11r11(rgb), back);
+        assert(fabs(back[0] - rgb[0]) <= rgb[0] / 128.0 && fabs(back[1] - rgb[1]) <= rgb[1] / 128.0);
+        assert(fabs(back[2] - rgb[2]) <= rgb[2] / 64.0);
+        assert(fabs(selftest_half_value(selftest_half(value)) - value) <= value / 2048.0);
+        assert(selftest_half_value(selftest_half(-value)) == -selftest_half_value(selftest_half(value)));
+    }
+    assert(selftest_d24(1.0) == 0xFFFFFF && selftest_d24(0.0) == 0 && selftest_d24(0.5) == 0x800000);
+    assert(selftest_d24(7.0) == 0xFFFFFF && selftest_d24(-1.0) == 0);
+    assert(selftest_half(1.0) == 0x3C00 && selftest_half(-2.0) == 0xC000 && selftest_half(0.0) == 0);
+    assert(selftest_half_value(0x3C00) == 1.0 && selftest_half_value(0x7C00) == INFINITY);
+    assert(isnan(selftest_half_value(0x7E00)) && selftest_half_value(0x0001) > 0.0);
+
+    /* The verdicts. Four variants of a case, the configured one first. */
+    const double clear[4] = {0.010, 0.030, 0.025, 0.040}, close[4] = {0.010, 0.012, 0.025, 0.040};
+    const double wrong[4] = {0.030, 0.010, 0.025, 0.040}, flat[4] = {0.020, 0.021, 0.020, 0.022};
+    const double tied[4] = {0.010, 0.010, 0.030, 0.040}, broken[4] = {0.010, NAN, 0.030, 0.040};
+    assert(selftest_verdict(clear, 4, 0, SELFTEST_MARGIN) == SELFTEST_PASS);
+    assert(selftest_verdict(close, 4, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);  /* one variant under the margin */
+    assert(selftest_verdict(wrong, 4, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);  /* a flipped sign is better */
+    assert(selftest_verdict(wrong, 4, 1, SELFTEST_MARGIN) == SELFTEST_PASS);
+    assert(selftest_verdict(flat, 4, 0, SELFTEST_MARGIN) == SELFTEST_BLIND);  /* the case tells nothing apart */
+    assert(selftest_verdict(tied, 4, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);   /* inconclusive counts as failed */
+    assert(selftest_verdict(broken, 4, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);
+    assert(selftest_verdict(clear, 1, 0, SELFTEST_MARGIN) == SELFTEST_FAIL);
+    assert(selftest_verdict(clear, 4, 4, SELFTEST_MARGIN) == SELFTEST_FAIL);
+    const double exact[2] = {0.008, 0.010}, under[2] = {0.008, 0.0099};
+    assert(selftest_verdict(exact, 2, 0, SELFTEST_MARGIN) == SELFTEST_PASS); /* exactly 1.25 times passes */
+    assert(selftest_verdict(under, 2, 0, SELFTEST_MARGIN) == SELFTEST_BLIND);
+    assert(selftest_beats(0.008, 0.010, SELFTEST_MARGIN) && !selftest_beats(0.008, 0.0099, SELFTEST_MARGIN));
+    assert(!selftest_beats(0.010, 0.008, SELFTEST_MARGIN) && !selftest_beats(NAN, 1.0, SELFTEST_MARGIN));
+    assert(!selftest_beats(0.0, 0.0, SELFTEST_MARGIN) && selftest_beats(0.0, 0.001, SELFTEST_MARGIN));
+    assert(selftest_settles(0.02, 0.01) && !selftest_settles(0.02, 0.0101) && !selftest_settles(0.0, 0.0));
+    assert(!selftest_settles(0.02, NAN) && selftest_settles(0.02, 0.0));
+    assert(selftest_same(0.01) && !selftest_same(0.0101) && !selftest_same(NAN));
+    assert(selftest_apart(0.05) && !selftest_apart(0.0499) && !selftest_apart(NAN));
+}
+
 int main(void) {
     test_jitter();
     test_jitter_matrices();
@@ -1994,6 +2157,7 @@ int main(void) {
     test_links();
     test_rect();
     test_upscaler();
+    test_selftest();
     puts("temporal_math: ok");
     return 0;
 }
