@@ -93,6 +93,16 @@ and `above_0.02` give the same share at those finer steps. With a still camera, 
 drawn, summed over the sampled pixels on brightness brought under 1. The resolve smooths edges, which lowers it, and
 so does a blur of the whole picture. It compares options on the same scene, not runs of different scenes.
 
+The viewport gate. The resolve and the jitter hold only while the scene's viewport is the whole target and the
+same as the frame before. This is decided once a frame, at the first draw that binds the scene camera's block,
+before the depth pass. Otherwise the whole frame is drawn without jitter and its history is not used, and the same
+goes for a frame whose G-buffer viewport is not the one decided on. Both are counted and logged (`no jitter and no
+history this frame`, `the scene's viewport ... is not the one the jitter was decided on`). A scene drawn smaller
+than its target, as the game's own dynamic scale does, is not supported yet.
+
+The camera's vectors have both ends without jitter, as the objects' have: the pixel's place as drawn minus the
+frame's jitter, and that point under the camera of a frame ago.
+
 Limits. The vectors are the camera's only, so a moving character or Pokémon drags a trail until the history is
 clamped away, and grass in the wind blurs. Thin bright details can flicker where the clamp cuts them. The resolve
 runs once per frame of the game, also where the scene is not the field (it is skipped when the composite is not
