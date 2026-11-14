@@ -2498,6 +2498,62 @@ static void test_upscaler_wiring(void) {
         const TemporalUpscalerHealth fresh = {0};
         assert(temporal_upscaler_decide(&fresh, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_JITTER);
     }
+    /* What a recycle notes of a context on its way: nothing until the timeline, read with success, has reached
+       the prepare's submission, and a stop whenever the recorder's mark is set, reached or not. */
+    assert(temporal_upscaler_poll(1, 9, 0, 10) == TEMPORAL_UPSCALER_WAIT);
+    assert(temporal_upscaler_poll(1, 10, 0, 10) == TEMPORAL_UPSCALER_COMPLETED);
+    assert(temporal_upscaler_poll(1, 11, 0, 10) == TEMPORAL_UPSCALER_COMPLETED);
+    assert(temporal_upscaler_poll(0, 11, 0, 10) == TEMPORAL_UPSCALER_WAIT); /* the timeline could not be read */
+    assert(temporal_upscaler_poll(1, 11, 0, 0) == TEMPORAL_UPSCALER_WAIT);  /* no submission is named */
+    assert(temporal_upscaler_poll(1, 11, 1, 10) == TEMPORAL_UPSCALER_STOP);  /* signalled by the host: not run */
+    assert(temporal_upscaler_poll(1, 9, 1, 10) == TEMPORAL_UPSCALER_STOP);
+    assert(temporal_upscaler_poll(0, 0, 1, 10) == TEMPORAL_UPSCALER_STOP);
+    /* The colour a decision counts on: only the frame before's, seen at its hook. */
+    {
+        const TemporalUpscalerColour seen = {100, 122, 1, 3840, 2160};
+        TemporalUpscalerColour other = seen;
+        assert(temporal_upscaler_predicted(&seen, 101));
+        assert(!temporal_upscaler_predicted(&seen, 102)); /* a gap */
+        assert(!temporal_upscaler_predicted(&seen, 100)); /* the same frame is no frame before */
+        assert(!temporal_upscaler_predicted(&seen, 99) && !temporal_upscaler_predicted(&seen, 0));
+        other.frame = 0;
+        assert(!temporal_upscaler_predicted(&other, 1)); /* none seen yet */
+        other = seen;
+        other.frame = ~0u; /* the number wraps: no frame follows it as 0 */
+        assert(!temporal_upscaler_predicted(&other, 0));
+        other = seen;
+        other.layers = 0;
+        assert(!temporal_upscaler_predicted(&other, 101));
+        other = seen;
+        other.w = 0;
+        assert(!temporal_upscaler_predicted(&other, 101));
+        other = seen;
+        other.frame = 500; /* the frame is no part of what is compared */
+        assert(temporal_upscaler_colour_same(&seen, &other));
+        unsigned* members[2] = {&other.format, &other.layers};
+        for (int k = 0; k < 2; k++) {
+            other = seen;
+            ++*members[k];
+            assert(!temporal_upscaler_colour_same(&seen, &other));
+        }
+        other = seen;
+        other.w = 1920;
+        assert(!temporal_upscaler_colour_same(&seen, &other));
+        other = seen;
+        other.h = 1080;
+        assert(!temporal_upscaler_colour_same(&seen, &other));
+    }
+    /* The reset's causes add up. Each alone sets it, and the new context's is used up by the asking. */
+    {
+        unsigned last = 0;
+        assert(temporal_upscaler_resets(0, 0, 1, &last) == 1 && last == 1); /* the first context */
+        assert(temporal_upscaler_resets(0, 0, 1, &last) == 0);
+        assert(temporal_upscaler_resets(1, 0, 1, &last) == 1);
+        assert(temporal_upscaler_resets(0, 1, 1, &last) == 1);
+        assert(temporal_upscaler_resets(1, 1, 2, &last) == 1 && last == 2); /* all three: the count is brought up */
+        assert(temporal_upscaler_resets(0, 0, 2, &last) == 0);
+        assert(temporal_upscaler_resets(0, 0, 3, &last) == 1 && temporal_upscaler_resets(0, 0, 3, &last) == 0);
+    }
     /* the counts between two lines */
     {
         TemporalUpscalerTally t = {0};

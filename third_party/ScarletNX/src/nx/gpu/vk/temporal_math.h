@@ -1403,6 +1403,37 @@ static inline int temporal_upscaler_after(TemporalUpscalerHealth* h, int jittere
     else if (jittered && temporal_upscaler_failed(&h->failures, outcome == TEMPORAL_UPSCALER_EVALUATED)) h->off = 1;
     return h->off;
 }
+/* What a frame's recycle notes of a context on its way, and it only notes. number: the submission its prepare
+   went into. done: the last one the timeline says is done, read 0 when it could not be read. failed: the
+   recorder's mark, looked at after the timeline. COMPLETED: it may be published where the runtime next records.
+   STOP: a submission did not run as recorded, so the context is kept, never used and never freed. */
+enum { TEMPORAL_UPSCALER_WAIT, TEMPORAL_UPSCALER_COMPLETED, TEMPORAL_UPSCALER_STOP };
+static inline int temporal_upscaler_poll(int read, unsigned long long done, int failed, unsigned long long number) {
+    if (failed) return TEMPORAL_UPSCALER_STOP;
+    return read && number && done >= number ? TEMPORAL_UPSCALER_COMPLETED : TEMPORAL_UPSCALER_WAIT;
+}
+/* The scene colour a frame's decision counts on, before the frame's own is seen: what the frame before had at
+   its hook, kept by value with that frame's number. It is no knowledge of this frame. The hook reads the
+   frame's own and the two must be equal, or the frame is a skipped evaluate. */
+typedef struct {
+    unsigned frame; /* the frame whose hook saw it, 0 for none */
+    unsigned format, layers;
+    int w, h;
+} TemporalUpscalerColour;
+/* 1 when the frame before this one reached its hook with a colour target: only then is there a prediction */
+static inline int temporal_upscaler_predicted(const TemporalUpscalerColour* c, unsigned frame) {
+    return c->frame != 0 && frame != 0 && c->frame + 1 == frame && c->w > 0 && c->h > 0 && c->layers > 0;
+}
+static inline int temporal_upscaler_colour_same(const TemporalUpscalerColour* a, const TemporalUpscalerColour* b) {
+    return a->format == b->format && a->layers == b->layers && a->w == b->w && a->h == b->h;
+}
+/* The reset flag of an evaluate from all its causes, none of which a later one can take back: the gate's history
+   and the camera cut, the frame time's fallback (the frame before was not evaluated), and a context that came
+   into use since the last evaluate (temporal_upscaler_reset, which is asked here and only here). */
+static inline int temporal_upscaler_resets(int frame_reset, int fallback, unsigned published, unsigned* last) {
+    const int another = temporal_upscaler_reset(0, published, last);
+    return frame_reset || fallback || another;
+}
 /* The counts between two log lines, one line every TEMPORAL_UPSCALER_EVERY frames that were decided: frames
    evaluated, frames not jittered by their reason, and evaluates that were skipped or failed. */
 #define TEMPORAL_UPSCALER_EVERY 600
