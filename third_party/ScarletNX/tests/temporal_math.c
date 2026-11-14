@@ -4,6 +4,7 @@
    resolve's filter, clip and weights. */
 #include "nx/gpu/vk/temporal_math.h"
 #include "nx/gpu/vk/upscaler_selftest.h"
+#include "nx/gpu/vk/upscaler_module.h"
 #include "nx/gpu/vk/upscaler_needs.h"
 #include "nx/gpu/vk/validation_lines.h"
 #include <assert.h>
@@ -2280,6 +2281,87 @@ static void test_projection_camera(void) {
         assert(!temporal_upscaler_camera(p.near_plane, p.far_plane, p.fov_y, 1.0 / 60.0, 1, camera));
         assert(!temporal_upscaler_camera(p.near_plane, (double)INFINITY, p.fov_y, 1.0 / 60.0, 0, camera));
     }
+}
+
+/* An adapter that is a module of its own (upscaler_module.h). */
+static void test_upscaler_module(void) {
+    /* Where a name is known. dlss in the game is refused by its name, before anything could be loaded or asked:
+       also when a module would answer with no needs at all, or with needs the game's device already meets,
+       either of which would otherwise start the upscaler. */
+    assert(snx_module_name("fsr", 0) == SNX_MODULE_NAME_BUILT_IN);
+    assert(snx_module_name("fsr", 1) == SNX_MODULE_NAME_BUILT_IN);
+    assert(snx_module_name("dlss", 1) == SNX_MODULE_NAME_MODULE);
+    assert(snx_module_name("dlss", 0) == SNX_MODULE_NAME_NOT_IN_GAME);
+    assert(snx_module_name("DLSS", 0) == SNX_MODULE_NAME_UNKNOWN);
+    assert(snx_module_name("dlss ", 0) == SNX_MODULE_NAME_UNKNOWN);
+    assert(snx_module_name("xess", 1) == SNX_MODULE_NAME_UNKNOWN && snx_module_name("", 0) == SNX_MODULE_NAME_UNKNOWN);
+    assert(snx_module_name(NULL, 0) == SNX_MODULE_NAME_UNKNOWN && snx_module_name(NULL, 1) == SNX_MODULE_NAME_UNKNOWN);
+    {
+        /* the two answers that would pass every other rule of the game's device and start */
+        const char* const one[1] = {"VK_KHR_compute_shader_derivatives"};
+        const SnxNeedsBits nothing = {0, 0, 0};
+        SnxNeedsRecord r = {0};
+        assert(snx_needs_none(0, NULL, 0));                                              /* an empty answer */
+        assert(snx_needs_record(&r, "dlss", one, 1, &nothing, 0) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "dlss", one, 1, NULL, 0) == SNX_NEEDS_OK);              /* one already met */
+        assert(snx_module_name("dlss", 0) == SNX_MODULE_NAME_NOT_IN_GAME);               /* and still refused */
+    }
+    /* a full path, on Windows and elsewhere */
+    assert(snx_module_full_path("C:\\games\\run\\snx_upscaler_dlss.dll", 1));
+    assert(snx_module_full_path("c:/games/run/snx_upscaler_dlss.dll", 1));
+    assert(snx_module_full_path("\\\\server\\share\\m.dll", 1));
+    assert(!snx_module_full_path("snx_upscaler_dlss.dll", 1) && !snx_module_full_path(".\\m.dll", 1));
+    assert(!snx_module_full_path("C:m.dll", 1));           /* relative to a drive's current folder */
+    assert(!snx_module_full_path("\\games\\m.dll", 1));    /* rooted on the current drive */
+    assert(!snx_module_full_path("/games/m.dll", 1));
+    assert(!snx_module_full_path("C:\\games\\..\\m.dll", 1) && !snx_module_full_path("C:\\games\\.\\m.dll", 1));
+    assert(!snx_module_full_path("C:\\games\\", 1) && !snx_module_full_path("C:\\", 1));
+    assert(!snx_module_full_path("C:", 1));
+    assert(!snx_module_full_path("\\\\.\\pipe\\m", 1) && !snx_module_full_path("\\\\?\\C:\\m.dll", 1));
+    assert(!snx_module_full_path("1:\\m.dll", 1) && !snx_module_full_path("", 1) && !snx_module_full_path(NULL, 1));
+    assert(snx_module_full_path("C:\\games\\a..b\\m.dll", 1) && snx_module_full_path("C:\\games\\...\\m.dll", 1));
+    assert(snx_module_full_path("/opt/run/libm.so", 0) && snx_module_full_path("/m.so", 0));
+    assert(!snx_module_full_path("m.so", 0) && !snx_module_full_path("./m.so", 0) && !snx_module_full_path("/", 0));
+    assert(!snx_module_full_path("/opt/../m.so", 0) && !snx_module_full_path("/opt/run/", 0));
+    assert(!snx_module_full_path("C:\\m.dll", 0)); /* a relative name there */
+    /* The table. The version number is read first and alone: a table of another number may be four bytes long,
+       and under the address sanitizer a read past them would be seen. */
+    {
+        void* calls[8];
+        unsigned char table[16 + 7 * sizeof(void*)];
+        const uint32_t ours = 3, other = 2;
+        for (int k = 0; k < 8; k++) calls[k] = &calls[k];
+        memset(table, 0, sizeof table);
+        memcpy(table, &ours, 4);
+        memcpy(table + 16, calls, 6 * sizeof(void*));
+        assert(snx_module_table(table, 3) == SNX_MODULE_OK);
+        /* the seventh, shutdown, may be NULL (it is here) or a call */
+        memcpy(table + 16 + 6 * sizeof(void*), &calls[6], sizeof(void*));
+        assert(snx_module_table(table, 3) == SNX_MODULE_OK);
+        memset(table + 16 + 6 * sizeof(void*), 0, sizeof(void*));
+        assert(snx_module_table(table, 4) == SNX_MODULE_OTHER_VERSION);
+        assert(snx_module_table(NULL, 3) == SNX_MODULE_NO_TABLE);
+        for (int k = 0; k < 6; k++) { /* each call alone missing */
+            unsigned char lacks[sizeof table];
+            memcpy(lacks, table, sizeof table);
+            memset(lacks + 16 + (size_t)k * sizeof(void*), 0, sizeof(void*));
+            assert(snx_module_table(lacks, 3) == SNX_MODULE_MISSING_CALL);
+        }
+        /* the name, at 8, is not one of the calls: a table without a name is whole */
+        memset(table + 8, 0, 8);
+        assert(snx_module_table(table, 3) == SNX_MODULE_OK);
+        unsigned char* four = malloc(4);
+        assert(four);
+        memcpy(four, &other, 4);
+        assert(snx_module_table(four, 3) == SNX_MODULE_OTHER_VERSION);
+        free(four);
+        /* a table of another number with every call missing is of another version, not one that lacks calls */
+        memset(table + 16, 0, 6 * sizeof(void*));
+        memcpy(table, &other, 4);
+        assert(snx_module_table(table, 3) == SNX_MODULE_OTHER_VERSION);
+    }
+    for (int a = SNX_MODULE_OK; a <= SNX_MODULE_MISSING_CALL; a++)
+        for (int b = a + 1; b <= SNX_MODULE_MISSING_CALL; b++) assert(strcmp(snx_module_text(a), snx_module_text(b)));
 }
 
 /* the readers' probe: its programs by their whole hashes as the census prints them, and not by either half */
@@ -5172,6 +5254,7 @@ int main(void) {
     test_validation_lines();
     test_upscaler_handed();
     test_readers_program();
+    test_upscaler_module();
     test_upscaler_wiring();
     test_jitter_conformance();
     test_gpu_time();

@@ -10,7 +10,9 @@
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/upscaler.h"
+#include "nx/gpu/vk/upscaler_module.h"
 #include "nx/gpu/vk/upscaler_needs.h"
+#include "common/utilities/common.h"
 #include "nx/runtime/platform/log.h"
 
 #ifdef _WIN32
@@ -34,6 +36,54 @@ const SnxUpscalerApi* vk_upscaler_adapter(const char* name) {
     int built = 0;
     const SnxUpscalerApi* api = adapter_find(name, &built);
     if (name && !built) WARN("arceus-upscaler: no adapter named \"%s\" is built into this program\n", name);
+    return api;
+}
+
+/* A name that is known to the self-test's lookup only gets one line in the game, and nothing else: no module is
+   loaded, nothing is asked, no context is made. 1 when the name is such a one. The device's creation and the
+   upscaler's start both ask this before anything else of the name. */
+int vk_upscaler_not_in_game(const char* name) {
+    if (snx_module_name(name, 0) != SNX_MODULE_NAME_NOT_IN_GAME) return 0;
+    LOG("arceus-upscaler: %s is not available in the game in this build\n", name);
+    return 1;
+}
+/* The log a module of its own is handed (SnxUpscalerLog): the line is copied, a line break or other control byte
+   in it becomes a space so that it stays one line, and it is cut at 1023 bytes. Any thread may call it. */
+static void module_log(const char* line) {
+    char copy[1024];
+    size_t n = 0;
+    if (!line) return;
+    for (; line[n] && n < sizeof copy - 1; n++) copy[n] = (unsigned char)line[n] < 0x20 ? ' ' : line[n];
+    copy[n] = 0;
+    LOG("%s%s\n", copy, line[n] ? " (cut)" : "");
+}
+/* The self-test's lookup: what the game's knows, and the adapters that are modules of their own. Such a module
+   is one file beside the program, named by its full path and loaded as upscaler_module.c says. */
+const SnxUpscalerApi* vk_upscaler_adapter_selftest(const char* name) {
+    if (snx_module_name(name, 1) != SNX_MODULE_NAME_MODULE) return vk_upscaler_adapter(name);
+#ifdef _WIN32
+    static const char file[] = "snx_upscaler_dlss.dll";
+#else
+    static const char file[] = "snx_upscaler_dlss.so";
+#endif
+    char* program = snx_executable(NULL);
+    char path[4096];
+    size_t folder = 0;
+    int why = SNX_MODULE_NOT_FULL_PATH;
+    const SnxUpscalerApi* api = NULL;
+    /* the program's own folder: up to its last separator */
+    for (size_t i = 0; program && program[i]; i++)
+        if (program[i] == '/' || program[i] == '\\') folder = i + 1;
+    if (program && folder && folder + sizeof file <= sizeof path) {
+        memcpy(path, program, folder);
+        memcpy(path + folder, file, sizeof file);
+        api = vk_upscaler_module_load(path, module_log, &why);
+    } else
+        path[0] = 0;
+    free(program);
+    if (!api)
+        WARN("arceus-upscaler: %s is not available: %s (%s beside the program%s%s)\n", name, snx_module_text(why),
+             file, path[0] ? ", " : "", path);
     return api;
 }
 
@@ -155,6 +205,7 @@ int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevi
     SnxUpscalerDeviceNeeds needs = {0};
     SnxNeedsBits asked = {0, 0, 0}, has = {0, 0, 0};
     memset(ask, 0, sizeof *ask);
+    if (vk_upscaler_not_in_game(name)) return 0; /* before any lookup: nothing of such a name is loaded or asked */
     int built = 0;
     const SnxUpscalerApi* api = adapter_find(name, &built);
     /* No adapter: nothing is said here. The upscaler's start has the one line for a name that is not built in. */

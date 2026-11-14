@@ -3217,6 +3217,8 @@ static void upscaler_start(void) {
     const char* target = getenv("SNX_ARCEUS_TARGET_FPS");
     g_u.asked = 0;
     if (!name || !name[0] || !strcmp(name, "0") || !strcmp(name, "off")) return;
+    /* a name the self-test alone knows: one line, and nothing of it is looked up, loaded, asked or started */
+    if (vk_upscaler_not_in_game(name)) return;
     const int start = temporal_upscaler_start(g_t.mode == MODE_TAA, g_t.reject);
     if (start != TEMPORAL_UPSCALER_START_OK) {
         LOG("arceus-upscaler: %s is not started: %s\n", name,

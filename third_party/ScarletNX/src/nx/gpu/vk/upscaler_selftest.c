@@ -54,6 +54,7 @@ static struct {
     u8* staging_bytes;
     u64 staging_size;
     const SnxUpscalerApi* api;
+    u32 contexts; /* contexts the adapter handed out and the self-test has not destroyed */
     int layers; /* how the loader's list of layers was read (selftest_layers) */
     int listed; /* the loader listed the validation layer, whatever came of setting it up */
     int messenger_result; /* what making its message callback gave, when that failed */
@@ -915,11 +916,15 @@ static int session_open(Session* s, const Inputs* in, const SnxUpscalerTraits* t
 
 /* Once the device's state is not known a session frees nothing: the device may still be using it all. What the
    session showed of its contexts is kept for the case that ran it. */
+static void context_destroy(SnxUpscaler* context) {
+    g.api->destroy(context);
+    g.contexts--;
+}
 static void session_close(Session* s) {
     g.proof = s->proof;
     if (!idle()) return;
-    if (s->live) g.api->destroy(s->live);
-    if (s->pending) g.api->destroy(s->pending);
+    if (s->live) context_destroy(s->live);
+    if (s->pending) context_destroy(s->pending);
     pictures_free(s);
     memset(s, 0, sizeof *s);
 }
@@ -953,6 +958,7 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
     const VkImageUsageFlags copies = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     const VkImageUsageFlags inputs = VK_IMAGE_USAGE_SAMPLED_BIT | copies, output = inputs | VK_IMAGE_USAGE_STORAGE_BIT;
     int made = g.api->create(&make, traits, &s->pending) == SNX_UPSCALER_OK && s->pending && !traits->submits_itself;
+    if (s->pending) g.contexts++; /* destroyed below whenever it is not taken */
     if (made && ((traits->colour_usage | traits->depth_usage | traits->motion_usage) & ~inputs ||
                  traits->output_usage & ~output)) {
         LOG(ST "the adapter needs image usages the self-test's pictures do not have (%x %x %x %x)\n",
@@ -972,7 +978,7 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
     switch (temporal_upscaler_completed(&s->contexts, config)) {
     case TEMPORAL_UPSCALER_RETIRE:
         if (!idle()) return 0;
-        g.api->destroy(s->live);
+        context_destroy(s->live);
         /* fall through */
     case TEMPORAL_UPSCALER_PUBLISHED:
         s->live = s->pending;
@@ -981,7 +987,7 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
         s->published++;
         break;
     default: /* a failed or stale one: its command buffer was discarded or has completed, so it may go */
-        if (s->pending) g.api->destroy(s->pending);
+        if (s->pending) context_destroy(s->pending);
         s->pending = NULL;
         break;
     }
@@ -1115,7 +1121,12 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
             (int)frame.depth.format, (int)frame.depth.layout, frame.motion.w, frame.motion.h,
             (int)frame.motion.format, (int)frame.motion.layout, frame.output.w, frame.output.h,
             (int)frame.output.format, (int)frame.output.layout);
-    const int evaluated = g.api->evaluate(s->live, &frame) == SNX_UPSCALER_OK;
+    const int answer = g.api->evaluate(s->live, &frame), evaluated = answer == SNX_UPSCALER_OK;
+    /* nothing of a command buffer in an unknown state is submitted, and nothing more is done on the device */
+    if (answer == SNX_UPSCALER_UNKNOWN) {
+        unknown("the adapter's evaluate left the images and the command buffer in a state that is not known");
+        return -1;
+    }
     /* whatever the adapter left bound or pending: the output is taken over for the copy with a full barrier */
     const VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                       .imageExtent = {(u32)in->ow, (u32)in->oh, 1}};
@@ -2240,7 +2251,7 @@ int vk_upscaler_selftest(const char* adapter) {
     int pass;
     LOG(ST "started for the adapter \"%s\". No game is loaded and no window is opened\n", adapter);
     if (!edges_announce()) return 1;
-    g.api = vk_upscaler_adapter(adapter);
+    g.api = vk_upscaler_adapter_selftest(adapter);
     if (!g.api) {
         LOG(ST "FAIL: the adapter \"%s\" is not available\n", adapter);
         return 1;
@@ -2281,6 +2292,22 @@ int vk_upscaler_selftest(const char* adapter) {
         if (!waited) unknown("waiting for the device failed");
     }
     pass = pass && waited;
+    /* An adapter that started something for the device is shut down for it here, before case 7's count, so that
+       what its shutdown makes the layer say is counted. Only when every context is destroyed and the device is
+       idle. Otherwise nothing is shut down and the run ends with it alive. A FAILED shutdown fails the run. */
+    if (g.api->shutdown) {
+        if (!waited)
+            LOG(ST "the adapter is NOT shut down for the device: the device is not known to be idle: FAIL\n");
+        else if (g.contexts)
+            LOG(ST "the adapter is NOT shut down for the device: %u of its contexts were not destroyed: FAIL\n",
+                g.contexts);
+        else {
+            const int down = g.api->shutdown(g.device);
+            LOG(ST "the adapter was shut down for the device: %s\n", down == SNX_UPSCALER_OK ? "ok" : "FAILED: FAIL");
+            pass = pass && down == SNX_UPSCALER_OK;
+        }
+        pass = pass && !g.contexts;
+    }
     /* Case 7: no message of the validation layer, with its synchronisation checks asked for, in any case. Without
        the layer the case was not run, which is not a pass. Neither is a run that had to stop, nor silence of a
        layer whose synchronisation checks were not asked for: that is not the case's condition. */

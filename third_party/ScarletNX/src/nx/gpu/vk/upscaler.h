@@ -3,9 +3,8 @@
 #ifndef SNX_VK_UPSCALER_H
 #define SNX_VK_UPSCALER_H
 /* The interface between the runtime and an upscaler's adapter (FSR, XeSS, DLSS). An adapter turns these steps into
-   one SDK's calls. NOT USED YET: no adapter exists, nothing is loaded and nothing calls this. It states the
-   contract an adapter is written to. The numbers a frame carries are made by temporal_upscaler_frame
-   (temporal_math.h). */
+   one SDK's calls. It states the contract an adapter is written to. The numbers a frame carries are made by
+   temporal_upscaler_frame (temporal_math.h). */
 /* Where an adapter lives is the SDK's licence's matter, not this interface's. For FSR and XeSS, whose headers are
    MIT, it can be part of the runtime and load the SDK's own library by name. For DLSS it is a separate module
    that the runtime loads. No SDK's library is ever in this repository: the user supplies it. */
@@ -14,14 +13,17 @@
 #include <vulkan/vulkan_core.h>
 #endif
 
-#define SNX_UPSCALER_ABI 3
+#define SNX_UPSCALER_ABI 4
 /* the one symbol a separate module exports: it returns its functions for this ABI number, or NULL */
 #define SNX_UPSCALER_ENTRY "snx_upscaler_api"
 
 enum {
     SNX_UPSCALER_OK = 0,
     SNX_UPSCALER_REFUSED = 1, /* this device, size or format is not supported: the upscaler stays off */
-    SNX_UPSCALER_FAILED = 2   /* this call failed: its output is not used */
+    SNX_UPSCALER_FAILED = 2,  /* this call failed: its output is not used */
+    /* Since ABI 4, from evaluate only: it failed, and the state of the images and of the command buffer is not
+       known. That command buffer is never submitted. No adapter the game takes returns it. */
+    SNX_UPSCALER_UNKNOWN = 3
 };
 
 /* What the library needs of Vulkan. The arrays and the chain are the library's and stay valid until it is
@@ -142,7 +144,124 @@ typedef struct SnxUpscalerApi {
     /* The runtime calls it only after every frame in flight that used the context has completed, and for a
        context whose prepare failed only after that command buffer was discarded or its submission completed. */
     void (*destroy)(SnxUpscaler* upscaler);
+    /* Since ABI 4, NULL when the library starts nothing for a device. Called once for a device, after every
+       context of it was destroyed and its work completed, before the device is destroyed, and never otherwise.
+       OK or FAILED, with the errors destroy could not return. The game never destroys its device: only the
+       self-test calls it. */
+    int (*shutdown)(VkDevice device);
 } SnxUpscalerApi;
 
-typedef const SnxUpscalerApi* (*SnxUpscalerEntry)(uint32_t abi);
+/* The host's log for a module of its own, which cannot use the runtime's: one whole line without its newline. It
+   copies the line, may be called from any thread, and never calls into the module. */
+typedef void (*SnxUpscalerLog)(const char* line);
+/* A separate module's one export (since ABI 4 it is handed the log): its table for this ABI number, or NULL.
+   It starts nothing. */
+typedef const SnxUpscalerApi* (*SnxUpscalerEntry)(uint32_t abi, SnxUpscalerLog log);
+#ifdef __cplusplus
+extern "C"
+#endif
+/* gpu/vk/upscaler_module.c: the table of the module at this full path, handed the log, or NULL with why
+   (upscaler_module.h) */
+const SnxUpscalerApi* vk_upscaler_module_load(const char* path, SnxUpscalerLog log, int* why);
+
+/* The boundary to a module of its own, stated: a 64 bit system in both files, C linkage and the one export
+   name, the platform's one calling convention, natural alignment with no packing pragma, and Vulkan's handles
+   as the pointers and 64 bit values its headers define. The size, the alignment and every member's offset of
+   the table and of each structure that crosses are asserted here, for whichever compiler reads this header. */
+#include <stddef.h>
+#if defined(_WIN64) || defined(__LP64__)
+#ifdef __cplusplus
+#define SNX_UPSCALER_LAID(type, size, align) \
+    static_assert(sizeof(type) == (size) && alignof(type) == (align), "the layout of " #type)
+#define SNX_UPSCALER_AT(type, member, offset) \
+    static_assert(offsetof(type, member) == (offset), "the place of " #member " in " #type)
+#else
+#define SNX_UPSCALER_LAID(type, size, align) \
+    _Static_assert(sizeof(type) == (size) && _Alignof(type) == (align), "the layout of " #type)
+#define SNX_UPSCALER_AT(type, member, offset) \
+    _Static_assert(offsetof(type, member) == (offset), "the place of " #member " in " #type)
+#endif
+SNX_UPSCALER_LAID(SnxUpscalerExtensions, 16, 8);
+SNX_UPSCALER_AT(SnxUpscalerExtensions, count, 0);
+SNX_UPSCALER_AT(SnxUpscalerExtensions, names, 8);
+SNX_UPSCALER_LAID(SnxUpscalerDeviceNeeds, 32, 8);
+SNX_UPSCALER_AT(SnxUpscalerDeviceNeeds, extensions, 0);
+SNX_UPSCALER_AT(SnxUpscalerDeviceNeeds, features, 16);
+SNX_UPSCALER_AT(SnxUpscalerDeviceNeeds, core, 24);
+SNX_UPSCALER_LAID(SnxUpscalerSizes, 24, 4);
+SNX_UPSCALER_AT(SnxUpscalerSizes, render_w, 0);
+SNX_UPSCALER_AT(SnxUpscalerSizes, render_h, 4);
+SNX_UPSCALER_AT(SnxUpscalerSizes, image_w, 8);
+SNX_UPSCALER_AT(SnxUpscalerSizes, image_h, 12);
+SNX_UPSCALER_AT(SnxUpscalerSizes, output_w, 16);
+SNX_UPSCALER_AT(SnxUpscalerSizes, output_h, 20);
+SNX_UPSCALER_LAID(SnxUpscalerCreate, 104, 8);
+SNX_UPSCALER_AT(SnxUpscalerCreate, sizes, 0);
+SNX_UPSCALER_AT(SnxUpscalerCreate, instance, 24);
+SNX_UPSCALER_AT(SnxUpscalerCreate, physical_device, 32);
+SNX_UPSCALER_AT(SnxUpscalerCreate, device, 40);
+SNX_UPSCALER_AT(SnxUpscalerCreate, instance_lookup, 48);
+SNX_UPSCALER_AT(SnxUpscalerCreate, device_lookup, 56);
+SNX_UPSCALER_AT(SnxUpscalerCreate, queue, 64);
+SNX_UPSCALER_AT(SnxUpscalerCreate, queue_family, 72);
+SNX_UPSCALER_AT(SnxUpscalerCreate, flags, 76);
+SNX_UPSCALER_AT(SnxUpscalerCreate, colour_format, 80);
+SNX_UPSCALER_AT(SnxUpscalerCreate, depth_format, 84);
+SNX_UPSCALER_AT(SnxUpscalerCreate, motion_format, 88);
+SNX_UPSCALER_AT(SnxUpscalerCreate, output_format, 92);
+SNX_UPSCALER_AT(SnxUpscalerCreate, folder, 96);
+SNX_UPSCALER_LAID(SnxUpscalerTraits, 28, 4);
+SNX_UPSCALER_AT(SnxUpscalerTraits, submits_itself, 0);
+SNX_UPSCALER_AT(SnxUpscalerTraits, takes_rectangle, 4);
+SNX_UPSCALER_AT(SnxUpscalerTraits, rectangle_at_origin, 8);
+SNX_UPSCALER_AT(SnxUpscalerTraits, colour_usage, 12);
+SNX_UPSCALER_AT(SnxUpscalerTraits, depth_usage, 16);
+SNX_UPSCALER_AT(SnxUpscalerTraits, motion_usage, 20);
+SNX_UPSCALER_AT(SnxUpscalerTraits, output_usage, 24);
+SNX_UPSCALER_LAID(SnxUpscalerImage, 32, 8);
+SNX_UPSCALER_AT(SnxUpscalerImage, image, 0);
+SNX_UPSCALER_AT(SnxUpscalerImage, view, 8);
+SNX_UPSCALER_AT(SnxUpscalerImage, layout, 16);
+SNX_UPSCALER_AT(SnxUpscalerImage, format, 20);
+SNX_UPSCALER_AT(SnxUpscalerImage, w, 24);
+SNX_UPSCALER_AT(SnxUpscalerImage, h, 28);
+SNX_UPSCALER_LAID(SnxUpscalerFrame, 192, 8);
+SNX_UPSCALER_AT(SnxUpscalerFrame, cb, 0);
+SNX_UPSCALER_AT(SnxUpscalerFrame, colour, 8);
+SNX_UPSCALER_AT(SnxUpscalerFrame, depth, 40);
+SNX_UPSCALER_AT(SnxUpscalerFrame, motion, 72);
+SNX_UPSCALER_AT(SnxUpscalerFrame, output, 104);
+SNX_UPSCALER_AT(SnxUpscalerFrame, render_x, 136);
+SNX_UPSCALER_AT(SnxUpscalerFrame, render_y, 140);
+SNX_UPSCALER_AT(SnxUpscalerFrame, render_w, 144);
+SNX_UPSCALER_AT(SnxUpscalerFrame, render_h, 148);
+SNX_UPSCALER_AT(SnxUpscalerFrame, jitter, 152);
+SNX_UPSCALER_AT(SnxUpscalerFrame, vector_scale, 160);
+SNX_UPSCALER_AT(SnxUpscalerFrame, reset, 168);
+SNX_UPSCALER_AT(SnxUpscalerFrame, frame_seconds, 172);
+SNX_UPSCALER_AT(SnxUpscalerFrame, near_plane, 176);
+SNX_UPSCALER_AT(SnxUpscalerFrame, far_plane, 180);
+SNX_UPSCALER_AT(SnxUpscalerFrame, fov_y, 184);
+SNX_UPSCALER_AT(SnxUpscalerFrame, trace, 188);
+SNX_UPSCALER_LAID(SnxUpscalerApi, 72, 8);
+SNX_UPSCALER_AT(SnxUpscalerApi, abi, 0);
+SNX_UPSCALER_AT(SnxUpscalerApi, name, 8);
+SNX_UPSCALER_AT(SnxUpscalerApi, instance_extensions, 16);
+SNX_UPSCALER_AT(SnxUpscalerApi, device_extensions, 24);
+SNX_UPSCALER_AT(SnxUpscalerApi, create, 32);
+SNX_UPSCALER_AT(SnxUpscalerApi, prepare, 40);
+SNX_UPSCALER_AT(SnxUpscalerApi, evaluate, 48);
+SNX_UPSCALER_AT(SnxUpscalerApi, destroy, 56);
+SNX_UPSCALER_AT(SnxUpscalerApi, shutdown, 64);
+/* what the members are made of, as far as this header can state it without naming a compiler */
+SNX_UPSCALER_LAID(VkInstance, 8, 8);
+SNX_UPSCALER_LAID(VkImage, 8, 8);
+SNX_UPSCALER_LAID(VkFormat, 4, 4);
+SNX_UPSCALER_LAID(VkImageLayout, 4, 4);
+SNX_UPSCALER_LAID(VkImageUsageFlags, 4, 4);
+SNX_UPSCALER_LAID(PFN_vkGetInstanceProcAddr, 8, 8);
+SNX_UPSCALER_LAID(SnxUpscalerLog, 8, 8);
+SNX_UPSCALER_LAID(SnxUpscalerEntry, 8, 8);
+SNX_UPSCALER_LAID(float, 4, 4);
+#endif
 #endif

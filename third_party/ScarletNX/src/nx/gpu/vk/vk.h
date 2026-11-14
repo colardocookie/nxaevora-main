@@ -1135,6 +1135,8 @@ void vk_scene_scale_note(const GpuChannel* ch, const Surf* zt, u32 colours);
 /* gpu/vk/upscaler_host.c: the steps with an upscaler's adapter (upscaler.h) before a device exists */
 struct SnxUpscalerApi;
 const struct SnxUpscalerApi* vk_upscaler_adapter(const char* name);
+const struct SnxUpscalerApi* vk_upscaler_adapter_selftest(const char* name);
+int vk_upscaler_not_in_game(const char* name);
 int vk_upscaler_instance_extensions(const struct SnxUpscalerApi* api, const char** names, u32* count, u32 room);
 int vk_upscaler_device_needs(const struct SnxUpscalerApi* api, VkInstance instance, VkPhysicalDevice device,
                              PFN_vkGetInstanceProcAddr lookup, const char** names, u32* count, u32 room,

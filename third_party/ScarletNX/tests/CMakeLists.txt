@@ -781,6 +781,90 @@ snx_test_target(snx-test-temporal-math 11)
 target_link_libraries(snx-test-temporal-math PRIVATE m)
 add_test(NAME temporal_math COMMAND snx-test-temporal-math)
 
+# The boundary between the runtime and an upscaler's module (src/nx/gpu/vk/upscaler.h), with no SDK and no GPU: five
+# stand-in modules, and a host that loads them through the runtime's own loader (gpu/vk/upscaler_module.c) and
+# exchanges sentinel values through every call of the table. The stand-ins use nothing of the C++ library, so that
+# they depend on no file that is not the system's. The host's name is in the temporal family, which the PC's test
+# builds run.
+set(snx_upscaler_standins "")
+foreach(snx_kind 0 1 2 3 4)
+    add_library(snx-test-upscaler-standin-${snx_kind} MODULE upscaler_boundary/standin.cpp)
+    set_target_properties(snx-test-upscaler-standin-${snx_kind} PROPERTIES PREFIX "" CXX_STANDARD 17
+                                                                           CXX_STANDARD_REQUIRED ON
+                                                                           CXX_VISIBILITY_PRESET hidden)
+    target_compile_definitions(snx-test-upscaler-standin-${snx_kind} PRIVATE SNX_STANDIN=${snx_kind})
+    target_compile_options(snx-test-upscaler-standin-${snx_kind} PRIVATE -Wall -Wextra -Werror)
+    target_include_directories(snx-test-upscaler-standin-${snx_kind} PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(snx-test-upscaler-standin-${snx_kind} PRIVATE Vulkan::Headers)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_link_options(snx-test-upscaler-standin-${snx_kind} PRIVATE -nostdlib++)
+    endif()
+    list(APPEND snx_upscaler_standins "$<TARGET_FILE:snx-test-upscaler-standin-${snx_kind}>")
+endforeach()
+add_executable(snx-test-temporal-upscaler-boundary upscaler_boundary/host.c
+                                                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/upscaler_module.c")
+snx_test_target(snx-test-temporal-upscaler-boundary 11)
+target_include_directories(snx-test-temporal-upscaler-boundary PRIVATE "${PROJECT_SOURCE_DIR}/src"
+                                                                       "${CMAKE_CURRENT_SOURCE_DIR}/upscaler_boundary")
+target_link_libraries(snx-test-temporal-upscaler-boundary PRIVATE Vulkan::Headers ${CMAKE_DL_LIBS} m)
+add_dependencies(snx-test-temporal-upscaler-boundary snx-test-upscaler-standin-0 snx-test-upscaler-standin-1
+                 snx-test-upscaler-standin-2 snx-test-upscaler-standin-3 snx-test-upscaler-standin-4)
+add_test(NAME upscaler_boundary COMMAND snx-test-temporal-upscaler-boundary ${snx_upscaler_standins})
+# The same five modules built by Microsoft's compiler, which a module such as DLSS's needs, against the same host
+# built by this build's compiler. Only on Windows, and only where a Visual Studio with the C++ tools for x64 is
+# found (SNX_UPSCALER_STANDIN_MSVC: AUTO, ON to insist, OFF to leave it out). Elsewhere the test does not exist.
+set(SNX_UPSCALER_STANDIN_MSVC "AUTO" CACHE STRING "Build the upscaler's stand-in modules with Microsoft's compiler")
+if(WIN32 AND NOT SNX_UPSCALER_STANDIN_MSVC STREQUAL "OFF")
+    set(snx_vs_major "")
+    find_program(SNX_VSWHERE vswhere PATHS "$ENV{ProgramFiles\(x86\)}/Microsoft Visual Studio/Installer"
+                                           "C:/Program Files (x86)/Microsoft Visual Studio/Installer")
+    if(SNX_VSWHERE)
+        execute_process(COMMAND "${SNX_VSWHERE}" -latest -products * -requires
+                                Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
+                        OUTPUT_VARIABLE snx_vs_version OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        string(REGEX MATCH "^[0-9]+" snx_vs_major "${snx_vs_version}")
+    endif()
+    set(snx_vs_generator "")
+    if(snx_vs_major STREQUAL "16")
+        set(snx_vs_generator "Visual Studio 16 2019")
+    elseif(snx_vs_major STREQUAL "17")
+        set(snx_vs_generator "Visual Studio 17 2022")
+    elseif(snx_vs_major STREQUAL "18")
+        set(snx_vs_generator "Visual Studio 18 2026")
+    endif()
+    if(snx_vs_generator)
+        message(STATUS "upscaler stand-in: Microsoft's compiler found (Visual Studio ${snx_vs_version}): the modules "
+                       "are also built with it, test upscaler_boundary_msvc")
+        include(ExternalProject)
+        set(snx_standin_msvc_dir "${CMAKE_CURRENT_BINARY_DIR}/upscaler_standin_msvc")
+        set(snx_upscaler_standins_msvc "")
+        foreach(snx_kind 0 1 2 3 4)
+            list(APPEND snx_upscaler_standins_msvc
+                 "${snx_standin_msvc_dir}/out/snx-upscaler-standin-msvc-${snx_kind}.dll")
+        endforeach()
+        ExternalProject_Add(snx-test-upscaler-standin-msvc
+                            SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/upscaler_boundary/msvc"
+                            BINARY_DIR "${snx_standin_msvc_dir}"
+                            CMAKE_GENERATOR "${snx_vs_generator}"
+                            CMAKE_GENERATOR_PLATFORM x64
+                            CMAKE_ARGS "-DSNX_SOURCE=${PROJECT_SOURCE_DIR}/src"
+                                       "-DSNX_VULKAN_INCLUDE=${Vulkan-Headers_SOURCE_DIR}/include"
+                            BUILD_COMMAND "${CMAKE_COMMAND}" --build . --config Release
+                            BUILD_ALWAYS ON
+                            INSTALL_COMMAND ""
+                            BUILD_BYPRODUCTS ${snx_upscaler_standins_msvc}
+                            EXCLUDE_FROM_ALL ON)
+        # building the host builds these modules too: the test needs them, and nothing else asks for them
+        add_dependencies(snx-test-temporal-upscaler-boundary snx-test-upscaler-standin-msvc)
+        add_test(NAME upscaler_boundary_msvc COMMAND snx-test-temporal-upscaler-boundary ${snx_upscaler_standins_msvc})
+    elseif(SNX_UPSCALER_STANDIN_MSVC STREQUAL "ON")
+        message(FATAL_ERROR "SNX_UPSCALER_STANDIN_MSVC=ON, and no Visual Studio with the C++ tools for x64 was found")
+    else()
+        message(STATUS "upscaler stand-in: Microsoft's compiler not found: the modules are built with this build's "
+                       "compiler only, and the test upscaler_boundary_msvc does not exist")
+    endif()
+endif()
+
 add_executable(snx-test-nvn-cmdlist nvn_cmdlist.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_cmdlist.c")
 snx_test_target(snx-test-nvn-cmdlist 11)
 add_test(NAME nvn_cmdlist COMMAND snx-test-nvn-cmdlist)
