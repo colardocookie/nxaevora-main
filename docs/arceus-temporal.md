@@ -37,7 +37,7 @@ particles and water. The game's own bloom, exposure and tone mapping then run on
 
 ## Numbers
 
-So that nobody has to judge the views by eye, the probe measures itself. Every 60 runs it samples 96 x 54 pixels of
+So that nobody has to judge the views by eye, the probe measures itself. Every 61 runs (not a multiple of the eight jitter offsets, so the readings see all of them) it samples 96 x 54 pixels of
 the scene and compares each with last frame's colour, once fetched through the motion vector and once at the same
 place. A pixel counts as wrong when the colours differ by more than a quarter of their brightness. One
 `arceus-temporal-stats` line a second gives the mean and longest vector in pixels and, for three depth bands (nearer

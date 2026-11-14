@@ -35,7 +35,9 @@
 #define STATS_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
 #define STATS_W 96u /* the numbers' image: one texel a sampled pixel, in each of two halves side by side */
 #define STATS_H 54u
-#define STATS_EVERY 60u    /* runs between two readings */
+/* Runs between two readings. Not a multiple of the jitter's period, so the readings walk through all its offsets:
+   every 60 runs they saw two of the eight. */
+#define STATS_EVERY 61u
 #define STATS_ERROR 0.25f  /* a relative colour error above this counts as wrong */
 
 typedef struct {
