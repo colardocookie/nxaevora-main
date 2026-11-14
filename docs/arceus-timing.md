@@ -480,4 +480,3 @@ sample neighbours (bloom, reflections, ambient occlusion, depth of field) are wh
 `SNX_ARCEUS_TEMPORAL` on, the temporal passes are as they were: their viewport gate refuses a frame whose scene
 viewport is not the whole target, so there is no jitter and no resolve under a scale below 1, and their lines
 count those frames.
-

@@ -291,4 +291,3 @@ The first lines of a run say whether it is on. `arceus-temporal-links`, every 60
 no matrix that a link gave one, and those it did not by reason (no link, still being learned, another draw, at
 rest alone, records not complete), the links that reached their fourth frame, the frames whose record was not
 complete by cause, and the frames whose object vectors were given up for a link.
-
