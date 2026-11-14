@@ -60,7 +60,7 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | `SNX_ARCEUS_CADENCE_CENSUS` | off | `=0` keeps the read-only census off. |
 | `SNX_ARCEUS_GRAVITY_PROBE` | off | `=0` keeps the read-only probe off. |
 | `SNX_ARCEUS_FIXED_RESOLUTION` | off | `=0` leaves the game's automatic 3D resolution governor enabled. |
-| `SNX_ARCEUS_SCENE_SCALE` | off | Not a boolean: a number from 0.5 to below 1.0, the game's own 3D buffer scale. Unset, or 1.0 and above, changes nothing. Needs `SNX_ARCEUS_FIXED_RESOLUTION=1`. See "Scene scale". |
+| `SNX_ARCEUS_SCENE_SCALE` | off | Not a boolean: a number from 0.5 to below 1.0, or `p/q` such as `2/3`, the game's own 3D buffer scale. Unset, or 1.0 and above, changes nothing. Needs `SNX_ARCEUS_FIXED_RESOLUTION=1`. See "Scene scale". |
 
 The default movement mask selects bits 2 through 8, the seven player movement sites, and bit 10, the player's horizontal position step. Bits 0 and 1 remain off. An explicit mask such as `7fc` adds bit 9's capped-fall selection while preserving the same sites. `1fc` leaves bit 10 out.
 
@@ -457,7 +457,10 @@ default mode from a table in the game's data, where it is 1.0 and 1.0 at `main+3
 code runs. The game then applies it as its own scale. It is an experiment for an upscaler to come, and off unless
 set. On its own it gives a softer picture, since the game stretches the part it drew over the screen.
 
-Rules. The value is one finite number. From 0.5 to below 1.0 it is used as written. Unset, or 1.0 and above, is
+Rules. The value is one finite number. From 0.5 to below 1.0 it is used as written. It may also be written as
+`p/q`, two whole numbers with 1 <= p < q <= 64 and nothing else, which is divided once: two thirds has no short
+decimal, and the game draws a viewport of the target's size times the scale as it is, so `0.6667` ends inside
+a pixel where `2/3` does not. Unset, or 1.0 and above, is
 off: nothing is touched and no line is written. Anything else (below 0.5, text, text after the number, not finite)
 is refused with a line and nothing is touched: a value is never moved into the range. It needs
 `SNX_ARCEUS_FIXED_RESOLUTION=1` to have turned the governor off, and refuses otherwise. The pair is written only

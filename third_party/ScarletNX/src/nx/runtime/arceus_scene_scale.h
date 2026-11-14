@@ -17,10 +17,41 @@ enum {
     ARCEUS_SCENE_SCALE_USED, /* from 0.5 to below 1.0 */
     ARCEUS_SCENE_SCALE_BAD   /* below 0.5, not a number, not finite, or text after the number: refused */
 };
-/* The switch's text. A value is never moved into the range, so a typing error gives no scale nobody asked for. */
+#define ARCEUS_SCENE_SCALE_PARTS 64 /* the largest whole number in a scale written as p/q */
+/* A scale written as p/q: 1 with both when the text is digits, a slash and digits and nothing else, and
+   1 <= p < q <= 64. Two thirds has no short decimal, and the game draws a viewport of the target's size times
+   the scale as it is, so 0.6667 ends inside a pixel. */
+static inline int arceus_scene_scale_parts(const char* text, int* p, int* q) {
+    int part[2] = {0, 0}, digits[2] = {0, 0}, at = 0;
+    for (const char* c = text; *c; c++) {
+        if (*c == '/' && at == 0) {
+            at = 1;
+            continue;
+        }
+        if (*c < '0' || *c > '9') return 0;
+        part[at] = part[at] * 10 + (*c - '0');
+        if (++digits[at] > 2) return 0; /* no number up to 64 has more */
+    }
+    if (!at || !digits[0] || !digits[1]) return 0;
+    if (part[0] < 1 || part[0] >= part[1] || part[1] > ARCEUS_SCENE_SCALE_PARTS) return 0;
+    *p = part[0];
+    *q = part[1];
+    return 1;
+}
+/* The switch's text: a decimal number, or p/q. A value is never moved into the range, so a typing error gives no
+   scale nobody asked for. p/q is divided in double and narrowed once to the float the game is given. */
 static inline int arceus_scene_scale_parse(const char* text, float* scale) {
     *scale = 1.0f;
     if (!text) return ARCEUS_SCENE_SCALE_OFF;
+    for (const char* c = text; *c; c++)
+        if (*c == '/') {
+            int p, q;
+            if (!arceus_scene_scale_parts(text, &p, &q)) return ARCEUS_SCENE_SCALE_BAD;
+            const float value = (float)((double)p / (double)q);
+            if (value < ARCEUS_SCENE_SCALE_LEAST) return ARCEUS_SCENE_SCALE_BAD;
+            *scale = value;
+            return ARCEUS_SCENE_SCALE_USED;
+        }
     char* end = NULL;
     const float value = strtof(text, &end);
     if (end == text || *end || !isfinite(value) || value < ARCEUS_SCENE_SCALE_LEAST) return ARCEUS_SCENE_SCALE_BAD;

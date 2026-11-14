@@ -2419,6 +2419,24 @@ static void test_scene_scale(void) {
         assert(arceus_scene_scale_parse(bad[i], &scale) == ARCEUS_SCENE_SCALE_BAD);
         assert(scale == 1.0f);
     }
+    /* Written as p/q, whole numbers with 1 <= p < q <= 64 and nothing else: divided in double, narrowed once.
+       Two thirds times 3840 and 2160 then lands on 2560 and 1440 in the float the game is given. */
+    assert(arceus_scene_scale_parse("2/3", &scale) == ARCEUS_SCENE_SCALE_USED && scale == (float)(2.0 / 3.0));
+    assert(fabsf(3840.0f * scale - 2560.0f) < 0.001f && fabsf(2160.0f * scale - 1440.0f) < 0.001f);
+    assert(arceus_scene_scale_parse("3/4", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.75f);
+    assert(arceus_scene_scale_parse("1/2", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.5f);
+    assert(arceus_scene_scale_parse("63/64", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.984375f);
+    assert(arceus_scene_scale_parse("32/64", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.5f);
+    assert(arceus_scene_scale_parse("02/03", &scale) == ARCEUS_SCENE_SCALE_USED && scale == (float)(2.0 / 3.0));
+    /* refused: under 0.5, p not under q, a part of 0 or over 64, a missing part, and anything else in the value */
+    static const char* const parts[] = {"1/3",  "3/2",   "3/3",  "0/5",  "2/0",   "2/3x", " 2/3", "2/3 ",  "65/66",
+                                        "1/65", "31/64", "/3",   "2/",   "/",     "2//3", "2/3/4", "-2/3", "2/-3",
+                                        "+2/3", "2.0/3", "2/3.0", "2 /3", "002/3", "2/003", "a/b",  "1e0/2"};
+    for (unsigned i = 0; i < sizeof parts / sizeof *parts; i++) {
+        scale = 0.25f;
+        assert(arceus_scene_scale_parse(parts[i], &scale) == ARCEUS_SCENE_SCALE_BAD);
+        assert(scale == 1.0f);
+    }
     /* the guard on the table's words: the governor first, then both words of the pair, then the pair after it */
     const float table[ARCEUS_SCENE_SCALE_WORDS] = {0.9f, 0.85f, 0.85f, 0.8f, 0.8f, 0.7f, 1.0f, 1.0f, 0.5f, 0.5f};
     uint32_t words[ARCEUS_SCENE_SCALE_WORDS], changed[ARCEUS_SCENE_SCALE_WORDS];
