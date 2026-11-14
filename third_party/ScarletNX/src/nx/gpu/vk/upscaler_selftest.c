@@ -54,6 +54,7 @@ static struct {
     int listed; /* the loader listed the validation layer, whatever came of setting it up */
     int messenger_result; /* what making its message callback gave, when that failed */
     int validation;
+    int limit_asked; /* the layer's limit of repeated messages was asked off at the instance's creation */
     unsigned messages;
     u64 generation; /* of the configuration: raised for every context made with other flags or formats */
     /* A submission's end is not known, or a command buffer could not be reset. From then on nothing is recorded,
@@ -112,6 +113,7 @@ typedef struct {
 #define VALIDATION_TEXT 4096
 #define VALIDATION_PIECE 1500
 #define VALIDATION_IDS 64
+#define VALIDATION_SCAN (1u << 20) /* bytes of a text looked through for variables' names */
 /* Callbacks may come from a thread of the library's. The lock is no part of what it guards: the counts are
    copied whole under it, and a callback that waits writes the lock meanwhile. */
 static int g_said_lock;
@@ -119,6 +121,8 @@ static struct {
     u32 ids, unlisted; /* message ids kept, and callbacks whose id found no room in the table */
     u32 omitted, truncated, nameless; /* callbacks not printed, printed with a cut text, without an id's name */
     u32 overlong; /* callbacks whose id's name is too long to keep whole: counted apart, never taken as one id */
+    u32 stops;    /* callbacks whose text holds the layer's own notice that it stops reporting a message id */
+    SelftestVariables variables; /* the variables' names the texts hold, by the layer's pattern */
     struct {
         char name[128];
         i32 number;
@@ -199,6 +203,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverit
     else if (k < VALIDATION_IDS) g_said.id[k].count++;
     else g_said.unlisted++;
     g_said.nameless += !(data && data->pMessageIdName);
+    /* the raw text of every callback, before any cap on what is printed */
+    selftest_variables(&g_said.variables, text, length, VALIDATION_SCAN);
+    g_said.stops += strstr(text, "duplicate_message_limit") != NULL;
     g_said.omitted += index >= VALIDATION_KEPT;
     g_said.truncated += index < VALIDATION_KEPT && length > kept;
     if (index < VALIDATION_KEPT) {
@@ -252,6 +259,30 @@ static unsigned validation_counts(void) {
         LOG(ST "validation: %u callbacks have a message id whose name is too long to classify (%zu characters or "
                "more). They are counted here together, as one line and not as one id\n", said.overlong,
             sizeof said.id[0].name);
+    /* Three facts of the layer's limit of repeats, kept apart: what was asked, the most callbacks one message id
+       had, and whether the layer's own notice of stopping an id arrived. The setting cannot be read back. */
+    u32 most = 0;
+    for (u32 k = 0; k < said.ids; k++) most = said.id[k].count > most ? said.id[k].count : most;
+    LOG(ST "validation: the layer's limit of repeated messages was %s. The most callbacks one listed message id had "
+           "is %u. Callbacks that hold the layer's notice of stopping a message id: %u\n",
+        g.limit_asked ? "asked off (enable_message_limit = false), which cannot be read back" : "not asked off", most,
+        said.stops);
+    /* the variables' names, taken from the texts by a pattern: no identity of a resource */
+    const SelftestVariables* v = &said.variables;
+    LOG(ST "validation: names found in the raw texts by the pattern variable \"name\", in %u callbacks: %u names. "
+           "Callbacks with no match of this exact pattern %u, with a text not looked through to its end %u. "
+           "Quoted names that do not close %u, too long to keep (over %d characters) %u, with no room in the "
+           "table of %d names %u. %s\n",
+        v->callbacks, v->names, v->unmatched, v->unscanned, v->unclosed, SELFTEST_VARIABLE_NAME, v->overlong,
+        SELFTEST_VARIABLES, v->full,
+        selftest_variables_whole(v) ? "No limit was met" : "A LIMIT WAS MET: a name may be missing from the table");
+    for (u32 k = 0; k < v->names; k++) {
+        char shown[4 * SELFTEST_VARIABLE_NAME + 1];
+        size_t at = 0;
+        for (size_t i = 0; v->name[k].name[i]; i++) at += validation_mark((unsigned char)v->name[k].name[i], shown + at);
+        shown[at] = 0;
+        LOG(ST "validation variable name %s: in %u callbacks\n", shown, v->name[k].count);
+    }
     const u32 all = listed + said.unlisted + said.overlong;
     LOG(ST "validation: %u callbacks listed by message id, %u past the table and %u with a name too long make %u, "
            "and %u were received: %s\n", listed, said.unlisted, said.overlong, all, received,
@@ -347,9 +378,40 @@ static int device_make(void) {
         return 0;
     }
     const VkValidationFeatureEnableEXT enables[1] = {VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
-    const VkValidationFeaturesEXT checks = {.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
-                                            .enabledValidationFeatureCount = 1,
-                                            .pEnabledValidationFeatures = enables};
+    VkValidationFeaturesEXT checks = {.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
+                                      .enabledValidationFeatureCount = 1,
+                                      .pEnabledValidationFeatures = enables};
+    /* Log only: the layer stops reporting a message id after ten repeats. It is asked not to, through its
+       settings at the instance's creation, where the layer offers that extension. What was asked cannot be
+       read back: the lines at the end say what the run shows. */
+#ifdef VK_EXT_layer_settings
+    const VkBool32 limit = VK_FALSE;
+    const VkLayerSettingEXT setting = {layers[0], "enable_message_limit", VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &limit};
+    const VkLayerSettingsCreateInfoEXT settings = {
+        .sType = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT, .settingCount = 1, .pSettings = &setting};
+    if (g.validation) {
+        u32 offered = 0;
+        VkResult asked = vkEnumerateInstanceExtensionProperties(layers[0], &offered, NULL);
+        VkExtensionProperties* of_layer = asked >= 0 ? calloc(offered ? offered : 1, sizeof *of_layer) : NULL;
+        if (of_layer) asked = vkEnumerateInstanceExtensionProperties(layers[0], &offered, of_layer);
+        int has = 0;
+        for (u32 i = 0; of_layer && asked == VK_SUCCESS && i < offered; i++)
+            has |= !strcmp(of_layer[i].extensionName, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+        free(of_layer);
+        if (has && instance_count < 32) {
+            instance_names[instance_count++] = VK_EXT_LAYER_SETTINGS_EXTENSION_NAME;
+            checks.pNext = &settings;
+            g.limit_asked = 1;
+        }
+        LOG(ST "the layer's limit of repeated messages: %s\n",
+            g.limit_asked ? "asked off (enable_message_limit = false)"
+                          : "not asked off, the layer's settings extension was not found in its list");
+    }
+#else
+    if (g.validation)
+        LOG(ST "the layer's limit of repeated messages: not asked off, the headers of this build have no layer "
+               "settings\n");
+#endif
     const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
                                    .pApplicationName = "scarletnx upscaler self-test",
                                    .apiVersion = VK_API_VERSION_1_2};

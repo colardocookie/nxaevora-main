@@ -669,6 +669,18 @@ The cases, each run with a viewport of negative and of positive height (render 3
    copy is said in a line of its own and fails case 7 as well. The messenger is not destroyed in this mode, so a
    callback that arrives later still is not counted. The layer stops reporting an id after its own limit of repeats,
    so a count is what it reported.
+   The self-test asks the layer to lift that limit (its setting `enable_message_limit`, false, through the layer
+   settings at the instance's creation, where the layer offers them). The setting cannot be read back. Three
+   facts are printed apart: that it was asked for, the most callbacks one message id had, and how many
+   callbacks hold the layer's own notice of stopping an id. A count over ten shows only that ten was passed
+   in this run.
+   A table lists the names of variables found in the raw text of every callback received, printed or not, by the
+   pattern the layer writes (the word variable and a quoted name): whole names, at most 64 of at most 63
+   characters, each with the callbacks it occurs in. It is taken from texts by a pattern and is no identity of
+   a resource. Beside it: the callbacks with no match, and marks for a text not looked through to its end, a
+   quoted name that does not close, a name too long and a full table. When a name is not in the table, what may
+   be said is "no match for this exact pattern in the callbacks received", and only when no mark is set.
+   Nothing follows about the resource: a callback worded another way is not found.
 The scene's depth is made from two distances (5 for the background, 1/6 for the patch) through a projection in
 the game's form, depth = (A z + B) / (-z) with A = n / (f - n) and B = n f / (f - n). The cases above use a near
 plane of 0.1 and a far plane at infinity, with the create flag for that: their 24 bit depths are the 0.02 and

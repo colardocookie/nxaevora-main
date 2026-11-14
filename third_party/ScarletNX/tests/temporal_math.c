@@ -4090,6 +4090,74 @@ static void test_selftest_layers(void) {
     assert(selftest_layers(success, 1, incomplete) == SELFTEST_LAYERS_WHOLE); /* another success code */
 }
 
+/* the names of variables that validation callbacks' texts hold, by the layer's pattern */
+static void test_selftest_variables(void) {
+    SelftestVariables v = {0};
+    const char* one = "vkCmdDispatch(): the storage image descriptor [Set 0, Binding 128, variable \"rw_a\"] is "
+                      "accessed";
+    selftest_variables(&v, one, strlen(one), 65536);
+    assert(v.callbacks == 1 && v.names == 1 && !strcmp(v.name[0].name, "rw_a") && v.name[0].count == 1);
+    assert(!v.unmatched && selftest_variables_whole(&v));
+    /* the same name twice in one callback counts once, and again in another callback */
+    const char* twice = "variable \"rw_a\" and variable \"rw_a\" and variable \"rw_b\"";
+    selftest_variables(&v, twice, strlen(twice), 65536);
+    assert(v.names == 2 && v.name[0].count == 2 && !strcmp(v.name[1].name, "rw_b") && v.name[1].count == 1);
+    /* a name is its whole text: a prefix of another is another name, and so is one that differs at its end */
+    const char* near = "variable \"rw_\" variable \"rw_ab\" variable \"rw_aB\"";
+    selftest_variables(&v, near, strlen(near), 65536);
+    assert(v.names == 5 && v.name[0].count == 2 && v.name[2].count == 1 && v.name[4].count == 1);
+    /* no match: other words, the word without a quote, a quote without the word, an empty text */
+    static const char* const none[5] = {"a shader module declares a capability", "the variable rw_a is bound",
+                                        "\"rw_a\"", "", "Variable \"rw_a\""};
+    for (int k = 0; k < 5; k++) selftest_variables(&v, none[k], strlen(none[k]), 65536);
+    assert(v.unmatched == 5 && v.names == 5 && v.callbacks == 8);
+    /* an empty name is a name, found and kept */
+    selftest_variables(&v, "variable \"\"", 11, 65536);
+    assert(v.names == 6 && v.name[5].name[0] == 0 && v.name[5].count == 1 && v.unmatched == 5);
+    assert(selftest_variables_whole(&v));
+    /* marks: a quoted name that does not close, counted as an occurrence and not as "no match" */
+    selftest_variables(&v, "variable \"rw_open", 17, 65536);
+    assert(v.unclosed == 1 && v.unmatched == 5 && v.names == 6 && !selftest_variables_whole(&v));
+    /* a name of 63 characters is kept, one of 64 is too long, and the scan goes on behind it */
+    {
+        SelftestVariables w = {0};
+        char text[200];
+        int at = snprintf(text, sizeof text, "variable \"");
+        memset(text + at, 'n', 63);
+        at += 63;
+        at += snprintf(text + at, sizeof text - (size_t)at, "\" variable \"");
+        memset(text + at, 'm', 64);
+        at += 64;
+        at += snprintf(text + at, sizeof text - (size_t)at, "\" variable \"rw_after\"");
+        selftest_variables(&w, text, (size_t)at, 65536);
+        assert(w.names == 2 && strlen(w.name[0].name) == 63 && !strcmp(w.name[1].name, "rw_after"));
+        assert(w.overlong == 1 && !w.unmatched && !selftest_variables_whole(&w));
+    }
+    /* a text longer than what is scanned: marked, and a name past the limit is not found */
+    {
+        SelftestVariables w = {0};
+        const char* text = "variable \"rw_a\" ................ variable \"rw_late\"";
+        selftest_variables(&w, text, strlen(text), 20);
+        assert(w.unscanned == 1 && w.names == 1 && !strcmp(w.name[0].name, "rw_a") && !selftest_variables_whole(&w));
+        /* the limit falls inside a name: it does not close within what was scanned */
+        SelftestVariables x = {0};
+        selftest_variables(&x, text, strlen(text), 12);
+        assert(x.unscanned == 1 && x.unclosed == 1 && x.names == 0 && x.unmatched == 0);
+    }
+    /* a full table: 64 names are kept, the 65th is marked, and a kept name is still counted after that */
+    {
+        SelftestVariables w = {0};
+        char text[64];
+        for (int k = 0; k < 65; k++) {
+            const int n = snprintf(text, sizeof text, "variable \"name%d\"", k);
+            selftest_variables(&w, text, (size_t)n, 65536);
+        }
+        assert(w.names == 64 && w.full == 1 && !selftest_variables_whole(&w));
+        selftest_variables(&w, "variable \"name3\"", 16, 65536);
+        assert(w.name[3].count == 2 && w.full == 1 && w.callbacks == 66 && w.unmatched == 0);
+    }
+}
+
 static void test_selftest_proof(void) {
     const uint32_t flag = 1u << 4, other = 0xf;
     const double finite[2] = {5000.0, 5000.0}, mixed[2] = {5000.0, INFINITY}, back[2] = {INFINITY, 5000.0};
@@ -4441,6 +4509,7 @@ int main(void) {
     test_selftest();
     test_selftest_projection();
     test_selftest_layers();
+    test_selftest_variables();
     test_selftest_proof();
     test_selftest_edges();
     puts("temporal_math: ok");

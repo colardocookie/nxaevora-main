@@ -10,7 +10,7 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../../.." && pwd)
 out=${1:-$(mktemp -d)}
-flags="-std=gnu11 -Wall -Wextra -Werror"
+flags="-std=gnu11 -Wall -Wextra -Werror -I$root/third_party/ScarletNX/src"
 python3 "$here/final.py" "$root" "$out/final.c" >/dev/null
 python3 "$here/concurrent.py" "$root" "$out/concurrent.c" >/dev/null
 ${CLANG:-clang} $flags -O2 -fsanitize=address,undefined -fno-sanitize-recover=all -o "$out/final" "$out/final.c"

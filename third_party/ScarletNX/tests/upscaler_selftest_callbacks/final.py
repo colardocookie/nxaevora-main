@@ -17,6 +17,7 @@ head=r'''
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#include "nx/gpu/vk/upscaler_selftest.h"
 typedef uint32_t u32;
 typedef int32_t i32;
 typedef int VkResult;
@@ -36,7 +37,7 @@ VkDebugUtilsMessengerCallbackDataEXT;
 #define VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT 256
 #define VK_OK(x) ((x)==0)
 #define ST "arceus-upscaler-selftest: "
-static struct {u32 messages;int validation,unknown,device;} g;
+static struct {u32 messages;int validation,unknown,device,limit_asked;} g;
 static char output[4000000];static size_t used;static void(*hook)(const char*);
 static void log_line(const char *fmt,...){
  char line[2048];
@@ -162,6 +163,24 @@ int main(void){
  assert(validation_counts()==257&&strstr(output,"more than 256")&&strstr(output,"counts add up"));
  check_lines();
  reset();validation_says(256,0,NULL,NULL);assert(g_said.nameless==1&&validation_counts()==1);check_lines();
+ reset();
+ emit("rule",1,"descriptor [Set 0, Binding 128, variable \"rw_a\"] and variable \"rw_b\"");
+ emit("rule",1,"descriptor [variable \"rw_a\"] again");
+ emit("rule",1,"(Warning - reported 10 times, which is the duplicate_message_limit value)");
+ emit("other",2,"variable \"a\nb\" with a line break in its name");
+ assert(g_said.variables.callbacks==4&&g_said.variables.names==3&&g_said.variables.unmatched==1);
+ assert(g_said.variables.name[0].count==2&&g_said.variables.name[1].count==1&&g_said.stops==1);
+ g.limit_asked=1;
+ assert(validation_counts()==4&&strstr(output,"asked off (enable_message_limit = false)"));
+ assert(strstr(output,"The most callbacks one listed message id had is 3"));
+ assert(strstr(output,"notice of stopping a message id: 1"));
+ assert(strstr(output,"validation variable name rw_a: in 2 callbacks")&&strstr(output,"No limit was met"));
+ assert(strstr(output,"validation variable name a\\nb: in 1 callbacks"));
+ check_lines();
+ reset();
+ emit("rule",1,"variable \"never closed");
+ assert(validation_counts()==1&&strstr(output,"A LIMIT WAS MET")&&strstr(output,"not asked off"));
+ check_lines();
  reset();
  emit("a\nb",42,"first");
  emit("a\\nb",42,"second");

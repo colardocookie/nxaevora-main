@@ -12,6 +12,7 @@ head=r'''
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#include "nx/gpu/vk/upscaler_selftest.h"
 #include <pthread.h>
 typedef uint32_t u32;
 typedef int32_t i32;
@@ -29,7 +30,7 @@ VkDebugUtilsMessengerCallbackDataEXT;
 #define VK_FALSE 0
 #define VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT 256
 #define ST "arceus-upscaler-selftest: "
-static struct {u32 messages;} g;
+static struct {u32 messages;int limit_asked;} g;
 static unsigned sink;
 static __attribute__((noinline)) void log_line(const char *fmt,...){
  char out[2048];

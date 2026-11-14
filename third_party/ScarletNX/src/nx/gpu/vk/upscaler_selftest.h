@@ -577,6 +577,69 @@ static inline int selftest_layers(int counted, int listed, int incomplete) {
     if (counted < 0 || listed < 0) return SELFTEST_LAYERS_UNREAD;
     return listed == incomplete ? SELFTEST_LAYERS_PART : SELFTEST_LAYERS_WHOLE;
 }
+/* The names of variables in the texts of validation callbacks, found by the pattern the layer writes: the word
+   variable, a space, a quoted name. Taken from a text by a pattern: no identity of a resource, and a callback
+   worded another way is not found. A name is its whole text, and counts once for each callback it occurs in. */
+#define SELFTEST_VARIABLES 64
+#define SELFTEST_VARIABLE_NAME 63
+typedef struct {
+    unsigned callbacks, names;
+    struct {
+        char name[SELFTEST_VARIABLE_NAME + 1];
+        unsigned count, last; /* callbacks it occurred in, and the last of them by its number */
+    } name[SELFTEST_VARIABLES];
+    /* callbacks with no occurrence of the pattern, and with a text not scanned to its end. Then occurrences:
+       a quoted name that does not close, a name too long to keep, a name that found no room in the table */
+    unsigned unmatched, unscanned, unclosed, overlong, full;
+} SelftestVariables;
+/* one callback's raw text of length bytes, of which at most limit are scanned */
+static inline void selftest_variables(SelftestVariables* v, const char* text, size_t length, size_t limit) {
+    static const char pattern[] = "variable \"";
+    const size_t width = sizeof pattern - 1, end = length > limit ? limit : length;
+    const unsigned serial = ++v->callbacks;
+    unsigned found = 0;
+    if (length > limit) v->unscanned++;
+    for (size_t i = 0; i + width <= end;) {
+        if (memcmp(text + i, pattern, width)) {
+            i++;
+            continue;
+        }
+        found++;
+        const size_t from = i + width;
+        size_t to = from;
+        while (to < end && text[to] != '"') to++;
+        if (to == end) { /* no closing quote in what was scanned: nothing after it can be a name */
+            v->unclosed++;
+            break;
+        }
+        i = to + 1;
+        const size_t n = to - from;
+        if (n > SELFTEST_VARIABLE_NAME) {
+            v->overlong++;
+            continue;
+        }
+        unsigned k = 0;
+        while (k < v->names && (strlen(v->name[k].name) != n || memcmp(v->name[k].name, text + from, n))) k++;
+        if (k == v->names) {
+            if (k == SELFTEST_VARIABLES) {
+                v->full++;
+                continue;
+            }
+            memcpy(v->name[k].name, text + from, n);
+            v->name[k].name[n] = 0;
+            v->names++;
+        }
+        if (v->name[k].last != serial) {
+            v->name[k].last = serial;
+            v->name[k].count++;
+        }
+    }
+    if (!found) v->unmatched++;
+}
+/* 1 when nothing limits what the table says: every text scanned to its end, every name closed, kept and listed */
+static inline int selftest_variables_whole(const SelftestVariables* v) {
+    return !v->unscanned && !v->unclosed && !v->overlong && !v->full;
+}
 /* What a session shows of the contexts it used, for the native suite's printed assertions: how many came into use,
    and of the first four each one's create flags, the frames it evaluated, whether the first of them had the
    reset, and the far plane it was handed (mixed: not the same in every frame). And the checksum of the depth
