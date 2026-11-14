@@ -535,11 +535,12 @@ A frame, in order:
    frame's decided camera block bound there: any other block, at a slot the camera is known to use or anywhere else,
    leaves the frame unevaluated, with a line naming the program and the address (eight times at most). Nothing is
    inferred from where a block is. Then the scene colour, the depth and the motion image are handed to the library
-   through `vk_rec_direct`, it writes a private image of four 32 bit floats (what the validation layer
-   reported its output variable as declared with, in the self-test), and a pass of ours (`temporal_upscaled.frag`) writes that picture into the scene colour before its first
-   reader: texel for texel, negative values and values that are no number raised to 0, each channel held to the
-   largest finite value of the scene colour's format. Once the library was entered, whatever it answers, every image
-   it was handed counts as last used by all commands, reading and writing, for whatever uses it next.
+   through `vk_rec_direct`, it writes a private image of four 32 bit floats (what the validation layer reported its
+   output variable as declared with, in the self-test), and a pass of ours (`temporal_upscaled.frag`) writes that
+   picture into the scene colour before its first reader: texel for texel, negative values and values that are no
+   number raised to 0, each channel held to the largest finite value of the scene colour's format. Once the library
+   was entered, whatever it answers, every image it was handed counts as last used by all commands, reading and
+   writing, for whatever uses it next.
 4. The reset flag is set by any of: no history of the frame before or a camera cut (the gate's rules), a frame
    before that was not evaluated (the frame time then is the nominal one of `SNX_ARCEUS_TARGET_FPS`, or a
    sixtieth), a context that came into use since the last evaluate.
