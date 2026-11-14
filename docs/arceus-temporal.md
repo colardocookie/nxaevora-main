@@ -315,4 +315,3 @@ nothing of any SDK is in this repository. The numbers a frame would carry are ma
 The host tests work the places out by hand for a moved camera, an object moving against a still and a moving
 camera, jitter over a negative height, a rectangle, a resize and a reset. They cannot show that a library reads
 the signs the same way: that needs a test on a device with the library.
-
