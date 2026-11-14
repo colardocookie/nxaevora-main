@@ -1301,7 +1301,8 @@ static TemporalGpuHandle gputime_begin(VkCommandBuffer cb, int kind) {
     if (!gputime_on()) return -1;
     /* after a failed submission no pair is taken again: one could be reused whose reset never ran */
     if (vk_rec_submit_failed()) {
-        gputime_off("a command buffer could not be ended or a submission was refused");
+        gputime_off("a command buffer could not be begun or ended, a submission was refused or a command pool "
+                    "could not be reset");
         return -1;
     }
     const TemporalGpuHandle h = temporal_gpu_begin(&g_time_ring, kind, vk_submit_number(), plat_ns());
@@ -1338,8 +1339,8 @@ void vk_temporal_gputime_poll(void) {
         return;
     }
     if (vk_rec_submit_failed()) {
-        gputime_off("a command buffer could not be ended or a submission was refused, so a completed submission "
-                    "need not have run");
+        gputime_off("a command buffer could not be begun or ended, a submission was refused or a command pool "
+                    "could not be reset, so a completed submission need not have run");
         return;
     }
     const u64 now = plat_ns();

@@ -279,7 +279,8 @@ static void frame_recycle(Frame* f) {
     dead_free(f);
     g_dead_bytes -= f->dead_bytes;
     f->dead_bytes = 0;
-    vkResetCommandPool(g_vk.dev, f->pool, 0);
+    /* a pool that could not be reset: what is recorded into its buffers next is not what runs (the mark only) */
+    if (vkResetCommandPool(g_vk.dev, f->pool, 0) != VK_SUCCESS) vk_rec_mark_failed();
     /* the pools stay, reset: a frame's draws fill several, and making them again every frame costs */
     for (int i = 0; i < f->npool; i++) vkResetDescriptorPool(g_vk.dev, f->pool_d[i], 0);
     f->ipool = 0;

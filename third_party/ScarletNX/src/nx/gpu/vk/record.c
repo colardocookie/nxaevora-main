@@ -167,10 +167,17 @@ void vk_rec_queue(VkQueue q) {
 }
 
 /* ------------------------------------------------------------ beginning and submitting */
+/* Set, and never cleared, when a command buffer could not be begun or ended, a submission was refused, or a
+   frame's command pool could not be reset: commands recorded there did not run as recorded, although their
+   submission's number on the timeline is reached (the host signals a refused one in submit_run). It is set
+   before that signal, so whoever reads the timeline and then this sees it. */
+static u32 g_submit_failed;
+int vk_rec_submit_failed(void) { return (int)__atomic_load_n(&g_submit_failed, __ATOMIC_ACQUIRE); }
+void vk_rec_mark_failed(void) { __atomic_store_n(&g_submit_failed, 1, __ATOMIC_RELEASE); }
 static void begin_run(const void* p) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    VK_OK(vkBeginCommandBuffer(*(const VkCommandBuffer*)p, &bi));
+    if (!VK_OK(vkBeginCommandBuffer(*(const VkCommandBuffer*)p, &bi))) vk_rec_mark_failed();
 }
 void vk_rec_begin(VkCommandBuffer cb) {
     g_rec_cb = cb;
@@ -188,14 +195,9 @@ typedef struct {
     VkSemaphore timeline;
     u64 value;
 } Submit;
-/* Set, and never cleared, when a command buffer could not be ended or a submission was refused: its commands did
-   not run although its number on the timeline will be reached (the host signals it below). Set before that
-   signal, so whoever reads the timeline and then this sees it. */
-static u32 g_submit_failed;
-int vk_rec_submit_failed(void) { return (int)__atomic_load_n(&g_submit_failed, __ATOMIC_ACQUIRE); }
 static void submit_run(const void* p) {
     const Submit* x = p;
-    if (!VK_OK(vkEndCommandBuffer(x->cb))) __atomic_store_n(&g_submit_failed, 1, __ATOMIC_RELEASE);
+    if (!VK_OK(vkEndCommandBuffer(x->cb))) vk_rec_mark_failed();
     VkCommandBufferSubmitInfo c = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->cb};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                         .waitSemaphoreInfoCount = x->nw,
@@ -206,7 +208,7 @@ static void submit_run(const void* p) {
                         .pSignalSemaphoreInfos = x->s};
     vk_wait_foreground();
     VkResult r = vkQueueSubmit2(g_vk.gfx, 1, &si, VK_NULL_HANDLE);
-    if (r != VK_SUCCESS) __atomic_store_n(&g_submit_failed, 1, __ATOMIC_RELEASE);
+    if (r != VK_SUCCESS) vk_rec_mark_failed();
     if (r == VK_ERROR_DEVICE_LOST) fatal("vulkan: the GPU device was lost (driver reset or crash)");
     VK_OK(r);
     /* a timeline of FFmpeg's never reaching its value would hang its decoder for good */
