@@ -1128,6 +1128,29 @@ static inline int temporal_upscaler_frame(const TemporalRectGate* g, unsigned fr
     if (stamp->fx != g->now.fx || stamp->fy != g->now.fy) return 0;
     return temporal_upscaler_numbers(stamp, viewport, jitter, cut || !temporal_rect_history(g, frame, stamp), out);
 }
+/* The camera's numbers out of a projection matrix in memory order, for row vectors: clip = point x matrix, so
+   clip w is z x m[11] and clip z is z x m[10] + m[14]. 1 with them when the matrix is a perspective projection
+   of the plain kind: no shear, no off-centre terms, w from z alone. The depth a point at the distance d gets is
+   a + b / d. Near is where it is 0 or 1 and far the other, the smaller distance being near, and far is infinite
+   when the depth only approaches its value there. reversed: 1 when near has the depth 1. Not used yet. */
+static inline int temporal_projection_camera(const float m[16], double* near_plane, double* far_plane,
+                                             double* fov_y, int* reversed) {
+    static const int zero[9] = {1, 2, 3, 4, 6, 7, 12, 13, 15};
+    for (int i = 0; i < 16; i++)
+        if (!isfinite(m[i])) return 0;
+    for (int i = 0; i < 9; i++)
+        if (m[zero[i]] != 0.0f) return 0;
+    if (m[8] != 0.0f || m[9] != 0.0f || m[0] == 0.0f || m[5] == 0.0f || m[11] == 0.0f || m[14] == 0.0f) return 0;
+    /* with z = -d or +d by the sign of m[11], the depth is m[10] / m[11] + (m[14] / |m[11]|) / d */
+    const double a = (double)m[10] / (double)m[11], b = (double)m[14] / fabs((double)m[11]);
+    const double at_one = a == 1.0 ? INFINITY : b / (1.0 - a), at_zero = a == 0.0 ? INFINITY : -b / a;
+    if (!(at_one > 0.0) || !(at_zero > 0.0) || at_one == at_zero) return 0;
+    *reversed = at_one < at_zero;
+    *near_plane = *reversed ? at_one : at_zero;
+    *far_plane = *reversed ? at_zero : at_one;
+    *fov_y = 2.0 * atan(1.0 / fabs((double)m[5]));
+    return isfinite(*near_plane) && *near_plane > 0.0 && *fov_y > 0.0;
+}
 /* The camera's numbers and the frame time, checked after the frame's numbers are made and before every dispatch
    to an upscaler. out gets the four floats that are handed on: near, far, the field of view and the frame time
    in seconds. The rules are held against those floats, since a double that passes may round to one that does

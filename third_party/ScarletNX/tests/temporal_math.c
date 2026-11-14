@@ -2082,6 +2082,75 @@ static void test_rect_confirm(void) {
     assert(temporal_rect_confirm(&g, 306, NULL, &small) == TEMPORAL_FRAME_NONE && !g.have_candidate);
 }
 
+/* The camera's numbers out of a projection matrix, row vectors, memory order. The matrices are written out by
+   hand: sy is 1 / tan(fov / 2), which for 50 degrees is 2.14450692, and sx is that over the aspect. */
+static void test_projection_camera(void) {
+    double near_plane, far_plane, fov;
+    int reversed;
+    const float sy = 2.14450692f, sx = sy * 9.0f / 16.0f;
+    /* reversed with an infinite far plane, the game's kind (depth = 0.1 / distance): w = -z, clip z = 0.1 */
+    const float game[16] = {sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, 0, -1, 0, 0, 0.1f, 0};
+    assert(temporal_projection_camera(game, &near_plane, &far_plane, &fov, &reversed));
+    assert(close_to(near_plane, 0.1, 1e-7) && isinf(far_plane) && reversed && close_to(fov, 0.8726646, 1e-6));
+    /* the same looking down +z, and with y turned: the same numbers */
+    float other[16];
+    memcpy(other, game, sizeof other);
+    other[11] = 1.0f;
+    other[5] = -sy;
+    assert(temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
+    assert(close_to(near_plane, 0.1, 1e-7) && isinf(far_plane) && reversed && close_to(fov, 0.8726646, 1e-6));
+    /* reversed with a far plane at 1000: depth 1 at 0.1 and 0 at 1000 gives m[10] = n / (f - n) and m[14] =
+       n f / (f - n), which are 0.00010001 and 0.10001 */
+    memcpy(other, game, sizeof other);
+    other[10] = 0.00010001f;
+    other[14] = 0.10001f;
+    assert(temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
+    assert(close_to(near_plane, 0.1, 1e-5) && close_to(far_plane, 1000.0, 0.5) && reversed);
+    /* not reversed: depth 0 at 0.1 and 1 at 1000 gives m[10] = -f / (f - n) and m[14] = -n f / (f - n), which
+       are -1.00010001 and -0.10001. And with the far plane at infinity: -1 and -0.1. */
+    other[10] = -1.00010001f;
+    other[14] = -0.10001f;
+    assert(temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
+    assert(close_to(near_plane, 0.1, 1e-5) && close_to(far_plane, 1000.0, 0.5) && !reversed);
+    other[10] = -1.0f;
+    other[14] = -0.1f;
+    assert(temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
+    assert(close_to(near_plane, 0.1, 1e-7) && isinf(far_plane) && !reversed);
+    /* another field of view: 90 degrees has sy 1 */
+    memcpy(other, game, sizeof other);
+    other[5] = 1.0f;
+    assert(temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
+    assert(close_to(fov, 1.5707963, 1e-6));
+    /* Refused: an orthographic matrix (w not from z), an off-centre one, a shear, a w with more in it, a number
+       that is not one, no scale, no depth term, and a depth that never is 0 or 1 in front of the camera. */
+    const float ortho[16] = {0.01f, 0, 0, 0, 0, 0.01f, 0, 0, 0, 0, 0.001f, 0, 0, 0, 0.5f, 1};
+    assert(!temporal_projection_camera(ortho, &near_plane, &far_plane, &fov, &reversed));
+    static const int touched[10] = {8, 9, 1, 4, 3, 7, 15, 12, 13, 2};
+    for (int i = 0; i < 10; i++) {
+        memcpy(other, game, sizeof other);
+        other[touched[i]] = 0.25f;
+        assert(!temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
+    }
+    static const int needed[4] = {0, 5, 11, 14};
+    for (int i = 0; i < 4; i++) {
+        memcpy(other, game, sizeof other);
+        other[needed[i]] = 0.0f;
+        assert(!temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
+        other[needed[i]] = NAN;
+        assert(!temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
+    }
+    memcpy(other, game, sizeof other);
+    other[14] = -0.1f; /* the depth would be negative in front of the camera */
+    assert(!temporal_projection_camera(other, &near_plane, &far_plane, &fov, &reversed));
+    /* what it gives passes the check before a dispatch, for the game's kind */
+    {
+        float camera[4];
+        assert(temporal_projection_camera(game, &near_plane, &far_plane, &fov, &reversed));
+        assert(temporal_upscaler_camera(near_plane, far_plane, fov, 1.0 / 60.0, 1, camera));
+        assert(camera[0] == 0.1f && isinf(camera[1]));
+    }
+}
+
 /* Acceptance item: the conversion equals the SDK's documented jitter for an added clip offset. AMD's documents
    for FSR 3.1 in the FidelityFX SDK at tag v2.4.0: projection x += 2 jx / width, y -= 2 jy / height, clip y up.
    Solved by hand: jx = dx width / 2, jy = -dy height / 2, and +dy height / 2 for a viewport of positive height.
@@ -3406,6 +3475,7 @@ int main(void) {
     test_rect();
     test_rect_confirm();
     test_upscaler();
+    test_projection_camera();
     test_jitter_conformance();
     test_gpu_time();
     test_selftest();
