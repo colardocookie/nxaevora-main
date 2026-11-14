@@ -559,6 +559,11 @@ void vk_submit_progress(u64* submitted, u64* done) {
     *done = 0;
     if (g_gsem) VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, done));
 }
+/* the last submission the timeline says is done, read without waiting: 0 when it could not be read */
+int vk_submit_completed(u64* done) {
+    *done = 0;
+    return g_gsem && vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, done) == VK_SUCCESS;
+}
 void vk_wait_submit(u64 value) { timeline_wait(value); }
 void vk_land_through(u64 value) { land_through(value < g_gval ? value : g_gval); }
 u64 vk_frame_id(void) { return g_frame_id; }

@@ -1299,6 +1299,11 @@ static int gputime_on(void) {
    before. The bracket's handle, -1 for none. */
 static TemporalGpuHandle gputime_begin(VkCommandBuffer cb, int kind) {
     if (!gputime_on()) return -1;
+    /* after a failed submission no pair is taken again: one could be reused whose reset never ran */
+    if (vk_rec_submit_failed()) {
+        gputime_off("a command buffer could not be ended or a submission was refused");
+        return -1;
+    }
     const TemporalGpuHandle h = temporal_gpu_begin(&g_time_ring, kind, vk_submit_number(), plat_ns());
     if (h < 0) return -1;
     const u32 first = 2 * (u32)temporal_gpu_index(h);
@@ -1324,8 +1329,19 @@ static void gputime_leftover(TemporalGpuHandle* h) {
    from the timeline as it stands and the results are asked for with their availability: nothing waits. */
 void vk_temporal_gputime_poll(void) {
     if (g_t.gputime != 1) return;
-    u64 submitted = 0, done = 0;
-    vk_submit_progress(&submitted, &done);
+    /* "Completed" is read from the timeline, and it means "ran" only while no submission has failed: the recorder
+       signals a failed one's number itself. It marks the failure before that signal, so the mark is looked at
+       after the timeline is read. With either wrong the measure stops and reads nothing more. */
+    u64 done = 0;
+    if (!vk_submit_completed(&done)) {
+        gputime_off("the timeline's count of completed submissions could not be read");
+        return;
+    }
+    if (vk_rec_submit_failed()) {
+        gputime_off("a command buffer could not be ended or a submission was refused, so a completed submission "
+                    "need not have run");
+        return;
+    }
     const u64 now = plat_ns();
     for (int i = 0; i < TEMPORAL_GPU_PAIRS; i++) {
         const int state = g_time_ring.pair[i].state;
