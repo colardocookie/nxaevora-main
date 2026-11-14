@@ -1332,6 +1332,72 @@ static int stats_ready(void) {
 /* What a draw tells before it is recorded: the composite names the scene colour and depth, the first G-buffer draw
    of a frame has the camera, a write to the scene colour gives its surface, and the first draw that samples the
    scene colour names the program before which the probe runs from the next frame on. */
+/* Read only, for the log alone, with probe or taa: what three readers of the scene are drawn with. In every
+   600th frame, at the first draw of each of these fragment programs (by the low 32 bits of its hash, the
+   composite under either of its two): the viewport, the first colour target, each sampled texture, and words
+   of the scene block bound to the fragment stage. No draw is changed. */
+static void readers_note(u32 frame, const GpuChannel* ch, const VkSh* fs0, Surf* const* sampled, int nt,
+                         Surf* const* rt, u32 n) {
+    static const u32 programs[4] = {0x21FBFBECu, 0xB46268ADu, 0x8A160A27u, 0x63B3848Cu};
+    static const char* const names[3] = {"copy of the scene colour", "blur prepare", "composite"};
+    static const u32 words[13] = {0x628, 0x62C, 0x670, 0x674, 0x710, 0x714, 0x718,
+                                  0x71C, 0x720, 0x724, 0x728, 0x794, 0x798};
+    static u32 said_at[3];
+    char line[1900];
+    int which = -1;
+    if (!fs0 || frame % 600) return;
+    for (int k = 0; k < 4; k++)
+        if ((u32)fs0->hash == programs[k]) which = k < 3 ? k : 2;
+    if (which < 0 || said_at[which] == frame) return;
+    said_at[which] = frame;
+    const VkViewport v = vk_render_viewport(ch->r3d);
+    const Surf* colour = NULL;
+    u32 colours = 0;
+    for (u32 i = 0; i < n; i++)
+        if (rt[i]) {
+            if (!colour) colour = rt[i];
+            colours++;
+        }
+    size_t at = (size_t)snprintf(line, sizeof line, "frame %u, the first draw of program %llx (%s): viewport %g,%g "
+                                                    "%gx%g, %u colour targets, the first ",
+                                 frame, (unsigned long long)fs0->hash, names[which], (double)v.x, (double)v.y,
+                                 (double)v.width, (double)v.height, colours);
+    if (colour)
+        at += (size_t)snprintf(line + at, sizeof line - at, "at %llx of %ux%u (image %ux%u)",
+                               (unsigned long long)colour->gva, colour->w, colour->h, colour->sw, colour->sh);
+    else
+        at += (size_t)snprintf(line + at, sizeof line - at, "none");
+    at += (size_t)snprintf(line + at, sizeof line - at, ". %d sampled textures:", nt);
+    for (int i = 0; i < nt && i < 16 && at < sizeof line - 80; i++)
+        if (sampled[i])
+            at += (size_t)snprintf(line + at, sizeof line - at, " [%d] at %llx of %ux%u (image %ux%u)", i,
+                                   (unsigned long long)sampled[i]->gva, sampled[i]->w, sampled[i]->h,
+                                   sampled[i]->sw, sampled[i]->sh);
+        else
+            at += (size_t)snprintf(line + at, sizeof line - at, " [%d] none", i);
+    if (nt > 16 && at < sizeof line - 80) at += (size_t)snprintf(line + at, sizeof line - at, " and %d more", nt - 16);
+    /* the scene block as it is bound to the fragment stage: each word, or why it cannot be read */
+    const u64 address = ch->cbind[ST_FS][TEMPORAL_SCENE_BANK];
+    const u32 size = ch->cbind_size[ST_FS][TEMPORAL_SCENE_BANK];
+    if (!address) at += (size_t)snprintf(line + at, sizeof line - at, ". The scene block (bank 3): not bound");
+    else {
+        at += (size_t)snprintf(line + at, sizeof line - at, ". The scene block (bank 3) at %llx, %u bytes bound, %u "
+                                                            "read by the program:",
+                               (unsigned long long)address, size, fs0->si.cbuf_max[TEMPORAL_SCENE_BANK]);
+        for (int k = 0; k < 13 && at < sizeof line - 48; k++) {
+            const u8* bytes = size >= words[k] + 4 ? gmem_host(address + words[k], 4) : NULL;
+            float value = 0.0f;
+            if (bytes) memcpy(&value, bytes, sizeof value);
+            if (bytes) at += (size_t)snprintf(line + at, sizeof line - at, " +%X %.9g", words[k], (double)value);
+            else
+                at += (size_t)snprintf(line + at, sizeof line - at, " +%X %s", words[k],
+                                       size >= words[k] + 4 ? "not readable" : "too short");
+        }
+    }
+    if (at >= sizeof line) at = sizeof line - 1;
+    LOG("arceus-temporal-readers: %s\n", line);
+}
+
 void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* const* sampled, int nt,
                       Surf* const* rt, u32 n, Surf* zt) {
     const u32 frame = g_vk_present + 1;
@@ -1341,6 +1407,7 @@ void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* con
     g_t.draw_vs = vs;
     g_t.draw_fs = fs0;
     if (!fs0) nt = 0;
+    readers_note(frame, ch, fs0, sampled, nt, rt, n);
     u32 colours = 0;
     int writes_scene = 0;
     const Surf* scene_colour = NULL;

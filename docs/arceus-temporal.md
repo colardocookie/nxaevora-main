@@ -54,6 +54,13 @@ depth modes of the guest GPU. The first runs log the two values and the mode.
 where the camera block is and whether the neighbouring slot holds last frame's view-projection, and the first runs
 with the viewport and depth range used. Skipped frames are counted with the reason.
 
+With `probe` or `taa`, read only and for the log alone, three readers of the scene are described in every 600th
+frame, each at its first draw: the copy of the scene colour, the blur's preparation and the composite, known by
+their fragment programs. One line each begins with `arceus-temporal-readers:` and has the viewport, the first
+colour target's address and size, each sampled texture's address and size, and thirteen words of the scene
+block bound to the fragment stage (the used fraction at +628 and +62C among them), or "not bound" or "too
+short". No draw is changed by it.
+
 ## Limits
 
 The vectors describe the camera only. A moving object has the vector of the background behind its depth. The depth
