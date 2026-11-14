@@ -232,7 +232,10 @@ static struct {
 } g_t = {.mode = -1, .gputime = -1, .time_hook = -1, .time_numbers = -1};
 static TemporalGpuRing g_time_ring; /* the brackets under way and the times kept since the last line */
 /* SNX_ARCEUS_UPSCALER: the state of a library's upscaler (the functions are further down, before the hook) */
-#define UPSCALED_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
+/* The private output: four 32 bit floats, as the library's shader declares the image it writes. Its uses are a
+   storage image for the library and a sampled one for our write-back, and no copy of ours. */
+#define UPSCALED_FORMAT VK_FORMAT_R32G32B32A32_SFLOAT
+#define UPSCALED_USAGE (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT)
 /* Once a library was entered, whatever it answers, every image it was handed counts as last written by any
    command: what it recorded is not known to the runtime, and a failed call is no proof of none. A barrier after
    it has this source, and its destination is every command, reading and writing, until the next use is known. */
@@ -2920,8 +2923,8 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         g_u.write_format = scene->f.vk;
     }
     const VkImageView scene_view = vk_tex_view(scene, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
-    const int imaged = image_ensure(&g_u.output, UPSCALED_FORMAT, scene->sw, scene->sh,
-                                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT, "upscaler's output");
+    const int imaged = image_ensure(&g_u.output, UPSCALED_FORMAT, scene->sw, scene->sh, UPSCALED_USAGE,
+                                    "upscaler's output");
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (imaged && g_u.write_pipe && scene_view) {
         const VkImageView views[SETS_BINDINGS] = {g_u.output.view, g_u.output.view, g_u.output.view, g_u.output.view,
@@ -3030,6 +3033,12 @@ static void upscaler_start(void) {
                                                device.features);
         if (met != SNX_NEEDS_OK) why = snx_needs_text(met);
     }
+    /* the private output's format, for the uses the image has together, as image_ensure makes it */
+    VkImageFormatProperties has;
+    if (!why && vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, UPSCALED_FORMAT, VK_IMAGE_TYPE_2D,
+                                                         VK_IMAGE_TILING_OPTIMAL, UPSCALED_USAGE, 0,
+                                                         &has) != VK_SUCCESS)
+        why = "the device has no image of four 32 bit floats that is both a storage and a sampled image";
     if (why) {
         LOG("arceus-upscaler: %s is not available (%s): the run goes on as without the switch\n", name, why);
         return;

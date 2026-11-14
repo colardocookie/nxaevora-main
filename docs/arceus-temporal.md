@@ -500,7 +500,8 @@ and case 7 with the validation layers installed, the passing cases as they are, 
 
 At full size only: the library does the temporal resolve in place of ours, in frames whose scene is the whole
 target. It needs `SNX_ARCEUS_TEMPORAL=taa` and is refused with `SNX_ARCEUS_TEMPORAL_REJECT=1`, each with one line.
-An adapter that is not there, that names needs of the instance, whose needs of the device are not all in the
+An adapter that is not there, that names needs of the instance, that runs on a device without that private
+image's format as a storage and sampled image together, whose needs of the device are not all in the
 record of what the game's device was made with (its own section below), or that cannot make a context on the game's
 device before any was in use, is "not available": one line, and the run goes on as without the switch. With
 it on, our own resolve, sharpen, history, numbers and views never run, and the options that steer them are
@@ -525,19 +526,19 @@ A frame, in order:
    own colour target, the projection its draws took and its whole-target state. One made for frames that have
    moved on goes unused and the one in use stays. Where a frame has no confirmed configuration nothing is
    published, and only the recorder's mark is read. Nothing else of ours runs in such a frame.
-3. In a frame drawn with jitter the vector pass runs as always. What the hook sees (this frame's own colour
-   target, the depth, the projection, eight offsets, a stored depth that is the projection's own) must be what
-   the frame was decided with, and every number must pass its check. The projection is the one the frame's
-   draws were given: it is kept by value from the unjittered bytes each jittered copy was made from, all draws
-   must have had the same one, and it must be the decision's bit for bit. Nothing is read again from guest
-   memory at the hook. And until our passes run, every draw into the scene's targets whose program reads
-   constant bank 4, however little of it, must have the frame's decided camera block bound there: any other
-   block, at a slot the camera is known to use or anywhere else, leaves the frame unevaluated, with a line
-   naming the program and the address (eight times at most). Nothing is inferred from where a block is. Then the scene colour, the depth and the
-   motion image are handed to the library through `vk_rec_direct`, it writes a private 16 bit float image, and
-   a pass of ours (`temporal_upscaled.frag`) writes that picture into the scene colour before its first reader:
-   texel for texel, negative values and values that are no number raised to 0, each channel held to the largest
-   finite value of the scene colour's format. Once the library was entered, whatever it answers, every image
+3. In a frame drawn with jitter the vector pass runs as always. What the hook sees (this frame's own colour target,
+   the depth, the projection, eight offsets, a stored depth that is the projection's own) must be what the frame was
+   decided with, and every number must pass its check. The projection is the one the frame's draws were given: it is
+   kept by value from the unjittered bytes each jittered copy was made from, all draws must have had the same one, and
+   it must be the decision's bit for bit. Nothing is read again from guest memory at the hook. And until our passes
+   run, every draw into the scene's targets whose program reads constant bank 4, however little of it, must have the
+   frame's decided camera block bound there: any other block, at a slot the camera is known to use or anywhere else,
+   leaves the frame unevaluated, with a line naming the program and the address (eight times at most). Nothing is
+   inferred from where a block is. Then the scene colour, the depth and the motion image are handed to the library
+   through `vk_rec_direct`, it writes a private image of four 32 bit floats (what the validation layer
+   reported its output variable as declared with, in the self-test), and a pass of ours (`temporal_upscaled.frag`) writes that picture into the scene colour before its first
+   reader: texel for texel, negative values and values that are no number raised to 0, each channel held to the
+   largest finite value of the scene colour's format. Once the library was entered, whatever it answers, every image
    it was handed counts as last used by all commands, reading and writing, for whatever uses it next.
 4. The reset flag is set by any of: no history of the frame before or a camera cut (the gate's rules), a frame
    before that was not evaluated (the frame time then is the nominal one of `SNX_ARCEUS_TARGET_FPS`, or a
