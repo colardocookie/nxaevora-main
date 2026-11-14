@@ -2279,6 +2279,170 @@ static void test_projection_camera(void) {
     }
 }
 
+/* The pure rules of the upscaler's wiring in the game. */
+static void test_upscaler_wiring(void) {
+    /* the start: only with the anti-aliasing on, and not with rejected vectors */
+    assert(temporal_upscaler_start(1, 0) == TEMPORAL_UPSCALER_START_OK);
+    assert(temporal_upscaler_start(0, 0) == TEMPORAL_UPSCALER_START_NOT_TAA);
+    assert(temporal_upscaler_start(0, 1) == TEMPORAL_UPSCALER_START_NOT_TAA);
+    assert(temporal_upscaler_start(1, 1) == TEMPORAL_UPSCALER_START_REJECT);
+    /* The generation: 1 for the first making, the same while nothing changes, another for a change of any one
+       member, and another again when the first making comes back. */
+    {
+        const TemporalUpscalerMaking first = {10, 20, 30, 40, 1, 1, 0xf};
+        TemporalUpscalerMaking last = {0}, now = first;
+        unsigned long long generation = 0, seen[9];
+        assert(temporal_upscaler_generation(&last, &generation, &now) == 1);
+        assert(temporal_upscaler_generation(&last, &generation, &now) == 1);
+        unsigned* members[7] = {&now.colour_format, &now.depth_format, &now.motion_format, &now.output_format,
+                                &now.colour_layers, &now.depth_layers, &now.flags};
+        for (int k = 0; k < 7; k++) {
+            ++*members[k];
+            seen[k] = temporal_upscaler_generation(&last, &generation, &now);
+            assert(seen[k] == 2 + (unsigned long long)k);
+            assert(temporal_upscaler_generation(&last, &generation, &now) == seen[k]);
+        }
+        now = first;
+        assert(temporal_upscaler_generation(&last, &generation, &now) == 9);
+        /* a making of all zeros is a making too: the first call always gives a generation that is not 0 */
+        TemporalUpscalerMaking none = {0}, zero = {0};
+        unsigned long long g = 0;
+        assert(temporal_upscaler_generation(&none, &g, &zero) == 1);
+        assert(temporal_upscaler_generation(&none, &g, &zero) == 1);
+    }
+    /* the whole target at full size, and nothing else */
+    {
+        const TemporalRectState whole = {{0, 0, 3840, 2160}, {0, 2160, 3840, -2160}, 3840, 2160, 1.0f, 1.0f};
+        TemporalRectState s = whole;
+        assert(temporal_upscaler_whole(&whole));
+        s.fx = 0.75f;
+        assert(!temporal_upscaler_whole(&s));
+        s = whole;
+        s.fy = 0.75f;
+        assert(!temporal_upscaler_whole(&s));
+        s = whole;
+        s.fx = s.fy = 0.0f; /* not confirmed yet */
+        assert(!temporal_upscaler_whole(&s));
+        s = whole;
+        s.rect.w = 2880;
+        assert(!temporal_upscaler_whole(&s));
+        s = whole;
+        s.rect.h = 1620;
+        assert(!temporal_upscaler_whole(&s));
+        s = whole;
+        s.rect.x = 1;
+        assert(!temporal_upscaler_whole(&s));
+        s = whole;
+        s.rect.y = 1;
+        assert(!temporal_upscaler_whole(&s));
+        s = (TemporalRectState){0};
+        assert(!temporal_upscaler_whole(&s));
+    }
+    /* The decision at the gate's draw: jitter only with a context that is ready for exactly the frame's
+       configuration, and the first reason against it otherwise. */
+    {
+        const TemporalUpscalerConfig config = {3840, 2160, 3840, 2160, 3840, 2160, 3};
+        TemporalUpscalerConfig other = config;
+        TemporalUpscalerContexts c = {0};
+        assert(temporal_upscaler_decide(1, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_READY);
+        temporal_upscaler_created(&c, &config, 1);
+        assert(temporal_upscaler_decide(1, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_READY); /* on its way */
+        assert(temporal_upscaler_completed(&c, &config) == TEMPORAL_UPSCALER_PUBLISHED);
+        assert(temporal_upscaler_decide(1, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_JITTER);
+        assert(temporal_upscaler_decide(0, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_ON);
+        assert(temporal_upscaler_decide(1, 0, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_GATE);
+        assert(temporal_upscaler_decide(1, 1, 0, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_WHOLE);
+        assert(temporal_upscaler_decide(1, 1, 1, 0, &c, &config) == TEMPORAL_UPSCALER_NOT_KNOWN);
+        assert(temporal_upscaler_decide(0, 0, 0, 0, &c, &config) == TEMPORAL_UPSCALER_NOT_ON); /* the first reason */
+        assert(temporal_upscaler_decide(1, 0, 0, 0, &c, &config) == TEMPORAL_UPSCALER_NOT_GATE);
+        assert(temporal_upscaler_decide(1, 1, 0, 0, &c, &config) == TEMPORAL_UPSCALER_NOT_WHOLE);
+        other.generation = 4; /* the far plane's decision changed, say: another context is needed */
+        assert(temporal_upscaler_decide(1, 1, 1, 1, &c, &other) == TEMPORAL_UPSCALER_NOT_READY);
+        other = config;
+        other.render_w = 2880;
+        assert(temporal_upscaler_decide(1, 1, 1, 1, &c, &other) == TEMPORAL_UPSCALER_NOT_READY);
+        /* at the hook: evaluated only when the frame was jittered, the configuration is the decided one and the
+           context is still the ready one */
+        assert(temporal_upscaler_hook(TEMPORAL_UPSCALER_JITTER, &config, &config, &c));
+        for (int reason = TEMPORAL_UPSCALER_NOT_ON; reason < TEMPORAL_UPSCALER_REASONS; reason++)
+            assert(!temporal_upscaler_hook(reason, &config, &config, &c));
+        other = config;
+        other.generation = 4;
+        assert(!temporal_upscaler_hook(TEMPORAL_UPSCALER_JITTER, &config, &other, &c));
+        other = config;
+        other.out_h = 1080;
+        assert(!temporal_upscaler_hook(TEMPORAL_UPSCALER_JITTER, &config, &other, &c));
+        /* another context came into use between the decision and the hook, and the hook sees its
+           configuration: ready for what is seen, and still not the frame that was decided */
+        {
+            TemporalUpscalerContexts replaced = c;
+            other = config;
+            other.generation = 4;
+            temporal_upscaler_created(&replaced, &other, 1);
+            assert(temporal_upscaler_completed(&replaced, &other) == TEMPORAL_UPSCALER_RETIRE);
+            assert(temporal_upscaler_ready(&replaced, &other));
+            assert(!temporal_upscaler_hook(TEMPORAL_UPSCALER_JITTER, &config, &other, &replaced));
+            assert(temporal_upscaler_hook(TEMPORAL_UPSCALER_JITTER, &other, &other, &replaced));
+        }
+        assert(temporal_upscaler_stop(&c) == 1); /* stopped between the decision and the hook */
+        assert(!temporal_upscaler_hook(TEMPORAL_UPSCALER_JITTER, &config, &config, &c));
+        assert(temporal_upscaler_decide(1, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_READY);
+    }
+    /* The frame time: the measured one between two evaluated hooks, else the nominal one with the fallback set. */
+    {
+        int fallback = -1;
+        const unsigned long long t0 = 5000000000ull;
+        assert(close_to(temporal_upscaler_seconds(t0 + 8333333, t0, 1, 1.0 / 120.0, &fallback), 0.008333333, 1e-12));
+        assert(fallback == 0);
+        assert(temporal_upscaler_seconds(t0 + 8333333, t0, 0, 1.0 / 120.0, &fallback) == 1.0 / 120.0 && fallback == 1);
+        assert(temporal_upscaler_seconds(t0, t0, 1, 1.0 / 120.0, &fallback) == 1.0 / 120.0 && fallback == 1);
+        assert(temporal_upscaler_seconds(t0 - 5, t0, 1, 1.0 / 120.0, &fallback) == 1.0 / 120.0 && fallback == 1);
+        /* a quarter of a second is taken, a nanosecond more is not */
+        assert(temporal_upscaler_seconds(t0 + 250000000, t0, 1, 1.0 / 30.0, &fallback) == 0.25 && fallback == 0);
+        assert(temporal_upscaler_seconds(t0 + 250000001, t0, 1, 1.0 / 30.0, &fallback) == 1.0 / 30.0 && fallback == 1);
+        assert(temporal_upscaler_seconds(t0 + 1, t0, 1, 1.0 / 30.0, &fallback) == 1e-9 && fallback == 0);
+        /* no nominal time, or one that is no frame time: a sixtieth */
+        static const double none[6] = {0.0, -1.0, NAN, INFINITY, 0.3, -INFINITY};
+        for (int k = 0; k < 6; k++)
+            assert(temporal_upscaler_seconds(t0 + 5, t0, 0, none[k], &fallback) == 1.0 / 60.0 && fallback == 1);
+        /* whatever comes out passes the dispatch's check of the frame time */
+        float handed;
+        assert(temporal_upscaler_time(temporal_upscaler_seconds(t0 + 1, t0, 1, 0.0, &fallback), &handed));
+        assert(temporal_upscaler_time(temporal_upscaler_seconds(t0, t0, 1, NAN, &fallback), &handed));
+    }
+    /* What came of a jittered frame: eight in a row that were skipped or failed turn it off, a success between
+       them begins the count again, and a stop turns it off at once and for good. */
+    {
+        unsigned failures = 0;
+        for (int k = 0; k < 7; k++)
+            assert(!temporal_upscaler_after(&failures, k & 1 ? TEMPORAL_UPSCALER_SKIPPED : TEMPORAL_UPSCALER_FAILED));
+        assert(!temporal_upscaler_after(&failures, TEMPORAL_UPSCALER_EVALUATED) && failures == 0);
+        for (int k = 0; k < 7; k++) assert(!temporal_upscaler_after(&failures, TEMPORAL_UPSCALER_SKIPPED));
+        assert(temporal_upscaler_after(&failures, TEMPORAL_UPSCALER_FAILED));
+        failures = 0;
+        assert(temporal_upscaler_after(&failures, TEMPORAL_UPSCALER_STOPPED));
+        assert(temporal_upscaler_after(&failures, TEMPORAL_UPSCALER_SKIPPED)); /* it stays off */
+    }
+    /* the counts between two lines */
+    {
+        TemporalUpscalerTally t = {0};
+        for (int k = 0; k < TEMPORAL_UPSCALER_EVERY - 1; k++)
+            assert(!temporal_upscaler_decided(&t, k % 3 ? TEMPORAL_UPSCALER_JITTER : TEMPORAL_UPSCALER_NOT_READY));
+        assert(temporal_upscaler_decided(&t, TEMPORAL_UPSCALER_NOT_GATE));
+        assert(t.frames == 600 && t.not_jittered[TEMPORAL_UPSCALER_NOT_READY] == 200);
+        assert(t.not_jittered[TEMPORAL_UPSCALER_NOT_GATE] == 1 && t.not_jittered[TEMPORAL_UPSCALER_JITTER] == 0);
+        temporal_upscaler_decided(&t, TEMPORAL_UPSCALER_REASONS); /* no reason: counted as a frame alone */
+        temporal_upscaler_decided(&t, -1);
+        assert(t.frames == 602);
+        temporal_upscaler_tallied(&t, TEMPORAL_UPSCALER_EVALUATED);
+        temporal_upscaler_tallied(&t, TEMPORAL_UPSCALER_EVALUATED);
+        temporal_upscaler_tallied(&t, TEMPORAL_UPSCALER_SKIPPED);
+        temporal_upscaler_tallied(&t, TEMPORAL_UPSCALER_FAILED);
+        temporal_upscaler_tallied(&t, TEMPORAL_UPSCALER_STOPPED);
+        assert(t.evaluated == 2 && t.skipped == 1 && t.failed == 1 && t.stopped == 1);
+    }
+}
+
 /* Acceptance item: the conversion equals the SDK's documented jitter for an added clip offset. AMD's documents
    for FSR 3.1 in the FidelityFX SDK at tag v2.4.0: projection x += 2 jx / width, y -= 2 jy / height, clip y up.
    Solved by hand: jx = dx width / 2, jy = -dy height / 2, and +dy height / 2 for a viewport of positive height.
@@ -3788,6 +3952,7 @@ int main(void) {
     test_upscaler();
     test_upscaler_reset();
     test_projection_camera();
+    test_upscaler_wiring();
     test_jitter_conformance();
     test_gpu_time();
     test_selftest();
