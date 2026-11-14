@@ -1390,14 +1390,14 @@ static inline double temporal_upscaler_seconds(unsigned long long now_ns, unsign
    back. SKIPPED: a number or the configuration did not pass at the hook. FAILED: the library refused. STOPPED:
    something of our own that the hand-over needs failed, or a submission's outcome is not known. */
 enum { TEMPORAL_UPSCALER_EVALUATED, TEMPORAL_UPSCALER_SKIPPED, TEMPORAL_UPSCALER_FAILED, TEMPORAL_UPSCALER_STOPPED };
-/* A frame is over. 1 when the upscaler is off for the rest of the session. A frame that was not drawn with jitter
-   changes nothing: it is no failure and no success. Of the jittered ones a stop turns it off at once, eight in
-   a row that were skipped or failed turn it off, and an evaluated one sets that count to 0. Once off, no
-   outcome turns it on. A frame that is not evaluated is left as drawn and the next evaluate has the reset. */
+/* Something came of a frame. 1 when the upscaler is off for the rest of the session. A stop turns it off at once
+   whenever it is reported, jittered frame or not: a prepare's submission can fail in a frame without jitter.
+   The other outcomes count only for a frame drawn with jitter: eight in a row that were skipped or failed turn
+   it off, an evaluated one sets that count to 0. Once off, no outcome turns it on. */
 static inline int temporal_upscaler_after(TemporalUpscalerHealth* h, int jittered, int outcome) {
-    if (h->off || !jittered) return h->off;
+    if (h->off) return 1;
     if (outcome == TEMPORAL_UPSCALER_STOPPED) h->off = h->stopped = 1;
-    else if (temporal_upscaler_failed(&h->failures, outcome == TEMPORAL_UPSCALER_EVALUATED)) h->off = 1;
+    else if (jittered && temporal_upscaler_failed(&h->failures, outcome == TEMPORAL_UPSCALER_EVALUATED)) h->off = 1;
     return h->off;
 }
 /* The counts between two log lines, one line every TEMPORAL_UPSCALER_EVERY frames that were decided: frames

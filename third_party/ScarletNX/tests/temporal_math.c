@@ -2440,19 +2440,33 @@ static void test_upscaler_wiring(void) {
         for (int k = 0; k < 7; k++) assert(!temporal_upscaler_after(&h, 1, TEMPORAL_UPSCALER_SKIPPED));
         assert(temporal_upscaler_after(&h, 1, TEMPORAL_UPSCALER_FAILED) && h.off && !h.stopped);
     }
-    /* A frame that was not drawn with jitter is no failure and no success: it changes nothing, whatever outcome
-       is named for it. Failures with such frames between them still reach eight, and an "evaluated" named for
-       one does not begin the count again. */
+    /* A frame that was not drawn with jitter is no failure and no success: an evaluated, a skipped or a failed
+       named for it changes nothing. Failures with such frames between them still reach eight, and an
+       "evaluated" named for one does not begin the count again. */
     {
         TemporalUpscalerHealth h = {0};
         for (int k = 0; k < 7; k++) {
             assert(!temporal_upscaler_after(&h, 1, TEMPORAL_UPSCALER_FAILED) && h.failures == (unsigned)k + 1);
-            for (int outcome = TEMPORAL_UPSCALER_EVALUATED; outcome <= TEMPORAL_UPSCALER_STOPPED; outcome++) {
+            for (int outcome = TEMPORAL_UPSCALER_EVALUATED; outcome <= TEMPORAL_UPSCALER_FAILED; outcome++) {
                 const TemporalUpscalerHealth before = h;
                 assert(!temporal_upscaler_after(&h, 0, outcome) && !memcmp(&h, &before, sizeof h));
             }
         }
         assert(temporal_upscaler_after(&h, 1, TEMPORAL_UPSCALER_SKIPPED) && h.off && !h.stopped);
+    }
+    /* A stop is not an evaluate's outcome: it latches whenever it is reported, also for a frame that was never
+       jittered (a prepare whose submission's outcome is not known, before any context is ready). The next
+       decision refuses jitter with a ready context and everything else in order. */
+    {
+        const TemporalUpscalerConfig config = {3840, 2160, 3840, 2160, 3840, 2160, 3};
+        TemporalUpscalerContexts c = {0};
+        TemporalUpscalerHealth h = {0};
+        temporal_upscaler_after(&h, 1, TEMPORAL_UPSCALER_FAILED);
+        assert(temporal_upscaler_after(&h, 0, TEMPORAL_UPSCALER_STOPPED) == 1 && h.off && h.stopped && h.failures == 1);
+        temporal_upscaler_created(&c, &config, 1);
+        assert(temporal_upscaler_completed(&c, &config) == TEMPORAL_UPSCALER_PUBLISHED);
+        assert(temporal_upscaler_decide(&h, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_ON);
+        assert(temporal_upscaler_after(&h, 1, TEMPORAL_UPSCALER_EVALUATED) == 1 && h.off);
     }
     /* A stop is a latch, and so is the eighth failure: after it every outcome, an evaluated one too, leaves it
        off, jittered or not, and the decision allows no jitter with everything else in order. */
