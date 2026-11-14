@@ -140,6 +140,7 @@ static struct {
         const float* was;
         int source;
         u64 pair, signature; /* the pair's lower slot (the slot itself when it takes no turns), the draw */
+        u64 pair_other;      /* a link's higher slot, 0 for a pair: the two tag the skinned copies */
         int chosen;          /* what the pairs said of the draw, before the guards */
         u64 link;            /* the linked slot whose matrix it took, 0 for none */
         int unskinned;       /* it reads skinned positions and was not drawn again with last frame's */
@@ -1257,7 +1258,8 @@ static void link_try(u32 frame, u64 address, u32 size, u64 signature) {
     g_t.current.was = q->world;
     g_t.current.source = TEMPORAL_BEFORE_LINK;
     g_t.current.link = q->address;
-    g_t.current.pair = temporal_link_key(address, q->address);
+    g_t.current.pair = address < q->address ? address : q->address;
+    g_t.current.pair_other = address < q->address ? q->address : address;
     g_t.current.other = NULL;
 }
 
@@ -1407,6 +1409,7 @@ int vk_temporal_object_note(const GpuChannel* ch, const Surf* zt, u64 vertex, u6
     g_t.current.was = object_before(o, signature, frame, &g_t.current.source, &other);
     g_t.current.signature = signature;
     g_t.current.pair = g_t.current.source == TEMPORAL_BEFORE_PARTNER && partner < address ? partner : address;
+    g_t.current.pair_other = 0;
     g_t.current.other = (void*)other;
     if (g_t.links) link_try(frame, address, size, signature);
     object_missed(o, size, signature, frame, g_t.current.source);
@@ -1616,7 +1619,9 @@ int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, u6
     Skin* s = skin_slot(address, frame, 0);
     const int last = (int)((frame - 1) & 1);
     /* this draw reads this frame's capture: the copy is tagged as its own for the frame after */
-    if (s && s->capacity) temporal_stream_used(&s->copy[!last], frame, g_t.current.pair, g_t.current.signature);
+    if (s && s->capacity)
+        temporal_stream_used(&s->copy[!last], frame, g_t.current.pair, g_t.current.pair_other,
+                             g_t.current.signature);
     if (!s || !s->capacity || s->at[last] + 1 != frame || offset >= s->size[last]) {
         g_t.skin_first++;
         return 0;
@@ -1629,7 +1634,8 @@ int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, u6
     /* last frame's copy must be this draw's own, and the address captured once in each frame */
     {
         const int own =
-            temporal_stream_before(&s->copy[!last], &s->copy[last], frame, g_t.current.pair, g_t.current.signature);
+            temporal_stream_before(&s->copy[!last], &s->copy[last], frame, g_t.current.pair, g_t.current.pair_other,
+                                   g_t.current.signature);
         if (own <= 0) {
             if (own < 0) g_t.skin_shared++;
             else g_t.skin_unowned++;

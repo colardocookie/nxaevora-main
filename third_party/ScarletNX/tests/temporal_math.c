@@ -559,8 +559,8 @@ static int stream_frame(TemporalStreamCopy copy[2], unsigned frame, const int* w
         temporal_stream_captured(now, &stream_generation, frame);
         temporal_stream_copied(now);
         const unsigned long long pair = 0x1000ull * (unsigned)(who[i] + 1), draw = 77; /* one mesh: the same draw */
-        temporal_stream_used(now, frame, pair, draw);
-        if (who[i] == ask) got = temporal_stream_before(now, last, frame, pair, draw);
+        temporal_stream_used(now, frame, pair, 0, draw);
+        if (who[i] == ask) got = temporal_stream_before(now, last, frame, pair, 0, draw);
     }
     if (count) *held = who[count - 1];
     return got;
@@ -604,7 +604,7 @@ static void test_streams(void) {
     assert(stream_frame(copy, 41, a, 1, 0, &held, &holder) == 1 && !temporal_stream_conflict(&copy[41 & 1], 41));
     temporal_stream_captured(&copy[41 & 1], &stream_generation, 41);
     temporal_stream_copied(&copy[41 & 1]);
-    temporal_stream_used(&copy[41 & 1], 41, 0x2000, 77);
+    temporal_stream_used(&copy[41 & 1], 41, 0x2000, 0, 77);
     assert(temporal_stream_conflict(&copy[41 & 1], 41));
     assert(stream_frame(copy, 42, a, 1, 0, &held, &holder) == -1);
     assert(stream_frame(copy, 43, a, 1, 0, &held, &holder) == 1 && holder == 0);
@@ -654,8 +654,8 @@ static int keep_capture(TestKeep* k, unsigned frame, int who, unsigned size, int
         temporal_stream_copied(&k->copy[turn]);
     }
     const unsigned long long pair = 0x1000ull * (unsigned)(who + 1), draw = 77;
-    temporal_stream_used(&k->copy[turn], frame, pair, draw);
-    const int got = temporal_stream_before(&k->copy[turn], &k->copy[!turn], frame, pair, draw);
+    temporal_stream_used(&k->copy[turn], frame, pair, 0, draw);
+    const int got = temporal_stream_before(&k->copy[turn], &k->copy[!turn], frame, pair, 0, draw);
     /* the one thing that must never happen: a draw handed another character's bytes, or unknown ones */
     if (got == 1) assert(k->bytes[!turn] == who);
     return got;
@@ -746,8 +746,8 @@ static void test_stream_table(void) {
        frame, so its slot is not given away, and the late conflict is still seen. */
     const int x = table_capture(&t, 0x1000, 10, 100, 1);
     assert(x >= 0 && table_capture(&t, 0x1000, 11, 100, 1) == x);
-    temporal_stream_used(&t.copy[x][0], 10, 7, 77);
-    assert(temporal_stream_before(&t.copy[x][1], &t.copy[x][0], 11, 7, 77) == 1);
+    temporal_stream_used(&t.copy[x][0], 10, 7, 0, 77);
+    assert(temporal_stream_before(&t.copy[x][1], &t.copy[x][0], 11, 7, 0, 77) == 1);
     const TemporalStreamCopy* emitted = &t.copy[x][1];
     assert(table_capture(&t, 0x1000, 11, 900, 0) == x);
     assert(t.capacity[x] == 100 && temporal_stream_valid(&t.copy[x][0])); /* last frame's copy untouched */
@@ -1203,17 +1203,14 @@ static void test_links(void) {
     }
     /* The other slot replaced while the link is learned: the turns with the old slot do not count for the new
        one. Frame 13 brings another address for the second slot, and the first draw with a link is in frame 16,
-       not 14. Its skinned copies are tagged with the link's key: the copy of the frame before a link's first use
-       has no tag, so the first use is refused and the next one is owned. */
+       not 14. Its skinned copies are tagged with both of the link's slots: the copy of the frame before a link's
+       first use has no tag, so the first use is refused and the next one is owned. */
     lreset();
     {
         TemporalStreamCopy copy[2];
         unsigned generation = 0;
         const ull B = A + 0x400, C = A + 0x2000;
         memset(copy, 0, sizeof copy);
-        assert(temporal_link_key(A, B) != temporal_link_key(A, C));
-        assert(temporal_link_key(A, C) != temporal_link_key(B, C));
-        assert(temporal_link_key(A, B) == temporal_link_key(B, A));
         for (unsigned i = 0; i < 9; i++) {
             const unsigned f = 10 + i;
             const ull at = !(i & 1) ? A : i < 3 ? B : C;
@@ -1224,10 +1221,17 @@ static void test_links(void) {
             temporal_stream_captured(&copy[f & 1], &generation, f);
             temporal_stream_copied(&copy[f & 1]);
             if (q) {
-                const ull key = temporal_link_key(at, q->address);
-                temporal_stream_used(&copy[f & 1], f, key, S1);
-                assert(temporal_stream_before(&copy[f & 1], &copy[!(f & 1)], f, key, S1) == (i >= 7));
-                assert(key == temporal_link_key(A, C));
+                /* the tag is both slots, the lower first, whichever of them the draw is at */
+                const ull low = at < q->address ? at : q->address, high = at < q->address ? q->address : at;
+                assert(low == A && high == C);
+                temporal_stream_used(&copy[f & 1], f, low, high, S1);
+                assert(temporal_stream_before(&copy[f & 1], &copy[!(f & 1)], f, low, high, S1) == (i >= 7));
+                /* Not owned by any other tag: the link with the replaced slot, a link that shares the higher
+                   slot, a pair at the lower slot, the slots the other way round. */
+                const TemporalStreamCopy* tagged = &copy[f & 1];
+                assert(!temporal_stream_owned(tagged, A, B, S1) && !temporal_stream_owned(tagged, B, C, S1));
+                assert(!temporal_stream_owned(tagged, A, 0, S1) && !temporal_stream_owned(tagged, C, A, S1));
+                assert(temporal_stream_owned(tagged, A, C, S1));
             }
             lend(f);
             if (i == 3) assert(lrec(f)->blocks[0].link == A && lrec(f)->blocks[0].turns == 1);

@@ -272,8 +272,9 @@ blocks), when the table of blocks is full or leaves a block unjudged, and when a
 before the frame's camera block is known. Such a frame ends every link, makes none, and the turns start again.
 A full table can keep it that way for up to 600 frames. The pairs are not touched by this.
 
-Skinned copies of a linked block are tagged with a key made of both addresses. The copy of the frame before a
-link's first use carries no tag, so that first use is refused and the next is owned.
+Skinned copies of a linked block are tagged with both of the link's addresses, the lower and the higher, where a
+pair's copies carry the pair's lower address and 0. So a link's tag is no other link's and no pair's. The copy of
+the frame before a link's first use carries no tag, so that first use is refused and the next is owned.
 
 Limits. This is a guess of the same kind as the pairs and does not close the limit named above. Equal digests are
 not equal draws: two different sets of draws with the same number, sum and first eight pass. Equal draws and strict
