@@ -2539,6 +2539,80 @@ static void test_upscaler_wiring(void) {
             assert(temporal_upscaler_poll(0, 11, 0, 10, &unread) == TEMPORAL_UPSCALER_WAIT);
         assert(temporal_upscaler_poll(0, 11, 0, 10, &unread) == TEMPORAL_UPSCALER_STOP && unread == 8);
     }
+    /* The note at a place where the runtime records: the mark, read again there, outranks it. A context noted
+       as completed is not published with the mark set, and with nothing on its way the mark is a stop too. */
+    assert(temporal_upscaler_noted(TEMPORAL_UPSCALER_COMPLETED, 1) == TEMPORAL_UPSCALER_STOP);
+    assert(temporal_upscaler_noted(TEMPORAL_UPSCALER_WAIT, 1) == TEMPORAL_UPSCALER_STOP);
+    assert(temporal_upscaler_noted(TEMPORAL_UPSCALER_STOP, 1) == TEMPORAL_UPSCALER_STOP);
+    assert(temporal_upscaler_noted(TEMPORAL_UPSCALER_COMPLETED, 0) == TEMPORAL_UPSCALER_COMPLETED);
+    assert(temporal_upscaler_noted(TEMPORAL_UPSCALER_WAIT, 0) == TEMPORAL_UPSCALER_WAIT);
+    assert(temporal_upscaler_noted(TEMPORAL_UPSCALER_STOP, 0) == TEMPORAL_UPSCALER_STOP);
+    {
+        /* and that stop latches for a frame without jitter, so the next decision refuses a ready context */
+        const TemporalUpscalerConfig config = {3840, 2160, 3840, 2160, 3840, 2160, 3};
+        TemporalUpscalerContexts c = {0};
+        TemporalUpscalerHealth h = {0};
+        temporal_upscaler_created(&c, &config, 1);
+        assert(temporal_upscaler_completed(&c, &config) == TEMPORAL_UPSCALER_PUBLISHED);
+        if (temporal_upscaler_noted(TEMPORAL_UPSCALER_WAIT, 1) == TEMPORAL_UPSCALER_STOP)
+            temporal_upscaler_after(&h, 0, TEMPORAL_UPSCALER_STOPPED);
+        assert(temporal_upscaler_decide(&h, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_ON);
+    }
+    /* A completed context is held against what the frames want NOW. The context for 1920 wide frames is in use,
+       one for 3840 is on its way from earlier frames, and this frame is 1920: the one that completed is stale
+       and the one in use stays, so the frame is jittered. Held against what was wanted when it was made, it
+       would replace the one in use and the frame would find no ready context. */
+    {
+        const TemporalUpscalerConfig small = {1920, 1080, 1920, 1080, 1920, 1080, 3};
+        const TemporalUpscalerConfig large = {3840, 2160, 3840, 2160, 3840, 2160, 3};
+        const TemporalUpscalerHealth on = {0};
+        TemporalUpscalerContexts c = {0};
+        temporal_upscaler_created(&c, &small, 1);
+        assert(temporal_upscaler_completed(&c, &small) == TEMPORAL_UPSCALER_PUBLISHED);
+        temporal_upscaler_created(&c, &large, 1);
+        TemporalUpscalerContexts wrong = c;
+        assert(temporal_upscaler_completed(&c, &small) == TEMPORAL_UPSCALER_STALE);
+        assert(temporal_upscaler_ready(&c, &small) && !c.pending);
+        assert(temporal_upscaler_decide(&on, 1, 1, 1, &c, &small) == TEMPORAL_UPSCALER_JITTER);
+        assert(temporal_upscaler_completed(&wrong, &large) == TEMPORAL_UPSCALER_RETIRE);
+        assert(temporal_upscaler_decide(&on, 1, 1, 1, &wrong, &small) == TEMPORAL_UPSCALER_NOT_READY);
+    }
+    /* The projection the frame's draws were given, against the decision's. The pre-pass's draw decided with a
+       finite far plane, and the G-buffer's draws were given one with the far plane at infinity: not the same, so
+       the evaluate is skipped. */
+    {
+        float finite[16], infinite[16], other[16];
+        TemporalUpscalerUsed used = {0};
+        TemporalProjection p;
+        projection_make(0.1, 5000.0, 0.8726646259971648, 16.0 / 9.0, finite);
+        projection_make(0.1, INFINITY, 0.8726646259971648, 16.0 / 9.0, infinite);
+        assert(temporal_projection_camera(finite, &p) == TEMPORAL_PROJECTION_OK && !p.far_infinite);
+        assert(temporal_projection_camera(infinite, &p) == TEMPORAL_PROJECTION_OK && p.far_infinite);
+        assert(!temporal_upscaler_used_same(&used, 7, finite)); /* no draw took a projection in frame 7 */
+        temporal_upscaler_used(&used, 7, infinite);
+        assert(!temporal_upscaler_used_same(&used, 7, finite) && temporal_upscaler_used_same(&used, 7, infinite));
+        /* the same projection for every draw of the frame, and the decision's: evaluated */
+        temporal_upscaler_used(&used, 8, finite);
+        temporal_upscaler_used(&used, 8, finite);
+        assert(temporal_upscaler_used_same(&used, 8, finite) && !used.mixed);
+        assert(!temporal_upscaler_used_same(&used, 9, finite)); /* frame 8's draws say nothing of frame 9 */
+        assert(!temporal_upscaler_used_same(&used, 0, finite));
+        /* two projections in one frame: mixed, whichever came first and whatever the decision's was */
+        temporal_upscaler_used(&used, 8, infinite);
+        assert(used.mixed && !temporal_upscaler_used_same(&used, 8, finite));
+        assert(!temporal_upscaler_used_same(&used, 8, infinite));
+        temporal_upscaler_used(&used, 8, finite);
+        assert(!temporal_upscaler_used_same(&used, 8, finite));
+        /* a new frame begins clean */
+        temporal_upscaler_used(&used, 9, finite);
+        assert(!used.mixed && temporal_upscaler_used_same(&used, 9, finite));
+        /* one word of difference is another projection, the smallest there is included */
+        memcpy(other, finite, sizeof other);
+        other[14] = nextafterf(other[14], 1.0f);
+        assert(!temporal_upscaler_used_same(&used, 9, other));
+        temporal_upscaler_used(&used, 9, other);
+        assert(used.mixed);
+    }
     /* The colour a decision counts on: only the frame before's, seen at its hook. */
     {
         const TemporalUpscalerColour seen = {100, 122, 1, 3840, 2160};
@@ -2555,6 +2629,38 @@ static void test_upscaler_wiring(void) {
         other = seen;
         other.layers = 0;
         assert(!temporal_upscaler_predicted(&other, 101));
+        /* The hook saw a colour target of two layers in frame 100. The decision of frame 101 has no prediction,
+           so with the gate accepting, the whole target, a ready context and the upscaler on it is not JITTER. */
+        {
+            const TemporalUpscalerConfig config = {3840, 2160, 3840, 2160, 3840, 2160, 3};
+            const TemporalUpscalerHealth on = {0};
+            TemporalUpscalerContexts c = {0};
+            temporal_upscaler_created(&c, &config, 1);
+            assert(temporal_upscaler_completed(&c, &config) == TEMPORAL_UPSCALER_PUBLISHED);
+            other = seen;
+            other.layers = 2;
+            assert(!temporal_upscaler_predicted(&other, 101));
+            const int known = temporal_upscaler_predicted(&other, 101);
+            assert(temporal_upscaler_decide(&on, 1, 1, known, &c, &config) == TEMPORAL_UPSCALER_NOT_KNOWN);
+            /* The hook saw a colour target on layer 1 of an array, or a member of a shared one, each a single
+               layer by its own count: kept as no layer, and the next decision is not JITTER either. */
+            const TemporalUpscalerColour layer1 = temporal_upscaler_colour(100, 122, 1, 1, 0, 3840, 2160);
+            const TemporalUpscalerColour member = temporal_upscaler_colour(100, 122, 1, 0, 1, 3840, 2160);
+            const TemporalUpscalerColour two = temporal_upscaler_colour(100, 122, 2, 0, 0, 3840, 2160);
+            const TemporalUpscalerColour plain = temporal_upscaler_colour(100, 122, 1, 0, 0, 3840, 2160);
+            assert(layer1.layers == 0 && member.layers == 0 && two.layers == 0 && plain.layers == 1);
+            assert(plain.frame == 100 && plain.format == 122 && plain.w == 3840 && plain.h == 2160);
+            assert(temporal_upscaler_colour_same(&plain, &seen) && !temporal_upscaler_colour_same(&layer1, &seen));
+            const TemporalUpscalerColour* refused[3] = {&layer1, &member, &two};
+            for (int k = 0; k < 3; k++)
+                assert(temporal_upscaler_decide(&on, 1, 1, temporal_upscaler_predicted(refused[k], 101), &c, &config) ==
+                       TEMPORAL_UPSCALER_NOT_KNOWN);
+            assert(temporal_upscaler_decide(&on, 1, 1, temporal_upscaler_predicted(&plain, 101), &c, &config) ==
+                   TEMPORAL_UPSCALER_JITTER);
+            /* the same frames with one layer are jittered: the layer count is what refused */
+            assert(temporal_upscaler_decide(&on, 1, 1, temporal_upscaler_predicted(&seen, 101), &c, &config) ==
+                   TEMPORAL_UPSCALER_JITTER);
+        }
         other = seen;
         other.w = 0;
         assert(!temporal_upscaler_predicted(&other, 101));
@@ -2585,23 +2691,87 @@ static void test_upscaler_wiring(void) {
         assert(temporal_upscaler_resets(0, 0, 2, &last) == 0);
         assert(temporal_upscaler_resets(0, 0, 3, &last) == 1 && temporal_upscaler_resets(0, 0, 3, &last) == 0);
     }
-    /* the counts between two lines */
+    /* The counts between two lines. A frame is counted once, with its outcome, in one window: the window is
+       closed at the start of the next frame's decision, not at its own. */
     {
         TemporalUpscalerTally t = {0};
-        for (int k = 0; k < TEMPORAL_UPSCALER_EVERY - 1; k++)
-            assert(!temporal_upscaler_decided(&t, k % 3 ? TEMPORAL_UPSCALER_JITTER : TEMPORAL_UPSCALER_NOT_READY));
-        assert(temporal_upscaler_decided(&t, TEMPORAL_UPSCALER_NOT_GATE));
-        assert(t.frames == 600 && t.not_jittered[TEMPORAL_UPSCALER_NOT_READY] == 200);
-        assert(t.not_jittered[TEMPORAL_UPSCALER_NOT_GATE] == 1 && t.not_jittered[TEMPORAL_UPSCALER_JITTER] == 0);
+        /* 599 frames, each decided and evaluated: no line is due at any of their decisions */
+        for (int k = 0; k < 599; k++) {
+            assert(!temporal_upscaler_due(&t));
+            temporal_upscaler_decided(&t, TEMPORAL_UPSCALER_JITTER);
+            temporal_upscaler_tallied(&t, 0, TEMPORAL_UPSCALER_EVALUATED);
+        }
+        /* the 600th: not due at its own decision, so its outcome is still to come into this window */
+        assert(!temporal_upscaler_due(&t));
+        temporal_upscaler_decided(&t, TEMPORAL_UPSCALER_JITTER);
+        assert(t.frames == 600 && t.evaluated == 599);
+        temporal_upscaler_tallied(&t, 0, TEMPORAL_UPSCALER_EVALUATED);
+        /* the 601st's decision: the line is due, and holds 600 frames with 600 outcomes */
+        assert(temporal_upscaler_due(&t) && t.frames == 600 && t.evaluated == 600);
+        temporal_upscaler_closed(&t);
+        temporal_upscaler_decided(&t, TEMPORAL_UPSCALER_NOT_READY);
+        assert(t.frames == 1 && t.evaluated == 0 && t.not_jittered[TEMPORAL_UPSCALER_NOT_READY] == 1);
+    }
+    {
+        /* The window's last frame was drawn with jitter and its hook was missed. That is found at the next
+           frame's decision, counted as skipped first, and is in the line that is then due. */
+        TemporalUpscalerTally t = {0};
+        for (int k = 0; k < 600; k++) {
+            assert(!temporal_upscaler_due(&t));
+            temporal_upscaler_decided(&t, k % 3 ? TEMPORAL_UPSCALER_JITTER : TEMPORAL_UPSCALER_NOT_READY);
+            if (k % 3 && k != 599) temporal_upscaler_tallied(&t, 0, TEMPORAL_UPSCALER_EVALUATED);
+        }
+        assert(t.frames == 600 && t.not_jittered[TEMPORAL_UPSCALER_NOT_READY] == 200 && t.evaluated == 399);
+        temporal_upscaler_tallied(&t, 0, TEMPORAL_UPSCALER_SKIPPED); /* the missed hook, found at frame 601 */
+        assert(temporal_upscaler_due(&t) && t.skipped == 1 && t.evaluated + t.skipped == 400);
+        assert(t.not_jittered[TEMPORAL_UPSCALER_JITTER] == 0);
+    }
+    {
+        TemporalUpscalerTally t = {0};
+        temporal_upscaler_decided(&t, TEMPORAL_UPSCALER_NOT_GATE);
         temporal_upscaler_decided(&t, TEMPORAL_UPSCALER_REASONS); /* no reason: counted as a frame alone */
         temporal_upscaler_decided(&t, -1);
-        assert(t.frames == 602);
-        temporal_upscaler_tallied(&t, TEMPORAL_UPSCALER_EVALUATED);
-        temporal_upscaler_tallied(&t, TEMPORAL_UPSCALER_EVALUATED);
-        temporal_upscaler_tallied(&t, TEMPORAL_UPSCALER_SKIPPED);
-        temporal_upscaler_tallied(&t, TEMPORAL_UPSCALER_FAILED);
-        temporal_upscaler_tallied(&t, TEMPORAL_UPSCALER_STOPPED);
+        assert(t.frames == 3 && t.not_jittered[TEMPORAL_UPSCALER_NOT_GATE] == 1);
+        temporal_upscaler_tallied(&t, 0, TEMPORAL_UPSCALER_EVALUATED);
+        temporal_upscaler_tallied(&t, 0, TEMPORAL_UPSCALER_EVALUATED);
+        temporal_upscaler_tallied(&t, 0, TEMPORAL_UPSCALER_SKIPPED);
+        temporal_upscaler_tallied(&t, 0, TEMPORAL_UPSCALER_FAILED);
+        temporal_upscaler_tallied(&t, 0, TEMPORAL_UPSCALER_STOPPED);
         assert(t.evaluated == 2 && t.skipped == 1 && t.failed == 1 && t.stopped == 1);
+    }
+    /* One frame, one fate. Frame 5 was drawn with jitter. Staging its jitter failed, a stop, and at its hook the
+       gate did not take it, a skip: the frame counts once, as stopped, and the stop latches in the health. */
+    {
+        TemporalUpscalerTally t = {0};
+        TemporalUpscalerHealth h = {0};
+        temporal_upscaler_decided(&t, TEMPORAL_UPSCALER_JITTER);
+        assert(temporal_upscaler_tallied(&t, 5, TEMPORAL_UPSCALER_STOPPED) == 1);
+        assert(temporal_upscaler_after(&h, 1, TEMPORAL_UPSCALER_STOPPED) == 1);
+        assert(temporal_upscaler_tallied(&t, 5, TEMPORAL_UPSCALER_SKIPPED) == 0);
+        assert(t.frames == 1 && t.stopped == 1 && t.skipped == 0 && t.evaluated == 0 && t.failed == 0);
+        /* the other order: a skip first, then a stop for the same frame. One fate in the counts, the skip,
+           and the stop still latches. */
+        TemporalUpscalerTally u = {0};
+        TemporalUpscalerHealth g = {0};
+        temporal_upscaler_decided(&u, TEMPORAL_UPSCALER_JITTER);
+        const int first = temporal_upscaler_tallied(&u, 6, TEMPORAL_UPSCALER_SKIPPED);
+        assert(first == 1 && !temporal_upscaler_after(&g, first, TEMPORAL_UPSCALER_SKIPPED) && g.failures == 1);
+        const int second = temporal_upscaler_tallied(&u, 6, TEMPORAL_UPSCALER_STOPPED);
+        assert(second == 0 && temporal_upscaler_after(&g, second, TEMPORAL_UPSCALER_STOPPED) == 1 && g.stopped);
+        assert(u.skipped == 1 && u.stopped == 0 && g.failures == 1);
+        /* a second skip for the same frame does not count towards the eight either */
+        TemporalUpscalerHealth e = {0};
+        TemporalUpscalerTally v = {0};
+        for (int k = 0; k < 20; k++)
+            temporal_upscaler_after(&e, temporal_upscaler_tallied(&v, 9, TEMPORAL_UPSCALER_SKIPPED),
+                                    TEMPORAL_UPSCALER_SKIPPED);
+        assert(e.failures == 1 && !e.off && v.skipped == 1);
+        /* the next frame has a fate of its own, and closing a window keeps which frame had the last one */
+        assert(temporal_upscaler_tallied(&v, 10, TEMPORAL_UPSCALER_EVALUATED) == 1 && v.evaluated == 1);
+        temporal_upscaler_closed(&v);
+        assert(v.frames == 0 && v.evaluated == 0 && v.skipped == 0 && v.fated == 10);
+        assert(temporal_upscaler_tallied(&v, 10, TEMPORAL_UPSCALER_FAILED) == 0 && v.failed == 0);
+        assert(temporal_upscaler_tallied(&v, 11, TEMPORAL_UPSCALER_FAILED) == 1 && v.failed == 1);
     }
 }
 

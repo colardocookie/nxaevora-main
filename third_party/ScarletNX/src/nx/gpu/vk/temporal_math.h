@@ -1437,9 +1437,44 @@ typedef struct {
     unsigned format, layers;
     int w, h;
 } TemporalUpscalerColour;
-/* 1 when the frame before this one reached its hook with a colour target: only then is there a prediction */
+/* The projection the frame's draws were given, kept by value from the unjittered bytes each jittered copy was made
+   from, at the draw that takes it. The decision's projection is a prediction: the camera's block may be another
+   slot at the G-buffer, or rewritten since. mixed: the frame's draws did not all get the same one. */
+typedef struct {
+    unsigned frame;
+    int mixed;
+    float m[16];
+} TemporalUpscalerUsed;
+static inline void temporal_upscaler_used(TemporalUpscalerUsed* u, unsigned frame, const float m[16]) {
+    if (u->frame != frame) {
+        u->frame = frame;
+        u->mixed = 0;
+        memcpy(u->m, m, sizeof u->m);
+    } else if (memcmp(u->m, m, sizeof u->m))
+        u->mixed = 1;
+}
+/* 1 when the frame's jittered draws all used one projection and it is the decision's, bit for bit. Only then is
+   the frame evaluated, with that projection's planes. Nothing is read again from guest memory at the hook. */
+static inline int temporal_upscaler_used_same(const TemporalUpscalerUsed* u, unsigned frame, const float decided[16]) {
+    return frame != 0 && u->frame == frame && !u->mixed && !memcmp(u->m, decided, sizeof u->m);
+}
+/* What a place where the runtime records as usual (the gate's draw, the hook) makes of the recycle's note. The
+   recorder's mark is read again there, pending context or not, and outranks the note: a context noted as
+   completed is not published once a submission did not run as recorded. */
+static inline int temporal_upscaler_noted(int noted, int failed) { return failed ? TEMPORAL_UPSCALER_STOP : noted; }
+/* The colour target as a hook sees it. Only a target that may be handed to a library keeps a layer count: one
+   layer, at the image's first layer, not a member of a shared array. Any other is kept with a count of 0, which
+   no decision and no configuration takes. */
+static inline TemporalUpscalerColour temporal_upscaler_colour(unsigned frame, unsigned format, unsigned layers,
+                                                              unsigned base_layer, int member, int w, int h) {
+    const TemporalUpscalerColour c = {frame, format, layers == 1 && !base_layer && !member ? 1u : 0u, w, h};
+    return c;
+}
+/* 1 when the frame before this one reached its hook with a colour target of one layer: only then is there a
+   prediction this piece takes. A layered target, which the hook keeps with a count that is not 1, gives none,
+   so the decision after the frame it was seen in refuses jitter. */
 static inline int temporal_upscaler_predicted(const TemporalUpscalerColour* c, unsigned frame) {
-    return c->frame != 0 && frame != 0 && c->frame + 1 == frame && c->w > 0 && c->h > 0 && c->layers > 0;
+    return c->frame != 0 && frame != 0 && c->frame + 1 == frame && c->w > 0 && c->h > 0 && c->layers == 1;
 }
 static inline int temporal_upscaler_colour_same(const TemporalUpscalerColour* a, const TemporalUpscalerColour* b) {
     return a->format == b->format && a->layers == b->layers && a->w == b->w && a->h == b->h;
@@ -1456,17 +1491,34 @@ static inline int temporal_upscaler_resets(int frame_reset, int fallback, unsign
 #define TEMPORAL_UPSCALER_EVERY 600
 typedef struct {
     unsigned frames, evaluated, skipped, failed, stopped, not_jittered[TEMPORAL_UPSCALER_REASONS];
+    unsigned fated; /* the frame the last fate was counted for: it outlives a window */
 } TemporalUpscalerTally;
-/* a frame was decided: 1 when a line is due, after which the caller clears the tally */
-static inline int temporal_upscaler_decided(TemporalUpscalerTally* t, int decision) {
+/* A frame is counted once, its decision and what came of it in the same window. So a window is closed, and its
+   line written, at the start of a new frame's decision, when the frame before is final (evaluated, skipped,
+   failed, stopped, or its hook missed), and before the new frame is counted. 1 when a line is due then. */
+static inline int temporal_upscaler_due(const TemporalUpscalerTally* t) { return t->frames >= TEMPORAL_UPSCALER_EVERY; }
+/* a frame was decided */
+static inline void temporal_upscaler_decided(TemporalUpscalerTally* t, int decision) {
     if (decision > TEMPORAL_UPSCALER_JITTER && decision < TEMPORAL_UPSCALER_REASONS) t->not_jittered[decision]++;
-    return ++t->frames >= TEMPORAL_UPSCALER_EVERY;
+    t->frames++;
 }
-static inline void temporal_upscaler_tallied(TemporalUpscalerTally* t, int outcome) {
+/* What came of a frame that was drawn with jitter. A frame has one fate: the first one reported for it is counted,
+   and 1 is returned. Later ones for the same frame change nothing here and return 0. (A stop still latches in
+   the health whenever it comes: temporal_upscaler_after.) */
+static inline int temporal_upscaler_tallied(TemporalUpscalerTally* t, unsigned frame, int outcome) {
+    if (frame && t->fated == frame) return 0;
+    t->fated = frame;
     if (outcome == TEMPORAL_UPSCALER_EVALUATED) t->evaluated++;
     else if (outcome == TEMPORAL_UPSCALER_SKIPPED) t->skipped++;
     else if (outcome == TEMPORAL_UPSCALER_FAILED) t->failed++;
     else t->stopped++;
+    return 1;
+}
+/* a window's line is written: its counts begin again, and the frame that had the last fate is still known */
+static inline void temporal_upscaler_closed(TemporalUpscalerTally* t) {
+    const unsigned fated = t->fated;
+    memset(t, 0, sizeof *t);
+    t->fated = fated;
 }
 /* SNX_ARCEUS_TEMPORAL_GPUTIME, the pure part: the approximate time between two completions on the GPU's clock.
    A bracket is two timestamps written at the pipeline's last stage, one before and one after a stretch of our

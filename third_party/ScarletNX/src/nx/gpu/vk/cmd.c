@@ -252,7 +252,10 @@ static void timeline_wait(u64 value) {
     SNX_ZONE_C(z_wait, "vk timeline wait", 0xb05252);
     gpu_wait_note("a graphics submission", value);
     SNX_ZONE_V(z, "timeline wait", value);
-    VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
+    /* A wait that failed says nothing of the submission: whether it completed is not known. The recorder's mark
+       is set, and only that: whoever frees what a submission may use reads it first (a frame's recycle frees
+       right after this wait). */
+    if (!VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX))) vk_rec_mark_failed();
     SNX_ZONE_END(z);
     gpu_wait_note(NULL, 0);
 }

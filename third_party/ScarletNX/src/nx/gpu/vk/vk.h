@@ -224,9 +224,10 @@ void vk_frame_hold(u64 frame_id);
 u64 vk_last_submit(void);        /* the last submission's number, which its completion signals */
 void vk_submit_progress(u64* submitted, u64* done); /* the last submission and the last done (any thread) */
 int vk_submit_completed(u64* done); /* the last done, 0 when the timeline could not be read */
-/* record.c: 1 from the moment a command buffer could not be begun or ended, a submission was refused or a frame's
-   command pool could not be reset, for good. A submission's number on the timeline is still reached, so
-   "completed" then no longer means "ran". vk_rec_mark_failed sets it and does nothing else. */
+/* record.c: 1 from the moment a command buffer could not be begun or ended, a submission was refused, a frame's
+   command pool could not be reset or a wait for the timeline failed, for good. A submission's number on the
+   timeline may still be reached, so "completed" then no longer means "ran". vk_rec_mark_failed sets it and does
+   nothing else. */
 int vk_rec_submit_failed(void);
 void vk_rec_mark_failed(void);
 void vk_wait_submit(u64 value);  /* until the GPU has done that submission (any thread, without vk_lock) */

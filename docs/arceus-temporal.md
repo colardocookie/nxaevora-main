@@ -505,17 +505,25 @@ A frame, in order:
    The configuration is the sizes, the formats, the layer counts and the create flags, with the far plane's
    decision from the projection decoded at that draw. The depth target and the projection are this draw's. The
    colour target is the one thing taken from the frame before, which must have reached our passes, since the
-   frame's own is not seen yet in the depth pre-pass.
+   frame's own is not seen yet in the depth pre-pass. It is kept by value. One that is layered, not at its
+   image's first layer or a member of a shared array is kept as one the upscaler does not take, so the decision
+   after the frame it was seen in refuses jitter. The recorder's failure mark is read at every decision and at
+   every hook, context on its way or not, before anything is published or counts as ready.
 2. A frame left without jitter only because no context is ready gets one made at our passes' place: created,
    and its prepare recorded through `vk_rec_direct`. A frame's recycle notes when that submission has completed,
-   and the context comes into use at the next gate's draw or hook. Nothing else of ours runs in such a frame.
+   and the context comes into use at the next gate's draw or hook, held against what the frames want then: one
+   made for frames that have moved on goes unused. Nothing else of ours runs in such a frame.
 3. In a frame drawn with jitter the vector pass runs as always. What the hook sees (this frame's own colour
    target, the depth, the projection, eight offsets, a stored depth that is the projection's own) must be what
-   the frame was decided with, and every number must pass its check. Then the scene colour, the depth and the
+   the frame was decided with, and every number must pass its check. The projection is the one the frame's
+   draws were given: it is kept by value from the unjittered bytes each jittered copy was made from, all draws
+   must have had the same one, and it must be the decision's bit for bit. Nothing is read again from guest
+   memory at the hook. Then the scene colour, the depth and the
    motion image are handed to the library through `vk_rec_direct`, it writes a private 16 bit float image, and
    a pass of ours (`temporal_upscaled.frag`) writes that picture into the scene colour before its first reader:
    texel for texel, negative values and values that are no number raised to 0, each channel held to the largest
-   finite value of the scene colour's format.
+   finite value of the scene colour's format. Once the library was entered, whatever it answers, every image
+   it was handed counts as last used by all commands, reading and writing, for whatever uses it next.
 4. The reset flag is set by any of: no history of the frame before or a camera cut (the gate's rules), a frame
    before that was not evaluated (the frame time then is the nominal one of `SNX_ARCEUS_TARGET_FPS`, or a
    sixtieth), a context that came into use since the last evaluate.
@@ -528,7 +536,8 @@ at once when a pass of ours that the hand-over needs cannot be made, when a subm
 recorded, when a context's prepare fails, and when the timeline cannot be read eight recycles in a row. Off is
 for good: no frame is drawn with jitter any more and every frame is left as the game draws it. It does not
 fall back to our own resolve. A context is destroyed only after the frames in flight, and never once a
-submission did not run as recorded.
+submission did not run as recorded or a wait for the timeline failed (that sets the same mark). A frame has one
+fate in the counts, the first reported for it, and is counted in one window with its decision.
 
 Limits of this piece: FSR only, the formats the self-test ran (a B10G11R11 scene colour, a D24S8 depth), one
 layer each, the game's form of projection as two cameras of one place showed it. Any other frame is left
