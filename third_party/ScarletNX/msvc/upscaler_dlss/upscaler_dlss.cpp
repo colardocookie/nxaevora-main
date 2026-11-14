@@ -65,9 +65,19 @@ void utf8(const wchar_t* wide, char* out, int room) {
     if (!WideCharToMultiByte(CP_UTF8, 0, wide, -1, out, room, nullptr, nullptr)) snprintf(out, (size_t)room, "?");
 }
 
+// a path built into out, of kPath wide characters: 0 when it failed or did not fit whole
+const unsigned kPath = 32768;
+int join(wchar_t* out, const wchar_t* format, ...) {
+    va_list args;
+    va_start(args, format);
+    const int n = vswprintf(out, kPath, format, args);
+    va_end(args);
+    return n >= 0 && (unsigned)n < kPath;
+}
+
 // The folders, fixed before the instance exists: NGX looks for the feature library in the module's own folder (a
 // request, not a guarantee), and writes its data in snx-ngx-data under it. 1 when both are there and writable.
-wchar_t g_folder[32768], g_data[32768];
+wchar_t g_folder[kPath], g_data[kPath];
 int g_folders; // 0 not asked yet, 1 ready, -1 refused
 int folders() {
     if (g_folders) return g_folders > 0;
@@ -79,8 +89,8 @@ int folders() {
         say("arceus-upscaler: dlss is not available: the module's own file is not known (%lu)", GetLastError());
         return 0;
     }
-    const DWORD n = GetModuleFileNameW(self, g_folder, 32768);
-    if (!n || n >= 32768 - 32) {
+    const DWORD n = GetModuleFileNameW(self, g_folder, kPath);
+    if (!n || n >= kPath - 32) {
         say("arceus-upscaler: dlss is not available: the module's own path is not known (%lu)", GetLastError());
         return 0;
     }
@@ -97,7 +107,10 @@ int folders() {
         return 0;
     }
     g_folder[cut] = 0;
-    swprintf(g_data, 32768, L"%ls\\snx-ngx-data", g_folder);
+    if (!join(g_data, L"%ls\\snx-ngx-data", g_folder)) {
+        say("arceus-upscaler: dlss is not available: the path of NGX's data folder could not be made whole");
+        return 0;
+    }
     utf8(g_data, shown, sizeof shown);
     if (!CreateDirectoryW(g_data, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
         say("arceus-upscaler: dlss is not available: NGX's data folder %s could not be made (%lu)", shown,
@@ -110,9 +123,13 @@ int folders() {
     HANDLE file = INVALID_HANDLE_VALUE;
     if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY))
         for (unsigned attempt = 0; attempt < 4 && file == INVALID_HANDLE_VALUE; attempt++) {
-            wchar_t probe[32768];
-            swprintf(probe, 32768, L"%ls\\snx-write-check-%lu-%llu-%u", g_data, GetCurrentProcessId(),
-                     (unsigned long long)GetTickCount64(), attempt);
+            wchar_t probe[kPath];
+            if (!join(probe, L"%ls\\snx-write-check-%lu-%llu-%u", g_data, GetCurrentProcessId(),
+                      (unsigned long long)GetTickCount64(), attempt)) {
+                say("arceus-upscaler: dlss is not available: the path of the data folder's write check could not "
+                    "be made whole");
+                return 0;
+            }
             file = CreateFileW(probe, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                                FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
             if (file == INVALID_HANDLE_VALUE && GetLastError() != ERROR_FILE_EXISTS) break;
