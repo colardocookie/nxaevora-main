@@ -2355,6 +2355,52 @@ static void test_gpu_time(void) {
         assert(temporal_gpu_settle(&r, temporal_gpu_index(slow), 60, t0 + 5000000ull, ticks, there, 64, period));
         assert(r.n[TEMPORAL_GPU_EMPTY] == 0 && r.lost[TEMPORAL_GPU_EMPTY][TEMPORAL_GPU_OUTDATED] == 1);
     }
+    /* The window's clock is the presents, not our passes. With no run of our passes for 1200 presents the
+       window is written at 600 and again at 1200, each of 600, never one of 1200 (the review's case). */
+    {
+        TemporalGpuWindow w;
+        const unsigned first[TEMPORAL_GPU_CONFIG] = {2, 0, 31, 1, 1, 0, 1, 3840, 2160, 0, 0, 3840, 2160};
+        unsigned second[TEMPORAL_GPU_CONFIG], before[TEMPORAL_GPU_CONFIG], presents = 99;
+        int lines = 0;
+        memset(&w, 0, sizeof w);
+        memset(before, 0, sizeof before);
+        assert(!temporal_gpu_tick(&w, 5000, &presents) && presents == 0); /* no window yet: nothing to write */
+        assert(!temporal_gpu_configure(&w, first, 1000, before, &presents) && w.have && w.began == 1000);
+        for (unsigned present = 1001; present <= 2200; present++)
+            if (temporal_gpu_tick(&w, present, &presents)) {
+                assert(presents == TEMPORAL_GPU_SAMPLES && (present == 1600 || present == 2200));
+                lines++;
+            }
+        assert(lines == 2 && w.began == 2200);
+        /* The same configuration again changes nothing. Another one closes the window first, with its own
+           configuration and its length so far, and the bracket begun after that is the new window's first:
+           it is measured there, not retired as the old one's (the review's second case). */
+        assert(!temporal_gpu_configure(&w, first, 2300, before, &presents) && w.began == 2200);
+        memcpy(second, first, sizeof second);
+        second[11] = 2880;
+        second[12] = 1620;
+        memset(&r, 0, sizeof r);
+        const TemporalGpuHandle old = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 70, t0);
+        temporal_gpu_end(&r, old, 70);
+        assert(temporal_gpu_configure(&w, second, 2350, before, &presents) && presents == 150);
+        assert(!memcmp(before, first, sizeof first) && !memcmp(w.config, second, sizeof second) && w.began == 2350);
+        temporal_gpu_restart(&r); /* what the caller does when told to close */
+        const TemporalGpuHandle fresh = temporal_gpu_begin(&r, TEMPORAL_GPU_HOOK, 71, t0);
+        temporal_gpu_end(&r, fresh, 71);
+        const unsigned long long ticks[2] = {0, 2000000ull};
+        assert(temporal_gpu_settle(&r, temporal_gpu_index(old), 71, t0 + 5000000ull, ticks, there, 64, period));
+        assert(temporal_gpu_settle(&r, temporal_gpu_index(fresh), 71, t0 + 5000000ull, ticks, there, 64, period));
+        assert(r.asked[TEMPORAL_GPU_HOOK] == 1 && r.n[TEMPORAL_GPU_HOOK] == 1);
+        assert(r.lost[TEMPORAL_GPU_HOOK][TEMPORAL_GPU_OUTDATED] == 1);
+        /* each number of the configuration counts, and the window's length restarts at a change */
+        for (int k = 0; k < TEMPORAL_GPU_CONFIG; k++) {
+            unsigned other[TEMPORAL_GPU_CONFIG];
+            memcpy(other, w.config, sizeof other);
+            other[k]++;
+            assert(temporal_gpu_configure(&w, other, 2400 + (unsigned)k, before, &presents));
+        }
+        assert(!temporal_gpu_tick(&w, 2415 + 599, &presents) && temporal_gpu_tick(&w, 2415 + 600, &presents));
+    }
     /* the counts are kept by kind: a loss of one kind is not another's */
     memset(&r, 0, sizeof r);
     a = temporal_gpu_begin(&r, TEMPORAL_GPU_NUMBERS, 5, t0);

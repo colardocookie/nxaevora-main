@@ -351,8 +351,9 @@ of the fraction alone costs one more, drawn with jitter and not resolved. Lines 
 ## GPU time of our passes (`SNX_ARCEUS_TEMPORAL_GPUTIME=1`)
 
 Read only, off by default, and off it adds no command and no query. With it two timestamps are written at the
-pipeline's last stage around a stretch of our commands. Every 600 presents, and whenever what our passes are
-configured as changes (mode, view, options, object vectors, links, rejection, the rectangle's gate, the images'
+pipeline's last stage around a stretch of our commands. Every 600 presents, counted at the present whether or
+not our passes ran, and whenever what our passes are configured as changes, which is looked at before a frame's
+first bracket begins (mode, view, options, object vectors, links, rejection, the rectangle's gate, the images'
 and the scene's size), the log gives the window that ended: under which configuration it was taken and, for each
 kind of stretch, how many brackets were asked for, measured, still under way, and lost by each reason, with the
 median, the mean and the 95th percentile in milliseconds. The next window begins empty. A bracket still under way

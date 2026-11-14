@@ -202,8 +202,7 @@ static struct {
     /* The window the kept times belong to: what our passes were configured as when it began (whole numbers
        only, so two can be held against each other), and the present it began at. A line is written, and a new
        window begun, every 600 presents and whenever the configuration is another. */
-    int time_have;
-    u32 time_config[16], time_began;
+    TemporalGpuWindow time_window;
     double time_period;
     /* the brackets of the current run of our passes that are begun and not yet ended: -1 for none */
     TemporalGpuHandle time_hook, time_numbers;
@@ -1333,6 +1332,7 @@ static void gputime_leftover(TemporalGpuHandle* h) {
 /* Where the renderer has completed a slot's submissions and recycles it (cmd.c): every pair whose submission
    is known to have completed gives its time or is counted, and is free again. The completed number is read
    from the timeline as it stands and the results are asked for with their availability: nothing waits. */
+static void gputime_tick(void);
 void vk_temporal_gputime_poll(void) {
     if (g_t.gputime != 1) return;
     /* "Completed" is read from the timeline, and it means "ran" only while no submission has failed: the recorder
@@ -1373,17 +1373,18 @@ void vk_temporal_gputime_poll(void) {
         temporal_gpu_settle(&g_time_ring, i, done, now, fetched ? ticks : NULL, fetched ? there : NULL, g_t.time_bits,
                             g_t.time_period);
     }
+    /* the presents' clock, here because this is called once a recycled slot whether or not our passes ran */
+    gputime_tick();
 }
 /* A window's lines: under which configuration its times were taken, and for each kind of bracket how many were
    asked for, measured, still under way, and lost by each reason, with the median, the mean and the 95th
    percentile of the measured ones. Then the window is closed: the next begins empty, and brackets still under
    way are retired when they complete without giving it a time. */
-static void gputime_window(const char* ended, u32 presents) {
+static void gputime_window(const char* ended, const u32* c, u32 presents) {
     static const char* const names[TEMPORAL_GPU_KINDS] = {
         "our passes before the scene's first reader (vectors, the frame's copy, resolve, sharpen)",
         "the numbers and the view, only in the frames that have them",
         "an empty bracket, a baseline that is subtracted from nothing"};
-    const u32* c = g_t.time_config;
     float sharpen;
     memcpy(&sharpen, &c[13], sizeof sharpen);
     LOG("arceus-temporal-gputime: approximate time between two completions, a window of %u presents %s. Taken "
@@ -1407,39 +1408,37 @@ static void gputime_window(const char* ended, u32 presents) {
     }
     temporal_gpu_restart(&g_time_ring);
 }
-/* Once a run of our passes: the window's bookkeeping. Every time kept belongs to the configuration and the
-   stretch of presents it was taken in. A change of configuration ends the window at once, under its own label,
-   and 600 presents end it too. */
-static void gputime_line(const Surf* scene, const TemporalRect* area) {
-    u32 now[16] = {(u32)g_t.mode,
-                   (u32)g_t.view,
-                   (u32)g_t.options,
-                   (u32)g_t.objects,
-                   (u32)g_t.links,
-                   (u32)g_t.reject,
-                   (u32)g_t.rect,
-                   scene->sw,
-                   scene->sh,
-                   area ? (u32)area->x : 0,
-                   area ? (u32)area->y : 0,
-                   area ? (u32)area->w : scene->sw,
-                   area ? (u32)area->h : scene->sh,
-                   0,
-                   0,
-                   0};
+/* Before a run of our passes records its first bracket: the configuration the run is taken under
+   (temporal_gpu_configure). When it is another than the window's, the window is written and closed here, under
+   its own configuration, so that this run's brackets are the new window's first and not the old one's last. */
+static void gputime_configure(const Surf* scene, const TemporalRect* area) {
+    u32 now[TEMPORAL_GPU_CONFIG] = {(u32)g_t.mode,
+                                    (u32)g_t.view,
+                                    (u32)g_t.options,
+                                    (u32)g_t.objects,
+                                    (u32)g_t.links,
+                                    (u32)g_t.reject,
+                                    (u32)g_t.rect,
+                                    scene->sw,
+                                    scene->sh,
+                                    area ? (u32)area->x : 0,
+                                    area ? (u32)area->y : 0,
+                                    area ? (u32)area->w : scene->sw,
+                                    area ? (u32)area->h : scene->sh,
+                                    0,
+                                    0,
+                                    0};
+    u32 before[TEMPORAL_GPU_CONFIG], presents;
     memcpy(&now[13], &g_t.sharpen, sizeof g_t.sharpen);
-    if (!g_t.time_have) {
-        g_t.time_have = 1;
-        memcpy(g_t.time_config, now, sizeof now);
-        g_t.time_began = g_vk_present;
-        return;
-    }
-    const u32 presents = g_vk_present - g_t.time_began;
-    const int changed = memcmp(g_t.time_config, now, sizeof now) != 0;
-    if (!changed && presents < TEMPORAL_GPU_SAMPLES) return;
-    gputime_window(changed ? "ended by a change of configuration" : "", presents);
-    memcpy(g_t.time_config, now, sizeof now);
-    g_t.time_began = g_vk_present;
+    if (temporal_gpu_configure(&g_t.time_window, now, g_vk_present, before, &presents))
+        gputime_window("ended by a change of configuration", before, presents);
+}
+/* The window's clock is the count of presents, looked at where the renderer recycles a slot, so that a window
+   is written after 600 presents whether or not our passes ran in them (temporal_gpu_tick). */
+static void gputime_tick(void) {
+    u32 presents;
+    if (temporal_gpu_tick(&g_t.time_window, g_vk_present, &presents))
+        gputime_window("", g_t.time_window.config, presents);
 }
 
 /* Before the draw whose fragment program is the scene colour's first reader: the probe's passes. Once a frame. */
@@ -2480,6 +2479,7 @@ void vk_temporal_before(u64 fs0_hash) {
     /* with SNX_ARCEUS_TEMPORAL_GPUTIME: the first mark of the bracket around our passes here, -1 without */
     gputime_leftover(&g_t.time_hook);
     gputime_leftover(&g_t.time_numbers);
+    if (gputime_on()) gputime_configure(scene, area);
     g_t.time_hook = gputime_begin(cb, TEMPORAL_GPU_HOOK);
     /* objects that moved were drawn into their own target this frame: the vector pass takes their vectors from it */
     const int objects = g_t.objects && g_t.object_at == frame && g_t.object.view && g_t.object.w == scene->sw &&
@@ -2670,7 +2670,6 @@ void vk_temporal_before(u64 fs0_hash) {
     gputime_end(cb, &g_t.time_hook);
     TemporalGpuHandle empty = gputime_begin(cb, TEMPORAL_GPU_EMPTY);
     gputime_end(cb, &empty);
-    if (gputime_on()) gputime_line(scene, area);
     /* without a frame before (the first one, or after a gap) the frame is compared with itself */
     /* the probe's numbers also look at the pixels that took an object's vector */
     if (!taa && objects) {

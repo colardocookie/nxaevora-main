@@ -1376,6 +1376,37 @@ static inline int temporal_gpu_usable(int timestamps, unsigned bits, double peri
 /* Switched off for the session, after a failure: nothing begins and nothing recorded before is read. The pairs
    keep their state, since what was recorded with them may still be on its way. */
 static inline void temporal_gpu_stop(TemporalGpuRing* r) { r->off = 1; }
+/* Which stretch of presents, under which configuration, the kept times belong to. The configuration is whole
+   numbers only, so that two can be held against each other. */
+#define TEMPORAL_GPU_CONFIG 16
+typedef struct {
+    int have;
+    unsigned config[TEMPORAL_GPU_CONFIG];
+    unsigned began; /* the present the window began at */
+} TemporalGpuWindow;
+/* At a present's boundary, whether or not our passes ran: 1 when the window is full and is to be written and
+   closed. presents gets its length. The next window begins at this present, under the same configuration. */
+static inline int temporal_gpu_tick(TemporalGpuWindow* w, unsigned present, unsigned* presents) {
+    *presents = w->have ? present - w->began : 0;
+    if (!w->have || *presents < TEMPORAL_GPU_SAMPLES) return 0;
+    w->began = present;
+    return 1;
+}
+/* Before a frame's first bracket begins: the configuration it is taken under. 1 when the window was taken under
+   another and is to be written and closed first, with its own configuration, which before gets. Then, and when
+   there was no window yet, the window is this configuration's and begins at this present, so the bracket that
+   follows is its first. */
+static inline int temporal_gpu_configure(TemporalGpuWindow* w, const unsigned* config, unsigned present,
+                                         unsigned* before, unsigned* presents) {
+    const int had = w->have;
+    if (had && !memcmp(w->config, config, sizeof w->config)) return 0;
+    if (had) memcpy(before, w->config, sizeof w->config);
+    *presents = had ? present - w->began : 0;
+    w->have = 1;
+    memcpy(w->config, config, sizeof w->config);
+    w->began = present;
+    return had;
+}
 /* the median, the mean and the 95th percentile of a kind's times, which are sorted in place: 0 without any */
 static inline int temporal_gpu_summary(float* ms, unsigned n, double* median, double* mean, double* high) {
     double sum = 0.0;
