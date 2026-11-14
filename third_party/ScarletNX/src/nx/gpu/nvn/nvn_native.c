@@ -859,28 +859,70 @@ static void pool_initialize_error(NvnPoolResult result, u64 pool, const NvnMemor
             (unsigned long long)pool, (unsigned long long)b->storage, (unsigned long long)b->size,
             b->flags, (unsigned)result);
 }
+/* Maps the pitch range and the block linear range of a normal pool. Runs without objs_lock. On a failure it logs
+   the line of the range that failed, gives back the range it mapped, and returns 0. */
+static int pool_map_ranges(u64 pool, u64 address, u64 block_linear, u64 storage, u64 size) {
+    if (!nvn_gpu_map_range(address, storage, size)) {
+        LOG("nvn-native: MemoryPoolInitialize pool=%llx GPU range %llx size=%llx storage=%llx cannot be mapped\n",
+            (unsigned long long)pool, (unsigned long long)address, (unsigned long long)size,
+            (unsigned long long)storage);
+        return 0;
+    }
+    if (!nvn_gpu_map_range(block_linear, storage, size)) {
+        LOG("nvn-native: MemoryPoolInitialize pool=%llx block linear range %llx size=%llx storage=%llx cannot be mapped\n",
+            (unsigned long long)pool, (unsigned long long)block_linear, (unsigned long long)size,
+            (unsigned long long)storage);
+        nvn_gpu_unmap_range(address, storage, size);
+        return 0;
+    }
+    return 1;
+}
+/* Unmaps the ranges of a finalized pool: one for each mapped page of a virtual pool, both of a normal pool. It frees
+   the page table of a virtual pool. Runs without objs_lock. */
+static void pool_unmap_ranges(const MemoryPoolRec* p) {
+    if (p->page_cpu) {
+        for (uint32_t i = 0; i < p->page_count; i++)
+            if (p->page_cpu[i])
+                nvn_gpu_unmap_range(p->gpu_address + (u64)i * NVN_POOL_VIRTUAL_PAGE_SIZE, p->page_cpu[i],
+                                    NVN_POOL_VIRTUAL_PAGE_SIZE);
+        free(p->page_cpu);
+        return;
+    }
+    nvn_gpu_unmap_range(p->gpu_address, p->storage, p->size);
+    nvn_gpu_unmap_range(p->block_linear_address, p->storage, p->size);
+}
+/* Files the record of a pool that Initialize made. Takes objs_lock exclusive, for the object table. */
+static void pool_record_put(u64 pool, const MemoryPoolRec* rec) {
+    objs_lock_take();
+    NvnObj* o = nvn_objtab_put(&objs, pool, NVN_OBJ_MEMORY_POOL, sizeof(MemoryPoolRec));
+    if (!o) fatal("nvn-native: out of memory for the record of memory pool %llx\n", (unsigned long long)pool);
+    *(MemoryPoolRec*)o->data = *rec;
+    pm_unlock(&objs_lock);
+}
+/* Removes the pool record of a failed Initialize, so that the address keeps no record. Takes objs_lock exclusive. */
+static void pool_record_remove(u64 pool) {
+    objs_lock_take();
+    nvn_objtab_remove(&objs, pool);
+    pm_unlock(&objs_lock);
+}
 static void h_memory_pool_initialize(CPU* c, u64 entry) {
     (void)entry;
     objs_lock_take();
-    NvnMemoryPoolBuilder b = *memory_pool_builder(c->x[1]);
+    const NvnMemoryPoolBuilder b = *memory_pool_builder(c->x[1]);
+    pm_unlock(&objs_lock);
     uint32_t flags;
-    NvnPoolResult result = nvn_memory_pool_params(&b, NVN_POOL_PAGE_SIZE, &flags);
-    /* A failed initialization removes the record, so later calls find no pool. */
-    NvnObj* o = nvn_objtab_put(&objs, c->x[0], NVN_OBJ_MEMORY_POOL, sizeof(MemoryPoolRec));
-    if (!o) fatal("nvn-native: out of memory for the record of memory pool %llx\n", (unsigned long long)c->x[0]);
+    const NvnPoolResult result = nvn_memory_pool_params(&b, NVN_POOL_PAGE_SIZE, &flags);
     if (result != NVN_POOL_OK) {
         pool_initialize_error(result, c->x[0], &b);
-        nvn_objtab_remove(&objs, c->x[0]);
+        pool_record_remove(c->x[0]);
         c->x[0] = 0;
-        pm_unlock(&objs_lock);
         return;
     }
     if (!(flags & NVN_POOL_VIRTUAL) && b.size > UINT64_MAX / 2u) {
         LOG("nvn-native: MemoryPoolInitialize pool=%llx size=%llx overflows two GPU ranges\n",
             (unsigned long long)c->x[0], (unsigned long long)b.size);
-        nvn_objtab_remove(&objs, c->x[0]);
+        pool_record_remove(c->x[0]);
         c->x[0] = 0;
-        pm_unlock(&objs_lock);
         return;
     }
     /* MapVirtual maps whole 64 KiB pages, so a virtual range starts on one. */
@@ -890,12 +932,11 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
     if (!address) {
         LOG("nvn-native: MemoryPoolInitialize pool=%llx size=%llx GPU address allocation failed\n",
             (unsigned long long)c->x[0], (unsigned long long)b.size);
-        nvn_objtab_remove(&objs, c->x[0]);
+        pool_record_remove(c->x[0]);
         c->x[0] = 0;
-        pm_unlock(&objs_lock);
         return;
     }
-    MemoryPoolRec* p = o->data;
+    MemoryPoolRec rec;
     if (flags & NVN_POOL_VIRTUAL) {
         /* A virtual pool reserves the range and maps nothing: nvnMemoryPoolMapVirtual fills the pages. */
         const uint32_t pages = (uint32_t)(b.size / NVN_POOL_VIRTUAL_PAGE_SIZE);
@@ -904,69 +945,44 @@ static void h_memory_pool_initialize(CPU* c, u64 entry) {
             LOG("nvn-native: MemoryPoolInitialize pool=%llx virtual page table of %u pages cannot be allocated\n",
                 (unsigned long long)c->x[0], pages);
             nvn_gpu_va_free(address, va_size);
-            nvn_objtab_remove(&objs, c->x[0]);
+            pool_record_remove(c->x[0]);
             c->x[0] = 0;
-            pm_unlock(&objs_lock);
             return;
         }
-        *p = (MemoryPoolRec){.device = b.device, .storage = 0, .size = b.size,
-                             .gpu_address = address, .flags = flags,
-                             .page_cpu = table, .page_count = pages};
-        c->x[0] = 1;
-        pm_unlock(&objs_lock);
-        return;
+        rec = (MemoryPoolRec){.device = b.device, .storage = 0, .size = b.size,
+                              .gpu_address = address, .flags = flags,
+                              .page_cpu = table, .page_count = pages};
+    } else {
+        /* A normal pool maps its storage at two ranges, the pitch range and the block linear range. The library maps a
+           third range for pool kinds with bit 7; the host does not. */
+        const uint64_t block_linear = address + b.size;
+        if (!pool_map_ranges(c->x[0], address, block_linear, b.storage, b.size)) {
+            nvn_gpu_va_free(address, va_size);
+            pool_record_remove(c->x[0]);
+            c->x[0] = 0;
+            return;
+        }
+        rec = (MemoryPoolRec){.device = b.device, .storage = b.storage, .size = b.size,
+                              .gpu_address = address, .block_linear_address = block_linear, .flags = flags};
     }
-    /* A normal pool maps its storage at two ranges, the pitch range and the block linear range. The library maps a
-       third range for pool kinds with bit 7; the host does not. */
-    const uint64_t block_linear = address + b.size;
-    if (!nvn_gpu_map_range(address, b.storage, b.size)) {
-        LOG("nvn-native: MemoryPoolInitialize pool=%llx GPU range %llx size=%llx storage=%llx cannot be mapped\n",
-            (unsigned long long)c->x[0], (unsigned long long)address, (unsigned long long)b.size,
-            (unsigned long long)b.storage);
-        nvn_gpu_va_free(address, va_size);
-        nvn_objtab_remove(&objs, c->x[0]);
-        c->x[0] = 0;
-        pm_unlock(&objs_lock);
-        return;
-    }
-    if (!nvn_gpu_map_range(block_linear, b.storage, b.size)) {
-        LOG("nvn-native: MemoryPoolInitialize pool=%llx block linear range %llx size=%llx storage=%llx cannot be mapped\n",
-            (unsigned long long)c->x[0], (unsigned long long)block_linear, (unsigned long long)b.size,
-            (unsigned long long)b.storage);
-        nvn_gpu_unmap_range(address, b.storage, b.size);
-        nvn_gpu_va_free(address, va_size);
-        nvn_objtab_remove(&objs, c->x[0]);
-        c->x[0] = 0;
-        pm_unlock(&objs_lock);
-        return;
-    }
-    *p = (MemoryPoolRec){.device = b.device, .storage = b.storage, .size = b.size,
-                         .gpu_address = address, .block_linear_address = block_linear, .flags = flags};
+    pool_record_put(c->x[0], &rec);
     c->x[0] = 1;
-    pm_unlock(&objs_lock);
 }
 
 static void h_memory_pool_finalize(CPU* c, u64 entry) {
     (void)entry;
     objs_lock_take();
-    NvnObj* o = nvn_objtab_find(&objs, c->x[0]);
-    if (o && o->kind == NVN_OBJ_MEMORY_POOL) {
-        MemoryPoolRec* p = o->data;
-        if (p->page_cpu) {
-            /* A physical pool finalized while a virtual pool maps it stays mapped here, as the library does not check it. */
-            for (uint32_t i = 0; i < p->page_count; i++)
-                if (p->page_cpu[i])
-                    nvn_gpu_unmap_range(p->gpu_address + (u64)i * NVN_POOL_VIRTUAL_PAGE_SIZE, p->page_cpu[i],
-                                        NVN_POOL_VIRTUAL_PAGE_SIZE);
-            free(p->page_cpu);
-        } else {
-            nvn_gpu_unmap_range(p->gpu_address, p->storage, p->size);
-            nvn_gpu_unmap_range(p->block_linear_address, p->storage, p->size);
-        }
-        nvn_gpu_va_free(p->gpu_address, memory_pool_va_size(p->flags, p->size));
-        nvn_objtab_remove(&objs, c->x[0]);
+    const NvnObj* o = nvn_objtab_find(&objs, c->x[0]);
+    if (!o || o->kind != NVN_OBJ_MEMORY_POOL) {
+        pm_unlock(&objs_lock);
+        return;
     }
+    /* The copy takes the page table: nvn_objtab_remove frees only the record data. */
+    const MemoryPoolRec p = *(const MemoryPoolRec*)o->data;
+    nvn_objtab_remove(&objs, c->x[0]);
     pm_unlock(&objs_lock);
+    pool_unmap_ranges(&p);
+    nvn_gpu_va_free(p.gpu_address, memory_pool_va_size(p.flags, p.size));
 }
 #define MEMORY_POOL_GETTER(name, expression)                                        \
     static void h_memory_pool_##name(CPU* c, u64 entry) {                           \

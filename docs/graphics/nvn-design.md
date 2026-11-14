@@ -1345,3 +1345,12 @@ Run with the shared `nvnBufferGetSize` (2026-11-15, 163 s, field and a battle): 
 wait per frame is 0.02 to 0.11 ms after the loading. `nvnBufferGetSize` made 7.3 ms of wait (was 89 ms in 333 s). The
 game threads waited 2.0 ms each second of play (4.4 ms before). `nvnMemoryPoolInitialize` (220 ms, 488 us per call) is now
 most of the wait that is left.
+
+Pools out of the lock: `nvnMemoryPoolInitialize` cannot take the shared mode, because it adds a record and the table can
+grow. Its time is the GPU work: the address allocation and the two range maps, which have their own nvdrv locks. Now it
+copies the builder under `objs_lock`, does the GPU work with no lock, and adds the record under `objs_lock` at the end, so
+no thread sees a pool that is half made. `nvnMemoryPoolFinalize` copies and removes the record under `objs_lock`, then
+unmaps and frees the address with no lock. Run (2026-11-15, 212 s, field, a battle, and many moves between Jubilife Village
+and the Obsidian Fieldlands): no crash, `command_conflicts=0`. The two pool handlers left the top 10 of the holder list,
+with 5654 Initialize calls (the run before: 1629 calls and 220 ms of wait behind them). The lock wait per frame is 0.02 to
+0.14 ms.
