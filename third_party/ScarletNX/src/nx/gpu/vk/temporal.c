@@ -109,7 +109,7 @@ static struct {
         object_frames, object_far, object_same, object_never, object_older, object_skinned, skinned_lines;
     /* skinned characters: our vertex and fragment programs, and the counts of the stats line */
     VkShaderModule skin_vs, skin_fs;
-    u64 skin_kept, skin_drawn, skin_first, skin_twice, skin_changed, skin_short;
+    u64 skin_kept, skin_drawn, skin_first, skin_twice, skin_changed, skin_short, skin_unowned, skin_shared;
     /* the learned pairs: why draws got no matrix of a frame ago, what the end of each frame judged, and the frames
        whose object vectors were given up because a pair broke after its draws */
     u64 object_learning, object_other, object_rest, object_full, object_unjudged;
@@ -122,6 +122,7 @@ static struct {
         void *slot, *other;
         const float* was;
         int source;
+        u64 pair, signature; /* the pair's lower slot (the slot itself when it takes no turns), the draw */
         float world[16];
     } current;
     /* each extra draw of this frame by its number, and the same for the frame the numbers' image was drawn in:
@@ -131,6 +132,7 @@ static struct {
         float shift; /* the origin's move on screen in pixels */
         u8 skinned, source;
         void *slot, *other; /* the table entries its matrix of a frame ago came from */
+        const TemporalStreamCopy* stream; /* a skinned draw: this frame's copy at its capture address */
     } drawn[OBJECT_DRAWS + 1], stats_drawn[OBJECT_DRAWS + 1];
     u32 long_logged_at;
     /* the jitter of the frame: decided at its first draw with the scene camera's block (jitter_decide) from that
@@ -877,7 +879,8 @@ static void objects_log(u32 frame) {
         "without turns learned %llu, pairs broken %llu (at rest alone %llu), frames whose object vectors were "
         "given up %llu. Skinned: reading a feedback buffer %llu, buffers kept %llu (a second time in a frame "
         "%llu), drawn again %llu, without last frame's buffer %llu, with a capture of another length %llu, "
-        "reading past last frame's copy %llu\n",
+        "reading past last frame's copy %llu, last frame's copy another draw's %llu, address captured more than "
+        "once %llu\n",
         (unsigned long long)g_t.object_seen, (unsigned long long)g_t.object_new,
         (unsigned long long)g_t.object_never, (unsigned long long)g_t.object_older,
         (unsigned long long)g_t.object_learning, (unsigned long long)g_t.object_other,
@@ -891,8 +894,10 @@ static void objects_log(u32 frame) {
         (unsigned long long)g_t.broke_frames, (unsigned long long)g_t.object_skinned,
         (unsigned long long)g_t.skin_kept, (unsigned long long)g_t.skin_twice, (unsigned long long)g_t.skin_drawn,
         (unsigned long long)g_t.skin_first, (unsigned long long)g_t.skin_changed,
-        (unsigned long long)g_t.skin_short);
+        (unsigned long long)g_t.skin_short, (unsigned long long)g_t.skin_unowned,
+        (unsigned long long)g_t.skin_shared);
     g_t.skin_kept = g_t.skin_drawn = g_t.skin_first = g_t.skin_twice = g_t.skin_changed = g_t.skin_short = 0;
+    g_t.skin_unowned = g_t.skin_shared = 0;
     g_t.object_seen = g_t.object_new = g_t.object_moved = g_t.object_drawn = g_t.object_capped = g_t.object_odd = 0;
     g_t.object_far = g_t.object_same = g_t.object_never = g_t.object_older = g_t.object_skinned = 0;
     g_t.object_learning = g_t.object_other = g_t.object_rest = g_t.object_full = g_t.object_unjudged = 0;
@@ -1013,14 +1018,17 @@ static int pairs_hold(u32 frame) {
             broke = !o || !q || q->at + 1 != frame || o->n != q->n || o->sum != q->sum;
         else if (w->source == TEMPORAL_BEFORE_OWN)
             broke = !o || o->before_at + 1 != frame || o->n != o->before_n || o->sum != o->before_sum;
-        if (!broke) continue;
+        /* a skinned draw took last frame's copy, and its address was captured again later in this frame */
+        const int again = w->stream && temporal_stream_conflict(w->stream, frame);
+        if (!broke && !again) continue;
         g_t.broke_frames++;
         if (g_t.broke_logged_at + 60 <= frame) { /* one example a second */
             g_t.broke_logged_at = frame;
             LOG("arceus-temporal-objects: the pair of block %llx broke after its draw (%s), the frame's object "
                 "vectors are given up, %llu frames so far\n",
                 (unsigned long long)w->block,
-                w->source == TEMPORAL_BEFORE_OWN ? "its own draws changed"
+                again                             ? "its positions' address was captured again"
+                : w->source == TEMPORAL_BEFORE_OWN ? "its own draws changed"
                 : q && q->at == frame            ? "both slots bound"
                                                  : "the draws changed",
                 (unsigned long long)g_t.broke_frames);
@@ -1055,6 +1063,7 @@ static u32 drawn_note(u64 block, u64 feedback, int skinned, int source, const fl
     struct Drawn* d = &g_t.drawn[number <= OBJECT_DRAWS ? number : 0];
     d->slot = g_t.current.slot;
     d->other = g_t.current.other;
+    d->stream = NULL;
     d->block = block;
     d->feedback = feedback;
     d->skinned = (u8)skinned;
@@ -1105,6 +1114,8 @@ int vk_temporal_object_note(const GpuChannel* ch, const Surf* zt, u64 vertex, u6
     g_t.current.address = address;
     g_t.current.slot = o;
     g_t.current.was = object_before(o, signature, frame, &g_t.current.source, &other);
+    g_t.current.signature = signature;
+    g_t.current.pair = g_t.current.source == TEMPORAL_BEFORE_PARTNER && partner < address ? partner : address;
     g_t.current.other = (void*)other;
     if (g_t.current.was && object_jumped(address, world, g_t.current.was, frame)) g_t.current.was = NULL;
     return g_t.current.was != NULL;
@@ -1174,6 +1185,7 @@ int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* o
 typedef struct {
     u64 address;
     u32 capacity, size[2], at[2]; /* at: the frame each of the two copies was made in */
+    TemporalStreamCopy copy[2];   /* whose each copy is (temporal_math.h) */
     VkBuffer buffer[2];
     VmaAllocation memory[2];
 } Skin;
@@ -1213,6 +1225,7 @@ void vk_temporal_skin_keep(VkCommandBuffer cb, u64 address, u32 size, VkBuffer s
             if (s->buffer[k]) vk_defer_buffer(s->buffer[k], s->memory[k]);
             s->buffer[k] = VK_NULL_HANDLE;
             s->at[k] = 0;
+            memset(&s->copy[k], 0, sizeof s->copy[k]);
             if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &bai, &s->buffer[k], &s->memory[k], NULL)))
                 s->buffer[k] = VK_NULL_HANDLE;
         }
@@ -1241,6 +1254,7 @@ void vk_temporal_skin_keep(VkCommandBuffer cb, u64 address, u32 size, VkBuffer s
     rec_CmdPipelineBarrier2(cb, &di);
     s->size[turn] = size;
     s->at[turn] = frame;
+    temporal_stream_captured(&s->copy[turn], frame);
     g_t.skin_kept++;
 }
 
@@ -1256,8 +1270,10 @@ int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, u6
     (void)ch;
     /* the copy of a frame ago is the same character's only as far as its block's pair is known */
     if (!block_at || !was || !g_t.have_before) return 0;
-    const Skin* s = skin_slot(address, frame, 0);
+    Skin* s = skin_slot(address, frame, 0);
     const int last = (int)((frame - 1) & 1);
+    /* this draw reads this frame's capture: the copy is tagged as its own for the frame after */
+    if (s && s->capacity) temporal_stream_used(&s->copy[!last], frame, g_t.current.pair, g_t.current.signature);
     if (!s || !s->capacity || s->at[last] + 1 != frame || offset >= s->size[last]) {
         g_t.skin_first++;
         return 0;
@@ -1266,6 +1282,16 @@ int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, u6
     if (s->at[!last] != frame || s->size[!last] != s->size[last]) {
         g_t.skin_changed++;
         return 0;
+    }
+    /* last frame's copy must be this draw's own, and the address captured once in each frame */
+    {
+        const int own =
+            temporal_stream_before(&s->copy[!last], &s->copy[last], frame, g_t.current.pair, g_t.current.signature);
+        if (own <= 0) {
+            if (own < 0) g_t.skin_shared++;
+            else g_t.skin_unowned++;
+            return 0;
+        }
     }
     /* every vertex the draw reads must be in last frame's copy, 12 bytes each from offset on */
     if (last_vertex == ~0ull || (last_vertex + 1) * 12 > (u64)s->size[last] - offset) {
@@ -1295,6 +1321,7 @@ int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, u6
     block.size[0] = (float)zt->sw;
     block.size[1] = (float)zt->sh;
     const u32 number = drawn_note(block_at, address, 1, source, world, was, zt, frame);
+    g_t.drawn[number <= OBJECT_DRAWS ? number : 0].stream = &s->copy[!last];
     block.size[2] = g_t.mode == MODE_PROBE ? (float)number : 0.0f;
     block.size[3] = 0;
     if (!(block.viewport[2] != 0.0f) || !(block.viewport[3] != 0.0f) || !layouts_make()) return 0;

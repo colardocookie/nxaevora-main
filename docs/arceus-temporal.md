@@ -171,6 +171,12 @@ was not written the frame before, falls back to the motion of its world matrix. 
 frame is not as long as last frame's (another mesh may have taken the address), and one whose draw reads a vertex
 past last frame's copy. A character whose block has no established pair is not drawn again at all.
 
+The address does not say whose positions a copy holds: another character may capture into it. So each copy is
+tagged with the G-buffer draws that read it, by their block's pair and signature, and a draw takes last frame's copy
+only when that copy carries its tag and the address was captured exactly once in both frames. An address captured
+more than once gives no skinned vector (counted). A second capture that arrives after a draw already took the copy
+gives up the frame's object vectors.
+
 Limit. The renderer does not see which game object wrote a block, so a pair is a guess that 4 frames of evidence
 support. Two different things with the same mesh that swap visibility every frame and move would be taken for one
 object. One object that truly moves there and back in two frames is taken for two things at rest and keeps the

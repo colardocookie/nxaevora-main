@@ -544,6 +544,87 @@ static void test_pairs(void) {
     assert(fooled);
 }
 
+/* One frame at one capture address: who captures into it, in order, and each one's G-buffer draw reading the
+   capture right after. Returns for character `ask` what its draw gets: 1 last frame's copy, 0 or -1 none. The
+   copy kept is the last capture's, as in temporal.c. *holder says whose positions the copy of a frame ago held. */
+static int stream_frame(TemporalStreamCopy copy[2], unsigned frame, const int* who, int count, int ask, int* held,
+                        int* holder) {
+    TemporalStreamCopy *now = &copy[frame & 1], *last = &copy[!(frame & 1)];
+    int got = -2;
+    *holder = *held;
+    for (int i = 0; i < count; i++) {
+        temporal_stream_captured(now, frame);
+        const unsigned long long pair = 0x1000ull * (unsigned)(who[i] + 1), draw = 77; /* one mesh: the same draw */
+        temporal_stream_used(now, frame, pair, draw);
+        if (who[i] == ask) got = temporal_stream_before(now, last, frame, pair, draw);
+    }
+    if (count) *held = who[count - 1];
+    return got;
+}
+
+static void test_streams(void) {
+    const int a[1] = {0}, b[1] = {1}, ab[2] = {0, 1}, ba[2] = {1, 0};
+    TemporalStreamCopy copy[2];
+    int held = -1, holder;
+    /* one character alone: its own copy from the second frame */
+    memset(copy, 0, sizeof copy);
+    assert(stream_frame(copy, 11, a, 1, 0, &held, &holder) == 0);
+    assert(stream_frame(copy, 12, a, 1, 0, &held, &holder) == 1 && holder == 0);
+    assert(stream_frame(copy, 13, a, 1, 0, &held, &holder) == 1 && holder == 0);
+    /* the audit's trace: A then B capture into the address every frame. The copy is B's. A never gets it, and
+       neither does B while the address is captured twice. */
+    memset(copy, 0, sizeof copy);
+    held = -1;
+    for (unsigned f = 21; f <= 26; f++) {
+        assert(stream_frame(copy, f, ab, 2, 0, &held, &holder) <= 0);
+        held = holder;
+        assert(stream_frame(copy, f, ab, 2, 1, &held, &holder) <= 0);
+    }
+    /* B alone, then A alone, at the same address: the copy of a frame ago is B's, so A gets none. A frame later
+       the copy is A's. */
+    memset(copy, 0, sizeof copy);
+    held = -1;
+    assert(stream_frame(copy, 31, b, 1, 1, &held, &holder) == 0);
+    assert(stream_frame(copy, 32, b, 1, 1, &held, &holder) == 1 && holder == 1);
+    assert(stream_frame(copy, 33, a, 1, 0, &held, &holder) == 0 && holder == 1);
+    assert(stream_frame(copy, 34, a, 1, 0, &held, &holder) == 1 && holder == 0);
+    /* twice in the frame before only, or in this one only: none either way */
+    assert(stream_frame(copy, 35, ba, 2, 0, &held, &holder) == -1);
+    assert(stream_frame(copy, 36, a, 1, 0, &held, &holder) == -1);
+    assert(stream_frame(copy, 37, a, 1, 0, &held, &holder) == 1 && holder == 0);
+    /* a gap of a frame */
+    assert(stream_frame(copy, 39, a, 1, 0, &held, &holder) == 0);
+    /* From one capture to two, late: A captures and its draw takes last frame's copy, then B captures into the
+       address in the same frame. That is seen before the vectors are read, and the copy is no good a frame later. */
+    assert(stream_frame(copy, 40, a, 1, 0, &held, &holder) == 1);
+    assert(stream_frame(copy, 41, a, 1, 0, &held, &holder) == 1 && !temporal_stream_conflict(&copy[41 & 1], 41));
+    temporal_stream_captured(&copy[41 & 1], 41);
+    temporal_stream_used(&copy[41 & 1], 41, 0x2000, 77);
+    assert(temporal_stream_conflict(&copy[41 & 1], 41));
+    assert(stream_frame(copy, 42, a, 1, 0, &held, &holder) == -1);
+    assert(stream_frame(copy, 43, a, 1, 0, &held, &holder) == 1 && holder == 0);
+    /* two captures a frame in changing order: never a copy, whichever came last */
+    for (unsigned f = 44; f <= 49; f++) {
+        assert(stream_frame(copy, f, f & 1 ? ab : ba, 2, 0, &held, &holder) == -1);
+        assert(temporal_stream_conflict(&copy[f & 1], f));
+    }
+    /* B's tag on last frame's copy does not serve A even with one capture in each frame */
+    assert(stream_frame(copy, 50, b, 1, 1, &held, &holder) == -1);
+    assert(stream_frame(copy, 51, b, 1, 1, &held, &holder) == 1);
+    assert(stream_frame(copy, 52, a, 1, 0, &held, &holder) == 0 && holder == 1);
+    /* across many orders, a draw that gets a copy always gets its own character's */
+    memset(copy, 0, sizeof copy);
+    held = -1;
+    unsigned seed = 12345;
+    for (unsigned f = 100; f < 600; f++) {
+        seed = seed * 1103515245u + 12345u;
+        const int pick = (int)(seed >> 16) % 5, ask = (int)(seed >> 20) % 2;
+        const int* who = pick == 0 ? a : pick == 1 ? b : pick == 2 ? ab : pick == 3 ? ba : a;
+        const int count = pick == 4 ? 0 : pick >= 2 ? 2 : 1;
+        if (stream_frame(copy, f, who, count, ask, &held, &holder) == 1) assert(holder == ask);
+    }
+}
+
 static void test_origin_shift(void) {
     float vp_now[16], vp_before[16], unused[16], w_now[16], w_before[16];
     camera(0, 0, 1, 1, vp_now, unused);
@@ -640,6 +721,7 @@ int main(void) {
     test_mip_bias();
     test_pairs();
     test_gate();
+    test_streams();
     test_origin_shift();
     puts("temporal_math: ok");
     return 0;
