@@ -502,7 +502,9 @@ At full size only: the library does the temporal resolve in place of ours, in fr
 target. It needs `SNX_ARCEUS_TEMPORAL=taa` and is refused with `SNX_ARCEUS_TEMPORAL_REJECT=1`, each with one line.
 An adapter that is not there, that names needs of the instance or the device, or that cannot make a context on
 the game's device before any was in use, is "not available": one line, and the run goes on as without the
-switch. With it on, our own resolve, sharpen, history, numbers and views never run, and the options that steer
+switch. The FSR adapter names needs of the device since a run of the self-test showed them (below), and the
+game's device is not made with an adapter's needs in this piece. So with FSR the switch says "not available"
+in the game until a piece of its own adds an adapter's needs to the game's device. With it on, our own resolve, sharpen, history, numbers and views never run, and the options that steer
 them are without effect.
 
 A frame, in order:
@@ -564,6 +566,21 @@ Lines: `arceus-upscaler:` at the start (what was asked, experimental, what is wi
 first contexts, for the first frames left as drawn and every 600th, when it turns off, and every 600 decided
 frames the counts (evaluated, drawn with jitter and skipped or failed, and not jittered by reason: the gate, not
 the whole target, a part of the configuration not known, no ready context, off).
+
+## What the FSR adapter needs of a device
+
+A conservative policy for the one provider that was seen, and not a complete list. In a run of the self-test
+with the validation layer, the library's shader modules declared `SPV_KHR_compute_shader_derivatives` with
+linear derivative groups, and the device had been made without them. As far as the SDK's published source
+shows, the library picks its shaders by what the physical device has and not by what the device was made
+with. So the adapter names `VK_KHR_compute_shader_derivatives` with its feature for linear groups as needs of
+the device, and it is "not available" on a physical device that lacks either: the library would load the same
+shaders there. A list of extensions or a query of features that fails, or a list that stays incomplete, also
+means "not available": nothing is taken from a part of a list. 16 bit floats in shaders are a core feature
+that whoever makes the device turns on where the physical device has it. The self-test's device has every
+feature of the physical device on, that one among them as a bit of the Vulkan 1.2 structure, and the adapter's
+own structure for the derivatives goes behind it in the chain and lives in the adapter. This is for the
+self-test's device only. It closes no condition: the library's own storage image messages remain.
 
 ## The upscaler's self-test (`SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>`)
 

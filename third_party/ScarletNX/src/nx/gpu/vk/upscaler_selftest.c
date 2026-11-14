@@ -403,10 +403,12 @@ static int device_make(void) {
     vkGetPhysicalDeviceProperties(g.physical, &props);
     if (!vk_upscaler_device_needs(g.api, g.instance, g.physical, vkGetInstanceProcAddr, device_names, &device_count,
                                   64, &features)) {
-        LOG(ST "FAIL: the adapter's device extensions could not be taken\n");
+        LOG(ST "FAIL: the adapter is not available on this device, or its needs of it could not be taken\n");
         return 0;
     }
-    /* every feature the device has is turned on, and the adapter's own chain, if it has one, goes behind */
+    /* Every feature the device has is turned on, 16 bit floats in shaders among them where it has them: that
+       is a bit of the 1.2 structure here, and no structure of its own in the chain. The adapter's chain, if it
+       has one, goes behind and lives in the adapter. */
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                             .pNext = (void*)features};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
@@ -415,6 +417,9 @@ static int device_make(void) {
     f12.pNext = NULL;
     vkGetPhysicalDeviceFeatures2(g.physical, &f2);
     f12.pNext = (void*)features;
+    LOG(ST "the device is made with %u extensions of the adapter%s%s, and with 16 bit floats in shaders %s\n",
+        device_count, device_count ? ": " : "", device_count ? device_names[0] : "",
+        f12.shaderFloat16 ? "on, as the physical device has them" : "off, as the physical device has none");
     const float priority = 1.0f;
     const VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                                         .queueFamilyIndex = g.family,

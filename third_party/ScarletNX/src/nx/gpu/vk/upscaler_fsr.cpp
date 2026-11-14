@@ -96,12 +96,87 @@ int instance_extensions(SnxUpscalerExtensions* out) {
     return library() ? SNX_UPSCALER_OK : SNX_UPSCALER_REFUSED;
 }
 
-/* the SDK's Vulkan backend asks for no extension and no feature of its own */
-int device_extensions(VkInstance, VkPhysicalDevice, PFN_vkGetInstanceProcAddr, SnxUpscalerDeviceNeeds* out) {
+/* What this library needs of a device. A conservative policy for the one provider that was seen, not a complete
+   list: in a run of the self-test its shader modules declared SPV_KHR_compute_shader_derivatives with linear
+   derivative groups, and the layer reported the device as made without them. The feature's structure is the
+   one the NV extension named first: the KHR extension has the same structure and the same type number. */
+#define FSR_DERIVATIVES "VK_KHR_compute_shader_derivatives"
+const char* const g_device_names[1] = {FSR_DERIVATIVES};
+/* handed to whoever makes the device, as a node of its feature chain: it lives as long as the adapter */
+VkPhysicalDeviceComputeShaderDerivativesFeaturesNV g_derivatives = {
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_NV, nullptr, VK_FALSE, VK_TRUE};
+
+/* The extension and its feature for linear groups are required: a device without either is refused, since the
+   library would load the same shaders there. A list or a query that fails refuses too, and nothing is taken
+   from a part of a list. 16 bit floats in shaders are a core feature that whoever makes the device turns on
+   where the physical device has it: the library picks those shaders by the physical device. It is only said. */
+int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetInstanceProcAddr lookup,
+                      SnxUpscalerDeviceNeeds* out) {
     out->extensions.count = 0;
     out->extensions.names = nullptr;
     out->features = nullptr;
-    return library() ? SNX_UPSCALER_OK : SNX_UPSCALER_REFUSED;
+    if (!library()) return SNX_UPSCALER_REFUSED;
+    if (!instance || !device || !lookup) {
+        logf_(0, "arceus-upscaler: fsr is not available: its needs of the device cannot be asked without one\n");
+        return SNX_UPSCALER_REFUSED;
+    }
+    const auto enumerate =
+        (PFN_vkEnumerateDeviceExtensionProperties)lookup(instance, "vkEnumerateDeviceExtensionProperties");
+    const auto features = (PFN_vkGetPhysicalDeviceFeatures2)lookup(instance, "vkGetPhysicalDeviceFeatures2");
+    if (!enumerate || !features) {
+        logf_(0, "arceus-upscaler: fsr is not available: the instance has no call to list a device's extensions or "
+                 "to ask its features\n");
+        return SNX_UPSCALER_REFUSED;
+    }
+    /* the list, whole: asked again with a fresh count when it comes back incomplete, three times at most */
+    VkExtensionProperties* list = nullptr;
+    uint32_t n = 0;
+    VkResult listed = VK_INCOMPLETE;
+    for (int tries = 0; tries < 3 && listed == VK_INCOMPLETE; tries++) {
+        std::free(list);
+        list = nullptr;
+        n = 0;
+        listed = enumerate(device, nullptr, &n, nullptr);
+        if (listed != VK_SUCCESS) break;
+        list = (VkExtensionProperties*)std::calloc(n ? n : 1, sizeof *list);
+        listed = list ? enumerate(device, nullptr, &n, list) : VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    if (listed != VK_SUCCESS) {
+        logf_(0, "arceus-upscaler: fsr is not available: the device's extensions could not be listed whole (result "
+                 "%d), and nothing is taken from a part of the list\n", (int)listed);
+        std::free(list);
+        return SNX_UPSCALER_REFUSED;
+    }
+    int found = 0;
+    for (uint32_t i = 0; i < n; i++) found |= !std::strcmp(list[i].extensionName, FSR_DERIVATIVES);
+    std::free(list);
+    if (!found) {
+        logf_(0, "arceus-upscaler: fsr is not available: the device has no " FSR_DERIVATIVES ", which the "
+                 "library's shaders declare\n");
+        return SNX_UPSCALER_REFUSED;
+    }
+    /* asked in a chain of the query's own: the derivatives' feature, and whether shaders have 16 bit floats */
+    VkPhysicalDeviceShaderFloat16Int8Features halves = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
+                                                        nullptr, VK_FALSE, VK_FALSE};
+    VkPhysicalDeviceComputeShaderDerivativesFeaturesNV has = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_NV, &halves, VK_FALSE, VK_FALSE};
+    VkPhysicalDeviceFeatures2 asked = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &has, {}};
+    features(device, &asked);
+    if (!has.computeDerivativeGroupLinear) {
+        logf_(0, "arceus-upscaler: fsr is not available: the device has " FSR_DERIVATIVES " without linear "
+                 "derivative groups, which the library's shaders declare\n");
+        return SNX_UPSCALER_REFUSED;
+    }
+    static int said;
+    if (!said++)
+        logf_(1, "arceus-upscaler: fsr names its needs of the device: " FSR_DERIVATIVES " with linear derivative "
+                 "groups. The physical device %s 16 bit floats in shaders, a core feature the device's maker turns "
+                 "on where it is there. A conservative policy for the library that was seen, not a complete list\n",
+              halves.shaderFloat16 ? "has" : "does not have");
+    out->extensions.count = 1;
+    out->extensions.names = g_device_names;
+    out->features = &g_derivatives;
+    return SNX_UPSCALER_OK;
 }
 
 int create(const SnxUpscalerCreate* made, SnxUpscalerTraits* traits, SnxUpscaler** out) {
