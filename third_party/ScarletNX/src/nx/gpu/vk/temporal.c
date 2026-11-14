@@ -131,11 +131,11 @@ static struct {
     struct Drawn {
         u64 block, feedback;
         float shift; /* the origin's move on screen in pixels */
-        u8 skinned, source;
+        u8 skinned, source, far; /* far: a long move with the camera nearly still */
         void *slot, *other; /* the table entries its matrix of a frame ago came from */
         const TemporalStreamCopy* stream; /* a skinned draw: this frame's copy at its capture address */
     } drawn[OBJECT_DRAWS + 1], stats_drawn[OBJECT_DRAWS + 1];
-    u32 long_logged_at;
+    u32 long_logged_at, stats_draws; /* stats_draws: the extra draws of the frame the numbers' image was drawn in */
     /* the jitter of the frame: decided at its first draw with the scene camera's block (jitter_decide) from that
        draw's depth target and registers, which vk_temporal_draw notes for every draw */
     const Surf* draw_zt;
@@ -634,7 +634,10 @@ static void stats_log(void) {
     double length = 0, longest = 0;
     double drawn_gradient = 0, shown_gradient = 0;
     u16 capped[OBJECT_DRAWS + 1];
+    /* per extra draw: its sampled pixels, and those wrong with its vector, with the camera's, with none */
+    static u16 per_draw[OBJECT_DRAWS + 1][4];
     memset(capped, 0, sizeof capped);
+    memset(per_draw, 0, sizeof per_draw);
     for (u32 i = 0; i < STATS_W * STATS_H; i++) {
         /* the left half's texel of this sample, then the right half's */
         const u16* words = &g_t.stats_words[4 * (i / STATS_W * 2 * STATS_W + i % STATS_W)];
@@ -676,6 +679,12 @@ static void stats_log(void) {
         wrong_still[band] += still > STATS_ERROR;
         skin_near += object_marks >> 2 & 1;
         if (object_marks & 1) {
+            const float number = half_float(more[0]);
+            u16* tally = per_draw[number >= 1.0f && number <= (float)OBJECT_DRAWS ? (u32)(number + 0.5f) : 0];
+            tally[0]++;
+            tally[1] += moved > STATS_ERROR;
+            tally[2] += object_marks >> 1 & 1;
+            tally[3] += still > STATS_ERROR;
             object_n++;
             object_wrong += moved > STATS_ERROR;
             object_camera += object_marks >> 1 & 1;
@@ -730,6 +739,17 @@ static void stats_log(void) {
                  skin_near);
     LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px vector_max=%.2f px sky=%u off_screen=%u%s\n",
         (unsigned long long)g_t.stats_run, all ? length / all : 0.0, longest, sky, off, bands);
+    /* the draws whose origin moved far on screen: what the picture says of their vectors, four at most */
+    int moves = 0;
+    for (u32 d = 1; !taa && d <= g_t.stats_draws && d <= OBJECT_DRAWS && moves < 4; d++) {
+        const struct Drawn* w = &g_t.stats_drawn[d];
+        if (!w->far) continue;
+        moves++;
+        LOG("arceus-temporal-moved: run=%llu draw %u (%s, block %llx, origin moved %.0f px): sampled pixels n=%u "
+            "wrong=%u with_camera_vectors=%u without_vectors=%u\n",
+            (unsigned long long)g_t.stats_run, d, w->skinned ? "skinned" : "rigid", (unsigned long long)w->block,
+            (double)w->shift, per_draw[d][0], per_draw[d][1], per_draw[d][2], per_draw[d][3]);
+    }
     /* the draws that left vectors at the cap, four at most */
     int lines = 0;
     for (u32 d = 0; d <= OBJECT_DRAWS && lines < 4; d++) {
@@ -1126,7 +1146,8 @@ static u32 drawn_note(u64 block, u64 feedback, int skinned, int source, const fl
     d->shift = (float)temporal_origin_shift(g_t.now, world, g_t.before, was, (double)zt->sw, (double)zt->sh);
     const float camera =
         (float)temporal_origin_shift(g_t.now, world, g_t.before, world, (double)zt->sw, (double)zt->sh);
-    if (d->shift > 100.0f && camera >= 0.0f && camera < 20.0f && g_t.long_logged_at + 60 <= frame) {
+    d->far = d->shift > 100.0f && camera >= 0.0f && camera < 20.0f;
+    if (d->far && g_t.long_logged_at + 60 <= frame) {
         g_t.long_logged_at = frame;
         LOG("arceus-temporal-objects: long move of %.0f px (the camera alone %.0f px) at block %llx (%s, before from "
             "%s): now %.2f %.2f %.2f, a frame ago %.2f %.2f %.2f\n",
@@ -1715,7 +1736,12 @@ void vk_temporal_before(u64 fs0_hash) {
         shown_before = g_t.object.view;
         pc.depth[3] = 1.0f;
     }
-    const int stats_due = numbers && g_t.runs % STATS_EVERY == 0;
+    /* A frame with a long move line has its numbers taken too, when no regular run is within eight runs: the
+       buffer is read one run of the numbers later and the copy must be finished by then. */
+    const u64 phase = g_t.runs % STATS_EVERY;
+    const int moved_far = !taa && objects && g_t.long_logged_at == g_vk_present + 1 && phase >= 8 &&
+                          phase + 8 <= STATS_EVERY;
+    const int stats_due = numbers && (phase == 0 || moved_far);
     /* the picture as shown, for its gradient: the resolve's, or the scene colour itself after a sharpen */
     VkImageView final_view = numbers_before;
     if (sharpened && stats_due) {
@@ -1751,6 +1777,7 @@ void vk_temporal_before(u64 fs0_hash) {
         rec_CmdCopyImageToBuffer(cb, g_t.stats.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_t.stats_buffer, 1, &out);
         g_t.stats_run = g_t.runs;
         memcpy(g_t.stats_drawn, g_t.drawn, sizeof g_t.stats_drawn);
+        g_t.stats_draws = g_t.object_draws;
     }
     if (taa || !g_t.view) return;
     /* a view of the probe, drawn over the scene */
