@@ -829,4 +829,51 @@ static inline void temporal_jitter_pixels(const double jitter[2], const Temporal
     out[0] = 0.5 * jitter[0] * (double)v->width;
     out[1] = 0.5 * jitter[1] * (double)v->height;
 }
+/* What an upscaler is given, in one fixed convention that each library turns into its own (gpu/vk/upscaler.h). Pure,
+   not used by the renderer yet.
+   The vector: where the pixel's point was a frame ago less where it is now, in pixels of the target, x to the
+   right and y down the image, both ends without jitter. The motion image holds (now less before) over (W, H). */
+static inline void temporal_upscaler_vector(const float texel[2], int target_w, int target_h, double out[2]) {
+    out[0] = -(double)texel[0] * (double)target_w;
+    out[1] = -(double)texel[1] * (double)target_h;
+}
+/* One frame's numbers for the upscaler. The vector's scale is what a motion texel is multiplied by: the size of
+   the whole target with a minus, in full and in partial mode. The jitter is the shift of the drawn image against
+   the unjittered one, in pixels of the rectangle. */
+typedef struct {
+    TemporalRect render; /* the active rectangle, inside images of target_w by target_h */
+    int target_w, target_h, out_w, out_h;
+    double jitter[2], vector_scale[2];
+    int reset; /* the upscaler must not use what it kept */
+} TemporalUpscalerFrame;
+/* 1 with the numbers when the frame may be given to the upscaler: it is steady and the viewport is its own.
+   Reset when no history of the frame before may be used (temporal_rect_history) or the camera cut. 0: the frame is
+   not evaluated and is left as drawn. Whoever evaluates with success calls temporal_rect_wrote. */
+static inline int temporal_upscaler_frame(const TemporalRectGate* g, unsigned frame, const TemporalRectStamp* stamp,
+                                          const TemporalViewport* viewport, const double jitter[2], int cut,
+                                          TemporalUpscalerFrame* out) {
+    TemporalRect r;
+    if (!temporal_rect_steady(g, frame) || !temporal_viewport_same(viewport, &g->candidate.viewport)) return 0;
+    if (!temporal_rect_from_viewport(viewport, stamp->target_w, stamp->target_h, &r)) return 0;
+    if (!temporal_rect_same(&r, &g->candidate.rect) || !temporal_rect_same(&r, &stamp->rect)) return 0;
+    if (stamp->target_w != g->candidate.target_w || stamp->target_h != g->candidate.target_h) return 0;
+    out->render = r;
+    out->target_w = stamp->target_w;
+    out->target_h = stamp->target_h;
+    out->out_w = stamp->out_w;
+    out->out_h = stamp->out_h;
+    temporal_jitter_pixels(jitter, viewport, out->jitter);
+    out->vector_scale[0] = -(double)stamp->target_w;
+    out->vector_scale[1] = -(double)stamp->target_h;
+    out->reset = cut || !temporal_rect_history(g, frame, stamp);
+    return 1;
+}
+/* The upscaler's failures in a row. A frame that fails writes no history, so the next one has the reset. 1 when
+   the upscaler is to be off for the rest of the session. */
+#define TEMPORAL_UPSCALER_FAILURES 8
+static inline int temporal_upscaler_failed(unsigned* failures, int ok) {
+    if (ok) *failures = 0;
+    else if (*failures < TEMPORAL_UPSCALER_FAILURES) ++*failures;
+    return *failures >= TEMPORAL_UPSCALER_FAILURES;
+}
 #endif

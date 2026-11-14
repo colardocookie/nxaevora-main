@@ -1620,6 +1620,150 @@ static void test_rect(void) {
     assert(fabs(px[0] - 0.25) < 1e-12 && fabs(px[1] - 0.25) < 1e-12);
 }
 
+/* What an upscaler is given. The places are worked out by hand from the test's camera: a point at (px, py) and
+   distance d under a camera at (cx, cy) with scales 1 is at ndc ((px - cx) / d, (py - cy) / d). */
+static void image_place(const double ndc[2], const TemporalViewport* v, double out[2]) {
+    out[0] = (ndc[0] * 0.5 + 0.5) * (double)v->width + (double)v->x;
+    out[1] = (ndc[1] * 0.5 + 0.5) * (double)v->height + (double)v->y;
+}
+/* the motion image's texel as shaders/temporal_motion.frag writes it: (now less before) in pixels over the size */
+static void motion_texel(const double now[2], const double before[2], const TemporalViewport* v, int w, int h,
+                         float texel[2]) {
+    double is[2], was[2];
+    image_place(now, v, is);
+    image_place(before, v, was);
+    texel[0] = (float)((is[0] - was[0]) / (double)w);
+    texel[1] = (float)((is[1] - was[1]) / (double)h);
+}
+
+static void test_upscaler(void) {
+    const TemporalViewport whole = {0.0f, 1080.0f, 1920.0f, -1080.0f}, part = {0.0f, 810.0f, 1440.0f, -810.0f};
+    float vp_now[16], inverse_now[16], vp_before[16], unused[16], texel[2];
+    double now[2], before[2], vector[2];
+    /* A camera that moved from (0, 0) to (0.5, 0.25), a still point at (1, 0.5) and distance 10. By hand: ndc
+       (0.05, 0.025) now and (0.1, 0.05) before. In a 1920 by 1080 image whose y runs down: x 1008 now and 1056
+       before, y 526.5 now and 513 before. A frame ago the point was 48 px to the right and 13.5 px further up. */
+    camera(0.5f, 0.25f, 1, 1, vp_now, inverse_now);
+    camera(0, 0, 1, 1, vp_before, unused);
+    for (int jittered = 0; jittered < 2; jittered++) {
+        /* the pixel is drawn with the jitter, and both ends of the vector are without it */
+        const double jx = jittered ? 2.0 * 0.25 / 1920.0 : 0.0, jy = jittered ? 2.0 * -0.375 / 1080.0 : 0.0;
+        assert(temporal_camera_points(inverse_now, vp_before, 0.05 + jx, 0.025 + jy, 0.01, jx, jy, now, before));
+        motion_texel(now, before, &whole, 1920, 1080, texel);
+        temporal_upscaler_vector(texel, 1920, 1080, vector);
+        assert(close_to(vector[0], 48.0, 1e-3) && close_to(vector[1], -13.5, 1e-3));
+    }
+    /* The same in the rectangle of a scale of 0.75 (1440 by 810 of the 1920 by 1080 target): x 756 now and 792
+       before, y 394.875 now and 384.75 before. So 36 px and -10.125 px, three quarters of the whole target's.
+       The texel is still over the whole target's size. */
+    assert(temporal_camera_points(inverse_now, vp_before, 0.05, 0.025, 0.01, 0, 0, now, before));
+    motion_texel(now, before, &part, 1920, 1080, texel);
+    temporal_upscaler_vector(texel, 1920, 1080, vector);
+    assert(close_to(vector[0], 36.0, 1e-3) && close_to(vector[1], -10.125, 1e-3));
+    assert(close_to((double)texel[0], -36.0 / 1920.0, 1e-7));
+    /* An object that moves on its own, its origin from (1, 0, 20) to (2, 0.4, 20). Against a still camera at
+       (0, 0): ndc (0.05, 0) then (0.1, 0.02), x 1008 then 1056, y 540 then 529.2. It was 48 px to the left and
+       10.8 px lower. Against the camera that moved to (0.5, 0.25): ndc (0.075, 0.0075) now, x 1032, y 535.95.
+       It was 24 px to the left and 4.05 px lower. */
+    float world_now[16], world_before[16], m_now[16], m_before[16], jittered_vp[16];
+    world(0, 1, 2, 0.4f, 20, world_now);
+    world(0, 1, 1, 0, 20, world_before);
+    for (int moving = 0; moving < 2; moving++) {
+        const double jx = 2.0 * 0.25 / 1920.0, jy = 2.0 * 0.125 / 1080.0;
+        camera(moving ? 0.5f : 0, moving ? 0.25f : 0, 1, 1, vp_now, inverse_now);
+        assert(temporal_object_matrices(inverse_now, world_now, world_before, vp_before, jx, jy, m_now, m_before));
+        /* the fragment's place as drawn: the object's origin through this frame's jittered view-projection */
+        memcpy(jittered_vp, vp_now, sizeof vp_now);
+        temporal_jitter_forward(jittered_vp, (float)jx, (float)jy);
+        const float origin[4] = {2, 0.4f, 20, 1};
+        double drawn[4], a[4], b[4];
+        transform(origin, jittered_vp, drawn);
+        const float clip[4] = {(float)(drawn[0] / drawn[3]), (float)(drawn[1] / drawn[3]),
+                               (float)(drawn[2] / drawn[3]), 1};
+        transform(clip, m_now, a);
+        transform(clip, m_before, b);
+        const double is[2] = {a[0] / a[3], a[1] / a[3]}, was[2] = {b[0] / b[3], b[1] / b[3]};
+        motion_texel(is, was, &whole, 1920, 1080, texel);
+        temporal_upscaler_vector(texel, 1920, 1080, vector);
+        assert(close_to(vector[0], moving ? -24.0 : -48.0, 2e-2));
+        assert(close_to(vector[1], moving ? 4.05 : 10.8, 2e-2));
+    }
+
+    /* The frame's numbers through the gate. Jitter alone over the game's viewport, whose height is negative:
+       j = (0.5 / 1920, 0.75 / 1080) in clip units. The drawn place less the unjittered one is
+       0.5 x j x (1920, -1080) = (0.25, -0.375) px. Up in clip is up the image, so y is negative. */
+    const TemporalRectState full = {{0, 0, 1920, 1080}, whole, 1920, 1080, 1.0f, 1.0f};
+    const TemporalRectState scaled = {{0, 0, 1440, 810}, part, 1920, 1080, 0.75f, 0.75f};
+    const TemporalRectStamp full_stamp = {0x5508c0000ull, 1, 1920, 1080, 1920, 1080, {0, 0, 1920, 1080}};
+    const TemporalRectStamp scaled_stamp = {0x5508c0000ull, 1, 1920, 1080, 1920, 1080, {0, 0, 1440, 810}};
+    const double jitter[2] = {0.5 / 1920.0, 0.75 / 1080.0};
+    TemporalRectGate g;
+    TemporalUpscalerFrame out;
+    memset(&g, 0, sizeof g);
+    /* a gated frame is not given to the upscaler */
+    assert(!temporal_rect_decide(&g, 10, &full));
+    assert(!temporal_upscaler_frame(&g, 10, &full_stamp, &whole, jitter, 0, &out));
+    /* the first accepted frame has the reset, the next has not, once the one before was evaluated with success */
+    assert(temporal_rect_decide(&g, 11, &full));
+    assert(temporal_upscaler_frame(&g, 11, &full_stamp, &whole, jitter, 0, &out) && out.reset);
+    assert(close_to(out.jitter[0], 0.25, 1e-12) && close_to(out.jitter[1], -0.375, 1e-12));
+    {
+        /* by hand as well: a place with the jitter less the same place without it */
+        const double plain[2] = {0.3, -0.2}, with[2] = {0.3 + jitter[0], -0.2 + jitter[1]};
+        double at[2], at_with[2];
+        image_place(plain, &whole, at);
+        image_place(with, &whole, at_with);
+        assert(close_to(at_with[0] - at[0], out.jitter[0], 1e-9) && close_to(at_with[1] - at[1], out.jitter[1], 1e-9));
+    }
+    assert(out.vector_scale[0] == -1920.0 && out.vector_scale[1] == -1080.0);
+    assert(out.render.w == 1920 && out.render.h == 1080 && out.out_w == 1920 && out.out_h == 1080);
+    temporal_rect_wrote(&g, 11, &full_stamp);
+    assert(temporal_rect_decide(&g, 12, &full));
+    assert(temporal_upscaler_frame(&g, 12, &full_stamp, &whole, jitter, 0, &out) && !out.reset);
+    /* a camera cut resets while the frame is steady */
+    assert(temporal_upscaler_frame(&g, 12, &full_stamp, &whole, jitter, 1, &out) && out.reset);
+    /* an evaluation that failed wrote nothing: the frame after has the reset */
+    assert(temporal_rect_decide(&g, 13, &full));
+    assert(temporal_upscaler_frame(&g, 13, &full_stamp, &whole, jitter, 0, &out) && out.reset);
+    temporal_rect_wrote(&g, 13, &full_stamp);
+    /* A resize: the scene goes into the rectangle of 0.75. The frame of the change is not evaluated, the next has
+       the reset, the rectangle, a jitter sized by the rectangle and the vector scale of the whole target still. */
+    assert(!temporal_rect_decide(&g, 14, &scaled));
+    assert(!temporal_upscaler_frame(&g, 14, &scaled_stamp, &part, jitter, 0, &out));
+    assert(temporal_rect_decide(&g, 15, &scaled));
+    assert(temporal_upscaler_frame(&g, 15, &scaled_stamp, &part, jitter, 0, &out) && out.reset);
+    assert(out.render.w == 1440 && out.render.h == 810 && out.target_w == 1920 && out.out_w == 1920);
+    assert(close_to(out.jitter[0], 0.25 * 0.75, 1e-12) && close_to(out.jitter[1], -0.375 * 0.75, 1e-12));
+    assert(out.vector_scale[0] == -1920.0 && out.vector_scale[1] == -1080.0);
+    temporal_rect_wrote(&g, 15, &scaled_stamp);
+    assert(temporal_rect_decide(&g, 16, &scaled));
+    assert(temporal_upscaler_frame(&g, 16, &scaled_stamp, &part, jitter, 0, &out) && !out.reset);
+    /* a viewport that is not the frame's own, also the same rectangle with y the other way round, or a stamp of
+       another rectangle or target size, gives nothing */
+    const TemporalViewport flipped = {0.0f, 0.0f, 1440.0f, 810.0f};
+    assert(!temporal_upscaler_frame(&g, 16, &scaled_stamp, &whole, jitter, 0, &out));
+    assert(!temporal_upscaler_frame(&g, 16, &scaled_stamp, &flipped, jitter, 0, &out));
+    assert(!temporal_upscaler_frame(&g, 16, &full_stamp, &part, jitter, 0, &out));
+    TemporalRectStamp other = scaled_stamp;
+    other.target_w = 3840;
+    assert(!temporal_upscaler_frame(&g, 16, &other, &part, jitter, 0, &out));
+    /* a history made for another output size is not used: reset */
+    other = scaled_stamp;
+    other.out_w = 2560;
+    assert(temporal_upscaler_frame(&g, 16, &other, &part, jitter, 0, &out) && out.reset && out.out_w == 2560);
+    /* a late disagreement after the numbers were made: the frame is no longer steady */
+    assert(temporal_rect_late(&g, 16, &full));
+    assert(!temporal_upscaler_frame(&g, 16, &scaled_stamp, &part, jitter, 0, &out));
+
+    /* failures in a row: the eighth turns the upscaler off, a success before that starts the count again */
+    unsigned failures = 0;
+    for (int i = 0; i < 7; i++) assert(!temporal_upscaler_failed(&failures, 0));
+    assert(!temporal_upscaler_failed(&failures, 1) && failures == 0);
+    for (int i = 0; i < 7; i++) assert(!temporal_upscaler_failed(&failures, 0));
+    assert(temporal_upscaler_failed(&failures, 0) && temporal_upscaler_failed(&failures, 0));
+    assert(failures == TEMPORAL_UPSCALER_FAILURES);
+}
+
 int main(void) {
     test_jitter();
     test_jitter_matrices();
@@ -1643,6 +1787,7 @@ int main(void) {
     test_classes();
     test_links();
     test_rect();
+    test_upscaler();
     puts("temporal_math: ok");
     return 0;
 }

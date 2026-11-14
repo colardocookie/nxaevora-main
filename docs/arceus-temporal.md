@@ -291,3 +291,28 @@ The first lines of a run say whether it is on. `arceus-temporal-links`, every 60
 no matrix that a link gave one, and those it did not by reason (no link, still being learned, another draw, at
 rest alone, records not complete), the links that reached their fourth frame, the frames whose record was not
 complete by cause, and the frames whose object vectors were given up for a link.
+
+## For the upscaler step: rules and an interface that nothing uses yet
+
+Two things are in the sources ahead of their use. Neither changes what the renderer does.
+
+The rules for a scene inside a rectangle of its targets (`SNX_ARCEUS_SCENE_SCALE`, `docs/arceus-timing.md`) are pure
+functions in `temporal_math.h` with host tests: the active rectangle of a signed viewport, a frame's structure
+from the viewport and the used fraction, the gate with its candidate and history stamp, the refusal of a history
+fetch whose centre is outside the rectangle the history was made in, the rejection bound from the rectangle's
+height, the numbers' lattice, the jitter's offsets and the texture level shift. The game's corner of the target is
+a parameter. The renderer still uses the whole-target gate, so under a scale below 1 it refuses every frame.
+
+`gpu/vk/upscaler.h` is the contract for an upscaler library (FSR, XeSS, DLSS): a separate file that the runtime
+would load by name, with `query`, `create`, `evaluate` and `destroy`. No library is loaded, nothing calls it, and
+nothing of any SDK is in this repository. The numbers a frame would carry are made by `temporal_upscaler_frame`:
+- the vector is where the pixel's point was a frame ago less where it is now, in pixels, x to the right and y down
+  the image, without jitter. A motion texel times minus the whole target's size gives it, also for a rectangle.
+- the jitter is the shift of the drawn image against the unjittered one in pixels of the rectangle, taken through
+  the viewport's signed size, so a negative height turns its y.
+- reset is set when no history of the frame before may be used or the camera cut. A frame that is not steady is
+  not given to the upscaler at all. Eight failures in a row turn it off for the session.
+The host tests work the places out by hand for a moved camera, an object moving against a still and a moving
+camera, jitter over a negative height, a rectangle, a resize and a reset. They cannot show that a library reads
+the signs the same way: that needs a test on a device with the library.
+
