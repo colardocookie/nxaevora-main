@@ -467,7 +467,10 @@ command inside it:
 4. the library records at once, on the frame's command buffer, which must be begun and not submitted,
 5. every bound state counts as lost, so the runtime binds all of it anew.
 It answers whether the library recorded, refused, was not called for the failure mark, or was not called because
-the command buffer is not the frame's unsubmitted one.
+the command buffer is not the frame's unsubmitted one. Only the first two mean the library was called. In the
+other two `before` may have run all the same (always for the failure mark, and for the command buffer when it
+stopped being the frame's while `before` ran): what it queued is recorded, and may be submitted, so whatever
+that work uses stays in use. No answer means "nothing was recorded".
 
 `tests/vk_record/run.sh` is its fixture, for a host with gcc and pthreads (it is not part of the Windows test
 run). It compiles the recorder's own file as it is, with its ring, its thread, its drain and its mark, against

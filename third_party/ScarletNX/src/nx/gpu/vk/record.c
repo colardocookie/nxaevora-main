@@ -235,10 +235,10 @@ void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, c
 }
 
 /* ------------------------------------------------------------ a library records at once */
-/* The one way a library outside the runtime (an upscaler's prepare and evaluate) is handed the frame's command
-   buffer. All of it under vk_lock, so nobody else adds a command: before queues what must come first, the ring
-   is drained and the recording thread is at rest, direct records at once on cb, and every bound state then
-   counts as lost. cb must be the frame's command buffer, begun and not submitted, also after before. */
+/* The one way a library outside the runtime (an upscaler's prepare and evaluate) gets the frame's command buffer.
+   All under vk_lock, so nobody else adds a command: before queues what must come first, the ring is drained,
+   direct records at once on cb, and all bound state then counts as lost. cb must be the frame's buffer, begun
+   and not submitted, also after before. When direct is not called, what before queued is recorded all the same. */
 int vk_rec_direct(VkCommandBuffer cb, VkRecBefore before, VkRecDirect direct, void* user) {
     int r = VK_REC_DIRECT_NO_BUFFER;
     vk_lock();
