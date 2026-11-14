@@ -733,6 +733,31 @@ static double difference(const Inputs* in, const double* a, const double* b, con
     return n ? sum / (double)n : -1.0;
 }
 
+/* For the log alone: a picture's error against the true one by region (the background, inside the patch, the
+   band the patch left) and in each by channel. A region without pixels is left out. */
+static void errors_log(const char* name, const Inputs* in, const double* picture, const double* reference,
+                       const u8* regions) {
+    static const char* const names[3] = {"background", "patch", "band the patch left"};
+    static const int which[3] = {SELFTEST_BACKGROUND, SELFTEST_INSIDE, SELFTEST_UNCOVERED};
+    char line[320];
+    size_t at = 0;
+    line[0] = 0;
+    for (int r = 0; r < 3; r++) {
+        double sum[3] = {0.0, 0.0, 0.0};
+        size_t n = 0;
+        for (size_t p = 0; p < (size_t)in->ow * in->oh; p++) {
+            if (regions[p] != which[r]) continue;
+            for (int c = 0; c < 3; c++) sum[c] += fabs(picture[3 * p + c] - reference[3 * p + c]);
+            n++;
+        }
+        if (n && at < sizeof line)
+            at += (size_t)snprintf(line + at, sizeof line - at, "%s%s (%zu pixels) r %.6f g %.6f b %.6f",
+                                   at ? ", " : "", names[r], n, sum[0] / (double)n, sum[1] / (double)n,
+                                   sum[2] / (double)n);
+    }
+    LOG(ST "%s, logged only, error by region and channel: %s\n", name, line);
+}
+
 /* the true picture of the run's last frame at the output's size, and each pixel's region */
 static void truth(const Inputs* in, int up, double* reference, u8* regions) {
     const int W = in->ow, H = in->oh;
@@ -851,6 +876,12 @@ static int signs(const char* name, const Inputs* in, unsigned mask, int region, 
         LOG(ST "%s: jitter %c%c vector %c%c error %.6f%s\n", name, v.jitter_x < 0 ? '-' : '+',
             v.jitter_y < 0 ? '-' : '+', v.vector_x < 0 ? '-' : '+', v.vector_y < 0 ? '-' : '+', errors[n],
             combo ? "" : " (configured)");
+        if (ran) {
+            char variant[96];
+            snprintf(variant, sizeof variant, "%s: jitter %c%c vector %c%c", name, v.jitter_x < 0 ? '-' : '+',
+                     v.jitter_y < 0 ? '-' : '+', v.vector_x < 0 ? '-' : '+', v.vector_y < 0 ? '-' : '+');
+            errors_log(variant, in, output, reference, regions);
+        }
         if (!combo) own = n;
         needs[n] = combo && !(combo & 3); /* turns vector signs and leaves the jitter's as configured */
         n++;
@@ -1200,6 +1231,13 @@ static int edge_case(int up) {
                     selftest_profile_crossing(&profile[k][e], 0.5) - selftest_profile_crossing(&truth_profile[e], 0.5),
                     selftest_profile_rise(&profile[k][e]), selftest_profile_rise(&truth_profile[e]),
                     selftest_profile_overshoot(&profile[k][e]), measure[k][e].profile / measure[OWN][e].profile);
+        for (int k = 0; k < PICTURES; k++)
+            for (int e = 0; e < 2; e++) {
+                double by[3];
+                selftest_edge_channels(edges[e], picture[k], reference, OUT_W, by);
+                LOG(ST "edge case %s %s, %s edge, logged only, error by channel: r %.6f g %.6f b %.6f\n", way,
+                    names[k], e ? "near-horizontal" : "near-vertical", by[0], by[1], by[2]);
+            }
         for (int e = 0; e < 2; e++)
             LOG(ST "edge case %s noise, %s edge: between the two configured runs the profiles differ by %.6f and the "
                    "pictures by %.6f per pixel\n",

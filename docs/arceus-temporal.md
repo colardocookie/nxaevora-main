@@ -457,8 +457,11 @@ pictures. The configured run beats the plainly scaled frame on both edges, and i
 If told nothing is not worse, the noise is too large or a profile has a bin without pixels, the case has
 decided nothing and fails as a test. The budgets were fixed before any run of the case.
 
-A case that cannot tell its variants apart fails as a test. Every number is in the log, pass or fail. The last
-line is `RESULT: PASS` or `RESULT: FAIL`.
+A case that cannot tell its variants apart fails as a test. Every number is in the log, pass or fail. For the
+log alone, each variant's error is also given by region (background, patch, the band the patch left) and by
+channel, and each picture of the edge case by channel on each edge: on the first device run nearly all of the
+background's error was in one channel, which the single mean did not show. The last line is `RESULT: PASS` or
+`RESULT: FAIL`.
 
 Limits. Cases 1 to 7 have run once on a device, with FSR 3.1.6, in an earlier state of the test, and failed
 on the jitter's margin of cases 1 and 2, on case 4's error and on the missing validation layer. The edge case

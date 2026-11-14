@@ -2559,6 +2559,16 @@ static void test_selftest_edges(void) {
     assert(selftest_profile_apart(&pv, &rv) < 1e-12);
     assert(close_to(selftest_edge_apart(v, copy, ref, EDGE_W), 0.2 / 3.0, 1e-12));
     assert(close_to(selftest_edge_apart(h, ref, copy, EDGE_W), 0.2 / 3.0, 1e-12));
+    /* by channel, for the log: the fringe is 0.1 in red, nothing in green, 0.1 in blue, and their mean is the
+       measure */
+    {
+        double by[3];
+        selftest_edge_channels(v, copy, ref, EDGE_W, by);
+        assert(close_to(by[0], 0.1, 1e-12) && close_to(by[1], 0.0, 1e-12) && close_to(by[2], 0.1, 1e-12));
+        assert(close_to((by[0] + by[1] + by[2]) / 3.0, selftest_edge_apart(v, copy, ref, EDGE_W), 1e-12));
+        selftest_edge_channels(h, ref, ref, EDGE_W, by);
+        assert(by[0] == 0.0 && by[1] == 0.0 && by[2] == 0.0);
+    }
     /* the audit's case: plus and minus an eighth in two channels is a twelfth over the three */
     memcpy(copy, ref, bytes);
     for (int i = 0; i < EDGE_W * EDGE_H; i++) {

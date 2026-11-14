@@ -369,6 +369,20 @@ static inline double selftest_edge_apart(const SelftestEdge* e, const double* a,
         }
     return n && isfinite(sum) ? sum / (double)n : NAN;
 }
+/* For the log, not for any verdict: the same difference kept apart by channel, red, green, blue. */
+static inline void selftest_edge_channels(const SelftestEdge* e, const double* a, const double* b, int w,
+                                          double out[3]) {
+    double sum[3] = {0.0, 0.0, 0.0};
+    long n = 0;
+    for (int y = e->y0; y < e->y1; y++)
+        for (int x = e->x0; x < e->x1; x++) {
+            if (selftest_edge_bin(e, x, y) < 0) continue;
+            const size_t at = 3 * ((size_t)y * (size_t)w + (size_t)x);
+            for (int c = 0; c < 3; c++) sum[c] += fabs(a[at + c] - b[at + c]);
+            n++;
+        }
+    for (int c = 0; c < 3; c++) out[c] = n ? sum[c] / (double)n : NAN;
+}
 /* For the log, not for any verdict. Where the profile first rises through a level, in pixels from the edge, taken
    between the two bins' centres. Not a number when it never does. */
 static inline double selftest_profile_crossing(const SelftestProfile* p, double level) {
