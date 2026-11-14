@@ -1833,6 +1833,11 @@ static void test_upscaler(void) {
             TemporalUpscalerContexts moved = c; /* the context for the rectangle is published */
             temporal_upscaler_created(&moved, &at_full, 1);
             assert(!temporal_upscaler_must_create(&moved, &at_other)); /* one on its way at a time */
+            /* While that one is still on its way: a frame of the new sizes is not evaluated, not on the pending
+               context and not on the published one, which is for other sizes. The published one still serves
+               its own. */
+            assert(!temporal_upscaler_ready(&moved, &at_other) && !temporal_upscaler_ready(&moved, &at_full));
+            assert(temporal_upscaler_ready(&moved, &at_part));
             assert(temporal_upscaler_completed(&moved, &at_other) == TEMPORAL_UPSCALER_STALE);
             assert(!temporal_upscaler_ready(&moved, &at_full) && !temporal_upscaler_ready(&moved, &at_other));
             assert(temporal_upscaler_ready(&moved, &at_part) && temporal_upscaler_must_create(&moved, &at_other));
