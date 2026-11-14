@@ -74,9 +74,12 @@ typedef struct {
     int ungated;         /* a shape the game does not make: not put through the game's gate (frame_run) */
 } Inputs;
 
-/* the signs a variant turns, and the depth convention it claims */
+/* What a variant makes of the numbers handed on: the factor on the reported jitter of each axis (1 as configured,
+   -1 the sign turned, 0 told nothing), the vectors' signs, the depth convention it claims, and whether every
+   frame's inputs and dispatch are logged. */
 typedef struct {
-    int jitter_x, jitter_y, vector_x, vector_y, depth_reversed;
+    double jitter_x, jitter_y;
+    int vector_x, vector_y, depth_reversed, trace;
 } Variant;
 static const Variant CONFIGURED = {1, 1, 1, 1, 1};
 
@@ -684,7 +687,22 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
         .frame_seconds = camera[3],
         .near_plane = camera[0],
         .far_plane = camera[1],
-        .fov_y = camera[2]};
+        .fov_y = camera[2],
+        .trace = (u32)v->trace};
+    /* log only: this frame's inputs as they are handed over, beside the adapter's own line of its dispatch */
+    if (v->trace)
+        LOG(ST "handed over, frame %d of the inputs: clip offset %.9g %.9g, jitter %.9g %.9g px (the variant's "
+               "factors %g %g), vector scale %.9g %.9g, rectangle %ux%u at %d,%d, reset %u, frame %.9g s, near "
+               "%.9g, far %.9g, fov %.9g, context flags 0x%x. Images as width x height, format, layout: colour "
+               "%ux%u %d %d, depth %ux%u %d %d, vectors %ux%u %d %d, output %ux%u %d %d\n",
+            i, in->scene[i].jitter[0], in->scene[i].jitter[1], (double)frame.jitter[0], (double)frame.jitter[1],
+            v->jitter_x, v->jitter_y, (double)frame.vector_scale[0], (double)frame.vector_scale[1], frame.render_w,
+            frame.render_h, frame.render_x, frame.render_y, frame.reset, (double)frame.frame_seconds,
+            (double)frame.near_plane, (double)frame.far_plane, (double)frame.fov_y, flags, frame.colour.w,
+            frame.colour.h, (int)frame.colour.format, (int)frame.colour.layout, frame.depth.w, frame.depth.h,
+            (int)frame.depth.format, (int)frame.depth.layout, frame.motion.w, frame.motion.h,
+            (int)frame.motion.format, (int)frame.motion.layout, frame.output.w, frame.output.h,
+            (int)frame.output.format, (int)frame.output.layout);
     const int evaluated = g.api->evaluate(s->live, &frame) == SNX_UPSCALER_OK;
     /* whatever the adapter left bound or pending: the output is taken over for the copy with a full barrier */
     const VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
@@ -1165,8 +1183,10 @@ static int edge_case(int up) {
     static const char* const names[PICTURES] = {"configured",        "configured again", "jitter x turned",
                                                 "jitter y turned",   "both turned",      "told nothing",
                                                 "one frame plainly"};
-    static const Variant variants[PLAIN] = {{1, 1, 1, 1, 1},  {1, 1, 1, 1, 1},   {-1, 1, 1, 1, 1},
-                                            {1, -1, 1, 1, 1}, {-1, -1, 1, 1, 1}, {0, 0, 1, 1, 1}};
+    /* the two configured runs log every frame's inputs and dispatch: what FSR is given is to be known before
+       anything is reasoned about what it does with it */
+    static const Variant variants[PLAIN] = {{1, 1, 1, 1, 1, 1},  {1, 1, 1, 1, 1, 1},   {-1, 1, 1, 1, 1, 0},
+                                            {1, -1, 1, 1, 1, 0}, {-1, -1, 1, 1, 1, 0}, {0, 0, 1, 1, 1, 0}};
     static const double still[2] = {0.0, 0.0};
     const SelftestEdge* edges[2] = {&SELFTEST_EDGE_V, &SELFTEST_EDGE_H};
     const size_t pixels = (size_t)OUT_W * OUT_H, size = sizeof(double) * 3 * pixels;

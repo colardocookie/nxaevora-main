@@ -468,6 +468,11 @@ channel, and each picture of the edge case by channel on each edge: on the first
 background's error was in one channel, which the single mean did not show. The last line is `RESULT: PASS` or
 `RESULT: FAIL`.
 
+For the log alone as well: in the edge case's two configured runs every frame's inputs are printed as they are
+handed to the adapter, and the adapter prints the whole of what it gives its library for that frame and what
+its context was made with (a `trace` flag in the frame of `gpu/vk/upscaler.h`). What a library is given is to
+be known from the log before anything is concluded about what it does with it.
+
 Limits. Cases 1 to 7 have run once on a device, with FSR 3.1.6, in an earlier state of the test, and failed
 on the jitter's margin of cases 1 and 2, on case 4's error and on the missing validation layer. The edge case
 has been built and has not run. Errors are

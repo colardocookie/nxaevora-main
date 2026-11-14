@@ -274,6 +274,25 @@ int evaluate(SnxUpscaler* u, const SnxUpscalerFrame* f) {
     d.cameraFar = std::isinf(f->far_plane) ? 3.4028234663852886e38f : f->far_plane;
     d.cameraFovAngleVertical = f->fov_y;
     d.viewSpaceToMetersFactor = 1.0f;
+    /* asked for by the caller: the whole of what the library is given for this frame, as it stands in the
+       structure handed over, and what the context was made with */
+    if (f->trace)
+        logf_(1, "arceus-upscaler: fsr dispatch: jitterOffset %.9g %.9g, motionVectorScale %.9g %.9g, renderSize "
+                 "%ux%u, upscaleSize %ux%u, reset %d, frameTimeDelta %.9g ms, preExposure %.9g, enableSharpening %d, "
+                 "sharpness %.9g, cameraNear %.9g, cameraFar %.9g, cameraFovAngleVertical %.9g, "
+                 "viewSpaceToMetersFactor %.9g. Context: flags 0x%x, maxRenderSize %ux%u, maxUpscaleSize %ux%u. "
+                 "Images as width x height, format, layout: colour %ux%u %d %d, depth %ux%u %d %d, vectors %ux%u "
+                 "%d %d, output %ux%u %d %d\n",
+              (double)d.jitterOffset.x, (double)d.jitterOffset.y, (double)d.motionVectorScale.x,
+              (double)d.motionVectorScale.y, d.renderSize.width, d.renderSize.height, d.upscaleSize.width,
+              d.upscaleSize.height, (int)d.reset, (double)d.frameTimeDelta, (double)d.preExposure,
+              (int)d.enableSharpening, (double)d.sharpness, (double)d.cameraNear, (double)d.cameraFar,
+              (double)d.cameraFovAngleVertical, (double)d.viewSpaceToMetersFactor, (unsigned)u->upscale.flags,
+              u->upscale.maxRenderSize.width, u->upscale.maxRenderSize.height, u->upscale.maxUpscaleSize.width,
+              u->upscale.maxUpscaleSize.height, f->colour.w, f->colour.h, (int)f->colour.format,
+              (int)f->colour.layout, f->depth.w, f->depth.h, (int)f->depth.format, (int)f->depth.layout,
+              f->motion.w, f->motion.h, (int)f->motion.format, (int)f->motion.layout, f->output.w, f->output.h,
+              (int)f->output.format, (int)f->output.layout);
     const ffxReturnCode_t rc = g_library.dispatch(&u->context, &d.header);
     if (rc == FFX_API_RETURN_OK) return SNX_UPSCALER_OK;
     logf_(0, "arceus-upscaler: fsr dispatch failed (code %u)\n", rc);

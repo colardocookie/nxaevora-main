@@ -14,7 +14,7 @@
 #include <vulkan/vulkan_core.h>
 #endif
 
-#define SNX_UPSCALER_ABI 1
+#define SNX_UPSCALER_ABI 2
 /* the one symbol a separate module exports: it returns its functions for this ABI number, or NULL */
 #define SNX_UPSCALER_ENTRY "snx_upscaler_api"
 
@@ -107,6 +107,9 @@ typedef struct {
     uint32_t reset;      /* 1: nothing kept from earlier frames may be used */
     float frame_seconds; /* since the frame before */
     float near_plane, far_plane, fov_y; /* of the scene's camera without jitter, fov in radians */
+    /* 1: the adapter logs, for this frame, every number it hands to its library and what its context was made
+       with, in a line that begins "arceus-upscaler: <name> dispatch". It changes nothing else. */
+    uint32_t trace;
 } SnxUpscalerFrame;
 
 typedef struct SnxUpscaler SnxUpscaler; /* a library's context */
