@@ -617,11 +617,12 @@ The cases, each run with a viewport of negative and of positive height (render 3
 7. No message of the validation layer, with its synchronisation checks on, in any case. Without the layer
    installed the case is not run, which is not a pass. The self-test sees only the loader's list of layers, and
    says how it read it: whole and the layer is not in it, in part (asked three times, still incomplete, so
-   whether the layer is installed is not known), or not at all (a call failed, with its result). A layer that
-   was listed and asked for and whose message callback could not be made is said as that, with the result. The device's line and case 7's line say
-   which. Then each layer listed is printed on a line of its own, 64 at most with
-   a line for the rest, and the values of `VK_LAYER_PATH`, `VK_ADD_LAYER_PATH` and `VULKAN_SDK` as the process
-   sees them. Case 7 is not run in all three.
+   whether the layer is installed is not known), or not at all (a call failed, with its result). A fourth
+   state is its own: the layer was listed and asked for, and its message callback could not be made, said
+   with that call's result. The device's line and case 7's line say which of the four it is. Then each layer
+   listed is printed on a line of its own, 64 at most with a line for the rest, and the values of
+   `VK_LAYER_PATH`, `VK_ADD_LAYER_PATH` and `VULKAN_SDK` as the process sees them. Case 7 is not run in all
+   four.
 The scene's depth is made from two distances (5 for the background, 1/6 for the patch) through a projection in
 the game's form, depth = (A z + B) / (-z) with A = n / (f - n) and B = n f / (f - n). The cases above use a near
 plane of 0.1 and a far plane at infinity, with the create flag for that: their 24 bit depths are the 0.02 and
