@@ -567,6 +567,14 @@ first contexts, for the first frames left as drawn and every 600th, when it turn
 frames the counts (evaluated, drawn with jitter and skipped or failed, and not jittered by reason: the gate, not
 the whole target, a part of the configuration not known, no ready context, off).
 
+`tests/upscaler_selftest_callbacks/run.sh` runs two host regressions of the validation callbacks, written by the
+reviewer, for a host with python3, clang, gcc and pthreads (not part of the Windows test run). Each takes the
+callback, its counts and the self-test's last lines out of `upscaler_selftest.c` as they are and puts a test
+body around them: the ids, the caps, the marks for every byte value and their reading back, a character of
+several bytes at a piece's edge, and the 64 combinations of case 7's last lines (the wait, a count before, a
+callback after) under the address and undefined-behaviour sanitizers, and a callback thread against the counts
+under the thread sanitizer.
+
 ## What the FSR adapter needs of a device
 
 A conservative policy for the one provider that was seen, and not a complete list. In a run of the self-test
