@@ -125,13 +125,13 @@ static struct {
         u32 count;
     } id[VALIDATION_IDS];
 } g_said;
-/* A line break or another control character in a callback's text would end the log line early and leave the
-   rest without the self-test's prefix, where a report's filter loses it. Each is written out as a visible mark
-   (a backslash with n, r or t, or with x and two hexadecimal digits), and a backslash of the text is doubled:
-   nothing is dropped and two texts never read the same. One character into out, at most four bytes: how many. */
+/* Only printable ASCII goes into a log line as it is. A line break would end the line early, and a piece's cut
+   could fall inside a character of several bytes. Every other byte is written out as a mark (a backslash with
+   n, r or t, or with x and two hexadecimal digits) and a backslash of the text is doubled: nothing is dropped
+   and a line reads back to exactly one text. One byte into out, at most four bytes: how many. */
 static u32 validation_mark(unsigned char c, char* out) {
     static const char digits[] = "0123456789abcdef";
-    if (c >= 0x20 && c != 0x7f && c != '\\') {
+    if (c >= 0x20 && c < 0x7f && c != '\\') {
         out[0] = (char)c;
         return 1;
     }
@@ -204,11 +204,12 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverit
     if (index < VALIDATION_KEPT) {
         char shown[4 * 127 + 1];
         u32 breaks = 0, name_breaks = 0;
-        for (size_t i = 0; i < kept; i++) breaks += (unsigned char)text[i] < 0x20 || text[i] == 0x7f;
-        for (size_t i = 0; i < name_length; i++) name_breaks += (unsigned char)name[i] < 0x20 || name[i] == 0x7f;
+        for (size_t i = 0; i < kept; i++) breaks += (unsigned char)text[i] < 0x20 || (unsigned char)text[i] >= 0x7f;
+        for (size_t i = 0; i < name_length; i++)
+            name_breaks += (unsigned char)name[i] < 0x20 || (unsigned char)name[i] >= 0x7f;
         validation_name(shown, name, name_length);
         /* the name is printed whole when it fits the table, else its first 127 characters, said as cut */
-        LOG(ST "validation %u: message id %s%s (%d), %zu characters%s. Line breaks or control characters, each "
+        LOG(ST "validation %u: message id %s%s (%d), %zu characters%s. Bytes that are not printable ASCII, each "
                "written out as a mark: %u in the text printed, %u in the whole name\n", index + 1, shown,
             fits ? "" : " [the name is cut here: it is longer]", (int)number, length,
             length > kept ? ", of which the first 4096 are printed" : "", breaks, name_breaks);
@@ -2104,13 +2105,15 @@ int vk_upscaler_selftest(const char* adapter) {
     edge_response(1);
     g.generation++;
     edge_response(0);
-    pass = pass && idle();
+    /* the wait is made whatever the cases before came to: its answer is kept on its own */
+    const int waited = idle();
+    pass = pass && waited;
     /* Case 7: no message of the validation layer in any case. Without the layer the case was not run, which is
        not a pass, and neither is a run that had to stop. */
-    /* One copy of the callbacks' counts, taken under their lock when the device is idle, is what the summary,
-       case 7's lines and the RESULT all read. A callback that arrives after it, from a thread of the library's,
-       is said in a line of its own and fails the case too: never weaker than the lines. The messenger is not
-       destroyed in this mode, so one that arrives later still is not counted. */
+    /* One copy of the callbacks' counts, taken under their lock after the wait for the device, is what the
+       summary, case 7's lines and the RESULT all read. When that wait could not be made or failed the copy is
+       taken all the same, case 7's line says so, and the case fails. A callback that arrives after the copy
+       gets a line of its own and fails the case too. The messenger is never destroyed in this mode. */
     const unsigned said = validation_counts();
     if (!g.validation) LOG(ST "case 7: NOT RUN, the validation layer is %s: FAIL\n", validation_missing());
     else if (g.unknown)
@@ -2122,7 +2125,10 @@ int vk_upscaler_selftest(const char* adapter) {
     if (late)
         LOG(ST "case 7: %u more validation callbacks arrived after its count was taken. They are not in the lines "
                "above: FAIL\n", late);
-    pass = pass && g.validation && !said && !late && !g.unknown;
+    if (!waited)
+        LOG(ST "case 7: its count was taken without the device known to be idle (the wait for it %s): FAIL\n",
+            g.unknown ? "could not be made, the device's state is not known" : "failed");
+    pass = pass && g.validation && !said && !late && waited && !g.unknown;
     LOG(ST "RESULT: %s\n", pass ? "PASS" : "FAIL");
     return pass ? 0 : 1;
 }

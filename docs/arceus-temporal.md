@@ -631,16 +631,19 @@ The cases, each run with a viewport of negative and of positive height (render 3
    received, printed, cut, not printed and without an id's name, one line a message id gives its count (64 ids,
    and a line when that table is full), and a last line says whether the counts add up to the callbacks
    received. A message id is its whole name and its number: a name of 128 characters or more is not
-   classified, is counted in a line of its own and is printed cut, said as cut, with its length. A line break
-   or another control character in a text or a name is written out as a visible mark (a backslash with n, r or
+   classified, is counted in a line of its own and is printed cut, said as cut, with its length. Only
+   printable ASCII is printed as it is. A line break, another control character and every byte outside ASCII
+   (so each byte of a character of several bytes) is written out as a visible mark (a backslash with n, r or
    t, or with x and two hexadecimal digits), a backslash of the text itself is doubled, and nothing is
-   dropped: a printed line reads back to exactly one text. So every piece is one log line with the
-   self-test's prefix, and the callback's first line says how many marks the text and the name have. The
-   counts at the end are taken at one moment, under the lock the callbacks use, when the device is idle. The
-   lines of the counts, case 7's line and the RESULT all go by that one copy. A callback that arrives after
-   it is said in a line of its own and fails case 7 as well. The messenger is not destroyed in this mode, so
-   a callback that arrives later still is not counted. The layer stops reporting an id after its own limit of
-   repeats, so a count is what it reported.
+   dropped: a printed line reads back to exactly one text, and no piece can cut a character in two. So every piece
+   is one log line with the self-test's prefix, and the callback's first line says how many marks the text and the
+   name have. The counts at the end are taken at one moment, under the lock the callbacks use, after a wait for the
+   device that is made whatever the cases before came to. The lines of the counts, case 7's line and the RESULT all
+   go by that one copy. When the wait could not be made or failed, the copy is taken all the same, case 7's line
+   says that it was taken without the device known to be idle, and the case fails. A callback that arrives after the
+   copy is said in a line of its own and fails case 7 as well. The messenger is not destroyed in this mode, so a
+   callback that arrives later still is not counted. The layer stops reporting an id after its own limit of repeats,
+   so a count is what it reported.
 The scene's depth is made from two distances (5 for the background, 1/6 for the patch) through a projection in
 the game's form, depth = (A z + B) / (-z) with A = n / (f - n) and B = n f / (f - n). The cases above use a near
 plane of 0.1 and a far plane at infinity, with the create flag for that: their 24 bit depths are the 0.02 and
