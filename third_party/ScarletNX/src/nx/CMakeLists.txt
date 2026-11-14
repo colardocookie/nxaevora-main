@@ -109,6 +109,13 @@ snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/record.c 
                  "${imgui_SOURCE_DIR}/imgui.cpp" "${imgui_SOURCE_DIR}/imgui_draw.cpp"
                  "${imgui_SOURCE_DIR}/imgui_tables.cpp" "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
                  "${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp")
+# The FSR adapter (gpu/vk/upscaler_fsr.cpp), built against the FidelityFX SDK's API headers in third_party. Windows
+# only: the SDK's library, which the user supplies, exists there, and its headers use that system's keywords.
+if(WIN32)
+    target_sources(snx_vk PRIVATE gpu/vk/upscaler_fsr.cpp)
+    set_source_files_properties(gpu/vk/upscaler_fsr.cpp PROPERTIES INCLUDE_DIRECTORIES
+                                "${PROJECT_SOURCE_DIR}/third_party/FidelityFX-SDK")
+endif()
 # Dear ImGui's own files, with the Vulkan backend that loads its functions through volk (gpu/vk/imgui_glue.cpp)
 target_include_directories(snx_vk PRIVATE "${imgui_SOURCE_DIR}" "${imgui_SOURCE_DIR}/backends")
 # ImWchar holds a whole code point: the game counts a character past U+FFFF as two UTF-16 units and must get it whole

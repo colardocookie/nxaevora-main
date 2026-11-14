@@ -9,10 +9,17 @@
 #include "nx/gpu/vk/upscaler.h"
 #include "nx/runtime/platform/log.h"
 
+#ifdef _WIN32
+const SnxUpscalerApi* snx_upscaler_fsr(void); /* gpu/vk/upscaler_fsr.cpp */
+#endif
+
 /* The adapter of that name, NULL for none: one that is not built into this program, or one whose SDK library is not
    beside it. The adapter says why in a line of its own. */
 const SnxUpscalerApi* vk_upscaler_adapter(const char* name) {
-    (void)name;
+#ifdef _WIN32
+    if (name && !strcmp(name, "fsr")) return snx_upscaler_fsr();
+#endif
+    if (name) WARN("arceus-upscaler: no adapter named \"%s\" is built into this program\n", name);
     return NULL;
 }
 
