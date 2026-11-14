@@ -112,8 +112,10 @@ typedef struct {
 #define VALIDATION_TEXT 4096
 #define VALIDATION_PIECE 1500
 #define VALIDATION_IDS 64
+/* Callbacks may come from a thread of the library's. The lock is no part of what it guards: the counts are
+   copied whole under it, and a callback that waits writes the lock meanwhile. */
+static int g_said_lock;
 static struct {
-    int lock; /* callbacks may come from a thread of the library's */
     u32 ids, unlisted; /* message ids kept, and callbacks whose id found no room in the table */
     u32 omitted, truncated, nameless; /* callbacks not printed, printed with a cut text, without an id's name */
     u32 overlong; /* callbacks whose id's name is too long to keep whole: counted apart, never taken as one id */
@@ -125,15 +127,19 @@ static struct {
 } g_said;
 /* A line break or another control character in a callback's text would end the log line early and leave the
    rest without the self-test's prefix, where a report's filter loses it. Each is written out as a visible mark
-   (a backslash with n, r or t, or with x and two hexadecimal digits), so nothing is dropped. One character's
-   mark into out, at most four bytes: how many. */
+   (a backslash with n, r or t, or with x and two hexadecimal digits), and a backslash of the text is doubled:
+   nothing is dropped and two texts never read the same. One character into out, at most four bytes: how many. */
 static u32 validation_mark(unsigned char c, char* out) {
     static const char digits[] = "0123456789abcdef";
-    if (c >= 0x20 && c != 0x7f) {
+    if (c >= 0x20 && c != 0x7f && c != '\\') {
         out[0] = (char)c;
         return 1;
     }
     out[0] = '\\';
+    if (c == '\\') { /* a backslash of the text itself is doubled, so that a mark is never mistaken for text */
+        out[1] = '\\';
+        return 2;
+    }
     out[1] = c == '\n' ? 'n' : c == '\r' ? 'r' : c == '\t' ? 't' : 'x';
     if (out[1] != 'x') return 2;
     out[2] = digits[c >> 4];
@@ -176,7 +182,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverit
     const char* text = data && data->pMessage ? data->pMessage : "";
     const i32 number = data ? data->messageIdNumber : 0;
     const size_t length = strlen(text), kept = length > VALIDATION_TEXT ? VALIDATION_TEXT : length;
-    while (__atomic_exchange_n(&g_said.lock, 1, __ATOMIC_ACQUIRE)) {}
+    while (__atomic_exchange_n(&g_said_lock, 1, __ATOMIC_ACQUIRE)) {}
     const u32 index = g.messages++;
     /* An id is its whole name and its number. A name that does not fit the table whole is not classified: a
        prefix is no identity. */
@@ -211,7 +217,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverit
     } else if (index == VALIDATION_KEPT)
         LOG(ST "more than %d validation callbacks: the ones from here on are counted by their message id and not "
                "printed\n", VALIDATION_KEPT);
-    __atomic_store_n(&g_said.lock, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_said_lock, 0, __ATOMIC_RELEASE);
     return VK_FALSE;
 }
 /* At the end: how many callbacks each message id had, the layer's own limit on repeats said beside them. It
@@ -220,10 +226,10 @@ static unsigned validation_counts(void) {
     u32 listed = 0;
     /* a callback may still arrive from a thread of the library's: the counts are taken under the callbacks' lock,
        all at one moment, and printed from that copy */
-    while (__atomic_exchange_n(&g_said.lock, 1, __ATOMIC_ACQUIRE)) {}
+    while (__atomic_exchange_n(&g_said_lock, 1, __ATOMIC_ACQUIRE)) {}
     const __typeof__(g_said) said = g_said;
     const u32 received = g.messages;
-    __atomic_store_n(&g_said.lock, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_said_lock, 0, __ATOMIC_RELEASE);
     if (!received) return 0;
     for (u32 k = 0; k < said.ids; k++) listed += said.id[k].count;
     LOG(ST "validation: %u callbacks at warning or above. Printed %u, of which %u with a text cut at %d characters. "
