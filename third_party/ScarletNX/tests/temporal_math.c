@@ -2344,23 +2344,24 @@ static void test_upscaler_wiring(void) {
         const TemporalUpscalerConfig config = {3840, 2160, 3840, 2160, 3840, 2160, 3};
         TemporalUpscalerConfig other = config;
         TemporalUpscalerContexts c = {0};
-        assert(temporal_upscaler_decide(1, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_READY);
+        const TemporalUpscalerHealth on = {0}, off = {0, 1, 0};
+        assert(temporal_upscaler_decide(&on, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_READY);
         temporal_upscaler_created(&c, &config, 1);
-        assert(temporal_upscaler_decide(1, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_READY); /* on its way */
+        assert(temporal_upscaler_decide(&on, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_READY); /* on its way */
         assert(temporal_upscaler_completed(&c, &config) == TEMPORAL_UPSCALER_PUBLISHED);
-        assert(temporal_upscaler_decide(1, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_JITTER);
-        assert(temporal_upscaler_decide(0, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_ON);
-        assert(temporal_upscaler_decide(1, 0, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_GATE);
-        assert(temporal_upscaler_decide(1, 1, 0, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_WHOLE);
-        assert(temporal_upscaler_decide(1, 1, 1, 0, &c, &config) == TEMPORAL_UPSCALER_NOT_KNOWN);
-        assert(temporal_upscaler_decide(0, 0, 0, 0, &c, &config) == TEMPORAL_UPSCALER_NOT_ON); /* the first reason */
-        assert(temporal_upscaler_decide(1, 0, 0, 0, &c, &config) == TEMPORAL_UPSCALER_NOT_GATE);
-        assert(temporal_upscaler_decide(1, 1, 0, 0, &c, &config) == TEMPORAL_UPSCALER_NOT_WHOLE);
+        assert(temporal_upscaler_decide(&on, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_JITTER);
+        assert(temporal_upscaler_decide(&off, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_ON);
+        assert(temporal_upscaler_decide(&on, 0, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_GATE);
+        assert(temporal_upscaler_decide(&on, 1, 0, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_WHOLE);
+        assert(temporal_upscaler_decide(&on, 1, 1, 0, &c, &config) == TEMPORAL_UPSCALER_NOT_KNOWN);
+        assert(temporal_upscaler_decide(&off, 0, 0, 0, &c, &config) == TEMPORAL_UPSCALER_NOT_ON); /* the first reason */
+        assert(temporal_upscaler_decide(&on, 0, 0, 0, &c, &config) == TEMPORAL_UPSCALER_NOT_GATE);
+        assert(temporal_upscaler_decide(&on, 1, 0, 0, &c, &config) == TEMPORAL_UPSCALER_NOT_WHOLE);
         other.generation = 4; /* the far plane's decision changed, say: another context is needed */
-        assert(temporal_upscaler_decide(1, 1, 1, 1, &c, &other) == TEMPORAL_UPSCALER_NOT_READY);
+        assert(temporal_upscaler_decide(&on, 1, 1, 1, &c, &other) == TEMPORAL_UPSCALER_NOT_READY);
         other = config;
         other.render_w = 2880;
-        assert(temporal_upscaler_decide(1, 1, 1, 1, &c, &other) == TEMPORAL_UPSCALER_NOT_READY);
+        assert(temporal_upscaler_decide(&on, 1, 1, 1, &c, &other) == TEMPORAL_UPSCALER_NOT_READY);
         /* at the hook: evaluated only when the frame was jittered, the configuration is the decided one and the
            context is still the ready one */
         assert(temporal_upscaler_hook(TEMPORAL_UPSCALER_JITTER, &config, &config, &c));
@@ -2386,7 +2387,7 @@ static void test_upscaler_wiring(void) {
         }
         assert(temporal_upscaler_stop(&c) == 1); /* stopped between the decision and the hook */
         assert(!temporal_upscaler_hook(TEMPORAL_UPSCALER_JITTER, &config, &config, &c));
-        assert(temporal_upscaler_decide(1, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_READY);
+        assert(temporal_upscaler_decide(&on, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_READY);
     }
     /* The frame time: the measured one between two evaluated hooks, else the nominal one with the fallback set. */
     {
@@ -2401,27 +2402,82 @@ static void test_upscaler_wiring(void) {
         assert(temporal_upscaler_seconds(t0 + 250000000, t0, 1, 1.0 / 30.0, &fallback) == 0.25 && fallback == 0);
         assert(temporal_upscaler_seconds(t0 + 250000001, t0, 1, 1.0 / 30.0, &fallback) == 1.0 / 30.0 && fallback == 1);
         assert(temporal_upscaler_seconds(t0 + 1, t0, 1, 1.0 / 30.0, &fallback) == 1e-9 && fallback == 0);
-        /* no nominal time, or one that is no frame time: a sixtieth */
-        static const double none[6] = {0.0, -1.0, NAN, INFINITY, 0.3, -INFINITY};
-        for (int k = 0; k < 6; k++)
+        /* No nominal time, or one the dispatch's check would refuse or that is over a quarter of a second, is
+           absent: a sixtieth. 1e-300 and 1e-46 are 0 as floats, 1e-42 is a float whose milliseconds are fine. */
+        static const double none[9] = {0.0, -1.0, NAN, INFINITY, 0.3, -INFINITY, 1e-300, 1e-46, 0.2500001};
+        float narrowed;
+        for (int k = 0; k < 9; k++) {
             assert(temporal_upscaler_seconds(t0 + 5, t0, 0, none[k], &fallback) == 1.0 / 60.0 && fallback == 1);
+            assert(temporal_upscaler_seconds(t0 + 400000000, t0, 1, none[k], &fallback) == 1.0 / 60.0);
+            assert(!temporal_upscaler_time(none[k], &narrowed) || none[k] > 0.25);
+        }
+        assert(temporal_upscaler_seconds(t0 + 5, t0, 0, 0.25, &fallback) == 0.25 && fallback == 1);
+        assert(temporal_upscaler_seconds(t0 + 5, t0, 0, 1e-42, &fallback) == 1e-42 && fallback == 1);
+        /* every answer passes the dispatch's check, whatever the clocks and the nominal time are */
+        {
+            static const unsigned long long later[7] = {0, 1, 1000, 8333333, 250000000, 250000001, 9000000000ull};
+            static const double nominal[8] = {1.0 / 120.0, 1.0 / 30.0, 0.0, 1e-300, 1e-46, NAN, INFINITY, 5.0};
+            for (int i = 0; i < 7; i++)
+                for (int j = 0; j < 8; j++)
+                    for (int evaluated = 0; evaluated < 2; evaluated++) {
+                        const double given =
+                            temporal_upscaler_seconds(t0 + later[i], t0, evaluated, nominal[j], &fallback);
+                        assert(temporal_upscaler_time(given, &narrowed) && given <= 0.25);
+                    }
+        }
         /* whatever comes out passes the dispatch's check of the frame time */
         float handed;
         assert(temporal_upscaler_time(temporal_upscaler_seconds(t0 + 1, t0, 1, 0.0, &fallback), &handed));
         assert(temporal_upscaler_time(temporal_upscaler_seconds(t0, t0, 1, NAN, &fallback), &handed));
     }
-    /* What came of a jittered frame: eight in a row that were skipped or failed turn it off, a success between
-       them begins the count again, and a stop turns it off at once and for good. */
+    /* What came of a frame. Eight jittered frames in a row that were skipped or failed turn it off, and an
+       evaluated one between them begins the count again. */
     {
-        unsigned failures = 0;
+        TemporalUpscalerHealth h = {0};
         for (int k = 0; k < 7; k++)
-            assert(!temporal_upscaler_after(&failures, k & 1 ? TEMPORAL_UPSCALER_SKIPPED : TEMPORAL_UPSCALER_FAILED));
-        assert(!temporal_upscaler_after(&failures, TEMPORAL_UPSCALER_EVALUATED) && failures == 0);
-        for (int k = 0; k < 7; k++) assert(!temporal_upscaler_after(&failures, TEMPORAL_UPSCALER_SKIPPED));
-        assert(temporal_upscaler_after(&failures, TEMPORAL_UPSCALER_FAILED));
-        failures = 0;
-        assert(temporal_upscaler_after(&failures, TEMPORAL_UPSCALER_STOPPED));
-        assert(temporal_upscaler_after(&failures, TEMPORAL_UPSCALER_SKIPPED)); /* it stays off */
+            assert(!temporal_upscaler_after(&h, 1, k & 1 ? TEMPORAL_UPSCALER_SKIPPED : TEMPORAL_UPSCALER_FAILED));
+        assert(!temporal_upscaler_after(&h, 1, TEMPORAL_UPSCALER_EVALUATED) && h.failures == 0);
+        for (int k = 0; k < 7; k++) assert(!temporal_upscaler_after(&h, 1, TEMPORAL_UPSCALER_SKIPPED));
+        assert(temporal_upscaler_after(&h, 1, TEMPORAL_UPSCALER_FAILED) && h.off && !h.stopped);
+    }
+    /* A frame that was not drawn with jitter is no failure and no success: it changes nothing, whatever outcome
+       is named for it. Failures with such frames between them still reach eight, and an "evaluated" named for
+       one does not begin the count again. */
+    {
+        TemporalUpscalerHealth h = {0};
+        for (int k = 0; k < 7; k++) {
+            assert(!temporal_upscaler_after(&h, 1, TEMPORAL_UPSCALER_FAILED) && h.failures == (unsigned)k + 1);
+            for (int outcome = TEMPORAL_UPSCALER_EVALUATED; outcome <= TEMPORAL_UPSCALER_STOPPED; outcome++) {
+                const TemporalUpscalerHealth before = h;
+                assert(!temporal_upscaler_after(&h, 0, outcome) && !memcmp(&h, &before, sizeof h));
+            }
+        }
+        assert(temporal_upscaler_after(&h, 1, TEMPORAL_UPSCALER_SKIPPED) && h.off && !h.stopped);
+    }
+    /* A stop is a latch, and so is the eighth failure: after it every outcome, an evaluated one too, leaves it
+       off, jittered or not, and the decision allows no jitter with everything else in order. */
+    for (int by_stop = 0; by_stop < 2; by_stop++) {
+        const TemporalUpscalerConfig config = {3840, 2160, 3840, 2160, 3840, 2160, 3};
+        TemporalUpscalerContexts c = {0};
+        TemporalUpscalerHealth h = {0};
+        temporal_upscaler_created(&c, &config, 1);
+        assert(temporal_upscaler_completed(&c, &config) == TEMPORAL_UPSCALER_PUBLISHED);
+        assert(temporal_upscaler_decide(&h, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_JITTER);
+        if (by_stop) assert(temporal_upscaler_after(&h, 1, TEMPORAL_UPSCALER_STOPPED));
+        else
+            for (int k = 0; k < 8; k++) temporal_upscaler_after(&h, 1, TEMPORAL_UPSCALER_FAILED);
+        assert(h.off && h.stopped == by_stop);
+        const TemporalUpscalerHealth latched = h;
+        for (int jittered = 0; jittered < 2; jittered++)
+            for (int outcome = TEMPORAL_UPSCALER_EVALUATED; outcome <= TEMPORAL_UPSCALER_STOPPED; outcome++)
+                for (int times = 0; times < 20; times++) {
+                    assert(temporal_upscaler_after(&h, jittered, outcome) == 1);
+                    assert(!memcmp(&h, &latched, sizeof h));
+                    assert(temporal_upscaler_decide(&h, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_NOT_ON);
+                }
+        /* only a new session is clean */
+        const TemporalUpscalerHealth fresh = {0};
+        assert(temporal_upscaler_decide(&fresh, 1, 1, 1, &c, &config) == TEMPORAL_UPSCALER_JITTER);
     }
     /* the counts between two lines */
     {

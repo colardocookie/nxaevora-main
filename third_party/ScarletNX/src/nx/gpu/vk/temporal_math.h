@@ -1337,22 +1337,28 @@ static inline int temporal_upscaler_whole(const TemporalRectState* s) {
     return s->fx == 1.0f && s->fy == 1.0f && s->rect.x == 0 && s->rect.y == 0 && s->rect.w == s->target_w &&
            s->rect.h == s->target_h && s->target_w > 0 && s->target_h > 0;
 }
-/* Whether a frame is drawn with jitter, asked at the gate's draw before any jitter is staged. Only when the gate
-   accepts the frame, its scene is the whole target, every part of the configuration is known there (the
-   projection decoded, one layer each) and a context for exactly that configuration is ready. So no frame is ever
-   jittered without an evaluate that can follow. The first reason against it is the answer. */
+/* Whether the upscaler is still on in this session. off is a latch: once set, by a stop or by eight frames in a
+   row that were drawn with jitter and not evaluated, nothing clears it, and only a new session starts clean. */
+typedef struct {
+    unsigned failures; /* frames in a row that were drawn with jitter and then skipped or failed */
+    int off, stopped;  /* off for the session, and whether a stop did it */
+} TemporalUpscalerHealth;
+/* Whether a frame is drawn with jitter, asked at the gate's draw before any jitter is staged. Only when the
+   upscaler is on, the gate accepts the frame, its scene is the whole target, every part of the configuration is
+   known there and a context for exactly that configuration is ready. So no frame is ever jittered without an
+   evaluate that can follow. The first reason against it is the answer. */
 enum {
     TEMPORAL_UPSCALER_JITTER,
-    TEMPORAL_UPSCALER_NOT_ON,      /* off for the session */
+    TEMPORAL_UPSCALER_NOT_ON,      /* off for the session: stopped, or eight in a row */
     TEMPORAL_UPSCALER_NOT_GATE,    /* the rectangle's gate does not accept the frame */
     TEMPORAL_UPSCALER_NOT_WHOLE,   /* a fraction below 1 or a viewport that is not the whole target */
     TEMPORAL_UPSCALER_NOT_KNOWN,   /* a part of the configuration is not known at the gate's draw */
     TEMPORAL_UPSCALER_NOT_READY,   /* no context is ready for the configuration */
     TEMPORAL_UPSCALER_REASONS
 };
-static inline int temporal_upscaler_decide(int on, int accepted, int whole, int known,
+static inline int temporal_upscaler_decide(const TemporalUpscalerHealth* health, int accepted, int whole, int known,
                                            const TemporalUpscalerContexts* c, const TemporalUpscalerConfig* config) {
-    if (!on) return TEMPORAL_UPSCALER_NOT_ON;
+    if (health->off) return TEMPORAL_UPSCALER_NOT_ON;
     if (!accepted) return TEMPORAL_UPSCALER_NOT_GATE;
     if (!whole) return TEMPORAL_UPSCALER_NOT_WHOLE;
     if (!known) return TEMPORAL_UPSCALER_NOT_KNOWN;
@@ -1366,16 +1372,17 @@ static inline int temporal_upscaler_hook(int decision, const TemporalUpscalerCon
            temporal_upscaler_ready(c, seen);
 }
 /* The frame time handed over, in seconds: the host clock's time between this frame's hook and the hook of the
-   frame before, when that frame was evaluated. Else, or when that time is not positive or over a quarter of a
-   second, the run's nominal frame time, or a sixtieth without one, and *fallback is 1: such a frame has the
-   reset flag. */
+   frame before, when that frame was evaluated. Else the run's nominal frame time, or a sixtieth without one,
+   and *fallback is 1: such a frame has the reset flag. A time counts, measured or nominal, only when it is at
+   most a quarter of a second and passes the dispatch's own check (temporal_upscaler_time). */
 static inline double temporal_upscaler_seconds(unsigned long long now_ns, unsigned long long before_ns,
                                                int before_evaluated, double nominal, int* fallback) {
-    const double usual = isfinite(nominal) && nominal > 0.0 && nominal <= 0.25 ? nominal : 1.0 / 60.0;
+    float narrowed;
+    const double usual = temporal_upscaler_time(nominal, &narrowed) && nominal <= 0.25 ? nominal : 1.0 / 60.0;
     *fallback = 1;
     if (!before_evaluated || now_ns <= before_ns) return usual;
     const double seconds = (double)(now_ns - before_ns) * 1e-9;
-    if (!(seconds > 0.0) || seconds > 0.25) return usual;
+    if (!temporal_upscaler_time(seconds, &narrowed) || seconds > 0.25) return usual;
     *fallback = 0;
     return seconds;
 }
@@ -1383,15 +1390,15 @@ static inline double temporal_upscaler_seconds(unsigned long long now_ns, unsign
    back. SKIPPED: a number or the configuration did not pass at the hook. FAILED: the library refused. STOPPED:
    something of our own that the hand-over needs failed, or a submission's outcome is not known. */
 enum { TEMPORAL_UPSCALER_EVALUATED, TEMPORAL_UPSCALER_SKIPPED, TEMPORAL_UPSCALER_FAILED, TEMPORAL_UPSCALER_STOPPED };
-/* 1 when the upscaler is off for the rest of the session: at once when stopped, and after eight frames in a row
-   that were skipped or failed. A frame that is not evaluated is left as drawn, and the next evaluate has the
-   reset flag, which the frame's own history gives (temporal_upscaler_frame). */
-static inline int temporal_upscaler_after(unsigned* failures, int outcome) {
-    if (outcome == TEMPORAL_UPSCALER_STOPPED) {
-        *failures = TEMPORAL_UPSCALER_FAILURES;
-        return 1;
-    }
-    return temporal_upscaler_failed(failures, outcome == TEMPORAL_UPSCALER_EVALUATED);
+/* A frame is over. 1 when the upscaler is off for the rest of the session. A frame that was not drawn with jitter
+   changes nothing: it is no failure and no success. Of the jittered ones a stop turns it off at once, eight in
+   a row that were skipped or failed turn it off, and an evaluated one sets that count to 0. Once off, no
+   outcome turns it on. A frame that is not evaluated is left as drawn and the next evaluate has the reset. */
+static inline int temporal_upscaler_after(TemporalUpscalerHealth* h, int jittered, int outcome) {
+    if (h->off || !jittered) return h->off;
+    if (outcome == TEMPORAL_UPSCALER_STOPPED) h->off = h->stopped = 1;
+    else if (temporal_upscaler_failed(&h->failures, outcome == TEMPORAL_UPSCALER_EVALUATED)) h->off = 1;
+    return h->off;
 }
 /* The counts between two log lines, one line every TEMPORAL_UPSCALER_EVERY frames that were decided: frames
    evaluated, frames not jittered by their reason, and evaluates that were skipped or failed. */
