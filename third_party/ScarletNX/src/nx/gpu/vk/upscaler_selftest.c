@@ -53,6 +53,10 @@ static struct {
     int validation;
     unsigned messages;
     u64 generation; /* of the configuration: raised for every context made with other flags or formats */
+    /* A submission's end is not known, or a command buffer could not be reset. From then on nothing is recorded,
+       reset, submitted or freed on this device: the command buffer, the buffer and the queue are shared by all
+       cases. The cases left are not run and the mode fails. */
+    int unknown;
 } g;
 
 /* one run's inputs, made once and never changed: a sign variant changes only the numbers handed to the adapter */
@@ -80,7 +84,6 @@ typedef struct {
     TemporalUpscalerContexts contexts;
     SnxUpscaler *live, *pending;
     unsigned frame, failures, skipped, evaluated, published; /* published: contexts that came into use */
-    int off; /* a submission's end is not known: nothing is freed any more and nothing is evaluated */
     Picture colour, depth, motion, output; /* what the adapter is handed */
     Picture wide_colour, wide_depth, wide_motion; /* for inputs that sit inside larger images */
 } Session;
@@ -310,21 +313,46 @@ static void settle(void) {
                          NULL, 0, NULL);
 }
 
+static void unknown(const char* what) {
+    if (!g.unknown)
+        LOG(ST "FAIL: %s. What the device still uses is not known, so nothing more is recorded, reset, submitted "
+               "or freed, and the cases left are not run\n", what);
+    g.unknown = 1;
+}
+
+/* the command buffer's contents are discarded: 1 only when the reset itself succeeded */
+static int discard(void) {
+    if (g.unknown) return 0;
+    if (VK_OK(vkResetCommandBuffer(g.cb, 0))) return 1;
+    unknown("the command buffer could not be reset");
+    return 0;
+}
+
 static int begin(void) {
     const VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                          .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    return VK_OK(vkResetCommandBuffer(g.cb, 0)) && VK_OK(vkBeginCommandBuffer(g.cb, &bi));
+    return discard() && VK_OK(vkBeginCommandBuffer(g.cb, &bi));
 }
 
-/* The command buffer is submitted. 1: it has completed. 0: it was not submitted, and is reset, so what it held is
-   discarded. -1: it was submitted and whether it completed is not known. */
+/* the device has finished everything: 1, or its state is unknown from now on */
+static int idle(void) {
+    if (g.unknown) return 0;
+    if (VK_OK(vkDeviceWaitIdle(g.device))) return 1;
+    unknown("waiting for the device failed");
+    return 0;
+}
+
+/* The command buffer is submitted. 1: it has completed. 0: it was not submitted and its contents were discarded
+   by a reset that succeeded. -1: its end is not known (submitted and the wait failed, or the reset failed), and
+   the whole mode stops using the device. */
 static int submit(void) {
     const VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &g.cb};
-    if (!VK_OK(vkEndCommandBuffer(g.cb)) || !VK_OK(vkQueueSubmit(g.queue, 1, &si, VK_NULL_HANDLE))) {
-        vkResetCommandBuffer(g.cb, 0);
-        return 0;
-    }
-    return VK_OK(vkQueueWaitIdle(g.queue)) ? 1 : -1;
+    if (g.unknown) return -1;
+    if (!VK_OK(vkEndCommandBuffer(g.cb)) || !VK_OK(vkQueueSubmit(g.queue, 1, &si, VK_NULL_HANDLE)))
+        return discard() ? 0 : -1;
+    if (VK_OK(vkQueueWaitIdle(g.queue))) return 1;
+    unknown("a submission was made and waiting for it failed");
+    return -1;
 }
 
 /* bytes from the staging buffer at offset into a picture, which is then readable by shaders or by a copy */
@@ -460,7 +488,7 @@ static void pictures_free(Session* s) {
 /* the session's pictures for these inputs' sizes, in place of the ones it had */
 static int pictures_make(Session* s, const Inputs* in, const SnxUpscalerTraits* traits) {
     const u32 rw = (u32)in->rw, rh = (u32)in->rh;
-    vkDeviceWaitIdle(g.device);
+    if (!idle()) return 0;
     pictures_free(s);
     if (!picture_make(&s->colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, rw, rh, traits->colour_usage) ||
         !picture_make(&s->depth, VK_FORMAT_D24_UNORM_S8_UINT, rw, rh, traits->depth_usage) ||
@@ -478,12 +506,9 @@ static int session_open(Session* s, const Inputs* in, const SnxUpscalerTraits* t
     return pictures_make(s, in, traits);
 }
 
-/* A session whose last submission's end is not known frees nothing: the device may still be using it all. */
+/* Once the device's state is not known a session frees nothing: the device may still be using it all. */
 static void session_close(Session* s) {
-    if (s->off || !VK_OK(vkDeviceWaitIdle(g.device))) {
-        LOG(ST "a session is left as it is: a submission's end is not known, so nothing of it is freed\n");
-        return;
-    }
+    if (!idle()) return;
     if (s->live) g.api->destroy(s->live);
     if (s->pending) g.api->destroy(s->pending);
     pictures_free(s);
@@ -493,10 +518,10 @@ static void session_close(Session* s) {
 /* The context for a configuration, by the states the runtime will keep (temporal_upscaler_*): created, prepared into
    a command buffer that is submitted and has completed, and only then published. 1 when the frame may be
    evaluated on s->live. A context is freed only when its command buffer was discarded or has completed. When
-   a submission's end is not known the session is off: nothing is freed and nothing more is evaluated. */
+   that is not known (g.unknown) nothing is freed and nothing more is done on the device. */
 static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerConfig* config, u32 flags,
                          SnxUpscalerTraits* traits) {
-    if (s->off) return 0;
+    if (g.unknown) return 0;
     if (temporal_upscaler_ready(&s->contexts, config)) return 1;
     if (!temporal_upscaler_must_create(&s->contexts, config)) return 0;
     const SnxUpscalerCreate make = {.sizes = {(u32)in->rw, (u32)in->rh, (u32)in->rw, (u32)in->rh, (u32)in->ow,
@@ -525,27 +550,19 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
             traits->colour_usage, traits->depth_usage, traits->motion_usage, traits->output_usage);
         made = 0;
     }
-    /* Three ends. Nothing was submitted (the command buffer is reset, what it held is discarded). It was
-       submitted and has completed. It was submitted and its end is not known. */
+    /* Three ends. Nothing was submitted and the command buffer's reset succeeded: what it held is discarded. It
+       was submitted and has completed. Or its end is not known: then the context is held and nothing is freed. */
     int prepared = 0, submitted = 0;
     if (made && begin()) {
         prepared = g.api->prepare(s->pending, g.cb) == SNX_UPSCALER_OK;
         if (prepared) submitted = submit();
-        else vkResetCommandBuffer(g.cb, 0);
+        else discard();
     }
-    if (submitted < 0) {
-        s->off = 1;
-        LOG(ST "FAIL: a context's preparation was submitted and its end is not known. Nothing is freed and the "
-               "adapter is off for this run\n");
-        return 0;
-    }
+    if (g.unknown) return 0;
     temporal_upscaler_created(&s->contexts, config, prepared && submitted == 1);
     switch (temporal_upscaler_completed(&s->contexts, config)) {
     case TEMPORAL_UPSCALER_RETIRE:
-        if (!VK_OK(vkDeviceWaitIdle(g.device))) {
-            s->off = 1;
-            return 0;
-        }
+        if (!idle()) return 0;
         g.api->destroy(s->live);
         /* fall through */
     case TEMPORAL_UPSCALER_PUBLISHED:
@@ -572,7 +589,7 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     TemporalRectState state = {0};
     TemporalUpscalerFrame numbers;
     float camera[4];
-    if (s->off) return -1;
+    if (g.unknown) return -1;
     s->frame++;
     /* what the renderer would know of the frame: its viewport, the images' size, the fraction of them in use */
     state.viewport = (TemporalViewport){(float)in->vp.x, (float)in->vp.y, (float)in->vp.w, (float)in->vp.h};
@@ -658,7 +675,6 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     vkCmdPipelineBarrier(g.cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &read, 0,
                          NULL);
     const int done = submit();
-    if (done < 0) s->off = 1; /* submitted, and its end is not known */
     if (temporal_upscaler_failed(&s->failures, evaluated && done == 1))
         LOG(ST "the adapter failed eight times in a row\n");
     if (!evaluated || done != 1) return -1;
@@ -734,7 +750,7 @@ static int run(const Inputs* in, const Variant* v, int use_cut, double* last, do
     double sums[2] = {0.0, 0.0};
     int counts[2] = {0, 0};
     memset(&s, 0, sizeof s);
-    int ok = previous && session_open(&s, in, &traits), evaluated = 0;
+    int ok = !g.unknown && previous && session_open(&s, in, &traits), evaluated = 0;
     for (int i = 0; ok && i < in->frames; i++) {
         const int r = frame_run(&s, in, i, v, use_cut && i == in->cut_at, last);
         if (r < 0) ok = 0;
@@ -816,6 +832,12 @@ static int signs(const char* name, const Inputs* in, unsigned mask, int region, 
     return verdict == SELFTEST_PASS;
 }
 
+/* 1 with a line when a case cannot be run because the device's state is not known any more */
+static int not_run(const char* name, int up) {
+    if (g.unknown) LOG(ST "%s %s: NOT RUN\n", name, up ? "up" : "down");
+    return g.unknown;
+}
+
 /* the whole suite for one sign of the viewport's height: 1 when every case passed */
 static int suite(int up) {
     const size_t pixels = (size_t)OUT_W * OUT_H, size = sizeof(double) * 3 * pixels;
@@ -831,7 +853,8 @@ static int suite(int up) {
         FRAMES);
 
     /* Case 1: jitter alone over a still pattern. The jitter's signs, the plain scale, and settling. */
-    ok = inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0);
+    memset(&in, 0, sizeof in);
+    ok = !not_run("case 1", up) && inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0);
     if (ok) {
         double first = 0, last = 0;
         truth(&in, up, reference, regions);
@@ -853,7 +876,8 @@ static int suite(int up) {
     inputs_free(&in);
 
     /* Case 2: a translation that is unequal in both axes. All sixteen combinations of the four signs. */
-    ok = inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, pan, 0, 0);
+    memset(&in, 0, sizeof in);
+    ok = !not_run("case 2", up) && inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, pan, 0, 0);
     if (ok) {
         truth(&in, up, reference, regions);
         snprintf(name, sizeof name, "case 2 %s all signs", up ? "up" : "down");
@@ -864,7 +888,8 @@ static int suite(int up) {
 
     /* Case 3: a nearer patch that moves on its own over a still background. The vector's signs inside the patch,
        and the depth convention in the band the patch left. */
-    ok = inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 1, 0);
+    memset(&in, 0, sizeof in);
+    ok = !not_run("case 3", up) && inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 1, 0);
     if (ok) {
         const Variant flipped = {1, 1, 1, 1, 0};
         truth(&in, up, reference, regions);
@@ -892,7 +917,8 @@ static int suite(int up) {
 
     /* Case 5: a new pattern with the reset flag. The output of that frame against a context that never saw the old
        pattern, and the same without the flag as the control of the test itself. */
-    ok = inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 1);
+    memset(&in, 0, sizeof in);
+    ok = !not_run("case 5", up) && inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 1);
     if (ok) {
         Inputs fresh = in;
         const int with = run(&in, &CONFIGURED, 1, output, NULL, NULL, NULL, NULL);
@@ -922,7 +948,8 @@ static int suite(int up) {
 
     /* Case 6: the same content at a place that is not the first texel of larger images of other proportions, with
        padding that is none of the scene's, against the content at the first texel of images of its own size. */
-    ok = inputs_make(&in, SIZES, 400, 240, 40, 30, up, pan, 0, 0);
+    memset(&in, 0, sizeof in);
+    ok = !not_run("case 6", up) && inputs_make(&in, SIZES, 400, 240, 40, 30, up, pan, 0, 0);
     if (ok) {
         Inputs tight;
         ok = inputs_make(&tight, SIZES, RENDER_W, RENDER_H, 0, 0, up, pan, 0, 0) &&
@@ -968,7 +995,7 @@ static int resize(int up) {
     memset(&small, 0, sizeof small);
     memset(&big, 0, sizeof big);
     memset(&s, 0, sizeof s);
-    int ok = output && previous && reference && scaled && regions &&
+    int ok = !not_run("case 4", up) && output && previous && reference && scaled && regions &&
              inputs_make(&small, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0) &&
              inputs_make(&big, BIG, BIG[0], BIG[1], 0, 0, up, still, 0, 0) && session_open(&s, &small, &traits);
     for (int i = 0; ok && i < 12; i++) ok = frame_run(&s, &small, i, &CONFIGURED, 0, output) >= 0;
@@ -1031,12 +1058,14 @@ int vk_upscaler_selftest(const char* adapter) {
     pass &= resize(1);
     g.generation++;
     pass &= resize(0);
-    vkDeviceWaitIdle(g.device);
+    pass = pass && idle();
     /* Case 7: no message of the validation layer in any case. Without the layer the case was not run, which is
-       not a pass. */
+       not a pass, and neither is a run that had to stop. */
     if (!g.validation) LOG(ST "case 7: NOT RUN, the validation layer is not installed: FAIL\n");
+    else if (g.unknown)
+        LOG(ST "case 7: NOT JUDGED, the run stopped (%u validation messages until then): FAIL\n", g.messages);
     else LOG(ST "case 7: %u validation messages: %s\n", g.messages, g.messages ? "FAIL" : "PASS");
-    pass = pass && g.validation && !g.messages;
+    pass = pass && g.validation && !g.messages && !g.unknown;
     LOG(ST "RESULT: %s\n", pass ? "PASS" : "FAIL");
     return pass ? 0 : 1;
 }
