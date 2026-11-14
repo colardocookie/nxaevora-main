@@ -109,6 +109,8 @@ static struct {
        reached their fourth frame, the frames not complete by cause and the frames given up for a link. */
     int links;
     u32 link_frame, link_unknown_at[3], link_logged_at;
+    /* link_left: draws left without a matrix, [rigid or skinned][not asked, then TEMPORAL_LINK_*][all, moving] */
+    u64 link_left[2][7][2];
     u64 link_why[6], links_made, link_unknown_frames[3], link_early_draws, link_broke_frames;
     int reject; /* SNX_ARCEUS_TEMPORAL_REJECT: no history where an object's vector is far from the camera's */
     float sharpen;  /* 0 off, to 1: the sharpen after the resolve */
@@ -143,6 +145,7 @@ static struct {
         u64 pair_other;      /* a link's higher slot, 0 for a pair: the two tag the skinned copies */
         int chosen;          /* what the pairs said of the draw, before the guards */
         u64 link;            /* the linked slot whose matrix it took, 0 for none */
+        int link_why;        /* what the links said of the draw (TEMPORAL_LINK_*), -1 when they were not asked */
         int unskinned;       /* it reads skinned positions and was not drawn again with last frame's */
         float world[16];
     } current;
@@ -1051,6 +1054,20 @@ static void objects_log(u32 frame) {
             (unsigned long long)g_t.link_unknown_frames[LINK_TABLE],
             (unsigned long long)g_t.link_unknown_frames[LINK_EARLY], (unsigned long long)g_t.link_early_draws,
             (unsigned long long)g_t.link_broke_frames);
+    /* the draws still without a matrix with the links on, by what the links said, all and (moving) */
+    for (int kind = 0; g_t.links && kind < 2; kind++) {
+        const u64(*left)[2] = g_t.link_left[kind];
+        LOG("arceus-temporal-links-left: in 600 frames, %s draws without a matrix: links not asked (the pairs' own "
+            "refusal) %llu (%llu), a link's matrix refused as a jump %llu (%llu), records not complete %llu (%llu), "
+            "no link %llu (%llu), still being learned %llu (%llu), another draw %llu (%llu), at rest alone %llu "
+            "(%llu). In brackets: matrix not what the address last held\n",
+            kind ? "skinned-reading" : "rigid", (unsigned long long)left[0][0], (unsigned long long)left[0][1],
+            (unsigned long long)left[1][0], (unsigned long long)left[1][1], (unsigned long long)left[2][0],
+            (unsigned long long)left[2][1], (unsigned long long)left[3][0], (unsigned long long)left[3][1],
+            (unsigned long long)left[4][0], (unsigned long long)left[4][1], (unsigned long long)left[5][0],
+            (unsigned long long)left[5][1], (unsigned long long)left[6][0], (unsigned long long)left[6][1]);
+    }
+    memset(g_t.link_left, 0, sizeof g_t.link_left);
     memset(g_t.link_why, 0, sizeof g_t.link_why);
     memset(g_t.link_unknown_frames, 0, sizeof g_t.link_unknown_frames);
     g_t.links_made = g_t.link_early_draws = g_t.link_broke_frames = 0;
@@ -1285,6 +1302,7 @@ static void link_try(u32 frame, u64 address, u32 size, u64 signature) {
         return;
     }
     g_t.link_why[why]++;
+    g_t.current.link_why = why;
     if (!q) return;
     g_t.current.was = q->world;
     g_t.current.source = TEMPORAL_BEFORE_LINK;
@@ -1399,6 +1417,7 @@ int vk_temporal_object_note(const GpuChannel* ch, const Surf* zt, u64 vertex, u6
     g_t.current.slot = g_t.current.other = NULL;
     g_t.current.address = 0;
     g_t.current.link = 0;
+    g_t.current.link_why = -1;
     if (!g_t.objects || !zt) return 0;
     const u64 signature = temporal_draw_signature(vertex, index, count, first, program);
     /* The links' record must see every draw with an object block into the scene depth, by its address or by the
@@ -1468,9 +1487,15 @@ void vk_temporal_object_fate(int known, int reads, int again) {
         return;
     }
     u64* count = g_t.uncovered[reads != 0];
+    const int moving = o->before_at && memcmp(o->world, o->before, sizeof o->world);
     count[0]++;
     if (!o->before_at) count[2]++;
-    else if (memcmp(o->world, o->before, sizeof o->world)) count[1]++;
+    else if (moving) count[1]++;
+    if (g_t.links) {
+        u64* left = g_t.link_left[reads != 0][g_t.current.link_why + 1];
+        left[0]++;
+        left[1] += moving != 0;
+    }
 }
 
 int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* out) {
