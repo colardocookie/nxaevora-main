@@ -337,7 +337,14 @@ and leaves every such frame as drawn. With it, in `probe` and in `taa`, a frame 
   jitter has ceil(8 x W x H / (w x h)) offsets, and without `SNX_ARCEUS_TEMPORAL_MIPBIAS` the scene draws of a
   jittered frame get a level bias of log2(w / W), the same for every draw of the frame: the renderer has the
   frame decided before the deciding draw's samplers are chosen. A number in that switch, 0 included, turns the
-  automatic bias off. The options line says which: automatic, set to a value, or none.
+  automatic bias off. The options line says which: automatic, set to a value, or none. A value that was set is
+  given, like the automatic one, only in a frame the gate accepted at its first draw (the first acceptance,
+  not the later confirmation or the resolve): a frame without jitter has no use for sharper texture levels.
+  That is so with this switch only. Without it a set value is also given in the frames the whole-target gate
+  does not accept, since that gate decides a frame only after its first draw's bias was asked for: a few
+  frames at load in the runs so far, which is what was seen and no bound. And no promise of one bias for a
+  whole frame follows from this: a set value goes by the depth target's surface, the automatic one by its
+  address, so a surface made anew at the same address in mid-frame can still give two biases in a frame.
 
 The game draws a viewport of the target's size times the scale as it comes, without rounding. A scale that does
 not give whole pixels, `0.6667` in a target of 3840 by 2160 for one, ends inside a pixel, and no frame of it is

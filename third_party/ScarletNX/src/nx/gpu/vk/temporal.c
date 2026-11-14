@@ -1637,11 +1637,14 @@ float vk_temporal_mip_bias(const Surf* zt) {
     if (upscaler_on() && !upscaler_jittered(g_vk_present + 1)) return 0.0f;
     /* No value set and the rectangle's gate in use: every draw into the scene's depth of a frame drawn with
        jitter gets log2 of the scale. The frame is decided before its first such draw asks (render.c), so one
-       frame has one bias. A value that was set, 0 included, is used as it always was. */
+       frame has one bias. A value that was set, 0 included, takes the automatic one's place. */
     if (g_t.rect && g_t.mode == MODE_TAA && !g_t.mip_bias_set) {
         if (!g_t.depth || zt->gva != g_t.depth || !rect_accepted(g_vk_present + 1)) return 0.0f;
         return temporal_rect_bias(0, 0.0f, &g_t.rect_gate.now.rect, g_t.rect_gate.now.target_w);
     }
+    /* A value that was set. With the rectangle's gate it is given, like the automatic one, only in a frame the
+       gate accepted at its first draw. Without that gate it is given in every frame, as it always was. */
+    if (g_t.rect && !rect_accepted(g_vk_present + 1)) return 0.0f;
     return g_t.mip_bias < 0.0f && zt == g_t.depth_rt ? g_t.mip_bias : 0.0f;
 }
 
