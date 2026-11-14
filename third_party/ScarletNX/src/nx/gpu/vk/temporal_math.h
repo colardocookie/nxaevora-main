@@ -1350,6 +1350,12 @@ static inline int temporal_upscaler_whole(const TemporalRectState* s) {
     return s->fx == 1.0f && s->fy == 1.0f && s->rect.x == 0 && s->rect.y == 0 && s->rect.w == s->target_w &&
            s->rect.h == s->target_h && s->target_w > 0 && s->target_h > 0;
 }
+/* 1 when a private output of the scene's size is within what the physical device said of the output's format
+   and uses (its largest width and height). Larger in either, or a size or a limit of 0: the image is not asked
+   for at all. */
+static inline int temporal_upscaler_output_fits(unsigned w, unsigned h, unsigned max_w, unsigned max_h) {
+    return w > 0 && h > 0 && w <= max_w && h <= max_h;
+}
 /* Whether the upscaler is still on in this session. off is a latch: once set, by a stop or by eight frames in a
    row that were drawn with jitter and not evaluated, nothing clears it, and only a new session starts clean. */
 typedef struct {

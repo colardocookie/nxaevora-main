@@ -505,7 +505,9 @@ image's format as a storage and sampled image together, whose needs of the devic
 record of what the game's device was made with (its own section below), or that cannot make a context on the game's
 device before any was in use, is "not available": one line, and the run goes on as without the switch. With
 it on, our own resolve, sharpen, history, numbers and views never run, and the options that steer them are
-without effect.
+without effect. The start's question about the private image's format also gives the largest width and
+height of such an image. Before the image is made the scene's size is held against them: a scene larger in
+either stops the upscaler with a line that names both sizes, and the driver is not asked for the image.
 
 A frame, in order:
 1. At the frame's first draw with the scene camera's block the rectangle's gate decides as it always does

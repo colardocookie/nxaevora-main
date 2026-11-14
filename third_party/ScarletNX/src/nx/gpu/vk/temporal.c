@@ -266,6 +266,7 @@ static struct {
     u64 evaluated_ns, unresolved, contexts_made, strangers; /* strangers: lines of draws with another bank 4 */
     TemporalUpscalerTally tally;
     Image output;
+    u32 output_max[2]; /* the output's largest width and height, as the start's format question answered */
     VkPipeline write_pipe;
     VkFormat write_format;
 } g_u = {.asked = -1};
@@ -2923,6 +2924,14 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         g_u.write_format = scene->f.vk;
     }
     const VkImageView scene_view = vk_tex_view(scene, VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
+    /* A scene larger than the format's limit for these uses: the driver is not asked for such an image. */
+    if (!temporal_upscaler_output_fits(scene->sw, scene->sh, g_u.output_max[0], g_u.output_max[1])) {
+        LOG("arceus-upscaler: the private output cannot be made: the scene is %ux%u, and the device's limit for "
+            "an image of its format and uses is %ux%u\n", scene->sw, scene->sh, g_u.output_max[0],
+            g_u.output_max[1]);
+        upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_STOPPED, "the write-back's image, pipeline, set or view");
+        return;
+    }
     const int imaged = image_ensure(&g_u.output, UPSCALED_FORMAT, scene->sw, scene->sh, UPSCALED_USAGE,
                                     "upscaler's output");
     VkDescriptorSet set = VK_NULL_HANDLE;
@@ -3033,12 +3042,17 @@ static void upscaler_start(void) {
                                                device.features);
         if (met != SNX_NEEDS_OK) why = snx_needs_text(met);
     }
-    /* the private output's format, for the uses the image has together, as image_ensure makes it */
+    /* The private output's format, for the type, tiling, uses and flags image_ensure makes it with. The largest
+       size it answers is kept: the scene's size is held against it before the image is made. */
     VkImageFormatProperties has;
     if (!why && vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, UPSCALED_FORMAT, VK_IMAGE_TYPE_2D,
                                                          VK_IMAGE_TILING_OPTIMAL, UPSCALED_USAGE, 0,
                                                          &has) != VK_SUCCESS)
         why = "the device has no image of four 32 bit floats that is both a storage and a sampled image";
+    else if (!why) {
+        g_u.output_max[0] = has.maxExtent.width;
+        g_u.output_max[1] = has.maxExtent.height;
+    }
     if (why) {
         LOG("arceus-upscaler: %s is not available (%s): the run goes on as without the switch\n", name, why);
         return;

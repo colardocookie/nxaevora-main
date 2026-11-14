@@ -2281,6 +2281,21 @@ static void test_projection_camera(void) {
     }
 }
 
+/* the private output's size against the limits the physical device gave for its format and uses */
+static void test_upscaler_output_fits(void) {
+    assert(temporal_upscaler_output_fits(3840, 2160, 16384, 16384));
+    assert(temporal_upscaler_output_fits(16384, 16384, 16384, 16384)); /* the limit itself fits */
+    assert(!temporal_upscaler_output_fits(16385, 16384, 16384, 16384));
+    assert(!temporal_upscaler_output_fits(16384, 16385, 16384, 16384));
+    assert(!temporal_upscaler_output_fits(4096, 2160, 4095, 16384)); /* the width alone */
+    assert(!temporal_upscaler_output_fits(3840, 2160, 16384, 2159)); /* the height alone */
+    assert(temporal_upscaler_output_fits(1, 1, 1, 1));
+    assert(!temporal_upscaler_output_fits(0, 1, 16384, 16384) && !temporal_upscaler_output_fits(1, 0, 16384, 16384));
+    assert(!temporal_upscaler_output_fits(1, 1, 0, 16384) && !temporal_upscaler_output_fits(1, 1, 16384, 0));
+    assert(temporal_upscaler_output_fits(UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX));
+    assert(!temporal_upscaler_output_fits(UINT32_MAX, 1, UINT32_MAX - 1, UINT32_MAX));
+}
+
 /* What the host makes of an adapter's needs of the game's device (upscaler_needs.h). */
 static void test_upscaler_needs(void) {
     SnxNeedsBits asked = {9, 9, 9};
@@ -4720,6 +4735,7 @@ int main(void) {
     test_upscaler_reset();
     test_projection_camera();
     test_upscaler_needs();
+    test_upscaler_output_fits();
     test_upscaler_wiring();
     test_jitter_conformance();
     test_gpu_time();
