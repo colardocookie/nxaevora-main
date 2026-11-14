@@ -1189,17 +1189,10 @@ static int resize(int up) {
     return counted && beats && settles && same == SELFTEST_PASS;
 }
 
-/* The native suite: the render size is the output's size, so 8 offsets, as the game at full size has it. Three
-   changes are held by one rule each (selftest_resized): the picture after the change against a fresh context's
-   on the same frames, at most 0.005 apart. The noise is two fresh contexts against each other. A control that
-   is wrong on purpose must be over the budget and over the noise, or the case has decided nothing.
-   - a reset: a new pattern in the last frame with the flag, against a context that saw that frame alone. The
-     control is the same without the flag.
-   - a change of a create property with the sizes kept: a session made without the flag for linear colours over
-     1, then with it, against a fresh context made with it. The control is the fresh context's frames one
-     offset ahead of the reported jitter.
-   - a change of size: 320x180 to the native size, against the same fresh context and control.
-   The error against the true picture is logged and has no margin. */
+/* The native suite: the render size is the output's size, so 8 offsets, as the game at full size has it. A reset,
+   a changed create property and a changed size are each held by selftest_resized: the picture after the change
+   against a fresh context's on the same frames, the noise of two fresh contexts, and a control that is wrong on
+   purpose. docs/arceus-temporal.md has the three cases. The error against the true picture is only logged. */
 #define NATIVE_W 480
 #define NATIVE_H 270
 static const char* native_word(int ran, int verdict) {
