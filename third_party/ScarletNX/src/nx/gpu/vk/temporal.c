@@ -504,21 +504,20 @@ static void block_read(u64 address, float out[16]) {
     }
 }
 
-/* Read only, for an upscaler to come, which must be told the camera's near plane, far plane and field of view:
-   the two matrices of the camera block that are not the view-projection or its inverse, as the game wrote
-   them, with the frame's viewport, and what temporal_projection_camera makes of each. Written when the block is
-   first seen and when the matrix at +0x80 is another than the last one written, eight times at most. Nothing
+/* Read only, for an upscaler to come: the camera block's matrices at +0x40 and +0x80 as the game wrote them, the
+   frame's viewport, and what temporal_projection_camera makes of each. An event is the block seen first or the
+   matrix at +0x80 changed. Eight events at most, each two lines, one a matrix: sixteen lines at most. Nothing
    uses the numbers. */
 static void projection_log(u64 address, u32 size, const char* stage, u32 frame) {
     static float last[16];
-    static u32 lines;
+    static u32 events;
     float at40[16], at80[16];
-    if (lines >= 8) return;
+    if (events >= 8) return;
     block_read(address + 0x40, at40);
     block_read(address + 0x80, at80);
-    if (lines && !memcmp(last, at80, sizeof last)) return;
+    if (events && !memcmp(last, at80, sizeof last)) return;
     memcpy(last, at80, sizeof last);
-    lines++;
+    events++;
     const float* both[2] = {at40, at80};
     for (int k = 0; k < 2; k++) {
         const float* m = both[k];

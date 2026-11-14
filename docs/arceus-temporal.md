@@ -354,7 +354,8 @@ Whenever the temporal code is on, the log has lines that start with `arceus-temp
 matrices of the scene camera's block at +0x40 and +0x80 as the game wrote them, with the frame's viewport, the
 block's address and stage and the present, and what `temporal_projection_camera` makes of each (near plane, far
 plane, vertical field of view, whether the depth is reversed) or that it refuses it. They are written when the
-block is first seen and when the matrix at +0x80 changes, eight times at most. Nothing uses the numbers: an
+block is first seen and when the matrix at +0x80 changes: eight such events at most, each printing both
+matrices, so sixteen lines at most. Nothing uses the numbers: an
 upscaler has to be told them, and they are to be seen before they are relied on.
 
 ## GPU time of our passes (`SNX_ARCEUS_TEMPORAL_GPUTIME=1`)
