@@ -625,6 +625,12 @@ The cases, each run with a viewport of negative and of positive height (render 3
    listed is printed on a line of its own, 64 at most with a line for the rest, and the values of
    `VK_LAYER_PATH`, `VK_ADD_LAYER_PATH` and `VULKAN_SDK` as the process sees them. Case 7 is not run in all
    four.
+   With the layer on, every callback at warning or above is counted and printed whole: its number, its
+   message id's name and number, and its text in pieces of a log line's length, for the first 256 callbacks and
+   up to 4096 characters of a text, each cap said when it is reached. At the end one line gives the callbacks
+   received, printed, cut, not printed and without an id's name, one line a message id gives its count (64 ids,
+   and a line when that table is full), and a last line says whether the counts add up to the callbacks
+   received. The layer stops reporting an id after its own limit of repeats, so a count is what it reported.
 The scene's depth is made from two distances (5 for the background, 1/6 for the patch) through a projection in
 the game's form, depth = (A z + B) / (-z) with A = n / (f - n) and B = n f / (f - n). The cases above use a near
 plane of 0.1 and a far plane at infinity, with the create flag for that: their 24 bit depths are the 0.02 and

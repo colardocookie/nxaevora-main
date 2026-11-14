@@ -104,14 +104,83 @@ typedef struct {
     Picture wide_colour, wide_depth, wide_motion; /* for inputs that sit inside larger images */
 } Session;
 
+/* Every callback of the validation layer at warning or above is counted, and printed whole: its number, its
+   message id's name and number, and its text, in pieces of a log line's length. Two caps, each said when it is
+   reached: VALIDATION_KEPT callbacks are printed, and VALIDATION_TEXT characters of a text. Every callback is
+   counted by its message id (up to VALIDATION_IDS ids), for the lines at the end. */
+#define VALIDATION_KEPT 256
+#define VALIDATION_TEXT 4096
+#define VALIDATION_PIECE 1500
+#define VALIDATION_IDS 64
+static struct {
+    int lock; /* callbacks may come from a thread of the library's */
+    u32 ids, unlisted; /* message ids kept, and callbacks whose id found no room in the table */
+    u32 omitted, truncated, nameless; /* callbacks not printed, printed with a cut text, without an id's name */
+    struct {
+        char name[128];
+        i32 number;
+        u32 count;
+    } id[VALIDATION_IDS];
+} g_said;
 static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                                       VkDebugUtilsMessageTypeFlagsEXT type,
                                                       const VkDebugUtilsMessengerCallbackDataEXT* data, void* user) {
     (void)type;
     (void)user;
     if (severity < VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) return VK_FALSE;
-    if (g.messages++ < 16) LOG(ST "validation: %.300s\n", data && data->pMessage ? data->pMessage : "");
+    const char* name = data && data->pMessageIdName ? data->pMessageIdName : "(no name)";
+    const char* text = data && data->pMessage ? data->pMessage : "";
+    const i32 number = data ? data->messageIdNumber : 0;
+    const size_t length = strlen(text), kept = length > VALIDATION_TEXT ? VALIDATION_TEXT : length;
+    while (__atomic_exchange_n(&g_said.lock, 1, __ATOMIC_ACQUIRE)) {}
+    const u32 index = g.messages++;
+    u32 k = 0;
+    while (k < g_said.ids && (g_said.id[k].number != number || strncmp(g_said.id[k].name, name, 127))) k++;
+    if (k == g_said.ids && k < VALIDATION_IDS) {
+        snprintf(g_said.id[k].name, sizeof g_said.id[k].name, "%s", name);
+        g_said.id[k].number = number;
+        g_said.ids++;
+    }
+    if (k < VALIDATION_IDS) g_said.id[k].count++;
+    else g_said.unlisted++;
+    g_said.nameless += !(data && data->pMessageIdName);
+    g_said.omitted += index >= VALIDATION_KEPT;
+    g_said.truncated += index < VALIDATION_KEPT && length > kept;
+    if (index < VALIDATION_KEPT) {
+        const u32 pieces = (u32)((kept + VALIDATION_PIECE - 1) / VALIDATION_PIECE);
+        LOG(ST "validation %u: message id %s (%d), %zu characters%s\n", index + 1, name, (int)number, length,
+            length > kept ? ", of which the first 4096 are printed" : "");
+        for (u32 p = 0; p < pieces; p++) {
+            const size_t from = (size_t)p * VALIDATION_PIECE;
+            const int n = (int)(kept - from > VALIDATION_PIECE ? VALIDATION_PIECE : kept - from);
+            LOG(ST "validation %u, part %u of %u: %.*s\n", index + 1, p + 1, pieces, n, text + from);
+        }
+    } else if (index == VALIDATION_KEPT)
+        LOG(ST "more than %d validation callbacks: the ones from here on are counted by their message id and not "
+               "printed\n", VALIDATION_KEPT);
+    __atomic_store_n(&g_said.lock, 0, __ATOMIC_RELEASE);
     return VK_FALSE;
+}
+/* at the end: how many callbacks each message id had, the layer's own limit on repeats said beside them */
+static void validation_counts(void) {
+    u32 listed = 0;
+    if (!g.messages) return;
+    for (u32 k = 0; k < g_said.ids; k++) listed += g_said.id[k].count;
+    LOG(ST "validation: %u callbacks at warning or above. Printed %u, of which %u with a text cut at %d characters. "
+           "Not printed %u (past the first %d). Without a message id's name %u. The layer itself stops reporting "
+           "a message id after its own limit of repeats (it says so in a callback), so a count is what it "
+           "reported and not how often the fault occurred\n",
+        g.messages, g.messages - g_said.omitted, g_said.truncated, VALIDATION_TEXT, g_said.omitted, VALIDATION_KEPT,
+        g_said.nameless);
+    for (u32 k = 0; k < g_said.ids; k++)
+        LOG(ST "validation message id %s (%d): %u callbacks\n", g_said.id[k].name, (int)g_said.id[k].number,
+            g_said.id[k].count);
+    if (g_said.unlisted)
+        LOG(ST "validation: the table of %d message ids is full. %u callbacks of further message ids are counted "
+               "here together and are not listed by id\n", VALIDATION_IDS, g_said.unlisted);
+    LOG(ST "validation: %u callbacks listed by message id and %u not listed make %u, and %u were received: %s\n",
+        listed, g_said.unlisted, listed + g_said.unlisted, g.messages,
+        listed + g_said.unlisted == g.messages ? "the counts add up" : "THE COUNTS DO NOT ADD UP");
 }
 
 static int memory_type(u32 bits, VkMemoryPropertyFlags want) {
@@ -1963,6 +2032,7 @@ int vk_upscaler_selftest(const char* adapter) {
     pass = pass && idle();
     /* Case 7: no message of the validation layer in any case. Without the layer the case was not run, which is
        not a pass, and neither is a run that had to stop. */
+    validation_counts();
     if (!g.validation) LOG(ST "case 7: NOT RUN, the validation layer is %s: FAIL\n", validation_missing());
     else if (g.unknown)
         LOG(ST "case 7: NOT JUDGED, the run stopped (%u validation messages until then): FAIL\n", g.messages);
