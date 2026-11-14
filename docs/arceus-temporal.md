@@ -310,14 +310,27 @@ and leaves every such frame as drawn. With it, in `probe` and in `taa`, a frame 
   stage that reads the block and has none bound, two stages that differ, or a fraction that does not fit leave
   the frame as drawn, and a later draw does not mend it.
 - Every later scene draw until our passes is held to the frame's viewport and, in each stage that reads the
-  block, to the confirmed fraction.
+  block, to the confirmed fraction. A scene draw is one whose depth target is the scene's depth or whose colour
+  targets include the scene colour. A draw that disagrees is logged with its fragment program and both viewports.
+- A scene draw that is completed before the frame's decision counts in the same way (`rect_note`): the first
+  that reads the scene block is the confirming draw, and every one must have the decision's viewport. Such a
+  frame is never drawn with jitter. It can only make the next frame's candidate.
 - Our passes run only for a frame that was accepted and confirmed (`vk_temporal_before`): vectors, resolve,
   sharpen, numbers and views. Any other frame is left as drawn and gives the next one no history.
+- A frame drawn with jitter must not stay unresolved frame after frame. If our passes cannot be made or run in
+  such a frame, or a draw cannot be given its jittered block, the gate accepts no frame any more in the session
+  and one line names what failed (`rect_fail`). If our passes are not reached at all in such a frame, the start
+  begins again, and after 8 such frames in a row the gate stops as well. Only view 4 shows a jittered frame
+  unresolved on purpose.
 - The passes write the rectangle only and read nothing outside it. A history centre outside it fetches
-  nothing. The history is used only when it was made from the same images, sizes, rectangle and fraction.
+  nothing, in the resolve and in the numbers. The history, and the copy of the frame before that the numbers
+  and the error view use, are used only when they were made from the same images, sizes, rectangle and fraction.
+  Without such a copy a frame has no numbers and no error view.
 - The rejection bound is an eighth of the rectangle's height, the numbers' lattice spans the rectangle, the
   jitter has ceil(8 x W x H / (w x h)) offsets, and without `SNX_ARCEUS_TEMPORAL_MIPBIAS` the scene draws of a
-  jittered frame get a level bias of log2(w / W).
+  jittered frame get a level bias of log2(w / W), the same for every draw of the frame: the renderer has the
+  frame decided before the deciding draw's samplers are chosen. A number in that switch, 0 included, turns the
+  automatic bias off. The options line says which: automatic, set to a value, or none.
 
 A change of the viewport costs two frames without anti-aliasing: one gated, one that seeds the history. A change
 of the fraction alone costs one more, drawn with jitter and not resolved. Lines start with

@@ -614,6 +614,7 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     } else {
         temporal_rect_decide(&s->gate, s->frame, &state, 0);
         temporal_rect_confirm(&s->gate, s->frame, NULL, &block);
+        temporal_rect_hooked(&s->gate, s->frame); /* the passes are reached in every frame of a run */
         given = temporal_upscaler_frame(&s->gate, s->frame, &stamp, &state.viewport, jitter, cut, &numbers);
     }
     if (!given || !temporal_upscaler_camera(NEAR_PLANE, (double)INFINITY, FOV_Y, FRAME_SECONDS, 1, camera)) {

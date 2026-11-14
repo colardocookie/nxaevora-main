@@ -128,6 +128,12 @@ void main() {
             float camera = 1.0;
             if (before.w > 0.0) {
                 vec2 was = (before.xy / before.w * 0.5 + 0.5) * pc.viewport.zw + pc.viewport.xy;
+                // With a rectangle a place outside it has no frame before to fetch: the centre is tested before
+                // anything is kept inside, and the sample then counts as one without a frame before, in no share.
+                if (in_rectangle() && outside(was / pc.size.xy)) {
+                    o_stats.a = -2.0;
+                    return;
+                }
                 vec2 was_at = in_rectangle() ? tap(was) / pc.size.xy : was / pc.size.xy;
                 camera = relative(now, textureLod(u_before, was_at, 0.0).rgb);
             }

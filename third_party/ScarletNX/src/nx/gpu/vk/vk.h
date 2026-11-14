@@ -1065,6 +1065,7 @@ void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* con
 void vk_temporal_before(u64 fs0_hash);
 /* the scene camera's constant block with this frame's jitter in place of the guest's, 1 when buffer and offset are set */
 int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer, u64* offset);
+void vk_temporal_camera_seen(u64 address, u32 bound, u32 size);
 /* Object vectors (SNX_ARCEUS_TEMPORAL_VECTORS=object). vk_temporal_object: 1 when the draw's object (constant bank
    6) moved since the frame before, with the fragment program and its constant block for the draw that writes its
    vector. vk_temporal_object_begin then begins that draw's pass, outside any other: the vector target and depth. */

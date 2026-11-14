@@ -3059,6 +3059,13 @@ retry:
     u32 fb = 0;
     u64 scaled = 0, aspect = 0;
     DrawImages images = {0};
+    if (vk_temporal_enabled()) {
+        /* a frame that the scene camera's block decides is decided before this draw's level bias is asked for */
+        VkSh* const stages[5] = {vs, tcs, tes, gs, fs};
+        for (int st = 0; st < 5; st++)
+            if (stages[st] && (stages[st]->si.cbuf_mask & (1u << 4)))
+                vk_temporal_camera_seen(ch->cbind[st][4], ch->cbind_size[st][4], cb_range(ch, st, stages[st], 4));
+    }
     g_scene_shift = vk_temporal_enabled() ? vk_temporal_mip_bias(zt) : 0.0f;
     VkDescriptorSet vset = stage_set(ch, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, NULL, &storage, &images);
     VkDescriptorSet fset =

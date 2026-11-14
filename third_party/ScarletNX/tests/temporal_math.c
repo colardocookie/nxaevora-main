@@ -1378,11 +1378,18 @@ static int rect_structure(const TemporalViewport* v, int tw, int th, float fx, f
 static TemporalSceneBlock rect_block(const TemporalRectState* s) {
     return (TemporalSceneBlock){1, 1, s->fx, s->fy};
 }
-/* a frame decided and confirmed by its own fraction. What the decision said: 1 jittered, 0 gated. */
-static int rect_go(TemporalRectGate* g, unsigned frame, const TemporalRectState* s) {
+/* A frame decided and confirmed by its own fraction, in which our passes were not reached. What the decision
+   said: 1 jittered, 0 gated. */
+static int rect_unreached(TemporalRectGate* g, unsigned frame, const TemporalRectState* s) {
     const TemporalSceneBlock block = rect_block(s);
     const int jitter = temporal_rect_decide(g, frame, s, 0);
     temporal_rect_confirm(g, frame, NULL, &block);
+    return jitter;
+}
+/* the same, and our passes were reached */
+static int rect_go(TemporalRectGate* g, unsigned frame, const TemporalRectState* s) {
+    const int jitter = rect_unreached(g, frame, s);
+    temporal_rect_hooked(g, frame);
     return jitter;
 }
 static TemporalRectStamp rect_stamp(const TemporalRectState* s) {
@@ -1396,6 +1403,7 @@ static int rect_frame(TemporalRectGate* g, unsigned frame, const TemporalRectSta
     const TemporalSceneBlock block = rect_block(s);
     const int jitter = temporal_rect_decide(g, frame, fault == RECT_EARLY ? NULL : s, 0);
     temporal_rect_confirm(g, frame, NULL, &block);
+    temporal_rect_hooked(g, frame);
     if (fault == RECT_LATE) {
         TemporalRectState other = *s;
         other.rect.w -= 2;
@@ -1511,6 +1519,7 @@ static void test_rect(void) {
     other_fraction.fx = other_fraction.fy = 0.7501f;
     const TemporalSceneBlock other_block = rect_block(&other_fraction);
     assert(temporal_rect_decide(&g, f, &other_fraction, 0));
+    temporal_rect_hooked(&g, f);
     assert(temporal_rect_confirm(&g, f, NULL, &other_block) == TEMPORAL_FRAME_SEEN && !temporal_rect_steady(&g, f));
     f++;
     assert(!temporal_rect_decide(&g, f++, &other_target, 0));
@@ -1754,6 +1763,7 @@ static void test_rect_confirm(void) {
     temporal_rect_wrote(&g, 10, &stamp); /* a gated frame writes nothing, confirmed or not */
     assert(!g.have_stamp);
     assert(temporal_rect_decide(&g, 11, &a, 0));
+    temporal_rect_hooked(&g, 11);
     /* decided and not yet confirmed: not to be resolved, no history, nothing written */
     assert(!temporal_rect_steady(&g, 11) && !temporal_rect_history(&g, 11, &stamp));
     temporal_rect_wrote(&g, 11, &stamp);
@@ -1766,6 +1776,7 @@ static void test_rect_confirm(void) {
     assert(!temporal_rect_history(&g, 11, &stamp));
     temporal_rect_wrote(&g, 11, &stamp);
     assert(temporal_rect_decide(&g, 12, &a, 0) && !temporal_rect_history(&g, 12, &stamp));
+    temporal_rect_hooked(&g, 12);
     assert(temporal_rect_confirm(&g, 12, &good, &good) == TEMPORAL_FRAME_STEADY); /* both stages read it and agree */
     assert(temporal_rect_history(&g, 12, &stamp));
     temporal_rect_wrote(&g, 12, &stamp);
@@ -1836,6 +1847,7 @@ static void test_rect_confirm(void) {
         const TemporalRectStamp now = rect_stamp(turn[t]), before = rect_stamp(turn[!t]);
         const TemporalSceneBlock block = rect_block(turn[t]);
         assert(temporal_rect_decide(&g, f, turn[t], 0) && g.have_stamp);
+        temporal_rect_hooked(&g, f);
         assert(temporal_rect_confirm(&g, f, NULL, &block) == TEMPORAL_FRAME_SEEN);
         assert(!temporal_rect_steady(&g, f) && !g.have_stamp && g.have_candidate && g.candidate.fx == turn[t]->fx);
         assert(!temporal_rect_history(&g, f, &now) && !temporal_rect_history(&g, f, &before));
@@ -1843,6 +1855,7 @@ static void test_rect_confirm(void) {
         assert(!g.have_stamp);
         assert(rect_frame(&g, f + 1, turn[t], RECT_FINE, &history) && !history);
         assert(temporal_rect_decide(&g, f + 2, turn[t], 0));
+        temporal_rect_hooked(&g, f + 2);
         assert(temporal_rect_confirm(&g, f + 2, NULL, &block) == TEMPORAL_FRAME_STEADY);
         assert(temporal_rect_history(&g, f + 2, &now) && !temporal_rect_history(&g, f + 2, &before));
         temporal_rect_wrote(&g, f + 2, &now);
@@ -1853,6 +1866,117 @@ static void test_rect_confirm(void) {
     assert(temporal_rect_late(&g, 209, &whole_state, NULL, &other) && !g.have_candidate && !g.have_stamp);
     assert(!temporal_rect_decide(&g, 210, &b, 0));
 
+    /* Scene draws before the frame's decision. The first that reads the scene block is the confirming draw,
+       whenever it comes. Such a frame is never accepted, since those draws had no jitter: at most it makes the
+       candidate. */
+    {
+        TemporalRectGate e;
+        /* a bad binding early, the decision, then a good reader: wrong for good */
+        memset(&e, 0, sizeof e);
+        for (unsigned f = 400; f < 403; f++) rect_frame(&e, f, &a, RECT_FINE, &history);
+        assert(history);
+        temporal_rect_before(&e, 403, &a, NULL, &unbound);
+        assert(!temporal_rect_decide(&e, 403, &a, 0) && !e.have_candidate && !e.have_stamp);
+        assert(temporal_rect_confirm(&e, 403, NULL, &good) == TEMPORAL_FRAME_NONE && !temporal_rect_steady(&e, 403));
+        assert(temporal_rect_late(&e, 403, &a, NULL, &good) && !temporal_rect_decide(&e, 404, &a, 0));
+        /* a good reader early, the decision, then a reader with another fraction: wrong */
+        memset(&e, 0, sizeof e);
+        for (unsigned f = 410; f < 413; f++) rect_frame(&e, f, &a, RECT_FINE, &history);
+        temporal_rect_before(&e, 413, &a, NULL, &none); /* a scene draw that reads nothing: geometry only */
+        temporal_rect_before(&e, 413, &a, &good, &good);
+        assert(!temporal_rect_decide(&e, 413, &a, 0)); /* the candidate's geometry, and still not accepted */
+        assert(e.state == TEMPORAL_FRAME_SEEN && e.have_candidate && e.candidate.fx == 0.75f && !e.have_stamp);
+        assert(!temporal_rect_steady(&e, 413) && !temporal_rect_late(&e, 413, &a, NULL, &good));
+        assert(temporal_rect_late(&e, 413, &a, NULL, &other) && !e.have_candidate);
+        /* the same without the later reader: the frame after is accepted and seeds */
+        memset(&e, 0, sizeof e);
+        temporal_rect_before(&e, 420, &a, NULL, &good);
+        assert(!temporal_rect_decide(&e, 420, &a, 0) && e.state == TEMPORAL_FRAME_SEEN);
+        assert(rect_frame(&e, 421, &a, RECT_FINE, &history) && !history);
+        assert(rect_frame(&e, 422, &a, RECT_FINE, &history) && history);
+        /* early draws that read nothing leave the confirmation to a draw after the decision */
+        memset(&e, 0, sizeof e);
+        temporal_rect_before(&e, 430, &a, &unread, &none);
+        assert(!temporal_rect_decide(&e, 430, &a, 0) && e.state == TEMPORAL_FRAME_DECIDED);
+        assert(temporal_rect_confirm(&e, 430, NULL, &good) == TEMPORAL_FRAME_SEEN);
+        /* early: two readers that differ, a fraction that does not fit, another viewport, no geometry, and a
+           decision on another geometry than the early draws had */
+        const TemporalSceneBlock* bad_early[2][2] = {{&good, &other}, {NULL, &small}};
+        for (int i = 0; i < 2; i++) {
+            memset(&e, 0, sizeof e);
+            temporal_rect_before(&e, 440, &a, bad_early[i][0], bad_early[i][1]);
+            assert(!temporal_rect_decide(&e, 440, &a, 0) && e.state == TEMPORAL_FRAME_NONE);
+        }
+        memset(&e, 0, sizeof e);
+        temporal_rect_before(&e, 450, &a, NULL, &good);
+        temporal_rect_before(&e, 450, &whole_state, NULL, &none);
+        assert(!temporal_rect_decide(&e, 450, &a, 0) && e.state == TEMPORAL_FRAME_NONE);
+        memset(&e, 0, sizeof e);
+        temporal_rect_before(&e, 451, NULL, NULL, &good);
+        temporal_rect_before(&e, 451, &a, NULL, &good); /* nothing mends it */
+        assert(!temporal_rect_decide(&e, 451, &a, 0) && e.state == TEMPORAL_FRAME_NONE);
+        memset(&e, 0, sizeof e);
+        temporal_rect_before(&e, 452, &a, NULL, &good);
+        assert(!temporal_rect_decide(&e, 452, &whole_state, 0) && e.state == TEMPORAL_FRAME_NONE);
+        /* early draws of the frame before say nothing of this one, and a draw after the decision is not early */
+        memset(&e, 0, sizeof e);
+        for (unsigned f = 460; f < 462; f++) rect_frame(&e, f, &a, RECT_FINE, &history);
+        temporal_rect_before(&e, 461, &a, NULL, &unbound);
+        assert(e.early_at != 461 && rect_frame(&e, 462, &a, RECT_FINE, &history) && history);
+        /* The start as the renderer has it: the pre-pass's first draw decides and is not an earlier draw of its
+           own frame, the G-buffer's first draw confirms. Accepted from the second such frame. */
+        memset(&e, 0, sizeof e);
+        assert(!temporal_rect_decide(&e, 470, &a, 0));
+        assert(temporal_rect_confirm(&e, 470, &good, &good) == TEMPORAL_FRAME_SEEN);
+        assert(temporal_rect_decide(&e, 471, &a, 0));
+        assert(temporal_rect_confirm(&e, 471, &good, &good) == TEMPORAL_FRAME_STEADY && temporal_rect_steady(&e, 471));
+    }
+    /* Our passes. A frame drawn with jitter in which they were never reached leaves nothing: the start begins
+       again. Eight such frames in a row and the gate stops for good. One that is reached starts the count anew.
+       A failure of the passes stops it at once. Stopped, the gate still confirms, and accepts nothing. */
+    {
+        TemporalRectGate u;
+        unsigned f = 500;
+        memset(&u, 0, sizeof u);
+        for (int round = 0; round < TEMPORAL_RECT_UNHOOKED; round++) {
+            assert(!rect_unreached(&u, f++, &a) && u.unhooked == (unsigned)round); /* gated: the candidate */
+            assert(rect_unreached(&u, f, &a) && temporal_rect_steady(&u, f));      /* accepted, never reached */
+            f++;
+            assert(!u.stopped);
+        }
+        assert(!rect_unreached(&u, f++, &a) && u.stopped && u.unhooked == TEMPORAL_RECT_UNHOOKED);
+        for (int i = 0; i < 4; i++) {
+            assert(!rect_unreached(&u, f, &a) && u.state == TEMPORAL_FRAME_SEEN && !temporal_rect_steady(&u, f));
+            f++;
+        }
+        /* seven in a row, then one that is reached: the count starts again and seven more do not stop it */
+        memset(&u, 0, sizeof u);
+        f = 550;
+        for (int part = 0; part < 2; part++) {
+            unsigned frames = 0;
+            while (u.unhooked < TEMPORAL_RECT_UNHOOKED - 1 && frames++ < 40) rect_unreached(&u, f++, &a);
+            assert(u.unhooked == TEMPORAL_RECT_UNHOOKED - 1 && !u.stopped);
+            assert(rect_go(&u, f++, &a));
+            assert(rect_go(&u, f++, &a) && u.unhooked == 0);
+        }
+        assert(!u.stopped);
+        /* a frame that was reached is not counted, and a gated frame never is */
+        memset(&u, 0, sizeof u);
+        for (f = 600; f < 640; f++) {
+            rect_unreached(&u, f, &a);
+            temporal_rect_hooked(&u, f);
+        }
+        assert(!u.stopped && u.unhooked == 0 && temporal_rect_steady(&u, 639));
+        memset(&u, 0, sizeof u);
+        for (f = 700; f < 740; f++) assert(!temporal_rect_decide(&u, f, &a, 1));
+        assert(!u.stopped && u.unhooked == 0);
+        /* a failure */
+        memset(&u, 0, sizeof u);
+        rect_go(&u, 800, &a);
+        assert(rect_go(&u, 801, &a));
+        temporal_rect_failed(&u);
+        assert(!rect_go(&u, 802, &a) && !rect_go(&u, 803, &a) && u.stopped);
+    }
     /* The early refusal gates a frame whose geometry is the candidate's. Confirmed later in the frame, it stays
        gated: never resolved, no history written. It only makes the frame after acceptable. */
     memset(&g, 0, sizeof g);

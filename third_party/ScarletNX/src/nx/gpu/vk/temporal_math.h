@@ -791,7 +791,17 @@ typedef struct {
     unsigned decided_at; /* the frame decided last, and what became of it */
     int accepted, state;
     TemporalRectState now;
+    /* scene draws that came before the frame's decision (temporal_rect_before): the frame, what they showed
+       (0 no fraction yet, 1 a fraction, 2 something wrong), and their geometry with that fraction */
+    unsigned early_at;
+    int early_state, early_shaped;
+    TemporalRectState early;
+    /* the frame our passes were reached in, accepted frames in a row in which they were not, and whether the
+       gate has stopped accepting for good (temporal_rect_hooked, temporal_rect_failed) */
+    unsigned hooked_at, unhooked;
+    int stopped;
 } TemporalRectGate;
+#define TEMPORAL_RECT_UNHOOKED 8 /* accepted frames in a row that our passes were not reached in: the gate stops */
 static inline void temporal_rect_clear(TemporalRectGate* g) { g->have_candidate = g->have_stamp = 0; }
 /* a frame found wrong after its decision: nothing of it or before it counts any more */
 static inline void temporal_rect_spoil(TemporalRectGate* g) {
@@ -804,6 +814,16 @@ static inline void temporal_rect_spoil(TemporalRectGate* g) {
    the frame is drawn as it is, and whatever follows in it, it is never resolved. */
 static inline int temporal_rect_decide(TemporalRectGate* g, unsigned frame, const TemporalRectState* geometry,
                                        int refused) {
+    const int early = g->early_at == frame;
+    /* The frame decided last was drawn with jitter and our passes were never reached in it: its picture was
+       shown as drawn. The start begins again, and after enough such frames in a row the gate stops. */
+    if (g->decided_at && g->decided_at != frame && g->accepted) {
+        if (g->hooked_at == g->decided_at) g->unhooked = 0;
+        else {
+            temporal_rect_clear(g);
+            if (++g->unhooked >= TEMPORAL_RECT_UNHOOKED) g->stopped = 1;
+        }
+    }
     /* Only a confirmation makes a candidate. So after a frame that was never confirmed, as after a missing one,
        the candidate is not of the frame before and goes, and the history with it. */
     if (g->have_candidate && g->candidate_at + 1 != frame) temporal_rect_clear(g);
@@ -818,10 +838,70 @@ static inline int temporal_rect_decide(TemporalRectGate* g, unsigned frame, cons
     g->now = *geometry;
     g->now.fx = g->now.fy = 0.0f;
     g->state = TEMPORAL_FRAME_DECIDED;
-    g->accepted = !refused && g->have_candidate && temporal_rect_geometry_same(&g->candidate, &g->now);
+    g->accepted = !refused && !g->stopped && !early && g->have_candidate &&
+                  temporal_rect_geometry_same(&g->candidate, &g->now);
     if (!g->accepted) g->have_stamp = 0; /* a change starts the history anew */
+    if (early) {
+        /* Scene draws came before this one. They were not jittered, so the frame is not either. What they
+           showed must be this geometry, and a fraction they fixed is the frame's: it can make the candidate. */
+        if (g->early_state == 2 || !g->early_shaped || !temporal_rect_geometry_same(&g->early, &g->now)) {
+            temporal_rect_spoil(g);
+            return 0;
+        }
+        if (g->early_state == 1) {
+            g->now.fx = g->early.fx;
+            g->now.fy = g->early.fy;
+            g->have_candidate = 1;
+            g->candidate_at = frame;
+            g->candidate = g->now;
+            g->state = TEMPORAL_FRAME_SEEN;
+        }
+    }
     return g->accepted;
 }
+/* A draw into the scene that was completed before the frame's decision. Its geometry is kept and every such draw
+   must have the same. The first of them whose program reads the scene block is the frame's confirming draw, as
+   it would be after the decision: a bad binding there is wrong for good, a good one fixes the fraction, and
+   every later reader must show exactly that. The decision then takes it from here. */
+static inline void temporal_rect_before(TemporalRectGate* g, unsigned frame, const TemporalRectState* geometry,
+                                        const TemporalSceneBlock* vertex, const TemporalSceneBlock* fragment) {
+    const TemporalSceneBlock* stage[2] = {vertex, fragment};
+    if (g->decided_at == frame) return;
+    if (g->early_at != frame) {
+        g->early_at = frame;
+        g->early_state = g->early_shaped = 0;
+    }
+    if (g->early_state == 2) return;
+    if (!geometry || (g->early_shaped && !temporal_rect_geometry_same(&g->early, geometry))) {
+        g->early_state = 2;
+        return;
+    }
+    if (!g->early_shaped) {
+        g->early = *geometry;
+        g->early.fx = g->early.fy = 0.0f;
+        g->early_shaped = 1;
+    }
+    for (int i = 0; i < 2 && g->early_state != 2; i++) {
+        if (!stage[i] || !stage[i]->reads) continue;
+        if (!stage[i]->bound) g->early_state = 2;
+        else if (g->early_state == 1)
+            g->early_state = stage[i]->fx == g->early.fx && stage[i]->fy == g->early.fy ? 1 : 2;
+        else if (temporal_rect_fraction(&g->early, stage[i]->fx, stage[i]->fy) != TEMPORAL_RECT_OK)
+            g->early_state = 2;
+        else {
+            g->early.fx = stage[i]->fx;
+            g->early.fy = stage[i]->fy;
+            g->early_state = 1;
+        }
+    }
+}
+/* our passes were reached in this frame, whatever they then did */
+static inline void temporal_rect_hooked(TemporalRectGate* g, unsigned frame) {
+    if (g->decided_at == frame) g->hooked_at = frame;
+}
+/* Our passes could not be made or run in a frame that was drawn with jitter: no frame is accepted from here on.
+   The gate still decides and confirms, so its lines go on, and it refuses. */
+static inline void temporal_rect_failed(TemporalRectGate* g) { g->stopped = 1; }
 /* The frame's confirmation, at its first scene draw whose program reads the scene block in either stage. That
    draw alone confirms: a stage that reads the block and has none bound, two stages that disagree, or a fraction
    that is not the geometry's spoil the frame, and no later draw can mend it. With the candidate's fraction an
