@@ -1239,7 +1239,8 @@ enum {
     TEMPORAL_GPU_FREE,  /* nothing recorded refers to it */
     TEMPORAL_GPU_BEGUN, /* the first mark is recorded and the second is not */
     TEMPORAL_GPU_ENDED, /* both marks are recorded, in one submission */
-    TEMPORAL_GPU_SPLIT  /* the submission ended between the marks: the second was not recorded */
+    TEMPORAL_GPU_SPLIT, /* the submission ended between the marks: the second was not recorded */
+    TEMPORAL_GPU_GIVEN_UP /* begun and given up by its caller before its second mark */
 };
 /* why a bracket gave no time */
 enum {
@@ -1249,13 +1250,19 @@ enum {
     TEMPORAL_GPU_UNAVAILABLE, /* a result was not there though its submission had completed */
     TEMPORAL_GPU_OLD,         /* too long between the first mark and the completion to rule out a turn of the clock */
     TEMPORAL_GPU_ABSURD,      /* a difference longer than the host saw pass */
+    TEMPORAL_GPU_STALE,       /* an end or a giving up for a bracket that is no longer the pair's: ignored */
     TEMPORAL_GPU_REASONS
 };
 typedef struct {
     int state, kind;
+    unsigned generation;         /* which bracket of this pair: raised at every begin */
     unsigned long long submit;   /* the number of the submission both marks belong to */
     unsigned long long begun_ns; /* the host's clock when the first mark was recorded, 0 for not known */
 } TemporalGpuPair;
+/* A bracket's handle: the pair and which of its brackets, so that an end that comes late cannot close another
+   bracket that has taken the pair since. -1 is no bracket. */
+typedef long long TemporalGpuHandle;
+static inline int temporal_gpu_index(TemporalGpuHandle h) { return h < 0 ? -1 : (int)(h % TEMPORAL_GPU_PAIRS); }
 typedef struct {
     TemporalGpuPair pair[TEMPORAL_GPU_PAIRS];
     int off; /* switched off for the session: nothing is begun and nothing recorded earlier is read */
@@ -1263,29 +1270,50 @@ typedef struct {
     unsigned n[TEMPORAL_GPU_KINDS];
     float ms[TEMPORAL_GPU_KINDS][TEMPORAL_GPU_SAMPLES];
 } TemporalGpuRing;
-/* A bracket begins on a free pair only: the pair's number, or -1 when the measure is off or no pair is free.
-   The caller then records the pair's reset and its first mark, in the submission it named. */
-static inline int temporal_gpu_begin(TemporalGpuRing* r, int kind, unsigned long long submit,
-                                     unsigned long long now_ns) {
+/* A bracket begins on a free pair only: its handle, or -1 when the measure is off or no pair is free. The caller
+   then records the pair's reset and its first mark, in the submission it named. */
+static inline TemporalGpuHandle temporal_gpu_begin(TemporalGpuRing* r, int kind, unsigned long long submit,
+                                                   unsigned long long now_ns) {
     if (r->off || kind < 0 || kind >= TEMPORAL_GPU_KINDS) return -1;
     r->asked[kind]++;
     for (int i = 0; i < TEMPORAL_GPU_PAIRS; i++)
         if (r->pair[i].state == TEMPORAL_GPU_FREE) {
-            r->pair[i] = (TemporalGpuPair){TEMPORAL_GPU_BEGUN, kind, submit, now_ns};
-            return i;
+            const unsigned generation = r->pair[i].generation + 1;
+            r->pair[i] = (TemporalGpuPair){TEMPORAL_GPU_BEGUN, kind, generation, submit, now_ns};
+            return (TemporalGpuHandle)generation * TEMPORAL_GPU_PAIRS + i;
         }
     r->lost[TEMPORAL_GPU_EXHAUSTED]++;
     return -1;
 }
+/* the pair of a handle when the handle is still that pair's own bracket and the bracket is begun, else NULL */
+static inline TemporalGpuPair* temporal_gpu_own(TemporalGpuRing* r, TemporalGpuHandle h) {
+    const int index = temporal_gpu_index(h);
+    if (index < 0) return NULL;
+    TemporalGpuPair* p = &r->pair[index];
+    if ((TemporalGpuHandle)p->generation != h / TEMPORAL_GPU_PAIRS || p->state != TEMPORAL_GPU_BEGUN) {
+        if (!r->off) r->lost[TEMPORAL_GPU_STALE]++;
+        return NULL;
+    }
+    return p;
+}
 /* The bracket's end. 1 when the caller is to record the second mark: the submission is still the first mark's.
-   0 when it is another: the pair is split, the mark is not recorded, and no time will be made of it. */
-static inline int temporal_gpu_end(TemporalGpuRing* r, int index, unsigned long long submit) {
-    if (r->off || index < 0 || index >= TEMPORAL_GPU_PAIRS || r->pair[index].state != TEMPORAL_GPU_BEGUN) return 0;
-    r->pair[index].state = submit == r->pair[index].submit ? TEMPORAL_GPU_ENDED : TEMPORAL_GPU_SPLIT;
-    return r->pair[index].state == TEMPORAL_GPU_ENDED;
+   0 when it is another (the pair is split, the mark is not recorded, no time will be made of it), or when the
+   handle is not the pair's bracket any more, which is counted and changes nothing. */
+static inline int temporal_gpu_end(TemporalGpuRing* r, TemporalGpuHandle h, unsigned long long submit) {
+    TemporalGpuPair* p = r->off ? NULL : temporal_gpu_own(r, h);
+    if (!p) return 0;
+    p->state = submit == p->submit ? TEMPORAL_GPU_ENDED : TEMPORAL_GPU_SPLIT;
+    return p->state == TEMPORAL_GPU_ENDED;
+}
+/* A bracket that will get no second mark, said by its caller. A begun pair leaves the ring only through its end
+   or this: until one of them it is not settled and not free, whatever its submission did. */
+static inline void temporal_gpu_abandon(TemporalGpuRing* r, TemporalGpuHandle h) {
+    TemporalGpuPair* p = r->off ? NULL : temporal_gpu_own(r, h);
+    if (p) p->state = TEMPORAL_GPU_GIVEN_UP;
 }
 /* 1 when a pair's results are to be fetched now: both marks recorded and its submission known to have completed */
 static inline int temporal_gpu_fetch(const TemporalGpuRing* r, int index, unsigned long long done) {
+    if (index < 0 || index >= TEMPORAL_GPU_PAIRS) return 0;
     return !r->off && r->pair[index].state == TEMPORAL_GPU_ENDED && done >= r->pair[index].submit;
 }
 /* the second tick less the first on a counter of so many valid bits, which may have gone round once between */
@@ -1294,22 +1322,24 @@ static inline unsigned long long temporal_gpu_ticks(unsigned long long first, un
     const unsigned long long delta = second - first;
     return bits >= 64 ? delta : delta & ((1ull << bits) - 1ull);
 }
-/* how long one turn of such a counter lasts in nanoseconds, infinite for one that does not turn in practice */
+/* how long one turn of such a counter lasts in nanoseconds: the period times two to the valid bits, a finite
+   number for every period a device gives, with all 64 bits too */
 static inline double temporal_gpu_turn_ns(unsigned bits, double period_ns) {
-    return bits >= 64 ? INFINITY : ldexp(period_ns, (int)bits);
+    return ldexp(period_ns, bits > 64 ? 64 : (int)bits);
 }
 /* A pair whose submission has completed leaves the ring: it gives a time, or is counted with the reason it gives
    none, and is free again either way. ticks and available: the two results as fetched, for a pair
    temporal_gpu_fetch named, else NULL. A time is taken only when both results are there, the host saw less
    than half a turn of the counter pass since the first mark was recorded, and the difference is no longer than
-   that. 1 when the pair was freed, 0 when its submission has not completed or the measure is off. */
+   that. 1 when the pair was freed, 0 when its submission has not completed, when it is begun and neither ended
+   nor given up, or when the measure is off. */
 static inline int temporal_gpu_settle(TemporalGpuRing* r, int index, unsigned long long done,
                                       unsigned long long now_ns, const unsigned long long* ticks,
                                       const int* available, unsigned bits, double period_ns) {
     TemporalGpuPair* p = &r->pair[index];
-    if (r->off || p->state == TEMPORAL_GPU_FREE || done < p->submit) return 0;
+    if (r->off || p->state == TEMPORAL_GPU_FREE || p->state == TEMPORAL_GPU_BEGUN || done < p->submit) return 0;
     if (p->state == TEMPORAL_GPU_SPLIT) r->lost[TEMPORAL_GPU_CUT]++;
-    else if (p->state == TEMPORAL_GPU_BEGUN) r->lost[TEMPORAL_GPU_PARTIAL]++;
+    else if (p->state == TEMPORAL_GPU_GIVEN_UP) r->lost[TEMPORAL_GPU_PARTIAL]++;
     else if (!ticks || !available || !available[0] || !available[1]) r->lost[TEMPORAL_GPU_UNAVAILABLE]++;
     else {
         const double age = p->begun_ns && now_ns >= p->begun_ns ? (double)(now_ns - p->begun_ns) : -1.0;
@@ -1321,9 +1351,11 @@ static inline int temporal_gpu_settle(TemporalGpuRing* r, int index, unsigned lo
     p->state = TEMPORAL_GPU_FREE;
     return 1;
 }
-/* 1 when a device's clock can be used: timestamps on the queue, some valid bits, a period that is a number */
+/* 1 when a device's clock can be used: timestamps on the queue, some valid bits, a period that is a number, and
+   a turn of the counter that is a finite time */
 static inline int temporal_gpu_usable(int timestamps, unsigned bits, double period_ns) {
-    return timestamps && bits > 0 && bits <= 64 && isfinite(period_ns) && period_ns > 0.0;
+    if (!timestamps || bits == 0 || bits > 64 || !isfinite(period_ns) || !(period_ns > 0.0)) return 0;
+    return isfinite(temporal_gpu_turn_ns(bits, period_ns)) && temporal_gpu_turn_ns(bits, period_ns) > 0.0;
 }
 /* Switched off for the session, after a failure: nothing begins and nothing recorded before is read. The pairs
    keep their state, since what was recorded with them may still be on its way. */
