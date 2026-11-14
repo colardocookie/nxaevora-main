@@ -51,6 +51,8 @@ static struct {
     u64 staging_size;
     const SnxUpscalerApi* api;
     int layers; /* how the loader's list of layers was read (selftest_layers) */
+    int listed; /* the loader listed the validation layer, whatever came of setting it up */
+    int messenger_result; /* what making its message callback gave, when that failed */
     int validation;
     unsigned messages;
     u64 generation; /* of the configuration: raised for every context made with other flags or formats */
@@ -122,8 +124,15 @@ static int memory_type(u32 bits, VkMemoryPropertyFlags want) {
 
 /* The instance and the device, through the steps the runtime will take with an adapter (upscaler_host.c). The
    validation layer with its synchronisation checks is asked for when it is installed. */
-/* why there is no validation layer, by how the loader's list was read: no message can be seen in any of them */
+/* Why no validation message can be seen. Two facts kept apart: how the layer's presence was read (the list's
+   three states), and, when it was listed and asked for, that its message callback could not be made. */
 static const char* validation_missing(void) {
+    if (g.listed) {
+        static char text[160];
+        snprintf(text, sizeof text, "LISTED BY THE LOADER and asked for, but its message callback could not be made "
+                                    "(result %d): no validation message can be seen", g.messenger_result);
+        return text;
+    }
     return g.layers == SELFTEST_LAYERS_WHOLE  ? "NOT IN THE LOADER'S LIST, which was read whole: no validation message "
                                                 "can be seen"
            : g.layers == SELFTEST_LAYERS_PART ? "NOT FOUND, and the loader's list was read only in part, so whether "
@@ -155,6 +164,7 @@ static int device_make(void) {
     g.layers = selftest_layers((int)counted, (int)listed, (int)VK_INCOMPLETE);
     for (u32 i = 0; g.layers != SELFTEST_LAYERS_UNREAD && i < n; i++)
         g.validation |= !strcmp(have[i].layerName, layers[0]);
+    g.listed = g.validation;
     if (!g.validation) {
         /* Log only, once: how the list was read, each layer it holds on a line of its own, and where this
            process is told to look for layers. The self-test sees the loader's list and nothing else. */
@@ -208,7 +218,12 @@ static int device_make(void) {
             .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                            VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
             .pfnUserCallback = validation_says};
-        if (!VK_OK(vkCreateDebugUtilsMessengerEXT(g.instance, &mi, NULL, &g.messenger))) g.validation = 0;
+        /* the layer is there and loaded, but without its messenger no message of it can be seen */
+        const VkResult made = vkCreateDebugUtilsMessengerEXT(g.instance, &mi, NULL, &g.messenger);
+        if (!VK_OK(made)) {
+            g.validation = 0;
+            g.messenger_result = (int)made;
+        }
     }
     /* the first device with a queue family for graphics and compute */
     VkPhysicalDevice devices[8];
