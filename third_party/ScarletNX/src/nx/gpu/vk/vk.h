@@ -772,6 +772,7 @@ VkImageView vk_null_view(VkImageViewType type, int num);
    border color as integers (an integer texture) */
 /* raise: bit 0 anisotropy raised to the setting, bit 1 the level bias shifted by g_vk_sampler_shift */
 VkSampler vk_sampler(const u32* tsc, int raise, int integer);
+int vk_sampler_made(VkSampler s, VkSamplerCreateInfo* out); /* read only, for a log line */
 extern float g_vk_sampler_shift;
 extern int g_vk_anisotropy; /* anisotropy=, read once at start: the sampler table keeps the samplers it made */
 void vk_tex_frame(void);    /* a frame was presented: evicts what wasn't used for a while */
@@ -1080,6 +1081,7 @@ int vk_temporal_enabled(void);
 void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* const* sampled,
                       const u32* const* tic, const u32* const* tsc, int nt, Surf* const* rt, u32 n, Surf* zt);
 void vk_temporal_recorded(const VkViewport* viewport, const VkRect2D* scissor);
+void vk_temporal_sampler(u32 slot, VkSampler sampler);
 void vk_temporal_before(u64 fs0_hash);
 /* the scene camera's constant block with this frame's jitter in place of the guest's, 1 when buffer and offset are set */
 int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer, u64* offset);

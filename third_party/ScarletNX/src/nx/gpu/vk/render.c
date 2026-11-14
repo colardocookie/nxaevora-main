@@ -2046,6 +2046,7 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         if (!view) return VK_NULL_HANDLE;
         VkSampler smp = vk_tex_bind_sampler(x->tsc, x->tic, st, num, sampled, want);
         if (!smp) return VK_NULL_HANDLE;
+        if (stage == ST_FS && vk_temporal_enabled()) vk_temporal_sampler(i, smp); /* read only, for the log */
         u32 b = SNX_VKB_TEX + i;
         d.ii[b] = (VkDescriptorImageInfo){smp, view, layout};
         d.w[d.n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,

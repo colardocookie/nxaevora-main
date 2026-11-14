@@ -55,20 +55,27 @@ where the camera block is and whether the neighbouring slot holds last frame's v
 with the viewport and depth range used. Skipped frames are counted with the reason.
 
 With `probe` or `taa`, read only and for the log alone, three readers of the scene are described in every 600th
-frame, each at its first draw: the copy of the scene colour, the blur's preparation and the composite, known by
-their fragment programs. The lines begin with `arceus-temporal-readers:` and name the frame and the program:
+frame: the copy of the scene colour, the blur's preparation and the composite, known by their fragment programs.
+For each, the first draw of that frame that is recorded. The renderer can set a draw up more than once before it
+records it, and can skip it: the lines are printed where the draw is recorded, once, and a draw that was set up
+and not recorded gets one line that says so. The lines begin with `arceus-temporal-readers:` and name the frame
+and the program:
 
 - the draw: the vertex program, the game's registers for the viewport and the scissor (whether the test is on,
   and its rectangle in the game's own pixels), the count of colour targets and the first one's address and size;
-- one line for each sampled texture (sixteen at most): its address and size, and its sampler as the renderer
-  makes it from the game's header (the filters, the address modes on both axes, the level range, normalised
-  coordinates, which is the only kind the renderer makes), with the header's own words;
+- one line for each sampled texture (sixteen at most): its address and size. Then Vulkan's sampler for the slot
+  as it was made: the filters, the address modes on both axes, the level range and bias, normalised
+  coordinates or not, compare and anisotropy. That is not the game's header: the renderer limits the levels of
+  a sampler without a filter between levels, swaps a reversed range, maps two address modes by what the device
+  has, and can force nearest. When no sampler was bound for the slot while the draw was set up, because the
+  draw kept the draw before's, the line says "not known". Beside it, under its own name, the game's sampler
+  header as numbers and words, and words 4 and 5 of its texture header;
 - the fragment stage's scene block: thirteen words, the used fraction at +628 and +62C among them, or "not
   bound" or "too short";
 - the vertex stage's scene block at +628 and +62C, and the first sixteen words of the vertex stage's bank 1;
 - what the draw is recorded with: Vulkan's viewport and scissor after the render scale and the turn of the
-  window's origin, in the image's pixels. That line comes from the place where the renderer makes them, so
-  the game's registers and the effective values stand side by side. A draw that never gets there says so.
+  window's origin, in the image's pixels, so that the game's registers and the effective values stand side by
+  side.
 
 No draw is changed by it.
 

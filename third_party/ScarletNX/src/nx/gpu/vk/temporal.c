@@ -1333,14 +1333,25 @@ static int stats_ready(void) {
    of a frame has the camera, a write to the scene colour gives its surface, and the first draw that samples the
    scene colour names the program before which the probe runs from the next frame on. */
 /* Read only, for the log alone, with probe or taa: what three readers of the scene are drawn with. In every
-   600th frame, at the first draw of each of these fragment programs (by the low 32 bits of its hash, the
-   composite under either of its two), lines that begin "arceus-temporal-readers:" and name the frame and the
-   program. No draw is changed. */
+   600th frame, for the first draw of each of these fragment programs that is recorded (by the low 32 bits of
+   its hash, the composite under either of its two), lines that begin "arceus-temporal-readers:" and name the
+   frame and the program. No draw is changed. */
+#define READERS_TEXTURES 16
 static struct {
-    int pending; /* a reader's draw was described and what it is recorded with has not been said yet */
+    int pending, which; /* a reader's draw is described here, and whether it is recorded is not known yet */
     u32 frame;
     u64 program;
+    char draw[900], blocks[3][700];
+    int nt;
+    struct {
+        char surface[160];
+        int header; /* the game's two headers were there */
+        u32 tsc[3], tic[2];
+        int bound; /* a sampler was bound for the slot while this draw was set up */
+        VkSampler sampler;
+    } texture[READERS_TEXTURES];
 } g_readers;
+static u32 g_readers_said_at[3];
 /* float words of a constant block of a stage into the line: each word, or why it cannot be read */
 static size_t readers_words(char* line, size_t at, size_t room, const GpuChannel* ch, int stage, int bank,
                             const u32* offsets, int count) {
@@ -1359,6 +1370,9 @@ static size_t readers_words(char* line, size_t at, size_t room, const GpuChannel
     }
     return at;
 }
+/* The draw is only described here, into g_readers: nothing is printed. The renderer may set a draw up more than
+   once before it records it, and may not record it at all. The lines are printed where the draw is recorded
+   (vk_temporal_recorded), for the draw that is, once. */
 static void readers_note(u32 frame, const GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* const* sampled,
                          const u32* const* tic, const u32* const* tsc, int nt, Surf* const* rt, u32 n) {
     static const u32 programs[4] = {0x21FBFBECu, 0xB46268ADu, 0x8A160A27u, 0x63B3848Cu};
@@ -1368,24 +1382,22 @@ static void readers_note(u32 frame, const GpuChannel* ch, const VkSh* vs, const 
     static const u32 fraction[2] = {0x628, 0x62C};
     static const u32 first[16] = {0x0,  0x4,  0x8,  0xC,  0x10, 0x14, 0x18, 0x1C,
                                   0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x3C};
-    /* the address modes as the renderer's sampler takes them (texture.c), by the header's number 0 to 7 */
-    static const char* const wraps[8] = {"repeat",        "mirrored repeat", "clamp to edge",   "clamp to border",
-                                         "clamp to edge", "mirror clamp",    "clamp to border", "mirror clamp"};
-    static u32 said_at[3];
-    char line[1900], head[96];
     int which = -1;
-    /* a reader's draw that never reached the place where its viewport and scissor are recorded */
-    if (g_readers.pending) {
-        LOG("arceus-temporal-readers: frame %u, program %llx: the draw was not recorded, so no viewport and scissor "
-            "of Vulkan's can be said for it\n", g_readers.frame, (unsigned long long)g_readers.program);
+    for (int k = 0; fs0 && !(frame % 600) && k < 4; k++)
+        if ((u32)fs0->hash == programs[k]) which = k < 3 ? k : 2;
+    /* A reader's draw was described and another draw begins: of another program, so that one was not recorded.
+       The same program again is the same draw set up once more, or the reader's next: it is described anew. */
+    if (g_readers.pending && (which < 0 || g_readers.which != which || g_readers.frame != frame)) {
+        LOG("arceus-temporal-readers: frame %u, program %llx: a draw of it was set up and not recorded, so nothing "
+            "is said of that draw\n", g_readers.frame, (unsigned long long)g_readers.program);
         g_readers.pending = 0;
     }
-    if (!fs0 || frame % 600) return;
-    for (int k = 0; k < 4; k++)
-        if ((u32)fs0->hash == programs[k]) which = k < 3 ? k : 2;
-    if (which < 0 || said_at[which] == frame) return;
-    said_at[which] = frame;
-    snprintf(head, sizeof head, "frame %u, program %llx", frame, (unsigned long long)fs0->hash);
+    if (which < 0 || g_readers_said_at[which] == frame) return;
+    memset(&g_readers, 0, sizeof g_readers);
+    g_readers.pending = 1;
+    g_readers.which = which;
+    g_readers.frame = frame;
+    g_readers.program = fs0->hash;
     const VkViewport v = vk_render_viewport(ch->r3d);
     const Surf* colour = NULL;
     u32 colours = 0;
@@ -1398,75 +1410,108 @@ static void readers_note(u32 frame, const GpuChannel* ch, const VkSh* vs, const 
        rectangle in the game's own pixels, before the render scale and before a flip of the window's origin. */
     const u32* r = ch->r3d;
     const u32 xs = r[0x381], ys = r[0x382];
-    size_t at = (size_t)snprintf(line, sizeof line, "%s: the first draw of the %s, with vertex program %llx. The "
-                                                    "game's registers: viewport %g,%g %gx%g, scissor test %s, its "
-                                                    "rectangle x %u to %u, y %u to %u in the game's pixels%s. %u "
-                                                    "colour targets, the first ",
-                                 head, names[which], (unsigned long long)(vs ? vs->hash : 0), (double)v.x,
-                                 (double)v.y, (double)v.width, (double)v.height, r[0x380] & 1 ? "on" : "off",
-                                 xs & 0xFFFF, xs >> 16, ys & 0xFFFF, ys >> 16,
-                                 r[0x4EB] & 1 ? " (y counted from the bottom)" : "", colours);
+    size_t at = (size_t)snprintf(g_readers.draw, sizeof g_readers.draw,
+                                 "the first recorded draw of the %s, with vertex program %llx. The game's registers: "
+                                 "viewport %g,%g %gx%g, scissor test %s, its rectangle x %u to %u, y %u to %u in the "
+                                 "game's pixels%s. %u colour targets, the first ",
+                                 names[which], (unsigned long long)(vs ? vs->hash : 0), (double)v.x, (double)v.y,
+                                 (double)v.width, (double)v.height, r[0x380] & 1 ? "on" : "off", xs & 0xFFFF,
+                                 xs >> 16, ys & 0xFFFF, ys >> 16, r[0x4EB] & 1 ? " (y counted from the bottom)" : "",
+                                 colours);
     if (colour)
-        snprintf(line + at, sizeof line - at, "at %llx of %ux%u (image %ux%u). %d sampled textures",
+        snprintf(g_readers.draw + at, sizeof g_readers.draw - at, "at %llx of %ux%u (image %ux%u). %d sampled "
+                                                                  "textures",
                  (unsigned long long)colour->gva, colour->w, colour->h, colour->sw, colour->sh, nt);
     else
-        snprintf(line + at, sizeof line - at, "none. %d sampled textures", nt);
-    LOG("arceus-temporal-readers: %s\n", line);
-    /* Each sampled texture, and its sampler as the renderer makes it from the game's header (texture.c), with
-       the header's numbers and its first three words as they are. The renderer's samplers always take
-       normalised coordinates: it makes no other kind. */
-    for (int i = 0; i < nt && i < 16; i++) {
-        const u32* t = tsc ? tsc[i] : NULL;
-        const u32* h = tic ? tic[i] : NULL;
-        at = (size_t)snprintf(line, sizeof line, "%s: texture %d ", head, i);
+        snprintf(g_readers.draw + at, sizeof g_readers.draw - at, "none. %d sampled textures", nt);
+    g_readers.nt = nt;
+    for (int i = 0; i < nt && i < READERS_TEXTURES; i++) {
         if (sampled[i])
-            at += (size_t)snprintf(line + at, sizeof line - at, "at %llx of %ux%u (image %ux%u)",
-                                   (unsigned long long)sampled[i]->gva, sampled[i]->w, sampled[i]->h,
-                                   sampled[i]->sw, sampled[i]->sh);
+            snprintf(g_readers.texture[i].surface, sizeof g_readers.texture[i].surface,
+                     "at %llx of %ux%u (image %ux%u)", (unsigned long long)sampled[i]->gva, sampled[i]->w,
+                     sampled[i]->h, sampled[i]->sw, sampled[i]->sh);
         else
-            at += (size_t)snprintf(line + at, sizeof line - at, "none");
-        if (t)
-            at += (size_t)snprintf(line + at, sizeof line - at,
-                                   ". Sampler: mag %s (%u), min %s (%u), between levels %s (%u), x %s (%u), y %s "
-                                   "(%u), levels %g to %g, normalised coordinates (the renderer makes no other "
-                                   "sampler), header words %08x %08x %08x",
-                                   (t[1] & 3) == 2 ? "linear" : "nearest", t[1] & 3,
-                                   ((t[1] >> 4) & 3) == 2 ? "linear" : "nearest", (t[1] >> 4) & 3,
-                                   ((t[1] >> 6) & 3) == 3 ? "linear" : "nearest", (t[1] >> 6) & 3, wraps[t[0] & 7],
-                                   t[0] & 7, wraps[(t[0] >> 3) & 7], (t[0] >> 3) & 7,
-                                   (double)(t[2] & 0xFFF) / 256.0, (double)((t[2] >> 12) & 0xFFF) / 256.0, t[0],
-                                   t[1], t[2]);
-        if (h)
-            snprintf(line + at, sizeof line - at, ". Texture header words 4 and 5: %08x %08x", h[4], h[5]);
-        LOG("arceus-temporal-readers: %s\n", line);
+            snprintf(g_readers.texture[i].surface, sizeof g_readers.texture[i].surface, "none");
+        if (tsc && tsc[i] && tic && tic[i]) {
+            g_readers.texture[i].header = 1;
+            memcpy(g_readers.texture[i].tsc, tsc[i], sizeof g_readers.texture[i].tsc);
+            g_readers.texture[i].tic[0] = tic[i][4];
+            g_readers.texture[i].tic[1] = tic[i][5];
+        }
     }
-    if (nt > 16) LOG("arceus-temporal-readers: %s: %d more textures are not listed\n", head, nt - 16);
     /* the blocks: the scene block of both stages, and the start of the vertex stage's bank 1 */
-    at = (size_t)snprintf(line, sizeof line, "%s: the fragment stage's scene block (bank 3), %u bytes read by the "
-                                             "program, ",
-                          head, fs0->si.cbuf_max[TEMPORAL_SCENE_BANK]);
-    readers_words(line, at, sizeof line, ch, ST_FS, TEMPORAL_SCENE_BANK, scene, 13);
-    LOG("arceus-temporal-readers: %s\n", line);
-    at = (size_t)snprintf(line, sizeof line, "%s: the vertex stage's scene block (bank 3) ", head);
-    readers_words(line, at, sizeof line, ch, ST_VS, TEMPORAL_SCENE_BANK, fraction, 2);
-    LOG("arceus-temporal-readers: %s\n", line);
-    at = (size_t)snprintf(line, sizeof line, "%s: the vertex stage's bank 1, its first sixteen words, ", head);
-    readers_words(line, at, sizeof line, ch, ST_VS, 1, first, 16);
-    LOG("arceus-temporal-readers: %s\n", line);
-    g_readers.pending = 1;
-    g_readers.frame = frame;
-    g_readers.program = fs0->hash;
+    at = (size_t)snprintf(g_readers.blocks[0], sizeof g_readers.blocks[0],
+                          "the fragment stage's scene block (bank 3), %u bytes read by the program, ",
+                          fs0->si.cbuf_max[TEMPORAL_SCENE_BANK]);
+    readers_words(g_readers.blocks[0], at, sizeof g_readers.blocks[0], ch, ST_FS, TEMPORAL_SCENE_BANK, scene, 13);
+    at = (size_t)snprintf(g_readers.blocks[1], sizeof g_readers.blocks[1], "the vertex stage's scene block (bank 3) ");
+    readers_words(g_readers.blocks[1], at, sizeof g_readers.blocks[1], ch, ST_VS, TEMPORAL_SCENE_BANK, fraction, 2);
+    at = (size_t)snprintf(g_readers.blocks[2], sizeof g_readers.blocks[2],
+                          "the vertex stage's bank 1, its first sixteen words, ");
+    readers_words(g_readers.blocks[2], at, sizeof g_readers.blocks[2], ch, ST_VS, 1, first, 16);
+}
+/* From the renderer, where a fragment stage's texture gets its sampler while a draw is set up: the sampler that
+   is bound, for a reader's draw that is being described. */
+void vk_temporal_sampler(u32 slot, VkSampler sampler) {
+    if (!g_readers.pending || slot >= READERS_TEXTURES) return;
+    g_readers.texture[slot].bound = 1;
+    g_readers.texture[slot].sampler = sampler;
 }
 /* From the renderer, where a draw's first viewport and scissor are made for Vulkan: after the render scale and
-   the turn of the window's origin, as they are recorded. Said for a reader's draw described just before. */
+   the turn of the window's origin, as they are recorded. Here the lines of a reader's draw are printed, once. */
 void vk_temporal_recorded(const VkViewport* viewport, const VkRect2D* scissor) {
+    static const char* const modes[5] = {"repeat", "mirrored repeat", "clamp to edge", "clamp to border",
+                                         "mirror clamp to edge"};
+    char head[96], line[1900];
     if (!g_readers.pending) return;
     g_readers.pending = 0;
-    LOG("arceus-temporal-readers: frame %u, program %llx: recorded with Vulkan's viewport %g,%g %gx%g, depth %g to "
-        "%g, and scissor %d,%d %ux%u, in the image's pixels\n",
-        g_readers.frame, (unsigned long long)g_readers.program, (double)viewport->x, (double)viewport->y,
-        (double)viewport->width, (double)viewport->height, (double)viewport->minDepth, (double)viewport->maxDepth,
-        scissor->offset.x, scissor->offset.y, scissor->extent.width, scissor->extent.height);
+    g_readers_said_at[g_readers.which] = g_readers.frame;
+    snprintf(head, sizeof head, "arceus-temporal-readers: frame %u, program %llx", g_readers.frame,
+             (unsigned long long)g_readers.program);
+    LOG("%s: %s\n", head, g_readers.draw);
+    for (int i = 0; i < g_readers.nt && i < READERS_TEXTURES; i++) {
+        VkSamplerCreateInfo made;
+        size_t at = (size_t)snprintf(line, sizeof line, "texture %d %s. ", i, g_readers.texture[i].surface);
+        /* the sampler Vulkan has for the slot: what it was made with, not what the game's header says */
+        if (!g_readers.texture[i].bound)
+            at += (size_t)snprintf(line + at, sizeof line - at,
+                                   "Vulkan's sampler: not known, none was bound for the slot while this draw was set "
+                                   "up (a draw can keep the draw before's)");
+        else if (!vk_sampler_made(g_readers.texture[i].sampler, &made))
+            at += (size_t)snprintf(line + at, sizeof line - at, "Vulkan's sampler: bound, and what it was made with "
+                                                                "was not kept");
+        else
+            at += (size_t)snprintf(line + at, sizeof line - at,
+                                   "Vulkan's sampler as it was made: mag %s, min %s, between levels %s, x %s, y %s, "
+                                   "levels %g to %g, level bias %g, %s coordinates, compare %s, anisotropy %s",
+                                   made.magFilter == VK_FILTER_LINEAR ? "linear" : "nearest",
+                                   made.minFilter == VK_FILTER_LINEAR ? "linear" : "nearest",
+                                   made.mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR ? "linear" : "nearest",
+                                   (u32)made.addressModeU < 5 ? modes[made.addressModeU] : "another mode",
+                                   (u32)made.addressModeV < 5 ? modes[made.addressModeV] : "another mode",
+                                   (double)made.minLod, (double)made.maxLod, (double)made.mipLodBias,
+                                   made.unnormalizedCoordinates ? "unnormalised" : "normalised",
+                                   made.compareEnable ? "on" : "off", made.anisotropyEnable ? "on" : "off");
+        /* beside it, under its own name: the game's sampler header as it is, numbers and words */
+        if (g_readers.texture[i].header) {
+            const u32* t = g_readers.texture[i].tsc;
+            snprintf(line + at, sizeof line - at,
+                     ". The game's sampler header: mag %u, min %u, mip %u, address x %u, y %u, levels %g to %g, words "
+                     "%08x %08x %08x. The game's texture header, words 4 and 5: %08x %08x",
+                     t[1] & 3, (t[1] >> 4) & 3, (t[1] >> 6) & 3, t[0] & 7, (t[0] >> 3) & 7,
+                     (double)(t[2] & 0xFFF) / 256.0, (double)((t[2] >> 12) & 0xFFF) / 256.0, t[0], t[1], t[2],
+                     g_readers.texture[i].tic[0], g_readers.texture[i].tic[1]);
+        } else
+            snprintf(line + at, sizeof line - at, ". The game's headers for the slot were not there");
+        LOG("%s: %s\n", head, line);
+    }
+    if (g_readers.nt > READERS_TEXTURES)
+        LOG("%s: %d more textures are not listed\n", head, g_readers.nt - READERS_TEXTURES);
+    for (int k = 0; k < 3; k++) LOG("%s: %s\n", head, g_readers.blocks[k]);
+    LOG("%s: recorded with Vulkan's viewport %g,%g %gx%g, depth %g to %g, and scissor %d,%d %ux%u, in the image's "
+        "pixels\n", head, (double)viewport->x, (double)viewport->y, (double)viewport->width,
+        (double)viewport->height, (double)viewport->minDepth, (double)viewport->maxDepth, scissor->offset.x,
+        scissor->offset.y, scissor->extent.width, scissor->extent.height);
 }
 
 void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* const* sampled,

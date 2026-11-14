@@ -1033,6 +1033,21 @@ static VkSamplerAddressMode wrap(u32 m) {
 int g_vk_anisotropy;
 /* the shift of the samplers made with raise bit 1: one value for the run (temporal.c reads it from a switch) */
 float g_vk_sampler_shift;
+/* For a log line alone: what each sampler was made with, its chain left out, beside the table below. As many
+   as that table makes at most. vk_sampler_made: 0 when the sampler is not one of them. */
+static struct {
+    VkSampler s;
+    VkSamplerCreateInfo made;
+} g_sampler_made[3072];
+static u32 g_sampler_made_n;
+int vk_sampler_made(VkSampler s, VkSamplerCreateInfo* out) {
+    for (u32 j = 0; s && j < g_sampler_made_n; j++)
+        if (g_sampler_made[j].s == s) {
+            *out = g_sampler_made[j].made;
+            return 1;
+        }
+    return 0;
+}
 VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     /* samplers are kept for good, and a device allows at least 4000 (maxSamplerAllocationCount): past 3072, a quarter
        of the table left free for probing, new sampler states get the first sampler made */
@@ -1156,6 +1171,11 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     tab[j].raise = raise;
     tab[j].integer = integer;
     tab[j].s = s;
+    if (g_sampler_made_n < sizeof g_sampler_made / sizeof g_sampler_made[0]) {
+        g_sampler_made[g_sampler_made_n].s = s;
+        g_sampler_made[g_sampler_made_n].made = si;
+        g_sampler_made[g_sampler_made_n++].made.pNext = NULL;
+    }
     ncustom += custom;
     if (!n++) first = s;
     return s;
