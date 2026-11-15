@@ -2,8 +2,8 @@
    Copyright 2026 the NXAevora contributors */
 /* D3's fixed size answer (ShaderInfo.txq_fixed) on two programs of a captured corpus, which is game code and never in
    the repository: SNX_SHADER_CORPUS names its folder, and without it the test is skipped (77). Keyed for another
-   slot the SPIR-V is byte for byte the unkeyed one. Keyed for the slot, the query answers the key's two constants,
-   and the only instructions that go are those of its scaling. */
+   slot the SPIR-V is byte for byte the unkeyed one. Keyed for the slot, only the scaling goes and the key's two
+   constants come, and every other instruction reads the same, the width where the scaled width was read. */
 #include "nx/gpu/shader/shader.h"
 #include <assert.h>
 #include <dirent.h>
@@ -64,18 +64,6 @@ static int constants_differ(const u32* a, size_t aw, const u32* b, size_t bw, co
     return ok && *extra <= 2;
 }
 
-/* the module's instructions as their first words (count and opcode), from word 5 on */
-static size_t instructions(const u32* spv, size_t words, u32* out, size_t room) {
-    size_t n = 0;
-    for (size_t at = 5; at < words && n < room;) {
-        const u32 count = spv[at] >> 16;
-        assert(count && at + count <= words);
-        out[n++] = at;
-        at += count;
-    }
-    return n;
-}
-
 /* whether the module defines a 32 bit integer constant of this value */
 static int has_constant(const u32* spv, size_t words, u32 value) {
     for (size_t at = 5; at < words; at += spv[at] >> 16)
@@ -96,23 +84,135 @@ static u32* translate(const u8* code, u32 max_bytes, int stage, const ShaderInfo
     return spv;
 }
 
-/* The keyed module against the unkeyed one. Before the first function, where types and constants are declared when
-   first used and so may move, by the count of each opcode: fewer only of the scaling's, more only constants. In
-   the functions, in order: two cursors, a run of differences taken by the shortest skip that agrees again, and
-   what is skipped may only be the scaling's, and only on the unkeyed side. */
+/* A module read for the comparison: each instruction's offset, the instruction that defines each id, and each id's
+   decorations summed into one number */
+#define MOST (1u << 20)
+typedef struct {
+    const u32* w;
+    u32 n, body; /* instructions, and the index of the first OpFunction */
+    u32 *at, *def, bound;
+    u64 *canon, *deco;
+    u32* pos; /* a body instruction's place among those kept, plus 1 (0: removed) */
+    u32 aligning; /* while the functions are aligned: the instruction looked at, plus 1 */
+} Module;
+static u64 mix(u64 h, u64 v) { return (h ^ v) * 0x100000001B3ull + 0x9E3779B97F4A7C15ull; }
+/* the word of an instruction that holds its result id: 0 none, 1 or 2 */
+static int result_word(u32 op) {
+    switch (op) {
+        case 0: case 2: case 3: case 4: case 5: case 6: case 8: case 10: case 14: case 15: case 16: case 17:
+        case 39: case 56: case 62: case 63: case 71: case 72: case 74: case 75: case 99: case 218: case 219:
+        case 224: case 225: case 246: case 247: case 249: case 250: case 251: case 252: case 253: case 254:
+        case 255: case 317: case 330: case 331: case 332: case 4416: case 5380: case 5632: return 0;
+        case 7: case 11: case 73: case 248: return 1;
+        default: return op >= 19 && op <= 38 ? 1 : 2;
+    }
+}
+/* whether word k of an instruction of op is a literal (else an id where it names one) */
+static int literal(u32 op, u32 k) {
+    switch (op) {
+        case 7: case 11: case 21: case 22: case 71: case 72: return k >= 2;
+        case 23: case 24: case 54: case 59: return k == 3;
+        case 25: case 43: case 50: case 62: case 63: case 246: return k >= 3;
+        case 32: return k == 2;
+        case 61: case 81: return k >= 4;
+        case 79: case 82: return k >= 5;
+        case 12: return k == 4;
+        case 247: return k >= 2;
+        case 250: return k >= 4;
+        case 251: return k >= 3 && (k - 3) % 2 == 0;
+        case 87: case 88: case 91: case 92: case 95: case 98: return k == 5;
+        case 89: case 90: case 93: case 94: case 96: case 97: return k == 6;
+        case 99: return k == 4;
+        default: return 0;
+    }
+}
+static void module_read(Module* m, const u32* w, size_t words) {
+    memset(m, 0, sizeof *m);
+    m->w = w;
+    m->bound = w[3];
+    m->at = calloc(MOST, sizeof *m->at);
+    m->def = calloc(m->bound, sizeof *m->def);
+    m->canon = calloc(m->bound, sizeof *m->canon);
+    m->deco = calloc(m->bound, sizeof *m->deco);
+    m->pos = calloc(MOST, sizeof *m->pos);
+    assert(m->at && m->def && m->canon && m->deco && m->pos);
+    m->body = ~0u;
+    for (size_t at = 5; at < words;) {
+        const u32 count = w[at] >> 16, op = w[at] & 0xFFFF;
+        assert(count && at + count <= words && m->n < MOST);
+        if (op == 54 && m->body == ~0u) m->body = m->n;
+        const int r = result_word(op);
+        if (r && (u32)r < count) assert(w[at + r] < m->bound), m->def[w[at + r]] = m->n + 1;
+        if ((op == 71 || op == 72) && count > 1 && w[at + 1] < m->bound) { /* decorations, in any order */
+            u64 h = op;
+            for (u32 k = 2; k < count; k++) h = mix(h, w[at + k]);
+            m->deco[w[at + 1]] += h;
+        }
+        m->at[m->n++] = (u32)at;
+        at += count;
+    }
+    assert(m->body != ~0u);
+}
+static void module_free(Module* m) { free(m->at), free(m->def), free(m->canon), free(m->deco), free(m->pos); }
+
+/* The two names the query's results have: the scaled width and height without the key, its two constants with it */
+#define NAME_X 0x5858585858585858ull
+#define NAME_Y 0x5959595959595959ull
+/* An id's name: in the functions, the place of the instruction that defines it among those kept, or for one of the
+   scaling's two results X and Y. Before them, what it is, by its instruction's opcode, literals and operands' names,
+   and its decorations. key: the keyed module's two values, whose constants are X and Y. */
+static u64 name_of(Module* m, u32 id, const u32* key, const u32* fu, u32 nfu) {
+    assert(id < m->bound && m->def[id]);
+    const u32 i = m->def[id] - 1, at = m->at[i], op = m->w[at] & 0xFFFF, count = m->w[at] >> 16;
+    if (i >= m->body) {
+        if (m->pos[i]) return mix(0xB0D1ull, m->pos[i]);
+        for (u32 q = 0; q < nfu; q++)
+            if (fu[q] == i) return q == 0 ? NAME_X : q == 1 ? NAME_Y : mix(0xDEADull, i);
+        if (m->aligning && i + 1 >= m->aligning) return 0xF0F0F0F0F0F0F0F0ull; /* not reached yet: a branch, a phi */
+        return mix(0xDEADull, i); /* a removed instruction's result that is not one of the two */
+    }
+    if (m->canon[id]) return m->canon[id];
+    if (key && op == 43 && count == 4 && (m->w[at + 3] == key[0] || m->w[at + 3] == key[1]))
+        return m->canon[id] = m->w[at + 3] == key[0] ? NAME_X : NAME_Y;
+    u64 h = mix(0xDEC1ull, op);
+    const int r = result_word(op);
+    for (u32 k = 1; k < count; k++) {
+        if ((int)k == r) continue;
+        const u32 v = m->w[at + k];
+        h = !literal(op, k) && v < m->bound && m->def[v] ? mix(h, name_of(m, v, key, fu, nfu)) : mix(h, mix(1, v));
+    }
+    h = mix(h, m->deco[id]);
+    return m->canon[id] = h | 1;
+}
+/* one function instruction, by its opcode and its operands' names */
+static u64 instruction_name(Module* m, u32 i, const u32* key, const u32* fu, u32 nfu) {
+    const u32 at = m->at[i], op = m->w[at] & 0xFFFF, count = m->w[at] >> 16;
+    const int r = result_word(op);
+    u64 h = mix(op, count);
+    for (u32 k = 1; k < count; k++) {
+        const u32 v = m->w[at + k];
+        if ((int)k == r) h = mix(h, m->deco[v]);
+        else h = !literal(op, k) && v < m->bound && m->def[v] ? mix(h, name_of(m, v, key, fu, nfu)) : mix(h, mix(1, v));
+    }
+    return h;
+}
+
+/* k, keyed, against a, unkeyed. Before the functions (types and constants are declared at first use, so they move),
+   by opcode counts: fewer only of the scaling's, more only constants. In the functions, a's instructions that read
+   unlike k's next are a's alone and may only be the scaling's. Then every kept one must read as k's does, operands
+   named by what they are: the scaled width where a reads it is the key's width in k, the height likewise. */
 #define OPS 8192
-static void compare(const u32* a, size_t aw, const u32* k, size_t kw, unsigned* removed, unsigned* added) {
-    static u32 ia[1 << 20], ik[1 << 20];
+static void compare(const u32* a, size_t aw, const u32* k, size_t kw, const u32 key[2], unsigned* removed,
+                    unsigned* added) {
     static int count_a[OPS], count_k[OPS];
-    const size_t na = instructions(a, aw, ia, 1 << 20), nk = instructions(k, kw, ik, 1 << 20);
-#define OP(spv, at) ((spv)[at] & 0xFFFF)
-    size_t fa = 0, fk = 0;
-    while (fa < na && OP(a, ia[fa]) != 54) fa++; /* OpFunction */
-    while (fk < nk && OP(k, ik[fk]) != 54) fk++;
+    Module ma, mk;
+    module_read(&ma, a, aw);
+    module_read(&mk, k, kw);
+#define OP(m, i) ((m).w[(m).at[i]] & 0xFFFF)
     memset(count_a, 0, sizeof count_a);
     memset(count_k, 0, sizeof count_k);
-    for (size_t i = 0; i < fa; i++) assert(OP(a, ia[i]) < OPS), count_a[OP(a, ia[i])]++;
-    for (size_t j = 0; j < fk; j++) assert(OP(k, ik[j]) < OPS), count_k[OP(k, ik[j])]++;
+    for (u32 i = 0; i < ma.body; i++) assert(OP(ma, i) < OPS), count_a[OP(ma, i)]++;
+    for (u32 j = 0; j < mk.body; j++) assert(OP(mk, j) < OPS), count_k[OP(mk, j)]++;
     *removed = *added = 0;
     for (unsigned op = 0; op < OPS; op++) {
         if (count_a[op] > count_k[op]) {
@@ -125,25 +225,45 @@ static void compare(const u32* a, size_t aw, const u32* k, size_t kw, unsigned* 
             *added += (unsigned)(count_k[op] - count_a[op]);
         }
     }
-    size_t i = fa, j = fk;
-    while (i < na && j < nk) {
-        if (OP(a, ia[i]) == OP(k, ik[j])) {
-            i++, j++;
+    /* Which of a's function instructions are not in k: in order, one that does not read as k's next does (its
+       operands named as far as known, those not reached yet all alike) is a's alone, and may only be the scaling's */
+    static u32 fu[MOST];
+    u32 nfu = 0, i = ma.body, j = mk.body, kept = 0, run = 0;
+    while (i < ma.n && j < mk.n) {
+        ma.aligning = i + 1;
+        mk.aligning = j + 1;
+        if (OP(ma, i) == OP(mk, j) &&
+            instruction_name(&ma, i, NULL, fu, nfu) == instruction_name(&mk, j, key, NULL, 0)) {
+            ma.pos[i++] = ++kept;
+            mk.pos[j++] = kept;
+            run = 0;
             continue;
         }
-        size_t skip = 0;
-        while (i + skip < na && OP(a, ia[i + skip]) != OP(k, ik[j])) {
-            if (!scaling_op(OP(a, ia[i + skip])))
-                fprintf(stderr, "txq_variant: only without the key: opcode %u\n", OP(a, ia[i + skip]));
-            assert(scaling_op(OP(a, ia[i + skip])) && skip < 96);
-            skip++;
-        }
-        *removed += (unsigned)skip;
-        i += skip;
+        if (!scaling_op(OP(ma, i)))
+            fprintf(stderr, "txq_variant: only without the key: opcode %u at %u\n", OP(ma, i), i);
+        assert(scaling_op(OP(ma, i)) && ++run < 96);
+        if (OP(ma, i) == 109) fu[nfu++] = i; /* OpConvertFToU: the scaling's results, the width first */
+        i++, (*removed)++;
     }
-    assert(j == nk && "nothing in the keyed functions is new");
-    for (; i < na; i++, (*removed)++) assert(scaling_op(OP(a, ia[i])));
+    ma.aligning = mk.aligning = 0;
+    assert(j == mk.n && "nothing in the keyed functions is new");
+    for (; i < ma.n; i++, (*removed)++) assert(scaling_op(OP(ma, i)));
+    assert(nfu == 2 && "the scaling's two results, width and height");
+    /* the data flow: every kept instruction the same, by its operands' names */
+    for (u32 x = ma.body, y = mk.body; x < ma.n; x++) {
+        if (!ma.pos[x]) continue;
+        while (y < mk.n && !mk.pos[y]) y++;
+        assert(y < mk.n);
+        const u64 na = instruction_name(&ma, x, NULL, fu, nfu), nk = instruction_name(&mk, y, key, NULL, 0);
+        if (na != nk)
+            fprintf(stderr, "txq_variant: the instructions at %u and %u differ (opcode %u), in what they read\n", x, y,
+                    OP(ma, x));
+        assert(na == nk);
+        y++;
+    }
 #undef OP
+    module_free(&ma);
+    module_free(&mk);
 }
 
 /* A record of the ShaderInfo before txq_fixed, any padding of it not 0: it loads, the new fields 0, the rest as
@@ -153,12 +273,14 @@ static void old_record(void) {
     const size_t old = (offsetof(ShaderInfo, txq_fixed) + align - 1) / align * align;
     static const char path[] = "txq_variant_old_record.snxs";
     const u32 header[5] = {1, (u32)old, ST_FS, 4, 4}; /* version, record size, stage, length, window */
+    ShaderInfo written;
     unsigned char record[sizeof(ShaderInfo)];
     const unsigned char code[4] = {1, 2, 3, 4};
     assert(offsetof(ShaderInfo, txq_fixed) <= old && old < sizeof(ShaderInfo));
-    memset(record, 0xA5, sizeof record);
-    memset(record, 0, offsetof(ShaderInfo, txq_fixed));
-    ((ShaderInfo*)record)->ntex = 3;
+    memset(&written, 0, sizeof written);
+    written.ntex = 3;
+    memcpy(record, &written, sizeof record);
+    memset(record + offsetof(ShaderInfo, txq_fixed), 0xA5, sizeof record - offsetof(ShaderInfo, txq_fixed));
     FILE* f = fopen(path, "wb");
     assert(f && fwrite("SNXS", 1, 4, f) == 4 && fwrite(header, 1, sizeof header, f) == sizeof header &&
            fwrite(record, 1, old, f) == old &&
@@ -216,7 +338,7 @@ int main(void) {
             assert(!has_constant(a, aw, 1234) && !has_constant(a, aw, 567));
             unsigned removed, added, extra;
             const u32 want[2] = {1234, 567};
-            compare(a, aw, k, kw, &removed, &added);
+            compare(a, aw, k, kw, want, &removed, &added);
             assert(constants_differ(a, aw, k, kw, want, &extra) && extra == 2 && "the key's two values, and no other");
             assert(removed >= 10 && "these two programs scale the query without the key");
             printf("txq_variant: %016llx handle 0x%X: %zu words, keyed %zu: %u instructions of the scaling gone, %u "
