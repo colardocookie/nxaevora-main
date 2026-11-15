@@ -331,6 +331,31 @@ static inline int selftest_verdict(const double* errors, int n, int own, double 
         if (i != own && !(errors[i] > errors[own] && errors[i] >= margin * errors[own])) return SELFTEST_FAIL;
     return SELFTEST_PASS;
 }
+/* DL2's sign protocol (UPSCALER-DESIGN.md, DL2 revision 2): score[s][v] the mean of variant v's three runs' errors
+   at viewport sign s (v's bit 0 turns the jitter's x, bit 1 its y), noise the largest mean difference between the
+   outputs of two repeats of one variant, valid 0 when any run was not finite, complete and silent. A variant lowest
+   at both signs and below every other at each by more than four times the noise, at least the floor, is chosen:
+   its index. Otherwise -1, unresolved. */
+#define SELFTEST_SIGN_NOISE_FLOOR 0.001
+#define SELFTEST_SIGN_GAP 4.0
+static inline int selftest_sign_choose(const double score[2][4], double noise, int valid) {
+    if (!valid || !isfinite(noise) || noise < 0.0) return -1;
+    const double floor_noise = noise > SELFTEST_SIGN_NOISE_FLOOR ? noise : SELFTEST_SIGN_NOISE_FLOOR;
+    int chosen = -1;
+    for (int s = 0; s < 2; s++) {
+        int low = 0;
+        for (int v = 0; v < 4; v++) {
+            if (!isfinite(score[s][v])) return -1;
+            if (score[s][v] < score[s][low]) low = v;
+        }
+        if (s && low != chosen) return -1;
+        chosen = low;
+        for (int v = 0; v < 4; v++)
+            if (v != chosen && !(score[s][v] - score[s][chosen] > SELFTEST_SIGN_GAP * floor_noise)) return -1;
+    }
+    return chosen;
+}
+
 /* The verdict of a case whose variants turn the jitter's signs too (cases 1 and 2). The configured variant must
    have strictly the lowest error of all. The margin is asked only of the variants marked in needs: those that
    turn vector signs and leave the jitter's as configured, which the pattern excites. The jitter's own margin

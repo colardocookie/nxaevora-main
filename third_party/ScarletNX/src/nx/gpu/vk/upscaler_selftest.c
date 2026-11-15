@@ -857,7 +857,10 @@ static int inputs_project(Inputs* in, const SelftestProjection* form, const int 
     for (int i = 0; i < in->frames; i++) {
         SelftestFrame* f = &in->scene[i];
         double px[2];
-        offset((unsigned)(i + (ahead ? 1 : 0)), (unsigned)in->offsets, px);
+        /* ahead: the images and the reported jitter that many offsets on (1 the control a step ahead, -1 the sign
+           protocol's, whose first evaluated frame is phase 0) */
+        offset((unsigned)((((long long)i + ahead) % in->offsets + in->offsets) % in->offsets), (unsigned)in->offsets,
+               px);
         f->pattern = edges ? SELFTEST_PATTERN_EDGES : cut_at >= 0 && i >= cut_at;
         f->out = (SelftestViewport){0, up ? in->oh : 0, in->ow, up ? -in->oh : in->oh};
         f->jitter[0] = 2.0 * px[0] / RW;
@@ -2096,6 +2099,116 @@ static int native(int up) {
     return pass;
 }
 
+/* DL2's sign protocol (UPSCALER-DESIGN.md, DL2 revision 2), for DLSS after both native suites: the jitter case's still
+   scene at the native size and the finite far plane, at both viewport signs, its first evaluated frame the reset at
+   phase 0 (inputs one offset behind). Each of the four jitter sign variants three times, each from a fresh context.
+   Scored: evaluated frames 8 to 15, every pixel, red, green and blue. Decided by selftest_sign_choose. The sign is a
+   finding, not a verdict: only a run that cannot be made fails. */
+static u32 messages_now(void) {
+    while (__atomic_exchange_n(&g_said_lock, 1, __ATOMIC_ACQUIRE)) {}
+    const u32 n = g.messages;
+    __atomic_store_n(&g_said_lock, 0, __ATOMIC_RELEASE);
+    return n;
+}
+static int sign_protocol(void) {
+    enum { REPEATS = 3, FIRST_SCORED = 8, SCORED = 8, EVALUATED = 16 };
+    static const char* const variants[4] = {"(+1, +1)", "(-1, +1)", "(+1, -1)", "(-1, -1)"};
+    const size_t pixels = (size_t)NATIVE_W * NATIVE_H, picture = 3 * pixels;
+    double score[2][4], noise = 0.0;
+    int valid = 1, made = 1;
+    if (skip_rest()) return 1;
+    step("the sign protocol");
+    double *reference = malloc(sizeof(double) * picture), *work = malloc(sizeof(double) * picture);
+    double* outputs = malloc(sizeof(double) * picture * SCORED * REPEATS);
+    u8 *regions = malloc(pixels), *everywhere = malloc(pixels);
+    if (!reference || !work || !outputs || !regions || !everywhere) {
+        SAY(ST "the sign protocol: could not be made: FAIL\n");
+        made = 0;
+    } else
+        memset(everywhere, SELFTEST_BACKGROUND, pixels);
+    const u32 messages = messages_now();
+    for (int up = 1; made && !stopped() && up >= 0; up--) {
+        const int sign = up ? 0 : 1;
+        Inputs in;
+        memset(&in, 0, sizeof in);
+        if (!inputs_project(&in, &FINITE, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, up, STILL, 0, 0, 0, -1, 0)) {
+            SAY(ST "the sign protocol %s: its inputs could not be made: FAIL\n", up ? "up" : "down");
+            inputs_free(&in);
+            made = 0;
+            break;
+        }
+        truth(&in, up, reference, regions);
+        for (int v = 0; made && !stopped() && v < 4; v++) {
+            Variant variant = CONFIGURED;
+            variant.jitter_x = v & 1 ? -1 : 1;
+            variant.jitter_y = v & 2 ? -1 : 1;
+            double sum = 0.0;
+            for (int r = 0; made && !stopped() && r < REPEATS; r++) {
+                Session s;
+                memset(&s, 0, sizeof s);
+                int evaluated = 0, ok = !stopped() && session_open(&s, &in, &NATIVE_TRAITS);
+                double error = 0.0;
+                for (int i = 0; ok && i < in.frames; i++) {
+                    const int got = frame_run(&s, &in, i, &variant, 0, work);
+                    if (got < 0) ok = 0;
+                    if (got <= 0) continue;
+                    const int at = evaluated++; /* the protocol's frame: 0 is the reset at phase 0 */
+                    if (at < FIRST_SCORED || at >= FIRST_SCORED + SCORED) continue;
+                    memcpy(outputs + picture * ((size_t)r * SCORED + (size_t)(at - FIRST_SCORED)), work,
+                           sizeof(double) * picture);
+                    error += difference(&in, work, reference, everywhere, SELFTEST_BACKGROUND);
+                }
+                session_close(&s);
+                if (skip_rest()) break;
+                if (!ok) {
+                    SAY(ST "the sign protocol %s, %s, run %d: a call failed: FAIL\n", up ? "up" : "down", variants[v],
+                        r + 1);
+                    made = 0;
+                }
+                error /= SCORED;
+                if (evaluated != EVALUATED || !isfinite(error)) valid = 0;
+                sum += error;
+                SAY(ST "the sign protocol %s, %s, run %d: %d frames evaluated, error over frames 8 to 15 %.6f\n",
+                    up ? "up" : "down", variants[v], r + 1, evaluated, error);
+            }
+            score[sign][v] = sum / REPEATS;
+            /* the noise: the outputs of two repeats against each other, every pair, over the same frames */
+            for (int a = 0; made && !stopped() && a < REPEATS; a++)
+                for (int b = a + 1; b < REPEATS; b++) {
+                    double apart = 0.0;
+                    for (int f = 0; f < SCORED; f++)
+                        apart += difference(&in, outputs + picture * ((size_t)a * SCORED + (size_t)f),
+                                            outputs + picture * ((size_t)b * SCORED + (size_t)f), everywhere,
+                                            SELFTEST_BACKGROUND);
+                    apart /= SCORED;
+                    if (!isfinite(apart)) valid = 0;
+                    else if (apart > noise) noise = apart;
+                }
+        }
+        inputs_free(&in);
+    }
+    free(reference);
+    free(work);
+    free(outputs);
+    free(regions);
+    free(everywhere);
+    if (skip_rest()) return 1;
+    const u32 said = messages_now() - messages;
+    if (!g.validation || !g.checks_asked || said) valid = 0;
+    if (made) {
+        for (int sign = 0; sign < 2; sign++)
+            SAY(ST "the sign protocol %s: scores %.6f %.6f %.6f %.6f for %s %s %s %s\n", sign ? "down" : "up",
+                score[sign][0], score[sign][1], score[sign][2], score[sign][3], variants[0], variants[1], variants[2],
+                variants[3]);
+        const int chosen = selftest_sign_choose(score, noise, valid);
+        SAY(ST "the sign protocol: noise %.6f (the floor %.3f), %u validation messages during it, runs %s. The "
+               "jitter's sign: %s%s\n", noise, SELFTEST_SIGN_NOISE_FLOOR, said, valid ? "valid" : "NOT all valid",
+            chosen < 0 ? "UNRESOLVED, (+1, +1) is used" : variants[chosen < 0 ? 0 : chosen],
+            chosen < 0 ? "" : ", lowest at both viewport signs by more than four times the noise");
+    }
+    return made;
+}
+
 /* The edge case, for the jitter's signs, on a still grey picture with two edges. Seven pictures of the same frozen
    images, each run a session of its own: the configured signs twice (for the noise), the three other combinations,
    the jitter reported as zero, and one frame scaled plainly. Each is held against the reference by its edges'
@@ -2424,6 +2537,8 @@ int vk_upscaler_selftest(const char* adapter) {
         pass = native(1) || skip_rest();
         g.generation++;
         pass &= native(0) || skip_rest();
+        g.generation++;
+        pass &= sign_protocol() || skip_rest();
     } else {
         /* after a stop each is neither run nor counted (skipped) */
         pass = suite(1) || skip_rest();

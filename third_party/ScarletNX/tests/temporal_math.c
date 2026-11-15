@@ -4391,6 +4391,31 @@ static void edge_set(double* rgb, int x, int y, double value) {
 }
 
 /* The jitter-sign case's picture, regions, profile and measures. */
+/* DL2's sign protocol, its decision (selftest_sign_choose) */
+static void test_selftest_sign_protocol(void) {
+    double score[2][4] = {{0.010, 0.030, 0.031, 0.050}, {0.012, 0.040, 0.033, 0.060}};
+    assert(selftest_sign_choose(score, 0.002, 1) == 0);
+    assert(selftest_sign_choose(score, 0.002, 0) == -1);        /* a run not valid */
+    assert(selftest_sign_choose(score, 0.006, 1) == -1);        /* 0.020 above it is not more than 4 x 0.006 */
+    assert(selftest_sign_choose(score, 0.0, 1) == 0);           /* the floor of 0.001: 4 x 0.001 */
+    double narrow[2][4] = {{0.010, 0.013, 0.014, 0.015}, {0.010, 0.013, 0.014, 0.015}};
+    assert(selftest_sign_choose(narrow, 0.0, 1) == -1);         /* 0.003 apart: a zero noise is floored, unresolved */
+    assert(selftest_sign_choose(score, NAN, 1) == -1 && selftest_sign_choose(score, -1.0, 1) == -1);
+    double other[2][4] = {{0.030, 0.010, 0.031, 0.050}, {0.040, 0.012, 0.033, 0.060}};
+    assert(selftest_sign_choose(other, 0.002, 1) == 1);         /* jitter x turned */
+    double split[2][4] = {{0.010, 0.030, 0.031, 0.050}, {0.040, 0.012, 0.033, 0.060}};
+    assert(selftest_sign_choose(split, 0.002, 1) == -1);        /* another lowest at each sign */
+    double close[2][4] = {{0.010, 0.030, 0.031, 0.050}, {0.012, 0.040, 0.0159, 0.060}};
+    assert(selftest_sign_choose(close, 0.001, 1) == -1);        /* 0.0039 above it at the second sign */
+    double exact[2][4] = {{0.010, 0.030, 0.031, 0.050}, {0.012, 0.040, 0.020, 0.060}};
+    assert(selftest_sign_choose(exact, 0.002, 1) == -1);        /* exactly four times: not more */
+    double tie[2][4] = {{0.010, 0.010, 0.031, 0.050}, {0.012, 0.040, 0.033, 0.060}};
+    assert(selftest_sign_choose(tie, 0.0, 1) == -1);
+    double lost[2][4] = {{0.010, 0.030, NAN, 0.050}, {0.012, 0.040, 0.033, 0.060}};
+    assert(selftest_sign_choose(lost, 0.002, 1) == -1);
+    double last[2][4] = {{0.050, 0.030, 0.031, 0.010}, {0.060, 0.040, 0.033, 0.012}};
+    assert(selftest_sign_choose(last, 0.002, 1) == 3);          /* both turned */
+}
 static void test_selftest_edges(void) {
     const SelftestEdge *v = &SELFTEST_EDGE_V, *h = &SELFTEST_EDGE_H;
     const size_t bytes = sizeof(double) * 3 * EDGE_W * EDGE_H;
@@ -5314,6 +5339,7 @@ int main(void) {
     test_selftest_variables();
     test_selftest_stop_notice();
     test_selftest_proof();
+    test_selftest_sign_protocol();
     test_selftest_edges();
     puts("temporal_math: ok");
     return 0;
