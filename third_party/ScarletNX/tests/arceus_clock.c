@@ -2466,8 +2466,144 @@ static void test_event_probe(void) {
     host_ns = ns;
     logged_count = 0;
 }
+/* The event tick on its real wrappers: a stand-in job that, when it runs, asks IsPadTrigger through the wrapper. */
+#define EVENT_PAD 3200
+static unsigned event_job_runs[2], event_trigger_seen[2];
+static u64 event_job_answer;
+static void event_trigger_stub(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = gr64(EVENT_PAD + 0x118) != 0;
+    c->pc = c->x[30];
+}
+static void event_job_stub(CPU* c, u64 entry) {
+    assert(entry == entry_pc);
+    const unsigned which = c->x[0] == 1024 ? 0 : 1;
+    event_job_runs[which]++;
+    CPU n = {.x = {[0] = 5, [30] = return_pc}, .pc = entry_pc};
+    event_tick_trigger(&n, entry_pc);
+    event_trigger_seen[which] += (unsigned)n.x[0];
+    c->x[0] = event_job_answer;
+    c->pc = c->x[30];
+}
+static void event_frame(u64 ns) {
+    step.step = ns;
+    __atomic_add_fetch(&frame_step_frames, 1, __ATOMIC_RELEASE);
+}
+/* One call of the job at the object; 1 when it ran. A skip answers 0 and leaves the job's memory alone. */
+static int event_call(u64 object) {
+    u8 before[0x148];
+    memcpy(before, memory + object, sizeof before);
+    const unsigned runs = event_job_runs[0] + event_job_runs[1];
+    CPU c = {.x = {[0] = object, [30] = return_pc}, .pc = entry_pc};
+    event_tick_update(&c, entry_pc);
+    assert(c.pc == return_pc);
+    const int ran = event_job_runs[0] + event_job_runs[1] != runs;
+    if (!ran) assert(c.x[0] == 0 && !memcmp(before, memory + object, sizeof before));
+    return ran;
+}
+static void event_reset(void) {
+    memset(event_tick_jobs, 0, sizeof event_tick_jobs);
+    memset(event_job_runs, 0, sizeof event_job_runs);
+    memset(event_trigger_seen, 0, sizeof event_trigger_seen);
+    event_job_answer = 0;
+}
+static void test_event_tick(void) {
+    const u64 base = main_base, ns = step.step, frames = frame_step_frames;
+    memset(memory, 0, sizeof memory);
+    main_base = 3000 - EVENT_TICK_PAD; /* the pad's slot at 3000, its holder at 3100, the pad at 3200 */
+    gw64(3000, 3100);
+    gw64(3100, EVENT_PAD);
+    gw64(1024 + 0x140, 0x700);
+    gw64(1536 + 0x140, 0x800);
+    event_tick_original = event_job_stub;
+    event_tick_pad_original[0] = event_trigger_stub;
+    /* the runs a second at 30, 60 and 120 FPS and at uneven 12 and 20 ms frames: 30, the first call at once */
+    static const u64 steps[4][2] = {
+        {33333334, 33333334}, {16666667, 16666667}, {8333334, 8333333}, {12000000, 20000000}};
+    static const unsigned frames_per_second[4] = {30, 60, 120, 62};
+    for (unsigned k = 0; k < 4; k++) {
+        event_reset();
+        unsigned ran = 0, first = 0;
+        for (unsigned f = 0; f < frames_per_second[k]; f++) {
+            event_frame(steps[k][f & 1]);
+            const int run = event_call(1024);
+            if (!f) first = (unsigned)run;
+            ran += (unsigned)run;
+        }
+        assert(first && ran >= 30 && ran <= 31);
+        if (!k) assert(ran == 30); /* at 30 FPS every frame runs, as the game does */
+    }
+    /* at 60 FPS a one-frame trigger in a skipped frame is seen by the next run once, and only once; the pad's word is
+       as before afterwards, and the held word is never written */
+    event_reset();
+    gw64(EVENT_PAD + 0xa0, 0x40);
+    event_frame(16666667);
+    assert(event_call(1024));
+    event_frame(16666667);
+    gw64(EVENT_PAD + 0x118, 0x40);
+    assert(!event_call(1024));
+    gw64(EVENT_PAD + 0x118, 0);
+    event_frame(16666667);
+    assert(event_call(1024) && event_trigger_seen[0] == 1 && gr64(EVENT_PAD + 0x118) == 0);
+    for (unsigned f = 0; f < 4; f++) {
+        event_frame(16666667);
+        (void)event_call(1024);
+    }
+    assert(event_trigger_seen[0] == 1 && gr64(EVENT_PAD + 0xa0) == 0x40);
+    /* two jobs at once, each on its own budget and latch: the trigger seen once by each */
+    event_reset();
+    event_frame(16666667);
+    assert(event_call(1024));
+    event_frame(16666667);
+    assert(!event_call(1024) && event_call(1536)); /* the second job's first call runs at once */
+    event_frame(16666667);
+    gw64(EVENT_PAD + 0x118, 0x8);
+    assert(event_call(1024) && !event_call(1536));
+    gw64(EVENT_PAD + 0x118, 0);
+    event_frame(16666667);
+    assert(!event_call(1024) && event_call(1536));
+    assert(event_trigger_seen[0] == 1 && event_trigger_seen[1] == 1);
+    /* a finished job's state goes: a new job at the same address runs at once with nothing carried */
+    event_reset();
+    event_frame(16666667);
+    assert(event_call(1024));
+    event_frame(16666667);
+    gw64(EVENT_PAD + 0x118, 0x2);
+    assert(!event_call(1024));
+    gw64(EVENT_PAD + 0x118, 0);
+    event_job_answer = 1;
+    event_frame(16666667);
+    assert(event_call(1024) && event_trigger_seen[0] == 1);
+    assert(!event_tick_jobs[0].object);
+    event_job_answer = 0;
+    event_frame(16666667);
+    assert(event_call(1024) && event_trigger_seen[0] == 1);
+    /* the same address with another script context is another job: fresh too */
+    event_frame(16666667);
+    assert(!event_call(1024));
+    gw64(1024 + 0x140, 0x900);
+    assert(event_call(1024));
+    /* a full table: a ninth job runs every frame as today, counted */
+    event_reset();
+    const u64 full = event_tick_full;
+    for (unsigned k = 0; k < EVENT_TICK_JOBS; k++)
+        event_tick_jobs[k] = (EventTickJob){.object = 2000 + k, .generation = 1};
+    for (unsigned f = 0; f < 4; f++) {
+        event_frame(16666667);
+        assert(event_call(1536));
+    }
+    assert(event_tick_full == full + 4);
+    event_reset();
+    event_tick_original = NULL;
+    event_tick_pad_original[0] = NULL;
+    main_base = base;
+    step.step = ns;
+    frame_step_frames = frames;
+    memset(memory, 0, sizeof memory);
+}
 int main(void) {
     test_event_probe();
+    test_event_tick();
     test_ride_swap();
     test_defaults_on();
     test_capped_fall_body();

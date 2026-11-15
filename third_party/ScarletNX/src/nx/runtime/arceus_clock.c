@@ -4395,6 +4395,195 @@ static void event_probe_init(void) {
     LOG("arceus-event-probe: read-only, %u of 2 installed (the event script job 15BA460, its resume F7EC80), a line "
         "every 5 s%s\n", installed, clocks_installed ? "" : ", frames not counted without the clock wrappers");
 }
+/* SNX_ARCEUS_EVENT_TICK=1 (EVENT-TICK-DESIGN.md, 9a82c3de): the event script job 15BA460 runs its Lua script once a
+   call, and the scripts' waits count calls, so at 60 FPS a cutscene's waits were half as long. Each job is run 30 times
+   a second of elapsed time by the script tick's own decision, on a budget of its own. A frame without a run answers 0,
+   as a suspended script does, and writes nothing. At 30 FPS every frame runs. */
+#define EVENT_TICK_JOBS 8
+#define EVENT_TICK_PAD 0x42796c0 /* the pad singleton's slot, as IsPadTrigger D8EDCC reads it */
+/* The pad's edge words the event natives read: IsPadTrigger +118, IsPadRelease +B0, IsPadRepeat +A8 and +B8. */
+static const u32 event_tick_edges[4] = {0x118, 0xb0, 0xa8, 0xb8};
+typedef struct {
+    u64 object, generation; /* the job, and its script context [job +140] at its first call */
+    ScriptTick tick;
+    u64 latch[4]; /* the edges of the frames since this job's last run */
+    u64 sampled;  /* the frame whose edges are in the latch already */
+    int fresh;    /* not called yet: its first call runs, the budget then starts empty */
+} EventTickJob;
+static EventTickJob event_tick_jobs[EVENT_TICK_JOBS];
+static PMutex event_tick_lock = PMUTEX_INIT;
+static GuestFn event_tick_original;
+static GuestFn event_tick_pad_original[3];
+static u64 event_tick_ran, event_tick_skipped, event_tick_full, event_tick_carried, event_tick_calls;
+static u64 event_tick_logged[2];
+/* While a job runs on this thread: the edges its natives see on top of the pad's own, else NULL. */
+static _Thread_local const u64* event_tick_running;
+static u64 event_tick_pad(void) {
+    const u64 slot = main_base + EVENT_TICK_PAD;
+    if (!readable(slot, 8)) return 0;
+    const u64 holder = gr64(slot);
+    if (!holder || !readable(holder, 8)) return 0;
+    const u64 pad = gr64(holder);
+    return pad && readable(pad, 0x120) ? pad : 0;
+}
+/* The job's state: found by the job and its generation, else made fresh in a free slot (its first call runs at
+   once, as at 30 FPS), else NULL when the table is full. */
+static EventTickJob* event_tick_job(u64 object, u64 generation) {
+    for (unsigned k = 0; k < EVENT_TICK_JOBS; k++)
+        if (event_tick_jobs[k].object == object) {
+            if (event_tick_jobs[k].generation == generation) return &event_tick_jobs[k];
+            event_tick_jobs[k].object = 0; /* the address reused by another job: it starts fresh */
+        }
+    for (unsigned k = 0; k < EVENT_TICK_JOBS; k++)
+        if (!event_tick_jobs[k].object) {
+            event_tick_jobs[k] = (EventTickJob){.object = object, .generation = generation, .sampled = ~0ull,
+                                                .fresh = 1};
+            return &event_tick_jobs[k];
+        }
+    return NULL;
+}
+static void event_tick_line(void) {
+    const u64 calls = __atomic_add_fetch(&event_tick_calls, 1, __ATOMIC_RELAXED);
+    if (calls % 600) return;
+    const u64 ran = __atomic_load_n(&event_tick_ran, __ATOMIC_RELAXED);
+    const u64 skipped = __atomic_load_n(&event_tick_skipped, __ATOMIC_RELAXED);
+    LOG("arceus-event-tick: calls=%llu ran=%llu skipped=%llu (of the last 600: ran %llu, skipped %llu) carried=%llu "
+        "full=%llu\n", (unsigned long long)calls, (unsigned long long)ran, (unsigned long long)skipped,
+        (unsigned long long)(ran - event_tick_logged[0]), (unsigned long long)(skipped - event_tick_logged[1]),
+        (unsigned long long)__atomic_load_n(&event_tick_carried, __ATOMIC_RELAXED),
+        (unsigned long long)__atomic_load_n(&event_tick_full, __ATOMIC_RELAXED));
+    event_tick_logged[0] = ran;
+    event_tick_logged[1] = skipped;
+}
+static void event_tick_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    if (event_tick_running || !readable(object, 0x148)) { /* a job inside a run, or one we cannot key: as today */
+        event_tick_original(c, entry);
+        return;
+    }
+    const u64 generation = gr64(object + 0x140), pad = event_tick_pad();
+    pm_lock(&step_lock);
+    const u64 ns = step.step ? step.step : step.initial_ns;
+    pm_unlock(&step_lock);
+    const u64 frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
+    u64 seen[4] = {0};
+    pm_lock(&event_tick_lock);
+    EventTickJob* job = event_tick_job(object, generation);
+    int run = 1;
+    if (job) {
+        if (job->fresh) { /* this frame decided as a run, with nothing carried into the budget */
+            job->fresh = 0;
+            job->tick = (ScriptTick){.frame = frame, .decided = 1, .tick = 1, .frames = 1, .ticks = 1};
+        }
+        run = script_tick_decide(&job->tick, frame, ns);
+        /* each frame's edges once into the latch; a run's own frame is read live by its natives */
+        if (!run && pad && job->sampled != frame)
+            for (unsigned k = 0; k < 4; k++) job->latch[k] |= gr64(pad + event_tick_edges[k]);
+        job->sampled = frame;
+        if (run) {
+            memcpy(seen, job->latch, sizeof seen);
+            memset(job->latch, 0, sizeof job->latch);
+        }
+    }
+    pm_unlock(&event_tick_lock);
+    if (!job) {
+        if (__atomic_add_fetch(&event_tick_full, 1, __ATOMIC_RELAXED) == 1)
+            WARN("arceus-event-tick: table of %u jobs full: job %llx runs every frame as today\n", EVENT_TICK_JOBS,
+                 (unsigned long long)object);
+    }
+    event_tick_line();
+    if (!run) { /* as a run that found the script suspended: 0, nothing written */
+        __atomic_add_fetch(&event_tick_skipped, 1, __ATOMIC_RELAXED);
+        c->x[0] = 0;
+        c->pc = c->x[30];
+        return;
+    }
+    __atomic_add_fetch(&event_tick_ran, 1, __ATOMIC_RELAXED);
+    event_tick_running = seen;
+    event_tick_original(c, entry);
+    event_tick_running = NULL;
+    if (job && (c->x[0] & 0xff)) { /* finished or failed: its state goes */
+        pm_lock(&event_tick_lock);
+        if (job->object == object && job->generation == generation) job->object = 0;
+        pm_unlock(&event_tick_lock);
+    }
+}
+/* A pad edge native inside a job's run: the job's latched edges ORed into the words it reads, for its own call only.
+   A word another writer changed meanwhile is left as that writer made it. */
+static void event_tick_pad_read(CPU* c, u64 entry, unsigned kind) {
+    const u64* seen = event_tick_running;
+    const u64 pad = seen ? event_tick_pad() : 0;
+    static const unsigned words[3][2] = {{0, 0}, {1, 1}, {2, 3}};
+    u64 before[2] = {0}, shown[2] = {0};
+    unsigned written = 0;
+    for (unsigned k = 0; pad && k < 2; k++) {
+        const unsigned w = words[kind][k];
+        if (k && w == words[kind][0]) break;
+        before[k] = gr64(pad + event_tick_edges[w]);
+        shown[k] = before[k] | seen[w];
+        if (shown[k] != before[k]) {
+            gw64(pad + event_tick_edges[w], shown[k]);
+            written |= 1u << k;
+        }
+    }
+    event_tick_pad_original[kind](c, entry);
+    for (unsigned k = 0; k < 2; k++)
+        if (written >> k & 1) {
+            const u64 at = pad + event_tick_edges[words[kind][k]];
+            if (gr64(at) == shown[k]) gw64(at, before[k]);
+        }
+    if (written) __atomic_add_fetch(&event_tick_carried, 1, __ATOMIC_RELAXED);
+}
+static void event_tick_trigger(CPU* c, u64 entry) { event_tick_pad_read(c, entry, 0); }
+static void event_tick_release(CPU* c, u64 entry) { event_tick_pad_read(c, entry, 1); }
+static void event_tick_repeat(CPU* c, u64 entry) { event_tick_pad_read(c, entry, 2); }
+/* Guard, rewrite one equivalent instruction for an independent JIT body, compile: the body, or NULL. */
+static GuestFn event_tick_body(u64 offset, u32 size, u32 head, u32 patch, u32 word, u32 replacement, u32 extra,
+                               u32 extra_word) {
+    const u64 pc = main_base + offset;
+    int covered = 0;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] >= size) covered = 1;
+    if (!covered || pc < g_code_lo || pc + size > g_code_hi || !readable(pc, size) || gr32(pc) != head ||
+        gr32(pc + patch) != word || gr32(pc + extra) != extra_word) {
+        WARN("arceus-event-tick: refused instruction/function guard site=main+%llx\n", (unsigned long long)offset);
+        return NULL;
+    }
+    gw32(pc + patch, replacement);
+    jit_code_changed(pc, size);
+    GuestFn body = jit_wait(pc);
+    if (!body) WARN("arceus-event-tick: compile failed site=main+%llx\n", (unsigned long long)offset);
+    return body;
+}
+static void event_tick_init(void) {
+    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_EVENT_TICK", 0)) return;
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    if (!frame_step_cell_init("arceus-event-tick")) return;
+    /* MOV X0,X8 -> ADD X0,X8,#0 in each native; the trigger's load of +118 and the others' tail calls guarded */
+    static const struct { u32 offset, extra, extra_word; } pads[3] = {
+        {0xd8edcc, 0x38, 0xf9408e68}, {0xd8ee6c, 0x4c, 0x17fc2d6d}, {0xd8ef0c, 0x4c, 0x17fc2d49}};
+    static const GuestFn pad_wrappers[3] = {event_tick_trigger, event_tick_release, event_tick_repeat};
+    GuestFn bodies[3];
+    for (unsigned k = 0; k < 3; k++) {
+        bodies[k] = event_tick_body(pads[k].offset, 0xa0, 0xf81e0ff3, 0x5c, 0xaa0803e0, 0x91000100, pads[k].extra,
+                                    pads[k].extra_word);
+        if (!bodies[k]) return; /* without the carry a press could be lost: nothing is installed */
+    }
+    /* The job: behind the event probe's wrapper when the probe is on, so that it counts the runs */
+    const u64 pc = main_base + 0x15ba460;
+    GuestFn job = event_probe_original[0] ? event_job_probe
+                                          : event_tick_body(0x15ba460, 0x138, 0xd10703ff, 0xa4, 0xaa0003f3, 0x91000013,
+                                                            0x134, 0xd65f03c0);
+    if (!job) return;
+    event_tick_original = job;
+    for (unsigned k = 0; k < 3; k++) {
+        event_tick_pad_original[k] = bodies[k];
+        __atomic_store_n(&g_disp[(main_base + pads[k].offset - g_code_lo) / 4], pad_wrappers[k], __ATOMIC_RELEASE);
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], event_tick_update, __ATOMIC_RELEASE);
+    LOG("arceus-event-tick: EXPERIMENT: event scripts run 30 times a second of elapsed time (the job 15BA460), the "
+        "pad's edges of skipped frames carried to the next run (IsPadTrigger, IsPadRelease, IsPadRepeat)\n");
+}
 void arceus_clock_post_jit(void) {
     event_probe_init(); /* read-only, before the return below so that 30 FPS has it too */
     if (!timing_enabled || !clocks_installed) return;
@@ -4432,6 +4621,7 @@ void arceus_clock_post_jit(void) {
     field_waza_init();
     waza_object_init();
     waza_shot_init();
+    event_tick_init(); /* after the event probe, which it then calls on a run */
     cadence_census_init();
     water_fix_init();
     effects_fix_init();
