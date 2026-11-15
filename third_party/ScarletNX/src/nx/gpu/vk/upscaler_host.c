@@ -112,11 +112,10 @@ int vk_upscaler_instance_extensions(const SnxUpscalerApi* api, const char** name
     return names_add(names, count, room, &more);
 }
 
-/* After the instance, before the device: the adapter's device extensions are added to the list, features gets
-   the chain of feature structures it wants on, or NULL, and core the core feature bits it needs, which the
-   caller turns on in its own structure after its own question to the physical device. An adapter of another
-   version of the contract is refused before anything of it is called, and so is a core bit the self-test does not
-   know. 0 as above: the device is then made without the adapter. */
+/* After the instance, before the device: the adapter's device extensions go onto the list, features gets the chain
+   it wants on (or NULL) and core its core bits, which the caller turns on in its own structure. An adapter of another
+   contract version is refused before any call, and so is a core bit the self-test does not know. 0: the device is
+   then made without the adapter. */
 int vk_upscaler_device_needs(const SnxUpscalerApi* api, VkInstance instance, VkPhysicalDevice device,
                              PFN_vkGetInstanceProcAddr lookup, const char** names, uint32_t* count, uint32_t room,
                              const void** features, uint32_t* core) {

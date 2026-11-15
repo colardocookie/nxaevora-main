@@ -357,7 +357,8 @@ int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetIns
             out->core = core;
             say("arceus-upscaler: dlss: needs classified: %u instance and %u device extensions, %s, %ld messages of "
                 "NGX", g_instance.count, g_device.count,
-                core & SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS ? "buffer device addresses on" : "no feature bit",
+                core & SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS ? "buffer device addresses needed"
+                                                               : "no feature bit needed",
                 g_ngx_messages);
             answer = SNX_UPSCALER_OK;
         }
