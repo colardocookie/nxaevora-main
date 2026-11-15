@@ -2839,6 +2839,25 @@ static void spatial_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, int ot
             break;
         }
     const int nt = fs0->si.ntex > SH_MAXTEX ? SH_MAXTEX : fs0->si.ntex;
+    /* for the log (research 15:40): every texture slot of a listed program's draw, which binding holds what */
+    int listed_program = 0;
+    for (int e = 0; e < TEMPORAL_SPATIAL_ENTRIES; e++) listed_program |= temporal_spatial_entries[e].fs == fs0->hash;
+    static u64 listed_draws;
+    if (listed_program && (listed_draws++ < 4 || listed_draws % 600 == 0))
+        for (int i = 0; i < nt; i++) {
+            const TexRes* x = &res[i];
+            const ShTex* st = &fs0->si.tex[i];
+            if (!x->have || !x->t)
+                LOG("arceus-upscaler: spatial: listed draw %llu of program %llx, texture slot %d, handle offset %x: "
+                    "no surface%s\n", (unsigned long long)listed_draws, (unsigned long long)fs0->hash, i,
+                    st->cbuf_off, st->flags & SNX_TEX_INDEXED ? " (indexed)" : "");
+            else
+                LOG("arceus-upscaler: spatial: listed draw %llu of program %llx, texture slot %d, handle offset %x: "
+                    "surface at %llx of %ux%u (image %ux%u)%s%s\n", (unsigned long long)listed_draws,
+                    (unsigned long long)fs0->hash, i, st->cbuf_off, (unsigned long long)x->t->gva, x->t->w, x->t->h,
+                    x->t->sw, x->t->sh, x->t == g_vk_watch ? ", the scene colour" : "",
+                    st->flags & SNX_TEX_INDEXED ? " (indexed)" : "");
+        }
     for (int i = 0; i < nt; i++) {
         const TexRes* x = &res[i];
         const ShTex* st = &fs0->si.tex[i];

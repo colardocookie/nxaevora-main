@@ -3496,6 +3496,10 @@ int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh*
     if (!fs0 || !spatial_now(frame) || !g_s.fr.recorded) return TEMPORAL_SPATIAL_AS_DRAWN;
     if (t != g_s.scene) return TEMPORAL_SPATIAL_AS_DRAWN;
     int k = temporal_spatial_entry(fs0->hash, handle);
+    /* for the line: the program's own entry when its binding is another (research 15:40) */
+    int own = k;
+    for (int e = 0; own < 0 && e < TEMPORAL_SPATIAL_ENTRIES; e++)
+        if (temporal_spatial_entries[e].fs == fs0->hash) own = e;
     if (k >= 0 && (t->img != g_s.image || t->wseq != g_s.wseq)) {
         temporal_spatial_unknown(&g_s.latch, "the scene colour changed after the hook");
         k = -1;
@@ -3517,6 +3521,35 @@ int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh*
             temporal_spatial_unknown(&g_s.latch, why);
             k = -1;
             *listed = 0;
+        }
+    }
+    /* every condition that failed, with its class, while the frame is not yet decided or the first few times */
+    if (own >= 0 && verdict != TEMPORAL_SPATIAL_TAKEN) {
+        static u64 refusals;
+        if (refusals++ < 4 || refusals % 600 == 0) {
+            if (k < 0) { /* the conditions were not asked: ask them of the program's own entry, for the line */
+                d->vs = vs ? vs->hash : 0;
+                d->vertex_f_ok =
+                    spatial_block(ch, ST_VS, vs, TEMPORAL_SCENE_BANK, TEMPORAL_SCENE_FRACTION, d->vertex_f);
+                d->vertex_origin_ok = spatial_block(ch, ST_VS, vs, 1, 0, d->vertex_origin);
+                d->fragment_f_ok =
+                    spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_BANK, TEMPORAL_SCENE_FRACTION, d->fragment_f);
+                d->divisor_ok = spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_BANK, 0x794, d->divisor);
+            }
+            const uint32_t failed = temporal_spatial_failed(own, d, g_s.f);
+            char list[900];
+            size_t at = 0;
+            list[0] = 0;
+            for (int r = 1; r < TEMPORAL_SPATIAL_REASONS && at + 160 < sizeof list; r++)
+                if (failed >> r & 1)
+                    at += (size_t)snprintf(list + at, sizeof list - at, "%s%s (class %s)", at ? "; " : "",
+                                           temporal_spatial_text(r), temporal_spatial_class_n(r) ? "N" : "U");
+            LOG("arceus-upscaler: spatial: frame %u, fragment program %llx at binding %x (its entry's binding %x): "
+                "refused, %s. Every condition that fails against its entry: %s%s, %llu such so far\n", frame,
+                (unsigned long long)fs0->hash, handle, temporal_spatial_entries[own].handle,
+                k < 0 ? "not on the list" : "listed", list[0] ? list : "none",
+                k < 0 && handle != temporal_spatial_entries[own].handle ? "; and its binding is not the entry's" : "",
+                (unsigned long long)refusals);
         }
     }
     const int first = !g_s.fr.decided && k >= 0;

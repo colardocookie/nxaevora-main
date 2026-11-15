@@ -276,6 +276,70 @@ static inline int temporal_spatial_overlaps(uint64_t at, uint64_t bytes, uint64_
     return bytes && scene_bytes && at < scene + scene_bytes && scene < at + bytes;
 }
 
+/* For the log alone (research 15:40): every condition of entry k that fails at this draw, as a mask of reasons (bit
+   r for reason r), not only the first. Each group of conditions is asked of the check alone, the others made to
+   hold and the draw's coverage kept, which the check asks last. */
+static inline uint32_t temporal_spatial_failed(int k, const TemporalSpatialDraw* d, const double fs[2]) {
+    if (k < 0 || k >= TEMPORAL_SPATIAL_ENTRIES) return 1u << TEMPORAL_SPATIAL_NOT_LISTED;
+    TemporalSpatialDraw pass = *d; /* every group but the coverage made to hold */
+    pass.vs = temporal_spatial_entries[k].vs;
+    pass.vertex_f_ok = pass.vertex_origin_ok = pass.fragment_f_ok = pass.divisor_ok = 1;
+    pass.direct = pass.triangle_list = 1;
+    pass.first_vertex = pass.first_instance = 0;
+    pass.vertex_count = 3;
+    pass.instance_count = 1;
+    pass.other_stages = 0;
+    pass.vertex_origin[0] = -1.0, pass.vertex_origin[1] = 1.0;
+    pass.divisor[0] = pass.divisor[1] = 1.0;
+    pass.normalised = pass.one_level = pass.filters_same = 1;
+    pass.anisotropy = pass.compare = 0;
+    pass.address[0] = pass.address[1] = TEMPORAL_SPATIAL_EDGE;
+    pass.view_format_same = pass.view_2d = pass.view_one_level = pass.view_one_layer = pass.view_identity = 1;
+    for (int a = 0; a < 2; a++) pass.vertex_f[a] = pass.fragment_f[a] = fs[a];
+    uint32_t mask = 0;
+    for (int group = 0; group < 10; group++) {
+        TemporalSpatialDraw x = pass;
+        int why = TEMPORAL_SPATIAL_COVERAGE;
+        switch (group) {
+            case 0: x.vs = d->vs, why = TEMPORAL_SPATIAL_VERTEX; break;
+            case 1:
+                x.vertex_f_ok = d->vertex_f_ok, x.vertex_origin_ok = d->vertex_origin_ok;
+                x.fragment_f_ok = d->fragment_f_ok, x.divisor_ok = d->divisor_ok;
+                why = TEMPORAL_SPATIAL_UNAVAILABLE;
+                break;
+            case 2:
+                x.direct = d->direct, x.triangle_list = d->triangle_list, x.first_vertex = d->first_vertex;
+                x.vertex_count = d->vertex_count, x.instance_count = d->instance_count;
+                x.first_instance = d->first_instance, why = TEMPORAL_SPATIAL_FORM;
+                break;
+            case 3: x.other_stages = d->other_stages, why = TEMPORAL_SPATIAL_STAGES; break;
+            case 4:
+                memcpy(x.vertex_origin, d->vertex_origin, sizeof x.vertex_origin);
+                why = TEMPORAL_SPATIAL_ORIGIN;
+                break;
+            case 5: memcpy(x.divisor, d->divisor, sizeof x.divisor), why = TEMPORAL_SPATIAL_DIVISOR; break;
+            case 6:
+                x.normalised = d->normalised, x.one_level = d->one_level, x.anisotropy = d->anisotropy;
+                x.compare = d->compare, x.filters_same = d->filters_same, x.mag_nearest = d->mag_nearest;
+                x.min_nearest = d->min_nearest, x.address[0] = d->address[0], x.address[1] = d->address[1];
+                why = TEMPORAL_SPATIAL_SAMPLER;
+                break;
+            case 7:
+                x.view_format_same = d->view_format_same, x.view_2d = d->view_2d;
+                x.view_one_level = d->view_one_level, x.view_one_layer = d->view_one_layer;
+                x.view_identity = d->view_identity, why = TEMPORAL_SPATIAL_VIEW;
+                break;
+            case 8:
+                memcpy(x.vertex_f, d->vertex_f, sizeof x.vertex_f);
+                memcpy(x.fragment_f, d->fragment_f, sizeof x.fragment_f);
+                why = TEMPORAL_SPATIAL_FRACTION;
+                break;
+            default: break; /* the coverage, the draw's own */
+        }
+        if (temporal_spatial_check(k, &x, fs) == why) mask |= 1u << why;
+    }
+    return mask;
+}
 /* A binding of entry k at a draw, classified (UPSCALER-DESIGN.md d08b624c, research 14:35, 14:45 and 15:00): class
    N is only the fraction and the tap and coverage bounds of available values, the frame against the replacement: k,
    with the verdict. Every other failure, a required value not available included, is class U whatever fails with

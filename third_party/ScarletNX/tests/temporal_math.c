@@ -2526,7 +2526,8 @@ static void test_spatial(void) {
     do {                                                                                                       \
         x = d;                                                                                                 \
         change;                                                                                                \
-        assert(temporal_spatial_check(k, &x, ff) == (why));                                                     \
+        assert(temporal_spatial_check(k, &x, ff) == (why));                                                    \
+        assert(temporal_spatial_failed(k, &x, ff) == 1u << (why)); /* the log's mask: that one alone */      \
     } while (0)
             REFUSED(x.vs ^= 1, TEMPORAL_SPATIAL_VERTEX);
             REFUSED(x.direct = 0, TEMPORAL_SPATIAL_FORM);
@@ -2691,6 +2692,25 @@ static void test_spatial(void) {
             assert(l.off_next && !l.off && temporal_spatial_use(&fr, &l, 0, TEMPORAL_SPATIAL_AS_DRAWN, "a binding") ==
                                                   TEMPORAL_SPATIAL_CONSUMER);
         }
+    /* the log's mask of every failure (research 15:40): several at once, each named, none when taken */
+    {
+        const double half[2] = {0.5, 0.5};
+        for (int k = 0; k < 3; k++) assert(temporal_spatial_failed(k, &(TemporalSpatialDraw){0}, half) != 0);
+        TemporalSpatialDraw x = spatial_draw(2, 0.5);
+        assert(temporal_spatial_failed(2, &x, half) == 0);
+        x.first_vertex = 1, x.vertex_origin[0] = -2.0, x.divisor[0] = 2.0, x.view_2d = 0, x.fragment_f[0] = 0.4;
+        x.viewport[2] = 0;
+        const uint32_t m = temporal_spatial_failed(2, &x, half); /* the composite reads no origin */
+        assert(m == (1u << TEMPORAL_SPATIAL_FORM | 1u << TEMPORAL_SPATIAL_DIVISOR | 1u << TEMPORAL_SPATIAL_VIEW |
+                     1u << TEMPORAL_SPATIAL_FRACTION | 1u << TEMPORAL_SPATIAL_COVERAGE));
+        assert(temporal_spatial_check(2, &x, half) == TEMPORAL_SPATIAL_FORM); /* the mask's lowest is the check's */
+        x = spatial_draw(0, 0.5);
+        x.vs ^= 1, x.vertex_origin_ok = 0, x.vertex_origin[1] = 3.0, x.anisotropy = 1;
+        const uint32_t four = 1u << TEMPORAL_SPATIAL_VERTEX | 1u << TEMPORAL_SPATIAL_UNAVAILABLE |
+                              1u << TEMPORAL_SPATIAL_ORIGIN | 1u << TEMPORAL_SPATIAL_SAMPLER;
+        assert(temporal_spatial_failed(0, &x, half) == four);
+        assert(temporal_spatial_failed(-1, &x, half) == 1u << TEMPORAL_SPATIAL_NOT_LISTED);
+    }
     for (int a = 0; a < TEMPORAL_SPATIAL_REASONS; a++)
         for (int b = a + 1; b < TEMPORAL_SPATIAL_REASONS; b++)
             assert(strcmp(temporal_spatial_text(a), temporal_spatial_text(b)));
