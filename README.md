@@ -6,6 +6,7 @@
 <img alt="aevora-icon" src="assets/nxaevora-banner.png" width="1000">
 <br>
 <a href="https://github.com/nxaevora/nxaevora-main/actions/workflows/ci.yml"><img src="https://github.com/nxaevora/nxaevora-main/actions/workflows/ci.yml/badge.svg?branch=main" alt="Build NXAevora (Windows)"></a>
+<br>
 <img src="https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20Linux%20x64%20(Planned)-blue?style=flat" alt="Badge">
 <img src="https://img.shields.io/badge/Status-work%20in%20progress%20(alpha%20stage)-orange?style=flat" alt="Status: work in progress (alpha stage)">
 <img src="https://img.shields.io/badge/License-GPL--3.0%20(v3)-lightgrey?style=flat" alt="License: GPL-3.0 (v3)">
