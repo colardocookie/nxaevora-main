@@ -513,7 +513,7 @@ int main(int argc, char** argv) {
     g_shader_maximal_reconvergence = 1;
     DIR* folder = opendir(dir);
     assert(folder && "the corpus folder opens");
-    int seen = 0;
+    int seen = 0, offset_readers = 0;
     struct dirent* entry;
     while ((entry = readdir(folder))) {
         const size_t len = strlen(entry->d_name);
@@ -526,12 +526,28 @@ int main(int argc, char** argv) {
         u8* code = shader_corpus_load(path, &max_bytes, &stage, &info);
         if (!code) continue;
         const unsigned long long hash = shader_hash(code, max_bytes, &hlen);
+        { /* the positive control: some program of the corpus, of any stage, reads a size for its offsets */
+            ShaderInfo any = info;
+            size_t anyw;
+            u8* copy = malloc(max_bytes);
+            assert(copy);
+            memcpy(copy, code, max_bytes);
+            u32* spv = shader_to_spirv(copy, max_bytes, stage, &any, &anyw, 1, 1, 1, 1);
+            free(copy);
+            if (spv && any.tex_offset_size_mask) offset_readers++;
+            free(spv);
+        }
         if (hash == plain && stage == ST_FS) { /* no size query at all: no slot marked */
             ShaderInfo made;
             size_t pw;
             free(translate(code, max_bytes, stage, &info, (const u32[3]){0, 0, 0}, &pw, &made));
-            check(CHECK_QUERIED, made.tex_txq_mask == 0, "B46268AD's translation marks no queried slot");
-            printf("txq_variant: %016llx: queried slots 0x%llx\n", hash, (unsigned long long)made.tex_txq_mask);
+            unsigned long long scene = 0;
+            for (int s = 0; s < made.ntex && s < 64; s++)
+                if (made.tex[s].cbuf_off == 0x28) scene |= 1ull << s;
+            check(CHECK_QUERIED, made.tex_txq_mask == 0 && scene && !(made.tex_offset_size_mask & scene),
+                  "B46268AD's translation marks no queried slot, and reads no size of the scene's for offsets");
+            printf("txq_variant: %016llx: queried slots 0x%llx, sizes read for offsets 0x%llx, the scene's 0x%llx\n",
+                   hash, (unsigned long long)made.tex_txq_mask, (unsigned long long)made.tex_offset_size_mask, scene);
             seen |= 4;
         }
         for (int p = 0; p < 2; p++) {
@@ -549,10 +565,13 @@ int main(int argc, char** argv) {
                 if (made.tex[s].cbuf_off == programs[p].handle) queried |= 1ull << s;
                 if (made.tex[s].cbuf_off == 0x28) scene |= 1ull << s;
             }
-            check(CHECK_QUERIED, queried && made.tex_txq_mask == queried && scene && !(made.tex_txq_mask & scene),
-                  "the translation marks the queried slot and not the scene colour's");
-            printf("txq_variant: %016llx: queried slots 0x%llx, the query's 0x%llx, the scene's 0x%llx\n", hash,
-                   (unsigned long long)made.tex_txq_mask, queried, scene);
+            check(CHECK_QUERIED,
+                  queried && made.tex_txq_mask == queried && scene && !(made.tex_txq_mask & scene) &&
+                      !(made.tex_offset_size_mask & scene),
+                  "the translation marks the queried slot and not the scene colour's, nor reads its size for offsets");
+            printf("txq_variant: %016llx: queried slots 0x%llx, the query's 0x%llx, the scene's 0x%llx, sizes read for "
+                   "offsets 0x%llx\n", hash, (unsigned long long)made.tex_txq_mask, queried, scene,
+                   (unsigned long long)made.tex_offset_size_mask);
             check(CHECK_OTHER_SLOT, ow == aw && !memcmp(o, a, aw * sizeof *a),
                   "a key for another slot changes nothing");
             unsigned removed, added;
@@ -569,6 +588,8 @@ int main(int argc, char** argv) {
     }
     closedir(folder);
     check(CHECK_SEEN, seen == 7, "the three programs are in the corpus");
+    /* none in this corpus: the positive case of the mark is tests/shader_direct_regressions.c's run-time offset */
+    printf("txq_variant: %d programs of the corpus read a size for texel offsets\n", offset_readers);
     if (must_fail >= 0) {
         printf("txq_variant: the check %s %s, as this test must see it fail\n", g_check_name[must_fail],
                g_failed[must_fail] ? "failed" : "did NOT fail");

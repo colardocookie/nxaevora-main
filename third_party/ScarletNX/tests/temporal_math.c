@@ -2539,6 +2539,7 @@ static void test_spatial(void) {
             REFUSED(x.instance_count = 2, TEMPORAL_SPATIAL_FORM);
             REFUSED(x.first_instance = 1, TEMPORAL_SPATIAL_FORM);
             REFUSED(x.other_stages = 1, TEMPORAL_SPATIAL_STAGES);
+            REFUSED(x.offset_size = 1, TEMPORAL_SPATIAL_SIZE_READ); /* class U (research 17:35) */
             { /* the classification (d08b624c, research 14:35, 14:45): only the fraction and the tap and coverage
                  bounds are class N, everything else class U, whatever fails with it */
                 int v;
@@ -2581,6 +2582,7 @@ static void test_spatial(void) {
                 CLASS_U(x.first_vertex = 1, TEMPORAL_SPATIAL_FORM);
                 CLASS_U(x.direct = 0, TEMPORAL_SPATIAL_FORM);
                 CLASS_U(x.other_stages = 1, TEMPORAL_SPATIAL_STAGES);
+                CLASS_U(x.offset_size = 1, TEMPORAL_SPATIAL_SIZE_READ);
                 CLASS_U(x.normalised = 0, TEMPORAL_SPATIAL_SAMPLER);
                 CLASS_U(x.filters_same = 0, TEMPORAL_SPATIAL_SAMPLER);
                 CLASS_U(x.address[0] = TEMPORAL_SPATIAL_OTHER_ADDRESS, TEMPORAL_SPATIAL_SAMPLER);

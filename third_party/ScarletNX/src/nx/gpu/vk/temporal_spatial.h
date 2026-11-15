@@ -130,6 +130,7 @@ typedef struct TemporalSpatialDraw {
     int triangle_list;        /* the topology */
     uint32_t first_vertex, vertex_count, instance_count, first_instance;
     int other_stages;         /* a tessellation or geometry program bound */
+    int offset_size;          /* the translation reads the slot's size for texel offsets, which no key rewrites */
     /* each value with whether it is available: read by the program, bound, long enough, readable, and neither
        pending nor GPU-owned (research 15:00). A value not available is never compared. */
     double vertex_f[2];       /* the fraction the vertex stage's scene block holds */
@@ -156,6 +157,7 @@ enum {
     TEMPORAL_SPATIAL_UNAVAILABLE,  /* a value the entry's programs read is not available */
     TEMPORAL_SPATIAL_FORM,         /* not a direct, non-indexed triangle list of one instance from vertex 0, 3 long */
     TEMPORAL_SPATIAL_STAGES,       /* a tessellation or geometry program */
+    TEMPORAL_SPATIAL_SIZE_READ,    /* the translation reads the slot's size for its offsets (research 17:35) */
     TEMPORAL_SPATIAL_FRACTION,     /* a fraction the programs read is not the replacement's */
     TEMPORAL_SPATIAL_ORIGIN,       /* c6aaf96f's position origin (bank 1 +0, +4) is not the measured -1, +1 */
     TEMPORAL_SPATIAL_DIVISOR,      /* the composite's +794 or +798 not 1 */
@@ -172,6 +174,7 @@ static inline const char* temporal_spatial_text(int why) {
         "a value its programs read is missing, short, unreadable, pending or held on the GPU",
         "it is not a direct, non-indexed triangle list of one instance from vertex 0 and 3 vertices",
         "a tessellation or geometry program is bound",
+        "its translation reads the slot's size for texel offsets, which no key rewrites",
         "a fraction its programs read is not the replacement's",
         "its vertex program's position origin is not the measured -1, +1",
         "the composite's divisors are not 1",
@@ -227,6 +230,7 @@ static inline int temporal_spatial_check(int k, const TemporalSpatialDraw* d, co
         d->first_instance != 0)
         return TEMPORAL_SPATIAL_FORM;
     if (d->other_stages) return TEMPORAL_SPATIAL_STAGES;
+    if (d->offset_size) return TEMPORAL_SPATIAL_SIZE_READ;
     /* c6aaf96f positions from bank 1 +0, +4, measured -1 and +1 in P1 and P2: the audited mapping holds only there */
     if (e->scaled_vertex && !(d->vertex_origin[0] == -1.0 && d->vertex_origin[1] == 1.0))
         return TEMPORAL_SPATIAL_ORIGIN;
@@ -282,7 +286,7 @@ static inline uint32_t temporal_spatial_failed(int k, const TemporalSpatialDraw*
     pass.first_vertex = pass.first_instance = 0;
     pass.vertex_count = 3;
     pass.instance_count = 1;
-    pass.other_stages = 0;
+    pass.other_stages = pass.offset_size = 0;
     pass.vertex_origin[0] = -1.0, pass.vertex_origin[1] = 1.0;
     pass.divisor[0] = pass.divisor[1] = 1.0;
     pass.normalised = pass.one_level = pass.filters_same = 1;
@@ -291,7 +295,7 @@ static inline uint32_t temporal_spatial_failed(int k, const TemporalSpatialDraw*
     pass.view_format_same = pass.view_2d = pass.view_one_level = pass.view_one_layer = pass.view_identity = 1;
     for (int a = 0; a < 2; a++) pass.vertex_f[a] = pass.fragment_f[a] = fs[a];
     uint32_t mask = 0;
-    for (int group = 0; group < 10; group++) {
+    for (int group = 0; group < 11; group++) {
         TemporalSpatialDraw x = pass;
         int why = TEMPORAL_SPATIAL_COVERAGE;
         switch (group) {
@@ -307,6 +311,7 @@ static inline uint32_t temporal_spatial_failed(int k, const TemporalSpatialDraw*
                 x.first_instance = d->first_instance, why = TEMPORAL_SPATIAL_FORM;
                 break;
             case 3: x.other_stages = d->other_stages, why = TEMPORAL_SPATIAL_STAGES; break;
+            case 9: x.offset_size = d->offset_size, why = TEMPORAL_SPATIAL_SIZE_READ; break;
             case 4:
                 if (d->vertex_origin_ok) memcpy(x.vertex_origin, d->vertex_origin, sizeof x.vertex_origin);
                 why = TEMPORAL_SPATIAL_ORIGIN;

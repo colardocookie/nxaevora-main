@@ -2875,6 +2875,7 @@ static void spatial_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, int ot
         d.instance_count = instances;
         d.first_instance = base_instance;
         d.other_stages = other_stages;
+        d.offset_size = (int)(fs0->si.tex_offset_size_mask >> i & 1);
         const VkViewport v = vk_render_viewport_at(r, 0);
         d.viewport[0] = v.x;
         d.viewport[1] = v.y;
@@ -3051,7 +3052,9 @@ retry:
            the scene with the ordinary program, and the mode off at once. The draw is drawn (astra's O2, 04:40) */
         if (g_spatial.larger) {
             int fault;
-            const int made = g_spatial.keyed ? fs && !fs->failed && fs != sh.fs0 : fs != NULL;
+            /* made: a program that exists and did not fail; a failed ordinary program withdraws the decision too
+               (research 17:35) */
+            const int made = g_spatial.keyed ? fs && !fs->failed && fs != sh.fs0 : fs && !fs->failed;
             g_spatial.larger = temporal_spatial_final(g_spatial.larger, made, g_vk_watch != NULL, &fault);
             if (fault) {
                 vk_temporal_spatial_fault(made ? "the mode went off before the draw's textures were bound"

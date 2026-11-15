@@ -15,7 +15,7 @@
 #define CORPUS_INFO_OLD                                                                                              \
     ((offsetof(ShaderInfo, txq_fixed) + _Alignof(ShaderInfo) - 1) / _Alignof(ShaderInfo) * _Alignof(ShaderInfo))
 _Static_assert(CORPUS_INFO_OLD < sizeof(ShaderInfo), "the older record is shorter");
-/* and the ShaderInfo before tex_txq_mask (D3-2 revision 4) */
+/* and the ShaderInfo before tex_txq_mask and tex_offset_size_mask (D3-2 revision 4) */
 #define CORPUS_INFO_MID                                                                                              \
     ((offsetof(ShaderInfo, tex_txq_mask) + _Alignof(ShaderInfo) - 1) / _Alignof(ShaderInfo) * _Alignof(ShaderInfo))
 _Static_assert(CORPUS_INFO_OLD < CORPUS_INFO_MID && CORPUS_INFO_MID < sizeof(ShaderInfo), "the records grow");
@@ -87,7 +87,7 @@ u8* shader_corpus_load(const char* path, u32* max_bytes, int* stage, ShaderInfo*
         h.stage <= ST_CS &&
         h.len <= h.max_bytes && h.max_bytes <= CORPUS_MAX && fread(&info, 1, h.info_size, f) == h.info_size) {
         if (h.info_size == CORPUS_INFO_OLD) memset(info.txq_fixed, 0, sizeof info.txq_fixed);
-        if (h.info_size != sizeof(ShaderInfo)) info.tex_txq_mask = 0;
+        if (h.info_size != sizeof(ShaderInfo)) info.tex_txq_mask = info.tex_offset_size_mask = 0;
         code = (u8*)calloc(h.max_bytes ? h.max_bytes : 1, 1);
         if (code && fread(code, 1, h.len, f) != h.len) {
             free(code);
