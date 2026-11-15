@@ -45,7 +45,8 @@ enum {
     SNX_NEEDS_CORE_UNKNOWN, /* a core feature bit is asked for that the host does not know */
     SNX_NEEDS_CORE_BIT,     /* a core feature bit that is asked for is not one the physical device has */
     SNX_NEEDS_ADAPTER,     /* the record is of another adapter, or there is none */
-    SNX_NEEDS_NOT_RECORDED /* an extension or a bit that is asked for is not in the record */
+    SNX_NEEDS_NOT_RECORDED, /* an extension or a bit that is asked for is not in the record */
+    SNX_NEEDS_INSTANCE      /* an instance extension it names was not enabled on the instance (DL2) */
 };
 
 /* The adapter's chain, read only and never written or linked: the bits it asks for, copied by value. A chain
@@ -100,15 +101,29 @@ static inline int snx_needs_owner(const char* const* names, uint32_t count, cons
     return SNX_NEEDS_OWNER;
 }
 
-/* Needs of core feature bits are no structure at all: a plain field of the adapter's answer, of which one bit
-   is defined, separate layouts for the depth and the stencil aspect (a bit of the 1.2 features). Whoever makes
-   a device turns it on in its own 1.2 structure, after its own question to the physical device. A bit the host
-   does not know refuses, and so does a known one the physical device does not have. */
+/* Needs of core feature bits are no structure at all: a plain field of the adapter's answer, of which two bits
+   are defined, separate layouts for the depth and the stencil aspect and buffer device addresses (both bits of
+   the 1.2 features). Whoever makes a device turns them on in its own 1.2 structure, after its own question to the
+   physical device, whose answer is has. A bit the host does not know refuses, and so does a known one the
+   physical device does not have. */
 #define SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL 1u
-#define SNX_NEEDS_CORE_KNOWN SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL
-static inline int snx_needs_core(uint32_t asked, int has_separate_depth_stencil) {
+#define SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS 2u
+#define SNX_NEEDS_CORE_KNOWN (SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL | SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS)
+static inline int snx_needs_core(uint32_t asked, uint32_t has) {
     if (asked & ~SNX_NEEDS_CORE_KNOWN) return SNX_NEEDS_CORE_UNKNOWN;
-    if ((asked & SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL) && !has_separate_depth_stencil) return SNX_NEEDS_CORE_BIT;
+    if (asked & ~has) return SNX_NEEDS_CORE_BIT;
+    return SNX_NEEDS_OK;
+}
+/* The instance extensions an adapter names, against the ones the instance was made with for it (DL2): every one
+   of them, else SNX_NEEDS_INSTANCE */
+static inline int snx_needs_instance(const char* const* asked, uint32_t count, const char* const* made,
+                                     uint32_t made_count) {
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t k = 0;
+        if (!asked || !asked[i]) return SNX_NEEDS_INSTANCE;
+        while (k < made_count && (!made[k] || strcmp(made[k], asked[i]))) k++;
+        if (k == made_count) return SNX_NEEDS_INSTANCE;
+    }
     return SNX_NEEDS_OK;
 }
 /* The bit as a device's own 1.2 structure gets it for one creation: on when the additions are taken and the
@@ -192,9 +207,9 @@ static inline const char* snx_needs_text(int why) {
         case SNX_NEEDS_ROOM: return "it names more than the host keeps, or a name too long to keep";
         case SNX_NEEDS_OWNER: return "it asks for a feature bit and does not name VK_KHR_compute_shader_derivatives";
         case SNX_NEEDS_CORE_UNKNOWN: return "it asks for a core feature bit the host does not know";
-        case SNX_NEEDS_CORE_BIT:
-            return "it asks for separate depth and stencil layouts, which the physical device does not have";
+        case SNX_NEEDS_CORE_BIT: return "it asks for a core feature bit that the physical device does not have";
         case SNX_NEEDS_ADAPTER: return "the game's device was not made with the needs of this adapter";
+        case SNX_NEEDS_INSTANCE: return "it names an instance extension the game's instance was not made with";
         default: return "it names an extension or a feature bit the game's device was not made with";
     }
 }

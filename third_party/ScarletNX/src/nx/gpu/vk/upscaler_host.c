@@ -12,6 +12,7 @@
 #include "nx/gpu/vk/upscaler.h"
 #include "nx/gpu/vk/upscaler_module.h"
 #include "nx/gpu/vk/upscaler_needs.h"
+#include "common/gpu/vk/vk_common.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/platform/log.h"
 
@@ -19,6 +20,7 @@
 const SnxUpscalerApi* snx_upscaler_fsr(void); /* gpu/vk/upscaler_fsr.cpp */
 #endif
 
+static const SnxUpscalerApi* module_adapter(const char* name);
 /* built: whether an adapter of that name is part of this program at all */
 static const SnxUpscalerApi* adapter_find(const char* name, int* built) {
     *built = 0;
@@ -34,6 +36,7 @@ static const SnxUpscalerApi* adapter_find(const char* name, int* built) {
    beside it. The adapter says why in a line of its own. */
 const SnxUpscalerApi* vk_upscaler_adapter(const char* name) {
     int built = 0;
+    if (snx_module_name(name, 0) == SNX_MODULE_NAME_MODULE) return module_adapter(name);
     const SnxUpscalerApi* api = adapter_find(name, &built);
     if (name && !built) WARN("arceus-upscaler: no adapter named \"%s\" is built into this program\n", name);
     return api;
@@ -57,10 +60,13 @@ static void module_log(const char* line) {
     copy[n] = 0;
     LOG("%s%s\n", copy, line[n] ? " (cut)" : "");
 }
-/* The self-test's lookup: what the game's knows, and the adapters that are modules of their own. Such a module
-   is one file beside the program, named by its full path and loaded as upscaler_module.c says. */
-const SnxUpscalerApi* vk_upscaler_adapter_selftest(const char* name) {
-    if (snx_module_name(name, 1) != SNX_MODULE_NAME_MODULE) return vk_upscaler_adapter(name);
+/* An adapter that is a module of its own (snx_module_name): one file beside the program, named by its full path and
+   loaded as upscaler_module.c says, once for the session. A load that failed is not tried again. */
+static const SnxUpscalerApi* module_adapter(const char* name) {
+    static const SnxUpscalerApi* api;
+    static int tried;
+    if (tried) return api;
+    tried = 1;
 #ifdef _WIN32
     static const char file[] = "snx_upscaler_dlss.dll";
 #else
@@ -70,7 +76,6 @@ const SnxUpscalerApi* vk_upscaler_adapter_selftest(const char* name) {
     char path[4096];
     size_t folder = 0;
     int why = SNX_MODULE_NOT_FULL_PATH;
-    const SnxUpscalerApi* api = NULL;
     /* the program's own folder: up to its last separator */
     for (size_t i = 0; program && program[i]; i++)
         if (program[i] == '/' || program[i] == '\\') folder = i + 1;
@@ -86,6 +91,8 @@ const SnxUpscalerApi* vk_upscaler_adapter_selftest(const char* name) {
              file, path[0] ? ", " : "", path);
     return api;
 }
+/* The self-test's lookup: the same as the game's */
+const SnxUpscalerApi* vk_upscaler_adapter_selftest(const char* name) { return vk_upscaler_adapter(name); }
 
 /* one more name on a list without repeats: 0 when there is no room */
 static int name_add(const char** names, uint32_t* count, uint32_t room, const char* name) {
@@ -103,6 +110,49 @@ static int names_add(const char** names, uint32_t* count, uint32_t room, const S
     return 1;
 }
 
+/* The instance extensions added for an adapter when the instance was made, kept for its device and its start */
+static const char* g_instance_names[SNX_NEEDS_NAMES];
+static char g_instance_name[SNX_NEEDS_NAMES][SNX_NEEDS_NAME_LENGTH + 1];
+static uint32_t g_instance_count;
+/* Before the game's instance is made, with SNX_ARCEUS_UPSCALER naming an adapter (DL2): its instance extensions,
+   each added to the list only when the instance lists it, as classified, and kept. 0 with one line when one is not
+   listed or the list has no room: the instance is made without them, and the adapter is refused later. */
+int vk_upscaler_instance_ask(const char* name, const char** names, uint32_t* count, uint32_t room) {
+    SnxUpscalerExtensions more = {0};
+    if (!name || vk_upscaler_not_in_game(name)) return 0;
+    const SnxUpscalerApi* api = vk_upscaler_adapter(name);
+    if (!api || api->abi != SNX_UPSCALER_ABI || !api->instance_extensions) return 0;
+    if (api->instance_extensions(&more) != SNX_UPSCALER_OK || more.count > SNX_NEEDS_NAMES ||
+        (more.count && !more.names)) {
+        LOG("arceus-upscaler: %s: its needs of the instance could not be asked: it is not available\n", name);
+        return 0;
+    }
+    const uint32_t before = *count;
+    for (uint32_t i = 0; i < more.count; i++) {
+        const char* n = more.names[i];
+        if (!n || strlen(n) > SNX_NEEDS_NAME_LENGTH || !snx_vk_has_instance_extension(n) ||
+            !name_add(names, count, room, n)) {
+            LOG("arceus-upscaler: %s: the instance extension %s is not listed by the instance or has no room: the "
+                "instance is made without its needs, and it is not available\n", name, n ? n : "(none)");
+            for (uint32_t k = before; k < *count; k++) names[k] = NULL;
+            *count = before;
+            return 0;
+        }
+    }
+    for (uint32_t i = 0; i < more.count; i++) {
+        memcpy(g_instance_name[i], more.names[i], strlen(more.names[i]) + 1);
+        g_instance_names[i] = g_instance_name[i];
+    }
+    g_instance_count = more.count;
+    if (more.count) LOG("arceus-upscaler: %s: %u instance extensions added to the game's instance\n", name, more.count);
+    return 1;
+}
+/* At the upscaler's start: whether every instance extension the adapter names was added when the instance was made */
+int vk_upscaler_instance_met(const SnxUpscalerApi* api) {
+    SnxUpscalerExtensions more = {0};
+    if (!api || !api->instance_extensions || api->instance_extensions(&more) != SNX_UPSCALER_OK) return 0;
+    return snx_needs_instance(more.names, more.count, g_instance_names, g_instance_count) == SNX_NEEDS_OK;
+}
 /* Before the instance is made: the adapter's instance extensions are added to the list. 0 when the adapter refuses
    or the list has no room. The instance is then made without the adapter, and the upscaler is off. */
 int vk_upscaler_instance_extensions(const SnxUpscalerApi* api, const char** names, uint32_t* count, uint32_t room) {
@@ -136,8 +186,9 @@ int vk_upscaler_device_needs(const SnxUpscalerApi* api, VkInstance instance, VkP
 
 /* The game's device (upscaler_needs.h has the rules). The one structure the host accepts is Vulkan's. The pure
    header copies its fields out of the object's bytes at its stand-in's offsets, which must be Vulkan's. */
-_Static_assert(SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL == SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL,
-               "the core bit of the contract and of the pure rules");
+_Static_assert(SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL == SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL &&
+                   SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS == SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS,
+               "the core bits of the contract and of the pure rules");
 _Static_assert(SNX_NEEDS_DERIVATIVES == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_NV,
                "the accepted structure's type");
 _Static_assert(offsetof(SnxNeedsNode, type) == offsetof(VkBaseInStructure, sType) &&
@@ -198,15 +249,15 @@ static int device_names(VkPhysicalDevice device, const char* const* names, uint3
    none when there is no such adapter: the device is made as without the switch. The adapter's storage is read
    and never written or kept. */
 int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevice device,
-                           PFN_vkGetInstanceProcAddr lookup, int has_separate_depth_stencil,
-                           VkUpscalerDeviceAsk* ask) {
+                           PFN_vkGetInstanceProcAddr lookup, uint32_t has_core, VkUpscalerDeviceAsk* ask) {
     SnxUpscalerExtensions of_instance = {0};
     SnxUpscalerDeviceNeeds needs = {0};
     SnxNeedsBits asked = {0, 0, 0}, has = {0, 0, 0};
     memset(ask, 0, sizeof *ask);
     if (vk_upscaler_not_in_game(name)) return 0; /* before any lookup: nothing of such a name is loaded or asked */
     int built = 0;
-    const SnxUpscalerApi* api = adapter_find(name, &built);
+    const SnxUpscalerApi* api =
+        snx_module_name(name, 0) == SNX_MODULE_NAME_MODULE ? module_adapter(name) : adapter_find(name, &built);
     /* No adapter: nothing is said here. The upscaler's start has the one line for a name that is not built in. */
     if (!api) return 0;
     if (api->abi != SNX_UPSCALER_ABI || !api->instance_extensions || !api->device_extensions) {
@@ -218,8 +269,9 @@ int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevi
         device_refused(name, "its needs of the instance and the device could not be asked");
         return 0;
     }
-    if (of_instance.count) {
-        device_refused(name, "it names needs of the instance, which is already made");
+    /* its instance names: every one enabled when the instance was made for it (vk_upscaler_instance_ask) */
+    if (snx_needs_instance(of_instance.names, of_instance.count, g_instance_names, g_instance_count) != SNX_NEEDS_OK) {
+        device_refused(name, snx_needs_text(SNX_NEEDS_INSTANCE));
         return 0;
     }
     if (snx_needs_none(needs.extensions.count, needs.features, needs.core)) {
@@ -233,7 +285,7 @@ int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevi
         if (!needs.extensions.names[i] || strlen(needs.extensions.names[i]) > SNX_NEEDS_NAME_LENGTH)
             why = SNX_NEEDS_ROOM;
     /* the core bits against the caller's own question to the physical device */
-    if (why == SNX_NEEDS_OK) why = snx_needs_core(needs.core, has_separate_depth_stencil);
+    if (why == SNX_NEEDS_OK) why = snx_needs_core(needs.core, has_core);
     if (why == SNX_NEEDS_OK) why = snx_needs_chain(needs.features, &asked);
     if (why == SNX_NEEDS_OK) why = snx_needs_owner(needs.extensions.names, needs.extensions.count, &asked);
     if (why == SNX_NEEDS_OK) why = device_names(device, needs.extensions.names, needs.extensions.count);

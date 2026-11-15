@@ -108,9 +108,21 @@ typedef struct {
 static int create_instance(void) {
     u32 nbe = 0;
     const char* const* be = g_opt_headless ? NULL : backend_vk_extensions(&nbe);
+    /* With SNX_ARCEUS_UPSCALER naming an adapter: its instance extensions behind the backend's, on a copy, each
+       only when the instance lists it (DL2). Without the switch the backend's list is used as it is. */
+    const char* upscaler = getenv("SNX_ARCEUS_UPSCALER");
+    const char* with[64];
+    u32 nwith = 0;
+    const int asks = upscaler && upscaler[0] && strcmp(upscaler, "0") && strcmp(upscaler, "off") &&
+                     strcmp(upscaler, "spatial") && (!be || nbe <= 32);
+    if (asks) {
+        for (u32 i = 0; be && i < nbe; i++) with[nwith++] = be[i];
+        const u32 room = (u32)(sizeof with / sizeof with[0]);
+        if (!vk_upscaler_instance_ask(upscaler, with, &nwith, room)) nwith = be ? nbe : 0;
+    }
     SnxVkInstanceInfo info = {.app_name = "ScarletNX",
-                              .extensions = be,
-                              .extension_count = be ? nbe : 0,
+                              .extensions = asks ? (nwith ? with : NULL) : be,
+                              .extension_count = asks ? nwith : be ? nbe : 0,
                               .validation = g_settings.vulkan_validation_layer != 0,
                               .synchronization = g_settings.vulkan_validation_layer != 0,
                               .message_limit_off = g_settings.vulkan_validation_layer != 0,
@@ -593,16 +605,21 @@ static int create_device(void) {
     const u32 room = (u32)(sizeof g_vk.dev_ext / sizeof g_vk.dev_ext[0]);
     u32 with_count = next;
     int accepted = 0;
-    if (upscaler && upscaler[0] && strcmp(upscaler, "0") && strcmp(upscaler, "off"))
-        accepted = vk_upscaler_device_ask(upscaler, g_vk.instance, g_vk.phys, vkGetInstanceProcAddr,
-                                          q12.separateDepthStencilLayouts != 0, &ask) &&
+    if (upscaler && upscaler[0] && strcmp(upscaler, "0") && strcmp(upscaler, "off")) {
+        /* the core bits the physical device has, as its own 1.2 question answered */
+        const u32 has = (q12.separateDepthStencilLayouts ? SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL : 0) |
+                        (q12.bufferDeviceAddress ? SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS : 0);
+        accepted = vk_upscaler_device_ask(upscaler, g_vk.instance, g_vk.phys, vkGetInstanceProcAddr, has, &ask) &&
                    vk_upscaler_device_names(&ask, ext, &with_count, room);
+    }
     if (accepted && ask.have) ask.derivatives.pNext = chain;
     /* A core bit the adapter needs goes into the game's OWN 1.2 structure, for the creation with the additions
        only: the game's own value is kept and put back before a creation without them. */
-    const VkBool32 own_separate = f12.separateDepthStencilLayouts;
+    const VkBool32 own_separate = f12.separateDepthStencilLayouts, own_address = f12.bufferDeviceAddress;
     f12.separateDepthStencilLayouts = (VkBool32)snx_needs_core_bit(
         own_separate != 0, accepted, accepted ? ask.core : 0, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL);
+    f12.bufferDeviceAddress = (VkBool32)snx_needs_core_bit(own_address != 0, accepted, accepted ? ask.core : 0,
+                                                           SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS);
     const SnxNeedsPlan plan =
         snx_needs_plan(next, chain, accepted, with_count, accepted && ask.have ? (void*)&ask.derivatives : chain);
     VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -622,6 +639,7 @@ static int create_device(void) {
         /* as without the switch: the game's own count and chain head, and no name of an adapter behind them */
         for (u32 i = next; i < room; i++) ext[i] = NULL;
         f12.separateDepthStencilLayouts = own_separate;
+        f12.bufferDeviceAddress = own_address;
         dci.pNext = chain;
         dci.enabledExtensionCount = next;
         if (!VK_OK(vkCreateDevice(g_vk.phys, &dci, NULL, &g_vk.dev))) return 0;

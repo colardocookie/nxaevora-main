@@ -1150,9 +1150,10 @@ typedef struct {
     u32 core;                /* core feature bits to turn on in the caller's own structure */
     VkPhysicalDeviceComputeShaderDerivativesFeaturesNV derivatives; /* the host's own structure for the chain */
 } VkUpscalerDeviceAsk;
+int vk_upscaler_instance_ask(const char* name, const char** names, u32* count, u32 room);
+int vk_upscaler_instance_met(const struct SnxUpscalerApi* api);
 int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevice device,
-                           PFN_vkGetInstanceProcAddr lookup, int has_separate_depth_stencil,
-                           VkUpscalerDeviceAsk* ask);
+                           PFN_vkGetInstanceProcAddr lookup, u32 has_core, VkUpscalerDeviceAsk* ask);
 int vk_upscaler_device_names(const VkUpscalerDeviceAsk* ask, const char** names, u32* count, u32 room);
 void vk_upscaler_device_failed(const VkUpscalerDeviceAsk* ask, int result);
 void vk_upscaler_device_made(const VkUpscalerDeviceAsk* ask);

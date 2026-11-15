@@ -3239,8 +3239,8 @@ static void upscaler_start(void) {
     else if (api->instance_extensions(&instance) != SNX_UPSCALER_OK ||
              api->device_extensions(g_vk.instance, g_vk.phys, vkGetInstanceProcAddr, &device) != SNX_UPSCALER_OK)
         why = "its needs of the instance and the device could not be asked";
-    else if (instance.count)
-        why = "it names needs of the instance, which are not added to the game's instance";
+    else if (instance.count && !vk_upscaler_instance_met(api)) /* added when the instance was made (DL2) */
+        why = "it names needs of the instance that the game's instance was not made with";
     else if (!snx_needs_none(device.extensions.count, device.features, device.core)) {
         /* asked again here, and held against what the game's device was made with: every name and every bit */
         const int met = vk_upscaler_device_met(api, name, device.extensions.names, device.extensions.count,
