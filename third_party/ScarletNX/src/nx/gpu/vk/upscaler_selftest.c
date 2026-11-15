@@ -2491,6 +2491,9 @@ int vk_upscaler_selftest(const char* adapter) {
     else if (!g.checks_asked)
         LOG(ST "case 7: NOT MET, %u validation messages of a layer WITHOUT its synchronisation checks. Its condition "
                "is no message with them asked for: FAIL\n", said);
+    else if (g.halted) /* exempt from the skip, a count over what ran (research 12:40) */
+        LOG(ST "case 7: %u validation messages over the part that ran (stopped after %s): %s\n", said, g.halted_in,
+            said ? "FAIL" : "PASS");
     else LOG(ST "case 7: %u validation messages: %s\n", said, said ? "FAIL" : "PASS");
     /* said also when the run stopped: the reason is kept whatever else failed */
     if (g.validation && !g.checks_asked)
