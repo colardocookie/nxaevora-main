@@ -46,7 +46,7 @@ target_compile_definitions(snx_upscaler_dlss PRIVATE WIN32_LEAN_AND_MEAN NOMINMA
 target_compile_options(snx_upscaler_dlss PRIVATE /W4 /WX /utf-8)
 # NVIDIA's loader for the static runtime (/MT), never a debug variant, and no vulkan-1: every Vulkan entry comes from
 # the lookups the module is handed
-target_link_libraries(snx_upscaler_dlss PRIVATE Vulkan::Headers "${snx_ngx_lib}")
+target_link_libraries(snx_upscaler_dlss PRIVATE Vulkan::Headers "${snx_ngx_lib}" version) # version: the provenance line
 
 # What the module depends on, printed in the build's log. vulkan-1.dll among them fails the build.
 get_filename_component(snx_cl_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
