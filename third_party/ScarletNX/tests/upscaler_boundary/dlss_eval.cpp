@@ -17,6 +17,17 @@ int dlss_eval_cases() {
     assert(!snx_dlss::ngx_config_line("[2026-11-14 21:42:06] [NGXLoadFeature:88] loading nvngx_dlss.dll"));
     assert(!snx_dlss::ngx_config_line("NGXLoadConfig without its bracket") && !snx_dlss::ngx_config_line(nullptr));
     assert(!snx_dlss::ngx_config_line(""));
+    // the experiment's forced sign: the four values, x first, and nothing else
+    {
+        int s[2] = {7, 7};
+        assert(snx_dlss::jitter_sign_forced("--", s) && s[0] == -1 && s[1] == -1);
+        assert(snx_dlss::jitter_sign_forced("-+", s) && s[0] == -1 && s[1] == 1);
+        assert(snx_dlss::jitter_sign_forced("+-", s) && s[0] == 1 && s[1] == -1);
+        assert(snx_dlss::jitter_sign_forced("++", s) && s[0] == 1 && s[1] == 1);
+        s[0] = s[1] = 7;
+        static const char* const refused[] = {nullptr, "", "-", "+", "---", "+0", "1-", " -", "++ ", "x+"};
+        for (const char* v : refused) assert(!snx_dlss::jitter_sign_forced(v, s) && s[0] == 7 && s[1] == 7);
+    }
     using namespace snx_dlss;
     const float scale[2] = {-1280.0f, -720.0f}, jitter[2] = {0.25f, -0.125f};
     const int plus[2] = {1, 1};

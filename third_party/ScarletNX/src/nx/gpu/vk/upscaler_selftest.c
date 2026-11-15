@@ -2118,6 +2118,13 @@ static int sign_protocol(void) {
     int valid = 1, made = 1;
     if (skip_rest()) return 1;
     step("the sign protocol");
+    /* the experiment's forced sign multiplies every variant's: the protocol would not compare what it says */
+    const char* forced = getenv("SNX_ARCEUS_DLSS_JITTER_SIGN");
+    if (forced && forced[0]) {
+        SAY(ST "the sign protocol: not run, SNX_ARCEUS_DLSS_JITTER_SIGN is set (an experiment that forces the sign the "
+               "module hands NGX), and the protocol compares the signs itself\n");
+        return 1;
+    }
     double *reference = malloc(sizeof(double) * picture), *work = malloc(sizeof(double) * picture);
     double* outputs = malloc(sizeof(double) * picture * SCORED * REPEATS);
     u8 *regions = malloc(pixels), *everywhere = malloc(pixels);

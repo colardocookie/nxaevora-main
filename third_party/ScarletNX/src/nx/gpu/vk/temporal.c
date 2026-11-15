@@ -3622,9 +3622,18 @@ static void upscaler_start(void) {
     }
     const SnxUpscalerApi* api = vk_upscaler_adapter(name);
     g_u.two_channel = !strcmp(name, "dlss"); /* DLSS takes the vectors in two channels (DL2 point 3) */
-    if (g_u.two_channel)
-        LOG("arceus-upscaler: dlss in the game (DL2): DLAA at full size, the vectors in two channels. The jitter's "
-            "sign is unresolved until the self-test's sign protocol chooses one: (+1, +1) is used\n");
+    if (g_u.two_channel) {
+        /* SNX_ARCEUS_DLSS_JITTER_SIGN, the module's experiment (research 18:45): said here as the module reads it */
+        const char* forced = getenv("SNX_ARCEUS_DLSS_JITTER_SIGN");
+        const int is_forced = forced && (!strcmp(forced, "--") || !strcmp(forced, "-+") || !strcmp(forced, "+-") ||
+                                         !strcmp(forced, "++"));
+        if (is_forced)
+            LOG("arceus-upscaler: dlss in the game (DL2): DLAA at full size, the vectors in two channels. The jitter's "
+                "sign %s is forced by experiment (SNX_ARCEUS_DLSS_JITTER_SIGN), not chosen by the protocol\n", forced);
+        else
+            LOG("arceus-upscaler: dlss in the game (DL2): DLAA at full size, the vectors in two channels. The jitter's "
+                "sign is unresolved until the self-test's sign protocol chooses one: (+1, +1) is used\n");
+    }
     SnxUpscalerExtensions instance = {0};
     SnxUpscalerDeviceNeeds device = {0};
     const char* why = NULL;

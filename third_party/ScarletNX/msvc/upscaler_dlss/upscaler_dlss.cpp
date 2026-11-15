@@ -27,6 +27,11 @@ const unsigned kNgxPrinted = 256; // NGX's messages printed in full, the rest co
 // DL2 point 5: the jitter's sign against NGX's, decided by the self-test's sign protocol. Until it has chosen one,
 // (+1, +1) is handed ("the same co-ordinate and direction system as motion vectors") and every line says so.
 const bool kJitterSignResolved = false;
+// SNX_ARCEUS_DLSS_JITTER_SIGN (research 18:45): an experiment that forces the sign handed to NGX in place of the
+// protocol's, read once at the module's entry. Unset or not one of the four values: as without it.
+int g_sign[2] = {1, 1};
+bool g_sign_forced;
+char g_sign_note[96] = " [the jitter's sign unresolved, (+1, +1) used]";
 const uint32_t kNamesMost = 32;
 
 SnxUpscalerLog g_log;
@@ -45,10 +50,10 @@ void say(const char* format, ...) {
     if ((size_t)n >= sizeof line) memcpy(line + sizeof line - sizeof cut, cut, sizeof cut);
     size_t end = strlen(line);
     while (end && (line[end - 1] == '\n' || line[end - 1] == '\r')) line[--end] = 0;
-    if (!kJitterSignResolved) {
-        static const char unresolved[] = " [the jitter's sign unresolved, (+1, +1) used]";
-        if (end + sizeof unresolved > sizeof line) end = sizeof line - sizeof unresolved;
-        memcpy(line + end, unresolved, sizeof unresolved);
+    if (!kJitterSignResolved || g_sign_forced) {
+        const size_t note = strlen(g_sign_note) + 1;
+        if (end + note > sizeof line) end = sizeof line - note;
+        memcpy(line + end, g_sign_note, note);
     }
     g_log(line);
 }
@@ -723,7 +728,7 @@ NVSDK_NGX_Resource_VK resource(const SnxUpscalerImage& im, VkImageAspectFlags as
 }
 int evaluate(SnxUpscaler* u, const SnxUpscalerFrame* f) {
     Context* x = reinterpret_cast<Context*>(u);
-    static const int plus[2] = {1, 1};
+    const int* plus = g_sign; /* (+1, +1), or the experiment's forced sign */
     const SnxUpscalerImage* frame_images[4] = {&f->colour, &f->depth, &f->motion, &f->output};
     snx_dlss::Handed handed[4];
     for (int k = 0; k < 4; k++) {
@@ -825,6 +830,17 @@ const SnxUpscalerApi g_api = {SNX_UPSCALER_ABI, "dlss", instance_extensions, dev
 extern "C" __declspec(dllexport) const SnxUpscalerApi* snx_upscaler_api(uint32_t abi, SnxUpscalerLog log) {
     if (abi != SNX_UPSCALER_ABI) return nullptr;
     g_log = log;
+    char value[16] = "";
+    const DWORD n = GetEnvironmentVariableA("SNX_ARCEUS_DLSS_JITTER_SIGN", value, sizeof value);
+    if (n && n < sizeof value) {
+        g_sign_forced = snx_dlss::jitter_sign_forced(value, g_sign) != 0;
+        if (g_sign_forced)
+            snprintf(g_sign_note, sizeof g_sign_note, " [the jitter's sign (%+d, %+d) forced by experiment, not chosen "
+                     "by the protocol]", g_sign[0], g_sign[1]);
+        else
+            say("arceus-upscaler: dlss: SNX_ARCEUS_DLSS_JITTER_SIGN=%s is not --, -+, +- or ++: not used", value);
+    } else if (n)
+        say("arceus-upscaler: dlss: SNX_ARCEUS_DLSS_JITTER_SIGN is too long: not used");
     return &g_api;
 }
 static_assert(std::is_same<decltype(&snx_upscaler_api), SnxUpscalerEntry>::value, "the export's type");

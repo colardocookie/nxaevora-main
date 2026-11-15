@@ -177,5 +177,14 @@ inline int ngx_flags(uint32_t flags) {
 // NGX's configuration dump (DL2 point 6): its NGXLoadConfig lines are counted, not printed, so that the printed ones
 // reach what NGX says about loading the feature
 inline int ngx_config_line(const char* text) { return text && strstr(text, "[NGXLoadConfig:") != nullptr; }
+// SNX_ARCEUS_DLSS_JITTER_SIGN, an experiment (research 18:45): "--", "-+", "+-" or "++", the x sign first, force
+// the jitter's sign. 1 with out set for one of those four, 0 for anything else (unset, empty, another value).
+inline int jitter_sign_forced(const char* value, int out[2]) {
+    if (!value || strlen(value) != 2) return 0;
+    for (int k = 0; k < 2; k++)
+        if (value[k] != '+' && value[k] != '-') return 0;
+    for (int k = 0; k < 2; k++) out[k] = value[k] == '-' ? -1 : 1;
+    return 1;
+}
 } // namespace snx_dlss
 #endif
