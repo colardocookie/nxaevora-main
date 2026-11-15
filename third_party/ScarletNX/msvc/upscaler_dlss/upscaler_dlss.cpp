@@ -28,7 +28,7 @@ const uint32_t kNamesMost = 32;
 
 SnxUpscalerLog g_log;
 SRWLOCK g_lock = SRWLOCK_INIT; // every call into NGX, and the module's state
-volatile LONG g_ngx_messages;
+volatile LONG g_ngx_messages, g_ngx_config; // printed or counted; configuration lines, counted only
 
 // one line through the host's log, without a line break at its end, and one cut to fit says so at its end
 void say(const char* format, ...) {
@@ -49,6 +49,10 @@ void say(const char* format, ...) {
 // first bytes up to a whole character and says how many of how many it shows.
 void NVSDK_CONV ngx_log(const char* message, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature) {
     const size_t room = 900;
+    if (snx_dlss::ngx_config_line(message)) { // not printed, and not among the printed ones (DL2 point 6)
+        InterlockedIncrement(&g_ngx_config);
+        return;
+    }
     const LONG n = InterlockedIncrement(&g_ngx_messages);
     if ((unsigned)n > kNgxPrinted) {
         if ((unsigned)n == kNgxPrinted + 1)
@@ -362,10 +366,10 @@ int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetIns
             out->features = nullptr;
             out->core = core;
             say("arceus-upscaler: dlss: needs classified: %u instance and %u device extensions, %s, %ld messages of "
-                "NGX", g_instance.count, g_device.count,
+                "NGX and %ld configuration lines counted, not printed", g_instance.count, g_device.count,
                 core & SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS ? "buffer device addresses needed"
                                                                : "no feature bit needed",
-                g_ngx_messages);
+                g_ngx_messages, g_ngx_config);
             answer = SNX_UPSCALER_OK;
         }
         free(on_instance);
@@ -778,8 +782,8 @@ int evaluate(SnxUpscaler* u, const SnxUpscalerFrame* f) {
     Evaluation e = {x->feature, x->params, &eval, f->cb, NVSDK_NGX_Result_Success};
     const int recorded = snx_dlss::record_evaluation(x->barrier, f->cb, images, ngx_evaluate, &e);
     if (++x->frames % 600 == 0)
-        say("arceus-upscaler: dlss: %llu frames of this context, %ld messages of NGX so far",
-            (unsigned long long)x->frames, g_ngx_messages);
+        say("arceus-upscaler: dlss: %llu frames of this context, %ld messages of NGX and %ld configuration lines so "
+            "far", (unsigned long long)x->frames, g_ngx_messages, g_ngx_config);
     ReleaseSRWLockExclusive(&g_lock);
     if (recorded == snx_dlss::RECORD_UNKNOWN) {
         say("arceus-upscaler: dlss: NGX's evaluation failed (result 0x%08x): what it recorded is not known",

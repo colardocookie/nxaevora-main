@@ -11,6 +11,12 @@
 #include "dlss_eval.h"
 
 int dlss_eval_cases() {
+    // NGX's configuration lines as DL-S2 logged them, and lines that only look alike
+    assert(snx_dlss::ngx_config_line("[2026-11-14 21:42:06] [NGXLoadConfig:1145] [dlss]"));
+    assert(snx_dlss::ngx_config_line("[2026-11-14 21:42:06] [NGXLoadConfig:1151] app_E658702=0.0.0"));
+    assert(!snx_dlss::ngx_config_line("[2026-11-14 21:42:06] [NGXLoadFeature:88] loading nvngx_dlss.dll"));
+    assert(!snx_dlss::ngx_config_line("NGXLoadConfig without its bracket") && !snx_dlss::ngx_config_line(nullptr));
+    assert(!snx_dlss::ngx_config_line(""));
     using namespace snx_dlss;
     const float scale[2] = {-1280.0f, -720.0f}, jitter[2] = {0.25f, -0.125f};
     const int plus[2] = {1, 1};

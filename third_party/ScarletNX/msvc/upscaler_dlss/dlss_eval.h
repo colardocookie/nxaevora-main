@@ -6,6 +6,7 @@
 #define SNX_DLSS_EVAL_H
 #include <math.h>
 #include <stdint.h>
+#include <string.h>
 
 namespace snx_dlss {
 // what NGX is given (the names of nvsdk_ngx_helpers_vk.h's evaluation parameters)
@@ -173,5 +174,8 @@ const int kNgxIsHdr = 1 << 0, kNgxMvLowRes = 1 << 1, kNgxMvJittered = 1 << 2, kN
 inline int ngx_flags(uint32_t flags) {
     return kNgxMvLowRes | kNgxIsHdr | kNgxAutoExposure | (flags & kDepthReversed ? kNgxDepthInverted : 0);
 }
+// NGX's configuration dump (DL2 point 6): its NGXLoadConfig lines are counted, not printed, so that the printed ones
+// reach what NGX says about loading the feature
+inline int ngx_config_line(const char* text) { return text && strstr(text, "[NGXLoadConfig:") != nullptr; }
 } // namespace snx_dlss
 #endif
