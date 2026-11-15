@@ -2384,7 +2384,7 @@ static TemporalSpatialDraw spatial_draw(int k, double f) {
     d.scissor[3] = k == 1 ? (int)(H * f) : H;
     d.target[0] = W, d.target[1] = H;
     d.query[0] = 1920, d.query[1] = 1080;
-    d.normalised = d.one_level = 1;
+    d.normalised = d.one_level = d.filters_same = 1;
     d.mag_nearest = d.min_nearest = k != 1; /* B46268AD's sampler is linear with clamp to edge */
     d.address[0] = d.address[1] = k == 1 ? TEMPORAL_SPATIAL_EDGE : TEMPORAL_SPATIAL_BORDER;
     d.view_format_same = d.view_2d = d.view_one_level = d.view_one_layer = d.view_identity = 1;
@@ -2473,15 +2473,15 @@ static void test_spatial(void) {
     /* each measured draw is taken at both fractions; each condition alone refuses it */
     for (int k = 0; k < 3; k++)
         for (int fi = 0; fi < 2; fi++) {
-            const double f = fi ? 0.5 : 1.0;
+            const double f = fi ? 0.5 : 1.0, ff[2] = {f, f};
             TemporalSpatialDraw d = spatial_draw(k, f), x;
-            assert(temporal_spatial_check(k, &d, f) == TEMPORAL_SPATIAL_TAKEN);
-            assert(temporal_spatial_check(-1, &d, f) == TEMPORAL_SPATIAL_NOT_LISTED);
+            assert(temporal_spatial_check(k, &d, ff) == TEMPORAL_SPATIAL_TAKEN);
+            assert(temporal_spatial_check(-1, &d, ff) == TEMPORAL_SPATIAL_NOT_LISTED);
 #define REFUSED(change, why)                                                                                   \
     do {                                                                                                       \
         x = d;                                                                                                 \
         change;                                                                                                \
-        assert(temporal_spatial_check(k, &x, f) == (why));                                                     \
+        assert(temporal_spatial_check(k, &x, ff) == (why));                                                     \
     } while (0)
             REFUSED(x.vs ^= 1, TEMPORAL_SPATIAL_VERTEX);
             REFUSED(x.direct = 0, TEMPORAL_SPATIAL_FORM);
@@ -2497,7 +2497,7 @@ static void test_spatial(void) {
             } else {
                 x = d;
                 x.fragment_f[0] = NAN; /* B46268AD reads no fraction: its block's value is not held */
-                assert(temporal_spatial_check(k, &x, f) == TEMPORAL_SPATIAL_TAKEN);
+                assert(temporal_spatial_check(k, &x, ff) == TEMPORAL_SPATIAL_TAKEN);
             }
             if (k == 0) REFUSED(x.vertex_f[0] = f * 1.001, TEMPORAL_SPATIAL_FRACTION);
             if (k == 2) {
@@ -2508,6 +2508,18 @@ static void test_spatial(void) {
             REFUSED(x.one_level = 0, TEMPORAL_SPATIAL_SAMPLER);
             REFUSED(x.anisotropy = 1, TEMPORAL_SPATIAL_SAMPLER);
             REFUSED(x.compare = 1, TEMPORAL_SPATIAL_SAMPLER);
+            REFUSED(x.filters_same = 0, TEMPORAL_SPATIAL_SAMPLER);
+            if (k == 1 && fi) { /* the coverage of each axis by its own fraction: the height whole at 1 is taken */
+                const double wide[2] = {0.5, 1.0};
+                x = d;
+                x.scissor[3] = d.target[1];
+                assert(temporal_spatial_check(k, &x, wide) == TEMPORAL_SPATIAL_TAKEN);
+            }
+            { /* each axis is held to its own fraction: a height fraction one float step away refuses */
+                const double other[2] = {f, nextafter(f, 0.0)};
+                x = d;
+                if (k != 1) assert(temporal_spatial_check(k, &x, other) == TEMPORAL_SPATIAL_FRACTION);
+            }
             REFUSED(x.address[1] = TEMPORAL_SPATIAL_OTHER_ADDRESS, TEMPORAL_SPATIAL_SAMPLER);
             REFUSED((x.address[0] = TEMPORAL_SPATIAL_BORDER, x.min_nearest = 0), TEMPORAL_SPATIAL_SAMPLER);
             REFUSED((x.address[0] = TEMPORAL_SPATIAL_BORDER, x.mag_nearest = 0), TEMPORAL_SPATIAL_SAMPLER);

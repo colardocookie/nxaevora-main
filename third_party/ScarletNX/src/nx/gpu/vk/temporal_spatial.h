@@ -96,7 +96,7 @@ static inline int temporal_spatial_entry(uint64_t fs, uint32_t handle) {
 
 /* What a draw that binds the scene colour is, as the renderer sees it (D3-2 and its revisions 2 and 3) */
 enum { TEMPORAL_SPATIAL_EDGE, TEMPORAL_SPATIAL_BORDER, TEMPORAL_SPATIAL_OTHER_ADDRESS };
-typedef struct {
+typedef struct TemporalSpatialDraw {
     uint64_t vs;              /* the vertex program's whole hash */
     int direct;               /* no index buffer, no count read from memory */
     int triangle_list;        /* the topology */
@@ -112,6 +112,8 @@ typedef struct {
     uint32_t query[2];        /* what the size query of the binding answers (today's, temporal_txq_today) */
     /* the binding's sampler and view */
     int normalised, mag_nearest, min_nearest, one_level, anisotropy, compare;
+    int filters_same;         /* minification and magnification alike: the larger texture is read at about one texel
+                                 a pixel, where the level of detail chooses between them */
     int address[2];           /* TEMPORAL_SPATIAL_EDGE, _BORDER or _OTHER_ADDRESS for u and v */
     int view_format_same, view_2d, view_one_level, view_one_layer, view_identity;
 } TemporalSpatialDraw;
@@ -171,10 +173,11 @@ static inline int temporal_spatial_covered(const TemporalSpatialDraw* d, int axi
     return 1;
 }
 
-/* Whether entry k may be given the larger texture at this draw, for the replacement's fraction f: the first reason
-   against it, or TEMPORAL_SPATIAL_TAKEN. Every covered coordinate must be at most f and every tap at least 0 and
-   below 1 on both axes, from the audited mapping and the entry's tap (recon 2026-11-15 01:40). */
-static inline int temporal_spatial_check(int k, const TemporalSpatialDraw* d, double f) {
+/* Whether entry k may be given the larger texture at this draw, for the replacement's fractions fs (each axis's): the
+   first reason against it, or TEMPORAL_SPATIAL_TAKEN. Every covered coordinate must be at most the fraction and
+   every tap at least 0 and below 1 on both axes, from the audited mapping and the entry's tap (recon 2026-11-15
+   01:40). */
+static inline int temporal_spatial_check(int k, const TemporalSpatialDraw* d, const double fs[2]) {
     if (k < 0 || k >= TEMPORAL_SPATIAL_ENTRIES) return TEMPORAL_SPATIAL_NOT_LISTED;
     const TemporalSpatialEntry* e = &temporal_spatial_entries[k];
     if (d->vs != e->vs) return TEMPORAL_SPATIAL_VERTEX;
@@ -185,11 +188,12 @@ static inline int temporal_spatial_check(int k, const TemporalSpatialDraw* d, do
     for (int a = 0; a < 2; a++) {
         /* the fraction where a program of the entry reads it: the clamp's and the composite's fragment stage,
            c6aaf96f's vertex stage. B46268AD reads none for its coordinate. */
-        if (e->tap != TEMPORAL_SPATIAL_RAW && !(d->fragment_f[a] == f)) return TEMPORAL_SPATIAL_FRACTION;
-        if (e->scaled_vertex && !(d->vertex_f[a] == f)) return TEMPORAL_SPATIAL_FRACTION;
+        if (e->tap != TEMPORAL_SPATIAL_RAW && !(d->fragment_f[a] == fs[a])) return TEMPORAL_SPATIAL_FRACTION;
+        if (e->scaled_vertex && !(d->vertex_f[a] == fs[a])) return TEMPORAL_SPATIAL_FRACTION;
         if (e->tap == TEMPORAL_SPATIAL_COMPOSITE && !(d->divisor[a] == 1.0)) return TEMPORAL_SPATIAL_DIVISOR;
     }
-    if (!d->normalised || !d->one_level || d->anisotropy || d->compare) return TEMPORAL_SPATIAL_SAMPLER;
+    if (!d->normalised || !d->one_level || d->anisotropy || d->compare || !d->filters_same)
+        return TEMPORAL_SPATIAL_SAMPLER;
     for (int a = 0; a < 2; a++)
         if (!(d->address[a] == TEMPORAL_SPATIAL_EDGE ||
               (d->address[a] == TEMPORAL_SPATIAL_BORDER && d->mag_nearest && d->min_nearest)))
@@ -197,6 +201,7 @@ static inline int temporal_spatial_check(int k, const TemporalSpatialDraw* d, do
     if (!d->view_format_same || !d->view_2d || !d->view_one_level || !d->view_one_layer || !d->view_identity)
         return TEMPORAL_SPATIAL_VIEW;
     for (int a = 0; a < 2; a++) {
+        const double f = fs[a];
         double lo, hi;
         if (!temporal_spatial_covered(d, a, &lo, &hi)) return TEMPORAL_SPATIAL_COVERAGE;
         if (e->scaled_vertex) lo *= f, hi *= f; /* c6aaf96f stretches the coordinate by the fraction */
