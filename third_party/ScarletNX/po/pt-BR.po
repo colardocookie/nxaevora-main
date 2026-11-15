@@ -114,8 +114,8 @@ msgid "Saved in %s"
 msgstr "Salvo em %s"
 
 #: src/gui/main.c
-msgid "Load Switch NSP/XCI/NRO"
-msgstr "Abrir Switch NSP/XCI/NRO"
+msgid "Load Switch NRO"
+msgstr "Abrir Switch NRO"
 
 #: src/gui/main.c
 msgid "Load Linux ARM ELF"
@@ -164,10 +164,6 @@ msgid "Back: go back."
 msgstr "Voltar: retornar."
 
 #: src/gui/main.c
-msgid "Pick prod.keys"
-msgstr "Escolha o prod.keys"
-
-#: src/gui/main.c
 msgid "tap the box to open the file picker"
 msgstr "toque na caixa para abrir o seletor de arquivos"
 
@@ -184,8 +180,8 @@ msgid "Tap here to abort and return to menu"
 msgstr "Toque aqui para abortar e voltar ao menu"
 
 #: src/gui/main.c
-msgid "No games in recompiled/ or dumps/: put a game's .nro, .xci or .nsp in dumps/."
-msgstr "Nenhum jogo em recompiled/ nem em dumps/: coloque o .nro, .xci ou .nsp de um jogo em dumps/."
+msgid "No games in recompiled/ or dumps/: put a game's .nro in dumps/."
+msgstr "Nenhum jogo em recompiled/ nem em dumps/: coloque o .nro de um jogo em dumps/."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -272,10 +268,6 @@ msgstr "clique na caixa (ou Enter) para abrir o seletor de arquivos"
 #, snx-keys
 msgid "Ctrl+V: paste a path, or drop the file on the window. ESC: back."
 msgstr "Ctrl+V: colar um caminho, ou soltar o arquivo na janela. ESC: voltar."
-
-#: src/gui/main.c
-msgid "Pick or drop prod.keys"
-msgstr "Escolha ou solte o prod.keys"
 
 #: src/gui/main.c
 msgid "Pick or drop a file"
@@ -792,8 +784,8 @@ msgid "Status"
 msgstr "Estado"
 
 #: src/gui/main.c
-msgid "Recompiles a game's .nsp, .xci or .nro, then runs it"
-msgstr "Recompila o .nsp, .xci ou .nro de um jogo e depois o roda"
+msgid "Recompiles a game's .nro, then runs it"
+msgstr "Recompila o .nro de um jogo e depois o roda"
 
 #: src/gui/main.c
 msgid "Runs an ARM64 Linux program on the CPU"
@@ -804,21 +796,12 @@ msgid "Opens a 3DS .cia"
 msgstr "Abre um .cia de 3DS"
 
 #: src/gui/main.c
-msgid "Installs prod.keys, which games are extracted with"
-msgstr "Instala o prod.keys, com o qual os jogos são extraídos"
-
-#: src/gui/main.c
 msgid "Closes ScarletNX"
 msgstr "Fecha o ScarletNX"
 
 #: src/gui/main.c
 msgid "Last output (no scrollback):"
 msgstr "Última saída (sem rolagem):"
-
-#: src/gui/main.c
-#, c-format
-msgid "In use: %s"
-msgstr "Em uso: %s"
 
 #: src/gui/main.c
 msgid "none"
@@ -868,11 +851,6 @@ msgid "Page %zu/%zu, %zu game(s)"
 msgstr "Página %zu/%zu, %zu jogo(s)"
 
 #: src/gui/main.c
-#, c-format
-msgid "Installs to: %s"
-msgstr "Instala em: %s"
-
-#: src/gui/main.c
 msgid "Home directory unavailable."
 msgstr "Pasta pessoal indisponível."
 
@@ -881,27 +859,8 @@ msgid "Installed"
 msgstr "Instalado"
 
 #: src/gui/main.c
-msgid "Not installed"
-msgstr "Não instalado"
-
-#: src/gui/main.c
-#, c-format
-msgid "Back to the menu in %d s"
-msgstr "Volta ao menu em %d s"
-
-#: src/gui/main.c
-#, c-format
-msgid "Back to the menu in %d s, or pick another file"
-msgstr "Volta ao menu em %d s, ou escolha outro arquivo"
-
-#: src/gui/main.c
 msgid "Keys already setup. This will overwrite the previous ones"
 msgstr "Chaves já instaladas. Isto vai sobrescrever as anteriores"
-
-#: src/gui/main.c
-#, c-format
-msgid "Keys in use: %s. Keys dropped here are read before them"
-msgstr "Chaves em uso: %s. As soltas aqui são lidas antes delas"
 
 #: src/gui/main.c
 msgid "Output"
@@ -1096,8 +1055,8 @@ msgid "is on a disk that runs no programs (noexec)"
 msgstr "está num disco que não roda programas (noexec)"
 
 #: src/gui/main.c
-msgid "recompiled/, dumps/, themes/ and prod.keys"
-msgstr "recompiled/, dumps/, themes/ e prod.keys"
+msgid "recompiled/, dumps/ and themes/"
+msgstr "recompiled/, dumps/ e themes/"
 
 #: src/gui/main.c
 msgid "The recompiled games"
@@ -1502,29 +1461,6 @@ msgid "No folder was picked."
 msgstr "Nenhuma pasta foi escolhida."
 
 #: src/gui/main.c
-msgid "Cannot install prod.keys: neither USERPROFILE nor HOME is set"
-msgstr "Não foi possível instalar o prod.keys: nem USERPROFILE nem HOME estão definidos"
-
-#: src/gui/main.c
-msgid "Cannot install prod.keys: HOME is not set"
-msgstr "Não foi possível instalar o prod.keys: HOME não está definido"
-
-#: src/gui/main.c
-#, c-format
-msgid "Not installed: %s"
-msgstr "Não instalado: %s"
-
-#: src/gui/main.c
-#, c-format
-msgid "Installed prod.keys and title.keys in %s"
-msgstr "prod.keys e title.keys instalados em %s"
-
-#: src/gui/main.c
-#, c-format
-msgid "Installed prod.keys in %s"
-msgstr "prod.keys instalado em %s"
-
-#: src/gui/main.c
 #, c-format
 msgid "This copy is portable: to install it, first move away %s"
 msgstr "Esta cópia é portátil: para instalá-la, primeiro tire do lugar %s"
@@ -1557,10 +1493,6 @@ msgstr "Usar estas"
 #: src/gui/main.c
 msgid "Choose folder"
 msgstr "Escolher pasta"
-
-#: src/gui/main.c
-msgid "Later"
-msgstr "Depois"
 
 #: src/gui/main.c
 msgid "Skip"
@@ -1719,14 +1651,6 @@ msgid "Dumps"
 msgstr "Dumps"
 
 #: src/gui/main.c
-msgid "found"
-msgstr "achado"
-
-#: src/gui/main.c
-msgid "missing"
-msgstr "faltando"
-
-#: src/gui/main.c
 msgid "everything"
 msgstr "tudo"
 
@@ -1745,14 +1669,6 @@ msgstr "nenhuma ainda"
 #: src/gui/main.c
 msgid " + subfolders"
 msgstr " + subpastas"
-
-#: src/gui/main.c
-msgid "games are extracted with it"
-msgstr "os jogos são extraídos com ele"
-
-#: src/gui/main.c
-msgid "only some .nsp need it"
-msgstr "só alguns .nsp precisam dele"
 
 #: src/gui/main.c
 msgid "nickname"
@@ -1991,42 +1907,9 @@ msgid "R recompiles Switch games only."
 msgstr "R só recompila jogos de Switch."
 
 #: src/gui/main.c
-msgid "prod.keys installed: games can be extracted now."
-msgstr "prod.keys instalado: os jogos já podem ser extraídos."
-
-#: src/gui/main.c
-#, c-format
-msgid "Cannot install %s: %s"
-msgstr "Não foi possível instalar %s: %s"
-
-#: src/gui/main.c
-msgid "Please drop a readable file named prod.keys."
-msgstr "Solte um arquivo legível chamado prod.keys."
-
-#: src/gui/main.c
-#, c-format
-msgid "This file could not be read. Pick prod.keys again, from the device's storage (%s)."
-msgstr "Não foi possível ler este arquivo. Escolha o prod.keys de novo, no armazenamento do aparelho (%s)."
-
-#: src/gui/main.c
-#, c-format
-msgid "This file is not a prod.keys. Pick the prod.keys file (%s)."
-msgstr "Este arquivo não é um prod.keys. Escolha o arquivo prod.keys (%s)."
-
-#: src/gui/main.c
 #, c-format
 msgid "Cannot read this file by its path. Check that ScarletNX may access the device's files in Android's settings, then pick it from the device's storage (%s)."
 msgstr "Não foi possível ler este arquivo pelo caminho. Confira nas configurações do Android se o ScarletNX pode acessar os arquivos do aparelho e escolha-o no armazenamento do aparelho (%s)."
-
-#: src/gui/main.c
-#, c-format
-msgid "The picked file could not be read as prod.keys (%s)."
-msgstr "Não foi possível ler o arquivo escolhido como prod.keys (%s)."
-
-#: src/gui/main.c
-#, c-format
-msgid "The picked file is not a prod.keys (%s)."
-msgstr "O arquivo escolhido não é um prod.keys (%s)."
 
 #: src/gui/main.c
 #, c-format
@@ -2414,8 +2297,8 @@ msgid "the item chosen, the run's head"
 msgstr "o item escolhido, o topo da execução"
 
 #: src/gui/theme.c
-msgid "warnings, the ESC line, a failed run, missing keys"
-msgstr "avisos, a linha do ESC, uma execução que falhou, chaves faltando"
+msgid "warnings, the ESC line, a failed run"
+msgstr "avisos, a linha do ESC, uma execução que falhou"
 
 #: src/gui/theme.c
 msgid "the boxes' frames, a filled box, the grid and the title's shadow"
@@ -2456,10 +2339,6 @@ msgstr "o título do menu"
 #: src/gui/theme.c
 msgid "the games/ list's title"
 msgstr "o título da lista de games/"
-
-#: src/gui/theme.c
-msgid "the keys screen's title"
-msgstr "o título da tela das chaves"
 
 #: src/gui/theme.c
 msgid "a run's title until the game loads"
@@ -2656,10 +2535,6 @@ msgid "blinking at blink_ms"
 msgstr "piscando a cada blink_ms"
 
 #: src/gui/theme.c
-msgid "the keys screen's drop line"
-msgstr "a linha de soltar da tela das chaves"
-
-#: src/gui/theme.c
 msgid "the ESC line after a run"
 msgstr "a linha do ESC depois de uma execução"
 
@@ -2802,22 +2677,6 @@ msgstr "gdbstub"
 #: src/nx/runtime/settings.txt
 msgid "Enables gdbstub on port 1234"
 msgstr "Ativa o gdbstub na porta 1234"
-
-#: src/nx/runtime/settings.txt
-msgid "Extract to tmpfs"
-msgstr "Extrair para tmpfs"
-
-#: src/nx/runtime/settings.txt
-msgid "Extract to tmpfs, in memory (the temporary folder's scarletnx/work/<title ID>), which the game reads its RomFS from"
-msgstr "Extrai para tmpfs, na memória (scarletnx/work/<ID do título> na pasta temporária), de onde o jogo lê a RomFS"
-
-#: src/nx/runtime/settings.txt
-msgid "Extract game container"
-msgstr "Extrair contêiner do jogo"
-
-#: src/nx/runtime/settings.txt
-msgid "Extract a dump's ExeFS and RomFS into its game's folder. Off, the game reads them from the dump"
-msgstr "Extrai a ExeFS e a RomFS de um dump para a pasta do jogo. Desligado, o jogo as lê do dump"
 
 #: src/nx/runtime/settings.txt
 msgid "Optimization level"

@@ -151,9 +151,9 @@ void gui_apple_start(void) {
     @autoreleasepool {
         NSFileManager* files = NSFileManager.defaultManager;
         NSURL* documents = [files URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
-        /* what the player sees: dumps to put a game's .nsp or .xci in, keys for prod.keys, recompiled for what the app
-           makes of them, logs for what it prints */
-        for (NSString* name in @[ @"dumps", @"keys", @"recompiled", @"logs" ])
+        /* what the player sees: dumps to put a game's .nro in, recompiled for what the app makes of them, logs for what it
+           prints */
+        for (NSString* name in @[ @"dumps", @"recompiled", @"logs" ])
             [files createDirectoryAtURL:[documents URLByAppendingPathComponent:name isDirectory:YES]
                 withIntermediateDirectories:YES
                                  attributes:nil
