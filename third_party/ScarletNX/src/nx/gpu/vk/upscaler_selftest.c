@@ -2143,6 +2143,7 @@ static int sign_protocol(void) {
             variant.jitter_x = v & 1 ? -1 : 1;
             variant.jitter_y = v & 2 ? -1 : 1;
             double sum = 0.0;
+            int written[REPEATS] = {0}; /* the scored frames each repeat wrote: only whole ones enter the noise */
             for (int r = 0; made && !stopped() && r < REPEATS; r++) {
                 Session s;
                 memset(&s, 0, sizeof s);
@@ -2156,6 +2157,7 @@ static int sign_protocol(void) {
                     if (at < FIRST_SCORED || at >= FIRST_SCORED + SCORED) continue;
                     memcpy(outputs + picture * ((size_t)r * SCORED + (size_t)(at - FIRST_SCORED)), work,
                            sizeof(double) * picture);
+                    written[r]++;
                     error += difference(&in, work, reference, everywhere, SELFTEST_BACKGROUND);
                 }
                 session_close(&s);
@@ -2166,7 +2168,7 @@ static int sign_protocol(void) {
                     made = 0;
                 }
                 error /= SCORED;
-                if (evaluated != EVALUATED || !isfinite(error)) valid = 0;
+                if (evaluated != EVALUATED || written[r] != SCORED || !isfinite(error)) valid = 0;
                 sum += error;
                 SAY(ST "the sign protocol %s, %s, run %d: %d frames evaluated, error over frames 8 to 15 %.6f\n",
                     up ? "up" : "down", variants[v], r + 1, evaluated, error);
@@ -2175,6 +2177,12 @@ static int sign_protocol(void) {
             /* the noise: the outputs of two repeats against each other, every pair, over the same frames */
             for (int a = 0; made && !stopped() && a < REPEATS; a++)
                 for (int b = a + 1; b < REPEATS; b++) {
+                    /* a repeat that did not write every scored frame is not valid, and its slots are not read
+                       (reviewer 05:16) */
+                    if (written[a] != SCORED || written[b] != SCORED) {
+                        valid = 0;
+                        continue;
+                    }
                     double apart = 0.0;
                     for (int f = 0; f < SCORED; f++)
                         apart += difference(&in, outputs + picture * ((size_t)a * SCORED + (size_t)f),
