@@ -474,7 +474,26 @@ static void old_record(void) {
     free(loaded);
 }
 
-int main(void) {
+/* The corpus's checks are verdicts, not assertions: with --must-fail <check> the test passes only when that check
+   failed (a translator mutant's test), with no argument only when none did */
+enum { CHECK_OTHER_SLOT, CHECK_COMPARE, CHECK_SCALED, CHECK_SEEN, CHECKS };
+static const char* const g_check_name[CHECKS] = {"other-slot", "compare", "scaled", "seen"};
+static int g_failed[CHECKS];
+static void check(int which, int holds, const char* what) {
+    if (holds) return;
+    if (!g_failed[which]) printf("txq_variant: check %s FAILED: %s\n", g_check_name[which], what);
+    g_failed[which] = 1;
+}
+
+int main(int argc, char** argv) {
+    int must_fail = -1;
+    if (argc == 3 && !strcmp(argv[1], "--must-fail"))
+        for (int c = 0; c < CHECKS; c++)
+            if (!strcmp(argv[2], g_check_name[c])) must_fail = c;
+    if (argc != 1 && must_fail < 0) {
+        fprintf(stderr, "usage: %s [--must-fail other-slot|compare|scaled|seen]\n", argv[0]);
+        return 2;
+    }
     old_record();
     controls();
     static const struct {
@@ -511,11 +530,12 @@ int main(void) {
             u32* a = translate(code, max_bytes, stage, &info, none, &aw);
             u32* o = translate(code, max_bytes, stage, &info, other, &ow);
             u32* k = translate(code, max_bytes, stage, &info, keyed, &kw);
-            assert(ow == aw && !memcmp(o, a, aw * sizeof *a) && "a key for another slot changes nothing");
+            check(CHECK_OTHER_SLOT, ow == aw && !memcmp(o, a, aw * sizeof *a),
+                  "a key for another slot changes nothing");
             unsigned removed, added;
             const int same = compare(a, aw, k, kw, keyed + 1, &removed, &added);
-            assert(same && "only the scaling goes and the key's constants come");
-            assert(removed >= 10 && "these two programs scale the query without the key");
+            check(CHECK_COMPARE, same, "only the scaling goes and the key's constants come");
+            check(CHECK_SCALED, removed >= 10, "these two programs scale the query without the key");
             printf("txq_variant: %016llx handle 0x%X: %zu words, keyed %zu: %u instructions gone (the scaling and its "
                    "declarations), %u declarations new (the key's constants)\n", hash, programs[p].handle, aw, kw,
                    removed, added);
@@ -525,7 +545,14 @@ int main(void) {
         free(code);
     }
     closedir(folder);
-    assert(seen == 3 && "both programs are in the corpus");
+    check(CHECK_SEEN, seen == 3, "both programs are in the corpus");
+    if (must_fail >= 0) {
+        printf("txq_variant: the check %s %s, as this test must see it fail\n", g_check_name[must_fail],
+               g_failed[must_fail] ? "failed" : "did NOT fail");
+        return g_failed[must_fail] ? 0 : 1;
+    }
+    for (int c = 0; c < CHECKS; c++)
+        if (g_failed[c]) return 1;
     puts("txq_variant: ok");
     return 0;
 }
