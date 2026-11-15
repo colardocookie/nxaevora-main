@@ -2961,9 +2961,20 @@ static void upscaler_took(VkCommandBuffer cb, Surf* s) {
     s->stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     s->access = UPSCALER_ANY_ACCESS;
 }
+/* The library's answers go through as they are (vk_rec_direct): UNKNOWN is not reduced to a failure (DL2 rev 2) */
 static int upscaler_prepare(VkCommandBuffer cb, void* user) {
     const UpscalerCall* c = user;
-    return g_u.api->prepare(c->context, cb) == SNX_UPSCALER_OK;
+    return g_u.api->prepare(c->context, cb);
+}
+/* A library answered UNKNOWN: the frame's command buffer holds the game's earlier work of the frame and what the
+   library left, in a state not known. Nothing more is recorded into it, it is never submitted (vk_rec_direct's
+   latch), nothing is destroyed or freed, and the process ends with this one line (DL2 revision 2, O1). */
+static void upscaler_stop(u32 frame, const char* call) {
+    LOG("arceus-upscaler: FATAL: the adapter %s answered UNKNOWN to its %s at frame %u: the frame's command buffer is "
+        "in a state not known and is not submitted. Nothing is released, and the run ends here, as an experiment "
+        "that met a state the library leaves undefined\n", g_u.api && g_u.api->name ? g_u.api->name : "?", call,
+        frame);
+    vk_rec_end_run(3);
 }
 static int upscaler_evaluate(VkCommandBuffer cb, void* user) {
     const UpscalerCall* c = user;
@@ -2981,7 +2992,7 @@ static int upscaler_evaluate(VkCommandBuffer cb, void* user) {
         LOG("arceus-upscaler: handed images at frame %u: colour 0x%llx, depth 0x%llx, vectors 0x%llx, output "
             "0x%llx%s\n", c->number, images[0], images[1], images[2], images[3],
             say == TEMPORAL_UPSCALER_HANDED_LAST ? ". The last such line: later changes are not said" : "");
-    return g_u.api->evaluate(c->context, &frame) == SNX_UPSCALER_OK;
+    return g_u.api->evaluate(c->context, &frame);
 }
 
 /* The hook of a frame that was not drawn with jitter. Nothing of ours runs in it but this: when the frame was
@@ -3040,6 +3051,7 @@ static void upscaler_warm(u32 frame, Surf* scene, Surf* depth, int steady) {
     }
     UpscalerCall call = {made, NULL, NULL, NULL};
     const int recorded = vk_rec_direct(vk_cmd(), upscaler_before, upscaler_prepare, &call);
+    if (recorded == VK_REC_DIRECT_UNKNOWN) upscaler_stop(frame, "prepare"); /* before anything else */
     /* Whatever the answer, work may be recorded for the context: it is kept until the submission that work is
        in has completed, and only then freed or published (vk_temporal_upscaler_poll, upscaler_settle). */
     g_u.pending = made;
@@ -3168,6 +3180,8 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         .fov_y = camera[2]};
     UpscalerCall call = {g_u.live, &handed, scene, depth, frame};
     const int recorded = vk_rec_direct(cb, upscaler_before, upscaler_evaluate, &call);
+    /* before any barrier back, write-back or draw: nothing more goes into this command buffer */
+    if (recorded == VK_REC_DIRECT_UNKNOWN) upscaler_stop(frame, "evaluate");
     /* On every path out of a call the library was entered in, each of the four images it was handed gets a
        barrier of its own from "written by any command", so that whatever the library wrote is available to
        what comes next: the scene colour, the scene depth, the motion image and the private output. */

@@ -275,9 +275,13 @@ void vk_rec_queue(VkQueue q);  /* before submitting to or presenting on q outsid
    still have run: what it queued is recorded, and may be submitted, and whatever that work uses is in use. */
 /* OK: direct said 1. REFUSED: it said 0. FAILED: a begin, an end or a submission has failed. NO_BUFFER: cb is
    not the frame's unsubmitted buffer, at the call (then before did not run either) or after before ran. */
-enum { VK_REC_DIRECT_OK, VK_REC_DIRECT_REFUSED, VK_REC_DIRECT_FAILED, VK_REC_DIRECT_NO_BUFFER };
+enum { VK_REC_DIRECT_OK, VK_REC_DIRECT_REFUSED, VK_REC_DIRECT_FAILED, VK_REC_DIRECT_NO_BUFFER, VK_REC_DIRECT_UNKNOWN };
 typedef void (*VkRecBefore)(VkCommandBuffer cb, void* user);
+/* direct answers as an upscaler does (SNX_UPSCALER_OK, _REFUSED, _FAILED, _UNKNOWN). UNKNOWN: what cb holds is not
+   known, vk_rec_direct answers VK_REC_DIRECT_UNKNOWN and no submission of cb is made from then on (DL2 revision 2) */
 typedef int (*VkRecDirect)(VkCommandBuffer cb, void* user);
+int vk_rec_unknown(void); /* 1 once a library left the frame's command buffer in a state not known */
+void vk_rec_end_run(int code) __attribute__((noreturn)); /* the process ends now, nothing released */
 int vk_rec_direct(VkCommandBuffer cb, VkRecBefore before, VkRecDirect direct, void* user);
 /* presents image idx of sc once wait is signaled, in order after the submissions queued before it (vk_lock). The
    result is this present's without the recording thread, otherwise that of an earlier one which wasn't VK_SUCCESS,

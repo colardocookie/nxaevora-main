@@ -17,6 +17,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/upscaler.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 
@@ -173,6 +174,11 @@ void vk_rec_queue(VkQueue q) {
    before that signal, so whoever reads the timeline and then this sees it. */
 static u32 g_submit_failed;
 int vk_rec_submit_failed(void) { return (int)__atomic_load_n(&g_submit_failed, __ATOMIC_ACQUIRE); }
+/* set under vk_lock before vk_rec_direct returns UNKNOWN: no command buffer is submitted after it */
+static int g_rec_unknown;
+int vk_rec_unknown(void) { return __atomic_load_n(&g_rec_unknown, __ATOMIC_ACQUIRE); }
+/* the run ends at once, nothing released: after a state a library left undefined (temporal.c upscaler_stop) */
+void vk_rec_end_run(int code) { plat_exit_now(code); }
 void vk_rec_mark_failed(void) { __atomic_store_n(&g_submit_failed, 1, __ATOMIC_RELEASE); }
 static void begin_run(const void* p) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -197,6 +203,7 @@ typedef struct {
 } Submit;
 static void submit_run(const void* p) {
     const Submit* x = p;
+    if (vk_rec_unknown()) return; /* queued before the latch and run after it: not submitted either */
     if (!VK_OK(vkEndCommandBuffer(x->cb))) vk_rec_mark_failed();
     VkCommandBufferSubmitInfo c = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->cb};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
@@ -222,6 +229,8 @@ static void submit_run(const void* p) {
 }
 void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, const VkSemaphoreSubmitInfo* s,
                    u32 ns) {
+    /* a library left the frame's buffer in a state not known: it is never submitted, nor any after it */
+    if (vk_rec_unknown()) return;
     Submit x = {.cb = cb, .nw = nw, .ns = ns, .timeline = s[0].semaphore, .value = s[0].value};
     memcpy(x.w, w, nw * sizeof *w);
     memcpy(x.s, s, ns * sizeof *s);
@@ -248,7 +257,13 @@ int vk_rec_direct(VkCommandBuffer cb, VkRecBefore before, VkRecDirect direct, vo
         /* once a begin, an end or a submission has failed, what cb holds does not run as recorded */
         if (cb != g_rec_cb) r = VK_REC_DIRECT_NO_BUFFER;
         else if (vk_rec_submit_failed()) r = VK_REC_DIRECT_FAILED;
-        else r = direct(cb, user) ? VK_REC_DIRECT_OK : VK_REC_DIRECT_REFUSED;
+        else {
+            const int answer = direct(cb, user);
+            if (answer == SNX_UPSCALER_UNKNOWN) __atomic_store_n(&g_rec_unknown, 1, __ATOMIC_RELEASE);
+            r = answer == SNX_UPSCALER_OK        ? VK_REC_DIRECT_OK
+                : answer == SNX_UPSCALER_UNKNOWN ? VK_REC_DIRECT_UNKNOWN
+                                                 : VK_REC_DIRECT_REFUSED;
+        }
         vk_render_forget_state();
     }
     vk_unlock();
