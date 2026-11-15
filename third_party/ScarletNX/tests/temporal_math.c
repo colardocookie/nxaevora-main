@@ -2535,6 +2535,54 @@ static void test_spatial(void) {
             REFUSED(x.instance_count = 2, TEMPORAL_SPATIAL_FORM);
             REFUSED(x.first_instance = 1, TEMPORAL_SPATIAL_FORM);
             REFUSED(x.other_stages = 1, TEMPORAL_SPATIAL_STAGES);
+            { /* the classification (d08b624c, research 14:35, 14:45): only the fraction and the tap and coverage
+                 bounds are class N, everything else class U, whatever fails with it */
+                int v;
+                assert(temporal_spatial_classify(k, &d, ff, 0, &v) == k && v == TEMPORAL_SPATIAL_TAKEN);
+                assert(temporal_spatial_classify(k, &d, ff, 1, &v) == -1); /* a block held on the GPU */
+                assert(temporal_spatial_classify(-1, &d, ff, 0, &v) == -1 && v == TEMPORAL_SPATIAL_NOT_LISTED);
+#define CLASS_U(change, why)                                                                                    \
+    do {                                                                                                        \
+        x = d;                                                                                                  \
+        change;                                                                                                 \
+        assert(temporal_spatial_classify(k, &x, ff, 0, &v) == -1 && v == (why));                                 \
+        if (k != 1) x.fragment_f[0] = f * 0.999; /* with a class N failure too: still class U */                 \
+        x.viewport[2] = 0;                                                                                      \
+        assert(temporal_spatial_classify(k, &x, ff, 0, &v) == -1 && v == (why));                                 \
+    } while (0)
+                CLASS_U(x.vs ^= 1, TEMPORAL_SPATIAL_VERTEX);
+                CLASS_U(x.first_vertex = 1, TEMPORAL_SPATIAL_FORM);
+                CLASS_U(x.direct = 0, TEMPORAL_SPATIAL_FORM);
+                CLASS_U(x.other_stages = 1, TEMPORAL_SPATIAL_STAGES);
+                CLASS_U(x.normalised = 0, TEMPORAL_SPATIAL_SAMPLER);
+                CLASS_U(x.filters_same = 0, TEMPORAL_SPATIAL_SAMPLER);
+                CLASS_U(x.address[0] = TEMPORAL_SPATIAL_OTHER_ADDRESS, TEMPORAL_SPATIAL_SAMPLER);
+                CLASS_U(x.view_format_same = 0, TEMPORAL_SPATIAL_VIEW);
+                CLASS_U(x.view_2d = 0, TEMPORAL_SPATIAL_VIEW);
+                CLASS_U(x.view_one_level = 0, TEMPORAL_SPATIAL_VIEW);
+                CLASS_U(x.view_one_layer = 0, TEMPORAL_SPATIAL_VIEW);
+                CLASS_U(x.view_identity = 0, TEMPORAL_SPATIAL_VIEW);
+                if (k == 0) CLASS_U(x.vertex_origin[0] = -2.0, TEMPORAL_SPATIAL_ORIGIN);
+                if (k == 0) CLASS_U(x.vertex_origin[1] = NAN, TEMPORAL_SPATIAL_ORIGIN);
+                if (k == 2) CLASS_U(x.divisor[1] = 2.0, TEMPORAL_SPATIAL_DIVISOR);
+                /* astra's combined case: a bad origin with a bad form is class U, not a listed reader refused */
+                x = d;
+                x.first_vertex = 1;
+                x.vertex_origin[0] = -2.0;
+                assert(temporal_spatial_classify(k, &x, ff, 0, &v) == -1 && v == TEMPORAL_SPATIAL_FORM);
+#undef CLASS_U
+                /* class N alone: listed, refused, with its reason */
+                x = d;
+                x.viewport[2] = 0;
+                assert(temporal_spatial_classify(k, &x, ff, 0, &v) == k && v == TEMPORAL_SPATIAL_COVERAGE);
+                if (k != 1) {
+                    x = d;
+                    x.fragment_f[1] = f * 0.999;
+                    assert(temporal_spatial_classify(k, &x, ff, 0, &v) == k && v == TEMPORAL_SPATIAL_FRACTION);
+                    x.viewport[2] = 0; /* both of class N: the fraction is the one said */
+                    assert(temporal_spatial_classify(k, &x, ff, 0, &v) == k && v == TEMPORAL_SPATIAL_FRACTION);
+                }
+            }
             if (k == 0) { /* c6aaf96f's origin, as measured or not (astra's O1) */
                 REFUSED(x.vertex_origin[0] = -2.0, TEMPORAL_SPATIAL_ORIGIN);
                 REFUSED(x.vertex_origin[1] = -1.0, TEMPORAL_SPATIAL_ORIGIN);

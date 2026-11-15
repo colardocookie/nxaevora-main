@@ -218,13 +218,8 @@ static inline int temporal_spatial_check(int k, const TemporalSpatialDraw* d, co
     /* c6aaf96f positions from bank 1 +0, +4, measured -1 and +1 in P1 and P2: the audited mapping holds only there */
     if (e->scaled_vertex && !(d->vertex_origin[0] == -1.0 && d->vertex_origin[1] == 1.0))
         return TEMPORAL_SPATIAL_ORIGIN;
-    for (int a = 0; a < 2; a++) {
-        /* the fraction where a program of the entry reads it: the clamp's and the composite's fragment stage,
-           c6aaf96f's vertex stage. B46268AD reads none for its coordinate. */
-        if (e->tap != TEMPORAL_SPATIAL_RAW && !(d->fragment_f[a] == fs[a])) return TEMPORAL_SPATIAL_FRACTION;
-        if (e->scaled_vertex && !(d->vertex_f[a] == fs[a])) return TEMPORAL_SPATIAL_FRACTION;
+    for (int a = 0; a < 2; a++)
         if (e->tap == TEMPORAL_SPATIAL_COMPOSITE && !(d->divisor[a] == 1.0)) return TEMPORAL_SPATIAL_DIVISOR;
-    }
     if (!d->normalised || !d->one_level || d->anisotropy || d->compare || !d->filters_same)
         return TEMPORAL_SPATIAL_SAMPLER;
     for (int a = 0; a < 2; a++)
@@ -233,6 +228,14 @@ static inline int temporal_spatial_check(int k, const TemporalSpatialDraw* d, co
             return TEMPORAL_SPATIAL_SAMPLER;
     if (!d->view_format_same || !d->view_2d || !d->view_one_level || !d->view_one_layer || !d->view_identity)
         return TEMPORAL_SPATIAL_VIEW;
+    /* every condition above is of class U (the audited reader), the two below of class N (this frame against the
+       replacement): checked after all of class U, so a class U failure is the one reported (research 14:35) */
+    for (int a = 0; a < 2; a++) {
+        /* the fraction where a program of the entry reads it: the clamp's and the composite's fragment stage,
+           c6aaf96f's vertex stage. B46268AD reads none for its coordinate. */
+        if (e->tap != TEMPORAL_SPATIAL_RAW && !(d->fragment_f[a] == fs[a])) return TEMPORAL_SPATIAL_FRACTION;
+        if (e->scaled_vertex && !(d->vertex_f[a] == fs[a])) return TEMPORAL_SPATIAL_FRACTION;
+    }
     for (int a = 0; a < 2; a++) {
         const double f = fs[a];
         double lo, hi;
@@ -260,6 +263,22 @@ static inline int temporal_spatial_overlaps(uint64_t at, uint64_t bytes, uint64_
     at &= low;
     scene &= low;
     return bytes && scene_bytes && at < scene + scene_bytes && scene < at + bytes;
+}
+
+/* A binding of entry k at a draw, classified (UPSCALER-DESIGN.md d08b624c, research 14:35 and 14:45): class N is
+   only the fraction and the tap and coverage bounds, the frame against the replacement: k, with the verdict. Every
+   other failure, and a block held on the GPU (held), is class U whatever fails with it: -1, a reader not on the
+   list, *verdict its reason. Taken: k, TEMPORAL_SPATIAL_TAKEN. */
+static inline int temporal_spatial_class_n(int verdict) {
+    return verdict == TEMPORAL_SPATIAL_TAKEN || verdict == TEMPORAL_SPATIAL_FRACTION ||
+           verdict == TEMPORAL_SPATIAL_COVERAGE;
+}
+static inline int temporal_spatial_classify(int k, const TemporalSpatialDraw* d, const double fs[2], int held,
+                                            int* verdict) {
+    *verdict = TEMPORAL_SPATIAL_NOT_LISTED;
+    if (k < 0 || k >= TEMPORAL_SPATIAL_ENTRIES || held) return -1;
+    *verdict = temporal_spatial_check(k, d, fs);
+    return temporal_spatial_class_n(*verdict) ? k : -1;
 }
 
 /* The mode's state across frames (D3-2 revision 3 and its tightening): off for the session at once after a failure

@@ -3507,15 +3507,16 @@ int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh*
                             spatial_block(ch, ST_VS, vs, 1, 0, d->vertex_origin) |
                             spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_BANK, TEMPORAL_SCENE_FRACTION, d->fragment_f) |
                             spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_BANK, 0x794, d->divisor);
-        if (!pending) verdict = temporal_spatial_check(k, d, g_s.f);
-        /* bytes on the GPU only, or c6aaf96f's origin absent or not the measured one: a reader not on the list,
-           the mode off from the next frame (research 14:00) */
-        if (pending || verdict == TEMPORAL_SPATIAL_ORIGIN) {
-            temporal_spatial_unknown(&g_s.latch, pending ? "a block a listed reader reads is held on the GPU"
-                                                         : "c6aaf96f's position origin is not the measured -1, +1");
+        /* any failure of class U, or a block held on the GPU, whatever else fails: a reader not on the list, the
+           mode off from the next frame. Only the fraction and the coverage leave it a listed reader (d08b624c) */
+        if (temporal_spatial_classify(k, d, g_s.f, pending, &verdict) < 0) {
+            static char why[160]; /* the latch keeps the first reason: written only while it has none */
+            if (!g_s.latch.off && !g_s.latch.off_next)
+                snprintf(why, sizeof why, "a reader not on the list: %s",
+                         pending ? "a block it reads is held on the GPU" : temporal_spatial_text(verdict));
+            temporal_spatial_unknown(&g_s.latch, why);
             k = -1;
             *listed = 0;
-            verdict = TEMPORAL_SPATIAL_NOT_LISTED;
         }
     }
     const int first = !g_s.fr.decided && k >= 0;
