@@ -2574,6 +2574,51 @@ static void test_spatial(void) {
     temporal_spatial_unknown(&l, "a reader not on the list");
     temporal_spatial_outcome(&l, 1, 0);
     assert(l.off && !strcmp(l.why, "a reader not on the list"));
+    /* the watch (research 11:25): not armed before the hook's end */
+    memset(&l, 0, sizeof l);
+    fr = (TemporalSpatialFrame){0, 0, 0};
+    assert(temporal_spatial_use(&fr, &l, 0, -1, "a draw into it") == TEMPORAL_SPATIAL_UNARMED && !l.off_next);
+    /* armed in an unpublished frame: the listed reader's own binding of the scene is expected, nothing counted */
+    fr = (TemporalSpatialFrame){1, 0, 0};
+    assert(temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_FORM) == TEMPORAL_SPATIAL_AS_DRAWN);
+    assert(temporal_spatial_use(&fr, &l, 1, TEMPORAL_SPATIAL_AS_DRAWN, "a binding") == TEMPORAL_SPATIAL_EXPECTED);
+    assert(temporal_spatial_draw(&fr, &l, 2, TEMPORAL_SPATIAL_TAKEN) == TEMPORAL_SPATIAL_AS_DRAWN);
+    assert(temporal_spatial_use(&fr, &l, 1, TEMPORAL_SPATIAL_AS_DRAWN, "a binding") == TEMPORAL_SPATIAL_EXPECTED);
+    assert(!l.off_next && !l.off);
+    /* a listed reader's draw that also draws into the scene: not a binding, so a consumer */
+    {
+        TemporalSpatialLatch l2 = {0, 0, 0, NULL};
+        assert(temporal_spatial_use(&fr, &l2, 1, -1, "a draw into it") == TEMPORAL_SPATIAL_CONSUMER && l2.off_next);
+    }
+    /* but a copy, a write or an unlisted binding in that frame is a consumer: off from the next frame */
+    assert(temporal_spatial_use(&fr, &l, 0, -1, "a copy from it") == TEMPORAL_SPATIAL_CONSUMER);
+    assert(l.off_next && !l.off && !strcmp(l.why, "a copy from it"));
+    memset(&l, 0, sizeof l);
+    fr = (TemporalSpatialFrame){1, 0, 0};
+    temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_FORM);
+    assert(temporal_spatial_use(&fr, &l, 0, TEMPORAL_SPATIAL_AS_DRAWN, "a binding") == TEMPORAL_SPATIAL_CONSUMER);
+    /* a listed reader's binding before the frame is decided is not expected */
+    memset(&l, 0, sizeof l);
+    fr = (TemporalSpatialFrame){1, 0, 0};
+    assert(temporal_spatial_use(&fr, &l, 1, TEMPORAL_SPATIAL_AS_DRAWN, "a binding") == TEMPORAL_SPATIAL_CONSUMER);
+    /* in a published frame: any use is a consumer, the refused listed reader's binding included */
+    memset(&l, 0, sizeof l);
+    fr = (TemporalSpatialFrame){1, 0, 0};
+    temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_TAKEN);
+    assert(temporal_spatial_use(&fr, &l, 0, -1, "a draw into it") == TEMPORAL_SPATIAL_CONSUMER);
+    assert(l.off_next && !l.off && !strcmp(l.why, "a draw into it"));
+    memset(&l, 0, sizeof l);
+    fr = (TemporalSpatialFrame){1, 0, 0};
+    temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_TAKEN);
+    assert(temporal_spatial_draw(&fr, &l, 1, TEMPORAL_SPATIAL_VIEW) == TEMPORAL_SPATIAL_AS_DRAWN);
+    assert(temporal_spatial_use(&fr, &l, 1, TEMPORAL_SPATIAL_AS_DRAWN, "a binding") == TEMPORAL_SPATIAL_CONSUMER);
+    assert(l.off_next && !l.off);
+    /* a binding given the larger texture that reaches the scene's Surf: a fault, off at once */
+    memset(&l, 0, sizeof l);
+    fr = (TemporalSpatialFrame){1, 0, 0};
+    temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_TAKEN);
+    assert(temporal_spatial_use(&fr, &l, 1, TEMPORAL_SPATIAL_LARGER, "a binding") == TEMPORAL_SPATIAL_FAULT);
+    assert(l.off && !temporal_spatial_frame(&l));
     /* (b) eight times in a row turns the mode off */
     memset(&l, 0, sizeof l);
     for (int i = 0; i < 8; i++) {

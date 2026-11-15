@@ -250,6 +250,24 @@ static inline int temporal_spatial_draw(TemporalSpatialFrame* fr, TemporalSpatia
                                                                     "refused in a published frame");
     return TEMPORAL_SPATIAL_AS_DRAWN;
 }
+/* A use of the scene colour's Surf while the watch is armed: from the end of the hook of a frame whose replacement
+   was recorded to its present (research 11:25). given is what the binding being made was given, when the use is a
+   draw's binding of it (-1 otherwise: a draw into it, a copy, a write-back, a reload, its end). A listed reader of
+   an unpublished frame binds the scene as drawn: expected. A binding given the larger texture never reaches the
+   Surf: such a use is a fault of ours, TEMPORAL_SPATIAL_FAULT, and the caller turns the mode off at once. Any other
+   use is a consumer not replaced: off from the next frame. */
+enum { TEMPORAL_SPATIAL_UNARMED, TEMPORAL_SPATIAL_EXPECTED, TEMPORAL_SPATIAL_CONSUMER, TEMPORAL_SPATIAL_FAULT };
+static inline int temporal_spatial_use(const TemporalSpatialFrame* fr, TemporalSpatialLatch* l, int listed, int given,
+                                       const char* what) {
+    if (!fr->recorded) return TEMPORAL_SPATIAL_UNARMED;
+    if (given == TEMPORAL_SPATIAL_LARGER) {
+        temporal_spatial_make_failed(l, "a binding given the larger texture used the scene colour (a fault)");
+        return TEMPORAL_SPATIAL_FAULT;
+    }
+    if (listed && given == TEMPORAL_SPATIAL_AS_DRAWN && fr->decided && !fr->published) return TEMPORAL_SPATIAL_EXPECTED;
+    temporal_spatial_unknown(l, what);
+    return TEMPORAL_SPATIAL_CONSUMER;
+}
 /* the frame's end, for the latch: eligible when its replacement was recorded */
 static inline void temporal_spatial_frame_end(const TemporalSpatialFrame* fr, TemporalSpatialLatch* l) {
     temporal_spatial_outcome(l, fr->recorded, fr->published);
