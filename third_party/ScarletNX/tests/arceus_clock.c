@@ -4,6 +4,8 @@
 #include "nx/runtime/arceus_clock.c"
 #include "arceus_steps_30.h"
 #include <assert.h>
+#include <stdarg.h>
+#include <stdio.h>
 
 static u8 memory[4096];
 u8* g_mem = memory;
@@ -17,7 +19,16 @@ void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 static unsigned waza_dependency_warnings;
 static unsigned low_fps_skip_logs;
+/* Only the event probe's lines are kept. */
+static char logged[8][512];
+static unsigned logged_count;
 void logf_(int level, const char* fmt, ...) {
+    if (!strncmp(fmt, "arceus-event-probe: ", 20) && logged_count < 8) {
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(logged[logged_count++], sizeof logged[0], fmt, args);
+        va_end(args);
+    }
     if (level == 0 && strstr(fmt, "arceus-waza-shot: enabled without WAZA_OBJECT_FIX"))
         waza_dependency_warnings++;
     if (level == 1 && strstr(fmt, "arceus-clock: timing layer skipped at fps_limit="))
@@ -2390,7 +2401,59 @@ static void test_whole_step(void) {
     blink_ticks = 0, blink_remainder = 0;
     capture_fix_active = 0;
 }
+/* The event probe: each wrapper calls its original once with the registers as given, counts it, and a line every
+   5 s gives the calls and frames a second since the last line. */
+static unsigned event_stub_runs;
+static void event_stub(CPU* c, u64 entry) {
+    assert(entry == entry_pc && c->x[0] == object && c->x[1] == 7);
+    event_stub_runs++;
+    c->x[0] = 3;
+    c->pc = c->x[30];
+}
+static void test_event_probe(void) {
+    event_probe_original[0] = event_probe_original[1] = event_stub;
+    event_probe_calls[0] = event_probe_calls[1] = event_probe_ns = 0;
+    memset(event_probe_logged, 0, sizeof event_probe_logged);
+    const int clocks = clocks_installed;
+    const u64 frames = event_probe_frames, ns = host_ns;
+    clocks_installed = 1;
+    event_probe_logged[2] = event_probe_frames;
+    logged_count = 0;
+    event_stub_runs = 0;
+    /* 6 s at 60 frames a second: the job once a frame, the resume every other frame */
+    for (unsigned k = 0; k < 360; k++) {
+        host_ns += 16666667;
+        event_probe_frames++;
+        CPU c = {.x = {[0] = object, [1] = 7, [30] = return_pc}, .pc = entry_pc};
+        event_job_probe(&c, entry_pc);
+        assert(c.x[0] == 3 && c.pc == return_pc);
+        if (k % 2) {
+            CPU d = {.x = {[0] = object, [1] = 7, [30] = return_pc}, .pc = entry_pc};
+            event_resume_probe(&d, entry_pc);
+            assert(d.x[0] == 3 && d.pc == return_pc);
+        }
+    }
+    assert(event_stub_runs == 540 && event_probe_calls[0] == 360 && event_probe_calls[1] == 180);
+    /* the first call starts the window, one line 5 s later */
+    assert(logged_count == 1);
+    assert(strstr(logged[0], "arceus-event-probe: seconds=5.00 job_15ba460_per_s=60.00 resume_f7ec80_per_s=30.00 "
+                             "frames_per_s=60.00 job_total=301 resume_total=150"));
+    /* without the clock wrappers the frames are not counted, and the line says so */
+    clocks_installed = 0;
+    for (unsigned k = 0; k < 300; k++) {
+        host_ns += 16666667;
+        CPU c = {.x = {[0] = object, [1] = 7, [30] = return_pc}, .pc = entry_pc};
+        event_job_probe(&c, entry_pc);
+    }
+    assert(logged_count == 2 && strstr(logged[1], "frames_per_s=- (no clock wrappers)"));
+    event_probe_original[0] = event_probe_original[1] = NULL;
+    clocks_installed = clocks;
+    event_probe_frames = frames;
+    host_ns = ns;
+    logged_count = 0;
+}
 int main(void) {
+    test_event_probe();
     test_ride_swap();
     test_defaults_on();
     test_capped_fall_body();

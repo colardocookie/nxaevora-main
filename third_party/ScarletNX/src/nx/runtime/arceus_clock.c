@@ -193,9 +193,17 @@ static int readable(u64 address, u64 size) {
     return 1;
 }
 
+static int event_probe;
+static u64 event_probe_frames;
+static void event_probe_line(void);
 static void trace_call(CPU* c, u64 entry, unsigned kind) {
     u64 object = c->x[0], channel = c->x[1], input = c->x[2], caller = c->x[30];
     u64 count = __atomic_add_fetch(&counts[kind], 1, __ATOMIC_RELAXED);
+    /* The channel 0 duration write comes once per main-loop frame. */
+    if (event_probe && kind == 2 && channel == 0 && caller == main_base + 0x278150c) {
+        __atomic_add_fetch(&event_probe_frames, 1, __ATOMIC_RELAXED);
+        event_probe_line();
+    }
     if (kind == 2) adjust_duration(c);
     originals[kind](c, entry);
     /* At this exact call site X19 is the UI animation owner and X21 is its
@@ -4292,6 +4300,88 @@ static void waza_shot_init(void) {
         waza_shot_fix == 2 ? "between ticks" : "at the tick rate");
 }
 
+/* SNX_ARCEUS_EVENT_PROBE=1, read-only (research 01:05): the calls of the event script job 15BA460 (vtable
+   4124CE0 +40) and of F7EC80, which resumes its Lua script, counted. Every 5 s one line gives each a second and the
+   main-loop frames a second, counted only while the clock wrappers are in. Is the job once a frame? */
+static GuestFn event_probe_original[2];
+static u64 event_probe_calls[2], event_probe_logged[3], event_probe_ns;
+static void event_probe_line(void) {
+    const u64 now = plat_ns();
+    u64 last = __atomic_load_n(&event_probe_ns, __ATOMIC_RELAXED);
+    if (!last) { /* the first window starts here, with the counts so far */
+        if (__atomic_compare_exchange_n(&event_probe_ns, &last, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            event_probe_logged[0] = __atomic_load_n(&event_probe_calls[0], __ATOMIC_RELAXED);
+            event_probe_logged[1] = __atomic_load_n(&event_probe_calls[1], __ATOMIC_RELAXED);
+            event_probe_logged[2] = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
+        }
+        return;
+    }
+    if (now - last < 5000000000ull ||
+        !__atomic_compare_exchange_n(&event_probe_ns, &last, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        return;
+    /* only the thread that moved the time on gets here, so the logged counts are its own */
+    const u64 job = __atomic_load_n(&event_probe_calls[0], __ATOMIC_RELAXED);
+    const u64 resume = __atomic_load_n(&event_probe_calls[1], __ATOMIC_RELAXED);
+    const u64 frames = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
+    const double seconds = (double)(now - last) / 1e9;
+    char frame_rate[32] = "- (no clock wrappers)";
+    if (clocks_installed)
+        snprintf(frame_rate, sizeof frame_rate, "%.2f", (double)(frames - event_probe_logged[2]) / seconds);
+    LOG("arceus-event-probe: seconds=%.2f job_15ba460_per_s=%.2f resume_f7ec80_per_s=%.2f frames_per_s=%s "
+        "job_total=%llu resume_total=%llu\n", seconds, (double)(job - event_probe_logged[0]) / seconds,
+        (double)(resume - event_probe_logged[1]) / seconds, frame_rate, (unsigned long long)job,
+        (unsigned long long)resume);
+    event_probe_logged[0] = job;
+    event_probe_logged[1] = resume;
+    event_probe_logged[2] = frames;
+}
+static void event_probe_count(CPU* c, u64 entry, unsigned kind) {
+    __atomic_add_fetch(&event_probe_calls[kind], 1, __ATOMIC_RELAXED);
+    event_probe_original[kind](c, entry);
+    event_probe_line();
+}
+static void event_job_probe(CPU* c, u64 entry) { event_probe_count(c, entry, 0); }
+static void event_resume_probe(CPU* c, u64 entry) { event_probe_count(c, entry, 1); }
+static void event_probe_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_EVENT_PROBE");
+    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) {
+        WARN("arceus-event-probe: refused without AOT invalidation\n");
+        return;
+    }
+    /* Equivalent MOV Xd,X0 -> ADD Xd,X0,#0 selects an independent JIT body; the RET is a second guard */
+    static const struct { u64 offset; u32 size, head, patch, word, replacement, extra, extra_word; } sites[2] = {
+        {0x15ba460, 0x138, 0xd10703ff, 0xa4, 0xaa0003f3, 0x91000013, 0x134, 0xd65f03c0},
+        {0xf7ec80, 0x134, 0xd10143ff, 0x18, 0xaa0003f4, 0x91000014, 0x74, 0xd65f03c0},
+    };
+    static const GuestFn wrappers[2] = {event_job_probe, event_resume_probe};
+    unsigned installed = 0;
+    for (unsigned k = 0; k < 2; k++) {
+        const u64 pc = main_base + sites[k].offset;
+        int covered = 0;
+        for (u32 i = 0; i < g_mod->nfns; i++)
+            if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] >= sites[k].size) covered = 1;
+        if (!covered || pc < g_code_lo || pc + sites[k].size > g_code_hi || !readable(pc, sites[k].size) ||
+            gr32(pc) != sites[k].head || gr32(pc + sites[k].patch) != sites[k].word ||
+            gr32(pc + sites[k].extra) != sites[k].extra_word) {
+            WARN("arceus-event-probe: refused instruction/function guard site=main+%llx\n",
+                 (unsigned long long)sites[k].offset);
+            continue;
+        }
+        gw32(pc + sites[k].patch, sites[k].replacement);
+        jit_code_changed(pc, sites[k].size);
+        event_probe_original[k] = jit_wait(pc);
+        if (!event_probe_original[k]) {
+            WARN("arceus-event-probe: compile failed site=main+%llx\n", (unsigned long long)sites[k].offset);
+            continue;
+        }
+        __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
+        installed++;
+    }
+    event_probe = installed != 0;
+    LOG("arceus-event-probe: read-only, %u of 2 installed (the event script job 15BA460, its resume F7EC80), a line "
+        "every 5 s%s\n", installed, clocks_installed ? "" : ", frames not counted without the clock wrappers");
+}
 void arceus_clock_post_jit(void) {
     if (!timing_enabled || !clocks_installed) return;
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
@@ -4328,6 +4418,7 @@ void arceus_clock_post_jit(void) {
     field_waza_init();
     waza_object_init();
     waza_shot_init();
+    event_probe_init();
     cadence_census_init();
     water_fix_init();
     effects_fix_init();
