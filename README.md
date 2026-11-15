@@ -2,18 +2,19 @@
 
 <!-- Copyright 2026 the NXAevora contributors -->
 
-<center>
+<p align="center">
 <img alt="aevora-icon" src="assets/nxaevora-banner.png" width="1000">
-<br><a href="https://github.com/nxaevora/nxaevora-main/actions/workflows/ci.yml"><img src="https://github.com/nxaevora/nxaevora-main/actions/workflows/ci.yml/badge.svg?branch=main" alt="Build NXAevora (Windows)"></a>
+<br>
+<a href="https://github.com/nxaevora/nxaevora-main/actions/workflows/ci.yml"><img src="https://github.com/nxaevora/nxaevora-main/actions/workflows/ci.yml/badge.svg?branch=main" alt="Build NXAevora (Windows)"></a>
 <img src="https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20Linux%20x64%20(Planned)-blue?style=flat" alt="Badge">
 <img src="https://img.shields.io/badge/Status-work%20in%20progress%20(alpha%20stage)-orange?style=flat" alt="Status: work in progress (alpha stage)">
 <img src="https://img.shields.io/badge/License-GPL--3.0%20(v3)-lightgrey?style=flat" alt="License: GPL-3.0 (v3)">
+</p>
 
-<br>NXAevora is a project aimed at running **Pokémon Legends: Arceus** fully natively.<br>
+<p align="center">
+NXAevora is a project aimed at running <strong>Pokémon Legends: Arceus</strong> fully natively.<br>
 The game's code is compiled using <a href="https://github.com/scarletnx/ScarletNX">ScarletNX</a>, a static compiler, while NXAevora provides a wide range of modifications, including the framework for native execution, runtime modifications, patches to the game's code, and a dedicated launcher.
-
-<br>
-</center>
+</p>
 
 > [!IMPORTANT]
 > While AI is used as the primary means of development, human maintainers are responsible for determining the project's development direction, verifying functionality, reviewing and approving changes, and managing the project.
