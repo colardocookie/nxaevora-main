@@ -808,6 +808,12 @@ target_link_libraries(snx-test-temporal-upscaler-boundary PRIVATE Vulkan::Header
 add_dependencies(snx-test-temporal-upscaler-boundary snx-test-upscaler-standin-0 snx-test-upscaler-standin-1
                  snx-test-upscaler-standin-2 snx-test-upscaler-standin-3 snx-test-upscaler-standin-4)
 add_test(NAME upscaler_boundary COMMAND snx-test-temporal-upscaler-boundary ${snx_upscaler_standins})
+# NGX's lifetimes in DLSS's module (msvc/upscaler_dlss/dlss_core.h) against a stand-in NGX, with no SDK
+add_executable(snx-test-temporal-dlss-core upscaler_boundary/dlss_core.cpp)
+set_target_properties(snx-test-temporal-dlss-core PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_compile_options(snx-test-temporal-dlss-core PRIVATE -Wall -Wextra -Werror)
+target_include_directories(snx-test-temporal-dlss-core PRIVATE "${PROJECT_SOURCE_DIR}/msvc/upscaler_dlss")
+set(snx_dlss_core_msvc "") # the copy by Microsoft's compiler, which the test runs too where it is built (below)
 # The same five modules built by Microsoft's compiler, which a module such as DLSS's needs, against the same host
 # built by this build's compiler. Only on Windows, and only where a Visual Studio with the C++ tools for x64 is
 # found (SNX_UPSCALER_STANDIN_MSVC: AUTO, ON to insist, OFF to leave it out). Elsewhere the test does not exist.
@@ -851,10 +857,14 @@ if(WIN32 AND NOT SNX_UPSCALER_STANDIN_MSVC STREQUAL "OFF")
                             BUILD_ALWAYS ON
                             INSTALL_COMMAND ""
                             BUILD_BYPRODUCTS ${snx_upscaler_standins_msvc}
+                                             "${snx_standin_msvc_dir}/out/snx-dlss-core-msvc.exe"
                             EXCLUDE_FROM_ALL ON)
         # building the host builds these modules too: the test needs them, and nothing else asks for them
         add_dependencies(snx-test-temporal-upscaler-boundary snx-test-upscaler-standin-msvc)
         add_test(NAME upscaler_boundary_msvc COMMAND snx-test-temporal-upscaler-boundary ${snx_upscaler_standins_msvc})
+        # the same lifetimes by Microsoft's compiler: dlss_core runs that copy too
+        add_dependencies(snx-test-temporal-dlss-core snx-test-upscaler-standin-msvc)
+        set(snx_dlss_core_msvc "${snx_standin_msvc_dir}/out/snx-dlss-core-msvc.exe")
     elseif(SNX_UPSCALER_STANDIN_MSVC STREQUAL "ON")
         message(FATAL_ERROR "SNX_UPSCALER_STANDIN_MSVC=ON, and no Visual Studio with the C++ tools for x64 was found")
     else()
@@ -862,6 +872,8 @@ if(WIN32 AND NOT SNX_UPSCALER_STANDIN_MSVC STREQUAL "OFF")
                        "compiler only, and the test upscaler_boundary_msvc does not exist")
     endif()
 endif()
+
+add_test(NAME dlss_core COMMAND snx-test-temporal-dlss-core ${snx_dlss_core_msvc})
 
 add_executable(snx-test-nvn-cmdlist nvn_cmdlist.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_cmdlist.c")
 snx_test_target(snx-test-nvn-cmdlist 11)
