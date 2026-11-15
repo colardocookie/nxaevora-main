@@ -69,6 +69,64 @@ int dlss_eval_cases() {
     assert(isfinite(e.frame_ms));
     for (int a = EVAL_OK; a <= EVAL_DERIVED; a++)
         for (int b = a + 1; b <= EVAL_DERIVED; b++) assert(strcmp(eval_text(a), eval_text(b)));
+    // what a context may be made with: the three flags required, the two others either way, two vector formats, DLAA
+    const uint32_t need = kLinearHdr | kUnjittered | kExposureAutomatic;
+    assert(create_check(need, kMotionR16G16Float, 64, 64, 64, 64, 64, 64) == CREATE_OK);
+    assert(create_check(need | kDepthReversed | kFarInfinite, kMotionR32G32Float, 64, 64, 80, 80, 64, 64) == CREATE_OK);
+    const uint32_t required[3] = {kLinearHdr, kUnjittered, kExposureAutomatic};
+    for (uint32_t one : required)
+        assert(create_check(need & ~one, kMotionR16G16Float, 64, 64, 64, 64, 64, 64) == CREATE_FLAG_MISSING);
+    assert(create_check(need | 1u << 5, kMotionR16G16Float, 64, 64, 64, 64, 64, 64) == CREATE_FLAG_UNKNOWN);
+    const int formats[4] = {0, 97 /* R16G16B16A16_SFLOAT */, 82 /* R16G16_SNORM */, 106 /* R32G32B32_SFLOAT */};
+    for (int format : formats)
+        assert(create_check(need, format, 64, 64, 64, 64, 64, 64) == CREATE_MOTION_FORMAT);
+    assert(create_check(need, kMotionR16G16Float, 32, 32, 64, 64, 64, 64) == CREATE_NOT_NATIVE); /* not DLAA */
+    assert(create_check(need, kMotionR16G16Float, 64, 64, 63, 64, 64, 64) == CREATE_NOT_NATIVE); /* beyond the images */
+    assert(create_check(need, kMotionR16G16Float, 0, 0, 64, 64, 0, 0) == CREATE_NOT_NATIVE);
+    for (int a = CREATE_OK; a <= CREATE_NOT_NATIVE; a++)
+        for (int b = a + 1; b <= CREATE_NOT_NATIVE; b++) assert(strcmp(create_text(a), create_text(b)));
+    // NGX's flags: vectors at the render size, HDR, the library's exposure, the depth inverted only when reversed
+    const int base = kNgxMvLowRes | kNgxIsHdr | kNgxAutoExposure;
+    assert(ngx_flags(need) == base && ngx_flags(need | kFarInfinite) == base);
+    assert(ngx_flags(need | kDepthReversed) == (base | kNgxDepthInverted));
+    assert(!(ngx_flags(need | kDepthReversed | kFarInfinite) & kNgxMvJittered));
+    // NGX's capabilities: Available and NeedsUpdatedDriver must be read, then available and no driver update needed
+    const Field yes = {1, 1, 0}, no = {1, 0, 0}, unread = {0, 1, 0xBAD00001u};
+    assert(cap_verdict(yes, no) == CAP_OK);
+    assert(cap_verdict(unread, no) == CAP_NOT_READ && cap_verdict(yes, unread) == CAP_NOT_READ);
+    assert(cap_verdict(Field{0, 0, 0xBAD00001u}, Field{0, 0, 0xBAD00001u}) == CAP_NOT_READ);
+    assert(cap_verdict(no, no) == CAP_NOT_AVAILABLE && cap_verdict(yes, yes) == CAP_DRIVER);
+    assert(cap_verdict(no, yes) == CAP_NOT_AVAILABLE); /* not available comes first */
+    for (int a = CAP_OK; a <= CAP_DRIVER; a++)
+        for (int b = a + 1; b <= CAP_DRIVER; b++) assert(strcmp(cap_text(a), cap_text(b)));
+    // a frame held to its context: render size, each image's handles, size and format, before anything is recorded
+    const Made made = {64, 64, 80, 80, 64, 64, {97, 126, kMotionR16G16Float, 109}};
+    const Handed good[4] = {{1, 2, 97, 80, 80}, {3, 4, 126, 80, 80}, {5, 6, kMotionR16G16Float, 80, 80},
+                            {7, 8, 109, 64, 64}};
+    int which = 0;
+    assert(frame_check(made, 64, 64, good, &which) == FRAME_OK && which == -1);
+    assert(frame_check(made, 63, 64, good, &which) == FRAME_RENDER && which == -1);
+    assert(frame_check(made, 64, 65, good, &which) == FRAME_RENDER);
+    for (int k = 0; k < 4; k++) {
+        Handed bad[4];
+        memcpy(bad, good, sizeof bad);
+        bad[k].image = 0;
+        assert(frame_check(made, 64, 64, bad, &which) == FRAME_HANDLE && which == k);
+        memcpy(bad, good, sizeof bad);
+        bad[k].view = 0;
+        assert(frame_check(made, 64, 64, bad, &which) == FRAME_HANDLE && which == k);
+        memcpy(bad, good, sizeof bad);
+        bad[k].w++;
+        assert(frame_check(made, 64, 64, bad, &which) == FRAME_SIZE && which == k);
+        memcpy(bad, good, sizeof bad);
+        bad[k].h--;
+        assert(frame_check(made, 64, 64, bad, &which) == FRAME_SIZE && which == k);
+        memcpy(bad, good, sizeof bad);
+        bad[k].format++;
+        assert(frame_check(made, 64, 64, bad, &which) == FRAME_FORMAT && which == k);
+    }
+    for (int a = FRAME_OK; a <= FRAME_FORMAT; a++)
+        for (int b = a + 1; b <= FRAME_FORMAT; b++) assert(strcmp(frame_text(a), frame_text(b)));
     puts("dlss_eval: ok");
     return 0;
 }

@@ -99,6 +99,38 @@ int main(int argc, char** argv) {
     assert(core_begin(&f.core, kDevice) == CORE_OK);
     core_end(&f.core, kDevice, &a_context);
     assert(core_shutdown(&f.core, kDevice) == CORE_FAILED && f.stand.stops == 1);
+    // a failure latched outside a release (the module's capability parameters): the shutdown stops and answers FAILED
+    fresh(&f);
+    assert(core_begin(&f.core, kDevice) == CORE_OK);
+    core_latch(&f.core, kDevice);
+    core_end(&f.core, kDevice, &a_context);
+    assert(f.stand.releases == 1 && core_shutdown(&f.core, kDevice) == CORE_FAILED && f.stand.stops == 1);
+    fresh(&f); /* for a device not started: a line, nothing latched */
+    core_latch(&f.core, kOther);
+    assert(f.stand.lines == 1 && core_shutdown(&f.core, kOther) == CORE_OK);
+    // a call that failed with no object: a plain failure, the device still known, a clean shutdown
+    fresh(&f);
+    assert(core_begin(&f.core, kDevice) == CORE_OK);
+    assert(core_call(&f.core, kDevice, "a call", 0, 0) == CORE_FAILED && core_known(&f.core, kDevice));
+    core_end(&f.core, kDevice, &a_context);
+    assert(f.stand.releases == 1 && core_shutdown(&f.core, kDevice) == CORE_OK && f.stand.stops == 1);
+    // Each of the three calls that hand out an object, failing with one: the device unknown, nothing of NGX called
+    // again (no release, no start, no stop), no context begins, prepare and evaluate refused (core_known 0)
+    static const char* const calls[3] = {"capability parameters", "a context's parameters", "a feature's creation"};
+    for (const char* call : calls) {
+        fresh(&f);
+        assert(core_begin(&f.core, kDevice) == CORE_OK && core_begin(&f.core, kDevice) == CORE_OK);
+        assert(core_known(&f.core, kDevice));
+        assert(core_call(&f.core, kDevice, call, 0, 1) == CORE_REFUSED && !core_known(&f.core, kDevice));
+        core_end(&f.core, kDevice, &a_context);
+        core_end(&f.core, kDevice, &b_context);
+        assert(f.stand.releases == 0 && f.core.device[0].contexts == 0); /* both ended, nothing released */
+        assert(core_begin(&f.core, kDevice) == CORE_REFUSED && f.stand.starts == 1); /* create refused */
+        assert(!core_known(&f.core, kDevice));                                         /* prepare, evaluate refused */
+        assert(core_shutdown(&f.core, kDevice) == CORE_FAILED && f.stand.stops == 0);
+    }
+    fresh(&f);
+    assert(core_call(&f.core, kOther, "a call", 1, 1) == CORE_OK && !core_known(&f.core, kOther)); /* never started */
     // a stop that failed answers FAILED
     fresh(&f);
     f.stand.stop_ok = 0;
