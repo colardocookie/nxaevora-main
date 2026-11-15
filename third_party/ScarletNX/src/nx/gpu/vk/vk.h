@@ -816,6 +816,7 @@ void vk_buf_mem_need(u64 gva, u64 len);
 u64 vk_buf_reclaim(u32 before, u64 want);
 void vk_buf_stats(u32* count, u64* bytes);
 int vk_buf_pending(u64 gva, u64 len); /* a pending graphics result overlaps the range */
+int vk_buf_owned(u64 gva, u64 len);   /* GPU-owned bytes are on the range's pages: guest memory is stale there */
 u64 vk_buf_adds(void);                /* graphics results committed so far: as vk_compute_adds */
 int vk_buf_pending_any(void);         /* any graphics result is pending */
 int vk_buf_pending_unsubmitted(void); /* one is in the commands recorded since the last submit */

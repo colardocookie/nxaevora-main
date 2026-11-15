@@ -2019,6 +2019,9 @@ static int range_owned(u64 gva, u64 len) {
     }
     return 0;
 }
+/* the same, for a reader outside the buffer cache that must know whether guest memory holds the bytes a draw binds
+   (temporal.c, SNX_ARCEUS_UPSCALER=spatial), vk_lock held */
+int vk_buf_owned(u64 gva, u64 len) { return range_owned(gva, len); }
 /* A range over bytes the GPU holds: copied into this frame's staging ring, the CPU's bytes by the CPU and the owned
    ones from their owners by the GPU (vk_guest_read), with nothing landed. It isn't hashed (the CPU's copy of the
    owned bytes is stale) or given a buffer of its own: it is copied again when the GPU writes those bytes again

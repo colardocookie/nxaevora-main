@@ -17,7 +17,7 @@ static inline int temporal_spatial_size(int W, int H, int w, int h, double fx, d
     if (!(fabs(fx - fy) <= 1e-6) || !(fabs(fx - (double)w / W) <= 1e-6) || !(fabs(fy - (double)h / H) <= 1e-6))
         return 0;
     const int64_t mw = (int64_t)W * W, nh = (int64_t)H * H;
-    if (mw % w || nh % h) return 0;
+    if (mw % w || nh % h || mw / w > INT32_MAX || nh / h > INT32_MAX) return 0; /* whole, and an int (astra's O5) */
     *M = (int)(mw / w);
     *N = (int)(nh / h);
     return 1;
@@ -38,9 +38,16 @@ static inline int temporal_spatial_scale_listed(int W, int H, int w, int h) {
 static inline float temporal_spatial_scale_fraction(int k) {
     return (float)((double)temporal_spatial_scales[k][0] / temporal_spatial_scales[k][1]);
 }
-/* whether images of w x h fit the device's limit for the format and the uses they are made with (astra's O5) */
-static inline int temporal_spatial_fits(uint32_t w, uint32_t h, uint32_t max_w, uint32_t max_h) {
-    return w && h && w <= max_w && h <= max_h;
+/* the frame's confirmed fractions, bit for bit the float of scale k: no tolerance (research 14:00) */
+static inline int temporal_spatial_confirmed(float fx, float fy, int k) {
+    const float f = temporal_spatial_scale_fraction(k);
+    return memcmp(&fx, &f, sizeof f) == 0 && memcmp(&fy, &f, sizeof f) == 0;
+}
+/* whether images of w x h fit the device's limits for the format and the uses they are made with, and, as colour
+   attachments, its framebuffer's (astra's O5) */
+static inline int temporal_spatial_fits(uint32_t w, uint32_t h, uint32_t max_w, uint32_t max_h, uint32_t fb_w,
+                                        uint32_t fb_h) {
+    return w && h && w <= max_w && h <= max_h && w <= fb_w && h <= fb_h;
 }
 
 /* Where the picture goes in the larger texture and what repeats its edge: the picture W x H at the origin, then three

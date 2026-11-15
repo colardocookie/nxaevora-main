@@ -3303,17 +3303,18 @@ static void spatial_start(void) {
         "given. Only at a scale of 1/2, 3/5, 2/3, 3/4 or 4/5, otherwise D2 as without the switch. Its numbers are "
         "of the private picture before the scale\n");
 }
-/* Two floats of a bank a stage's program reads at offset, as the draw binds them: guest memory, which is what the
-   renderer's constant buffer copies (render.c cb_get) unless a pending compute or graphics result covers the range,
-   whose newer bytes are on the GPU only. NaN when not read or not bound. 1 when such a result is pending: what the
-   draw reads is then not known here, and the binding is not on the list (research 12:50). */
+/* Two floats of a bank a stage's program reads at offset, as the draw binds them: guest memory, which is cb_get's
+   source (render.c) unless a pending compute or graphics result or GPU-owned bytes cover the range, which are newer
+   on the GPU only (buffer.c buf_get_owned). NaN when not read or not bound. 1 for those: what the draw reads is not
+   known here, and the binding is not on the list (research 12:50, 14:00). */
 static int spatial_block(const GpuChannel* ch, int stage, const VkSh* program, int bank, u32 offset, double out[2]) {
     out[0] = out[1] = NAN;
     if (!program || !(program->si.cbuf_mask >> bank & 1u) || program->si.cbuf_max[bank] < offset + 8) return 0;
     const u64 address = ch->cbind[stage][bank];
     const u32 size = ch->cbind_size[stage][bank];
     if (!address || size < offset + 8) return 0;
-    if (vk_compute_pending(address + offset, 8) || (vk_buf_pending_any() && vk_buf_pending(address + offset, 8)))
+    if (vk_compute_pending(address + offset, 8) || (vk_buf_pending_any() && vk_buf_pending(address + offset, 8)) ||
+        vk_buf_owned(address + offset, 8))
         return 1;
     const u8* bytes = gmem_host(address + offset, 8);
     if (!bytes) return 0;
@@ -3332,11 +3333,14 @@ static int spatial_ready(u32 frame, const Surf* scene, const TemporalRect* area,
     const int W = (int)scene->sw, H = (int)scene->sh;
     if (!spatial_now(frame) || !area) return 0;
     if (!area->x && !area->y) scale = temporal_spatial_scale_listed(W, H, area->w, area->h);
+    /* the confirmed fractions are the scale's float, bit for bit (research 14:00) */
+    if (scale >= 0 && !temporal_spatial_confirmed(rg->now.fx, rg->now.fy, scale)) scale = -1;
     if (scale < 0 || scene->levels != 1 ||
         !temporal_spatial_size(W, H, area->w, area->h, rg->now.fx, rg->now.fy, &M, &N)) {
         if (refused++ < 4 || refused % 600 == 0)
             LOG("arceus-upscaler: spatial: frame %u is left to D2 (rectangle %d,%d %dx%d of %dx%d at %g x %g, %u "
-                "levels: not 1/2, 3/5, 2/3, 3/4 or 4/5 at the origin with one level), %llu such so far\n", frame,
+                "levels: not 1/2, 3/5, 2/3, 3/4 or 4/5 at the origin with that fraction exactly and one level), %llu "
+                "such so far\n", frame,
                 area->x, area->y, area->w, area->h, W, H, (double)rg->now.fx, (double)rg->now.fy, scene->levels,
                 (unsigned long long)refused);
         return 0;
@@ -3357,8 +3361,10 @@ static int spatial_ready(u32 frame, const Surf* scene, const TemporalRect* area,
                                                                      VK_IMAGE_TILING_OPTIMAL, drawn, 0, &limit[0])) &&
                       VK_OK(vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, scene->f.vk, VK_IMAGE_TYPE_2D,
                                                                      VK_IMAGE_TILING_OPTIMAL, filled, 0, &limit[1]));
-    if (!asked || !temporal_spatial_fits(scene->sw, scene->sh, limit[0].maxExtent.width, limit[0].maxExtent.height) ||
-        !temporal_spatial_fits((u32)M, (u32)N, limit[1].maxExtent.width, limit[1].maxExtent.height)) {
+    const u32 fb_w = g_vk.props.limits.maxFramebufferWidth, fb_h = g_vk.props.limits.maxFramebufferHeight;
+    if (!asked ||
+        !temporal_spatial_fits(scene->sw, scene->sh, limit[0].maxExtent.width, limit[0].maxExtent.height, fb_w, fb_h) ||
+        !temporal_spatial_fits((u32)M, (u32)N, limit[1].maxExtent.width, limit[1].maxExtent.height, fb_w, fb_h)) {
         spatial_failed("the device takes no private picture or larger texture of these sizes for their uses");
         return 0;
     }
@@ -3501,12 +3507,16 @@ int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh*
                             spatial_block(ch, ST_VS, vs, 1, 0, d->vertex_origin) |
                             spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_BANK, TEMPORAL_SCENE_FRACTION, d->fragment_f) |
                             spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_BANK, 0x794, d->divisor);
-        if (pending) { /* the bytes the draw reads are on the GPU only: not on the list */
-            temporal_spatial_unknown(&g_s.latch, "a block a listed reader reads has a pending GPU result");
+        if (!pending) verdict = temporal_spatial_check(k, d, g_s.f);
+        /* bytes on the GPU only, or c6aaf96f's origin absent or not the measured one: a reader not on the list,
+           the mode off from the next frame (research 14:00) */
+        if (pending || verdict == TEMPORAL_SPATIAL_ORIGIN) {
+            temporal_spatial_unknown(&g_s.latch, pending ? "a block a listed reader reads is held on the GPU"
+                                                         : "c6aaf96f's position origin is not the measured -1, +1");
             k = -1;
             *listed = 0;
-        } else
-            verdict = temporal_spatial_check(k, d, g_s.f);
+            verdict = TEMPORAL_SPATIAL_NOT_LISTED;
+        }
     }
     const int first = !g_s.fr.decided && k >= 0;
     const int given = temporal_spatial_draw(&g_s.fr, &g_s.latch, k, verdict);

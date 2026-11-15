@@ -2423,9 +2423,27 @@ static void test_spatial(void) {
     assert(temporal_spatial_scale_fraction(0) == 0.5f && temporal_spatial_scale_fraction(1) == 0.6f);
     assert(temporal_spatial_scale_fraction(2) == 2.0f / 3.0f && temporal_spatial_scale_fraction(3) == 0.75f);
     assert(temporal_spatial_scale_fraction(4) == 0.8f);
-    /* the device's limit (astra's O5): an 8192 scene at 1/2 needs 16384 */
-    assert(temporal_spatial_fits(16384, 16384, 16384, 16384) && !temporal_spatial_fits(16384, 9216, 8192, 16384));
-    assert(!temporal_spatial_fits(7680, 16385, 16384, 16384) && !temporal_spatial_fits(0, 1, 16384, 16384));
+    /* the device's limits (astra's O5): an 8192 scene at 1/2 needs 16384, and the framebuffer's limit counts too */
+    assert(temporal_spatial_fits(16384, 16384, 16384, 16384, 16384, 16384));
+    assert(!temporal_spatial_fits(16384, 9216, 8192, 16384, 16384, 16384));
+    assert(!temporal_spatial_fits(7680, 16385, 16384, 16384, 16384, 16384));
+    assert(!temporal_spatial_fits(0, 1, 16384, 16384, 16384, 16384));
+    assert(!temporal_spatial_fits(16384, 16384, 16384, 16384, 8192, 16384)); /* the framebuffer's width */
+    assert(!temporal_spatial_fits(16384, 16384, 16384, 16384, 16384, 8192)); /* and height */
+    /* a quotient past an int is refused before it is narrowed */
+    /* equal fractions of 1/4096, one quotient 2^32 (past an int), the other 2^24 */
+    assert(!temporal_spatial_size(1048576, 4096, 256, 1, 1.0 / 4096, 1.0 / 4096, &M, &N));
+    assert(!temporal_spatial_size(4096, 1048576, 1, 256, 1.0 / 4096, 1.0 / 4096, &M, &N));
+    assert(temporal_spatial_size(4096, 4096, 1, 1, 1.0 / 4096, 1.0 / 4096, &M, &N) && M == 16777216 && N == M);
+    /* the confirmed fractions bit for bit (research 14:00): each table float, and one float step either way */
+    for (int k = 0; k < 5; k++) {
+        const float f = temporal_spatial_scale_fraction(k);
+        assert(temporal_spatial_confirmed(f, f, k));
+        assert(!temporal_spatial_confirmed(nextafterf(f, 1.0f), f, k));
+        assert(!temporal_spatial_confirmed(f, nextafterf(f, 0.0f), k));
+        assert(!temporal_spatial_confirmed(f, f, (k + 1) % 5));
+    }
+    assert(!temporal_spatial_confirmed(0.5000001f, 0.5f, 0) && !temporal_spatial_confirmed(-0.0f, -0.0f, 0));
     /* the final decision (astra's O2): a variant not made or the mode gone off draws the scene unkeyed, never drops */
     {
         int fault = 0;
