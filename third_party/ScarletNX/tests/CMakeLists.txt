@@ -1962,11 +1962,11 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     endif()
     add_test(NAME txq_variant COMMAND snx-test-temporal-txq-variant WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(txq_variant PROPERTIES SKIP_RETURN_CODE 77)
-    # The same test against the translator built with a mutant (SNX_TEST_TXQ_MUTANT in spirv_translate.c), which it
-    # must fail at the corpus, by the assertion named: 1 width and height swapped, 2 every other slot keyed. The
-    # targets are named in full for the PC's test builds, which find them by name.
+    # The same test against the translator built with a mutant (SNX_TEST_TXQ_MUTANT in spirv_translate.c), which must
+    # fail the corpus check it names (--must-fail): 1 width and height swapped, 2 every other slot keyed. The targets
+    # are named in full for the PC's test builds, which find them by name.
     include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake") # tests/ is configured before src/nx, which includes it too
-    function(snx_txq_mutant target test number said)
+    function(snx_txq_mutant target test number)
         add_library(${target}-shader OBJECT "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/shader.c"
                     "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/decode.c"
                     "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/corpus.c"
@@ -1982,16 +1982,16 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         if(NOT WIN32)
             target_link_libraries(${target} PRIVATE m)
         endif()
-        set_tests_properties(${test} PROPERTIES SKIP_RETURN_CODE 77
-                             SKIP_REGULAR_EXPRESSION "skipped, SNX_SHADER_CORPUS names no corpus"
-                             PASS_REGULAR_EXPRESSION "${said}")
+        set_tests_properties(${test} PROPERTIES SKIP_RETURN_CODE 77)
     endfunction()
     add_executable(snx-test-temporal-txq-mutant-1 txq_variant.c)
-    add_test(NAME txq_mutant_1 COMMAND snx-test-temporal-txq-mutant-1 WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    snx_txq_mutant(snx-test-temporal-txq-mutant-1 txq_mutant_1 1 "only the scaling goes and the key's constants come")
+    add_test(NAME txq_mutant_1 COMMAND snx-test-temporal-txq-mutant-1 --must-fail compare
+             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    snx_txq_mutant(snx-test-temporal-txq-mutant-1 txq_mutant_1 1)
     add_executable(snx-test-temporal-txq-mutant-2 txq_variant.c)
-    add_test(NAME txq_mutant_2 COMMAND snx-test-temporal-txq-mutant-2 WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    snx_txq_mutant(snx-test-temporal-txq-mutant-2 txq_mutant_2 2 "a key for another slot changes nothing")
+    add_test(NAME txq_mutant_2 COMMAND snx-test-temporal-txq-mutant-2 --must-fail other-slot
+             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    snx_txq_mutant(snx-test-temporal-txq-mutant-2 txq_mutant_2 2)
     if(NOT CMAKE_CROSSCOMPILING)
         # the SVC registers tools/svcgen lays out from src/nx/hle/svc/hos.svc, in both ABIs
         include("${PROJECT_SOURCE_DIR}/cmake/svcgen.cmake")
