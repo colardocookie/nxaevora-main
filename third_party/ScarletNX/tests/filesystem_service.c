@@ -2137,6 +2137,41 @@ int main(int argc, char** argv) {
         printf("PASS %u checks: romfs= reads the RomFS folder through the RomFS service\n", test_checks);
         return 0;
     }
+    if (argc == 4 && !strcmp(argv[3], "romfs-setting-update")) {
+        static const char* const made[][2] = {
+            {"setting-update-data/0100000000AB0000_data/exefs/main", "the game's main"},
+            {"setting-update-data/0100000000AB0000_0100000000AB0800_data/exefs/main", "the update's main"},
+            {"setting-update-data/0100000000AB0000_0100000000AB0800_data/romfs/a.bin", "the update's a"},
+            {"setting-update-romfs/a.bin", "the setting's a"},
+        };
+        char* romfs = snx_absolute("setting-update-romfs");
+        u8* data;
+        u64 size = 0;
+        CHECK(romfs != NULL);
+        for (size_t i = 0; i < sizeof made / sizeof made[0]; i++) {
+            char* folder = snx_dirname(made[i][0]);
+            CHECK(!snx_mkdirs(folder) && !snx_write_file(made[i][0], made[i][1], strlen(made[i][1])));
+            free(folder);
+        }
+        g_addon = 0x0100000000AB0800ULL;
+        strcpy(g_exedir, "setting-update-data/");
+        strcpy(g_confdir, "setting-update-data/");
+        strcpy(g_gamename, "0100000000AB0000");
+        strcpy(g_addondir, "setting-update-data/0100000000AB0000_0100000000AB0800_data/");
+        strcpy(g_datadir, "setting-update-data/0100000000AB0000_data/");
+        snprintf(g_settings.game_romfs, sizeof g_settings.game_romfs, "%s", romfs);
+        test_log_text[0] = 0;
+        fs_init(NULL, NULL);
+        data = fs_read_file("romfs/a.bin", &size);
+        CHECK(data && size == 14 && !memcmp(data, "the update's a", 14));
+        free(data);
+        CHECK(strstr(test_log_text, "is not used: an add-on's RomFS") != NULL);
+        cleanup_service();
+        free(g_mem);
+        free(romfs);
+        printf("PASS %u checks: an add-on's RomFS replaces the romfs= folder\n", test_checks);
+        return 0;
+    }
     if (argc == 4 && !strcmp(argv[3], "addon-overlay")) {
         test_overlay();
         cleanup_service();

@@ -262,20 +262,20 @@ static int drop_extraction(const char* dir, int quiet) {
     return rc || snx_mkdirs(dir);
 }
 /* a game made from a folder reads its RomFS there (romfs=), not in its data folder: what an older version copied
-   there must not hide it, a stopped copy included. An input RomFS in that copy (an old data folder as the input) is
-   refused, not removed */
-static int drop_romfs_copy(const char* dir, const char* input_romfs, int quiet) {
+   there must not hide it, a stopped copy included. An input in that folder (an old data folder) is refused before
+   anything is removed: the loader takes the RomFS beside the ExeFS, so the ExeFS check also covers the RomFS */
+static int drop_romfs_copy(const char* dir, const char* input_exefs, int quiet) {
     static const char* const parts[] = {"romfs", "romfs.bin", "romfs.copying"};
     char* part;
     size_t i;
     int rc = 0;
+    if (snx_path_within(input_exefs, dir))
+        return snx_error("the input ExeFS %s is in %s, which the recompile removes: recompile from the game's own "
+                         "folder",
+                         input_exefs, dir);
     for (i = 0; !rc && i < sizeof parts / sizeof *parts; ++i) {
         part = snx_path_join(dir, parts[i]);
-        if (input_romfs && snx_path_within(input_romfs, part)) {
-            snx_error("the input RomFS %s is in %s, which the recompile removes: use the game's own folder", input_romfs,
-                      part);
-            rc = 1;
-        } else if (snx_path_exists(part) || snx_is_link(part)) {
+        if (snx_path_exists(part) || snx_is_link(part)) {
             if (!quiet) printf("Removing %s: the game reads its RomFS from its folder (romfs=)\n", part);
             rc = snx_remove_tree(part);
         }
@@ -315,7 +315,7 @@ static int copy_data(const SnxProgram* p, const char* dir, int quiet) {
             free(dst);
         }
     } else {
-        if (drop_romfs_copy(dir, p->romfs_path, quiet) || snx_list_dir(p->exefs_path, &names, &n)) {
+        if (drop_romfs_copy(dir, p->exefs_path, quiet) || snx_list_dir(p->exefs_path, &names, &n)) {
             free(ex);
             return 1;
         }

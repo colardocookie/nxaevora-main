@@ -368,6 +368,8 @@ int main(int argc, char** argv) {
         char *data = snx_path_join(out, "Folder Fixture/Folder Fixture_data");
         char *stale = snx_path_join(data, "romfs"), *stale_file = snx_path_join(stale, "old.bin");
         char *ini = snx_path_join(out, "Folder Fixture/Folder Fixture.ini"), *staged, *expected, *value;
+        char* romfs_image;
+        static const char image_bytes[] = "a RomFS image";
         check(!snx_mkdirs(exefs) && !snx_mkdirs(romfs_dir), "the game folder's folders");
         write_nso(main_nso);
         check(!snx_write_file(romfs_file, "one", 3), "the folder's RomFS file");
@@ -400,16 +402,32 @@ int main(int argc, char** argv) {
         check(expected && value && !strcmp(value, expected), "romfs= names the folder of the RomFS");
         free(value);
         free(expected);
-        /* an old data folder (exefs/ and its RomFS copy) as the input: refused, and its RomFS kept */
+        /* an old data folder (exefs/ and its RomFS copy) as the input: refused by its ExeFS, and its RomFS kept */
         check(!snx_mkdirs(stale) && !snx_write_file(stale_file, "old", 3), "a RomFS copy in the data folder");
         args[4] = data;
         rc = snx_run(args, root, NULL, &text);
-        if (!rc || !text || !strstr(text, "which the recompile removes")) fprintf(stderr, "%s\n", text ? text : "");
-        check(rc && text && strstr(text, "which the recompile removes"),
-              "a game folder whose RomFS the recompile would remove is refused");
+        if (!rc || !text || !strstr(text, "recompile from the game's own folder"))
+            fprintf(stderr, "%s\n", text ? text : "");
+        check(rc && text && strstr(text, "recompile from the game's own folder"),
+              "a data folder whose ExeFS the recompile would remove is refused");
         free(text);
         text = NULL;
         check(snx_is_file(stale_file), "the input RomFS is kept");
+        /* a RomFS image in that input data folder: refused before it is removed, and kept */
+        romfs_image = snx_path_join(data, "romfs.bin");
+        check(!snx_write_file(romfs_image, image_bytes, sizeof image_bytes), "a RomFS image in the data folder");
+        rc = snx_run(args, root, NULL, &text);
+        if (!rc || !text || !strstr(text, "recompile from the game's own folder"))
+            fprintf(stderr, "%s\n", text ? text : "");
+        check(rc && text && strstr(text, "recompile from the game's own folder"),
+              "a data folder with a RomFS image as the input is refused");
+        free(text);
+        text = NULL;
+        cached = (char*)snx_read_file(romfs_image, &cached_size);
+        check(cached && cached_size == sizeof image_bytes && !memcmp(cached, image_bytes, sizeof image_bytes),
+              "the input RomFS image is kept");
+        free(cached);
+        free(romfs_image);
         free(ini);
         free(stale_file);
         free(stale);

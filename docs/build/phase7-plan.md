@@ -77,7 +77,8 @@ The user makes one folder from their console:
 - The recompile makes one program for this folder. The base program and the separate update program go away.
 - The run reads the RomFS from the folder of the user with no copy. The runtime gets the path from `<name>.ini`
   (`romfs=`, in place of `source=`) and lays it as the `romfs/` branch of `romfs_init`. A `romfs=` folder that is
-  not there, or a `romfs/` or `romfs.bin` in the data folder beside it, stops the run with a log line.
+  not there, or a `romfs/` or `romfs.bin` in the data folder beside it, stops the run with a log line. An
+  add-on's RomFS (an update's data folder) replaces it, as the overlays do, and the run logs that `romfs=` is not used.
 - The folder names can have capitals (`ExeFS/`, `RomFS/`, as Ryujinx writes them): `find_exefs` and
   `load_exefs_program` take both forms.
 - `romfs.bin` (one RomFS image file) stays a valid input, as now.

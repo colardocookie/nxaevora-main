@@ -93,8 +93,9 @@ static void romfs_from_tmpfs(void) {
 }
 
 /* The RomFS of a game recompiled from a folder (romfs=): the folder of the user, grafted as romfs:/ with no copy. A
-   dump wins (the old update program reads its files from it), and two sources are an error. Under tree.lock, at
-   startup */
+   dump wins (the old update program reads its files from it), and so does an add-on's RomFS, which replaces the
+   game's whole; the game's own data folder with a RomFS and the setting are two sources, an error. Under tree.lock,
+   at startup */
 static void romfs_from_setting(void) {
     FsNode* node;
     FsTreeResult r;
@@ -104,14 +105,22 @@ static void romfs_from_setting(void) {
         LOG("fs: romfs=%s is not used: the game reads its RomFS from its dump\n", g_settings.game_romfs);
         return;
     }
-    if (!fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs", &node) ||
-        !fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs.bin", &node)) {
-        folder = snx_path_join(g_datadir, "romfs");
-        image = snx_path_join(g_datadir, "romfs.bin");
+    folder = snx_path_join(g_datadir, "romfs");
+    image = snx_path_join(g_datadir, "romfs.bin");
+    if (!folder || !image) fatal("RomFS: out of memory for the paths of the data folder\n");
+    if (snx_path_exists(folder) || snx_path_exists(image)) {
         LOG("fs: the data folder has %s and %s, and romfs=%s is set\n", folder, image, g_settings.game_romfs);
         free(folder);
         free(image);
         fatal("The game has two RomFS sources: its data folder and its romfs= setting");
+    }
+    free(folder);
+    free(image);
+    if (!fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs", &node) ||
+        !fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs.bin", &node)) {
+        LOG("fs: romfs=%s is not used: an add-on's RomFS (the update's data folder, or a checked DLC's) replaces it\n",
+            g_settings.game_romfs);
+        return;
     }
     if (!snx_is_dir(g_settings.game_romfs)) {
         ini = snx_absolute(ini_file());
