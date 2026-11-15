@@ -1753,7 +1753,8 @@ static int blit_depth(Surf* st, const Surf2D* s, const Surf2D* d, int dx, int dy
 /* a 2D blit from st read as src_format into dt is a copy of bytes: the source and destination 2D formats are the same,
    and both images hold their guest bytes at the same size */
 static int blit_copies_bytes(const Surf* st, const Surf* dt, u32 src_format) {
-    return vk_rt_format(src_format).vk == dt->f.vk && st->f.bpp == dt->f.bpp && st->f.raw && dt->f.raw;
+    VkFmt sf = vk_rt_format(src_format); /* a format the GPU can't render comes back as an RGBA8 stand-in, not raw */
+    return sf.raw && sf.vk == dt->f.vk && st->f.bpp == dt->f.bpp && st->f.raw && dt->f.raw;
 }
 
 /* the 2D engine's blit between render targets, on the GPU. The surfaces are gpu/gpu.h's
