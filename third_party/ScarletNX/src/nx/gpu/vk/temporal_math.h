@@ -1243,6 +1243,13 @@ static inline int temporal_upscaler_config_same(const TemporalUpscalerConfig* a,
     return a->target_w == b->target_w && a->target_h == b->target_h && a->render_w == b->render_w &&
            a->render_h == b->render_h && a->out_w == b->out_w && a->out_h == b->out_h && a->generation == b->generation;
 }
+/* the jitter sequence's length a context's frames must have: 8 x (output area / render area), rounded up, as the
+   sequence itself is made (temporal_rect_offsets). 8 at full size, 32 at 1/2, 18 at 2/3: FSR's documented phase
+   count there (research 22:55). At 3/5, 3/4 and 4/5 FSR's formula truncates over the width (22, 14, 12) */
+static inline unsigned temporal_upscaler_phases(const TemporalUpscalerConfig* c) {
+    const TemporalRect render = {0, 0, c->render_w, c->render_h};
+    return temporal_rect_offsets(&render, c->out_w, c->out_h);
+}
 /* 1 when the published context is for the frame's configuration: only then is the frame evaluated */
 static inline int temporal_upscaler_ready(const TemporalUpscalerContexts* c, const TemporalUpscalerConfig* config) {
     return c->live && temporal_upscaler_config_same(&c->live_config, config);

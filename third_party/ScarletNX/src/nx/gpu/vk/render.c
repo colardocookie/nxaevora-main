@@ -1212,6 +1212,8 @@ static void fs_key(GpuChannel* ch, const VkSh* s0, TexRes* res, u32 last_out, u3
    decided once (spatial_draw) for both the texture (stage_set_) and the variant (FsKey.txq). Slot masks. */
 static struct {
     u64 larger, scene, listed;
+    VkImageView view; /* the larger texture's view with the game view's mapping, for the slot given it */
+    int keyed; /* the larger texture's slot is one the program's size queries read: drawn with the keyed variant */
 } g_spatial;
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
 static VkSh* fs_variant(GpuChannel* ch, u64 addr, VkSh* s0, const FsKey* fk) {
@@ -2019,7 +2021,7 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
             for (u32 j = 0; j < n; j++)
                 if (rt[j] == t) slots |= 1u << j;
         if (larger) {
-            view = vk_temporal_spatial_view();
+            view = g_spatial.view;
             depth_ro = 0;
         } else if (slots) {
             /* the guest reads the target's previous contents during a draw that writes it: in place, in a feedback
@@ -2830,6 +2832,7 @@ static void spatial_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, int ot
                          int indexed, u32 topology, u32 first, u32 count, u32 base_instance, u32 instances,
                          Surf* const* rt, u32 n, const Surf* zt, FsKey* fk) {
     g_spatial.larger = g_spatial.scene = g_spatial.listed = 0;
+    g_spatial.keyed = 0;
     if (!g_vk_watch || !fs0) return;
     const u32* r = ch->r3d;
     const Surf* target = zt;
@@ -2839,6 +2842,25 @@ static void spatial_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, int ot
             break;
         }
     const int nt = fs0->si.ntex > SH_MAXTEX ? SH_MAXTEX : fs0->si.ntex;
+    /* for the log (research 15:40): every texture slot of a listed program's draw, which binding holds what */
+    int listed_program = 0;
+    for (int e = 0; e < TEMPORAL_SPATIAL_ENTRIES; e++) listed_program |= temporal_spatial_entries[e].fs == fs0->hash;
+    static u64 listed_draws;
+    if (listed_program && (listed_draws++ < 4 || listed_draws % 600 == 0))
+        for (int i = 0; i < nt; i++) {
+            const TexRes* x = &res[i];
+            const ShTex* st = &fs0->si.tex[i];
+            if (!x->have || !x->t)
+                LOG("arceus-upscaler: spatial: listed draw %llu of program %llx, texture slot %d, handle offset %x: "
+                    "no surface%s\n", (unsigned long long)listed_draws, (unsigned long long)fs0->hash, i,
+                    st->cbuf_off, st->flags & SNX_TEX_INDEXED ? " (indexed)" : "");
+            else
+                LOG("arceus-upscaler: spatial: listed draw %llu of program %llx, texture slot %d, handle offset %x: "
+                    "surface at %llx of %ux%u (image %ux%u)%s%s\n", (unsigned long long)listed_draws,
+                    (unsigned long long)fs0->hash, i, st->cbuf_off, (unsigned long long)x->t->gva, x->t->w, x->t->h,
+                    x->t->sw, x->t->sh, x->t == g_vk_watch ? ", the scene colour" : "",
+                    st->flags & SNX_TEX_INDEXED ? " (indexed)" : "");
+        }
     for (int i = 0; i < nt; i++) {
         const TexRes* x = &res[i];
         const ShTex* st = &fs0->si.tex[i];
@@ -2854,6 +2876,7 @@ static void spatial_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, int ot
         d.instance_count = instances;
         d.first_instance = base_instance;
         d.other_stages = other_stages;
+        d.offset_size = (int)(fs0->si.tex_offset_size_mask >> i & 1);
         const VkViewport v = vk_render_viewport_at(r, 0);
         d.viewport[0] = v.x;
         d.viewport[1] = v.y;
@@ -2901,21 +2924,31 @@ static void spatial_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, int ot
         d.view_2d = want == VK_IMAGE_VIEW_TYPE_2D;
         d.view_one_level = t->levels == 1;
         d.view_one_layer = t->layers == 1 && !t->member && !t->group;
-        d.view_identity = tex_map_identity(tex_map(t, x->tic));
+        /* the replacement's view with exactly the game view's mapping (research 19:40) */
+        const VkComponentMapping map = tex_map(t, x->tic);
+        const VkImageView view = vk_temporal_spatial_view_for(&map);
+        d.view_mapping_same = view != VK_NULL_HANDLE;
         int listed = 0;
         const int given = vk_temporal_spatial_decide(ch, vs, fs0, st->cbuf_off, t, &d, &listed);
         if (listed) g_spatial.listed |= 1ull << i;
         if (given != TEMPORAL_SPATIAL_LARGER) continue;
-        if (fk->txq[0]) { /* one keyed slot a variant: no entry has two, so this is ours */
+        if (g_spatial.larger) { /* one binding a draw: no entry binds the scene twice, so this is ours (astra 04:40) */
             vk_temporal_spatial_fault("two bindings of one draw were given the larger texture");
             g_spatial.larger = 0;
+            g_spatial.keyed = 0;
             memset(fk->txq, 0, sizeof fk->txq);
             return;
         }
         g_spatial.larger |= 1ull << i;
-        fk->txq[0] = st->cbuf_off + 1;
-        fk->txq[1] = q[0];
-        fk->txq[2] = q[1];
+        g_spatial.view = view;
+        /* the size query's variant only where the translated program queries this slot: else its ordinary program,
+           which computes nothing from the size (D3-2 revision 4) */
+        if (fs0->si.tex_txq_mask >> i & 1) {
+            g_spatial.keyed = 1;
+            fk->txq[0] = st->cbuf_off + 1;
+            fk->txq[1] = q[0];
+            fk->txq[2] = q[1];
+        }
     }
 }
 
@@ -3004,6 +3037,7 @@ retry:
     u32 n;
     read_targets(ch, rt, &zt, &n);
     g_spatial.larger = g_spatial.scene = g_spatial.listed = 0;
+    g_spatial.keyed = 0;
     if (sh.fs0) {
         fs_key(ch, sh.fs0, fres, last->si.out_mask, sh.rt_int, sh.rt_sint, &fk);
         spatial_draw(ch, vs, sh.fs0, tcs || tes || gs, fres, indexed, draw_topo, first, count, base_instance,
@@ -3018,16 +3052,20 @@ retry:
             }
             fs = made;
         }
-        /* the larger texture with its variant, or neither: without the variant, or with the mode gone off since the
-           decision, the scene with the unkeyed program, and the mode off. The draw is drawn (astra's O2) */
+        /* the larger texture with its pair, or neither: the keyed variant where the slot is queried, the ordinary
+           program where not. A keyed variant not made, or the mode gone off since the decision, is a make failure:
+           the scene with the ordinary program, and the mode off at once. The draw is drawn (astra's O2, 04:40) */
         if (g_spatial.larger) {
             int fault;
-            const int made = fs && !fs->failed && fs != sh.fs0;
+            /* made: a program that exists and did not fail; a failed ordinary program withdraws the decision too
+               (research 17:35) */
+            const int made = g_spatial.keyed ? fs && !fs->failed && fs != sh.fs0 : fs && !fs->failed;
             g_spatial.larger = temporal_spatial_final(g_spatial.larger, made, g_vk_watch != NULL, &fault);
             if (fault) {
                 vk_temporal_spatial_fault(made ? "the mode went off before the draw's textures were bound"
                                                : "the size query's variant could not be made");
                 memset(fk.txq, 0, sizeof fk.txq);
+                g_spatial.keyed = 0;
                 fs = fs_variant(ch, code + r[0x851], sh.fs0, &fk);
                 kept = 0;
             }

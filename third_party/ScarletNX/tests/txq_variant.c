@@ -433,7 +433,7 @@ static void controls(void) {
 }
 
 static u32* translate(const u8* code, u32 max_bytes, int stage, const ShaderInfo* info, const u32 txq[3],
-                      size_t* words) {
+                      size_t* words, ShaderInfo* out) {
     ShaderInfo si = *info;
     memcpy(si.txq_fixed, txq, sizeof si.txq_fixed);
     u8* copy = malloc(max_bytes);
@@ -442,6 +442,7 @@ static u32* translate(const u8* code, u32 max_bytes, int stage, const ShaderInfo
     u32* spv = shader_to_spirv(copy, max_bytes, stage, &si, words, 1, 1, 1, 1);
     free(copy);
     assert(spv && "the program translates");
+    if (out) *out = si;
     return spv;
 }
 
@@ -476,8 +477,8 @@ static void old_record(void) {
 
 /* The corpus's checks are verdicts, not assertions: with --must-fail <check> the test passes only when that check
    failed (a translator mutant's test), with no argument only when none did */
-enum { CHECK_OTHER_SLOT, CHECK_COMPARE, CHECK_SCALED, CHECK_SEEN, CHECKS };
-static const char* const g_check_name[CHECKS] = {"other-slot", "compare", "scaled", "seen"};
+enum { CHECK_OTHER_SLOT, CHECK_COMPARE, CHECK_SCALED, CHECK_SEEN, CHECK_QUERIED, CHECKS };
+static const char* const g_check_name[CHECKS] = {"other-slot", "compare", "scaled", "seen", "queried"};
 static int g_failed[CHECKS];
 static void check(int which, int holds, const char* what) {
     if (holds) return;
@@ -496,10 +497,13 @@ int main(int argc, char** argv) {
     }
     old_record();
     controls();
+    /* handle: the one size query's slot, D3-1's mechanism's (the half-size picture 54F500000, D3-2 revision 4); the
+       scene colour is at 0x28 in both and is not queried. B46268AD queries nothing (ShaderInfo.tex_txq_mask). */
     static const struct {
         unsigned long long hash;
-        u32 handle; /* the scene colour's handle offset, in words */
+        u32 handle;
     } programs[2] = {{0x21fbfbecbf90f4a3ull, 0x2A}, {0x8a160a27d90af72dull, 0x36}};
+    const unsigned long long plain = 0xb46268adda62e218ull;
     const char* dir = getenv("SNX_SHADER_CORPUS");
     if (!dir || !dir[0]) {
         puts("txq_variant: skipped, SNX_SHADER_CORPUS names no corpus");
@@ -509,7 +513,7 @@ int main(int argc, char** argv) {
     g_shader_maximal_reconvergence = 1;
     DIR* folder = opendir(dir);
     assert(folder && "the corpus folder opens");
-    int seen = 0;
+    int seen = 0, offset_readers = 0;
     struct dirent* entry;
     while ((entry = readdir(folder))) {
         const size_t len = strlen(entry->d_name);
@@ -522,14 +526,52 @@ int main(int argc, char** argv) {
         u8* code = shader_corpus_load(path, &max_bytes, &stage, &info);
         if (!code) continue;
         const unsigned long long hash = shader_hash(code, max_bytes, &hlen);
+        { /* the positive control: some program of the corpus, of any stage, reads a size for its offsets */
+            ShaderInfo any = info;
+            size_t anyw;
+            u8* copy = malloc(max_bytes);
+            assert(copy);
+            memcpy(copy, code, max_bytes);
+            u32* spv = shader_to_spirv(copy, max_bytes, stage, &any, &anyw, 1, 1, 1, 1);
+            free(copy);
+            if (spv && any.tex_offset_size_mask) offset_readers++;
+            free(spv);
+        }
+        if (hash == plain && stage == ST_FS) { /* no size query at all: no slot marked */
+            ShaderInfo made;
+            size_t pw;
+            free(translate(code, max_bytes, stage, &info, (const u32[3]){0, 0, 0}, &pw, &made));
+            unsigned long long scene = 0;
+            for (int s = 0; s < made.ntex && s < 64; s++)
+                if (made.tex[s].cbuf_off == 0x28) scene |= 1ull << s;
+            check(CHECK_QUERIED, made.tex_txq_mask == 0 && scene && !(made.tex_offset_size_mask & scene),
+                  "B46268AD's translation marks no queried slot, and reads no size of the scene's for offsets");
+            printf("txq_variant: %016llx: queried slots 0x%llx, sizes read for offsets 0x%llx, the scene's 0x%llx\n",
+                   hash, (unsigned long long)made.tex_txq_mask, (unsigned long long)made.tex_offset_size_mask, scene);
+            seen |= 4;
+        }
         for (int p = 0; p < 2; p++) {
             if (hash != programs[p].hash || stage != ST_FS) continue;
             const u32 none[3] = {0, 0, 0}, other[3] = {programs[p].handle + 1 + 7, 1234, 567},
                       keyed[3] = {programs[p].handle + 1, 1234, 567};
             size_t aw, ow, kw;
-            u32* a = translate(code, max_bytes, stage, &info, none, &aw);
-            u32* o = translate(code, max_bytes, stage, &info, other, &ow);
-            u32* k = translate(code, max_bytes, stage, &info, keyed, &kw);
+            ShaderInfo made;
+            u32* a = translate(code, max_bytes, stage, &info, none, &aw, &made);
+            u32* o = translate(code, max_bytes, stage, &info, other, &ow, NULL);
+            u32* k = translate(code, max_bytes, stage, &info, keyed, &kw, NULL);
+            /* the queried slots as translated (D3-2 revision 4): the query's slot marked, the scene's (0x28) not */
+            unsigned long long queried = 0, scene = 0;
+            for (int s = 0; s < made.ntex && s < 64; s++) {
+                if (made.tex[s].cbuf_off == programs[p].handle) queried |= 1ull << s;
+                if (made.tex[s].cbuf_off == 0x28) scene |= 1ull << s;
+            }
+            check(CHECK_QUERIED,
+                  queried && made.tex_txq_mask == queried && scene && !(made.tex_txq_mask & scene) &&
+                      !(made.tex_offset_size_mask & scene),
+                  "the translation marks the queried slot and not the scene colour's, nor reads its size for offsets");
+            printf("txq_variant: %016llx: queried slots 0x%llx, the query's 0x%llx, the scene's 0x%llx, sizes read for "
+                   "offsets 0x%llx\n", hash, (unsigned long long)made.tex_txq_mask, queried, scene,
+                   (unsigned long long)made.tex_offset_size_mask);
             check(CHECK_OTHER_SLOT, ow == aw && !memcmp(o, a, aw * sizeof *a),
                   "a key for another slot changes nothing");
             unsigned removed, added;
@@ -545,7 +587,9 @@ int main(int argc, char** argv) {
         free(code);
     }
     closedir(folder);
-    check(CHECK_SEEN, seen == 3, "both programs are in the corpus");
+    check(CHECK_SEEN, seen == 7, "the three programs are in the corpus");
+    /* none in this corpus: the positive case of the mark is tests/shader_direct_regressions.c's run-time offset */
+    printf("txq_variant: %d programs of the corpus read a size for texel offsets\n", offset_readers);
     if (must_fail >= 0) {
         printf("txq_variant: the check %s %s, as this test must see it fail\n", g_check_name[must_fail],
                g_failed[must_fail] ? "failed" : "did NOT fail");

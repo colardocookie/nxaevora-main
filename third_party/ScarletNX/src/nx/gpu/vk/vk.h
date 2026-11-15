@@ -1100,7 +1100,7 @@ static inline void vk_temporal_watch_bound(const Surf* t) {
 struct TemporalSpatialDraw;
 int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh* fs0, u32 handle, const Surf* t,
                                struct TemporalSpatialDraw* d, int* listed);
-VkImageView vk_temporal_spatial_view(void);
+VkImageView vk_temporal_spatial_view_for(const VkComponentMapping* map); /* the game view's own mapping */
 void vk_temporal_spatial_binding(int on, int listed, int given); /* around a scene binding's vk_surf_use */
 void vk_temporal_spatial_fault(const char* what);
 /* the scene camera's constant block with this frame's jitter in place of the guest's, 1 when buffer and offset are set */
