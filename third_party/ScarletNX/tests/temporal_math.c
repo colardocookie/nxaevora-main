@@ -2511,6 +2511,78 @@ static void test_spatial(void) {
     assert(temporal_spatial_frame(&l));
     temporal_spatial_outcome(&l, 1, 0);
     assert(!temporal_spatial_frame(&l) && l.off);
+    /* a frame draw by draw (research 11:10). Nothing recorded at the hook: every reader as drawn, nothing counted */
+    TemporalSpatialFrame fr = {0, 0, 0};
+    memset(&l, 0, sizeof l);
+    assert(temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_TAKEN) == TEMPORAL_SPATIAL_AS_DRAWN);
+    assert(temporal_spatial_draw(&fr, &l, -1, TEMPORAL_SPATIAL_NOT_LISTED) == TEMPORAL_SPATIAL_AS_DRAWN);
+    temporal_spatial_frame_end(&fr, &l);
+    assert(!l.off_next && l.unpublished == 0 && temporal_spatial_frame(&l));
+    /* published: the first listed reader taken, the later ones taken too */
+    fr = (TemporalSpatialFrame){1, 0, 0};
+    assert(temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_TAKEN) == TEMPORAL_SPATIAL_LARGER && fr.published);
+    assert(temporal_spatial_draw(&fr, &l, 1, TEMPORAL_SPATIAL_TAKEN) == TEMPORAL_SPATIAL_LARGER);
+    assert(temporal_spatial_draw(&fr, &l, 2, TEMPORAL_SPATIAL_TAKEN) == TEMPORAL_SPATIAL_LARGER);
+    temporal_spatial_frame_end(&fr, &l);
+    assert(!l.off_next && l.unpublished == 0 && temporal_spatial_frame(&l));
+    /* (b) the first listed reader refused: not published, every later reader as drawn, counted, no stop */
+    fr = (TemporalSpatialFrame){1, 0, 0};
+    assert(temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_FORM) == TEMPORAL_SPATIAL_AS_DRAWN && !fr.published);
+    assert(temporal_spatial_draw(&fr, &l, 1, TEMPORAL_SPATIAL_TAKEN) == TEMPORAL_SPATIAL_AS_DRAWN);
+    assert(temporal_spatial_draw(&fr, &l, 2, TEMPORAL_SPATIAL_COVERAGE) == TEMPORAL_SPATIAL_AS_DRAWN);
+    temporal_spatial_frame_end(&fr, &l);
+    assert(!l.off_next && l.unpublished == 1 && temporal_spatial_frame(&l));
+    /* a reader not on the list in an unpublished frame: nothing is mixed in it, but the list is not whole, so the
+       mode is off from the next frame */
+    fr = (TemporalSpatialFrame){1, 0, 0};
+    assert(temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_VIEW) == TEMPORAL_SPATIAL_AS_DRAWN);
+    assert(temporal_spatial_draw(&fr, &l, -1, TEMPORAL_SPATIAL_NOT_LISTED) == TEMPORAL_SPATIAL_AS_DRAWN);
+    assert(l.off_next && !strcmp(l.why, "a reader not on the list"));
+    temporal_spatial_frame_end(&fr, &l);
+    assert(l.unpublished == 2 && !temporal_spatial_frame(&l));
+    /* one before the frame's first listed reader: it does not decide the frame, the listed one does, and the mode is
+       off from the next frame */
+    memset(&l, 0, sizeof l);
+    fr = (TemporalSpatialFrame){1, 0, 0};
+    assert(temporal_spatial_draw(&fr, &l, -1, TEMPORAL_SPATIAL_NOT_LISTED) == TEMPORAL_SPATIAL_AS_DRAWN);
+    assert(!fr.decided && l.off_next);
+    assert(temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_TAKEN) == TEMPORAL_SPATIAL_LARGER && fr.published);
+    temporal_spatial_frame_end(&fr, &l);
+    assert(!temporal_spatial_frame(&l));
+    memset(&l, 0, sizeof l);
+    /* (a) a later listed reader refused in a published frame: as drawn, the frame stays published, off next frame */
+    fr = (TemporalSpatialFrame){1, 0, 0};
+    assert(temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_TAKEN) == TEMPORAL_SPATIAL_LARGER);
+    assert(temporal_spatial_draw(&fr, &l, 2, TEMPORAL_SPATIAL_DIVISOR) == TEMPORAL_SPATIAL_AS_DRAWN);
+    assert(l.off_next && !l.off && fr.published && !strcmp(l.why, "a listed reader refused in a published frame"));
+    temporal_spatial_frame_end(&fr, &l);
+    assert(l.unpublished == 0 && !temporal_spatial_frame(&l));
+    /* a reader not on the list in a published frame: the same */
+    memset(&l, 0, sizeof l);
+    fr = (TemporalSpatialFrame){1, 0, 0};
+    assert(temporal_spatial_draw(&fr, &l, 1, TEMPORAL_SPATIAL_TAKEN) == TEMPORAL_SPATIAL_LARGER);
+    assert(temporal_spatial_draw(&fr, &l, -1, TEMPORAL_SPATIAL_NOT_LISTED) == TEMPORAL_SPATIAL_AS_DRAWN);
+    assert(l.off_next && !strcmp(l.why, "a reader not on the list"));
+    temporal_spatial_draw(&fr, &l, 2, TEMPORAL_SPATIAL_DIVISOR); /* a second reason: the first is kept */
+    temporal_spatial_make_failed(&l, "the larger image");
+    assert(!strcmp(l.why, "a reader not on the list"));
+    temporal_spatial_frame_end(&fr, &l);
+    assert(!temporal_spatial_frame(&l));
+    /* the eighth unpublished frame after an unknown reader in the same frame: the reader's reason is kept */
+    memset(&l, 0, sizeof l);
+    for (int i = 0; i < 7; i++) temporal_spatial_outcome(&l, 1, 0);
+    temporal_spatial_unknown(&l, "a reader not on the list");
+    temporal_spatial_outcome(&l, 1, 0);
+    assert(l.off && !strcmp(l.why, "a reader not on the list"));
+    /* (b) eight times in a row turns the mode off */
+    memset(&l, 0, sizeof l);
+    for (int i = 0; i < 8; i++) {
+        assert(temporal_spatial_frame(&l));
+        fr = (TemporalSpatialFrame){1, 0, 0};
+        temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_FRACTION);
+        temporal_spatial_frame_end(&fr, &l);
+    }
+    assert(!temporal_spatial_frame(&l) && !strcmp(l.why, "eight eligible frames in a row were not published"));
 }
 
 /* the readers' probe: its programs by their whole hashes as the census prints them, and not by either half */

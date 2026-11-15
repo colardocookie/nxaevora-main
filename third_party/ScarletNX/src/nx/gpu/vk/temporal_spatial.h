@@ -196,14 +196,18 @@ typedef struct {
     const char* why;      /* why it went off, for its one line */
 } TemporalSpatialLatch;
 #define TEMPORAL_SPATIAL_UNPUBLISHED_MOST 8
+/* the first reason the mode goes off is the one its line gives */
+static inline void temporal_spatial_reason(TemporalSpatialLatch* l, const char* why) {
+    if (!l->off && !l->off_next) l->why = why;
+}
 /* a thing the mode needs could not be made: off now */
 static inline void temporal_spatial_make_failed(TemporalSpatialLatch* l, const char* why) {
-    if (!l->off) l->why = why;
+    temporal_spatial_reason(l, why);
     l->off = 1;
 }
 /* an unknown reader or a consumer not replaced in this frame: off from the next */
 static inline void temporal_spatial_unknown(TemporalSpatialLatch* l, const char* why) {
-    if (!l->off && !l->off_next) l->why = why;
+    temporal_spatial_reason(l, why);
     l->off_next = 1;
 }
 /* at a frame's start: whether the mode is on for it (an off_next of the frame before takes effect here) */
@@ -217,8 +221,37 @@ static inline void temporal_spatial_outcome(TemporalSpatialLatch* l, int eligibl
     if (!eligible || l->off) return;
     if (published) l->unpublished = 0;
     else if (++l->unpublished >= TEMPORAL_SPATIAL_UNPUBLISHED_MOST) {
-        if (!l->off) l->why = "eight eligible frames in a row were not published";
+        temporal_spatial_reason(l, "eight eligible frames in a row were not published");
         l->off = 1;
     }
+}
+/* One frame's hand-over, draw by draw (research's ruling of 11:10). The replacement is recorded at the hook; the
+   frame's first listed reader decides whether it is published: taken, it is, and so are the later readers that are
+   taken; refused, the frame is not published at all and every reader gets the scene as drawn (an eligible frame not
+   published, counted). A later listed reader refused in a published frame, or any reader not on the list in a frame
+   whose replacement was recorded, read the scene as drawn: an unknown reader, the mode off from the next frame. */
+enum { TEMPORAL_SPATIAL_AS_DRAWN, TEMPORAL_SPATIAL_LARGER };
+typedef struct {
+    int recorded;  /* the replacement was recorded at the hook in this frame */
+    int decided;   /* the first listed reader was met */
+    int published; /* it was taken */
+} TemporalSpatialFrame;
+/* What a draw that samples the scene colour is given: entry k (-1 not listed) with temporal_spatial_check's answer */
+static inline int temporal_spatial_draw(TemporalSpatialFrame* fr, TemporalSpatialLatch* l, int k, int verdict) {
+    if (!fr->recorded) return TEMPORAL_SPATIAL_AS_DRAWN;
+    const int taken = k >= 0 && verdict == TEMPORAL_SPATIAL_TAKEN;
+    if (k >= 0 && !fr->decided) { /* the frame's first listed reader */
+        fr->decided = 1;
+        fr->published = taken;
+        return taken ? TEMPORAL_SPATIAL_LARGER : TEMPORAL_SPATIAL_AS_DRAWN;
+    }
+    if (taken && fr->published) return TEMPORAL_SPATIAL_LARGER;
+    if (k < 0 || fr->published) temporal_spatial_unknown(l, k < 0 ? "a reader not on the list" : "a listed reader "
+                                                                    "refused in a published frame");
+    return TEMPORAL_SPATIAL_AS_DRAWN;
+}
+/* the frame's end, for the latch: eligible when its replacement was recorded */
+static inline void temporal_spatial_frame_end(const TemporalSpatialFrame* fr, TemporalSpatialLatch* l) {
+    temporal_spatial_outcome(l, fr->recorded, fr->published);
 }
 #endif
