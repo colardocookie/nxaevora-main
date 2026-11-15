@@ -4964,6 +4964,22 @@ static void test_selftest_proof(void) {
     }
 }
 
+/* the live contexts: each added once, taken once, nothing else */
+static void test_selftest_live(void) {
+    SelftestLive l = {{0}, 0};
+    int a = 0, b = 0, c[SELFTEST_LIVE_MOST + 1] = {0}; /* only their addresses are used */
+    assert(selftest_live_add(&l, &a) && selftest_live_add(&l, &b) && l.n == 2);
+    assert(!selftest_live_add(&l, &a) && l.n == 2); /* handed out twice without a destroy */
+    assert(!selftest_live_add(&l, NULL));
+    assert(selftest_live_take(&l, &a) && !selftest_live_take(&l, &a) && l.n == 1); /* ended twice */
+    assert(!selftest_live_take(&l, &c[0]));                                      /* never handed out */
+    assert(selftest_live_take(&l, &b) && l.n == 0);
+    for (int k = 0; k < SELFTEST_LIVE_MOST; k++) assert(selftest_live_add(&l, &c[k]));
+    assert(!selftest_live_add(&l, &c[SELFTEST_LIVE_MOST]) && l.n == SELFTEST_LIVE_MOST); /* full */
+    for (int k = SELFTEST_LIVE_MOST - 1; k >= 0; k--) assert(selftest_live_take(&l, &c[k]));
+    assert(l.n == 0);
+}
+
 /* a depth of the other convention: 1 less the reversed depth, which for a finite far plane is the standard one */
 static void test_selftest_depth_turn(void) {
     const SelftestProjection finite = {0.1, 5000.0};
@@ -5292,6 +5308,7 @@ int main(void) {
     test_selftest();
     test_selftest_motion_pack();
     test_selftest_depth_turn();
+    test_selftest_live();
     test_selftest_projection();
     test_selftest_layers();
     test_selftest_variables();

@@ -57,6 +57,10 @@ static struct {
     VkFormat motion_format; /* the vectors' images: two halves for dlss, four for the others */
     int dlss; /* DLSS's matrix (DL1b revision 2, research's rulings for N4): native sizes only, quality not judged */
     u32 contexts; /* contexts the adapter handed out and the self-test has not destroyed */
+    SelftestLive live; /* which they are: each ends exactly once */
+    int ended_wrong;   /* a context destroyed that was not live, or while a command buffer was recorded */
+    int recording;     /* a command buffer is begun and neither submitted nor reset */
+    int halted;        /* an evaluate answered UNKNOWN and its buffer was reset: no more is recorded or run */
     int layers; /* how the loader's list of layers was read (selftest_layers) */
     int listed; /* the loader listed the validation layer, whatever came of setting it up */
     int messenger_result; /* what making its message callback gave, when that failed */
@@ -708,7 +712,10 @@ static void unknown(const char* what) {
 /* the command buffer's contents are discarded: 1 only when the reset itself succeeded */
 static int discard(void) {
     if (g.unknown) return 0;
-    if (VK_OK(vkResetCommandBuffer(g.cb, 0))) return 1;
+    if (VK_OK(vkResetCommandBuffer(g.cb, 0))) {
+        g.recording = 0;
+        return 1;
+    }
     unknown("the command buffer could not be reset");
     return 0;
 }
@@ -716,7 +723,10 @@ static int discard(void) {
 static int begin(void) {
     const VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                          .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    return discard() && VK_OK(vkBeginCommandBuffer(g.cb, &bi));
+    if (g.halted) return 0; /* after an UNKNOWN evaluate nothing more is recorded */
+    const int begun = discard() && VK_OK(vkBeginCommandBuffer(g.cb, &bi));
+    g.recording = begun;
+    return begun;
 }
 
 /* the device has finished everything: 1, or its state is unknown from now on */
@@ -735,6 +745,7 @@ static int submit(void) {
     if (g.unknown) return -1;
     if (!VK_OK(vkEndCommandBuffer(g.cb)) || !VK_OK(vkQueueSubmit(g.queue, 1, &si, VK_NULL_HANDLE)))
         return discard() ? 0 : -1;
+    g.recording = 0; /* submitted: what it records is the queue's now */
     if (VK_OK(vkQueueWaitIdle(g.queue))) return 1;
     unknown("a submission was made and waiting for it failed");
     return -1;
@@ -934,7 +945,19 @@ static int session_open(Session* s, const Inputs* in, const SnxUpscalerTraits* t
 
 /* Once the device's state is not known a session frees nothing: the device may still be using it all. What the
    session showed of its contexts is kept for the case that ran it. */
+/* A context ends here, once, only while no command buffer is being recorded: its work has completed or was
+   discarded. Anything else is a FAIL, and nothing of it is called. */
 static void context_destroy(SnxUpscaler* context) {
+    if (g.recording) {
+        LOG(ST "FAIL: a context was to be destroyed while a command buffer is recorded: it is kept\n");
+        g.ended_wrong = 1;
+        return;
+    }
+    if (!selftest_live_take(&g.live, context)) {
+        LOG(ST "FAIL: a context was to be destroyed that is not live (ended already, or never handed out)\n");
+        g.ended_wrong = 1;
+        return;
+    }
     g.api->destroy(context);
     g.contexts--;
 }
@@ -976,7 +999,14 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
     const VkImageUsageFlags copies = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     const VkImageUsageFlags inputs = VK_IMAGE_USAGE_SAMPLED_BIT | copies, output = inputs | VK_IMAGE_USAGE_STORAGE_BIT;
     int made = g.api->create(&make, traits, &s->pending) == SNX_UPSCALER_OK && s->pending && !traits->submits_itself;
-    if (s->pending) g.contexts++; /* destroyed below whenever it is not taken */
+    if (s->pending) { /* destroyed below whenever it is not taken */
+        g.contexts++;
+        if (!selftest_live_add(&g.live, s->pending)) {
+            LOG(ST "FAIL: a context handed out could not be kept on the list of live ones (full, or handed out "
+                   "twice)\n");
+            g.ended_wrong = 1;
+        }
+    }
     if (made && ((traits->colour_usage | traits->depth_usage | traits->motion_usage) & ~inputs ||
                  traits->output_usage & ~output)) {
         LOG(ST "the adapter needs image usages the self-test's pictures do not have (%x %x %x %x)\n",
@@ -1143,8 +1173,14 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
             (int)frame.output.format, (int)frame.output.layout);
     const int answer = g.api->evaluate(s->live, &frame), evaluated = answer == SNX_UPSCALER_OK;
     /* nothing of a command buffer in an unknown state is submitted, and nothing more is done on the device */
+    /* Revision 4: the buffer is never submitted, and is reset by a checked call before anything it refers to is
+       released. The reset done: no more is recorded and no case runs, and the teardown goes on. Not done: unknown. */
     if (answer == SNX_UPSCALER_UNKNOWN) {
-        unknown("the adapter's evaluate left the images and the command buffer in a state that is not known");
+        if (discard()) {
+            g.halted = 1;
+            LOG(ST "FAIL: the adapter's evaluate answered UNKNOWN: its command buffer was not submitted and was reset "
+                   "(the reset succeeded), nothing more is recorded and the cases left are not run\n");
+        }
         return -1;
     }
     /* whatever the adapter left bound or pending: the output is taken over for the copy with a full barrier */
@@ -1375,8 +1411,8 @@ static int signs(const char* name, const Inputs* in, unsigned mask, int region, 
 
 /* 1 with a line when a case cannot be run because the device's state is not known any more */
 static int not_run(const char* name, int up) {
-    if (g.unknown) LOG(ST "%s %s: NOT RUN\n", name, up ? "up" : "down");
-    return g.unknown;
+    if (g.unknown || g.halted) LOG(ST "%s %s: NOT RUN\n", name, up ? "up" : "down");
+    return g.unknown || g.halted;
 }
 
 /* the whole suite for one sign of the viewport's height: 1 when every case passed */
@@ -2419,7 +2455,11 @@ int vk_upscaler_selftest(const char* adapter) {
     else if (!waited)
         LOG(ST "case 7: its count was taken without the device known to be idle. The wait for it was made and "
                "failed with the result %d: FAIL\n", (int)wait_result);
-    pass = pass && g.validation && g.checks_asked && !said && !late && waited && !g.unknown;
+    LOG(ST "contexts: %u handed out and not destroyed at the end, each destroyed once and only with no command buffer "
+           "recorded: %s\n", g.contexts, g.ended_wrong ? "NO: FAIL" : "yes");
+    if (g.halted) LOG(ST "an evaluate answered UNKNOWN: FAIL\n");
+    pass = pass && g.validation && g.checks_asked && !said && !late && waited && !g.unknown && !g.halted &&
+           !g.ended_wrong;
     if (g.dlss) { /* DL1 judges integration only: every call, every value, every run, the lifecycle, case 7 */
         LOG(ST "DL1 integration checks, quality unassessed: %s\n", pass ? "PASS" : "FAIL");
         LOG(ST "quality: not assessed in DL1\n");
