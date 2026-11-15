@@ -193,9 +193,11 @@ static int readable(u64 address, u64 size) {
     return 1;
 }
 
-static int event_probe, demo_probe;
+static int event_probe, demo_probe, demo_tick;
 static u64 event_probe_frames;
 static void event_probe_line(void);
+/* The main-loop frames the probes and the demo tick's line count, while one of them is on */
+static int probe_frames_wanted(void) { return event_probe || demo_probe || demo_tick; }
 /* The probes' frame count, once a main-loop frame; the event probe's line only when that probe is on */
 static void probe_frame(void) {
     __atomic_add_fetch(&event_probe_frames, 1, __ATOMIC_RELAXED);
@@ -205,7 +207,7 @@ static void trace_call(CPU* c, u64 entry, unsigned kind) {
     u64 object = c->x[0], channel = c->x[1], input = c->x[2], caller = c->x[30];
     u64 count = __atomic_add_fetch(&counts[kind], 1, __ATOMIC_RELAXED);
     /* The channel 0 duration write comes once per main-loop frame. */
-    if ((event_probe || demo_probe) && kind == 2 && channel == 0 && caller == main_base + 0x278150c) probe_frame();
+    if (probe_frames_wanted() && kind == 2 && channel == 0 && caller == main_base + 0x278150c) probe_frame();
     if (kind == 2) adjust_duration(c);
     originals[kind](c, entry);
     /* At this exact call site X19 is the UI animation owner and X21 is its
@@ -4748,7 +4750,6 @@ typedef struct { u64 object, context; int64_t budget; } DemoTickState;
 static DemoTickState demo_tick_states[DEMO_TICK_CONTROLLERS];
 static PMutex demo_tick_lock = PMUTEX_INIT;
 static GuestFn demo_tick_original;
-static int demo_tick;
 static u64 demo_tick_calls, demo_tick_units, demo_tick_held, demo_tick_full, demo_tick_ns, demo_tick_logged[3];
 /* The units for a call of this step: the budget gains the step (one within 1/32 of 1/30 s as 1/30 s), gives the whole
    units with the script tick's half rounding, at most 2, and keeps at most 4 */

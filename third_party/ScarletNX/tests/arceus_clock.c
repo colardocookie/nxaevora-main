@@ -24,7 +24,8 @@ static char logged[8][512];
 static unsigned logged_count;
 void logf_(int level, const char* fmt, ...) {
     if ((!strncmp(fmt, "arceus-event-probe: ", 20) || !strncmp(fmt, "arceus-event-tick: calls", 24) ||
-         !strncmp(fmt, "arceus-demo-probe: s", 20) || !strncmp(fmt, "arceus-demo-probe: p", 20)) &&
+         !strncmp(fmt, "arceus-demo-probe: s", 20) || !strncmp(fmt, "arceus-demo-probe: p", 20) ||
+         !strncmp(fmt, "arceus-demo-tick: s", 19)) &&
         logged_count < 8) {
         va_list args;
         va_start(args, fmt);
@@ -2634,6 +2635,30 @@ static void test_demo_tick(void) {
     demo_probe_step(&c, entry_pc);
     assert(gr32(DEMO_CONTEXT + 0x7ec) == 1 && demo_probe_clock == 1);
     demo_probe_original = NULL;
+    /* with the demo tick alone the frames are counted too, and its line gives their rate (the reviewer's note on
+       69038158) */
+    {
+        const int probes[2] = {event_probe, demo_probe}, ticked = demo_tick;
+        event_probe = demo_probe = 0;
+        demo_tick = 0;
+        assert(!probe_frames_wanted());
+        demo_tick = 1;
+        assert(probe_frames_wanted());
+        demo_tick_reset(0);
+        demo_tick_ns = 0;
+        logged_count = 0;
+        for (unsigned k = 0; k < 330; k++) {
+            host_ns += 16666667;
+            if (probe_frames_wanted()) probe_frame();
+            (void)demo_tick_call(DEMO_OBJECT, 16666667);
+        }
+        assert(logged_count == 1 && strstr(logged[0], "arceus-demo-tick: seconds=5.00 calls_per_s=60.00 "
+                                                      "units_per_s=60.00 frames_per_s=60.00 held="));
+        event_probe = probes[0];
+        demo_probe = probes[1];
+        demo_tick = ticked;
+        logged_count = 0;
+    }
     /* with the demo probe alone, the frame count runs and no event probe line comes (the reviewer's note) */
     const int event = event_probe;
     event_probe = 0;
