@@ -2705,11 +2705,25 @@ static void test_spatial(void) {
                      1u << TEMPORAL_SPATIAL_FRACTION | 1u << TEMPORAL_SPATIAL_COVERAGE));
         assert(temporal_spatial_check(2, &x, half) == TEMPORAL_SPATIAL_FORM); /* the mask's lowest is the check's */
         x = spatial_draw(0, 0.5);
-        x.vs ^= 1, x.vertex_origin_ok = 0, x.vertex_origin[1] = 3.0, x.anisotropy = 1;
+        x.vs ^= 1, x.fragment_f_ok = 0, x.vertex_origin[1] = 3.0, x.anisotropy = 1; /* the origin readable */
         const uint32_t four = 1u << TEMPORAL_SPATIAL_VERTEX | 1u << TEMPORAL_SPATIAL_UNAVAILABLE |
                               1u << TEMPORAL_SPATIAL_ORIGIN | 1u << TEMPORAL_SPATIAL_SAMPLER;
         assert(temporal_spatial_failed(0, &x, half) == four);
         assert(temporal_spatial_failed(-1, &x, half) == 1u << TEMPORAL_SPATIAL_NOT_LISTED);
+        /* a value not available is named by its availability alone, its placeholder never compared (reviewer
+           04:42); a readable fault beside it is still named */
+        x = spatial_draw(0, 0.5);
+        x.fragment_f_ok = x.vertex_f_ok = x.vertex_origin_ok = 0;
+        x.fragment_f[0] = x.vertex_f[1] = x.vertex_origin[0] = 0.0; /* placeholders */
+        assert(temporal_spatial_failed(0, &x, half) == 1u << TEMPORAL_SPATIAL_UNAVAILABLE);
+        x.view_2d = 0;
+        const uint32_t two = 1u << TEMPORAL_SPATIAL_UNAVAILABLE | 1u << TEMPORAL_SPATIAL_VIEW;
+        assert(temporal_spatial_failed(0, &x, half) == two);
+        x = spatial_draw(2, 0.5);
+        x.divisor_ok = 0, x.divisor[0] = 0.0;
+        assert(temporal_spatial_failed(2, &x, half) == 1u << TEMPORAL_SPATIAL_UNAVAILABLE);
+        x.divisor_ok = 1; /* readable and wrong: named */
+        assert(temporal_spatial_failed(2, &x, half) == 1u << TEMPORAL_SPATIAL_DIVISOR);
     }
     for (int a = 0; a < TEMPORAL_SPATIAL_REASONS; a++)
         for (int b = a + 1; b < TEMPORAL_SPATIAL_REASONS; b++)

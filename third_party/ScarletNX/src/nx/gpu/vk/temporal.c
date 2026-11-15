@@ -3540,16 +3540,18 @@ int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh*
             char list[900];
             size_t at = 0;
             list[0] = 0;
+            /* a binding that is not the entry's is itself a condition of class U (reviewer 04:42) */
+            if (k < 0 && handle != temporal_spatial_entries[own].handle)
+                at += (size_t)snprintf(list, sizeof list, "its binding %x is not the entry's %x (class U)", handle,
+                                       temporal_spatial_entries[own].handle);
             for (int r = 1; r < TEMPORAL_SPATIAL_REASONS && at + 160 < sizeof list; r++)
                 if (failed >> r & 1)
                     at += (size_t)snprintf(list + at, sizeof list - at, "%s%s (class %s)", at ? "; " : "",
                                            temporal_spatial_text(r), temporal_spatial_class_n(r) ? "N" : "U");
             LOG("arceus-upscaler: spatial: frame %u, fragment program %llx at binding %x (its entry's binding %x): "
-                "refused, %s. Every condition that fails against its entry: %s%s, %llu such so far\n", frame,
+                "refused, %s. Every condition that fails against its entry: %s, %llu such so far\n", frame,
                 (unsigned long long)fs0->hash, handle, temporal_spatial_entries[own].handle,
-                k < 0 ? "not on the list" : "listed", list[0] ? list : "none",
-                k < 0 && handle != temporal_spatial_entries[own].handle ? "; and its binding is not the entry's" : "",
-                (unsigned long long)refusals);
+                k < 0 ? "not on the list" : "listed", list[0] ? list : "none", (unsigned long long)refusals);
         }
     }
     const int first = !g_s.fr.decided && k >= 0;

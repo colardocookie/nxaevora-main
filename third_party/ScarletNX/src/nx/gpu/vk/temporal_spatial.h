@@ -278,7 +278,8 @@ static inline int temporal_spatial_overlaps(uint64_t at, uint64_t bytes, uint64_
 
 /* For the log alone (research 15:40): every condition of entry k that fails at this draw, as a mask of reasons (bit
    r for reason r), not only the first. Each group of conditions is asked of the check alone, the others made to
-   hold and the draw's coverage kept, which the check asks last. */
+   hold and the draw's coverage kept, which the check asks last. A value that is not available is named by its
+   availability alone: its number is never compared (reviewer 04:42). */
 static inline uint32_t temporal_spatial_failed(int k, const TemporalSpatialDraw* d, const double fs[2]) {
     if (k < 0 || k >= TEMPORAL_SPATIAL_ENTRIES) return 1u << TEMPORAL_SPATIAL_NOT_LISTED;
     TemporalSpatialDraw pass = *d; /* every group but the coverage made to hold */
@@ -314,10 +315,13 @@ static inline uint32_t temporal_spatial_failed(int k, const TemporalSpatialDraw*
                 break;
             case 3: x.other_stages = d->other_stages, why = TEMPORAL_SPATIAL_STAGES; break;
             case 4:
-                memcpy(x.vertex_origin, d->vertex_origin, sizeof x.vertex_origin);
+                if (d->vertex_origin_ok) memcpy(x.vertex_origin, d->vertex_origin, sizeof x.vertex_origin);
                 why = TEMPORAL_SPATIAL_ORIGIN;
                 break;
-            case 5: memcpy(x.divisor, d->divisor, sizeof x.divisor), why = TEMPORAL_SPATIAL_DIVISOR; break;
+            case 5:
+                if (d->divisor_ok) memcpy(x.divisor, d->divisor, sizeof x.divisor);
+                why = TEMPORAL_SPATIAL_DIVISOR;
+                break;
             case 6:
                 x.normalised = d->normalised, x.one_level = d->one_level, x.anisotropy = d->anisotropy;
                 x.compare = d->compare, x.filters_same = d->filters_same, x.mag_nearest = d->mag_nearest;
@@ -330,8 +334,8 @@ static inline uint32_t temporal_spatial_failed(int k, const TemporalSpatialDraw*
                 x.view_identity = d->view_identity, why = TEMPORAL_SPATIAL_VIEW;
                 break;
             case 8:
-                memcpy(x.vertex_f, d->vertex_f, sizeof x.vertex_f);
-                memcpy(x.fragment_f, d->fragment_f, sizeof x.fragment_f);
+                if (d->vertex_f_ok) memcpy(x.vertex_f, d->vertex_f, sizeof x.vertex_f);
+                if (d->fragment_f_ok) memcpy(x.fragment_f, d->fragment_f, sizeof x.fragment_f);
                 why = TEMPORAL_SPATIAL_FRACTION;
                 break;
             default: break; /* the coverage, the draw's own */
