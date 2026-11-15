@@ -24,9 +24,9 @@ typedef enum { GUI_PICTURE_NONE, GUI_PICTURE_SQUARE, GUI_PICTURE_ROUND } GuiPict
 /* a question and its choices: in a box in the middle, the choices under the question; or the question in a box at the
    foot, the choices at its right above it, as the dialogs of the game YoRHa is named for */
 typedef enum { GUI_DIALOG_DEFAULT, GUI_DIALOG_YORHA } GuiDialog;
-/* the lines that wait on the user: the keys screen's drop line, the ESC line after a run, a run being aborted */
+/* the lines that wait on the user: the file pick screen's line, the ESC line after a run, a run being aborted */
 typedef enum {
-    GUI_PROMPT_KEYS,
+    GUI_PROMPT_PICK,
     GUI_PROMPT_DONE,
     GUI_PROMPT_FAILED,
     GUI_PROMPT_ABORTING,
@@ -44,7 +44,6 @@ typedef struct {
 typedef enum {
     GUI_SCREEN_MENU,
     GUI_SCREEN_GAMES,
-    GUI_SCREEN_KEYS,
     GUI_SCREEN_COMPILING,
     GUI_SCREEN_LOADING,
     GUI_SCREEN_COUNT

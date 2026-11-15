@@ -340,11 +340,7 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Pick the prod.keys file."
-msgstr ""
-
-#: src/gui/main.c
-msgid "Pick prod.keys"
+msgid "Pick the game file."
 msgstr ""
 
 #: src/gui/main.c
@@ -364,7 +360,7 @@ msgid "Tap here to abort and return to menu"
 msgstr ""
 
 #: src/gui/main.c
-msgid "No games in recompiled/ or dumps/: put a game's .nro, .xci or .nsp in dumps/."
+msgid "No games in recompiled/ or dumps/: put a game's .nro in dumps/."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -551,10 +547,6 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "Ctrl+V: paste. ESC: back."
-msgstr ""
-
-#: src/gui/main.c
-msgid "Pick or drop prod.keys"
 msgstr ""
 
 #: src/gui/main.c
@@ -1719,10 +1711,6 @@ msgid "Folders"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Keys"
-msgstr ""
-
-#: src/gui/main.c
 msgid "User"
 msgstr ""
 
@@ -1735,7 +1723,7 @@ msgid "Status"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Recompiles a game's .nsp, .xci or .nro, then runs it"
+msgid "Recompiles a game's .nro, then runs it"
 msgstr ""
 
 #: src/gui/main.c
@@ -1755,20 +1743,11 @@ msgid "Runs a GBA ROM on the emulated AGB board"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Installs prod.keys, which games are extracted with"
-msgstr ""
-
-#: src/gui/main.c
 msgid "Closes ScarletNX"
 msgstr ""
 
 #: src/gui/main.c
 msgid "Last output:"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "In use: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -1916,42 +1895,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%zu game(s)"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Installs to: %s"
-msgstr ""
-
-#: src/gui/main.c
-msgid "No home folder"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Installed"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Not installed"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Back to the menu in %d s"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Back to the menu in %d s, or pick another file"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Keys installed here: installing again replaces them"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Keys in use: %s. Keys dropped here are read before them"
 msgstr ""
 
 #: src/gui/main.c
@@ -2133,7 +2076,7 @@ msgid "%s: each folder of an older version's lines is in a library now: %s"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Dumps put here are listed (.nsp, .xci and .nro), its subfolders' too while it says + subfolders. It stays on the list"
+msgid "Dumps put here are listed (.nro), its subfolders' too while it says + subfolders. It stays on the list"
 msgstr ""
 
 #: src/gui/main.c
@@ -2229,7 +2172,7 @@ msgid "is on a disk that runs no programs (noexec)"
 msgstr ""
 
 #: src/gui/main.c
-msgid "recompiled/, dumps/, themes/ and prod.keys"
+msgid "recompiled/, dumps/ and themes/"
 msgstr ""
 
 #: src/gui/main.c
@@ -2708,39 +2651,16 @@ msgid "No user written: %s"
 msgstr ""
 
 #: src/gui/main.c
-msgid "No folder was picked."
-msgstr ""
-
-#: src/gui/main.c
-msgid "Cannot install prod.keys: neither USERPROFILE nor HOME is set"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Cannot install prod.keys: HOME is not set"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Not installed: %s"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Installed prod.keys and title.keys in %s"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Installed prod.keys in %s"
-msgstr ""
-
-#: src/gui/main.c
 #, c-format
 msgid "This copy is portable: to install it, first move away %s"
 msgstr ""
 
 #: src/gui/main.c
 msgid "Skip stops on this page: it has no default to take"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Installed"
 msgstr ""
 
 #: src/gui/main.c
@@ -2753,18 +2673,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Add a folder"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Use These"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Browse..."
-msgstr ""
-
-#: src/gui/main.c
-msgid "Later"
 msgstr ""
 
 #: src/gui/main.c
@@ -2824,10 +2732,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Tip: Settings > App > Folders changes them"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Tip: Menu > Install Keys changes them"
 msgstr ""
 
 #: src/gui/main.c
@@ -2911,14 +2815,6 @@ msgid "caches"
 msgstr ""
 
 #: src/gui/main.c
-msgid "found"
-msgstr ""
-
-#: src/gui/main.c
-msgid "missing"
-msgstr ""
-
-#: src/gui/main.c
 msgid "everything"
 msgstr ""
 
@@ -2932,14 +2828,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid " + subfolders"
-msgstr ""
-
-#: src/gui/main.c
-msgid "games are extracted with it"
-msgstr ""
-
-#: src/gui/main.c
-msgid "only some .nsp need it"
 msgstr ""
 
 #: src/gui/main.c
@@ -2972,6 +2860,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Nothing to keep: no file of the menu's"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Keys"
 msgstr ""
 
 #: src/gui/main.c
@@ -3337,41 +3229,8 @@ msgid "M opens the mods and cheats of a recompiled Switch game in focus."
 msgstr ""
 
 #: src/gui/main.c
-msgid "prod.keys installed: games can be extracted now."
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Cannot install %s: %s"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Please drop a readable file named prod.keys."
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "This file could not be read. Pick prod.keys again, from the device's storage (%s)."
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "This file is not a prod.keys. Pick the prod.keys file (%s)."
-msgstr ""
-
-#: src/gui/main.c
 #, c-format
 msgid "Cannot read this file by its path. Check that ScarletNX may access the device's files in Android's settings, then pick it from the device's storage (%s)."
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "The picked file could not be read as prod.keys (%s)."
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "The picked file is not a prod.keys (%s)."
 msgstr ""
 
 #: src/gui/main.c
@@ -3756,6 +3615,10 @@ msgid "Drop one local folder"
 msgstr ""
 
 #: src/gui/main.c
+msgid "No folder was picked."
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Cannot find the folder ScarletNX runs from: %s"
 msgstr ""
@@ -3938,7 +3801,7 @@ msgid "the item chosen, the run's head"
 msgstr ""
 
 #: src/gui/theme.c
-msgid "warnings, the ESC line, a failed run, missing keys"
+msgid "warnings, the ESC line, a failed run"
 msgstr ""
 
 #: src/gui/theme.c
@@ -3979,10 +3842,6 @@ msgstr ""
 
 #: src/gui/theme.c
 msgid "the games/ list's title"
-msgstr ""
-
-#: src/gui/theme.c
-msgid "the keys screen's title"
 msgstr ""
 
 #: src/gui/theme.c
@@ -4110,7 +3969,7 @@ msgid "blinking at blink_ms"
 msgstr ""
 
 #: src/gui/theme.c
-msgid "the keys screen's drop line"
+msgid "the file pick screen's waiting line"
 msgstr ""
 
 #: src/gui/theme.c
@@ -4150,7 +4009,7 @@ msgid "sync: one line at a time"
 msgstr ""
 
 #: src/gui/theme.c
-msgid "the cursor's, the prompt's and Install Keys' blink"
+msgid "the cursor's and the prompt's blink"
 msgstr ""
 
 #: src/gui/theme.c
@@ -4242,7 +4101,7 @@ msgid "No themes/%s/theme.ini could be read: it shows %s"
 msgstr ""
 
 #: src/gui/ui.txt
-msgid "Load Switch NSP/XCI/NRO"
+msgid "Load Switch NRO"
 msgstr ""
 
 #: src/gui/ui.txt
@@ -4259,10 +4118,6 @@ msgstr ""
 
 #: src/gui/ui.txt
 msgid "Load GBA ROM"
-msgstr ""
-
-#: src/gui/ui.txt
-msgid "Install Keys"
 msgstr ""
 
 #: src/common/utilities/setup.c
@@ -4443,26 +4298,6 @@ msgstr ""
 
 #: src/nx/runtime/settings.txt
 msgid "Enables gdbstub on port 1234"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Extract to tmpfs"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Extract to tmpfs, in memory (the temporary folder's scarletnx/work/<title ID>), which the game reads its RomFS from"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Extract game container"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Extract dump"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Extract a dump's ExeFS and RomFS into its game's folder. Off, the game reads them from the dump"
 msgstr ""
 
 #: src/nx/runtime/settings.txt

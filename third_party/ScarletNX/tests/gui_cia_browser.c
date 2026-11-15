@@ -12,11 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* gui_games_group's made: b.nsp is the dump of a game recompiled already */
+/* gui_games_group's made: b.nro is the dump of a game recompiled already */
 static bool made_b(const char* path, const void* user) {
     size_t n = strlen(path);
     (void)user;
-    return n >= 5 && !strcmp(path + n - 5, "b.nsp");
+    return n >= 5 && !strcmp(path + n - 5, "b.nro");
 }
 
 int main(void) {
@@ -227,7 +227,7 @@ int main(void) {
     {
         GuiGames g = {0};
         char* d = snx_temp_dir(NULL);
-        const char* dumps[] = {"b.nsp", "a.xci", "c.nro", "z.cia", "notes.txt"};
+        const char* dumps[] = {"b.nro", "a.nro", "c.nro", "z.cia", "notes.txt"};
         size_t k, ready = 0;
         assert(d);
         for (k = 0; k < sizeof dumps / sizeof *dumps; ++k) {
@@ -256,7 +256,7 @@ int main(void) {
         assert(g.count == 4 + ready);
         assert(gui_games_group(&g, "Recompiled", "Dumps", made_b, NULL));
         for (int again = 0; again < 2; ++again) {
-            /* [Recompiled, Ready, Dumps,] then a.xci, c.nro and z.cia in their order; b.nsp made already. The headings
+            /* [Recompiled, Ready, Dumps,] then a.nro, c.nro and z.cia in their order; b.nro made already. The headings
                only with both groups: without Ready (Windows here) the dumps alone */
             size_t at = 0;
             assert(g.count == (ready ? 3 : 0) + 3);
@@ -266,7 +266,7 @@ int main(void) {
                 assert(gui_games_heading(&g, 2) && !strcmp(g.shown[2], "Dumps"));
                 at = 3;
             }
-            for (k = at; k < g.count; ++k) assert(!gui_games_heading(&g, k) && strcmp(g.names[k], "b.nsp"));
+            for (k = at; k < g.count; ++k) assert(!gui_games_heading(&g, k) && strcmp(g.names[k], "b.nro"));
             assert(!gui_games_heading(&g, g.count));                          /* past the end: no heading */
             assert(gui_games_group(&g, "Recompiled", "Dumps", made_b, NULL)); /* again: the same */
         }
@@ -291,7 +291,7 @@ int main(void) {
         assert(d);
         for (k = 0; k < 12; ++k) {
             char* path;
-            snprintf(name, sizeof name, "game%02zu.nsp", k);
+            snprintf(name, sizeof name, "game%02zu.nro", k);
             path = snx_path_join(d, name);
             assert(path && !snx_write_file(path, "fixture", 7));
             free(path);
@@ -303,7 +303,7 @@ int main(void) {
             assert(folder && !snx_mkdirs(folder));
             for (k = 0; k < (f == 1 ? 20u : 1u); ++k) {
                 char* path;
-                snprintf(name, sizeof name, "in%d-%02zu.xci", f, k);
+                snprintf(name, sizeof name, "in%d-%02zu.nro", f, k);
                 path = snx_path_join(folder, name);
                 assert(path && !snx_write_file(path, "fixture", 7));
                 free(path);
@@ -325,7 +325,7 @@ int main(void) {
         char* d = snx_temp_dir(NULL);
         const char* names[] = {"alpha", "beta", "delta", "gamma"};
         const unsigned long long times[] = {1000, 3000, 1000, 0};
-        const char* order[] = {"beta", "flat", "alpha", "delta", "gamma", "a.nsp", "b.nsp"};
+        const char* order[] = {"beta", "flat", "alpha", "delta", "gamma", "a.nro", "b.nro"};
         char *path, *log, *own;
         size_t k, at;
         assert(d);
@@ -363,12 +363,12 @@ int main(void) {
         free(log);
         free(own);
         free(path);
-        for (k = 0; k < 2; ++k) { /* the dumps; b.nsp with a newer log of its name, which is no run's */
-            path = snx_path_join(d, k ? "b.nsp" : "a.nsp");
+        for (k = 0; k < 2; ++k) { /* the dumps; b.nro with a newer log of its name, which is no run's */
+            path = snx_path_join(d, k ? "b.nro" : "a.nro");
             assert(!snx_write_file(path, "dump", 4));
             free(path);
         }
-        own = snx_path_join(d, "b.nsp.log");
+        own = snx_path_join(d, "b.nro.log");
         assert(!snx_write_file(own, "log", 3) && !snx_set_file_time(own, 9000));
         free(own);
         { /* where the game's <name>.folders records another state folder, the runtime's log is there while it is */

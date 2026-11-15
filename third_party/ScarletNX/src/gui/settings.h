@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The menu's Settings: the launcher's own rows and the recompiler's (settings.txt's launcher sections: gdbstub, Extract
-   to tmpfs, Extract dump, the optimization level, the AOT threads and the LLVM Internals page), then every
+/* The menu's Settings: the launcher's own rows and the recompiler's (settings.txt's launcher sections: gdbstub, the
+   optimization level, the AOT threads and the LLVM Internals page), then every
    setting of the game's .ini as the runtime lists them (scarletnx --settings, its tables), each a row of the form
    (editor.h), named and its values worded as the game's menu shows them. A setting is the .ini's,
    passed to no run, until one is picked. The picks are kept in a file, an .ini of the game's sections and keys, and go
@@ -75,14 +75,9 @@ void gui_settings_shown(const GuiSettings* settings, int row, char* out, size_t 
 int gui_settings_debug(const GuiSettings* settings, const char* ini, int picks, char* out, size_t size);
 /* the value picked for key, NULL for the .ini's or no such row */
 const char* gui_settings_value(const GuiSettings* settings, const char* key);
-/* argv's options for a run: --key=value for each setting picked; with launch the launcher's too, -S -s for the stub,
-   --tmpfs and --extract-container. Their count, count + 1 at most */
+/* argv's options for a run: --key=value for each setting picked; with launch the launcher's too, -S -s for the stub.
+   Their count, count + 1 at most */
 size_t gui_settings_options(GuiSettings* settings, int launch, const char** argv);
-/* Extract to tmpfs: --tmpfs while it is on, else NULL (extractions on disk) */
-const char* gui_settings_tmpfs(const GuiSettings* settings);
-/* Extract dump: --extract-container while it is on, else NULL (a dump read in place, nothing extracted).
-   Both drivers take it */
-const char* gui_settings_extract(const GuiSettings* settings);
 /* argv's --key=value for each of the recompiler's settings picked (the optimization level, the AOT threads, LLVM
    Internals), which the Switch driver takes for a run (which recompiles when it must) and for R's recompile. Their
    count */

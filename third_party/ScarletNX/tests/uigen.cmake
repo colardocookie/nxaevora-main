@@ -17,7 +17,7 @@ ${T}[list]LoadList {
 ${T}${T}min_row_width = 200px # width of row in pixels
 ${T}${T}max_row_width = 400px
 ${T}${T}width = 50%
-${T}${T}[button]\"Load Switch NSP/XCI/NRO\" {}
+${T}${T}[button]\"Load Switch NRO\" {}
 ${T}${T}[button]\"Load 3DS game\" {
 ${T}${T}${T}color = focus
 ${T}${T}${T}key = alt-f4
@@ -82,7 +82,7 @@ file(READ "${WORK}/out/gui/ui.h" header)
 file(READ "${WORK}/out/gui/ui.c" c)
 foreach(line
         # each scene's items by name, in ui.txt's order, an item of one platform within its #if
-        "enum {\n    UI_MAIN_LOAD_LIST,\n    UI_MAIN_LOAD_LIST_LOAD_SWITCH_NSP_XCI_NRO,\n    UI_MAIN_LOAD_LIST_LOAD_3DS_GAME,\n#ifdef SDL_PLATFORM_ANDROID\n    UI_MAIN_LOAD_LIST_OPEN_DATA_FOLDER,\n#endif\n#if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS)\n    UI_MAIN_LOAD_LIST_PASTE_1_HERE,\n#endif\n"
+        "enum {\n    UI_MAIN_LOAD_LIST,\n    UI_MAIN_LOAD_LIST_LOAD_SWITCH_NRO,\n    UI_MAIN_LOAD_LIST_LOAD_3DS_GAME,\n#ifdef SDL_PLATFORM_ANDROID\n    UI_MAIN_LOAD_LIST_OPEN_DATA_FOLDER,\n#endif\n#if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS)\n    UI_MAIN_LOAD_LIST_PASTE_1_HERE,\n#endif\n"
         "    UI_MAIN_GAMES,\n    UI_MAIN_SPARE,\n    UI_MAIN_STATUS,\n    UI_MAIN_ITEMS\n};"
         # the callbacks main.c defines: a button's action, a named label's text, a list without items' rows
         "void ui_main_load_list_load_3ds_game_action_cb(App* app, uint32_t hit);\n"
@@ -114,10 +114,10 @@ foreach(word "ui_main_load_list_fixed_words_" "ui_main_load_list_action_cb")
 endforeach()
 foreach(line
         # the texts, one array, each item at its offset; a # in a text is the text's
-        "const char ui_main_texts[] =\n    \"Load Switch NSP/XCI/NRO\" \"\\0\"\n    \"Load 3DS game\" \"\\0\"\n    \"Open Data Folder\" \"\\0\"\n    \"Paste #1 \\\"here\\\"\" \"\\0\"\n"
+        "const char ui_main_texts[] =\n    \"Load Switch NRO\" \"\\0\"\n    \"Load 3DS game\" \"\\0\"\n    \"Open Data Folder\" \"\\0\"\n    \"Paste #1 \\\"here\\\"\" \"\\0\"\n"
         # an item at the line it came from: its type, colour, parent, text's offset and lengths
         "#line 3 \"${WORK}/ui.txt\"\n    {UI_LIST, UI_COLOR_NONE, -1, UI_NO_TEXT, 0},\n"
-        "#line 8 \"${WORK}/ui.txt\"\n    {UI_BUTTON, UI_COLOR_FOCUS, UI_MAIN_LOAD_LIST, 24, 0},\n"
+        "#line 8 \"${WORK}/ui.txt\"\n    {UI_BUTTON, UI_COLOR_FOCUS, UI_MAIN_LOAD_LIST, 16, 0},\n"
         # an icon by its name in gui/icons.h, a row's and a button's, drawn beside its text
         "#include \"gui/icons.h\"\n"
         "    {UI_BUTTON, UI_COLOR_NONE, UI_ICONS_ROWS, 0, GUI_ICON_GAMEPAD_2},\n"
@@ -127,7 +127,7 @@ foreach(line
         "ui_draw_row(app, ui_shifted(ui_beside_bar(ui_row(r[UI_ICONS_ROWS], i, 17, 2, 0, 0, s), bw), lists[UI_ICONS_ROWS].shift), ui_tr(ui_icons_texts + ui_icons_items[item].text), ui_icons_items[item].icon, NULL,\n"
         "    ui_draw_row(app, r[UI_ICONS_EXIT], ui_tr(ui_icons_texts + 5), ui_icons_items[UI_ICONS_EXIT].icon, NULL, ui_icons_items[UI_ICONS_EXIT].color, 0, false);\n"
         # the list's rows; its row bounds in px, times the scale
-        "static const int16_t ui_main_load_list_rows[] = {\n    UI_MAIN_LOAD_LIST_LOAD_SWITCH_NSP_XCI_NRO,\n"
+        "static const int16_t ui_main_load_list_rows[] = {\n    UI_MAIN_LOAD_LIST_LOAD_SWITCH_NRO,\n"
         "ui_row(r[UI_MAIN_LOAD_LIST], i, 17, 2, 200 * s, 400 * s, s)"
         # the list half the inside wide, under the scene's first row: fractions and pixels in 16.16; its height a third
         # of what the 17 px row leaves, -17/3 px rounded (-371370.67), not cut

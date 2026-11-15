@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors
    Ported from Eden (src/core/file_sys/fsmitm_romfsbuild.cpp, system_archive/mii_model.cpp):
    SPDX-FileCopyrightText: Copyright 2018, 2019 yuzu Emulator Project */
-/* fsp-srv over the game's indexed data folder: the RomFS (a romfs.bin, an image made up from the romfs/ folder, or
-   the game's dump read in place), save data, the SD card and the system archives */
+/* fsp-srv over the game's indexed data folder: the RomFS (a romfs.bin, or an image made up from the romfs/ folder),
+   save data, the SD card and the system archives */
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/filesystem/fs_tree.h"
 #include "nx/runtime/main.h"
@@ -21,7 +21,6 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/common.h"
-#include "nx/runtime/driver/container.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/mods.h"
 #include "common/utilities/patches.h"
@@ -65,46 +64,14 @@ static u32 tree_result(FsTreeResult r) {
     }
 }
 
-/* Extract to tmpfs (the launcher's setting): a data folder without a RomFS of its own reads the one its extraction
-   keeps in snx_tmpfs_work, by the title ID of its main.npdm. The driver extracts it there again, from the dump the
-   game's folder links to, when the system has emptied it. Under tree.lock, at startup */
-static void romfs_from_tmpfs(void) {
-    FsNode* node;
-    char path[sizeof g_datadir + 16], *work, *romfs;
-    unsigned char* npdm;
-    size_t size;
-    if (!fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs", &node) || !fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs.bin", &node))
-        return;
-    snprintf(path, sizeof path, "%sexefs/main.npdm", g_datadir);
-    npdm = snx_read_file(path, &size);
-    work = npdm ? snx_tmpfs_work(snx_npdm_title(npdm, size)) : NULL;
-    free(npdm);
-    if (!work) return;
-    romfs = snx_path_join(work, "romfs");
-    if (snx_is_dir(romfs)) {
-        FsTreeResult r = fs_tree_graft(&g_hle.fs.tree, "romfs", romfs);
-        if (r == FS_TREE_OK)
-            LOG("fs: RomFS from %s\n", romfs);
-        else
-            WARN("fs: could not index the RomFS in %s (error %d)\n", romfs, r);
-    }
-    free(romfs);
-    free(work);
-}
-
-/* The RomFS of a game recompiled from a folder (romfs=): the folder of the user, grafted as romfs:/ with no copy. A
-   dump wins (the old update program reads its files from it), and so does an add-on's RomFS, which replaces the
-   game's whole; the game's own data folder with a RomFS and the setting are two sources, an error. Under tree.lock,
-   at startup */
+/* The RomFS of a game recompiled from a folder (romfs=): the folder of the user, grafted as romfs:/ with no copy. An
+   add-on's RomFS replaces the game's whole; the game's own data folder with a RomFS and the setting are two sources,
+   an error. Under tree.lock, at startup */
 static void romfs_from_setting(void) {
     FsNode* node;
     FsTreeResult r;
     char *folder, *image, *ini;
     if (!g_settings.game_romfs[0]) return;
-    if (g_hle.fs.dfs) {
-        LOG("fs: romfs=%s is not used: the game reads its RomFS from its dump\n", g_settings.game_romfs);
-        return;
-    }
     folder = snx_path_join(g_datadir, "romfs");
     image = snx_path_join(g_datadir, "romfs.bin");
     if (!folder || !image) fatal("RomFS: out of memory for the paths of the data folder\n");
@@ -137,142 +104,23 @@ static void romfs_from_setting(void) {
     LOG("fs: RomFS from %s (romfs=)\n", g_settings.game_romfs);
 }
 
-/* hactool ends the process on a dump it cannot read: what it said first */
-static void dump_exit(void* data) {
-    (void)data;
-    snx_hac_error("fs: hactool stopped on the game's dump");
-}
-
 /* the game's title ID, which its folder and data are named by: 0 for a game named otherwise */
 static SnxU64 game_title(void) {
     SnxU64 id = 0;
     return snx_title_parse(g_gamename, &id) ? id : 0;
 }
-/* dump opened as snx_dump_open takes it (base, addon, either NULL) and each container mapped read-only for the whole
-   run: the base's into base_map, the add-on's into addon_map. Ends the run on a dump that cannot be read */
-static void dump_map(SnxDump* dump, PFileMap* base_map, PFileMap* addon_map, const char* base, const char* addon,
-                     const char* keys, const char* title_keys, const char* repo) {
-    snx_hac_on_exit(dump_exit, NULL);
-    if (snx_dump_open(dump, base, addon, keys, title_keys, repo, 0))
-        fatal("Could not read the game's dump %s, which it reads its files from: the line before says why",
-              addon ? addon : base);
-    if (base && (plat_file_map_sized(base_map, base, snx_file_size(base)) ||
-                 snx_hac_map(dump->hac, dump->base, base_map->data, base_map->size)))
-        fatal("Could not map the game's dump %s", base);
-    if (addon && (plat_file_map_sized(addon_map, addon, snx_file_size(addon)) ||
-                  snx_hac_map(dump->hac, dump->update, addon_map->data, addon_map->size)))
-        fatal("Could not map the add-on's dump %s", addon);
-    snx_hac_on_exit(NULL, NULL);
-}
 
-/* Extract dump off: a data folder without an ExeFS of its own reads its ExeFS and RomFS from the dump the
-   game was made from, mapped read-only for the whole run: source= in its .ini, else the dump <folder>/<name>.source
-   beside <name>_data links to, as older versions recorded it; a line names both when neither is. Nothing of it is
-   written anywhere. The keys are those given for this run, else where the driver finds them, in the data folder games/
-   is in or in ~/.switch.
-   An add-on (g_addon) not extracted into its own data folder reads its dump, source= in its own .ini: an update's
-   ExeFS and RomFS over the game's dump, which it needs even when the game's files are extracted (its Patch RomFS
-   is made of the game's), and a DLC's RomFS image beside the game's files (dump_aoc). At startup, under tree.lock */
-static void dump_open(const char* keys, const char* title_keys) {
-    FsNode* node;
-    char *data, *source, *folder, *games, *repo, *ini, *addon = NULL, *own, *at;
-    size_t n = strlen(g_datadir);
-    int kind = g_addon ? SNX_ADDON_UPDATE : SNX_ADDON_NONE, extracted = 0;
-    if (kind != SNX_ADDON_NONE) { /* its extraction, laid over the game's (fs_init), else its dump */
-        at = snx_format("%sexefs", g_addondir);
-        extracted = snx_is_dir(at);
-        free(at);
-        own = snx_format("%s%s.ini", g_confdir, g_exename);
-        addon = extracted ? NULL : snx_ini_value(own, "source");
-        if (!extracted && (!addon || !snx_is_file(addon)))
-            fatal("The update %s can't be read: its settings %s name %s. Play its dump again to record it", g_exename,
-                  own, addon ? "a dump that is not there" : "no dump (source=)");
-        free(own);
-        if (extracted) LOG("fs: the update's files from its extraction in %s\n", g_addondir);
-    }
-    /* the game's own ExeFS, or the update's extraction laid over it: no dump to read the program from */
-    if (!fs_tree_lookup(&g_hle.fs.tree, NULL, "exefs", &node) && (kind != SNX_ADDON_UPDATE || extracted)) goto done;
-    data = snx_strdup(g_datadir);
-    while (n && (data[n - 1] == '/' || data[n - 1] == '\\')) data[--n] = 0;
-    if (n < 5 || strcmp(data + n - 5, "_data")) {
-        free(data);
-        goto done;
-    }
-    data[n - 5] = 0;
-    source = g_settings.game_dump[0] ? snx_strdup(g_settings.game_dump) : snx_format("%s.source", data);
-    folder = snx_dirname(data);
-    free(data);
-    games = snx_dirname(folder);
-    repo = snx_dirname(games);
-    if (!snx_is_file(source)) {
-        ini = snx_absolute(ini_file()); /* a game beside its .ini runs in its folder: "./Game.ini" */
-        /* the loader also takes the main module from the data folder's root, as older versions put it */
-        if (addon && kind == SNX_ADDON_UPDATE)
-            fatal("The update reads its files over the game's dump, and %s names %s: play the game's dump to record "
-                  "it",
-                  ini ? ini : ini_file(), g_settings.game_dump[0] ? "a dump that is not there" : "none (source=)");
-        if (g_settings.game_dump[0])
-            WARN("fs: the game's dump %s, its source= setting, is not there; its settings are %s\n", source,
-                 ini ? ini : ini_file());
-        else if (fs_tree_lookup(&g_hle.fs.tree, NULL, "main", &node) &&
-                 fs_tree_lookup(&g_hle.fs.tree, NULL, "main.nro", &node))
-            WARN("fs: the game has no ExeFS in %sexefs/ and no dump to read it from: %s sets no source=, and %s is not "
-                 "there\n",
-                 g_datadir, ini ? ini : ini_file(), source);
-        free(ini);
-        free(source);
-        free(folder);
-        free(games);
-        free(repo);
-        goto done;
-    }
-    /* an update over the game: both in one hactool, its Patch RomFS reading the game's */
-    dump_map(&g_hle.fs.dump, &g_hle.fs.dmap, &g_hle.fs.amap, source,
-             kind == SNX_ADDON_UPDATE ? addon : NULL, keys, title_keys, repo);
-    snx_hac_on_exit(dump_exit, NULL);
-    g_hle.fs.dfs = snx_dump_fs(&g_hle.fs.dump);
-    if (!g_hle.fs.dfs) fatal("Could not read the game's program in its dump %s: the line before says why", source);
-    snx_hac_on_exit(NULL, NULL);
-    pm_init(&g_host.fs.dlock);
-    if (kind == SNX_ADDON_UPDATE) {
-        LOG("fs: ExeFS and RomFS read from the update %s over the game's dump %s (%.1f MB mapped)\n", addon, source,
-            (double)(g_hle.fs.dmap.size + g_hle.fs.amap.size) / 1048576.0);
-        free(addon);
-        addon = NULL;
-    } else
-        LOG("fs: ExeFS and RomFS read from the dump %s (%.1f MB mapped)\n", source,
-            (double)g_hle.fs.dmap.size / 1048576.0);
-    free(source);
-    free(folder);
-    free(games);
-    free(repo);
-done:
-    free(addon);
-}
-
-/* The DLCs checked in the game's addons= (g_settings.game_addons), each made beside it with its own .ini naming its
-   dump (<game>_<its title ID>.ini): one extracted in its data folder is there already, laid over the game's
-   (fs_init); any other is read from its dump in place, its RomFS image served by OpenDataStorageByDataId as
-   installed. One whose dump is not there is left out, a line saying so. The keys are those given for this run, else
-   where the driver finds them, in the data folder games/ is in or in ~/.switch. At startup */
-static void dlcs_open(const char* keys, const char* title_keys) {
+/* The DLCs checked in the game's addons= (g_settings.game_addons): one extracted in its data folder is there
+   already, laid over the game's (overlays); any other is left out, a line saying so. At startup */
+static void dlcs_open(void) {
     SnxAddon* ids = malloc(SNX_ADDONS_MAX * sizeof *ids);
     size_t count, i;
-    char *data = snx_strdup(g_datadir), *folder, *games, *repo;
-    size_t n = strlen(data);
-    /* g_datadir is <repo>/games/<name>/<name>_data/ */
-    while (n > 1 && (data[n - 1] == '/' || data[n - 1] == '\\')) data[--n] = 0;
-    folder = snx_dirname(data);
-    games = snx_dirname(folder);
-    repo = snx_dirname(games);
     if (!ids) fatal("Out of memory for the game's DLCs");
     count = snx_addons_parse(g_settings.game_addons, g_gamename, ids, SNX_ADDONS_MAX);
-    g_hle.fs.aocs = calloc(count ? count : 1, sizeof *g_hle.fs.aocs);
     g_hle.fs.dlcs = calloc(count ? count : 1, sizeof *g_hle.fs.dlcs);
-    if (!g_hle.fs.aocs || !g_hle.fs.dlcs) fatal("Out of memory for the game's DLCs");
+    if (!g_hle.fs.dlcs) fatal("Out of memory for the game's DLCs");
     for (i = 0; i < count; i++) {
-        char text[17], *image, *ini, *dump;
-        FsAoc* aoc = &g_hle.fs.aocs[g_hle.fs.naocs];
+        char text[17], *image;
         if (snx_addon_kind(game_title(), ids[i].id) == SNX_ADDON_UPDATE) {
             if (ids[i].id != g_addon)
                 LOG("fs: the update %016llx is checked, and runs from its own program: the game's leaves it out\n",
@@ -281,40 +129,14 @@ static void dlcs_open(const char* keys, const char* title_keys) {
         }
         snx_title_text(ids[i].id, text);
         image = snx_format("%s%s_%s_data/system/archives/%s.romfs", g_exedir, g_gamename, text, text);
-        ini = snx_format("%s%s_%s.ini", g_confdir, g_gamename, text);
-        dump = snx_is_file(image) ? NULL : snx_ini_value(ini, "source");
         if (snx_is_file(image)) {
             LOG("fs: the DLC %s from its extraction\n", text);
             g_hle.fs.dlcs[g_hle.fs.ndlcs++] = ids[i].id;
-        }
-        else if (!dump || !snx_is_file(dump))
-            WARN("fs: the DLC %s is checked, and its settings %s name %s: the game runs without it. Play its dump "
-                 "again to record it\n",
-                 text, ini, dump ? "a dump that is not there" : "no dump (source=)");
-        else {
-            dump_map(&aoc->dump, NULL, &aoc->map, NULL, dump, keys, title_keys, repo);
-            snx_hac_on_exit(dump_exit, NULL);
-            aoc->fs = snx_dump_aoc_fs(&aoc->dump);
-            if (!aoc->fs) fatal("Could not read the DLC in its dump %s: the line before says why", dump);
-            snx_hac_on_exit(NULL, NULL);
-            if (aoc->dump.aoc.title_id != ids[i].id)
-                WARN("fs: the DLC's dump %s holds %016llx, and the DLC is %s: it is served by its own\n", dump,
-                     (unsigned long long)aoc->dump.aoc.title_id, text);
-            LOG("fs: the DLC %016llx read from its dump %s (%.1f MB)\n", (unsigned long long)aoc->dump.aoc.title_id,
-                dump, (double)snx_hac_fs_romfs_size(aoc->fs) / 1048576.0);
-            g_hle.fs.dlcs[g_hle.fs.ndlcs++] = aoc->dump.aoc.title_id;
-            g_hle.fs.naocs++;
-        }
+        } else
+            WARN("fs: the DLC %s is checked, and its image %s is not there: the game runs without it\n", text, image);
         free(image);
-        free(ini);
-        free(dump);
     }
-    if (g_hle.fs.naocs && !g_hle.fs.dfs) pm_init(&g_host.fs.dlock); /* dump_open, before this, made it for the game */
     free(ids);
-    free(data);
-    free(folder);
-    free(games);
-    free(repo);
 }
 
 /* The mods played (common/utilities/mods.h), from the game's mods folder, which the data folder's index leaves out:
@@ -378,47 +200,10 @@ static u8* mod_exefs(const char* path, u64* size) {
     return data;
 }
 
-/* an ExeFS file of the dump read in place, malloc'd: path is exefs/<name>. NULL when the game has no dump open or
-   the dump no such file */
-static u8* dump_exefs(const char* path, u64* size) {
-    const SnxHacEntry* files;
-    size_t count, i;
-    u8* data;
-    int failed;
-    if (!g_hle.fs.dfs || strncmp(path, "exefs/", 6)) return NULL;
-    count = snx_hac_fs_files(g_hle.fs.dfs, &files);
-    for (i = 0; i < count && strcmp(files[i].name, path + 6); i++) continue;
-    if (i == count || files[i].size > SIZE_MAX) return NULL;
-    data = malloc(files[i].size ? (size_t)files[i].size : 1);
-    if (!data) return NULL;
-    pm_lock(&g_host.fs.dlock);
-    failed = snx_hac_fs_read(g_hle.fs.dfs, i, 0, data, (size_t)files[i].size);
-    pm_unlock(&g_host.fs.dlock);
-    if (failed) {
-        WARN("fs: could not read %s from the game's dump\n", path);
-        free(data);
-        return NULL;
-    }
-    *size = files[i].size;
-    return data;
-}
 u8* fs_html_document(const char* path, u64* size) {
-    char* full;
-    u8* data = NULL;
-    size_t n = 0;
-    if (!g_hle.fs.dfs) return NULL;
-    full = snx_format("html-document/%s", path);
-    if (!full) return NULL;
-    pm_lock(&g_host.fs.dlock);
-    if (!g_hle.fs.html_tried) { /* opened when a page is first asked for, and kept, as the program's is */
-        g_hle.fs.html_tried = 1;
-        g_hle.fs.hfs = snx_dump_html_fs(&g_hle.fs.dump);
-    }
-    if (g_hle.fs.hfs) data = snx_romfs_file(g_hle.fs.hfs, full, &n);
-    pm_unlock(&g_host.fs.dlock);
-    free(full);
-    if (data) *size = n;
-    return data;
+    (void)path;
+    (void)size;
+    return NULL; /* the content came from the game's dump, which this build no longer reads */
 }
 
 /* The checked DLCs' data folders, then the update's, laid over the game's, each read-only: what their extractions
@@ -448,11 +233,7 @@ static void overlays(void) {
     }
 }
 
-/* 1 when path is in the ExeFS a dump read in place has: the program's whole ExeFS, an update's over any the game's
-   data folder keeps */
-static int dump_has_exefs(const char* path) { return g_hle.fs.dfs && !strncmp(path, "exefs/", 6); }
-
-void fs_init(const char* keys, const char* title_keys) {
+void fs_init(void) {
     static const char* const apart[] = {"mods", NULL}; /* mods_open's */
     FsTreeResult r = fs_tree_init_skipping(&g_hle.fs.tree, g_datadir, apart);
     if (r != FS_TREE_OK) fatal("Could not index game filesystem %s (error %d)", g_datadir, r);
@@ -473,15 +254,21 @@ void fs_init(const char* keys, const char* title_keys) {
        empty at first use */
     r = fs_tree_remove(&g_hle.fs.tree, NULL, "save/temp", 1, 1, 0);
     if (r != FS_TREE_OK && r != FS_TREE_NOTFOUND) WARN("fs: could not empty save/temp (error %d)\n", r);
+    /* a data folder made from a dump has no exefs/: its program cannot be made from it any more */
+    {
+        FsNode* exefs;
+        if (fs_tree_lookup(&g_hle.fs.tree, NULL, "exefs", &exefs) != 0) {
+            if (g_settings.game_dump[0]) LOG("fs: source=%s\n", g_settings.game_dump);
+            pm_unlock(&g_hle.fs.tree.lock);
+            fatal("The data folder %s has no exefs/: recompile the game from its decrypted folder with -r", g_datadir);
+        }
+    }
     overlays();
-    dump_open(keys, title_keys);
-    dlcs_open(keys, title_keys);
+    dlcs_open();
     romfs_from_setting();
-    if (!g_hle.fs.dfs) romfs_from_tmpfs();
     mods_open();
     for (size_t i = 0; i < sizeof shared_paths / sizeof shared_paths[0]; i++) {
         FsNode* node;
-        if (g_hle.fs.dump.patch.found) break; /* an update's, read over the game's dump: the game's files unread */
         if (fs_tree_lookup(&g_hle.fs.tree, NULL, shared_paths[i], &node)) continue;
         share.lazy = !strcmp(shared_paths[i], "romfs");
         r = fs_tree_share(&g_hle.fs.tree, node, &share);
@@ -536,12 +323,11 @@ int fs_map_file(const char* path, PFileMap* map) {
     char host[FS_TREE_PATH_MAX];
     int r = -1;
     memset(map, 0, sizeof *map);
-    if ((map->data = mod_exefs(path, &map->size)) || (map->data = dump_exefs(path, &map->size))) {
-        /* a mod's, or read out of the dump: plat_file_unmap frees it */
+    if ((map->data = mod_exefs(path, &map->size))) {
+        /* a mod's: plat_file_unmap frees it */
         map->heap = 1;
         return 0;
     }
-    if (dump_has_exefs(path)) return -1;
     pm_lock(&g_hle.fs.tree.lock);
     if (!fs_tree_lookup(&g_hle.fs.tree, NULL, path, &node) && !node->is_dir) {
         if (fs_tree_mapped(node)) { /* already mapped for the rest of the run: lend that view */
@@ -561,11 +347,10 @@ u8* fs_read_file(const char* path, u64* size) {
     u64 got;
     u8* data = NULL;
     if (size) *size = 0;
-    if ((data = mod_exefs(path, &got)) || (data = dump_exefs(path, &got))) {
+    if ((data = mod_exefs(path, &got))) {
         if (size) *size = got;
         return data;
     }
-    if (dump_has_exefs(path)) return NULL;
     pm_lock(&g_hle.fs.tree.lock);
     if (!fs_tree_lookup(&g_hle.fs.tree, NULL, path, &node) && !node->is_dir && node->size <= SIZE_MAX) {
         data = malloc(node->size ? (size_t)node->size : 1);
@@ -830,27 +615,15 @@ static void romfs_build(const RNode* dir, const char* what) {
     LOG("RomFS: built from %s (%u folders, %u files, %.1f MB)\n", what, nd, nf, (double)g_hle.fs.rtotal / 1048576.0);
 }
 
-/* size bytes of the game's own image at off into dst: romfs.bin, mapped or not, or the dump's. The caller checked the
-   range against the image's size, and holds tree.lock when locked is set. 0, or -1 with the part that couldn't be read
-   zeroed. quiet: the runtime's own read (romfs_peek), which warns of nothing */
+/* size bytes of the game's own image at off into dst: romfs.bin, mapped or not. The caller checked the range against
+   the image's size, and holds tree.lock when locked is set. 0, or -1 with the part that couldn't be read zeroed.
+   quiet: the runtime's own read (romfs_peek), which warns of nothing */
 static int image_read(u64 off, void* dst, u64 size, int locked, int quiet) {
     u8* out = dst;
-    int rc;
+    (void)quiet;
     if (g_hle.fs.rimage) {
         memcpy(out, g_hle.fs.rimage->map + off, (size_t)size);
         return 0;
-    }
-    if (g_hle.fs.dfs) {
-        pm_lock(&g_host.fs.dlock);
-        rc = size > SIZE_MAX ? -1 : snx_hac_fs_read_romfs(g_hle.fs.dfs, off, out, (size_t)size);
-        pm_unlock(&g_host.fs.dlock);
-        if (rc) {
-            memset(out, 0, (size_t)size);
-            if (!quiet)
-                WARN("RomFS: could not read the dump at %llx (%llx bytes): the game gets zeros\n",
-                     (unsigned long long)off, (unsigned long long)size);
-        }
-        return rc;
     }
     if (g_hle.fs.rraw) {
         i64 got;
@@ -986,19 +759,8 @@ void romfs_init(void) {
         g_hle.fs.rtotal = node->size;
         image = 1;
         LOG("RomFS: image (%.1f MB)\n", (double)g_hle.fs.rtotal / 1048576.0);
-    } else if (g_hle.fs.dump.patch.found && g_hle.fs.dfs && snx_hac_fs_romfs_size(g_hle.fs.dfs)) {
-        g_hle.fs.rtotal = snx_hac_fs_romfs_size(g_hle.fs.dfs); /* an update's over the game's, which it is made of */
-        image = 1;
-        LOG("RomFS: the update's over the game's dump, read in place (%.1f MB)\n",
-            (double)g_hle.fs.rtotal / 1048576.0);
     } else if (!fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs:/", &node) && node->is_dir) {
         folder = node;
-    } else if (g_hle.fs.dfs && snx_hac_fs_romfs_size(g_hle.fs.dfs)) {
-        g_hle.fs.rtotal = snx_hac_fs_romfs_size(g_hle.fs.dfs);
-        image = 1;
-        LOG("RomFS: the dump's, read in place (%.1f MB)\n", (double)g_hle.fs.rtotal / 1048576.0);
-    } else if (g_hle.fs.dfs) {
-        LOG("RomFS: none in the game's dump\n");
     } else {
         LOG("RomFS: none in %s\n", g_datadir);
         if (fs_tree_lookup(&g_hle.fs.tree, NULL, "exefs/main.nro", &node))
@@ -1105,7 +867,7 @@ static int romfs_read(u64 off, void* dst, u64 size, int quiet) {
     int rc = 0;
     int lo, hi, k;
     if (!size) return 0;
-    if (!g_hle.fs.rlayered && (g_hle.fs.rimage || g_hle.fs.dfs || g_hle.fs.rraw))
+    if (!g_hle.fs.rlayered && (g_hle.fs.rimage || g_hle.fs.rraw))
         return image_read(off, dst, size, 0, quiet);
     if (off < g_hle.fs.rmeta_size) {
         u64 n = size < g_hle.fs.rmeta_size - off ? size : g_hle.fs.rmeta_size - off;
@@ -1151,10 +913,10 @@ int romfs_peek(u64 off, void* dst, u64 size) {
     int rc = 0;
     if (!romfs_in(off, size)) return -1;
     while (size) {
-        /* a piece at a time when a read can hold a lock (a dump's, an unmapped romfs.bin's, with or without mods
-           over it), so the game's reads wait for one piece at most. A mapped image takes none, and one built from
-           extracted files opens each file a read reaches: read whole */
-        int locked = !g_hle.fs.rimage && (g_hle.fs.dfs || g_hle.fs.rraw);
+        /* a piece at a time when a read can hold a lock (an unmapped romfs.bin's, with or without mods over it), so
+           the game's reads wait for one piece at most. A mapped image takes none, and one built from extracted files
+           opens each file a read reaches: read whole */
+        int locked = !g_hle.fs.rimage && g_hle.fs.rraw;
         u64 n = locked && size > ((u64)1 << 20) ? (u64)1 << 20 : size;
         if (romfs_read(off, out, n, 1)) rc = -1;
         out += n;
@@ -1210,17 +972,12 @@ int romfs_files(RomfsEach each, void* ctx) {
     return rc ? rc : malformed ? -2 : 0;
 }
 /* ============================================================ IStorage: the RomFS (no data) or a system archive */
-/* u[0] of a storage without data: the RomFS, or a DLC's image read in place, u[1] its index in aocs */
-enum { STORAGE_ROMFS, STORAGE_AOC };
-
-/* the DLC read in place that is id, NULL for none */
-static FsAoc* aoc_of(u64 id) {
+int fs_aoc_has(u64 id) {
     size_t i;
-    for (i = 0; id && i < g_hle.fs.naocs; i++)
-        if (g_hle.fs.aocs[i].dump.aoc.title_id == id) return &g_hle.fs.aocs[i];
-    return NULL;
+    for (i = 0; id && i < g_hle.fs.ndlcs; i++)
+        if (g_hle.fs.dlcs[i] == id) return 1;
+    return 0;
 }
-int fs_aoc_has(u64 id) { return aoc_of(id) != NULL; }
 size_t fs_dlcs(const u64** ids) {
     *ids = g_hle.fs.dlcs;
     return g_hle.fs.ndlcs;
@@ -1288,16 +1045,6 @@ static int nn_fssrv_sf_IStorage_Read(SvcObj* self, i64 offset, IpcBuf buffer, i6
     if (!sz) R_SUCCEED();
     /* the reads below go through the kernel, which can't wait on memory the GPU holds: it lands first */
     if (buffer_valid(a, sz)) own_acquire(a, sz);
-    if (!data && self->u[0] == STORAGE_AOC) { /* a DLC's image, read in place */
-        SnxHacFs* fs = g_hle.fs.aocs[self->u[1]].fs;
-        u64 total = snx_hac_fs_romfs_size(fs);
-        R_UNLESS(sz <= (u64)INT64_MAX - off && off <= total && sz <= total - off, FS_OUT_OF_RANGE);
-        R_UNLESS(buffer_valid(a, sz) && sz <= SIZE_MAX, FS_OUT_OF_RANGE);
-        pm_lock(&g_host.fs.dlock);
-        rc = snx_hac_fs_read_romfs(fs, off, GP(a), (size_t)sz);
-        pm_unlock(&g_host.fs.dlock);
-        return rc ? FS_OUT_OF_RANGE : 0;
-    }
     if (!data) { /* the RomFS */
         R_UNLESS(sz <= (u64)INT64_MAX - off && romfs_in(off, sz), FS_OUT_OF_RANGE);
         R_UNLESS(buffer_valid(a, sz), FS_OUT_OF_RANGE);
@@ -1326,8 +1073,7 @@ static int nn_fssrv_sf_IStorage_SetSize(SvcObj* self, i64 size) { return size < 
 static int nn_fssrv_sf_IStorage_GetSize(SvcObj* self, i64* size) {
     FileData* data = self->data;
     if (!data) {
-        *size = (i64)(self->u[0] == STORAGE_AOC ? snx_hac_fs_romfs_size(g_hle.fs.aocs[self->u[1]].fs)
-                                                : g_hle.fs.rtotal);
+        *size = (i64)g_hle.fs.rtotal;
         R_SUCCEED();
     }
     pm_lock(&g_hle.fs.tree.lock);
@@ -2092,12 +1838,6 @@ static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByProgramId(SvcObj* self,
 static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByDataId(SvcObj* self, nn_ncm_DataId data_id,
                                                                 nn_ncm_StorageId storage_id, SvcObj** storage) {
     char p[64];
-    if (aoc_of(data_id)) { /* a DLC read in place, as installed */
-        *storage = nn_fssrv_sf_IStorage_new();
-        (*storage)->u[0] = STORAGE_AOC;
-        (*storage)->u[1] = (u64)(aoc_of(data_id) - g_hle.fs.aocs);
-        R_SUCCEED();
-    }
     snprintf(p, sizeof p, "system/archives/%016llx.romfs", (unsigned long long)data_id);
     pm_lock(&g_hle.fs.tree.lock);
     FsNode* node;

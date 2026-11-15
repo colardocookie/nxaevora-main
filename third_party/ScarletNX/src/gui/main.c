@@ -296,14 +296,12 @@ typedef struct App {
     unsigned loads_off;
     uint64_t loads_key;
     Uint64 loads_at;
-    char *cwd, *file, *games_dir, *keys_path;
+    char *cwd, *file, *games_dir;
     char*
         data_dir; /* recompiled/, dumps/, work/ and themes/: the driver's too, which gets it as --repo (snx_data_dir) */
     char* checkout;       /* a build tree's menu's checkout (snx_checkout), where an older version kept games/ */
     char* themes_dirs[2]; /* themes/ in the data folder, then beside the GUI */
     char message[512];
-    Uint64 keys_done; /* the keys screen's outcome shown since, 0 for none: then the menu by itself */
-    bool keys_ok;
     int cols, rows, scale;
     int auto_scale; /* the UI scale a start takes with none in app.ini, chosen as the window opens (pick_auto_scale) */
     Uint64 sampled;
@@ -608,7 +606,6 @@ typedef struct App {
     char setup_name[SNX_USERS_NICKNAME + 1];
     uint64_t setup_uid[2];
     int setup_saves;    /* games with saves of the fixed uid, which setup_uid is then */
-    bool setup_keys;    /* the folder picker opened for the keys' page */
     bool setup_failed;  /* the message says what did not work */
     bool setup_written; /* users.ini at the user's page: there, its users (-1: setup_why says why it is none) */
     int setup_users;
@@ -629,12 +626,11 @@ typedef struct App {
 
 /* the menu's item i: a row of ui.txt's Entries, in model.h's order (a negative size if not); its text shown
    translated */
-#define GUI_ENTRY(item) (UI_MENU_ENTRIES_LOAD_SWITCH_NSP_XCI_NRO + (item))
+#define GUI_ENTRY(item) (UI_MENU_ENTRIES_LOAD_SWITCH_NRO + (item))
 typedef char gui_entries_in_order[GUI_ENTRY(GUI_LINUX) == UI_MENU_ENTRIES_LOAD_LINUX_ARM_ELF &&
                                           GUI_ENTRY(GUI_3DS) == UI_MENU_ENTRIES_LOAD_3DS_GAME &&
                                           GUI_ENTRY(GUI_VITA) == UI_MENU_ENTRIES_LOAD_VITA_VPK &&
                                           GUI_ENTRY(GUI_GBA) == UI_MENU_ENTRIES_LOAD_GBA_ROM &&
-                                          GUI_ENTRY(GUI_KEYS) == UI_MENU_ENTRIES_INSTALL_KEYS &&
                                           GUI_ENTRY(GUI_SETTINGS) == UI_MENU_ENTRIES_SETTINGS &&
                                           GUI_ENTRY(GUI_LOG) == UI_MENU_ENTRIES_SHARE_LOG &&
                                           GUI_ENTRY(GUI_FOLDERS) == UI_MENU_ENTRIES_FOLDERS &&
@@ -645,7 +641,7 @@ typedef char gui_entries_in_order[GUI_ENTRY(GUI_LINUX) == UI_MENU_ENTRIES_LOAD_L
 static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[GUI_ENTRY(item)].text; }
 #define GUI_RECENT_SHOWN 3 /* the recent games Games shows before a row that shows the rest */
 /* what the screens say to press: a phone has a finger, the back button and the system's file picker, nothing to drop;
-   a computer has the picker too (on Linux the desktop's portal, else zenity), on a screen of its own as the keys' */
+   a computer has the picker too (on Linux the desktop's portal, else zenity), on a screen of its own */
 #ifdef SDL_PLATFORM_ANDROID
 #ifdef SNX_TOUCH_UI
 #define SAY_MENU SNX_TR_KEYS("Tap: select. Refresh. Back.")
@@ -664,16 +660,15 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_GAMES_AOT    SNX_TR_KEYS("AOT pack.")
 #define SAY_GAMES_STATES SNX_TR_KEYS("Save states.")
 #ifdef SDL_PLATFORM_ANDROID
-#define SAY_KEYS_HOW SNX_TR_KEYS("Back.")
+#define SAY_PICK_HOW SNX_TR_KEYS("Back.")
 #else
-#define SAY_KEYS_HOW SNX_TR_KEYS("Pick the prod.keys file.")
+#define SAY_PICK_HOW SNX_TR_KEYS("Pick the game file.")
 #endif
-#define SAY_KEYS_WAIT SNX_TR_NOOP("Pick prod.keys")
 #define SAY_PICK_BOX  SNX_TR_NOOP("tap the box to open the file picker")
 #define SAY_FILE_WAIT SNX_TR_NOOP("Pick a file")
 #define SAY_DONE      SNX_TR_NOOP("Tap to return to menu")
 #define SAY_ABORT     SNX_TR_NOOP("Tap here to abort and return to menu")
-#define SAY_NO_GAMES  SNX_TR_NOOP("No games in recompiled/ or dumps/: put a game's .nro, .xci or .nsp in dumps/.")
+#define SAY_NO_GAMES  SNX_TR_NOOP("No games in recompiled/ or dumps/: put a game's .nro in dumps/.")
 #ifdef SDL_PLATFORM_ANDROID
 #define SAY_EDITOR SNX_TR_KEYS("Tap: change. Back.")
 #else
@@ -738,8 +733,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_GAMES_AOT    SNX_TR_KEYS("B: AOT pack.")
 #define SAY_GAMES_STATES SNX_TR_KEYS("S: save states.")
 #define SAY_PICK_BOX     SNX_TR_NOOP("click the box (or Enter) to open the file picker")
-#define SAY_KEYS_HOW     SNX_TR_KEYS("Ctrl+V: paste. ESC: back.")
-#define SAY_KEYS_WAIT    SNX_TR_NOOP("Pick or drop prod.keys")
+#define SAY_PICK_HOW     SNX_TR_KEYS("Ctrl+V: paste. ESC: back.")
 #define SAY_FILE_WAIT    SNX_TR_NOOP("Pick or drop a file")
 #define SAY_DONE         SNX_TR_NOOP("Press [ESC] to return to menu")
 #define SAY_ABORT        SNX_TR_NOOP("Press [ESC] to abort and return to menu")
@@ -828,22 +822,6 @@ static SDL_Color rgb(GuiRgb c) {
     return out;
 }
 static Uint64 now_ms(const App* app) { return app->clock ? app->clock : SDL_GetTicks(); }
-#define GUI_KEYS_OK_MS     3000  /* how long the keys screen shows they were installed, then the menu */
-#define GUI_KEYS_FAILED_MS 10000 /* and why they were not, the menu's line saying it after */
-/* the keys screen's outcome, gone back to the menu once shown long enough; the seconds it still shows, 0 for none */
-static int keys_left(App* app) {
-    Uint64 shown = app->keys_ok ? GUI_KEYS_OK_MS : GUI_KEYS_FAILED_MS, now = now_ms(app);
-    if (!app->keys_done || app->menu.view != GUI_LOAD_KEYS) {
-        app->keys_done = 0;
-        return 0;
-    }
-    if (now - app->keys_done >= shown) {
-        app->keys_done = 0;
-        app->menu.view = GUI_LOAD_NONE;
-        return 0;
-    }
-    return (int)((shown - (now - app->keys_done) + 999) / 1000);
-}
 static void glyph(App* app, float x, float y, int c);
 /* the glyphs a row of the font's texture: 512 pixels wide, so 8192 of them (CP437's, the Latin letters, the icons and
    3780 wide letters) fit 2048 high, where 16 a row would take 8192 */
@@ -1002,24 +980,6 @@ static void rule(App* app, int row, GuiRgb c) {
     fill(app, 8 * s, (float)(row * 16) * s - s, (float)((app->cols - 2) * 8) * s, s, c, 255);
 }
 static void event(App* app, const SDL_Event* e);
-#ifdef SNX_XDG
-/* ~/.switch/prod.keys, where hactool and other tools keep them */
-static char* home_keys_path(void) {
-    const char* home = getenv("HOME");
-    if (!home || !home[0]) return NULL;
-    char* directory = snx_path_join(home, ".switch");
-    char* path = directory ? snx_path_join(directory, "prod.keys") : NULL;
-    free(directory);
-    return path;
-}
-/* the menu whose folder is the user's data folder (snx_data_dir), not a portable copy's */
-static bool installed(const App* app) {
-    char* user = snx_user_data_dir();
-    bool same = user && app->data_dir && !strcmp(user, app->data_dir);
-    free(user);
-    return same;
-}
-#endif
 /* the menu's own files: those of its config folder, then those of its state folder */
 static const char* const menu_files[2][4] = {{"settings.ini", "app.ini", "folders.txt", "gamecontrollerdb.txt"},
                                              {"recent.txt", "last-run.log", "last-recompile.log", ""}};
@@ -1035,22 +995,6 @@ static char* menu_folder(const App* app, int kind, bool make) {
         folder = NULL;
     }
     return folder;
-}
-/* where the keys are installed (snx_keys_dir): the user's data folder on an XDG system, else ~/.switch */
-static char* device_keys_path(const App* app) {
-    char *dir = snx_keys_dir(app->data_dir), *path = dir ? snx_path_join(dir, "prod.keys") : NULL;
-    free(dir);
-    return path;
-}
-/* the prod.keys the driver reads: those installed here, else with the user's data folder the ones in ~/.switch */
-static char* keys_in_use(const App* app) {
-    if (app->keys_path && snx_is_file(app->keys_path)) return snx_strdup(app->keys_path);
-#ifdef SNX_XDG
-    char* home = installed(app) ? home_keys_path() : NULL;
-    if (home && snx_is_file(home)) return home;
-    free(home);
-#endif
-    return NULL;
 }
 /* the footer from row: the usage, then the working folder, which recompiled/ and themes/ are found in. The theme's bar
    style puts them on a band of ink over rows rows, its plain one in soft and ink; a rule above when it says so */
@@ -1082,13 +1026,11 @@ static void footer(App* app, int row, int rows, GuiRgb page, GuiRgb ink, GuiRgb 
     text(app, 2 + gui_text_cols(snx_tr("Working folder:")), row + 1, app->cwd ? app->cwd : snx_tr("(unavailable)"),
          rgb(bar ? page : ink));
 }
-/* the screen a file is picked or dropped on: the keys', and a load option's */
-static int pick_screen(const App* app) { return app->menu.view == GUI_LOAD_KEYS || app->menu.view == GUI_LOAD_DROP; }
+/* the screen a file is picked or dropped on: a load option's */
+static int pick_screen(const App* app) { return app->menu.view == GUI_LOAD_DROP; }
 /* the menu's screen, a run or not */
 static GuiScreen menu_screen(const App* app) {
-    return app->menu.view == GUI_LOAD_GAMES  ? GUI_SCREEN_GAMES
-           : app->menu.view == GUI_LOAD_KEYS ? GUI_SCREEN_KEYS
-                                             : GUI_SCREEN_MENU;
+    return app->menu.view == GUI_LOAD_GAMES ? GUI_SCREEN_GAMES : GUI_SCREEN_MENU;
 }
 static GuiScreen screen(const App* app) {
     if (app->menu.running || app->finished)
@@ -2699,7 +2641,7 @@ static const char* screen_said(const App* app, bool help, char* out, size_t size
         else if (app->menu.view == GUI_LOAD_GAMES)
             keys = games_grid(app) ? SAY_GAMES_GRID : SAY_GAMES;
         else if (pick_screen(app))
-            keys = SAY_KEYS_HOW;
+            keys = SAY_PICK_HOW;
         if (app->editing && app->form == GUI_FORM_FOLDERS) folders_said(app, false, parts, &n);
         if (!app->editing && app->menu.view == GUI_LOAD_GAMES) games_said(app, false, parts, &n);
         said_add(parts, &n, keys);
@@ -3178,10 +3120,9 @@ static SDL_Texture* picture_texture(App* app, const unsigned char* jpeg, size_t 
 /* the icon of the game whose program is at path, as its row shows it: its icon.jpg drawn once, then kept; NULL for
    a game without one. One that does not draw is said, with its file, and shows none */
 /* the folder in the cache a dump's icon goes in: icons/ of the menu's cache, named by a hash of the dump's path, size
-   and time and of the keys' (prod.keys), so a dump replaced, or keys put in after a dump could not be read, asks again.
-   Owned; NULL when the dump is not there */
+   and time, so a dump replaced asks again. Owned; NULL when the dump is not there */
 static char* dump_icon_dir(const App* app, const char* dump) {
-    SDL_PathInfo info, keys = {0};
+    SDL_PathInfo info;
     uint64_t h = 1469598103934665603ull; /* FNV-1a */
     const char* c;
     char *cache, *icons, name[17], *dir;
@@ -3189,9 +3130,6 @@ static char* dump_icon_dir(const App* app, const char* dump) {
     for (c = dump; *c; ++c) h = (h ^ (unsigned char)*c) * 1099511628211ull;
     h = (h ^ info.size) * 1099511628211ull;
     h = (h ^ (uint64_t)info.modify_time) * 1099511628211ull;
-    if (app->keys_path) SDL_GetPathInfo(app->keys_path, &keys); /* none: zeros */
-    h = (h ^ keys.size) * 1099511628211ull;
-    h = (h ^ (uint64_t)keys.modify_time) * 1099511628211ull;
     snprintf(name, sizeof name, "%016llx", (unsigned long long)h);
     cache = menu_folder(app, SNX_USER_CACHE, false);
     icons = cache ? snx_path_join(cache, "icons") : NULL;
@@ -5279,12 +5217,11 @@ static int recompile_tab(const App* app, char* out, size_t size) {
 /* the tabs while the setup shows: its pages, the notices' then each step's, numbered */
 enum { SETUP_NOTICE = SNX_SETUP_STEPS }; /* a page's: a step's, or the notices' */
 static const char* const setup_step_names[SNX_SETUP_STEPS] = {SNX_TR_NOOP("Appearance"), SNX_TR_NOOP("Install"),
-                                                              SNX_TR_NOOP("Folders"), SNX_TR_NOOP("Keys"),
-                                                              SNX_TR_NOOP("User")};
-/* each step's icon in its tab, before its name where its number was (the page's head says it, 1/5): the tabs keep
+                                                              SNX_TR_NOOP("Folders"), SNX_TR_NOOP("User")};
+/* each step's icon in its tab, before its name where its number was (the page's head says it, 1/4): the tabs keep
    the width they had; the notices' after them */
 static const unsigned setup_step_icons[SNX_SETUP_STEPS + 1] = {
-    GUI_ICON_PALETTE, GUI_ICON_HARD_DRIVE_DOWNLOAD, GUI_ICON_FOLDER, GUI_ICON_KEY_ROUND, GUI_ICON_USER, GUI_ICON_INFO};
+    GUI_ICON_PALETTE, GUI_ICON_HARD_DRIVE_DOWNLOAD, GUI_ICON_FOLDER, GUI_ICON_USER, GUI_ICON_INFO};
 static int tab_count(const App* app) {
     if (app->setup_on && !app->editing) return app->setup_count;
     return app->queue.count ? GUI_TABS : GUI_TAB_RECOMPILE;
@@ -5390,26 +5327,25 @@ static int head_room(const App* app, int size) {
     return width - (last.x + last.w) - 2 * cell_w(app);
 }
 /* The head's title over the tabs' screens and its letters' size: a window too narrow for the main screens' titles
-   (the menu's, Games', the keys' and the Settings') whole at the theme's size takes a size smaller, down to the
+   (the menu's, Games' and the Settings') whole at the theme's size takes a size smaller, down to the
    text's, and only then leaves out the same first parts of every one, "SCARLETNX  /" first, so the head stays one
    and the same from screen to screen. The size is the English titles', so the head is as big in every language: a
    translation too long for it leaves out first parts too. A screen deeper in the Settings leaves out what more it
    must, and a last part still too wide is cut. The setup's head, its steps for tabs, keeps its title as it is */
 static const char* head_title(const App* app, bool tabs, char* out, size_t size, int* letters) {
-    const char *titles[5], *english[5];
+    const char *titles[4], *english[4];
     char own[160];
     const char* title = screen_title(app, own, sizeof own);
-    int big = title_size(app), parts = 0, room = 0, i, n = app->queue.count ? 5 : 4; /* the Compile tab's with it */
+    int big = title_size(app), parts = 0, room = 0, i, n = app->queue.count ? 4 : 3; /* the Compile tab's with it */
     *letters = big;
     snprintf(out, size, "%s", title);
     if (!tabs || !title[0] || (app->setup_on && !app->editing)) return out; /* the setup's steps are its tabs */
     titles[0] = english[0] = app->theme.title[GUI_SCREEN_MENU];
     titles[1] = english[1] = app->theme.title[GUI_SCREEN_GAMES];
-    titles[2] = english[2] = app->theme.title[GUI_SCREEN_KEYS];
-    english[3] = SAY_SETTINGS_TITLE;
-    titles[3] = snx_tr(SAY_SETTINGS_TITLE);
-    english[4] = SAY_COMPILE_TITLE;
-    titles[4] = snx_tr(SAY_COMPILE_TITLE);
+    english[2] = SAY_SETTINGS_TITLE;
+    titles[2] = snx_tr(SAY_SETTINGS_TITLE);
+    english[3] = SAY_COMPILE_TITLE;
+    titles[3] = snx_tr(SAY_COMPILE_TITLE);
     for (parts = 0; parts < 4; ++parts) {
         for (*letters = big; *letters >= 1; --*letters) {
             room = head_room(app, *letters);
@@ -5647,13 +5583,12 @@ typedef struct {
 } GuiMenuBoxes;
 /* what an item is about, for the tips and the side box */
 static const char* item_about(const App* app, int item) {
-    static const char* const loads[] = {SNX_TR_NOOP("Recompiles a game's .nsp, .xci or .nro, then runs it"),
+    static const char* const loads[] = {SNX_TR_NOOP("Recompiles a game's .nro, then runs it"),
                                         SNX_TR_NOOP("Runs a Linux ARM program, 64 or 32-bit"),
                                         SNX_TR_NOOP("Recompiles a 3DS game, then runs it"),
                                         SNX_TR_NOOP("Recompiles a PS Vita homebrew .vpk, then runs it"),
                                         SNX_TR_NOOP("Runs a GBA ROM on the emulated AGB board")};
     if (item >= GUI_SWITCH && item <= GUI_GBA) return snx_tr(loads[item - GUI_SWITCH]);
-    if (item == GUI_KEYS) return snx_tr("Installs prod.keys, which games are extracted with");
     if (item == GUI_EXIT) return snx_tr("Closes ScarletNX");
     {
         GuiMenu menu = app->menu;
@@ -5684,33 +5619,19 @@ static void last_output(App* app, GuiRect r, int y) {
             if (app->console.cells[i][x] != ' ')
                 glyph(app, (float)(r.x + x * cell_w(app)), (float)y, app->console.cells[i][x]);
 }
-/* the side box: the focused item, and for the keys the ones in use; the last run's output under it. What the item
-   does is the tips', not said twice */
+/* the side box: the focused item; the last run's output under it. What the item does is the tips', not said twice */
 static void menu_side(App* app, const GuiMenuBoxes* m) {
     int item = (int)m->lists[UI_MENU_ENTRIES].focus, y;
     GuiRect r = inner(app, m->place.side);
-    char line[1100];
     if (!m->place.side.h) return;
     y = pane(app, m->place.side, snx_tr(entry_text(item)));
     r = gui_rect(r.x, y, r.w, m->place.side.y + m->place.side.h - y);
-    if (item == GUI_KEYS) {
-        char* in_use = keys_in_use(app);
-        snprintf(line, sizeof line, snx_tr("In use: %s"), in_use ? in_use : snx_tr("none"));
-        y += wrap_in(app, r, r.x, y, line, 1, rgb(in_use ? app->theme.soft : app->theme.failure)) * cell_h(app);
-        free(in_use);
-    }
     last_output(app, r, y);
 }
-/* the entries' attributes: the one activated last in the active colour; blinking in the failure colour, Setup device
-   keys while no prod.keys is in use, so a first start shows what to do first, and Share Log after a run crashed until
-   its log is saved; greyed, a load whose driver is not there */
+/* the entries' attributes: the one activated last in the active colour; blinking in the failure colour, Share Log after
+   a run crashed until its log is saved; greyed, a load whose driver is not there */
 unsigned ui_menu_entries_attr_cb(App* app, size_t row) {
     unsigned attr = app->menu.activated && (size_t)app->menu.active == row ? UI_ATTR_ACTIVE : 0;
-    if (row == GUI_KEYS) {
-        char* in_use = keys_in_use(app);
-        if (!in_use) attr |= UI_ATTR_FAILURE | UI_ATTR_BLINK;
-        free(in_use);
-    }
     if (row == GUI_LOG && app->log_due) attr |= UI_ATTR_FAILURE | UI_ATTR_BLINK;
     if (row <= GUI_GBA && (loads_off(app) >> row & 1u)) attr |= UI_ATTR_OFF;
     return attr;
@@ -6351,8 +6272,8 @@ static void prompt_in(App* app, GuiRect r, int y, GuiPromptLine line, const char
     }
     text_in(app, r, SDL_max(r.x, x), y, value, color);
 }
-/* ---- the screen a file is picked or dropped on: one box with where the keys go and the ones in use, the line that
-   waits in its middle; ESC, or the foot's, goes back */
+/* ---- the screen a file is picked or dropped on: one box with the line that waits in its middle; ESC, or the foot's,
+   goes back ---- */
 typedef struct {
     GuiPlace place;
     int prompt; /* the waiting line's pixel row */
@@ -6365,48 +6286,15 @@ static void pick_boxes(App* app, GuiPickBoxes* k) {
 static void draw_pick(App* app) {
     GuiPickBoxes k;
     GuiRect r;
-    bool keys = app->menu.view == GUI_LOAD_KEYS;
-    char line[1100], hints_line[256], *in_use = keys ? keys_in_use(app) : NULL;
+    char line[1100], hints_line[256];
     int y;
     pick_boxes(app, &k);
     chrome(app, &k.place);
-    y = pane(app, k.place.list, snx_tr(entry_text(keys ? GUI_KEYS : app->menu.active)));
+    y = pane(app, k.place.list, snx_tr(entry_text(app->menu.active)));
     r = inner(app, k.place.list);
     r = gui_rect(r.x, y, r.w, r.y + r.h - y);
-    if (keys) {
-        snprintf(line, sizeof line, snx_tr("Installs to: %s"),
-                 app->keys_path ? app->keys_path : snx_tr("No home folder"));
-        y += wrap_in(app, r, r.x, y, line, 1, rgb(app->theme.ink)) * cell_h(app);
-    }
-    if (keys && keys_left(app)) { /* what the last try did, and when the menu comes back */
-        GuiRgb said = app->keys_ok ? app->theme.focus : app->theme.failure;
-        y += cell_h(app);
-        y += wrap_in(app, r, r.x, y, app->keys_ok ? snx_tr("Installed") : snx_tr("Not installed"), 0, rgb(said)) *
-             cell_h(app);
-        y += wrap_in(app, r, r.x, y, app->message, 1, rgb(app->keys_ok ? app->theme.ink : said)) * cell_h(app);
-        snprintf(line, sizeof line,
-                 app->keys_ok ? snx_tr("Back to the menu in %d s")
-                              : snx_tr("Back to the menu in %d s, or pick another file"),
-                 keys_left(app));
-        y += wrap_in(app, r, r.x, y, line, 0, rgb(app->theme.soft)) * cell_h(app);
-        if (app->keys_ok) { /* the keys just installed: nothing to warn about, nor to pick */
-            free(in_use);
-            in_use = NULL;
-        }
-    }
-    if (in_use && app->keys_path && !strcmp(in_use, app->keys_path))
-        y += wrap_in(app, r, r.x, y, snx_tr("Keys installed here: installing again replaces them"), 0,
-                     rgb(app->theme.failure)) *
-             cell_h(app);
-    else if (in_use) {
-        snprintf(line, sizeof line, snx_tr("Keys in use: %s. Keys dropped here are read before them"), in_use);
-        y += wrap_in(app, r, r.x, y, line, 1, rgb(app->theme.soft)) * cell_h(app);
-    }
-    free(in_use);
-    if (!keys || !app->keys_done || !app->keys_ok)
-        prompt_in(app, r, SDL_max(y, k.prompt), GUI_PROMPT_KEYS, snx_tr(keys ? SAY_KEYS_WAIT : SAY_FILE_WAIT),
-                  rgb(app->theme.focus));
-    snprintf(line, sizeof line, "%s: %s", snx_tr(entry_text(keys ? GUI_KEYS : app->menu.active)), snx_tr(SAY_PICK_BOX));
+    prompt_in(app, r, SDL_max(y, k.prompt), GUI_PROMPT_PICK, snx_tr(SAY_FILE_WAIT), rgb(app->theme.focus));
+    snprintf(line, sizeof line, "%s: %s", snx_tr(entry_text(app->menu.active)), snx_tr(SAY_PICK_BOX));
     screen_foot(app, &k.place, line, shown_keys(app, hints_line, sizeof hints_line));
 }
 static void draw_run(App* app) {
@@ -6797,7 +6685,7 @@ static GuiSettings* settings_of(App* app) {
 }
 /* ---- the theme editor's preview: the menu or a run in the theme being edited ---- */
 #define GUI_PREVIEW_MS 8000
-static const char preview_run[] = "Extracting A Game.nsp\n"
+static const char preview_run[] = "Extracting A Game.nro\n"
                                   "Extracted 3 NCAs, the program's 4 modules\n"
                                   "Recompiling A Game (4 modules)\n"
                                   "Functions: 48211  instructions: 2915002\n"
@@ -6843,7 +6731,7 @@ static bool preview_texture(App* app) {
     if (run) {
         app->steps = app->preview_steps;
         app->console = app->preview_console;
-        app->file = (char*)"dumps/A Game.nsp";
+        app->file = (char*)"dumps/A Game.nro";
         app->menu.selected = GUI_SWITCH;
     }
     SDL_SetRenderTarget(app->renderer, app->preview);
@@ -7153,7 +7041,7 @@ static int folders_save(App* app) {
 static void open_folders(App* app, int row);
 static int folder_row_of(const App* app, int kind, int at);
 /* the dumps library's Main row: dumps/ of the data folder, which goes with it */
-static const char dumps_row[] = SNX_TR_NOOP("Dumps put here are listed (.nsp, .xci and .nro), its subfolders' too "
+static const char dumps_row[] = SNX_TR_NOOP("Dumps put here are listed (.nro), its subfolders' too "
                                             "while it says + subfolders. It stays on the list");
 /* whether path is dumps/ of the data folder, which the Library always lists */
 static bool is_dumps_dir(const App* app, const char* path) {
@@ -7364,7 +7252,7 @@ static const char* unfit_text(const char* why) {
     return why;
 }
 static const char* const place_holds[GUI_PLACES] = {
-    SNX_TR_NOOP("recompiled/, dumps/, themes/ and prod.keys"), SNX_TR_NOOP("The recompiled games"),
+    SNX_TR_NOOP("recompiled/, dumps/ and themes/"), SNX_TR_NOOP("The recompiled games"),
     SNX_TR_NOOP("Each dump's extraction"), SNX_TR_NOOP("The games' logs, threads.txt and recent.txt"),
     SNX_TR_NOOP("units/, the shader caches and the dumps' icons")};
 /* Settings' row: its folder holds app.ini, which names the others, so the folder is moved outside the launcher */
@@ -7419,8 +7307,6 @@ static void places_apply(App* app) {
     free(app->cache_dir);
     app->cache_dir =
         app->place[GUI_PLACE_CACHE] ? snx_strdup(app->place[GUI_PLACE_CACHE]) : place_default(app, GUI_PLACE_CACHE);
-    free(app->keys_path);
-    app->keys_path = device_keys_path(app);
 }
 static const char* place_path(const App* app, int place) {
     return place == GUI_PLACE_DATA    ? app->data_dir
@@ -7818,12 +7704,6 @@ static bool places_fit(const App* app, char* out, size_t size) {
     }
     return true;
 }
-/* a Switch homebrew's .nro, which runs without an extraction */
-static bool nro_file(const char* path) {
-    size_t n = strlen(path);
-    return n > 4 && path[n - 4] == '.' && SDL_tolower((unsigned char)path[n - 3]) == 'n' &&
-           SDL_tolower((unsigned char)path[n - 2]) == 'r' && SDL_tolower((unsigned char)path[n - 1]) == 'o';
-}
 /* a dump's extraction in the picked extractions folder, as the driver names it in its own: <work>[/<kind>]/<name> */
 static char* dump_out(const App* app, const char* file, const char* kind) {
     char *name = snx_dump_name(file), *dir = kind ? snx_path_join(app->work_dir, kind) : snx_strdup(app->work_dir);
@@ -7979,27 +7859,19 @@ static void recent_as_games(App* app) {
     }
     if (changed) recent_changed(app);
 }
-/* room on the disks for file's run (gui_room), not extracted yet; else room_line says what it takes. With Extract game
-   container off a dump is read in place and takes no room. On, a Switch dump is extracted straight into its game's
-   folder, or the temporary folder with Extract to tmpfs; only into an extractions folder picked is it kept, and its
-   game made from a copy. The free space is room_free in tests */
+/* room on the disks for file's 3DS run (gui_room), not extracted yet; else room_line says what it takes. A Switch game
+   reads its files in place and takes no room. The free space is room_free in tests */
 static bool room_fits(App* app, const char* file) {
-    bool nx = app->menu.selected == GUI_SWITCH, tmpfs = nx && gui_settings_tmpfs(settings_of(app));
-    if (!tmpfs && !gui_settings_extract(settings_of(app))) return true; /* read in place: nothing extracted */
-    bool kept = !nx || (app->place[GUI_PLACE_WORK] && !tmpfs), fits = true;
-    char *out, *temp = tmpfs ? snx_temp_root() : NULL, need_text[32], left_text[32];
+    char *out, need_text[32], left_text[32];
     const char* games = app->dest_out ? app->dest_out : app->games_dir; /* where the game goes */
-    const char* work = temp ? temp : kept ? app->work_dir : games;
     uint64_t need = 0, left = 0;
-    if (nx && nro_file(file)) { /* no extraction */
-        free(temp);
-        return true;
-    }
-    out = dump_out(app, file, nx ? NULL : app->menu.selected == GUI_VITA ? "vita" : "3ds");
-    if (kept ? !snx_is_dir(out) : !made_from(app, file)) /* else extracted already, and its game made with it */
-        fits = gui_room(snx_file_size(file), nx && kept, app->room_free ? app->room_free : free_space(work),
-                        app->room_free ? app->room_free : free_space(games), snx_same_disk(work, games), &need, &left);
-    free(temp);
+    bool fits = true;
+    if (app->menu.selected != GUI_3DS) return true; /* nothing is extracted */
+    out = dump_out(app, file, "3ds");
+    if (!snx_is_dir(out) && !made_from(app, file)) /* else extracted already, and its game made with it */
+        fits = gui_room(snx_file_size(file), false, app->room_free ? app->room_free : free_space(app->work_dir),
+                        app->room_free ? app->room_free : free_space(games), snx_same_disk(app->work_dir, games), &need,
+                        &left);
     if (!fits) {
         gui_size_text(need_text, sizeof need_text, need);
         gui_size_text(left_text, sizeof left_text, left);
@@ -9910,7 +9782,7 @@ static void form_pointer(App* app, float x, float y) {
 #define SAY_SETUP_ON         SNX_TR_KEYS("Up/Down: row. Enter: next. ESC: back.")
 #define SAY_SETUP_ON_FIRST   SNX_TR_KEYS("Up/Down: row. Enter: next. ESC: exit.")
 #endif
-#define GUI_SETUP_CHOICES 4 /* a page's, at most: Folders' and Keys' three, and Skip on the first page */
+#define GUI_SETUP_CHOICES 4 /* a page's, at most: Folders' three, and Skip on the first page */
 /* a page's boxes above YoRHa's choices at least, else beside them: a notice's, its head and four lines, and a row */
 #define GUI_SETUP_CONTENT_ROWS 6
 #define GUI_SETUP_CONTENT_COLS 24 /* and the columns beside them it takes */
@@ -9980,10 +9852,9 @@ static void notice_choices(App* app, bool back) {
 static void setup_enter(App* app) {
     int page = setup_page_of(app);
     bool there;
-    char *portable, *prod;
+    char* portable;
     app->setup_top = 0;
     app->setup_typing = false;
-    app->setup_keys = false;
     app->setup_choice.focus = 0;
     SDL_StopTextInput(app->window);
     switch (page) {
@@ -9998,12 +9869,6 @@ static void setup_enter(App* app) {
             free(portable);
             break;
         case SNX_SETUP_FOLDERS: app->setup_choice.count = 3; break;
-        case SNX_SETUP_KEYS:
-            prod = snx_keys_found(app->data_dir, "prod.keys");
-            app->setup_choice.count = prod ? 3 : 2;
-            app->setup_choice.focus = prod ? 0 : 1; /* these, or later */
-            free(prod);
-            break;
         case SNX_SETUP_USER:
             setup_users_read(app);
             app->setup_saves = snx_setup_first_saves(app->games_dir);
@@ -10024,6 +9889,7 @@ static void scale_keep(App* app) {
 }
 /* the setup at the start, unless --no-setup leaves it out: the pages setup.ini has left, or none */
 static void setup_start(App* app) {
+    static const int steps[] = {SNX_SETUP_LANGUAGE, SNX_SETUP_INSTALL, SNX_SETUP_FOLDERS, SNX_SETUP_USER};
     char why[512], *file = snx_setup_file(app->home_dir ? app->home_dir : app->data_dir);
     int i;
     app->setup_on = false;
@@ -10038,8 +9904,9 @@ static void setup_start(App* app) {
     free(file);
     for (i = 0; i < SNX_NOTICES && !snx_setup_shows(&app->setup, i); ++i) {}
     if (i < SNX_NOTICES) app->setup_pages[app->setup_count++] = SETUP_NOTICE;
-    for (i = 0; i < SNX_SETUP_STEPS; ++i)
-        if (snx_setup_asks(&app->setup, i) && snx_setup_here(i)) app->setup_pages[app->setup_count++] = i;
+    for (i = 0; i < (int)SDL_arraysize(steps); ++i)
+        if (snx_setup_asks(&app->setup, steps[i]) && snx_setup_here(steps[i]))
+            app->setup_pages[app->setup_count++] = steps[i];
     app->setup_on = app->setup_count > 0;
     app->setup_save = app->setup_moved = false;
     app->setup_language = app->language;
@@ -10121,46 +9988,12 @@ static void setup_user_done(App* app) {
     } else
         setup_next(app);
 }
-/* the folder of keys the picker gave (NULL: none, error why it could not open), installed where the menu keeps them */
-static void setup_keys_from(App* app, const char* folder, const char* error) {
-    char *dir = app->keys_path ? snx_dirname(app->keys_path) : NULL, why[1024], note[1200], shown[1024];
-    int titles, ok = 0, failure = 1; /* none picked is no failure */
-    app->setup_keys = false;
-    if (!folder) {
-        snprintf(note, sizeof note, "%s", error ? error : snx_tr("No folder was picked."));
-        failure = error != NULL;
-    } else if (!dir) /* snx_keys_dir's: the variables it reads are unset */
-#ifdef _WIN32
-        snprintf(note, sizeof note, "%s", snx_tr("Cannot install prod.keys: neither USERPROFILE nor HOME is set"));
-#else
-        snprintf(note, sizeof note, "%s", snx_tr("Cannot install prod.keys: HOME is not set"));
-#endif
-    else if (snx_keys_install(folder, dir, &titles, why, sizeof why))
-        snprintf(note, sizeof note, snx_tr("Not installed: %s"), why);
-    else {
-        snx_home_short(dir, shown, sizeof shown);
-        snprintf(note, sizeof note,
-                 titles ? snx_tr("Installed prod.keys and title.keys in %s") : snx_tr("Installed prod.keys in %s"),
-                 shown);
-        ok = 1;
-    }
-    setup_enter(app); /* found now: Use these; else Choose folder again */
-    if (ok) {
-        snprintf(app->message, sizeof app->message, "%s", note);
-        app->setup_failed = false;
-    } else {
-        app->setup_choice.focus = app->setup_choice.count == 3;
-        setup_fail(app, note);
-        if (failure) say_failure(app, note);
-    }
-    free(dir);
-}
 /* the focused choice of the page taken */
 static int setup_notices(const App* app, int* list);
 static void setup_skip(App* app);
 static void setup_take(App* app) {
     int page = setup_page_of(app), choice = app->setup_choice.focus;
-    char note[1100], *portable, *prod, shown[1024];
+    char note[1100], *portable, shown[1024];
     bool there;
     if (setup_skips(app) && choice == app->setup_choice.count) {
         setup_skip(app);
@@ -10191,15 +10024,6 @@ static void setup_take(App* app) {
             }
             app->place_row = choice == 1 ? GUI_PLACE_GAMES : -1; /* the games' folder, or one more of dumps */
             open_folder_picker(app);
-            return;
-        case SNX_SETUP_KEYS:
-            prod = snx_keys_found(app->data_dir, "prod.keys");
-            if (choice == (prod ? 1 : 0)) {
-                app->setup_keys = true;
-                open_folder_picker(app);
-            } else
-                setup_next(app);
-            free(prod);
             return;
         case SNX_SETUP_USER:
             if (app->setup_typing)
@@ -10370,14 +10194,12 @@ static int setup_labels(const App* app, const char** labels) {
     static const char* const install[] = {SNX_TR_NOOP("Installed"), SNX_TR_NOOP("Portable")};
     static const char* const folders[] = {SNX_TR_NOOP("Keep"), SNX_TR_NOOP("Change Recompiled Folder"),
                                           SNX_TR_NOOP("Add a folder")};
-    static const char* const keys[] = {SNX_TR_NOOP("Use These"), SNX_TR_NOOP("Browse..."), SNX_TR_NOOP("Later")};
     static const char* const user[] = {SNX_TR_NOOP("Keep"), SNX_TR_NOOP("Overwrite")};
     int i, page = setup_page_of(app), count = app->setup_choice.count, list[SNX_NOTICES];
     for (i = 0; i < count; ++i)
         labels[i] = page == SNX_SETUP_LANGUAGE                     ? snx_tr("Next")
                     : page == SNX_SETUP_INSTALL                    ? snx_tr(install[i])
                     : page == SNX_SETUP_FOLDERS                    ? snx_tr(folders[i])
-                    : page == SNX_SETUP_KEYS                       ? snx_tr(keys[i + 3 - count])
                     : page == SNX_SETUP_USER && !app->setup_typing ? snx_tr(user[i])
                     : page == SETUP_NOTICE && i < count - 1        ? snx_tr("Back")
                     : page == SETUP_NOTICE && app->setup_top < setup_notices(app, list) - 1 ? snx_tr("Next")
@@ -10392,7 +10214,6 @@ static const char* setup_question(const App* app, char* out, size_t size) {
         case SNX_SETUP_LANGUAGE: return snx_tr("Appearance");
         case SNX_SETUP_INSTALL: return snx_tr("Install Type");
         case SNX_SETUP_FOLDERS: return snx_tr("Folders");
-        case SNX_SETUP_KEYS: return snx_tr("Keys");
         default:
             if (app->setup_typing)
                 snprintf(out, size, snx_tr("Nickname: %s_"), app->setup_name);
@@ -10411,7 +10232,6 @@ static const char* setup_tip(const App* app) {
         case SNX_SETUP_LANGUAGE: return snx_tr("Tip: games keep their own language: Settings > Display > Language");
         case SNX_SETUP_INSTALL: return snx_tr("Tip: a portable copy is a folder you can copy");
         case SNX_SETUP_FOLDERS: return snx_tr("Tip: Settings > App > Folders changes them");
-        case SNX_SETUP_KEYS: return snx_tr("Tip: Menu > Install Keys changes them");
         default: return snx_tr("Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -");
     }
 }
@@ -10653,12 +10473,11 @@ static void setup_panes(App* app, GuiRect r) {
     static const char* const kind_names[] = {SNX_TR_NOOP("settings"), SNX_TR_NOOP("data"), SNX_TR_NOOP("logs"),
                                              SNX_TR_NOOP("caches")};
     static const char* const folder_names[] = {SNX_TR_NOOP("Recompiled"), SNX_TR_NOOP("Dumps")};
-    static const char* const found[] = {SNX_TR_NOOP("found"), SNX_TR_NOOP("missing")};
     char text[GUI_FOLDERS_MAX + 4][1100], shown[1024], pad[96];
     const char* lines[GUI_FOLDERS_MAX + 4];
     GuiRect a, b;
     int i, n = 0;
-    char *path, *other;
+    char* path;
     bool there;
     const char* m = app->theme.marker;
     if (!r.h) return;
@@ -10706,20 +10525,6 @@ static void setup_panes(App* app, GuiRect r) {
                     shown, app->folders_deep[i] ? snx_tr(" + subfolders") : "");
             }
             setup_box(app, r, snx_tr("Folders"), lines, n);
-            break;
-        case SNX_SETUP_KEYS:
-            path = snx_keys_found(app->data_dir, "prod.keys");
-            other = snx_keys_found(app->data_dir, "title.keys");
-            snx_home_short(path ? path : "", shown, sizeof shown);
-            SETUP_LINE("%s%-12s%s%s", m, "prod.keys", setup_pad(pad, sizeof pad, found[!path], setup_cols(found, 2, 2)),
-                       path ? shown : snx_tr("games are extracted with it"));
-            snx_home_short(other ? other : "", shown, sizeof shown);
-            SETUP_LINE("%s%-12s%s%s", m, "title.keys",
-                       setup_pad(pad, sizeof pad, found[!other], setup_cols(found, 2, 2)),
-                       other ? shown : snx_tr("only some .nsp need it"));
-            setup_box(app, r, snx_tr("Keys"), lines, n);
-            free(path);
-            free(other);
             break;
         default:
             if (app->setup_typing) {
@@ -11069,10 +10874,10 @@ static bool game_was_old(const App* app, const char* path) {
     return was;
 }
 #ifdef SDL_PLATFORM_ANDROID
-/* what older versions kept elsewhere on Android: /sdcard/ScarletNX's games and keys (a shared storage the app no longer
-   uses), and the games/ in the app's own files from before it had All files access */
+/* what older versions kept elsewhere on Android: /sdcard/ScarletNX's games (a shared storage the app no longer uses),
+   and the games/ in the app's own files from before it had All files access */
 static void left_android(App* app) {
-    static const char* const shared[] = {"games", "prod.keys", "title.keys"};
+    static const char* const shared[] = {"games"};
     const char* files = SDL_GetAndroidInternalStoragePath();
     char *old, *now;
     size_t i;
@@ -11423,7 +11228,6 @@ static void games_back(App* app, const char* path);
 static void tell(App* app);
 #endif
 static void pump(App* app) {
-    keys_left(app);
     text_left(app);
     setup_keyboard(app);
     job_pump(app);
@@ -11948,7 +11752,6 @@ static void launch(App* app, char* absolute, bool prepared) {
     /* the driver, the file, the settings, --repo and its folder, the picked games and extraction folders, NULL */
     GuiSettings* s = settings_of(app);
     const char** argv = (const char**)snx_alloc((size_t)(s->count + 17) * sizeof(*argv));
-    char* out = NULL; /* a dump's extraction in the picked extractions folder */
     size_t n = 1;
     argv[0] = direct ? absolute : driver;
     if (!direct && driver_in_self(app, app->menu.selected)) argv[n++] = driver_name(app->menu.selected);
@@ -11956,7 +11759,6 @@ static void launch(App* app, char* absolute, bool prepared) {
     if (!direct) argv[n++] = game_option ? game_option : absolute;
     /* Switch options only, never guest argv for the CPU-only Linux driver or the 3DS one; R's recompile takes no
        option of a run. The drivers work in the menu's data folder, so they list the same games */
-    if (make && app->menu.selected == GUI_SWITCH && gui_settings_tmpfs(s)) argv[n++] = gui_settings_tmpfs(s);
     if (!direct && app->menu.selected == GUI_SWITCH) n += gui_settings_recompile(s, argv + n);
     /* B's pack: the cache the profile run left, and the level and hook its key was made with. -O after the
        settings' --opt= so the matched level is the one the build uses */
@@ -11972,9 +11774,8 @@ static void launch(App* app, char* absolute, bool prepared) {
     if (app->menu.selected == GUI_SWITCH && !make && app->state_load) argv[n++] = app->state_load;
     /* Debug's SLP vectorizer, which R's recompile takes too: a run passes it with the game's settings */
     if (app->menu.selected == GUI_SWITCH && make) n += gui_settings_one(s, "slp_vectorizer", argv + n);
-    /* Extract dump, which both drivers take, for a run and for R's recompile: off, nothing is extracted */
-    if ((app->menu.selected == GUI_3DS || (app->menu.selected == GUI_SWITCH && make)) && gui_settings_extract(s))
-        argv[n++] = gui_settings_extract(s);
+    /* the 3DS driver's own extraction, which its target has */
+    if (app->menu.selected == GUI_3DS) argv[n++] = "--extract-container";
     if (folders || (native && !direct)) {
         argv[n++] = "--data";
         argv[n++] = app->data_dir;
@@ -11987,14 +11788,6 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     /* the GBA's window starts fullscreen as a Switch game's does; a compile opens none */
     if (app->menu.selected == GUI_GBA && !make) n += gui_settings_one(s, "fullscreen", argv + n);
-    /* the picked extractions folder, which Extract to tmpfs leaves for the temporary one, and a Switch dump read in
-       place (Extract dump off) has no use for */
-    if (folders && app->place[GUI_PLACE_WORK] && app->menu.selected == GUI_SWITCH && !nro_file(absolute) &&
-        !gui_settings_tmpfs(s) && gui_settings_extract(s)) {
-        out = dump_out(app, absolute, NULL); /* an NRO has no extraction */
-        argv[n++] = "--out";
-        argv[n++] = out;
-    }
     argv[n] = NULL;
     /* R's, B's and a first compile, whichever console's: the queue runs them behind the screens, one at a time */
     if (make) {
@@ -12003,7 +11796,6 @@ static void launch(App* app, char* absolute, bool prepared) {
                 : app->aot_pack ? GUI_JOB_AOT
                                 : GUI_JOB_RECOMPILE);
         free(argv);
-        free(out);
         free(app->dest_out); /* the run's, which argv held until here: a next one asks again */
         app->dest_out = NULL;
         free(driver);
@@ -12026,7 +11818,6 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     free(argv);
     free(game_option); /* argv held it until the process started */
-    free(out);
     free(app->dest_out); /* the run's, which argv held until here: a next one asks again */
     app->dest_out = NULL;
     gui_steps_reset(&app->steps);
@@ -12817,91 +12608,14 @@ static void mods_focus(App* app) {
                  snx_tr("M opens the mods and cheats of a recompiled Switch game in focus."));
     free(folder);
 }
-#define SNX_GUI_KEYS_MAX (1 << 20) /* a prod.keys is a few kilobytes: past this it is not one */
-/* the bytes of file (a path, or on Android a document's URI, which SDL opens through its app), up to SNX_GUI_KEYS_MAX;
-   NULL when it cannot be read or is bigger */
-static char* keys_read(const char* file, size_t* size) {
-    SDL_IOStream* io = SDL_IOFromFile(file, "rb");
-    char* data = io ? (char*)malloc(SNX_GUI_KEYS_MAX + 1) : NULL;
-    size_t n = 0, got = 1;
-    while (data && n <= SNX_GUI_KEYS_MAX && got) n += got = SDL_ReadIO(io, data + n, SNX_GUI_KEYS_MAX + 1 - n);
-    if (data && (n > SNX_GUI_KEYS_MAX || SDL_GetIOStatus(io) == SDL_IO_STATUS_ERROR)) {
-        free(data);
-        data = NULL;
-    }
-    if (io) SDL_CloseIO(io);
-    *size = n;
-    return data;
-}
-/* the keys read into keys_path */
-/* what installing keys did, on their screen in app->message until it goes back to the menu by itself */
-static void keys_result(App* app, bool ok) {
-    if (app->menu.view != GUI_LOAD_KEYS) return;
-    app->keys_ok = ok;
-    app->keys_done = now_ms(app) ? now_ms(app) : 1;
-}
-static void keys_write(App* app, const char* data, size_t size) {
-    char why[256];
-    if (!app->keys_path) { /* snx_keys_dir's: the variables it reads are unset */
-#ifdef _WIN32
-        snprintf(app->message, sizeof(app->message), "%s",
-                 snx_tr("Cannot install prod.keys: neither USERPROFILE nor HOME is set"));
-#else
-        snprintf(app->message, sizeof(app->message), "%s", snx_tr("Cannot install prod.keys: HOME is not set"));
-#endif
-        keys_result(app, false); /* the keys' screen says it whole in its box, Not installed over it */
-        return;
-    }
-    /* staged beside them first: a failed copy (or dropping the installed file itself) must not destroy existing keys */
-    bool ok = !snx_keys_put(app->keys_path, data, size, why, sizeof why);
-    if (ok)
-        snprintf(app->message, sizeof(app->message), "%s", snx_tr("prod.keys installed: games can be extracted now."));
-    else
-        snprintf(app->message, sizeof(app->message), snx_tr("Cannot install %s: %s"), app->keys_path, why);
-    keys_result(app, ok); /* the keys' screen says it whole in its box */
-}
-static void install_keys(App* app, const char* source) {
-    const char* name = source;
-    char* data = NULL;
-    size_t size = 0;
-    if (source)
-        for (const char* p = source; *p; ++p)
-            if (*p == '/' || *p == '\\') name = p + 1;
-    if (source && !strcmp(name, "prod.keys") && snx_is_file(source)) data = keys_read(source, &size);
-    if (!data) {
-        snprintf(app->message, sizeof(app->message), "%s", snx_tr("Please drop a readable file named prod.keys."));
-        keys_result(app, false);
-    } else
-        keys_write(app, data, size);
-    free(data);
-}
 /* what a picked file that cannot be used says, for the platform's picker: Android's documents, a desktop's files */
 #ifdef SDL_PLATFORM_ANDROID
-#define SAY_KEYS_UNREAD                                                                                                \
-    SNX_TR_NOOP("This file could not be read. Pick prod.keys again, from the device's storage (%s).")
-#define SAY_KEYS_NOT SNX_TR_NOOP("This file is not a prod.keys. Pick the prod.keys file (%s).")
 #define SAY_PICK_UNREAD                                                                                                \
     SNX_TR_NOOP("Cannot read this file by its path. Check that ScarletNX may access the device's files in Android's "  \
                 "settings, then pick it from the device's storage (%s).")
 #else
-#define SAY_KEYS_UNREAD SNX_TR_NOOP("The picked file could not be read as prod.keys (%s).")
-#define SAY_KEYS_NOT    SNX_TR_NOOP("The picked file is not a prod.keys (%s).")
 #define SAY_PICK_UNREAD SNX_TR_NOOP("Pick the file from this computer's storage (%s).")
 #endif
-/* keys the picker gave as a document of an app's (Android's), read through it: a path to it may be one this app cannot
-   read, or there is none (Downloads by number, #280). With no name to go by, its text has to be a prod.keys' */
-static void install_keys_document(App* app, const char* uri) {
-    size_t size = 0;
-    char* data = keys_read(uri, &size);
-    if (!data)
-        snprintf(app->message, sizeof(app->message), snx_tr(SAY_KEYS_UNREAD), uri);
-    else if (!gui_keys_text(data, size))
-        snprintf(app->message, sizeof(app->message), snx_tr(SAY_KEYS_NOT), uri);
-    else
-        keys_write(app, data, size);
-    if (!data || !gui_keys_text(data, size)) keys_result(app, false);
-    free(data);
-}
 /* a file dropped or picked on a load whose name says another console's (Android's picker shows every file): refused,
    saying the load that opens it, or the driver it needs that is not there; true then */
 static bool drop_elsewhere(App* app, const char* path) {
@@ -12919,28 +12633,21 @@ static bool drop_elsewhere(App* app, const char* path) {
     return true;
 }
 static void drop(App* app, const char* value, bool text_drop) {
-    if ((app->menu.view != GUI_LOAD_DROP && app->menu.view != GUI_LOAD_KEYS) || app->menu.running || app->finished)
-        return;
+    if (app->menu.view != GUI_LOAD_DROP || app->menu.running || app->finished) return;
     char* path = gui_drop_path(value, text_drop);
     if (!path) {
         snprintf(app->message, sizeof(app->message), "%s",
                  snx_tr("Drop one local file path, not a list or remote URL."));
-        keys_result(app, false);
         return;
     }
     char* absolute = snx_absolute(path);
     free(path);
-    if (app->menu.view == GUI_LOAD_KEYS) {
-        install_keys(app, absolute);
+    /* Hovering another main item must not change the driver for this drop. */
+    app->menu.selected = app->menu.active;
+    if (!drop_elsewhere(app, absolute))
+        launch(app, absolute, false);
+    else
         free(absolute);
-    } else {
-        /* Hovering another main item must not change the driver for this drop. */
-        app->menu.selected = app->menu.active;
-        if (!drop_elsewhere(app, absolute))
-            launch(app, absolute, false);
-        else
-            free(absolute);
-    }
 }
 /* the system's file picker answers on its own thread: the choice comes back to event() as an app->picked event */
 static void SDLCALL picker_done(void* userdata, const char* const* files, int filter) {
@@ -12953,7 +12660,6 @@ static void SDLCALL picker_done(void* userdata, const char* const* files, int fi
 }
 static void picked(App* app, const char* uri);
 static void open_picker(App* app) {
-    app->keys_done = 0; /* another try: the last one's outcome no longer stands */
     if (!app->picked) app->picked = SDL_RegisterEvents(1);
 #ifdef SDL_PLATFORM_IOS /* SDL has no file dialog there: the document picker (dist/apple) */
     if (app->picked) gui_apple_pick(app->window, 0, picker_done, &app->picked, app->message, sizeof(app->message));
@@ -13652,8 +13358,7 @@ static void menu_key(App* app, GuiKey key) {
     if (key == GUI_CANCEL || (key == GUI_SELECT && pick_screen(app))) app->message[0] = 0;
     /* the screen opens first, so what happens shows there; a select on it (a tap in its box) opens the picker, whose
        answer may come at once */
-    if (key == GUI_SELECT && app->menu.view == before && (before == GUI_LOAD_DROP || before == GUI_LOAD_KEYS))
-        open_picker(app);
+    if (key == GUI_SELECT && app->menu.view == before && before == GUI_LOAD_DROP) open_picker(app);
     if (app->menu.view == GUI_LOAD_GAMES) list_games(app);
     /* Back or ESC with nothing open to close: on Android the app goes behind, as an app's first screen does; on a
        computer the menu asks before it closes, as rEden does */
@@ -13848,12 +13553,11 @@ static void menu_entry(App* app, int item, uint32_t hit) {
     app->menu.selected = item;
     if (hit & UI_HIT_CLICK) menu_key(app, GUI_SELECT);
 }
-void ui_menu_entries_load_switch_nsp_xci_nro_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_SWITCH, hit); }
+void ui_menu_entries_load_switch_nro_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_SWITCH, hit); }
 void ui_menu_entries_load_linux_arm_elf_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_LINUX, hit); }
 void ui_menu_entries_load_3ds_game_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_3DS, hit); }
 void ui_menu_entries_load_vita_vpk_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_VITA, hit); }
 void ui_menu_entries_load_gba_rom_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_GBA, hit); }
-void ui_menu_entries_install_keys_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_KEYS, hit); }
 void ui_menu_entries_settings_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_SETTINGS, hit); }
 void ui_menu_entries_share_log_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_LOG, hit); }
 void ui_menu_entries_folders_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_FOLDERS, hit); }
@@ -14225,21 +13929,15 @@ static void pointer(App* app, float window_x, float window_y, bool click, bool t
 }
 /* the file the system's picker chose, as a dropped one; none (cancelled) stays on the screen and says so */
 static void picked(App* app, const char* uri) {
-    char* path;
-    if (uri && app->menu.view == GUI_LOAD_KEYS && strstr(uri, "://") && strncmp(uri, "file://", 7)) {
-        install_keys_document(app, uri);
-        return;
-    }
-    path = uri ? gui_document_path(uri) : NULL;
+    char* path = uri ? gui_document_path(uri) : NULL;
 #ifdef SDL_PLATFORM_ANDROID
     if (uri && !path) path = gui_android_document_file(uri);
 #endif
     if (!uri)
         snprintf(app->message, sizeof(app->message), "%s", snx_tr("No file was picked."));
-    else if (!path) {
-        snprintf(app->message, sizeof(app->message), snx_tr(SAY_PICK_UNREAD), uri);
-        keys_result(app, false);
-    } else
+    else if (!path)
+        snprintf(app->message, sizeof app->message, snx_tr(SAY_PICK_UNREAD), uri);
+    else
         drop(app, path, false);
     free(path);
 }
@@ -14667,9 +14365,7 @@ static void event_take(App* app, const SDL_Event* e) {
         char* error = (char*)e->user.data2;
         int place = app->place_row;
         app->place_row = -1;
-        if (app->setup_keys) /* the setup's keys */
-            setup_keys_from(app, (const char*)e->user.data1, e->user.code ? error : NULL);
-        else if (e->user.data1 && place >= 0)
+        if (e->user.data1 && place >= 0)
             place_set(app, place, (const char*)e->user.data1);
         else if (e->user.data1)
             folder_ask(app, (const char*)e->user.data1); /* to the library Add a folder was for */
@@ -14838,8 +14534,8 @@ static void event_take(App* app, const SDL_Event* e) {
             cancel(app);
         return;
     }
-    if (e->key.key == SDLK_V && (e->key.mod & SDL_KMOD_CTRL) &&
-        (app->menu.view == GUI_LOAD_DROP || app->menu.view == GUI_LOAD_KEYS) && !e->key.repeat) {
+    if (e->key.key == SDLK_V && (e->key.mod & SDL_KMOD_CTRL) && app->menu.view == GUI_LOAD_DROP &&
+        !e->key.repeat) {
         char* clipboard = SDL_GetClipboardText();
         drop(app, clipboard, true);
         SDL_free(clipboard);
@@ -14917,7 +14613,7 @@ static bool paths_start(App* app, const char* self) {
     app->home_dir = snx_strdup(app->data_dir);
     app->place_row = -1;
     app->adding = -1;
-    places_apply(app); /* recompiled/, themes/, work/ and the keys, by the data folder */
+    places_apply(app); /* recompiled/, themes/ and work/, by the data folder */
     app->themes_dirs[1] = shipped_themes(app->drivers);
     return true;
 }
@@ -15001,7 +14697,7 @@ static bool initialize(App* app, const char* self) {
     app->home_dir = snx_strdup(app->data_dir);
     app->place_row = -1;
     app->adding = -1;
-    places_apply(app); /* recompiled/, themes/, work/ and the keys, by the data folder */
+    places_apply(app); /* recompiled/, themes/ and work/, by the data folder */
     app->themes_dirs[1] = shipped_themes(app->drivers);
 #else
     if (!paths_start(app, self)) return false;
@@ -15062,7 +14758,6 @@ static void forget(App* app) {
     free(app->themes_dirs[0]);
     free(app->themes_dirs[1]);
     gui_themes_free(&app->themes);
-    free(app->keys_path);
     free(app->recent_file);
     if (app->run_out) fclose(app->run_out);
     free(app->run_log);

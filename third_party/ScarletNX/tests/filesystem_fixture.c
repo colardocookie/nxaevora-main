@@ -26,6 +26,7 @@ static const Fixture files[] = {{"data/drive/seed.bin", "initial", 7},
                                 {"data/romfs.bin", "raw", 3},
                                 {"hardlinks/original.bin", "shared", 6},
                                 {"service-data/sdmc/seed.bin", "seed", 4},
+                                {"service-data/exefs/main", "main", 4},
                                 {"service-data/romfs/asset.bin", "romfs test", 10},
                                 {"service-data/romfs/empty.bin", "", 0},
                                 {"service-data/romfs/zulu.bin", "tail", 4},
@@ -35,6 +36,7 @@ static const Fixture files[] = {{"data/drive/seed.bin", "initial", 7},
 #endif
                                 {"service-data/root/root.txt", "root", 4},
                                 {"service-data/save/temp/last-launch.bin", "left", 4},
+                                {"raw-data/exefs/main", "main", 4},
                                 {"raw-data/romfs.bin", "RAW\0ROMFS\xff bytes", 16}};
 
 static int fixtures(const char* scratch) {

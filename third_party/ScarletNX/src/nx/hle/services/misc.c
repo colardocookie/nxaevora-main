@@ -744,9 +744,8 @@ static u64 aoc_base_id(u64 application_id) {
 /* am's ApplicationRecordNotFound, for a list asked from past its end */
 #define SNX_AOC_NO_RECORD RC(128, 37)
 /* An add-on content is installed when its RomFS image is in the data folder as system/archives/<data id>.romfs, the
-   file OpenDataStorageByDataId opens, or is a DLC read in place from its dump (fs_aoc_has): data id = base id +
-   index, index 1 to 2047. Scanned once: the list does not
-   change while the game runs (g_hle.misc.aoc_index, AOC_MAX at most) */
+   file OpenDataStorageByDataId opens, or is a DLC found extracted (fs_aoc_has): data id = base id + index, index 1
+   to 2047. Scanned once: the list does not change while the game runs (g_hle.misc.aoc_index, AOC_MAX at most) */
 static void aoc_scan(void) {
     u64 base = aoc_base_id(g_hle.kernel.title_id);
     char path[64];
