@@ -2,7 +2,8 @@
 // Copyright 2026 the NXAevora contributors
 // NGX's lifetimes in DLSS's module (msvc/upscaler_dlss/dlss_core.h) against a stand-in of NGX that counts its calls,
 // with no SDK: the orders revision 2 of DL1b names. Built by this build's compiler and, where Visual Studio is found,
-// by Microsoft's: given that copy's path, this one runs it as well. Nothing of the C++ library is used.
+// by Microsoft's: given that copy's path, this one runs it as well. Nothing of the C++ library is used. The numbers
+// handed to NGX (dlss_eval.cpp) are run from here too.
 #undef NDEBUG /* the checks are asserts, in a Release build too */
 #include <assert.h>
 #include <stdio.h>
@@ -47,8 +48,11 @@ const uint64_t kDevice = 0xD0, kOther = 0xD1;
 int a_context, b_context; // what a context's feature stands for: only its address is used
 }  // namespace
 
+int dlss_eval_cases(); /* dlss_eval.cpp */
+
 int main(int argc, char** argv) {
     using namespace snx_dlss;
+    dlss_eval_cases();
     Fixture f;
     // one context: NGX started at its begin, released at its end, stopped at the shutdown
     fresh(&f);
