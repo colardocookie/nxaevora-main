@@ -3149,7 +3149,8 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         if (g_u.health.off) skip = "the upscaler stopped";
         else if (!temporal_upscaler_hook(g_u.decision, &g_u.decided, &seen, &g_u.contexts) || !g_u.live)
             skip = "the configuration is not the one the frame was decided with";
-        else if (g_t.offsets != 8) skip = "the jitter does not have eight offsets";
+        else if (g_t.offsets != temporal_upscaler_phases(&seen)) /* the same for every adapter, DLSS's too */
+            skip = "the jitter's length is not the phase count of the context's render and output sizes";
         else if (!g_t.depth_zero_to_one || g_t.depth_translate != 0.0f || g_t.depth_scale != 1.0f)
             skip = "the stored depth is not the projection's own";
     }

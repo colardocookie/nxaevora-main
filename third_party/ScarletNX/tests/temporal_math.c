@@ -2427,6 +2427,29 @@ static void test_spatial(void) {
     assert(temporal_spatial_below(3840, 2160, 0, 0, 1920, 1080, nextafterf(0.5f, 1.0f), 0.5f) < 0); /* a step off */
     assert(temporal_spatial_below(3840, 2160, 0, 0, 3840, 2160, 1.0f, 1.0f) < 0);             /* the whole: not below */
     assert(temporal_spatial_below(3840, 2160, 0, 0, 3200, 1800, 5.0f / 6.0f, 5.0f / 6.0f) < 0); /* not listed */
+    /* the phase count a context's frames must have (research 22:55): at each listed scale of the two targets the
+       one the gate's sequence for that rectangle has, 8 at full size, 32 at 1/2 and 18 at 2/3 as FSR documents */
+    {
+        static const int targets[2][2] = {{3840, 2160}, {1920, 1080}};
+        static const unsigned wanted[5] = {32, 23, 18, 15, 13}, fsr[5] = {32, 22, 18, 14, 12};
+        for (int t = 0; t < 2; t++) {
+            const int W = targets[t][0], H = targets[t][1];
+            const TemporalUpscalerConfig whole = {W, H, W, H, W, H, 1};
+            assert(temporal_upscaler_phases(&whole) == 8);
+            for (int k = 0; k < 5; k++) {
+                const float f = temporal_spatial_scale_fraction(k);
+                const int w = (int)lround(W * (double)f), h = (int)lround(H * (double)f);
+                assert(temporal_spatial_below(W, H, 0, 0, w, h, f, f) == k);
+                const TemporalRect rect = {0, 0, w, h};
+                const TemporalUpscalerConfig below = {W, H, w, h, W, H, 1};
+                assert(temporal_upscaler_phases(&below) == temporal_rect_offsets(&rect, W, H));
+                assert(temporal_upscaler_phases(&below) == wanted[k]);
+                /* FSR's own formula, 8 x (display / render width)^2 truncated, agrees at 1/2 and 2/3 only */
+                const unsigned theirs = (unsigned)(8.0f * powf((float)W / (float)w, 2.0f));
+                assert(theirs == fsr[k] && (theirs == wanted[k]) == (k == 0 || k == 2));
+            }
+        }
+    }
     /* each scale's fraction, the float nearest p / q (research 12:50) */
     assert(temporal_spatial_scale_fraction(0) == 0.5f && temporal_spatial_scale_fraction(1) == 0.6f);
     assert(temporal_spatial_scale_fraction(2) == 2.0f / 3.0f && temporal_spatial_scale_fraction(3) == 0.75f);
