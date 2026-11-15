@@ -290,12 +290,20 @@ static struct {
     int W, H, M, N;
     int binding_on, binding_listed, binding_given; /* the binding being made (vk_temporal_spatial_binding) */
     int stats_private; /* the numbers last written are of the private picture */
+    /* the larger texture's views by component mapping, the game view's own (research 19:40), of the image views_of */
+    struct {
+        VkComponentMapping map;
+        VkImageView view;
+    } views[4];
+    int nviews;
+    VkImage views_of;
     /* for the line every 600th frame: frames replaced and left as drawn, the first reason, the first consumer */
     u64 replaced, as_drawn, consumers, faults;
     char reason[200], consumer[200];
 } g_s;
 const Surf* g_vk_watch;
 static int spatial_now(u32 frame);
+static void spatial_views_drop(void);
 static void upscaler_start(void);
 static int upscaler_on(void);
 static int upscaler_jittered(u32 frame);
@@ -3369,6 +3377,9 @@ static int spatial_ready(u32 frame, const Surf* scene, const TemporalRect* area,
         spatial_failed("the device takes no private picture or larger texture of these sizes for their uses");
         return 0;
     }
+    /* views of another mapping go before their image is made anew */
+    if (g_s.larger.img && (g_s.larger.w != (u32)M || g_s.larger.h != (u32)N || g_s.larger.format != scene->f.vk))
+        spatial_views_drop();
     if (!image_ensure(&g_s.picture, scene->f.vk, scene->sw, scene->sh, drawn, "private picture") ||
         !image_ensure(&g_s.larger, scene->f.vk, (u32)M, (u32)N, filled, "larger")) {
         spatial_failed("the private picture or the larger texture");
@@ -3486,7 +3497,44 @@ void vk_temporal_spatial_fault(const char* what) {
     LOG("arceus-upscaler: spatial: %s (a fault of ours)\n", what);
     spatial_failed(what);
 }
-VkImageView vk_temporal_spatial_view(void) { return g_s.larger.view; }
+/* the larger texture's views with another mapping go with the image they were made of */
+static void spatial_views_drop(void) {
+    for (int i = 0; i < g_s.nviews; i++)
+        vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, g_s.views[i].view, VK_NULL_HANDLE);
+    g_s.nviews = 0;
+    g_s.views_of = VK_NULL_HANDLE;
+}
+static VkComponentSwizzle spatial_swizzle(VkComponentSwizzle s, VkComponentSwizzle own) {
+    return s == VK_COMPONENT_SWIZZLE_IDENTITY ? own : s;
+}
+/* A view of the larger texture with exactly the game view's component mapping (research 19:40, astra's O2), made
+   once a mapping and kept with its image. NULL when it cannot be made: a make failure, the mode off at once. */
+VkImageView vk_temporal_spatial_view_for(const VkComponentMapping* map) {
+    if (!g_s.larger.img) return VK_NULL_HANDLE;
+    if (g_s.views_of != g_s.larger.img) spatial_views_drop();
+    const VkComponentMapping m = {spatial_swizzle(map->r, VK_COMPONENT_SWIZZLE_R),
+                                  spatial_swizzle(map->g, VK_COMPONENT_SWIZZLE_G),
+                                  spatial_swizzle(map->b, VK_COMPONENT_SWIZZLE_B),
+                                  spatial_swizzle(map->a, VK_COMPONENT_SWIZZLE_A)};
+    for (int i = 0; i < g_s.nviews; i++)
+        if (!memcmp(&g_s.views[i].map, &m, sizeof m)) return g_s.views[i].view;
+    VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                 .image = g_s.larger.img,
+                                 .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                 .format = g_s.larger.format,
+                                 .components = m,
+                                 .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkImageView view = VK_NULL_HANDLE;
+    if (g_s.nviews >= (int)(sizeof g_s.views / sizeof g_s.views[0]) ||
+        !VK_OK(vkCreateImageView(g_vk.dev, &vci, NULL, &view))) {
+        spatial_failed("the larger texture's view with the game view's component mapping");
+        return VK_NULL_HANDLE;
+    }
+    g_s.views[g_s.nviews].map = m;
+    g_s.views[g_s.nviews++].view = view;
+    g_s.views_of = g_s.larger.img;
+    return view;
+}
 /* A binding of texture t by fragment program fs0 at handle (words), its draw described in d by the renderer: what it
    is given. One decision for both the texture and the variant (revision 3). listed: an entry of the list. */
 int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh* fs0, u32 handle, const Surf* t,

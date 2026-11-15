@@ -1212,6 +1212,7 @@ static void fs_key(GpuChannel* ch, const VkSh* s0, TexRes* res, u32 last_out, u3
    decided once (spatial_draw) for both the texture (stage_set_) and the variant (FsKey.txq). Slot masks. */
 static struct {
     u64 larger, scene, listed;
+    VkImageView view; /* the larger texture's view with the game view's mapping, for the slot given it */
     int keyed; /* the larger texture's slot is one the program's size queries read: drawn with the keyed variant */
 } g_spatial;
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
@@ -2020,7 +2021,7 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
             for (u32 j = 0; j < n; j++)
                 if (rt[j] == t) slots |= 1u << j;
         if (larger) {
-            view = vk_temporal_spatial_view();
+            view = g_spatial.view;
             depth_ro = 0;
         } else if (slots) {
             /* the guest reads the target's previous contents during a draw that writes it: in place, in a feedback
@@ -2923,7 +2924,10 @@ static void spatial_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, int ot
         d.view_2d = want == VK_IMAGE_VIEW_TYPE_2D;
         d.view_one_level = t->levels == 1;
         d.view_one_layer = t->layers == 1 && !t->member && !t->group;
-        d.view_identity = tex_map_identity(tex_map(t, x->tic));
+        /* the replacement's view with exactly the game view's mapping (research 19:40) */
+        const VkComponentMapping map = tex_map(t, x->tic);
+        const VkImageView view = vk_temporal_spatial_view_for(&map);
+        d.view_mapping_same = view != VK_NULL_HANDLE;
         int listed = 0;
         const int given = vk_temporal_spatial_decide(ch, vs, fs0, st->cbuf_off, t, &d, &listed);
         if (listed) g_spatial.listed |= 1ull << i;
@@ -2936,6 +2940,7 @@ static void spatial_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, int ot
             return;
         }
         g_spatial.larger |= 1ull << i;
+        g_spatial.view = view;
         /* the size query's variant only where the translated program queries this slot: else its ordinary program,
            which computes nothing from the size (D3-2 revision 4) */
         if (fs0->si.tex_txq_mask >> i & 1) {

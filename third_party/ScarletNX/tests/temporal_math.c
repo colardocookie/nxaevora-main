@@ -2389,7 +2389,7 @@ static TemporalSpatialDraw spatial_draw(int k, double f) {
     d.normalised = d.one_level = d.filters_same = 1;
     d.mag_nearest = d.min_nearest = k != 1; /* B46268AD's sampler is linear with clamp to edge */
     d.address[0] = d.address[1] = k == 1 ? TEMPORAL_SPATIAL_EDGE : TEMPORAL_SPATIAL_BORDER;
-    d.view_format_same = d.view_2d = d.view_one_level = d.view_one_layer = d.view_identity = 1;
+    d.view_format_same = d.view_2d = d.view_one_level = d.view_one_layer = d.view_mapping_same = 1;
     return d;
 }
 static void test_spatial(void) {
@@ -2586,11 +2586,11 @@ static void test_spatial(void) {
                 CLASS_U(x.normalised = 0, TEMPORAL_SPATIAL_SAMPLER);
                 CLASS_U(x.filters_same = 0, TEMPORAL_SPATIAL_SAMPLER);
                 CLASS_U(x.address[0] = TEMPORAL_SPATIAL_OTHER_ADDRESS, TEMPORAL_SPATIAL_SAMPLER);
-                CLASS_U(x.view_format_same = 0, TEMPORAL_SPATIAL_VIEW);
-                CLASS_U(x.view_2d = 0, TEMPORAL_SPATIAL_VIEW);
-                CLASS_U(x.view_one_level = 0, TEMPORAL_SPATIAL_VIEW);
-                CLASS_U(x.view_one_layer = 0, TEMPORAL_SPATIAL_VIEW);
-                CLASS_U(x.view_identity = 0, TEMPORAL_SPATIAL_VIEW);
+                CLASS_U(x.view_format_same = 0, TEMPORAL_SPATIAL_VIEW_FORMAT);
+                CLASS_U(x.view_2d = 0, TEMPORAL_SPATIAL_VIEW_TYPE);
+                CLASS_U(x.view_one_level = 0, TEMPORAL_SPATIAL_VIEW_LEVELS);
+                CLASS_U(x.view_one_layer = 0, TEMPORAL_SPATIAL_VIEW_LAYERS);
+                CLASS_U(x.view_mapping_same = 0, TEMPORAL_SPATIAL_VIEW_MAPPING);
                 if (k == 0) CLASS_U(x.vertex_origin[0] = -2.0, TEMPORAL_SPATIAL_ORIGIN);
                 if (k == 0) CLASS_U(x.vertex_origin[1] = NAN, TEMPORAL_SPATIAL_ORIGIN);
                 if (k == 2) CLASS_U(x.divisor[1] = 2.0, TEMPORAL_SPATIAL_DIVISOR);
@@ -2656,11 +2656,11 @@ static void test_spatial(void) {
             REFUSED(x.address[1] = TEMPORAL_SPATIAL_OTHER_ADDRESS, TEMPORAL_SPATIAL_SAMPLER);
             REFUSED((x.address[0] = TEMPORAL_SPATIAL_BORDER, x.min_nearest = 0), TEMPORAL_SPATIAL_SAMPLER);
             REFUSED((x.address[0] = TEMPORAL_SPATIAL_BORDER, x.mag_nearest = 0), TEMPORAL_SPATIAL_SAMPLER);
-            REFUSED(x.view_format_same = 0, TEMPORAL_SPATIAL_VIEW);
-            REFUSED(x.view_2d = 0, TEMPORAL_SPATIAL_VIEW);
-            REFUSED(x.view_one_level = 0, TEMPORAL_SPATIAL_VIEW);
-            REFUSED(x.view_one_layer = 0, TEMPORAL_SPATIAL_VIEW);
-            REFUSED(x.view_identity = 0, TEMPORAL_SPATIAL_VIEW);
+            REFUSED(x.view_format_same = 0, TEMPORAL_SPATIAL_VIEW_FORMAT);
+            REFUSED(x.view_2d = 0, TEMPORAL_SPATIAL_VIEW_TYPE);
+            REFUSED(x.view_one_level = 0, TEMPORAL_SPATIAL_VIEW_LEVELS);
+            REFUSED(x.view_one_layer = 0, TEMPORAL_SPATIAL_VIEW_LAYERS);
+            REFUSED(x.view_mapping_same = 0, TEMPORAL_SPATIAL_VIEW_MAPPING);
             /* not flipped: coordinate 1 at the top */
             REFUSED(x.viewport[3] = -x.viewport[3], TEMPORAL_SPATIAL_COVERAGE);
             REFUSED(x.viewport[2] = 0, TEMPORAL_SPATIAL_COVERAGE);
@@ -2709,9 +2709,17 @@ static void test_spatial(void) {
         x.first_vertex = 1, x.vertex_origin[0] = -2.0, x.divisor[0] = 2.0, x.view_2d = 0, x.fragment_f[0] = 0.4;
         x.viewport[2] = 0;
         const uint32_t m = temporal_spatial_failed(2, &x, half); /* the composite reads no origin */
-        assert(m == (1u << TEMPORAL_SPATIAL_FORM | 1u << TEMPORAL_SPATIAL_DIVISOR | 1u << TEMPORAL_SPATIAL_VIEW |
+        assert(m == (1u << TEMPORAL_SPATIAL_FORM | 1u << TEMPORAL_SPATIAL_DIVISOR | 1u << TEMPORAL_SPATIAL_VIEW_TYPE |
                      1u << TEMPORAL_SPATIAL_FRACTION | 1u << TEMPORAL_SPATIAL_COVERAGE));
         assert(temporal_spatial_check(2, &x, half) == TEMPORAL_SPATIAL_FORM); /* the mask's lowest is the check's */
+        /* the five view tests named apart (research 19:40): all failing, all five in the mask */
+        x = spatial_draw(1, 0.5);
+        x.view_format_same = x.view_2d = x.view_one_level = x.view_one_layer = x.view_mapping_same = 0;
+        const uint32_t views = 1u << TEMPORAL_SPATIAL_VIEW_FORMAT | 1u << TEMPORAL_SPATIAL_VIEW_TYPE |
+                               1u << TEMPORAL_SPATIAL_VIEW_LEVELS | 1u << TEMPORAL_SPATIAL_VIEW_LAYERS |
+                               1u << TEMPORAL_SPATIAL_VIEW_MAPPING;
+        assert(temporal_spatial_failed(1, &x, half) == views);
+        assert(temporal_spatial_check(1, &x, half) == TEMPORAL_SPATIAL_VIEW_FORMAT);
         x = spatial_draw(0, 0.5);
         x.vs ^= 1, x.fragment_f_ok = 0, x.vertex_origin[1] = 3.0, x.anisotropy = 1; /* the origin readable */
         const uint32_t four = 1u << TEMPORAL_SPATIAL_VERTEX | 1u << TEMPORAL_SPATIAL_UNAVAILABLE |
@@ -2725,7 +2733,7 @@ static void test_spatial(void) {
         x.fragment_f[0] = x.vertex_f[1] = x.vertex_origin[0] = 0.0; /* placeholders */
         assert(temporal_spatial_failed(0, &x, half) == 1u << TEMPORAL_SPATIAL_UNAVAILABLE);
         x.view_2d = 0;
-        const uint32_t two = 1u << TEMPORAL_SPATIAL_UNAVAILABLE | 1u << TEMPORAL_SPATIAL_VIEW;
+        const uint32_t two = 1u << TEMPORAL_SPATIAL_UNAVAILABLE | 1u << TEMPORAL_SPATIAL_VIEW_TYPE;
         assert(temporal_spatial_failed(0, &x, half) == two);
         x = spatial_draw(2, 0.5);
         x.divisor_ok = 0, x.divisor[0] = 0.0;
@@ -2787,7 +2795,7 @@ static void test_spatial(void) {
     /* a reader not on the list in an unpublished frame: nothing is mixed in it, but the list is not whole, so the
        mode is off from the next frame */
     fr = (TemporalSpatialFrame){1, 0, 0};
-    assert(temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_VIEW) == TEMPORAL_SPATIAL_AS_DRAWN);
+    assert(temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_VIEW_FORMAT) == TEMPORAL_SPATIAL_AS_DRAWN);
     assert(temporal_spatial_draw(&fr, &l, -1, TEMPORAL_SPATIAL_NOT_LISTED) == TEMPORAL_SPATIAL_AS_DRAWN);
     assert(l.off_next && !strcmp(l.why, "a reader not on the list"));
     temporal_spatial_frame_end(&fr, &l);
@@ -2879,7 +2887,7 @@ static void test_spatial(void) {
     memset(&l, 0, sizeof l);
     fr = (TemporalSpatialFrame){1, 0, 0};
     temporal_spatial_draw(&fr, &l, 0, TEMPORAL_SPATIAL_TAKEN);
-    assert(temporal_spatial_draw(&fr, &l, 1, TEMPORAL_SPATIAL_VIEW) == TEMPORAL_SPATIAL_AS_DRAWN);
+    assert(temporal_spatial_draw(&fr, &l, 1, TEMPORAL_SPATIAL_VIEW_FORMAT) == TEMPORAL_SPATIAL_AS_DRAWN);
     assert(temporal_spatial_use(&fr, &l, 1, TEMPORAL_SPATIAL_AS_DRAWN, "a binding") == TEMPORAL_SPATIAL_CONSUMER);
     assert(l.off_next && !l.off);
     /* a binding given the larger texture that reaches the scene's Surf: a fault, off at once */

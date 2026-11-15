@@ -148,7 +148,9 @@ typedef struct TemporalSpatialDraw {
     int filters_same;         /* minification and magnification alike: the larger texture is read at about one texel
                                  a pixel, where the level of detail chooses between them */
     int address[2];           /* TEMPORAL_SPATIAL_EDGE, _BORDER or _OTHER_ADDRESS for u and v */
-    int view_format_same, view_2d, view_one_level, view_one_layer, view_identity;
+    /* view_mapping_same: the replacement's view is made with exactly the game view's component mapping (research
+       19:40, astra's O2: B10G11R11 has no alpha, which the game's view may map to one) */
+    int view_format_same, view_2d, view_one_level, view_one_layer, view_mapping_same;
 } TemporalSpatialDraw;
 enum {
     TEMPORAL_SPATIAL_TAKEN,
@@ -162,7 +164,11 @@ enum {
     TEMPORAL_SPATIAL_ORIGIN,       /* c6aaf96f's position origin (bank 1 +0, +4) is not the measured -1, +1 */
     TEMPORAL_SPATIAL_DIVISOR,      /* the composite's +794 or +798 not 1 */
     TEMPORAL_SPATIAL_SAMPLER,      /* not normalised, more than one level, anisotropy, compare, or an address mode */
-    TEMPORAL_SPATIAL_VIEW,         /* another format, not 2D, not one level and layer, not the identity mapping */
+    TEMPORAL_SPATIAL_VIEW_FORMAT,  /* the view's format is not the scene colour's own */
+    TEMPORAL_SPATIAL_VIEW_TYPE,    /* the view is not 2D */
+    TEMPORAL_SPATIAL_VIEW_LEVELS,  /* the view is not one level */
+    TEMPORAL_SPATIAL_VIEW_LAYERS,  /* the view is not one layer */
+    TEMPORAL_SPATIAL_VIEW_MAPPING, /* the replacement's view cannot have the game view's mapping */
     TEMPORAL_SPATIAL_COVERAGE,     /* a covered coordinate beyond the fraction, or a tap outside 0 to below 1 */
     TEMPORAL_SPATIAL_REASONS
 };
@@ -179,7 +185,11 @@ static inline const char* temporal_spatial_text(int why) {
         "its vertex program's position origin is not the measured -1, +1",
         "the composite's divisors are not 1",
         "its sampler is not the audited form",
-        "its view is not the scene colour's own, 2D, one level and layer, with the identity mapping",
+        "its view's format is not the scene colour's own",
+        "its view is not 2D",
+        "its view is not one level",
+        "its view is not one layer",
+        "the replacement's view does not have the game view's component mapping",
         "a coordinate it covers is beyond the fraction, or a tap lies outside 0 to below 1"};
     return why >= 0 && why < TEMPORAL_SPATIAL_REASONS ? text[why] : "?";
 }
@@ -242,8 +252,11 @@ static inline int temporal_spatial_check(int k, const TemporalSpatialDraw* d, co
         if (!(d->address[a] == TEMPORAL_SPATIAL_EDGE ||
               (d->address[a] == TEMPORAL_SPATIAL_BORDER && d->mag_nearest && d->min_nearest)))
             return TEMPORAL_SPATIAL_SAMPLER;
-    if (!d->view_format_same || !d->view_2d || !d->view_one_level || !d->view_one_layer || !d->view_identity)
-        return TEMPORAL_SPATIAL_VIEW;
+    if (!d->view_format_same) return TEMPORAL_SPATIAL_VIEW_FORMAT;
+    if (!d->view_2d) return TEMPORAL_SPATIAL_VIEW_TYPE;
+    if (!d->view_one_level) return TEMPORAL_SPATIAL_VIEW_LEVELS;
+    if (!d->view_one_layer) return TEMPORAL_SPATIAL_VIEW_LAYERS;
+    if (!d->view_mapping_same) return TEMPORAL_SPATIAL_VIEW_MAPPING;
     /* every condition above is of class U (the audited reader), the two below of class N (this frame against the
        replacement): checked after all of class U, so a class U failure is the one reported (research 14:35) */
     for (int a = 0; a < 2; a++) {
@@ -292,10 +305,10 @@ static inline uint32_t temporal_spatial_failed(int k, const TemporalSpatialDraw*
     pass.normalised = pass.one_level = pass.filters_same = 1;
     pass.anisotropy = pass.compare = 0;
     pass.address[0] = pass.address[1] = TEMPORAL_SPATIAL_EDGE;
-    pass.view_format_same = pass.view_2d = pass.view_one_level = pass.view_one_layer = pass.view_identity = 1;
+    pass.view_format_same = pass.view_2d = pass.view_one_level = pass.view_one_layer = pass.view_mapping_same = 1;
     for (int a = 0; a < 2; a++) pass.vertex_f[a] = pass.fragment_f[a] = fs[a];
     uint32_t mask = 0;
-    for (int group = 0; group < 11; group++) {
+    for (int group = 0; group < 15; group++) {
         TemporalSpatialDraw x = pass;
         int why = TEMPORAL_SPATIAL_COVERAGE;
         switch (group) {
@@ -311,7 +324,6 @@ static inline uint32_t temporal_spatial_failed(int k, const TemporalSpatialDraw*
                 x.first_instance = d->first_instance, why = TEMPORAL_SPATIAL_FORM;
                 break;
             case 3: x.other_stages = d->other_stages, why = TEMPORAL_SPATIAL_STAGES; break;
-            case 9: x.offset_size = d->offset_size, why = TEMPORAL_SPATIAL_SIZE_READ; break;
             case 4:
                 if (d->vertex_origin_ok) memcpy(x.vertex_origin, d->vertex_origin, sizeof x.vertex_origin);
                 why = TEMPORAL_SPATIAL_ORIGIN;
@@ -326,16 +338,18 @@ static inline uint32_t temporal_spatial_failed(int k, const TemporalSpatialDraw*
                 x.min_nearest = d->min_nearest, x.address[0] = d->address[0], x.address[1] = d->address[1];
                 why = TEMPORAL_SPATIAL_SAMPLER;
                 break;
-            case 7:
-                x.view_format_same = d->view_format_same, x.view_2d = d->view_2d;
-                x.view_one_level = d->view_one_level, x.view_one_layer = d->view_one_layer;
-                x.view_identity = d->view_identity, why = TEMPORAL_SPATIAL_VIEW;
-                break;
-            case 8:
+            /* the view's five tests, each its own (research 19:40) */
+            case 7: x.view_format_same = d->view_format_same, why = TEMPORAL_SPATIAL_VIEW_FORMAT; break;
+            case 8: x.view_2d = d->view_2d, why = TEMPORAL_SPATIAL_VIEW_TYPE; break;
+            case 9: x.view_one_level = d->view_one_level, why = TEMPORAL_SPATIAL_VIEW_LEVELS; break;
+            case 10: x.view_one_layer = d->view_one_layer, why = TEMPORAL_SPATIAL_VIEW_LAYERS; break;
+            case 11: x.view_mapping_same = d->view_mapping_same, why = TEMPORAL_SPATIAL_VIEW_MAPPING; break;
+            case 12:
                 if (d->vertex_f_ok) memcpy(x.vertex_f, d->vertex_f, sizeof x.vertex_f);
                 if (d->fragment_f_ok) memcpy(x.fragment_f, d->fragment_f, sizeof x.fragment_f);
                 why = TEMPORAL_SPATIAL_FRACTION;
                 break;
+            case 13: x.offset_size = d->offset_size, why = TEMPORAL_SPATIAL_SIZE_READ; break;
             default: break; /* the coverage, the draw's own */
         }
         if (temporal_spatial_check(k, &x, fs) == why) mask |= 1u << why;
