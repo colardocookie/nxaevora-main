@@ -129,10 +129,13 @@ typedef struct TemporalSpatialDraw {
     int triangle_list;        /* the topology */
     uint32_t first_vertex, vertex_count, instance_count, first_instance;
     int other_stages;         /* a tessellation or geometry program bound */
-    double vertex_f[2];       /* the fraction the vertex stage's scene block holds (NAN when not read or bound) */
-    double vertex_origin[2];  /* the vertex stage's bank 1 +0 and +4, where c6aaf96f's position starts (NAN as above) */
+    /* each value with whether it is available: read by the program, bound, long enough, readable, and neither
+       pending nor GPU-owned (research 15:00). A value not available is never compared. */
+    double vertex_f[2];       /* the fraction the vertex stage's scene block holds */
+    double vertex_origin[2];  /* the vertex stage's bank 1 +0 and +4, where c6aaf96f's position starts */
     double fragment_f[2];     /* the fragment stage's */
-    double divisor[2];        /* the fragment stage's +794 and +798 (NAN when not read or bound) */
+    double divisor[2];        /* the fragment stage's +794 and +798 */
+    int vertex_f_ok, vertex_origin_ok, fragment_f_ok, divisor_ok;
     double viewport[4];       /* x, y, width, height, the height signed */
     int scissor_on;
     int scissor[4];           /* x0, y0, x1, y1 */
@@ -149,6 +152,7 @@ enum {
     TEMPORAL_SPATIAL_TAKEN,
     TEMPORAL_SPATIAL_NOT_LISTED,   /* the program and binding are not an entry */
     TEMPORAL_SPATIAL_VERTEX,       /* another vertex program */
+    TEMPORAL_SPATIAL_UNAVAILABLE,  /* a value the entry's programs read is not available */
     TEMPORAL_SPATIAL_FORM,         /* not a direct, non-indexed triangle list of one instance from vertex 0, 3 long */
     TEMPORAL_SPATIAL_STAGES,       /* a tessellation or geometry program */
     TEMPORAL_SPATIAL_FRACTION,     /* a fraction the programs read is not the replacement's */
@@ -164,6 +168,7 @@ static inline const char* temporal_spatial_text(int why) {
         "taken",
         "the program and binding are not on the list",
         "its vertex program is not the audited one",
+        "a value its programs read is missing, short, unreadable, pending or held on the GPU",
         "it is not a direct, non-indexed triangle list of one instance from vertex 0 and 3 vertices",
         "a tessellation or geometry program is bound",
         "a fraction its programs read is not the replacement's",
@@ -211,6 +216,12 @@ static inline int temporal_spatial_check(int k, const TemporalSpatialDraw* d, co
     if (k < 0 || k >= TEMPORAL_SPATIAL_ENTRIES) return TEMPORAL_SPATIAL_NOT_LISTED;
     const TemporalSpatialEntry* e = &temporal_spatial_entries[k];
     if (d->vs != e->vs) return TEMPORAL_SPATIAL_VERTEX;
+    /* the values the entry's programs read, before any is compared: the fragment fraction for the clamp and the
+       composite, c6aaf96f's fraction and origin, the composite's divisors. 26fc2347 reads none (research 15:00) */
+    if ((e->tap != TEMPORAL_SPATIAL_RAW && !d->fragment_f_ok) ||
+        (e->scaled_vertex && (!d->vertex_f_ok || !d->vertex_origin_ok)) ||
+        (e->tap == TEMPORAL_SPATIAL_COMPOSITE && !d->divisor_ok))
+        return TEMPORAL_SPATIAL_UNAVAILABLE;
     if (!d->direct || !d->triangle_list || d->first_vertex != 0 || d->vertex_count != 3 || d->instance_count != 1 ||
         d->first_instance != 0)
         return TEMPORAL_SPATIAL_FORM;
@@ -265,18 +276,17 @@ static inline int temporal_spatial_overlaps(uint64_t at, uint64_t bytes, uint64_
     return bytes && scene_bytes && at < scene + scene_bytes && scene < at + bytes;
 }
 
-/* A binding of entry k at a draw, classified (UPSCALER-DESIGN.md d08b624c, research 14:35 and 14:45): class N is
-   only the fraction and the tap and coverage bounds, the frame against the replacement: k, with the verdict. Every
-   other failure, and a block held on the GPU (held), is class U whatever fails with it: -1, a reader not on the
-   list, *verdict its reason. Taken: k, TEMPORAL_SPATIAL_TAKEN. */
+/* A binding of entry k at a draw, classified (UPSCALER-DESIGN.md d08b624c, research 14:35, 14:45 and 15:00): class
+   N is only the fraction and the tap and coverage bounds of available values, the frame against the replacement: k,
+   with the verdict. Every other failure, a required value not available included, is class U whatever fails with
+   it: -1, a reader not on the list, *verdict its reason. Taken: k, TEMPORAL_SPATIAL_TAKEN. */
 static inline int temporal_spatial_class_n(int verdict) {
     return verdict == TEMPORAL_SPATIAL_TAKEN || verdict == TEMPORAL_SPATIAL_FRACTION ||
            verdict == TEMPORAL_SPATIAL_COVERAGE;
 }
-static inline int temporal_spatial_classify(int k, const TemporalSpatialDraw* d, const double fs[2], int held,
-                                            int* verdict) {
+static inline int temporal_spatial_classify(int k, const TemporalSpatialDraw* d, const double fs[2], int* verdict) {
     *verdict = TEMPORAL_SPATIAL_NOT_LISTED;
-    if (k < 0 || k >= TEMPORAL_SPATIAL_ENTRIES || held) return -1;
+    if (k < 0 || k >= TEMPORAL_SPATIAL_ENTRIES) return -1;
     *verdict = temporal_spatial_check(k, d, fs);
     return temporal_spatial_class_n(*verdict) ? k : -1;
 }

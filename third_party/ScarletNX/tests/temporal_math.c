@@ -2378,6 +2378,7 @@ static TemporalSpatialDraw spatial_draw(int k, double f) {
     d.instance_count = 1;
     d.vertex_f[0] = d.vertex_f[1] = d.fragment_f[0] = d.fragment_f[1] = f;
     d.vertex_origin[0] = -1.0, d.vertex_origin[1] = 1.0; /* c6aaf96f's bank 1 as measured */
+    d.vertex_f_ok = d.vertex_origin_ok = d.fragment_f_ok = d.divisor_ok = 1;
     d.divisor[0] = d.divisor[1] = 1.0;
     d.viewport[0] = 0, d.viewport[1] = H, d.viewport[2] = W, d.viewport[3] = -H;
     d.scissor_on = 1;
@@ -2538,17 +2539,40 @@ static void test_spatial(void) {
             { /* the classification (d08b624c, research 14:35, 14:45): only the fraction and the tap and coverage
                  bounds are class N, everything else class U, whatever fails with it */
                 int v;
-                assert(temporal_spatial_classify(k, &d, ff, 0, &v) == k && v == TEMPORAL_SPATIAL_TAKEN);
-                assert(temporal_spatial_classify(k, &d, ff, 1, &v) == -1); /* a block held on the GPU */
-                assert(temporal_spatial_classify(-1, &d, ff, 0, &v) == -1 && v == TEMPORAL_SPATIAL_NOT_LISTED);
+                assert(temporal_spatial_classify(k, &d, ff, &v) == k && v == TEMPORAL_SPATIAL_TAKEN);
+                /* availability (research 15:00): a required value not available is class U before any comparison,
+                   with a readable disagreement too; one the entry's programs do not read may be absent */
+                const int needs_fragment = k != 1, needs_vertex = k == 0, needs_divisor = k == 2;
+                for (int which = 0; which < 4; which++) {
+                    x = d;
+                    if (which == 0) x.fragment_f_ok = 0;
+                    if (which == 1) x.vertex_f_ok = 0;
+                    if (which == 2) x.vertex_origin_ok = 0;
+                    if (which == 3) x.divisor_ok = 0;
+                    const int needed = which == 0 ? needs_fragment : which == 3 ? needs_divisor : needs_vertex;
+                    const int k2 = temporal_spatial_classify(k, &x, ff, &v);
+                    if (needed) assert(k2 == -1 && v == TEMPORAL_SPATIAL_UNAVAILABLE);
+                    else assert(k2 == k && v == TEMPORAL_SPATIAL_TAKEN);
+                    x.fragment_f[1] = f * 0.999; /* and a fraction that disagrees */
+                    x.viewport[2] = 0;
+                    const int k3 = temporal_spatial_classify(k, &x, ff, &v);
+                    if (needed) assert(k3 == -1 && v == TEMPORAL_SPATIAL_UNAVAILABLE);
+                    else
+                        assert(k3 == k && v == (k == 1 ? TEMPORAL_SPATIAL_COVERAGE : TEMPORAL_SPATIAL_FRACTION));
+                }
+                x = d; /* a readable NaN is a value that disagrees: class N for the fraction */
+                x.fragment_f[0] = NAN;
+                assert(temporal_spatial_classify(k, &x, ff, &v) == k && v == (k == 1 ? TEMPORAL_SPATIAL_TAKEN
+                                                                                     : TEMPORAL_SPATIAL_FRACTION));
+                assert(temporal_spatial_classify(-1, &d, ff, &v) == -1 && v == TEMPORAL_SPATIAL_NOT_LISTED);
 #define CLASS_U(change, why)                                                                                    \
     do {                                                                                                        \
         x = d;                                                                                                  \
         change;                                                                                                 \
-        assert(temporal_spatial_classify(k, &x, ff, 0, &v) == -1 && v == (why));                                 \
+        assert(temporal_spatial_classify(k, &x, ff, &v) == -1 && v == (why));                                 \
         if (k != 1) x.fragment_f[0] = f * 0.999; /* with a class N failure too: still class U */                 \
         x.viewport[2] = 0;                                                                                      \
-        assert(temporal_spatial_classify(k, &x, ff, 0, &v) == -1 && v == (why));                                 \
+        assert(temporal_spatial_classify(k, &x, ff, &v) == -1 && v == (why));                                 \
     } while (0)
                 CLASS_U(x.vs ^= 1, TEMPORAL_SPATIAL_VERTEX);
                 CLASS_U(x.first_vertex = 1, TEMPORAL_SPATIAL_FORM);
@@ -2569,18 +2593,18 @@ static void test_spatial(void) {
                 x = d;
                 x.first_vertex = 1;
                 x.vertex_origin[0] = -2.0;
-                assert(temporal_spatial_classify(k, &x, ff, 0, &v) == -1 && v == TEMPORAL_SPATIAL_FORM);
+                assert(temporal_spatial_classify(k, &x, ff, &v) == -1 && v == TEMPORAL_SPATIAL_FORM);
 #undef CLASS_U
                 /* class N alone: listed, refused, with its reason */
                 x = d;
                 x.viewport[2] = 0;
-                assert(temporal_spatial_classify(k, &x, ff, 0, &v) == k && v == TEMPORAL_SPATIAL_COVERAGE);
+                assert(temporal_spatial_classify(k, &x, ff, &v) == k && v == TEMPORAL_SPATIAL_COVERAGE);
                 if (k != 1) {
                     x = d;
                     x.fragment_f[1] = f * 0.999;
-                    assert(temporal_spatial_classify(k, &x, ff, 0, &v) == k && v == TEMPORAL_SPATIAL_FRACTION);
+                    assert(temporal_spatial_classify(k, &x, ff, &v) == k && v == TEMPORAL_SPATIAL_FRACTION);
                     x.viewport[2] = 0; /* both of class N: the fraction is the one said */
-                    assert(temporal_spatial_classify(k, &x, ff, 0, &v) == k && v == TEMPORAL_SPATIAL_FRACTION);
+                    assert(temporal_spatial_classify(k, &x, ff, &v) == k && v == TEMPORAL_SPATIAL_FRACTION);
                 }
             }
             if (k == 0) { /* c6aaf96f's origin, as measured or not (astra's O1) */
@@ -2591,6 +2615,8 @@ static void test_spatial(void) {
                 x = d;
                 x.vertex_origin[0] = x.vertex_origin[1] = NAN;
                 assert(temporal_spatial_check(k, &x, ff) == TEMPORAL_SPATIAL_TAKEN);
+                x.vertex_origin_ok = x.vertex_f_ok = 0; /* not available either: not read, so taken */
+                assert(temporal_spatial_check(k, &x, ff) == TEMPORAL_SPATIAL_TAKEN);
             }
             if (k != 1) {
                 REFUSED(x.fragment_f[1] = f * 0.999, TEMPORAL_SPATIAL_FRACTION);
@@ -2598,6 +2624,7 @@ static void test_spatial(void) {
             } else {
                 x = d;
                 x.fragment_f[0] = NAN; /* B46268AD reads no fraction: its block's value is not held */
+                x.fragment_f_ok = 0;
                 assert(temporal_spatial_check(k, &x, ff) == TEMPORAL_SPATIAL_TAKEN);
             }
             if (k == 0) REFUSED(x.vertex_f[0] = f * 1.001, TEMPORAL_SPATIAL_FRACTION);
@@ -2648,14 +2675,16 @@ static void test_spatial(void) {
         for (int fault = 1; fault < 4; fault++) {
             TemporalSpatialDraw x = spatial_draw(0, 0.5);
             const double half[2] = {0.5, 0.5};
-            if (origin == 0) x.vertex_origin[0] = x.vertex_origin[1] = NAN;
+            if (origin == 0) x.vertex_origin_ok = 0; /* missing: not available (research 15:00) */
             if (origin == 2) x.vertex_origin[0] = -2.0;
             if (fault == 1) x.vertex_count = 4;
             if (fault == 2) x.direct = 0;
             if (fault == 3) x.other_stages = 1;
             int v;
-            const int k = temporal_spatial_classify(0, &x, half, 0, &v);
-            assert(k == -1 && v == (fault == 3 ? TEMPORAL_SPATIAL_STAGES : TEMPORAL_SPATIAL_FORM));
+            const int k = temporal_spatial_classify(0, &x, half, &v);
+            assert(k == -1 && v == (origin == 0       ? TEMPORAL_SPATIAL_UNAVAILABLE
+                                    : fault == 3        ? TEMPORAL_SPATIAL_STAGES
+                                                        : TEMPORAL_SPATIAL_FORM));
             TemporalSpatialLatch l = {0, 0, 0, NULL};
             TemporalSpatialFrame fr = {1, 0, 0};
             assert(temporal_spatial_draw(&fr, &l, k, v) == TEMPORAL_SPATIAL_AS_DRAWN && !fr.decided && !fr.published);

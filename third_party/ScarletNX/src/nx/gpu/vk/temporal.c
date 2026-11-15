@@ -3304,25 +3304,26 @@ static void spatial_start(void) {
         "of the private picture before the scale\n");
 }
 /* Two floats of a bank a stage's program reads at offset, as the draw binds them: guest memory, which is cb_get's
-   source (render.c) unless a pending compute or graphics result or GPU-owned bytes cover the range, which are newer
-   on the GPU only (buffer.c buf_get_owned). NaN when not read or not bound. 1 for those: what the draw reads is not
-   known here, and the binding is not on the list (research 12:50, 14:00). */
+   source (render.c) unless a pending compute or graphics result or GPU-owned bytes cover the range, newer on the GPU
+   only (buffer.c buf_get_owned). 1 when available. 0 when the program does not read them, the bank is not bound or
+   too short, the bytes are not readable, or they are pending or owned: whether the entry needs them is its rule's
+   (research 12:50, 14:00, 15:00). out is 0 then, never a stand-in for "not available". */
 static int spatial_block(const GpuChannel* ch, int stage, const VkSh* program, int bank, u32 offset, double out[2]) {
-    out[0] = out[1] = NAN;
+    out[0] = out[1] = 0.0;
     if (!program || !(program->si.cbuf_mask >> bank & 1u) || program->si.cbuf_max[bank] < offset + 8) return 0;
     const u64 address = ch->cbind[stage][bank];
     const u32 size = ch->cbind_size[stage][bank];
     if (!address || size < offset + 8) return 0;
     if (vk_compute_pending(address + offset, 8) || (vk_buf_pending_any() && vk_buf_pending(address + offset, 8)) ||
         vk_buf_owned(address + offset, 8))
-        return 1;
+        return 0;
     const u8* bytes = gmem_host(address + offset, 8);
     if (!bytes) return 0;
     float words[2];
     memcpy(words, bytes, sizeof words);
     out[0] = words[0];
     out[1] = words[1];
-    return 0;
+    return 1;
 }
 /* At the hook, before the resolve: whether this frame is replaced, with everything it needs made. A scale not on the
    list leaves the frame to D2 with a line. A failure to make a part turns the mode off at once. */
@@ -3503,17 +3504,16 @@ int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh*
     int verdict = TEMPORAL_SPATIAL_NOT_LISTED;
     if (k >= 0) {
         d->vs = vs ? vs->hash : 0;
-        const int pending = spatial_block(ch, ST_VS, vs, TEMPORAL_SCENE_BANK, TEMPORAL_SCENE_FRACTION, d->vertex_f) |
-                            spatial_block(ch, ST_VS, vs, 1, 0, d->vertex_origin) |
-                            spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_BANK, TEMPORAL_SCENE_FRACTION, d->fragment_f) |
-                            spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_BANK, 0x794, d->divisor);
-        /* any failure of class U, or a block held on the GPU, whatever else fails: a reader not on the list, the
-           mode off from the next frame. Only the fraction and the coverage leave it a listed reader (d08b624c) */
-        if (temporal_spatial_classify(k, d, g_s.f, pending, &verdict) < 0) {
+        d->vertex_f_ok = spatial_block(ch, ST_VS, vs, TEMPORAL_SCENE_BANK, TEMPORAL_SCENE_FRACTION, d->vertex_f);
+        d->vertex_origin_ok = spatial_block(ch, ST_VS, vs, 1, 0, d->vertex_origin);
+        d->fragment_f_ok = spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_BANK, TEMPORAL_SCENE_FRACTION, d->fragment_f);
+        d->divisor_ok = spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_BANK, 0x794, d->divisor);
+        /* any failure of class U, a required value not available included, whatever else fails: a reader not on the
+           list, the mode off from the next frame. Only the fraction and the coverage leave it listed (d08b624c) */
+        if (temporal_spatial_classify(k, d, g_s.f, &verdict) < 0) {
             static char why[160]; /* the latch keeps the first reason: written only while it has none */
             if (!g_s.latch.off && !g_s.latch.off_next)
-                snprintf(why, sizeof why, "a reader not on the list: %s",
-                         pending ? "a block it reads is held on the GPU" : temporal_spatial_text(verdict));
+                snprintf(why, sizeof why, "a reader not on the list: %s", temporal_spatial_text(verdict));
             temporal_spatial_unknown(&g_s.latch, why);
             k = -1;
             *listed = 0;
