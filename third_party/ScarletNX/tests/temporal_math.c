@@ -2420,6 +2420,13 @@ static void test_spatial(void) {
     assert(temporal_spatial_scale_listed(3840, 2160, 3456, 1944) < 0);
     assert(temporal_spatial_scale_listed(3840, 2160, 1920, 1440) < 0); /* 1/2 by 2/3 */
     assert(temporal_spatial_scale_listed(3840, 2160, 1921, 1080) < 0);
+    /* D3-3's admission below native: a listed scale at the origin, the fractions bit for bit */
+    assert(temporal_spatial_below(3840, 2160, 0, 0, 1920, 1080, 0.5f, 0.5f) == 0);
+    assert(temporal_spatial_below(3840, 2160, 0, 0, 2560, 1440, 2.0f / 3.0f, 2.0f / 3.0f) == 2);
+    assert(temporal_spatial_below(3840, 2160, 1, 0, 1920, 1080, 0.5f, 0.5f) < 0);             /* not at the origin */
+    assert(temporal_spatial_below(3840, 2160, 0, 0, 1920, 1080, nextafterf(0.5f, 1.0f), 0.5f) < 0); /* a step off */
+    assert(temporal_spatial_below(3840, 2160, 0, 0, 3840, 2160, 1.0f, 1.0f) < 0);             /* the whole: not below */
+    assert(temporal_spatial_below(3840, 2160, 0, 0, 3200, 1800, 5.0f / 6.0f, 5.0f / 6.0f) < 0); /* not listed */
     /* each scale's fraction, the float nearest p / q (research 12:50) */
     assert(temporal_spatial_scale_fraction(0) == 0.5f && temporal_spatial_scale_fraction(1) == 0.6f);
     assert(temporal_spatial_scale_fraction(2) == 2.0f / 3.0f && temporal_spatial_scale_fraction(3) == 0.75f);

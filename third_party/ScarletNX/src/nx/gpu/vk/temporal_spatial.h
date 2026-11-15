@@ -43,6 +43,17 @@ static inline int temporal_spatial_confirmed(float fx, float fy, int k) {
     const float f = temporal_spatial_scale_fraction(k);
     return memcmp(&fx, &f, sizeof f) == 0 && memcmp(&fy, &f, sizeof f) == 0;
 }
+/* D3-3: a frame of W x H whose scene is the rectangle w x h at x, y, confirmed at fx, fy: the index of its listed
+   scale when the rectangle is at the origin, the scale listed, the fractions the scale's float bit for bit and the
+   larger texture whole and an int; else -1, a frame not below native for the hand-over */
+static inline int temporal_spatial_below(int W, int H, int x, int y, int w, int h, float fx, float fy) {
+    int M, N;
+    if (x || y) return -1;
+    const int k = temporal_spatial_scale_listed(W, H, w, h);
+    if (k < 0 || !temporal_spatial_confirmed(fx, fy, k) || !temporal_spatial_size(W, H, w, h, fx, fy, &M, &N))
+        return -1;
+    return k;
+}
 /* whether images of w x h fit the device's limits for the format and the uses they are made with, and, as colour
    attachments, its framebuffer's (astra's O5) */
 static inline int temporal_spatial_fits(uint32_t w, uint32_t h, uint32_t max_w, uint32_t max_h, uint32_t fb_w,

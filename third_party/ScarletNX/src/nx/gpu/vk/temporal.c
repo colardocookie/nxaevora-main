@@ -268,6 +268,8 @@ static struct {
     TemporalUpscalerTally tally;
     Image output;
     TemporalUpscalerHanded handed; /* for the log: the four images as last said */
+    /* D3-3: FSR below native on D3-2's hand-over, with the fixed resolution; the scene scale is the opt-in */
+    int below;
     u32 output_max[2]; /* the output's largest width and height, as the start's format question answered */
     VkPipeline write_pipe;
     VkFormat write_format;
@@ -304,6 +306,10 @@ static struct {
 const Surf* g_vk_watch;
 static int spatial_now(u32 frame);
 static void spatial_views_drop(void);
+static int spatial_larger(const Surf* scene, int M, int N, int picture);
+static void spatial_larger_begin(VkCommandBuffer cb);
+static void spatial_fill_publish(VkCommandBuffer cb, const Surf* scene);
+static int spatial_below_ready(u32 frame, const Surf* scene, const TemporalRectGate* rg);
 static void upscaler_start(void);
 static int upscaler_on(void);
 static int upscaler_jittered(u32 frame);
@@ -2886,8 +2892,18 @@ static void upscaler_settle(u32 frame, const TemporalUpscalerConfig* confirmed) 
    colour target, and an unjittered projection given by value. 0 when a part of it is not
    known or not one this piece takes: one layer each, the same size, the formats the self-test ran, and the
    game's form of projection. */
+/* D3-3: a frame below native the hand-over takes (a listed scale at the origin, bit for bit), while it is on */
+static int upscaler_below(const TemporalRectState* s) {
+    return g_u.below && g_s.asked && !g_s.latch.off &&
+           temporal_spatial_below(s->target_w, s->target_h, s->rect.x, s->rect.y, s->rect.w, s->rect.h, s->fx,
+                                  s->fy) >= 0;
+}
+/* the frames FSR takes: the whole target, or below native on the hand-over */
+static int upscaler_admitted(const TemporalRectState* s) { return temporal_upscaler_whole(s) || upscaler_below(s); }
+/* render: the rectangle of a frame below native, NULL for the whole target */
 static int upscaler_key(const Surf* depth, const TemporalUpscalerColour* colour, const float m[16],
-                        TemporalUpscalerConfig* config, TemporalProjection* projection, u32* flags) {
+                        TemporalUpscalerConfig* config, TemporalProjection* projection, u32* flags,
+                        const TemporalRect* render) {
     /* one layer each, at the image's first layer and not a member of an array: the depth target's are read here,
        at the gate's draw too, the colour target's are in its description */
     if (!depth || depth->layers != 1 || depth->group || depth->base_layer || colour->layers != 1) return 0;
@@ -2900,7 +2916,8 @@ static int upscaler_key(const Surf* depth, const TemporalUpscalerColour* colour,
     const TemporalUpscalerMaking making = {colour->format,           (unsigned)depth->f.vk, (unsigned)MOTION_FORMAT,
                                            (unsigned)UPSCALED_FORMAT, colour->layers,        depth->layers,
                                            *flags};
-    *config = (TemporalUpscalerConfig){colour->w, colour->h, colour->w, colour->h, colour->w, colour->h,
+    *config = (TemporalUpscalerConfig){colour->w, colour->h, render ? render->w : colour->w,
+                                       render ? render->h : colour->h, colour->w, colour->h,
                                        temporal_upscaler_generation(&g_u.making, &g_u.generation, &making)};
     return 1;
 }
@@ -2933,7 +2950,7 @@ static int upscaler_decide(u32 frame, int accepted) {
     TemporalRectState now = rg->now;
     now.fx = rg->candidate.fx;
     now.fy = rg->candidate.fy;
-    const int whole = accepted && temporal_upscaler_whole(&now);
+    const int whole = accepted && upscaler_admitted(&now); /* D3-3: below native too, on the hand-over */
     /* the projection as the block holds it at this draw, kept by value: what the draws are given is checked
        against it at the hook */
     memset(g_u.decided_projection, 0, sizeof g_u.decided_projection);
@@ -2943,7 +2960,8 @@ static int upscaler_decide(u32 frame, int accepted) {
         block_read(g_u.block, g_u.decided_view);
     }
     const int known = accepted && g_u.block && temporal_upscaler_predicted(&g_u.colour, frame) &&
-                      upscaler_key(g_t.draw_zt, &g_u.colour, g_u.decided_projection, &config, &projection, &flags);
+                      upscaler_key(g_t.draw_zt, &g_u.colour, g_u.decided_projection, &config, &projection, &flags,
+                                   upscaler_below(&now) ? &now.rect : NULL);
     g_u.decided_at = frame;
     g_u.decided = config;
     g_u.known = known;
@@ -3033,16 +3051,17 @@ static void upscaler_warm(u32 frame, Surf* scene, Surf* depth, int steady) {
     /* This frame is confirmed first: the whole target, the projection its draws took (the decision's, bit for
        bit, and the same view), and the key from them and the frame's own colour target. Only then is a
        completed context settled, against that key. */
-    if (!temporal_upscaler_whole(&g_t.rect_gate.now)) return;
+    if (!upscaler_admitted(&g_t.rect_gate.now)) return;
     if (!temporal_upscaler_used_same(&g_u.used, frame, g_u.decided_projection) ||
         !temporal_upscaler_used_same(&g_u.used_view, frame, g_u.decided_view))
         return;
-    if (!upscaler_key(depth, &colour, g_u.used.m, &seen, &projection, &flags)) return;
+    const TemporalRect* render = upscaler_below(&g_t.rect_gate.now) ? &g_t.rect_gate.now.rect : NULL;
+    if (!upscaler_key(depth, &colour, g_u.used.m, &seen, &projection, &flags, render)) return;
     upscaler_settle(frame, &seen);
     if (g_u.health.off || g_u.decision != TEMPORAL_UPSCALER_NOT_READY) return;
     if (!temporal_upscaler_config_same(&g_u.decided, &seen)) return;
     if (!temporal_upscaler_must_create(&g_u.contexts, &seen)) return;
-    const SnxUpscalerCreate make = {.sizes = {scene->sw, scene->sh, scene->sw, scene->sh, scene->sw, scene->sh},
+    const SnxUpscalerCreate make = {.sizes = {seen.render_w, seen.render_h, scene->sw, scene->sh, scene->sw, scene->sh},
                                     .instance = g_vk.instance,
                                     .physical_device = g_vk.phys,
                                     .device = g_vk.dev,
@@ -3114,11 +3133,13 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
        here), the whole target, eight offsets, and a depth that is the projection's own (a viewport depth range
        of 0 to 1). */
     const char* skip = NULL;
-    if (!area || !temporal_upscaler_whole(&rg->now)) skip = "the scene is not the whole target";
+    const int below = area && upscaler_below(&rg->now);
+    if (!area || !upscaler_admitted(&rg->now))
+        skip = "the scene is not the whole target nor below native on the hand-over";
     else if (!temporal_upscaler_used_same(&g_u.used, frame, g_u.decided_projection) ||
              !temporal_upscaler_used_same(&g_u.used_view, frame, g_u.decided_view))
         skip = "a draw took a camera block that was not the decided projection with jitter";
-    else if (!upscaler_key(depth, &colour, g_u.used.m, &seen, &projection, &flags))
+    else if (!upscaler_key(depth, &colour, g_u.used.m, &seen, &projection, &flags, below ? &rg->now.rect : NULL))
         skip = "a part of the configuration is not known at the hook";
     /* the frame is confirmed: a context that completed since the decision is settled against this key, and
        only then is the ready one asked for */
@@ -3150,6 +3171,12 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         !temporal_upscaler_camera(projection.near_plane, projection.far_plane, projection.fov_y, seconds,
                                   projection.far_infinite, camera)) {
         upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_SKIPPED, "a number for the library did not pass its check");
+        return;
+    }
+    /* D3-3: below native, the hand-over's larger texture is made before the library is called. One that cannot be
+       made turns the hand-over off at once (a make failure), and the frame is not evaluated. */
+    if (below && !spatial_below_ready(frame, scene, rg)) {
+        upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_SKIPPED, "the hand-over's larger texture could not be made");
         return;
     }
     /* Everything of our own that the hand-over needs is made before the library is called: the private image,
@@ -3221,22 +3248,34 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
            refused may have recorded all the same is covered by the barriers above. */
         if (recorded == VK_REC_DIRECT_REFUSED)
             upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_FAILED, "its evaluate failed");
+        /* D3-3: below native a failed evaluation is a frame of class N, eligible and not published, counted */
+        if (below && recorded == VK_REC_DIRECT_REFUSED) temporal_spatial_outcome(&g_s.latch, 1, 0);
         else
             upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_STOPPED,
                              recorded == VK_REC_DIRECT_FAILED ? "a submission did not run as recorded"
                                                               : "the frame's command buffer could not be used");
         return;
     }
-    /* the write-back: the library's picture read in a fragment shader, the scene colour written */
-    vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     /* each channel is held to the largest finite value the scene colour holds (B10G11R11: 11, 11 and 10 bits) */
     Constants wc = *pc;
     wc.depth[0] = wc.depth[1] = temporal_ufloat_largest(6);
     wc.depth[2] = temporal_ufloat_largest(5);
-    fullscreen(cb, scene->att, scene->sw, scene->sh, g_u.write_pipe, set, &wc, area);
-    vk_surf_wrote(scene);
-    vk_rt_drawn(scene);
+    if (below) {
+        /* D3-3: the library's W x H picture written into the larger texture's picture part, then the edge fill
+           and D3-2's publication; the scene colour stays as drawn */
+        spatial_larger_begin(cb);
+        fullscreen(cb, g_s.larger.view, scene->sw, scene->sh, g_u.write_pipe, set, &wc, NULL);
+        vk_surf_wrote(scene); /* the same bookkeeping as D3-2's hook: copies of the scene made before it go */
+        vk_rt_drawn(scene);
+        spatial_fill_publish(cb, scene);
+    } else {
+        /* the write-back: the library's picture read in a fragment shader, the scene colour written */
+        vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        fullscreen(cb, scene->att, scene->sw, scene->sh, g_u.write_pipe, set, &wc, area);
+        vk_surf_wrote(scene);
+        vk_rt_drawn(scene);
+    }
     temporal_rect_wrote(&g_t.rect_gate, frame, &stamp);
     g_u.evaluated_at = frame;
     g_u.evaluated_ns = now_ns;
@@ -3254,8 +3293,12 @@ static void spatial_went_off(void) {
     if (g_s.said_off) return;
     g_s.said_off = 1;
     g_vk_watch = NULL;
-    LOG("arceus-upscaler: spatial is off for the rest of the session (%s): D2 goes on, restarted from a reset\n",
-        g_s.latch.why ? g_s.latch.why : "?");
+    if (g_u.below) /* D3-3: FSR's mode has no resolve of ours, so frames below native are left as drawn */
+        LOG("arceus-upscaler: FSR below native is off for the rest of the session (%s): frames below native are "
+            "left as drawn, FSR at full size goes on\n", g_s.latch.why ? g_s.latch.why : "?");
+    else
+        LOG("arceus-upscaler: spatial is off for the rest of the session (%s): D2 goes on, restarted from a reset\n",
+            g_s.latch.why ? g_s.latch.why : "?");
 }
 static void spatial_failed(const char* why) {
     temporal_spatial_make_failed(&g_s.latch, why);
@@ -3333,27 +3376,9 @@ static int spatial_block(const GpuChannel* ch, int stage, const VkSh* program, i
     out[1] = words[1];
     return 1;
 }
-/* At the hook, before the resolve: whether this frame is replaced, with everything it needs made. A scale not on the
-   list leaves the frame to D2 with a line. A failure to make a part turns the mode off at once. */
-static int spatial_ready(u32 frame, const Surf* scene, const TemporalRect* area, const TemporalRectGate* rg,
-                         VkDescriptorSet* set) {
-    static u64 refused;
-    int M, N, scale = -1;
-    const int W = (int)scene->sw, H = (int)scene->sh;
-    if (!spatial_now(frame) || !area) return 0;
-    if (!area->x && !area->y) scale = temporal_spatial_scale_listed(W, H, area->w, area->h);
-    /* the confirmed fractions are the scale's float, bit for bit (research 14:00) */
-    if (scale >= 0 && !temporal_spatial_confirmed(rg->now.fx, rg->now.fy, scale)) scale = -1;
-    if (scale < 0 || scene->levels != 1 ||
-        !temporal_spatial_size(W, H, area->w, area->h, rg->now.fx, rg->now.fy, &M, &N)) {
-        if (refused++ < 4 || refused % 600 == 0)
-            LOG("arceus-upscaler: spatial: frame %u is left to D2 (rectangle %d,%d %dx%d of %dx%d at %g x %g, %u "
-                "levels: not 1/2, 3/5, 2/3, 3/4 or 4/5 at the origin with that fraction exactly and one level), %llu "
-                "such so far\n", frame,
-                area->x, area->y, area->w, area->h, W, H, (double)rg->now.fx, (double)rg->now.fy, scene->levels,
-                (unsigned long long)refused);
-        return 0;
-    }
+/* The larger texture of M x N, and with picture the private picture of the scene's size: the format's features and
+   each image's limits for its uses asked first. A failure turns the mode off at once (a make failure). */
+static int spatial_larger(const Surf* scene, int M, int N, int picture) {
     VkFormatProperties has;
     vkGetPhysicalDeviceFormatProperties(g_vk.phys, scene->f.vk, &has);
     const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
@@ -3380,11 +3405,35 @@ static int spatial_ready(u32 frame, const Surf* scene, const TemporalRect* area,
     /* views of another mapping go before their image is made anew */
     if (g_s.larger.img && (g_s.larger.w != (u32)M || g_s.larger.h != (u32)N || g_s.larger.format != scene->f.vk))
         spatial_views_drop();
-    if (!image_ensure(&g_s.picture, scene->f.vk, scene->sw, scene->sh, drawn, "private picture") ||
+    if ((picture && !image_ensure(&g_s.picture, scene->f.vk, scene->sw, scene->sh, drawn, "private picture")) ||
         !image_ensure(&g_s.larger, scene->f.vk, (u32)M, (u32)N, filled, "larger")) {
         spatial_failed("the private picture or the larger texture");
         return 0;
     }
+    return 1;
+}
+/* At the hook, before the resolve: whether this frame is replaced, with everything it needs made. A scale not on the
+   list leaves the frame to D2 with a line. A failure to make a part turns the mode off at once. */
+static int spatial_ready(u32 frame, const Surf* scene, const TemporalRect* area, const TemporalRectGate* rg,
+                         VkDescriptorSet* set) {
+    static u64 refused;
+    int M, N, scale = -1;
+    const int W = (int)scene->sw, H = (int)scene->sh;
+    if (!spatial_now(frame) || !area) return 0;
+    if (!area->x && !area->y) scale = temporal_spatial_scale_listed(W, H, area->w, area->h);
+    /* the confirmed fractions are the scale's float, bit for bit (research 14:00) */
+    if (scale >= 0 && !temporal_spatial_confirmed(rg->now.fx, rg->now.fy, scale)) scale = -1;
+    if (scale < 0 || scene->levels != 1 ||
+        !temporal_spatial_size(W, H, area->w, area->h, rg->now.fx, rg->now.fy, &M, &N)) {
+        if (refused++ < 4 || refused % 600 == 0)
+            LOG("arceus-upscaler: spatial: frame %u is left to D2 (rectangle %d,%d %dx%d of %dx%d at %g x %g, %u "
+                "levels: not 1/2, 3/5, 2/3, 3/4 or 4/5 at the origin with that fraction exactly and one level), %llu "
+                "such so far\n", frame,
+                area->x, area->y, area->w, area->h, W, H, (double)rg->now.fx, (double)rg->now.fy, scene->levels,
+                (unsigned long long)refused);
+        return 0;
+    }
+    if (!spatial_larger(scene, M, N, 1)) return 0;
     if (!g_s.scale_pipe || g_s.scale_format != scene->f.vk) {
         g_s.scale_pipe = pipeline_make(scene->f.vk, temporal_spatial_fs_spv, temporal_spatial_fs_spv_size, "scale");
         g_s.scale_format = scene->f.vk;
@@ -3408,24 +3457,35 @@ static int spatial_ready(u32 frame, const Surf* scene, const TemporalRect* area,
     g_s.f[0] = g_s.f[1] = temporal_spatial_scale_fraction(scale);
     return 1;
 }
-/* After the resolve wrote the private picture: the scale into the picture part, the edge fill, and the frame's
-   publication with what the scene colour is now (its write sequence after the hook's own bookkeeping) */
-static void spatial_record(VkCommandBuffer cb, const Surf* scene, const TemporalRect* area, VkDescriptorSet set,
-                           const Constants* pc) {
-    vk_barrier(cb, g_s.picture.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    /* the larger texture was last read by the frame before's readers and filled by blits: both done first */
+/* D3-3: at FSR's hook, a frame below native: its listed scale, the larger texture made for it, the fractions the
+   readers' blocks must hold */
+static int spatial_below_ready(u32 frame, const Surf* scene, const TemporalRectGate* rg) {
+    int M, N;
+    const TemporalRectState* n = &rg->now;
+    const int k = temporal_spatial_below(n->target_w, n->target_h, n->rect.x, n->rect.y, n->rect.w, n->rect.h, n->fx,
+                                         n->fy);
+    if (!spatial_now(frame) || k < 0 || scene->levels != 1 || (int)scene->sw != n->target_w ||
+        (int)scene->sh != n->target_h ||
+        !temporal_spatial_size(n->target_w, n->target_h, n->rect.w, n->rect.h, n->fx, n->fy, &M, &N))
+        return 0;
+    if (!spatial_larger(scene, M, N, 0)) return 0;
+    g_s.W = n->target_w;
+    g_s.H = n->target_h;
+    g_s.M = M;
+    g_s.N = N;
+    g_s.f[0] = g_s.f[1] = temporal_spatial_scale_fraction(k);
+    return 1;
+}
+/* The larger texture before its picture part is drawn: last read by the frame before's readers and filled by
+   blits, both done first */
+static void spatial_larger_begin(VkCommandBuffer cb) {
     vk_barrier(cb, g_s.larger.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_SAMPLED_STAGES | VK_PIPELINE_STAGE_2_BLIT_BIT, 0,
                VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    Constants sc = *pc;
-    sc.size[0] = (float)area->w;
-    sc.size[1] = (float)area->h;
-    sc.size[2] = (float)g_s.W;
-    sc.size[3] = (float)g_s.H;
-    fullscreen(cb, g_s.larger.view, (u32)g_s.W, (u32)g_s.H, g_s.scale_pipe, set, &sc, NULL);
+}
+/* After the picture part was drawn: the edge fill, and the frame's publication with what the scene colour is now
+   (its write sequence after the hook's own bookkeeping), the watch armed until the present */
+static void spatial_fill_publish(VkCommandBuffer cb, const Surf* scene) {
     /* the edge fill reads and writes the same image: in the general layout */
     vk_barrier(cb, g_s.larger.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -3453,6 +3513,23 @@ static void spatial_record(VkCommandBuffer cb, const Surf* scene, const Temporal
     g_s.bytes = vk_surf_guest_size(scene);
     g_s.fr.recorded = 1;
     g_vk_watch = scene; /* armed until the present */
+}
+/* After the resolve wrote the private picture: the scale into the picture part, the edge fill, and the frame's
+   publication with what the scene colour is now (its write sequence after the hook's own bookkeeping) */
+static void spatial_record(VkCommandBuffer cb, const Surf* scene, const TemporalRect* area, VkDescriptorSet set,
+                           const Constants* pc) {
+    vk_barrier(cb, g_s.picture.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    spatial_larger_begin(cb);
+    Constants sc = *pc;
+    sc.size[0] = (float)area->w;
+    sc.size[1] = (float)area->h;
+    sc.size[2] = (float)g_s.W;
+    sc.size[3] = (float)g_s.H;
+    fullscreen(cb, g_s.larger.view, (u32)g_s.W, (u32)g_s.H, g_s.scale_pipe, set, &sc, NULL);
+    spatial_fill_publish(cb, scene);
 }
 
 /* The watch (research 11:25): a use of the scene colour's Surf while armed. One from the binding being made is
@@ -3696,6 +3773,17 @@ static void upscaler_start(void) {
         "At full size only, in frames whose scene is the whole target\n", api->name ? api->name : name);
     LOG("arceus-upscaler: our own resolve, sharpen, history, numbers and views do not run with it. Without effect: "
         "SNX_ARCEUS_TEMPORAL_HISTORY, _CLAMP, _BLEND, _NEAREST, _LUMA, _SHARPEN, _VIEW and _RECT\n");
+    /* D3-3: with the fixed resolution, frames below native at a listed scale go to FSR on D3-2's hand-over, whose
+       lines say "spatial" (the hand-over's name); the scene scale itself is the opt-in */
+    const char* fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
+    g_u.below = fixed && !strcmp(fixed, "1");
+    if (g_u.below) {
+        g_s.asked = 1;
+        LOG("arceus-upscaler: %s below native (D3-3, EXPERIMENTAL): frames at a scene scale of 1/2, 3/5, 2/3, 3/4 or "
+            "4/5 are rendered by it at the rectangle and handed to the game's readers in a larger texture (the "
+            "hand-over's lines say spatial); none of our numbers are made for them\n",
+            api->name ? api->name : name);
+    }
 }
 
 void vk_temporal_before(u64 fs0_hash) {
