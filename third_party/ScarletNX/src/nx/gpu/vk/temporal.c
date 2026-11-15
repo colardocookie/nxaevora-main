@@ -3247,10 +3247,10 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
     if (recorded != VK_REC_DIRECT_OK) {
         /* no successful output: nothing is written back and the frame stays as drawn. What a library that
            refused may have recorded all the same is covered by the barriers above. */
-        if (recorded == VK_REC_DIRECT_REFUSED)
-            upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_FAILED, "its evaluate failed");
         /* D3-3: below native a failed evaluation is a frame of class N, eligible and not published, counted */
         if (below && recorded == VK_REC_DIRECT_REFUSED) temporal_spatial_outcome(&g_s.latch, 1, 0);
+        if (recorded == VK_REC_DIRECT_REFUSED)
+            upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_FAILED, "its evaluate failed");
         else
             upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_STOPPED,
                              recorded == VK_REC_DIRECT_FAILED ? "a submission did not run as recorded"
@@ -3781,7 +3781,7 @@ static void upscaler_start(void) {
     /* D3-3: with the fixed resolution, frames below native at a listed scale go to FSR on D3-2's hand-over, whose
        lines say "spatial" (the hand-over's name); the scene scale itself is the opt-in */
     const char* fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
-    g_u.below = fixed && !strcmp(fixed, "1");
+    g_u.below = fixed && !strcmp(fixed, "1") && !strcmp(name, "fsr"); /* D3-3 is FSR's (reviewer's note) */
     if (g_u.below) {
         g_s.asked = 1;
         LOG("arceus-upscaler: %s below native (D3-3, EXPERIMENTAL): frames at a scene scale of 1/2, 3/5, 2/3, 3/4 or "
