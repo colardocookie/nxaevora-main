@@ -809,7 +809,9 @@ add_dependencies(snx-test-temporal-upscaler-boundary snx-test-upscaler-standin-0
                  snx-test-upscaler-standin-2 snx-test-upscaler-standin-3 snx-test-upscaler-standin-4)
 add_test(NAME upscaler_boundary COMMAND snx-test-temporal-upscaler-boundary ${snx_upscaler_standins})
 # NGX's lifetimes in DLSS's module (msvc/upscaler_dlss/dlss_core.h) against a stand-in NGX, with no SDK
-add_executable(snx-test-temporal-dlss-core upscaler_boundary/dlss_core.cpp upscaler_boundary/dlss_eval.cpp)
+add_executable(snx-test-temporal-dlss-core upscaler_boundary/dlss_core.cpp)
+target_sources(snx-test-temporal-dlss-core PRIVATE upscaler_boundary/dlss_eval.cpp upscaler_boundary/dlss_record.cpp)
+target_link_libraries(snx-test-temporal-dlss-core PRIVATE Vulkan::Headers)
 set_target_properties(snx-test-temporal-dlss-core PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_compile_options(snx-test-temporal-dlss-core PRIVATE -Wall -Wextra -Werror)
 target_include_directories(snx-test-temporal-dlss-core PRIVATE "${PROJECT_SOURCE_DIR}/msvc/upscaler_dlss")
