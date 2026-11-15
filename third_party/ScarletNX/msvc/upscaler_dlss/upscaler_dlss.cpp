@@ -28,7 +28,7 @@ const unsigned kNgxPrinted = 256; // NGX's messages printed in full, the rest co
 // in the game chose (+1, +1), the forced (-1, -1) shaking (research 21:20). Every line says so.
 const bool kJitterSignResolved = false; // by the protocol: it is the user's look that chose it
 // SNX_ARCEUS_DLSS_JITTER_SIGN (research 18:45): an experiment that forces the sign handed to NGX in place of the
-// protocol's, read once at the module's entry. Unset or not one of the four values: as without it.
+// protocol's, read once at the module's entry. Unset or not one of the eight values: as without it.
 int g_sign[2] = {1, 1};
 bool g_sign_forced;
 char g_sign_note[96] =
