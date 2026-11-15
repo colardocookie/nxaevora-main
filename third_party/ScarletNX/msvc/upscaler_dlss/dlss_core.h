@@ -18,7 +18,9 @@ struct CoreOps {
     int (*release)(void* user, void* context); // a context's feature and parameters
     void (*say)(void* user, const char* line);
 };
-enum { DEVICE_FREE, DEVICE_STARTED, DEVICE_START_FAILED, DEVICE_SHUT };
+// DEVICE_UNKNOWN: NGX left the device in a state not known (a feature handle returned by a creation that failed):
+// nothing of NGX is called for it again, and all of it is kept until the process ends
+enum { DEVICE_FREE, DEVICE_STARTED, DEVICE_START_FAILED, DEVICE_SHUT, DEVICE_UNKNOWN };
 const int kDevices = 4;
 struct Device {
     uint64_t handle;
@@ -57,9 +59,10 @@ inline int core_begin(Core* c, uint64_t handle) {
         core_say(c, "no context: the module keeps no more devices", handle, 0);
         return CORE_REFUSED;
     }
-    if (d->state == DEVICE_START_FAILED || d->state == DEVICE_SHUT) {
-        core_say(c, d->state == DEVICE_SHUT ? "no context: NGX was shut down for the device"
-                                            : "no context: NGX could not be started for the device",
+    if (d->state == DEVICE_START_FAILED || d->state == DEVICE_SHUT || d->state == DEVICE_UNKNOWN) {
+        core_say(c, d->state == DEVICE_SHUT      ? "no context: NGX was shut down for the device"
+                    : d->state == DEVICE_UNKNOWN ? "no context: NGX's state for the device is not known"
+                                                 : "no context: NGX could not be started for the device",
                  handle, d->contexts);
         return CORE_REFUSED;
     }
@@ -79,6 +82,12 @@ inline int core_begin(Core* c, uint64_t handle) {
 // release that fails is latched for the device's shutdown. NGX stays started.
 inline void core_end(Core* c, uint64_t handle, void* context) {
     Device* d = core_device(c, handle, 0);
+    if (d && d->state == DEVICE_UNKNOWN && d->contexts) { /* kept: nothing of NGX is called */
+        d->contexts--;
+        core_say(c, "a context of a device whose NGX state is not known ends, its feature and parameters kept",
+                 handle, d->contexts);
+        return;
+    }
     if (!d || d->state != DEVICE_STARTED || !d->contexts) {
         core_say(c, "a context was ended that was not begun", handle, d ? d->contexts : 0);
         return;
@@ -89,6 +98,33 @@ inline void core_end(Core* c, uint64_t handle, void* context) {
     }
     d->contexts--;
 }
+// A failure of NGX for the device outside a context's release (its capability parameters not destroyed): latched
+// as a failed release is, so the shutdown answers FAILED
+inline void core_latch(Core* c, uint64_t handle) {
+    Device* d = core_device(c, handle, 0);
+    if (d && (d->state == DEVICE_STARTED || d->state == DEVICE_UNKNOWN)) d->latched = 1;
+    else core_say(c, "a failure was latched for a device NGX is not started for", handle, 0);
+}
+// After a call of NGX that hands out an object (capability parameters, a context's parameters, a feature): CORE_OK
+// when it succeeded with one. A failure with none is a plain failure (CORE_FAILED). A failure that handed one out all
+// the same leaves the device unknown (CORE_REFUSED): the object is kept and never released, and nothing more of NGX
+// is called for the device: no context begins, no shutdown, and core_known answers 0.
+inline int core_call(Core* c, uint64_t handle, const char* call, int succeeded, int object_returned) {
+    if (succeeded && object_returned) return CORE_OK;
+    if (!object_returned) return CORE_FAILED;
+    Device* d = core_device(c, handle, 0);
+    if (d) d->state = DEVICE_UNKNOWN;
+    char what[160];
+    snprintf(what, sizeof what, "%s failed and handed out an object all the same: it is kept, never released, and "
+             "nothing more of NGX is called for the device", call);
+    core_say(c, what, handle, d ? d->contexts : 0);
+    return CORE_REFUSED;
+}
+// whether NGX may be called for the device: started, and not unknown
+inline int core_known(Core* c, uint64_t handle) {
+    Device* d = core_device(c, handle, 0);
+    return d && d->state == DEVICE_STARTED;
+}
 // The table's shutdown: only with no context of the device left, else refused with nothing called. CORE_FAILED
 // when NGX's stop failed or a release since its start did.
 inline int core_shutdown(Core* c, uint64_t handle) {
@@ -96,6 +132,11 @@ inline int core_shutdown(Core* c, uint64_t handle) {
     if (!d || d->state == DEVICE_START_FAILED) return CORE_OK; // nothing of NGX was started for it
     if (d->state == DEVICE_SHUT) {
         core_say(c, "NGX was already shut down for the device", handle, 0);
+        return CORE_FAILED;
+    }
+    if (d->state == DEVICE_UNKNOWN) {
+        core_say(c, "NGX is not shut down: its state for the device is not known, and all of it is kept", handle,
+                 d->contexts);
         return CORE_FAILED;
     }
     if (d->contexts) {

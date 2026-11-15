@@ -375,6 +375,23 @@ int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetIns
     return answer;
 }
 
+// the mirrored numbers of dlss_eval.h are the interface's, Vulkan's and NGX's
+static_assert(snx_dlss::kLinearHdr == SNX_UPSCALER_COLOUR_LINEAR_HDR &&
+                  snx_dlss::kDepthReversed == SNX_UPSCALER_DEPTH_REVERSED &&
+                  snx_dlss::kUnjittered == SNX_UPSCALER_VECTORS_UNJITTERED &&
+                  snx_dlss::kExposureAutomatic == SNX_UPSCALER_EXPOSURE_AUTOMATIC &&
+                  snx_dlss::kFarInfinite == SNX_UPSCALER_FAR_PLANE_INFINITE,
+              "the interface's flags");
+static_assert(snx_dlss::kMotionR16G16Float == VK_FORMAT_R16G16_SFLOAT &&
+                  snx_dlss::kMotionR32G32Float == VK_FORMAT_R32G32_SFLOAT,
+              "Vulkan's formats");
+static_assert(snx_dlss::kNgxIsHdr == NVSDK_NGX_DLSS_Feature_Flags_IsHDR &&
+                  snx_dlss::kNgxMvLowRes == NVSDK_NGX_DLSS_Feature_Flags_MVLowRes &&
+                  snx_dlss::kNgxMvJittered == NVSDK_NGX_DLSS_Feature_Flags_MVJittered &&
+                  snx_dlss::kNgxDepthInverted == NVSDK_NGX_DLSS_Feature_Flags_DepthInverted &&
+                  snx_dlss::kNgxAutoExposure == NVSDK_NGX_DLSS_Feature_Flags_AutoExposure,
+              "NGX's flags");
+
 // ---- NGX's lifetimes (dlss_core.h): started at a device's first context with the handles of the create that asks
 const SnxUpscalerCreate* g_starting; // the create that begins a context, while core_begin runs
 int ngx_start(void*, uint64_t) {
@@ -396,9 +413,11 @@ int ngx_stop(void*, uint64_t device) {
 struct Context {
     VkDevice device;
     NVSDK_NGX_Parameter* params;
-    NVSDK_NGX_Handle* feature; // made by prepare
+    NVSDK_NGX_Handle* feature; // what NGX's creation returned
+    int prepared;              // the creation succeeded: only then is a frame evaluated
     NVSDK_NGX_DLSS_Create_Params made;
     SnxUpscalerSizes sizes;
+    snx_dlss::Made made_with; // what each frame is held to
     PFN_vkCmdPipelineBarrier barrier;
     uint64_t frames;
 };
@@ -432,7 +451,8 @@ uint64_t device_key(VkDevice d) {
 int capabilities(const SnxUpscalerCreate* c) {
     NVSDK_NGX_Parameter* cap = nullptr;
     NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_GetCapabilityParameters(&cap);
-    if (NVSDK_NGX_FAILED(r) || !cap) {
+    if (snx_dlss::core_call(&g_core, device_key(c->device), "NGX's capability parameters", !NVSDK_NGX_FAILED(r),
+                            cap != nullptr) != snx_dlss::CORE_OK) {
         say("arceus-upscaler: dlss is not available: NGX's capability parameters could not be had (result 0x%08x)",
             (unsigned)r);
         return 0;
@@ -472,7 +492,11 @@ int capabilities(const SnxUpscalerCreate* c) {
             dlaa = c->sizes.render_w >= min_w && c->sizes.render_w <= max_w && c->sizes.render_h >= min_h &&
                    c->sizes.render_h <= max_h;
     }
-    NVSDK_NGX_VULKAN_DestroyParameters(cap);
+    r = NVSDK_NGX_VULKAN_DestroyParameters(cap);
+    if (NVSDK_NGX_FAILED(r)) { /* the device's shutdown answers FAILED for it */
+        say("arceus-upscaler: dlss: NGX's capability parameters could not be destroyed (result 0x%08x)", (unsigned)r);
+        snx_dlss::core_latch(&g_core, device_key(c->device));
+    }
     if (!available) say("arceus-upscaler: dlss is not available on this device, by NGX's capabilities");
     else if (!dlaa)
         say("arceus-upscaler: dlss is not available: DLAA does not take the render size %ux%u", c->sizes.render_w,
@@ -484,18 +508,12 @@ int capabilities(const SnxUpscalerCreate* c) {
 // size only, the flags as NGX's, and the context's own parameters. The feature is made by prepare.
 int create(const SnxUpscalerCreate* c, SnxUpscalerTraits* traits, SnxUpscaler** out) {
     *out = nullptr;
-    const uint32_t known = SNX_UPSCALER_COLOUR_LINEAR_HDR | SNX_UPSCALER_DEPTH_REVERSED |
-                           SNX_UPSCALER_VECTORS_UNJITTERED | SNX_UPSCALER_EXPOSURE_AUTOMATIC |
-                           SNX_UPSCALER_FAR_PLANE_INFINITE;
-    if (c->flags & ~known) {
-        say("arceus-upscaler: dlss: no context: a flag this module does not know (0x%x)", c->flags & ~known);
-        return SNX_UPSCALER_REFUSED;
-    }
-    if (c->sizes.render_w != c->sizes.output_w || c->sizes.render_h != c->sizes.output_h ||
-        c->sizes.render_w > c->sizes.image_w || c->sizes.render_h > c->sizes.image_h) {
-        say("arceus-upscaler: dlss: no context: only DLAA at the native size, and the render size %ux%u is not the "
-            "output's %ux%u or is larger than the images' %ux%u", c->sizes.render_w, c->sizes.render_h,
-            c->sizes.output_w, c->sizes.output_h, c->sizes.image_w, c->sizes.image_h);
+    const int check = snx_dlss::create_check(c->flags, (int)c->motion_format, c->sizes.render_w, c->sizes.render_h,
+                                             c->sizes.image_w, c->sizes.image_h, c->sizes.output_w, c->sizes.output_h);
+    if (check != snx_dlss::CREATE_OK) {
+        say("arceus-upscaler: dlss: no context: %s (flags 0x%x, vectors' format %d, render %ux%u, images %ux%u, "
+            "output %ux%u)", snx_dlss::create_text(check), c->flags, (int)c->motion_format, c->sizes.render_w,
+            c->sizes.render_h, c->sizes.image_w, c->sizes.image_h, c->sizes.output_w, c->sizes.output_h);
         return SNX_UPSCALER_REFUSED;
     }
     const PFN_vkVoidFunction found = c->device_lookup ? c->device_lookup(c->device, "vkCmdPipelineBarrier") : nullptr;
@@ -518,9 +536,10 @@ int create(const SnxUpscalerCreate* c, SnxUpscalerTraits* traits, SnxUpscaler** 
     if (!x) say("arceus-upscaler: dlss: no context: no memory");
     else if (capabilities(c)) {
         const NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_AllocateParameters(&x->params);
-        if (NVSDK_NGX_FAILED(r) || !x->params) {
+        if (snx_dlss::core_call(&g_core, key, "NGX's parameters for a context", !NVSDK_NGX_FAILED(r),
+                                x->params != nullptr) != snx_dlss::CORE_OK) {
             say("arceus-upscaler: dlss: no context: NGX gave no parameters (result 0x%08x)", (unsigned)r);
-            x->params = nullptr;
+            x->params = nullptr; /* a pointer handed out on a failure is kept by NGX's record, not released here */
             answer = SNX_UPSCALER_FAILED;
         } else
             answer = SNX_UPSCALER_OK;
@@ -531,13 +550,13 @@ int create(const SnxUpscalerCreate* c, SnxUpscalerTraits* traits, SnxUpscaler** 
         ReleaseSRWLockExclusive(&g_lock);
         return answer;
     }
-    int flags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes; // vectors at the render size
-    if (c->flags & SNX_UPSCALER_COLOUR_LINEAR_HDR) flags |= NVSDK_NGX_DLSS_Feature_Flags_IsHDR;
-    if (c->flags & SNX_UPSCALER_DEPTH_REVERSED) flags |= NVSDK_NGX_DLSS_Feature_Flags_DepthInverted;
-    if (!(c->flags & SNX_UPSCALER_VECTORS_UNJITTERED)) flags |= NVSDK_NGX_DLSS_Feature_Flags_MVJittered;
-    if (c->flags & SNX_UPSCALER_EXPOSURE_AUTOMATIC) flags |= NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+    const int flags = snx_dlss::ngx_flags(c->flags);
     x->device = c->device;
     x->sizes = c->sizes;
+    x->made_with = snx_dlss::Made{c->sizes.render_w, c->sizes.render_h, c->sizes.image_w, c->sizes.image_h,
+                                  c->sizes.output_w, c->sizes.output_h,
+                                  {(int)c->colour_format, (int)c->depth_format, (int)c->motion_format,
+                                   (int)c->output_format}};
     x->barrier = barrier;
     x->made = NVSDK_NGX_DLSS_Create_Params{};
     x->made.Feature.InWidth = c->sizes.render_w;
@@ -570,14 +589,20 @@ int prepare(SnxUpscaler* u, VkCommandBuffer cb) {
             NVSDK_NGX_DLSS_Hint_Render_Preset_J, NVSDK_NGX_DLSS_Hint_Render_Preset_K,
             NVSDK_NGX_DLSS_Hint_Render_Preset_L, NVSDK_NGX_DLSS_Hint_Render_Preset_M);
     int answer = SNX_UPSCALER_FAILED;
-    if (x->feature) say("arceus-upscaler: dlss: a context was prepared twice");
+    if (!snx_dlss::core_known(&g_core, device_key(x->device)))
+        say("arceus-upscaler: dlss: a context not prepared: NGX's state for its device is not known");
+    else if (x->prepared || x->feature) say("arceus-upscaler: dlss: a context was prepared twice");
     else {
         const NVSDK_NGX_Result r = NGX_VULKAN_CREATE_DLSS_EXT1(x->device, cb, 1, 1, &x->feature, x->params, &x->made);
-        if (NVSDK_NGX_FAILED(r) || !x->feature) {
-            say("arceus-upscaler: dlss: NGX's creation of the feature failed (result 0x%08x)", (unsigned)r);
-            x->feature = nullptr;
-        } else
+        const int outcome = snx_dlss::core_call(&g_core, device_key(x->device), "NGX's creation of the feature",
+                                                !NVSDK_NGX_FAILED(r), x->feature != nullptr);
+        if (outcome != snx_dlss::CORE_OK)
+            say("arceus-upscaler: dlss: NGX's creation of the feature failed (result 0x%08x, a handle %s)",
+                (unsigned)r, x->feature ? "returned, kept" : "not returned");
+        else {
+            x->prepared = 1;
             answer = SNX_UPSCALER_OK;
+        }
     }
     ReleaseSRWLockExclusive(&g_lock);
     return answer;
@@ -646,6 +671,21 @@ NVSDK_NGX_Resource_VK resource(const SnxUpscalerImage& im, VkImageAspectFlags as
 int evaluate(SnxUpscaler* u, const SnxUpscalerFrame* f) {
     Context* x = reinterpret_cast<Context*>(u);
     static const int plus[2] = {1, 1};
+    const SnxUpscalerImage* frame_images[4] = {&f->colour, &f->depth, &f->motion, &f->output};
+    snx_dlss::Handed handed[4];
+    for (int k = 0; k < 4; k++) {
+        handed[k] = snx_dlss::Handed{0, 0, (int)frame_images[k]->format, frame_images[k]->w, frame_images[k]->h};
+        memcpy(&handed[k].image, &frame_images[k]->image, sizeof frame_images[k]->image);
+        memcpy(&handed[k].view, &frame_images[k]->view, sizeof frame_images[k]->view);
+    }
+    int which = -1;
+    const int held = snx_dlss::frame_check(x->made_with, f->render_w, f->render_h, handed, &which);
+    if (held != snx_dlss::FRAME_OK) { /* nothing recorded */
+        static const char* const names[4] = {"colour", "depth", "vectors", "output"};
+        say("arceus-upscaler: dlss: a frame not evaluated: %s%s%s", snx_dlss::frame_text(held),
+            which >= 0 ? ": the " : "", which >= 0 ? names[which] : "");
+        return SNX_UPSCALER_FAILED;
+    }
     snx_dlss::Eval n;
     const int why = snx_dlss::eval_numbers(f->vector_scale, f->jitter, plus, f->render_x, f->render_y, f->render_w,
                                            f->render_h, f->colour.w, f->colour.h, f->reset, f->frame_seconds, &n);
@@ -654,9 +694,10 @@ int evaluate(SnxUpscaler* u, const SnxUpscalerFrame* f) {
         return SNX_UPSCALER_FAILED;
     }
     AcquireSRWLockExclusive(&g_lock);
-    if (!x->feature) {
+    if (!x->prepared || !snx_dlss::core_known(&g_core, device_key(x->device))) {
         ReleaseSRWLockExclusive(&g_lock);
-        say("arceus-upscaler: dlss: a frame not evaluated: the context was not prepared");
+        say("arceus-upscaler: dlss: a frame not evaluated: the context was not prepared, or NGX's state for its "
+            "device is not known");
         return SNX_UPSCALER_FAILED;
     }
     if (!x->frames) provenance();
