@@ -4371,6 +4371,7 @@ static PMutex text_probe_lock = PMUTEX_INIT;
 static u64 text_probe_base, text_probe_calls, text_probe_steps, text_probe_ns, text_probe_logged[3], text_probe_last;
 static unsigned text_probe_seen;
 static _Thread_local u64 text_probe_running; /* the text whose reveal runs on this thread, 0 for none */
+static unsigned text_probe_setup_lines, text_probe_first_lines;
 static TextProbeText* text_probe_text(u64 text) {
     for (unsigned k = 0; k < TEXT_PROBE_TEXTS; k++)
         if (text_probe_texts[k].text == text) return &text_probe_texts[k];
@@ -4378,6 +4379,12 @@ static TextProbeText* text_probe_text(u64 text) {
         if (!text_probe_texts[k].text) {
             text_probe_texts[k] = (TextProbeText){.text = text};
             text_probe_seen++;
+            /* research (recon 13:18): each T's first quota, to settle 2 or 4 at speed 1 */
+            if (text_probe_first_lines < 64 && readable(text + 0x9d, 0xa)) {
+                text_probe_first_lines++;
+                LOG("arceus-text-probe: text %llx first seen: +9D=%u +A4=%u +A5=%u +A6=%u\n", (unsigned long long)text,
+                    *GP(text + 0x9d), *GP(text + 0xa4), *GP(text + 0xa5), *GP(text + 0xa6));
+            }
             return &text_probe_texts[k];
         }
     return NULL;
@@ -4440,6 +4447,26 @@ static void text_probe_reveal(CPU* c, u64 entry) {
         text_probe_line(now);
     pm_unlock(&text_probe_lock);
 }
+/* FBF57C(T, speed w1, mode w2), from FBEFE4 when a text is built, fills +9D/+A5 and +A4/+A6 from its tables: logged
+   with the language byte it reads ([[[main+427B188]]+50]) and what it set, for the first 64 calls */
+static GuestFn text_probe_setup_original;
+static void text_probe_setup(CPU* c, u64 entry) {
+    const u64 text = c->x[0], base = text_probe_base;
+    const u32 speed = (u32)c->x[1], mode = (u32)c->x[2];
+    const u64 holder = readable(base + 0x427b188, 8) ? gr64(base + 0x427b188) : 0;
+    const u64 inner = holder && readable(holder, 8) ? gr64(holder) : 0;
+    const unsigned language = text_probe_byte(inner ? inner + 0x50 : 0);
+    text_probe_setup_original(c, entry);
+    pm_lock(&text_probe_lock);
+    if (text_probe_setup_lines < 64) {
+        text_probe_setup_lines++;
+        const int known = readable(text + 0x9d, 0xa);
+        LOG("arceus-text-probe: setup FBF57C text=%llx w1=%d w2=%d language=%u: +9D=%u +A4=%u +A5=%u +A6=%u\n",
+            (unsigned long long)text, (int)speed, (int)mode, language, known ? *GP(text + 0x9d) : 0u,
+            known ? *GP(text + 0xa4) : 0u, known ? *GP(text + 0xa5) : 0u, known ? *GP(text + 0xa6) : 0u);
+    }
+    pm_unlock(&text_probe_lock);
+}
 /* The glyph step: one that used the quota, called from the reveal's loop (return address FBFC24) */
 static void text_probe_step(CPU* c, u64 entry) {
     const u64 status = c->x[1], caller = c->x[30];
@@ -4492,6 +4519,22 @@ static void text_probe_init(u64 base) {
         __atomic_store_n(&g_disp[(base + sites[k].offset - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
     }
     text_probe = 1;
+    /* FBF57C, log only: its own guards (head, the store of +A4, the RET); MOV X0,X8 -> ADD at +D4. Not needed for the
+       rest of the probe, so a failed guard only leaves it out */
+    const u64 setup = base + 0xfbf57c;
+    int covered = 0;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == setup && g_mod->fn_len[i] >= 0x130) covered = 1;
+    if (covered && setup >= g_code_lo && setup + 0x130 <= g_code_hi && readable(setup, 0x130) &&
+        gr32(setup) == 0xd100c3ff && gr32(setup + 0xb4) == 0x39029008 && gr32(setup + 0xc4) == 0xd65f03c0 &&
+        gr32(setup + 0xd4) == 0xaa0803e0) {
+        gw32(setup + 0xd4, 0x91000100);
+        jit_code_changed(setup, 0x130);
+        text_probe_setup_original = jit_wait(setup);
+        if (text_probe_setup_original)
+            __atomic_store_n(&g_disp[(setup - g_code_lo) / 4], text_probe_setup, __ATOMIC_RELEASE);
+    }
+    if (!text_probe_setup_original) WARN("arceus-text-probe: the text setup FBF57C is not logged (guard or compile)\n");
     LOG("arceus-text-probe: read-only, the text reveal FBFBD0 and its glyph step 2B315E8, a line every 5 s and one "
         "when a text ends%s\n", clocks_installed ? "" : ", frames not counted without the clock wrappers");
 }

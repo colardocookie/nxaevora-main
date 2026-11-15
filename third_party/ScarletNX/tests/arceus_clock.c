@@ -2696,6 +2696,12 @@ static void text_reveal_stub(CPU* c, u64 entry) {
     c->x[0] = text_stub_answer;
     c->pc = c->x[30];
 }
+static void text_setup_stub(CPU* c, u64 entry) {
+    (void)entry;
+    *GP(c->x[0] + 0x9d) = *GP(c->x[0] + 0xa5) = 0;
+    *GP(c->x[0] + 0xa4) = *GP(c->x[0] + 0xa6) = 4;
+    c->pc = c->x[30];
+}
 static void test_text_probe(void) {
     memset(memory, 0, sizeof memory);
     const u64 ns = host_ns, frames = event_probe_frames;
@@ -2724,11 +2730,12 @@ static void test_text_probe(void) {
         text_probe_reveal(&c, entry_pc);
         assert(c.pc == return_pc && c.x[0] == (k == 359 ? 0u : 1u));
     }
-    assert(logged_count == 2);
-    assert(strstr(logged[0], "arceus-text-probe: seconds=5.00 reveal_fbfbd0_per_s=60.00 glyph_steps_per_s=120.00 "
+    assert(logged_count == 3);
+    assert(strstr(logged[0], "arceus-text-probe: text 200 first seen: +9D=0 +A4=2 +A5=0 +A6=0"));
+    assert(strstr(logged[1], "arceus-text-probe: seconds=5.00 reveal_fbfbd0_per_s=60.00 glyph_steps_per_s=120.00 "
                              "frames_per_s=60.00 texts=1 speed=2 ") &&
-           strstr(logged[0], " +9D=0 +A4=2 "));
-    assert(strstr(logged[1], "arceus-text-probe: text 200 ended: calls=360 glyph_steps=720 ms=5983.3"));
+           strstr(logged[1], " +9D=0 +A4=2 "));
+    assert(strstr(logged[2], "arceus-text-probe: text 200 ended: calls=360 glyph_steps=720 ms=5983.3"));
     /* steps from another caller, with a status other than 0, or outside a reveal are not counted */
     const u64 counted = text_probe_steps;
     text_stub_answer = 1;
@@ -2743,6 +2750,16 @@ static void test_text_probe(void) {
     CPU s = {.x = {[0] = TEXT_OBJECT, [1] = TEXT_STATUS, [30] = text_stub_caller}, .pc = entry_pc};
     text_probe_step(&s, entry_pc);
     assert(text_probe_steps == counted);
+    /* the setup FBF57C: its arguments and the language byte before, the bytes it set after, the game's call once */
+    logged_count = 0;
+    text_probe_setup_lines = 0;
+    text_probe_setup_original = text_setup_stub;
+    CPU u = {.x = {[0] = TEXT_OBJECT, [1] = 1, [2] = 0, [30] = return_pc}, .pc = entry_pc};
+    text_probe_setup(&u, entry_pc);
+    assert(u.pc == return_pc && logged_count == 1);
+    assert(strstr(logged[0],
+                  "arceus-text-probe: setup FBF57C text=200 w1=1 w2=0 language=255: +9D=0 +A4=4 +A5=0 +A6=4"));
+    text_probe_setup_original = NULL;
     text_probe_original[0] = text_probe_original[1] = NULL;
     text_probe_base = 0;
     clocks_installed = clocks;
