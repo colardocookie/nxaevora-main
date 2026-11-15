@@ -483,6 +483,8 @@ once a frame, the demo ending at clock 3502 after 33.65 s at 60 FPS and 61.00 s 
 against 467 ms at 30 for the same calls and glyph steps. With the three switches the demo ended at 61.40 s at 60 FPS,
 and the user found the opening's timing and the text speed the same as on the Switch.
 
-Limits. The battle and menu windows' auto-advance counts (`main+C67EA8` to `main+C67F30`) also count calls and are not
-covered. The state tables hold 8 jobs, 8 demo controllers and 16 texts. A full table leaves that one as the game runs
-it, with a count, and the played sessions had none.
+Limits. The battle's message windows wait for a press or for a count of calls (`main+C67F30`, mode 3, up to 40 counts
+in the session played). The count is made in the glyph step that `SNX_ARCEUS_TEXT_TICK` paces, and with it on the user
+found battle text at 60 FPS the same as on the Switch. The length of a wait was not measured. The state tables hold 8
+jobs, 8 demo controllers and 16 texts. A full table leaves that one as the game runs it, with a count, and the played
+sessions had none.
