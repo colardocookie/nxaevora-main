@@ -4415,7 +4415,7 @@ static PMutex event_tick_lock = PMUTEX_INIT;
 static GuestFn event_tick_original;
 static GuestFn event_tick_pad_original[3];
 static u64 event_tick_ran, event_tick_skipped, event_tick_full, event_tick_carried, event_tick_calls;
-static u64 event_tick_logged[2];
+static u64 event_tick_logged[2], event_tick_line_frame;
 /* While a job runs on this thread: the edges its natives see on top of the pad's own, else NULL. */
 static _Thread_local const u64* event_tick_running;
 static u64 event_tick_pad(void) {
@@ -4442,13 +4442,24 @@ static EventTickJob* event_tick_job(u64 object, u64 generation) {
         }
     return NULL;
 }
-static void event_tick_line(void) {
+/* Every 600th frame, however many jobs are called in a frame (the reviewer's note on 9041f04d) */
+static void event_tick_line(u64 frame) {
     const u64 calls = __atomic_add_fetch(&event_tick_calls, 1, __ATOMIC_RELAXED);
-    if (calls % 600) return;
+    u64 last = __atomic_load_n(&event_tick_line_frame, __ATOMIC_RELAXED);
+    if (!last) { /* the first window starts here, with the counts so far */
+        if (__atomic_compare_exchange_n(&event_tick_line_frame, &last, frame, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            event_tick_logged[0] = __atomic_load_n(&event_tick_ran, __ATOMIC_RELAXED);
+            event_tick_logged[1] = __atomic_load_n(&event_tick_skipped, __ATOMIC_RELAXED);
+        }
+        return;
+    }
+    if (frame - last < 600 ||
+        !__atomic_compare_exchange_n(&event_tick_line_frame, &last, frame, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        return;
     const u64 ran = __atomic_load_n(&event_tick_ran, __ATOMIC_RELAXED);
     const u64 skipped = __atomic_load_n(&event_tick_skipped, __ATOMIC_RELAXED);
-    LOG("arceus-event-tick: calls=%llu ran=%llu skipped=%llu (of the last 600: ran %llu, skipped %llu) carried=%llu "
-        "full=%llu\n", (unsigned long long)calls, (unsigned long long)ran, (unsigned long long)skipped,
+    LOG("arceus-event-tick: calls=%llu ran=%llu skipped=%llu (in the last 600 frames: ran %llu, skipped %llu) "
+        "carried=%llu full=%llu\n", (unsigned long long)calls, (unsigned long long)ran, (unsigned long long)skipped,
         (unsigned long long)(ran - event_tick_logged[0]), (unsigned long long)(skipped - event_tick_logged[1]),
         (unsigned long long)__atomic_load_n(&event_tick_carried, __ATOMIC_RELAXED),
         (unsigned long long)__atomic_load_n(&event_tick_full, __ATOMIC_RELAXED));
@@ -4491,7 +4502,7 @@ static void event_tick_update(CPU* c, u64 entry) {
             WARN("arceus-event-tick: table of %u jobs full: job %llx runs every frame as today\n", EVENT_TICK_JOBS,
                  (unsigned long long)object);
     }
-    event_tick_line();
+    event_tick_line(frame);
     if (!run) { /* as a run that found the script suspended: 0, nothing written */
         __atomic_add_fetch(&event_tick_skipped, 1, __ATOMIC_RELAXED);
         c->x[0] = 0;

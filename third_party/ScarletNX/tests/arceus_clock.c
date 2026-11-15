@@ -19,11 +19,12 @@ void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 static unsigned waza_dependency_warnings;
 static unsigned low_fps_skip_logs;
-/* Only the event probe's lines are kept. */
+/* Only the event probe's and the event tick's lines are kept. */
 static char logged[8][512];
 static unsigned logged_count;
 void logf_(int level, const char* fmt, ...) {
-    if (!strncmp(fmt, "arceus-event-probe: ", 20) && logged_count < 8) {
+    if ((!strncmp(fmt, "arceus-event-probe: ", 20) || !strncmp(fmt, "arceus-event-tick: calls", 24)) &&
+        logged_count < 8) {
         va_list args;
         va_start(args, fmt);
         vsnprintf(logged[logged_count++], sizeof logged[0], fmt, args);
@@ -2468,11 +2469,21 @@ static void test_event_probe(void) {
 }
 /* The event tick on its real wrappers: a stand-in job that, when it runs, asks IsPadTrigger through the wrapper. */
 #define EVENT_PAD 3200
-static unsigned event_job_runs[2], event_trigger_seen[2];
+static unsigned event_job_runs[2], event_trigger_seen[2], event_release_seen[2], event_repeat_seen[2];
 static u64 event_job_answer;
 static void event_trigger_stub(CPU* c, u64 entry) {
     (void)entry;
     c->x[0] = gr64(EVENT_PAD + 0x118) != 0;
+    c->pc = c->x[30];
+}
+static void event_release_stub(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = gr64(EVENT_PAD + 0xb0) != 0;
+    c->pc = c->x[30];
+}
+static void event_repeat_stub(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = (gr64(EVENT_PAD + 0xa8) | gr64(EVENT_PAD + 0xb8)) != 0;
     c->pc = c->x[30];
 }
 static void event_job_stub(CPU* c, u64 entry) {
@@ -2482,6 +2493,14 @@ static void event_job_stub(CPU* c, u64 entry) {
     CPU n = {.x = {[0] = 5, [30] = return_pc}, .pc = entry_pc};
     event_tick_trigger(&n, entry_pc);
     event_trigger_seen[which] += (unsigned)n.x[0];
+    CPU m = {.x = {[0] = 5, [30] = return_pc}, .pc = entry_pc};
+    event_tick_release(&m, entry_pc);
+    assert(m.pc == return_pc);
+    event_release_seen[which] += (unsigned)m.x[0];
+    CPU q = {.x = {[0] = 5, [30] = return_pc}, .pc = entry_pc};
+    event_tick_repeat(&q, entry_pc);
+    assert(q.pc == return_pc);
+    event_repeat_seen[which] += (unsigned)q.x[0];
     c->x[0] = event_job_answer;
     c->pc = c->x[30];
 }
@@ -2505,6 +2524,8 @@ static void event_reset(void) {
     memset(event_tick_jobs, 0, sizeof event_tick_jobs);
     memset(event_job_runs, 0, sizeof event_job_runs);
     memset(event_trigger_seen, 0, sizeof event_trigger_seen);
+    memset(event_release_seen, 0, sizeof event_release_seen);
+    memset(event_repeat_seen, 0, sizeof event_repeat_seen);
     event_job_answer = 0;
 }
 static void test_event_tick(void) {
@@ -2517,6 +2538,8 @@ static void test_event_tick(void) {
     gw64(1536 + 0x140, 0x800);
     event_tick_original = event_job_stub;
     event_tick_pad_original[0] = event_trigger_stub;
+    event_tick_pad_original[1] = event_release_stub;
+    event_tick_pad_original[2] = event_repeat_stub;
     /* the runs a second at 30, 60 and 120 FPS and at uneven 12 and 20 ms frames: 30, the first call at once */
     static const u64 steps[4][2] = {
         {33333334, 33333334}, {16666667, 16666667}, {8333334, 8333333}, {12000000, 20000000}};
@@ -2550,6 +2573,25 @@ static void test_event_tick(void) {
         (void)event_call(1024);
     }
     assert(event_trigger_seen[0] == 1 && gr64(EVENT_PAD + 0xa0) == 0x40);
+    /* the release (+B0) and the repeat's two words (+A8, +B8) the same way: each seen once, each word put back, and
+       the other natives see nothing of them */
+    for (unsigned w = 0; w < 3; w++) {
+        static const u32 at[3] = {0xb0, 0xa8, 0xb8};
+        event_reset();
+        event_frame(16666667);
+        assert(event_call(1024));
+        event_frame(16666667);
+        gw64(EVENT_PAD + at[w], 0x10);
+        assert(!event_call(1024));
+        gw64(EVENT_PAD + at[w], 0);
+        event_frame(16666667);
+        assert(event_call(1024) && gr64(EVENT_PAD + at[w]) == 0);
+        for (unsigned f = 0; f < 4; f++) {
+            event_frame(16666667);
+            (void)event_call(1024);
+        }
+        assert(event_release_seen[0] == (w == 0) && event_repeat_seen[0] == (w > 0) && !event_trigger_seen[0]);
+    }
     /* two jobs at once, each on its own budget and latch: the trigger seen once by each */
     event_reset();
     event_frame(16666667);
@@ -2583,6 +2625,18 @@ static void test_event_tick(void) {
     assert(!event_call(1024));
     gw64(1024 + 0x140, 0x900);
     assert(event_call(1024));
+    /* the line comes every 600 frames, also with two jobs called each frame */
+    event_reset();
+    gw64(1024 + 0x140, 0x700);
+    logged_count = 0;
+    event_tick_line_frame = 0;
+    for (unsigned f = 0; f < 1300; f++) {
+        event_frame(16666667);
+        (void)event_call(1024);
+        (void)event_call(1536);
+    }
+    assert(logged_count == 2 && strstr(logged[0], "(in the last 600 frames: ran 600, skipped 600)"));
+    logged_count = 0;
     /* a full table: a ninth job runs every frame as today, counted */
     event_reset();
     const u64 full = event_tick_full;
@@ -2595,7 +2649,7 @@ static void test_event_tick(void) {
     assert(event_tick_full == full + 4);
     event_reset();
     event_tick_original = NULL;
-    event_tick_pad_original[0] = NULL;
+    event_tick_pad_original[0] = event_tick_pad_original[1] = event_tick_pad_original[2] = NULL;
     main_base = base;
     step.step = ns;
     frame_step_frames = frames;
