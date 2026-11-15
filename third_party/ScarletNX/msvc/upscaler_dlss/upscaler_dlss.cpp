@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the NXAevora contributors
 // DLSS's adapter (src/nx/gpu/vk/upscaler.h), a module of its own built against the builder's NGX SDK. This build is
-// the discovery step: it asks NGX which instance and device extensions the feature needs and prints every name. No
-// name is classified yet, so none is handed back: the instance is made without NGX's names, the device question
-// always refuses, no device is made for NGX, and nothing of NGX is started. create, prepare and evaluate refuse.
+// the step that classifies NGX's needs: the extensions NGX names are taken by a table of what each one needs, held
+// against what the instance and the device advertise, and handed to the device's maker with their core bits.
+// Nothing of NGX is started yet: create, prepare and evaluate refuse.
 #include <windows.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -172,17 +172,17 @@ const NVSDK_NGX_FeatureDiscoveryInfo* discovery() {
     return &g_discovery;
 }
 
-// The names NGX returned, copied: they are the module's and stay valid until it is unloaded
+// The names NGX returned, copied with the revision it asks for: the module's, valid until it is unloaded
 struct Names {
     char name[kNamesMost][VK_MAX_EXTENSION_NAME_SIZE];
     const char* list[kNamesMost];
+    uint32_t version[kNamesMost];
     uint32_t count;
 };
 Names g_instance, g_device;
 int g_instance_asked;
-// 0 when every name fits, and prints each with what becomes of it
-int names_take(Names* to, const char* kind, uint32_t count, const VkExtensionProperties* properties,
-               const char* fate) {
+// 0 when every name fits
+int names_take(Names* to, const char* kind, uint32_t count, const VkExtensionProperties* properties) {
     if (count > kNamesMost) {
         say("arceus-upscaler: dlss is not available: NGX names %u %s extensions, more than the %u this module keeps",
             count, kind, kNamesMost);
@@ -198,23 +198,98 @@ int names_take(Names* to, const char* kind, uint32_t count, const VkExtensionPro
         memcpy(to->name[i], properties[i].extensionName, VK_MAX_EXTENSION_NAME_SIZE);
         to->name[i][VK_MAX_EXTENSION_NAME_SIZE - 1] = 0;
         to->list[i] = to->name[i];
-        say("arceus-upscaler: dlss: NGX names the %s extension %u of %u: %s (version %u)%s", kind, i + 1, count,
-            to->name[i], properties[i].specVersion, fate);
+        to->version[i] = properties[i].specVersion;
     }
     return 1;
 }
 
-// The extensions this module knows the needs of: what feature bits each one's use needs on, as core bits of the
-// interface or as a structure of the chain. EMPTY in this build: no list is written from memory. It is filled from the
-// names a run of this step printed and the Vulkan specification's text for each, in a step of its own.
+// The extensions this module knows the needs of (UPSCALER-DESIGN.md, DLSS's needs classified, from run DL-S1 and the
+// registry): the revision DL-S1 saw as the least taken, and the core feature bits each one's use needs on. A name
+// not here, or a revision below the larger of NGX's request and this one, makes DLSS unavailable.
 struct Classified {
     const char* name;
-    uint32_t core;
+    int instance;
+    uint32_t least, core;
 };
-const Classified* classified(const char*) { return nullptr; }
+const Classified kClassified[] = {
+    {"VK_KHR_get_physical_device_properties2", 1, 2, 0},
+    {"VK_NVX_binary_import", 0, 1, 0},
+    {"VK_NVX_image_view_handle", 0, 2, 0},
+    {"VK_KHR_buffer_device_address", 0, 1, SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS},
+    {"VK_KHR_push_descriptor", 0, 2, 0},
+};
+const Classified* classified(const char* name, int instance) {
+    for (const Classified& c : kClassified)
+        if (c.instance == instance && !strcmp(c.name, name)) return &c;
+    return nullptr;
+}
+// 1 when every name is classified, each printed with what it needs
+int names_classified(const Names* names, int instance) {
+    const char* kind = instance ? "instance" : "device";
+    int all = 1;
+    for (uint32_t i = 0; i < names->count; i++) {
+        const Classified* c = classified(names->name[i], instance);
+        if (!c) {
+            say("arceus-upscaler: dlss: NGX names the %s extension %u of %u: %s (version %u), which is not classified",
+                kind, i + 1, names->count, names->name[i], names->version[i]);
+            all = 0;
+            continue;
+        }
+        say("arceus-upscaler: dlss: NGX names the %s extension %u of %u: %s (version %u), classified: %s, taken from "
+            "version %u", kind, i + 1, names->count, names->name[i], names->version[i],
+            c->core & SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS ? "needs buffer device addresses" : "no feature bit",
+            names->version[i] > c->least ? names->version[i] : c->least);
+    }
+    if (!all)
+        say("arceus-upscaler: dlss is not available: NGX names a %s extension this build has not classified", kind);
+    return all;
+}
 
-// Every name NGX gives is printed and none is handed back, as none is classified: the list is empty, and the instance
-// is made without them. The device's question is then asked on that instance.
+// What the instance or the device advertises, read whole: NULL with a line when it cannot be
+VkExtensionProperties* advertised(PFN_vkEnumerateInstanceExtensionProperties of_instance,
+                                  PFN_vkEnumerateDeviceExtensionProperties of_device, VkPhysicalDevice device,
+                                  uint32_t* count) {
+    for (int attempt = 0; attempt < 3; attempt++) {
+        uint32_t n = 0;
+        VkResult r = of_device ? of_device(device, nullptr, &n, nullptr) : of_instance(nullptr, &n, nullptr);
+        if (r != VK_SUCCESS) break;
+        VkExtensionProperties* list = static_cast<VkExtensionProperties*>(calloc(n ? n : 1, sizeof *list));
+        if (!list) break;
+        r = of_device ? of_device(device, nullptr, &n, list) : of_instance(nullptr, &n, list);
+        if (r == VK_SUCCESS) {
+            *count = n;
+            return list;
+        }
+        free(list);
+        if (r != VK_INCOMPLETE) break;
+    }
+    say("arceus-upscaler: dlss is not available: the %s's list of extensions could not be read whole",
+        of_device ? "physical device" : "instance");
+    return nullptr;
+}
+// 1 when each name is advertised at a revision of at least the larger of NGX's request and the table's least
+int names_advertised(const Names* names, int instance, const VkExtensionProperties* list, uint32_t listed) {
+    int all = 1;
+    for (uint32_t i = 0; i < names->count; i++) {
+        const Classified* c = classified(names->name[i], instance);
+        const uint32_t least = names->version[i] > c->least ? names->version[i] : c->least;
+        uint32_t k = 0;
+        while (k < listed && strcmp(list[k].extensionName, names->name[i])) k++;
+        if (k == listed) {
+            say("arceus-upscaler: dlss is not available: the %s does not list %s", instance ? "instance" : "device",
+                names->name[i]);
+            all = 0;
+        } else if (list[k].specVersion < least) {
+            say("arceus-upscaler: dlss is not available: the %s lists %s at version %u, below %u",
+                instance ? "instance" : "device", names->name[i], list[k].specVersion, least);
+            all = 0;
+        }
+    }
+    return all;
+}
+
+// NGX's instance names, each classified and handed back, or a refusal. Their revisions are held against the
+// instance's at the device's question, where the module has a lookup.
 int instance_extensions(SnxUpscalerExtensions* out) {
     AcquireSRWLockExclusive(&g_lock);
     int answer = SNX_UPSCALER_REFUSED;
@@ -227,55 +302,74 @@ int instance_extensions(SnxUpscalerExtensions* out) {
         if (NVSDK_NGX_FAILED(result))
             say("arceus-upscaler: dlss is not available: NGX's question of the instance's extensions failed "
                 "(result 0x%08x)", (unsigned)result);
-        else if (names_take(&g_instance, "instance", count, properties,
-                            ", named by NGX, not enabled: not classified")) {
+        else if (names_take(&g_instance, "instance", count, properties) && names_classified(&g_instance, 1)) {
             g_instance_asked = 1;
             answer = SNX_UPSCALER_OK;
         }
     }
     if (answer == SNX_UPSCALER_OK) {
-        out->count = 0;
-        out->names = nullptr;
+        out->count = g_instance.count;
+        out->names = g_instance.list;
     }
     ReleaseSRWLockExclusive(&g_lock);
     return answer;
 }
 
-// In this build always a refusal: every name NGX returns is printed, and none is classified. The instance was made
-// without NGX's instance extensions: a failure or another answer here is a finding of the discovery run.
-int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetInstanceProcAddr,
-                      SnxUpscalerDeviceNeeds*) {
+// NGX's device names, each classified, the instance's and the device's revisions held against them, and the core
+// bits they need. No feature chain: NGX names extensions only.
+int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetInstanceProcAddr lookup,
+                      SnxUpscalerDeviceNeeds* out) {
     AcquireSRWLockExclusive(&g_lock);
-    if (!g_instance_asked || !folders()) {
-        say("arceus-upscaler: dlss is not available: the device was asked about before the instance's extensions");
-        ReleaseSRWLockExclusive(&g_lock);
-        return SNX_UPSCALER_REFUSED;
-    }
-    uint32_t count = 0, unknown = 0;
+    int answer = SNX_UPSCALER_REFUSED;
+    uint32_t count = 0, core = 0;
     VkExtensionProperties* properties = nullptr;
-    const NVSDK_NGX_Result result =
-        NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements(instance, device, discovery(), &count, &properties);
-    if (NVSDK_NGX_FAILED(result))
-        say("arceus-upscaler: dlss is not available: NGX's question of the device's extensions failed "
-            "(result 0x%08x)", (unsigned)result);
-    else if (names_take(&g_device, "device", count, properties, "")) {
-        for (uint32_t i = 0; i < g_device.count; i++)
-            if (!classified(g_device.name[i])) {
-                unknown++;
-                say("arceus-upscaler: dlss: the device extension %s is not classified: what its use needs is not "
-                    "known to this build", g_device.name[i]);
-            }
-        say("arceus-upscaler: dlss: needs discovered, not classified: unavailable (%u instance extensions named by NGX "
-            "and not enabled, %u device extensions named by NGX on an instance without them, %u of those not "
-            "classified, %ld messages of NGX)", g_instance.count, g_device.count, unknown, g_ngx_messages);
+    const PFN_vkEnumerateInstanceExtensionProperties of_instance =
+        lookup ? reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
+                     lookup(nullptr, "vkEnumerateInstanceExtensionProperties"))
+               : nullptr;
+    const PFN_vkEnumerateDeviceExtensionProperties of_device =
+        lookup ? reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(
+                     lookup(instance, "vkEnumerateDeviceExtensionProperties"))
+               : nullptr;
+    if (!g_instance_asked || !folders())
+        say("arceus-upscaler: dlss is not available: the device was asked about before the instance's extensions");
+    else if (!of_instance || !of_device)
+        say("arceus-upscaler: dlss is not available: the lookup it was handed gives no list of extensions");
+    else {
+        const NVSDK_NGX_Result result =
+            NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements(instance, device, discovery(), &count, &properties);
+        uint32_t listed_instance = 0, listed_device = 0;
+        VkExtensionProperties* on_instance = nullptr;
+        VkExtensionProperties* on_device = nullptr;
+        if (NVSDK_NGX_FAILED(result))
+            say("arceus-upscaler: dlss is not available: NGX's question of the device's extensions failed "
+                "(result 0x%08x)", (unsigned)result);
+        else if (names_take(&g_device, "device", count, properties) && names_classified(&g_device, 0) &&
+                 (on_instance = advertised(of_instance, nullptr, nullptr, &listed_instance)) != nullptr &&
+                 (on_device = advertised(nullptr, of_device, device, &listed_device)) != nullptr &&
+                 names_advertised(&g_instance, 1, on_instance, listed_instance) &&
+                 names_advertised(&g_device, 0, on_device, listed_device)) {
+            for (uint32_t i = 0; i < g_device.count; i++) core |= classified(g_device.name[i], 0)->core;
+            out->extensions.count = g_device.count;
+            out->extensions.names = g_device.list;
+            out->features = nullptr;
+            out->core = core;
+            say("arceus-upscaler: dlss: needs classified: %u instance and %u device extensions, %s, %ld messages of "
+                "NGX", g_instance.count, g_device.count,
+                core & SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS ? "buffer device addresses on" : "no feature bit",
+                g_ngx_messages);
+            answer = SNX_UPSCALER_OK;
+        }
+        free(on_instance);
+        free(on_device);
     }
     ReleaseSRWLockExclusive(&g_lock);
-    return SNX_UPSCALER_REFUSED;
+    return answer;
 }
 
 int create(const SnxUpscalerCreate*, SnxUpscalerTraits*, SnxUpscaler** out) {
     *out = nullptr;
-    say("arceus-upscaler: dlss: no context is made in this build, which only discovers NGX's needs");
+    say("arceus-upscaler: dlss: no context is made in this build: NGX's start is not in it yet");
     return SNX_UPSCALER_REFUSED;
 }
 int prepare(SnxUpscaler*, VkCommandBuffer) { return SNX_UPSCALER_REFUSED; }

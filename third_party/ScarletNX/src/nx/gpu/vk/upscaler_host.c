@@ -115,7 +115,7 @@ int vk_upscaler_instance_extensions(const SnxUpscalerApi* api, const char** name
 /* After the instance, before the device: the adapter's device extensions are added to the list, features gets
    the chain of feature structures it wants on, or NULL, and core the core feature bits it needs, which the
    caller turns on in its own structure after its own question to the physical device. An adapter of another
-   version of the contract is refused before anything of it is called, and so is a core bit the host does not
+   version of the contract is refused before anything of it is called, and so is a core bit the self-test does not
    know. 0 as above: the device is then made without the adapter. */
 int vk_upscaler_device_needs(const SnxUpscalerApi* api, VkInstance instance, VkPhysicalDevice device,
                              PFN_vkGetInstanceProcAddr lookup, const char** names, uint32_t* count, uint32_t room,
@@ -125,7 +125,7 @@ int vk_upscaler_device_needs(const SnxUpscalerApi* api, VkInstance instance, VkP
     *core = 0;
     if (!api || api->abi != SNX_UPSCALER_ABI || !api->device_extensions) return 0;
     if (api->device_extensions(instance, device, lookup, &needs) != SNX_UPSCALER_OK) return 0;
-    if (needs.core & ~SNX_NEEDS_CORE_KNOWN) {
+    if (needs.core & ~SNX_UPSCALER_CORE_SELFTEST_KNOWN) {
         WARN("arceus-upscaler: the adapter asks for a core feature bit the host does not know (0x%x)\n", needs.core);
         return 0;
     }
