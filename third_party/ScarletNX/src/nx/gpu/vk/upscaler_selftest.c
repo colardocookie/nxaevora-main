@@ -702,6 +702,10 @@ static void settle(void) {
                          NULL, 0, NULL);
 }
 
+/* Whether nothing new may start: the device's state is not known, or an evaluate answered UNKNOWN and the run halted.
+   Only completion, destroys, the shutdown and the last lines go on (research's ruling of 10:20). */
+static int stopped(void) { return g.unknown || g.halted; }
+
 static void unknown(const char* what) {
     if (!g.unknown)
         LOG(ST "FAIL: %s. What the device still uses is not known, so nothing more is recorded, reset, submitted "
@@ -723,7 +727,7 @@ static int discard(void) {
 static int begin(void) {
     const VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                          .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    if (g.halted) return 0; /* after an UNKNOWN evaluate nothing more is recorded */
+    if (stopped()) return 0; /* after an UNKNOWN evaluate nothing more is recorded */
     const int begun = discard() && VK_OK(vkBeginCommandBuffer(g.cb, &bi));
     g.recording = begun;
     return begun;
@@ -924,7 +928,7 @@ static int output_supported(const Inputs* in, VkImageUsageFlags usage) {
 /* the session's pictures for these inputs' sizes, in place of the ones it had */
 static int pictures_make(Session* s, const Inputs* in, const SnxUpscalerTraits* traits) {
     const u32 rw = (u32)in->rw, rh = (u32)in->rh;
-    if (!idle()) return 0;
+    if (stopped() || !idle()) return 0; /* no pictures are made after the run stopped */
     pictures_free(s);
     if (!picture_make(&s->colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, rw, rh, traits->colour_usage) ||
         !picture_make(&s->depth, VK_FORMAT_D24_UNORM_S8_UINT, rw, rh, traits->depth_usage) ||
@@ -976,7 +980,7 @@ static void session_close(Session* s) {
    that is not known (g.unknown) nothing is freed and nothing more is done on the device. */
 static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerConfig* config, u32 flags,
                          SnxUpscalerTraits* traits) {
-    if (g.unknown) return 0;
+    if (stopped()) return 0;
     if (temporal_upscaler_ready(&s->contexts, config)) return 1;
     if (!temporal_upscaler_must_create(&s->contexts, config)) return 0;
     const SnxUpscalerCreate make = {.sizes = {(u32)in->rw, (u32)in->rh, (u32)in->rw, (u32)in->rh, (u32)in->ow,
@@ -1021,7 +1025,7 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
         if (prepared) submitted = submit();
         else discard();
     }
-    if (g.unknown) return 0;
+    if (stopped()) return 0;
     temporal_upscaler_created(&s->contexts, config, prepared && submitted == 1);
     switch (temporal_upscaler_completed(&s->contexts, config)) {
     case TEMPORAL_UPSCALER_RETIRE:
@@ -1053,7 +1057,7 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     TemporalRectState state = {0};
     TemporalUpscalerFrame numbers;
     float camera[4];
-    if (g.unknown) return -1;
+    if (stopped()) return -1;
     s->frame++;
     /* what the renderer would know of the frame: its viewport, the images' size, the fraction of them in use */
     state.viewport = (TemporalViewport){(float)in->vp.x, (float)in->vp.y, (float)in->vp.w, (float)in->vp.h};
@@ -1309,7 +1313,7 @@ static int run(const Inputs* in, const Variant* v, int use_cut, double* last, do
     double* previous = malloc(size);
     SelftestSettling settling = {{0.0, 0.0}, {0, 0}};
     memset(&s, 0, sizeof s);
-    int ok = !g.unknown && previous && session_open(&s, in, &traits), evaluated = 0;
+    int ok = !stopped() && previous && session_open(&s, in, &traits), evaluated = 0;
     for (int i = 0; ok && i < in->frames; i++) {
         const int r = frame_run(&s, in, i, v, use_cut && i == in->cut_at, last);
         if (r < 0) ok = 0;
@@ -1411,8 +1415,8 @@ static int signs(const char* name, const Inputs* in, unsigned mask, int region, 
 
 /* 1 with a line when a case cannot be run because the device's state is not known any more */
 static int not_run(const char* name, int up) {
-    if (g.unknown || g.halted) LOG(ST "%s %s: NOT RUN\n", name, up ? "up" : "down");
-    return g.unknown || g.halted;
+    if (stopped()) LOG(ST "%s %s: NOT RUN\n", name, up ? "up" : "down");
+    return stopped();
 }
 
 /* the whole suite for one sign of the viewport's height: 1 when every case passed */
@@ -1812,7 +1816,7 @@ static int native_cases(Native* n, NativeForm* F) {
     memset(&cut, 0, sizeof cut);
     memset(&small, 0, sizeof small);
     memset(&s, 0, sizeof s);
-    const int ran = F->ran && !g.unknown &&
+    const int ran = F->ran && !stopped() &&
                     inputs_project(&cut, F->form, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 0, 1, 0, 0, 0) &&
                     inputs_project(&small, F->form, SMALL, 320, 180, 0, 0, n->up, STILL, 0, 0, 0, 0, 0);
     /* a change of a create property: the session's first frames without the flag, then every frame a fresh run
@@ -1934,7 +1938,7 @@ static int native_transition(Native* n, const NativeForm* from, const NativeForm
     Session s;
     snprintf(name, sizeof name, "native suite %s, from %s to %s", n->way, from->name, to->name);
     memset(&s, 0, sizeof s);
-    int evaluated = 0, changed = from->ran && to->ran && !g.unknown && session_open(&s, &from->in, &NATIVE_TRAITS);
+    int evaluated = 0, changed = from->ran && to->ran && !stopped() && session_open(&s, &from->in, &NATIVE_TRAITS);
     for (int i = 0; changed && i < 9; i++) changed = frame_run(&s, &from->in, i, &CONFIGURED, 0, work) >= 0;
     const unsigned before = changed ? s.evaluated : 0;
     for (int i = 1; changed && i <= end; i++) {
@@ -1969,7 +1973,7 @@ static int native_patch(Native* n, const SelftestProjection* form, const char* f
     Inputs in;
     snprintf(name, sizeof name, "native suite %s, %s, a nearer patch", n->way, form_name);
     memset(&in, 0, sizeof in);
-    int ok = regions && !g.unknown &&
+    int ok = regions && !stopped() &&
              inputs_project(&in, form, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 1, 0, 0, 0, 0);
     if (!ok) LOG(ST "%s: could not be made: FAIL\n", name);
     else {
@@ -2029,9 +2033,15 @@ static int native(int up) {
             LOG(ST "native suite %s, %s, a nearer patch: not run for dlss, its verdict is one of quality\n", n.way,
                 forms[0].name);
             snprintf(name, sizeof name, "native suite %s, %s, the jitter's signs", n.way, forms[0].name);
-            truth(&forms[0].in, n.up, n.reference, n.regions);
-            pass &= forms[0].ran && !g.unknown &&
-                    signs(name, &forms[0].in, 3, SELFTEST_BACKGROUND, n.reference, n.regions, n.scratch[N_WORK], 0);
+            /* only on a form that was generated and ran: its inputs exist, else nothing of them is read */
+            if (!forms[0].ran || !forms[0].in.scene) {
+                LOG(ST "%s: not run, the form's inputs or its fresh run were not made: FAIL\n", name);
+                pass = 0;
+            } else {
+                truth(&forms[0].in, n.up, n.reference, n.regions);
+                pass &= !stopped() && signs(name, &forms[0].in, 3, SELFTEST_BACKGROUND, n.reference, n.regions,
+                                            n.scratch[N_WORK], 0);
+            }
         }
     }
     for (int k = 0; k < 2; k++) {
@@ -2177,7 +2187,7 @@ static void edge_matched(void) {
     SelftestHanded* handed[2] = {NULL, NULL};
     memset(&down, 0, sizeof down);
     memset(&up, 0, sizeof up);
-    int ok = !g.unknown && reference && regions && picture[0] && picture[1] && picture[2] &&
+    int ok = !stopped() && reference && regions && picture[0] && picture[1] && picture[2] &&
              inputs_build(&down, SIZES, RENDER_W, RENDER_H, 0, 0, 0, still, 0, 0, 1, 0, 0) &&
              inputs_build(&up, SIZES, RENDER_W, RENDER_H, 0, 0, 1, still, 0, 0, 1, 0, 1);
     if (ok) {
@@ -2284,7 +2294,7 @@ static void edge_response(int up) {
     SelftestProfile truth_profile[2];
     Inputs in;
     memset(&in, 0, sizeof in);
-    int ok = !g.unknown && reference && picture && regions &&
+    int ok = !stopped() && reference && picture && regions &&
              inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1, 0, 0);
     if (ok) {
         truth(&in, up, reference, regions);
