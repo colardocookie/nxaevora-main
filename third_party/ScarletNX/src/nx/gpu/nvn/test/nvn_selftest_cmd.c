@@ -1864,7 +1864,7 @@ static void st_d3_copy_source_destroy(CPU* c, StCmdProcs* p, NvnStResCache* cach
     }
 }
 
-/* With nvn_native=0 the game's depth mode went to the library, so the host device record still reads 0. The depth
+/* With nvn_legacy=1 the game's depth mode went to the library, so the host device record still reads 0. The depth
    range handlers read that record: copy the library value into the host. The library setter is not called, because
    it would change the game device. */
 static void st_sync_host_depth_mode(CPU* c) {

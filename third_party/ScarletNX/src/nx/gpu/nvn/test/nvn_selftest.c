@@ -199,7 +199,7 @@ static void case_texture_builder(CPU* c, NvnStRun* run) {
 void nvn_selftest_run(CPU* c) {
     if (__atomic_exchange_n(&g_ran, 1, __ATOMIC_ACQ_REL)) return;
     if (nvn_native_active()) {
-        LOG("selftest: not run, nvn_native=1 (the library must run as the reference)\n");
+        LOG("selftest: not run, nvn_legacy=0 (the library must run as the reference)\n");
         return;
     }
     if (!g_device) {

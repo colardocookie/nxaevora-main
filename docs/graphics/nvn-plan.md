@@ -143,6 +143,9 @@ Content: CPU time, frame time and dropped draws, compared with the old path.
 
 Exit condition: the effect and the limits of the replacement are confirmed. Then decide if the old path is removed.
 
+Decided (2026-11-15): the old path is not removed. The native path is the default, and the debug setting
+`nvn_legacy=1` selects the old path for a comparison (the setting `nvn_native` is deprecated).
+
 ## Rules for all stages
 
 - The user runs and tests the game. After a run, the agent reads the files and reports.

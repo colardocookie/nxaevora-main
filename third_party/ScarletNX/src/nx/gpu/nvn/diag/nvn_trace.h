@@ -20,7 +20,7 @@ NvnNameRead nvn_guest_name_read(uint64_t ptr, char name[128]);
 /* 1 when nvn_guest_name_read returned NVN_NAME_OK. */
 int nvn_guest_name(uint64_t ptr, char name[128]);
 /* The library's function that the game resolved as name: its entry and its address (what ran before any wrapper). 1
-   when the game resolved it. With nvn_native=1 the entry is the host handler's, so the selftest does not use it. */
+   when the game resolved it. With nvn_legacy=0 the entry is the host handler's, so the selftest does not use it. */
 int nvn_trace_library(const char* name, GuestFn* fn, uint64_t* entry);
 
 #endif

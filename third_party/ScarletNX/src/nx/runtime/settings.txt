@@ -747,15 +747,15 @@ setting NVN trace
     help 1 = logs each NVN function the game resolves, the GPFIFO submissions during each queue call, and at exit
     help the calls of every function used (gpu/nvn/diag/nvn_trace.c). Calls by direct branch are counted only in a game
     help recompiled with --hook-direct-calls. The game runs slower
-setting NVN native
-    key nvn_native
+setting NVN legacy
+    key nvn_legacy
     int 0 1
     default 0
     startup
     words Off|On
-    help 1 = the host answers the NVN functions of the game (gpu/nvn/nvn_native.c) and the game's NVN library is not run. A
-    help function the host does not have yet stops the game (nvn_native_missing). 0 = the library runs as always.
-    help Phase 6 of NXAevora, under construction: with 1 the game draws, but some objects such as characters are missing
+    help 1 = the game's own NVN library runs (the old path), as before phase 6 of NXAevora. A comparison target for the
+    help diagnosis of the native path. 0 = the host answers the NVN functions of the game (gpu/nvn/nvn_native.c) and the
+    help library is not run. A function the host does not have stops the game (nvn_native_missing)
 setting NVN draw record
     key nvn_drawrec
     int 0 1
@@ -764,7 +764,7 @@ setting NVN draw record
     words Off|On
     help 1 = the runtime records the draw, clear, dispatch, copy and present calls of the renderer (gpu/nvn/diag/draw_record.c)
     help and writes per frame counts and a signature table to <game>.drawrec<N>.frames.txt and
-    help <game>.drawrec<N>.sigs.txt, N being nvn_native. 0 = no record
+    help <game>.drawrec<N>.sigs.txt, N being 1 for the native path and 0 for nvn_legacy=1. 0 = no record
 setting NVN measure
     key nvn_measure
     int 0 1
@@ -781,7 +781,7 @@ setting NVN native missing
     words Log|Stop
     help 1 = a call of an NVN function that the host does not have, or a lookup of a name that the NVN library does not
     help have, stops the game with the function name. 0 = it returns 0 and is logged (each missing function at its first
-    help call, the first 16 missing names). Only with nvn_native=1
+    help call, the first 16 missing names). Only on the native path (nvn_legacy=0)
 setting NVN selftest
     key nvn_selftest
     int 0 1
@@ -790,7 +790,7 @@ setting NVN selftest
     words Off|On
     help 1 = at the first nvnQueueInitialize, the same scripted calls go to the game's NVN library and to the host
     help handlers, and the results are compared (gpu/nvn/test/nvn_selftest.c). The result is in the log. It needs nvn_trace=1
-    help and nvn_native=0. A diagnostic: it draws nothing and writes no object of the game
+    help and nvn_legacy=1. A diagnostic: it draws nothing and writes no object of the game
 setting NVN selftest mutation
     key nvn_selftest_mutate
     text 64
@@ -808,7 +808,7 @@ setting NVN exectest
     words Off|On
     help 1 = at the first nvnQueueInitialize, the execution test runs real work through the host handlers on its own
     help queues and checks the result in memory (gpu/nvn/test/nvn_exectest.c). The result is in the log. It needs nvn_trace=1 and
-    help nvn_native=1. A diagnostic: it draws nothing and writes no object of the game
+    help nvn_legacy=0. A diagnostic: it draws nothing and writes no object of the game
 setting Shader corpus
     key shader_corpus
     text 1024
