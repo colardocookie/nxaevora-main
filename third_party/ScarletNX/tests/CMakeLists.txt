@@ -1960,7 +1960,12 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     if(NOT WIN32)
         target_link_libraries(snx-test-temporal-txq-variant PRIVATE m)
     endif()
-    add_test(NAME txq_variant COMMAND snx-test-temporal-txq-variant WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    # each txq test in a folder of its own: they write and remove a file of the same name there
+    foreach(snx_txq_dir txq_variant txq_mutant_1 txq_mutant_2)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${snx_txq_dir}")
+    endforeach()
+    add_test(NAME txq_variant COMMAND snx-test-temporal-txq-variant
+             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/txq_variant")
     set_tests_properties(txq_variant PROPERTIES SKIP_RETURN_CODE 77)
     # The same test against the translator built with a mutant (SNX_TEST_TXQ_MUTANT in spirv_translate.c), which must
     # fail the corpus check it names (--must-fail): 1 width and height swapped, 2 every other slot keyed. The targets
@@ -1986,11 +1991,11 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     endfunction()
     add_executable(snx-test-temporal-txq-mutant-1 txq_variant.c)
     add_test(NAME txq_mutant_1 COMMAND snx-test-temporal-txq-mutant-1 --must-fail compare
-             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/txq_mutant_1")
     snx_txq_mutant(snx-test-temporal-txq-mutant-1 txq_mutant_1 1)
     add_executable(snx-test-temporal-txq-mutant-2 txq_variant.c)
     add_test(NAME txq_mutant_2 COMMAND snx-test-temporal-txq-mutant-2 --must-fail other-slot
-             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/txq_mutant_2")
     snx_txq_mutant(snx-test-temporal-txq-mutant-2 txq_mutant_2 2)
     if(NOT CMAKE_CROSSCOMPILING)
         # the SVC registers tools/svcgen lays out from src/nx/hle/svc/hos.svc, in both ABIs
