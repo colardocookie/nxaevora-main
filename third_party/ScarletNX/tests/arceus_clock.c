@@ -2716,6 +2716,7 @@ static void test_text_probe(void) {
     memset(text_probe_texts, 0, sizeof text_probe_texts);
     text_probe_calls = text_probe_steps = text_probe_ns = 0;
     text_probe_seen = 0;
+    text_probe_option = -1; /* as installed with the options word not readable (here: outside the test memory) */
     text_stub_caller = text_probe_base + 0xfbfc24;
     text_stub_status = 0;
     text_stub_answer = 1;
@@ -2762,6 +2763,33 @@ static void test_text_probe(void) {
     text_probe_reveal(&w, entry_pc);
     assert(logged_count == 1 && strstr(logged[0], "arceus-text-probe: text 200 bytes changed at call ") &&
            strstr(logged[0], ": +9D 0 -> 0, +A4 2 -> 4, +A6 0 -> 0 (FBFBD0 called from main+27379f0)"));
+    /* the options word [[[main+4279560]]+230]+68: its bits 0-1 at install and on each change, polled each frame */
+    {
+        const u64 probe_base = text_probe_base;
+        text_probe_base = 2000 - 0x4279560ull;
+        gw64(2000, 2100);
+        gw64(2100, 2200);
+        gw64(2200 + 0x230, 2600);
+        gw32(2600 + 0x68, 0x101);
+        text_probe_option = -2;
+        logged_count = 0;
+        text_probe_option_poll(host_ns);
+        text_probe_frame();
+        gw32(2600 + 0x68, 0x102);
+        host_ns += 2000000000;
+        text_probe_frame();
+        gw32(2600 + 0x68, 0x106); /* bit 2 is not the option's */
+        text_probe_frame();
+        assert(logged_count == 2 &&
+               strstr(logged[0], "arceus-text-probe: options word bits 0-1 at install -1 -> 1 at ") &&
+               strstr(logged[1], "arceus-text-probe: options word bits 0-1 1 -> 2 at ") &&
+               strstr(logged[1], " (2.000 s after the previous)"));
+        gw64(2200 + 0x230, 0);
+        text_probe_frame();
+        assert(logged_count == 3 && strstr(logged[2], "bits 0-1 2 -> -1 "));
+        text_probe_base = probe_base;
+        memset(memory + 2000, 0, 1100);
+    }
     /* the setup FBF57C: its arguments and the language byte before, the bytes it set after, the game's call once */
     logged_count = 0;
     text_probe_setup_lines = 0;

@@ -199,9 +199,11 @@ static void event_probe_line(void);
 /* The main-loop frames the probes and the demo tick's line count, while one of them is on */
 static int probe_frames_wanted(void) { return event_probe || demo_probe || demo_tick || text_probe; }
 /* The probes' frame count, once a main-loop frame; the event probe's line only when that probe is on */
+static void text_probe_frame(void);
 static void probe_frame(void) {
     __atomic_add_fetch(&event_probe_frames, 1, __ATOMIC_RELAXED);
     if (event_probe) event_probe_line();
+    if (text_probe) text_probe_frame();
 }
 static void trace_call(CPU* c, u64 entry, unsigned kind) {
     u64 object = c->x[0], channel = c->x[1], input = c->x[2], caller = c->x[30];
@@ -4376,6 +4378,29 @@ static u64 text_probe_base, text_probe_calls, text_probe_steps, text_probe_ns, t
 static unsigned text_probe_seen;
 static _Thread_local u64 text_probe_running; /* the text whose reveal runs on this thread, 0 for none */
 static unsigned text_probe_setup_lines, text_probe_first_lines, text_probe_change_lines;
+/* research (recon 13:58): bits 0-1 of the options word [[[main+4279560]]+230]+68, a candidate for the text speed: the
+   value at install and every change, polled on each reveal call and counted frame. -1 while it cannot be read. */
+static int text_probe_option = -2;
+static u64 text_probe_option_ns;
+static int text_probe_option_read(u64 base) {
+    if (!readable(base + 0x4279560, 8)) return -1;
+    const u64 holder = gr64(base + 0x4279560);
+    if (!holder || !readable(holder, 8)) return -1;
+    const u64 owner = gr64(holder);
+    if (!owner || !readable(owner + 0x230, 8)) return -1;
+    const u64 options = gr64(owner + 0x230);
+    if (!options || !readable(options + 0x68, 4)) return -1;
+    return (int)(gr32(options + 0x68) & 3);
+}
+static void text_probe_option_poll(u64 now) {
+    const int value = text_probe_option_read(text_probe_base);
+    if (value == text_probe_option) return;
+    LOG("arceus-text-probe: options word bits 0-1 %s%d -> %d at %.3f s (%.3f s after the previous)\n",
+        text_probe_option == -2 ? "at install " : "", text_probe_option == -2 ? -1 : text_probe_option, value,
+        (double)now / 1e9, text_probe_option_ns ? (double)(now - text_probe_option_ns) / 1e9 : 0.0);
+    text_probe_option = value;
+    text_probe_option_ns = now;
+}
 /* A text's record, retired when it has not been seen for a second, as a text not shown any more */
 static TextProbeText* text_probe_text(u64 text, u64 now) {
     for (unsigned k = 0; k < TEXT_PROBE_TEXTS; k++)
@@ -4446,6 +4471,7 @@ static void text_probe_reveal(CPU* c, u64 entry) {
     pm_lock(&text_probe_lock);
     text_probe_calls++;
     text_probe_last = text;
+    text_probe_option_poll(now);
     TextProbeText* tp = text_probe_text(text, now);
     if (tp) {
         if (!tp->calls) tp->first_ns = now;
@@ -4478,6 +4504,11 @@ static void text_probe_reveal(CPU* c, u64 entry) {
         text_probe_logged[2] = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
     } else if (now - text_probe_ns >= 5000000000ull)
         text_probe_line(now);
+    pm_unlock(&text_probe_lock);
+}
+static void text_probe_frame(void) {
+    pm_lock(&text_probe_lock);
+    text_probe_option_poll(plat_ns());
     pm_unlock(&text_probe_lock);
 }
 /* FBF57C(T, speed w1, mode w2), from FBEFE4 when a text is built, fills +9D/+A5 and +A4/+A6 from its tables: logged
@@ -4552,6 +4583,7 @@ static void text_probe_init(u64 base) {
         __atomic_store_n(&g_disp[(base + sites[k].offset - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
     }
     text_probe = 1;
+    text_probe_option_poll(plat_ns()); /* the value at install */
     /* FBF57C, log only: its own guards (head, the store of +A4, the RET); MOV X0,X8 -> ADD at +D4. Not needed for the
        rest of the probe, so a failed guard only leaves it out */
     const u64 setup = base + 0xfbf57c;
