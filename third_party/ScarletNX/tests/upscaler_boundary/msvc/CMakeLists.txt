@@ -24,3 +24,10 @@ foreach(kind 0 1 2 3 4)
     # every warning is an error, and the layout assertions of upscaler.h are compiled here by this compiler
     target_compile_options(snx-upscaler-standin-msvc-${kind} PRIVATE /W4 /WX /utf-8)
 endforeach()
+# NGX's lifetimes in DLSS's module (msvc/upscaler_dlss/dlss_core.h) against a stand-in NGX, by this compiler too
+add_executable(snx-dlss-core-msvc "${CMAKE_CURRENT_SOURCE_DIR}/../dlss_core.cpp")
+set_target_properties(snx-dlss-core-msvc PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+                      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out"
+                      RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/out" MSVC_RUNTIME_LIBRARY "MultiThreaded")
+target_include_directories(snx-dlss-core-msvc PRIVATE "${SNX_SOURCE}/../msvc/upscaler_dlss")
+target_compile_options(snx-dlss-core-msvc PRIVATE /W4 /WX /utf-8)
