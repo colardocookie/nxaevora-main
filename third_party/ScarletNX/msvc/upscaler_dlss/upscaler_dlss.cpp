@@ -24,6 +24,9 @@ namespace {
 // ours, fixed, GUID-like as NGX asks of a project id (CUSTOM engine)
 const char kProjectId[] = "0f297030-0b63-4170-ac30-3c0d1cb0de45";
 const unsigned kNgxPrinted = 256; // NGX's messages printed in full, the rest counted
+// DL2 point 5: the jitter's sign against NGX's, decided by the self-test's sign protocol. Until it has chosen one,
+// (+1, +1) is handed ("the same co-ordinate and direction system as motion vectors") and every line says so.
+const bool kJitterSignResolved = false;
 const uint32_t kNamesMost = 32;
 
 SnxUpscalerLog g_log;
@@ -42,6 +45,11 @@ void say(const char* format, ...) {
     if ((size_t)n >= sizeof line) memcpy(line + sizeof line - sizeof cut, cut, sizeof cut);
     size_t end = strlen(line);
     while (end && (line[end - 1] == '\n' || line[end - 1] == '\r')) line[--end] = 0;
+    if (!kJitterSignResolved) {
+        static const char unresolved[] = " [the jitter's sign unresolved, (+1, +1) used]";
+        if (end + sizeof unresolved > sizeof line) end = sizeof line - sizeof unresolved;
+        memcpy(line + end, unresolved, sizeof unresolved);
+    }
     g_log(line);
 }
 

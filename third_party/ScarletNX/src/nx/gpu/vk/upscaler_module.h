@@ -31,14 +31,14 @@ static inline const char* snx_module_text(int why) {
     }
 }
 
-/* Where a name is known. fsr is part of the program. dlss is a module, and in this build it is known to the
-   self-test's lookup only: in the game the name never loads a module, asks one anything, or creates or
-   evaluates a context, whatever a module would answer. */
+/* Where a name is known. fsr is part of the program. dlss is a module, in the self-test and, since DL2, in the game.
+   NOT_IN_GAME is kept for a name known to the self-test alone; none is so now. */
 enum { SNX_MODULE_NAME_UNKNOWN, SNX_MODULE_NAME_BUILT_IN, SNX_MODULE_NAME_MODULE, SNX_MODULE_NAME_NOT_IN_GAME };
 static inline int snx_module_name(const char* name, int selftest) {
     if (!name) return SNX_MODULE_NAME_UNKNOWN;
     if (!strcmp(name, "fsr")) return SNX_MODULE_NAME_BUILT_IN;
-    if (!strcmp(name, "dlss")) return selftest ? SNX_MODULE_NAME_MODULE : SNX_MODULE_NAME_NOT_IN_GAME;
+    (void)selftest;
+    if (!strcmp(name, "dlss")) return SNX_MODULE_NAME_MODULE;
     return SNX_MODULE_NAME_UNKNOWN;
 }
 

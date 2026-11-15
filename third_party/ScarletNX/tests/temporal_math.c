@@ -2291,7 +2291,7 @@ static void test_upscaler_module(void) {
     assert(snx_module_name("fsr", 0) == SNX_MODULE_NAME_BUILT_IN);
     assert(snx_module_name("fsr", 1) == SNX_MODULE_NAME_BUILT_IN);
     assert(snx_module_name("dlss", 1) == SNX_MODULE_NAME_MODULE);
-    assert(snx_module_name("dlss", 0) == SNX_MODULE_NAME_NOT_IN_GAME);
+    assert(snx_module_name("dlss", 0) == SNX_MODULE_NAME_MODULE); /* in the game too since DL2 */
     assert(snx_module_name("DLSS", 0) == SNX_MODULE_NAME_UNKNOWN);
     assert(snx_module_name("dlss ", 0) == SNX_MODULE_NAME_UNKNOWN);
     assert(snx_module_name("xess", 1) == SNX_MODULE_NAME_UNKNOWN && snx_module_name("", 0) == SNX_MODULE_NAME_UNKNOWN);
@@ -2304,7 +2304,7 @@ static void test_upscaler_module(void) {
         assert(snx_needs_none(0, NULL, 0));                                              /* an empty answer */
         assert(snx_needs_record(&r, "dlss", one, 1, &nothing, 0) == SNX_NEEDS_OK);
         assert(snx_needs_met(&r, "dlss", one, 1, NULL, 0) == SNX_NEEDS_OK);              /* one already met */
-        assert(snx_module_name("dlss", 0) == SNX_MODULE_NAME_NOT_IN_GAME);               /* and still refused */
+        assert(snx_module_name("dlss", 0) == SNX_MODULE_NAME_MODULE);                    /* and loaded (DL2) */
     }
     /* a full path, on Windows and elsewhere */
     assert(snx_module_full_path("C:\\games\\run\\snx_upscaler_dlss.dll", 1));
