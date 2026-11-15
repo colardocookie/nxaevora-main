@@ -2377,6 +2377,7 @@ static TemporalSpatialDraw spatial_draw(int k, double f) {
     d.vertex_count = 3;
     d.instance_count = 1;
     d.vertex_f[0] = d.vertex_f[1] = d.fragment_f[0] = d.fragment_f[1] = f;
+    d.vertex_origin[0] = -1.0, d.vertex_origin[1] = 1.0; /* c6aaf96f's bank 1 as measured */
     d.divisor[0] = d.divisor[1] = 1.0;
     d.viewport[0] = 0, d.viewport[1] = H, d.viewport[2] = W, d.viewport[3] = -H;
     d.scissor_on = 1;
@@ -2408,6 +2409,31 @@ static void test_spatial(void) {
     assert(temporal_spatial_size(3840, 2160, 3840, 2160, 1.0, 1.0, &M, &N) && M == 3840 && N == 2160);
     assert(!temporal_spatial_size(3840, 2160, 3841, 2160, 1.0, 1.0, &M, &N));
     assert(!temporal_spatial_size(0, 2160, 0, 1080, 0.5, 0.5, &M, &N));
+    /* the listed scales only (astra's O4): the five, on both axes alike; 1, 5/6, 9/10 and mixed ones are not */
+    for (int k = 0; k < 5; k++) assert(temporal_spatial_scale_listed(3840, 2160, allowed[k][0], allowed[k][1]) == k);
+    assert(temporal_spatial_scale_listed(1920, 1080, 960, 540) == 0);
+    assert(temporal_spatial_scale_listed(1920, 1080, 1536, 864) == 4);
+    assert(temporal_spatial_scale_listed(3840, 2160, 3840, 2160) < 0);
+    assert(temporal_spatial_scale_listed(3840, 2160, 3200, 1800) < 0); /* 5/6: whole, and not listed */
+    assert(temporal_spatial_size(3840, 2160, 3200, 1800, 3200.0 / 3840, 1800.0 / 2160, &M, &N));
+    assert(temporal_spatial_scale_listed(3840, 2160, 3456, 1944) < 0);
+    assert(temporal_spatial_scale_listed(3840, 2160, 1920, 1440) < 0); /* 1/2 by 2/3 */
+    assert(temporal_spatial_scale_listed(3840, 2160, 1921, 1080) < 0);
+    /* each scale's fraction, the float nearest p / q (research 12:50) */
+    assert(temporal_spatial_scale_fraction(0) == 0.5f && temporal_spatial_scale_fraction(1) == 0.6f);
+    assert(temporal_spatial_scale_fraction(2) == 2.0f / 3.0f && temporal_spatial_scale_fraction(3) == 0.75f);
+    assert(temporal_spatial_scale_fraction(4) == 0.8f);
+    /* the device's limit (astra's O5): an 8192 scene at 1/2 needs 16384 */
+    assert(temporal_spatial_fits(16384, 16384, 16384, 16384) && !temporal_spatial_fits(16384, 9216, 8192, 16384));
+    assert(!temporal_spatial_fits(7680, 16385, 16384, 16384) && !temporal_spatial_fits(0, 1, 16384, 16384));
+    /* the final decision (astra's O2): a variant not made or the mode gone off draws the scene unkeyed, never drops */
+    {
+        int fault = 0;
+        assert(temporal_spatial_final(4, 1, 1, &fault) == 4 && !fault);
+        assert(temporal_spatial_final(4, 0, 1, &fault) == 0 && fault);
+        assert(temporal_spatial_final(4, 1, 0, &fault) == 0 && fault);
+        assert(temporal_spatial_final(0, 0, 0, &fault) == 0 && !fault);
+    }
     /* the edge fill: right, bottom, corner, from the last column, row and pixel */
     TemporalSpatialRegion fill[3];
     assert(temporal_spatial_fill(3840, 2160, 7680, 4320, fill) == 3);
@@ -2491,6 +2517,15 @@ static void test_spatial(void) {
             REFUSED(x.instance_count = 2, TEMPORAL_SPATIAL_FORM);
             REFUSED(x.first_instance = 1, TEMPORAL_SPATIAL_FORM);
             REFUSED(x.other_stages = 1, TEMPORAL_SPATIAL_STAGES);
+            if (k == 0) { /* c6aaf96f's origin, as measured or not (astra's O1) */
+                REFUSED(x.vertex_origin[0] = -2.0, TEMPORAL_SPATIAL_ORIGIN);
+                REFUSED(x.vertex_origin[1] = -1.0, TEMPORAL_SPATIAL_ORIGIN);
+                REFUSED(x.vertex_origin[0] = NAN, TEMPORAL_SPATIAL_ORIGIN);
+            } else { /* 26fc2347 reads no constant: its bank 1 is not looked at */
+                x = d;
+                x.vertex_origin[0] = x.vertex_origin[1] = NAN;
+                assert(temporal_spatial_check(k, &x, ff) == TEMPORAL_SPATIAL_TAKEN);
+            }
             if (k != 1) {
                 REFUSED(x.fragment_f[1] = f * 0.999, TEMPORAL_SPATIAL_FRACTION);
                 REFUSED(x.fragment_f[0] = NAN, TEMPORAL_SPATIAL_FRACTION);
@@ -2632,6 +2667,23 @@ static void test_spatial(void) {
     temporal_spatial_unknown(&l, "a reader not on the list");
     temporal_spatial_outcome(&l, 1, 0);
     assert(l.off && !strcmp(l.why, "a reader not on the list"));
+    /* a bound surface over the scene's memory (A2, research 12:15): the scene's own range, one that shares a byte,
+       one that only touches it, one apart, a parked one (bit 63) over it, and empty ranges */
+    {
+        const uint64_t scene = 0x400000000ull, bytes = 0x2000000ull;
+        assert(temporal_spatial_overlaps(scene, bytes, scene, bytes));
+        assert(temporal_spatial_overlaps(scene + bytes - 1, 0x1000, scene, bytes));
+        assert(temporal_spatial_overlaps(scene - 0x1000, 0x1001, scene, bytes));
+        assert(temporal_spatial_overlaps(scene + 0x100000, 0x1000, scene, bytes)); /* a crop inside it */
+        assert(!temporal_spatial_overlaps(scene + bytes, 0x1000, scene, bytes));
+        assert(!temporal_spatial_overlaps(scene - 0x1000, 0x1000, scene, bytes));
+        assert(!temporal_spatial_overlaps(0x500000000ull, bytes, scene, bytes));
+        assert(temporal_spatial_overlaps(scene | 1ull << 63, bytes, scene, bytes));
+        assert(temporal_spatial_overlaps(scene, bytes, scene | 1ull << 63, bytes));
+        assert(!temporal_spatial_overlaps(scene, 0, scene, bytes));
+        assert(!temporal_spatial_overlaps(scene, bytes, scene, 0));
+        assert(!temporal_spatial_overlaps(scene + 16, 0, scene, bytes)); /* empty, inside it */
+    }
     /* the watch (research 11:25): not armed before the hook's end */
     memset(&l, 0, sizeof l);
     fr = (TemporalSpatialFrame){0, 0, 0};

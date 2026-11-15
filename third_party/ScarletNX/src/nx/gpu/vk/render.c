@@ -1733,6 +1733,7 @@ static int tex_tables_set(GpuChannel* ch, int stage, const VkSh* s, const int* f
                 VkImageView view = VK_NULL_HANDLE;
                 if ((handle & 0xFFFFF) <= ch->r3d[0x55F] && ((handle >> 20) & 0xFFF) <= ch->r3d[0x559]) {
                     tex_resolve(ch, handle, &x);
+                    vk_temporal_watch_bound(x.t); /* an element over the scene's memory (spatial) */
                     if (x.t && (!kind->shadow || !x.t->f.is_int) && !is_target(x.t, rt, zt, n))
                         view = vk_tex_bind_view(x.t, want, x.tic, x.tsc, num);
                 }
@@ -1984,8 +1985,11 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         u32 handle = tex_handle(ch, stage, tcb, st);
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
+        /* SNX_ARCEUS_UPSCALER=spatial: a binding given the larger texture (spatial_draw) is bound from the resolution
+           that decision was made on, never resolved again, so it is that binding and no other (astra's O2) */
+        const int larger = stage == 4 && res && (g_spatial.larger >> i & 1);
         TexRes own, *x = res ? &res[i] : NULL;
-        if (!x || !x->have || x->handle != handle || (x->t && x->t->is_rt)) {
+        if (!larger && (!x || !x->have || x->handle != handle || (x->t && x->t->is_rt))) {
             x = &own;
             tex_resolve(ch, handle, x);
         }
@@ -2007,12 +2011,9 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         /* sampling the depth target needs it read-only: no depth writes, and no stencil writes on either face */
         int sten_w = zt && zt->f.stencil && r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF)));
         int depth_ro = t && t == zt && !r[0x4BA] && !sten_w;
-        /* SNX_ARCEUS_UPSCALER=spatial: given the larger texture (spatial_draw), whose view is bound in place of the
-           scene's, before anything of the scene's Surf is used (research 11:25). Any other texture over the scene's
-           memory while the watch is armed is told to the watch. */
-        const int larger = stage == 4 && (g_spatial.larger >> i & 1);
-        if (larger && t != g_vk_watch) vk_temporal_spatial_fault("a binding given the larger texture resolved anew");
-        if (g_vk_watch && t && t != g_vk_watch) vk_temporal_watch(t, VK_WATCH_OVERLAP);
+        /* given the larger texture: its view in place of the scene's, before anything of the scene's Surf is used
+           (research 11:25). Any other texture over the scene's memory while the watch is armed goes to the watch. */
+        if (!larger) vk_temporal_watch_bound(t);
         u32 slots = 0; /* the color slots t is bound to, when the fragment shader may sample it in place */
         if (!larger && t && fb && g_vk.has_feedback && t->layout != VK_IMAGE_LAYOUT_UNDEFINED)
             for (u32 j = 0; j < n; j++)
@@ -2089,6 +2090,7 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         u32 tic[8];
         vk_gmem_words(tic_base + (handle & 0xFFFFF) * 32ull, tic, 8);
         Surf* surf = vk_tex_from_tic_storage(tic);
+        vk_temporal_watch_bound(surf);
         u64 size = vk_surf_guest_size(surf);
         int kind = s->si.img[i].kind;
         /* a draw can't also write one of its own attachments through a storage image */
@@ -3016,11 +3018,19 @@ retry:
             }
             fs = made;
         }
-        /* a binding given the larger texture without its variant: never one without the other (revision 3) */
-        if (g_spatial.larger && (!fs || fs->failed || fs == sh.fs0)) {
-            vk_temporal_spatial_fault("the size query's variant could not be made");
-            g_vk_skipped++;
-            return;
+        /* the larger texture with its variant, or neither: without the variant, or with the mode gone off since the
+           decision, the scene with the unkeyed program, and the mode off. The draw is drawn (astra's O2) */
+        if (g_spatial.larger) {
+            int fault;
+            const int made = fs && !fs->failed && fs != sh.fs0;
+            g_spatial.larger = temporal_spatial_final(g_spatial.larger, made, g_vk_watch != NULL, &fault);
+            if (fault) {
+                vk_temporal_spatial_fault(made ? "the mode went off before the draw's textures were bound"
+                                               : "the size query's variant could not be made");
+                memset(fk.txq, 0, sizeof fk.txq);
+                fs = fs_variant(ch, code + r[0x851], sh.fs0, &fk);
+                kept = 0;
+            }
         }
         if (fs && fs->failed) {
             g_vk_skipped++;
@@ -3950,6 +3960,7 @@ void vk_render_draw_texture(GpuChannel* ch) {
     TexRes x;
     tex_resolve(ch, (r[0x428] & 0xFFF) << 20 | (r[0x429] & 0xFFFFF), &x);
     Surf *rt[8], *zt, *t = x.t;
+    vk_temporal_watch_bound(t);
     u32 n;
     read_targets(ch, rt, &zt, &n);
     if (!t || !n || !rt[0]) {

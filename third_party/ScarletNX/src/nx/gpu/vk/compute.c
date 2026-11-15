@@ -1204,6 +1204,7 @@ rebind:
                 return;
             }
             Surf* t = st->flags & 1 ? vk_tex_from_tic_raw(tic) : vk_tex_from_tic(tic);
+            vk_temporal_watch_bound(t);
             if ((st->flags & 1) && !t) {
                 LOG_LIMIT(4, "vulkan: raw surface load requires a 32-bit color format (skipped)\n");
                 g_cs_skips[CS_SKIP_TEXTURE]++;
@@ -1259,6 +1260,7 @@ rebind:
             }
             vk_gmem_words(tic_base + (h & 0xFFFFF) * 32ull, tic, 8);
             Surf* t = vk_tex_from_tic_storage(tic);
+            vk_temporal_watch_bound(t);
             u64 image_bytes;
             VkImageView view = vk_storage_image_view(t, &p->si, i, &image_bytes);
             if (!view) {

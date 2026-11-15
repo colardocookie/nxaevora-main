@@ -23,6 +23,26 @@ static inline int temporal_spatial_size(int W, int H, int w, int h, double fx, d
     return 1;
 }
 
+/* The scales the mode takes (D3 revision 2 rule 2, astra's O4): w / W and h / H each exactly 1/2, 3/5, 2/3, 3/4 or
+   4/5, the same on both axes, by whole numbers. The scale's index, or -1 for any other, 1 included: the frame is then
+   D2's, not eligible and not counted. */
+static const int temporal_spatial_scales[5][2] = {{1, 2}, {3, 5}, {2, 3}, {3, 4}, {4, 5}};
+static inline int temporal_spatial_scale_listed(int W, int H, int w, int h) {
+    for (int k = 0; k < 5; k++) {
+        const int64_t p = temporal_spatial_scales[k][0], q = temporal_spatial_scales[k][1];
+        if ((int64_t)w * q == (int64_t)W * p && (int64_t)h * q == (int64_t)H * p) return k;
+    }
+    return -1;
+}
+/* the fraction a block must hold for scale k: the float nearest p / q (research 12:50), 0.6f for 3/5 */
+static inline float temporal_spatial_scale_fraction(int k) {
+    return (float)((double)temporal_spatial_scales[k][0] / temporal_spatial_scales[k][1]);
+}
+/* whether images of w x h fit the device's limit for the format and the uses they are made with (astra's O5) */
+static inline int temporal_spatial_fits(uint32_t w, uint32_t h, uint32_t max_w, uint32_t max_h) {
+    return w && h && w <= max_w && h <= max_h;
+}
+
 /* Where the picture goes in the larger texture and what repeats its edge: the picture W x H at the origin, then three
    stretched copies (the last column over the right part, the last row over the bottom part, the last pixel over
    the corner), which equal a clamp at the picture's edge for a footprint of any size (rule 3). A part of no size is
@@ -103,6 +123,7 @@ typedef struct TemporalSpatialDraw {
     uint32_t first_vertex, vertex_count, instance_count, first_instance;
     int other_stages;         /* a tessellation or geometry program bound */
     double vertex_f[2];       /* the fraction the vertex stage's scene block holds (NAN when not read or bound) */
+    double vertex_origin[2];  /* the vertex stage's bank 1 +0 and +4, where c6aaf96f's position starts (NAN as above) */
     double fragment_f[2];     /* the fragment stage's */
     double divisor[2];        /* the fragment stage's +794 and +798 (NAN when not read or bound) */
     double viewport[4];       /* x, y, width, height, the height signed */
@@ -124,6 +145,7 @@ enum {
     TEMPORAL_SPATIAL_FORM,         /* not a direct, non-indexed triangle list of one instance from vertex 0, 3 long */
     TEMPORAL_SPATIAL_STAGES,       /* a tessellation or geometry program */
     TEMPORAL_SPATIAL_FRACTION,     /* a fraction the programs read is not the replacement's */
+    TEMPORAL_SPATIAL_ORIGIN,       /* c6aaf96f's position origin (bank 1 +0, +4) is not the measured -1, +1 */
     TEMPORAL_SPATIAL_DIVISOR,      /* the composite's +794 or +798 not 1 */
     TEMPORAL_SPATIAL_SAMPLER,      /* not normalised, more than one level, anisotropy, compare, or an address mode */
     TEMPORAL_SPATIAL_VIEW,         /* another format, not 2D, not one level and layer, not the identity mapping */
@@ -138,6 +160,7 @@ static inline const char* temporal_spatial_text(int why) {
         "it is not a direct, non-indexed triangle list of one instance from vertex 0 and 3 vertices",
         "a tessellation or geometry program is bound",
         "a fraction its programs read is not the replacement's",
+        "its vertex program's position origin is not the measured -1, +1",
         "the composite's divisors are not 1",
         "its sampler is not the audited form",
         "its view is not the scene colour's own, 2D, one level and layer, with the identity mapping",
@@ -185,6 +208,9 @@ static inline int temporal_spatial_check(int k, const TemporalSpatialDraw* d, co
         d->first_instance != 0)
         return TEMPORAL_SPATIAL_FORM;
     if (d->other_stages) return TEMPORAL_SPATIAL_STAGES;
+    /* c6aaf96f positions from bank 1 +0, +4, measured -1 and +1 in P1 and P2: the audited mapping holds only there */
+    if (e->scaled_vertex && !(d->vertex_origin[0] == -1.0 && d->vertex_origin[1] == 1.0))
+        return TEMPORAL_SPATIAL_ORIGIN;
     for (int a = 0; a < 2; a++) {
         /* the fraction where a program of the entry reads it: the clamp's and the composite's fragment stage,
            c6aaf96f's vertex stage. B46268AD reads none for its coordinate. */
@@ -218,6 +244,15 @@ static inline int temporal_spatial_check(int k, const TemporalSpatialDraw* d, co
         if (!(covered_hi <= f) || !(t_lo >= 0.0) || !(t_hi < 1.0)) return TEMPORAL_SPATIAL_COVERAGE;
     }
     return TEMPORAL_SPATIAL_TAKEN;
+}
+
+/* Whether a surface bound at guest address at, bytes long, lies over the published scene colour's memory: the two
+   ranges share a byte. A parked surface's address carries bit 63 (surface.c), which is not part of the range. */
+static inline int temporal_spatial_overlaps(uint64_t at, uint64_t bytes, uint64_t scene, uint64_t scene_bytes) {
+    const uint64_t low = ~(1ull << 63);
+    at &= low;
+    scene &= low;
+    return bytes && scene_bytes && at < scene + scene_bytes && scene < at + bytes;
 }
 
 /* The mode's state across frames (D3-2 revision 3 and its tightening): off for the session at once after a failure
@@ -302,6 +337,14 @@ static inline int temporal_spatial_use(const TemporalSpatialFrame* fr, TemporalS
     if (listed && given == TEMPORAL_SPATIAL_AS_DRAWN && fr->decided && !fr->published) return TEMPORAL_SPATIAL_EXPECTED;
     temporal_spatial_unknown(l, what);
     return TEMPORAL_SPATIAL_CONSUMER;
+}
+/* What a draw is finally drawn with, decided once before its textures are bound (astra's O2): the slots given the
+   larger texture with the keyed variant, or, when the variant could not be made or the mode went off since the
+   decision, none of them, the scene with the unkeyed program. The draw is never dropped for it. fault: 1 when the
+   mode must go off for it. */
+static inline uint64_t temporal_spatial_final(uint64_t larger, int variant_made, int mode_on, int* fault) {
+    *fault = larger && (!variant_made || !mode_on);
+    return *fault ? 0 : larger;
 }
 /* the frame's end, for the latch: eligible when its replacement was recorded */
 static inline void temporal_spatial_frame_end(const TemporalSpatialFrame* fr, TemporalSpatialLatch* l) {

@@ -1087,6 +1087,11 @@ void vk_temporal_before(u64 fs0_hash);
 extern const Surf* g_vk_watch;
 enum { VK_WATCH_READ, VK_WATCH_WRITE, VK_WATCH_WROTE, VK_WATCH_FREED, VK_WATCH_OVERLAP };
 void vk_temporal_watch(const Surf* s, int kind);
+/* every surface a draw, a table element, a blit or a dispatch binds from a guest header goes here: one over the
+   scene colour's memory through another Surf is a consumer (D3-2 A2, research 12:15) */
+static inline void vk_temporal_watch_bound(const Surf* t) {
+    if (g_vk_watch && t && t != g_vk_watch) vk_temporal_watch(t, VK_WATCH_OVERLAP);
+}
 struct TemporalSpatialDraw;
 int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh* fs0, u32 handle, const Surf* t,
                                struct TemporalSpatialDraw* d, int* listed);

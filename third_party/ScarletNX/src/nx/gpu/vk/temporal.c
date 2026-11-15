@@ -3303,36 +3303,41 @@ static void spatial_start(void) {
         "given. Only at a scale of 1/2, 3/5, 2/3, 3/4 or 4/5, otherwise D2 as without the switch. Its numbers are "
         "of the private picture before the scale\n");
 }
-/* The fraction of a block a stage's program reads at offset, two floats, or NaN when it does not read them or they
-   are not bound */
-static void spatial_block(const GpuChannel* ch, int stage, const VkSh* program, u32 offset, double out[2]) {
+/* Two floats of a bank a stage's program reads at offset, as the draw binds them: guest memory, which is what the
+   renderer's constant buffer copies (render.c cb_get) unless a pending compute or graphics result covers the range,
+   whose newer bytes are on the GPU only. NaN when not read or not bound. 1 when such a result is pending: what the
+   draw reads is then not known here, and the binding is not on the list (research 12:50). */
+static int spatial_block(const GpuChannel* ch, int stage, const VkSh* program, int bank, u32 offset, double out[2]) {
     out[0] = out[1] = NAN;
-    if (!program || !(program->si.cbuf_mask >> TEMPORAL_SCENE_BANK & 1u) ||
-        program->si.cbuf_max[TEMPORAL_SCENE_BANK] < offset + 8)
-        return;
-    const u64 address = ch->cbind[stage][TEMPORAL_SCENE_BANK];
-    const u32 size = ch->cbind_size[stage][TEMPORAL_SCENE_BANK];
-    const u8* bytes = address && size >= offset + 8 ? gmem_host(address + offset, 8) : NULL;
-    if (!bytes) return;
+    if (!program || !(program->si.cbuf_mask >> bank & 1u) || program->si.cbuf_max[bank] < offset + 8) return 0;
+    const u64 address = ch->cbind[stage][bank];
+    const u32 size = ch->cbind_size[stage][bank];
+    if (!address || size < offset + 8) return 0;
+    if (vk_compute_pending(address + offset, 8) || (vk_buf_pending_any() && vk_buf_pending(address + offset, 8)))
+        return 1;
+    const u8* bytes = gmem_host(address + offset, 8);
+    if (!bytes) return 0;
     float words[2];
     memcpy(words, bytes, sizeof words);
     out[0] = words[0];
     out[1] = words[1];
+    return 0;
 }
 /* At the hook, before the resolve: whether this frame is replaced, with everything it needs made. A scale not on the
    list leaves the frame to D2 with a line. A failure to make a part turns the mode off at once. */
 static int spatial_ready(u32 frame, const Surf* scene, const TemporalRect* area, const TemporalRectGate* rg,
                          VkDescriptorSet* set) {
     static u64 refused;
-    int M, N;
+    int M, N, scale = -1;
     const int W = (int)scene->sw, H = (int)scene->sh;
     if (!spatial_now(frame) || !area) return 0;
-    if (area->x || area->y || scene->levels != 1 ||
+    if (!area->x && !area->y) scale = temporal_spatial_scale_listed(W, H, area->w, area->h);
+    if (scale < 0 || scene->levels != 1 ||
         !temporal_spatial_size(W, H, area->w, area->h, rg->now.fx, rg->now.fy, &M, &N)) {
         if (refused++ < 4 || refused % 600 == 0)
             LOG("arceus-upscaler: spatial: frame %u is left to D2 (rectangle %d,%d %dx%d of %dx%d at %g x %g, %u "
-                "levels: not an exact scale at the origin with one level), %llu such so far\n", frame, area->x,
-                area->y, area->w, area->h, W, H, (double)rg->now.fx, (double)rg->now.fy, scene->levels,
+                "levels: not 1/2, 3/5, 2/3, 3/4 or 4/5 at the origin with one level), %llu such so far\n", frame,
+                area->x, area->y, area->w, area->h, W, H, (double)rg->now.fx, (double)rg->now.fy, scene->levels,
                 (unsigned long long)refused);
         return 0;
     }
@@ -3345,9 +3350,20 @@ static int spatial_ready(u32 frame, const Surf* scene, const TemporalRect* area,
         return 0;
     }
     const VkImageUsageFlags drawn = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    const VkImageUsageFlags filled = drawn | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    /* the device's own limit for each image's format and uses, asked before either is made (astra's O5) */
+    VkImageFormatProperties limit[2];
+    const int asked = VK_OK(vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, scene->f.vk, VK_IMAGE_TYPE_2D,
+                                                                     VK_IMAGE_TILING_OPTIMAL, drawn, 0, &limit[0])) &&
+                      VK_OK(vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, scene->f.vk, VK_IMAGE_TYPE_2D,
+                                                                     VK_IMAGE_TILING_OPTIMAL, filled, 0, &limit[1]));
+    if (!asked || !temporal_spatial_fits(scene->sw, scene->sh, limit[0].maxExtent.width, limit[0].maxExtent.height) ||
+        !temporal_spatial_fits((u32)M, (u32)N, limit[1].maxExtent.width, limit[1].maxExtent.height)) {
+        spatial_failed("the device takes no private picture or larger texture of these sizes for their uses");
+        return 0;
+    }
     if (!image_ensure(&g_s.picture, scene->f.vk, scene->sw, scene->sh, drawn, "private picture") ||
-        !image_ensure(&g_s.larger, scene->f.vk, (u32)M, (u32)N,
-                      drawn | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, "larger")) {
+        !image_ensure(&g_s.larger, scene->f.vk, (u32)M, (u32)N, filled, "larger")) {
         spatial_failed("the private picture or the larger texture");
         return 0;
     }
@@ -3370,8 +3386,8 @@ static int spatial_ready(u32 frame, const Surf* scene, const TemporalRect* area,
     g_s.H = H;
     g_s.M = M;
     g_s.N = N;
-    g_s.f[0] = rg->now.fx;
-    g_s.f[1] = rg->now.fy;
+    /* the fraction the blocks must hold: the float nearest the scale's p / q (research 12:50) */
+    g_s.f[0] = g_s.f[1] = temporal_spatial_scale_fraction(scale);
     return 1;
 }
 /* After the resolve wrote the private picture: the scale into the picture part, the edge fill, and the frame's
@@ -3435,10 +3451,9 @@ void vk_temporal_watch(const Surf* s, int kind) {
     }
     /* another surface bound as a texture: a consumer only when it lies over the scene colour's memory (the scene
        made anew or parked since the hook, a crop of it, another view of its bytes) */
-    if (kind == VK_WATCH_OVERLAP) {
-        const u64 low = ~(1ull << 63), at = s ? s->gva & low : 0, scene = g_s.gva & low;
-        if (!s || s == g_s.scene || !(at < scene + g_s.bytes && scene < at + vk_surf_guest_size(s))) return;
-    }
+    if (kind == VK_WATCH_OVERLAP &&
+        (!s || s == g_s.scene || !temporal_spatial_overlaps(s->gva, vk_surf_guest_size(s), g_s.gva, g_s.bytes)))
+        return;
     const int binding = g_s.binding_on && kind == VK_WATCH_READ;
     const int use = temporal_spatial_use(&g_s.fr, &g_s.latch, binding && g_s.binding_listed,
                                          binding ? g_s.binding_given : -1, what[kind]);
@@ -3482,10 +3497,16 @@ int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh*
     int verdict = TEMPORAL_SPATIAL_NOT_LISTED;
     if (k >= 0) {
         d->vs = vs ? vs->hash : 0;
-        spatial_block(ch, ST_VS, vs, TEMPORAL_SCENE_FRACTION, d->vertex_f);
-        spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_FRACTION, d->fragment_f);
-        spatial_block(ch, ST_FS, fs0, 0x794, d->divisor);
-        verdict = temporal_spatial_check(k, d, g_s.f);
+        const int pending = spatial_block(ch, ST_VS, vs, TEMPORAL_SCENE_BANK, TEMPORAL_SCENE_FRACTION, d->vertex_f) |
+                            spatial_block(ch, ST_VS, vs, 1, 0, d->vertex_origin) |
+                            spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_BANK, TEMPORAL_SCENE_FRACTION, d->fragment_f) |
+                            spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_BANK, 0x794, d->divisor);
+        if (pending) { /* the bytes the draw reads are on the GPU only: not on the list */
+            temporal_spatial_unknown(&g_s.latch, "a block a listed reader reads has a pending GPU result");
+            k = -1;
+            *listed = 0;
+        } else
+            verdict = temporal_spatial_check(k, d, g_s.f);
     }
     const int first = !g_s.fr.decided && k >= 0;
     const int given = temporal_spatial_draw(&g_s.fr, &g_s.latch, k, verdict);
