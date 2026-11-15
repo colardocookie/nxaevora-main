@@ -228,6 +228,35 @@ static inline uint32_t selftest_d24(double depth) {
     const double clamped = depth < 0.0 ? 0.0 : depth > 1.0 ? 1.0 : depth;
     return (uint32_t)(clamped * 16777215.0 + 0.5);
 }
+/* The contexts an adapter handed out and the self-test has not destroyed, so that each ends exactly once (research's
+   ruling of 07:25): add one made (0 when the list is full), take one off when it is destroyed (0 when it is not on
+   the list: ended already, or never made) */
+#define SELFTEST_LIVE_MOST 64
+typedef struct {
+    const void* context[SELFTEST_LIVE_MOST];
+    unsigned n;
+} SelftestLive;
+static inline int selftest_live_add(SelftestLive* l, const void* context) {
+    if (!context || l->n >= SELFTEST_LIVE_MOST) return 0;
+    for (unsigned k = 0; k < l->n; k++)
+        if (l->context[k] == context) return 0; /* handed out twice and not destroyed between */
+    l->context[l->n++] = context;
+    return 1;
+}
+static inline int selftest_live_take(SelftestLive* l, const void* context) {
+    for (unsigned k = 0; k < l->n; k++)
+        if (l->context[k] == context) {
+            l->context[k] = l->context[--l->n];
+            return 1;
+        }
+    return 0;
+}
+/* A frame's depth in the other convention, near 0 and far 1 (DLSS's case of a changed create property, research's
+   ruling of N4 Q2): for a finite far plane that is 1 less the reversed depth, which in D24 is the largest code
+   less the code */
+static inline void selftest_depth_turn(uint32_t* depth, size_t texels) {
+    for (size_t t = 0; t < texels; t++) depth[t] = 16777215u - (depth[t] & 16777215u);
+}
 /* The output image holds four 32 bit floats a pixel, 16 bytes, and is read back as that. One channel of one
    pixel out of the bytes of the read-back, copied out and not read through a pointer of another type. */
 #define SELFTEST_OUTPUT_BYTES 16

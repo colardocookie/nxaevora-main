@@ -476,7 +476,9 @@ int capabilities(const SnxUpscalerCreate* c) {
     char fields[5][48];
     const snx_dlss::Field* all[5] = {&available, &needs_driver, &major, &minor, &init};
     for (int k = 0; k < 5; k++)
-        if (all[k]->got) snprintf(fields[k], sizeof fields[k], k == 4 ? "0x%08llx" : "%lld", all[k]->value);
+        if (all[k]->got && k == 4) /* NGX's result: its 32 bits */
+            snprintf(fields[k], sizeof fields[k], "0x%08x", (unsigned)(uint32_t)all[k]->value);
+        else if (all[k]->got) snprintf(fields[k], sizeof fields[k], "%lld", all[k]->value);
         else snprintf(fields[k], sizeof fields[k], "not given (result 0x%08x)", (unsigned)all[k]->result);
     say("arceus-upscaler: dlss: NGX's capabilities: available %s, needs an updated driver %s, the least driver %s.%s, "
         "the feature's init result %s", fields[0], fields[1], fields[2], fields[3], fields[4]);
@@ -628,41 +630,60 @@ int prepare(SnxUpscaler* u, VkCommandBuffer cb) {
     return answer;
 }
 
-// which loaded module NGX's feature library is, by its name in the process: a log line, no check
+// Which loaded module NGX's feature library is, by its name in the process: a log line, no check. "None" and "the
+// only one" are said only when every module's name was read whole; a cut list or a name not read is said as such.
 void provenance() {
     HMODULE modules[1024];
     DWORD bytes = 0;
-    int found = 0;
+    if (!K32EnumProcessModules(GetCurrentProcess(), modules, sizeof modules, &bytes)) {
+        say("arceus-upscaler: dlss: observed in the process: not known, the list of modules could not be read (%lu)",
+            GetLastError());
+        return;
+    }
+    const DWORD listed = bytes / sizeof modules[0], read = listed < 1024 ? listed : 1024;
+    int found = 0, unread = 0;
     wchar_t path[MAX_PATH * 4], first[MAX_PATH * 4] = L"";
-    if (K32EnumProcessModules(GetCurrentProcess(), modules, sizeof modules, &bytes))
-        for (DWORD i = 0; i < bytes / sizeof modules[0] && i < 1024; i++) {
-            if (!GetModuleFileNameW(modules[i], path, MAX_PATH * 4)) continue;
-            const wchar_t* name = wcsrchr(path, L'\\');
-            if (_wcsicmp(name ? name + 1 : path, L"nvngx_dlss.dll")) continue;
-            if (!found++) wcscpy_s(first, path);
+    for (DWORD i = 0; i < read; i++) {
+        const DWORD n = GetModuleFileNameW(modules[i], path, MAX_PATH * 4);
+        if (!n || n >= MAX_PATH * 4) { /* failed, or cut to the buffer */
+            unread++;
+            continue;
         }
-    char shown[MAX_PATH * 12];
-    if (!found) {
-        say("arceus-upscaler: dlss: observed in the process: no module named nvngx_dlss.dll");
-        return;
+        const wchar_t* name = wcsrchr(path, L'\\');
+        if (_wcsicmp(name ? name + 1 : path, L"nvngx_dlss.dll")) continue;
+        if (!found++) wcscpy_s(first, path);
     }
+    const int whole = listed <= 1024 && !unread;
+    char gaps[160] = "";
+    if (!whole)
+        snprintf(gaps, sizeof gaps, " (of %lu modules %lu listed here, %d names not read whole)",
+                 (unsigned long)listed, (unsigned long)read, unread);
     if (found > 1) {
-        say("arceus-upscaler: dlss: observed in the process: %d modules named nvngx_dlss.dll: ambiguous", found);
+        say("arceus-upscaler: dlss: observed in the process: %d modules named nvngx_dlss.dll: ambiguous%s", found,
+            gaps);
         return;
     }
+    if (!found) {
+        say(whole ? "arceus-upscaler: dlss: observed in the process: no module named nvngx_dlss.dll%s"
+                  : "arceus-upscaler: dlss: observed in the process: none named nvngx_dlss.dll among the names read, "
+                    "so whether one is loaded is not known%s",
+            gaps);
+        return;
+    }
+    char shown[MAX_PATH * 12];
     utf8(first, shown, sizeof shown);
+    char version[64] = "version not known";
     DWORD handle = 0, size = GetFileVersionInfoSizeW(first, &handle);
     unsigned char* info = size ? static_cast<unsigned char*>(malloc(size)) : nullptr;
     VS_FIXEDFILEINFO* fixed = nullptr;
     UINT length = 0;
     if (info && GetFileVersionInfoW(first, 0, size, info) &&
         VerQueryValueW(info, L"\\", reinterpret_cast<void**>(&fixed), &length) && fixed && length >= sizeof *fixed)
-        say("arceus-upscaler: dlss: observed in the process: nvngx_dlss.dll at %s, version %u.%u.%u.%u", shown,
-            HIWORD(fixed->dwFileVersionMS), LOWORD(fixed->dwFileVersionMS), HIWORD(fixed->dwFileVersionLS),
-            LOWORD(fixed->dwFileVersionLS));
-    else
-        say("arceus-upscaler: dlss: observed in the process: nvngx_dlss.dll at %s, version not known", shown);
+        snprintf(version, sizeof version, "version %u.%u.%u.%u", HIWORD(fixed->dwFileVersionMS),
+                 LOWORD(fixed->dwFileVersionMS), HIWORD(fixed->dwFileVersionLS), LOWORD(fixed->dwFileVersionLS));
     free(info);
+    say("arceus-upscaler: dlss: observed in the process: nvngx_dlss.dll at %s, %s%s%s", shown, version,
+        whole ? "" : ", not known to be the only one", gaps);
 }
 
 // NGX's evaluation for one frame: the numbers (dlss_eval.h, the jitter's signs +1 and +1: a self-test's variants
