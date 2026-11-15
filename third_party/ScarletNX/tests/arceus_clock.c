@@ -2530,6 +2530,125 @@ static void test_demo_probe(void) {
     logged_count = 0;
     memset(memory, 0, sizeof memory);
 }
+/* DEMO_TICK on its real wrapper: a stand-in step that, in state 3 or 4, adds 2 to the clock from max(clock, 0), or
+   holds it, or sets another value */
+static int demo_game_hold, demo_game_other;
+static void demo_game_step(CPU* c, u64 entry) {
+    (void)entry;
+    const u64 object = c->x[0], context = gr64(object + 0x3b0);
+    const u32 state = gr32(object + 0x3b8);
+    const int32_t clock = (int32_t)gr32(context + 0x7ec);
+    if ((state == 3 || state == 4) && !demo_game_hold)
+        gw32(context + 0x7ec, (u32)(demo_game_other ? 77 : (clock < 0 ? 0 : clock) + 2));
+    c->x[0] = 1;
+    c->pc = c->x[30];
+}
+static int32_t demo_tick_call(u64 object, u64 ns) {
+    step.step = ns;
+    CPU c = {.x = {[0] = object, [30] = return_pc}, .pc = entry_pc};
+    demo_tick_step(&c, entry_pc);
+    assert(c.x[0] == 1 && c.pc == return_pc);
+    return (int32_t)gr32(gr64(object + 0x3b0) + 0x7ec);
+}
+static void demo_tick_reset(int32_t clock) {
+    memset(demo_tick_states, 0, sizeof demo_tick_states);
+    gw32(DEMO_CONTEXT + 0x7ec, (u32)clock);
+    demo_game_hold = demo_game_other = 0;
+}
+static void test_demo_tick(void) {
+    memset(memory, 0, sizeof memory);
+    const u64 ns = step.step;
+    gw64(DEMO_OBJECT + 0x3b0, DEMO_CONTEXT);
+    gw32(DEMO_OBJECT + 0x3b8, 3);
+    demo_tick_original = demo_game_step;
+    /* 30 FPS: 2 a call, as the game */
+    demo_tick_reset(0);
+    for (unsigned k = 1; k <= 30; k++) assert(demo_tick_call(DEMO_OBJECT, 33333334) == (int32_t)(2 * k));
+    /* 60 FPS: 1 a call, 60 a second */
+    demo_tick_reset(0);
+    for (unsigned k = 1; k <= 60; k++) assert(demo_tick_call(DEMO_OBJECT, 16666667) == (int32_t)k);
+    /* 19.2 ms frames, 52 a second: 60 units within 1, never more than 2 a call */
+    demo_tick_reset(0);
+    int32_t clock = 0;
+    for (unsigned k = 0; k < 52; k++) {
+        const int32_t next = demo_tick_call(DEMO_OBJECT, 19200000);
+        assert(next - clock >= 0 && next - clock <= 2);
+        clock = next;
+    }
+    assert(clock >= 59 && clock <= 61);
+    /* a 100 ms frame at 60 FPS: 2 there, its carry of 4 units 2 a call over the next calls, then 1 a call: 13 units
+       for 216.7 ms, nothing lost */
+    demo_tick_reset(0);
+    clock = 0;
+    static const int32_t gains[8] = {1, 1, 2, 2, 2, 2, 2, 1};
+    static const u64 steps[8] = {16666667, 16666667, 100000000, 16666667, 16666667, 16666667, 16666667, 16666667};
+    for (unsigned k = 0; k < 8; k++) {
+        const int32_t next = demo_tick_call(DEMO_OBJECT, steps[k]);
+        assert(next - clock == gains[k]);
+        clock = next;
+    }
+    /* five 100 ms frames: 2 a call, and the carry is capped at 4 units, so at 60 FPS after them four calls give 2 and
+       then 1 a call again (the time beyond the cap is not owed) */
+    demo_tick_reset(0);
+    for (unsigned k = 0; k < 5; k++) (void)demo_tick_call(DEMO_OBJECT, 100000000);
+    clock = (int32_t)gr32(DEMO_CONTEXT + 0x7ec);
+    assert(clock == 10);
+    for (unsigned k = 0; k < 6; k++) {
+        const int32_t next = demo_tick_call(DEMO_OBJECT, 16666667);
+        assert(next - clock == (k < 4 ? 2 : 1));
+        clock = next;
+    }
+    /* a hold adds nothing and clears the carry: after it, 1 a call at 60 again */
+    demo_tick_reset(0);
+    (void)demo_tick_call(DEMO_OBJECT, 100000000);
+    demo_game_hold = 1;
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 2);
+    demo_game_hold = 0;
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 3);
+    /* a negative clock gives 0 + n; a change other than +2 is left as the game made it; another state is untouched */
+    demo_tick_reset(-1);
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 1);
+    demo_game_other = 1;
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 77);
+    demo_game_other = 0;
+    gw32(DEMO_OBJECT + 0x3b8, 4); /* the skip state steps the same way */
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 78);
+    gw32(DEMO_OBJECT + 0x3b8, 5);
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 78);
+    gw32(DEMO_OBJECT + 0x3b8, 3);
+    /* a full table: that controller keeps the game's +2, counted; a reused pointer with another context is fresh */
+    demo_tick_reset(0);
+    for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++)
+        demo_tick_states[k] = (DemoTickState){.object = 3000 + k, .context = 1};
+    const u64 full = demo_tick_full;
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 2 && demo_tick_full == full + 1);
+    demo_tick_reset(0);
+    demo_tick_states[0] = (DemoTickState){.object = DEMO_OBJECT, .context = 999, .budget = 3 * DEMO_TICK_UNIT};
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 1 && demo_tick_states[0].context == DEMO_CONTEXT);
+    /* inside the demo probe the probe reads the clock as the tick left it */
+    demo_tick_reset(0);
+    demo_probe_original = demo_tick_step;
+    demo_probe_ns = demo_probe_object = 0;
+    CPU c = {.x = {[0] = DEMO_OBJECT, [1] = 9, [30] = return_pc}, .pc = entry_pc};
+    step.step = 16666667;
+    demo_probe_step(&c, entry_pc);
+    assert(gr32(DEMO_CONTEXT + 0x7ec) == 1 && demo_probe_clock == 1);
+    demo_probe_original = NULL;
+    /* with the demo probe alone, the frame count runs and no event probe line comes (the reviewer's note) */
+    const int event = event_probe;
+    event_probe = 0;
+    event_probe_ns = 0;
+    logged_count = 0;
+    for (unsigned k = 0; k < 10; k++) {
+        host_ns += 1000000000;
+        probe_frame();
+    }
+    assert(!logged_count);
+    event_probe = event;
+    demo_tick_original = NULL;
+    step.step = ns;
+    memset(memory, 0, sizeof memory);
+}
 /* EVENT_TICK-2's decision on the measured step: runs over frame times, the budget never above two ticks */
 static unsigned event_decide_runs(const u64* steps, unsigned count, unsigned repeat, char* pattern, u64* cut_total) {
     ScriptTick t = {0};
@@ -2775,6 +2894,7 @@ int main(void) {
     test_event_tick();
     test_event_tick_decide();
     test_demo_probe();
+    test_demo_tick();
     test_ride_swap();
     test_defaults_on();
     test_capped_fall_body();

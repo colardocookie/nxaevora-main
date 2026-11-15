@@ -196,14 +196,16 @@ static int readable(u64 address, u64 size) {
 static int event_probe, demo_probe;
 static u64 event_probe_frames;
 static void event_probe_line(void);
+/* The probes' frame count, once a main-loop frame; the event probe's line only when that probe is on */
+static void probe_frame(void) {
+    __atomic_add_fetch(&event_probe_frames, 1, __ATOMIC_RELAXED);
+    if (event_probe) event_probe_line();
+}
 static void trace_call(CPU* c, u64 entry, unsigned kind) {
     u64 object = c->x[0], channel = c->x[1], input = c->x[2], caller = c->x[30];
     u64 count = __atomic_add_fetch(&counts[kind], 1, __ATOMIC_RELAXED);
     /* The channel 0 duration write comes once per main-loop frame. */
-    if ((event_probe || demo_probe) && kind == 2 && channel == 0 && caller == main_base + 0x278150c) {
-        __atomic_add_fetch(&event_probe_frames, 1, __ATOMIC_RELAXED);
-        event_probe_line();
-    }
+    if ((event_probe || demo_probe) && kind == 2 && channel == 0 && caller == main_base + 0x278150c) probe_frame();
     if (kind == 2) adjust_duration(c);
     originals[kind](c, entry);
     /* At this exact call site X19 is the UI animation owner and X21 is its
@@ -4736,6 +4738,138 @@ static void event_tick_init(void) {
     LOG("arceus-event-tick: EXPERIMENT: event scripts run 30 times a second of elapsed time (the job 15BA460), the "
         "pad's edges of skipped frames carried to the next run (IsPadTrigger, IsPadRelease, IsPadRepeat)\n");
 }
+/* SNX_ARCEUS_DEMO_TICK=1 (DEMO-TICK-DESIGN.md 7c525c55, confirmed by CUT-60f/30f: the demo ended at clock 3502 at both
+   rates): the demo clock C+7EC gained 2 a call, 1/60 s units counted at the authored 30 FPS. The step is wrapped as a
+   whole: when a call added exactly 2 in state 3 or 4, the clock is set to max(before, 0) + n instead, n the elapsed
+   time in 1/60 s units (at most 2 a call, the rest carried, the carry capped at 4 units). Any other change is left. */
+#define DEMO_TICK_UNIT (SCRIPT_TICK_NS / 2)
+#define DEMO_TICK_CONTROLLERS 8
+typedef struct { u64 object, context; int64_t budget; } DemoTickState;
+static DemoTickState demo_tick_states[DEMO_TICK_CONTROLLERS];
+static PMutex demo_tick_lock = PMUTEX_INIT;
+static GuestFn demo_tick_original;
+static int demo_tick;
+static u64 demo_tick_calls, demo_tick_units, demo_tick_held, demo_tick_full, demo_tick_ns, demo_tick_logged[3];
+/* The units for a call of this step: the budget gains the step (one within 1/32 of 1/30 s as 1/30 s), gives the whole
+   units with the script tick's half rounding, at most 2, and keeps at most 4 */
+static unsigned demo_tick_units_for(int64_t* budget, u64 step_ns) {
+    int64_t step = (int64_t)step_ns;
+    if (step > SCRIPT_TICK_NS - SCRIPT_TICK_NS / 32 && step < SCRIPT_TICK_NS + SCRIPT_TICK_NS / 32)
+        step = SCRIPT_TICK_NS;
+    *budget += step;
+    int64_t n = (*budget + (step < DEMO_TICK_UNIT ? step : DEMO_TICK_UNIT) / 2) / DEMO_TICK_UNIT;
+    if (n > 2) n = 2;
+    if (n < 0) n = 0;
+    *budget -= n * DEMO_TICK_UNIT;
+    if (*budget > 4 * DEMO_TICK_UNIT) *budget = 4 * DEMO_TICK_UNIT;
+    return (unsigned)n;
+}
+/* The controller's state, fresh for a new controller, or a reused pointer with another context; NULL when the table
+   is full (astra's table point: that controller's clock keeps the game's +2, with a line and a count) */
+static DemoTickState* demo_tick_state(u64 object, u64 context) {
+    for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++)
+        if (demo_tick_states[k].object == object) {
+            if (demo_tick_states[k].context != context) demo_tick_states[k] = (DemoTickState){object, context, 0};
+            return &demo_tick_states[k];
+        }
+    for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++)
+        if (!demo_tick_states[k].object) {
+            demo_tick_states[k] = (DemoTickState){object, context, 0};
+            return &demo_tick_states[k];
+        }
+    return NULL;
+}
+static void demo_tick_step(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    const int known = readable(object + 0x3b0, 0x10);
+    const u64 context = known ? gr64(object + 0x3b0) : 0;
+    const int usable = context && readable(context + 0x7ec, 4);
+    const u32 state = known ? gr32(object + 0x3b8) : 0;
+    const int32_t before = usable ? (int32_t)gr32(context + 0x7ec) : 0;
+    demo_tick_original(c, entry);
+    if (!usable || (state != 3 && state != 4) || !readable(object + 0x3b0, 8) || gr64(object + 0x3b0) != context ||
+        !readable(context + 0x7ec, 4))
+        return;
+    const int32_t after = (int32_t)gr32(context + 0x7ec), from = before < 0 ? 0 : before;
+    pm_lock(&step_lock);
+    const u64 ns = step.step ? step.step : step.initial_ns;
+    pm_unlock(&step_lock);
+    pm_lock(&demo_tick_lock);
+    DemoTickState* st = demo_tick_state(object, context);
+    if (st && before < 0) st->budget = 0; /* the clock restarted: nothing carried */
+    unsigned n = 0;
+    int changed = 0;
+    if (!st) {
+        if (after == from + 2 && __atomic_add_fetch(&demo_tick_full, 1, __ATOMIC_RELAXED) == 1)
+            WARN("arceus-demo-tick: table of %u controllers full: controller %llx keeps the game's +2 a call\n",
+                 DEMO_TICK_CONTROLLERS, (unsigned long long)object);
+    } else if (after == from + 2) {
+        n = demo_tick_units_for(&st->budget, ns);
+        changed = 1;
+    } else if (after == before) { /* held: a held demo owes no time */
+        st->budget = 0;
+        __atomic_add_fetch(&demo_tick_held, 1, __ATOMIC_RELAXED);
+    }
+    pm_unlock(&demo_tick_lock);
+    if (changed) {
+        gw32(context + 0x7ec, (u32)(from + (int32_t)n));
+        __atomic_add_fetch(&demo_tick_units, n, __ATOMIC_RELAXED);
+    }
+    const u64 calls = __atomic_add_fetch(&demo_tick_calls, 1, __ATOMIC_RELAXED), now = plat_ns();
+    u64 last = __atomic_load_n(&demo_tick_ns, __ATOMIC_RELAXED);
+    if (!last) {
+        if (__atomic_compare_exchange_n(&demo_tick_ns, &last, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            demo_tick_logged[0] = calls;
+            demo_tick_logged[1] = __atomic_load_n(&demo_tick_units, __ATOMIC_RELAXED);
+            demo_tick_logged[2] = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
+        }
+        return;
+    }
+    if (now - last < 5000000000ull ||
+        !__atomic_compare_exchange_n(&demo_tick_ns, &last, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        return;
+    const u64 units = __atomic_load_n(&demo_tick_units, __ATOMIC_RELAXED);
+    const u64 frames = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
+    const double seconds = (double)(now - last) / 1e9;
+    LOG("arceus-demo-tick: seconds=%.2f calls_per_s=%.2f units_per_s=%.2f frames_per_s=%.2f held=%llu full=%llu\n",
+        seconds, (double)(calls - demo_tick_logged[0]) / seconds, (double)(units - demo_tick_logged[1]) / seconds,
+        (double)(frames - demo_tick_logged[2]) / seconds,
+        (unsigned long long)__atomic_load_n(&demo_tick_held, __ATOMIC_RELAXED),
+        (unsigned long long)__atomic_load_n(&demo_tick_full, __ATOMIC_RELAXED));
+    demo_tick_logged[0] = calls;
+    demo_tick_logged[1] = units;
+    demo_tick_logged[2] = frames;
+}
+static void demo_tick_init(void) {
+    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_DEMO_TICK", 0)) return;
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x1458300, size = 0x1154;
+    if (demo_probe_original) {
+        /* inside the probe, so that the probe reads the clock as the tick left it */
+        demo_tick_original = demo_probe_original;
+        __atomic_store_n(&demo_probe_original, demo_tick_step, __ATOMIC_RELEASE);
+    } else {
+        int covered = 0;
+        for (u32 i = 0; i < g_mod->nfns; i++)
+            if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] >= size) covered = 1;
+        if (!covered || pc < g_code_lo || pc + size > g_code_hi || !readable(pc, size) || gr32(pc) != 0xd10343ff ||
+            gr32(pc + 0x1d8) != 0x14000069) {
+            WARN("arceus-demo-tick: refused instruction/function guard\n");
+            return;
+        }
+        gw32(pc + 0x1d8, 0xb4000d3f); /* the census's own rewrite, as the demo probe */
+        jit_code_changed(pc, size);
+        demo_tick_original = jit_wait(pc);
+        if (!demo_tick_original) {
+            WARN("arceus-demo-tick: compile failed\n");
+            return;
+        }
+        __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], demo_tick_step, __ATOMIC_RELEASE);
+    }
+    demo_tick = 1;
+    LOG("arceus-demo-tick: EXPERIMENT: the demo clock C+7EC gains 1/60 s units of elapsed time, at most 2 a call, "
+        "instead of 2 a call\n");
+}
 void arceus_clock_post_jit(void) {
     event_probe_init(); /* read-only, before the return below so that 30 FPS has it too */
     demo_probe_init(arceus_probe_base());
@@ -4775,6 +4909,7 @@ void arceus_clock_post_jit(void) {
     waza_object_init();
     waza_shot_init();
     event_tick_init(); /* after the event probe, which it then calls on a run */
+    demo_tick_init();  /* after the demo probe, inside which it then runs */
     cadence_census_init();
     water_fix_init();
     effects_fix_init();
