@@ -2447,6 +2447,20 @@ static void test_event_probe(void) {
     }
     assert(logged_count == 2 && strstr(logged[1], "frames_per_s=- (no clock wrappers)"));
     event_probe_original[0] = event_probe_original[1] = NULL;
+    /* At 30 FPS the timing layer leaves main_base unset: the probe looks for the module itself, and with none
+       supported it refuses, installs nothing and leaves main_base alone */
+    const SnxModule* mod = g_mod;
+    const u64 base = main_base;
+    static const SnxModule none = {0};
+    g_mod = &none;
+    main_base = 0;
+    event_probe = 0;
+    flag("SNX_ARCEUS_EVENT_PROBE", "1");
+    event_probe_init();
+    unset_flag("SNX_ARCEUS_EVENT_PROBE");
+    assert(!event_probe && !main_base && !event_probe_original[0] && !event_probe_original[1]);
+    g_mod = mod;
+    main_base = base;
     clocks_installed = clocks;
     event_probe_frames = frames;
     host_ns = ns;

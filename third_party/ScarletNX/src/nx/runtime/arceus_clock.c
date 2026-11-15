@@ -249,9 +249,11 @@ static void message_view_probe(CPU* c, u64 entry) {
 
 /* The default probe only observes virtual calls. The optional experiment changes the four verified
    main-loop duration writes. Build and instruction guards precede both hooks and the 60 FPS pacing override. */
+/* The supported main module's build id: 1.1.1 */
+static const u8 arceus_main_id[32] = {0xae,0xe8,0xf1,0x50,0xdd,0xa1,0xb5,0xa8,0x38,0x80,0x6e,0x1a,0x5e,0xa6,0x82,0x7a,
+                                      0xd9,0xf3,0xc5,0x1e,0,0,0,0,0,0,0,0,0,0,0,0};
 void arceus_clock_init(void) {
-    static const u8 id[32] = {0xae,0xe8,0xf1,0x50,0xdd,0xa1,0xb5,0xa8,0x38,0x80,0x6e,0x1a,0x5e,0xa6,0x82,0x7a,
-                              0xd9,0xf3,0xc5,0x1e,0,0,0,0,0,0,0,0,0,0,0,0};
+    const u8* id = arceus_main_id;
     static const u64 offsets[3] = {0x278303c, 0x2783048, 0x277bef4};
     static const u32 words[3] = {0x8b21d008, 0xf0008fc8, 0x8b21d008};
     static const GuestFn wrappers[3] = {read_clock, set_mode, set_duration};
@@ -276,7 +278,7 @@ void arceus_clock_init(void) {
     experimental = 1;
     for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
         if (!strcmp(g_mod->mods[i].name, "main")) mod = &g_mod->mods[i];
-    if (!mod || memcmp(mod->build_id, id, sizeof id)) {
+    if (!mod || memcmp(mod->build_id, id, sizeof arceus_main_id)) {
         WARN("arceus-clock: refused unsupported main build\n");
         return;
     }
@@ -4342,9 +4344,20 @@ static void event_probe_count(CPU* c, u64 entry, unsigned kind) {
 }
 static void event_job_probe(CPU* c, u64 entry) { event_probe_count(c, entry, 0); }
 static void event_resume_probe(CPU* c, u64 entry) { event_probe_count(c, entry, 1); }
+/* Also at 30 FPS and below, where the timing layer is skipped and main_base is not set: the probe finds the module
+   itself and leaves main_base alone (the reviewer's note on 471fe69d) */
 static void event_probe_init(void) {
     const char* enabled = getenv("SNX_ARCEUS_EVENT_PROBE");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!enabled || strcmp(enabled, "1")) return;
+    u64 base = main_base;
+    for (u32 i = 0; !base && g_mod && i < g_mod->nmods; i++)
+        if (!strcmp(g_mod->mods[i].name, "main") &&
+            !memcmp(g_mod->mods[i].build_id, arceus_main_id, sizeof arceus_main_id))
+            base = g_mod->mods[i].base;
+    if (!base) {
+        WARN("arceus-event-probe: refused unsupported main build\n");
+        return;
+    }
     if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) {
         WARN("arceus-event-probe: refused without AOT invalidation\n");
         return;
@@ -4357,7 +4370,7 @@ static void event_probe_init(void) {
     static const GuestFn wrappers[2] = {event_job_probe, event_resume_probe};
     unsigned installed = 0;
     for (unsigned k = 0; k < 2; k++) {
-        const u64 pc = main_base + sites[k].offset;
+        const u64 pc = base + sites[k].offset;
         int covered = 0;
         for (u32 i = 0; i < g_mod->nfns; i++)
             if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] >= sites[k].size) covered = 1;
@@ -4383,6 +4396,7 @@ static void event_probe_init(void) {
         "every 5 s%s\n", installed, clocks_installed ? "" : ", frames not counted without the clock wrappers");
 }
 void arceus_clock_post_jit(void) {
+    event_probe_init(); /* read-only, before the return below so that 30 FPS has it too */
     if (!timing_enabled || !clocks_installed) return;
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     camera_trace_only = main_base && !target_fps_explicit && probe && !strcmp(probe, "1");
@@ -4418,7 +4432,6 @@ void arceus_clock_post_jit(void) {
     field_waza_init();
     waza_object_init();
     waza_shot_init();
-    event_probe_init();
     cadence_census_init();
     water_fix_init();
     effects_fix_init();
