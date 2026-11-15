@@ -1081,6 +1081,18 @@ void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* con
 void vk_temporal_recorded(const VkViewport* viewport, const VkRect2D* scissor);
 void vk_temporal_sampler(u32 slot, VkSampler sampler);
 void vk_temporal_before(u64 fs0_hash);
+/* SNX_ARCEUS_UPSCALER=spatial (D3): the hand-over of the scaled picture. g_vk_watch is the scene colour's Surf while
+   the watch is armed (from the hook to the present of a frame whose replacement was recorded), else NULL: every use of
+   it goes to vk_temporal_watch. The renderer asks, for each binding of the scene, what the binding is given. */
+extern const Surf* g_vk_watch;
+enum { VK_WATCH_READ, VK_WATCH_WRITE, VK_WATCH_WROTE, VK_WATCH_FREED, VK_WATCH_OVERLAP };
+void vk_temporal_watch(const Surf* s, int kind);
+struct TemporalSpatialDraw;
+int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh* fs0, u32 handle, const Surf* t,
+                               struct TemporalSpatialDraw* d, int* listed);
+VkImageView vk_temporal_spatial_view(void);
+void vk_temporal_spatial_binding(int on, int listed, int given); /* around a scene binding's vk_surf_use */
+void vk_temporal_spatial_fault(const char* what);
 /* the scene camera's constant block with this frame's jitter in place of the guest's, 1 when buffer and offset are set */
 int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer, u64* offset);
 void vk_temporal_camera_seen(u64 address, u32 bound, u32 size, u64 program);
