@@ -55,6 +55,7 @@ static struct {
     u64 staging_size;
     const SnxUpscalerApi* api;
     VkFormat motion_format; /* the vectors' images: two halves for dlss, four for the others */
+    int dlss; /* DLSS's matrix (DL1b revision 2, research's rulings for N4): native sizes only, quality not judged */
     u32 contexts; /* contexts the adapter handed out and the self-test has not destroyed */
     int layers; /* how the loader's list of layers was read (selftest_layers) */
     int listed; /* the loader listed the validation layer, whatever came of setting it up */
@@ -100,6 +101,7 @@ typedef struct {
     int ldr; /* 1: the context is made without the flag for linear colours over 1 (a real create property) */
 } Variant;
 static const Variant CONFIGURED = {1, 1, 1, 1, 1};
+static const Variant STANDARD_DEPTH = {1, 1, 1, 1, 0}; /* depth near 0 and far 1, for inputs made so */
 
 /* a run's state across frames, as the runtime will keep it */
 typedef struct {
@@ -1330,7 +1332,7 @@ static const char* verdict_name(int verdict) {
 /* A sign case: the same frozen inputs run once per combination of the signs in mask (bit 0 jitter x, 1 jitter y,
    2 vector x, 3 vector y), judged in one region against the reference. 1 for a pass. */
 static int signs(const char* name, const Inputs* in, unsigned mask, int region, const double* reference,
-                 const u8* regions, double* output) {
+                 const u8* regions, double* output, int judge) {
     double errors[16];
     int needs[16];
     int n = 0, own = -1, ran = 1;
@@ -1356,6 +1358,11 @@ static int signs(const char* name, const Inputs* in, unsigned mask, int region, 
        margin of the variants that turn vector signs alone: the jitter's margin is the edge case's. A case of
        vector signs alone asks the margin of every variant, as it did. */
     const int jitter_too = (mask & 3) != 0;
+    if (!judge) { /* logged, nothing chosen (DLSS in DL1: the jitter's sign against NGX's is not documented) */
+        LOG(ST "%s: %d variants logged, no verdict and nothing chosen%s\n", name, n,
+            ran ? "" : ": a run could not be made");
+        return ran;
+    }
     const int verdict = !ran         ? SELFTEST_FAIL
                         : jitter_too ? selftest_signs(errors, needs, n, own, SELFTEST_MARGIN)
                                      : selftest_verdict(errors, n, own, SELFTEST_MARGIN);
@@ -1393,7 +1400,7 @@ static int suite(int up) {
         double first = 0, last = 0;
         truth(&in, up, reference, regions);
         snprintf(name, sizeof name, "case 1 %s jitter signs", up ? "up" : "down");
-        ok = signs(name, &in, 3, SELFTEST_BACKGROUND, reference, regions, output);
+        ok = signs(name, &in, 3, SELFTEST_BACKGROUND, reference, regions, output, 1);
         const int ran = run(&in, &CONFIGURED, 0, output, &first, &last, regions, NULL);
         const double error = ran ? difference(&in, output, reference, regions, SELFTEST_BACKGROUND) : NAN;
         plain(&in, in.frames - 1, up, other);
@@ -1415,7 +1422,7 @@ static int suite(int up) {
     if (ok) {
         truth(&in, up, reference, regions);
         snprintf(name, sizeof name, "case 2 %s all signs", up ? "up" : "down");
-        ok = signs(name, &in, 15, SELFTEST_BACKGROUND, reference, regions, output);
+        ok = signs(name, &in, 15, SELFTEST_BACKGROUND, reference, regions, output, 1);
     }
     pass &= ok;
     inputs_free(&in);
@@ -1428,7 +1435,7 @@ static int suite(int up) {
         const Variant flipped = {1, 1, 1, 1, 0};
         truth(&in, up, reference, regions);
         snprintf(name, sizeof name, "case 3 %s vector signs in the patch", up ? "up" : "down");
-        ok = signs(name, &in, 12, SELFTEST_INSIDE, reference, regions, output);
+        ok = signs(name, &in, 12, SELFTEST_INSIDE, reference, regions, output, 1);
         /* the band the patch left, over every evaluated frame after the first cycle of offsets. Under BAND_LEAST
            pixels it is too little to judge by, and the case fails as a test. */
         Band own_band = {up, 0.0, 0}, wrong_band = {up, 0.0, 0};
@@ -1725,8 +1732,17 @@ static int native_base(Native* n, NativeForm* F) {
     F->ran = run(&F->in, &CONFIGURED, 0, F->fresh, &first, &last, n->regions, NULL);
     const SelftestProof fresh = g.proof;
     F->ran = F->ran && run(&F->in, &CONFIGURED, 0, n->scratch[N_AGAIN], NULL, NULL, NULL, NULL) &&
-             run(&ahead, &CONFIGURED, 0, n->scratch[N_AHEAD], NULL, NULL, NULL, NULL) &&
-             run(&F->in, &WITHOUT_HDR, 0, n->scratch[N_OLD], NULL, NULL, NULL, NULL);
+             run(&ahead, &CONFIGURED, 0, n->scratch[N_AHEAD], NULL, NULL, NULL, NULL);
+    /* the logged control of another create property: for DLSS the other depth convention, on the finite form */
+    const int control = !g.dlss || !isinf(F->form->far_plane);
+    if (F->ran && control && !g.dlss) F->ran = run(&F->in, &WITHOUT_HDR, 0, n->scratch[N_OLD], NULL, NULL, NULL, NULL);
+    else if (F->ran && control) {
+        Inputs other;
+        F->ran = inputs_project(&other, F->form, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 0, 0, 0, 0, 0);
+        if (F->ran) selftest_depth_turn(other.depth, (size_t)other.frames * (size_t)other.w * (size_t)other.h);
+        F->ran = F->ran && run(&other, &STANDARD_DEPTH, 0, n->scratch[N_OLD], NULL, NULL, NULL, NULL);
+        inputs_free(&other);
+    }
     inputs_free(&ahead);
     if (!F->ran) {
         LOG(ST "%s: a run could not be made: FAIL\n", name);
@@ -1737,10 +1753,13 @@ static int native_base(Native* n, NativeForm* F) {
     plain(&F->in, F->in.frames - 1, n->up, n->scratch[N_PLAIN]);
     LOG(ST "native suite %s, %s: logged only, no margin: error against the true picture %.6f, of one frame scaled "
            "plainly %.6f. Change a frame over the first cycle %.6f, over the last %.6f. Two fresh contexts differ "
-           "by %.6f, a context made without the flag for colours over 1 from one made with it by %.6f\n",
+           "by %.6f, a context made %s from one made as configured by %.6f\n",
         n->way, F->name, difference(&F->in, F->fresh, n->reference, n->regions, SELFTEST_BACKGROUND),
         difference(&F->in, n->scratch[N_PLAIN], n->reference, n->regions, SELFTEST_BACKGROUND), first, last, F->noise,
-        difference(&F->in, n->scratch[N_OLD], F->fresh, n->regions, SELFTEST_BACKGROUND));
+        !g.dlss  ? "without the flag for colours over 1"
+        : control ? "with the other depth convention"
+                  : "with the other depth convention (not made on this form)",
+        control ? difference(&F->in, n->scratch[N_OLD], F->fresh, n->regions, SELFTEST_BACKGROUND) : NAN);
     return native_asserted(name, &fresh, 1, &F->form->far_plane, &F->in, F->in.frames - 1, F->form);
 }
 
@@ -1763,8 +1782,22 @@ static int native_cases(Native* n, NativeForm* F) {
     /* a change of a create property: the session's first frames without the flag, then every frame a fresh run
        hands over (all but the gate's first) with it, on a context made anew */
     snprintf(name, sizeof name, "native suite %s, %s, a create property changed", n->way, F->name);
-    int evaluated = 0, changed = ran && session_open(&s, &F->in, &NATIVE_TRAITS);
-    for (int i = 0; changed && i < 9; i++) changed = frame_run(&s, &F->in, i, &WITHOUT_HDR, 0, work) >= 0;
+    /* For DLSS, which takes no colour without the flag for colours over 1: the depth convention, on the finite form,
+       with inputs whose depth is of the other convention (research's ruling of N4 Q2). Not run on the infinite
+       form, where the change of the far plane's flag is the transition case. */
+    const u32 property = g.dlss ? SNX_UPSCALER_DEPTH_REVERSED : SNX_UPSCALER_COLOUR_LINEAR_HDR;
+    const char* property_name = g.dlss ? "the flag for reversed depth" : "the flag for colours over 1";
+    const int property_run = !g.dlss || !isinf(F->form->far_plane);
+    Inputs other;
+    memset(&other, 0, sizeof other);
+    int evaluated = 0, changed = ran && property_run && session_open(&s, &F->in, &NATIVE_TRAITS);
+    if (changed && g.dlss) {
+        changed = inputs_project(&other, F->form, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 0, 0, 0, 0, 0);
+        if (changed) selftest_depth_turn(other.depth, (size_t)other.frames * (size_t)other.w * (size_t)other.h);
+    }
+    const Inputs* first_inputs = g.dlss ? &other : &F->in;
+    const Variant* first_variant = g.dlss ? &STANDARD_DEPTH : &WITHOUT_HDR;
+    for (int i = 0; changed && i < 9; i++) changed = frame_run(&s, first_inputs, i, first_variant, 0, work) >= 0;
     const unsigned before = changed ? s.evaluated : 0;
     for (int i = 1; changed && i <= end; i++) {
         const int r = frame_run(&s, &F->in, i, &CONFIGURED, 0, work);
@@ -1774,20 +1807,26 @@ static int native_cases(Native* n, NativeForm* F) {
     /* the property really changed: two contexts came into use, the first made without the flag and the second
        with it, and the picture compared is the second's, against a fresh context made with it */
     SelftestProof proof = s.proof;
-    const int remade = proof.contexts == 2 && !(proof.flags[0] & SNX_UPSCALER_COLOUR_LINEAR_HDR) &&
-                       (proof.flags[1] & SNX_UPSCALER_COLOUR_LINEAR_HDR);
+    const int remade = proof.contexts == 2 && !(proof.flags[0] & property) && (proof.flags[1] & property);
     const int counted = changed && before == 8 && evaluated == end && remade;
     session_close(&s);
+    inputs_free(&other);
     const double apart = changed ? difference(&F->in, work, F->fresh, n->regions, SELFTEST_BACKGROUND) : NAN;
     int verdict = changed ? selftest_resized(apart, F->noise, F->off) : SELFTEST_FAIL;
-    LOG(ST "%s: %u frames evaluated without the flag, %d with it, %u contexts made with the flags 0x%x and then "
-           "0x%x: %s. The remade context's picture against a fresh context's made with the flag, on the same "
-           "frames %.6f (at most %.3f), two fresh contexts %.6f, the control one offset ahead %.6f (over %.3f and "
-           "over the noise): %s\n",
-        name, before, evaluated, proof.contexts, proof.flags[0], proof.flags[1], counted ? "PASS" : "FAIL", apart,
-        SELFTEST_RESIZED, F->noise, F->off, SELFTEST_RESIZED, native_word(changed, verdict));
-    pass &= counted && verdict == SELFTEST_PASS;
-    pass &= changed && native_asserted(name, &proof, 2, far, &F->in, end, F->form);
+    if (!property_run)
+        LOG(ST "%s: not run for dlss on this form: its depth has no other convention here, and the change of the "
+               "far plane's flag is the transition case\n", name);
+    else {
+        LOG(ST "%s (%s): %u frames evaluated without the flag, %d with it, %u contexts made with the flags 0x%x and "
+               "then 0x%x: %s. The remade context's picture against a fresh context's made with the flag, on the "
+               "same frames %.6f (at most %.3f), two fresh contexts %.6f, the control one offset ahead %.6f (over "
+               "%.3f and over the noise): %s\n",
+            name, property_name, before, evaluated, proof.contexts, proof.flags[0], proof.flags[1],
+            counted ? "PASS" : "FAIL", apart, SELFTEST_RESIZED, F->noise, F->off, SELFTEST_RESIZED,
+            native_word(changed, verdict));
+        pass &= counted && verdict == SELFTEST_PASS;
+        pass &= changed && native_asserted(name, &proof, 2, far, &F->in, end, F->form);
+    }
     /* a change of size, on one session: the small size's frames, then the native ones */
     snprintf(name, sizeof name, "native suite %s, %s, the size changed", n->way, F->name);
     memset(&s, 0, sizeof s);
@@ -1901,7 +1940,7 @@ static int native_patch(Native* n, const SelftestProjection* form, const char* f
         char signs_name[200];
         truth(&in, n->up, reference, regions);
         snprintf(signs_name, sizeof signs_name, "%s, vector signs in the patch", name);
-        ok = signs(signs_name, &in, 12, SELFTEST_INSIDE, reference, regions, output);
+        ok = signs(signs_name, &in, 12, SELFTEST_INSIDE, reference, regions, output, 1);
         /* the band the patch left, over every evaluated frame after the first cycle of offsets, as in case 3 */
         Band own_band = {n->up, 0.0, 0}, wrong_band = {n->up, 0.0, 0};
         int ran = run(&in, &CONFIGURED, 0, output, NULL, NULL, NULL, &own_band);
@@ -1945,7 +1984,19 @@ static int native(int up) {
         for (int k = 0; k < 2; k++) pass &= native_cases(&n, &forms[k]);
         pass &= native_transition(&n, &forms[0], &forms[1]);
         pass &= native_transition(&n, &forms[1], &forms[0]);
-        pass &= native_patch(&n, &FINITE, forms[0].name);
+        if (!g.dlss) pass &= native_patch(&n, &FINITE, forms[0].name);
+        else {
+            /* The jitter's four sign variants, logged and nothing chosen (research's ruling of N4 Q4): the frame's
+               jitter times each variant's signs, as the module always hands NGX +1 and +1. A run that cannot be
+               made still fails, as every call must succeed. */
+            char name[160];
+            LOG(ST "native suite %s, %s, a nearer patch: not run for dlss, its verdict is one of quality\n", n.way,
+                forms[0].name);
+            snprintf(name, sizeof name, "native suite %s, %s, the jitter's signs", n.way, forms[0].name);
+            truth(&forms[0].in, n.up, n.reference, n.regions);
+            pass &= forms[0].ran && !g.unknown &&
+                    signs(name, &forms[0].in, 3, SELFTEST_BACKGROUND, n.reference, n.regions, n.scratch[N_WORK], 0);
+        }
     }
     for (int k = 0; k < 2; k++) {
         inputs_free(&forms[k].in);
@@ -2270,35 +2321,46 @@ int vk_upscaler_selftest(const char* adapter) {
     LOG(ST "started for the adapter \"%s\". No game is loaded and no window is opened\n", adapter);
     if (!edges_announce()) return 1;
     g.api = vk_upscaler_adapter_selftest(adapter);
-    g.motion_format = !strcmp(adapter, "dlss") ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16G16B16A16_SFLOAT;
+    g.dlss = !strcmp(adapter, "dlss");
+    g.motion_format = g.dlss ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16G16B16A16_SFLOAT;
     if (!g.api) {
         LOG(ST "FAIL: the adapter \"%s\" is not available\n", adapter);
         return 1;
     }
     g.generation = 1;
     if (!device_make()) return 1;
-    pass = suite(1);
-    g.generation++;
-    pass &= suite(0);
-    g.generation++;
-    pass &= resize(1);
-    g.generation++;
-    pass &= resize(0);
-    g.generation++;
-    pass &= native(1);
-    g.generation++;
-    pass &= native(0);
-    g.generation++;
-    pass &= edge_case(1);
-    g.generation++;
-    pass &= edge_case(0);
-    /* log only from here: nothing below is a case, and none of it enters the result */
-    g.generation++;
-    edge_matched();
-    g.generation++;
-    edge_response(1);
-    g.generation++;
-    edge_response(0);
+    if (g.dlss) { /* DLSS's matrix: native sizes only, quality not judged (research's ruling of N4 Q1) */
+        LOG(ST "the suite of cases 1 to 6: not run for dlss, its sizes are below the native one, which DLAA does not "
+               "take, and its verdicts are of quality\n");
+        LOG(ST "the change of size below the native one: not run for dlss, DLAA takes the native size only\n");
+        LOG(ST "the edge case, its matched and its response runs: not run for dlss, their verdicts are of quality\n");
+        pass = native(1);
+        g.generation++;
+        pass &= native(0);
+    } else {
+        pass = suite(1);
+        g.generation++;
+        pass &= suite(0);
+        g.generation++;
+        pass &= resize(1);
+        g.generation++;
+        pass &= resize(0);
+        g.generation++;
+        pass &= native(1);
+        g.generation++;
+        pass &= native(0);
+        g.generation++;
+        pass &= edge_case(1);
+        g.generation++;
+        pass &= edge_case(0);
+        /* log only from here: nothing below is a case, and none of it enters the result */
+        g.generation++;
+        edge_matched();
+        g.generation++;
+        edge_response(1);
+        g.generation++;
+        edge_response(0);
+    }
     /* The wait is made whatever the cases before came to, and its answer is kept on its own. It is idle()'s wait,
        written out here so that a wait that was not tried (the device's state was not known before it) and one
        that was tried and failed, with its result, can be told apart afterwards. */
@@ -2358,6 +2420,10 @@ int vk_upscaler_selftest(const char* adapter) {
         LOG(ST "case 7: its count was taken without the device known to be idle. The wait for it was made and "
                "failed with the result %d: FAIL\n", (int)wait_result);
     pass = pass && g.validation && g.checks_asked && !said && !late && waited && !g.unknown;
-    LOG(ST "RESULT: %s\n", pass ? "PASS" : "FAIL");
+    if (g.dlss) { /* DL1 judges integration only: every call, every value, every run, the lifecycle, case 7 */
+        LOG(ST "DL1 integration checks, quality unassessed: %s\n", pass ? "PASS" : "FAIL");
+        LOG(ST "quality: not assessed in DL1\n");
+    } else
+        LOG(ST "RESULT: %s\n", pass ? "PASS" : "FAIL");
     return pass ? 0 : 1;
 }

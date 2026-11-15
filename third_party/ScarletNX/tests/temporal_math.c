@@ -4964,6 +4964,25 @@ static void test_selftest_proof(void) {
     }
 }
 
+/* a depth of the other convention: 1 less the reversed depth, which for a finite far plane is the standard one */
+static void test_selftest_depth_turn(void) {
+    const SelftestProjection finite = {0.1, 5000.0};
+    const double distances[4] = {0.1, 1.0, 37.5, 5000.0};
+    uint32_t depth[4];
+    for (int k = 0; k < 4; k++) depth[k] = selftest_d24(selftest_depth(&finite, distances[k]));
+    assert(depth[0] == 16777215u && depth[3] == 0); /* reversed: near at 1, far at 0 */
+    selftest_depth_turn(depth, 4);
+    assert(depth[0] == 0 && depth[3] == 16777215u); /* turned: near at 0, far at 1 */
+    for (int k = 0; k < 4; k++) { /* each within one step of the standard depth f (z - n) / ((f - n) z) */
+        const double z = distances[k], standard = 5000.0 * (z - 0.1) / ((5000.0 - 0.1) * z);
+        const double code = (double)selftest_d24(standard);
+        assert(fabs((double)depth[k] - code) <= 1.0);
+    }
+    uint32_t stencil = 0xAB000010u; /* a stencil byte above the 24 bits is not kept */
+    selftest_depth_turn(&stencil, 1);
+    assert(stencil == 16777215u - 0x10u);
+}
+
 /* the vectors' texels into FSR's four-half image or DLSS's two-half one */
 static void test_selftest_motion_pack(void) {
     const uint16_t from[12] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
@@ -5272,6 +5291,7 @@ int main(void) {
     test_gpu_time();
     test_selftest();
     test_selftest_motion_pack();
+    test_selftest_depth_turn();
     test_selftest_projection();
     test_selftest_layers();
     test_selftest_variables();
