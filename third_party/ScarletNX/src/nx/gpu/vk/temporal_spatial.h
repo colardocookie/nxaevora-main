@@ -95,13 +95,14 @@ static inline double temporal_spatial_catmull_rom(const float* picture, int w, i
     return sum > 0.0 ? sum : 0.0;
 }
 
-/* The audited readers (D3 revision 4, measured in P1 and P2): fragment and vertex program by their whole hashes, the
-   scene colour's handle offset in words, how the program's coordinate of that binding is made, and whether the
-   composite's +794 and +798 must be 1. */
+/* The audited readers (D3-2 revision 4, the scene colour at handle 0x28 in all three as S-1 and S-2 measured, recon
+   2026-11-15 16:30): fragment and vertex program by their whole hashes, the scene colour's handle offset in words,
+   how the program's coordinate of that binding is made, none of them clamped, and whether the composite's +794 and
+   +798 must be 1. */
 enum {
     TEMPORAL_SPATIAL_RAW,      /* the vertex coordinate as it is (26fc2347): B46268AD */
-    TEMPORAL_SPATIAL_CLAMPED,  /* min(f - 1/Q, the coordinate times f) (c6aaf96f's f, the fragment's clamp): 21FBFBEC */
-    TEMPORAL_SPATIAL_COMPOSITE /* min(f - 1/Q, f x the coordinate / +794): the composite */
+    TEMPORAL_SPATIAL_SCALED,   /* the coordinate times f, c6aaf96f's: 21FBFBEC */
+    TEMPORAL_SPATIAL_COMPOSITE /* f x the coordinate / +794 and +798: the composite */
 };
 typedef struct {
     uint64_t fs, vs;
@@ -111,9 +112,9 @@ typedef struct {
 } TemporalSpatialEntry;
 #define TEMPORAL_SPATIAL_ENTRIES 3
 static const TemporalSpatialEntry temporal_spatial_entries[TEMPORAL_SPATIAL_ENTRIES] = {
-    {0x21fbfbecbf90f4a3ull, 0xc6aaf96f6c29a40eull, 0x2A, TEMPORAL_SPATIAL_CLAMPED, 1},
+    {0x21fbfbecbf90f4a3ull, 0xc6aaf96f6c29a40eull, 0x28, TEMPORAL_SPATIAL_SCALED, 1},
     {0xb46268adda62e218ull, 0x26fc2347977486d7ull, 0x28, TEMPORAL_SPATIAL_RAW, 0},
-    {0x8a160a27d90af72dull, 0x26fc2347977486d7ull, 0x36, TEMPORAL_SPATIAL_COMPOSITE, 0}};
+    {0x8a160a27d90af72dull, 0x26fc2347977486d7ull, 0x28, TEMPORAL_SPATIAL_COMPOSITE, 0}};
 /* the entry of a fragment program and binding, or -1 */
 static inline int temporal_spatial_entry(uint64_t fs, uint32_t handle) {
     for (int k = 0; k < TEMPORAL_SPATIAL_ENTRIES; k++)
@@ -252,17 +253,9 @@ static inline int temporal_spatial_check(int k, const TemporalSpatialDraw* d, co
         double lo, hi;
         if (!temporal_spatial_covered(d, a, &lo, &hi)) return TEMPORAL_SPATIAL_COVERAGE;
         if (e->scaled_vertex) lo *= f, hi *= f; /* c6aaf96f stretches the coordinate by the fraction */
-        double t_lo = lo, t_hi = hi;
-        if (e->tap == TEMPORAL_SPATIAL_COMPOSITE) t_lo = f * lo, t_hi = f * hi; /* divided by +794, which is 1 */
-        /* the covered coordinate the fraction bounds: the one the scene colour is sampled at, before any clamp */
-        const double covered_hi = e->tap == TEMPORAL_SPATIAL_RAW ? hi : t_hi;
-        if (e->tap != TEMPORAL_SPATIAL_RAW) {
-            const double clamp = d->query[a] ? f - 1.0 / d->query[a] : NAN; /* min(f - 1/Q, the coordinate) */
-            if (!(clamp == clamp)) return TEMPORAL_SPATIAL_COVERAGE;
-            if (t_hi > clamp) t_hi = clamp;
-            if (t_lo > clamp) t_lo = clamp;
-        }
-        if (!(covered_hi <= f) || !(t_lo >= 0.0) || !(t_hi < 1.0)) return TEMPORAL_SPATIAL_COVERAGE;
+        if (e->tap == TEMPORAL_SPATIAL_COMPOSITE) lo *= f, hi *= f; /* divided by +794 and +798, which are 1 */
+        /* the scene colour's tap, unclamped in all three (revision 4): at least 0, at most the fraction, below 1 */
+        if (!(hi <= f) || !(lo >= 0.0) || !(hi < 1.0)) return TEMPORAL_SPATIAL_COVERAGE;
     }
     return TEMPORAL_SPATIAL_TAKEN;
 }

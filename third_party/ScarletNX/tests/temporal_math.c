@@ -2510,9 +2510,11 @@ static void test_spatial(void) {
         assert(fabs(temporal_spatial_catmull_rom(flat, PW, PH, 18, 12, 17, 11) - 0.25) < 1e-9);
     }
     /* the entries, by whole hash and handle */
-    assert(temporal_spatial_entry(0x21fbfbecbf90f4a3ull, 0x2A) == 0);
+    assert(temporal_spatial_entry(0x21fbfbecbf90f4a3ull, 0x28) == 0); /* revision 4: 0x28 for all three */
     assert(temporal_spatial_entry(0xb46268adda62e218ull, 0x28) == 1);
-    assert(temporal_spatial_entry(0x8a160a27d90af72dull, 0x36) == 2);
+    assert(temporal_spatial_entry(0x8a160a27d90af72dull, 0x28) == 2);
+    assert(temporal_spatial_entry(0x21fbfbecbf90f4a3ull, 0x2A) == -1); /* recon's earlier pairing, withdrawn */
+    assert(temporal_spatial_entry(0x8a160a27d90af72dull, 0x36) == -1);
     assert(temporal_spatial_entry(0x8a160a27d90af72dull, 0x2A) == -1);
     assert(temporal_spatial_entry(0x63b3848c1a6e23e0ull, 0x36) == -1);
     /* each measured draw is taken at both fractions; each condition alone refuses it */
@@ -2661,7 +2663,11 @@ static void test_spatial(void) {
             REFUSED(x.viewport[3] = -x.viewport[3], TEMPORAL_SPATIAL_COVERAGE);
             REFUSED(x.viewport[2] = 0, TEMPORAL_SPATIAL_COVERAGE);
             REFUSED(x.scissor[2] = x.scissor[0], TEMPORAL_SPATIAL_COVERAGE); /* nothing covered */
-            if (k != 1) REFUSED(x.query[0] = 0, TEMPORAL_SPATIAL_COVERAGE);
+            /* no size of the scene colour is in its taps any more (revision 4): a query answer of 0 changes nothing */
+            x = d;
+            x.query[0] = x.query[1] = 0;
+            assert(temporal_spatial_check(k, &x, ff) == TEMPORAL_SPATIAL_TAKEN);
+
             if (fi && k == 1) REFUSED(x.scissor[2] = d.target[0], TEMPORAL_SPATIAL_COVERAGE); /* beyond f */
             if (fi && k == 1) REFUSED(x.scissor[2] += 1, TEMPORAL_SPATIAL_COVERAGE); /* one pixel beyond f */
             if (!fi && k == 1) /* a centre at coordinate 1 exactly: within f = 1, and a tap not below 1 */
