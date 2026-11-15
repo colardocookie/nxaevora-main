@@ -24,14 +24,15 @@ namespace {
 // ours, fixed, GUID-like as NGX asks of a project id (CUSTOM engine)
 const char kProjectId[] = "0f297030-0b63-4170-ac30-3c0d1cb0de45";
 const unsigned kNgxPrinted = 256; // NGX's messages printed in full, the rest counted
-// DL2 point 5: the jitter's sign against NGX's, decided by the self-test's sign protocol. Until it has chosen one,
-// (+1, +1) is handed ("the same co-ordinate and direction system as motion vectors") and every line says so.
-const bool kJitterSignResolved = false;
+// DL2 point 5: the jitter's sign against NGX's. The self-test's protocol left it unresolved (DL-S3); the user's look
+// in the game chose (+1, +1), the forced (-1, -1) shaking (research 21:20). Every line says so.
+const bool kJitterSignResolved = false; // by the protocol: it is the user's look that chose it
 // SNX_ARCEUS_DLSS_JITTER_SIGN (research 18:45): an experiment that forces the sign handed to NGX in place of the
 // protocol's, read once at the module's entry. Unset or not one of the four values: as without it.
 int g_sign[2] = {1, 1};
 bool g_sign_forced;
-char g_sign_note[96] = " [the jitter's sign unresolved, (+1, +1) used]";
+char g_sign_note[96] =
+    " [the jitter's sign (+1, +1), chosen by the user's look in the game (forced -- shook)]";
 const uint32_t kNamesMost = 32;
 
 SnxUpscalerLog g_log;

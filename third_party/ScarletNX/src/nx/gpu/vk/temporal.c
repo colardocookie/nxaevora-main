@@ -3655,7 +3655,7 @@ static void upscaler_start(void) {
                 "sign %s is forced by experiment (SNX_ARCEUS_DLSS_JITTER_SIGN), not chosen by the protocol\n", forced);
         else
             LOG("arceus-upscaler: dlss in the game (DL2): DLAA at full size, the vectors in two channels. The jitter's "
-                "sign is unresolved until the self-test's sign protocol chooses one: (+1, +1) is used\n");
+                "sign (+1, +1), chosen by the user's look in the game (forced -- shook)\n");
     }
     SnxUpscalerExtensions instance = {0};
     SnxUpscalerDeviceNeeds device = {0};
