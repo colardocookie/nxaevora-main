@@ -42,7 +42,7 @@ If you would like to contribute, please read the [CONTRIBUTING.md](CONTRIBUTING.
 ## Features
 
 ### Implemented features
-・Native NVN processing that bypasses the command stream built by the library
+・Native NVN processing that bypasses the command stream built by the library (complete, now in the maintenance phase with bug fixes)
 
 ・FXAA and SMAA anti-aliasing
 
