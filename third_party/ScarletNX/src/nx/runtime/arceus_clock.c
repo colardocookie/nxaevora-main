@@ -4364,20 +4364,28 @@ static u64 arceus_probe_base(void) {
    return 1) and the frames a second, the texts seen, the speed int main+40F0138, the language byte and the last
    text's bytes. One line when a text ends (its first call answering 0 after steps): its calls, steps and time. */
 #define TEXT_PROBE_TEXTS 16
-typedef struct { u64 text, first_ns, calls, steps; } TextProbeText;
+typedef struct {
+    u64 text, first_ns, last_ns, calls, steps;
+    int known;      /* bytes[] hold the previous call's +9D, +A4 and +A6 */
+    u8 bytes[3];
+} TextProbeText;
 static TextProbeText text_probe_texts[TEXT_PROBE_TEXTS];
 static GuestFn text_probe_original[2];
 static PMutex text_probe_lock = PMUTEX_INIT;
 static u64 text_probe_base, text_probe_calls, text_probe_steps, text_probe_ns, text_probe_logged[3], text_probe_last;
 static unsigned text_probe_seen;
 static _Thread_local u64 text_probe_running; /* the text whose reveal runs on this thread, 0 for none */
-static unsigned text_probe_setup_lines, text_probe_first_lines;
-static TextProbeText* text_probe_text(u64 text) {
+static unsigned text_probe_setup_lines, text_probe_first_lines, text_probe_change_lines;
+/* A text's record, retired when it has not been seen for a second, as a text not shown any more */
+static TextProbeText* text_probe_text(u64 text, u64 now) {
     for (unsigned k = 0; k < TEXT_PROBE_TEXTS; k++)
-        if (text_probe_texts[k].text == text) return &text_probe_texts[k];
+        if (text_probe_texts[k].text == text) {
+            text_probe_texts[k].last_ns = now;
+            return &text_probe_texts[k];
+        }
     for (unsigned k = 0; k < TEXT_PROBE_TEXTS; k++)
-        if (!text_probe_texts[k].text) {
-            text_probe_texts[k] = (TextProbeText){.text = text};
+        if (!text_probe_texts[k].text || now - text_probe_texts[k].last_ns > 1000000000ull) {
+            text_probe_texts[k] = (TextProbeText){.text = text, .last_ns = now};
             text_probe_seen++;
             /* research (recon 13:18): each T's first quota, to settle 2 or 4 at speed 1 */
             if (text_probe_first_lines < 64 && readable(text + 0x9d, 0xa)) {
@@ -4396,25 +4404,38 @@ static void text_probe_line(u64 now) {
     char frame_rate[32] = "- (no clock wrappers)";
     if (clocks_installed)
         snprintf(frame_rate, sizeof frame_rate, "%.2f", (double)(frames - text_probe_logged[2]) / seconds);
+    /* every live T (seen in the last second) with its +9D/+A4/+A6 (research) */
+    char live[16 * 40 + 1] = "";
+    int at = 0;
+    for (unsigned k = 0; k < TEXT_PROBE_TEXTS && at >= 0 && at < (int)sizeof live - 40; k++) {
+        const TextProbeText* tp = &text_probe_texts[k];
+        if (tp->text && now - tp->last_ns <= 1000000000ull && tp->known)
+            at += snprintf(live + at, sizeof live - (size_t)at, " %llx:%u/%u/%u", (unsigned long long)tp->text,
+                           tp->bytes[0], tp->bytes[1], tp->bytes[2]);
+    }
     const u64 holder = readable(base + 0x427b188, 8) ? gr64(base + 0x427b188) : 0;
     const u64 inner = holder && readable(holder, 8) ? gr64(holder) : 0;
     const int speed = readable(base + 0x40f0138, 4) ? (int)gr32(base + 0x40f0138) : -1;
     const u64 t = text_probe_last;
     const int known = t && readable(t + 0x90, 0x110);
     LOG("arceus-text-probe: seconds=%.2f reveal_fbfbd0_per_s=%.2f glyph_steps_per_s=%.2f frames_per_s=%s texts=%u "
-        "speed=%d language=%u language_inner=%u last=%llx +9D=%u +A4=%u +A5=%u +A6=%u +90=%u +19C=%u\n", seconds,
+        "speed=%d language=%u language_inner=%u last=%llx +9D=%u +A4=%u +A5=%u +A6=%u +90=%u +19C=%u "
+        "live(+9D/+A4/+A6)=%s\n", seconds,
         (double)(text_probe_calls - text_probe_logged[0]) / seconds,
         (double)(text_probe_steps - text_probe_logged[1]) / seconds, frame_rate, text_probe_seen, speed,
         text_probe_byte(holder ? holder + 0x50 : 0), text_probe_byte(inner ? inner + 0x50 : 0), (unsigned long long)t,
         known ? *GP(t + 0x9d) : 0u, known ? *GP(t + 0xa4) : 0u, known ? *GP(t + 0xa5) : 0u, known ? *GP(t + 0xa6) : 0u,
-        known ? *GP(t + 0x90) : 0u, known ? (unsigned)gr16(t + 0x19c) : 0u);
+        known ? *GP(t + 0x90) : 0u, known ? (unsigned)gr16(t + 0x19c) : 0u, *live ? live + 1 : "-");
     text_probe_ns = now;
     text_probe_logged[0] = text_probe_calls;
     text_probe_logged[1] = text_probe_steps;
     text_probe_logged[2] = frames;
 }
 static void text_probe_reveal(CPU* c, u64 entry) {
-    const u64 text = c->x[0], outer = text_probe_running;
+    const u64 text = c->x[0], outer = text_probe_running, caller = c->x[30];
+    const int readable_bytes = readable(text + 0x9d, 0xa);
+    const u8 bytes[3] = {readable_bytes ? *GP(text + 0x9d) : 0, readable_bytes ? *GP(text + 0xa4) : 0,
+                         readable_bytes ? *GP(text + 0xa6) : 0};
     text_probe_running = text;
     u64 steps = __atomic_load_n(&text_probe_steps, __ATOMIC_RELAXED);
     text_probe_original[0](c, entry);
@@ -4425,17 +4446,29 @@ static void text_probe_reveal(CPU* c, u64 entry) {
     pm_lock(&text_probe_lock);
     text_probe_calls++;
     text_probe_last = text;
-    TextProbeText* tp = text_probe_text(text);
+    TextProbeText* tp = text_probe_text(text, now);
     if (tp) {
         if (!tp->calls) tp->first_ns = now;
         tp->calls++;
+        /* a change of +9D, +A4 or +A6 since the previous call (research), at most 64 lines */
+        if (readable_bytes && tp->known && memcmp(tp->bytes, bytes, 3) && text_probe_change_lines < 64) {
+            text_probe_change_lines++;
+            LOG("arceus-text-probe: text %llx bytes changed at call %llu: +9D %u -> %u, +A4 %u -> %u, +A6 %u -> %u "
+                "(FBFBD0 called from main+%llx)\n", (unsigned long long)text, (unsigned long long)tp->calls,
+                tp->bytes[0], bytes[0], tp->bytes[1], bytes[1], tp->bytes[2], bytes[2],
+                (unsigned long long)(caller - text_probe_base));
+        }
+        if (readable_bytes) {
+            memcpy(tp->bytes, bytes, 3);
+            tp->known = 1;
+        }
         tp->steps += steps;
         if (done && tp->steps) {
             LOG("arceus-text-probe: text %llx ended: calls=%llu glyph_steps=%llu ms=%.1f (%.1f steps a second)\n",
                 (unsigned long long)text, (unsigned long long)tp->calls, (unsigned long long)tp->steps,
                 (double)(now - tp->first_ns) / 1e6,
                 now > tp->first_ns ? (double)tp->steps * 1e9 / (double)(now - tp->first_ns) : 0.0);
-            *tp = (TextProbeText){.text = text};
+            *tp = (TextProbeText){.text = text, .last_ns = now};
         }
     }
     if (!text_probe_ns) {
@@ -5054,32 +5087,42 @@ static void demo_tick_init(void) {
 /* SNX_ARCEUS_TEXT_TICK=1 (TEXT-TICK-DESIGN.md e5b0c379 and revision 2 f1064177; CUT-60t/30t: the same calls and
    glyph steps per text, 204.9 ms against 466.5): each text processor T is decided once a frame on its own budget, as
    EVENT_TICK-2 decides. In a frame that is not a tick for T, its reveal loop's glyph steps (2B315E8 called from FBFC24)
-   do not run: each answers a counted step with no glyph, out-status 0, and nothing of T is written. */
-#define TEXT_TICK_TEXTS 8
-typedef struct { u64 text, generation; ScriptTick tick; u64 steps; int fresh; } TextTickState;
+   do not run: each answers a counted step with no glyph, out-status 0, and nothing of T is written. A T's state is
+   retired when the T was not seen in the previous frame. */
+#define TEXT_TICK_TEXTS 16
+typedef struct { u64 text, generation; ScriptTick tick; u64 last; int fresh; } TextTickState;
 static TextTickState text_tick_states[TEXT_TICK_TEXTS];
 static PMutex text_tick_lock = PMUTEX_INIT;
 static GuestFn text_tick_original[2];
 static int text_tick;
 static u64 text_tick_calls, text_tick_ticks, text_tick_skipped, text_tick_full, text_tick_ns, text_tick_logged[3];
 static unsigned text_tick_seen;
-/* The text whose reveal runs on this thread in a frame that is not its tick, 0 for none; and its real steps */
-static _Thread_local u64 text_tick_skip, text_tick_ran;
-/* T's state by its address and its text [T +78]: fresh (its first call a tick) for a new T or a new text there */
-static TextTickState* text_tick_state(u64 text, u64 generation) {
-    for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++)
-        if (text_tick_states[k].text == text) {
-            if (text_tick_states[k].generation != generation)
-                text_tick_states[k] = (TextTickState){.text = text, .generation = generation, .fresh = 1};
-            return &text_tick_states[k];
+/* The text whose reveal runs on this thread in a frame that is not its tick, 0 for none */
+static _Thread_local u64 text_tick_skip;
+/* Retirement by staleness (research's ruling on the user's look: no text was ever seen to end, and the table
+   filled). A shown T is updated every frame, so a state whose T was not seen in the previous frame is free. */
+static int text_tick_stale(const TextTickState* st, u64 frame) { return !st->text || st->last + 1 < frame; }
+/* T's state by its address and its text [T +78]. It starts fresh (its first call a tick) for a new T, a new text there,
+   or a T seen again after a gap. A new T takes a free state first, else the oldest one not seen this frame; NULL only
+   when every state was seen this frame. */
+static TextTickState* text_tick_state(u64 text, u64 generation, u64 frame) {
+    TextTickState *free = NULL, *oldest = NULL;
+    for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++) {
+        TextTickState* st = &text_tick_states[k];
+        if (st->text == text) {
+            if (st->generation != generation || text_tick_stale(st, frame))
+                *st = (TextTickState){.text = text, .generation = generation, .fresh = 1};
+            st->last = frame;
+            return st;
         }
-    for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++)
-        if (!text_tick_states[k].text) {
-            text_tick_states[k] = (TextTickState){.text = text, .generation = generation, .fresh = 1};
-            text_tick_seen++;
-            return &text_tick_states[k];
-        }
-    return NULL;
+        if (!free && text_tick_stale(st, frame)) free = st;
+        if (st->last < frame && (!oldest || st->last < oldest->last)) oldest = st;
+    }
+    TextTickState* st = free ? free : oldest;
+    if (!st) return NULL;
+    *st = (TextTickState){.text = text, .generation = generation, .last = frame, .fresh = 1};
+    text_tick_seen++;
+    return st;
 }
 static void text_tick_reveal(CPU* c, u64 entry) {
     const u64 text = c->x[0];
@@ -5093,7 +5136,7 @@ static void text_tick_reveal(CPU* c, u64 entry) {
     pm_unlock(&step_lock);
     const u64 frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
     pm_lock(&text_tick_lock);
-    TextTickState* st = text_tick_state(text, generation);
+    TextTickState* st = text_tick_state(text, generation, frame);
     int tick = 1;
     if (st) {
         if (st->fresh) {
@@ -5102,24 +5145,18 @@ static void text_tick_reveal(CPU* c, u64 entry) {
         }
         u64 cut;
         tick = event_tick_decide(&st->tick, frame, ns, &cut); /* once a frame for T: cached */
-    } else
-        __atomic_add_fetch(&text_tick_full, 1, __ATOMIC_RELAXED);
+    }
+    const u64 full = st ? 0 : __atomic_add_fetch(&text_tick_full, 1, __ATOMIC_RELAXED);
     pm_unlock(&text_tick_lock);
-    if (!st && text_tick_full == 1)
+    if (full == 1) /* the increment's own result (the reviewer's note on 9f2154e1) */
         WARN("arceus-text-tick: table of %u texts full: text %llx reveals as today\n", TEXT_TICK_TEXTS,
              (unsigned long long)text);
     text_tick_skip = tick ? 0 : text;
-    text_tick_ran = 0;
     text_tick_original[0](c, entry);
-    const u64 ran = text_tick_ran;
     text_tick_skip = 0;
     __atomic_add_fetch(&text_tick_calls, 1, __ATOMIC_RELAXED);
     if (tick) __atomic_add_fetch(&text_tick_ticks, 1, __ATOMIC_RELAXED);
     pm_lock(&text_tick_lock);
-    if (st && st->text == text && st->generation == generation) {
-        st->steps += ran;
-        if (!(c->x[0] & 1) && st->steps) st->text = 0; /* the text ended: its state goes */
-    }
     const u64 now = plat_ns();
     if (!text_tick_ns) {
         text_tick_ns = now;
@@ -5153,9 +5190,6 @@ static void text_tick_step(CPU* c, u64 entry) {
         return;
     }
     text_tick_original[1](c, entry);
-    if (text_tick_skip == 0 && c->x[30] == main_base + 0xfbfc24 && (c->x[0] & 0xffffffffu) == 1 &&
-        readable(status, 4) && gr32(status) == 0)
-        text_tick_ran++;
 }
 static void text_tick_init(void) {
     if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_TEXT_TICK", 0)) return;

@@ -2734,7 +2734,7 @@ static void test_text_probe(void) {
     assert(strstr(logged[0], "arceus-text-probe: text 200 first seen: +9D=0 +A4=2 +A5=0 +A6=0"));
     assert(strstr(logged[1], "arceus-text-probe: seconds=5.00 reveal_fbfbd0_per_s=60.00 glyph_steps_per_s=120.00 "
                              "frames_per_s=60.00 texts=1 speed=2 ") &&
-           strstr(logged[1], " +9D=0 +A4=2 "));
+           strstr(logged[1], " +9D=0 +A4=2 ") && strstr(logged[1], " live(+9D/+A4/+A6)=200:0/2/0\n"));
     assert(strstr(logged[2], "arceus-text-probe: text 200 ended: calls=360 glyph_steps=720 ms=5983.3"));
     /* steps from another caller, with a status other than 0, or outside a reveal are not counted */
     const u64 counted = text_probe_steps;
@@ -2750,6 +2750,18 @@ static void test_text_probe(void) {
     CPU s = {.x = {[0] = TEXT_OBJECT, [1] = TEXT_STATUS, [30] = text_stub_caller}, .pc = entry_pc};
     text_probe_step(&s, entry_pc);
     assert(text_probe_steps == counted);
+    /* a change of the bytes between two calls gives one line, with the call and the caller */
+    logged_count = 0;
+    text_probe_change_lines = 0;
+    *GP(TEXT_OBJECT + 0xa4) = 4;
+    CPU v = {.x = {[0] = TEXT_OBJECT, [30] = text_probe_base + 0x27379f0}, .pc = entry_pc};
+    host_ns += 16666667;
+    text_probe_reveal(&v, entry_pc);
+    CPU w = {.x = {[0] = TEXT_OBJECT, [30] = text_probe_base + 0x27379f0}, .pc = entry_pc};
+    host_ns += 16666667;
+    text_probe_reveal(&w, entry_pc);
+    assert(logged_count == 1 && strstr(logged[0], "arceus-text-probe: text 200 bytes changed at call ") &&
+           strstr(logged[0], ": +9D 0 -> 0, +A4 2 -> 4, +A6 0 -> 0 (FBFBD0 called from main+27379f0)"));
     /* the setup FBF57C: its arguments and the language byte before, the bytes it set after, the game's call once */
     logged_count = 0;
     text_probe_setup_lines = 0;
@@ -2870,36 +2882,46 @@ static void test_text_tick(void) {
     text_tick_step(&s, entry_pc);
     text_tick_skip = 0;
     assert(gr32(TT_A + 0x100) == 3);
-    /* the text ends (answer 0 after glyphs): its state goes, and the next text there runs at once */
+    /* a T paused for a frame and resumed starts fresh, its first call a tick (where the old state would skip); one
+       called in consecutive frames keeps its state */
     tt_reset();
     tt_frame(16666667);
-    (void)tt_call(TT_A);
-    tt_frame(16666667);
-    assert(tt_call(TT_A) == 0 && text_tick_states[0].text == TT_A);
-    tt_answer = 0;
-    tt_frame(16666667);
-    assert(tt_call(TT_A) == 2 && !text_tick_states[0].text);
-    tt_answer = 1;
-    tt_frame(16666667);
-    assert(tt_call(TT_A) == 2); /* fresh: a tick at once, where the old state would skip */
-    /* a new text at the same T ([T +78] changed) is fresh too: a tick where the old state would skip */
+    assert(tt_call(TT_A) == 2);
     tt_frame(16666667);
     assert(tt_call(TT_A) == 0);
     tt_frame(16666667);
     assert(tt_call(TT_A) == 2);
+    tt_frame(16666667); /* not called in this frame */
+    tt_frame(16666667);
+    assert(tt_call(TT_A) == 2);
+    tt_frame(16666667);
+    assert(tt_call(TT_A) == 0);
+    /* a new text at the same T ([T +78] changed) is fresh too */
     tt_frame(16666667);
     gw64(TT_A + 0x78, 0x7100);
     assert(tt_call(TT_A) == 2);
-    /* a full table: that T reveals as today, counted */
-    tt_reset();
+    /* 100 texts one after another, each shown 5 frames, beside a T shown in every frame: with 16 states the table
+       never runs out (research's retirement ruling) */
+    memset(text_tick_states, 0, sizeof text_tick_states);
+    u64 frame = 1000;
+    for (unsigned k = 0; k < 100; k++)
+        for (unsigned f = 0; f < 5; f++, frame++) {
+            assert(text_tick_state(TT_B, 1, frame));
+            assert(text_tick_state(0x100000 + 0x200 * k, 1, frame));
+        }
+    /* a full table takes the oldest state not seen this frame: 15 seen this frame, one in the previous frame */
     for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++)
-        text_tick_states[k] = (TextTickState){.text = 3000 + k, .generation = 1};
+        text_tick_states[k] = (TextTickState){.text = 3000 + k, .generation = 1, .last = k == 7 ? frame - 1 : frame};
+    TextTickState* taken = text_tick_state(0x200000, 1, frame);
+    assert(taken == &text_tick_states[7] && taken->fresh && taken->text == 0x200000);
+    /* every state seen this frame: the new T reveals as today, counted */
+    tt_reset();
+    tt_frame(16666667);
+    const u64 now = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
+    for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++)
+        text_tick_states[k] = (TextTickState){.text = 3000 + k, .generation = 1, .last = now};
     const u64 full = text_tick_full;
-    for (unsigned k = 0; k < 4; k++) {
-        tt_frame(16666667);
-        assert(tt_call(TT_A) == 2);
-    }
-    assert(text_tick_full == full + 4);
+    assert(tt_call(TT_A) == 2 && text_tick_full == full + 1);
     /* with the text probe: the reveal inside the probe's, the step outside it, as text_tick_init chains them, so the
        probe counts only the glyphs made (60 in 60 calls at 60 FPS: 30 ticks of 2) */
     tt_reset();
