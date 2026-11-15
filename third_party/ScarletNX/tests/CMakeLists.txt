@@ -1964,8 +1964,8 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     foreach(snx_txq_dir txq_variant txq_mutant_1 txq_mutant_2)
         file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${snx_txq_dir}")
     endforeach()
-    add_test(NAME txq_variant COMMAND snx-test-temporal-txq-variant
-             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/txq_variant")
+    set(snx_txq_work "${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME txq_variant COMMAND snx-test-temporal-txq-variant WORKING_DIRECTORY "${snx_txq_work}/txq_variant")
     set_tests_properties(txq_variant PROPERTIES SKIP_RETURN_CODE 77)
     # The same test against the translator built with a mutant (SNX_TEST_TXQ_MUTANT in spirv_translate.c), which must
     # fail the corpus check it names (--must-fail): 1 width and height swapped, 2 every other slot keyed. The targets
