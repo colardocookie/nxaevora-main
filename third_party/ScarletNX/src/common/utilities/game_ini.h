@@ -23,6 +23,9 @@ char* snx_game_source(const char* folder, const char* name, int* recorded);
 /* dump, absolute, as source= in [Game] of the game's .ini, the file made when there is none and left as it is when it
    names dump already. 0, or nonzero with a line saying why */
 int snx_record_source(const char* folder, const char* name, const char* dump);
+/* romfs, absolute, as romfs= in [Game] of the game's .ini, the folder of the game's RomFS which the runtime reads it
+   from with no copy: the file made when there is none. 0, or nonzero with a line saying why */
+int snx_record_romfs(const char* folder, const char* name, const char* romfs);
 
 /* the console a game's folder plays, as system= in [Game] of the .ini in it, <folder>/<name>.ini, says: the launcher
    picks the driver, the options and what R does by it, and cmake/deploy.cmake the runtime it copies there. A folder

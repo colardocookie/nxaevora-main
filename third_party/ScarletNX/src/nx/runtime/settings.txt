@@ -62,6 +62,14 @@ setting Game dump
     help The dump the game was made from, which the recompile writes here. Without Extract dump the game
     help reads its ExeFS and RomFS from it, and Extract to tmpfs extracts it again when tmpfs was emptied. Empty or
     help left out: the link <name>.source in the game's folder, which older versions made
+setting Game romfs
+    key romfs
+    text 2048
+    once
+    startup
+    in-game
+    help The folder of the game's RomFS, which the recompile of a game folder writes here. The game reads its RomFS
+    help from it with no copy. Empty or left out: the RomFS in the data folder or in the dump.
 setting Game addons
     key addons
     text 2048

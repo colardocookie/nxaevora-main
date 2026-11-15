@@ -163,6 +163,7 @@ static char test_left_text[1024];
 /* memory/own.c: nothing is GPU-owned here */
 void own_acquire(u64 addr, u64 size) { (void)addr, (void)size; }
 static char test_fs_text[1024]; /* the last warning of fs.c's own, "fs: ..." */
+static char test_log_text[4096]; /* every line of fs.c's own at info level, "fs: ..." */
 void logf_(int level, const char* format, ...) {
     char text[1024];
     va_list args;
@@ -174,6 +175,10 @@ void logf_(int level, const char* format, ...) {
         snprintf(test_left_text, sizeof test_left_text, "%s", text);
     }
     if (!level && !strncmp(text, "fs: ", 4)) snprintf(test_fs_text, sizeof test_fs_text, "%s", text);
+    if (level && !strncmp(text, "fs: ", 4)) {
+        size_t used = strlen(test_log_text);
+        if (used + strlen(text) + 1 < sizeof test_log_text) strcat(test_log_text + used, text);
+    }
 }
 /* options.c's: the game's settings, where the runtime read them */
 const char* ini_file(void) { return "config/Game.ini"; }
@@ -998,6 +1003,64 @@ static void test_romfs_listing(const u8* image, const u64* header) {
     memset(&listed, 0, sizeof listed);
     listed.stop_at = 2;
     CHECK(romfs_files(list_file, NULL) == 1 && listed.n == 2); /* stopped by the second */
+}
+/* a RomFS file's bytes, read from the service's storage by its entry's place in the image */
+static void romfs_service_file(SvcObj* storage, const u8* image, const u64* header, u32 parent, const char* name,
+                               const char* expected, u64 expected_size) {
+    Request r;
+    u32 entry = romfs_find(image, header, 0, parent, name);
+    u64 offset, size;
+    CHECK(entry != UINT32_MAX);
+    offset = snx_ld_le64(image + header[7] + entry + 8);
+    size = snx_ld_le64(image + header[7] + entry + 16);
+    CHECK(size == expected_size);
+    request(&r, 0);
+    argument64(&r, 0, header[9] + offset);
+    argument64(&r, 8, size);
+    output_buffer(&r, size);
+    dispatch(storage, &r, 0);
+    CHECK(!memcmp(GP(0x5000), expected, (size_t)size));
+}
+/* romfs=: the data folder has no RomFS of its own, and the game reads the two files of the folder the setting names,
+   in two levels, through the RomFS service */
+static void test_romfs_setting(void) {
+    SvcObj* proxy = new_fsp();
+    Request r;
+    u8* image;
+    u64 size, header[10];
+    u32 dir;
+    request(&r, 200);
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.nout_objs == 1);
+    SvcObj* storage = r.c.out_objs[0];
+    size = get_size(storage);
+    CHECK(size > 0x50 && size < 0x3000);
+    request(&r, 0);
+    argument64(&r, 0, 0);
+    argument64(&r, 8, size);
+    output_buffer(&r, size);
+    dispatch(storage, &r, 0);
+    image = malloc((size_t)size);
+    CHECK(image != NULL);
+    memcpy(image, GP(0x5000), (size_t)size);
+    memcpy(header, image, sizeof header);
+    snx_le64_array(header, 10);
+    CHECK(header[0] == 0x50 && header[3] < size && header[7] < size && header[9] < size);
+    dir = romfs_find(image, header, 1, 0, "dir");
+    CHECK(dir != UINT32_MAX);
+    romfs_service_file(storage, image, header, 0, "one.bin", "first file", 10);
+    romfs_service_file(storage, image, header, dir, "two.bin", "second", 6);
+    free(image);
+    svcobj_unref(storage);
+    svcobj_unref(proxy);
+    CHECK(test_objects == 0);
+}
+/* the data folder the romfs= modes read: no RomFS of its own, and the folder of the user beside it */
+static void romfs_setting_write(void) {
+    CHECK(!snx_mkdirs("setting-data/Game_data"));
+    CHECK(!snx_mkdirs("setting-romfs/dir"));
+    CHECK(!snx_write_file("setting-romfs/one.bin", "first file", 10));
+    CHECK(!snx_write_file("setting-romfs/dir/two.bin", "second", 6));
 }
 static void test_extracted_romfs(SvcObj* proxy) {
     Request r;
@@ -2017,6 +2080,96 @@ int main(int argc, char** argv) {
         cleanup_service();
         free(g_mem);
         printf("PASS %u mod checks\n", test_checks);
+        return 0;
+    }
+    if (argc == 4 && (!strcmp(argv[3], "romfs-setting") || !strcmp(argv[3], "romfs-setting-missing") ||
+                      !strcmp(argv[3], "romfs-setting-conflict"))) {
+        int missing = !strcmp(argv[3], "romfs-setting-missing"), conflict = !strcmp(argv[3], "romfs-setting-conflict");
+        char* romfs = snx_absolute(missing ? "gone-romfs" : "setting-romfs");
+        char* said;
+        CHECK(romfs != NULL);
+        if (conflict) {
+            CHECK(!snx_mkdirs("setting-data/Game_data/romfs"));
+            CHECK(!snx_write_file("setting-data/Game_data/romfs/old.bin", "old", 3));
+        } else
+            romfs_setting_write();
+        snprintf(g_settings.game_romfs, sizeof g_settings.game_romfs, "%s", romfs);
+        strcpy(g_datadir, "setting-data/Game_data/");
+        test_log_text[0] = 0;
+        if (missing || conflict) {
+            jmp_buf jump;
+            test_fatal_text[0] = 0;
+            test_fatal_jump = &jump;
+            if (!setjmp(jump)) {
+                fs_init(NULL, NULL);
+                CHECK(!"a refused romfs= did not stop the game");
+            }
+            test_fatal_jump = NULL;
+            pm_unlock(&g_hle.fs.tree.lock);
+            if (missing) {
+                said = snx_format("fs: romfs= names %s, which is not a folder", romfs);
+                CHECK(strstr(test_log_text, said) != NULL);
+            } else {
+                char* folder = snx_path_join(g_datadir, "romfs");
+                said = snx_format("fs: the data folder has %s", folder);
+                CHECK(strstr(test_log_text, said) != NULL);
+                free(folder);
+            }
+            free(said);
+            CHECK(test_fatal_text[0] && !strstr(test_fatal_text, romfs));
+            cleanup_service();
+            free(g_mem);
+            free(romfs);
+            printf("PASS %u checks: a refused romfs= stops the game, said by the log\n", test_checks);
+            return 0;
+        }
+        fs_init(NULL, NULL);
+        test_scans_allowed = 0;
+        svc_fs_init();
+        romfs_init();
+        said = snx_format("fs: RomFS from %s (romfs=)\n", romfs);
+        CHECK(strstr(test_log_text, said) != NULL);
+        free(said);
+        test_romfs_setting();
+        cleanup_service();
+        free(g_mem);
+        free(romfs);
+        printf("PASS %u checks: romfs= reads the RomFS folder through the RomFS service\n", test_checks);
+        return 0;
+    }
+    if (argc == 4 && !strcmp(argv[3], "romfs-setting-update")) {
+        static const char* const made[][2] = {
+            {"setting-update-data/0100000000AB0000_data/exefs/main", "the game's main"},
+            {"setting-update-data/0100000000AB0000_0100000000AB0800_data/exefs/main", "the update's main"},
+            {"setting-update-data/0100000000AB0000_0100000000AB0800_data/romfs/a.bin", "the update's a"},
+            {"setting-update-romfs/a.bin", "the setting's a"},
+        };
+        char* romfs = snx_absolute("setting-update-romfs");
+        u8* data;
+        u64 size = 0;
+        CHECK(romfs != NULL);
+        for (size_t i = 0; i < sizeof made / sizeof made[0]; i++) {
+            char* folder = snx_dirname(made[i][0]);
+            CHECK(!snx_mkdirs(folder) && !snx_write_file(made[i][0], made[i][1], strlen(made[i][1])));
+            free(folder);
+        }
+        g_addon = 0x0100000000AB0800ULL;
+        strcpy(g_exedir, "setting-update-data/");
+        strcpy(g_confdir, "setting-update-data/");
+        strcpy(g_gamename, "0100000000AB0000");
+        strcpy(g_addondir, "setting-update-data/0100000000AB0000_0100000000AB0800_data/");
+        strcpy(g_datadir, "setting-update-data/0100000000AB0000_data/");
+        snprintf(g_settings.game_romfs, sizeof g_settings.game_romfs, "%s", romfs);
+        test_log_text[0] = 0;
+        fs_init(NULL, NULL);
+        data = fs_read_file("romfs/a.bin", &size);
+        CHECK(data && size == 14 && !memcmp(data, "the update's a", 14));
+        free(data);
+        CHECK(strstr(test_log_text, "is not used: an add-on's RomFS") != NULL);
+        cleanup_service();
+        free(g_mem);
+        free(romfs);
+        printf("PASS %u checks: an add-on's RomFS replaces the romfs= folder\n", test_checks);
         return 0;
     }
     if (argc == 4 && !strcmp(argv[3], "addon-overlay")) {

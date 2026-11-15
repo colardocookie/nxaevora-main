@@ -261,8 +261,30 @@ static int drop_extraction(const char* dir, int quiet) {
     }
     return rc || snx_mkdirs(dir);
 }
-/* the game's data folder: its ExeFS (or NRO) and RomFS, the RomFS left where it is with tmpfs */
-static int copy_data(const SnxProgram* p, const char* dir, int quiet, int tmpfs) {
+/* a game made from a folder reads its RomFS there (romfs=), not in its data folder: what an older version copied
+   there must not hide it, a stopped copy included. An input in that folder (an old data folder) is refused before
+   anything is removed: the loader takes the RomFS beside the ExeFS, so the ExeFS check also covers the RomFS */
+static int drop_romfs_copy(const char* dir, const char* input_exefs, int quiet) {
+    static const char* const parts[] = {"romfs", "romfs.bin", "romfs.copying"};
+    char* part;
+    size_t i;
+    int rc = 0;
+    if (snx_path_within(input_exefs, dir))
+        return snx_error("the input ExeFS %s is in %s, which the recompile removes: recompile from the game's own "
+                         "folder",
+                         input_exefs, dir);
+    for (i = 0; !rc && i < sizeof parts / sizeof *parts; ++i) {
+        part = snx_path_join(dir, parts[i]);
+        if (snx_path_exists(part) || snx_is_link(part)) {
+            if (!quiet) printf("Removing %s: the game reads its RomFS from its folder (romfs=)\n", part);
+            rc = snx_remove_tree(part);
+        }
+        free(part);
+    }
+    return rc;
+}
+/* the game's data folder: its ExeFS (or NRO), whose RomFS it reads from its folder (romfs=) or in the NRO's image */
+static int copy_data(const SnxProgram* p, const char* dir, int quiet) {
     char *ex = snx_path_join(dir, "exefs"), *dst, *src, **names;
     size_t n, i;
     int rc = 0;
@@ -279,16 +301,6 @@ static int copy_data(const SnxProgram* p, const char* dir, int quiet, int tmpfs)
         return 1;
     }
     free(dst);
-    if (!p->modules[0].is_nro) {
-        dst = snx_path_join(dir, "romfs.bin");
-        if (snx_is_file(dst)) {
-            snx_error("%s conflicts with the NSO input: remove it before recompiling", dst);
-            free(dst);
-            free(ex);
-            return 1;
-        }
-        free(dst);
-    }
     if (p->module_count == 1 && p->modules[0].is_nro) {
         dst = snx_path_join(ex, "main.nro");
         rc = snx_copy_file(p->entry_path, dst);
@@ -303,7 +315,7 @@ static int copy_data(const SnxProgram* p, const char* dir, int quiet, int tmpfs)
             free(dst);
         }
     } else {
-        if (snx_list_dir(p->exefs_path, &names, &n)) {
+        if (drop_romfs_copy(dir, p->exefs_path, quiet) || snx_list_dir(p->exefs_path, &names, &n)) {
             free(ex);
             return 1;
         }
@@ -318,19 +330,6 @@ static int copy_data(const SnxProgram* p, const char* dir, int quiet, int tmpfs)
             free(dst);
         }
         snx_free_strings(names, n);
-        if (!rc && p->romfs_path && !tmpfs) {
-            dst = snx_path_join(dir, "romfs");
-            if (!snx_is_dir(dst)) {
-                /* A stopped copy must not look like a complete cache on the next run. */
-                char* pending = snx_format("%s.copying", dst);
-                if (!quiet) puts("Copying RomFS...");
-                rc = ((snx_is_dir(pending) || snx_is_file(pending) || snx_is_link(pending)) &&
-                      snx_remove_tree(pending)) ||
-                     snx_copy_tree(p->romfs_path, pending) || snx_replace(pending, dst);
-                free(pending);
-            }
-            free(dst);
-        }
     }
     if (!rc && !p->npdm_data) {
         dst = snx_path_join(ex, "main.npdm");
@@ -376,7 +375,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     char error[1024], option[64], why[256];
     const char* equal;
     size_t option_size;
-    int i, rc = 1, ios = 0, no_build = 0, keep_c = 0, host_win = 0, positional = 0, tmpfs = 0, dump = 0;
+    int i, rc = 1, ios = 0, no_build = 0, keep_c = 0, host_win = 0, positional = 0, dump = 0;
     memset(&compile, 0, sizeof(compile));
     memset(&gen, 0, sizeof(gen));
     memset(&program, 0, sizeof(program));
@@ -406,8 +405,8 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         }
         if (!strcmp(arg, "--no-build"))
             no_build = 1;
-        else if (!strcmp(arg, "--tmpfs"))
-            tmpfs = 1;
+        else if (!strcmp(arg, "--tmpfs")) /* a dump's: the runtime reads its RomFS in tmpfs, the recompile copies none */
+            continue;
         else if (!strcmp(arg, "--jit-only") || !strcmp(arg, "--interp-only")) {
             if (!strcmp(arg, "--interp-only")) snx_option_renamed("--interp-only", "--jit-only");
             gen.interp_only = 1;
@@ -613,7 +612,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     if (!compile.quiet) printf("Recompiling %s (%zu modules)\n", title, program.module_count);
     /* an add-on's files: its dump, read in place, or what the driver extracts into its data folder */
     if (addon ? snx_mkdirs(data)
-              : dump ? drop_extraction(data, compile.quiet) : copy_data(&program, data, compile.quiet, tmpfs)) {
+              : dump ? drop_extraction(data, compile.quiet) : copy_data(&program, data, compile.quiet)) {
         snx_error("cannot stage game data in %s", data);
         goto done;
     }
@@ -640,6 +639,12 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         }
     }
     if (snx_record_folders(folder, game)) goto done;
+    if (!dump && !program.modules[0].is_nro) { /* the folder's own RomFS, which the runtime reads with no copy */
+        char* absolute = program.romfs_path ? snx_absolute(program.romfs_path) : snx_strdup("");
+        int failed = !absolute || snx_record_romfs(folder, game, absolute);
+        free(absolute);
+        if (failed) goto done;
+    }
     if (dump) { /* what the game reads in place, and Extract to tmpfs extracts again */
         char* absolute = snx_absolute(input);
         int failed = !absolute || snx_record_source(folder, game, absolute);
