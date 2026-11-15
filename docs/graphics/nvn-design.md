@@ -98,6 +98,9 @@ is the smaller step only at the start.
 
 1. Way A or way B. Decided: A.
 2. The switch is per launch (`nvn_native` setting, old path kept as a comparison target until stage 5 decides). Decided.
+   After stage 5 (2026-11-15): the native path is the default, and the old path stays in the code. The debug setting
+   `nvn_legacy=1` selects the old path. `nvn_native` is deprecated. In the older sections, `nvn_native=1` is the native
+   path and `nvn_native=0` is `nvn_legacy=1`.
 3. The place of the code (`runtime/gfx` or inside ScarletNX) is decided after this choice. The first files go into
    `third_party/ScarletNX/src/nx/gpu/` next to `nvn_trace.c`.
 

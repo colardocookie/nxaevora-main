@@ -439,9 +439,9 @@ void draw_record_init(void) {
     drawrec_table_init(&rec_table, entries, DRAWREC_TABLE_SIZE);
     drawrec_shader_cache_init(&rec_shader_cache, rec_shader_entries, DRAWREC_SHADER_CACHE);
     snprintf(rec_frames_path, sizeof rec_frames_path, "%s%s.drawrec%u.frames.txt", g_exedir, g_exename,
-             (unsigned)g_settings.nvn_native);
+             (unsigned)!g_settings.nvn_legacy);
     snprintf(rec_sigs_path, sizeof rec_sigs_path, "%s%s.drawrec%u.sigs.txt", g_exedir, g_exename,
-             (unsigned)g_settings.nvn_native);
+             (unsigned)!g_settings.nvn_legacy);
     snprintf(rec_sigs_tmp, sizeof rec_sigs_tmp, "%s.tmp", rec_sigs_path);
     rec_frames_file = fopen(rec_frames_path, "w");
     if (!rec_frames_file) {

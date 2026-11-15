@@ -51,7 +51,7 @@ static void window_log(uint64_t guest_ns, uint64_t gpu_ns, uint64_t lock_ns, uin
     if (other_ns) snprintf(other, sizeof other, " other_ns=%llu", (unsigned long long)other_ns);
     LOG("nvn-measure: path=%s presents=%u guest_ms=%.3f gpu_ms=%.3f lock_ms=%.3f frame_ms median=%.3f p99=%.3f "
         "max=%.3f draws=%llu skipped=%llu%s\n",
-        g_settings.nvn_native ? "native" : "old", frame_count, nvn_measure_ms(guest_ns, frame_count),
+        !g_settings.nvn_legacy ? "native" : "old", frame_count, nvn_measure_ms(guest_ns, frame_count),
         nvn_measure_ms(gpu_ns, frame_count), nvn_measure_ms(lock_ns, frame_count), (double)stats.median_us / 1000.0,
         (double)stats.p99_us / 1000.0, (double)stats.max_us / 1000.0,
         (unsigned long long)(g_vk_drawn - window_drawn), (unsigned long long)(g_vk_skipped - window_skipped), other);
@@ -71,7 +71,7 @@ void nvn_measure_present(uint64_t now_ns) {
     }
     last_present_ns = now_ns;
     if (frame_count < NVN_MEASURE_WINDOW) return;
-    if (g_settings.nvn_native) {
+    if (!g_settings.nvn_legacy) {
         guest_ns = counter_take(&native_guest_ns);
         gpu_ns = counter_take(&native_gpu_ns);
         lock_ns = counter_take(&native_lock_ns);

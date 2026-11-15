@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* nvn_native=1: the host answers the NVN functions that the game resolves through nvnBootstrapLoader and
+/* nvn_legacy=0: the host answers the NVN functions that the game resolves through nvnBootstrapLoader and
    nvnDeviceGetProcAddress. Each resolved address gets a host handler in its dispatch slot. A function without a
    handler stops the game unless nvn_native_missing=0. The hook order and the trace are in nvn-design.md, 2-3 and
    2-6. */
@@ -632,7 +632,7 @@ static int queue_init_build(CPU* c, const NvnQueueBuilder* b, u64 queue_addr, Qu
 
 /* The selftest's channels are fresh and have no macro code, but a command buffer's ClearColor is a macro call. This
    builds the queue init stream that a real channel runs first: the library builders on the host arena, as the frame
-   job does. The selftest has no device record (nvn_native=0), so its device supplies the two words instead. */
+   job does. The selftest has no device record (nvn_legacy=1), so its device supplies the two words instead. */
 int nvn_native_selftest_init_words(CPU* c, uint32_t window_origin, uint32_t depth_mode, uint32_t** words,
                                    uint32_t* count) {
     *words = NULL;
@@ -1969,7 +1969,7 @@ static void* known_record(u64 addr, NvnObjKind kind) {
 #define NVN_SHADER_REGION_BASE_HIGH_METHOD 0x582u
 #define NVN_SHADER_REGION_BASE_LOW_METHOD 0x583u
 
-/* Measured with the game's own library (nvn_native=0). The host has no device object, so these are constants. */
+/* Measured with the game's own library (nvn_legacy=1). The host has no device object, so these are constants. */
 static const NvnProgramDeviceIn program_device_words = {
     .d1a38 = 0x087f6080u, .d1a3c = 0u, .d1a40 = 0u, .d1a68 = 0x20u,
     .d1a70 = 1u, .d1a74 = 0x20806080u, .d94 = 2u, .da4 = 0u,
@@ -8075,7 +8075,7 @@ static void bootstrap_native(CPU* c, u64 entry) {
 }
 
 void nvn_native_init(void) {
-    if (!g_settings.nvn_native) return;
+    if (g_settings.nvn_legacy) return;
     pc_init(&frame_done_cv);
     u64 entry = kernel_find_symbol_exact("nvnBootstrapLoader");
     if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3)) {

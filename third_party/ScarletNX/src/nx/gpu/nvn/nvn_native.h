@@ -7,16 +7,16 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_replay.h"
 
-/* nvn_native=1: the host answers the NVN functions that the game resolves, and the game's NVN library does not run
+/* nvn_legacy=0: the host answers the NVN functions that the game resolves, and the game's NVN library does not run
    (nvn-design.md). Init runs once the game's symbols and dispatch table are loaded, before nvn_trace_init and
    before any guest thread starts. */
 void nvn_native_init(void);
 /* at a clean exit: the functions that the game called and the host does not have */
 void nvn_native_report(void);
-/* 1 once nvn_native_init found nvn_native=1 and hooked the loader */
+/* 1 once nvn_native_init found nvn_legacy=0 and hooked the loader */
 int nvn_native_active(void);
 /* the host handler of an NVN function by name, or NULL when the host has none (the selftest compares it with the
-   library). It does not need nvn_native=1. */
+   library). It does not need nvn_legacy=0. */
 GuestFn nvn_native_handler(const char* name);
 /* The device of the host record of a queue, for the execution test. 0 when the queue has no record. */
 uint64_t nvn_native_queue_device(uint64_t queue);

@@ -250,7 +250,7 @@ static void trace_proc(u64 addr, const char* name) {
                       !strcmp(name, "nvnQueueWaitSync");
         p->size_op = !strcmp(name, "nvnTextureBuilderGetStorageSize") ||
                      !strcmp(name, "nvnTextureBuilderGetStorageAlignment");
-        /* The selftest and the execution test need opposite nvn_native values; with both on, the selftest takes the
+        /* The selftest and the execution test need opposite nvn_legacy values; with both on, the selftest takes the
            queue hook, and the execution test does not run. */
         if (g_settings.nvn_selftest || g_settings.nvn_exectest)
             p->selftest_hook = !strcmp(name, "nvnDeviceInitialize")

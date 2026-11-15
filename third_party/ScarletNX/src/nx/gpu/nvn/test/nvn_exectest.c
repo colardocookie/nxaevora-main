@@ -990,7 +990,7 @@ static int g_ran;
 void nvn_exectest_run(CPU* c, uint64_t game_queue) {
     if (__atomic_exchange_n(&g_ran, 1, __ATOMIC_ACQ_REL)) return;
     if (!nvn_native_active()) {
-        LOG("exectest: not run, nvn_native=0\n");
+        LOG("exectest: not run, nvn_legacy=1\n");
         return;
     }
     const uint64_t device = nvn_native_queue_device(game_queue);

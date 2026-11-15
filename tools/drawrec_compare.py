@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the NXAevora contributors
-"""Compares the draw record files of a run with nvn_native=0 and a run with nvn_native=1.
+"""Compares the draw record files of a run with nvn_legacy=1 and a run with nvn_legacy=0.
 
     tools/drawrec_compare.py PREFIX_A PREFIX_B [--skip N] [--top N] [--ratio R]
 

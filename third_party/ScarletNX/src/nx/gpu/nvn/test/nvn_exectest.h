@@ -4,7 +4,7 @@
 #define SNX_NVN_EXECTEST_H
 
 /* nvn_exectest=1: the execution test of the NVN host path (nvn-unobserved.md, "Design of 4-u3-4"). It runs real work
-   through the host handlers on its own queues and checks the result in memory. It needs nvn_trace=1 and nvn_native=1.
+   through the host handlers on its own queues and checks the result in memory. It needs nvn_trace=1 and nvn_legacy=0.
    The pure parts are here, so a host test can run them: the clear bytes, the comparison and its text, the pass rules
    of E1, E4, E7 and E8, the stall result, the cleanup drain rule, and the mutation name. */
 

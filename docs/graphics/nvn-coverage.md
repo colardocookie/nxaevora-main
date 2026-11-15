@@ -11,7 +11,7 @@ tool keeps them.
   from the name table of the NVN library in the sdk module. The address is the guest address in the update program of
   update 1.1.1.
 - group: G1 to G9 as in `docs/graphics/nvn-design.md`, section 2-6. G10 is a function that no run called.
-- calls: the calls of the run in `docs/graphics/nvn-calls.md`, through the dispatch table and with the library (`nvn_native=0`).
+- calls: the calls of the run in `docs/graphics/nvn-calls.md`, through the dispatch table and with the library (`nvn_legacy=1`).
 - handler: `implemented` when `native_procs` of `nvn_native.c` has a host handler (or, for `nvnDeviceGetProcAddress`, the
   host lookup hook), `stub-log` when the missing-function handler answers (it stops the game unless
   `nvn_native_missing=0`, which logs the first call and returns 0).
@@ -19,7 +19,7 @@ tool keeps them.
   `update 1.1.1` is the library of that update: the `sdk` module with the build ID
   `B39ADD63421BE525D352E576DAB438D3812EDFF0`. The argument sets of a selftest check are the cases of the function in
   `third_party/ScarletNX/src/nx/gpu/nvn/test/nvn_selftest*.c`, and each case line of the selftest log names its
-  arguments. seen: a game run with `nvn_native=1` that called it and was read. A function with checks and without seen is not verified in the game.
+  arguments. seen: a game run with `nvn_legacy=0` that called it and was read. A function with checks and without seen is not verified in the game.
 
 ## Summary
 
