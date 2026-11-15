@@ -2640,6 +2640,28 @@ static void test_spatial(void) {
                 REFUSED((x.viewport[0] = -0.5, x.scissor_on = 0), TEMPORAL_SPATIAL_COVERAGE);
 #undef REFUSED
         }
+    /* The reviewer's six combined cases (reviewer.md 04:02, /tmp/reviewer-d3-0a-combined.c, astra's combined case),
+       ported: c6aaf96f's origin missing or (-2, +1), each with a vertex count of 4, a draw not direct, or another
+       stage. Each is a reader not on the list, given the scene as drawn, the mode off from the next frame. So are the
+       three faults with the measured origin (d08b624c: class U). */
+    for (int origin = 0; origin < 3; origin++)
+        for (int fault = 1; fault < 4; fault++) {
+            TemporalSpatialDraw x = spatial_draw(0, 0.5);
+            const double half[2] = {0.5, 0.5};
+            if (origin == 0) x.vertex_origin[0] = x.vertex_origin[1] = NAN;
+            if (origin == 2) x.vertex_origin[0] = -2.0;
+            if (fault == 1) x.vertex_count = 4;
+            if (fault == 2) x.direct = 0;
+            if (fault == 3) x.other_stages = 1;
+            int v;
+            const int k = temporal_spatial_classify(0, &x, half, 0, &v);
+            assert(k == -1 && v == (fault == 3 ? TEMPORAL_SPATIAL_STAGES : TEMPORAL_SPATIAL_FORM));
+            TemporalSpatialLatch l = {0, 0, 0, NULL};
+            TemporalSpatialFrame fr = {1, 0, 0};
+            assert(temporal_spatial_draw(&fr, &l, k, v) == TEMPORAL_SPATIAL_AS_DRAWN && !fr.decided && !fr.published);
+            assert(l.off_next && !l.off && temporal_spatial_use(&fr, &l, 0, TEMPORAL_SPATIAL_AS_DRAWN, "a binding") ==
+                                                  TEMPORAL_SPATIAL_CONSUMER);
+        }
     for (int a = 0; a < TEMPORAL_SPATIAL_REASONS; a++)
         for (int b = a + 1; b < TEMPORAL_SPATIAL_REASONS; b++)
             assert(strcmp(temporal_spatial_text(a), temporal_spatial_text(b)));
