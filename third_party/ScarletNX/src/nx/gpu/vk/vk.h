@@ -957,14 +957,12 @@ extern u32 g_vk_stage_sets; /* sets in the pipeline layout: 5, or 2 without the 
     (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |                                           \
      VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
 void vk_pipeline_init(void);
-/* the shader at gva (after a VertexA program at gva_a, or 0). The masks key integer inputs: attributes for the
-   vertex stage, textures and render target outputs for the fragment stage. rt_int keys the primitives of the
-   tessellation evaluation and geometry stages (ShaderInfo.rt_int_mask). clip: the clip distances the 3D engine
-   enables, and SNX_SH_NOT_LAST (the stages before rasterization). The translator reads ch's bound constant buffers
-   (ch->cbind) to resolve indirect branches. xfb: what transform feedback captures of the last stage before
-   rasterization's outputs (ShaderInfo.xfb), NULL for none */
+/* the shader at gva (after a VertexA program at gva_a, or 0), keyed by its integer attributes (vertex) or textures and
+   targets (fragment), rt_int the tessellation and geometry primitives, clip the clip distances and SNX_SH_NOT_LAST,
+   xfb what transform feedback captures (ShaderInfo.xfb, or NULL), txq ShaderInfo.txq_fixed (fragment, or NULL). The
+   translator reads ch's bound constant buffers (ch->cbind) to resolve indirect branches */
 VkSh* vk_shader_get(const GpuChannel* ch, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
-                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb);
+                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb, const u32* txq);
 /* whether the constant buffer words s's translation read still hold in ch's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const GpuChannel* ch, const VkSh* s);

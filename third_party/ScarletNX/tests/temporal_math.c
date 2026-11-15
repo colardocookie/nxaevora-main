@@ -2375,6 +2375,33 @@ static void test_readers_program(void) {
     assert(temporal_readers_program(0x21fbfbecbf90f4a2ull) == -1 && temporal_readers_program(0) == -1);
 }
 
+/* D3's fixed size answer is today's: the four render scales, the game's sizes in use, both scale bits */
+static void test_txq_today(void) {
+    static const float scales[4] = {2.0f / 3.0f, 1.0f, 4.0f / 3.0f, 2.0f}; /* scale.h vk_render_scale */
+    static const unsigned games[3][2] = {{1920, 1080}, {1280, 720}, {960, 540}};
+    unsigned out[2];
+    for (int s = 0; s < 4; s++)
+        for (int g = 0; g < 3; g++) {
+            unsigned image[2];
+            for (int k = 0; k < 2; k++) { /* a scaled surface's image, as surface.c vk_sc makes it */
+                volatile float v = (float)games[g][k] * scales[s];
+                v = v + 0.5f;
+                image[k] = (unsigned)v;
+            }
+            temporal_txq_today(image[0], image[1], scales[s], 1, out);
+            assert(out[0] == games[g][0] && out[1] == games[g][1]);
+            temporal_txq_today(image[0], image[1], scales[s], 0, out);
+            assert(out[0] == image[0] && out[1] == image[1]);
+        }
+    /* 32 bit floats, as the program: 1 / (2/3) is 1.5 as a float, 1.49999995 as a double, and one texel answers 2 */
+    temporal_txq_today(1, 1, 2.0f / 3.0f, 1, out);
+    assert(out[0] == 2 && out[1] == 2);
+    temporal_txq_today(3840, 2160, 2.0f, 0, out);
+    assert(out[0] == 3840 && out[1] == 2160);
+    temporal_txq_today(1281, 853, 2.0f / 3.0f, 1, out);
+    assert(out[0] == 1922 && out[1] == 1280);
+}
+
 /* the line of the images handed to the library: when it is said */
 static void test_upscaler_handed(void) {
     TemporalUpscalerHanded h = {0};
@@ -5253,6 +5280,7 @@ int main(void) {
     test_upscaler_output_fits();
     test_validation_lines();
     test_upscaler_handed();
+    test_txq_today();
     test_readers_program();
     test_upscaler_module();
     test_upscaler_wiring();

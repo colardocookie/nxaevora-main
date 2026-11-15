@@ -1950,6 +1950,16 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         target_link_libraries(snx-test-shader-structure PRIVATE m)
     endif()
     add_test(NAME shader_structure COMMAND snx-test-shader-structure)
+    # D3's fixed size answer (ShaderInfo.txq_fixed): an older corpus record, and two programs of the corpus that
+    # SNX_SHADER_CORPUS names, skipped (77) without one. In the temporal family, which the PC's test builds run.
+    add_executable(snx-test-temporal-txq-variant txq_variant.c)
+    snx_test_target(snx-test-temporal-txq-variant 23)
+    target_link_libraries(snx-test-temporal-txq-variant PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-temporal-txq-variant PRIVATE m)
+    endif()
+    add_test(NAME txq_variant COMMAND snx-test-temporal-txq-variant WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(txq_variant PROPERTIES SKIP_RETURN_CODE 77)
     if(NOT CMAKE_CROSSCOMPILING)
         # the SVC registers tools/svcgen lays out from src/nx/hle/svc/hos.svc, in both ABIs
         include("${PROJECT_SOURCE_DIR}/cmake/svcgen.cmake")

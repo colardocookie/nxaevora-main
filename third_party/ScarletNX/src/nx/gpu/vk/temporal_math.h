@@ -1384,6 +1384,20 @@ static inline int temporal_readers_program(unsigned long long hash) {
         if (hash == programs[k]) return k < 3 ? k : 2;
     return -1;
 }
+/* What a fragment program's 2D size query answers today for an image of w x h (spirv_translate.c, scaled_coords with
+   size), and so what D3's fixed answer (ShaderInfo.txq_fixed) must be: each side as a 32 bit float, times the
+   frame's 1 / scale (frame_consts) when the slot's scale bit is set and times 1 when not, plus one half, truncated.
+   Each step is rounded to a float on its own, as the program's NoContraction steps are. */
+static inline void temporal_txq_today(unsigned w, unsigned h, float scale, int scaled, unsigned out[2]) {
+    volatile float factor = scaled ? 1 / scale : 1.0f;
+    const unsigned side[2] = {w, h};
+    for (int k = 0; k < 2; k++) {
+        volatile float f = (float)side[k];
+        f = f * factor;
+        f = f + 0.5f;
+        out[k] = (unsigned)f;
+    }
+}
 /* Whether the upscaler is still on in this session. off is a latch: once set, by a stop or by eight frames in a
    row that were drawn with jitter and not evaluated, nothing clears it, and only a new session starts clean. */
 typedef struct {
