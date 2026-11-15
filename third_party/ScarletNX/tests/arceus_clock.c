@@ -2751,6 +2751,162 @@ static void test_text_probe(void) {
     logged_count = 0;
     memset(memory, 0, sizeof memory);
 }
+/* TEXT_TICK on its real wrappers: a stand-in reveal with the game's do-while loop (the step from FBFC24, counted while
+   it answers 1 with status 0, up to +A4), and a stand-in step that counts the delay in +9E, moves the cursor +100 and
+   the state +A8, as a glyph does */
+#define TT_A 512
+#define TT_B 1024
+#define TT_STATUS 1800
+static unsigned tt_answer;
+static void tt_step(CPU* c, u64 entry) {
+    (void)entry;
+    const u64 t = c->x[0];
+    gw32(c->x[1], 0);
+    *GP(t + 0x9e) = (u8)(*GP(t + 0x9e) + 1);
+    gw32(t + 0x100, gr32(t + 0x100) + 1);
+    gw32(t + 0xa8, 3);
+    c->x[0] = 1;
+    c->pc = c->x[30];
+}
+static void tt_reveal(CPU* c, u64 entry) {
+    const u64 t = c->x[0];
+    unsigned n = 0;
+    do {
+        CPU s = {.x = {[0] = t, [1] = TT_STATUS, [30] = main_base + 0xfbfc24}, .pc = entry};
+        text_tick_step(&s, entry);
+        assert(s.pc == main_base + 0xfbfc24 && gr32(TT_STATUS) == 0 && s.x[0] == 1);
+    } while (++n < *GP(t + 0xa4));
+    c->x[0] = tt_answer;
+    c->pc = c->x[30];
+}
+/* one call of T's reveal; the glyphs it made */
+static unsigned tt_call(u64 t) {
+    const u32 before = gr32(t + 0x100);
+    CPU c = {.x = {[0] = t, [30] = return_pc}, .pc = entry_pc};
+    text_tick_reveal(&c, entry_pc);
+    assert(c.pc == return_pc);
+    return gr32(t + 0x100) - before;
+}
+static void tt_reset(void) {
+    memset(text_tick_states, 0, sizeof text_tick_states);
+    for (unsigned k = 0; k < 2; k++) {
+        const u64 t = k ? TT_B : TT_A;
+        memset(memory + t, 0, 0x110);
+        gw64(t + 0x78, 0x7000 + k);
+        *GP(t + 0xa4) = 2;
+    }
+    tt_answer = 1;
+}
+static void tt_frame(u64 ns) {
+    step.step = ns;
+    __atomic_add_fetch(&frame_step_frames, 1, __ATOMIC_RELEASE);
+}
+static void test_text_tick(void) {
+    memset(memory, 0, sizeof memory);
+    const u64 ns = step.step, frames = frame_step_frames, base = main_base;
+    main_base = 0x10000;
+    text_tick_original[0] = tt_reveal;
+    text_tick_original[1] = tt_step;
+    /* 30 FPS: every call a tick, 2 glyphs a call as the game */
+    tt_reset();
+    for (unsigned k = 0; k < 30; k++) {
+        tt_frame(33333334);
+        assert(tt_call(TT_A) == 2);
+    }
+    /* 60 FPS: a tick every other frame; on the other frames nothing of T moves, and the reveal still answers */
+    tt_reset();
+    for (unsigned k = 0; k < 12; k++) {
+        tt_frame(16666667);
+        u8 before[0x110];
+        memcpy(before, memory + TT_A, sizeof before);
+        const unsigned glyphs = tt_call(TT_A);
+        assert(glyphs == (k % 2 ? 0u : 2u)); /* the first call a tick */
+        if (!glyphs) assert(!memcmp(before, memory + TT_A, sizeof before));
+    }
+    /* two T a frame, each called twice in it: one decision a frame each, its budget fed once (research 13:50) */
+    tt_reset();
+    unsigned a = 0, b = 0;
+    for (unsigned k = 0; k < 60; k++) {
+        tt_frame(16666667);
+        a += tt_call(TT_A) + tt_call(TT_A);
+        b += tt_call(TT_B);
+    }
+    assert(a == 30 * 4 && b == 30 * 2);
+    /* a fast finish (+A4 100) and the whole page (255) on a frame that is not a tick run the game's steps */
+    tt_reset();
+    tt_frame(16666667);
+    (void)tt_call(TT_A);
+    tt_frame(16666667);
+    *GP(TT_A + 0xa4) = 100;
+    assert(tt_call(TT_A) == 100);
+    tt_frame(16666667);
+    tt_frame(16666667);
+    *GP(TT_A + 0xa4) = 255;
+    assert(tt_call(TT_A) == 255);
+    /* a step from another return address runs */
+    tt_reset();
+    tt_frame(16666667);
+    (void)tt_call(TT_A);
+    tt_frame(16666667);
+    text_tick_skip = TT_A;
+    CPU s = {.x = {[0] = TT_A, [1] = TT_STATUS, [30] = main_base + 0x2b31568}, .pc = entry_pc};
+    text_tick_step(&s, entry_pc);
+    text_tick_skip = 0;
+    assert(gr32(TT_A + 0x100) == 3);
+    /* the text ends (answer 0 after glyphs): its state goes, and the next text there runs at once */
+    tt_reset();
+    tt_frame(16666667);
+    (void)tt_call(TT_A);
+    tt_frame(16666667);
+    assert(tt_call(TT_A) == 0 && text_tick_states[0].text == TT_A);
+    tt_answer = 0;
+    tt_frame(16666667);
+    assert(tt_call(TT_A) == 2 && !text_tick_states[0].text);
+    tt_answer = 1;
+    tt_frame(16666667);
+    assert(tt_call(TT_A) == 2); /* fresh: a tick at once, where the old state would skip */
+    /* a new text at the same T ([T +78] changed) is fresh too: a tick where the old state would skip */
+    tt_frame(16666667);
+    assert(tt_call(TT_A) == 0);
+    tt_frame(16666667);
+    assert(tt_call(TT_A) == 2);
+    tt_frame(16666667);
+    gw64(TT_A + 0x78, 0x7100);
+    assert(tt_call(TT_A) == 2);
+    /* a full table: that T reveals as today, counted */
+    tt_reset();
+    for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++)
+        text_tick_states[k] = (TextTickState){.text = 3000 + k, .generation = 1};
+    const u64 full = text_tick_full;
+    for (unsigned k = 0; k < 4; k++) {
+        tt_frame(16666667);
+        assert(tt_call(TT_A) == 2);
+    }
+    assert(text_tick_full == full + 4);
+    /* with the text probe: the reveal inside the probe's, the step outside it, as text_tick_init chains them, so the
+       probe counts only the glyphs made (60 in 60 calls at 60 FPS: 30 ticks of 2) */
+    tt_reset();
+    text_probe_base = main_base;
+    text_probe_original[0] = text_tick_reveal;
+    text_tick_original[0] = tt_reveal;
+    text_tick_original[1] = text_probe_step;
+    text_probe_original[1] = tt_step;
+    const u64 probed = text_probe_steps;
+    for (unsigned k = 0; k < 60; k++) {
+        tt_frame(16666667);
+        CPU c = {.x = {[0] = TT_A, [30] = return_pc}, .pc = entry_pc};
+        text_probe_reveal(&c, entry_pc);
+    }
+    assert(text_probe_steps - probed == 60 && gr32(TT_A + 0x100) == 60);
+    text_probe_original[0] = text_probe_original[1] = NULL;
+    text_probe_base = 0;
+    text_tick_original[0] = text_tick_original[1] = NULL;
+    memset(text_tick_states, 0, sizeof text_tick_states);
+    main_base = base;
+    step.step = ns;
+    frame_step_frames = frames;
+    memset(memory, 0, sizeof memory);
+}
 /* EVENT_TICK-2's decision on the measured step: runs over frame times, the budget never above two ticks */
 static unsigned event_decide_runs(const u64* steps, unsigned count, unsigned repeat, char* pattern, u64* cut_total) {
     ScriptTick t = {0};
@@ -2998,6 +3154,7 @@ int main(void) {
     test_demo_probe();
     test_demo_tick();
     test_text_probe();
+    test_text_tick();
     test_ride_swap();
     test_defaults_on();
     test_capped_fall_body();

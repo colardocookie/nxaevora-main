@@ -5008,6 +5008,167 @@ static void demo_tick_init(void) {
     LOG("arceus-demo-tick: EXPERIMENT: the demo clock C+7EC gains 1/60 s units of elapsed time, at most 2 a call, "
         "instead of 2 a call\n");
 }
+/* SNX_ARCEUS_TEXT_TICK=1 (TEXT-TICK-DESIGN.md e5b0c379 and revision 2 f1064177; CUT-60t/30t: the same calls and
+   glyph steps per text, 204.9 ms against 466.5): each text processor T is decided once a frame on its own budget, as
+   EVENT_TICK-2 decides. In a frame that is not a tick for T, its reveal loop's glyph steps (2B315E8 called from FBFC24)
+   do not run: each answers a counted step with no glyph, out-status 0, and nothing of T is written. */
+#define TEXT_TICK_TEXTS 8
+typedef struct { u64 text, generation; ScriptTick tick; u64 steps; int fresh; } TextTickState;
+static TextTickState text_tick_states[TEXT_TICK_TEXTS];
+static PMutex text_tick_lock = PMUTEX_INIT;
+static GuestFn text_tick_original[2];
+static int text_tick;
+static u64 text_tick_calls, text_tick_ticks, text_tick_skipped, text_tick_full, text_tick_ns, text_tick_logged[3];
+static unsigned text_tick_seen;
+/* The text whose reveal runs on this thread in a frame that is not its tick, 0 for none; and its real steps */
+static _Thread_local u64 text_tick_skip, text_tick_ran;
+/* T's state by its address and its text [T +78]: fresh (its first call a tick) for a new T or a new text there */
+static TextTickState* text_tick_state(u64 text, u64 generation) {
+    for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++)
+        if (text_tick_states[k].text == text) {
+            if (text_tick_states[k].generation != generation)
+                text_tick_states[k] = (TextTickState){.text = text, .generation = generation, .fresh = 1};
+            return &text_tick_states[k];
+        }
+    for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++)
+        if (!text_tick_states[k].text) {
+            text_tick_states[k] = (TextTickState){.text = text, .generation = generation, .fresh = 1};
+            text_tick_seen++;
+            return &text_tick_states[k];
+        }
+    return NULL;
+}
+static void text_tick_reveal(CPU* c, u64 entry) {
+    const u64 text = c->x[0];
+    if (text_tick_skip || !readable(text + 0x78, 8)) { /* nested, or a T we cannot key: as today */
+        text_tick_original[0](c, entry);
+        return;
+    }
+    const u64 generation = gr64(text + 0x78);
+    pm_lock(&step_lock);
+    const u64 ns = step.step ? step.step : step.initial_ns;
+    pm_unlock(&step_lock);
+    const u64 frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
+    pm_lock(&text_tick_lock);
+    TextTickState* st = text_tick_state(text, generation);
+    int tick = 1;
+    if (st) {
+        if (st->fresh) {
+            st->fresh = 0;
+            st->tick = (ScriptTick){.frame = frame, .decided = 1, .tick = 1, .frames = 1, .ticks = 1};
+        }
+        u64 cut;
+        tick = event_tick_decide(&st->tick, frame, ns, &cut); /* once a frame for T: cached */
+    } else
+        __atomic_add_fetch(&text_tick_full, 1, __ATOMIC_RELAXED);
+    pm_unlock(&text_tick_lock);
+    if (!st && text_tick_full == 1)
+        WARN("arceus-text-tick: table of %u texts full: text %llx reveals as today\n", TEXT_TICK_TEXTS,
+             (unsigned long long)text);
+    text_tick_skip = tick ? 0 : text;
+    text_tick_ran = 0;
+    text_tick_original[0](c, entry);
+    const u64 ran = text_tick_ran;
+    text_tick_skip = 0;
+    __atomic_add_fetch(&text_tick_calls, 1, __ATOMIC_RELAXED);
+    if (tick) __atomic_add_fetch(&text_tick_ticks, 1, __ATOMIC_RELAXED);
+    pm_lock(&text_tick_lock);
+    if (st && st->text == text && st->generation == generation) {
+        st->steps += ran;
+        if (!(c->x[0] & 1) && st->steps) st->text = 0; /* the text ended: its state goes */
+    }
+    const u64 now = plat_ns();
+    if (!text_tick_ns) {
+        text_tick_ns = now;
+        text_tick_logged[0] = text_tick_calls;
+        text_tick_logged[1] = text_tick_ticks;
+        text_tick_logged[2] = text_tick_skipped;
+    } else if (now - text_tick_ns >= 5000000000ull) {
+        const double seconds = (double)(now - text_tick_ns) / 1e9;
+        LOG("arceus-text-tick: seconds=%.2f reveal_calls_per_s=%.2f ticks_per_s=%.2f skipped_steps_per_s=%.2f texts=%u "
+            "full=%llu\n", seconds, (double)(text_tick_calls - text_tick_logged[0]) / seconds,
+            (double)(text_tick_ticks - text_tick_logged[1]) / seconds,
+            (double)(text_tick_skipped - text_tick_logged[2]) / seconds, text_tick_seen,
+            (unsigned long long)text_tick_full);
+        text_tick_ns = now;
+        text_tick_logged[0] = text_tick_calls;
+        text_tick_logged[1] = text_tick_ticks;
+        text_tick_logged[2] = text_tick_skipped;
+    }
+    pm_unlock(&text_tick_lock);
+}
+/* The glyph step: skipped from the reveal loop of a T in a frame that is not its tick, unless T+A4 holds the fast
+   finish's 100 or more (also the whole page's 255); anything else runs the game's */
+static void text_tick_step(CPU* c, u64 entry) {
+    const u64 text = c->x[0], status = c->x[1];
+    if (text_tick_skip && text == text_tick_skip && c->x[30] == main_base + 0xfbfc24 && readable(text + 0xa4, 1) &&
+        *GP(text + 0xa4) < 100 && writable(status, 4)) {
+        gw32(status, 0);
+        c->x[0] = 1;
+        c->pc = c->x[30];
+        __atomic_add_fetch(&text_tick_skipped, 1, __ATOMIC_RELAXED);
+        return;
+    }
+    text_tick_original[1](c, entry);
+    if (text_tick_skip == 0 && c->x[30] == main_base + 0xfbfc24 && (c->x[0] & 0xffffffffu) == 1 &&
+        readable(status, 4) && gr32(status) == 0)
+        text_tick_ran++;
+}
+static void text_tick_init(void) {
+    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_TEXT_TICK", 0)) return;
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    if (!frame_step_cell_init("arceus-text-tick")) return;
+    static const u32 offsets[2] = {0xfbfbd0, 0x2b315e8};
+    if (text_probe_original[0] && text_probe_original[1]) {
+        /* The reveal inside the probe's (it sees the whole call), the step outside it (it counts only real steps) */
+        text_tick_original[0] = text_probe_original[0];
+        text_probe_original[0] = text_tick_reveal;
+        text_tick_original[1] = g_disp[(main_base + offsets[1] - g_code_lo) / 4];
+        __atomic_store_n(&g_disp[(main_base + offsets[1] - g_code_lo) / 4], text_tick_step, __ATOMIC_RELEASE);
+    } else {
+        /* the probe's sites and rewrites */
+        static const struct { u32 size, head, patch, word, replacement, extra[3], extra_word[3]; } sites[2] = {
+            {0x15c, 0xd100c3ff, 0x10, 0xaa0003f3, 0x91000013, {0x24, 0x12c, 0x158},
+             {0xb9418a68, 0x7100053f, 0x17ffffe7}},
+            {0x9c4, 0xfc1b0fe8, 0x3c, 0xaa0103f4, 0x91000034, {0x18, 0x868, 0x18},
+             {0xb900003f, 0xd65f03c0, 0xb900003f}},
+        };
+        GuestFn bodies[2];
+        for (unsigned k = 0; k < 2; k++) {
+            const u64 pc = main_base + offsets[k];
+            int covered = 0;
+            for (u32 i = 0; i < g_mod->nfns; i++)
+                if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] >= sites[k].size) covered = 1;
+            int guarded = covered && pc >= g_code_lo && pc + sites[k].size <= g_code_hi &&
+                          readable(pc, sites[k].size) && gr32(pc) == sites[k].head &&
+                          gr32(pc + sites[k].patch) == sites[k].word;
+            for (unsigned e = 0; guarded && e < 3; e++)
+                guarded = gr32(pc + sites[k].extra[e]) == sites[k].extra_word[e];
+            if (!guarded) {
+                WARN("arceus-text-tick: refused instruction/function guard site=main+%x\n", offsets[k]);
+                return;
+            }
+        }
+        for (unsigned k = 0; k < 2; k++) {
+            const u64 pc = main_base + offsets[k];
+            gw32(pc + sites[k].patch, sites[k].replacement);
+            jit_code_changed(pc, sites[k].size);
+            bodies[k] = jit_wait(pc);
+            if (!bodies[k]) {
+                WARN("arceus-text-tick: compile failed site=main+%x\n", offsets[k]);
+                return;
+            }
+        }
+        static const GuestFn wrappers[2] = {text_tick_reveal, text_tick_step};
+        for (unsigned k = 0; k < 2; k++) {
+            text_tick_original[k] = bodies[k];
+            __atomic_store_n(&g_disp[(main_base + offsets[k] - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
+        }
+    }
+    text_tick = 1;
+    LOG("arceus-text-tick: EXPERIMENT: each text reveals in 30 frames a second of elapsed time (FBFBD0, its glyph "
+        "step 2B315E8 skipped on other frames; the fast finish and the whole page as today)\n");
+}
 void arceus_clock_post_jit(void) {
     event_probe_init(); /* read-only, before the return below so that 30 FPS has it too */
     demo_probe_init(arceus_probe_base());
@@ -5049,6 +5210,7 @@ void arceus_clock_post_jit(void) {
     waza_shot_init();
     event_tick_init(); /* after the event probe, which it then calls on a run */
     demo_tick_init();  /* after the demo probe, inside which it then runs */
+    text_tick_init();  /* after the text probe, around whose wrappers it then goes */
     cadence_census_init();
     water_fix_init();
     effects_fix_init();
