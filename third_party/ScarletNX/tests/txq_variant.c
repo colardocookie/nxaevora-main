@@ -218,6 +218,53 @@ static int compare(const u32* a, size_t aw, const u32* k, size_t kw, const u32 k
         if (!scaling_op(OP(ma, i))) fprintf(stderr, "txq_variant: only without the key at the end\n"), ok = 0;
     if (ok && j < mk.n) fprintf(stderr, "txq_variant: an instruction of the keyed functions is new\n"), ok = 0;
     if (ok && na.nfu != 2) fprintf(stderr, "txq_variant: %u scaling results, not width and height\n", na.nfu), ok = 0;
+    /* Every removed instruction is in the backward slice of the two scaled results, and no kept one reads any but
+       those two: a removed instruction outside it, dead or not, is not the scaling's */
+    unsigned char* slice = calloc(ma.n + 1, 1);
+    u32* stack = calloc(ma.n + 1, sizeof *stack);
+    assert(slice && stack);
+    u32 depth = 0;
+    for (u32 q = 0; ok && q < 2; q++) slice[fu[q]] = 1, stack[depth++] = fu[q];
+    while (ok && depth) {
+        const u32 e = stack[--depth], count = ma.w[ma.at[e]] >> 16;
+        for (u32 w = 1; w < count; w++) {
+            const u32 v = ma.w[ma.at[e] + w];
+            if (!is_id(&ma, e, w) || (int)w == result_word(OP(ma, e)) || ma.def[v] - 1 < ma.body) continue;
+            if (!slice[ma.def[v] - 1]) slice[ma.def[v] - 1] = 1, stack[depth++] = ma.def[v] - 1;
+        }
+    }
+    for (u32 e = ma.body; ok && e < ma.n; e++) {
+        if (ma.pos[e]) continue;
+        if (!slice[e]) {
+            fprintf(stderr, "txq_variant: a removed instruction (opcode %u at %u) is not in the scaled results' "
+                    "slice\n", OP(ma, e), e);
+            ok = 0;
+            break;
+        }
+        const int r = result_word(OP(ma, e));
+        for (u32 x = ma.body; ok && r && x < ma.n && e != fu[0] && e != fu[1]; x++)
+            if (ma.pos[x] && reads(&ma, x, ma.w[ma.at[e] + r])) {
+                fprintf(stderr, "txq_variant: a removed result (opcode %u at %u) is read by a kept instruction\n",
+                        OP(ma, e), e);
+                ok = 0;
+            }
+    }
+    /* the declarations the removed instructions read, and what those read in turn: a's alone may only be these */
+    unsigned char* owned = calloc(ma.bound + 1, 1);
+    assert(owned);
+    depth = 0;
+    for (u32 e = ma.body; ok && e < ma.n; e++)
+        if (!ma.pos[e]) stack[depth++] = e;
+    while (ok && depth) {
+        const u32 e = stack[--depth], count = ma.w[ma.at[e]] >> 16;
+        for (u32 w = 1; w < count; w++) {
+            const u32 v = ma.w[ma.at[e] + w];
+            if (!is_id(&ma, e, w) || (int)w == result_word(OP(ma, e)) || ma.def[v] - 1 >= ma.body || owned[v]) continue;
+            owned[v] = 1;
+            stack[depth++] = ma.def[v] - 1;
+        }
+    }
+    free(slice), free(stack);
     /* the data flow: every kept instruction reads the same, by its operands' names */
     for (u32 x = ma.body, y = mk.body; ok && x < ma.n; x++) {
         if (!ma.pos[x]) continue;
@@ -251,6 +298,11 @@ static int compare(const u32* a, size_t aw, const u32* k, size_t kw, const u32 k
             const int r = result_word(OP(ma, d));
             const u32 target = ma.w[ma.at[d] + (r ? r : 1)];
             int still = 0;
+            if (r && !owned[target]) {
+                fprintf(stderr, "txq_variant: a declaration only without the key (opcode %u) is read by no removed "
+                        "instruction\n", OP(ma, d));
+                ok = 0;
+            }
             if (r) { /* a declaration: read by a kept function instruction, or by a declaration that is not a's alone */
                 for (u32 e = 0; e < ma.n && !still; e++) {
                     if (e == d || !reads(&ma, e, target) || (e >= ma.body && !ma.pos[e])) continue;
@@ -258,12 +310,14 @@ static int compare(const u32* a, size_t aw, const u32* k, size_t kw, const u32 k
                     const u64 e_name = instruction_name(&ma, e, &na);
                     still = e >= ma.body || bsearch(&e_name, sk, mk.body, sizeof *sk, u64_order) != NULL;
                 }
-            } else /* a decoration, a name: of a function instruction that was removed */
-                still = target >= ma.bound || !ma.def[target] || ma.def[target] - 1 < ma.body ||
-                        ma.pos[ma.def[target] - 1];
+            } else { /* only a decoration or a name, and only of a function instruction that was removed */
+                const u32 op = OP(ma, d);
+                const int metadata = op == 5 || op == 6 || op == 71 || op == 72 || op == 332 || op == 5632;
+                still = !metadata || !is_id(&ma, d, 1) || ma.def[target] - 1 < ma.body || ma.pos[ma.def[target] - 1];
+            }
             if (still) {
-                fprintf(stderr, "txq_variant: a declaration only without the key (opcode %u) is still read\n",
-                        OP(ma, d));
+                fprintf(stderr, "txq_variant: an instruction only without the key (opcode %u) %s\n", OP(ma, d),
+                        r ? "is still read" : "is not a decoration or name of a removed instruction");
                 ok = 0;
             }
             (*removed)++, x++;
@@ -285,7 +339,7 @@ static int compare(const u32* a, size_t aw, const u32* k, size_t kw, const u32 k
     if (ok && (key_x != 1 || key_y != 1))
         fprintf(stderr, "txq_variant: the key's constants are not both new\n"), ok = 0;
 #undef OP
-    free(sa), free(sk);
+    free(sa), free(sk), free(owned);
     module_free(&ma);
     module_free(&mk);
     return ok;
@@ -304,14 +358,16 @@ static size_t emit(u32* m, size_t n, u32 op, int count, const u32* operands) {
         n = emit(m, n, op, (int)(sizeof o_ / sizeof o_[0]) + 1, o_);                                                   \
     } while (0)
 #define E0(op) (m[n++] = 1u << 16 | (op))
-enum { V_OK, V_SWAPPED, V_MODE, V_OPERAND, V_EXTRA, V_ONE_CONSTANT };
+enum { V_OK, V_SWAPPED, V_MODE, V_OPERAND, V_EXTRA, V_ONE_CONSTANT, V_DEAD, V_UNREAD, V_CAPABILITY };
 /* ids: 1 void, 2 fn, 3 u32, 4 f32, 5 main, 6 width, 7 height, 8 half, 9 label, 10-15 the scaling, 16 the result,
-   17 and 18 the key's constants, 19 an extra constant */
+   17 and 18 the key's constants, 19 an extra constant, 20 a dead OpFAdd and 21 an unread constant of the unkeyed
+   module */
 static size_t control(u32* m, int keyed, int variant) {
     size_t n = 5;
-    const u32 header[5] = {0x07230203u, 0x00010300u, 0, 20, 0};
+    const u32 header[5] = {0x07230203u, 0x00010300u, 0, 22, 0};
     memcpy(m, header, sizeof header);
-    E(17, 1);                              /* OpCapability Shader */
+    E(17, 1); /* OpCapability Shader */
+    if (!keyed && variant == V_CAPABILITY) E(17, 11); /* OpCapability Int64: its literal is a removed result's id */
     E(14, 0, 1);                           /* OpMemoryModel Logical GLSL450 */
     E(15, 4, 5, 0x6E69616Du, 0);           /* OpEntryPoint Fragment %5 "main" */
     E(16, 5, variant == V_MODE ? 8u : 7u); /* OpExecutionMode %5 OriginUpperLeft (8: OriginLowerLeft) */
@@ -323,6 +379,7 @@ static size_t control(u32* m, int keyed, int variant) {
     E(43, 3, 6, variant == V_OPERAND ? 3841u : 3840u);
     E(43, 3, 7, 2160);
     if (!keyed) E(43, 4, 8, 0x3F000000u);
+    if (!keyed && variant == V_UNREAD) E(43, 3, 21, 77);
     if (keyed) {
         E(43, 3, 17, 1234);
         if (variant != V_ONE_CONSTANT) E(43, 3, 18, 567);
@@ -337,7 +394,8 @@ static size_t control(u32* m, int keyed, int variant) {
         E(112, 4, 13, 7); /* the height */
         E(133, 4, 14, 13, 8);
         E(109, 3, 15, 14);
-        E(130, 3, 16, 12, 15); /* OpISub width, height */
+        if (variant == V_DEAD) E(129, 4, 20, 10, 8); /* OpFAdd, read by nothing */
+        E(130, 3, 16, 12, 15);                       /* OpISub width, height */
     } else if (variant == V_ONE_CONSTANT)
         E(130, 3, 16, 17, 17);
     else
@@ -349,18 +407,21 @@ static size_t control(u32* m, int keyed, int variant) {
 static void controls(void) {
     static u32 a[256], k[256];
     static const struct {
-        int keyed, variant, passes;
+        int unkeyed, keyed, variant, passes; /* the unkeyed module's variant, and the keyed one's */
         const char* what;
-    } cases[] = {{1, V_OK, 1, "the key in the scaling's place"},
-                 {1, V_SWAPPED, 0, "width and height swapped"},
-                 {1, V_MODE, 0, "an execution mode's literal changed"},
-                 {1, V_OPERAND, 0, "an unrelated constant changed"},
-                 {1, V_EXTRA, 0, "an unrelated constant added"},
-                 {0, V_OK, 0, "the key without effect (another slot keyed)"},
-                 {1, V_ONE_CONSTANT, 0, "one of the key's constants missing"}};
+    } cases[] = {{V_OK, 1, V_OK, 1, "the key in the scaling's place"},
+                 {V_OK, 1, V_SWAPPED, 0, "width and height swapped"},
+                 {V_OK, 1, V_MODE, 0, "an execution mode's literal changed"},
+                 {V_OK, 1, V_OPERAND, 0, "an unrelated constant changed"},
+                 {V_OK, 1, V_EXTRA, 0, "an unrelated constant added"},
+                 {V_OK, 0, V_OK, 0, "the key without effect (another slot keyed)"},
+                 {V_OK, 1, V_ONE_CONSTANT, 0, "one of the key's constants missing"},
+                 {V_DEAD, 1, V_OK, 0, "a dead instruction outside the scaling removed too"},
+                 {V_UNREAD, 1, V_OK, 0, "an unread declaration outside the scaling removed too"},
+                 {V_CAPABILITY, 1, V_OK, 0, "a capability whose literal equals a removed id removed too"}};
     const u32 key[2] = {1234, 567};
-    const size_t aw = control(a, 0, V_OK);
     for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        const size_t aw = control(a, 0, cases[c].unkeyed);
         const size_t kw = control(k, cases[c].keyed, cases[c].variant);
         unsigned removed, added;
         fprintf(stderr, "txq_variant: control, %s, must %s:\n", cases[c].what, cases[c].passes ? "pass" : "fail");
@@ -368,7 +429,7 @@ static void controls(void) {
         if (passed != cases[c].passes) fprintf(stderr, "txq_variant: control '%s' went the other way\n", cases[c].what);
         assert(passed == cases[c].passes);
     }
-    puts("txq_variant: controls ok (one passes, six fail as they must)");
+    puts("txq_variant: controls ok (one passes, nine fail as they must)");
 }
 
 static u32* translate(const u8* code, u32 max_bytes, int stage, const ShaderInfo* info, const u32 txq[3],
