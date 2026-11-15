@@ -17,6 +17,8 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/temporal_math.h"
+#include "nx/gpu/vk/temporal_spatial.h"
 #include "nx/gpu/vk/scale.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/internal_spv.h"
@@ -1154,6 +1156,7 @@ static u32 image_variant(const GpuChannel* ch, int stage, const VkSh* s, u32* si
 typedef struct {
     u64 tm, ts, dm;
     u32 rm, rs, df, unfed;
+    u32 txq[3]; /* ShaderInfo.txq_fixed: nothing sets it yet */
 } FsKey;
 /* the integer color targets (rm, signed rs) the registers name, which key the fragment shader's outputs */
 static void rt_int_targets(const u32* r, u32* rm, u32* rs) {
@@ -1205,10 +1208,16 @@ static void fs_key(GpuChannel* ch, const VkSh* s0, TexRes* res, u32 last_out, u3
     fk->rm |= image_variant(ch, 4, s0, &signed_images) << 8;
     fk->rs |= signed_images << 8;
 }
+/* SNX_ARCEUS_UPSCALER=spatial: what the fragment program's bindings of the scene colour are given at this draw,
+   decided once (spatial_draw) for both the texture (stage_set_) and the variant (FsKey.txq). Slot masks. */
+static struct {
+    u64 larger, scene, listed;
+} g_spatial;
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
 static VkSh* fs_variant(GpuChannel* ch, u64 addr, VkSh* s0, const FsKey* fk) {
-    if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed) return s0;
-    return vk_shader_get(ch, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, NULL);
+    if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed && !fk->txq[0]) return s0;
+    return vk_shader_get(ch, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, NULL,
+                         fk->txq);
 }
 
 VkImageViewType vk_tex_view_type(const ShTex* st) {
@@ -1724,6 +1733,7 @@ static int tex_tables_set(GpuChannel* ch, int stage, const VkSh* s, const int* f
                 VkImageView view = VK_NULL_HANDLE;
                 if ((handle & 0xFFFFF) <= ch->r3d[0x55F] && ((handle >> 20) & 0xFFF) <= ch->r3d[0x559]) {
                     tex_resolve(ch, handle, &x);
+                    vk_temporal_watch_bound(x.t); /* an element over the scene's memory (spatial) */
                     if (x.t && (!kind->shadow || !x.t->f.is_int) && !is_target(x.t, rt, zt, n))
                         view = vk_tex_bind_view(x.t, want, x.tic, x.tsc, num);
                 }
@@ -1975,8 +1985,11 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         u32 handle = tex_handle(ch, stage, tcb, st);
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
+        /* SNX_ARCEUS_UPSCALER=spatial: a binding given the larger texture (spatial_draw) is bound from the resolution
+           that decision was made on, never resolved again, so it is that binding and no other (astra's O2) */
+        const int larger = stage == 4 && res && (g_spatial.larger >> i & 1);
         TexRes own, *x = res ? &res[i] : NULL;
-        if (!x || !x->have || x->handle != handle || (x->t && x->t->is_rt)) {
+        if (!larger && (!x || !x->have || x->handle != handle || (x->t && x->t->is_rt))) {
             x = &own;
             tex_resolve(ch, handle, x);
         }
@@ -1998,11 +2011,17 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         /* sampling the depth target needs it read-only: no depth writes, and no stencil writes on either face */
         int sten_w = zt && zt->f.stencil && r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF)));
         int depth_ro = t && t == zt && !r[0x4BA] && !sten_w;
+        /* given the larger texture: its view in place of the scene's, before anything of the scene's Surf is used
+           (research 11:25). Any other texture over the scene's memory while the watch is armed goes to the watch. */
+        if (!larger) vk_temporal_watch_bound(t);
         u32 slots = 0; /* the color slots t is bound to, when the fragment shader may sample it in place */
-        if (t && fb && g_vk.has_feedback && t->layout != VK_IMAGE_LAYOUT_UNDEFINED)
+        if (!larger && t && fb && g_vk.has_feedback && t->layout != VK_IMAGE_LAYOUT_UNDEFINED)
             for (u32 j = 0; j < n; j++)
                 if (rt[j] == t) slots |= 1u << j;
-        if (slots) {
+        if (larger) {
+            view = vk_temporal_spatial_view();
+            depth_ro = 0;
+        } else if (slots) {
             /* the guest reads the target's previous contents during a draw that writes it: in place, in a feedback
                loop */
             view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
@@ -2037,9 +2056,15 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
             layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         } else if (view && slots)
             layout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT; /* render_begin moves it there */
-        else if (view)
+        else if (view && larger)
+            layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; /* where the hook left it */
+        else if (view) {
+            /* the scene's own binding by the fragment program: the watch judges it with what it was given */
+            const int scene = stage == 4 && (g_spatial.scene >> i & 1);
+            if (scene) vk_temporal_spatial_binding(1, (int)(g_spatial.listed >> i & 1), TEMPORAL_SPATIAL_AS_DRAWN);
             vk_surf_use(vk_cmd(), t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        else {
+            if (scene) vk_temporal_spatial_binding(0, 0, 0);
+        } else {
             view = vk_null_view(want, st->shadow ? 3 : num);
             layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
@@ -2065,6 +2090,7 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         u32 tic[8];
         vk_gmem_words(tic_base + (handle & 0xFFFFF) * 32ull, tic, 8);
         Surf* surf = vk_tex_from_tic_storage(tic);
+        vk_temporal_watch_bound(surf);
         u64 size = vk_surf_guest_size(surf);
         int kind = s->si.img[i].kind;
         /* a draw can't also write one of its own attachments through a storage image */
@@ -2218,6 +2244,28 @@ int vk_render_depth_clamp(const u32* r) {
 
 VkFrontFace vk_render_front_face(const u32* r) { return front_face_at_viewport(r, vk_render_viewport(r).height); }
 
+/* viewport i's scissor as it is recorded: the whole extent of the pass, or with the test on the guest's rectangle
+   after the render scale and the turn of the window's origin, held to the extent. None without area. */
+static VkRect2D draw_scissor(const u32* r, u32 i, int area, VkExtent2D ext) {
+    VkRect2D sc = {{0, 0}, area ? ext : (VkExtent2D){0, 0}};
+    if (area && (r[0x380 + i * 4] & 1)) {
+        u32 xs = r[0x381 + i * 4], ys = r[0x382 + i * 4];
+        i32 x0 = (i32)vk_scf(xs & 0xFFFF), x1 = (i32)vk_scf(xs >> 16);
+        i32 y0 = (i32)vk_scf(ys & 0xFFFF), y1 = (i32)vk_scf(ys >> 16);
+        if (r[0x4EB] & 1) {
+            i32 clip_height = (i32)vk_scf((float)(r[0x3FE] >> 16));
+            i32 old_y0 = y0;
+            y0 = clip_height - y1;
+            y1 = clip_height - old_y0;
+        }
+        if (x0 < 0) x0 = 0;
+        if (y0 < 0) y0 = 0;
+        if (x1 > (i32)ext.width) x1 = (i32)ext.width;
+        if (y1 > (i32)ext.height) y1 = (i32)ext.height;
+        sc = x1 > x0 && y1 > y0 ? (VkRect2D){{x0, y0}, {(u32)(x1 - x0), (u32)(y1 - y0)}} : (VkRect2D){{0, 0}, {0, 0}};
+    }
+    return sc;
+}
 /* the Vulkan topology of a draw's (the 3D engine's numbers, 14 a patch list) */
 static VkPrimitiveTopology topology_vk(u32 topology) {
     static const VkPrimitiveTopology adjacent[5] = {
@@ -2410,26 +2458,27 @@ static int draw_shaders(GpuChannel* ch, u32 topology, DrawShaders* o) {
     o->attr_sint = attr_sint;
     o->vs = vk_shader_get(ch, code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint, 0, 0,
                           tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0,
-                          xfb_on && !tes_on && !gs_on ? &xfb : NULL);
+                          xfb_on && !tes_on && !gs_on ? &xfb : NULL, NULL);
     /* a vertex program's images pick its variant as a fragment program's do (fs_key) */
     u32 vs_signed_images = 0;
     u32 vs_images = o->vs && !o->vs->failed && o->vs->si.nimg ? image_variant(ch, 0, o->vs, &vs_signed_images) : 0;
     if (vs_images || vs_signed_images)
         o->vs = vk_shader_get(ch, code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint,
                               vs_images << 8, vs_signed_images << 8, tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0,
-                              xfb_on && !tes_on && !gs_on ? &xfb : NULL);
+                              xfb_on && !tes_on && !gs_on ? &xfb : NULL, NULL);
     o->tcs =
-        tcs_on ? vk_shader_get(ch, code + r[0x821], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0, NULL) : NULL;
+        tcs_on ? vk_shader_get(ch, code + r[0x821], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0, NULL, NULL)
+               : NULL;
     o->tes = tes_on ? vk_shader_get(ch, code + r[0x831], 0, ST_TES, 0, 0, r[0xC8] & 0x333, 0,
-                                    gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, xfb_on && !gs_on ? &xfb : NULL)
+                                    gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, xfb_on && !gs_on ? &xfb : NULL, NULL)
                     : NULL;
     o->gs = gs_on ? vk_shader_get(ch, code + r[0x841], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, r[0xC8]),
-                                  0, clip, 0, 0, 0, xfb_on ? &xfb : NULL)
+                                  0, clip, 0, 0, 0, xfb_on ? &xfb : NULL, NULL)
                   : NULL;
     if ((tcs_on && (!o->tcs || o->tcs->failed)) || (tes_on && (!o->tes || o->tes->failed)) ||
         (gs_on && (!o->gs || o->gs->failed)) || !o->vs || o->vs->failed)
         return 0;
-    o->fs0 = (r[0x850] & 1) ? vk_shader_get(ch, code + r[0x851], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, NULL) : NULL;
+    o->fs0 = (r[0x850] & 1) ? vk_shader_get(ch, code + r[0x851], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL) : NULL;
     rt_int_targets(r, &o->rt_int, &o->rt_sint);
     return 1;
 }
@@ -2774,6 +2823,102 @@ static u64 draw_last_vertex(GpuChannel* ch, int indexed, u32 first, u32 count, u
     return last < 0 ? 0 : (u64)last;
 }
 
+/* SNX_ARCEUS_UPSCALER=spatial, while the hand-over's watch is armed (vk.h g_vk_watch): each binding of the scene
+   colour by the fragment program is described as this draw has it and decided by vk_temporal_spatial_decide. A
+   binding given the larger texture keys the size query's variant for its slot. */
+static void spatial_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, int other_stages, const TexRes* res,
+                         int indexed, u32 topology, u32 first, u32 count, u32 base_instance, u32 instances,
+                         Surf* const* rt, u32 n, const Surf* zt, FsKey* fk) {
+    g_spatial.larger = g_spatial.scene = g_spatial.listed = 0;
+    if (!g_vk_watch || !fs0) return;
+    const u32* r = ch->r3d;
+    const Surf* target = zt;
+    for (u32 j = 0; j < n; j++)
+        if (rt[j]) {
+            target = rt[j];
+            break;
+        }
+    const int nt = fs0->si.ntex > SH_MAXTEX ? SH_MAXTEX : fs0->si.ntex;
+    for (int i = 0; i < nt; i++) {
+        const TexRes* x = &res[i];
+        const ShTex* st = &fs0->si.tex[i];
+        if (!x->have || x->t != g_vk_watch || (st->flags & SNX_TEX_INDEXED)) continue;
+        Surf* t = x->t;
+        g_spatial.scene |= 1ull << i;
+        TemporalSpatialDraw d;
+        memset(&d, 0, sizeof d);
+        d.direct = indexed == 0;
+        d.triangle_list = topology_vk(topology) == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        d.first_vertex = first;
+        d.vertex_count = count;
+        d.instance_count = instances;
+        d.first_instance = base_instance;
+        d.other_stages = other_stages;
+        const VkViewport v = vk_render_viewport_at(r, 0);
+        d.viewport[0] = v.x;
+        d.viewport[1] = v.y;
+        d.viewport[2] = v.width;
+        d.viewport[3] = v.height;
+        if (target) {
+            d.target[0] = (int)target->sw;
+            d.target[1] = (int)target->sh;
+            const VkRect2D sc = draw_scissor(r, 0, v.width > 0 && v.height != 0, (VkExtent2D){target->sw, target->sh});
+            d.scissor_on = 1;
+            d.scissor[0] = sc.offset.x;
+            d.scissor[1] = sc.offset.y;
+            d.scissor[2] = sc.offset.x + (int)sc.extent.width;
+            d.scissor[3] = sc.offset.y + (int)sc.extent.height;
+        }
+        unsigned q[2];
+        temporal_txq_today(t->sw, t->sh, g_vk_scale, t->sw != t->w || t->sh != t->h, q);
+        d.query[0] = q[0];
+        d.query[1] = q[1];
+        /* the sampler Vulkan is given for the slot, made as stage_set_ makes it */
+        const VkImageViewType want = vk_tex_view_type(st);
+        const int num = st->flags & 1                                      ? 1
+                        : st->shadow || !((fs0->si.tex_int_mask >> i) & 1) ? 0
+                        : ((fs0->si.tex_sint_mask >> i) & 1)               ? 2
+                                                                           : 1;
+        const VkSampler smp = vk_tex_bind_sampler(x->tsc, x->tic, st, num, t, want);
+        VkSamplerCreateInfo made;
+        if (smp && vk_sampler_made(smp, &made)) {
+            static const int address[5] = {TEMPORAL_SPATIAL_OTHER_ADDRESS, TEMPORAL_SPATIAL_OTHER_ADDRESS,
+                                           TEMPORAL_SPATIAL_EDGE, TEMPORAL_SPATIAL_BORDER,
+                                           TEMPORAL_SPATIAL_OTHER_ADDRESS};
+            d.normalised = !made.unnormalizedCoordinates;
+            d.mag_nearest = made.magFilter == VK_FILTER_NEAREST;
+            d.min_nearest = made.minFilter == VK_FILTER_NEAREST;
+            d.filters_same = made.magFilter == made.minFilter;
+            d.anisotropy = made.anisotropyEnable != 0;
+            d.compare = made.compareEnable != 0 || st->shadow;
+            d.address[0] = (u32)made.addressModeU < 5 ? address[made.addressModeU] : TEMPORAL_SPATIAL_OTHER_ADDRESS;
+            d.address[1] = (u32)made.addressModeV < 5 ? address[made.addressModeV] : TEMPORAL_SPATIAL_OTHER_ADDRESS;
+        }
+        d.one_level = t->levels == 1;
+        /* the view as vk_tex_bind_view makes it: the image's own format, two dimensions, the identity mapping */
+        d.view_format_same = num == 0 && !(st->flags & 1) && !tex_srgb(x->tic, x->tsc) && !t->f.depth &&
+                             !t->f.is_int && !(t->fkey & (1u << 30));
+        d.view_2d = want == VK_IMAGE_VIEW_TYPE_2D;
+        d.view_one_level = t->levels == 1;
+        d.view_one_layer = t->layers == 1 && !t->member && !t->group;
+        d.view_identity = tex_map_identity(tex_map(t, x->tic));
+        int listed = 0;
+        const int given = vk_temporal_spatial_decide(ch, vs, fs0, st->cbuf_off, t, &d, &listed);
+        if (listed) g_spatial.listed |= 1ull << i;
+        if (given != TEMPORAL_SPATIAL_LARGER) continue;
+        if (fk->txq[0]) { /* one keyed slot a variant: no entry has two, so this is ours */
+            vk_temporal_spatial_fault("two bindings of one draw were given the larger texture");
+            g_spatial.larger = 0;
+            memset(fk->txq, 0, sizeof fk->txq);
+            return;
+        }
+        g_spatial.larger |= 1ull << i;
+        fk->txq[0] = st->cbuf_off + 1;
+        fk->txq[1] = q[0];
+        fk->txq[2] = q[1];
+    }
+}
+
 static void render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex,
                         u32 base_instance, u32 instances);
 /* a draw as a profiler zone (SNX_TRACY builds), around its many ways out */
@@ -2853,8 +2998,16 @@ retry:
     VkSh* last = gs ? gs : tes ? tes : vs;
     VkSh* fs = NULL;
     FsKey fk = {0};
+    /* the targets, read before the fragment program's variant: the hand-over's decision needs their size */
+    Surf* rt[8];
+    Surf* zt;
+    u32 n;
+    read_targets(ch, rt, &zt, &n);
+    g_spatial.larger = g_spatial.scene = g_spatial.listed = 0;
     if (sh.fs0) {
         fs_key(ch, sh.fs0, fres, last->si.out_mask, sh.rt_int, sh.rt_sint, &fk);
+        spatial_draw(ch, vs, sh.fs0, tcs || tes || gs, fres, indexed, draw_topo, first, count, base_instance,
+                     instances, rt, n, zt, &fk);
         if (kept && memcmp(&fk, &g_draw.fkey, sizeof fk)) kept = 0;
         if (kept) fs = g_draw.fs;
         if (!kept || g_draw.check) {
@@ -2865,6 +3018,20 @@ retry:
             }
             fs = made;
         }
+        /* the larger texture with its variant, or neither: without the variant, or with the mode gone off since the
+           decision, the scene with the unkeyed program, and the mode off. The draw is drawn (astra's O2) */
+        if (g_spatial.larger) {
+            int fault;
+            const int made = fs && !fs->failed && fs != sh.fs0;
+            g_spatial.larger = temporal_spatial_final(g_spatial.larger, made, g_vk_watch != NULL, &fault);
+            if (fault) {
+                vk_temporal_spatial_fault(made ? "the mode went off before the draw's textures were bound"
+                                               : "the size query's variant could not be made");
+                memset(fk.txq, 0, sizeof fk.txq);
+                fs = fs_variant(ch, code + r[0x851], sh.fs0, &fk);
+                kept = 0;
+            }
+        }
         if (fs && fs->failed) {
             g_vk_skipped++;
             return;
@@ -2873,10 +3040,6 @@ retry:
     cb_prefetch(ch, 0, vs, 0);
     if (fs) cb_prefetch(ch, 4, fs, 0);
     draw_indices_prefetch(ch, indexed, first, count, 0);
-    Surf* rt[8];
-    Surf* zt;
-    u32 n;
-    read_targets(ch, rt, &zt, &n);
     if (vk_temporal_enabled()) { /* what the temporal probe learns from a draw: its targets and sampled surfaces */
         Surf* sampled[SH_MAXTEX];
         const u32 *tic[SH_MAXTEX], *tsc[SH_MAXTEX]; /* the headers of each, for the probe's lines */
@@ -3391,25 +3554,7 @@ retry:
         int area = viewport[i].width > 0 && viewport[i].height != 0;
         if (!area) /* An empty guest viewport clips everything. Vulkan still needs a valid transform. */
             viewport[i] = (VkViewport){0, 0, 1, 1, 0, 1};
-        VkRect2D sc = {{0, 0}, area ? g_rp.ext : (VkExtent2D){0, 0}};
-        if (area && (r[0x380 + i * 4] & 1)) {
-            u32 xs = r[0x381 + i * 4], ys = r[0x382 + i * 4];
-            i32 x0 = (i32)vk_scf(xs & 0xFFFF), x1 = (i32)vk_scf(xs >> 16);
-            i32 y0 = (i32)vk_scf(ys & 0xFFFF), y1 = (i32)vk_scf(ys >> 16);
-            if (r[0x4EB] & 1) {
-                i32 clip_height = (i32)vk_scf((float)(r[0x3FE] >> 16));
-                i32 old_y0 = y0;
-                y0 = clip_height - y1;
-                y1 = clip_height - old_y0;
-            }
-            if (x0 < 0) x0 = 0;
-            if (y0 < 0) y0 = 0;
-            if (x1 > (i32)g_rp.ext.width) x1 = (i32)g_rp.ext.width;
-            if (y1 > (i32)g_rp.ext.height) y1 = (i32)g_rp.ext.height;
-            sc = x1 > x0 && y1 > y0 ? (VkRect2D){{x0, y0}, {(u32)(x1 - x0), (u32)(y1 - y0)}}
-                                   : (VkRect2D){{0, 0}, {0, 0}};
-        }
-        scissor[i] = sc;
+        scissor[i] = draw_scissor(r, i, area, g_rp.ext);
     }
     if (vk_temporal_enabled()) vk_temporal_recorded(&viewport[0], &scissor[0]); /* read only, for the log */
     if (fresh || g_dyn.viewports != viewports || memcmp(g_dyn.vp, viewport, viewports * sizeof *viewport)) {
@@ -3815,6 +3960,7 @@ void vk_render_draw_texture(GpuChannel* ch) {
     TexRes x;
     tex_resolve(ch, (r[0x428] & 0xFFF) << 20 | (r[0x429] & 0xFFFFF), &x);
     Surf *rt[8], *zt, *t = x.t;
+    vk_temporal_watch_bound(t);
     u32 n;
     read_targets(ch, rt, &zt, &n);
     if (!t || !n || !rt[0]) {

@@ -13,6 +13,7 @@
 #include "nx/gpu/vk/post_spv.h"
 #include "nx/gpu/vk/temporal_spv.h"
 #include "nx/gpu/vk/temporal_math.h"
+#include "nx/gpu/vk/temporal_spatial.h"
 #include "nx/gpu/vk/upscaler.h"
 #include "nx/gpu/vk/upscaler_needs.h"
 #include "nx/runtime/platform/log.h"
@@ -276,6 +277,30 @@ static struct {
     VkPipeline write_pipe;
     VkFormat write_format;
 } g_u = {.asked = -1};
+/* SNX_ARCEUS_UPSCALER=spatial's state (the functions are further down, before the hook) */
+static struct {
+    int asked;
+    TemporalSpatialLatch latch;
+    TemporalSpatialFrame fr;
+    u32 frame; /* the frame fr is of */
+    int said_off, restarted;
+    Image picture, larger;
+    VkPipeline scale_pipe;
+    VkFormat scale_format;
+    /* published: the scene colour's Surf, its image, write sequence and memory at the hook, the fractions */
+    const Surf* scene;
+    VkImage image;
+    u64 wseq, gva, bytes;
+    double f[2];
+    int W, H, M, N;
+    int binding_on, binding_listed, binding_given; /* the binding being made (vk_temporal_spatial_binding) */
+    int stats_private; /* the numbers last written are of the private picture */
+    /* for the line every 600th frame: frames replaced and left as drawn, the first reason, the first consumer */
+    u64 replaced, as_drawn, consumers, faults;
+    char reason[200], consumer[200];
+} g_s;
+const Surf* g_vk_watch;
+static int spatial_now(u32 frame);
 static void upscaler_start(void);
 #define MOTION2_FORMAT VK_FORMAT_R16G16_SFLOAT
 static VkFormat upscaler_motion_format(void) { return g_u.two_channel ? MOTION2_FORMAT : MOTION_FORMAT; }
@@ -1246,8 +1271,9 @@ static void stats_log(void) {
         snprintf(refused, sizeof refused, " rejected_sampled of_all n=%u of %u, of_eligible n=%u of %u, "
                  "without_finite_camera_distance n=%u, largest_finite_distance=%.0f px (a half float, capped at 59000)",
                  rejected_all, STATS_W * STATS_H, rejected, all, rejected_blind, (double)rejected_far);
-    LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px vector_max=%.2f px sky=%u off_screen=%u%s%s\n",
-        (unsigned long long)g_t.stats_run, all ? length / all : 0.0, longest, sky, off, bands, refused);
+    LOG("arceus-temporal-stats: run=%llu vector_mean=%.2f px vector_max=%.2f px sky=%u off_screen=%u%s%s%s\n",
+        (unsigned long long)g_t.stats_run, all ? length / all : 0.0, longest, sky, off, bands, refused,
+        g_s.stats_private ? " (of the private picture before the scale, not of the picture shown)" : "");
     /* The probe names the draws that left a sampled vector longer than an eighth of the scene's height in that
        frame, four at most. The length has the camera's part in it, so a fast pan names draws too and nothing here
        says a pixel would be rejected. It is a half float, cut at 990 px by the numbers' shader. */
@@ -1529,6 +1555,7 @@ void vk_temporal_recorded(const VkViewport* viewport, const VkRect2D* scissor) {
 void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* const* sampled,
                       const u32* const* tic, const u32* const* tsc, int nt, Surf* const* rt, u32 n, Surf* zt) {
     const u32 frame = g_vk_present + 1;
+    spatial_now(frame); /* a frame's first draw settles the one before, before this frame is decided */
     g_t.draw_zt = zt;
     g_t.draw_r3d = ch->r3d;
     g_t.draw_ch = ch;
@@ -3266,6 +3293,310 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
     upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_EVALUATED, "");
 }
 
+/* ------------------------------------------------------------ SNX_ARCEUS_UPSCALER=spatial: our own scaler (D3) */
+/* Dormant without its switch: nothing below runs unless g_s.asked is 1, which only spatial_start sets. The rules are
+   temporal_spatial.h's. The resolve writes a private picture, which is scaled into the picture part of a larger
+   texture. The audited readers are given that texture with the size query's variant. The scene stays as drawn. */
+
+/* the mode goes off for the session: one line. D2 restarts from a reset at the next frame's first draw, before its
+   decision (spatial_now): the history and the rectangle's candidate cleared, so that frame seeds (revision 3 c) */
+static void spatial_went_off(void) {
+    if (g_s.said_off) return;
+    g_s.said_off = 1;
+    g_vk_watch = NULL;
+    LOG("arceus-upscaler: spatial is off for the rest of the session (%s): D2 goes on, restarted from a reset\n",
+        g_s.latch.why ? g_s.latch.why : "?");
+}
+static void spatial_failed(const char* why) {
+    temporal_spatial_make_failed(&g_s.latch, why);
+    spatial_went_off();
+}
+/* The frame's state, settled when a later frame is first seen: the latch takes the frame's outcome, and an
+   off from the next frame takes effect. 1 while the mode is on. */
+static int spatial_now(u32 frame) {
+    if (!g_s.asked) return 0;
+    if (g_s.frame != frame) {
+        if (g_s.frame && g_s.fr.recorded) {
+            if (g_s.fr.published) g_s.replaced++;
+            else g_s.as_drawn++;
+        }
+        if (g_s.frame) temporal_spatial_frame_end(&g_s.fr, &g_s.latch);
+        g_s.fr = (TemporalSpatialFrame){0, 0, 0};
+        g_s.frame = frame;
+        g_vk_watch = NULL;
+        if (!temporal_spatial_frame(&g_s.latch)) spatial_went_off();
+        if (g_s.latch.off && !g_s.restarted) {
+            g_s.restarted = 1;
+            temporal_rect_clear(&g_t.rect_gate);
+            g_t.resolved_at = 0;
+        }
+        if (!(frame % 600))
+            LOG("arceus-upscaler: spatial at frame %u: %llu frames replaced, %llu left as drawn (the first: %s), "
+                "%llu consumers not replaced (the first: %s)%s\n", frame, (unsigned long long)g_s.replaced,
+                (unsigned long long)g_s.as_drawn, g_s.reason[0] ? g_s.reason : "none",
+                (unsigned long long)g_s.consumers, g_s.consumer[0] ? g_s.consumer : "none",
+                g_s.latch.off ? ", off" : "");
+    }
+    return !g_s.latch.off;
+}
+/* The switch's start (from upscaler_start): it needs the anti-aliasing in the rectangle and the fixed resolution,
+   and refuses the sharpen and the views, which read or write the scene colour after the resolve (revision 3) */
+static void spatial_start(void) {
+    const char* fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
+    const char* view = getenv("SNX_ARCEUS_TEMPORAL_VIEW");
+    const char* sharpen = getenv("SNX_ARCEUS_TEMPORAL_SHARPEN");
+    const char* why = g_t.mode != MODE_TAA                  ? "it needs SNX_ARCEUS_TEMPORAL=taa"
+                      : !g_t.rect                           ? "it needs SNX_ARCEUS_TEMPORAL_RECT=1"
+                      : !fixed || strcmp(fixed, "1")        ? "it needs SNX_ARCEUS_FIXED_RESOLUTION=1"
+                      : sharpen && strtof(sharpen, NULL) != 0.0f ? "SNX_ARCEUS_TEMPORAL_SHARPEN is not 0"
+                      : view && view[0] && strcmp(view, "0") ? "SNX_ARCEUS_TEMPORAL_VIEW is not 0"
+                                                             : NULL;
+    if (why) {
+        LOG("arceus-upscaler: spatial is not started (%s): the run goes on as without the switch\n", why);
+        return;
+    }
+    g_s.asked = 1;
+    LOG("arceus-upscaler: spatial asked for. EXPERIMENTAL: the resolve writes a private picture, scaled to the target "
+        "with Catmull-Rom into a larger texture, which the audited readers 21FBFBEC, B46268AD and 8A160A27 are "
+        "given. Only at a scale of 1/2, 3/5, 2/3, 3/4 or 4/5, otherwise D2 as without the switch. Its numbers are "
+        "of the private picture before the scale\n");
+}
+/* Two floats of a bank a stage's program reads at offset, as the draw binds them: guest memory, which is cb_get's
+   source (render.c) unless a pending compute or graphics result or GPU-owned bytes cover the range, newer on the GPU
+   only (buffer.c buf_get_owned). 1 when available. 0 when the program does not read them, the bank is not bound or
+   too short, the bytes are not readable, or they are pending or owned: whether the entry needs them is its rule's
+   (research 12:50, 14:00, 15:00). out is 0 then, never a stand-in for "not available". */
+static int spatial_block(const GpuChannel* ch, int stage, const VkSh* program, int bank, u32 offset, double out[2]) {
+    out[0] = out[1] = 0.0;
+    if (!program || !(program->si.cbuf_mask >> bank & 1u) || program->si.cbuf_max[bank] < offset + 8) return 0;
+    const u64 address = ch->cbind[stage][bank];
+    const u32 size = ch->cbind_size[stage][bank];
+    if (!address || size < offset + 8) return 0;
+    if (vk_compute_pending(address + offset, 8) || (vk_buf_pending_any() && vk_buf_pending(address + offset, 8)) ||
+        vk_buf_owned(address + offset, 8))
+        return 0;
+    const u8* bytes = gmem_host(address + offset, 8);
+    if (!bytes) return 0;
+    float words[2];
+    memcpy(words, bytes, sizeof words);
+    out[0] = words[0];
+    out[1] = words[1];
+    return 1;
+}
+/* At the hook, before the resolve: whether this frame is replaced, with everything it needs made. A scale not on the
+   list leaves the frame to D2 with a line. A failure to make a part turns the mode off at once. */
+static int spatial_ready(u32 frame, const Surf* scene, const TemporalRect* area, const TemporalRectGate* rg,
+                         VkDescriptorSet* set) {
+    static u64 refused;
+    int M, N, scale = -1;
+    const int W = (int)scene->sw, H = (int)scene->sh;
+    if (!spatial_now(frame) || !area) return 0;
+    if (!area->x && !area->y) scale = temporal_spatial_scale_listed(W, H, area->w, area->h);
+    /* the confirmed fractions are the scale's float, bit for bit (research 14:00) */
+    if (scale >= 0 && !temporal_spatial_confirmed(rg->now.fx, rg->now.fy, scale)) scale = -1;
+    if (scale < 0 || scene->levels != 1 ||
+        !temporal_spatial_size(W, H, area->w, area->h, rg->now.fx, rg->now.fy, &M, &N)) {
+        if (refused++ < 4 || refused % 600 == 0)
+            LOG("arceus-upscaler: spatial: frame %u is left to D2 (rectangle %d,%d %dx%d of %dx%d at %g x %g, %u "
+                "levels: not 1/2, 3/5, 2/3, 3/4 or 4/5 at the origin with that fraction exactly and one level), %llu "
+                "such so far\n", frame,
+                area->x, area->y, area->w, area->h, W, H, (double)rg->now.fx, (double)rg->now.fy, scene->levels,
+                (unsigned long long)refused);
+        return 0;
+    }
+    VkFormatProperties has;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, scene->f.vk, &has);
+    const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
+                                      VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+    if ((has.optimalTilingFeatures & need) != need) {
+        spatial_failed("the scene colour's format cannot be drawn to, blitted and sampled");
+        return 0;
+    }
+    const VkImageUsageFlags drawn = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    const VkImageUsageFlags filled = drawn | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    /* the device's own limit for each image's format and uses, asked before either is made (astra's O5) */
+    VkImageFormatProperties limit[2];
+    const int asked = VK_OK(vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, scene->f.vk, VK_IMAGE_TYPE_2D,
+                                                                     VK_IMAGE_TILING_OPTIMAL, drawn, 0, &limit[0])) &&
+                      VK_OK(vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, scene->f.vk, VK_IMAGE_TYPE_2D,
+                                                                     VK_IMAGE_TILING_OPTIMAL, filled, 0, &limit[1]));
+    const u32 fb_w = g_vk.props.limits.maxFramebufferWidth, fb_h = g_vk.props.limits.maxFramebufferHeight;
+    if (!asked ||
+        !temporal_spatial_fits(scene->sw, scene->sh, limit[0].maxExtent.width, limit[0].maxExtent.height, fb_w, fb_h) ||
+        !temporal_spatial_fits((u32)M, (u32)N, limit[1].maxExtent.width, limit[1].maxExtent.height, fb_w, fb_h)) {
+        spatial_failed("the device takes no private picture or larger texture of these sizes for their uses");
+        return 0;
+    }
+    if (!image_ensure(&g_s.picture, scene->f.vk, scene->sw, scene->sh, drawn, "private picture") ||
+        !image_ensure(&g_s.larger, scene->f.vk, (u32)M, (u32)N, filled, "larger")) {
+        spatial_failed("the private picture or the larger texture");
+        return 0;
+    }
+    if (!g_s.scale_pipe || g_s.scale_format != scene->f.vk) {
+        g_s.scale_pipe = pipeline_make(scene->f.vk, temporal_spatial_fs_spv, temporal_spatial_fs_spv_size, "scale");
+        g_s.scale_format = scene->f.vk;
+    }
+    VkImageView views[SETS_BINDINGS];
+    VkSampler samplers[SETS_BINDINGS];
+    for (int i = 0; i < SETS_BINDINGS; i++) {
+        views[i] = g_s.picture.view;
+        samplers[i] = g_t.point;
+    }
+    *set = g_s.scale_pipe ? set_make(views, samplers) : VK_NULL_HANDLE;
+    if (!*set) {
+        spatial_failed("the scale's pipeline or set");
+        return 0;
+    }
+    g_s.W = W;
+    g_s.H = H;
+    g_s.M = M;
+    g_s.N = N;
+    /* the fraction the blocks must hold: the float nearest the scale's p / q (research 12:50) */
+    g_s.f[0] = g_s.f[1] = temporal_spatial_scale_fraction(scale);
+    return 1;
+}
+/* After the resolve wrote the private picture: the scale into the picture part, the edge fill, and the frame's
+   publication with what the scene colour is now (its write sequence after the hook's own bookkeeping) */
+static void spatial_record(VkCommandBuffer cb, const Surf* scene, const TemporalRect* area, VkDescriptorSet set,
+                           const Constants* pc) {
+    vk_barrier(cb, g_s.picture.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    /* the larger texture was last read by the frame before's readers and filled by blits: both done first */
+    vk_barrier(cb, g_s.larger.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_SAMPLED_STAGES | VK_PIPELINE_STAGE_2_BLIT_BIT, 0,
+               VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    Constants sc = *pc;
+    sc.size[0] = (float)area->w;
+    sc.size[1] = (float)area->h;
+    sc.size[2] = (float)g_s.W;
+    sc.size[3] = (float)g_s.H;
+    fullscreen(cb, g_s.larger.view, (u32)g_s.W, (u32)g_s.H, g_s.scale_pipe, set, &sc, NULL);
+    /* the edge fill reads and writes the same image: in the general layout */
+    vk_barrier(cb, g_s.larger.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               VK_IMAGE_LAYOUT_GENERAL);
+    TemporalSpatialRegion fill[3];
+    const int count = temporal_spatial_fill(g_s.W, g_s.H, g_s.M, g_s.N, fill);
+    VkImageBlit blits[3];
+    for (int i = 0; i < count; i++)
+        blits[i] = (VkImageBlit){.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                 .srcOffsets = {{fill[i].from[0], fill[i].from[1], 0},
+                                                {fill[i].from[2], fill[i].from[3], 1}},
+                                 .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                 .dstOffsets = {{fill[i].to[0], fill[i].to[1], 0}, {fill[i].to[2], fill[i].to[3], 1}}};
+    if (count)
+        rec_CmdBlitImage(cb, g_s.larger.img, VK_IMAGE_LAYOUT_GENERAL, g_s.larger.img, VK_IMAGE_LAYOUT_GENERAL,
+                         (u32)count, blits, VK_FILTER_NEAREST);
+    vk_barrier(cb, g_s.larger.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT,
+               VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_SAMPLED_STAGES,
+               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    g_s.scene = scene;
+    g_s.image = scene->img;
+    g_s.wseq = scene->wseq;
+    g_s.gva = scene->gva;
+    g_s.bytes = vk_surf_guest_size(scene);
+    g_s.fr.recorded = 1;
+    g_vk_watch = scene; /* armed until the present */
+}
+
+/* The watch (research 11:25): a use of the scene colour's Surf while armed. One from the binding being made is
+   judged with what that binding was given. */
+void vk_temporal_watch(const Surf* s, int kind) {
+    static const char* const what[5] = {"a read of the scene colour", "a write of the scene colour",
+                                        "a write of the scene colour", "the scene colour's end",
+                                        "a texture over the scene colour's memory"};
+    const u32 frame = g_vk_present + 1;
+    if (!g_s.asked || g_s.frame != frame || !g_s.fr.recorded || kind < 0 || kind > VK_WATCH_OVERLAP ||
+        (s != g_s.scene && kind != VK_WATCH_OVERLAP)) {
+        if (g_s.frame != frame) g_vk_watch = NULL;
+        return;
+    }
+    /* another surface bound as a texture: a consumer only when it lies over the scene colour's memory (the scene
+       made anew or parked since the hook, a crop of it, another view of its bytes) */
+    if (kind == VK_WATCH_OVERLAP &&
+        (!s || s == g_s.scene || !temporal_spatial_overlaps(s->gva, vk_surf_guest_size(s), g_s.gva, g_s.bytes)))
+        return;
+    const int binding = g_s.binding_on && kind == VK_WATCH_READ;
+    const int use = temporal_spatial_use(&g_s.fr, &g_s.latch, binding && g_s.binding_listed,
+                                         binding ? g_s.binding_given : -1, what[kind]);
+    if (use == TEMPORAL_SPATIAL_FAULT) {
+        g_s.faults++;
+        spatial_went_off();
+    } else if (use == TEMPORAL_SPATIAL_CONSUMER) {
+        if (!g_s.consumers++)
+            snprintf(g_s.consumer, sizeof g_s.consumer, "%s at frame %u", what[kind], frame);
+        if (g_s.consumers <= 4)
+            LOG("arceus-upscaler: spatial: frame %u, %s after the hook: a consumer not replaced, off from the next "
+                "frame\n", frame, what[kind]);
+    }
+}
+void vk_temporal_spatial_binding(int on, int listed, int given) {
+    g_s.binding_on = on;
+    g_s.binding_listed = listed;
+    g_s.binding_given = given;
+}
+/* the renderer found its own substitution broken: off at once */
+void vk_temporal_spatial_fault(const char* what) {
+    g_s.faults++;
+    LOG("arceus-upscaler: spatial: %s (a fault of ours)\n", what);
+    spatial_failed(what);
+}
+VkImageView vk_temporal_spatial_view(void) { return g_s.larger.view; }
+/* A binding of texture t by fragment program fs0 at handle (words), its draw described in d by the renderer: what it
+   is given. One decision for both the texture and the variant (revision 3). listed: an entry of the list. */
+int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh* fs0, u32 handle, const Surf* t,
+                               TemporalSpatialDraw* d, int* listed) {
+    const u32 frame = g_vk_present + 1;
+    *listed = 0;
+    if (!fs0 || !spatial_now(frame) || !g_s.fr.recorded) return TEMPORAL_SPATIAL_AS_DRAWN;
+    if (t != g_s.scene) return TEMPORAL_SPATIAL_AS_DRAWN;
+    int k = temporal_spatial_entry(fs0->hash, handle);
+    if (k >= 0 && (t->img != g_s.image || t->wseq != g_s.wseq)) {
+        temporal_spatial_unknown(&g_s.latch, "the scene colour changed after the hook");
+        k = -1;
+    }
+    *listed = k >= 0;
+    int verdict = TEMPORAL_SPATIAL_NOT_LISTED;
+    if (k >= 0) {
+        d->vs = vs ? vs->hash : 0;
+        d->vertex_f_ok = spatial_block(ch, ST_VS, vs, TEMPORAL_SCENE_BANK, TEMPORAL_SCENE_FRACTION, d->vertex_f);
+        d->vertex_origin_ok = spatial_block(ch, ST_VS, vs, 1, 0, d->vertex_origin);
+        d->fragment_f_ok = spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_BANK, TEMPORAL_SCENE_FRACTION, d->fragment_f);
+        d->divisor_ok = spatial_block(ch, ST_FS, fs0, TEMPORAL_SCENE_BANK, 0x794, d->divisor);
+        /* any failure of class U, a required value not available included, whatever else fails: a reader not on the
+           list, the mode off from the next frame. Only the fraction and the coverage leave it listed (d08b624c) */
+        if (temporal_spatial_classify(k, d, g_s.f, &verdict) < 0) {
+            static char why[160]; /* the latch keeps the first reason: written only while it has none */
+            if (!g_s.latch.off && !g_s.latch.off_next)
+                snprintf(why, sizeof why, "a reader not on the list: %s", temporal_spatial_text(verdict));
+            temporal_spatial_unknown(&g_s.latch, why);
+            k = -1;
+            *listed = 0;
+        }
+    }
+    const int first = !g_s.fr.decided && k >= 0;
+    const int given = temporal_spatial_draw(&g_s.fr, &g_s.latch, k, verdict);
+    if (first && verdict != TEMPORAL_SPATIAL_TAKEN && !g_s.reason[0])
+        snprintf(g_s.reason, sizeof g_s.reason, "frame %u, program %llx: %s", frame, (unsigned long long)fs0->hash,
+                 temporal_spatial_text(verdict));
+    if (k < 0) {
+        static u64 unknown;
+        if (unknown++ < 4 || unknown % 600 == 0)
+            LOG("arceus-upscaler: spatial: frame %u, a reader not on the list: fragment program %llx, vertex program "
+                "%llx, binding %x, %s: as drawn, off from the next frame, %llu such so far\n", frame,
+                (unsigned long long)fs0->hash, (unsigned long long)(vs ? vs->hash : 0), handle,
+                g_s.fr.published ? "the frame was published" : "the frame was not published",
+                (unsigned long long)unknown);
+        if (!g_s.consumers++)
+            snprintf(g_s.consumer, sizeof g_s.consumer, "fragment program %llx, vertex %llx, binding %x",
+                     (unsigned long long)fs0->hash, (unsigned long long)(vs ? vs->hash : 0), handle);
+    }
+    return given;
+}
+
 /* The switch, read once with the anti-aliasing's own (temporal_on). It needs the anti-aliasing and is refused
    with rejected vectors. An adapter that is not there, that names needs of the instance, or whose needs of the
    device are not all in the record of what the game's device was made with (upscaler_host.c), is not available:
@@ -3275,6 +3606,10 @@ static void upscaler_start(void) {
     const char* target = getenv("SNX_ARCEUS_TARGET_FPS");
     g_u.asked = 0;
     if (!name || !name[0] || !strcmp(name, "0") || !strcmp(name, "off")) return;
+    if (!strcmp(name, "spatial")) {
+        spatial_start();
+        return;
+    }
     /* a name the self-test alone knows: one line, and nothing of it is looked up, loaded, asked or started */
     if (vk_upscaler_not_in_game(name)) return;
     const int start = temporal_upscaler_start(g_t.mode == MODE_TAA, g_t.reject);
@@ -3563,7 +3898,7 @@ void vk_temporal_before(u64 fs0_hash) {
     VkImageView numbers_before = last_frame;
     /* the picture shown a frame ago, for the numbers: the resolved one with anti-aliasing on */
     VkImageView shown_before = VK_NULL_HANDLE;
-    int numbers = history, sharpened = 0;
+    int numbers = history, sharpened = 0, spatial = 0;
     /* A frame without jitter (jitter_decide) or whose G-buffer viewport is not the one decided on is left as drawn:
        no resolve, no sharpen, no numbers, and no history for the frame after it. */
     const int steady = g_t.rect ? rect_ok : temporal_gate_steady(&g_t.gate, frame);
@@ -3613,12 +3948,21 @@ void vk_temporal_before(u64 fs0_hash) {
             rect_fail(frame, "the resolve's set");
             return;
         }
+        /* with SNX_ARCEUS_UPSCALER=spatial the resolve writes the private picture, the scene colour stays as drawn */
+        VkDescriptorSet scale_set = VK_NULL_HANDLE;
+        spatial = spatial_ready(frame, scene, area, rg, &scale_set);
         vk_barrier(cb, made->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
                    VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-        fullscreen2(cb, scene->att, made->view, scene->sw, scene->sh, g_t.resolve_pipe, set, &rc, area);
+        if (spatial)
+            vk_barrier(cb, g_s.picture.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
+                       VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        else
+            vk_surf_use(cb, scene, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        fullscreen2(cb, spatial ? g_s.picture.view : scene->att, made->view, scene->sw, scene->sh, g_t.resolve_pipe,
+                    set, &rc, area);
         vk_barrier(cb, made->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -3651,8 +3995,10 @@ void vk_temporal_before(u64 fs0_hash) {
                 sharpened = 1;
             }
         }
+        /* the same bookkeeping in both: copies of the scene made before the hook are out of date */
         vk_surf_wrote(scene);
         vk_rt_drawn(scene);
+        if (spatial) spatial_record(cb, scene, area, scale_set, &pc);
         g_t.history_newest = !g_t.history_newest;
         g_t.resolved_at = frame;
         if (rect_ok) temporal_rect_wrote(&g_t.rect_gate, frame, &stamp);
@@ -3751,6 +4097,7 @@ void vk_temporal_before(u64 fs0_hash) {
             .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &read};
         rec_CmdPipelineBarrier2(cb, &host);
         g_t.stats_run = g_t.runs;
+        g_s.stats_private = spatial;
         memcpy(g_t.stats_drawn, g_t.drawn, sizeof g_t.stats_drawn);
         g_t.stats_draws = g_t.object_draws;
         g_t.stats_height = area ? (u32)area->h : scene->sh;

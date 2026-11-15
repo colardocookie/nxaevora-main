@@ -4,12 +4,17 @@
    the ShaderInfo the translation started from and the program's code, for tools/snx_shaderc.c. */
 #include "nx/gpu/shader/shader.h"
 #include "common/utilities/common.h"
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define CORPUS_VERSION 1u
 #define CORPUS_MAX     (1u << 20) /* the largest program window a file may claim */
+/* the ShaderInfo before txq_fixed, with its padding: a corpus saved then still loads */
+#define CORPUS_INFO_OLD                                                                                              \
+    ((offsetof(ShaderInfo, txq_fixed) + _Alignof(ShaderInfo) - 1) / _Alignof(ShaderInfo) * _Alignof(ShaderInfo))
+_Static_assert(CORPUS_INFO_OLD < sizeof(ShaderInfo), "the older record is shorter");
 
 typedef struct {
     char magic[4]; /* "SNXS" */
@@ -71,9 +76,12 @@ u8* shader_corpus_load(const char* path, u32* max_bytes, int* stage, ShaderInfo*
     if (!path || !max_bytes || !stage || !si) return NULL;
     f = fopen(path, "rb");
     if (!f) return NULL;
+    memset(&info, 0, sizeof info);
+    /* an older record is read whole and only then are the new fields zeroed: its padding may lie where they are */
     if (fread(&h, 1, sizeof h, f) == sizeof h && !memcmp(h.magic, "SNXS", 4) && h.version == CORPUS_VERSION &&
-        h.info_size == sizeof(ShaderInfo) && h.stage <= ST_CS && h.len <= h.max_bytes && h.max_bytes <= CORPUS_MAX &&
-        fread(&info, 1, sizeof info, f) == sizeof info) {
+        (h.info_size == sizeof(ShaderInfo) || h.info_size == CORPUS_INFO_OLD) && h.stage <= ST_CS &&
+        h.len <= h.max_bytes && h.max_bytes <= CORPUS_MAX && fread(&info, 1, h.info_size, f) == h.info_size) {
+        if (h.info_size != sizeof(ShaderInfo)) memset(info.txq_fixed, 0, sizeof info.txq_fixed);
         code = (u8*)calloc(h.max_bytes ? h.max_bytes : 1, 1);
         if (code && fread(code, 1, h.len, f) != h.len) {
             free(code);

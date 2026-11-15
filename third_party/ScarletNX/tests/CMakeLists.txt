@@ -1964,6 +1964,51 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         target_link_libraries(snx-test-shader-structure PRIVATE m)
     endif()
     add_test(NAME shader_structure COMMAND snx-test-shader-structure)
+    # D3's fixed size answer (ShaderInfo.txq_fixed): an older corpus record, and two programs of the corpus that
+    # SNX_SHADER_CORPUS names, skipped (77) without one. In the temporal family, which the PC's test builds run.
+    add_executable(snx-test-temporal-txq-variant txq_variant.c)
+    snx_test_target(snx-test-temporal-txq-variant 23)
+    target_link_libraries(snx-test-temporal-txq-variant PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-temporal-txq-variant PRIVATE m)
+    endif()
+    # each txq test in a folder of its own: they write and remove a file of the same name there
+    foreach(snx_txq_dir txq_variant txq_mutant_1 txq_mutant_2)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${snx_txq_dir}")
+    endforeach()
+    set(snx_txq_work "${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME txq_variant COMMAND snx-test-temporal-txq-variant WORKING_DIRECTORY "${snx_txq_work}/txq_variant")
+    set_tests_properties(txq_variant PROPERTIES SKIP_RETURN_CODE 77)
+    # The same test against the translator built with a mutant (SNX_TEST_TXQ_MUTANT in spirv_translate.c), which must
+    # fail the corpus check it names (--must-fail): 1 width and height swapped, 2 every other slot keyed. The targets
+    # are named in full for the PC's test builds, which find them by name.
+    include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake") # tests/ is configured before src/nx, which includes it too
+    function(snx_txq_mutant target test number)
+        add_library(${target}-shader OBJECT "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/shader.c"
+                    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/decode.c"
+                    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/corpus.c"
+                    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/shipped.c"
+                    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/spirv_translate.c"
+                    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/spirv_compute.c"
+                    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/structure.c")
+        target_link_libraries(${target}-shader PUBLIC snx_nx_flags)
+        target_compile_definitions(${target}-shader PRIVATE SNX_TEST_TXQ_MUTANT=${number})
+        snx_shaderdec(${target}-shader)
+        snx_test_target(${target} 23)
+        target_link_libraries(${target} PRIVATE ${target}-shader)
+        if(NOT WIN32)
+            target_link_libraries(${target} PRIVATE m)
+        endif()
+        set_tests_properties(${test} PROPERTIES SKIP_RETURN_CODE 77)
+    endfunction()
+    add_executable(snx-test-temporal-txq-mutant-1 txq_variant.c)
+    add_test(NAME txq_mutant_1 COMMAND snx-test-temporal-txq-mutant-1 --must-fail compare
+             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/txq_mutant_1")
+    snx_txq_mutant(snx-test-temporal-txq-mutant-1 txq_mutant_1 1)
+    add_executable(snx-test-temporal-txq-mutant-2 txq_variant.c)
+    add_test(NAME txq_mutant_2 COMMAND snx-test-temporal-txq-mutant-2 --must-fail other-slot
+             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/txq_mutant_2")
+    snx_txq_mutant(snx-test-temporal-txq-mutant-2 txq_mutant_2 2)
     if(NOT CMAKE_CROSSCOMPILING)
         # the SVC registers tools/svcgen lays out from src/nx/hle/svc/hos.svc, in both ABIs
         include("${PROJECT_SOURCE_DIR}/cmake/svcgen.cmake")

@@ -820,6 +820,7 @@ void vk_buf_mem_need(u64 gva, u64 len);
 u64 vk_buf_reclaim(u32 before, u64 want);
 void vk_buf_stats(u32* count, u64* bytes);
 int vk_buf_pending(u64 gva, u64 len); /* a pending graphics result overlaps the range */
+int vk_buf_owned(u64 gva, u64 len);   /* GPU-owned bytes are on the range's pages: guest memory is stale there */
 u64 vk_buf_adds(void);                /* graphics results committed so far: as vk_compute_adds */
 int vk_buf_pending_any(void);         /* any graphics result is pending */
 int vk_buf_pending_unsubmitted(void); /* one is in the commands recorded since the last submit */
@@ -961,14 +962,12 @@ extern u32 g_vk_stage_sets; /* sets in the pipeline layout: 5, or 2 without the 
     (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |                                           \
      VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
 void vk_pipeline_init(void);
-/* the shader at gva (after a VertexA program at gva_a, or 0). The masks key integer inputs: attributes for the
-   vertex stage, textures and render target outputs for the fragment stage. rt_int keys the primitives of the
-   tessellation evaluation and geometry stages (ShaderInfo.rt_int_mask). clip: the clip distances the 3D engine
-   enables, and SNX_SH_NOT_LAST (the stages before rasterization). The translator reads ch's bound constant buffers
-   (ch->cbind) to resolve indirect branches. xfb: what transform feedback captures of the last stage before
-   rasterization's outputs (ShaderInfo.xfb), NULL for none */
+/* the shader at gva (after a VertexA program at gva_a, or 0), keyed by its integer attributes (vertex) or textures and
+   targets (fragment), rt_int the tessellation and geometry primitives, clip the clip distances and SNX_SH_NOT_LAST,
+   xfb what transform feedback captures (ShaderInfo.xfb, or NULL), txq ShaderInfo.txq_fixed (fragment, or NULL). The
+   translator reads ch's bound constant buffers (ch->cbind) to resolve indirect branches */
 VkSh* vk_shader_get(const GpuChannel* ch, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
-                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb);
+                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb, const u32* txq);
 /* whether the constant buffer words s's translation read still hold in ch's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const GpuChannel* ch, const VkSh* s);
@@ -1087,6 +1086,23 @@ void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* con
 void vk_temporal_recorded(const VkViewport* viewport, const VkRect2D* scissor);
 void vk_temporal_sampler(u32 slot, VkSampler sampler);
 void vk_temporal_before(u64 fs0_hash);
+/* SNX_ARCEUS_UPSCALER=spatial (D3): the hand-over of the scaled picture. g_vk_watch is the scene colour's Surf while
+   the watch is armed (from the hook to the present of a frame whose replacement was recorded), else NULL: every use of
+   it goes to vk_temporal_watch. The renderer asks, for each binding of the scene, what the binding is given. */
+extern const Surf* g_vk_watch;
+enum { VK_WATCH_READ, VK_WATCH_WRITE, VK_WATCH_WROTE, VK_WATCH_FREED, VK_WATCH_OVERLAP };
+void vk_temporal_watch(const Surf* s, int kind);
+/* every surface a draw, a table element, a blit or a dispatch binds from a guest header goes here: one over the
+   scene colour's memory through another Surf is a consumer (D3-2 A2, research 12:15) */
+static inline void vk_temporal_watch_bound(const Surf* t) {
+    if (g_vk_watch && t && t != g_vk_watch) vk_temporal_watch(t, VK_WATCH_OVERLAP);
+}
+struct TemporalSpatialDraw;
+int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh* fs0, u32 handle, const Surf* t,
+                               struct TemporalSpatialDraw* d, int* listed);
+VkImageView vk_temporal_spatial_view(void);
+void vk_temporal_spatial_binding(int on, int listed, int given); /* around a scene binding's vk_surf_use */
+void vk_temporal_spatial_fault(const char* what);
 /* the scene camera's constant block with this frame's jitter in place of the guest's, 1 when buffer and offset are set */
 int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer, u64* offset);
 void vk_temporal_camera_seen(u64 address, u32 bound, u32 size, u64 program);
