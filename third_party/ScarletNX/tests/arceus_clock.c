@@ -2467,7 +2467,7 @@ static void test_event_probe(void) {
     host_ns = ns;
     logged_count = 0;
 }
-/* EVENT_TICK-2's decision on the measured step: runs over a sequence of frame times, the budget never above a tick */
+/* EVENT_TICK-2's decision on the measured step: runs over frame times, the budget never above two ticks */
 static unsigned event_decide_runs(const u64* steps, unsigned count, unsigned repeat, char* pattern, u64* cut_total) {
     ScriptTick t = {0};
     unsigned runs = 0, n = 0;
@@ -2478,7 +2478,7 @@ static unsigned event_decide_runs(const u64* steps, unsigned count, unsigned rep
             const int run = event_tick_decide(&t, n + 1, steps[k], &cut);
             *cut_total += cut;
             assert(event_tick_decide(&t, n + 1, steps[k], &cut) == run && !cut); /* once a frame */
-            assert(t.budget >= -SCRIPT_TICK_NS / 2 && t.budget <= SCRIPT_TICK_NS); /* half a step early at most */
+            assert(t.budget >= -SCRIPT_TICK_NS / 2 && t.budget <= 2 * SCRIPT_TICK_NS); /* half a step early at most */
             runs += (unsigned)run;
             if (pattern && n < 63) pattern[n] = run ? '1' : '0', pattern[n + 1] = 0;
         }
@@ -2490,10 +2490,10 @@ static void test_event_tick_decide(void) {
     /* steady 19.2 ms frames (52 a second): 30 runs a second */
     static const u64 steady[1] = {19200000};
     assert(event_decide_runs(steady, 1, 52, NULL, &cut) == 30);
-    /* 2, 2, 53.6 ms (52 frames a second): 25 runs a second with the cap at one tick, where the 1/30 s cap gave 19 */
+    /* 2, 2, 53.6 ms (51 frames, 979 ms): 28 runs with nothing cut, where the 1/30 s cap gave 19 */
     static const u64 uneven[3] = {2000000, 2000000, 53600000};
     const unsigned runs = event_decide_runs(uneven, 3, 17, NULL, &cut);
-    assert(runs >= 25 && runs <= 26);
+    assert(runs >= 28 && runs <= 29 && !cut);
     {
         ScriptTick t = {0};
         unsigned old = 0;
@@ -2508,20 +2508,15 @@ static void test_event_tick_decide(void) {
     assert(!strcmp(pattern, "111111111111"));
     (void)event_decide_runs(slow, 1, 12, pattern, &cut);
     assert(!strcmp(pattern, "111111111111"));
-    /* one 100 ms frame at 60 FPS: a run there and on the next frame, then every other frame again, the rest cut */
+    /* one 100 ms frame at 60 FPS: its three ticks caught up one a frame, then every other frame again, nothing cut */
     static const u64 hitch[13] = {16666667, 16666667, 16666667, 16666667, 100000000, 16666667, 16666667, 16666667,
                                   16666667, 16666667, 16666667, 16666667, 16666667};
     (void)event_decide_runs(hitch, 13, 1, pattern, &cut);
-    assert(!strcmp(pattern, "0101111010101"));
-    {
-        ScriptTick t = {0};
-        u64 c, total = 0;
-        for (unsigned k = 0; k < 13; k++) {
-            (void)event_tick_decide(&t, k + 1, hitch[k], &c);
-            total += c;
-        }
-        assert(total > 33000000 && total < 34000000); /* what the cap cut: the hitch's second tick */
-    }
+    assert(!strcmp(pattern, "0101111110101") && !cut);
+    /* steady 100 ms frames: a run every frame, and what one run a frame cannot take is cut above two ticks */
+    static const u64 ten[1] = {100000000};
+    (void)event_decide_runs(ten, 1, 5, pattern, &cut);
+    assert(!strcmp(pattern, "11111") && cut > 266000000 && cut < 267000000);
 }
 /* The event tick on its real wrappers: a stand-in job that, when it runs, asks IsPadTrigger through the wrapper. */
 #define EVENT_PAD 3200

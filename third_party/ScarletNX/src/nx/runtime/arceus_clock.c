@@ -4428,8 +4428,8 @@ static u64 event_tick_pad(void) {
 }
 /* EVENT_TICK-2 (research): the decision on the clocks' measured step, up to 100 ms, not the 1/30 s cap, so a slow
    frame's time is not lost (a step within 1/32 of 1/30 s counts as exactly 1/30 s). A run when the budget is within
-   half a step, at most 1/30 s, of a tick. After the decision the budget is capped at one tick, so a hitch gives at most
-   one extra run on the next frame. Returns the run, and the time the cap cut in *cut. */
+   half a step, at most 1/30 s, of a tick. After the decision the budget is capped at two ticks (research), so a hitch
+   up to the clocks' 100 ms is caught up one run a frame and nothing runs ahead. Returns the run, the cut in *cut. */
 static int event_tick_decide(ScriptTick* t, u64 frame, u64 step_ns, u64* cut) {
     *cut = 0;
     if (t->decided && t->frame == frame) return t->tick;
@@ -4442,9 +4442,9 @@ static int event_tick_decide(ScriptTick* t, u64 frame, u64 step_ns, u64* cut) {
         t->budget -= SCRIPT_TICK_NS;
         t->ticks++;
     }
-    if (t->budget > SCRIPT_TICK_NS) {
-        *cut = (u64)(t->budget - SCRIPT_TICK_NS);
-        t->budget = SCRIPT_TICK_NS;
+    if (t->budget > 2 * SCRIPT_TICK_NS) {
+        *cut = (u64)(t->budget - 2 * SCRIPT_TICK_NS);
+        t->budget = 2 * SCRIPT_TICK_NS;
     }
     t->frames++;
     t->frame = frame;
