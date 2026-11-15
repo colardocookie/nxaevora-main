@@ -90,6 +90,15 @@ int dlss_eval_cases() {
     assert(ngx_flags(need) == base && ngx_flags(need | kFarInfinite) == base);
     assert(ngx_flags(need | kDepthReversed) == (base | kNgxDepthInverted));
     assert(!(ngx_flags(need | kDepthReversed | kFarInfinite) & kNgxMvJittered));
+    // NGX's capabilities: Available and NeedsUpdatedDriver must be read, then available and no driver update needed
+    const Field yes = {1, 1, 0}, no = {1, 0, 0}, unread = {0, 1, 0xBAD00001u};
+    assert(cap_verdict(yes, no) == CAP_OK);
+    assert(cap_verdict(unread, no) == CAP_NOT_READ && cap_verdict(yes, unread) == CAP_NOT_READ);
+    assert(cap_verdict(Field{0, 0, 0xBAD00001u}, Field{0, 0, 0xBAD00001u}) == CAP_NOT_READ);
+    assert(cap_verdict(no, no) == CAP_NOT_AVAILABLE && cap_verdict(yes, yes) == CAP_DRIVER);
+    assert(cap_verdict(no, yes) == CAP_NOT_AVAILABLE); /* not available comes first */
+    for (int a = CAP_OK; a <= CAP_DRIVER; a++)
+        for (int b = a + 1; b <= CAP_DRIVER; b++) assert(strcmp(cap_text(a), cap_text(b)));
     // a frame held to its context: render size, each image's handles, size and format, before anything is recorded
     const Made made = {64, 64, 80, 80, 64, 64, {97, 126, kMotionR16G16Float, 109}};
     const Handed good[4] = {{1, 2, 97, 80, 80}, {3, 4, 126, 80, 80}, {5, 6, kMotionR16G16Float, 80, 80},

@@ -447,7 +447,8 @@ uint64_t device_key(VkDevice d) {
 }
 
 // What NGX says of DLSS on this device (the capability parameters, printed whole), and the render sizes of each
-// quality mode at the output size. 1 when DLSS is available and DLAA takes the render size, else a line.
+// quality mode at the output size. 1 when DLSS is available and DLAA takes the render size, 0 when not, -1 when a
+// call of NGX failed: each with a line.
 int capabilities(const SnxUpscalerCreate* c) {
     NVSDK_NGX_Parameter* cap = nullptr;
     NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_GetCapabilityParameters(&cap);
@@ -455,17 +456,31 @@ int capabilities(const SnxUpscalerCreate* c) {
                             cap != nullptr) != snx_dlss::CORE_OK) {
         say("arceus-upscaler: dlss is not available: NGX's capability parameters could not be had (result 0x%08x)",
             (unsigned)r);
-        return 0;
+        return -1;
     }
-    int available = 0, needs_driver = 0, init_result = 0;
-    unsigned major = 0, minor = 0;
-    NVSDK_NGX_Parameter_GetI(cap, NVSDK_NGX_Parameter_SuperSampling_Available, &available);
-    NVSDK_NGX_Parameter_GetI(cap, NVSDK_NGX_Parameter_SuperSampling_NeedsUpdatedDriver, &needs_driver);
-    NVSDK_NGX_Parameter_GetUI(cap, NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMajor, &major);
-    NVSDK_NGX_Parameter_GetUI(cap, NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMinor, &minor);
-    NVSDK_NGX_Parameter_GetI(cap, NVSDK_NGX_Parameter_SuperSampling_FeatureInitResult, &init_result);
-    say("arceus-upscaler: dlss: NGX's capabilities: available %d, needs an updated driver %d, the least driver %u.%u, "
-        "the feature's init result 0x%08x", available, needs_driver, major, minor, (unsigned)init_result);
+    int i_value = 0;
+    unsigned u_value = 0;
+    NVSDK_NGX_Result got = NVSDK_NGX_Parameter_GetI(cap, NVSDK_NGX_Parameter_SuperSampling_Available, &i_value);
+    const snx_dlss::Field available = {!NVSDK_NGX_FAILED(got), i_value, (uint32_t)got};
+    i_value = 0;
+    got = NVSDK_NGX_Parameter_GetI(cap, NVSDK_NGX_Parameter_SuperSampling_NeedsUpdatedDriver, &i_value);
+    const snx_dlss::Field needs_driver = {!NVSDK_NGX_FAILED(got), i_value, (uint32_t)got};
+    got = NVSDK_NGX_Parameter_GetUI(cap, NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMajor, &u_value);
+    const snx_dlss::Field major = {!NVSDK_NGX_FAILED(got), u_value, (uint32_t)got};
+    u_value = 0;
+    got = NVSDK_NGX_Parameter_GetUI(cap, NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMinor, &u_value);
+    const snx_dlss::Field minor = {!NVSDK_NGX_FAILED(got), u_value, (uint32_t)got};
+    i_value = 0;
+    got = NVSDK_NGX_Parameter_GetI(cap, NVSDK_NGX_Parameter_SuperSampling_FeatureInitResult, &i_value);
+    const snx_dlss::Field init = {!NVSDK_NGX_FAILED(got), i_value, (uint32_t)got};
+    char fields[5][48];
+    const snx_dlss::Field* all[5] = {&available, &needs_driver, &major, &minor, &init};
+    for (int k = 0; k < 5; k++)
+        if (all[k]->got) snprintf(fields[k], sizeof fields[k], k == 4 ? "0x%08llx" : "%lld", all[k]->value);
+        else snprintf(fields[k], sizeof fields[k], "not given (result 0x%08x)", (unsigned)all[k]->result);
+    say("arceus-upscaler: dlss: NGX's capabilities: available %s, needs an updated driver %s, the least driver %s.%s, "
+        "the feature's init result %s", fields[0], fields[1], fields[2], fields[3], fields[4]);
+    const int verdict = snx_dlss::cap_verdict(available, needs_driver);
     static const struct {
         NVSDK_NGX_PerfQuality_Value mode;
         const char* name;
@@ -497,11 +512,14 @@ int capabilities(const SnxUpscalerCreate* c) {
         say("arceus-upscaler: dlss: NGX's capability parameters could not be destroyed (result 0x%08x)", (unsigned)r);
         snx_dlss::core_latch(&g_core, device_key(c->device));
     }
-    if (!available) say("arceus-upscaler: dlss is not available on this device, by NGX's capabilities");
-    else if (!dlaa)
+    if (verdict != snx_dlss::CAP_OK) {
+        say("arceus-upscaler: dlss is not available: %s", snx_dlss::cap_text(verdict));
+        return verdict == snx_dlss::CAP_NOT_READ ? -1 : 0;
+    }
+    if (!dlaa)
         say("arceus-upscaler: dlss is not available: DLAA does not take the render size %ux%u", c->sizes.render_w,
             c->sizes.render_h);
-    return available && dlaa;
+    return dlaa;
 }
 
 // A context, no GPU work: NGX started for the device (once), its capabilities and modes printed, DLAA at the native
@@ -533,8 +551,10 @@ int create(const SnxUpscalerCreate* c, SnxUpscalerTraits* traits, SnxUpscaler** 
     }
     Context* x = static_cast<Context*>(calloc(1, sizeof *x));
     int answer = SNX_UPSCALER_REFUSED;
+    const int can = x ? capabilities(c) : 0;
     if (!x) say("arceus-upscaler: dlss: no context: no memory");
-    else if (capabilities(c)) {
+    else if (can < 0) answer = SNX_UPSCALER_FAILED; /* a call of NGX failed */
+    else if (can) {
         const NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_AllocateParameters(&x->params);
         if (snx_dlss::core_call(&g_core, key, "NGX's parameters for a context", !NVSDK_NGX_FAILED(r),
                                 x->params != nullptr) != snx_dlss::CORE_OK) {

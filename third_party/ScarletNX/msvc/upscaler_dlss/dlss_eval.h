@@ -106,6 +106,29 @@ inline int create_check(uint32_t flags, int motion_format, uint32_t render_w, ui
         return CREATE_NOT_NATIVE;
     return CREATE_OK;
 }
+// NGX's capability parameters (research's ruling of 09:45): Available and NeedsUpdatedDriver must be read, and a
+// failed read is a failed call. The least driver and the feature's init result are for the log only.
+struct Field {
+    int got;          // NGX's getter succeeded
+    long long value;  // what it gave, when it did
+    uint32_t result;  // NGX's result of the getter
+};
+enum { CAP_OK, CAP_NOT_READ, CAP_NOT_AVAILABLE, CAP_DRIVER };
+inline const char* cap_text(int why) {
+    switch (why) {
+        case CAP_OK: return "available";
+        case CAP_NOT_READ: return "a capability NGX must give could not be read";
+        case CAP_NOT_AVAILABLE: return "NGX says DLSS is not available on this device";
+        default: return "NGX says the driver must be updated for DLSS";
+    }
+}
+inline int cap_verdict(const Field& available, const Field& needs_driver) {
+    if (!available.got || !needs_driver.got) return CAP_NOT_READ;
+    if (!available.value) return CAP_NOT_AVAILABLE;
+    if (needs_driver.value) return CAP_DRIVER;
+    return CAP_OK;
+}
+
 // A frame against what its context was made with (research's ruling of 09:10), before anything is recorded: the
 // render size, each image's size and format, and every image and view handed. Images in the order colour, depth,
 // motion, output, the first three of the images' size, the output of the output's.
