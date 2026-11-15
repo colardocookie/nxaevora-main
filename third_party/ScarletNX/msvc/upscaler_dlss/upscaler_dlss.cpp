@@ -2,8 +2,8 @@
 // Copyright 2026 the NXAevora contributors
 // DLSS's adapter (src/nx/gpu/vk/upscaler.h), a module of its own built against the builder's NGX SDK. This build is
 // NGX's needs by a table, NGX's lifetimes by dlss_core.h, its numbers by dlss_eval.h and what is recorded around its
-// evaluation by dlss_record.h. DLAA only, at the native size: the render size equals the output's. The self-test
-// alone loads the module (the game's guard).
+// evaluation by dlss_record.h. DLAA at the native size, and below it (D3-4) the mode NGX's optimal settings choose
+// (dlss_eval.h's mode_choose).
 #include <windows.h>
 #include <psapi.h>
 #include <stdarg.h>
@@ -465,9 +465,14 @@ uint64_t device_key(VkDevice d) {
 }
 
 // What NGX says of DLSS on this device (the capability parameters, printed whole), and the render sizes of each
-// quality mode at the output size. 1 when DLSS is available and DLAA takes the render size, 0 when not, -1 when a
-// call of NGX failed: each with a line.
-int capabilities(const SnxUpscalerCreate* c) {
+// quality mode at the output size. 1 when DLSS is available and a mode takes the render size (in *mode, D3-4), 0
+// when not, -1 when a call of NGX failed: each with a line.
+struct Chosen {
+    NVSDK_NGX_PerfQuality_Value mode;
+    const char* name;
+    snx_dlss::Mode numbers;
+};
+int capabilities(const SnxUpscalerCreate* c, Chosen* chosen) {
     NVSDK_NGX_Parameter* cap = nullptr;
     NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_GetCapabilityParameters(&cap);
     if (snx_dlss::core_call(&g_core, device_key(c->device), "NGX's capability parameters", !NVSDK_NGX_FAILED(r),
@@ -501,6 +506,7 @@ int capabilities(const SnxUpscalerCreate* c) {
     say("arceus-upscaler: dlss: NGX's capabilities: available %s, needs an updated driver %s, the least driver %s.%s, "
         "the feature's init result %s", fields[0], fields[1], fields[2], fields[3], fields[4]);
     const int verdict = snx_dlss::cap_verdict(available, needs_driver);
+    /* in rising quality, DLAA last: mode_choose's ties go to the later one */
     static const struct {
         NVSDK_NGX_PerfQuality_Value mode;
         const char* name;
@@ -510,8 +516,10 @@ int capabilities(const SnxUpscalerCreate* c) {
                  {NVSDK_NGX_PerfQuality_Value_MaxQuality, "quality"},
                  {NVSDK_NGX_PerfQuality_Value_UltraQuality, "ultra quality"},
                  {NVSDK_NGX_PerfQuality_Value_DLAA, "DLAA"}};
-    int dlaa = 0;
-    for (const auto& m : modes) {
+    constexpr int n = (int)(sizeof modes / sizeof modes[0]);
+    snx_dlss::Mode numbers[n] = {};
+    for (int k = 0; k < n; k++) {
+        const auto& m = modes[k];
         unsigned w = 0, h = 0, max_w = 0, max_h = 0, min_w = 0, min_h = 0;
         float sharpness = 0;
         r = NGX_DLSS_GET_OPTIMAL_SETTINGS(cap, c->sizes.output_w, c->sizes.output_h, m.mode, &w, &h, &max_w, &max_h,
@@ -523,10 +531,10 @@ int capabilities(const SnxUpscalerCreate* c) {
         }
         say("arceus-upscaler: dlss: %s at %ux%u: optimal %ux%u, from %ux%u to %ux%u", m.name, c->sizes.output_w,
             c->sizes.output_h, w, h, min_w, min_h, max_w, max_h);
-        if (m.mode == NVSDK_NGX_PerfQuality_Value_DLAA)
-            dlaa = c->sizes.render_w >= min_w && c->sizes.render_w <= max_w && c->sizes.render_h >= min_h &&
-                   c->sizes.render_h <= max_h;
+        numbers[k] = snx_dlss::Mode{1, w, h, min_w, min_h, max_w, max_h};
     }
+    const int pick = snx_dlss::mode_choose(numbers, n, n - 1, c->sizes.render_w, c->sizes.render_h,
+                                           c->sizes.output_w, c->sizes.output_h);
     r = NVSDK_NGX_VULKAN_DestroyParameters(cap);
     if (NVSDK_NGX_FAILED(r)) { /* the device's shutdown answers FAILED for it */
         say("arceus-upscaler: dlss: NGX's capability parameters could not be destroyed (result 0x%08x)", (unsigned)r);
@@ -536,14 +544,23 @@ int capabilities(const SnxUpscalerCreate* c) {
         say("arceus-upscaler: dlss is not available: %s", snx_dlss::cap_text(verdict));
         return verdict == snx_dlss::CAP_NOT_READ ? -1 : 0;
     }
-    if (!dlaa)
-        say("arceus-upscaler: dlss is not available: DLAA does not take the render size %ux%u", c->sizes.render_w,
-            c->sizes.render_h);
-    return dlaa;
+    if (pick < 0) {
+        if (c->sizes.render_w == c->sizes.output_w && c->sizes.render_h == c->sizes.output_h)
+            say("arceus-upscaler: dlss is not available: DLAA does not take the render size %ux%u", c->sizes.render_w,
+                c->sizes.render_h);
+        else
+            say("arceus-upscaler: dlss is not available: no mode takes the render size %ux%u for the output %ux%u (no "
+                "optimal is that size and no range holds it)", c->sizes.render_w, c->sizes.render_h,
+                c->sizes.output_w, c->sizes.output_h);
+        return 0;
+    }
+    *chosen = Chosen{modes[pick].mode, modes[pick].name, numbers[pick]};
+    return 1;
 }
 
-// A context, no GPU work: NGX started for the device (once), its capabilities and modes printed, DLAA at the native
-// size only, the flags as NGX's, and the context's own parameters. The feature is made by prepare.
+// A context, no GPU work: NGX started for the device (once), its capabilities and modes printed, the mode chosen for
+// the render size (DLAA at the native size), the flags as NGX's, and the context's own parameters. The feature is
+// made by prepare.
 int create(const SnxUpscalerCreate* c, SnxUpscalerTraits* traits, SnxUpscaler** out) {
     *out = nullptr;
     const int check = snx_dlss::create_check(c->flags, (int)c->motion_format, c->sizes.render_w, c->sizes.render_h,
@@ -571,7 +588,8 @@ int create(const SnxUpscalerCreate* c, SnxUpscalerTraits* traits, SnxUpscaler** 
     }
     Context* x = static_cast<Context*>(calloc(1, sizeof *x));
     int answer = SNX_UPSCALER_REFUSED;
-    const int can = x ? capabilities(c) : 0;
+    Chosen chosen = {};
+    const int can = x ? capabilities(c, &chosen) : 0;
     if (!x) say("arceus-upscaler: dlss: no context: no memory");
     else if (can < 0) answer = SNX_UPSCALER_FAILED; /* a call of NGX failed */
     else if (can) {
@@ -603,7 +621,7 @@ int create(const SnxUpscalerCreate* c, SnxUpscalerTraits* traits, SnxUpscaler** 
     x->made.Feature.InHeight = c->sizes.render_h;
     x->made.Feature.InTargetWidth = c->sizes.output_w;
     x->made.Feature.InTargetHeight = c->sizes.output_h;
-    x->made.Feature.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value_DLAA;
+    x->made.Feature.InPerfQualityValue = chosen.mode;
     x->made.InFeatureCreateFlags = flags;
     traits->submits_itself = 0;
     traits->takes_rectangle = 1;
@@ -612,8 +630,10 @@ int create(const SnxUpscalerCreate* c, SnxUpscalerTraits* traits, SnxUpscaler** 
     /* NGX clears its output in its evaluation (DL-G1, VUID-vkCmdClearColorImage-image-00002): a transfer destination
        too (research 19:00) */
     traits->output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    say("arceus-upscaler: dlss: a context for DLAA at %ux%u, NGX's flags 0x%x", c->sizes.output_w, c->sizes.output_h,
-        (unsigned)flags);
+    say("arceus-upscaler: dlss: a context for %s at %ux%u, rendered at %ux%u in images of %ux%u (the mode's optimal "
+        "%ux%u, from %ux%u to %ux%u), NGX's flags 0x%x", chosen.name, c->sizes.output_w, c->sizes.output_h,
+        c->sizes.render_w, c->sizes.render_h, c->sizes.image_w, c->sizes.image_h, chosen.numbers.w, chosen.numbers.h,
+        chosen.numbers.min_w, chosen.numbers.min_h, chosen.numbers.max_w, chosen.numbers.max_h, (unsigned)flags);
     *out = reinterpret_cast<SnxUpscaler*>(x);
     ReleaseSRWLockExclusive(&g_lock);
     return SNX_UPSCALER_OK;

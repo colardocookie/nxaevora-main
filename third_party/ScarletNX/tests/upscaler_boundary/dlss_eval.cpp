@@ -103,11 +103,68 @@ int dlss_eval_cases() {
     const int formats[4] = {0, 97 /* R16G16B16A16_SFLOAT */, 82 /* R16G16_SNORM */, 106 /* R32G32B32_SFLOAT */};
     for (int format : formats)
         assert(create_check(need, format, 64, 64, 64, 64, 64, 64) == CREATE_MOTION_FORMAT);
-    assert(create_check(need, kMotionR16G16Float, 32, 32, 64, 64, 64, 64) == CREATE_NOT_NATIVE); /* not DLAA */
-    assert(create_check(need, kMotionR16G16Float, 64, 64, 63, 64, 64, 64) == CREATE_NOT_NATIVE); /* beyond the images */
-    assert(create_check(need, kMotionR16G16Float, 0, 0, 64, 64, 0, 0) == CREATE_NOT_NATIVE);
-    for (int a = CREATE_OK; a <= CREATE_NOT_NATIVE; a++)
-        for (int b = a + 1; b <= CREATE_NOT_NATIVE; b++) assert(strcmp(create_text(a), create_text(b)));
+    /* D3-4: a render size below the output's, in images of the output's size or of its own */
+    assert(create_check(need, kMotionR16G16Float, 32, 32, 64, 64, 64, 64) == CREATE_OK);
+    assert(create_check(need, kMotionR16G16Float, 32, 18, 32, 18, 64, 36) == CREATE_OK);
+    assert(create_check(need, kMotionR16G16Float, 64, 64, 63, 64, 64, 64) == CREATE_SIZES); /* beyond the images */
+    assert(create_check(need, kMotionR16G16Float, 64, 64, 64, 63, 64, 64) == CREATE_SIZES);
+    assert(create_check(need, kMotionR16G16Float, 65, 64, 80, 80, 64, 64) == CREATE_SIZES); /* beyond the output */
+    assert(create_check(need, kMotionR16G16Float, 64, 65, 80, 80, 64, 64) == CREATE_SIZES);
+    assert(create_check(need, kMotionR16G16Float, 0, 0, 64, 64, 0, 0) == CREATE_SIZES);
+    assert(create_check(need, kMotionR16G16Float, 0, 64, 64, 64, 64, 64) == CREATE_SIZES);
+    assert(create_check(need, kMotionR16G16Float, 64, 0, 64, 64, 64, 64) == CREATE_SIZES);
+    for (int a = CREATE_OK; a <= CREATE_SIZES; a++)
+        for (int b = a + 1; b <= CREATE_SIZES; b++) assert(strcmp(create_text(a), create_text(b)));
+    // D3-4's mode: NGX's tables as the runs logged them (DL-S2 at 480x270, DL2 at 3840x2160), the modes in rising
+    // quality as the module asks them: ultra performance, performance, balanced, quality, ultra quality, DLAA
+    {
+        const Mode small[6] = {{1, 160, 90, 160, 90, 160, 90},    {1, 240, 135, 240, 135, 480, 270},
+                               {1, 278, 157, 240, 135, 480, 270}, {1, 320, 180, 240, 135, 480, 270},
+                               {0, 0, 0, 0, 0, 0, 0},             {1, 480, 270, 475, 267, 480, 270}};
+        const Mode large[6] = {{1, 1280, 720, 1280, 720, 1280, 720},    {1, 1920, 1080, 1920, 1080, 3840, 2160},
+                               {1, 2227, 1253, 1920, 1080, 3840, 2160}, {1, 2560, 1440, 1920, 1080, 3840, 2160},
+                               {0, 0, 0, 0, 0, 0, 0},                   {1, 3840, 2160, 3802, 2138, 3840, 2160}};
+        assert(mode_choose(small, 6, 5, 480, 270, 480, 270) == 5); /* native: DLAA, as before */
+        assert(mode_choose(small, 6, 5, 240, 135, 480, 270) == 1); /* 1/2: performance's optimal */
+        assert(mode_choose(small, 6, 5, 320, 180, 480, 270) == 3); /* 2/3: quality's optimal */
+        assert(mode_choose(small, 6, 5, 160, 90, 480, 270) == 0);  /* ultra performance by the same rule */
+        assert(mode_choose(large, 6, 5, 3840, 2160, 3840, 2160) == 5);
+        assert(mode_choose(large, 6, 5, 1920, 1080, 3840, 2160) == 1);
+        assert(mode_choose(large, 6, 5, 2560, 1440, 3840, 2160) == 3);
+        assert(mode_choose(large, 6, 5, 2304, 1296, 3840, 2160) == 2); /* 3/5: balanced is 120 apart, quality 400 */
+        assert(mode_choose(large, 6, 5, 2880, 1620, 3840, 2160) == 3); /* 3/4 */
+        assert(mode_choose(large, 6, 5, 3072, 1728, 3840, 2160) == 3); /* 4/5 */
+        assert(mode_choose(large, 6, 5, 3820, 2150, 3840, 2160) == 5); /* in DLAA's range, its optimal nearest */
+        assert(mode_choose(large, 6, 5, 1600, 900, 3840, 2160) == -1); /* no range holds it */
+        assert(mode_choose(large, 6, 5, 1920, 1079, 3840, 2160) == -1);
+        assert(mode_choose(large, 6, 5, 1900, 1080, 3840, 2160) == -1); /* below every range's width */
+        assert(mode_choose(large, 6, 5, 1280, 721, 3840, 2160) == -1);  /* above ultra performance's one height */
+        assert(mode_choose(large, 6, 5, 1281, 720, 3840, 2160) == -1);
+        assert(mode_choose(small, 6, 5, 480, 269, 480, 270) == 5); /* below by a row: DLAA's range */
+        Mode none[6];
+        memcpy(none, small, sizeof none);
+        none[5].got = 0;
+        assert(mode_choose(none, 6, 5, 480, 270, 480, 270) == -1); /* native without DLAA: refused */
+        assert(mode_choose(small, 6, -1, 480, 270, 480, 270) == -1);
+        assert(mode_choose(small, 5, 5, 480, 270, 480, 270) == -1);
+        // native stays DLAA when another mode's optimal is the native size; below native an exact optimal comes
+        // first even outside its own range; ties go to the higher quality, exact or nearest
+        Mode t[6];
+        memcpy(t, small, sizeof t);
+        t[4] = Mode{1, 480, 270, 400, 200, 480, 270};
+        assert(mode_choose(t, 6, 5, 480, 270, 480, 270) == 5);
+        t[2] = Mode{1, 300, 170, 310, 175, 480, 270}; /* balanced's optimal outside its range */
+        assert(mode_choose(t, 6, 5, 300, 170, 480, 270) == 2);
+        t[2] = Mode{1, 320, 180, 240, 135, 480, 270}; /* balanced and quality both at 320x180 */
+        assert(mode_choose(t, 6, 5, 320, 180, 480, 270) == 3);
+        t[2] = Mode{1, 300, 170, 240, 135, 480, 270}; /* 300x170 and 320x180, both 15 from 310x175 */
+        t[4].got = 0;
+        assert(mode_choose(t, 6, 5, 310, 175, 480, 270) == 3);
+        assert(mode_choose(t, 6, 5, 309, 175, 480, 270) == 2);
+        assert(mode_choose(t, 6, 5, 300, 180, 480, 270) == 2); /* 10 from balanced, 20 from quality */
+        assert(mode_choose(t, 6, 5, 310, 171, 480, 270) == 2); /* the same width apart, the height decides */
+        assert(mode_choose(t, 6, 5, 310, 179, 480, 270) == 3);
+    }
     // NGX's flags: vectors at the render size, HDR, the library's exposure, the depth inverted only when reversed
     const int base = kNgxMvLowRes | kNgxIsHdr | kNgxAutoExposure;
     assert(ngx_flags(need) == base && ngx_flags(need | kFarInfinite) == base);

@@ -55,7 +55,7 @@ static struct {
     u64 staging_size;
     const SnxUpscalerApi* api;
     VkFormat motion_format; /* the vectors' images: two halves for dlss, four for the others */
-    int dlss; /* DLSS's matrix (DL1b revision 2, research's rulings for N4): native sizes only, quality not judged */
+    int dlss; /* DLSS's matrix (DL1b revision 2, research's rulings for N4, D3-4): integration only, not quality */
     u32 contexts; /* contexts the adapter handed out and the self-test has not destroyed */
     SelftestLive live; /* which they are: each ends exactly once */
     int ended_wrong;   /* a context destroyed that was not live, or while a command buffer was recorded */
@@ -96,6 +96,7 @@ typedef struct {
     u16* motion;
     int cut_at;          /* the frame whose pattern is new, -1 for none */
     int ungated;         /* a shape the game does not make: not put through the game's gate (frame_run) */
+    int whole;           /* D3-4: the images handed whole, the rectangle at their origin the render size, as the game */
     SelftestProjection form; /* the projection the depth was made with: the camera's numbers and the far-plane flag */
 } Inputs;
 
@@ -958,7 +959,7 @@ static int output_supported(const Inputs* in, VkImageUsageFlags usage) {
 
 /* the session's pictures for these inputs' sizes, in place of the ones it had */
 static int pictures_make(Session* s, const Inputs* in, const SnxUpscalerTraits* traits) {
-    const u32 rw = (u32)in->rw, rh = (u32)in->rh;
+    const u32 rw = (u32)(in->whole ? in->w : in->rw), rh = (u32)(in->whole ? in->h : in->rh);
     if (stopped() || !idle()) return 0; /* no pictures are made after the run stopped */
     pictures_free(s);
     if (!picture_make(&s->colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, rw, rh, traits->colour_usage) ||
@@ -967,7 +968,7 @@ static int pictures_make(Session* s, const Inputs* in, const SnxUpscalerTraits* 
         !output_supported(in, traits->output_usage) ||
         !picture_make(&s->output, OUTPUT_FORMAT, (u32)in->ow, (u32)in->oh, traits->output_usage))
         return 0;
-    if (in->w == in->rw && in->h == in->rh) return 1;
+    if (in->whole || (in->w == in->rw && in->h == in->rh)) return 1;
     return picture_make(&s->wide_colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, (u32)in->w, (u32)in->h, 0) &&
            picture_make(&s->wide_depth, VK_FORMAT_D24_UNORM_S8_UINT, (u32)in->w, (u32)in->h, 0) &&
            picture_make(&s->wide_motion, g.motion_format, (u32)in->w, (u32)in->h, 0);
@@ -1014,8 +1015,8 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
     if (stopped()) return 0;
     if (temporal_upscaler_ready(&s->contexts, config)) return 1;
     if (!temporal_upscaler_must_create(&s->contexts, config)) return 0;
-    const SnxUpscalerCreate make = {.sizes = {(u32)in->rw, (u32)in->rh, (u32)in->rw, (u32)in->rh, (u32)in->ow,
-                                              (u32)in->oh},
+    const u32 iw = (u32)(in->whole ? in->w : in->rw), ih = (u32)(in->whole ? in->h : in->rh);
+    const SnxUpscalerCreate make = {.sizes = {(u32)in->rw, (u32)in->rh, iw, ih, (u32)in->ow, (u32)in->oh},
                                     .instance = g.instance,
                                     .physical_device = g.physical,
                                     .device = g.device,
@@ -1082,7 +1083,7 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
    context was not ready is. -1: a failure. */
 static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int cut, double* out) {
     const size_t pixels = (size_t)in->w * in->h;
-    const int wide = in->w != in->rw || in->h != in->rh;
+    const int wide = !in->whole && (in->w != in->rw || in->h != in->rh);
     const int x = (int)in->vp.x, y = (int)(in->vp.h < 0 ? in->vp.y + in->vp.h : in->vp.y);
     SnxUpscalerTraits traits = {0};
     TemporalRectState state = {0};
@@ -1701,6 +1702,11 @@ static int resize(int up) {
 #define NATIVE_W 480
 #define NATIVE_H 270
 static const int NATIVE_SIZE[4] = {NATIVE_W, NATIVE_H, NATIVE_W, NATIVE_H};
+static const int NATIVE_SMALL[4] = {320, 180, 320, 180};
+/* D3-4: the same cases below the native size, for DLSS: the rectangle at the origin of images of the output's size,
+   as the game hands it on the hand-over. Each size's change of size comes from the other one. */
+static const int HALF_SIZE[4] = {NATIVE_W / 2, NATIVE_H / 2, NATIVE_W, NATIVE_H};
+static const int TWO_THIRDS_SIZE[4] = {NATIVE_W * 2 / 3, NATIVE_H * 2 / 3, NATIVE_W, NATIVE_H};
 static const SelftestProjection FINITE = {NEAR_PLANE, 5000.0};
 static const double STILL[2] = {0.0, 0.0};
 static const Variant WITHOUT_HDR = {1, 1, 1, 1, 1, 0, 1};
@@ -1716,6 +1722,8 @@ typedef struct {
     const char* way;
     double *reference, *scratch[N_SCRATCH];
     u8 *regions, *everywhere; /* each pixel's region for the still scene, and the whole picture as one region */
+    const char* suite;        /* "native suite", or the size below it (D3-4) */
+    const int *size, *small;  /* the render and output sizes, and those the change of size starts from */
 } Native;
 typedef struct {
     const SelftestProjection* form;
@@ -1785,6 +1793,14 @@ static int native_asserted(const char* name, const SelftestProof* p, unsigned co
     return reason == SELFTEST_PROOF_OK;
 }
 
+/* The suite's inputs: its rectangle at the origin of images of the output's size, handed whole */
+static int native_inputs(const Native* n, Inputs* in, const SelftestProjection* form, const int size[4], int cut,
+                         int ahead) {
+    const int made = inputs_project(in, form, size, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 0, cut, 0, ahead, 0);
+    in->whole = 1;
+    return made;
+}
+
 /* A form's inputs and what every case of it is held against: a fresh context's picture, its repeat for the noise
    and the control one offset ahead. Logged only: the error against the true picture and what the flag for
    colours over 1 changes. The fresh context itself is asserted. */
@@ -1792,23 +1808,21 @@ static int native_base(Native* n, NativeForm* F) {
     Inputs ahead;
     char name[160];
     double first = NAN, last = NAN;
-    snprintf(name, sizeof name, "native suite %s, %s, a fresh context", n->way, F->name);
+    snprintf(name, sizeof name, "%s %s, %s, a fresh context", n->suite, n->way, F->name);
     memset(&ahead, 0, sizeof ahead);
     if (skip_rest()) return 1;
     step(name);
-    const int made = inputs_project(&F->in, F->form, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 0, 0, 0, 0,
-                                    0) &&
-                     inputs_project(&ahead, F->form, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 0, 0, 0, 1,
-                                    0);
+    const int made =
+        native_inputs(n, &F->in, F->form, n->size, 0, 0) && native_inputs(n, &ahead, F->form, n->size, 0, 1);
     if (!made) {
         SAY(ST "%s: could not be made: FAIL\n", name);
         inputs_free(&ahead);
         return 0;
     }
-    SAY(ST "native suite %s, %s: near %g, far %g, the create flag for a far plane at infinity %s, render and "
-           "output %dx%d, %d offsets, %d frames a run\n",
-        n->way, F->name, F->form->near_plane, F->form->far_plane, isinf(F->form->far_plane) ? "on" : "off", NATIVE_W,
-        NATIVE_H, F->in.offsets, F->in.frames);
+    SAY(ST "%s %s, %s: near %g, far %g, the create flag for a far plane at infinity %s, render %dx%d at the origin "
+           "of images of %dx%d, output %dx%d, %d offsets, %d frames a run\n",
+        n->suite, n->way, F->name, F->form->near_plane, F->form->far_plane, isinf(F->form->far_plane) ? "on" : "off",
+        n->size[0], n->size[1], NATIVE_W, NATIVE_H, n->size[2], n->size[3], F->in.offsets, F->in.frames);
     truth(&F->in, n->up, n->reference, n->regions);
     F->ran = run(&F->in, &CONFIGURED, 0, F->fresh, &first, &last, n->regions, NULL);
     const SelftestProof fresh = g.proof;
@@ -1819,7 +1833,7 @@ static int native_base(Native* n, NativeForm* F) {
     if (F->ran && control && !g.dlss) F->ran = run(&F->in, &WITHOUT_HDR, 0, n->scratch[N_OLD], NULL, NULL, NULL, NULL);
     else if (F->ran && control) {
         Inputs other;
-        F->ran = inputs_project(&other, F->form, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 0, 0, 0, 0, 0);
+        F->ran = native_inputs(n, &other, F->form, n->size, 0, 0);
         if (F->ran) selftest_depth_turn(other.depth, (size_t)other.frames * (size_t)other.w * (size_t)other.h);
         F->ran = F->ran && run(&other, &STANDARD_DEPTH, 0, n->scratch[N_OLD], NULL, NULL, NULL, NULL);
         inputs_free(&other);
@@ -1832,10 +1846,10 @@ static int native_base(Native* n, NativeForm* F) {
     F->noise = difference(&F->in, F->fresh, n->scratch[N_AGAIN], n->regions, SELFTEST_BACKGROUND);
     F->off = difference(&F->in, n->scratch[N_AHEAD], F->fresh, n->regions, SELFTEST_BACKGROUND);
     plain(&F->in, F->in.frames - 1, n->up, n->scratch[N_PLAIN]);
-    SAY(ST "native suite %s, %s: logged only, no margin: error against the true picture %.6f, of one frame scaled "
+    SAY(ST "%s %s, %s: logged only, no margin: error against the true picture %.6f, of one frame scaled "
            "plainly %.6f. Change a frame over the first cycle %.6f, over the last %.6f. Two fresh contexts differ "
            "by %.6f, a context made %s from one made as configured by %.6f\n",
-        n->way, F->name, difference(&F->in, F->fresh, n->reference, n->regions, SELFTEST_BACKGROUND),
+        n->suite, n->way, F->name, difference(&F->in, F->fresh, n->reference, n->regions, SELFTEST_BACKGROUND),
         difference(&F->in, n->scratch[N_PLAIN], n->reference, n->regions, SELFTEST_BACKGROUND), first, last, F->noise,
         !g.dlss  ? "without the flag for colours over 1"
         : control ? "with the other depth convention"
@@ -1846,7 +1860,6 @@ static int native_base(Native* n, NativeForm* F) {
 
 /* A form's three cases: a changed create property (the flag for colours over 1), a changed size and a reset. */
 static int native_cases(Native* n, NativeForm* F) {
-    static const int SMALL[4] = {320, 180, 320, 180};
     const double far[2] = {F->form->far_plane, F->form->far_plane};
     const int end = F->in.frames - 1;
     double* work = n->scratch[N_WORK];
@@ -1859,11 +1872,13 @@ static int native_cases(Native* n, NativeForm* F) {
     memset(&s, 0, sizeof s);
     if (skip_rest()) return 1;
     const int ran = F->ran &&
-                    inputs_project(&cut, F->form, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 0, 1, 0, 0, 0) &&
-                    inputs_project(&small, F->form, SMALL, 320, 180, 0, 0, n->up, STILL, 0, 0, 0, 0, 0);
+                    native_inputs(n, &cut, F->form, n->size, 1, 0) &&
+                    (n->small == NATIVE_SMALL
+                         ? inputs_project(&small, F->form, NATIVE_SMALL, 320, 180, 0, 0, n->up, STILL, 0, 0, 0, 0, 0)
+                         : native_inputs(n, &small, F->form, n->small, 0, 0));
     /* a change of a create property: the session's first frames without the flag, then every frame a fresh run
        hands over (all but the gate's first) with it, on a context made anew */
-    snprintf(name, sizeof name, "native suite %s, %s, a create property changed", n->way, F->name);
+    snprintf(name, sizeof name, "%s %s, %s, a create property changed", n->suite, n->way, F->name);
     step(name);
     /* For DLSS, which takes no colour without the flag for colours over 1: the depth convention, on the finite form,
        with inputs whose depth is of the other convention (research's ruling of N4 Q2). Not run on the infinite
@@ -1875,7 +1890,7 @@ static int native_cases(Native* n, NativeForm* F) {
     memset(&other, 0, sizeof other);
     int evaluated = 0, changed = ran && property_run && !stopped() && session_open(&s, &F->in, &NATIVE_TRAITS);
     if (changed && g.dlss) {
-        changed = inputs_project(&other, F->form, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 0, 0, 0, 0, 0);
+        changed = native_inputs(n, &other, F->form, n->size, 0, 0);
         if (changed) selftest_depth_turn(other.depth, (size_t)other.frames * (size_t)other.w * (size_t)other.h);
     }
     const Inputs* first_inputs = g.dlss ? &other : &F->in;
@@ -1911,7 +1926,7 @@ static int native_cases(Native* n, NativeForm* F) {
         pass &= (changed && native_asserted(name, &proof, 2, far, &F->in, end, F->form)) || skip_rest();
     }
     /* a change of size, on one session: the small size's frames, then the native ones */
-    snprintf(name, sizeof name, "native suite %s, %s, the size changed", n->way, F->name);
+    snprintf(name, sizeof name, "%s %s, %s, the size changed", n->suite, n->way, F->name);
     step(name);
     memset(&s, 0, sizeof s);
     evaluated = 0;
@@ -1929,16 +1944,17 @@ static int native_cases(Native* n, NativeForm* F) {
     session_close(&s);
     const double moved = resized ? difference(&F->in, work, F->fresh, n->regions, SELFTEST_BACKGROUND) : NAN;
     verdict = resized ? selftest_resized(moved, F->noise, F->off) : SELFTEST_FAIL;
-    SAY(ST "%s: %u frames evaluated at 320x180, %d at %dx%d, %u contexts made: %s. The picture against a fresh "
+    SAY(ST "%s: %u frames evaluated at %dx%d, %d at %dx%d, %u contexts made: %s. The picture against a fresh "
            "context's on the same frames %.6f (at most %.3f), two fresh contexts %.6f, the control one offset "
            "ahead %.6f: %s\n",
-        name, small_frames, evaluated, NATIVE_W, NATIVE_H, proof.contexts, sized ? "PASS" : "FAIL", moved,
+        name, small_frames, n->small[0], n->small[1], evaluated, n->size[0], n->size[1], proof.contexts,
+        sized ? "PASS" : "FAIL", moved,
         SELFTEST_RESIZED, F->noise, F->off, native_word(resized, verdict));
     pass &= (sized && verdict == SELFTEST_PASS) || skip_rest();
     pass &= (resized && native_asserted(name, &proof, 2, far, &F->in, end, F->form)) || skip_rest();
     /* a reset: the last frame shows the other pattern. With the flag, without it, and a context that is given
        the gate's first frame and that frame alone, twice. */
-    snprintf(name, sizeof name, "native suite %s, %s, a reset", n->way, F->name);
+    snprintf(name, sizeof name, "%s %s, %s, a reset", n->suite, n->way, F->name);
     step(name);
     Inputs alone = cut;
     if (ran) {
@@ -1981,7 +1997,7 @@ static int native_transition(Native* n, const NativeForm* from, const NativeForm
     double* work = n->scratch[N_WORK];
     char name[160];
     Session s;
-    snprintf(name, sizeof name, "native suite %s, from %s to %s", n->way, from->name, to->name);
+    snprintf(name, sizeof name, "%s %s, from %s to %s", n->suite, n->way, from->name, to->name);
     memset(&s, 0, sizeof s);
     if (skip_rest()) return 1;
     step(name);
@@ -2018,7 +2034,7 @@ static int native_patch(Native* n, const SelftestProjection* form, const char* f
     u8* regions = malloc(pixels);
     char name[160];
     Inputs in;
-    snprintf(name, sizeof name, "native suite %s, %s, a nearer patch", n->way, form_name);
+    snprintf(name, sizeof name, "%s %s, %s, a nearer patch", n->suite, n->way, form_name);
     memset(&in, 0, sizeof in);
     step(name);
     int ok = regions && !stopped() &&
@@ -2056,15 +2072,16 @@ static int native_patch(Native* n, const SelftestProjection* form, const char* f
     return ok;
 }
 
-static int native(int up) {
-    const size_t pixels = (size_t)NATIVE_W * NATIVE_H, size = sizeof(double) * 3 * pixels;
-    Native n = {up, up ? "up" : "down", malloc(size), {0}, malloc(pixels), malloc(pixels)};
+/* suite: its name, size and small: the render and output sizes and the change of size's first ones */
+static int native_at(int up, const char* suite, const int size[4], const int small[4]) {
+    const size_t pixels = (size_t)NATIVE_W * NATIVE_H, size_bytes = sizeof(double) * 3 * pixels;
+    Native n = {up, up ? "up" : "down", malloc(size_bytes), {0}, malloc(pixels), malloc(pixels), suite, size, small};
     NativeForm forms[2] = {{&FINITE, "the far plane at 5000"}, {&INFINITE, "the far plane at infinity"}};
-    int pass = 1, ok = !not_run("native suite", up) && n.reference && n.regions && n.everywhere;
-    for (int k = 0; k < N_SCRATCH; k++) ok = (n.scratch[k] = malloc(size)) != NULL && ok;
-    for (int k = 0; k < 2; k++) ok = (forms[k].fresh = malloc(size)) != NULL && ok;
+    int pass = 1, ok = !not_run(suite, up) && n.reference && n.regions && n.everywhere;
+    for (int k = 0; k < N_SCRATCH; k++) ok = (n.scratch[k] = malloc(size_bytes)) != NULL && ok;
+    for (int k = 0; k < 2; k++) ok = (forms[k].fresh = malloc(size_bytes)) != NULL && ok;
     if (!ok) {
-        SAY(ST "native suite %s: could not be made: FAIL\n", n.way);
+        SAY(ST "%s %s: could not be made: FAIL\n", suite, n.way);
         pass &= skip_rest();
     } else {
         memset(n.everywhere, SELFTEST_BACKGROUND, pixels);
@@ -2078,9 +2095,9 @@ static int native(int up) {
                jitter times each variant's signs, as the module always hands NGX +1 and +1. A run that cannot be
                made still fails, as every call must succeed. */
             char name[160];
-            SAY(ST "native suite %s, %s, a nearer patch: not run for dlss, its verdict is one of quality\n", n.way,
+            SAY(ST "%s %s, %s, a nearer patch: not run for dlss, its verdict is one of quality\n", suite, n.way,
                 forms[0].name);
-            snprintf(name, sizeof name, "native suite %s, %s, the jitter's signs", n.way, forms[0].name);
+            snprintf(name, sizeof name, "%s %s, %s, the jitter's signs", suite, n.way, forms[0].name);
             /* only on a form that was generated and ran: its inputs exist, else nothing of them is read */
             if (!forms[0].ran || !forms[0].in.scene) {
                 SAY(ST "%s: not run, the form's inputs or its fresh run were not made: FAIL\n", name);
@@ -2102,6 +2119,13 @@ static int native(int up) {
     free(n.everywhere);
     return pass;
 }
+static int native(int up) { return native_at(up, "native suite", NATIVE_SIZE, NATIVE_SMALL); }
+/* D3-4: DLSS below the native size, at 1/2 and 2/3 of the output: integration judged as at native, the module's mode
+   printed by its context line */
+static int below_native(int up, int half) {
+    return half ? native_at(up, "the suite at 1/2", HALF_SIZE, TWO_THIRDS_SIZE)
+                : native_at(up, "the suite at 2/3", TWO_THIRDS_SIZE, HALF_SIZE);
+}
 
 /* DL2's sign protocol (UPSCALER-DESIGN.md, DL2 revision 2), for DLSS after both native suites: the jitter case's still
    scene at the native size and the finite far plane, at both viewport signs, its first evaluated frame the reset at
@@ -2114,26 +2138,29 @@ static u32 messages_now(void) {
     __atomic_store_n(&g_said_lock, 0, __ATOMIC_RELEASE);
     return n;
 }
-static int sign_protocol(void) {
-    enum { REPEATS = 3, FIRST_SCORED = 8, SCORED = 8, EVALUATED = 16 };
+/* D3-4: at below, the 1/2 size on the hand-over's form, a diagnostic only that never sets the sign (5f7a6715): its
+   result is printed apart from the sign's source, and a valid unique one other than (+1, +1) says the step stops */
+static int sign_protocol(int below) {
+    enum { REPEATS = 3, FIRST_SCORED = 8, SCORED = 8, EVALUATED = 16 }; /* the run ends at EVALUATED frames */
+    const char* const at = below ? "the sign protocol at 1/2" : "the sign protocol";
     static const char* const variants[4] = {"(+1, +1)", "(-1, +1)", "(+1, -1)", "(-1, -1)"};
     const size_t pixels = (size_t)NATIVE_W * NATIVE_H, picture = 3 * pixels;
     double score[2][4], noise = 0.0;
     int valid = 1, made = 1;
     if (skip_rest()) return 1;
-    step("the sign protocol");
+    step(at);
     /* the experiment's forced sign multiplies every variant's: the protocol would not compare what it says */
     const char* forced = getenv("SNX_ARCEUS_DLSS_JITTER_SIGN");
     if (forced && forced[0]) {
-        SAY(ST "the sign protocol: not run, SNX_ARCEUS_DLSS_JITTER_SIGN is set (an experiment that forces the sign the "
-               "module hands NGX), and the protocol compares the signs itself\n");
+        SAY(ST "%s: not run, SNX_ARCEUS_DLSS_JITTER_SIGN is set (an experiment that forces the sign the module hands "
+               "NGX), and the protocol compares the signs itself\n", at);
         return 1;
     }
     double *reference = malloc(sizeof(double) * picture), *work = malloc(sizeof(double) * picture);
     double* outputs = malloc(sizeof(double) * picture * SCORED * REPEATS);
     u8 *regions = malloc(pixels), *everywhere = malloc(pixels);
     if (!reference || !work || !outputs || !regions || !everywhere) {
-        SAY(ST "the sign protocol: could not be made: FAIL\n");
+        SAY(ST "%s: could not be made: FAIL\n", at);
         made = 0;
     } else
         memset(everywhere, SELFTEST_BACKGROUND, pixels);
@@ -2142,8 +2169,12 @@ static int sign_protocol(void) {
         const int sign = up ? 0 : 1;
         Inputs in;
         memset(&in, 0, sizeof in);
-        if (!inputs_project(&in, &FINITE, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, up, STILL, 0, 0, 0, -1, 0)) {
-            SAY(ST "the sign protocol %s: its inputs could not be made: FAIL\n", up ? "up" : "down");
+        const int made_in =
+            inputs_project(&in, &FINITE, below ? HALF_SIZE : NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, up, STILL, 0, 0, 0,
+                           -1, 0);
+        in.whole = 1;
+        if (!made_in) {
+            SAY(ST "%s %s: its inputs could not be made: FAIL\n", at, up ? "up" : "down");
             inputs_free(&in);
             made = 0;
             break;
@@ -2160,7 +2191,7 @@ static int sign_protocol(void) {
                 memset(&s, 0, sizeof s);
                 int evaluated = 0, ok = !stopped() && session_open(&s, &in, &NATIVE_TRAITS);
                 double error = 0.0;
-                for (int i = 0; ok && i < in.frames; i++) {
+                for (int i = 0; ok && i < in.frames && evaluated < EVALUATED; i++) {
                     const int got = frame_run(&s, &in, i, &variant, 0, work);
                     if (got < 0) ok = 0;
                     if (got <= 0) continue;
@@ -2174,14 +2205,13 @@ static int sign_protocol(void) {
                 session_close(&s);
                 if (skip_rest()) break;
                 if (!ok) {
-                    SAY(ST "the sign protocol %s, %s, run %d: a call failed: FAIL\n", up ? "up" : "down", variants[v],
-                        r + 1);
+                    SAY(ST "%s %s, %s, run %d: a call failed: FAIL\n", at, up ? "up" : "down", variants[v], r + 1);
                     made = 0;
                 }
                 error /= SCORED;
                 if (evaluated != EVALUATED || written[r] != SCORED || !isfinite(error)) valid = 0;
                 sum += error;
-                SAY(ST "the sign protocol %s, %s, run %d: %d frames evaluated, error over frames 8 to 15 %.6f\n",
+                SAY(ST "%s %s, %s, run %d: %d frames evaluated, error over frames 8 to 15 %.6f\n", at,
                     up ? "up" : "down", variants[v], r + 1, evaluated, error);
             }
             score[sign][v] = sum / REPEATS;
@@ -2216,14 +2246,23 @@ static int sign_protocol(void) {
     if (!g.validation || !g.checks_asked || said) valid = 0;
     if (made) {
         for (int sign = 0; sign < 2; sign++)
-            SAY(ST "the sign protocol %s: scores %.6f %.6f %.6f %.6f for %s %s %s %s\n", sign ? "down" : "up",
-                score[sign][0], score[sign][1], score[sign][2], score[sign][3], variants[0], variants[1], variants[2],
-                variants[3]);
+            SAY(ST "%s %s: scores %.6f %.6f %.6f %.6f for %s %s %s %s\n", at, sign ? "down" : "up", score[sign][0],
+                score[sign][1], score[sign][2], score[sign][3], variants[0], variants[1], variants[2], variants[3]);
         const int chosen = selftest_sign_choose(score, noise, valid);
-        SAY(ST "the sign protocol: noise %.6f (the floor %.3f), %u validation messages during it, runs %s. The "
-               "jitter's sign: %s%s\n", noise, SELFTEST_SIGN_NOISE_FLOOR, said, valid ? "valid" : "NOT all valid",
-            chosen < 0 ? "UNRESOLVED, (+1, +1) is used" : variants[chosen < 0 ? 0 : chosen],
-            chosen < 0 ? "" : ", lowest at both viewport signs by more than four times the noise");
+        if (!below)
+            SAY(ST "the sign protocol: noise %.6f (the floor %.3f), %u validation messages during it, runs %s. The "
+                   "jitter's sign: %s%s\n", noise, SELFTEST_SIGN_NOISE_FLOOR, said, valid ? "valid" : "NOT all valid",
+                chosen < 0 ? "UNRESOLVED, (+1, +1) is used" : variants[chosen < 0 ? 0 : chosen],
+                chosen < 0 ? "" : ", lowest at both viewport signs by more than four times the noise");
+        else {
+            SAY(ST "%s: noise %.6f (the floor %.3f), %u validation messages during it, runs %s. The protocol: %s%s. "
+                   "The sign (+1, +1), from the user's look\n", at, noise, SELFTEST_SIGN_NOISE_FLOOR, said,
+                valid ? "valid" : "NOT all valid", chosen < 0 ? "unresolved" : variants[chosen],
+                chosen < 0 ? "" : ", lowest at both viewport signs by more than four times the noise");
+            if (chosen > 0)
+                SAY(ST "%s: STOP: a valid, unique result other than (+1, +1) contradicts the user's look. DLSS below "
+                       "native is not to be run in the game until it is understood (nothing is switched)\n", at);
+        }
     }
     return made;
 }
@@ -2548,16 +2587,25 @@ int vk_upscaler_selftest(const char* adapter) {
     }
     g.generation = 1;
     if (!device_make()) return 1;
-    if (g.dlss) { /* DLSS's matrix: native sizes only, quality not judged (research's ruling of N4 Q1) */
-        LOG(ST "the suite of cases 1 to 6: not run for dlss, its sizes are below the native one, which DLAA does not "
-               "take, and its verdicts are of quality\n");
-        LOG(ST "the change of size below the native one: not run for dlss, DLAA takes the native size only\n");
+    if (g.dlss) { /* DLSS's matrix: the native size, and 1/2 and 2/3 for D3-4, quality not judged (N4 Q1) */
+        LOG(ST "the suite of cases 1 to 6: not run for dlss, its verdicts are of quality (below native, the suites at "
+               "1/2 and 2/3 judge integration)\n");
+        LOG(ST "the change of size below the native one: not run for dlss, its suites at 1/2 and 2/3 change the size "
+               "instead\n");
         LOG(ST "the edge case, its matched and its response runs: not run for dlss, their verdicts are of quality\n");
         pass = native(1) || skip_rest();
         g.generation++;
         pass &= native(0) || skip_rest();
         g.generation++;
-        pass &= sign_protocol() || skip_rest();
+        pass &= sign_protocol(0) || skip_rest();
+        /* D3-4: below the native size at 1/2 and 2/3 of the output, then the sign protocol at 1/2 as a diagnostic */
+        for (int half = 1; half >= 0; half--)
+            for (int up = 1; up >= 0; up--) {
+                g.generation++;
+                pass &= below_native(up, half) || skip_rest();
+            }
+        g.generation++;
+        pass &= sign_protocol(1) || skip_rest();
     } else {
         /* after a stop each is neither run nor counted (skipped) */
         pass = suite(1) || skip_rest();

@@ -273,7 +273,8 @@ static struct {
     Image motion2;
     VkPipeline motion2_pipe;
     TemporalUpscalerHanded handed; /* for the log: the four images as last said */
-    /* D3-3: FSR below native on D3-2's hand-over, with the fixed resolution; the scene scale is the opt-in */
+    /* D3-3 and D3-4: FSR or DLSS below native on D3-2's hand-over, with the fixed resolution; the scene scale is
+       the opt-in */
     int below;
     u32 output_max[2]; /* the output's largest width and height, as the start's format question answered */
     /* the output's uses: the runtime's (sampled for the write-back, storage) and the adapter's traits' (research
@@ -2904,13 +2905,13 @@ static void upscaler_settle(u32 frame, const TemporalUpscalerConfig* confirmed) 
    known or not one this piece takes: one layer each, the same size, the formats the self-test ran, and the
    game's form of projection. */
 /* D3-3: a frame below native the hand-over takes (a listed scale at the origin, bit for bit), while it is on. Off,
-   such a frame is not taken by FSR, so the gate gives it no jitter: never a jitter without a resolve */
+   such a frame is not taken by the upscaler, so the gate gives it no jitter: never a jitter without a resolve */
 static int upscaler_below(const TemporalRectState* s) {
     return g_u.below && g_s.asked && !g_s.latch.off &&
            temporal_spatial_below(s->target_w, s->target_h, s->rect.x, s->rect.y, s->rect.w, s->rect.h, s->fx,
                                   s->fy) >= 0;
 }
-/* the frames FSR takes: the whole target, or below native on the hand-over */
+/* the frames the upscaler takes: the whole target, or below native on the hand-over */
 static int upscaler_admitted(const TemporalRectState* s) { return temporal_upscaler_whole(s) || upscaler_below(s); }
 /* render: the rectangle of a frame below native, NULL for the whole target */
 static int upscaler_key(const Surf* depth, const TemporalUpscalerColour* colour, const float m[16],
@@ -3376,13 +3377,14 @@ static void spatial_went_off(void) {
     if (g_s.said_off) return;
     g_s.said_off = 1;
     g_vk_watch = NULL;
-    /* D3-3: FSR's mode runs no resolve of ours, so a frame below native is never jittered once the hand-over is off
-       (research 21:05): upscaler_below refuses it at the gate's decision, which comes after the latch is settled
-       at the frame's first draw (spatial_now, which also resets the rectangle's candidate and the history) */
+    /* D3-3: the upscaler's mode runs no resolve of ours, so a frame below native is never jittered once the
+       hand-over is off (research 21:05): upscaler_below refuses it at the gate's decision, which comes after the
+       latch is settled at the frame's first draw (spatial_now, which also resets the candidate and the history) */
+    const char* named = g_u.api && g_u.api->name ? g_u.api->name : "the upscaler";
     if (g_u.below)
-        LOG("arceus-upscaler: FSR below native is off for the rest of the session (%s): from the next frame on, frames "
-            "below native get no jitter and are left as drawn (the rectangle's candidate and history reset); FSR at "
-            "full size goes on\n", g_s.latch.why ? g_s.latch.why : "?");
+        LOG("arceus-upscaler: %s below native is off for the rest of the session (%s): from the next frame on, frames "
+            "below native get no jitter and are left as drawn (the rectangle's candidate and history reset); %s at "
+            "full size goes on\n", named, g_s.latch.why ? g_s.latch.why : "?", named);
     else
         LOG("arceus-upscaler: spatial is off for the rest of the session (%s): D2 goes on, restarted from a reset\n",
             g_s.latch.why ? g_s.latch.why : "?");
@@ -3819,10 +3821,11 @@ static void upscaler_start(void) {
         for (int k = 0; forced && k < 8; k++) is_forced |= !strcmp(forced, forcing[k]);
         if (is_forced)
             LOG("arceus-upscaler: dlss in the game (DL2): DLAA at full size, the vectors in two channels. The jitter's "
-                "sign %s is forced by experiment (SNX_ARCEUS_DLSS_JITTER_SIGN), not chosen by the protocol\n", forced);
+                "sign %s is forced by experiment (SNX_ARCEUS_DLSS_JITTER_SIGN), not chosen by the protocol, below "
+                "native too\n", forced);
         else
             LOG("arceus-upscaler: dlss in the game (DL2): DLAA at full size, the vectors in two channels. The jitter's "
-                "sign (+1, +1), chosen by the user's look in the game (forced -- shook)\n");
+                "sign (+1, +1), chosen by the user's look in the game (forced -- shook), below native too (D3-4)\n");
     }
     SnxUpscalerExtensions instance = {0};
     SnxUpscalerDeviceNeeds device = {0};
@@ -3874,16 +3877,18 @@ static void upscaler_start(void) {
         "At full size only, in frames whose scene is the whole target\n", api->name ? api->name : name);
     LOG("arceus-upscaler: our own resolve, sharpen, history, numbers and views do not run with it. Without effect: "
         "SNX_ARCEUS_TEMPORAL_HISTORY, _CLAMP, _BLEND, _NEAREST, _LUMA, _SHARPEN, _VIEW and _RECT\n");
-    /* D3-3: with the fixed resolution, frames below native at a listed scale go to FSR on D3-2's hand-over, whose
-       lines say "spatial" (the hand-over's name); the scene scale itself is the opt-in */
+    /* D3-3 and D3-4: with the fixed resolution, frames below native at a listed scale go to FSR or DLSS on D3-2's
+       hand-over, whose lines say "spatial" (the hand-over's name); the scene scale itself is the opt-in */
     const char* fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
-    g_u.below = fixed && !strcmp(fixed, "1") && !strcmp(name, "fsr"); /* D3-3 is FSR's (reviewer's note) */
+    g_u.below = fixed && !strcmp(fixed, "1") && (!strcmp(name, "fsr") || !strcmp(name, "dlss"));
     if (g_u.below) {
         g_s.asked = 1;
-        LOG("arceus-upscaler: %s below native (D3-3, EXPERIMENTAL): frames at a scene scale of 1/2, 3/5, 2/3, 3/4 or "
+        LOG("arceus-upscaler: %s below native (%s, EXPERIMENTAL): frames at a scene scale of 1/2, 3/5, 2/3, 3/4 or "
             "4/5 are rendered by it at the rectangle and handed to the game's readers in a larger texture (the "
-            "hand-over's lines say spatial); none of our numbers are made for them\n",
-            api->name ? api->name : name);
+            "hand-over's lines say spatial); none of our numbers are made for them%s\n",
+            api->name ? api->name : name, g_u.two_channel ? "D3-4" : "D3-3",
+            g_u.two_channel ? ". The mode is the one NGX's optimal settings give for the rectangle (the module's "
+                              "context line)" : "");
     }
 }
 

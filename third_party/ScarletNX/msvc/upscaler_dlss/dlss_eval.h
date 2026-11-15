@@ -79,11 +79,12 @@ inline int eval_numbers(const float vector_scale[2], const float jitter[2], cons
 
 // What a context may be made with (DL1b revision 2 and research's rulings of 08:40 and 08:45), before NGX is asked:
 // the interface's flags (upscaler.h, mirrored here and held to it in the module), linear HDR colour, unjittered
-// vectors and NGX's own exposure required. Vectors in R16G16_SFLOAT or R32G32_SFLOAT (Vulkan's numbers). DLAA only.
+// vectors and NGX's own exposure required. Vectors in R16G16_SFLOAT or R32G32_SFLOAT (Vulkan's numbers). A render size
+// up to the output's: D3-4 takes one below it, the mode chosen by mode_choose.
 const uint32_t kLinearHdr = 1u << 0, kDepthReversed = 1u << 1, kUnjittered = 1u << 2, kExposureAutomatic = 1u << 3,
                kFarInfinite = 1u << 4;
 const int kMotionR16G16Float = 83, kMotionR32G32Float = 103;
-enum { CREATE_OK, CREATE_FLAG_UNKNOWN, CREATE_FLAG_MISSING, CREATE_MOTION_FORMAT, CREATE_NOT_NATIVE };
+enum { CREATE_OK, CREATE_FLAG_UNKNOWN, CREATE_FLAG_MISSING, CREATE_MOTION_FORMAT, CREATE_SIZES };
 inline const char* create_text(int why) {
     switch (why) {
         case CREATE_OK: return "ok";
@@ -91,8 +92,7 @@ inline const char* create_text(int why) {
         case CREATE_FLAG_MISSING:
             return "linear HDR colour, unjittered vectors and the library's own exposure are required";
         case CREATE_MOTION_FORMAT: return "the vectors' format is not R16G16_SFLOAT or R32G32_SFLOAT";
-        default:
-            return "only DLAA at the native size: the render size is not the output's or is larger than the images";
+        default: return "the render size is empty, or larger than the output or the images";
     }
 }
 inline int create_check(uint32_t flags, int motion_format, uint32_t render_w, uint32_t render_h, uint32_t image_w,
@@ -102,10 +102,37 @@ inline int create_check(uint32_t flags, int motion_format, uint32_t render_w, ui
     if (flags & ~known) return CREATE_FLAG_UNKNOWN;
     if ((flags & required) != required) return CREATE_FLAG_MISSING;
     if (motion_format != kMotionR16G16Float && motion_format != kMotionR32G32Float) return CREATE_MOTION_FORMAT;
-    if (render_w != output_w || render_h != output_h || render_w > image_w || render_h > image_h || !render_w ||
+    if (render_w > output_w || render_h > output_h || render_w > image_w || render_h > image_h || !render_w ||
         !render_h)
-        return CREATE_NOT_NATIVE;
+        return CREATE_SIZES;
     return CREATE_OK;
+}
+// D3-4: NGX's optimal settings for one quality mode at the output size, as the module reads them
+struct Mode {
+    int got; // NGX answered with a render size
+    uint32_t w, h, min_w, min_h, max_w, max_h;
+};
+inline int mode_holds(const Mode& m, uint32_t w, uint32_t h) {
+    return m.got && w >= m.min_w && w <= m.max_w && h >= m.min_h && h <= m.max_h;
+}
+// The mode for a render size (UPSCALER-DESIGN.md D3-4), modes in rising quality and dlaa the index of DLAA. At the
+// output's size DLAA when its range holds it, as before. Below it a mode whose optimal is the render size, else the
+// nearest optimal (width and height apart, added) among the modes whose range holds it, ties to the higher quality.
+inline int mode_choose(const Mode* modes, int n, int dlaa, uint32_t render_w, uint32_t render_h, uint32_t output_w,
+                       uint32_t output_h) {
+    if (render_w == output_w && render_h == output_h)
+        return dlaa >= 0 && dlaa < n && mode_holds(modes[dlaa], render_w, render_h) ? dlaa : -1;
+    for (int k = n - 1; k >= 0; k--)
+        if (modes[k].got && modes[k].w == render_w && modes[k].h == render_h) return k;
+    int best = -1;
+    uint64_t nearest = 0;
+    for (int k = n - 1; k >= 0; k--) {
+        if (!mode_holds(modes[k], render_w, render_h)) continue;
+        const uint64_t apart = (uint64_t)(modes[k].w > render_w ? modes[k].w - render_w : render_w - modes[k].w) +
+                               (uint64_t)(modes[k].h > render_h ? modes[k].h - render_h : render_h - modes[k].h);
+        if (best < 0 || apart < nearest) best = k, nearest = apart;
+    }
+    return best;
 }
 // NGX's capability parameters (research's ruling of 09:45): Available and NeedsUpdatedDriver must be read, and a
 // failed read is a failed call. The least driver and the feature's init result are for the log only.
