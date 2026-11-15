@@ -274,6 +274,9 @@ static struct {
     VkPipeline motion2_pipe;
     TemporalUpscalerHanded handed; /* for the log: the four images as last said */
     u32 output_max[2]; /* the output's largest width and height, as the start's format question answered */
+    /* the output's uses: the runtime's (sampled for the write-back, storage) and the adapter's traits' (research
+       19:00: NGX clears it, a transfer destination), and those the image was last made with */
+    VkImageUsageFlags output_usage, output_made_usage;
     VkPipeline write_pipe;
     VkFormat write_format;
 } g_u = {.asked = -1};
@@ -3069,12 +3072,25 @@ static void upscaler_warm(u32 frame, Surf* scene, Surf* depth, int steady) {
                                     .folder = "."};
     /* what the images handed over are made with: sampled inputs, a sampled storage image for the output */
     const VkImageUsageFlags inputs = VK_IMAGE_USAGE_SAMPLED_BIT;
-    const VkImageUsageFlags output = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+    const VkImageUsageFlags output =
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     SnxUpscalerTraits traits = {0};
     SnxUpscaler* made = NULL;
     const int created = g_u.api->create(&make, &traits, &made) == SNX_UPSCALER_OK && made;
     const VkImageUsageFlags reads = traits.colour_usage | traits.depth_usage | traits.motion_usage;
-    if (!created || traits.submits_itself || (reads & ~inputs) || (traits.output_usage & ~output)) {
+    /* the output with the runtime's uses and the traits', its format asked for them before the context is taken */
+    VkImageFormatProperties output_has;
+    const VkImageUsageFlags output_usage = UPSCALED_USAGE | traits.output_usage;
+    const int output_ok =
+        created && !(traits.output_usage & ~output) &&
+        VK_OK(vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, UPSCALED_FORMAT, VK_IMAGE_TYPE_2D,
+                                                       VK_IMAGE_TILING_OPTIMAL, output_usage, 0, &output_has));
+    if (output_ok) {
+        g_u.output_usage = output_usage;
+        g_u.output_max[0] = output_has.maxExtent.width;
+        g_u.output_max[1] = output_has.maxExtent.height;
+    }
+    if (!created || traits.submits_itself || (reads & ~inputs) || !output_ok) {
         const char* why = !created              ? "a context could not be made on the game's device"
                           : traits.submits_itself ? "the adapter submits work on its own"
                                                   : "the adapter needs image usages the game's images do not have";
@@ -3180,8 +3196,15 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_STOPPED, "the write-back's image, pipeline, set or view");
         return;
     }
-    const int imaged = image_ensure(&g_u.output, UPSCALED_FORMAT, scene->sw, scene->sh, UPSCALED_USAGE,
+    /* made anew when its uses changed (image_ensure keeps one of the same format and size) */
+    if (g_u.output.img && g_u.output_made_usage != g_u.output_usage) {
+        vk_defer_image(g_u.output.img, g_u.output.mem, g_u.output.view, VK_NULL_HANDLE);
+        g_u.output = (Image){0};
+    }
+    const VkImageUsageFlags output_usage = g_u.output_usage ? g_u.output_usage : UPSCALED_USAGE;
+    const int imaged = image_ensure(&g_u.output, UPSCALED_FORMAT, scene->sw, scene->sh, output_usage,
                                     "upscaler's output");
+    if (imaged) g_u.output_made_usage = output_usage;
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (imaged && g_u.write_pipe && scene_view) {
         const VkImageView views[SETS_BINDINGS] = {g_u.output.view, g_u.output.view, g_u.output.view, g_u.output.view,

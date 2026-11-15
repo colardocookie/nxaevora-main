@@ -608,7 +608,9 @@ int create(const SnxUpscalerCreate* c, SnxUpscalerTraits* traits, SnxUpscaler** 
     traits->takes_rectangle = 1;
     traits->rectangle_at_origin = 1;
     traits->colour_usage = traits->depth_usage = traits->motion_usage = VK_IMAGE_USAGE_SAMPLED_BIT;
-    traits->output_usage = VK_IMAGE_USAGE_STORAGE_BIT;
+    /* NGX clears its output in its evaluation (DL-G1, VUID-vkCmdClearColorImage-image-00002): a transfer destination
+       too (research 19:00) */
+    traits->output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     say("arceus-upscaler: dlss: a context for DLAA at %ux%u, NGX's flags 0x%x", c->sizes.output_w, c->sizes.output_h,
         (unsigned)flags);
     *out = reinterpret_cast<SnxUpscaler*>(x);

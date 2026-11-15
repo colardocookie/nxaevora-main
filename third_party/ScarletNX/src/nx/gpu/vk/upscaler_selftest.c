@@ -1339,7 +1339,8 @@ static int run(const Inputs* in, const Variant* v, int use_cut, double* last, do
     SnxUpscalerTraits traits = {.colour_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .depth_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .motion_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
-                                .output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+                                .output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                                VK_IMAGE_USAGE_TRANSFER_DST_BIT};
     const size_t size = sizeof(double) * 3 * (size_t)in->ow * in->oh;
     double* previous = malloc(size);
     SelftestSettling settling = {{0.0, 0.0}, {0, 0}};
@@ -1606,7 +1607,8 @@ static int resize(int up) {
     SnxUpscalerTraits traits = {.colour_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .depth_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .motion_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
-                                .output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+                                .output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                                VK_IMAGE_USAGE_TRANSFER_DST_BIT};
     Inputs small, big, wrong;
     Session s;
     double *output = malloc(size), *previous = malloc(size), *reference = malloc(size), *scaled = malloc(size);
@@ -1704,8 +1706,9 @@ static const Variant WITHOUT_HDR = {1, 1, 1, 1, 1, 0, 1};
 static const SnxUpscalerTraits NATIVE_TRAITS = {.colour_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                                 .depth_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
                                                 .motion_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
-                                                .output_usage =
-                                                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+                                                .output_usage = VK_IMAGE_USAGE_STORAGE_BIT |
+                                                                VK_IMAGE_USAGE_SAMPLED_BIT |
+                                                                VK_IMAGE_USAGE_TRANSFER_DST_BIT};
 enum { N_AGAIN, N_AHEAD, N_OLD, N_PLAIN, N_WORK, N_WITH, N_WITHOUT, N_ALONE, N_ALONE_AGAIN, N_OTHER, N_SCRATCH };
 typedef struct {
     int up;
