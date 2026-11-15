@@ -1253,3 +1253,104 @@ Effect and limits: at 30 FPS the native path does not change the frame time. It 
 (about 1 ms a frame in the busy scenes) and the library code on the game threads (at least about 1 ms), but its handlers
 add about 1.5 to 2 ms of work and 2 ms of `objs_lock` wait on the game threads. The lock wait is the largest cost that
 the native path adds.
+
+### Who holds `objs_lock` (measure added 2026-11-14)
+
+Each handler holds `objs_lock` for the whole call. The `GPU` thread takes it for short lookups: once per list in
+`frame_replay_lists`, per op in the `replay_host_*` callbacks, and in `frame_read_parts`, `frame_finish` and `frame_line`.
+To find which of them makes the handlers wait, `nvn_measure=1` now records the holder at each blocked take (the
+`nvn-measure: lock` and `holder` lines). The result of a run and the split design follow here.
+
+Run of 2026-11-14 (`3eac584` code, update program, field and a battle, 193 s, clean exit):
+
+- Game threads: 5.76 million blocked takes of 35.75 million handler calls (16%), 11612 ms of wait. 11611 ms of it was
+  held by a handler on another game thread, 1.3 ms by the `GPU` thread. 12 threads ran a handler.
+- `GPU` thread: 1259 blocked takes, 135 ms, nearly all held by a handler. The `GPU` thread is not the cause.
+- A blocked take waits about 2 us on average, longer than the hold of the most called handlers (0.7 to 1.4 us). So the
+  cost is many short collisions of the game's recording threads, not a few long holds.
+- The 10 largest holders (8.7 s of the 11.6 s): `nvnCommandBufferCallCommands` (2715 ms), `AddControlMemory` (1259 ms),
+  `AddCommandMemory` (1182 ms), `BindBlendState` (757 ms), `nvnBufferMap` (708 ms), `SetStencilRef` (600 ms),
+  `SetRenderTargets` (455 ms), `BindProgram` (342 ms), `EndRecording` (334 ms), `nvnMemoryPoolInitialize` (308 ms,
+  494 us per call). All but `nvnBufferMap` and `nvnMemoryPoolInitialize` are command buffer handlers.
+
+Conclusion: the game records different command buffers on many threads at the same time, and the one global lock makes
+them run one after the other. A split must let the handlers of different command buffers run at the same time.
+
+### Split design: `objs_lock` as a read-write lock (decided 2026-11-14)
+
+The user chose a read-write lock (not a lock per command buffer, not a lock-free table) and a concurrent use check that is
+always on.
+
+Facts checked in the code:
+
+- `PMutex` is an `SRWLOCK` on Windows and a `pthread_mutex_t` on POSIX (`common/filesystem/host.h`). An `SRWLOCK` has a
+  shared mode. `kthread_wait(&frame_done_cv, &objs_lock, ...)` waits with the lock in exclusive mode.
+- `nvn_objtab_find` and `probe` only read the table, so a find under the shared mode is safe while every
+  `nvn_objtab_put` and `nvn_objtab_remove` runs under the exclusive mode.
+- `rec_get` can make a record. `command_bind_state` (the `BindBlendState` family) calls it, so today a bind can write the
+  table when the game never called SetDefaults on the state object.
+- `lists` (the command lists) is used by `EndRecording` (publish), `CallCommands` (ref), `CopyCommands` (find and copy),
+  `AddControlMemory` (unref), the queue submit, `frame_finish` (release) and the `GPU` thread (find).
+- `COMMAND_LOG` counts with a plain `++`. `LOG_LIMIT` is atomic.
+
+Decisions:
+
+1. `host.h` gets `pm_lock_shared`, `pm_unlock_shared` and `pm_trylock_shared` for a `PMutex`: the `SRWLOCK` shared calls on
+   Windows. On POSIX they take the mutex in the normal way (correct, but no parallel readers) until the Linux work. They
+   note waits as `pm_lock` does. They do not report to the profiler (changed in step 1): the Tracy C API has only an
+   exclusive lockable context, so two shared holders at the same time would give a wrong pane. `PMutex` stays the type,
+   so `kthread_wait` does not change.
+2. `lists` gets its own mutex `lists_lock`. Lock order: `objs_lock` (either mode), then `lists_lock`, then `g_qlk`. The
+   `GPU` thread takes only `lists_lock` for its list finds. A found list stays alive through the references of its frame,
+   as today.
+3. A handler can take `objs_lock` in the shared mode only when it (a) finds records with `known_record` or
+   `nvn_objtab_find` and never makes or removes one, (b) changes no record except the command buffer named by x0, (c) uses
+   `lists` only under `lists_lock`, and (d) changes globals only with atomics. All other handlers keep the exclusive mode.
+4. The first shared set: the recording, setter and getter handlers of command buffers, `nvnBufferMap` and
+   `nvnBufferGetAddress`. `CommandBufferInitialize` and `Finalize` stay exclusive (they make and remove the record). A bind
+   of a state object without a record reads the library defaults into a local array and makes no record.
+5. Concurrent use check, always on: `CommandBufferRec` gets an owner thread id. A shared handler sets it with one
+   compare-and-swap from 0 at the start and clears it at the end. When another thread owns it, the handler writes a
+   limited log line, counts the conflict, releases the shared mode and runs under the exclusive mode, which waits until
+   all shared holders leave. So a conflict is reported and still correct.
+6. `nvn_measure` splits the lock lines by mode (shared and exclusive takes, blocked count and wait of each). The holder code
+   of a shared take is the last shared taker, which is enough to name the handlers.
+
+Work order (each step is built, tested with `ctest` and committed alone):
+
+1. Decision 1 with a host test: two shared takes at the same time succeed, an exclusive try fails while a shared
+   holder is in, and a shared try fails while an exclusive holder is in (Windows only).
+2. Decision 2 (`lists_lock`), with no shared mode yet. A user run checks that nothing changed.
+3. Decisions 3 to 6: the mode argument of the take, the owner check, the first shared set and the measure split.
+4. User runs with `nvn_measure=1`: the field and a battle, compared with the run above (2.0 to 2.4 ms of lock wait per
+   frame). Many runs, because a race can show only now and then.
+
+Expected effect: the holders that become shared made 8.4 s of the 11.6 s of wait. The exclusive handlers still block
+the shared ones, for example `nvnMemoryPoolInitialize` (494 us per call).
+
+Step 3 (done 2026-11-14): 141 command buffer handlers, `nvnBufferMap` and `nvnBufferGetAddress` take the shared mode
+through `command_hold` and `command_unhold` (the owner helpers `nvn_owner_claim` and `nvn_owner_release` are in
+`nvn_cmdlist.c`). No handler of the set needed to stay exclusive. A conflict falls back to the exclusive mode and finds the
+record again, because a `Finalize` can run in the gap.
+
+Step 4 (user run 2026-11-15, build of step 3, 333 s, field and a battle): no crash, 30 frames each second,
+`command_conflicts=0`. The lock wait per frame fell from 2.0 to 2.4 ms to 0.09 to 0.22 ms. Takes: 43.9 M shared,
+15.2 M exclusive. The game threads waited 1109 ms behind exclusive holders and 372 ms behind shared ones. The GPU thread
+never waited in the shared mode. Top holders: `nvnMemoryPoolInitialize` (378 ms, 597 us per call),
+`nvnCommandBufferCallCommands` (245 ms), `nvnCommandBufferBindUniformBuffer` (149 ms) and `nvnBufferGetSize` (89 ms,
+173,900 waits). `nvnBufferGetSize` reads only the buffer record, like `nvnBufferGetAddress`, so it takes the shared mode
+too (after this run).
+
+Run with the shared `nvnBufferGetSize` (2026-11-15, 163 s, field and a battle): no crash, `command_conflicts=0`. The lock
+wait per frame is 0.02 to 0.11 ms after the loading. `nvnBufferGetSize` made 7.3 ms of wait (was 89 ms in 333 s). The
+game threads waited 2.0 ms each second of play (4.4 ms before). `nvnMemoryPoolInitialize` (220 ms, 488 us per call) is now
+most of the wait that is left.
+
+Pools out of the lock: `nvnMemoryPoolInitialize` cannot take the shared mode, because it adds a record and the table can
+grow. Its time is the GPU work: the address allocation and the two range maps, which have their own nvdrv locks. Now it
+copies the builder under `objs_lock`, does the GPU work with no lock, and adds the record under `objs_lock` at the end, so
+no thread sees a pool that is half made. `nvnMemoryPoolFinalize` copies and removes the record under `objs_lock`, then
+unmaps and frees the address with no lock. Run (2026-11-15, 212 s, field, a battle, and many moves between Jubilife Village
+and the Obsidian Fieldlands): no crash, `command_conflicts=0`. The two pool handlers left the top 10 of the holder list,
+with 5654 Initialize calls (the run before: 1629 calls and 220 ms of wait behind them). The lock wait per frame is 0.02 to
+0.14 ms.
