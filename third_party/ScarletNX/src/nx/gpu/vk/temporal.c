@@ -2892,7 +2892,8 @@ static void upscaler_settle(u32 frame, const TemporalUpscalerConfig* confirmed) 
    colour target, and an unjittered projection given by value. 0 when a part of it is not
    known or not one this piece takes: one layer each, the same size, the formats the self-test ran, and the
    game's form of projection. */
-/* D3-3: a frame below native the hand-over takes (a listed scale at the origin, bit for bit), while it is on */
+/* D3-3: a frame below native the hand-over takes (a listed scale at the origin, bit for bit), while it is on. Off,
+   such a frame is not taken by FSR, so the gate gives it no jitter: never a jitter without a resolve */
 static int upscaler_below(const TemporalRectState* s) {
     return g_u.below && g_s.asked && !g_s.latch.off &&
            temporal_spatial_below(s->target_w, s->target_h, s->rect.x, s->rect.y, s->rect.w, s->rect.h, s->fx,
@@ -3293,9 +3294,13 @@ static void spatial_went_off(void) {
     if (g_s.said_off) return;
     g_s.said_off = 1;
     g_vk_watch = NULL;
-    if (g_u.below) /* D3-3: FSR's mode has no resolve of ours, so frames below native are left as drawn */
-        LOG("arceus-upscaler: FSR below native is off for the rest of the session (%s): frames below native are "
-            "left as drawn, FSR at full size goes on\n", g_s.latch.why ? g_s.latch.why : "?");
+    /* D3-3: FSR's mode runs no resolve of ours, so a frame below native is never jittered once the hand-over is off
+       (research 21:05): upscaler_below refuses it at the gate's decision, which comes after the latch is settled
+       at the frame's first draw (spatial_now, which also resets the rectangle's candidate and the history) */
+    if (g_u.below)
+        LOG("arceus-upscaler: FSR below native is off for the rest of the session (%s): from the next frame on, frames "
+            "below native get no jitter and are left as drawn (the rectangle's candidate and history reset); FSR at "
+            "full size goes on\n", g_s.latch.why ? g_s.latch.why : "?");
     else
         LOG("arceus-upscaler: spatial is off for the rest of the session (%s): D2 goes on, restarted from a reset\n",
             g_s.latch.why ? g_s.latch.why : "?");
