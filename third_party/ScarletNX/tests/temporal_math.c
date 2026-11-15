@@ -2418,6 +2418,52 @@ static void test_spatial(void) {
     assert(!memcmp(fill[2].from, (int[4]){3839, 2159, 3840, 2160}, sizeof fill[2].from));
     assert(!memcmp(fill[2].to, (int[4]){3840, 2160, 7680, 4320}, sizeof fill[2].to));
     assert(temporal_spatial_fill(3840, 2160, 3840, 2160, fill) == 0);
+    /* the scale: weights that sum to 1 and pass through the taps */
+    for (int k = 0; k <= 8; k++) {
+        double wt[4];
+        temporal_spatial_weights(k / 8.0, wt);
+        assert(fabs(wt[0] + wt[1] + wt[2] + wt[3] - 1.0) < 1e-12);
+        if (k == 0) assert(wt[1] == 1.0 && wt[0] == 0.0 && wt[2] == 0.0 && wt[3] == 0.0);
+    }
+    {
+        enum { PW = 12, PH = 8 };
+        float ramp[PW * PH], flat[PW * PH], step[PW * PH];
+        for (int y = 0; y < PH; y++)
+            for (int x = 0; x < PW; x++) {
+                ramp[y * PW + x] = (float)(3 * x + 2 * y + 1);
+                flat[y * PW + x] = 0.25f;
+                step[y * PW + x] = x < PW / 2 ? 0.0f : 1.0f;
+            }
+        for (int y = 0; y < PH; y++) /* scale 1: the picture itself */
+            for (int x = 0; x < PW; x++)
+                assert(fabs(temporal_spatial_catmull_rom(ramp, PW, PH, PW, PH, x, y) - ramp[y * PW + x]) < 1e-9);
+        for (int y = 0; y < 2 * PH; y++) /* twice the size: a constant everywhere, the edges included */
+            for (int x = 0; x < 2 * PW; x++)
+                assert(fabs(temporal_spatial_catmull_rom(flat, PW, PH, 2 * PW, 2 * PH, x, y) - 0.25) < 1e-9);
+        for (int y = 4; y < 2 * PH - 4; y++) /* a ramp exactly, away from the clamped edge */
+            for (int x = 4; x < 2 * PW - 4; x++) {
+                const double sx = (x + 0.5) / 2 - 0.5, sy = (y + 0.5) / 2 - 0.5;
+                assert(fabs(temporal_spatial_catmull_rom(ramp, PW, PH, 2 * PW, 2 * PH, x, y) - (3 * sx + 2 * sy + 1)) <
+                       1e-9);
+            }
+        for (int x = 0; x < 2 * PW; x++) /* a hard edge: never below 0, the undershoot cut */
+            assert(temporal_spatial_catmull_rom(step, PW, PH, 2 * PW, 2 * PH, x, 3) >= 0.0);
+        assert(temporal_spatial_catmull_rom(step, PW, PH, 2 * PW, 2 * PH, PW - 2, 3) == 0.0);
+        { /* the right edge: x 23 of 24 falls at 11.25, its taps 10 and 11, then 11 twice held to the picture.
+             y 5 of 16 falls at 2.25, inside, where the ramp's y part 2 y comes out exactly. */
+            double wt[4];
+            temporal_spatial_weights(0.25, wt);
+            const double expect = wt[0] * 30 + (wt[1] + wt[2] + wt[3]) * 33 + 2 * 2.25 + 1;
+            assert(fabs(temporal_spatial_catmull_rom(ramp, PW, PH, 2 * PW, 2 * PH, 2 * PW - 1, 5) - expect) < 1e-9);
+            assert(fabs(expect - 38.7109375) < 1e-12);
+            /* the top edge the same way: y 0 of 16 falls at -0.25, its taps -2, -1 held to row 0, then rows 0, 1 */
+            temporal_spatial_weights(0.75, wt);
+            const double top = wt[3] * 2 + 3 * 2.25 + 1; /* row 1's y part is 2, row 0's 0; x 5 falls at 2.25 */
+            assert(fabs(temporal_spatial_catmull_rom(ramp, PW, PH, 2 * PW, 2 * PH, 5, 0) - top) < 1e-9);
+        }
+        /* 2/3: W = 18 from w = 12, the first and last outputs from the picture's edge pixels and their neighbours */
+        assert(fabs(temporal_spatial_catmull_rom(flat, PW, PH, 18, 12, 17, 11) - 0.25) < 1e-9);
+    }
     /* the entries, by whole hash and handle */
     assert(temporal_spatial_entry(0x21fbfbecbf90f4a3ull, 0x2A) == 0);
     assert(temporal_spatial_entry(0xb46268adda62e218ull, 0x28) == 1);

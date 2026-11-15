@@ -38,6 +38,36 @@ static inline int temporal_spatial_fill(int W, int H, int M, int N, TemporalSpat
     return count;
 }
 
+/* The scale (shaders/temporal_spatial.frag): Catmull-Rom's weights of the four taps at -1, 0, 1, 2 from the tap
+   below the point, t its distance from it, and one channel of output pixel x, y of W x H from a picture of w x h
+   (rows of w floats), the taps held to the picture, no value below 0 */
+static inline void temporal_spatial_weights(double t, double out[4]) {
+    const double t2 = t * t, t3 = t2 * t;
+    out[0] = -0.5 * t3 + t2 - 0.5 * t;
+    out[1] = 1.5 * t3 - 2.5 * t2 + 1.0;
+    out[2] = -1.5 * t3 + 2.0 * t2 + 0.5 * t;
+    out[3] = 0.5 * t3 - 0.5 * t2;
+}
+static inline double temporal_spatial_catmull_rom(const float* picture, int w, int h, int W, int H, int x, int y) {
+    const double ax = (x + 0.5) * w / W - 0.5, ay = (y + 0.5) * h / H - 0.5;
+    const double bx = floor(ax), by = floor(ay);
+    double wx[4], wy[4], sum = 0.0;
+    temporal_spatial_weights(ax - bx, wx);
+    temporal_spatial_weights(ay - by, wy);
+    for (int j = 0; j < 4; j++) {
+        double row = 0.0;
+        int ty = (int)by + j - 1;
+        ty = ty < 0 ? 0 : ty > h - 1 ? h - 1 : ty;
+        for (int i = 0; i < 4; i++) {
+            int tx = (int)bx + i - 1;
+            tx = tx < 0 ? 0 : tx > w - 1 ? w - 1 : tx;
+            row += wx[i] * picture[(size_t)ty * w + tx];
+        }
+        sum += wy[j] * row;
+    }
+    return sum > 0.0 ? sum : 0.0;
+}
+
 /* The audited readers (D3 revision 4, measured in P1 and P2): fragment and vertex program by their whole hashes, the
    scene colour's handle offset in words, how the program's coordinate of that binding is made, and whether the
    composite's +794 and +798 must be 1. */
