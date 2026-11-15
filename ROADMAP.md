@@ -141,10 +141,15 @@ started from a CLI, with one new in-game UI.
 
 Not in the plan: audio, memory and video. They stay as they are. Open them again only with a measured problem.
 
-## Phase 6: Graphics, NVN to Vulkan
+## Phase 6: Graphics, NVN to Vulkan (done, in maintenance)
 
-Now: the game calls its own NVN library, which writes a GPU command stream. ScarletNX decodes that stream (the methods
-and macros of the console GPU) and draws with Vulkan. The chain is: game, NVN library inside the game, GPU command
+The five stages are done and the native NVN path is the default. The user closed this phase on 2026-11-15. Fixes and
+maintenance continue: faults of the native path are tracked as issues (#43 and #47 at the close) and are fixed as they
+come. The old path that decodes the command stream stays only to compare results with the native path. It is not
+maintained.
+
+Before this phase, the game called its own NVN library, which wrote a GPU command stream. ScarletNX decoded that
+stream (the methods and macros of the console GPU) and drew with Vulkan. The chain is: game, NVN library inside the game, GPU command
 stream, interpretation by ScarletNX, Vulkan.
 
 Goal: game, NVN implementation on the host, Vulkan. The NVN calls of the game go to code on the PC that calls Vulkan
