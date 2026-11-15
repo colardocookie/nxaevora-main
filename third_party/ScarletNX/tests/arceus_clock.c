@@ -19,11 +19,12 @@ void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 static unsigned waza_dependency_warnings;
 static unsigned low_fps_skip_logs;
-/* Only the event probe's and the event tick's lines are kept. */
+/* Only the event probes', the event tick's and the demo probe's lines are kept. */
 static char logged[8][512];
 static unsigned logged_count;
 void logf_(int level, const char* fmt, ...) {
-    if ((!strncmp(fmt, "arceus-event-probe: ", 20) || !strncmp(fmt, "arceus-event-tick: calls", 24)) &&
+    if ((!strncmp(fmt, "arceus-event-probe: ", 20) || !strncmp(fmt, "arceus-event-tick: calls", 24) ||
+         !strncmp(fmt, "arceus-demo-probe: s", 20) || !strncmp(fmt, "arceus-demo-probe: p", 20)) &&
         logged_count < 8) {
         va_list args;
         va_start(args, fmt);
@@ -2467,6 +2468,68 @@ static void test_event_probe(void) {
     host_ns = ns;
     logged_count = 0;
 }
+/* The demo probe on its real wrapper: a stand-in step that adds 2 to the clock while playing and ends the demo on a
+   given call. The step is called once with the registers as given; the probe writes nothing. */
+#define DEMO_OBJECT 64
+#define DEMO_CONTEXT 1100
+static unsigned demo_stub_calls, demo_stub_end;
+static void demo_stub(CPU* c, u64 entry) {
+    assert(entry == entry_pc && c->x[0] == DEMO_OBJECT && c->x[1] == 9);
+    if (gr32(DEMO_OBJECT + 0x3b8) == 3) {
+        gw32(DEMO_CONTEXT + 0x7ec, gr32(DEMO_CONTEXT + 0x7ec) + 2);
+        if (++demo_stub_calls == demo_stub_end) gw32(DEMO_OBJECT + 0x3b8, 5);
+    }
+    c->x[0] = 1;
+    c->pc = c->x[30];
+}
+static void test_demo_probe(void) {
+    memset(memory, 0, sizeof memory);
+    const u64 ns = host_ns, frames = event_probe_frames;
+    const int clocks = clocks_installed;
+    clocks_installed = 1;
+    gw64(DEMO_OBJECT + 0x3b0, DEMO_CONTEXT);
+    gw32(DEMO_OBJECT + 0x3b8, 3);
+    for (unsigned k = 0; k < 5; k++) gw64(DEMO_CONTEXT + 0x7f0 + 8 * k, DEMO_EMPTY_NAME);
+    demo_probe_original = demo_stub;
+    demo_probe_ns = demo_probe_object = 0;
+    demo_stub_calls = 0;
+    demo_stub_end = 400;
+    logged_count = 0;
+    /* 60 frames a second: the clock gains 120 a second, and playing ends after 400 calls at 800 */
+    for (unsigned k = 0; k < 420; k++) {
+        host_ns += 16666667;
+        event_probe_frames++;
+        u8 before[4096];
+        memcpy(before, memory, sizeof memory);
+        CPU c = {.x = {[0] = DEMO_OBJECT, [1] = 9, [30] = return_pc}, .pc = entry_pc};
+        demo_probe_step(&c, entry_pc);
+        assert(c.x[0] == 1 && c.pc == return_pc);
+        /* only the stand-in's own writes: the clock and, at the end, the state */
+        memcpy(before + DEMO_CONTEXT + 0x7ec, memory + DEMO_CONTEXT + 0x7ec, 4);
+        memcpy(before + DEMO_OBJECT + 0x3b8, memory + DEMO_OBJECT + 0x3b8, 4);
+        assert(!memcmp(before, memory, sizeof memory));
+    }
+    assert(logged_count == 2);
+    assert(strstr(logged[0], "arceus-demo-probe: seconds=5.00 step_1458300_per_s=60.00 frames_per_s=60.00 state=3 ") &&
+           strstr(logged[0], " context=44c clock=602 clock_per_s=120.0 slots_empty=1 calls_total=301"));
+    assert(strstr(logged[1], "arceus-demo-probe: playing ended: state=5 clock=800 (from 2, 6.65 s at 120.0 a second)"));
+    /* a name slot that holds the demo shows as not empty */
+    gw64(DEMO_CONTEXT + 0x800, 7);
+    u32 state;
+    u64 context;
+    int32_t clock;
+    int empty;
+    assert(demo_probe_read(DEMO_OBJECT, &state, &context, &clock, &empty) && !empty && context == DEMO_CONTEXT);
+    /* an unreadable context: nothing read, the step still called once */
+    gw64(DEMO_OBJECT + 0x3b0, 0);
+    assert(!demo_probe_read(DEMO_OBJECT, &state, &context, &clock, &empty));
+    demo_probe_original = NULL;
+    clocks_installed = clocks;
+    host_ns = ns;
+    event_probe_frames = frames;
+    logged_count = 0;
+    memset(memory, 0, sizeof memory);
+}
 /* EVENT_TICK-2's decision on the measured step: runs over frame times, the budget never above two ticks */
 static unsigned event_decide_runs(const u64* steps, unsigned count, unsigned repeat, char* pattern, u64* cut_total) {
     ScriptTick t = {0};
@@ -2711,6 +2774,7 @@ int main(void) {
     test_event_probe();
     test_event_tick();
     test_event_tick_decide();
+    test_demo_probe();
     test_ride_swap();
     test_defaults_on();
     test_capped_fall_body();

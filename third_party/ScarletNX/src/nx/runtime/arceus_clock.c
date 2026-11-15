@@ -193,14 +193,14 @@ static int readable(u64 address, u64 size) {
     return 1;
 }
 
-static int event_probe;
+static int event_probe, demo_probe;
 static u64 event_probe_frames;
 static void event_probe_line(void);
 static void trace_call(CPU* c, u64 entry, unsigned kind) {
     u64 object = c->x[0], channel = c->x[1], input = c->x[2], caller = c->x[30];
     u64 count = __atomic_add_fetch(&counts[kind], 1, __ATOMIC_RELAXED);
     /* The channel 0 duration write comes once per main-loop frame. */
-    if (event_probe && kind == 2 && channel == 0 && caller == main_base + 0x278150c) {
+    if ((event_probe || demo_probe) && kind == 2 && channel == 0 && caller == main_base + 0x278150c) {
         __atomic_add_fetch(&event_probe_frames, 1, __ATOMIC_RELAXED);
         event_probe_line();
     }
@@ -4344,16 +4344,118 @@ static void event_probe_count(CPU* c, u64 entry, unsigned kind) {
 }
 static void event_job_probe(CPU* c, u64 entry) { event_probe_count(c, entry, 0); }
 static void event_resume_probe(CPU* c, u64 entry) { event_probe_count(c, entry, 1); }
-/* Also at 30 FPS and below, where the timing layer is skipped and main_base is not set: the probe finds the module
-   itself and leaves main_base alone (the reviewer's note on 471fe69d) */
-static void event_probe_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_EVENT_PROBE");
-    if (!enabled || strcmp(enabled, "1")) return;
+/* The main module's base for a read-only probe, also at 30 FPS and below, where the timing layer is skipped and
+   main_base is not set: found by the supported build id, main_base left alone. 0 for another build. */
+static u64 arceus_probe_base(void) {
     u64 base = main_base;
     for (u32 i = 0; !base && g_mod && i < g_mod->nmods; i++)
         if (!strcmp(g_mod->mods[i].name, "main") &&
             !memcmp(g_mod->mods[i].build_id, arceus_main_id, sizeof arceus_main_id))
             base = g_mod->mods[i].base;
+    return base;
+}
+/* SNX_ARCEUS_DEMO_PROBE=1, read-only (recon 11:12, research): the demo controller's step 1458300 adds 2 to the demo
+   clock C+7EC ([this +3B0]) once a call while playing (state +3B8 == 3), unless a name slot C+7F0..810 holds it.
+   Every 5 s a line with its calls and frames a second, the state, the clock and its growth a second, and whether the
+   slots are empty; one line when playing ends, with the clock then. Does the demo end on a count of calls? */
+#define DEMO_EMPTY_NAME 0xcbf29ce484222645ull
+static GuestFn demo_probe_original;
+static PMutex demo_probe_lock = PMUTEX_INIT;
+static u64 demo_probe_calls, demo_probe_ns, demo_probe_logged[2], demo_probe_object, demo_probe_played_ns;
+static int64_t demo_probe_clock, demo_probe_played_clock;
+/* The controller's state, its context, the clock and whether the five name slots are empty: 0 when unreadable */
+static int demo_probe_read(u64 object, u32* state, u64* context, int32_t* clock, int* empty) {
+    if (!readable(object + 0x3b0, 0x10)) return 0;
+    *state = gr32(object + 0x3b8);
+    *context = gr64(object + 0x3b0);
+    if (!*context || !readable(*context + 0x7ec, 0x2c)) return 0;
+    *clock = (int32_t)gr32(*context + 0x7ec);
+    *empty = 1;
+    for (unsigned k = 0; k < 5; k++) *empty &= gr64(*context + 0x7f0 + 8 * k) == DEMO_EMPTY_NAME;
+    return 1;
+}
+static void demo_probe_step(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    u32 before = 0, after = 0;
+    u64 context = 0;
+    int32_t clock = 0;
+    int empty = 0;
+    const int seen = demo_probe_read(object, &before, &context, &clock, &empty);
+    const u64 calls = __atomic_add_fetch(&demo_probe_calls, 1, __ATOMIC_RELAXED);
+    demo_probe_original(c, entry);
+    const int read = seen && demo_probe_read(object, &after, &context, &clock, &empty);
+    const u64 now = plat_ns();
+    pm_lock(&demo_probe_lock);
+    if (read && after == 3 && (before != 3 || demo_probe_object != object)) {
+        demo_probe_object = object;
+        demo_probe_played_ns = now;
+        demo_probe_played_clock = clock;
+    }
+    if (read && before == 3 && after != 3 && demo_probe_object == object) {
+        LOG("arceus-demo-probe: playing ended: state=%u clock=%d (from %lld, %.2f s at %.1f a second)\n", after,
+            clock, (long long)demo_probe_played_clock, (double)(now - demo_probe_played_ns) / 1e9,
+            now > demo_probe_played_ns
+                ? (double)(clock - demo_probe_played_clock) * 1e9 / (double)(now - demo_probe_played_ns) : 0.0);
+        demo_probe_object = 0;
+    }
+    const u64 last = demo_probe_ns;
+    if (!last) {
+        demo_probe_ns = now;
+        demo_probe_logged[0] = calls;
+        demo_probe_logged[1] = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
+        demo_probe_clock = read ? clock : 0;
+    } else if (now - last >= 5000000000ull) {
+        const double seconds = (double)(now - last) / 1e9;
+        const u64 frames = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
+        char frame_rate[32] = "- (no clock wrappers)";
+        if (clocks_installed)
+            snprintf(frame_rate, sizeof frame_rate, "%.2f", (double)(frames - demo_probe_logged[1]) / seconds);
+        LOG("arceus-demo-probe: seconds=%.2f step_1458300_per_s=%.2f frames_per_s=%s state=%u context=%llx clock=%d "
+            "clock_per_s=%.1f slots_empty=%d calls_total=%llu\n", seconds,
+            (double)(calls - demo_probe_logged[0]) / seconds, frame_rate, read ? after : 0u,
+            (unsigned long long)context, read ? clock : 0, read ? (double)(clock - demo_probe_clock) / seconds : 0.0,
+            read ? empty : -1, (unsigned long long)calls);
+        demo_probe_ns = now;
+        demo_probe_logged[0] = calls;
+        demo_probe_logged[1] = frames;
+        demo_probe_clock = read ? clock : 0;
+    }
+    pm_unlock(&demo_probe_lock);
+}
+static void demo_probe_init(u64 base) {
+    if (!arceus_switch_enabled("SNX_ARCEUS_DEMO_PROBE", 0)) return;
+    if (!base || !g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) {
+        WARN("arceus-demo-probe: refused without the main build or AOT invalidation\n");
+        return;
+    }
+    /* The census's own equivalent rewrite (B -> CBZ XZR at +1D8), so that the census leaves this owner to the probe */
+    const u64 pc = base + 0x1458300, size = 0x1154;
+    int covered = 0;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] >= size) covered = 1;
+    if (!covered || pc < g_code_lo || pc + size > g_code_hi || !readable(pc, size) || gr32(pc) != 0xd10343ff ||
+        gr32(pc + 0x1d8) != 0x14000069) {
+        WARN("arceus-demo-probe: refused instruction/function guard\n");
+        return;
+    }
+    gw32(pc + 0x1d8, 0xb4000d3f);
+    jit_code_changed(pc, size);
+    demo_probe_original = jit_wait(pc);
+    if (!demo_probe_original) {
+        WARN("arceus-demo-probe: compile failed\n");
+        return;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], demo_probe_step, __ATOMIC_RELEASE);
+    demo_probe = 1;
+    LOG("arceus-demo-probe: read-only, the demo controller's step 1458300 and its clock C+7EC, a line every 5 s and "
+        "one when playing ends%s\n", clocks_installed ? "" : ", frames not counted without the clock wrappers");
+}
+/* Also at 30 FPS and below, where the timing layer is skipped and main_base is not set: the probe finds the module
+   itself and leaves main_base alone (the reviewer's note on 471fe69d) */
+static void event_probe_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_EVENT_PROBE");
+    if (!enabled || strcmp(enabled, "1")) return;
+    const u64 base = arceus_probe_base();
     if (!base) {
         WARN("arceus-event-probe: refused unsupported main build\n");
         return;
@@ -4636,6 +4738,7 @@ static void event_tick_init(void) {
 }
 void arceus_clock_post_jit(void) {
     event_probe_init(); /* read-only, before the return below so that 30 FPS has it too */
+    demo_probe_init(arceus_probe_base());
     if (!timing_enabled || !clocks_installed) return;
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     camera_trace_only = main_base && !target_fps_explicit && probe && !strcmp(probe, "1");
