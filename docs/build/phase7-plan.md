@@ -76,7 +76,10 @@ The user makes one folder from their console:
 - This is the layout that `find_exefs` and `load_exefs_program` read already (`exefs/` with a sibling `romfs/`).
 - The recompile makes one program for this folder. The base program and the separate update program go away.
 - The run reads the RomFS from the folder of the user with no copy. The runtime gets the path from `<name>.ini`
-  (a new setting in place of `source=`) and lays it as the `romfs/` branch of `romfs_init`.
+  (`romfs=`, in place of `source=`) and lays it as the `romfs/` branch of `romfs_init`. A `romfs=` folder that is
+  not there, or a `romfs/` or `romfs.bin` in the data folder beside it, stops the run with a log line.
+- The folder names can have capitals (`ExeFS/`, `RomFS/`, as Ryujinx writes them): `find_exefs` and
+  `load_exefs_program` take both forms.
 - `romfs.bin` (one RomFS image file) stays a valid input, as now.
 
 ## 4. Mod layer
@@ -94,8 +97,10 @@ The user makes one folder from their console:
 
 ## 5. PR units
 
-1. Input from the decrypted folder: the driver recompiles and plays from `<game folder>` with no keys, the runtime reads
-   the RomFS from the folder. Container input stays in this PR. User test: recompile and run with the keys moved away.
+1. Input from the decrypted folder: `-r <game folder>` recompiles with no keys and no copy of the RomFS. It records the
+   RomFS folder in `<name>.ini` (`romfs=`), and the runtime reads the RomFS from there. Container input stays in this
+   PR. Play through the driver (`scarletnx <game folder>`) is not part of it: the player starts the program in
+   `recompiled/<id>/`, and the launcher (phase 11) can add it. User test: recompile and run with the keys moved away.
 2. Removal: hactool, containers, keys, extraction, BKTR, DLC from dumps, the options, the GUI parts, the tests, the
    build lines; cJSON moves; `docs/build/runtime-changes.md`. User test: the same run as PR 1.
 3. Mod layer: the order in the docs, the host test, the user test mod.
@@ -111,4 +116,8 @@ Decided by the user on 2026-11-15:
 - DLC: the DLC read from dumps is removed with the decryption. A DLC read from a folder can come later if needed.
 - Mod order: the name order of the mod folders (section 4), fixed in the docs and in a test. No order list setting.
 
-Still open: the place of the decrypted files of the user (ask before the first run of PR 1).
+- The decrypted files of the user stay outside the repository, in a folder that the user chooses. `romfs=` holds its
+  absolute path.
+- PR 1 recompiles in place in `recompiled/<id>/`: the saves, the mods, the settings and the shader cache stay. The old
+  base program and its `.jitcache` are moved away first, and the hints of the update program are merged into
+  `<id>.hints`.

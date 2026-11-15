@@ -518,6 +518,32 @@ static void record_source(const char* root) {
     free(ini);
     free(folder);
 }
+/* snx_record_romfs: as snx_record_source, with romfs=: [Game] made when there is none, an older romfs= taken out, an
+   empty value recorded, and source= in the same file kept */
+static void record_romfs(const char* root) {
+    static const char before[] = "[Game]\nsource=/a dump.nsp\nromfs=/old\n[Other]\nkey=1\n";
+    static const char after[] = "[Game]\nromfs=/new romfs\nsource=/a dump.nsp\n[Other]\nkey=1\n";
+    char *folder = snx_path_join(root, "record"), *ini = snx_game_ini(folder, "R"), *text, *value;
+    size_t size;
+    CHECK(!snx_record_romfs(folder, "R", "/a romfs"));
+    text = (char*)snx_read_file(ini, &size);
+    CHECK(text && !strcmp(text, "[Game]\nromfs=/a romfs\n"));
+    free(text);
+    CHECK(!snx_write_file(ini, before, sizeof before - 1) && !snx_record_romfs(folder, "R", "/new romfs"));
+    text = (char*)snx_read_file(ini, &size);
+    CHECK(text && !strcmp(text, after));
+    free(text);
+    value = snx_ini_value(ini, "source");
+    CHECK(value && !strcmp(value, "/a dump.nsp"));
+    free(value);
+    CHECK(!snx_record_romfs(folder, "R", ""));
+    text = (char*)snx_read_file(ini, &size);
+    CHECK(text && strstr(text, "romfs=\n") && strstr(text, "source=/a dump.nsp"));
+    free(text);
+    CHECK(!snx_remove_tree(ini));
+    free(ini);
+    free(folder);
+}
 /* snx_record_folders: a game of the user's data folder gets <name>.folders naming the config, state and cache folders
    snx_user_path moves its files to, each made, the logs and caches Settings > App > Folders picked in app.ini among
    them; a game elsewhere none, and an older one there is taken away. The user's folders in root for the test, from the
@@ -679,6 +705,7 @@ int main(int argc, char** argv) {
     set_env("SNX_WORKFLOW_KEYS", keys);
     set_env("SNX_WORKFLOW_TITLE_KEYS", title_keys);
     record_source(root);
+    record_romfs(root);
     record_folders(root);
     repo = snx_path_join(root, "checkout with spaces");
     CHECK(!snx_mkdirs(repo));

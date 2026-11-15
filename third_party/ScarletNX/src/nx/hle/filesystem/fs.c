@@ -92,6 +92,42 @@ static void romfs_from_tmpfs(void) {
     free(work);
 }
 
+/* The RomFS of a game recompiled from a folder (romfs=): the folder of the user, grafted as romfs:/ with no copy. A
+   dump wins (the old update program reads its files from it), and two sources are an error. Under tree.lock, at
+   startup */
+static void romfs_from_setting(void) {
+    FsNode* node;
+    FsTreeResult r;
+    char *folder, *image, *ini;
+    if (!g_settings.game_romfs[0]) return;
+    if (g_hle.fs.dfs) {
+        LOG("fs: romfs=%s is not used: the game reads its RomFS from its dump\n", g_settings.game_romfs);
+        return;
+    }
+    if (!fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs", &node) ||
+        !fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs.bin", &node)) {
+        folder = snx_path_join(g_datadir, "romfs");
+        image = snx_path_join(g_datadir, "romfs.bin");
+        LOG("fs: the data folder has %s and %s, and romfs=%s is set\n", folder, image, g_settings.game_romfs);
+        free(folder);
+        free(image);
+        fatal("The game has two RomFS sources: its data folder and its romfs= setting");
+    }
+    if (!snx_is_dir(g_settings.game_romfs)) {
+        ini = snx_absolute(ini_file());
+        LOG("fs: romfs= names %s, which is not a folder; its settings are %s\n", g_settings.game_romfs,
+            ini ? ini : ini_file());
+        free(ini);
+        fatal("The folder of the game's RomFS, romfs=, is not a folder");
+    }
+    r = fs_tree_graft(&g_hle.fs.tree, "romfs", g_settings.game_romfs);
+    if (r != FS_TREE_OK) {
+        LOG("fs: could not index the RomFS in %s (error %d)\n", g_settings.game_romfs, r);
+        fatal("Could not index the folder of the game's RomFS, romfs= (error %d)", r);
+    }
+    LOG("fs: RomFS from %s (romfs=)\n", g_settings.game_romfs);
+}
+
 /* hactool ends the process on a dump it cannot read: what it said first */
 static void dump_exit(void* data) {
     (void)data;
@@ -431,6 +467,7 @@ void fs_init(const char* keys, const char* title_keys) {
     overlays();
     dump_open(keys, title_keys);
     dlcs_open(keys, title_keys);
+    romfs_from_setting();
     if (!g_hle.fs.dfs) romfs_from_tmpfs();
     mods_open();
     for (size_t i = 0; i < sizeof shared_paths / sizeof shared_paths[0]; i++) {

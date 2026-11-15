@@ -3,6 +3,7 @@
 /* Synthetic NRO -> CLI -> module -> AOT execution, and an --interp-only module that holds no code (the runtime JIT
    compiles all of it: modules carry no interpreter any more). No game data. */
 #include "common/utilities/common.h"
+#include "common/utilities/game_ini.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/loader/module_abi.h"
 #include "nx/runtime/driver/recompile.h"
@@ -53,6 +54,16 @@ static void check_sources(const char* dir, const char* suffix) {
 static void put32(unsigned char* p, size_t off, unsigned long n) {
     unsigned i;
     for (i = 0; i < 4; ++i) p[off + i] = (unsigned char)(n >> (8 * i));
+}
+/* a minimal NSO: its header and one RET in the text segment, no MOD0 */
+static void write_nso(const char* path) {
+    unsigned char file[0x104];
+    memset(file, 0, sizeof file);
+    memcpy(file, "NSO0", 4);
+    put32(file, 0x10, 0x100); /* the text segment's file offset */
+    put32(file, 0x18, 4);     /* its size; its memory offset stays 0 */
+    put32(file, 0x100, 0xd65f03c0);
+    check(!snx_write_file(path, file, sizeof file), "write a minimal NSO");
 }
 static void undefined(CPU* c, u64 pc, u32 word) {
     (void)c;
@@ -349,6 +360,66 @@ int main(int argc, char** argv) {
         free(ini);
         free(nacp);
         free(nro);
+    }
+    { /* a game folder: its RomFS read from the folder (romfs=) with no copy, an old copy in its data removed */
+        char *folder = snx_path_join(root, "game folder"), *exefs = snx_path_join(folder, "exefs");
+        char *romfs_dir = snx_path_join(folder, "RomFS"), *romfs_file = snx_path_join(romfs_dir, "one.bin");
+        char *nacp = snx_path_join(folder, "control.nacp"), *main_nso = snx_path_join(exefs, "main");
+        char *data = snx_path_join(out, "Folder Fixture/Folder Fixture_data");
+        char *stale = snx_path_join(data, "romfs"), *stale_file = snx_path_join(stale, "old.bin");
+        char *ini = snx_path_join(out, "Folder Fixture/Folder Fixture.ini"), *staged, *expected, *value;
+        check(!snx_mkdirs(exefs) && !snx_mkdirs(romfs_dir), "the game folder's folders");
+        write_nso(main_nso);
+        check(!snx_write_file(romfs_file, "one", 3), "the folder's RomFS file");
+        check(!snx_write_file(nacp, "NACP", 4), "the folder's control.nacp");
+        check(!snx_mkdirs(stale) && !snx_write_file(stale_file, "old", 3), "an old RomFS copy");
+        k = 0;
+        args[k++] = argv[1];
+        args[k++] = "--repo";
+        args[k++] = argv[2];
+        args[k++] = "-r";
+        args[k++] = folder;
+        args[k++] = "Folder Fixture";
+        args[k++] = "--outdir";
+        args[k++] = out;
+        args[k++] = "--no-build";
+        args[k] = NULL;
+        rc = snx_run(args, root, NULL, &text);
+        if (rc) fprintf(stderr, "%s\n", text);
+        check(!rc, "recompile a game folder");
+        free(text);
+        text = NULL;
+        staged = snx_path_join(data, "exefs/main");
+        check(snx_is_file(staged), "the ExeFS staged");
+        free(staged);
+        check(!snx_is_dir(stale), "an old RomFS copy in the data folder is removed");
+        expected = snx_absolute(romfs_dir);
+        value = snx_ini_value(ini, "romfs");
+        if (!value || !expected || strcmp(value, expected))
+            fprintf(stderr, "romfs= is %s, expected %s\n", value ? value : "(none)", expected ? expected : "(none)");
+        check(expected && value && !strcmp(value, expected), "romfs= names the folder of the RomFS");
+        free(value);
+        free(expected);
+        /* an old data folder (exefs/ and its RomFS copy) as the input: refused, and its RomFS kept */
+        check(!snx_mkdirs(stale) && !snx_write_file(stale_file, "old", 3), "a RomFS copy in the data folder");
+        args[4] = data;
+        rc = snx_run(args, root, NULL, &text);
+        if (!rc || !text || !strstr(text, "which the recompile removes")) fprintf(stderr, "%s\n", text ? text : "");
+        check(rc && text && strstr(text, "which the recompile removes"),
+              "a game folder whose RomFS the recompile would remove is refused");
+        free(text);
+        text = NULL;
+        check(snx_is_file(stale_file), "the input RomFS is kept");
+        free(ini);
+        free(stale_file);
+        free(stale);
+        free(data);
+        free(main_nso);
+        free(nacp);
+        free(romfs_file);
+        free(romfs_dir);
+        free(exefs);
+        free(folder);
     }
     k = 0;
     args[k++] = argv[1];
