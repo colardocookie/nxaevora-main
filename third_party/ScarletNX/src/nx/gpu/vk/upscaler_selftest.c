@@ -521,6 +521,12 @@ static int device_make(void) {
     }
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(g.physical, &props);
+    /* the device is asked for 1.2 features and made at 1.2: the physical device must be 1.2 itself */
+    if (props.apiVersion < VK_API_VERSION_1_2) {
+        LOG(ST "FAIL: the physical device %s is Vulkan %u.%u, below 1.2\n", props.deviceName,
+            VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion));
+        return 0;
+    }
     u32 core = 0;
     if (!vk_upscaler_device_needs(g.api, g.instance, g.physical, vkGetInstanceProcAddr, device_names, &device_count,
                                   64, &features, &core)) {
@@ -541,18 +547,27 @@ static int device_make(void) {
     /* A core bit the adapter needs is a bit of this 1.2 structure, which has every bit the physical device has:
        it is on by that, and here it is held against the need. A physical device without it has no adapter. */
     const int separate = (core & SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL) != 0;
+    const int address = (core & SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS) != 0;
     if (separate && !f12.separateDepthStencilLayouts) {
         LOG(ST "FAIL: the adapter is not available on this device: it needs separate depth and stencil layouts, "
                "which the physical device does not have\n");
         return 0;
     }
+    if (address && !f12.bufferDeviceAddress) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs buffer device addresses, which the "
+               "physical device does not have\n");
+        return 0;
+    }
     LOG(ST "the device is made with %u extensions of the adapter%s%s, with separate depth and stencil layouts %s, "
-           "and with 16 bit floats in shaders %s\n",
+           "%s, and with 16 bit floats in shaders %s\n",
         device_count, device_count ? ": " : "", device_count ? device_names[0] : "",
         separate ? "on for the adapter, which needs them"
                  : f12.separateDepthStencilLayouts ? "on as every feature the physical device has, not asked for by "
                                                      "the adapter"
                                                    : "off, as the physical device has none",
+        address ? "with buffer device addresses on for the adapter, which needs them"
+                : f12.bufferDeviceAddress ? "with buffer device addresses on as every feature the physical device has"
+                                          : "with no buffer device addresses, as the physical device has none",
         f12.shaderFloat16 ? "on, as the physical device has them" : "off, as the physical device has none");
     const float priority = 1.0f;
     const VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,

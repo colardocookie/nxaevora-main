@@ -36,8 +36,11 @@ typedef struct {
 } SnxUpscalerExtensions;
 /* Core feature bits a library needs on, as a plain field and never as a structure in the chain: whoever makes
    the device turns each on in its own structure of the core features, after its own question to the physical
-   device. One bit so far. A bit the runtime does not know refuses the adapter. */
+   device. A bit the runtime does not know refuses the adapter. The game's device knows the first only (DL2). */
 #define SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL 1u /* separateDepthStencilLayouts of the 1.2 features */
+#define SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS  2u /* bufferDeviceAddress of the 1.2 features */
+#define SNX_UPSCALER_CORE_SELFTEST_KNOWN                                                                                \
+    (SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL | SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS)
 typedef struct {
     SnxUpscalerExtensions extensions;
     const void* features; /* a pNext chain of feature structures to turn on, or NULL. Never a core structure */
