@@ -4,6 +4,7 @@
 // signs, and every number NGX's documents bound refused outside it, with nothing written. Run by dlss_core.cpp.
 #undef NDEBUG /* the checks are asserts, in a Release build too */
 #include <assert.h>
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -51,7 +52,9 @@ int dlss_eval_cases() {
                           {{-1280, -720}, {0, 0}, {1, 1}, 0, 0, 64, 65, 0, EVAL_RECTANGLE},
                           {{-1280, -720}, {0, 0}, {1, 1}, 0, 0, 64, 64, -0.001f, EVAL_SECONDS},
                           {{-1280, -720}, {0, 0}, {0, 1}, 0, 0, 64, 64, 0, EVAL_SIGN},
-                          {{-1280, -720}, {0, 0}, {1, 2}, 0, 0, 64, 64, 0, EVAL_SIGN}};
+                          {{-1280, -720}, {0, 0}, {1, 2}, 0, 0, 64, 64, 0, EVAL_SIGN},
+                          {{-1280, -720}, {0, 0}, {1, 1}, 0, 0, 64, 64, FLT_MAX, EVAL_DERIVED},
+                          {{-1280, -720}, {0, 0}, {1, 1}, 0, 0, 64, 64, FLT_MAX / 999.0f, EVAL_DERIVED}};
     for (const Case& c : cases) {
         Eval kept;
         memset(&kept, 0x5A, sizeof kept);
@@ -59,11 +62,13 @@ int dlss_eval_cases() {
         assert(eval_numbers(c.scale, c.jitter, c.sign, c.x, c.y, c.w, c.h, 64, 64, 0, c.seconds, &e) == c.why);
         assert(!memcmp(&e, &kept, sizeof e));
     }
-    // the bounds themselves are taken
+    // the bounds themselves are taken: the jitter's, and the longest frame time whose milliseconds are finite
     const float edge[2] = {0.5f, -0.5f};
     assert(eval_numbers(scale, edge, plus, 0, 0, 64, 64, 64, 64, 0, 0.0f, &e) == EVAL_OK);
-    for (int a = EVAL_OK; a <= EVAL_SIGN; a++)
-        for (int b = a + 1; b <= EVAL_SIGN; b++) assert(strcmp(eval_text(a), eval_text(b)));
+    assert(eval_numbers(scale, jitter, plus, 0, 0, 64, 64, 64, 64, 0, FLT_MAX / 1000.0f, &e) == EVAL_OK);
+    assert(isfinite(e.frame_ms));
+    for (int a = EVAL_OK; a <= EVAL_DERIVED; a++)
+        for (int b = a + 1; b <= EVAL_DERIVED; b++) assert(strcmp(eval_text(a), eval_text(b)));
     puts("dlss_eval: ok");
     return 0;
 }

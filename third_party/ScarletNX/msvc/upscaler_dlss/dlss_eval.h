@@ -26,7 +26,8 @@ enum {
     EVAL_JITTER,      // a jitter outside -0.5 to 0.5, NGX's stated range
     EVAL_RECTANGLE,   // a rectangle not at the origin (this step's traits), empty, or beyond the colour image
     EVAL_SECONDS,     // a frame time below 0
-    EVAL_SIGN         // a sign other than 1 or -1
+    EVAL_SIGN,        // a sign other than 1 or -1
+    EVAL_DERIVED      // a number made from the frame's is not finite (a frame time too long in milliseconds)
 };
 inline const char* eval_text(int why) {
     switch (why) {
@@ -36,12 +37,14 @@ inline const char* eval_text(int why) {
         case EVAL_JITTER: return "the jitter is outside -0.5 to 0.5";
         case EVAL_RECTANGLE: return "the rectangle is not at the origin, is empty, or is larger than the colour image";
         case EVAL_SECONDS: return "the frame time is below 0";
-        default: return "a jitter sign is not 1 or -1";
+        case EVAL_SIGN: return "a jitter sign is not 1 or -1";
+        default: return "a number made from the frame's is not finite";
     }
 }
 // The vectors' scale as the frame has it (NGX's convention is the same: from the current frame to the previous one,
 // in render pixels, the origin at the upper left). The jitter times the case's signs, as its sign against NGX's is
-// not documented. Exposure as 1, NGX computes it (AutoExposure). Rectangle bases 0.
+// not documented. Exposure as 1, NGX computes it (AutoExposure). Rectangle bases 0. Made apart, held finite, and
+// written to *out only when every number is taken: a refusal leaves *out as it was.
 inline int eval_numbers(const float vector_scale[2], const float jitter[2], const int sign[2], int32_t render_x,
                         int32_t render_y, uint32_t render_w, uint32_t render_h, uint32_t image_w, uint32_t image_h,
                         uint32_t reset, float frame_seconds, Eval* out) {
@@ -55,17 +58,21 @@ inline int eval_numbers(const float vector_scale[2], const float jitter[2], cons
     if (render_x || render_y || !render_w || !render_h || render_w > image_w || render_h > image_h)
         return EVAL_RECTANGLE;
     if (frame_seconds < 0.0f) return EVAL_SECONDS;
-    *out = Eval{};
+    Eval e = {};
     for (int k = 0; k < 2; k++) {
-        out->mv_scale[k] = vector_scale[k];
-        out->jitter[k] = jitter[k] * (float)sign[k];
+        e.mv_scale[k] = vector_scale[k];
+        e.jitter[k] = jitter[k] * (float)sign[k];
     }
-    out->render_w = render_w;
-    out->render_h = render_h;
-    out->reset = reset ? 1 : 0;
-    out->frame_ms = frame_seconds * 1000.0f;
-    out->pre_exposure = 1.0f;
-    out->exposure_scale = 1.0f;
+    e.render_w = render_w;
+    e.render_h = render_h;
+    e.reset = reset ? 1 : 0;
+    e.frame_ms = frame_seconds * 1000.0f;
+    e.pre_exposure = 1.0f;
+    e.exposure_scale = 1.0f;
+    for (int k = 0; k < 2; k++)
+        if (!isfinite(e.mv_scale[k]) || !isfinite(e.jitter[k])) return EVAL_DERIVED;
+    if (!isfinite(e.frame_ms)) return EVAL_DERIVED;
+    *out = e;
     return EVAL_OK;
 }
 } // namespace snx_dlss
