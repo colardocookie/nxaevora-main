@@ -15,6 +15,7 @@
 #include "nx/gpu/vk/upscaler_selftest.h"
 #include "nx/gpu/vk/temporal_math.h"
 #include "nx/runtime/platform/log.h"
+u64 plat_ns(void); /* plat.h's, declared alone: plat.h brings windows.h, whose far and INFINITE are macros */
 
 #define ST "arceus-upscaler-selftest: "
 /* The output picture: four 32 bit floats, as the library's shader declares the image it writes (a run under the
@@ -141,6 +142,7 @@ static struct {
     u32 omitted, truncated, nameless; /* callbacks not printed, printed with a cut text, without an id's name */
     u32 overlong; /* callbacks whose id's name is too long to keep whole: counted apart, never taken as one id */
     u32 stops;    /* callbacks whose text holds the layer's own sentence of stopping an id (selftest_stop_notice) */
+    u32 ngx_own;  /* callbacks that are NGX's own 09600 (selftest_ngx_own, research 22:20): counted, not silenced */
     SelftestVariables variables; /* the variables' names the texts hold, by the layer's pattern */
     struct {
         char name[128];
@@ -222,6 +224,21 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverit
     else if (k < VALIDATION_IDS) g_said.id[k].count++;
     else g_said.unlisted++;
     g_said.nameless += !(data && data->pMessageIdName);
+    /* NGX's own: up to 16 labels and 16 objects are looked at, a callback with more is never taken as NGX's */
+    const char* labels[16];
+    const char* names[16];
+    int images[16];
+    const u32 nlabels = data ? data->cmdBufLabelCount : 0, nobjects = data ? data->objectCount : 0;
+    int own = 0;
+    if (data && nlabels <= 16 && nobjects <= 16) {
+        for (u32 k = 0; k < nlabels; k++) labels[k] = data->pCmdBufLabels[k].pLabelName;
+        for (u32 k = 0; k < nobjects; k++) {
+            images[k] = data->pObjects[k].objectType == VK_OBJECT_TYPE_IMAGE;
+            names[k] = data->pObjects[k].pObjectName;
+        }
+        own = selftest_ngx_own(data->pMessageIdName, text, labels, nlabels, images, names, nobjects);
+    }
+    g_said.ngx_own += (u32)own;
     /* the raw text of every callback, before any cap on what is printed */
     selftest_variables(&g_said.variables, text, length, VALIDATION_SCAN);
     g_said.stops += selftest_stop_notice(text);
@@ -239,6 +256,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverit
                "written out as a mark: %u in the text printed, %u in the whole name\n", index + 1, shown,
             fits ? "" : " [the name is cut here: it is longer]", (int)number, length,
             length > kept ? ", of which the first 4096 are printed" : "", breaks, name_breaks);
+        if (own)
+            LOG(ST "validation %u: NGX's own (%s in %s on %s only), counted apart by research's ruling of 22:20\n",
+                index + 1, SELFTEST_NGX_ID, SELFTEST_NGX_REGION, SELFTEST_NGX_IMAGE);
         if (!fits) LOG(ST "validation %u: its message id's name has %zu characters\n", index + 1, name_length);
         validation_pieces(text, kept, index + 1, validation_pieces(text, kept, index + 1, 0, 0), 1);
     } else if (index == VALIDATION_KEPT)
@@ -250,7 +270,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverit
 /* At the end: how many callbacks each message id had, the layer's own limit on repeats said beside them. All of
    it from one copy taken under the callbacks' lock. It answers how many callbacks that copy holds, which is
    the count case 7 and the RESULT go by. */
-static unsigned validation_counts(void) {
+static unsigned validation_counts(unsigned* own) {
     u32 listed = 0;
     /* a callback may still arrive from a thread of the library's: the counts are taken under the callbacks' lock,
        all at one moment, and printed from that copy */
@@ -258,7 +278,10 @@ static unsigned validation_counts(void) {
     const __typeof__(g_said) said = g_said;
     const u32 received = g.messages;
     __atomic_store_n(&g_said_lock, 0, __ATOMIC_RELEASE);
+    *own = said.ngx_own;
     if (!received) return 0;
+    LOG(ST "validation: %u of the callbacks are NGX's own (%s in %s on %s only), %u are not\n", said.ngx_own,
+        SELFTEST_NGX_ID, SELFTEST_NGX_REGION, SELFTEST_NGX_IMAGE, received - said.ngx_own);
     for (u32 k = 0; k < said.ids; k++) listed += said.id[k].count;
     LOG(ST "validation: %u callbacks at warning or above. Printed %u, of which %u with a text cut at %d characters. "
            "Not printed %u (past the first %d). Without a message id's name %u. The layer itself stops reporting "
@@ -827,7 +850,7 @@ static void offset(unsigned k, unsigned n, double out[2]) {
 
 /* A run's inputs: the scene's rectangle of size[0] by size[1] at x, y in images of w by h, padded with what is
    none of the scene's, for an output of size[2] by size[3]. move: the background's move a frame in render pixels.
-   patch: a nearer patch moving another way. cut: the last frame has the other pattern. up: a negative viewport
+   patch: a nearer patch moving another way. cut: the last cut frames have the other pattern. up: a negative viewport
    height. edges: the edge picture. ahead: images one offset ahead of the reported jitter. turned: clip y negated. */
 static const int SIZES[4] = {RENDER_W, RENDER_H, OUT_W, OUT_H};
 static const SelftestProjection INFINITE = {NEAR_PLANE, INFINITY}; /* a form: what the depth is made with */
@@ -845,7 +868,7 @@ static int inputs_project(Inputs* in, const SelftestProjection* form, const int 
     in->offsets = (int)((8LL * in->ow * in->oh + (long long)RW * RH - 1) / ((long long)RW * RH));
     in->vp = (SelftestViewport){x, up ? y + RH : y, RW, up ? -RH : RH};
     in->frames = 2 * in->offsets + 1;
-    const int cut_at = cut ? in->frames - 1 : -1;
+    const int cut_at = cut > 0 ? in->frames - cut : -1;
     in->cut_at = cut_at;
     in->scene = calloc((size_t)in->frames, sizeof *in->scene);
     in->colour = malloc((size_t)in->frames * w * h * 4);
@@ -1034,7 +1057,10 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
        with: inputs sampled, the output sampled and storage, all of them copy sources and destinations. */
     const VkImageUsageFlags copies = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     const VkImageUsageFlags inputs = VK_IMAGE_USAGE_SAMPLED_BIT | copies, output = inputs | VK_IMAGE_USAGE_STORAGE_BIT;
+    const u64 asked = plat_ns(); /* D3-4, log only (research 22:40): what a context costs to make */
     int made = g.api->create(&make, traits, &s->pending) == SNX_UPSCALER_OK && s->pending && !traits->submits_itself;
+    const u64 created = plat_ns();
+    u64 recorded = created;
     if (s->pending) { /* destroyed below whenever it is not taken */
         g.contexts++;
         if (!selftest_live_add(&g.live, s->pending)) {
@@ -1054,9 +1080,15 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
     int prepared = 0, submitted = 0;
     if (made && begin()) {
         prepared = g.api->prepare(s->pending, g.cb) == SNX_UPSCALER_OK;
+        recorded = plat_ns();
         if (prepared) submitted = submit();
         else discard();
     }
+    if (prepared && submitted == 1)
+        LOG(ST "a context for %dx%d to %dx%d made, logged only: its create %.3f ms, its preparation recorded %.3f ms, "
+               "submitted and completed %.3f ms, %.3f ms in all\n", in->rw, in->rh, in->ow, in->oh,
+            (double)(created - asked) / 1e6, (double)(recorded - created) / 1e6, (double)(plat_ns() - recorded) / 1e6,
+            (double)(plat_ns() - asked) / 1e6);
     if (stopped()) return 0;
     temporal_upscaler_created(&s->contexts, config, prepared && submitted == 1);
     switch (temporal_upscaler_completed(&s->contexts, config)) {
@@ -1858,6 +1890,57 @@ static int native_base(Native* n, NativeForm* F) {
     return native_asserted(name, &fresh, 1, &F->form->far_plane, &F->in, F->in.frames - 1, F->form);
 }
 
+/* D3-4, log only (research 22:30, 22:40): a reset SETTLE_AFTER frames before the inputs' end, the context with a
+   history against a fresh one given the same frames from the gate's first, on the reset frame and the ones after
+   it: whether the reset's difference settles. A run that cannot be made is said, and fails nothing. */
+enum { SETTLE_AFTER = 4 };
+static void native_settle(Native* n, NativeForm* F) {
+    const size_t picture = (size_t)3 * NATIVE_W * NATIVE_H;
+    double* out = malloc(sizeof(double) * picture * 2 * SETTLE_AFTER);
+    double apart[SETTLE_AFTER];
+    char name[160];
+    Inputs late, alone;
+    memset(&late, 0, sizeof late);
+    snprintf(name, sizeof name, "%s %s, %s, the reset settling", n->suite, n->way, F->name);
+    step(name);
+    int ok = out && !stopped() && native_inputs(n, &late, F->form, n->size, SETTLE_AFTER, 0);
+    alone = late;
+    if (ok) { /* the gate's first frame and the SETTLE_AFTER from the reset on */
+        const size_t skip = (size_t)late.frames - SETTLE_AFTER - 1, pixels = (size_t)late.w * late.h;
+        alone.scene += skip;
+        alone.colour += skip * pixels;
+        alone.depth += skip * pixels;
+        alone.motion += skip * pixels * 4;
+        alone.frames = SETTLE_AFTER + 1;
+        alone.cut_at = -1;
+    }
+    for (int fresh = 0; ok && fresh < 2; fresh++) {
+        const Inputs* in = fresh ? &alone : &late;
+        Session s;
+        int kept = 0;
+        ok = !stopped() && session_open(&s, in, &NATIVE_TRAITS);
+        for (int i = 0; ok && i < in->frames; i++) {
+            const int stored = i >= in->frames - SETTLE_AFTER;
+            double* to = stored ? out + picture * ((size_t)fresh * SETTLE_AFTER + (size_t)kept) : n->scratch[N_WORK];
+            const int r = frame_run(&s, in, i, &CONFIGURED, !fresh && i == in->cut_at, to);
+            if (r < 0 || (stored && r == 0)) ok = 0;
+            kept += stored && r > 0;
+        }
+        session_close(&s);
+        ok = ok && kept == SETTLE_AFTER;
+    }
+    for (int k = 0; ok && k < SETTLE_AFTER; k++)
+        apart[k] = difference(&late, out + picture * (size_t)k, out + picture * (size_t)(SETTLE_AFTER + k),
+                              n->everywhere, SELFTEST_BACKGROUND);
+    if (!ok) SAY(ST "%s: a run could not be made (logged only, nothing judged)\n", name);
+    else
+        SAY(ST "%s, logged only: a context reset at frame %d of its inputs against a fresh one on the same frames, on "
+               "the reset frame and the %d after it: %.6f %.6f %.6f %.6f\n", name, late.cut_at, SETTLE_AFTER - 1,
+            apart[0], apart[1], apart[2], apart[3]);
+    inputs_free(&late);
+    free(out);
+}
+
 /* A form's three cases: a changed create property (the flag for colours over 1), a changed size and a reset. */
 static int native_cases(Native* n, NativeForm* F) {
     const double far[2] = {F->form->far_plane, F->form->far_plane};
@@ -1979,13 +2062,18 @@ static int native_cases(Native* n, NativeForm* F) {
     const double kept =
         reset ? difference(&cut, n->scratch[N_WITHOUT], n->scratch[N_ALONE], n->everywhere, SELFTEST_BACKGROUND) : NAN;
     verdict = reset ? selftest_resized(same, twice, kept) : SELFTEST_FAIL;
-    SAY(ST "%s: the reset frame against a fresh context's %.6f (at most %.3f), two fresh contexts %.6f, the "
-           "control without the flag %.6f (over %.3f and over the noise): %s\n",
-        name, same, SELFTEST_RESIZED, twice, kept, SELFTEST_RESIZED, native_word(reset, verdict));
+    /* research 22:40: a reset nearer than the control but over the bar is said as such, and still fails */
+    const int improves = verdict == SELFTEST_FAIL && same < kept;
+    SAY(ST "%s: the reset frame against a fresh context's %.6f (at most %.3f), two fresh contexts given the same two "
+           "frames (the gate's first and the reset frame) %.6f, the control without the flag %.6f (over %.3f and "
+           "over the noise): %s%s\n",
+        name, same, SELFTEST_RESIZED, twice, kept, SELFTEST_RESIZED, native_word(reset, verdict),
+        improves ? ". The reset improves on no reset, and is not equivalent to a fresh context" : "");
     pass &= (verdict == SELFTEST_PASS) || skip_rest();
     pass &= (reset && native_asserted(name, &proof, 1, far, &cut, cut.frames - 1, F->form)) || skip_rest();
     inputs_free(&cut);
     inputs_free(&small);
+    if (n->size != NATIVE_SIZE && !skip_rest()) native_settle(n, F);
     return pass;
 }
 
@@ -2132,9 +2220,10 @@ static int below_native(int up, int half) {
    phase 0 (inputs one offset behind). Each of the four jitter sign variants three times, each from a fresh context.
    Scored: evaluated frames 8 to 15, every pixel, red, green and blue. Decided by selftest_sign_choose. The sign is a
    finding, not a verdict: only a run that cannot be made fails. */
+/* the callbacks so far that are not NGX's own (research 22:20) */
 static u32 messages_now(void) {
     while (__atomic_exchange_n(&g_said_lock, 1, __ATOMIC_ACQUIRE)) {}
-    const u32 n = g.messages;
+    const u32 n = g.messages - g_said.ngx_own;
     __atomic_store_n(&g_said_lock, 0, __ATOMIC_RELEASE);
     return n;
 }
@@ -2250,13 +2339,15 @@ static int sign_protocol(int below) {
                 score[sign][1], score[sign][2], score[sign][3], variants[0], variants[1], variants[2], variants[3]);
         const int chosen = selftest_sign_choose(score, noise, valid);
         if (!below)
-            SAY(ST "the sign protocol: noise %.6f (the floor %.3f), %u validation messages during it, runs %s. The "
-                   "jitter's sign: %s%s\n", noise, SELFTEST_SIGN_NOISE_FLOOR, said, valid ? "valid" : "NOT all valid",
+            SAY(ST "the sign protocol: noise %.6f (the floor %.3f), %u validation messages during it (NGX's own "
+                   "not counted), runs %s. The jitter's sign: %s%s\n", noise, SELFTEST_SIGN_NOISE_FLOOR, said,
+                valid ? "valid" : "NOT all valid",
                 chosen < 0 ? "UNRESOLVED, (+1, +1) is used" : variants[chosen < 0 ? 0 : chosen],
                 chosen < 0 ? "" : ", lowest at both viewport signs by more than four times the noise");
         else {
-            SAY(ST "%s: noise %.6f (the floor %.3f), %u validation messages during it, runs %s. The protocol: %s%s. "
-                   "The sign (+1, +1), from the user's look\n", at, noise, SELFTEST_SIGN_NOISE_FLOOR, said,
+            SAY(ST "%s: noise %.6f (the floor %.3f), %u validation messages during it (NGX's own not counted), runs "
+                   "%s. The protocol: %s%s. The sign (+1, +1), from the user's look\n", at, noise,
+                SELFTEST_SIGN_NOISE_FLOOR, said,
                 valid ? "valid" : "NOT all valid", chosen < 0 ? "unresolved" : variants[chosen],
                 chosen < 0 ? "" : ", lowest at both viewport signs by more than four times the noise");
             if (chosen > 0)
@@ -2666,7 +2757,12 @@ int vk_upscaler_selftest(const char* adapter) {
        summary, case 7's lines and the RESULT all read. When that wait could not be made or failed the copy is
        taken all the same, case 7's line says so, and the case fails. A callback that arrives after the copy
        gets a line of its own and fails the case too. The messenger is never destroyed in this mode. */
-    const unsigned said = validation_counts();
+    unsigned own = 0;
+    const unsigned said = validation_counts(&own), others = said - own; /* NGX's own are counted, not judged */
+    if (own)
+        LOG(ST "case 7: %u of the %u validation messages are NGX's own (%s in %s on %s only), shown and not judged "
+               "(research 22:20). The case is judged on the other %u\n", own, said, SELFTEST_NGX_ID,
+            SELFTEST_NGX_REGION, SELFTEST_NGX_IMAGE, others);
     if (!g.validation) LOG(ST "case 7: NOT RUN, the validation layer is %s: FAIL\n", validation_missing());
     else if (g.unknown)
         LOG(ST "case 7: NOT JUDGED, the run stopped (%u validation messages until then): FAIL\n", said);
@@ -2674,9 +2770,9 @@ int vk_upscaler_selftest(const char* adapter) {
         LOG(ST "case 7: NOT MET, %u validation messages of a layer WITHOUT its synchronisation checks. Its condition "
                "is no message with them asked for: FAIL\n", said);
     else if (g.halted) /* exempt from the skip, a count over what ran (research 12:40) */
-        LOG(ST "case 7: %u validation messages over the part that ran (stopped after %s): %s\n", said, g.halted_in,
-            said ? "FAIL" : "PASS");
-    else LOG(ST "case 7: %u validation messages: %s\n", said, said ? "FAIL" : "PASS");
+        LOG(ST "case 7: %u validation messages over the part that ran (stopped after %s): %s\n", others, g.halted_in,
+            others ? "FAIL" : "PASS");
+    else LOG(ST "case 7: %u validation messages: %s\n", others, others ? "FAIL" : "PASS");
     /* said also when the run stopped: the reason is kept whatever else failed */
     if (g.validation && !g.checks_asked)
         LOG(ST "case 7: the synchronisation checks were %s: FAIL\n", checks_missing());
@@ -2695,7 +2791,7 @@ int vk_upscaler_selftest(const char* adapter) {
     LOG(ST "contexts: %u handed out and not destroyed at the end, each destroyed once and only with no command buffer "
            "recorded: %s\n", g.contexts, g.ended_wrong ? "NO: FAIL" : "yes");
     if (g.halted) LOG(ST "an evaluate answered UNKNOWN: FAIL\n");
-    pass = pass && g.validation && g.checks_asked && !said && !late && waited && !g.unknown && !g.halted &&
+    pass = pass && g.validation && g.checks_asked && !others && !late && waited && !g.unknown && !g.halted &&
            !g.ended_wrong;
     if (g.dlss) { /* DL1 judges integration only: every call, every value, every run, the lifecycle, case 7 */
         LOG(ST "DL1 integration checks, quality unassessed: %s\n", pass ? "PASS" : "FAIL");

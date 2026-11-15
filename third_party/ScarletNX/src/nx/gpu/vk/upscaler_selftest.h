@@ -650,6 +650,25 @@ static inline int selftest_resized(double apart, double noise, double control) {
     if (!(control > SELFTEST_RESIZED) || !(control > noise)) return SELFTEST_BLIND;
     return apart <= SELFTEST_RESIZED ? SELFTEST_PASS : SELFTEST_FAIL;
 }
+/* research 22:20: VUID-vkCmdDraw-None-09600 inside NGX's evaluation on an image NGX names itself is the library's
+   own, counted apart and never silenced. All three must hold: the id, the debug region (a label of the callback or
+   the text's own prefix) and at least one image named, every named or unnamed image being NGX's. */
+#define SELFTEST_NGX_ID "VUID-vkCmdDraw-None-09600"
+#define SELFTEST_NGX_REGION "nv.ngx.dlss.Evaluate"
+#define SELFTEST_NGX_IMAGE "nv.ngx.dlss.resource"
+static inline int selftest_ngx_own(const char* id, const char* text, const char* const* labels, unsigned nlabels,
+                                   const int* is_image, const char* const* names, unsigned nobjects) {
+    static const char prefix[] = "[ Debug region: " SELFTEST_NGX_REGION " ]";
+    int region = text && !strncmp(text, prefix, sizeof prefix - 1), images = 0;
+    if (!id || strcmp(id, SELFTEST_NGX_ID)) return 0;
+    for (unsigned k = 0; k < nlabels; k++) region |= labels[k] && !strcmp(labels[k], SELFTEST_NGX_REGION);
+    for (unsigned k = 0; k < nobjects; k++) {
+        if (!is_image[k]) continue;
+        if (!names[k] || strcmp(names[k], SELFTEST_NGX_IMAGE)) return 0;
+        images++;
+    }
+    return region && images > 0;
+}
 static inline int selftest_apart(double difference) { return isfinite(difference) && difference >= SELFTEST_APART; }
 /* How the loader's list of instance layers was read, from the results of the call for the count and of the call
    for the list: whole, in part (the list's call answered "incomplete", so a layer that is not in the part read

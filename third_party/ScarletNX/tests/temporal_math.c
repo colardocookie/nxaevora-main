@@ -5010,6 +5010,31 @@ static void edge_set(double* rgb, int x, int y, double value) {
 }
 
 /* The jitter-sign case's picture, regions, profile and measures. */
+/* research 22:20: NGX's own 09600, by the id, the region and every image NGX's */
+static void test_selftest_ngx_own(void) {
+    static const char text[] = "[ Debug region: nv.ngx.dlss.Evaluate ] vkQueueSubmit(): pSubmits[0] command buffer";
+    static const char* const region[2] = {"frame", "nv.ngx.dlss.Evaluate"};
+    static const char* const other[1] = {"nv.ngx.dlss.Other"};
+    const int kinds[3] = {0, 1, 1};
+    const char* ngx[3] = {NULL, "nv.ngx.dlss.resource", "nv.ngx.dlss.resource"};
+    const char* ours[3] = {NULL, "nv.ngx.dlss.resource", NULL};
+    const char* named[3] = {NULL, "nv.ngx.dlss.resource", "scene colour"};
+    assert(selftest_ngx_own("VUID-vkCmdDraw-None-09600", text, NULL, 0, kinds, ngx, 3));
+    assert(selftest_ngx_own("VUID-vkCmdDraw-None-09600", "no prefix", region, 2, kinds, ngx, 3)); /* by its label */
+    assert(selftest_ngx_own("VUID-vkCmdDraw-None-09600", text, NULL, 0, kinds, ngx, 2));
+    assert(!selftest_ngx_own("VUID-vkCmdDraw-None-09600", "no prefix", other, 1, kinds, ngx, 3));
+    assert(!selftest_ngx_own("VUID-vkCmdDraw-None-09600", "no prefix", NULL, 0, kinds, ngx, 3));
+    assert(!selftest_ngx_own("VUID-vkCmdDraw-None-09600", " [ Debug region: nv.ngx.dlss.Evaluate ]", NULL, 0, kinds,
+                             ngx, 3)); /* the prefix only at the start */
+    assert(!selftest_ngx_own("VUID-vkCmdDraw-None-09601", text, region, 2, kinds, ngx, 3));
+    assert(!selftest_ngx_own("VUID-vkCmdDraw-None-0960", text, region, 2, kinds, ngx, 3));
+    assert(!selftest_ngx_own(NULL, text, region, 2, kinds, ngx, 3));
+    assert(!selftest_ngx_own("VUID-vkCmdDraw-None-09600", text, region, 2, kinds, ours, 3)); /* an unnamed image */
+    assert(!selftest_ngx_own("VUID-vkCmdDraw-None-09600", text, region, 2, kinds, named, 3)); /* one of ours */
+    assert(!selftest_ngx_own("VUID-vkCmdDraw-None-09600", text, region, 2, kinds, ngx, 1)); /* no image at all */
+    assert(!selftest_ngx_own("VUID-vkCmdDraw-None-09600", NULL, NULL, 0, kinds, ngx, 3));
+}
+
 /* DL2's sign protocol, its decision (selftest_sign_choose) */
 static void test_selftest_sign_protocol(void) {
     double score[2][4] = {{0.010, 0.030, 0.031, 0.050}, {0.012, 0.040, 0.033, 0.060}};
@@ -5960,6 +5985,7 @@ int main(void) {
     test_selftest_variables();
     test_selftest_stop_notice();
     test_selftest_proof();
+    test_selftest_ngx_own();
     test_selftest_sign_protocol();
     test_selftest_edges();
     puts("temporal_math: ok");
