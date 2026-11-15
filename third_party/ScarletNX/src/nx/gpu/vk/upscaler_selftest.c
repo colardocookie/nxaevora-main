@@ -857,8 +857,9 @@ static int inputs_project(Inputs* in, const SelftestProjection* form, const int 
     for (int i = 0; i < in->frames; i++) {
         SelftestFrame* f = &in->scene[i];
         double px[2];
-        /* ahead: the images and the reported jitter that many offsets on (1 the control a step ahead, -1 the sign
-           protocol's, whose first evaluated frame is phase 0) */
+        /* ahead: 1, the control, draws the images a step ahead of the jitter the frame reports; -1, the sign
+           protocol's phase, shifts both the images and the reported jitter a step back, so that its first evaluated
+           frame is phase 0 and every frame's drawn offset is the one it reports (recon 06:41, research 21:35) */
         offset((unsigned)((((long long)i + ahead) % in->offsets + in->offsets) % in->offsets), (unsigned)in->offsets,
                px);
         f->pattern = edges ? SELFTEST_PATTERN_EDGES : cut_at >= 0 && i >= cut_at;
@@ -898,7 +899,7 @@ static int inputs_project(Inputs* in, const SelftestProjection* form, const int 
                 motion[4 * at + 2] = 0;
                 motion[4 * at + 3] = selftest_half(patch && z == f->depth[1] ? 1.0 : 0.0);
             }
-        if (ahead) { /* the images are made: from here the frame says it had its own offset */
+        if (ahead > 0) { /* the control's images are made: from here the frame says it had its own offset */
             offset((unsigned)i, (unsigned)in->offsets, px);
             f->jitter[0] = 2.0 * px[0] / RW;
             f->jitter[1] = (turned ? -2.0 : 2.0) * px[1] / RH;
