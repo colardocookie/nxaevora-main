@@ -841,7 +841,8 @@ extern "C" __declspec(dllexport) const SnxUpscalerApi* snx_upscaler_api(uint32_t
             snprintf(g_sign_note, sizeof g_sign_note, " [the jitter's sign (%+d, %+d) forced by experiment, not chosen "
                      "by the protocol]", g_sign[0], g_sign[1]);
         else
-            say("arceus-upscaler: dlss: SNX_ARCEUS_DLSS_JITTER_SIGN=%s is not --, -+, +- or ++: not used", value);
+            say("arceus-upscaler: dlss: SNX_ARCEUS_DLSS_JITTER_SIGN=%s is not --, -+, +-, ++ (or mm, mp, pm, pp): not "
+                "used", value);
     } else if (n)
         say("arceus-upscaler: dlss: SNX_ARCEUS_DLSS_JITTER_SIGN is too long: not used");
     return &g_api;

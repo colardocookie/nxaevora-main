@@ -178,12 +178,14 @@ inline int ngx_flags(uint32_t flags) {
 // reach what NGX says about loading the feature
 inline int ngx_config_line(const char* text) { return text && strstr(text, "[NGXLoadConfig:") != nullptr; }
 // SNX_ARCEUS_DLSS_JITTER_SIGN, an experiment (research 18:45): "--", "-+", "+-" or "++", the x sign first, force
-// the jitter's sign. 1 with out set for one of those four, 0 for anything else (unset, empty, another value).
+// the jitter's sign; "mm", "mp", "pm" and "pp" the same, as nx play takes no "+" in a value. 1 with out set for one
+// of those eight, 0 for anything else (unset, empty, another value, the two kinds mixed).
 inline int jitter_sign_forced(const char* value, int out[2]) {
     if (!value || strlen(value) != 2) return 0;
+    const int letters = value[0] == 'm' || value[0] == 'p';
     for (int k = 0; k < 2; k++)
-        if (value[k] != '+' && value[k] != '-') return 0;
-    for (int k = 0; k < 2; k++) out[k] = value[k] == '-' ? -1 : 1;
+        if (letters ? value[k] != 'm' && value[k] != 'p' : value[k] != '+' && value[k] != '-') return 0;
+    for (int k = 0; k < 2; k++) out[k] = value[k] == '-' || value[k] == 'm' ? -1 : 1;
     return 1;
 }
 } // namespace snx_dlss

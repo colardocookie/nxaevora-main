@@ -24,8 +24,14 @@ int dlss_eval_cases() {
         assert(snx_dlss::jitter_sign_forced("-+", s) && s[0] == -1 && s[1] == 1);
         assert(snx_dlss::jitter_sign_forced("+-", s) && s[0] == 1 && s[1] == -1);
         assert(snx_dlss::jitter_sign_forced("++", s) && s[0] == 1 && s[1] == 1);
+        /* the letters nx play passes: m for minus, p for plus */
+        assert(snx_dlss::jitter_sign_forced("mm", s) && s[0] == -1 && s[1] == -1);
+        assert(snx_dlss::jitter_sign_forced("mp", s) && s[0] == -1 && s[1] == 1);
+        assert(snx_dlss::jitter_sign_forced("pm", s) && s[0] == 1 && s[1] == -1);
+        assert(snx_dlss::jitter_sign_forced("pp", s) && s[0] == 1 && s[1] == 1);
         s[0] = s[1] = 7;
-        static const char* const refused[] = {nullptr, "", "-", "+", "---", "+0", "1-", " -", "++ ", "x+"};
+        static const char* const refused[] = {nullptr, "", "-", "+", "---", "+0", "1-", " -", "++ ", "x+",
+                                              "m+", "-p", "mmm", "P", "PP", "mx"};
         for (const char* v : refused) assert(!snx_dlss::jitter_sign_forced(v, s) && s[0] == 7 && s[1] == 7);
     }
     using namespace snx_dlss;

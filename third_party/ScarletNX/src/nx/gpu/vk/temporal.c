@@ -3648,8 +3648,9 @@ static void upscaler_start(void) {
     if (g_u.two_channel) {
         /* SNX_ARCEUS_DLSS_JITTER_SIGN, the module's experiment (research 18:45): said here as the module reads it */
         const char* forced = getenv("SNX_ARCEUS_DLSS_JITTER_SIGN");
-        const int is_forced = forced && (!strcmp(forced, "--") || !strcmp(forced, "-+") || !strcmp(forced, "+-") ||
-                                         !strcmp(forced, "++"));
+        int is_forced = 0;
+        static const char* const forcing[8] = {"--", "-+", "+-", "++", "mm", "mp", "pm", "pp"};
+        for (int k = 0; forced && k < 8; k++) is_forced |= !strcmp(forced, forcing[k]);
         if (is_forced)
             LOG("arceus-upscaler: dlss in the game (DL2): DLAA at full size, the vectors in two channels. The jitter's "
                 "sign %s is forced by experiment (SNX_ARCEUS_DLSS_JITTER_SIGN), not chosen by the protocol\n", forced);
