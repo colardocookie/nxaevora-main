@@ -18,6 +18,8 @@ extern const u32 temporal_sharpen_fs_spv[];
 extern const u64 temporal_sharpen_fs_spv_size;
 extern const u32 temporal_upscaled_fs_spv[]; /* the write-back after an upscaler: used by nothing yet */
 extern const u64 temporal_upscaled_fs_spv_size;
+extern const u32 temporal_motion2_fs_spv[]; /* DL2: the vectors in two channels for DLSS */
+extern const u64 temporal_motion2_fs_spv_size;
 extern const u32 temporal_skin_vs_spv[];
 extern const u64 temporal_skin_vs_spv_size;
 extern const u32 temporal_skin_fs_spv[];

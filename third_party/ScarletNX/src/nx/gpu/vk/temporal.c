@@ -266,12 +266,20 @@ static struct {
     u64 evaluated_ns, unresolved, contexts_made, strangers; /* strangers: lines of draws with another bank 4 */
     TemporalUpscalerTally tally;
     Image output;
+    /* DL2 point 3: an adapter that takes the vectors in two channels (DLSS) is handed a private copy of red and
+       green of the motion image, made each evaluated frame (upscaler_motion) */
+    int two_channel;
+    Image motion2;
+    VkPipeline motion2_pipe;
     TemporalUpscalerHanded handed; /* for the log: the four images as last said */
     u32 output_max[2]; /* the output's largest width and height, as the start's format question answered */
     VkPipeline write_pipe;
     VkFormat write_format;
 } g_u = {.asked = -1};
 static void upscaler_start(void);
+#define MOTION2_FORMAT VK_FORMAT_R16G16_SFLOAT
+static VkFormat upscaler_motion_format(void) { return g_u.two_channel ? MOTION2_FORMAT : MOTION_FORMAT; }
+static Image* upscaler_motion(void) { return g_u.two_channel ? &g_u.motion2 : &g_t.motion; }
 static int upscaler_on(void);
 static int upscaler_jittered(u32 frame);
 static int upscaler_decide(u32 frame, int accepted);
@@ -2862,7 +2870,7 @@ static int upscaler_key(const Surf* depth, const TemporalUpscalerColour* colour,
     if (temporal_projection_camera(m, projection) != TEMPORAL_PROJECTION_OK) return 0;
     *flags = SNX_UPSCALER_COLOUR_LINEAR_HDR | SNX_UPSCALER_DEPTH_REVERSED | SNX_UPSCALER_VECTORS_UNJITTERED |
              SNX_UPSCALER_EXPOSURE_AUTOMATIC | (projection->far_infinite ? SNX_UPSCALER_FAR_PLANE_INFINITE : 0);
-    const TemporalUpscalerMaking making = {colour->format,           (unsigned)depth->f.vk, (unsigned)MOTION_FORMAT,
+    const TemporalUpscalerMaking making = {colour->format, (unsigned)depth->f.vk, (unsigned)upscaler_motion_format(),
                                            (unsigned)UPSCALED_FORMAT, colour->layers,        depth->layers,
                                            *flags};
     *config = (TemporalUpscalerConfig){colour->w, colour->h, colour->w, colour->h, colour->w, colour->h,
@@ -2939,7 +2947,7 @@ static void upscaler_before(VkCommandBuffer cb, void* user) {
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     vk_surf_use(cb, c->depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    vk_barrier(cb, g_t.motion.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+    vk_barrier(cb, upscaler_motion()->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -3029,7 +3037,7 @@ static void upscaler_warm(u32 frame, Surf* scene, Surf* depth, int steady) {
                                     .flags = flags,
                                     .colour_format = scene->f.vk,
                                     .depth_format = depth->f.vk,
-                                    .motion_format = MOTION_FORMAT,
+                                    .motion_format = upscaler_motion_format(),
                                     .output_format = UPSCALED_FORMAT,
                                     .folder = "."};
     /* what the images handed over are made with: sampled inputs, a sampled storage image for the output */
@@ -3159,11 +3167,47 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_STOPPED, "the write-back's image, pipeline, set or view");
         return;
     }
+    /* DL2 point 3: the two-channel copy, after the vectors and before the evaluate. Its format's uses and extents
+       are asked before it is made; the motion image itself is not changed. */
+    if (g_u.two_channel) {
+        VkImageFormatProperties has;
+        const VkImageUsageFlags uses = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        const int fits = VK_OK(vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, MOTION2_FORMAT, VK_IMAGE_TYPE_2D,
+                                                                        VK_IMAGE_TILING_OPTIMAL, uses, 0, &has)) &&
+                         g_t.motion.w <= has.maxExtent.width && g_t.motion.h <= has.maxExtent.height &&
+                         g_t.motion.w <= g_vk.props.limits.maxFramebufferWidth &&
+                         g_t.motion.h <= g_vk.props.limits.maxFramebufferHeight;
+        if (fits && !g_u.motion2_pipe)
+            g_u.motion2_pipe = pipeline_make(MOTION2_FORMAT, temporal_motion2_fs_spv, temporal_motion2_fs_spv_size,
+                                             "two-channel vectors");
+        VkDescriptorSet copy = VK_NULL_HANDLE;
+        if (fits && g_u.motion2_pipe &&
+            image_ensure(&g_u.motion2, MOTION2_FORMAT, g_t.motion.w, g_t.motion.h, uses, "two-channel vectors")) {
+            VkImageView views[SETS_BINDINGS];
+            VkSampler samplers[SETS_BINDINGS];
+            for (int i = 0; i < SETS_BINDINGS; i++) views[i] = g_t.motion.view, samplers[i] = g_t.point;
+            copy = set_make(views, samplers);
+        }
+        if (!copy) {
+            upscaler_outcome(frame, 1, TEMPORAL_UPSCALER_STOPPED, "the two-channel vectors' image, pass or set");
+            return;
+        }
+        /* its last use was the library's, a frame ago or earlier: every command, reading and writing */
+        vk_barrier(cb, g_u.motion2.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, UPSCALER_WROTE,
+                   VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        fullscreen(cb, g_u.motion2.view, g_u.motion2.w, g_u.motion2.h, g_u.motion2_pipe, copy, pc, NULL);
+        vk_barrier(cb, g_u.motion2.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+    const Image* motion = upscaler_motion();
     const SnxUpscalerFrame handed = {
         .colour = {scene->img, scene_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, scene->f.vk, scene->sw, scene->sh},
         .depth = {depth->img, depth_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, depth->f.vk, depth->sw, depth->sh},
-        .motion = {g_t.motion.img, g_t.motion.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, g_t.motion.format,
-                   g_t.motion.w, g_t.motion.h},
+        .motion = {motion->img, motion->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, motion->format, motion->w,
+                   motion->h},
         .output = {g_u.output.img, g_u.output.view, VK_IMAGE_LAYOUT_GENERAL, g_u.output.format, g_u.output.w,
                    g_u.output.h},
         .render_x = numbers.render.x,
@@ -3188,7 +3232,7 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
     if (recorded == VK_REC_DIRECT_OK || recorded == VK_REC_DIRECT_REFUSED) {
         upscaler_took(cb, scene);
         upscaler_took(cb, depth);
-        vk_barrier(cb, g_t.motion.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, UPSCALER_WROTE,
+        vk_barrier(cb, motion->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, UPSCALER_WROTE,
                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, UPSCALER_ANY_ACCESS,
                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         vk_barrier(cb, g_u.output.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, UPSCALER_WROTE,
@@ -3242,6 +3286,7 @@ static void upscaler_start(void) {
         return;
     }
     const SnxUpscalerApi* api = vk_upscaler_adapter(name);
+    g_u.two_channel = !strcmp(name, "dlss"); /* DLSS takes the vectors in two channels (DL2 point 3) */
     SnxUpscalerExtensions instance = {0};
     SnxUpscalerDeviceNeeds device = {0};
     const char* why = NULL;

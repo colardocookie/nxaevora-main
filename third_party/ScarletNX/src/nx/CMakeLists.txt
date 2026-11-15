@@ -153,6 +153,8 @@ snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/temporal_sharpen.frag NAME temporal_
                HEADER nx/gpu/vk/temporal_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/temporal_upscaled.frag NAME temporal_upscaled_fs_spv
                HEADER nx/gpu/vk/temporal_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/temporal_motion2.frag NAME temporal_motion2_fs_spv
+               HEADER nx/gpu/vk/temporal_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/temporal_skin.vert NAME temporal_skin_vs_spv
                HEADER nx/gpu/vk/temporal_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/temporal_skin.frag NAME temporal_skin_fs_spv
