@@ -1750,6 +1750,12 @@ static int blit_depth(Surf* st, const Surf2D* s, const Surf2D* d, int dx, int dy
     return 1;
 }
 
+/* a 2D blit from st read as src_format into dt is a copy of bytes: the source and destination 2D formats are the same,
+   and both images hold their guest bytes at the same size */
+static int blit_copies_bytes(const Surf* st, const Surf* dt, u32 src_format) {
+    return vk_rt_format(src_format).vk == dt->f.vk && st->f.bpp == dt->f.bpp && st->f.raw && dt->f.raw;
+}
+
 /* the 2D engine's blit between render targets, on the GPU. The surfaces are gpu/gpu.h's
    Surf2D. 0 when it can't be done there: the front end then copies through guest memory */
 int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
@@ -1778,20 +1784,38 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
     /* a region starting outside either image (the source's corner can be negative): the front end copies it */
     if (x1 <= x0 || y1 <= y0 || X1 <= dx || Y1 <= dy || x0 < 0 || y0 < 0 || dx < 0 || dy < 0) return 0;
     int scaled = x1 - x0 != X1 - dx || y1 - y0 != Y1 - dy;
+    /* the 2D engine reads the source in its own format, which can differ from the target's in encoding only (an sRGB
+       target read as UNORM): vkCmdBlitImage would convert from the image's format. An unscaled copy between equal 2D
+       formats copies the bytes, as the hardware does */
+    int other_format = st->f.vk != vk_rt_format(s->format).vk;
+    int bytes = other_format && !scaled && blit_copies_bytes(st, dt, s->format);
+    if (other_format && !bytes)
+        LOG_LIMIT(4, "vulkan: a 2D blit reads the target at %llx (format %x) as format %x: converted from the target's\n",
+                  (unsigned long long)st->gva, st->fkey & 0xFFFF, s->format);
     vk_rt_note_read(st);
     if (st->layout == VK_IMAGE_LAYOUT_UNDEFINED) return 0;
     VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, st, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
-                VK_ACCESS_2_TRANSFER_READ_BIT);
-    vk_surf_use(cb, dt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
-                VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, st->base_layer, 1},
-                     .srcOffsets = {{x0, y0, 0}, {x1, y1, 1}},
-                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, dt->base_layer, 1},
-                     .dstOffsets = {{dx, dy, 0}, {X1, Y1, 1}}};
-    int linear = scaled && !st->f.is_int && blit_ok(st->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
-    rec_CmdBlitImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                   &b, linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+    VkPipelineStageFlags2 stage = bytes ? VK_PIPELINE_STAGE_2_COPY_BIT : VK_PIPELINE_STAGE_2_BLIT_BIT;
+    vk_surf_use(cb, st, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stage, VK_ACCESS_2_TRANSFER_READ_BIT);
+    vk_surf_use(cb, dt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, stage, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    if (bytes) {
+        VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, st->base_layer, 1},
+                         .srcOffset = {x0, y0, 0},
+                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, dt->base_layer, 1},
+                         .dstOffset = {dx, dy, 0},
+                         .extent = {(u32)(x1 - x0), (u32)(y1 - y0), 1}};
+        rec_CmdCopyImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    } else {
+        VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, st->base_layer, 1},
+                         .srcOffsets = {{x0, y0, 0}, {x1, y1, 1}},
+                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, dt->base_layer, 1},
+                         .dstOffsets = {{dx, dy, 0}, {X1, Y1, 1}}};
+        int linear =
+            scaled && !st->f.is_int && blit_ok(st->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
+        rec_CmdBlitImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+    }
     vk_surf_wrote(dt);
     if (dx == 0 && dy == 0 && X1 == (i32)dt->sw && Y1 == (i32)dt->sh)
         vk_rt_drawn_full(dt);
