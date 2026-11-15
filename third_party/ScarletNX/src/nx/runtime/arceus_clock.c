@@ -193,11 +193,11 @@ static int readable(u64 address, u64 size) {
     return 1;
 }
 
-static int event_probe, demo_probe, demo_tick;
+static int event_probe, demo_probe, demo_tick, text_probe;
 static u64 event_probe_frames;
 static void event_probe_line(void);
 /* The main-loop frames the probes and the demo tick's line count, while one of them is on */
-static int probe_frames_wanted(void) { return event_probe || demo_probe || demo_tick; }
+static int probe_frames_wanted(void) { return event_probe || demo_probe || demo_tick || text_probe; }
 /* The probes' frame count, once a main-loop frame; the event probe's line only when that probe is on */
 static void probe_frame(void) {
     __atomic_add_fetch(&event_probe_frames, 1, __ATOMIC_RELAXED);
@@ -4358,6 +4358,143 @@ static u64 arceus_probe_base(void) {
             base = g_mod->mods[i].base;
     return base;
 }
+/* SNX_ARCEUS_TEXT_PROBE=1, read-only (recon 12:52, research): the message text processor's reveal FBFBD0 (T = x0)
+   runs once a message update and does up to T+A4 glyph steps (2B315E8), one every T+9D+1 calls, with no time read.
+   Every 5 s a line: the reveal's calls, its glyph steps (a step from its loop that used the quota: out-status 0,
+   return 1) and the frames a second, the texts seen, the speed int main+40F0138, the language byte and the last
+   text's bytes. One line when a text ends (its first call answering 0 after steps): its calls, steps and time. */
+#define TEXT_PROBE_TEXTS 16
+typedef struct { u64 text, first_ns, calls, steps; } TextProbeText;
+static TextProbeText text_probe_texts[TEXT_PROBE_TEXTS];
+static GuestFn text_probe_original[2];
+static PMutex text_probe_lock = PMUTEX_INIT;
+static u64 text_probe_base, text_probe_calls, text_probe_steps, text_probe_ns, text_probe_logged[3], text_probe_last;
+static unsigned text_probe_seen;
+static _Thread_local u64 text_probe_running; /* the text whose reveal runs on this thread, 0 for none */
+static TextProbeText* text_probe_text(u64 text) {
+    for (unsigned k = 0; k < TEXT_PROBE_TEXTS; k++)
+        if (text_probe_texts[k].text == text) return &text_probe_texts[k];
+    for (unsigned k = 0; k < TEXT_PROBE_TEXTS; k++)
+        if (!text_probe_texts[k].text) {
+            text_probe_texts[k] = (TextProbeText){.text = text};
+            text_probe_seen++;
+            return &text_probe_texts[k];
+        }
+    return NULL;
+}
+static unsigned text_probe_byte(u64 address) { return address && readable(address, 1) ? *GP(address) : 0xffu; }
+static void text_probe_line(u64 now) {
+    const double seconds = (double)(now - text_probe_ns) / 1e9;
+    const u64 frames = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED), base = text_probe_base;
+    char frame_rate[32] = "- (no clock wrappers)";
+    if (clocks_installed)
+        snprintf(frame_rate, sizeof frame_rate, "%.2f", (double)(frames - text_probe_logged[2]) / seconds);
+    const u64 holder = readable(base + 0x427b188, 8) ? gr64(base + 0x427b188) : 0;
+    const u64 inner = holder && readable(holder, 8) ? gr64(holder) : 0;
+    const int speed = readable(base + 0x40f0138, 4) ? (int)gr32(base + 0x40f0138) : -1;
+    const u64 t = text_probe_last;
+    const int known = t && readable(t + 0x90, 0x110);
+    LOG("arceus-text-probe: seconds=%.2f reveal_fbfbd0_per_s=%.2f glyph_steps_per_s=%.2f frames_per_s=%s texts=%u "
+        "speed=%d language=%u language_inner=%u last=%llx +9D=%u +A4=%u +A5=%u +A6=%u +90=%u +19C=%u\n", seconds,
+        (double)(text_probe_calls - text_probe_logged[0]) / seconds,
+        (double)(text_probe_steps - text_probe_logged[1]) / seconds, frame_rate, text_probe_seen, speed,
+        text_probe_byte(holder ? holder + 0x50 : 0), text_probe_byte(inner ? inner + 0x50 : 0), (unsigned long long)t,
+        known ? *GP(t + 0x9d) : 0u, known ? *GP(t + 0xa4) : 0u, known ? *GP(t + 0xa5) : 0u, known ? *GP(t + 0xa6) : 0u,
+        known ? *GP(t + 0x90) : 0u, known ? (unsigned)gr16(t + 0x19c) : 0u);
+    text_probe_ns = now;
+    text_probe_logged[0] = text_probe_calls;
+    text_probe_logged[1] = text_probe_steps;
+    text_probe_logged[2] = frames;
+}
+static void text_probe_reveal(CPU* c, u64 entry) {
+    const u64 text = c->x[0], outer = text_probe_running;
+    text_probe_running = text;
+    u64 steps = __atomic_load_n(&text_probe_steps, __ATOMIC_RELAXED);
+    text_probe_original[0](c, entry);
+    text_probe_running = outer;
+    steps = __atomic_load_n(&text_probe_steps, __ATOMIC_RELAXED) - steps;
+    const int done = !(c->x[0] & 1);
+    const u64 now = plat_ns();
+    pm_lock(&text_probe_lock);
+    text_probe_calls++;
+    text_probe_last = text;
+    TextProbeText* tp = text_probe_text(text);
+    if (tp) {
+        if (!tp->calls) tp->first_ns = now;
+        tp->calls++;
+        tp->steps += steps;
+        if (done && tp->steps) {
+            LOG("arceus-text-probe: text %llx ended: calls=%llu glyph_steps=%llu ms=%.1f (%.1f steps a second)\n",
+                (unsigned long long)text, (unsigned long long)tp->calls, (unsigned long long)tp->steps,
+                (double)(now - tp->first_ns) / 1e6,
+                now > tp->first_ns ? (double)tp->steps * 1e9 / (double)(now - tp->first_ns) : 0.0);
+            *tp = (TextProbeText){.text = text};
+        }
+    }
+    if (!text_probe_ns) {
+        text_probe_ns = now;
+        text_probe_logged[0] = text_probe_calls;
+        text_probe_logged[1] = text_probe_steps;
+        text_probe_logged[2] = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
+    } else if (now - text_probe_ns >= 5000000000ull)
+        text_probe_line(now);
+    pm_unlock(&text_probe_lock);
+}
+/* The glyph step: one that used the quota, called from the reveal's loop (return address FBFC24) */
+static void text_probe_step(CPU* c, u64 entry) {
+    const u64 status = c->x[1], caller = c->x[30];
+    text_probe_original[1](c, entry);
+    if (text_probe_running && caller == text_probe_base + 0xfbfc24 && (c->x[0] & 0xffffffffu) == 1 &&
+        readable(status, 4) && gr32(status) == 0)
+        __atomic_add_fetch(&text_probe_steps, 1, __ATOMIC_RELAXED);
+}
+static void text_probe_init(u64 base) {
+    if (!arceus_switch_enabled("SNX_ARCEUS_TEXT_PROBE", 0)) return;
+    if (!base || !g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) {
+        WARN("arceus-text-probe: refused without the main build or AOT invalidation\n");
+        return;
+    }
+    /* MOV Xd,Xn -> ADD Xd,Xn,#0 for independent JIT bodies; recon's guards (pass 5) and the step's first store */
+    static const struct { u32 offset, size, head, patch, word, replacement, extra[3], extra_word[3]; } sites[2] = {
+        {0xfbfbd0, 0x15c, 0xd100c3ff, 0x10, 0xaa0003f3, 0x91000013, {0x24, 0x12c, 0x158},
+         {0xb9418a68, 0x7100053f, 0x17ffffe7}},
+        {0x2b315e8, 0x9c4, 0xfc1b0fe8, 0x3c, 0xaa0103f4, 0x91000034, {0x18, 0x868, 0x18},
+         {0xb900003f, 0xd65f03c0, 0xb900003f}},
+    };
+    static const GuestFn wrappers[2] = {text_probe_reveal, text_probe_step};
+    GuestFn bodies[2];
+    for (unsigned k = 0; k < 2; k++) {
+        const u64 pc = base + sites[k].offset;
+        int covered = 0;
+        for (u32 i = 0; i < g_mod->nfns; i++)
+            if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] >= sites[k].size) covered = 1;
+        int guarded = covered && pc >= g_code_lo && pc + sites[k].size <= g_code_hi && readable(pc, sites[k].size) &&
+                      gr32(pc) == sites[k].head && gr32(pc + sites[k].patch) == sites[k].word;
+        for (unsigned e = 0; guarded && e < 3; e++) guarded = gr32(pc + sites[k].extra[e]) == sites[k].extra_word[e];
+        if (!guarded) {
+            WARN("arceus-text-probe: refused instruction/function guard site=main+%x\n", sites[k].offset);
+            return;
+        }
+    }
+    for (unsigned k = 0; k < 2; k++) {
+        const u64 pc = base + sites[k].offset;
+        gw32(pc + sites[k].patch, sites[k].replacement);
+        jit_code_changed(pc, sites[k].size);
+        bodies[k] = jit_wait(pc);
+        if (!bodies[k]) {
+            WARN("arceus-text-probe: compile failed site=main+%x\n", sites[k].offset);
+            return;
+        }
+    }
+    text_probe_base = base;
+    for (unsigned k = 0; k < 2; k++) {
+        text_probe_original[k] = bodies[k];
+        __atomic_store_n(&g_disp[(base + sites[k].offset - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
+    }
+    text_probe = 1;
+    LOG("arceus-text-probe: read-only, the text reveal FBFBD0 and its glyph step 2B315E8, a line every 5 s and one "
+        "when a text ends%s\n", clocks_installed ? "" : ", frames not counted without the clock wrappers");
+}
 /* SNX_ARCEUS_DEMO_PROBE=1, read-only (recon 11:12, research): the demo controller's step 1458300 adds 2 to the demo
    clock C+7EC ([this +3B0]) once a call while playing (state +3B8 == 3), unless a name slot C+7F0..810 holds it.
    Every 5 s a line with its calls and frames a second, the state, the clock and its growth a second, and whether the
@@ -4874,6 +5011,7 @@ static void demo_tick_init(void) {
 void arceus_clock_post_jit(void) {
     event_probe_init(); /* read-only, before the return below so that 30 FPS has it too */
     demo_probe_init(arceus_probe_base());
+    text_probe_init(arceus_probe_base());
     if (!timing_enabled || !clocks_installed) return;
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     camera_trace_only = main_base && !target_fps_explicit && probe && !strcmp(probe, "1");

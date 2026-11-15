@@ -25,7 +25,7 @@ static unsigned logged_count;
 void logf_(int level, const char* fmt, ...) {
     if ((!strncmp(fmt, "arceus-event-probe: ", 20) || !strncmp(fmt, "arceus-event-tick: calls", 24) ||
          !strncmp(fmt, "arceus-demo-probe: s", 20) || !strncmp(fmt, "arceus-demo-probe: p", 20) ||
-         !strncmp(fmt, "arceus-demo-tick: s", 19)) &&
+         !strncmp(fmt, "arceus-demo-tick: s", 19) || !strncmp(fmt, "arceus-text-probe: ", 19)) &&
         logged_count < 8) {
         va_list args;
         va_start(args, fmt);
@@ -2674,6 +2674,83 @@ static void test_demo_tick(void) {
     step.step = ns;
     memset(memory, 0, sizeof memory);
 }
+/* The text probe on its real wrappers: a stand-in reveal does a set number of glyph steps through the step's wrapper,
+   as the game's loop does (return address FBFC24, the status word on its stack), and answers 1 while text remains */
+#define TEXT_OBJECT 512
+#define TEXT_STATUS 1800
+static unsigned text_stub_steps, text_stub_answer, text_stub_status;
+static u64 text_stub_caller;
+static void text_glyph_stub(CPU* c, u64 entry) {
+    (void)entry;
+    gw32(c->x[1], text_stub_status);
+    c->x[0] = 1;
+    c->pc = c->x[30];
+}
+static void text_reveal_stub(CPU* c, u64 entry) {
+    assert(entry == entry_pc && c->x[0] == TEXT_OBJECT);
+    for (unsigned k = 0; k < text_stub_steps; k++) {
+        CPU s = {.x = {[0] = TEXT_OBJECT, [1] = TEXT_STATUS, [30] = text_stub_caller}, .pc = entry_pc};
+        text_probe_step(&s, entry_pc);
+        assert(s.pc == text_stub_caller);
+    }
+    c->x[0] = text_stub_answer;
+    c->pc = c->x[30];
+}
+static void test_text_probe(void) {
+    memset(memory, 0, sizeof memory);
+    const u64 ns = host_ns, frames = event_probe_frames;
+    const int clocks = clocks_installed;
+    clocks_installed = 1;
+    text_probe_base = 3000 - 0x40f0138ull; /* the speed int at 3000 */
+    gw32(3000, 2);
+    *GP(TEXT_OBJECT + 0x9d) = 0;
+    *GP(TEXT_OBJECT + 0xa4) = 2;
+    text_probe_original[0] = text_reveal_stub;
+    text_probe_original[1] = text_glyph_stub;
+    memset(text_probe_texts, 0, sizeof text_probe_texts);
+    text_probe_calls = text_probe_steps = text_probe_ns = 0;
+    text_probe_seen = 0;
+    text_stub_caller = text_probe_base + 0xfbfc24;
+    text_stub_status = 0;
+    text_stub_answer = 1;
+    logged_count = 0;
+    /* 60 calls a second with 2 steps each for 6 s, then the text ends */
+    for (unsigned k = 0; k < 360; k++) {
+        host_ns += 16666667;
+        event_probe_frames++;
+        text_stub_steps = 2;
+        if (k == 359) text_stub_answer = 0;
+        CPU c = {.x = {[0] = TEXT_OBJECT, [30] = return_pc}, .pc = entry_pc};
+        text_probe_reveal(&c, entry_pc);
+        assert(c.pc == return_pc && c.x[0] == (k == 359 ? 0u : 1u));
+    }
+    assert(logged_count == 2);
+    assert(strstr(logged[0], "arceus-text-probe: seconds=5.00 reveal_fbfbd0_per_s=60.00 glyph_steps_per_s=120.00 "
+                             "frames_per_s=60.00 texts=1 speed=2 ") &&
+           strstr(logged[0], " +9D=0 +A4=2 "));
+    assert(strstr(logged[1], "arceus-text-probe: text 200 ended: calls=360 glyph_steps=720 ms=5983.3"));
+    /* steps from another caller, with a status other than 0, or outside a reveal are not counted */
+    const u64 counted = text_probe_steps;
+    text_stub_answer = 1;
+    text_stub_caller = text_probe_base + 0x2b31568;
+    CPU c = {.x = {[0] = TEXT_OBJECT, [30] = return_pc}, .pc = entry_pc};
+    text_probe_reveal(&c, entry_pc);
+    text_stub_caller = text_probe_base + 0xfbfc24;
+    text_stub_status = 1;
+    CPU d = {.x = {[0] = TEXT_OBJECT, [30] = return_pc}, .pc = entry_pc};
+    text_probe_reveal(&d, entry_pc);
+    text_stub_status = 0;
+    CPU s = {.x = {[0] = TEXT_OBJECT, [1] = TEXT_STATUS, [30] = text_stub_caller}, .pc = entry_pc};
+    text_probe_step(&s, entry_pc);
+    assert(text_probe_steps == counted);
+    text_probe_original[0] = text_probe_original[1] = NULL;
+    text_probe_base = 0;
+    clocks_installed = clocks;
+    host_ns = ns;
+    event_probe_frames = frames;
+    logged_count = 0;
+    memset(memory, 0, sizeof memory);
+}
 /* EVENT_TICK-2's decision on the measured step: runs over frame times, the budget never above two ticks */
 static unsigned event_decide_runs(const u64* steps, unsigned count, unsigned repeat, char* pattern, u64* cut_total) {
     ScriptTick t = {0};
@@ -2920,6 +2997,7 @@ int main(void) {
     test_event_tick_decide();
     test_demo_probe();
     test_demo_tick();
+    test_text_probe();
     test_ride_swap();
     test_defaults_on();
     test_capped_fall_body();
