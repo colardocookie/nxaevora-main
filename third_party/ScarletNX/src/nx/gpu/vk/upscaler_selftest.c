@@ -54,6 +54,7 @@ static struct {
     u8* staging_bytes;
     u64 staging_size;
     const SnxUpscalerApi* api;
+    VkFormat motion_format; /* the vectors' images: two halves for dlss, four for the others */
     u32 contexts; /* contexts the adapter handed out and the self-test has not destroyed */
     int layers; /* how the loader's list of layers was read (selftest_layers) */
     int listed; /* the loader listed the validation layer, whatever came of setting it up */
@@ -914,14 +915,14 @@ static int pictures_make(Session* s, const Inputs* in, const SnxUpscalerTraits* 
     pictures_free(s);
     if (!picture_make(&s->colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, rw, rh, traits->colour_usage) ||
         !picture_make(&s->depth, VK_FORMAT_D24_UNORM_S8_UINT, rw, rh, traits->depth_usage) ||
-        !picture_make(&s->motion, VK_FORMAT_R16G16B16A16_SFLOAT, rw, rh, traits->motion_usage) ||
+        !picture_make(&s->motion, g.motion_format, rw, rh, traits->motion_usage) ||
         !output_supported(in, traits->output_usage) ||
         !picture_make(&s->output, OUTPUT_FORMAT, (u32)in->ow, (u32)in->oh, traits->output_usage))
         return 0;
     if (in->w == in->rw && in->h == in->rh) return 1;
     return picture_make(&s->wide_colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, (u32)in->w, (u32)in->h, 0) &&
            picture_make(&s->wide_depth, VK_FORMAT_D24_UNORM_S8_UINT, (u32)in->w, (u32)in->h, 0) &&
-           picture_make(&s->wide_motion, VK_FORMAT_R16G16B16A16_SFLOAT, (u32)in->w, (u32)in->h, 0);
+           picture_make(&s->wide_motion, g.motion_format, (u32)in->w, (u32)in->h, 0);
 }
 
 static int session_open(Session* s, const Inputs* in, const SnxUpscalerTraits* traits) {
@@ -965,7 +966,7 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
                                     .flags = flags,
                                     .colour_format = VK_FORMAT_B10G11R11_UFLOAT_PACK32,
                                     .depth_format = VK_FORMAT_D24_UNORM_S8_UINT,
-                                    .motion_format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                                    .motion_format = g.motion_format,
                                     .output_format = OUTPUT_FORMAT,
                                     .folder = "."};
     /* An adapter that submits on its own is refused, and so is one that needs a usage the pictures were not made
@@ -1071,7 +1072,9 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     /* the frame's three images, frozen, into the pictures the adapter reads */
     memcpy(g.staging_bytes, in->colour + (size_t)i * pixels, pixels * 4);
     memcpy(g.staging_bytes + pixels * 4, in->depth + (size_t)i * pixels, pixels * 4);
-    memcpy(g.staging_bytes + pixels * 8, in->motion + (size_t)i * pixels * 4, pixels * 8);
+    /* the vectors as the image's format takes them: four halves a texel, or two for a two-channel image */
+    selftest_motion_pack((u16*)(void*)(g.staging_bytes + pixels * 8), in->motion + (size_t)i * pixels * 4, pixels,
+                         g.motion_format == VK_FORMAT_R16G16_SFLOAT);
     if (!begin()) return -1;
     if (wide) {
         upload(&s->wide_colour, 0, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -2267,6 +2270,7 @@ int vk_upscaler_selftest(const char* adapter) {
     LOG(ST "started for the adapter \"%s\". No game is loaded and no window is opened\n", adapter);
     if (!edges_announce()) return 1;
     g.api = vk_upscaler_adapter_selftest(adapter);
+    g.motion_format = !strcmp(adapter, "dlss") ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16G16B16A16_SFLOAT;
     if (!g.api) {
         LOG(ST "FAIL: the adapter \"%s\" is not available\n", adapter);
         return 1;

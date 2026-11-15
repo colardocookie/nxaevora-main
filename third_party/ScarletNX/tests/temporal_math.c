@@ -4991,6 +4991,18 @@ static void test_selftest_proof(void) {
     }
 }
 
+/* the vectors' texels into FSR's four-half image or DLSS's two-half one */
+static void test_selftest_motion_pack(void) {
+    const uint16_t from[12] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    uint16_t to[16];
+    memset(to, 0xEE, sizeof to);
+    assert(selftest_motion_pack(to, from, 3, 0) == 24 && !memcmp(to, from, 24) && to[12] == 0xEEEE);
+    memset(to, 0xEE, sizeof to);
+    assert(selftest_motion_pack(to, from, 3, 1) == 12);
+    assert(to[0] == 1 && to[1] == 2 && to[2] == 5 && to[3] == 6 && to[4] == 9 && to[5] == 10 && to[6] == 0xEEEE);
+    assert(selftest_motion_pack(to, from, 0, 1) == 0 && selftest_motion_pack(to, from, 0, 0) == 0);
+}
+
 static void test_selftest(void) {
     const SelftestViewport down = {0, 0, 640, 360}, up = {0, 360, 640, -360};
     double n[2], p[2], a[3], b[3], depth, texel[2];
@@ -5287,6 +5299,7 @@ int main(void) {
     test_jitter_conformance();
     test_gpu_time();
     test_selftest();
+    test_selftest_motion_pack();
     test_selftest_projection();
     test_selftest_layers();
     test_selftest_variables();

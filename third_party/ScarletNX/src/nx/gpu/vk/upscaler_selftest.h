@@ -267,6 +267,19 @@ static inline uint16_t selftest_half(double value) {
     }
     return (uint16_t)(sign | (uint32_t)e << 10 | mantissa);
 }
+/* The vectors' texels as the motion image takes them: four halves each as the inputs keep them (FSR's image), or
+   their first two only (DLSS's two-channel image, research's ruling of N4 Q3). The bytes written: 8 or 4 a texel. */
+static inline uint64_t selftest_motion_pack(uint16_t* to, const uint16_t* from, uint64_t texels, int two) {
+    if (!two) {
+        memcpy(to, from, (size_t)texels * 8);
+        return texels * 8;
+    }
+    for (uint64_t t = 0; t < texels; t++) {
+        to[2 * t] = from[4 * t];
+        to[2 * t + 1] = from[4 * t + 1];
+    }
+    return texels * 4;
+}
 
 /* The verdicts. Every one is a comparison with a control from the same run. The numbers are the design's. */
 #define SELFTEST_MARGIN 1.25  /* a wrong variant, or a control, has at least this many times the error */
