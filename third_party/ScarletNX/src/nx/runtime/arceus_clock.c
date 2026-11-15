@@ -4415,7 +4415,7 @@ static PMutex event_tick_lock = PMUTEX_INIT;
 static GuestFn event_tick_original;
 static GuestFn event_tick_pad_original[3];
 static u64 event_tick_ran, event_tick_skipped, event_tick_full, event_tick_carried, event_tick_calls;
-static u64 event_tick_logged[2], event_tick_line_frame;
+static u64 event_tick_logged[4], event_tick_line_frame, event_tick_fed_ns, event_tick_cut_ns;
 /* While a job runs on this thread: the edges its natives see on top of the pad's own, else NULL. */
 static _Thread_local const u64* event_tick_running;
 static u64 event_tick_pad(void) {
@@ -4425,6 +4425,31 @@ static u64 event_tick_pad(void) {
     if (!holder || !readable(holder, 8)) return 0;
     const u64 pad = gr64(holder);
     return pad && readable(pad, 0x120) ? pad : 0;
+}
+/* EVENT_TICK-2 (research): the decision on the clocks' measured step, up to 100 ms, not the 1/30 s cap, so a slow
+   frame's time is not lost (a step within 1/32 of 1/30 s counts as exactly 1/30 s). A run when the budget is within
+   half a step, at most 1/30 s, of a tick. After the decision the budget is capped at one tick, so a hitch gives at most
+   one extra run on the next frame. Returns the run, and the time the cap cut in *cut. */
+static int event_tick_decide(ScriptTick* t, u64 frame, u64 step_ns, u64* cut) {
+    *cut = 0;
+    if (t->decided && t->frame == frame) return t->tick;
+    int64_t step = (int64_t)step_ns;
+    if (step > SCRIPT_TICK_NS - SCRIPT_TICK_NS / 32 && step < SCRIPT_TICK_NS + SCRIPT_TICK_NS / 32)
+        step = SCRIPT_TICK_NS;
+    t->budget += step;
+    t->tick = t->budget + (step < SCRIPT_TICK_NS ? step : SCRIPT_TICK_NS) / 2 >= SCRIPT_TICK_NS;
+    if (t->tick) {
+        t->budget -= SCRIPT_TICK_NS;
+        t->ticks++;
+    }
+    if (t->budget > SCRIPT_TICK_NS) {
+        *cut = (u64)(t->budget - SCRIPT_TICK_NS);
+        t->budget = SCRIPT_TICK_NS;
+    }
+    t->frames++;
+    t->frame = frame;
+    t->decided = 1;
+    return t->tick;
 }
 /* The job's state: found by the job and its generation, else made fresh in a free slot (its first call runs at
    once, as at 30 FPS), else NULL when the table is full. */
@@ -4450,6 +4475,8 @@ static void event_tick_line(u64 frame) {
         if (__atomic_compare_exchange_n(&event_tick_line_frame, &last, frame, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
             event_tick_logged[0] = __atomic_load_n(&event_tick_ran, __ATOMIC_RELAXED);
             event_tick_logged[1] = __atomic_load_n(&event_tick_skipped, __ATOMIC_RELAXED);
+            event_tick_logged[2] = __atomic_load_n(&event_tick_fed_ns, __ATOMIC_RELAXED);
+            event_tick_logged[3] = __atomic_load_n(&event_tick_cut_ns, __ATOMIC_RELAXED);
         }
         return;
     }
@@ -4458,13 +4485,19 @@ static void event_tick_line(u64 frame) {
         return;
     const u64 ran = __atomic_load_n(&event_tick_ran, __ATOMIC_RELAXED);
     const u64 skipped = __atomic_load_n(&event_tick_skipped, __ATOMIC_RELAXED);
-    LOG("arceus-event-tick: calls=%llu ran=%llu skipped=%llu (in the last 600 frames: ran %llu, skipped %llu) "
-        "carried=%llu full=%llu\n", (unsigned long long)calls, (unsigned long long)ran, (unsigned long long)skipped,
-        (unsigned long long)(ran - event_tick_logged[0]), (unsigned long long)(skipped - event_tick_logged[1]),
+    const u64 fed = __atomic_load_n(&event_tick_fed_ns, __ATOMIC_RELAXED);
+    const u64 cut = __atomic_load_n(&event_tick_cut_ns, __ATOMIC_RELAXED);
+    LOG("arceus-event-tick: calls=%llu ran=%llu skipped=%llu (in the last 600 frames: ran %llu, skipped %llu, fed "
+        "%.1f ms, cut by the cap %.1f ms) carried=%llu full=%llu\n", (unsigned long long)calls,
+        (unsigned long long)ran, (unsigned long long)skipped, (unsigned long long)(ran - event_tick_logged[0]),
+        (unsigned long long)(skipped - event_tick_logged[1]), (double)(fed - event_tick_logged[2]) / 1e6,
+        (double)(cut - event_tick_logged[3]) / 1e6,
         (unsigned long long)__atomic_load_n(&event_tick_carried, __ATOMIC_RELAXED),
         (unsigned long long)__atomic_load_n(&event_tick_full, __ATOMIC_RELAXED));
     event_tick_logged[0] = ran;
     event_tick_logged[1] = skipped;
+    event_tick_logged[2] = fed;
+    event_tick_logged[3] = cut;
 }
 static void event_tick_update(CPU* c, u64 entry) {
     const u64 object = c->x[0];
@@ -4486,7 +4519,13 @@ static void event_tick_update(CPU* c, u64 entry) {
             job->fresh = 0;
             job->tick = (ScriptTick){.frame = frame, .decided = 1, .tick = 1, .frames = 1, .ticks = 1};
         }
-        run = script_tick_decide(&job->tick, frame, ns);
+        const int decided = job->tick.decided && job->tick.frame == frame;
+        u64 cut;
+        run = event_tick_decide(&job->tick, frame, ns, &cut);
+        if (!decided) {
+            __atomic_add_fetch(&event_tick_fed_ns, ns, __ATOMIC_RELAXED);
+            if (cut) __atomic_add_fetch(&event_tick_cut_ns, cut, __ATOMIC_RELAXED);
+        }
         /* each frame's edges once into the latch; a run's own frame is read live by its natives */
         if (!run && pad && job->sampled != frame)
             for (unsigned k = 0; k < 4; k++) job->latch[k] |= gr64(pad + event_tick_edges[k]);
