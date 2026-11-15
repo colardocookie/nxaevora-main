@@ -3,6 +3,7 @@
 /* The arithmetic of the temporal passes (gpu/vk/temporal_math.h): the jitter, an object's vector matrices and the
    resolve's filter, clip and weights. */
 #include "nx/gpu/vk/temporal_math.h"
+#include "nx/gpu/vk/temporal_spatial.h"
 #include "nx/gpu/vk/upscaler_selftest.h"
 #include "nx/gpu/vk/upscaler_module.h"
 #include "nx/gpu/vk/upscaler_needs.h"
@@ -2362,6 +2363,154 @@ static void test_upscaler_module(void) {
     }
     for (int a = SNX_MODULE_OK; a <= SNX_MODULE_MISSING_CALL; a++)
         for (int b = a + 1; b <= SNX_MODULE_MISSING_CALL; b++) assert(strcmp(snx_module_text(a), snx_module_text(b)));
+}
+
+/* D3-2's pure rules: the larger texture's size, the edge fill, the entries, each draw condition alone, the latch */
+static TemporalSpatialDraw spatial_draw(int k, double f) {
+    /* the draws as P1 and P2 measured them: 21FBFBEC and B46268AD into a half-size target of 1920x1080 (B46268AD's
+       scissor the fraction of it), the composite over the whole 3840x2160, every viewport flipped */
+    TemporalSpatialDraw d;
+    memset(&d, 0, sizeof d);
+    const int big = k == 2, W = big ? 3840 : 1920, H = big ? 2160 : 1080;
+    d.vs = temporal_spatial_entries[k].vs;
+    d.direct = d.triangle_list = 1;
+    d.vertex_count = 3;
+    d.instance_count = 1;
+    d.vertex_f[0] = d.vertex_f[1] = d.fragment_f[0] = d.fragment_f[1] = f;
+    d.divisor[0] = d.divisor[1] = 1.0;
+    d.viewport[0] = 0, d.viewport[1] = H, d.viewport[2] = W, d.viewport[3] = -H;
+    d.scissor_on = 1;
+    d.scissor[2] = k == 1 ? (int)(W * f) : W;
+    d.scissor[3] = k == 1 ? (int)(H * f) : H;
+    d.target[0] = W, d.target[1] = H;
+    d.query[0] = 1920, d.query[1] = 1080;
+    d.normalised = d.one_level = 1;
+    d.mag_nearest = d.min_nearest = k != 1; /* B46268AD's sampler is linear with clamp to edge */
+    d.address[0] = d.address[1] = k == 1 ? TEMPORAL_SPATIAL_EDGE : TEMPORAL_SPATIAL_BORDER;
+    d.view_format_same = d.view_2d = d.view_one_level = d.view_one_layer = d.view_identity = 1;
+    return d;
+}
+static void test_spatial(void) {
+    int M, N;
+    /* the scales D3 revision 2 allows at 3840x2160, and the ones it does not */
+    static const int allowed[5][2] = {{1920, 1080}, {2304, 1296}, {2560, 1440}, {2880, 1620}, {3072, 1728}};
+    static const int sizes[5][2] = {{7680, 4320}, {6400, 3600}, {5760, 3240}, {5120, 2880}, {4800, 2700}};
+    for (int k = 0; k < 5; k++) {
+        const double f = (double)allowed[k][0] / 3840;
+        assert(temporal_spatial_size(3840, 2160, allowed[k][0], allowed[k][1], f, f, &M, &N));
+        assert(M == sizes[k][0] && N == sizes[k][1]);
+    }
+    assert(!temporal_spatial_size(3840, 2160, 2560, 1440, 0.6667, 0.6667, &M, &N));      /* the fraction off */
+    assert(!temporal_spatial_size(3840, 2160, 3456, 1944, 0.9, 0.9, &M, &N));            /* 3840x3840/3456 not whole */
+    assert(!temporal_spatial_size(3840, 2160, 1920, 1080, 0.5, 0.5000011, &M, &N));     /* unequal */
+    /* whole, each fraction its own, unequal */
+    assert(!temporal_spatial_size(3840, 2160, 1920, 1440, 0.5, 1440.0 / 2160, &M, &N));
+    assert(temporal_spatial_size(3840, 2160, 3840, 2160, 1.0, 1.0, &M, &N) && M == 3840 && N == 2160);
+    assert(!temporal_spatial_size(3840, 2160, 3841, 2160, 1.0, 1.0, &M, &N));
+    assert(!temporal_spatial_size(0, 2160, 0, 1080, 0.5, 0.5, &M, &N));
+    /* the edge fill: right, bottom, corner, from the last column, row and pixel */
+    TemporalSpatialRegion fill[3];
+    assert(temporal_spatial_fill(3840, 2160, 7680, 4320, fill) == 3);
+    assert(!memcmp(fill[0].from, (int[4]){3839, 0, 3840, 2160}, sizeof fill[0].from));
+    assert(!memcmp(fill[0].to, (int[4]){3840, 0, 7680, 2160}, sizeof fill[0].to));
+    assert(!memcmp(fill[1].from, (int[4]){0, 2159, 3840, 2160}, sizeof fill[1].from));
+    assert(!memcmp(fill[1].to, (int[4]){0, 2160, 3840, 4320}, sizeof fill[1].to));
+    assert(!memcmp(fill[2].from, (int[4]){3839, 2159, 3840, 2160}, sizeof fill[2].from));
+    assert(!memcmp(fill[2].to, (int[4]){3840, 2160, 7680, 4320}, sizeof fill[2].to));
+    assert(temporal_spatial_fill(3840, 2160, 3840, 2160, fill) == 0);
+    /* the entries, by whole hash and handle */
+    assert(temporal_spatial_entry(0x21fbfbecbf90f4a3ull, 0x2A) == 0);
+    assert(temporal_spatial_entry(0xb46268adda62e218ull, 0x28) == 1);
+    assert(temporal_spatial_entry(0x8a160a27d90af72dull, 0x36) == 2);
+    assert(temporal_spatial_entry(0x8a160a27d90af72dull, 0x2A) == -1);
+    assert(temporal_spatial_entry(0x63b3848c1a6e23e0ull, 0x36) == -1);
+    /* each measured draw is taken at both fractions; each condition alone refuses it */
+    for (int k = 0; k < 3; k++)
+        for (int fi = 0; fi < 2; fi++) {
+            const double f = fi ? 0.5 : 1.0;
+            TemporalSpatialDraw d = spatial_draw(k, f), x;
+            assert(temporal_spatial_check(k, &d, f) == TEMPORAL_SPATIAL_TAKEN);
+            assert(temporal_spatial_check(-1, &d, f) == TEMPORAL_SPATIAL_NOT_LISTED);
+#define REFUSED(change, why)                                                                                   \
+    do {                                                                                                       \
+        x = d;                                                                                                 \
+        change;                                                                                                \
+        assert(temporal_spatial_check(k, &x, f) == (why));                                                     \
+    } while (0)
+            REFUSED(x.vs ^= 1, TEMPORAL_SPATIAL_VERTEX);
+            REFUSED(x.direct = 0, TEMPORAL_SPATIAL_FORM);
+            REFUSED(x.triangle_list = 0, TEMPORAL_SPATIAL_FORM);
+            REFUSED(x.first_vertex = 1, TEMPORAL_SPATIAL_FORM);
+            REFUSED(x.vertex_count = 4, TEMPORAL_SPATIAL_FORM);
+            REFUSED(x.instance_count = 2, TEMPORAL_SPATIAL_FORM);
+            REFUSED(x.first_instance = 1, TEMPORAL_SPATIAL_FORM);
+            REFUSED(x.other_stages = 1, TEMPORAL_SPATIAL_STAGES);
+            if (k != 1) {
+                REFUSED(x.fragment_f[1] = f * 0.999, TEMPORAL_SPATIAL_FRACTION);
+                REFUSED(x.fragment_f[0] = NAN, TEMPORAL_SPATIAL_FRACTION);
+            } else {
+                x = d;
+                x.fragment_f[0] = NAN; /* B46268AD reads no fraction: its block's value is not held */
+                assert(temporal_spatial_check(k, &x, f) == TEMPORAL_SPATIAL_TAKEN);
+            }
+            if (k == 0) REFUSED(x.vertex_f[0] = f * 1.001, TEMPORAL_SPATIAL_FRACTION);
+            if (k == 2) {
+                REFUSED(x.divisor[0] = 2.0, TEMPORAL_SPATIAL_DIVISOR);
+                REFUSED(x.divisor[1] = NAN, TEMPORAL_SPATIAL_DIVISOR);
+            }
+            REFUSED(x.normalised = 0, TEMPORAL_SPATIAL_SAMPLER);
+            REFUSED(x.one_level = 0, TEMPORAL_SPATIAL_SAMPLER);
+            REFUSED(x.anisotropy = 1, TEMPORAL_SPATIAL_SAMPLER);
+            REFUSED(x.compare = 1, TEMPORAL_SPATIAL_SAMPLER);
+            REFUSED(x.address[1] = TEMPORAL_SPATIAL_OTHER_ADDRESS, TEMPORAL_SPATIAL_SAMPLER);
+            REFUSED((x.address[0] = TEMPORAL_SPATIAL_BORDER, x.min_nearest = 0), TEMPORAL_SPATIAL_SAMPLER);
+            REFUSED((x.address[0] = TEMPORAL_SPATIAL_BORDER, x.mag_nearest = 0), TEMPORAL_SPATIAL_SAMPLER);
+            REFUSED(x.view_format_same = 0, TEMPORAL_SPATIAL_VIEW);
+            REFUSED(x.view_2d = 0, TEMPORAL_SPATIAL_VIEW);
+            REFUSED(x.view_one_level = 0, TEMPORAL_SPATIAL_VIEW);
+            REFUSED(x.view_one_layer = 0, TEMPORAL_SPATIAL_VIEW);
+            REFUSED(x.view_identity = 0, TEMPORAL_SPATIAL_VIEW);
+            /* not flipped: coordinate 1 at the top */
+            REFUSED(x.viewport[3] = -x.viewport[3], TEMPORAL_SPATIAL_COVERAGE);
+            REFUSED(x.viewport[2] = 0, TEMPORAL_SPATIAL_COVERAGE);
+            REFUSED(x.scissor[2] = x.scissor[0], TEMPORAL_SPATIAL_COVERAGE); /* nothing covered */
+            if (k != 1) REFUSED(x.query[0] = 0, TEMPORAL_SPATIAL_COVERAGE);
+            if (fi && k == 1) REFUSED(x.scissor[2] = d.target[0], TEMPORAL_SPATIAL_COVERAGE); /* beyond f */
+            if (fi && k == 1) REFUSED(x.scissor[2] += 1, TEMPORAL_SPATIAL_COVERAGE); /* one pixel beyond f */
+            if (!fi && k == 1) /* a centre at coordinate 1 exactly: within f = 1, and a tap not below 1 */
+                REFUSED((x.viewport[0] = -0.5, x.scissor_on = 0), TEMPORAL_SPATIAL_COVERAGE);
+#undef REFUSED
+        }
+    for (int a = 0; a < TEMPORAL_SPATIAL_REASONS; a++)
+        for (int b = a + 1; b < TEMPORAL_SPATIAL_REASONS; b++)
+            assert(strcmp(temporal_spatial_text(a), temporal_spatial_text(b)));
+    /* the latch: a make failure off at once; an unknown reader off from the next frame; eight eligible frames in
+       a row not published; ineligible frames neither count nor reset */
+    TemporalSpatialLatch l = {0, 0, 0, NULL};
+    assert(temporal_spatial_frame(&l));
+    temporal_spatial_make_failed(&l, "the larger image");
+    assert(!temporal_spatial_frame(&l) && l.why && !strcmp(l.why, "the larger image"));
+    memset(&l, 0, sizeof l);
+    assert(temporal_spatial_frame(&l));
+    temporal_spatial_unknown(&l, "an unknown reader");
+    assert(!l.off); /* the frame it was found in goes on */
+    assert(!temporal_spatial_frame(&l) && l.off && !strcmp(l.why, "an unknown reader"));
+    memset(&l, 0, sizeof l);
+    for (int i = 0; i < 7; i++) {
+        temporal_spatial_outcome(&l, 1, 0);
+        temporal_spatial_outcome(&l, 0, 1); /* an ineligible frame between: no reset */
+        assert(temporal_spatial_frame(&l));
+    }
+    temporal_spatial_outcome(&l, 1, 0); /* the eighth, across the ineligible ones */
+    assert(!temporal_spatial_frame(&l) && l.off);
+    memset(&l, 0, sizeof l);
+    for (int i = 0; i < 7; i++) temporal_spatial_outcome(&l, 1, 0);
+    temporal_spatial_outcome(&l, 1, 1); /* a published frame resets the count */
+    assert(l.unpublished == 0 && temporal_spatial_frame(&l));
+    for (int i = 0; i < 7; i++) temporal_spatial_outcome(&l, 1, 0);
+    assert(temporal_spatial_frame(&l));
+    temporal_spatial_outcome(&l, 1, 0);
+    assert(!temporal_spatial_frame(&l) && l.off);
 }
 
 /* the readers' probe: its programs by their whole hashes as the census prints them, and not by either half */
@@ -5282,6 +5431,7 @@ int main(void) {
     test_upscaler_handed();
     test_txq_today();
     test_readers_program();
+    test_spatial();
     test_upscaler_module();
     test_upscaler_wiring();
     test_jitter_conformance();
