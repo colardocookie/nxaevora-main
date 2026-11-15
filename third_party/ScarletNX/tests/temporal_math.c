@@ -5035,6 +5035,15 @@ static void test_selftest_ngx_own(void) {
     assert(!selftest_ngx_own("VUID-vkCmdDraw-None-09600", NULL, NULL, 0, kinds, ngx, 3));
 }
 
+/* the self-test skips the sign protocol for the module's eight forcing values only */
+static void test_selftest_sign_forcing(void) {
+    static const char* const taken[] = {"--", "-+", "+-", "++", "mm", "mp", "pm", "pp"};
+    static const char* const refused[] = {NULL, "", "off", "0", "-", "+", "---", "+0", "1-", " -", "++ ", "x+",
+                                          "m+", "-p", "mmm", "P", "PP", "mx"};
+    for (size_t k = 0; k < sizeof taken / sizeof taken[0]; k++) assert(selftest_sign_forcing(taken[k]));
+    for (size_t k = 0; k < sizeof refused / sizeof refused[0]; k++) assert(!selftest_sign_forcing(refused[k]));
+}
+
 /* DL2's sign protocol, its decision (selftest_sign_choose) */
 static void test_selftest_sign_protocol(void) {
     double score[2][4] = {{0.010, 0.030, 0.031, 0.050}, {0.012, 0.040, 0.033, 0.060}};
@@ -5986,6 +5995,7 @@ int main(void) {
     test_selftest_stop_notice();
     test_selftest_proof();
     test_selftest_ngx_own();
+    test_selftest_sign_forcing();
     test_selftest_sign_protocol();
     test_selftest_edges();
     puts("temporal_math: ok");

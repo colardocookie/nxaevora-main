@@ -85,6 +85,14 @@ void NVSDK_CONV ngx_log(const char* message, NVSDK_NGX_Logging_Level, NVSDK_NGX_
         say("arceus-upscaler: dlss ngx: %s", text);
 }
 
+// milliseconds since an earlier now_ms(), for the log only (research 22:50: what a context costs in the game)
+double now_ms() {
+    LARGE_INTEGER t, f;
+    QueryPerformanceCounter(&t);
+    QueryPerformanceFrequency(&f);
+    return (double)t.QuadPart * 1000.0 / (double)f.QuadPart;
+}
+
 // a path for a log line, in UTF-8
 void utf8(const wchar_t* wide, char* out, int room) {
     if (!WideCharToMultiByte(CP_UTF8, 0, wide, -1, out, room, nullptr, nullptr)) snprintf(out, (size_t)room, "?");
@@ -578,6 +586,7 @@ int create(const SnxUpscalerCreate* c, SnxUpscalerTraits* traits, SnxUpscaler** 
         return SNX_UPSCALER_REFUSED;
     }
     AcquireSRWLockExclusive(&g_lock);
+    const double began = now_ms();
     const uint64_t key = device_key(c->device);
     g_starting = c;
     const int begun = snx_dlss::core_begin(&g_core, key);
@@ -631,9 +640,10 @@ int create(const SnxUpscalerCreate* c, SnxUpscalerTraits* traits, SnxUpscaler** 
        too (research 19:00) */
     traits->output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     say("arceus-upscaler: dlss: a context for %s at %ux%u, rendered at %ux%u in images of %ux%u (the mode's optimal "
-        "%ux%u, from %ux%u to %ux%u), NGX's flags 0x%x", chosen.name, c->sizes.output_w, c->sizes.output_h,
-        c->sizes.render_w, c->sizes.render_h, c->sizes.image_w, c->sizes.image_h, chosen.numbers.w, chosen.numbers.h,
-        chosen.numbers.min_w, chosen.numbers.min_h, chosen.numbers.max_w, chosen.numbers.max_h, (unsigned)flags);
+        "%ux%u, from %ux%u to %ux%u), NGX's flags 0x%x, made in %.3f ms", chosen.name, c->sizes.output_w,
+        c->sizes.output_h, c->sizes.render_w, c->sizes.render_h, c->sizes.image_w, c->sizes.image_h, chosen.numbers.w,
+        chosen.numbers.h, chosen.numbers.min_w, chosen.numbers.min_h, chosen.numbers.max_w, chosen.numbers.max_h,
+        (unsigned)flags, now_ms() - began);
     *out = reinterpret_cast<SnxUpscaler*>(x);
     ReleaseSRWLockExclusive(&g_lock);
     return SNX_UPSCALER_OK;
@@ -655,7 +665,9 @@ int prepare(SnxUpscaler* u, VkCommandBuffer cb) {
         say("arceus-upscaler: dlss: a context not prepared: NGX's state for its device is not known");
     else if (x->prepared || x->feature) say("arceus-upscaler: dlss: a context was prepared twice");
     else {
+        const double began = now_ms();
         const NVSDK_NGX_Result r = NGX_VULKAN_CREATE_DLSS_EXT1(x->device, cb, 1, 1, &x->feature, x->params, &x->made);
+        const double took = now_ms() - began;
         const int outcome = snx_dlss::core_call(&g_core, device_key(x->device), "NGX's creation of the feature",
                                                 !NVSDK_NGX_FAILED(r), x->feature != nullptr);
         if (outcome != snx_dlss::CORE_OK)
@@ -664,6 +676,8 @@ int prepare(SnxUpscaler* u, VkCommandBuffer cb) {
         else {
             x->prepared = 1;
             answer = SNX_UPSCALER_OK;
+            say("arceus-upscaler: dlss: NGX's creation of the feature recorded in %.3f ms (its GPU work runs with the "
+                "command buffer)", took);
         }
     }
     ReleaseSRWLockExclusive(&g_lock);

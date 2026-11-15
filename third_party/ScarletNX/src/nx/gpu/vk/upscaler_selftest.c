@@ -62,6 +62,7 @@ static struct {
     int ended_wrong;   /* a context destroyed that was not live, or while a command buffer was recorded */
     int recording;     /* a command buffer is begun and neither submitted nor reset */
     int halted;        /* an evaluate answered UNKNOWN and its buffer was reset: no more is recorded or run */
+    int known;         /* reset lines of the known library deviation (research 22:50), failed apart from the rest */
     /* the case being run, the one the run stopped in, and whether the one line of what was not run was said */
     char step[160], halted_in[160];
     int skip_said;
@@ -2064,12 +2065,18 @@ static int native_cases(Native* n, NativeForm* F) {
     verdict = reset ? selftest_resized(same, twice, kept) : SELFTEST_FAIL;
     /* research 22:40: a reset nearer than the control but over the bar is said as such, and still fails */
     const int improves = verdict == SELFTEST_FAIL && same < kept;
+    /* research 22:50, astra AGREE: at 1/2 (performance) such a reset is NGX's known deviation, still a FAIL, counted
+       apart so that the summary tells it from any other failure */
+    const int known = improves && g.dlss && n->size == HALF_SIZE;
     SAY(ST "%s: the reset frame against a fresh context's %.6f (at most %.3f), two fresh contexts given the same two "
            "frames (the gate's first and the reset frame) %.6f, the control without the flag %.6f (over %.3f and "
-           "over the noise): %s%s\n",
+           "over the noise): %s%s%s\n",
         name, same, SELFTEST_RESIZED, twice, kept, SELFTEST_RESIZED, native_word(reset, verdict),
-        improves ? ". The reset improves on no reset, and is not equivalent to a fresh context" : "");
-    pass &= (verdict == SELFTEST_PASS) || skip_rest();
+        improves ? ". The reset improves on no reset, and is not equivalent to a fresh context" : "",
+        known ? ". Performance mode keeps state across InReset (DL-S5: 0.004 lasting, 2/3 exact): the known library "
+                "deviation" : "");
+    g.known += known;
+    pass &= (verdict == SELFTEST_PASS || known) || skip_rest();
     pass &= (reset && native_asserted(name, &proof, 1, far, &cut, cut.frames - 1, F->form)) || skip_rest();
     inputs_free(&cut);
     inputs_free(&small);
@@ -2240,11 +2247,14 @@ static int sign_protocol(int below) {
     step(at);
     /* the experiment's forced sign multiplies every variant's: the protocol would not compare what it says */
     const char* forced = getenv("SNX_ARCEUS_DLSS_JITTER_SIGN");
-    if (forced && forced[0]) {
-        SAY(ST "%s: not run, SNX_ARCEUS_DLSS_JITTER_SIGN is set (an experiment that forces the sign the module hands "
-               "NGX), and the protocol compares the signs itself\n", at);
+    if (selftest_sign_forcing(forced)) { /* as the module: a value other than its eight is not used (BOARD) */
+        SAY(ST "%s: not run, SNX_ARCEUS_DLSS_JITTER_SIGN is %s (an experiment that forces the sign the module hands "
+               "NGX), and the protocol compares the signs itself\n", at, forced);
         return 1;
     }
+    if (forced && forced[0])
+        SAY(ST "%s: SNX_ARCEUS_DLSS_JITTER_SIGN=%s is not one of the module's eight values, which does not use it: "
+               "run as without it\n", at, forced);
     double *reference = malloc(sizeof(double) * picture), *work = malloc(sizeof(double) * picture);
     double* outputs = malloc(sizeof(double) * picture * SCORED * REPEATS);
     u8 *regions = malloc(pixels), *everywhere = malloc(pixels);
@@ -2776,9 +2786,13 @@ int vk_upscaler_selftest(const char* adapter) {
     /* said also when the run stopped: the reason is kept whatever else failed */
     if (g.validation && !g.checks_asked)
         LOG(ST "case 7: the synchronisation checks were %s: FAIL\n", checks_missing());
+    /* the callbacks after the copy, NGX's own apart as in the copy (the reviewer's note on 4de0a6ad) */
     while (__atomic_exchange_n(&g_said_lock, 1, __ATOMIC_ACQUIRE)) {}
-    const unsigned late = g.messages - said;
+    const unsigned late_own = g_said.ngx_own - own, late = g.messages - said - late_own;
     __atomic_store_n(&g_said_lock, 0, __ATOMIC_RELEASE);
+    if (late_own)
+        LOG(ST "case 7: %u more callbacks of NGX's own arrived after its count was taken, shown and not judged\n",
+            late_own);
     if (late)
         LOG(ST "case 7: %u more validation callbacks arrived after its count was taken. They are not in the lines "
                "above: FAIL\n", late);
@@ -2794,9 +2808,15 @@ int vk_upscaler_selftest(const char* adapter) {
     pass = pass && g.validation && g.checks_asked && !others && !late && waited && !g.unknown && !g.halted &&
            !g.ended_wrong;
     if (g.dlss) { /* DL1 judges integration only: every call, every value, every run, the lifecycle, case 7 */
-        LOG(ST "DL1 integration checks, quality unassessed: %s\n", pass ? "PASS" : "FAIL");
+        if (pass && g.known) /* every other check passed: the failure is the known deviation's alone */
+            LOG(ST "DL1 integration checks, quality unassessed: FAIL, with 1 known library deviation alone (the reset "
+                   "at 1/2 in performance mode, %d lines, research 22:50) and nothing else failed\n", g.known);
+        else
+            LOG(ST "DL1 integration checks, quality unassessed: %s%s\n", pass ? "PASS" : "FAIL",
+                !pass && g.known ? ", and besides the known library deviation (the reset at 1/2) another check failed"
+                                 : "");
         LOG(ST "quality: not assessed in DL1\n");
     } else
         LOG(ST "RESULT: %s\n", pass ? "PASS" : "FAIL");
-    return pass ? 0 : 1;
+    return pass && !g.known ? 0 : 1;
 }

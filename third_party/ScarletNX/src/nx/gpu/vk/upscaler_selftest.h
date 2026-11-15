@@ -669,6 +669,15 @@ static inline int selftest_ngx_own(const char* id, const char* text, const char*
     }
     return region && images > 0;
 }
+/* SNX_ARCEUS_DLSS_JITTER_SIGN as DLSS's module takes it (dlss_eval.h jitter_sign_forced): 1 for one of its eight
+   values ("--", "-+", "+-", "++", "mm", "mp", "pm", "pp"), 0 for anything else, which the module does not use */
+static inline int selftest_sign_forcing(const char* value) {
+    if (!value || strlen(value) != 2) return 0;
+    const int letters = value[0] == 'm' || value[0] == 'p';
+    for (int k = 0; k < 2; k++)
+        if (letters ? value[k] != 'm' && value[k] != 'p' : value[k] != '+' && value[k] != '-') return 0;
+    return 1;
+}
 static inline int selftest_apart(double difference) { return isfinite(difference) && difference >= SELFTEST_APART; }
 /* How the loader's list of instance layers was read, from the results of the call for the count and of the call
    for the list: whole, in part (the list's call answered "incomplete", so a layer that is not in the part read
