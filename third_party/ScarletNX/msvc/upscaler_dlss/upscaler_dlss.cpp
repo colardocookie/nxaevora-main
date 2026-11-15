@@ -476,7 +476,9 @@ int capabilities(const SnxUpscalerCreate* c) {
     char fields[5][48];
     const snx_dlss::Field* all[5] = {&available, &needs_driver, &major, &minor, &init};
     for (int k = 0; k < 5; k++)
-        if (all[k]->got) snprintf(fields[k], sizeof fields[k], k == 4 ? "0x%08llx" : "%lld", all[k]->value);
+        if (all[k]->got && k == 4) /* NGX's result: its 32 bits */
+            snprintf(fields[k], sizeof fields[k], "0x%08x", (unsigned)(uint32_t)all[k]->value);
+        else if (all[k]->got) snprintf(fields[k], sizeof fields[k], "%lld", all[k]->value);
         else snprintf(fields[k], sizeof fields[k], "not given (result 0x%08x)", (unsigned)all[k]->result);
     say("arceus-upscaler: dlss: NGX's capabilities: available %s, needs an updated driver %s, the least driver %s.%s, "
         "the feature's init result %s", fields[0], fields[1], fields[2], fields[3], fields[4]);
