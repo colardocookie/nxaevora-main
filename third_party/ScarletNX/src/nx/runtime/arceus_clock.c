@@ -4317,6 +4317,7 @@ static void drp_set(uint32_t activity) {
     if (activity != DRP_BATTLE) {
         drp_values.foe = drp_values.active = (SnxDrpMon){0};
         drp_values.kind = DRP_KIND_RECORD;
+        drp_values.trainer[0] = 0;
     }
     snx_drp_write(&g_drp_state, &drp_values);
     pm_unlock(&drp_lock);
@@ -4783,44 +4784,43 @@ static void drp_text(CPU* c, u64 entry) {
    most 0x800 units). For 30 s from a trainer battle's start its lines are logged as UTF-8, tags as {tag:<units>},
    64 lines a battle, with the caller. drp_text_line formats one line from units already copied. */
 static size_t drp_text_line(const u16* units, size_t count, char* out, size_t size) {
-    size_t n = 0;
-    out[0] = 0;
-    for (size_t i = 0; i < count && units[i] && n + 24 < size;) {
-        const unsigned u = units[i];
-        if (u == 0x10) {
-            const size_t len = i + 1 < count ? units[i + 1] : 0;
-            n += (size_t)snprintf(out + n, size - n, "{tag:");
-            for (size_t k = 0; k < len && i + 2 + k < count && n + 12 < size; k++)
-                n += (size_t)snprintf(out + n, size - n, "%s%x", k ? " " : "", units[i + 2 + k]);
-            n += (size_t)snprintf(out + n, size - n, "}");
-            i += 2 + len;
-            continue;
-        }
-        if (u < 0x80) out[n++] = u < 0x20 ? ' ' : (char)u;
-        else if (u < 0x800) out[n++] = (char)(0xc0 | u >> 6), out[n++] = (char)(0x80 | (u & 0x3f));
-        else
-            out[n++] = (char)(0xe0 | u >> 12), out[n++] = (char)(0x80 | ((u >> 6) & 0x3f)),
-            out[n++] = (char)(0x80 | (u & 0x3f));
-        out[n] = 0;
-        i++;
-    }
-    return n;
+    return snx_drp_utf16_line(units, count, 1, out, size);
 }
+/* D5 (research 01:10), with SNX_ARCEUS_DISCORD=1: from a trainer battle's start until its name is found or 20 s pass,
+   each line is read (96 units, tags left out) and matched by snx_drp_sent_out. The first match is the battle's
+   trainer, "Battling <name>". Nothing of a line is logged here. */
+static u32 drp_name_battle; /* the battle whose trainer's name was found */
 static void drp_text_set(CPU* c, u64 entry) {
     const u64 text = c->x[0], line = c->x[1], caller = c->x[30], now = plat_ns();
     static DrpBudget budget;
-    const int window = (__atomic_load_n(&g_drp_files.kinds, __ATOMIC_RELAXED) & DRP_FILE_TRAINER) &&
-                       now >= drp_kind_start && now - drp_kind_start < 30000000000ull;
-    if (window && drp_budget(&budget, 64)) {
+    const int trainer = (__atomic_load_n(&g_drp_files.kinds, __ATOMIC_RELAXED) & DRP_FILE_TRAINER) &&
+                        now >= drp_kind_start;
+    const u32 battle = __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED);
+    const int probe = drp_probe && trainer && now - drp_kind_start < 30000000000ull;
+    const int name = drp_presence && trainer && now - drp_kind_start < 20000000000ull &&
+                     __atomic_load_n(&drp_name_battle, __ATOMIC_RELAXED) != battle;
+    if (probe || name) {
         u16 units[256];
         size_t count = 0;
         for (; count < 256 && readable(line + count * 2, 2); count++)
             if (!(units[count] = (u16)gr16(line + count * 2))) break;
-        char out[640];
-        drp_text_line(units, count, out, sizeof out);
-        LOG("arceus-drp: battle %u text %llx line \"%s\", caller main+%llx, %llu ms after the start\n",
-            __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED), (unsigned long long)text, out,
-            (unsigned long long)(caller - main_base), (unsigned long long)((now - drp_kind_start) / 1000000));
+        char out[640], found[SNX_DRP_NAME];
+        if (name && snx_drp_utf16_line(units, count < 96 ? count : 96, 0, out, sizeof out) &&
+            snx_drp_sent_out(out, found, sizeof found)) {
+            pm_lock(&drp_lock);
+            if (drp_values.activity == DRP_BATTLE && __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED) == battle) {
+                memcpy(drp_values.trainer, found, sizeof found);
+                snx_drp_write(&g_drp_state, &drp_values);
+                __atomic_store_n(&drp_name_battle, battle, __ATOMIC_RELAXED);
+            }
+            pm_unlock(&drp_lock);
+        }
+        if (probe && drp_budget(&budget, 64)) {
+            drp_text_line(units, count, out, sizeof out);
+            LOG("arceus-drp: battle %u text %llx line \"%s\", caller main+%llx, %llu ms after the start\n", battle,
+                (unsigned long long)text, out, (unsigned long long)(caller - main_base),
+                (unsigned long long)((now - drp_kind_start) / 1000000));
+        }
     }
     drp_original[DRPS_TEXT_SET](c, entry);
 }
@@ -4847,6 +4847,7 @@ static void drp_battle_start(CPU* c, u64 entry) {
             drp_values.activity = DRP_BATTLE;
             drp_values.kind = DRP_KIND_PENDING;
             drp_values.foe = drp_values.active = (SnxDrpMon){0};
+            drp_values.trainer[0] = 0;
             snx_drp_write(&g_drp_state, &drp_values);
         }
         pm_unlock(&drp_lock);
@@ -4931,8 +4932,8 @@ static void discord_probe_init(void) {
         {0xfc20c8, 0xf81d0ff5, drp_text_set, "the message text's line (FC20C8)"},
     };
     for (unsigned k = 0; k < DRPS_SITES; k++) {
-        /* the presence needs only the area name and the battle start, the rest are the probe's */
-        if (!drp_probe && k != DRPS_AREA && k != DRPS_BATTLE) continue;
+        /* the presence needs the area name, the battle start and the message lines (D5), the rest are the probe's */
+        if (!drp_probe && k != DRPS_AREA && k != DRPS_BATTLE && k != DRPS_TEXT_SET) continue;
         const u64 pc = main_base + sites[k].offset;
         if (pc < g_code_lo || pc >= g_code_hi || !readable(pc, 4) || gr32(pc) != sites[k].word ||
             !g_disp[(pc - g_code_lo) / 4]) {

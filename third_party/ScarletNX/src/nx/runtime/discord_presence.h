@@ -27,12 +27,14 @@ typedef struct {
 /* What the presence shows. The game half writes all but the region and the noble fight, which the host half takes
    from the file service (g_drp_files). foe: a wild opponent that checked out. active: the player's Pokémon in a
    battle. noble: a noble fight's number with SNX_DRP_NOBLE_ON, 0 for none. */
+#define SNX_DRP_NAME 76 /* a trainer's name, 24 characters of UTF-8 at most, NUL-terminated */
 typedef struct {
     int32_t region;
     uint32_t activity, kind, noble;
     SnxDrpMon foe, active, party[6];
+    char trainer[SNX_DRP_NAME]; /* the trainer's name in this battle (D5), "" while not known */
 } SnxDrpValues;
-#define SNX_DRP_WORDS 9
+#define SNX_DRP_WORDS (9 + SNX_DRP_NAME / 4)
 /* Plain words only. seq is odd while the game half writes. */
 typedef struct {
     volatile uint32_t seq;
@@ -49,6 +51,7 @@ static inline SnxDrpMon snx_drp_word_mon(uint32_t w) {
 static inline void snx_drp_write(SnxDrpState* s, const SnxDrpValues* v) {
     uint32_t w[SNX_DRP_WORDS] = {v->activity | v->kind << 8, snx_drp_mon_word(v->foe), snx_drp_mon_word(v->active)};
     for (int i = 0; i < 6; i++) w[3 + i] = snx_drp_mon_word(v->party[i]);
+    memcpy(&w[9], v->trainer, SNX_DRP_NAME);
     __atomic_store_n(&s->seq, s->seq + 1, __ATOMIC_RELAXED);
     __atomic_thread_fence(__ATOMIC_RELEASE);
     for (int i = 0; i < SNX_DRP_WORDS; i++) __atomic_store_n(&s->words[i], w[i], __ATOMIC_RELAXED);
@@ -69,6 +72,8 @@ static inline int snx_drp_read(const SnxDrpState* s, SnxDrpValues* out, int trie
         out->foe = snx_drp_word_mon(w[1]);
         out->active = snx_drp_word_mon(w[2]);
         for (int k = 0; k < 6; k++) out->party[k] = snx_drp_word_mon(w[3 + k]);
+        memcpy(out->trainer, &w[9], SNX_DRP_NAME);
+        out->trainer[SNX_DRP_NAME - 1] = 0;
         return 1;
     }
     return 0;
@@ -167,6 +172,68 @@ static inline int snx_drp_file_line(SnxDrpFileLog* l, const void* file, uint64_t
     l->lines++;
     return 1;
 }
+/* A message line's UTF-16 as UTF-8 (the text object's slot +58, P9b and D5): 0x10 starts a tag whose next unit is its
+   length, shown as {tag:<units>} when tags is set and left out otherwise, 0 ends the line, a control unit becomes a
+   space. Whole characters only within size. The bytes written. */
+static inline size_t snx_drp_utf16_line(const uint16_t* units, size_t count, int tags, char* out, size_t size) {
+    size_t n = 0;
+    out[0] = 0;
+    for (size_t i = 0; i < count && units[i] && n + 24 < size;) {
+        const unsigned u = units[i];
+        if (u == 0x10) {
+            const size_t len = i + 1 < count ? units[i + 1] : 0;
+            if (tags) {
+                n += (size_t)snprintf(out + n, size - n, "{tag:");
+                for (size_t k = 0; k < len && i + 2 + k < count && n + 12 < size; k++)
+                    n += (size_t)snprintf(out + n, size - n, "%s%x", k ? " " : "", units[i + 2 + k]);
+                n += (size_t)snprintf(out + n, size - n, "}");
+            }
+            i += 2 + len;
+            continue;
+        }
+        if (u < 0x80) out[n++] = u < 0x20 ? ' ' : (char)u;
+        else if (u < 0x800) out[n++] = (char)(0xc0 | u >> 6), out[n++] = (char)(0x80 | (u & 0x3f));
+        else
+            out[n++] = (char)(0xe0 | u >> 12), out[n++] = (char)(0x80 | ((u >> 6) & 0x3f)),
+            out[n++] = (char)(0x80 | (u & 0x3f));
+        out[n] = 0;
+        i++;
+    }
+    return n;
+}
+/* D5 (research 01:10): the trainer's name from the battle's line "<name> sent out <species>!", the whole line, with
+   <species> exactly one of our names and <name> 1 to 24 characters of ASCII letters, spaces, apostrophes (' and the
+   typographic one), hyphens and periods, starting with a letter, and not "You". 1 with the name in out. Any other
+   line, or a language where it does not read so, gives 0 and the status stays "Battling a trainer". */
+static inline int snx_drp_sent_out(const char* line, char* out, size_t size) {
+    const char* sent = strstr(line, " sent out ");
+    if (!sent) return 0;
+    const size_t name_bytes = (size_t)(sent - line);
+    const char* species = sent + 10;
+    const size_t species_bytes = strlen(species);
+    if (species_bytes < 2 || species[species_bytes - 1] != '!') return 0;
+    int known = 0;
+    for (unsigned k = 1; k <= 905 && !known; k++) {
+        const char* name = snx_drp_species_name(k);
+        known = strlen(name) == species_bytes - 1 && !strncmp(name, species, species_bytes - 1);
+    }
+    if (!known || !name_bytes || name_bytes + 1 > size) return 0;
+    unsigned characters = 0;
+    for (size_t i = 0; i < name_bytes; characters++) {
+        const unsigned char c = (unsigned char)line[i];
+        const int letter = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        if (!i && !letter) return 0;
+        if (letter || c == ' ' || c == '\'' || c == '-' || c == '.') i++;
+        else if (c == 0xe2 && i + 2 < name_bytes && (unsigned char)line[i + 1] == 0x80 &&
+                 (unsigned char)line[i + 2] == 0x99)
+            i += 3;
+        else return 0;
+    }
+    if (characters > 24 || (name_bytes == 3 && !strncmp(line, "You", 3))) return 0;
+    memcpy(out, line, name_bytes);
+    out[name_bytes] = 0;
+    return 1;
+}
 /* The noble fight shown now: its number with SNX_DRP_NOBLE_ON, or 0 once it ended or 15 min after its start (the
    backstop for a fight lost or left) */
 #define SNX_DRP_NOBLE_MAX_NS 900000000000ull
@@ -207,6 +274,10 @@ static inline const char* snx_drp_details(const SnxDrpValues* v, char* out, size
     }
     if (v->activity == DRP_BATTLE) {
         const char* name = snx_drp_species_name(v->foe.species);
+        if (v->kind == DRP_KIND_TRAINER && v->trainer[0]) {
+            snprintf(out, size, "Battling %s", v->trainer);
+            return out;
+        }
         if (v->kind == DRP_KIND_TRAINER) return "Battling a trainer";
         if (!name || v->kind == DRP_KIND_PENDING) return "In battle";
         if (v->kind == DRP_KIND_NOBLE) {

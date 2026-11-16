@@ -69,6 +69,7 @@ static void test_sequence(void) {
     SnxDrpValues v, w = {.region = 3, .activity = DRP_BATTLE, .kind = DRP_KIND_NOBLE, .foe = {401, 12, 1},
                          .active = {493, 100, 0}};
     w.party[5] = mon(491, 100, 0);
+    snprintf(w.trainer, sizeof w.trainer, "Bren");
     snx_drp_write(&s, &w);
     v.region = 7; /* the region is the host half's own, never in the state */
     assert(s.seq == 2 && snx_drp_read(&s, &v, 4) && v.region == 7 && v.activity == DRP_BATTLE);
@@ -78,6 +79,7 @@ static void test_sequence(void) {
     assert(snx_drp_read(&s, &v, 4) && v.kind == DRP_KIND_PENDING && v.activity == DRP_BATTLE);
     assert(v.foe.species == 401 && v.foe.level == 12 && v.foe.alpha == 1 && v.active.species == 493);
     assert(v.party[5].species == 491 && v.party[5].level == 100 && v.party[0].species == 0);
+    assert(!strcmp(v.trainer, "Bren"));
     s.seq = 3; /* a writer in the middle: no copy is taken */
     v.activity = 9;
     assert(!snx_drp_read(&s, &v, 4) && v.activity == 9);
@@ -165,6 +167,48 @@ static void test_noble(void) {
     v.activity = DRP_TITLE;
     v.noble = SNX_DRP_NOBLE_ON | 900;
     assert(!strcmp(snx_drp_details(&v, line, sizeof line), "On the title screen"));
+}
+
+/* D5 (research 01:10): the trainer's name from "<name> sent out <species>!" only, with our species list */
+static void test_trainer_name(void) {
+    char out[200], name[SNX_DRP_NAME];
+    /* the two lines of the BC-60 look's battle, as UTF-16 with the challenge line's tag */
+    const uint16_t challenge[] = {'T', 'h', 'e', ' ', 'C', 'o', 'r', 'p', 's', 0x2019, ' ', 'B', 'r', 'e', 'n', '!',
+                                  0x10, 1, 0xbe01, 0};
+    assert(snx_drp_utf16_line(challenge, 20, 0, out, sizeof out) && !strcmp(out, "The Corps\xe2\x80\x99 Bren!"));
+    assert(!snx_drp_sent_out(out, name, sizeof name));
+    snx_drp_utf16_line(challenge, 20, 1, out, sizeof out);
+    assert(!strcmp(out, "The Corps\xe2\x80\x99 Bren!{tag:be01}"));
+    assert(snx_drp_sent_out("Bren sent out Wormadam!", name, sizeof name) && !strcmp(name, "Bren"));
+    assert(snx_drp_sent_out("Mr. O'Neil-Smith sent out Mr. Mime!", name, sizeof name));
+    assert(!strcmp(name, "Mr. O'Neil-Smith"));
+    assert(snx_drp_sent_out("Lian\xe2\x80\x99s Pal sent out Nidoran\xe2\x99\x80!", name, sizeof name));
+    assert(!strcmp(name, "Lian\xe2\x80\x99s Pal"));
+    assert(snx_drp_sent_out("Abcdefghijklmnopqrstuvwx sent out Bidoof!", name, sizeof name)); /* 24 */
+    assert(!snx_drp_sent_out("Abcdefghijklmnopqrstuvwxy sent out Bidoof!", name, sizeof name)); /* 25 */
+    assert(!snx_drp_sent_out("You sent out Arceus!", name, sizeof name));
+    assert(snx_drp_sent_out("Youngster Ben sent out Bidoof!", name, sizeof name));
+    assert(!snx_drp_sent_out("Bren sent out Wormadamx!", name, sizeof name));    /* not one of our names */
+    assert(!snx_drp_sent_out("Bren sent out Wormadam", name, sizeof name));      /* no ! */
+    assert(!snx_drp_sent_out("Bren sent out Wormadam!!", name, sizeof name));
+    assert(!snx_drp_sent_out("Bren sent out Wormadam.", name, sizeof name)); /* the line ends with ! */
+    assert(!snx_drp_sent_out("Bren sent out Wormadam! Go!", name, sizeof name)); /* not the whole line */
+    assert(!snx_drp_sent_out("Bren2 sent out Wormadam!", name, sizeof name));
+    assert(!snx_drp_sent_out(" Bren sent out Wormadam!", name, sizeof name));
+    assert(!snx_drp_sent_out("Br\xc3\xa9n sent out Wormadam!", name, sizeof name));
+    assert(!snx_drp_sent_out(" sent out Wormadam!", name, sizeof name));
+    assert(!snx_drp_sent_out("Bren envoie Wormadam !", name, sizeof name)); /* another language: no name */
+    assert(!snx_drp_sent_out("Bren\xe2\x80 sent out Wormadam!", name, sizeof name)); /* a cut apostrophe */
+    char tiny[4];
+    assert(!snx_drp_sent_out("Bren sent out Wormadam!", tiny, sizeof tiny));
+    /* the text: the name once known, before that "Battling a trainer" */
+    char line[160];
+    SnxDrpValues v = {.region = 1, .activity = DRP_BATTLE, .kind = DRP_KIND_TRAINER, .foe = {401, 5, 0}};
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Battling a trainer"));
+    snprintf(v.trainer, sizeof v.trainer, "Bren");
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Battling Bren"));
+    v.kind = DRP_KIND_WILD; /* a name never shows outside a trainer battle */
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Battling a wild Kricketot"));
 }
 
 /* The probe's file lines (research 22:05): one per file opened, chunks within 1 s merged, 100 per fight or battle */
@@ -582,6 +626,7 @@ int main(void) {
     test_noble();
     test_reply();
     test_file_line();
+    test_trainer_name();
     test_text();
     test_species();
     test_hover();

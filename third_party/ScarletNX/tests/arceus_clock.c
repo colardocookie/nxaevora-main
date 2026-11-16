@@ -2614,6 +2614,8 @@ static void test_text_line(void) {
     assert(drp_text_line(many, 300, small, sizeof small) < sizeof small && strlen(small) < sizeof small);
     /* the wrapper: only in a trainer battle's first 30 s, 64 lines a battle, the game's function always called */
     const u64 saved_ns = host_ns, saved_base = main_base;
+    const int saved_presence = drp_presence, saved_probe = drp_probe;
+    drp_presence = 0, drp_probe = 1;
     memset(memory, 0, sizeof memory);
     main_base = 0x10000000;
     drp_original[DRPS_TEXT_SET] = text_set_original;
@@ -2634,6 +2636,63 @@ static void test_text_line(void) {
     host_ns = drp_kind_start + 30000000000ull; /* 30 s on: no line, the game's function still called */
     drp_text_set(&c, 0);
     assert(text_set_calls == 73 && text_line_logs == 65);
+    drp_presence = saved_presence, drp_probe = saved_probe;
+    g_drp_files.kinds = 0;
+    g_drp_battle = 0;
+    host_ns = saved_ns;
+    main_base = saved_base;
+    memset(memory, 0, sizeof memory);
+}
+
+/* D5 (research 01:10): the trainer's name from the battle's lines, with the presence on and the probe off */
+static void test_trainer_line(void) {
+    const u64 saved_ns = host_ns, saved_base = main_base;
+    const int saved_presence = drp_presence, saved_probe = drp_probe;
+    memset(memory, 0, sizeof memory);
+    main_base = 0x10000000;
+    drp_presence = 1, drp_probe = 0;
+    drp_original[DRPS_TEXT_SET] = text_set_original;
+    put_utf16(0x400, "The Corps Bren challenged you to battle!");
+    put_utf16(0x600, "Bren sent out Wormadam!");
+    put_utf16(0x700, "Volo sent out Togepi!");
+    g_drp_battle = 31;
+    drp_kind_start = host_ns = 90000000000ull;
+    host_ns += 3000000000ull;
+    drp_values.activity = DRP_BATTLE;
+    drp_values.kind = DRP_KIND_TRAINER;
+    drp_values.trainer[0] = 0;
+    const unsigned calls = text_set_calls, logs = text_line_logs;
+    CPU c = {.x = {[0] = 0x200, [1] = 0x600, [30] = 0x10000100}};
+    g_drp_files.kinds = DRP_FILE_WILD; /* not a trainer battle */
+    drp_text_set(&c, 0);
+    assert(!drp_values.trainer[0]);
+    g_drp_files.kinds = DRP_FILE_TRAINER;
+    c.x[1] = 0x400; /* the challenge line is not used */
+    drp_text_set(&c, 0);
+    assert(!drp_values.trainer[0]);
+    c.x[1] = 0x600;
+    drp_text_set(&c, 0);
+    assert(!strcmp(drp_values.trainer, "Bren") && drp_name_battle == 31);
+    c.x[1] = 0x700; /* the first match in the battle wins */
+    drp_text_set(&c, 0);
+    assert(!strcmp(drp_values.trainer, "Bren"));
+    SnxDrpValues v = {0};
+    assert(snx_drp_read(&g_drp_state, &v, 4) && !strcmp(v.trainer, "Bren"));
+    drp_set(DRP_FIELD); /* the battle's end clears it */
+    assert(!drp_values.trainer[0]);
+    g_drp_battle = 32; /* a new battle, 20 s after its start: no more looking */
+    drp_values.activity = DRP_BATTLE;
+    host_ns = drp_kind_start + 20000000000ull;
+    c.x[1] = 0x600;
+    drp_text_set(&c, 0);
+    assert(!drp_values.trainer[0]);
+    host_ns = drp_kind_start + 19000000000ull;
+    drp_text_set(&c, 0);
+    assert(!strcmp(drp_values.trainer, "Bren") && drp_name_battle == 32);
+    assert(text_set_calls == calls + 6 && text_line_logs == logs); /* always the game's function, no line logged */
+    drp_set(DRP_FIELD);
+    drp_values.activity = DRP_TITLE;
+    drp_presence = saved_presence, drp_probe = saved_probe;
     g_drp_files.kinds = 0;
     g_drp_battle = 0;
     host_ns = saved_ns;
@@ -2643,6 +2702,7 @@ static void test_text_line(void) {
 
 int main(void) {
     test_text_line();
+    test_trainer_line();
     test_text_walk();
     test_budget();
     test_mon_read();
