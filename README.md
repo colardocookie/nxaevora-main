@@ -53,6 +53,8 @@ If you would like to contribute, please read the [CONTRIBUTING.md](CONTRIBUTING.
 
 ・An accurate dynamic FPS patch (now in the maintenance phase, with changes limited to bug fixes)
 
+・The game is read from a decrypted game folder with no keys, and RomFS mods replace game files at run time.
+
 ### Planned features
 ・Intel Xe Ground Truth Ambient Occlusion (XeGTAO) support
 
@@ -80,7 +82,7 @@ Also, the plan for native implementation is also documented in [ROADMAP.md](ROAD
 
 - Windows 11 x64
 - A GPU with Vulkan 1.3 support
-- Decrypted game sources (RomFS, ExeFS), including the base game and the v1.1.1 update, dumped from your own copy<br>(NXAevora contains no game files. Do not ask for them and do not share them.)
+- Decrypted game sources (RomFS, ExeFS, control.nacp), including the base game and the v1.1.1 update, dumped from your own copy<br>(NXAevora contains no game files. Do not ask for them and do not share them.)
 
 ## Build
 
