@@ -1238,7 +1238,7 @@ static int same_name(const char* a, const char* b) {
     return !a[i] && !b[i];
 }
 int snx_launcher_name(const char* name) {
-    static const char* const names[] = {SNX_PROGRAM_FILE, SNX_PROGRAM_FILE "-switch", "ScarletNX-x86_64"};
+    static const char* const names[] = {SNX_PROGRAM_FILE, SNX_SWITCH_DRIVER, "ScarletNX-x86_64"};
     for (size_t i = 0; i < sizeof names / sizeof names[0]; ++i)
         if (same_name(name, names[i])) return 1;
     return 0;

@@ -26,6 +26,7 @@
 #if defined(SNX_MULTICALL_GUI) && defined(_WIN32)
 #include "gui/gui.h"
 #endif
+#include "common/utilities/common.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -61,7 +62,7 @@ static const Driver drivers[] = {
     {"scarletnx-gnuabi", snx_gnuabi_main, NULL},
 #endif
 #ifdef SNX_MULTICALL_SWITCH
-    {"nxaevora-engine-switch", snx_switch_main, NULL},
+    {SNX_SWITCH_DRIVER, snx_switch_main, NULL},
 #endif
 };
 #define DRIVERS (sizeof drivers / sizeof *drivers)

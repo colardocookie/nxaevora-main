@@ -23,6 +23,8 @@ typedef struct {
 #else
 #define SNX_PROGRAM_FILE "nxaevora-engine"
 #endif
+/* The Switch driver's name and link (src/multicall) */
+#define SNX_SWITCH_DRIVER "nxaevora-engine-switch"
 #define SNX_PROGRAM_NAME "NXAevora Engine"
 
 void* snx_alloc(size_t size);
