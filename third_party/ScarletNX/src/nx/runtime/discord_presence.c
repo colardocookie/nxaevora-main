@@ -46,6 +46,13 @@ static void drp_close(void* user) {
 }
 static unsigned long drp_pid(void) { return GetCurrentProcessId(); }
 #else
+/* A write to a socket Discord closed must fail, not raise SIGPIPE, which would end the process: MSG_NOSIGNAL on each
+   send where the system has it (Linux, Android), else SO_NOSIGPIPE on the socket (macOS, iOS) */
+#ifdef MSG_NOSIGNAL
+#define DRP_SEND_FLAGS MSG_NOSIGNAL
+#else
+#define DRP_SEND_FLAGS 0
+#endif
 static int drp_fd = -1;
 static int drp_open(void* user, int index) {
     (void)user;
@@ -54,6 +61,12 @@ static int drp_open(void* user, int index) {
     snprintf(a.sun_path, sizeof a.sun_path, "%s/discord-ipc-%d", dir && dir[0] ? dir : "/tmp", index);
     drp_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (drp_fd < 0) return 0;
+#if !defined(MSG_NOSIGNAL) && defined(SO_NOSIGPIPE)
+    const int one = 1;
+    setsockopt(drp_fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#elif !defined(MSG_NOSIGNAL)
+#error "no way to keep a closed Discord socket from raising SIGPIPE on this system"
+#endif
     if (connect(drp_fd, (const struct sockaddr*)&a, sizeof a)) {
         close(drp_fd);
         drp_fd = -1;
@@ -64,7 +77,7 @@ static int drp_open(void* user, int index) {
 static int drp_write(void* user, const void* data, size_t size) {
     (void)user;
     for (size_t done = 0; done < size;) {
-        const ssize_t n = send(drp_fd, (const char*)data + done, size - done, 0);
+        const ssize_t n = send(drp_fd, (const char*)data + done, size - done, DRP_SEND_FLAGS);
         if (n <= 0) return 0;
         done += (size_t)n;
     }
