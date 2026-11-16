@@ -25,8 +25,9 @@ int g_opt_fps;
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 static unsigned waza_dependency_warnings;
-static unsigned low_fps_skip_logs;
+static unsigned low_fps_skip_logs, text_line_logs;
 void logf_(int level, const char* fmt, ...) {
+    if (strstr(fmt, "arceus-drp: battle %u text %llx line")) text_line_logs++;
     if (level == 0 && strstr(fmt, "arceus-waza-shot: enabled without WAZA_OBJECT_FIX"))
         waza_dependency_warnings++;
     if (level == 1 && strstr(fmt, "arceus-clock: timing layer skipped at fps_limit="))
@@ -2591,7 +2592,57 @@ static void test_text_walk(void) {
     memset(memory, 0, sizeof memory);
 }
 
+/* P9b (research 00:15): a message line's UTF-16 as UTF-8 with its tags shown, and the window it is logged in */
+static unsigned text_set_calls;
+static void text_set_original(CPU* c, u64 entry) {
+    (void)c, (void)entry;
+    text_set_calls++;
+}
+static void test_text_line(void) {
+    char out[640];
+    const u16 plain[] = {'B', 'r', 'e', 'n', ' ', 'w', 'a', 'n', 't', 's', 0, 'x'};
+    assert(drp_text_line(plain, 12, out, sizeof out) == 10 && !strcmp(out, "Bren wants"));
+    const u16 tagged[] = {0x10, 3, 0x100, 0x2, 0x1f, 'B', 'r', 'e', 'n', '!', '\n', 0xe9, 0x3042, 0};
+    drp_text_line(tagged, 14, out, sizeof out);
+    assert(!strcmp(out, "{tag:100 2 1f}Bren! \xc3\xa9\xe3\x81\x82"));
+    const u16 cut[] = {'a', 0x10, 5, 1}; /* a tag cut by the copy's end */
+    drp_text_line(cut, 4, out, sizeof out);
+    assert(!strcmp(out, "a{tag:1}"));
+    u16 many[300];
+    for (int i = 0; i < 300; i++) many[i] = 'z';
+    char small[32];
+    assert(drp_text_line(many, 300, small, sizeof small) < sizeof small && strlen(small) < sizeof small);
+    /* the wrapper: only in a trainer battle's first 30 s, 64 lines a battle, the game's function always called */
+    const u64 saved_ns = host_ns, saved_base = main_base;
+    memset(memory, 0, sizeof memory);
+    main_base = 0x10000000;
+    drp_original[DRPS_TEXT_SET] = text_set_original;
+    put_utf16(0x400, "Bren");
+    g_drp_battle = 21;
+    drp_kind_start = host_ns = 70000000000ull;
+    host_ns += 1000000000ull;
+    CPU c = {.x = {[0] = 0x200, [1] = 0x400, [30] = 0x10000100}};
+    g_drp_files.kinds = DRP_FILE_WILD;
+    drp_text_set(&c, 0);
+    assert(text_set_calls == 1 && text_line_logs == 0);
+    g_drp_files.kinds = DRP_FILE_TRAINER;
+    for (int i = 0; i < 70; i++) drp_text_set(&c, 0);
+    assert(text_set_calls == 71 && text_line_logs == 64);
+    g_drp_battle = 22; /* a new battle: lines again */
+    drp_text_set(&c, 0);
+    assert(text_set_calls == 72 && text_line_logs == 65);
+    host_ns = drp_kind_start + 30000000000ull; /* 30 s on: no line, the game's function still called */
+    drp_text_set(&c, 0);
+    assert(text_set_calls == 73 && text_line_logs == 65);
+    g_drp_files.kinds = 0;
+    g_drp_battle = 0;
+    host_ns = saved_ns;
+    main_base = saved_base;
+    memset(memory, 0, sizeof memory);
+}
+
 int main(void) {
+    test_text_line();
     test_text_walk();
     test_budget();
     test_mon_read();

@@ -4300,7 +4300,7 @@ static void waza_shot_init(void) {
 /* Discord presence (SNX_ARCEUS_DISCORD, D1 and D2) and its read-only probe (SNX_ARCEUS_DISCORD_PROBE=1). Each wrapper
    runs the game's function and only reads what it was given or returned. The region comes from fs.c (D2). */
 enum { DRPS_AREA, DRPS_PARENT, DRPS_BATTLE, DRPS_MONSNO, DRPS_LEVEL, DRPS_END, DRPS_LOSE, DRPS_TRNAME, DRPS_TRDATA,
-       DRPS_TEXT, DRPS_SITES };
+       DRPS_TEXT, DRPS_TEXT_SET, DRPS_SITES };
 static GuestFn drp_original[DRPS_SITES];
 /* drp_probe: the read-only lines. drp_presence: the state for the host half, written under drp_lock by whichever
    game thread runs a wrapper or the tick */
@@ -4778,6 +4778,53 @@ static void drp_text(CPU* c, u64 entry) {
     pm_unlock(&drp_walk_lock);
 }
 
+/* P9b (research 00:15, the probe only, the last try for the trainer's name): the text object's vtable slot +58,
+   FC20C8, takes each message line as UTF-16 in x1 (0x10 starts a tag whose next unit is its length, 0 ends it, at
+   most 0x800 units). For 30 s from a trainer battle's start its lines are logged as UTF-8, tags as {tag:<units>},
+   64 lines a battle, with the caller. drp_text_line formats one line from units already copied. */
+static size_t drp_text_line(const u16* units, size_t count, char* out, size_t size) {
+    size_t n = 0;
+    out[0] = 0;
+    for (size_t i = 0; i < count && units[i] && n + 24 < size;) {
+        const unsigned u = units[i];
+        if (u == 0x10) {
+            const size_t len = i + 1 < count ? units[i + 1] : 0;
+            n += (size_t)snprintf(out + n, size - n, "{tag:");
+            for (size_t k = 0; k < len && i + 2 + k < count && n + 12 < size; k++)
+                n += (size_t)snprintf(out + n, size - n, "%s%x", k ? " " : "", units[i + 2 + k]);
+            n += (size_t)snprintf(out + n, size - n, "}");
+            i += 2 + len;
+            continue;
+        }
+        if (u < 0x80) out[n++] = u < 0x20 ? ' ' : (char)u;
+        else if (u < 0x800) out[n++] = (char)(0xc0 | u >> 6), out[n++] = (char)(0x80 | (u & 0x3f));
+        else
+            out[n++] = (char)(0xe0 | u >> 12), out[n++] = (char)(0x80 | ((u >> 6) & 0x3f)),
+            out[n++] = (char)(0x80 | (u & 0x3f));
+        out[n] = 0;
+        i++;
+    }
+    return n;
+}
+static void drp_text_set(CPU* c, u64 entry) {
+    const u64 text = c->x[0], line = c->x[1], caller = c->x[30], now = plat_ns();
+    static DrpBudget budget;
+    const int window = (__atomic_load_n(&g_drp_files.kinds, __ATOMIC_RELAXED) & DRP_FILE_TRAINER) &&
+                       now >= drp_kind_start && now - drp_kind_start < 30000000000ull;
+    if (window && drp_budget(&budget, 64)) {
+        u16 units[256];
+        size_t count = 0;
+        for (; count < 256 && readable(line + count * 2, 2); count++)
+            if (!(units[count] = (u16)gr16(line + count * 2))) break;
+        char out[640];
+        drp_text_line(units, count, out, sizeof out);
+        LOG("arceus-drp: battle %u text %llx line \"%s\", caller main+%llx, %llu ms after the start\n",
+            __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED), (unsigned long long)text, out,
+            (unsigned long long)(caller - main_base), (unsigned long long)((now - drp_kind_start) / 1000000));
+    }
+    drp_original[DRPS_TEXT_SET](c, entry);
+}
+
 /* UpdateBattleStartCoroutine (1DD7C68), called each frame of a battle's start with one object per battle. D2: the
    first call decides the opponent, record 0's Pokémon object ([+78]+90). In P1b's trainer battle that record was
    empty, so a battle without one says "In battle". Its copy is tried on the calls after, while the game holds it. */
@@ -4881,6 +4928,7 @@ static void discord_probe_init(void) {
         {0xfc70c8, 0xd10203ff, drp_trainer_word, "the trainer name's word (FC70C8)"},
         {0x83636c, 0xf81d0ff5, drp_trainer_data, "the trainer data's path (83636C)"},
         {0xfbfbd0, 0xd100c3ff, drp_text, "the message text's reveal (FBFBD0)"},
+        {0xfc20c8, 0xf81d0ff5, drp_text_set, "the message text's line (FC20C8)"},
     };
     for (unsigned k = 0; k < DRPS_SITES; k++) {
         /* the presence needs only the area name and the battle start, the rest are the probe's */
