@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* snx_user_dir and snx_user_path: an installed build's config, state and cache folders (the XDG Base Directory spec),
-   a portable copy's (config/, state/ and cache/ of its .scarletnx), and where a file of a data folder goes in them;
+   a portable copy's (config/, state/ and cache/ of its .nxaevora), and where a file of a data folder goes in them;
    snx_menu_dir: the launcher's own, for it and for a game of its; the logs and caches Settings > App > Folders picks
    in app.ini. tests/data_dir.c has the data folder itself. */
 #define _POSIX_C_SOURCE 200809L
@@ -67,7 +67,7 @@ int main(void) {
         for (kind = SNX_USER_DATA; kind <= SNX_USER_CACHE; ++kind) {
             /* unset, empty or relative: the spec's default under HOME */
             base = join(home, defaults[kind]);
-            expected = join(base, "scarletnx");
+            expected = join(base, "nxaevora");
             expect_dir(kind, expected);
             setenv(vars[kind], "", 1);
             expect_dir(kind, expected);
@@ -79,7 +79,7 @@ int main(void) {
             unsetenv("HOME");
             expect_dir(kind, NULL);
             base = join(root, vars[kind]);
-            expected = join(base, "scarletnx");
+            expected = join(base, "nxaevora");
             setenv(vars[kind], base, 1);
             expect_dir(kind, expected);
             setenv("HOME", home, 1);
@@ -181,9 +181,9 @@ int main(void) {
     expect_path(path, SNX_USER_CONFIG, path);
     expect_path(path, SNX_USER_CACHE, path);
     free(path);
-    /* a portable copy's .scarletnx: its config/, state/ and cache/, on every system */
+    /* a portable copy's .nxaevora: its config/, state/ and cache/, on every system */
     {
-        char *expected, *copy = join(root, "portable/.scarletnx");
+        char *expected, *copy = join(root, "portable/.nxaevora");
         path = join(copy, "games/Game");
         expected = join(copy, "config/games/Game");
         expect_path(path, SNX_USER_CONFIG, expected);
@@ -199,7 +199,7 @@ int main(void) {
         expect_path(copy, SNX_USER_STATE, expected);
         assert(snx_app_dir(copy) && !snx_app_dir(root));
         free(expected);
-        path = join(root, "portable/.scarletnx-other/games"); /* only that name */
+        path = join(root, "portable/.nxaevora-other/games"); /* only that name */
         expect_path(path, SNX_USER_STATE, path);
         free(path);
         /* the launcher's settings.ini and gamecontrollerdb.txt: its config/, for it and for a game in its games/ */
@@ -279,7 +279,7 @@ int main(void) {
         assert(!remove(ini));
         /* a portable copy's own app.ini, in its config/ */
         {
-            char *copy = join(root, "portable/.scarletnx"), *own = join(copy, "config"),
+            char *copy = join(root, "portable/.nxaevora"), *own = join(copy, "config"),
                  *own_ini = join(own, "app.ini");
             assert(!snx_mkdirs(own));
             text = snx_format("[folders]\ncache = %s\n", caches);

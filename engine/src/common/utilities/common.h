@@ -17,8 +17,12 @@ typedef struct {
     const char* source; /* the checkout the build came from (snx_checkout), to build tools in; NULL without one */
 } SnxPaths;
 
-/* The program's file name (CMake's output name) and the shown name of the windows and logs */
+/* The program's file name, as CMake sets it: nxaevora-engine unless APPLE or ANDROID (src/multicall/CMakeLists.txt) */
+#if defined(__APPLE__) || defined(__ANDROID__)
+#define SNX_PROGRAM_FILE "scarletnx"
+#else
 #define SNX_PROGRAM_FILE "nxaevora-engine"
+#endif
 #define SNX_PROGRAM_NAME "NXAevora Engine"
 
 void* snx_alloc(size_t size);

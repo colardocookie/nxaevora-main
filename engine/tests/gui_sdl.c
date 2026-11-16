@@ -3472,7 +3472,7 @@ int main(int argc, char** argv) {
         Uint64 until = SDL_GetTicks() + 5000;
         char* big = snx_path_join(app.games_dir, "big.bin");
         char* bytes = (char*)calloc(1, 3 << 20);
-        /* the test's own folders alone: the user's data folder (%APPDATA%\scarletnx on Windows) may be another
+        /* the test's own folders alone: the user's data folder (%APPDATA%\nxaevora on Windows) may be another
            test's at the same time */
         char *data_dir = app.data_dir, *themes = app.themes_dirs[0];
         app.data_dir = snx_path_join(temporary, "data");
@@ -5872,15 +5872,46 @@ int main(int argc, char** argv) {
     assert(app.menu.running && app.menu.selected == GUI_SWITCH);
     finish(&app, 0);
     assert(!app.native && !gui_steps_last(&app.steps, "LAUNCH")); /* a driver that started no game stayed compiling */
-    /* a menu that is no runtime's (a build without one) looks for scarletnx beside it, then on PATH */
+    /* a menu that is no runtime's (a build without one) looks for the program file beside it, then on PATH */
     {
         char* own = app.self;
         char* path = SDL_strdup(getenv("PATH"));
         app.self = NULL;
+        {   /* the program file beside the menu: found and run, before PATH is emptied */
+#ifdef _WIN32
+            char* found = snx_path_join(app.drivers, SNX_PROGRAM_FILE ".exe");
+#else
+            char* found = snx_path_join(app.drivers, SNX_PROGRAM_FILE);
+#endif
+            char* argv_file = snx_path_join(temporary, "find-driver.argv");
+            char* run_log = snx_path_join(temporary, "find-driver-run.log");
+            char* kept_log = app.run_log;
+            char* got;
+            assert(!snx_copy_file(self, found) && !snx_make_executable(found));
+            app.run_log = run_log; /* the run's output of the earlier run stays for the check below */
+            driver_will(argv_file, 0, "the fake driver ran");
+            launch(&app, snx_strdup(input), false);
+            play_made(&app);
+            assert(launched(&app));
+            got = ran(&app, 0);
+            assert(has_arg(got, input, NULL));
+            free(got);
+            driver_will(NULL, 0, NULL);
+            app.run_log = kept_log;
+            assert(!remove(run_log));
+            free(run_log);
+            assert(!remove(found));
+            free(argv_file);
+            free(found);
+        }
         set_env("PATH", "/nonexistent");
         launch(&app, snx_strdup(input), false);
         play_made(&app);
-        assert(!app.menu.running && !strcmp(app.message, "Cannot find scarletnx beside ScarletNX or on PATH."));
+        {
+            char* want = snx_format("Cannot find %s beside ScarletNX or on PATH.", SNX_PROGRAM_FILE);
+            assert(!app.menu.running && !strcmp(app.message, want));
+            free(want);
+        }
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR && !strcmp(app.error_line, app.message));
         key(&app, SDLK_RETURN); /* in the box too, whole, until OK */
         assert(!app.confirm.shown);
@@ -10572,7 +10603,7 @@ int main(int argc, char** argv) {
         free(first);
         free(state);
     }
-    /* Android's menu: its own files in its data folder's config/ and state/ (.scarletnx/ in the app's own files, which
+    /* Android's menu: its own files in its data folder's config/ and state/ (.nxaevora/ in the app's own files, which
        the Files app shows). An older version's, in the app's own files, are neither moved nor read: the menu starts
        from its defaults, and the box of what older versions left names each file with its size, then how they go while
        the app is in testing; Share Log too */

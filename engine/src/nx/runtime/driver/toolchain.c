@@ -45,14 +45,8 @@ char* snx_build_runtime(const SnxPaths* paths, int target_win, int quiet) {
     if (rc) {
         diagnostic("Runtime build", output);
         runtime = NULL;
-    } else {
-        /* Apple's app packaging keeps the target name; the other builds set CMake's output name */
-#if defined(__APPLE__) || defined(__ANDROID__)
-        runtime = snx_path_join(bdir, target_win ? "scarletnx.exe" : "scarletnx");
-#else
+    } else
         runtime = snx_path_join(bdir, target_win ? SNX_PROGRAM_FILE ".exe" : SNX_PROGRAM_FILE);
-#endif
-    }
     free(bdir);
     free(output);
     return runtime;

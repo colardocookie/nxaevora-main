@@ -332,7 +332,7 @@ static void test_first(App* app) {
     key(app, SDLK_UP); /* Keep */
     key(app, SDLK_RETURN);
     assert(!app->sizes_shown && app->menu.text_size == 1 && app->setup_on && page(app) == SNX_SETUP_LANGUAGE);
-    path = join(home, ".config/scarletnx/app.ini");
+    path = join(home, ".config/nxaevora/app.ini");
     assert(!snx_is_file(path)); /* kept for the setup's end, in the folders Install picks */
     free(path);
     key(app, SDLK_RIGHT); /* its dialog, its slider a step on: 2x, used on OK and asked about, ESC bringing 1x back */
@@ -374,7 +374,7 @@ static void test_first(App* app) {
     key(app, SDLK_UP);
     key(app, SDLK_LEFT); /* the list again */
     assert(!games_grid(app));
-    path = join(home, ".config/scarletnx/app.ini");
+    path = join(home, ".config/nxaevora/app.ini");
     assert(!snx_is_file(path)); /* still for the setup's end */
     free(path);
     key(app, SDLK_DOWN);
@@ -473,7 +473,7 @@ static void test_first(App* app) {
     holds(config, "app.ini", "side_box = on\n");
     holds(config, "app.ini", "games_view = list\n");
     holds(config, "app.ini", "games_icons = large\n");
-    path = join(home, ".config/scarletnx/setup.ini");
+    path = join(home, ".config/nxaevora/setup.ini");
     assert(!snx_is_file(path)); /* nothing in the user's folders */
     free(path);
     setup_start(app);

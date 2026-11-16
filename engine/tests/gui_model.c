@@ -323,25 +323,25 @@ int main(void) {
     /* a path in a row's columns: whole when it fits, else the root and its first folder, "...", and as many of the last
        folders as fit; a last name too long alone keeps its last letters; never wider than asked, a wide letter whole */
     {
-        const char* data = "/home/dravee/.local/share/scarletnx/recompiled"; /* 46 */
+        const char* data = "/home/dravee/.local/share/nxaevora/recompiled"; /* 45 */
         const char* paths[] = {
             data,
-            "C:\\Users\\me\\AppData\\Roaming\\scarletnx\\recompiled",
+            "C:\\Users\\me\\AppData\\Roaming\\nxaevora\\recompiled",
             "relative/to/here",
             "/x/averyveryverylongfilename.nro",
             "nameonlynoseparatorsatall",
             "/\xe8\x8f\x9c\xe5\x8d\x95/\xe8\x8f\x9c\xe5\x8d\x95\xe8\x8f\x9c/\xe6\xb8\xb8\xe6\x88\x8f.nro"};
         char out[128];
-        gui_path_fit(data, 46, out, sizeof out);
+        gui_path_fit(data, 45, out, sizeof out);
         assert(!strcmp(out, data));
         gui_path_fit(data, 30, out, sizeof out);
-        assert(!strcmp(out, "/home/.../scarletnx/recompiled"));
-        gui_path_fit(data, 29, out, sizeof out); /* the end's room first, then the start up to a separator */
+        assert(!strcmp(out, "/home/.../nxaevora/recompiled"));
+        gui_path_fit(data, 28, out, sizeof out); /* the end's room first, then the start up to a separator */
         assert(!strcmp(out, "/home/dravee/.../recompiled"));
         gui_path_fit(data, 33, out, sizeof out);
-        assert(!strcmp(out, "/home/.../scarletnx/recompiled"));
+        assert(!strcmp(out, "/home/.../nxaevora/recompiled"));
         gui_path_fit(paths[1], 30, out, sizeof out);
-        assert(!strcmp(out, "C:\\...\\scarletnx\\recompiled"));
+        assert(!strcmp(out, "C:\\...\\nxaevora\\recompiled"));
         gui_path_fit(paths[3], 16, out, sizeof out);
         assert(!strcmp(out, "/x/...lename.nro"));
         gui_path_fit(paths[4], 12, out, sizeof out);

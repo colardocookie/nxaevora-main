@@ -6155,7 +6155,7 @@ static const char* driver_name(int item) {
         case GUI_VITA: return "libscarletnx-vita.so";
         case GUI_GBA: return "libscarletnx-agb.so";
 #else
-        case GUI_SWITCH: return "scarletnx";
+        case GUI_SWITCH: return SNX_PROGRAM_FILE;
         case GUI_LINUX: return "scarletnx-gnuabi";
         case GUI_3DS: return "scarletnx-3ds";
         case GUI_VITA: return "scarletnx-vita";

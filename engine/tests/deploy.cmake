@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # cmake/deploy.cmake copies the runtime beside each game of SNX_RECOMPILED_DIR, else of the data folder a build tree's
-# driver uses (snx_data_dir): a .scarletnx/ beside the runtime, else the user's ($XDG_DATA_HOME/scarletnx, a relative
+# driver uses (snx_data_dir): a .nxaevora/ beside the runtime, else the user's ($XDG_DATA_HOME/nxaevora, a relative
 # one ignored). Without a home folder it deploys nothing and says so. Run by ctest as runtime_deploy, with no
 # runtime: any file is copied the same way
 set(dir "${CMAKE_CURRENT_BINARY_DIR}/runtime-deploy")
@@ -102,16 +102,16 @@ if(NOT result EQUAL 0 OR EXISTS "${dir}/odd/Odd/Odd" OR NOT out MATCHES "Odd.ini
     file(REMOVE_RECURSE "${dir}")
     message(FATAL_ERROR "a game of system=nds got a runtime, or no line said why not (${result}):\n${out}")
 endif()
-game("${dir}/xdg/scarletnx/recompiled")
+game("${dir}/xdg/nxaevora/recompiled")
 deploy("" "XDG_DATA_HOME=${dir}/xdg" "HOME=${dir}/home")
-deployed("${dir}/xdg/scarletnx/recompiled" "the user's data folder")
-game("${dir}/home/.local/share/scarletnx/recompiled")
+deployed("${dir}/xdg/nxaevora/recompiled" "the user's data folder")
+game("${dir}/home/.local/share/nxaevora/recompiled")
 deploy("" "XDG_DATA_HOME=relative" "HOME=${dir}/home")
-deployed("${dir}/home/.local/share/scarletnx/recompiled" "a relative XDG_DATA_HOME")
-game("${dir}/bin/.scarletnx/recompiled")
+deployed("${dir}/home/.local/share/nxaevora/recompiled" "a relative XDG_DATA_HOME")
+game("${dir}/bin/.nxaevora/recompiled")
 deploy("" "XDG_DATA_HOME=${dir}/xdg")
-deployed("${dir}/bin/.scarletnx/recompiled" "a portable copy's")
-file(REMOVE_RECURSE "${dir}/bin/.scarletnx")
+deployed("${dir}/bin/.nxaevora/recompiled" "a portable copy's")
+file(REMOVE_RECURSE "${dir}/bin/.nxaevora")
 deploy("")
 file(REMOVE_RECURSE "${dir}")
 if(NOT result EQUAL 0 OR NOT out MATCHES "Runtime not deployed: no home folder to find the games in")

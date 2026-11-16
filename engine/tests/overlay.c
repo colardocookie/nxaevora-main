@@ -889,7 +889,7 @@ int main(void) {
         i = glyph_at(3, total - 4, 'S');
         assert(i >= 0 && list.q[i].rgba == focused);
         /* what Share Log did, over the items, and kept when the picture is short */
-        panel.said = "Log saved to /home/player/.local/state/scarletnx/games/0100ABCD12345000/scarletnx.log.";
+        panel.said = "Log saved to /home/player/.local/state/nxaevora/games/0100ABCD12345000/scarletnx.log.";
         list.n = 0;
         overlay_error_draw(&list, SW, 260, &panel);
         overlay_place(SW, 260, &px, &py, &s);
@@ -917,7 +917,7 @@ int main(void) {
        short screen that hides the path leaves no invisible click target. */
     {
         int i, underlines = 0;
-        const char* path = "/home/player/.local/state/scarletnx/A game with a long name.log";
+        const char* path = "/home/player/.local/state/nxaevora/A game with a long name.log";
         SnxOverlayError panel = panel_of("GAME", "message", "The game's log:", path, NULL);
         SnxOverlayRect link;
         list.n = 0;
@@ -949,7 +949,7 @@ int main(void) {
            both, the whole path is still there and still a link */
         {
             const char* said =
-                "Log saved to /home/player/.local/state/scarletnx/games/0100ABCD12345000/scarletnx.log (path copied).";
+                "Log saved to /home/player/.local/state/nxaevora/games/0100ABCD12345000/scarletnx.log (path copied).";
             int whole;
             panel = panel_of("GAME", "Unsupported instruction ce62c820 at 801b67c",
                              "The game's log has what ran last:", path, NULL);
