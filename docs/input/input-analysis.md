@@ -62,7 +62,7 @@ Result: native mouse look cannot be given to the game as a mouse. The mouse move
   a. A patch file in `recomp/patches/` that is applied to the submodule before the build. The pin of the submodule stays.
   b. A change that is proposed to the upstream project, with the patch kept until it is accepted.
   c. A fork of ScarletNX. This is the largest cost, so it is not the first choice.
-- The game-specific values (dead zone, camera speed, button names) belong to NXAevora (`runtime/` or `recomp/config`).
+- The game-specific values (dead zone, camera speed, button names) belong to NXAevora (`engine/` or `recomp/config`).
   The general part (mouse capture, remap table) is useful for any game, so it fits upstream.
 
 ## Decisions of the user

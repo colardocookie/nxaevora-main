@@ -123,7 +123,7 @@ Exit condition: the decision above is recorded. The optional check can be done a
   read (see `docs/analysis/stutter-analysis.md`, the hitch runs). The runtime's sleeps are exact, so no fix is planned. The cause of
   the other slow frames is not known.
 - Audio and save data.
-- Services of the console that Arceus needs and ScarletNX does not have yet (`runtime/hle`).
+- Services of the console that Arceus needs and ScarletNX does not have yet (`engine/src/nx/hle`).
 
 Exit condition: the covered scenes play at the speed and the quality that the user accepts.
 
@@ -249,7 +249,7 @@ Exit condition: the whole game is playable with the keyboard and the mouse, and 
 ## Phase 10: Host replacement of SDK functions
 
 Replace SDK functions of the game with code on the host. Use the preparation that exists (the recompile patches in
-`recomp/patches/`, the analysis of the SDK code from the disassembly, and the HLE services in `runtime/hle`). Make the
+`recomp/patches/`, the analysis of the SDK code from the disassembly, and the HLE services in `engine/src/nx/hle`). Make the
 new graphics layer of phase 6 part of it, so that the SDK calls that touch graphics go to the host too.
 
 Exit condition: the replaced functions are listed in `docs/`, each has a test run, and the game runs with 0 misses.
