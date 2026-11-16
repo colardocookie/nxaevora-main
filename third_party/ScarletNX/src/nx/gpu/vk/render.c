@@ -2918,7 +2918,8 @@ static void spatial_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, int ot
             d.address[1] = (u32)made.addressModeV < 5 ? address[made.addressModeV] : TEMPORAL_SPATIAL_OTHER_ADDRESS;
         }
         d.one_level = t->levels == 1;
-        /* the view as vk_tex_bind_view makes it: the image's own format, two dimensions, the identity mapping */
+        /* the view as vk_tex_bind_view makes it: the image's own format and two dimensions. Its mapping may be any:
+           the replacement's view takes the game view's own (below) */
         d.view_format_same = num == 0 && !(st->flags & 1) && !tex_srgb(x->tic, x->tsc) && !t->f.depth &&
                              !t->f.is_int && !(t->fkey & (1u << 30));
         d.view_2d = want == VK_IMAGE_VIEW_TYPE_2D;
