@@ -4300,7 +4300,7 @@ static void waza_shot_init(void) {
 /* DRP-0, read-only (SNX_ARCEUS_DISCORD_PROBE=1): where the game keeps the area, the party and a battle's start, for
    Discord presence. Each wrapper runs the game's function first and only logs what it returned or was given. */
 enum { DRPS_AREA, DRPS_PARENT, DRPS_BATTLE, DRPS_SHOW, DRPS_MONSNO, DRPS_LEVEL, DRPS_END, DRPS_LOSE, DRPS_PLACE,
-       DRPS_SITES };
+       DRPS_CHANGE, DRPS_SITES };
 static GuestFn drp_original[DRPS_SITES];
 /* drp_probe: the read-only lines (SNX_ARCEUS_DISCORD_PROBE). drp_presence: the state for the host half
    (SNX_ARCEUS_DISCORD, D1), written under drp_lock by whichever game thread runs a wrapper */
@@ -4486,15 +4486,12 @@ static void drp_tick(void) {
         pm_unlock(&drp_lock);
         if (ended) drp_set(DRP_FIELD);
     }
-    /* the title screen until a save is loaded: the party object's chain readable with a count of 1 to 6 */
-    if (drp_presence && __atomic_load_n(&g_drp_state.activity, __ATOMIC_RELAXED) == DRP_TITLE) {
-        const u64 slot = main_base + 0x4279680, holder = readable(slot, 8) ? gr64(slot) : 0;
-        const u64 single = readable(holder, 8) ? gr64(holder) : 0;
-        const u64 p = readable(single + 0xd0, 8) ? gr64(single + 0xd0) : 0;
-        const u64 q = readable(p + 0x58, 8) ? gr64(p + 0x58) : 0;
-        const u64 n = readable(q + 0x88, 8) ? gr64(q + 0x88) : 0;
-        if (n >= 1 && n <= 6) drp_set(DRP_FIELD);
-    }
+    /* the title screen until the player's camera first takes input in the field (the camera input fix's wrapper,
+       20 to 46 s into DRP-P3 to P4, after the title), or an area call. The party's data is there from the boot, so it
+       cannot tell (DRP-P4). */
+    if (drp_presence && __atomic_load_n(&g_drp_state.activity, __ATOMIC_RELAXED) == DRP_TITLE &&
+        __atomic_load_n(&camera_input_calls, __ATOMIC_RELAXED))
+        drp_set(DRP_FIELD);
     if (drp_probe) drp_watch();
 }
 static void drp_trainer_walk(u64 object);
@@ -4577,6 +4574,25 @@ static void drp_area_by_hash(u64 hash, char* name, size_t size) {
             return;
         }
 }
+/* P5: the field's RequestAreaChange (the FieldProc native at 1D5A958): w1 is an index into the area table, whose
+   entry (its hash and name) it reads first. The name sets the region, and with the probe it is logged. */
+static void drp_area_change(CPU* c, u64 entry) {
+    const int32_t index = (int32_t)c->x[1];
+    const u64 caller = c->x[30];
+    const u64 slot = main_base + 0x427a788, holder = readable(slot, 8) ? gr64(slot) : 0;
+    const u64 single = readable(holder, 8) ? gr64(holder) : 0, a = readable(single + 0x78, 8) ? gr64(single + 0x78) : 0;
+    const u64 b = readable(a + 0x70, 8) ? gr64(a + 0x70) : 0, base = readable(b + 0x278, 16) ? gr64(b + 0x278) : 0;
+    char name[64] = "";
+    if (base && index >= 0 && index < 400 && readable(base + (u64)index * 32, 32))
+        drp_string(gr64(base + (u64)index * 32 + 8), name, sizeof name);
+    drp_original[DRPS_CHANGE](c, entry);
+    const u64 count = __atomic_add_fetch(&drp_calls[DRPS_CHANGE], 1, __ATOMIC_RELAXED);
+    if (drp_presence && name[0]) drp_set_region(snx_drp_region(name));
+    if (drp_probe)
+        LOG("arceus-drp: RequestAreaChange %llu: index %d \"%s\", region row %d, caller main+%llx, ns=%llu\n",
+            (unsigned long long)count, (int)index, name, snx_drp_region(name), (unsigned long long)(caller - main_base),
+            (unsigned long long)plat_ns());
+}
 /* P4: FC7318, which the area name panel (1077BC4) calls to map an area's data (its hash at [[x2]+58]) to a place
    name. The hash, its name in the area table, the result, each change. With the presence, the region. */
 static void drp_place(CPU* c, u64 entry) {
@@ -4595,11 +4611,11 @@ static void drp_place(CPU* c, u64 entry) {
     last = hash;
 }
 /* P4: the trainer's name. At each battle start, a walk of the start object's pointers to depth 2, 0x200 bytes
-   each, logging each run of 2 to 32 letters as UTF-8 or UTF-16 (the user's next trainer tells which is the name) */
+   each, logging each run of 4 to 32 letters with a vowel, as UTF-8 or UTF-16, at most 64 lines a battle */
 static unsigned drp_walk_lines;
 static void drp_text_runs(const char* path, u64 at) {
     if (!readable(at, 0x200)) return;
-    for (unsigned i = 0; i < 0x200 && drp_walk_lines < 200;) {
+    for (unsigned i = 0; i < 0x200 && drp_walk_lines < 64;) {
         char text[40];
         unsigned n = 0, wide = i + 1 < 0x200 && *(const u8*)GP(at + i + 1) == 0;
         for (unsigned k = i; k + (wide ? 1 : 0) < 0x200 && n < 33; k += wide ? 2 : 1) {
@@ -4608,7 +4624,9 @@ static void drp_text_runs(const char* path, u64 at) {
             if (!letter || (wide && *(const u8*)GP(at + k + 1))) break;
             text[n++] = (char)ch;
         }
-        if (n >= 2 && n <= 32) {
+        int vowel = 0; /* 4 to 32 letters with a vowel: DRP-P4's 2-letter runs were noise */
+        for (unsigned k = 0; k < n; k++) vowel |= strchr("AEIOUYaeiouy", text[k]) != NULL;
+        if (n >= 4 && n <= 32 && vowel) {
             text[n] = 0;
             drp_walk_lines++;
             LOG("arceus-drp: battle text %s+%03x: %s \"%s\"\n", path, i, wide ? "UTF-16" : "UTF-8", text);
@@ -4665,10 +4683,11 @@ static void discord_probe_init(void) {
         {0x17dcf30, 0x911d6c08, drp_battle_end, "the player's OnBattleEnd"},
         {0x17dcf40, 0x395d6c08, drp_battle_lose, "the player's OnBattleLoseEnd"},
         {0xfc7318, 0xd100c3ff, drp_place, "the area name panel's place lookup"},
+        {0x1d5a958, 0xd10683ff, drp_area_change, "the field's RequestAreaChange"},
     };
     for (unsigned k = 0; k < DRPS_SITES; k++) {
         /* the presence needs only the area name and the battle start, the rest are the probe's */
-        if (!drp_probe && k != DRPS_AREA && k != DRPS_BATTLE && k != DRPS_PLACE) continue;
+        if (!drp_probe && k != DRPS_AREA && k != DRPS_BATTLE && k != DRPS_PLACE && k != DRPS_CHANGE) continue;
         const u64 pc = main_base + sites[k].offset;
         if (pc < g_code_lo || pc >= g_code_hi || !readable(pc, 4) || gr32(pc) != sites[k].word ||
             !g_disp[(pc - g_code_lo) / 4]) {
