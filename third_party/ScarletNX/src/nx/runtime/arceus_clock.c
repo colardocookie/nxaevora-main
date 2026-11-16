@@ -4307,11 +4307,11 @@ static int drp_probe, drp_presence;
 static PMutex drp_lock = PMUTEX_INIT;
 static SnxDrpValues drp_values = {-1, DRP_FIELD, 0};
 static u64 drp_unread, drp_area_object, drp_area_hash; /* the last area GetAreaName was given, for the tick's watch */
-/* the activity, or the party's size with activity UINT32_MAX; the region stays -1 until a read of it is found */
-static void drp_set(uint32_t activity, uint32_t party) {
+/* the activity; the region stays -1 until a read of it is found, and the party's size is not shown (the user,
+   DRP-P3: the party belongs in the profile's extra information, D2) */
+static void drp_set(uint32_t activity) {
     pm_lock(&drp_lock);
-    if (activity != UINT32_MAX) drp_values.activity = activity;
-    else drp_values.party = party;
+    drp_values.activity = activity;
     snx_drp_write(&g_drp_state, &drp_values);
     pm_unlock(&drp_lock);
 }
@@ -4381,7 +4381,7 @@ static void drp_name(CPU* c, u64 entry, unsigned kind) {
     /* An area's name comes on the return to the field after a battle (DRP-D1, research 08:20), so it ends the
        battle. It is never the region: travel does not call it. */
     if (drp_presence && kind == DRPS_AREA) {
-        if (name[0]) drp_set(DRP_FIELD, 0);
+        if (name[0]) drp_set(DRP_FIELD);
         else if (__atomic_add_fetch(&drp_unread, 1, __ATOMIC_RELAXED) % 600 == 1)
             LOG("arceus-discord: an area name could not be read (%llu so far)\n", (unsigned long long)drp_unread);
     }
@@ -4417,19 +4417,10 @@ static void drp_party(void) {
         (unsigned long long)(vt ? vt - main_base : 0), (unsigned long long)(member ? member - main_base : 0));
     drp_words("party object", q, 24);
 }
-/* The party's size: the party object's count at +88 (DRP-D1: six objects at +58 to +80 and 6 here), 0 when the
-   chain cannot be read or the count is out of range */
-static uint32_t drp_party_size(void) {
-    const u64 slot = main_base + 0x4279680, holder = readable(slot, 8) ? gr64(slot) : 0;
-    const u64 single = readable(holder, 8) ? gr64(holder) : 0, p = readable(single + 0xd0, 8) ? gr64(single + 0xd0) : 0;
-    const u64 q = readable(p + 0x58, 8) ? gr64(p + 0x58) : 0;
-    const u64 n = readable(q + 0x88, 8) ? gr64(q + 0x88) : 0;
-    return n <= 6 ? (uint32_t)n : 0;
-}
-/* P3 item 1: the area manager's objects (the table's singleton, its +78 and +70), 0x400 bytes each, logged by word
+/* P3 item 1: the area manager's objects (the table's singleton, its +78 and +70), 0x1000 bytes each, logged by word
    when a word changes, for a word that has changed fewer than 8 times (so counters fall silent), to see which one
    follows a trip between regions. Also each word that holds the last area object or its hash. */
-#define DRP_WATCH_WORDS 128
+#define DRP_WATCH_WORDS 512
 static u64 drp_watch_last[3][DRP_WATCH_WORDS];
 static u8 drp_watch_changes[3][DRP_WATCH_WORDS];
 static int drp_watch_seen;
@@ -4459,16 +4450,31 @@ static void drp_watch(void) {
         }
     }
     drp_watch_seen = 1;
+    /* what the singleton's +58 and +68 point to (one pointer since 25.9 s in DRP-P3), each time it changes */
+    static u64 last_pointed;
+    const u64 pointed = readable(single + 0x58, 8) ? gr64(single + 0x58) : 0;
+    if (pointed != last_pointed) {
+        last_pointed = pointed;
+        drp_words("area singleton's +58", pointed, 32);
+    }
 }
-static u64 drp_next_tick;
+/* A battle ends when the battle effect sequences (9DBEAC, the battle sequence fix's wrapper and its counter) have
+   not run for 3 s, or at an area call, whichever first (DRP-P3, research 09:00). Inside the battles seen they ran in
+   every second, menus included, and outside them never. drp_battle_since: the start, or the counter's last move. */
+static u64 drp_next_tick, drp_battle_seen, drp_battle_since;
 static void drp_tick(void) {
     const u64 now = plat_ns(), next = __atomic_load_n(&drp_next_tick, __ATOMIC_RELAXED);
     if (now < next || !__atomic_compare_exchange_n(&drp_next_tick, &(u64){next}, now + 1000000000ull, 0,
                                                      __ATOMIC_RELAXED, __ATOMIC_RELAXED))
         return;
-    if (drp_presence) {
-        const uint32_t party = drp_party_size();
-        if (party != __atomic_load_n(&g_drp_state.party, __ATOMIC_RELAXED)) drp_set(UINT32_MAX, party);
+    if (drp_presence && battle_sequence_original) {
+        const u64 calls = __atomic_load_n(&battle_sequence_calls, __ATOMIC_RELAXED);
+        pm_lock(&drp_lock);
+        const int in_battle = drp_values.activity != DRP_FIELD;
+        if (calls != drp_battle_seen) drp_battle_seen = calls, drp_battle_since = now;
+        const int ended = snx_drp_battle_over(in_battle, now, drp_battle_since);
+        pm_unlock(&drp_lock);
+        if (ended) drp_set(DRP_FIELD);
     }
     if (drp_probe) drp_watch();
 }
@@ -4477,7 +4483,12 @@ static void drp_battle_start(CPU* c, u64 entry) {
     const u64 count = __atomic_add_fetch(&drp_calls[DRPS_BATTLE], 1, __ATOMIC_RELAXED);
     /* "In battle" for every battle: the word at +64 is a handle, not a kind (DRP-D1), and battleStartType is not
        found yet */
-    if (drp_presence && object != drp_last_battle) drp_set(DRP_BATTLE, 0);
+    if (drp_presence && object != drp_last_battle) {
+        pm_lock(&drp_lock);
+        drp_battle_since = plat_ns(); /* the effects begin about 0.7 s after the start (DRP-P3) */
+        pm_unlock(&drp_lock);
+        drp_set(DRP_BATTLE);
+    }
     if (drp_probe && object != drp_last_battle) {
         drp_last_battle = object;
         LOG("arceus-drp: battle start %llu: object %llx (vtable main+%llx), caller main+%llx\n",
@@ -4582,7 +4593,9 @@ static void discord_probe_init(void) {
     }
     /* the tick needs the clock layer's read wrapper, which runs it on the game's threads */
     __atomic_store_n(&drp_ticking, 1, __ATOMIC_RELEASE);
-    if (!clocks_installed) WARN("arceus-drp: no tick without the elapsed-time clocks: the party size is not read\n");
+    if (!clocks_installed || !battle_sequence_original)
+        WARN("arceus-drp: without the elapsed-time clocks and the battle sequence fix a battle ends only at an area "
+             "call\n");
 }
 
 void arceus_clock_post_jit(void) {

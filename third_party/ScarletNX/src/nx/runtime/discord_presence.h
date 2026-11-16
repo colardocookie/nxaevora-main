@@ -89,6 +89,13 @@ static inline const char* snx_drp_state_line(const SnxDrpValues* v, char* out, s
     return out;
 }
 
+/* A battle is over when its effect sequences have not run for 3 s (DRP-P3, research 09:00). since: the battle's
+   start or the counter's last move, whichever is later. */
+#define SNX_DRP_BATTLE_QUIET_NS 3000000000ull
+static inline int snx_drp_battle_over(int in_battle, uint64_t now, uint64_t since) {
+    return in_battle && now >= since && now - since >= SNX_DRP_BATTLE_QUIET_NS;
+}
+
 /* The application id: 1 to 20 decimal digits */
 static inline int snx_drp_app_ok(const char* id) {
     if (!id || !id[0] || strlen(id) > 20) return 0;

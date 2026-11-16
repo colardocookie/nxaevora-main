@@ -138,6 +138,14 @@ static void test_due(void) {
     assert(snx_drp_due("b", "a", 4 * s, 0, 1));          /* and goes at their end */
 }
 
+static void test_battle_over(void) {
+    const uint64_t s = 1000000000ull;
+    assert(!snx_drp_battle_over(0, 100 * s, 0));               /* not in a battle: nothing to end */
+    assert(!snx_drp_battle_over(1, 12 * s, 10 * s));           /* 2 s quiet: still in it */
+    assert(snx_drp_battle_over(1, 13 * s, 10 * s));            /* 3 s quiet: over */
+    assert(!snx_drp_battle_over(1, 9 * s, 10 * s));            /* a start after now (a race): not over */
+}
+
 static void test_session(void) {
     Stand st = {0};
     const SnxDrpPipe pipe = {st_open, st_write, st_read, st_close, &st};
@@ -191,6 +199,7 @@ int main(void) {
     test_json();
     test_frame();
     test_due();
+    test_battle_over();
     test_session();
     puts("discord_presence: all checks passed");
     return 0;
