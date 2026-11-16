@@ -361,9 +361,11 @@ and leaves every such frame as drawn. With it, in `probe` and in `taa`, a frame 
   nothing, in the resolve and in the numbers. The history, and the copy of the frame before that the numbers
   and the error view use, are used only when they were made from the same images, sizes, rectangle and fraction.
   Without such a copy a frame has no numbers and no error view.
-- The rejection bound is an eighth of the rectangle's height, the numbers' lattice spans the rectangle, the
-  jitter has ceil(8 x W x H / (w x h)) offsets, and without `SNX_ARCEUS_TEMPORAL_MIPBIAS` the scene draws of a
-  jittered frame get a level bias of log2(w / W), the same for every draw of the frame: the renderer has the
+- The rejection bound is an eighth of the rectangle's height, the numbers' lattice spans the rectangle, and the
+  jitter has ceil(8 x W x H / (w x h)) offsets, ceil(8 / f^2) for a scale f. At 3/5, 3/4 and 4/5 that is one more
+  than the truncated count in AMD's and NVIDIA's guidance, which the SDKs do not take as an input. Without
+  `SNX_ARCEUS_TEMPORAL_MIPBIAS` the scene draws of a jittered frame get a level bias of log2(w / W), the same for
+  every draw of the frame: the renderer has the
   frame decided before the deciding draw's samplers are chosen. A number in that switch, 0 included, turns the
   automatic bias off. The options line says which: automatic, set to a value, or none. A value that was set is
   given, like the automatic one, only in a frame the gate accepted at its first draw (the first acceptance,
