@@ -2757,7 +2757,7 @@ static int edges_announce(void) {
 
 /* The mode. The process's result: 0 when every case passed and the validation layer was there and silent. */
 int vk_upscaler_selftest(const char* adapter) {
-    int pass;
+    int pass = 1;
     LOG(ST "started for the adapter \"%s\". No game is loaded and no window is opened\n", adapter);
     if (!edges_announce()) return 1;
     g.api = vk_upscaler_adapter_selftest(adapter);
@@ -2794,7 +2794,7 @@ int vk_upscaler_selftest(const char* adapter) {
                 pass &= vector_signs(up) || skip_rest();
                 g.generation++;
             }
-        pass = native(1) || skip_rest();
+        pass &= native(1) || skip_rest(); /* with &=, so that the vector signs' runs above stay in the verdict */
         g.generation++;
         pass &= native(0) || skip_rest();
         g.generation++;

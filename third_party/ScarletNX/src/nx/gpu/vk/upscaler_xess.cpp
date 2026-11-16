@@ -399,19 +399,29 @@ xess_vk_image_view_info view(const SnxUpscalerImage& image, VkImageAspectFlags a
 
 int evaluate(SnxUpscaler* u, const SnxUpscalerFrame* f) {
     if (!on_owner("evaluate")) return SNX_UPSCALER_FAILED;
-    /* inputs readable by shaders, the output in the general layout, the vectors' scale the context's, the render
-       size inside the chosen mode's range: anything else is refused before XeSS is called */
+    /* inputs readable by shaders, the output in the general layout, the render size inside the chosen mode's range,
+       the output's format the context's: anything else is refused before XeSS is called */
     if (f->colour.layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ||
         f->depth.layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ||
         f->motion.layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || f->output.layout != VK_IMAGE_LAYOUT_GENERAL ||
-        f->vector_scale[0] != u->velocity[0] || f->vector_scale[1] != u->velocity[1] || f->render_x < 0 ||
-        f->render_y < 0 || !snx_mode_holds(&u->mode, f->render_w, f->render_h) ||
+        f->render_x < 0 || f->render_y < 0 || !snx_mode_holds(&u->mode, f->render_w, f->render_h) ||
         f->output.format != u->made.output_format) {
-        logf_(0, "arceus-upscaler: xess: a frame not evaluated: a layout, the vectors' scale %.9g %.9g (the "
-                 "context's %.9g %.9g), the rectangle %ux%u at %d,%d or the output's format is not the context's\n",
-              (double)f->vector_scale[0], (double)f->vector_scale[1], (double)u->velocity[0], (double)u->velocity[1],
-              f->render_w, f->render_h, f->render_x, f->render_y);
+        logf_(0, "arceus-upscaler: xess: a frame not evaluated: a layout, the rectangle %ux%u at %d,%d or the "
+                 "output's format is not the context's\n", f->render_w, f->render_h, f->render_x, f->render_y);
         return SNX_UPSCALER_FAILED;
+    }
+    /* XeSS holds the vectors' scale in the context: a frame with another one (the self-test's vector signs, XS2-b)
+       sets it first. The game's frames keep the scale made at create, so there it is never set again. */
+    if (f->vector_scale[0] != u->velocity[0] || f->vector_scale[1] != u->velocity[1]) {
+        if (!succeeded(g_library.velocity_scale(u->context, f->vector_scale[0], f->vector_scale[1]),
+                       "its velocity scale for a frame")) {
+            logf_(0, "arceus-upscaler: xess: a frame not evaluated: the vectors' scale %.9g %.9g could not be set "
+                     "(the context's %.9g %.9g)\n", (double)f->vector_scale[0], (double)f->vector_scale[1],
+                  (double)u->velocity[0], (double)u->velocity[1]);
+            return SNX_UPSCALER_FAILED;
+        }
+        u->velocity[0] = f->vector_scale[0];
+        u->velocity[1] = f->vector_scale[1];
     }
     xess_vk_execute_params_t e = {};
     e.colorTexture = view(f->colour, VK_IMAGE_ASPECT_COLOR_BIT);
