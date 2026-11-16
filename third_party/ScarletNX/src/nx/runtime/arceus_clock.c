@@ -4300,7 +4300,7 @@ static void waza_shot_init(void) {
 /* Discord presence (SNX_ARCEUS_DISCORD, D1 and D2) and its read-only probe (SNX_ARCEUS_DISCORD_PROBE=1). Each wrapper
    runs the game's function and only reads what it was given or returned. The region comes from fs.c (D2). */
 enum { DRPS_AREA, DRPS_PARENT, DRPS_BATTLE, DRPS_MONSNO, DRPS_LEVEL, DRPS_END, DRPS_LOSE, DRPS_TRNAME, DRPS_TRDATA,
-       DRPS_SITES };
+       DRPS_TEXT, DRPS_SITES };
 static GuestFn drp_original[DRPS_SITES];
 /* drp_probe: the read-only lines. drp_presence: the state for the host half, written under drp_lock by whichever
    game thread runs a wrapper or the tick */
@@ -4738,6 +4738,46 @@ static void drp_trainer_data(CPU* c, u64 entry) {
             (unsigned long long)(caller - main_base), (unsigned long long)plat_ns());
 }
 
+/* P9 (research 22:45, the probe only): the trainer's name in the text the battle shows. FBFBD0, the message text
+   processor's reveal (T = x0), is a vtable method (main+40F01A0), so our dispatch wrapper sees its calls, and it
+   writes nothing. For 30 s from a trainer battle's start (its trdata file read, the kind bit), each text T is walked
+   once a text (at its first call, again after a call that ends a text): depth 2, 0x400 bytes an object, UTF-16 and
+   UTF-8 runs with the offsets that reached them and the reveal's caller, 64 lines a battle. */
+#define DRP_TEXT_OBJECTS 16
+static u64 drp_text_seen[DRP_TEXT_OBJECTS], drp_text_calls;
+static u32 drp_text_battle, drp_text_lines;
+static void drp_text(CPU* c, u64 entry) {
+    const u64 text = c->x[0], caller = c->x[30], now = plat_ns();
+    drp_original[DRPS_TEXT](c, entry);
+    const int ended = !(c->x[0] & 1);
+    __atomic_add_fetch(&drp_text_calls, 1, __ATOMIC_RELAXED);
+    if (!(__atomic_load_n(&g_drp_files.kinds, __ATOMIC_RELAXED) & DRP_FILE_TRAINER)) return;
+    pm_lock(&drp_walk_lock);
+    const u32 battle = __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED);
+    if (battle != drp_text_battle) {
+        drp_text_battle = battle;
+        drp_text_lines = 0;
+        memset(drp_text_seen, 0, sizeof drp_text_seen);
+    }
+    int seen = -1, free_slot = -1;
+    for (int k = 0; k < DRP_TEXT_OBJECTS; k++) {
+        if (drp_text_seen[k] == text) seen = k;
+        if (!drp_text_seen[k] && free_slot < 0) free_slot = k;
+    }
+    const int window = now >= drp_kind_start && now - drp_kind_start < 30000000000ull;
+    if (window && seen < 0 && free_slot >= 0 && drp_text_lines < 64) {
+        drp_text_seen[free_slot] = text;
+        LOG("arceus-drp: battle %u text %llx (vtable main+%llx), caller main+%llx, %llu ms after the start\n", battle,
+            (unsigned long long)text, (unsigned long long)drp_vtable(text), (unsigned long long)(caller - main_base),
+            (unsigned long long)((now - drp_kind_start) / 1000000));
+        drp_walk_start(64 - ++drp_text_lines);
+        drp_walk("text>", text, 2);
+        drp_text_lines += drp_walk_lines;
+    }
+    if (ended && seen >= 0) drp_text_seen[seen] = 0; /* its next text is walked again */
+    pm_unlock(&drp_walk_lock);
+}
+
 /* UpdateBattleStartCoroutine (1DD7C68), called each frame of a battle's start with one object per battle. D2: the
    first call decides the opponent, record 0's Pokémon object ([+78]+90). In P1b's trainer battle that record was
    empty, so a battle without one says "In battle". Its copy is tried on the calls after, while the game holds it. */
@@ -4783,9 +4823,11 @@ static void drp_battle_start(CPU* c, u64 entry) {
     }
     if (drp_presence) drp_battle_decide(plat_ns());
     if (drp_probe && fresh) {
-        LOG("arceus-drp: battle start %llu: object %llx (vtable main+%llx), caller main+%llx, ns=%llu\n",
+        LOG("arceus-drp: battle start %llu: object %llx (vtable main+%llx), caller main+%llx, ns=%llu, text reveals "
+            "so far %llu\n",
             (unsigned long long)count, (unsigned long long)object, (unsigned long long)drp_vtable(object),
-            (unsigned long long)(c->x[30] - main_base), (unsigned long long)plat_ns());
+            (unsigned long long)(c->x[30] - main_base), (unsigned long long)plat_ns(),
+            (unsigned long long)__atomic_load_n(&drp_text_calls, __ATOMIC_RELAXED));
         drp_words("battle start object", object, 24);
         drp_party();
         drp_trainer_walk(object);
@@ -4838,6 +4880,7 @@ static void discord_probe_init(void) {
         {0x17dcf40, 0x395d6c08, drp_battle_lose, "the player's OnBattleLoseEnd"},
         {0xfc70c8, 0xd10203ff, drp_trainer_word, "the trainer name's word (FC70C8)"},
         {0x83636c, 0xf81d0ff5, drp_trainer_data, "the trainer data's path (83636C)"},
+        {0xfbfbd0, 0xd100c3ff, drp_text, "the message text's reveal (FBFBD0)"},
     };
     for (unsigned k = 0; k < DRPS_SITES; k++) {
         /* the presence needs only the area name and the battle start, the rest are the probe's */

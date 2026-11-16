@@ -2527,7 +2527,72 @@ static void test_budget(void) {
     g_drp_battle = saved;
 }
 
+/* P9's text walk (research 22:45): only in a trainer battle's first 30 s, once a text, 64 lines a battle */
+static u64 text_answer = 1;
+static void text_original(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = text_answer;
+}
+static void put_utf16(u64 at, const char* text) {
+    for (; *text; text++, at += 2) memory[at] = (u8)*text, memory[at + 1] = 0;
+}
+static void test_text_walk(void) {
+    const u64 saved_ns = host_ns, saved_base = main_base;
+    memset(memory, 0, sizeof memory);
+    main_base = 0x10000000;
+    drp_original[DRPS_TEXT] = text_original;
+    put_utf16(0x400 + 0x40, "Coin");
+    put_utf16(0x800 + 0x80, "Volo");
+    g_drp_battle = 9;
+    drp_kind_start = host_ns = 50000000000ull;
+    host_ns += 2000000000ull;
+    CPU c = {.x = {[0] = 0x400, [30] = 0x10000100}};
+    g_drp_files.kinds = DRP_FILE_WILD; /* not a trainer battle: nothing */
+    drp_text(&c, 0);
+    assert(drp_text_calls == 1 && drp_text_battle != 9);
+    g_drp_files.kinds = DRP_FILE_TRAINER;
+    c.x[0] = 0x400;
+    drp_text(&c, 0);
+    assert(drp_text_battle == 9 && drp_text_seen[0] == 0x400 && drp_text_lines == 2); /* its header and "Coin" */
+    c.x[0] = 0x400;
+    drp_text(&c, 0); /* the same text again: not walked */
+    assert(drp_text_lines == 2);
+    text_answer = 0; /* a call that ends the text: its next text is walked again */
+    c.x[0] = 0x400;
+    drp_text(&c, 0);
+    assert(drp_text_seen[0] == 0 && drp_text_lines == 2);
+    text_answer = 1;
+    c.x[0] = 0x400;
+    drp_text(&c, 0);
+    assert(drp_text_lines == 4);
+    host_ns = drp_kind_start + 30000000000ull; /* 30 s after the start: over */
+    c.x[0] = 0x800;
+    drp_text(&c, 0);
+    assert(drp_text_lines == 4);
+    host_ns = drp_kind_start + 29000000000ull;
+    c.x[0] = 0x800;
+    drp_text(&c, 0);
+    assert(drp_text_lines == 6);
+    drp_text_lines = 63; /* the cap: a header fits, nothing more */
+    c.x[0] = 0xc00;
+    drp_text(&c, 0);
+    assert(drp_text_lines == 64);
+    c.x[0] = 0xd00;
+    drp_text(&c, 0);
+    assert(drp_text_lines == 64);
+    g_drp_battle = 10; /* a new battle starts again */
+    c.x[0] = 0x800;
+    drp_text(&c, 0);
+    assert(drp_text_battle == 10 && drp_text_lines == 2);
+    g_drp_files.kinds = 0;
+    g_drp_battle = 0;
+    host_ns = saved_ns;
+    main_base = saved_base;
+    memset(memory, 0, sizeof memory);
+}
+
 int main(void) {
+    test_text_walk();
     test_budget();
     test_mon_read();
     test_battle_mon();
