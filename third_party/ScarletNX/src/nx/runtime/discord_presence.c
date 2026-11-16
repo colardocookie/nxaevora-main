@@ -14,7 +14,7 @@
 #include <unistd.h>
 #endif
 
-SnxDrpState g_drp_state = {0, -1, DRP_FIELD};
+SnxDrpState g_drp_state = {0, -1, DRP_FIELD, 0};
 
 #ifdef _WIN32
 static HANDLE drp_handle = INVALID_HANDLE_VALUE;
@@ -108,13 +108,16 @@ static char drp_app[24];
    the pipe closes with the process. */
 static void drp_thread(void* arg) {
     (void)arg;
-    SnxDrpValues v = {-1, DRP_FIELD};
+    SnxDrpValues v = {-1, DRP_FIELD, 0};
     unsigned said = 0;
     for (;;) {
         SnxDrpValues now;
         if (snx_drp_read(&g_drp_state, &now, 8)) v = now;
         const int was = drp_session.connected;
+        const unsigned sends = drp_session.sends;
         snx_drp_step(&drp_session, &v, plat_ns());
+        /* each activity sent, which is only ever a change, so that a look can be read against the log */
+        if (drp_session.sends != sends) LOG("arceus-discord: sent \"%s\"\n", drp_session.sent);
         if (drp_session.connected != was && said < 20) {
             said++;
             LOG("arceus-discord: %s Discord's pipe\n", drp_session.connected ? "connected to" : "lost");

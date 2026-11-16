@@ -18,17 +18,19 @@ typedef struct {
     volatile uint32_t seq;
     int32_t region; /* an index into snx_drp_regions, -1 for none known */
     uint32_t activity;
+    uint32_t party; /* the party's size, 0 when not read */
 } SnxDrpState;
 typedef struct {
     int32_t region;
-    uint32_t activity;
+    uint32_t activity, party;
 } SnxDrpValues;
 
-static inline void snx_drp_write(SnxDrpState* s, int32_t region, uint32_t activity) {
+static inline void snx_drp_write(SnxDrpState* s, const SnxDrpValues* v) {
     __atomic_store_n(&s->seq, s->seq + 1, __ATOMIC_RELAXED);
     __atomic_thread_fence(__ATOMIC_RELEASE);
-    __atomic_store_n(&s->region, region, __ATOMIC_RELAXED);
-    __atomic_store_n(&s->activity, activity, __ATOMIC_RELAXED);
+    __atomic_store_n(&s->region, v->region, __ATOMIC_RELAXED);
+    __atomic_store_n(&s->activity, v->activity, __ATOMIC_RELAXED);
+    __atomic_store_n(&s->party, v->party, __ATOMIC_RELAXED);
     __atomic_store_n(&s->seq, s->seq + 1, __ATOMIC_RELEASE);
 }
 /* 1 with a consistent copy: the same even number before and after. 0 after tries attempts that each saw a write */
@@ -38,6 +40,7 @@ static inline int snx_drp_read(const SnxDrpState* s, SnxDrpValues* out, int trie
         if (before & 1) continue;
         out->region = __atomic_load_n(&s->region, __ATOMIC_RELAXED);
         out->activity = __atomic_load_n(&s->activity, __ATOMIC_RELAXED);
+        out->party = __atomic_load_n(&s->party, __ATOMIC_RELAXED);
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
         if (__atomic_load_n(&s->seq, __ATOMIC_RELAXED) == before) return 1;
     }
@@ -76,6 +79,13 @@ static inline const char* snx_drp_details(const SnxDrpValues* v, char* out, size
     const SnxDrpRegion* r = known ? &snx_drp_regions[v->region] : NULL;
     if (!r) return "Exploring Hisui";
     snprintf(out, size, "%s %s", r->village ? "Visiting" : "Exploring", r->text);
+    return out;
+}
+
+/* The activity's second line: the party's size, 1 to 6, else none (NULL) */
+static inline const char* snx_drp_state_line(const SnxDrpValues* v, char* out, size_t size) {
+    if (v->party < 1 || v->party > 6) return NULL;
+    snprintf(out, size, "Party: %u Pok\xc3\xa9mon", v->party);
     return out;
 }
 
@@ -132,13 +142,18 @@ static inline void snx_json_string(SnxJson* j, const char* text, size_t max) {
 /* The SET_ACTIVITY command for this state, NUL-terminated in out. 0 when it did not fit. */
 static inline int snx_drp_activity(char* out, size_t size, const SnxDrpValues* v, unsigned long pid, long long start,
                                    unsigned nonce) {
-    char line[160], number[64];
+    char line[160], party[48], number[64];
     SnxJson j = {out, size, 0, 0};
     snx_json_text(&j, "{\"cmd\":\"SET_ACTIVITY\",\"args\":{\"pid\":");
     snprintf(number, sizeof number, "%lu", pid);
     snx_json_text(&j, number);
     snx_json_text(&j, ",\"activity\":{\"details\":");
     snx_json_string(&j, snx_drp_details(v, line, sizeof line), 128);
+    const char* state = snx_drp_state_line(v, party, sizeof party);
+    if (state) {
+        snx_json_text(&j, ",\"state\":");
+        snx_json_string(&j, state, 128);
+    }
     snprintf(number, sizeof number, ",\"timestamps\":{\"start\":%lld}", start);
     snx_json_text(&j, number);
     snx_json_text(&j, ",\"assets\":{\"large_image\":\"nxaevora\",\"large_text\":");
@@ -192,7 +207,7 @@ typedef struct {
     int connected, ever;
     uint64_t last_send, last_try;
     unsigned nonce, sends, connects;
-    char sent[160];
+    char sent[200]; /* the two lines last sent, "details / state" */
 } SnxDrpSession;
 /* one reply frame read and dropped, so the pipe never fills. 0 when the pipe failed or Discord closed it */
 static inline int snx_drp_reply(SnxDrpSession* d) {
@@ -235,7 +250,9 @@ static inline void snx_drp_step(SnxDrpSession* d, const SnxDrpValues* v, uint64_
             return;
         }
     }
-    const char* text = snx_drp_details(v, line, sizeof line);
+    char party[48], text[200];
+    const char* state = snx_drp_state_line(v, party, sizeof party);
+    snprintf(text, sizeof text, "%s / %s", snx_drp_details(v, line, sizeof line), state ? state : "-");
     if (!snx_drp_due(text, d->sent, now, d->last_send, d->ever)) return;
     if (!snx_drp_activity(json, sizeof json, v, d->pid, d->start, ++d->nonce) || !snx_drp_send(d, 1, json)) return;
     snprintf(d->sent, sizeof d->sent, "%s", text);

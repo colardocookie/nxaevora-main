@@ -51,10 +51,10 @@ static int st_read(void* u, void* data, size_t n) {
 static void st_close(void* u) { ((Stand*)u)->closes++; }
 
 static void test_sequence(void) {
-    SnxDrpState s = {0, -1, DRP_FIELD};
-    SnxDrpValues v;
-    snx_drp_write(&s, 1, DRP_WILD);
-    assert(s.seq == 2 && snx_drp_read(&s, &v, 4) && v.region == 1 && v.activity == DRP_WILD);
+    SnxDrpState s = {0, -1, DRP_FIELD, 0};
+    SnxDrpValues v, w = {1, DRP_WILD, 6};
+    snx_drp_write(&s, &w);
+    assert(s.seq == 2 && snx_drp_read(&s, &v, 4) && v.region == 1 && v.activity == DRP_WILD && v.party == 6);
     s.seq = 3; /* a writer in the middle: no copy is taken */
     v.region = 7;
     assert(!snx_drp_read(&s, &v, 4) && v.region == 7);
@@ -68,7 +68,7 @@ static void test_regions(void) {
     assert(snx_drp_region("ha_area01_x") == -1);
     assert(snx_drp_region("ha_test_battle_00") == -1 && snx_drp_region("") == -1 && snx_drp_region(NULL) == -1);
     char line[160];
-    SnxDrpValues v = {1, DRP_FIELD};
+    SnxDrpValues v = {1, DRP_FIELD, 0};
     assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Exploring Obsidian Fieldlands"));
     v.region = 0; /* not confirmed yet */
     assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Exploring Hisui"));
@@ -105,12 +105,23 @@ static void test_json(void) {
     snx_json_string(&k, "too long for it", 128);
     assert(k.failed && strlen(small) < sizeof small);
     char act[1100];
-    SnxDrpValues v = {1, DRP_FIELD};
+    SnxDrpValues v = {1, DRP_FIELD, 0};
     assert(snx_drp_activity(act, sizeof act, &v, 42, 1700000000, 3));
     assert(strstr(act, "\"details\":\"Exploring Obsidian Fieldlands\"") && strstr(act, "\"pid\":42") &&
            strstr(act, "\"start\":1700000000") && strstr(act, "\"large_image\":\"nxaevora\"") &&
            strstr(act, "\"nonce\":\"3\"") && !strstr(act, "\"state\""));
     assert(snx_drp_handshake(act, sizeof act, "123") && !strcmp(act, "{\"v\":1,\"client_id\":\"123\"}"));
+    /* the party's size as the second line, 1 to 6 only */
+    v.party = 6;
+    assert(snx_drp_activity(act, sizeof act, &v, 42, 1700000000, 4));
+    assert(strstr(act, "\"state\":\"Party: 6 Pok\xc3\xa9mon\""));
+    char line[48];
+    v.party = 0;
+    assert(!snx_drp_state_line(&v, line, sizeof line));
+    v.party = 7;
+    assert(!snx_drp_state_line(&v, line, sizeof line));
+    v.party = 1;
+    assert(!strcmp(snx_drp_state_line(&v, line, sizeof line), "Party: 1 Pok\xc3\xa9mon"));
 }
 
 static void test_frame(void) {
@@ -131,7 +142,7 @@ static void test_session(void) {
     Stand st = {0};
     const SnxDrpPipe pipe = {st_open, st_write, st_read, st_close, &st};
     SnxDrpSession d = {&pipe, "123", 7, 1700000000, 0, 0, 0, 0, 0, 0, 0, ""};
-    SnxDrpValues v = {1, DRP_FIELD};
+    SnxDrpValues v = {1, DRP_FIELD, 0};
     const uint64_t s = 1000000000ull;
     /* no Discord: ten pipes tried, then nothing until 30 s later */
     snx_drp_step(&d, &v, 1 * s);
@@ -150,10 +161,16 @@ static void test_session(void) {
     v.activity = DRP_TRAINER;
     snx_drp_step(&d, &v, 35 * s);
     assert(st.frames == 3 && strstr(st.last, "trainer"));
+    /* the party's size changing alone is a change */
+    v.party = 6;
+    snx_drp_step(&d, &v, 39 * s);
+    assert(st.frames == 4 && strstr(st.last, "Party: 6"));
+    assert(!strcmp(d.sent, "Battling a trainer / Party: 6 Pok\xc3\xa9mon"));
+    v.party = 0;
     /* a failed write drops the pipe, the next try 30 s on sends the activity again on a new pipe */
     st.fail_write = 1;
     v.activity = DRP_FIELD;
-    snx_drp_step(&d, &v, 40 * s);
+    snx_drp_step(&d, &v, 44 * s);
     assert(!d.connected && st.closes == 1);
     st.fail_write = 0;
     snx_drp_step(&d, &v, 50 * s);
