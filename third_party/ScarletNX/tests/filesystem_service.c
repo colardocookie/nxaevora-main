@@ -47,6 +47,8 @@ void mem_query(u64 addr, MemBlock* out) {
 }
 char g_datadir[1024], g_exename[256], g_exedir[1024], g_confdir[1024], g_addondir[1024], g_gamename[256];
 u64 g_addon;
+/* the platform's clock, which fs.c's Discord presence hook reads when its flag is on: a fixed time is enough here */
+u64 plat_ns(void) { return 1000000000ull; }
 SnxDrpFiles g_drp_files = {-1, 0, 0, 0}; /* discord_presence.c's, which this test does not link */
 int g_drp_packs;
 uint32_t g_drp_battle;
