@@ -19,6 +19,6 @@ int snx_switch_main(int argc, char** argv) {
     if (argc > 1 && !strcmp(argv[1], "--mcp")) return snx_mcp(argc, argv);
     result = snx_driver(argc, argv);
     if (result >= 0) return result;
-    fputs("Pass a dump file, -x, -r or -h. This build contains host tools only.\n", stderr);
+    fputs("Pass a game folder with -r, or an NRO, or -h. This build contains host tools only.\n", stderr);
     return 2;
 }

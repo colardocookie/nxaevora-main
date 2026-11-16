@@ -252,15 +252,6 @@ msgid "Back."
 msgstr "返回."
 
 #: src/gui/main.c
-#, snx-keys
-msgid "Pick the prod.keys file."
-msgstr "选取 prod.keys 文件."
-
-#: src/gui/main.c
-msgid "Pick prod.keys"
-msgstr "选取 prod.keys"
-
-#: src/gui/main.c
 msgid "tap the box to open the file picker"
 msgstr "轻触此框打开文件选择器"
 
@@ -277,8 +268,8 @@ msgid "Tap here to abort and return to menu"
 msgstr "轻触此处中止并返回菜单"
 
 #: src/gui/main.c
-msgid "No games in recompiled/ or dumps/: put a game's .nro, .xci or .nsp in dumps/."
-msgstr "recompiled/ 或 dumps/ 中没有游戏：把游戏的 .nro、.xci 或 .nsp 放入 dumps/。"
+msgid "No games in recompiled/ or dumps/: put a game's .nro in dumps/."
+msgstr "recompiled/ 或 dumps/ 中没有游戏：把游戏的 .nro 放入 dumps/。"
 
 #: src/gui/main.c
 #, snx-keys
@@ -426,10 +417,6 @@ msgstr "点击此框（或按 Enter）打开文件选择器"
 #, snx-keys
 msgid "Ctrl+V: paste. ESC: back."
 msgstr "Ctrl+V: 粘贴. ESC: 返回."
-
-#: src/gui/main.c
-msgid "Pick or drop prod.keys"
-msgstr "选取或拖入 prod.keys"
 
 #: src/gui/main.c
 msgid "Pick or drop a file"
@@ -1047,11 +1034,6 @@ msgstr "未显示用户：%s"
 
 #: src/gui/main.c
 #, c-format
-msgid "The dumps' icons are not asked for (%s)"
-msgstr "未能读取转储的图标（%s）"
-
-#: src/gui/main.c
-#, c-format
 msgid "%s could not be drawn: the game shows no icon"
 msgstr "无法绘制 %s：该游戏不显示图标"
 
@@ -1382,8 +1364,8 @@ msgid "Status"
 msgstr "状态"
 
 #: src/gui/main.c
-msgid "Recompiles a game's .nsp, .xci or .nro, then runs it"
-msgstr "重新编译游戏的 .nsp、.xci 或 .nro，然后运行它"
+msgid "Recompiles a game's .nro, then runs it"
+msgstr "重新编译游戏的 .nro，然后运行它"
 
 #: src/gui/main.c
 msgid "Runs a Linux ARM program, 64 or 32-bit"
@@ -1402,21 +1384,12 @@ msgid "Runs a GBA ROM on the emulated AGB board"
 msgstr "在模拟的 AGB 主板上运行 GBA ROM"
 
 #: src/gui/main.c
-msgid "Installs prod.keys, which games are extracted with"
-msgstr "安装用于提取游戏的 prod.keys"
-
-#: src/gui/main.c
 msgid "Closes ScarletNX"
 msgstr "关闭 ScarletNX"
 
 #: src/gui/main.c
 msgid "Last output:"
 msgstr "上次输出："
-
-#: src/gui/main.c
-#, c-format
-msgid "In use: %s"
-msgstr "使用中：%s"
 
 #: src/gui/main.c
 msgid "none"
@@ -1552,40 +1525,8 @@ msgid "Page %zu/%zu, %zu game(s)"
 msgstr "第 %zu/%zu 页，%zu 个游戏"
 
 #: src/gui/main.c
-#, c-format
-msgid "Installs to: %s"
-msgstr "安装到：%s"
-
-#: src/gui/main.c
-msgid "No home folder"
-msgstr "没有主文件夹"
-
-#: src/gui/main.c
 msgid "Installed"
 msgstr "已安装"
-
-#: src/gui/main.c
-msgid "Not installed"
-msgstr "未安装"
-
-#: src/gui/main.c
-#, c-format
-msgid "Back to the menu in %d s"
-msgstr "%d 秒后返回菜单"
-
-#: src/gui/main.c
-#, c-format
-msgid "Back to the menu in %d s, or pick another file"
-msgstr "%d 秒后返回菜单，或选取另一个文件"
-
-#: src/gui/main.c
-msgid "Keys installed here: installing again replaces them"
-msgstr "密钥已安装在此：再次安装会替换它们"
-
-#: src/gui/main.c
-#, c-format
-msgid "Keys in use: %s. Keys dropped here are read before them"
-msgstr "使用中的密钥：%s。拖到这里的密钥会先于它们读取"
 
 #: src/gui/main.c
 msgid "Output"
@@ -1866,8 +1807,8 @@ msgid "is on a disk that runs no programs (noexec)"
 msgstr "位于不能运行程序的磁盘上（noexec）"
 
 #: src/gui/main.c
-msgid "recompiled/, dumps/, themes/ and prod.keys"
-msgstr "recompiled/、dumps/、themes/ 和 prod.keys"
+msgid "recompiled/, dumps/ and themes/"
+msgstr "recompiled/、dumps/ 和 themes/"
 
 #: src/gui/main.c
 msgid "The recompiled games"
@@ -2319,29 +2260,6 @@ msgid "No folder was picked."
 msgstr "未选取文件夹。"
 
 #: src/gui/main.c
-msgid "Cannot install prod.keys: neither USERPROFILE nor HOME is set"
-msgstr "无法安装 prod.keys：USERPROFILE 和 HOME 都未设置"
-
-#: src/gui/main.c
-msgid "Cannot install prod.keys: HOME is not set"
-msgstr "无法安装 prod.keys：HOME 未设置"
-
-#: src/gui/main.c
-#, c-format
-msgid "Not installed: %s"
-msgstr "未安装：%s"
-
-#: src/gui/main.c
-#, c-format
-msgid "Installed prod.keys and title.keys in %s"
-msgstr "已将 prod.keys 和 title.keys 安装到 %s"
-
-#: src/gui/main.c
-#, c-format
-msgid "Installed prod.keys in %s"
-msgstr "已将 prod.keys 安装到 %s"
-
-#: src/gui/main.c
 #, c-format
 msgid "This copy is portable: to install it, first move away %s"
 msgstr "此副本为便携版：要安装，请先移走 %s"
@@ -2361,18 +2279,6 @@ msgstr "更改已重编译文件夹"
 #: src/gui/main.c
 msgid "Add a folder"
 msgstr "添加文件夹"
-
-#: src/gui/main.c
-msgid "Use These"
-msgstr "使用这些"
-
-#: src/gui/main.c
-msgid "Browse..."
-msgstr "浏览..."
-
-#: src/gui/main.c
-msgid "Later"
-msgstr "稍后"
 
 #: src/gui/main.c
 msgid "Overwrite"
@@ -2437,10 +2343,6 @@ msgstr "提示：便携副本就是一个可以复制的文件夹"
 #: src/gui/main.c
 msgid "Tip: Settings > App > Folders changes them"
 msgstr "提示：「设置 > 应用 > 文件夹」可更改它们"
-
-#: src/gui/main.c
-msgid "Tip: Menu > Install Keys changes them"
-msgstr "提示：「菜单 > 安装密钥」可更改它们"
 
 #: src/gui/main.c
 msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
@@ -2528,14 +2430,6 @@ msgid "caches"
 msgstr "缓存"
 
 #: src/gui/main.c
-msgid "found"
-msgstr "已找到"
-
-#: src/gui/main.c
-msgid "missing"
-msgstr "缺失"
-
-#: src/gui/main.c
 msgid "everything"
 msgstr "全部"
 
@@ -2550,14 +2444,6 @@ msgstr "在程序旁边，届时创建"
 #: src/gui/main.c
 msgid " + subfolders"
 msgstr " + 子文件夹"
-
-#: src/gui/main.c
-msgid "games are extracted with it"
-msgstr "提取游戏时需要"
-
-#: src/gui/main.c
-msgid "only some .nsp need it"
-msgstr "仅部分 .nsp 需要"
 
 #: src/gui/main.c
 msgid "nickname"
@@ -2912,42 +2798,9 @@ msgid "M opens the mods and cheats of a recompiled Switch game in focus."
 msgstr "M 打开选中的已重编译 Switch 游戏的模组和金手指。"
 
 #: src/gui/main.c
-msgid "prod.keys installed: games can be extracted now."
-msgstr "prod.keys 已安装：现在可以提取游戏了。"
-
-#: src/gui/main.c
-#, c-format
-msgid "Cannot install %s: %s"
-msgstr "无法安装 %s：%s"
-
-#: src/gui/main.c
-msgid "Please drop a readable file named prod.keys."
-msgstr "请拖入一个名为 prod.keys 的可读文件。"
-
-#: src/gui/main.c
-#, c-format
-msgid "This file could not be read. Pick prod.keys again, from the device's storage (%s)."
-msgstr "无法读取此文件。请从设备存储中重新选取 prod.keys（%s）。"
-
-#: src/gui/main.c
-#, c-format
-msgid "This file is not a prod.keys. Pick the prod.keys file (%s)."
-msgstr "此文件不是 prod.keys。请选取 prod.keys 文件（%s）。"
-
-#: src/gui/main.c
 #, c-format
 msgid "Cannot read this file by its path. Check that ScarletNX may access the device's files in Android's settings, then pick it from the device's storage (%s)."
 msgstr "无法通过路径读取此文件。请在 Android 设置中确认 ScarletNX 可以访问设备上的文件，然后从设备存储中选取它（%s）。"
-
-#: src/gui/main.c
-#, c-format
-msgid "The picked file could not be read as prod.keys (%s)."
-msgstr "所选文件无法作为 prod.keys 读取（%s）。"
-
-#: src/gui/main.c
-#, c-format
-msgid "The picked file is not a prod.keys (%s)."
-msgstr "所选文件不是 prod.keys（%s）。"
 
 #: src/gui/main.c
 #, c-format
@@ -3442,8 +3295,8 @@ msgid "the item chosen, the run's head"
 msgstr "已选的项目，运行画面的页头"
 
 #: src/gui/theme.c
-msgid "warnings, the ESC line, a failed run, missing keys"
-msgstr "警告、ESC 行、失败的运行、缺少的密钥"
+msgid "warnings, the ESC line, a failed run"
+msgstr "警告、ESC 行、失败的运行"
 
 #: src/gui/theme.c
 msgid "the boxes' frames, a filled box, the grid and the title's shadow"
@@ -3484,10 +3337,6 @@ msgstr "菜单的标题"
 #: src/gui/theme.c
 msgid "the games/ list's title"
 msgstr "games/ 列表的标题"
-
-#: src/gui/theme.c
-msgid "the keys screen's title"
-msgstr "密钥画面的标题"
 
 #: src/gui/theme.c
 msgid "a run's title until the game loads"
@@ -3614,10 +3463,6 @@ msgid "blinking at blink_ms"
 msgstr "按 blink_ms 闪烁"
 
 #: src/gui/theme.c
-msgid "the keys screen's drop line"
-msgstr "密钥画面的拖入提示行"
-
-#: src/gui/theme.c
 msgid "the ESC line after a run"
 msgstr "运行结束后的 ESC 行"
 
@@ -3652,10 +3497,6 @@ msgstr "进行中的行逐字出现，其他行整行出现"
 #: src/gui/theme.c
 msgid "sync: one line at a time"
 msgstr "sync：一次一行"
-
-#: src/gui/theme.c
-msgid "the cursor's, the prompt's and Install Keys' blink"
-msgstr "光标、提示符和「安装密钥」的闪烁"
 
 #: src/gui/theme.c
 msgid "a line too long for its row slides a column each"
@@ -3746,8 +3587,8 @@ msgid "No themes/%s/theme.ini could be read: it shows %s"
 msgstr "无法读取 themes/%s/theme.ini：显示 %s"
 
 #: src/gui/ui.txt
-msgid "Load Switch NSP/XCI/NRO"
-msgstr "载入 Switch NSP/XCI/NRO"
+msgid "Load Switch NRO"
+msgstr "载入 Switch NRO"
 
 #: src/gui/ui.txt
 msgid "Load Linux ARM ELF"
@@ -3764,10 +3605,6 @@ msgstr "载入 Vita VPK"
 #: src/gui/ui.txt
 msgid "Load GBA ROM"
 msgstr "载入 GBA ROM"
-
-#: src/gui/ui.txt
-msgid "Install Keys"
-msgstr "安装密钥"
 
 #: src/gui/ui.txt
 msgid "Share Log"
@@ -3944,26 +3781,6 @@ msgstr "GDB 调试桩"
 #: src/nx/runtime/settings.txt
 msgid "Enables gdbstub on port 1234"
 msgstr "在端口 1234 上启用 gdbstub"
-
-#: src/nx/runtime/settings.txt
-msgid "Extract to tmpfs"
-msgstr "提取到 tmpfs"
-
-#: src/nx/runtime/settings.txt
-msgid "Extract to tmpfs, in memory (the temporary folder's scarletnx/work/<title ID>), which the game reads its RomFS from"
-msgstr "提取到内存中的 tmpfs（临时文件夹的 scarletnx/work/<title ID>），游戏从这里读取其 RomFS"
-
-#: src/nx/runtime/settings.txt
-msgid "Extract game container"
-msgstr "提取游戏容器"
-
-#: src/nx/runtime/settings.txt
-msgid "Extract dump"
-msgstr "提取转储"
-
-#: src/nx/runtime/settings.txt
-msgid "Extract a dump's ExeFS and RomFS into its game's folder. Off, the game reads them from the dump"
-msgstr "把转储的 ExeFS 和 RomFS 提取到游戏文件夹中。关闭时游戏直接从转储读取"
 
 #: src/nx/runtime/settings.txt
 msgid "Tracy capture"

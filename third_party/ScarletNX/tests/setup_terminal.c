@@ -93,7 +93,7 @@ static void fresh(void) {
     assert(!snx_mkdirs(home));
 }
 
-/* every step at its default: the notices' OK, English, installed, folders and keys as they are, Player */
+/* every step at its default: the notices' OK, English, installed, folders as they are, Player */
 static void test_defaults(void) {
     char *users = join(data, "users"), *text, uid[33];
     fresh();
@@ -105,13 +105,11 @@ static void test_defaults(void) {
                  snx_notices[SNX_NOTICES - 1].now);
         said(last);
     }
-    said("[1/5] Language\n  1) English 2) Portugu\xc3\xaas (Brasil) 3) "
+    said("[1/4] Language\n  1) English 2) Portugu\xc3\xaas (Brasil) 3) "
          "\xe7\xae\x80\xe4\xbd\x93\xe4\xb8\xad\xe6\x96\x87\n  [1] ");
-    said_with("[2/5] Install Type\n  Installed: settings %s, data %s", config, data);
-    said_with("[3/5] Folders\n  Recompiled: %s/recompiled\n  Dumps: none yet\n", data, NULL);
-    said("[4/5] Keys\n  prod.keys missing\n  title.keys missing: only some .nsp need it\n  1) Choose folder  2) Later\n"
-         "  [2] ");
-    said("[5/5] First User\n  uid ");
+    said_with("[2/4] Install Type\n  Installed: settings %s, data %s", config, data);
+    said_with("[3/4] Folders\n  Recompiled: %s/recompiled\n  Dumps: none yet\n", data, NULL);
+    said("[4/4] First User\n  uid ");
     said_with("Done: %s/setup.ini\n", config, NULL);
     {
         char seen[64]; /* every notice there is, seen */
@@ -129,24 +127,18 @@ static void test_defaults(void) {
     puts("PASS every step at its default");
 }
 
-/* again with --setup: users.ini kept (n), Portuguese, games and dumps folders, keys installed, answers that are none */
+/* again with --setup: users.ini kept (n), Portuguese, games and dumps folders, answers that are none */
 static void test_again(void) {
     char *users = join(data, "users"), *games = join(root, "picked games"), *dumps = join(root, "dumps");
-    char *keys = join(root, "keys"), *path, answers[4096], *before, *keys_dir = snx_keys_dir(data);
-    assert(keys_dir && !snx_mkdirs(games) && !snx_mkdirs(dumps));
-    path = join(keys, "prod.keys");
-    put(path, "header_key = 00112233\n");
-    free(path);
+    char *path, answers[4096], *before;
+    assert(!snx_mkdirs(games) && !snx_mkdirs(dumps));
     before = text_of(users, "users.ini");
-    sprintf(answers, "\n9\n2\n1\n2\n%s\n3\n/no/such/folder\n%s\n3\n%s\n1\n1\n%s\n1\nmaybe\nn\n", games, dumps, dumps,
-            keys);
+    sprintf(answers, "\n9\n2\n1\n2\n%s\n3\n/no/such/folder\n%s\n3\n%s\n1\nmaybe\nn\n", games, dumps, dumps);
     assert(!run(answers, 1));
     said("9: answer 1 to 3, or Enter for 1");
     said("/no/such/folder is not a folder");
     said("  Dumps:\n");
-    said_with("  Installed prod.keys in %s\n", keys_dir, NULL);
-    said_with("prod.keys found, %s/prod.keys", keys_dir, NULL);
-    said("[5/5] users.ini has 1 user: Player\n  Overwrite? (users.ini.old keeps it) [y/N] ");
+    said("[4/4] users.ini has 1 user: Player\n  Overwrite? (users.ini.old keeps it) [y/N] ");
     said("maybe: answer y or n");
     expect(config, "app.ini", "[folders]\nrecompiled = ");
     expect(config, "app.ini", "\n[app]\nlanguage = pt-BR\n");
@@ -157,8 +149,6 @@ static void test_again(void) {
     assert(path && before && !strcmp(path, before));
     free(path);
     free(before);
-    free(keys_dir);
-    free(keys);
     free(dumps);
     free(games);
     free(users);
@@ -171,13 +161,13 @@ static void test_portable(void) {
     fresh();
     assert(run("\n\n2\n", 0) == 1 && snx_is_dir(portable)); /* made as it is picked, though nothing else was */
     assert(!snx_remove_tree(portable));
-    assert(!run("\n\n2\n\n\nAda\nAogo\n", 0));
+    assert(!run("\n\n2\n\nAda\nAogo\n", 0));
     said("Portable: everything in ");
     said("Ada is not 4 to 20 of A-Z a-z 0-9 space . _ -");
     expect(pconfig, "setup.ini", "version = 1");
     expect(users, "users.ini", "nickname=Aogo");
     assert(!text_of(config, "setup.ini"));
-    assert(!run("\n\n1\n2\n\n\nn\n", 1));
+    assert(!run("\n\n1\n2\n\nn\n", 1));
     said("is there, so this copy is portable: move it away first, then answer 1");
     assert(!snx_remove_tree(portable));
     free(users);

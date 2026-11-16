@@ -174,15 +174,10 @@ int main(void) {
     old = join(checkout, "games");
     assert(!snx_mkdirs(old));
     free(old);
-    old = join(checkout, "prod.keys");
-    assert(!snx_write_file(old, "", 0));
-    free(old);
     said = left_said(checkout, expected, file);
     line = snx_format("scarletnx: %s/games was left by an older version: this one keeps it in %s/recompiled "
-                      "(docs/DEPRECATIONS.md)\n"
-                      "scarletnx: %s/prod.keys was left by an older version: this one keeps it in %s/prod.keys "
                       "(docs/DEPRECATIONS.md)\n",
-                      checkout, expected, checkout, expected);
+                      checkout, expected);
     assert(!strcmp(said, line));
     free(line);
     free(said);
@@ -245,7 +240,7 @@ int main(void) {
         free(file);
         free(dir);
     }
-    /* snx_dump_name: the extraction's folder the drivers and the menu give a dump */
+    /* snx_dump_name: a dump file's name, which the 3DS target uses for its game */
     {
         static const char* const names[][2] = {{"/dumps/My Game [v1.0].nsp", "My Game v10"},
                                                {"C:\\dumps\\two.dots.xci", "twodots"},

@@ -87,22 +87,21 @@ int main(void) {
     assert(s.count == 2 && !strcmp(at(&s, 1)->label, "READY") && !strcmp(at(&s, 1)->detail, "Game"));
     assert(at(&s, 1)->state == GUI_STEP_DONE && gui_steps_percent(&s) == 100);
 
-    /* the driver's row a second while hactool extracts, each over the last (\r): the step's value and total in MB, its
-       percent the bar's, no note under it; a row of another step's word is a plain line */
+    /* a driver's line of a step that starts none is a note of it: an extraction's row sets no step value */
     gui_steps_reset(&s);
     feed(&s, "Reading Game.xci\nExtracting the base game\n", 1);
     assert(s.count == 1 && gui_steps_percent(&s) == -1); /* nothing said yet */
     feed(&s, "  extracted 1024 of 4096 MB (25%)\r  extracted 2048 of 4096 MB (50%)\r", 2);
-    assert(at(&s, 0)->value == 2048 && at(&s, 0)->total == 4096 && at(&s, 0)->megabytes);
-    assert(gui_steps_percent(&s) == 50 && gui_step_notes(&s, at(&s, 0), notes, 8) == 0);
+    assert(at(&s, 0)->value == 0 && at(&s, 0)->total == 0 && gui_steps_percent(&s) == -1);
+    assert(gui_step_notes(&s, at(&s, 0), notes, 8) == 2);
     feed(&s, "  extracted 4000 of 4096 MB (97%)\r\nRecompiling Game (1 modules)\n", 3);
-    assert(at(&s, 0)->state == GUI_STEP_DONE && at(&s, 0)->value == 4000 && gui_steps_percent(&s) == 0);
+    assert(at(&s, 0)->state == GUI_STEP_DONE && at(&s, 0)->value == 0 && gui_steps_percent(&s) == 0);
     feed(&s, "  extracted 9 of 9 MB (100%)\n  compiled block 3/4: code_002 (1.0 s)\n", 4);
     assert(at(&s, 1)->value == 3 && at(&s, 1)->total == 4 && gui_steps_percent(&s) == 75);
     assert(gui_step_notes(&s, at(&s, 1), notes, 8) == 2 && !strcmp(notes[0]->text, "extracted 9 of 9 MB (100%)"));
 
-    /* a step's progress on its line, as the theme says: amount in MB, GB past 1024 of them, blocks bare; percent;
-       the time left at its pace so far, once a second of it has gone; nothing while it has no total */
+    /* a step's progress on its line, as the theme says: the amount, the blocks bare; percent; the time left at its
+       pace so far, once a second of it has gone; nothing while it has no total */
     {
         GuiStep step;
         char text[32];
@@ -112,13 +111,12 @@ int main(void) {
         assert(!strcmp(text, ""));
         step.value = 300;
         step.total = 900;
-        step.megabytes = 1;
         gui_step_progress(&step, GUI_PROGRESS_AMOUNT, 2000, text, sizeof text);
-        assert(!strcmp(text, "300 / 900 MB"));
+        assert(!strcmp(text, "300 / 900"));
         step.value = 2048;
         step.total = 4096;
         gui_step_progress(&step, GUI_PROGRESS_AMOUNT, 2000, text, sizeof text);
-        assert(!strcmp(text, "2.0 / 4.0 GB"));
+        assert(!strcmp(text, "2048 / 4096"));
         gui_step_progress(&step, GUI_PROGRESS_PERCENT, 2000, text, sizeof text);
         assert(!strcmp(text, "50%"));
         gui_step_progress(&step, GUI_PROGRESS_TIME, 1500, text, sizeof text);
@@ -129,7 +127,6 @@ int main(void) {
         step.total = 1000;
         gui_step_progress(&step, GUI_PROGRESS_TIME, 11000, text, sizeof text); /* 10 s a block, 999 to go */
         assert(!strcmp(text, "2:46:30 left"));
-        step.megabytes = 0;
         step.value = 3;
         step.total = 6;
         gui_step_progress(&step, GUI_PROGRESS_AMOUNT, 2000, text, sizeof text);

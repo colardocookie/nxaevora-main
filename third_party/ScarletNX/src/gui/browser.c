@@ -30,10 +30,7 @@ bool gui_is_cia(const char* name) {
 }
 bool gui_is_vpk(const char* name) { return suffix(name, ".vpk"); }
 bool gui_is_gba(const char* name) { return suffix(name, ".gba"); }
-bool gui_is_dump(const char* name) {
-    return suffix(name, ".nro") || suffix(name, ".xci") || suffix(name, ".nsp") || suffix(name, ".dxci") ||
-           suffix(name, ".dnsp");
-}
+bool gui_is_dump(const char* name) { return suffix(name, ".nro"); }
 bool gui_game_folder(const char* path) {
     char *folder = snx_dirname(path), *name, data[SNX_PATH_SIZE];
     const char *own = path + strlen(path), *leaf = folder + strlen(folder);

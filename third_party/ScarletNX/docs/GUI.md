@@ -57,7 +57,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Back goes back, Tab to the next screen, Enter or Tap selects; Drag says what the finger does). A key of
   words between slashes presses the word clicked, `Left` or `Right` of `Left/Right`; the text after it
   presses the key when its words all press one. `Arrows`, `mouse`, `pad` and `D-pad` press nothing.
-- The menu, top to bottom: the three loads, **Install Keys**, **Settings**, **Share Log**,
+- The menu, top to bottom: the loads, **Settings**, **Share Log**,
   **Folders**, and **Exit**. The games, and the recent ones, are the Games tab's. A load whose driver
   is neither beside ScarletNX nor on PATH, as those an app leaves out ([APPLE](APPLE.md)), is greyed out, still there,
   and Enter or a tap on it says which driver it misses rather than opening its screen; the drivers are looked for
@@ -73,20 +73,19 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   focus again. A tap on a finished run returns to the menu, and one on a
   running run's ESC line aborts it. Android's back button is ESC. On a screen packed with
   pixels (a phone) the text takes the display's own scale, as far as the menu still fits.
-- **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK** and
-  **Load GBA ROM** open a screen as the keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
+- **Load Switch NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK** and
+  **Load GBA ROM** open a screen: a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
   picker (on Linux the desktop's, else zenity's). Dropping a file on the window and Ctrl+V with
-  a path work too. ESC returns to the menu. On Android the picker opens at once. A dump is read where it lies
-  and takes no room, unless *Extract dump* is on. Then one not extracted yet takes about its size, a Switch
-  dump's extracted straight into its game's folder (as much again only with an **Extractions** folder picked, which
-  keeps a copy, and in the temporary folder with *Extract to tmpfs*); when its disks have less free, the menu says how
-  much it needs and *Run Anyway* takes a second press. With more than one folder of the recompiled library that can
+  a path work too. ESC returns to the menu. On Android the picker opens at once. A Switch game is read where it lies
+  and takes no room. A 3DS dump not extracted yet takes about its size; when its disks have less free, the menu says how
+  much it needs and *Run Anyway* takes a second press. A Switch game from encrypted dumps is not loaded here: decrypt it
+  to a folder (`exefs/`, `romfs/`) and give the folder to `scarletnx -r`. With more than one folder of the recompiled library that can
   take a game (its Main, and each Extra that can be written and runs programs), a box asks which the dump's game goes
   in, **Recompile** on its tab: each folder with what it is and its free room, the Main first and in focus; ESC runs
   nothing. The one taken is the run's `--outdir`, and the room asked about is that folder's.
 - **Load 3DS game** uses `scarletnx-3ds`. Its `games/` browser lists CIA, CCI, 3DS, CXI, APP, HBB, BCCI/BCXI/BCIA and ZCCI/ZCXI/ZCIA inputs,
   not host executables. The driver reads supported decrypted application CIAs, cartridge images (a card's
-  update partition played as the update) and bare NCCHs where they lie, or extracts them with *Extract dump*.
+  update partition played as the update) and bare NCCHs where they lie, or extracts them with its `--extract-container`.
   The driver then compiles the ARM11 code ahead of time and runs it, on Linux and
   Windows. Larger images use bounded conservative discovery (16 MiB text cap).
   SuperTux shows its title screen and plays its music, but takes no input yet.
@@ -100,17 +99,6 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
 - **Load GBA ROM** uses `scarletnx-agb`, the AGB board runtime, with the menu's data folder as its `--data`: it makes
   the game's folder of `recompiled/` (named after the ROM's file), its module and its copy of the runtime, and plays
   it in a window. See [AGB board](AGB.md).
-- **Install Keys**, immediately after the five load entries, blinks red (the theme's `failure` colour, at its
-  `blink_ms`) while no `prod.keys` is in use. It prompts you to
-  pick `prod.keys` (a click on the blinking **[ Pick or drop prod.keys ]** in the middle of
-  the screen, the theme's `[prompt]`, or Enter), drop it, or paste its path with Ctrl+V. It installs the file to `~/.switch/prod.keys`, or
-  `%USERPROFILE%\.switch\prod.keys` on Windows; on Linux, in the user's data folder, it puts it there
-  instead (`~/.local/share/scarletnx/prod.keys`), which the driver reads before
-  `~/.switch`, and names the keys of `~/.switch` it would use until then. It creates the
-  folder if needed. Existing keys trigger the bright-red warning
-  **Keys already setup. This will overwrite the previous ones**. The screen then says what the try
-  did, *Installed* or *Not installed* and why, and goes back to the menu by itself after 3 seconds
-  (10 after a failure, while another file can still be picked); ESC cancels without changing them.
 - **Settings** opens on its groups, Enter opening one and ESC coming back: **App**, then
   **Launch** (the launcher's own and the recompiler's, from `src/nx/runtime/settings.txt`), then a group per section of the game's `.ini` (Display,
   Graphics, Performance, Overlay, Controllers, Network, Debug; Overlay is the runtime's On-screen controls, the
@@ -142,11 +130,11 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   [the Compile tab](#the-compile-tab)),
 **Theme Editor**, which comes
   back to App, and **Folders**, every folder on one screen, the whole of it, a box a group:
-  - **App Folders**: **Data** (`recompiled/`, `dumps/`, `themes/` and `prod.keys`), **Settings**, shown only
+  - **App Folders**: **Data** (`recompiled/`, `dumps/` and `themes/`), **Settings**, shown only
     (`app.ini`, which names the others, and each game's `.ini`: `XDG_CONFIG_HOME` moves it, a portable copy keeps its
     own), **Logs** (the games' logs and `threads.txt`, `recent.txt`, `last-run.log`, `last-recompile.log` and the
     launcher's `scarletnx-console-<date>.log` and `scarletnx-error.log`), **Caches** (the recompile's
-    `units/`, the shader caches, the dumps' icons, and Extractions by default) and **Extractions**;
+    `units/`, the shader caches and Extractions by default) and **Extractions**;
   - **Dumps Library**: its **Main**, the data folder's `dumps/` (with its subfolders, going with the data folder), then its
     **Extra** folders, whose dumps Games lists, and **Add a folder**;
   - **Recompiled Library**: its **Main**, `recompiled/`, where recompiled games go, then its **Extra** folders, whose games
@@ -205,19 +193,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   `.ini`. Del puts a setting back to its default, and App's **Reset to Defaults** every one. The launcher's own choices start picked: `fullscreen` 0, `controls` 0 (on Android 1,
   and `fullscreen` puts the launcher itself on the whole screen too).
   **gdbstub** passes `-S` and `-s`, the
-  runtime's stub on port 1234 waiting for the debugger at startup (UNIX only), and **Extract to tmpfs**
-  passes `--tmpfs`: a dump's extraction goes to `/tmp/scarletnx/work/<title ID>` (`$TMPDIR` when set, the
-  temporary folder on Windows) instead of the game's folder, and the game reads its RomFS from there, its ExeFS and
-  saves staying in its folder. Off, the default, it is extracted to disk. The room a run asks about is then the temporary
-  folder's, without the second copy. Either way the game's `.ini` records the dump as `source=`, which the RomFS is
-  extracted again from when tmpfs was emptied (a reboot), or moved by when the setting changes. A game that records
-  none (made before, without the `<name>.source` link older versions made) says it can't be extracted to tmpfs and
-  runs from what it has.
-  **Extract dump** passes `--extract-container`, to the Switch and the 3DS driver both. Off, the default,
-  nothing of a dump is extracted: the game's `.ini` records the dump, the recompile reads the ExeFS from it, and the
-  game reads its ExeFS and RomFS out of the dump on the fly, decrypting them as it reads ([USAGE](USAGE.md)). A CIA
-  is read the same way. On, a dump is extracted as before, into the game's folder or with *Extract to tmpfs* into
-  tmpfs, which implies it. Turning it off again takes a game's extraction away on its next run.
+  runtime's stub on port 1234 waiting for the debugger at startup (UNIX only).
   **Optimization level** (0, 1, 2, 3 or z, 2 by default) is LLVM's level for the game's code, **AOT threads** the
   threads compiling it (0, the default, one for each core), **Unit cache limit** the GB the compiled code units kept
   for the next recompile may hold (20 by default, 0 for no limit; [USAGE](USAGE.md)), and the **LLVM Internals** page
@@ -287,7 +263,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   goes in `share/` of Folders' Logs (`~/.local/state/scarletnx/share/`; on iOS Documents' `logs/share/`, which the Files
   app shows), emptied of what was shared before, and that folder opens in the system's file manager, to share from
   there. **Open Logs Folder** opens Folders' Logs, where they all are. After a run or a recompile of the queue that
-  ended abnormally (not by ESC) it blinks red, as Install Keys does, until its logs are saved or a run ends well.
+  ended abnormally (not by ESC) it blinks red (the theme's `failure` colour, at its `blink_ms`) until its logs are saved or a run ends well.
 - **Folders** opens Settings > App > Folders (ESC comes back to the menu). There Enter, or a tap, on a folder gives
   **Open Folder**, which opens it in the system's file manager (on Android its Files app, the data folder through the
   app's own storage, [ANDROID](ANDROID.md)), **Change Folder** and **Reset to Default**; on an Extra of a library
@@ -299,8 +275,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Logs; on iOS in `logs/` of the app's Documents, [APPLE](APPLE.md)), the 14 newest days kept (a day's first line
   deletes the older ones; the `scarletnx-console.log` older versions wrote stays as it is), holds what it says: its
   start (its build and data folder), each failure
-  once in a session (what the box over the screen says, shown or not), the warnings it gives as it opens, a dump whose
-  icon the driver did not give with what the driver said. Each line starts with the time and the launcher's process
+  once in a session (what the box over the screen says, shown or not), the warnings it gives as it opens. Each line starts with the time and the launcher's process
   ID, `2026-10-25 11:30:02 [4242] `, so two launchers open at once write theirs apart, and the lines go to stderr
   too. A fatal error, the launcher's that stops it as it starts or a game's, is also kept in `scarletnx-error.log`
   beside it, a game's after its name (a game of no data folder, an `--outdir`'s, beside its own log). Each start adds
@@ -378,8 +353,6 @@ they are, Keep, Later, the nickname `Player`), writes `setup.ini` and opens the 
 - **Folders**: Keep, Change recompiled folder (Settings > App > Folders, the recompiled library's Main) or Add a folder
   (an Extra of Settings > App > Folders), each through the folder picker, the page listing what is there now: Recompiled, Dumps
   (the data folder's `dumps/`, with its subfolders), then the player's folders.
-- **Keys**: `prod.keys` and `title.keys` where the driver reads them; Use these, Choose folder (a folder with
-  `prod.keys`, and `title.keys` if it has one, installed where Install Keys installs them) or Later.
 - **User**: with `users/users.ini` there, its users with their pictures and uids, then Keep or Overwrite; without one,
   or to overwrite it, the nickname typed (`Player` to start with; Backspace takes a letter out) and Enter. A nickname
   the rooms' rule refuses is said, and the page stays.
@@ -397,10 +370,7 @@ folder the driver works in, which the menu passes it as `--data`: a portable cop
 AppImage (or the GUI), else the user's data folder, a build tree's menu's too ([USAGE](USAGE.md#folders)), then each
 Extra of Settings > App > Folders. Each game is shown by the name in its `control.nacp`, which the recompile copies into
 its data, else by its folder's or file's name, sorted by it in each folder, with its icon (Wimsy in grey for one with
-none): a game's own, a dump's
-the one its driver gives (`scarletnx -x --icon`), asked once a session into Caches' `icons/`. A dump the driver gave
-none for says why after its kind (the side box, the tips), and the launcher's log has all the driver said (above); the
-next start asks again. Only immediate files are listed:
+none): a game's own; a dump (an `.nro`) shows none. Only immediate files are listed:
 executables (execute permission on UNIX, `.exe` on Windows), `.cia`, `.cci`, `.3ds`, `.cxi`, `.app`, `.hbb`, `.bcci`, `.bcxi`, `.bcia`, `.zcci`, `.zcxi` and `.zcia` files
 (case-insensitive, no execute permission needed), which run with the 3DS driver, and `.vpk` files, which run with the Vita driver. Hidden files, shared libraries and
 directories are excluded. The folders are looked at once a second while the menu is open (their
@@ -542,7 +512,7 @@ holding their nickname and their picture, `users/<uid>.jpg` or Wimsy
 without one ([USAGE](USAGE.md#users)), square or round (`[head] picture`; `none` for no box). A click on it opens
 the users over the screen, each with their picture; the one picked is Settings' user from then on, and ESC or a click
 off them leaves it as it was. The head is the same on every screen of one window: when the main screens' titles
-(the menu's, Games', the keys', `SCARLETNX  /  SETTINGS` and while its tab shows `SCARLETNX  /  RECOMPILE`) do not all
+(the menu's, Games', `SCARLETNX  /  SETTINGS` and while its tab shows `SCARLETNX  /  RECOMPILE`) do not all
 fit beside the tabs, every one takes letters a
 size smaller, down to the text's, else leaves out the same first parts (`SCARLETNX  /` first), else shows no title.
 The size is the one the English titles take, so the head is as big in every language, and a translation too long for
@@ -563,8 +533,8 @@ the text's size) for a finger, and so are the tabs. The tips and the keys each i
 its left (`[tips] box`, `[footer] box`) or on the page, each key with what it does a button as a tab is: a box as the
 theme's are (filled in the dim colour, framed in it, or on the foot's band framed in the soft one), its text a column
 inside, a column between two, as tall as a tab where it has a row of its own. Games lists the recent games and the
-games, as many as the list's box holds and the rest a scroll away, the focused one's path and kind beside them; the keys'
-screen, and a load's, is one box with where the keys go, the waiting line in its middle (a click in the box
+games, as many as the list's box holds and the rest a scroll away, the focused one's path and kind beside them; a load's
+screen is one box, the waiting line in its middle (a click in the box
 opens the picker). The Settings list their groups, and beside them the focused group's
 rows: Enter, or a click on a row, opens the group, its rows taking the focus, the group shown as the focused one; a
 click on another group opens that one. No screen has a Back row: ESC goes back, and so does a click or a tap on the
@@ -608,11 +578,9 @@ dots and a turning ring; each step the driver and the runner report (unpack, ext
 recompile with its blocks, built, launch, GPU) typed down the page, with turning dots
 while it runs and `...OK` or `...FAILED` once it ends, the cursor blinking on the current
 one, and the other lines it printed indented under it (`[run] bar` adds a progress bar
-with the running step's percentage). A step that counts, the extraction by
-what hactool has written, the recompile by its blocks, shows how far it is on its line as
-`[run] progress` says: `amount` (`1.2 / 4.0 GB`, `3 / 6`), `percent` (`30%`, YoRHa's) or
-`time`, what is left at its pace so far (`01:23 left`). With `layout = console` the
-driver's own row says it, `extracted 1229 of 4096 MB (30%)`, written over itself each second. The menu fades out to black as a run starts and the run fades in from it; ESC
+with the running step's percentage). A step that counts, the recompile by its blocks, shows how far it is on its
+line as `[run] progress` says: `amount` (`3 / 6`), `percent` (`30%`, YoRHa's) or
+`time`, what is left at its pace so far (`01:23 left`). The menu fades out to black as a run starts and the run fades in from it; ESC
 fades the run out and the menu back in.
 
 The runtime draws a loading screen of its own in the same look while it prepares the shaders before a game starts

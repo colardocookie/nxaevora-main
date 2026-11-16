@@ -3,7 +3,6 @@
 #include "gui/model.h"
 #include "common/utilities/common.h"
 #include "common/utilities/font.h"
-#include "common/utilities/setup.h"
 #include "gui/i18n.h"
 #include "gui/latin.h"
 #include "gui/wide.h"
@@ -22,7 +21,6 @@ GuiMenuDo gui_menu_key(GuiMenu* menu, GuiKey key) {
         menu->selected = menu->active;
         return GUI_MENU_STAY;
     }
-    if (menu->view == GUI_LOAD_KEYS) return GUI_MENU_STAY;
     switch (key) {
         case GUI_UP:
         case GUI_LEFT: menu->selected = step_item(menu->selected, -1); break;
@@ -38,7 +36,6 @@ GuiMenuDo gui_menu_key(GuiMenu* menu, GuiKey key) {
                 case GUI_3DS:
                 case GUI_VITA: menu->view = GUI_LOAD_DROP; break;
                 case GUI_GBA: menu->view = GUI_LOAD_DROP; break;
-                case GUI_KEYS: menu->view = GUI_LOAD_KEYS; break;
                 case GUI_SETTINGS: return GUI_MENU_SETTINGS;
                 case GUI_LOG: return GUI_MENU_LOG;
                 case GUI_FOLDERS: return GUI_MENU_FOLDERS;
@@ -434,7 +431,7 @@ char* gui_document_path(const char* uri) {
         path = malloc(strlen(colon + 1) + 1);
         if (path) strcpy(path, colon + 1);
     } else if (colon && !download) {
-        /* "primary:Download/x.xci" is the device's own storage (its first user's), "1234-5678:x.xci" a card */
+        /* "primary:Download/x.nro" is the device's own storage (its first user's), "1234-5678:x.nro" a card */
         *colon = 0;
         n = strlen(id) + strlen(colon + 1) + 32;
         path = malloc(n);
@@ -443,4 +440,3 @@ char* gui_document_path(const char* uri) {
     free(id);
     return path;
 }
-int gui_keys_text(const char* data, size_t size) { return snx_keys_text(data, size); }

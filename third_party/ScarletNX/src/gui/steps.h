@@ -13,8 +13,7 @@ typedef enum { GUI_STEP_ACTIVE, GUI_STEP_DONE, GUI_STEP_FAILED } GuiStepState;
 typedef struct {
     char label[12], detail[96];
     GuiStepState state;
-    uint32_t value, total; /* the recompile's blocks, or the MB an unpack or an extraction has written (megabytes) */
-    int megabytes;
+    uint32_t value, total; /* the recompile's blocks, or the units an unpack or an extraction has written */
     uint64_t shown_ms;
     uint32_t serial;
 } GuiStep;

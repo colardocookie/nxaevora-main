@@ -54,7 +54,7 @@ int main(void) {
     /* every console's records keep their driver across a restart: its package (a CIA, a VPK, a GBA ROM) as one, and the
        game its driver made of it, ready to run, as one too */
     GuiRecent before_ctr = r;
-    assert(gui_recent_add(&r, games[6], GUI_KEYS, 0));
+    assert(gui_recent_add(&r, games[6], -1, 0)); /* a driver that is no console is refused */
     for (int d = 0; d < 6; ++d) {
         int driver = d % 3 == 0 ? GUI_3DS : d % 3 == 1 ? GUI_VITA : GUI_GBA, made = d >= 3;
         assert(!gui_recent_add(&r, games[6], driver, made));

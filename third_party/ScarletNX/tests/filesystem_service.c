@@ -1057,7 +1057,7 @@ static void test_romfs_setting(void) {
 }
 /* the data folder the romfs= modes read: no RomFS of its own, and the folder of the user beside it */
 static void romfs_setting_write(void) {
-    CHECK(!snx_mkdirs("setting-data/Game_data"));
+    CHECK(!snx_mkdirs("setting-data/Game_data/exefs") && !snx_write_file("setting-data/Game_data/exefs/main", "main", 4));
     CHECK(!snx_mkdirs("setting-romfs/dir"));
     CHECK(!snx_write_file("setting-romfs/one.bin", "first file", 10));
     CHECK(!snx_write_file("setting-romfs/dir/two.bin", "second", 6));
@@ -1179,218 +1179,6 @@ static void test_raw_romfs(SvcObj* proxy) {
     puts("PASS raw RomFS reads, cached image size and the storage by program index and id");
 }
 
-#if !defined(_WIN32) /* the dump's link: Windows makes one only with the right to */
-/* the synthetic dumps of tests/hac_synth.h, under names fs.c doesn't use */
-#define put32 synth_put32
-#define put64 synth_put64
-#define romfs_build synth_romfs_build
-#include "nx/runtime/driver/hactool/hfs0.h"
-#include "nx/runtime/driver/hactool/nca.h"
-#include "nx/runtime/driver/hactool/pfs0.h"
-#include "nx/runtime/driver/hactool/sha.h"
-#include "nx/runtime/driver/hactool/xci.h"
-#include "hac_synth.h"
-#undef put32
-#undef put64
-#undef romfs_build
-#endif
-#if !defined(_WIN32)
-/* Extract dump off: dump-data/Game_data has no ExeFS or RomFS of its own, and dump-data/Game.source links to
-   an NSP of decrypted NCAs, which fs_init opens and maps. The game's ExeFS (exefs/...) and RomFS come out of it, read
-   in place: nothing is written beside it. With source, the settings' source= names the NSP instead, and Game.source
-   is a file that is no dump, which the setting is read over */
-static const char dump_code[] = "synthetic main", dump_asset[] = "an asset of the dump's RomFS";
-static blob_t dump_npdm(void) {
-    blob_t b = {zalloc(0x80), 0x80};
-    memcpy(b.data, "META", 4);
-    b.data[0x40] = 0x2A; /* told apart from a blank one */
-    return b;
-}
-static void dump_write(int source) {
-    blob_t code = {zalloc(sizeof dump_code - 1), sizeof dump_code - 1}, asset = {zalloc(sizeof dump_asset - 1), 0};
-    blob_t meta = dump_npdm(), nsp;
-    asset.size = sizeof dump_asset - 1;
-    memcpy(code.data, dump_code, code.size);
-    memcpy(asset.data, dump_asset, asset.size);
-    romfs_file_t exefs[2] = {{"main.npdm", meta}, {"main", code}}, romfs[1] = {{"asset.bin", asset}};
-    romfs_file_t ncas[1] = {
-        {"program.nca", dnca_build(NCACONTENTTYPE_PROGRAM, 0x0100000000AB0000ULL, exefs, 2, romfs, 1)}};
-    nsp = partition_build(MAGIC_PFS0, ncas, 1, 0x200);
-    CHECK(!snx_mkdirs("dump-data/Game_data") && !snx_write_file("dump-data/Game.nsp", nsp.data, nsp.size));
-    if (source)
-        CHECK(!snx_write_file("dump-data/Game.source", "no dump", 7));
-    else
-        CHECK(!snx_symlink("Game.nsp", "dump-data/Game.source"));
-    free(nsp.data);
-    free(ncas[0].content.data);
-    free(code.data);
-    free(asset.data);
-    free(meta.data);
-}
-static void test_dump(SvcObj* proxy) {
-    blob_t meta = dump_npdm();
-    PFileMap map;
-    Request r;
-    u64 size = 0;
-    u8* data = fs_read_file("exefs/main.npdm", &size);
-    CHECK(g_hle.fs.dfs != NULL && data && size == meta.size && !memcmp(data, meta.data, meta.size));
-    free(data);
-    CHECK(!fs_map_file("exefs/main", &map) && map.heap && map.size == sizeof dump_code - 1);
-    CHECK(!memcmp(map.data, dump_code, map.size));
-    map.borrowed = 0;
-    plat_file_unmap(&map); /* the test's frees it, as the platform's does for heap */
-    CHECK(fs_read_file("exefs/subsdk0", &size) == NULL && fs_read_file("romfs/asset.bin", &size) == NULL);
-    CHECK(!snx_path_exists("dump-data/Game_data/exefs") && !snx_path_exists("dump-data/Game_data/romfs"));
-    /* the RomFS image, what OpenDataStorageByCurrentProcess (200) gives: its header, then asset.bin's bytes where the
-       file table says they are */
-    request(&r, 200);
-    dispatch(proxy, &r, 0);
-    CHECK(r.c.nout_objs == 1);
-    SvcObj* storage = r.c.out_objs[0];
-    u64 total = get_size(storage);
-    CHECK(total == g_hle.fs.rtotal && total >= 0x50 && total <= 0x8000);
-    test_storage_contracts(storage, total);
-    request(&r, 0);
-    argument64(&r, 0, 0);
-    argument64(&r, 8, total);
-    output_buffer(&r, total);
-    dispatch(storage, &r, 0);
-    const u8* image = GP(0x5000);
-    u64 file_table = 0, data_offset = 0, at, name_size;
-    file_table = snx_ld_le64(image + 0x38);
-    data_offset = snx_ld_le64(image + 0x48);
-    CHECK(file_table + 0x20 + 9 <= total && !memcmp(image + file_table + 0x20, "asset.bin", 9));
-    at = snx_ld_le64(image + file_table + 8);
-    size = snx_ld_le64(image + file_table + 0x10);
-    name_size = 0;
-    name_size = snx_ld_le32(image + file_table + 0x1c);
-    CHECK(name_size == 9 && size == sizeof dump_asset - 1 && data_offset + at + size <= total);
-    CHECK(!memcmp(image + data_offset + at, dump_asset, size));
-    svcobj_unref(storage);
-    free(meta.data);
-    puts("PASS the dump's ExeFS and RomFS read in place, nothing extracted");
-}
-
-/* the RomFS image storage gives, a file name and its bytes the first file in its table, as a dump's image of one file
-   lays it out */
-static void image_holds(SvcObj* storage, const char* name, const char* contents) {
-    Request r;
-    u64 total = get_size(storage), file_table = 0, data_offset = 0, at = 0, size = 0, name_size = 0;
-    const u8* image = GP(0x5000);
-    CHECK(total >= 0x50 && total <= 0x8000);
-    request(&r, 0);
-    argument64(&r, 0, 0);
-    argument64(&r, 8, total);
-    output_buffer(&r, total);
-    dispatch(storage, &r, 0);
-    file_table = snx_ld_le64(image + 0x38);
-    data_offset = snx_ld_le64(image + 0x48);
-    CHECK(file_table + 0x20 + strlen(name) <= total && !memcmp(image + file_table + 0x20, name, strlen(name)));
-    at = snx_ld_le64(image + file_table + 8);
-    size = snx_ld_le64(image + file_table + 0x10);
-    name_size = snx_ld_le32(image + file_table + 0x1c);
-    CHECK(name_size == strlen(name) && size == strlen(contents) && data_offset + at + size <= total);
-    CHECK(!memcmp(image + data_offset + at, contents, size));
-}
-/* an update's or DLCs' dumps beside the game's (dump_write), the game named by its title ID, 0100000000AB0000. An
-   update runs as its own program, <game>_<its ID>, whose .ini names its dump; it is its game's ID with 0x800, with
-   an ExeFS and RomFS of its own. DLCs are checked in the game's addons= and played by the game's program, each a
-   PublicData NCA past the game's 0x1000 in a dump its own .ini names: two read in place, a third checked without a
-   dump recorded, and the update listed too, which the game's program leaves out. With extracted, the game's ExeFS
-   and RomFS are extracted in its data folder too, and the update's are still read over them */
-static const char addon_code[] = "the update's main", addon_asset[] = "the update's asset";
-static const char* const dlc_assets[] = {"a DLC's data", "another DLC's"};
-static void addon_dump(const char* path, int update, SnxU64 id, const char* file, const char* contents,
-                       const char* own) {
-    blob_t code = {zalloc(sizeof addon_code - 1), sizeof addon_code - 1}, meta = dump_npdm(), nsp;
-    blob_t asset = {zalloc(64), strlen(contents)};
-    romfs_file_t exefs[2] = {{"main.npdm", meta}, {"main", code}}, romfs[1] = {{file, asset}};
-    romfs_file_t ncas[1];
-    char *ini = snx_format("dump-data/%s.ini", own), *text = snx_format("[Game]\nsource=%s\n", path);
-    memcpy(code.data, addon_code, code.size);
-    memcpy(asset.data, contents, asset.size);
-    ncas[0].name = update ? "patch.nca" : "dlc.nca";
-    ncas[0].content = update ? dnca_build(NCACONTENTTYPE_PROGRAM, id, exefs, 2, romfs, 1)
-                             : dnca_build(NCACONTENTTPYE_PUBLICDATA, id, NULL, 0, romfs, 1);
-    nsp = partition_build(MAGIC_PFS0, ncas, 1, 0x200);
-    CHECK(!snx_write_file(path, nsp.data, nsp.size));
-    CHECK(!snx_write_file(ini, text, strlen(text)));
-    free(ini);
-    free(text);
-    free(nsp.data);
-    free(ncas[0].content.data);
-    free(code.data);
-    free(asset.data);
-    free(meta.data);
-}
-static void addon_write(int update, int extracted) {
-    strcpy(g_confdir, "dump-data/");
-    strcpy(g_exedir, "dump-data/");
-    strcpy(g_gamename, "0100000000AB0000");
-    if (update) {
-        g_addon = 0x0100000000AB0800ULL;
-        strcpy(g_exename, "0100000000AB0000_0100000000AB0800");
-        snprintf(g_addondir, sizeof g_addondir, "dump-data/%s_data/", g_exename);
-        addon_dump("dump-data/Update.nsp", 1, g_addon, "asset.bin", addon_asset, g_exename);
-    } else {
-        addon_dump("dump-data/Dlc1.nsp", 0, 0x0100000000AB1001ULL, "dlc.bin", dlc_assets[0],
-                   "0100000000AB0000_0100000000AB1001");
-        addon_dump("dump-data/Dlc2.nsp", 0, 0x0100000000AB1002ULL, "dlc2.bin", dlc_assets[1],
-                   "0100000000AB0000_0100000000AB1002");
-        strcpy(g_settings.game_addons, "0100000000AB1001, 0100000000ab1002,0100000000AB1003,0100000000AB0800");
-    }
-    if (extracted)
-        CHECK(!snx_mkdirs("dump-data/Game_data/exefs") && !snx_mkdirs("dump-data/Game_data/romfs") &&
-              !snx_write_file("dump-data/Game_data/exefs/main", "the game's main", 15) &&
-              !snx_write_file("dump-data/Game_data/romfs/asset.bin", "the game's", 10));
-}
-static void test_addon(SvcObj* proxy, int update) {
-    static const char* const files[] = {"dlc.bin", "dlc2.bin"};
-    Request r;
-    u64 size = 0;
-    u8* data = fs_read_file("exefs/main", &size);
-    SvcObj* storage;
-    if (update) { /* the update's ExeFS and RomFS, over the game's dump, whatever the game has extracted */
-        CHECK(g_hle.fs.dump.patch.found && data && size == sizeof addon_code - 1 && !memcmp(data, addon_code, size));
-        free(data);
-        CHECK(fs_read_file("exefs/subsdk0", &size) == NULL);
-        request(&r, 200);
-        dispatch(proxy, &r, 0);
-        CHECK(r.c.nout_objs == 1);
-        storage = r.c.out_objs[0];
-        image_holds(storage, "asset.bin", addon_asset);
-        svcobj_unref(storage);
-        puts("PASS an update's ExeFS and RomFS read from its dump over the game's");
-        return;
-    }
-    /* DLCs: the game's own program from its dump, the update left out, and each DLC's image as installed, by its
-       data ID; the one without a dump is not, and said so */
-    CHECK(data && size == sizeof dump_code - 1 && !memcmp(data, dump_code, size));
-    free(data);
-    CHECK(g_hle.fs.naocs == 2 && !g_hle.fs.dump.patch.found);
-    { /* the DLCs the game plays with, which its window names: the two found, in addons= order */
-        const u64* ids;
-        CHECK(fs_dlcs(&ids) == 2 && ids[0] == 0x0100000000AB1001ULL && ids[1] == 0x0100000000AB1002ULL);
-    }
-    CHECK(fs_aoc_has(0x0100000000AB1001ULL) && fs_aoc_has(0x0100000000AB1002ULL) && !fs_aoc_has(0x0100000000AB1003ULL));
-    CHECK(strstr(test_fs_text, "the DLC 0100000000AB1003 is checked") != NULL);
-    for (u64 i = 0; i < 2; i++) {
-        request(&r, 202); /* the StorageId (u8) at 0, the DataId at 8 */
-        argument64(&r, 8, 0x0100000000AB1001ULL + i);
-        dispatch(proxy, &r, 0);
-        CHECK(r.c.nout_objs == 1);
-        storage = r.c.out_objs[0];
-        image_holds(storage, files[i], dlc_assets[i]);
-        svcobj_unref(storage);
-    }
-    request(&r, 202); /* the DLC without a dump: not installed, an empty archive */
-    argument64(&r, 8, 0x0100000000AB1003ULL);
-    dispatch(proxy, &r, 0);
-    CHECK(r.c.nout_objs == 1 && get_size(r.c.out_objs[0]) == sizeof g_hle.fs.emptyrom);
-    svcobj_unref(r.c.out_objs[0]);
-    puts("PASS two DLCs' images read from their dumps as installed, the game's program from the game's");
-}
-#endif
 /* An update extracted in its data folder (<game>_<its ID>_data), laid over the game's (<game>_data), and a DLC checked
    in addons= extracted in its own: the update's ExeFS and RomFS whole, the game's RomFS files it does not have gone, its other folders merged, all of it read-only. The game's saves
    stay where they are, writable */
@@ -1422,10 +1210,13 @@ static void test_overlay(void) {
     strcpy(g_exedir, "overlay-data/");
     strcpy(g_confdir, "overlay-data/");
     strcpy(g_gamename, "0100000000AB0000");
-    strcpy(g_settings.game_addons, "0100000000AB1001");
+    strcpy(g_settings.game_addons, "0100000000AB1001,0100000000AB1005"); /* the second has no extraction */
     strcpy(g_addondir, "overlay-data/0100000000AB0000_0100000000AB0800_data/");
     strcpy(g_datadir, "overlay-data/0100000000AB0000_data/");
-    fs_init(NULL, NULL);
+    test_fs_text[0] = 0;
+    fs_init();
+    CHECK(fs_aoc_has(0x0100000000AB1001ULL) && !fs_aoc_has(0x0100000000AB1005ULL));
+    CHECK(strstr(test_fs_text, "0100000000AB1005_data/system/archives/0100000000AB1005.romfs is not there") != NULL);
     data = fs_read_file("exefs/main", &size);
     CHECK(data && size == 17 && !memcmp(data, "the update's main", 17));
     free(data);
@@ -1462,8 +1253,8 @@ static void test_overlay(void) {
    was recompiled with them (its stamp, <program>.abi, says so), else the game's own, said; and their romfs/ folders
    laid over the game's RomFS in their names' order, a file of a later one over an earlier one's and the game's. A mod
    mods_off= names, a hidden folder and a file are no mods played, and nothing under mods/ is indexed with the data
-   folder: a link in a mod left out doesn't stop the game. image: the game's RomFS a romfs.bin image instead of its
-   romfs/ folder. stale: the program was recompiled without the mods' ExeFS files */
+   folder: a link in a mod left out doesn't stop the game. stale: the program was recompiled without the mods'
+   ExeFS files */
 static const char* const mod_made[][2] = {
     {"mods-data/0100000000AB0000_data/exefs/main", "the game's main"},
     {"mods-data/0100000000AB0000_data/exefs/main.npdm", "the game's npdm"},
@@ -1504,6 +1295,15 @@ static void image_has(const u8* image, const u64* header, const char* path, cons
         fprintf(stderr, "%s: expected \"%s\"\n", path, contents);
     CHECK(data && size == strlen(contents) && !memcmp(data, contents, size));
 }
+#if !defined(_WIN32) /* the mods-image case: a plain RomFS image, and fs.c's static builders renamed */
+#define put32 synth_put32
+#define put64 synth_put64
+#define romfs_build synth_romfs_build
+#include "romfs_synth.h"
+#undef put32
+#undef put64
+#undef romfs_build
+#endif
 static void test_mods(SvcObj* proxy, int image, int stale) {
     Request r;
     u64 size = 0, header[10], total;
@@ -1999,77 +1799,10 @@ int main(int argc, char** argv) {
     g_mem = calloc(1, 0x10000);
     CHECK(g_mem != NULL);
     int raw = argc == 4 && !strcmp(argv[3], "raw");
-#if !defined(_WIN32)
-    if (argc == 4 && (!strcmp(argv[3], "dump") || !strcmp(argv[3], "dump-source"))) {
-        int source = !strcmp(argv[3], "dump-source");
-        dump_write(source);
-        if (source) strcpy(g_settings.game_dump, "dump-data/Game.nsp");
-        strcpy(g_datadir, "dump-data/Game_data/");
-        fs_init(NULL, NULL);
-        test_scans_allowed = 0;
-        svc_fs_init();
-        romfs_init();
-        SvcObj* proxy = new_fsp();
-        test_dump(proxy);
-        svcobj_unref(proxy);
-        CHECK(test_objects == 0);
-        cleanup_service();
-        free(g_mem);
-        printf("PASS %u dump checks; %u startup scans\n", test_checks, test_scans);
-        return 0;
-    }
-    if (argc == 4 && (!strcmp(argv[3], "dump-update") || !strcmp(argv[3], "dump-update-extracted") ||
-                      !strcmp(argv[3], "dump-dlc"))) {
-        int update = strncmp(argv[3], "dump-update", 11) == 0;
-        dump_write(1);
-        addon_write(update, !strcmp(argv[3], "dump-update-extracted"));
-        strcpy(g_settings.game_dump, "dump-data/Game.nsp"); /* the game's .ini's, which the add-on runs with */
-        strcpy(g_datadir, "dump-data/Game_data/");
-        fs_init(NULL, NULL);
-        test_scans_allowed = 0;
-        svc_fs_init();
-        romfs_init();
-        SvcObj* proxy = new_fsp();
-        test_addon(proxy, update);
-        svcobj_unref(proxy);
-        CHECK(test_objects == 0);
-        cleanup_service();
-        free(g_mem);
-        printf("PASS %u add-on checks\n", test_checks);
-        return 0;
-    }
-    /* a game read from its dump that finds none: where it looked, its .ini and the link an older version made */
-    if (argc == 4 && (!strcmp(argv[3], "dump-none") || !strcmp(argv[3], "dump-gone"))) {
-        int gone = !strcmp(argv[3], "dump-gone");
-        char *dir, *ini, *said;
-        CHECK(!snx_mkdirs("dump-data/Game_data"));
-        dir = snx_absolute("dump-data"); /* fs_init's data folder is a full path, and so is the .ini said */
-        ini = snx_absolute(ini_file());
-        said = gone ? snx_format("fs: the game's dump dump-data/Gone.nsp, its source= setting, is not there; its "
-                                 "settings are %s\n",
-                                 ini)
-                    : snx_format("fs: the game has no ExeFS in %s/Game_data/exefs/ and no dump to read it from: "
-                                 "%s sets no source=, and %s/Game.source is not there\n",
-                                 dir, ini, dir);
-        CHECK(strcmp(ini, ini_file()) != 0);
-        if (gone) strcpy(g_settings.game_dump, "dump-data/Gone.nsp");
-        strcpy(g_datadir, "dump-data/Game_data/");
-        fs_init(NULL, NULL);
-        if (strcmp(test_fs_text, said)) fprintf(stderr, "said:     %sexpected: %s", test_fs_text, said);
-        CHECK(!strcmp(test_fs_text, said) && g_hle.fs.dfs == NULL);
-        free(dir);
-        free(ini);
-        free(said);
-        cleanup_service();
-        free(g_mem);
-        printf("PASS %u checks: the game without a dump says where it looked\n", test_checks);
-        return 0;
-    }
-#endif
     if (argc == 4 && (!strcmp(argv[3], "mods") || !strcmp(argv[3], "mods-image") || !strcmp(argv[3], "mods-stale"))) {
         int image = !strcmp(argv[3], "mods-image"), stale = !strcmp(argv[3], "mods-stale");
         mods_write(image, stale);
-        fs_init(NULL, NULL);
+        fs_init();
         test_scans_allowed = 0;
         svc_fs_init();
         romfs_init();
@@ -2082,6 +1815,52 @@ int main(int argc, char** argv) {
         printf("PASS %u mod checks\n", test_checks);
         return 0;
     }
+    /* a data folder made from a dump has no exefs/: fs_init stops, naming the folder and how to recompile it */
+    if (argc == 4 && !strcmp(argv[3], "no-exefs")) {
+        jmp_buf jump;
+        CHECK(!snx_mkdirs("noexefs-data/Game_data/romfs"));
+        strcpy(g_datadir, "noexefs-data/Game_data/");
+        strcpy(g_settings.game_dump, "noexefs-data/Game.nsp");
+        test_log_text[0] = 0;
+        test_fatal_text[0] = 0;
+        test_fatal_jump = &jump;
+        if (!setjmp(jump)) {
+            fs_init();
+            CHECK(!"a data folder without exefs/ did not stop the game");
+        }
+        test_fatal_jump = NULL;
+        CHECK(strstr(test_fatal_text, "has no exefs/") != NULL && strstr(test_fatal_text, "-r") != NULL);
+        CHECK(strstr(test_log_text, "fs: source=noexefs-data/Game.nsp") != NULL);
+        cleanup_service();
+        free(g_mem);
+        printf("PASS %u checks: a data folder without exefs/ stops the game\n", test_checks);
+        return 0;
+    }
+    /* an update's data folder without exefs/ stops the game, naming that folder: the base folder's exefs/ is not its */
+    if (argc == 4 && !strcmp(argv[3], "update-no-exefs")) {
+        jmp_buf jump;
+        CHECK(!snx_mkdirs("updatenoexefs-data/0100000000AB0000_data/exefs") &&
+              !snx_write_file("updatenoexefs-data/0100000000AB0000_data/exefs/main", "main", 4));
+        CHECK(!snx_mkdirs("updatenoexefs-data/0100000000AB0000_0100000000AB0800_data/romfs"));
+        strcpy(g_exedir, "updatenoexefs-data/");
+        strcpy(g_gamename, "0100000000AB0000");
+        strcpy(g_datadir, "updatenoexefs-data/0100000000AB0000_data/");
+        g_addon = 0x0100000000AB0800ULL;
+        strcpy(g_addondir, "updatenoexefs-data/0100000000AB0000_0100000000AB0800_data/");
+        test_fatal_text[0] = 0;
+        test_fatal_jump = &jump;
+        if (!setjmp(jump)) {
+            fs_init();
+            CHECK(!"an update's data folder without exefs/ did not stop the game");
+        }
+        test_fatal_jump = NULL;
+        CHECK(strstr(test_fatal_text, g_addondir) != NULL && strstr(test_fatal_text, "has no exefs/") != NULL &&
+              strstr(test_fatal_text, "-r") != NULL);
+        cleanup_service();
+        free(g_mem);
+        printf("PASS %u checks: an update's data folder without exefs/ stops the game\n", test_checks);
+        return 0;
+    }
     if (argc == 4 && (!strcmp(argv[3], "romfs-setting") || !strcmp(argv[3], "romfs-setting-missing") ||
                       !strcmp(argv[3], "romfs-setting-conflict"))) {
         int missing = !strcmp(argv[3], "romfs-setting-missing"), conflict = !strcmp(argv[3], "romfs-setting-conflict");
@@ -2089,6 +1868,8 @@ int main(int argc, char** argv) {
         char* said;
         CHECK(romfs != NULL);
         if (conflict) {
+            CHECK(!snx_mkdirs("setting-data/Game_data/exefs") &&
+                  !snx_write_file("setting-data/Game_data/exefs/main", "main", 4));
             CHECK(!snx_mkdirs("setting-data/Game_data/romfs"));
             CHECK(!snx_write_file("setting-data/Game_data/romfs/old.bin", "old", 3));
         } else
@@ -2101,7 +1882,7 @@ int main(int argc, char** argv) {
             test_fatal_text[0] = 0;
             test_fatal_jump = &jump;
             if (!setjmp(jump)) {
-                fs_init(NULL, NULL);
+                fs_init();
                 CHECK(!"a refused romfs= did not stop the game");
             }
             test_fatal_jump = NULL;
@@ -2123,7 +1904,7 @@ int main(int argc, char** argv) {
             printf("PASS %u checks: a refused romfs= stops the game, said by the log\n", test_checks);
             return 0;
         }
-        fs_init(NULL, NULL);
+        fs_init();
         test_scans_allowed = 0;
         svc_fs_init();
         romfs_init();
@@ -2161,7 +1942,7 @@ int main(int argc, char** argv) {
         strcpy(g_datadir, "setting-update-data/0100000000AB0000_data/");
         snprintf(g_settings.game_romfs, sizeof g_settings.game_romfs, "%s", romfs);
         test_log_text[0] = 0;
-        fs_init(NULL, NULL);
+        fs_init();
         data = fs_read_file("romfs/a.bin", &size);
         CHECK(data && size == 14 && !memcmp(data, "the update's a", 14));
         free(data);
@@ -2180,7 +1961,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     strcpy(g_datadir, raw ? "raw-data/" : "service-data/");
-    fs_init(NULL, NULL);
+    fs_init();
     CHECK(test_scans > 0);
     /* the temporary storage the fixture left is gone, from the index and the disk: each launch starts it empty */
     FILE* left = fopen("service-data/save/temp/last-launch.bin", "rb");

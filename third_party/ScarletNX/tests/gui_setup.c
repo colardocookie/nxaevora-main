@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The launcher's setup (gui/main.c's setup_*) on the real renderer and its events, in a home of its own: the pages a
-   first start goes through and what each writes (a portable copy, the language, the games and dumps folders, the keys,
-   the first user), what it refuses, the user's page with users.ini there, the fixed uid kept for its saves, a notice
+   first start goes through and what each writes (a portable copy, the language, the games and dumps folders, the first
+   user), what it refuses, the user's page with users.ini there, the fixed uid kept for its saves, a notice
    alone after an update, --debug, the question's place as options-dialog says, and Skip */
 #include <SDL3/SDL.h>
 /* the keyboards main.c asks for: SDL keeps no count, and one asked for and dropped in a frame stays up on Android */
@@ -110,24 +110,18 @@ static char* config_of(const App* app) { return snx_menu_dir(app->home_dir, SNX_
 /* a first start: every page, what each writes; then nothing left */
 static void test_first(App* app) {
     char *portable = join(bin, SNX_PORTABLE_DIR), *games = join(root, "games picked"), *dumps = join(root, "dumps");
-    char *keys = join(root, "keys"), *config, *users, *path;
+    char *config, *users, *path;
     int notices; /* the first setup's, one a page */
     assert(!snx_mkdirs(games) && !snx_mkdirs(dumps));
-    path = join(keys, "prod.keys");
-    put(path, "header_key = 00112233\n");
-    free(path);
-    path = join(keys, "title.keys");
-    put(path, "0100000000000000000000000000000a = 0011aabb\n");
-    free(path);
     setup_start(app);
-    assert(app->setup_on && app->setup_count == 1 + SNX_SETUP_STEPS && page(app) == SETUP_NOTICE);
+    assert(app->setup_on && app->setup_count == 5 && page(app) == SETUP_NOTICE);
     render(app);
     shows_big(app, "SETUP", rgb(app->theme.ink), title_size(app));
     shows(app, "Changed in older versions", rgb(app->theme.page)); /* YoRHa's: in the box of ink at the foot */
     shows(app, "Notice", rgb(app->theme.page));                    /* the tab shown, inverted */
     shows(app, ICON_PALETTE " Appearance", rgb(app->theme.ink));
     hides(app, "1 " ICON_PALETTE " Appearance", rgb(app->theme.ink));
-    { /* each tab its icon and its name, no number: the six fit a 1280 window at 2x, as before their icons */
+    { /* each tab its icon and its name, no number: the five fit a 1280 window at 2x, as before their icons */
         int i, cols = 0;
         for (i = 0; i < app->setup_count; ++i) cols += tab_cols(app, i) + 3;
         assert((cols + 1) * 16 <= 1280);
@@ -447,39 +441,6 @@ static void test_first(App* app) {
     shows(app, "Recompiled", rgb(app->theme.ink));
     key(app, SDLK_DOWN); /* round to Keep */
     key(app, SDLK_RETURN);
-    /* the keys: none, Later in focus; a folder of them installed where the menu keeps them, Use These then */
-    assert(page(app) == SNX_SETUP_KEYS && app->setup_choice.count == 2 && app->setup_choice.focus == 1);
-    key(app, SDLK_UP);
-    key(app, SDLK_RETURN);
-    assert(app->setup_keys);
-    folder_answer_is(app, NULL);
-    assert(page(app) == SNX_SETUP_KEYS && app->setup_failed && !app->setup_keys && !app->confirm.shown);
-    {
-        char* keys_path = app->keys_path; /* NULL when snx_keys_dir finds no home: the variable it reads is named */
-        app->keys_path = NULL;
-        key(app, SDLK_RETURN);
-        folder_answer_is(app, keys);
-#ifdef _WIN32
-        assert(app->setup_failed &&
-               !strcmp(app->message, "Cannot install prod.keys: neither USERPROFILE nor HOME is set"));
-#else
-        assert(app->setup_failed && !strcmp(app->message, "Cannot install prod.keys: HOME is not set"));
-#endif
-        /* a failure, unlike none picked: in the box too, whole, until OK */
-        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR && !strcmp(app->error_line, app->message));
-        key(app, SDLK_RETURN);
-        assert(!app->confirm.shown && page(app) == SNX_SETUP_KEYS);
-        app->keys_path = keys_path;
-    }
-    key(app, SDLK_RETURN);
-    folder_answer_is(app, keys);
-    assert(!app->setup_failed && strstr(app->message, "Installed prod.keys and title.keys in"));
-    assert(app->setup_choice.count == 3 && !app->setup_choice.focus);
-    path = snx_dirname(app->keys_path);
-    holds(path, "prod.keys", "header_key");
-    holds(path, "title.keys", "0100000000000000000000000000000a");
-    free(path);
-    key(app, SDLK_RETURN);
     /* the first user: no users.ini, so its nickname typed, a random uid; one that is no nickname refused */
     assert(page(app) == SNX_SETUP_USER && app->setup_typing && !strcmp(app->setup_name, "Player"));
     assert(app->setup_saves == 0);
@@ -519,7 +480,6 @@ static void test_first(App* app) {
     assert(!app->setup_on);
     free(users);
     free(config);
-    free(keys);
     free(dumps);
     free(games);
     free(portable);
@@ -656,8 +616,8 @@ static void test_places(App* app) {
     assert(b.choices.box.y + b.choices.box.h == b.place.list.y + b.place.list.h && b.choices.box.w == b.place.list.w);
     assert(b.choices.at.y + b.choices.at.h <= b.choices.tab.y && b.choices.at.x > width / 2);
     assert(b.content.y + b.content.h <= b.choices.at.y && b.content.h > 0);
-    assert(!strcmp(b.tab, "ScarletNX  2/5"));
-    shows(app, "ScarletNX  2/5", rgb(app->theme.ink));
+    assert(!strcmp(b.tab, "ScarletNX  2/4"));
+    shows(app, "ScarletNX  2/4", rgb(app->theme.ink));
     { /* where the choices leave the page's boxes too few rows above them (a phone's, a finger's row each: here the
          largest letters, a phone held wide's 2340 pixels), the boxes go beside them, down to the question: a notice
          there to its "now" line, which the rows above the choices cut */
@@ -700,7 +660,7 @@ static void test_places(App* app) {
     assert(SDL_abs(b.choices.box.x + b.choices.box.w / 2 - (b.place.list.x + b.place.list.w / 2)) <= cell_w(app));
     assert(SDL_abs(b.choices.box.y + b.choices.box.h / 2 - (b.place.list.y + b.place.list.h / 2)) <= cell_h(app));
     shows(app, "Install Type", rgb(app->theme.warning));
-    shows(app, "2/5", rgb(app->theme.soft));
+    shows(app, "2/4", rgb(app->theme.soft));
     app->theme = *gui_theme_builtin("yorha");
     /* the foot: the tips beside the keys, halves; where half is under the keys' widest sentence, which a row cannot
        break (the narrowest window, 800 wide, at 4x: the foot's letters 3x), the keys that wide and the tips what is
@@ -885,7 +845,7 @@ int main(void) {
     bin = join(root, "Downloads/ScarletNX-windows-x86_64-0123456789abcdef/a copy kept here/bin");
     home = join(root, "home");
     assert(!snx_mkdirs(bin) && !snx_mkdirs(home));
-    /* the user's folders in that home: XDG's under HOME, Windows' in APPDATA and the keys in USERPROFILE */
+    /* the user's folders in that home: XDG's under HOME, Windows' in APPDATA and USERPROFILE */
     set_env("HOME", home);
     set_env("APPDATA", home);
     set_env("USERPROFILE", home);
@@ -894,7 +854,6 @@ int main(void) {
     set_env("XDG_STATE_HOME", NULL);
     set_env("XDG_CACHE_HOME", NULL);
     set_env("APPIMAGE", NULL);
-    /* the keys the setup installs go there, never into the real user's .switch */
     assert(getenv("USERPROFILE") && !strcmp(getenv("USERPROFILE"), home));
     {
         char* self = join(bin, "scarletnx");

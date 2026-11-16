@@ -1,7 +1,7 @@
 # The launcher's scenes: tools/uigen makes gui/ui.h and gui/ui.c of them as it builds (its first comment has the
 # format), and main.c draws each in the area its screen gives it. android. values are a phone's, iOS's too
 [scene]Menu {
-	# in the order of model.h's items, which main.c checks; the code gives the active one and the keys' state
+	# in the order of model.h's items, which main.c checks; the code gives the active one
 	[list]Entries {
 		attr = callback
 		# every entry where they fit: a list shows 8 rows at most by default
@@ -9,7 +9,7 @@
 		# a finger's (main.c's GUI_FINGER_ROW): 96 pixels at a phone's default 2x, about 37dp at a density of 2.6; 144 at
 		# 3x, Android's 48dp touch target (#589)
 		android.row_height = 48px
-		[button]"Load Switch NSP/XCI/NRO" {
+		[button]"Load Switch NRO" {
 			icon = gamepad-2
 		}
 		[button]"Load Linux ARM ELF" {
@@ -23,9 +23,6 @@
 		}
 		[button]"Load GBA ROM" {
 			icon = gamepad
-		}
-		[button]"Install Keys" {
-			icon = key-round
 		}
 		[button]"Settings" {
 			icon = settings

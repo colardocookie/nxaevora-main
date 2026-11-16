@@ -59,9 +59,8 @@ setting Game dump
     once
     startup
     in-game
-    help The dump the game was made from, which the recompile writes here. Without Extract dump the game
-    help reads its ExeFS and RomFS from it, and Extract to tmpfs extracts it again when tmpfs was emptied. Empty or
-    help left out: the link <name>.source in the game's folder, which older versions made
+    help The dump an older build's game was made from. This build logs it, and a data folder without exefs/ stops:
+    help recompile the game from its decrypted folder with -r.
 setting Game romfs
     key romfs
     text 2048
@@ -1161,20 +1160,6 @@ setting gdbstub
     default off
     words on=On
     help Enables gdbstub on port 1234
-setting Extract to tmpfs
-    key tmpfs
-    text 4
-    default off
-    words on=On
-    help Extract to tmpfs, in memory (the temporary folder's scarletnx/work/<title ID>), which the game reads its RomFS
-    help from
-setting Extract game container
-    label Extract dump
-    key extract
-    text 4
-    default off
-    words on=On
-    help Extract a dump's ExeFS and RomFS into its game's folder. Off, the game reads them from the dump
 # SNX_TRACY_BEGIN
 setting Tracy capture
     key tracy_capture
