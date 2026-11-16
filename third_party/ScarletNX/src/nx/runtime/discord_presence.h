@@ -14,6 +14,9 @@
 
 /* DRP_TITLE: the session's start, until the player's camera first moves in the field */
 enum { DRP_FIELD, DRP_BATTLE, DRP_TITLE };
+/* A battle's kind (D3, research 19:35). RECORD: no kind file was read, D2's rule from the opponent's record. PENDING:
+   not decided yet, and nothing is sent for the battle until it is. */
+enum { DRP_KIND_RECORD, DRP_KIND_WILD, DRP_KIND_ALPHA, DRP_KIND_NOBLE, DRP_KIND_TRAINER, DRP_KIND_PENDING };
 
 /* A Pokémon as the presence shows it: species 1 to 905, 0 for none, level 1 to 100, 0 when not known */
 typedef struct {
@@ -24,7 +27,7 @@ typedef struct {
    service (g_drp_region). foe: a wild opponent that checked out. active: the player's Pokémon in a battle. */
 typedef struct {
     int32_t region;
-    uint32_t activity;
+    uint32_t activity, kind;
     SnxDrpMon foe, active, party[6];
 } SnxDrpValues;
 #define SNX_DRP_WORDS 9
@@ -42,7 +45,7 @@ static inline SnxDrpMon snx_drp_word_mon(uint32_t w) {
 }
 
 static inline void snx_drp_write(SnxDrpState* s, const SnxDrpValues* v) {
-    uint32_t w[SNX_DRP_WORDS] = {v->activity, snx_drp_mon_word(v->foe), snx_drp_mon_word(v->active)};
+    uint32_t w[SNX_DRP_WORDS] = {v->activity | v->kind << 8, snx_drp_mon_word(v->foe), snx_drp_mon_word(v->active)};
     for (int i = 0; i < 6; i++) w[3 + i] = snx_drp_mon_word(v->party[i]);
     __atomic_store_n(&s->seq, s->seq + 1, __ATOMIC_RELAXED);
     __atomic_thread_fence(__ATOMIC_RELEASE);
@@ -59,7 +62,8 @@ static inline int snx_drp_read(const SnxDrpState* s, SnxDrpValues* out, int trie
         for (int k = 0; k < SNX_DRP_WORDS; k++) w[k] = __atomic_load_n(&s->words[k], __ATOMIC_RELAXED);
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
         if (__atomic_load_n(&s->seq, __ATOMIC_RELAXED) != before) continue;
-        out->activity = w[0];
+        out->activity = w[0] & 0xff;
+        out->kind = w[0] >> 8;
         out->foe = snx_drp_word_mon(w[1]);
         out->active = snx_drp_word_mon(w[2]);
         for (int k = 0; k < 6; k++) out->party[k] = snx_drp_word_mon(w[3 + k]);
@@ -76,10 +80,40 @@ static inline int snx_drp_pack_index(const char* leaf) {
     if (a < '0' || a > '9' || b < '0' || b > '9' || strcmp(leaf + 9, ".gfpak")) return -1;
     return (a - '0') * 10 + (b - '0');
 }
-/* fs.c's call, once per opened file the game reads, only when the presence is on (g_drp_packs) */
-static inline void snx_drp_note_pack(int32_t* region, const char* leaf) {
+/* The files a battle's start reads by its kind (research 19:35): a trainer's data, or the start of a noble's, an
+   alpha's or a wild Pokémon's battle. The kind's bit, 0 for any other name. */
+enum { DRP_FILE_TRAINER = 1, DRP_FILE_NOBLE = 2, DRP_FILE_ALPHA = 4, DRP_FILE_WILD = 8 };
+static inline unsigned snx_drp_file_kind(const char* leaf) {
+    if (!leaf) return 0;
+    const size_t n = strlen(leaf);
+    if (n > 11 && !strncmp(leaf, "trdata_", 7) && !strcmp(leaf + n - 4, ".bin")) return DRP_FILE_TRAINER;
+    if (!strcmp(leaf, "cmn_battle_start_ns.wbin")) return DRP_FILE_NOBLE;
+    if (!strcmp(leaf, "cmn_battle_start_oybn.wbin")) return DRP_FILE_ALPHA;
+    if (!strcmp(leaf, "cmn_battle_start_wild.wbin")) return DRP_FILE_WILD;
+    return 0;
+}
+/* fs.c's call at each file read of the game's while the presence or its probe is on (g_drp_packs): a region's pack
+   sets the region, a kind file adds its bit to kinds (cleared at each battle's start). The kind's bit, else 0. */
+static inline unsigned snx_drp_note_file(int32_t* region, uint32_t* kinds, const char* leaf) {
     const int index = snx_drp_pack_index(leaf);
     if (index >= 0) __atomic_store_n(region, index, __ATOMIC_RELAXED);
+    const unsigned kind = snx_drp_file_kind(leaf);
+    if (kind) __atomic_fetch_or(kinds, kind, __ATOMIC_RELAXED);
+    return kind;
+}
+/* The kind from the files a battle's start read: a trainer, then a noble, an alpha, a wild Pokémon */
+static inline uint32_t snx_drp_kind_of(uint32_t files) {
+    if (files & DRP_FILE_TRAINER) return DRP_KIND_TRAINER;
+    if (files & DRP_FILE_NOBLE) return DRP_KIND_NOBLE;
+    if (files & DRP_FILE_ALPHA) return DRP_KIND_ALPHA;
+    return files & DRP_FILE_WILD ? DRP_KIND_WILD : DRP_KIND_RECORD;
+}
+/* Decided once a kind file was read and the opponent's record settled (read, failed or none), or 3 s after the start,
+   whichever comes first. Else PENDING. */
+#define SNX_DRP_KIND_WAIT_NS 3000000000ull
+static inline uint32_t snx_drp_decide(uint32_t files, int foe_settled, uint64_t now, uint64_t start) {
+    if ((files && foe_settled) || (now >= start && now - start >= SNX_DRP_KIND_WAIT_NS)) return snx_drp_kind_of(files);
+    return DRP_KIND_PENDING;
 }
 /* Our own text for the packs. 00, 01 and 02 are confirmed by runs, 03 to 05 by the game's order until a look. */
 static const char* const snx_drp_regions[] = {"Visiting Jubilife Village", "Exploring Obsidian Fieldlands",
@@ -92,7 +126,12 @@ static inline const char* snx_drp_details(const SnxDrpValues* v, char* out, size
     if (v->activity == DRP_TITLE) return "On the title screen";
     if (v->activity == DRP_BATTLE) {
         const char* name = snx_drp_species_name(v->foe.species);
-        if (!name) return "In battle";
+        if (v->kind == DRP_KIND_TRAINER) return "Battling a trainer";
+        if (!name || v->kind == DRP_KIND_PENDING) return "In battle";
+        if (v->kind == DRP_KIND_NOBLE) {
+            snprintf(out, size, "Fighting noble %s", name);
+            return out;
+        }
         if (snx_drp_boss(v->foe.species)) snprintf(out, size, "Fighting %s", name);
         else snprintf(out, size, "Battling a wild %s%s", v->foe.alpha ? "alpha " : "", name);
         return out;
@@ -367,6 +406,8 @@ static inline void snx_drp_step(SnxDrpSession* d, const SnxDrpValues* v, uint64_
     const char* state = snx_drp_state_line(v, party, sizeof party);
     snprintf(text, sizeof text, "%s / %s / %s", snx_drp_details(v, line, sizeof line), state ? state : "-",
              snx_drp_hover(v, hover, sizeof hover));
+    /* a battle's kind not decided yet: the last status stays until it is (at most 3 s) */
+    if (v->activity == DRP_BATTLE && v->kind == DRP_KIND_PENDING) return;
     if (!snx_drp_due(text, d->sent, now, d->last_send, d->ever)) return;
     if (!snx_drp_activity(json, sizeof json, v, d->pid, d->start, ++d->nonce) || !snx_drp_send(d, 1, json)) return;
     snprintf(d->sent, sizeof d->sent, "%s", text);
@@ -375,10 +416,11 @@ static inline void snx_drp_step(SnxDrpSession* d, const SnxDrpValues* v, uint64_
     d->sends++;
 }
 
-/* discord_presence.c: the state the game half writes, the region fs.c notes when g_drp_packs is set (by the
-   host thread's start), and that start */
+/* discord_presence.c: the state the game half writes, what fs.c notes while g_drp_packs is set (1 by the host
+   thread's start, 2 by the probe), and that start */
 extern SnxDrpState g_drp_state;
 extern int32_t g_drp_region;
 extern int g_drp_packs;
+extern uint32_t g_drp_kinds, g_drp_battle;
 int snx_discord_start(const char* app);
 #endif

@@ -11,6 +11,7 @@
 SnxDrpState g_drp_state;
 int32_t g_drp_region = -1;
 int g_drp_packs;
+uint32_t g_drp_kinds, g_drp_battle;
 int snx_discord_start(const char* app) { return snx_drp_app_ok(app); }
 
 /* A stand-in pipe: records what was written, answers each frame with a reply, can fail or close on request */
@@ -60,11 +61,16 @@ static SnxDrpMon mon(unsigned species, unsigned level, unsigned alpha) {
 
 static void test_sequence(void) {
     SnxDrpState s = {0, {0}};
-    SnxDrpValues v, w = {.region = 3, .activity = DRP_BATTLE, .foe = {401, 12, 1}, .active = {493, 100, 0}};
+    SnxDrpValues v, w = {.region = 3, .activity = DRP_BATTLE, .kind = DRP_KIND_NOBLE, .foe = {401, 12, 1},
+                         .active = {493, 100, 0}};
     w.party[5] = mon(491, 100, 0);
     snx_drp_write(&s, &w);
     v.region = 7; /* the region is the host half's own, never in the state */
     assert(s.seq == 2 && snx_drp_read(&s, &v, 4) && v.region == 7 && v.activity == DRP_BATTLE);
+    assert(v.kind == DRP_KIND_NOBLE);
+    w.kind = DRP_KIND_PENDING;
+    snx_drp_write(&s, &w);
+    assert(snx_drp_read(&s, &v, 4) && v.kind == DRP_KIND_PENDING && v.activity == DRP_BATTLE);
     assert(v.foe.species == 401 && v.foe.level == 12 && v.foe.alpha == 1 && v.active.species == 493);
     assert(v.party[5].species == 491 && v.party[5].level == 100 && v.party[0].species == 0);
     s.seq = 3; /* a writer in the middle: no copy is taken */
@@ -81,16 +87,42 @@ static void test_packs(void) {
     assert(snx_drp_pack_index("ha_area00.gfpa") == -1 && snx_drp_pack_index("xha_area00.gfpak") == -1);
     assert(snx_drp_pack_index("ha_terrain.bnsh") == -1 && snx_drp_pack_index("ha_terrain_zprepass.trsha") == -1);
     assert(snx_drp_pack_index("") == -1 && snx_drp_pack_index(NULL) == -1);
-    /* fs.c's call: a region's pack sets it, any other name leaves it */
+    /* fs.c's call: a region's pack sets it, a kind file adds its bit, any other name leaves both */
     int32_t region = -1;
-    snx_drp_note_pack(&region, "ha_terrain.bnsh");
-    assert(region == -1);
-    snx_drp_note_pack(&region, "ha_area02.gfpak");
-    assert(region == 2);
-    snx_drp_note_pack(&region, "field_weathering_config.bin");
-    assert(region == 2);
-    snx_drp_note_pack(&region, "ha_area00.gfpak");
+    uint32_t kinds = 0;
+    assert(!snx_drp_note_file(&region, &kinds, "ha_terrain.bnsh") && region == -1 && !kinds);
+    assert(!snx_drp_note_file(&region, &kinds, "ha_area02.gfpak") && region == 2 && !kinds);
+    assert(!snx_drp_note_file(&region, &kinds, "field_weathering_config.bin") && region == 2);
+    assert(!snx_drp_note_file(&region, &kinds, "ha_area00.gfpak") && region == 0);
+    assert(snx_drp_note_file(&region, &kinds, "cmn_battle_start_wild.wbin") == DRP_FILE_WILD && kinds == 8);
+    assert(snx_drp_note_file(&region, &kinds, "trdata_trainer03_19.bin") == DRP_FILE_TRAINER && kinds == 9);
     assert(region == 0);
+}
+
+/* The battle start files by kind (research 19:35), their precedence and when the kind is decided */
+static void test_kinds(void) {
+    assert(snx_drp_file_kind("trdata_trainer03_19.bin") == DRP_FILE_TRAINER);
+    assert(snx_drp_file_kind("trdata_x.bin") == DRP_FILE_TRAINER);
+    assert(snx_drp_file_kind("cmn_battle_start_ns.wbin") == DRP_FILE_NOBLE);
+    assert(snx_drp_file_kind("cmn_battle_start_oybn.wbin") == DRP_FILE_ALPHA);
+    assert(snx_drp_file_kind("cmn_battle_start_wild.wbin") == DRP_FILE_WILD);
+    assert(!snx_drp_file_kind("trdata_.bin") && !snx_drp_file_kind("trdata_trainer03_19.bnsh"));
+    assert(!snx_drp_file_kind("xtrdata_trainer03_19.bin") && !snx_drp_file_kind("tr0035_00_bandit_third.trmdl"));
+    assert(!snx_drp_file_kind("cmn_battle_start_wild.wbin2") && !snx_drp_file_kind("battle_seq_intro_00.wbin"));
+    assert(!snx_drp_file_kind("poke_nushi_battle_setting.bin") && !snx_drp_file_kind("") && !snx_drp_file_kind(NULL));
+    assert(snx_drp_kind_of(0) == DRP_KIND_RECORD && snx_drp_kind_of(DRP_FILE_WILD) == DRP_KIND_WILD);
+    assert(snx_drp_kind_of(DRP_FILE_ALPHA | DRP_FILE_WILD) == DRP_KIND_ALPHA);
+    assert(snx_drp_kind_of(DRP_FILE_NOBLE | DRP_FILE_ALPHA | DRP_FILE_WILD) == DRP_KIND_NOBLE);
+    assert(snx_drp_kind_of(15) == DRP_KIND_TRAINER && snx_drp_kind_of(DRP_FILE_TRAINER) == DRP_KIND_TRAINER);
+    const uint64_t s = 1000000000ull, start = 10 * s;
+    assert(snx_drp_decide(0, 1, start + 2 * s, start) == DRP_KIND_PENDING);             /* no file yet */
+    assert(snx_drp_decide(DRP_FILE_WILD, 0, start + 2 * s, start) == DRP_KIND_PENDING); /* the record not settled */
+    assert(snx_drp_decide(DRP_FILE_WILD, 1, start + 1, start) == DRP_KIND_WILD);
+    assert(snx_drp_decide(DRP_FILE_TRAINER, 1, start, start) == DRP_KIND_TRAINER);
+    assert(snx_drp_decide(0, 1, start + 3 * s, start) == DRP_KIND_RECORD); /* 3 s: D2's rule */
+    assert(snx_drp_decide(DRP_FILE_NOBLE, 0, start + 3 * s, start) == DRP_KIND_NOBLE);
+    assert(snx_drp_decide(0, 0, start + 3 * s - 1, start) == DRP_KIND_PENDING);
+    assert(snx_drp_decide(0, 0, start - 1, start) == DRP_KIND_PENDING); /* a start after now (a race) */
 }
 
 static void test_text(void) {
@@ -119,6 +151,28 @@ static void test_text(void) {
     assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Battling a wild alpha Kricketot"));
     v.foe = mon(493, 75, 0);
     assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Fighting Arceus"));
+    /* D3's kinds: a trainer whatever the record, a noble by name, the alpha word from the record's bit only */
+    v.kind = DRP_KIND_TRAINER;
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Battling a trainer"));
+    v.kind = DRP_KIND_NOBLE;
+    v.foe = mon(900, 70, 0);
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Fighting noble Kleavor"));
+    v.foe.alpha = 1;
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Fighting noble Kleavor"));
+    v.foe = mon(0, 0, 0);
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "In battle"));
+    v.kind = DRP_KIND_ALPHA;
+    v.foe = mon(143, 40, 0);
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Battling a wild Snorlax"));
+    v.foe.alpha = 1;
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Battling a wild alpha Snorlax"));
+    v.kind = DRP_KIND_WILD;
+    v.foe = mon(491, 70, 0);
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Fighting Darkrai"));
+    v.kind = DRP_KIND_PENDING;
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "In battle"));
+    v.kind = DRP_KIND_RECORD;
+    v.foe = mon(493, 75, 0);
     v.foe = mon(906, 5, 0); /* out of range: as a failed copy */
     assert(!strcmp(snx_drp_details(&v, line, sizeof line), "In battle"));
     assert(snx_drp_in_battle(DRP_BATTLE) && !snx_drp_in_battle(DRP_FIELD) && !snx_drp_in_battle(DRP_TITLE));
@@ -371,33 +425,39 @@ static void test_session(void) {
     snx_drp_step(&d, &v, 33 * s);
     assert(st.frames == 2);
     v.foe = mon(401, 5, 0);
+    v.kind = DRP_KIND_PENDING; /* the kind not decided: nothing sent, however long */
     snx_drp_step(&d, &v, 35 * s);
+    snx_drp_step(&d, &v, 37 * s);
+    assert(st.frames == 2);
+    v.kind = DRP_KIND_WILD;
+    snx_drp_step(&d, &v, 38 * s);
     assert(st.frames == 3 && strstr(st.last, "Battling a wild Kricketot"));
     /* the party changing alone is a change, through the hover text */
     v.party[0] = mon(493, 100, 0);
-    snx_drp_step(&d, &v, 39 * s);
+    snx_drp_step(&d, &v, 42 * s);
     assert(st.frames == 4 && strstr(st.last, "\"large_text\":\"Arceus Lv. 100\""));
     assert(!strcmp(d.sent, "Battling a wild Kricketot / - / Arceus Lv. 100"));
     /* a failed write drops the pipe, the next try 30 s on sends the activity again on a new pipe */
     st.fail_write = 1;
     v.activity = DRP_FIELD;
-    snx_drp_step(&d, &v, 44 * s);
+    snx_drp_step(&d, &v, 46 * s);
     assert(!d.connected && st.closes == 1);
     st.fail_write = 0;
     snx_drp_step(&d, &v, 50 * s);
     assert(!d.connected);
-    snx_drp_step(&d, &v, 71 * s);
+    snx_drp_step(&d, &v, 77 * s);
     assert(d.connected && strstr(st.last, "Obsidian") && st.last_opcode == 1);
     /* Discord closing the pipe (opcode 2 in a reply) drops it too */
     st.close_next = 1;
     v.activity = DRP_BATTLE;
-    snx_drp_step(&d, &v, 80 * s);
+    snx_drp_step(&d, &v, 82 * s);
     assert(!d.connected && st.closes == 2);
 }
 
 int main(void) {
     test_sequence();
     test_packs();
+    test_kinds();
     test_text();
     test_species();
     test_hover();

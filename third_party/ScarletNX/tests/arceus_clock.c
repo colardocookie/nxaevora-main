@@ -4,6 +4,8 @@
 #include "nx/runtime/arceus_clock.c"
 /* Discord presence's host half is not part of this test: its state and a start that never starts */
 SnxDrpState g_drp_state;
+int g_drp_packs;
+uint32_t g_drp_kinds, g_drp_battle;
 int snx_discord_start(const char* app) {
     (void)app;
     return 0;

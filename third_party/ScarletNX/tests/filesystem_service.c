@@ -49,6 +49,7 @@ char g_datadir[1024], g_exename[256], g_exedir[1024], g_confdir[1024], g_addondi
 u64 g_addon;
 int32_t g_drp_region = -1; /* discord_presence.c's, which this test does not link */
 int g_drp_packs;
+uint32_t g_drp_kinds, g_drp_battle;
 const u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull}; /* am.c's: the first user */
 static jmp_buf* test_fatal_jump;                                   /* a fatal() the test waits for comes back here */
 static char test_fatal_text[1024];
@@ -1924,8 +1925,9 @@ static void test_rhash(void) {
     CHECK(rhash(0x18, "Data") == 0x0418D017u);
     CHECK(rhash(0, "\xC3\xA9") == 0x5D41D65Cu);
 }
-/* Discord presence's region (research 18:25): rfile_read notes a region's pack only while g_drp_packs is set, at
-   each of the game's reads (logged is once a run), never at the runtime's quiet ones, and reads the same either way */
+/* Discord presence's region and battle kind (research 18:25, 19:35): rfile_read notes a region's pack and a kind
+   file only while g_drp_packs is set, at each of the game's reads (logged is once a run), never at the runtime's quiet
+   ones, and reads the same either way */
 static void test_discord_pack(void) {
     static u8 data[8] = {'g', 'f', 'p', 'a', 'k', 1, 2, 3};
     FsNode node;
@@ -1952,9 +1954,19 @@ static void test_discord_pack(void) {
     g_drp_packs = 0;
     CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_region == 3);
     g_drp_packs = 1;
-    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_region == 0);
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_region == 0 && !g_drp_kinds);
+    node.name = (char*)"cmn_battle_start_ns.wbin";
+    g_drp_packs = 0;
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && !g_drp_kinds);
+    g_drp_packs = 1;
+    CHECK(!rfile_read(&rf, 0, got, 8, 1) && !g_drp_kinds);
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && g_drp_kinds == 2 && g_drp_region == 0);
+    node.name = (char*)"trdata_trainer03_19.bin";
+    g_drp_packs = 3; /* the probe's line too */
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_kinds == 3);
     g_drp_packs = 0;
     g_drp_region = -1;
+    g_drp_kinds = 0;
 }
 int main(int argc, char** argv) {
     hle_init();

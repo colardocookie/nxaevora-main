@@ -15,9 +15,11 @@
 #endif
 
 SnxDrpState g_drp_state = {0, {DRP_TITLE}};
-/* the last region pack the game read (fs.c, research 18:25), -1 before any, noted only while g_drp_packs is set */
+/* What fs.c notes while g_drp_packs is set (1 the presence, 2 its probe): the last region pack the game read
+   (research 18:25), -1 before any, and the kind files read since the battle start g_drp_battle counts (D3) */
 int32_t g_drp_region = -1;
 int g_drp_packs;
+uint32_t g_drp_kinds, g_drp_battle;
 
 #ifdef _WIN32
 static HANDLE drp_handle = INVALID_HANDLE_VALUE;
@@ -114,7 +116,7 @@ static void drp_thread(void* arg) {
     SnxDrpValues v = {.region = -1, .activity = DRP_TITLE};
     unsigned said = 0;
     for (;;) {
-        SnxDrpValues now;
+        SnxDrpValues now = v; /* the read leaves the region, the host's own, as it was */
         if (snx_drp_read(&g_drp_state, &now, 8)) v = now;
         v.region = __atomic_load_n(&g_drp_region, __ATOMIC_RELAXED);
         const int was = drp_session.connected;
@@ -143,7 +145,7 @@ int snx_discord_start(const char* app) {
         WARN("arceus-discord: the presence thread could not be started\n");
         return 0;
     }
-    __atomic_store_n(&g_drp_packs, 1, __ATOMIC_RELAXED);
+    __atomic_fetch_or(&g_drp_packs, 1, __ATOMIC_RELAXED);
     const size_t n = strlen(drp_app);
     LOG("arceus-discord: EXPERIMENT: Discord presence on, application ...%s\n", drp_app + (n > 4 ? n - 4 : 0));
     return 1;

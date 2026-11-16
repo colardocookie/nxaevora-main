@@ -59,8 +59,8 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | `SNX_ARCEUS_TIMING_RESEARCH` | off | `=0` keeps read-only timing counters off. |
 | `SNX_ARCEUS_CADENCE_CENSUS` | off | `=0` keeps the read-only census off. |
 | `SNX_ARCEUS_GRAVITY_PROBE` | off | `=0` keeps the read-only probe off. |
-| `SNX_ARCEUS_DISCORD_PROBE` | off | `1` logs, read-only, the area names, each battle's start, the party's chain, and for the trainer's name a walk of the battle's objects and the trainer name and data calls (`arceus-drp:`, DRP-0 to P6). |
-| `SNX_ARCEUS_DISCORD` | off | `1` shows Discord status with `SNX_ARCEUS_DISCORD_APP` (D2, `arceus-discord:`): the title screen, the region from the pack the game reads, a wild opponent's species (alpha, or "Fighting" for a legendary) else "In battle", and the party in the image's hover text. Species and levels come from copies of the game's records deciphered by our own code. A battle ends 3 s after its effect sequences stop. |
+| `SNX_ARCEUS_DISCORD_PROBE` | off | `1` logs, read-only, the area names, each battle's start, the party's chain, for the trainer's name a walk of the battle's objects and the trainer name and data calls, each battle kind file read, and the species getter's calls by party slot in a battle (`arceus-drp:`, DRP-0 to P7). |
+| `SNX_ARCEUS_DISCORD` | off | `1` shows Discord status with `SNX_ARCEUS_DISCORD_APP` (D2, `arceus-discord:`): the title screen, the region from the pack the game reads, the battle's kind from the files its start reads (D3: a trainer, "Fighting noble <species>", an alpha or a wild opponent's species, "Fighting" for a legendary, else "In battle"), and the party in the image's hover text. Species and levels come from copies of the game's records deciphered by our own code. A battle ends 3 s after its effect sequences stop. |
 | `SNX_ARCEUS_DISCORD_APP` | none | The user's Discord application id, digits only. Never in the repository; only its last four digits are logged. |
 | `SNX_ARCEUS_FIXED_RESOLUTION` | off | `=0` leaves the game's automatic 3D resolution governor enabled. |
 
