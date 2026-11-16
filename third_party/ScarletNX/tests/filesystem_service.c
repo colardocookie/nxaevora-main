@@ -1254,7 +1254,8 @@ static void test_overlay(void) {
    laid over the game's RomFS in their names' order, a file of a later one over an earlier one's and the game's. A mod
    mods_off= names, a hidden folder and a file are no mods played, and nothing under mods/ is indexed with the data
    folder: a link in a mod left out doesn't stop the game. stale: the program was recompiled without the mods'
-   ExeFS files */
+   ExeFS files. setting: the game's RomFS from the RomFS folder of romfs=, and that folder unchanged by the reads */
+#define MODS_SETTING_ROMFS "mods-setting-romfs"
 static const char* const mod_made[][2] = {
     {"mods-data/0100000000AB0000_data/exefs/main", "the game's main"},
     {"mods-data/0100000000AB0000_data/exefs/main.npdm", "the game's npdm"},
@@ -1304,7 +1305,7 @@ static void image_has(const u8* image, const u64* header, const char* path, cons
 #undef put64
 #undef romfs_build
 #endif
-static void test_mods(SvcObj* proxy, int image, int stale) {
+static void test_mods(SvcObj* proxy, int image, int stale, int setting) {
     Request r;
     u64 size = 0, header[10], total;
     u8* data = fs_read_file("exefs/main", &size);
@@ -1375,11 +1376,30 @@ static void test_mods(SvcObj* proxy, int image, int stale) {
               !memcmp(GP(0x5000) + length - z_size, "the game's z", 12));
     }
     svcobj_unref(storage);
-    puts(stale ? "PASS mods' RomFS laid over the game's, their ExeFS left out of a program made without it"
-               : image ? "PASS mods' ExeFS and RomFS laid over the game's RomFS image"
-                       : "PASS mods' ExeFS and RomFS laid over the game's extracted files");
+    if (setting) { /* the mods laid over the romfs= folder, and the reads did not change that folder of the user */
+        char* romfs = snx_absolute(MODS_SETTING_ROMFS);
+        char* said;
+        u8* game;
+        size_t game_size = 0;
+        CHECK(romfs != NULL);
+        said = snx_format("fs: RomFS from %s (romfs=)\n", romfs);
+        CHECK(strstr(test_log_text, said) != NULL);
+        free(said);
+        free(romfs);
+        game = snx_read_file(MODS_SETTING_ROMFS "/a.bin", &game_size);
+        CHECK(game && game_size == 12 && !memcmp(game, "the game's a", 12));
+        free(game);
+        game = snx_read_file(MODS_SETTING_ROMFS "/dir/b.bin", &game_size);
+        CHECK(game && game_size == 12 && !memcmp(game, "the game's b", 12));
+        free(game);
+        CHECK(!snx_path_exists(MODS_SETTING_ROMFS "/new/n.bin"));
+    }
+    puts(setting ? "PASS mods' ExeFS and RomFS laid over the game's romfs= folder"
+                 : stale ? "PASS mods' RomFS laid over the game's, their ExeFS left out of a program made without it"
+                 : image ? "PASS mods' ExeFS and RomFS laid over the game's RomFS image"
+                         : "PASS mods' ExeFS and RomFS laid over the game's extracted files");
 }
-static void mods_write(int image, int stale) {
+static void mods_write(int image, int stale, int setting) {
     char *mods, *stamp, *text;
     for (size_t i = 0; i < sizeof mod_made / sizeof mod_made[0]; i++) {
         char* folder = snx_dirname(mod_made[i][0]);
@@ -1404,6 +1424,13 @@ static void mods_write(int image, int stale) {
         CHECK(!snx_mkdirs("mods-data/0100000000AB0000_data/mods/0 c/romfs/dir") &&
               !snx_write_file("mods-data/0100000000AB0000_data/mods/0 c/romfs/dir/c.bin", "the game's c", 12));
 #endif
+    } else if (setting) { /* the game's RomFS outside the data folder, named by romfs= */
+        CHECK(!snx_mkdirs(MODS_SETTING_ROMFS "/dir") &&
+              !snx_write_file(MODS_SETTING_ROMFS "/a.bin", "the game's a", 12) &&
+              !snx_write_file(MODS_SETTING_ROMFS "/empty.bin", "", 0) &&
+              !snx_write_file(MODS_SETTING_ROMFS "/z.bin", "the game's z", 12) &&
+              !snx_write_file(MODS_SETTING_ROMFS "/dir/b.bin", "the game's b", 12) &&
+              !snx_write_file(MODS_SETTING_ROMFS "/dir/c.bin", "the game's c", 12));
     } else {
         CHECK(!snx_mkdirs("mods-data/0100000000AB0000_data/romfs/dir") &&
               !snx_write_file("mods-data/0100000000AB0000_data/romfs/a.bin", "the game's a", 12) &&
@@ -1420,6 +1447,12 @@ static void mods_write(int image, int stale) {
     strcpy(g_gamename, "0100000000AB0000");
     strcpy(g_confdir, "mods-data/");
     strcpy(g_settings.game_mods_off, "3 off");
+    if (setting) {
+        char* romfs = snx_absolute(MODS_SETTING_ROMFS);
+        CHECK(romfs != NULL);
+        snprintf(g_settings.game_romfs, sizeof g_settings.game_romfs, "%s", romfs);
+        free(romfs);
+    }
     mods = snx_mods_folder("mods-data/0100000000AB0000_data");
     stamp = snx_mods_stamp(mods, g_settings.game_mods_off);
     CHECK(strlen(stamp) == 16);
@@ -1799,15 +1832,18 @@ int main(int argc, char** argv) {
     g_mem = calloc(1, 0x10000);
     CHECK(g_mem != NULL);
     int raw = argc == 4 && !strcmp(argv[3], "raw");
-    if (argc == 4 && (!strcmp(argv[3], "mods") || !strcmp(argv[3], "mods-image") || !strcmp(argv[3], "mods-stale"))) {
-        int image = !strcmp(argv[3], "mods-image"), stale = !strcmp(argv[3], "mods-stale");
-        mods_write(image, stale);
+    if (argc == 4 && (!strcmp(argv[3], "mods") || !strcmp(argv[3], "mods-image") || !strcmp(argv[3], "mods-stale") ||
+                      !strcmp(argv[3], "mods-setting"))) {
+        int image = !strcmp(argv[3], "mods-image"), stale = !strcmp(argv[3], "mods-stale"),
+            setting = !strcmp(argv[3], "mods-setting");
+        mods_write(image, stale, setting);
+        test_log_text[0] = 0;
         fs_init();
         test_scans_allowed = 0;
         svc_fs_init();
         romfs_init();
         SvcObj* proxy = new_fsp();
-        test_mods(proxy, image, stale);
+        test_mods(proxy, image, stale, setting);
         svcobj_unref(proxy);
         CHECK(test_objects == 0);
         cleanup_service();
