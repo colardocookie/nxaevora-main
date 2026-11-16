@@ -1836,6 +1836,31 @@ int main(int argc, char** argv) {
         printf("PASS %u checks: a data folder without exefs/ stops the game\n", test_checks);
         return 0;
     }
+    /* an update's data folder without exefs/ stops the game, naming that folder: the base folder's exefs/ is not its */
+    if (argc == 4 && !strcmp(argv[3], "update-no-exefs")) {
+        jmp_buf jump;
+        CHECK(!snx_mkdirs("updatenoexefs-data/0100000000AB0000_data/exefs") &&
+              !snx_write_file("updatenoexefs-data/0100000000AB0000_data/exefs/main", "main", 4));
+        CHECK(!snx_mkdirs("updatenoexefs-data/0100000000AB0000_0100000000AB0800_data/romfs"));
+        strcpy(g_exedir, "updatenoexefs-data/");
+        strcpy(g_gamename, "0100000000AB0000");
+        strcpy(g_datadir, "updatenoexefs-data/0100000000AB0000_data/");
+        g_addon = 0x0100000000AB0800ULL;
+        strcpy(g_addondir, "updatenoexefs-data/0100000000AB0000_0100000000AB0800_data/");
+        test_fatal_text[0] = 0;
+        test_fatal_jump = &jump;
+        if (!setjmp(jump)) {
+            fs_init();
+            CHECK(!"an update's data folder without exefs/ did not stop the game");
+        }
+        test_fatal_jump = NULL;
+        CHECK(strstr(test_fatal_text, g_addondir) != NULL && strstr(test_fatal_text, "has no exefs/") != NULL &&
+              strstr(test_fatal_text, "-r") != NULL);
+        cleanup_service();
+        free(g_mem);
+        printf("PASS %u checks: an update's data folder without exefs/ stops the game\n", test_checks);
+        return 0;
+    }
     if (argc == 4 && (!strcmp(argv[3], "romfs-setting") || !strcmp(argv[3], "romfs-setting-missing") ||
                       !strcmp(argv[3], "romfs-setting-conflict"))) {
         int missing = !strcmp(argv[3], "romfs-setting-missing"), conflict = !strcmp(argv[3], "romfs-setting-conflict");

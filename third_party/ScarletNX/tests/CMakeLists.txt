@@ -350,6 +350,8 @@ add_test(NAME filesystem_romfs_setting_conflict
 add_test(NAME filesystem_romfs_setting_update
          COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> romfs-setting-update)
 add_test(NAME filesystem_no_exefs COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> no-exefs)
+add_test(NAME filesystem_update_no_exefs
+         COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> update-no-exefs)
 if(NOT WIN32) # a symlink in the mods' files, and the synthetic RomFS image
     add_test(NAME filesystem_mods_image COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods-image)
 endif()

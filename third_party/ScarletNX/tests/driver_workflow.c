@@ -563,6 +563,19 @@ int main(int argc, char** argv) {
         free(folder2);
         free(outdir);
     }
+    /* an update's program made from a dump is refused, played and with -r, said */
+    {
+        char* addon_folder = snx_path_join(repo, "recompiled/0100000000AB0000");
+        char* addon = snx_path_join(addon_folder, "0100000000AB0000_0100000000AB0800" TEST_PROGRAM_SUFFIX);
+        reset(repo, nro);
+        CHECK(!snx_mkdirs(addon_folder) && !snx_write_file(addon, "synthetic", 9));
+        run(exe, repo, addon, log, 1, "", "made from a dump");
+        set_env("SNX_WORKFLOW_FLAGS", "-r");
+        run(exe, repo, addon, log, 1, "", "made from a dump");
+        set_env("SNX_WORKFLOW_FLAGS", "");
+        free(addon);
+        free(addon_folder);
+    }
     /* an encrypted dump is refused, with the line that says what to give instead */
     reset(repo, xci);
     run(exe, repo, xci, log, 1, "", "is an encrypted dump");

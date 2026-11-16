@@ -1146,11 +1146,10 @@ static void step_line(void) {
     snprintf(s.detail, sizeof s.detail, "Game.xci");
     s.value = 1024;
     s.total = 4096;
-    s.megabytes = 1;
     step_runs(&s, GUI_PROGRESS_PERCENT, 0, runs, lengths);
     assert(!strcmp(runs[0], "EXTRACT:") && !strcmp(runs[1], " GAME.XCI") && !strcmp(runs[2], " 25%"));
     step_runs(&s, GUI_PROGRESS_AMOUNT, 0, runs, lengths);
-    assert(!strcmp(runs[2], " 1.0 / 4.0 GB") && lengths[2] == 13);
+    assert(!strcmp(runs[2], " 1024 / 4096") && lengths[2] == 12);
     s.state = GUI_STEP_DONE;
     step_runs(&s, GUI_PROGRESS_PERCENT, 0, runs, lengths);
     assert(!strcmp(runs[2], "...OK"));
@@ -1279,6 +1278,13 @@ static void view_box(App* app, const char* temporary) {
     go_tab(app, GUI_TAB_GAMES);
     assert(recent_on(app) && dumps_on(app) && app->browser.head == 1 && games_lists(app, "Dumps") &&
            games_lists(app, "beta dump.nro") && games_lists(app, "gamma.cia") && games_lists(app, "alpha game"));
+    { /* a dump's row has no icon, and no driver is started for one */
+        char* got = snx_path_join(root, "icon driver argv");
+        driver_will(got, 0, "the fake driver ran");
+        assert(!game_icon(app, dump) && !snx_path_exists(got));
+        driver_will(NULL, 0, NULL);
+        free(got);
+    }
     render(app);
     shows(app, "Recent Games", rgb(app->theme.soft));
     shows(app, "dumps", rgb(app->theme.soft)); /* the side box's folders, dumps/ with them, wrapped at a slash */
@@ -3083,32 +3089,6 @@ int main(int argc, char** argv) {
         wait_taken(step);
         free(step);
         return 0;
-    }
-    if (argc == 9 && !strcmp(argv[3], "-x") && !strcmp(argv[4], "--icon")) { /* a dump's icon, as -x --icon writes it */
-        IconJpeg jpeg = {{0}, 0};
-        char* to = snx_path_join(argv[6], "icon.jpg");
-        int rc = 1;
-#ifndef _WIN32
-        /* started as the menu starts its drivers (gui_process.h), which works where SDL's processes do not (Android's
-           API 21): in a session of its own, the leader of its process group */
-        if (getpgrp() != getpid()) {
-            fputs("scarletnx: not started through the menu's processes\n", stderr);
-            free(to);
-            return 9;
-        }
-#endif
-        if (strstr(argv[8], "hung icon")) /* never answers: the menu stops it */
-            SDL_Delay(60000);
-        if (strstr(argv[8], "no icon")) {
-            puts("Reading the dump's Control NCA");
-            fflush(stdout);
-            fprintf(stderr, "scarletnx: Games shows no icon for %s: it has no Control NCA\n",
-                    argv[8]); /* as snx_error */
-        } else
-            rc = snx_splash_jpeg("wimsy-fuddles", 32, 90, icon_jpeg_write, &jpeg) ||
-                 snx_write_file(to, jpeg.data, (size_t)jpeg.size);
-        free(to);
-        return rc;
     }
     if (argc == 2 && !strcmp(argv[1], "--settings")) { /* as the runtime lists its settings */
         fputs("Display\tfullscreen\t0\tint\t0\t1\t1 = start in fullscreen\t\t0=0|1=1\n"

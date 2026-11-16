@@ -625,9 +625,6 @@ msgstr "Não foi possível desenhar %s: o jogo fica sem ícone"
 msgid "Games is not watched for new games (%s): F5 lists them"
 msgstr "Jogos não acompanha jogos novos (%s): F5 os lista"
 
-msgid "The dumps' icons are not asked for (%s)"
-msgstr "Os ícones dos dumps não são pedidos (%s)"
-
 #: src/gui/main.c
 msgid "Who plays the games"
 msgstr "Quem joga"

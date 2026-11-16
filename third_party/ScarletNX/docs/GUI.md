@@ -134,7 +134,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
     (`app.ini`, which names the others, and each game's `.ini`: `XDG_CONFIG_HOME` moves it, a portable copy keeps its
     own), **Logs** (the games' logs and `threads.txt`, `recent.txt`, `last-run.log`, `last-recompile.log` and the
     launcher's `scarletnx-console-<date>.log` and `scarletnx-error.log`), **Caches** (the recompile's
-    `units/`, the shader caches, the dumps' icons, and Extractions by default) and **Extractions**;
+    `units/`, the shader caches and Extractions by default) and **Extractions**;
   - **Dumps Library**: its **Main**, the data folder's `dumps/` (with its subfolders, going with the data folder), then its
     **Extra** folders, whose dumps Games lists, and **Add a folder**;
   - **Recompiled Library**: its **Main**, `recompiled/`, where recompiled games go, then its **Extra** folders, whose games
@@ -275,8 +275,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Logs; on iOS in `logs/` of the app's Documents, [APPLE](APPLE.md)), the 14 newest days kept (a day's first line
   deletes the older ones; the `scarletnx-console.log` older versions wrote stays as it is), holds what it says: its
   start (its build and data folder), each failure
-  once in a session (what the box over the screen says, shown or not), the warnings it gives as it opens, a dump whose
-  icon the driver did not give with what the driver said. Each line starts with the time and the launcher's process
+  once in a session (what the box over the screen says, shown or not), the warnings it gives as it opens. Each line starts with the time and the launcher's process
   ID, `2026-10-25 11:30:02 [4242] `, so two launchers open at once write theirs apart, and the lines go to stderr
   too. A fatal error, the launcher's that stops it as it starts or a game's, is also kept in `scarletnx-error.log`
   beside it, a game's after its name (a game of no data folder, an `--outdir`'s, beside its own log). Each start adds
@@ -371,10 +370,7 @@ folder the driver works in, which the menu passes it as `--data`: a portable cop
 AppImage (or the GUI), else the user's data folder, a build tree's menu's too ([USAGE](USAGE.md#folders)), then each
 Extra of Settings > App > Folders. Each game is shown by the name in its `control.nacp`, which the recompile copies into
 its data, else by its folder's or file's name, sorted by it in each folder, with its icon (Wimsy in grey for one with
-none): a game's own, a dump's
-the one its driver gives (`scarletnx -x --icon`), asked once a session into Caches' `icons/`. A dump the driver gave
-none for says why after its kind (the side box, the tips), and the launcher's log has all the driver said (above); the
-next start asks again. Only immediate files are listed:
+none): a game's own; a dump (an `.nro`) shows none. Only immediate files are listed:
 executables (execute permission on UNIX, `.exe` on Windows), `.cia`, `.cci`, `.3ds`, `.cxi`, `.app`, `.hbb`, `.bcci`, `.bcxi`, `.bcia`, `.zcci`, `.zcxi` and `.zcia` files
 (case-insensitive, no execute permission needed), which run with the 3DS driver, and `.vpk` files, which run with the Vita driver. Hidden files, shared libraries and
 directories are excluded. The folders are looked at once a second while the menu is open (their
@@ -582,11 +578,9 @@ dots and a turning ring; each step the driver and the runner report (unpack, ext
 recompile with its blocks, built, launch, GPU) typed down the page, with turning dots
 while it runs and `...OK` or `...FAILED` once it ends, the cursor blinking on the current
 one, and the other lines it printed indented under it (`[run] bar` adds a progress bar
-with the running step's percentage). A step that counts, the extraction by
-the MB the driver reports, the recompile by its blocks, shows how far it is on its line as
-`[run] progress` says: `amount` (`1.2 / 4.0 GB`, `3 / 6`), `percent` (`30%`, YoRHa's) or
-`time`, what is left at its pace so far (`01:23 left`). With `layout = console` the
-driver's own row says it, `extracted 1229 of 4096 MB (30%)`, written over itself each second. The menu fades out to black as a run starts and the run fades in from it; ESC
+with the running step's percentage). A step that counts, the recompile by its blocks, shows how far it is on its
+line as `[run] progress` says: `amount` (`3 / 6`), `percent` (`30%`, YoRHa's) or
+`time`, what is left at its pace so far (`01:23 left`). The menu fades out to black as a run starts and the run fades in from it; ESC
 fades the run out and the menu back in.
 
 The runtime draws a loading screen of its own in the same look while it prepares the shaders before a game starts

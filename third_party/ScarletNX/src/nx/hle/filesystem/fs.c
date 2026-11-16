@@ -263,6 +263,17 @@ void fs_init(void) {
             fatal("The data folder %s has no exefs/: recompile the game from its decrypted folder with -r", g_datadir);
         }
     }
+    /* an update runs from this folder with the base game's data folder: its own exefs/ is needed before overlays */
+    if (g_addon) {
+        char* exefs = snx_path_join(g_addondir, "exefs");
+        int present = exefs && snx_is_dir(exefs);
+        free(exefs);
+        if (!present) {
+            pm_unlock(&g_hle.fs.tree.lock);
+            fatal("The update's data folder %s has no exefs/: recompile the game from its decrypted folder with -r",
+                  g_addondir);
+        }
+    }
     overlays();
     dlcs_open();
     romfs_from_setting();

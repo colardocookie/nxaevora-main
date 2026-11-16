@@ -1034,11 +1034,6 @@ msgstr "未显示用户：%s"
 
 #: src/gui/main.c
 #, c-format
-msgid "The dumps' icons are not asked for (%s)"
-msgstr "未能读取转储的图标（%s）"
-
-#: src/gui/main.c
-#, c-format
 msgid "%s could not be drawn: the game shows no icon"
 msgstr "无法绘制 %s：该游戏不显示图标"
 

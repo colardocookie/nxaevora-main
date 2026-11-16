@@ -28,8 +28,8 @@
 
 static void usage(void) {
     puts("Usage: scarletnx [OPTIONS] INPUT [-- GAME_ARGUMENTS...]\n"
-         "  INPUT                  A decrypted game folder (recompiled if needed), a game made already, or an NRO\n"
-         "  -r, --recompile        Recompile the game's folder or an NRO, without playing\n"
+         "  INPUT                  A game made already, or an NRO; a decrypted game folder with -r\n"
+         "  -r, --recompile        Recompile a decrypted game folder or an NRO, without playing\n"
          "  -H, --headless         Run without a window or swapchain");
     puts("  --tracy                Start the Tracy client for a GUI connection (SNX_TRACY builds)\n"
          "  --tracy-capture        Record the run with tracy-capture, from Tracy 0.14.1 on PATH (SNX_TRACY builds)");
@@ -68,7 +68,7 @@ static void usage(void) {
 #ifndef _WIN32
     puts("  -S                     Enable the native GDB stub on localhost:1234\n"
          "  -s                     Enable the stub and stop at startup\n"
-         "Short options may be combined, for example -rx or -Hs.");
+         "Short options may be combined, for example -rH or -Hs.");
 #endif
 }
 static int is_nro_path(const char* path) {
@@ -252,8 +252,8 @@ static int named_otherwise(const char* source, const char* name) {
     free(own);
     return otherwise;
 }
-/* The game the driver plays: a game made already (recompiled/<id>/<id>), a prepared update's program in its game's
-   folder, or an NRO, which is recompiled first. A decrypted game folder is recompiled with -r. 0, or nonzero with the
+/* The game the driver plays: a game made already (recompiled/<id>/<id>) or an NRO, which is recompiled first. A
+   decrypted game folder is recompiled with -r. An update's program made from a dump is refused. 0, or nonzero with the
    line that says why */
 static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, const char* outdir, const char* opt,
                      int recompiling, char** recompile, int settings, char** setting, int game_argc, char** game_argv) {
@@ -262,7 +262,7 @@ static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, c
     SnxU64 addon = 0;
     const char** command =
         (const char**)snx_alloc((size_t)(game_argc + settings + recompiling + 24) * sizeof(*command));
-    int rc = 1, nro = is_nro_path(input), prepared = prepared_game(input, &folder, &name), named = 0, prebuilt = 0;
+    int rc = 1, nro = is_nro_path(input), prepared = prepared_game(input, &folder, &name), named = 0;
     int n, j;
     SnxNpdm npdm;
     command[0] = paths->executable;
@@ -293,12 +293,11 @@ static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, c
         named = named_otherwise(source, name); /* an NRO's, one named when it was made */
         goto made;
     }
-    if (prepared_addon(input, &folder, &name, &addon)) { /* an update's program made by an older version */
-        games = snx_dirname(folder);
-        base = snx_path_join(folder, name);
-        source = snx_strdup(input);
-        prebuilt = 1;
-        goto made;
+    /* an update's program made from a dump, which this build cannot read */
+    if (prepared_addon(input, &folder, &name, &addon)) {
+        snx_error("%s is an update's program made from a dump: recompile the game from its decrypted folder with -r",
+                  input);
+        goto done;
     }
     if (snx_refuse_encrypted_dump(input)) goto done;
     if (!nro || !snx_is_file(input)) {
@@ -332,7 +331,7 @@ made:
     code = snx_format("%s_code.so", base);
     game = snx_strdup(base);
 #endif
-    if (!prebuilt) {
+    {
         /* Always restage an NRO: a same-named cached game may belong to another input or an older build. */
 #ifdef SNX_IOS
         if (nro || (flags & SNX_RECOMP) || !snx_is_file(code)) {
