@@ -2514,7 +2514,21 @@ static void test_mon_read(void) {
     main_base = saved_base;
 }
 
+/* P6's per-battle line budget (research 22:25): spent lines come back at the next battle start */
+static void test_budget(void) {
+    const u32 saved = g_drp_battle;
+    DrpBudget b = {0};
+    g_drp_battle = 4;
+    unsigned granted = 0;
+    for (int i = 0; i < 40; i++) granted += drp_budget(&b, 32);
+    assert(granted == 32 && !drp_budget(&b, 32));
+    g_drp_battle = 5;
+    assert(drp_budget(&b, 32) && b.used == 1 && b.battle == 5);
+    g_drp_battle = saved;
+}
+
 int main(void) {
+    test_budget();
     test_mon_read();
     test_battle_mon();
     test_ride_swap();

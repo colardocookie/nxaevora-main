@@ -4687,6 +4687,20 @@ static void drp_trainer_walk(u64 object) {
         }
     pm_unlock(&drp_walk_lock);
 }
+/* P6's lines per battle (research 22:25): a site's budget starts again at each battle start (g_drp_battle), so field
+   talk before a trainer battle cannot spend it. Under the walk's lock, as the sites run on several threads. */
+typedef struct {
+    u32 battle, used;
+} DrpBudget;
+static int drp_budget(DrpBudget* b, u32 cap) {
+    pm_lock(&drp_walk_lock);
+    const u32 battle = __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED);
+    if (b->battle != battle) b->battle = battle, b->used = 0;
+    const int ok = b->used < cap;
+    b->used += ok;
+    pm_unlock(&drp_walk_lock);
+    return ok;
+}
 /* P6 item 1: FC70C8 puts a trainer's name from common/trname.dat into a word of a message: x0 the words, w1 the
    word's index, x2 the label. The script's WordSetTrainerName (2486A70) calls it, and 82F2E4 and 15A50F0. Logged:
    the label's words, then the words' object's text to depth 1. */
@@ -4698,7 +4712,8 @@ static void drp_trainer_word(CPU* c, u64 entry) {
         for (unsigned i = 0; i < 4; i++) l[i] = gr64(label + i * 8ull);
     drp_original[DRPS_TRNAME](c, entry);
     const u64 count = __atomic_add_fetch(&drp_calls[DRPS_TRNAME], 1, __ATOMIC_RELAXED);
-    if (count > 32) return;
+    static DrpBudget budget;
+    if (!drp_budget(&budget, 32)) return;
     LOG("arceus-drp: trainer name word %llu: words %llx, word %u, label %016llx %016llx %016llx %016llx, caller "
         "main+%llx, ns=%llu\n",
         (unsigned long long)count, (unsigned long long)words, index, (unsigned long long)l[0], (unsigned long long)l[1],
@@ -4717,7 +4732,8 @@ static void drp_trainer_data(CPU* c, u64 entry) {
     drp_string(id, name, sizeof name);
     drp_original[DRPS_TRDATA](c, entry);
     const u64 count = __atomic_add_fetch(&drp_calls[DRPS_TRDATA], 1, __ATOMIC_RELAXED);
-    if (count <= 64)
+    static DrpBudget budget;
+    if (drp_budget(&budget, 64))
         LOG("arceus-drp: trainer data %llu: \"%s\", caller main+%llx, ns=%llu\n", (unsigned long long)count, name,
             (unsigned long long)(caller - main_base), (unsigned long long)plat_ns());
 }
