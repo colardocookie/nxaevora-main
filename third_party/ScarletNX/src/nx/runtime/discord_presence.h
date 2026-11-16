@@ -432,7 +432,8 @@ static inline int snx_drp_reply(SnxDrpSession* d) {
     return opcode != 2;
 }
 /* Discord's reply (research 21:50): its evt ("null", or "" when it has none) and, for an ERROR, the data's code and
-   message. A run of ten digits or more in the message is masked, so no id is ever logged. */
+   message. Every digit in the message becomes '#' and every \\u escape '?' (its four hex digits dropped), so no number,
+   an id least of all, is ever logged however it is written. */
 static inline void snx_drp_reply_parse(const char* json, char* evt, size_t evt_size, long* code, char* message,
                                        size_t message_size) {
     evt[0] = message[0] = 0;
@@ -451,13 +452,16 @@ static inline void snx_drp_reply_parse(const char* json, char* evt, size_t evt_s
     if (c) *code = strtol(c + 7, NULL, 10);
     const char* m = strstr(json, "\"message\":\"");
     if (!m) return;
-    size_t n = 0, digits = 0;
+    size_t n = 0;
     for (m += 11; *m && *m != '"' && n + 1 < message_size; m++) {
+        if (*m == '\\' && m[1] == 'u') {
+            m++; /* the u, then up to four hex digits, never past the string's end or its quote */
+            for (int k = 0; k < 4 && m[1] && m[1] != '"'; k++) m++;
+            message[n++] = '?';
+            continue;
+        }
         if (*m == '\\' && m[1]) m++;
-        digits = *m >= '0' && *m <= '9' ? digits + 1 : 0;
-        message[n++] = *m;
-        if (digits >= 10)
-            for (size_t k = n - digits; k < n; k++) message[k] = '#';
+        message[n++] = *m >= '0' && *m <= '9' ? '#' : *m;
     }
     message[n] = 0;
 }

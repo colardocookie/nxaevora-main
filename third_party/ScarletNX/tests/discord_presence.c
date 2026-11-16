@@ -166,6 +166,18 @@ static void test_reply(void) {
                         evt, sizeof evt, &code, message, sizeof message);
     assert(!strcmp(evt, "ERROR") && code == 4000);
     assert(!strcmp(message, "child \"activity\" fails for app ###################"));
+    /* digits written as escapes, or short, are masked too: nothing numeric reaches the log */
+    snx_drp_reply_parse("{\"data\":{\"code\":4000,\"message\":\"app \\u0031\\u0032\\u0033 pid 42 \\u00e9\"},"
+                        "\"evt\":\"ERROR\"}",
+                        evt, sizeof evt, &code, message, sizeof message);
+    assert(!strcmp(message, "app ??? pid ## ?"));
+    snx_drp_reply_parse("{\"message\":\"cut \\u00\",\"evt\":\"ERROR\"}", evt, sizeof evt, &code, message,
+                        sizeof message);
+    assert(!strcmp(message, "cut ?") && !strcmp(evt, "ERROR")); /* a cut escape stops at the string's quote */
+    snx_drp_reply_parse("{\"message\":\"end \\u0", evt, sizeof evt, &code, message, sizeof message);
+    assert(!strcmp(message, "end ?"));
+    snx_drp_reply_parse("{\"message\":\"a\\u1\",\"code\":7}", evt, sizeof evt, &code, message, sizeof message);
+    assert(!strcmp(message, "a?") && code == 7);
     snx_drp_reply_parse("{}", evt, sizeof evt, &code, message, sizeof message);
     assert(!evt[0] && code == 0 && !message[0]);
     snx_drp_reply_parse("{\"evt\":\"A_VERY_LONG_EVENT_NAME_INDEED\"}", evt, 8, &code, message, sizeof message);
