@@ -4476,13 +4476,13 @@ static void drp_party_read(void) {
     pm_unlock(&drp_lock);
 }
 
-/* D3 (research 19:35): a battle's kind from the files its start reads (fs.c notes them in g_drp_kinds, cleared at
+/* D3 (research 19:35): a battle's kind from the files its start reads (fs.c notes them in g_drp_files, cleared at
    the start). Decided by snx_drp_decide on the start's calls and on the tick: a kind file and the opponent's record
    settled, or 3 s. The probe logs the decision, with the record's alpha bit beside the alpha file. */
 static u64 drp_foe_object, drp_kind_start;
 static void drp_battle_decide(u64 now) {
     const int settled = !__atomic_load_n(&drp_foe_object, __ATOMIC_RELAXED);
-    const uint32_t files = __atomic_load_n(&g_drp_kinds, __ATOMIC_RELAXED);
+    const uint32_t files = __atomic_load_n(&g_drp_files.kinds, __ATOMIC_RELAXED);
     pm_lock(&drp_lock);
     const int pending = drp_values.activity == DRP_BATTLE && drp_values.kind == DRP_KIND_PENDING;
     const uint32_t kind = pending ? snx_drp_decide(files, settled, now, drp_kind_start) : DRP_KIND_PENDING;
@@ -4504,7 +4504,21 @@ static void drp_battle_decide(u64 now) {
    at [T]+110 and slot 0: P = [T + side*38 + 8], present when the byte at T + side*38 + 38 is above 0, its id at +7D.
    Logged on change: the side and each side's first entry with its id, and each new entry's first 0x100 bytes once,
    marking the words that are a party member (its slot) or that member's data object (+98). */
-static u64 drp_rd(u64 at) { return at >= 0x100000 && readable(at, 8) ? gr64(at) : 0; }
+static u64 drp_rd(u64 at) { return at && readable(at, 8) ? gr64(at) : 0; }
+/* the table T from the global slot: the slot holds the singleton's address, S = [[slot]], X = [[S+B0]+E0] as 882D58
+   reads it, then [X+D0] (823C00) and 834074's [[[[c+68]+98]+370]+8]. 0 when a link is missing or the table is not
+   readable for its five sides. */
+static u64 drp_battle_table(void) {
+    const u64 x = drp_rd(drp_rd(drp_rd(drp_rd(main_base + 0x4279580)) + 0xb0) + 0xe0);
+    const u64 t = drp_rd(drp_rd(drp_rd(drp_rd(drp_rd(x + 0xd0) + 0x68) + 0x98) + 0x370) + 8);
+    return readable(t, 5 * 0x38 + 1) ? t : 0;
+}
+/* a side's first entry and its id at +7D as entry << 8 | id, 0 when the side's count byte is 0 */
+static u64 drp_battle_first(u64 t, unsigned side) {
+    const unsigned n = *(const u8*)GP(t + side * 0x38ull + 0x38);
+    const u64 p = n ? drp_rd(t + side * 0x38ull + 8) : 0;
+    return p && readable(p + 0x7d, 1) ? p << 8 | *(const u8*)GP(p + 0x7d) : 0;
+}
 static int drp_index0_side(u64 m) {
     if (!readable(m + 0x110, 4)) return -1;
     const u32 mode = *(const u32*)GP(m + 0x110);
@@ -4520,16 +4534,11 @@ static void drp_battle_mon(void) {
     static u64 last[5], dumped[8];
     static int last_side = -2;
     static unsigned dumps;
-    const u64 x = drp_rd(drp_rd(drp_rd(drp_rd(drp_rd(main_base + 0x4279580)) + 0xb0) + 0xe0));
-    const u64 t = drp_rd(drp_rd(drp_rd(drp_rd(drp_rd(x + 0xd0) + 0x68) + 0x98) + 0x370) + 8);
-    if (!readable(t, 5 * 0x38 + 1)) return;
+    const u64 t = drp_battle_table();
+    if (!t) return;
     const int side = drp_index0_side(drp_rd(t));
     u64 now[5];
-    for (unsigned k = 0; k < 5; k++) {
-        const unsigned n = *(const u8*)GP(t + k * 0x38ull + 0x38);
-        const u64 p = n ? drp_rd(t + k * 0x38ull + 8) : 0;
-        now[k] = p && readable(p + 0x7d, 1) ? p << 8 | *(const u8*)GP(p + 0x7d) : 0;
-    }
+    for (unsigned k = 0; k < 5; k++) now[k] = drp_battle_first(t, k);
     if (side == last_side && !memcmp(now, last, sizeof now)) return;
     last_side = side;
     memcpy(last, now, sizeof now);
@@ -4708,7 +4717,7 @@ static void drp_battle_start(CPU* c, u64 entry) {
         /* a new battle forgets the last one's opponent and kind files, even when it starts before that one was seen
            to end */
         __atomic_add_fetch(&g_drp_battle, 1, __ATOMIC_RELAXED);
-        __atomic_store_n(&g_drp_kinds, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_drp_files.kinds, 0, __ATOMIC_RELAXED);
         pm_lock(&drp_lock);
         drp_battle_since = drp_kind_start = plat_ns(); /* the effects begin about 0.7 s after the start (DRP-P3) */
         if (drp_presence) {

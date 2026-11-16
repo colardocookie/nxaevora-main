@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "nx/runtime/discord_species.h"
 
@@ -23,11 +24,12 @@ typedef struct {
     uint16_t species;
     uint8_t level, alpha;
 } SnxDrpMon;
-/* What the presence shows. The game half writes all but the region, which the host half takes from the file
-   service (g_drp_region). foe: a wild opponent that checked out. active: the player's Pokémon in a battle. */
+/* What the presence shows. The game half writes all but the region and the noble fight, which the host half takes
+   from the file service (g_drp_files). foe: a wild opponent that checked out. active: the player's Pokémon in a
+   battle. noble: a noble fight's number with SNX_DRP_NOBLE_ON, 0 for none. */
 typedef struct {
     int32_t region;
-    uint32_t activity, kind;
+    uint32_t activity, kind, noble;
     SnxDrpMon foe, active, party[6];
 } SnxDrpValues;
 #define SNX_DRP_WORDS 9
@@ -92,14 +94,55 @@ static inline unsigned snx_drp_file_kind(const char* leaf) {
     if (!strcmp(leaf, "cmn_battle_start_wild.wbin")) return DRP_FILE_WILD;
     return 0;
 }
-/* fs.c's call at each file read of the game's while the presence or its probe is on (g_drp_packs): a region's pack
-   sets the region, a kind file adds its bit to kinds (cleared at each battle's start). The kind's bit, else 0. */
-static inline unsigned snx_drp_note_file(int32_t* region, uint32_t* kinds, const char* leaf) {
-    const int index = snx_drp_pack_index(leaf);
-    if (index >= 0) __atomic_store_n(region, index, __ATOMIC_RELAXED);
+/* A noble fight (D3c, research 21:50): the noble's sound bank PM_N_<n>.bnk starts it, n its national number (1 to 4
+   digits). The next scene d<n>.bseq (the win scene in the fights seen) or region pack ends it. The number, or -1. */
+static inline int snx_drp_bank_number(const char* leaf) {
+    if (!leaf || strncmp(leaf, "PM_N_", 5)) return -1;
+    int n = 0, digits = 0;
+    for (leaf += 5; *leaf >= '0' && *leaf <= '9' && digits < 5; leaf++, digits++) n = n * 10 + (*leaf - '0');
+    return digits >= 1 && digits <= 4 && !strcmp(leaf, ".bnk") ? n : -1;
+}
+static inline int snx_drp_scene(const char* leaf) {
+    if (!leaf || leaf[0] != 'd' || leaf[1] < '0' || leaf[1] > '9') return 0;
+    for (leaf++; *leaf >= '0' && *leaf <= '9'; leaf++) {}
+    return !strcmp(leaf, ".bseq");
+}
+/* What fs.c notes (research 18:25, 19:35, 21:50): the last region pack, -1 before any; the battle kind files since a
+   battle's start; a noble fight's number with SNX_DRP_NOBLE_ON, 0 for none, and its start */
+#define SNX_DRP_NOBLE_ON 0x10000u
+typedef struct {
+    int32_t region;
+    uint32_t kinds, noble;
+    uint64_t noble_ns;
+} SnxDrpFiles;
+/* fs.c's call at each file read of the game's while the presence or its probe is on (g_drp_packs). What the name
+   was, for the probe's lines: a kind's bit, or one of these. */
+enum { DRP_FILE_PACK = 16, DRP_FILE_BANK = 32, DRP_FILE_SCENE = 64, DRP_FILE_SCRIPT = 128 };
+static inline unsigned snx_drp_note_file(SnxDrpFiles* f, const char* leaf, uint64_t now) {
+    const int index = snx_drp_pack_index(leaf), bank = snx_drp_bank_number(leaf);
     const unsigned kind = snx_drp_file_kind(leaf);
-    if (kind) __atomic_fetch_or(kinds, kind, __ATOMIC_RELAXED);
-    return kind;
+    if (kind) __atomic_fetch_or(&f->kinds, kind, __ATOMIC_RELAXED);
+    if (bank >= 0) {
+        __atomic_store_n(&f->noble_ns, now, __ATOMIC_RELAXED);
+        __atomic_store_n(&f->noble, SNX_DRP_NOBLE_ON | (uint32_t)bank, __ATOMIC_RELEASE);
+        return DRP_FILE_BANK;
+    }
+    if (index >= 0 || snx_drp_scene(leaf)) __atomic_store_n(&f->noble, 0, __ATOMIC_RELEASE);
+    if (index >= 0) {
+        __atomic_store_n(&f->region, index, __ATOMIC_RELAXED);
+        return DRP_FILE_PACK;
+    }
+    if (snx_drp_scene(leaf)) return DRP_FILE_SCENE;
+    const size_t n = leaf ? strlen(leaf) : 0;
+    return kind ? kind : n > 7 && !strncmp(leaf, "ns", 2) && !strcmp(leaf + n - 5, ".blua") ? DRP_FILE_SCRIPT : 0;
+}
+/* The noble fight shown now: its number with SNX_DRP_NOBLE_ON, or 0 once it ended or 15 min after its start (the
+   backstop for a fight lost or left) */
+#define SNX_DRP_NOBLE_MAX_NS 900000000000ull
+static inline uint32_t snx_drp_noble_now(const SnxDrpFiles* f, uint64_t now) {
+    const uint32_t noble = __atomic_load_n(&f->noble, __ATOMIC_ACQUIRE);
+    const uint64_t start = __atomic_load_n(&f->noble_ns, __ATOMIC_RELAXED);
+    return noble && now >= start && now - start < SNX_DRP_NOBLE_MAX_NS ? noble : 0;
 }
 /* The kind from the files a battle's start read: a trainer, then a noble, an alpha, a wild Pokémon */
 static inline uint32_t snx_drp_kind_of(uint32_t files) {
@@ -124,6 +167,13 @@ static const char* const snx_drp_regions[] = {"Visiting Jubilife Village", "Expl
 /* The activity's first line, UTF-8 */
 static inline const char* snx_drp_details(const SnxDrpValues* v, char* out, size_t size) {
     if (v->activity == DRP_TITLE) return "On the title screen";
+    if (v->noble & SNX_DRP_NOBLE_ON) { /* the whole noble fight, its inner battles too */
+        const unsigned number = v->noble & 0xffff;
+        const char* name = snx_drp_species_name(number);
+        if (!name) return "Fighting a noble";
+        snprintf(out, size, snx_drp_boss(number) ? "Fighting %s" : "Fighting noble %s", name);
+        return out;
+    }
     if (v->activity == DRP_BATTLE) {
         const char* name = snx_drp_species_name(v->foe.species);
         if (v->kind == DRP_KIND_TRAINER) return "Battling a trainer";
@@ -358,22 +408,58 @@ typedef struct {
     long long start;
     int connected, ever;
     uint64_t last_send, last_try;
-    unsigned nonce, sends, connects;
-    char sent[400]; /* what was last sent, "details / state / hover text" */
+    unsigned nonce, sends, connects, replies;
+    char sent[400];  /* what was last sent, "details / state / hover text" */
+    char reply[513]; /* the start of Discord's last reply, its JSON, NUL-terminated */
 } SnxDrpSession;
-/* one reply frame read and dropped, so the pipe never fills. 0 when the pipe failed or Discord closed it */
+/* one reply frame read, its first 512 bytes kept, so the pipe never fills. 0 when the pipe failed or Discord closed
+   it */
 static inline int snx_drp_reply(SnxDrpSession* d) {
     unsigned char head[8], skip[512];
     if (!d->pipe->read(d->pipe->user, head, 8)) return 0;
     const uint32_t opcode = head[0] | head[1] << 8 | head[2] << 16 | (uint32_t)head[3] << 24;
     uint32_t n = head[4] | head[5] << 8 | head[6] << 16 | (uint32_t)head[7] << 24;
     if (n > 65536) return 0;
+    size_t kept = 0;
     while (n) {
         const uint32_t part = n < sizeof skip ? n : (uint32_t)sizeof skip;
         if (!d->pipe->read(d->pipe->user, skip, part)) return 0;
+        if (!kept) memcpy(d->reply, skip, kept = part);
         n -= part;
     }
+    d->reply[kept] = 0;
+    d->replies++;
     return opcode != 2;
+}
+/* Discord's reply (research 21:50): its evt ("null", or "" when it has none) and, for an ERROR, the data's code and
+   message. A run of ten digits or more in the message is masked, so no id is ever logged. */
+static inline void snx_drp_reply_parse(const char* json, char* evt, size_t evt_size, long* code, char* message,
+                                       size_t message_size) {
+    evt[0] = message[0] = 0;
+    *code = 0;
+    const char* e = strstr(json, "\"evt\":");
+    if (e) {
+        for (e += 6; *e == ' '; e++) {}
+        if (!strncmp(e, "null", 4)) snprintf(evt, evt_size, "null");
+        else if (*e == '"') {
+            size_t n = 0;
+            for (e++; *e && *e != '"' && n + 1 < evt_size; e++) evt[n++] = *e;
+            evt[n] = 0;
+        }
+    }
+    const char* c = strstr(json, "\"code\":");
+    if (c) *code = strtol(c + 7, NULL, 10);
+    const char* m = strstr(json, "\"message\":\"");
+    if (!m) return;
+    size_t n = 0, digits = 0;
+    for (m += 11; *m && *m != '"' && n + 1 < message_size; m++) {
+        if (*m == '\\' && m[1]) m++;
+        digits = *m >= '0' && *m <= '9' ? digits + 1 : 0;
+        message[n++] = *m;
+        if (digits >= 10)
+            for (size_t k = n - digits; k < n; k++) message[k] = '#';
+    }
+    message[n] = 0;
 }
 static inline void snx_drp_drop(SnxDrpSession* d) {
     if (d->connected) d->pipe->close(d->pipe->user);
@@ -419,8 +505,8 @@ static inline void snx_drp_step(SnxDrpSession* d, const SnxDrpValues* v, uint64_
 /* discord_presence.c: the state the game half writes, what fs.c notes while g_drp_packs is set (1 by the host
    thread's start, 2 by the probe), and that start */
 extern SnxDrpState g_drp_state;
-extern int32_t g_drp_region;
+extern SnxDrpFiles g_drp_files;
 extern int g_drp_packs;
-extern uint32_t g_drp_kinds, g_drp_battle;
+extern uint32_t g_drp_battle;
 int snx_discord_start(const char* app);
 #endif

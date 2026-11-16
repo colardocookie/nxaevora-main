@@ -5,7 +5,8 @@
 /* Discord presence's host half is not part of this test: its state and a start that never starts */
 SnxDrpState g_drp_state;
 int g_drp_packs;
-uint32_t g_drp_kinds, g_drp_battle;
+SnxDrpFiles g_drp_files;
+uint32_t g_drp_battle;
 int snx_discord_start(const char* app) {
     (void)app;
     return 0;
@@ -2398,7 +2399,71 @@ static void test_whole_step(void) {
     blink_ticks = 0, blink_remainder = 0;
     capture_fix_active = 0;
 }
+/* P8's reads of the player's battle Pokémon (research 21:35): stand-in memory in the layout 882D58, 823C00, 834074
+   and 2847B84 read, one placement of main for the slot and others for the mode tables, which lie 9 MB apart */
+static void test_battle_mon(void) {
+    const u64 saved_base = main_base;
+    memset(memory, 0, sizeof memory);
+    main_base = 0x100 - 0x4279580; /* the slot at 0x100, holding the singleton's address */
+    put64(0x100, 0x108);
+    put64(0x108, 0x120);         /* S */
+    put64(0x120 + 0xb0, 0x200);  /* [S+B0] */
+    put64(0x200 + 0xe0, 0x300);  /* X = [[S+B0]+E0] */
+    put64(0x300 + 0xd0, 0x400);  /* c = [X+D0] */
+    put64(0x400 + 0x68, 0x480);
+    put64(0x480 + 0x98, 0x540);
+    put64(0x540 + 0x370, 0x900);
+    put64(0x900 + 8, 0xa00); /* T */
+    memory[0xa00 + 0x38] = 1; /* side 0: one Pokémon, at 0xc00 with id 3 */
+    put64(0xa00 + 8, 0xc00);
+    memory[0xc00 + 0x7d] = 3;
+    memory[0xa00 + 2 * 0x38 + 0x38] = 2; /* side 2: its first at 0xd00 with id 7 */
+    put64(0xa00 + 2 * 0x38 + 8, 0xd00);
+    memory[0xd00 + 0x7d] = 7;
+    put64(0xa00 + 0x38 + 8, 0xe00); /* side 1 has an entry but a count of 0: none */
+    const u64 t = drp_battle_table();
+    assert(t == 0xa00 && drp_battle_first(t, 0) == (0xc00ull << 8 | 3));
+    assert(drp_battle_first(t, 2) == (0xd00ull << 8 | 7));
+    assert(drp_battle_first(t, 1) == 0 && drp_battle_first(t, 4) == 0);
+    /* one read more or less than 882D58 finds nothing: X's first word and the slot's own value lead nowhere */
+    assert(drp_rd(drp_rd(drp_rd(drp_rd(drp_rd(main_base + 0x4279580)) + 0xb0) + 0xe0)) == 0);
+    assert(drp_rd(drp_rd(drp_rd(main_base + 0x4279580) + 0xb0) + 0xe0) == 0);
+    put64(0x540 + 0x370, 0); /* a missing link */
+    assert(drp_battle_table() == 0);
+    put64(0x540 + 0x370, 0x900);
+    put64(0x900 + 8, sizeof memory - 0x100); /* a table not readable for its five sides */
+    assert(drp_battle_table() == 0);
+    /* index 0's side by the mode at M+110: 0 and 2 their tables, 1 by [[M+58]+55], others none */
+    memset(memory, 0, sizeof memory);
+    main_base = 0x100 - 0x397eb50;
+    put32(0x100, 1);           /* mode 0's table, main+397EB50 */
+    put32(0x100 + 0x78, 0);    /* mode 2's, main+397EBC8 */
+    put32(0x100 + 0x18, 2);    /* mode 1's when the kind is not 1 to 5, main+397EB68 */
+    put64(0x800 + 0x58, 0x600);
+    assert(drp_index0_side(0x800) == 1);
+    put32(0x800 + 0x110, 2);
+    assert(drp_index0_side(0x800) == 0);
+    put32(0x800 + 0x110, 3);
+    assert(drp_index0_side(0x800) == -1);
+    put32(0x800 + 0x110, 1);
+    assert(drp_index0_side(0x800) == 2); /* kind 0 */
+    memory[0x600 + 0x55] = 9;
+    assert(drp_index0_side(0x800) == 2);
+    assert(drp_index0_side(sizeof memory) == -1);
+    memset(memory, 0, sizeof memory);
+    main_base = 0x100 - 0x41767f8; /* mode 1 with kind 3: the pointer table's third entry */
+    put64(0x100 + 2 * 8, 0x300);
+    put32(0x300, 4);
+    put32(0x800 + 0x110, 1);
+    put64(0x800 + 0x58, 0x600);
+    memory[0x600 + 0x55] = 3;
+    assert(drp_index0_side(0x800) == 4);
+    memset(memory, 0, sizeof memory);
+    main_base = saved_base;
+}
+
 int main(void) {
+    test_battle_mon();
     test_ride_swap();
     test_defaults_on();
     test_capped_fall_body();

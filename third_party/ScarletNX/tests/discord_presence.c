@@ -9,9 +9,9 @@
 #include <stdio.h>
 
 SnxDrpState g_drp_state;
-int32_t g_drp_region = -1;
+SnxDrpFiles g_drp_files = {-1, 0, 0, 0};
 int g_drp_packs;
-uint32_t g_drp_kinds, g_drp_battle;
+uint32_t g_drp_battle;
 int snx_discord_start(const char* app) { return snx_drp_app_ok(app); }
 
 /* A stand-in pipe: records what was written, answers each frame with a reply, can fail or close on request */
@@ -19,7 +19,8 @@ typedef struct {
     int opens, open_ok, fail_write, close_next, closes;
     unsigned frames, last_opcode;
     char last[1200];
-    unsigned char reply[16];
+    unsigned char reply[300];
+    const char* answer; /* the reply's JSON, "{}" when NULL */
     size_t reply_at, reply_n;
 } Stand;
 static int st_open(void* u, int i) {
@@ -38,11 +39,15 @@ static int st_write(void* u, const void* data, size_t n) {
     memcpy(s->last, b + 8, len);
     s->last[len] = 0;
     s->frames++;
-    /* the reply: opcode 1 (or 2 to close) with a 4 byte payload */
-    const unsigned char r[12] = {(unsigned char)(s->close_next ? 2 : 1), 0, 0, 0, 4, 0, 0, 0, '{', '}', ' ', ' '};
-    memcpy(s->reply, r, sizeof r);
+    /* the reply: opcode 1 (or 2 to close) with the answer's JSON */
+    const char* answer = s->answer ? s->answer : "{}";
+    const size_t an = strlen(answer);
+    assert(an + 8 <= sizeof s->reply);
+    const unsigned char r[8] = {(unsigned char)(s->close_next ? 2 : 1), 0, 0, 0, (unsigned char)an, 0, 0, 0};
+    memcpy(s->reply, r, 8);
+    memcpy(s->reply + 8, answer, an);
     s->reply_at = 0;
-    s->reply_n = sizeof r;
+    s->reply_n = an + 8;
     return 1;
 }
 static int st_read(void* u, void* data, size_t n) {
@@ -88,15 +93,83 @@ static void test_packs(void) {
     assert(snx_drp_pack_index("ha_terrain.bnsh") == -1 && snx_drp_pack_index("ha_terrain_zprepass.trsha") == -1);
     assert(snx_drp_pack_index("") == -1 && snx_drp_pack_index(NULL) == -1);
     /* fs.c's call: a region's pack sets it, a kind file adds its bit, any other name leaves both */
-    int32_t region = -1;
-    uint32_t kinds = 0;
-    assert(!snx_drp_note_file(&region, &kinds, "ha_terrain.bnsh") && region == -1 && !kinds);
-    assert(!snx_drp_note_file(&region, &kinds, "ha_area02.gfpak") && region == 2 && !kinds);
-    assert(!snx_drp_note_file(&region, &kinds, "field_weathering_config.bin") && region == 2);
-    assert(!snx_drp_note_file(&region, &kinds, "ha_area00.gfpak") && region == 0);
-    assert(snx_drp_note_file(&region, &kinds, "cmn_battle_start_wild.wbin") == DRP_FILE_WILD && kinds == 8);
-    assert(snx_drp_note_file(&region, &kinds, "trdata_trainer03_19.bin") == DRP_FILE_TRAINER && kinds == 9);
-    assert(region == 0);
+    SnxDrpFiles f = {-1, 0, 0, 0};
+    assert(!snx_drp_note_file(&f, "ha_terrain.bnsh", 1) && f.region == -1 && !f.kinds);
+    assert(snx_drp_note_file(&f, "ha_area02.gfpak", 1) == DRP_FILE_PACK && f.region == 2 && !f.kinds);
+    assert(!snx_drp_note_file(&f, "field_weathering_config.bin", 1) && f.region == 2);
+    assert(snx_drp_note_file(&f, "ha_area00.gfpak", 1) == DRP_FILE_PACK && f.region == 0);
+    assert(snx_drp_note_file(&f, "cmn_battle_start_wild.wbin", 1) == DRP_FILE_WILD && f.kinds == 8);
+    assert(snx_drp_note_file(&f, "trdata_trainer03_19.bin", 1) == DRP_FILE_TRAINER && f.kinds == 9);
+    assert(f.region == 0 && !f.noble);
+}
+
+/* A noble fight (research 21:50): the bank starts it, the next scene or region pack ends it, 15 min at most */
+static void test_noble(void) {
+    assert(snx_drp_bank_number("PM_N_900.bnk") == 900 && snx_drp_bank_number("PM_N_101.bnk") == 101);
+    assert(snx_drp_bank_number("PM_N_493.bnk") == 493 && snx_drp_bank_number("PM_N_7.bnk") == 7);
+    assert(snx_drp_bank_number("PM_N_1002.bnk") == 1002 && snx_drp_bank_number("PM_N_12345.bnk") == -1);
+    assert(snx_drp_bank_number("PM_N_.bnk") == -1 && snx_drp_bank_number("PM_N_900.bnk2") == -1);
+    assert(snx_drp_bank_number("PM_N_900.wem") == -1 && snx_drp_bank_number("PM_900.bnk") == -1);
+    assert(snx_drp_bank_number("pm_n_900.bnk") == -1 && snx_drp_bank_number(NULL) == -1);
+    assert(snx_drp_scene("d120.bseq") && snx_drp_scene("d170.bseq") && snx_drp_scene("d5.bseq"));
+    assert(!snx_drp_scene("d.bseq") && !snx_drp_scene("d170.bseq.bak") && !snx_drp_scene("dx170.bseq"));
+    assert(!snx_drp_scene("battle_seq_intro_00.bseq") && !snx_drp_scene(NULL));
+    const uint64_t s = 1000000000ull;
+    SnxDrpFiles f = {4, 0, 0, 0};
+    assert(snx_drp_note_file(&f, "d120.bseq", 100 * s) == DRP_FILE_SCENE && !f.noble); /* the intro, before the bank */
+    assert(snx_drp_note_file(&f, "PM_N_900.bnk", 114 * s) == DRP_FILE_BANK);
+    assert(snx_drp_noble_now(&f, 114 * s) == (SNX_DRP_NOBLE_ON | 900));
+    assert(snx_drp_note_file(&f, "cmn_battle_start_ns.wbin", 124 * s) == DRP_FILE_NOBLE); /* an inner battle */
+    assert(snx_drp_note_file(&f, "nsrematchwin.blua", 125 * s) == DRP_FILE_SCRIPT);
+    assert(snx_drp_noble_now(&f, 200 * s) == (SNX_DRP_NOBLE_ON | 900));
+    assert(snx_drp_note_file(&f, "d170.bseq", 265 * s) == DRP_FILE_SCENE && !snx_drp_noble_now(&f, 265 * s));
+    /* a region's pack ends it too, and a fight neither ends is over 15 min after its start */
+    snx_drp_note_file(&f, "PM_N_101.bnk", 300 * s);
+    assert(snx_drp_note_file(&f, "ha_area00.gfpak", 310 * s) == DRP_FILE_PACK && !snx_drp_noble_now(&f, 310 * s));
+    assert(f.region == 0);
+    snx_drp_note_file(&f, "PM_N_493.bnk", 400 * s);
+    assert(snx_drp_noble_now(&f, 400 * s + 900 * s - 1) == (SNX_DRP_NOBLE_ON | 493));
+    assert(!snx_drp_noble_now(&f, 400 * s + 900 * s) && !snx_drp_noble_now(&f, 399 * s));
+    /* the text: the whole fight, inner battles too; the legendary list "Fighting"; a number we do not name */
+    char line[160];
+    SnxDrpValues v = {.region = 4, .activity = DRP_FIELD, .noble = SNX_DRP_NOBLE_ON | 900};
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Fighting noble Kleavor"));
+    v.activity = DRP_BATTLE;
+    v.kind = DRP_KIND_WILD;
+    v.foe = mon(900, 70, 0);
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Fighting noble Kleavor"));
+    v.activity = DRP_FIELD;
+    v.noble = SNX_DRP_NOBLE_ON | 493;
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Fighting Arceus"));
+    v.noble = SNX_DRP_NOBLE_ON | 1002;
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Fighting a noble"));
+    v.noble = SNX_DRP_NOBLE_ON | 0;
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Fighting a noble"));
+    v.noble = 0;
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Exploring Coronet Highlands"));
+    v.activity = DRP_TITLE;
+    v.noble = SNX_DRP_NOBLE_ON | 900;
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "On the title screen"));
+}
+
+/* Discord's reply: evt and an ERROR's code and message, ids masked */
+static void test_reply(void) {
+    char evt[24], message[160];
+    long code;
+    snx_drp_reply_parse("{\"cmd\":\"SET_ACTIVITY\",\"data\":{\"name\":\"x\"},\"evt\":null,\"nonce\":\"3\"}", evt,
+                        sizeof evt, &code, message, sizeof message);
+    assert(!strcmp(evt, "null") && code == 0 && !message[0]);
+    snx_drp_reply_parse("{\"cmd\":\"DISPATCH\",\"evt\": \"READY\"}", evt, sizeof evt, &code, message, sizeof message);
+    assert(!strcmp(evt, "READY"));
+    snx_drp_reply_parse("{\"cmd\":\"SET_ACTIVITY\",\"data\":{\"code\":4000,\"message\":\"child \\\"activity\\\" "
+                        "fails for app 1234567890123456789\"},\"evt\":\"ERROR\"}",
+                        evt, sizeof evt, &code, message, sizeof message);
+    assert(!strcmp(evt, "ERROR") && code == 4000);
+    assert(!strcmp(message, "child \"activity\" fails for app ###################"));
+    snx_drp_reply_parse("{}", evt, sizeof evt, &code, message, sizeof message);
+    assert(!evt[0] && code == 0 && !message[0]);
+    snx_drp_reply_parse("{\"evt\":\"A_VERY_LONG_EVENT_NAME_INDEED\"}", evt, 8, &code, message, sizeof message);
+    assert(!strcmp(evt, "A_VERY_"));
 }
 
 /* The battle start files by kind (research 19:35), their precedence and when the kind is decided */
@@ -407,7 +480,7 @@ static void test_battle_over(void) {
 static void test_session(void) {
     Stand st = {0};
     const SnxDrpPipe pipe = {st_open, st_write, st_read, st_close, &st};
-    SnxDrpSession d = {&pipe, "123", 7, 1700000000, 0, 0, 0, 0, 0, 0, 0, ""};
+    SnxDrpSession d = {.pipe = &pipe, .app = "123", .pid = 7, .start = 1700000000};
     SnxDrpValues v = {.region = 1, .activity = DRP_FIELD};
     const uint64_t s = 1000000000ull;
     /* no Discord: ten pipes tried, then nothing until 30 s later */
@@ -418,6 +491,7 @@ static void test_session(void) {
     st.open_ok = 1;
     snx_drp_step(&d, &v, 31 * s);
     assert(d.connected && st.frames == 2 && st.last_opcode == 1 && strstr(st.last, "Obsidian") && d.sends == 1);
+    assert(d.replies == 2 && !strcmp(d.reply, "{}"));
     /* the same text: nothing; a change at once waits for 4 s, and the newest is sent */
     snx_drp_step(&d, &v, 32 * s);
     assert(st.frames == 2);
@@ -434,7 +508,10 @@ static void test_session(void) {
     assert(st.frames == 3 && strstr(st.last, "Battling a wild Kricketot"));
     /* the party changing alone is a change, through the hover text */
     v.party[0] = mon(493, 100, 0);
+    st.answer = "{\"cmd\":\"SET_ACTIVITY\",\"data\":{\"code\":4000,\"message\":\"bad\"},\"evt\":\"ERROR\"}";
     snx_drp_step(&d, &v, 42 * s);
+    assert(d.replies == 4 && strstr(d.reply, "\"evt\":\"ERROR\"") && d.connected); /* refused, the pipe stays */
+    st.answer = NULL;
     assert(st.frames == 4 && strstr(st.last, "\"large_text\":\"Arceus Lv. 100\""));
     assert(!strcmp(d.sent, "Battling a wild Kricketot / - / Arceus Lv. 100"));
     /* a failed write drops the pipe, the next try 30 s on sends the activity again on a new pipe */
@@ -458,6 +535,8 @@ int main(void) {
     test_sequence();
     test_packs();
     test_kinds();
+    test_noble();
+    test_reply();
     test_text();
     test_species();
     test_hover();

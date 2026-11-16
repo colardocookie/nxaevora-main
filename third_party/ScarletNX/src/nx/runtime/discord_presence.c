@@ -15,11 +15,11 @@
 #endif
 
 SnxDrpState g_drp_state = {0, {DRP_TITLE}};
-/* What fs.c notes while g_drp_packs is set (1 the presence, 2 its probe): the last region pack the game read
-   (research 18:25), -1 before any, and the kind files read since the battle start g_drp_battle counts (D3) */
-int32_t g_drp_region = -1;
+/* What fs.c notes while g_drp_packs is set (1 the presence, 2 its probe): the region, the battle kind files since
+   the battle start g_drp_battle counts, and a noble fight (SnxDrpFiles) */
+SnxDrpFiles g_drp_files = {-1, 0, 0, 0};
 int g_drp_packs;
-uint32_t g_drp_kinds, g_drp_battle;
+uint32_t g_drp_battle;
 
 #ifdef _WIN32
 static HANDLE drp_handle = INVALID_HANDLE_VALUE;
@@ -114,16 +114,31 @@ static char drp_app[24];
 static void drp_thread(void* arg) {
     (void)arg;
     SnxDrpValues v = {.region = -1, .activity = DRP_TITLE};
-    unsigned said = 0;
+    unsigned said = 0, replies = 0;
+    char last_evt[24] = "";
     for (;;) {
         SnxDrpValues now = v; /* the read leaves the region, the host's own, as it was */
         if (snx_drp_read(&g_drp_state, &now, 8)) v = now;
-        v.region = __atomic_load_n(&g_drp_region, __ATOMIC_RELAXED);
+        v.region = __atomic_load_n(&g_drp_files.region, __ATOMIC_RELAXED);
+        v.noble = snx_drp_noble_now(&g_drp_files, plat_ns());
         const int was = drp_session.connected;
         const unsigned sends = drp_session.sends;
         snx_drp_step(&drp_session, &v, plat_ns());
         /* each activity sent, which is only ever a change, so that a look can be read against the log */
         if (drp_session.sends != sends) LOG("arceus-discord: sent \"%s\"\n", drp_session.sent);
+        /* Discord's reply to it (research 21:50): its evt when it changes, an ERROR in full, so the log shows whether
+           Discord took each status */
+        if (drp_session.replies != replies) {
+            replies = drp_session.replies;
+            char evt[24], message[160];
+            long code;
+            snx_drp_reply_parse(drp_session.reply, evt, sizeof evt, &code, message, sizeof message);
+            if (!strcmp(evt, "ERROR"))
+                WARN("arceus-discord: Discord refused it: code %ld, \"%s\"\n", code, message);
+            else if (strcmp(evt, last_evt))
+                LOG("arceus-discord: Discord replies with evt %s\n", evt[0] ? evt : "(none)");
+            snprintf(last_evt, sizeof last_evt, "%s", evt);
+        }
         if (drp_session.connected != was && said < 20) {
             said++;
             LOG("arceus-discord: %s Discord's pipe\n", drp_session.connected ? "connected to" : "lost");

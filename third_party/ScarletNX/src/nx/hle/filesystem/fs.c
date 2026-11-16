@@ -1018,15 +1018,17 @@ static int rfile_read(RFile* rf, u64 rel, u8* dst, u64 size, int quiet) {
     if (!node) return image_read(rf->base + rel, dst, size, 0, quiet); /* the game's image's, under the mods' */
     if (!quiet && !__atomic_exchange_n(&rf->logged, 1, __ATOMIC_RELAXED))
         LOG("RomFS: reading %s (%.1f KB)\n", node->name, (double)node->size / 1024.0);
-    /* Discord presence: the region's pack and a battle's kind files, at every read, as logged is once a run
-       (SNX_ARCEUS_DISCORD and its probe, research 18:25 and 19:35). The probe logs each kind file read. */
+    /* Discord presence: the region's pack, a battle's kind files and a noble fight's files, at every read, as logged
+       is once a run (SNX_ARCEUS_DISCORD and its probe, research 18:25, 19:35, 21:50). The probe logs all but packs. */
     const int drp = !quiet ? __atomic_load_n(&g_drp_packs, __ATOMIC_RELAXED) : 0;
-    if (drp && snx_drp_note_file(&g_drp_region, &g_drp_kinds, node->name) && (drp & 2)) {
-        static unsigned kind_reads;
-        const unsigned n = __atomic_add_fetch(&kind_reads, 1, __ATOMIC_RELAXED);
-        if (n <= 400)
-            LOG("arceus-drp: battle kind file %s, read %u, battle %u\n", node->name, n,
-                __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED));
+    const u64 drp_now = drp ? plat_ns() : 0;
+    const unsigned drp_file = drp ? snx_drp_note_file(&g_drp_files, node->name, drp_now) : 0;
+    if (drp_file && drp_file != DRP_FILE_PACK && (drp & 2)) {
+        static unsigned probe_reads;
+        const unsigned n = __atomic_add_fetch(&probe_reads, 1, __ATOMIC_RELAXED);
+        if (n <= 600)
+            LOG("arceus-drp: battle or noble file %s, read %u, battle %u, ns=%llu\n", node->name, n,
+                __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED), (unsigned long long)drp_now);
     }
     if (fs_tree_mapped(node)) { /* mapped for the rest of the run, and never changes */
         memcpy(dst, node->map + rel, (size_t)size);

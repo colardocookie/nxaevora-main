@@ -47,9 +47,9 @@ void mem_query(u64 addr, MemBlock* out) {
 }
 char g_datadir[1024], g_exename[256], g_exedir[1024], g_confdir[1024], g_addondir[1024], g_gamename[256];
 u64 g_addon;
-int32_t g_drp_region = -1; /* discord_presence.c's, which this test does not link */
+SnxDrpFiles g_drp_files = {-1, 0, 0, 0}; /* discord_presence.c's, which this test does not link */
 int g_drp_packs;
-uint32_t g_drp_kinds, g_drp_battle;
+uint32_t g_drp_battle;
 const u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull}; /* am.c's: the first user */
 static jmp_buf* test_fatal_jump;                                   /* a fatal() the test waits for comes back here */
 static char test_fatal_text[1024];
@@ -1942,31 +1942,40 @@ static void test_discord_pack(void) {
     rf.node = &node;
     rf.size = sizeof data;
     u8 got[8];
-    g_drp_region = -1;
+    g_drp_files.region = -1;
     g_drp_packs = 0;
-    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && g_drp_region == -1 && rf.logged);
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && g_drp_files.region == -1 && rf.logged);
     g_drp_packs = 1;
-    CHECK(!rfile_read(&rf, 2, got, 4, 1) && !memcmp(got, data + 2, 4) && g_drp_region == -1);
-    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && g_drp_region == 3);
+    CHECK(!rfile_read(&rf, 2, got, 4, 1) && !memcmp(got, data + 2, 4) && g_drp_files.region == -1);
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && g_drp_files.region == 3);
     node.name = (char*)"ha_terrain.bnsh";
-    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_region == 3);
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_files.region == 3);
     node.name = (char*)"ha_area00.gfpak";
     g_drp_packs = 0;
-    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_region == 3);
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_files.region == 3);
     g_drp_packs = 1;
-    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_region == 0 && !g_drp_kinds);
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_files.region == 0 && !g_drp_files.kinds);
     node.name = (char*)"cmn_battle_start_ns.wbin";
     g_drp_packs = 0;
-    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && !g_drp_kinds);
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && !g_drp_files.kinds);
     g_drp_packs = 1;
-    CHECK(!rfile_read(&rf, 0, got, 8, 1) && !g_drp_kinds);
-    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && g_drp_kinds == 2 && g_drp_region == 0);
+    CHECK(!rfile_read(&rf, 0, got, 8, 1) && !g_drp_files.kinds);
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && g_drp_files.kinds == 2 && g_drp_files.region == 0);
     node.name = (char*)"trdata_trainer03_19.bin";
     g_drp_packs = 3; /* the probe's line too */
-    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_kinds == 3);
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_files.kinds == 3);
+    /* a noble fight: the bank starts it, the next scene ends it, and nothing with the flag off */
+    node.name = (char*)"PM_N_900.bnk";
     g_drp_packs = 0;
-    g_drp_region = -1;
-    g_drp_kinds = 0;
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !g_drp_files.noble);
+    g_drp_packs = 1;
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && g_drp_files.noble == (SNX_DRP_NOBLE_ON | 900));
+    node.name = (char*)"d170.bseq";
+    CHECK(!rfile_read(&rf, 0, got, 8, 1) && g_drp_files.noble == (SNX_DRP_NOBLE_ON | 900));
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !g_drp_files.noble);
+    g_drp_packs = 0;
+    g_drp_files.region = -1;
+    g_drp_files.kinds = 0;
 }
 int main(int argc, char** argv) {
     hle_init();
