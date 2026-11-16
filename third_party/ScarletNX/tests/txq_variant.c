@@ -446,33 +446,55 @@ static u32* translate(const u8* code, u32 max_bytes, int stage, const ShaderInfo
     return spv;
 }
 
-/* A record of the ShaderInfo before txq_fixed, any padding of it not 0: it loads, the new fields 0, the rest as
-   written. Where the old size has padding on the new field, the loader's zeroing after the copy is what holds. */
-static void old_record(void) {
+/* Records of each size a corpus was saved with, any padding past the last field of the size not 0: before txq_fixed,
+   before tex_txq_mask, with tex_txq_mask alone (767cb91e) and the current one. Each loads with the fields it lacks 0
+   and the rest as written. A size not on that list is refused. */
+static void old_records(void) {
     const size_t align = _Alignof(ShaderInfo);
-    const size_t old = (offsetof(ShaderInfo, txq_fixed) + align - 1) / align * align;
+    const size_t sizes[4] = {(offsetof(ShaderInfo, txq_fixed) + align - 1) / align * align,
+                             (offsetof(ShaderInfo, tex_txq_mask) + align - 1) / align * align,
+                             (offsetof(ShaderInfo, tex_offset_size_mask) + align - 1) / align * align,
+                             sizeof(ShaderInfo)};
+    const size_t lacks[4] = {offsetof(ShaderInfo, txq_fixed), offsetof(ShaderInfo, tex_txq_mask),
+                             offsetof(ShaderInfo, tex_offset_size_mask), sizeof(ShaderInfo)};
     static const char path[] = "txq_variant_old_record.snxs";
-    const u32 header[5] = {1, (u32)old, ST_FS, 4, 4}; /* version, record size, stage, length, window */
-    ShaderInfo written;
-    unsigned char record[sizeof(ShaderInfo)];
     const unsigned char code[4] = {1, 2, 3, 4};
-    assert(offsetof(ShaderInfo, txq_fixed) <= old && old < sizeof(ShaderInfo));
-    memset(&written, 0, sizeof written);
-    written.ntex = 3;
-    memcpy(record, &written, sizeof record);
-    memset(record + offsetof(ShaderInfo, txq_fixed), 0xA5, sizeof record - offsetof(ShaderInfo, txq_fixed));
-    FILE* f = fopen(path, "wb");
-    assert(f && fwrite("SNXS", 1, 4, f) == 4 && fwrite(header, 1, sizeof header, f) == sizeof header &&
-           fwrite(record, 1, old, f) == old && fwrite(code, 1, sizeof code, f) == sizeof code && !fclose(f));
-    u32 max_bytes;
-    int stage;
-    ShaderInfo info;
-    memset(&info, 0x5A, sizeof info);
-    u8* loaded = shader_corpus_load(path, &max_bytes, &stage, &info);
-    remove(path);
-    assert(loaded && stage == ST_FS && max_bytes == 4 && !memcmp(loaded, code, 4));
-    assert(info.ntex == 3 && !info.txq_fixed[0] && !info.txq_fixed[1] && !info.txq_fixed[2]);
-    free(loaded);
+    assert(sizes[0] < sizes[1] && sizes[1] < sizes[2] && sizes[2] < sizes[3]);
+    for (int k = 0; k <= 4; k++) {
+        const size_t size = k < 4 ? sizes[k] : sizes[2] + 4; /* 4: a size no build wrote */
+        const u32 header[5] = {1, (u32)size, ST_FS, 4, 4}; /* version, record size, stage, length, window */
+        ShaderInfo written;
+        unsigned char record[sizeof(ShaderInfo) + 8];
+        memset(&written, 0, sizeof written);
+        written.ntex = 3;
+        written.txq_fixed[0] = 0x29;
+        written.txq_fixed[1] = 1920;
+        written.txq_fixed[2] = 1080;
+        written.tex_txq_mask = 0x81;
+        written.tex_offset_size_mask = 0x42;
+        memset(record, 0xA5, sizeof record);
+        memcpy(record, &written, sizeof written);
+        if (k < 4) memset(record + lacks[k], 0xA5, sizeof record - lacks[k]);
+        FILE* f = fopen(path, "wb");
+        assert(f && fwrite("SNXS", 1, 4, f) == 4 && fwrite(header, 1, sizeof header, f) == sizeof header &&
+               fwrite(record, 1, size, f) == size && fwrite(code, 1, sizeof code, f) == sizeof code && !fclose(f));
+        u32 max_bytes;
+        int stage;
+        ShaderInfo info;
+        memset(&info, 0x5A, sizeof info);
+        u8* loaded = shader_corpus_load(path, &max_bytes, &stage, &info);
+        remove(path);
+        if (k == 4) {
+            assert(!loaded);
+            continue;
+        }
+        assert(loaded && stage == ST_FS && max_bytes == 4 && !memcmp(loaded, code, 4) && info.ntex == 3);
+        assert(info.txq_fixed[0] == (k ? 0x29u : 0) && info.txq_fixed[1] == (k ? 1920u : 0) &&
+               info.txq_fixed[2] == (k ? 1080u : 0));
+        assert(info.tex_txq_mask == (k >= 2 ? 0x81u : 0));
+        assert(info.tex_offset_size_mask == (k == 3 ? 0x42u : 0));
+        free(loaded);
+    }
 }
 
 /* The corpus's checks are verdicts, not assertions: with --must-fail <check> the test passes only when that check
@@ -495,7 +517,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "usage: %s [--must-fail other-slot|compare|scaled|seen]\n", argv[0]);
         return 2;
     }
-    old_record();
+    old_records();
     controls();
     /* handle: the one size query's slot, D3-1's mechanism's (the half-size picture 54F500000, D3-2 revision 4); the
        scene colour is at 0x28 in both and is not queried. B46268AD queries nothing (ShaderInfo.tex_txq_mask). */

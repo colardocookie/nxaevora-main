@@ -18,7 +18,13 @@ _Static_assert(CORPUS_INFO_OLD < sizeof(ShaderInfo), "the older record is shorte
 /* and the ShaderInfo before tex_txq_mask and tex_offset_size_mask (D3-2 revision 4) */
 #define CORPUS_INFO_MID                                                                                              \
     ((offsetof(ShaderInfo, tex_txq_mask) + _Alignof(ShaderInfo) - 1) / _Alignof(ShaderInfo) * _Alignof(ShaderInfo))
-_Static_assert(CORPUS_INFO_OLD < CORPUS_INFO_MID && CORPUS_INFO_MID < sizeof(ShaderInfo), "the records grow");
+/* and the one with tex_txq_mask before tex_offset_size_mask (767cb91e): its mask is kept */
+#define CORPUS_INFO_TXQ                                                                                              \
+    ((offsetof(ShaderInfo, tex_offset_size_mask) + _Alignof(ShaderInfo) - 1) / _Alignof(ShaderInfo) *              \
+     _Alignof(ShaderInfo))
+_Static_assert(CORPUS_INFO_OLD < CORPUS_INFO_MID && CORPUS_INFO_MID < CORPUS_INFO_TXQ &&
+                   CORPUS_INFO_TXQ < sizeof(ShaderInfo),
+               "the records grow");
 
 typedef struct {
     char magic[4]; /* "SNXS" */
@@ -83,11 +89,13 @@ u8* shader_corpus_load(const char* path, u32* max_bytes, int* stage, ShaderInfo*
     memset(&info, 0, sizeof info);
     /* an older record is read whole and only then are the new fields zeroed: its padding may lie where they are */
     if (fread(&h, 1, sizeof h, f) == sizeof h && !memcmp(h.magic, "SNXS", 4) && h.version == CORPUS_VERSION &&
-        (h.info_size == sizeof(ShaderInfo) || h.info_size == CORPUS_INFO_MID || h.info_size == CORPUS_INFO_OLD) &&
+        (h.info_size == sizeof(ShaderInfo) || h.info_size == CORPUS_INFO_TXQ || h.info_size == CORPUS_INFO_MID ||
+         h.info_size == CORPUS_INFO_OLD) &&
         h.stage <= ST_CS &&
         h.len <= h.max_bytes && h.max_bytes <= CORPUS_MAX && fread(&info, 1, h.info_size, f) == h.info_size) {
         if (h.info_size == CORPUS_INFO_OLD) memset(info.txq_fixed, 0, sizeof info.txq_fixed);
-        if (h.info_size != sizeof(ShaderInfo)) info.tex_txq_mask = info.tex_offset_size_mask = 0;
+        if (h.info_size != sizeof(ShaderInfo)) info.tex_offset_size_mask = 0;
+        if (h.info_size != sizeof(ShaderInfo) && h.info_size != CORPUS_INFO_TXQ) info.tex_txq_mask = 0;
         code = (u8*)calloc(h.max_bytes ? h.max_bytes : 1, 1);
         if (code && fread(code, 1, h.len, f) != h.len) {
             free(code);

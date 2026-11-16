@@ -109,7 +109,8 @@ typedef struct {
     u32 txq_fixed[3];
     /* the texture slots a size query of the program reads (bit i for tex[i]), as translated (D3-2 revision 4), and
        those whose size the translation itself reads for texel offsets (direct_offset_coords), which no key rewrites:
-       last of all, a corpus of the size before them loads with both zeroed */
+       last of all, a corpus of the size before them loads with both zeroed, one with the first alone (767cb91e) with
+       the second zeroed */
     u64 tex_txq_mask, tex_offset_size_mask;
 } ShaderInfo;
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs has room for */
