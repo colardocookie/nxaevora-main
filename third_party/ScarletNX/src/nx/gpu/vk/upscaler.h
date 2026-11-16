@@ -89,7 +89,7 @@ typedef struct {
 } SnxUpscalerCreate;
 
 /* What the adapter says of itself at create. One that must submit work on its own is refused by the runtime, but one
-   that submits only in its prepare (submits_at_init, since ABI 5) has that prepare run with the queue idle before and
+   that submits only in its prepare (submits_at_init, since ABI 5) has that prepare run with the device idle before and
    after it, under the runtime's lock, and its frames are never evaluated before both waits succeeded. One
    that cannot take a rectangle of a larger image gets images of exactly the render size, and one that takes a
    rectangle only from an image's first texel gets copies whenever the rectangle starts elsewhere. The usages

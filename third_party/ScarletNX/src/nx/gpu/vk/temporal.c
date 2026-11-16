@@ -3907,9 +3907,15 @@ static void upscaler_start(void) {
     g_t.rect = 1;
     g_t.view = 0;
     g_t.rect_extras_off = 1;
-    LOG("arceus-upscaler: %s asked for. EXPERIMENTAL: its self-test's result is FAIL (the edge case's budgets and "
-        "case 4's comparison with a plainly scaled frame are not met), and nothing about its quality is claimed. "
-        "At full size only, in frames whose scene is the whole target\n", api->name ? api->name : name);
+    /* each adapter's own self-test result (FSR's quality suite, DLSS's and XeSS's integration matrix) */
+    const char* tested = !strcmp(name, "dlss") ? "its integration self-test fails on one known library deviation "
+                                                 "alone (the reset at 1/2 in performance mode)"
+                         : !strcmp(name, "xess") ? "its integration self-test passes"
+                                                 : "its self-test's result is FAIL (the edge case's budgets and case "
+                                                   "4's comparison with a plainly scaled frame are not met)";
+    LOG("arceus-upscaler: %s asked for. EXPERIMENTAL: %s, and nothing about its quality is claimed. In frames whose "
+        "scene is the whole target, at full size, and below it only with the fixed resolution (its own line)\n",
+        api->name ? api->name : name, tested);
     LOG("arceus-upscaler: our own resolve, sharpen, history, numbers and views do not run with it. Without effect: "
         "SNX_ARCEUS_TEMPORAL_HISTORY, _CLAMP, _BLEND, _NEAREST, _LUMA, _SHARPEN, _VIEW and _RECT\n");
     /* D3-3, D3-4 and XeSS: with the fixed resolution, frames below native at a listed scale go to the library on
