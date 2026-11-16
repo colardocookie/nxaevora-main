@@ -107,6 +107,13 @@ static inline int snx_drp_scene(const char* leaf) {
     for (leaf++; *leaf >= '0' && *leaf <= '9'; leaf++) {}
     return !strcmp(leaf, ".bseq");
 }
+/* A lost fight's scripts (research 22:05): the game over script, or a noble rematch's ns*lose*.blua */
+static inline int snx_drp_lost(const char* leaf) {
+    if (!leaf) return 0;
+    const size_t n = strlen(leaf);
+    if (!strcmp(leaf, "gameoverpre.blua")) return 1;
+    return n > 7 && !strncmp(leaf, "ns", 2) && !strcmp(leaf + n - 5, ".blua") && strstr(leaf, "lose") != NULL;
+}
 /* What fs.c notes (research 18:25, 19:35, 21:50): the last region pack, -1 before any; the battle kind files since a
    battle's start; a noble fight's number with SNX_DRP_NOBLE_ON, 0 for none, and its start */
 #define SNX_DRP_NOBLE_ON 0x10000u
@@ -127,14 +134,38 @@ static inline unsigned snx_drp_note_file(SnxDrpFiles* f, const char* leaf, uint6
         __atomic_store_n(&f->noble, SNX_DRP_NOBLE_ON | (uint32_t)bank, __ATOMIC_RELEASE);
         return DRP_FILE_BANK;
     }
-    if (index >= 0 || snx_drp_scene(leaf)) __atomic_store_n(&f->noble, 0, __ATOMIC_RELEASE);
+    const int lost = snx_drp_lost(leaf);
+    if (index >= 0 || snx_drp_scene(leaf) || lost) __atomic_store_n(&f->noble, 0, __ATOMIC_RELEASE);
     if (index >= 0) {
         __atomic_store_n(&f->region, index, __ATOMIC_RELAXED);
         return DRP_FILE_PACK;
     }
     if (snx_drp_scene(leaf)) return DRP_FILE_SCENE;
     const size_t n = leaf ? strlen(leaf) : 0;
-    return kind ? kind : n > 7 && !strncmp(leaf, "ns", 2) && !strcmp(leaf + n - 5, ".blua") ? DRP_FILE_SCRIPT : 0;
+    if (lost || (n > 7 && !strncmp(leaf, "ns", 2) && !strcmp(leaf + n - 5, ".blua"))) return DRP_FILE_SCRIPT;
+    return kind;
+}
+/* The probe's file lines (research 22:05): one per file opened. A read of the same file within 1 s of its last read
+   is a chunk of the same load, counted in merged instead of logged. At most SNX_DRP_FILE_LINES lines for each fight
+   or battle, its key. 1 when this read gets a line. */
+#define SNX_DRP_FILE_LINES 100
+typedef struct {
+    const void* file;
+    uint64_t last_ns, key;
+    unsigned lines, merged;
+} SnxDrpFileLog;
+static inline int snx_drp_file_line(SnxDrpFileLog* l, const void* file, uint64_t now, uint64_t key) {
+    if (key != l->key) l->key = key, l->lines = 0;
+    const int chunk = file == l->file && now >= l->last_ns && now - l->last_ns < 1000000000ull;
+    l->file = file;
+    l->last_ns = now;
+    if (chunk) {
+        l->merged++;
+        return 0;
+    }
+    if (l->lines >= SNX_DRP_FILE_LINES) return 0;
+    l->lines++;
+    return 1;
 }
 /* The noble fight shown now: its number with SNX_DRP_NOBLE_ON, or 0 once it ended or 15 min after its start (the
    backstop for a fight lost or left) */

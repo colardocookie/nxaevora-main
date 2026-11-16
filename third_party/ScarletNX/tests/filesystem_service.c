@@ -1975,6 +1975,14 @@ static void test_discord_pack(void) {
     node.name = (char*)"d170.bseq";
     CHECK(!rfile_read(&rf, 0, got, 8, 1) && g_drp_files.noble == (SNX_DRP_NOBLE_ON | 900));
     CHECK(!rfile_read(&rf, 0, got, 8, 0) && !g_drp_files.noble);
+    /* a lost fight's script ends it too, an arena's sub-area pack does not (research 22:05, 22:15) */
+    node.name = (char*)"PM_N_493.bnk";
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_files.noble == (SNX_DRP_NOBLE_ON | 493));
+    node.name = (char*)"ha_area04_s04.gfpak";
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_files.noble == (SNX_DRP_NOBLE_ON | 493));
+    node.name = (char*)"gameoverpre.blua";
+    g_drp_packs = 3; /* the probe's one line for this open */
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !g_drp_files.noble);
     g_drp_packs = 0;
     g_drp_files.region = -1;
     g_drp_files.kinds = 0;

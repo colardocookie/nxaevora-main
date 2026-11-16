@@ -2462,7 +2462,60 @@ static void test_battle_mon(void) {
     main_base = saved_base;
 }
 
+/* D2's reader on a stand-in Pokémon (D3d reads the battle's copy at P+60 with it): the object's vtable, its data
+   object (+8 the extension, +10 the record, +18 enciphered, +30 the lock) and a record we encipher ourselves */
+static void test_mon_read(void) {
+    const u64 saved_base = main_base;
+    const int saved_d2 = drp_d2;
+    memset(memory, 0, sizeof memory);
+    main_base = 0x10000000;
+    drp_d2 = 1;
+    const u64 object = 0x100, data = 0x200, record = 0x300, extension = 0x500;
+    put64(object, main_base + DRP_MON_VTABLE);
+    put64(object + 0x98, data);
+    put64(data + 0x8, extension);
+    put64(data + 0x10, record);
+    memory[data + 0x18] = 1;
+    u8* r = memory + record;
+    const uint32_t key = (5u << 13) | 0x77; /* order ADCB: block A first */
+    memcpy(r, &key, 4);
+    u8* a = r + 8 + SNX_PK_BLOCK * snx_pk_position(key, 0);
+    a[0] = 157 & 0xff; /* Typhlosion */
+    a[1] = 157 >> 8;
+    unsigned sum = 0;
+    for (size_t i = 8; i < SNX_PK_RECORD; i += 2) sum += snx_pk_u16(r + i);
+    r[6] = (u8)sum;
+    r[7] = (u8)(sum >> 8);
+    memory[extension] = 58;
+    snx_pk_crypt(r + 8, SNX_PK_RECORD - 8, key);
+    snx_pk_crypt(memory + extension, SNX_PK_EXTENSION, key);
+    u8 before[SNX_PK_RECORD + SNX_PK_EXTENSION];
+    memcpy(before, memory + record, SNX_PK_RECORD);
+    memcpy(before + SNX_PK_RECORD, memory + extension, SNX_PK_EXTENSION);
+    SnxDrpMon m = {0};
+    assert(drp_mon_read(object, &m) == DRP_MON_OK && m.species == 157 && m.level == 58 && !m.alpha);
+    /* the game's record and extension are left as they were: the copy is deciphered, never the game's memory */
+    assert(!memcmp(before, memory + record, SNX_PK_RECORD));
+    assert(!memcmp(before + SNX_PK_RECORD, memory + extension, SNX_PK_EXTENSION));
+    put64(data + 0x30, 0x1234); /* held by a game thread: busy, try next second */
+    assert(drp_mon_read(object, &m) == DRP_MON_BUSY);
+    put64(data + 0x30, 0);
+    memory[data + 0x18] = 0; /* said plain while enciphered: the sum fails, dropped */
+    assert(drp_mon_read(object, &m) == DRP_MON_DROPPED);
+    memory[data + 0x18] = 1;
+    put64(object, main_base + 0x418ae48); /* not a Pokémon object */
+    assert(drp_mon_read(object, &m) == DRP_MON_NONE);
+    put64(object, main_base + DRP_MON_VTABLE);
+    assert(drp_mon_read(sizeof memory, &m) == DRP_MON_NONE);
+    drp_d2 = 0; /* the game's block order differed from ours */
+    assert(drp_mon_read(object, &m) == DRP_MON_NONE);
+    drp_d2 = saved_d2;
+    memset(memory, 0, sizeof memory);
+    main_base = saved_base;
+}
+
 int main(void) {
+    test_mon_read();
     test_battle_mon();
     test_ride_swap();
     test_defaults_on();

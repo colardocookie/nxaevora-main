@@ -4569,6 +4569,24 @@ static void drp_battle_mon(void) {
     }
 }
 
+/* D3d (research 22:05 and 22:15): the second line in a battle, "Active: <species> Lv. <n>". P8's Pokémon P for index
+   0 holds at +60 a Pokémon object (vtable 418AE40, the battle's own copy, in all six battles of the D3c look), read
+   once a second by D2's copy rules. A failed check empties the line, a busy record keeps it for the next second. */
+static void drp_active_read(void) {
+    const u64 t = drp_battle_table();
+    const int side = t ? drp_index0_side(drp_rd(t)) : -1;
+    const u64 p = side >= 0 && side < 5 ? drp_battle_first(t, (unsigned)side) >> 8 : 0;
+    SnxDrpMon m = {0};
+    const int r = p ? drp_mon_read(drp_rd(p + 0x60), &m) : DRP_MON_NONE;
+    if (r == DRP_MON_BUSY) return;
+    pm_lock(&drp_lock);
+    if (drp_values.activity == DRP_BATTLE && memcmp(&m, &drp_values.active, sizeof m)) {
+        drp_values.active = m;
+        snx_drp_write(&g_drp_state, &drp_values);
+    }
+    pm_unlock(&drp_lock);
+}
+
 /* A battle ends when the battle effect sequences (9DBEAC, the battle sequence fix's wrapper and its counter) have
    not run for 3 s, or at an area call, whichever first (DRP-P3, research 09:00). Inside the battles seen they ran in
    every second, menus included, and outside them never. drp_battle_since: the start, or the counter's last move. */
@@ -4588,6 +4606,7 @@ static void drp_tick(void) {
     if (!drp_presence) return;
     if (quiet && snx_drp_in_battle(activity)) drp_set(DRP_FIELD);
     drp_battle_decide(now);
+    if (activity == DRP_BATTLE) drp_active_read();
     /* the title screen until the player's camera first takes input in the field (the camera input fix's wrapper,
        20 to 46 s into DRP-P3 to P4, after the title), or an area call. The party's data is there from the boot, so it
        cannot tell (DRP-P4). */

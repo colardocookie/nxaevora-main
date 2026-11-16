@@ -1019,16 +1019,24 @@ static int rfile_read(RFile* rf, u64 rel, u8* dst, u64 size, int quiet) {
     if (!quiet && !__atomic_exchange_n(&rf->logged, 1, __ATOMIC_RELAXED))
         LOG("RomFS: reading %s (%.1f KB)\n", node->name, (double)node->size / 1024.0);
     /* Discord presence: the region's pack, a battle's kind files and a noble fight's files, at every read, as logged
-       is once a run (SNX_ARCEUS_DISCORD and its probe, research 18:25, 19:35, 21:50). The probe logs all but packs. */
+       is once a run (SNX_ARCEUS_DISCORD and its probe, research 18:25 to 22:05). The probe logs all but packs, one
+       line per file opened and at most 100 per battle or noble fight (snx_drp_file_line). */
     const int drp = !quiet ? __atomic_load_n(&g_drp_packs, __ATOMIC_RELAXED) : 0;
     const u64 drp_now = drp ? plat_ns() : 0;
     const unsigned drp_file = drp ? snx_drp_note_file(&g_drp_files, node->name, drp_now) : 0;
     if (drp_file && drp_file != DRP_FILE_PACK && (drp & 2)) {
-        static unsigned probe_reads;
-        const unsigned n = __atomic_add_fetch(&probe_reads, 1, __ATOMIC_RELAXED);
-        if (n <= 600)
-            LOG("arceus-drp: battle or noble file %s, read %u, battle %u, ns=%llu\n", node->name, n,
-                __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED), (unsigned long long)drp_now);
+        static PMutex drp_log_lock = PMUTEX_INIT;
+        static SnxDrpFileLog drp_log;
+        const u32 battle = __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED);
+        const u64 key = (u64)battle << 48 ^ __atomic_load_n(&g_drp_files.noble_ns, __ATOMIC_RELAXED);
+        pm_lock(&drp_log_lock);
+        const int line = snx_drp_file_line(&drp_log, node, drp_now, key);
+        const unsigned merged = drp_log.merged;
+        if (line) drp_log.merged = 0;
+        pm_unlock(&drp_log_lock);
+        if (line)
+            LOG("arceus-drp: battle or noble file %s, battle %u, ns=%llu (%u chunk reads before merged)\n", node->name,
+                battle, (unsigned long long)drp_now, merged);
     }
     if (fs_tree_mapped(node)) { /* mapped for the rest of the run, and never changes */
         memcpy(dst, node->map + rel, (size_t)size);

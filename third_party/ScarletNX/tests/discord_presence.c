@@ -127,6 +127,21 @@ static void test_noble(void) {
     snx_drp_note_file(&f, "PM_N_101.bnk", 300 * s);
     assert(snx_drp_note_file(&f, "ha_area00.gfpak", 310 * s) == DRP_FILE_PACK && !snx_drp_noble_now(&f, 310 * s));
     assert(f.region == 0);
+    /* a lost fight ends at the game over script or a ns*lose*.blua (research 22:05), not at the arena's sub-area pack
+       (22:15), which neither sets the region */
+    snx_drp_note_file(&f, "PM_N_493.bnk", 350 * s);
+    assert(!snx_drp_note_file(&f, "ha_area04_s04.gfpak", 351 * s) && f.region == 0);
+    assert(snx_drp_noble_now(&f, 352 * s) == (SNX_DRP_NOBLE_ON | 493));
+    assert(snx_drp_note_file(&f, "gameoverpre.blua", 395 * s) == DRP_FILE_SCRIPT && !snx_drp_noble_now(&f, 395 * s));
+    snx_drp_note_file(&f, "PM_N_483.bnk", 396 * s);
+    assert(snx_drp_note_file(&f, "nsrematchlose.blua", 397 * s) == DRP_FILE_SCRIPT && !snx_drp_noble_now(&f, 397 * s));
+    snx_drp_note_file(&f, "PM_N_483.bnk", 398 * s);
+    assert(snx_drp_note_file(&f, "nsrematchwin.blua", 399 * s) == DRP_FILE_SCRIPT);
+    assert(snx_drp_note_file(&f, "nsrematchbeforeextraact.blua", 399 * s) == DRP_FILE_SCRIPT);
+    assert(snx_drp_noble_now(&f, 399 * s) == (SNX_DRP_NOBLE_ON | 483)); /* other ns scripts do not end it */
+    assert(snx_drp_lost("gameoverpre.blua") && snx_drp_lost("nslose.blua") && snx_drp_lost("ns_x_lose_y.blua"));
+    assert(!snx_drp_lost("gameover.blua") && !snx_drp_lost("nsrematchlose.bnk") && !snx_drp_lost("rematchlose.blua"));
+    assert(!snx_drp_lost("nsrematchwin.blua") && !snx_drp_lost(NULL));
     snx_drp_note_file(&f, "PM_N_493.bnk", 400 * s);
     assert(snx_drp_noble_now(&f, 400 * s + 900 * s - 1) == (SNX_DRP_NOBLE_ON | 493));
     assert(!snx_drp_noble_now(&f, 400 * s + 900 * s) && !snx_drp_noble_now(&f, 399 * s));
@@ -150,6 +165,23 @@ static void test_noble(void) {
     v.activity = DRP_TITLE;
     v.noble = SNX_DRP_NOBLE_ON | 900;
     assert(!strcmp(snx_drp_details(&v, line, sizeof line), "On the title screen"));
+}
+
+/* The probe's file lines (research 22:05): one per file opened, chunks within 1 s merged, 100 per fight or battle */
+static void test_file_line(void) {
+    const uint64_t ms = 1000000ull;
+    SnxDrpFileLog l = {0};
+    int a = 1, b = 2, lines = 0;
+    assert(snx_drp_file_line(&l, &a, 1000 * ms, 7));
+    for (int i = 1; i <= 50; i++) lines += snx_drp_file_line(&l, &a, 1000 * ms + i * ms, 7);
+    assert(lines == 0 && l.merged == 50);
+    assert(snx_drp_file_line(&l, &b, 1060 * ms, 7)); /* another file */
+    /* back to the first is a new open, and so is a read 1 s or more after its last */
+    assert(snx_drp_file_line(&l, &a, 1070 * ms, 7));
+    assert(!snx_drp_file_line(&l, &a, 2069 * ms, 7) && snx_drp_file_line(&l, &a, 3070 * ms, 7));
+    for (int i = 0; i < 200; i++) lines += snx_drp_file_line(&l, i % 2 ? &a : &b, 4000 * ms + i * ms, 7);
+    assert(lines == 100 - 4 && l.lines == 100);                      /* the cap */
+    assert(snx_drp_file_line(&l, &b, 5000 * ms, 8) && l.lines == 1); /* a new fight or battle */
 }
 
 /* Discord's reply: evt and an ERROR's code and message, ids masked */
@@ -549,6 +581,7 @@ int main(void) {
     test_kinds();
     test_noble();
     test_reply();
+    test_file_line();
     test_text();
     test_species();
     test_hover();
