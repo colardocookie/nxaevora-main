@@ -5,7 +5,7 @@
 
 Goal and exit condition: `ROADMAP.md`, section "Phase 7". This file holds the inventory of the code that phase 7
 removes or changes, the input layout of the decrypted files, the mod layer, and the PR units. Paths are relative to
-`third_party/ScarletNX/` unless they start with the repository root. Line numbers are from `main` at `92f1705`.
+`engine/` unless they start with the repository root. Line numbers are from `main` at `92f1705`.
 
 ## 1. How the game is read now
 
@@ -56,7 +56,7 @@ removes or changes, the input layout of the decrypted files, the mod layer, and 
 - Tests with a container as input: `tests/filesystem_service.c` (the `dump*`, `addon_overlay`, `mods*` suites),
   `tests/driver_workflow.c`, `tests/data_dir.c`, `tests/setup_terminal.c`, `tests/gui_model.c`, `tests/gui_setup.c`,
   `tests/gui_settings.c`, `tests/uigen.cmake`, `tests/xdg_layout.py`. Change them to folder input or remove the cases.
-- Docs: `third_party/ScarletNX/README.md`, `docs/USAGE.md`, `docs/GUI.md`, `docs/ARCHITECTURE.md`, `docs/BUILD.md`,
+- Docs: `engine/README.md`, `docs/USAGE.md`, `docs/GUI.md`, `docs/ARCHITECTURE.md`, `docs/BUILD.md`,
   `docs/CREDITS.md`, `docs/ANDROID.md`, `docs/APPLE.md`, `dist/android` comments; `po/` strings (regenerate);
   repository root `docs/build/runtime-changes.md` (the removal list), `docs/analysis/stutter-analysis.md` (old path).
 - Local skills: `nx-recompile` passes `<base>.nsp --update <update>.nsp`. Change it to the decrypted folder.
