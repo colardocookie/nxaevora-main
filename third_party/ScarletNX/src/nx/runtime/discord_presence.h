@@ -2,99 +2,202 @@
    Copyright 2026 the NXAevora contributors */
 #ifndef SNX_DISCORD_PRESENCE_H
 #define SNX_DISCORD_PRESENCE_H
-/* Discord presence for Legends: Arceus (DISCORD-DESIGN.md, D1). The pure parts, tested on any host: the shared
-   state and its sequence number, the region table, the activity's text, the JSON writer, the IPC frame and the
-   rule of when to send. The game half (arceus_clock.c) writes the state, the host half (discord_presence.c) reads
-   it on a thread of its own and never touches game memory. */
+/* Discord presence for Legends: Arceus (DISCORD-DESIGN.md, D1 and D2). The pure parts, tested on any host: the
+   shared state and its sequence number, the region from a pack's name, the activity's text, a record's decipher,
+   the JSON writer, the IPC frame and the rule of when to send. The game half (arceus_clock.c) writes the state,
+   the host half (discord_presence.c) reads it on a thread of its own and never touches game memory. */
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "nx/runtime/discord_species.h"
 
-/* DRP_TITLE: the session's start, until a save is loaded */
-enum { DRP_FIELD, DRP_WILD, DRP_TRAINER, DRP_BATTLE, DRP_TITLE };
+/* DRP_TITLE: the session's start, until the player's camera first moves in the field */
+enum { DRP_FIELD, DRP_BATTLE, DRP_TITLE };
 
-/* Plain values only. seq is odd while the game half writes. */
+/* A Pokémon as the presence shows it: species 1 to 905, 0 for none, level 1 to 100, 0 when not known */
 typedef struct {
-    volatile uint32_t seq;
-    int32_t region; /* an index into snx_drp_regions, -1 for none known */
-    uint32_t activity;
-    uint32_t party; /* the party's size, 0 when not read */
-} SnxDrpState;
+    uint16_t species;
+    uint8_t level, alpha;
+} SnxDrpMon;
+/* What the presence shows. The game half writes all but the region, which the host half takes from the file
+   service (g_drp_region). foe: a wild opponent that checked out. active: the player's Pokémon in a battle. */
 typedef struct {
     int32_t region;
-    uint32_t activity, party;
+    uint32_t activity;
+    SnxDrpMon foe, active, party[6];
 } SnxDrpValues;
+#define SNX_DRP_WORDS 9
+/* Plain words only. seq is odd while the game half writes. */
+typedef struct {
+    volatile uint32_t seq;
+    uint32_t words[SNX_DRP_WORDS];
+} SnxDrpState;
+static inline uint32_t snx_drp_mon_word(SnxDrpMon m) {
+    return m.species | (uint32_t)m.level << 16 | (uint32_t)(m.alpha ? 1 : 0) << 24;
+}
+static inline SnxDrpMon snx_drp_word_mon(uint32_t w) {
+    const SnxDrpMon m = {(uint16_t)w, (uint8_t)(w >> 16), (uint8_t)(w >> 24)};
+    return m;
+}
 
 static inline void snx_drp_write(SnxDrpState* s, const SnxDrpValues* v) {
+    uint32_t w[SNX_DRP_WORDS] = {v->activity, snx_drp_mon_word(v->foe), snx_drp_mon_word(v->active)};
+    for (int i = 0; i < 6; i++) w[3 + i] = snx_drp_mon_word(v->party[i]);
     __atomic_store_n(&s->seq, s->seq + 1, __ATOMIC_RELAXED);
     __atomic_thread_fence(__ATOMIC_RELEASE);
-    __atomic_store_n(&s->region, v->region, __ATOMIC_RELAXED);
-    __atomic_store_n(&s->activity, v->activity, __ATOMIC_RELAXED);
-    __atomic_store_n(&s->party, v->party, __ATOMIC_RELAXED);
+    for (int i = 0; i < SNX_DRP_WORDS; i++) __atomic_store_n(&s->words[i], w[i], __ATOMIC_RELAXED);
     __atomic_store_n(&s->seq, s->seq + 1, __ATOMIC_RELEASE);
 }
-/* 1 with a consistent copy: the same even number before and after. 0 after tries attempts that each saw a write */
+/* 1 with a consistent copy: the same even number before and after. 0 after tries attempts that each saw a write.
+   The region is left as it was. */
 static inline int snx_drp_read(const SnxDrpState* s, SnxDrpValues* out, int tries) {
     for (int i = 0; i < tries; i++) {
         const uint32_t before = __atomic_load_n(&s->seq, __ATOMIC_ACQUIRE);
         if (before & 1) continue;
-        out->region = __atomic_load_n(&s->region, __ATOMIC_RELAXED);
-        out->activity = __atomic_load_n(&s->activity, __ATOMIC_RELAXED);
-        out->party = __atomic_load_n(&s->party, __ATOMIC_RELAXED);
+        uint32_t w[SNX_DRP_WORDS];
+        for (int k = 0; k < SNX_DRP_WORDS; k++) w[k] = __atomic_load_n(&s->words[k], __ATOMIC_RELAXED);
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
-        if (__atomic_load_n(&s->seq, __ATOMIC_RELAXED) == before) return 1;
+        if (__atomic_load_n(&s->seq, __ATOMIC_RELAXED) != before) continue;
+        out->activity = w[0];
+        out->foe = snx_drp_word_mon(w[1]);
+        out->active = snx_drp_word_mon(w[2]);
+        for (int k = 0; k < 6; k++) out->party[k] = snx_drp_word_mon(w[3 + k]);
+        return 1;
     }
     return 0;
 }
 
-/* The game's area names, our own text. confirmed: seen in a run as that place (P1b for the Fieldlands), else the
-   presence says "Exploring Hisui" until a run confirms it. village: "Visiting" instead of "Exploring". */
-typedef struct {
-    const char* name;
-    const char* text;
-    int confirmed, village;
-} SnxDrpRegion;
-static const SnxDrpRegion snx_drp_regions[] = {
-    {"ha_area00", "Jubilife Village", 0, 1},     {"ha_area01", "Obsidian Fieldlands", 1, 0},
-    {"ha_area02", "Crimson Mirelands", 0, 0},    {"ha_area03", "Cobalt Coastlands", 0, 0},
-    {"ha_area04", "Coronet Highlands", 0, 0},    {"ha_area05", "Alabaster Icelands", 0, 0},
-};
-#define SNX_DRP_REGIONS ((int)(sizeof snx_drp_regions / sizeof snx_drp_regions[0]))
-/* the row for an area name, exactly or with a sub-area suffix (_s...), -1 for any other name */
-static inline int snx_drp_region(const char* name) {
-    if (!name) return -1;
-    for (int i = 0; i < SNX_DRP_REGIONS; i++) {
-        const size_t n = strlen(snx_drp_regions[i].name);
-        if (!strncmp(name, snx_drp_regions[i].name, n) && (!name[n] || (name[n] == '_' && name[n + 1] == 's')))
-            return i;
-    }
-    return -1;
+/* The region (research 18:25): the pack the game reads on entering one, ha_areaNN.gfpak, by the file service's
+   leaf name. The index NN, or -1 for any other name. */
+static inline int snx_drp_pack_index(const char* leaf) {
+    if (!leaf || strncmp(leaf, "ha_area", 7)) return -1;
+    const char a = leaf[7], b = a ? leaf[8] : 0;
+    if (a < '0' || a > '9' || b < '0' || b > '9' || strcmp(leaf + 9, ".gfpak")) return -1;
+    return (a - '0') * 10 + (b - '0');
 }
+/* fs.c's call, once per opened file the game reads, only when the presence is on (g_drp_packs) */
+static inline void snx_drp_note_pack(int32_t* region, const char* leaf) {
+    const int index = snx_drp_pack_index(leaf);
+    if (index >= 0) __atomic_store_n(region, index, __ATOMIC_RELAXED);
+}
+/* Our own text for the packs. 00, 01 and 02 are confirmed by runs, 03 to 05 by the game's order until a look. */
+static const char* const snx_drp_regions[] = {"Visiting Jubilife Village", "Exploring Obsidian Fieldlands",
+                                              "Exploring Crimson Mirelands", "Exploring Cobalt Coastlands",
+                                              "Exploring Coronet Highlands", "Exploring Alabaster Icelands"};
+#define SNX_DRP_REGIONS ((int)(sizeof snx_drp_regions / sizeof snx_drp_regions[0]))
 
 /* The activity's first line, UTF-8 */
 static inline const char* snx_drp_details(const SnxDrpValues* v, char* out, size_t size) {
-    static const char* const battles[] = {"Battling a wild Pok\xc3\xa9mon", "Battling a trainer", "In battle"};
-    if (v->activity >= DRP_WILD && v->activity <= DRP_BATTLE) return battles[v->activity - DRP_WILD];
     if (v->activity == DRP_TITLE) return "On the title screen";
-    const int known = v->region >= 0 && v->region < SNX_DRP_REGIONS && snx_drp_regions[v->region].confirmed;
-    const SnxDrpRegion* r = known ? &snx_drp_regions[v->region] : NULL;
-    if (!r) return "Exploring Hisui";
-    snprintf(out, size, "%s %s", r->village ? "Visiting" : "Exploring", r->text);
+    if (v->activity == DRP_BATTLE) {
+        const char* name = snx_drp_species_name(v->foe.species);
+        if (!name) return "In battle";
+        if (snx_drp_boss(v->foe.species)) snprintf(out, size, "Fighting %s", name);
+        else snprintf(out, size, "Battling a wild %s%s", v->foe.alpha ? "alpha " : "", name);
+        return out;
+    }
+    return v->region >= 0 && v->region < SNX_DRP_REGIONS ? snx_drp_regions[v->region] : "Exploring Hisui";
+}
+
+/* The activity's second line: the player's Pokémon in a battle, else none (NULL) */
+static inline const char* snx_drp_state_line(const SnxDrpValues* v, char* out, size_t size) {
+    const char* name = snx_drp_species_name(v->active.species);
+    if (v->activity != DRP_BATTLE || !name) return NULL;
+    if (v->active.level) snprintf(out, size, "Active: %s Lv. %u", name, v->active.level);
+    else snprintf(out, size, "Active: %s", name);
     return out;
 }
 
-/* The activity's second line: the party's size, 1 to 6, else none (NULL) */
-static inline const char* snx_drp_state_line(const SnxDrpValues* v, char* out, size_t size) {
-    if (v->party < 1 || v->party > 6) return NULL;
-    snprintf(out, size, "Party: %u Pok\xc3\xa9mon", v->party);
-    return out;
+/* The large image's hover text: the party in order, "<species> Lv. <n>" (the level left out when not known), whole
+   members only within Discord's 128 bytes. A member that did not check out is left out. None: our name. */
+#define SNX_DRP_HOVER 128
+static inline const char* snx_drp_hover(const SnxDrpValues* v, char* out, size_t size) {
+    size_t used = 0;
+    out[0] = 0;
+    for (int i = 0; i < 6; i++) {
+        const char* name = snx_drp_species_name(v->party[i].species);
+        if (!name) continue;
+        char member[48];
+        const char* comma = used ? ", " : "";
+        if (v->party[i].level) snprintf(member, sizeof member, "%s%s Lv. %u", comma, name, v->party[i].level);
+        else snprintf(member, sizeof member, "%s%s", comma, name);
+        const size_t n = strlen(member);
+        if (used + n > SNX_DRP_HOVER || used + n + 1 > size) break;
+        memcpy(out + used, member, n + 1);
+        used += n;
+    }
+    return used ? out : "NXAevora (unofficial)";
+}
+
+/* D2 (research 08:35): a Pokémon's record, deciphered from a copy by our own code. 0x168 bytes: a u32 key, a u16 of
+   flags (bit 2 a bad checksum), a u16 sum, then four blocks of 0x58. A 16-byte party extension (byte 0 the level).
+   Both are enciphered by an LCG seeded with the key, each u16 XORed with the state's high half. */
+#define SNX_PK_RECORD 0x168
+#define SNX_PK_EXTENSION 16
+#define SNX_PK_BLOCK 0x58
+/* The 24 orders of the blocks A to D as they lie in the record, from the public description of the format: the
+   order's row is (key >> 13) & 31, rows 24 to 31 are rows 0 to 7 again */
+static const char snx_pk_orders[24][5] = {"ABCD", "ABDC", "ACBD", "ACDB", "ADBC", "ADCB", "BACD", "BADC",
+                                          "BCAD", "BCDA", "BDAC", "BDCA", "CABD", "CADB", "CBAD", "CBDA",
+                                          "CDAB", "CDBA", "DABC", "DACB", "DBAC", "DBCA", "DCAB", "DCBA"};
+/* where block (0 for A) lies for this key, 0 to 3 */
+static inline unsigned snx_pk_position(uint32_t key, unsigned block) {
+    const char* order = snx_pk_orders[((key >> 13) & 31) % 24];
+    return (unsigned)(strchr(order, 'A' + (int)block) - order);
+}
+/* 1 when a table of 32 rows of 4 bytes, each the positions of A to D, is ours: checked once against the game's */
+static inline int snx_pk_table_same(const uint8_t* table) {
+    for (uint32_t row = 0; row < 32; row++)
+        for (unsigned block = 0; block < 4; block++)
+            if (table[row * 4 + block] != snx_pk_position(row << 13, block)) return 0;
+    return 1;
+}
+/* the cipher, its own inverse */
+static inline void snx_pk_crypt(uint8_t* data, size_t size, uint32_t seed) {
+    for (size_t i = 0; i + 1 < size; i += 2) {
+        seed = seed * 0x41c64e6du + 0x6073u;
+        data[i] ^= (uint8_t)(seed >> 16);
+        data[i + 1] ^= (uint8_t)(seed >> 24);
+    }
+}
+static inline unsigned snx_pk_u16(const uint8_t* p) { return p[0] | (unsigned)p[1] << 8; }
+/* A copy is kept when the record's lock word was free before it and after it and the enciphered flag did not
+   change. BUSY: the game holds it, skip this second. TORN: it changed under the copy, drop it. */
+enum { SNX_PK_STEADY, SNX_PK_BUSY, SNX_PK_TORN };
+static inline int snx_pk_copy_state(uint64_t lock_before, unsigned flag_before, uint64_t lock_after,
+                                    unsigned flag_after) {
+    if (lock_before) return SNX_PK_BUSY;
+    return lock_after || flag_after != flag_before ? SNX_PK_TORN : SNX_PK_STEADY;
+}
+/* A copy deciphered in place when enciphered says so (a plain copy is not deciphered again), then accepted only
+   when the flags say no bad checksum, the sum holds, the species is 1 to 905 and, with an extension, the level 1 to
+   100. The alpha flag is bit 5 of block A's u16 at +0xE (IsOybn, 2B6D5B0). */
+enum { SNX_PK_OK, SNX_PK_FLAGGED, SNX_PK_SUM, SNX_PK_SPECIES, SNX_PK_LEVEL };
+static inline int snx_pk_decode(uint8_t* record, uint8_t* extension, int enciphered, SnxDrpMon* out) {
+    const uint32_t key = record[0] | (uint32_t)record[1] << 8 | (uint32_t)record[2] << 16 | (uint32_t)record[3] << 24;
+    if (enciphered) {
+        snx_pk_crypt(record + 8, SNX_PK_RECORD - 8, key);
+        if (extension) snx_pk_crypt(extension, SNX_PK_EXTENSION, key);
+    }
+    if (snx_pk_u16(record + 4) & 4) return SNX_PK_FLAGGED;
+    unsigned sum = 0;
+    for (size_t i = 8; i < SNX_PK_RECORD; i += 2) sum += snx_pk_u16(record + i);
+    if ((sum & 0xffff) != snx_pk_u16(record + 6)) return SNX_PK_SUM;
+    const uint8_t* a = record + 8 + SNX_PK_BLOCK * snx_pk_position(key, 0);
+    const unsigned species = snx_pk_u16(a), level = extension ? extension[0] : 0;
+    if (species < 1 || species > 905) return SNX_PK_SPECIES;
+    if (extension && (level < 1 || level > 100)) return SNX_PK_LEVEL;
+    out->species = (uint16_t)species;
+    out->level = (uint8_t)level;
+    out->alpha = (snx_pk_u16(a + 0xe) >> 5) & 1;
+    return SNX_PK_OK;
 }
 
 /* A battle is over when its effect sequences have not run for 3 s (DRP-P3, research 09:00). since: the battle's
    start or the counter's last move, whichever is later. */
 #define SNX_DRP_BATTLE_QUIET_NS 3000000000ull
-static inline int snx_drp_in_battle(uint32_t activity) { return activity >= DRP_WILD && activity <= DRP_BATTLE; }
+static inline int snx_drp_in_battle(uint32_t activity) { return activity == DRP_BATTLE; }
 static inline int snx_drp_battle_over(int in_battle, uint64_t now, uint64_t since) {
     return in_battle && now >= since && now - since >= SNX_DRP_BATTLE_QUIET_NS;
 }
@@ -152,7 +255,7 @@ static inline void snx_json_string(SnxJson* j, const char* text, size_t max) {
 /* The SET_ACTIVITY command for this state, NUL-terminated in out. 0 when it did not fit. */
 static inline int snx_drp_activity(char* out, size_t size, const SnxDrpValues* v, unsigned long pid, long long start,
                                    unsigned nonce) {
-    char line[160], party[48], number[64];
+    char line[160], party[64], hover[SNX_DRP_HOVER + 1], number[64];
     SnxJson j = {out, size, 0, 0};
     snx_json_text(&j, "{\"cmd\":\"SET_ACTIVITY\",\"args\":{\"pid\":");
     snprintf(number, sizeof number, "%lu", pid);
@@ -167,7 +270,7 @@ static inline int snx_drp_activity(char* out, size_t size, const SnxDrpValues* v
     snprintf(number, sizeof number, ",\"timestamps\":{\"start\":%lld}", start);
     snx_json_text(&j, number);
     snx_json_text(&j, ",\"assets\":{\"large_image\":\"nxaevora\",\"large_text\":");
-    snx_json_string(&j, "NXAevora (unofficial)", 128);
+    snx_json_string(&j, snx_drp_hover(v, hover, sizeof hover), SNX_DRP_HOVER);
     snprintf(number, sizeof number, "}}},\"nonce\":\"%u\"}", nonce);
     snx_json_text(&j, number);
     return !j.failed;
@@ -217,7 +320,7 @@ typedef struct {
     int connected, ever;
     uint64_t last_send, last_try;
     unsigned nonce, sends, connects;
-    char sent[200]; /* the two lines last sent, "details / state" */
+    char sent[400]; /* what was last sent, "details / state / hover text" */
 } SnxDrpSession;
 /* one reply frame read and dropped, so the pipe never fills. 0 when the pipe failed or Discord closed it */
 static inline int snx_drp_reply(SnxDrpSession* d) {
@@ -260,9 +363,10 @@ static inline void snx_drp_step(SnxDrpSession* d, const SnxDrpValues* v, uint64_
             return;
         }
     }
-    char party[48], text[200];
+    char party[64], hover[SNX_DRP_HOVER + 1], text[400];
     const char* state = snx_drp_state_line(v, party, sizeof party);
-    snprintf(text, sizeof text, "%s / %s", snx_drp_details(v, line, sizeof line), state ? state : "-");
+    snprintf(text, sizeof text, "%s / %s / %s", snx_drp_details(v, line, sizeof line), state ? state : "-",
+             snx_drp_hover(v, hover, sizeof hover));
     if (!snx_drp_due(text, d->sent, now, d->last_send, d->ever)) return;
     if (!snx_drp_activity(json, sizeof json, v, d->pid, d->start, ++d->nonce) || !snx_drp_send(d, 1, json)) return;
     snprintf(d->sent, sizeof d->sent, "%s", text);
@@ -271,7 +375,10 @@ static inline void snx_drp_step(SnxDrpSession* d, const SnxDrpValues* v, uint64_
     d->sends++;
 }
 
-/* discord_presence.c: the state the game half writes, and the host thread's start */
+/* discord_presence.c: the state the game half writes, the region fs.c notes when g_drp_packs is set (by the
+   host thread's start), and that start */
 extern SnxDrpState g_drp_state;
+extern int32_t g_drp_region;
+extern int g_drp_packs;
 int snx_discord_start(const char* app);
 #endif

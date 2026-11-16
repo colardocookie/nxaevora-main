@@ -22,6 +22,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/driver/container.h"
+#include "nx/runtime/discord_presence.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/mods.h"
 #include "common/utilities/patches.h"
@@ -1017,6 +1018,9 @@ static int rfile_read(RFile* rf, u64 rel, u8* dst, u64 size, int quiet) {
     if (!node) return image_read(rf->base + rel, dst, size, 0, quiet); /* the game's image's, under the mods' */
     if (!quiet && !__atomic_exchange_n(&rf->logged, 1, __ATOMIC_RELAXED))
         LOG("RomFS: reading %s (%.1f KB)\n", node->name, (double)node->size / 1024.0);
+    /* Discord presence's region: the pack of the region the game reads, at every read, as logged is once a run
+       (SNX_ARCEUS_DISCORD, research 18:25) */
+    if (!quiet && __atomic_load_n(&g_drp_packs, __ATOMIC_RELAXED)) snx_drp_note_pack(&g_drp_region, node->name);
     if (fs_tree_mapped(node)) { /* mapped for the rest of the run, and never changes */
         memcpy(dst, node->map + rel, (size_t)size);
         return 0;

@@ -14,7 +14,10 @@
 #include <unistd.h>
 #endif
 
-SnxDrpState g_drp_state = {0, -1, DRP_TITLE, 0};
+SnxDrpState g_drp_state = {0, {DRP_TITLE}};
+/* the last region pack the game read (fs.c, research 18:25), -1 before any, noted only while g_drp_packs is set */
+int32_t g_drp_region = -1;
+int g_drp_packs;
 
 #ifdef _WIN32
 static HANDLE drp_handle = INVALID_HANDLE_VALUE;
@@ -108,11 +111,12 @@ static char drp_app[24];
    the pipe closes with the process. */
 static void drp_thread(void* arg) {
     (void)arg;
-    SnxDrpValues v = {-1, DRP_TITLE, 0};
+    SnxDrpValues v = {.region = -1, .activity = DRP_TITLE};
     unsigned said = 0;
     for (;;) {
         SnxDrpValues now;
         if (snx_drp_read(&g_drp_state, &now, 8)) v = now;
+        v.region = __atomic_load_n(&g_drp_region, __ATOMIC_RELAXED);
         const int was = drp_session.connected;
         const unsigned sends = drp_session.sends;
         snx_drp_step(&drp_session, &v, plat_ns());
@@ -139,6 +143,7 @@ int snx_discord_start(const char* app) {
         WARN("arceus-discord: the presence thread could not be started\n");
         return 0;
     }
+    __atomic_store_n(&g_drp_packs, 1, __ATOMIC_RELAXED);
     const size_t n = strlen(drp_app);
     LOG("arceus-discord: EXPERIMENT: Discord presence on, application ...%s\n", drp_app + (n > 4 ? n - 4 : 0));
     return 1;
