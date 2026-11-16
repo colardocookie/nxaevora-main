@@ -198,8 +198,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   threads compiling it (0, the default, one for each core), **Unit cache limit** the GB the compiled code units kept
   for the next recompile may hold (20 by default, 0 for no limit; [USAGE](USAGE.md)), and the **LLVM Internals** page
   turns each pass of LLVM's pipelines off and sets the options LLVM's C API takes, its **All** stepping every row. They
-  are passed as `--key=value` when the game is recompiled: by **R**, or by a run that has to (a dump played the first
-  time, an NRO each time). A game made already keeps its code until then. The first two settings and these reach
+  are passed as `--key=value` when the game is recompiled: by **R**, or by a run that has to (a game folder recompiled
+  the first time, an NRO each time). A game made already keeps its code until then. The first two settings and these reach
   neither the Linux nor the 3DS driver.
 - The Status box, after the RAM and the CPU, says what ScarletNX's folders take (recompiled/,
   work/ and themes/ of the data folder, and on Linux its config, state and cache folders, else
@@ -327,7 +327,7 @@ Status box. See [GNUABI](GNUABI.md) for supported Linux ELF applications.
 
 The first start opens on the setup, not the menu, a page at a time, each a tab at the top under its number: the
 notices of what older versions did that this one does otherwise (only said, nothing moves:
-[DEPRECATIONS](DEPRECATIONS.md)), then **Appearance**, **Install**, **Folders**, **Keys** and **User**
+[DEPRECATIONS](DEPRECATIONS.md)), then **Appearance**, **Install**, **Folders** and **User**
 ([USAGE](USAGE.md#setup) has what each asks, the terminal's setup too). Its boxes say what the page is about; its
 question and choices come as the theme's `[body] options-dialog` places a question ([Themes](#themes)), over the boxes
 without darkening them; its tip, and what a choice did or why it did not, are in the foot. Up/Down (or the mouse)

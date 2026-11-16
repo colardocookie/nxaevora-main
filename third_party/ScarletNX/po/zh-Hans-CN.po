@@ -1711,10 +1711,6 @@ msgid "%s: each folder of an older version's lines is in a library now: %s"
 msgstr "%s：旧版本各行的文件夹现已放入游戏库：%s"
 
 #: src/gui/main.c
-msgid "Dumps put here are listed, its subfolders' too: .nsp, .xci and .nro files. It stays on the list"
-msgstr "放在这里的转储会被列出，其子文件夹中的也会：.nsp、.xci 和 .nro 文件。它会留在列表中"
-
-#: src/gui/main.c
 #, c-format
 msgid "Not a folder: %s"
 msgstr "不是文件夹：%s"
@@ -3151,10 +3147,6 @@ msgstr "把上次运行的输出和游戏日志保存到数据文件夹中的 sc
 #: src/gui/model.c
 msgid "Saves the last run's output and game log to scarletnx.log and copies its path"
 msgstr "把上次运行的输出和游戏日志保存到 scarletnx.log，并复制其路径"
-
-#: src/gui/model.c
-msgid "Opens the data folder, recompiled/ and the keys in it, in the system's Files app"
-msgstr "在系统的文件应用中打开数据文件夹、recompiled/ 及其中的密钥"
 
 #: src/gui/process_posix.c
 #, c-format

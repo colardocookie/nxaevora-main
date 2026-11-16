@@ -167,11 +167,12 @@ and a new path can add visual faults.
 
 Exit condition: the covered scenes draw the same as before with no command stream decode, at 30 frames each second.
 
-## Phase 7: Decrypted game files and a file layer for mods
+## Phase 7: Decrypted game files and a file layer for mods (done)
 
-Now: ScarletNX reads NSP and XCI files and decrypts them with the keys of the console, at the recompile and at each
-start of the game. The code is a copy of hactool in `third_party/ScarletNX/src/nx/runtime/driver/hactool/`. Code that
-decrypts the game can conflict with laws against the circumvention of copy protection, such as the DMCA.
+ScarletNX read NSP and XCI files and decrypted them with the keys of the console, at the recompile and at each start
+of the game. That code is removed. The input is now a decrypted game folder: the ExeFS of the update, one RomFS of the
+game with the update applied, and `control.nacp`. RomFS mods are laid over that folder in the name order of their
+folders.
 
 Goal: NXAevora reads only game files that are already decrypted. The user makes them from their own console: the
 ExeFS of the update and one RomFS of the game with the update applied. ScarletNX has no decryption code and needs no keys.

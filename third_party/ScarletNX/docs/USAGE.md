@@ -17,71 +17,55 @@
 * [Settings / input](#settings--input)
   * [On-screen controls](#on-screen-controls)
 
-Setup: [BUILD](BUILD.md). Checkout CWD; own dumps/keys.
+Setup: [BUILD](BUILD.md). Checkout CWD; own game files.
 For the keyboard-controlled SDL3 menu and file drops, see [GUI](GUI.md).
 
 ## Extract → AOT → run
 
-Pass a single XCI, NSP, DXCI or DNSP to recompile and play:
+Pass one decrypted game folder to recompile:
 
 ```sh
-./build/scarletnx "Game.xci"
+./build/scarletnx -r "/path/to/game folder"
 ```
 
+This forces recompilation, even if a cached executable exists. To play, run the game made already:
+`./build/scarletnx recompiled/<id>`.
+Encrypted dumps and keys are not read: decrypt the game to a folder first.
+The folder holds its ExeFS in `exefs/` (or `ExeFS/`), with `main`, `main.npdm`, `rtld`, `sdk` and `subsdk*`, its RomFS
+in `romfs/` (or `RomFS/`), and `control.nacp`. A game with an update takes the ExeFS of the update and one RomFS with
+the update applied: there is one program.
+
 The driver runs each step as a child process and starts the game with its folder, `recompiled/<id>/`, as its working
-directory. The game is named by its title ID, read from the dump's NCA headers, an NRO by its name (a dump without a
+directory. The game is named by its title ID, read from its `main.npdm`, an NRO by its name (a game without a
 title ID of its own by its stem); `recompiled/` is the data folder's, from a build tree too ([Folders](#folders)).
 
-Nothing of the dump is extracted by default. The game's `.ini` records the dump's path as `source=` under `[Game]`, and
-the recompile reads the ExeFS's modules from the dump itself. When the game runs, the runtime maps the dump read-only
-from that path and reads its ExeFS and RomFS out of it on the fly, decrypting what is encrypted, with the keys
-where the driver finds them (the data folder `recompiled/` is in, else `~/.switch`). No copy or cache of those files is
-kept anywhere: `recompiled/<id>/<id>_data/` holds only the game's `control.nacp` and its saves. An update embedded in an
-NSP is applied over the base as it is read. Moving or deleting the dump breaks the game until it is back, or until
-`source=` names its new place, and the run says so. A game made by an older version has `<id>.source` in its folder
-instead, a link to the dump, which is still read when the `.ini` names no dump. Playing the dump again records it in
-the `.ini`.
+The recompile records the absolute path of the folder's RomFS as `romfs=` under `[Game]` of the game's `.ini`,
+and reads the ExeFS's modules from the folder. When the game runs, the runtime reads the RomFS from that folder in
+place, with no copy: `recompiled/<id>/<id>_data/` holds only the game's `control.nacp` and its saves. Moving or
+deleting the `romfs=` folder stops the run, and the log says so. A game made by an older version has `source=` in its
+`.ini` instead, a deprecated setting: recompile the game from its decrypted folder with `-r`.
 
-`--extract-container` (the launcher's **Extract dump**) extracts the dump instead, straight into the game's
-folder, `recompiled/<id>/<id>_data/` (`exefs/`, `romfs/`, `control.nacp`), and the game is made from it there: there is no
-second copy. `<id>.extracting` stays in the game's folder while an extraction is unfinished, and a stopped one is redone
-on the next run, the game's saves kept. A game made from its dump is extracted on the first run with the option, with
-no recompile, and a game run without it again has that extraction taken away, as long as the dump it records is there.
-`--data DIR` and `--build-dir DIR` may precede the dump. Keys use the usual discovery paths below.
-`--outdir DIR` puts the game's folder in DIR in place of the data folder's `recompiled/`, as `-r` takes it. With
-`--extract-container`, `--out DIR` keeps the dump's extraction at DIR instead, as `-x` takes it, the game made from a
-copy of it; an NRO has no extraction to name.
-`--tmpfs` extracts to tmpfs instead, and implies `--extract-container`: `<temp>/scarletnx/work/<title ID>` (`$TMPDIR`,
-else `/tmp`; the temporary folder on Windows), where the game reads its RomFS from while its ExeFS and saves stay in
-`recompiled/<id>/<id>_data/`. The game's folder gets `<id>.tmpfs` while its RomFS is in tmpfs. A run extracts the RomFS again
-from the dump the game records when the system emptied tmpfs, and moves it between tmpfs and the game's folder when
-`--tmpfs` is given or left out. A game that records no dump says *Can't be extracted to tmpfs: the game's settings name
-no dump it was made from*. `-r --tmpfs` on an extraction leaves its RomFS where it is.
-`-H` (`--headless`) can precede or follow the dump and is passed to the game only.
+`--data DIR` and `--build-dir DIR` may precede or follow the input.
+`--outdir DIR` puts the game's folder in DIR in place of the data folder's `recompiled/`, as `-r` takes it. `--out` is
+an old name of `--name`. `-H` (`--headless`) can precede or follow the input and is passed to the game only.
 Omitting it starts the game with a window.
-`-x` means `--extract`, and `-r` means `--recompile` (`--recomp`, its older name, still works and says so once).
+`-r` means `--recompile` (`--recomp`, its older name, still works and says so once).
 On UNIX, short flags can be combined. Windows accepts separate short flags only.
-
-To prepare a dump without playing, use `./build/scarletnx -r "Game.xci"`.
-This forces recompilation, even if a cached executable exists, and extracts nothing unless `--extract-container` is
-given. `scarletnx -r --outdir games -- "Game.xci"` recompiles straight from a dump the same way, reading its ExeFS in
-place. `-rx` (`-r -x` on Windows) prepares it extracted, as `-r --extract-container` does. `-x` alone only extracts.
 
 A game made already plays the same way, named by its folder or its program: `./build/scarletnx recompiled/<id>` (or
 `recompiled/<id>/<id>`) runs it, recompiled first where it is when a build of another ABI made it, from what its `<id>_data/`
-keeps (the ExeFS or the NRO: no dump, keys or extraction), or from the dump its `.ini` records when it was
-made without extracting it. `-r` recompiles it without playing. `--outdir` and `--out`
-name a dump's folders and are refused for it. `--game=recompiled/<id>` runs it as it is, whichever build made it.
+keeps (the ExeFS or the NRO) and the folder its `romfs=` records. `-r` recompiles it without playing. `--outdir` is
+refused for it. `--game=recompiled/<id>` runs it as it is, whichever build made it.
 Pass arguments to the game executable after `--`, for example:
 
 ```sh
-./build/scarletnx "Game.xci" -- some arg
+./build/scarletnx recompiled/<id> -- some arg
 ```
 
 The argument boundary is retained when launching the deployed game, so game arguments
 cannot trigger launcher actions or overwrite runtime settings. This does not add a
 homebrew-loader guest argv block.
-`-f` (or `--fullscreen`, `--fullscreen=1`) can also precede or follow the dump and is forwarded to the game,
+`-f` (or `--fullscreen`, `--fullscreen=1`) can also precede or follow the input and is forwarded to the game,
 which then starts fullscreen (not in timed test runs). `--fullscreen=0` starts it windowed. Without either, the
 game's `.ini` decides (`fullscreen=1` starts fullscreen).
 `--touch=0|1|2` is forwarded to the game too: its touch screen takes nothing, the fingers, or the fingers and the
@@ -95,51 +79,30 @@ LLVM is the only backend. `--backend=llvm`, which older scripts give, is accepte
 other `--backend` stops with an error.
 Use the separate commands for other compiler options.
 
-DXCI and DNSP with decrypted content need no keys. Containers are identified by their headers,
-including renamed files. A matching bundled update is applied automatically. DLC-only and update-only dumps cannot
-be used as a base game.
-
-```powershell
-.\build\scarletnx.exe "C:\Games\Game.dxci"
-.\build\scarletnx.exe --extract "C:\Games\Game.dnsp" --update "C:\Games\Update.dnsp"
-```
-
 ### Updates and DLC
 
 An update or a DLC is recorded beside its game, in the game's folder, and checked in the game's list of updates and
 DLCs, `addons=` in the game's `.ini` (their title IDs, a comma between two). The game plays with what that list
-checks: any number of DLCs and one update at most. Give their dumps with the game's, or alone once the game is in
-`recompiled/`:
+checks: any number of DLCs and one update at most. Each is a data folder of its own in the game's folder: an update's
+`exefs/` and `romfs/` replace the game's whole, a DLC's `system/` is added to the game's, and nothing else of theirs is
+used.
 
-```sh
-./build/scarletnx Game.xci --update Update.nsp --update Dlc.nsp   # the game made first if it isn't yet
-./build/scarletnx Dlc.nsp                                          # a game made already: its DLC checked too
-```
-
-Each dump given is checked along with what the list checks already: a DLC is added, and an update, older or newer,
-takes the place of the one checked before, as installing an older update means playing it. The launcher lists a
-game's updates and DLCs under it: opening a game that has some shows its updates as a choice of one (each version
-installed, the newest first, by its version from its own control data, or No update) and its DLCs as boxes to check
-(`DLC 1`, numbered from the base ID the game's control data gives). Save keeps the choice in `addons=` without
-playing, Play keeps it and plays the game, and Back leaves the list as it was.
+The launcher lists a game's updates and DLCs under it: opening a game that has some shows its updates as a choice of
+one (each version installed, the newest first, by its version from its own control data, or No update) and its DLCs as
+boxes to check (`DLC 1`, numbered from the base ID the game's control data gives). Save keeps the choice in `addons=`
+without playing, Play keeps it and plays the game, and Back leaves the list as it was.
 
 - **Programs:** an update is recompiled from its own ExeFS into a program beside the game,
   `recompiled/<id>/<id>_<its title ID>v<its version>`, which runs whenever it is checked. Every version of a game's update
   has the same title ID, so each version installed keeps a program of its own, its version its content meta's. A DLC runs its game's code and has no program,
-  only its record: its own `.ini`, which holds `source=` (the path of its dump), and its data folder. A DLC program
-  an older version made is taken away the next time its dump is played.
+  only its data folder. A DLC program an older version made stops the run with a message. An update's program an older
+  version made from its dump is refused: recompile the game from its decrypted folder with `-r`.
 - **Settings and saves:** an update runs with its game's `.ini` and its game's data folder, so its saves are the
   game's.
-- **Files:** the game's own program never reads an update's files. Without Extract dump, an update reads
-  its ExeFS and RomFS from its dump, its RomFS patch read over the game's dump (the game's `.ini` must name it, which
-  playing the game's dump records). Each checked DLC's RomFS image is read from its dump and served as installed. A
-  checked DLC whose dump is not there is left out, and the log says so. With Extract dump, an update is
-  extracted into its own data folder with its RomFS applied, and a DLC's image goes to
-  `system/archives/<its title ID>.romfs` in its own. Those folders lie over the game's: an update's ExeFS, RomFS and
-  control data replace the game's, a DLC's `system/` is added to the game's, and nothing else of theirs is used.
-
-`-x` keeps extracting an update over its game into one folder (`-x Game.nsp --update Update.nsp`), and extracts a
-DLC's dump given alone as its RomFS image.
+- **Files:** the game's own program never reads an update's files. An update's data folder holds its ExeFS and its
+  RomFS, with the update applied, which replace the game's whole. Each checked DLC's RomFS image is read from its own
+  data folder, `system/archives/<its title ID>.romfs`, and served as installed. A checked DLC whose folder is not there
+  is left out, and the log says so.
 
 ### Mods
 
@@ -205,16 +168,13 @@ Add Cheats, in the same box, opens the system's file picker for a `.txt` and cop
 `<build id>.txt`, the only name the runtime reads; the original stays where it is, and its cheats show checked at once.
 A file already named by a build ID (16 hex digits) keeps that name, in capitals, and is refused when the game plays
 with another, the message naming both. Another takes the build ID of the main module the game plays with as the box has
-it: a played mod's `exefs/main`, else the checked update's own (from its extraction: one read from its dump has none
-the launcher can read), else the game's `exefs/main` or `main.nro`; with none to read, the file is refused, the message
-naming the module it looked for. It refuses too a name the cheats folder has already (files are never merged), a file
-that is not a `.txt`, one over 1 MiB, one with no `[name]` line, and on a phone a document of an app or a cloud that no
-path reaches.
+it: a played mod's `exefs/main`, else the checked update's own, else the game's `exefs/main` or `main.nro`; with none
+to read, the file is refused, the message naming the module it looked for. It refuses too a name the cheats folder has
+already (files are never merged), a file that is not a `.txt`, one over 1 MiB, one with no `[name]` line, and on a
+phone a document of an app or a cloud that no path reaches.
 
 Run the same command again to retry after a failure or interruption:
 
-- `work/Game/` skips extraction. Automatic extraction publishes this directory only after success,
-  using `work/Game.extracting/` while running. An incomplete staging directory is discarded on retry.
 - A complete `recompiled/<id>/<id>` (`<id>.exe` on Windows), code module and `<id>.abi` stamp naming this build's
   ABI skip recompilation. The stamp holds `SNX_ABI`: a game a build of another ABI made is recompiled
   automatically, as is one with a missing or invalid stamp, and that recompile takes from the unit cache (below) every
@@ -232,11 +192,11 @@ Failures stop the workflow and print the failed stage and exit status or signal.
 child also aborts that stage so it can be retried, except for intentional debugger stops. Uncatchable termination of the driver itself, such as
 `SIGKILL`, cannot print a diagnostic. Do not run concurrent workflows for the same output name.
 Existing manually extracted directories are assumed complete. Remove stale checkpoints or use the
-explicit commands when changing a dump or rebuilding game code.
+explicit commands when changing a game folder or rebuilding game code.
 
 ### NRO applications
 
-Pass an uncompressed NRO directly to recompile and play, without keys or extraction:
+Pass an uncompressed NRO directly to recompile and play, without extraction:
 
 ```sh
 ./build/scarletnx "app.nro" -H
@@ -249,42 +209,30 @@ This uses ScarletNX's existing guest runtime, not a complete homebrew-loader env
 Compatibility still depends on the application's runtime and service requirements.
 See [NRO implementation notes](NRO.md) for the reference and validation policy.
 
-To run the steps separately, here in folders of the current one (`--out` and `--outdir`; without them, the data
-folder's `work/` and `recompiled/`):
+To run the steps separately, here in folders of the current one (`--outdir` and `--name`; without them, the data
+folder's `recompiled/`):
 
 ```sh
-./build/scarletnx -x "Game.xci" --out work/Game
-./build/scarletnx -r work/Game Game --outdir recompiled
+./build/scarletnx -r "/path/to/game folder" --name Game --outdir recompiled
 recompiled/Game/Game
 ```
 
 ```powershell
-.\build\scarletnx.exe -x "Game.xci" --out work/Game
-.\build\scarletnx.exe -r work/Game Game --outdir games
+.\build\scarletnx.exe -r "C:\path\to\game folder" --name Game --outdir games
 .\games\Game\Game.exe
 ```
 
 Remaining examples: POSIX.
 
 ```sh
-# NSP + same-title update
-./build/scarletnx -x Game.nsp --update update.nsp --name Game \
-  --keys /path/prod.keys --title-keys /path/title.keys
+# a game from its decrypted folder, named Game
+./build/scarletnx -r "/path/to/game folder" --name Game --outdir games
 
-./build/scarletnx -r work/Game Game --outdir games --jobs 8
+./build/scarletnx -r "/path/to/game folder" --outdir games --jobs 8
 ./build/scarletnx -r app.nro --name App --outdir games
 ./build/scarletnx -r -h
 ```
 
-- **Keys:** encrypted content uses `--keys`/`--title-keys` flags, then the data folder ([Folders](#folders)) → `~/.switch`
-  (`%USERPROFILE%\.switch` on Windows).
-  Common NSP tickets supplement title keys. Fully decrypted content needs neither key file.
-- **Extraction:** defaults to the data folder's `work/<dump stem>`; `--name`/`--out DIR` override. Refuses existing
-  `exefs`. hactool runs inside the driver and reads each NCA where it lies in the XCI or NSP, so the ExeFS and RomFS
-  are written straight into the output and nothing is unpacked beside it
-  ([key filtering and cleanup](../src/nx/runtime/driver/extract.c)).
-  Sparse and compressed NCAs, updates with large relocation tables and gamecard dumps that start with the card's key
-  area all extract, through what [`storage.c`](../src/nx/runtime/driver/hactool/storage.c) ports from LibHac.
 - **Recompile:** AOT → module (LLVM) →
   final runtime deployment, for this machine's CPU. Shaders compile directly to SPIR-V at runtime.
   `-O 0..3,s,z` (`--opt=`) sets the optimization level (2 by default), and `--jobs N` (`--aot_threads=N`) the threads
@@ -292,7 +240,7 @@ Remaining examples: POSIX.
   `--llvm_pass_<pass>=0` (`--llvm_pass_instcombine=0`), and each option LLVM's C API sets on the pass builder and the
   target machine set, `--llvm_<option>=N` (`--llvm_inliner_threshold=50`). `scarletnx --settings=recompile` lists
   them, as the launcher's LLVM Internals page shows them: the passes are those of the pipelines the build's LLVM prints
-  for each level, and a build without an `opt` of that LLVM has none. A dump played with these is recompiled with them
+  for each level, and a build without an `opt` of that LLVM has none. A game with these is recompiled with them
   when it has to be, and a game made already keeps its code until `-r` recompiles it. A value a setting does not take
   (`--aot_threads=abc`) stops the recompile. The code the runtime compiles while the game runs keeps LLVM's own, but
   for the SLP vectorizer, which `slp_vectorizer` turns on or off for both.
@@ -318,14 +266,13 @@ Remaining examples: POSIX.
   `--keep-ir` saves the generated code (LLVM IR) in `<outdir>/<NAME>/<NAME>_build/`.
   `--hook-direct-calls` sends calls and branches between guest functions through the dispatch table too, so
   `nvn_trace=1` also counts calls made by direct branch. The game runs slower, so use it only for investigating.
-- **Data updates:** ExeFS refreshes; `<id>_data/romfs` is reused.
-  Replace cached RomFS after asset changes; preserve `<id>_data/save/`.
+- **Data updates:** the recompile copies the input's ExeFS again, and the game keeps the RomFS that `romfs=` names.
+  Preserve `<id>_data/save/`.
 
-With `--out work/Game` and `--outdir games` as above (without them, see [Folders](#folders)):
+With `--outdir games` as above (without it, see [Folders](#folders)):
 
 | Output | Contents |
 | --- | --- |
-| `work/Game/{exefs,romfs}` | Extracted input |
 | `recompiled/<id>/<id>[.exe]`, `<id>_code.so/.dll` | Runtime + AOT module |
 | `recompiled/<id>/<id>_data/`, `<id>.ini` | Data/saves (and `control.nacp`) + settings |
 | `recompiled/<id>/<id>_build/` | Generated code, only with `--keep-ir` |
@@ -341,8 +288,7 @@ Install `gdbserver` on PATH (and `gdb` for the MCP tools below). `-S` enables th
 `-s` enables the stub and waits before runtime initialization. It implies `-S`.
 
 ```sh
-./build/scarletnx -s "Game.xci"
-# Or: recompiled/<id>/<id> -Hs
+recompiled/<id>/<id> -Hs
 ```
 
 In GDB, load the deployed executable's symbols and connect:
@@ -408,8 +354,6 @@ The normal SDL3 build can run without initializing SDL video or opening a window
 
 ```sh
 ./build/scarletnx --game=recompiled/Game -H --seconds=30 --shot=/tmp/frame
-# Or extract, recompile and launch a dump without a window:
-./build/scarletnx "Game.xci" -H
 ```
 
 `-H` enables it. Omit the flag for the normal window. `--headless` is the long spelling
@@ -452,8 +396,8 @@ On an ARM64 machine the image is `ScarletNX-linux-aarch64.AppImage`, on PowerPC6
 ([PPC64](PPC64.md)).
 `--game` selects the game's folder, its `Game_code.so` and `Game_data/`; or name the image `recompiled/Game/Game.AppImage`
 to load the files beside it.
-The AppImage also prepares dumps: `./ScarletNX-linux-x86_64.AppImage Game.nsp`, in the folder [Folders](#folders) names,
-and each game gets a copy of the AppImage (on Windows, of `scarletnx.exe` and the DLLs next to it).
+The AppImage also prepares games: `./ScarletNX-linux-x86_64.AppImage -r "/path/to/game folder"`, in the folder
+[Folders](#folders) names, and each game gets a copy of the AppImage (on Windows, of `scarletnx.exe` and the DLLs next to it).
 X11 bypasses Wayland. [Licenses](CREDITS.md).
 
 ## Folders
@@ -489,13 +433,11 @@ list). The user's data folder and a portable copy's keep each kind of file apart
 | the setup's `setup.ini` ([Setup](#setup)) | - | `~/.config/scarletnx/` | `config/` |
 | the menu's `recent.txt`, `last-run.log`, `last-recompile.log` (a second launcher open at once `last-run-2.log` and `last-recompile-2.log`), its log `scarletnx-console-<date>.log` (a file a day, the 14 newest kept) and fatal errors `scarletnx-error.log` ([GUI](GUI.md); iOS: `logs/` of its Documents) | - | `~/.local/state/scarletnx/` | `state/` |
 | the menu's Share Log, `scarletnx-logs-<date>.zip` or `scarletnx.log` (iOS: `logs/share/` of its Documents) | - | `~/.local/state/scarletnx/share/` | `state/share/` |
-| `prod.keys`, read before `~/.switch` | the folder | `~/.local/share/scarletnx/` | the folder |
 | the console's users, `users.ini` and `<uid>.jpg` ([Users](#users)), and `online.ini`, an Eden room's password (`room`) | `users/` of the user's data folder | `~/.local/share/scarletnx/users/` | `users/` |
 
 The menu works in the user's data folder or a portable copy's, unless its Settings > App > Folders picks a data
-folder, a games folder or an extractions folder ([GUI](GUI.md)): it passes them to the driver as `--data`, `--outdir`
-and `--out` (an extractions folder picked keeps a Switch dump's extraction there, the game made from a copy; to the
-3DS driver as `--data` and `--output`), and its own files stay where they are. Its Logs and Caches move the state and
+folder, a games folder or an extractions folder ([GUI](GUI.md)): it passes them to the driver as `--data` and `--outdir`
+(to the 3DS driver as `--data` and `--output`), and its own files stay where they are. Its Logs and Caches move the state and
 cache folders of the table: `[folders] state =` and `cache =` in `app.ini`, full paths, which the menu, the drivers
 and the games read (a game's `.folders` below names them), its files going to the same place under them
 (`recompiled/<id>/<id>.log` of the state folder); a value that is not a full path is said once and the default kept.
@@ -552,7 +494,7 @@ the launcher's foot.
 
 ## Setup
 
-The first start goes through a setup: in the launcher's window ([GUI](GUI.md#setup)), or in the terminal a dump is
+The first start goes through a setup: in the launcher's window ([GUI](GUI.md#setup)), or in the terminal a game folder is
 first run from. It says first what older versions did that this one does otherwise ([DEPRECATIONS](DEPRECATIONS.md):
 only said, nothing is moved), then asks:
 
@@ -563,8 +505,7 @@ only said, nothing is moved), then asks:
    `.scarletnx/` beside the program (or the AppImage), which it makes. An app (Android, iOS) has no other.
 3. **Folders**, the launcher's: where its recompiled games go and the folders of dumps it lists (Settings > App >
    Folders).
-4. **Keys**: `prod.keys` and `title.keys` where the driver reads them, or installed from a folder that has them.
-5. **First user**: a `users/users.ini` there is kept, or overwritten, the one before kept as `users.ini.old`. A new one
+4. **First user**: a `users/users.ini` there is kept, or overwritten, the one before kept as `users.ini.old`. A new one
    has one user, the nickname given (`Player` by default), its uid random, of a v4 UUID's form as Ryujinx's are; or
    `0123456789abcdeffedcba9876543210`, the uid user 1 has had, while a game in `recompiled/` has saves of it.
 
@@ -585,7 +526,7 @@ shown, and one a newer version adds shows alone, with OK, before anything else.
 ```sh
 ./build/scarletnx --setup                  # all of it again, in the terminal
 printf '\n\n\n\n\nAogo\n' | ./build/scarletnx --setup  # its answers a line each, Enter the one in brackets
-./build/scarletnx --no-setup "Game.xci"    # no setup this run, nothing written
+./build/scarletnx --no-setup "/path/to/game folder"    # no setup this run, nothing written
 ```
 
 A run whose stdin or stdout is no terminal (a pipe, the launcher's runs) asks nothing. With `--no-setup` nothing is
@@ -602,7 +543,8 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `source` | none | The dump the game was made from, which the recompile writes. Without `--extract-container` the game reads its ExeFS and RomFS from it. Left out, the `<id>.source` link older versions made is read instead |
+| `source` | none | Deprecated: the dump an older version's game was made from. The run names it in the log only when the data folder has no `exefs/`, and then stops: recompile the game from its decrypted folder with `-r` |
+| `romfs` | none | The folder of the game's RomFS, which the recompile of a game folder writes. The game reads its RomFS from it with no copy. Empty or left out: the RomFS in the data folder |
 | `state_slots` | `10` | The save state slots the menu's Save states page lists and F9 steps through, 1 to 32 |
 | `state_auto_backup` | `1` | `1` saves the game to the auto slot before a save state is loaded over it, so the load can be undone |
 | `fullscreen` | `0` | `1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets it for one run. F11 or Alt+Enter switches without changing it |

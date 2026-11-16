@@ -42,12 +42,12 @@ An iOS app runs one process and may not start another, so the iOS app works like
 menu's driver:
 
 - **The data folder** is the app's Documents, which the Files app (*On My iPhone > ScarletNX*) and the Finder show.
-  It holds `dumps/` (a game's `.nsp` or `.xci`), `keys/` (`prod.keys`), `recompiled/` (what the app makes, each game as
+  It holds `dumps/` (a game's `.nro`), `recompiled/` (what the app makes, each game as
   `recompiled/<id>/<id>_code.snxobj` with `_data/`) and `logs/`. The menu's settings, state and caches are in the app's
   `Library/scarletnx/`, which the Files app does not show ([Running a game on iOS](#running-a-game-on-ios)).
-- **The menu** lists those games. *Load* and the folder settings open the system's document picker. Preparing a dump
-  runs the driver on a thread of the app, since an app may not start a process. A dump picked outside `dumps/` is
-  copied into it first. The thread has a 64 MiB stack, which LLVM's passes need.
+- **The menu** lists those games. *Load* and the folder settings open the system's document picker. Preparing a game
+  runs the driver on a thread of the app, since an app may not start a process. A game folder picked outside `dumps/`
+  is read where it is, not copied. The thread has a 64 MiB stack, which LLVM's passes need.
 - **A game** runs in the app's process once the menu closes (`src/nx/runtime/entry.c`): the runtime starts once per
   process, so the app ends with the game.
 - **Share Log** asks how, then saves `scarletnx-logs-<date>.zip` or `scarletnx.log` in `logs/share/` of its Documents
@@ -70,11 +70,11 @@ executable. The app is signed without the hardened runtime, so `MAP_JIT` needs n
 
 ### Running a game on iOS
 
-The iPhone prepares the game itself: it extracts the dump and recompiles it with its own LLVM. Super Meat Boy takes
+The iPhone prepares the game itself: it recompiles the game folder with its own LLVM. Super Meat Boy takes
 about two minutes on an iPhone 14 Pro, with the app in the foreground and the screen on.
 
-You do not need to put files in the right folders. The app copies the `prod.keys` you pick into `keys/` and a dump you
-pick into `dumps/`, then makes the game in `recompiled/`. Pick them from wherever they are (Files, Downloads, iCloud).
+You do not need to put files in the right folders. The app reads the game folder you pick where it is and makes the
+game in `recompiled/`. Pick it from wherever it is (Files, Downloads, iCloud).
 
 1. **Install the app.** Take `ScarletNX-ios-arm64-<commit>.ipa` from a CI run, or build it (`cmake --preset ios`,
    [Building](#building)), and install it with a sideloading tool that signs it with an Apple ID: iloader or
@@ -86,19 +86,18 @@ pick into `dumps/`, then makes the game in `recompiled/`. Pick them from whereve
    `ALTPairingFile.mobiledevicepairing`), hold ScarletNX in StikDebug's list and *Assign Script* `universal.js`. The
    runtime checks for the debugger first and says what to enable when there is none. Reinstalling StikDebug removes its data,
    assignments included, so assign the script again.
-3. **Add your keys.** Open ScarletNX, *Install Keys*, and pick the `prod.keys` of your Switch.
-4. **Prepare the game.** In *Games*, pick the `.nsp` or `.xci` and prepare it. The app extracts it and writes
+3. **Prepare the game.** In *Games*, pick the decrypted game folder and prepare it. The app writes
    `recompiled/<id>/` with `<id>_code.snxobj` and `<id>_data/`. 64-bit games only. Keep the app in the foreground
    until it ends: iOS stops its GPU and its threads in the background.
-5. **Play.** *Enable JIT* for ScarletNX in StikDebug, open ScarletNX, *Games*, and pick the game. Do this before each
+4. **Play.** *Enable JIT* for ScarletNX in StikDebug, open ScarletNX, *Games*, and pick the game. Do this before each
    run, and do not leave the app while the game runs. Keep StikDebug open too: when it is closed, the debugger goes
    with it and the game loses JIT.
 
-The folders the app makes in *On My iPhone > ScarletNX* are `dumps/` (your games' dumps), `keys/`, `recompiled/` (the
+The folders the app makes in *On My iPhone > ScarletNX* are `dumps/` (a game's `.nro`), `recompiled/` (the
 games it made) and `logs/` (what to send when a run fails). Reinstalling the app can remove them with some tools.
 
-A Mac still prepares a game the same way (`scarletnx -x "Game.nsp" --name Game`, then
-`scarletnx -r work/Game --target ios --outdir recompiled`), and its `recompiled/<id>/` can be copied into the app.
+A Mac still prepares a game the same way (`scarletnx -r "/path/to/game folder" --name Game --target ios --outdir recompiled`),
+and its `recompiled/<id>/` can be copied into the app.
 
 Limits found on an iPhone 14 Pro (iOS 26.6.1): without the paid extended-virtual-addressing entitlement the app has
 about 13 GiB of address space and about 3 GB of memory, so the runtime takes the largest free run it can (128 GiB
@@ -121,7 +120,7 @@ UDID the iPhone's (`xcrun devicectl list devices`). The script:
 2. **Signs the app.** It puts that profile in the app, sets the bundle ID, takes the entitlements from the profile and
    signs the frameworks and then the app with the certificate.
 3. **Installs it** with `xcrun devicectl device install app`. The same bundle ID replaces the app and keeps its
-   `dumps/`, `keys/` and `recompiled/`. A sideloading tool adds the team to the bundle ID, so pass the one the
+   `dumps/` and `recompiled/`. A sideloading tool adds the team to the bundle ID, so pass the one the
    installed app has (`org.scarletnx.TEAM`), as another counts as a new app.
 
 Run it from Terminal.app on the Mac's own screen. Over ssh the keychain is locked and codesign fails with

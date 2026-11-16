@@ -126,10 +126,6 @@ msgid "Load 3DS game"
 msgstr "Abrir jogo de 3DS"
 
 #: src/gui/main.c
-msgid "Setup device keys"
-msgstr "Configurar chaves"
-
-#: src/gui/main.c
 msgid "Settings"
 msgstr "Configurações"
 
@@ -856,10 +852,6 @@ msgid "Installed"
 msgstr "Instalado"
 
 #: src/gui/main.c
-msgid "Keys already setup. This will overwrite the previous ones"
-msgstr "Chaves já instaladas. Isto vai sobrescrever as anteriores"
-
-#: src/gui/main.c
 msgid "Output"
 msgstr "Saída"
 
@@ -1555,10 +1547,6 @@ msgid "Tip: Settings > App > Library and Folders change them"
 msgstr "Dica: Configurações > App > Biblioteca e Pastas mudam isso"
 
 #: src/gui/main.c
-msgid "Tip: the menu's Setup device keys changes them"
-msgstr "Dica: Configurar chaves, no menu, muda isso"
-
-#: src/gui/main.c
 msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
 msgstr "Dica: apelido de 4 a 20 de A-Z a-z 0-9 espaço . _ -"
 
@@ -2189,10 +2177,6 @@ msgstr "Salva a saída e o log de jogo da última execução em scarletnx.log na
 msgid "Saves the last run's output and game log to scarletnx.log in the working folder, path copied"
 msgstr "Salva a saída e o log de jogo da última execução em scarletnx.log na pasta de trabalho, com o caminho copiado"
 
-#: src/gui/model.c
-msgid "Opens the data folder, games/ and the keys among them, in the system's Files app"
-msgstr "Abre a pasta de dados, com games/ e as chaves, no app Arquivos do sistema"
-
 #: src/gui/process_posix.c src/gui/process_win32.c
 msgid "A driver is already running"
 msgstr "Já há um driver rodando"
@@ -2568,10 +2552,6 @@ msgid "sync: one line at a time"
 msgstr "sync: uma linha por vez"
 
 #: src/gui/theme.c
-msgid "the cursor's, the prompt's and Setup device keys' blink"
-msgstr "o piscar do cursor, do prompt e de Configurar chaves"
-
-#: src/gui/theme.c
 msgid "a line too long for its row slides a column each"
 msgstr "uma linha longa demais para caber desliza uma coluna a cada"
 
@@ -2844,9 +2824,6 @@ msgstr "Recompilados"
 
 msgid "Not enough memory to list the games in their groups."
 msgstr "Sem memória para listar os jogos em seus grupos."
-
-msgid "Dumps put here are listed, its subfolders' too: .nsp, .xci and .nro files. It stays on the list"
-msgstr "Os dumps postos aqui são listados, os das subpastas também: arquivos .nsp, .xci e .nro. Ela fica na lista"
 
 msgid "%s: [folders] games = %s is now recompiled = %s"
 msgstr "%s: [folders] games = %s agora é recompiled = %s"

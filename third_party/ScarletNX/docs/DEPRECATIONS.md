@@ -65,9 +65,10 @@ renderer=opengl
 Settings > App > Move Old Files in the launcher, or `scarletnx --migrate=yes`, moves the rest of these, an entry at a
 time, each to the folder its line names; `scarletnx --migrate` says first what would move ([USAGE](USAGE.md#folders)).
 
-To move a game an older version laid out beside the others: run it from its dump once, which makes `games/<id>/`;
-move its saves, `<Game>_data/save/` and `<Game>_data/sdmc/`, into `games/<id>/<id>_data/`, and its settings,
-`<Game>.ini`, to `<id>.ini` where the table in [USAGE](USAGE.md#folders) says; then delete the older files. The
+To move a game an older version laid out beside the others: recompile it once from its decrypted game folder with `-r`,
+which makes `recompiled/<id>/`; move its saves, `<Game>_data/save/` and `<Game>_data/sdmc/`, into
+`recompiled/<id>/<id>_data/`, and its settings, `<Game>.ini`, to `<id>.ini` where the table in [USAGE](USAGE.md#folders) says;
+then delete the older files. The
 menu's files, and a checkout's `work/`, keys and `linux/`, move as they are, each to the folder the line names (on
 Android the menu's files are out of reach: the line says how they go). A checkout's
 `games/` does too, then each game's `<id>.ini` to where the table says (the game's run names it).

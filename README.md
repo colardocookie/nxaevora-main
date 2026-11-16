@@ -53,6 +53,8 @@ If you would like to contribute, please read the [CONTRIBUTING.md](CONTRIBUTING.
 
 ・An accurate dynamic FPS patch (now in the maintenance phase, with changes limited to bug fixes)
 
+・The game is read from a decrypted game folder with no keys, and RomFS mods replace game files at run time.
+
 ### Planned features
 ・Intel Xe Ground Truth Ambient Occlusion (XeGTAO) support
 

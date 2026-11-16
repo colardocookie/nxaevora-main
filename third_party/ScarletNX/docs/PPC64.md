@@ -184,8 +184,6 @@ compile to nothing on a little-endian host:
   the CPU computes for the device (push constants, uniform and index buffers it builds, indirect commands) is
   written little-endian, and what it reads back is converted. lavapipe on a big-endian host is not little-endian,
   so it doesn't show a game's rendering there.
-- hactool's headers are converted as they are read, or at each field where they are signed or written back, so
-  extraction and recompiling work on a big-endian machine.
 
 The build (the Arch POWER system root of the `appimage-cross` job, with GCC's runtime and LLVM installed):
 
