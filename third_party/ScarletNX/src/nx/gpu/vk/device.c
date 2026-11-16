@@ -616,6 +616,7 @@ static int create_device(void) {
                         (f2.features.shaderStorageImageWriteWithoutFormat ? SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT
                                                                           : 0) |
                         (q12.shaderInt8 ? SNX_NEEDS_CORE_SHADER_INT8 : 0) |
+                        (q12.scalarBlockLayout ? SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT : 0) |
                         (q13.shaderIntegerDotProduct ? SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT : 0);
         accepted = vk_upscaler_device_ask(upscaler, g_vk.instance, g_vk.phys, vkGetInstanceProcAddr, has, &ask) &&
                    vk_upscaler_device_names(&ask, ext, &with_count, room);
@@ -634,7 +635,7 @@ static int create_device(void) {
        additions only: the game's own value is kept and put back before a creation without them. */
     const VkBool32 own_separate = f12.separateDepthStencilLayouts, own_address = f12.bufferDeviceAddress;
     const VkBool32 own_storage = g_vk.feat.shaderStorageImageWriteWithoutFormat, own_int8 = f12.shaderInt8,
-                   own_dot = f13.shaderIntegerDotProduct;
+                   own_dot = f13.shaderIntegerDotProduct, own_scalar = f12.scalarBlockLayout;
     const u32 bits = accepted ? ask.core : 0;
     f12.separateDepthStencilLayouts =
         (VkBool32)snx_needs_core_bit(own_separate != 0, accepted, bits, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL);
@@ -643,6 +644,8 @@ static int create_device(void) {
     g_vk.feat.shaderStorageImageWriteWithoutFormat =
         (VkBool32)snx_needs_core_bit(own_storage != 0, accepted, bits, SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT);
     f12.shaderInt8 = (VkBool32)snx_needs_core_bit(own_int8 != 0, accepted, bits, SNX_NEEDS_CORE_SHADER_INT8);
+    f12.scalarBlockLayout =
+        (VkBool32)snx_needs_core_bit(own_scalar != 0, accepted, bits, SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT);
     f13.shaderIntegerDotProduct =
         (VkBool32)snx_needs_core_bit(own_dot != 0, accepted, bits, SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT);
     const SnxNeedsPlan plan = snx_needs_plan(next, chain, accepted, with_count, head);
@@ -666,6 +669,7 @@ static int create_device(void) {
         f12.bufferDeviceAddress = own_address;
         g_vk.feat.shaderStorageImageWriteWithoutFormat = own_storage;
         f12.shaderInt8 = own_int8;
+        f12.scalarBlockLayout = own_scalar;
         f13.shaderIntegerDotProduct = own_dot;
         dci.pNext = chain;
         dci.enabledExtensionCount = next;

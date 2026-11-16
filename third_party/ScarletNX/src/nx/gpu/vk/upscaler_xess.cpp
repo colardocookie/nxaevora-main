@@ -146,23 +146,26 @@ int instance_extensions(SnxUpscalerExtensions* out) {
     return SNX_UPSCALER_OK;
 }
 
-/* A structure's VkBool32 fields from start to its end: the first one set that is not in keep, as a byte offset, or
-   -1 for none. keep holds the offsets this adapter maps, -1 for none. */
-long other_field(const void* structure, size_t start, size_t size, long keep) {
+/* A structure's VkBool32 fields from start to its end: each one set that is not in keep (the offsets this adapter
+   maps, -1 for none) is logged by its byte offset. The number logged, so that one run names every one (XS2-a). */
+int other_fields(const void* structure, size_t start, size_t size, long keep, long keep_too, const char* kind) {
+    int others = 0;
     for (size_t at = start; at + sizeof(VkBool32) <= size; at += sizeof(VkBool32)) {
         VkBool32 value;
         std::memcpy(&value, (const unsigned char*)structure + at, sizeof value);
-        if (value && (long)at != keep) return (long)at;
+        if (!value || (long)at == keep || (long)at == keep_too) continue;
+        logf_(0, "arceus-upscaler: xess sets the field at byte %zu of %s, which this adapter does not map\n", at, kind);
+        others++;
     }
-    return -1;
+    return others;
 }
 /* handed to whoever makes the device, as a node of its feature chain: it lives as long as the adapter */
 VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT g_mutable = {
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT, nullptr, VK_TRUE};
 
 /* Gap 3: XeSS fills a private chain of its own question, read back here. Storage writes without a format, 8 bit
-   integers and integer dot products become core bits, the mutable descriptor type goes on as an extension
-   structure. Any other field or structure XeSS sets refuses the adapter, named, so nothing is left off silently. */
+   integers, scalar block layouts and integer dot products become core bits, the mutable descriptor type goes on as
+   an extension structure. Any other field or structure XeSS sets refuses the adapter, each one named. */
 int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetInstanceProcAddr,
                       SnxUpscalerDeviceNeeds* out) {
     out->extensions.count = 0;
@@ -200,34 +203,32 @@ int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetIns
         return SNX_UPSCALER_REFUSED;
     }
     uint32_t core = 0;
-    int mutable_on = 0, nodes = 0;
+    int mutable_on = 0, nodes = 0, others = 0;
     for (const VkBaseInStructure* at = (const VkBaseInStructure*)chain; at; at = at->pNext) {
-        long other = -1;
-        const char* kind = "a structure";
         if (++nodes > 16) {
             logf_(0, "arceus-upscaler: xess is not available: its feature chain does not end within 16 structures\n");
             return SNX_UPSCALER_REFUSED;
         }
         if (at == (const void*)&f2) {
-            kind = "the 1.0 features";
             const long keep = (long)offsetof(VkPhysicalDeviceFeatures, shaderStorageImageWriteWithoutFormat);
             if (f2.features.shaderStorageImageWriteWithoutFormat)
                 core |= SNX_UPSCALER_CORE_STORAGE_WRITE_WITHOUT_FORMAT;
-            other = other_field(&f2.features, 0, sizeof f2.features, keep);
+            others += other_fields(&f2.features, 0, sizeof f2.features, keep, -1, "the 1.0 features");
         } else if (at == (const void*)&v11) {
-            kind = "the 1.1 features";
-            other = other_field(&v11, offsetof(VkPhysicalDeviceVulkan11Features, storageBuffer16BitAccess), sizeof v11,
-                                -1);
+            others += other_fields(&v11, offsetof(VkPhysicalDeviceVulkan11Features, storageBuffer16BitAccess),
+                                   sizeof v11, -1, -1, "the 1.1 features");
         } else if (at == (const void*)&v12) {
-            kind = "the 1.2 features";
             if (v12.shaderInt8) core |= SNX_UPSCALER_CORE_SHADER_INT8;
-            other = other_field(&v12, offsetof(VkPhysicalDeviceVulkan12Features, samplerMirrorClampToEdge), sizeof v12,
-                                (long)offsetof(VkPhysicalDeviceVulkan12Features, shaderInt8));
+            if (v12.scalarBlockLayout) core |= SNX_UPSCALER_CORE_SCALAR_BLOCK_LAYOUT;
+            others += other_fields(&v12, offsetof(VkPhysicalDeviceVulkan12Features, samplerMirrorClampToEdge),
+                                   sizeof v12, (long)offsetof(VkPhysicalDeviceVulkan12Features, shaderInt8),
+                                   (long)offsetof(VkPhysicalDeviceVulkan12Features, scalarBlockLayout),
+                                   "the 1.2 features");
         } else if (at == (const void*)&v13) {
-            kind = "the 1.3 features";
             if (v13.shaderIntegerDotProduct) core |= SNX_UPSCALER_CORE_INTEGER_DOT_PRODUCT;
-            other = other_field(&v13, offsetof(VkPhysicalDeviceVulkan13Features, robustImageAccess), sizeof v13,
-                                (long)offsetof(VkPhysicalDeviceVulkan13Features, shaderIntegerDotProduct));
+            others += other_fields(&v13, offsetof(VkPhysicalDeviceVulkan13Features, robustImageAccess), sizeof v13,
+                                   (long)offsetof(VkPhysicalDeviceVulkan13Features, shaderIntegerDotProduct), -1,
+                                   "the 1.3 features");
         } else if (at == (const void*)&mut) {
             mutable_on = mut.mutableDescriptorType != 0;
         } else {
@@ -235,19 +236,8 @@ int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetIns
                      "this adapter does not map\n", (int)at->sType);
             return SNX_UPSCALER_REFUSED;
         }
-        if (other >= 0) {
-            logf_(0, "arceus-upscaler: xess is not available: it sets the field at byte %ld of %s, which this adapter "
-                     "does not map\n", other, kind);
-            return SNX_UPSCALER_REFUSED;
-        }
     }
-    int named = 0;
-    for (uint32_t i = 0; i < n; i++) named |= names[i] && !std::strcmp(names[i], XESS_MUTABLE);
-    if (mutable_on && !named) {
-        logf_(0, "arceus-upscaler: xess is not available: it asks for the mutable descriptor type without naming "
-                 XESS_MUTABLE "\n");
-        return SNX_UPSCALER_REFUSED;
-    }
+    /* said before any refusal, so that a refused run still shows the whole of what XeSS asks */
     static int said;
     if (!said++) {
         char list[600] = "";
@@ -255,8 +245,21 @@ int device_extensions(VkInstance instance, VkPhysicalDevice device, PFN_vkGetIns
         for (uint32_t i = 0; i < n && used < sizeof list - 80; i++)
             used += (size_t)std::snprintf(list + used, sizeof list - used, "%s%s", i ? ", " : "", names[i]);
         logf_(1, "arceus-upscaler: xess names %u device extensions (%s), the mutable descriptor type %s, and the core "
-                 "features 0x%x (4 storage writes without a format, 8 8 bit integers, 16 integer dot products)\n", n,
+                 "features 0x%x (4 storage writes without a format, 8 8 bit integers, 16 integer dot products, "
+                 "32 scalar block layouts)\n", n,
               n ? list : "none", mutable_on ? "on" : "off", core);
+    }
+    if (others) {
+        logf_(0, "arceus-upscaler: xess is not available: it sets %d fields this adapter does not map (the lines "
+                 "above)\n", others);
+        return SNX_UPSCALER_REFUSED;
+    }
+    int named = 0;
+    for (uint32_t i = 0; i < n; i++) named |= names[i] && !std::strcmp(names[i], XESS_MUTABLE);
+    if (mutable_on && !named) {
+        logf_(0, "arceus-upscaler: xess is not available: it asks for the mutable descriptor type without naming "
+                 XESS_MUTABLE "\n");
+        return SNX_UPSCALER_REFUSED;
     }
     out->extensions.count = n;
     out->extensions.names = names;

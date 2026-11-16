@@ -61,6 +61,7 @@ static struct {
     int dlss; /* DLSS's matrix (DL1b revision 2, research's rulings for N4, D3-4): integration only, not quality */
     int matrix; /* that matrix, for DLSS and for XeSS (XESS-DESIGN.md: DLSS's DL1 matrix and bars) */
     const char* name; /* the adapter's, for the lines */
+    int at13;         /* the instance and the device at Vulkan 1.3, for XeSS (its least, XS2-a) */
     u32 contexts; /* contexts the adapter handed out and the self-test has not destroyed */
     SelftestLive live; /* which they are: each ends exactly once */
     int ended_wrong;   /* a context destroyed that was not live, or while a command buffer was recorded */
@@ -509,9 +510,10 @@ static int device_make(void) {
         LOG(ST "the layer's limit of repeated messages: not asked off, the headers of this build have no layer "
                "settings\n");
 #endif
+    /* XeSS names Vulkan 1.3 as its least (XS2-a), as the game's device is: for it the self-test is made at 1.3 */
     const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
                                    .pApplicationName = "scarletnx upscaler self-test",
-                                   .apiVersion = VK_API_VERSION_1_2};
+                                   .apiVersion = g.at13 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2};
     const VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                                       .pNext = instance_chain,
                                       .pApplicationInfo = &app,
@@ -560,10 +562,10 @@ static int device_make(void) {
     }
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(g.physical, &props);
-    /* the device is asked for 1.2 features and made at 1.2: the physical device must be 1.2 itself */
-    if (props.apiVersion < VK_API_VERSION_1_2) {
-        LOG(ST "FAIL: the physical device %s is Vulkan %u.%u, below 1.2\n", props.deviceName,
-            VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion));
+    /* the device is asked for 1.2 features and made at 1.2 (1.3 for XeSS): the physical device must be that */
+    if (props.apiVersion < (g.at13 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2)) {
+        LOG(ST "FAIL: the physical device %s is Vulkan %u.%u, below %s\n", props.deviceName,
+            VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion), g.at13 ? "1.3" : "1.2");
         return 0;
     }
     u32 core = 0;
@@ -575,14 +577,16 @@ static int device_make(void) {
     /* Every feature the device has is turned on, 16 bit floats in shaders among them where it has them: that
        is a bit of the 1.2 structure here, and no structure of its own in the chain. The adapter's chain, if it
        has one, goes behind and lives in the adapter. */
+    /* At 1.3 (XeSS) the 1.3 structure follows the 1.2 one, every feature on too, and the adapter's goes behind it */
+    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                            .pNext = (void*)features};
+                                            .pNext = g.at13 ? (void*)&f13 : NULL};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .pNext = &f12};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f11};
-    f12.pNext = NULL;
     vkGetPhysicalDeviceFeatures2(g.physical, &f2);
-    f12.pNext = (void*)features;
+    if (g.at13) f13.pNext = (void*)features;
+    else f12.pNext = (void*)features;
     /* A core bit the adapter needs is a bit of this 1.2 structure, which has every bit the physical device has:
        it is on by that, and here it is held against the need. A physical device without it has no adapter. */
     const int separate = (core & SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL) != 0;
@@ -597,9 +601,9 @@ static int device_make(void) {
                "physical device does not have\n");
         return 0;
     }
-    /* since ABI 5: storage writes without a format (1.0) and 8 bit integers (1.2) are on as every feature the
-       physical device has, and held against the need. Integer dot products are of 1.3, which this device at 1.2
-       does not take: an adapter that needs them is not available here (XeSS's stage 2 decides it). */
+    /* since ABI 5: storage writes without a format (1.0), 8 bit integers and scalar block layouts (1.2) and, on a
+       device at 1.3, integer dot products are on as every feature the physical device has, and held against the
+       need. A device at 1.2 does not take integer dot products: an adapter that needs them is not available. */
     if ((core & SNX_UPSCALER_CORE_STORAGE_WRITE_WITHOUT_FORMAT) && !f2.features.shaderStorageImageWriteWithoutFormat) {
         LOG(ST "FAIL: the adapter is not available on this device: it needs storage image writes without a format, "
                "which the physical device does not have\n");
@@ -610,14 +614,21 @@ static int device_make(void) {
                "physical device does not have\n");
         return 0;
     }
-    if (core & SNX_UPSCALER_CORE_INTEGER_DOT_PRODUCT) {
-        LOG(ST "FAIL: the adapter is not available on this device: it needs integer dot products, a feature of "
-               "Vulkan 1.3, and the self-test's device is made at 1.2\n");
+    if ((core & SNX_UPSCALER_CORE_SCALAR_BLOCK_LAYOUT) && !f12.scalarBlockLayout) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs scalar block layouts, which the "
+               "physical device does not have\n");
         return 0;
     }
-    LOG(ST "the device is made with %u extensions of the adapter%s%s, with separate depth and stencil layouts %s, "
+    if ((core & SNX_UPSCALER_CORE_INTEGER_DOT_PRODUCT) && (!g.at13 || !f13.shaderIntegerDotProduct)) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs integer dot products, a feature of "
+               "Vulkan 1.3, and %s\n", g.at13 ? "the physical device does not have them" : "the self-test's device "
+               "is made at 1.2");
+        return 0;
+    }
+    LOG(ST "the device is made at Vulkan %s with %u extensions of the adapter%s%s, with separate depth and stencil "
+           "layouts %s, "
            "%s, and with 16 bit floats in shaders %s\n",
-        device_count, device_count ? ": " : "", device_count ? device_names[0] : "",
+        g.at13 ? "1.3" : "1.2", device_count, device_count ? ": " : "", device_count ? device_names[0] : "",
         separate ? "on for the adapter, which needs them"
                  : f12.separateDepthStencilLayouts ? "on as every feature the physical device has, not asked for by "
                                                      "the adapter"
@@ -2753,6 +2764,7 @@ int vk_upscaler_selftest(const char* adapter) {
     g.dlss = !strcmp(adapter, "dlss");
     g.matrix = g.dlss || !strcmp(adapter, "xess");
     g.name = adapter;
+    g.at13 = !strcmp(adapter, "xess");
     /* DLSS and XeSS take the vectors in two channels */
     g.motion_format = g.matrix ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16G16B16A16_SFLOAT;
     if (!g.api) {

@@ -126,7 +126,8 @@ static inline int snx_needs_owner(const char* const* names, uint32_t count, cons
 
 /* Needs of core feature bits are no structure at all: a plain field of the adapter's answer. Defined: separate
    layouts for the depth and the stencil aspect and buffer device addresses (1.2), and since ABI 5 storage image
-   writes without a format (1.0), 8 bit integers in shaders (1.2) and integer dot products (1.3). Whoever makes a
+   writes without a format (1.0), 8 bit integers in shaders and scalar block layouts (1.2) and integer dot products
+   (1.3). Whoever makes a
    device turns them on in its own structures after its own question to the physical device, whose answer is has.
    A bit the host does not know refuses, and so does a known one the physical device does not have. */
 #define SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL 1u
@@ -134,9 +135,11 @@ static inline int snx_needs_owner(const char* const* names, uint32_t count, cons
 #define SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT 4u
 #define SNX_NEEDS_CORE_SHADER_INT8 8u
 #define SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT 16u
+#define SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT 32u
 #define SNX_NEEDS_CORE_KNOWN                                                                                         \
     (SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL | SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS |                                 \
-     SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT | SNX_NEEDS_CORE_SHADER_INT8 | SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT)
+     SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT | SNX_NEEDS_CORE_SHADER_INT8 | SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT | \
+     SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT)
 static inline int snx_needs_core(uint32_t asked, uint32_t has) {
     if (asked & ~SNX_NEEDS_CORE_KNOWN) return SNX_NEEDS_CORE_UNKNOWN;
     if (asked & ~has) return SNX_NEEDS_CORE_BIT;

@@ -196,6 +196,7 @@ _Static_assert(SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL == SNX_UPSCALER_CORE_SEPARA
                    SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT == SNX_UPSCALER_CORE_STORAGE_WRITE_WITHOUT_FORMAT &&
                    SNX_NEEDS_CORE_SHADER_INT8 == SNX_UPSCALER_CORE_SHADER_INT8 &&
                    SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT == SNX_UPSCALER_CORE_INTEGER_DOT_PRODUCT &&
+                   SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT == SNX_UPSCALER_CORE_SCALAR_BLOCK_LAYOUT &&
                    SNX_NEEDS_CORE_KNOWN == SNX_UPSCALER_CORE_SELFTEST_KNOWN,
                "the core bits of the contract and of the pure rules");
 _Static_assert(SNX_NEEDS_DERIVATIVES == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_NV &&
@@ -373,14 +374,15 @@ void vk_upscaler_device_made(const VkUpscalerDeviceAsk* ask) {
         if (i) strcat(names, ", ");
         strcat(names, ask->names[i]);
     }
-    LOG("arceus-upscaler: the game's device is made with %s%s%s%s%s%s%s%s%s for %s%s\n",
+    LOG("arceus-upscaler: the game's device is made with %s%s%s%s%s%s%s%s%s%s for %s%s\n",
         ask->count ? names : "no extension", ask->have ? " and the compute derivatives features" : "",
         ask->quads ? " (quad groups)" : "", ask->linear ? " (linear groups)" : "",
         ask->mutable_on ? " and the mutable descriptor type" : "",
         ask->core & SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL ? " and separate depth and stencil layouts" : "",
         ask->core & SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT ? " and storage writes without a format" : "",
         ask->core & SNX_NEEDS_CORE_SHADER_INT8 ? " and 8 bit integers in shaders" : "",
-        ask->core & SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT ? " and integer dot products" : "", ask->adapter,
+        ask->core & SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT ? " and integer dot products" : "",
+        ask->core & SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT ? " and scalar block layouts" : "", ask->adapter,
         kept == SNX_NEEDS_OK ? "" : ". That could NOT be recorded: the adapter stays not available");
 }
 /* At the start of the upscaler: the adapter's needs, asked again by the caller, against what the game's device

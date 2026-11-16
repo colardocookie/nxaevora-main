@@ -43,10 +43,11 @@ typedef struct {
 #define SNX_UPSCALER_CORE_STORAGE_WRITE_WITHOUT_FORMAT 4u /* shaderStorageImageWriteWithoutFormat */
 #define SNX_UPSCALER_CORE_SHADER_INT8                  8u /* shaderInt8 */
 #define SNX_UPSCALER_CORE_INTEGER_DOT_PRODUCT          16u /* shaderIntegerDotProduct */
+#define SNX_UPSCALER_CORE_SCALAR_BLOCK_LAYOUT          32u /* scalarBlockLayout (1.2), as XS2-a found XeSS asks */
 #define SNX_UPSCALER_CORE_SELFTEST_KNOWN                                                                                \
     (SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL | SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS |                              \
      SNX_UPSCALER_CORE_STORAGE_WRITE_WITHOUT_FORMAT | SNX_UPSCALER_CORE_SHADER_INT8 |                                 \
-     SNX_UPSCALER_CORE_INTEGER_DOT_PRODUCT)
+     SNX_UPSCALER_CORE_INTEGER_DOT_PRODUCT | SNX_UPSCALER_CORE_SCALAR_BLOCK_LAYOUT)
 typedef struct {
     SnxUpscalerExtensions extensions;
     const void* features; /* a pNext chain of feature structures to turn on, or NULL. Never a core structure */

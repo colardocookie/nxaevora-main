@@ -3535,8 +3535,8 @@ static void test_upscaler_needs(void) {
         assert(!r.made && snx_needs_met(&r, "fsr", one, 1, &linear, 0) == SNX_NEEDS_ADAPTER);
     }
     assert(snx_needs_none(0, NULL, 0) && !snx_needs_none(1, NULL, 0) && !snx_needs_none(0, &linear, 0));
-    /* Core feature bits: a plain field, five bits known (separate depth and stencil layouts and buffer device
-       addresses since DL2, three for XeSS since ABI 5). Unknown bits refuse whatever the device has, a known one
+    /* Core feature bits: a plain field, six bits known (separate depth and stencil layouts and buffer device
+       addresses since DL2, four for XeSS since ABI 5). Unknown bits refuse whatever the device has, a known one
        needs the physical device to have it, and nothing asked is met by any device. */
     const uint32_t sds = SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL, bda = SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS;
     assert(snx_needs_core(0, 0) == SNX_NEEDS_OK && snx_needs_core(0, sds | bda) == SNX_NEEDS_OK);
@@ -3552,7 +3552,10 @@ static void test_upscaler_needs(void) {
     assert(snx_needs_core(swf | i8 | dot, swf | i8 | dot) == SNX_NEEDS_OK);
     assert(snx_needs_core(swf, i8 | dot) == SNX_NEEDS_CORE_BIT && snx_needs_core(i8, swf | dot) == SNX_NEEDS_CORE_BIT);
     assert(snx_needs_core(dot, swf | i8) == SNX_NEEDS_CORE_BIT);
-    for (int bit = 5; bit < 32; bit++) {
+    assert(SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT == 32u);
+    assert(snx_needs_core(SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT, SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT) == SNX_NEEDS_OK);
+    assert(snx_needs_core(SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT, swf | i8 | dot) == SNX_NEEDS_CORE_BIT);
+    for (int bit = 6; bit < 32; bit++) {
         assert(snx_needs_core(1u << bit, ~0u) == SNX_NEEDS_CORE_UNKNOWN);
         assert(snx_needs_core(1u << bit | sds, sds) == SNX_NEEDS_CORE_UNKNOWN);
         assert(snx_needs_core(1u << bit | bda, 0) == SNX_NEEDS_CORE_UNKNOWN);
@@ -3591,7 +3594,7 @@ static void test_upscaler_needs(void) {
         /* buffer device addresses (DL2) are known: asked of a record without them, not recorded */
         assert(snx_needs_met(&r, "fsr", one, 1, &linear, separate | SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS) ==
                SNX_NEEDS_NOT_RECORDED);
-        assert(snx_needs_met(&r, "fsr", one, 1, &linear, separate | 32u) == SNX_NEEDS_CORE_UNKNOWN);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear, separate | 64u) == SNX_NEEDS_CORE_UNKNOWN);
         assert(snx_needs_met(&r, "fsr", one, 1, &linear, 0x80000000u) == SNX_NEEDS_CORE_UNKNOWN);
         /* a device made without the bit does not meet an adapter that asks for it */
         assert(snx_needs_record(&r, "fsr", one, 1, &on_linear, 0) == SNX_NEEDS_OK && !r.core);
