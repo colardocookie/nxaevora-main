@@ -77,7 +77,7 @@ exception handler. The crash report already names the guest function of a faulti
 3. The user runs one scene (for example the opening scene at sea or the first walk) with the camera stick pushed. Claude
    reads the log, gets the camera function, and then writes the patch of the game.
 
-This is a change of the runtime (`third_party/ScarletNX`), kept as a patch in `recomp/patches/`.
+This is a change of the runtime (`engine`), kept as a patch in `recomp/patches/`.
 
 ## Result of the stick trace (run of 2026-10-31, patch 0002)
 

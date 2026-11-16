@@ -20,7 +20,7 @@ import os
 import shutil
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'third_party', 'ScarletNX', 'tools'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'engine', 'tools'))
 import moduledump  # noqa: E402
 
 WINDOW = 24  # instructions searched before a BR for the table address, the load and the add

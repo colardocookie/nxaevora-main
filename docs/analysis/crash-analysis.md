@@ -44,7 +44,7 @@ has only the one entry. The crash happened at the start, while the game loaded d
 ## What would give the answer
 
 1. Add to the crash report: the memory block that holds the fault address (or "free"), and 16 words of the stack
-   at `sp`. That is a change in `third_party/ScarletNX`. Tell the user first. A patch in `recomp/patches/` is better.
+   at `sp`. That is a change in `engine`. Tell the user first. A patch in `recomp/patches/` is better.
 2. Run the same start many times (30 or more starts, quit after 5 s). The crash report then shows if the address
    is always unmapped.
 3. A fix needs many runs. One good run does not prove it.

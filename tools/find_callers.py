@@ -17,7 +17,7 @@ import struct
 import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
-sys.path.insert(0, os.path.join(ROOT, 'third_party', 'ScarletNX', 'tools'))
+sys.path.insert(0, os.path.join(ROOT, 'engine', 'tools'))
 import moduledump  # noqa: E402  (ScarletNX's tool, found by the path above)
 
 DEFAULT_GAME = os.path.join(ROOT, 'game', 'work', 'Arceus')

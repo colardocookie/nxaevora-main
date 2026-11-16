@@ -1,7 +1,7 @@
 # ScarletNX build notes (Windows, MSYS2 CLANG64)
 
-This file records how `third_party/ScarletNX` was built on Windows. For the official steps, see the section
-"Windows / MSYS2 CLANG64" in `third_party/ScarletNX/docs/BUILD.md`.
+This file records how `engine` was built on Windows. For the official steps, see the section
+"Windows / MSYS2 CLANG64" in `engine/docs/BUILD.md`.
 
 ## Environment
 
@@ -28,7 +28,7 @@ If `pacman -Syu` closes the shell, open it again and run the command a second ti
 
 ## 2. Get the source
 
-Clone the repository. ScarletNX is in `third_party/ScarletNX` and needs no extra step.
+Clone the repository. ScarletNX is in `engine` and needs no extra step.
 
 ```sh
 git clone <this repository>
@@ -37,7 +37,7 @@ git clone <this repository>
 ## 3. Configure and build
 
 ```sh
-cd third_party/ScarletNX
+cd engine
 cmake --preset default \
   -DCMAKE_C_FLAGS=-mcx16 \
   -DSNX_LLVM_CONFIG="$(cygpath -m "$(command -v llvm-config)")" \
@@ -49,8 +49,13 @@ cmake --preset default \
 cmake --build --preset default
 ```
 
-The output goes to `third_party/ScarletNX/build/default/` (`scarletnx.exe`, `snx-shaderc.exe`). The first build
+The output goes to `engine/build/default/` (`scarletnx.exe`, `snx-shaderc.exe`). The first build
 takes a long time, because FFmpeg and OpenSSL are built from source.
+
+A build folder made before the move holds the old absolute path (`SNX_SOURCE_DIR` and `SNX_BUILD_DIR` are
+compiled in, `engine/src/nx/runtime/driver/CMakeLists.txt:12`), so delete it and configure again. Moving the
+untracked `.cache/` folder to `engine/.cache/` keeps the CPM downloads. FFmpeg and OpenSSL are kept across a new
+build folder only with `SNX_DEPS_CACHE` set.
 
 ## Differences from the official steps
 
