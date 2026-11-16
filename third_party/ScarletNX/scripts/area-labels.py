@@ -9,7 +9,7 @@ import re
 import sys
 
 LABELS = {
-    'area: build': ('cmake', 'hactool', 'scripts', 'setup', 'tools'),
+    'area: build': ('cmake', 'scripts', 'setup', 'tools'),
     'area: ci': ('appimage', 'ci', 'flatpak'),
     'area: gpu': ('gpu', 'graphics', 'mme', 'shader', 'surface', 'vk'),
     'area: gui': ('gui', 'ui', 'ux'),

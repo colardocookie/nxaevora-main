@@ -49,15 +49,6 @@ int main(void) {
     assert(menu.active == GUI_GBA && menu.view == GUI_LOAD_DROP);
     gui_menu_key(&menu, GUI_CANCEL);
     gui_menu_key(&menu, GUI_RIGHT);
-    assert(menu.selected == GUI_KEYS);
-    gui_menu_key(&menu, GUI_SELECT);
-    assert(menu.view == GUI_LOAD_KEYS && !menu.running);
-    gui_menu_key(&menu, GUI_DOWN);
-    gui_menu_key(&menu, GUI_SELECT);
-    assert(menu.selected == GUI_KEYS && menu.view == GUI_LOAD_KEYS);
-    gui_menu_key(&menu, GUI_CANCEL);
-    assert(menu.view == GUI_LOAD_NONE && !menu.quit);
-    gui_menu_key(&menu, GUI_RIGHT);
     assert(menu.selected == GUI_SETTINGS);
     /* Settings opens the screens of the game's settings, the launcher's and its App (settings.h, gui_settings.c) */
     assert(gui_menu_key(&menu, GUI_SELECT) == GUI_MENU_SETTINGS && menu.active == GUI_SETTINGS);
@@ -337,9 +328,9 @@ int main(void) {
             data,
             "C:\\Users\\me\\AppData\\Roaming\\scarletnx\\recompiled",
             "relative/to/here",
-            "/x/averyveryverylongfilename.nsp",
+            "/x/averyveryverylongfilename.nro",
             "nameonlynoseparatorsatall",
-            "/\xe8\x8f\x9c\xe5\x8d\x95/\xe8\x8f\x9c\xe5\x8d\x95\xe8\x8f\x9c/\xe6\xb8\xb8\xe6\x88\x8f.nsp"};
+            "/\xe8\x8f\x9c\xe5\x8d\x95/\xe8\x8f\x9c\xe5\x8d\x95\xe8\x8f\x9c/\xe6\xb8\xb8\xe6\x88\x8f.nro"};
         char out[128];
         gui_path_fit(data, 46, out, sizeof out);
         assert(!strcmp(out, data));
@@ -352,7 +343,7 @@ int main(void) {
         gui_path_fit(paths[1], 30, out, sizeof out);
         assert(!strcmp(out, "C:\\...\\scarletnx\\recompiled"));
         gui_path_fit(paths[3], 16, out, sizeof out);
-        assert(!strcmp(out, "/x/...lename.nsp"));
+        assert(!strcmp(out, "/x/...lename.nro"));
         gui_path_fit(paths[4], 12, out, sizeof out);
         assert(!strcmp(out, "nam...satall")); /* no separator: a third of the room for the start */
         gui_path_fit(data, 4, out, sizeof out);
@@ -391,31 +382,20 @@ int main(void) {
     /* what a picker gives: the Android one's documents of the device's storage and its cards, a download by path; no
        other of its documents has a path */
     path =
-        gui_document_path("content://com.android.externalstorage.documents/document/primary%3ADownload%2FGame%20X.xci");
-    assert(path && !strcmp(path, "/storage/emulated/0/Download/Game X.xci"));
+        gui_document_path("content://com.android.externalstorage.documents/document/primary%3ADownload%2FGame%20X.nro");
+    assert(path && !strcmp(path, "/storage/emulated/0/Download/Game X.nro"));
     free(path);
-    path = gui_document_path("content://com.android.externalstorage.documents/document/1A2B-3C4D%3Agames%2Fa.nsp");
-    assert(path && !strcmp(path, "/storage/1A2B-3C4D/games/a.nsp"));
+    path = gui_document_path("content://com.android.externalstorage.documents/document/1A2B-3C4D%3Agames%2Fa.nro");
+    assert(path && !strcmp(path, "/storage/1A2B-3C4D/games/a.nro"));
     free(path);
     path = gui_document_path("content://com.android.providers.downloads.documents/document/"
-                             "raw%3A%2Fstorage%2Femulated%2F0%2FDownload%2Fprod.keys");
-    assert(path && !strcmp(path, "/storage/emulated/0/Download/prod.keys"));
+                             "raw%3A%2Fstorage%2Femulated%2F0%2FDownload%2Fnotes.txt");
+    assert(path && !strcmp(path, "/storage/emulated/0/Download/notes.txt"));
     free(path);
     assert(!gui_document_path("content://com.android.providers.downloads.documents/document/msf%3A1234"));
-    /* what a prod.keys is when it comes with no name: "name = hex" lines, the others let be; never binary */
-    {
-        static const char keys[] = "header_key = 00112233\nkey_area_key_application_00 = AABBCCDD  \n";
-        static const char crlf[] = "; Lockpick\r\n\r\nmaster_key_00 = 0011\r\n";
-        static const char nul[] = "header_key = 0011\n\0";
-        assert(gui_keys_text(keys, sizeof keys - 1) && gui_keys_text(crlf, sizeof crlf - 1));
-        assert(gui_keys_text("header_key=0011", 15));
-        assert(!gui_keys_text(nul, sizeof nul - 1) && !gui_keys_text("", 0) && !gui_keys_text(NULL, 0));
-        assert(!gui_keys_text("a game, not keys\n", 17) && !gui_keys_text("header_key = 0\n", 15));
-        assert(!gui_keys_text("header_key = 00zz\n", 18) && !gui_keys_text(" = 0011\n", 8));
-    }
     assert(!gui_document_path("content://com.android.providers.media.documents/document/document%3A12"));
     assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary%3A%zz"));
-    assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary%3A%00.xci"));
+    assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary%3A%00.nro"));
     assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary"));
     /* a folder its folder picker gave: a tree of the device's storage, its root too, or a card's; Downloads' has none */
     path = gui_document_path("content://com.android.externalstorage.documents/tree/primary%3AGames%2FSwitch");
@@ -434,8 +414,9 @@ int main(void) {
     path = gui_document_path("/tmp/ a.nro ");
     assert(path && !strcmp(path, "/tmp/ a.nro "));
     free(path);
-    /* the dumps the Android games/ list offers, to prepare first */
-    assert(gui_is_dump("a.NRO") && gui_is_dump("b.xci") && gui_is_dump("c.nsp") && gui_is_dump("d.dxci"));
+    /* the dumps the Android games/ list offers, to prepare first: NRO files alone */
+    assert(gui_is_dump("a.NRO"));
+    assert(!gui_is_dump("b.xci") && !gui_is_dump("c.nsp") && !gui_is_dump("d.dxci") && !gui_is_dump("e.dnsp"));
     assert(!gui_is_dump("e_code.so") && !gui_is_dump("nro") && !gui_is_dump("f.nro.ini"));
     path = gui_document_path("C:\\Games\\a.nro"); /* Windows' */
     assert(path && !strcmp(path, "C:\\Games\\a.nro"));

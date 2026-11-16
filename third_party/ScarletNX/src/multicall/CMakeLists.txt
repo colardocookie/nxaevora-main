@@ -38,7 +38,7 @@ if(SNX_BUILD_NX)
     if(SNX_BUILD_GUI AND NOT ANDROID)
         target_compile_definitions(scarletnx PRIVATE SNX_MULTICALL_GUI)
     endif()
-    # a build of the host tools has the Switch's extraction and recompile, and no runtime to copy beside its games
+    # a build of the host tools has the Switch's recompile, and no runtime to copy beside its games
     if(SNX_TOOLS_ONLY)
         snx_multicall_driver(SWITCH snx_switch_program scarletnx-switch "")
     else()

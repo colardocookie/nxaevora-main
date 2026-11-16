@@ -30,7 +30,7 @@ private final class Picker: NSObject, UIDocumentPickerDelegate {
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        // a dump is read where it is, by its path, all the app's run: its scope stays open
+        // a picked file or folder is read where it is, by its path, all the app's run: its scope stays open
         guard let url = urls.first else { return finish(nil) }
         _ = url.startAccessingSecurityScopedResource()
         finish(url.path)
@@ -52,7 +52,7 @@ private final class Picker: NSObject, UIDocumentPickerDelegate {
 public func snxApplePick(_ window: UnsafeMutableRawPointer, _ folder: Bool, _ done: SNXPicked,
                          _ data: UnsafeMutableRawPointer?) -> Bool {
     guard Picker.showing == nil, let top = presenter(window) else { return false }
-    // opened in place, not copied: a dump is many gigabytes
+    // opened in place, not copied: a game's files are many gigabytes
     let picker = UIDocumentPickerViewController(forOpeningContentTypes: folder ? [.folder] : [.item], asCopy: false)
     let delegate = Picker(done: done, data: data)
     picker.delegate = delegate

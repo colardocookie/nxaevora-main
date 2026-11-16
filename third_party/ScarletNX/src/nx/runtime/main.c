@@ -119,8 +119,8 @@ static void refuse_dumps(int argc, char** argv, const char* game) {
     for (i = 1; !dump && i < argc && strcmp(argv[i], "--"); i++)
         if (argv[i][0] != '-' && is_dump(argv[i])) dump = argv[i];
     if (dump)
-        fatal("%s is a dump, and this runs games already recompiled. Open the dump without --game "
-              "(scarletnx Game.nsp) to prepare and play it, or point --game at a recompiled game's folder",
+        fatal("%s is a file input, and --game names a game already recompiled. Use -r <folder> with exefs/, romfs/ "
+              "and control.nacp to recompile the game from its decrypted folder",
               dump);
 }
 
@@ -781,59 +781,13 @@ static int open_menu(const char* argv0) {
     return status;
 }
 
-/* Key paths belong to the runtime as well as the driver: an unextracted game opens its dump again at startup. */
-static int runtime_key_options(int* argc, char** argv, char** keys, char** title_keys) {
-    int read = 1, write = 1;
-    while (read < *argc && strcmp(argv[read], "--")) {
-        const char *arg = argv[read], *value = NULL;
-        char** slot = NULL;
-        if (!strcmp(arg, "--keys")) slot = keys;
-        else if (!strcmp(arg, "--title-keys")) slot = title_keys;
-        else if (!strncmp(arg, "--keys=", 7)) { slot = keys; value = arg + 7; }
-        else if (!strncmp(arg, "--title-keys=", 13)) { slot = title_keys; value = arg + 13; }
-        if (!slot) {
-            argv[write++] = argv[read++];
-            continue;
-        }
-        if (!value) {
-            if (read + 1 >= *argc || !argv[read + 1][0] || argv[read + 1][0] == '-')
-                return snx_error("%s requires a file", arg);
-            value = argv[++read];
-        } else if (!value[0])
-            return snx_error("%s requires a file", arg);
-        {
-            char* path = snx_absolute(value);
-            if (!path || !snx_is_file(path)) {
-                int result = snx_error("%s is not a file: %s", !path ? "cannot resolve key path" : arg,
-                                       path ? path : value);
-                free(path);
-                return result;
-            }
-            free(*slot);
-            *slot = path;
-        }
-        ++read;
-    }
-    while (read < *argc) argv[write++] = argv[read++];
-    argv[write] = NULL;
-    *argc = write;
-    return 0;
-}
-
 int snx_main(int argc, char** argv) {
     char module[sizeof g_exedir + sizeof g_exename + 16], ini[sizeof g_confdir + sizeof g_exename + 8];
     char base[sizeof g_exename];
-    char *keys = NULL, *title_keys = NULL;
     const char *game, *title;
     const SnxModule* mod;
     int status, i;
     hle_init(); /* before anything, the options included, touches g_hle */
-    /* The driver's dump-play options also belong to the runtime when it reads the dump in place. */
-    status = runtime_key_options(&argc, argv, &keys, &title_keys);
-    if (status) {
-        status = 2;
-        goto done;
-    }
     status = snx_startup_options(argc, argv);
     if (status) goto done;
     if (argc == 2 && !strcmp(argv[1], "--settings")) {
@@ -936,11 +890,8 @@ int snx_main(int argc, char** argv) {
     snx_ir_fpsr_flags(g_settings.fpsr_flags);
     snx_ir_volatile_memory(g_settings.volatile_load_stores);
 
-    fs_init(keys, title_keys); /* the npdm is read through it, and mem_init's layout comes before */
+    fs_init(); /* the npdm is read through it, and mem_init's layout comes before */
     npdm_layout(); /* the address space type's layout, before mem_init sizes its blocks in it */
-    free(keys);
-    free(title_keys);
-    keys = title_keys = NULL;
 #ifdef MODULE_PACK
     g_settings.log_level = 2; /* a phone's log is the only way to see what a run did: everything, until it is steadier */
 #endif
@@ -998,7 +949,5 @@ int snx_main(int argc, char** argv) {
     frontend_loop();
     status = 0;
 done:
-    free(keys);
-    free(title_keys);
     return status;
 }

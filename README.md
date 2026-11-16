@@ -6,6 +6,7 @@
 <img alt="aevora-icon" src="assets/nxaevora-banner.png" width="1000">
 <br>
 <a href="https://github.com/nxaevora/nxaevora-main/actions/workflows/ci.yml"><img src="https://github.com/nxaevora/nxaevora-main/actions/workflows/ci.yml/badge.svg?branch=main" alt="Build NXAevora (Windows)"></a>
+<br>
 <img src="https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20Linux%20x64%20(Planned)-blue?style=flat" alt="Badge">
 <img src="https://img.shields.io/badge/Status-work%20in%20progress%20(alpha%20stage)-orange?style=flat" alt="Status: work in progress (alpha stage)">
 <img src="https://img.shields.io/badge/License-GPL--3.0%20(v3)-lightgrey?style=flat" alt="License: GPL-3.0 (v3)">
@@ -42,7 +43,7 @@ If you would like to contribute, please read the [CONTRIBUTING.md](CONTRIBUTING.
 ## Features
 
 ### Implemented features
-・Native NVN processing that bypasses the command stream built by the library
+・Native NVN processing that bypasses the command stream built by the library (complete, now in the maintenance phase with bug fixes)
 
 ・FXAA and SMAA anti-aliasing
 
@@ -51,6 +52,8 @@ If you would like to contribute, please read the [CONTRIBUTING.md](CONTRIBUTING.
 ・Native mouse camera controls (currently in testing, with fixes planned under roadmap item 9)
 
 ・An accurate dynamic FPS patch (now in the maintenance phase, with changes limited to bug fixes)
+
+・The game is read from a decrypted game folder with no keys, and RomFS mods replace game files at run time.
 
 ### Planned features
 ・Intel Xe Ground Truth Ambient Occlusion (XeGTAO) support
@@ -79,7 +82,7 @@ Also, the plan for native implementation is also documented in [ROADMAP.md](ROAD
 
 - Windows 11 x64
 - A GPU with Vulkan 1.3 support
-- Decrypted game sources (RomFS, ExeFS), including the base game and the v1.1.1 update, dumped from your own copy<br>(NXAevora contains no game files. Do not ask for them and do not share them.)
+- Decrypted game sources (RomFS, ExeFS, control.nacp), including the base game and the v1.1.1 update, dumped from your own copy<br>(NXAevora contains no game files. Do not ask for them and do not share them.)
 
 ## Build
 

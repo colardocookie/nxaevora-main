@@ -79,17 +79,17 @@ syscalls, ELF execution, filesystem scope, and differential testing.
 ## Recompiler + module ABI
 
 NX tooling under `src/nx/runtime/driver/` and `src/nx/loader/`:
-a dump, read in place, or `work/<Game>/{exefs,romfs}` -> `recompiled/<id>/`: `<id>[.exe]`, `<id>_code.{so,dll}`,
-`<id>_data/`, and the dump's path as `source=` in the game's `<id>.ini` (`<id>.source`, a link to it, from older
-versions):
+a decrypted game folder (`exefs/`, `romfs/`, `control.nacp`) or `work/<Game>/{exefs,romfs}` -> `recompiled/<id>/`:
+`<id>[.exe]`, `<id>_code.{so,dll}`, `<id>_data/`, and the folder of its RomFS as `romfs=` in the game's `<id>.ini`
+(`source=`, an older version's dump, is deprecated):
 
-An update or a DLC is recorded beside its game (`snx_addon_name`), its own `.ini` naming only its dump, and checked
+An update or a DLC is recorded beside its game (`snx_addon_name`), its own data folder, and checked
 in the game's `addons=` (`common/utilities/game_ini.c`, which the driver and the launcher write). An update also gets a
 program, `recompiled/<id>/<id>_<its title ID>`; a DLC runs its game's code. The runtime (`main.c`'s `addon_init`) runs an
 update's program with the game's `.ini` and data folder, and `fs.c` lays the checked DLCs' data folders and then the
 update's over that folder (`fs_tree_overlay`, which takes only their ExeFS, RomFS, control data and `system/`). It
-reads an update's dump with the game's in one `SnxDump` (its Patch RomFS reads the game's NCA), and each checked DLC's
-in one of its own (`HleFs.aocs`), whose image `OpenDataStorageByDataId` serves by its title ID.
+reads a DLC's image in its data folder, `system/archives/<its title ID>.romfs`, which `OpenDataStorageByDataId` serves
+by its title ID.
 
 A game's mods are the folders of `<id>_data/mods/` (`common/utilities/mods.c`), each played unless the game's
 `mods_off=` names it. The data folder's index leaves `mods/` out (`fs_tree_init_skipping`). The recompile loads the
@@ -99,12 +99,7 @@ place of the game's when the stamp matches, grafts each played mod's `romfs/` as
 the RomFS image up from the game's (its `romfs/` folder, or its image's tables) with the mods' laid over it, a file of
 the game's image read from that image.
 
-- `driver.c`: CLI dispatch only; `extract.c` and `recompile.c` own their workflows.
-- `container.c`: a dump opened with hactool, its keys loaded and its NCAs picked, shared by the extraction, the
-  recompiler (a dump given to `-r`, its ExeFS read through `SnxExefsReader`) and the runtime's `fs.c`. Without
-  Extract dump, `fs.c` maps the dump `source=` names (else the one `<id>.source` links to) and serves `exefs/*` and the RomFS image from
-  it through hactool's storage chains (`snx_hac.h`'s `SnxHacFs`), the sections decrypted, an update's patch applied
-  and compressed blocks expanded as they are read. Nothing is cached.
+- `driver.c`: CLI dispatch only; `recompile.c` owns its workflow.
 - `src/nx/loader/loader.c`: NSO/NRO, LZ4, SHA-256, NPDM, MOD0, symbols/relocs/FDEs.
 - `src/common/cpu/aarch64/a64_decoder.c`: the A64 decoder `tools/a64dec` generates from QEMU's `a64.decode` and
   ScarletNX's `a64.profile` (`src/common/cpu/aarch64/decode/`): each op's flow and the feature it needs, so a target's

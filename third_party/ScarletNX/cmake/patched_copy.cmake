@@ -10,7 +10,7 @@
 # copy left half patched) and, after that, stops the configure.
 #
 # The one way a package is patched here: CPM's PATCHES leaves a cache it did not fill unpatched (#214). FFmpeg uses it,
-# for NVDEC's VP9 jobs. hactool, a fork of ours since #166, is in the tree (src/nx/runtime/driver/hactool).
+# for NVDEC's VP9 jobs.
 function(snx_patched_copy)
     cmake_parse_arguments(arg "" "SOURCE;DEST" "PATCHES;FILES" ${ARGN})
     set(stale FALSE)

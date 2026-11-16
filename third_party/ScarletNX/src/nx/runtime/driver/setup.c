@@ -245,41 +245,6 @@ static int folders(Ask* a) {
     free(app);
     return rc;
 }
-/* the keys the driver reads, and where they are installed from a folder of them */
-static int keys(Ask* a) {
-    char *prod, *titles, *dir = snx_keys_dir(a->data), line[SETUP_LINE], why[SETUP_LINE + 64], *folder;
-    int choice, installed_titles, rc = 0;
-    heading(a, "Keys");
-    for (;;) {
-        prod = snx_keys_found(a->data, "prod.keys");
-        titles = snx_keys_found(a->data, "title.keys");
-        shown(prod ? prod : "", line, sizeof line);
-        fprintf(a->out, "  prod.keys %s%s\n", prod ? "found, " : "missing", line);
-        shown(titles ? titles : "", line, sizeof line);
-        fprintf(a->out, "  title.keys %s%s\n", titles ? "found, " : "missing: only some .nsp need it", line);
-        fputs(prod ? "  1) Use these  2) Choose folder  3) Later\n" : "  1) Choose folder  2) Later\n", a->out);
-        if (choose(a, prod ? 3 : 2, prod ? 1 : 2, &choice)) rc = 1;
-        if (!rc && prod) --choice; /* 0: these */
-        free(prod);
-        free(titles);
-        if (rc || choice != 1) break;
-        if (folder_answer(a, "Folder with prod.keys", &folder)) {
-            rc = 1;
-            break;
-        }
-        if (!dir)
-            fputs("  No home folder: nowhere to install them\n", a->out);
-        else if (snx_keys_install(folder, dir, &installed_titles, why, sizeof why))
-            fprintf(a->out, "  Not installed: %s\n", why);
-        else {
-            shown(dir, line, sizeof line);
-            fprintf(a->out, "  Installed prod.keys%s in %s\n", installed_titles ? " and title.keys" : "", line);
-        }
-        free(folder);
-    }
-    free(dir);
-    return rc;
-}
 /* the first user: users.ini kept as it is, or started over with one user, its uid the fixed one while games have
    saves of it, else a random one */
 static int user(Ask* a) {
@@ -357,7 +322,7 @@ int snx_setup_terminal(FILE* in, FILE* out, const char* program_dir, int all) {
     char *file, why[SETUP_LINE + 64], shown_path[SETUP_LINE];
     SnxSetup setup, ask;
     Ask a;
-    int i, language_picked = 0, languages = 0, rc = 0;
+    int language_picked = 0, languages = 0, rc = 0;
     const char* name;
     memset(&a, 0, sizeof a);
     a.in = in;
@@ -379,12 +344,12 @@ int snx_setup_terminal(FILE* in, FILE* out, const char* program_dir, int all) {
         return 0;
     }
     while (snx_menu_language && snx_menu_language(languages, &name)) ++languages;
-    for (i = 0; i < SNX_SETUP_STEPS; ++i) a.steps += asked(&ask, i, languages);
+    a.steps = asked(&ask, SNX_SETUP_LANGUAGE, languages) + asked(&ask, SNX_SETUP_INSTALL, languages) +
+              asked(&ask, SNX_SETUP_FOLDERS, languages) + asked(&ask, SNX_SETUP_USER, languages);
     rc = notices(&a, &ask);
     if (!rc && asked(&ask, SNX_SETUP_LANGUAGE, languages)) rc = language(&a, &language_picked);
     if (!rc && asked(&ask, SNX_SETUP_INSTALL, languages)) rc = install(&a);
     if (!rc && asked(&ask, SNX_SETUP_FOLDERS, languages)) rc = folders(&a);
-    if (!rc && asked(&ask, SNX_SETUP_KEYS, languages)) rc = keys(&a);
     if (!rc && asked(&ask, SNX_SETUP_USER, languages)) rc = user(&a);
     if (!rc && language_picked) { /* in the folder the install says */
         char* app = menu_file(&a, "app.ini");

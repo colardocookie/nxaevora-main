@@ -66,7 +66,12 @@ static int play(const char* runtime, const char* root, const char* name, const c
     const char* args[4];
     size_t i;
     int rc;
+    char* exefs;
     check(!snx_mkdirs(data) && !snx_copy_file(module, code), "the game's code and data folder", NULL);
+    /* the ExeFS folder a recompile makes; its program stays absent, which the run stops on */
+    exefs = snx_path_join(data, "exefs");
+    check(!snx_mkdirs(exefs), "the game's exefs folder", NULL);
+    free(exefs);
     for (i = 0; i < sizeof kinds / sizeof *kinds; ++i) {
         char *kind = snx_path_join(folder, kinds[i]), *line = snx_format("%s%s=%s\n", text, kinds[i], kind);
         check(!snx_mkdirs(kind), kinds[i], NULL);

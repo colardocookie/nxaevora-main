@@ -329,6 +329,49 @@ static int check_depth_array(void) {
     return 0;
 }
 
+/* A 2D blit that reads an sRGB target as UNORM into a UNORM target copies the bytes, as the 2D engine does: no sRGB
+   decode on the way (a feedback cross-fade that copied its frame this way went darker each frame). */
+static int check_blit2d_srgb_as_unorm(void) {
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    u32* r = ch->r3d;
+    const u32 src = 0x500000, dst = 0x540000, w = 16, h = 16, pitch = w * 4;
+    r[0x487] = 1;
+    r[0x201] = src;
+    r[0x202] = pitch;
+    r[0x203] = h;
+    r[0x204] = 0xD6; /* A8B8G8R8 sRGB */
+    r[0x205] = 0x1000;
+    r[0x206] = 1;
+    float color[4] = {0.5f, 0.5f, 0.5f, 1}; /* stored as is: sRGB writes are off */
+    memcpy(&r[0x360], color, sizeof color);
+    vk_render_clear(ch, 15 << 2);
+    vk_render_end();
+    Surf* source = vk_rt_find(src);
+    CHECK(source && source->f.vk == VK_FORMAT_R8G8B8A8_SRGB);
+    Surf2D s = {.format = 0xD5, .linear = 1, .pitch = pitch, .width = w, .height = h, .addr = src};
+    Surf2D d = s;
+    d.addr = dst;
+    CHECK(vk_blit2d(&s, &d, 0, 0, (int)w, (int)h, 0, 0, 1, 1));
+    vk_render_end();
+    Surf* target = vk_rt_find(dst);
+    CHECK(target && target->f.vk == VK_FORMAT_R8G8B8A8_UNORM);
+    VkBuffer buffer;
+    u8* data = vk_readback_buffer(4, &buffer);
+    CHECK(data);
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+    rec_CmdCopyImageToBuffer(cb, target->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    const u8 expected[4] = {128, 128, 128, 255}; /* an sRGB decode would give 55 */
+    for (u32 i = 0; i < 4; i++) CHECK(abs((int)data[i] - expected[i]) <= 1);
+    free(ch);
+    return 0;
+}
+
 /* Switch sRGB writes on one image without losing its contents. Both full clears and the masked-clear draw
    must use the selected attachment format, including when it changes in an already-open pass. */
 static int check_srgb_write(void) {
@@ -1222,6 +1265,7 @@ int main(int argc, char** argv) {
     CHECK(!check_packed_depth());
     CHECK(!check_depth_array());
     CHECK(!check_srgb_write());
+    CHECK(!check_blit2d_srgb_as_unorm());
     CHECK(!check_multisample_shader_gate());
     CHECK(!check_direct_spirv());
     CHECK(!check_flush_subnormal());

@@ -218,18 +218,6 @@ if(NOT SNX_BUILD_NX)
     endif()
     return()
 endif()
-if(BUILD_TESTING AND TARGET hactool_lib)
-    add_executable(snx-test-hactool-decrypted tests/hactool_decrypted.c)
-    snx_test_target(snx-test-hactool-decrypted 11)
-    target_link_libraries(snx-test-hactool-decrypted PRIVATE hactool_internals)
-    add_test(NAME hactool_decrypted COMMAND snx-test-hactool-decrypted)
-    # the storages ported from LibHac (src/nx/runtime/driver/hactool/storage.c), and NCAs read in place in a container
-    add_executable(snx-test-hactool-layers tests/hactool_layers.c)
-    snx_test_target(snx-test-hactool-layers 11)
-    target_link_libraries(snx-test-hactool-layers PRIVATE hactool_internals)
-    add_test(NAME hactool_layers COMMAND snx-test-hactool-layers)
-    snx_sanitizer_path() # tests/CMakeLists.txt
-endif()
 add_subdirectory(src/nx)
 add_subdirectory(tools)
 
@@ -245,7 +233,7 @@ if(ANDROID) # the app's launcher icon (dist/android)
 endif()
 
 # The licenses go with the binaries: ScarletNX's (GPL-3.0), and those of the libraries and code built into the runtime
-# and the driver (hactool among them), each in a folder named after it
+# and the driver, each in a folder named after it
 set(licenses "${CMAKE_INSTALL_DATADIR}/licenses/scarletnx")
 install(FILES LICENSE DESTINATION ${licenses})
 # FFmpeg's with the change made to it (cmake/ffmpeg-vp9-nvdec.patch), which its LGPL wants carried with the binaries
@@ -278,15 +266,13 @@ endif()
 if(TARGET Tracy::TracyClient)
     install(FILES "${tracy_SOURCE_DIR}/LICENSE" DESTINATION ${licenses}/Tracy)
 endif()
-if(TARGET hactool_lib)
-    install(FILES "${hactool_src}/LICENSE" DESTINATION ${licenses}/hactool)
-    # cJSON's license is the comment at the top of its header
-    file(READ "${hactool_src}/cJSON.h" cjson)
-    string(FIND "${cjson}" "*/" cjson_end)
-    string(SUBSTRING "${cjson}" 0 ${cjson_end} cjson)
-    file(WRITE "${PROJECT_BINARY_DIR}/cJSON-LICENSE.txt" "${cjson}*/\n")
-    install(FILES "${PROJECT_BINARY_DIR}/cJSON-LICENSE.txt" DESTINATION ${licenses}/hactool/cJSON RENAME LICENSE.txt)
-endif()
+# cJSON's license is the comment at the top of its header
+set(cjson_src "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/cjson")
+file(READ "${cjson_src}/cJSON.h" cjson)
+string(FIND "${cjson}" "*/" cjson_end)
+string(SUBSTRING "${cjson}" 0 ${cjson_end} cjson)
+file(WRITE "${PROJECT_BINARY_DIR}/cJSON-LICENSE.txt" "${cjson}*/\n")
+install(FILES "${PROJECT_BINARY_DIR}/cJSON-LICENSE.txt" DESTINATION ${licenses}/cJSON RENAME LICENSE.txt)
 if(APPLE) # the app's own files, its signature and CPack's package of it
     include(cmake/apple_package.cmake)
 endif()

@@ -20,8 +20,8 @@ Implemented: Clang/CMake, Linux/Windows CI, SDL3/Vulkan, shader caches, componen
   32-bit games run (A32 and Thumb, `src/nx/runtime/arm.c`), checked only with the synthetic program
   (`tests/nx_arm32_smoke.py`): a real one, ldr:ro's NROs in a 32-bit process, the Thumb32 DSP and
   saturating instructions (QADD16, SMULxy, SSAT), and TBB/TBH targets ahead of time.
-- **Updates and DLC:** checked with synthetic dumps and a homebrew game laid out as an update with DLCs, not yet with
-  a real game's update or DLC: an update's Patch RomFS read at run time, and a game's own aoc:u calls.
+- **Updates and DLC:** checked with a homebrew game laid out as an update with DLCs, not yet with
+  a real game's update or DLC: an update's data folder laid over the game's, and a game's own aoc:u calls.
 - **Host:** vsync during Win32 window drags, native Windows/gamepad coverage.
 - **Performance:** runtime/guest profiling, Vulkan measurements, broader title coverage.
 

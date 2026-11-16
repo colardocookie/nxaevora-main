@@ -40,7 +40,7 @@ public class MainActivity extends SDLActivity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        // dumps and keys are read by their path: all files from Android 11, the shared storage before it
+        // a game's files are read by their path: all files from Android 11, the shared storage before it
         if (Build.VERSION.SDK_INT >= 30) {
             if (!Environment.isExternalStorageManager())
                 startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,

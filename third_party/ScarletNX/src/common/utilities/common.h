@@ -11,12 +11,10 @@
 typedef uint32_t SnxU32;
 typedef uint64_t SnxU64;
 typedef struct {
-    const char* repo; /* the data folder: games/, work/, the keys */
+    const char* repo; /* the data folder: games/ and work/ */
     const char* build;
     const char* executable;
     const char* source; /* the checkout the build came from (snx_checkout), to build tools in; NULL without one */
-    const char* keys; /* optional prod.keys path supplied with --keys */
-    const char* title_keys; /* optional title.keys path supplied with --title-keys */
 } SnxPaths;
 
 void* snx_alloc(size_t size);
@@ -105,9 +103,6 @@ int snx_write_changed(const char* path, const void* data, size_t size);
 char* snx_temp_dir(const char* parent);
 /* the system's folder for temporary files: TMPDIR, else /tmp; on Windows GetTempPath's */
 char* snx_temp_root(void);
-/* Extract to tmpfs: where a game's extraction goes, <temp root>/scarletnx/work/<title ID as snx_title_text writes it>,
-   and its RomFS is read from when the game's data folder has none. NULL for a title ID that is no game's own */
-char* snx_tmpfs_work(SnxU64 title);
 char* snx_user_data_dir(void);
 /* Systems that follow the XDG Base Directory spec, where settings, state and caches have folders of their own */
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(__ANDROID__)
@@ -186,13 +181,16 @@ char* snx_checkout(const char* checkout, const char* build, const char* program_
 /* What an older version kept in the checkout of a build tree's program, its data folder then: games/, work/, the
    keys and scarletnx-gnuabi's sysroot, linux/. snx_checkout_now names where this one keeps each for the data folder data; snx_checkout_left says so on
    stderr for each still there. Nothing is moved: the player does that (docs/DEPRECATIONS.md) */
-#define SNX_CHECKOUT_FILES 5
+#define SNX_CHECKOUT_FILES 3
 extern const char* const snx_checkout_files[SNX_CHECKOUT_FILES];
 char* snx_checkout_now(const char* data, int file);
 void snx_checkout_left(const char* checkout, const char* data);
-/* The name of a dump's extraction in work/: its file's name without the extension, kept to letters, digits, UTF-8,
-   spaces, '-' and '_', trailing spaces cut; "Game" when nothing is left */
+/* A dump file's name without its extension, kept to letters, digits, UTF-8, spaces, '-' and '_', trailing spaces cut;
+   "Game" when nothing is left (the 3DS target names its games by it) */
 char* snx_dump_name(const char* input);
+/* 0 for a name that is not an encrypted Switch dump (.nsp, .xci, .dnsp, .dxci, any case), else 1 with the line that
+   says so: such a dump is no longer read, the decrypted game folder is (-r <folder>) */
+int snx_refuse_encrypted_dump(const char* path);
 /* Why folder cannot take what the drivers write there, and with run the games run from it: "is not there", "is not a
    folder", "cannot be written" or "is on a disk that runs no programs (noexec)"; NULL when it can */
 const char* snx_folder_unfit(const char* folder, int run);
