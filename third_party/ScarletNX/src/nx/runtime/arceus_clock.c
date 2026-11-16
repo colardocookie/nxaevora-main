@@ -6,6 +6,7 @@
 #include "nx/runtime/arceus_step.h"
 #include "nx/runtime/arceus_camera.h"
 #include "nx/runtime/guest_jit.h"
+#include "nx/runtime/discord_presence.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -4294,9 +4295,21 @@ static void waza_shot_init(void) {
 
 /* DRP-0, read-only (SNX_ARCEUS_DISCORD_PROBE=1): where the game keeps the area, the party and a battle's start, for
    Discord presence. Each wrapper runs the game's function first and only logs what it returned or was given. */
-enum { DRP_AREA, DRP_PARENT, DRP_BATTLE, DRP_SHOW, DRP_SITES };
-static GuestFn drp_original[DRP_SITES];
-static u64 drp_calls[DRP_SITES], drp_last_battle;
+enum { DRPS_AREA, DRPS_PARENT, DRPS_BATTLE, DRPS_SHOW, DRPS_MONSNO, DRPS_LEVEL, DRPS_SITES };
+static GuestFn drp_original[DRPS_SITES];
+/* drp_probe: the read-only lines (SNX_ARCEUS_DISCORD_PROBE). drp_presence: the state for the host half
+   (SNX_ARCEUS_DISCORD, D1), written under drp_lock by whichever game thread runs a wrapper */
+static int drp_probe, drp_presence;
+static PMutex drp_lock = PMUTEX_INIT;
+static int32_t drp_region = -1;
+static u64 drp_unread;
+static void drp_set(int32_t region, uint32_t activity) {
+    pm_lock(&drp_lock);
+    if (region != INT32_MIN) drp_region = region;
+    snx_drp_write(&g_drp_state, drp_region, activity);
+    pm_unlock(&drp_lock);
+}
+static u64 drp_calls[DRPS_SITES], drp_last_battle;
 static char drp_last_name[2][64];
 static int drp_table_said;
 /* a guest string of printable bytes, at most size - 1, empty when unreadable */
@@ -4359,25 +4372,64 @@ static void drp_name(CPU* c, u64 entry, unsigned kind) {
     const u64 count = __atomic_add_fetch(&drp_calls[kind], 1, __ATOMIC_RELAXED);
     char name[64];
     drp_string(c->x[0], name, sizeof name);
+    /* D1: an area's name after a battle ends it (P1b); a name that cannot be read keeps the last region */
+    if (drp_presence && kind == DRPS_AREA) {
+        if (name[0]) drp_set(snx_drp_region(name), DRP_FIELD);
+        else if (__atomic_add_fetch(&drp_unread, 1, __ATOMIC_RELAXED) % 600 == 1)
+            LOG("arceus-discord: an area name could not be read (%llu so far), the last region kept\n",
+                (unsigned long long)drp_unread);
+    }
+    if (!drp_probe) return;
     if (count <= 8 || strcmp(name, drp_last_name[kind]) || count % 3000 == 0)
         LOG("arceus-drp: %s %llu: \"%s\" (returned %llx, object %llx, caller main+%llx)\n",
-            kind == DRP_AREA ? "GetAreaName" : "GetParentAreaName", (unsigned long long)count, name,
+            kind == DRPS_AREA ? "GetAreaName" : "GetParentAreaName", (unsigned long long)count, name,
             (unsigned long long)c->x[0], (unsigned long long)object, (unsigned long long)(caller - main_base));
+    if (strcmp(name, drp_last_name[kind]) && kind == DRPS_AREA) { /* P2: the area object, to find who holds it */
+        drp_words("area object", object, 16);
+        drp_words("area object's +68", readable(object + 0x68, 8) ? gr64(object + 0x68) : 0, 16);
+    }
     memcpy(drp_last_name[kind], name, sizeof name);
     drp_area_table();
 }
-static void drp_area_name(CPU* c, u64 entry) { drp_name(c, entry, DRP_AREA); }
-static void drp_parent_name(CPU* c, u64 entry) { drp_name(c, entry, DRP_PARENT); }
+static void drp_area_name(CPU* c, u64 entry) { drp_name(c, entry, DRPS_AREA); }
+static void drp_parent_name(CPU* c, u64 entry) { drp_name(c, entry, DRPS_PARENT); }
 /* UpdateBattleStartCoroutine (1DD7C68): the object, and its six records of 0x60 bytes from [+78]+90, once per object */
+/* The party, as the script's GetMonsNo and GetLevel bindings reach it (D92288 with -1): a singleton through the slot
+   main+4279680, +D0, +58, whose virtual +50 gives a slot's Pokémon. P2 logs the chain to read it without a call. */
+static void drp_party(void) {
+    const u64 slot = main_base + 0x4279680, holder = readable(slot, 8) ? gr64(slot) : 0;
+    const u64 single = readable(holder, 8) ? gr64(holder) : 0, p = readable(single + 0xd0, 8) ? gr64(single + 0xd0) : 0;
+    const u64 q = readable(p + 0x58, 8) ? gr64(p + 0x58) : 0, vt = readable(q, 8) ? gr64(q) : 0;
+    const u64 member = readable(vt + 0x50, 8) ? gr64(vt + 0x50) : 0;
+    LOG("arceus-drp: party: singleton %llx, +d0 %llx, +58 %llx (vtable main+%llx, its +50 main+%llx)\n",
+        (unsigned long long)single, (unsigned long long)p, (unsigned long long)q,
+        (unsigned long long)(vt ? vt - main_base : 0), (unsigned long long)(member ? member - main_base : 0));
+    drp_words("party object", q, 24);
+}
 static void drp_battle_start(CPU* c, u64 entry) {
     const u64 object = c->x[0];
-    const u64 count = __atomic_add_fetch(&drp_calls[DRP_BATTLE], 1, __ATOMIC_RELAXED);
-    if (object != drp_last_battle) {
+    const u64 count = __atomic_add_fetch(&drp_calls[DRPS_BATTLE], 1, __ATOMIC_RELAXED);
+    if (drp_presence && object != drp_last_battle) {
+        /* the word at +60's high half: 2 a wild battle, 7 a trainer (P1b, one of each) */
+        const u32 kind = readable(object + 0x64, 4) ? gr32(object + 0x64) : 0;
+        drp_set(INT32_MIN, kind == 2 ? DRP_WILD : kind == 7 ? DRP_TRAINER : DRP_BATTLE);
+    }
+    if (drp_probe && object != drp_last_battle) {
         drp_last_battle = object;
         LOG("arceus-drp: battle start %llu: object %llx (vtable main+%llx), caller main+%llx\n",
             (unsigned long long)count, (unsigned long long)object, (unsigned long long)drp_vtable(object),
             (unsigned long long)(c->x[30] - main_base));
         drp_words("battle start object", object, 24);
+        /* P2: one level down from each word that points at memory and is not an object of main's, for the
+           BattleStartDescription (+18 and +1C small, +0 to +10 objects) */
+        for (unsigned i = 0; i < 24 && readable(object, 24 * 8); i++) {
+            const u64 v = gr64(object + i * 8ull);
+            if (v < 0x100000 || drp_vtable(v) || !readable(v, 64)) continue;
+            char what[48];
+            snprintf(what, sizeof what, "battle start object +%02x's", i * 8);
+            drp_words(what, v, 8);
+        }
+        drp_party();
         drp_area_table();
         const u64 records = readable(object + 0x78, 8) ? gr64(object + 0x78) : 0;
         for (unsigned k = 0; records && k < 6; k++) {
@@ -4386,30 +4438,60 @@ static void drp_battle_start(CPU* c, u64 entry) {
             drp_words(what, records + 0x90 + k * 0x60ull, 12);
         }
     }
-    drp_original[DRP_BATTLE](c, entry);
+    if (object != drp_last_battle) drp_last_battle = object;
+    drp_original[DRPS_BATTLE](c, entry);
 }
 /* ShowAreaName's call into PlaceNameView (136995C): the popup's argument, as a string or four words, each time */
 static void drp_show_area(CPU* c, u64 entry) {
     const u64 argument = c->x[1], caller = c->x[30];
-    const u64 count = __atomic_add_fetch(&drp_calls[DRP_SHOW], 1, __ATOMIC_RELAXED);
+    if (!drp_probe) {
+        drp_original[DRPS_SHOW](c, entry);
+        return;
+    }
+    const u64 count = __atomic_add_fetch(&drp_calls[DRPS_SHOW], 1, __ATOMIC_RELAXED);
     char name[64];
     drp_string(argument, name, sizeof name);
     LOG("arceus-drp: ShowAreaName %llu: argument %llx \"%s\", view %llx, caller main+%llx\n", (unsigned long long)count,
         (unsigned long long)argument, name, (unsigned long long)c->x[0], (unsigned long long)(caller - main_base));
     if (count <= 16) drp_words("ShowAreaName argument", argument, 4);
     drp_area_table();
-    drp_original[DRP_SHOW](c, entry);
+    drp_original[DRPS_SHOW](c, entry);
 }
+/* P2: the script's GetMonsNo and GetLevel bindings (D92524, D92D14): (box, slot) in, the value out, -1 the party */
+static void drp_mon(CPU* c, u64 entry, unsigned kind) {
+    const u32 box = (u32)c->x[0], slot = (u32)c->x[1];
+    drp_original[kind](c, entry);
+    const u64 count = __atomic_add_fetch(&drp_calls[kind], 1, __ATOMIC_RELAXED);
+    if (count <= 48 || count % 600 == 0)
+        LOG("arceus-drp: %s %llu: box %d slot %u -> %u, caller main+%llx\n",
+            kind == DRPS_MONSNO ? "GetMonsNo" : "GetLevel", (unsigned long long)count, (int)box, slot, (u32)c->x[0],
+            (unsigned long long)(c->x[30] - main_base));
+    if (count == 1) drp_party();
+}
+static void drp_monsno(CPU* c, u64 entry) { drp_mon(c, entry, DRPS_MONSNO); }
+static void drp_level(CPU* c, u64 entry) { drp_mon(c, entry, DRPS_LEVEL); }
 static void discord_probe_init(void) {
     const char* value = getenv("SNX_ARCEUS_DISCORD_PROBE");
-    if (!value || strcmp(value, "1") || !main_base || !g_disp) return;
-    static const struct { u32 offset, word; GuestFn wrapper; const char* name; } sites[DRP_SITES] = {
+    const char* presence = getenv("SNX_ARCEUS_DISCORD");
+    drp_probe = value && !strcmp(value, "1");
+    drp_presence = presence && !strcmp(presence, "1");
+    if ((!drp_probe && !drp_presence) || !main_base || !g_disp) return;
+    if (drp_presence && !snx_discord_start(getenv("SNX_ARCEUS_DISCORD_APP"))) {
+        WARN("arceus-discord: presence off: SNX_ARCEUS_DISCORD_APP is missing or not an application id\n");
+        drp_presence = 0;
+        if (!drp_probe) return;
+    }
+    static const struct { u32 offset, word; GuestFn wrapper; const char* name; } sites[DRPS_SITES] = {
         {0x1eb2a7c, 0xf9403408, drp_area_name, "GetAreaName"},
         {0x17ba3f8, 0xd10103ff, drp_parent_name, "GetParentAreaName"},
         {0x1dd7c68, 0xd103c3ff, drp_battle_start, "UpdateBattleStartCoroutine"},
         {0x136995c, 0xd10103ff, drp_show_area, "ShowAreaName's view call"},
+        {0xd92524, 0xd100c3ff, drp_monsno, "the script's GetMonsNo"},
+        {0xd92d14, 0xd100c3ff, drp_level, "the script's GetLevel"},
     };
-    for (unsigned k = 0; k < DRP_SITES; k++) {
+    for (unsigned k = 0; k < DRPS_SITES; k++) {
+        /* the presence needs only the area name and the battle start, the rest are the probe's */
+        if (!drp_probe && k != DRPS_AREA && k != DRPS_BATTLE) continue;
         const u64 pc = main_base + sites[k].offset;
         if (pc < g_code_lo || pc >= g_code_hi || !readable(pc, 4) || gr32(pc) != sites[k].word ||
             !g_disp[(pc - g_code_lo) / 4]) {
@@ -4418,7 +4500,8 @@ static void discord_probe_init(void) {
         }
         drp_original[k] = g_disp[(pc - g_code_lo) / 4];
         __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], sites[k].wrapper, __ATOMIC_RELEASE);
-        LOG("arceus-drp: read-only probe on %s (main+%x)\n", sites[k].name, sites[k].offset);
+        LOG("arceus-drp: read-only %s on %s (main+%x)\n", drp_probe ? "probe" : "presence reader", sites[k].name,
+            sites[k].offset);
     }
 }
 

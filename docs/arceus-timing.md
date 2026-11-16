@@ -59,7 +59,9 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | `SNX_ARCEUS_TIMING_RESEARCH` | off | `=0` keeps read-only timing counters off. |
 | `SNX_ARCEUS_CADENCE_CENSUS` | off | `=0` keeps the read-only census off. |
 | `SNX_ARCEUS_GRAVITY_PROBE` | off | `=0` keeps the read-only probe off. |
-| `SNX_ARCEUS_DISCORD_PROBE` | off | `1` logs, read-only, the area names the game asks for and each battle start's records (`arceus-drp:`, DRP-0). |
+| `SNX_ARCEUS_DISCORD_PROBE` | off | `1` logs, read-only, the area names, the area popup, each battle start and the party's chain (`arceus-drp:`, DRP-0, P2). |
+| `SNX_ARCEUS_DISCORD` | off | `1` shows the region and battles in Discord's status (D1, `arceus-discord:`), with `SNX_ARCEUS_DISCORD_APP`. |
+| `SNX_ARCEUS_DISCORD_APP` | none | The user's Discord application id, digits only. Never in the repository; only its last four digits are logged. |
 | `SNX_ARCEUS_FIXED_RESOLUTION` | off | `=0` leaves the game's automatic 3D resolution governor enabled. |
 
 The default movement mask selects bits 2 through 8, the seven player movement sites, and bit 10, the player's horizontal position step. Bits 0 and 1 remain off. An explicit mask such as `7fc` adds bit 9's capped-fall selection while preserving the same sites. `1fc` leaves bit 10 out.

@@ -2,6 +2,12 @@
    Copyright 2026 the NXAevora contributors */
 /* Exercise the real wrappers with an asset-free guest sequence and host stubs. */
 #include "nx/runtime/arceus_clock.c"
+/* Discord presence's host half is not part of this test: its state and a start that never starts */
+SnxDrpState g_drp_state;
+int snx_discord_start(const char* app) {
+    (void)app;
+    return 0;
+}
 #include "arceus_steps_30.h"
 #include <assert.h>
 
@@ -270,7 +276,7 @@ static void test_defaults_on(void) {
         "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE",
         "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_DIRECT_MOVE_FIX", "SNX_ARCEUS_FIELD_WAZA_FIX",
         "SNX_ARCEUS_WAZA_OBJECT_FIX", "SNX_ARCEUS_WAZA_SHOT_FIX", "SNX_ARCEUS_SCRIPT_TICK",
-        "SNX_ARCEUS_SCRIPT_WINDOWS", "SNX_ARCEUS_DISCORD_PROBE"
+        "SNX_ARCEUS_SCRIPT_WINDOWS", "SNX_ARCEUS_DISCORD_PROBE", "SNX_ARCEUS_DISCORD"
     };
     for (unsigned i = 0; i < sizeof all / sizeof all[0]; i++) unset_flag(all[i]);
     int saved_fps = g_opt_fps;
