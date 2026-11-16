@@ -37,7 +37,7 @@ disassembly of the game.
 
 ## Changes to ScarletNX
 
-`third_party/ScarletNX` is a copy of the upstream project (commit 8efbf9c4), kept in this repository. Edit it like
+`engine` is a copy of the upstream project (commit 8efbf9c4), kept in this repository. Edit it like
 any other source. It does not follow the upstream project, so a fix that helps every game can also be sent upstream.
 The changes of NXAevora are listed in `docs/build/runtime-changes.md`.
 
@@ -69,8 +69,8 @@ the fix of an intermittent crash.
 ### Automatic checks
 
 Each pull request to `main`, each push to `main` and each manual run starts the workflow `CI`
-(`.github/workflows/ci.yml`). Its check `Windows build and test` builds `third_party/ScarletNX` in MSYS2 CLANG64 with
-the steps of `docs/build/SCARLETNX_BUILD-NOTES.md`, starts `scarletnx.exe --help` and runs `ctest`. It uses no game
+(`.github/workflows/ci.yml`). Its check `Windows build and test` builds `engine` in MSYS2 CLANG64 with
+the steps of `docs/build/ENGINE_BUILD-NOTES.md`, starts `scarletnx.exe --help` and runs `ctest`. It uses no game
 data and no secrets, so it also runs for a pull request from a fork. The result is on the Checks tab of the pull
 request. When a test fails, its output is in the log of the step `Run ctest`, and the file `LastTest.log` is
 attached to the run.

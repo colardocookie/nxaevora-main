@@ -8,7 +8,7 @@ ScarletNX works now, what the game reads, and the plan. Nothing is changed yet.
 
 ## How ScarletNX makes the input now
 
-All of this is in `third_party/ScarletNX/src/nx/runtime/platform/backend/sdl3.c` (the SDL3 backend) and
+All of this is in `engine/src/nx/runtime/platform/backend/sdl3.c` (the SDL3 backend) and
 `runtime/platform/unattended.c`. The game program is the same binary as `scarletnx.exe`, so a change here is a
 change of the runtime.
 

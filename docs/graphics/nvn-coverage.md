@@ -18,7 +18,7 @@ tool keeps them.
 - checks: the checks that passed, with their scope (`unit`, `selftest R/M/S/Y` with the build, `exec`). The build
   `update 1.1.1` is the library of that update: the `sdk` module with the build ID
   `B39ADD63421BE525D352E576DAB438D3812EDFF0`. The argument sets of a selftest check are the cases of the function in
-  `third_party/ScarletNX/src/nx/gpu/nvn/test/nvn_selftest*.c`, and each case line of the selftest log names its
+  `engine/src/nx/gpu/nvn/test/nvn_selftest*.c`, and each case line of the selftest log names its
   arguments. seen: a game run with `nvn_legacy=0` that called it and was read. A function with checks and without seen is not verified in the game.
 
 ## Summary

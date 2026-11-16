@@ -2,7 +2,7 @@
 # NVN survey (phase 6, stage 1)
 
 Status: started on 2026-11-02. This file grows with the substeps of `docs/graphics/nvn-plan.md`. A line marked "verified" was read
-in the source of `third_party/ScarletNX`. A line marked "open" is not checked yet.
+in the source of `engine`. A line marked "open" is not checked yet.
 
 ## What the runtime does now (verified from the headers)
 

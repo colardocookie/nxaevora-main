@@ -3,7 +3,7 @@
 
 # Runtime changes in the vendored ScarletNX
 
-ScarletNX is part of this repository (`third_party/ScarletNX`, from upstream commit 8efbf9c4). The changes below
+ScarletNX is part of this repository (`engine`, from upstream commit 8efbf9c4). The changes below
 were patch files before. They are now ordinary commits in the source, and the patch files are deleted. The names
 `0001` to `0017` are the old patch numbers. The text says what each change does.
 

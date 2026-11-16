@@ -152,4 +152,4 @@ Decided (2026-11-15): the old path is not removed. The native path is the defaul
 - A fix explains the mechanism. No tuning of delays, no retries, no special cases.
 - Nothing of the game goes into git (dumps, frame dumps, shader dumps, logs).
 - The 30 frames each second and 0 JIT misses are the baseline. A stage must not make them worse.
-- A change in `third_party/ScarletNX` goes to `docs/build/runtime-changes.md`.
+- A change in `engine` goes to `docs/build/runtime-changes.md`.

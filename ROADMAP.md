@@ -10,7 +10,7 @@ ScarletNX runtime compiles the code at that moment (the JIT). A fully static bui
 ## Phase 0: Foundation (done)
 
 - The repository, the vendored ScarletNX and the folder layout are in place.
-- ScarletNX builds on Windows with MSYS2 CLANG64. The steps are in `docs/build/SCARLETNX_BUILD-NOTES.md`.
+- ScarletNX builds on Windows with MSYS2 CLANG64. The steps are in `docs/build/ENGINE_BUILD-NOTES.md`.
 - A portable copy of the recompiler runs without MSYS2.
 - The base game and update 1.1.1 recompile in a few minutes.
 - The recompiled game boots to the language selection screen and runs without a crash for 45 seconds.
@@ -84,7 +84,7 @@ What the source of ScarletNX shows (`guest_jit.c`, `rtapi.c`, `jit_service.c`):
 - A miss is already a hard error when the JIT is not running. `rt_miss` then ends the game with the message "The game
   reached code at <pc> that the recompiler missed". The runtime has this path for a JIT that cannot start.
 - The smallest change is a setting or a switch that skips `snx_jit_service_new` in `jit_init()`. It is a few lines.
-  It would be a normal commit in `third_party/ScarletNX`.
+  It would be a normal commit in `engine`.
 - The game program is the same program as `scarletnx.exe`, with the recompiler and the JIT in it, and it imports
   `libLLVM-23.dll` (154 MB).
 
@@ -190,7 +190,7 @@ and a test mod replaces one file without a change to the decrypted files.
 
 ## Phase 7.5: NXAevora Engine, a CLI first runtime and a new UI
 
-Now: the runtime is the vendored ScarletNX in `third_party/ScarletNX/`. With no argument it opens the start GUI of
+Now: the runtime is the vendored ScarletNX in `engine/`. With no argument it opens the start GUI of
 ScarletNX, and in the game it has two UIs: the old menu of ScarletNX and the windows made with Dear ImGui.
 
 Goal: the base derived from ScarletNX becomes the NXAevora Engine in `engine/`. The Engine starts from its CLI, which
