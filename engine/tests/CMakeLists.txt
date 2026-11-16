@@ -368,6 +368,12 @@ if(UNIX)
     add_test(NAME data_dir COMMAND snx-test-data-dir)
     add_test(NAME runtime_deploy COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/deploy.cmake")
 endif()
+# snx_old_data_dir finds an older version's data folder: the portable .scarletnx beside the program, else the old
+# user's data folder, on every system
+add_executable(snx-test-old-data-dir old_data_dir.c)
+snx_test_target(snx-test-old-data-dir 99)
+target_link_libraries(snx-test-old-data-dir PRIVATE scarletnx-common)
+add_test(NAME old_data_dir COMMAND snx-test-old-data-dir)
 # the encrypted dumps the recompile driver and the driver refuse, and the game folder and NRO they take
 add_executable(snx-test-dump-input dump_input.c)
 snx_test_target(snx-test-dump-input 99)

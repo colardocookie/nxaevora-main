@@ -225,11 +225,11 @@ static void test_place(const char* root, const char* home) {
     free(expected);
     free(path);
     {
-        char shown[256], *in_home = join(home, ".local/share/scarletnx");
+        char shown[256], *in_home = join(home, ".local/share/nxaevora");
         snx_home_short(in_home, shown, sizeof shown);
-        assert(!strcmp(shown, "~/.local/share/scarletnx"));
-        snx_home_short("/elsewhere/scarletnx", shown, sizeof shown);
-        assert(!strcmp(shown, "/elsewhere/scarletnx"));
+        assert(!strcmp(shown, "~/.local/share/nxaevora"));
+        snx_home_short("/elsewhere/nxaevora", shown, sizeof shown);
+        assert(!strcmp(shown, "/elsewhere/nxaevora"));
         free(in_home);
         in_home = snx_format("%s-other/x", home); /* a folder named like it is not in it */
         snx_home_short(in_home, shown, sizeof shown);

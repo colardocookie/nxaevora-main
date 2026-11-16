@@ -28,7 +28,7 @@ const IniOpt* snx_recompile_setting(const char* key) {
     return o ? o : ini_find(g_recompile_game_ini, key);
 }
 static void usage(void) {
-    puts("Usage: scarletnx -r INPUT [NAME] [OPTIONS]\n"
+    puts("Usage: nxaevora-engine -r INPUT [NAME] [OPTIONS]\n"
          "  INPUT                  Game/ExeFS folder (exefs/, romfs/, control.nacp) or .nro\n"
          "  --name NAME            Output name (default: the title ID, else the NPDM's or input name)\n"
          "  --outdir DIR           Where the game's folder goes (default: recompiled/)\n"

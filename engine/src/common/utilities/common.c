@@ -1054,19 +1054,19 @@ int snx_same_file(const char* a, const char* b) {
     return !stat(a, &x) && !stat(b, &y) && x.st_dev == y.st_dev && x.st_ino == y.st_ino;
 #endif
 }
-/* The per-user data folder, an installed build's and a build tree's: $XDG_DATA_HOME/scarletnx or
-   ~/.local/share/scarletnx, ~/Library/Application Support/scarletnx on macOS, %APPDATA%\scarletnx on Windows. These are
-   the folders SDL_GetPrefPath("scarletnx", ...) gives the GUI; the app's Documents on iOS. NULL when the environment
+/* The per-user data folder, an installed build's and a build tree's: $XDG_DATA_HOME/nxaevora or
+   ~/.local/share/nxaevora, ~/Library/Application Support/nxaevora on macOS, %APPDATA%\nxaevora on Windows. These are
+   the folders SDL_GetPrefPath("nxaevora", ...) gives the GUI; the app's Documents on iOS. NULL when the environment
    names no home */
 #if !defined(_WIN32) && !defined(SNX_IOS)
-/* $var/scarletnx, else ~/fallback/scarletnx: the XDG spec ignores a relative path */
-static char* home_folder(const char* var, const char* fallback) {
+/* $var/name, else ~/fallback/name: the XDG spec ignores a relative path */
+static char* home_folder_named(const char* var, const char* fallback, const char* name) {
     const char* base = var ? getenv(var) : NULL;
-    if (base && base[0] == '/') return snx_path_join(base, "scarletnx");
+    if (base && base[0] == '/') return snx_path_join(base, name);
     base = getenv("HOME");
     if (!base || !base[0]) return NULL;
     char* parent = snx_path_join(base, fallback);
-    char* path = snx_path_join(parent, "scarletnx");
+    char* path = snx_path_join(parent, name);
     free(parent);
     return path;
 }
@@ -1074,30 +1074,44 @@ static char* home_folder(const char* var, const char* fallback) {
 char* snx_user_data_dir(void) {
 #ifdef _WIN32
     const char* base = getenv("APPDATA");
-    return base && base[0] ? snx_path_join(base, "scarletnx") : NULL;
+    return base && base[0] ? snx_path_join(base, SNX_DATA_NAME) : NULL;
 #elif defined(SNX_IOS)
     /* the app's Documents, which the Files app and the Finder show the user (UIFileSharingEnabled, dist/apple) */
     const char* home = getenv("HOME");
     return home && home[0] ? snx_path_join(home, "Documents") : NULL;
 #elif defined(__APPLE__)
-    return home_folder(NULL, "Library/Application Support");
+    return home_folder_named(NULL, "Library/Application Support", SNX_DATA_NAME);
 #else
-    return home_folder("XDG_DATA_HOME", ".local/share");
+    return home_folder_named("XDG_DATA_HOME", ".local/share", SNX_DATA_NAME);
+#endif
+}
+/* the older version's user data folder: SNX_OLD_DATA_NAME where SNX_DATA_NAME is now */
+static char* old_user_data_dir(void) {
+#if defined(__ANDROID__) || defined(SNX_IOS)
+    /* iOS keeps its data in the app's Documents, and Android's old folder is a game's own: no separate old folder */
+    return NULL;
+#elif defined(_WIN32)
+    const char* base = getenv("APPDATA");
+    return base && base[0] ? snx_path_join(base, SNX_OLD_DATA_NAME) : NULL;
+#elif defined(__APPLE__)
+    return home_folder_named(NULL, "Library/Application Support", SNX_OLD_DATA_NAME);
+#else
+    return home_folder_named("XDG_DATA_HOME", ".local/share", SNX_OLD_DATA_NAME);
 #endif
 }
 static const char* const kind_names[] = {NULL, "config", "state", "cache"};
 char* snx_user_dir(int kind) {
     char *data, *dir;
 #ifdef SNX_XDG
-    if (kind == SNX_USER_CONFIG) return home_folder("XDG_CONFIG_HOME", ".config");
-    if (kind == SNX_USER_STATE) return home_folder("XDG_STATE_HOME", ".local/state");
-    if (kind == SNX_USER_CACHE) return home_folder("XDG_CACHE_HOME", ".cache");
+    if (kind == SNX_USER_CONFIG) return home_folder_named("XDG_CONFIG_HOME", ".config", SNX_DATA_NAME);
+    if (kind == SNX_USER_STATE) return home_folder_named("XDG_STATE_HOME", ".local/state", SNX_DATA_NAME);
+    if (kind == SNX_USER_CACHE) return home_folder_named("XDG_CACHE_HOME", ".cache", SNX_DATA_NAME);
 #endif
 #ifdef SNX_IOS
     /* the Files app shows Documents: what is not the player's to move (settings, state, caches) is in Library, which the system makes */
     if (kind != SNX_USER_DATA) {
         const char* home = getenv("HOME");
-        char* base = home && home[0] ? snx_path_join(home, "Library/scarletnx") : NULL;
+        char* base = home && home[0] ? snx_path_join(home, "Library/" SNX_DATA_NAME) : NULL;
         dir = base ? snx_path_join(base, kind_names[kind]) : NULL;
         free(base);
         return dir;
@@ -1216,12 +1230,26 @@ static char* menu_dir(const char* folder, int kind, char* (*of)(const char* app,
 char* snx_menu_dir(const char* folder, int kind) { return menu_dir(folder, kind, snx_app_kind_dir); }
 char* snx_menu_kind_default(const char* folder, int kind) { return menu_dir(folder, kind, snx_app_kind_default); }
 int snx_left_behind(const char* old, const char* now) { return strcmp(old, now) && snx_path_exists(old); }
+/* 1 when a and b are the same letters in any case */
+static int same_name(const char* a, const char* b) {
+    size_t i = 0;
+    for (; a[i] && b[i]; ++i)
+        if (snx_to_lower(a[i]) != snx_to_lower(b[i])) return 0;
+    return !a[i] && !b[i];
+}
+/* 1 when name starts with prefix, in any case, and has more after it */
+static int starts_name(const char* name, const char* prefix) {
+    size_t i = 0;
+    for (; prefix[i]; ++i)
+        if (!name[i] || snx_to_lower(name[i]) != snx_to_lower(prefix[i])) return 0;
+    return name[i] != 0;
+}
 int snx_launcher_name(const char* name) {
-    static const char own[] = "scarletnx";
-    size_t i;
-    for (i = 0; own[i]; ++i)
-        if (snx_to_lower(name[i]) != own[i]) return 0;
-    return !name[i] || name[i] == '-' || name[i] == '.';
+    static const char* const names[] = {SNX_PROGRAM_FILE, SNX_SWITCH_DRIVER, "ScarletNX-x86_64"};
+    if (!name) return 0;
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; ++i)
+        if (same_name(name, names[i])) return 1;
+    return starts_name(name, SNX_APPIMAGE_PREFIX);
 }
 const SnxGameFile snx_game_files[SNX_GAME_FILES] = {{".log", SNX_USER_STATE},
                                                     {"threads.txt", SNX_USER_STATE},
@@ -1260,7 +1288,7 @@ void snx_recompiled_left(const char* data_dir) {
     free(old);
     free(now);
 }
-char* snx_portable_dir(const char* program_dir) {
+static char* portable_dir(const char* program_dir, const char* name) {
     const char *appimage = getenv("APPIMAGE"), *appdir = getenv("APPDIR");
     char *dir = NULL, *copy;
     /* an AppImage's programs run from its mount: the copy is the AppImage file. APPIMAGE is inherited, so it counts
@@ -1269,9 +1297,23 @@ char* snx_portable_dir(const char* program_dir) {
         dir = snx_dirname(appimage);
     else if (program_dir)
         dir = snx_strdup(program_dir);
-    copy = dir ? snx_path_join(dir, SNX_PORTABLE_DIR) : NULL;
+    copy = dir ? snx_path_join(dir, name) : NULL;
     free(dir);
     return copy;
+}
+char* snx_portable_dir(const char* program_dir) { return portable_dir(program_dir, SNX_PORTABLE_DIR); }
+/* Which older version's data folder is there: the portable one wins, else the old user data folder */
+int snx_old_data_dir(const char* program_dir) {
+    char* copy = portable_dir(program_dir, SNX_OLD_PORTABLE_DIR);
+    char* user = old_user_data_dir();
+    int result = SNX_OLD_DATA_NONE;
+    if (copy && snx_is_dir(copy))
+        result = SNX_OLD_DATA_PORTABLE;
+    else if (user && snx_is_dir(user))
+        result = SNX_OLD_DATA_USER;
+    free(user);
+    free(copy);
+    return result;
 }
 char* snx_data_dir(const char* program_dir) {
     char* copy = snx_portable_dir(program_dir);
@@ -1597,7 +1639,7 @@ void snx_tool_console(void) {
 #endif
 }
 /* file's path from the root, its folder resolved and its own name kept: a program found by name runs under that name,
-   which can say what it does (scarletnx-3ds, a link to scarletnx) */
+   which can say what it does (scarletnx-3ds, a link to nxaevora-engine) */
 static char* tool_path(const char* file) {
     const char* name = file + strlen(file);
     while (name > file && !snx_is_separator(name[-1])) --name;

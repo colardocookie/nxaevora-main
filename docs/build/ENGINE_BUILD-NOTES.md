@@ -49,7 +49,7 @@ cmake --preset default \
 cmake --build --preset default
 ```
 
-The output goes to `engine/build/default/` (`scarletnx.exe`, `snx-shaderc.exe`). The first build
+The output goes to `engine/build/default/` (`nxaevora-engine.exe`, `snx-shaderc.exe`). The first build
 takes a long time, because FFmpeg and OpenSSL are built from source.
 
 A build folder made before the move holds the old absolute path (`SNX_SOURCE_DIR` and `SNX_BUILD_DIR` are
@@ -74,7 +74,7 @@ the build succeeds. The upstream source is not changed.
 
 ## Portable copy
 
-`scarletnx.exe` needs the DLLs of MSYS2. To run it without MSYS2, install it to a folder and copy the DLLs:
+`nxaevora-engine.exe` needs the DLLs of MSYS2. To run it without MSYS2, install it to a folder and copy the DLLs:
 
 ```sh
 cmake --install build/default --prefix <folder>
@@ -87,7 +87,7 @@ The DLLs are libLLVM-23, libc++, libxml2-16, libzstd, libiconv-2, libffi-8 and z
 ## Check
 
 ```sh
-build/default/scarletnx.exe --help
+build/default/nxaevora-engine.exe --help
 ```
 
 ## Not verified

@@ -155,7 +155,7 @@ static void test_again(void) {
     puts("PASS --setup again: each choice written, users.ini kept, answers that are none asked again");
 }
 
-/* a portable copy: .scarletnx beside the program, every file in it; then installed refused while it is there */
+/* a portable copy: .nxaevora beside the program, every file in it; then installed refused while it is there */
 static void test_portable(void) {
     char *portable = join(bin, SNX_PORTABLE_DIR), *pconfig = join(portable, "config"), *users = join(portable, "users");
     fresh();

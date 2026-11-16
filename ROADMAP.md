@@ -85,7 +85,7 @@ What the source of ScarletNX shows (`guest_jit.c`, `rtapi.c`, `jit_service.c`):
   reached code at <pc> that the recompiler missed". The runtime has this path for a JIT that cannot start.
 - The smallest change is a setting or a switch that skips `snx_jit_service_new` in `jit_init()`. It is a few lines.
   It would be a normal commit in `engine`.
-- The game program is the same program as `scarletnx.exe`, with the recompiler and the JIT in it, and it imports
+- The game program is the same program as `nxaevora-engine.exe`, with the recompiler and the JIT in it, and it imports
   `libLLVM-23.dll` (154 MB).
 
 The line `jit: ... N misses` of the log shows exactly how often the JIT was needed, so 0 misses in a run means that

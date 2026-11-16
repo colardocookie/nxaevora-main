@@ -157,7 +157,7 @@ int main(void) {
        config/gamecontrollerdb.txt. SDL takes a line of a file only with its own platform */
     {
         char line[160];
-        char *root = snx_temp_dir(NULL), *copy = snx_path_join(root, ".scarletnx");
+        char *root = snx_temp_dir(NULL), *copy = snx_path_join(root, ".nxaevora");
         char *config = snx_path_join(copy, "config"), *game = snx_path_join(copy, "games/0100ABCD12345000");
         char *db = snx_path_join(config, "gamecontrollerdb.txt"), *mapping;
         snprintf(line, sizeof line, "03000000341200007856000000000000,Odd Stick,a:b0,b:b1,x:b2,y:b3,platform:%s,\n",

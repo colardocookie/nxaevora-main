@@ -4,12 +4,12 @@
 # on Windows): the game's own and its update's (<Game>_<update>), which a player may start as directly. And to
 # <games>/<Game> for an older version's game beside the others. The runtime finds its game module
 # by its own file name, so each game gets a copy under its name. GAMES empty: recompiled/ of the folder the driver
-# beside the runtime works in when no --repo names one (snx_data_dir): a .scarletnx/ beside it, else the user's data
+# beside the runtime works in when no --repo names one (snx_data_dir): a .nxaevora/ beside it, else the user's data
 # folder.
 # A game's folder gets the runtime of the console its <Name>.ini names (system=, which the 3DS, Vita and GBA drivers
 # write): AGB_RUNTIME, scarletnx-agb, for gba. Without one, a 3DS game's folder is named after its title ID (0004 and
 # 12 more hex digits) and gets CTR_RUNTIME, scarletnx-3ds. A Vita game's folder is named after its title ID (four
-# capital letters and five digits) and gets VITA_RUNTIME, scarletnx-vita. Each is scarletnx, which is every driver
+# capital letters and five digits) and gets VITA_RUNTIME, scarletnx-vita. Each is nxaevora-engine, which is every driver
 # the build has (src/multicall). One of them empty: its games keep theirs.
 if(WINDOWS)
     set(module_ext dll)
@@ -28,16 +28,16 @@ if(NOT GAMES)
     else()
         get_filename_component(program_dir "${AGB_RUNTIME}" DIRECTORY)
     endif()
-    if(IS_DIRECTORY "${program_dir}/.scarletnx")
-        set(data "${program_dir}/.scarletnx")
+    if(IS_DIRECTORY "${program_dir}/.nxaevora")
+        set(data "${program_dir}/.nxaevora")
     elseif(WINDOWS AND DEFINED ENV{APPDATA} AND NOT "$ENV{APPDATA}" STREQUAL "")
-        set(data "$ENV{APPDATA}/scarletnx")
+        set(data "$ENV{APPDATA}/nxaevora")
     elseif(MACOS AND DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
-        set(data "$ENV{HOME}/Library/Application Support/scarletnx")
+        set(data "$ENV{HOME}/Library/Application Support/nxaevora")
     elseif(NOT WINDOWS AND NOT MACOS AND "$ENV{XDG_DATA_HOME}" MATCHES "^/") # the XDG spec ignores a relative one
-        set(data "$ENV{XDG_DATA_HOME}/scarletnx")
+        set(data "$ENV{XDG_DATA_HOME}/nxaevora")
     elseif(NOT WINDOWS AND NOT MACOS AND DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
-        set(data "$ENV{HOME}/.local/share/scarletnx")
+        set(data "$ENV{HOME}/.local/share/nxaevora")
     else()
         message(STATUS "Runtime not deployed: no home folder to find the games in (set SNX_RECOMPILED_DIR)")
         return()

@@ -90,9 +90,9 @@ int main(void) {
     path = gui_aot_cache_path(folder, "010069401ADB8000");
     assert(path && expected && !strcmp(path, expected));
 
-    /* a portable data folder: snx_user_path moves games/ under .scarletnx/cache/games/ */
+    /* a portable data folder: snx_user_path moves games/ under .nxaevora/cache/games/ */
     {
-        char* data = snx_format("%s/portable/.scarletnx", root);
+        char* data = snx_format("%s/portable/.nxaevora", root);
         char* game = snx_format("%s/games/0100", data);
         char* cache = snx_format("%s/cache/games/0100", data);
         assert(data && game && cache);

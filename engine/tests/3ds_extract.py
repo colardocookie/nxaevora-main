@@ -140,13 +140,13 @@ def main():
                 plain,
                 run_status,
                 run_message,
-                extra=('--repo', str(root / 'xdg-data/scarletnx')),
+                extra=('--repo', str(root / 'xdg-data/nxaevora')),
                 explicit=False,
                 env=env,
             )
-            expected = (root / 'xdg-data').resolve() / 'scarletnx/recompiled' / name
+            expected = (root / 'xdg-data').resolve() / 'nxaevora/recompiled' / name
             assert expected.is_dir() and str(expected) in text
-            assert not (root / 'xdg-data/scarletnx/work').exists()
+            assert not (root / 'xdg-data/nxaevora/work').exists()
         # Requested extraction alone may succeed without a runtime; normal launches stop before AOT.
         run(cia(encrypted=True), 3, 'no 3DS keys')
         run(cia(application=ncch(encrypted=True)), 3, 'no 3DS keys')

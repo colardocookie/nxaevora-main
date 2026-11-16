@@ -160,7 +160,7 @@ int main(void) {
     s.pad[0] = 0;
     snprintf(s.note, sizeof s.note,
              "Arcade Stick has no SDL mapping: add a line for GUID "
-             "03000000341200007856000000000000 to /home/player/.config/scarletnx/config/"
+             "03000000341200007856000000000000 to /home/player/.config/nxaevora/config/"
              "gamecontrollerdb.txt");
     for (k = 0; k < sizeof sizes / sizeof sizes[0]; ++k) {
         char whole[sizeof s.note] = "";

@@ -67,6 +67,14 @@ void gui_apple_stats(char* out, size_t size);
 #else
 #define MODULE_SUFFIX "_code.so"
 #endif
+/* The old user data folder, named without the account's path in the log */
+#ifdef _WIN32
+#define SNX_OLD_USER_FOLDER_TEXT "the old user data folder (%APPDATA%\\scarletnx)"
+#elif defined(__APPLE__)
+#define SNX_OLD_USER_FOLDER_TEXT "the old user data folder (~/Library/Application Support/scarletnx)"
+#else
+#define SNX_OLD_USER_FOLDER_TEXT "the old user data folder ($XDG_DATA_HOME/scarletnx or ~/.local/share/scarletnx)"
+#endif
 
 char g_datadir[1024], g_exename[256], g_exedir[1024];
 u64 g_addon;
@@ -862,12 +870,22 @@ int snx_main(int argc, char** argv) {
 #endif
     /* the header the log summary reads (common/utilities/logscan.c): no folder in it, since players attach the log to
        public reports and the folder names their account */
-    LOG("ScarletNX - %s\n", title);
+    LOG(SNX_PROGRAM_NAME " - %s\n", title);
     LOG("build: %s\n", snx_build_info());
     {
         char sys[384];
         plat_system_info(sys, sizeof sys);
         LOG("system: %s\n", sys);
+    }
+    switch (snx_old_data_dir(g_exedir[0] ? g_exedir : NULL)) {
+        case SNX_OLD_DATA_PORTABLE:
+            LOG("data: %s is not used (no migration)\n",
+                "an old " SNX_OLD_PORTABLE_DIR " folder beside the program");
+            break;
+        case SNX_OLD_DATA_USER:
+            LOG("data: %s is not used (no migration)\n", SNX_OLD_USER_FOLDER_TEXT);
+            break;
+        default: break;
     }
     {
         char list[HUD_DEBUG_MAX];

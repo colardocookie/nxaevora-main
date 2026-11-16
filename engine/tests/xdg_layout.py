@@ -40,7 +40,7 @@ def main():
         for kind, path in homes.items():
             env[f'XDG_{kind}_HOME'] = str(path)
         env['HOME'] = str(root / 'home')
-        data, config, state, cache = (homes[kind] / 'scarletnx' for kind in ('DATA', 'CONFIG', 'STATE', 'CACHE'))
+        data, config, state, cache = (homes[kind] / 'nxaevora' for kind in ('DATA', 'CONFIG', 'STATE', 'CACHE'))
         games = data / 'recompiled'
         folder = games / 'Smoke'  # the game's own
 
@@ -184,8 +184,8 @@ def main():
         (beside / 'Beside.folders').write_text(f'config={config / "games/Beside"}\n')
         status, out = run([driver, '--repo', str(data), str(beside), '-H'])
         check(not (beside / 'Beside.folders').exists(), 'the driver kept a Beside.folders naming other folders', out)
-        # a portable copy's .scarletnx: its config/, state/ and cache/, as off Linux
-        portable = root / 'copy/.scarletnx'
+        # a portable copy's .nxaevora: its config/, state/ and cache/, as off Linux
+        portable = root / 'copy/.nxaevora'
         port = portable / 'games/Port'
         status, out = run(
             [driver, '--repo', str(portable), '-r', str(nro), 'Port', '--runtime', driver, '--jobs', '2']
@@ -223,16 +223,16 @@ def main():
             'PortableConfig': (
                 dict(env, XDG_CONFIG_HOME=f'{appimage}.config'),
                 data,
-                Path(f'{appimage}.config/scarletnx'),
+                Path(f'{appimage}.config/nxaevora'),
                 state,
                 cache,
             ),
             'PortableHome': (
                 dict(bare, HOME=str(made_home)),
-                made_home / '.local/share/scarletnx',
-                made_home / '.config/scarletnx',
-                made_home / '.local/state/scarletnx',
-                made_home / '.cache/scarletnx',
+                made_home / '.local/share/nxaevora',
+                made_home / '.config/nxaevora',
+                made_home / '.local/state/nxaevora',
+                made_home / '.cache/nxaevora',
             ),
         }
         for name, (environment, made_data, made_config, made_state, made_cache) in made.items():
@@ -279,7 +279,7 @@ def main():
         (game / f'{name}.folders').unlink(missing_ok=True)
         status, out = run([f'./{name}', '-H'], cwd=game, environment=made[name][0])
         log = state / 'recompiled' / name / f'{name}.log'
-        ini = Path(f'{appimage}.config/scarletnx/recompiled/{name}/{name}.ini')
+        ini = Path(f'{appimage}.config/nxaevora/recompiled/{name}/{name}.ini')
         said = 'fs: source=/nonexistent/Game.nsp'
         check(said in log.read_text(errors='replace'), f'the game without a record did not read {ini}', out)
         status, out = run([f'./{name}', '-H'], cwd=game)
@@ -296,7 +296,7 @@ def main():
         other = dict(env, XDG_CONFIG_HOME=str(root / 'other'))
         status, out = run([driver, '--repo', str(data), str(game), '-H'], environment=other)
         check(
-            (game / f'{name}.folders').read_text().startswith(f'config={root}/other/scarletnx/recompiled/{name}\n'),
+            (game / f'{name}.folders').read_text().startswith(f'config={root}/other/nxaevora/recompiled/{name}\n'),
             'the driver that started the game did not record its own folders',
             out,
         )

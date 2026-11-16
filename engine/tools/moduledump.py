@@ -2,12 +2,12 @@
 # Copyright 2026 the ScarletNX contributors
 """A game's modules as the runtime lays them out, for symbols.py and disasm.py.
 
-The recompiler's own loader reads them: `scarletnx --dump-modules PROGRAM DIR` writes each module's image
+The recompiler's own loader reads them: `nxaevora-engine --dump-modules PROGRAM DIR` writes each module's image
 (DIR/<name>.bin) and an index of its base, size and symbols (DIR/modules.txt, the format is in src/nx/loader/loader.h).
 The dump is cached per program folder under $XDG_CACHE_HOME/scarletnx/module-dumps (~/.cache without it) and made again when the
 program's ExeFS files or the scarletnx binary change.
 
-scarletnx is build/scarletnx in this checkout, or the program the environment variable SNX_SCARLETNX names.
+nxaevora-engine is build/nxaevora-engine in this checkout, or the program the environment variable SNX_SCARLETNX names.
 """
 
 import hashlib
@@ -32,11 +32,11 @@ def scarletnx():
     named = os.environ.get('SNX_SCARLETNX')
     if named:
         return named
-    for leaf in ('scarletnx', 'scarletnx.exe'):
+    for leaf in ('nxaevora-engine', 'nxaevora-engine.exe'):
         path = os.path.join(REPO, 'build', leaf)
         if os.path.isfile(path):
             return path
-    raise SystemExit('build/scarletnx is missing: build it, or name the program with SNX_SCARLETNX')
+    raise SystemExit('build/nxaevora-engine is missing: build it, or name the program with SNX_SCARLETNX')
 
 
 def _inputs(program):

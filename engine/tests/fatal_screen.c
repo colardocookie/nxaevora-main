@@ -16,7 +16,7 @@ int main(void) {
     int n;
     assert(strstr(fatal_hint("vulkan: the GPU device was lost (driver reset or crash)"), "driver reset it"));
     assert(strstr(fatal_hint("Unsupported instruction 0x1ee0f800 at 0x80021c4"), "does not translate"));
-    assert(strstr(fatal_hint("Vulkan could not start (see the log). ScarletNX needs a GPU and driver with Vulkan 1.3."),
+    assert(strstr(fatal_hint("Vulkan could not start (see the log). NXAevora Engine needs a GPU and driver with Vulkan 1.3."),
                   "Vulkan 1.3"));
     assert(strstr(fatal_hint("kernel: out of memory mapping 0x10000000 bytes"), "ran out of memory"));
     assert(!fatal_hint("svc 0x7f is not implemented"));
@@ -66,10 +66,10 @@ int main(void) {
         char* text;
         size_t n = 0;
         assert(root && log && !snx_write_file(log, "[  0.10] svc: hello\n", 20));
-        assert(!fatal_share_log(root, "ScarletNX main abc1234 (clang 23, Linux x86_64)",
+        assert(!fatal_share_log(root, "NXAevora Engine main abc1234 (clang 23, Linux x86_64)",
                                 "Unsupported instruction e78f1000", log, saved, sizeof saved));
         text = (char*)snx_read_file(saved, &n);
-        assert(text && strstr(saved, "scarletnx.log") && !strncmp(text, "ScarletNX main abc1234", 22));
+        assert(text && strstr(saved, "scarletnx.log") && !strncmp(text, "NXAevora Engine main abc1234", 28));
         assert(strstr(text, "\nMessage: Unsupported instruction e78f1000\n") && strstr(text, log) &&
                strstr(text, "svc: hello"));
         free(text);

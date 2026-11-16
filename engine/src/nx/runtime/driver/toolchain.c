@@ -46,7 +46,7 @@ char* snx_build_runtime(const SnxPaths* paths, int target_win, int quiet) {
         diagnostic("Runtime build", output);
         runtime = NULL;
     } else
-        runtime = snx_path_join(bdir, target_win ? "scarletnx.exe" : "scarletnx");
+        runtime = snx_path_join(bdir, target_win ? SNX_PROGRAM_FILE ".exe" : SNX_PROGRAM_FILE);
     free(bdir);
     free(output);
     return runtime;

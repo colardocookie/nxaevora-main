@@ -17,6 +17,18 @@ typedef struct {
     const char* source; /* the checkout the build came from (snx_checkout), to build tools in; NULL without one */
 } SnxPaths;
 
+/* The program's file name, as CMake sets it: nxaevora-engine unless APPLE or ANDROID (src/multicall/CMakeLists.txt) */
+#if defined(__APPLE__) || defined(__ANDROID__)
+#define SNX_PROGRAM_FILE "scarletnx"
+#else
+#define SNX_PROGRAM_FILE "nxaevora-engine"
+#endif
+/* The Switch driver's name and link (src/multicall) */
+#define SNX_SWITCH_DRIVER "nxaevora-engine-switch"
+/* The AppImage name prefix of scripts/make-appimage.sh (ScarletNX-linux-<arch>) */
+#define SNX_APPIMAGE_PREFIX "ScarletNX-linux-"
+#define SNX_PROGRAM_NAME "NXAevora Engine"
+
 void* snx_alloc(size_t size);
 void* snx_realloc(void* ptr, size_t size);
 char* snx_strdup(const char* s);
@@ -109,8 +121,13 @@ char* snx_user_data_dir(void);
 #define SNX_XDG 1
 #endif
 enum { SNX_USER_DATA, SNX_USER_CONFIG, SNX_USER_STATE, SNX_USER_CACHE };
+/* The data folder's name, and the older version's name, kept only to find what it left */
+#define SNX_DATA_NAME     "nxaevora"
+#define SNX_OLD_DATA_NAME "scarletnx"
 /* A portable copy's data folder: this folder beside the AppImage or the program */
-#define SNX_PORTABLE_DIR ".scarletnx"
+#define SNX_PORTABLE_DIR ".nxaevora"
+/* The old name of SNX_PORTABLE_DIR, kept only to find what an older version left */
+#define SNX_OLD_PORTABLE_DIR ".scarletnx"
 /* iOS: the app (dist/apple), which starts no other process and keeps its data in its Documents folder */
 #ifdef __APPLE__
 #include <TargetConditionals.h>
@@ -120,8 +137,8 @@ enum { SNX_USER_DATA, SNX_USER_CONFIG, SNX_USER_STATE, SNX_USER_CACHE };
 #endif
 /* An older version's data folder on Android, the shared storage's: a game there still runs as one of a data folder */
 #define SNX_ANDROID_DIR "/sdcard/ScarletNX"
-/* The user's folder for one kind of file: $XDG_CONFIG_HOME/scarletnx (~/.config), $XDG_STATE_HOME/scarletnx
-   (~/.local/state) or $XDG_CACHE_HOME/scarletnx (~/.cache), a relative path ignored. Without SNX_XDG config/, state/
+/* The user's folder for one kind of file: $XDG_CONFIG_HOME/nxaevora (~/.config), $XDG_STATE_HOME/nxaevora
+   (~/.local/state) or $XDG_CACHE_HOME/nxaevora (~/.cache), a relative path ignored. Without SNX_XDG config/, state/
    and cache/ of the data folder. NULL when the environment names no home */
 char* snx_user_dir(int kind);
 /* 1 for a data folder that keeps each kind of file apart: the user's, a portable copy's (SNX_PORTABLE_DIR), Android's.
@@ -146,7 +163,7 @@ char* snx_menu_kind_default(const char* folder, int kind);
 /* 1 while what an older build left at old is still there, for the caller to say each run where it is and that this
    build keeps it at now. Nothing is moved: the player does that */
 int snx_left_behind(const char* old, const char* now);
-/* 1 for a name the program has as the launcher, not as a game's copy: scarletnx, scarletnx-switch, the
+/* 1 for a name the program has as the launcher, not as a game's copy: nxaevora-engine, nxaevora-engine-switch, the
    AppImage's (ScarletNX-x86_64), in any case, without .exe or .AppImage. Started bare under another name it is a
    game's copy, which says what is missing and never opens the menu */
 int snx_launcher_name(const char* name);
@@ -173,6 +190,11 @@ void snx_recompiled_left(const char* data_dir);
    beside the AppImage or the program, when it is there (a portable copy); else the user's data folder. NULL when none
    can be named */
 char* snx_data_dir(const char* program_dir);
+/* The old data folder snx_old_data_dir found: none, the portable one beside the program, or the user's */
+enum { SNX_OLD_DATA_NONE, SNX_OLD_DATA_PORTABLE, SNX_OLD_DATA_USER };
+/* Which older version's data folder is there (SNX_OLD_PORTABLE_DIR beside the program or the AppImage, else
+   SNX_OLD_DATA_NAME in the user's data folder), one of SNX_OLD_DATA_*. Nothing is moved or changed */
+int snx_old_data_dir(const char* program_dir);
 /* SNX_PORTABLE_DIR beside the AppImage or the program in program_dir, there or not; NULL when none can be named */
 char* snx_portable_dir(const char* program_dir);
 /* The checkout a program run from its build tree (build; NULL: any program) was built from, for what only a checkout

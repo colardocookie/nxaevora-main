@@ -6155,7 +6155,7 @@ static const char* driver_name(int item) {
         case GUI_VITA: return "libscarletnx-vita.so";
         case GUI_GBA: return "libscarletnx-agb.so";
 #else
-        case GUI_SWITCH: return "scarletnx";
+        case GUI_SWITCH: return SNX_PROGRAM_FILE;
         case GUI_LINUX: return "scarletnx-gnuabi";
         case GUI_3DS: return "scarletnx-3ds";
         case GUI_VITA: return "scarletnx-vita";
@@ -14276,7 +14276,7 @@ static bool initialize(App* app, const char* self) {
     app->data_dir = snx_strdup(app->cwd ? app->cwd : ".");
     app->own_dir = SDL_GetAndroidInternalStoragePath() ? snx_strdup(SDL_GetAndroidInternalStoragePath()) : NULL;
     {
-        char* sdl = SDL_GetPrefPath("scarletnx", "gui"); /* the app's own files, whatever its names */
+        char* sdl = SDL_GetPrefPath("nxaevora", "gui"); /* the app's own files, whatever its names */
         app->menu_old = sdl ? snx_strdup(sdl) : NULL;
         SDL_free(sdl);
     }

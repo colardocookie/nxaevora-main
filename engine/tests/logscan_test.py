@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""The log summary (src/common/utilities/logscan.c, as snx-logscan or scarletnx --scan-log, the program given) on
+"""The log summary (src/common/utilities/logscan.c, as snx-logscan or nxaevora-engine --scan-log, the program given) on
 made-up logs in the runtime's formats: the header lines, each kind of failure and the
 function it is pinned on (past the SDK's abort for svcBreak), the place a crash is put (the game, the runtime, a
 library), the older nightlies' svcBreak line and header, service commands counted, signatures that agree across runs,
 paths shortened and the dumps left out, invalid UTF-8, long lines, the markdown's escaping. Offline.
 
-    tests/logscan_test.py PROGRAM [ARGS...]   (build/snx-logscan, or build/scarletnx --scan-log)"""
+    tests/logscan_test.py PROGRAM [ARGS...]   (build/snx-logscan, or build/nxaevora-engine --scan-log)"""
 
 import json
 import subprocess
@@ -30,8 +30,8 @@ def scan(text):
     return json.loads(run(['-'], text.encode('utf-8') if isinstance(text, str) else text))
 
 
-HEADER = """[   0.00] ScarletNX - Some Game
-[   0.00] build: ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)
+HEADER = """[   0.00] NXAevora Engine - Some Game
+[   0.00] build: NXAevora Engine main 1234abc (clang 23.1.3, Linux x86_64)
 [   0.00] system: Some Linux 1.0 (Linux 6.1.0), Some CPU 9000, 12 threads, 32 GB RAM
 [   0.05] module main     at 0008005000 (71.8 MB)
 [   0.27] vulkan: Some GPU 3000, Vulkan 1.4.351, driver 99d38200, graphics queue family 0, compute 2 (separate family)
@@ -130,7 +130,7 @@ UNDEFINED = (
 # the launcher's Share Log file: its build, its message, the run's output (the game's warnings again, on stderr), then
 # the newest game log, one without a build: line
 LAUNCHER = (
-    'ScarletNX main 9999fff (clang 23.1.3, Windows x86_64)\n'
+    'NXAevora Engine main 9999fff (clang 23.1.3, Windows x86_64)\n'
     'Message: The game stopped (svcBreak). See C:\\Users\\someone\\AppData\\x.log\n'
     '\n== the last run: C:\\Users\\someone\\run.log ==\n'
     '  [undeclared] nn::audio::detail::IAudioDevice cmd 7 -> ok\n'
@@ -234,6 +234,16 @@ def main():
     )
     check(old['signature'] == r['signature'], f'the same failure, the same signature: {old["signature"]}')
 
+    old_build = scan(
+        '[   0.00] ScarletNX - Some Game\n'
+        '[   0.00] build: ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)\n'
+    )
+    check(
+        old_build['title'] == 'Some Game'
+        and old_build['build'] == 'ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)',
+        f"an older build's header: {old_build['title']!r} {old_build['build']!r}",
+    )
+
     c = scan(CRASH_IN_GAME)
     check(
         c['outcome'] == 'crash' and c['failure']['signal'] == '11' and c['failure']['game_address'] == '10',
@@ -322,7 +332,7 @@ def main():
 
     la = scan(LAUNCHER)
     check(
-        la['build'] == 'ScarletNX main 9999fff (clang 23.1.3, Windows x86_64)' and la['commit'] == '9999fff',
+        la['build'] == 'NXAevora Engine main 9999fff (clang 23.1.3, Windows x86_64)' and la['commit'] == '9999fff',
         f"the launcher's build: {la['build']}",
     )
     check(la['signature'] == r['signature'] and la['ipc'] == [], "only the game log's section is scanned")

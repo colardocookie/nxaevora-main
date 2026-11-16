@@ -2,7 +2,7 @@
 Type=Application
 Name=ScarletNX
 Comment=Runs Switch games recompiled to native code
-Exec=scarletnx
+Exec=nxaevora-engine
 Icon=wimsy
 Categories=Game;Emulator;
 Keywords=Switch;recompiler;
