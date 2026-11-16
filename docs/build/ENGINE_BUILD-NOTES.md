@@ -53,8 +53,9 @@ The output goes to `engine/build/default/` (`scarletnx.exe`, `snx-shaderc.exe`).
 takes a long time, because FFmpeg and OpenSSL are built from source.
 
 A build folder made before the move holds the old absolute path (`SNX_SOURCE_DIR` and `SNX_BUILD_DIR` are
-compiled in, `engine/src/nx/runtime/driver/CMakeLists.txt:12`), so delete it and configure again. The untracked
-`.cache/` folder (FFmpeg, OpenSSL, CPM) can be moved to `engine/.cache/` to skip the dependency build.
+compiled in, `engine/src/nx/runtime/driver/CMakeLists.txt:12`), so delete it and configure again. Moving the
+untracked `.cache/` folder to `engine/.cache/` keeps the CPM downloads. FFmpeg and OpenSSL are kept across a new
+build folder only with `SNX_DEPS_CACHE` set.
 
 ## Differences from the official steps
 
