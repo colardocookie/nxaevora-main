@@ -80,7 +80,7 @@ update and one RomFS with the update applied. No key is read.
 ```bash
 ./build/scarletnx -r "/path/to/game folder"  # recompile the game folder
 ```
-Run the same command again after an interruption. A completed recompilation is skipped. The driver keeps games in its data folder,
+Run the same command again after an interruption. The driver keeps games in its data folder,
 `~/.local/share/scarletnx` on Linux ([Folders](./docs/USAGE.md#folders)). To run the steps separately, here in
 folders of the current one:
 ```bash

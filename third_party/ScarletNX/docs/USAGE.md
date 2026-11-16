@@ -25,7 +25,7 @@ For the keyboard-controlled SDL3 menu and file drops, see [GUI](GUI.md).
 Pass one decrypted game folder to recompile:
 
 ```sh
-./build/scarletnx -r "/path/to/game folder"
+./build/scarletnx -r "/path/to/game folder" --outdir recompiled
 ```
 
 This forces recompilation, even if a cached executable exists. To play, run the game made already:

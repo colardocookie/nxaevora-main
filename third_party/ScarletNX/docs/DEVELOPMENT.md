@@ -45,7 +45,7 @@ Test guest semantics + malformed IPC with synthetic cases.
 
 ```sh
 (cd "$games/<id>" && ./<id> --seconds=60 --script=15000:400,16000:1 --press_len=300 --shot=out)
-python3 tools/run_game.py <id> --runs 5 --seconds 60 --dump "$game" --script ""
+python3 tools/run_game.py <id> --runs 5 --seconds 60 --dump "/path/to/game folder" --script ""
 python3 tools/symbols.py "$work/Game" cf34380
 python3 tools/disasm.py "$work/Game" NvRmStreamFlushSync
 python3 tools/disasm.py "$work/Game" cf34240 cf343c0
@@ -226,8 +226,8 @@ keeps the runtime it already had: run it through the profiled driver once, and l
 `SNX_TRACY=OFF` leaves the client out; iOS has none. The Windows-only `profile=1` sampler is separate.
 
 The guest's own file I/O is in the trace too: a read or a write is a zone with the file's name and the bytes, and
-`io read MB/s` and `io write MB/s` are the rate. The game's assets are not read during a run, though: they are mapped
-from the folder that `romfs=` names, and the runtime reads them there, in place.
+`io read MB/s` and `io write MB/s` are the rate. The game's assets go through those reads too: they are mapped from the
+folder that `romfs=` names, and each read of one is an `fs read` zone with its file name and bytes.
 
 The sampler covers every CPU and the threads that start later, so the guest's threads are sampled too. The names come
 from the ELF tables of the loaded objects: the runtime's own code and the game's recompiled code beside the game

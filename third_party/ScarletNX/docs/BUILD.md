@@ -387,7 +387,7 @@ Test options, read when `BUILD_TESTING` is on (CTest's default), all OFF by defa
 cmake --preset default -B build/headless-vk -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF &&
 cmake --build build/headless-vk
 # Recompile a game folder, then run Vulkan without a display server, a surface or a swapchain:
-./build/headless-vk/scarletnx -r "/path/to/game folder"
+./build/headless-vk/scarletnx -r "/path/to/game folder" --outdir recompiled
 ./build/headless-vk/scarletnx --game=recompiled/<id> -H
 
 cmake --preset windows-cross && cmake --build --preset windows-cross
