@@ -135,7 +135,7 @@ jobs:
           key: ${{ steps.deps-used.outputs.key }}
 
       - name: Check the executable starts
-        run: build/default/scarletnx.exe --help > /dev/null
+        run: build/default/nxaevora-engine.exe --help > /dev/null
 
       # APPDATA gives the tests that write settings a clean folder of their own.
       - name: Run ctest

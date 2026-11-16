@@ -9,9 +9,10 @@
 dist/icons/hicolor/ holds the PNG sizes desktops look for, laid out as installed under share/icons/; wimsy.ico packs
 the Windows sizes for the executables' resources (src/common/platform/runtime.rc); the 128 one is the window
 icon (cmake/window_icon.cmake). Each PNG goes through optipng, keeping it RGBA (the ICO's images must be, and a
-palette came out larger). MANIFEST records the SVG's and every output's SHA-256 and the tools that made them, so a
-changed SVG, or an output edited by hand, fails the check until this runs again. When the tools at hand are the
-recorded ones, --check also makes each size again and compares the bytes.
+palette came out larger). MANIFEST records the SVG's and every output's SHA-256 and the tools that made them; other
+lines name files another script made (the engine icon), and their hashes are checked too. A changed SVG, or an
+output edited by hand, fails the check until this runs again. When the tools at hand are the recorded ones, --check
+also makes each size again and compares the bytes.
 """
 
 import argparse
@@ -129,11 +130,26 @@ def check():
     drawn_by = lines[0].split(' with ', 1)[1].split(';', 1)[0] if lines and ' with ' in lines[0] else None
     listed = {}
     for line in lines[1:]:
-        digest, name = line.split('  ', 1)
+        if not line or line.startswith('#'):
+            continue
+        parts = line.split('  ', 1)
+        if len(parts) != 2:
+            problems.append(f'the manifest has a line that is not a hash and a name: {line}')
+            continue
+        digest, name = parts
         listed[name] = digest
     wanted = [SOURCE] + outputs()
-    if sorted(listed) != sorted(path.relative_to(DIST).as_posix() for path in wanted):
+    wanted_names = {path.relative_to(DIST).as_posix() for path in wanted}
+    if sorted(name for name in listed if name in wanted_names) != sorted(wanted_names):
         problems.append('the manifest does not list wimsy.svg and exactly the outputs this script makes')
+    for name, digest in listed.items():
+        if name in wanted_names:
+            continue
+        path = DIST / name
+        if not path.is_file():
+            problems.append(f'{name} is missing')
+        elif digest != sha256(path):
+            problems.append(f'{name} does not match the manifest: it was changed by hand')
     for path in wanted:
         name = path.relative_to(DIST).as_posix()
         if not path.is_file():

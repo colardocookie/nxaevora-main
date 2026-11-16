@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# scarletnx, the program, wherever the build has a driver: its main (main.c), the only one, and every driver the build
+# nxaevora-engine, the program, wherever the build has a driver: its main (main.c), the only one, and every driver the build
 # has, each a library of its own folder, linked by name (the folders are configured after this one), run by the name the
 # program is started under or by that name as its first argument. On Linux and macOS each driver's name is a link to it
 # beside it. Windows has none: its launcher runs a driver with its name first, and its build folder alone has hard
@@ -14,6 +14,10 @@ if(ANDROID)
     install(TARGETS scarletnx LIBRARY DESTINATION lib/${ANDROID_ABI})
 else()
     add_executable(scarletnx main.c)
+    if(NOT APPLE)
+        # the program file of every build that is not an Apple app package
+        set_target_properties(scarletnx PROPERTIES OUTPUT_NAME nxaevora-engine)
+    endif()
 endif()
 # linked as C++: VMA, LLVM and the demangler need the C++ runtime. It goes in the build folder itself, where the
 # driver and CI look for it
@@ -40,9 +44,9 @@ if(SNX_BUILD_NX)
     endif()
     # a build of the host tools has the Switch's recompile, and no runtime to copy beside its games
     if(SNX_TOOLS_ONLY)
-        snx_multicall_driver(SWITCH snx_switch_program scarletnx-switch "")
+        snx_multicall_driver(SWITCH snx_switch_program nxaevora-engine-switch "")
     else()
-        snx_multicall_driver(SWITCH snx_switch_program scarletnx-switch RUNTIME)
+        snx_multicall_driver(SWITCH snx_switch_program nxaevora-engine-switch RUNTIME)
     endif()
 endif()
 if(SNX_BUILD_3DS)

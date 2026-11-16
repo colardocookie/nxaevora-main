@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* snx_data_dir, the folder the driver and the menu share: a portable copy's (.scarletnx beside the AppImage or the
+/* snx_data_dir, the folder the driver and the menu share: a portable copy's (.nxaevora beside the AppImage or the
    program), else the user's data folder, for a build tree's programs too. snx_checkout, the checkout of a build tree's
    program, and what an older version kept in it, said with where it goes now. */
 #define _POSIX_C_SOURCE 200809L
@@ -77,7 +77,7 @@ int main(void) {
     setenv("XDG_DATA_HOME", xdg, 1);
     setenv("XDG_CACHE_HOME", cache, 1);
 #ifdef SNX_XDG
-    expected = join(xdg, "scarletnx");
+    expected = join(xdg, "nxaevora");
 #else
     /* no XDG spec (macOS): the user's data folder of its own, under a HOME of the test's (tests/user_dirs.c has it) */
     file = join(root, "home");
@@ -104,8 +104,8 @@ int main(void) {
     data = snx_data_dir(program);
     assert(data && !strcmp(data, expected));
     free(data);
-    /* .scarletnx beside the program (the Windows zip, a portable install) is the folder */
-    beside = join(program, ".scarletnx");
+    /* .nxaevora beside the program (the Windows zip, a portable install) is the folder */
+    beside = join(program, ".nxaevora");
     assert(!snx_mkdirs(beside));
     data = snx_data_dir(program);
     assert(data && !strcmp(data, beside));
@@ -119,9 +119,9 @@ int main(void) {
     free(file);
     file = join(mount, "bin");
     data = snx_data_dir(file);
-    assert(data && !strcmp(data, expected)); /* no .scarletnx beside the AppImage yet */
+    assert(data && !strcmp(data, expected)); /* no .nxaevora beside the AppImage yet */
     free(data);
-    portable = join(copy, ".scarletnx");
+    portable = join(copy, ".nxaevora");
     assert(!snx_mkdirs(portable));
     data = snx_data_dir(file);
     assert(data && !strcmp(data, portable));
@@ -154,7 +154,7 @@ int main(void) {
     for (i = 0; i < SNX_CHECKOUT_FILES; ++i) {
         now = snx_checkout_now(expected, i);
 #ifdef SNX_XDG
-        line = !strcmp(snx_checkout_files[i], "work")    ? snx_format("%s/scarletnx/work", cache)
+        line = !strcmp(snx_checkout_files[i], "work")    ? snx_format("%s/nxaevora/work", cache)
                : !strcmp(snx_checkout_files[i], "games") ? join(expected, "recompiled")
                                                          : join(expected, snx_checkout_files[i]);
 #else
@@ -263,7 +263,7 @@ int main(void) {
     assert(!snx_same_disk(root, "/proc"));
 #endif
 
-    puts("snx_data_dir: .scarletnx beside the program or the AppImage, else the user's data folder, for a build "
+    puts("snx_data_dir: .nxaevora beside the program or the AppImage, else the user's data folder, for a build "
          "tree's programs too; snx_checkout: a build tree's program's checkout, what an older version kept in it said");
     free(expected);
     free(cache);

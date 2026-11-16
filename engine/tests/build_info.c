@@ -34,10 +34,10 @@ int main(void) {
     arch = NULL;
 #endif
 #if defined(__clang__)
-    snprintf(want, sizeof want, "ScarletNX %s %s (clang %d.%d.%d, %s %s)", SNX_BRANCH, SNX_COMMIT, __clang_major__,
+    snprintf(want, sizeof want, "NXAevora Engine %s %s (clang %d.%d.%d, %s %s)", SNX_BRANCH, SNX_COMMIT, __clang_major__,
              __clang_minor__, __clang_patchlevel__, os, arch ? arch : "");
 #else
-    snprintf(want, sizeof want, "ScarletNX %s %s (gcc %d.%d.%d, %s %s)", SNX_BRANCH, SNX_COMMIT, __GNUC__,
+    snprintf(want, sizeof want, "NXAevora Engine %s %s (gcc %d.%d.%d, %s %s)", SNX_BRANCH, SNX_COMMIT, __GNUC__,
              __GNUC_MINOR__, __GNUC_PATCHLEVEL__, os, arch ? arch : "");
 #endif
     printf("%s\n", snx_build_info());

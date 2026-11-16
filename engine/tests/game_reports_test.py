@@ -24,8 +24,8 @@ spec.loader.exec_module(reports)
 BOT = 'github-actions[bot]'
 SCAN = reports.LogScan(sys.argv[1:])
 
-SVC_BREAK = """[   0.00] ScarletNX - Some Game
-[   0.00] build: ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)
+SVC_BREAK = """[   0.00] NXAevora Engine - Some Game
+[   0.00] build: NXAevora Engine main 1234abc (clang 23.1.3, Linux x86_64)
 [   0.30] game: 0100aaaabbbb0000, version 1.2.3
 [   2.25]
 *** The game called svcBreak (reason 0, info 1300100df8, 4 bytes) ***
@@ -34,8 +34,8 @@ SVC_BREAK = """[   0.00] ScarletNX - Some Game
 [   2.32] FATAL: The game stopped (svcBreak, reason 0). See the .log for details.
 """
 
-CRASH = """[   0.00] ScarletNX - Other Game
-[   0.00] build: ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)
+CRASH = """[   0.00] NXAevora Engine - Other Game
+[   0.00] build: NXAevora Engine main 1234abc (clang 23.1.3, Linux x86_64)
 [   3.00]
 *** Crash (signal 11) at host pc=0x1, access to 0x10 ***
 [   3.00]   invalid memory access

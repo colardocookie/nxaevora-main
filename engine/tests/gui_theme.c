@@ -143,7 +143,7 @@ static void app_ini(const char* config, const char* text) {
     free(file);
 }
 static void run_theme(void) {
-    char *root = snx_absolute("gui_run_theme_test"), *app = snx_path_join(root, ".scarletnx");
+    char *root = snx_absolute("gui_run_theme_test"), *app = snx_path_join(root, ".nxaevora");
     char *config = snx_path_join(app, "config"), *themes = snx_path_join(app, "themes"),
          *game = snx_path_join(app, "games");
     char *picked = snx_path_join(root, "picked"), *picked_themes = snx_path_join(picked, "themes"), text[1200];
@@ -160,7 +160,7 @@ static void run_theme(void) {
     app_ini(config, text);
     gui_run_theme(game, &out);
     assert(!strcmp(out.name, "There") && out.page == 0x0A0B0C);
-    app_ini(config, "[app]\ntheme = ../.scarletnx/themes/mine\n");
+    app_ini(config, "[app]\ntheme = ../.nxaevora/themes/mine\n");
     gui_run_theme(game, &out);
     assert(!strcmp(out.name, gui_theme_builtin("yorha")->name) && out.ink != out.page);
     app_ini(config, "[app]\ntheme = gone\n");

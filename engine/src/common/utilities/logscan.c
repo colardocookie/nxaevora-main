@@ -5,6 +5,7 @@
    dump and backtrace (hle/kernel/debug.c), ipc.c's service command warnings, and what the runtime missed (gap_line) */
 #include "common/utilities/logscan.h"
 #include "common/utilities/ascii.h"
+#include "common/utilities/common.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -454,12 +455,15 @@ static int marker(Span line, Marker* m) {
 
 /* ============================================================ the scan */
 /* A game log is all of itself. The launcher's Share Log file (src/gui/main.c's share_log) starts with snx_build_info's
-   line, "ScarletNX <branch> <commit> (<compiler>, <system>)", then its message and sections: the last run's output
+   line, "NXAevora Engine <branch> <commit> (<compiler>, <system>)", then its message and sections: the last run's output
    under "== the last run: <path> ==" and the newest game log under "== <path> ==". The game log's lines are scanned,
    else the run's output when it had none */
 enum { PHASE_START, PHASE_LOG, PHASE_HEAD, PHASE_RUN, PHASE_GAME, PHASE_DONE };
 
-/* "ScarletNX - <title>", what an older build followed with " (<folder>)", which is cut */
+/* The name a log starts with. Logs of older runs say ScarletNX, so both are read. */
+static int take_name(Span* s) { return take_lit(s, SNX_PROGRAM_NAME) || take_lit(s, "ScarletNX"); }
+
+/* "NXAevora Engine - <title>", what an older build followed with " (<folder>)", which is cut */
 static void header(SnxLogScan* s, Span title) {
     size_t i;
     for (i = title.n; i > 2; i--)
@@ -475,10 +479,10 @@ static void header(SnxLogScan* s, Span title) {
     s->title = add(s, title);
 }
 
-/* "build: ScarletNX <branch> <commit> (<compiler>, <system>)" or the launcher's line without "build: " */
+/* "build: NXAevora Engine <branch> <commit> (<compiler>, <system>)" or the launcher's line without "build: " */
 static int build_line(SnxLogScan* s, Span line) {
     Span rest = line;
-    if (!take_lit(&rest, "ScarletNX ") || !rest.n || rest.p[rest.n - 1] != ')') return 0;
+    if (!take_name(&rest) || !take_lit(&rest, " ") || !rest.n || rest.p[rest.n - 1] != ')') return 0;
     long sp = find(rest, " ");
     if (sp <= 0) return 0;
     Span branch = span(rest.p, (size_t)sp);
@@ -987,7 +991,8 @@ void snx_logscan_line(SnxLogScan* s, const char* p, size_t n) {
         case PHASE_START:
             s->phase = PHASE_LOG;
             rest = line;
-            if (take_lit(&rest, "ScarletNX ") && !starts(rest, "- ") && line.n && line.p[line.n - 1] == ')') {
+            if (take_name(&rest) && take_lit(&rest, " ") && !starts(rest, "- ") && line.n &&
+                line.p[line.n - 1] == ')') {
                 s->launcher_build = add(s, line);
                 s->phase = PHASE_HEAD;
                 return;
@@ -1020,8 +1025,9 @@ void snx_logscan_line(SnxLogScan* s, const char* p, size_t n) {
     if (!line.n) return;
     rest = line;
     switch (line.p[0]) {
+        case 'N':
         case 'S':
-            if (!s->title && take_lit(&rest, "ScarletNX - ")) {
+            if (!s->title && take_name(&rest) && take_lit(&rest, " - ")) {
                 header(s, rest);
                 return;
             }

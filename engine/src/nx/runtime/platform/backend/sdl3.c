@@ -408,7 +408,8 @@ void video_init(const char* title, const char* addons) {
     wsize_set(w, h);
     wsafe_set();
     if (!g_renderer->start())
-        fatal("Vulkan could not start (see the log). ScarletNX needs a GPU and driver with Vulkan 1.3.");
+        fatal("Vulkan could not start (see the log). " SNX_PROGRAM_NAME
+              " needs a GPU and driver with Vulkan 1.3.");
     LOG("renderer: Vulkan\n");
     /* not for an unattended run: nobody is at the screen, and it would cover the desktop of whoever is */
     if (g_settings.fullscreen && !unattended_active()) set_fullscreen(1);
@@ -1024,7 +1025,7 @@ void win_fatal_box(const char* msg) {
         char* left = __atomic_load_n(&g_fatal_left, __ATOMIC_ACQUIRE);
         __atomic_store_n(&g_fatal_taken, 1, __ATOMIC_RELEASE);
         if (!fatal_screen(left ? left : msg))
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left ? left : msg, g_win);
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, SNX_PROGRAM_NAME, left ? left : msg, g_win);
         return;
     }
     if (g_win) {
@@ -1045,9 +1046,9 @@ void win_fatal_box(const char* msg) {
 #ifdef _WIN32
     wchar_t w[4096]; /* on the stack: this also runs in the crash report, where the heap may be what broke */
     if (MultiByteToWideChar(CP_UTF8, 0, msg, -1, w, 4096))
-        MessageBoxW(NULL, w, L"ScarletNX", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        MessageBoxW(NULL, w, L"" SNX_PROGRAM_NAME, MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
     else
-        MessageBoxA(NULL, msg, "ScarletNX", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        MessageBoxA(NULL, msg, SNX_PROGRAM_NAME, MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
 #endif
 }
 
@@ -1068,7 +1069,7 @@ static void hotkey(SDL_Keycode k) {
         case SDLK_F1: {
             int fs = g_fullscreen;
             if (fs) set_fullscreen(0);
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "ScarletNX", HELP, g_win);
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, SNX_PROGRAM_NAME, HELP, g_win);
             if (fs) set_fullscreen(1);
             break;
         }
@@ -1620,7 +1621,7 @@ void video_poll(void) {
     char* left = __atomic_load_n(&g_fatal_left, __ATOMIC_ACQUIRE);
     if (left) { /* another thread's fatal error, left for this thread to show */
         __atomic_store_n(&g_fatal_taken, 1, __ATOMIC_RELEASE);
-        if (!fatal_screen(left)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left, g_win);
+        if (!fatal_screen(left)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, SNX_PROGRAM_NAME, left, g_win);
         plat_exit_now(1);
     }
     /* the menu, or the keyboard's box, had the controls when this poll began: the press that closes it (B, or A that

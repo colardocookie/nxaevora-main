@@ -862,12 +862,22 @@ int snx_main(int argc, char** argv) {
 #endif
     /* the header the log summary reads (common/utilities/logscan.c): no folder in it, since players attach the log to
        public reports and the folder names their account */
-    LOG("ScarletNX - %s\n", title);
+    LOG(SNX_PROGRAM_NAME " - %s\n", title);
     LOG("build: %s\n", snx_build_info());
     {
         char sys[384];
         plat_system_info(sys, sizeof sys);
         LOG("system: %s\n", sys);
+    }
+    {
+        char old[SNX_PATH_SIZE];
+        int found = snx_old_data_dir(g_exedir[0] ? g_exedir : NULL, old, sizeof old);
+        if (found > 0)
+            LOG("data: old folder %s is not used (no migration)\n", old);
+        else if (found < 0)
+            LOG("data: an old folder is beside the program or in the user's data folder, and its path does not fit "
+                "%u bytes: it is not used (no migration)\n",
+                (unsigned)sizeof old);
     }
     {
         char list[HUD_DEBUG_MAX];

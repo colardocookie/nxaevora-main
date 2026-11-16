@@ -27,7 +27,7 @@
 #endif
 
 static void usage(void) {
-    puts("Usage: scarletnx [OPTIONS] INPUT [-- GAME_ARGUMENTS...]\n"
+    puts("Usage: nxaevora-engine [OPTIONS] INPUT [-- GAME_ARGUMENTS...]\n"
          "  INPUT                  A game made already, or an NRO; a decrypted game folder with -r\n"
          "  -r, --recompile        Recompile a decrypted game folder or an NRO, without playing\n"
          "  -H, --headless         Run without a window or swapchain");
@@ -45,14 +45,14 @@ static void usage(void) {
          "                         already keeps its code until -r");
     puts("  --outdir DIR           Where the game's folder goes (default: recompiled/)\n"
          "  --data DIR             The data folder: recompiled/ and work/ (default: a\n"
-         "                         .scarletnx folder beside the AppImage or the program,\n"
+         "                         .nxaevora folder beside the AppImage or the program,\n"
          "                         else the user's data folder,\n"
 #ifdef _WIN32
-         "                         %APPDATA%\\scarletnx)");
+         "                         %APPDATA%\\nxaevora)");
 #elif defined(__APPLE__)
-         "                         ~/Library/Application Support/scarletnx)");
+         "                         ~/Library/Application Support/nxaevora)");
 #else
-         "                         ~/.local/share/scarletnx)");
+         "                         ~/.local/share/nxaevora)");
 #endif
     puts("  --setup                Go through the setup in the terminal: the language, the install, the\n"
          "                         folders and the first user (asked by itself the first time a terminal\n"
@@ -630,12 +630,12 @@ int snx_driver(int argc, char** argv) {
                 continue;
             if (rest[i][0] == '-' && rest[i][1] && strcmp(rest[i], "-h") && strcmp(rest[i], "--help") &&
                 strcmp(rest[i], "--hook-direct-calls")) {
-                result = snx_error("unknown option: %s (scarletnx --help lists them)", rest[i]);
+                result = snx_error("unknown option: %s (nxaevora-engine --help lists them)", rest[i]);
                 goto done;
             }
         }
     if (automatic && (n != 1 || help)) {
-        result = help ? snx_error("-h goes with -r, or alone (scarletnx --help)")
+        result = help ? snx_error("-h goes with -r, or alone (nxaevora-engine --help)")
                       : snx_error("one input at a time, and %s is a second: the game's own arguments go after --",
                                   rest[n - 1]);
         goto done;

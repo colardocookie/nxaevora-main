@@ -3212,9 +3212,9 @@ int main(int argc, char** argv) {
     app.animations_off = true;
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID)
     /* no checkout and no games/ beside the test: recompiled/ and themes/ come from the user's data folder */
-    assert(!strcmp(app.data_dir, "/nonexistent/snx-gui-test/scarletnx"));
-    assert(!strcmp(app.games_dir, "/nonexistent/snx-gui-test/scarletnx/recompiled"));
-    assert(!strcmp(app.themes_dirs[0], "/nonexistent/snx-gui-test/scarletnx/themes"));
+    assert(!strcmp(app.data_dir, "/nonexistent/snx-gui-test/nxaevora"));
+    assert(!strcmp(app.games_dir, "/nonexistent/snx-gui-test/nxaevora/recompiled"));
+    assert(!strcmp(app.themes_dirs[0], "/nonexistent/snx-gui-test/nxaevora/themes"));
 #endif
     /* the themes that come with the GUI: beside it in a build tree, else in share/scarletnx beside its bin/ */
     {
@@ -3235,7 +3235,8 @@ int main(int argc, char** argv) {
         free(root);
     }
     /* the window says which build it is: commit, compiler, platform */
-    assert(!strcmp(SDL_GetWindowTitle(app.window), snx_build_info()) && !strncmp(snx_build_info(), "ScarletNX ", 10));
+    assert(!strcmp(SDL_GetWindowTitle(app.window), snx_build_info()) &&
+           !strncmp(snx_build_info(), "NXAevora Engine ", 15));
     /* the boot's splash: a drawing of Wimsy's in the middle of the default theme's black page, a third of the window's
        shorter side, until its time, drawn again when the window changes; a key ends it and does nothing else. Every
        drawing built in shows. A theme's own page shows in its chance of boots, the default's in the others */
@@ -4561,8 +4562,8 @@ int main(int argc, char** argv) {
            goes, nothing touched; =yes moves them; any other value refused, naming it */
         {
             char *xdg = snx_path_join(temporary, "migrate"), *was[4], *data_home = snx_path_join(xdg, "data");
-            char *game = snx_format("%s/scarletnx/games/G/G", data_home),
-                 *now = snx_format("%s/scarletnx/recompiled/G/G", data_home);
+            char *game = snx_format("%s/nxaevora/games/G/G", data_home),
+                 *now = snx_format("%s/nxaevora/recompiled/G/G", data_home);
             static const char* const vars[4] = {"XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"};
             char said[8192];
             size_t n;
@@ -4577,7 +4578,7 @@ int main(int argc, char** argv) {
             assert(!snx_mkdirs(dir) && !snx_write_file(game, "fixture", 7));
             free(dir);
             { /* the menu's gui/ of an older version: its files split between the config and state folders */
-                char *gui = snx_format("%s/scarletnx/gui", data_home), *recent = snx_path_join(gui, "recent.txt"),
+                char *gui = snx_format("%s/nxaevora/gui", data_home), *recent = snx_path_join(gui, "recent.txt"),
                      *picks = snx_path_join(gui, "app.ini");
                 assert(!snx_mkdirs(gui) && !snx_write_file(recent, "", 0) && !snx_write_file(picks, "", 0));
                 free(picks);
@@ -4585,7 +4586,7 @@ int main(int argc, char** argv) {
                 free(gui);
             }
             for (int apply = 0; apply < 2; ++apply) {
-                char* line = snx_format("%s/scarletnx/games/G: %s to %s/scarletnx/recompiled/G\n%s", data_home,
+                char* line = snx_format("%s/nxaevora/games/G: %s to %s/nxaevora/recompiled/G\n%s", data_home,
                                         apply ? "Moved" : "Moves", data_home,
                                         apply ? "" : "3 to move, 0 staying: --migrate=yes moves them\n");
                 assert((out = tmpfile()) != NULL);
@@ -4596,15 +4597,15 @@ int main(int argc, char** argv) {
                 fclose(out);
                 if (!apply) { /* nothing touched, no folder made */
                     char *config = snx_path_join(xdg, "1"), *state = snx_path_join(xdg, "2");
-                    char* dumps = snx_format("%s/scarletnx/dumps", data_home);
+                    char* dumps = snx_format("%s/nxaevora/dumps", data_home);
                     assert(strstr(said, line) && snx_is_file(game) && !snx_path_exists(now));
                     assert(!snx_path_exists(config) && !snx_path_exists(state) && !snx_path_exists(dumps));
                     free(dumps);
                     free(state);
                     free(config);
                 } else {
-                    char *recent = snx_format("%s/2/scarletnx/recent.txt", xdg),
-                         *picks = snx_format("%s/1/scarletnx/app.ini", xdg);
+                    char *recent = snx_format("%s/2/nxaevora/recent.txt", xdg),
+                         *picks = snx_format("%s/1/nxaevora/app.ini", xdg);
                     assert(strstr(said, line) && strstr(said, "3 moved, 0 not\n") && snx_is_file(now) &&
                            !snx_path_exists(game));
                     assert(snx_is_file(recent) && snx_is_file(picks));
@@ -10710,8 +10711,8 @@ int main(int argc, char** argv) {
     /* the menu's recent.txt and last-run.log in the state folder; an older build's in the data folder's gui/ stay */
     {
         char *data = snx_path_join(temporary, "data"), *state = snx_path_join(temporary, "state");
-        char *old = snx_path_join(data, "scarletnx/gui"), *recent = snx_path_join(old, "recent.txt");
-        char *run = snx_path_join(old, "last-run.log"), *folder, *expected = snx_path_join(state, "scarletnx"), *now;
+        char *old = snx_path_join(data, "nxaevora/gui"), *recent = snx_path_join(old, "recent.txt");
+        char *run = snx_path_join(old, "last-run.log"), *folder, *expected = snx_path_join(state, "nxaevora"), *now;
         assert(!snx_mkdirs(old) && !snx_write_file(recent, "recent", 6) && !snx_write_file(run, "run", 3));
         set_env("XDG_DATA_HOME", data);
         set_env("XDG_STATE_HOME", state);
@@ -10736,7 +10737,7 @@ int main(int argc, char** argv) {
             int i;
             set_env("XDG_CONFIG_HOME", config);
             set_env("XDG_CACHE_HOME", cache);
-            app.data_dir = snx_path_join(data, "scarletnx");
+            app.data_dir = snx_path_join(data, "nxaevora");
             app.games_dir = snx_recompiled_dir(app.data_dir);
             app.recent_file = snx_path_join(expected, "recent.txt");
             loose = snx_path_join(app.games_dir, LONG);
@@ -10764,13 +10765,13 @@ int main(int argc, char** argv) {
             lines[0][0] = snx_strdup(old); /* the menu's gui/, its recent games and last run in the state folder */
             lines[0][1] = snx_strdup(expected);
             lines[1][0] = snx_strdup(work);
-            lines[1][1] = snx_format("%s/scarletnx/work", cache);
+            lines[1][1] = snx_format("%s/nxaevora/work", cache);
             lines[2][0] = snx_strdup(loose);
             lines[2][1] = snx_format("%s/" LONG "/", app.games_dir);
             lines[3][0] = snx_strdup(named);
             lines[3][1] = snx_format("%s/0100ABCD12345000/", app.games_dir);
             lines[4][0] = snx_path_join(app.drivers, "games"); /* a portable copy's games/ beside the program */
-            lines[4][1] = snx_format("%s/.scarletnx/recompiled", app.drivers);
+            lines[4][1] = snx_format("%s/.nxaevora/recompiled", app.drivers);
             left_behind(&app);
             assert(app.lefts == 5 && snx_is_dir(lines[4][0]));
             for (i = 0, at = app.left; i < 5; ++i, at = strchr(at, '\n') + 1) {
@@ -10784,7 +10785,7 @@ int main(int argc, char** argv) {
             /* gui/'s gamecontrollerdb.txt, where #276 read it, goes to the config folder as settings.ini does */
             {
                 char *db = snx_path_join(old, "gamecontrollerdb.txt"),
-                     *said = snx_format("%s" SAY_LEFT_BY "%s/scarletnx\n", old, config);
+                     *said = snx_format("%s" SAY_LEFT_BY "%s/nxaevora\n", old, config);
                 assert(!snx_write_file(db, "", 0));
                 left_behind(&app);
                 assert(app.lefts == 6 && strstr(app.left, said));
@@ -10802,7 +10803,7 @@ int main(int argc, char** argv) {
                      *said[3];
                 assert(!snx_mkdirs(old_games) && !snx_mkdirs(old_work) && !snx_write_file(keys, "", 0));
                 said[0] = snx_format("%s" SAY_LEFT_BY "%s\n", old_games, app.games_dir);
-                said[1] = snx_format("%s" SAY_LEFT_BY "%s/scarletnx/work\n", old_work, cache);
+                said[1] = snx_format("%s" SAY_LEFT_BY "%s/nxaevora/work\n", old_work, cache);
                 said[2] = snx_format("%s" SAY_LEFT_BY "%s/prod.keys\n", keys, app.data_dir);
                 app.checkout = checkout;
                 left_behind(&app);

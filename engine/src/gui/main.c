@@ -14276,7 +14276,7 @@ static bool initialize(App* app, const char* self) {
     app->data_dir = snx_strdup(app->cwd ? app->cwd : ".");
     app->own_dir = SDL_GetAndroidInternalStoragePath() ? snx_strdup(SDL_GetAndroidInternalStoragePath()) : NULL;
     {
-        char* sdl = SDL_GetPrefPath("scarletnx", "gui"); /* the app's own files, whatever its names */
+        char* sdl = SDL_GetPrefPath("nxaevora", "gui"); /* the app's own files, whatever its names */
         app->menu_old = sdl ? snx_strdup(sdl) : NULL;
         SDL_free(sdl);
     }

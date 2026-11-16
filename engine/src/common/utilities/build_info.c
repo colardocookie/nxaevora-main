@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/build_info.h"
+#include "common/utilities/common.h"
 #include "snx_commit.h"
 
 #define SNX_TEXT(x)   #x
@@ -48,6 +49,6 @@
 #endif
 
 const char* snx_build_info(void) {
-    return "ScarletNX " SNX_BRANCH " " SNX_COMMIT " (" SNX_COMPILER ", " SNX_OS " " SNX_ARCH ")";
+    return SNX_PROGRAM_NAME " " SNX_BRANCH " " SNX_COMMIT " (" SNX_COMPILER ", " SNX_OS " " SNX_ARCH ")";
 }
 const char* snx_build_commit(void) { return SNX_COMMIT; }

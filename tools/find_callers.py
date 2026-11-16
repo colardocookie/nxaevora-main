@@ -3,7 +3,7 @@
 # Copyright 2026 the NXAevora contributors
 """Finds the direct calls (bl) and jumps (b) to given guest addresses in the code of the extracted game.
 
-    SNX_SCARLETNX=<abs path of scarletnx.exe> python tools/find_callers.py ADDRESS... [--game DIR]
+    SNX_SCARLETNX=<abs path of nxaevora-engine.exe> python tools/find_callers.py ADDRESS... [--game DIR]
 
 Run it from the repository root in the MSYS2 CLANG64 shell, as tools/jump_table_scan.py is run: it uses ScarletNX's
 tools/moduledump.py. ADDRESS is a guest address in hex. The default game folder is game/work/Arceus.

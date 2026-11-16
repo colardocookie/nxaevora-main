@@ -44,7 +44,7 @@ int snx_switch_main(int argc, char** argv) {
     /* the setup's own options, for the driver and the menu, before anything reads the rest */
     argc = snx_setup_options(argc, argv, why, sizeof why);
     if (argc < 0) {
-        fprintf(stderr, "scarletnx: %s\n", why);
+        fprintf(stderr, "nxaevora-engine: %s\n", why);
         return 2;
     }
 #ifdef SNX_WITH_GUI

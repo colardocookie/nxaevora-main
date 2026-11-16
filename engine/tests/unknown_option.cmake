@@ -23,7 +23,7 @@ foreach(option --resoltion=2 --render_resolution=2 --seconds=5)
 endforeach()
 # an option nothing takes is refused by its name, with no game given too; an option's older name is said once, with
 # its name now, and taken as that
-foreach(case "--bogus;unknown option: --bogus (scarletnx --help lists them)"
+foreach(case "--bogus;unknown option: --bogus (nxaevora-engine --help lists them)"
              "--settings=bogus;--settings=bogus: not --settings (the game's) or --settings=recompile"
              "--recomp;--recomp;--help;--recomp is --recompile now: this run takes it as --recompile")
     list(POP_BACK case expected)
