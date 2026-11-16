@@ -4300,7 +4300,7 @@ static void waza_shot_init(void) {
 /* Discord presence (SNX_ARCEUS_DISCORD, D1 and D2) and its read-only probe (SNX_ARCEUS_DISCORD_PROBE=1). Each wrapper
    runs the game's function and only reads what it was given or returned. The region comes from fs.c (D2). */
 enum { DRPS_AREA, DRPS_PARENT, DRPS_BATTLE, DRPS_MONSNO, DRPS_LEVEL, DRPS_END, DRPS_LOSE, DRPS_TRNAME, DRPS_TRDATA,
-       DRPS_SPECIES, DRPS_SITES };
+       DRPS_SITES };
 static GuestFn drp_original[DRPS_SITES];
 /* drp_probe: the read-only lines. drp_presence: the state for the host half, written under drp_lock by whichever
    game thread runs a wrapper or the tick */
@@ -4498,56 +4498,6 @@ static void drp_battle_decide(u64 now) {
             (unsigned long long)((now - drp_kind_start) / 1000000), foe.species, foe.alpha);
 }
 
-/* P7 (research 19:35 item 4, the probe only): which party member the battle shows. A counting wrapper on the
-   species getter (2B6849C) counts calls by data object, and the tick says each second of a battle how many calls
-   each party slot's data object (party object +58 to +80, each +98) had, and the party object's +A0 word on change. */
-#define DRP_P7_KEYS 32
-static u64 drp_p7_key[DRP_P7_KEYS], drp_p7_count[DRP_P7_KEYS], drp_p7_full;
-static int drp_p7_battle;
-static void drp_species_get(CPU* c, u64 entry) {
-    const u64 data = c->x[0];
-    drp_original[DRPS_SPECIES](c, entry);
-    if (!__atomic_load_n(&drp_p7_battle, __ATOMIC_RELAXED)) return;
-    for (unsigned i = 0; i < DRP_P7_KEYS; i++) {
-        u64 key = __atomic_load_n(&drp_p7_key[i], __ATOMIC_RELAXED);
-        if (!key && __atomic_compare_exchange_n(&drp_p7_key[i], &key, data, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
-            key = data;
-        if (key == data) {
-            __atomic_add_fetch(&drp_p7_count[i], 1, __ATOMIC_RELAXED);
-            return;
-        }
-    }
-    __atomic_add_fetch(&drp_p7_full, 1, __ATOMIC_RELAXED);
-}
-static void drp_p7_second(void) {
-    static u64 last_a0 = ~0ull;
-    const u64 q = drp_party_object();
-    const u64 a0 = readable(q + 0xa0, 8) ? gr64(q + 0xa0) : 0;
-    if (a0 != last_a0) LOG("arceus-drp: party object +a0 = %llx\n", (unsigned long long)a0);
-    last_a0 = a0;
-    if (!__atomic_load_n(&drp_p7_battle, __ATOMIC_RELAXED)) return;
-    u64 slot_data[6] = {0}, slots[6] = {0}, other = 0;
-    for (unsigned k = 0; k < 6; k++) {
-        const u64 member = readable(q + 0x58 + k * 8ull, 8) ? gr64(q + 0x58 + k * 8ull) : 0;
-        slot_data[k] = readable(member + 0x98, 8) ? gr64(member + 0x98) : 0;
-    }
-    for (unsigned i = 0; i < DRP_P7_KEYS; i++) {
-        const u64 key = __atomic_load_n(&drp_p7_key[i], __ATOMIC_RELAXED);
-        const u64 n = __atomic_exchange_n(&drp_p7_count[i], 0, __ATOMIC_RELAXED);
-        int slot = -1;
-        for (int k = 0; key && k < 6; k++)
-            if (slot_data[k] == key) slot = k;
-        if (slot >= 0) slots[slot] += n;
-        else other += n;
-    }
-    LOG("arceus-drp: species getter calls in battle %u: slots %llu %llu %llu %llu %llu %llu, others %llu, not kept "
-        "%llu\n",
-        __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED), (unsigned long long)slots[0], (unsigned long long)slots[1],
-        (unsigned long long)slots[2], (unsigned long long)slots[3], (unsigned long long)slots[4],
-        (unsigned long long)slots[5], (unsigned long long)other,
-        (unsigned long long)__atomic_exchange_n(&drp_p7_full, 0, __ATOMIC_RELAXED));
-}
-
 /* A battle ends when the battle effect sequences (9DBEAC, the battle sequence fix's wrapper and its counter) have
    not run for 3 s, or at an area call, whichever first (DRP-P3, research 09:00). Inside the battles seen they ran in
    every second, menus included, and outside them never. drp_battle_since: the start, or the counter's last move. */
@@ -4563,10 +4513,6 @@ static void drp_tick(void) {
     if (calls != drp_battle_seen) drp_battle_seen = calls, drp_battle_since = now;
     const int quiet = battle_sequence_original && snx_drp_battle_over(1, now, drp_battle_since);
     pm_unlock(&drp_lock);
-    if (drp_probe) {
-        drp_p7_second();
-        if (quiet) __atomic_store_n(&drp_p7_battle, 0, __ATOMIC_RELAXED);
-    }
     if (!drp_presence) return;
     if (quiet && snx_drp_in_battle(activity)) drp_set(DRP_FIELD);
     drp_battle_decide(now);
@@ -4697,7 +4643,7 @@ static void drp_battle_start(CPU* c, u64 entry) {
     const u64 records = readable(object + 0x78, 8) ? gr64(object + 0x78) : 0;
     if (fresh) {
         /* a new battle forgets the last one's opponent and kind files, even when it starts before that one was seen
-           to end. The P7 counts start again. */
+           to end */
         __atomic_add_fetch(&g_drp_battle, 1, __ATOMIC_RELAXED);
         __atomic_store_n(&g_drp_kinds, 0, __ATOMIC_RELAXED);
         pm_lock(&drp_lock);
@@ -4713,13 +4659,6 @@ static void drp_battle_start(CPU* c, u64 entry) {
         __atomic_store_n(&drp_foe_object, drp_presence && readable(records + 0x90, 8) ? gr64(records + 0x90) : 0,
                          __ATOMIC_RELAXED);
         drp_foe_tries = 0;
-        if (drp_probe) {
-            for (unsigned i = 0; i < DRP_P7_KEYS; i++) {
-                __atomic_store_n(&drp_p7_key[i], 0, __ATOMIC_RELAXED);
-                __atomic_store_n(&drp_p7_count[i], 0, __ATOMIC_RELAXED);
-            }
-            __atomic_store_n(&drp_p7_battle, 1, __ATOMIC_RELAXED);
-        }
     }
     const u64 foe_object = __atomic_load_n(&drp_foe_object, __ATOMIC_RELAXED);
     if (drp_presence && foe_object && drp_foe_tries++ < 32) {
@@ -4792,7 +4731,6 @@ static void discord_probe_init(void) {
         {0x17dcf40, 0x395d6c08, drp_battle_lose, "the player's OnBattleLoseEnd"},
         {0xfc70c8, 0xd10203ff, drp_trainer_word, "the trainer name's word (FC70C8)"},
         {0x83636c, 0xf81d0ff5, drp_trainer_data, "the trainer data's path (83636C)"},
-        {0x2b6849c, 0xa9bd57f6, drp_species_get, "the species getter (2B6849C), counted"},
     };
     for (unsigned k = 0; k < DRPS_SITES; k++) {
         /* the presence needs only the area name and the battle start, the rest are the probe's */
