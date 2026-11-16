@@ -610,6 +610,11 @@ first contexts, for the first frames left as drawn and every 600th, when it turn
 frames the counts (evaluated, drawn with jitter and skipped or failed, and not jittered by reason: the gate, not
 the whole target, a part of the configuration not known, no ready context, off).
 
+`tests/temporal_spatial_host/run.sh` does the same for the spatial hand-over, from the reviewer's D3 fixtures: the
+decision in `temporal.c` and the pair in `render.c`, as they are in the tree, with stand-ins for the driver, the guest
+memory and the shader factory. It runs the 112 required-source cases, the refusal's log and the pair and key controls
+under the address and undefined-behaviour sanitizers (python3, clang and the Vulkan headers, not on Windows).
+
 `tests/upscaler_selftest_callbacks/run.sh` runs two host regressions of the validation callbacks, written by the
 reviewer, for a host with python3, clang, gcc and pthreads (not part of the Windows test run). Each takes the
 callback, its counts and the self-test's last lines out of `upscaler_selftest.c` as they are and puts a test
