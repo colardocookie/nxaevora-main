@@ -1237,11 +1237,19 @@ static int same_name(const char* a, const char* b) {
         if (snx_to_lower(a[i]) != snx_to_lower(b[i])) return 0;
     return !a[i] && !b[i];
 }
+/* 1 when name starts with prefix, in any case, and has more after it */
+static int starts_name(const char* name, const char* prefix) {
+    size_t i = 0;
+    for (; prefix[i]; ++i)
+        if (!name[i] || snx_to_lower(name[i]) != snx_to_lower(prefix[i])) return 0;
+    return name[i] != 0;
+}
 int snx_launcher_name(const char* name) {
     static const char* const names[] = {SNX_PROGRAM_FILE, SNX_SWITCH_DRIVER, "ScarletNX-x86_64"};
+    if (!name) return 0;
     for (size_t i = 0; i < sizeof names / sizeof names[0]; ++i)
         if (same_name(name, names[i])) return 1;
-    return 0;
+    return starts_name(name, SNX_APPIMAGE_PREFIX);
 }
 const SnxGameFile snx_game_files[SNX_GAME_FILES] = {{".log", SNX_USER_STATE},
                                                     {"threads.txt", SNX_USER_STATE},
@@ -1294,22 +1302,16 @@ static char* portable_dir(const char* program_dir, const char* name) {
     return copy;
 }
 char* snx_portable_dir(const char* program_dir) { return portable_dir(program_dir, SNX_PORTABLE_DIR); }
-/* 1 and an older version's data folder in out when one is there; 0 when none is, -1 when it does not fit size */
-int snx_old_data_dir(const char* program_dir, char* out, size_t size) {
+/* Which older version's data folder is there: the portable one wins, else the old user data folder */
+int snx_old_data_dir(const char* program_dir) {
     char* copy = portable_dir(program_dir, SNX_OLD_PORTABLE_DIR);
-    char* dir = copy && snx_is_dir(copy) ? copy : old_user_data_dir();
-    int found = dir && snx_is_dir(dir);
-    int result = 0;
-    if (found) {
-        size_t n = strlen(dir);
-        if (n >= size) {
-            result = -1;
-        } else {
-            memcpy(out, dir, n + 1);
-            result = 1;
-        }
-    }
-    if (dir != copy) free(dir);
+    char* user = old_user_data_dir();
+    int result = SNX_OLD_DATA_NONE;
+    if (copy && snx_is_dir(copy))
+        result = SNX_OLD_DATA_PORTABLE;
+    else if (user && snx_is_dir(user))
+        result = SNX_OLD_DATA_USER;
+    free(user);
     free(copy);
     return result;
 }

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* snx_old_data_dir: where an older version kept the data folder, the portable .scarletnx beside the program or the
-   old user's folder. It reports the path and does not move or change it. */
+   old user's folder. It reports which one is there and does not move or change it. */
 #define _POSIX_C_SOURCE 200809L /* setenv */
 #include "common/utilities/common.h"
 #include <assert.h>
@@ -49,7 +49,6 @@ int main(void) {
     char *portable, *user_old;
     char *was_appdata = save_env("APPDATA"), *was_xdg = save_env("XDG_DATA_HOME"), *was_home = save_env("HOME");
     char *was_appimage = save_env("APPIMAGE"), *was_appdir = save_env("APPDIR");
-    char out[SNX_PATH_SIZE], small[4] = "abc";
     assert(root);
     program = join(root, "program");
     portable = join(program, ".scarletnx");
@@ -76,18 +75,16 @@ int main(void) {
 #endif
 
     /* no old folder beside the program and none in the old user's data folder */
-    assert(snx_old_data_dir(program, out, sizeof out) == 0);
+    assert(snx_old_data_dir(program) == SNX_OLD_DATA_NONE);
     /* the old user's data folder is found */
     assert(!snx_mkdirs(user_old));
-    assert(snx_old_data_dir(program, out, sizeof out) == 1 && !strcmp(out, user_old));
+    assert(snx_old_data_dir(program) == SNX_OLD_DATA_USER);
     /* a portable .scarletnx beside the program wins */
     assert(!snx_mkdirs(portable));
-    assert(snx_old_data_dir(program, out, sizeof out) == 1 && !strcmp(out, portable));
-    /* a buffer that is too small is refused, and it is not changed */
-    assert(snx_old_data_dir(program, small, sizeof small) == -1 && !strcmp(small, "abc"));
+    assert(snx_old_data_dir(program) == SNX_OLD_DATA_PORTABLE);
     /* no portable folder: the old user's data folder again */
     assert(!snx_remove_tree(portable));
-    assert(snx_old_data_dir(program, out, sizeof out) == 1 && !strcmp(out, user_old));
+    assert(snx_old_data_dir(program) == SNX_OLD_DATA_USER);
 
     assert(!snx_remove_tree(root));
     restore_env("APPDATA", was_appdata);

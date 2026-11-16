@@ -25,6 +25,8 @@ typedef struct {
 #endif
 /* The Switch driver's name and link (src/multicall) */
 #define SNX_SWITCH_DRIVER "nxaevora-engine-switch"
+/* The AppImage name prefix of scripts/make-appimage.sh (ScarletNX-linux-<arch>) */
+#define SNX_APPIMAGE_PREFIX "ScarletNX-linux-"
 #define SNX_PROGRAM_NAME "NXAevora Engine"
 
 void* snx_alloc(size_t size);
@@ -188,10 +190,11 @@ void snx_recompiled_left(const char* data_dir);
    beside the AppImage or the program, when it is there (a portable copy); else the user's data folder. NULL when none
    can be named */
 char* snx_data_dir(const char* program_dir);
-/* 1 and an older version's data folder in out when one is there (SNX_OLD_PORTABLE_DIR beside the program or the
-   AppImage, else SNX_OLD_DATA_NAME in the user's data folder); 0 when none is, -1 when it does not fit size.
-   Nothing is moved or changed */
-int snx_old_data_dir(const char* program_dir, char* out, size_t size);
+/* The old data folder snx_old_data_dir found: none, the portable one beside the program, or the user's */
+enum { SNX_OLD_DATA_NONE, SNX_OLD_DATA_PORTABLE, SNX_OLD_DATA_USER };
+/* Which older version's data folder is there (SNX_OLD_PORTABLE_DIR beside the program or the AppImage, else
+   SNX_OLD_DATA_NAME in the user's data folder), one of SNX_OLD_DATA_*. Nothing is moved or changed */
+int snx_old_data_dir(const char* program_dir);
 /* SNX_PORTABLE_DIR beside the AppImage or the program in program_dir, there or not; NULL when none can be named */
 char* snx_portable_dir(const char* program_dir);
 /* The checkout a program run from its build tree (build; NULL: any program) was built from, for what only a checkout

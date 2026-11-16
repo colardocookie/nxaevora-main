@@ -12,7 +12,7 @@
 # A copy named after a game works like the bare runtime: games/MyGame.AppImage (or games/MyGame) loads
 # games/MyGame_code.so, since the runtime takes its name and folder from $APPIMAGE.
 #
-# An install of the Linux runtime alone (scarletnx without the Switch driver, scarletnx-switch, and scarletnx-gnuabi a
+# An install of the Linux runtime alone (nxaevora-engine without the Switch driver, nxaevora-engine-switch, and scarletnx-gnuabi a
 # link to it) makes an AppImage of it: it runs Linux
 # AArch64 programs (`ScarletNX-linux-ppc64.AppImage ./program`), and its checks run one.
 #
@@ -30,13 +30,14 @@ export OUTPATH=./dist
 export OUTNAME=ScarletNX-linux-$ARCH.AppImage
 # The AppImage's program: the driver, else the Linux runtime when it is all the install has
 bin=/usr/bin
-main=scarletnx
-if [ ! -e "$bin/scarletnx-switch" ] && [ -e "$bin/scarletnx-gnuabi" ]; then
+main=nxaevora-engine
+if [ ! -e "$bin/nxaevora-engine-switch" ] && [ -e "$bin/scarletnx-gnuabi" ]; then
     main=scarletnx-gnuabi
 fi
 # quick-sharun copies ICON to .DirIcon as well
 export ICON=/usr/share/icons/hicolor/256x256/apps/wimsy.png
-export DESKTOP=/usr/share/applications/$main.desktop
+# The desktop entry keeps its packaging name, whatever the program file is called
+export DESKTOP=/usr/share/applications/scarletnx.desktop
 # AppImageUpdate finds new builds through the .zsync file next to the AppImage in the latest release
 # (scripts/publish-builds.py): a version's in this repository's, a nightly's in the owner's nightly repository
 if [ "${GITHUB_REF_TYPE:-}" = tag ]; then
@@ -59,11 +60,11 @@ fi
 # The runtime stays the AppImage's program (the desktop entry's Exec), so a copy named after a game runs that game.
 # Started bare it opens its launcher, which runs Switch games with it and the other drivers from beside it
 # (scarletnx-3ds, scarletnx-vita, scarletnx-agb, scarletnx-gnuabi). The Linux runtime alone has no launcher.
-if [ "$main" = scarletnx ]; then
-    quick-sharun "$bin/scarletnx" "$bin/scarletnx-switch" "$bin/scarletnx-3ds" "$bin/scarletnx-vita" \
+if [ "$main" = nxaevora-engine ]; then
+    quick-sharun "$bin/nxaevora-engine" "$bin/nxaevora-engine-switch" "$bin/scarletnx-3ds" "$bin/scarletnx-vita" \
         "$bin/scarletnx-agb" "$bin/scarletnx-gnuabi"
 else
-    quick-sharun "$bin/scarletnx" "$bin/scarletnx-gnuabi"
+    quick-sharun "$bin/nxaevora-engine" "$bin/scarletnx-gnuabi"
 fi
 
 # The licenses travel with the AppImage: the runtime's and those of the libraries built into it (`cmake --install` put
@@ -74,8 +75,8 @@ if [ ! -d "$appdir/lib" ]; then
     echo "quick-sharun left no $appdir/lib: where it puts the bundled libraries has changed" >&2
     exit 1
 fi
-# each driver the launcher runs, a name of scarletnx's (SNX_MULTICALL): sharun has to start it under its own name
-if [ "$main" = scarletnx ]; then
+# each driver the launcher runs, a name of nxaevora-engine's (SNX_MULTICALL): sharun has to start it under its own name
+if [ "$main" = nxaevora-engine ]; then
     for program in scarletnx-3ds scarletnx-vita scarletnx-agb scarletnx-gnuabi; do
         out=$("$appdir/bin/$program" --help 2>&1 || true)
         if ! grep -q "^Usage: $program" <<<"$out"; then

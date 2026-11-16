@@ -131,7 +131,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 'ScarletNX-linux-loongarch64.AppImage': 'elf loong',
                 'ScarletNX-linux-loongarch64.AppImage.zsync': 'zsync loong',
             },
-            f'ScarletNX-windows-x86_64-{short}': {'bin/scarletnx.exe': 'MZ', 'share/licenses/LICENSE': 'GPL'},
+            f'ScarletNX-windows-x86_64-{short}': {'bin/nxaevora-engine.exe': 'MZ', 'share/licenses/LICENSE': 'GPL'},
             f'ScarletNX-android-universal-{short}.apk': {f'ScarletNX-android-universal-{short}.apk': 'PK apk'},
             # skip-decompress: the macOS zip lands at the artifact's own path, the IPA inside its folder
             f'ScarletNX-macos-arm64-{short}.zip': {'': 'PK app'},
@@ -280,7 +280,7 @@ with tempfile.TemporaryDirectory() as temporary:
     )
     data = {a['name']: a['data'] for a in made['assets']} if made else {}
     archive = data.get('ScarletNX-windows-x86_64.zip', '')
-    check('the Windows build zipped from its folder', archive.startswith('PK') and 'bin/scarletnx.exe' in archive)
+    check('the Windows build zipped from its folder', archive.startswith('PK') and 'bin/nxaevora-engine.exe' in archive)
     check(
         'the macOS app and the iOS IPA as their jobs made them, not zipped again',
         data.get('ScarletNX-macos-arm64.zip') == 'PK app' and data.get('ScarletNX-ios-arm64.ipa') == 'PK ipa',

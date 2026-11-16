@@ -24,7 +24,7 @@ mkdir -p "$probe"
 cp "$OUTPATH/$OUTNAME" "$probe/Probe.AppImage"
 
 # The Linux runtime alone: it runs an AArch64 program, which prints its line and exits with 42
-if [ ! -e "$APPDIR/bin/scarletnx" ]; then
+if [ ! -e "$APPDIR/bin/nxaevora-engine" ]; then
     "$(dirname "$0")/aarch64-smoke.sh" "$probe/smoke"
     status=0
     out=$(cd "$probe" && APPIMAGE_EXTRACT_AND_RUN=1 "${launch[@]}" ./Probe.AppImage ./smoke 2>&1) || status=$?

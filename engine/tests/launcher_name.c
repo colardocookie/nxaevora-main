@@ -15,6 +15,9 @@ int main(void) {
     assert(snx_launcher_name("ScarletNX-x86_64") && snx_launcher_name("NXAEVORA-ENGINE"));
     assert(!snx_launcher_name("scarletnx") && !snx_launcher_name("scarletnx-switch"));
 #endif
+    assert(snx_launcher_name("ScarletNX-linux-x86_64") && snx_launcher_name("ScarletNX-linux-aarch64"));
+    assert(snx_launcher_name("scarletnx-linux-ppc64le"));
+    assert(!snx_launcher_name("ScarletNX-linux-"));
     assert(!snx_launcher_name("MyGame") && !snx_launcher_name("scarlet") && !snx_launcher_name(""));
     assert(!snx_launcher_name("nxaevora-enginegame") && !snx_launcher_name("my nxaevora-engine"));
     puts("launcher names passed");

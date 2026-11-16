@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # Runs a packaged ScarletNX as a user would, in an empty folder of a machine without the checkout it was built from:
-# the AppImage, or bin/scarletnx(.exe) of `cmake --install` (the Windows zip). CI runs it in jobs of their own
+# the AppImage, or bin/nxaevora-engine(.exe) of `cmake --install` (the Windows zip). CI runs it in jobs of their own
 # (.github/workflows/build.yml): in the build jobs the checkout is where the package looks for it, and hides what an
 # installed copy lacks.
 #
 #   scripts/check-package.sh dist/ScarletNX-linux-x86_64.AppImage
-#   scripts/check-package.sh stage/bin/scarletnx.exe
+#   scripts/check-package.sh stage/bin/nxaevora-engine.exe
 set -euo pipefail
 
 if [ $# -ne 1 ] || [ ! -f "$1" ]; then
@@ -57,9 +57,9 @@ cd "$work"
 # settings, log and caches (work/ too) in the XDG config, state and cache folders on Linux, in config/, state/ and
 # cache/ of the data folder elsewhere: point them into this run's
 export XDG_DATA_HOME="$work/data" XDG_CONFIG_HOME="$work/config" XDG_STATE_HOME="$work/state" XDG_CACHE_HOME="$work/cache"
-data=$XDG_DATA_HOME/scarletnx
-config=$XDG_CONFIG_HOME/scarletnx/recompiled
-state=$XDG_STATE_HOME/scarletnx/recompiled
+data=$XDG_DATA_HOME/nxaevora
+config=$XDG_CONFIG_HOME/nxaevora/recompiled
+state=$XDG_STATE_HOME/nxaevora/recompiled
 if [ -n "$exe" ]; then
     APPDATA=$(cygpath -w "$work/data")
     export APPDATA
@@ -114,10 +114,10 @@ fi
 
 for mode in "" -r; do
     run "${launch[@]}" "$runtime" ${mode:+"$mode"} --help
-    if [ "$status" -eq 0 ] && grep -q '^Usage: scarletnx' <<<"$out"; then
-        pass "scarletnx${mode:+ $mode} --help"
+    if [ "$status" -eq 0 ] && grep -q '^Usage: nxaevora-engine' <<<"$out"; then
+        pass "nxaevora-engine${mode:+ $mode} --help"
     else
-        fail "scarletnx${mode:+ $mode} --help exited $status" "$out"
+        fail "nxaevora-engine${mode:+ $mode} --help exited $status" "$out"
     fi
 done
 
@@ -125,26 +125,26 @@ done
 game=$data/recompiled/Smoke
 run "${launch[@]}" "$runtime" -r smoke.nro Smoke --jobs 2
 if [ "$status" -eq 0 ] && [ -f "$game/Smoke$exe" ] && [ -f "$game/Smoke.abi" ]; then
-    pass "scarletnx -r smoke.nro made $game/Smoke$exe"
+    pass "nxaevora-engine -r smoke.nro made $game/Smoke$exe"
 else
-    fail "scarletnx -r smoke.nro exited $status, without $game/Smoke$exe and its .abi" "$out"
+    fail "nxaevora-engine -r smoke.nro exited $status, without $game/Smoke$exe and its .abi" "$out"
 fi
 if [ -f "$config/Smoke/Smoke.ini" ] && [ ! -e "$game/Smoke.ini" ]; then
     pass "its settings are $config/Smoke/Smoke.ini"
 else
-    fail "scarletnx -r smoke.nro did not write its settings in $config/Smoke only" "$out"
+    fail "nxaevora-engine -r smoke.nro did not write its settings in $config/Smoke only" "$out"
 fi
 
 # The runtime left in the game's folder must start on its own (on Windows, with the DLLs it needs), find the game's
 # code by its name and take its ABI. The banner comes after that and before the GPU, which CI runners lack
 if [ -f "$game/Smoke$exe" ]; then
     run env -C "$game" "./Smoke$exe" -H
-    if grep -q '^ScarletNX - Smoke' <<<"$out"; then
+    if grep -q '^NXAevora Engine - Smoke' <<<"$out"; then
         pass "$game/Smoke$exe started the game (exit $status: $(tail -n 1 <<<"$out"))"
     else
         fail "$game/Smoke$exe exited $status before the game's banner" "$out"
     fi
-    if grep -q 'ScarletNX - Smoke' "$state/Smoke/Smoke.log" 2>/dev/null && [ ! -e "$game/Smoke.log" ]; then
+    if grep -q 'NXAevora Engine - Smoke' "$state/Smoke/Smoke.log" 2>/dev/null && [ ! -e "$game/Smoke.log" ]; then
         pass "its log is $state/Smoke/Smoke.log"
     else
         fail "the game did not log in $state/Smoke only" "$out"
@@ -155,10 +155,10 @@ fi
 # from Smoke by case
 cp smoke.nro play.nro
 run "${launch[@]}" "$runtime" play.nro -H
-if grep -q '^ScarletNX - play' <<<"$out"; then
-    pass "scarletnx play.nro recompiled and started the game (exit $status)"
+if grep -q '^NXAevora Engine - play' <<<"$out"; then
+    pass "nxaevora-engine play.nro recompiled and started the game (exit $status)"
 else
-    fail "scarletnx play.nro exited $status before the game's banner" "$out"
+    fail "nxaevora-engine play.nro exited $status before the game's banner" "$out"
 fi
 
 if [ "$failed" -ne 0 ]; then
