@@ -860,7 +860,7 @@ int shutdown(VkDevice device) {
 }
 
 const SnxUpscalerApi g_api = {SNX_UPSCALER_ABI, "dlss", instance_extensions, device_extensions, create, prepare,
-                              evaluate, destroy, shutdown};
+                              evaluate, destroy, shutdown, VK_FORMAT_UNDEFINED};
 } // namespace
 
 // The one export: the table for our number, or nothing. It keeps the host's log and starts nothing.

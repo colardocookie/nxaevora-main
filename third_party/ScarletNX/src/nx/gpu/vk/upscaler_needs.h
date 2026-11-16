@@ -10,10 +10,12 @@
 #include <stdint.h>
 #include <string.h>
 
-/* The one feature structure the host accepts from an adapter: the compute shader derivatives features (the KHR
-   and the NV extension share it), by its type number and its two bits. Any other type is refused: a core feature
-   structure, a promoted alias such as the 16 bit float features, and anything that is no feature structure. */
+/* The feature structures the host accepts from an adapter: the compute shader derivatives features (the KHR and
+   the NV extension share it), by its type number and its two bits, and since ABI 5 the mutable descriptor type
+   features (XeSS), by its one bit. Any other type is refused: a core feature structure, a promoted alias such as
+   the 16 bit float features, and anything that is no feature structure. */
 #define SNX_NEEDS_DERIVATIVES 1000201000
+#define SNX_NEEDS_MUTABLE     1000351000
 /* The walk's guard against a chain that does not end. With one accepted type it is never the first refusal: a
    second structure is refused by its type or as a repeat before the count gets there. */
 #define SNX_NEEDS_NODES 8
@@ -26,22 +28,28 @@ typedef struct {
     const void* next;
     uint32_t quads, linear; /* computeDerivativeGroupQuads, computeDerivativeGroupLinear */
 } SnxNeedsDerivatives;
-/* the bits of that structure, by value: asked for by an adapter, had by a physical device, or turned on */
 typedef struct {
-    int have; /* the structure is there */
+    int32_t type;
+    const void* next;
+    uint32_t on; /* mutableDescriptorType */
+} SnxNeedsMutable;
+/* the bits of those structures, by value: asked for by an adapter, had by a physical device, or turned on */
+typedef struct {
+    int have; /* the derivatives structure is there */
     int quads, linear;
+    int mutable_have, mutable_on; /* the mutable descriptor structure is there, and its bit */
 } SnxNeedsBits;
 
 enum {
     SNX_NEEDS_OK,
     SNX_NEEDS_TYPE,        /* a structure of a type the host does not accept */
-    SNX_NEEDS_REPEATED,    /* the accepted type twice in one chain */
+    SNX_NEEDS_REPEATED,    /* an accepted type twice in one chain */
     SNX_NEEDS_LONG,        /* the chain does not end within SNX_NEEDS_NODES structures */
     SNX_NEEDS_BIT,         /* a bit the adapter asks for is not one the physical device has */
     SNX_NEEDS_NAME,        /* an extension the adapter names is not in the physical device's list */
     SNX_NEEDS_LIST,        /* the physical device's list of extensions was not read whole */
     SNX_NEEDS_ROOM,        /* more names than the host keeps, or a name too long to keep */
-    SNX_NEEDS_OWNER,       /* a bit is asked for and VK_KHR_compute_shader_derivatives is not named */
+    SNX_NEEDS_OWNER,       /* a structure is asked for and the extension it belongs to is not named */
     SNX_NEEDS_CORE_UNKNOWN, /* a core feature bit is asked for that the host does not know */
     SNX_NEEDS_CORE_BIT,     /* a core feature bit that is asked for is not one the physical device has */
     SNX_NEEDS_ADAPTER,     /* the record is of another adapter, or there is none */
@@ -53,28 +61,38 @@ enum {
    without a structure is OK with nothing asked. The first fault is the answer. */
 static inline int snx_needs_chain(const void* chain, SnxNeedsBits* asked) {
     int nodes = 0;
-    *asked = (SnxNeedsBits){0, 0, 0};
+    *asked = (SnxNeedsBits){0, 0, 0, 0, 0};
     const unsigned char* at = chain;
     while (at) {
         int32_t type;
         const void* next;
-        uint32_t quads, linear;
+        uint32_t quads, linear, on;
         if (++nodes > SNX_NEEDS_NODES) return SNX_NEEDS_LONG;
         memcpy(&type, at + offsetof(SnxNeedsNode, type), sizeof type);
         memcpy(&next, at + offsetof(SnxNeedsNode, next), sizeof next);
-        if (type != SNX_NEEDS_DERIVATIVES) return SNX_NEEDS_TYPE;
-        if (asked->have) return SNX_NEEDS_REPEATED;
-        memcpy(&quads, at + offsetof(SnxNeedsDerivatives, quads), sizeof quads);
-        memcpy(&linear, at + offsetof(SnxNeedsDerivatives, linear), sizeof linear);
-        *asked = (SnxNeedsBits){1, quads != 0, linear != 0};
+        if (type == SNX_NEEDS_DERIVATIVES) {
+            if (asked->have) return SNX_NEEDS_REPEATED;
+            memcpy(&quads, at + offsetof(SnxNeedsDerivatives, quads), sizeof quads);
+            memcpy(&linear, at + offsetof(SnxNeedsDerivatives, linear), sizeof linear);
+            asked->have = 1;
+            asked->quads = quads != 0;
+            asked->linear = linear != 0;
+        } else if (type == SNX_NEEDS_MUTABLE) {
+            if (asked->mutable_have) return SNX_NEEDS_REPEATED;
+            memcpy(&on, at + offsetof(SnxNeedsMutable, on), sizeof on);
+            asked->mutable_have = 1;
+            asked->mutable_on = on != 0;
+        } else
+            return SNX_NEEDS_TYPE;
         at = next;
     }
     return SNX_NEEDS_OK;
 }
 /* each bit asked for against the host's own question to the physical device: one that is not there refuses */
 static inline int snx_needs_bits(const SnxNeedsBits* asked, const SnxNeedsBits* has) {
-    if (!asked->have) return SNX_NEEDS_OK;
-    if (!has->have || (asked->quads && !has->quads) || (asked->linear && !has->linear)) return SNX_NEEDS_BIT;
+    if (asked->have && (!has->have || (asked->quads && !has->quads) || (asked->linear && !has->linear)))
+        return SNX_NEEDS_BIT;
+    if (asked->mutable_have && (!has->mutable_have || (asked->mutable_on && !has->mutable_on))) return SNX_NEEDS_BIT;
     return SNX_NEEDS_OK;
 }
 /* Each name the adapter gives against the physical device's list. whole: that list was read to its end with
@@ -91,24 +109,34 @@ static inline int snx_needs_names(const char* const* names, uint32_t count, cons
     return SNX_NEEDS_OK;
 }
 
-/* An adapter that asks for a bit of the structure names VK_KHR_compute_shader_derivatives: a feature structure
-   is not put into a device's chain without its extension enabled. The NV extension of the same structure is
-   not taken as that: a configuration nobody examined. */
-static inline int snx_needs_owner(const char* const* names, uint32_t count, const SnxNeedsBits* asked) {
-    if (!asked->have) return SNX_NEEDS_OK;
+/* An adapter that hands a structure names its extension: VK_KHR_compute_shader_derivatives for the derivatives,
+   VK_EXT_mutable_descriptor_type for the mutable descriptor type. A feature structure is not put into a device's
+   chain without its extension enabled. The NV extension of the derivatives' structure is not taken as that: a
+   configuration nobody examined. */
+static inline int snx_needs_named(const char* const* names, uint32_t count, const char* name) {
     for (uint32_t i = 0; i < count; i++)
-        if (names && names[i] && !strcmp(names[i], "VK_KHR_compute_shader_derivatives")) return SNX_NEEDS_OK;
-    return SNX_NEEDS_OWNER;
+        if (names && names[i] && !strcmp(names[i], name)) return 1;
+    return 0;
+}
+static inline int snx_needs_owner(const char* const* names, uint32_t count, const SnxNeedsBits* asked) {
+    if (asked->have && !snx_needs_named(names, count, "VK_KHR_compute_shader_derivatives")) return SNX_NEEDS_OWNER;
+    if (asked->mutable_have && !snx_needs_named(names, count, "VK_EXT_mutable_descriptor_type")) return SNX_NEEDS_OWNER;
+    return SNX_NEEDS_OK;
 }
 
-/* Needs of core feature bits are no structure at all: a plain field of the adapter's answer, of which two bits
-   are defined, separate layouts for the depth and the stencil aspect and buffer device addresses (both bits of
-   the 1.2 features). Whoever makes a device turns them on in its own 1.2 structure, after its own question to the
-   physical device, whose answer is has. A bit the host does not know refuses, and so does a known one the
-   physical device does not have. */
+/* Needs of core feature bits are no structure at all: a plain field of the adapter's answer. Defined: separate
+   layouts for the depth and the stencil aspect and buffer device addresses (1.2), and since ABI 5 storage image
+   writes without a format (1.0), 8 bit integers in shaders (1.2) and integer dot products (1.3). Whoever makes a
+   device turns them on in its own structures after its own question to the physical device, whose answer is has.
+   A bit the host does not know refuses, and so does a known one the physical device does not have. */
 #define SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL 1u
 #define SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS 2u
-#define SNX_NEEDS_CORE_KNOWN (SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL | SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS)
+#define SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT 4u
+#define SNX_NEEDS_CORE_SHADER_INT8 8u
+#define SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT 16u
+#define SNX_NEEDS_CORE_KNOWN                                                                                         \
+    (SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL | SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS |                                 \
+     SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT | SNX_NEEDS_CORE_SHADER_INT8 | SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT)
 static inline int snx_needs_core(uint32_t asked, uint32_t has) {
     if (asked & ~SNX_NEEDS_CORE_KNOWN) return SNX_NEEDS_CORE_UNKNOWN;
     if (asked & ~has) return SNX_NEEDS_CORE_BIT;
@@ -191,6 +219,8 @@ static inline int snx_needs_met(const SnxNeedsRecord* r, const char* adapter, co
     }
     if (asked.have && (!r->on.have || (asked.quads && !r->on.quads) || (asked.linear && !r->on.linear)))
         return SNX_NEEDS_NOT_RECORDED;
+    if (asked.mutable_have && (!r->on.mutable_have || (asked.mutable_on && !r->on.mutable_on)))
+        return SNX_NEEDS_NOT_RECORDED;
     if (core & ~r->core) return SNX_NEEDS_NOT_RECORDED; /* a core bit asked for that was not turned on */
     return SNX_NEEDS_OK;
 }
@@ -199,13 +229,13 @@ static inline const char* snx_needs_text(int why) {
     switch (why) {
         case SNX_NEEDS_OK: return "met";
         case SNX_NEEDS_TYPE: return "its chain holds a structure of a type the host does not accept";
-        case SNX_NEEDS_REPEATED: return "its chain holds the accepted structure twice";
+        case SNX_NEEDS_REPEATED: return "its chain holds an accepted structure twice";
         case SNX_NEEDS_LONG: return "its chain does not end within eight structures";
         case SNX_NEEDS_BIT: return "a feature bit it asks for is not one the physical device has";
         case SNX_NEEDS_NAME: return "an extension it names is not in the physical device's list";
         case SNX_NEEDS_LIST: return "the physical device's list of extensions could not be read whole";
         case SNX_NEEDS_ROOM: return "it names more than the host keeps, or a name too long to keep";
-        case SNX_NEEDS_OWNER: return "it asks for a feature bit and does not name VK_KHR_compute_shader_derivatives";
+        case SNX_NEEDS_OWNER: return "it hands a feature structure and does not name the extension it belongs to";
         case SNX_NEEDS_CORE_UNKNOWN: return "it asks for a core feature bit the host does not know";
         case SNX_NEEDS_CORE_BIT: return "it asks for a core feature bit that the physical device does not have";
         case SNX_NEEDS_ADAPTER: return "the game's device was not made with the needs of this adapter";

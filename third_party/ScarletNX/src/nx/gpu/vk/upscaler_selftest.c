@@ -56,6 +56,7 @@ static struct {
     u64 staging_size;
     const SnxUpscalerApi* api;
     VkFormat motion_format; /* the vectors' images: two halves for dlss, four for the others */
+    VkFormat output_format; /* the adapter's own since ABI 5: four 32 bit floats, or B10G11R11 */
     int dlss; /* DLSS's matrix (DL1b revision 2, research's rulings for N4, D3-4): integration only, not quality */
     u32 contexts; /* contexts the adapter handed out and the self-test has not destroyed */
     SelftestLive live; /* which they are: each ends exactly once */
@@ -593,6 +594,24 @@ static int device_make(void) {
                "physical device does not have\n");
         return 0;
     }
+    /* since ABI 5: storage writes without a format (1.0) and 8 bit integers (1.2) are on as every feature the
+       physical device has, and held against the need. Integer dot products are of 1.3, which this device at 1.2
+       does not take: an adapter that needs them is not available here (XeSS's stage 2 decides it). */
+    if ((core & SNX_UPSCALER_CORE_STORAGE_WRITE_WITHOUT_FORMAT) && !f2.features.shaderStorageImageWriteWithoutFormat) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs storage image writes without a format, "
+               "which the physical device does not have\n");
+        return 0;
+    }
+    if ((core & SNX_UPSCALER_CORE_SHADER_INT8) && !f12.shaderInt8) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs 8 bit integers in shaders, which the "
+               "physical device does not have\n");
+        return 0;
+    }
+    if (core & SNX_UPSCALER_CORE_INTEGER_DOT_PRODUCT) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs integer dot products, a feature of "
+               "Vulkan 1.3, and the self-test's device is made at 1.2\n");
+        return 0;
+    }
     LOG(ST "the device is made with %u extensions of the adapter%s%s, with separate depth and stencil layouts %s, "
            "%s, and with 16 bit floats in shaders %s\n",
         device_count, device_count ? ": " : "", device_count ? device_names[0] : "",
@@ -966,11 +985,12 @@ static void pictures_free(Session* s) {
 static int output_supported(const Inputs* in, VkImageUsageFlags usage) {
     const VkImageUsageFlags all = usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     VkImageFormatProperties has;
-    const VkResult r = vkGetPhysicalDeviceImageFormatProperties(g.physical, OUTPUT_FORMAT, VK_IMAGE_TYPE_2D,
+    const VkResult r = vkGetPhysicalDeviceImageFormatProperties(g.physical, g.output_format, VK_IMAGE_TYPE_2D,
                                                                 VK_IMAGE_TILING_OPTIMAL, all, 0, &has);
     if (r != VK_SUCCESS || has.maxExtent.width < (u32)in->ow || has.maxExtent.height < (u32)in->oh) {
-        LOG(ST "the adapter is not available on this device: the output's format, four 32 bit floats, is not "
-               "there for the uses %x together at %dx%d (result %d)\n", (unsigned)all, in->ow, in->oh, (int)r);
+        LOG(ST "the adapter is not available on this device: the output's format, Vulkan format %d, is not there "
+               "for the uses %x together at %dx%d (result %d)\n", (int)g.output_format, (unsigned)all, in->ow, in->oh,
+            (int)r);
         return 0;
     }
     if (!selftest_staging_fits(g.staging_size, in->w, in->h, in->ow, in->oh)) {
@@ -990,7 +1010,7 @@ static int pictures_make(Session* s, const Inputs* in, const SnxUpscalerTraits* 
         !picture_make(&s->depth, VK_FORMAT_D24_UNORM_S8_UINT, rw, rh, traits->depth_usage) ||
         !picture_make(&s->motion, g.motion_format, rw, rh, traits->motion_usage) ||
         !output_supported(in, traits->output_usage) ||
-        !picture_make(&s->output, OUTPUT_FORMAT, (u32)in->ow, (u32)in->oh, traits->output_usage))
+        !picture_make(&s->output, g.output_format, (u32)in->ow, (u32)in->oh, traits->output_usage))
         return 0;
     if (in->whole || (in->w == in->rw && in->h == in->rh)) return 1;
     return picture_make(&s->wide_colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, (u32)in->w, (u32)in->h, 0) &&
@@ -1052,14 +1072,16 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
                                     .colour_format = VK_FORMAT_B10G11R11_UFLOAT_PACK32,
                                     .depth_format = VK_FORMAT_D24_UNORM_S8_UINT,
                                     .motion_format = g.motion_format,
-                                    .output_format = OUTPUT_FORMAT,
+                                    .output_format = g.output_format,
                                     .folder = "."};
     /* An adapter that submits on its own is refused, and so is one that needs a usage the pictures were not made
        with: inputs sampled, the output sampled and storage, all of them copy sources and destinations. */
     const VkImageUsageFlags copies = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     const VkImageUsageFlags inputs = VK_IMAGE_USAGE_SAMPLED_BIT | copies, output = inputs | VK_IMAGE_USAGE_STORAGE_BIT;
     const u64 asked = plat_ns(); /* D3-4, log only (research 22:40): what a context costs to make */
-    int made = g.api->create(&make, traits, &s->pending) == SNX_UPSCALER_OK && s->pending && !traits->submits_itself;
+    /* an adapter that submits at its init (ABI 5) is refused until the self-test has the protocol for it (stage 2) */
+    int made = g.api->create(&make, traits, &s->pending) == SNX_UPSCALER_OK && s->pending && !traits->submits_itself &&
+               !traits->submits_at_init;
     const u64 created = plat_ns();
     u64 recorded = created;
     if (s->pending) { /* destroyed below whenever it is not taken */
@@ -1284,13 +1306,15 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     s->evaluated++;
     selftest_proof_frame(&s->proof, frame.reset, frame.far_plane,
                          selftest_checksum(in->depth + (size_t)i * pixels, pixels * 4, SELFTEST_CHECKSUM_START));
-    /* 16 bytes a pixel, four floats: red, green and blue are taken, and one that is not finite ends the run */
-    for (size_t p = 0; p < (size_t)in->ow * in->oh; p++)
+    /* red, green and blue of the output's format (16 bytes a pixel, or 4 packed), one not finite ends the run */
+    for (size_t p = 0; p < (size_t)in->ow * in->oh; p++) {
+        double rgb[3];
+        selftest_output_pixel(g.staging_bytes, p, g.output_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32, rgb);
         for (int c = 0; c < 3; c++) {
-            const float value = selftest_output_value(g.staging_bytes, p, c);
-            if (!isfinite(value)) return -1;
-            out[3 * p + c] = (double)value;
+            if (!isfinite(rgb[c])) return -1;
+            out[3 * p + c] = rgb[c];
         }
+    }
     return 1;
 }
 
@@ -2686,6 +2710,15 @@ int vk_upscaler_selftest(const char* adapter) {
         LOG(ST "FAIL: the adapter \"%s\" is not available\n", adapter);
         return 1;
     }
+    /* the output's format, as the adapter declares it when it is loaded (ABI 5), and only one this test reads back */
+    g.output_format = g.api->output_format != VK_FORMAT_UNDEFINED ? g.api->output_format : OUTPUT_FORMAT;
+    if (g.output_format != OUTPUT_FORMAT && g.output_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) {
+        LOG(ST "FAIL: the adapter's output format, Vulkan format %d, is not one the self-test reads back\n",
+            (int)g.output_format);
+        return 1;
+    }
+    LOG(ST "the adapter's output is made in Vulkan format %d%s\n", (int)g.output_format,
+        g.output_format == OUTPUT_FORMAT ? ", four 32 bit floats" : ", B10G11R11");
     g.generation = 1;
     if (!device_make()) return 1;
     if (g.dlss) { /* DLSS's matrix: the native size, and 1/2 and 2/3 for D3-4, quality not judged (N4 Q1) */

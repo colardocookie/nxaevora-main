@@ -277,6 +277,7 @@ static struct {
        the opt-in */
     int below;
     u32 output_max[2]; /* the output's largest width and height, as the start's format question answered */
+    VkFormat output_format; /* the adapter's, fixed at its start (ABI 5): UPSCALED_FORMAT unless it names another */
     /* the output's uses: the runtime's (sampled for the write-back, storage) and the adapter's traits' (research
        19:00: NGX clears it, a transfer destination), and those the image was last made with */
     VkImageUsageFlags output_usage, output_made_usage;
@@ -2927,7 +2928,7 @@ static int upscaler_key(const Surf* depth, const TemporalUpscalerColour* colour,
     *flags = SNX_UPSCALER_COLOUR_LINEAR_HDR | SNX_UPSCALER_DEPTH_REVERSED | SNX_UPSCALER_VECTORS_UNJITTERED |
              SNX_UPSCALER_EXPOSURE_AUTOMATIC | (projection->far_infinite ? SNX_UPSCALER_FAR_PLANE_INFINITE : 0);
     const TemporalUpscalerMaking making = {colour->format, (unsigned)depth->f.vk, (unsigned)upscaler_motion_format(),
-                                           (unsigned)UPSCALED_FORMAT, colour->layers,        depth->layers,
+                                           (unsigned)g_u.output_format, colour->layers,       depth->layers,
                                            *flags};
     *config = (TemporalUpscalerConfig){colour->w, colour->h, render ? render->w : colour->w,
                                        render ? render->h : colour->h, colour->w, colour->h,
@@ -3097,7 +3098,7 @@ static void upscaler_warm(u32 frame, Surf* scene, Surf* depth, int steady) {
                                     .colour_format = scene->f.vk,
                                     .depth_format = depth->f.vk,
                                     .motion_format = upscaler_motion_format(),
-                                    .output_format = UPSCALED_FORMAT,
+                                    .output_format = g_u.output_format,
                                     .folder = "."};
     /* what the images handed over are made with: sampled inputs, a sampled storage image for the output */
     const VkImageUsageFlags inputs = VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -3112,16 +3113,20 @@ static void upscaler_warm(u32 frame, Surf* scene, Surf* depth, int steady) {
     const VkImageUsageFlags output_usage = UPSCALED_USAGE | traits.output_usage;
     const int output_ok =
         created && !(traits.output_usage & ~output) &&
-        VK_OK(vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, UPSCALED_FORMAT, VK_IMAGE_TYPE_2D,
+        VK_OK(vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, g_u.output_format, VK_IMAGE_TYPE_2D,
                                                        VK_IMAGE_TILING_OPTIMAL, output_usage, 0, &output_has));
     if (output_ok) {
         g_u.output_usage = output_usage;
         g_u.output_max[0] = output_has.maxExtent.width;
         g_u.output_max[1] = output_has.maxExtent.height;
     }
-    if (!created || traits.submits_itself || (reads & ~inputs) || !output_ok) {
+    /* An adapter that submits at its init (ABI 5) is refused until the runtime has the protocol for it (XeSS's
+       stage 2) */
+    if (!created || traits.submits_itself || traits.submits_at_init || (reads & ~inputs) || !output_ok) {
         const char* why = !created              ? "a context could not be made on the game's device"
                           : traits.submits_itself ? "the adapter submits work on its own"
+                          : traits.submits_at_init ? "the adapter submits work at its init, which this build does not "
+                                                     "take yet"
                                                   : "the adapter needs image usages the game's images do not have";
         /* nothing was recorded for it, so it may go at once */
         if (created) g_u.api->destroy(made);
@@ -3240,7 +3245,7 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         g_u.output = (Image){0};
     }
     const VkImageUsageFlags output_usage = g_u.output_usage ? g_u.output_usage : UPSCALED_USAGE;
-    const int imaged = image_ensure(&g_u.output, UPSCALED_FORMAT, scene->sw, scene->sh, output_usage,
+    const int imaged = image_ensure(&g_u.output, g_u.output_format, scene->sw, scene->sh, output_usage,
                                     "upscaler's output");
     if (imaged) g_u.output_made_usage = output_usage;
     VkDescriptorSet set = VK_NULL_HANDLE;
@@ -3846,16 +3851,20 @@ static void upscaler_start(void) {
                                                device.features, device.core);
         if (met != SNX_NEEDS_OK) why = snx_needs_text(met);
     }
-    /* The private output's format, for the type, tiling, uses and flags image_ensure makes it with. The largest
-       size it answers is kept: the scene's size is held against it before the image is made. */
+    /* The private output's format, the adapter's own since ABI 5 (four 32 bit floats unless it names another), for
+       the type, tiling, uses and flags image_ensure makes it with. The largest size it answers is kept: the scene's
+       size is held against it before the image is made. */
     VkImageFormatProperties has;
-    if (!why && vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, UPSCALED_FORMAT, VK_IMAGE_TYPE_2D,
+    g_u.output_format = api && api->output_format != VK_FORMAT_UNDEFINED ? api->output_format : UPSCALED_FORMAT;
+    if (!why && vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, g_u.output_format, VK_IMAGE_TYPE_2D,
                                                          VK_IMAGE_TILING_OPTIMAL, UPSCALED_USAGE, 0,
                                                          &has) != VK_SUCCESS)
-        why = "the device has no image of four 32 bit floats that is both a storage and a sampled image";
+        why = "the device has no image of the adapter's output format that is both a storage and a sampled image";
     else if (!why) {
         g_u.output_max[0] = has.maxExtent.width;
         g_u.output_max[1] = has.maxExtent.height;
+        LOG("arceus-upscaler: %s's output is made in Vulkan format %d%s\n", api->name ? api->name : name,
+            (int)g_u.output_format, g_u.output_format == UPSCALED_FORMAT ? ", four 32 bit floats" : ", its own");
     }
     if (why) {
         LOG("arceus-upscaler: %s is not available (%s): the run goes on as without the switch\n", name, why);

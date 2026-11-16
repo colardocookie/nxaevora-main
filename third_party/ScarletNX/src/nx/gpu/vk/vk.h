@@ -1166,9 +1166,11 @@ typedef struct {
     char adapter[32];
     u32 count;
     const char* names[8]; /* the host's own copies */
-    int have, quads, linear; /* the accepted structure is asked for, and its bits to turn on */
-    u32 core;                /* core feature bits to turn on in the caller's own structure */
-    VkPhysicalDeviceComputeShaderDerivativesFeaturesNV derivatives; /* the host's own structure for the chain */
+    int have, quads, linear; /* the derivatives' structure is asked for, and its bits to turn on */
+    int mutable_have, mutable_on; /* the mutable descriptor type's (since ABI 5) */
+    u32 core;                /* core feature bits to turn on in the caller's own structures */
+    VkPhysicalDeviceComputeShaderDerivativesFeaturesNV derivatives; /* the host's own structures for the chain */
+    VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mutable_desc;
 } VkUpscalerDeviceAsk;
 int vk_upscaler_instance_ask(const char* name, const char** names, u32* count, u32 room);
 int vk_upscaler_instance_met(const struct SnxUpscalerApi* api);
