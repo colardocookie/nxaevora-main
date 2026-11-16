@@ -17,7 +17,8 @@
 #include "nx/runtime/platform/log.h"
 
 #ifdef _WIN32
-const SnxUpscalerApi* snx_upscaler_fsr(void); /* gpu/vk/upscaler_fsr.cpp */
+const SnxUpscalerApi* snx_upscaler_fsr(void);  /* gpu/vk/upscaler_fsr.cpp */
+const SnxUpscalerApi* snx_upscaler_xess(void); /* gpu/vk/upscaler_xess.cpp */
 #endif
 
 static const SnxUpscalerApi* module_adapter(const char* name);
@@ -28,6 +29,10 @@ static const SnxUpscalerApi* adapter_find(const char* name, int* built) {
     if (name && !strcmp(name, "fsr")) {
         *built = 1;
         return snx_upscaler_fsr();
+    }
+    if (name && !strcmp(name, "xess")) {
+        *built = 1;
+        return snx_upscaler_xess();
     }
 #endif
     return NULL;

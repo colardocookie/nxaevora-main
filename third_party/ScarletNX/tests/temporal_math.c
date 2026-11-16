@@ -7,6 +7,8 @@
 #include "nx/gpu/vk/upscaler_selftest.h"
 #include "nx/gpu/vk/upscaler_module.h"
 #include "nx/gpu/vk/upscaler_needs.h"
+#include "nx/gpu/vk/upscaler_protocol.h"
+#include "nx/gpu/vk/upscaler_modes.h"
 #include "nx/gpu/vk/validation_lines.h"
 #include <assert.h>
 #include <stddef.h>
@@ -2291,11 +2293,13 @@ static void test_upscaler_module(void) {
        either of which would otherwise start the upscaler. */
     assert(snx_module_name("fsr", 0) == SNX_MODULE_NAME_BUILT_IN);
     assert(snx_module_name("fsr", 1) == SNX_MODULE_NAME_BUILT_IN);
+    assert(snx_module_name("xess", 0) == SNX_MODULE_NAME_BUILT_IN);
+    assert(snx_module_name("xess", 1) == SNX_MODULE_NAME_BUILT_IN);
     assert(snx_module_name("dlss", 1) == SNX_MODULE_NAME_MODULE);
     assert(snx_module_name("dlss", 0) == SNX_MODULE_NAME_MODULE); /* in the game too since DL2 */
     assert(snx_module_name("DLSS", 0) == SNX_MODULE_NAME_UNKNOWN);
     assert(snx_module_name("dlss ", 0) == SNX_MODULE_NAME_UNKNOWN);
-    assert(snx_module_name("xess", 1) == SNX_MODULE_NAME_UNKNOWN && snx_module_name("", 0) == SNX_MODULE_NAME_UNKNOWN);
+    assert(snx_module_name("XeSS", 1) == SNX_MODULE_NAME_UNKNOWN && snx_module_name("", 0) == SNX_MODULE_NAME_UNKNOWN);
     assert(snx_module_name(NULL, 0) == SNX_MODULE_NAME_UNKNOWN && snx_module_name(NULL, 1) == SNX_MODULE_NAME_UNKNOWN);
     {
         /* the two answers that would pass every other rule of the game's device and start */
@@ -5050,6 +5054,75 @@ static void edge_set(double* rgb, int x, int y, double value) {
 }
 
 /* The jitter-sign case's picture, regions, profile and measures. */
+/* XeSS's R1 (upscaler_protocol.h) against stand-in waits and a stand-in call: each outcome, the order of the steps,
+   and no call and no second wait after a failed first one */
+typedef struct {
+    int waits[2], call, n; /* the answers of the two waits and of the call, and the steps taken */
+    char order[8];
+} ProtocolStandin;
+static int standin_wait(void* user) {
+    ProtocolStandin* p = user;
+    const int k = p->order[0] == 'w' && p->n ? 1 : 0;
+    p->order[p->n++] = 'w';
+    return p->waits[k];
+}
+static int standin_call(void* user) {
+    ProtocolStandin* p = user;
+    p->order[p->n++] = 'c';
+    return p->call;
+}
+static void test_upscaler_protocol(void) {
+    static const struct {
+        int before, call, after, outcome;
+        const char* order;
+    } cases[] = {{1, 1, 1, SNX_INIT_READY, "wcw"},      {0, 1, 1, SNX_INIT_NOT_CALLED, "w"},
+                 {0, 0, 0, SNX_INIT_NOT_CALLED, "w"},   {1, 0, 1, SNX_INIT_FAILED, "wcw"},
+                 {1, 1, 0, SNX_INIT_FATAL, "wcw"},      {1, 0, 0, SNX_INIT_FATAL, "wcw"}};
+    for (size_t k = 0; k < sizeof cases / sizeof cases[0]; k++) {
+        ProtocolStandin p = {{cases[k].before, cases[k].after}, cases[k].call, 0, ""};
+        const SnxInitSteps steps = {standin_wait, standin_call, &p};
+        assert(snx_init_protocol(&steps) == cases[k].outcome);
+        assert(!strcmp(p.order, cases[k].order));
+    }
+    for (int a = SNX_INIT_READY; a <= SNX_INIT_FATAL; a++)
+        for (int b = a + 1; b <= SNX_INIT_FATAL; b++) assert(strcmp(snx_init_text(a), snx_init_text(b)));
+}
+/* the mode rule in C (upscaler_modes.h) on the tables DLSS's host cases use, and XeSS's factors at 3840x2160 */
+static void test_upscaler_modes(void) {
+    const SnxMode large[6] = {{1, 1280, 720, 1280, 720, 1280, 720},    {1, 1920, 1080, 1920, 1080, 3840, 2160},
+                              {1, 2227, 1253, 1920, 1080, 3840, 2160}, {1, 2560, 1440, 1920, 1080, 3840, 2160},
+                              {0, 0, 0, 0, 0, 0, 0},                   {1, 3840, 2160, 3802, 2138, 3840, 2160}};
+    assert(snx_mode_choose(large, 6, 5, 3840, 2160, 3840, 2160) == 5);
+    assert(snx_mode_choose(large, 6, 5, 1920, 1080, 3840, 2160) == 1);
+    assert(snx_mode_choose(large, 6, 5, 2560, 1440, 3840, 2160) == 3);
+    assert(snx_mode_choose(large, 6, 5, 2304, 1296, 3840, 2160) == 2);
+    assert(snx_mode_choose(large, 6, 5, 3072, 1728, 3840, 2160) == 3);
+    assert(snx_mode_choose(large, 6, 5, 1900, 1080, 3840, 2160) == -1 && snx_mode_choose(large, 6, 5, 1280, 721,
+                                                                                         3840, 2160) == -1);
+    assert(snx_mode_choose(large, 6, -1, 3840, 2160, 3840, 2160) == -1);
+    SnxMode no_native[6];
+    memcpy(no_native, large, sizeof no_native);
+    no_native[5].got = 0; /* the native mode not answered: the output's own size has no mode */
+    assert(snx_mode_choose(no_native, 6, 5, 3840, 2160, 3840, 2160) == -1);
+    no_native[5] = (SnxMode){1, 3840, 2160, 3802, 2138, 3830, 2160}; /* answered, its range short of the output */
+    assert(snx_mode_choose(no_native, 6, 5, 3840, 2160, 3840, 2160) == -1);
+    /* XeSS by its factors (ultra performance 3.0 ... native 1.0), ranges from its factor up to the output */
+    const SnxMode xess[7] = {{1, 1280, 720, 1280, 720, 3840, 2160},  {1, 1670, 939, 1670, 939, 3840, 2160},
+                             {1, 1920, 1080, 1920, 1080, 3840, 2160}, {1, 2259, 1271, 2259, 1271, 3840, 2160},
+                             {1, 2560, 1440, 2560, 1440, 3840, 2160}, {1, 2954, 1662, 2954, 1662, 3840, 2160},
+                             {1, 3840, 2160, 3840, 2160, 3840, 2160}};
+    assert(snx_mode_choose(xess, 7, 6, 1920, 1080, 3840, 2160) == 2); /* 1/2: balanced */
+    assert(snx_mode_choose(xess, 7, 6, 2560, 1440, 3840, 2160) == 4); /* 2/3: ultra quality */
+    assert(snx_mode_choose(xess, 7, 6, 2304, 1296, 3840, 2160) == 3); /* 3/5: quality, 82 apart */
+    assert(snx_mode_choose(xess, 7, 6, 2880, 1620, 3840, 2160) == 4); /* 3/4: under ultra quality plus's least */
+    assert(snx_mode_choose(xess, 7, 6, 3840, 2160, 3840, 2160) == 6);
+    /* ties to the higher quality, an exact optimal outside its own range first */
+    SnxMode t[2] = {{1, 300, 170, 240, 135, 480, 270}, {1, 320, 180, 240, 135, 480, 270}};
+    assert(snx_mode_choose(t, 2, -1, 310, 175, 480, 270) == 1 && snx_mode_choose(t, 2, -1, 309, 175, 480, 270) == 0);
+    t[0] = (SnxMode){1, 300, 170, 310, 175, 480, 270};
+    assert(snx_mode_choose(t, 2, -1, 300, 170, 480, 270) == 0);
+}
+
 /* research 22:20: NGX's own 09600, by the id, the region and every image NGX's */
 static void test_selftest_ngx_own(void) {
     static const char text[] = "[ Debug region: nv.ngx.dlss.Evaluate ] vkQueueSubmit(): pSubmits[0] command buffer";
@@ -6056,6 +6129,8 @@ int main(void) {
     test_selftest_stop_notice();
     test_selftest_proof();
     test_selftest_ngx_own();
+    test_upscaler_protocol();
+    test_upscaler_modes();
     test_selftest_sign_forcing();
     test_selftest_sign_protocol();
     test_selftest_edges();

@@ -16,6 +16,7 @@
 #include "nx/gpu/vk/temporal_spatial.h"
 #include "nx/gpu/vk/upscaler.h"
 #include "nx/gpu/vk/upscaler_needs.h"
+#include "nx/gpu/vk/upscaler_protocol.h"
 #include "nx/runtime/platform/log.h"
 
 /* the host's monotonic clock in nanoseconds (runtime/platform/plat.h, whose Windows headers define near and far,
@@ -2993,7 +2994,8 @@ typedef struct {
     SnxUpscaler* context;
     const SnxUpscalerFrame* frame;
     Surf *scene, *depth;
-    u32 number; /* the frame's, for the log */
+    u32 number;  /* the frame's, for the log */
+    int at_init; /* a prepare whose library submits work of its own (submits_at_init, R1) */
 } UpscalerCall;
 /* What must be recorded before the library: the end of our rendering, and for an evaluate the images as the
    library reads and writes them, in a compute shader. The scene's targets go through the renderer's own
@@ -3028,10 +3030,36 @@ static void upscaler_took(VkCommandBuffer cb, Surf* s) {
     s->stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     s->access = UPSCALER_ANY_ACCESS;
 }
-/* The library's answers go through as they are (vk_rec_direct): UNKNOWN is not reduced to a failure (DL2 rev 2) */
+/* R1's steps for an adapter that submits at its init: the whole device idle, under vk_lock with the ring drained
+   (vk_rec_direct runs this on the GPU thread). A wait that fails takes the runtime's path of a failed wait. */
+typedef struct {
+    const UpscalerCall* call;
+    VkCommandBuffer cb;
+} UpscalerInit;
+static int upscaler_idle(void* user) {
+    (void)user;
+    if (VK_OK(vkDeviceWaitIdle(g_vk.dev))) return 1;
+    vk_rec_mark_failed();
+    return 0;
+}
+static int upscaler_init_call(void* user) {
+    const UpscalerInit* i = user;
+    return g_u.api->prepare(i->call->context, i->cb) == SNX_UPSCALER_OK;
+}
+/* The library's answers go through as they are (vk_rec_direct): UNKNOWN is not reduced to a failure (DL2 rev 2).
+   With submits_at_init (R1): a wait before that fails calls nothing, a failed prepare after a good wait is a failed
+   prepare, and a wait after that fails is UNKNOWN, the fatal path: nothing is called, freed or submitted again. */
 static int upscaler_prepare(VkCommandBuffer cb, void* user) {
     const UpscalerCall* c = user;
-    return g_u.api->prepare(c->context, cb);
+    if (!c->at_init) return g_u.api->prepare(c->context, cb);
+    UpscalerInit init = {c, cb};
+    const SnxInitSteps steps = {upscaler_idle, upscaler_init_call, &init};
+    const int outcome = snx_init_protocol(&steps);
+    LOG("arceus-upscaler: %s's prepare, which submits work of its own, between two waits for the device: %s\n",
+        g_u.api->name ? g_u.api->name : "?", snx_init_text(outcome));
+    return outcome == SNX_INIT_READY ? SNX_UPSCALER_OK
+           : outcome == SNX_INIT_FATAL ? SNX_UPSCALER_UNKNOWN
+                                       : SNX_UPSCALER_FAILED;
 }
 /* A library answered UNKNOWN: the frame's command buffer holds the game's earlier work of the frame and what the
    library left, in a state not known. Nothing more is recorded into it, it is never submitted (vk_rec_direct's
@@ -3120,13 +3148,10 @@ static void upscaler_warm(u32 frame, Surf* scene, Surf* depth, int steady) {
         g_u.output_max[0] = output_has.maxExtent.width;
         g_u.output_max[1] = output_has.maxExtent.height;
     }
-    /* An adapter that submits at its init (ABI 5) is refused until the runtime has the protocol for it (XeSS's
-       stage 2) */
-    if (!created || traits.submits_itself || traits.submits_at_init || (reads & ~inputs) || !output_ok) {
+    /* an adapter that submits at its init (ABI 5) is taken: its prepare runs under R1 (upscaler_prepare) */
+    if (!created || traits.submits_itself || (reads & ~inputs) || !output_ok) {
         const char* why = !created              ? "a context could not be made on the game's device"
                           : traits.submits_itself ? "the adapter submits work on its own"
-                          : traits.submits_at_init ? "the adapter submits work at its init, which this build does not "
-                                                     "take yet"
                                                   : "the adapter needs image usages the game's images do not have";
         /* nothing was recorded for it, so it may go at once */
         if (created) g_u.api->destroy(made);
@@ -3134,7 +3159,7 @@ static void upscaler_warm(u32 frame, Surf* scene, Surf* depth, int steady) {
         else upscaler_outcome(frame, 0, TEMPORAL_UPSCALER_STOPPED, why);
         return;
     }
-    UpscalerCall call = {made, NULL, NULL, NULL};
+    UpscalerCall call = {made, NULL, NULL, NULL, 0, traits.submits_at_init != 0};
     const int recorded = vk_rec_direct(vk_cmd(), upscaler_before, upscaler_prepare, &call);
     if (recorded == VK_REC_DIRECT_UNKNOWN) upscaler_stop(frame, "prepare"); /* before anything else */
     /* Whatever the answer, work may be recorded for the context: it is kept until the submission that work is
@@ -3315,7 +3340,7 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         .near_plane = camera[0],
         .far_plane = camera[1],
         .fov_y = camera[2]};
-    UpscalerCall call = {g_u.live, &handed, scene, depth, frame};
+    UpscalerCall call = {g_u.live, &handed, scene, depth, frame, 0};
     const int recorded = vk_rec_direct(cb, upscaler_before, upscaler_evaluate, &call);
     /* before any barrier back, write-back or draw: nothing more goes into this command buffer */
     if (recorded == VK_REC_DIRECT_UNKNOWN) upscaler_stop(frame, "evaluate");
@@ -3817,8 +3842,9 @@ static void upscaler_start(void) {
         return;
     }
     const SnxUpscalerApi* api = vk_upscaler_adapter(name);
-    g_u.two_channel = !strcmp(name, "dlss"); /* DLSS takes the vectors in two channels (DL2 point 3) */
-    if (g_u.two_channel) {
+    /* DLSS and XeSS take the vectors in two channels (DL2 point 3, XESS-DESIGN.md) */
+    g_u.two_channel = !strcmp(name, "dlss") || !strcmp(name, "xess");
+    if (!strcmp(name, "dlss")) {
         /* SNX_ARCEUS_DLSS_JITTER_SIGN, the module's experiment (research 18:45): said here as the module reads it */
         const char* forced = getenv("SNX_ARCEUS_DLSS_JITTER_SIGN");
         int is_forced = 0;
@@ -3886,18 +3912,20 @@ static void upscaler_start(void) {
         "At full size only, in frames whose scene is the whole target\n", api->name ? api->name : name);
     LOG("arceus-upscaler: our own resolve, sharpen, history, numbers and views do not run with it. Without effect: "
         "SNX_ARCEUS_TEMPORAL_HISTORY, _CLAMP, _BLEND, _NEAREST, _LUMA, _SHARPEN, _VIEW and _RECT\n");
-    /* D3-3 and D3-4: with the fixed resolution, frames below native at a listed scale go to FSR or DLSS on D3-2's
-       hand-over, whose lines say "spatial" (the hand-over's name); the scene scale itself is the opt-in */
+    /* D3-3, D3-4 and XeSS: with the fixed resolution, frames below native at a listed scale go to the library on
+       D3-2's hand-over, whose lines say "spatial" (the hand-over's name); the scene scale itself is the opt-in */
     const char* fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
-    g_u.below = fixed && !strcmp(fixed, "1") && (!strcmp(name, "fsr") || !strcmp(name, "dlss"));
+    const int dlss = !strcmp(name, "dlss"), xess = !strcmp(name, "xess");
+    g_u.below = fixed && !strcmp(fixed, "1") && (!strcmp(name, "fsr") || dlss || xess);
     if (g_u.below) {
         g_s.asked = 1;
         LOG("arceus-upscaler: %s below native (%s, EXPERIMENTAL): frames at a scene scale of 1/2, 3/5, 2/3, 3/4 or "
             "4/5 are rendered by it at the rectangle and handed to the game's readers in a larger texture (the "
             "hand-over's lines say spatial); none of our numbers are made for them%s\n",
-            api->name ? api->name : name, g_u.two_channel ? "D3-4" : "D3-3",
-            g_u.two_channel ? ". The mode is the one NGX's optimal settings give for the rectangle (the module's "
-                              "context line)" : "");
+            api->name ? api->name : name, dlss ? "D3-4" : xess ? "XeSS" : "D3-3",
+            dlss   ? ". The mode is the one NGX's optimal settings give for the rectangle (the module's context line)"
+            : xess ? ". The mode is the one XeSS's optimal input resolutions give for the rectangle (its context line)"
+                   : "");
     }
 }
 

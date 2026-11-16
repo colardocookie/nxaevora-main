@@ -14,6 +14,7 @@
 #include "nx/gpu/vk/upscaler.h"
 #include "nx/gpu/vk/upscaler_selftest.h"
 #include "nx/gpu/vk/temporal_math.h"
+#include "nx/gpu/vk/upscaler_protocol.h"
 #include "nx/runtime/platform/log.h"
 u64 plat_ns(void); /* plat.h's, declared alone: plat.h brings windows.h, whose far and INFINITE are macros */
 
@@ -58,6 +59,8 @@ static struct {
     VkFormat motion_format; /* the vectors' images: two halves for dlss, four for the others */
     VkFormat output_format; /* the adapter's own since ABI 5: four 32 bit floats, or B10G11R11 */
     int dlss; /* DLSS's matrix (DL1b revision 2, research's rulings for N4, D3-4): integration only, not quality */
+    int matrix; /* that matrix, for DLSS and for XeSS (XESS-DESIGN.md: DLSS's DL1 matrix and bars) */
+    const char* name; /* the adapter's, for the lines */
     u32 contexts; /* contexts the adapter handed out and the self-test has not destroyed */
     SelftestLive live; /* which they are: each ends exactly once */
     int ended_wrong;   /* a context destroyed that was not live, or while a command buffer was recorded */
@@ -1050,6 +1053,15 @@ static void session_close(Session* s) {
     memset(s, 0, sizeof *s);
 }
 
+/* R1 in the self-test: the adapter's prepare between two waits for the device (idle(), which marks the device's
+   state unknown when it fails), outside any command buffer of ours: the library submits on its own */
+static u32 messages_now(void);
+static int selftest_idle(void* user) {
+    (void)user;
+    return idle();
+}
+static int selftest_init(void* user) { return g.api->prepare((SnxUpscaler*)user, VK_NULL_HANDLE) == SNX_UPSCALER_OK; }
+
 /* The context for a configuration, by the states the runtime will keep (temporal_upscaler_*): created, prepared into
    a command buffer that is submitted and has completed, and only then published. 1 when the frame may be
    evaluated on s->live. A context is freed only when its command buffer was discarded or has completed. When
@@ -1079,9 +1091,7 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
     const VkImageUsageFlags copies = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     const VkImageUsageFlags inputs = VK_IMAGE_USAGE_SAMPLED_BIT | copies, output = inputs | VK_IMAGE_USAGE_STORAGE_BIT;
     const u64 asked = plat_ns(); /* D3-4, log only (research 22:40): what a context costs to make */
-    /* an adapter that submits at its init (ABI 5) is refused until the self-test has the protocol for it (stage 2) */
-    int made = g.api->create(&make, traits, &s->pending) == SNX_UPSCALER_OK && s->pending && !traits->submits_itself &&
-               !traits->submits_at_init;
+    int made = g.api->create(&make, traits, &s->pending) == SNX_UPSCALER_OK && s->pending && !traits->submits_itself;
     const u64 created = plat_ns();
     u64 recorded = created;
     if (s->pending) { /* destroyed below whenever it is not taken */
@@ -1101,7 +1111,15 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
     /* Three ends. Nothing was submitted and the command buffer's reset succeeded: what it held is discarded. It
        was submitted and has completed. Or its end is not known: then the context is held and nothing is freed. */
     int prepared = 0, submitted = 0;
-    if (made && begin()) {
+    if (made && traits->submits_at_init) { /* R1: nothing of ours is recorded or submitted for it */
+        const u32 before = messages_now();
+        const SnxInitSteps steps = {selftest_idle, selftest_init, s->pending};
+        const int outcome = snx_init_protocol(&steps);
+        recorded = plat_ns();
+        prepared = submitted = outcome == SNX_INIT_READY;
+        LOG(ST "the adapter's prepare, which submits work of its own, between two waits for the device: %s, %u "
+               "validation messages during it\n", snx_init_text(outcome), messages_now() - before);
+    } else if (made && begin()) {
         prepared = g.api->prepare(s->pending, g.cb) == SNX_UPSCALER_OK;
         recorded = plat_ns();
         if (prepared) submitted = submit();
@@ -1514,6 +1532,33 @@ static int not_run(const char* name, int up) {
     return skip_rest();
 }
 
+/* XeSS (XESS-DESIGN.md): case 2's sixteen combinations of the jitter's and the vectors' signs on an unequal
+   translation, at the suite's 320x180 for 480x270, logged and nothing chosen, as DLSS's jitter signs are. Only a
+   run that cannot be made fails. */
+static int vector_signs(int up) {
+    const size_t pixels = (size_t)OUT_W * OUT_H, size = sizeof(double) * 3 * pixels;
+    const double pan[2] = {1.3, 0.7};
+    double *reference = malloc(size), *output = malloc(size);
+    u8* regions = malloc(pixels);
+    Inputs in;
+    char name[64];
+    memset(&in, 0, sizeof in);
+    int ok = reference && output && regions;
+    if (ok && !not_run("case 2", up) && inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, pan, 0, 0)) {
+        truth(&in, up, reference, regions);
+        snprintf(name, sizeof name, "case 2 %s all signs, logged only", up ? "up" : "down");
+        ok = signs(name, &in, 15, SELFTEST_BACKGROUND, reference, regions, output, 0);
+    } else if (!skip_rest()) {
+        SAY(ST "case 2 %s for %s: could not be made: FAIL\n", up ? "up" : "down", g.name);
+        ok = 0;
+    }
+    inputs_free(&in);
+    free(reference);
+    free(output);
+    free(regions);
+    return ok;
+}
+
 /* the whole suite for one sign of the viewport's height: 1 when every case passed */
 static int suite(int up) {
     const size_t pixels = (size_t)OUT_W * OUT_H, size = sizeof(double) * 3 * pixels;
@@ -1886,8 +1931,9 @@ static int native_base(Native* n, NativeForm* F) {
     F->ran = F->ran && run(&F->in, &CONFIGURED, 0, n->scratch[N_AGAIN], NULL, NULL, NULL, NULL) &&
              run(&ahead, &CONFIGURED, 0, n->scratch[N_AHEAD], NULL, NULL, NULL, NULL);
     /* the logged control of another create property: for DLSS the other depth convention, on the finite form */
-    const int control = !g.dlss || !isinf(F->form->far_plane);
-    if (F->ran && control && !g.dlss) F->ran = run(&F->in, &WITHOUT_HDR, 0, n->scratch[N_OLD], NULL, NULL, NULL, NULL);
+    const int control = !g.matrix || !isinf(F->form->far_plane);
+    if (F->ran && control && !g.matrix)
+        F->ran = run(&F->in, &WITHOUT_HDR, 0, n->scratch[N_OLD], NULL, NULL, NULL, NULL);
     else if (F->ran && control) {
         Inputs other;
         F->ran = native_inputs(n, &other, F->form, n->size, 0, 0);
@@ -1908,7 +1954,7 @@ static int native_base(Native* n, NativeForm* F) {
            "by %.6f, a context made %s from one made as configured by %.6f\n",
         n->suite, n->way, F->name, difference(&F->in, F->fresh, n->reference, n->regions, SELFTEST_BACKGROUND),
         difference(&F->in, n->scratch[N_PLAIN], n->reference, n->regions, SELFTEST_BACKGROUND), first, last, F->noise,
-        !g.dlss  ? "without the flag for colours over 1"
+        !g.matrix ? "without the flag for colours over 1"
         : control ? "with the other depth convention"
                   : "with the other depth convention (not made on this form)",
         control ? difference(&F->in, n->scratch[N_OLD], F->fresh, n->regions, SELFTEST_BACKGROUND) : NAN);
@@ -1991,18 +2037,18 @@ static int native_cases(Native* n, NativeForm* F) {
     /* For DLSS, which takes no colour without the flag for colours over 1: the depth convention, on the finite form,
        with inputs whose depth is of the other convention (research's ruling of N4 Q2). Not run on the infinite
        form, where the change of the far plane's flag is the transition case. */
-    const u32 property = g.dlss ? SNX_UPSCALER_DEPTH_REVERSED : SNX_UPSCALER_COLOUR_LINEAR_HDR;
-    const char* property_name = g.dlss ? "the flag for reversed depth" : "the flag for colours over 1";
-    const int property_run = !g.dlss || !isinf(F->form->far_plane);
+    const u32 property = g.matrix ? SNX_UPSCALER_DEPTH_REVERSED : SNX_UPSCALER_COLOUR_LINEAR_HDR;
+    const char* property_name = g.matrix ? "the flag for reversed depth" : "the flag for colours over 1";
+    const int property_run = !g.matrix || !isinf(F->form->far_plane);
     Inputs other;
     memset(&other, 0, sizeof other);
     int evaluated = 0, changed = ran && property_run && !stopped() && session_open(&s, &F->in, &NATIVE_TRAITS);
-    if (changed && g.dlss) {
+    if (changed && g.matrix) {
         changed = native_inputs(n, &other, F->form, n->size, 0, 0);
         if (changed) selftest_depth_turn(other.depth, (size_t)other.frames * (size_t)other.w * (size_t)other.h);
     }
-    const Inputs* first_inputs = g.dlss ? &other : &F->in;
-    const Variant* first_variant = g.dlss ? &STANDARD_DEPTH : &WITHOUT_HDR;
+    const Inputs* first_inputs = g.matrix ? &other : &F->in;
+    const Variant* first_variant = g.matrix ? &STANDARD_DEPTH : &WITHOUT_HDR;
     for (int i = 0; changed && i < 9; i++) changed = frame_run(&s, first_inputs, i, first_variant, 0, work) >= 0;
     const unsigned before = changed ? s.evaluated : 0;
     for (int i = 1; changed && i <= end; i++) {
@@ -2020,8 +2066,8 @@ static int native_cases(Native* n, NativeForm* F) {
     const double apart = changed ? difference(&F->in, work, F->fresh, n->regions, SELFTEST_BACKGROUND) : NAN;
     int verdict = changed ? selftest_resized(apart, F->noise, F->off) : SELFTEST_FAIL;
     if (!property_run)
-        SAY(ST "%s: not run for dlss on this form: its depth has no other convention here, and the change of the "
-               "far plane's flag is the transition case\n", name);
+        SAY(ST "%s: not run for %s on this form: its depth has no other convention here, and the change of the far "
+               "plane's flag is the transition case\n", name, g.name);
     else {
         SAY(ST "%s (%s): %u frames evaluated without the flag, %d with it, %u contexts made with the flags 0x%x and "
                "then 0x%x: %s. The remade context's picture against a fresh context's made with the flag, on the "
@@ -2208,14 +2254,14 @@ static int native_at(int up, const char* suite, const int size[4], const int sma
         for (int k = 0; k < 2; k++) pass &= (native_cases(&n, &forms[k])) || skip_rest();
         pass &= (native_transition(&n, &forms[0], &forms[1])) || skip_rest();
         pass &= (native_transition(&n, &forms[1], &forms[0])) || skip_rest();
-        if (!g.dlss) pass &= (native_patch(&n, &FINITE, forms[0].name)) || skip_rest();
+        if (!g.matrix) pass &= (native_patch(&n, &FINITE, forms[0].name)) || skip_rest();
         else {
             /* The jitter's four sign variants, logged and nothing chosen (research's ruling of N4 Q4): the frame's
                jitter times each variant's signs, as the module always hands NGX +1 and +1. A run that cannot be
                made still fails, as every call must succeed. */
             char name[160];
-            SAY(ST "%s %s, %s, a nearer patch: not run for dlss, its verdict is one of quality\n", suite, n.way,
-                forms[0].name);
+            SAY(ST "%s %s, %s, a nearer patch: not run for %s, its verdict is one of quality\n", suite, n.way,
+                forms[0].name, g.name);
             snprintf(name, sizeof name, "%s %s, %s, the jitter's signs", suite, n.way, forms[0].name);
             /* only on a form that was generated and ran: its inputs exist, else nothing of them is read */
             if (!forms[0].ran || !forms[0].in.scene) {
@@ -2271,12 +2317,12 @@ static int sign_protocol(int below) {
     step(at);
     /* the experiment's forced sign multiplies every variant's: the protocol would not compare what it says */
     const char* forced = getenv("SNX_ARCEUS_DLSS_JITTER_SIGN");
-    if (selftest_sign_forcing(forced)) { /* as the module: a value other than its eight is not used (BOARD) */
+    if (g.dlss && selftest_sign_forcing(forced)) { /* as the module: a value other than its eight is not used */
         SAY(ST "%s: not run, SNX_ARCEUS_DLSS_JITTER_SIGN is %s (an experiment that forces the sign the module hands "
                "NGX), and the protocol compares the signs itself\n", at, forced);
         return 1;
     }
-    if (forced && forced[0])
+    if (g.dlss && forced && forced[0])
         SAY(ST "%s: SNX_ARCEUS_DLSS_JITTER_SIGN=%s is not one of the module's eight values, which does not use it: "
                "run as without it\n", at, forced);
     double *reference = malloc(sizeof(double) * picture), *work = malloc(sizeof(double) * picture);
@@ -2705,7 +2751,10 @@ int vk_upscaler_selftest(const char* adapter) {
     if (!edges_announce()) return 1;
     g.api = vk_upscaler_adapter_selftest(adapter);
     g.dlss = !strcmp(adapter, "dlss");
-    g.motion_format = g.dlss ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16G16B16A16_SFLOAT;
+    g.matrix = g.dlss || !strcmp(adapter, "xess");
+    g.name = adapter;
+    /* DLSS and XeSS take the vectors in two channels */
+    g.motion_format = g.matrix ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16G16B16A16_SFLOAT;
     if (!g.api) {
         LOG(ST "FAIL: the adapter \"%s\" is not available\n", adapter);
         return 1;
@@ -2721,12 +2770,18 @@ int vk_upscaler_selftest(const char* adapter) {
         g.output_format == OUTPUT_FORMAT ? ", four 32 bit floats" : ", B10G11R11");
     g.generation = 1;
     if (!device_make()) return 1;
-    if (g.dlss) { /* DLSS's matrix: the native size, and 1/2 and 2/3 for D3-4, quality not judged (N4 Q1) */
-        LOG(ST "the suite of cases 1 to 6: not run for dlss, its verdicts are of quality (below native, the suites at "
-               "1/2 and 2/3 judge integration)\n");
-        LOG(ST "the change of size below the native one: not run for dlss, its suites at 1/2 and 2/3 change the size "
-               "instead\n");
-        LOG(ST "the edge case, its matched and its response runs: not run for dlss, their verdicts are of quality\n");
+    if (g.matrix) { /* DLSS's matrix, XeSS's too: the native size, and 1/2 and 2/3 (D3-4), quality not judged (N4 Q1) */
+        LOG(ST "the suite of cases 1 to 6: not run for %s, its verdicts are of quality (below native, the suites at "
+               "1/2 and 2/3 judge integration)%s\n", g.name, g.dlss ? "" : ". Case 2's vector signs are logged");
+        LOG(ST "the change of size below the native one: not run for %s, its suites at 1/2 and 2/3 change the size "
+               "instead\n", g.name);
+        LOG(ST "the edge case, its matched and its response runs: not run for %s, their verdicts are of quality\n",
+            g.name);
+        if (!g.dlss) /* XeSS (XESS-DESIGN.md): the vectors' signs by case 2's sixteen combinations, logged only */
+            for (int up = 1; up >= 0; up--) {
+                pass &= vector_signs(up) || skip_rest();
+                g.generation++;
+            }
         pass = native(1) || skip_rest();
         g.generation++;
         pass &= native(0) || skip_rest();
@@ -2840,15 +2895,15 @@ int vk_upscaler_selftest(const char* adapter) {
     if (g.halted) LOG(ST "an evaluate answered UNKNOWN: FAIL\n");
     pass = pass && g.validation && g.checks_asked && !others && !late && waited && !g.unknown && !g.halted &&
            !g.ended_wrong;
-    if (g.dlss) { /* DL1 judges integration only: every call, every value, every run, the lifecycle, case 7 */
+    if (g.matrix) { /* DL1 judges integration only: every call, every value, every run, the lifecycle, case 7 */
         if (pass && g.known) /* every other check passed: the failure is the known deviation's alone */
             LOG(ST "DL1 integration checks, quality unassessed: FAIL, with 1 known library deviation alone (the reset "
                    "at 1/2 in performance mode, %d lines, research 22:50) and nothing else failed\n", g.known);
         else
-            LOG(ST "DL1 integration checks, quality unassessed: %s%s\n", pass ? "PASS" : "FAIL",
+            LOG(ST "%s integration checks, quality unassessed: %s%s\n", g.dlss ? "DL1" : g.name, pass ? "PASS" : "FAIL",
                 !pass && g.known ? ", and besides the known library deviation (the reset at 1/2) another check failed"
                                  : "");
-        LOG(ST "quality: not assessed in DL1\n");
+        LOG(ST "quality: not assessed in %s\n", g.dlss ? "DL1" : "this matrix");
     } else
         LOG(ST "RESULT: %s\n", pass ? "PASS" : "FAIL");
     return pass && !g.known ? 0 : 1;
