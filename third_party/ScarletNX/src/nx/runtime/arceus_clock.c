@@ -4498,6 +4498,68 @@ static void drp_battle_decide(u64 now) {
             (unsigned long long)((now - drp_kind_start) / 1000000), foe.species, foe.alpha);
 }
 
+/* P8 (research 20:35 and 21:05, the probe only, reads on the tick, no wrapper): the player's battle Pokémon as the
+   move menu finds it (7B8114 -> 834074 with index 0). The battle context X = [[[[main+4279580]]+B0]+E0] (882D58), its
+   container [X+D0] (823C00), the table T = [[[[c+68]+98]+370]+8], index 0's side from 2847B84's table for the mode
+   at [T]+110 and slot 0: P = [T + side*38 + 8], present when the byte at T + side*38 + 38 is above 0, its id at +7D.
+   Logged on change: the side and each side's first entry with its id, and each new entry's first 0x100 bytes once,
+   marking the words that are a party member (its slot) or that member's data object (+98). */
+static u64 drp_rd(u64 at) { return at >= 0x100000 && readable(at, 8) ? gr64(at) : 0; }
+static int drp_index0_side(u64 m) {
+    if (!readable(m + 0x110, 4)) return -1;
+    const u32 mode = *(const u32*)GP(m + 0x110);
+    u64 table = mode == 0 ? main_base + 0x397eb50 : mode == 2 ? main_base + 0x397ebc8 : 0;
+    if (mode == 1) {
+        const u64 b = drp_rd(m + 0x58);
+        const unsigned kind = readable(b + 0x55, 1) ? *(const u8*)GP(b + 0x55) : 0;
+        table = kind - 1 < 5 ? drp_rd(main_base + 0x41767f8 + (kind - 1) * 8ull) : main_base + 0x397eb68;
+    }
+    return table && readable(table, 4) ? (int)*(const u32*)GP(table) : -1;
+}
+static void drp_battle_mon(void) {
+    static u64 last[5], dumped[8];
+    static int last_side = -2;
+    static unsigned dumps;
+    const u64 x = drp_rd(drp_rd(drp_rd(drp_rd(drp_rd(main_base + 0x4279580)) + 0xb0) + 0xe0));
+    const u64 t = drp_rd(drp_rd(drp_rd(drp_rd(drp_rd(x + 0xd0) + 0x68) + 0x98) + 0x370) + 8);
+    if (!readable(t, 5 * 0x38 + 1)) return;
+    const int side = drp_index0_side(drp_rd(t));
+    u64 now[5];
+    for (unsigned k = 0; k < 5; k++) {
+        const unsigned n = *(const u8*)GP(t + k * 0x38ull + 0x38);
+        const u64 p = n ? drp_rd(t + k * 0x38ull + 8) : 0;
+        now[k] = p && readable(p + 0x7d, 1) ? p << 8 | *(const u8*)GP(p + 0x7d) : 0;
+    }
+    if (side == last_side && !memcmp(now, last, sizeof now)) return;
+    last_side = side;
+    memcpy(last, now, sizeof now);
+    LOG("arceus-drp: battle Pok\xc3\xa9mon table %llx, index 0's side %d: %llx id %llu, %llx id %llu, %llx id %llu, "
+        "%llx id %llu, %llx id %llu\n",
+        (unsigned long long)t, side, (unsigned long long)(now[0] >> 8), (unsigned long long)(now[0] & 0xff),
+        (unsigned long long)(now[1] >> 8), (unsigned long long)(now[1] & 0xff), (unsigned long long)(now[2] >> 8),
+        (unsigned long long)(now[2] & 0xff), (unsigned long long)(now[3] >> 8), (unsigned long long)(now[3] & 0xff),
+        (unsigned long long)(now[4] >> 8), (unsigned long long)(now[4] & 0xff));
+    const u64 p = side >= 0 && side < 5 ? now[side] >> 8 : 0;
+    if (!p || !readable(p, 0x100) || dumps >= 8) return;
+    for (unsigned i = 0; i < dumps; i++)
+        if (dumped[i] == p) return;
+    dumped[dumps++] = p;
+    const u64 q = drp_party_object();
+    for (unsigned i = 0; i < 32; i++) {
+        const u64 w = gr64(p + i * 8ull);
+        char mark[40] = "";
+        for (unsigned k = 0; k < 6 && readable(q + 0x58, 0x30); k++) {
+            const u64 member = gr64(q + 0x58 + k * 8ull);
+            if (w && w == member) snprintf(mark, sizeof mark, " party member %u", k);
+            if (w && w == drp_rd(member + 0x98)) snprintf(mark, sizeof mark, " party member %u's data", k);
+        }
+        const u64 vt = drp_vtable(w);
+        if (vt && !mark[0]) snprintf(mark, sizeof mark, " (object, vtable main+%llx)", (unsigned long long)vt);
+        LOG("arceus-drp: battle Pok\xc3\xa9mon %llx +%02x = %016llx%s\n", (unsigned long long)p, i * 8,
+            (unsigned long long)w, mark);
+    }
+}
+
 /* A battle ends when the battle effect sequences (9DBEAC, the battle sequence fix's wrapper and its counter) have
    not run for 3 s, or at an area call, whichever first (DRP-P3, research 09:00). Inside the battles seen they ran in
    every second, menus included, and outside them never. drp_battle_since: the start, or the counter's last move. */
@@ -4513,6 +4575,7 @@ static void drp_tick(void) {
     if (calls != drp_battle_seen) drp_battle_seen = calls, drp_battle_since = now;
     const int quiet = battle_sequence_original && snx_drp_battle_over(1, now, drp_battle_since);
     pm_unlock(&drp_lock);
+    if (drp_probe) drp_battle_mon();
     if (!drp_presence) return;
     if (quiet && snx_drp_in_battle(activity)) drp_set(DRP_FIELD);
     drp_battle_decide(now);
