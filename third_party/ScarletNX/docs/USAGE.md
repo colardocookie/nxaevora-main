@@ -148,7 +148,14 @@ A game's mods go in the `mods` folder of its data folder, one folder each, named
 does, and over the update too when one is checked. A file in its `romfs/` replaces the RomFS file at the same path, or
 is added to the RomFS when the game has none there. A file in its `exefs/` (`main`, `subsdk0` and the other modules,
 or `main.npdm`) replaces the program's file of that name. Mods are laid in the order of their names, so a later one
-wins over an earlier one where both have the same file.
+wins over an earlier one where both have the same file. The order compares the names byte by byte: `10 x` comes before
+`2 y`, and capitals come before small letters. To set the order, start each name with a number of the same length,
+for example `01 textures` and `02 fixes`.
+
+A mod's `romfs/` lies over the game's RomFS wherever that comes from: the `romfs/` folder or `romfs.bin` in the data
+folder, or the folder that `romfs=` names for a game recompiled from its decrypted folder. The files are replaced
+while the game runs. Nothing is copied or written into the game's folder, so turning a mod off gives back the game's
+own files at the next start.
 
 Every mod in the folder is played until it is turned off. Opening a game in the launcher lists its mods under its
 updates and DLCs, each with a box to check, and Open Mods Folder opens the folder in the file manager (it is made

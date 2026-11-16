@@ -87,9 +87,10 @@ The user makes one folder from their console:
 
 - Base: the existing mods (`src/common/utilities/mods.c`, `fs.c` `mods_open`). A mod is
   `<game>_data/mods/<mod>/` with `romfs/` and `exefs/`.
-- Order (to be written in the docs and tested): game RomFS first, then each played mod in name order of its folder,
-  so that a later mod wins. `mods_off=` leaves a mod out. The order of the mods is changed by the folder name (for
-  example a number prefix).
+- Order (written in ScarletNX `docs/USAGE.md`, Mods, and tested by `filesystem_mods` and `filesystem_mods_setting`):
+  game RomFS first (also a `romfs=` folder), then each played mod in name order of its folder, so that a later mod
+  wins. `mods_off=` leaves a mod out. The order of the mods is changed by the folder name (for example a number
+  prefix). The names are compared byte by byte (`strcmp`), so `10` comes before `2`.
 - RomFS files: replaced at run time, no change to the folder of the user.
 - ExeFS: a mod gives `.pchtxt` or `.ips` patches or a replaced module. These are code, so they need a new recompile
   (AOT). This stays and is written in the docs.

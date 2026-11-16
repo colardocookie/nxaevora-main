@@ -341,6 +341,7 @@ add_test(NAME filesystem_raw COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-
 add_test(NAME filesystem_addon_overlay COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> addon-overlay)
 add_test(NAME filesystem_mods COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods)
 add_test(NAME filesystem_mods_stale COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods-stale)
+add_test(NAME filesystem_mods_setting COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods-setting)
 add_test(NAME filesystem_romfs_setting
          COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> romfs-setting)
 add_test(NAME filesystem_romfs_setting_missing
