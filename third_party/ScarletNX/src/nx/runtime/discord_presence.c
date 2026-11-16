@@ -14,7 +14,7 @@
 #include <unistd.h>
 #endif
 
-SnxDrpState g_drp_state = {0, -1, DRP_FIELD, 0};
+SnxDrpState g_drp_state = {0, -1, DRP_TITLE, 0};
 
 #ifdef _WIN32
 static HANDLE drp_handle = INVALID_HANDLE_VALUE;
@@ -108,7 +108,7 @@ static char drp_app[24];
    the pipe closes with the process. */
 static void drp_thread(void* arg) {
     (void)arg;
-    SnxDrpValues v = {-1, DRP_FIELD, 0};
+    SnxDrpValues v = {-1, DRP_TITLE, 0};
     unsigned said = 0;
     for (;;) {
         SnxDrpValues now;

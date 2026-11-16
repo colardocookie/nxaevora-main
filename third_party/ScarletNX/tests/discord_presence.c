@@ -82,6 +82,10 @@ static void test_regions(void) {
     assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Battling a trainer"));
     v.activity = DRP_BATTLE;
     assert(!strcmp(snx_drp_details(&v, line, sizeof line), "In battle"));
+    v.activity = DRP_TITLE;
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "On the title screen"));
+    assert(!snx_drp_in_battle(DRP_TITLE) && !snx_drp_in_battle(DRP_FIELD) && snx_drp_in_battle(DRP_WILD));
+    assert(snx_drp_in_battle(DRP_TRAINER) && snx_drp_in_battle(DRP_BATTLE));
     for (int i = 0; i < SNX_DRP_REGIONS; i++) assert(snx_drp_region(snx_drp_regions[i].name) == i);
 }
 

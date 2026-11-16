@@ -11,7 +11,8 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { DRP_FIELD, DRP_WILD, DRP_TRAINER, DRP_BATTLE };
+/* DRP_TITLE: the session's start, until a save is loaded */
+enum { DRP_FIELD, DRP_WILD, DRP_TRAINER, DRP_BATTLE, DRP_TITLE };
 
 /* Plain values only. seq is odd while the game half writes. */
 typedef struct {
@@ -75,6 +76,7 @@ static inline int snx_drp_region(const char* name) {
 static inline const char* snx_drp_details(const SnxDrpValues* v, char* out, size_t size) {
     static const char* const battles[] = {"Battling a wild Pok\xc3\xa9mon", "Battling a trainer", "In battle"};
     if (v->activity >= DRP_WILD && v->activity <= DRP_BATTLE) return battles[v->activity - DRP_WILD];
+    if (v->activity == DRP_TITLE) return "On the title screen";
     const int known = v->region >= 0 && v->region < SNX_DRP_REGIONS && snx_drp_regions[v->region].confirmed;
     const SnxDrpRegion* r = known ? &snx_drp_regions[v->region] : NULL;
     if (!r) return "Exploring Hisui";
@@ -92,6 +94,7 @@ static inline const char* snx_drp_state_line(const SnxDrpValues* v, char* out, s
 /* A battle is over when its effect sequences have not run for 3 s (DRP-P3, research 09:00). since: the battle's
    start or the counter's last move, whichever is later. */
 #define SNX_DRP_BATTLE_QUIET_NS 3000000000ull
+static inline int snx_drp_in_battle(uint32_t activity) { return activity >= DRP_WILD && activity <= DRP_BATTLE; }
 static inline int snx_drp_battle_over(int in_battle, uint64_t now, uint64_t since) {
     return in_battle && now >= since && now - since >= SNX_DRP_BATTLE_QUIET_NS;
 }

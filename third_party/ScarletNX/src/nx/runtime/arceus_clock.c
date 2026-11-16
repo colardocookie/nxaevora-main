@@ -4299,13 +4299,14 @@ static void waza_shot_init(void) {
 
 /* DRP-0, read-only (SNX_ARCEUS_DISCORD_PROBE=1): where the game keeps the area, the party and a battle's start, for
    Discord presence. Each wrapper runs the game's function first and only logs what it returned or was given. */
-enum { DRPS_AREA, DRPS_PARENT, DRPS_BATTLE, DRPS_SHOW, DRPS_MONSNO, DRPS_LEVEL, DRPS_END, DRPS_LOSE, DRPS_SITES };
+enum { DRPS_AREA, DRPS_PARENT, DRPS_BATTLE, DRPS_SHOW, DRPS_MONSNO, DRPS_LEVEL, DRPS_END, DRPS_LOSE, DRPS_PLACE,
+       DRPS_SITES };
 static GuestFn drp_original[DRPS_SITES];
 /* drp_probe: the read-only lines (SNX_ARCEUS_DISCORD_PROBE). drp_presence: the state for the host half
    (SNX_ARCEUS_DISCORD, D1), written under drp_lock by whichever game thread runs a wrapper */
 static int drp_probe, drp_presence;
 static PMutex drp_lock = PMUTEX_INIT;
-static SnxDrpValues drp_values = {-1, DRP_FIELD, 0};
+static SnxDrpValues drp_values = {-1, DRP_TITLE, 0};
 static u64 drp_unread, drp_area_object, drp_area_hash; /* the last area GetAreaName was given, for the tick's watch */
 /* the activity; the region stays -1 until a read of it is found, and the party's size is not shown (the user,
    DRP-P3: the party belongs in the profile's extra information, D2) */
@@ -4313,6 +4314,15 @@ static void drp_set(uint32_t activity) {
     pm_lock(&drp_lock);
     drp_values.activity = activity;
     snx_drp_write(&g_drp_state, &drp_values);
+    pm_unlock(&drp_lock);
+}
+/* the region, an index into snx_drp_regions or -1, from an area's hash (P4) */
+static void drp_set_region(int32_t region) {
+    pm_lock(&drp_lock);
+    if (drp_values.region != region) {
+        drp_values.region = region;
+        snx_drp_write(&g_drp_state, &drp_values);
+    }
     pm_unlock(&drp_lock);
 }
 static u64 drp_calls[DRPS_SITES], drp_last_battle;
@@ -4470,14 +4480,24 @@ static void drp_tick(void) {
     if (drp_presence && battle_sequence_original) {
         const u64 calls = __atomic_load_n(&battle_sequence_calls, __ATOMIC_RELAXED);
         pm_lock(&drp_lock);
-        const int in_battle = drp_values.activity != DRP_FIELD;
+        const int in_battle = snx_drp_in_battle(drp_values.activity);
         if (calls != drp_battle_seen) drp_battle_seen = calls, drp_battle_since = now;
         const int ended = snx_drp_battle_over(in_battle, now, drp_battle_since);
         pm_unlock(&drp_lock);
         if (ended) drp_set(DRP_FIELD);
     }
+    /* the title screen until a save is loaded: the party object's chain readable with a count of 1 to 6 */
+    if (drp_presence && __atomic_load_n(&g_drp_state.activity, __ATOMIC_RELAXED) == DRP_TITLE) {
+        const u64 slot = main_base + 0x4279680, holder = readable(slot, 8) ? gr64(slot) : 0;
+        const u64 single = readable(holder, 8) ? gr64(holder) : 0;
+        const u64 p = readable(single + 0xd0, 8) ? gr64(single + 0xd0) : 0;
+        const u64 q = readable(p + 0x58, 8) ? gr64(p + 0x58) : 0;
+        const u64 n = readable(q + 0x88, 8) ? gr64(q + 0x88) : 0;
+        if (n >= 1 && n <= 6) drp_set(DRP_FIELD);
+    }
     if (drp_probe) drp_watch();
 }
+static void drp_trainer_walk(u64 object);
 static void drp_battle_start(CPU* c, u64 entry) {
     const u64 object = c->x[0];
     const u64 count = __atomic_add_fetch(&drp_calls[DRPS_BATTLE], 1, __ATOMIC_RELAXED);
@@ -4505,6 +4525,7 @@ static void drp_battle_start(CPU* c, u64 entry) {
             drp_words(what, v, 8);
         }
         drp_party();
+        drp_trainer_walk(object);
         drp_area_table();
         const u64 records = readable(object + 0x78, 8) ? gr64(object + 0x78) : 0;
         for (unsigned k = 0; records && k < 6; k++) {
@@ -4544,6 +4565,73 @@ static void drp_mon(CPU* c, u64 entry, unsigned kind) {
     if (count == 1) drp_party();
 }
 static void drp_monsno(CPU* c, u64 entry) { drp_mon(c, entry, DRPS_MONSNO); }
+/* The area table's name for a hash (its entries' first word), into name, empty when none matches */
+static void drp_area_by_hash(u64 hash, char* name, size_t size) {
+    name[0] = 0;
+    const u64 slot = main_base + 0x427a788, holder = readable(slot, 8) ? gr64(slot) : 0;
+    const u64 single = readable(holder, 8) ? gr64(holder) : 0, a = readable(single + 0x78, 8) ? gr64(single + 0x78) : 0;
+    const u64 b = readable(a + 0x70, 8) ? gr64(a + 0x70) : 0, base = readable(b + 0x278, 16) ? gr64(b + 0x278) : 0;
+    for (unsigned i = 0; hash && base && i < 400 && readable(base + i * 32ull, 32); i++)
+        if (gr64(base + i * 32ull) == hash) {
+            drp_string(gr64(base + i * 32ull + 8), name, size);
+            return;
+        }
+}
+/* P4: FC7318, which the area name panel (1077BC4) calls to map an area's data (its hash at [[x2]+58]) to a place
+   name. The hash, its name in the area table, the result, each change. With the presence, the region. */
+static void drp_place(CPU* c, u64 entry) {
+    const u64 x0 = c->x[0], x1 = c->x[1], x2 = c->x[2], caller = c->x[30];
+    const u64 data = readable(x2, 8) ? gr64(x2) : 0, hash = readable(data + 0x58, 8) ? gr64(data + 0x58) : 0;
+    drp_original[DRPS_PLACE](c, entry);
+    static u64 last;
+    const u64 count = __atomic_add_fetch(&drp_calls[DRPS_PLACE], 1, __ATOMIC_RELAXED);
+    char name[64];
+    drp_area_by_hash(hash, name, sizeof name);
+    if (drp_presence && name[0]) drp_set_region(snx_drp_region(name));
+    if (drp_probe && (hash != last || count <= 8))
+        LOG("arceus-drp: place name %llu: hash %016llx \"%s\" -> %llx (x0 %llx x1 %llx, caller main+%llx)\n",
+            (unsigned long long)count, (unsigned long long)hash, name, (unsigned long long)c->x[0],
+            (unsigned long long)x0, (unsigned long long)x1, (unsigned long long)(caller - main_base));
+    last = hash;
+}
+/* P4: the trainer's name. At each battle start, a walk of the start object's pointers to depth 2, 0x200 bytes
+   each, logging each run of 2 to 32 letters as UTF-8 or UTF-16 (the user's next trainer tells which is the name) */
+static unsigned drp_walk_lines;
+static void drp_text_runs(const char* path, u64 at) {
+    if (!readable(at, 0x200)) return;
+    for (unsigned i = 0; i < 0x200 && drp_walk_lines < 200;) {
+        char text[40];
+        unsigned n = 0, wide = i + 1 < 0x200 && *(const u8*)GP(at + i + 1) == 0;
+        for (unsigned k = i; k + (wide ? 1 : 0) < 0x200 && n < 33; k += wide ? 2 : 1) {
+            const u8 ch = *(const u8*)GP(at + k);
+            const int letter = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (n && (ch == ' ' || ch == '.'));
+            if (!letter || (wide && *(const u8*)GP(at + k + 1))) break;
+            text[n++] = (char)ch;
+        }
+        if (n >= 2 && n <= 32) {
+            text[n] = 0;
+            drp_walk_lines++;
+            LOG("arceus-drp: battle text %s+%03x: %s \"%s\"\n", path, i, wide ? "UTF-16" : "UTF-8", text);
+            i += n * (wide ? 2 : 1);
+        } else i += 1;
+    }
+}
+static void drp_trainer_walk(u64 object) {
+    drp_walk_lines = 0;
+    for (unsigned i = 0; i < 0x40 && readable(object, 0x200); i++) {
+        const u64 v = gr64(object + i * 8ull);
+        if (v < 0x100000 || drp_vtable(v) || !readable(v, 0x200)) continue;
+        char path[48];
+        snprintf(path, sizeof path, "+%03x>", i * 8);
+        drp_text_runs(path, v);
+        for (unsigned j = 0; j < 0x40; j++) {
+            const u64 w = gr64(v + j * 8ull);
+            if (w < 0x100000 || !readable(w, 0x200)) continue;
+            snprintf(path, sizeof path, "+%03x>+%03x>", i * 8, j * 8);
+            drp_text_runs(path, w);
+        }
+    }
+}
 /* P3 item 2: the player's OnBattleEnd and OnBattleLoseEnd handlers (17DCF30, 17DCF40, set flags at +75A/+75B of their
    object), logged to confirm the end that the area name call gives */
 static void drp_end(CPU* c, u64 entry, unsigned kind) {
@@ -4576,10 +4664,11 @@ static void discord_probe_init(void) {
         {0xd92d14, 0xd100c3ff, drp_level, "the script's GetLevel"},
         {0x17dcf30, 0x911d6c08, drp_battle_end, "the player's OnBattleEnd"},
         {0x17dcf40, 0x395d6c08, drp_battle_lose, "the player's OnBattleLoseEnd"},
+        {0xfc7318, 0xd100c3ff, drp_place, "the area name panel's place lookup"},
     };
     for (unsigned k = 0; k < DRPS_SITES; k++) {
         /* the presence needs only the area name and the battle start, the rest are the probe's */
-        if (!drp_probe && k != DRPS_AREA && k != DRPS_BATTLE) continue;
+        if (!drp_probe && k != DRPS_AREA && k != DRPS_BATTLE && k != DRPS_PLACE) continue;
         const u64 pc = main_base + sites[k].offset;
         if (pc < g_code_lo || pc >= g_code_hi || !readable(pc, 4) || gr32(pc) != sites[k].word ||
             !g_disp[(pc - g_code_lo) / 4]) {
