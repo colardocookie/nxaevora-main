@@ -379,17 +379,13 @@ int gui_settings_debug(const GuiSettings* s, const char* ini, int picks, char* o
     free(text);
     return count;
 }
-const char* gui_settings_tmpfs(const GuiSettings* s) { return own_on(s, "tmpfs") ? "--tmpfs" : NULL; }
-const char* gui_settings_extract(const GuiSettings* s) { return own_on(s, "extract") ? "--extract-container" : NULL; }
 size_t gui_settings_recompile(GuiSettings* s, const char** argv) {
     size_t n = 0;
     int i;
     for (i = 0; i < s->own; ++i) {
         const char* value = s->values[i].kind ? NULL : picked(s, i);
         const char* key = s->values[i].key;
-        if (!value || !strcmp(key, "gdbstub") || !strcmp(key, "tmpfs") || !strcmp(key, "extract") ||
-            !strcmp(key, "tracy_capture"))
-            continue;
+        if (!value || !strcmp(key, "gdbstub") || !strcmp(key, "tracy_capture")) continue;
         snprintf(s->values[i].option, sizeof s->values[i].option, "--%s=%s", key, value);
         argv[n++] = s->values[i].option;
     }
@@ -411,8 +407,6 @@ size_t gui_settings_options(GuiSettings* s, int launch, const char** argv) {
         snprintf(s->values[i].option, sizeof s->values[i].option, "--%s=%s", s->values[i].key, value);
         argv[n++] = s->values[i].option;
     }
-    if (launch && gui_settings_tmpfs(s)) argv[n++] = gui_settings_tmpfs(s);
-    if (launch && gui_settings_extract(s)) argv[n++] = gui_settings_extract(s);
     if (launch && own_on(s, "gdbstub")) {
         argv[n++] = "-S";
         argv[n++] = "-s";

@@ -6,7 +6,7 @@
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.VIBRATE" />
-    <!-- dumps and keys are read by their path, the driver's process included: all files from Android 11, the shared
+    <!-- a game's files are read by their path, the driver's process included: all files from Android 11, the shared
          storage before it, which Android 10 leaves whole only when asked (requestLegacyExternalStorage) -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The program's entry: the MCP server (--mcp) and the host driver's commands (extract, recompile) first, and anything
-   else is a game to run */
+/* The program's entry: the MCP server (--mcp) and the host driver's recompile first, and anything else is a game to
+   run */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

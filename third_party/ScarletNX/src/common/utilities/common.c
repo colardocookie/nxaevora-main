@@ -1287,7 +1287,7 @@ char* snx_checkout(const char* checkout, const char* build, const char* program_
     free(path);
     return ours ? snx_strdup(checkout) : NULL;
 }
-const char* const snx_checkout_files[SNX_CHECKOUT_FILES] = {"games", "work", "prod.keys", "title.keys", "linux"};
+const char* const snx_checkout_files[SNX_CHECKOUT_FILES] = {"games", "work", "linux"};
 char* snx_checkout_now(const char* data, int file) {
     if (!strcmp(snx_checkout_files[file], "games")) return snx_recompiled_dir(data);
     char* path = snx_path_join(data, snx_checkout_files[file]);
@@ -1309,6 +1309,17 @@ void snx_checkout_left(const char* checkout, const char* data) {
         free(old);
         free(now);
     }
+}
+/* the encrypted Switch dumps this build no longer reads: an NSP, an XCI, or their decrypted DNSP and DXCI */
+static const char* const encrypted_dump_extensions[] = {".nsp", ".xci", ".dnsp", ".dxci"};
+int snx_refuse_encrypted_dump(const char* path) {
+    size_t i;
+    for (i = 0; path && i < sizeof encrypted_dump_extensions / sizeof encrypted_dump_extensions[0]; i++)
+        if (snx_ends_with_nocase(path, encrypted_dump_extensions[i]))
+            return snx_error("%s is an encrypted dump: ScarletNX reads the decrypted game folder. Use -r <folder> with "
+                             "exefs/, romfs/ and control.nacp",
+                             path);
+    return 0;
 }
 char* snx_dump_name(const char* input) {
     const char *base = input, *p;
@@ -1356,15 +1367,6 @@ char* snx_temp_root(void) {
     const char* root = getenv("TMPDIR");
     return snx_strdup(root && *root ? root : "/tmp");
 #endif
-}
-char* snx_tmpfs_work(SnxU64 title) {
-    char text[17], *root, *work;
-    if (!snx_title_text(title, text) || !(root = snx_temp_root())) return NULL;
-    work = snx_path_join(root, "scarletnx/work");
-    char* path = snx_path_join(work, text);
-    free(work);
-    free(root);
-    return path;
 }
 char* snx_temp_dir(const char* parent) {
     char* path;

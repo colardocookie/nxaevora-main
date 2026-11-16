@@ -74,26 +74,20 @@ int main(int argc, char** argv) {
     GuiSettings s = {0};
     GuiEditor form;
     const char* options[64];
-    int fullscreen, touch, stub, tmpfs, extract, launch, page, all, changed;
+    int fullscreen, touch, stub, launch, page, all, changed;
     size_t tracy_n;
     assert(!gui_settings_read(&s, list));
 
     /* the launcher's own and the recompiler's (settings.txt's launcher sections), then a row a setting in the list's
        order, the other line left out; a page's row and its All before its settings */
     int tracy = at(&s, "tracy_capture") >= 0; /* the row a runtime without SNX_TRACY does not list */
-    int opt = 3 + tracy;                      /* the optimization level's row, after it */
-    assert(s.own > 5 && s.count == s.own + 16 && !strcmp(s.keys[0].key, "GDB stub"));
-    assert(!tracy || at(&s, "tracy_capture") == 3); /* after Extract dump, before the optimization level */
+    int opt = 1 + tracy;                      /* the optimization level's row, after it */
+    assert(s.own > 4 && s.count == s.own + 16 && !strcmp(s.keys[0].key, "GDB stub"));
+    assert(!tracy || at(&s, "tracy_capture") == 1); /* before the optimization level */
     assert(!strcmp(s.keys[0].section, "Launch") && !strcmp(s.keys[0].about, "Enables gdbstub on port 1234") &&
            words(&s.keys[0]) == 2 && !strcmp(s.values[0].key, "gdbstub"));
-    /* shown by its name, kept by its key */
-    assert(!strcmp(s.keys[1].section, "Launch") && !strcmp(s.keys[1].key, "Extract to tmpfs") &&
-           !strcmp(s.values[1].key, "tmpfs") && words(&s.keys[1]) == 2 && strstr(s.keys[1].about, "RomFS"));
-    assert(!strcmp(s.keys[2].section, "Launch") && !strcmp(s.keys[2].key, "Extract dump") &&
-           !strcmp(s.values[2].key, "extract") && words(&s.keys[2]) == 2 && strstr(s.keys[2].about, "dump"));
-    assert(!tracy || (!strcmp(s.keys[3].section, "Launch") && !strcmp(s.values[3].key, "tracy_capture") &&
-                      words(&s.keys[3]) == 2 && strstr(s.keys[3].about, "PATH")));
-    assert(!gui_settings_extract(&s)); /* off: a dump read in place */
+    assert(!tracy || (!strcmp(s.keys[1].section, "Launch") && !strcmp(s.values[1].key, "tracy_capture") &&
+                      words(&s.keys[1]) == 2 && strstr(s.keys[1].about, "PATH")));
     /* the recompiler's: none passed until picked, then --key=value; the optimization level takes 0 to 3 and z, the
        AOT threads a number (0 the cores), the unit size a number of instructions, the unit cache limit a number of GB
        (0 none), and LLVM Internals is a page of its own */
@@ -302,38 +296,29 @@ int main(int argc, char** argv) {
     for (fullscreen = 0; fullscreen < 3; ++fullscreen)
         for (touch = 0; touch < 4; ++touch)
             for (stub = 0; stub < 2; ++stub)
-                for (tmpfs = 0; tmpfs < 2; ++tmpfs)
-                    for (extract = 0; extract < 2; ++extract)
-                    for (launch = 0; launch < 2; ++launch) {
-                        static const char* const picks[] = {".ini", "0", "1", "2"};
-                        size_t n, i = 0;
-                        char want[32];
-                        assert(gui_settings_set(&s, "fullscreen", picks[fullscreen]));
-                        assert(gui_settings_set(&s, "touch", picks[touch]));
-                        assert(gui_settings_set(&s, "gdbstub", stub ? "on" : "off"));
-                        assert(gui_settings_set(&s, "tmpfs", tmpfs ? "on" : "off"));
-                        assert(tmpfs ? !strcmp(gui_settings_tmpfs(&s), "--tmpfs") : !gui_settings_tmpfs(&s));
-                        assert(gui_settings_set(&s, "extract", extract ? "on" : "off"));
-                        assert(extract ? !strcmp(gui_settings_extract(&s), "--extract-container")
-                                       : !gui_settings_extract(&s));
-                        n = gui_settings_options(&s, launch, options);
-                        assert(n <= (size_t)s.count + 1);
-                        if (fullscreen) {
-                            snprintf(want, sizeof want, "--fullscreen=%s", picks[fullscreen]);
-                            assert(i < n && !strcmp(options[i++], want));
-                        }
-                        if (touch) {
-                            snprintf(want, sizeof want, "--touch=%s", picks[touch]);
-                            assert(i < n && !strcmp(options[i++], want));
-                        }
-                        if (launch && tmpfs) assert(i < n && !strcmp(options[i++], "--tmpfs"));
-                        if (launch && extract) assert(i < n && !strcmp(options[i++], "--extract-container"));
-                        if (launch && stub) {
-                            assert(i < n && !strcmp(options[i++], "-S"));
-                            assert(i < n && !strcmp(options[i++], "-s"));
-                        }
-                        assert(i == n);
+                for (launch = 0; launch < 2; ++launch) {
+                    static const char* const picks[] = {".ini", "0", "1", "2"};
+                    size_t n, i = 0;
+                    char want[32];
+                    assert(gui_settings_set(&s, "fullscreen", picks[fullscreen]));
+                    assert(gui_settings_set(&s, "touch", picks[touch]));
+                    assert(gui_settings_set(&s, "gdbstub", stub ? "on" : "off"));
+                    n = gui_settings_options(&s, launch, options);
+                    assert(n <= (size_t)s.count + 1);
+                    if (fullscreen) {
+                        snprintf(want, sizeof want, "--fullscreen=%s", picks[fullscreen]);
+                        assert(i < n && !strcmp(options[i++], want));
                     }
+                    if (touch) {
+                        snprintf(want, sizeof want, "--touch=%s", picks[touch]);
+                        assert(i < n && !strcmp(options[i++], want));
+                    }
+                    if (launch && stub) {
+                        assert(i < n && !strcmp(options[i++], "-S"));
+                        assert(i < n && !strcmp(options[i++], "-s"));
+                    }
+                    assert(i == n);
+                }
     /* the launcher's Tracy capture is passed to a run, never to the recompiler */
     if (tracy) {
         assert(gui_settings_set(&s, "tracy_capture", "on") && !gui_settings_recompile(&s, options));

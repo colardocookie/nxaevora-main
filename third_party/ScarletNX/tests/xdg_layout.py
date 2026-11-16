@@ -165,14 +165,6 @@ def main():
         check(told in out, 'the loose game did not say where its folder goes', out)
         check((games / 'Loose').is_file() and not (games / 'Loose').is_dir(), 'the loose game was moved', out)
 
-        # an extraction: the older build's work/ stays, and the driver says the cache folder's is used. hactool finds
-        # no program in an empty PFS0
-        (root / 'empty.nsp').write_bytes(b'PFS0' + bytes(12))
-        status, out = run([driver, '--repo', str(data), '-x', str(root / 'empty.nsp')])
-        check((data / 'work/Old/exefs/main').read_bytes() == b'code', 'the older work/ was touched', out)
-        told = f'{data / "work"} was left by an older version: this one keeps it in {cache / "work"}'
-        check(told in out, 'the extraction did not say where the older work/ is', out)
-
         # a folder of its own (a checkout's or a portable copy's games/, --outdir): everything beside the game
         beside = root / 'portable/games/Beside'
         status, out = run(
@@ -260,14 +252,13 @@ def main():
                 out,
             )
             ini = made_config / 'recompiled' / name / f'{name}.ini'
-            ini.write_text(ini.read_text() + '[Game]\nsource=/nonexistent/Game.nsp\n')  # a dump read in place
+            # an older build's source=: logged, then the data folder without exefs/ stops the game
+            ini.write_text(ini.read_text() + '[Game]\nsource=/nonexistent/Game.nsp\n')
             shutil.rmtree(game / f'{name}_data/exefs')
             status, out = run([f'./{name}', '-H'], cwd=game)
             log = made_state / 'recompiled' / name / f'{name}.log'
             text = log.read_text(errors='replace') if log.is_file() else ''
-            said = (
-                f"fs: the game's dump /nonexistent/Game.nsp, its source= setting, is not there; its settings are {ini}"
-            )
+            said = 'fs: source=/nonexistent/Game.nsp'
             check(said in text, f'the game started outside the AppImage did not read {ini} and log in {log}', out)
             outside = ((config, made_config), (state, made_state), (cache, made_cache))
             check(
@@ -289,14 +280,10 @@ def main():
         status, out = run([f'./{name}', '-H'], cwd=game, environment=made[name][0])
         log = state / 'recompiled' / name / f'{name}.log'
         ini = Path(f'{appimage}.config/scarletnx/recompiled/{name}/{name}.ini')
-        said = f"fs: the game's dump /nonexistent/Game.nsp, its source= setting, is not there; its settings are {ini}"
+        said = 'fs: source=/nonexistent/Game.nsp'
         check(said in log.read_text(errors='replace'), f'the game without a record did not read {ini}', out)
         status, out = run([f'./{name}', '-H'], cwd=game)
-        said = (
-            f'fs: the game has no ExeFS in {game}/{name}_data/exefs/ and no dump to read it from: '
-            f'{config}/recompiled/{name}/{name}.ini sets no source=, and {game}/{name}.source is not there'
-        )
-        check(said in log.read_text(errors='replace'), 'the game without a dump did not say where it looked', out)
+        check(said in log.read_text(errors='replace'), 'the game without exefs/ did not log from its source=', out)
         # a record naming a folder that is not there: said, with the one the game takes instead
         (game / f'{name}.folders').write_text(f'config={root / "gone"}\n')
         status, out = run([f'./{name}', '-H'], cwd=game)

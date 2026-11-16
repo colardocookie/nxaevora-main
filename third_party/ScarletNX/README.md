@@ -24,11 +24,11 @@ cross-built for [PowerPC64 LE](docs/PPC64.md), [RISC-V and LoongArch](docs/RISCV
 and [ScarletNX-android-universal.apk](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-android-universal.apk) ([Android](docs/ANDROID.md)).
 Games need a Vulkan 1.3 driver.
 
-Keys and games must be dumped from your own console. Started with no arguments, the program opens the
-[launcher](docs/GUI.md). **Install Keys** installs your `prod.keys`. For NSPs, also put `title.keys` in
-`~/.switch` (`%USERPROFILE%\.switch` on Windows). **Load Switch NSP/XCI/NRO** then picks a dump, extracts and
-recompiles it and starts the game, which the **Games** tab lists from then on. See [Usage](docs/USAGE.md) for the
-command line and [Folders](docs/USAGE.md#folders) for where games, saves and settings go.
+A game must be dumped from your own console and decrypted to a folder. Started with no arguments, the program opens the
+[launcher](docs/GUI.md). **Load Switch NRO** picks an `.nro`; a decrypted game folder goes to `-r` on the command
+line, which recompiles it without playing. The game then runs from `recompiled/<id>`, which the **Games** tab lists
+from then on. See [Usage](docs/USAGE.md) for the command line and [Folders](docs/USAGE.md#folders) for where games,
+saves and settings go.
 
 The shared ARM64 recompiler lives under `src/common/`. Switch Horizon HLE
 and Maxwell graphics live under `src/nx/`. The CPU-only Linux AArch64 runtime lives
@@ -74,21 +74,19 @@ cd ScarletNX
 cmake --preset default -B build && cmake --build build
 ```
 
-For encrypted dumps, put `prod.keys` (and `title.keys`, for NSPs) in `~/.switch`, or pass them with
-`--keys` and `--title-keys`. Decrypted DNSP/DXCI content needs no keys.
+Put a decrypted game folder anywhere: its ExeFS in `exefs/` (or `ExeFS/`), with `main`, `main.npdm`, `rtld`, `sdk`
+and `subsdk*`, its RomFS in `romfs/` (or `RomFS/`), and `control.nacp`. A game with an update takes the ExeFS of the
+update and one RomFS with the update applied. No key is read.
 ```bash
-./build/scarletnx "Game.xci"  # extract, recompile, then play (also accepts NSP, DNSP and DXCI)
+./build/scarletnx -r "/path/to/game folder"  # recompile the game folder
 ```
-Run the same command again after an interruption. Completed extraction and recompilation are skipped,
-but the game always starts anew. The driver keeps games, extractions and keys in its data folder,
+Run the same command again after an interruption. The driver keeps games in its data folder,
 `~/.local/share/scarletnx` on Linux ([Folders](./docs/USAGE.md#folders)). To run the steps separately, here in
 folders of the current one:
 ```bash
-./build/scarletnx -x "Game.xci" --out work/Game     # -> work/Game/{exefs,romfs}
-./build/scarletnx -r work/Game Game --outdir games  # -> games/Game/Game
-./build/scarletnx -rx "Game.xci"                   # prepare without playing (UNIX)
-./build/scarletnx -Hs "Game.xci"                   # headless, wait for GDB (UNIX)
-cd games/Game && ./Game
+./build/scarletnx -r "/path/to/game folder" --outdir games  # -> games/<id>/<id>
+./build/scarletnx -Hs games/<id>/<id>                      # headless, wait for GDB (UNIX)
+cd games/<id> && ./<id>
 ```
 
 For an SDL3 menu, run `./build/scarletnx` with no arguments. Select a driver with arrow keys and
@@ -122,7 +120,6 @@ runs on macOS yet: see [macOS and iOS](./docs/APPLE.md). Every document: [docs](
 
 - yuzu, Suyu, Torzu, Ryujinx, [Ryubing](https://git.ryujinx.app/ryubing/ryujinx) (Ryujinx's continuation), [Citron](https://git.citron-emu.org/citron/emulator) and [Eden](https://git.eden-emu.dev/eden-emu/eden).
 - [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)
-- LibHac.
 - [NeXium](https://nexium-emu.org/) for research and development.
 - [Switchbrew](https://switchbrew.org) for research.
 - [Azahar](https://github.com/azahar-emu/azahar) and Citra, for all of the 3DS emulation.

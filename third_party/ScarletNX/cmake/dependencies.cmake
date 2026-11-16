@@ -43,9 +43,9 @@ function(snx_quiet)
     endforeach()
 endfunction()
 
-# LZ4's block decoder for NSO segments (src/nx/loader/loader.c, src/nx/runtime/loader.c) and hactool's NSO
-# extraction. Only lib/lz4.c is built (BSD-2-Clause): the rest of LZ4 is its frame format, the HC compressor and the
-# command-line program, none of which an NSO uses
+# LZ4's block decoder for NSO segments (src/nx/loader/loader.c, src/nx/runtime/loader.c). Only lib/lz4.c is built
+# (BSD-2-Clause): the rest of LZ4 is its frame format, the HC compressor and the command-line program, none of which an
+# NSO uses
 if(SNX_BUILD_NX)
     CPMAddPackage(NAME lz4 VERSION 1.10.0
                   URL https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz
@@ -120,7 +120,7 @@ else()
     set(snx_vita_runtime OFF)
 endif()
 
-# OpenSSL for the hashes and ciphers (the NX, 3DS and Vita loaders, ldr, csrng, hactool) and the ssl service's TLS. It
+# OpenSSL for the hashes and ciphers (the NX, 3DS and Vita loaders, ldr, csrng) and the ssl service's TLS. It
 # builds with its own Configure and make, which cmake/openssl.cmake runs
 # The archives' SHA-256 are also part of their cache keys (cmake/deps_cache.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/deps_cache.cmake")
@@ -320,9 +320,4 @@ if(SNX_BUILD_GUI OR (SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY))
                   URL https://github.com/sammycage/lunasvg/archive/refs/tags/v3.5.0.tar.gz
                   URL_HASH SHA256=1abf1472ee6c4d19797916e8cc3c2e4b628e0d81178ffac60bdb0d457e32c690
                   DOWNLOAD_ONLY YES)
-endif()
-
-# hactool, in the tree (src/nx/runtime/driver/hactool), which scarletnx --extract calls in its own process
-if(SNX_BUILD_NX)
-    include("${PROJECT_SOURCE_DIR}/cmake/hactool.cmake")
 endif()

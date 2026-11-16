@@ -48,12 +48,6 @@ static void line(GuiSteps* steps, const char* s, uint64_t now) {
         sscanf(block, "compiled block %u/%u", &value, &total) == 2) {
         last->value = value;
         last->total = total;
-    } else if (last && !strcmp(last->label, "EXTRACT") && sscanf(s, " extracted %u of %u MB", &value, &total) == 2) {
-        /* the driver's row a second, over itself: the step's own line shows it, no note under it */
-        last->value = value;
-        last->total = total;
-        last->megabytes = 1;
-        return;
     } else if (prefix(s, "Extracting ")) /* the labels show translated */
         begin(steps, SNX_TR_NOOP("EXTRACT"), s + 11, strlen(s + 11), now);
     else if (prefix(s, "Recompiling ")) {
@@ -129,10 +123,8 @@ void gui_step_progress(const GuiStep* s, int how, uint64_t now, char* out, size_
                      (unsigned)(left % 60));
         else
             snprintf(out, size, snx_tr("%02u:%02u left"), (unsigned)(left / 60), (unsigned)(left % 60));
-    } else if (s->megabytes && s->total >= 1024)
-        snprintf(out, size, "%.1f / %.1f GB", s->value / 1024.0, s->total / 1024.0);
-    else
-        snprintf(out, size, s->megabytes ? "%u / %u MB" : "%u / %u", s->value, s->total);
+    } else
+        snprintf(out, size, "%u / %u", s->value, s->total);
 }
 const GuiStep* gui_steps_last(const GuiSteps* steps, const char* label) {
     int i;

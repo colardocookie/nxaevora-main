@@ -44,8 +44,8 @@ if(SNX_TEST_SANITIZERS)
         snx-logscan
         # the recompiler and its backends
         snx_llvm snx_arm_llvm scarletnx-recompiler scarletnx-recompiler-shared
-        # the driver, its extraction, the first start's setup, the settings and the build's line
-        snx_driver snx_nx_module snx_driver_llvm hactool_lib snx_setup snx_settings snx_settings_runtime snx_build_info
+        # the driver, the first start's setup, the settings and the build's line
+        snx_driver snx_nx_module snx_driver_llvm snx_setup snx_settings snx_settings_runtime snx_build_info
         snx-test-build-info
         # the Switch runtime: its components, the shader translator and the Vulkan backend
         scarletnx snx_core snx_kernel snx_hle snx_video snx_gpu snx_platform snx_shader snx_vk
@@ -327,37 +327,34 @@ target_link_libraries(snx-test-fs-fixture PRIVATE scarletnx-common)
 add_library(snx_test_fs_tree OBJECT "${PROJECT_SOURCE_DIR}/src/common/filesystem/tree.c")
 snx_test_target(snx_test_fs_tree 11)
 target_compile_options(snx_test_fs_tree PRIVATE -include "${CMAKE_CURRENT_SOURCE_DIR}/fs_scan_probe.h")
-set(snx_fs_suites tree)
-if(TARGET hactool_internals) # the service reads dumps through hactool, built with the NX runtime
-    list(APPEND snx_fs_suites service)
-endif()
+set(snx_fs_suites tree service)
 foreach(suite ${snx_fs_suites})
     add_executable(snx-test-fs-${suite} filesystem_${suite}.c $<TARGET_OBJECTS:snx_test_fs_tree>)
     snx_test_target(snx-test-fs-${suite} 11)
     add_test(NAME filesystem_${suite}
         COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-${suite}>)
 endforeach()
-if(TARGET hactool_internals)
-    target_compile_options(snx-test-fs-service PRIVATE -Wno-unused-parameter)
-    snx_swipc(snx-test-fs-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc hle/filesystem/fs.swipc)
-    # fs.c reads a game's dump in place through the driver's container.c and hactool
-    target_sources(snx-test-fs-service PRIVATE "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c")
-    target_link_libraries(snx-test-fs-service PRIVATE scarletnx-common hactool_internals)
-    add_test(NAME filesystem_raw COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> raw)
-    add_test(NAME filesystem_addon_overlay COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> addon-overlay)
-    add_test(NAME filesystem_mods COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods)
-    add_test(NAME filesystem_mods_stale COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods-stale)
-    if(NOT WIN32) # the dump's link: Windows makes one only with the right to
-        add_test(NAME filesystem_dump COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump)
-        add_test(NAME filesystem_dump_source COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-source)
-        add_test(NAME filesystem_dump_none COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-none)
-        add_test(NAME filesystem_dump_gone COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-gone)
-        add_test(NAME filesystem_dump_update COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-update)
-        add_test(NAME filesystem_mods_image COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods-image)
-        add_test(NAME filesystem_dump_update_extracted
-                 COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-update-extracted)
-        add_test(NAME filesystem_dump_dlc COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-dlc)
-    endif()
+target_compile_options(snx-test-fs-service PRIVATE -Wno-unused-parameter)
+snx_swipc(snx-test-fs-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc hle/filesystem/fs.swipc)
+target_link_libraries(snx-test-fs-service PRIVATE scarletnx-common)
+add_test(NAME filesystem_raw COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> raw)
+add_test(NAME filesystem_addon_overlay COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> addon-overlay)
+add_test(NAME filesystem_mods COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods)
+add_test(NAME filesystem_mods_stale COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods-stale)
+add_test(NAME filesystem_mods_setting COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods-setting)
+add_test(NAME filesystem_romfs_setting
+         COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> romfs-setting)
+add_test(NAME filesystem_romfs_setting_missing
+         COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> romfs-setting-missing)
+add_test(NAME filesystem_romfs_setting_conflict
+         COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> romfs-setting-conflict)
+add_test(NAME filesystem_romfs_setting_update
+         COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> romfs-setting-update)
+add_test(NAME filesystem_no_exefs COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> no-exefs)
+add_test(NAME filesystem_update_no_exefs
+         COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> update-no-exefs)
+if(NOT WIN32) # a symlink in the mods' files, and the synthetic RomFS image
+    add_test(NAME filesystem_mods_image COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods-image)
 endif()
 if(UNIX)
     # host.c by itself: shared files, folders and the mutex
@@ -371,6 +368,15 @@ if(UNIX)
     add_test(NAME data_dir COMMAND snx-test-data-dir)
     add_test(NAME runtime_deploy COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/deploy.cmake")
 endif()
+# the encrypted dumps the recompile driver and the driver refuse, and the game folder and NRO they take
+add_executable(snx-test-dump-input dump_input.c)
+snx_test_target(snx-test-dump-input 99)
+target_link_libraries(snx-test-dump-input PRIVATE scarletnx-common)
+add_test(NAME dump_input COMMAND snx-test-dump-input)
+# host.c's shared mode of PMutex: a shared take excludes only exclusive takes, and an exclusive take excludes shared ones
+add_executable(snx-test-host-shared-lock host_shared_lock.c "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
+snx_test_target(snx-test-host-shared-lock 11)
+add_test(NAME host_shared_lock COMMAND snx-test-host-shared-lock)
 # snx_os_error: the system's reason a message names, Windows' GetLastError where its calls leave errno
 add_executable(snx-test-os-error os_error.c)
 snx_test_target(snx-test-os-error 99)
@@ -636,7 +642,7 @@ target_link_libraries(snx-test-room-service PRIVATE scarletnx-ldn scarletnx-comm
 add_test(NAME room_service COMMAND snx-test-room-service)
 
 # ssl (ssl.c) against a TLS server in the test, on the game's bsd sockets (bsd.c, built beside). OpenSSL comes with
-# the NX, 3DS and hactool builds (cmake/dependencies.cmake), not with a GNU ABI-only one
+# the NX and 3DS builds (cmake/dependencies.cmake), not with a GNU ABI-only one
 if(TARGET OpenSSL::SSL)
     add_executable(snx-test-ssl-service ssl_service.c "${PROJECT_SOURCE_DIR}/src/nx/hle/services/network/bsd.c"
     own_stub.c)
@@ -762,7 +768,7 @@ target_link_libraries(snx-test-imgui-settings PRIVATE scarletnx-common m)
 target_include_directories(snx-test-imgui-settings PRIVATE "${PROJECT_BINARY_DIR}/generated")
 add_test(NAME imgui_settings COMMAND snx-test-imgui-settings)
 
-add_executable(snx-test-nvn-objtab nvn_objtab.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_objtab.c")
+add_executable(snx-test-nvn-objtab nvn/nvn_objtab.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_objtab.c")
 snx_test_target(snx-test-nvn-objtab 11)
 add_test(NAME nvn_objtab COMMAND snx-test-nvn-objtab)
 
@@ -776,60 +782,68 @@ snx_test_target(snx-test-arceus-clock 11)
 target_link_libraries(snx-test-arceus-clock PRIVATE m)
 add_test(NAME arceus_clock COMMAND snx-test-arceus-clock)
 
-add_executable(snx-test-nvn-cmdlist nvn_cmdlist.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_cmdlist.c")
+add_executable(snx-test-nvn-cmdlist nvn/nvn_cmdlist.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmdlist.c")
 snx_test_target(snx-test-nvn-cmdlist 11)
 add_test(NAME nvn_cmdlist COMMAND snx-test-nvn-cmdlist)
 
-add_executable(snx-test-nvn-frame nvn_frame.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_frame.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_cmdlist.c")
+add_executable(snx-test-nvn-frame nvn/nvn_frame.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_frame.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmdlist.c")
 snx_test_target(snx-test-nvn-frame 11)
 add_test(NAME nvn_frame COMMAND snx-test-nvn-frame)
 
-add_executable(snx-test-nvn-replay nvn_replay.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_replay.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_cmdlist.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_params.c")
+add_executable(snx-test-nvn-replay nvn/nvn_replay.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_replay.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmdlist.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_params.c")
 snx_test_target(snx-test-nvn-replay 11)
 add_test(NAME nvn_replay COMMAND snx-test-nvn-replay)
 
-add_executable(snx-test-nvn-rt nvn_rt.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_rt.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_params.c")
+add_executable(snx-test-nvn-rt nvn/nvn_rt.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_rt.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_params.c")
 snx_test_target(snx-test-nvn-rt 11)
 if(NOT WIN32)
     target_link_libraries(snx-test-nvn-rt PRIVATE m)
 endif()
 add_test(NAME nvn_rt COMMAND snx-test-nvn-rt)
 
-add_executable(snx-test-nvn-params nvn_params.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_params.c")
+add_executable(snx-test-draw-record nvn/draw_record.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/draw_record_sig.c")
+snx_test_target(snx-test-draw-record 11)
+add_test(NAME draw_record COMMAND snx-test-draw-record)
+
+add_executable(snx-test-nvn-measure nvn/nvn_measure.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/nvn_measure_calc.c")
+snx_test_target(snx-test-nvn-measure 11)
+add_test(NAME nvn_measure COMMAND snx-test-nvn-measure)
+
+add_executable(snx-test-nvn-params nvn/nvn_params.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_params.c")
 snx_test_target(snx-test-nvn-params 11)
 if(NOT WIN32)
     target_link_libraries(snx-test-nvn-params PRIVATE m)
 endif()
 add_test(NAME nvn_params COMMAND snx-test-nvn-params)
 
-add_executable(snx-test-nvn-exectest nvn_exectest.c)
+add_executable(snx-test-nvn-exectest nvn/nvn_exectest.c)
 snx_test_target(snx-test-nvn-exectest 11)
 add_test(NAME nvn_exectest COMMAND snx-test-nvn-exectest)
 
-add_executable(snx-test-nvn-enum-trace nvn_enum_trace.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_enum_trace.c")
+add_executable(snx-test-nvn-enum-trace nvn/nvn_enum_trace.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/nvn_enum_trace.c")
 snx_test_target(snx-test-nvn-enum-trace 11)
 add_test(NAME nvn_enum_trace COMMAND snx-test-nvn-enum-trace)
 
-add_executable(snx-test-nvn-selftest-cmp nvn_selftest_cmp.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_cmp.c")
+add_executable(snx-test-nvn-selftest-cmp nvn/nvn_selftest_cmp.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/test/nvn_selftest_cmp.c")
 snx_test_target(snx-test-nvn-selftest-cmp 11)
 add_test(NAME nvn_selftest_cmp COMMAND snx-test-nvn-selftest-cmp)
 
-add_executable(snx-test-nvn-selftest-mem nvn_selftest_mem.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_mem.c")
+add_executable(snx-test-nvn-selftest-mem nvn/nvn_selftest_mem.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/test/nvn_selftest_mem.c")
 snx_test_target(snx-test-nvn-selftest-mem 11)
 add_test(NAME nvn_selftest_mem COMMAND snx-test-nvn-selftest-mem)
 
-add_executable(snx-test-nvn-selftest-rec nvn_selftest_rec.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_rec.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_cmp.c")
+add_executable(snx-test-nvn-selftest-rec nvn/nvn_selftest_rec.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/test/nvn_selftest_rec.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/test/nvn_selftest_cmp.c")
 snx_test_target(snx-test-nvn-selftest-rec 11)
 target_include_directories(snx-test-nvn-selftest-rec PRIVATE "${PROJECT_BINARY_DIR}/generated")
 add_test(NAME nvn_selftest_rec COMMAND snx-test-nvn-selftest-rec)
 
-add_executable(snx-test-nvn-selftest-dec nvn_selftest_dec.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_dec.c")
+add_executable(snx-test-nvn-selftest-dec nvn/nvn_selftest_dec.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/test/nvn_selftest_dec.c")
 snx_test_target(snx-test-nvn-selftest-dec 11)
 add_test(NAME nvn_selftest_dec COMMAND snx-test-nvn-selftest-dec)
 
-add_executable(snx-test-nvn-selftest-regdiff nvn_selftest_regdiff.c
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_selftest_regdiff.c")
+add_executable(snx-test-nvn-selftest-regdiff nvn/nvn_selftest_regdiff.c
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/test/nvn_selftest_regdiff.c")
 snx_test_target(snx-test-nvn-selftest-regdiff 11)
 add_test(NAME nvn_selftest_regdiff COMMAND snx-test-nvn-selftest-regdiff)
 
@@ -1081,13 +1095,6 @@ add_executable(snx-test-run-ticking run_ticking.c)
 snx_test_target(snx-test-run-ticking 99)
 target_link_libraries(snx-test-run-ticking PRIVATE snx_test_common)
 add_test(NAME run_ticking COMMAND snx-test-run-ticking)
-
-# C11 for hactool's headers, which build the synthetic dumps (hac_synth.h); extract.c itself stays C99 in the driver
-add_executable(snx-test-extract extract.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/extract.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c")
-snx_test_target(snx-test-extract 11)
-target_link_libraries(snx-test-extract PRIVATE snx_test_common hactool_internals)
-add_test(NAME extraction_native COMMAND snx-test-extract)
 
 add_executable(snx-test-loader loader_test.c "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c")
@@ -1594,11 +1601,11 @@ add_executable(snx-test-astc-blocks astc_blocks.c support/astc.c)
 snx_test_target(snx-test-astc-blocks 23)
 add_test(NAME astc_blocks COMMAND snx-test-astc-blocks)
 
-add_executable(snx-test-nvn-command-gap nvn_command_gap.c support/nvn_command_gap.c)
+add_executable(snx-test-nvn-command-gap nvn/nvn_command_gap.c nvn/support/nvn_command_gap.c)
 snx_test_target(snx-test-nvn-command-gap 23)
 add_test(NAME nvn_command_gap COMMAND snx-test-nvn-command-gap)
 
-add_executable(snx-test-nvn-control nvn_control.c support/nvn_control.c)
+add_executable(snx-test-nvn-control nvn/nvn_control.c nvn/support/nvn_control.c)
 snx_test_target(snx-test-nvn-control 23)
 add_test(NAME nvn_control COMMAND snx-test-nvn-control)
 

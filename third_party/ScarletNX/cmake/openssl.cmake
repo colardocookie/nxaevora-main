@@ -3,7 +3,7 @@
 #
 # OpenSSL's libcrypto and libssl as static libraries (targets OpenSSL::Crypto and OpenSSL::SSL), built from the release
 # source in cmake/dependencies.cmake with OpenSSL's own Configure (Perl) and make. libcrypto does the hashing and
-# ciphers (NSO, NRR and 3DS hashes, csrng, hactool's AES, SHA and RSA), libssl the ssl service's TLS. Only the libraries
+# ciphers (NSO, NRR and 3DS hashes, csrng, the 3DS decryption), libssl the ssl service's TLS. Only the libraries
 # are built: no programs, docs, tests or loadable modules, and no configuration file is read at startup, so the result
 # needs nothing but libc and behaves the same everywhere. OpenSSL is Apache 2.0. It needs Perl and make (gmake on the
 # BSDs).

@@ -6,31 +6,23 @@
 #include <string.h>
 
 enum {
-    SNX_EXTRACT = 1,
     SNX_RECOMP = 2,
     SNX_HEADLESS = 4,
     SNX_GDB = 8,
     SNX_STOP = 16,
     SNX_FULLSCREEN = 32,
     SNX_WINDOWED = 64, /* --fullscreen=0: windowed over the .ini's fullscreen=1 */
-    SNX_TMPFS = 128,   /* the driver's --tmpfs (the launcher's Extract to tmpfs), which snx_cli_flag leaves to it */
-    /* the driver's --extract-container (the launcher's Extract dump): a dump played is extracted into its
-       game's data folder, instead of read in place. snx_cli_flag leaves it to the driver too */
-    SNX_EXTRACT_CONTAINER = 256,
     /* --tracy-capture: record this run with tracy-capture (SNX_TRACY builds only) */
     SNX_TRACY_CAPTURE = 512,
     /* --tracy: start the Tracy client for a GUI connection (SNX_TRACY builds only) */
     SNX_TRACY_CLIENT = 1024
 };
-/* Shared by the driver and standalone game runtime (startup.c), which refuses SNX_EXTRACT and SNX_RECOMP: only the
-   driver extracts and recompiles. Windows accepts individual short options, but deliberately not POSIX-style
-   clusters. */
+/* Shared by the driver and standalone game runtime (startup.c), which refuses SNX_RECOMP: only the driver
+   recompiles. Windows accepts individual short options, but deliberately not POSIX-style clusters. */
 static int snx_cli_flag(const char* arg, unsigned* flags) {
     unsigned bits = 0;
     const char* p;
-    if (!strcmp(arg, "--extract"))
-        bits = SNX_EXTRACT;
-    else if (!strcmp(arg, "--recompile"))
+    if (!strcmp(arg, "--recompile"))
         bits = SNX_RECOMP;
     else if (!strcmp(arg, "--recomp")) {
         snx_option_renamed("--recomp", "--recompile");
@@ -55,7 +47,6 @@ static int snx_cli_flag(const char* arg, unsigned* flags) {
 #endif
         for (p = arg + 1; *p; ++p) {
             switch (*p) {
-                case 'x': bits |= SNX_EXTRACT; break;
                 case 'r': bits |= SNX_RECOMP; break;
                 case 'H': bits |= SNX_HEADLESS; break;
                 case 'f': bits |= SNX_FULLSCREEN; break;

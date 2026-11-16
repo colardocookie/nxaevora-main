@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include "common/utilities/font.h" /* gui_glyph */
 
-/* the menu's items, in order: the loads, the keys, Settings and Share Log, on Android the data folder, Exit. The games
+/* the menu's items, in order: the loads, Settings and Share Log, on Android the data folder, Exit. The games
    are the Games tab's */
 enum {
     GUI_SWITCH,
@@ -15,7 +15,6 @@ enum {
     GUI_3DS,
     GUI_VITA,
     GUI_GBA,
-    GUI_KEYS,
     GUI_SETTINGS, /* the game's .ini settings, the launcher's own for the runs and its App: settings.h */
     GUI_LOG,      /* the logs in one file, for a bug report: a phone has no terminal to copy them from */
     GUI_FOLDERS,  /* Settings > App > Folders, where each folder opens */
@@ -24,8 +23,8 @@ enum {
 };
 typedef enum { GUI_UP, GUI_DOWN, GUI_LEFT, GUI_RIGHT, GUI_SELECT, GUI_CANCEL, GUI_PAGE_UP, GUI_PAGE_DOWN } GuiKey;
 #define GUI_TEXT_MAX 4
-/* the screen over the menu: none, a load's file to pick, the games' browser, the keys', the recompiles' queue */
-typedef enum { GUI_LOAD_NONE, GUI_LOAD_DROP, GUI_LOAD_GAMES, GUI_LOAD_KEYS, GUI_LOAD_RECOMPILE } GuiLoadView;
+/* the screen over the menu: none, a load's file to pick, the games' browser, the recompiles' queue */
+typedef enum { GUI_LOAD_NONE, GUI_LOAD_DROP, GUI_LOAD_GAMES, GUI_LOAD_RECOMPILE } GuiLoadView;
 typedef struct {
     int selected; /* keyboard/mouse focus, not activation */
     int active;   /* the last explicitly activated item: the load a picked file goes to */
@@ -162,7 +161,4 @@ char* gui_drop_path(const char* text, bool text_drop);
    download it names by path, NULL for any other (an app's, a cloud's); elsewhere the path or file:// URI it gave.
    Owned. */
 char* gui_document_path(const char* uri);
-/* 1 for text as a prod.keys has it: no NUL byte, and a line "name = hex" at least (a key's name of letters, digits and
-   _, its value hexadecimal), what tells it from any other file where it has no name to go by */
-int gui_keys_text(const char* data, size_t size);
 #endif

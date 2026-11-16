@@ -47,7 +47,7 @@ body:
     id: settings
     attributes:
       label: Settings
-      description: The lines of the `.ini` file that you changed, for example `nvn_native`.
+      description: The lines of the `.ini` file that you changed, for example `nvn_legacy`.
       render: ini
   - type: textarea
     id: steps

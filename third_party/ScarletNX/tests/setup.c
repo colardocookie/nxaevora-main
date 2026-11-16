@@ -13,7 +13,6 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #define FIRST "0123456789abcdeffedcba9876543210"
@@ -152,98 +151,6 @@ static void test_saves(const char* root) {
     puts("PASS the games with saves of the fixed uid");
 }
 
-static void test_keys(const char* root, const char* home) {
-    static const char prod[] = "header_key = 00112233\n";
-    static const char titles[] = "0100000000000000000000000000000a = 0011aabb\n";
-    char *data = join(root, "data"), *picked = join(root, "picked"), *found, *dir, *switch_dir = join(home, ".switch");
-    char *path, why[512];
-    struct stat st;
-    int titled;
-    assert(snx_keys_text(prod, strlen(prod)) && snx_keys_text(titles, strlen(titles)));
-    assert(!snx_keys_text("no keys here\n", 13) && !snx_keys_text("name =\n", 7) && !snx_keys_text("a\0= 00", 6));
-    /* none anywhere; ~/.switch's; the data folder's first */
-    assert(!snx_keys_found(data, "prod.keys"));
-    path = join(switch_dir, "prod.keys");
-    put(path, prod);
-    found = snx_keys_found(data, "prod.keys");
-    assert(found && !strcmp(found, path));
-    free(found);
-    free(path);
-    path = join(data, "prod.keys");
-    put(path, prod);
-    found = snx_keys_found(data, "prod.keys");
-    assert(found && !strcmp(found, path));
-    free(found);
-    free(path);
-    { /* command-line files override the usual lookup, for this driver's run only */
-        char *prod_override = join(root, "provided-prod.keys"), *title_override = join(root, "provided-title.keys");
-        SnxSetupKeysOverride previous = snx_setup_keys_override_get();
-        put(prod_override, prod);
-        put(title_override, titles);
-        snx_setup_keys_override_set(prod_override, title_override);
-        found = snx_keys_found(data, "prod.keys");
-        assert(found && !strcmp(found, prod_override));
-        free(found);
-        found = snx_keys_found(data, "title.keys");
-        assert(found && !strcmp(found, title_override));
-        free(found);
-        found = snx_keys_found(data, "console.keys");
-        assert(!found || strcmp(found, title_override));
-        free(found);
-        assert(!snx_keys_found(data, "other.keys"));
-        snx_setup_keys_override_set(previous.prod, previous.title);
-        free(prod_override);
-        free(title_override);
-    }
-    /* installed from a folder: prod.keys, title.keys with it when there, each its owner's alone */
-    assert(snx_keys_install(picked, data, &titled, why, sizeof why) == -1 && strstr(why, "has no prod.keys"));
-    path = join(picked, "prod.keys");
-    put(path, "not keys\n");
-    assert(snx_keys_install(picked, data, &titled, why, sizeof why) == -1 && strstr(why, "is not a prod.keys"));
-    put(path, prod);
-    free(path);
-    dir = join(root, "installed");
-    assert(!snx_keys_install(picked, dir, &titled, why, sizeof why) && !titled);
-    path = join(dir, "prod.keys");
-    expect_text(path, prod);
-    assert(!stat(path, &st) && (st.st_mode & 0777) == 0600);
-    free(path);
-    path = join(picked, "title.keys");
-    put(path, titles);
-    free(path);
-    assert(!snx_keys_install(picked, dir, &titled, why, sizeof why) && titled);
-    path = join(dir, "title.keys");
-    expect_text(path, titles);
-    free(path);
-    /* a folder they cannot go in (a file there): said with the path and the system's reason */
-    path = join(root, "a file");
-    put(path, "x");
-    assert(snx_keys_install(picked, path, &titled, why, sizeof why) == -1 && strstr(why, "could not be written: "));
-    assert(strlen(strstr(why, "could not be written: ")) > strlen("could not be written: "));
-#ifndef _WIN32
-    assert(strstr(why, strerror(EEXIST)) != NULL);
-#endif
-    free(path);
-    /* where they go: the user's data folder itself on an XDG system, else ~/.switch */
-    path = snx_user_data_dir();
-    found = snx_keys_dir(path);
-#ifdef SNX_XDG
-    assert(found && !strcmp(found, path));
-#else
-    assert(found && !strcmp(found, switch_dir));
-#endif
-    free(found);
-    free(path);
-    found = snx_keys_dir(data);
-    assert(found && !strcmp(found, switch_dir));
-    free(found);
-    free(dir);
-    free(switch_dir);
-    free(picked);
-    free(data);
-    puts("PASS the keys found and installed");
-}
-
 static void test_files(const char* root) {
     char *app = join(root, "app.ini"), *list = join(root, "folders.txt"), why[256];
     assert(!snx_ini_put(app, "app", "language", "pt-BR", why, sizeof why));
@@ -349,7 +256,6 @@ int main(void) {
     test_file(real);
     test_options();
     test_saves(real);
-    test_keys(real, home);
     test_files(real);
     test_notices();
     test_place(real, home);

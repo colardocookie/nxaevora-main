@@ -86,7 +86,7 @@ static const char* k[] = {SNX_TR_KEY("ESC"), SNX_TR_NOOP("A \"quoted\" (paren)")
         text = '# [button]"a comment"\n[scene]S {\n\t[list]L {\n\t\t[button]"Load \\"A\\" \\\\ B" {}\n'
         text += '\t\t@[button]"Decor" {\n\t\t\tkey = d\n\t\t}\n\t}\n\t[label]Status {}\n}\n'
         self.assertEqual(bl.ui_phrases(text), ['Load "A" \\ B', 'Decor'])
-        self.assertEqual(bl.code_phrases(ROOT)['Load Switch NSP/XCI/NRO'][1], [bl.UI])
+        self.assertEqual(bl.code_phrases(ROOT)['Load Switch NRO'][1], [bl.UI])
 
     def test_the_pot_is_the_code(self):
         self.assertEqual((ROOT / bl.POT).read_text(), bl.pot_text(bl.code_phrases(ROOT)))
