@@ -593,7 +593,14 @@ after the frames in flight. Only once a submission did not run as recorded, or a
 (that sets the same mark), is nothing destroyed any more, to the end of the session. A frame has one
 fate in the counts, the first reported for it, and is counted in one window with its decision.
 
-Limits of this piece: FSR only, the formats the self-test ran (a B10G11R11 scene colour, a D24S8 depth), one
+Below native size (`SNX_ARCEUS_UPSCALER=fsr` or `dlss` with `SNX_ARCEUS_FIXED_RESOLUTION=1` and a scene scale of
+1/2, 3/5, 2/3, 3/4 or 4/5): the library takes the scene's rectangle as its render size and the target as its output,
+and its picture is handed to the game's readers in a larger texture, as the spatial path's hand-over does. DLSS takes
+the mode whose optimal render size NGX gives as the rectangle, else the nearest one whose range holds it. The texture
+level bias of such frames is automatic by default, log2 of the scene's scale (-1 at 1/2): in the user's look at DLSS
+1/2 it was much sharper than no bias, and -2 sharper still but shimmered a little. -2 stays available as a set value.
+
+Limits of this piece: FSR and DLSS only, the formats the self-test ran (a B10G11R11 scene colour, a D24S8 depth), one
 layer each, the game's form of projection as two cameras of one place showed it. Any other frame is left
 without jitter. The first context costs at least two frames without jitter and a create in the middle of a
 frame. A change of the colour target between two frames costs one frame drawn with jitter and left as drawn.
