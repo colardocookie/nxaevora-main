@@ -27,6 +27,12 @@ enum {
     PT_SYNC_WAIT,  /* the game's nvnSyncWait, the whole call */
     PT_ACQUIRE,    /* the game's nvnWindowAcquireTexture, the whole call */
     PT_RELEASE_HOLD, /* the release thread holding vk_lock in release_through (the landings and releases) */
+    /* a present job's tail, each from its syncpoint increment queued at frame_end (PERF-10, research 19:46) */
+    PT_TAIL_SUBMIT, /* to the recorder thread handing the submission the increment waits for to the driver */
+    PT_TAIL_DONE,   /* to the release thread's wait for that submission returning */
+    PT_TAIL_INCR,   /* to the increment performed, after the landings before it */
+    PT_TAIL_FREE,   /* to the end of the release_through that performed it: vk_lock released */
+    PT_TAIL_WAKE,   /* to the game's next nvnSyncWait returning after the increment */
     PT_SITES
 };
 /* counts a frame, not times */
@@ -34,14 +40,29 @@ enum {
     PC_WB_OUTPUTS, /* graphics storage outputs landed (buffer.c, as g_wb_outputs counts them) */
     PC_WB_BYTES,   /* their bytes */
     PC_WC_BYTES,   /* bytes vk_write_changed wrote to guest memory, the ones the shader changed */
+    PC_TAIL_SUBMITS, /* graphics submissions from one present's increment to the next, the increment's own included */
+    PC_TAIL_AFTER,   /* of those, the ones not complete when the increment was queued */
+    PC_TAIL_UNGATED, /* increments that waited for no submission: no submit or done time */
+    PC_TAIL_PARTIAL, /* tails closed with a time missing (performed by another path, or no wait after it) */
+    PC_TAIL_LOST,    /* tails whose slot was needed again before they closed */
     PC_COUNTS
 };
 
 typedef struct {
     uint64_t sum, max, count;
 } PerfTime;
+/* A tail's times, each written once by the thread that reaches that point, and closed when both its vk_lock release
+   and the game's wake are in */
+#define PERF_TAILS 4u
+typedef struct {
+    uint64_t armed, gate, seq, t0, t_submit, t_done, t_incr, t_free, t_wake;
+    int closes;
+} PerfTail;
 typedef struct {
     PerfTime site[PT_SITES];
+    PerfTail tail[PERF_TAILS];
+    uint64_t tail_next, tail_handed, tail_mark; /* the next tail's number, the last value handed, the submit count */
+    int tail_arm;                               /* the GPU thread's: frame_end armed the next increment */
     struct {
         const char* what; /* 0 while free: claimed with a compare-exchange */
         PerfTime t;
@@ -57,6 +78,17 @@ extern PerfTimes g_perf;
 void perf_time_add(PerfTimes* p, int site, uint64_t ns);
 void perf_time_named(PerfTimes* p, const char* what, uint64_t ns);
 void perf_count(PerfTimes* p, int counter, uint64_t n);
+/* The tail's points. arm and take on the GPU thread: frame_end arms, the next increment it queues takes */
+void perf_tail_arm(PerfTimes* p);
+int perf_tail_take(PerfTimes* p);
+/* the armed increment queued as release seq, waiting for submission gate (0: none), with the graphics submissions
+   recorded and done so far */
+void perf_tail_queued(PerfTimes* p, uint64_t seq, uint64_t gate, uint64_t submitted, uint64_t done, uint64_t now);
+void perf_tail_handed(PerfTimes* p, uint64_t value, uint64_t now);  /* the recorder handed submission value over */
+void perf_tail_done(PerfTimes* p, uint64_t value, uint64_t now);    /* the release thread's wait for value returned */
+void perf_tail_performed(PerfTimes* p, uint64_t seq, uint64_t now); /* release seq, an increment, performed */
+void perf_tail_freed(PerfTimes* p, uint64_t now);                   /* a release_through ended, vk_lock released */
+void perf_tail_woke(PerfTimes* p, uint64_t now);                    /* the game's nvnSyncWait returned */
 /* Writes the window's line into out and starts the next window. frames: the presents it covers. */
 size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size);
 

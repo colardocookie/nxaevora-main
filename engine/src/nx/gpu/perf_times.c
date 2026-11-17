@@ -33,6 +33,98 @@ void perf_count(PerfTimes* p, int counter, uint64_t n) {
     if (counter >= 0 && counter < PC_COUNTS) __atomic_fetch_add(&p->count[counter], n, __ATOMIC_RELAXED);
 }
 
+void perf_tail_arm(PerfTimes* p) { p->tail_arm = 1; }
+int perf_tail_take(PerfTimes* p) {
+    const int armed = p->tail_arm;
+    p->tail_arm = 0;
+    return armed;
+}
+
+#define LOAD(x) __atomic_load_n(&(x), __ATOMIC_ACQUIRE)
+/* sets a time once: 1 when this call set it */
+static int stamp(uint64_t* t, uint64_t now) {
+    uint64_t zero = 0;
+    return __atomic_compare_exchange_n(t, &zero, now ? now : 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+static void tail_site(PerfTimes* p, int site, const PerfTail* t, uint64_t at, int* partial) {
+    if (!at) {
+        *partial = 1;
+        return;
+    }
+    perf_time_add(p, site, at > t->t0 ? at - t->t0 : 0);
+}
+/* the second of the two closing points adds the times and frees the slot */
+static void tail_close(PerfTimes* p, PerfTail* t) {
+    if (__atomic_add_fetch(&t->closes, 1, __ATOMIC_ACQ_REL) != 2) return;
+    int partial = 0;
+    if (LOAD(t->gate)) {
+        tail_site(p, PT_TAIL_SUBMIT, t, LOAD(t->t_submit), &partial);
+        tail_site(p, PT_TAIL_DONE, t, LOAD(t->t_done), &partial);
+    }
+    tail_site(p, PT_TAIL_INCR, t, LOAD(t->t_incr), &partial);
+    tail_site(p, PT_TAIL_FREE, t, LOAD(t->t_free), &partial);
+    tail_site(p, PT_TAIL_WAKE, t, LOAD(t->t_wake), &partial);
+    if (partial) perf_count(p, PC_TAIL_PARTIAL, 1);
+    __atomic_store_n(&t->armed, 0, __ATOMIC_RELEASE);
+}
+void perf_tail_queued(PerfTimes* p, uint64_t seq, uint64_t gate, uint64_t submitted, uint64_t done, uint64_t now) {
+    PerfTail* t = &p->tail[p->tail_next++ % PERF_TAILS];
+    if (LOAD(t->armed)) perf_count(p, PC_TAIL_LOST, 1); /* reused unclosed: its late points may land in the new one */
+    __atomic_store_n(&t->armed, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&t->gate, gate, __ATOMIC_RELAXED);
+    __atomic_store_n(&t->seq, seq, __ATOMIC_RELAXED);
+    __atomic_store_n(&t->t0, now, __ATOMIC_RELAXED);
+    uint64_t* times[] = {&t->t_submit, &t->t_done, &t->t_incr, &t->t_free, &t->t_wake};
+    for (unsigned i = 0; i < sizeof times / sizeof times[0]; i++) __atomic_store_n(times[i], 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&t->closes, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&t->armed, 1, __ATOMIC_RELEASE);
+    const uint64_t last = gate > submitted ? gate : submitted; /* the increment's own submission counts */
+    if (p->tail_mark) perf_count(p, PC_TAIL_SUBMITS, last - p->tail_mark);
+    p->tail_mark = last;
+    perf_count(p, PC_TAIL_AFTER, last > done ? last - done : 0);
+    if (!gate) perf_count(p, PC_TAIL_UNGATED, 1);
+    else if (LOAD(p->tail_handed) >= gate) stamp(&t->t_submit, now); /* handed over already */
+}
+void perf_tail_handed(PerfTimes* p, uint64_t value, uint64_t now) {
+    uint64_t seen = LOAD(p->tail_handed);
+    while (value > seen && !__atomic_compare_exchange_n(&p->tail_handed, &seen, value, 0, __ATOMIC_ACQ_REL,
+                                                        __ATOMIC_ACQUIRE)) {
+    }
+    for (unsigned i = 0; i < PERF_TAILS; i++) {
+        PerfTail* t = &p->tail[i];
+        const uint64_t gate = LOAD(t->gate);
+        if (LOAD(t->armed) && gate && gate <= value) stamp(&t->t_submit, now);
+    }
+}
+void perf_tail_done(PerfTimes* p, uint64_t value, uint64_t now) {
+    for (unsigned i = 0; i < PERF_TAILS; i++) {
+        PerfTail* t = &p->tail[i];
+        const uint64_t gate = LOAD(t->gate);
+        if (LOAD(t->armed) && gate && gate <= value) stamp(&t->t_done, now);
+    }
+}
+void perf_tail_performed(PerfTimes* p, uint64_t seq, uint64_t now) {
+    for (unsigned i = 0; i < PERF_TAILS; i++) {
+        PerfTail* t = &p->tail[i];
+        if (LOAD(t->armed) && LOAD(t->seq) == seq) stamp(&t->t_incr, now);
+    }
+}
+void perf_tail_freed(PerfTimes* p, uint64_t now) {
+    for (unsigned i = 0; i < PERF_TAILS; i++) {
+        PerfTail* t = &p->tail[i];
+        if (LOAD(t->armed) && LOAD(t->t_incr) && stamp(&t->t_free, now)) tail_close(p, t);
+    }
+}
+void perf_tail_woke(PerfTimes* p, uint64_t now) {
+    PerfTail* oldest = NULL;
+    for (unsigned i = 0; i < PERF_TAILS; i++) {
+        PerfTail* t = &p->tail[i];
+        if (!LOAD(t->armed) || !LOAD(t->t_incr) || LOAD(t->t_wake)) continue;
+        if (!oldest || LOAD(t->seq) < LOAD(oldest->seq)) oldest = t;
+    }
+    if (oldest && stamp(&oldest->t_wake, now)) tail_close(p, oldest);
+}
+
 static PerfTime take(PerfTime* t) {
     PerfTime out;
     out.sum = __atomic_exchange_n(&t->sum, 0, __ATOMIC_RELAXED);
@@ -50,8 +142,10 @@ static size_t put(char* out, size_t size, size_t at, const char* name, PerfTime 
 size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size) {
     static const char* const names[PT_SITES] = {"post_start", "start_end", "end_post", "period", "idle", "show",
                                                 "tl_recycle", "tl_finish", "tl_submit", "rec_sync", "rec_full",
-                                                "sync_wait", "acquire", "release_hold"};
-    static const char* const counts[PC_COUNTS] = {"wb_outputs", "wb_bytes", "wc_bytes"};
+                                                "sync_wait", "acquire", "release_hold", "tail_submit", "tail_done",
+                                                "tail_incr", "tail_free", "tail_wake"};
+    static const char* const counts[PC_COUNTS] = {"wb_outputs", "wb_bytes", "wc_bytes", "tail_submits",
+                                                  "tail_after", "tail_ungated", "tail_partial", "tail_lost"};
     if (!size) return 0;
     if (!frames) frames = 1;
     int n = snprintf(out, size, "perf-times: frames=%u (ms a frame/largest ms)", frames);

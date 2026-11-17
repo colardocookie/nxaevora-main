@@ -71,7 +71,66 @@ static void test_small_buffers(void) {
     CHECK(perf_times_line(&p, 1, tiny, 0) == 0);
 }
 
+/* a present's tail: each point once, the times from the increment's queueing, closed by the later of the vk_lock
+   release and the game's wake, ungated, partial and lost tails counted */
+static void test_tail(void) {
+    static PerfTimes p;
+    memset(&p, 0, sizeof p);
+    CHECK(!perf_tail_take(&p));
+    perf_tail_arm(&p);
+    CHECK(perf_tail_take(&p) && !perf_tail_take(&p));
+    perf_tail_queued(&p, 10, 5, 4, 3, 100);
+    perf_tail_handed(&p, 4, 120); /* an earlier submission */
+    CHECK(!p.tail[0].t_submit);
+    perf_tail_handed(&p, 5, 150);
+    perf_tail_handed(&p, 6, 160); /* once only */
+    perf_tail_done(&p, 4, 200);
+    CHECK(!p.tail[0].t_done);
+    perf_tail_done(&p, 5, 300);
+    perf_tail_woke(&p, 310); /* before its increment: not this tail's */
+    perf_tail_freed(&p, 312); /* a release_through before it: not this tail's either */
+    CHECK(!p.tail[0].t_wake && !p.tail[0].t_free);
+    perf_tail_performed(&p, 9, 315);
+    CHECK(!p.tail[0].t_incr);
+    perf_tail_performed(&p, 10, 320);
+    perf_tail_woke(&p, 400); /* the wake before the release: the release closes it */
+    CHECK(p.tail[0].armed && p.tail[0].closes == 1);
+    perf_tail_freed(&p, 330);
+    CHECK(!p.tail[0].armed);
+    CHECK(p.site[PT_TAIL_SUBMIT].sum == 50 && p.site[PT_TAIL_DONE].sum == 200 && p.site[PT_TAIL_INCR].sum == 220);
+    CHECK(p.site[PT_TAIL_FREE].sum == 230 && p.site[PT_TAIL_WAKE].sum == 300 && p.site[PT_TAIL_WAKE].count == 1);
+    CHECK(p.count[PC_TAIL_AFTER] == 2 && p.count[PC_TAIL_SUBMITS] == 0 && !p.count[PC_TAIL_PARTIAL]);
+    /* handed over before it was queued: no wait for the recorder. 3 submissions since the last tail */
+    perf_tail_handed(&p, 8, 900);
+    perf_tail_queued(&p, 20, 8, 8, 8, 1000);
+    CHECK(p.tail[1].t_submit == 1000 && p.count[PC_TAIL_SUBMITS] == 3);
+    perf_tail_performed(&p, 20, 1100);
+    perf_tail_freed(&p, 1110);
+    perf_tail_woke(&p, 1120); /* closed without a done time: partial */
+    CHECK(!p.tail[1].armed && p.count[PC_TAIL_PARTIAL] == 1 && p.site[PT_TAIL_DONE].count == 1);
+    /* no gate: no submit or done time, not partial */
+    perf_tail_queued(&p, 30, 0, 8, 8, 2000);
+    perf_tail_performed(&p, 30, 2010);
+    perf_tail_woke(&p, 2020);
+    perf_tail_freed(&p, 2030);
+    CHECK(p.count[PC_TAIL_UNGATED] == 1 && p.count[PC_TAIL_PARTIAL] == 1 && p.site[PT_TAIL_SUBMIT].count == 2);
+    /* the oldest performed tail takes the wake */
+    perf_tail_queued(&p, 40, 0, 8, 8, 3000);
+    perf_tail_queued(&p, 41, 0, 8, 8, 3001);
+    perf_tail_performed(&p, 41, 3010);
+    perf_tail_performed(&p, 40, 3011);
+    perf_tail_woke(&p, 3020);
+    CHECK(p.tail[3].t_wake == 3020 && !p.tail[0].t_wake);
+    /* a slot needed again before it closed */
+    for (int i = 0; i < 4; i++) perf_tail_queued(&p, 50 + (uint64_t)i, 0, 8, 8, 4000); /* 40 and 41 still open */
+    CHECK(p.count[PC_TAIL_LOST] == 2);
+    char line[2048];
+    perf_times_line(&p, 1, line, sizeof line);
+    CHECK(strstr(line, " tail_wake=") && strstr(line, " tail_lost=2.0"));
+}
+
 int main(void) {
+    test_tail();
     test_line();
     test_named_full();
     test_small_buffers();

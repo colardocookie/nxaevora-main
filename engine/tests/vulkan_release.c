@@ -33,6 +33,7 @@ int vk_buf_pending_unsubmitted(void);
 void vk_submit(u64, u64, u64);
 u64 vk_last_submit(void);
 u64 vk_submit_number(void);
+void vk_submit_progress(u64*, u64*);
 void vk_rt_before_write(u64, u64);
 u64 vk_query_value(u32, u64, u64);
 #define VK_PRED_EQUAL 0x80000000u
@@ -257,6 +258,29 @@ void vk_query_pred_drop(u32 slot) {
 }
 u64 vk_last_submit(void) { return next_graphics; }
 u64 vk_submit_number(void) { return next_graphics + 1; }
+void vk_submit_progress(u64* submitted, u64* done) {
+    *submitted = next_graphics;
+    *done = 0;
+}
+int gpu_on_gpu_thread(void) { return 1; }
+/* SNX_ARCEUS_PERF_TIMES' tail through the real queue: an increment no work holds starts it when armed, is performed
+   at the stream's end, and the game's wake closes it (the clock is 0 here, so only the counts are checked) */
+static void check_tail(void) {
+    g_perf_times = 1;
+    pending = 0;
+    perf_tail_arm(&g_perf);
+    vk_release_incr(7);
+    const PerfTail* t = &g_perf.tail[0];
+    assert(t->armed && !t->gate && t->seq == g_rhead - 1 && !t->t_incr);
+    vk_release_incr(8); /* not armed: no tail */
+    assert(g_perf.tail_next == 1);
+    vk_release_submit();
+    assert(t->t_incr && t->t_free && t->closes == 1 && g_rhead == g_rtail);
+    perf_tail_woke(&g_perf, 5);
+    assert(!t->armed && g_perf.site[PT_TAIL_INCR].count == 1 && g_perf.site[PT_TAIL_WAKE].count == 1);
+    assert(g_perf.count[PC_TAIL_UNGATED] == 1 && !g_perf.site[PT_TAIL_SUBMIT].count && !g_perf.count[PC_TAIL_PARTIAL]);
+    g_perf_times = 0;
+}
 
 /* Compare both mapping paths against the byte merge rule, including chunk
  * boundaries, dense writes, unchanged output and intervening CPU writes.
@@ -514,5 +538,6 @@ int main(void) {
     assert(lock_depth == 0 && events_signaled == 3 && !events_due); /* payload writes signal nothing */
 	check_writeback_merge();
     check_release_walks();
+    check_tail();
     return 0;
 }

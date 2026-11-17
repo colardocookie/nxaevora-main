@@ -164,6 +164,7 @@ static void release_through(u64 gate, u64 cgate) {
             /* release_value sees the transfer from queued to completed atomically. */
             perform(&r);
             if (r.id < SYNC_N) g_rincr[r.id]--;
+            if (g_perf_times) perf_tail_performed(&g_perf, g_rtail - 1, plat_ns());
         }
         if (g_rtail == g_rhead) __atomic_store_n(&g_gpu_releases, 0, __ATOMIC_RELEASE);
         pm_unlock(&g_rlock);
@@ -171,6 +172,7 @@ static void release_through(u64 gate, u64 cgate) {
     }
     if (held) perf_time_add(&g_perf, PT_RELEASE_HOLD, plat_ns() - held);
     vk_unlock();
+    if (g_perf_times) perf_tail_freed(&g_perf, plat_ns());
 }
 static void release_thread(void* p) {
     (void)p;
@@ -185,6 +187,7 @@ static void release_thread(void* p) {
         pm_unlock(&g_rlock);
         SNX_ZONE(z_release, "vk release");
         vk_wait_submit(gate);
+        if (g_perf_times) perf_tail_done(&g_perf, gate, plat_ns());
         vk_compute_wait(cgate);
         {
             SNX_ZONE(z, "land and release");
@@ -236,6 +239,12 @@ static void release(Release* r) {
         if (r->cgate < prev->cgate) r->cgate = prev->cgate;
     }
     if (r->gva) rix_track(r, g_rhead, 1);
+    /* SNX_ARCEUS_PERF_TIMES: a present's increment starts its tail, under g_rlock so its perform comes after */
+    if (!r->gva && g_perf_times && gpu_on_gpu_thread() && perf_tail_take(&g_perf)) {
+        u64 submitted, done;
+        vk_submit_progress(&submitted, &done);
+        perf_tail_queued(&g_perf, g_rhead, r->gate, submitted, done, plat_ns());
+    }
     g_rq[g_rhead % RQ_N] = *r;
     g_rhead++;
     if (r->gva) pend_add(&g_rpages, r->gva, r->len, 1);
