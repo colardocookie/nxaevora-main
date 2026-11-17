@@ -33,7 +33,8 @@ enum {
 enum {
     PC_WB_OUTPUTS, /* graphics storage outputs landed (buffer.c, as g_wb_outputs counts them) */
     PC_WB_BYTES,   /* their bytes */
-    PC_WC_BYTES,   /* bytes vk_write_changed wrote to guest memory, the ones the shader changed */
+    PC_WC_BYTES,   /* bytes vk_write_changed wrote to guest memory, the ones the shader changed (whole blocks at
+                      SNX_ARCEUS_PERF_LANDING=2) */
     PC_COUNTS
 };
 

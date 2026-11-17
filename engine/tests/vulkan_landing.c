@@ -2,7 +2,7 @@
    Copyright 2026 the NXAevora contributors */
 /* PERF-1 (gpu/vk/landing.c) against the byte loops it replaces: out_changed_runs' word test (buffer.c) and
    vk_write_changed's walk (writeback.c), copied here as they are with SNX_ARCEUS_PERF_LANDING unset. The same runs,
-   and the same bytes in guest memory, on random and edge inputs. */
+   and the same bytes in guest memory, on random and edge inputs. Level 2's landing_blocks: the same guest bytes. */
 #include "nx/gpu/vk/landing.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -221,7 +221,106 @@ static void test_masks(void) {
         }
 }
 
+/* landing_blocks against the level 0 walk: the same guest bytes, and per block 0 bytes put where res is org, the
+   whole block where the guest still holds org, else the level 0 bytes. No put crosses a block or repeats a byte */
+typedef struct {
+    uint8_t* dst;
+    const uint8_t* res;
+    uint32_t size;
+    uint64_t total;
+    int bad;
+    uint8_t seen[MAX];
+} Blocks;
+static Blocks blocks;
+static void block_put(void* ctx, uint32_t from, uint32_t n) {
+    Blocks* b = ctx;
+    if (!n || from + n > b->size || from / LANDING_BLOCK != (from + n - 1) / LANDING_BLOCK) {
+        b->bad = 1;
+        return;
+    }
+    for (uint32_t i = from; i < from + n; i++) {
+        if (b->seen[i]) b->bad = 1;
+        b->seen[i] = 1;
+    }
+    memcpy(b->dst + from, b->res + from, n);
+    b->total += n;
+}
+static void compare_blocks(uint32_t size, int alias) {
+    uint64_t want = 0;
+    for (uint32_t i = 0, n; i < size; i += n) {
+        n = size - i < LANDING_BLOCK ? size - i : LANDING_BLOCK;
+        if (!memcmp(res + i, org + i, n)) continue;
+        if (!memcmp(guest + i, org + i, n)) {
+            want += n;
+            continue;
+        }
+        for (uint32_t j = i; j < i + n; j++) want += res[j] != org[j] && guest[j] == org[j];
+    }
+    memcpy(old_dst, guest, size);
+    memcpy(new_dst, guest, size);
+    old_out.count = 0;
+    old_out.dst = old_dst;
+    old_out.res = res;
+    old_walk(res, org, alias ? old_dst : guest, size, &old_out);
+    memset(&blocks, 0, sizeof blocks);
+    blocks.dst = new_dst;
+    blocks.res = res;
+    blocks.size = size;
+    const uint64_t total = landing_blocks(res, org, alias ? new_dst : guest, size, block_put, &blocks);
+    CHECK(!blocks.bad && total == blocks.total && total == want);
+    CHECK(!memcmp(new_dst, old_dst, size));
+}
+/* a block of each kind in random order: res unchanged, changed with the guest unchanged, changed with a guest write
+   to a byte the shader left alone or to one it changed, the guest's write alone, and the guest holding res already.
+   Changes are 2 or 3 bytes of a float, as in a skinned vertex */
+static void fill_blocks(uint32_t size) {
+    for (uint32_t i = 0; i < size; i++) org[i] = res[i] = guest[i] = (uint8_t)rnd();
+    for (uint32_t i = 0, n; i < size; i += n) {
+        n = size - i < LANDING_BLOCK ? size - i : LANDING_BLOCK;
+        const unsigned kind = rnd() % 6;
+        if (kind == 1 || kind == 2 || kind == 4 || kind == 5)
+            for (uint32_t f = i; f + 4 <= i + n; f += 4)
+                if (rnd() % 2)
+                    for (uint32_t b = 0; b < 2 + rnd() % 2; b++) res[f + b] ^= (uint8_t)(1 + rnd() % 255);
+        if (kind == 1 || kind == 2 || kind == 4 || kind == 5) res[i + n - 1] ^= 0x10; /* a changed last byte */
+        if (kind == 2 || kind == 3) { /* a short last block may have no unchanged byte */
+            uint32_t at = i + rnd() % n;
+            for (uint32_t tries = 0; kind == 2 && res[at] != org[at] && tries < 64; tries++) at = i + rnd() % n;
+            guest[at] ^= 0x22;
+        }
+        if (kind == 4) guest[i + n - 1] ^= 0x22;
+        if (kind == 5) memcpy(guest + i, res + i, n);
+    }
+}
+static void test_blocks(void) {
+    static const uint32_t sizes[] = {0, 1, 3, 1023, 1024, 1025, 2047, 2048, 2049, 3000, 4096, 5000, MAX};
+    for (unsigned s = 0; s < sizeof sizes / sizeof sizes[0]; s++)
+        for (unsigned round = 0; round < 40; round++) {
+            fill_blocks(sizes[s]);
+            compare_blocks(sizes[s], (int)(round % 2));
+        }
+    for (unsigned round = 0; round < 2000; round++) {
+        const uint32_t size = rnd() % (MAX + 1);
+        fill_blocks(size);
+        compare_blocks(size, (int)(round % 2));
+    }
+    for (unsigned round = 0; round < 600; round++) { /* the random fills of the level 1 test as well */
+        static const int densities[] = {0, 1, 20, 300, 900, 1000};
+        const uint32_t size = rnd() % 5001;
+        fill(size, densities[round % 6], (int)(round / 6 % 2));
+        compare_blocks(size, (int)(round % 2));
+    }
+    /* only the last byte of a block or of the whole result changed, the guest untouched */
+    for (uint32_t size = 1020; size < 2060; size += 13) {
+        for (uint32_t i = 0; i < size; i++) org[i] = res[i] = guest[i] = (uint8_t)(i * 7);
+        res[size - 1] ^= 1;
+        if (size > LANDING_BLOCK) res[LANDING_BLOCK - 1] ^= 1;
+        compare_blocks(size, (int)(size & 1));
+    }
+}
+
 int main(void) {
+    test_blocks();
     test_words();
     test_edges();
     test_random();

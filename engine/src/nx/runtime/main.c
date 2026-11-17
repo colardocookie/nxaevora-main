@@ -890,8 +890,12 @@ int snx_main(int argc, char** argv) {
         if (g_perf_replay) LOG("perf-replay: on, the draw's bind walks stop at their last set flag\n");
         if (validation && !strcmp(validation, "1")) g_settings.vulkan_validation_layer = 1; /* vk_validation */
         g_perf_times = times && !strcmp(times, "1"); /* the frame's timing line (gpu/perf_times.h) */
-        g_perf_landing = landing && !strcmp(landing, "1"); /* word compares in the landing (gpu/vk/landing.h) */
-        if (g_perf_landing) LOG("perf-landing: on, storage results land with word compares\n");
+        /* word compares in the landing, 2 also whole blocks (gpu/vk/landing.h) */
+        g_perf_landing = landing && !strcmp(landing, "1") ? 1 : landing && !strcmp(landing, "2") ? 2 : 0;
+        if (g_perf_landing == 1) LOG("perf-landing: on (level 1), storage results land with word compares\n");
+        if (g_perf_landing == 2)
+            LOG("perf-landing: on (level 2), storage results land with word compares, blocks the guest left alone "
+                "copied whole\n");
         g_perf_overlap = overlap && !strcmp(overlap, "1"); /* a present's fence a frame early (gpu/nvn/nvn_native.h) */
         if (g_perf_overlap)
             LOG("nvn-overlap: EXPERIMENT on, a sync wait on a present's fence settles for the present before it "
