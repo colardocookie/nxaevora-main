@@ -10,7 +10,7 @@ The notes of NXAevora, by subject. Each line names the file and its state. Until
 
 ## build
 
-- [SCARLETNX_BUILD-NOTES.md](build/SCARLETNX_BUILD-NOTES.md): how ScarletNX is built on Windows in MSYS2 CLANG64.
+- [ENGINE_BUILD-NOTES.md](build/ENGINE_BUILD-NOTES.md): how ScarletNX is built on Windows in MSYS2 CLANG64.
 - [runtime-changes.md](build/runtime-changes.md): the list of the changes in the vendored ScarletNX. Kept up to date.
 - [phase7-plan.md](build/phase7-plan.md): the plan of phase 7 (decrypted game files and a file layer for mods), with
   the inventory, the input layout and the PR units. In progress.

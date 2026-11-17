@@ -14,7 +14,7 @@ import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEF = os.path.join(HERE, "..", "third_party", "ScarletNX", "src", "nx", "gpu", "shader", "maxwell_opcodes.def")
+DEF = os.path.join(HERE, "..", "engine", "src", "nx", "gpu", "shader", "maxwell_opcodes.def")
 
 
 def load_table():

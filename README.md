@@ -86,13 +86,13 @@ Also, the plan for native implementation is also documented in [ROADMAP.md](ROAD
 
 ## Build
 
-Clone the repository. ScarletNX is part of it (`third_party/ScarletNX`, copied from upstream commit 8efbf9c4):
+Clone the repository. ScarletNX is part of it (`engine`, copied from upstream commit 8efbf9c4):
 
 ```sh
 git clone <this repository>
 ```
 
-The build steps for Windows are in [docs/build/SCARLETNX_BUILD-NOTES.md](docs/build/SCARLETNX_BUILD-NOTES.md). They use MSYS2
+The build steps for Windows are in [docs/build/ENGINE_BUILD-NOTES.md](docs/build/ENGINE_BUILD-NOTES.md). They use MSYS2
 and the CLANG64 environment.
 
 ## Legal
@@ -107,4 +107,4 @@ game and are for your own use. Do not distribute them.
 
 NXAevora is free software under the GNU General Public License, version 3 or later. See [LICENSE](LICENSE).
 ScarletNX is also GPL-3.0. Its license and the list of the projects that it builds on are in
-`third_party/ScarletNX/`. The credits of NXAevora are in [docs/CREDITS.md](docs/CREDITS.md).
+`engine/`. The credits of NXAevora are in [docs/CREDITS.md](docs/CREDITS.md).

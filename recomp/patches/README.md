@@ -3,7 +3,7 @@
 
 # Game patches and diagnostic patches
 
-The runtime changes of ScarletNX are in the source of `third_party/ScarletNX` (see `docs/build/runtime-changes.md`). This
+The runtime changes of ScarletNX are in the source of `engine` (see `docs/build/runtime-changes.md`). This
 folder holds the patches of the game code and the diagnostic patches.
 
 ## Game code patches
@@ -23,7 +23,7 @@ against the source before the vendoring: a patch may need a manual fix to apply 
 `0003` is the stick trace and `0011` is the angle search (both for the camera analysis, apply `0003` after `0001`
 and `0011` after `0003`). `0004` to `0008` find the wait of a stop of the game (`hitch_dump`, apply them in the order
 of their numbers, `0004` first). The `0001` that `0003` needs is now in the source. Use the path `diagnostics/` in
-the command, from `third_party/ScarletNX`, for example `git apply ../../recomp/patches/diagnostics/0004-hitch-dump.patch`.
+the command, from `engine`, for example `git apply ../recomp/patches/diagnostics/0004-hitch-dump.patch`.
 
 | Patch | What it does |
 | --- | --- |

@@ -95,7 +95,7 @@ reads, not like work. This is not verified. After the start the game runs smooth
 
 ## Run M: RomFS extracted (--extract-container), early game, 274 s
 
-The user ran `scarletnx.exe --extract-container <base> --update <update>`. This made a second game folder in
+The user ran `nxaevora-engine.exe --extract-container <base> --update <update>`. This made a second game folder in
 `%APPDATA%\scarletnx\recompiled\01001F5010DFA000` (own recompile, own hints, own cache, no save, 12.3 GB of RomFS
 copies). The run began in the opening scene.
 

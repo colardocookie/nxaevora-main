@@ -8,8 +8,8 @@ ScarletNX works now, what the game reads, and the plan. Nothing is changed yet.
 
 ## How ScarletNX makes the input now
 
-All of this is in `third_party/ScarletNX/src/nx/runtime/platform/backend/sdl3.c` (the SDL3 backend) and
-`runtime/platform/unattended.c`. The game program is the same binary as `scarletnx.exe`, so a change here is a
+All of this is in `engine/src/nx/runtime/platform/backend/sdl3.c` (the SDL3 backend) and
+`runtime/platform/unattended.c`. The game program is the same binary as `nxaevora-engine.exe`, so a change here is a
 change of the runtime.
 
 - Keyboard: a fixed table (`keymap`) turns scancodes into console buttons. X or Space is A, Z is B, C is X, V is Y,
@@ -62,7 +62,7 @@ Result: native mouse look cannot be given to the game as a mouse. The mouse move
   a. A patch file in `recomp/patches/` that is applied to the submodule before the build. The pin of the submodule stays.
   b. A change that is proposed to the upstream project, with the patch kept until it is accepted.
   c. A fork of ScarletNX. This is the largest cost, so it is not the first choice.
-- The game-specific values (dead zone, camera speed, button names) belong to NXAevora (`runtime/` or `recomp/config`).
+- The game-specific values (dead zone, camera speed, button names) belong to NXAevora (`engine/` or `recomp/config`).
   The general part (mouse capture, remap table) is useful for any game, so it fits upstream.
 
 ## Decisions of the user
@@ -84,7 +84,7 @@ known yet.
 
 ## How a patch would be built
 
-- `game/scarletnx/bin/scarletnx.exe` and the two game programs are byte-equal copies of one runtime. After a change in
+- `game/scarletnx/bin/nxaevora-engine.exe` and the two game programs are byte-equal copies of one runtime. After a change in
   ScarletNX the three files must be replaced by the new build. The `.abi` file records only `opt`, `aot`, `found` and
   `code`. It is not verified that a rebuilt runtime is accepted without a recompile.
 - The settings live in the ini tables of the backend (`g_backend_ini`, `IniOpt`). New keys for the mouse look
@@ -98,7 +98,7 @@ known yet.
 The patch `recomp/patches/0001-native-mouse-input.patch` (see `recomp/patches/README.md`) adds the mouse look to `sdl3.c` and the
 settings `mouse_look`, `mouse_sensitivity`, `mouse_vertical_sensitivity`, `mouse_invert_y`, `mouse_dead_zone_offset`
 and `mouse_curve` to `settings.txt`. It builds. The runtime is copied over the three program copies, and the old
-runtime is kept as `game/scarletnx/bin/scarletnx.exe.orig`.
+runtime is kept as `game/scarletnx/bin/nxaevora-engine.exe.orig`.
 
 How it works:
 
