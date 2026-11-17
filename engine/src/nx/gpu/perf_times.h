@@ -86,6 +86,10 @@ typedef struct {
 
 extern int g_perf_times;
 extern PerfTimes g_perf;
+/* SNX_ARCEUS_PERF_SUBMIT_US, bench only (research 20:51): the GPU thread's recording time a submission holds at most
+   (vk/cmd.c vk_frame_check), upstream's 1 ms unless set to 250 to 8000 us. Read once at start */
+#define PERF_SUBMIT_EVERY_NS 1000000ull
+extern uint64_t g_perf_submit_every_ns;
 
 /* why the next vk_render_end ends the pass, a PC_END_* count less PC_END_OTHER: set just before the call */
 enum { PE_OTHER = 0, PE_GPU_SRC, PE_COPY, PE_IMAGE, PE_TARGET };

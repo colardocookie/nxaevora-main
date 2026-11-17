@@ -184,6 +184,7 @@ static void test_tail_threads(void) {
 }
 
 int main(void) {
+    CHECK(g_perf_submit_every_ns == 1000000); /* upstream's interval while SNX_ARCEUS_PERF_SUBMIT_US is unset */
     test_tail();
     test_tail_line();
     test_tail_threads();

@@ -535,8 +535,8 @@ void vk_frame_next(void) {
     g_fr[g_cur].fresh = 1;
     g_frame_id++;
 }
-/* the GPU thread's recording time a submission holds at most */
-#define SUBMIT_EVERY_NS 1000000
+/* the GPU thread's recording time a submission holds at most: g_perf_submit_every_ns, 1 ms unless
+   SNX_ARCEUS_PERF_SUBMIT_US sets it (perf_times.h) */
 /* A frame that goes long without a present (a loading screen) still has to hand its pools and rings back: one with
    many submissions or descriptor pools ends here, at the start of a draw or dispatch, before anything is set up.
    Otherwise what was recorded goes to the GPU once it holds a millisecond of the GPU thread's work. Submissions came
@@ -550,7 +550,7 @@ void vk_frame_check(void) {
     const Frame* f = &g_fr[g_cur];
     if (f->icb >= 128 || f->ipool >= 32 || vk_rec_frame_sets(g_cur) >= 32 * 1024)
         vk_frame_next();
-    else if (f->recording && plat_ns() - g_sub_ns >= SUBMIT_EVERY_NS)
+    else if (f->recording && plat_ns() - g_sub_ns >= g_perf_submit_every_ns)
         submit(NULL, NULL, 1);
 }
 
