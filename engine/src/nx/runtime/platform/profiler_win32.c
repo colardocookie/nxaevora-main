@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The profile option on Windows: samples the program counter of the runtime's threads every millisecond. Every 10
    seconds it writes each thread's share of that window in game code, runtime code, other host code and system waits,
-   with its top functions, to profile.txt beside the game, and keeps the window as profile-<seconds>.txt too */
+   with its top functions, to profile.txt beside the log (the state folder, with threads.txt), and keeps the window
+   as profile-<seconds>.txt too */
 #include "common/utilities/common.h"
 #include "nx/loader/module_abi.h"
 #include "nx/runtime/loader.h"
@@ -239,10 +240,10 @@ static void write_profile(u64 started, u64 window_start) {
     qsort(order, (size_t)n, sizeof *order, busy_cmp);
     for (int pass = 0; pass < 2; pass++) {
         if (pass)
-            snprintf(path, sizeof path, "%sprofile-%05llu.txt", g_exedir,
+            snprintf(path, sizeof path, "%sprofile-%05llu.txt", g_statedir,
                      (unsigned long long)((now - started) / 1000000000u));
         else
-            snprintf(path, sizeof path, "%sprofile.txt", g_exedir);
+            snprintf(path, sizeof path, "%sprofile.txt", g_statedir);
         FILE* f = fopen(path, "w");
         if (!f) continue;
         write_window(f, order, n, window_start - started, now - started);
