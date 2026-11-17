@@ -9,6 +9,7 @@
 #include "nx/gpu/nvn/nvn_frame.h"
 #include "nx/gpu/nvn/diag/nvn_measure.h"
 #include "nx/gpu/nvn/diag/nvn_measure_calc.h"
+#include "nx/gpu/nvn/diag/perf_reuse.h"
 #include "nx/gpu/nvn/nvn_objtab.h"
 #include "nx/gpu/nvn/nvn_params.h"
 #include "nx/gpu/nvn/nvn_rt.h"
@@ -6617,6 +6618,7 @@ typedef struct {
 static void frame_begin(void) {
     if (g_renderer->stream_run) g_renderer->stream_run(1);
     if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
+    perf_reuse_job_begin();
 }
 static void frame_read_parts(const FrameJob* job, FrameParts* parts) {
     *parts = (FrameParts){0};
@@ -6719,6 +6721,7 @@ int nvn_native_selftest_replay(GpuChannel* ch, uint64_t handle, int window_origi
 static void frame_end(const FrameJob* job) {
     r3d_const_flush(job->channel);
     r3d_pending_flush();
+    perf_reuse_job_end(job->kind != NVN_FRAME_FLUSH); /* before the syncpoint lets the game go on */
     /* The job's syncpoint increment follows the releases of its reports, as the console's fence does. */
     gpu_stream_incr(job->channel->id);
     if (g_renderer->stream_end) g_renderer->stream_end();
