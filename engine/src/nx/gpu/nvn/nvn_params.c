@@ -77,6 +77,22 @@ NvnSyncAction nvn_sync_wait_action(NvnSyncState state, int reached) {
 uint32_t nvn_sync_fence_value(int has_posted, uint32_t last_posted, uint32_t syncpoint_now) {
     return has_posted ? last_posted : syncpoint_now;
 }
+int nvn_present_values_post(NvnPresentValues* p, uint32_t value, uint32_t* early) {
+    const int had = p->has_last;
+    if (had) {
+        p->previous = p->last;
+        p->has_previous = 1;
+        *early = p->previous;
+    }
+    p->last = value;
+    p->has_last = 1;
+    return had;
+}
+int nvn_present_values_early(const NvnPresentValues* p, uint32_t fence_value, uint32_t* early) {
+    if (!p->has_last || !p->has_previous || fence_value != p->last) return 0;
+    *early = p->previous;
+    return 1;
+}
 NvnWaitDeadline nvn_wait_deadline(uint64_t timeout_ns, uint64_t now_ns) {
     if (timeout_ns == NVN_SYNC_WAIT_NO_LIMIT) return (NvnWaitDeadline){0, 0};
     uint64_t deadline = now_ns + timeout_ns;

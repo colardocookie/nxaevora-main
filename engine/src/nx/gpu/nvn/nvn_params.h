@@ -56,6 +56,17 @@ NvnSyncAction nvn_sync_wait_action(NvnSyncState state, int reached);
 /* The value of a fence on an empty pending frame: the last posted value, or the syncpoint value when the queue never
    posted. Pure. */
 uint32_t nvn_sync_fence_value(int has_posted, uint32_t last_posted, uint32_t syncpoint_now);
+/* SNX_ARCEUS_PERF_OVERLAP: the syncpoint values of a queue's last two present jobs. A wait on the last present's
+   fence may settle for the one before it, so the game builds the next frame while the last one is replayed. Pure. */
+typedef struct {
+    uint32_t last, previous;
+    uint8_t has_last, has_previous;
+} NvnPresentValues;
+/* A present job was posted and reaches value. Returns 1 and sets *early to the present before it, 0 when it is the
+   queue's first. */
+int nvn_present_values_post(NvnPresentValues* p, uint32_t value, uint32_t* early);
+/* For a fence at fence_value: 1 and *early when it is the last present's value and a present came before it. */
+int nvn_present_values_early(const NvnPresentValues* p, uint32_t fence_value, uint32_t* early);
 /* The limit of a wait in host nanoseconds. */
 typedef struct {
     uint64_t deadline_ns;

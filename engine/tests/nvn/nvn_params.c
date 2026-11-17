@@ -52,6 +52,40 @@ static void test_window_sync_cycle_params(void) {
     CHECK(nvn_window_has_presented(presented2, 2));
 }
 
+/* SNX_ARCEUS_PERF_OVERLAP: only the last present's fence gets the value of the present before it. */
+static void test_present_values(void) {
+    NvnPresentValues p = {0};
+    uint32_t early = 0xAAAAAAAAu;
+    CHECK(!nvn_present_values_early(&p, 0, &early)); /* a queue that never presented */
+    CHECK(early == 0xAAAAAAAAu);
+    CHECK(!nvn_present_values_post(&p, 7, &early)); /* the first present has none before it */
+    CHECK(early == 0xAAAAAAAAu);
+    CHECK(p.has_last && p.last == 7 && !p.has_previous);
+    CHECK(!nvn_present_values_early(&p, 7, &early));
+    CHECK(nvn_present_values_post(&p, 9, &early)); /* 8 was a flush job: the present before 9 is 7, not 8 */
+    CHECK(early == 7);
+    CHECK(p.last == 9 && p.previous == 7 && p.has_previous);
+    early = 0;
+    CHECK(nvn_present_values_early(&p, 9, &early));
+    CHECK(early == 7);
+    early = 0xAAAAAAAAu;
+    CHECK(!nvn_present_values_early(&p, 10, &early)); /* a flush posted after the present: waited for whole */
+    CHECK(!nvn_present_values_early(&p, 7, &early));  /* an older present's fence */
+    CHECK(!nvn_present_values_early(&p, 8, &early));
+    CHECK(early == 0xAAAAAAAAu);
+    CHECK(nvn_present_values_post(&p, 10, &early));
+    CHECK(early == 9 && p.last == 10 && p.previous == 9);
+    /* the syncpoint wraps at 32 bits */
+    NvnPresentValues w = {0};
+    CHECK(!nvn_present_values_post(&w, 0xFFFFFFFFu, &early));
+    CHECK(nvn_present_values_post(&w, 0, &early));
+    CHECK(early == 0xFFFFFFFFu);
+    early = 1;
+    CHECK(nvn_present_values_early(&w, 0, &early));
+    CHECK(early == 0xFFFFFFFFu);
+    CHECK(!nvn_present_values_early(&w, 0xFFFFFFFFu, &early));
+}
+
 static void test_sync_wait_limit(void) {
     const uint8_t acquired4[] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED};
     const uint8_t mixed[] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_PRESENTED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED};
@@ -3670,6 +3704,7 @@ int main(int argc, char** argv) {
     test_window_params();
     test_window_sync_cycle_params();
     test_sync_wait_limit();
+    test_present_values();
     test_window_present_args();
     test_sync_fence_value();
     test_u2_event_signal_value();

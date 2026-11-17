@@ -102,6 +102,11 @@ static PMutex lists_lock = PMUTEX_INIT;
    are atomic because missing_handler and the recorder run without it. */
 static uint32_t frame_acquires, frame_submitted_lists, frame_skipped_lists, frame_unmet_event_waits;
 static uint32_t frames_in_flight; /* frame jobs that a post made and frame_finish has not ended */
+/* SNX_ARCEUS_PERF_OVERLAP (nvn_native.h). The counters are guarded by objs_lock: the waits that could settle early,
+   those that did while their own frame still ran, and the most frame jobs in flight, since the last line */
+int g_perf_overlap;
+#define NVN_OVERLAP_LINE_PRESENTS 600u
+static uint32_t overlap_waits, overlap_early, overlap_in_flight;
 static uint32_t missing_calls, dropped_ops;
 
 typedef struct {
@@ -122,6 +127,7 @@ typedef struct {
     uint8_t init_replayed; /* a frame job took the words: the record hands them out once */
     uint32_t last_posted;  /* the syncpoint value that the last posted frame job reaches */
     uint8_t has_posted;    /* a frame job was posted: last_posted has a value */
+    NvnPresentValues presents; /* SNX_ARCEUS_PERF_OVERLAP: the values of the last two present jobs */
 } QueueRec;
 typedef struct {
     uint64_t device, native_window, textures[NVN_WINDOW_MAX_TEXTURES];
@@ -136,6 +142,8 @@ typedef struct {
     uint32_t syncpoint; /* the syncpoint id of the queue with the newest fence */
     uint32_t value;     /* what that queue promises to reach for the newest fence */
     uint32_t serial;    /* the newest fence of this sync */
+    uint32_t early;     /* SNX_ARCEUS_PERF_OVERLAP: the present before the fence's, which a wait may settle for */
+    uint8_t has_early;  /* the fence is a present's and a present came before it: early has a value */
 } SyncRec;
 /* nvnQueueFenceSync flag bit 0: the call also posts the pending frame. Other bits have no host meaning. */
 #define NVN_QUEUE_FENCE_FLUSH_FOR_CPU 1u
@@ -6395,6 +6403,8 @@ static void h_sync_initialize(CPU* c, u64 entry) {
     s->syncpoint = 0;
     s->value = 0;
     s->serial = 0;
+    s->early = 0;
+    s->has_early = 0;
     c->x[0] = 1; pm_unlock(&objs_lock);
 }
 static void h_sync_finalize(CPU* c, u64 entry) {
@@ -6542,10 +6552,17 @@ static void h_sync_wait(CPU* c, u64 entry) {
     NvnSyncWaitResult result = NVN_SYNC_WAIT_FAILED;
     int waited = 0;
     for (;;) {
-        const int reached = sync->state == NVN_SYNC_FENCED ? syncpoint_reached(sync->syncpoint, sync->value) : 0;
+        /* SNX_ARCEUS_PERF_OVERLAP: a present's fence settles for the present before it */
+        const int early = g_perf_overlap && sync->has_early;
+        const uint32_t want = early ? sync->early : sync->value;
+        const int reached = sync->state == NVN_SYNC_FENCED ? syncpoint_reached(sync->syncpoint, want) : 0;
         const NvnSyncAction action = nvn_sync_wait_action(sync->state, reached);
         if (action == NVN_SYNC_ACTION_SIGNALED) {
             result = waited ? NVN_SYNC_WAIT_SATISFIED : NVN_SYNC_WAIT_SIGNALED;
+            if (early && sync->state == NVN_SYNC_FENCED) {
+                overlap_waits++;
+                if (!syncpoint_reached(sync->syncpoint, sync->value)) overlap_early++; /* its own frame still runs */
+            }
             break;
         }
         if (action == NVN_SYNC_ACTION_REFUSE) {
@@ -6566,7 +6583,7 @@ static void h_sync_wait(CPU* c, u64 entry) {
             handler_wait_end(wait_start);
             if (g_settings.nvn_measure) objs_holder_set();
         } else {
-            const uint32_t id = sync->syncpoint, value = sync->value;
+            const uint32_t id = sync->syncpoint, value = want;
             pm_unlock(&objs_lock);
             syncpt_wait(id, value, left);
             /* End the wait first: objs_lock_take counts a blocked take as lock time. */
@@ -6768,7 +6785,21 @@ static void frame_finish(FrameJob* job) {
     pm_unlock(&lists_lock);
     frames_in_flight--;
     pc_broadcast(&frame_done_cv); /* the image and the syncs are up to date */
+    /* SNX_ARCEUS_PERF_OVERLAP: one line every 600 presents says how often the game got ahead */
+    static uint32_t overlap_presents; /* only the GPU thread runs the frame jobs */
+    uint32_t waits = 0, early_waits = 0, in_flight = 0;
+    int line = 0;
+    if (g_perf_overlap && job->kind == NVN_FRAME_PRESENT && ++overlap_presents % NVN_OVERLAP_LINE_PRESENTS == 0) {
+        waits = overlap_waits, early_waits = overlap_early, in_flight = overlap_in_flight;
+        overlap_waits = overlap_early = 0;
+        overlap_in_flight = frames_in_flight;
+        line = 1;
+    }
     pm_unlock(&objs_lock);
+    if (line)
+        LOG("nvn-overlap: %u presents, %u sync waits on a present's fence, %u returned while that frame still ran, "
+            "at most %u frame jobs in flight\n",
+            NVN_OVERLAP_LINE_PRESENTS, waits, early_waits, in_flight);
 }
 static void frame_line(const FrameJob* job, const NvnReplayStats* stats, int shown, uint32_t fences,
                        uint32_t list_count, uint32_t frame_number, uint64_t dispatches, uint32_t dispatch_refusals) {
@@ -6965,6 +6996,9 @@ static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget
     const uint32_t value = syncpt_promise(q->channel_id, 1);
     q->last_posted = value;
     q->has_posted = 1;
+    uint32_t early = 0; /* only a present's fence gets one: a flush or a finish is waited for whole */
+    const int has_early =
+        target->kind == NVN_FRAME_PRESENT ? nvn_present_values_post(&q->presents, value, &early) : 0;
     for (uint32_t i = 0; i < job->frame.token_count; i++) {
         const NvnFrameToken* token = &job->frame.tokens[i];
         NvnObj* so = nvn_objtab_valid(&objs, token->sync, token->generation)
@@ -6974,9 +7008,12 @@ static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget
         if (sync->serial != token->serial) continue; /* a newer fence of this sync is in another frame */
         sync->syncpoint = q->channel_id;
         sync->value = value;
+        sync->early = early;
+        sync->has_early = (uint8_t)has_early;
         sync->state = NVN_SYNC_FENCED;
     }
     frames_in_flight++;
+    if (frames_in_flight > overlap_in_flight) overlap_in_flight = frames_in_flight;
     pc_broadcast(&frame_done_cv); /* a PENDING waiter now has a fence to wait on */
     return job;
 }
@@ -7158,6 +7195,7 @@ static void h_queue_fence_sync(CPU* c, u64 entry) {
         sync->serial = fence_serial_next(sync); /* a newer fence replaces a token that another frame still holds */
         sync->syncpoint = q->channel_id;
         sync->value = nvn_sync_fence_value(q->has_posted, q->last_posted, syncpt_read(q->channel_id));
+        sync->has_early = (uint8_t)nvn_present_values_early(&q->presents, sync->value, &sync->early);
         sync->state = NVN_SYNC_FENCED;
         pc_broadcast(&frame_done_cv); /* a PENDING waiter of an older token now sees the fence */
     }
