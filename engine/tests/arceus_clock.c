@@ -19,10 +19,12 @@ void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 static unsigned waza_dependency_warnings;
 static unsigned low_fps_skip_logs;
+static unsigned log_calls;
 /* Only the event probes', the event tick's and the demo probe's lines are kept. */
 static char logged[8][512];
 static unsigned logged_count;
 void logf_(int level, const char* fmt, ...) {
+    log_calls++;
     if ((!strncmp(fmt, "arceus-event-probe: ", 20) || !strncmp(fmt, "arceus-event-tick: calls", 24) ||
          !strncmp(fmt, "arceus-demo-probe: s", 20) || !strncmp(fmt, "arceus-demo-probe: p", 20) ||
          !strncmp(fmt, "arceus-demo-tick: s", 19) || !strncmp(fmt, "arceus-text-probe: ", 19)) &&
@@ -266,6 +268,67 @@ static void unset_flag(const char* name) {
 #else
     assert(!unsetenv(name));
 #endif
+}
+static void test_probe_master_switch(void) {
+    static const char* const probes[] = {
+        "SNX_ARCEUS_EVENT_PROBE", "SNX_ARCEUS_DEMO_PROBE", "SNX_ARCEUS_TEXT_PROBE"
+    };
+    static const char* const disabled[] = {
+        "0", "invalid",
+#ifndef _WIN32
+        "", /* Windows _putenv_s removes empty values, restoring the default-on state. */
+#endif
+    };
+    static const int runtime_limits[] = {SNX_FPS_GAME, 30, 60, 120, 0};
+    const int saved_fps = g_opt_fps;
+    const SnxModule* saved_mod = g_mod;
+    const u64 saved_base = main_base;
+    const int saved_timing = timing_enabled, saved_clocks = clocks_installed;
+    u8 before[sizeof memory];
+    memcpy(before, memory, sizeof before);
+    main_base = 0;
+    g_mod = NULL;
+    for (unsigned i = 0; i < sizeof probes / sizeof probes[0]; i++) flag(probes[i], "1");
+    for (unsigned r = 0; r < sizeof runtime_limits / sizeof runtime_limits[0]; r++) {
+        g_opt_fps = runtime_limits[r];
+        for (unsigned d = 0; d < sizeof disabled / sizeof disabled[0]; d++) {
+            flag("SNX_ARCEUS_TIMING_FIXES", disabled[d]);
+            for (int installed = 0; installed <= 1; installed++) {
+                timing_enabled = clocks_installed = installed;
+                log_calls = 0;
+                arceus_clock_post_jit();
+                assert(!log_calls && g_opt_fps == runtime_limits[r] && !main_base);
+                assert(timing_enabled == installed && clocks_installed == installed);
+                assert(!event_probe && !demo_probe && !text_probe);
+                assert(!event_probe_original[0] && !event_probe_original[1] && !demo_probe_original);
+                assert(!text_probe_original[0] && !text_probe_original[1] && !text_probe_setup_original);
+                assert(!memcmp(before, memory, sizeof before));
+            }
+        }
+        /* Each enabled initializer refuses this missing module and logs once. Both master-on forms
+           must still reach all three probes when timing hooks are absent, including at game pace. */
+        timing_enabled = clocks_installed = 0;
+        for (unsigned explicit_on = 0; explicit_on < 2; explicit_on++) {
+            if (explicit_on) flag("SNX_ARCEUS_TIMING_FIXES", "1");
+            else unset_flag("SNX_ARCEUS_TIMING_FIXES");
+            for (unsigned p = 0; p < sizeof probes / sizeof probes[0]; p++) {
+                for (unsigned i = 0; i < sizeof probes / sizeof probes[0]; i++)
+                    flag(probes[i], i == p ? "1" : "0");
+                log_calls = 0;
+                arceus_clock_post_jit();
+                assert(log_calls == 1 && !main_base && g_opt_fps == runtime_limits[r]);
+            }
+        }
+        for (unsigned i = 0; i < sizeof probes / sizeof probes[0]; i++) flag(probes[i], "1");
+    }
+    for (unsigned i = 0; i < sizeof probes / sizeof probes[0]; i++) unset_flag(probes[i]);
+    unset_flag("SNX_ARCEUS_TIMING_FIXES");
+    g_opt_fps = saved_fps;
+    g_mod = saved_mod;
+    main_base = saved_base;
+    timing_enabled = saved_timing;
+    clocks_installed = saved_clocks;
+    logged_count = log_calls = 0;
 }
 static void test_defaults_on(void) {
     static const char* const all[] = {
@@ -3215,6 +3278,7 @@ static void test_event_tick(void) {
     memset(memory, 0, sizeof memory);
 }
 int main(void) {
+    test_probe_master_switch();
     test_event_probe();
     test_event_tick();
     test_event_tick_decide();

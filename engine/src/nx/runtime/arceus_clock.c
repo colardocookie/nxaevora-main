@@ -5279,6 +5279,7 @@ static void text_tick_init(void) {
         "step 2B315E8 skipped on other frames; the fast finish and the whole page as today)\n");
 }
 void arceus_clock_post_jit(void) {
+    if (!arceus_switch_enabled("SNX_ARCEUS_TIMING_FIXES", 1)) return;
     event_probe_init(); /* read-only, before the return below so that 30 FPS has it too */
     demo_probe_init(arceus_probe_base());
     text_probe_init(arceus_probe_base());
