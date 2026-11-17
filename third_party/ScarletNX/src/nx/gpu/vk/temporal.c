@@ -247,6 +247,7 @@ static struct {
     const SnxUpscalerApi* api;
     double nominal; /* the target rate's frame time in seconds, 0 without one */
     int was_rect, was_view, was_extras; /* what the start changed, to put back if no context can be made */
+    int armed_spatial; /* the adapter enabled the hand-over, rather than the explicit spatial mode */
     TemporalUpscalerHealth health;
     TemporalUpscalerContexts contexts;
     SnxUpscaler *live, *pending;
@@ -2785,6 +2786,25 @@ static void upscaler_destroy(void* context) {
     g_u.api->destroy(context);
 }
 
+/* Withdraw the adapter's hand-over. Views and images use the same deferred retirement as a size change. */
+static void spatial_retire(void) {
+    g_s.asked = 0;
+    g_vk_watch = NULL;
+    g_s.fr = (TemporalSpatialFrame){0};
+    g_s.frame = 0;
+    g_s.scene = NULL;
+    g_s.image = VK_NULL_HANDLE;
+    g_s.gva = g_s.bytes = g_s.wseq = 0;
+    g_s.binding_on = g_s.binding_listed = g_s.binding_given = 0;
+    spatial_views_drop();
+    Image* images[2] = {&g_s.picture, &g_s.larger};
+    for (int i = 0; i < 2; i++) {
+        Image* image = images[i];
+        if (image->img) vk_defer_image(image->img, image->mem, image->view, VK_NULL_HANDLE);
+        *image = (Image){0};
+    }
+}
+
 /* No context could be made before any was in use: the adapter is not available on this device after all. What
    the start changed is put back and the run goes on as without the switch. */
 static void upscaler_unavailable(const char* why) {
@@ -2793,6 +2813,10 @@ static void upscaler_unavailable(const char* why) {
     g_t.view = g_u.was_view;
     g_t.rect_extras_off = g_u.was_extras;
     g_u.asked = 0;
+    /* The adapter enabled the below-native hand-over. A refusal must not select the spatial debug scaler. */
+    g_u.below = 0;
+    if (g_u.armed_spatial) spatial_retire();
+    g_u.armed_spatial = 0;
 }
 
 /* Something came of a frame (temporal_upscaler_after). jittered: it was drawn with jitter, so it counts. Never
@@ -3882,6 +3906,7 @@ static void upscaler_start(void) {
     const char* fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
     g_u.below = fixed && !strcmp(fixed, "1") && (!strcmp(name, "fsr") || !strcmp(name, "dlss"));
     if (g_u.below) {
+        g_u.armed_spatial = !g_s.asked;
         g_s.asked = 1;
         LOG("arceus-upscaler: %s below native (%s, EXPERIMENTAL): frames at a scene scale of 1/2, 3/5, 2/3, 3/4 or "
             "4/5 are rendered by it at the rectangle and handed to the game's readers in a larger texture (the "

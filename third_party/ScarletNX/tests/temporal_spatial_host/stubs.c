@@ -29,9 +29,11 @@ typedef struct { u64 cbind[5][18]; u32 cbind_size[5][18]; } GpuChannel;
 #define VK_OK(x) ((x) == VK_SUCCESS)
 enum { VK_WATCH_READ, VK_WATCH_WRITE, VK_WATCH_WROTE, VK_WATCH_FREED, VK_WATCH_OVERLAP };
 static struct { VkDevice dev; VkPhysicalDevice phys; VkPhysicalDeviceProperties props; } g_vk;
-static struct { int mode,rect; VkSampler point; TemporalRectGate rect_gate; u32 resolved_at; } g_t;
+static struct { int mode,rect,view,rect_extras_off; VkSampler point; TemporalRectGate rect_gate; u32 resolved_at; } g_t;
 static u32 g_vk_present;
 static int creates, views_made, deferred, pipes, sets, failure, barriers, fullscreens, fills;
+static VkImage retired_images[8];
+static VkImageView retired_views[8];
 static uintptr_t next_id=100;
 static char logs[20000];
 static void log_at(const char* f,...) {
@@ -68,7 +70,10 @@ static void vk_defer_image(VkImage i,VmaAllocation m,VkImageView v,VkImageView v
     (void)m;
     (void)v;
     (void)v2;
-    assert(i);
+    assert(i || v || v2);
+    assert(deferred < 8);
+    retired_images[deferred] = i;
+    retired_views[deferred] = v;
     deferred++;
 }
 static VkPipeline pipeline_make(VkFormat f,const u32* w,u64 sz,const char* what){
@@ -157,6 +162,6 @@ typedef struct {
     const char* name;
 } HostApi;
 static struct {
-    int below;
+    int below, asked, was_rect, was_view, was_extras, armed_spatial;
     const HostApi* api;
 } g_u;

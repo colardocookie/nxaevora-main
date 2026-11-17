@@ -6,7 +6,8 @@ root=Path(sys.argv[1] if len(sys.argv)>1 else '.')
 s=(root/'third_party/ScarletNX/src/nx/gpu/vk/upscaler_selftest.c').read_text()
 a=s.index('#define VALIDATION_KEPT');b=s.index('\nstatic int memory_type(',a)
 head=r'''
-/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the NXAevora contributors */
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -14,21 +15,7 @@ head=r'''
 #include <stdarg.h>
 #include "nx/gpu/vk/upscaler_selftest.h"
 #include <pthread.h>
-typedef uint32_t u32;
-typedef int32_t i32;
-typedef int VkBool32;
-typedef unsigned VkDebugUtilsMessageSeverityFlagBitsEXT;
-typedef unsigned VkDebugUtilsMessageTypeFlagsEXT;
-typedef struct {
- const char *pMessageIdName;
- const char *pMessage;
- int32_t messageIdNumber;
-}
-VkDebugUtilsMessengerCallbackDataEXT;
-#define VKAPI_ATTR
-#define VKAPI_CALL
-#define VK_FALSE 0
-#define VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT 256
+#include "types.h"
 #define ST "arceus-upscaler-selftest: "
 static struct {u32 messages;int limit_asked;} g;
 static unsigned sink;
@@ -48,20 +35,29 @@ static pthread_barrier_t start;
 static void* writer(void*unused){
  (void)unused;
  VkDebugUtilsMessengerCallbackDataEXT d={
-  "id","text",1};
+  .pMessageIdName="id",.pMessage="text",.messageIdNumber=1};
+ const VkDebugUtilsLabelEXT label={SELFTEST_NGX_REGION};
+ const VkDebugUtilsObjectNameInfoEXT object={VK_OBJECT_TYPE_IMAGE,SELFTEST_NGX_IMAGE};
+ VkDebugUtilsMessengerCallbackDataEXT own={
+  .pMessageIdName=SELFTEST_NGX_ID,.pMessage="own callback",.messageIdNumber=9600,
+  .cmdBufLabelCount=1,.objectCount=1,.pCmdBufLabels=&label,.pObjects=&object};
   pthread_barrier_wait(&start);
-  for(int i=0;i<20000;i++)validation_says(256,0,&d,NULL);
+ for(int i=0;i<20000;i++)validation_says(256,0,i%2?&d:&own,NULL);
   return NULL;
  }
 int main(void){
+ unsigned own=0;
  pthread_t t;
  assert(!pthread_barrier_init(&start,NULL,2));
  assert(!pthread_create(&t,NULL,writer,NULL));
  pthread_barrier_wait(&start);
- for(int i=0;i<20000;i++)validation_counts();
+ for(int i=0;i<20000;i++){
+  unsigned total=validation_counts(&own);
+  assert(own==(total+1)/2);
+ }
  assert(!pthread_join(t,NULL));
- validation_counts();
- assert(g.messages==20000);
+ validation_counts(&own);
+ assert(g.messages==20000 && own==10000);
  puts("concurrent callback/summary finished");
 }
 '''

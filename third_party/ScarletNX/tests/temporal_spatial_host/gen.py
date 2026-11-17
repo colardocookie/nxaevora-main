@@ -33,7 +33,8 @@ begin = temporal.index('static struct {', temporal.index(mark))
 state = temporal[begin:temporal.index('} g_s;\n', begin) + 7]
 watch = re.search(r'^const Surf\* g_vk_watch;\n', temporal, re.M)
 names = ['image_ensure', 'spatial_went_off', 'spatial_failed', 'spatial_now', 'spatial_block', 'vk_temporal_watch',
-         'vk_temporal_spatial_binding', 'vk_temporal_spatial_fault', 'vk_temporal_spatial_decide']
+         'vk_temporal_spatial_binding', 'vk_temporal_spatial_fault', 'vk_temporal_spatial_decide',
+         'spatial_views_drop', 'spatial_larger', 'spatial_ready', 'spatial_retire', 'upscaler_unavailable']
 text = (here / 'stubs.c').read_text()
 text += function(buffer, 'range_owned') + function(buffer, 'vk_buf_owned')
 text += state + '\n' + (watch.group(0) if watch else '')
