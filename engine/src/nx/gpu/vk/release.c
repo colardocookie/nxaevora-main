@@ -25,6 +25,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h" /* tests/vulkan_release.c stubs vk.h */
+#include "nx/gpu/perf_times.h"
 
 typedef struct {
     u64 gate;  /* the graphics submit whose completion it waits for */
@@ -138,8 +139,10 @@ static void perform(Release* r) {
 void vk_release_events(void) { syncpt_events(); }
 /* lands the results of every submit up to gate and compute batch up to cgate (they have finished) and performs the
    releases they gate, in order */
+static _Thread_local int t_release_thread; /* SNX_ARCEUS_PERF_TIMES times this thread's holds only */
 static void release_through(u64 gate, u64 cgate) {
     vk_lock();
+    const u64 held = g_perf_times && t_release_thread ? plat_ns() : 0;
     vk_result_begin();
     vk_compute_land_through(cgate);
     vk_land_through(gate);
@@ -165,11 +168,13 @@ static void release_through(u64 gate, u64 cgate) {
         pm_unlock(&g_rlock);
         if (r.gva) perform(&r);
     }
+    if (held) perf_time_add(&g_perf, PT_RELEASE_HOLD, plat_ns() - held);
     vk_unlock();
 }
 static void release_thread(void* p) {
     (void)p;
     SNX_THREAD_NAME("Vulkan release");
+    t_release_thread = 1;
     for (;;) {
         u64 gate, cgate;
         pm_lock(&g_rlock);

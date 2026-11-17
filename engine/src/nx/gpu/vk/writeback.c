@@ -8,6 +8,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/perf_times.h"
 
 /* Nested because a result can flush an overlapping render target while landing. */
 static _Thread_local unsigned t_result_depth;
@@ -31,6 +32,7 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
     u8* tmp = NULL;
     const u8* cur = dst;
     int changed = 0;
+    u64 written = 0;
     if (!cur) {
         tmp = malloc(size);
         if (!tmp) fatal("Out of memory landing a shader storage buffer");
@@ -60,10 +62,12 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
                 memcpy(dst + start, res + start, i - start);
             else
                 gmem_write(addr + start, res + start, i - start);
+            written += i - start;
             changed = 1;
         } while (i < end);
     }
     free(tmp);
+    if (written && g_perf_times) perf_count(&g_perf, PC_WC_BYTES, written);
     if (changed) gpu_mem_written_shader(addr, size); /* other GPU virtual addresses can alias these guest pages */
     vk_result_end();
 }

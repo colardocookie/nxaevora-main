@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
@@ -509,6 +510,10 @@ void vk_buf_frame_done(u64 frame) {
         if (copy_stats_on()) {
             g_wb_outputs++;
             g_wb_bytes += o->size;
+        }
+        if (g_perf_times) {
+            perf_count(&g_perf, PC_WB_OUTPUTS, 1);
+            perf_count(&g_perf, PC_WB_BYTES, o->size);
         }
         free(o);
     }

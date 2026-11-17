@@ -19,6 +19,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
+#include "nx/gpu/perf_times.h"
 
 typedef void (*RecFn)(const void* args);
 typedef struct {
@@ -128,10 +129,11 @@ static void publish(void) {
 }
 /* room for a packet of size bytes of arguments, filled in and then made known by rec_commit */
 static void* rec_push(RecFn fn, u64 size) {
-    u64 need = (sizeof(RecHdr) + size + 15) & ~15ull, at = g_pending & (REC_CAP - 1);
+    u64 need = (sizeof(RecHdr) + size + 15) & ~15ull, at = g_pending & (REC_CAP - 1), full = 0;
     if (at + need > REC_CAP) { /* the packet doesn't fit before the end: the rest is skipped */
         u64 skip = REC_CAP - at;
         while (g_pending + skip - __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) > REC_CAP) {
+            if (!full && g_perf_times) full = plat_ns();
             publish();
             plat_yield();
         }
@@ -142,9 +144,11 @@ static void* rec_push(RecFn fn, u64 size) {
         at = 0;
     }
     while (g_pending + need - __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) > REC_CAP) {
+        if (!full && g_perf_times) full = plat_ns();
         publish();
         plat_yield();
     }
+    if (full && gpu_on_gpu_thread()) perf_time_add(&g_perf, PT_REC_FULL, plat_ns() - full);
     RecHdr* h = (RecHdr*)(g_ring + at);
     h->fn = fn;
     h->size = need;
@@ -159,7 +163,9 @@ void vk_rec_sync(void) {
     if (g_rec <= 0) return;
     vk_lock(); /* no command is added meanwhile */
     publish();
+    const u64 t0 = g_perf_times && gpu_on_gpu_thread() ? plat_ns() : 0;
     while (__atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) != g_pending) plat_yield();
+    if (t0) perf_time_add(&g_perf, PT_REC_SYNC, plat_ns() - t0);
     vk_unlock();
 }
 

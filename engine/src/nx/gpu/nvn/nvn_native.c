@@ -15,6 +15,7 @@
 #include "nx/gpu/nvn/diag/nvn_trace.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/renderer.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/cheats.h"
@@ -6509,11 +6510,15 @@ static void window_acquire_texture(CPU* c, u64 queue_addr, u64 window_addr, u64 
 }
 static void h_window_acquire_texture(CPU* c, u64 entry) {
     (void)entry;
+    const u64 t0 = g_perf_times ? plat_ns() : 0;
     window_acquire_texture(c, 0, c->x[0], c->x[1], c->x[2], "nvnWindowAcquireTexture");
+    if (t0) perf_time_add(&g_perf, PT_ACQUIRE, plat_ns() - t0);
 }
 static void h_queue_acquire_texture(CPU* c, u64 entry) {
     (void)entry;
+    const u64 t0 = g_perf_times ? plat_ns() : 0;
     window_acquire_texture(c, c->x[0], c->x[1], 0, c->x[2], "nvnQueueAcquireTexture");
+    if (t0) perf_time_add(&g_perf, PT_ACQUIRE, plat_ns() - t0);
 }
 /* 1 when the syncpoint has reached value, across the 32-bit wrap (the look of syncpt_wait with a 0 timeout). */
 static int syncpoint_reached(u32 id, u32 value) { return (int32_t)(syncpt_read(id) - value) >= 0; }
@@ -6521,6 +6526,7 @@ static int syncpoint_reached(u32 id, u32 value) { return (int32_t)(syncpt_read(i
    runs without objs_lock, so the GPU thread can post and finish jobs meanwhile. */
 static void h_sync_wait(CPU* c, u64 entry) {
     (void)entry;
+    const u64 perf_t0 = g_perf_times ? plat_ns() : 0;
     const u64 sync_addr = c->x[0];
     const NvnWaitDeadline limit = nvn_wait_deadline(c->x[1], plat_ns());
     objs_lock_take();
@@ -6576,6 +6582,7 @@ static void h_sync_wait(CPU* c, u64 entry) {
     }
     c->x[0] = result;
     pm_unlock(&objs_lock);
+    if (perf_t0) perf_time_add(&g_perf, PT_SYNC_WAIT, plat_ns() - perf_t0);
 }
 
 /* The frame that Present, a flush, a finish or a fenced flush closes (decisions 8 and 10). The GPU thread replays it
@@ -6590,6 +6597,7 @@ typedef struct {
     GpuChannel* channel; /* the private channel of the queue, used on the GPU thread only */
     uint32_t* init_words; /* the queue's macro code, copied so that it outlives the record */
     uint32_t init_word_count;
+    uint64_t post_ns; /* SNX_ARCEUS_PERF_TIMES: when the job was posted, 0 with it off */
 } FrameJob;
 /* What a post takes from the caller; a flush leaves the window fields zero. */
 typedef struct {
@@ -6848,12 +6856,36 @@ static void frame_replay_init(const FrameJob* job) {
 }
 
 /* Runs on the GPU thread: it frees the job that a post made. A flush has no window: it replays the lists and ends. */
+/* SNX_ARCEUS_PERF_TIMES: the post and the end of the last present job, for the cycle (perf_times.h) */
+static u64 perf_last_post, perf_last_end;
+/* A present's post: the period from the last one, and the time from the last present job's end, or an overlap when
+   that job has not ended. Caller holds objs_lock, so posts come one at a time */
+static void perf_present_posted(u64 now) {
+    const u64 last_post = __atomic_load_n(&perf_last_post, __ATOMIC_RELAXED);
+    const u64 last_end = __atomic_load_n(&perf_last_end, __ATOMIC_ACQUIRE);
+    if (last_post) perf_time_add(&g_perf, PT_PERIOD, now - last_post);
+    if (last_post && last_end < last_post)
+        __atomic_fetch_add(&g_perf.overlaps, 1, __ATOMIC_RELAXED);
+    else if (last_end)
+        perf_time_add(&g_perf, PT_END_POST, now - last_end);
+    __atomic_store_n(&perf_last_post, now, __ATOMIC_RELAXED);
+}
+static void perf_line(void) {
+    static uint32_t presents; /* GPU thread only */
+    char line[1536];
+    if (++presents % PERF_TIMES_WINDOW) return;
+    perf_times_line(&g_perf, PERF_TIMES_WINDOW, line, sizeof line);
+    LOG("%s\n", line);
+}
+
 static void frame_run(void* arg) {
     FrameJob* job = arg;
     static uint32_t frame_jobs, flush_jobs; /* only the GPU thread runs the frame jobs */
     const int flush = job->kind == NVN_FRAME_FLUSH;
     const int measure = g_settings.nvn_measure;
     u64 measure_t0 = measure ? plat_ns() : 0;
+    const u64 perf_start = job->post_ns ? plat_ns() : 0;
+    if (perf_start) perf_time_add(&g_perf, PT_POST_START, perf_start - job->post_ns);
     frame_begin();
     FrameParts parts = {0};
     if (!flush) {
@@ -6867,13 +6899,21 @@ static void frame_run(void* arg) {
     uint32_t dispatch_refusals = 0;
     frame_replay_lists(job, &stats, &dispatches, &dispatch_refusals);
     frame_end(job);
+    if (perf_start) {
+        const u64 end = plat_ns();
+        perf_time_add(&g_perf, PT_START_END, end - perf_start);
+        if (!flush) __atomic_store_n(&perf_last_end, end, __ATOMIC_RELEASE);
+    }
     if (measure) nvn_measure_native_gpu(plat_ns() - measure_t0);
+    const u64 perf_show = perf_start && !flush ? plat_ns() : 0;
     int shown = flush ? 0 : frame_show(job, &parts);
+    if (perf_show) perf_time_add(&g_perf, PT_SHOW, plat_ns() - perf_show);
     uint32_t list_count = job->frame.handle_count;
     uint32_t fences = job->frame.token_count;
     uint32_t frame_number = flush ? ++flush_jobs : ++frame_jobs;
     frame_finish(job);
     frame_line(job, &stats, shown, fences, list_count, frame_number, dispatches, dispatch_refusals);
+    if (perf_start && !flush) perf_line();
     free(job->init_words);
     free(job);
 }
@@ -6906,6 +6946,10 @@ static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget
     job->index = target->index;
     job->window_origin_flip = target->kind == NVN_FRAME_PRESENT ? target->window_origin_flip : queue_origin_flip(q);
     job->channel = q->channel;
+    if (g_perf_times) {
+        job->post_ns = plat_ns();
+        if (target->kind == NVN_FRAME_PRESENT) perf_present_posted(job->post_ns);
+    }
     if (!q->init_replayed) {
         if (q->init_word_count) {
             job->init_words = malloc((size_t)q->init_word_count * sizeof *job->init_words);

@@ -12,6 +12,7 @@
 #include "common/utilities/ini_lines.h"
 #include "nx/gpu/nvn/diag/draw_record.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/gpu/nvn/nvn_native.h"
 #include "nx/gpu/nvn/diag/nvn_trace.h"
 #include "nx/gpu/renderer.h"
@@ -873,8 +874,11 @@ int snx_main(int argc, char** argv) {
     {
         const char* profile = getenv("SNX_ARCEUS_PROFILE");
         const char* gpu_profile = getenv("SNX_ARCEUS_GPU_PROFILE");
+        const char* times = getenv("SNX_ARCEUS_PERF_TIMES");
         if (profile && !strcmp(profile, "1")) g_settings.profiler = 1;
         if (gpu_profile && !strcmp(gpu_profile, "1")) g_settings.gpu_profile = 1;
+        g_perf_times = times && !strcmp(times, "1"); /* the frame's timing line (gpu/perf_times.h) */
+        if (g_perf_times) LOG("perf-times: on, a line every %u presents (SNX_ARCEUS_PERF_TIMES)\n", PERF_TIMES_WINDOW);
     }
     /* the header the log summary reads (common/utilities/logscan.c): no folder in it, since players attach the log to
        public reports and the folder names their account */

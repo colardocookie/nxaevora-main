@@ -62,6 +62,7 @@ static u64 mapping = 4096;
 static int writeback_direct;
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
+u64 plat_ns(void) { return 0; } /* release.c times its holds only with SNX_ARCEUS_PERF_TIMES */
 void pc_init(PCond* c) { (void)c; }
 void pc_broadcast(PCond* c) { (void)c; }
 int pc_wait(PCond* c, PMutex* m, i64 n) {

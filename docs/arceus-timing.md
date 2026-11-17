@@ -55,6 +55,7 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | `SNX_ARCEUS_SCRIPT_WINDOWS` | `0x1` | Not a boolean: a mask of script windows. Bit 0 is the throw window. `0` turns it off. |
 | `SNX_ARCEUS_THROW_OWNER_GUARD` | on | Lets the game make a throw whose owner is already gone, which crashes. Not a timing fix: it installs at every target rate and with `SNX_ARCEUS_TIMING_FIXES=0`. |
 | `SNX_ARCEUS_CLOCK_TRACE` | off | `=0` keeps the trace off; set to `1` to log clock calls. |
+| `SNX_ARCEUS_PERF_TIMES` | off | `1` logs a `perf-times:` line every 600 presents on native: the frame job's cycle (post to start, start to end, end to the next post, the period), the GPU thread's idle and blocked time by site, the release thread's `vk_lock` holds, the game's `nvnSyncWait` and `nvnWindowAcquireTexture`, and the storage bytes landed a frame. Log only. |
 | `SNX_ARCEUS_DIALOGUE_TRACE` | off | `=0` keeps the read-only trace off. |
 | `SNX_ARCEUS_CAMERA_TRACE` | off | `=0` keeps the read-only trace off. |
 | `SNX_ARCEUS_TIMING_RESEARCH` | off | `=0` keeps read-only timing counters off. |

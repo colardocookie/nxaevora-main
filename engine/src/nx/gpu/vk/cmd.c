@@ -10,6 +10,7 @@
 #include <string.h>
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/common.h"
@@ -246,7 +247,9 @@ static void ring_reset(Ring* r, const VmaBudget* budget) {
     r->used = 0;
 }
 
-static void timeline_wait(u64 value) {
+/* site: the perf_times.h site the wait counts for on the GPU thread (SNX_ARCEUS_PERF_TIMES) */
+static void timeline_wait(u64 value, int site) {
+    const u64 t0 = g_perf_times && gpu_on_gpu_thread() ? plat_ns() : 0;
     VkSemaphoreWaitInfo wi = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_gsem, .pValues = &value};
     SNX_ZONE_C(z_wait, "vk timeline wait", 0xb05252);
@@ -255,6 +258,7 @@ static void timeline_wait(u64 value) {
     VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
     SNX_ZONE_END(z);
     gpu_wait_note(NULL, 0);
+    if (t0) perf_time_add(&g_perf, site, plat_ns() - t0);
 }
 /* the storage results of every submission up to value, which has finished, land in guest memory, in order */
 static void land_through(u64 value) {
@@ -269,7 +273,7 @@ static void frame_recycle(Frame* f) {
     u64 done = f->last > f->hold ? f->last : f->hold;
     SNX_ZONE(z, "vk frame recycle");
     if (done) {
-        timeline_wait(done);
+        timeline_wait(done, PT_TL_RECYCLE);
         land_through(done);
         f->last = 0;
         f->hold = 0;
@@ -518,7 +522,7 @@ void vk_finish(void) {
     u64 t0 = plat_ns();
     SNX_ZONE(z_finish, "vk finish");
     vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
-    timeline_wait(g_gval);
+    timeline_wait(g_gval, PT_TL_FINISH);
     land_through(g_gval);
     g_vk_finishes++;
     g_vk_finish_ns += plat_ns() - t0;
@@ -558,7 +562,7 @@ void vk_submit_progress(u64* submitted, u64* done) {
     *done = 0;
     if (g_gsem) VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, done));
 }
-void vk_wait_submit(u64 value) { timeline_wait(value); }
+void vk_wait_submit(u64 value) { timeline_wait(value, PT_TL_SUBMIT); }
 void vk_land_through(u64 value) { land_through(value < g_gval ? value : g_gval); }
 u64 vk_frame_id(void) { return g_frame_id; }
 void vk_frame_hold(u64 frame_id) {
