@@ -811,6 +811,10 @@ add_executable(snx-test-draw-record nvn/draw_record.c "${PROJECT_SOURCE_DIR}/src
 snx_test_target(snx-test-draw-record 11)
 add_test(NAME draw_record COMMAND snx-test-draw-record)
 
+add_executable(snx-test-nvn-dirty nvn/nvn_dirty.c)
+snx_test_target(snx-test-nvn-dirty 11)
+add_test(NAME nvn_dirty COMMAND snx-test-nvn-dirty)
+
 add_executable(snx-test-vulkan-landing vulkan_landing.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/landing.c")
 snx_test_target(snx-test-vulkan-landing 11)
 add_test(NAME vulkan_landing COMMAND snx-test-vulkan-landing)

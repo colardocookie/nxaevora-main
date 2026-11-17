@@ -14,6 +14,8 @@ void nvn_native_init(void);
 /* at a clean exit: the functions that the game called and the host does not have */
 void nvn_native_report(void);
 /* 1 once nvn_native_init found nvn_legacy=0 and hooked the loader */
+/* SNX_ARCEUS_PERF_REPLAY=1: the draw's bind walks stop at a table's last set flag (nvn_dirty.h), read once at start */
+extern int g_perf_replay;
 int nvn_native_active(void);
 /* the host handler of an NVN function by name, or NULL when the host has none (the selftest compares it with the
    library). It does not need nvn_legacy=0. */
@@ -46,6 +48,9 @@ typedef struct {
     uint8_t uniform_dirty[NVN_BIND_STAGE_MAX + 1u][NVN_UNIFORM_SLOT_MAX];
     uint8_t storage_dirty[NVN_BIND_STAGE_MAX + 1u][NVN_STORAGE_SLOT_MAX];
     uint8_t vertex_dirty[NVN_VERTEX_SLOT_MAX];
+    /* The set flags of each dirty table above, per stage, kept by nvn_dirty.h's helpers (PERF-2) */
+    uint16_t texture_dirty_n[NVN_BIND_STAGE_MAX + 1u], uniform_dirty_n[NVN_BIND_STAGE_MAX + 1u];
+    uint16_t storage_dirty_n[NVN_BIND_STAGE_MAX + 1u], vertex_dirty_n;
     /* The bound state objects of one frame job, written by the replay and read by the pipeline stage later. */
     NvnBoundState state[NVN_STATE_COUNT];
     uint8_t state_dirty[NVN_STATE_COUNT];

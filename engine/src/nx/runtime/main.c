@@ -880,6 +880,9 @@ int snx_main(int argc, char** argv) {
         if (gpu_profile && !strcmp(gpu_profile, "1")) g_settings.gpu_profile = 1;
         const char* landing = getenv("SNX_ARCEUS_PERF_LANDING");
         const char* validation = getenv("SNX_ARCEUS_VK_VALIDATION");
+        const char* replay = getenv("SNX_ARCEUS_PERF_REPLAY");
+        g_perf_replay = replay && !strcmp(replay, "1"); /* the draw's bind walks stop early (gpu/nvn/nvn_dirty.h) */
+        if (g_perf_replay) LOG("perf-replay: on, the draw's bind walks stop at their last set flag\n");
         if (validation && !strcmp(validation, "1")) g_settings.vulkan_validation_layer = 1; /* vk_validation */
         g_perf_times = times && !strcmp(times, "1"); /* the frame's timing line (gpu/perf_times.h) */
         g_perf_landing = landing && !strcmp(landing, "1"); /* word compares in the landing (gpu/vk/landing.h) */
