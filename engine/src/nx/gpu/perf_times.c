@@ -9,6 +9,7 @@ PerfTimes g_perf;
 int g_perf_pass_why;
 int g_perf_submit_why;
 uint64_t g_perf_submit_every_ns = PERF_SUBMIT_EVERY_NS;
+int g_perf_compute_submit = 1;
 
 static void time_add(PerfTime* t, uint64_t ns) {
     __atomic_fetch_add(&t->sum, ns, __ATOMIC_RELAXED);

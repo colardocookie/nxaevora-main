@@ -288,6 +288,7 @@ int main(void) {
     test_subs_producer();
     test_subs_threads();
     CHECK(g_perf_submit_every_ns == 1000000); /* upstream's interval while SNX_ARCEUS_PERF_SUBMIT_US is unset */
+    CHECK(g_perf_compute_submit == 1); /* deferred dispatches submit at once while the switch is unset */
     test_tail();
     test_tail_line();
     test_tail_threads();

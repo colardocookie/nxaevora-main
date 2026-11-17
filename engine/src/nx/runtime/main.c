@@ -897,6 +897,12 @@ int snx_main(int argc, char** argv) {
         if (g_perf_replay) LOG("perf-replay: on, the draw's bind walks stop at their last set flag\n");
         if (validation && !strcmp(validation, "1")) g_settings.vulkan_validation_layer = 1; /* vk_validation */
         g_perf_times = times && !strcmp(times, "1"); /* the frame's timing line (gpu/perf_times.h) */
+        const char* compute_submit = getenv("SNX_ARCEUS_PERF_COMPUTE_SUBMIT"); /* an experiment (gpu/perf_times.h) */
+        if (compute_submit && !strcmp(compute_submit, "0")) {
+            g_perf_compute_submit = 0;
+            LOG("perf-compute-submit: EXPERIMENT on, a deferred dispatch is not submitted at once, its results go "
+                "with the next submission\n");
+        }
         const char* submit_us = getenv("SNX_ARCEUS_PERF_SUBMIT_US"); /* bench only: a submission's recording time */
         if (submit_us) {
             char* end = NULL;

@@ -120,6 +120,9 @@ extern PerfTimes g_perf;
    (vk/cmd.c vk_frame_check), upstream's 1 ms unless set to 250 to 8000 us. Read once at start */
 #define PERF_SUBMIT_EVERY_NS 1000000ull
 extern uint64_t g_perf_submit_every_ns;
+/* SNX_ARCEUS_PERF_COMPUTE_SUBMIT=0, an experiment (PERF-13, research 22:09): a deferred dispatch's results are not
+   submitted at once (vk/compute.c), so they go with the next submission. 1 unless set to 0. Read once at start */
+extern int g_perf_compute_submit;
 
 /* why the next vk_render_end ends the pass, a PC_END_* count less PC_END_OTHER: set just before the call */
 enum { PE_OTHER = 0, PE_GPU_SRC, PE_COPY, PE_IMAGE, PE_TARGET };
