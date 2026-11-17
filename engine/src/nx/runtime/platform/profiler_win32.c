@@ -249,16 +249,16 @@ static void cpu_window(ProfStat* s, HANDLE h) {
     s->seen_user = user;
     s->seen_kernel = kernel;
 }
-/* The host module that holds addr, looked up once and kept. Write time only: GetModuleHandleEx takes the loader's
-   lock, and no thread is stopped then */
+/* The host module that holds addr, kept for one write. Write time only: GetModuleHandleEx takes the loader's lock,
+   and no thread is stopped then. The handle holds a reference while the headers and the path are read, so a module
+   that another thread unloads stays mapped until FreeLibrary */
 static const ProfModule* module_at(u64 addr) {
     HMODULE m;
     char path[MAX_PATH];
     for (u32 i = 0; i < g_nmodules; i++)
         if (addr - g_modules[i].base < g_modules[i].size) return &g_modules[i];
     if (g_nmodules == PROF_MODULES ||
-        !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            (LPCSTR)(size_t)addr, &m))
+        !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)(size_t)addr, &m))
         return NULL;
     const unsigned char* base = (const unsigned char*)m;
     const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)base;
@@ -272,6 +272,7 @@ static const ProfModule* module_at(u64 addr) {
     const char* leaf = n ? path + n : path;
     while (leaf > path && leaf[-1] != '\\' && leaf[-1] != '/') leaf--;
     snprintf(mod->name, sizeof mod->name, "%s", n ? leaf : "?");
+    FreeLibrary(m);
     if (addr - mod->base >= mod->size) return NULL;
     g_nmodules++;
     return mod;
@@ -362,8 +363,9 @@ static void write_window(FILE* f, const ProfStat* const* order, int n, u64 from_
         }
     }
 }
-/* profile.txt holds the last window, profile-<seconds>.txt keeps each one. Then the next window starts empty */
-static void write_profile(u64 started, u64 window_start) {
+/* profile.txt holds the last window, profile-<seconds>.txt keeps each one. Then the next window starts empty, at the
+   time returned, which is when the CPU totals were read, so a window's CPU time and its length cover the same span */
+static u64 write_profile(u64 started, u64 window_start) {
     static const ProfStat* order[PROF_THREADS + PROF_ENDED];
     const u64 now = plat_ns();
     char path[1200];
@@ -391,6 +393,8 @@ static void write_profile(u64 started, u64 window_start) {
     g_nended = 0;
     g_ended_lost = 0;
     g_ticks = 0;
+    g_nmodules = 0; /* a module at a base another one had is looked up again */
+    return now;
 }
 
 static DWORD WINAPI sampler(LPVOID unused) {
@@ -434,8 +438,7 @@ static DWORD WINAPI sampler(LPVOID unused) {
             ResumeThread(h);
         }
         if (plat_ns() >= next_write) {
-            write_profile(started, window_start);
-            window_start = plat_ns();
+            window_start = write_profile(started, window_start);
             next_write += (u64)PROF_PERIOD_MS * 1000000u;
         }
     }
