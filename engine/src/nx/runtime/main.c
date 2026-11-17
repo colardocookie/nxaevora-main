@@ -867,13 +867,13 @@ int snx_main(int argc, char** argv) {
     title = mod->title && mod->title[0] ? mod->title : g_exename;
 #if defined(SNX_TRACY)
     if (g_settings.tracy_profiler) g_opt_tracy_client = 1; /* the .ini's Debug section asks for the client */
+#endif
     /* SNX_ARCEUS_PROFILE=1 is the profile option for a launcher that passes only SNX_ARCEUS_* variables. Before any
        thread starts, since each one is sampled from its start */
     {
         const char* profile = getenv("SNX_ARCEUS_PROFILE");
         if (profile && !strcmp(profile, "1")) g_settings.profiler = 1;
     }
-#endif
     /* the header the log summary reads (common/utilities/logscan.c): no folder in it, since players attach the log to
        public reports and the folder names their account */
     LOG(SNX_PROGRAM_NAME " - %s\n", title);

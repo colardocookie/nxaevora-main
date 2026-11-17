@@ -38,14 +38,18 @@ static struct {
     char name[PROF_LABEL];
 } g_labels[PROF_THREADS];
 
-/* the sampler's own (no other thread touches these) */
-static ProfTable g_table;
-static struct {
-    uint16_t gen;
-    uint8_t live, ended;
+/* the sampler's own (no other thread touches these). A thread that ends is copied to g_ended, so its window is still
+   written after another thread takes its slot */
+#define PROF_ENDED 64
+typedef struct {
+    uint16_t gen, slot;
+    uint8_t live;
     DWORD tid;
     u64 kinds[PROF_KINDS];
-} g_stats[PROF_THREADS];
+} ProfStat;
+static ProfTable g_table;
+static ProfStat g_stats[PROF_THREADS], g_ended[PROF_ENDED];
+static int g_nended;
 static u64 g_ticks;
 typedef struct {
     u64 host;
@@ -155,6 +159,7 @@ static void record(int slot, u64 pc) {
     if (!g_stats[slot].live || g_stats[slot].gen != gen) {
         memset(&g_stats[slot], 0, sizeof g_stats[slot]);
         g_stats[slot].gen = gen;
+        g_stats[slot].slot = (uint16_t)slot;
         g_stats[slot].live = 1;
         g_stats[slot].tid = __atomic_load_n(&g_tids[slot], __ATOMIC_RELAXED);
     }
@@ -164,11 +169,11 @@ static void record(int slot, u64 pc) {
 }
 
 /* The thread's name: its own label, the system's description, or its Windows id. No thread is stopped here */
-static void thread_name(int slot, char* out, size_t size) {
+static void thread_name(const ProfStat* s, char* out, size_t size) {
     typedef HRESULT(WINAPI * Describe)(HANDLE, PWSTR*);
     static Describe describe;
     static int looked;
-    const DWORD tid = g_stats[slot].tid;
+    const DWORD tid = s->tid;
     for (int i = 0; i < PROF_THREADS; i++) {
         if (__atomic_load_n(&g_labels[i].tid, __ATOMIC_ACQUIRE) != tid) continue;
         if (!__atomic_load_n(&g_labels[i].ready, __ATOMIC_ACQUIRE)) break;
@@ -180,7 +185,7 @@ static void thread_name(int slot, char* out, size_t size) {
         describe = k ? (Describe)(void (*)(void))GetProcAddress(k, "GetThreadDescription") : NULL;
         looked = 1;
     }
-    HANDLE h = g_stats[slot].live ? __atomic_load_n(&g_threads[slot], __ATOMIC_ACQUIRE) : NULL;
+    HANDLE h = s->live ? __atomic_load_n(&g_threads[s->slot], __ATOMIC_ACQUIRE) : NULL;
     PWSTR wide = NULL;
     if (h && describe && SUCCEEDED(describe(h, &wide)) && wide && wide[0]) {
         const int n = WideCharToMultiByte(CP_UTF8, 0, wide, -1, out, (int)size, NULL, NULL);
@@ -191,14 +196,12 @@ static void thread_name(int slot, char* out, size_t size) {
     snprintf(out, size, "host thread %lu", (unsigned long)tid);
 }
 
-static u64 busy(int slot) {
-    return g_stats[slot].kinds[PROF_GAME] + g_stats[slot].kinds[PROF_RUNTIME] + g_stats[slot].kinds[PROF_HOST];
-}
+static u64 busy(const ProfStat* s) { return s->kinds[PROF_GAME] + s->kinds[PROF_RUNTIME] + s->kinds[PROF_HOST]; }
 static int busy_cmp(const void* a, const void* b) {
-    u64 x = busy(*(const int*)a), y = busy(*(const int*)b);
+    u64 x = busy(*(const ProfStat* const*)a), y = busy(*(const ProfStat* const*)b);
     return x > y ? -1 : x < y;
 }
-static void write_window(FILE* f, const int* order, int n, u64 from_ns, u64 to_ns) {
+static void write_window(FILE* f, const ProfStat* const* order, int n, u64 from_ns, u64 to_ns) {
     static ProfBucket top[PROF_TOP];
     const u64 image = (u64)(size_t)&__ImageBase;
     const double ticks = g_ticks ? (double)g_ticks : 1.0;
@@ -207,15 +210,15 @@ static void write_window(FILE* f, const int* order, int n, u64 from_ns, u64 to_n
             (double)from_ns / 1e9, (double)to_ns / 1e9, (unsigned long long)g_ticks, n,
             (unsigned long long)g_table.unplaced);
     for (int k = 0; k < n; k++) {
-        const int s = order[k];
+        const ProfStat* s = order[k];
         char name[PROF_LABEL + 32];
         thread_name(s, name, sizeof name);
-        const u64* c = g_stats[s].kinds;
+        const u64* c = s->kinds;
         fprintf(f, "\nthread %s: busy %.1f%% (game %.1f%%, runtime %.1f%%, host %.1f%%), wait %.1f%%%s\n", name,
                 100.0 * (double)busy(s) / ticks, 100.0 * (double)c[PROF_GAME] / ticks,
                 100.0 * (double)c[PROF_RUNTIME] / ticks, 100.0 * (double)c[PROF_HOST] / ticks,
-                100.0 * (double)c[PROF_WAIT] / ticks, g_stats[s].ended ? ", ended" : "");
-        const u32 found = prof_top(&g_table, (uint16_t)s, g_stats[s].gen, top, PROF_TOP);
+                100.0 * (double)c[PROF_WAIT] / ticks, s->live ? "" : ", ended");
+        const u32 found = prof_top(&g_table, s->slot, s->gen, top, PROF_TOP);
         for (u32 i = 0; i < found; i++) {
             const ProfFn* fn = fn_at(top[i].key);
             const double pct = 100.0 * top[i].count / ticks;
@@ -231,12 +234,13 @@ static void write_window(FILE* f, const int* order, int n, u64 from_ns, u64 to_n
 }
 /* profile.txt holds the last window, profile-<seconds>.txt keeps each one. Then the next window starts empty */
 static void write_profile(u64 started, u64 window_start) {
-    static int order[PROF_THREADS];
+    static const ProfStat* order[PROF_THREADS + PROF_ENDED];
     const u64 now = plat_ns();
     char path[1200];
     int n = 0;
     for (int i = 0; i < PROF_THREADS; i++)
-        if (g_stats[i].live && (busy(i) || g_stats[i].kinds[PROF_WAIT])) order[n++] = i;
+        if (g_stats[i].live && (busy(&g_stats[i]) || g_stats[i].kinds[PROF_WAIT])) order[n++] = &g_stats[i];
+    for (int i = 0; i < g_nended; i++) order[n++] = &g_ended[i];
     qsort(order, (size_t)n, sizeof *order, busy_cmp);
     for (int pass = 0; pass < 2; pass++) {
         if (pass)
@@ -250,10 +254,8 @@ static void write_profile(u64 started, u64 window_start) {
         fclose(f);
     }
     prof_clear(&g_table);
-    for (int i = 0; i < PROF_THREADS; i++) {
-        if (g_stats[i].ended) g_stats[i].live = 0;
-        memset(g_stats[i].kinds, 0, sizeof g_stats[i].kinds);
-    }
+    for (int i = 0; i < PROF_THREADS; i++) memset(g_stats[i].kinds, 0, sizeof g_stats[i].kinds);
+    g_nended = 0;
     g_ticks = 0;
 }
 
@@ -271,7 +273,8 @@ static DWORD WINAPI sampler(LPVOID unused) {
             CONTEXT c;
             if (!h) continue;
             if (WaitForSingleObject(h, 0) == WAIT_OBJECT_0) { /* the thread ended: its slot is free again */
-                if (g_stats[i].live) g_stats[i].ended = 1; /* its window is still written */
+                if (g_stats[i].live && g_nended < PROF_ENDED) g_ended[g_nended++] = g_stats[i];
+                g_stats[i].live = 0; /* its window is still written, from g_ended */
                 __atomic_store_n(&g_threads[i], NULL, __ATOMIC_RELEASE);
                 CloseHandle(h);
                 continue;
