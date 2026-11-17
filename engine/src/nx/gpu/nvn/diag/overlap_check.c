@@ -95,14 +95,14 @@ static void window_line(void) {
     const double f = w->frames ? (double)w->frames : 1.0;
     const uint64_t post_ns = __atomic_exchange_n(&g_post_ns, 0, __ATOMIC_RELAXED);
     const uint64_t lost = __atomic_exchange_n(&g_lost, 0, __ATOMIC_RELAXED);
-    LOG("nvn-overlap-check: %llu presents, %llu of them not checked (skipped %llu, lost %llu, missed %llu). "
+    LOG("nvn-overlap-check: %llu presents, %llu of them not checked (skipped %llu, missed %llu, lost %llu of them). "
         "Candidates, not a bound: a range that meets a replay write counts as the replay's, textures and copy "
         "sources are not covered, owned runs are hashed by owner, and a change after its draw read it counts. "
         "%.1f ranges %.2f MB a frame, changed %llu ranges %.3f MB, by the game: constants %llu/%llu vertices "
         "%llu/%llu indices %llu/%llu storages %llu/%llu, by the replay itself %llu, owned %llu, overflow "
         "%llu+%llu, hashing %.3f ms a frame at the post and %.3f at the end, largest changed: %s\n",
-        (unsigned long long)w->frames, (unsigned long long)(g_skipped + lost + g_missed),
-        (unsigned long long)g_skipped, (unsigned long long)lost, (unsigned long long)g_missed, w->kept / f,
+        (unsigned long long)w->frames, (unsigned long long)(g_skipped + g_missed), /* a lost post is missed too */
+        (unsigned long long)g_skipped, (unsigned long long)g_missed, (unsigned long long)lost, w->kept / f,
         w->bytes_kept / f / 1e6, (unsigned long long)w->changed,
         w->bytes_changed / 1e6, (unsigned long long)g_game_changed[0], (unsigned long long)w->kept_kind[0],
         (unsigned long long)g_game_changed[1], (unsigned long long)w->kept_kind[1],
