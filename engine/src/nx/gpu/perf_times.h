@@ -27,6 +27,8 @@ enum {
     PT_SYNC_WAIT,  /* the game's nvnSyncWait, the whole call */
     PT_ACQUIRE,    /* the game's nvnWindowAcquireTexture, the whole call */
     PT_RELEASE_HOLD, /* the release thread holding vk_lock in release_through (the landings and releases) */
+    PT_PASS_END,     /* vk_render_end ending an open pass (PERF-11, research 20:41) */
+    PT_PASS_BEGIN,   /* a game pass begun: from the end of the pass before to its vkCmdBeginRendering recorded */
     /* a present job's tail, each from its syncpoint increment queued at frame_end (PERF-10, research 19:46) */
     PT_TAIL_SUBMIT, /* to the recorder thread handing the submission the increment waits for to the driver */
     PT_TAIL_DONE,   /* to the release thread's wait for that submission returning */
@@ -42,6 +44,15 @@ enum {
     PC_WC_BYTES,   /* bytes vk_write_changed wrote to guest memory, the ones the shader changed */
     PC_TAIL_SUBMITS, /* graphics submissions from one present's increment to the next, the increment's own included */
     PC_TAIL_AFTER,   /* of those, the ones not complete when the increment was queued */
+    PC_PASS_BEGINS,  /* game render passes begun */
+    PC_END_OTHER,    /* open passes ended, by the reason the caller gave: none named */
+    PC_END_GPU_SRC,  /* gfx_gpu_src's barrier for a draw that reads an earlier result */
+    PC_END_COPY,     /* a buffer copy (overlay, owned input, patch, staging) */
+    PC_END_IMAGE,    /* an image upload, copy, blit or readback */
+    PC_END_TARGET,   /* the next draw's targets or their layouts differ */
+    PC_SRC_BARRIERS, /* gfx_gpu_src's barriers */
+    PC_SRC_CLEAN,    /* of those, ones whose result no draw bound for writing since the barrier before */
+    PC_SRC_UNKNOWN,  /* of those, ones whose result's last writer was not kept (the table's slot taken) */
     /* from here on printed as totals, not a frame's mean */
     PC_TAIL_UNGATED, /* increments that waited for no submission: no submit or done time */
     PC_TAIL_PARTIAL, /* tails closed with a time missing (performed by another path, or no wait after it) */
@@ -75,6 +86,13 @@ typedef struct {
 
 extern int g_perf_times;
 extern PerfTimes g_perf;
+
+/* why the next vk_render_end ends the pass, a PC_END_* count less PC_END_OTHER: set just before the call */
+enum { PE_OTHER = 0, PE_GPU_SRC, PE_COPY, PE_IMAGE, PE_TARGET };
+extern int g_perf_pass_why; /* the GPU thread's */
+static inline void perf_pass_why(int why) {
+    if (g_perf_times) g_perf_pass_why = why;
+}
 
 void perf_time_add(PerfTimes* p, int site, uint64_t ns);
 void perf_time_named(PerfTimes* p, const char* what, uint64_t ns);

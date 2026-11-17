@@ -247,6 +247,22 @@ typedef struct GfxOut {
     struct GfxOut* next;
 } GfxOut;
 static GfxOut *g_prep, *g_prep_tail, *g_out, *g_out_tail;
+/* SNX_ARCEUS_PERF_TIMES (PERF-11): the draw that last bound a result for writing, by result in a fixed table, to
+   count gfx_gpu_src's barriers that no write since the barrier before needed. A slot another result took: unknown */
+#define WMARK_N 1024u
+static struct {
+    const GfxOut* o;
+    u64 work;
+} g_wmark[WMARK_N];
+static u32 wmark_slot(const GfxOut* o) {
+    return (u32)((u64)(uintptr_t)o * 0x9E3779B97F4A7C15ull >> 54) & (WMARK_N - 1);
+}
+static void wmark_set(const GfxOut* o) {
+    if (!g_perf_times) return;
+    const u32 i = wmark_slot(o);
+    g_wmark[i].o = o;
+    g_wmark[i].work = g_vk_drawn + g_vk_dispatches; /* the draw or dispatch being prepared */
+}
 /* the guest pages the results in g_out cover, so a read or write that meets none (almost all) skips the walk over
    them: each adds its own translated pages when it is committed and removes them when it lands. A range that meets a
    result only at the same GPU address through an unmapped page skips it too: nothing is read or written there. A GMMU
@@ -734,6 +750,7 @@ static void copy_add(CopyBatch* c, VkBuffer src, u64 src_off, u64 dst_off, u64 s
     u32 k;
     int overlap = c->nwritten == sizeof c->written / sizeof *c->written;
     if (!c->started) {
+        perf_pass_why(PE_COPY);
         vk_render_end();
         copy_barrier(out_stages(), out_access(), VK_PIPELINE_STAGE_2_COPY_BIT,
                      VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -999,7 +1016,17 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
         /* one barrier per draw or dispatch that reads an earlier one's result: either may have written it, and
            either may read it next (a dispatch on the graphics queue binds like a draw) */
         static u64 barrier_frame = ~0ull, barrier_work = ~0ull;
+        if (writable) wmark_set(match); /* this draw writes it again */
         if (barrier_frame != vk_submit_number() || barrier_work != g_vk_drawn + g_vk_dispatches) {
+            if (g_perf_times) { /* no write of match since the barrier before (a barrier orders all earlier work) */
+                const u32 i = wmark_slot(match);
+                perf_count(&g_perf, PC_SRC_BARRIERS, 1);
+                if (g_wmark[i].o != match)
+                    perf_count(&g_perf, PC_SRC_UNKNOWN, 1);
+                else if (barrier_work != ~0ull && g_wmark[i].work < barrier_work)
+                    perf_count(&g_perf, PC_SRC_CLEAN, 1);
+            }
+            perf_pass_why(PE_GPU_SRC);
             vk_render_end();
             copy_barrier(out_stages(), out_access(),
                          VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1475,6 +1502,7 @@ static int writable_owned(GfxOut* o, u64 gva, u32 len, VkBuffer buf, u64 off) {
     u64 at;
     o->initial = vk_stage_back(len, &back, &at, &o->initial_mem);
     if (!o->initial) return 0;
+    perf_pass_why(PE_COPY);
     vk_render_end();
     vk_guest_read(gva, len, o->ptr, buf, off);
     copy_barrier(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
@@ -1539,6 +1567,7 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
     o->off = *off;
     o->frame = vk_submit_number();
     o->frame_id = vk_frame_id();
+    wmark_set(o); /* the draw being prepared writes it */
     if (g_prep_tail)
         g_prep_tail->next = o;
     else
@@ -1890,6 +1919,7 @@ static int patch_apply(const Vb* e, Patch* pt0) {
         at += pt.r[k].size;
     }
     if (copy_stats_on()) g_copy_owned += pt.bytes;
+    perf_pass_why(PE_COPY);
     vk_render_end(); /* copies happen outside rendering passes */
     /* the draws recorded and submitted before read the old bytes, and an earlier patch wrote them: both are done
        before the copy writes */
@@ -1960,6 +1990,7 @@ static int make_own_(u32 i, VkBuffer sb, u64 so) {
     if (vmaCreateBuffer(g_vk.vma, &bci, &aci, &b, &m, NULL) != VK_SUCCESS) return 0;
     vk_mem_track(m);
     if (copy_stats_on()) g_copy_owned += len;
+    perf_pass_why(PE_COPY);
     vk_render_end(); /* copies happen outside rendering passes */
     VkBufferCopy r = {so, 0, len};
     rec_CmdCopyBuffer(vk_cmd(), sb, b, 1, &r);
@@ -2044,6 +2075,7 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, VkBuffer* b
     drop_own(i);
     e->hash = 0;
     e->stable = 0;
+    perf_pass_why(PE_COPY);
     vk_render_end(); /* the GPU's copies happen outside rendering passes */
     u8* p = vk_stage_upload(len, vk_stage_align(), &sb, &so);
     if (!p) return 0;

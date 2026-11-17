@@ -12,6 +12,7 @@
 #include "nx/gpu/renderer.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/memory/own.h"
 #include "nx/runtime/platform/tracy.h"
 
@@ -379,6 +380,7 @@ static int tex_upload_(Surf* t) {
     t->wgen = vk_surf_gen();      /* even a new texture at a reused address invalidates an old target's copy */
     t->took_drawn = 0;            /* memory's own texels again, until tex_take_drawn copies targets in */
     vk_surf_relist(t);
+    perf_pass_why(PE_IMAGE);
     vk_render_end();              /* copies and clears happen outside rendering passes */
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
@@ -988,6 +990,7 @@ VkImageView vk_null_view(VkImageViewType type, int num) {
             return VK_NULL_HANDLE;
         }
         vk_mem_track(s->mem);
+        perf_pass_why(PE_IMAGE);
         vk_render_end(); /* clears happen outside rendering passes */
         VkCommandBuffer cb = vk_cmd();
         vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
@@ -1189,6 +1192,7 @@ static int can_blit(VkFormat f) {
 }
 /* the command buffer with s ready to be read from and t written to, by copies or blits */
 static VkCommandBuffer copy_begin(Surf* s, Surf* t) {
+    perf_pass_why(PE_IMAGE);
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,

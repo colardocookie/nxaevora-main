@@ -22,6 +22,7 @@
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/runtime/platform/tracy.h"
+#include "nx/gpu/perf_times.h"
 
 static struct {
     Surf* rt[8];
@@ -38,12 +39,19 @@ static struct {
 u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies;
 
 void vk_render_end(void) {
+    const int why = g_perf_pass_why; /* SNX_ARCEUS_PERF_TIMES: the caller's reason, used once */
+    g_perf_pass_why = PE_OTHER;
     if (!g_rp.open) return;
+    const u64 t0 = g_perf_times ? plat_ns() : 0;
     g_rp.open = 0;
     VkCommandBuffer cb = vk_cmd();
     vk_query_pass_end(cb); /* a query begun in the pass ends in it */
     rec_CmdEndRendering(cb);
     vk_gpuprof_pass_end(cb);
+    if (t0) {
+        perf_count(&g_perf, PC_END_OTHER + why, 1);
+        perf_time_add(&g_perf, PT_PASS_END, plat_ns() - t0);
+    }
 }
 
 /* the targets the registers name, without opening anything */
@@ -96,7 +104,9 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
                !memcmp(g_rp.rt, rt, sizeof g_rp.rt);
     if (same && !(fb & ~g_rp.fb)) return 1;
     if (same) g_vk_fb_restarts++; /* only a target's layout changes */
+    perf_pass_why(PE_TARGET);
     vk_render_end();
+    const u64 perf_t0 = g_perf_times ? plat_ns() : 0;
     VkCommandBuffer cb = vk_cmd();
     u32 loops = 0;
     VkRenderingAttachmentInfo ca[8];
@@ -172,6 +182,10 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     g_rp.fb = loops;
     g_rp.fb_written = g_rp.fb_read = 0;
     g_rp.open = 1;
+    if (perf_t0) {
+        perf_count(&g_perf, PC_PASS_BEGINS, 1);
+        perf_time_add(&g_perf, PT_PASS_BEGIN, plat_ns() - perf_t0);
+    }
     return 1;
 }
 static void target_written(Surf* s) {
@@ -195,7 +209,9 @@ static int zt_written(Surf* zt, u32 pred, int undefined) {
    area is as large as a framebuffer may be, so the draw's viewport and scissor fit in it */
 static int render_begin_empty(void) {
     if (g_rp.open && !g_rp.n && !g_rp.zt) return 1;
+    perf_pass_why(PE_TARGET);
     vk_render_end();
+    const u64 perf_t0 = g_perf_times ? plat_ns() : 0;
     VkExtent2D ext = {g_vk.props.limits.maxFramebufferWidth, g_vk.props.limits.maxFramebufferHeight};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, ext}, .layerCount = 1};
     vk_gpuprof_pass_begin(vk_cmd(), NULL, NULL);
@@ -208,6 +224,10 @@ static int render_begin_empty(void) {
     g_rp.srgb_write = 0;
     g_rp.fb = g_rp.fb_written = g_rp.fb_read = 0;
     g_rp.open = 1;
+    if (perf_t0) {
+        perf_count(&g_perf, PC_PASS_BEGINS, 1);
+        perf_time_add(&g_perf, PT_PASS_BEGIN, plat_ns() - perf_t0);
+    }
     return 1;
 }
 

@@ -10,6 +10,7 @@
    comes after it */
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
@@ -48,6 +49,7 @@ static int dma(const GpuDmaOp* o) {
     VkBuffer sb = VK_NULL_HANDLE, db, scr;
     VkCommandBuffer cb;
     VkOwnRes* d;
+    perf_pass_why(PE_COPY);
     vk_render_end();
     if (dspan > g_vk.alloc_cap || sspan > g_vk.alloc_cap || !(scr = vk_bl_scratch(scratch_size, &cap))) return 0;
     if (!o->fill) {

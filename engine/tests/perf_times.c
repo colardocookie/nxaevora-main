@@ -139,8 +139,13 @@ static void test_tail_line(void) {
     perf_tail_performed(&p, 1, 3000000);
     perf_tail_freed(&p, 3500000);
     perf_tail_woke(&p, 4000000);
+    perf_count(&p, PC_END_OTHER + PE_GPU_SRC, 1200); /* PERF-11's pass counts: a frame's mean, by reason */
+    perf_count(&p, PC_SRC_CLEAN, 300);
+    perf_time_add(&p, PT_PASS_END, 600000);
     perf_times_line(&p, 600, line, sizeof line);
     CHECK(strstr(line, " tail_incr=2.000/2.000/1 ") && strstr(line, " tail_wake=3.000/3.000/1 "));
+    CHECK(strstr(line, " end_gpu_src=2.0 ") && strstr(line, " src_clean=0.5 ") && strstr(line, " end_other=0.0 "));
+    CHECK(strstr(line, " pass_end=0.001/0.600 ") && strstr(line, " passes=0.0 "));
 }
 /* reviewer 20:08 F1: a slot reused by the GPU thread while another thread closes it (run under TSan by hand) */
 static PerfTimes threaded;

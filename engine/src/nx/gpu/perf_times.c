@@ -5,6 +5,7 @@
 
 int g_perf_times;
 PerfTimes g_perf;
+int g_perf_pass_why;
 
 static void time_add(PerfTime* t, uint64_t ns) {
     __atomic_fetch_add(&t->sum, ns, __ATOMIC_RELAXED);
@@ -143,10 +144,12 @@ static size_t put(char* out, size_t size, size_t at, const char* name, PerfTime 
 size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size) {
     static const char* const names[PT_SITES] = {"post_start", "start_end", "end_post", "period", "idle", "show",
                                                 "tl_recycle", "tl_finish", "tl_submit", "rec_sync", "rec_full",
-                                                "sync_wait", "acquire", "release_hold", "tail_submit", "tail_done",
-                                                "tail_incr", "tail_free", "tail_wake"};
-    static const char* const counts[PC_COUNTS] = {"wb_outputs", "wb_bytes", "wc_bytes", "tail_submits",
-                                                  "tail_after", "tail_ungated", "tail_partial", "tail_lost"};
+                                                "sync_wait", "acquire", "release_hold", "pass_end", "pass_begin",
+                                                "tail_submit", "tail_done", "tail_incr", "tail_free", "tail_wake"};
+    static const char* const counts[PC_COUNTS] = {
+        "wb_outputs", "wb_bytes",    "wc_bytes",      "tail_submits", "tail_after",  "passes",
+        "end_other",  "end_gpu_src", "end_copy",      "end_image",    "end_target",  "src_barriers",
+        "src_clean",  "src_unknown", "tail_ungated",  "tail_partial", "tail_lost"};
     if (!size) return 0;
     if (!frames) frames = 1;
     int n = snprintf(out, size, "perf-times: frames=%u (ms a frame/largest ms)", frames);
