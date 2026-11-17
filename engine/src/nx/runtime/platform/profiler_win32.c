@@ -199,8 +199,10 @@ static void record(int slot, u64 pc) {
     u64 key = f ? f->host : pc & ~(u64)15;
     g_stats[slot].kinds[kind]++;
     if (kind == PROF_WAIT) return;
-    if (kind == PROF_RUNTIME && prof_function_at(g_pdata, g_npdata, g_pdata_stride, (uint32_t)(pc - image), &begin))
-        key = image + begin; /* the function, not its 16 bytes */
+    if (kind == PROF_RUNTIME)
+        key = prof_function_at(g_pdata, g_npdata, g_pdata_stride, (uint32_t)(pc - image), &begin)
+                  ? image + begin  /* the function, not its 16 bytes */
+                  : pc & ~(u64)63; /* a leaf function has no .pdata entry: 64 bytes hold most of one */
     prof_count(&g_table, (uint16_t)slot, gen, key);
 }
 
