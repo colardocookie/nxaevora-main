@@ -4317,7 +4317,7 @@ static void drp_set(uint32_t activity) {
     if (activity != DRP_BATTLE) {
         drp_values.foe = drp_values.active = (SnxDrpMon){0};
         drp_values.kind = DRP_KIND_RECORD;
-        drp_values.trainer[0] = 0;
+        memset(drp_values.trainer, 0, sizeof drp_values.trainer);
     }
     snx_drp_write(&g_drp_state, &drp_values);
     pm_unlock(&drp_lock);
@@ -4804,7 +4804,7 @@ static void drp_text_set(CPU* c, u64 entry) {
         size_t count = 0;
         for (; count < 256 && readable(line + count * 2, 2); count++)
             if (!(units[count] = (u16)gr16(line + count * 2))) break;
-        char out[640], found[SNX_DRP_NAME];
+        char out[640], found[SNX_DRP_NAME] = {0};
         if (name && snx_drp_utf16_line(units, count < 96 ? count : 96, 0, out, sizeof out) &&
             snx_drp_sent_out(out, found, sizeof found)) {
             pm_lock(&drp_lock);
@@ -4847,7 +4847,7 @@ static void drp_battle_start(CPU* c, u64 entry) {
             drp_values.activity = DRP_BATTLE;
             drp_values.kind = DRP_KIND_PENDING;
             drp_values.foe = drp_values.active = (SnxDrpMon){0};
-            drp_values.trainer[0] = 0;
+            memset(drp_values.trainer, 0, sizeof drp_values.trainer);
             snx_drp_write(&g_drp_state, &drp_values);
         }
         pm_unlock(&drp_lock);

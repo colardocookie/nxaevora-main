@@ -179,7 +179,9 @@ static void test_trainer_name(void) {
     assert(!snx_drp_sent_out(out, name, sizeof name));
     snx_drp_utf16_line(challenge, 20, 1, out, sizeof out);
     assert(!strcmp(out, "The Corps\xe2\x80\x99 Bren!{tag:be01}"));
+    memset(name, 0x55, sizeof name);
     assert(snx_drp_sent_out("Bren sent out Wormadam!", name, sizeof name) && !strcmp(name, "Bren"));
+    for (size_t i = 4; i < sizeof name; i++) assert(!name[i]); /* nothing after the name but zeros */
     assert(snx_drp_sent_out("Mr. O'Neil-Smith sent out Mr. Mime!", name, sizeof name));
     assert(!strcmp(name, "Mr. O'Neil-Smith"));
     assert(snx_drp_sent_out("Lian\xe2\x80\x99s Pal sent out Nidoran\xe2\x99\x80!", name, sizeof name));

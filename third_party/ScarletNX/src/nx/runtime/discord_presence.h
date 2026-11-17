@@ -201,10 +201,10 @@ static inline size_t snx_drp_utf16_line(const uint16_t* units, size_t count, int
     }
     return n;
 }
-/* D5 (research 01:10): the trainer's name from the battle's line "<name> sent out <species>!", the whole line, with
-   <species> exactly one of our names and <name> 1 to 24 characters of ASCII letters, spaces, apostrophes (' and the
-   typographic one), hyphens and periods, starting with a letter, and not "You". 1 with the name in out. Any other
-   line, or a language where it does not read so, gives 0 and the status stays "Battling a trainer". */
+/* D5 (research 01:10): the trainer's name from the whole line "<name> sent out <species>!", <species> one of our
+   names, <name> 1 to 24 ASCII letters, spaces, apostrophes (' and the typographic one), hyphens or periods, from a
+   letter, not "You". 1 with the name in out, zeros to its end (it goes whole into the shared state). Any other line,
+   or another language, gives 0 and the status stays "Battling a trainer". */
 static inline int snx_drp_sent_out(const char* line, char* out, size_t size) {
     const char* sent = strstr(line, " sent out ");
     if (!sent) return 0;
@@ -230,8 +230,8 @@ static inline int snx_drp_sent_out(const char* line, char* out, size_t size) {
         else return 0;
     }
     if (characters > 24 || (name_bytes == 3 && !strncmp(line, "You", 3))) return 0;
+    memset(out, 0, size);
     memcpy(out, line, name_bytes);
-    out[name_bytes] = 0;
     return 1;
 }
 /* The noble fight shown now: its number with SNX_DRP_NOBLE_ON, or 0 once it ended or 15 min after its start (the
