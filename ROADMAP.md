@@ -141,10 +141,15 @@ started from a CLI, with one new in-game UI.
 
 Not in the plan: audio, memory and video. They stay as they are. Open them again only with a measured problem.
 
-## Phase 6: Graphics, NVN to Vulkan
+## Phase 6: Graphics, NVN to Vulkan (done, in maintenance)
 
-Now: the game calls its own NVN library, which writes a GPU command stream. ScarletNX decodes that stream (the methods
-and macros of the console GPU) and draws with Vulkan. The chain is: game, NVN library inside the game, GPU command
+The five stages are done and the native NVN path is the default. The user closed this phase on 2026-11-15. Fixes and
+maintenance continue: faults of the native path are tracked as issues (#43 and #47 at the close) and are fixed as they
+come. The old path that decodes the command stream stays only to compare results with the native path. It is not
+maintained.
+
+Before this phase, the game called its own NVN library, which wrote a GPU command stream. ScarletNX decoded that
+stream (the methods and macros of the console GPU) and drew with Vulkan. The chain is: game, NVN library inside the game, GPU command
 stream, interpretation by ScarletNX, Vulkan.
 
 Goal: game, NVN implementation on the host, Vulkan. The NVN calls of the game go to code on the PC that calls Vulkan
@@ -162,11 +167,12 @@ and a new path can add visual faults.
 
 Exit condition: the covered scenes draw the same as before with no command stream decode, at 30 frames each second.
 
-## Phase 7: Decrypted game files and a file layer for mods
+## Phase 7: Decrypted game files and a file layer for mods (done)
 
-Now: ScarletNX reads NSP and XCI files and decrypts them with the keys of the console, at the recompile and at each
-start of the game. The code is a copy of hactool in `third_party/ScarletNX/src/nx/runtime/driver/hactool/`. Code that
-decrypts the game can conflict with laws against the circumvention of copy protection, such as the DMCA.
+ScarletNX read NSP and XCI files and decrypted them with the keys of the console, at the recompile and at each start
+of the game. That code is removed. The input is now a decrypted game folder: the ExeFS of the update, one RomFS of the
+game with the update applied, and `control.nacp`. RomFS mods are laid over that folder in the name order of their
+folders.
 
 Goal: NXAevora reads only game files that are already decrypted. The user makes them from their own console: the
 ExeFS of the update and one RomFS of the game with the update applied. ScarletNX has no decryption code and needs no keys.

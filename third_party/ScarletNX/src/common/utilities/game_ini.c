@@ -114,6 +114,12 @@ int snx_record_source(const char* folder, const char* name, const char* dump) {
     free(ini);
     return rc;
 }
+int snx_record_romfs(const char* folder, const char* name, const char* romfs) {
+    char* ini = snx_game_ini(folder, name);
+    int rc = snx_ini_record(ini, "romfs", romfs);
+    free(ini);
+    return rc;
+}
 size_t snx_addons_parse(const char* text, const char* game, SnxAddon* list, size_t max) {
     char word[32];
     size_t count = 0, n, i, update = (size_t)-1;

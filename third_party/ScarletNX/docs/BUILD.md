@@ -386,8 +386,9 @@ Test options, read when `BUILD_TESTING` is on (CTest's default), all OFF by defa
 # Build without the GUI launcher; SDL3 remains required by the runtime:
 cmake --preset default -B build/headless-vk -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF &&
 cmake --build build/headless-vk
-# Run Vulkan without a display server, a surface or a swapchain:
-./build/headless-vk/scarletnx "Game.xci" -H
+# Recompile a game folder, then run Vulkan without a display server, a surface or a swapchain:
+./build/headless-vk/scarletnx -r "/path/to/game folder" --outdir recompiled
+./build/headless-vk/scarletnx --game=recompiled/<id> -H
 
 cmake --preset windows-cross && cmake --build --preset windows-cross
 # -> build/windows-cross/scarletnx.exe; requires llvm-mingw on PATH
@@ -411,7 +412,7 @@ The test uses synthetic pixels, not a game. It checks offscreen submissions, fra
 readback hashes and PPM contents without WSI. Validation requires the Khronos validation layer to be installed.
 `SNX_TEST_VULKAN` is off by default so ordinary unit tests do not require an ICD.
 
-A cross-built driver extracts too: hactool is part of it. The recompiler still requires LLVM development
+A cross-built driver works too. The recompiler still requires LLVM development
 files for the target. `SNX_LLVM_CONFIG` must run on the build machine and describe that target installation,
 not the build machine's LLVM libraries. Running the `snx-rtlib-gen` build helper also requires a suitable
 `CMAKE_CROSSCOMPILING_EMULATOR`.
@@ -431,7 +432,7 @@ build without LLVM. Modules are built for the machine that builds them, with its
 extensions (build == host == target); nothing is detected at run time. Whole functions are batched into units of 90000
 instructions (20000 on Android; `--chunk`), with a progress line per compiled unit.
 
-Extraction needs nothing beside the driver: hactool runs inside it. Recompilation deploys the
+Recompilation deploys the
 running full runtime; the tools-only build creates one in its checkout's `build/native-recomp`, or accepts
 `--runtime FILE`. A build tree's programs work in the same data folder as an installed copy's: the user's
 (`~/.local/share/scarletnx`, `%APPDATA%\scarletnx` on Windows), and on Linux the XDG config, state and cache folders

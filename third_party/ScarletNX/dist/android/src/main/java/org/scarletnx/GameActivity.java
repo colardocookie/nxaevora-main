@@ -11,13 +11,13 @@ import org.libsdl.app.SDLSurface;
 
 /** A game: the runtime's main in libscarletnx.so, with the menu's arguments */
 public class GameActivity extends SDLActivity {
-    /** HOME as the menu sets it (src/gui/android.c): a new process has none, and the keys are in its .switch/ */
+    /** HOME as the menu sets it (src/gui/android.c): a new process has none */
     @Override
     protected void onCreate(Bundle state) {
         try {
             Os.setenv("HOME", getFilesDir().getPath(), true);
         } catch (ErrnoException e) {
-            // the runtime then reads the keys from the data folder only
+            // HOME is left as it is then
         }
         super.onCreate(state);
     }

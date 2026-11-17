@@ -69,8 +69,7 @@ content is.
 An encrypted CIA, as a console dump is, is decrypted once with the user's own keys
 into a copy beside the title's folder (`<folder>.decrypted.cia`, published only
 complete), which is read from then on (`src/3ds/loader/decrypt.c`). The keys are an `aes_keys.txt` in Azahar's
-format, looked for in `~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows) as
-the Switch driver looks in `~/.switch`, or named with `--keys FILE`. They are
+format, looked for in `~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows), or named with `--keys FILE`. They are
 never part of ScarletNX. Both layers come off: each content's AES-CBC under the
 ticket's title key (itself under the common key), and the NCCH's AES-CTR under
 the primary key (slot 0x2C) and the secondary one its crypto method names (0x2C,

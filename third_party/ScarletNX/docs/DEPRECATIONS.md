@@ -38,6 +38,7 @@ renderer=opengl
 | `.ini` keys `idioma`, `sombras`, `perfil` (the settings' first, Spanish names) | #185 | `language`, `shadows`, `profile` | the same |
 | `.ini` keys `docked` (1 TV mode, 0 handheld) and `modo_tv` (its first, Spanish name) | NXAevora: TV mode always on | nothing: the runtime is always in TV mode | the same |
 | `.ini` keys `resolution` (a scale, 0.25 to 16) and `resolucion` (its first, Spanish name) | NXAevora: render resolution choices | `render_resolution`: 720p, 1080p, 1440p or 2160p | the same |
+| `.ini` key `nvn_native` (1 the native NVN path, 0 the game's NVN library) | NXAevora: the native NVN path by default | the native path always, unless `nvn_legacy=1` (the old path, a debug setting) | the same |
 | `.ini` key `gamepad_buttons` (A B X Y by position, by label or the map) | Swap A/B in place of the A B X Y presets | `gamepad_swap_ab`; `gamepad_map` always applies | the same |
 | `.ini` key `cpu_fallback` (the interpreter or the JIT for code the recompiler missed) | [recompiler] Replace the interpreter with the runtime JIT | nothing: the runtime JIT compiles that code | under `[Deprecated]`, named once a run |
 | `--keep-c` | Replace Python pipeline with a C90 driver | `--keep-ir` | still taken, said on stderr each time |
@@ -64,9 +65,10 @@ renderer=opengl
 Settings > App > Move Old Files in the launcher, or `scarletnx --migrate=yes`, moves the rest of these, an entry at a
 time, each to the folder its line names; `scarletnx --migrate` says first what would move ([USAGE](USAGE.md#folders)).
 
-To move a game an older version laid out beside the others: run it from its dump once, which makes `games/<id>/`;
-move its saves, `<Game>_data/save/` and `<Game>_data/sdmc/`, into `games/<id>/<id>_data/`, and its settings,
-`<Game>.ini`, to `<id>.ini` where the table in [USAGE](USAGE.md#folders) says; then delete the older files. The
+To move a game an older version laid out beside the others: recompile it once from its decrypted game folder with `-r`,
+which makes `recompiled/<id>/`; move its saves, `<Game>_data/save/` and `<Game>_data/sdmc/`, into
+`recompiled/<id>/<id>_data/`, and its settings, `<Game>.ini`, to `<id>.ini` where the table in [USAGE](USAGE.md#folders) says;
+then delete the older files. The
 menu's files, and a checkout's `work/`, keys and `linux/`, move as they are, each to the folder the line names (on
 Android the menu's files are out of reach: the line says how they go). A checkout's
 `games/` does too, then each game's `<id>.ini` to where the table says (the game's run names it).

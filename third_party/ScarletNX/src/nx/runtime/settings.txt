@@ -34,8 +34,8 @@
 #     label TEXT          the menus' name when it is not NAME (the game's menu shows a page's settings by it)
 #     startup             read when the game starts only
 #     in-game             the game's own (its menu's, or the driver's): the launcher's Settings leave it out
-#     recompile           a game's setting the recompile takes too, as -r's --KEY=VALUE and from a played dump's
-#                         options: its row also in g_recompile_game_ini, which the driver links (one value, no set)
+#     recompile           a game's setting the recompile takes too, as -r's --KEY=VALUE and from the .ini of a game
+#                         made already: its row also in g_recompile_game_ini, which the driver links (one value, no set)
 #     set FUNCTION        called after each read (ini.h's set), declared by settings.h
 #     each LIST           one setting for each instance of LIST, in its order: the member an array
 #     help TEXT           its help, a line each
@@ -59,9 +59,16 @@ setting Game dump
     once
     startup
     in-game
-    help The dump the game was made from, which the recompile writes here. Without Extract dump the game
-    help reads its ExeFS and RomFS from it, and Extract to tmpfs extracts it again when tmpfs was emptied. Empty or
-    help left out: the link <name>.source in the game's folder, which older versions made
+    help The dump an older build's game was made from. This build logs it, and a data folder without exefs/ stops:
+    help recompile the game from its decrypted folder with -r.
+setting Game romfs
+    key romfs
+    text 2048
+    once
+    startup
+    in-game
+    help The folder of the game's RomFS, which the recompile of a game folder writes here. The game reads its RomFS
+    help from it with no copy. Empty or left out: the RomFS in the data folder.
 setting Game addons
     key addons
     text 2048
@@ -745,17 +752,34 @@ setting NVN trace
     startup
     words Off|On
     help 1 = logs each NVN function the game resolves, the GPFIFO submissions during each queue call, and at exit
-    help the calls of every function used (gpu/nvn_trace.c). Calls by direct branch are counted only in a game
+    help the calls of every function used (gpu/nvn/diag/nvn_trace.c). Calls by direct branch are counted only in a game
     help recompiled with --hook-direct-calls. The game runs slower
-setting NVN native
-    key nvn_native
+setting NVN legacy
+    key nvn_legacy
     int 0 1
     default 0
     startup
     words Off|On
-    help 1 = the host answers the NVN functions of the game (gpu/nvn_native.c) and the game's NVN library is not run. A
-    help function the host does not have yet stops the game (nvn_native_missing). 0 = the library runs as always.
-    help Phase 6 of NXAevora, under construction: with 1 the game draws, but some objects such as characters are missing
+    help 1 = the game's own NVN library runs (the old path), as before phase 6 of NXAevora. A comparison target for the
+    help diagnosis of the native path. 0 = the host answers the NVN functions of the game (gpu/nvn/nvn_native.c) and the
+    help library is not run. A function the host does not have stops the game (nvn_native_missing)
+setting NVN draw record
+    key nvn_drawrec
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = the runtime records the draw, clear, dispatch, copy and present calls of the renderer (gpu/nvn/diag/draw_record.c)
+    help and writes per frame counts and a signature table to <game>.drawrec<N>.frames.txt and
+    help <game>.drawrec<N>.sigs.txt, N being 1 for the native path and 0 for nvn_legacy=1. 0 = no record
+setting NVN measure
+    key nvn_measure
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = logs the CPU time of the guest and GPU sides of both NVN paths each 600 presents (gpu/nvn/diag/nvn_measure.c),
+    help with the frame time median, 99th percentile, maximum and the draw counts. 0 = no measure and no clock read
 setting NVN native missing
     key nvn_native_missing
     int 0 1
@@ -764,7 +788,7 @@ setting NVN native missing
     words Log|Stop
     help 1 = a call of an NVN function that the host does not have, or a lookup of a name that the NVN library does not
     help have, stops the game with the function name. 0 = it returns 0 and is logged (each missing function at its first
-    help call, the first 16 missing names). Only with nvn_native=1
+    help call, the first 16 missing names). Only on the native path (nvn_legacy=0)
 setting NVN selftest
     key nvn_selftest
     int 0 1
@@ -772,8 +796,8 @@ setting NVN selftest
     startup
     words Off|On
     help 1 = at the first nvnQueueInitialize, the same scripted calls go to the game's NVN library and to the host
-    help handlers, and the results are compared (gpu/nvn_selftest.c). The result is in the log. It needs nvn_trace=1
-    help and nvn_native=0. A diagnostic: it draws nothing and writes no object of the game
+    help handlers, and the results are compared (gpu/nvn/test/nvn_selftest.c). The result is in the log. It needs nvn_trace=1
+    help and nvn_legacy=1. A diagnostic: it draws nothing and writes no object of the game
 setting NVN selftest mutation
     key nvn_selftest_mutate
     text 64
@@ -782,7 +806,7 @@ setting NVN selftest mutation
     help The name of one NVN function whose host call gets a changed argument in the selftest command buffer cases, or
     help one execution test case (exec_fence_order, exec_gpu_to_cpu, exec_cpu_to_gpu, exec_timeout, exec_event_report,
     help exec_two_queues, exec_cb_fence_flush, exec_queue_reinit). A test of the comparison. Empty: none
-    help (gpu/nvn_selftest_cmd.c, gpu/nvn_exectest.c)
+    help (gpu/nvn/test/nvn_selftest_cmd.c, gpu/nvn/test/nvn_exectest.c)
 setting NVN exectest
     key nvn_exectest
     int 0 1
@@ -790,8 +814,8 @@ setting NVN exectest
     startup
     words Off|On
     help 1 = at the first nvnQueueInitialize, the execution test runs real work through the host handlers on its own
-    help queues and checks the result in memory (gpu/nvn_exectest.c). The result is in the log. It needs nvn_trace=1 and
-    help nvn_native=1. A diagnostic: it draws nothing and writes no object of the game
+    help queues and checks the result in memory (gpu/nvn/test/nvn_exectest.c). The result is in the log. It needs nvn_trace=1 and
+    help nvn_legacy=0. A diagnostic: it draws nothing and writes no object of the game
 setting Shader corpus
     key shader_corpus
     text 1024
@@ -1136,20 +1160,6 @@ setting gdbstub
     default off
     words on=On
     help Enables gdbstub on port 1234
-setting Extract to tmpfs
-    key tmpfs
-    text 4
-    default off
-    words on=On
-    help Extract to tmpfs, in memory (the temporary folder's scarletnx/work/<title ID>), which the game reads its RomFS
-    help from
-setting Extract game container
-    label Extract dump
-    key extract
-    text 4
-    default off
-    words on=On
-    help Extract a dump's ExeFS and RomFS into its game's folder. Off, the game reads them from the dump
 # SNX_TRACY_BEGIN
 setting Tracy capture
     key tracy_capture

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The setup a first start goes through, in the launcher (gui/main.c) and in a terminal (the driver's setup.c): what
-   older versions did that this one does otherwise (the notices), then the language, the install, the folders, the keys
+   older versions did that this one does otherwise (the notices), then the language, the install, the folders
    and the first user. setup.ini in the config folder says how far it went: the version of the steps it asked and the
    notices it showed. A step a newer version adds raises SNX_SETUP_VERSION and is asked alone where setup.ini is of an
    older one; a notice goes last in snx_notices and is shown alone the next start. --no-setup leaves it out of a run,
@@ -12,7 +12,7 @@
 #include <stdint.h>
 
 #define SNX_SETUP_VERSION 1
-enum { SNX_SETUP_LANGUAGE, SNX_SETUP_INSTALL, SNX_SETUP_FOLDERS, SNX_SETUP_KEYS, SNX_SETUP_USER, SNX_SETUP_STEPS };
+enum { SNX_SETUP_LANGUAGE, SNX_SETUP_INSTALL, SNX_SETUP_FOLDERS, SNX_SETUP_USER, SNX_SETUP_STEPS };
 extern const int snx_setup_since[SNX_SETUP_STEPS]; /* the version each step came in */
 /* what an older version did that this one does otherwise, on the systems it says: what, where it was, where it is now,
    and words of its row in docs/DEPRECATIONS.md's table, which lists it in full. The first three in English, those with
@@ -58,27 +58,6 @@ int snx_setup_first_saves(const char* games);
 /* the uid of a new users.ini's first user: the fixed one while games has saves of it, else snx_setup_uid's. How many
    games have them, else -1 when the generator failed */
 int snx_setup_first_uid(const char* games, uint64_t uid[2]);
-
-/* 1 for text as a prod.keys or a title.keys has it: no NUL byte, and a line "name = hex" at least */
-int snx_keys_text(const char* data, size_t size);
-/* name (prod.keys, title.keys) where the driver reads it: in the data folder data, else in ~/.switch (%USERPROFILE% on
-   Windows); NULL for neither */
-char* snx_keys_found(const char* data, const char* name);
-/* key paths explicitly supplied to the current driver's run, visible to the setup's key check */
-typedef struct {
-    const char* prod;
-    const char* title;
-} SnxSetupKeysOverride;
-SnxSetupKeysOverride snx_setup_keys_override_get(void);
-void snx_setup_keys_override_set(const char* prod, const char* title);
-/* the folder the keys are installed in: data when it is the user's data folder on an XDG system, which the driver
-   reads first, so nothing is written in the home folder itself; else ~/.switch. NULL with no home */
-char* snx_keys_dir(const char* data);
-/* data written at path, readable by its owner alone where the system says so, through a file beside it first: a failed
-   copy leaves the keys there. 0, else nonzero with the system's reason in why */
-int snx_keys_put(const char* path, const void* data, size_t size, char* why, size_t why_size);
-/* folder's prod.keys installed in dir, and its title.keys when it has one (*titles says so): 0, else -1 with why */
-int snx_keys_install(const char* folder, const char* dir, int* titles, char* why, size_t why_size);
 
 /* path as the setup shows it: ~/ for the home folder at its start (not on Windows) */
 void snx_home_short(const char* path, char* out, size_t size);

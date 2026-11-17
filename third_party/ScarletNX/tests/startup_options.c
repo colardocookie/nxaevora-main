@@ -51,11 +51,11 @@ int main(void) {
 #endif
     }
     {
-        /* the driver's switches: a game's runtime refuses them */
-        char *extract[] = {"game", "-x"}, *recomp[] = {"game", "-r"}, *extract_long[] = {"game", "--extract"};
+        /* the driver's switch, and -x, which is no option any more: a game's runtime refuses them */
+        char *extract[] = {"game", "-x"}, *recomp[] = {"game", "-r"};
         char *recomp_long[] = {"game", "--recomp"}, *after[] = {"game", "--", "-x"};
-        if (check(2, extract, 2, 0) || check(2, recomp, 2, 0) || check(2, extract_long, 2, 0) ||
-            check(2, recomp_long, 2, 0) || check(3, after, 0, 0))
+        if (check(2, extract, 2, 0) || check(2, recomp, 2, 0) || check(2, recomp_long, 2, 0) ||
+            check(3, after, 0, 0))
             return 1;
 #ifndef _WIN32
         {

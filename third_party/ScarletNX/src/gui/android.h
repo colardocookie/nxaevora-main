@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <SDL3/SDL_dialog.h>
 
-/* The app's own files as HOME, for the keys (.switch/), and the working folder until the data folder is gone into */
+/* The app's own files as HOME, and the working folder until the data folder is gone into */
 void gui_android_start(void);
 /* Changes to the data folder, made with its games/: a .scarletnx/ (SNX_PORTABLE_DIR) in the app's own files, which
    every process of the app divides by kind (snx_app_dir); NULL when it cannot be. The user sees it through the Files

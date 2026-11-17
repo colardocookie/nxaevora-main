@@ -4,20 +4,15 @@
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/users.h"
-#include "common/utilities/ascii.h"
 #include "common/utilities/endian.h"
 #include <openssl/rand.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef _WIN32
-#include <sys/stat.h>
-#endif
 
-#define SETUP_FILE     "setup.ini"
-#define SETUP_KEYS_MAX (1 << 20) /* a prod.keys is a few kilobytes, a title.keys some more: past this it is not one */
+#define SETUP_FILE "setup.ini"
 
-const int snx_setup_since[SNX_SETUP_STEPS] = {1, 1, 1, 1, 1};
+const int snx_setup_since[SNX_SETUP_STEPS] = {1, 1, 1, 1};
 const SnxNotice snx_notices[SNX_NOTICES] = {
     {SNX_TR_NOOP("Game settings"), SNX_TR_NOOP("removed or renamed keys in a game's .ini"),
      SNX_TR_NOOP("under [Deprecated]: Clean Old Settings takes them"), "`.ini` key", SNX_NOTICE_ALL},
@@ -151,17 +146,6 @@ int snx_setup_due(const SnxSetup* setup) {
 }
 
 int snx_setup_skip, snx_setup_again;
-static struct {
-    const char *prod_keys_override, *title_keys_override;
-} g_setup;
-SnxSetupKeysOverride snx_setup_keys_override_get(void) {
-    SnxSetupKeysOverride current = {g_setup.prod_keys_override, g_setup.title_keys_override};
-    return current;
-}
-void snx_setup_keys_override_set(const char* prod, const char* title) {
-    g_setup.prod_keys_override = prod;
-    g_setup.title_keys_override = title;
-}
 int snx_setup_options(int argc, char** argv, char* why, size_t why_size) {
     int n = 1, skips = 0, debug = 0;
     snx_setup_skip = snx_setup_again = 0;
@@ -232,128 +216,6 @@ int snx_setup_first_uid(const char* games, uint64_t uid[2]) {
         return saves;
     }
     return snx_setup_uid(uid);
-}
-
-int snx_keys_text(const char* data, size_t size) {
-    size_t at = 0;
-    int keys = 0;
-    if (!data || memchr(data, 0, size)) return 0;
-    while (at < size) {
-        const char *line = data + at, *end = (const char*)memchr(line, '\n', size - at);
-        size_t n = end ? (size_t)(end - line) : size - at, i = 0, name, hex = 0;
-        while (i < n && (line[i] == ' ' || line[i] == '\t')) ++i;
-        for (name = i; i < n && (snx_is_alnum(line[i]) || line[i] == '_'); ++i) {}
-        name = i - name;
-        while (i < n && (line[i] == ' ' || line[i] == '\t')) ++i;
-        if (name && i < n && line[i] == '=') {
-            for (++i; i < n && (line[i] == ' ' || line[i] == '\t'); ++i) {}
-            for (; i < n && snx_is_hex(line[i]); ++i) ++hex;
-            while (i < n && snx_is_space(line[i])) ++i;
-            keys += hex >= 2 && i == n;
-        }
-        at += n + 1;
-    }
-    return keys > 0;
-}
-/* ~/.switch (%USERPROFILE%\.switch on Windows), where hactool and other tools keep the keys; NULL with no home */
-static char* keys_home(void) {
-#ifdef _WIN32
-    const char* home = getenv("USERPROFILE");
-    if (!home || !home[0]) home = getenv("HOME");
-#else
-    const char* home = getenv("HOME");
-#endif
-    return home && home[0] ? snx_path_join(home, ".switch") : NULL;
-}
-char* snx_keys_found(const char* data, const char* name) {
-    const char* override;
-    char* home;
-    if (!strcmp(name, "prod.keys"))
-        override = g_setup.prod_keys_override;
-    else if (!strcmp(name, "title.keys"))
-        override = g_setup.title_keys_override;
-    else
-        override = NULL;
-    if (override) return snx_is_file(override) ? snx_strdup(override) : NULL;
-    char* path = data ? snx_path_join(data, name) : NULL;
-#ifdef SNX_IOS
-    free(path); /* the data folder keeps them in keys/ */
-    path = data ? snx_path_join(data, "keys") : NULL;
-    if (path) {
-        char* file = snx_path_join(path, name);
-        free(path);
-        path = file;
-    }
-#endif
-    if (path && snx_is_file(path)) return path;
-    free(path);
-    home = keys_home();
-    path = home ? snx_path_join(home, name) : NULL;
-    free(home);
-    if (path && snx_is_file(path)) return path;
-    free(path);
-    return NULL;
-}
-char* snx_keys_dir(const char* data) {
-#ifdef SNX_XDG
-    char* user = snx_user_data_dir();
-    int own = user && data && !strcmp(user, data);
-    free(user);
-    if (own) return snx_strdup(data);
-#elif defined(SNX_IOS)
-    /* HOME is the app's container root, which it cannot write to: the keys go in the data folder's keys/ */
-    if (data) return snx_path_join(data, "keys");
-#else
-    (void)data;
-#endif
-    return keys_home();
-}
-int snx_keys_put(const char* path, const void* data, size_t size, char* why, size_t why_size) {
-    char *dir = snx_dirname(path), *temporary = dir && !snx_mkdirs(dir) ? snx_temp_dir(dir) : NULL;
-    char* staged = temporary ? snx_path_join(temporary, "keys") : NULL;
-    int failed = !staged || snx_write_file(staged, data, size);
-#ifndef _WIN32
-    if (!failed) failed = chmod(staged, 0600) != 0;
-#endif
-    if (!failed) failed = snx_replace(staged, path);
-    if (failed) snx_os_error(why, why_size); /* before the cleanup's calls set another */
-    if (temporary) snx_remove_tree(temporary);
-    free(staged);
-    free(temporary);
-    free(dir);
-    return failed;
-}
-/* folder's name, a keys file, into dir: 0, 1 when folder has none, else -1 with why */
-static int keys_copy(const char* folder, const char* dir, const char* name, char* why, size_t why_size) {
-    char *from = snx_path_join(folder, name), *to = snx_path_join(dir, name), *data = NULL, reason[256];
-    size_t size = 0;
-    int rc = -1;
-    if (!snx_is_file(from)) {
-        rc = 1;
-        goto done;
-    }
-    if (snx_file_size(from) > SETUP_KEYS_MAX || !(data = (char*)snx_read_file(from, &size)))
-        snprintf(why, why_size, "%s could not be read as keys", from);
-    else if (!snx_keys_text(data, size))
-        snprintf(why, why_size, "%s is not a %s: no line name = hex", from, name);
-    else if (snx_keys_put(to, data, size, reason, sizeof reason))
-        snprintf(why, why_size, "%s could not be written: %s", to, reason);
-    else
-        rc = 0;
-done:
-    free(data);
-    free(to);
-    free(from);
-    return rc;
-}
-int snx_keys_install(const char* folder, const char* dir, int* titles, char* why, size_t why_size) {
-    int rc = keys_copy(folder, dir, "prod.keys", why, why_size);
-    *titles = 0;
-    if (rc > 0) snprintf(why, why_size, "%s has no prod.keys", folder);
-    if (rc) return -1;
-    rc = keys_copy(folder, dir, "title.keys", why, why_size);
-    *titles = !rc;
-    return rc < 0 ? -1 : 0;
 }
 
 void snx_home_short(const char* path, char* out, size_t size) {

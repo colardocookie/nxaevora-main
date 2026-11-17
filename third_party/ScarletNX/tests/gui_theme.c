@@ -32,7 +32,6 @@ static const char* const format_keys[] = {"theme/format",
                                           "head/picture",
                                           "head/menu",
                                           "head/games",
-                                          "head/keys",
                                           "head/compiling",
                                           "head/loading",
                                           "body/marker",
@@ -226,7 +225,7 @@ int main(void) {
     for (b = def; b; b = b == def ? loading : NULL) {
         const GuiPrompt* p = &b->prompt;
         assert(p->align == GUI_ALIGN_CENTER && !strcmp(p->open, "[ ") && !strcmp(p->close, " ]") && p->blink);
-        assert(p->lines[GUI_PROMPT_KEYS] && !p->lines[GUI_PROMPT_DONE] && !p->lines[GUI_PROMPT_FAILED] &&
+        assert(p->lines[GUI_PROMPT_PICK] && !p->lines[GUI_PROMPT_DONE] && !p->lines[GUI_PROMPT_FAILED] &&
                !p->lines[GUI_PROMPT_ABORTING]);
     }
     assert(!strcmp(loading->title[GUI_SCREEN_LOADING], "BOOTING"));
@@ -329,10 +328,10 @@ int main(void) {
                   "aborting = true\nkeys = maybe\ndone = false\nnowhere = true\n");
     assert(theme.prompt.align == GUI_ALIGN_RIGHT && !strcmp(theme.prompt.open, "<< ") && !theme.prompt.close[0]);
     assert(!theme.prompt.blink && theme.prompt.lines[GUI_PROMPT_FAILED] && theme.prompt.lines[GUI_PROMPT_ABORTING]);
-    assert(theme.prompt.lines[GUI_PROMPT_KEYS] && !theme.prompt.lines[GUI_PROMPT_DONE]);
+    assert(theme.prompt.lines[GUI_PROMPT_PICK] && !theme.prompt.lines[GUI_PROMPT_DONE]);
     parse(&theme, "[prompt]\nalign = middle\nopen = \"[[[[[[[[[[[[[[[[[[[[\"\nkeys = false\n");
     assert(theme.prompt.align == GUI_ALIGN_CENTER && !strcmp(theme.prompt.open, "[ ") &&
-           !theme.prompt.lines[GUI_PROMPT_KEYS]);
+           !theme.prompt.lines[GUI_PROMPT_PICK]);
     parse(&theme, "[prompt]\nalign = left\n");
     assert(theme.prompt.align == GUI_ALIGN_LEFT);
 
