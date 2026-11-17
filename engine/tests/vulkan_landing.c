@@ -160,10 +160,72 @@ static void test_words(void) {
     }
 }
 
+/* every selection of one word (res differs where rm says, the guest holds org where cm says) at each of the eight
+   alignments, and tails up to 17 bytes, in exact allocations so that ASan sees a read past the end (reviewer 11:13) */
+typedef struct {
+    uint8_t* dst;
+    const uint8_t* res;
+    uint32_t size, seen;
+    int bad;
+} Masks;
+static void mask_put(void* ctx, uint32_t from, uint32_t n) {
+    Masks* m = ctx;
+    if (!n || from + n > m->size) {
+        m->bad = 1;
+        return;
+    }
+    for (uint32_t i = from; i < from + n; i++) {
+        if (m->seen >> i & 1) m->bad = 1; /* a byte put twice */
+        m->seen |= 1u << i;
+    }
+    memcpy(m->dst + from, m->res + from, n);
+}
+static void test_masks(void) {
+    for (unsigned off = 0; off < 8; off++)
+        for (unsigned rm = 0; rm < 256; rm++)
+            for (unsigned cm = 0; cm < 256; cm++) {
+                uint8_t *a = malloc(off + 8), *b = malloc(off + 8), *d = malloc(off + 8);
+                uint8_t *o = a + off, *r = b + off, *cur = d + off;
+                for (unsigned i = 0; i < 8; i++) {
+                    o[i] = 0x55;
+                    r[i] = (uint8_t)(o[i] ^ (rm >> i & 1 ? (i & 1 ? 0x80 : 1) : 0));
+                    cur[i] = (uint8_t)(o[i] ^ (cm >> i & 1 ? 0 : 0x40));
+                }
+                Masks m = {cur, r, 8, 0, 0};
+                const uint64_t n = landing_runs(r, o, cur, 8, mask_put, &m);
+                const unsigned want = rm & cm;
+                CHECK(!m.bad && m.seen == want && n == (uint64_t)__builtin_popcount(want));
+                for (unsigned i = 0; i < 8; i++)
+                    CHECK(cur[i] == (want >> i & 1 ? r[i] : (uint8_t)(o[i] ^ (cm >> i & 1 ? 0 : 0x40))));
+                free(a);
+                free(b);
+                free(d);
+            }
+    for (unsigned off = 0; off < 8; off++)
+        for (unsigned size = 0; size < 18; size++) {
+            const unsigned bytes = off + size ? off + size : 1;
+            uint8_t *a = malloc(bytes), *b = malloc(bytes), *d = malloc(bytes);
+            unsigned want = 0;
+            for (unsigned i = 0; i < size; i++) {
+                a[off + i] = 0x55;
+                b[off + i] = 0xd5;
+                d[off + i] = i % 3 ? 0x55 : 0x15;
+                if (i % 3) want |= 1u << i;
+            }
+            Masks m = {d + off, b + off, size, 0, 0};
+            const uint64_t n = landing_runs(b + off, a + off, d + off, size, mask_put, &m);
+            CHECK(!m.bad && m.seen == want && n == (uint64_t)__builtin_popcount(want));
+            free(a);
+            free(b);
+            free(d);
+        }
+}
+
 int main(void) {
     test_words();
     test_edges();
     test_random();
+    test_masks();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;
