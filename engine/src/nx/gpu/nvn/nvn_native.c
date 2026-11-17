@@ -6597,7 +6597,7 @@ typedef struct {
     GpuChannel* channel; /* the private channel of the queue, used on the GPU thread only */
     uint32_t* init_words; /* the queue's macro code, copied so that it outlives the record */
     uint32_t init_word_count;
-    uint64_t post_ns; /* SNX_ARCEUS_PERF_TIMES: when the job was posted, 0 with it off */
+    uint32_t post_ns; /* SNX_ARCEUS_PERF_TIMES: the low 32 bits of its post time, in the tail padding */
 } FrameJob;
 /* What a post takes from the caller; a flush leaves the window fields zero. */
 typedef struct {
@@ -6859,16 +6859,19 @@ static void frame_replay_init(const FrameJob* job) {
 /* SNX_ARCEUS_PERF_TIMES: the post and the end of the last present job, for the cycle (perf_times.h) */
 static u64 perf_last_post, perf_last_end;
 /* A present's post: the period from the last one, and the time from the last present job's end, or an overlap when
-   that job has not ended. Caller holds objs_lock, so posts come one at a time */
-static void perf_present_posted(u64 now) {
+   that job has not ended. The clock is read after the end, so an end published meanwhile counts as an overlap and
+   never comes after now. Caller holds objs_lock, so posts come one at a time. The post time */
+static u64 perf_present_posted(void) {
     const u64 last_post = __atomic_load_n(&perf_last_post, __ATOMIC_RELAXED);
     const u64 last_end = __atomic_load_n(&perf_last_end, __ATOMIC_ACQUIRE);
+    const u64 now = plat_ns();
     if (last_post) perf_time_add(&g_perf, PT_PERIOD, now - last_post);
     if (last_post && last_end < last_post)
         __atomic_fetch_add(&g_perf.overlaps, 1, __ATOMIC_RELAXED);
     else if (last_end)
         perf_time_add(&g_perf, PT_END_POST, now - last_end);
     __atomic_store_n(&perf_last_post, now, __ATOMIC_RELAXED);
+    return now;
 }
 static void perf_line(void) {
     static uint32_t presents; /* GPU thread only */
@@ -6884,8 +6887,8 @@ static void frame_run(void* arg) {
     const int flush = job->kind == NVN_FRAME_FLUSH;
     const int measure = g_settings.nvn_measure;
     u64 measure_t0 = measure ? plat_ns() : 0;
-    const u64 perf_start = job->post_ns ? plat_ns() : 0;
-    if (perf_start) perf_time_add(&g_perf, PT_POST_START, perf_start - job->post_ns);
+    const u64 perf_start = g_perf_times ? plat_ns() : 0;
+    if (perf_start) perf_time_add(&g_perf, PT_POST_START, (uint32_t)((uint32_t)perf_start - job->post_ns));
     frame_begin();
     FrameParts parts = {0};
     if (!flush) {
@@ -6946,10 +6949,8 @@ static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget
     job->index = target->index;
     job->window_origin_flip = target->kind == NVN_FRAME_PRESENT ? target->window_origin_flip : queue_origin_flip(q);
     job->channel = q->channel;
-    if (g_perf_times) {
-        job->post_ns = plat_ns();
-        if (target->kind == NVN_FRAME_PRESENT) perf_present_posted(job->post_ns);
-    }
+    if (g_perf_times) /* a 32-bit stamp: the post to start interval is far below its 4 s wrap */
+        job->post_ns = (uint32_t)(target->kind == NVN_FRAME_PRESENT ? perf_present_posted() : plat_ns());
     if (!q->init_replayed) {
         if (q->init_word_count) {
             job->init_words = malloc((size_t)q->init_word_count * sizeof *job->init_words);
