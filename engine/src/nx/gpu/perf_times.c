@@ -134,15 +134,16 @@ enum { SUB_SEEN = 1, SUB_LAST5 = 2 };
 void perf_sub_queued(PerfTimes* p, uint64_t v, int site, uint64_t now) {
     PerfSub* s = &p->sub[v % PERF_SUBS];
     if (site < 0 || site >= (int)SW_SITES) site = SW_OTHER;
-    if (LOAD(s->v) && LOAD(s->v) > LOAD(p->sub_seen)) p->sub_lost++; /* its completion was never seen */
+    if (LOAD(s->v) && LOAD(s->v) > LOAD(p->sub_seen))
+        __atomic_fetch_add(&p->sub_lost, 1, __ATOMIC_RELAXED); /* its completion was never seen */
     __atomic_store_n(&s->v, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&s->state, site << 2, __ATOMIC_RELAXED); /* the site, for frame_end, under the flag bits */
     __atomic_store_n(&s->handed, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&s->seen, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&s->queued, now, __ATOMIC_RELAXED);
     __atomic_store_n(&s->v, v, __ATOMIC_RELEASE);
-    p->sub_site[site][0]++;
-    p->sub_last = v;
+    __atomic_fetch_add(&p->sub_site[site][0], 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&p->sub_last, v, __ATOMIC_RELEASE);
 }
 void perf_sub_handed(PerfTimes* p, uint64_t v, uint64_t now) {
     PerfSub* s = &p->sub[v % PERF_SUBS];
@@ -153,7 +154,10 @@ static void sub_done(PerfTimes* p, PerfSub* s, uint64_t v, uint64_t now) {
     if (LOAD(s->v) != v) return;
     const uint64_t handed = LOAD(s->handed);
     const uint64_t d = handed && now > handed ? now - handed : 0;
-    if (handed) perf_time_add(p, PT_SUB_DONE, d);
+    if (handed)
+        perf_time_add(p, PT_SUB_DONE, d);
+    else /* the recorder's time not published yet: no sample (reviewer N1) */
+        __atomic_fetch_add(&p->sub_unhanded, 1, __ATOMIC_RELAXED);
     __atomic_store_n(&s->seen, now, __ATOMIC_RELAXED); /* published by the fetch_or below */
     const int old = __atomic_fetch_or(&s->state, SUB_SEEN, __ATOMIC_ACQ_REL);
     if (handed && old & SUB_LAST5) perf_time_add(p, PT_SUB_LAST5, d);
@@ -169,13 +173,14 @@ void perf_sub_seen(PerfTimes* p, uint64_t value, uint64_t now) {
 }
 void perf_sub_frame_end(PerfTimes* p, uint64_t now) {
     unsigned marked = 0;
-    for (uint64_t v = p->sub_last, n = 0; v && n < PERF_SUBS; v--, n++) {
+    for (uint64_t v = LOAD(p->sub_last), n = 0; v && n < PERF_SUBS; v--, n++) {
         PerfSub* s = &p->sub[v % PERF_SUBS];
         const uint64_t queued = LOAD(s->queued);
         if (LOAD(s->v) != v || queued <= p->sub_end) break; /* the frame before */
         const int site = LOAD(s->state) >> 2;
         for (unsigned k = 0; k < PERF_SUB_LEADS; k++)
-            if (now - queued <= (1000000ull << k)) p->sub_site[site][1 + k]++;
+            if (now - queued <= (1000000ull << k))
+                __atomic_fetch_add(&p->sub_site[site][1 + k], 1, __ATOMIC_RELAXED);
         if (marked < 5) {
             marked++;
             const int old = __atomic_fetch_or(&s->state, SUB_LAST5, __ATOMIC_ACQ_REL);
@@ -243,19 +248,21 @@ size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size) {
         if (n > 0) at += (size_t)n;
     }
     /* a window's submissions by site, a frame's mean: all, then those in the last 1, 2 and 4 ms before frame_end */
-    for (int i = 0; i < (int)SW_SITES && at < size; i++) {
-        uint64_t* c = p->sub_site[i];
-        if (c[0]) {
-            n = snprintf(out + at, size - at, " sub_%s=%.1f/%.1f/%.1f/%.1f", sites[i], (double)c[0] / frames,
-                         (double)c[1] / frames, (double)c[2] / frames, (double)c[3] / frames);
-            if (n > 0) at += (size_t)n;
-        }
-        memset(c, 0, sizeof p->sub_site[i]);
-    }
-    if (at < size) {
-        n = snprintf(out + at, size - at, " sub_lost=%llu", (unsigned long long)p->sub_lost);
+    for (int i = 0; i < (int)SW_SITES; i++) {
+        uint64_t c[1 + PERF_SUB_LEADS];
+        for (unsigned k = 0; k <= PERF_SUB_LEADS; k++)
+            c[k] = __atomic_exchange_n(&p->sub_site[i][k], 0, __ATOMIC_RELAXED);
+        if (!c[0] || at >= size) continue;
+        n = snprintf(out + at, size - at, " sub_%s=%.1f/%.1f/%.1f/%.1f", sites[i], (double)c[0] / frames,
+                     (double)c[1] / frames, (double)c[2] / frames, (double)c[3] / frames);
         if (n > 0) at += (size_t)n;
-        p->sub_lost = 0;
+    }
+    const uint64_t sub_lost = __atomic_exchange_n(&p->sub_lost, 0, __ATOMIC_RELAXED);
+    const uint64_t sub_unhanded = __atomic_exchange_n(&p->sub_unhanded, 0, __ATOMIC_RELAXED);
+    if (at < size) {
+        n = snprintf(out + at, size - at, " sub_lost=%llu sub_unhanded=%llu", (unsigned long long)sub_lost,
+                     (unsigned long long)sub_unhanded);
+        if (n > 0) at += (size_t)n;
     }
     const uint64_t overlaps = __atomic_exchange_n(&p->overlaps, 0, __ATOMIC_RELAXED);
     const uint64_t lost = __atomic_exchange_n(&p->named_lost, 0, __ATOMIC_RELAXED);

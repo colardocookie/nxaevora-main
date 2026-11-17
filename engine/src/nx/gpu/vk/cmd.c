@@ -453,8 +453,7 @@ u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, VmaAllocation* mem) {
 /* the frame's commands submitted, waiting for xw and signaling xs besides the graphics timeline (one each at most) */
 static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land) {
     SNX_ZONE(z_submit, "vk submit");
-    const int why = g_perf_submit_why; /* SNX_ARCEUS_PERF_TIMES: the caller's site, used once */
-    g_perf_submit_why = SW_OTHER;
+    const int why = __atomic_exchange_n(&g_perf_submit_why, SW_OTHER, __ATOMIC_RELAXED); /* PERF_TIMES: the site */
     vk_render_end();
     Frame* f = &g_fr[g_cur];
     VkCommandBuffer cb = vk_cmd(); /* a submit with nothing recorded still has to wait and signal */
@@ -513,7 +512,10 @@ void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore s
    open command buffer: starting/recycling a frame or landing completed results
    here could acquire those same ranges and wait for this thread itself. */
 void vk_submit_for_readback(void) {
-    if (g_fr[g_cur].recording) submit(NULL, NULL, 0);
+    if (g_fr[g_cur].recording)
+        submit(NULL, NULL, 0);
+    else
+        __atomic_store_n(&g_perf_submit_why, SW_OTHER, __ATOMIC_RELAXED); /* no submission: no site left over */
     vk_rec_sync(); /* the immediate copy must follow the recorder's queue calls */
 }
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
@@ -537,8 +539,10 @@ void vk_finish(void) {
 
 /* A present ends the frame: the next one records in the other slot, once that slot's previous use is done */
 void vk_frame_next(void) {
-    perf_submit_why(SW_FRAME);
-    if (g_fr[g_cur].recording) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    if (g_fr[g_cur].recording) {
+        perf_submit_why(SW_FRAME);
+        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    }
     g_cur = (g_cur + 1) % VK_FRAMES;
     g_fr[g_cur].fresh = 1;
     g_frame_id++;

@@ -98,10 +98,13 @@ typedef struct {
     uint64_t tail_next, tail_handed, tail_mark; /* the next tail's number, the last value handed, the submit count */
     int tail_arm;                               /* the GPU thread's: frame_end armed the next increment */
     PerfSub sub[PERF_SUBS];
-    uint64_t sub_seen;                            /* the highest submission whose completion was seen */
-    uint64_t sub_last, sub_end;                   /* the GPU thread's: the last queued, the last frame_end */
+    /* atomic: a submission may come from any thread that holds vk_lock (a readback, the front end's refresh), and
+       frame_end and the line run on the GPU thread without it (reviewer 21:58) */
+    uint64_t sub_seen;                               /* the highest submission whose completion was seen */
+    uint64_t sub_last;                               /* the last queued */
     uint64_t sub_site[SW_SITES][1 + PERF_SUB_LEADS]; /* a window's submissions by site: all, and in the last 1/2/4 ms */
-    uint64_t sub_lost;
+    uint64_t sub_lost, sub_unhanded;                 /* never seen; seen before its handing was published */
+    uint64_t sub_end;                                /* the GPU thread's: the last frame_end */
     struct {
         const char* what; /* 0 while free: claimed with a compare-exchange */
         PerfTime t;
@@ -141,9 +144,9 @@ void perf_tail_freed(PerfTimes* p, uint64_t now);                   /* a release
 void perf_tail_woke(PerfTimes* p, uint64_t now);                    /* the game's nvnSyncWait returned */
 /* the submissions: queued and its site (the GPU thread, in submit), handed over (the recorder), completion seen up to
    value (any thread that read the timeline), and a present's frame_end (the GPU thread) */
-extern int g_perf_submit_why; /* the GPU thread's: an SW_* for the next submit, used once */
+extern int g_perf_submit_why; /* an SW_* for the next submit, used once: set and taken by whoever submits */
 static inline void perf_submit_why(int why) {
-    if (g_perf_times) g_perf_submit_why = why;
+    if (g_perf_times) __atomic_store_n(&g_perf_submit_why, why, __ATOMIC_RELAXED);
 }
 void perf_sub_queued(PerfTimes* p, uint64_t v, int site, uint64_t now);
 void perf_sub_handed(PerfTimes* p, uint64_t v, uint64_t now);

@@ -250,8 +250,42 @@ static void test_subs_threads(void) {
     CHECK(subs_threaded.site[PT_SUB_DONE].count == 200 && subs_threaded.sub_seen == 200);
 }
 
+/* reviewer 21:58 F1: submissions from a thread that holds vk_lock (here a mutex) while the GPU thread runs frame_end
+   and the line without it (run under TSan by hand) */
+static PerfTimes subs_producer;
+static pthread_mutex_t subs_lock = PTHREAD_MUTEX_INITIALIZER;
+static int subs_done;
+static void* subs_queuer(void* arg) {
+    (void)arg;
+    for (uint64_t v = 1; v <= 50000; v++) {
+        pthread_mutex_lock(&subs_lock);
+        perf_sub_queued(&subs_producer, v, (int)(v % SW_SITES), 10 * v);
+        perf_sub_handed(&subs_producer, v, 10 * v + 1);
+        perf_sub_seen(&subs_producer, v, 10 * v + 5);
+        pthread_mutex_unlock(&subs_lock);
+    }
+    __atomic_store_n(&subs_done, 1, __ATOMIC_RELEASE);
+    return NULL;
+}
+static void test_subs_producer(void) {
+    pthread_t q;
+    if (pthread_create(&q, NULL, subs_queuer, NULL)) {
+        CHECK(!"the producer starts");
+        return;
+    }
+    char line[3072];
+    uint64_t total = 0;
+    for (uint64_t t = 1; !__atomic_load_n(&subs_done, __ATOMIC_ACQUIRE); t++) {
+        perf_sub_frame_end(&subs_producer, 100 * t);
+        perf_times_line(&subs_producer, 1, line, sizeof line);
+        total++;
+    }
+    CHECK(!pthread_join(q, NULL) && total > 0);
+}
+
 int main(void) {
     test_subs();
+    test_subs_producer();
     test_subs_threads();
     CHECK(g_perf_submit_every_ns == 1000000); /* upstream's interval while SNX_ARCEUS_PERF_SUBMIT_US is unset */
     test_tail();
