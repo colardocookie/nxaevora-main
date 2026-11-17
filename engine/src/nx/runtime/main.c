@@ -888,8 +888,11 @@ int snx_main(int argc, char** argv) {
         g_overlap_check = check && !strcmp(check, "1"); /* log only (gpu/nvn/diag/overlap_check.h) */
         if (g_overlap_check) LOG("nvn-overlap-check: on, a line every 600 presents, log only\n");
         const char* submit = getenv("SNX_ARCEUS_PERF_SUBMIT_PROBE");
-        g_submit_probe = submit && !strcmp(submit, "1"); /* log only (gpu/nvn/diag/submit_probe.h) */
-        if (g_submit_probe) LOG("perf-submit-probe: on, a line every 600 presents, log only\n");
+        /* log only, 2 without the hashes (gpu/nvn/diag/submit_probe.h) */
+        g_submit_probe = submit && !strcmp(submit, "1") ? 1 : submit && !strcmp(submit, "2") ? 2 : 0;
+        if (g_submit_probe)
+            LOG("perf-submit-probe: on, %s, a line every 600 presents, log only\n",
+                g_submit_probe == 1 ? "with the hashes" : "the times alone");
         g_perf_replay = replay && !strcmp(replay, "1"); /* the draw's bind walks stop early (gpu/nvn/nvn_dirty.h) */
         if (g_perf_replay) LOG("perf-replay: on, the draw's bind walks stop at their last set flag\n");
         if (validation && !strcmp(validation, "1")) g_settings.vulkan_validation_layer = 1; /* vk_validation */

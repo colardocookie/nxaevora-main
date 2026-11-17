@@ -161,10 +161,31 @@ static void test_runtime(void) {
     CHECK(!bad_order && !g_lk.held && !lists.held && !vk_depth && vk_takes > 0);
 }
 
+/* 2: the same times, no range kept or hashed */
+static void test_times_alone(void) {
+    g_submit_probe = 2;
+    free(g_ranges);
+    g_ranges = NULL;
+    const int takes = vk_takes;
+    NvnOpList a = {0};
+    bind(&a, NVN_BIND_UNIFORM, 0x1000, 0x100);
+    uint64_t ha = publish(&a);
+    const uint64_t calls = g_tot.calls;
+    submit_at(Q, clock_ns + 3 * MS, &ha, 1);
+    memory[1]++;
+    present_at(clock_ns + 2 * MS);
+    CHECK(g_tot.calls == calls + 1 && g_tot.ops_lead[1] == 1 && g_tot.ops_lead[2] == 0);
+    CHECK(!g_ranges && vk_takes == takes && g_game_changed[0] == 0 && g_win.kept == 0);
+    while (g_win.frames) present_at(clock_ns + MS);
+    CHECK(strstr(g_test_line, "times alone, nothing hashed") != NULL);
+    g_submit_probe = 1;
+}
+
 int main(void) {
     test_ops();
     test_leads();
     test_runtime();
+    test_times_alone();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

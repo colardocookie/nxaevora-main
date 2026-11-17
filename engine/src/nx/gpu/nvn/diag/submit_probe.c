@@ -88,7 +88,8 @@ void submit_probe_submit(uint64_t queue, const uint64_t* handles, uint32_t count
         frame_flushed();
         g_flushes_seen = now;
     }
-    if (!g_ranges) {
+    const int hashing = g_submit_probe == 1; /* 2: the times alone, no hash to delay the game */
+    if (hashing && !g_ranges) {
         if (!(g_ranges = malloc(sizeof *g_ranges))) {
             g_no_memory++;
             pm_unlock(&g_lk);
@@ -106,7 +107,7 @@ void submit_probe_submit(uint64_t queue, const uint64_t* handles, uint32_t count
             g_wait_used = wait;
         }
     }
-    const uint32_t from = g_ranges->set.n;
+    const uint32_t from = hashing ? g_ranges->set.n : 0;
     uint32_t lists = 0;
     uint64_t ops = 0;
     pm_lock(lists_lock);
@@ -115,13 +116,13 @@ void submit_probe_submit(uint64_t queue, const uint64_t* handles, uint32_t count
         if (!list) continue;
         lists++;
         ops += submit_list_ops(list, find, ctx, 0);
-        overlap_collect(g_ranges, list, find, ctx, 0);
+        if (hashing) overlap_collect(g_ranges, list, find, ctx, 0);
     }
     pm_unlock(lists_lock);
     submit_frame_add(&g_frame, entry_ns, lists, ops > UINT32_MAX ? UINT32_MAX : (uint32_t)ops);
     if (flushes != now) { /* this call's own flush posted its lists: no time before a present to measure */
         frame_flushed();
-    } else {
+    } else if (hashing) {
         const uint64_t t0 = plat_ns();
         hash_ranges(from, 0);
         g_submit_hash_ns += plat_ns() - t0;
@@ -134,7 +135,7 @@ static void window_line(void) {
     const double p = t->posts ? (double)t->posts : 1.0, ops = t->ops ? (double)t->ops : 1.0;
     const double calls = t->calls ? (double)t->calls : 1.0, fp = g_first_n ? (double)g_first_n : 1.0;
     const PerfReuseWindow* w = &g_win;
-    LOG("perf-submit-probe: %llu presents, log only. A present: %.1f submit calls, %.1f lists, %.0f ops. Ops "
+    LOG("perf-submit-probe: %llu presents, log only, %s. A present: %.1f submit calls, %.1f lists, %.0f ops. Ops "
         "submitted at least 1 ms before the post %.1f%%, 2 ms %.1f%%, 3 ms %.1f%%. Submit call to post mean %.3f ms, "
         "largest %.3f. nvnSyncWait return to the frame's first submit mean %.3f ms, largest %.3f (%llu presents). "
         "Posted early by a flush: %llu calls, %.0f ops a present. Other queues %llu calls, before the first present "
@@ -143,7 +144,8 @@ static void window_line(void) {
         "changed by the game: constants %llu/%llu vertices %llu/%llu indices %llu/%llu storages %llu/%llu, by a "
         "write of the frame's lists %llu, owned %llu, overflow %llu+%llu, hashing %.3f ms a present after the "
         "submits and %.3f before the post\n",
-        (unsigned long long)t->posts, t->calls / p, t->lists / p, t->ops / p, 100.0 * t->ops_lead[0] / ops,
+        (unsigned long long)t->posts, g_submit_probe == 1 ? "hashing" : "times alone, nothing hashed",
+        t->calls / p, t->lists / p, t->ops / p, 100.0 * t->ops_lead[0] / ops,
         100.0 * t->ops_lead[1] / ops, 100.0 * t->ops_lead[2] / ops, t->lead_ns_sum / calls / 1e6,
         t->lead_ns_max / 1e6, g_first_sum / fp / 1e6, g_first_max / 1e6, (unsigned long long)g_first_n,
         (unsigned long long)g_flushed.calls, g_flushed.ops / p, (unsigned long long)g_other_calls,

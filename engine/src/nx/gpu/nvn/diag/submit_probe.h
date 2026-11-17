@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* SNX_ARCEUS_PERF_SUBMIT_PROBE=1, log only (PERF-7, research 18:28): when a frame's lists are submitted against its
-   present's post, and whether the game changes what a submitted list reads before that post. One line every 600
-   presents of the queue that presents first. The probe's own lock is never taken under objs_lock, lists_lock or
-   vk_lock. Unset, the hooks test g_submit_probe and nothing else runs. */
+   present's post, and whether the game changes what a submitted list reads before that post. 2: the times alone,
+   since the hashes delay the game (reviewer 18:52). One line every 600 presents of the queue that presents first.
+   Its own lock is never taken under objs_lock, lists_lock or vk_lock. Unset, the hooks test g_submit_probe alone. */
 #ifndef SNX_GPU_NVN_SUBMIT_PROBE_H
 #define SNX_GPU_NVN_SUBMIT_PROBE_H
 #include "nx/gpu/nvn/diag/submit_probe_calc.h"
