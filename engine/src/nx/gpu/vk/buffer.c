@@ -10,6 +10,7 @@
 #include <string.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/perf_times.h"
+#include "nx/gpu/vk/landing.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
@@ -390,7 +391,8 @@ static u32 out_changed_runs(const GfxOut* e) {
     g_nchg = 0;
     while (k < e->size) {
         u32 w = e->size - k < 8 ? e->size - k : 8;
-        if (memcmp(e->ptr + k, e->org + k, w)) {
+        /* SNX_ARCEUS_PERF_LANDING: a whole word in one compare, not a library call */
+        if (g_perf_landing ? landing_differs(e->ptr + k, e->org + k, w) : memcmp(e->ptr + k, e->org + k, w) != 0) {
             if (g_nchg && g_chg[g_nchg - 1].to == k)
                 g_chg[g_nchg - 1].to = k + w;
             else {

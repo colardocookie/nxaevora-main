@@ -811,6 +811,10 @@ add_executable(snx-test-draw-record nvn/draw_record.c "${PROJECT_SOURCE_DIR}/src
 snx_test_target(snx-test-draw-record 11)
 add_test(NAME draw_record COMMAND snx-test-draw-record)
 
+add_executable(snx-test-vulkan-landing vulkan_landing.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/landing.c")
+snx_test_target(snx-test-vulkan-landing 11)
+add_test(NAME vulkan_landing COMMAND snx-test-vulkan-landing)
+
 add_executable(snx-test-perf-times perf_times.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/perf_times.c")
 snx_test_target(snx-test-perf-times 11)
 add_test(NAME perf_times COMMAND snx-test-perf-times)
@@ -1909,7 +1913,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
             $<TARGET_FILE:snx-shaderdec> "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/maxwell_opcodes.def")
     endif()
     add_executable(snx-test-vulkan-release vulkan_release.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/gpu/perf_times.c")
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/perf_times.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/landing.c")
     snx_test_target(snx-test-vulkan-release 11)
     target_link_libraries(snx-test-vulkan-release PRIVATE scarletnx-common) # release.c's snx_os_error
     add_test(NAME vulkan_release COMMAND snx-test-vulkan-release)

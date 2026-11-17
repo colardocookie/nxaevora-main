@@ -9,6 +9,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/perf_times.h"
+#include "nx/gpu/vk/landing.h"
 
 /* Nested because a result can flush an overlapping render target while landing. */
 static _Thread_local unsigned t_result_depth;
@@ -18,6 +19,20 @@ int vk_result_landing(void) { return t_result_depth != 0; }
 
 /* whether [p, p + n) overlaps the guest's address space, where pages the GPU holds fault when read */
 static int in_guest(const u8* p, u32 n) { return p < g_mem + AS_SIZE && p + n > g_mem; }
+
+/* where landing_runs puts a run: guest memory through its host pointer, else gmem_write */
+typedef struct {
+    u64 addr;
+    const u8* res;
+    u8* dst;
+} LandingDst;
+static void landing_put(void* ctx, u32 from, u32 n) {
+    const LandingDst* d = ctx;
+    if (d->dst)
+        memcpy(d->dst + from, d->res + from, n);
+    else
+        gmem_write(d->addr + from, d->res + from, n);
+}
 
 void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
     /* res and org are host copies: the shader's output read back into host-cached memory, and the bytes it started
@@ -39,7 +54,12 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
         gmem_read(addr, tmp, size);
         cur = tmp;
     }
-    for (u32 i = 0; i < size;) {
+    if (g_perf_landing) { /* SNX_ARCEUS_PERF_LANDING: the same bytes, found a word at a time */
+        LandingDst d = {addr, res, dst};
+        written = landing_runs(res, org, cur, size, landing_put, &d);
+        changed = written != 0;
+    }
+    for (u32 i = 0; !g_perf_landing && i < size;) {
         u32 n = size - i < 1024 ? size - i : 1024, end = i + n;
         /* Large storage bindings often change only a few bytes: the host's vectorized comparison of the two host
            copies skips their unchanged ranges, and guest memory is read only where the shader changed a byte */
