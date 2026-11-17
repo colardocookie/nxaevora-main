@@ -18,5 +18,8 @@ void perf_reuse_job_begin(void);
 /* a frame job ends, before its syncpoint lets the game go on: a frame's ranges are hashed (frame), a flush's are
    kept for the frame it is part of */
 void perf_reuse_job_end(int frame);
+/* the hash of [gva, gva + len) as the probe takes it: GPU-owned runs by their owners (*owned set), so nothing lands.
+   Caller holds vk_lock */
+uint64_t perf_reuse_hash(uint64_t gva, uint64_t len, uint8_t* owned);
 
 #endif

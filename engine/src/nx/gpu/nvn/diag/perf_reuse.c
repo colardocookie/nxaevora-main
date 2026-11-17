@@ -48,8 +48,8 @@ static u64 mix(u64 h, u64 v) {
     h = (h ^ v) * 0x9E3779B97F4A7C15ull;
     return h ^ (h >> 29);
 }
-/* the range's bytes run by run of the guest memory behind it, an unmapped page as its offset */
-static u64 range_hash(u64 gva, u64 len, u8* owned) {
+/* the range's bytes run by run of the guest memory behind it, an unmapped page as its offset. Caller holds vk_lock */
+u64 perf_reuse_hash(u64 gva, u64 len, u8* owned) {
     u64 h = 0x243F6A8885A308D3ull;
     for (u64 o = 0; o < len;) {
         u64 cpu = 0, oh = 0, n = gmmu_run(gva + o, len - o, &cpu);
@@ -99,7 +99,7 @@ void perf_reuse_job_begin(void) {
         for (u32 i = 0; i < g_set->n; i++) {
             PerfReuseRange* r = &g_set->r[i];
             u8 owned = 0;
-            perf_reuse_count(&g_win, r, range_hash(r->gva, r->len, &owned) != r->hash);
+            perf_reuse_count(&g_win, r, perf_reuse_hash(r->gva, r->len, &owned) != r->hash);
         }
         vk_unlock();
         g_hash_ns += plat_ns() - t0;
@@ -120,7 +120,7 @@ void perf_reuse_job_end(int frame) {
     vk_lock();
     for (u32 i = 0; i < g_set->n; i++) {
         PerfReuseRange* r = &g_set->r[i];
-        r->hash = range_hash(r->gva, r->len, &r->owned);
+        r->hash = perf_reuse_hash(r->gva, r->len, &r->owned);
     }
     vk_unlock();
     g_hash_ns += plat_ns() - t0;

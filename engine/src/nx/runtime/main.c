@@ -14,6 +14,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/perf_times.h"
 #include "nx/gpu/vk/landing.h"
+#include "nx/gpu/nvn/diag/overlap_check.h"
 #include "nx/gpu/nvn/nvn_native.h"
 #include "nx/gpu/nvn/diag/nvn_trace.h"
 #include "nx/gpu/renderer.h"
@@ -881,6 +882,9 @@ int snx_main(int argc, char** argv) {
         const char* landing = getenv("SNX_ARCEUS_PERF_LANDING");
         const char* validation = getenv("SNX_ARCEUS_VK_VALIDATION");
         const char* replay = getenv("SNX_ARCEUS_PERF_REPLAY");
+        const char* check = getenv("SNX_ARCEUS_PERF_OVERLAP_CHECK");
+        g_overlap_check = check && !strcmp(check, "1"); /* log only (gpu/nvn/diag/overlap_check.h) */
+        if (g_overlap_check) LOG("nvn-overlap-check: on, a line every 600 presents, log only\n");
         g_perf_replay = replay && !strcmp(replay, "1"); /* the draw's bind walks stop early (gpu/nvn/nvn_dirty.h) */
         if (g_perf_replay) LOG("perf-replay: on, the draw's bind walks stop at their last set flag\n");
         if (validation && !strcmp(validation, "1")) g_settings.vulkan_validation_layer = 1; /* vk_validation */

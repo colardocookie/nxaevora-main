@@ -51,7 +51,7 @@ void perf_reuse_count(PerfReuseWindow* w, const PerfReuseRange* r, int changed) 
     w->kept++;
     w->bytes_kept += r->len;
     w->owned += r->owned;
-    for (int k = 0; k < 3; k++)
+    for (unsigned k = 0; k < PERF_REUSE_KINDS; k++)
         if (r->kinds >> k & 1) {
             w->kept_kind[k]++;
             w->changed_kind[k] += changed != 0;

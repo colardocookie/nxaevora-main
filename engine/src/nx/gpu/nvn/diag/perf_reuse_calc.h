@@ -11,7 +11,8 @@
 #define PERF_REUSE_SLOTS 16384u /* the set's index, a power of two, at most half used */
 #define PERF_REUSE_TOP 10u
 /* what a range was read as, a bit each */
-enum { PERF_REUSE_CB = 1, PERF_REUSE_VERTEX = 2, PERF_REUSE_INDEX = 4 };
+enum { PERF_REUSE_CB = 1, PERF_REUSE_VERTEX = 2, PERF_REUSE_INDEX = 4, PERF_REUSE_STORAGE = 8 };
+#define PERF_REUSE_KINDS 4u /* the overlap check also names storage binds (diag/overlap_check.c) */
 
 typedef struct {
     uint64_t gva, hash;
@@ -28,7 +29,7 @@ typedef struct {
 
 typedef struct {
     uint64_t frames, kept, changed, bytes_kept, bytes_changed, owned, overflow;
-    uint64_t kept_kind[3], changed_kind[3]; /* constants, vertices, indices */
+    uint64_t kept_kind[PERF_REUSE_KINDS], changed_kind[PERF_REUSE_KINDS]; /* constants, vertices, indices, storages */
     PerfReuseRange top[PERF_REUSE_TOP];     /* the largest changed ranges, each range once, largest first */
     uint32_t ntop;
 } PerfReuseWindow;

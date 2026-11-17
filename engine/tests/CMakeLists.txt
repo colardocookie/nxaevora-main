@@ -831,6 +831,11 @@ add_executable(snx-test-nvn-measure nvn/nvn_measure.c "${PROJECT_SOURCE_DIR}/src
 snx_test_target(snx-test-nvn-measure 11)
 add_test(NAME nvn_measure COMMAND snx-test-nvn-measure)
 
+add_executable(snx-test-overlap-check nvn/overlap_check.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/overlap_check_calc.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/perf_reuse_calc.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmdlist.c")
+snx_test_target(snx-test-overlap-check 11)
+add_test(NAME overlap_check COMMAND snx-test-overlap-check)
+
 add_executable(snx-test-perf-reuse nvn/perf_reuse.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/perf_reuse_calc.c")
 snx_test_target(snx-test-perf-reuse 11)
 add_test(NAME perf_reuse COMMAND snx-test-perf-reuse)

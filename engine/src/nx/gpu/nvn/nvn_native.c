@@ -8,6 +8,7 @@
 #include "nx/gpu/nvn/nvn_cmdlist.h"
 #include "nx/gpu/nvn/nvn_frame.h"
 #include "nx/gpu/nvn/nvn_dirty.h"
+#include "nx/gpu/nvn/diag/overlap_check.h"
 #include "nx/gpu/nvn/diag/nvn_measure.h"
 #include "nx/gpu/nvn/diag/nvn_measure_calc.h"
 #include "nx/gpu/nvn/diag/perf_reuse.h"
@@ -6732,6 +6733,7 @@ static void frame_end(const FrameJob* job) {
     r3d_const_flush(job->channel);
     r3d_pending_flush();
     perf_reuse_job_end(job->kind != NVN_FRAME_FLUSH); /* before the syncpoint lets the game go on */
+    if (g_overlap_check && job->kind == NVN_FRAME_PRESENT) overlap_check_end(); /* the replay has ended */
     /* The job's syncpoint increment follows the releases of its reports, as the console's fence does. */
     gpu_stream_incr(job->channel->id);
     if (g_renderer->stream_end) g_renderer->stream_end();
@@ -7273,6 +7275,11 @@ QUEUE_USAGE_REFUSE_HANDLER(get_total_compute_memory_used, "nvnQueueGetTotalCompu
 
 /* nvnQueuePresentTexture(queue, window, index): closes the pending frame and hands it to the GPU (decision 11). A
    present that names an image that is not ACQUIRED is a fault of the game: nothing is shown and the frame stays. */
+/* the overlap check's list lookup: caller holds lists_lock */
+static const NvnOpList* overlap_find(void* ctx, uint64_t handle) {
+    (void)ctx;
+    return nvn_list_find(&lists, handle);
+}
 static void h_queue_present_texture(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueuePresentTexture";
@@ -7301,9 +7308,16 @@ static void h_queue_present_texture(CPU* c, u64 entry) {
     target.index = (uint32_t)index;
     const DeviceRec* device = known_record(window->device, NVN_OBJ_DEVICE);
     target.window_origin_flip = device && device->window_origin == 1;
+    int check = -1; /* SNX_ARCEUS_PERF_OVERLAP_CHECK: the frame's ranges, collected before its post */
+    if (g_overlap_check) {
+        pm_lock(&lists_lock);
+        check = overlap_check_collect(q->pending.handles, q->pending.handle_count, overlap_find, NULL);
+        pm_unlock(&lists_lock);
+    }
     FrameJob* job = queue_post_frame(queue_addr, q, &target);
     gpu_call(frame_run, job, NULL, 0);
     pm_unlock(&objs_lock);
+    if (check >= 0) overlap_check_post_hash(check); /* on the game's thread, outside objs_lock */
 }
 
 /* The host handlers by NVN function name. Later steps add their entries here (G2 to G5 of nvn-design.md, 2-6). */
