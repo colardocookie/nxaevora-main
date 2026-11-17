@@ -15,6 +15,7 @@
    draws after it read the next frame's slots there, and vertices flew to other characters. So the stream holds its
    releases until it stops, at its end or at a wait (vk_release_submit), when the commands after them have read guest
    memory, and the ones no GPU work holds are performed then. */
+#include <stdlib.h>
 #include <string.h>
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
@@ -320,6 +321,96 @@ static int release_overlaps(const Release* r, u64 gva, u64 len) {
     }
     return 0;
 }
+/* SNX_ARCEUS_PERF_STORAGE=1: the queue walks below translate the range they look for once, not once for each queued
+   release, and release_match stops at the latest match. They find the same releases. Read once */
+static int g_perf_storage_walk = -1;
+static int perf_storage_walk(void) {
+    if (g_perf_storage_walk < 0) {
+        const char* v = getenv("SNX_ARCEUS_PERF_STORAGE");
+        g_perf_storage_walk = v && !strcmp(v, "1");
+        if (g_perf_storage_walk) LOG("vulkan: SNX_ARCEUS_PERF_STORAGE: release queue walks translate their range once\n");
+    }
+    return g_perf_storage_walk;
+}
+/* [gva, gva + len)'s guest memory, page by page as release_overlaps translates it, its contiguous pages merged: more
+   runs than it holds leaves all set, and the walk then takes release_overlaps itself */
+#define QUERY_RUNS 16
+typedef struct {
+    u64 gva, len;
+    u32 n;
+    int all;
+    struct {
+        u64 cpu, n;
+    } run[QUERY_RUNS];
+} QueryRuns;
+static void query_runs(u64 gva, u64 len, QueryRuns* q) {
+    q->gva = gva;
+    q->len = len;
+    q->n = 0;
+    q->all = 0;
+    for (u64 off = 0; off < len;) {
+        u64 b = gva + off, other = gmmu_translate(b), span = 4096 - (b & 4095);
+        if (span > len - off) span = len - off;
+        if (other) {
+            if (q->n && q->run[q->n - 1].cpu + q->run[q->n - 1].n == other)
+                q->run[q->n - 1].n += span;
+            else if (q->n == QUERY_RUNS) {
+                q->all = 1;
+                return;
+            } else {
+                q->run[q->n].cpu = other;
+                q->run[q->n].n = span;
+                q->n++;
+            }
+        }
+        off += span;
+    }
+}
+/* release_overlaps(r, q->gva, q->len), with the range's pages translated already */
+static int release_overlaps_runs(const Release* r, const QueryRuns* q) {
+    u64 gva = q->gva, len = q->len;
+    if (q->all) return release_overlaps(r, gva, len);
+    if (!r->gva || !r->len || !len) return 0;
+    if (gva >= r->gva ? gva - r->gva < r->len : r->gva - gva < len) return 1;
+    for (u32 at = 0; at < r->len;) {
+        u64 a = r->gva + at, cpu = gmmu_translate(a);
+        u32 n = 4096 - (u32)(a & 4095);
+        if (n > r->len - at) n = r->len - at;
+        for (u32 k = 0; cpu && k < q->n; k++) {
+            u64 other = q->run[k].cpu, span = q->run[k].n;
+            if (other >= cpu ? other - cpu < n : cpu - other < span) return 1;
+        }
+        at += n;
+    }
+    return 0;
+}
+/* the latest queued release over [gva, gva + len), or of syncpoint id when len is 0, or the latest at all: its gate and
+   cgate, 0 when none. With g_rlock held */
+static int release_find(u64 gva, u64 len, u32 id, int all, u64* gate, u64* cgate) {
+    int found = 0;
+    for (u64 i = g_rtail; i < g_rhead; i++) {
+        const Release* r = &g_rq[i % RQ_N];
+        if (all || (len ? release_overlaps(r, gva, len) : !r->gva && r->id == id)) {
+            *gate = r->gate;
+            *cgate = r->cgate;
+            found = 1;
+        }
+    }
+    return found;
+}
+static int release_find_runs(u64 gva, u64 len, u32 id, int all, u64* gate, u64* cgate) {
+    QueryRuns q;
+    if (len && !all) query_runs(gva, len, &q);
+    for (u64 i = g_rhead; i-- > g_rtail;) {
+        const Release* r = &g_rq[i % RQ_N];
+        if (all || (len ? release_overlaps_runs(r, &q) : !r->gva && r->id == id)) {
+            *gate = r->gate;
+            *cgate = r->cgate;
+            return 1;
+        }
+    }
+    return 0;
+}
 /* Drain through the latest matching release. Gates are monotonic prefix maxima. */
 static void release_match(u64 gva, u64 len, u32 id, int all) {
     u64 gate = 0, cgate = 0;
@@ -333,14 +424,8 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
     pm_lock(&g_rlock);
     g_rheld = g_rhead; /* needed now: the stream holds them no longer */
     if (g_rthread) pc_broadcast(&g_rcv);
-    for (u64 i = g_rtail; i < g_rhead; i++) {
-        const Release* r = &g_rq[i % RQ_N];
-        if (all || (len ? release_overlaps(r, gva, len) : !r->gva && r->id == id)) {
-            gate = r->gate;
-            cgate = r->cgate;
-            found = 1;
-        }
-    }
+    found = perf_storage_walk() ? release_find_runs(gva, len, id, all, &gate, &cgate)
+                                : release_find(gva, len, id, all, &gate, &cgate);
     pm_unlock(&g_rlock);
     if (found) {
         submit_through(gate);
@@ -349,6 +434,29 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
         release_through(gate, cgate);
     }
     vk_unlock();
+}
+/* whether the queued releases over [gva, gva + len) can be read past: 1, 0 when none is there, -1 when one can't. With
+   g_rlock held */
+static int release_read_state(u64 gva, u64 len) {
+    int r = 0;
+    for (u64 i = g_rtail; i < g_rhead && r >= 0; i++) {
+        const Release* q = &g_rq[i % RQ_N];
+        if (!release_overlaps(q, gva, len)) continue;
+        /* a count the GPU hasn't given yet, or the same memory through another address: not known here */
+        r = !q->samples && gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 ? 1 : -1;
+    }
+    return r;
+}
+static int release_read_runs(u64 gva, u64 len) {
+    QueryRuns runs;
+    int r = 0;
+    query_runs(gva, len, &runs);
+    for (u64 i = g_rtail; i < g_rhead && r >= 0; i++) {
+        const Release* q = &g_rq[i % RQ_N];
+        if (!release_overlaps_runs(q, &runs)) continue;
+        r = !q->samples && gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 ? 1 : -1;
+    }
+    return r;
 }
 /* [gva, gva + len) as the stream sees it: memory, then the payloads of the releases queued over it in their order (1),
    or 0 when none is queued there, or -1 when one there can't be read past now. Under vk_lock, which release_through
@@ -365,12 +473,7 @@ int vk_release_read(u64 gva, void* dst, u64 len) {
         return 0;
     }
     pm_lock(&g_rlock);
-    for (u64 i = g_rtail; i < g_rhead && r >= 0; i++) {
-        const Release* q = &g_rq[i % RQ_N];
-        if (!release_overlaps(q, gva, len)) continue;
-        /* a count the GPU hasn't given yet, or the same memory through another address: not known here */
-        r = !q->samples && gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 ? 1 : -1;
-    }
+    r = perf_storage_walk() ? release_read_runs(gva, len) : release_read_state(gva, len);
     pm_unlock(&g_rlock);
     if (r > 0 && (vk_compute_pending(gva, len) || vk_buf_pending(gva, len) || vk_gfx_image_pending(gva, len))) r = -1;
     if (r > 0) {
