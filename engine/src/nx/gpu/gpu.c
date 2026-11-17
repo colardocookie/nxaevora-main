@@ -998,6 +998,7 @@ static void gpu_thread(void* arg) {
     (void)arg;
     t_gpu = 1;
     SNX_THREAD_NAME("GPU");
+    if (g_settings.profiler) plat_prof_label_self("GPU");
     pm_lock(&g_qlk);
     for (;;) {
         u64 gen = g_qgen;

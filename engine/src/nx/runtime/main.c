@@ -955,7 +955,7 @@ int snx_main(int argc, char** argv) {
     if (g_settings.profiler) {
 #if defined(_WIN32)
         plat_prof_start();
-        LOG("profiler: on, profile.txt every 10 seconds\n");
+        LOG("profiler: on, profile.txt and profile-<seconds>.txt every 10 seconds, per thread\n");
 #else
         LOG("the CPU profiler is Windows only, profile=1 does nothing here\n");
 #endif

@@ -208,6 +208,7 @@ static void* thread_main(void* arg) {
     thread_fn(arg);
     return NULL;
 }
+void plat_prof_label_self(const char* name) { (void)name; }
 int plat_thread(PThreadFn fn, void* arg, size_t stack) {
     pthread_t t;
     (void)stack;

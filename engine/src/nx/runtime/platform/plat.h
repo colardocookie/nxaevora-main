@@ -164,6 +164,8 @@ void plat_audio_volume(PAudio* a, float volume);
 /* ---- crash reports and profiling */
 void plat_install_crash_handler(void);
 void plat_prof_start(void); /* starts the sampling profiler (the profile option): Windows only */
+/* the calling thread's name in profile.txt, called only with the profile option on: Windows only */
+void plat_prof_label_self(const char* name);
 #if defined(_WIN32)
 void plat_prof_add_thread(HANDLE h); /* a thread to sample; the profiler keeps its own handle */
 #endif

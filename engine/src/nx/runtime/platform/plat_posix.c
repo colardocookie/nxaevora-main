@@ -1166,3 +1166,4 @@ void plat_install_crash_handler(void) {
 }
 
 void plat_prof_start(void) {}
+void plat_prof_label_self(const char* name) { (void)name; }

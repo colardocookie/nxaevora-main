@@ -811,6 +811,10 @@ add_executable(snx-test-draw-record nvn/draw_record.c "${PROJECT_SOURCE_DIR}/src
 snx_test_target(snx-test-draw-record 11)
 add_test(NAME draw_record COMMAND snx-test-draw-record)
 
+add_executable(snx-test-profile-calc profile_calc.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/profile_calc.c")
+snx_test_target(snx-test-profile-calc 11)
+add_test(NAME profile_calc COMMAND snx-test-profile-calc)
+
 add_executable(snx-test-nvn-measure nvn/nvn_measure.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/nvn_measure_calc.c")
 snx_test_target(snx-test-nvn-measure 11)
 add_test(NAME nvn_measure COMMAND snx-test-nvn-measure)

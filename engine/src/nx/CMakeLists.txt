@@ -86,7 +86,7 @@ set(platform runtime/platform/plat.c runtime/platform/plat_sdl.c runtime/platfor
              runtime/platform/prepare_screen.c
              "${PROJECT_BINARY_DIR}/generated/controls_png.c")
 if(WIN32)
-    list(APPEND platform runtime/platform/plat_win32.c runtime/platform/profiler_win32.c)
+    list(APPEND platform runtime/platform/plat_win32.c runtime/platform/profiler_win32.c runtime/platform/profile_calc.c)
 else()
     list(APPEND platform runtime/platform/plat_posix.c)
 endif()

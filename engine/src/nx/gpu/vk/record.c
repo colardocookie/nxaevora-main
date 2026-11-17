@@ -52,6 +52,7 @@ static void rec_thread(void* arg) {
     (void)g_pad0;
     (void)g_pad1;
     SNX_THREAD_NAME("vk record");
+    if (g_settings.profiler) plat_prof_label_self("Vulkan recorder");
     for (;;) {
         u64 head = __atomic_load_n(&g_head, __ATOMIC_ACQUIRE);
         /* nothing more yet: sleep until the producer publishes (REC_PUBLISH). It spun 4000 pauses first, which with
