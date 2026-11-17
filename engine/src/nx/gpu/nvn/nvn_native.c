@@ -9,6 +9,7 @@
 #include "nx/gpu/nvn/nvn_frame.h"
 #include "nx/gpu/nvn/nvn_dirty.h"
 #include "nx/gpu/nvn/diag/overlap_check.h"
+#include "nx/gpu/nvn/diag/submit_probe.h"
 #include "nx/gpu/nvn/diag/nvn_measure.h"
 #include "nx/gpu/nvn/diag/nvn_measure_calc.h"
 #include "nx/gpu/nvn/diag/perf_reuse.h"
@@ -6608,6 +6609,7 @@ static void h_sync_wait(CPU* c, u64 entry) {
     c->x[0] = result;
     pm_unlock(&objs_lock);
     if (perf_t0) perf_time_add(&g_perf, PT_SYNC_WAIT, plat_ns() - perf_t0);
+    if (g_submit_probe) submit_probe_wait_return();
 }
 
 /* The frame that Present, a flush, a finish or a fenced flush closes (decisions 8 and 10). The GPU thread replays it
@@ -6991,6 +6993,7 @@ static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget
     job->index = target->index;
     job->window_origin_flip = target->kind == NVN_FRAME_PRESENT ? target->window_origin_flip : queue_origin_flip(q);
     job->channel = q->channel;
+    if (g_submit_probe && target->kind == NVN_FRAME_FLUSH) submit_probe_flush_posted(queue_addr);
     if (g_perf_times) /* a 32-bit stamp: the post to start interval is far below its 4 s wrap */
         job->post_ns = (uint32_t)(target->kind == NVN_FRAME_PRESENT ? perf_present_posted() : plat_ns());
     if (!q->init_replayed) {
@@ -7100,10 +7103,15 @@ static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const
 /* nvnQueueSubmitCommands(queue, count, handles): copies the handle array at once and adds the lists to the pending
    frame (decision 8). The game alternates two arrays and reuses them, so the copy is not optional. A fence op with
    FLUSH_FOR_CPU posts the frame after the scan. */
+static const NvnOpList* overlap_find(void* ctx, uint64_t handle);
 static void h_queue_submit_commands(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueueSubmitCommands";
     FrameJob* job = NULL;
+    /* SNX_ARCEUS_PERF_SUBMIT_PROBE: the call's time and the flushes posted before it */
+    const uint64_t probe_ns = g_submit_probe ? plat_ns() : 0;
+    const uint64_t probe_flushes = g_submit_probe ? submit_probe_flushes() : 0;
+    int probe = 0;
     objs_lock_take();
     QueueRec* q = queue_rec(c->x[0], name);
     int32_t count = (int32_t)c->x[1];
@@ -7148,15 +7156,18 @@ static void h_queue_submit_commands(CPU* c, u64 entry) {
         }
         frame_submitted_lists += handle_count - skipped;
         frame_skipped_lists += skipped;
+        probe = g_submit_probe;
     }
     pm_unlock(&lists_lock);
     if (flush && !nvn_frame_is_empty(&q->pending)) {
         const FrameTarget target = {.kind = NVN_FRAME_FLUSH};
         job = queue_post_frame(c->x[0], q, &target);
     }
-    free(handles);
     if (job) gpu_call(frame_run, job, NULL, 0);
     pm_unlock(&objs_lock);
+    if (probe) submit_probe_submit(c->x[0], handles, handle_count, probe_ns, probe_flushes, overlap_find, NULL,
+                                   &lists_lock);
+    free(handles);
 }
 
 /* nvnQueueFenceSync(queue, sync, condition, flags): a token in the pending frame, or the syncpoint value of the
@@ -7334,6 +7345,7 @@ static void h_queue_present_texture(CPU* c, u64 entry) {
     static const char* const name = "nvnQueuePresentTexture";
     const u64 queue_addr = c->x[0], window_addr = c->x[1];
     int32_t index = (int32_t)c->x[2];
+    if (g_submit_probe) submit_probe_present(queue_addr); /* outside objs_lock: it hashes */
     objs_lock_take();
     QueueRec* q = known_record(queue_addr, NVN_OBJ_QUEUE);
     NvnObj* wo = nvn_objtab_find(&objs, window_addr);
