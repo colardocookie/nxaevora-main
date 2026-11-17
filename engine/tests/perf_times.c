@@ -3,6 +3,7 @@
 /* SNX_ARCEUS_PERF_TIMES's counting (gpu/perf_times.c): sums, largest values, the named waits, the counts and the
    line, which starts the next window empty. */
 #include "nx/gpu/perf_times.h"
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -126,11 +127,61 @@ static void test_tail(void) {
     CHECK(p.count[PC_TAIL_LOST] == 2);
     char line[2048];
     perf_times_line(&p, 1, line, sizeof line);
-    CHECK(strstr(line, " tail_wake=") && strstr(line, " tail_lost=2.0"));
+    CHECK(strstr(line, " tail_lost=2 ") && strstr(line, " tail_partial=1 ") && strstr(line, " tail_ungated=7 "));
+    CHECK(strstr(line, " tail_incr=0.000/0.000/3 ")); /* three tails closed, their times under a microsecond */
+}
+/* a tail closed in the line: its mean over the tails, not over the frames, and how many */
+static void test_tail_line(void) {
+    static PerfTimes p;
+    char line[2048];
+    memset(&p, 0, sizeof p);
+    perf_tail_queued(&p, 1, 0, 0, 0, 1000000);
+    perf_tail_performed(&p, 1, 3000000);
+    perf_tail_freed(&p, 3500000);
+    perf_tail_woke(&p, 4000000);
+    perf_times_line(&p, 600, line, sizeof line);
+    CHECK(strstr(line, " tail_incr=2.000/2.000/1 ") && strstr(line, " tail_wake=3.000/3.000/1 "));
+}
+/* reviewer 20:08 F1: a slot reused by the GPU thread while another thread closes it (run under TSan by hand) */
+static PerfTimes threaded;
+static int threaded_done;
+static void* tail_writer(void* arg) {
+    (void)arg;
+    for (uint64_t i = 1; i <= 50000; i++) {
+        perf_tail_queued(&threaded, i, 0, 0, 0, 100 * i);
+        perf_tail_performed(&threaded, i, 100 * i + 10);
+        perf_tail_freed(&threaded, 100 * i + 20);
+    }
+    __atomic_store_n(&threaded_done, 1, __ATOMIC_RELEASE);
+    return NULL;
+}
+static void* tail_waker(void* arg) {
+    (void)arg;
+    for (uint64_t i = 1; !__atomic_load_n(&threaded_done, __ATOMIC_ACQUIRE); i++)
+        perf_tail_woke(&threaded, 100 * i + 30);
+    return NULL;
+}
+static void test_tail_threads(void) {
+    pthread_t w, k;
+    if (pthread_create(&k, NULL, tail_waker, NULL)) {
+        CHECK(!"the waker starts");
+        return;
+    }
+    if (pthread_create(&w, NULL, tail_writer, NULL)) {
+        CHECK(!"the writer starts");
+        __atomic_store_n(&threaded_done, 1, __ATOMIC_RELEASE);
+    } else {
+        CHECK(!pthread_join(w, NULL));
+    }
+    CHECK(!pthread_join(k, NULL));
+    /* a late close can land in the slot's next tail (reviewer note 2), so closed and lost are not a partition */
+    CHECK(threaded.site[PT_TAIL_INCR].count > 0 && threaded.site[PT_TAIL_INCR].count <= 50000);
 }
 
 int main(void) {
     test_tail();
+    test_tail_line();
+    test_tail_threads();
     test_line();
     test_named_full();
     test_small_buffers();

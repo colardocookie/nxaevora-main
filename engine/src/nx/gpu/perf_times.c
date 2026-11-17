@@ -46,24 +46,25 @@ static int stamp(uint64_t* t, uint64_t now) {
     uint64_t zero = 0;
     return __atomic_compare_exchange_n(t, &zero, now ? now : 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 }
-static void tail_site(PerfTimes* p, int site, const PerfTail* t, uint64_t at, int* partial) {
+static void tail_site(PerfTimes* p, int site, uint64_t t0, uint64_t at, int* partial) {
     if (!at) {
         *partial = 1;
         return;
     }
-    perf_time_add(p, site, at > t->t0 ? at - t->t0 : 0);
+    perf_time_add(p, site, at > t0 ? at - t0 : 0);
 }
 /* the second of the two closing points adds the times and frees the slot */
 static void tail_close(PerfTimes* p, PerfTail* t) {
     if (__atomic_add_fetch(&t->closes, 1, __ATOMIC_ACQ_REL) != 2) return;
     int partial = 0;
+    const uint64_t t0 = LOAD(t->t0); /* atomic: the GPU thread may be reusing the slot (reviewer 20:08) */
     if (LOAD(t->gate)) {
-        tail_site(p, PT_TAIL_SUBMIT, t, LOAD(t->t_submit), &partial);
-        tail_site(p, PT_TAIL_DONE, t, LOAD(t->t_done), &partial);
+        tail_site(p, PT_TAIL_SUBMIT, t0, LOAD(t->t_submit), &partial);
+        tail_site(p, PT_TAIL_DONE, t0, LOAD(t->t_done), &partial);
     }
-    tail_site(p, PT_TAIL_INCR, t, LOAD(t->t_incr), &partial);
-    tail_site(p, PT_TAIL_FREE, t, LOAD(t->t_free), &partial);
-    tail_site(p, PT_TAIL_WAKE, t, LOAD(t->t_wake), &partial);
+    tail_site(p, PT_TAIL_INCR, t0, LOAD(t->t_incr), &partial);
+    tail_site(p, PT_TAIL_FREE, t0, LOAD(t->t_free), &partial);
+    tail_site(p, PT_TAIL_WAKE, t0, LOAD(t->t_wake), &partial);
     if (partial) perf_count(p, PC_TAIL_PARTIAL, 1);
     __atomic_store_n(&t->armed, 0, __ATOMIC_RELEASE);
 }
@@ -150,7 +151,17 @@ size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size) {
     if (!frames) frames = 1;
     int n = snprintf(out, size, "perf-times: frames=%u (ms a frame/largest ms)", frames);
     size_t at = n > 0 ? (size_t)n : 0;
-    for (int i = 0; i < PT_SITES; i++) at = put(out, size, at, names[i], take(&p->site[i]), frames);
+    for (int i = 0; i < PT_SITES; i++) {
+        const PerfTime t = take(&p->site[i]);
+        if (i < PT_TAIL_SUBMIT) {
+            at = put(out, size, at, names[i], t, frames);
+        } else if (at < size) { /* a tail's times: the mean over the tails that have it, the largest, how many */
+            const double mean = t.count ? (double)t.sum / t.count / 1e6 : 0.0;
+            n = snprintf(out + at, size - at, " %s=%.3f/%.3f/%llu", names[i], mean, (double)t.max / 1e6,
+                         (unsigned long long)t.count);
+            if (n > 0) at += (size_t)n;
+        }
+    }
     for (uint32_t i = 0; i < PERF_TIMES_NAMED; i++) {
         const char* what = __atomic_load_n(&p->named[i].what, __ATOMIC_ACQUIRE);
         const PerfTime t = take(&p->named[i].t);
@@ -158,9 +169,12 @@ size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size) {
         n = snprintf(out + at, size - at, " [%s]=%.3f/%.3f", what, (double)t.sum / frames / 1e6, (double)t.max / 1e6);
         if (n > 0) at += (size_t)n;
     }
-    for (int i = 0; i < PC_COUNTS && at < size; i++) { /* a frame's mean */
+    for (int i = 0; i < PC_COUNTS && at < size; i++) { /* a frame's mean, the tails' misses as totals */
         const uint64_t c = __atomic_exchange_n(&p->count[i], 0, __ATOMIC_RELAXED);
-        n = snprintf(out + at, size - at, " %s=%.1f", counts[i], (double)c / frames);
+        if (i >= PC_TAIL_UNGATED)
+            n = snprintf(out + at, size - at, " %s=%llu", counts[i], (unsigned long long)c);
+        else
+            n = snprintf(out + at, size - at, " %s=%.1f", counts[i], (double)c / frames);
         if (n > 0) at += (size_t)n;
     }
     const uint64_t overlaps = __atomic_exchange_n(&p->overlaps, 0, __ATOMIC_RELAXED);

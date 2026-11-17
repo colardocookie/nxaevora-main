@@ -42,6 +42,7 @@ enum {
     PC_WC_BYTES,   /* bytes vk_write_changed wrote to guest memory, the ones the shader changed */
     PC_TAIL_SUBMITS, /* graphics submissions from one present's increment to the next, the increment's own included */
     PC_TAIL_AFTER,   /* of those, the ones not complete when the increment was queued */
+    /* from here on printed as totals, not a frame's mean */
     PC_TAIL_UNGATED, /* increments that waited for no submission: no submit or done time */
     PC_TAIL_PARTIAL, /* tails closed with a time missing (performed by another path, or no wait after it) */
     PC_TAIL_LOST,    /* tails whose slot was needed again before they closed */
