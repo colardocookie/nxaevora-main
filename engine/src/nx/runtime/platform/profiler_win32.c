@@ -50,6 +50,7 @@ typedef struct {
 static ProfTable g_table;
 static ProfStat g_stats[PROF_THREADS], g_ended[PROF_ENDED];
 static int g_nended;
+static u32 g_ended_lost; /* threads that ended past PROF_ENDED in the window */
 static u64 g_ticks;
 typedef struct {
     u64 host;
@@ -206,8 +207,8 @@ static void write_window(FILE* f, const ProfStat* const* order, int n, u64 from_
     const u64 image = (u64)(size_t)&__ImageBase;
     const double ticks = g_ticks ? (double)g_ticks : 1.0;
     fprintf(f, "ScarletNX profile: the window from %.1f s to %.1f s after the profiler started, %llu ticks of 1 ms, "
-               "%d threads, %llu samples not placed. Shares are of the ticks\n",
-            (double)from_ns / 1e9, (double)to_ns / 1e9, (unsigned long long)g_ticks, n,
+               "%d threads, %u ended threads left out, %llu samples not placed. Shares are of the ticks\n",
+            (double)from_ns / 1e9, (double)to_ns / 1e9, (unsigned long long)g_ticks, n, g_ended_lost,
             (unsigned long long)g_table.unplaced);
     for (int k = 0; k < n; k++) {
         const ProfStat* s = order[k];
@@ -256,6 +257,7 @@ static void write_profile(u64 started, u64 window_start) {
     prof_clear(&g_table);
     for (int i = 0; i < PROF_THREADS; i++) memset(g_stats[i].kinds, 0, sizeof g_stats[i].kinds);
     g_nended = 0;
+    g_ended_lost = 0;
     g_ticks = 0;
 }
 
@@ -273,8 +275,13 @@ static DWORD WINAPI sampler(LPVOID unused) {
             CONTEXT c;
             if (!h) continue;
             if (WaitForSingleObject(h, 0) == WAIT_OBJECT_0) { /* the thread ended: its slot is free again */
-                if (g_stats[i].live && g_nended < PROF_ENDED) g_ended[g_nended++] = g_stats[i];
-                g_stats[i].live = 0; /* its window is still written, from g_ended */
+                if (g_stats[i].live) { /* its window is still written, from g_ended, marked ended */
+                    g_stats[i].live = 0;
+                    if (g_nended < PROF_ENDED)
+                        g_ended[g_nended++] = g_stats[i];
+                    else
+                        g_ended_lost++;
+                }
                 __atomic_store_n(&g_threads[i], NULL, __ATOMIC_RELEASE);
                 CloseHandle(h);
                 continue;
