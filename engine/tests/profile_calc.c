@@ -63,8 +63,9 @@ static void test_top_order(void) {
         const unsigned f = (k * 7) % 30 + 1;
         for (unsigned i = 0; i < f; i++) prof_count(&t, 0, 0, 0x1000 + 16 * f);
     }
-    CHECK(prof_top(&t, 0, 0, top, PROF_TOP) == PROF_TOP);
-    for (unsigned i = 0; i < PROF_TOP; i++) CHECK(top[i].count == 30 - i && top[i].key == 0x1000 + 16 * (30 - i));
+    CHECK(prof_top(&t, 0, 0, top, 20) == 20);
+    for (unsigned i = 0; i < 20; i++) CHECK(top[i].count == 30 - i && top[i].key == 0x1000 + 16 * (30 - i));
+    CHECK(prof_top(&t, 0, 0, top, PROF_TOP) == (PROF_TOP < 30 ? PROF_TOP : 30)); /* all of them, when they fit */
 }
 
 static void test_full(void) {

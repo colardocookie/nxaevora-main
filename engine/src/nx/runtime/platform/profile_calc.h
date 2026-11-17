@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 #define PROF_BUCKETS 65536u /* a power of two */
-#define PROF_TOP 20u        /* the functions listed for each thread */
+#define PROF_TOP 50u        /* the functions listed for each thread */
 
 /* Game code, the runtime's own image, other host code (the driver, the system), or a system wait function. */
 enum { PROF_GAME, PROF_RUNTIME, PROF_HOST, PROF_WAIT, PROF_KINDS };
