@@ -12,6 +12,7 @@
 #include <stdarg.h>
 #include "nx/gpu/vk/temporal_math.h"
 #include "nx/gpu/vk/temporal_spatial.h"
+#include "nx/gpu/vk/upscaler.h"
 typedef uint64_t u64; typedef uint32_t u32; typedef uint8_t u8;
 typedef void* VmaAllocation;
 typedef struct { VkImage img; VmaAllocation mem; VkImageView view; VkFormat format; u32 w,h; } Image;
@@ -28,8 +29,8 @@ typedef struct { u64 cbind[5][18]; u32 cbind_size[5][18]; } GpuChannel;
      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
 #define VK_OK(x) ((x) == VK_SUCCESS)
 enum { VK_WATCH_READ, VK_WATCH_WRITE, VK_WATCH_WROTE, VK_WATCH_FREED, VK_WATCH_OVERLAP };
-static struct { VkDevice dev; VkPhysicalDevice phys; VkPhysicalDeviceProperties props; } g_vk;
-static struct { int mode,rect,view,rect_extras_off; VkSampler point; TemporalRectGate rect_gate; u32 resolved_at; } g_t;
+static struct { VkInstance instance; VkDevice dev; VkPhysicalDevice phys; VkPhysicalDeviceProperties props; } g_vk;
+static struct { int mode,rect,view,rect_extras_off,reject; VkSampler point; TemporalRectGate rect_gate; u32 resolved_at; } g_t;
 static u32 g_vk_present;
 static int creates, views_made, deferred, pipes, sets, failure, barriers, fullscreens, fills;
 static VkImage retired_images[8];
@@ -137,7 +138,8 @@ static VkResult vkGetPhysicalDeviceImageFormatProperties(VkPhysicalDevice p,VkFo
  (void)p;
  (void)f;
  assert(ty==VK_IMAGE_TYPE_2D&&ti==VK_IMAGE_TILING_OPTIMAL&&!flags);
- assert(u&VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+ assert((u & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) ||
+        (f == VK_FORMAT_R32G32B32A32_SFLOAT && u == (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT)));
  queries++;
  if(query_fail)return VK_ERROR_FORMAT_NOT_SUPPORTED;
  *out=(VkImageFormatProperties){
@@ -157,11 +159,3 @@ static int own_hash(u64 cpu,u64 n,u64*hash){
     *hash=7;
     return owned_bytes&&cpu<owned_at+owned_bytes&&owned_at<cpu+n;
 }
-/* the upscaler's state as spatial_went_off reads it (D3-3): below native on the hand-over, and the adapter's name */
-typedef struct {
-    const char* name;
-} HostApi;
-static struct {
-    int below, asked, was_rect, was_view, was_extras, armed_spatial;
-    const HostApi* api;
-} g_u;

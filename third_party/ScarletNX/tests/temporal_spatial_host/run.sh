@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the NXAevora contributors
 # Extract the current spatial decision and draw code with host stand-ins: required-source readability, refusal
-# diagnostics, adapter fallback and the renderer's texture/program pair. runner_test.py checks this runner's status.
+# diagnostics, adapter startup/fallback and the renderer's texture/program pair. runner_test.py checks runner status.
 # For a host with python3, clang and the Vulkan headers. Usage: run.sh [build dir] [Vulkan include dir]
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
@@ -21,7 +21,7 @@ run_case() {
         return "$status"
     fi
 }
-for t in readability refusal fallback; do
+for t in readability refusal fallback startup; do
     python3 "$here/gen.py" "$src" "$here/$t.c" "$out/$t.c"
     ${CLANG:-clang} $flags -o "$out/$t" "$out/$t.c" -lm
     run_case "$t"

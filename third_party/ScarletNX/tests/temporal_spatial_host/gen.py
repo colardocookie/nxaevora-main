@@ -31,13 +31,19 @@ tests = (root / 'tests/temporal_math.c').read_text()
 mark = "/* SNX_ARCEUS_UPSCALER=spatial's state"
 begin = temporal.index('static struct {', temporal.index(mark))
 state = temporal[begin:temporal.index('} g_s;\n', begin) + 7]
+begin = temporal.index('static struct {', temporal.index('/* SNX_ARCEUS_UPSCALER:'))
+upscaler = temporal[begin:temporal.index('} g_u = {.asked = -1};', begin) + len('} g_u = {.asked = -1};')]
 watch = re.search(r'^const Surf\* g_vk_watch;\n', temporal, re.M)
 names = ['image_ensure', 'spatial_went_off', 'spatial_failed', 'spatial_now', 'spatial_block', 'vk_temporal_watch',
          'vk_temporal_spatial_binding', 'vk_temporal_spatial_fault', 'vk_temporal_spatial_decide',
          'spatial_views_drop', 'spatial_larger', 'spatial_ready', 'spatial_retire', 'upscaler_unavailable']
 text = (here / 'stubs.c').read_text()
 text += function(buffer, 'range_owned') + function(buffer, 'vk_buf_owned')
-text += state + '\n' + (watch.group(0) if watch else '')
+text += upscaler + '\n' + state + '\n' + (watch.group(0) if watch else '')
+if case.stem == 'startup':
+    text += ''.join(re.findall(r'^#define UPSCALED_(?:FORMAT|USAGE) .+\n', temporal, re.M))
+    text += (here / 'startup_stubs.c').read_text()
+    names += ['spatial_start', 'upscaler_start']
 text += ''.join(function(temporal, n) for n in names)
 text += function(tests, 'spatial_draw')
 text += case.read_text()

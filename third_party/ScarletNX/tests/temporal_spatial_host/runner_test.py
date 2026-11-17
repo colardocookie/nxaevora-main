@@ -22,7 +22,7 @@ out.write_text('#!/bin/sh\\necho "case ' + out.name + ' status ' + str(status) +
 out.chmod(0o755)
 ''')
     compiler.chmod(0o755)
-    for failure in ('none', 'readability', 'refusal', 'fallback', 'render_pair'):
+    for failure in ('none', 'readability', 'refusal', 'fallback', 'startup', 'render_pair'):
         build = root / failure
         build.mkdir()
         env = dict(os.environ, CLANG=str(compiler), FAIL_CASE=failure)
@@ -33,4 +33,4 @@ out.chmod(0o755)
         assert ('temporal_spatial_host: ok' in result.stdout) == (expected == 0)
         if expected:
             assert f'case {failure} status 42' in result.stderr
-print('spatial runner: success control and all four executable failures propagated')
+print('spatial runner: success control and all five executable failures propagated')
