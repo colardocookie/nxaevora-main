@@ -2,10 +2,18 @@
    Copyright 2026 the NXAevora contributors */
 /* PERF-1 (gpu/vk/landing.c) against the byte loops it replaces: out_changed_runs' word test (buffer.c) and
    vk_write_changed's walk (writeback.c), copied here as they are with SNX_ARCEUS_PERF_LANDING unset. The same runs,
-   and the same bytes in guest memory, on random and edge inputs. Level 2's landing_blocks: the same guest bytes. */
+   and the same bytes in guest memory, on random and edge inputs. Level 2's landing_blocks: the same guest bytes.
+   Level 3's landing_masked: the same bytes and the same count, run only where the CPU and OS have AVX-512BW. */
 #include "nx/gpu/vk/landing.h"
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 static int failures;
 #define CHECK(cond)                                                                                                    \
@@ -319,7 +327,141 @@ static void test_blocks(void) {
     }
 }
 
+/* landing_masked, or landing_runs where it can't run, as writeback.c picks them */
+static int masked;
+static uint64_t land3(const uint8_t* r, const uint8_t* o, uint8_t* d, uint32_t size, LandingPut p, void* ctx) {
+    return masked ? landing_masked(r, o, d, size, p, ctx) : landing_runs(r, o, d, size, p, ctx);
+}
+/* the step of landing_masked in scalar code, so that the rule is tested where AVX-512BW is missing too */
+static uint64_t model_masked(const uint8_t* r, const uint8_t* o, uint8_t* d, uint32_t size) {
+    uint64_t total = 0;
+    uint32_t k = 0;
+    for (; size - k >= 64; k += 64) {
+        uint64_t m = 0;
+        for (unsigned j = 0; j < 64; j++) m |= (uint64_t)(r[k + j] != o[k + j] && d[k + j] == o[k + j]) << j;
+        for (unsigned j = 0; j < 64; j++)
+            if (m >> j & 1) d[k + j] = r[k + j];
+        total += (uint64_t)__builtin_popcountll(m);
+    }
+    for (; k < size; k++)
+        if (r[k] != o[k] && d[k] == o[k]) d[k] = r[k], total++;
+    return total;
+}
+/* the tail's puts: after the last whole step, within the result, each byte once */
+static void tail_put(void* ctx, uint32_t from, uint32_t n) {
+    Blocks* b = ctx;
+    if (!n || from + n > b->size || from < b->size / 64 * 64) b->bad = 1;
+    for (uint32_t i = from; !b->bad && i < from + n; i++) {
+        if (b->seen[i]) b->bad = 1;
+        b->seen[i] = 1;
+    }
+    if (!b->bad) memcpy(b->dst + from, b->res + from, n);
+    b->total += n;
+}
+static void compare_masked(uint32_t size) {
+    memcpy(old_dst, guest, size);
+    old_out.count = 0;
+    old_out.dst = old_dst;
+    old_out.res = res;
+    old_walk(res, org, old_dst, size, &old_out); /* cur is the guest memory written, as at level 3 */
+    uint64_t want = 0;
+    for (uint32_t i = 0; i < old_out.count; i++) want += old_out.runs[i].n;
+    memcpy(new_dst, guest, size);
+    CHECK(model_masked(res, org, new_dst, size) == want && !memcmp(new_dst, old_dst, size));
+    if (!masked) return;
+    memcpy(new_dst, guest, size);
+    memset(&blocks, 0, sizeof blocks);
+    blocks.dst = new_dst;
+    blocks.res = res;
+    blocks.size = size;
+    const uint64_t total = landing_masked(res, org, new_dst, size, tail_put, &blocks);
+    CHECK(!blocks.bad && total == want && !memcmp(new_dst, old_dst, size));
+}
+static void test_masked(void) {
+    for (uint32_t size = 0; size < 300; size++) {
+        fill_blocks(size);
+        compare_masked(size);
+    }
+    for (unsigned round = 0; round < 2000; round++) {
+        const uint32_t size = rnd() % (MAX + 1);
+        fill_blocks(size);
+        compare_masked(size);
+    }
+    for (unsigned round = 0; round < 600; round++) {
+        static const int densities[] = {0, 1, 20, 300, 900, 1000};
+        const uint32_t size = rnd() % 5001;
+        fill(size, densities[round % 6], (int)(round / 6 % 2));
+        compare_masked(size);
+    }
+}
+
+/* A result and its guest bytes that each end where an unmapped page starts: no step reads or writes past the end */
+static void test_canary(void) {
+    const size_t page = 4096; /* res in page 0, guest memory in page 2, pages 1 and 3 unmapped */
+#if defined(_WIN32)
+    uint8_t* map = VirtualAlloc(NULL, 4 * page, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    DWORD was;
+    CHECK(map && VirtualProtect(map + page, page, PAGE_NOACCESS, &was) &&
+          VirtualProtect(map + 3 * page, page, PAGE_NOACCESS, &was));
+#else
+    uint8_t* map = mmap(NULL, 4 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(map != MAP_FAILED && !mprotect(map + page, page, PROT_NONE) && !mprotect(map + 3 * page, page, PROT_NONE));
+#endif
+    static uint8_t o[4096];
+    for (uint32_t size = 1; size <= page; size = size < 200 ? size + 1 : size * 2 + 7) {
+        uint8_t *r = map + page - size, *d = map + 3 * page - size;
+        for (uint32_t i = 0; i < size; i++) o[i] = (uint8_t)i, r[i] = (uint8_t)(i % 3 ? i : i + 1), d[i] = o[i];
+        Out out = {.dst = d, .res = r};
+        CHECK(land3(r, o, d, size, put, &out) == (size + 2) / 3 && !memcmp(d, r, size));
+    }
+#if defined(_WIN32)
+    VirtualFree(map, 0, MEM_RELEASE);
+#else
+    munmap(map, 4 * page);
+#endif
+}
+
+/* A thread keeps writing the guest bytes the shader left alone and reading them back while the landing runs: none of
+   its writes may be undone (the bytes of a clear mask bit are not stored). Level 2 fails it */
+#define GUARD 4133u
+static uint8_t g_res[GUARD], g_org[GUARD], g_dst[GUARD];
+static int g_stop;
+static unsigned g_lost;
+static void* guard_writer(void* arg) {
+    (void)arg;
+    for (unsigned v = 0; !__atomic_load_n(&g_stop, __ATOMIC_ACQUIRE); v++) {
+        for (uint32_t i = 0; i < GUARD; i++)
+            if (i % 4) __atomic_store_n(&g_dst[i], (uint8_t)(v & 1), __ATOMIC_RELAXED);
+        for (uint32_t i = 0; i < GUARD; i++)
+            if (i % 4 && __atomic_load_n(&g_dst[i], __ATOMIC_RELAXED) != (uint8_t)(v & 1)) g_lost++;
+    }
+    return NULL;
+}
+static void guard_put(void* ctx, uint32_t from, uint32_t n) {
+    (void)ctx;
+    for (uint32_t i = from; i < from + n; i++) __atomic_store_n(&g_dst[i], g_res[i], __ATOMIC_RELAXED);
+}
+static void test_guard(void) {
+    for (uint32_t i = 0; i < GUARD; i++) g_org[i] = 0, g_res[i] = i % 4 ? 0 : (uint8_t)(0x80 | i);
+    pthread_t t;
+    CHECK(!pthread_create(&t, NULL, guard_writer, NULL));
+    uint64_t landed = 0;
+    for (unsigned round = 0; round < 20000; round++) {
+        for (uint32_t i = 0; i < GUARD; i += 4) __atomic_store_n(&g_dst[i], 0, __ATOMIC_RELAXED);
+        landed += land3(g_res, g_org, g_dst, GUARD, guard_put, NULL);
+    }
+    __atomic_store_n(&g_stop, 1, __ATOMIC_RELEASE);
+    pthread_join(t, NULL);
+    CHECK(!g_lost);
+    CHECK(landed == 20000ull * ((GUARD + 3) / 4));
+}
+
 int main(void) {
+    masked = landing_masked_supported();
+    printf("vulkan_landing: level 3's masked path %s\n", masked ? "RUNS (AVX-512BW)" : "skipped: no AVX-512BW here");
+    test_masked();
+    test_canary();
+    test_guard();
     test_blocks();
     test_words();
     test_edges();

@@ -1,8 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 #include "nx/gpu/vk/landing.h"
+#if defined(__x86_64__) || defined(__i386__)
+#include <cpuid.h>
+#include <immintrin.h>
+#define LANDING_X86 1
+#else
+#define LANDING_X86 0
+#endif
 
 int g_perf_landing;
+int g_landing_masked;
 
 /* 0xFF in each byte where x's byte is not 0, as rebase_bytes builds its mask */
 static uint64_t byte_mask(uint64_t x) {
@@ -71,6 +79,46 @@ uint64_t landing_runs(const uint8_t* res, const uint8_t* org, const uint8_t* cur
     runs_in(&r, res, org, cur, 0, size);
     return r.total;
 }
+
+int landing_masked_supported(void) {
+#if LANDING_X86
+    unsigned a, b, c, d, lo, hi;
+    if (!__get_cpuid(1, &a, &b, &c, &d) || !(c & bit_OSXSAVE)) return 0;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    (void)hi;
+    if ((lo & 0xE6) != 0xE6) return 0; /* XCR0: the OS saves the XMM, YMM, opmask and both ZMM states */
+    if (!__get_cpuid_count(7, 0, &a, &b, &c, &d)) return 0;
+    return (b & bit_AVX512F) && (b & bit_AVX512BW);
+#else
+    return 0;
+#endif
+}
+
+#if LANDING_X86
+__attribute__((target("avx512f,avx512bw"))) uint64_t landing_masked(const uint8_t* res, const uint8_t* org,
+                                                                    uint8_t* dst, uint32_t size, LandingPut put,
+                                                                    void* ctx) {
+    uint64_t total = 0;
+    uint32_t k = 0;
+    for (; size - k >= 64; k += 64) {
+        const __m512i r = _mm512_loadu_si512(res + k), o = _mm512_loadu_si512(org + k);
+        __mmask64 m = _mm512_cmpneq_epi8_mask(r, o);
+        if (!m) continue; /* the guest's bytes are read only in a step the shader changed */
+        m &= _mm512_cmpeq_epi8_mask(_mm512_loadu_si512(dst + k), o);
+        if (!m) continue;
+        _mm512_mask_storeu_epi8(dst + k, m, r); /* the bytes of a clear mask bit are not stored */
+        total += (uint64_t)__builtin_popcountll(m);
+    }
+    Runs r = {put, ctx, 0, 0, 0};
+    runs_in(&r, res, org, dst, k, size);
+    return total + r.total;
+}
+#else
+uint64_t landing_masked(const uint8_t* res, const uint8_t* org, uint8_t* dst, uint32_t size, LandingPut put,
+                        void* ctx) {
+    return landing_runs(res, org, dst, size, put, ctx);
+}
+#endif
 
 uint64_t landing_blocks(const uint8_t* res, const uint8_t* org, const uint8_t* cur, uint32_t size, LandingPut put,
                         void* ctx) {

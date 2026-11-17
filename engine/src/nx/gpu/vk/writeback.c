@@ -58,8 +58,11 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
         LandingDst d = {addr, res, dst};
         /* 2, a bench measurement only: blocks the guest left alone are copied whole, written counting them whole. A
            guest write to an unchanged byte between a block's compare and its copy is undone (gpu/vk/landing.h) */
-        written = g_perf_landing == 2 && dst ? landing_blocks(res, org, cur, size, landing_put, &d)
-                                             : landing_runs(res, org, cur, size, landing_put, &d);
+        if (g_perf_landing == 3 && g_landing_masked && dst) /* 3: the same bytes, a 64-byte masked store a step */
+            written = landing_masked(res, org, dst, size, landing_put, &d);
+        else
+            written = g_perf_landing == 2 && dst ? landing_blocks(res, org, cur, size, landing_put, &d)
+                                                 : landing_runs(res, org, cur, size, landing_put, &d);
         changed = written != 0;
     }
     for (u32 i = 0; !g_perf_landing && i < size;) {
