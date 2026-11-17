@@ -28,4 +28,14 @@ void overlap_collect(OverlapRanges* r, const NvnOpList* list, OverlapFind find, 
    clear, a report. 1 too when writes overflowed, since one of them may be it */
 int overlap_self_written(const OverlapRanges* r, uint64_t gva, uint64_t len);
 
+/* A record's hand-over between the post, which hashes it on the game's thread, and frame_end on the GPU thread */
+enum { OVERLAP_FREE = 0, OVERLAP_COLLECTED, OVERLAP_HASHED, OVERLAP_ENDING, OVERLAP_SKIPPED };
+/* The end's claim: ENDING when the post's hash is done (the end compares, then frees), SKIPPED when it is not (the
+   post frees). Retried until one of the two holds, so a hash finished between the look and the claim is not lost.
+   Any other state is returned as it is: the record is not the end's to take */
+int overlap_end_claim(int* state);
+/* The post's hand-over after its hash: 1 when the record is HASHED for the end, 0 when the end skipped it, which
+   leaves it FREE */
+int overlap_post_publish(int* state);
+
 #endif

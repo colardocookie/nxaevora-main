@@ -4,6 +4,11 @@
 #include "nx/gpu/nvn/nvn_params.h"
 #include <string.h>
 
+/* a test replaces it to run the other side between a look and a claim */
+#ifndef OVERLAP_CAS
+#define OVERLAP_CAS(p, e, v) __atomic_compare_exchange_n(p, e, v, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)
+#endif
+
 void overlap_clear(OverlapRanges* r) {
     perf_reuse_clear(&r->set);
     r->nw = 0;
@@ -77,6 +82,21 @@ void overlap_collect(OverlapRanges* r, const NvnOpList* list, OverlapFind find, 
         default: break;
         }
     }
+}
+
+int overlap_end_claim(int* state) {
+    for (;;) {
+        int seen = __atomic_load_n(state, __ATOMIC_ACQUIRE);
+        const int next = seen == OVERLAP_HASHED ? OVERLAP_ENDING : seen == OVERLAP_COLLECTED ? OVERLAP_SKIPPED : -1;
+        if (next < 0) return seen;
+        if (OVERLAP_CAS(state, &seen, next)) return next;
+    }
+}
+int overlap_post_publish(int* state) {
+    int expected = OVERLAP_COLLECTED;
+    if (OVERLAP_CAS(state, &expected, OVERLAP_HASHED)) return 1;
+    __atomic_store_n(state, OVERLAP_FREE, __ATOMIC_RELEASE); /* SKIPPED: the replay ended first */
+    return 0;
 }
 
 int overlap_self_written(const OverlapRanges* r, uint64_t gva, uint64_t len) {

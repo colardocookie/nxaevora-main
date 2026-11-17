@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* The records go round in post order, which is the order the GPU thread ends present jobs in. A record's state says
-   who has it: the post collects (COLLECTED), the game's thread hashes (HASHED), frame_end hashes again and counts.
-   A replay that ends before its post's hash is done finds the record COLLECTED and marks it SKIPPED, and the game's
-   thread then drops it, so no count compares against a hash that was not finished. */
+   who has it (overlap_check_calc.h): the post collects, the game's thread hashes and hands it over, frame_end claims it
+   and hashes again. A replay that ends before its post's hash is done skips it, and the game's thread then frees it,
+   so no count compares against an unfinished hash. Every job missed so is counted and printed. */
 #include "nx/gpu/nvn/diag/overlap_check.h"
 #include "nx/gpu/nvn/diag/perf_reuse.h"
 #include "nx/gpu/vk/vk.h"
@@ -14,7 +14,6 @@
 
 #define OVERLAP_RECORDS 4u /* presents between a post and its end: one, two with SNX_ARCEUS_PERF_OVERLAP */
 #define OVERLAP_WINDOW 600u
-enum { REC_FREE = 0, REC_COLLECTED, REC_HASHED, REC_ENDING, REC_SKIPPED };
 
 int g_overlap_check;
 typedef struct {
@@ -26,7 +25,8 @@ static Record g_rec[OVERLAP_RECORDS];
 static uint64_t g_post_seq; /* objs_lock */
 static uint64_t g_end_seq;  /* the GPU thread's */
 static PerfReuseWindow g_win; /* the GPU thread's */
-static uint64_t g_game_changed[PERF_REUSE_KINDS], g_self_changed, g_lost, g_skipped, g_end_ns, g_w_overflow;
+static uint64_t g_game_changed[PERF_REUSE_KINDS], g_self_changed, g_lost, g_skipped, g_missed;
+static uint64_t g_end_ns, g_w_overflow;
 static uint64_t g_post_ns; /* the game's thread adds, the GPU thread takes: atomic */
 
 static uint64_t hash_all(OverlapRanges* r, int compare) {
@@ -58,7 +58,7 @@ static uint64_t hash_all(OverlapRanges* r, int compare) {
 int overlap_check_collect(const uint64_t* handles, uint32_t count, OverlapFind find, void* ctx) {
     const uint64_t seq = g_post_seq++;
     Record* rec = &g_rec[seq % OVERLAP_RECORDS];
-    if (__atomic_load_n(&rec->state, __ATOMIC_ACQUIRE) != REC_FREE) {
+    if (__atomic_load_n(&rec->state, __ATOMIC_ACQUIRE) != OVERLAP_FREE) {
         __atomic_fetch_add(&g_lost, 1, __ATOMIC_RELAXED);
         return -1;
     }
@@ -69,7 +69,7 @@ int overlap_check_collect(const uint64_t* handles, uint32_t count, OverlapFind f
     overlap_clear(rec->ranges);
     for (uint32_t i = 0; i < count; i++) overlap_collect(rec->ranges, find(ctx, handles[i]), find, ctx, 0);
     rec->seq = seq;
-    __atomic_store_n(&rec->state, REC_COLLECTED, __ATOMIC_RELEASE);
+    __atomic_store_n(&rec->state, OVERLAP_COLLECTED, __ATOMIC_RELEASE);
     return (int)(seq % OVERLAP_RECORDS);
 }
 
@@ -79,9 +79,7 @@ void overlap_check_post_hash(int record) {
     const uint64_t t0 = plat_ns();
     hash_all(rec->ranges, 0);
     __atomic_fetch_add(&g_post_ns, plat_ns() - t0, __ATOMIC_RELAXED);
-    int expected = REC_COLLECTED;
-    if (!__atomic_compare_exchange_n(&rec->state, &expected, REC_HASHED, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
-        __atomic_store_n(&rec->state, REC_FREE, __ATOMIC_RELEASE); /* SKIPPED: the replay ended first */
+    overlap_post_publish(&rec->state);
 }
 
 static void window_line(void) {
@@ -96,42 +94,43 @@ static void window_line(void) {
                                  w->top[i].kinds & PERF_REUSE_STORAGE ? "s" : "");
     const double f = w->frames ? (double)w->frames : 1.0;
     const uint64_t post_ns = __atomic_exchange_n(&g_post_ns, 0, __ATOMIC_RELAXED);
-    LOG("nvn-overlap-check: %llu presents (upper bound for buffers: uniforms hashed at their bound size, textures not "
-        "covered, a change after its draw read it counts): %.1f ranges %.2f MB a frame, changed %llu ranges %.3f MB, "
-        "by the game: constants %llu/%llu vertices %llu/%llu indices %llu/%llu storages %llu/%llu, by the replay "
-        "itself %llu, owned %llu, overflow %llu+%llu, skipped %llu, lost %llu, hashing %.3f ms a frame at the post and "
-        "%.3f at the end, largest changed: %s\n",
-        (unsigned long long)w->frames, w->kept / f, w->bytes_kept / f / 1e6, (unsigned long long)w->changed,
+    const uint64_t lost = __atomic_exchange_n(&g_lost, 0, __ATOMIC_RELAXED);
+    LOG("nvn-overlap-check: %llu presents, %llu of them not checked (skipped %llu, lost %llu, missed %llu). "
+        "Candidates, not a bound: a range that meets a replay write counts as the replay's, textures and copy "
+        "sources are not covered, owned runs are hashed by owner, and a change after its draw read it counts. "
+        "%.1f ranges %.2f MB a frame, changed %llu ranges %.3f MB, by the game: constants %llu/%llu vertices "
+        "%llu/%llu indices %llu/%llu storages %llu/%llu, by the replay itself %llu, owned %llu, overflow "
+        "%llu+%llu, hashing %.3f ms a frame at the post and %.3f at the end, largest changed: %s\n",
+        (unsigned long long)w->frames, (unsigned long long)(g_skipped + lost + g_missed),
+        (unsigned long long)g_skipped, (unsigned long long)lost, (unsigned long long)g_missed, w->kept / f,
+        w->bytes_kept / f / 1e6, (unsigned long long)w->changed,
         w->bytes_changed / 1e6, (unsigned long long)g_game_changed[0], (unsigned long long)w->kept_kind[0],
         (unsigned long long)g_game_changed[1], (unsigned long long)w->kept_kind[1],
         (unsigned long long)g_game_changed[2], (unsigned long long)w->kept_kind[2],
         (unsigned long long)g_game_changed[3], (unsigned long long)w->kept_kind[3],
         (unsigned long long)g_self_changed, (unsigned long long)w->owned, (unsigned long long)w->overflow,
-        (unsigned long long)g_w_overflow, (unsigned long long)g_skipped,
-        (unsigned long long)__atomic_exchange_n(&g_lost, 0, __ATOMIC_RELAXED), post_ns / f / 1e6, g_end_ns / f / 1e6,
-        top[0] ? top : "none");
+        (unsigned long long)g_w_overflow, post_ns / f / 1e6, g_end_ns / f / 1e6, top[0] ? top : "none");
     memset(&g_win, 0, sizeof g_win);
     memset(g_game_changed, 0, sizeof g_game_changed);
-    g_self_changed = g_skipped = g_end_ns = g_w_overflow = 0;
+    g_self_changed = g_skipped = g_missed = g_end_ns = g_w_overflow = 0;
 }
 
 void overlap_check_end(void) {
     const uint64_t seq = g_end_seq++;
     Record* rec = &g_rec[seq % OVERLAP_RECORDS];
-    int expected = REC_HASHED;
-    if (rec->seq == seq &&
-        __atomic_compare_exchange_n(&rec->state, &expected, REC_ENDING, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    /* a lost post left no record of its own, so the record there is another job's: missed, not taken */
+    const int claim = rec->seq == seq ? overlap_end_claim(&rec->state) : OVERLAP_FREE;
+    if (claim == OVERLAP_ENDING) {
         const uint64_t t0 = plat_ns();
         hash_all(rec->ranges, 1);
         g_end_ns += plat_ns() - t0;
         g_win.overflow += rec->ranges->set.overflow;
         g_w_overflow += rec->ranges->w_overflow;
-        __atomic_store_n(&rec->state, REC_FREE, __ATOMIC_RELEASE);
-    } else if (rec->seq == seq && expected == REC_COLLECTED &&
-               __atomic_compare_exchange_n(&rec->state, &expected, REC_SKIPPED, 0, __ATOMIC_ACQ_REL,
-                                           __ATOMIC_ACQUIRE)) {
+        __atomic_store_n(&rec->state, OVERLAP_FREE, __ATOMIC_RELEASE);
+    } else if (claim == OVERLAP_SKIPPED) {
         g_skipped++;
+    } else {
+        g_missed++;
     }
-    /* a lost post left no record of its own: the count of presents still goes on */
     if (++g_win.frames == OVERLAP_WINDOW) window_line();
 }
