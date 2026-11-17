@@ -868,11 +868,13 @@ int snx_main(int argc, char** argv) {
 #if defined(SNX_TRACY)
     if (g_settings.tracy_profiler) g_opt_tracy_client = 1; /* the .ini's Debug section asks for the client */
 #endif
-    /* SNX_ARCEUS_PROFILE=1 is the profile option for a launcher that passes only SNX_ARCEUS_* variables. Before any
-       thread starts, since each one is sampled from its start */
+    /* SNX_ARCEUS_PROFILE=1 and SNX_ARCEUS_GPU_PROFILE=1 are the profile and vk_gpu_profile options for a launcher that
+       passes only SNX_ARCEUS_* variables. Before any thread starts, since each one is sampled from its start */
     {
         const char* profile = getenv("SNX_ARCEUS_PROFILE");
+        const char* gpu_profile = getenv("SNX_ARCEUS_GPU_PROFILE");
         if (profile && !strcmp(profile, "1")) g_settings.profiler = 1;
+        if (gpu_profile && !strcmp(gpu_profile, "1")) g_settings.gpu_profile = 1;
     }
     /* the header the log summary reads (common/utilities/logscan.c): no folder in it, since players attach the log to
        public reports and the folder names their account */

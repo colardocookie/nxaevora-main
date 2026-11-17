@@ -35,5 +35,8 @@ void prof_count(ProfTable* t, uint16_t slot, uint16_t gen, uint64_t key);
 /* The thread's n largest buckets, largest first. The number found. */
 uint32_t prof_top(const ProfTable* t, uint16_t slot, uint16_t gen, ProfBucket* out, uint32_t n);
 void prof_clear(ProfTable* t);
+/* The function that covers rva in an image's exception directory (.pdata): count entries of stride bytes, each
+   starting with the function's begin and end RVAs, sorted by begin. 1 with *begin set, 0 when none covers it. */
+int prof_function_at(const void* table, uint32_t count, uint32_t stride, uint32_t rva, uint32_t* begin);
 
 #endif

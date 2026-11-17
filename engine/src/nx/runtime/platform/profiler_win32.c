@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The profile option on Windows: samples the program counter of the runtime's threads every millisecond. Every 10
-   seconds it writes each thread's share of that window in game code, runtime code, other host code and system waits,
-   with its top functions, to profile.txt beside the log (the state folder, with threads.txt), and keeps the window
-   as profile-<seconds>.txt too */
+/* The profile option on Windows: samples the program counter of the runtime's threads every millisecond, and every
+   10 seconds writes each thread's CPU time, its share in game code, runtime code (by function, from .pdata), host
+   code (by module) and system waits, and its top functions, to profile.txt in the state folder beside the log. Each
+   window is kept as profile-<seconds>.txt too */
 #include "common/utilities/common.h"
 #include "nx/loader/module_abi.h"
 #include "nx/runtime/loader.h"
@@ -46,6 +46,8 @@ typedef struct {
     uint8_t live;
     DWORD tid;
     u64 kinds[PROF_KINDS];
+    u64 cpu_user, cpu_kernel;   /* the window's CPU time in 100 ns units (GetThreadTimes) */
+    u64 seen_user, seen_kernel; /* the thread's totals at the last reading */
 } ProfStat;
 static ProfTable g_table;
 static ProfStat g_stats[PROF_THREADS], g_ended[PROF_ENDED];
@@ -60,6 +62,18 @@ static ProfFn* g_fns; /* the game module's functions by host address */
 static u32 g_nfns;
 static ProfRange g_waits[PROF_WAITS];
 static u32 g_nwaits;
+/* the runtime's own functions, from its exception directory, and its image size */
+static const void* g_pdata;
+static u32 g_npdata, g_pdata_stride;
+static u64 g_image_size = 0x10000000u;
+/* the host modules seen at write time */
+#define PROF_MODULES 64
+typedef struct {
+    u64 base, size;
+    char name[64];
+} ProfModule;
+static ProfModule g_modules[PROF_MODULES];
+static u32 g_nmodules;
 
 void plat_prof_add_thread(HANDLE h) {
     HANDLE own;
@@ -140,6 +154,22 @@ static void waits_index(void) {
         g_nwaits++;
     }
 }
+/* the runtime's function table (.pdata). x64 only: an ARM64 entry packs the length, so it keeps the 16-byte keys */
+static void pdata_index(void) {
+    const unsigned char* base = (const unsigned char*)&__ImageBase;
+    const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+    const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return;
+    g_image_size = nt->OptionalHeader.SizeOfImage;
+#if defined(_M_X64) || defined(__x86_64__)
+    const IMAGE_DATA_DIRECTORY* d = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+    if (!d->VirtualAddress || d->Size < sizeof(RUNTIME_FUNCTION)) return;
+    g_pdata = base + d->VirtualAddress;
+    g_pdata_stride = sizeof(RUNTIME_FUNCTION);
+    g_npdata = d->Size / sizeof(RUNTIME_FUNCTION);
+#endif
+}
 /* the game function pc is in: the closest start at or below it, within 1 MiB */
 static const ProfFn* fn_at(u64 pc) {
     u32 lo = 0, hi = g_nfns;
@@ -164,9 +194,14 @@ static void record(int slot, u64 pc) {
         g_stats[slot].live = 1;
         g_stats[slot].tid = __atomic_load_n(&g_tids[slot], __ATOMIC_RELAXED);
     }
-    const int kind = prof_kind(pc, f != NULL, (ProfRange){image, image + 0x10000000u}, g_waits, g_nwaits);
+    const int kind = prof_kind(pc, f != NULL, (ProfRange){image, image + g_image_size}, g_waits, g_nwaits);
+    uint32_t begin;
+    u64 key = f ? f->host : pc & ~(u64)15;
     g_stats[slot].kinds[kind]++;
-    if (kind != PROF_WAIT) prof_count(&g_table, (uint16_t)slot, gen, f ? f->host : pc & ~(u64)15);
+    if (kind == PROF_WAIT) return;
+    if (kind == PROF_RUNTIME && prof_function_at(g_pdata, g_npdata, g_pdata_stride, (uint32_t)(pc - image), &begin))
+        key = image + begin; /* the function, not its 16 bytes */
+    prof_count(&g_table, (uint16_t)slot, gen, key);
 }
 
 /* The thread's name: its own label, the system's description, or its Windows id. No thread is stopped here */
@@ -197,6 +232,89 @@ static void thread_name(const ProfStat* s, char* out, size_t size) {
     snprintf(out, size, "host thread %lu", (unsigned long)tid);
 }
 
+/* The thread's CPU totals in 100 ns units, 0 when the system has none */
+static void thread_times(HANDLE h, u64* user, u64* kernel) {
+    FILETIME created, exited, k, u;
+    *user = *kernel = 0;
+    if (!h || !GetThreadTimes(h, &created, &exited, &k, &u)) return;
+    *user = (u64)u.dwHighDateTime << 32 | u.dwLowDateTime;
+    *kernel = (u64)k.dwHighDateTime << 32 | k.dwLowDateTime;
+}
+/* the window's CPU time: the totals now against the last reading */
+static void cpu_window(ProfStat* s, HANDLE h) {
+    u64 user, kernel;
+    thread_times(h, &user, &kernel);
+    s->cpu_user = user > s->seen_user ? user - s->seen_user : 0;
+    s->cpu_kernel = kernel > s->seen_kernel ? kernel - s->seen_kernel : 0;
+    s->seen_user = user;
+    s->seen_kernel = kernel;
+}
+/* The host module that holds addr, looked up once and kept. Write time only: GetModuleHandleEx takes the loader's
+   lock, and no thread is stopped then */
+static const ProfModule* module_at(u64 addr) {
+    HMODULE m;
+    char path[MAX_PATH];
+    for (u32 i = 0; i < g_nmodules; i++)
+        if (addr - g_modules[i].base < g_modules[i].size) return &g_modules[i];
+    if (g_nmodules == PROF_MODULES ||
+        !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCSTR)(size_t)addr, &m))
+        return NULL;
+    const unsigned char* base = (const unsigned char*)m;
+    const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)base;
+    const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    ProfModule* mod = &g_modules[g_nmodules];
+    mod->base = (u64)(size_t)base;
+    mod->size = dos->e_magic == IMAGE_DOS_SIGNATURE && nt->Signature == IMAGE_NT_SIGNATURE
+                    ? nt->OptionalHeader.SizeOfImage
+                    : 1;
+    const DWORD n = GetModuleFileNameA(m, path, sizeof path);
+    const char* leaf = n ? path + n : path;
+    while (leaf > path && leaf[-1] != '\\' && leaf[-1] != '/') leaf--;
+    snprintf(mod->name, sizeof mod->name, "%s", n ? leaf : "?");
+    if (addr - mod->base >= mod->size) return NULL;
+    g_nmodules++;
+    return mod;
+}
+/* "host by module": the thread's host samples summed by module, the largest first */
+typedef struct {
+    const ProfModule* mod; /* NULL: no module holds the address */
+    u64 count;
+} ProfSum;
+static void host_modules(FILE* f, const ProfStat* s, double ticks) {
+    ProfSum sums[16];
+    u32 n = 0;
+    u64 other = 0;
+    const u64 image = (u64)(size_t)&__ImageBase;
+    for (u32 i = 0; i < PROF_BUCKETS; i++) {
+        const ProfBucket* b = &g_table.buckets[i];
+        if (!b->key || b->slot != s->slot || b->gen != s->gen) continue;
+        const ProfFn* fn = fn_at(b->key);
+        if ((fn && fn->host == b->key) || b->key - image < g_image_size) continue; /* game or runtime */
+        const ProfModule* mod = module_at(b->key);
+        u32 k = 0;
+        while (k < n && sums[k].mod != mod) k++;
+        if (k == n && n < sizeof sums / sizeof sums[0]) sums[n++] = (ProfSum){mod, 0};
+        if (k < n)
+            sums[k].count += b->count;
+        else
+            other += b->count;
+    }
+    if (!n) return;
+    for (u32 i = 1; i < n; i++) /* a few entries: insertion sort */
+        for (u32 j = i; j && sums[j - 1].count < sums[j].count; j--) {
+            const ProfSum t = sums[j];
+            sums[j] = sums[j - 1];
+            sums[j - 1] = t;
+        }
+    fprintf(f, "  host by module:");
+    for (u32 i = 0; i < n; i++)
+        fprintf(f, "%s %s %.1f%%", i ? "," : "", sums[i].mod ? sums[i].mod->name : "unknown",
+                100.0 * (double)sums[i].count / ticks);
+    if (other) fprintf(f, ", others %.1f%%", 100.0 * (double)other / ticks);
+    fprintf(f, "\n");
+}
+
 static u64 busy(const ProfStat* s) { return s->kinds[PROF_GAME] + s->kinds[PROF_RUNTIME] + s->kinds[PROF_HOST]; }
 static int busy_cmp(const void* a, const void* b) {
     u64 x = busy(*(const ProfStat* const*)a), y = busy(*(const ProfStat* const*)b);
@@ -206,6 +324,7 @@ static void write_window(FILE* f, const ProfStat* const* order, int n, u64 from_
     static ProfBucket top[PROF_TOP];
     const u64 image = (u64)(size_t)&__ImageBase;
     const double ticks = g_ticks ? (double)g_ticks : 1.0;
+    const double window_100ns = to_ns > from_ns ? (double)(to_ns - from_ns) / 100.0 : 1.0;
     fprintf(f, "ScarletNX profile: the window from %.1f s to %.1f s after the profiler started, %llu ticks of 1 ms, "
                "%d threads, %u ended threads left out, %llu samples not placed. Shares are of the ticks\n",
             (double)from_ns / 1e9, (double)to_ns / 1e9, (unsigned long long)g_ticks, n, g_ended_lost,
@@ -215,21 +334,31 @@ static void write_window(FILE* f, const ProfStat* const* order, int n, u64 from_
         char name[PROF_LABEL + 32];
         thread_name(s, name, sizeof name);
         const u64* c = s->kinds;
-        fprintf(f, "\nthread %s: busy %.1f%% (game %.1f%%, runtime %.1f%%, host %.1f%%), wait %.1f%%%s\n", name,
-                100.0 * (double)busy(s) / ticks, 100.0 * (double)c[PROF_GAME] / ticks,
-                100.0 * (double)c[PROF_RUNTIME] / ticks, 100.0 * (double)c[PROF_HOST] / ticks,
-                100.0 * (double)c[PROF_WAIT] / ticks, s->live ? "" : ", ended");
+        fprintf(f, "\nthread %s: cpu %.1f%% (kernel %.1f%%), busy %.1f%% (game %.1f%%, runtime %.1f%%, host %.1f%%), "
+                   "wait %.1f%%%s\n",
+                name, 100.0 * (double)(s->cpu_user + s->cpu_kernel) / window_100ns,
+                100.0 * (double)s->cpu_kernel / window_100ns, 100.0 * (double)busy(s) / ticks,
+                100.0 * (double)c[PROF_GAME] / ticks, 100.0 * (double)c[PROF_RUNTIME] / ticks,
+                100.0 * (double)c[PROF_HOST] / ticks, 100.0 * (double)c[PROF_WAIT] / ticks,
+                s->live ? "" : ", ended");
+        host_modules(f, s, ticks);
         const u32 found = prof_top(&g_table, s->slot, s->gen, top, PROF_TOP);
         for (u32 i = 0; i < found; i++) {
             const ProfFn* fn = fn_at(top[i].key);
             const double pct = 100.0 * top[i].count / ticks;
             if (fn && fn->host == top[i].key)
                 fprintf(f, "  %6.2f%% %8u  game function %llx\n", pct, top[i].count, (unsigned long long)fn->guest);
-            else if (top[i].key >= image && top[i].key - image < 0x10000000u)
+            else if (top[i].key >= image && top[i].key - image < g_image_size)
                 fprintf(f, "  %6.2f%% %8u  runtime +%llx\n", pct, top[i].count,
                         (unsigned long long)(top[i].key - image));
-            else
-                fprintf(f, "  %6.2f%% %8u  host %llx\n", pct, top[i].count, (unsigned long long)top[i].key);
+            else {
+                const ProfModule* mod = module_at(top[i].key);
+                if (mod)
+                    fprintf(f, "  %6.2f%% %8u  host %s+%llx\n", pct, top[i].count, mod->name,
+                            (unsigned long long)(top[i].key - mod->base));
+                else
+                    fprintf(f, "  %6.2f%% %8u  host %llx\n", pct, top[i].count, (unsigned long long)top[i].key);
+            }
         }
     }
 }
@@ -239,8 +368,11 @@ static void write_profile(u64 started, u64 window_start) {
     const u64 now = plat_ns();
     char path[1200];
     int n = 0;
-    for (int i = 0; i < PROF_THREADS; i++)
-        if (g_stats[i].live && (busy(&g_stats[i]) || g_stats[i].kinds[PROF_WAIT])) order[n++] = &g_stats[i];
+    for (int i = 0; i < PROF_THREADS; i++) {
+        if (!g_stats[i].live) continue;
+        cpu_window(&g_stats[i], __atomic_load_n(&g_threads[i], __ATOMIC_ACQUIRE));
+        if (busy(&g_stats[i]) || g_stats[i].kinds[PROF_WAIT]) order[n++] = &g_stats[i];
+    }
     for (int i = 0; i < g_nended; i++) order[n++] = &g_ended[i];
     qsort(order, (size_t)n, sizeof *order, busy_cmp);
     for (int pass = 0; pass < 2; pass++) {
@@ -266,6 +398,7 @@ static DWORD WINAPI sampler(LPVOID unused) {
     (void)unused;
     fns_index();
     waits_index();
+    pdata_index();
     for (;;) {
         int i, used = __atomic_load_n(&g_threads_used, __ATOMIC_ACQUIRE);
         Sleep(1);
@@ -276,6 +409,7 @@ static DWORD WINAPI sampler(LPVOID unused) {
             if (!h) continue;
             if (WaitForSingleObject(h, 0) == WAIT_OBJECT_0) { /* the thread ended: its slot is free again */
                 if (g_stats[i].live) { /* its window is still written, from g_ended, marked ended */
+                    cpu_window(&g_stats[i], h);
                     g_stats[i].live = 0;
                     if (g_nended < PROF_ENDED)
                         g_ended[g_nended++] = g_stats[i];

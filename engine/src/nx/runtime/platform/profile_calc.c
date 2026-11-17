@@ -43,3 +43,23 @@ uint32_t prof_top(const ProfTable* t, uint16_t slot, uint16_t gen, ProfBucket* o
 }
 
 void prof_clear(ProfTable* t) { memset(t, 0, sizeof *t); }
+
+static uint32_t rva_word(const void* table, uint32_t stride, uint32_t i, uint32_t at) {
+    uint32_t v;
+    memcpy(&v, (const unsigned char*)table + (size_t)i * stride + at, sizeof v);
+    return v;
+}
+int prof_function_at(const void* table, uint32_t count, uint32_t stride, uint32_t rva, uint32_t* begin) {
+    uint32_t lo = 0, hi = count;
+    if (!table || stride < 8) return 0;
+    while (lo < hi) { /* the first entry that begins past rva */
+        const uint32_t mid = lo + (hi - lo) / 2;
+        if (rva_word(table, stride, mid, 0) <= rva)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (!lo || rva >= rva_word(table, stride, lo - 1, 4)) return 0;
+    *begin = rva_word(table, stride, lo - 1, 0);
+    return 1;
+}

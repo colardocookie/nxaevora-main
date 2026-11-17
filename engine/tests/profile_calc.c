@@ -79,11 +79,34 @@ static void test_full(void) {
     CHECK(used + t.unplaced == total);
 }
 
+static void test_function_at(void) {
+    /* RUNTIME_FUNCTION-like entries of 12 bytes: begin, end, unwind */
+    static const uint32_t pdata[] = {0x1000, 0x1040, 0, 0x1040, 0x1100, 0, 0x2000, 0x2010, 0};
+    uint32_t begin = 7;
+    CHECK(!prof_function_at(pdata, 3, 12, 0xfff, &begin) && begin == 7);
+    CHECK(prof_function_at(pdata, 3, 12, 0x1000, &begin) && begin == 0x1000);
+    CHECK(prof_function_at(pdata, 3, 12, 0x103f, &begin) && begin == 0x1000);
+    CHECK(prof_function_at(pdata, 3, 12, 0x1040, &begin) && begin == 0x1040);
+    CHECK(prof_function_at(pdata, 3, 12, 0x10ff, &begin) && begin == 0x1040);
+    begin = 7;
+    CHECK(!prof_function_at(pdata, 3, 12, 0x1100, &begin) && begin == 7); /* a gap between functions */
+    CHECK(!prof_function_at(pdata, 3, 12, 0x1fff, &begin));
+    CHECK(prof_function_at(pdata, 3, 12, 0x200f, &begin) && begin == 0x2000);
+    CHECK(!prof_function_at(pdata, 3, 12, 0x2010, &begin));
+    CHECK(!prof_function_at(pdata, 0, 12, 0x1000, &begin));
+    CHECK(!prof_function_at(NULL, 3, 12, 0x1000, &begin));
+    CHECK(!prof_function_at(pdata, 3, 4, 0x1000, &begin));
+    static const uint32_t pairs[] = {0x10, 0x20, 0x30, 0x40}; /* an 8-byte stride */
+    CHECK(prof_function_at(pairs, 2, 8, 0x35, &begin) && begin == 0x30);
+    CHECK(!prof_function_at(pairs, 2, 8, 0x25, &begin));
+}
+
 int main(void) {
     test_kind();
     test_counts_and_top();
     test_top_order();
     test_full();
+    test_function_at();
     if (failures) return 1;
     printf("profile_calc: ok\n");
     return 0;
