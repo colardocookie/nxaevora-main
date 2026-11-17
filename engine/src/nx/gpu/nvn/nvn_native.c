@@ -107,6 +107,9 @@ static uint32_t frames_in_flight; /* frame jobs that a post made and frame_finis
 int g_perf_overlap;
 #define NVN_OVERLAP_LINE_PRESENTS 600u
 static uint32_t overlap_waits, overlap_early, overlap_in_flight;
+/* The experiment's values live beside the records, in a fixed table that only the switch touches, so a queue's and a
+   sync's record keep their size and contents with it unset (NvnOverlapTable, nvn_params.h). Guarded by objs_lock. */
+static NvnOverlapTable overlap_table;
 static uint32_t missing_calls, dropped_ops;
 
 typedef struct {
@@ -127,7 +130,6 @@ typedef struct {
     uint8_t init_replayed; /* a frame job took the words: the record hands them out once */
     uint32_t last_posted;  /* the syncpoint value that the last posted frame job reaches */
     uint8_t has_posted;    /* a frame job was posted: last_posted has a value */
-    NvnPresentValues presents; /* SNX_ARCEUS_PERF_OVERLAP: the values of the last two present jobs */
 } QueueRec;
 typedef struct {
     uint64_t device, native_window, textures[NVN_WINDOW_MAX_TEXTURES];
@@ -142,8 +144,6 @@ typedef struct {
     uint32_t syncpoint; /* the syncpoint id of the queue with the newest fence */
     uint32_t value;     /* what that queue promises to reach for the newest fence */
     uint32_t serial;    /* the newest fence of this sync */
-    uint32_t early;     /* SNX_ARCEUS_PERF_OVERLAP: the present before the fence's, which a wait may settle for */
-    uint8_t has_early;  /* the fence is a present's and a present came before it: early has a value */
 } SyncRec;
 /* nvnQueueFenceSync flag bit 0: the call also posts the pending frame. Other bits have no host meaning. */
 #define NVN_QUEUE_FENCE_FLUSH_FOR_CPU 1u
@@ -712,6 +712,8 @@ static void h_queue_initialize(CPU* c, u64 entry) {
     uint32_t channel_id = 0;
     GpuChannel* channel = NULL;
     if (old) { /* initialized again without Finalize */
+        /* SNX_ARCEUS_PERF_OVERLAP: the new queue's first present has none before it */
+        if (g_perf_overlap) nvn_overlap_queue_drop(&overlap_table, queue_addr);
         queue_drop_frame_syncs(queue_addr, &old->pending);
         pm_lock(&lists_lock);
         nvn_frame_release(&old->pending, &lists);
@@ -6403,14 +6405,15 @@ static void h_sync_initialize(CPU* c, u64 entry) {
     s->syncpoint = 0;
     s->value = 0;
     s->serial = 0;
-    s->early = 0;
-    s->has_early = 0;
+    /* SNX_ARCEUS_PERF_OVERLAP: a new sync at an old address starts without a value */
+    if (g_perf_overlap) nvn_overlap_sync_drop(&overlap_table, c->x[0]);
     c->x[0] = 1; pm_unlock(&objs_lock);
 }
 static void h_sync_finalize(CPU* c, u64 entry) {
     (void)entry;
     objs_lock_take();
     if (known_record(c->x[0], NVN_OBJ_SYNC)) nvn_objtab_remove(&objs, c->x[0]);
+    if (g_perf_overlap) nvn_overlap_sync_drop(&overlap_table, c->x[0]);
     pm_unlock(&objs_lock);
 }
 /* The host has no GL backend. The library stores a GL sync in a SyncRec of kind 4, so both calls fail the same way:
@@ -6553,13 +6556,14 @@ static void h_sync_wait(CPU* c, u64 entry) {
     int waited = 0;
     for (;;) {
         /* SNX_ARCEUS_PERF_OVERLAP: a present's fence settles for the present before it */
-        const int early = g_perf_overlap && sync->has_early;
-        const uint32_t want = early ? sync->early : sync->value;
+        uint32_t want = sync->value;
+        const int early = g_perf_overlap && sync->state == NVN_SYNC_FENCED &&
+                          nvn_overlap_sync_get(&overlap_table, sync_addr, sync->serial, &want);
         const int reached = sync->state == NVN_SYNC_FENCED ? syncpoint_reached(sync->syncpoint, want) : 0;
         const NvnSyncAction action = nvn_sync_wait_action(sync->state, reached);
         if (action == NVN_SYNC_ACTION_SIGNALED) {
             result = waited ? NVN_SYNC_WAIT_SATISFIED : NVN_SYNC_WAIT_SIGNALED;
-            if (early && sync->state == NVN_SYNC_FENCED) {
+            if (early) {
                 overlap_waits++;
                 if (!syncpoint_reached(sync->syncpoint, sync->value)) overlap_early++; /* its own frame still runs */
             }
@@ -6997,8 +7001,11 @@ static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget
     q->last_posted = value;
     q->has_posted = 1;
     uint32_t early = 0; /* only a present's fence gets one: a flush or a finish is waited for whole */
-    const int has_early =
-        target->kind == NVN_FRAME_PRESENT ? nvn_present_values_post(&q->presents, value, &early) : 0;
+    int has_early = 0;
+    if (g_perf_overlap && target->kind == NVN_FRAME_PRESENT) {
+        NvnPresentValues* presents = nvn_overlap_queue(&overlap_table, queue_addr, 1);
+        has_early = presents ? nvn_present_values_post(presents, value, &early) : 0;
+    }
     for (uint32_t i = 0; i < job->frame.token_count; i++) {
         const NvnFrameToken* token = &job->frame.tokens[i];
         NvnObj* so = nvn_objtab_valid(&objs, token->sync, token->generation)
@@ -7008,12 +7015,11 @@ static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget
         if (sync->serial != token->serial) continue; /* a newer fence of this sync is in another frame */
         sync->syncpoint = q->channel_id;
         sync->value = value;
-        sync->early = early;
-        sync->has_early = (uint8_t)has_early;
         sync->state = NVN_SYNC_FENCED;
+        if (g_perf_overlap) nvn_overlap_sync_set(&overlap_table, token->sync, sync->serial, has_early, early);
     }
     frames_in_flight++;
-    if (frames_in_flight > overlap_in_flight) overlap_in_flight = frames_in_flight;
+    if (g_perf_overlap && frames_in_flight > overlap_in_flight) overlap_in_flight = frames_in_flight;
     pc_broadcast(&frame_done_cv); /* a PENDING waiter now has a fence to wait on */
     return job;
 }
@@ -7195,7 +7201,12 @@ static void h_queue_fence_sync(CPU* c, u64 entry) {
         sync->serial = fence_serial_next(sync); /* a newer fence replaces a token that another frame still holds */
         sync->syncpoint = q->channel_id;
         sync->value = nvn_sync_fence_value(q->has_posted, q->last_posted, syncpt_read(q->channel_id));
-        sync->has_early = (uint8_t)nvn_present_values_early(&q->presents, sync->value, &sync->early);
+        if (g_perf_overlap) {
+            uint32_t early = 0;
+            const NvnPresentValues* presents = nvn_overlap_queue(&overlap_table, c->x[0], 0);
+            const int has = presents && nvn_present_values_early(presents, sync->value, &early);
+            nvn_overlap_sync_set(&overlap_table, c->x[1], sync->serial, has, early);
+        }
         sync->state = NVN_SYNC_FENCED;
         pc_broadcast(&frame_done_cv); /* a PENDING waiter of an older token now sees the fence */
     }
