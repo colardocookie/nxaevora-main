@@ -35,6 +35,9 @@ enum {
     PT_TAIL_INCR,   /* to the increment performed, after the landings before it */
     PT_TAIL_FREE,   /* to the end of the release_through that performed it: vk_lock released */
     PT_TAIL_WAKE,   /* to the game's next nvnSyncWait returning after the increment */
+    /* a graphics submission, from the recorder's vkQueueSubmit2 returning to its completion first seen (PERF-12) */
+    PT_SUB_DONE,  /* every submission */
+    PT_SUB_LAST5, /* the last five a present queued before its frame_end */
     PT_SITES
 };
 /* counts a frame, not times */
@@ -63,6 +66,25 @@ enum {
 typedef struct {
     uint64_t sum, max, count;
 } PerfTime;
+/* where a graphics submission came from (PERF-12, research 21:46): set by the caller just before vk_submit */
+enum {
+    SW_OTHER = 0,
+    SW_SLICE,    /* vk_frame_check: the recording time a submission holds */
+    SW_RELEASE,  /* release.c submit_through: a release's gate */
+    SW_FINISH,   /* vk_finish */
+    SW_FRAME,    /* vk_frame_next: a frame slot's end */
+    SW_PRESENT,  /* the renderer's present */
+    SW_IMAGE,    /* render.c image_flush_at */
+    SW_COMPUTE,  /* compute.c */
+    SW_READBACK, /* owned.c, a landing of owned memory */
+    SW_SITES
+};
+#define PERF_SUBS 256u /* the submissions kept, by number: one far behind is counted lost */
+#define PERF_SUB_LEADS 3u /* the last 1, 2 and 4 ms before a present's frame_end */
+typedef struct {
+    uint64_t v, queued, handed, seen;
+    int state; /* the site << 2, and SUB_SEEN and SUB_LAST5: whoever sets the second adds the last five's time */
+} PerfSub;
 /* A tail's times, each written once by the thread that reaches that point, and closed when both its vk_lock release
    and the game's wake are in */
 #define PERF_TAILS 4u
@@ -75,6 +97,11 @@ typedef struct {
     PerfTail tail[PERF_TAILS];
     uint64_t tail_next, tail_handed, tail_mark; /* the next tail's number, the last value handed, the submit count */
     int tail_arm;                               /* the GPU thread's: frame_end armed the next increment */
+    PerfSub sub[PERF_SUBS];
+    uint64_t sub_seen;                            /* the highest submission whose completion was seen */
+    uint64_t sub_last, sub_end;                   /* the GPU thread's: the last queued, the last frame_end */
+    uint64_t sub_site[SW_SITES][1 + PERF_SUB_LEADS]; /* a window's submissions by site: all, and in the last 1/2/4 ms */
+    uint64_t sub_lost;
     struct {
         const char* what; /* 0 while free: claimed with a compare-exchange */
         PerfTime t;
@@ -112,6 +139,16 @@ void perf_tail_done(PerfTimes* p, uint64_t value, uint64_t now);    /* the relea
 void perf_tail_performed(PerfTimes* p, uint64_t seq, uint64_t now); /* release seq, an increment, performed */
 void perf_tail_freed(PerfTimes* p, uint64_t now);                   /* a release_through ended, vk_lock released */
 void perf_tail_woke(PerfTimes* p, uint64_t now);                    /* the game's nvnSyncWait returned */
+/* the submissions: queued and its site (the GPU thread, in submit), handed over (the recorder), completion seen up to
+   value (any thread that read the timeline), and a present's frame_end (the GPU thread) */
+extern int g_perf_submit_why; /* the GPU thread's: an SW_* for the next submit, used once */
+static inline void perf_submit_why(int why) {
+    if (g_perf_times) g_perf_submit_why = why;
+}
+void perf_sub_queued(PerfTimes* p, uint64_t v, int site, uint64_t now);
+void perf_sub_handed(PerfTimes* p, uint64_t v, uint64_t now);
+void perf_sub_seen(PerfTimes* p, uint64_t value, uint64_t now);
+void perf_sub_frame_end(PerfTimes* p, uint64_t now);
 /* Writes the window's line into out and starts the next window. frames: the presents it covers. */
 size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size);
 

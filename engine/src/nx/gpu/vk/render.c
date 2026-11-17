@@ -1275,7 +1275,10 @@ static void image_flush_at(size_t index) {
     GfxImageOut out = g_img_out[index];
     SNX_ZONE(z, "vk image flush");
     if (out.sub) { /* its copy is recorded: once its submit is done, from there */
-        if (out.sub > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+        if (out.sub > vk_last_submit()) {
+            perf_submit_why(SW_IMAGE);
+            vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+        }
         vk_wait_submit(out.sub);
         index = image_find(out.original);
         if (index < g_img_count) image_land(index); /* not landed by a frame's landing meanwhile */

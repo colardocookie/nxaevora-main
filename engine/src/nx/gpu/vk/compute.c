@@ -20,6 +20,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/backing.h"
 #include "nx/gpu/vk/pending_pages.h"
@@ -1476,6 +1477,7 @@ rebind:
             if (!vk_surf_publish(images[i])) vk_surf_flush(images[i], NULL);
         }
         g_vk_dispatches++;
+        perf_submit_why(SW_COMPUTE);
         vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
         return;
     }

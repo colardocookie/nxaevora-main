@@ -10,6 +10,7 @@
 #include <string.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/hle/services/nvdrv.h"
@@ -150,6 +151,7 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
     SNX_ZONE_V(z, "vk own land", n);
     vk_lock();
     for (u32 k = 0; k < n; k++) cpu_read_note(r[k].addr, r[k].size);
+    perf_submit_why(SW_READBACK);
     vk_submit_for_readback();
     while (i < n) {
         Piece pc[64];

@@ -21,6 +21,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/stats.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/gpu/vk/scale.h"
 #include "nx/gpu/vk/debug_stats.h"
 #include "nx/gpu/nvn/diag/nvn_measure.h"
@@ -631,6 +632,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
         }
     }
     /* Offscreen frames still submit and advance the frame ring. g_last remains available for readback. */
+    perf_submit_why(SW_PRESENT);
     vk_submit(wait, VK_PIPELINE_STAGE_2_CLEAR_BIT, signal);
     if (game) vk_renderdoc_present(g_vk_present);
     vk_frame_next(); /* every show used this frame's slot and acquire semaphore, the menu's own too */

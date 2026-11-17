@@ -183,7 +183,76 @@ static void test_tail_threads(void) {
     CHECK(threaded.site[PT_TAIL_INCR].count > 0 && threaded.site[PT_TAIL_INCR].count <= 50000);
 }
 
+/* PERF-12: submissions by site, those in the last 1/2/4 ms before frame_end, each one's time from handing to its
+   completion seen, and the last five a frame queued, whether seen before or after its frame_end */
+static void test_subs(void) {
+    static PerfTimes p;
+    memset(&p, 0, sizeof p);
+    const uint64_t ms = 1000000;
+    perf_sub_frame_end(&p, 1 * ms); /* the frame before */
+    for (uint64_t v = 1; v <= 7; v++) { /* queued at 2..8 ms, handed 0.1 ms later */
+        perf_sub_queued(&p, v, v == 7 ? SW_RELEASE : SW_SLICE, (1 + v) * ms);
+        perf_sub_handed(&p, v, (1 + v) * ms + 100000);
+    }
+    perf_sub_queued(&p, 8, SW_SITES + 3, 9 * ms); /* an unknown site: other, never handed */
+    perf_sub_seen(&p, 2, 9 * ms); /* 1 and 2 seen, 6.9 and 5.9 ms after handing */
+    perf_sub_seen(&p, 1, 9 * ms); /* again, older: nothing */
+    CHECK(p.site[PT_SUB_DONE].count == 2 && p.site[PT_SUB_DONE].sum == 6900000 + 5900000);
+    perf_sub_frame_end(&p, 9 * ms + 500000); /* 8, 7 within 1 ms; 7 and 6 within 4; 5..8 the ones within 4 ms */
+    CHECK(p.sub_site[SW_SLICE][0] == 6 && p.sub_site[SW_RELEASE][0] == 1 && p.sub_site[SW_OTHER][0] == 1);
+    CHECK(p.sub_site[SW_OTHER][1] == 1 && p.sub_site[SW_RELEASE][1] == 0 && p.sub_site[SW_RELEASE][2] == 1);
+    CHECK(p.sub_site[SW_SLICE][1] == 0 && p.sub_site[SW_SLICE][2] == 0 && p.sub_site[SW_SLICE][3] == 2);
+    CHECK(p.site[PT_SUB_LAST5].count == 0); /* the last five are 4..8: none seen yet */
+    perf_sub_seen(&p, 8, 10 * ms); /* 3..8 seen at 10 ms: 8 was never handed */
+    CHECK(p.site[PT_SUB_DONE].count == 7 && p.site[PT_SUB_LAST5].count == 4);
+    CHECK(p.site[PT_SUB_LAST5].sum == (10 * ms - 5100000) + (10 * ms - 6100000) + (10 * ms - 7100000) +
+                                          (10 * ms - 8100000));
+    /* a frame whose last five were seen before its frame_end: the time kept at the seeing counts */
+    perf_sub_queued(&p, 9, SW_FRAME, 11 * ms);
+    perf_sub_handed(&p, 9 + PERF_SUBS, 10 * ms); /* another submission of the slot: not this one's */
+    CHECK(!p.sub[9 % PERF_SUBS].handed);
+    perf_sub_handed(&p, 9, 11 * ms);
+    perf_sub_seen(&p, 9, 12 * ms);
+    perf_sub_frame_end(&p, 13 * ms); /* queued exactly 2 ms before: in the 2 and 4 ms windows, not the 1 ms one */
+    CHECK(p.sub_site[SW_FRAME][1] == 0 && p.sub_site[SW_FRAME][2] == 1 && p.sub_site[SW_FRAME][3] == 1);
+    CHECK(p.site[PT_SUB_LAST5].count == 5 && p.site[PT_SUB_LAST5].max >= 1 * ms);
+    /* a slot needed again before its completion was seen */
+    for (uint64_t v = 10; v < 10 + PERF_SUBS + 1; v++) perf_sub_queued(&p, v, SW_SLICE, 14 * ms);
+    CHECK(p.sub_lost == 1);
+    char line[3072];
+    perf_times_line(&p, 1, line, sizeof line);
+    CHECK(strstr(line, " sub_slice=") && strstr(line, " sub_release=1.0/0.0/1.0/1.0 ") && strstr(line, " sub_lost=1"));
+    CHECK(!strstr(line, " sub_compute=")); /* a site with none is left out */
+    CHECK(p.sub_site[SW_SLICE][0] == 0 && p.sub_lost == 0);
+}
+/* two threads seeing completions at once: each submission's time is added once */
+static PerfTimes subs_threaded;
+static void* subs_seer(void* arg) {
+    const uint64_t step = (uint64_t)(uintptr_t)arg;
+    for (uint64_t v = step; v <= 200; v += 2) perf_sub_seen(&subs_threaded, v, 1000 + v);
+    return NULL;
+}
+static void test_subs_threads(void) {
+    for (uint64_t v = 1; v <= 200; v++) {
+        perf_sub_queued(&subs_threaded, v, SW_SLICE, v);
+        perf_sub_handed(&subs_threaded, v, v);
+    }
+    pthread_t a, b;
+    if (pthread_create(&a, NULL, subs_seer, (void*)(uintptr_t)1)) {
+        CHECK(!"the first seer starts");
+        return;
+    }
+    if (!pthread_create(&b, NULL, subs_seer, (void*)(uintptr_t)2))
+        CHECK(!pthread_join(b, NULL));
+    else
+        CHECK(!"the second seer starts");
+    CHECK(!pthread_join(a, NULL));
+    CHECK(subs_threaded.site[PT_SUB_DONE].count == 200 && subs_threaded.sub_seen == 200);
+}
+
 int main(void) {
+    test_subs();
+    test_subs_threads();
     CHECK(g_perf_submit_every_ns == 1000000); /* upstream's interval while SNX_ARCEUS_PERF_SUBMIT_US is unset */
     test_tail();
     test_tail_line();

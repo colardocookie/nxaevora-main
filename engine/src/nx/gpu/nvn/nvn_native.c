@@ -6762,7 +6762,10 @@ static void frame_end(const FrameJob* job) {
     perf_reuse_job_end(job->kind != NVN_FRAME_FLUSH); /* before the syncpoint lets the game go on */
     if (g_overlap_check && job->kind == NVN_FRAME_PRESENT) overlap_check_end(); /* the replay has ended */
     /* The job's syncpoint increment follows the releases of its reports, as the console's fence does. */
-    if (g_perf_times && job->kind == NVN_FRAME_PRESENT) perf_tail_arm(&g_perf); /* its tail, from this increment */
+    if (g_perf_times && job->kind == NVN_FRAME_PRESENT) { /* its tail, from this increment */
+        perf_tail_arm(&g_perf);
+        perf_sub_frame_end(&g_perf, plat_ns());
+    }
     gpu_stream_incr(job->channel->id);
     if (g_renderer->stream_end) g_renderer->stream_end();
     if (g_renderer->stream_run) g_renderer->stream_run(0);
@@ -6924,7 +6927,7 @@ static u64 perf_present_posted(void) {
 }
 static void perf_line(void) {
     static uint32_t presents; /* GPU thread only */
-    char line[2048];
+    char line[3072];
     if (++presents % PERF_TIMES_WINDOW) return;
     perf_times_line(&g_perf, PERF_TIMES_WINDOW, line, sizeof line);
     LOG("%s\n", line);

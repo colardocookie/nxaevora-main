@@ -2,10 +2,12 @@
    Copyright 2026 the NXAevora contributors */
 #include "nx/gpu/perf_times.h"
 #include <stdio.h>
+#include <string.h>
 
 int g_perf_times;
 PerfTimes g_perf;
 int g_perf_pass_why;
+int g_perf_submit_why;
 uint64_t g_perf_submit_every_ns = PERF_SUBMIT_EVERY_NS;
 
 static void time_add(PerfTime* t, uint64_t ns) {
@@ -128,6 +130,62 @@ void perf_tail_woke(PerfTimes* p, uint64_t now) {
     if (oldest && stamp(&oldest->t_wake, now)) tail_close(p, oldest);
 }
 
+enum { SUB_SEEN = 1, SUB_LAST5 = 2 };
+void perf_sub_queued(PerfTimes* p, uint64_t v, int site, uint64_t now) {
+    PerfSub* s = &p->sub[v % PERF_SUBS];
+    if (site < 0 || site >= (int)SW_SITES) site = SW_OTHER;
+    if (LOAD(s->v) && LOAD(s->v) > LOAD(p->sub_seen)) p->sub_lost++; /* its completion was never seen */
+    __atomic_store_n(&s->v, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s->state, site << 2, __ATOMIC_RELAXED); /* the site, for frame_end, under the flag bits */
+    __atomic_store_n(&s->handed, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&s->seen, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&s->queued, now, __ATOMIC_RELAXED);
+    __atomic_store_n(&s->v, v, __ATOMIC_RELEASE);
+    p->sub_site[site][0]++;
+    p->sub_last = v;
+}
+void perf_sub_handed(PerfTimes* p, uint64_t v, uint64_t now) {
+    PerfSub* s = &p->sub[v % PERF_SUBS];
+    if (LOAD(s->v) == v) stamp(&s->handed, now);
+}
+/* one submission's completion seen: its time, and the last five's if frame_end marked it */
+static void sub_done(PerfTimes* p, PerfSub* s, uint64_t v, uint64_t now) {
+    if (LOAD(s->v) != v) return;
+    const uint64_t handed = LOAD(s->handed);
+    const uint64_t d = handed && now > handed ? now - handed : 0;
+    if (handed) perf_time_add(p, PT_SUB_DONE, d);
+    __atomic_store_n(&s->seen, now, __ATOMIC_RELAXED); /* published by the fetch_or below */
+    const int old = __atomic_fetch_or(&s->state, SUB_SEEN, __ATOMIC_ACQ_REL);
+    if (handed && old & SUB_LAST5) perf_time_add(p, PT_SUB_LAST5, d);
+}
+void perf_sub_seen(PerfTimes* p, uint64_t value, uint64_t now) {
+    uint64_t seen = LOAD(p->sub_seen);
+    while (value > seen) { /* claim (seen, value]: each submission is done by one caller */
+        if (!__atomic_compare_exchange_n(&p->sub_seen, &seen, value, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) continue;
+        const uint64_t from = value - seen > PERF_SUBS ? value - PERF_SUBS : seen;
+        for (uint64_t v = from + 1; v <= value; v++) sub_done(p, &p->sub[v % PERF_SUBS], v, now);
+        return;
+    }
+}
+void perf_sub_frame_end(PerfTimes* p, uint64_t now) {
+    unsigned marked = 0;
+    for (uint64_t v = p->sub_last, n = 0; v && n < PERF_SUBS; v--, n++) {
+        PerfSub* s = &p->sub[v % PERF_SUBS];
+        const uint64_t queued = LOAD(s->queued);
+        if (LOAD(s->v) != v || queued <= p->sub_end) break; /* the frame before */
+        const int site = LOAD(s->state) >> 2;
+        for (unsigned k = 0; k < PERF_SUB_LEADS; k++)
+            if (now - queued <= (1000000ull << k)) p->sub_site[site][1 + k]++;
+        if (marked < 5) {
+            marked++;
+            const int old = __atomic_fetch_or(&s->state, SUB_LAST5, __ATOMIC_ACQ_REL);
+            const uint64_t handed = LOAD(s->handed), seen = LOAD(s->seen);
+            if (old & SUB_SEEN && handed) perf_time_add(p, PT_SUB_LAST5, seen > handed ? seen - handed : 0);
+        }
+    }
+    p->sub_end = now;
+}
+
 static PerfTime take(PerfTime* t) {
     PerfTime out;
     out.sum = __atomic_exchange_n(&t->sum, 0, __ATOMIC_RELAXED);
@@ -146,7 +204,10 @@ size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size) {
     static const char* const names[PT_SITES] = {"post_start", "start_end", "end_post", "period", "idle", "show",
                                                 "tl_recycle", "tl_finish", "tl_submit", "rec_sync", "rec_full",
                                                 "sync_wait", "acquire", "release_hold", "pass_end", "pass_begin",
-                                                "tail_submit", "tail_done", "tail_incr", "tail_free", "tail_wake"};
+                                                "tail_submit", "tail_done", "tail_incr", "tail_free", "tail_wake",
+                                                "sub_done", "sub_last5"};
+    static const char* const sites[SW_SITES] = {"other",   "slice", "release", "finish",  "frame",
+                                                "present", "image", "compute", "readback"};
     static const char* const counts[PC_COUNTS] = {
         "wb_outputs", "wb_bytes",    "wc_bytes",      "tail_submits", "tail_after",  "passes",
         "end_other",  "end_gpu_src", "end_copy",      "end_image",    "end_target",  "src_barriers",
@@ -180,6 +241,21 @@ size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size) {
         else
             n = snprintf(out + at, size - at, " %s=%.1f", counts[i], (double)c / frames);
         if (n > 0) at += (size_t)n;
+    }
+    /* a window's submissions by site, a frame's mean: all, then those in the last 1, 2 and 4 ms before frame_end */
+    for (int i = 0; i < (int)SW_SITES && at < size; i++) {
+        uint64_t* c = p->sub_site[i];
+        if (c[0]) {
+            n = snprintf(out + at, size - at, " sub_%s=%.1f/%.1f/%.1f/%.1f", sites[i], (double)c[0] / frames,
+                         (double)c[1] / frames, (double)c[2] / frames, (double)c[3] / frames);
+            if (n > 0) at += (size_t)n;
+        }
+        memset(c, 0, sizeof p->sub_site[i]);
+    }
+    if (at < size) {
+        n = snprintf(out + at, size - at, " sub_lost=%llu", (unsigned long long)p->sub_lost);
+        if (n > 0) at += (size_t)n;
+        p->sub_lost = 0;
     }
     const uint64_t overlaps = __atomic_exchange_n(&p->overlaps, 0, __ATOMIC_RELAXED);
     const uint64_t lost = __atomic_exchange_n(&p->named_lost, 0, __ATOMIC_RELAXED);

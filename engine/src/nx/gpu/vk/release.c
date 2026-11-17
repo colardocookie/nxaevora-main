@@ -199,7 +199,10 @@ static void release_thread(void* p) {
 
 /* the submit gate names, recorded still: submitted now, so waiting for it ends (vk_lock) */
 static void submit_through(u64 gate) {
-    if (gate > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    if (gate > vk_last_submit()) {
+        perf_submit_why(SW_RELEASE);
+        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    }
 }
 /* r once everything recorded before it has landed and the stream has stopped (g_rheld) */
 static void release(Release* r) {
