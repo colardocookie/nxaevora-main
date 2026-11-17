@@ -894,8 +894,8 @@ int snx_main(int argc, char** argv) {
         g_perf_landing = landing && !strcmp(landing, "1") ? 1 : landing && !strcmp(landing, "2") ? 2 : 0;
         if (g_perf_landing == 1) LOG("perf-landing: on (level 1), storage results land with word compares\n");
         if (g_perf_landing == 2)
-            LOG("perf-landing: on (level 2), storage results land with word compares, blocks the guest left alone "
-                "copied whole\n");
+            LOG("perf-landing: MEASUREMENT on (level 2), blocks the guest left alone are copied whole, which can undo "
+                "a guest write, bench only\n");
         g_perf_overlap = overlap && !strcmp(overlap, "1"); /* a present's fence a frame early (gpu/nvn/nvn_native.h) */
         if (g_perf_overlap)
             LOG("nvn-overlap: EXPERIMENT on, a sync wait on a present's fence settles for the present before it "

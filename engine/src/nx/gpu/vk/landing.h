@@ -30,9 +30,10 @@ uint64_t landing_runs(const uint8_t* res, const uint8_t* org, const uint8_t* cur
                       void* ctx);
 
 #define LANDING_BLOCK 1024u
-/* SNX_ARCEUS_PERF_LANDING=2 (PERF-1b, research 16:40): by block of LANDING_BLOCK bytes, none where res equals org,
-   the whole block where cur equals org, else landing_runs' runs. The same guest bytes as the byte rule, unless the
-   guest writes a byte of a copied block while it is copied: the old value can then win. The bytes put in all */
+/* SNX_ARCEUS_PERF_LANDING=2, a measurement for the unattended bench only, never a PR (research 16:28): by block of
+   LANDING_BLOCK bytes, none where res equals org, the whole block where cur equals org, else landing_runs' runs. Not
+   exact: a guest write to a byte the shader left alone, between the block's compare and its copy, is undone. The
+   bytes put in all */
 uint64_t landing_blocks(const uint8_t* res, const uint8_t* org, const uint8_t* cur, uint32_t size, LandingPut put,
                         void* ctx);
 

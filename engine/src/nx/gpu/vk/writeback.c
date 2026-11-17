@@ -56,8 +56,8 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
     }
     if (g_perf_landing) { /* SNX_ARCEUS_PERF_LANDING: the same bytes, found a word at a time */
         LandingDst d = {addr, res, dst};
-        /* 2: blocks the guest left alone are copied whole, with written counting them whole. A guest write to one of
-           their unchanged bytes during the copy can be undone, which level 0 never does (gpu/vk/landing.h) */
+        /* 2, a bench measurement only: blocks the guest left alone are copied whole, written counting them whole. A
+           guest write to an unchanged byte between a block's compare and its copy is undone (gpu/vk/landing.h) */
         written = g_perf_landing == 2 && dst ? landing_blocks(res, org, cur, size, landing_put, &d)
                                              : landing_runs(res, org, cur, size, landing_put, &d);
         changed = written != 0;
