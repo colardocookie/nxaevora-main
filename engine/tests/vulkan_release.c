@@ -91,7 +91,15 @@ void vk_unlock(void) {
     assert(lock_depth);
     if (!--lock_depth) vk_release_events();
 }
+/* check_release_walks' GPU pages 0x100000 to 0x140000: each page's guest page, 0 for an unmapped one */
+#define WALK_PAGES 64
+static u64 walk_map[WALK_PAGES];
+static int walk_on;
 u64 gmmu_translate(u64 address) {
+    if (walk_on) {
+        u64 p = (address >> 12) - 0x100;
+        return address >= 0x100000 && p < WALK_PAGES && walk_map[p] ? (walk_map[p] << 12) + (address & 4095) : 0;
+    }
     if (address >= 0x10000 && address < 0x11000) return mapping + (address & 4095);
     if (address >= 0x20000 && address < 0x21000) return 4096 + (address & 4095);
     if (address >= 0x30004 && address < 0x38000) return address - 0x30000; /* all of memory, for the index's homes */
@@ -288,6 +296,85 @@ static void check_writeback_merge(void)
 	writeback_direct = 0;
 }
 
+/* SNX_ARCEUS_PERF_STORAGE's queue walks against the old ones on random mappings: guest pages 1 to 7 behind 64 GPU
+   pages, so GPU pages alias often, a quarter unmapped. Each queue is searched by several ranges, some long enough to
+   take release_overlaps itself (more runs than QueryRuns holds). Every answer must be the old walk's: each overlap,
+   release_match's latest match with its gate and cgate, and vk_release_read's state */
+static u32 walk_rand(u32* s) {
+    *s = *s * 1103515245u + 12345u;
+    return *s >> 8;
+}
+static void check_release_walks(void) {
+    u32 seed = 0x5eed1234u;
+    u64 tail0 = g_rtail, head0 = g_rhead;
+    unsigned many_one = 0, one_many = 0, latest_not_first = 0, overflowed = 0, matched = 0;
+    walk_on = 1;
+    for (int trial = 0; trial < 4000; trial++) {
+        for (int p = 0; p < WALK_PAGES; p++) walk_map[p] = walk_rand(&seed) % 4 ? 1 + walk_rand(&seed) % 7 : 0;
+        u32 n = walk_rand(&seed) % 40;
+        g_rtail = g_rhead = walk_rand(&seed) % (3 * RQ_N); /* a queue that wraps */
+        u64 gate = 0, cgate = 0;
+        for (u32 i = 0; i < n; i++) {
+            Release* r = &g_rq[g_rhead % RQ_N];
+            memset(r, 0, sizeof *r);
+            gate += walk_rand(&seed) % 3;
+            cgate += walk_rand(&seed) % 2;
+            r->gate = gate;
+            r->cgate = cgate;
+            r->id = walk_rand(&seed) % 4;
+            r->samples = walk_rand(&seed) % 5 == 0;
+            if (walk_rand(&seed) % 6) { /* a payload, some across a page end, else a syncpoint increment */
+                r->len = 4 * (1 + walk_rand(&seed) % 4);
+                r->gva = 0x100000 + (walk_rand(&seed) % (WALK_PAGES * 4096 - 16));
+            }
+            g_rhead++;
+        }
+        u32 hits_of[40] = {0};
+        for (int k = 0; k < 6; k++) {
+            u64 len = walk_rand(&seed) % 3 == 0 ? 1 + walk_rand(&seed) % (40 * 4096) : 1 + walk_rand(&seed) % 9000;
+            u64 gva = 0x100000 + walk_rand(&seed) % (WALK_PAGES * 4096);
+            QueryRuns q;
+            query_runs(gva, len, &q);
+            overflowed += q.all;
+            u32 hits = 0;
+            for (u64 i = g_rtail; i < g_rhead; i++) {
+                const Release* r = &g_rq[i % RQ_N];
+                int old = release_overlaps(r, gva, len);
+                assert(old == release_overlaps_runs(r, &q));
+                if (old) hits_of[i - g_rtail]++, hits++;
+            }
+            if (hits >= 2) many_one++;
+            u64 g0 = 0, c0 = 0, g1 = 0, c1 = 0;
+            int f0 = release_find(gva, len, 0, 0, &g0, &c0), f1 = release_find_runs(gva, len, 0, 0, &g1, &c1);
+            assert(f0 == f1 && g0 == g1 && c0 == c1);
+            matched += f0;
+            /* the latest match is not the first one the old walk met: the newest-first walk had to find it */
+            if (hits >= 2) {
+                u64 first = 0;
+                for (u64 i = g_rtail; i < g_rhead && !first; i++)
+                    if (release_overlaps(&g_rq[i % RQ_N], gva, len)) first = i + 1;
+                if (g_rq[(first - 1) % RQ_N].gate != g0) latest_not_first++;
+            }
+            assert(release_read_state(gva, len) == release_read_runs(gva, len));
+        }
+        for (u32 i = 0; i < n; i++) one_many += hits_of[i] >= 2;
+        /* a syncpoint's latest increment, and the latest release of all */
+        for (u32 id = 0; id < 4; id++) {
+            u64 g0 = 0, c0 = 0, g1 = 0, c1 = 0;
+            int f0 = release_find(0, 0, id, 0, &g0, &c0), f1 = release_find_runs(0, 0, id, 0, &g1, &c1);
+            assert(f0 == f1 && g0 == g1 && c0 == c1);
+        }
+        u64 g0 = 0, c0 = 0, g1 = 0, c1 = 0;
+        int f0 = release_find(0, 0, 0, 1, &g0, &c0), f1 = release_find_runs(0, 0, 0, 1, &g1, &c1);
+        assert(f0 == f1 && g0 == g1 && c0 == c1 && f0 == (n != 0));
+    }
+    /* the cases the walk had to get right, each met many times */
+    assert(many_one > 1000 && one_many > 1000 && latest_not_first > 300 && overflowed > 100 && matched > 3000);
+    walk_on = 0;
+    g_rtail = tail0;
+    g_rhead = head0;
+}
+
 int main(void) {
     pending = 1;
     next_compute = 9;
@@ -426,5 +513,6 @@ int main(void) {
     assert(!g_rix[home].word && !g_rix[(home + 1) & (RIX_N - 1)].word && count_queued(0x37ab4) == -1);
     assert(lock_depth == 0 && events_signaled == 3 && !events_due); /* payload writes signal nothing */
 	check_writeback_merge();
+    check_release_walks();
     return 0;
 }
