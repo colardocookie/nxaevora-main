@@ -29,6 +29,7 @@ enum {
     PT_RELEASE_HOLD, /* the release thread holding vk_lock in release_through (the landings and releases) */
     PT_PASS_END,     /* vk_render_end ending an open pass (PERF-11, research 20:41) */
     PT_PASS_BEGIN,   /* a game pass begun: from the end of the pass before to its vkCmdBeginRendering recorded */
+    PT_REL_LOCK_ALL, /* the release thread waiting to take vk_lock, the whole frame (PERF-14, research 22:35) */
     /* a present job's tail, each from its syncpoint increment queued at frame_end (PERF-10, research 19:46) */
     PT_TAIL_SUBMIT, /* to the recorder thread handing the submission the increment waits for to the driver */
     PT_TAIL_DONE,   /* to the release thread's wait for that submission returning */
@@ -38,6 +39,11 @@ enum {
     /* a graphics submission, from the recorder's vkQueueSubmit2 returning to its completion first seen (PERF-12) */
     PT_SUB_DONE,  /* every submission */
     PT_SUB_LAST5, /* the last five a present queued before its frame_end */
+    /* a tail's window, from its increment queued to tail_done, by what the release thread did in it (PERF-14) */
+    PT_WIN_GPU,   /* blocked in vk_wait_submit or vk_compute_wait */
+    PT_WIN_LOCK,  /* waiting to take vk_lock */
+    PT_WIN_HOLD,  /* holding vk_lock in release_through: the landings and releases */
+    PT_WIN_OTHER, /* the rest: its queue's lock and condition, and between those */
     PT_SITES
 };
 /* counts a frame, not times */
@@ -56,6 +62,8 @@ enum {
     PC_SRC_BARRIERS, /* gfx_gpu_src's barriers */
     PC_SRC_CLEAN,    /* of those, ones whose first result read no draw bound for writing since the one before */
     PC_SRC_UNKNOWN,  /* of those, ones whose result's last writer was not kept (the table's slot taken) */
+    PC_REL_DEPTH,    /* releases queued and not yet performed when a present's increment was queued */
+    PC_WIN_OUTPUTS,  /* storage outputs the release thread landed inside a tail's window */
     /* from here on printed as totals, not a frame's mean */
     PC_TAIL_UNGATED, /* increments that waited for no submission: no submit or done time */
     PC_TAIL_PARTIAL, /* tails closed with a time missing (performed by another path, or no wait after it) */
@@ -79,6 +87,13 @@ enum {
     SW_READBACK, /* owned.c, a landing of owned memory */
     SW_SITES
 };
+/* the release thread's recent intervals, for a tail's window (its own: written and read on that thread) */
+enum { REL_GPU = 0, REL_LOCK, REL_HOLD, REL_STATES };
+#define PERF_RELS 512u
+typedef struct {
+    uint64_t start, end, outputs;
+    int state;
+} PerfRel;
 #define PERF_SUBS 256u /* the submissions kept, by number: one far behind is counted lost */
 #define PERF_SUB_LEADS 3u /* the last 1, 2 and 4 ms before a present's frame_end */
 typedef struct {
@@ -105,6 +120,9 @@ typedef struct {
     uint64_t sub_site[SW_SITES][1 + PERF_SUB_LEADS]; /* a window's submissions by site: all, and in the last 1/2/4 ms */
     uint64_t sub_lost, sub_unhanded;                 /* never seen; seen before its handing was published */
     uint64_t sub_end;                                /* the GPU thread's: the last frame_end */
+    PerfRel rel[PERF_RELS];
+    uint64_t rel_next;  /* the release thread's */
+    uint64_t wb_total;  /* storage outputs landed so far, never reset: atomic */
     struct {
         const char* what; /* 0 while free: claimed with a compare-exchange */
         PerfTime t;
@@ -155,6 +173,8 @@ void perf_sub_queued(PerfTimes* p, uint64_t v, int site, uint64_t now);
 void perf_sub_handed(PerfTimes* p, uint64_t v, uint64_t now);
 void perf_sub_seen(PerfTimes* p, uint64_t value, uint64_t now);
 void perf_sub_frame_end(PerfTimes* p, uint64_t now);
+/* the release thread spent [start, end) in state (REL_*), landing outputs storage outputs while holding vk_lock */
+void perf_rel_interval(PerfTimes* p, int state, uint64_t start, uint64_t end, uint64_t outputs);
 /* Writes the window's line into out and starts the next window. frames: the presents it covers. */
 size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size);
 

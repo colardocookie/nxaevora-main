@@ -283,7 +283,40 @@ static void test_subs_producer(void) {
     CHECK(!pthread_join(q, NULL) && total > 0);
 }
 
+/* PERF-14: a tail's window, from its increment queued to tail_done, split by the release thread's intervals in it,
+   clipped at both ends, the rest as other, and the outputs landed under the holds in it */
+static void test_rel_window(void) {
+    static PerfTimes p;
+    memset(&p, 0, sizeof p);
+    perf_rel_interval(&p, REL_HOLD, 10, 50, 7); /* before the window: not counted */
+    perf_rel_interval(&p, REL_GPU, 100, 300, 0);
+    perf_tail_queued(&p, 1, 3, 2, 1, 150);
+    perf_rel_interval(&p, REL_LOCK, 300, 320, 9); /* outputs count under a hold only */
+    perf_rel_interval(&p, REL_HOLD, 320, 400, 5);
+    perf_rel_interval(&p, REL_GPU, 410, 500, 0);
+    perf_rel_interval(&p, REL_STATES, 400, 410, 0); /* no such state: ignored */
+    perf_rel_interval(&p, REL_GPU, 420, 410, 0);    /* ends before it starts: ignored */
+    perf_tail_done(&p, 2, 480);                       /* not its gate yet */
+    CHECK(!p.site[PT_WIN_GPU].count);
+    perf_tail_done(&p, 3, 500);
+    CHECK(p.site[PT_WIN_GPU].sum == 150 + 90 && p.site[PT_WIN_LOCK].sum == 20 && p.site[PT_WIN_HOLD].sum == 80);
+    CHECK(p.site[PT_WIN_OTHER].sum == 10 && p.count[PC_WIN_OUTPUTS] == 5 && p.site[PT_WIN_GPU].count == 1);
+    perf_tail_done(&p, 4, 600); /* stamped once: the window is not split again */
+    CHECK(p.site[PT_WIN_GPU].count == 1);
+    /* the window's end cuts an interval that runs past it */
+    perf_tail_queued(&p, 2, 9, 2, 1, 1000);
+    perf_rel_interval(&p, REL_HOLD, 900, 1100, 3);
+    perf_tail_done(&p, 9, 1050);
+    CHECK(p.site[PT_WIN_HOLD].sum == 80 + 50 && p.site[PT_WIN_OTHER].sum == 10 + 0 && p.count[PC_WIN_OUTPUTS] == 8);
+    perf_count(&p, PC_WB_OUTPUTS, 4);
+    CHECK(p.wb_total == 4); /* kept apart from the window's counts, never reset */
+    char line[3072];
+    perf_times_line(&p, 1, line, sizeof line);
+    CHECK(strstr(line, " win_hold=0.000/0.000/2 ") && strstr(line, " win_outputs=8.0 ") && p.wb_total == 4);
+}
+
 int main(void) {
+    test_rel_window();
     test_subs();
     test_subs_producer();
     test_subs_threads();

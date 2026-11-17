@@ -36,6 +36,7 @@ void perf_time_named(PerfTimes* p, const char* what, uint64_t ns) {
 
 void perf_count(PerfTimes* p, int counter, uint64_t n) {
     if (counter >= 0 && counter < PC_COUNTS) __atomic_fetch_add(&p->count[counter], n, __ATOMIC_RELAXED);
+    if (counter == PC_WB_OUTPUTS) __atomic_fetch_add(&p->wb_total, n, __ATOMIC_RELAXED); /* never reset */
 }
 
 void perf_tail_arm(PerfTimes* p) { p->tail_arm = 1; }
@@ -102,11 +103,33 @@ void perf_tail_handed(PerfTimes* p, uint64_t value, uint64_t now) {
         if (LOAD(t->armed) && gate && gate <= value) stamp(&t->t_submit, now);
     }
 }
+void perf_rel_interval(PerfTimes* p, int state, uint64_t start, uint64_t end, uint64_t outputs) {
+    if (state < 0 || state >= REL_STATES || end < start) return;
+    p->rel[p->rel_next++ % PERF_RELS] = (PerfRel){start, end, outputs, state};
+}
+/* a tail's window [t0, now) split by the release thread's intervals in it, the rest counted as other */
+static void rel_window(PerfTimes* p, uint64_t t0, uint64_t now) {
+    static const int sites[REL_STATES] = {PT_WIN_GPU, PT_WIN_LOCK, PT_WIN_HOLD};
+    uint64_t in[REL_STATES] = {0}, outputs = 0, covered = 0;
+    const uint64_t n = p->rel_next < PERF_RELS ? p->rel_next : PERF_RELS;
+    for (uint64_t k = 0; k < n; k++) {
+        const PerfRel* r = &p->rel[(p->rel_next - 1 - k) % PERF_RELS];
+        if (r->end <= t0) break; /* newest first: the rest are older */
+        const uint64_t a = r->start > t0 ? r->start : t0, b = r->end < now ? r->end : now;
+        if (b <= a) continue;
+        in[r->state] += b - a;
+        covered += b - a;
+        if (r->state == REL_HOLD) outputs += r->outputs;
+    }
+    for (int s = 0; s < REL_STATES; s++) perf_time_add(p, sites[s], in[s]);
+    perf_time_add(p, PT_WIN_OTHER, now > t0 + covered ? now - t0 - covered : 0);
+    perf_count(p, PC_WIN_OUTPUTS, outputs);
+}
 void perf_tail_done(PerfTimes* p, uint64_t value, uint64_t now) {
     for (unsigned i = 0; i < PERF_TAILS; i++) {
         PerfTail* t = &p->tail[i];
         const uint64_t gate = LOAD(t->gate);
-        if (LOAD(t->armed) && gate && gate <= value) stamp(&t->t_done, now);
+        if (LOAD(t->armed) && gate && gate <= value && stamp(&t->t_done, now)) rel_window(p, LOAD(t->t0), now);
     }
 }
 void perf_tail_performed(PerfTimes* p, uint64_t seq, uint64_t now) {
@@ -210,14 +233,16 @@ size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size) {
     static const char* const names[PT_SITES] = {"post_start", "start_end", "end_post", "period", "idle", "show",
                                                 "tl_recycle", "tl_finish", "tl_submit", "rec_sync", "rec_full",
                                                 "sync_wait", "acquire", "release_hold", "pass_end", "pass_begin",
-                                                "tail_submit", "tail_done", "tail_incr", "tail_free", "tail_wake",
-                                                "sub_done", "sub_last5"};
+                                                "rel_lock_all", "tail_submit", "tail_done", "tail_incr",
+                                                "tail_free", "tail_wake", "sub_done", "sub_last5", "win_gpu",
+                                                "win_lock", "win_hold", "win_other"};
     static const char* const sites[SW_SITES] = {"other",   "slice", "release", "finish",  "frame",
                                                 "present", "image", "compute", "readback"};
     static const char* const counts[PC_COUNTS] = {
         "wb_outputs", "wb_bytes",    "wc_bytes",      "tail_submits", "tail_after",  "passes",
         "end_other",  "end_gpu_src", "end_copy",      "end_image",    "end_target",  "src_barriers",
-        "src_clean",  "src_unknown", "tail_ungated",  "tail_partial", "tail_lost"};
+        "src_clean",  "src_unknown", "rel_depth",     "win_outputs",  "tail_ungated", "tail_partial",
+        "tail_lost"};
     if (!size) return 0;
     if (!frames) frames = 1;
     int n = snprintf(out, size, "perf-times: frames=%u (ms a frame/largest ms)", frames);

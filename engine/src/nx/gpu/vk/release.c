@@ -142,8 +142,10 @@ void vk_release_events(void) { syncpt_events(); }
    releases they gate, in order */
 static _Thread_local int t_release_thread; /* SNX_ARCEUS_PERF_TIMES times this thread's holds only */
 static void release_through(u64 gate, u64 cgate) {
+    const u64 lock0 = g_perf_times && t_release_thread ? plat_ns() : 0; /* and its wait for vk_lock (PERF-14) */
     vk_lock();
-    const u64 held = g_perf_times && t_release_thread ? plat_ns() : 0;
+    const u64 held = lock0 ? plat_ns() : 0;
+    const u64 outputs0 = held ? __atomic_load_n(&g_perf.wb_total, __ATOMIC_RELAXED) : 0;
     vk_result_begin();
     vk_compute_land_through(cgate);
     vk_land_through(gate);
@@ -170,7 +172,13 @@ static void release_through(u64 gate, u64 cgate) {
         pm_unlock(&g_rlock);
         if (r.gva) perform(&r);
     }
-    if (held) perf_time_add(&g_perf, PT_RELEASE_HOLD, plat_ns() - held);
+    if (held) {
+        const u64 end = plat_ns(), outputs = __atomic_load_n(&g_perf.wb_total, __ATOMIC_RELAXED) - outputs0;
+        perf_time_add(&g_perf, PT_RELEASE_HOLD, end - held);
+        perf_time_add(&g_perf, PT_REL_LOCK_ALL, held - lock0);
+        perf_rel_interval(&g_perf, REL_LOCK, lock0, held, 0);
+        perf_rel_interval(&g_perf, REL_HOLD, held, end, outputs); /* the outputs landed under this hold */
+    }
     vk_unlock();
     if (g_perf_times) perf_tail_freed(&g_perf, plat_ns());
 }
@@ -186,9 +194,16 @@ static void release_thread(void* p) {
         cgate = g_rq[g_rtail % RQ_N].cgate;
         pm_unlock(&g_rlock);
         SNX_ZONE(z_release, "vk release");
+        const u64 wait0 = g_perf_times ? plat_ns() : 0;
         vk_wait_submit(gate);
-        if (g_perf_times) perf_tail_done(&g_perf, gate, plat_ns());
+        if (g_perf_times) {
+            const u64 now = plat_ns();
+            perf_rel_interval(&g_perf, REL_GPU, wait0, now, 0); /* before tail_done, which reads it */
+            perf_tail_done(&g_perf, gate, now);
+        }
+        const u64 cwait0 = g_perf_times ? plat_ns() : 0;
         vk_compute_wait(cgate);
+        if (g_perf_times) perf_rel_interval(&g_perf, REL_GPU, cwait0, plat_ns(), 0);
         {
             SNX_ZONE(z, "land and release");
             release_through(gate, cgate);
@@ -246,6 +261,7 @@ static void release(Release* r) {
     if (!r->gva && g_perf_times && gpu_on_gpu_thread() && perf_tail_take(&g_perf)) {
         u64 submitted, done;
         vk_submit_progress(&submitted, &done);
+        perf_count(&g_perf, PC_REL_DEPTH, g_rhead - g_rtail); /* queued and not yet performed */
         perf_tail_queued(&g_perf, g_rhead, r->gate, submitted, done, plat_ns());
     }
     g_rq[g_rhead % RQ_N] = *r;
