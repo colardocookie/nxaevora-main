@@ -831,6 +831,10 @@ add_executable(snx-test-nvn-measure nvn/nvn_measure.c "${PROJECT_SOURCE_DIR}/src
 snx_test_target(snx-test-nvn-measure 11)
 add_test(NAME nvn_measure COMMAND snx-test-nvn-measure)
 
+add_executable(snx-test-perf-reuse nvn/perf_reuse.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/perf_reuse_calc.c")
+snx_test_target(snx-test-perf-reuse 11)
+add_test(NAME perf_reuse COMMAND snx-test-perf-reuse)
+
 add_executable(snx-test-nvn-params nvn/nvn_params.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_params.c")
 snx_test_target(snx-test-nvn-params 11)
 if(NOT WIN32)
