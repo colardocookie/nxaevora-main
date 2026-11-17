@@ -69,7 +69,7 @@ static void test_sequence(void) {
     SnxDrpValues v, w = {.region = 3, .activity = DRP_BATTLE, .kind = DRP_KIND_NOBLE, .foe = {401, 12, 1},
                          .active = {493, 100, 0}};
     w.party[5] = mon(491, 100, 0);
-    snprintf(w.trainer, sizeof w.trainer, "Bren");
+    snprintf(w.trainer, sizeof w.trainer, "Ada");
     snx_drp_write(&s, &w);
     v.region = 7; /* the region is the host half's own, never in the state */
     assert(s.seq == 2 && snx_drp_read(&s, &v, 4) && v.region == 7 && v.activity == DRP_BATTLE);
@@ -79,7 +79,7 @@ static void test_sequence(void) {
     assert(snx_drp_read(&s, &v, 4) && v.kind == DRP_KIND_PENDING && v.activity == DRP_BATTLE);
     assert(v.foe.species == 401 && v.foe.level == 12 && v.foe.alpha == 1 && v.active.species == 493);
     assert(v.party[5].species == 491 && v.party[5].level == 100 && v.party[0].species == 0);
-    assert(!strcmp(v.trainer, "Bren"));
+    assert(!strcmp(v.trainer, "Ada"));
     s.seq = 3; /* a writer in the middle: no copy is taken */
     v.activity = 9;
     assert(!snx_drp_read(&s, &v, 4) && v.activity == 9);
@@ -96,12 +96,18 @@ static void test_packs(void) {
     assert(snx_drp_pack_index("") == -1 && snx_drp_pack_index(NULL) == -1);
     /* fs.c's call: a region's pack sets it, a kind file adds its bit, any other name leaves both */
     SnxDrpFiles f = {-1, 0, 0, 0};
-    assert(!snx_drp_note_file(&f, "ha_terrain.bnsh", 1) && f.region == -1 && !f.kinds);
-    assert(snx_drp_note_file(&f, "ha_area02.gfpak", 1) == DRP_FILE_PACK && f.region == 2 && !f.kinds);
-    assert(!snx_drp_note_file(&f, "field_weathering_config.bin", 1) && f.region == 2);
-    assert(snx_drp_note_file(&f, "ha_area00.gfpak", 1) == DRP_FILE_PACK && f.region == 0);
-    assert(snx_drp_note_file(&f, "cmn_battle_start_wild.wbin", 1) == DRP_FILE_WILD && f.kinds == 8);
-    assert(snx_drp_note_file(&f, "trdata_trainer03_19.bin", 1) == DRP_FILE_TRAINER && f.kinds == 9);
+    snx_drp_note_file(&f, "ha_terrain.bnsh", 1);
+    assert(f.region == -1 && !f.kinds);
+    snx_drp_note_file(&f, "ha_area02.gfpak", 1);
+    assert(f.region == 2 && !f.kinds);
+    snx_drp_note_file(&f, "field_weathering_config.bin", 1);
+    assert(f.region == 2);
+    snx_drp_note_file(&f, "ha_area00.gfpak", 1);
+    assert(f.region == 0);
+    snx_drp_note_file(&f, "cmn_battle_start_wild.wbin", 1);
+    assert(f.kinds == 8);
+    snx_drp_note_file(&f, "trdata_trainer03_19.bin", 1);
+    assert(f.kinds == 9);
     assert(f.region == 0 && !f.noble);
 }
 
@@ -118,28 +124,33 @@ static void test_noble(void) {
     assert(!snx_drp_scene("battle_seq_intro_00.bseq") && !snx_drp_scene(NULL));
     const uint64_t s = 1000000000ull;
     SnxDrpFiles f = {4, 0, 0, 0};
-    assert(snx_drp_note_file(&f, "d120.bseq", 100 * s) == DRP_FILE_SCENE && !f.noble); /* the intro, before the bank */
-    assert(snx_drp_note_file(&f, "PM_N_900.bnk", 114 * s) == DRP_FILE_BANK);
+    snx_drp_note_file(&f, "d120.bseq", 100 * s); /* the intro, before the bank */
+    assert(!f.noble);
+    snx_drp_note_file(&f, "PM_N_900.bnk", 114 * s);
     assert(snx_drp_noble_now(&f, 114 * s) == (SNX_DRP_NOBLE_ON | 900));
-    assert(snx_drp_note_file(&f, "cmn_battle_start_ns.wbin", 124 * s) == DRP_FILE_NOBLE); /* an inner battle */
-    assert(snx_drp_note_file(&f, "nsrematchwin.blua", 125 * s) == DRP_FILE_SCRIPT);
+    snx_drp_note_file(&f, "cmn_battle_start_ns.wbin", 124 * s); /* an inner battle */
+    assert(f.kinds == DRP_FILE_NOBLE);
+    snx_drp_note_file(&f, "nsrematchwin.blua", 125 * s);
     assert(snx_drp_noble_now(&f, 200 * s) == (SNX_DRP_NOBLE_ON | 900));
-    assert(snx_drp_note_file(&f, "d170.bseq", 265 * s) == DRP_FILE_SCENE && !snx_drp_noble_now(&f, 265 * s));
+    snx_drp_note_file(&f, "d170.bseq", 265 * s);
+    assert(!snx_drp_noble_now(&f, 265 * s));
     /* a region's pack ends it too, and a fight neither ends is over 15 min after its start */
     snx_drp_note_file(&f, "PM_N_101.bnk", 300 * s);
-    assert(snx_drp_note_file(&f, "ha_area00.gfpak", 310 * s) == DRP_FILE_PACK && !snx_drp_noble_now(&f, 310 * s));
-    assert(f.region == 0);
+    snx_drp_note_file(&f, "ha_area00.gfpak", 310 * s);
+    assert(!snx_drp_noble_now(&f, 310 * s) && f.region == 0);
     /* a lost fight ends at the game over script or a ns*lose*.blua (research 22:05), not at the arena's sub-area pack
        (22:15), which neither sets the region */
     snx_drp_note_file(&f, "PM_N_493.bnk", 350 * s);
-    assert(!snx_drp_note_file(&f, "ha_area04_s04.gfpak", 351 * s) && f.region == 0);
-    assert(snx_drp_noble_now(&f, 352 * s) == (SNX_DRP_NOBLE_ON | 493));
-    assert(snx_drp_note_file(&f, "gameoverpre.blua", 395 * s) == DRP_FILE_SCRIPT && !snx_drp_noble_now(&f, 395 * s));
+    snx_drp_note_file(&f, "ha_area04_s04.gfpak", 351 * s);
+    assert(f.region == 0 && snx_drp_noble_now(&f, 352 * s) == (SNX_DRP_NOBLE_ON | 493));
+    snx_drp_note_file(&f, "gameoverpre.blua", 395 * s);
+    assert(!snx_drp_noble_now(&f, 395 * s));
     snx_drp_note_file(&f, "PM_N_483.bnk", 396 * s);
-    assert(snx_drp_note_file(&f, "nsrematchlose.blua", 397 * s) == DRP_FILE_SCRIPT && !snx_drp_noble_now(&f, 397 * s));
+    snx_drp_note_file(&f, "nsrematchlose.blua", 397 * s);
+    assert(!snx_drp_noble_now(&f, 397 * s));
     snx_drp_note_file(&f, "PM_N_483.bnk", 398 * s);
-    assert(snx_drp_note_file(&f, "nsrematchwin.blua", 399 * s) == DRP_FILE_SCRIPT);
-    assert(snx_drp_note_file(&f, "nsrematchbeforeextraact.blua", 399 * s) == DRP_FILE_SCRIPT);
+    snx_drp_note_file(&f, "nsrematchwin.blua", 399 * s);
+    snx_drp_note_file(&f, "nsrematchbeforeextraact.blua", 399 * s);
     assert(snx_drp_noble_now(&f, 399 * s) == (SNX_DRP_NOBLE_ON | 483)); /* other ns scripts do not end it */
     assert(snx_drp_lost("gameoverpre.blua") && snx_drp_lost("nslose.blua") && snx_drp_lost("ns_x_lose_y.blua"));
     assert(!snx_drp_lost("gameover.blua") && !snx_drp_lost("nsrematchlose.bnk") && !snx_drp_lost("rematchlose.blua"));
@@ -169,65 +180,52 @@ static void test_noble(void) {
     assert(!strcmp(snx_drp_details(&v, line, sizeof line), "On the title screen"));
 }
 
-/* D5 (research 01:10): the trainer's name from "<name> sent out <species>!" only, with our species list */
+/* D5 (research 01:10): the trainer's name from "<name> sent out <species>!" only, with our species list. The names and
+   lines are invented. */
 static void test_trainer_name(void) {
     char out[200], name[SNX_DRP_NAME];
-    /* the two lines of the BC-60 look's battle, as UTF-16 with the challenge line's tag */
-    const uint16_t challenge[] = {'T', 'h', 'e', ' ', 'C', 'o', 'r', 'p', 's', 0x2019, ' ', 'B', 'r', 'e', 'n', '!',
-                                  0x10, 1, 0xbe01, 0};
-    assert(snx_drp_utf16_line(challenge, 20, 0, out, sizeof out) && !strcmp(out, "The Corps\xe2\x80\x99 Bren!"));
+    /* a line as UTF-16 with a typographic apostrophe and a tag, which is left out */
+    const uint16_t greeting[] = {'T', 'h', 'e', ' ', 'G', 'u', 'i', 'l', 'd', 0x2019, 's', ' ', 'A', 'd', 'a', '!',
+                                 0x10, 1, 0xbe01, 0};
+    assert(snx_drp_utf16_line(greeting, 20, out, sizeof out) == 18 && !strcmp(out, "The Guild\xe2\x80\x99s Ada!"));
     assert(!snx_drp_sent_out(out, name, sizeof name));
-    snx_drp_utf16_line(challenge, 20, 1, out, sizeof out);
-    assert(!strcmp(out, "The Corps\xe2\x80\x99 Bren!{tag:be01}"));
+    const uint16_t sent[] = {'A', 'd', 'a', 0x10, 2, 7, 7, ' ', 's', 'e', 'n', 't', ' ', 'o', 'u', 't', ' ',
+                             'B', 'i', 'd', 'o', 'o', 'f', '!', 0, 'x'};
+    assert(snx_drp_utf16_line(sent, 26, out, sizeof out) && !strcmp(out, "Ada sent out Bidoof!"));
+    assert(snx_drp_utf16_line(sent, 2, out, sizeof out) == 2 && !strcmp(out, "Ad")); /* count units at most */
     memset(name, 0x55, sizeof name);
-    assert(snx_drp_sent_out("Bren sent out Wormadam!", name, sizeof name) && !strcmp(name, "Bren"));
-    for (size_t i = 4; i < sizeof name; i++) assert(!name[i]); /* nothing after the name but zeros */
+    assert(snx_drp_sent_out("Ada sent out Bidoof!", name, sizeof name));
+    assert(!strcmp(name, "Ada"));
+    for (size_t i = 3; i < sizeof name; i++) assert(!name[i]); /* nothing after the name but zeros */
     assert(snx_drp_sent_out("Mr. O'Neil-Smith sent out Mr. Mime!", name, sizeof name));
     assert(!strcmp(name, "Mr. O'Neil-Smith"));
     assert(snx_drp_sent_out("Lian\xe2\x80\x99s Pal sent out Nidoran\xe2\x99\x80!", name, sizeof name));
     assert(!strcmp(name, "Lian\xe2\x80\x99s Pal"));
     assert(snx_drp_sent_out("Abcdefghijklmnopqrstuvwx sent out Bidoof!", name, sizeof name)); /* 24 */
     assert(!snx_drp_sent_out("Abcdefghijklmnopqrstuvwxy sent out Bidoof!", name, sizeof name)); /* 25 */
-    assert(!snx_drp_sent_out("You sent out Arceus!", name, sizeof name));
-    assert(snx_drp_sent_out("Youngster Ben sent out Bidoof!", name, sizeof name));
-    assert(!snx_drp_sent_out("Bren sent out Wormadamx!", name, sizeof name));    /* not one of our names */
-    assert(!snx_drp_sent_out("Bren sent out Wormadam", name, sizeof name));      /* no ! */
-    assert(!snx_drp_sent_out("Bren sent out Wormadam!!", name, sizeof name));
-    assert(!snx_drp_sent_out("Bren sent out Wormadam.", name, sizeof name)); /* the line ends with ! */
-    assert(!snx_drp_sent_out("Bren sent out Wormadam! Go!", name, sizeof name)); /* not the whole line */
-    assert(!snx_drp_sent_out("Bren2 sent out Wormadam!", name, sizeof name));
-    assert(!snx_drp_sent_out(" Bren sent out Wormadam!", name, sizeof name));
-    assert(!snx_drp_sent_out("Br\xc3\xa9n sent out Wormadam!", name, sizeof name));
-    assert(!snx_drp_sent_out(" sent out Wormadam!", name, sizeof name));
-    assert(!snx_drp_sent_out("Bren envoie Wormadam !", name, sizeof name)); /* another language: no name */
-    assert(!snx_drp_sent_out("Bren\xe2\x80 sent out Wormadam!", name, sizeof name)); /* a cut apostrophe */
+    assert(!snx_drp_sent_out("You sent out Bidoof!", name, sizeof name));
+    assert(snx_drp_sent_out("Yolanda Ray sent out Bidoof!", name, sizeof name));
+    assert(!snx_drp_sent_out("Ada sent out Bidoofx!", name, sizeof name));    /* not one of our names */
+    assert(!snx_drp_sent_out("Ada sent out Bidoof", name, sizeof name));      /* no ! */
+    assert(!snx_drp_sent_out("Ada sent out Bidoof!!", name, sizeof name));
+    assert(!snx_drp_sent_out("Ada sent out Bidoof.", name, sizeof name)); /* the line ends with ! */
+    assert(!snx_drp_sent_out("Ada sent out Bidoof! Go!", name, sizeof name)); /* not the whole line */
+    assert(!snx_drp_sent_out("Ada2 sent out Bidoof!", name, sizeof name));
+    assert(!snx_drp_sent_out(" Ada sent out Bidoof!", name, sizeof name));
+    assert(!snx_drp_sent_out("Ad\xc3\xa9 sent out Bidoof!", name, sizeof name));
+    assert(!snx_drp_sent_out(" sent out Bidoof!", name, sizeof name));
+    assert(!snx_drp_sent_out("Ada envoie Bidoof !", name, sizeof name)); /* another language: no name */
+    assert(!snx_drp_sent_out("Ada\xe2\x80 sent out Bidoof!", name, sizeof name)); /* a cut apostrophe */
     char tiny[4];
-    assert(!snx_drp_sent_out("Bren sent out Wormadam!", tiny, sizeof tiny));
+    assert(!snx_drp_sent_out("Adam sent out Bidoof!", tiny, sizeof tiny));
     /* the text: the name once known, before that "Battling a trainer" */
     char line[160];
     SnxDrpValues v = {.region = 1, .activity = DRP_BATTLE, .kind = DRP_KIND_TRAINER, .foe = {401, 5, 0}};
     assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Battling a trainer"));
-    snprintf(v.trainer, sizeof v.trainer, "Bren");
-    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Battling Bren"));
+    snprintf(v.trainer, sizeof v.trainer, "Ada");
+    assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Battling Ada"));
     v.kind = DRP_KIND_WILD; /* a name never shows outside a trainer battle */
     assert(!strcmp(snx_drp_details(&v, line, sizeof line), "Battling a wild Kricketot"));
-}
-
-/* The probe's file lines (research 22:05): one per file opened, chunks within 1 s merged, 100 per fight or battle */
-static void test_file_line(void) {
-    const uint64_t ms = 1000000ull;
-    SnxDrpFileLog l = {0};
-    int a = 1, b = 2, lines = 0;
-    assert(snx_drp_file_line(&l, &a, 1000 * ms, 7));
-    for (int i = 1; i <= 50; i++) lines += snx_drp_file_line(&l, &a, 1000 * ms + i * ms, 7);
-    assert(lines == 0 && l.merged == 50);
-    assert(snx_drp_file_line(&l, &b, 1060 * ms, 7)); /* another file */
-    /* back to the first is a new open, and so is a read 1 s or more after its last */
-    assert(snx_drp_file_line(&l, &a, 1070 * ms, 7));
-    assert(!snx_drp_file_line(&l, &a, 2069 * ms, 7) && snx_drp_file_line(&l, &a, 3070 * ms, 7));
-    for (int i = 0; i < 200; i++) lines += snx_drp_file_line(&l, i % 2 ? &a : &b, 4000 * ms + i * ms, 7);
-    assert(lines == 100 - 4 && l.lines == 100);                      /* the cap */
-    assert(snx_drp_file_line(&l, &b, 5000 * ms, 8) && l.lines == 1); /* a new fight or battle */
 }
 
 /* Discord's reply: evt and an ERROR's code and message, ids masked */
@@ -627,7 +625,6 @@ int main(void) {
     test_kinds();
     test_noble();
     test_reply();
-    test_file_line();
     test_trainer_name();
     test_text();
     test_species();

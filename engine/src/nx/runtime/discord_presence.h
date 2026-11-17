@@ -127,68 +127,29 @@ typedef struct {
     uint32_t kinds, noble;
     uint64_t noble_ns;
 } SnxDrpFiles;
-/* fs.c's call at each file read of the game's while the presence or its probe is on (g_drp_packs). What the name
-   was, for the probe's lines: a kind's bit, or one of these. */
-enum { DRP_FILE_PACK = 16, DRP_FILE_BANK = 32, DRP_FILE_SCENE = 64, DRP_FILE_SCRIPT = 128 };
-static inline unsigned snx_drp_note_file(SnxDrpFiles* f, const char* leaf, uint64_t now) {
+/* fs.c's call at each file read of the game's while the presence is on (g_drp_packs) */
+static inline void snx_drp_note_file(SnxDrpFiles* f, const char* leaf, uint64_t now) {
     const int index = snx_drp_pack_index(leaf), bank = snx_drp_bank_number(leaf);
     const unsigned kind = snx_drp_file_kind(leaf);
     if (kind) __atomic_fetch_or(&f->kinds, kind, __ATOMIC_RELAXED);
     if (bank >= 0) {
         __atomic_store_n(&f->noble_ns, now, __ATOMIC_RELAXED);
         __atomic_store_n(&f->noble, SNX_DRP_NOBLE_ON | (uint32_t)bank, __ATOMIC_RELEASE);
-        return DRP_FILE_BANK;
+        return;
     }
-    const int lost = snx_drp_lost(leaf);
-    if (index >= 0 || snx_drp_scene(leaf) || lost) __atomic_store_n(&f->noble, 0, __ATOMIC_RELEASE);
-    if (index >= 0) {
-        __atomic_store_n(&f->region, index, __ATOMIC_RELAXED);
-        return DRP_FILE_PACK;
-    }
-    if (snx_drp_scene(leaf)) return DRP_FILE_SCENE;
-    const size_t n = leaf ? strlen(leaf) : 0;
-    if (lost || (n > 7 && !strncmp(leaf, "ns", 2) && !strcmp(leaf + n - 5, ".blua"))) return DRP_FILE_SCRIPT;
-    return kind;
+    if (index >= 0 || snx_drp_scene(leaf) || snx_drp_lost(leaf)) __atomic_store_n(&f->noble, 0, __ATOMIC_RELEASE);
+    if (index >= 0) __atomic_store_n(&f->region, index, __ATOMIC_RELAXED);
 }
-/* The probe's file lines (research 22:05): one per file opened. A read of the same file within 1 s of its last read
-   is a chunk of the same load, counted in merged instead of logged. At most SNX_DRP_FILE_LINES lines for each fight
-   or battle, its key. 1 when this read gets a line. */
-#define SNX_DRP_FILE_LINES 100
-typedef struct {
-    const void* file;
-    uint64_t last_ns, key;
-    unsigned lines, merged;
-} SnxDrpFileLog;
-static inline int snx_drp_file_line(SnxDrpFileLog* l, const void* file, uint64_t now, uint64_t key) {
-    if (key != l->key) l->key = key, l->lines = 0;
-    const int chunk = file == l->file && now >= l->last_ns && now - l->last_ns < 1000000000ull;
-    l->file = file;
-    l->last_ns = now;
-    if (chunk) {
-        l->merged++;
-        return 0;
-    }
-    if (l->lines >= SNX_DRP_FILE_LINES) return 0;
-    l->lines++;
-    return 1;
-}
-/* A message line's UTF-16 as UTF-8 (the text object's slot +58, P9b and D5): 0x10 starts a tag whose next unit is its
-   length, shown as {tag:<units>} when tags is set and left out otherwise, 0 ends the line, a control unit becomes a
-   space. Whole characters only within size. The bytes written. */
-static inline size_t snx_drp_utf16_line(const uint16_t* units, size_t count, int tags, char* out, size_t size) {
+/* A message line's UTF-16 as UTF-8 (the text object's slot +58, D5): 0x10 starts a tag whose next unit is its
+   length, left out, 0 ends the line, a control unit becomes a space. Whole characters only within size. The bytes
+   written. */
+static inline size_t snx_drp_utf16_line(const uint16_t* units, size_t count, char* out, size_t size) {
     size_t n = 0;
     out[0] = 0;
     for (size_t i = 0; i < count && units[i] && n + 24 < size;) {
         const unsigned u = units[i];
         if (u == 0x10) {
-            const size_t len = i + 1 < count ? units[i + 1] : 0;
-            if (tags) {
-                n += (size_t)snprintf(out + n, size - n, "{tag:");
-                for (size_t k = 0; k < len && i + 2 + k < count && n + 12 < size; k++)
-                    n += (size_t)snprintf(out + n, size - n, "%s%x", k ? " " : "", units[i + 2 + k]);
-                n += (size_t)snprintf(out + n, size - n, "}");
-            }
-            i += 2 + len;
+            i += 2 + (i + 1 < count ? units[i + 1] : 0);
             continue;
         }
         if (u < 0x80) out[n++] = u < 0x20 ? ' ' : (char)u;
@@ -609,7 +570,7 @@ static inline void snx_drp_step(SnxDrpSession* d, const SnxDrpValues* v, uint64_
 }
 
 /* discord_presence.c: the state the game half writes, what fs.c notes while g_drp_packs is set (1 by the host
-   thread's start, 2 by the probe), and that start */
+   thread's start), the battle start's count and that start */
 extern SnxDrpState g_drp_state;
 extern SnxDrpFiles g_drp_files;
 extern int g_drp_packs;

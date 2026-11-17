@@ -23,11 +23,18 @@ GuestFn* g_disp;
 u64 g_code_lo, g_code_hi;
 int g_opt_fps;
 void pm_lock(PMutex* m) { (void)m; }
-void pm_unlock(PMutex* m) { (void)m; }
+/* a test's step run once at the next unlock, as another thread that takes the lock then would */
+static void (*unlock_hook)(void);
+void pm_unlock(PMutex* m) {
+    (void)m;
+    void (*hook)(void) = unlock_hook;
+    unlock_hook = NULL;
+    if (hook) hook();
+}
 static unsigned waza_dependency_warnings;
-static unsigned low_fps_skip_logs, text_line_logs;
+static unsigned low_fps_skip_logs, log_lines;
 void logf_(int level, const char* fmt, ...) {
-    if (strstr(fmt, "arceus-drp: battle %u text %llx line")) text_line_logs++;
+    log_lines++;
     if (level == 0 && strstr(fmt, "arceus-waza-shot: enabled without WAZA_OBJECT_FIX"))
         waza_dependency_warnings++;
     if (level == 1 && strstr(fmt, "arceus-clock: timing layer skipped at fps_limit="))
@@ -280,7 +287,7 @@ static void test_defaults_on(void) {
         "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE",
         "SNX_ARCEUS_FIXED_RESOLUTION", "SNX_ARCEUS_DIRECT_MOVE_FIX", "SNX_ARCEUS_FIELD_WAZA_FIX",
         "SNX_ARCEUS_WAZA_OBJECT_FIX", "SNX_ARCEUS_WAZA_SHOT_FIX", "SNX_ARCEUS_SCRIPT_TICK",
-        "SNX_ARCEUS_SCRIPT_WINDOWS", "SNX_ARCEUS_DISCORD_PROBE", "SNX_ARCEUS_DISCORD"
+        "SNX_ARCEUS_SCRIPT_WINDOWS", "SNX_ARCEUS_DISCORD"
     };
     for (unsigned i = 0; i < sizeof all / sizeof all[0]; i++) unset_flag(all[i]);
     int saved_fps = g_opt_fps;
@@ -2400,7 +2407,7 @@ static void test_whole_step(void) {
     blink_ticks = 0, blink_remainder = 0;
     capture_fix_active = 0;
 }
-/* P8's reads of the player's battle Pokémon (research 21:35): stand-in memory in the layout 882D58, 823C00, 834074
+/* The reads of the player's battle Pokémon (P8, research 21:35): stand-in memory in the layout 882D58, 823C00, 834074
    and 2847B84 read, one placement of main for the slot and others for the mode tables, which lie 9 MB apart */
 static void test_battle_mon(void) {
     const u64 saved_base = main_base;
@@ -2415,16 +2422,13 @@ static void test_battle_mon(void) {
     put64(0x480 + 0x98, 0x540);
     put64(0x540 + 0x370, 0x900);
     put64(0x900 + 8, 0xa00); /* T */
-    memory[0xa00 + 0x38] = 1; /* side 0: one Pokémon, at 0xc00 with id 3 */
+    memory[0xa00 + 0x38] = 1; /* side 0: one Pokémon, at 0xc00 */
     put64(0xa00 + 8, 0xc00);
-    memory[0xc00 + 0x7d] = 3;
-    memory[0xa00 + 2 * 0x38 + 0x38] = 2; /* side 2: its first at 0xd00 with id 7 */
+    memory[0xa00 + 2 * 0x38 + 0x38] = 2; /* side 2: its first at 0xd00 */
     put64(0xa00 + 2 * 0x38 + 8, 0xd00);
-    memory[0xd00 + 0x7d] = 7;
     put64(0xa00 + 0x38 + 8, 0xe00); /* side 1 has an entry but a count of 0: none */
     const u64 t = drp_battle_table();
-    assert(t == 0xa00 && drp_battle_first(t, 0) == (0xc00ull << 8 | 3));
-    assert(drp_battle_first(t, 2) == (0xd00ull << 8 | 7));
+    assert(t == 0xa00 && drp_battle_first(t, 0) == 0xc00 && drp_battle_first(t, 2) == 0xd00);
     assert(drp_battle_first(t, 1) == 0 && drp_battle_first(t, 4) == 0);
     /* one read more or less than 882D58 finds nothing: X's first word and the slot's own value lead nowhere */
     assert(drp_rd(drp_rd(drp_rd(drp_rd(drp_rd(main_base + 0x4279580)) + 0xb0) + 0xe0)) == 0);
@@ -2516,147 +2520,38 @@ static void test_mon_read(void) {
 }
 
 /* P6's per-battle line budget (research 22:25): spent lines come back at the next battle start */
-static void test_budget(void) {
-    const u32 saved = g_drp_battle;
-    DrpBudget b = {0};
-    g_drp_battle = 4;
-    unsigned granted = 0;
-    for (int i = 0; i < 40; i++) granted += drp_budget(&b, 32);
-    assert(granted == 32 && !drp_budget(&b, 32));
-    g_drp_battle = 5;
-    assert(drp_budget(&b, 32) && b.used == 1 && b.battle == 5);
-    g_drp_battle = saved;
-}
-
-/* P9's text walk (research 22:45): only in a trainer battle's first 30 s, once a text, 64 lines a battle */
-static u64 text_answer = 1;
-static void text_original(CPU* c, u64 entry) {
-    (void)entry;
-    c->x[0] = text_answer;
-}
 static void put_utf16(u64 at, const char* text) {
     for (; *text; text++, at += 2) memory[at] = (u8)*text, memory[at + 1] = 0;
 }
-static void test_text_walk(void) {
-    const u64 saved_ns = host_ns, saved_base = main_base;
-    memset(memory, 0, sizeof memory);
-    main_base = 0x10000000;
-    drp_original[DRPS_TEXT] = text_original;
-    put_utf16(0x400 + 0x40, "Coin");
-    put_utf16(0x800 + 0x80, "Volo");
-    g_drp_battle = 9;
-    drp_kind_start = host_ns = 50000000000ull;
-    host_ns += 2000000000ull;
-    CPU c = {.x = {[0] = 0x400, [30] = 0x10000100}};
-    g_drp_files.kinds = DRP_FILE_WILD; /* not a trainer battle: nothing */
-    drp_text(&c, 0);
-    assert(drp_text_calls == 1 && drp_text_battle != 9);
-    g_drp_files.kinds = DRP_FILE_TRAINER;
-    c.x[0] = 0x400;
-    drp_text(&c, 0);
-    assert(drp_text_battle == 9 && drp_text_seen[0] == 0x400 && drp_text_lines == 2); /* its header and "Coin" */
-    c.x[0] = 0x400;
-    drp_text(&c, 0); /* the same text again: not walked */
-    assert(drp_text_lines == 2);
-    text_answer = 0; /* a call that ends the text: its next text is walked again */
-    c.x[0] = 0x400;
-    drp_text(&c, 0);
-    assert(drp_text_seen[0] == 0 && drp_text_lines == 2);
-    text_answer = 1;
-    c.x[0] = 0x400;
-    drp_text(&c, 0);
-    assert(drp_text_lines == 4);
-    host_ns = drp_kind_start + 30000000000ull; /* 30 s after the start: over */
-    c.x[0] = 0x800;
-    drp_text(&c, 0);
-    assert(drp_text_lines == 4);
-    host_ns = drp_kind_start + 29000000000ull;
-    c.x[0] = 0x800;
-    drp_text(&c, 0);
-    assert(drp_text_lines == 6);
-    drp_text_lines = 63; /* the cap: a header fits, nothing more */
-    c.x[0] = 0xc00;
-    drp_text(&c, 0);
-    assert(drp_text_lines == 64);
-    c.x[0] = 0xd00;
-    drp_text(&c, 0);
-    assert(drp_text_lines == 64);
-    g_drp_battle = 10; /* a new battle starts again */
-    c.x[0] = 0x800;
-    drp_text(&c, 0);
-    assert(drp_text_battle == 10 && drp_text_lines == 2);
-    g_drp_files.kinds = 0;
-    g_drp_battle = 0;
-    host_ns = saved_ns;
-    main_base = saved_base;
-    memset(memory, 0, sizeof memory);
-}
-
-/* P9b (research 00:15): a message line's UTF-16 as UTF-8 with its tags shown, and the window it is logged in */
+/* D5 (research 01:10): the trainer's name from the battle's lines, read by the FC20C8 wrapper. Invented names and
+   lines of the game's shape. */
 static unsigned text_set_calls;
 static void text_set_original(CPU* c, u64 entry) {
     (void)c, (void)entry;
     text_set_calls++;
 }
-static void test_text_line(void) {
-    char out[640];
-    const u16 plain[] = {'B', 'r', 'e', 'n', ' ', 'w', 'a', 'n', 't', 's', 0, 'x'};
-    assert(drp_text_line(plain, 12, out, sizeof out) == 10 && !strcmp(out, "Bren wants"));
-    const u16 tagged[] = {0x10, 3, 0x100, 0x2, 0x1f, 'B', 'r', 'e', 'n', '!', '\n', 0xe9, 0x3042, 0};
-    drp_text_line(tagged, 14, out, sizeof out);
-    assert(!strcmp(out, "{tag:100 2 1f}Bren! \xc3\xa9\xe3\x81\x82"));
-    const u16 cut[] = {'a', 0x10, 5, 1}; /* a tag cut by the copy's end */
-    drp_text_line(cut, 4, out, sizeof out);
-    assert(!strcmp(out, "a{tag:1}"));
-    u16 many[300];
-    for (int i = 0; i < 300; i++) many[i] = 'z';
-    char small[32];
-    assert(drp_text_line(many, 300, small, sizeof small) < sizeof small && strlen(small) < sizeof small);
-    /* the wrapper: only in a trainer battle's first 30 s, 64 lines a battle, the game's function always called */
-    const u64 saved_ns = host_ns, saved_base = main_base;
-    const int saved_presence = drp_presence, saved_probe = drp_probe;
-    drp_presence = 0, drp_probe = 1;
-    memset(memory, 0, sizeof memory);
-    main_base = 0x10000000;
-    drp_original[DRPS_TEXT_SET] = text_set_original;
-    put_utf16(0x400, "Bren");
-    g_drp_battle = 21;
-    drp_kind_start = host_ns = 70000000000ull;
-    host_ns += 1000000000ull;
-    CPU c = {.x = {[0] = 0x200, [1] = 0x400, [30] = 0x10000100}};
-    g_drp_files.kinds = DRP_FILE_WILD;
-    drp_text_set(&c, 0);
-    assert(text_set_calls == 1 && text_line_logs == 0);
-    g_drp_files.kinds = DRP_FILE_TRAINER;
-    for (int i = 0; i < 70; i++) drp_text_set(&c, 0);
-    assert(text_set_calls == 71 && text_line_logs == 64);
-    g_drp_battle = 22; /* a new battle: lines again */
-    drp_text_set(&c, 0);
-    assert(text_set_calls == 72 && text_line_logs == 65);
-    host_ns = drp_kind_start + 30000000000ull; /* 30 s on: no line, the game's function still called */
-    drp_text_set(&c, 0);
-    assert(text_set_calls == 73 && text_line_logs == 65);
-    drp_presence = saved_presence, drp_probe = saved_probe;
-    g_drp_files.kinds = 0;
-    g_drp_battle = 0;
-    host_ns = saved_ns;
-    main_base = saved_base;
-    memset(memory, 0, sizeof memory);
-}
-
-/* D5 (research 01:10): the trainer's name from the battle's lines, with the presence on and the probe off */
 static void battle_start_original(CPU* c, u64 entry) { (void)c, (void)entry; }
+static void put16(u64 address, u16 value) { memcpy(GP(address), &value, 2); }
+/* "Ada", a tag of length units, then " sent out Bidoof!": 3 + 2 + length + 17 units */
+static void put_tagged(u64 at, unsigned length) {
+    put_utf16(at, "Ada");
+    put16(at + 6, 0x10);
+    put16(at + 8, (u16)length);
+    for (unsigned i = 0; i < length; i++) put16(at + 10 + i * 2ull, 1);
+    put_utf16(at + 10 + length * 2ull, " sent out Bidoof!");
+    put16(at + 10 + length * 2ull + 34, 0);
+}
 static void test_trainer_line(void) {
     const u64 saved_ns = host_ns, saved_base = main_base;
-    const int saved_presence = drp_presence, saved_probe = drp_probe;
+    const int saved_presence = drp_presence;
     memset(memory, 0, sizeof memory);
     main_base = 0x10000000;
-    drp_presence = 1, drp_probe = 0;
+    drp_presence = 1;
     drp_original[DRPS_TEXT_SET] = text_set_original;
     drp_original[DRPS_BATTLE] = battle_start_original;
-    put_utf16(0x400, "The Corps Bren challenged you to battle!");
-    put_utf16(0x600, "Bren sent out Wormadam!");
-    put_utf16(0x700, "Volo sent out Togepi!");
+    put_utf16(0x400, "Captain Ada wants a battle!");
+    put_utf16(0x600, "Ada sent out Bidoof!");
+    put_utf16(0x700, "Rook sent out Togepi!");
     g_drp_battle = 31;
     drp_kind_start = host_ns = 90000000000ull;
     host_ns += 3000000000ull;
@@ -2664,24 +2559,24 @@ static void test_trainer_line(void) {
     drp_values.kind = DRP_KIND_TRAINER;
     memset(drp_values.trainer, 0x55, sizeof drp_values.trainer); /* an earlier name's bytes */
     drp_values.trainer[0] = 0;
-    const unsigned calls = text_set_calls, logs = text_line_logs;
+    const unsigned calls = text_set_calls, logs = log_lines;
     CPU c = {.x = {[0] = 0x200, [1] = 0x600, [30] = 0x10000100}};
     g_drp_files.kinds = DRP_FILE_WILD; /* not a trainer battle */
     drp_text_set(&c, 0);
     assert(!drp_values.trainer[0]);
     g_drp_files.kinds = DRP_FILE_TRAINER;
-    c.x[1] = 0x400; /* the challenge line is not used */
+    c.x[1] = 0x400; /* another line is not used */
     drp_text_set(&c, 0);
     assert(!drp_values.trainer[0]);
     c.x[1] = 0x600;
     drp_text_set(&c, 0);
-    assert(!strcmp(drp_values.trainer, "Bren") && drp_name_battle == 31);
+    assert(!strcmp(drp_values.trainer, "Ada") && drp_name_battle == 31);
     c.x[1] = 0x700; /* the first match in the battle wins */
     drp_text_set(&c, 0);
-    assert(!strcmp(drp_values.trainer, "Bren"));
+    assert(!strcmp(drp_values.trainer, "Ada"));
     SnxDrpValues v = {0};
-    assert(snx_drp_read(&g_drp_state, &v, 4) && !strcmp(v.trainer, "Bren"));
-    for (size_t i = 4; i < sizeof v.trainer; i++) assert(!drp_values.trainer[i] && !v.trainer[i]);
+    assert(snx_drp_read(&g_drp_state, &v, 4) && !strcmp(v.trainer, "Ada"));
+    for (size_t i = 3; i < sizeof v.trainer; i++) assert(!drp_values.trainer[i] && !v.trainer[i]);
     memset(drp_values.trainer + 5, 0x55, sizeof drp_values.trainer - 5);
     drp_set(DRP_FIELD); /* the battle's end clears it, all of it */
     for (size_t i = 0; i < sizeof v.trainer; i++) assert(!drp_values.trainer[i]);
@@ -2696,12 +2591,21 @@ static void test_trainer_line(void) {
     drp_text_set(&c, 0);
     assert(!drp_values.trainer[0]);
     host_ns = drp_kind_start + 19000000000ull;
+    put_tagged(0xc00, 75); /* 97 units: the 96 read end before its "!" */
+    c.x[1] = 0xc00;
     drp_text_set(&c, 0);
-    assert(!strcmp(drp_values.trainer, "Bren") && drp_name_battle == 32);
-    assert(text_set_calls == calls + 6 && text_line_logs == logs); /* always the game's function, no line logged */
+    assert(!drp_values.trainer[0]);
+    put_tagged(0xb00, 74); /* 96 units, all read */
+    c.x[1] = 0xb00;
+    drp_text_set(&c, 0);
+    assert(!strcmp(drp_values.trainer, "Ada") && drp_name_battle == 32);
+    c.x[1] = 0x600;
+    drp_text_set(&c, 0);
+    assert(!strcmp(drp_values.trainer, "Ada") && drp_name_battle == 32);
+    assert(text_set_calls == calls + 8 && log_lines == logs); /* always the game's function, nothing logged */
     drp_set(DRP_FIELD);
     drp_values.activity = DRP_TITLE;
-    drp_presence = saved_presence, drp_probe = saved_probe;
+    drp_presence = saved_presence;
     g_drp_files.kinds = 0;
     g_drp_battle = 0;
     drp_last_battle = 0;
@@ -2710,11 +2614,67 @@ static void test_trainer_line(void) {
     memset(memory, 0, sizeof memory);
 }
 
+/* Research 01:25 item 2: the tick decides a quiet battle's end and makes it in one hold of drp_lock, so a battle that
+   starts as the lock is let go keeps its status. The title ends at the camera's first input. */
+static u64 race_object;
+static void race_start(void) {
+    CPU start = {.x = {[0] = race_object}};
+    drp_battle_start(&start, 0);
+}
+static void test_tick_end(void) {
+    const u64 saved_ns = host_ns, saved_base = main_base, saved_camera = camera_input_calls;
+    const GuestFn saved_sequence = battle_sequence_original;
+    const int saved_presence = drp_presence;
+    memset(memory, 0, sizeof memory);
+    main_base = 0x10000000;
+    drp_presence = 1;
+    drp_original[DRPS_BATTLE] = battle_start_original;
+    battle_sequence_original = sequence_original;
+    camera_input_calls = 0;
+    drp_values.activity = DRP_TITLE;
+    drp_next_tick = 0;
+    host_ns = 200000000000ull;
+    drp_tick();
+    assert(drp_values.activity == DRP_TITLE); /* no camera input yet */
+    camera_input_calls = 1;
+    host_ns += 1000000000ull;
+    drp_tick();
+    assert(drp_values.activity == DRP_FIELD);
+    race_object = 0x900;
+    race_start();
+    assert(drp_values.activity == DRP_BATTLE);
+    drp_battle_seen = battle_sequence_calls; /* the effects stopped */
+    host_ns += 2000000000ull;
+    drp_tick();
+    assert(drp_values.activity == DRP_BATTLE); /* 2 s quiet: not over */
+    host_ns += 1000000000ull;
+    drp_tick();
+    assert(drp_values.activity == DRP_FIELD && drp_values.kind == DRP_KIND_RECORD); /* 3 s: over */
+    race_object = 0x980;
+    race_start();
+    host_ns += 3000000000ull;
+    race_object = 0xa00; /* quiet for 3 s, and a new battle starts as the tick lets the lock go */
+    unlock_hook = race_start;
+    const u32 battle = g_drp_battle;
+    drp_tick();
+    assert(!unlock_hook && g_drp_battle == battle + 1);
+    assert(drp_values.activity == DRP_BATTLE && drp_values.kind == DRP_KIND_PENDING);
+    drp_set(DRP_FIELD);
+    drp_values.activity = DRP_TITLE;
+    battle_sequence_original = saved_sequence;
+    camera_input_calls = saved_camera;
+    drp_presence = saved_presence;
+    drp_next_tick = 0;
+    drp_last_battle = 0;
+    g_drp_battle = 0;
+    g_drp_files.kinds = 0;
+    host_ns = saved_ns;
+    main_base = saved_base;
+}
+
 int main(void) {
-    test_text_line();
     test_trainer_line();
-    test_text_walk();
-    test_budget();
+    test_tick_end();
     test_mon_read();
     test_battle_mon();
     test_ride_swap();

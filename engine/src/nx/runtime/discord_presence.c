@@ -15,8 +15,8 @@
 #endif
 
 SnxDrpState g_drp_state = {0, {DRP_TITLE}};
-/* What fs.c notes while g_drp_packs is set (1 the presence, 2 its probe): the region, the battle kind files since
-   the battle start g_drp_battle counts, and a noble fight (SnxDrpFiles) */
+/* What fs.c notes while g_drp_packs is set (1 the presence): the region, the battle kind files since the battle start
+   g_drp_battle counts, and a noble fight (SnxDrpFiles) */
 SnxDrpFiles g_drp_files = {-1, 0, 0, 0};
 int g_drp_packs;
 uint32_t g_drp_battle;

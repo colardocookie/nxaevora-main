@@ -51,7 +51,6 @@ u64 g_addon;
 u64 plat_ns(void) { return 1000000000ull; }
 SnxDrpFiles g_drp_files = {-1, 0, 0, 0}; /* discord_presence.c's, which this test does not link */
 int g_drp_packs;
-uint32_t g_drp_battle;
 const u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull}; /* am.c's: the first user */
 static jmp_buf* test_fatal_jump;                                   /* a fatal() the test waits for comes back here */
 static char test_fatal_text[1024];
@@ -1860,7 +1859,6 @@ static void test_discord_pack(void) {
     CHECK(!rfile_read(&rf, 0, got, 8, 1) && !g_drp_files.kinds);
     CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && g_drp_files.kinds == 2 && g_drp_files.region == 0);
     node.name = (char*)"trdata_trainer03_19.bin";
-    g_drp_packs = 3; /* the probe's line too */
     CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_files.kinds == 3);
     /* a noble fight: the bank starts it, the next scene ends it, and nothing with the flag off */
     node.name = (char*)"PM_N_900.bnk";

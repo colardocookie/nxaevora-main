@@ -4297,21 +4297,19 @@ static void waza_shot_init(void) {
         waza_shot_fix == 2 ? "between ticks" : "at the tick rate");
 }
 
-/* Discord presence (SNX_ARCEUS_DISCORD, D1 and D2) and its read-only probe (SNX_ARCEUS_DISCORD_PROBE=1). Each wrapper
-   runs the game's function and only reads what it was given or returned. The region comes from fs.c (D2). */
-enum { DRPS_AREA, DRPS_PARENT, DRPS_BATTLE, DRPS_MONSNO, DRPS_LEVEL, DRPS_END, DRPS_LOSE, DRPS_TRNAME, DRPS_TRDATA,
-       DRPS_TEXT, DRPS_TEXT_SET, DRPS_SITES };
+/* Discord presence (SNX_ARCEUS_DISCORD, D1 to D5). Each wrapper runs the game's function and only reads what it was
+   given or returned. The region and the battle kind files come from fs.c (D2, D3). */
+enum { DRPS_AREA, DRPS_BATTLE, DRPS_TEXT_SET, DRPS_SITES };
 static GuestFn drp_original[DRPS_SITES];
-/* drp_probe: the read-only lines. drp_presence: the state for the host half, written under drp_lock by whichever
-   game thread runs a wrapper or the tick */
-static int drp_probe, drp_presence;
+/* drp_presence: on. The state for the host half is written under drp_lock by whichever game thread runs a wrapper or
+   the tick. */
+static int drp_presence;
 static PMutex drp_lock = PMUTEX_INIT;
 static SnxDrpValues drp_values = {.region = -1, .activity = DRP_TITLE};
 static u64 drp_unread;
 static int drp_party_due = 1; /* read the party at the next tick: at the start, and when a battle starts or ends */
-/* the activity. Leaving a battle forgets its opponent and active Pokémon. */
-static void drp_set(uint32_t activity) {
-    pm_lock(&drp_lock);
+/* the activity, under drp_lock. Leaving a battle forgets its opponent, active Pokémon and trainer. */
+static void drp_set_locked(uint32_t activity) {
     if (drp_values.activity != activity) drp_party_due = 1;
     drp_values.activity = activity;
     if (activity != DRP_BATTLE) {
@@ -4320,11 +4318,12 @@ static void drp_set(uint32_t activity) {
         memset(drp_values.trainer, 0, sizeof drp_values.trainer);
     }
     snx_drp_write(&g_drp_state, &drp_values);
+}
+static void drp_set(uint32_t activity) {
+    pm_lock(&drp_lock);
+    drp_set_locked(activity);
     pm_unlock(&drp_lock);
 }
-static u64 drp_calls[DRPS_SITES], drp_last_battle;
-static char drp_last_name[2][64];
-static int drp_table_said;
 /* a guest string of printable bytes, at most size - 1, empty when unreadable */
 static void drp_string(u64 at, char* out, size_t size) {
     size_t n = 0;
@@ -4336,65 +4335,16 @@ static void drp_string(u64 at, char* out, size_t size) {
     }
     out[n] = 0;
 }
-/* a pointer's first word as main+offset when it is one (a vtable), else 0 */
-static u64 drp_vtable(u64 value) {
-    if (!readable(value, 8)) return 0;
-    const u64 v = gr64(value);
-    return v >= main_base && v < main_base + 0x5000000 ? v - main_base : 0;
-}
-static void drp_words(const char* what, u64 at, unsigned words) {
-    if (!readable(at, words * 8ull)) {
-        LOG("arceus-drp: %s at %llx: not readable\n", what, (unsigned long long)at);
-        return;
-    }
-    for (unsigned i = 0; i < words; i++) {
-        const u64 v = gr64(at + i * 8ull), vt = drp_vtable(v);
-        char text[40], note[48] = "";
-        drp_string(v, text, sizeof text);
-        if (vt) snprintf(note, sizeof note, " (object, vtable main+%llx)", (unsigned long long)vt);
-        LOG("arceus-drp: %s +%02x = %016llx%s%s%s%s\n", what, i * 8, (unsigned long long)v, note,
-            text[0] ? " \"" : "", text, text[0] ? "\"" : "");
-    }
-}
-/* The area table GetAreaNameByIndex (17B45FC) reads: a static pointer, +78, +70, then entries of 32 bytes from
-   +278, the name at +8. Logged once it has entries, every entry until a name is unreadable. */
-static void drp_area_table(void) {
-    if (drp_table_said) return;
-    const u64 slot = main_base + 0x427a788, holder = readable(slot, 8) ? gr64(slot) : 0;
-    const u64 single = readable(holder, 8) ? gr64(holder) : 0, a = readable(single + 0x78, 8) ? gr64(single + 0x78) : 0;
-    const u64 b = readable(a + 0x70, 8) ? gr64(a + 0x70) : 0, base = readable(b + 0x278, 16) ? gr64(b + 0x278) : 0;
-    if (!base) return;
-    drp_table_said = 1;
-    for (unsigned i = 0; i < 400 && readable(base + i * 32ull, 32); i++) {
-        char name[64];
-        drp_string(gr64(base + i * 32ull + 8), name, sizeof name);
-        if (!name[0]) break;
-        LOG("arceus-drp: area %u: \"%s\"\n", i, name);
-    }
-}
-static void drp_name(CPU* c, u64 entry, unsigned kind) {
-    const u64 object = c->x[0], caller = c->x[30];
-    drp_original[kind](c, entry);
-    const u64 count = __atomic_add_fetch(&drp_calls[kind], 1, __ATOMIC_RELAXED);
+/* GetAreaName (1EB2A7C). An area's name comes on the return to the field after a battle (DRP-D1, research 08:20), so
+   it ends the battle. It is never the region: travel does not call it. */
+static void drp_area_name(CPU* c, u64 entry) {
+    drp_original[DRPS_AREA](c, entry);
     char name[64];
     drp_string(c->x[0], name, sizeof name);
-    /* An area's name comes on the return to the field after a battle (DRP-D1, research 08:20), so it ends the
-       battle. It is never the region: travel does not call it. */
-    if (drp_presence && kind == DRPS_AREA) {
-        if (name[0]) drp_set(DRP_FIELD);
-        else if (__atomic_add_fetch(&drp_unread, 1, __ATOMIC_RELAXED) % 600 == 1)
-            LOG("arceus-discord: an area name could not be read (%llu so far)\n", (unsigned long long)drp_unread);
-    }
-    if (!drp_probe) return;
-    if (count <= 8 || strcmp(name, drp_last_name[kind]) || count % 3000 == 0)
-        LOG("arceus-drp: %s %llu: \"%s\" (returned %llx, object %llx, caller main+%llx)\n",
-            kind == DRPS_AREA ? "GetAreaName" : "GetParentAreaName", (unsigned long long)count, name,
-            (unsigned long long)c->x[0], (unsigned long long)object, (unsigned long long)(caller - main_base));
-    memcpy(drp_last_name[kind], name, sizeof name);
-    drp_area_table();
+    if (name[0]) drp_set(DRP_FIELD);
+    else if (__atomic_add_fetch(&drp_unread, 1, __ATOMIC_RELAXED) % 600 == 1)
+        LOG("arceus-discord: an area name could not be read (%llu so far)\n", (unsigned long long)drp_unread);
 }
-static void drp_area_name(CPU* c, u64 entry) { drp_name(c, entry, DRPS_AREA); }
-static void drp_parent_name(CPU* c, u64 entry) { drp_name(c, entry, DRPS_PARENT); }
 /* The party, as the script's GetMonsNo and GetLevel bindings reach it (D92288 with -1): a singleton through the slot
    main+4279680, +D0, +58. That object holds the six Pokémon objects at +58 to +80 and their count at +88. */
 static u64 drp_party_object(void) {
@@ -4402,7 +4352,6 @@ static u64 drp_party_object(void) {
     const u64 single = readable(holder, 8) ? gr64(holder) : 0, p = readable(single + 0xd0, 8) ? gr64(single + 0xd0) : 0;
     return readable(p + 0x58, 8) ? gr64(p + 0x58) : 0;
 }
-static void drp_party(void) { drp_words("party object", drp_party_object(), 24); }
 
 /* D2 (research 08:35 and 18:10): a Pokémon object (vtable main+418AE40) has its data object at +98, the one the
    game's getters take (2B6849C, 2B5FB2C, 2B6D5B0): +8 the party extension, +10 the record, +18 enciphered, +30 the
@@ -4479,32 +4428,26 @@ static void drp_party_read(void) {
 
 /* D3 (research 19:35): a battle's kind from the files its start reads (fs.c notes them in g_drp_files, cleared at
    the start). Decided by snx_drp_decide on the start's calls and on the tick: a kind file and the opponent's record
-   settled, or 3 s. The probe logs the decision, with the record's alpha bit beside the alpha file. */
+   settled, or 3 s. drp_kind_start, the start, is atomic, as the line wrapper reads it on other threads. */
 static u64 drp_foe_object, drp_kind_start;
 static void drp_battle_decide(u64 now) {
     const int settled = !__atomic_load_n(&drp_foe_object, __ATOMIC_RELAXED);
     const uint32_t files = __atomic_load_n(&g_drp_files.kinds, __ATOMIC_RELAXED);
+    const u64 start = __atomic_load_n(&drp_kind_start, __ATOMIC_RELAXED);
     pm_lock(&drp_lock);
     const int pending = drp_values.activity == DRP_BATTLE && drp_values.kind == DRP_KIND_PENDING;
-    const uint32_t kind = pending ? snx_drp_decide(files, settled, now, drp_kind_start) : DRP_KIND_PENDING;
+    const uint32_t kind = pending ? snx_drp_decide(files, settled, now, start) : DRP_KIND_PENDING;
     if (kind != DRP_KIND_PENDING) {
         drp_values.kind = kind;
         snx_drp_write(&g_drp_state, &drp_values);
     }
-    const SnxDrpMon foe = drp_values.foe;
     pm_unlock(&drp_lock);
-    if (drp_probe && kind != DRP_KIND_PENDING)
-        LOG("arceus-drp: battle %u kind %u from files %x after %llu ms, opponent %u alpha bit %u\n",
-            __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED), kind, files,
-            (unsigned long long)((now - drp_kind_start) / 1000000), foe.species, foe.alpha);
 }
 
-/* P8 (research 20:35 and 21:05, the probe only, reads on the tick, no wrapper): the player's battle Pokémon as the
-   move menu finds it (7B8114 -> 834074 with index 0). The battle context X = [[[[main+4279580]]+B0]+E0] (882D58), its
-   container [X+D0] (823C00), the table T = [[[[c+68]+98]+370]+8], index 0's side from 2847B84's table for the mode
-   at [T]+110 and slot 0: P = [T + side*38 + 8], present when the byte at T + side*38 + 38 is above 0, its id at +7D.
-   Logged on change: the side and each side's first entry with its id, and each new entry's first 0x100 bytes once,
-   marking the words that are a party member (its slot) or that member's data object (+98). */
+/* The player's battle Pokémon (P8, research 20:35 and 21:05) as the move menu finds it (7B8114 -> 834074 with index
+   0), read on the tick: the battle context X = [[[[main+4279580]]+B0]+E0] (882D58), its container [X+D0] (823C00),
+   the table T = [[[[c+68]+98]+370]+8], index 0's side from 2847B84's table for the mode at [T]+110 and slot 0. Its
+   Pokémon P = [T + side*38 + 8], present when the byte at T + side*38 + 38 is above 0. */
 static u64 drp_rd(u64 at) { return at && readable(at, 8) ? gr64(at) : 0; }
 /* the table T from the global slot: the slot holds the singleton's address, S = [[slot]], X = [[S+B0]+E0] as 882D58
    reads it, then [X+D0] (823C00) and 834074's [[[[c+68]+98]+370]+8]. 0 when a link is missing or the table is not
@@ -4514,11 +4457,10 @@ static u64 drp_battle_table(void) {
     const u64 t = drp_rd(drp_rd(drp_rd(drp_rd(drp_rd(x + 0xd0) + 0x68) + 0x98) + 0x370) + 8);
     return readable(t, 5 * 0x38 + 1) ? t : 0;
 }
-/* a side's first entry and its id at +7D as entry << 8 | id, 0 when the side's count byte is 0 */
+/* a side's first Pokémon, 0 when the side's count byte is 0 */
 static u64 drp_battle_first(u64 t, unsigned side) {
     const unsigned n = *(const u8*)GP(t + side * 0x38ull + 0x38);
-    const u64 p = n ? drp_rd(t + side * 0x38ull + 8) : 0;
-    return p && readable(p + 0x7d, 1) ? p << 8 | *(const u8*)GP(p + 0x7d) : 0;
+    return n ? drp_rd(t + side * 0x38ull + 8) : 0;
 }
 static int drp_index0_side(u64 m) {
     if (!readable(m + 0x110, 4)) return -1;
@@ -4531,52 +4473,14 @@ static int drp_index0_side(u64 m) {
     }
     return table && readable(table, 4) ? (int)*(const u32*)GP(table) : -1;
 }
-static void drp_battle_mon(void) {
-    static u64 last[5], dumped[8];
-    static int last_side = -2;
-    static unsigned dumps;
-    const u64 t = drp_battle_table();
-    if (!t) return;
-    const int side = drp_index0_side(drp_rd(t));
-    u64 now[5];
-    for (unsigned k = 0; k < 5; k++) now[k] = drp_battle_first(t, k);
-    if (side == last_side && !memcmp(now, last, sizeof now)) return;
-    last_side = side;
-    memcpy(last, now, sizeof now);
-    LOG("arceus-drp: battle Pok\xc3\xa9mon table %llx, index 0's side %d: %llx id %llu, %llx id %llu, %llx id %llu, "
-        "%llx id %llu, %llx id %llu\n",
-        (unsigned long long)t, side, (unsigned long long)(now[0] >> 8), (unsigned long long)(now[0] & 0xff),
-        (unsigned long long)(now[1] >> 8), (unsigned long long)(now[1] & 0xff), (unsigned long long)(now[2] >> 8),
-        (unsigned long long)(now[2] & 0xff), (unsigned long long)(now[3] >> 8), (unsigned long long)(now[3] & 0xff),
-        (unsigned long long)(now[4] >> 8), (unsigned long long)(now[4] & 0xff));
-    const u64 p = side >= 0 && side < 5 ? now[side] >> 8 : 0;
-    if (!p || !readable(p, 0x100) || dumps >= 8) return;
-    for (unsigned i = 0; i < dumps; i++)
-        if (dumped[i] == p) return;
-    dumped[dumps++] = p;
-    const u64 q = drp_party_object();
-    for (unsigned i = 0; i < 32; i++) {
-        const u64 w = gr64(p + i * 8ull);
-        char mark[40] = "";
-        for (unsigned k = 0; k < 6 && readable(q + 0x58, 0x30); k++) {
-            const u64 member = gr64(q + 0x58 + k * 8ull);
-            if (w && w == member) snprintf(mark, sizeof mark, " party member %u", k);
-            if (w && w == drp_rd(member + 0x98)) snprintf(mark, sizeof mark, " party member %u's data", k);
-        }
-        const u64 vt = drp_vtable(w);
-        if (vt && !mark[0]) snprintf(mark, sizeof mark, " (object, vtable main+%llx)", (unsigned long long)vt);
-        LOG("arceus-drp: battle Pok\xc3\xa9mon %llx +%02x = %016llx%s\n", (unsigned long long)p, i * 8,
-            (unsigned long long)w, mark);
-    }
-}
 
-/* D3d (research 22:05 and 22:15): the second line in a battle, "Active: <species> Lv. <n>". P8's Pokémon P for index
+/* D3d (research 22:05 and 22:15): the second line in a battle, "Active: <species> Lv. <n>". The Pokémon P for index
    0 holds at +60 a Pokémon object (vtable 418AE40, the battle's own copy, in all six battles of the D3c look), read
    once a second by D2's copy rules. A failed check empties the line, a busy record keeps it for the next second. */
 static void drp_active_read(void) {
     const u64 t = drp_battle_table();
     const int side = t ? drp_index0_side(drp_rd(t)) : -1;
-    const u64 p = side >= 0 && side < 5 ? drp_battle_first(t, (unsigned)side) >> 8 : 0;
+    const u64 p = side >= 0 && side < 5 ? drp_battle_first(t, (unsigned)side) : 0;
     SnxDrpMon m = {0};
     const int r = p ? drp_mon_read(drp_rd(p + 0x60), &m) : DRP_MON_NONE;
     if (r == DRP_MON_BUSY) return;
@@ -4599,214 +4503,36 @@ static void drp_tick(void) {
         return;
     const u64 calls = battle_sequence_original ? __atomic_load_n(&battle_sequence_calls, __ATOMIC_RELAXED) : 0;
     pm_lock(&drp_lock);
-    const uint32_t activity = drp_values.activity;
     if (calls != drp_battle_seen) drp_battle_seen = calls, drp_battle_since = now;
     const int quiet = battle_sequence_original && snx_drp_battle_over(1, now, drp_battle_since);
+    /* the title screen until the player's camera first takes input in the field (the camera input fix's wrapper,
+       20 to 46 s into DRP-P3 to P4), or an area call. The party's data is there from the boot, so it cannot tell
+       (DRP-P4). Both ends are decided and made in one hold of the lock, so a battle starting meanwhile stays. */
+    const int title_over = drp_values.activity == DRP_TITLE && __atomic_load_n(&camera_input_calls, __ATOMIC_RELAXED);
+    if ((quiet && snx_drp_in_battle(drp_values.activity)) || title_over) drp_set_locked(DRP_FIELD);
+    const uint32_t activity = drp_values.activity;
     pm_unlock(&drp_lock);
-    if (drp_probe) drp_battle_mon();
-    if (!drp_presence) return;
-    if (quiet && snx_drp_in_battle(activity)) drp_set(DRP_FIELD);
     drp_battle_decide(now);
     if (activity == DRP_BATTLE) drp_active_read();
-    /* the title screen until the player's camera first takes input in the field (the camera input fix's wrapper,
-       20 to 46 s into DRP-P3 to P4, after the title), or an area call. The party's data is there from the boot, so it
-       cannot tell (DRP-P4). */
-    if (activity == DRP_TITLE && __atomic_load_n(&camera_input_calls, __ATOMIC_RELAXED)) drp_set(DRP_FIELD);
     drp_party_read();
 }
 
-/* P6 (research 18:40, the probe only): the trainer's name. At each battle start a walk from the start object and
-   from every object its records reach, to depth 3, 0x400 bytes an object, at most 1024 objects, logging each run of 3
-   to 32 letters with a vowel (UTF-8 or UTF-16) and the chain of offsets that reached it, 128 lines a battle. A
-   Pokémon object met on the way is logged with its chain and party slot, to find D2's active Pokémon. */
-#define DRP_WALK_BYTES 0x400
-#define DRP_WALK_OBJECTS 1024
-static PMutex drp_walk_lock = PMUTEX_INIT;
-static unsigned drp_walk_lines, drp_walk_cap, drp_walk_objects;
-static u64 drp_walk_seen[DRP_WALK_OBJECTS], drp_walk_party[6];
-static void drp_walk_start(unsigned cap) {
-    drp_walk_lines = drp_walk_objects = 0;
-    drp_walk_cap = cap;
-    const u64 q = drp_party_object();
-    for (unsigned i = 0; i < 6; i++) drp_walk_party[i] = readable(q + 0x58, 0x30) ? gr64(q + 0x58 + i * 8ull) : 0;
-}
-static void drp_text_runs(const char* path, u64 at) {
-    for (unsigned i = 0; i < DRP_WALK_BYTES && drp_walk_lines < drp_walk_cap;) {
-        char text[40];
-        unsigned n = 0, wide = i + 1 < DRP_WALK_BYTES && *(const u8*)GP(at + i + 1) == 0;
-        for (unsigned k = i; k + (wide ? 1 : 0) < DRP_WALK_BYTES && n < 33; k += wide ? 2 : 1) {
-            const u8 ch = *(const u8*)GP(at + k);
-            const int letter = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (n && (ch == ' ' || ch == '.'));
-            if (!letter || (wide && *(const u8*)GP(at + k + 1))) break;
-            text[n++] = (char)ch;
-        }
-        int vowel = 0; /* runs without a vowel were noise in DRP-P4 */
-        for (unsigned k = 0; k < n; k++) vowel |= strchr("AEIOUYaeiouy", text[k]) != NULL;
-        if (n >= 3 && n <= 32 && vowel) {
-            text[n] = 0;
-            drp_walk_lines++;
-            LOG("arceus-drp: battle text %s+%03x: %s \"%s\"\n", path, i, wide ? "UTF-16" : "UTF-8", text);
-            i += n * (wide ? 2 : 1);
-        } else i += 1;
-    }
-}
-static void drp_walk(const char* path, u64 at, unsigned depth) {
-    if (drp_walk_objects >= DRP_WALK_OBJECTS || drp_walk_lines >= drp_walk_cap || !readable(at, DRP_WALK_BYTES))
-        return;
-    for (unsigned i = 0; i < drp_walk_objects; i++)
-        if (drp_walk_seen[i] == at) return;
-    drp_walk_seen[drp_walk_objects++] = at;
-    drp_text_runs(path, at);
-    for (unsigned i = 0; depth && i < DRP_WALK_BYTES / 8; i++) {
-        const u64 w = gr64(at + i * 8ull);
-        if (w < 0x100000 || (w >= main_base && w < main_base + 0x5000000)) continue; /* not a pointer, or main's */
-        char next[80];
-        snprintf(next, sizeof next, "%s+%03x>", path, i * 8);
-        if (drp_vtable(w) == DRP_MON_VTABLE) {
-            int slot = -1;
-            for (int k = 0; k < 6; k++)
-                if (drp_walk_party[k] == w) slot = k;
-            if (drp_walk_lines++ < drp_walk_cap)
-                LOG("arceus-drp: battle Pok\xc3\xa9mon object at %s: %llx, party slot %d\n", next,
-                    (unsigned long long)w, slot);
-            continue;
-        }
-        drp_walk(next, w, depth - 1);
-    }
-}
-static void drp_trainer_walk(u64 object) {
-    pm_lock(&drp_walk_lock);
-    drp_walk_start(128);
-    drp_walk("", object, 3);
-    const u64 records = readable(object + 0x78, 8) ? gr64(object + 0x78) : 0;
-    for (unsigned k = 0; k < 6 && readable(records + 0x90, 6 * 0x60); k++)
-        for (unsigned i = 0; i < 12; i++) {
-            const u64 w = gr64(records + 0x90 + k * 0x60ull + i * 8ull);
-            char path[32];
-            snprintf(path, sizeof path, "r%u+%02x>", k, i * 8);
-            if (w >= 0x100000 && (w < main_base || w >= main_base + 0x5000000)) drp_walk(path, w, 3);
-        }
-    pm_unlock(&drp_walk_lock);
-}
-/* P6's lines per battle (research 22:25): a site's budget starts again at each battle start (g_drp_battle), so field
-   talk before a trainer battle cannot spend it. Under the walk's lock, as the sites run on several threads. */
-typedef struct {
-    u32 battle, used;
-} DrpBudget;
-static int drp_budget(DrpBudget* b, u32 cap) {
-    pm_lock(&drp_walk_lock);
-    const u32 battle = __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED);
-    if (b->battle != battle) b->battle = battle, b->used = 0;
-    const int ok = b->used < cap;
-    b->used += ok;
-    pm_unlock(&drp_walk_lock);
-    return ok;
-}
-/* P6 item 1: FC70C8 puts a trainer's name from common/trname.dat into a word of a message: x0 the words, w1 the
-   word's index, x2 the label. The script's WordSetTrainerName (2486A70) calls it, and 82F2E4 and 15A50F0. Logged:
-   the label's words, then the words' object's text to depth 1. */
-static void drp_trainer_word(CPU* c, u64 entry) {
-    const u64 words = c->x[0], label = c->x[2], caller = c->x[30];
-    const u32 index = (u32)c->x[1];
-    u64 l[4] = {0};
-    if (readable(label, 32))
-        for (unsigned i = 0; i < 4; i++) l[i] = gr64(label + i * 8ull);
-    drp_original[DRPS_TRNAME](c, entry);
-    const u64 count = __atomic_add_fetch(&drp_calls[DRPS_TRNAME], 1, __ATOMIC_RELAXED);
-    static DrpBudget budget;
-    if (!drp_budget(&budget, 32)) return;
-    LOG("arceus-drp: trainer name word %llu: words %llx, word %u, label %016llx %016llx %016llx %016llx, caller "
-        "main+%llx, ns=%llu\n",
-        (unsigned long long)count, (unsigned long long)words, index, (unsigned long long)l[0], (unsigned long long)l[1],
-        (unsigned long long)l[2], (unsigned long long)l[3], (unsigned long long)(caller - main_base),
-        (unsigned long long)plat_ns());
-    pm_lock(&drp_walk_lock);
-    drp_walk_start(32);
-    drp_walk("words>", words, 1);
-    pm_unlock(&drp_walk_lock);
-}
-/* P6 item 1: 83636C makes the path bin/trainer/trdata_<id>.bin from a string at [x0+8] (its length at +10): the
-   trainer's id as the battle loads its data */
-static void drp_trainer_data(CPU* c, u64 entry) {
-    const u64 id = readable(c->x[0] + 8, 8) ? gr64(c->x[0] + 8) : 0, caller = c->x[30];
-    char name[48];
-    drp_string(id, name, sizeof name);
-    drp_original[DRPS_TRDATA](c, entry);
-    const u64 count = __atomic_add_fetch(&drp_calls[DRPS_TRDATA], 1, __ATOMIC_RELAXED);
-    static DrpBudget budget;
-    if (drp_budget(&budget, 64))
-        LOG("arceus-drp: trainer data %llu: \"%s\", caller main+%llx, ns=%llu\n", (unsigned long long)count, name,
-            (unsigned long long)(caller - main_base), (unsigned long long)plat_ns());
-}
-
-/* P9 (research 22:45, the probe only): the trainer's name in the text the battle shows. FBFBD0, the message text
-   processor's reveal (T = x0), is a vtable method (main+40F01A0), so our dispatch wrapper sees its calls, and it
-   writes nothing. For 30 s from a trainer battle's start (its trdata file read, the kind bit), each text T is walked
-   once a text (at its first call, again after a call that ends a text): depth 2, 0x400 bytes an object, UTF-16 and
-   UTF-8 runs with the offsets that reached them and the reveal's caller, 64 lines a battle. */
-#define DRP_TEXT_OBJECTS 16
-static u64 drp_text_seen[DRP_TEXT_OBJECTS], drp_text_calls;
-static u32 drp_text_battle, drp_text_lines;
-static void drp_text(CPU* c, u64 entry) {
-    const u64 text = c->x[0], caller = c->x[30], now = plat_ns();
-    drp_original[DRPS_TEXT](c, entry);
-    const int ended = !(c->x[0] & 1);
-    __atomic_add_fetch(&drp_text_calls, 1, __ATOMIC_RELAXED);
-    if (!(__atomic_load_n(&g_drp_files.kinds, __ATOMIC_RELAXED) & DRP_FILE_TRAINER)) return;
-    pm_lock(&drp_walk_lock);
-    const u32 battle = __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED);
-    if (battle != drp_text_battle) {
-        drp_text_battle = battle;
-        drp_text_lines = 0;
-        memset(drp_text_seen, 0, sizeof drp_text_seen);
-    }
-    int seen = -1, free_slot = -1;
-    for (int k = 0; k < DRP_TEXT_OBJECTS; k++) {
-        if (drp_text_seen[k] == text) seen = k;
-        if (!drp_text_seen[k] && free_slot < 0) free_slot = k;
-    }
-    const int window = now >= drp_kind_start && now - drp_kind_start < 30000000000ull;
-    if (window && seen < 0 && free_slot >= 0 && drp_text_lines < 64) {
-        drp_text_seen[free_slot] = text;
-        LOG("arceus-drp: battle %u text %llx (vtable main+%llx), caller main+%llx, %llu ms after the start\n", battle,
-            (unsigned long long)text, (unsigned long long)drp_vtable(text), (unsigned long long)(caller - main_base),
-            (unsigned long long)((now - drp_kind_start) / 1000000));
-        drp_walk_start(64 - ++drp_text_lines);
-        drp_walk("text>", text, 2);
-        drp_text_lines += drp_walk_lines;
-    }
-    if (ended && seen >= 0) drp_text_seen[seen] = 0; /* its next text is walked again */
-    pm_unlock(&drp_walk_lock);
-}
-
-/* P9b (research 00:15, the probe only, the last try for the trainer's name): the text object's vtable slot +58,
-   FC20C8, takes each message line as UTF-16 in x1 (0x10 starts a tag whose next unit is its length, 0 ends it, at
-   most 0x800 units). For 30 s from a trainer battle's start its lines are logged as UTF-8, tags as {tag:<units>},
-   64 lines a battle, with the caller. drp_text_line formats one line from units already copied. */
-static size_t drp_text_line(const u16* units, size_t count, char* out, size_t size) {
-    return snx_drp_utf16_line(units, count, 1, out, size);
-}
-/* D5 (research 01:10), with SNX_ARCEUS_DISCORD=1: from a trainer battle's start until its name is found or 20 s pass,
-   each line is read (96 units, tags left out) and matched by snx_drp_sent_out. The first match is the battle's
-   trainer, "Battling <name>". Nothing of a line is logged here. */
+/* D5 (research 01:10): the text object's vtable slot +58, FC20C8, takes each message line as UTF-16 in x1 (0x10
+   starts a tag whose next unit is its length, 0 ends it). From a trainer battle's start until its name is found or
+   20 s pass, each line's first 96 units are matched by snx_drp_sent_out, tags left out. The first match is the
+   battle's trainer, "Battling <name>". Nothing of a line is logged. */
 static u32 drp_name_battle; /* the battle whose trainer's name was found */
 static void drp_text_set(CPU* c, u64 entry) {
-    const u64 text = c->x[0], line = c->x[1], caller = c->x[30], now = plat_ns();
-    static DrpBudget budget;
-    const int trainer = (__atomic_load_n(&g_drp_files.kinds, __ATOMIC_RELAXED) & DRP_FILE_TRAINER) &&
-                        now >= drp_kind_start;
+    const u64 line = c->x[1], now = plat_ns(), start = __atomic_load_n(&drp_kind_start, __ATOMIC_RELAXED);
     const u32 battle = __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED);
-    const int probe = drp_probe && trainer && now - drp_kind_start < 30000000000ull;
-    const int name = drp_presence && trainer && now - drp_kind_start < 20000000000ull &&
-                     __atomic_load_n(&drp_name_battle, __ATOMIC_RELAXED) != battle;
-    if (probe || name) {
-        u16 units[256];
+    if ((__atomic_load_n(&g_drp_files.kinds, __ATOMIC_RELAXED) & DRP_FILE_TRAINER) && now >= start &&
+        now - start < 20000000000ull && __atomic_load_n(&drp_name_battle, __ATOMIC_RELAXED) != battle) {
+        u16 units[96];
         size_t count = 0;
-        for (; count < 256 && readable(line + count * 2, 2); count++)
+        for (; count < 96 && readable(line + count * 2, 2); count++)
             if (!(units[count] = (u16)gr16(line + count * 2))) break;
-        char out[640], found[SNX_DRP_NAME] = {0};
-        if (name && snx_drp_utf16_line(units, count < 96 ? count : 96, 0, out, sizeof out) &&
-            snx_drp_sent_out(out, found, sizeof found)) {
+        char out[320], found[SNX_DRP_NAME] = {0};
+        if (snx_drp_utf16_line(units, count, out, sizeof out) && snx_drp_sent_out(out, found, sizeof found)) {
             pm_lock(&drp_lock);
             if (drp_values.activity == DRP_BATTLE && __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED) == battle) {
                 memcpy(drp_values.trainer, found, sizeof found);
@@ -4815,12 +4541,6 @@ static void drp_text_set(CPU* c, u64 entry) {
             }
             pm_unlock(&drp_lock);
         }
-        if (probe && drp_budget(&budget, 64)) {
-            drp_text_line(units, count, out, sizeof out);
-            LOG("arceus-drp: battle %u text %llx line \"%s\", caller main+%llx, %llu ms after the start\n", battle,
-                (unsigned long long)text, out, (unsigned long long)(caller - main_base),
-                (unsigned long long)((now - drp_kind_start) / 1000000));
-        }
     }
     drp_original[DRPS_TEXT_SET](c, entry);
 }
@@ -4828,12 +4548,11 @@ static void drp_text_set(CPU* c, u64 entry) {
 /* UpdateBattleStartCoroutine (1DD7C68), called each frame of a battle's start with one object per battle. D2: the
    first call decides the opponent, record 0's Pokémon object ([+78]+90). In P1b's trainer battle that record was
    empty, so a battle without one says "In battle". Its copy is tried on the calls after, while the game holds it. */
+static u64 drp_last_battle;
 static unsigned drp_foe_tries;
 static void drp_battle_start(CPU* c, u64 entry) {
     const u64 object = c->x[0];
-    const u64 count = __atomic_add_fetch(&drp_calls[DRPS_BATTLE], 1, __ATOMIC_RELAXED);
-    const int fresh = object != drp_last_battle;
-    drp_last_battle = object;
+    const int fresh = object != __atomic_exchange_n(&drp_last_battle, object, __ATOMIC_RELAXED);
     const u64 records = readable(object + 0x78, 8) ? gr64(object + 0x78) : 0;
     if (fresh) {
         /* a new battle forgets the last one's opponent and kind files, even when it starts before that one was seen
@@ -4841,22 +4560,20 @@ static void drp_battle_start(CPU* c, u64 entry) {
         __atomic_add_fetch(&g_drp_battle, 1, __ATOMIC_RELAXED);
         __atomic_store_n(&g_drp_files.kinds, 0, __ATOMIC_RELAXED);
         pm_lock(&drp_lock);
-        drp_battle_since = drp_kind_start = plat_ns(); /* the effects begin about 0.7 s after the start (DRP-P3) */
-        if (drp_presence) {
-            drp_party_due = 1;
-            drp_values.activity = DRP_BATTLE;
-            drp_values.kind = DRP_KIND_PENDING;
-            drp_values.foe = drp_values.active = (SnxDrpMon){0};
-            memset(drp_values.trainer, 0, sizeof drp_values.trainer);
-            snx_drp_write(&g_drp_state, &drp_values);
-        }
+        drp_battle_since = plat_ns(); /* the effects begin about 0.7 s after the start (DRP-P3) */
+        __atomic_store_n(&drp_kind_start, drp_battle_since, __ATOMIC_RELAXED);
+        drp_party_due = 1;
+        drp_values.activity = DRP_BATTLE;
+        drp_values.kind = DRP_KIND_PENDING;
+        drp_values.foe = drp_values.active = (SnxDrpMon){0};
+        memset(drp_values.trainer, 0, sizeof drp_values.trainer);
+        snx_drp_write(&g_drp_state, &drp_values);
         pm_unlock(&drp_lock);
-        __atomic_store_n(&drp_foe_object, drp_presence && readable(records + 0x90, 8) ? gr64(records + 0x90) : 0,
-                         __ATOMIC_RELAXED);
-        drp_foe_tries = 0;
+        __atomic_store_n(&drp_foe_object, readable(records + 0x90, 8) ? gr64(records + 0x90) : 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&drp_foe_tries, 0, __ATOMIC_RELAXED);
     }
     const u64 foe_object = __atomic_load_n(&drp_foe_object, __ATOMIC_RELAXED);
-    if (drp_presence && foe_object && drp_foe_tries++ < 32) {
+    if (foe_object && __atomic_fetch_add(&drp_foe_tries, 1, __ATOMIC_RELAXED) < 32) {
         SnxDrpMon foe;
         const int r = drp_mon_read(foe_object, &foe);
         if (r == DRP_MON_OK) {
@@ -4869,89 +4586,43 @@ static void drp_battle_start(CPU* c, u64 entry) {
         }
         if (r != DRP_MON_BUSY) __atomic_store_n(&drp_foe_object, 0, __ATOMIC_RELAXED);
     }
-    if (drp_presence) drp_battle_decide(plat_ns());
-    if (drp_probe && fresh) {
-        LOG("arceus-drp: battle start %llu: object %llx (vtable main+%llx), caller main+%llx, ns=%llu, text reveals "
-            "so far %llu\n",
-            (unsigned long long)count, (unsigned long long)object, (unsigned long long)drp_vtable(object),
-            (unsigned long long)(c->x[30] - main_base), (unsigned long long)plat_ns(),
-            (unsigned long long)__atomic_load_n(&drp_text_calls, __ATOMIC_RELAXED));
-        drp_words("battle start object", object, 24);
-        drp_party();
-        drp_trainer_walk(object);
-        drp_area_table();
-    }
+    drp_battle_decide(plat_ns());
     drp_original[DRPS_BATTLE](c, entry);
 }
-/* P2: the script's GetMonsNo and GetLevel bindings (D92524, D92D14): (box, slot) in, the value out, -1 the party */
-static void drp_mon(CPU* c, u64 entry, unsigned kind) {
-    const u32 box = (u32)c->x[0], slot = (u32)c->x[1];
-    drp_original[kind](c, entry);
-    const u64 count = __atomic_add_fetch(&drp_calls[kind], 1, __ATOMIC_RELAXED);
-    if (count <= 48 || count % 600 == 0)
-        LOG("arceus-drp: %s %llu: box %d slot %u -> %u, caller main+%llx\n",
-            kind == DRPS_MONSNO ? "GetMonsNo" : "GetLevel", (unsigned long long)count, (int)box, slot, (u32)c->x[0],
-            (unsigned long long)(c->x[30] - main_base));
-    if (count == 1) drp_party();
-}
-static void drp_monsno(CPU* c, u64 entry) { drp_mon(c, entry, DRPS_MONSNO); }
-static void drp_level(CPU* c, u64 entry) { drp_mon(c, entry, DRPS_LEVEL); }
-/* P3 item 2: the player's OnBattleEnd and OnBattleLoseEnd handlers (17DCF30, 17DCF40), never called in a full battle
-   so far, logged in case another kind of battle uses them */
-static void drp_end(CPU* c, u64 entry, unsigned kind) {
-    const u64 object = c->x[0];
-    drp_original[kind](c, entry);
-    const u64 count = __atomic_add_fetch(&drp_calls[kind], 1, __ATOMIC_RELAXED);
-    LOG("arceus-drp: %s %llu: object %llx, ns=%llu\n", kind == DRPS_END ? "OnBattleEnd" : "OnBattleLoseEnd",
-        (unsigned long long)count, (unsigned long long)object, (unsigned long long)plat_ns());
-}
-static void drp_battle_end(CPU* c, u64 entry) { drp_end(c, entry, DRPS_END); }
-static void drp_battle_lose(CPU* c, u64 entry) { drp_end(c, entry, DRPS_LOSE); }
-static void discord_probe_init(void) {
-    const char* value = getenv("SNX_ARCEUS_DISCORD_PROBE");
+static void discord_presence_init(void) {
     const char* presence = getenv("SNX_ARCEUS_DISCORD");
-    drp_probe = value && !strcmp(value, "1");
     drp_presence = presence && !strcmp(presence, "1");
-    if ((!drp_probe && !drp_presence) || !main_base || !g_disp) return;
-    if (drp_presence && !snx_discord_start(getenv("SNX_ARCEUS_DISCORD_APP"))) {
+    if (!drp_presence || !main_base || !g_disp) return;
+    if (!snx_discord_start(getenv("SNX_ARCEUS_DISCORD_APP"))) {
         WARN("arceus-discord: presence off: SNX_ARCEUS_DISCORD_APP is missing or not an application id\n");
         drp_presence = 0;
-        if (!drp_probe) return;
+        return;
     }
     static const struct { u32 offset, word; GuestFn wrapper; const char* name; } sites[DRPS_SITES] = {
         {0x1eb2a7c, 0xf9403408, drp_area_name, "GetAreaName"},
-        {0x17ba3f8, 0xd10103ff, drp_parent_name, "GetParentAreaName"},
         {0x1dd7c68, 0xd103c3ff, drp_battle_start, "UpdateBattleStartCoroutine"},
-        {0xd92524, 0xd100c3ff, drp_monsno, "the script's GetMonsNo"},
-        {0xd92d14, 0xd100c3ff, drp_level, "the script's GetLevel"},
-        {0x17dcf30, 0x911d6c08, drp_battle_end, "the player's OnBattleEnd"},
-        {0x17dcf40, 0x395d6c08, drp_battle_lose, "the player's OnBattleLoseEnd"},
-        {0xfc70c8, 0xd10203ff, drp_trainer_word, "the trainer name's word (FC70C8)"},
-        {0x83636c, 0xf81d0ff5, drp_trainer_data, "the trainer data's path (83636C)"},
-        {0xfbfbd0, 0xd100c3ff, drp_text, "the message text's reveal (FBFBD0)"},
         {0xfc20c8, 0xf81d0ff5, drp_text_set, "the message text's line (FC20C8)"},
     };
     for (unsigned k = 0; k < DRPS_SITES; k++) {
-        /* the presence needs the area name, the battle start and the message lines (D5), the rest are the probe's */
-        if (!drp_probe && k != DRPS_AREA && k != DRPS_BATTLE && k != DRPS_TEXT_SET) continue;
         const u64 pc = main_base + sites[k].offset;
         if (pc < g_code_lo || pc >= g_code_hi || !readable(pc, 4) || gr32(pc) != sites[k].word ||
             !g_disp[(pc - g_code_lo) / 4]) {
-            WARN("arceus-drp: %s left alone: missing or changed entry\n", sites[k].name);
+            WARN("arceus-discord: %s left alone: missing or changed entry\n", sites[k].name);
             continue;
         }
         drp_original[k] = g_disp[(pc - g_code_lo) / 4];
         __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], sites[k].wrapper, __ATOMIC_RELEASE);
-        LOG("arceus-drp: read-only %s on %s (main+%x)\n", drp_probe ? "probe" : "presence reader", sites[k].name,
-            sites[k].offset);
+        LOG("arceus-discord: read-only reader on %s (main+%x)\n", sites[k].name, sites[k].offset);
     }
-    /* fs.c logs the battle kind files for the probe (D3) */
-    if (drp_probe) __atomic_fetch_or(&g_drp_packs, 2, __ATOMIC_RELAXED);
-    /* the tick needs the clock layer's read wrapper, which runs it on the game's threads */
+    /* the tick needs the clock layer's read wrapper, which runs it on the game's threads. The clock layer is on here
+       (arceus_clock_post_jit), its two fixes may not be (research 01:25 item 4). */
     __atomic_store_n(&drp_ticking, 1, __ATOMIC_RELEASE);
-    if (!clocks_installed || !battle_sequence_original)
-        WARN("arceus-drp: without the elapsed-time clocks and the battle sequence fix a battle ends only at an area "
-             "call\n");
+    if (!battle_sequence_original)
+        WARN("arceus-discord: without SNX_ARCEUS_BATTLE_SEQUENCE_FIX a battle ends only at an area name, which most "
+             "battles never reach\n");
+    if (!camera_input_original)
+        WARN("arceus-discord: without SNX_ARCEUS_CAMERA_INPUT_FIX the title screen status stays until the first "
+             "battle\n");
 }
 
 void arceus_clock_post_jit(void) {
@@ -4999,5 +4670,5 @@ void arceus_clock_post_jit(void) {
     camera_input_init();
     camera_rate_init();
     field_message_probe_init();
-    discord_probe_init();
+    discord_presence_init();
 }
