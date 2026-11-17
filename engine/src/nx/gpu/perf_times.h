@@ -51,7 +51,7 @@ enum {
     PC_END_IMAGE,    /* an image upload, copy, blit or readback */
     PC_END_TARGET,   /* the next draw's targets or their layouts differ */
     PC_SRC_BARRIERS, /* gfx_gpu_src's barriers */
-    PC_SRC_CLEAN,    /* of those, ones whose result no draw bound for writing since the barrier before */
+    PC_SRC_CLEAN,    /* of those, ones whose first result read no draw bound for writing since the one before */
     PC_SRC_UNKNOWN,  /* of those, ones whose result's last writer was not kept (the table's slot taken) */
     /* from here on printed as totals, not a frame's mean */
     PC_TAIL_UNGATED, /* increments that waited for no submission: no submit or done time */
