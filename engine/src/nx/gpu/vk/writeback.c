@@ -54,15 +54,12 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
         gmem_read(addr, tmp, size);
         cur = tmp;
     }
-    if (g_perf_landing) { /* SNX_ARCEUS_PERF_LANDING: the same bytes, found a word at a time */
+    if (g_perf_landing) { /* SNX_ARCEUS_PERF_LANDING=3: the same bytes, a 64-byte masked store a step */
         LandingDst d = {addr, res, dst};
-        /* 2, a bench measurement only: blocks the guest left alone are copied whole, written counting them whole. A
-           guest write to an unchanged byte between a block's compare and its copy is undone (gpu/vk/landing.h) */
-        if (g_perf_landing == 3 && g_landing_masked && dst) /* 3: the same bytes, a 64-byte masked store a step */
+        if (g_landing_masked && dst)
             written = landing_masked(res, org, dst, size, landing_put, &d);
-        else
-            written = g_perf_landing == 2 && dst ? landing_blocks(res, org, cur, size, landing_put, &d)
-                                                 : landing_runs(res, org, cur, size, landing_put, &d);
+        else /* no AVX-512BW, or no contiguous host pointer: found a word at a time */
+            written = landing_runs(res, org, cur, size, landing_put, &d);
         changed = written != 0;
     }
     for (u32 i = 0; !g_perf_landing && i < size;) {

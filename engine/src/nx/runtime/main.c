@@ -897,19 +897,16 @@ int snx_main(int argc, char** argv) {
         if (g_perf_replay) LOG("perf-replay: on, the draw's bind walks stop at their last set flag\n");
         if (validation && !strcmp(validation, "1")) g_settings.vulkan_validation_layer = 1; /* vk_validation */
         g_perf_times = times && !strcmp(times, "1"); /* the frame's timing line (gpu/perf_times.h) */
-        /* word compares in the landing, 2 also whole blocks, 3 masked stores (gpu/vk/landing.h) */
-        g_perf_landing = 0;
-        for (int level = 1; landing && level <= 3; level++)
-            if (landing[0] == '0' + level && !landing[1]) g_perf_landing = level;
-        g_landing_masked = g_perf_landing == 3 && landing_masked_supported(); /* the CPU and OS check, once */
-        if (g_perf_landing == 1) LOG("perf-landing: on (level 1), storage results land with word compares\n");
-        if (g_perf_landing == 2)
-            LOG("perf-landing: MEASUREMENT on (level 2), blocks the guest left alone are copied whole, which can undo "
-                "a guest write, bench only\n");
-        if (g_perf_landing == 3)
+        /* masked stores in the landing (gpu/vk/landing.h). 3 is the only level left: 1 and 2 were removed */
+        g_perf_landing = landing && !strcmp(landing, "3") ? 3 : 0;
+        g_landing_masked = g_perf_landing && landing_masked_supported(); /* the CPU and OS check, once */
+        if (landing && (!strcmp(landing, "1") || !strcmp(landing, "2")))
+            LOG("perf-landing: level %s was removed (research 19:31), storage results land as with it unset\n",
+                landing);
+        if (g_perf_landing)
             LOG("perf-landing: on (level 3), storage results land %s\n",
                 g_landing_masked ? "with 64-byte masked stores (AVX-512BW)"
-                                 : "with word compares, as level 1: no AVX-512BW on this CPU or OS");
+                                 : "with word compares: no AVX-512BW on this CPU or OS");
         g_perf_overlap = overlap && !strcmp(overlap, "1"); /* a present's fence a frame early (gpu/nvn/nvn_native.h) */
         if (g_perf_overlap)
             LOG("nvn-overlap: EXPERIMENT on, a sync wait on a present's fence settles for the present before it "

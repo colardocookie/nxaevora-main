@@ -119,19 +119,3 @@ uint64_t landing_masked(const uint8_t* res, const uint8_t* org, uint8_t* dst, ui
     return landing_runs(res, org, dst, size, put, ctx);
 }
 #endif
-
-uint64_t landing_blocks(const uint8_t* res, const uint8_t* org, const uint8_t* cur, uint32_t size, LandingPut put,
-                        void* ctx) {
-    Runs r = {put, ctx, 0, 0, 0};
-    for (uint32_t i = 0, n; i < size; i += n) {
-        n = size - i < LANDING_BLOCK ? size - i : LANDING_BLOCK;
-        if (!memcmp(res + i, org + i, n)) continue; /* the shader changed nothing here */
-        if (!memcmp(cur + i, org + i, n)) {         /* nor the guest: the bytes left alone hold res */
-            put(ctx, i, n);
-            r.total += n;
-            continue;
-        }
-        runs_in(&r, res, org, cur, i, i + n);
-    }
-    return r.total;
-}
