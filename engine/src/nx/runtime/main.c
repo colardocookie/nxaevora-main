@@ -880,6 +880,7 @@ int snx_main(int argc, char** argv) {
         if (profile && !strcmp(profile, "1")) g_settings.profiler = 1;
         if (gpu_profile && !strcmp(gpu_profile, "1")) g_settings.gpu_profile = 1;
         const char* landing = getenv("SNX_ARCEUS_PERF_LANDING");
+        const char* overlap = getenv("SNX_ARCEUS_PERF_OVERLAP");
         const char* validation = getenv("SNX_ARCEUS_VK_VALIDATION");
         const char* replay = getenv("SNX_ARCEUS_PERF_REPLAY");
         const char* check = getenv("SNX_ARCEUS_PERF_OVERLAP_CHECK");
@@ -891,6 +892,10 @@ int snx_main(int argc, char** argv) {
         g_perf_times = times && !strcmp(times, "1"); /* the frame's timing line (gpu/perf_times.h) */
         g_perf_landing = landing && !strcmp(landing, "1"); /* word compares in the landing (gpu/vk/landing.h) */
         if (g_perf_landing) LOG("perf-landing: on, storage results land with word compares\n");
+        g_perf_overlap = overlap && !strcmp(overlap, "1"); /* a present's fence a frame early (gpu/nvn/nvn_native.h) */
+        if (g_perf_overlap)
+            LOG("nvn-overlap: EXPERIMENT on, a sync wait on a present's fence settles for the present before it "
+                "(SNX_ARCEUS_PERF_OVERLAP)\n");
         if (g_perf_times) LOG("perf-times: on, a line every %u presents (SNX_ARCEUS_PERF_TIMES)\n", PERF_TIMES_WINDOW);
     }
     /* the header the log summary reads (common/utilities/logscan.c): no folder in it, since players attach the log to

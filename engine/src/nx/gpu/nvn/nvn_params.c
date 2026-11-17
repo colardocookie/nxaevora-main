@@ -77,6 +77,56 @@ NvnSyncAction nvn_sync_wait_action(NvnSyncState state, int reached) {
 uint32_t nvn_sync_fence_value(int has_posted, uint32_t last_posted, uint32_t syncpoint_now) {
     return has_posted ? last_posted : syncpoint_now;
 }
+int nvn_present_values_post(NvnPresentValues* p, uint32_t value, uint32_t* early) {
+    const int had = p->has_last;
+    if (had) {
+        p->previous = p->last;
+        p->has_previous = 1;
+        *early = p->previous;
+    }
+    p->last = value;
+    p->has_last = 1;
+    return had;
+}
+int nvn_present_values_early(const NvnPresentValues* p, uint32_t fence_value, uint32_t* early) {
+    if (!p->has_last || !p->has_previous || fence_value != p->last) return 0;
+    *early = p->previous;
+    return 1;
+}
+NvnPresentValues* nvn_overlap_queue(NvnOverlapTable* t, uint64_t queue, int make) {
+    for (uint32_t i = 0; i < NVN_OVERLAP_QUEUES; i++)
+        if (t->queues[i].queue == queue) return &t->queues[i].presents;
+    for (uint32_t i = 0; make && i < NVN_OVERLAP_QUEUES; i++)
+        if (!t->queues[i].queue) {
+            t->queues[i].queue = queue;
+            t->queues[i].presents = (NvnPresentValues){0};
+            return &t->queues[i].presents;
+        }
+    return NULL;
+}
+void nvn_overlap_queue_drop(NvnOverlapTable* t, uint64_t queue) {
+    for (uint32_t i = 0; i < NVN_OVERLAP_QUEUES; i++)
+        if (t->queues[i].queue == queue) t->queues[i].queue = 0;
+}
+uint32_t nvn_overlap_sync_slot(uint64_t sync) {
+    return (uint32_t)((sync >> 3) * 0x9E3779B1u) >> 26 & (NVN_OVERLAP_SYNCS - 1);
+}
+void nvn_overlap_sync_set(NvnOverlapTable* t, uint64_t sync, uint32_t serial, int has, uint32_t early) {
+    const uint32_t i = nvn_overlap_sync_slot(sync);
+    if (has) {
+        t->syncs[i].sync = sync;
+        t->syncs[i].serial = serial;
+        t->syncs[i].early = early;
+    } else if (t->syncs[i].sync == sync)
+        t->syncs[i].sync = 0;
+}
+void nvn_overlap_sync_drop(NvnOverlapTable* t, uint64_t sync) { nvn_overlap_sync_set(t, sync, 0, 0, 0); }
+int nvn_overlap_sync_get(const NvnOverlapTable* t, uint64_t sync, uint32_t serial, uint32_t* early) {
+    const uint32_t i = nvn_overlap_sync_slot(sync);
+    if (t->syncs[i].sync != sync || t->syncs[i].serial != serial) return 0;
+    *early = t->syncs[i].early;
+    return 1;
+}
 NvnWaitDeadline nvn_wait_deadline(uint64_t timeout_ns, uint64_t now_ns) {
     if (timeout_ns == NVN_SYNC_WAIT_NO_LIMIT) return (NvnWaitDeadline){0, 0};
     uint64_t deadline = now_ns + timeout_ns;
