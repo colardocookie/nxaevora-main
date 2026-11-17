@@ -38,7 +38,7 @@ static void test_kinds_and_writes(void) {
     bind(&l, NVN_BIND_UNIFORM, 0x1000, 0x100);
     bind(&l, NVN_BIND_VERTEX, 0x2000, 0x40);
     bind(&l, NVN_BIND_STORAGE, 0x3000, 0x80);
-    bind(&l, NVN_BIND_TRANSFORM_FEEDBACK, 0x4000, 0x80); /* not read by the draws */
+    bind(&l, NVN_BIND_TRANSFORM_FEEDBACK, 0x4000, 0x80); /* not read by the draws, written by the capture */
     bind(&l, NVN_BIND_UNIFORM, 0x5000, 0);               /* a disabled slot */
     bind(&l, NVN_BIND_UNIFORM, 0x1000, 0x100);           /* again: one range */
     const NvnOpDraw arrays = {NVN_DRAW_ARRAYS, 4, 0, 30, 0xf000, 0, 0, 0, 1}; /* an address, but no index range */
@@ -76,9 +76,11 @@ static void test_kinds_and_writes(void) {
     CHECK(range(&r, 0x7000, 60) && range(&r, 0x8000, 120));
     CHECK(!range(&r, 0x4000, 0x80) && !range(&r, 0x9000, 30) && !range(&r, 0x9000, 240));
     CHECK(!range(&r, 0xf000, 30));
-    /* written by the replay: the storage bind, the copy's destination, the clear, both reports, the update */
-    CHECK(r.nw == 6);
-    CHECK(overlap_self_written(&r, 0x3040, 4));
+    /* written by the replay: the storage and capture binds, the copy's destination, the clear, both reports and the
+       update */
+    CHECK(r.nw == 7);
+    CHECK(overlap_self_written(&r, 0x3040, 4) && overlap_self_written(&r, 0x407f, 1));
+    CHECK(!overlap_self_written(&r, 0x4080, 4));
     CHECK(overlap_self_written(&r, 0xb01c, 8) && !overlap_self_written(&r, 0xa000, 0x20)); /* the source is read */
     CHECK(overlap_self_written(&r, 0xc00f, 1) && !overlap_self_written(&r, 0xc010, 4));
     CHECK(overlap_self_written(&r, 0xd000, 16) && overlap_self_written(&r, 0xe00c, 4));

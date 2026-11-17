@@ -24,8 +24,8 @@ typedef const NvnOpList* (*OverlapFind)(void* ctx, uint64_t handle);
 void overlap_clear(OverlapRanges* r);
 /* Adds what list's ops read and write, its CALLs followed to NVN_CALL_DEPTH_MAX as the replay does */
 void overlap_collect(OverlapRanges* r, const NvnOpList* list, OverlapFind find, void* ctx, uint32_t depth);
-/* whether [gva, gva + len) meets a range the replay writes: a storage bind, a uniform update, a buffer copy or
-   clear, a report. 1 too when writes overflowed, since one of them may be it */
+/* whether [gva, gva + len) meets a range the replay writes: a storage or transform feedback bind, a uniform update,
+   a buffer copy or clear, a report. 1 too when writes overflowed, since one of them may be it */
 int overlap_self_written(const OverlapRanges* r, uint64_t gva, uint64_t len);
 
 /* A record's hand-over between the post, which hashes it on the game's thread, and frame_end on the GPU thread */

@@ -39,6 +39,7 @@ void overlap_collect(OverlapRanges* r, const NvnOpList* list, OverlapFind find, 
                 perf_reuse_add(&r->set, op->addr, op->size, PERF_REUSE_STORAGE);
                 write_add(r, op->addr, op->size); /* a shader may write it */
             }
+            if (op->kind == NVN_BIND_TRANSFORM_FEEDBACK) write_add(r, op->addr, op->size); /* the capture writes it */
             break;
         }
         case NVN_OP_DRAW: {
