@@ -879,6 +879,8 @@ int snx_main(int argc, char** argv) {
         if (profile && !strcmp(profile, "1")) g_settings.profiler = 1;
         if (gpu_profile && !strcmp(gpu_profile, "1")) g_settings.gpu_profile = 1;
         const char* landing = getenv("SNX_ARCEUS_PERF_LANDING");
+        const char* validation = getenv("SNX_ARCEUS_VK_VALIDATION");
+        if (validation && !strcmp(validation, "1")) g_settings.vulkan_validation_layer = 1; /* vk_validation */
         g_perf_times = times && !strcmp(times, "1"); /* the frame's timing line (gpu/perf_times.h) */
         g_perf_landing = landing && !strcmp(landing, "1"); /* word compares in the landing (gpu/vk/landing.h) */
         if (g_perf_landing) LOG("perf-landing: on, storage results land with word compares\n");
