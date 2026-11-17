@@ -1689,8 +1689,9 @@ static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas,
     if (g_cs_any)
         for (i = 0; i < unique; i++)
             if (!(p[i].key & (1ull << 63))) vk_compute_mem_need(p[i].gva, 4096);
-    /* first, so a landing comes before memory is read; it frees the list, and leaves nothing to copy */
-    for (GfxOut* o = g_out; o && !landed && !g_out_landing; o = o->next)
+    /* first, so a landing comes before memory is read; it frees the list, and leaves nothing to copy (nor o's next
+       to read) */
+    for (GfxOut* o = g_out; o && !landed && !g_out_landing; o = landed ? NULL : o->next)
         for (u64 g = o->addr & ~4095ull, e = o->addr + o->size; g < e && !landed; g += 4096) {
             u64 key = draw_page_key(g), lo = g > o->addr ? g : o->addr, hi = g + 4096 < e ? g + 4096 : e;
             u32 at = draw_page_index(p, unique, key);
