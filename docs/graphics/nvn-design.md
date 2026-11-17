@@ -61,7 +61,7 @@ This file compares the two ways of `docs/graphics/nvn-plan.md` and holds the des
 
 ## Patch size against upstream
 
-Both ways are code in `third_party/ScarletNX`, which is vendored, so upstream distance is not a hard limit.
+Both ways are code in `engine`, which is vendored, so upstream distance is not a hard limit.
 
 - **A.** Mostly new files (a host NVN layer next to `nvn_trace.c`, which already wraps the table), plus a switch in the
   place that loads the table. Small changes to old files. The old path stays and a setting selects it.
@@ -102,7 +102,7 @@ is the smaller step only at the start.
    `nvn_legacy=1` selects the old path. `nvn_native` is deprecated. In the older sections, `nvn_native=1` is the native
    path and `nvn_native=0` is `nvn_legacy=1`.
 3. The place of the code (`runtime/gfx` or inside ScarletNX) is decided after this choice. The first files go into
-   `third_party/ScarletNX/src/nx/gpu/` next to `nvn_trace.c`.
+   `engine/src/nx/gpu/` next to `nvn_trace.c`.
 
 ## Open points that this choice does not close
 
@@ -204,7 +204,7 @@ a risk. The risk that remains is a hidden use of the stored address or of the po
 
 ## 2-3 Where the host layer attaches (2026-11-02)
 
-Method: `third_party/ScarletNX/src/nx/gpu/nvn/diag/nvn_trace.c`, `runtime/main.c`, `runtime/loader.h`, the settings file, and the
+Method: `engine/src/nx/gpu/nvn/diag/nvn_trace.c`, `runtime/main.c`, `runtime/loader.h`, the settings file, and the
 disassembly of the resolver stubs in the `sdk` module.
 
 How `nvn_trace` works, and what the host layer reuses:
@@ -568,7 +568,7 @@ first runs of 3b and 3c can move a function from one group to another.
 
 Files (new unless it says changed). The names are a proposal, the split follows the groups.
 
-- `third_party/ScarletNX/src/nx/gpu/nvn/nvn_native.h`: the shared types (object table, the side table of 2-1, the recorder types).
+- `engine/src/nx/gpu/nvn/nvn_native.h`: the shared types (object table, the side table of 2-1, the recorder types).
 - `nvn_native.c`: the table switch (2-3), "not implemented" handler, G1, G4 and the frame job (2-5 b).
 - `nvn_native_mem.c`: G2 and the GPU address rule of 2-2.
 - `nvn_native_tex.c`: G3, G5, the storage size function, the TIC and TSC encoders (stage 4 uses them with the pools).

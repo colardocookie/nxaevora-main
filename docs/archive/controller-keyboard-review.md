@@ -3,6 +3,8 @@
 
 # Review of patch 0016
 
+Note: `third_party/ScarletNX/` moved to `engine/` in phase 7.5 unit 1. The paths below are the old ones.
+
 Paths below are relative to `third_party/ScarletNX`. This is a source review of the patch and the applied files. No source was changed. No build, test suite, or game was run. Small byte-count and held-bit examples were checked in memory.
 
 ## 1. [P1] Mouse changes race with the main thread
