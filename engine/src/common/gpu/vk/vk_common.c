@@ -61,8 +61,8 @@ static bool layer_has_extension(const char* layer, const char* name) {
 }
 VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* out) {
     *out = (SnxVkInstance){0};
-    /* the window's, then debug utils, validation features and portability enumeration */
-    const char** ext = calloc((size_t)info->extension_count + 3, sizeof *ext);
+    /* the window's, then debug utils, validation features (only when asked for) and portability enumeration */
+    const char** ext = calloc((size_t)info->extension_count + (info->sync_validation ? 3 : 2), sizeof *ext);
     if (!ext) return VK_ERROR_OUT_OF_HOST_MEMORY;
     uint32_t next = 0;
     bool asked = false; /* the window system may ask for portability enumeration itself (SDL does on Apple systems) */
