@@ -4779,8 +4779,10 @@ static GuestFn event_tick_original;
 static GuestFn event_tick_pad_original[3];
 static u64 event_tick_ran, event_tick_skipped, event_tick_full, event_tick_carried, event_tick_calls;
 static u64 event_tick_logged[4], event_tick_line_frame, event_tick_fed_ns, event_tick_cut_ns;
-/* While a job runs on this thread: the edges its natives see on top of the pad's own, else NULL. */
+/* While a job runs on this thread: the edges its natives see on top of the pad's own, else NULL. A job run inside
+   it sees none (event_tick_nested), and the pointer still marks the thread as inside a run. */
 static _Thread_local const u64* event_tick_running;
+static const u64 event_tick_nested[4];
 static u64 event_tick_pad(void) {
     const u64 slot = main_base + EVENT_TICK_PAD;
     if (!readable(slot, 8)) return 0;
@@ -4866,7 +4868,7 @@ static void event_tick_update(CPU* c, u64 entry) {
     const u64 object = c->x[0];
     if (event_tick_running || !readable(object, 0x148)) { /* a job inside a run, or one we cannot key: as today */
         const u64* outer = event_tick_running;
-        event_tick_running = NULL; /* its pad natives see the pad as it is, not the outer job's edges */
+        if (outer) event_tick_running = event_tick_nested; /* the pad as it is, not the outer job's edges */
         event_tick_original(c, entry);
         event_tick_running = outer;
         return;

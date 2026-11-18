@@ -3259,7 +3259,7 @@ static void test_event_tick_decide(void) {
 }
 /* The event tick on its real wrappers: a stand-in job that, when it runs, asks IsPadTrigger through the wrapper. */
 #define EVENT_PAD 3200
-static unsigned event_job_runs[2], event_trigger_seen[2], event_release_seen[2], event_repeat_seen[2];
+static unsigned event_job_runs[3], event_trigger_seen[3], event_release_seen[3], event_repeat_seen[3];
 static u64 event_job_answer;
 static void event_trigger_stub(CPU* c, u64 entry) {
     (void)entry;
@@ -3276,13 +3276,14 @@ static void event_repeat_stub(CPU* c, u64 entry) {
     c->x[0] = (gr64(EVENT_PAD + 0xa8) | gr64(EVENT_PAD + 0xb8)) != 0;
     c->pc = c->x[30];
 }
-static u64 event_job_nested; /* a job the job at 1024 calls inside its run, before its own natives */
+/* the jobs the jobs at 1024 and 1536 call inside their runs, before their own natives */
+static u64 event_job_nested[2];
 static void event_job_stub(CPU* c, u64 entry) {
     assert(entry == entry_pc);
-    const unsigned which = c->x[0] == 1024 ? 0 : 1;
+    const unsigned which = c->x[0] == 1024 ? 0 : c->x[0] == 1536 ? 1 : 2;
     event_job_runs[which]++;
-    if (!which && event_job_nested) {
-        CPU j = {.x = {[0] = event_job_nested, [30] = return_pc}, .pc = entry_pc};
+    if (which < 2 && event_job_nested[which]) {
+        CPU j = {.x = {[0] = event_job_nested[which], [30] = return_pc}, .pc = entry_pc};
         event_tick_update(&j, entry_pc);
         assert(j.pc == return_pc);
     }
@@ -3308,11 +3309,11 @@ static void event_frame(u64 ns) {
 static int event_call(u64 object) {
     u8 before[0x148];
     memcpy(before, memory + object, sizeof before);
-    const unsigned runs = event_job_runs[0] + event_job_runs[1];
+    const unsigned runs = event_job_runs[0] + event_job_runs[1] + event_job_runs[2];
     CPU c = {.x = {[0] = object, [30] = return_pc}, .pc = entry_pc};
     event_tick_update(&c, entry_pc);
     assert(c.pc == return_pc);
-    const int ran = event_job_runs[0] + event_job_runs[1] != runs;
+    const int ran = event_job_runs[0] + event_job_runs[1] + event_job_runs[2] != runs;
     if (!ran) assert(c.x[0] == 0 && !memcmp(before, memory + object, sizeof before));
     return ran;
 }
@@ -3431,11 +3432,26 @@ static void test_event_tick(void) {
     gw64(EVENT_PAD + 0x118, 0x4);
     assert(!event_call(1024));
     gw64(EVENT_PAD + 0x118, 0);
-    event_job_nested = 1536;
+    event_job_nested[0] = 1536;
     event_frame(16666667);
     assert(event_call(1024) && event_job_runs[1] == 1);
     assert(event_trigger_seen[0] == 1 && event_trigger_seen[1] == 0 && gr64(EVENT_PAD + 0x118) == 0);
-    event_job_nested = 0;
+    /* three levels (the reviewer's control on cc604bdb): 1024 runs 1536, 1536 runs 2048. At 120 FPS with 1024 fresh
+       each frame both nested jobs run in every run of 1024, with no state of their own, as today */
+    event_reset();
+    gw64(2048 + 0x140, 0x900);
+    event_job_nested[0] = 1536;
+    event_job_nested[1] = 2048;
+    for (unsigned f = 0; f < 120; f++) {
+        event_frame(8333334);
+        gw64(1024 + 0x140, 0x1000 + f);
+        assert(event_call(1024));
+    }
+    assert(event_job_runs[0] == 120 && event_job_runs[1] == 120 && event_job_runs[2] == 120);
+    for (unsigned k = 0; k < EVENT_TICK_JOBS; k++)
+        assert(event_tick_jobs[k].object != 1536 && event_tick_jobs[k].object != 2048);
+    event_job_nested[0] = event_job_nested[1] = 0;
+    gw64(1024 + 0x140, 0x700);
     /* the line comes every 600 frames, also with two jobs called each frame */
     event_reset();
     gw64(1024 + 0x140, 0x700);
