@@ -400,6 +400,7 @@ typedef struct {
     uint64_t csame[2], cbig, cbytes, cbytes_written; /* own_same after a CPU write: tracked or not, at or past the
                                                         patch size, bytes, bytes on the pages written */
     uint64_t quiet, quiet_ns; /* written checks on own buffers that found nothing */
+    uint64_t sample_skips;    /* PERF-24: full checks that took no sample */
     PerfWPage wpage[PERF_WPAGES];
     uint64_t wpages_lost;
     PerfCopyTarget tg[PERF_COPY_TARGETS];
@@ -450,6 +451,7 @@ void perf_copy_probe(PerfCopies* c, uint64_t ns);
 void perf_copy_cleared(PerfCopies* c, unsigned tests); /* PCL_* bits */
 void perf_copy_csame(PerfCopies* c, int tracked, int big, uint64_t bytes, uint64_t written);
 void perf_copy_quiet(PerfCopies* c, uint64_t ns);
+void perf_copy_sample_skip(PerfCopies* c);
 void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame);
 /* PERF-23's, the same, with the stamps' counts since the last and the cost of one clock read */
 size_t perf_same_line(const PerfCopies* c, PerfStamps* s, PerfStamps* real, uint32_t frames, double clock_ns, char* out,
@@ -464,5 +466,7 @@ extern int g_perf_inplace;
 /* SNX_ARCEUS_PERF_QUERY=1, bench only (PERF-19, research 05:05): a samples-passed report neither ends the pass nor
    copies the counts, which the submission it waits for copies at its end (vk/query.c vk_query_room). 0 unless set */
 extern int g_perf_query;
+/* SNX_ARCEUS_PERF_SAMPLE=1 (PERF-24): with write tracking a buffer's full check takes no sample (gpu/vk/buffer.c) */
+extern int g_perf_sample;
 
 #endif

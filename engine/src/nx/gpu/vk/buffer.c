@@ -32,6 +32,7 @@ typedef struct {
     int own;   /* buf is this entry's own buffer */
     u32 wseen; /* write-tracking clock when it last matched memory */
     u32 host_gen; /* g_vb_map_gen when host_cpu was found: 0 never */
+    u8 sskip;     /* SNX_ARCEUS_PERF_SAMPLE: the last full check took no sample, shash is older (never set unset) */
     u64 host_cpu; /* the guest memory the range shows, ~0 for none (entry_host) */
     VkBuffer buf;
     VmaAllocation mem;
@@ -39,6 +40,8 @@ typedef struct {
     u32 own_prev, own_next; /* own buffers, from the least recently used to the most (vk_buf_reclaim); a free entry's
                                next free one in own_next */
 } Vb;
+/* sskip sits in the padding after host_gen, so the cache's array does not grow (PERF-24, astra 23:15) */
+_Static_assert(sizeof(void*) != 8 || sizeof(Vb) == 144, "Vb's flags must fill the hole after host_gen");
 /* The cache of guest ranges as buffers: its entries in one array by index (0 is none), and an index of them by range,
    open addressed. Entries live twenty seconds after their last use, and draws make new ranges all the time (constant
    buffers streamed through a ring, vertices at new offsets): chained buckets of separately allocated entries grew
@@ -2400,7 +2403,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             use(i, buf, off);
             return 1;
         }
-        if (!strict && w < 0 && e->own && e->stable >= 64 && len >= 4096 &&
+        if (!strict && w < 0 && e->own && e->stable >= 64 && len >= 4096 && !e->sskip &&
             g_vk_epoch - e->chk_epoch < (e->stable >= 256 ? 240u : 64u)) {
             if (g_vk_epoch - e->schk < 4 || vk_sample_hash(gva, len) == e->shash) {
                 if (g_vk_epoch - e->schk >= 4) e->schk = g_vk_epoch;
@@ -2507,10 +2510,16 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     e->gw = gpu_mem_generation();
     e->wseen = wnow;
     if (e->stable >= 63 && len >= 4096) {
-        const u64 s0 = ot0 ? plat_ns() : 0;
-        e->shash = vk_sample_hash(gva, len);
-        e->schk = g_vk_epoch;
-        if (s0) perf_step(st, ran, POS_SAMPLE, s0);
+        if (g_perf_sample && g_ww > 0) { /* PERF-24: only the shortcut without write tracking reads the sample */
+            e->sskip = 1;
+            if (ot0) vk_perf_sample_skip();
+        } else {
+            const u64 s0 = ot0 ? plat_ns() : 0;
+            e->shash = vk_sample_hash(gva, len);
+            e->schk = g_vk_epoch;
+            e->sskip = 0;
+            if (s0) perf_step(st, ran, POS_SAMPLE, s0);
+        }
     }
     if (!e->own) {
         const u64 c0 = ot0 ? plat_ns() : 0;

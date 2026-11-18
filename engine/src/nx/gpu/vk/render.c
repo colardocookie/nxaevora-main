@@ -92,6 +92,9 @@ void vk_perf_probe(u64 ns) {
 void vk_perf_csame(int tracked, int big, u64 bytes, u64 written) {
     if (g_perf_times && perf_here()) perf_copy_csame(&g_perf_cp, tracked, big, bytes, written);
 }
+void vk_perf_sample_skip(void) {
+    if (g_perf_times && perf_here()) perf_copy_sample_skip(&g_perf_cp);
+}
 void vk_perf_quiet(u64 ns) {
     if (g_perf_times && perf_here()) perf_copy_quiet(&g_perf_cp, ns);
 }

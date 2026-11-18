@@ -14,6 +14,7 @@ uint64_t g_perf_submit_every_ns = PERF_SUBMIT_EVERY_NS;
 int g_perf_compute_submit = 1;
 int g_perf_inplace;
 int g_perf_query;
+int g_perf_sample;
 int g_perf_bind;
 uint64_t g_perf_exact;
 
@@ -639,6 +640,7 @@ void perf_copy_csame(PerfCopies* c, int tracked, int big, uint64_t bytes, uint64
     c->cbytes += bytes;
     c->cbytes_written += written;
 }
+void perf_copy_sample_skip(PerfCopies* c) { c->sample_skips++; }
 void perf_copy_quiet(PerfCopies* c, uint64_t ns) {
     c->quiet++;
     c->quiet_ns += ns;
@@ -901,7 +903,8 @@ size_t perf_same_line(const PerfCopies* c, PerfStamps* s, PerfStamps* real, uint
                      "result/gpu/publish/landed; cleared by bytes as stamped/span as stamped/bytes as written/the "
                      "first and third/the second and third of all; after a CPU write tracked/untracked, at or past the patch size, KB, "
                      "KB on pages written; pages written under them in the window: distinct, every frame, half the "
-                     "frames or more, not kept; written checks finding nothing, ms; by outcome ms and calls by step "
+                     "frames or more, not kept; written checks finding nothing, ms; full checks taking no sample; by "
+                     "outcome ms and calls by step "
                      "patch/written/why/owned/bytes/hash/sample/use/other; this probe's asks after them, ms; each "
                      "record's writes, pages entered, runs merged, wide runs; ns a clock read)",
                      frames ? frames : 1);
@@ -922,6 +925,7 @@ size_t perf_same_line(const PerfCopies* c, PerfStamps* s, PerfStamps* real, uint
     if (pages || c->wpages_lost)
         at = putf(out, size, at, " pages=%u/%u/%u/%llu", pages, every, half, (unsigned long long)c->wpages_lost);
     if (c->quiet) at = putf(out, size, at, " quiet=%.1f ms=%.3f", c->quiet / f, c->quiet_ns / f / 1e6);
+    if (c->sample_skips) at = putf(out, size, at, " sample_skipped=%.1f", c->sample_skips / f);
     for (int w = 0; w < PO_N; w++) {
         uint64_t any = 0;
         for (int k = 0; k < POS_N; k++) any |= c->step_n[w][k];

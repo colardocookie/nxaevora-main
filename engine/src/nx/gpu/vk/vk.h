@@ -1083,6 +1083,7 @@ void vk_perf_probe(u64 ns);
 void vk_perf_cleared(unsigned tests);
 void vk_perf_csame(int tracked, int big, u64 bytes, u64 written);
 void vk_perf_quiet(u64 ns);
+void vk_perf_sample_skip(void);
 void vk_perf_wpage(u64 page);
 void vk_render_draw_texture(GpuChannel* ch);
 void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,

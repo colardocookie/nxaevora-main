@@ -921,6 +921,11 @@ int snx_main(int argc, char** argv) {
         if (g_perf_query)
             LOG("perf-query: EXPERIMENT on, a samples-passed report keeps the pass open and its counts are copied at "
                 "the submission's end, or at half the query ring\n");
+        const char* sample = getenv("SNX_ARCEUS_PERF_SAMPLE"); /* bench only (gpu/perf_times.h, PERF-24) */
+        g_perf_sample = sample && !strcmp(sample, "1");
+        if (g_perf_sample)
+            LOG("perf-sample: EXPERIMENT on, with write tracking a buffer's full check takes no sampled hash (only the "
+                "check without write tracking reads one)\n");
         const char* submit_us = getenv("SNX_ARCEUS_PERF_SUBMIT_US"); /* bench only: a submission's recording time */
         if (submit_us) {
             char* end = NULL;
