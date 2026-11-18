@@ -237,6 +237,8 @@ typedef struct {
     uint64_t total;
     int bad;
     uint8_t seen[MAX];
+    uint8_t noted[MAX]; /* PERF-23: in a span the note heard */
+    int bad_note;
 } Blocks;
 static Blocks blocks;
 #define FILL_BLOCK 1024u
@@ -265,15 +267,23 @@ static void fill_blocks(uint32_t size) {
 /* landing_masked, or landing_runs where it can't run, as writeback.c picks them */
 static int masked;
 static uint64_t land3(const uint8_t* r, const uint8_t* o, uint8_t* d, uint32_t size, LandingPut p, void* ctx) {
-    return masked ? landing_masked(r, o, d, size, p, ctx) : landing_runs(r, o, d, size, p, ctx);
+    return masked ? landing_masked(r, o, d, size, p, NULL, ctx) : landing_runs(r, o, d, size, p, ctx);
 }
-/* the step of landing_masked in scalar code, so that the rule is tested where AVX-512BW is missing too */
-static uint64_t model_masked(const uint8_t* r, const uint8_t* o, uint8_t* d, uint32_t size) {
+/* a masked step's span for the record as written (PERF-23): within one whole step, before the tail */
+static void note_span(void* ctx, uint32_t from, uint32_t n) {
+    Blocks* b = ctx;
+    if (!n || n > 64 || from / 64 != (from + n - 1) / 64 || from + n > b->size / 64 * 64) b->bad_note = 1;
+    for (uint32_t i = from; !b->bad_note && i < from + n; i++) b->noted[i] = 1;
+}
+/* the step of landing_masked in scalar code, so that the rule is tested where AVX-512BW is missing too, with its
+   note (noted, when not NULL, gets each step's span) */
+static uint64_t model_masked(const uint8_t* r, const uint8_t* o, uint8_t* d, uint32_t size, Blocks* noted) {
     uint64_t total = 0;
     uint32_t k = 0;
     for (; size - k >= 64; k += 64) {
         uint64_t m = 0;
         for (unsigned j = 0; j < 64; j++) m |= (uint64_t)(r[k + j] != o[k + j] && d[k + j] == o[k + j]) << j;
+        if (noted) landing_note_mask(m, k, note_span, noted);
         for (unsigned j = 0; j < 64; j++)
             if (m >> j & 1) d[k + j] = r[k + j];
         total += (uint64_t)__builtin_popcountll(m);
@@ -293,6 +303,26 @@ static void tail_put(void* ctx, uint32_t from, uint32_t n) {
     if (!b->bad) memcpy(b->dst + from, b->res + from, n);
     b->total += n;
 }
+/* every byte old_walk landed lies in a span heard, and each span begins and ends on one (blocks.noted, whole steps) */
+static int every_landed_noted(uint32_t size) {
+    static uint8_t landed[MAX];
+    memset(landed, 0, size);
+    for (uint32_t i = 0; i < old_out.count; i++)
+        for (uint32_t j = old_out.runs[i].from; j < old_out.runs[i].from + old_out.runs[i].n; j++) landed[j] = 1;
+    for (uint32_t i = 0; i < size / 64 * 64; i++) {
+        if (landed[i] && !blocks.noted[i]) return 0;
+        if (blocks.noted[i] && (i % 64 == 0 || !blocks.noted[i - 1]) && !landed[i]) return 0; /* a span's first */
+        if (blocks.noted[i] && (i % 64 == 63 || !blocks.noted[i + 1]) && !landed[i]) return 0; /* and last */
+    }
+    return 1;
+}
+/* every byte old_walk landed was heard, a step's span or a tail put (blocks.seen) */
+static int every_landed_seen(uint32_t size) {
+    for (uint32_t i = 0; i < old_out.count; i++)
+        for (uint32_t j = old_out.runs[i].from; j < old_out.runs[i].from + old_out.runs[i].n; j++)
+            if (j < size && !blocks.seen[j]) return 0;
+    return 1;
+}
 static void compare_masked(uint32_t size) {
     memcpy(old_dst, guest, size);
     old_out.count = 0;
@@ -302,17 +332,40 @@ static void compare_masked(uint32_t size) {
     uint64_t want = 0;
     for (uint32_t i = 0; i < old_out.count; i++) want += old_out.runs[i].n;
     memcpy(new_dst, guest, size);
-    CHECK(model_masked(res, org, new_dst, size) == want && !memcmp(new_dst, old_dst, size));
+    memset(&blocks, 0, sizeof blocks);
+    blocks.size = size;
+    CHECK(model_masked(res, org, new_dst, size, &blocks) == want && !memcmp(new_dst, old_dst, size));
+    CHECK(!blocks.bad_note && every_landed_noted(size));
     if (!masked) return;
     memcpy(new_dst, guest, size);
     memset(&blocks, 0, sizeof blocks);
     blocks.dst = new_dst;
     blocks.res = res;
     blocks.size = size;
-    const uint64_t total = landing_masked(res, org, new_dst, size, tail_put, &blocks);
-    CHECK(!blocks.bad && total == want && !memcmp(new_dst, old_dst, size));
+    const uint64_t total = landing_masked(res, org, new_dst, size, tail_put, note_span, &blocks);
+    CHECK(!blocks.bad && !blocks.bad_note && total == want && !memcmp(new_dst, old_dst, size));
+    for (uint32_t i = 0; i < size / 64 * 64; i++) blocks.seen[i] = blocks.noted[i]; /* the steps, then the tail */
+    CHECK(every_landed_seen(size));
+}
+typedef struct {
+    uint32_t calls, from, n;
+} Heard;
+static void heard(void* ctx, uint32_t from, uint32_t n) {
+    Heard* h = ctx;
+    h->calls++, h->from = from, h->n = n;
 }
 static void test_masked(void) {
+    /* PERF-23: a step's span from its mask, lowest set bit to highest (reviewer: a sparse byte 7 was missed) */
+    static const struct {
+        uint64_t m;
+        uint32_t calls, from, n;
+    } spans[] = {{0, 0, 0, 0},           {1ull << 7, 1, 64 + 7, 1}, {~0ull, 1, 64, 64},
+                 {1ull << 63, 1, 127, 1}, {1ull | 1ull << 63, 1, 64, 64}, {0x8ull | 1ull << 60, 1, 67, 58}};
+    for (unsigned i = 0; i < sizeof spans / sizeof spans[0]; i++) {
+        Heard h = {0, 0, 0};
+        landing_note_mask(spans[i].m, 64, heard, &h);
+        CHECK(h.calls == spans[i].calls && (!h.calls || (h.from == spans[i].from && h.n == spans[i].n)));
+    }
     for (uint32_t size = 0; size < 300; size++) {
         fill_blocks(size);
         compare_masked(size);

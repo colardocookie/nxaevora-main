@@ -80,6 +80,12 @@ uint64_t landing_runs(const uint8_t* res, const uint8_t* org, const uint8_t* cur
     return r.total;
 }
 
+void landing_note_mask(uint64_t m, uint32_t at, LandingPut note, void* ctx) {
+    if (!m) return;
+    const unsigned lo = (unsigned)__builtin_ctzll(m);
+    note(ctx, at + lo, 64 - (unsigned)__builtin_clzll(m) - lo);
+}
+
 int landing_masked_supported(void) {
 #if LANDING_X86
     unsigned a, b, c, d, lo, hi;
@@ -97,7 +103,7 @@ int landing_masked_supported(void) {
 #if LANDING_X86
 __attribute__((target("avx512f,avx512bw"))) uint64_t landing_masked(const uint8_t* res, const uint8_t* org,
                                                                     uint8_t* dst, uint32_t size, LandingPut put,
-                                                                    void* ctx) {
+                                                                    LandingPut note, void* ctx) {
     uint64_t total = 0;
     uint32_t k = 0;
     for (; size - k >= 64; k += 64) {
@@ -108,6 +114,7 @@ __attribute__((target("avx512f,avx512bw"))) uint64_t landing_masked(const uint8_
         if (!m) continue;
         _mm512_mask_storeu_epi8(dst + k, m, r); /* the bytes of a clear mask bit are not stored */
         total += (uint64_t)__builtin_popcountll(m);
+        if (note) landing_note_mask(m, k, note, ctx);
     }
     Runs r = {put, ctx, 0, 0, 0};
     runs_in(&r, res, org, dst, k, size);
@@ -115,7 +122,8 @@ __attribute__((target("avx512f,avx512bw"))) uint64_t landing_masked(const uint8_
 }
 #else
 uint64_t landing_masked(const uint8_t* res, const uint8_t* org, uint8_t* dst, uint32_t size, LandingPut put,
-                        void* ctx) {
+                        LandingPut note, void* ctx) {
+    (void)note; /* every run goes to put */
     return landing_runs(res, org, dst, size, put, ctx);
 }
 #endif

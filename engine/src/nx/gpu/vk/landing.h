@@ -35,8 +35,12 @@ uint64_t landing_runs(const uint8_t* res, const uint8_t* org, const uint8_t* cur
 int landing_masked_supported(void);
 /* The bytes of landing_runs with cur being dst, 64 a step, with
    a byte-masked store of res under (res != org) and (cur == org). The tail under 64 bytes goes to landing_runs' loop
-   and put, which must write dst. Only where landing_masked_supported(): off x86 it is landing_runs. The bytes put */
+   and put, which must write dst. note, when not NULL, hears each masked store's span, from its lowest byte stored to
+   its highest, and writes nothing (SNX_ARCEUS_PERF_TIMES, PERF-23). Only where landing_masked_supported(): off x86
+   it is landing_runs. The bytes put */
 uint64_t landing_masked(const uint8_t* res, const uint8_t* org, uint8_t* dst, uint32_t size, LandingPut put,
-                        void* ctx);
+                        LandingPut note, void* ctx);
+/* note told the span of the 64-bit mask m's set bits, lowest to highest, as bytes from at: nothing when none */
+void landing_note_mask(uint64_t m, uint32_t at, LandingPut note, void* ctx);
 
 #endif

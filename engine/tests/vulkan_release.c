@@ -164,6 +164,13 @@ void gpu_mem_written_shader(u64 address, u64 size) {
     (void)address;
     (void)size;
 }
+static u8 landed[200]; /* PERF-23: the bytes from 0x31000 writeback reported to the record as written */
+static unsigned landed_calls;
+void gpu_mem_landed(u64 address, u64 size) {
+    landed_calls++;
+    for (u64 i = address; i < address + size; i++)
+        if (i >= 0x31000 && i < 0x31000 + sizeof landed) landed[i - 0x31000] = 1;
+}
 void vk_rt_before_write(u64 address, u64 size) {
     (void)address;
     (void)size;
@@ -318,6 +325,37 @@ static void check_writeback_merge(void)
 		}
 	}
 	writeback_direct = 0;
+}
+
+/* SNX_ARCEUS_PERF_TIMES (PERF-23, reviewer 20:18): a result's changed bytes reach the record as written, byte 7 of
+   the first 64-byte step and byte 128 in the tail, by the byte loop, landing_runs and, where the CPU has AVX-512BW,
+   landing_masked's step, through both mapping paths. Its unchanged bytes don't, nor anything with the switch unset */
+static void check_landed_record(void) {
+    u8 original[130] = {0}, result[130] = {0};
+    result[7] = 1, result[128] = 2;
+    mapping = 4096;
+    for (int direct = 0; direct < 2; direct++)
+        for (int level = 0; level < 3; level++) {
+            writeback_direct = direct;
+            g_perf_landing = level ? 3 : 0;
+            g_landing_masked = level == 2 && landing_masked_supported();
+            for (int on = 0; on < 2; on++) {
+                g_perf_times = on;
+                memset(memory + mapping, 0, sizeof original);
+                memset(landed, 0, sizeof landed);
+                landed_calls = 0;
+                vk_lock();
+                vk_write_changed(0x31000, result, original, sizeof original);
+                vk_unlock();
+                assert(memory[mapping + 7] == 1 && memory[mapping + 128] == 2);
+                if (!on) {
+                    assert(!landed_calls);
+                    continue;
+                }
+                for (unsigned i = 0; i < sizeof landed; i++) assert(landed[i] == (i == 7 || i == 128));
+            }
+        }
+    g_perf_times = 0, g_perf_landing = 0, g_landing_masked = 0, writeback_direct = 0;
 }
 
 /* SNX_ARCEUS_PERF_STORAGE's queue walks against the old ones on random mappings: guest pages 1 to 7 behind 64 GPU
@@ -537,6 +575,7 @@ int main(void) {
     assert(!g_rix[home].word && !g_rix[(home + 1) & (RIX_N - 1)].word && count_queued(0x37ab4) == -1);
     assert(lock_depth == 0 && events_signaled == 3 && !events_due); /* payload writes signal nothing */
 	check_writeback_merge();
+    check_landed_record();
     check_release_walks();
     check_tail();
     return 0;
