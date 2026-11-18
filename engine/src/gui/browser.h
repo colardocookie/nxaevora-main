@@ -13,19 +13,18 @@ typedef struct {
     size_t count;
     size_t room; /* the entries the lists have room for, one past the last included */
 } GuiGames;
-/* what a folder's games are: ready to run (executables; on Android a game's code or a dump), the other consoles'
-   packages (3DS CIA and Vita VPK files, GBA ROMs, each opened with its driver), and dumps (NRO files), prepared when
-   they run */
-enum { GUI_GAMES_RUN = 1, GUI_GAMES_CIA = 2, GUI_GAMES_DUMP = 4 };
+/* what a folder's games are: ready to run (executables; on Android a game's code or a dump), and dumps (NRO files),
+   prepared when they run */
+enum { GUI_GAMES_RUN = 1, GUI_GAMES_DUMP = 2 };
 /* A folder's games of kinds added after those listed: its own files, and each folder of it that holds its game
    (<name>/<name>), named by the folder; nothing deeper. False, error saying why, when it cannot be read */
 bool gui_games_add(GuiGames* games, const char* directory, int kinds, char* error, size_t size);
 /* and with depth, the games of its other folders too, down that many levels; a hidden folder left alone. The folder's
    own error alone is said */
 bool gui_games_add_deep(GuiGames* games, const char* directory, int kinds, int depth, char* error, size_t size);
-/* games in two groups: those ready to run, then the dumps and CIAs, each in the order it had; when both have games,
+/* games in two groups: those ready to run, then the dumps, each in the order it had; when both have games,
    each under a heading of its own (an entry whose path is NULL, its text shown). A dump made already (made says so of
-   its path) is left out, and with dumps NULL every dump and CIA, the ready games alone. False when out of memory,
+   its path) is left out, and with dumps NULL every dump, the ready games alone. False when out of memory,
    games as they were */
 bool gui_games_group(GuiGames* games, const char* ready, const char* dumps,
                      bool (*made)(const char* path, const void* user), const void* user);
@@ -36,14 +35,13 @@ bool gui_games_heading(const GuiGames* games, size_t i);
    when out of memory */
 char* gui_game_log(const char* path);
 /* games in each group (from a heading to the next) by when each last ran, its log's time (gui_game_log), the newest
-   first; one never run (no log), a dump, a CIA and a VPK after them, each in the order it had, as the headings stay.
+   first; one never run (no log) and a dump after them, each in the order it had, as the headings stay.
    False when out of memory, games as they were */
 bool gui_games_by_last_opened(GuiGames* games);
 /* whether directory holds a folder that is no game and not hidden: one whose games a deep add would list */
 bool gui_has_folders(const char* directory, int kinds);
-/* games/'s alone: its executable files and game folders, or with cia CIA and VPK files (case-insensitive extension, no execute
-   bit needed). Never recurse into data/save directories. */
-bool gui_games_scan(GuiGames* games, const char* directory, bool cia, char* error, size_t size);
+/* games/'s alone: its executable files and game folders. Never recurse into data/save directories. */
+bool gui_games_scan(GuiGames* games, const char* directory, char* error, size_t size);
 void gui_games_free(GuiGames* games);
 /* The bytes of the files under path, in its folders too, links not followed: 0 for no such folder, or "". It stops,
    with what it counted, once *stop is set by another thread */
@@ -82,8 +80,4 @@ size_t gui_game_cheats(const char* path, char** folder, char*** names);
    copied in part, and taken away when a file fails. from is left as it is. True; false with why naming the file that
    failed, or the link a mod cannot hold, and the system's reason */
 bool gui_copy_mod(const char* from, const char* to, char* why, size_t size);
-/* A 3DS CIA, a Vita VPK, a GBA ROM, by its name */
-bool gui_is_cia(const char* name);
-bool gui_is_vpk(const char* name);
-bool gui_is_gba(const char* name);
 #endif

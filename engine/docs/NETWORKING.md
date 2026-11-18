@@ -22,15 +22,11 @@ Eden's C++ runtime.
 
 - `src/common/network/`: reference-counted sockets, host ABI translation, poll,
   cancellation, timeouts, ICMP, eventfd, resolver and interface discovery.
-- `src/gnuabi/network/`: AArch64 Linux syscall/layout translation and resolver files.
-  Sockets share the VFS descriptor namespace and open-file lifetime with ordinary
-  files, including `dup`, `read`, `write`, `fcntl`, `ioctl` and `fstat`.
 - `src/nx/hle/services/network/`: BSD IPC, sfdnsres/nsd and NIFM adapters.
 
 Each layer's `abi/*.inc` files are re-includable X-macro tables. Common tables
 cover errno (including Winsock), domains, socket types, levels/options, message
-and poll flags, and resolver errors/flags. Guest tables cover their Linux or
-Horizon constants and Linux syscall numbers. Define the relevant row macro before
+and poll flags, resolver errors/flags, and Horizon's constants. Define the relevant row macro before
 including a table; tables clean up the macros afterwards. Add mappings there
 rather than introducing parallel switch statements or relying on host numbers.
 Option tables also specify the value layout. Address and port bytes remain in
@@ -58,12 +54,6 @@ that, never who left.
 
 ## Runtime behavior
 
-GNU ABI networking uses the host connection. Its read-only virtual `/etc` contains
-`resolv.conf`, `hosts`, `nsswitch.conf`, `protocols`, and `services`. Guest libc can
-resolve names using those files and ordinary UDP/TCP DNS. No arbitrary host file
-paths become accessible; AF_UNIX pathname bind/connect is unsupported, while
-`socketpair` is supported.
-
 NX defaults to `network=0`. It reports offline through NIFM, permits outbound
 loopback destinations and numeric/localhost resolution. Set `network=1` in the
 runtime options to use host networking and host-derived NIFM configuration.
@@ -83,7 +73,7 @@ not emulated. The Windows helper currently supports IPv4 only.
 ## Current limitations
 
 - Host resolver calls are synchronous and not interrupted by socket cancellation.
-- GNU ABI still runs one guest thread. Poll/select signal masks are not delivered.
+- Poll/select signal masks are not delivered.
 - Epoll approximates edge-triggered requests with level readiness, supports
   oneshot, and does not expose nested epoll readiness through poll.
 - Ancillary/control messages are not forwarded. `recvmsg` reports no control data.
@@ -99,9 +89,9 @@ not emulated. The Windows helper currently supports IPv4 only.
 The dependency-light tests run even with NX disabled:
 
 ```sh
-cmake -S . -B build/gnuabi -DSNX_BUILD_NX=OFF
-cmake --build build/gnuabi
-ctest --test-dir build/gnuabi --output-on-failure
+cmake -S . -B build/tests -DSNX_BUILD_NX=OFF
+cmake --build build/tests
+ctest --test-dir build/tests --output-on-failure
 ```
 
 - `network_stack`: host loopback TCP/UDP, options, timeout/nonblocking behavior,
@@ -110,8 +100,6 @@ ctest --test-dir build/gnuabi --output-on-failure
 - `network_icmp`: deterministic injected-reply tests of odd-length checksums,
   headers, truncation, peek ownership, queue limits and missing-helper cleanup.
   These do not claim to prove host connectivity.
-- `gnuabi_network`: direct guest-memory/syscall tests, descriptor ownership,
-  epoll/select, socket metadata and filesystem isolation.
 - `bsd_service`: production BSD dispatch with a stubbed kernel; checks guest
   sockaddr/constants, TCP/UDP, poll/select, options, eventfd, offline rejection,
   exact error reply sizes and zero-length receives.
@@ -120,16 +108,3 @@ ctest --test-dir build/gnuabi --output-on-failure
   game's datagram sockets through it.
 - `room_service`: what `ldn=room` reads before it joins (`room.c`): `room`'s address,
   `users/online.ini`'s password, and what stops the game.
-
-An optional static AArch64 libc fixture exercises the complete ELF-to-native
-execution path, without external DNS or ICMP requirements:
-
-```sh
-aarch64-linux-gnu-gcc -static -O1 tests/gnuabi/network.c -o /tmp/network-aarch64
-# Alternatively: zig cc -target aarch64-linux-musl -static -O1 tests/gnuabi/network.c -o /tmp/network-aarch64
-timeout 60 build/gnuabi/scarletnx-gnuabi --cc=clang /tmp/network-aarch64
-```
-
-Expected stdout: `network test: ok`. The fixture is separate from the freestanding
-CPU/syscall suites because it needs an AArch64 libc/toolchain. Build/test success
-is not game validation; no game scene has been tested for this port.

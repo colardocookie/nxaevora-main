@@ -140,7 +140,7 @@ typedef struct {
 #define GUI_FOLDER_DEPTH 4     /* how deep the games of a folder kept with its subfolders are looked for */
 #define GUI_FOLDER_DEEP  "/**" /* after such a folder's path, in the file of folders */
 /* the library a folder of the player's is in, the word that starts its line in folders.txt: Games lists the games
-   ready to run of the recompiled ones, the dumps of the dumps ones, and the CIAs (run as they are) of both */
+   ready to run of the recompiled ones, the dumps of the dumps ones */
 enum { GUI_LIBRARY_RECOMPILED, GUI_LIBRARY_DUMPS, GUI_LIBRARIES };
 static const char* const library_words[GUI_LIBRARIES] = {"recompiled", "dumps"};
 /* What a row of Folders is: a place (Data, Logs, Caches, Extractions, the recompiled library's Main), dumps/ (the dumps
@@ -586,11 +586,7 @@ typedef struct App {
 /* the menu's item i: a row of ui.txt's Entries, in model.h's order (a negative size if not); its text shown
    translated */
 #define GUI_ENTRY(item) (UI_MENU_ENTRIES_LOAD_SWITCH_NRO + (item))
-typedef char gui_entries_in_order[GUI_ENTRY(GUI_LINUX) == UI_MENU_ENTRIES_LOAD_LINUX_ARM_ELF &&
-                                          GUI_ENTRY(GUI_3DS) == UI_MENU_ENTRIES_LOAD_3DS_GAME &&
-                                          GUI_ENTRY(GUI_VITA) == UI_MENU_ENTRIES_LOAD_VITA_VPK &&
-                                          GUI_ENTRY(GUI_GBA) == UI_MENU_ENTRIES_LOAD_GBA_ROM &&
-                                          GUI_ENTRY(GUI_SETTINGS) == UI_MENU_ENTRIES_SETTINGS &&
+typedef char gui_entries_in_order[GUI_ENTRY(GUI_SETTINGS) == UI_MENU_ENTRIES_SETTINGS &&
                                           GUI_ENTRY(GUI_LOG) == UI_MENU_ENTRIES_SHARE_LOG &&
                                           GUI_ENTRY(GUI_FOLDERS) == UI_MENU_ENTRIES_FOLDERS &&
                                           GUI_ENTRY(GUI_EXIT) == UI_MENU_ENTRIES_EXIT &&
@@ -1381,9 +1377,9 @@ static void recent_note(App* app) {
         memmove(at, at + cut, strlen(at + cut) + 1);
     }
 }
-/* a recent game Games shows: a game made, or a Linux program, which runs as it is. A dump not made yet stays in the
-   list, so that its game takes its place once made (recent_as_games), but is not shown: opening it would recompile it */
-static bool recent_game(const GuiRecentGame* r) { return r->prepared || r->driver == GUI_LINUX; }
+/* a recent game Games shows: a game made. A dump not made yet stays in the list, so that its game takes its place once
+   made (recent_as_games), but is not shown: opening it would recompile it */
+static bool recent_game(const GuiRecentGame* r) { return r->prepared; }
 static int recent_games(const App* app) {
     int n = 0;
     for (int i = 0; i < app->recent.count; ++i) n += recent_game(&app->recent.game[i]);
@@ -3477,8 +3473,8 @@ static size_t addons_updates(const App* app) {
     while (n < app->addons.count && addon_kind(app, n) == SNX_ADDON_UPDATE) n++;
     return n;
 }
-/* whether game, a program's path, keeps save states: a recompiled game's, not a dump's or a CIA's (states_focus's) */
-static bool states_kept(const char* game) { return !gui_is_cia(game) && !gui_is_dump(game); }
+/* whether game, a program's path, keeps save states: a recompiled game's, not a dump's (states_focus's) */
+static bool states_kept(const char* game) { return !gui_is_dump(game); }
 /* the box's rows: the updates and No update (with any update), the DLCs, the mods, the cheats, then addons_tail's */
 enum {
     ROW_NO_UPDATE = -1,
@@ -4556,7 +4552,7 @@ static void states_focus(App* app) {
     const GuiRecentGame* r = recent ? &app->recent.game[recent_index(app, (int)row - 1)] : NULL;
     if (r && r->driver == GUI_SWITCH && r->prepared)
         states_open(app, r->path, r->name);
-    else if (game && !gui_is_cia(app->games.names[index]) && !gui_is_dump(app->games.names[index]))
+    else if (game && !gui_is_dump(app->games.names[index]))
         states_open(app, app->games.paths[index], app->games.shown[index]);
     else
         snprintf(app->message, sizeof app->message, "%s",
@@ -5198,12 +5194,7 @@ typedef struct {
 } GuiMenuBoxes;
 /* what an item is about, for the tips and the side box */
 static const char* item_about(const App* app, int item) {
-    static const char* const loads[] = {SNX_TR_NOOP("Recompiles a game's .nro, then runs it"),
-                                        SNX_TR_NOOP("Runs a Linux ARM program, 64 or 32-bit"),
-                                        SNX_TR_NOOP("Recompiles a 3DS game, then runs it"),
-                                        SNX_TR_NOOP("Recompiles a PS Vita homebrew .vpk, then runs it"),
-                                        SNX_TR_NOOP("Runs a GBA ROM on the emulated AGB board")};
-    if (item >= GUI_SWITCH && item <= GUI_GBA) return snx_tr(loads[item - GUI_SWITCH]);
+    if (item == GUI_SWITCH) return snx_tr("Recompiles a game's .nro, then runs it");
     if (item == GUI_EXIT) return snx_tr("Closes ScarletNX");
     {
         GuiMenu menu = app->menu;
@@ -5248,7 +5239,7 @@ static void menu_side(App* app, const GuiMenuBoxes* m) {
 unsigned ui_menu_entries_attr_cb(App* app, size_t row) {
     unsigned attr = app->menu.activated && (size_t)app->menu.active == row ? UI_ATTR_ACTIVE : 0;
     if (row == GUI_LOG && app->log_due) attr |= UI_ATTR_FAILURE | UI_ATTR_BLINK;
-    if (row <= GUI_GBA && (loads_off(app) >> row & 1u)) attr |= UI_ATTR_OFF;
+    if (row == GUI_SWITCH && (loads_off(app) >> row & 1u)) attr |= UI_ATTR_OFF;
     return attr;
 }
 static void draw_menu(App* app) {
@@ -5625,16 +5616,9 @@ void ui_games_grid_tiles_row_action_cb(App* app, size_t row, uint32_t hit) {
 /* the focused row of Games: what it is, about it, and a line more for a recent game's or a game's kind */
 static bool game_was_old(const App* app, const char* path);
 static int row_driver(const GuiGames* games, size_t i);
-/* a 3DS game, a Vita VPK or a GBA ROM: a console's package its driver makes a game of */
-static bool package(const char* name) { return gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name); }
-/* a made game's kind, by the console its folder says */
-static const char* ready_kind(int driver) {
-    return driver == GUI_3DS    ? snx_tr("3DS game, ready to run")
-           : driver == GUI_VITA ? snx_tr("Vita game, ready to run")
-           : driver == GUI_GBA  ? snx_tr("GBA game, ready to run")
-                                : snx_tr("Ready to run");
-}
-/* game i's kind, by its file's name: ready (whose console its folder says), a dump or a package; its updates, DLCs and
+/* a made game's kind */
+static const char* ready_kind(void) { return snx_tr("Ready to run"); }
+/* game i's kind, by its file's name: ready, a dump or a package; its updates, DLCs and
    mods; the games/ of an older version that holds it, as its row's (games/) says */
 static void game_kind(const App* app, const GuiGames* games, size_t i, char* kind, size_t size) {
     const char* name = games->names[i];
@@ -5643,12 +5627,7 @@ static void game_kind(const App* app, const GuiGames* games, size_t i, char* kin
                  games->addons[i]);
     else
         snprintf(kind, size, "%s",
-                 gui_is_cia(name)    ? snx_tr("3DS game, opened with scarletnx-3ds")
-                 : gui_is_vpk(name)  ? snx_tr("Vita VPK, opened with scarletnx-vita")
-                 : gui_is_gba(name)  ? snx_tr("GBA ROM, played with scarletnx-agb")
-                 : gui_is_dump(name) ? snx_tr("A dump, prepared when it runs")
-                                     /* Games' own rows by what list_games read, another list's from its folder */
-                                     : ready_kind(games == &app->games ? app->games_drivers[i] : row_driver(games, i)));
+                 gui_is_dump(name) ? snx_tr("A dump, prepared when it runs") : ready_kind());
     if (game_was_old(app, games->paths[i]))
         snprintf(kind + strlen(kind), size - strlen(kind), "%s",
                  snx_tr(", in the games/ an older version made: new games go to recompiled/"));
@@ -5661,9 +5640,8 @@ static void recent_kind(const App* app, const GuiRecentGame* r, char* kind, size
             game_kind(app, &app->games, i, kind, size);
             return;
         }
-    /* shown, it is a game made or a Linux program (recent_game) */
-    snprintf(kind, size, "%s",
-             r->driver == GUI_LINUX ? snx_tr("Linux ARM ELF, run with scarletnx-gnuabi") : ready_kind(r->driver));
+    /* shown, it is a game made (recent_game) */
+    snprintf(kind, size, "%s", ready_kind());
 }
 static const char* games_focus(App* app, const GuiGamesBoxes* g, const char** about, char* kind, size_t size) {
     size_t selected = app->browser.selected, head = app->browser.head;
@@ -6148,18 +6126,10 @@ static void draw_screen(App* app) {
 static const char* driver_name(int item) {
     switch (item) {
 #ifdef SDL_PLATFORM_ANDROID
-        /* the app's libraries folder only takes lib*.so: the drivers go in as ones */
+        /* the app's libraries folder only takes lib*.so: the driver goes in as one */
         case GUI_SWITCH: return "libscarletnx-run.so";
-        case GUI_LINUX: return "libscarletnx-gnuabi.so";
-        case GUI_3DS: return "libscarletnx-3ds.so";
-        case GUI_VITA: return "libscarletnx-vita.so";
-        case GUI_GBA: return "libscarletnx-agb.so";
 #else
         case GUI_SWITCH: return SNX_PROGRAM_FILE;
-        case GUI_LINUX: return "scarletnx-gnuabi";
-        case GUI_3DS: return "scarletnx-3ds";
-        case GUI_VITA: return "scarletnx-vita";
-        case GUI_GBA: return "scarletnx-agb";
 #endif
         default: return NULL;
     }
@@ -6199,7 +6169,7 @@ static uint64_t text_hash(uint64_t h, const char* text) {
     for (const char* c = text ? text : ""; *c; ++c) h = (h ^ (unsigned char)*c) * 1099511628211ull;
     return (h ^ 0xffu) * 1099511628211ull; /* where it ends, so "a" then "bc" is not "ab" then "c" */
 }
-/* the menu's loads whose driver is not there, a bit an item (1u << GUI_LINUX): their rows greyed, Enter on one saying
+/* the menu's loads whose driver is not there, a bit an item (1u << GUI_SWITCH): their rows greyed, Enter on one saying
    which driver (#640). Looked for again once a second, as a driver put in or taken out shows, and at once when the
    folder they are looked for in, the menu's own program or PATH change */
 static unsigned loads_off(App* app) {
@@ -6207,8 +6177,7 @@ static unsigned loads_off(App* app) {
     Uint64 now = SDL_GetTicks();
     if (app->loads_at && key == app->loads_key && now - app->loads_at < 1000) return app->loads_off;
     app->loads_off = 0;
-    for (int item = GUI_SWITCH; item <= GUI_GBA; ++item)
-        if (!driver_there(app, item)) app->loads_off |= 1u << item;
+    if (!driver_there(app, GUI_SWITCH)) app->loads_off |= 1u << GUI_SWITCH;
     app->loads_key = key;
     app->loads_at = SDL_max(now, 1);
     return app->loads_off;
@@ -6541,7 +6510,7 @@ static void app_values(App* app) {
 }
 /* ---- the player's game folders: listed after recompiled/ and dumps/, kept a line each in folders_file ---- */
 /* what a folder holds, as Games lists it: 1 << GUI_LIBRARY_RECOMPILED for games ready to run, 1 << GUI_LIBRARY_DUMPS
-   for dumps or CIAs (down its subfolders with deep); nothing, or no such folder, the dumps' */
+   for dumps (down its subfolders with deep); nothing, or no such folder, the dumps' */
 static int folder_holds(const char* path, bool deep) {
     GuiGames games;
     char error[8];
@@ -6552,7 +6521,7 @@ static int folder_holds(const char* path, bool deep) {
         holds |= 1 << GUI_LIBRARY_RECOMPILED;
     gui_games_free(&games);
     memset(&games, 0, sizeof games);
-    if (gui_games_add_deep(&games, path, GUI_GAMES_DUMP | GUI_GAMES_CIA, deep ? GUI_FOLDER_DEPTH : 0, error,
+    if (gui_games_add_deep(&games, path, GUI_GAMES_DUMP, deep ? GUI_FOLDER_DEPTH : 0, error,
                            sizeof error) &&
         games.count)
         holds |= 1 << GUI_LIBRARY_DUMPS;
@@ -6731,7 +6700,7 @@ static void folder_add_to(App* app, const char* path, int holds, bool deep) {
 static void folder_ask(App* app, const char* path) {
     char* absolute = path ? snx_absolute(path) : NULL;
     int holds = app->adding >= 0 ? 1 << app->adding : absolute ? folder_holds(absolute, true) : 1 << GUI_LIBRARY_DUMPS;
-    if (absolute && snx_is_dir(absolute) && gui_has_folders(absolute, GUI_GAMES_RUN | GUI_GAMES_CIA)) {
+    if (absolute && snx_is_dir(absolute) && gui_has_folders(absolute, GUI_GAMES_RUN)) {
         free(app->folder_asked);
         app->folder_asked = absolute;
         app->asked_holds = holds;
@@ -7012,7 +6981,6 @@ static bool games_game_focus(const App* app, bool* mods) {
     *mods = false;
     if (row < head && (int)row < recent_shown(app)) {
         const GuiRecentGame* r = &app->recent.game[recent_index(app, (int)row)];
-        if (r->driver == GUI_LINUX) return false;
         *mods = r->driver == GUI_SWITCH && !gui_is_dump(r->path);
         return true;
     }
@@ -7309,14 +7277,6 @@ static bool places_fit(const App* app, char* out, size_t size) {
     }
     return true;
 }
-/* a dump's extraction in the picked extractions folder, as the driver names it in its own: <work>[/<kind>]/<name> */
-static char* dump_out(const App* app, const char* file, const char* kind) {
-    char *name = snx_dump_name(file), *dir = kind ? snx_path_join(app->work_dir, kind) : snx_strdup(app->work_dir);
-    char* out = snx_path_join(dir, name);
-    free(name);
-    free(dir);
-    return out;
-}
 /* the games of recompiled/ made from a dump: each one's program, as Games lists it, and the dump its .ini's source=
    names, else its folder's <name>.source, the link an older version made (snx_game_source) */
 typedef struct {
@@ -7443,7 +7403,7 @@ static void recent_as_games(App* app) {
     made_read(app, &made);
     for (i = app->recent.count - 1; i >= 0; --i) { /* from the oldest: an entry dropped moves none still to look at */
         const GuiRecentGame* r = &app->recent.game[i];
-        const char* program = r->driver != GUI_LINUX && !r->prepared ? made_program(&made, r->path) : NULL;
+        const char* program = !r->prepared ? made_program(&made, r->path) : NULL;
         if (program && gui_recent_made(&app->recent, i, program)) changed = true;
     }
     made_free(&made);
@@ -7463,27 +7423,6 @@ static void recent_as_games(App* app) {
         free(shown);
     }
     if (changed) recent_changed(app);
-}
-/* room on the disks for file's 3DS run (gui_room), not extracted yet; else room_line says what it takes. A Switch game
-   reads its files in place and takes no room. The free space is room_free in tests */
-static bool room_fits(App* app, const char* file) {
-    char *out, need_text[32], left_text[32];
-    const char* games = app->dest_out ? app->dest_out : app->games_dir; /* where the game goes */
-    uint64_t need = 0, left = 0;
-    bool fits = true;
-    if (app->menu.selected != GUI_3DS) return true; /* nothing is extracted */
-    out = dump_out(app, file, "3ds");
-    if (!snx_is_dir(out) && !made_from(app, file)) /* else extracted already, and its game made with it */
-        fits = gui_room(snx_file_size(file), false, app->room_free ? app->room_free : free_space(app->work_dir),
-                        app->room_free ? app->room_free : free_space(games), snx_same_disk(app->work_dir, games), &need,
-                        &left);
-    if (!fits) {
-        gui_size_text(need_text, sizeof need_text, need);
-        gui_size_text(left_text, sizeof left_text, left);
-        snprintf(app->room_line, sizeof app->room_line, snx_tr("Needs about %s, %s free."), need_text, left_text);
-    }
-    free(out);
-    return fits;
 }
 static void open_folder_picker(App* app) {
     if (!app->picked_folder) app->picked_folder = SDL_RegisterEvents(1);
@@ -11229,6 +11168,7 @@ static void made_answer(App* app, bool taken, bool second) {
     app->menu.selected = item;
 }
 static void queue_show(App* app, int i);
+static int program_driver(const char* program);
 static void launch(App* app, char* absolute, bool prepared) {
     int queued;
     if (!absolute || !snx_is_file(absolute)) {
@@ -11256,9 +11196,18 @@ static void launch(App* app, char* absolute, bool prepared) {
         return;
     }
 #endif
-    /* a dump, package or ROM a game was made from already: played or recompiled, as the player answers (made_answer;
-       DraVee, 2026-10-24) */
-    if (!app->recompile && !app->made_ok && !prepared && app->menu.selected != GUI_LINUX && made_from(app, absolute)) {
+    /* a game folder whose .ini says another console (snx_game_system) is not played: this build has the Switch driver */
+    if (program_driver(absolute) < 0) {
+        char* folder = snx_dirname(absolute);
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("%s is not a Switch game: ScarletNX plays Switch games only."), folder ? folder : absolute);
+        free(folder);
+        say_failure(app, app->message);
+        free(absolute);
+        return;
+    }
+    /* a dump a game was made from already: played or recompiled, as the player answers (made_answer; DraVee, 2026-10-24) */
+    if (!app->recompile && !app->made_ok && !prepared && made_from(app, absolute)) {
         made_ask(app, absolute);
         return;
     }
@@ -11266,7 +11215,7 @@ static void launch(App* app, char* absolute, bool prepared) {
        does: the Compile tab shows it, and it plays once it ended if the tab still shows it (job_play). So does a Switch
        game another build made, which its driver would recompile on the run's screen: its program opened, or its dump
        with Play answered */
-    bool compile = !app->recompile && !prepared && app->menu.selected != GUI_LINUX && !made_from(app, absolute);
+    bool compile = !app->recompile && !prepared && !made_from(app, absolute);
 #ifndef SDL_PLATFORM_IOS /* the games there are packs the app loads, with no stamp */
     compile = compile || (!app->recompile && !app->compiled && prepared && app->menu.selected == GUI_SWITCH &&
                           gui_game_folder(absolute) && !made_here(absolute));
@@ -11274,10 +11223,6 @@ static void launch(App* app, char* absolute, bool prepared) {
 #endif
     bool make = app->recompile || compile; /* the driver's -r: a run that makes the game and plays nothing */
     bool native = prepared && app->menu.selected == GUI_SWITCH;
-    /* another console's made game plays through its driver in its folder (--game=), as its copy of the runtime does */
-    char* game_dir = prepared && app->menu.selected != GUI_SWITCH ? snx_dirname(absolute) : NULL;
-    char* game_option = game_dir ? snx_format("--game=%s", game_dir) : NULL;
-    free(game_dir);
     /* a game in a folder of its own goes through the driver, which recompiles it first when another build made it; one
        an older version laid out beside the others runs as it is, as every game on iOS, which runs no other program */
 #ifdef SDL_PLATFORM_IOS
@@ -11290,11 +11235,10 @@ static void launch(App* app, char* absolute, bool prepared) {
     if (!direct && !driver && app->menu.selected == GUI_SWITCH) driver = snx_strdup("scarletnx");
 #endif
     if (!direct && !driver) {
-        snprintf(app->message, sizeof(app->message), snx_tr("Cannot find %s beside ScarletNX or on PATH."),
+        snprintf(app->message, sizeof app->message, snx_tr("Cannot find %s beside ScarletNX or on PATH."),
                  driver_name(app->menu.selected) ? driver_name(app->menu.selected) : snx_tr("the selected driver"));
         say_failure(app, app->message);
         free(absolute);
-        free(game_option);
         return;
     }
 #if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
@@ -11302,19 +11246,14 @@ static void launch(App* app, char* absolute, bool prepared) {
         if (play(app, absolute) && app->recent_file && !gui_recent_add(&app->recent, absolute, GUI_SWITCH, true))
             recent_changed(app);
         free(absolute);
-        free(game_option);
         return;
     }
 #endif
-    /* the folders picked in Settings > App > Folders, which a Switch, 3DS, Vita or GBA run works in: refused when one
-       cannot be */
-    bool folders = (app->menu.selected == GUI_SWITCH && !native) ||
-                   (!game_option &&
-                    (app->menu.selected == GUI_3DS || app->menu.selected == GUI_VITA || app->menu.selected == GUI_GBA));
+    /* the folders picked in Settings > App > Folders, which a Switch run works in: refused when one cannot be */
+    bool folders = app->menu.selected == GUI_SWITCH && !native;
     if (folders && !places_fit(app, app->message, sizeof app->message)) {
         free(driver);
         free(absolute);
-        free(game_option);
         return;
     }
     /* a dump made into the folder the player picks, when the recompiled library has more than one that can take it; one
@@ -11324,22 +11263,8 @@ static void launch(App* app, char* absolute, bool prepared) {
         if (dest_dirs(app, dirs) > 1) {
             dests_open(app, absolute, prepared);
             free(driver);
-            free(game_option);
             return;
         }
-    }
-    /* a dump not extracted yet may need more room than its disks have: asked first, Run Anyway pressed twice */
-    if (folders && !app->room_ok && !room_fits(app, absolute)) {
-        free(app->made_file);
-        free(app->room_file);
-        app->room_file = absolute;
-        app->room_item = app->menu.selected;
-        app->room_prepared = prepared;
-        app->room_recompile = app->recompile;
-        gui_confirm_open(&app->confirm, GUI_ASK_ROOM, true);
-        free(driver);
-        free(game_option);
-        return;
     }
     /* the driver, the file, the settings, --repo and its folder, the picked games and extraction folders, NULL */
     GuiSettings* s = settings_of(app);
@@ -11348,9 +11273,9 @@ static void launch(App* app, char* absolute, bool prepared) {
     argv[0] = direct ? absolute : driver;
     if (!direct && driver_in_self(app, app->menu.selected)) argv[n++] = driver_name(app->menu.selected);
     if (make) argv[n++] = "-r";
-    if (!direct) argv[n++] = game_option ? game_option : absolute;
-    /* Switch options only, never guest argv for the CPU-only Linux driver or the 3DS one; R's recompile takes no
-       option of a run. The drivers work in the menu's data folder, so they list the same games */
+    if (!direct) argv[n++] = absolute;
+    /* Switch options only; R's recompile takes no option of a run. The driver works in the menu's data folder, so it
+       lists the same games */
     if (!direct && app->menu.selected == GUI_SWITCH) n += gui_settings_recompile(s, argv + n);
     /* B's pack: the cache the profile run left, and the level and hook its key was made with. -O after the
        settings' --opt= so the matched level is the one the build uses */
@@ -11366,20 +11291,15 @@ static void launch(App* app, char* absolute, bool prepared) {
     if (app->menu.selected == GUI_SWITCH && !make && app->state_load) argv[n++] = app->state_load;
     /* Debug's SLP vectorizer, which R's recompile takes too: a run passes it with the game's settings */
     if (app->menu.selected == GUI_SWITCH && make) n += gui_settings_one(s, "slp_vectorizer", argv + n);
-    /* the 3DS driver's own extraction, which its target has */
-    if (app->menu.selected == GUI_3DS) argv[n++] = "--extract-container";
     if (folders || (native && !direct)) {
         argv[n++] = "--data";
         argv[n++] = app->data_dir;
     }
-    /* a CIA's game is a folder of the recompiled library as a Switch game is, named after its title ID, its saves in
-       it */
+    /* a made game is a folder of the recompiled library, its saves in it */
     if (folders && (app->place[GUI_PLACE_GAMES] || app->dest_out)) {
         argv[n++] = "--outdir";
         argv[n++] = app->dest_out ? app->dest_out : app->games_dir;
     }
-    /* the GBA's window starts fullscreen as a Switch game's does; a compile opens none */
-    if (app->menu.selected == GUI_GBA && !make) n += gui_settings_one(s, "fullscreen", argv + n);
     argv[n] = NULL;
     /* R's, B's and a first compile, whichever console's: the queue runs them behind the screens, one at a time */
     if (make) {
@@ -11406,7 +11326,6 @@ static void launch(App* app, char* absolute, bool prepared) {
         if (app->run_out) fputc('\n', app->run_out);
     }
     free(argv);
-    free(game_option); /* argv held it until the process started */
     free(app->dest_out); /* the run's, which argv held until here: a next one asks again */
     app->dest_out = NULL;
     gui_steps_reset(&app->steps);
@@ -11894,33 +11813,28 @@ static void open_recent(App* app, int shown) {
     launch(app, snx_strdup(game.path), game.prepared);
     app->menu.selected = item;
 }
-/* the console a made game's program plays, by its folder's .ini (snx_game_system): the driver that plays it */
+/* the driver that plays the game whose program is at program: the Switch's, or -1 when its folder's .ini says another
+   console (snx_game_system), which this build does not play */
 static int program_driver(const char* program) {
     const char* leaf = program;
+    char *folder, *name;
+    SnxSystem system;
     for (const char* c = program; *c; ++c)
         if (*c == '/' || *c == '\\') leaf = c + 1;
-    char *folder = snx_dirname(program), *name = snx_strdup(leaf);
+    folder = snx_dirname(program);
+    name = snx_strdup(leaf);
 #ifdef _WIN32
     if (strlen(name) > 4 && !SDL_strcasecmp(name + strlen(name) - 4, ".exe")) name[strlen(name) - 4] = 0;
 #endif
-    SnxSystem system = folder ? snx_game_system(folder, name) : SNX_SYSTEM_SWITCH;
+    system = folder ? snx_game_system(folder, name) : SNX_SYSTEM_SWITCH;
     free(name);
     free(folder);
-    return system == SNX_SYSTEM_3DS    ? GUI_3DS
-           : system == SNX_SYSTEM_VITA ? GUI_VITA
-           : system == SNX_SYSTEM_GBA  ? GUI_GBA
-                                       : GUI_SWITCH;
+    return system == SNX_SYSTEM_SWITCH ? GUI_SWITCH : -1;
 }
-/* the driver a file's name says: a package its console's, a dump the Switch's; -1 for a name that says none */
-static int named_driver(const char* name) {
-    return gui_is_cia(name)    ? GUI_3DS
-           : gui_is_vpk(name)  ? GUI_VITA
-           : gui_is_gba(name)  ? GUI_GBA
-           : gui_is_dump(name) ? GUI_SWITCH
-                               : -1;
-}
-/* the driver that plays row i of games: a package its console's, a dump the Switch's, and a made game, ready to run,
-   the one of the console its folder says; a heading the Switch's, which runs nothing */
+/* the driver a file's name says: a dump the Switch's; -1 for a name that says none */
+static int named_driver(const char* name) { return gui_is_dump(name) ? GUI_SWITCH : -1; }
+/* the driver that plays row i of games: a dump the Switch's, and a made game, ready to run, the Switch's unless its
+   folder says another console; a heading the Switch's, which runs nothing */
 static int row_driver(const GuiGames* games, size_t i) {
     if (gui_games_heading(games, i)) return GUI_SWITCH;
     int named = named_driver(games->names[i]);
@@ -11943,12 +11857,11 @@ static void open_game(App* app, size_t index) {
         if (app->addons_shown) return;
     }
     const char* name = app->games.names[index];
-    app->menu.selected = app->games_drivers[index];
-    launch(app, snx_absolute(app->games.paths[index]), !gui_is_dump(name) && !package(name));
+    app->menu.selected = app->games_drivers[index] >= 0 ? app->games_drivers[index] : GUI_SWITCH;
+    launch(app, snx_absolute(app->games.paths[index]), !gui_is_dump(name));
     if (!app->menu.running) app->menu.selected = item;
 }
-/* R on Games: the focused game recompiled where it is, or its dump or package made again, by its console's driver,
-   playing nothing; a Linux program runs as it is */
+/* R on Games: the focused game recompiled where it is, or its dump made again, by the Switch driver, playing nothing */
 static void recompile_focus(App* app) {
     size_t row = app->browser.selected, head = app->browser.head;
     size_t index = app->browser.page * app->browser.page_size + row - head;
@@ -11956,8 +11869,6 @@ static void recompile_focus(App* app) {
          game = row >= head && index < app->games.count && !gui_games_heading(&app->games, index);
     if (!recent && !game)
         snprintf(app->message, sizeof app->message, "%s", snx_tr("No game in focus to recompile."));
-    else if (recent && app->recent.game[recent_index(app, (int)row)].driver == GUI_LINUX)
-        snprintf(app->message, sizeof app->message, "%s", snx_tr("R recompiles games: a Linux program runs as it is."));
     else {
         app->recompile = true;
         if (recent)
@@ -11979,13 +11890,12 @@ static char* aot_leaf(const char* folder) {
     return snx_strdup(leaf);
 }
 /* the Debug settings a run of the game at path (its program) takes off their default (gui_settings_debug), with the
-   picks and the GDB stub or its .ini's alone: how many. None for a package or a game of another console, whose
-   runtime has its own */
+   picks and the GDB stub or its .ini's alone: how many. None for a game of another console, whose runtime has its own */
 static int game_debug(App* app, const char* path, int picks, char* out, size_t size) {
     char *folder = path && gui_game_folder(path) ? snx_dirname(path) : NULL, *name = folder ? aot_leaf(folder) : NULL;
     char* ini = name ? snx_game_ini(folder, name) : NULL;
     /* a made game by the console its folder says; else a dump, which the Switch driver prepares and plays */
-    int nx = name ? snx_game_system(folder, name) == SNX_SYSTEM_SWITCH : path && !package(path), n = 0;
+    int nx = name ? snx_game_system(folder, name) == SNX_SYSTEM_SWITCH : path != NULL, n = 0;
     if (size) out[0] = 0;
     if (nx) n = gui_settings_debug(settings_of(app), ini, picks, out, size);
     free(ini);
@@ -12019,8 +11929,7 @@ static int aot_focus_game(App* app, AotFocus* f) {
         if (app->recent.game[recent_index(app, (int)row)].driver != GUI_SWITCH) return 0;
         path = app->recent.game[recent_index(app, (int)row)].path;
     } else if (game) {
-        if (gui_games_heading(&app->games, index) || gui_is_cia(app->games.names[index]) ||
-            gui_is_vpk(app->games.names[index]) || gui_is_gba(app->games.names[index]))
+        if (gui_games_heading(&app->games, index))
             return 0; /* no path */
         path = app->games.paths[index];
     } else {
@@ -12579,29 +12488,28 @@ static bool made_dump(const char* path, const void* made) { return made_program(
    folder, or with Sort's Last opened the game that last ran first. The first folder that cannot be read is named, the
    others still listed */
 static void games_scan(App* app, GuiGames* games, char* message, size_t size) {
-    int kinds = GUI_GAMES_RUN | GUI_GAMES_CIA | GUI_GAMES_DUMP, i; /* the old games/'s: it held both */
+    int kinds = GUI_GAMES_RUN | GUI_GAMES_DUMP, i; /* the old games/'s: it held both */
     char error[sizeof app->message];
     MadeGames made;
     char *dumps = app->data_dir ? snx_path_join(app->data_dir, "dumps") : NULL, *old;
     gui_games_free(games);
     message[0] = 0;
-    if (!gui_games_add(games, app->games_dir, GUI_GAMES_RUN | GUI_GAMES_CIA, error, sizeof error))
+    if (!gui_games_add(games, app->games_dir, GUI_GAMES_RUN, error, sizeof error))
         snprintf(message, size, "%s", error);
     old = games_old(app);
     if (old && !gui_games_add(games, old, kinds, error, sizeof error) && !message[0])
         snprintf(message, size, "%s", error);
     free(old);
-    /* Dumps off: the dumps' folders not read, and the dumps and CIAs the others hold left out of the groups */
+    /* Dumps off: the dumps' folders not read, and the dumps the others hold left out of the groups */
     if (dumps_on(app) && dumps && snx_is_dir(dumps) && /* none: places_apply said it could not be made */
-        !gui_games_add_deep(games, dumps, GUI_GAMES_DUMP | GUI_GAMES_CIA, app->dumps_shallow ? 0 : GUI_FOLDER_DEPTH,
+        !gui_games_add_deep(games, dumps, GUI_GAMES_DUMP, app->dumps_shallow ? 0 : GUI_FOLDER_DEPTH,
                             error, sizeof error) &&
         !message[0])
         snprintf(message, size, "%s", error);
     for (i = 0; i < app->folder_count; ++i) /* a library's folder, its library's games */
         if ((dumps_on(app) || app->folders_library[i] == GUI_LIBRARY_RECOMPILED) &&
             !gui_games_add_deep(games, app->folders[i],
-                                (app->folders_library[i] == GUI_LIBRARY_RECOMPILED ? GUI_GAMES_RUN : GUI_GAMES_DUMP) |
-                                    GUI_GAMES_CIA,
+                                app->folders_library[i] == GUI_LIBRARY_RECOMPILED ? GUI_GAMES_RUN : GUI_GAMES_DUMP,
                                 app->folders_deep[i] ? GUI_FOLDER_DEPTH : 0, error, sizeof error) &&
             !message[0])
             snprintf(message, size, snx_tr("%s It is in Settings > App > Folders."), error);
@@ -12917,7 +12825,7 @@ static void menu_key(App* app, GuiKey key) {
     }
     if (pick_screen(app) && key != GUI_SELECT && key != GUI_CANCEL) return; /* nothing there to move to */
     /* a load whose driver is not there opens no screen: it says which driver, looked for again now (#640) */
-    if (key == GUI_SELECT && app->menu.view == GUI_LOAD_NONE && !app->menu.running && app->menu.selected <= GUI_GBA) {
+    if (key == GUI_SELECT && app->menu.view == GUI_LOAD_NONE && !app->menu.running && app->menu.selected == GUI_SWITCH) {
         app->loads_at = 0;
         if (loads_off(app) >> app->menu.selected & 1u) {
             snprintf(app->message, sizeof(app->message), snx_tr("Cannot find %s beside ScarletNX or on PATH."),
@@ -13140,10 +13048,6 @@ static void menu_entry(App* app, int item, uint32_t hit) {
     if (hit & UI_HIT_CLICK) menu_key(app, GUI_SELECT);
 }
 void ui_menu_entries_load_switch_nro_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_SWITCH, hit); }
-void ui_menu_entries_load_linux_arm_elf_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_LINUX, hit); }
-void ui_menu_entries_load_3ds_game_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_3DS, hit); }
-void ui_menu_entries_load_vita_vpk_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_VITA, hit); }
-void ui_menu_entries_load_gba_rom_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_GBA, hit); }
 void ui_menu_entries_settings_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_SETTINGS, hit); }
 void ui_menu_entries_share_log_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_LOG, hit); }
 void ui_menu_entries_folders_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_FOLDERS, hit); }

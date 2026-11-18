@@ -200,15 +200,15 @@ char* snx_portable_dir(const char* program_dir);
 /* The checkout a program run from its build tree (build; NULL: any program) was built from, for what only a checkout
    has: its sources, and what an older version kept in it. NULL for any other program */
 char* snx_checkout(const char* checkout, const char* build, const char* program_dir);
-/* What an older version kept in the checkout of a build tree's program, its data folder then: games/, work/, the
-   keys and scarletnx-gnuabi's sysroot, linux/. snx_checkout_now names where this one keeps each for the data folder data; snx_checkout_left says so on
+/* What an older version kept in the checkout of a build tree's program, its data folder then: games/ and work/.
+   snx_checkout_now names where this one keeps each for the data folder data; snx_checkout_left says so on
    stderr for each still there. Nothing is moved: the player does that (docs/DEPRECATIONS.md) */
-#define SNX_CHECKOUT_FILES 3
+#define SNX_CHECKOUT_FILES 2
 extern const char* const snx_checkout_files[SNX_CHECKOUT_FILES];
 char* snx_checkout_now(const char* data, int file);
 void snx_checkout_left(const char* checkout, const char* data);
 /* A dump file's name without its extension, kept to letters, digits, UTF-8, spaces, '-' and '_', trailing spaces cut;
-   "Game" when nothing is left (the 3DS target names its games by it) */
+   "Game" when nothing is left (the launcher names its games by it) */
 char* snx_dump_name(const char* input);
 /* 0 for a name that is not an encrypted Switch dump (.nsp, .xci, .dnsp, .dxci, any case), else 1 with the line that
    says so: such a dump is no longer read, the decrypted game folder is (-r <folder>) */

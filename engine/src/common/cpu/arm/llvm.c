@@ -288,7 +288,7 @@ static void bounds(ArmIR* a, LLVMValueRef addr, unsigned bytes, unsigned alignme
         require(a, cmp(a, LLVMIntEQ, band(a, addr, c32(a, alignment - 1)), c32(a, 0)), SNX_ARM_ALIGNMENT, addr);
     LLVMValueRef end = add(a, z64(a, addr), c64(a, bytes));
     LLVMValueRef size = get(a, offsetof(SnxArmCPU, mem_size), a->i64);
-    /* the AGB board's window runs past 4 GiB by a guard (agb/cpu/memmap.c): an access the console's bus wraps, an LDM
+    /* the ARM7TDMI profile's window runs past 4 GiB by a guard: an access the bus wraps, an LDM
        from 0xFFFFFFE8, lands in it instead of aborting */
     if (arm7tdmi(a))
         require(a, cmp(a, LLVMIntULE, end, size), SNX_ARM_DATA_ABORT, addr);
@@ -373,7 +373,7 @@ static LLVMTypeRef io_type(ArmIR* a) {
     LLVMTypeRef params[4] = {a->ptr, a->i32, a->i32, a->i32};
     return LLVMFunctionType(a->i32, params, 4, 0);
 }
-/* What a read of an I/O register with nothing to read gives on the GBA: the opcode the ARM7TDMI fetched last, as mGBA's
+/* What a read of an I/O register with nothing to read gives on the ARM7TDMI: the opcode it fetched last, as mGBA's
    GBALoadBad makes it. ARM: [$+8]. Thumb: [$+4] in both halves, but [$+4] above [$+2] from the BIOS and OAM, and from
    IWRAM [$+4] above [$+2] or below it by $+4's place in its word. Read from the code as it is, the hook gets it as the
    value of a read */

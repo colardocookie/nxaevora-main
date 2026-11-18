@@ -73,32 +73,14 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   focus again. A tap on a finished run returns to the menu, and one on a
   running run's ESC line aborts it. Android's back button is ESC. On a screen packed with
   pixels (a phone) the text takes the display's own scale, as far as the menu still fits.
-- **Load Switch NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK** and
-  **Load GBA ROM** open a screen: a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
+- **Load Switch NRO** opens a screen: a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
   picker (on Linux the desktop's, else zenity's). Dropping a file on the window and Ctrl+V with
   a path work too. ESC returns to the menu. On Android the picker opens at once. A Switch game is read where it lies
-  and takes no room. A 3DS dump not extracted yet takes about its size; when its disks have less free, the menu says how
-  much it needs and *Run Anyway* takes a second press. A Switch game from encrypted dumps is not loaded here: decrypt it
+  and takes no room. A game from encrypted dumps is not loaded here: decrypt it
   to a folder (`exefs/`, `romfs/`) and give the folder to `scarletnx -r`. With more than one folder of the recompiled library that can
   take a game (its Main, and each Extra that can be written and runs programs), a box asks which the dump's game goes
   in, **Recompile** on its tab: each folder with what it is and its free room, the Main first and in focus; ESC runs
-  nothing. The one taken is the run's `--outdir`, and the room asked about is that folder's.
-- **Load 3DS game** uses `scarletnx-3ds`. Its `games/` browser lists CIA, CCI, 3DS, CXI, APP, HBB, BCCI/BCXI/BCIA and ZCCI/ZCXI/ZCIA inputs,
-  not host executables. The driver reads supported decrypted application CIAs, cartridge images (a card's
-  update partition played as the update) and bare NCCHs where they lie, or extracts them with its `--extract-container`.
-  The driver then compiles the ARM11 code ahead of time and runs it, on Linux and
-  Windows. Larger images use bounded conservative discovery (16 MiB text cap).
-  SuperTux shows its title screen and plays its music, but takes no input yet.
-  Full HLE/devices remain incomplete. Like the Switch driver, it uses an
-  extraction (or the CIA itself) and a compiled module already there, and recompiles only when needed.
-  See [3DS port](3DS.md) for limits.
-- **Load Vita VPK** uses `scarletnx-vita`, with the menu's data folder as its `--data`. The driver extracts the VPK
-  into its game's folder of `recompiled/` (named after its title ID), compiles its code ahead of time and plays it,
-  compiling at run time what it missed. A VPK extracted and compiled before plays at once. See
-  [Vita driver](VITA.md) for limits.
-- **Load GBA ROM** uses `scarletnx-agb`, the AGB board runtime, with the menu's data folder as its `--data`: it makes
-  the game's folder of `recompiled/` (named after the ROM's file), its module and its copy of the runtime, and plays
-  it in a window. See [AGB board](AGB.md).
+  nothing. The one taken is the run's `--outdir`.
 - **Settings** opens on its groups, Enter opening one and ESC coming back: **App**, then
   **Launch** (the launcher's own and the recompiler's, from `src/nx/runtime/settings.txt`), then a group per section of the game's `.ini` (Display,
   Graphics, Performance, Overlay, Controllers, Network, Debug; Overlay is the runtime's On-screen controls, the
@@ -200,7 +182,6 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   turns each pass of LLVM's pipelines off and sets the options LLVM's C API takes, its **All** stepping every row. They
   are passed as `--key=value` when the game is recompiled: by **R**, or by a run that has to (a game folder recompiled
   the first time, an NRO each time). A game made already keeps its code until then. The first two settings and these reach
-  neither the Linux nor the 3DS driver.
 - The Status box, after the RAM and the CPU, says what ScarletNX's folders take (recompiled/,
   work/ and themes/ of the data folder, and on Linux its config, state and cache folders, else
   the menu's own) and what is left on that disk, counted as the menu opens and after each run. While a recompile of
@@ -312,16 +293,15 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   folder ([USAGE](USAGE.md#folders)): `$XDG_STATE_HOME/scarletnx/` on Linux, by default
   `~/.local/state/scarletnx/`, `%APPDATA%\scarletnx\state\` on Windows, or the data folder's `state/` on Android. An
   older version's, in a `gui/` folder, stay where they are. A line per
-  game: `switch`, `linux` or `3ds`, `file` or `games` (a program from recompiled/, run as it is: the token keeps its old name),
+  game: `switch`, `file` or `games` (a program from recompiled/, run as it is: the token keeps its old name),
   the path and the name, separated by tabs. A list that cannot be written there is named in the
   message, after a run's end too, until it can be.
 
-The launcher runs Switch inputs with the `scarletnx` it is part of, and looks beside it, then on
-PATH, for `scarletnx-gnuabi` or `scarletnx-3ds`. Files are passed directly
+The launcher runs Switch inputs with the `scarletnx` it is part of. Files are passed directly
 as argv entries, never through a shell. Spaces, Unicode paths and shell punctuation
 are not evaluated. Local `file://` text drops are decoded, but lists and remote URI
 authorities are rejected. The working directory is not changed and is shown in the
-Status box. See [GNUABI](GNUABI.md) for supported Linux ELF applications.
+Status box.
 
 ## Setup
 
@@ -363,17 +343,15 @@ setup, writing nothing.
 
 ## Games: the games of recompiled/ and the player's folders
 
-**Games**, the tab, lists the games: the ones ready to run (a recompiled game runs directly), the dumps to prepare
-on Android, CIA files, which go to the 3DS driver, VPK files, which go to the Vita driver, and GBA ROMs, which go to the
-GBA's. It reads the `recompiled/` of the
+**Games**, the tab, lists the games: the ones ready to run (a recompiled game runs directly) and the dumps to prepare
+on Android. It reads the `recompiled/` of the
 folder the driver works in, which the menu passes it as `--data`: a portable copy's `.scarletnx/` beside the
 AppImage (or the GUI), else the user's data folder, a build tree's menu's too ([USAGE](USAGE.md#folders)), then each
 Extra of Settings > App > Folders. Each game is shown by the name in its `control.nacp`, which the recompile copies into
 its data, else by its folder's or file's name, sorted by it in each folder, with its icon (Wimsy in grey for one with
 none): a game's own; a dump (an `.nro`) shows none. Only immediate files are listed:
-executables (execute permission on UNIX, `.exe` on Windows), `.cia`, `.cci`, `.3ds`, `.cxi`, `.app`, `.hbb`, `.bcci`, `.bcxi`, `.bcia`, `.zcci`, `.zcxi` and `.zcia` files
-(case-insensitive, no execute permission needed), which run with the 3DS driver, and `.vpk` files, which run with the Vita driver. Hidden files, shared libraries and
-directories are excluded. The folders are looked at once a second while the menu is open (their
+executables (execute permission on UNIX, `.exe` on Windows), which run with the Switch driver. Hidden
+files, shared libraries and directories are excluded. The folders are looked at once a second while the menu is open (their
 names only), so a game put in or taken out shows in the open list; a folder that
 cannot be read is named and the others still listed.
 
@@ -383,10 +361,10 @@ cannot be read is named and the others still listed.
 - **V** (on a phone a tap on *View* at the foot) opens the View box over the list, an option a row, its value between
   the arrows: **Recent Games** (*On*, `recent_games = on` in `app.ini`: the recent games over the list; *Off*: none),
   **Dumps** (*On*, `games_dumps = on`: the dumps of `dumps/` and of the dumps library's folders under their
-  heading; *Off*: the games ready to run alone, a CIA or a VPK left out with the dumps) and **Sort** (*Title*,
+  heading; *Off*: the games ready to run alone) and **Sort** (*Title*,
   `games_sort = title`: by the name shown, in each folder; *Last opened*, `games_sort = last_opened`: the game whose
   log a run wrote last first, as every run writes its game's log again, then the games never run in their order,
-  each group on its own, its dumps, CIAs and VPKs in theirs) and **View** (*List*, `games_view = list`: a row a game,
+  each group on its own, its dumps in theirs) and **View** (*List*, `games_view = list`: a row a game,
   all on one page that scrolls; *Grid*, `games_view = grid`: a tile a game, its icon over its name, as many a line as fit, on one page
   that scrolls, the list three fifths of the screen as a run's output is, Recent Games and a group's heading each on
   a line of its own; the arrows go to the tile beside, above or under the focus, its column or the line's last,
@@ -400,18 +378,17 @@ cannot be read is named and the others still listed.
   Menu; the player turns them on there. An `app.ini` without them, an older version's, has these defaults, and a word
   it does not know is named in the message with the one kept: `recent_games = maybe (it keeps on)`.
 - In the list, Up/Down go round the recent games and the page's files. Enter/Space opens one. A game no game of the
-  recompiled library was made from yet (a dump, a package, a ROM) compiles first, through the queue of compiles R's
+  recompiled library was made from yet (a dump) compiles first, through the queue of compiles R's
   goes through: the Compile tab shows it, and it plays once its compile ended if the tab still shows it; sent away
   first (Tab), the tips say it is ready, and Enter then plays it. One a game was made from already, in `recompiled/` or
   a recompiled folder of the Library, asks first, naming the game and its folder: **Play**, in focus, plays it,
   **Recompile** recompiles it where it is, as R does, and Back does neither.
-- **R** (on Android a tap on *Recompile* at the foot) recompiles the game in focus, recent or on the page, whichever
-  console's, where it is, or makes its dump or package again: its driver's `-r` (`scarletnx -r`, `scarletnx-3ds -r`,
-  `scarletnx-vita -r`, `scarletnx-agb -r`). It plays nothing, and goes in the queue of compiles, which runs them one
+- **R** (on Android a tap on *Recompile* at the foot) recompiles the game in focus, recent or on the page,
+  where it is, or makes its dump again: the driver's `-r` (`scarletnx -r`). It plays nothing, and goes in the queue of compiles, which runs them one
   at a time behind the screens: with none running it starts at once, the Compile tab showing it; else the tips say
   where it waits. A game of the queue says it on its row (`42%`, `next`, `3rd in queue`) and in the side box; Enter
-  on it, or R again, shows it on the Compile tab, and it plays once its compile ended. On a Linux
-  program, or another row, R says why it does nothing. **B** builds the focused game's AOT pack from its JIT cache
+  on it, or R again, shows it on the Compile tab, and it plays once its compile ended. On
+  another row, R says why it does nothing. **B** builds the focused game's AOT pack from its JIT cache
   ([AOT packs](AOT_PACKS.md)) through the same queue.
 - **M** (on Android a tap on *Mods* at the foot) opens the box of the recompiled Switch game in focus, recent or on
   the page, that Enter opens for a game with updates, DLCs, mods or cheats beside it, and for a game with none of them
@@ -420,7 +397,7 @@ cannot be read is named and the others still listed.
   not there greyed), **Save States** opens the box of its save states that S opens (greyed for a dump, which has
   none; on a phone the way to them, with a tap on *Save states* at the foot) and **Clean Cache** deletes its shader
   and code caches, asked first ([USAGE](USAGE.md#mods)). On
-  another row, a dump, a package or another console's game, it says what it opens. The side panel of a recompiled
+  another row, a dump, it says what it opens. The side panel of a recompiled
   game says how its code was made (`Made with: O2, AOT 81%`, `?` for one an older version made), or, in the failure
   colour, `Needs Recompile` when Play compiles it first.
 - The list is one page that scrolls, by pixels: past its height a scroll bar at its right, as every list has (below),
@@ -434,11 +411,10 @@ A recompiled game, in a folder of its own (`recompiled/<id>/<id>`), runs with th
 `scarletnx` and is never extracted as a dump: it plays as it is when this build made it with the mods it plays, and
 when another build did, or other mods, it compiles first, where it is, in the queue as a dump's first compile does
 (its `<id>.abi` says which: [USAGE](USAGE.md#extract--aot--run)), then plays if the Compile tab still shows it. A game
-an older version laid out beside the others runs directly, as every game does on iOS. A game another console's
-driver made says so in its `.ini` (`system=` of `[Game]`: `3ds`, `vita` or `gba`; an older one by
-its layout, a 3DS `.ini`'s `model=`, a Vita folder's `ux0/`): its row says "3DS game, ready to run" and the like, and
-Enter and R go through that driver, in the game's folder (`--game=`), with none of the Switch's Settings. A CIA goes
-to `scarletnx-3ds`, which is never executed on it directly. Output capture, resource accounting and the return to
+an older version laid out beside the others runs directly, as every game does on iOS. A game of another console
+says so in its `.ini` (`system=` of `[Game]`: a word that is not `switch`) or by its layout (an `.ini`'s
+`model=`, a folder's `ux0/`): the menu refuses it, naming its folder, and says that only Switch games are
+supported. Output capture, resource accounting and the return to
 the main menu work as for a file picked by a load.
 
 ### The Compile tab
@@ -811,8 +787,6 @@ cmake --build build/gui
 ctest --test-dir build/gui -R '^gui_' --output-on-failure
 ```
 
-For just the GUI and Linux runtime, use `-DSNX_BUILD_NX=OFF -DSNX_BUILD_GUI=ON`: the launcher is
-then `scarletnx-gui`, a program of its own, which looks for `scarletnx` as it does for the other drivers.
 Tools-only builds cannot enable the GUI.
 Supported host platforms are Linux, FreeBSD, Windows (llvm-mingw) and Android (`dist/android`).
 SDL3 handles window creation, keyboard/mouse input, rendering, clipboard and drag-and-drop

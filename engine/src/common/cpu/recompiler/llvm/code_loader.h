@@ -104,7 +104,7 @@ int snx_code_lookup(const SnxCodeLoader* loader, const char* name, SnxU64* addre
 int snx_code_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t count, const char* const* names,
                   size_t name_count, SnxU64* addresses, char* error, size_t error_size);
 /* The same, but the unit's globals stay its own: they don't join the table, and may repeat a name an earlier load
-   has (each unit of the GNU ABI runtime's JIT steps defines a descriptor of the same name). Not COFF */
+   has (each unit of a JIT steps' table defines a descriptor of the same name). Not COFF */
 int snx_code_load_private(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t count, const char* const* names,
                           size_t name_count, SnxU64* addresses, char* error, size_t error_size);
 /* In a forked child: the arena's code and read-only data copied into memory of the child's own, at the same

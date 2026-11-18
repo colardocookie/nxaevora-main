@@ -426,7 +426,7 @@ list). The user's data folder and a portable copy's keep each kind of file apart
 | its settings, `<id>.ini` | `recompiled/<id>/` | `~/.config/scarletnx/recompiled/<id>/` | `config/recompiled/<id>/` |
 | its `<id>.log` (this run's; the 4 before in `logs/<date>.log`) and `threads.txt` | `recompiled/<id>/` | `~/.local/state/scarletnx/recompiled/<id>/` | `state/recompiled/<id>/` |
 | its pipeline cache | `recompiled/<id>/shader_cache/` | `~/.cache/scarletnx/recompiled/<id>/shader_cache/` | `cache/recompiled/<id>/shader_cache/` |
-| extractions (`3ds/` for the 3DS driver) | `work/` | `~/.cache/scarletnx/work/` | `cache/work/` |
+| extractions | `work/` | `~/.cache/scarletnx/work/` | `cache/work/` |
 | the recompile's code units, `<key>.o`, every game's | `units/` of the user's cache folder | `~/.cache/scarletnx/units/` | `cache/units/` |
 | the menu's themes, `<name>/theme.ini` | - | `~/.local/share/scarletnx/themes/` | `themes/` |
 | the menu's `settings.ini`, `app.ini`, `folders.txt`, `gamecontrollerdb.txt` | - | `~/.config/scarletnx/` | `config/` |
@@ -437,7 +437,7 @@ list). The user's data folder and a portable copy's keep each kind of file apart
 
 The menu works in the user's data folder or a portable copy's, unless its Settings > App > Folders picks a data
 folder, a games folder or an extractions folder ([GUI](GUI.md)): it passes them to the driver as `--data` and `--outdir`
-(to the 3DS driver as `--data` and `--output`), and its own files stay where they are. Its Logs and Caches move the state and
+and its own files stay where they are. Its Logs and Caches move the state and
 cache folders of the table: `[folders] state =` and `cache =` in `app.ini`, full paths, which the menu, the drivers
 and the games read (a game's `.folders` below names them), its files going to the same place under them
 (`recompiled/<id>/<id>.log` of the state folder); a value that is not a full path is said once and the default kept.
