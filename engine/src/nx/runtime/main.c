@@ -928,6 +928,11 @@ int snx_main(int argc, char** argv) {
         if (g_perf_sample)
             LOG("perf-sample: EXPERIMENT on, with write tracking a buffer's full check takes no sampled hash (only the "
                 "check without write tracking reads one)\n");
+        const char* patch_hash = getenv("SNX_ARCEUS_PATCH_HASH"); /* a fix, off by default (gpu/vk/buffer.c) */
+        g_patch_hash = patch_hash && !strcmp(patch_hash, "1");
+        if (g_patch_hash)
+            LOG("patch-hash: EXPERIMENT on, a buffer patched in place is taken as changed at its next full check, and "
+                "the checks without write tracking do not skip it\n");
         const char* submit_us = getenv("SNX_ARCEUS_PERF_SUBMIT_US"); /* bench only: a submission's recording time */
         if (submit_us) {
             char* end = NULL;

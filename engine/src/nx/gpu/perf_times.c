@@ -15,6 +15,7 @@ int g_perf_compute_submit = 1;
 int g_perf_inplace;
 int g_perf_query;
 int g_perf_sample;
+int g_patch_hash;
 int g_perf_bind;
 uint64_t g_perf_exact;
 

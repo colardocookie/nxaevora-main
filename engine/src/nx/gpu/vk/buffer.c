@@ -33,6 +33,7 @@ typedef struct {
     u32 wseen; /* write-tracking clock when it last matched memory */
     u32 host_gen; /* g_vb_map_gen when host_cpu was found: 0 never */
     u8 sskip;     /* SNX_ARCEUS_PERF_SAMPLE: the last full check took no sample, shash is older (never set unset) */
+    u8 patched;   /* SNX_ARCEUS_PATCH_HASH: a patch copied bytes since the hash, so hash is older (never set unset) */
     u64 host_cpu; /* the guest memory the range shows, ~0 for none (entry_host) */
     VkBuffer buf;
     VmaAllocation mem;
@@ -40,7 +41,7 @@ typedef struct {
     u32 own_prev, own_next; /* own buffers, from the least recently used to the most (vk_buf_reclaim); a free entry's
                                next free one in own_next */
 } Vb;
-/* sskip sits in the padding after host_gen, so the cache's array does not grow (PERF-24, astra 23:15) */
+/* sskip and patched sit in the padding after host_gen, so the cache's array does not grow (PERF-24, PATCH-HASH) */
 _Static_assert(sizeof(void*) != 8 || sizeof(Vb) == 144, "Vb's flags must fill the hole after host_gen");
 /* The cache of guest ranges as buffers: its entries in one array by index (0 is none), and an index of them by range,
    open addressed. Entries live twenty seconds after their last use, and draws make new ranges all the time (constant
@@ -2080,7 +2081,7 @@ static void patch_note(void* user, u64 at, u64 n) {
     p->n++;
     p->bytes += n;
 }
-static int patch_apply(const Vb* e, Patch* pt);
+static int patch_apply(Vb* e, Patch* pt);
 static int patch_own(u32 i, const u8* host, u32 since) {
     Vb* e = &g_vb[i];
     Patch pt = {.src = host};
@@ -2095,7 +2096,7 @@ static int patch_own(u32 i, const u8* host, u32 since) {
     return patch_apply(e, &pt);
 }
 /* pt's runs of the entry's bytes (pt->src) copied over its own buffer: staged, then copied on the GPU */
-static int patch_apply(const Vb* e, Patch* pt0) {
+static int patch_apply(Vb* e, Patch* pt0) {
     Patch pt = *pt0;
     VkBuffer sb;
     u64 so, at = 0;
@@ -2118,6 +2119,9 @@ static int patch_apply(const Vb* e, Patch* pt0) {
     rec_CmdCopyBuffer(vk_cmd(), sb, e->buf, pt.n, pt.r);
     copy_barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                  VK_ACCESS_2_MEMORY_READ_BIT);
+    /* PATCH-HASH: the own buffer now holds bytes e->hash was not taken from. Bytes back as they were hashed would
+       match it at the next full check, which instead takes the entry as changed */
+    if (g_patch_hash) e->patched = 1;
     return 1;
 }
 /* An own buffer a GPU-side write touched (an inline upload, an engine's result landed in memory): the pages that write
@@ -2125,7 +2129,7 @@ static int patch_apply(const Vb* e, Patch* pt0) {
    copied again, instead of the whole range hashed again to learn whether anything changed. A write to one page of
    a big buffer hashed all of it: most of one game's GPU thread. 0 when there is no write tracking */
 static int patch_dirty(u32 i, u64 gva, const u8* host, u64 gw, u32 ws) {
-    const Vb* e = &g_vb[i];
+    Vb* e = &g_vb[i];
     Patch pt = {.src = host};
     u64 o = (u64)(host - g_mem), first = o >> 12, last = (o + e->len - 1) >> 12, run = 0;
     int in = 0;
@@ -2393,17 +2397,20 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         /* without it: own buffers that stayed the same for long are checked every few submits, big ones sampled in
            between. A CPU write in between shows that many submits late; writes of the GPU front end always show at
            once (gpu_mem_dirty_since above) */
-        if (!strict && w < 0 && e->own && e->stable >= 16 && len >= (64u << 10) && g_vk_epoch - e->chk_epoch < 8) {
+        /* PATCH-HASH: none of the three for an entry patched since its hash, whose hash and sample are older */
+        if (!strict && w < 0 && e->own && !e->patched && e->stable >= 16 && len >= (64u << 10) &&
+            g_vk_epoch - e->chk_epoch < 8) {
             e->epoch = g_vk_epoch;
             use(i, buf, off);
             return 1;
         }
-        if (!strict && w < 0 && e->own && e->stable >= 32 && len < (64u << 10) && g_vk_epoch - e->chk_epoch < 4) {
+        if (!strict && w < 0 && e->own && !e->patched && e->stable >= 32 && len < (64u << 10) &&
+            g_vk_epoch - e->chk_epoch < 4) {
             e->epoch = g_vk_epoch;
             use(i, buf, off);
             return 1;
         }
-        if (!strict && w < 0 && e->own && e->stable >= 64 && len >= 4096 && !e->sskip &&
+        if (!strict && w < 0 && e->own && !e->patched && e->stable >= 64 && len >= 4096 && !e->sskip &&
             g_vk_epoch - e->chk_epoch < (e->stable >= 256 ? 240u : 64u)) {
             if (g_vk_epoch - e->schk < 4 || vk_sample_hash(gva, len) == e->shash) {
                 if (g_vk_epoch - e->schk >= 4) e->schk = g_vk_epoch;
@@ -2497,10 +2504,13 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         e->cs_adds = vk_compute_adds(); /* checked for pending results above */
         e->gfx_adds = vk_buf_adds();
     }
-    int changed = e->hash != h, made = 0, own_before = e->own;
-    if (e->hash == h && e->stable < 100000)
+    /* PATCH-HASH: after a patch a matching hash says nothing of the own buffer: the entry is taken as changed */
+    const int patched = e->patched;
+    if (patched) e->patched = 0;
+    int changed = e->hash != h || patched, made = 0, own_before = e->own;
+    if (!changed && e->stable < 100000)
         e->stable++;
-    else if (e->hash != h) {
+    else if (changed) {
         e->hash = h;
         e->stable = 0;
         drop_own(i);

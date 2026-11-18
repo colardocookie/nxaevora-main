@@ -469,5 +469,7 @@ extern int g_perf_inplace;
 extern int g_perf_query;
 /* SNX_ARCEUS_PERF_SAMPLE=1 (PERF-24): with write tracking a buffer's full check takes no sample (gpu/vk/buffer.c) */
 extern int g_perf_sample;
+/* SNX_ARCEUS_PATCH_HASH=1: a patched own buffer takes the next full check as changed (gpu/vk/buffer.c) */
+extern int g_patch_hash;
 
 #endif
