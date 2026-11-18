@@ -896,6 +896,10 @@ int snx_main(int argc, char** argv) {
         g_perf_replay = replay && !strcmp(replay, "1"); /* the draw's bind walks stop early (gpu/nvn/nvn_dirty.h) */
         if (g_perf_replay) LOG("perf-replay: on, the draw's bind walks stop at their last set flag\n");
         if (validation && !strcmp(validation, "1")) g_settings.vulkan_validation_layer = 1; /* vk_validation */
+        if (validation && !strcmp(validation, "2")) { /* and its synchronization checks, never saved in the settings */
+            g_settings.vulkan_validation_layer = 1;
+            g_vk_sync_validation = 1;
+        }
         g_perf_times = times && !strcmp(times, "1"); /* the frame's timing line (gpu/perf_times.h) */
         const char* compute_submit = getenv("SNX_ARCEUS_PERF_COMPUTE_SUBMIT"); /* an experiment (gpu/perf_times.h) */
         if (compute_submit && !strcmp(compute_submit, "0")) {

@@ -47,10 +47,22 @@ bool snx_vk_has_instance_extension(const char* name) {
     return found;
 }
 
+/* the extension, of the layer itself */
+static bool layer_has_extension(const char* layer, const char* name) {
+    uint32_t n = 0;
+    if (vkEnumerateInstanceExtensionProperties(layer, &n, NULL) != VK_SUCCESS || !n) return false;
+    VkExtensionProperties* e = calloc(n, sizeof *e);
+    if (!e) return false;
+    bool found = false;
+    if (vkEnumerateInstanceExtensionProperties(layer, &n, e) >= 0)
+        for (uint32_t i = 0; i < n && !found; i++) found = !strcmp(e[i].extensionName, name);
+    free(e);
+    return found;
+}
 VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* out) {
     *out = (SnxVkInstance){0};
-    /* the window's, then debug utils and portability enumeration */
-    const char** ext = calloc((size_t)info->extension_count + 2, sizeof *ext);
+    /* the window's, then debug utils, validation features and portability enumeration */
+    const char** ext = calloc((size_t)info->extension_count + 3, sizeof *ext);
     if (!ext) return VK_ERROR_OUT_OF_HOST_MEMORY;
     uint32_t next = 0;
     bool asked = false; /* the window system may ask for portability enumeration itself (SDL does on Apple systems) */
@@ -64,7 +76,16 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
         layers[nlayers++] = "VK_LAYER_KHRONOS_validation";
         ext[next++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
         out->validation = true;
+        if (info->sync_validation &&
+            layer_has_extension("VK_LAYER_KHRONOS_validation", VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME)) {
+            ext[next++] = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME;
+            out->sync_validation = true;
+        }
     }
+    const VkValidationFeatureEnableEXT enables[] = {VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
+    const VkValidationFeaturesEXT features = {.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
+                                              .enabledValidationFeatureCount = 1,
+                                              .pEnabledValidationFeatures = enables};
     out->portability = asked;
     if (info->portability && !asked && snx_vk_has_instance_extension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
         ext[next++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
@@ -75,6 +96,7 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
                              .pEngineName = "ScarletNX",
                              .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                               .pNext = out->sync_validation ? &features : NULL,
                                .flags = out->portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0,
                                .pApplicationInfo = &app,
                                .enabledLayerCount = nlayers,

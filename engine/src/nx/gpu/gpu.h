@@ -374,6 +374,8 @@ extern void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len); /* the renderer's side 
 /* the renderer lands pending shader results before the stream goes on past them: before a write of memory those
    results overlap (size > 0), and before anything the game can observe (gpu_signal_point, size 0) */
 extern void (*g_gpu_before_write)(u64 gva, u64 size);
+/* SNX_ARCEUS_VK_VALIDATION=2: the validation layer's synchronization checks too (gpu/vk/device.c), read once */
+extern int g_vk_sync_validation;
 extern int g_gpu_releases; /* the renderer holds releases waiting to happen (renderer.h release_need) */
 /* the renderer's memory lock held across a change of backing. full is for CPU guest pages, whose GPU aliases are
    unknown; GPU address space changes give the range. Begin is taken before the memory manager's own lock */

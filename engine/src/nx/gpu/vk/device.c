@@ -89,6 +89,7 @@ static int create_instance(void) {
                               .extensions = be,
                               .extension_count = be ? nbe : 0,
                               .validation = g_settings.vulkan_validation_layer != 0,
+                              .sync_validation = g_vk_sync_validation != 0,
                               .portability = true,
                               .debug = debug_cb};
     SnxVkInstance made;
@@ -96,6 +97,9 @@ static int create_instance(void) {
     if (info.validation && !made.validation)
         WARN("vulkan: validation was asked for (vk_validation), but "
              "VK_LAYER_KHRONOS_validation is not installed\n");
+    if (info.sync_validation && made.validation)
+        LOG("vulkan: synchronization validation %s\n",
+            made.sync_validation ? "on" : "asked for, but the layer has no VK_EXT_validation_features: off");
     g_vk.instance = made.instance;
     g_vk.debug = made.messenger;
     return 1;
