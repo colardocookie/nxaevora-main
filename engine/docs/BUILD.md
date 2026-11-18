@@ -481,4 +481,4 @@ the tests. Android's and iOS's apps start the program their own way.
 
 A pull request's own builds are linked from a comment on it once CI has built them.
 
-[Licenses/credits](CREDITS.md) · [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md).
+[Licenses/credits](CREDITS.md) · [Architecture](ARCHITECTURE.md) · [Roadmap](../../ROADMAP.md).
