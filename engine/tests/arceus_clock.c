@@ -43,7 +43,7 @@ static u64 host_ns = 1000000000;
 u64 plat_ns(void) { return host_ns; }
 void mem_query(u64 address, MemBlock* out) {
     (void)address;
-    *out = (MemBlock){.addr = 1, .size = sizeof memory - 1, .perm = PERM_RW};
+    *out = (MemBlock){.addr = 1, .size = g_as_size - 1, .perm = PERM_RW};
 }
 u64 mem_find_free(u64 lo, u64 hi, u64 size, u64 align) {
     (void)lo; (void)hi; (void)size; (void)align;
@@ -53,8 +53,21 @@ int mem_map(u64 address, u64 size, u32 state, u32 perm) {
     (void)address; (void)size; (void)state; (void)perm;
     assert(0); return -1;
 }
-void jit_code_changed(u64 pc, u64 size) { (void)pc; (void)size; assert(0); }
-GuestFn jit_wait(u64 pc) { (void)pc; assert(0); return NULL; }
+/* Only the text probe's install test compiles: each jit_wait answers the next of jit_bodies, every change is noted */
+static int jit_stub_on;
+static GuestFn jit_bodies[2];
+static unsigned jit_waits, jit_changes;
+static u64 jit_changed[4];
+void jit_code_changed(u64 pc, u64 size) {
+    (void)size;
+    assert(jit_stub_on && jit_changes < 4);
+    jit_changed[jit_changes++] = pc;
+}
+GuestFn jit_wait(u64 pc) {
+    (void)pc;
+    assert(jit_stub_on && jit_waits < 2);
+    return jit_bodies[jit_waits++];
+}
 
 static unsigned calls, boundaries, calls_this_render, entered_whole;
 /* A command's end check as the game makes it: only in an update entered with the frame on
@@ -2759,6 +2772,25 @@ static void text_reveal_stub(CPU* c, u64 entry) {
     c->x[0] = text_stub_answer;
     c->pc = c->x[30];
 }
+/* The outer text: 2 glyph steps, a reveal of TEXT_INNER (4 steps), then 1 more step */
+#define TEXT_INNER 1200
+static void text_nest_stub(CPU* c, u64 entry) {
+    const u64 text = c->x[0];
+    const unsigned before = text == TEXT_INNER ? 4 : 2;
+    for (unsigned k = 0; k < before; k++) {
+        CPU s = {.x = {[0] = text, [1] = TEXT_STATUS, [30] = text_stub_caller}, .pc = entry_pc};
+        text_probe_step(&s, entry_pc);
+    }
+    if (text != TEXT_INNER) {
+        CPU n = {.x = {[0] = TEXT_INNER, [30] = return_pc}, .pc = entry_pc};
+        text_probe_reveal(&n, entry);
+        assert(text_probe_running == text);
+        CPU s = {.x = {[0] = text, [1] = TEXT_STATUS, [30] = text_stub_caller}, .pc = entry_pc};
+        text_probe_step(&s, entry_pc);
+    }
+    c->x[0] = 1;
+    c->pc = c->x[30];
+}
 static void text_setup_stub(CPU* c, u64 entry) {
     (void)entry;
     *GP(c->x[0] + 0x9d) = *GP(c->x[0] + 0xa5) = 0;
@@ -2862,6 +2894,37 @@ static void test_text_probe(void) {
     assert(u.pc == return_pc && logged_count == 1);
     assert(strstr(logged[0],
                   "arceus-text-probe: setup FBF57C text=200 w1=1 w2=0 language=255: +9D=0 +A4=4 +A5=0 +A6=4"));
+    /* a text not seen for more than a second starts a new record in its old slot: no calls or steps carried */
+    text_probe_original[0] = text_reveal_stub;
+    text_stub_steps = 2;
+    text_stub_answer = 1;
+    for (unsigned k = 0; k < 2; k++) { /* the options' 2 s above retired the record: these two make a new one */
+        host_ns += 16666667;
+        CPU e = {.x = {[0] = TEXT_OBJECT, [30] = return_pc}, .pc = entry_pc};
+        text_probe_reveal(&e, entry_pc);
+    }
+    TextProbeText* tp = NULL;
+    for (unsigned k = 0; k < TEXT_PROBE_TEXTS; k++)
+        if (text_probe_texts[k].text == TEXT_OBJECT) tp = &text_probe_texts[k];
+    assert(tp && tp->calls == 2 && tp->steps == 4);
+    const unsigned seen = text_probe_seen;
+    host_ns += 1500000000;
+    CPU g = {.x = {[0] = TEXT_OBJECT, [30] = return_pc}, .pc = entry_pc};
+    text_probe_reveal(&g, entry_pc);
+    assert(tp->text == TEXT_OBJECT && tp->calls == 1 && tp->steps == 2 && tp->first_ns == host_ns);
+    assert(text_probe_seen == seen + 1);
+    /* a reveal of another text inside a reveal: each text gets its own glyph steps, the total all of them */
+    text_probe_original[0] = text_nest_stub;
+    const u64 total = text_probe_steps;
+    host_ns += 16666667;
+    CPU o = {.x = {[0] = TEXT_OBJECT, [30] = return_pc}, .pc = entry_pc};
+    text_probe_reveal(&o, entry_pc);
+    assert(o.pc == return_pc && text_probe_running == 0 && text_probe_own == 0);
+    TextProbeText* inner = NULL;
+    for (unsigned k = 0; k < TEXT_PROBE_TEXTS; k++)
+        if (text_probe_texts[k].text == TEXT_INNER) inner = &text_probe_texts[k];
+    assert(tp->calls == 2 && tp->steps == 2 + 3 && inner && inner->calls == 1 && inner->steps == 4);
+    assert(text_probe_steps == total + 7);
     text_probe_setup_original = NULL;
     text_probe_original[0] = text_probe_original[1] = NULL;
     text_probe_base = 0;
@@ -2870,6 +2933,60 @@ static void test_text_probe(void) {
     event_probe_frames = frames;
     logged_count = 0;
     memset(memory, 0, sizeof memory);
+}
+/* The text probe's install with a failed compile, at either site: both stock words back (the text tick's guards read
+   them), each changed range invalidated, nothing published (g_disp is NULL here). The two sites lie 28 MB apart, so
+   this test has a guest space of its own. */
+static void test_text_probe_install(void) {
+    u8* const saved_mem = g_mem;
+    const u64 saved_size = g_as_size, saved_lo = g_code_lo, saved_hi = g_code_hi;
+    const SnxModule* const saved_mod = g_mod;
+    GuestFn* const saved_disp = g_disp;
+    const u64 pc[2] = {0x1000, 0x1000 + 0x2b315e8 - 0xfbfbd0}, base = pc[0] - 0xfbfbd0;
+    g_as_size = pc[1] + 0x1000;
+    g_mem = calloc(1, g_as_size);
+    assert(g_mem);
+    static const u32 words[2][5][2] = {
+        {{0, 0xd100c3ff}, {0x10, 0xaa0003f3}, {0x24, 0xb9418a68}, {0x12c, 0x7100053f}, {0x158, 0x17ffffe7}},
+        {{0, 0xfc1b0fe8}, {0x3c, 0xaa0103f4}, {0x18, 0xb900003f}, {0x868, 0xd65f03c0}, {0x18, 0xb900003f}},
+    };
+    for (unsigned k = 0; k < 2; k++)
+        for (unsigned w = 0; w < 5; w++) gw32(pc[k] + words[k][w][0], words[k][w][1]);
+    static const u64 fn_lo[2] = {0x1000, 0x1000 + 0x2b315e8 - 0xfbfbd0};
+    static const u32 fn_len[2] = {0x15c, 0x9c4};
+    static u8 stale[2];
+    static const GuestFn entries[1] = {text_glyph_stub};
+    const SnxModule module = {.nfns = 2, .fn_lo = fn_lo, .fn_len = fn_len, .stale = stale, .entry_fn = entries};
+    g_mod = &module;
+    g_code_lo = pc[0];
+    g_code_hi = pc[1] + 0x9c4;
+    g_disp = NULL;
+    u8 before[2][0x9c4];
+    for (unsigned k = 0; k < 2; k++) memcpy(before[k], GP(pc[k]), sizeof before[k]);
+    flag("SNX_ARCEUS_TEXT_PROBE", "1");
+    jit_stub_on = 1;
+    for (unsigned failed = 0; failed < 2; failed++) {
+        jit_bodies[0] = failed ? text_glyph_stub : NULL;
+        jit_bodies[1] = NULL;
+        jit_waits = jit_changes = 0;
+        text_probe_init(base);
+        assert(!text_probe && !text_probe_base && !text_probe_original[0] && !text_probe_original[1]);
+        for (unsigned k = 0; k < 2; k++) assert(!memcmp(before[k], GP(pc[k]), sizeof before[k]));
+        /* the compiles in order, then one change for each site put back */
+        assert(jit_waits == failed + 1 && jit_changes == 2 * (failed + 1));
+        if (!failed) assert(jit_changed[0] == pc[0] && jit_changed[1] == pc[0]);
+        else assert(jit_changed[0] == pc[0] && jit_changed[1] == pc[1] && jit_changed[2] == pc[0] &&
+                    jit_changed[3] == pc[1]);
+    }
+    jit_stub_on = 0;
+    unset_flag("SNX_ARCEUS_TEXT_PROBE");
+    free(g_mem);
+    g_mem = saved_mem;
+    g_as_size = saved_size;
+    g_code_lo = saved_lo;
+    g_code_hi = saved_hi;
+    g_mod = saved_mod;
+    g_disp = saved_disp;
 }
 /* TEXT_TICK on its real wrappers: a stand-in reveal with the game's do-while loop (the step from FBFC24, counted while
    it answers 1 with status 0, up to +A4), and a stand-in step that counts the delay in +9E, moves the cursor +100 and
@@ -3285,6 +3402,7 @@ int main(void) {
     test_demo_probe();
     test_demo_tick();
     test_text_probe();
+    test_text_probe_install();
     test_text_tick();
     test_ride_swap();
     test_defaults_on();

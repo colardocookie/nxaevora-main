@@ -4377,6 +4377,7 @@ static PMutex text_probe_lock = PMUTEX_INIT;
 static u64 text_probe_base, text_probe_calls, text_probe_steps, text_probe_ns, text_probe_logged[3], text_probe_last;
 static unsigned text_probe_seen;
 static _Thread_local u64 text_probe_running; /* the text whose reveal runs on this thread, 0 for none */
+static _Thread_local u64 text_probe_own;     /* that reveal's own glyph steps, not a nested reveal's */
 static unsigned text_probe_setup_lines, text_probe_first_lines, text_probe_change_lines;
 /* research (recon 13:58): bits 0-1 of the options word [[[main+4279560]]+230]+68, a candidate for the text speed: the
    value at install and every change, polled on each reveal call and counted frame. -1 while it cannot be read. */
@@ -4401,26 +4402,28 @@ static void text_probe_option_poll(u64 now) {
     text_probe_option = value;
     text_probe_option_ns = now;
 }
-/* A text's record, retired when it has not been seen for a second, as a text not shown any more */
+/* A text's record, retired when it has not been seen for a second, as a text not shown any more. A text seen again
+   after that starts a new record, also in its old slot. */
 static TextProbeText* text_probe_text(u64 text, u64 now) {
-    for (unsigned k = 0; k < TEXT_PROBE_TEXTS; k++)
-        if (text_probe_texts[k].text == text) {
-            text_probe_texts[k].last_ns = now;
-            return &text_probe_texts[k];
-        }
-    for (unsigned k = 0; k < TEXT_PROBE_TEXTS; k++)
-        if (!text_probe_texts[k].text || now - text_probe_texts[k].last_ns > 1000000000ull) {
-            text_probe_texts[k] = (TextProbeText){.text = text, .last_ns = now};
-            text_probe_seen++;
-            /* research (recon 13:18): each T's first quota, to settle 2 or 4 at speed 1 */
-            if (text_probe_first_lines < 64 && readable(text + 0x9d, 0xa)) {
-                text_probe_first_lines++;
-                LOG("arceus-text-probe: text %llx first seen: +9D=%u +A4=%u +A5=%u +A6=%u\n", (unsigned long long)text,
-                    *GP(text + 0x9d), *GP(text + 0xa4), *GP(text + 0xa5), *GP(text + 0xa6));
-            }
-            return &text_probe_texts[k];
-        }
-    return NULL;
+    TextProbeText* tp = NULL;
+    for (unsigned k = 0; k < TEXT_PROBE_TEXTS && !tp; k++)
+        if (text_probe_texts[k].text == text) tp = &text_probe_texts[k];
+    if (tp && now - tp->last_ns <= 1000000000ull) {
+        tp->last_ns = now;
+        return tp;
+    }
+    for (unsigned k = 0; k < TEXT_PROBE_TEXTS && !tp; k++)
+        if (!text_probe_texts[k].text || now - text_probe_texts[k].last_ns > 1000000000ull) tp = &text_probe_texts[k];
+    if (!tp) return NULL;
+    *tp = (TextProbeText){.text = text, .last_ns = now};
+    text_probe_seen++;
+    /* research (recon 13:18): each T's first quota, to settle 2 or 4 at speed 1 */
+    if (text_probe_first_lines < 64 && readable(text + 0x9d, 0xa)) {
+        text_probe_first_lines++;
+        LOG("arceus-text-probe: text %llx first seen: +9D=%u +A4=%u +A5=%u +A6=%u\n", (unsigned long long)text,
+            *GP(text + 0x9d), *GP(text + 0xa4), *GP(text + 0xa5), *GP(text + 0xa6));
+    }
+    return tp;
 }
 static unsigned text_probe_byte(u64 address) { return address && readable(address, 1) ? *GP(address) : 0xffu; }
 static void text_probe_line(u64 now) {
@@ -4461,11 +4464,13 @@ static void text_probe_reveal(CPU* c, u64 entry) {
     const int readable_bytes = readable(text + 0x9d, 0xa);
     const u8 bytes[3] = {readable_bytes ? *GP(text + 0x9d) : 0, readable_bytes ? *GP(text + 0xa4) : 0,
                          readable_bytes ? *GP(text + 0xa6) : 0};
+    const u64 outer_steps = text_probe_own;
     text_probe_running = text;
-    u64 steps = __atomic_load_n(&text_probe_steps, __ATOMIC_RELAXED);
+    text_probe_own = 0;
     text_probe_original[0](c, entry);
+    const u64 steps = text_probe_own;
     text_probe_running = outer;
-    steps = __atomic_load_n(&text_probe_steps, __ATOMIC_RELAXED) - steps;
+    text_probe_own = outer_steps;
     const int done = !(c->x[0] & 1);
     const u64 now = plat_ns();
     pm_lock(&text_probe_lock);
@@ -4536,8 +4541,10 @@ static void text_probe_step(CPU* c, u64 entry) {
     const u64 status = c->x[1], caller = c->x[30];
     text_probe_original[1](c, entry);
     if (text_probe_running && caller == text_probe_base + 0xfbfc24 && (c->x[0] & 0xffffffffu) == 1 &&
-        readable(status, 4) && gr32(status) == 0)
+        readable(status, 4) && gr32(status) == 0) {
+        text_probe_own++;
         __atomic_add_fetch(&text_probe_steps, 1, __ATOMIC_RELAXED);
+    }
 }
 static void text_probe_init(u64 base) {
     if (!arceus_switch_enabled("SNX_ARCEUS_TEXT_PROBE", 0)) return;
@@ -4573,6 +4580,11 @@ static void text_probe_init(u64 base) {
         jit_code_changed(pc, sites[k].size);
         bodies[k] = jit_wait(pc);
         if (!bodies[k]) {
+            /* Nothing is published, so the words go back: the text tick's guards expect the stock ones */
+            for (unsigned r = 0; r <= k; r++) {
+                gw32(base + sites[r].offset + sites[r].patch, sites[r].word);
+                jit_code_changed(base + sites[r].offset, sites[r].size);
+            }
             WARN("arceus-text-probe: compile failed site=main+%x\n", sites[k].offset);
             return;
         }
