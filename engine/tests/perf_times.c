@@ -660,6 +660,46 @@ static void test_inplace_counts(void) {
     CHECK(perf_inplace_line(&c, 1, small, 0) == 0);
 }
 
+/* PERF-20: the vertices a capture writes by primitive kind, and the writable steps and capture classes on their line */
+static void test_writable(void) {
+    CHECK(perf_xfb_vertices(PXP_POINTS, 7, 2) == 14);
+    CHECK(perf_xfb_vertices(PXP_LINES, 7, 1) == 6);
+    CHECK(perf_xfb_vertices(PXP_LINE_STRIP, 5, 1) == 8 && perf_xfb_vertices(PXP_LINE_STRIP, 1, 1) == 0);
+    CHECK(perf_xfb_vertices(PXP_LINE_STRIP, 0, 1) == 0 && perf_xfb_vertices(PXP_TRIANGLE_STRIP, 0, 1) == 0);
+    CHECK(perf_xfb_vertices(PXP_TRIANGLES, 8, 3) == 18);
+    CHECK(perf_xfb_vertices(PXP_TRIANGLE_STRIP, 5, 1) == 9 && perf_xfb_vertices(PXP_TRIANGLE_STRIP, 2, 1) == 0);
+    CHECK(perf_xfb_vertices(PXP_TRIANGLE_FAN, 6, 2) == 24 && perf_xfb_vertices(PXP_TRIANGLE_FAN, 3, 1) == 3);
+    CHECK(perf_xfb_vertices(PXP_OTHER, 6, 1) == ~0ull && perf_xfb_vertices(-1, 6, 1) == ~0ull);
+    static PerfCopies c;
+    char line[2048];
+    perf_copies_reset(&c);
+    const uint64_t ns[PWS_N] = {1000000, 2000000, 0, 0, 3000000, 0, 0, 500000};
+    perf_copy_writable(&c, PW_COMPOSED_EMPTY, ns, 4096);
+    perf_copy_writable(&c, PW_COMPOSED_EMPTY, ns, 2048);
+    perf_copy_writable(&c, PW_PATHS, ns, 1); /* out of range: ignored */
+    perf_copy_writable(&c, -1, ns, 1);
+    perf_copy_xfb(&c, PXF_WHOLE, 1000, 1000);
+    perf_copy_xfb(&c, PXF_SHORT, 1000, 600);
+    perf_copy_xfb(&c, PXF_RESUME, 2048, 0);
+    perf_copy_xfb(&c, PXF_N, 5, 5);
+    perf_copy_xfb(&c, -1, 5, 5);
+    CHECK(c.wr_calls[PW_COMPOSED_EMPTY] == 2 && c.wr_bytes[PW_COMPOSED_EMPTY] == 6144 && c.wr_calls[PW_PLAIN] == 0);
+    CHECK(c.wr_ns[PW_COMPOSED_EMPTY][PWS_STAGE] == 6000000 && c.wr_ns[PW_OWNED][PWS_STAGE] == 0);
+    CHECK(c.xfb[PXF_WHOLE] == 1 && c.xfb[PXF_SHORT] == 1 && c.xfb[PXF_RESUME] == 1 && c.xfb_bound == 4048);
+    CHECK(c.xfb_captured == 1600);
+    perf_writable_line(&c, 2, line, sizeof line);
+    CHECK(strstr(line, "perf-writable: frames=2 "));
+    CHECK(strstr(line, " composed_empty=1.0/3.0 1.000:2.000:0.000:0.000:3.000:0.000:0.000:0.500 xfb"));
+    CHECK(!strstr(line, " plain=") && !strstr(line, " owned="));
+    CHECK(strstr(line, " xfb whole=0.5 short=0.5 stage=0.0 resume=0.5 topology=0.0 xfb_KB=2.0 captured_KB=0.8"));
+    perf_copies_line(&c, 2, line, sizeof line); /* the window's counts go with it */
+    CHECK(c.wr_calls[PW_COMPOSED_EMPTY] == 0 && c.xfb[PXF_WHOLE] == 0 && c.xfb_bound == 0);
+    perf_writable_line(&c, 0, line, sizeof line);
+    CHECK(strstr(line, "frames=1 ") && strstr(line, " whole=0.0 "));
+    char small[12];
+    CHECK(perf_writable_line(&c, 1, small, sizeof small) == sizeof small - 1 && perf_writable_line(&c, 1, small, 0) == 0);
+}
+
 int main(void) {
     test_rel_window();
     test_subs();
@@ -679,6 +719,7 @@ int main(void) {
     test_copies_threads();
     test_inplace_class();
     test_inplace_counts();
+    test_writable();
     CHECK(g_perf_inplace == 0 && g_perf_bind == PBK_OTHER && g_perf_exact == 0); /* unset: today's commands */
     CHECK(g_perf_cp.site == -1 && g_perf_cp.slot == -1 && g_perf_cp.draw == -1 && g_perf_cp.last == -1);
     if (failures) return 1;

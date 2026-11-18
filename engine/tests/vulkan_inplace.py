@@ -186,6 +186,7 @@ static void vk_perf_src(int kind, int outcome) { perf_copy_src(&g_perf_cp, kind,
 static void vk_perf_class(int cls) { perf_copy_class(&g_perf_cp, cls); }
 static void vk_perf_extra(int which) { perf_copy_extra(&g_perf_cp, which, 1); }
 static void vk_perf_made(int producer) { perf_copy_made(&g_perf_cp, producer); }
+static void vk_perf_writable(int path, const u64* ns, u64 bytes) { perf_copy_writable(&g_perf_cp, path, ns, bytes); }
 '''
 
 BODY = r'''
@@ -267,6 +268,9 @@ static void test_level3(void) {
     reads(r); drawn();                   /* 12: records */
     assert(!strcmp(g_log, "B0 D0 D1 B2 D2 D3 D4 B5 D5 B6 D6 B7 D7 D8 B10 D10 D11 B12 D12 "));
     assert(g_perf_cp.made[PR_DISPATCH] == 1 && g_perf_cp.made[PR_XFB] == 1 && g_perf_cp.made[PR_REPEAT] == 1);
+    /* PERF-20: the two new results took the plain path, each step timed once (the repeated binding is not one) */
+    assert(g_perf_cp.wr_calls[PW_PLAIN] == 2 && g_perf_cp.wr_bytes[PW_PLAIN] == 1024);
+    for (int k = 0; k < PWS_N; k++) assert(g_perf_cp.wr_ns[PW_PLAIN][k] == 2);
     /* a producer that reaches the prepared list some other way is caught at its publication */
     reads(r); drawn();                   /* 13: covered */
     GfxOut* other = gfx_out_new(1, 64);
@@ -355,7 +359,7 @@ def main():
     buffer = (SRC / "nx/gpu/vk/buffer.c").read_text()
     code = HEAD
     code += between(buffer, "static u64 g_out_write_work;", "void vk_buf_writable_commit(void) {")
-    for sig in ["void vk_buf_writable_abort(void) {", "void vk_buf_writable_commit(void) {", "static void src_walked(",
+    for sig in ["void vk_buf_writable_abort(void) {", "void vk_buf_writable_commit(void) {", "static void src_walked(", "static void wr_step(",
                 "static int gfx_gpu_src(u64 gva", "int vk_buf_copy_writable(u64 gva",
                 "static int draw_output_page(", "int vk_buf_draw_prepare(VkDrawStorage* draw) {"]:
         code += function(buffer, sig)

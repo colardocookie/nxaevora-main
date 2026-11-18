@@ -388,6 +388,31 @@ void perf_copy_made(PerfCopies* c, int producer) {
     if (producer >= 0 && producer < PR_N) c->made[producer]++;
     if (producer == PR_ATLAS) c->atlas_total++;
 }
+void perf_copy_writable(PerfCopies* c, int path, const uint64_t* ns, uint64_t bytes) {
+    if (path < 0 || path >= PW_PATHS) return;
+    for (int k = 0; k < PWS_N; k++) c->wr_ns[path][k] += ns[k];
+    c->wr_calls[path]++;
+    c->wr_bytes[path] += bytes;
+}
+void perf_copy_xfb(PerfCopies* c, int cls, uint64_t size, uint64_t captured) {
+    if (cls < 0 || cls >= PXF_N) return;
+    c->xfb[cls]++;
+    c->xfb_bound += size;
+    c->xfb_captured += captured;
+}
+uint64_t perf_xfb_vertices(int prim, uint64_t count, uint64_t instances) {
+    uint64_t n;
+    switch (prim) {
+        case PXP_POINTS: n = count; break;
+        case PXP_LINES: n = count - count % 2; break;
+        case PXP_LINE_STRIP: n = count >= 2 ? (count - 1) * 2 : 0; break;
+        case PXP_TRIANGLES: n = count - count % 3; break;
+        case PXP_TRIANGLE_STRIP:
+        case PXP_TRIANGLE_FAN: n = count >= 3 ? (count - 2) * 3 : 0; break;
+        default: return ~0ull;
+    }
+    return n * instances;
+}
 static int result_covers(const PerfResult* r, uint64_t gva, uint64_t len) {
     return gva >= r->addr && gva + len <= r->addr + r->size;
 }
@@ -537,5 +562,23 @@ size_t perf_inplace_line(const PerfCopies* c, uint32_t frames, char* out, size_t
         at = putf(out, size, at, " [%llx %ux%u f%u]", (unsigned long long)g->t.gva, g->t.w, g->t.h, g->t.fmt);
         at = put_counts(out, size, at, "cls", g->cls, PI_CLASSES, f);
     }
+    return at < size ? at : size - 1;
+}
+
+size_t perf_writable_line(const PerfCopies* c, uint32_t frames, char* out, size_t size) {
+    static const char* const paths[PW_PATHS] = {"plain", "composed_empty", "composed_bytes", "owned"};
+    static const char* const xfbs[PXF_N] = {"whole", "short", "stage", "resume", "topology"};
+    if (!size) return 0;
+    const double f = frames ? frames : 1;
+    size_t at = putf(out, size, 0, "perf-writable: frames=%u (a frame: calls/KB, then ms in setup:record:original:"
+                     "map:stage:copy:overlay:tail)", frames ? frames : 1);
+    for (int p = 0; p < PW_PATHS; p++) {
+        if (!c->wr_calls[p]) continue;
+        at = putf(out, size, at, " %s=%.1f/%.1f", paths[p], c->wr_calls[p] / f, c->wr_bytes[p] / f / 1024);
+        for (int k = 0; k < PWS_N; k++) at = putf(out, size, at, "%s%.3f", k ? ":" : " ", c->wr_ns[p][k] / f / 1e6);
+    }
+    at = putf(out, size, at, " xfb");
+    for (int k = 0; k < PXF_N; k++) at = putf(out, size, at, " %s=%.1f", xfbs[k], c->xfb[k] / f);
+    at = putf(out, size, at, " xfb_KB=%.1f captured_KB=%.1f", c->xfb_bound / f / 1024, c->xfb_captured / f / 1024);
     return at < size ? at : size - 1;
 }

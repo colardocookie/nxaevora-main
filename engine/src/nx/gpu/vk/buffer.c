@@ -1627,6 +1627,13 @@ static int writable_owned(GfxOut* o, u64 gva, u32 len, VkBuffer buf, u64 off) {
     return 1;
 }
 
+/* SNX_ARCEUS_PERF_TIMES (PERF-20): the time since *t added to step k of st, the clock read again (t 0: off) */
+static void wr_step(u64* t, u64* st, int k) {
+    if (!*t) return;
+    const u64 now = plat_ns();
+    st[k] += now - *t;
+    *t = now;
+}
 /* Each writable binding keeps its original bytes until its draw's frame completes. The guest can keep writing RAM:
    vk_write_changed resolves those writes against the GPU result at the fence. */
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
@@ -1644,11 +1651,14 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
     int pending = gfx_gpu_src(gva, len, buf, off, 1, vk_stage_align(), PB_WRITE), copied = 0;
     if (pending == 1) return 1;
     const u64 compose_t0 = g_perf_times && pending == 2 ? plat_ns() : 0; /* PERF-18 */
+    u64 wr_t = g_perf_times ? plat_ns() : 0, st[PWS_N] = {0}; /* PERF-20: the steps' times */
     if (!pending) gmem_need(gva, len);
     int owned = !pending && range_owned(gva, len);
     if (owned) (void)written_since_gva(gva, len, 0); /* establish the CPU-write baseline before the GPU copy */
+    wr_step(&wr_t, st, PWS_SETUP);
     o = gfx_out_new((u32)(((gva & 0xFFF) + len + 0xFFF) >> 12), len);
     if (!o) return 0;
+    wr_step(&wr_t, st, PWS_RECORD);
     if (pending == 2) { /* guest memory's bytes, with the earlier results copied over them below (out_rebase) */
         read_untracked(gva, o->org, len);
         o->composed = 1;
@@ -1660,7 +1670,9 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
         }
         memcpy(o->org, src, len);
     }
+    wr_step(&wr_t, st, PWS_ORIGINAL);
     out_map(o, gva);
+    wr_step(&wr_t, st, PWS_MAP);
     u64 align = vk_stage_align();
     if (align < g_vk.props.limits.nonCoherentAtomSize) align = g_vk.props.limits.nonCoherentAtomSize;
     o->ptr = vk_stage_output(len, align, buf, off, &o->mem);
@@ -1668,6 +1680,7 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
         free(o);
         return 0;
     }
+    wr_step(&wr_t, st, PWS_STAGE);
     if (owned) {
         if (!writable_owned(o, gva, len, *buf, *off)) {
             free(o);
@@ -1675,7 +1688,9 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
         }
     } else
         memcpy(o->ptr, o->org, len);
+    wr_step(&wr_t, st, PWS_COPY);
     if (pending == 2) copied = gfx_overlay(gva, len, *buf, *off, PK_COMPOSE_W);
+    wr_step(&wr_t, st, PWS_OVERLAY);
     o->addr = gva;
     o->size = len;
     o->buf = *buf;
@@ -1696,6 +1711,11 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
                      : owned                       ? PR_OWNED
                                                    : PR_ORDINARY);
     if (compose_t0) perf_time_add(&g_perf, copied ? PT_COMPOSE_W_COPY : PT_COMPOSE_W_EMPTY, plat_ns() - compose_t0);
+    if (wr_t) {
+        wr_step(&wr_t, st, PWS_TAIL);
+        vk_perf_writable(pending == 2 ? (copied ? PW_COMPOSED_BYTES : PW_COMPOSED_EMPTY) : owned ? PW_OWNED : PW_PLAIN,
+                         st, len);
+    }
     return 1;
 }
 

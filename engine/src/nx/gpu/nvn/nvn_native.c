@@ -6933,6 +6933,8 @@ static void perf_line(void) {
     LOG("%s\n", line);
     perf_inplace_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* the same window, before its reset */
     LOG("%s\n", line);
+    perf_writable_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
+    LOG("%s\n", line);
     perf_copies_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
     LOG("%s\n", line);
 }

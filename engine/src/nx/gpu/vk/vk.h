@@ -1071,6 +1071,7 @@ void vk_perf_class(int cls);
 void vk_perf_empty(int site, u64 bytes);
 void vk_perf_extra(int which);
 void vk_perf_made(int producer);
+void vk_perf_writable(int path, const u64* ns, u64 bytes); /* PERF-20: a new writable result's steps */
 void vk_render_draw_texture(GpuChannel* ch);
 void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                     u32 instances);

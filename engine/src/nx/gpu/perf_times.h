@@ -245,6 +245,25 @@ enum {
     PX_QUERY_GUARD,   /* vk_query_room's copies: half the query ring not copied (a report, reset, enable, draw) */
     PX_N
 };
+/* PERF-20 (research 05:10): vk_buf_copy_writable by path, and its steps, each a time */
+enum { PW_PLAIN, PW_COMPOSED_EMPTY, PW_COMPOSED_BYTES, PW_OWNED, PW_PATHS };
+enum {
+    PWS_SETUP,    /* gmem_need, range_owned and the owned baseline */
+    PWS_RECORD,   /* gfx_out_new */
+    PWS_ORIGINAL, /* the original bytes: read_untracked, or guest_bytes and their copy */
+    PWS_MAP,      /* out_map */
+    PWS_STAGE,    /* vk_stage_output */
+    PWS_COPY,     /* into staging: memcpy, or writable_owned's GPU copies */
+    PWS_OVERLAY,  /* gfx_overlay */
+    PWS_TAIL,     /* the rest: the record filled and linked */
+    PWS_N
+};
+/* a transform feedback binding: whether the draw provably writes all of it (captured vertices times the stride, no
+   geometry or tessellation stage), and why not when it can't be told */
+enum { PXF_WHOLE, PXF_SHORT, PXF_STAGE, PXF_RESUME, PXF_TOPOLOGY, PXF_N };
+enum { PXP_POINTS, PXP_LINES, PXP_LINE_STRIP, PXP_TRIANGLES, PXP_TRIANGLE_STRIP, PXP_TRIANGLE_FAN, PXP_OTHER };
+/* the vertices a capture writes for count vertices of a primitive kind (PXP_*), times instances: ~0 when unknown */
+uint64_t perf_xfb_vertices(int prim, uint64_t count, uint64_t instances);
 /* a pending result sharing a byte with the range, oldest first, for perf_inplace_class */
 typedef struct {
     uint64_t addr, size, buf, off;
@@ -278,6 +297,8 @@ typedef struct {
     uint64_t empty[PK_SITES], empty_bytes[PK_SITES];         /* compositions that copied no byte, the bytes staged */
     uint64_t extra[PX_N];
     uint64_t made[PR_N];
+    uint64_t wr_ns[PW_PATHS][PWS_N], wr_calls[PW_PATHS], wr_bytes[PW_PATHS]; /* PERF-20 */
+    uint64_t xfb[PXF_N], xfb_bound, xfb_captured; /* bindings by class, their bytes, the bytes provably captured */
     PerfCopyTarget tg[PERF_COPY_TARGETS];
     int site, slot;   /* the copy being recorded and the slot of the pass it ended: -1 none */
     int draw;         /* the slot of the draw being prepared's first target: -1 none */
@@ -302,10 +323,16 @@ void perf_copy_class(PerfCopies* c, int cls);
 void perf_copy_empty(PerfCopies* c, int site, uint64_t bytes);
 void perf_copy_extra(PerfCopies* c, int which, uint64_t n);
 void perf_copy_made(PerfCopies* c, int producer);
+/* a vk_buf_copy_writable that returned a new result on path, its steps' times (PWS_N of them) and its bytes */
+void perf_copy_writable(PerfCopies* c, int path, const uint64_t* ns, uint64_t bytes);
+/* a transform feedback binding of size bytes, of class cls, captured bytes provably written (whole or short) */
+void perf_copy_xfb(PerfCopies* c, int cls, uint64_t size, uint64_t captured);
 /* the window's line, as perf_times_line, and the next window started */
 size_t perf_copies_line(PerfCopies* c, uint32_t frames, char* out, size_t size);
 /* PERF-17's line from the same window: written before perf_copies_line, which starts the next one */
 size_t perf_inplace_line(const PerfCopies* c, uint32_t frames, char* out, size_t size);
+/* PERF-20's, the same */
+size_t perf_writable_line(const PerfCopies* c, uint32_t frames, char* out, size_t size);
 
 /* SNX_ARCEUS_PERF_INPLACE=1, 2 or 3, bench only (PERF-17, research 02:42), each level with the ones below: 1 a read
    binds in place the newest pending result sharing a byte with its range when it covers it, 2 a vertex stream with

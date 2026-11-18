@@ -71,6 +71,30 @@ void vk_perf_extra(int which) {
 void vk_perf_made(int producer) {
     if (g_perf_times && perf_here()) perf_copy_made(&g_perf_cp, producer);
 }
+void vk_perf_writable(int path, const u64* ns, u64 bytes) {
+    if (g_perf_times && perf_here()) perf_copy_writable(&g_perf_cp, path, ns, bytes);
+}
+/* PERF-20: whether a transform feedback binding of size bytes at stride, from its start, is all written by this
+   draw's capture: none of a geometry or tessellation stage, a buffer not resumed from its counter, and a guest
+   topology drawn as itself (not line loops, quads, quad strips or polygons) with no restart in an indexed strip */
+static void perf_xfb(int staged, int resumed, u32 topology, int restart, u64 count, u64 instances, u64 stride,
+                     u64 size) {
+    int prim = PXP_OTHER;
+    switch (topology) {
+        case 0: prim = PXP_POINTS; break;
+        case 1: prim = PXP_LINES; break;
+        case 3: prim = restart ? PXP_OTHER : PXP_LINE_STRIP; break;
+        case 4: prim = PXP_TRIANGLES; break;
+        case 5: prim = restart ? PXP_OTHER : PXP_TRIANGLE_STRIP; break;
+        case 6: prim = restart ? PXP_OTHER : PXP_TRIANGLE_FAN; break;
+        default: break;
+    }
+    const u64 v = perf_xfb_vertices(prim, count, instances);
+    const u64 captured = v == ~0ull || !stride ? 0 : v * stride;
+    const int cls = staged ? PXF_STAGE : resumed ? PXF_RESUME : v == ~0ull || !stride ? PXF_TOPOLOGY
+                    : captured >= size ? PXF_WHOLE : PXF_SHORT;
+    perf_copy_xfb(&g_perf_cp, cls, size, cls == PXF_WHOLE ? size : cls == PXF_SHORT ? captured : 0);
+}
 
 void vk_render_end(void) {
     const int why = g_perf_pass_why; /* SNX_ARCEUS_PERF_TIMES: the caller's reason, used once */
@@ -3039,6 +3063,9 @@ retry:
         i32 size = (i32)t[3];
         u64 a = (((u64)(t[1] & 0xFF) << 32) | t[2]) + t[4];
         if (!t[0] || size <= 0 || (!r[0x1C1 + 4 * i] && !r[0x1C2 + 4 * i])) continue;
+        if (g_perf_times && perf_here()) /* PERF-20: TRANSFORM_FEEDBACK_CONTROL's stride (0x1C2 + 4 * i) */
+            perf_xfb(gs || tes, (ch->xfb_started & ~ch->xfb_reload) >> i & 1, topology, indexed && r[0x591], count,
+                     instances, r[0x1C2 + 4 * i], (u64)size);
         perf_bind(PBK_XFB, 0);
         const int got = vk_buf_copy_writable(a, (u32)size, &xbuf[i], &xoff[i]);
         perf_bind(PBK_OTHER, 0);
