@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/query_predicate_spv.h"
 #include "nx/runtime/platform/log.h"
@@ -245,6 +246,8 @@ int vk_query_report(u32 chan, u64 gva, u32 len, u64 ticks) {
     QCounter* c = counter(chan, 0);
     if (!c || !c->started || c->bad || c->whead - c->wtail == QWAIT) return 0;
     end_own(c);
+    if (g_perf_times) vk_perf_extra(PX_QUERY_REPORTS);
+    perf_pass_why(PE_QUERY);
     vk_render_end();
     vk_query_flush(vk_cmd()); /* the segments counted so far, copied in the submit the report waits for */
     c->wait[c->whead++ % QWAIT] = c->reported;

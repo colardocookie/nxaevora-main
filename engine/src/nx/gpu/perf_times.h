@@ -66,6 +66,7 @@ enum {
     PC_END_COPY,     /* a buffer copy (overlay, owned input, patch, staging) */
     PC_END_IMAGE,    /* an image upload, copy, blit or readback */
     PC_END_TARGET,   /* the next draw's targets or their layouts differ */
+    PC_END_QUERY,    /* a samples-passed report (vk_query_report, PERF-19) */
     PC_SRC_BARRIERS, /* gfx_gpu_src's barriers */
     PC_SRC_CLEAN,    /* of those, ones whose first result read no draw bound for writing since the one before */
     PC_SRC_UNKNOWN,  /* of those, ones whose result's last writer was not kept (the table's slot taken) */
@@ -152,7 +153,7 @@ extern uint64_t g_perf_submit_every_ns;
 extern int g_perf_compute_submit;
 
 /* why the next vk_render_end ends the pass, a PC_END_* count less PC_END_OTHER: set just before the call */
-enum { PE_OTHER = 0, PE_GPU_SRC, PE_COPY, PE_IMAGE, PE_TARGET };
+enum { PE_OTHER = 0, PE_GPU_SRC, PE_COPY, PE_IMAGE, PE_TARGET, PE_QUERY, PE_N };
 extern int g_perf_pass_why; /* the GPU thread's */
 static inline void perf_pass_why(int why) {
     if (g_perf_times) g_perf_pass_why = why;
@@ -239,6 +240,9 @@ enum {
     PX_BARRIER,      /* the reuse path's barriers recorded */
     PX_SKIPPED,      /* and skipped (level 3) */
     PX_WIDE,         /* classified ranges of more than 16 pages: a result on another address meets them by page */
+    PX_QUERY_REPORTS, /* samples-passed reports queued (vk_query_report, PERF-19) */
+    PX_QUERY_KEPT,    /* of those, left the pass open (SNX_ARCEUS_PERF_QUERY=1) */
+    PX_QUERY_GUARD,   /* of those, ended it as without the switch: half the query ring not copied yet */
     PX_N
 };
 /* a pending result sharing a byte with the range, oldest first, for perf_inplace_class */
@@ -261,7 +265,7 @@ typedef struct {
 typedef struct {
     PerfTarget t; /* gva 0: free */
     uint64_t draws, passes;
-    uint64_t why[PE_TARGET + 1];                      /* its passes ended, by the reason (PE_*) */
+    uint64_t why[PE_N];                               /* its passes ended, by the reason (PE_*) */
     uint64_t ends[PK_SITES], bytes[PK_SITES];         /* of the copy ends, by site, with the bytes that copy moved */
     uint64_t src[PB_KINDS][PS_N];                     /* its draws' bindings over pending results */
     uint64_t cls[PI_CLASSES];                         /* its draws' composed input bindings (PERF-17) */
@@ -280,7 +284,8 @@ typedef struct {
     int last;         /* the slot found last, tried first */
     uint64_t lost;    /* events for a target with no slot left */
     uint64_t nodraw;  /* bindings over pending results outside a draw (dispatches) */
-    uint64_t elsewhere; /* hook calls off the GPU thread, not counted: atomic, and the last field */
+    uint64_t elsewhere;   /* hook calls off the GPU thread, not counted: atomic */
+    uint64_t atlas_total; /* atlas pages made since the start, never reset by a window (research 05:05) */
 } PerfCopies;
 extern PerfCopies g_perf_cp;
 void perf_copies_reset(PerfCopies* c); /* all of it, before any hook runs */

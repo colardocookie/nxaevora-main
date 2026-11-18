@@ -244,9 +244,10 @@ size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size) {
     static const char* const sites[SW_SITES] = {"other",   "slice", "release", "finish",  "frame",
                                                 "present", "image", "compute", "readback"};
     static const char* const counts[PC_COUNTS] = {
-        "wb_outputs", "wb_bytes",    "wc_bytes",    "tail_submits", "tail_after",   "passes",       "end_other",
-        "end_gpu_src", "end_copy",   "end_image",   "end_target",   "src_barriers", "src_clean",    "src_unknown",
-        "rel_depth",  "win_outputs", "src_walks",   "src_results",  "tail_ungated", "tail_partial", "tail_lost"};
+        "wb_outputs",  "wb_bytes",    "wc_bytes",   "tail_submits", "tail_after",   "passes",       "end_other",
+        "end_gpu_src", "end_copy",    "end_image",  "end_target",   "end_query",    "src_barriers", "src_clean",
+        "src_unknown", "rel_depth",   "win_outputs", "src_walks",   "src_results",  "tail_ungated", "tail_partial",
+        "tail_lost"};
     if (!size) return 0;
     if (!frames) frames = 1;
     int n = snprintf(out, size, "perf-times: frames=%u (ms a frame/largest ms)", frames);
@@ -306,7 +307,7 @@ size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size) {
 
 PerfCopies g_perf_cp = {.site = -1, .slot = -1, .draw = -1, .last = -1};
 
-/* all but elsewhere, which other threads add to */
+/* a window's counts: not elsewhere, which other threads add to, nor the totals since the start */
 static void copies_clear(PerfCopies* c) {
     memset(c, 0, offsetof(PerfCopies, elsewhere));
     c->site = c->slot = c->draw = c->last = -1;
@@ -314,6 +315,7 @@ static void copies_clear(PerfCopies* c) {
 void perf_copies_reset(PerfCopies* c) {
     copies_clear(c);
     __atomic_store_n(&c->elsewhere, 0, __ATOMIC_RELAXED);
+    c->atlas_total = 0;
 }
 static int target_eq(const PerfTarget* a, const PerfTarget* b) {
     return a->gva == b->gva && a->w == b->w && a->h == b->h && a->fmt == b->fmt;
@@ -346,7 +348,7 @@ void perf_copy_pass_begin(PerfCopies* c, const PerfTarget* t) {
     if (i >= 0) c->tg[i].passes++;
 }
 void perf_copy_pass_end(PerfCopies* c, const PerfTarget* t, int why) {
-    if (why < 0 || why > PE_TARGET) why = PE_OTHER;
+    if (why < 0 || why >= PE_N) why = PE_OTHER;
     const int i = copy_slot(c, t);
     if (i >= 0) c->tg[i].why[why]++;
     if (why != PE_COPY || c->site < 0) return;
@@ -383,6 +385,7 @@ void perf_copy_extra(PerfCopies* c, int which, uint64_t n) {
 }
 void perf_copy_made(PerfCopies* c, int producer) {
     if (producer >= 0 && producer < PR_N) c->made[producer]++;
+    if (producer == PR_ATLAS) c->atlas_total++;
 }
 static int result_covers(const PerfResult* r, uint64_t gva, uint64_t len) {
     return gva >= r->addr && gva + len <= r->addr + r->size;
@@ -443,7 +446,7 @@ size_t perf_copies_line(PerfCopies* c, uint32_t frames, char* out, size_t size) 
     if (!size) return 0;
     const double f = frames ? frames : 1;
     size_t at = putf(out, size, 0, "perf-copies: frames=%u (a frame: ops/pass ends/KB, ends other/gpu_src/copy/"
-                     "image/target, reads reuse/several/part/align/submit/old/changed)", frames ? frames : 1);
+                     "image/target/query, reads reuse/several/part/align/submit/old/changed)", frames ? frames : 1);
     /* first, so a line cut at its size keeps them */
     at = putf(out, size, at, " lost=%llu nodraw=%.1f elsewhere=%llu", (unsigned long long)c->lost, c->nodraw / f,
               (unsigned long long)__atomic_exchange_n(&c->elsewhere, 0, __ATOMIC_RELAXED));
@@ -469,7 +472,7 @@ size_t perf_copies_line(PerfCopies* c, uint32_t frames, char* out, size_t size) 
         const PerfCopyTarget* g = &c->tg[shown[j]];
         at = putf(out, size, at, " [%llx %ux%u f%u] draws=%.1f passes=%.1f ends", (unsigned long long)g->t.gva, g->t.w,
                   g->t.h, g->t.fmt, g->draws / f, g->passes / f);
-        for (int w = 0; w <= PE_TARGET; w++) at = putf(out, size, at, "%s%.1f", w ? "/" : "=", g->why[w] / f);
+        for (int w = 0; w < PE_N; w++) at = putf(out, size, at, "%s%.1f", w ? "/" : "=", g->why[w] / f);
         for (int k = 0; k < PK_SITES; k++)
             if (g->ends[k])
                 at = putf(out, size, at, " end_%s=%.1f/%.1f", sites[k], g->ends[k] / f, g->bytes[k] / f / 1024);
@@ -506,6 +509,9 @@ size_t perf_inplace_line(const PerfCopies* c, uint32_t frames, char* out, size_t
     at = putf(out, size, at, " last_pending=%.1f exact=%.1f barriers=%.1f skipped=%.1f wide=%.1f",
               c->extra[PX_LAST_PENDING] / f, c->extra[PX_EXACT] / f, c->extra[PX_BARRIER] / f,
               c->extra[PX_SKIPPED] / f, c->extra[PX_WIDE] / f);
+    at = putf(out, size, at, " query_reports=%.1f kept=%.1f guard=%.1f atlas_total=%llu",
+              c->extra[PX_QUERY_REPORTS] / f, c->extra[PX_QUERY_KEPT] / f, c->extra[PX_QUERY_GUARD] / f,
+              (unsigned long long)c->atlas_total);
     at = put_counts(out, size, at, "made", c->made, PR_N, f);
     at = put_counts(out, size, at, "cls", c->cls, PI_CLASSES, f);
     for (int b = 0; b < PBK_KINDS; b++) at = put_counts(out, size, at, binds[b], c->bind[b], PS_N, f);

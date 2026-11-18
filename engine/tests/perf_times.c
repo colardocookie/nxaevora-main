@@ -346,9 +346,12 @@ static void test_copies(void) {
     CHECK(c.tg[0].bytes[PK_PATCH] == 0 && c.tg[0].bytes[PK_COMPOSE] == 128);
     perf_copy_pass_end(&c, &b, PE_GPU_SRC); /* another reason: the target's, and no copy's end */
     CHECK(c.tg[1].why[PE_GPU_SRC] == 1 && c.ends[PK_PATCH] == 0 && c.slot == -1);
-    perf_copy_pass_end(&c, &b, 99); /* out of range: other */
+    perf_copy_pass_end(&c, &b, PE_QUERY); /* a samples-passed report */
+    CHECK(c.tg[1].why[PE_QUERY] == 1);
+    perf_copy_pass_end(&c, &b, PE_N); /* out of range: other */
+    perf_copy_pass_end(&c, &b, 99);
     perf_copy_pass_end(&c, &b, -1);
-    CHECK(c.tg[1].why[PE_OTHER] == 2);
+    CHECK(c.tg[1].why[PE_OTHER] == 3);
     perf_copy_begin(&c, PK_SITES); /* out of range: nothing until the next begin */
     perf_copy_pass_end(&c, &b, PE_COPY);
     perf_copy_bytes(&c, 5);
@@ -434,7 +437,7 @@ static void test_copies_line(void) {
     CHECK(!strstr(line, " compose="));                  /* a site with no copy is left out */
     CHECK(strstr(line, " in=3.0/0.0/0.0/0.0/0.0/0.0/0.0 rd=0.5/0.0/0.0/0.5/0.0/0.0/0.0"));
     CHECK(!strstr(line, " wr="));
-    const char* t6 = strstr(line, " [60000 105x50 f37] draws=1.0 passes=0.0 ends=0.0/0.0/3.0/0.0/0.0");
+    const char* t6 = strstr(line, " [60000 105x50 f37] draws=1.0 passes=0.0 ends=0.0/0.0/3.0/0.0/0.0/0.0 ");
     const char* t5 = strstr(line, " [50000 104x50 f37]");
     const char* t4 = strstr(line, " [40000 103x50 f37]");
     const char* t3 = strstr(line, " [30000 102x50 f37]");
@@ -577,6 +580,9 @@ static void test_inplace_counts(void) {
     perf_copy_extra(&c, PX_N, 1);
     perf_copy_extra(&c, -1, 1);
     perf_copy_made(&c, PR_ATLAS);
+    perf_copy_extra(&c, PX_QUERY_REPORTS, 4);
+    perf_copy_extra(&c, PX_QUERY_KEPT, 3);
+    perf_copy_extra(&c, PX_QUERY_GUARD, 1);
     perf_copy_made(&c, PR_N);
     perf_copy_made(&c, -1);
     CHECK(c.cls[PI_ONE] == 2 && c.cls[PI_RUN] == 1 && c.cls[PI_NONE] == 1 && c.tg[0].cls[PI_ONE] == 2);
@@ -588,12 +594,13 @@ static void test_inplace_counts(void) {
     for (int i = 0; i < PX_N; i++) sum += c.extra[i];
     for (int i = 0; i < PR_N; i++) sum += c.made[i];
     for (int i = 0; i < PK_SITES; i++) sum += c.empty[i];
-    CHECK(sum == 3 + 1 + 2);
+    CHECK(sum == 3 + 4 + 3 + 1 + 1 + 2);
     g_perf_inplace = 2;
     perf_inplace_line(&c, 2, line, sizeof line);
     g_perf_inplace = 0;
     CHECK(strstr(line, "perf-inplace: frames=2 level=2 "));
-    CHECK(strstr(line, " last_pending=0.0 exact=0.0 barriers=0.0 skipped=1.5 wide=0.0"));
+    CHECK(strstr(line, " last_pending=0.0 exact=0.0 barriers=0.0 skipped=1.5 wide=0.0"
+                       " query_reports=2.0 kept=1.5 guard=0.5 atlas_total=1 "));
     CHECK(strstr(line, " made=0.0/0.0/0.0/0.0/0.0/0.5/0.0/0.0"));
     CHECK(strstr(line, " cls=0.5/1.0/0.0/0.5/0.0/0.0"));
     CHECK(strstr(line, " b_other=1.0/0.0/0.0/0.0/0.0/0.0/0.0 b_vertex=0.0/0.5/0.0/0.0/0.0/0.0/0.0"));
@@ -603,10 +610,21 @@ static void test_inplace_counts(void) {
     CHECK(c.cls[PI_ONE] == 2); /* not reset: perf_copies_line starts the next window */
     perf_copies_line(&c, 2, line, sizeof line);
     CHECK(c.cls[PI_ONE] == 0 && c.made[PR_ATLAS] == 0 && c.empty[PK_COMPOSE] == 0 && c.extra[PX_SKIPPED] == 0);
+    CHECK(c.atlas_total == 1 && c.extra[PX_QUERY_KEPT] == 0); /* the total since the start outlives the window */
+    perf_copy_made(&c, PR_ATLAS);
+    CHECK(c.atlas_total == 2 && c.made[PR_ATLAS] == 1);
+    {
+        static PerfCopies r;
+        r.atlas_total = 5;
+        perf_copies_reset(&r); /* before any hook: all of it */
+        CHECK(r.atlas_total == 0 && r.site == -1);
+    }
     CHECK(c.bind[PBK_VERTEX][PS_SEVERAL] == 0);
     perf_copy_extra(&c, PX_BARRIER, 1);
     perf_inplace_line(&c, 0, line, sizeof line); /* no frames: counted as one */
-    CHECK(strstr(line, "frames=1 level=0 ") && !strstr(line, " cls=") && !strstr(line, " made=") && !strstr(line, "["));
+    CHECK(strstr(line, "frames=1 level=0 ") && !strstr(line, " cls=") && !strstr(line, "["));
+    CHECK(strstr(line, " atlas_total=2"));
+    c.made[PR_ATLAS] = 0;
     CHECK(strstr(line, " barriers=1.0 "));
     c.extra[PX_BARRIER] = 0;
     /* the targets with the most classified bindings, highest first, four at most, none with none */
