@@ -1064,6 +1064,11 @@ VkFrontFace vk_render_front_face(const u32* r);
 void vk_perf_copy(int site);
 void vk_perf_copy_bytes(u64 n);
 void vk_perf_src(int kind, int outcome);
+/* PERF-17: a composed input's class (PI_*), a composition with no byte copied, a PX_* count, a PR_* result made */
+void vk_perf_class(int cls);
+void vk_perf_empty(int site, u64 bytes);
+void vk_perf_extra(int which);
+void vk_perf_made(int producer);
 void vk_render_draw_texture(GpuChannel* ch);
 void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                     u32 instances);

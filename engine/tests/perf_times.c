@@ -491,6 +491,148 @@ static void test_copies_threads(void) {
     CHECK(total == 100000); /* none lost to a window's reset */
 }
 
+/* PERF-17's class of a composed input range by its byte-sharing results, oldest first */
+static void test_inplace_class(void) {
+    PerfResult r[PERF_RESULTS + 1];
+    const uint64_t g = 0x10000;
+    CHECK(perf_inplace_class(r, 0, g, 0x100, 0) == PI_NONE);
+    r[0] = (PerfResult){g, 0x400, 1, 0, 1, 0};
+    CHECK(perf_inplace_class(r, 1, g, 0x100, 0) == PI_ONE);
+    CHECK(perf_inplace_class(r, 1, g, 0x400, 0) == PI_ONE); /* to its last byte */
+    CHECK(perf_inplace_class(r, 1, g, 0x401, 0) == PI_PART);
+    CHECK(perf_inplace_class(r, 1, g - 1, 0x10, 0) == PI_PART);
+    r[0].exact = 1; /* the exact length fits in it */
+    CHECK(perf_inplace_class(r, 1, g, 0x800, 0x400) == PI_ONE_EXACT);
+    CHECK(perf_inplace_class(r, 1, g, 0x800, 0x401) == PI_PART);
+    CHECK(perf_inplace_class(r, 1, g, 0x800, 0x800) == PI_PART); /* not shorter: no exact */
+    CHECK(perf_inplace_class(r, 1, g, 0x800, 0) == PI_PART);
+    r[0].exact = 0; /* shares no byte at the exact length */
+    CHECK(perf_inplace_class(r, 1, g, 0x800, 0x400) == PI_PART);
+    /* two at one address each, one buffer, the guest's spacing, no hole: a run */
+    r[0] = (PerfResult){g, 0x400, 7, 0x100, 1, 1};
+    r[1] = (PerfResult){g + 0x400, 0x400, 7, 0x500, 1, 0};
+    CHECK(perf_inplace_class(r, 2, g, 0x800, 0) == PI_RUN);
+    CHECK(perf_inplace_class(r, 2, g + 0x200, 0x400, 0) == PI_RUN);
+    CHECK(perf_inplace_class(r, 2, g, 0x801, 0) == PI_SEVERAL); /* past the last */
+    CHECK(perf_inplace_class(r, 2, g, 0x800, 0x400) == PI_ONE_EXACT); /* the newest at the exact length is r[0] */
+    r[1].off = 0x501; /* another spacing */
+    CHECK(perf_inplace_class(r, 2, g, 0x800, 0) == PI_SEVERAL);
+    r[1].off = 0x500;
+    r[1].buf = 8; /* another buffer */
+    CHECK(perf_inplace_class(r, 2, g, 0x800, 0) == PI_SEVERAL);
+    r[1].buf = 7;
+    r[1].same = 0; /* meets through another address */
+    CHECK(perf_inplace_class(r, 2, g, 0x800, 0) == PI_SEVERAL);
+    r[1].same = 1;
+    r[1].addr = g + 0x500, r[1].off = 0x600; /* a hole at 0x400 */
+    CHECK(perf_inplace_class(r, 2, g, 0x800, 0) == PI_SEVERAL);
+    r[1] = (PerfResult){g, 0x800, 7, 0x100, 1, 0}; /* the newest covers: one, whatever is older */
+    CHECK(perf_inplace_class(r, 2, g, 0x800, 0) == PI_ONE);
+    r[0] = (PerfResult){g + 0x200, 0x100, 7, 0x300, 1, 0}; /* inside the newest, out of order: a run */
+    r[1] = (PerfResult){g, 0x200, 7, 0x100, 1, 0};
+    r[2] = (PerfResult){g + 0x300, 0x100, 7, 0x400, 1, 0};
+    CHECK(perf_inplace_class(r, 3, g, 0x400, 0) == PI_RUN);
+    for (unsigned i = 0; i <= PERF_RESULTS; i++) r[i] = (PerfResult){g, 0x400, 7, 0x100, 1, 0};
+    CHECK(perf_inplace_class(r, PERF_RESULTS, g, 0x400, 0) == PI_ONE);
+    CHECK(perf_inplace_class(r, PERF_RESULTS + 1, g, 0x400, 0) == PI_SEVERAL); /* too many kept */
+    r[0] = (PerfResult){g, 0x400, 7, 0x100, 1, 1}; /* an older one fits the exact length, the newest sharing does not */
+    r[1] = (PerfResult){g + 0x300, 0x400, 7, 0x400, 1, 1};
+    CHECK(perf_inplace_class(r, 2, g, 0x800, 0x400) == PI_SEVERAL);
+}
+
+static void test_inplace_counts(void) {
+    static PerfCopies c;
+    char line[2048];
+    perf_copies_reset(&c);
+    const PerfTarget a = {0x440e90000ull, 1920, 1080, 97};
+    perf_copy_draw(&c, &a);
+    perf_copy_class(&c, PI_ONE);
+    perf_copy_class(&c, PI_ONE);
+    perf_copy_class(&c, PI_RUN);
+    perf_copy_class(&c, PI_CLASSES); /* out of range: ignored */
+    perf_copy_class(&c, -1);
+    g_perf_bind = PBK_VERTEX;
+    perf_copy_src(&c, PB_INPUT, PS_SEVERAL);
+    g_perf_bind = PBK_KINDS; /* out of range: other */
+    perf_copy_src(&c, PB_INPUT, PS_REUSE);
+    g_perf_bind = -1;
+    perf_copy_src(&c, PB_INPUT, PS_REUSE);
+    g_perf_bind = PBK_OTHER;
+    perf_copy_draw(&c, NULL);
+    perf_copy_class(&c, PI_NONE); /* no draw: the totals alone */
+    perf_copy_empty(&c, PK_COMPOSE, 4096);
+    perf_copy_empty(&c, PK_COMPOSE, 2048);
+    perf_copy_empty(&c, PK_SITES, 1);
+    perf_copy_empty(&c, -1, 1);
+    perf_copy_extra(&c, PX_SKIPPED, 3);
+    perf_copy_extra(&c, PX_N, 1);
+    perf_copy_extra(&c, -1, 1);
+    perf_copy_made(&c, PR_ATLAS);
+    perf_copy_made(&c, PR_N);
+    perf_copy_made(&c, -1);
+    CHECK(c.cls[PI_ONE] == 2 && c.cls[PI_RUN] == 1 && c.cls[PI_NONE] == 1 && c.tg[0].cls[PI_ONE] == 2);
+    CHECK(c.tg[0].cls[PI_NONE] == 0);
+    CHECK(c.bind[PBK_VERTEX][PS_SEVERAL] == 1 && c.bind[PBK_OTHER][PS_REUSE] == 2);
+    CHECK(c.empty[PK_COMPOSE] == 2 && c.empty_bytes[PK_COMPOSE] == 6144);
+    CHECK(c.extra[PX_SKIPPED] == 3 && c.made[PR_ATLAS] == 1);
+    uint64_t sum = 0;
+    for (int i = 0; i < PX_N; i++) sum += c.extra[i];
+    for (int i = 0; i < PR_N; i++) sum += c.made[i];
+    for (int i = 0; i < PK_SITES; i++) sum += c.empty[i];
+    CHECK(sum == 3 + 1 + 2);
+    g_perf_inplace = 2;
+    perf_inplace_line(&c, 2, line, sizeof line);
+    g_perf_inplace = 0;
+    CHECK(strstr(line, "perf-inplace: frames=2 level=2 "));
+    CHECK(strstr(line, " last_pending=0.0 exact=0.0 barriers=0.0 skipped=1.5 wide=0.0"));
+    CHECK(strstr(line, " made=0.0/0.0/0.0/0.0/0.0/0.5/0.0/0.0"));
+    CHECK(strstr(line, " cls=0.5/1.0/0.0/0.5/0.0/0.0"));
+    CHECK(strstr(line, " b_other=1.0/0.0/0.0/0.0/0.0/0.0/0.0 b_vertex=0.0/0.5/0.0/0.0/0.0/0.0/0.0"));
+    CHECK(!strstr(line, " b_index="));
+    CHECK(strstr(line, " empty_compose=1.0/3.0"));
+    CHECK(strstr(line, " [440e90000 1920x1080 f97] cls=0.0/1.0/0.0/0.5/0.0/0.0"));
+    CHECK(c.cls[PI_ONE] == 2); /* not reset: perf_copies_line starts the next window */
+    perf_copies_line(&c, 2, line, sizeof line);
+    CHECK(c.cls[PI_ONE] == 0 && c.made[PR_ATLAS] == 0 && c.empty[PK_COMPOSE] == 0 && c.extra[PX_SKIPPED] == 0);
+    CHECK(c.bind[PBK_VERTEX][PS_SEVERAL] == 0);
+    perf_copy_extra(&c, PX_BARRIER, 1);
+    perf_inplace_line(&c, 0, line, sizeof line); /* no frames: counted as one */
+    CHECK(strstr(line, "frames=1 level=0 ") && !strstr(line, " cls=") && !strstr(line, " made=") && !strstr(line, "["));
+    CHECK(strstr(line, " barriers=1.0 "));
+    c.extra[PX_BARRIER] = 0;
+    /* the targets with the most classified bindings, highest first, four at most, none with none */
+    for (unsigned i = 0; i < 6; i++) {
+        const PerfTarget t = {0x10000ull * (i + 1), 8, 8, 1};
+        perf_copy_draw(&c, &t);
+        for (unsigned k = 0; k <= i; k++) perf_copy_class(&c, PI_SEVERAL);
+    }
+    const PerfTarget quiet = {0x90000, 8, 8, 1};
+    perf_copy_draw(&c, &quiet);
+    perf_inplace_line(&c, 1, line, sizeof line);
+    const char *t6 = strstr(line, " [60000 "), *t5 = strstr(line, " [50000 "), *t4 = strstr(line, " [40000 ");
+    const char* t3 = strstr(line, " [30000 ");
+    CHECK(t6 && t5 && t4 && t3 && t6 < t5 && t5 < t4 && t4 < t3);
+    CHECK(!strstr(line, "[20000 ") && !strstr(line, "[90000 "));
+    perf_copies_reset(&c);
+    const PerfTarget nothing = {0xc0000, 8, 8, 1}, nones = {0xd0000, 8, 8, 1};
+    perf_copy_draw(&c, &nothing); /* drawn, nothing classified: not printed */
+    perf_copy_draw(&c, &nones);
+    perf_copy_class(&c, PI_NONE); /* none counts */
+    perf_copy_class(&c, PI_NONE);
+    perf_copy_class(&c, PI_NONE);
+    for (unsigned i = 0; i < 2; i++) { /* a tie: the lower slot first */
+        const PerfTarget t = {0xa0000ull + 0x10000ull * i, 8, 8, 1};
+        perf_copy_draw(&c, &t);
+        perf_copy_class(&c, PI_PART);
+    }
+    perf_inplace_line(&c, 1, line, sizeof line);
+    const char *ta = strstr(line, " [a0000 "), *tb = strstr(line, " [b0000 "), *td = strstr(line, " [d0000 ");
+    CHECK(ta && tb && td && td < ta && ta < tb && !strstr(line, "[c0000 "));
+    char small[16];
+    CHECK(perf_inplace_line(&c, 1, small, sizeof small) == sizeof small - 1 && !small[sizeof small - 1]);
+    CHECK(perf_inplace_line(&c, 1, small, 0) == 0);
+}
+
 int main(void) {
     test_rel_window();
     test_subs();
@@ -508,6 +650,9 @@ int main(void) {
     test_copies_full();
     test_copies_line();
     test_copies_threads();
+    test_inplace_class();
+    test_inplace_counts();
+    CHECK(g_perf_inplace == 0 && g_perf_bind == PBK_OTHER && g_perf_exact == 0); /* unset: today's commands */
     CHECK(g_perf_cp.site == -1 && g_perf_cp.slot == -1 && g_perf_cp.draw == -1 && g_perf_cp.last == -1);
     if (failures) return 1;
     printf("perf_times: ok\n");

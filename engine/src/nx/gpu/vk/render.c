@@ -59,6 +59,18 @@ void vk_perf_copy_bytes(u64 n) {
 void vk_perf_src(int kind, int outcome) {
     if (g_perf_times && perf_here()) perf_copy_src(&g_perf_cp, kind, outcome);
 }
+void vk_perf_class(int cls) {
+    if (g_perf_times && perf_here()) perf_copy_class(&g_perf_cp, cls);
+}
+void vk_perf_empty(int site, u64 bytes) {
+    if (g_perf_times && perf_here()) perf_copy_empty(&g_perf_cp, site, bytes);
+}
+void vk_perf_extra(int which) {
+    if (g_perf_times && perf_here()) perf_copy_extra(&g_perf_cp, which, 1);
+}
+void vk_perf_made(int producer) {
+    if (g_perf_times && perf_here()) perf_copy_made(&g_perf_cp, producer);
+}
 
 void vk_render_end(void) {
     const int why = g_perf_pass_why; /* SNX_ARCEUS_PERF_TIMES: the caller's reason, used once */
@@ -1143,7 +1155,10 @@ static int cb_get(const GpuChannel* ch, int stage, int i, u32 sz, VkBuffer* buf,
         *off = c[stage][i].off;
         return 1;
     }
-    if (!(a ? vk_buf_get_strict(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off))) return 0;
+    perf_bind(PBK_CONST, 0);
+    const int got = a ? vk_buf_get_strict(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off);
+    perf_bind(PBK_OTHER, 0);
+    if (!got) return 0;
     if (pending) {
         c[stage][i].a = 0;
         return 1;
@@ -1713,11 +1728,13 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         u32 size = gb->size;
         VkBuffer b;
         u64 o;
+        perf_bind(PBK_STORAGE, 0);
         int ok = gb->aliased            ? (b = gb->buf, o = gb->off, 1)
                  : addr && gb->writable ? vk_buf_copy_writable(addr, size, &b, &o)
                  : addr && gb->bare     ? vk_buf_get_window(addr, size, &b, &o)
                  : addr                 ? vk_buf_get(addr, size, &b, &o)
                                         : vk_buf_copy(0, size, &b, &o);
+        perf_bind(PBK_OTHER, 0);
         if (!ok) return VK_NULL_HANDLE;
         dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o, gb->aliased ? gb->range : size);
     }
@@ -2489,9 +2506,11 @@ static int copy_restrided(u64 gva, u64 len, u32 gstride, u32 stride, VkBuffer* b
    memory, or under results the GPU hasn't landed. A stream's limit is often the end of a ring the game streams
    vertices through, so its range from the draw's start to the limit was megabytes for a few hundred vertices: one
    game copied 100 to 360 MB a frame that way */
+static int g_last_pending; /* SNX_ARCEUS_PERF_TIMES: draw_last_vertex's unknown came from a pending result */
 static u64 draw_last_vertex(GpuChannel* ch, int indexed, u32 first, u32 count, u32 base_vertex) {
     const u32* r = ch->r3d;
     u64 top = 0;
+    g_last_pending = 0;
     if (!indexed) return (u64)first + count - 1;
     if (indexed == 3) { /* inline indices, 32-bit */
         for (u32 j = 0; j < count; j++)
@@ -2504,7 +2523,11 @@ static u64 draw_last_vertex(GpuChannel* ch, int indexed, u32 first, u32 count, u
         VkBuffer tb;
         u64 to;
         if (n > count) n = count;
-        if (vk_buf_pending(a, n * isz) || vk_compute_gpu_src(a, n * isz, &tb, &to)) return ~0ull;
+        if (vk_buf_pending(a, n * isz)) {
+            g_last_pending = 1;
+            return ~0ull;
+        }
+        if (vk_compute_gpu_src(a, n * isz, &tb, &to)) return ~0ull;
         vk_compute_mem_need(a, n * isz);
         /* the restart index, and all ones where Vulkan restarts instead, mark no vertex */
         u32 ones = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : 0xFFFFFFFFu, ri = r[0x591] ? r[0x592] & ones : ones;
@@ -2750,7 +2773,7 @@ retry:
     VkBuffer vbuf[33];
     VkDeviceSize voff[33], vsize[33];
     struct {
-        u64 gva, len;
+        u64 gva, len, exact; /* exact: the bytes it reads, when shorter than len (else 0) */
         u32 b, base;
     } vq[33];
     u32 nvq = 0;
@@ -2772,18 +2795,20 @@ retry:
         u32 sbuf = pl->key[v] & 31;
         /* up to a power of two of the bytes it reads: the cache keeps a range by its length, and draws of a mesh's parts
            that end at different vertices then share a few ranges, not one each */
-        u64 limit = stream_len(r, sbuf), len = limit;
+        u64 limit = stream_len(r, sbuf), len = limit, exact = 0;
         u64 last = k->bind[v].divisor ? last_instance : last_vertex;
         u64 gstride = pl->guest_stride[v] ? pl->guest_stride[v] : pl->stride[v];
         if (gstride && last < len / gstride) {
             u64 need = (last + 1) * gstride, up = 4096;
             while (up < need) up <<= 1;
             if (up < len) len = up;
+            exact = need + (pl->pad[v] < limit - need ? pl->pad[v] : limit - need); /* as len gets its pad below */
         }
         if (len > (64u << 20)) len = 64u << 20;
         /* Overlapping records can need the attribute's tail beyond a stride,
            but never beyond the guest binding's inclusive limit. */
         len += pl->pad[v] < limit - len ? pl->pad[v] : limit - len;
+        if (g_perf_times && !k->bind[v].divisor && last == ~0ull && g_last_pending) vk_perf_extra(PX_LAST_PENDING);
         u32 base = pl->key[v] >> 5;
         if (base >= len) {
             if (!frame_consts(&vbuf[v], &voff[v])) {
@@ -2796,6 +2821,7 @@ retry:
         }
         vq[nvq].gva = stream_start(r, sbuf);
         vq[nvq].len = len;
+        vq[nvq].exact = exact < len && exact > base ? exact : 0;
         vq[nvq].b = v;
         vq[nvq].base = base;
         nvq++;
@@ -2813,8 +2839,11 @@ retry:
             }
             continue;
         }
+        perf_bind(PBK_VERTEX, vq[q].exact);
         /* vertex formats have components of up to 4 bytes, which each attribute's address must be a multiple of */
-        if (!vk_buf_get_input(vq[q].gva, vq[q].len, 4, &vbuf[vq[q].b], &voff[vq[q].b])) {
+        const int got = vk_buf_get_input(vq[q].gva, vq[q].len, 4, &vbuf[vq[q].b], &voff[vq[q].b]);
+        perf_bind(PBK_OTHER, 0);
+        if (!got) {
             g_vk_skipped++;
             return;
         }
@@ -2978,9 +3007,14 @@ retry:
                         memset(o + (u64)j * 2, 0xFF, 2);
                     else if (isz == 4 && snx_ld_le32(o + (u64)j * 4) == ri)
                         memset(o + (u64)j * 4, 0xFF, 4);
-            } else if (!vk_buf_get_input(ia + (u64)first * isz, bytes, isz, &ibuf, &ioff)) {
-                draw_images_discard(&images);
-                return;
+            } else {
+                perf_bind(PBK_INDEX, 0);
+                const int got = vk_buf_get_input(ia + (u64)first * isz, bytes, isz, &ibuf, &ioff);
+                perf_bind(PBK_OTHER, 0);
+                if (!got) {
+                    draw_images_discard(&images);
+                    return;
+                }
             }
             itype = isz == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
         }
@@ -2997,7 +3031,10 @@ retry:
         i32 size = (i32)t[3];
         u64 a = (((u64)(t[1] & 0xFF) << 32) | t[2]) + t[4];
         if (!t[0] || size <= 0 || (!r[0x1C1 + 4 * i] && !r[0x1C2 + 4 * i])) continue;
-        if (!vk_buf_copy_writable(a, (u32)size, &xbuf[i], &xoff[i])) {
+        perf_bind(PBK_XFB, 0);
+        const int got = vk_buf_copy_writable(a, (u32)size, &xbuf[i], &xoff[i]);
+        perf_bind(PBK_OTHER, 0);
+        if (!got) {
             draw_images_discard(&images);
             g_vk_skipped++;
             return;

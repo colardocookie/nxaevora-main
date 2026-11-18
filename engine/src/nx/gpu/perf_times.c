@@ -11,6 +11,9 @@ int g_perf_pass_why;
 int g_perf_submit_why;
 uint64_t g_perf_submit_every_ns = PERF_SUBMIT_EVERY_NS;
 int g_perf_compute_submit = 1;
+int g_perf_inplace;
+int g_perf_bind;
+uint64_t g_perf_exact;
 
 static void time_add(PerfTime* t, uint64_t ns) {
     __atomic_fetch_add(&t->sum, ns, __ATOMIC_RELAXED);
@@ -358,10 +361,54 @@ void perf_copy_draw(PerfCopies* c, const PerfTarget* t) {
 void perf_copy_src(PerfCopies* c, int kind, int outcome) {
     if (kind < 0 || kind >= PB_KINDS || outcome < 0 || outcome >= PS_N) return;
     c->src[kind][outcome]++;
+    c->bind[g_perf_bind > 0 && g_perf_bind < PBK_KINDS ? g_perf_bind : PBK_OTHER][outcome]++;
     if (c->draw >= 0)
         c->tg[c->draw].src[kind][outcome]++;
     else
         c->nodraw++;
+}
+
+void perf_copy_class(PerfCopies* c, int cls) {
+    if (cls < 0 || cls >= PI_CLASSES) return;
+    c->cls[cls]++;
+    if (c->draw >= 0) c->tg[c->draw].cls[cls]++;
+}
+void perf_copy_empty(PerfCopies* c, int site, uint64_t bytes) {
+    if (site < 0 || site >= PK_SITES) return;
+    c->empty[site]++;
+    c->empty_bytes[site] += bytes;
+}
+void perf_copy_extra(PerfCopies* c, int which, uint64_t n) {
+    if (which >= 0 && which < PX_N) c->extra[which] += n;
+}
+void perf_copy_made(PerfCopies* c, int producer) {
+    if (producer >= 0 && producer < PR_N) c->made[producer]++;
+}
+static int result_covers(const PerfResult* r, uint64_t gva, uint64_t len) {
+    return gva >= r->addr && gva + len <= r->addr + r->size;
+}
+int perf_inplace_class(const PerfResult* r, uint32_t n, uint64_t gva, uint64_t len, uint64_t exact) {
+    if (!n) return PI_NONE;
+    if (n > PERF_RESULTS) return PI_SEVERAL;
+    if (result_covers(&r[n - 1], gva, len)) return PI_ONE;
+    if (exact && exact < len)
+        for (uint32_t i = n; i--;) /* the newest sharing a byte at the exact length */
+            if (r[i].exact) {
+                if (result_covers(&r[i], gva, exact)) return PI_ONE_EXACT;
+                break;
+            }
+    if (n == 1) return PI_PART;
+    for (uint32_t i = 0; i < n; i++)
+        if (!r[i].same || r[i].buf != r[0].buf || r[i].off - r[i].addr != r[0].off - r[0].addr) return PI_SEVERAL;
+    for (uint64_t at = gva, end = gva + len; at < end;) { /* no hole: each byte from at on is in one of them */
+        uint64_t next = at;
+        for (uint32_t i = 0; i < n; i++)
+            if (r[i].addr <= at && at < r[i].addr + r[i].size && r[i].addr + r[i].size > next)
+                next = r[i].addr + r[i].size;
+        if (next == at) return PI_SEVERAL;
+        at = next;
+    }
+    return PI_RUN;
 }
 
 static size_t putf(char* out, size_t size, size_t at, const char* fmt, ...) __attribute__((format(printf, 4, 5)));
@@ -429,5 +476,59 @@ size_t perf_copies_line(PerfCopies* c, uint32_t frames, char* out, size_t size) 
         for (int b = 0; b < PB_KINDS; b++) at = put_src(out, size, at, kinds[b], g->src[b], f);
     }
     copies_clear(c);
+    return at < size ? at : size - 1;
+}
+
+static size_t put_counts(char* out, size_t size, size_t at, const char* name, const uint64_t* v, int n, double f) {
+    uint64_t any = 0;
+    for (int i = 0; i < n; i++) any |= v[i];
+    if (!any) return at;
+    at = putf(out, size, at, " %s=", name);
+    for (int i = 0; i < n; i++) at = putf(out, size, at, i ? "/%.1f" : "%.1f", (double)v[i] / f);
+    return at;
+}
+static uint64_t class_score(const PerfCopyTarget* g) {
+    uint64_t s = 0;
+    for (int k = 0; k < PI_CLASSES; k++) s += g->cls[k];
+    return s;
+}
+size_t perf_inplace_line(const PerfCopies* c, uint32_t frames, char* out, size_t size) {
+    static const char* const sites[PK_SITES] = {"compose", "compose_w", "atlas", "owned_base",
+                                                "patch",   "own",       "owned_read", "dma"};
+    static const char* const binds[PBK_KINDS] = {"b_other",   "b_vertex", "b_index",   "b_const",
+                                                 "b_storage", "b_xfb",    "b_dispatch"};
+    if (!size) return 0;
+    const double f = frames ? frames : 1;
+    size_t at = putf(out, size, 0, "perf-inplace: frames=%u level=%d (a frame: classes none/one/one_exact/run/"
+                     "several/part, bindings reuse/several/part/align/submit/old/changed, empty ops/KB, made "
+                     "ordinary/owned/composed/xfb/dispatch/atlas/inplace/repeat)",
+                     frames ? frames : 1, g_perf_inplace);
+    at = putf(out, size, at, " last_pending=%.1f exact=%.1f barriers=%.1f skipped=%.1f wide=%.1f",
+              c->extra[PX_LAST_PENDING] / f, c->extra[PX_EXACT] / f, c->extra[PX_BARRIER] / f,
+              c->extra[PX_SKIPPED] / f, c->extra[PX_WIDE] / f);
+    at = put_counts(out, size, at, "made", c->made, PR_N, f);
+    at = put_counts(out, size, at, "cls", c->cls, PI_CLASSES, f);
+    for (int b = 0; b < PBK_KINDS; b++) at = put_counts(out, size, at, binds[b], c->bind[b], PS_N, f);
+    for (int k = 0; k < PK_SITES; k++)
+        if (c->empty[k])
+            at = putf(out, size, at, " empty_%s=%.1f/%.1f", sites[k], c->empty[k] / f, c->empty_bytes[k] / f / 1024);
+    int shown[PERF_COPY_PRINT];
+    unsigned nshown = 0;
+    for (; nshown < PERF_COPY_PRINT; nshown++) { /* the most classified bindings, each once, ties to the lower slot */
+        int best = -1;
+        for (int i = 0; i < (int)PERF_COPY_TARGETS; i++) {
+            int seen = 0;
+            for (unsigned j = 0; j < nshown; j++) seen |= shown[j] == i;
+            if (seen || !c->tg[i].t.gva || !class_score(&c->tg[i])) continue;
+            if (best < 0 || class_score(&c->tg[i]) > class_score(&c->tg[best])) best = i;
+        }
+        if (best < 0) break;
+        shown[nshown] = best;
+    }
+    for (unsigned j = 0; j < nshown; j++) {
+        const PerfCopyTarget* g = &c->tg[shown[j]];
+        at = putf(out, size, at, " [%llx %ux%u f%u]", (unsigned long long)g->t.gva, g->t.w, g->t.h, g->t.fmt);
+        at = put_counts(out, size, at, "cls", g->cls, PI_CLASSES, f);
+    }
     return at < size ? at : size - 1;
 }

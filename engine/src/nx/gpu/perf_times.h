@@ -204,6 +204,44 @@ enum {
     PS_N
 };
 enum { PB_INPUT, PB_READ, PB_WRITE, PB_KINDS }; /* buf_get, vk_buf_copy, vk_buf_copy_writable */
+/* PERF-17 (research 02:42): what a composed input binding (PB_INPUT) is, by its pending results that share a byte */
+enum {
+    PI_NONE,      /* none shares a byte: page neighbours only */
+    PI_ONE,       /* the newest one covers the range at its address (level 1 binds it) */
+    PI_ONE_EXACT, /* not one, but one at the vertex stream's exact length (level 2 binds it) */
+    PI_RUN,       /* several at one address each, tiling the range in one buffer with the guest's spacing */
+    PI_SEVERAL,   /* several, anything else */
+    PI_PART,      /* one, not covering the range */
+    PI_CLASSES
+};
+/* the binding being looked up, set by its caller (vk/render.c, vk/compute.c): the GPU thread's */
+enum { PBK_OTHER, PBK_VERTEX, PBK_INDEX, PBK_CONST, PBK_STORAGE, PBK_XFB, PBK_DISPATCH, PBK_KINDS };
+/* a writable result handed out, by producer (research 02:48): new from vk_buf_copy_writable by its caller or kind, an
+   atlas page (draw_output_page), rewritten in place, or a repeated binding of a prepared one */
+enum { PR_ORDINARY, PR_OWNED, PR_COMPOSED, PR_XFB, PR_DISPATCH, PR_ATLAS, PR_INPLACE, PR_REPEAT, PR_N };
+extern int g_perf_bind;
+extern uint64_t g_perf_exact; /* a vertex stream's exact length when it is looked up at a longer one, else 0 */
+static inline void perf_bind(int kind, uint64_t exact) {
+    if (g_perf_times) g_perf_bind = kind, g_perf_exact = exact;
+}
+enum {
+    PX_LAST_PENDING, /* vertex streams whose last vertex was unknown: the indices share a page with a pending result */
+    PX_EXACT,        /* vertex streams looked up at their exact length (level 2) */
+    PX_BARRIER,      /* the reuse path's barriers recorded */
+    PX_SKIPPED,      /* and skipped (level 3) */
+    PX_WIDE,         /* classified ranges of more than 16 pages: a result on another address meets them by page */
+    PX_N
+};
+/* a pending result sharing a byte with the range, oldest first, for perf_inplace_class */
+typedef struct {
+    uint64_t addr, size, buf, off;
+    int same;  /* it shares the bytes at its own address, not only through another one */
+    int exact; /* it shares a byte with the exact length's range */
+} PerfResult;
+#define PERF_RESULTS 32u /* a walk keeps this many: more are several */
+/* the class of [gva, gva + len) over its n results (n may exceed PERF_RESULTS: several), exact 0 or the shorter
+   length a vertex stream reads */
+int perf_inplace_class(const PerfResult* r, uint32_t n, uint64_t gva, uint64_t len, uint64_t exact);
 typedef struct {
     uint64_t gva;
     uint32_t w, h, fmt;
@@ -217,10 +255,16 @@ typedef struct {
     uint64_t why[PE_TARGET + 1];                      /* its passes ended, by the reason (PE_*) */
     uint64_t ends[PK_SITES], bytes[PK_SITES];         /* of the copy ends, by site, with the bytes that copy moved */
     uint64_t src[PB_KINDS][PS_N];                     /* its draws' bindings over pending results */
+    uint64_t cls[PI_CLASSES];                         /* its draws' composed input bindings (PERF-17) */
 } PerfCopyTarget;
 typedef struct {
     uint64_t ops[PK_SITES], bytes[PK_SITES], ends[PK_SITES]; /* every copy, the ones that ended a pass, all targets */
     uint64_t src[PB_KINDS][PS_N];                            /* every binding over pending results */
+    uint64_t bind[PBK_KINDS][PS_N];                          /* the same by what is bound (PERF-17) */
+    uint64_t cls[PI_CLASSES];                                /* every composed input binding */
+    uint64_t empty[PK_SITES], empty_bytes[PK_SITES];         /* compositions that copied no byte, the bytes staged */
+    uint64_t extra[PX_N];
+    uint64_t made[PR_N];
     PerfCopyTarget tg[PERF_COPY_TARGETS];
     int site, slot;   /* the copy being recorded and the slot of the pass it ended: -1 none */
     int draw;         /* the slot of the draw being prepared's first target: -1 none */
@@ -239,8 +283,20 @@ void perf_copy_pass_begin(PerfCopies* c, const PerfTarget* t);
 void perf_copy_pass_end(PerfCopies* c, const PerfTarget* t, int why);
 /* a draw on t being prepared, or none (NULL) once it is done */
 void perf_copy_draw(PerfCopies* c, const PerfTarget* t);
-void perf_copy_src(PerfCopies* c, int kind, int outcome);
+void perf_copy_src(PerfCopies* c, int kind, int outcome); /* also counted under g_perf_bind */
+void perf_copy_class(PerfCopies* c, int cls);
+void perf_copy_empty(PerfCopies* c, int site, uint64_t bytes);
+void perf_copy_extra(PerfCopies* c, int which, uint64_t n);
+void perf_copy_made(PerfCopies* c, int producer);
 /* the window's line, as perf_times_line, and the next window started */
 size_t perf_copies_line(PerfCopies* c, uint32_t frames, char* out, size_t size);
+/* PERF-17's line from the same window: written before perf_copies_line, which starts the next one */
+size_t perf_inplace_line(const PerfCopies* c, uint32_t frames, char* out, size_t size);
+
+/* SNX_ARCEUS_PERF_INPLACE=1, 2 or 3, bench only (PERF-17, research 02:42), each level with the ones below: 1 a read
+   binds in place the newest pending result sharing a byte with its range when it covers it, 2 a vertex stream with
+   pending results on its pages is looked up at its exact length, 3 a read skips the reuse barrier when no writable
+   result was handed out since the last one in its submission. 0 unless set. Read once at start */
+extern int g_perf_inplace;
 
 #endif

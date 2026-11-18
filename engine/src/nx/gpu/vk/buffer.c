@@ -945,6 +945,7 @@ static void gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, int site) {
         out_spans(newest[i], gva, len, rmap, overlay_span, &v);
     }
     copy_end(&c);
+    if (g_perf_times && !c.started) vk_perf_empty(site, len); /* the range staged, no byte copied over it */
     cover_free(&cov);
     if (newest != nlocal) free(newest);
     if (rmap != local) free(rmap);
@@ -969,6 +970,47 @@ static int out_still_copyable(const GfxOut* o, u64 gva, u64 len, u64** rmap, u64
     if (c.ok && !*rmap && !(*rmap = range_map(gva, len, local))) c.ok = 0;
     if (c.ok) out_spans(o, gva, len, *rmap, copyable_span, &c);
     return c.ok;
+}
+/* SNX_ARCEUS_PERF_TIMES (PERF-17): whether o shares a byte with [gva, gva + len), as out_meets, without allocating:
+   with no page map (a range of more than 16 pages) a page in common counts. *same: it shares them at its address */
+static int out_meets_noalloc(const GfxOut* o, u64 gva, u64 len, const RangePages* q, const u64* map, int* same) {
+    int hit = 0;
+    *same = gva < o->addr + o->size && o->addr < gva + len;
+    if (*same) return 1;
+    if (!backing_overlap(q, o)) return 0;
+    if (!map) return 1;
+    out_spans(o, gva, len, map, any_span, &hit);
+    return hit;
+}
+/* the range's page map in local when it has 16 pages at most, else NULL */
+static u64* range_map_local(u64 gva, u64 len, u64 local[16]) {
+    return ((gva + len - (gva & ~4095ull) + 4095) >> 12) <= 16 ? range_map(gva, len, local) : NULL;
+}
+/* the class (PI_*) of a composed input range by the pending results sharing a byte with it, exact 0 or the vertex
+   stream's exact length. Reads only: no landing, hold, barrier or allocation */
+static int input_class(u64 gva, u64 len, u64 exact) {
+    PerfResult r[PERF_RESULTS];
+    u32 n = 0;
+    RangePages q, qe;
+    u64 local[16], elocal[16];
+    if (!exact || exact >= len) exact = 0;
+    range_pages(gva, len, &q);
+    const u64* map = range_map_local(gva, len, local);
+    const u64* emap = NULL;
+    if (!map) vk_perf_extra(PX_WIDE);
+    if (exact) {
+        range_pages(gva, exact, &qe);
+        emap = range_map_local(gva, exact, elocal);
+    }
+    for (GfxOut* o = g_out; o; o = o->next) {
+        int same, esame;
+        if (!out_meets_noalloc(o, gva, len, &q, map, &same)) continue;
+        if (n < PERF_RESULTS)
+            r[n] = (PerfResult){o->addr, o->size, (u64)(uintptr_t)o->buf, o->off, same,
+                                exact && out_meets_noalloc(o, gva, exact, &qe, emap, &esame)};
+        n++;
+    }
+    return perf_inplace_class(r, n, gva, len, exact);
 }
 /* kind: the caller, a PB_* for SNX_ARCEUS_PERF_TIMES */
 static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, u64 align, int kind) {
@@ -1022,8 +1064,12 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
         /* one barrier per draw or dispatch that reads an earlier one's result: either may have written it, and
            either may read it next (a dispatch on the graphics queue binds like a draw) */
         static u64 barrier_frame = ~0ull, barrier_work = ~0ull;
-        if (writable) wmark_set(match); /* this draw writes it again */
+        if (writable) {
+            wmark_set(match); /* this draw writes it again */
+            if (g_perf_times) vk_perf_made(PR_INPLACE);
+        }
         if (barrier_frame != vk_submit_number() || barrier_work != g_vk_drawn + g_vk_dispatches) {
+            if (g_perf_times) vk_perf_extra(PX_BARRIER);
             if (g_perf_times) { /* no write of match since the barrier before (a barrier orders all earlier work) */
                 const u32 i = wmark_slot(match);
                 perf_count(&g_perf, PC_SRC_BARRIERS, 1);
@@ -1056,6 +1102,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
         else if ((match->off + (gva - match->addr)) & (align - 1))
             why = PS_ALIGN;
         vk_perf_src(kind, why);
+        if (kind == PB_INPUT) vk_perf_class(input_class(gva, len, g_perf_exact));
     }
     return 2;
 }
@@ -1543,6 +1590,7 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
         if (p->addr == gva && p->size == len) {
             *buf = p->buf;
             *off = p->off;
+            if (g_perf_times) vk_perf_made(PR_REPEAT);
             return 1;
         }
     int pending = gfx_gpu_src(gva, len, buf, off, 1, vk_stage_align(), PB_WRITE);
@@ -1592,6 +1640,12 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
         g_prep = o;
     g_prep_tail = o;
     copy_note(gva, len);
+    if (g_perf_times)
+        vk_perf_made(g_perf_bind == PBK_XFB        ? PR_XFB
+                     : g_perf_bind == PBK_DISPATCH ? PR_DISPATCH
+                     : pending == 2                ? PR_COMPOSED
+                     : owned                       ? PR_OWNED
+                                                   : PR_ORDINARY);
     return 1;
 }
 
@@ -1721,6 +1775,7 @@ static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, V
     else
         g_prep = o;
     g_prep_tail = o;
+    if (g_perf_times) vk_perf_made(PR_ATLAS);
     return 1;
 }
 /* An atlas page starts from guest memory, and the pending results over it are copied in on the GPU in the order they
