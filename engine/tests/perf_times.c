@@ -923,6 +923,8 @@ static void test_same(void) {
     perf_copy_csame(&c, 1, 0, 4096, 1024);
     perf_copy_csame(&c, 0, 1, 1 << 20, 0);
     perf_copy_quiet(&c, 3000000);
+    perf_copy_sample_skip(&c); /* PERF-24: two full checks without a sample */
+    perf_copy_sample_skip(&c);
     for (uint64_t f = 1; f <= 4; f++) {
         perf_copy_wpage(&c, 7, f); /* every frame, twice in each */
         perf_copy_wpage(&c, 7, f);
@@ -946,7 +948,8 @@ static void test_same(void) {
     CHECK(strstr(line, " gpu=0.2/0.2/0.0/0.2/0.0 writers=0.2/0.2/0.2/0.0 real=0.2/0.0/0.0/0.0/0.0 "
                        "real_writers=0.0/0.0/0.0/0.2 "));
     CHECK(strstr(line, " cleared=1.0/0.5/0.8/0.5/0.2 of 1.5 probe=0.5 ms=0.750 ") && strstr(line, " written=0.2/0.2/0.0/0.0 clock="));
-    CHECK(strstr(line, " cpu=0.2/0.2 big=0.2 KB=257.0 KB_written=0.2 pages=19/1/2/1 quiet=0.2 ms=0.750 "));
+    CHECK(strstr(line, " cpu=0.2/0.2 big=0.2 KB=257.0 KB_written=0.2 pages=19/1/2/1 quiet=0.2 ms=0.750 "
+                       "sample_skipped=0.5 "));
     CHECK(strstr(line, " own_same_ms=0.500/1.000/0.000/1.500/0.000/2.000/0.250/0.125/0.750 n=0.2/0.5/0.5/0.5/0.5/0.5/"
                        "0.2/0.5/0.5 "));
     CHECK(!strstr(line, " staged_ms="));
@@ -965,7 +968,8 @@ static void test_same(void) {
     CHECK(c.wpage[0].page == 0 && !c.wpages_lost);
     perf_same_line(&c, &t, &real, 4, 1, line, sizeof line);
     CHECK(!strstr(line, " gpu=") && !strstr(line, " cpu=") && !strstr(line, " pages=") && !strstr(line, "_ms="));
-    CHECK(!strstr(line, " real=") && !strstr(line, " probe=") && !strstr(line, " cleared="));
+    CHECK(!strstr(line, " real=") && !strstr(line, " probe=") && !strstr(line, " cleared=") &&
+          !strstr(line, " sample_skipped="));
     char small[10];
     CHECK(perf_same_line(&c, &t, &real, 1, 1, small, sizeof small) == sizeof small - 1);
     CHECK(perf_same_line(&c, &t, &real, 1, 1, small, 0) == 0);
