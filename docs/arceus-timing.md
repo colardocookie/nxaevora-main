@@ -456,7 +456,10 @@ and the object's first word is unchanged. An earlier form that asked more querie
 Three parts of a cutscene count calls instead of time, and each is called once per rendered frame. At 60 FPS the
 opening cutscene moved on between its texts about 1.7 times too fast and ended in half the Switch's time, and the text
 in its windows printed about twice as fast, while animation, camera and sound kept their speed. Each part has a
-switch of its own, off by default. With the timing layer off, as at 30 FPS and below, none of them installs.
+switch of its own, off by default. None of them installs while the timing layer is off, which it is with
+`SNX_ARCEUS_TIMING_FIXES=0` and, at the default frame-rate selection, at game pace or 30 FPS and below.
+`SNX_ARCEUS_TARGET_FPS=game` keeps the layer on at the runtime's own pace, so there an enabled switch also installs
+at a 30 FPS cap.
 
 Event scripts. The event script job `main+15BA460` runs its Lua script once a call and resumes it through
 `main+F7EC80`. The scripts read no time, so their waits are counts of calls. With `SNX_ARCEUS_EVENT_TICK=1` each job,
