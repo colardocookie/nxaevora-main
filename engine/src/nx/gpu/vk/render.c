@@ -38,6 +38,28 @@ static struct {
 } g_rp;
 u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies;
 
+/* SNX_ARCEUS_PERF_TIMES (PERF-16): the copies, passes and draws by a pass's first target, as gpuprof names it. The
+   table is the GPU thread's: a call on another thread is only counted as elsewhere */
+static PerfTarget perf_target(const Surf* rt, const Surf* zt) {
+    const Surf* s = rt ? rt : zt;
+    return s ? (PerfTarget){s->gva, s->w, s->h, (u32)s->f.vk} : (PerfTarget){0};
+}
+static int perf_here(void) {
+    if (gpu_on_gpu_thread()) return 1;
+    __atomic_fetch_add(&g_perf_cp.elsewhere, 1, __ATOMIC_RELAXED);
+    return 0;
+}
+void vk_perf_copy(int site) {
+    perf_pass_why(PE_COPY);
+    if (g_perf_times && perf_here()) perf_copy_begin(&g_perf_cp, site);
+}
+void vk_perf_copy_bytes(u64 n) {
+    if (g_perf_times && perf_here()) perf_copy_bytes(&g_perf_cp, n);
+}
+void vk_perf_src(int kind, int outcome) {
+    if (g_perf_times && perf_here()) perf_copy_src(&g_perf_cp, kind, outcome);
+}
+
 void vk_render_end(void) {
     const int why = g_perf_pass_why; /* SNX_ARCEUS_PERF_TIMES: the caller's reason, used once */
     g_perf_pass_why = PE_OTHER;
@@ -51,6 +73,10 @@ void vk_render_end(void) {
     if (t0) {
         perf_count(&g_perf, PC_END_OTHER + why, 1);
         perf_time_add(&g_perf, PT_PASS_END, plat_ns() - t0);
+        if (perf_here()) {
+            const PerfTarget t = perf_target(g_rp.n ? g_rp.rt[0] : NULL, g_rp.zt);
+            perf_copy_pass_end(&g_perf_cp, &t, why);
+        }
     }
 }
 
@@ -185,6 +211,10 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     if (perf_t0) {
         perf_count(&g_perf, PC_PASS_BEGINS, 1);
         perf_time_add(&g_perf, PT_PASS_BEGIN, plat_ns() - perf_t0);
+        if (perf_here()) {
+            const PerfTarget t = perf_target(n ? rt[0] : NULL, zt);
+            perf_copy_pass_begin(&g_perf_cp, &t);
+        }
     }
     return 1;
 }
@@ -2535,6 +2565,7 @@ void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 co
                     u32 instances) {
     SNX_ZONE(z, "draw");
     render_draw(ch, indexed, topology, first, count, base_vertex, base_instance, instances);
+    if (g_perf_times && perf_here()) perf_copy_draw(&g_perf_cp, NULL); /* the reads after it are no draw's */
     SNX_ZONE_END(z);
 }
 static void render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex,
@@ -2629,6 +2660,10 @@ retry:
     Surf* zt;
     u32 n;
     read_targets(ch, rt, &zt, &n);
+    if (g_perf_times && perf_here()) { /* a draw set up again (retry) counts again */
+        const PerfTarget t = perf_target(n ? rt[0] : NULL, zt);
+        perf_copy_draw(&g_perf_cp, &t);
+    }
     for (u32 i = 0; i < n; i++)
         if (trace_target(rt[i]))
             LOG_LIMIT(64,

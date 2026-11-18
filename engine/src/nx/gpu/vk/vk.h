@@ -1059,6 +1059,11 @@ VkViewport vk_render_viewport(const u32* r);
 VkViewport vk_render_viewport_at(const u32* r, u32 index);
 int vk_render_depth_clamp(const u32* r);
 VkFrontFace vk_render_front_face(const u32* r);
+/* SNX_ARCEUS_PERF_TIMES (PERF-16, perf_times.h): a buffer copy at site (PK_*) about to end the pass, its bytes, and
+   what gfx_gpu_src did (PS_*) for a binding of kind (PB_*) */
+void vk_perf_copy(int site);
+void vk_perf_copy_bytes(u64 n);
+void vk_perf_src(int kind, int outcome);
 void vk_render_draw_texture(GpuChannel* ch);
 void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                     u32 instances);

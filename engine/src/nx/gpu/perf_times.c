@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 #include "nx/gpu/perf_times.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -297,5 +298,136 @@ size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size) {
                      (unsigned long long)lost);
         if (n > 0) at += (size_t)n;
     }
+    return at < size ? at : size - 1;
+}
+
+PerfCopies g_perf_cp = {.site = -1, .slot = -1, .draw = -1, .last = -1};
+
+/* all but elsewhere, which other threads add to */
+static void copies_clear(PerfCopies* c) {
+    memset(c, 0, offsetof(PerfCopies, elsewhere));
+    c->site = c->slot = c->draw = c->last = -1;
+}
+void perf_copies_reset(PerfCopies* c) {
+    copies_clear(c);
+    __atomic_store_n(&c->elsewhere, 0, __ATOMIC_RELAXED);
+}
+static int target_eq(const PerfTarget* a, const PerfTarget* b) {
+    return a->gva == b->gva && a->w == b->w && a->h == b->h && a->fmt == b->fmt;
+}
+/* t's slot, claimed when it has none: -1 for no target or no slot left */
+static int copy_slot(PerfCopies* c, const PerfTarget* t) {
+    if (!t || !t->gva) return -1;
+    if (c->last >= 0 && target_eq(&c->tg[c->last].t, t)) return c->last;
+    for (int i = 0; i < (int)PERF_COPY_TARGETS; i++) {
+        PerfCopyTarget* g = &c->tg[i];
+        if (g->t.gva && !target_eq(&g->t, t)) continue;
+        if (!g->t.gva) g->t = *t;
+        return c->last = i;
+    }
+    c->lost++;
+    return -1;
+}
+void perf_copy_begin(PerfCopies* c, int site) {
+    c->site = site >= 0 && site < PK_SITES ? site : -1;
+    c->slot = -1;
+    if (c->site >= 0) c->ops[c->site]++;
+}
+void perf_copy_bytes(PerfCopies* c, uint64_t n) {
+    if (c->site < 0) return;
+    c->bytes[c->site] += n;
+    if (c->slot >= 0) c->tg[c->slot].bytes[c->site] += n;
+}
+void perf_copy_pass_begin(PerfCopies* c, const PerfTarget* t) {
+    const int i = copy_slot(c, t);
+    if (i >= 0) c->tg[i].passes++;
+}
+void perf_copy_pass_end(PerfCopies* c, const PerfTarget* t, int why) {
+    if (why < 0 || why > PE_TARGET) why = PE_OTHER;
+    const int i = copy_slot(c, t);
+    if (i >= 0) c->tg[i].why[why]++;
+    if (why != PE_COPY || c->site < 0) return;
+    c->ends[c->site]++;
+    c->slot = i;
+    if (i >= 0) c->tg[i].ends[c->site]++;
+}
+void perf_copy_draw(PerfCopies* c, const PerfTarget* t) {
+    c->draw = t ? copy_slot(c, t) : -1;
+    if (c->draw >= 0) c->tg[c->draw].draws++;
+}
+void perf_copy_src(PerfCopies* c, int kind, int outcome) {
+    if (kind < 0 || kind >= PB_KINDS || outcome < 0 || outcome >= PS_N) return;
+    c->src[kind][outcome]++;
+    if (c->draw >= 0)
+        c->tg[c->draw].src[kind][outcome]++;
+    else
+        c->nodraw++;
+}
+
+static size_t putf(char* out, size_t size, size_t at, const char* fmt, ...) __attribute__((format(printf, 4, 5)));
+static size_t putf(char* out, size_t size, size_t at, const char* fmt, ...) {
+    if (at >= size) return at;
+    va_list ap;
+    va_start(ap, fmt);
+    const int n = vsnprintf(out + at, size - at, fmt, ap);
+    va_end(ap);
+    return n > 0 ? at + (size_t)n : at;
+}
+/* what a target is printed by: its copy pass ends and its reads over results that were not bound in place */
+static uint64_t copy_score(const PerfCopyTarget* g) {
+    uint64_t s = 0;
+    for (int k = 0; k < PK_SITES; k++) s += g->ends[k];
+    for (int b = 0; b < PB_KINDS; b++)
+        for (int o = PS_REUSE + 1; o < PS_N; o++) s += g->src[b][o];
+    return s;
+}
+static size_t put_src(char* out, size_t size, size_t at, const char* name, const uint64_t* v, double f) {
+    uint64_t any = 0;
+    for (int o = 0; o < PS_N; o++) any |= v[o];
+    if (!any) return at;
+    at = putf(out, size, at, " %s=", name);
+    for (int o = 0; o < PS_N; o++) at = putf(out, size, at, o ? "/%.1f" : "%.1f", (double)v[o] / f);
+    return at;
+}
+size_t perf_copies_line(PerfCopies* c, uint32_t frames, char* out, size_t size) {
+    static const char* const sites[PK_SITES] = {"compose", "compose_w", "atlas", "owned_base",
+                                                "patch",   "own",       "owned_read", "dma"};
+    static const char* const kinds[PB_KINDS] = {"in", "rd", "wr"};
+    if (!size) return 0;
+    const double f = frames ? frames : 1;
+    size_t at = putf(out, size, 0, "perf-copies: frames=%u (a frame: ops/pass ends/KB, ends other/gpu_src/copy/"
+                     "image/target, reads reuse/several/part/align/submit/old/changed)", frames ? frames : 1);
+    /* first, so a line cut at its size keeps them */
+    at = putf(out, size, at, " lost=%llu nodraw=%.1f elsewhere=%llu", (unsigned long long)c->lost, c->nodraw / f,
+              (unsigned long long)__atomic_exchange_n(&c->elsewhere, 0, __ATOMIC_RELAXED));
+    for (int k = 0; k < PK_SITES; k++)
+        if (c->ops[k])
+            at = putf(out, size, at, " %s=%.1f/%.1f/%.1f", sites[k], c->ops[k] / f, c->ends[k] / f,
+                      c->bytes[k] / f / 1024);
+    for (int b = 0; b < PB_KINDS; b++) at = put_src(out, size, at, kinds[b], c->src[b], f);
+    int shown[PERF_COPY_PRINT];
+    unsigned nshown = 0;
+    for (; nshown < PERF_COPY_PRINT; nshown++) { /* the highest scores, each once, ties to the lower slot */
+        int best = -1;
+        for (int i = 0; i < (int)PERF_COPY_TARGETS; i++) {
+            int seen = 0;
+            for (unsigned j = 0; j < nshown; j++) seen |= shown[j] == i;
+            if (seen || !c->tg[i].t.gva || !copy_score(&c->tg[i])) continue;
+            if (best < 0 || copy_score(&c->tg[i]) > copy_score(&c->tg[best])) best = i;
+        }
+        if (best < 0) break;
+        shown[nshown] = best;
+    }
+    for (unsigned j = 0; j < nshown; j++) {
+        const PerfCopyTarget* g = &c->tg[shown[j]];
+        at = putf(out, size, at, " [%llx %ux%u f%u] draws=%.1f passes=%.1f ends", (unsigned long long)g->t.gva, g->t.w,
+                  g->t.h, g->t.fmt, g->draws / f, g->passes / f);
+        for (int w = 0; w <= PE_TARGET; w++) at = putf(out, size, at, "%s%.1f", w ? "/" : "=", g->why[w] / f);
+        for (int k = 0; k < PK_SITES; k++)
+            if (g->ends[k])
+                at = putf(out, size, at, " end_%s=%.1f/%.1f", sites[k], g->ends[k] / f, g->bytes[k] / f / 1024);
+        for (int b = 0; b < PB_KINDS; b++) at = put_src(out, size, at, kinds[b], g->src[b], f);
+    }
+    copies_clear(c);
     return at < size ? at : size - 1;
 }

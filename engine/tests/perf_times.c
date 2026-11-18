@@ -5,6 +5,7 @@
 #include "nx/gpu/perf_times.h"
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures;
@@ -315,6 +316,181 @@ static void test_rel_window(void) {
     CHECK(strstr(line, " win_hold=0.000/0.000/2 ") && strstr(line, " win_outputs=8.0 ") && p.wb_total == 4);
 }
 
+/* PERF-16's table: a copy's site, the pass it ended by target with that copy's bytes, the draws' reads */
+static void test_copies(void) {
+    static PerfCopies c;
+    const PerfTarget a = {0x440e90000ull, 1920, 1080, 97}, b = {0x500000000ull, 960, 540, 97};
+    const PerfTarget a_half = {0x440e90000ull, 960, 540, 97}, none = {0, 0, 0, 0};
+    perf_copies_reset(&c);
+    CHECK(c.site == -1 && c.slot == -1 && c.draw == -1);
+    perf_copy_pass_begin(&c, &a);
+    perf_copy_begin(&c, PK_COMPOSE);
+    perf_copy_pass_end(&c, &a, PE_COPY);
+    perf_copy_bytes(&c, 100);
+    perf_copy_bytes(&c, 28);
+    CHECK(c.ops[PK_COMPOSE] == 1 && c.ends[PK_COMPOSE] == 1 && c.bytes[PK_COMPOSE] == 128);
+    CHECK(c.tg[0].passes == 1 && c.tg[0].why[PE_COPY] == 1 && c.tg[0].ends[PK_COMPOSE] == 1);
+    CHECK(c.tg[0].bytes[PK_COMPOSE] == 128);
+    perf_copy_begin(&c, PK_PATCH); /* no pass open: its bytes are the site's, no target's */
+    perf_copy_bytes(&c, 64);
+    CHECK(c.ops[PK_PATCH] == 1 && c.ends[PK_PATCH] == 0 && c.bytes[PK_PATCH] == 64);
+    CHECK(c.tg[0].bytes[PK_PATCH] == 0 && c.tg[0].bytes[PK_COMPOSE] == 128);
+    perf_copy_pass_end(&c, &b, PE_GPU_SRC); /* another reason: the target's, and no copy's end */
+    CHECK(c.tg[1].why[PE_GPU_SRC] == 1 && c.ends[PK_PATCH] == 0 && c.slot == -1);
+    perf_copy_pass_end(&c, &b, 99); /* out of range: other */
+    perf_copy_pass_end(&c, &b, -1);
+    CHECK(c.tg[1].why[PE_OTHER] == 2);
+    perf_copy_begin(&c, PK_SITES); /* out of range: nothing until the next begin */
+    perf_copy_pass_end(&c, &b, PE_COPY);
+    perf_copy_bytes(&c, 5);
+    CHECK(c.site == -1 && c.tg[1].why[PE_COPY] == 1 && c.bytes[PK_PATCH] == 64);
+    uint64_t ends = 0, ops = 0;
+    for (int k = 0; k < PK_SITES; k++) ends += c.ends[k], ops += c.ops[k];
+    CHECK(ends == 1 && ops == 2);
+    perf_copy_begin(&c, PK_DMA); /* a pass with no target: counted for the site alone */
+    perf_copy_pass_end(&c, &none, PE_COPY);
+    perf_copy_bytes(&c, 7);
+    CHECK(c.ends[PK_DMA] == 1 && c.bytes[PK_DMA] == 7 && c.slot == -1);
+    perf_copy_pass_end(&c, &a_half, PE_TARGET); /* the same address at another size is another target */
+    CHECK(c.tg[2].t.w == 960 && c.tg[2].why[PE_TARGET] == 1 && c.tg[0].why[PE_TARGET] == 0);
+    perf_copy_pass_begin(&c, NULL);
+    CHECK(c.lost == 0);
+
+    perf_copy_draw(&c, &b);
+    perf_copy_src(&c, PB_INPUT, PS_REUSE);
+    perf_copy_src(&c, PB_WRITE, PS_SUBMIT);
+    perf_copy_draw(&c, &a);
+    perf_copy_src(&c, PB_READ, PS_SEVERAL);
+    perf_copy_draw(&c, NULL);
+    perf_copy_src(&c, PB_READ, PS_CHANGED); /* no draw: a dispatch's */
+    perf_copy_src(&c, PB_KINDS, PS_REUSE);  /* out of range: ignored */
+    perf_copy_src(&c, PB_READ, PS_N);
+    perf_copy_src(&c, -1, PS_REUSE);
+    perf_copy_src(&c, PB_READ, -1);
+    CHECK(c.tg[1].draws == 1 && c.tg[0].draws == 1);
+    CHECK(c.tg[1].src[PB_INPUT][PS_REUSE] == 1 && c.tg[1].src[PB_WRITE][PS_SUBMIT] == 1);
+    CHECK(c.tg[0].src[PB_READ][PS_SEVERAL] == 1 && c.tg[0].src[PB_READ][PS_CHANGED] == 0);
+    CHECK(c.src[PB_READ][PS_CHANGED] == 1 && c.nodraw == 1 && c.src[PB_INPUT][PS_REUSE] == 1);
+    CHECK(c.src[PB_READ][PS_SEVERAL] == 1 && c.src[PB_WRITE][PS_SUBMIT] == 1);
+}
+
+static void test_copies_full(void) {
+    static PerfCopies c;
+    perf_copies_reset(&c);
+    for (unsigned i = 0; i <= PERF_COPY_TARGETS; i++) {
+        const PerfTarget t = {0x1000ull * (i + 1), 64, 64, 1};
+        perf_copy_pass_begin(&c, &t);
+    }
+    CHECK(c.lost == 1);
+    CHECK(c.tg[PERF_COPY_TARGETS - 1].t.gva == 0x1000ull * PERF_COPY_TARGETS);
+    const PerfTarget first = {0x1000, 64, 64, 1}, extra = {0x1000ull * (PERF_COPY_TARGETS + 1), 64, 64, 1};
+    perf_copy_pass_begin(&c, &first); /* a target already there still counts */
+    CHECK(c.tg[0].passes == 2 && c.lost == 1);
+    perf_copy_begin(&c, PK_OWN); /* a copy ending a pass on a target with no slot: the site's, not a slot's */
+    perf_copy_pass_end(&c, &extra, PE_COPY);
+    perf_copy_bytes(&c, 9);
+    CHECK(c.lost == 2 && c.ends[PK_OWN] == 1 && c.bytes[PK_OWN] == 9 && c.slot == -1);
+    perf_copy_draw(&c, &extra);
+    perf_copy_src(&c, PB_INPUT, PS_PART);
+    CHECK(c.lost == 3 && c.nodraw == 1 && c.src[PB_INPUT][PS_PART] == 1);
+}
+
+static void test_copies_line(void) {
+    static PerfCopies c;
+    char line[2048];
+    perf_copies_reset(&c);
+    /* six targets with scores 1..6 (copy ends, and reads not in place), one with draws only */
+    for (unsigned i = 0; i < 6; i++) {
+        const PerfTarget t = {0x10000ull * (i + 1), 100 + i, 50, 37};
+        perf_copy_draw(&c, &t);
+        for (unsigned k = 0; k <= i; k++) {
+            perf_copy_begin(&c, PK_OWNED_READ);
+            perf_copy_pass_end(&c, &t, PE_COPY);
+            perf_copy_bytes(&c, 2048);
+        }
+        perf_copy_src(&c, PB_INPUT, PS_REUSE); /* in place: not scored */
+    }
+    const PerfTarget quiet = {0x90000, 8, 8, 1};
+    perf_copy_draw(&c, &quiet);
+    perf_copy_src(&c, PB_READ, PS_REUSE);
+    perf_copy_draw(&c, NULL);
+    const PerfTarget top = {0x60000, 105, 50, 37};
+    perf_copy_draw(&c, &top);
+    perf_copy_src(&c, PB_READ, PS_ALIGN); /* the top one gains a read not in place: score 7 */
+    __atomic_fetch_add(&c.elsewhere, 3, __ATOMIC_RELAXED);
+    perf_copies_line(&c, 2, line, sizeof line);
+    CHECK(strstr(line, "perf-copies: frames=2 "));
+    CHECK(strstr(line, " lost=0 nodraw=0.0 elsewhere=3 "));
+    CHECK(strstr(line, " owned_read=10.5/10.5/21.0")); /* 21 copies of 2 KB over 2 frames */
+    CHECK(!strstr(line, " compose="));                  /* a site with no copy is left out */
+    CHECK(strstr(line, " in=3.0/0.0/0.0/0.0/0.0/0.0/0.0 rd=0.5/0.0/0.0/0.5/0.0/0.0/0.0"));
+    CHECK(!strstr(line, " wr="));
+    const char* t6 = strstr(line, " [60000 105x50 f37] draws=1.0 passes=0.0 ends=0.0/0.0/3.0/0.0/0.0");
+    const char* t5 = strstr(line, " [50000 104x50 f37]");
+    const char* t4 = strstr(line, " [40000 103x50 f37]");
+    const char* t3 = strstr(line, " [30000 102x50 f37]");
+    CHECK(t6 && t5 && t4 && t3 && t6 < t5 && t5 < t4 && t4 < t3); /* highest first, four of them */
+    CHECK(!strstr(line, "[20000 ") && !strstr(line, "[10000 ") && !strstr(line, "[90000 "));
+    CHECK(t6 && strstr(t6, " end_owned_read=3.0/6.0 in=0.5/0.0/0.0/0.0/0.0/0.0/0.0 rd=0.0/0.0/0.0/0.5/"));
+    CHECK(c.site == -1 && c.draw == -1 && c.last == -1 && c.tg[0].t.gva == 0 && c.ops[PK_OWNED_READ] == 0);
+    perf_copies_line(&c, 2, line, sizeof line); /* the next window starts empty */
+    CHECK(strstr(line, " lost=0 nodraw=0.0 elsewhere=0"));
+    CHECK(!strstr(line, "owned_read") && !strstr(line, " in=") && !strstr(line, "["));
+    /* two tied targets in slot order, one with reads in place only and one with nothing: not printed */
+    const PerfTarget p1 = {0xa0000, 4, 4, 1}, p2 = {0xb0000, 4, 4, 1}, p3 = {0xc0000, 4, 4, 1}, p4 = {0xd000, 4, 4, 1};
+    perf_copy_draw(&c, &p1);
+    perf_copy_src(&c, PB_WRITE, PS_OLD);
+    perf_copy_draw(&c, &p2);
+    perf_copy_src(&c, PB_WRITE, PS_PART);
+    perf_copy_draw(&c, &p3);
+    perf_copy_src(&c, PB_WRITE, PS_REUSE);
+    perf_copy_pass_begin(&c, &p4);
+    perf_copies_line(&c, 0, line, sizeof line); /* no frames: counted as one */
+    CHECK(strstr(line, "frames=1 "));
+    CHECK(strstr(line, " wr=1.0/0.0/1.0/0.0/0.0/1.0/0.0"));
+    const char* q1 = strstr(line, " [a0000 "), *q2 = strstr(line, " [b0000 ");
+    CHECK(q1 && q2 && q1 < q2 && !strstr(line, "[c0000 ") && !strstr(line, "[d000 "));
+    char small[24];
+    memset(small, 'x', sizeof small);
+    const size_t n = perf_copies_line(&c, 2, small, sizeof small); /* cut, and terminated */
+    CHECK(n == sizeof small - 1 && small[n] == 0);
+    CHECK(perf_copies_line(&c, 2, small, 0) == 0);
+}
+
+/* other threads add to elsewhere while the GPU thread writes the line (run under -fsanitize=thread) */
+static void* copies_elsewhere(void* arg) {
+    PerfCopies* c = arg;
+    for (unsigned i = 0; i < 100000; i++) __atomic_fetch_add(&c->elsewhere, 1, __ATOMIC_RELAXED);
+    return NULL;
+}
+static void test_copies_threads(void) {
+    static PerfCopies c;
+    char line[2048];
+    unsigned long long total = 0;
+    perf_copies_reset(&c);
+    pthread_t t;
+    if (pthread_create(&t, NULL, copies_elsewhere, &c)) {
+        CHECK(0);
+        return;
+    }
+    const PerfTarget a = {0x440e90000ull, 1920, 1080, 97};
+    for (unsigned i = 0; i < 2000; i++) {
+        perf_copy_begin(&c, PK_COMPOSE);
+        perf_copy_pass_end(&c, &a, PE_COPY);
+        perf_copy_bytes(&c, 1);
+        if (i % 100 == 99) {
+            perf_copies_line(&c, 1, line, sizeof line);
+            const char* e = strstr(line, " elsewhere=");
+            if (e) total += strtoull(e + 11, NULL, 10);
+        }
+    }
+    CHECK(!pthread_join(t, NULL));
+    perf_copies_line(&c, 1, line, sizeof line);
+    const char* e = strstr(line, " elsewhere=");
+    if (e) total += strtoull(e + 11, NULL, 10);
+    CHECK(total == 100000); /* none lost to a window's reset */
+}
+
 int main(void) {
     test_rel_window();
     test_subs();
@@ -328,6 +504,11 @@ int main(void) {
     test_line();
     test_named_full();
     test_small_buffers();
+    test_copies();
+    test_copies_full();
+    test_copies_line();
+    test_copies_threads();
+    CHECK(g_perf_cp.site == -1 && g_perf_cp.slot == -1 && g_perf_cp.draw == -1 && g_perf_cp.last == -1);
     if (failures) return 1;
     printf("perf_times: ok\n");
     return 0;

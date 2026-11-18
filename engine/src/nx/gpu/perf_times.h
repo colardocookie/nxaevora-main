@@ -178,4 +178,69 @@ void perf_rel_interval(PerfTimes* p, int state, uint64_t start, uint64_t end, ui
 /* Writes the window's line into out and starts the next window. frames: the presents it covers. */
 size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size);
 
+/* PERF-16 (research 23:05): the buffer copies by call site, the passes they ended by the pass's first target, and
+   what the draws on a target did with an earlier draw's result. The GPU thread's: the hooks (vk/render.c) count
+   only there, the rest as elsewhere, and the line is written there too */
+enum {
+    PK_COMPOSE,    /* buffer.c gfx_overlay for a read (gfx_composed): pending results copied over guest bytes */
+    PK_COMPOSE_W,  /* gfx_overlay for a writable binding */
+    PK_ATLAS,      /* atlas_fill: an aliased draw's pages */
+    PK_OWNED_BASE, /* writable_owned: an owned input's baseline */
+    PK_PATCH,      /* patch_apply: the dirty runs of an own buffer */
+    PK_OWN,        /* make_own_: a buffer of its own filled */
+    PK_OWNED_READ, /* buf_get_owned: a range over bytes the GPU holds */
+    PK_DMA,        /* dma.c: a copy engine operation */
+    PK_SITES
+};
+/* a binding over pending results (gfx_gpu_src): read in place, composed by a copy (why), or landed first (why) */
+enum {
+    PS_REUSE,   /* the result's buffer bound itself */
+    PS_SEVERAL, /* composed: more than one result over the range */
+    PS_PART,    /* composed: one result, covering the range only in part */
+    PS_ALIGN,   /* composed: one result, at an offset the binding does not accept */
+    PS_SUBMIT,  /* composed: a writable binding of a result from an earlier submission */
+    PS_OLD,     /* landed: a result older than the frame before, or of the frame before with its bytes changed */
+    PS_CHANGED, /* landed: the guest wrote the result's original bytes since */
+    PS_N
+};
+enum { PB_INPUT, PB_READ, PB_WRITE, PB_KINDS }; /* buf_get, vk_buf_copy, vk_buf_copy_writable */
+typedef struct {
+    uint64_t gva;
+    uint32_t w, h, fmt;
+} PerfTarget;
+#define PERF_COPY_TARGETS 64u
+#define PERF_COPY_PRINT 4u /* the targets printed, most copy pass ends and composed or landed reads first */
+#define PERF_COPIES_LINE 2000u /* the line's size at most: the log keeps 2047 bytes of one */
+typedef struct {
+    PerfTarget t; /* gva 0: free */
+    uint64_t draws, passes;
+    uint64_t why[PE_TARGET + 1];                      /* its passes ended, by the reason (PE_*) */
+    uint64_t ends[PK_SITES], bytes[PK_SITES];         /* of the copy ends, by site, with the bytes that copy moved */
+    uint64_t src[PB_KINDS][PS_N];                     /* its draws' bindings over pending results */
+} PerfCopyTarget;
+typedef struct {
+    uint64_t ops[PK_SITES], bytes[PK_SITES], ends[PK_SITES]; /* every copy, the ones that ended a pass, all targets */
+    uint64_t src[PB_KINDS][PS_N];                            /* every binding over pending results */
+    PerfCopyTarget tg[PERF_COPY_TARGETS];
+    int site, slot;   /* the copy being recorded and the slot of the pass it ended: -1 none */
+    int draw;         /* the slot of the draw being prepared's first target: -1 none */
+    int last;         /* the slot found last, tried first */
+    uint64_t lost;    /* events for a target with no slot left */
+    uint64_t nodraw;  /* bindings over pending results outside a draw (dispatches) */
+    uint64_t elsewhere; /* hook calls off the GPU thread, not counted: atomic, and the last field */
+} PerfCopies;
+extern PerfCopies g_perf_cp;
+void perf_copies_reset(PerfCopies* c); /* all of it, before any hook runs */
+/* a copy at site begins: its pass end and bytes go to site until the next one */
+void perf_copy_begin(PerfCopies* c, int site);
+void perf_copy_bytes(PerfCopies* c, uint64_t n);
+/* a pass on t (gva 0: no target) begun, or ended for why (a PE_*) */
+void perf_copy_pass_begin(PerfCopies* c, const PerfTarget* t);
+void perf_copy_pass_end(PerfCopies* c, const PerfTarget* t, int why);
+/* a draw on t being prepared, or none (NULL) once it is done */
+void perf_copy_draw(PerfCopies* c, const PerfTarget* t);
+void perf_copy_src(PerfCopies* c, int kind, int outcome);
+/* the window's line, as perf_times_line, and the next window started */
+size_t perf_copies_line(PerfCopies* c, uint32_t frames, char* out, size_t size);
+
 #endif
