@@ -903,6 +903,13 @@ int snx_main(int argc, char** argv) {
             LOG("perf-compute-submit: EXPERIMENT on, a deferred dispatch is not submitted at once, its results go "
                 "with the next submission\n");
         }
+        const char* inplace = getenv("SNX_ARCEUS_PERF_INPLACE"); /* bench only (gpu/perf_times.h, PERF-17) */
+        if (inplace && inplace[0] >= '1' && inplace[0] <= '1' && !inplace[1]) {
+            g_perf_inplace = inplace[0] - '0';
+            LOG("perf-inplace: EXPERIMENT level %d: a read binds the newest result sharing a byte in place\n",
+                g_perf_inplace);
+        } else if (inplace && *inplace && strcmp(inplace, "0"))
+            LOG("perf-inplace: '%s' is not 0 or 1, off\n", inplace);
         const char* submit_us = getenv("SNX_ARCEUS_PERF_SUBMIT_US"); /* bench only: a submission's recording time */
         if (submit_us) {
             char* end = NULL;

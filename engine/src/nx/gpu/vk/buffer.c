@@ -1025,6 +1025,15 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     for (GfxOut* o = g_out; o; o = o->next)
         if (out_meets_range(o, gva, len, &q)) newest = o;
     if (!newest) return 0;
+    /* SNX_ARCEUS_PERF_INPLACE >= 1, a read (research 02:42): the newest result sharing a BYTE with the range, when it
+       covers it at this address. The newer ones on its pages hold none of its bytes, and the checks below run on it
+       as on the newest one. Otherwise the code below runs on the newest by page, as without the switch */
+    if (g_perf_inplace >= 1 && !writable && !(gva >= newest->addr && gva + len <= newest->addr + newest->size)) {
+        GfxOut* nb = NULL;
+        for (GfxOut* o = g_out; o; o = o->next)
+            if (out_meets(o, gva, len, &q, &rmap, local)) nb = o; /* conservative by page without a map */
+        if (nb && gva >= nb->addr && gva + len <= nb->addr + nb->size) newest = nb;
+    }
     /* The newest result over the range was composed over the older ones when it was made (gfx_overlay, through any
        address), and its draw ran after theirs: when it covers the whole range at this address, its buffer holds every
        byte as all of them left it, and the older ones need no check. Requiring a single result made every binding
