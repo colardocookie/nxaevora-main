@@ -628,6 +628,7 @@ void perf_copy_gsame(PerfCopies* c, int real, int q, unsigned kinds) {
     if (q <= PSQ_SPAN_UNKNOWN)
         for (int k = 0; k < PSK_N; k++) c->gkinds[real][k] += kinds >> k & 1;
 }
+void perf_copy_cleared(PerfCopies* c, unsigned tests) { c->cleared[tests & 7]++; }
 void perf_copy_probe(PerfCopies* c, uint64_t ns) {
     c->probe_ns += ns;
     c->probe_n++;
@@ -897,7 +898,8 @@ size_t perf_same_line(const PerfCopies* c, PerfStamps* s, PerfStamps* real, uint
     size_t at = putf(out, size, 0,
                      "perf-same: frames=%u (a frame: own_same after a GPU-side write by the record as stamped and "
                      "as written out/span/span_unknown/in/unknown, of the first three the writers on their pages "
-                     "result/gpu/publish/landed; after a CPU write tracked/untracked, at or past the patch size, KB, "
+                     "result/gpu/publish/landed; cleared by bytes as stamped/span as stamped/bytes as written/the "
+                     "first and third/the second and third of all; after a CPU write tracked/untracked, at or past the patch size, KB, "
                      "KB on pages written; pages written under them in the window: distinct, every frame, half the "
                      "frames or more, not kept; written checks finding nothing, ms; by outcome ms and calls by step "
                      "patch/written/why/owned/bytes/hash/sample/use/other; this probe's asks after them, ms; each "
@@ -928,6 +930,18 @@ size_t perf_same_line(const PerfCopies* c, PerfStamps* s, PerfStamps* real, uint
         for (int k = 0; k < POS_N; k++) at = putf(out, size, at, k ? "/%.3f" : "%.3f", c->step_ns[w][k] / f / 1e6);
         at = put_counts(out, size, at, "n", c->step_n[w], POS_N, f);
     }
+    uint64_t cl[5] = {0}, cl_n = 0; /* by bytes, by span, as written, bytes and written, span and written */
+    for (unsigned b = 0; b < 8; b++) {
+        cl_n += c->cleared[b];
+        cl[0] += b & PCL_BYTES ? c->cleared[b] : 0;
+        cl[1] += b & PCL_SPAN ? c->cleared[b] : 0;
+        cl[2] += b & PCL_REAL ? c->cleared[b] : 0;
+        cl[3] += (b & (PCL_BYTES | PCL_REAL)) == (PCL_BYTES | PCL_REAL) ? c->cleared[b] : 0;
+        cl[4] += (b & (PCL_SPAN | PCL_REAL)) == (PCL_SPAN | PCL_REAL) ? c->cleared[b] : 0;
+    }
+    if (cl_n)
+        at = putf(out, size, at, " cleared=%.1f/%.1f/%.1f/%.1f/%.1f of %.1f", cl[0] / f, cl[1] / f, cl[2] / f,
+                  cl[3] / f, cl[4] / f, cl_n / f);
     if (c->probe_n) at = putf(out, size, at, " probe=%.1f ms=%.3f", c->probe_n / f, c->probe_ns / f / 1e6);
     at = put_stamps(out, size, at, "stamps", s, f);
     at = put_stamps(out, size, at, "written", real, f);

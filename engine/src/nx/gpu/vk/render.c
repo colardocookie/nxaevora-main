@@ -83,6 +83,9 @@ void vk_perf_steps(int what, const u64* ns, const u8* ran) {
 void vk_perf_gsame(int real, int q, unsigned kinds) {
     if (g_perf_times && perf_here()) perf_copy_gsame(&g_perf_cp, real, q, kinds);
 }
+void vk_perf_cleared(unsigned tests) {
+    if (g_perf_times && perf_here()) perf_copy_cleared(&g_perf_cp, tests);
+}
 void vk_perf_probe(u64 ns) {
     if (g_perf_times && perf_here()) perf_copy_probe(&g_perf_cp, ns);
 }

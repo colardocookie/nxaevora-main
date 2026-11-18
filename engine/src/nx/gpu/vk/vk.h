@@ -1080,6 +1080,7 @@ void vk_perf_own_drop(u64 uses);
 void vk_perf_steps(int what, const u64* ns, const u8* ran);
 void vk_perf_gsame(int real, int q, unsigned kinds);
 void vk_perf_probe(u64 ns);
+void vk_perf_cleared(unsigned tests);
 void vk_perf_csame(int tracked, int big, u64 bytes, u64 written);
 void vk_perf_quiet(u64 ns);
 void vk_perf_wpage(u64 page);

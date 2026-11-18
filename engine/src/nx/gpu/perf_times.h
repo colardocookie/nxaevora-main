@@ -343,6 +343,9 @@ enum { POS_PATCH, POS_WRITTEN, POS_WHY, POS_OWNED, POS_BYTES, POS_HASH, POS_SAMP
 /* an own buffer found the same after a GPU-side write, by the stamps: none in range outside the span ever stamped
    on its pages, none in range inside it, none with the span unknown, one in range, not known */
 enum { PSQ_OUT, PSQ_SPAN, PSQ_SPAN_UNKNOWN, PSQ_IN, PSQ_UNKNOWN, PSQ_N };
+/* which tests clear an own_same after a GPU-side write (research 20:55): no byte of its range in a binding as stamped,
+   its range also outside its pages' spans as stamped, no byte of it in a changed run as written */
+enum { PCL_BYTES = 1, PCL_SPAN = 2, PCL_REAL = 4 };
 #define PERF_WPAGES 4096u /* the host pages a window finds written under own buffers found the same */
 typedef struct {
     uint64_t page; /* + 1, 0 free */
@@ -393,6 +396,7 @@ typedef struct {
                                                    written), and of those with none in range the writers on their
                                                    pages */
     uint64_t probe_ns, probe_n; /* this probe's own asks and page walks after a slow path's end */
+    uint64_t cleared[8];        /* own_same after a GPU-side write by which tests clear it (PCL_* bits) */
     uint64_t csame[2], cbig, cbytes, cbytes_written; /* own_same after a CPU write: tracked or not, at or past the
                                                         patch size, bytes, bytes on the pages written */
     uint64_t quiet, quiet_ns; /* written checks on own buffers that found nothing */
@@ -443,6 +447,7 @@ size_t perf_own_line(const PerfCopies* c, uint32_t frames, char* out, size_t siz
 void perf_copy_steps(PerfCopies* c, int what, const uint64_t* ns, const uint8_t* ran);
 void perf_copy_gsame(PerfCopies* c, int real, int q, unsigned kinds); /* real: g_perf_real's answer */
 void perf_copy_probe(PerfCopies* c, uint64_t ns);
+void perf_copy_cleared(PerfCopies* c, unsigned tests); /* PCL_* bits */
 void perf_copy_csame(PerfCopies* c, int tracked, int big, uint64_t bytes, uint64_t written);
 void perf_copy_quiet(PerfCopies* c, uint64_t ns);
 void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame);

@@ -2554,11 +2554,13 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         for (int k = POS_OWNED; k < POS_OTHER; k++) in += st[k];
         st[POS_OTHER] = end - ot0 - in, ran[POS_OTHER] = 1;
         vk_perf_steps(what, st, ran);
-        if (what == PO_OWN_SAME && why == ST_DIRTY) /* the GPU-side write to the byte, as stamped and as written */
+        if (what == PO_OWN_SAME && why == ST_DIRTY) { /* the GPU-side write to the byte, as stamped and as written */
+            unsigned cleared = 0; /* PCL_* */
             for (int real = 0; real < 2; real++) {
                 int outside;
                 unsigned kinds;
                 const int q = gpu_mem_written_ask(gw0, real, gva, len, &outside, &kinds);
+                if (q == PSA_NONE) cleared |= real ? PCL_REAL : PCL_BYTES | (outside > 0 ? PCL_SPAN : 0);
                 vk_perf_gsame(real,
                               q == PSA_IN        ? PSQ_IN
                               : q == PSA_UNKNOWN ? PSQ_UNKNOWN
@@ -2567,6 +2569,8 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
                                                  : PSQ_SPAN_UNKNOWN,
                               kinds);
             }
+            vk_perf_cleared(cleared);
+        }
         if (what == PO_OWN_SAME && why == ST_WRITTEN)
             vk_perf_csame(seen_w == 1, len >= PATCH_MIN, len, seen_w == 1 ? written_pages_note(gva, len, ws0) : 0);
         vk_perf_probe(plat_ns() - end); /* these asks and walks: outside every step above */
