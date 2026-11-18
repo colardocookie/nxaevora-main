@@ -241,6 +241,7 @@ enum {
     PX_SKIPPED,      /* and skipped (level 3) */
     PX_WIDE,         /* classified ranges of more than 16 pages: a result on another address meets them by page */
     PX_OVERLAY_SKIPPED, /* writable compositions whose gfx_overlay was skipped: no result shares a byte (level 4) */
+    PX_OVERLAY_ENTERED, /* and those that entered it */
     PX_QUERY_REPORTS, /* samples-passed reports queued (vk_query_report, PERF-19) */
     PX_QUERY_KEPT,    /* of those, left the pass open (SNX_ARCEUS_PERF_QUERY=1) */
     PX_QUERY_GUARD,   /* vk_query_room's copies: half the query ring not copied (a report, reset, enable, draw) */

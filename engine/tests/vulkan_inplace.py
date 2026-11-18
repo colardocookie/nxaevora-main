@@ -358,6 +358,7 @@ static int overlay_entered(int level, int bytes, int map_fail) {
     assert(vk_buf_copy_writable(0x10000, 0x100, &b, &off) == 1 && g_prep && g_prep->composed);
     const int skipped = (int)g_perf_cp.extra[PX_OVERLAY_SKIPPED];
     assert(skipped == !composes && g_perf_cp.empty[PK_COMPOSE_W] == (u64)skipped);
+    assert(g_perf_cp.extra[PX_OVERLAY_ENTERED] == (u64)composes);
     g_perf_times = 0;
     return composes;
 }

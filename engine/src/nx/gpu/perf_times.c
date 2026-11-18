@@ -532,9 +532,11 @@ size_t perf_inplace_line(const PerfCopies* c, uint32_t frames, char* out, size_t
                      "several/part, bindings reuse/several/part/align/submit/old/changed, empty ops/KB, made "
                      "ordinary/owned/composed/xfb/dispatch/atlas/inplace/repeat)",
                      frames ? frames : 1, g_perf_inplace);
-    at = putf(out, size, at, " last_pending=%.1f exact=%.1f barriers=%.1f skipped=%.1f wide=%.1f overlay_skipped=%.1f",
+    at = putf(out, size, at, " last_pending=%.1f exact=%.1f barriers=%.1f skipped=%.1f wide=%.1f",
               c->extra[PX_LAST_PENDING] / f, c->extra[PX_EXACT] / f, c->extra[PX_BARRIER] / f,
-              c->extra[PX_SKIPPED] / f, c->extra[PX_WIDE] / f, c->extra[PX_OVERLAY_SKIPPED] / f);
+              c->extra[PX_SKIPPED] / f, c->extra[PX_WIDE] / f);
+    at = putf(out, size, at, " overlay_w_entered=%.1f skipped=%.1f", c->extra[PX_OVERLAY_ENTERED] / f,
+              c->extra[PX_OVERLAY_SKIPPED] / f);
     at = putf(out, size, at, " query_reports=%.1f kept=%.1f guard=%.1f atlas_total=%llu",
               c->extra[PX_QUERY_REPORTS] / f, c->extra[PX_QUERY_KEPT] / f, c->extra[PX_QUERY_GUARD] / f,
               (unsigned long long)c->atlas_total);

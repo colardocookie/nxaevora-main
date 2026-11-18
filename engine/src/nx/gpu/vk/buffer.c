@@ -1701,9 +1701,10 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
     } else
         memcpy(o->ptr, o->org, len);
     wr_step(&wr_t, st, PWS_COPY);
-    if (pending == 2 && (g_perf_inplace < 4 || out_any_meets(gva, len)))
+    if (pending == 2 && (g_perf_inplace < 4 || out_any_meets(gva, len))) {
+        if (g_perf_times) vk_perf_extra(PX_OVERLAY_ENTERED);
         copied = gfx_overlay(gva, len, *buf, *off, PK_COMPOSE_W);
-    else if (pending == 2 && g_perf_times) { /* counted as gfx_overlay would have: a composition with no byte */
+    } else if (pending == 2 && g_perf_times) { /* counted as gfx_overlay would have: a composition with no byte */
         vk_perf_empty(PK_COMPOSE_W, len);
         vk_perf_extra(PX_OVERLAY_SKIPPED);
     }
