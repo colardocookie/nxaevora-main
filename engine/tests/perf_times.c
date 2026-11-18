@@ -599,7 +599,7 @@ static void test_inplace_counts(void) {
     perf_inplace_line(&c, 2, line, sizeof line);
     g_perf_inplace = 0;
     CHECK(strstr(line, "perf-inplace: frames=2 level=2 "));
-    CHECK(strstr(line, " last_pending=0.0 exact=0.0 barriers=0.0 skipped=1.5 wide=0.0"
+    CHECK(strstr(line, " last_pending=0.0 exact=0.0 barriers=0.0 skipped=1.5 wide=0.0 overlay_skipped=0.0"
                        " query_reports=2.0 kept=1.5 guard=0.5 atlas_total=1 "));
     CHECK(strstr(line, " made=0.0/0.0/0.0/0.0/0.0/0.5/0.0/0.0"));
     CHECK(strstr(line, " cls=0.5/1.0/0.0/0.5/0.0/0.0"));

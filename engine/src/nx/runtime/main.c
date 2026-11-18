@@ -908,13 +908,14 @@ int snx_main(int argc, char** argv) {
                 "with the next submission\n");
         }
         const char* inplace = getenv("SNX_ARCEUS_PERF_INPLACE"); /* bench only (gpu/perf_times.h, PERF-17) */
-        if (inplace && inplace[0] >= '1' && inplace[0] <= '3' && !inplace[1]) {
+        if (inplace && inplace[0] >= '1' && inplace[0] <= '4' && !inplace[1]) {
             g_perf_inplace = inplace[0] - '0';
-            LOG("perf-inplace: EXPERIMENT level %d: a read binds the newest result sharing a byte in place%s%s\n",
+            LOG("perf-inplace: EXPERIMENT level %d: a read binds the newest result sharing a byte in place%s%s%s\n",
                 g_perf_inplace, g_perf_inplace >= 2 ? ", a vertex stream over pending results at its exact length" : "",
-                g_perf_inplace >= 3 ? ", a read skips the reuse barrier with no writable result handed out since" : "");
+                g_perf_inplace >= 3 ? ", a read skips the reuse barrier with no writable result handed out since" : "",
+                g_perf_inplace >= 4 ? ", a writable composition skips gfx_overlay with no byte to copy" : "");
         } else if (inplace && *inplace && strcmp(inplace, "0"))
-            LOG("perf-inplace: '%s' is not 0 to 3, off\n", inplace);
+            LOG("perf-inplace: '%s' is not 0 to 4, off\n", inplace);
         const char* query = getenv("SNX_ARCEUS_PERF_QUERY"); /* bench only (gpu/perf_times.h, PERF-19) */
         g_perf_query = query && !strcmp(query, "1");
         if (g_perf_query)

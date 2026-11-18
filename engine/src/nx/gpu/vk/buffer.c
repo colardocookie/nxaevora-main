@@ -1627,6 +1627,18 @@ static int writable_owned(GfxOut* o, u64 gva, u32 len, VkBuffer buf, u64 off) {
     return 1;
 }
 
+/* SNX_ARCEUS_PERF_INPLACE=4 (PERF-21, research 06:40): whether a pending result shares a byte with [gva, gva + len),
+   as out_meets tests it (a page in common counts without a page map). gfx_overlay copies only such bytes, so with
+   none it records nothing and its call can be skipped */
+static int out_any_meets(u64 gva, u64 len) {
+    RangePages q;
+    u64 local[16], *rmap = NULL;
+    int any = 0;
+    range_pages(gva, len, &q);
+    for (GfxOut* o = g_out; o && !any; o = o->next) any = out_meets(o, gva, len, &q, &rmap, local);
+    if (rmap && rmap != local) free(rmap);
+    return any;
+}
 /* SNX_ARCEUS_PERF_TIMES (PERF-20): the time since *t added to step k of st, the clock read again (t 0: off) */
 static void wr_step(u64* t, u64* st, int k) {
     if (!*t) return;
@@ -1689,7 +1701,12 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
     } else
         memcpy(o->ptr, o->org, len);
     wr_step(&wr_t, st, PWS_COPY);
-    if (pending == 2) copied = gfx_overlay(gva, len, *buf, *off, PK_COMPOSE_W);
+    if (pending == 2 && (g_perf_inplace < 4 || out_any_meets(gva, len)))
+        copied = gfx_overlay(gva, len, *buf, *off, PK_COMPOSE_W);
+    else if (pending == 2 && g_perf_times) { /* counted as gfx_overlay would have: a composition with no byte */
+        vk_perf_empty(PK_COMPOSE_W, len);
+        vk_perf_extra(PX_OVERLAY_SKIPPED);
+    }
     wr_step(&wr_t, st, PWS_OVERLAY);
     o->addr = gva;
     o->size = len;

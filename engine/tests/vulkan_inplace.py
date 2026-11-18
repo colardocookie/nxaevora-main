@@ -186,6 +186,7 @@ static void vk_perf_src(int kind, int outcome) { perf_copy_src(&g_perf_cp, kind,
 static void vk_perf_class(int cls) { perf_copy_class(&g_perf_cp, cls); }
 static void vk_perf_extra(int which) { perf_copy_extra(&g_perf_cp, which, 1); }
 static void vk_perf_made(int producer) { perf_copy_made(&g_perf_cp, producer); }
+static void vk_perf_empty(int site, u64 bytes) { perf_copy_empty(&g_perf_cp, site, bytes); }
 static void vk_perf_writable(int path, const u64* ns, u64 bytes) { perf_copy_writable(&g_perf_cp, path, ns, bytes); }
 '''
 
@@ -344,7 +345,31 @@ static void test_level1(void) {
     (void)q;
     assert(read_at(1, 0x100, &b) == 2);
 }
+/* level 4 (PERF-21): a composed writable binding enters gfx_overlay only when a result shares a byte with it */
+static int overlay_entered(int level, int bytes, int map_fail) {
+    VkBuffer b;
+    u64 off;
+    reset(level);
+    g_perf_times = 1;
+    GfxOut* n = result(0x10400, 0x400, 6); /* on the range's page, no byte in common at its address */
+    n->alias = 1, n->alias_bytes = bytes; /* through another address: a byte in common when asked */
+    g_map_fail = map_fail;
+    composes = 0;
+    assert(vk_buf_copy_writable(0x10000, 0x100, &b, &off) == 1 && g_prep && g_prep->composed);
+    const int skipped = (int)g_perf_cp.extra[PX_OVERLAY_SKIPPED];
+    assert(skipped == !composes && g_perf_cp.empty[PK_COMPOSE_W] == (u64)skipped);
+    g_perf_times = 0;
+    return composes;
+}
+static void test_level4(void) {
+    assert(overlay_entered(3, 0, 0) == 1); /* level 3: always entered */
+    assert(overlay_entered(4, 0, 0) == 0); /* page neighbours only: skipped */
+    assert(overlay_entered(4, 1, 0) == 1); /* a byte in common: entered */
+    assert(overlay_entered(4, 0, 1) == 1); /* no page map: a page in common counts, entered */
+    assert(overlay_entered(3, 1, 0) == 1);
+}
 int main(void) {
+    test_level4();
     test_level3();
     test_level0();
     test_level1();
@@ -359,7 +384,7 @@ def main():
     buffer = (SRC / "nx/gpu/vk/buffer.c").read_text()
     code = HEAD
     code += between(buffer, "static u64 g_out_write_work;", "void vk_buf_writable_commit(void) {")
-    for sig in ["void vk_buf_writable_abort(void) {", "void vk_buf_writable_commit(void) {", "static void src_walked(", "static void wr_step(",
+    for sig in ["void vk_buf_writable_abort(void) {", "void vk_buf_writable_commit(void) {", "static void src_walked(", "static void wr_step(", "static int out_any_meets(",
                 "static int gfx_gpu_src(u64 gva", "int vk_buf_copy_writable(u64 gva",
                 "static int draw_output_page(", "int vk_buf_draw_prepare(VkDrawStorage* draw) {"]:
         code += function(buffer, sig)

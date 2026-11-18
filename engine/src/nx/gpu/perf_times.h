@@ -240,6 +240,7 @@ enum {
     PX_BARRIER,      /* the reuse path's barriers recorded */
     PX_SKIPPED,      /* and skipped (level 3) */
     PX_WIDE,         /* classified ranges of more than 16 pages: a result on another address meets them by page */
+    PX_OVERLAY_SKIPPED, /* writable compositions whose gfx_overlay was skipped: no result shares a byte (level 4) */
     PX_QUERY_REPORTS, /* samples-passed reports queued (vk_query_report, PERF-19) */
     PX_QUERY_KEPT,    /* of those, left the pass open (SNX_ARCEUS_PERF_QUERY=1) */
     PX_QUERY_GUARD,   /* vk_query_room's copies: half the query ring not copied (a report, reset, enable, draw) */
@@ -337,7 +338,8 @@ size_t perf_writable_line(const PerfCopies* c, uint32_t frames, char* out, size_
 /* SNX_ARCEUS_PERF_INPLACE=1, 2 or 3, bench only (PERF-17, research 02:42), each level with the ones below: 1 a read
    binds in place the newest pending result sharing a byte with its range when it covers it, 2 a vertex stream with
    pending results on its pages is looked up at its exact length, 3 a read skips the reuse barrier when no writable
-   result was handed out since the last one in its submission. 0 unless set. Read once at start */
+   result was handed out since the last one in its submission, 4 a writable composition skips gfx_overlay when no
+   pending result shares a byte with its range (PERF-21). 0 unless set. Read once at start */
 extern int g_perf_inplace;
 /* SNX_ARCEUS_PERF_QUERY=1, bench only (PERF-19, research 05:05): a samples-passed report neither ends the pass nor
    copies the counts, which the submission it waits for copies at its end (vk/query.c vk_query_room). 0 unless set */
