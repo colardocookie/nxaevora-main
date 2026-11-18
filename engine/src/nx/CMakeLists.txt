@@ -118,7 +118,7 @@ target_compile_definitions(snx_vk PRIVATE IMGUI_USE_WCHAR32)
 # built twice: for word aligned rows, and for the rest
 # (gpu/video/vic_compose.glsl)
 include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
-# vk_hash (gpu/vk/cmd.c); the device setup the 3DS and the Vita share (src/common/gpu/vk)
+# vk_hash (gpu/vk/cmd.c); the device setup the Vulkan frontend shares (src/common/gpu/vk)
 target_link_libraries(snx_vk PUBLIC snx_xxhash snx_vk_common)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc.comp NAME astc_spv HEADER nx/gpu/texture/astc_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/blocklinear.comp NAME blocklinear_spv HEADER nx/gpu/texture/blocklinear_spv.h)

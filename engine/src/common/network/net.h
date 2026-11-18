@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The emulated network stack the HLE layers share (nx's bsd and sfdnsres, the GNU ABI's socket syscalls). Every
+/* The emulated network stack the HLE layers share (nx's bsd and sfdnsres). Every
    socket is a host socket, except ICMP: a guest's raw ICMP socket needs privileges the runtime doesn't have, so its
    echo requests are answered through an unprivileged ping socket or the host's ping (net_icmp.c).
 
@@ -119,8 +119,8 @@ int snx_socket_setsockopt(SnxSocket* s, int level, int name, const void* value, 
 int snx_socket_getsockopt(SnxSocket* s, int level, int name, void* value, size_t* size);
 int snx_socket_readable_bytes(SnxSocket* s, int* bytes); /* FIONREAD */
 
-/* poll. An entry polls its socket, or the host descriptor host_fd when socket is NULL (POSIX only: the GNU ABI's
-   stdio), or nothing when both are unset (host_fd -1): its revents stay 0. events are SNX_POLL*. timeout_ms < 0
+/* poll. An entry polls its socket, or the host descriptor host_fd when socket is NULL, or nothing when both are
+   unset (host_fd -1): its revents stay 0. events are SNX_POLL*. timeout_ms < 0
    waits forever. Returns the number of entries with revents set */
 typedef struct SnxPollEntry {
     SnxSocket* socket;
@@ -154,8 +154,7 @@ int snx_net_interfaces(SnxNetInterface* out, int max);
 /* 0 and *out when the host has a connection, -SNX_ENETDOWN when it has none */
 int snx_net_primary_interface(SnxNetInterface* out);
 /* The host's DNS servers. IPv4 ones in ipv4 (up to max), the count returned. nameservers_text, when not NULL, gets
-   resolv.conf lines for every server including IPv6 ones, and the host's search and options lines (the GNU ABI's
-   /etc/resolv.conf) */
+   resolv.conf lines for every server including IPv6 ones, and the host's search and options lines */
 int snx_net_dns_servers(uint8_t (*ipv4)[4], int max, char* nameservers_text, size_t text_size);
 
 #endif

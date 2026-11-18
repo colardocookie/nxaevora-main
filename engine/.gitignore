@@ -17,12 +17,9 @@
 *.keys
 *.tik
 *.cert
-*.cia
 *.3ds
-*.gba
 *.gb
 *.nds
-*.vpk
 *.apk
 exefs/
 romfs/
@@ -45,8 +42,6 @@ vkshader_*.glsl
 # Recompiled games: runtime, game module, generated C, data, saves, settings and logs (games/ an older version's)
 /recompiled/
 /games/
-# The Linux runtime's default sysroot (scarletnx-gnuabi -L), and toolchains or sysroots dropped in to fill it
-/linux/
 /*.tar.xz
 /*.tar.gz
 /*.tar.zst

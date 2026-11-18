@@ -8,7 +8,7 @@
 #   scripts/appimage-sysroot.sh ROOT [--linux-only]
 #
 # The target's: gcc for the crt files, libgcc and libstdc++ Clang links the target's programs with, and with the Switch
-# and 3DS runtimes the libraries they link and bundle and what the pinned SDL3's build needs, as Arch POWER's SDL3 is
+# runtime the libraries it links and bundles and what the pinned SDL3's build needs, as Arch POWER's SDL3 is
 # older than the pin (its X11, Wayland and audio backends). --linux-only, for the Linux runtime alone, is the GCC
 # runtime only. They go in by the root's own pacman.conf (its architecture, repositories and mirrors, under the root)
 # and its own keys. Install scriptlets are the target's programs, left out. Each pacman is tried 3 times, as mirrors

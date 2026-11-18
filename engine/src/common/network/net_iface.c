@@ -3,7 +3,7 @@
    Ported from Eden's src/core/internal_network/network_interface.cpp and emu_net_state.cpp (branch
    lizzie/refactor-networking-12):
      SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project, GPL-3.0-or-later
-   The host's interfaces and DNS servers, for what nifm reports and the GNU ABI's /etc/resolv.conf. Eden takes the
+   The host's interfaces and DNS servers, for what nifm reports. Eden takes the
    first interface getifaddrs lists, or the one its settings name. Here the interface the host routes the internet
    through comes first: a UDP socket connected to a public address (connecting sends nothing) is bound to its
    address. */

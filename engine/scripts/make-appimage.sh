@@ -12,10 +12,6 @@
 # A copy named after a game works like the bare runtime: games/MyGame.AppImage (or games/MyGame) loads
 # games/MyGame_code.so, since the runtime takes its name and folder from $APPIMAGE.
 #
-# An install of the Linux runtime alone (nxaevora-engine without the Switch driver, nxaevora-engine-switch, and scarletnx-gnuabi a
-# link to it) makes an AppImage of it: it runs Linux
-# AArch64 programs (`ScarletNX-linux-ppc64.AppImage ./program`), and its checks run one.
-#
 # The cross builds bundle in the target's container (SKIP_APPIMAGE=1) and make the AppImage on the build machine
 # (MAKE_APPIMAGE_ONLY=1), whose appimagetool compresses natively and takes the target's runtime from APPIMAGE_ARCH.
 set -euo pipefail
@@ -28,12 +24,8 @@ export ARCH VERSION
 export APPIMAGE_ARCH=$ARCH
 export OUTPATH=./dist
 export OUTNAME=ScarletNX-linux-$ARCH.AppImage
-# The AppImage's program: the driver, else the Linux runtime when it is all the install has
+# The AppImage's program: the runtime
 bin=/usr/bin
-main=nxaevora-engine
-if [ ! -e "$bin/nxaevora-engine-switch" ] && [ -e "$bin/scarletnx-gnuabi" ]; then
-    main=scarletnx-gnuabi
-fi
 # quick-sharun copies ICON to .DirIcon as well
 export ICON=/usr/share/icons/hicolor/256x256/apps/wimsy.png
 # The desktop entry keeps its packaging name, whatever the program file is called
@@ -58,14 +50,8 @@ if [ "${MAKE_APPIMAGE_ONLY:-0}" = 1 ]; then
 fi
 
 # The runtime stays the AppImage's program (the desktop entry's Exec), so a copy named after a game runs that game.
-# Started bare it opens its launcher, which runs Switch games with it and the other drivers from beside it
-# (scarletnx-3ds, scarletnx-vita, scarletnx-agb, scarletnx-gnuabi). The Linux runtime alone has no launcher.
-if [ "$main" = nxaevora-engine ]; then
-    quick-sharun "$bin/nxaevora-engine" "$bin/nxaevora-engine-switch" "$bin/scarletnx-3ds" "$bin/scarletnx-vita" \
-        "$bin/scarletnx-agb" "$bin/scarletnx-gnuabi"
-else
-    quick-sharun "$bin/nxaevora-engine" "$bin/scarletnx-gnuabi"
-fi
+# Started bare it opens its launcher, which runs the Switch driver from beside it (nxaevora-engine-switch).
+quick-sharun "$bin/nxaevora-engine" "$bin/nxaevora-engine-switch"
 
 # The licenses travel with the AppImage: the runtime's and those of the libraries built into it (`cmake --install` put
 # them in /usr/share/licenses/scarletnx), and those of the Arch packages quick-sharun took the bundled libraries from,
@@ -75,16 +61,13 @@ if [ ! -d "$appdir/lib" ]; then
     echo "quick-sharun left no $appdir/lib: where it puts the bundled libraries has changed" >&2
     exit 1
 fi
-# each driver the launcher runs, a name of nxaevora-engine's (SNX_MULTICALL): sharun has to start it under its own name
-if [ "$main" = nxaevora-engine ]; then
-    for program in scarletnx-3ds scarletnx-vita scarletnx-agb scarletnx-gnuabi; do
-        out=$("$appdir/bin/$program" --help 2>&1 || true)
-        if ! grep -q "^Usage: $program" <<<"$out"; then
-            echo "The AppDir's bin/$program --help is not $program's. It printed:" >&2
-            echo "$out" >&2
-            exit 1
-        fi
-    done
+# the Switch driver's name, a name of nxaevora-engine's (SNX_MULTICALL): sharun has to start it under that name
+program=nxaevora-engine-switch
+out=$("$appdir/bin/$program" --help 2>&1 || true)
+if ! grep -q "^Usage: $program" <<<"$out"; then
+    echo "The AppDir's bin/$program --help is not $program's. It printed:" >&2
+    echo "$out" >&2
+    exit 1
 fi
 if [ "$(head -c 8 "$appdir/.DirIcon" | od -An -tx1 | tr -d ' \n')" != 89504e470d0a1a0a ]; then
     echo "$appdir/.DirIcon is not a PNG: quick-sharun no longer takes ICON for it" >&2

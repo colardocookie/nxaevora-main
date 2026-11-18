@@ -133,8 +133,6 @@ static Cmd cmds[MAX_CMDS];
 static Arg args[MAX_ARGS];
 static File files[MAX_FILES];
 static int ntypes, nfields, nifaces, ncmds, nargs, nfiles;
-static int ctr_mode;
-static void ctr_check_cmd(Cmd* c);
 
 /* ============================================================ errors */
 static const char* cur_path = "";
@@ -562,10 +560,6 @@ static unsigned long place_raw(const Cmd* c, int out, int tipc) {
 static void check_cmd(Cmd* c) {
     int i, na = 0, nb = 0, nx = 0, nc = 0, ncopy = 0, pid = 0, in_objs = 0;
     int out_copy = 0, out_move = 0, out_objs = 0, nc_sized = 0; /* nc_sized: C buffers whose size the request sends */
-    if (ctr_mode) {
-        ctr_check_cmd(c);
-        return;
-    }
     for (i = c->arg0; i < c->arg0 + c->nargs; i++) {
         Arg* a = &args[i];
         int j, t = resolve(a->type);
@@ -660,7 +654,6 @@ static void check_cmd(Cmd* c) {
 static void parse_interface(const char* fallback) {
     Iface* f;
     int i;
-    if (ctr_mode && fallback[0]) fail("CTR does not support @fallback");
     if (nifaces == MAX_IFACES) fail("too many interfaces");
     f = &ifaces[nifaces];
     memset(f, 0, sizeof *f);
@@ -1199,8 +1192,6 @@ static void write_inc(int fi, const char* out_dir) {
     flush(path);
 }
 
-#include "ctr.inc"
-
 /* every interface's dispatcher by the interface's name, which holds across builds: what a save state keeps of a
    service object's code (nx/runtime/state_fns.h) */
 static void write_fns(const char* path) {
@@ -1263,10 +1254,7 @@ int main(int argc, char** argv) {
     int i;
     builtin_types();
     for (i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--ctr")) {
-            if (nfiles) fail("--ctr must precede input files");
-            ctr_mode = 1;
-        } else if (!strcmp(argv[i], "--root") && i + 1 < argc) {
+        if (!strcmp(argv[i], "--root") && i + 1 < argc) {
             root = argv[++i];
         } else if (!strcmp(argv[i], "--out") && i + 1 < argc) {
             out = argv[++i];
@@ -1294,7 +1282,7 @@ int main(int argc, char** argv) {
         }
     }
     if (!root || !out || !nfiles) {
-        fprintf(stderr, "usage: swipc [--ctr] --root DIR --out DIR [--fns FILE.c] FILE.swipc...\n");
+        fprintf(stderr, "usage: swipc --root DIR --out DIR [--fns FILE.c] FILE.swipc...\n");
         return 1;
     }
     for (i = 0; i < nfiles; i++)
@@ -1304,14 +1292,9 @@ int main(int argc, char** argv) {
         }
     check_refs();
     for (i = 0; i < nfiles; i++) {
-        if (ctr_mode) {
-            ctr_header(i, out);
-            ctr_inc(i, out);
-        } else {
-            write_header(i, out);
-            write_inc(i, out);
-        }
+        write_header(i, out);
+        write_inc(i, out);
     }
-    if (fns && !ctr_mode) write_fns(fns);
+    if (fns) write_fns(fns);
     return 0;
 }
