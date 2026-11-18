@@ -413,6 +413,50 @@ uint64_t perf_xfb_vertices(int prim, uint64_t count, uint64_t instances) {
     }
     return n * instances;
 }
+PerfLanded g_perf_landed[PERF_LANDED];
+static uint32_t landed_home(uint64_t page) { return (uint32_t)((page * 0x9E3779B97F4A7C15ull) >> 51); }
+#define LANDED_PROBE 8u
+void perf_landed_add(PerfLanded* t, uint64_t start, uint64_t size, uint64_t frame) {
+    if (!size) return;
+    const uint64_t first = start >> 12, last = (start + size - 1) >> 12;
+    for (uint64_t p = first; p <= last && p - first < PERF_LANDED_PAGES; p++) {
+        uint32_t at = landed_home(p), pick = at;
+        for (uint32_t k = 0; k < LANDED_PROBE; k++) { /* a free or stale slot, else the oldest of the probe */
+            PerfLanded* e = &t[(at + k) % PERF_LANDED];
+            if (!e->end || e->frame + 1 < frame) {
+                pick = (at + k) % PERF_LANDED;
+                break;
+            }
+            if (e->frame < t[pick].frame) pick = (at + k) % PERF_LANDED;
+        }
+        t[pick] = (PerfLanded){p, start, start + size, frame};
+    }
+}
+int perf_landed_inside(const PerfLanded* t, uint64_t gva, uint64_t len, uint64_t frame) {
+    const uint64_t page = gva >> 12;
+    const uint32_t at = landed_home(page);
+    for (uint32_t k = 0; k < LANDED_PROBE; k++) {
+        const PerfLanded* e = &t[(at + k) % PERF_LANDED];
+        if (e->end && e->page == page && e->frame + 1 >= frame && e->start <= gva && gva + len <= e->end) return 1;
+    }
+    return 0;
+}
+void perf_copy_own(PerfCopies* c, int what, int why, uint64_t bytes, int landed, const uint64_t* ns) {
+    if (what < 0 || what >= PO_N) return;
+    if (why < 0 || why >= POW_N) why = POW_NEW;
+    c->own_n[what][why]++;
+    c->own_bytes[what] += bytes;
+    c->own_landed[what] += !!landed;
+    for (int k = 0; k < POT_N; k++) c->own_ns[what][k] += ns[k];
+    if (c->draw >= 0) {
+        c->tg[c->draw].own[what]++;
+        c->tg[c->draw].own_landed += !!landed;
+    }
+}
+void perf_copy_own_drop(PerfCopies* c, uint64_t uses) {
+    const unsigned b = uses == 0 ? 0 : uses == 1 ? 1 : uses < 4 ? 2 : uses < 16 ? 3 : uses < 64 ? 4 : 5;
+    c->own_uses[b]++;
+}
 static int result_covers(const PerfResult* r, uint64_t gva, uint64_t len) {
     return gva >= r->addr && gva + len <= r->addr + r->size;
 }
@@ -582,5 +626,51 @@ size_t perf_writable_line(const PerfCopies* c, uint32_t frames, char* out, size_
     at = putf(out, size, at, " xfb");
     for (int k = 0; k < PXF_N; k++) at = putf(out, size, at, " %s=%.1f", xfbs[k], c->xfb[k] / f);
     at = putf(out, size, at, " xfb_KB=%.1f captured_KB=%.1f", c->xfb_bound / f / 1024, c->xfb_captured / f / 1024);
+    return at < size ? at : size - 1;
+}
+
+static uint64_t own_score(const PerfCopyTarget* g) {
+    uint64_t s = 0;
+    for (int k = 0; k < PO_N; k++) s += g->own[k];
+    return s;
+}
+size_t perf_own_line(const PerfCopies* c, uint32_t frames, char* out, size_t size) {
+    static const char* const whats[PO_N] = {"staged", "own_made", "own_same", "owned_read", "patch"};
+    if (!size) return 0;
+    const double f = frames ? frames : 1;
+    size_t at = putf(out, size, 0,
+                     "perf-own: frames=%u (a frame: calls by reason new/nobuf/submit/dirty/written/epoch, KB, inside "
+                     "a landed result, ms hash+copy:create:rest; draws on an own buffer at its drop "
+                     "0/1/2-3/4-15/16-63/64+; by target staged/own_made/own_same/owned_read/patch/landed)",
+                     frames ? frames : 1);
+    for (int w = 0; w < PO_N; w++) {
+        uint64_t n = 0;
+        for (int r = 0; r < POW_N; r++) n += c->own_n[w][r];
+        if (!n) continue;
+        at = put_counts(out, size, at, whats[w], c->own_n[w], POW_N, f);
+        at = putf(out, size, at, " KB=%.1f landed=%.1f ms=%.3f:%.3f:%.3f", c->own_bytes[w] / f / 1024,
+                  c->own_landed[w] / f, c->own_ns[w][POT_HASH] / f / 1e6, c->own_ns[w][POT_CREATE] / f / 1e6,
+                  c->own_ns[w][POT_REST] / f / 1e6);
+    }
+    at = put_counts(out, size, at, "uses", c->own_uses, PERF_OWN_USES, f);
+    int shown[PERF_COPY_PRINT];
+    unsigned nshown = 0;
+    for (; nshown < PERF_COPY_PRINT; nshown++) { /* the targets with the most slow paths, ties to the lower slot */
+        int best = -1;
+        for (int i = 0; i < (int)PERF_COPY_TARGETS; i++) {
+            int seen = 0;
+            for (unsigned j = 0; j < nshown; j++) seen |= shown[j] == i;
+            if (seen || !c->tg[i].t.gva || !own_score(&c->tg[i])) continue;
+            if (best < 0 || own_score(&c->tg[i]) > own_score(&c->tg[best])) best = i;
+        }
+        if (best < 0) break;
+        shown[nshown] = best;
+    }
+    for (unsigned j = 0; j < nshown; j++) {
+        const PerfCopyTarget* g = &c->tg[shown[j]];
+        at = putf(out, size, at, " [%llx %ux%u f%u]", (unsigned long long)g->t.gva, g->t.w, g->t.h, g->t.fmt);
+        at = put_counts(out, size, at, "own", g->own, PO_N, f);
+        at = putf(out, size, at, "/%.1f", g->own_landed / f);
+    }
     return at < size ? at : size - 1;
 }

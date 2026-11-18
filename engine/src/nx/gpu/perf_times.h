@@ -266,6 +266,28 @@ enum { PXF_WHOLE, PXF_SHORT, PXF_STAGE, PXF_RESUME, PXF_TOPOLOGY, PXF_N };
 enum { PXP_POINTS, PXP_LINES, PXP_LINE_STRIP, PXP_TRIANGLES, PXP_TRIANGLE_STRIP, PXP_TRIANGLE_FAN, PXP_OTHER };
 /* the vertices a capture writes for count vertices of a primitive kind (PXP_*), times instances: ~0 when unknown */
 uint64_t perf_xfb_vertices(int prim, uint64_t count, uint64_t instances);
+/* PERF-22 (research 06:40): buf_get's slow path, past its checks, by what it did, why, its bytes and its time */
+enum {
+    PO_STAGED,     /* copied into this frame's staging ring */
+    PO_OWN_MADE,   /* a buffer of its own made and filled (make_own) */
+    PO_OWN_SAME,   /* its own buffer kept: hashed, unchanged */
+    PO_OWNED_READ, /* bytes the GPU holds, copied by the GPU (buf_get_owned) */
+    PO_PATCH,      /* its own buffer patched: the dirty runs copied (patch_own, patch_dirty) */
+    PO_N
+};
+enum { POW_NEW, POW_NOBUF, POW_SUBMIT, POW_DIRTY, POW_WRITTEN, POW_EPOCH, POW_N }; /* buf_get's ST_* reasons */
+enum { POT_HASH, POT_CREATE, POT_REST, POT_N }; /* guest bytes, hash and copy; make_own; the rest */
+#define PERF_OWN_USES 6u /* draws using an own buffer before it is dropped: 0, 1, 2-3, 4-15, 16-63, 64 or more */
+/* the graphics results landed lately, by guest page, for buf_get's slow path: under vk_lock, both sides */
+typedef struct {
+    uint64_t page, start, end, frame;
+} PerfLanded;
+#define PERF_LANDED 8192u
+#define PERF_LANDED_PAGES 16u /* a result's first pages are entered: a range further into a bigger one is missed */
+extern PerfLanded g_perf_landed[PERF_LANDED];
+void perf_landed_add(PerfLanded* t, uint64_t start, uint64_t size, uint64_t frame);
+/* whether [gva, gva + len) lies inside one result landed in frame or the one before */
+int perf_landed_inside(const PerfLanded* t, uint64_t gva, uint64_t len, uint64_t frame);
 /* a pending result sharing a byte with the range, oldest first, for perf_inplace_class */
 typedef struct {
     uint64_t addr, size, buf, off;
@@ -290,6 +312,7 @@ typedef struct {
     uint64_t ends[PK_SITES], bytes[PK_SITES];         /* of the copy ends, by site, with the bytes that copy moved */
     uint64_t src[PB_KINDS][PS_N];                     /* its draws' bindings over pending results */
     uint64_t cls[PI_CLASSES];                         /* its draws' composed input bindings (PERF-17) */
+    uint64_t own[PO_N], own_landed;                   /* its draws' buf_get slow paths (PERF-22) */
 } PerfCopyTarget;
 typedef struct {
     uint64_t ops[PK_SITES], bytes[PK_SITES], ends[PK_SITES]; /* every copy, the ones that ended a pass, all targets */
@@ -301,6 +324,8 @@ typedef struct {
     uint64_t made[PR_N];
     uint64_t wr_ns[PW_PATHS][PWS_N], wr_calls[PW_PATHS], wr_bytes[PW_PATHS]; /* PERF-20 */
     uint64_t xfb[PXF_N], xfb_bound, xfb_captured; /* bindings by class, their bytes, the bytes provably captured */
+    uint64_t own_n[PO_N][POW_N], own_bytes[PO_N], own_landed[PO_N], own_ns[PO_N][POT_N]; /* PERF-22 */
+    uint64_t own_uses[PERF_OWN_USES];                                                  /* at each own drop */
     PerfCopyTarget tg[PERF_COPY_TARGETS];
     int site, slot;   /* the copy being recorded and the slot of the pass it ended: -1 none */
     int draw;         /* the slot of the draw being prepared's first target: -1 none */
@@ -329,12 +354,17 @@ void perf_copy_made(PerfCopies* c, int producer);
 void perf_copy_writable(PerfCopies* c, int path, const uint64_t* ns, uint64_t bytes);
 /* a transform feedback binding of size bytes, of class cls, captured bytes provably written (whole or short) */
 void perf_copy_xfb(PerfCopies* c, int cls, uint64_t size, uint64_t captured);
+/* a buf_get slow path: what it did (PO_*), why (POW_*), its bytes, inside a landed result or not, its times (POT_N) */
+void perf_copy_own(PerfCopies* c, int what, int why, uint64_t bytes, int landed, const uint64_t* ns);
+void perf_copy_own_drop(PerfCopies* c, uint64_t uses); /* an own buffer dropped after uses draws */
 /* the window's line, as perf_times_line, and the next window started */
 size_t perf_copies_line(PerfCopies* c, uint32_t frames, char* out, size_t size);
 /* PERF-17's line from the same window: written before perf_copies_line, which starts the next one */
 size_t perf_inplace_line(const PerfCopies* c, uint32_t frames, char* out, size_t size);
 /* PERF-20's, the same */
 size_t perf_writable_line(const PerfCopies* c, uint32_t frames, char* out, size_t size);
+/* PERF-22's, the same */
+size_t perf_own_line(const PerfCopies* c, uint32_t frames, char* out, size_t size);
 
 /* SNX_ARCEUS_PERF_INPLACE=1, 2 or 3, bench only (PERF-17, research 02:42), each level with the ones below: 1 a read
    binds in place the newest pending result sharing a byte with its range when it covers it, 2 a vertex stream with

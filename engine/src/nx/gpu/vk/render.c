@@ -71,6 +71,12 @@ void vk_perf_extra(int which) {
 void vk_perf_made(int producer) {
     if (g_perf_times && perf_here()) perf_copy_made(&g_perf_cp, producer);
 }
+void vk_perf_own(int what, int why, u64 bytes, int landed, const u64* ns) {
+    if (g_perf_times && perf_here()) perf_copy_own(&g_perf_cp, what, why, bytes, landed, ns);
+}
+void vk_perf_own_drop(u64 uses) {
+    if (g_perf_times && perf_here()) perf_copy_own_drop(&g_perf_cp, uses);
+}
 void vk_perf_writable(int path, const u64* ns, u64 bytes) {
     if (g_perf_times && perf_here()) perf_copy_writable(&g_perf_cp, path, ns, bytes);
 }

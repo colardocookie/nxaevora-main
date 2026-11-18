@@ -700,6 +700,78 @@ static void test_writable(void) {
     CHECK(perf_writable_line(&c, 1, small, sizeof small) == sizeof small - 1 && perf_writable_line(&c, 1, small, 0) == 0);
 }
 
+/* PERF-22: the landed ranges by page, and buf_get's slow paths on their line */
+static void test_own(void) {
+    static PerfLanded t[PERF_LANDED];
+    memset(t, 0, sizeof t);
+    perf_landed_add(t, 0x10100, 0xd00, 7); /* 3.25 KB from 0x10100: pages 0x10 */
+    perf_landed_add(t, 0x20f00, 0x200, 7); /* across a page: 0x20 and 0x21 */
+    perf_landed_add(t, 0x30000, 0, 7);     /* empty: nothing */
+    CHECK(perf_landed_inside(t, 0x10100, 0xd00, 7) && perf_landed_inside(t, 0x10200, 0x100, 8));
+    CHECK(!perf_landed_inside(t, 0x10100, 0xd01, 7)); /* past its end */
+    CHECK(!perf_landed_inside(t, 0x10000, 0x200, 7)); /* before its start */
+    CHECK(!perf_landed_inside(t, 0x10100, 0x100, 9)); /* landed two frames ago */
+    CHECK(perf_landed_inside(t, 0x21000, 0x100, 7) && perf_landed_inside(t, 0x20f00, 0x200, 7));
+    CHECK(!perf_landed_inside(t, 0x30000, 1, 7));
+    perf_landed_add(t, 0x100000, 0x20000, 7); /* 32 pages: the first 16 entered */
+    CHECK(perf_landed_inside(t, 0x10f000, 0x100, 7) && !perf_landed_inside(t, 0x110000, 0x100, 7));
+    /* 12 results on one page in one frame: a probe holds 8, the ones past it take its first slot (lossy, a census) */
+    for (uint64_t k = 0; k < 12; k++) perf_landed_add(t, 0x50000 + k * 0x100, 0x100, 10);
+    unsigned kept = 0;
+    for (uint64_t k = 0; k < 12; k++) kept += perf_landed_inside(t, 0x50000 + k * 0x100, 0x100, 10);
+    CHECK(kept == 8 && perf_landed_inside(t, 0x50b00, 0x100, 10) && !perf_landed_inside(t, 0x50000, 0x100, 10));
+    /* two frames later every one of them is stale: a new result takes a slot of theirs, not one in use */
+    perf_landed_add(t, 0x50000, 0x80, 12);
+    CHECK(perf_landed_inside(t, 0x50000, 0x80, 12) && perf_landed_inside(t, 0x50000, 0x80, 13));
+    CHECK(!perf_landed_inside(t, 0x50b00, 0x100, 12)); /* stale for a lookup two frames on */
+    /* a full probe of one frame, then two of the next: the second evicts the oldest slot, not the first new one */
+    memset(t, 0, sizeof t);
+    for (uint64_t k = 0; k < 8; k++) perf_landed_add(t, 0x60000 + k * 0x100, 0x100, 10);
+    perf_landed_add(t, 0x60800, 0x100, 11);
+    perf_landed_add(t, 0x60900, 0x100, 11);
+    CHECK(perf_landed_inside(t, 0x60800, 0x100, 11) && perf_landed_inside(t, 0x60900, 0x100, 11));
+    static PerfCopies c;
+    char line[2048];
+    perf_copies_reset(&c);
+    const PerfTarget d = {0x4401e0000ull, 1920, 1080, 129};
+    perf_copy_draw(&c, &d);
+    const uint64_t ns[POT_N] = {1000000, 2000000, 500000};
+    perf_copy_own(&c, PO_OWN_MADE, POW_DIRTY, 4096, 1, ns);
+    perf_copy_own(&c, PO_OWN_MADE, POW_NEW, 1024, 0, ns);
+    perf_copy_own(&c, PO_STAGED, POW_N, 512, 0, ns); /* a reason out of range: new */
+    perf_copy_own(&c, PO_STAGED, -1, 0, 0, ns);
+    perf_copy_own(&c, PO_N, POW_NEW, 1, 1, ns);      /* out of range: ignored */
+    perf_copy_own(&c, -1, POW_NEW, 1, 1, ns);
+    perf_copy_draw(&c, NULL);
+    perf_copy_own(&c, PO_PATCH, POW_WRITTEN, 256, 1, ns); /* no draw: the totals alone */
+    for (uint64_t u = 0; u < 70; u++) perf_copy_own_drop(&c, u);
+    CHECK(c.own_n[PO_OWN_MADE][POW_DIRTY] == 1 && c.own_n[PO_OWN_MADE][POW_NEW] == 1);
+    CHECK(c.own_bytes[PO_OWN_MADE] == 5120);
+    CHECK(c.own_landed[PO_OWN_MADE] == 1 && c.own_n[PO_STAGED][POW_NEW] == 2);
+    CHECK(c.own_ns[PO_OWN_MADE][POT_CREATE] == 4000000);
+    CHECK(c.tg[0].own[PO_OWN_MADE] == 2 && c.tg[0].own[PO_STAGED] == 2 && c.tg[0].own_landed == 1);
+    const PerfTarget quiet = {0x90000, 8, 8, 1};
+    perf_copy_draw(&c, &quiet); /* drawn, no slow path: not printed */
+    perf_copy_draw(&c, NULL);
+    CHECK(c.tg[0].own[PO_PATCH] == 0 && c.own_n[PO_PATCH][POW_WRITTEN] == 1);
+    CHECK(c.own_uses[0] == 1 && c.own_uses[1] == 1 && c.own_uses[2] == 2 && c.own_uses[3] == 12);
+    CHECK(c.own_uses[4] == 48 && c.own_uses[5] == 6);
+    perf_own_line(&c, 2, line, sizeof line);
+    CHECK(strstr(line, "perf-own: frames=2 "));
+    CHECK(strstr(line, " staged=1.0/0.0/0.0/0.0/0.0/0.0 KB=0.2 landed=0.0 ms=1.000:2.000:0.500"));
+    CHECK(strstr(line, " own_made=0.5/0.0/0.0/0.5/0.0/0.0 KB=2.5 landed=0.5 ms=1.000:2.000:0.500"));
+    CHECK(strstr(line, " patch=0.0/0.0/0.0/0.0/0.5/0.0 KB=0.1 landed=0.5 "));
+    CHECK(!strstr(line, " own_same=") && !strstr(line, " owned_read="));
+    CHECK(!strstr(line, "KB=0.0 ") && !strstr(line, "[90000 "));
+    CHECK(strstr(line, " uses=0.5/0.5/1.0/6.0/24.0/3.0 [4401e0000 1920x1080 f129] own=1.0/1.0/0.0/0.0/0.0/0.5"));
+    perf_copies_line(&c, 2, line, sizeof line); /* the window's counts go with it */
+    CHECK(c.own_n[PO_OWN_MADE][POW_DIRTY] == 0 && c.own_uses[4] == 0 && c.tg[0].t.gva == 0);
+    perf_own_line(&c, 0, line, sizeof line);
+    CHECK(strstr(line, "frames=1 ") && !strstr(line, "uses=") && !strstr(line, "["));
+    char small[10];
+    CHECK(perf_own_line(&c, 1, small, sizeof small) == sizeof small - 1 && perf_own_line(&c, 1, small, 0) == 0);
+}
+
 int main(void) {
     test_rel_window();
     test_subs();
@@ -720,6 +792,7 @@ int main(void) {
     test_inplace_class();
     test_inplace_counts();
     test_writable();
+    test_own();
     CHECK(g_perf_inplace == 0 && g_perf_bind == PBK_OTHER && g_perf_exact == 0); /* unset: today's commands */
     CHECK(g_perf_cp.site == -1 && g_perf_cp.slot == -1 && g_perf_cp.draw == -1 && g_perf_cp.last == -1);
     if (failures) return 1;
