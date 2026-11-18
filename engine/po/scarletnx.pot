@@ -1694,22 +1694,6 @@ msgid "Recompiles a game's .nro, then runs it"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Runs a Linux ARM program, 64 or 32-bit"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Recompiles a 3DS game, then runs it"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Recompiles a PS Vita homebrew .vpk, then runs it"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Runs a GBA ROM on the emulated AGB board"
-msgstr ""
-
-#: src/gui/main.c
 msgid "Closes ScarletNX"
 msgstr ""
 
@@ -1722,18 +1706,6 @@ msgid "Show More"
 msgstr ""
 
 #: src/gui/main.c
-msgid "3DS game, ready to run"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Vita game, ready to run"
-msgstr ""
-
-#: src/gui/main.c
-msgid "GBA game, ready to run"
-msgstr ""
-
-#: src/gui/main.c
 msgid "Ready to run"
 msgstr ""
 
@@ -1743,27 +1715,11 @@ msgid "Ready to run, with %zu update(s), DLC(s), mod(s) or cheat(s) to pick from
 msgstr ""
 
 #: src/gui/main.c
-msgid "3DS game, opened with scarletnx-3ds"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Vita VPK, opened with scarletnx-vita"
-msgstr ""
-
-#: src/gui/main.c
-msgid "GBA ROM, played with scarletnx-agb"
-msgstr ""
-
-#: src/gui/main.c
 msgid "A dump, prepared when it runs"
 msgstr ""
 
 #: src/gui/main.c
 msgid ", in the games/ an older version made: new games go to recompiled/"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Linux ARM ELF, run with scarletnx-gnuabi"
 msgstr ""
 
 #: src/gui/main.c
@@ -2291,11 +2247,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s folder %s %s. Settings > App > Folders picks another."
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Needs about %s, %s free."
 msgstr ""
 
 #: src/gui/main.c
@@ -3039,6 +2990,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s is not a Switch game: ScarletNX plays Switch games only."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Cannot find %s beside ScarletNX or on PATH."
 msgstr ""
 
@@ -3172,10 +3128,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "No game in focus to recompile."
-msgstr ""
-
-#: src/gui/main.c
-msgid "R recompiles games: a Linux program runs as it is."
 msgstr ""
 
 #: src/gui/main.c
@@ -4073,22 +4025,6 @@ msgstr ""
 
 #: src/gui/ui.txt
 msgid "Load Switch NRO"
-msgstr ""
-
-#: src/gui/ui.txt
-msgid "Load Linux ARM ELF"
-msgstr ""
-
-#: src/gui/ui.txt
-msgid "Load 3DS game"
-msgstr ""
-
-#: src/gui/ui.txt
-msgid "Load Vita VPK"
-msgstr ""
-
-#: src/gui/ui.txt
-msgid "Load GBA ROM"
 msgstr ""
 
 #: src/common/utilities/setup.c

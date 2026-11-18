@@ -158,29 +158,21 @@ char* snx_addons_text(const SnxAddon* list, size_t count) {
     return text;
 }
 
-static const char* const g_system_words[] = {"switch", "3ds", "vita", "gba"};
+static const char* const g_system_words[] = {"switch", "other"};
 const char* snx_system_word(SnxSystem system) { return g_system_words[system]; }
 SnxSystem snx_game_system(const char* folder, const char* name) {
     char *ini = snx_format("%s/%s.ini", folder, name), *word = snx_ini_value(ini, "system"), *model = NULL,
          *card = snx_path_join(folder, "ux0");
     SnxSystem system = SNX_SYSTEM_SWITCH;
-    for (size_t i = 0; word && i < sizeof(g_system_words) / sizeof(g_system_words[0]); ++i)
-        if (!strcmp(word, g_system_words[i])) system = (SnxSystem)i;
-    if (!word && (model = snx_ini_value(ini, "model")) != NULL)
-        system = SNX_SYSTEM_3DS;
-    else if (!word && snx_is_dir(card))
-        system = SNX_SYSTEM_VITA;
+    if (word) {
+        if (strcmp(word, "switch")) system = SNX_SYSTEM_OTHER;
+    } else if ((model = snx_ini_value(ini, "model")) != NULL || snx_is_dir(card))
+        system = SNX_SYSTEM_OTHER;
     free(card);
     free(model);
     free(word);
     free(ini);
     return system;
-}
-int snx_record_system(const char* folder, const char* name, SnxSystem system) {
-    char* ini = snx_format("%s/%s.ini", folder, name);
-    int rc = snx_ini_record(ini, "system", snx_system_word(system));
-    free(ini);
-    return rc;
 }
 /* 1 when the files at a and b hold the same bytes */
 static int same_bytes(const char* a, const char* b) {

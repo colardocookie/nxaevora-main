@@ -1368,20 +1368,8 @@ msgid "Recompiles a game's .nro, then runs it"
 msgstr "重新编译游戏的 .nro，然后运行它"
 
 #: src/gui/main.c
-msgid "Runs a Linux ARM program, 64 or 32-bit"
-msgstr "运行 Linux ARM 程序，64 位或 32 位"
-
-#: src/gui/main.c
 msgid "Recompiles a 3DS .cia, then runs it"
 msgstr "重新编译 3DS .cia，然后运行"
-
-#: src/gui/main.c
-msgid "Recompiles a PS Vita homebrew .vpk, then runs it"
-msgstr "重新编译 PS Vita 自制程序 .vpk，然后运行"
-
-#: src/gui/main.c
-msgid "Runs a GBA ROM on the emulated AGB board"
-msgstr "在模拟的 AGB 主板上运行 GBA ROM"
 
 #: src/gui/main.c
 msgid "Closes ScarletNX"
@@ -1400,18 +1388,6 @@ msgid "Show More"
 msgstr "显示更多"
 
 #: src/gui/main.c
-msgid "3DS game, ready to run"
-msgstr "3DS 游戏，可以运行"
-
-#: src/gui/main.c
-msgid "Vita game, ready to run"
-msgstr "Vita 游戏，可以运行"
-
-#: src/gui/main.c
-msgid "GBA game, ready to run"
-msgstr "GBA 游戏，可以运行"
-
-#: src/gui/main.c
 msgid "Ready to run"
 msgstr "可以运行"
 
@@ -1421,28 +1397,12 @@ msgid "Ready to run, with %zu update(s), DLC(s), mod(s) or cheat(s) to pick from
 msgstr "可以运行，有 %zu 个更新、DLC、模组或金手指可供选择"
 
 #: src/gui/main.c
-msgid "3DS game, opened with scarletnx-3ds"
-msgstr "3DS 游戏，用 scarletnx-3ds 打开"
-
-#: src/gui/main.c
-msgid "Vita VPK, opened with scarletnx-vita"
-msgstr "Vita VPK，用 scarletnx-vita 打开"
-
-#: src/gui/main.c
-msgid "GBA ROM, played with scarletnx-agb"
-msgstr "GBA ROM，用 scarletnx-agb 运行"
-
-#: src/gui/main.c
 msgid "A dump, prepared when it runs"
 msgstr "转储，运行时准备"
 
 #: src/gui/main.c
 msgid ", in the games/ an older version made: new games go to recompiled/"
 msgstr "，位于旧版本创建的 games/：新游戏放入 recompiled/"
-
-#: src/gui/main.c
-msgid "Linux ARM ELF, run with scarletnx-gnuabi"
-msgstr "Linux ARM ELF，用 scarletnx-gnuabi 运行"
 
 #: src/gui/main.c
 msgid "Add a folder of games or dumps in Settings > App > Folders (P)"
@@ -1952,11 +1912,6 @@ msgstr "已恢复默认：未移动任何文件"
 #, c-format
 msgid "%s folder %s %s. Settings > App > Folders picks another."
 msgstr "%s文件夹 %s %s。可在「设置 > 应用 > 文件夹」中另选。"
-
-#: src/gui/main.c
-#, c-format
-msgid "Needs about %s, %s free."
-msgstr "约需 %s，可用 %s。"
 
 #: src/gui/main.c
 #, c-format
@@ -2769,10 +2724,6 @@ msgid "No game in focus to recompile."
 msgstr "没有选中要重新编译的游戏。"
 
 #: src/gui/main.c
-msgid "R recompiles games: a Linux program runs as it is."
-msgstr "R 重新编译游戏：Linux 程序直接运行。"
-
-#: src/gui/main.c
 msgid "B builds an AOT pack for a prepared Switch game in focus."
 msgstr "B 为选中的已准备 Switch 游戏构建 AOT 包。"
 
@@ -3581,22 +3532,6 @@ msgstr "无法读取 themes/%s/theme.ini：显示 %s"
 #: src/gui/ui.txt
 msgid "Load Switch NRO"
 msgstr "载入 Switch NRO"
-
-#: src/gui/ui.txt
-msgid "Load Linux ARM ELF"
-msgstr "载入 Linux ARM ELF"
-
-#: src/gui/ui.txt
-msgid "Load 3DS game"
-msgstr "载入 3DS 游戏"
-
-#: src/gui/ui.txt
-msgid "Load Vita VPK"
-msgstr "载入 Vita VPK"
-
-#: src/gui/ui.txt
-msgid "Load GBA ROM"
-msgstr "载入 GBA ROM"
 
 #: src/gui/ui.txt
 msgid "Share Log"

@@ -5,19 +5,17 @@
 # architecture (pkgforge's image of it, unpacked: .github/workflows/build.yml, appimage-cross). Run as root on an Arch
 # machine. CI keeps the root this makes a week at a time, keyed by this file, so a change here makes it again.
 #
-#   scripts/appimage-sysroot.sh ROOT [--linux-only]
+#   scripts/appimage-sysroot.sh ROOT
 #
 # The target's: gcc for the crt files, libgcc and libstdc++ Clang links the target's programs with, and with the Switch
 # runtime the libraries it links and bundles and what the pinned SDL3's build needs, as Arch POWER's SDL3 is
-# older than the pin (its X11, Wayland and audio backends). --linux-only, for the Linux runtime alone, is the GCC
-# runtime only. They go in by the root's own pacman.conf (its architecture, repositories and mirrors, under the root)
-# and its own keys. Install scriptlets are the target's programs, left out. Each pacman is tried 3 times, as mirrors
-# drop a connection now and then.
+# older than the pin (its X11, Wayland and audio backends). They go in by the root's own pacman.conf (its architecture,
+# repositories and mirrors, under the root) and its own keys. Install scriptlets are the target's programs, left out.
+# Each pacman is tried 3 times, as mirrors drop a connection now and then.
 set -eu
-[ $# -ge 1 ] || { sed -n '4,15p' "$0"; exit 2; }
+[ $# -ge 1 ] || { sed -n '4,14p' "$0"; exit 2; }
 root=$1
-libraries=gcc
-[ "${2:-}" = --linux-only ] || libraries="$libraries libx11 mesa vulkan-icd-loader vulkan-radeon vulkan-swrast
+libraries="gcc libx11 mesa vulkan-icd-loader vulkan-radeon vulkan-swrast
     libxext libxcursor libxfixes libxi libxinerama libxrandr libxrender libxss libxtst libxkbcommon wayland
     wayland-protocols libdecor alsa-lib libpulse libpipewire hidapi libusb"
 retry() { for try in 1 2 3; do "$@" && return; [ "$try" = 3 ] && return 1; sleep 5; done; }

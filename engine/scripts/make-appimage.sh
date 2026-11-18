@@ -62,13 +62,6 @@ if [ ! -d "$appdir/lib" ]; then
     exit 1
 fi
 # the Switch driver's name, a name of nxaevora-engine's (SNX_MULTICALL): sharun has to start it under that name
-program=nxaevora-engine-switch
-out=$("$appdir/bin/$program" --help 2>&1 || true)
-if ! grep -q "^Usage: $program" <<<"$out"; then
-    echo "The AppDir's bin/$program --help is not $program's. It printed:" >&2
-    echo "$out" >&2
-    exit 1
-fi
 if [ "$(head -c 8 "$appdir/.DirIcon" | od -An -tx1 | tr -d ' \n')" != 89504e470d0a1a0a ]; then
     echo "$appdir/.DirIcon is not a PNG: quick-sharun no longer takes ICON for it" >&2
     exit 1

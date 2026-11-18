@@ -12,7 +12,7 @@
 		[button]"Load Switch" {
 			attr = callback
 		}
-		[button]"Load 3DS game" {
+		[button]"Load Game" {
 			key = alt-f4
 			icon = box
 		}

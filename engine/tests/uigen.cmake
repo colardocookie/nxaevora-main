@@ -18,7 +18,7 @@ ${T}${T}min_row_width = 200px # width of row in pixels
 ${T}${T}max_row_width = 400px
 ${T}${T}width = 50%
 ${T}${T}[button]\"Load Switch NRO\" {}
-${T}${T}[button]\"Load 3DS game\" {
+${T}${T}[button]\"Load ROM\" {
 ${T}${T}${T}color = focus
 ${T}${T}${T}key = alt-f4
 ${T}${T}}
@@ -82,10 +82,10 @@ file(READ "${WORK}/out/gui/ui.h" header)
 file(READ "${WORK}/out/gui/ui.c" c)
 foreach(line
         # each scene's items by name, in ui.txt's order, an item of one platform within its #if
-        "enum {\n    UI_MAIN_LOAD_LIST,\n    UI_MAIN_LOAD_LIST_LOAD_SWITCH_NRO,\n    UI_MAIN_LOAD_LIST_LOAD_3DS_GAME,\n#ifdef SDL_PLATFORM_ANDROID\n    UI_MAIN_LOAD_LIST_OPEN_DATA_FOLDER,\n#endif\n#if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS)\n    UI_MAIN_LOAD_LIST_PASTE_1_HERE,\n#endif\n"
+        "enum {\n    UI_MAIN_LOAD_LIST,\n    UI_MAIN_LOAD_LIST_LOAD_SWITCH_NRO,\n    UI_MAIN_LOAD_LIST_LOAD_ROM,\n#ifdef SDL_PLATFORM_ANDROID\n    UI_MAIN_LOAD_LIST_OPEN_DATA_FOLDER,\n#endif\n#if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS)\n    UI_MAIN_LOAD_LIST_PASTE_1_HERE,\n#endif\n"
         "    UI_MAIN_GAMES,\n    UI_MAIN_SPARE,\n    UI_MAIN_STATUS,\n    UI_MAIN_ITEMS\n};"
         # the callbacks main.c defines: a button's action, a named label's text, a list without items' rows
-        "void ui_main_load_list_load_3ds_game_action_cb(App* app, uint32_t hit);\n"
+        "void ui_main_load_list_load_rom_action_cb(App* app, uint32_t hit);\n"
         "void ui_main_status_update_cb(App* app, char* text, size_t size);\n"
         "bool ui_main_games_get_row_info(App* app, size_t row, int width, UiRowInfo* info);\nvoid ui_main_games_row_action_cb(App* app, size_t row, uint32_t hit);\n"
         # and, with attr = callback, a button's attributes as it is drawn
@@ -114,7 +114,7 @@ foreach(word "ui_main_load_list_fixed_words_" "ui_main_load_list_action_cb")
 endforeach()
 foreach(line
         # the texts, one array, each item at its offset; a # in a text is the text's
-        "const char ui_main_texts[] =\n    \"Load Switch NRO\" \"\\0\"\n    \"Load 3DS game\" \"\\0\"\n    \"Open Data Folder\" \"\\0\"\n    \"Paste #1 \\\"here\\\"\" \"\\0\"\n"
+        "const char ui_main_texts[] =\n    \"Load Switch NRO\" \"\\0\"\n    \"Load ROM\" \"\\0\"\n    \"Open Data Folder\" \"\\0\"\n    \"Paste #1 \\\"here\\\"\" \"\\0\"\n"
         # an item at the line it came from: its type, colour, parent, text's offset and lengths
         "#line 3 \"${WORK}/ui.txt\"\n    {UI_LIST, UI_COLOR_NONE, -1, UI_NO_TEXT, 0},\n"
         "#line 8 \"${WORK}/ui.txt\"\n    {UI_BUTTON, UI_COLOR_FOCUS, UI_MAIN_LOAD_LIST, 16, 0},\n"
@@ -133,7 +133,7 @@ foreach(line
         # of what the 17 px row leaves, -17/3 px rounded (-371370.67), not cut
         "    r[UI_MAIN_LOAD_LIST] = gui_rect(at.x + UI_AT(0L, at.w, 0L, s), at.y + UI_AT(0L, at.h, 0L, s), UI_AT(32768L, at.w, 0L, s), UI_AT(21845L, at.h, -371371L, s));\n"
         # one case a key, each of its modifiers in it, an item of one platform within its #if
-        "        case SDLK_F4:\n#line 10 \"${WORK}/ui.txt\"\n            if (mods == UI_MOD_ALT) {\n                ui_main_load_list_load_3ds_game_action_cb(app, UI_HIT_CLICK);\n                return true;\n            }\n#line 21 \"${WORK}/ui.txt\"\n            if (mods == UI_MOD_CTRL) {\n                ui_main_load_list_drop_action_cb(app, UI_HIT_CLICK);"
+        "        case SDLK_F4:\n#line 10 \"${WORK}/ui.txt\"\n            if (mods == UI_MOD_ALT) {\n                ui_main_load_list_load_rom_action_cb(app, UI_HIT_CLICK);\n                return true;\n            }\n#line 21 \"${WORK}/ui.txt\"\n            if (mods == UI_MOD_CTRL) {\n                ui_main_load_list_drop_action_cb(app, UI_HIT_CLICK);"
         "        case '\\'':\n"
         "            if (mods == (UI_MOD_CTRL | UI_MOD_ALT)) {\n"
         # a letter's key, as SDL names it: the lowercase one, shift or not
@@ -238,7 +238,7 @@ refused(ctrl_ctrl "${S}${T}[button]\"A\" {\n${T}${T}key = ctrl-ctrl-a\n${T}}\n}\
 refused(same_key "${S}${T}[button]\"A\" {\n${T}${T}key = r\n${T}}\n${T}[button]\"B\" {\n${T}${T}key = R\n${T}}\n}\n" "6: its key is line 3's too, in the same scene")
 refused(stub_label "${S}${T}@[label]\"A\" {}\n}\n" "2: @ stubs an item's callbacks, and this label has none")
 refused(stub_list "${S}${T}@[list]L {\n${T}${T}[button]\"A\" {}\n${T}}\n}\n" "2: @ stubs a list's rows, and this one has items of its own")
-refused(symbol "${S}${T}[button]\"Load: CIA\" {}\n${T}[button]\"Load CIA\" {}\n}\n" "3: ui_s_load_cia is the symbol of line 2's item too: their names or texts differ only in what is not a letter or a digit")
+refused(symbol "${S}${T}[button]\"Load: NRO\" {}\n${T}[button]\"Load NRO\" {}\n}\n" "3: ui_s_load_nro is the symbol of line 2's item too: their names or texts differ only in what is not a letter or a digit")
 refused(scene_names "${S}${T}[list]Items {}\n}\n" "2: ui_s_items is the scene's own table or function: name it otherwise")
 refused(unclosed "${S}${T}[list]L {\n${T}}\n" "1: \\[scene\\]S is never closed")
 refused(orphan "x = 1px\n" "1: x = 1px outside any item")

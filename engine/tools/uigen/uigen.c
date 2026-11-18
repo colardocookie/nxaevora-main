@@ -20,7 +20,7 @@
        	padding = 8px
        	[list]LoadList {                  a list: a row each of its items, or without any, its rows from callbacks
        		max_rows = 8
-       		[button]"Load 3DS CIA" {}         a button, named by its English text: ui_main_load_list_load_3ds_cia
+       		[button]"Load ROM" {}             a button, named by its English text: ui_main_load_list_load_rom
        		@[button]"Decor" {}               @: the generator defines its callbacks, which do nothing
        	}
        	[label]Status {}                  a label: its "Text", or a Name and its text from a callback

@@ -24,7 +24,7 @@ typedef struct {
     GuiJobKind kind;
     GuiJobState state;
     bool native; /* a game made already, which its recompile's line names */
-    int console; /* the menu's item whose driver runs it (GUI_SWITCH, GUI_3DS...), which main.c sets */
+    int console; /* the menu's item whose driver runs it (GUI_SWITCH), which main.c sets */
     int status;  /* the driver's exit status, once it ended */
     int percent; /* how far it went, -1 before it said */
     uint64_t started_ms, ended_ms;

@@ -32,23 +32,10 @@ int main(void) {
     assert(gui_menu_key(&menu, GUI_DOWN) == GUI_MENU_STAY && menu.selected == GUI_SWITCH);
     menu.view = GUI_LOAD_NONE;
     gui_menu_key(&menu, GUI_DOWN);
-    assert(menu.selected == GUI_LINUX);
+    assert(menu.selected == GUI_SETTINGS);
     gui_menu_key(&menu, GUI_DOWN);
-    assert(menu.selected == GUI_3DS);
-    gui_menu_key(&menu, GUI_SELECT);
-    assert(menu.active == GUI_3DS && menu.view == GUI_LOAD_DROP);
-    gui_menu_key(&menu, GUI_CANCEL);
-    gui_menu_key(&menu, GUI_RIGHT);
-    assert(menu.selected == GUI_VITA);
-    gui_menu_key(&menu, GUI_SELECT);
-    assert(menu.active == GUI_VITA && menu.view == GUI_LOAD_DROP);
-    gui_menu_key(&menu, GUI_CANCEL);
-    gui_menu_key(&menu, GUI_RIGHT);
-    assert(menu.selected == GUI_GBA);
-    gui_menu_key(&menu, GUI_SELECT);
-    assert(menu.active == GUI_GBA && menu.view == GUI_LOAD_DROP);
-    gui_menu_key(&menu, GUI_CANCEL);
-    gui_menu_key(&menu, GUI_RIGHT);
+    assert(menu.selected == GUI_LOG);
+    gui_menu_key(&menu, GUI_UP);
     assert(menu.selected == GUI_SETTINGS);
     /* Settings opens the screens of the game's settings, the launcher's and its App (settings.h, gui_settings.c) */
     assert(gui_menu_key(&menu, GUI_SELECT) == GUI_MENU_SETTINGS && menu.active == GUI_SETTINGS);
@@ -71,9 +58,9 @@ int main(void) {
     menu = (GuiMenu){0};
     gui_menu_key(&menu, GUI_SELECT); /* Games hidden: the first load */
     assert(menu.active == GUI_SWITCH && menu.view == GUI_LOAD_DROP);
-    menu.selected = GUI_LINUX;
+    menu.selected = GUI_SETTINGS;
     gui_menu_key(&menu, GUI_DOWN);
-    assert(menu.selected == GUI_3DS && menu.active == GUI_SWITCH && menu.view == GUI_LOAD_DROP);
+    assert(menu.selected == GUI_LOG && menu.active == GUI_SWITCH && menu.view == GUI_LOAD_DROP);
     gui_menu_key(&menu, GUI_CANCEL);
     assert(menu.view == GUI_LOAD_NONE && menu.selected == GUI_SWITCH);
 
@@ -109,7 +96,7 @@ int main(void) {
         assert(!strcmp(use, "26.4 GB"));
     }
     /* a run's room: the extraction and a Switch game's RomFS copy each about the dump's size, both from one disk's free
-       space, or each from its own; a 3DS game has no copy */
+       space, or each from its own; a run that copies nothing takes the dump's size alone */
     {
         uint64_t need, left;
         assert(gui_room(10, true, 20, 0, true, &need, &left) && need == 20 && left == 20);

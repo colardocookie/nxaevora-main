@@ -17,13 +17,10 @@ passes under qemu-user, and Super Haxagon, recompiled under qemu, played a level
 lavapipe as the Vulkan driver. No real POWER machine has run it yet. CI cross-builds its AppImage
 (`ScarletNX-linux-ppc64le.AppImage`, the `appimage-cross` job in `.github/workflows/build.yml`) against an Arch POWER
 system root and runs it under qemu as installed; the test suite's job, `linux-ppc64le`, is commented out.
-The big-endian port has a job of its own, `linux-ppc64`, which builds the Linux runtime and runs its tests under
-qemu-ppc64.
+The big-endian port has a job of its own, `linux-ppc64`, which builds the Switch runtime and runs the tests that
+need no game under qemu-ppc64.
 
-On a big-endian host the Linux runtime runs AArch64 and 32-bit Arm programs, with Debian ports' glibc
-(`linux-ppc64-cross`, ELFv1) and with Arch POWER's (`linux-ppc64-elfv2-cross`, ELFv2): under qemu-ppc64, an
-AArch64-hosted GCC compiles a C file and the program it made runs, both dynamically linked against glibc. The Switch
-runtime is ported to big-endian ELFv2 too, its services, IPC, memory, GPU front end and video, and the renderer
+The Switch runtime is ported to big-endian ELFv2, its services, IPC, memory, GPU front end and video, and the renderer
 treats the Vulkan device as little-endian, as the drivers for big-endian PowerPC64 are. Its test suite passes under
 qemu-ppc64, but no game has run on a big-endian machine yet. See [Big-endian hosts](#big-endian-hosts).
 
@@ -79,12 +76,9 @@ when mapped again, as on the console. The differences from a 4 KiB host:
 - Views of memory (MapMemory, shared memory, ldr's code) are copies, as on Windows, instead of the same pages. A view
   can only share host pages with its source when both sit at the same place in a host page, and games pick their
   addresses in 4 KiB steps. The services reach shared memory through the guest's mapping while it lasts.
-- The Linux runtime (`src/gnuabi/`) protects each host page as the most permissive of its guest pages, so a write to
-  compiled code beside writable data in one host page isn't seen.
 
 `SNX_HOST_PAGE=16384` or `65536` in the environment makes any machine work in those pages, which is how the tests
-and CI check these paths on 4 KiB hosts (`ldr_service_64k_pages`, `gnuabi_memory_64k_pages`,
-`nx_runtime_homebrew_64k_pages`); `memory_accounting` runs as on 16 and 64 KiB hosts by itself.
+and CI check these paths on 4 KiB hosts (`ldr_service_64k_pages`, `nx_runtime_homebrew_64k_pages`); `memory_accounting` runs as on 16 and 64 KiB hosts by itself.
 
 ## What differs from the other hosts
 
@@ -99,7 +93,7 @@ and CI check these paths on 4 KiB hosts (`ldr_service_64k_pages`, `gnuabi_memory
 - **The linker** (`src/common/cpu/recompiler/llvm/link_elf.c`, with the relocations in `elf_object.c`) handles the
   TOC relocations, ELFv2's local entry points, ELFv1's `.opd` descriptors, and 16-byte stubs for a call past `bl`'s
   32 MiB.
-- **One TOC for the Linux runtime's code.** Its just-in-time steps are loaded into one code arena
+- **One TOC for the recompiler library's JIT code.** Its just-in-time steps are loaded into one code arena
   (`code_loader.c`, `library.c`'s `arena_load`) with the runtime library once, and the arena has one TOC, which every
   step's code keeps in r2. Elsewhere each step is a module of its own, linked and loaded with `dlopen`. On PowerPC64
   that gave each step its own TOC, and a guest's jump from one step into another came back to its caller with the
@@ -111,7 +105,7 @@ and CI check these paths on 4 KiB hosts (`ldr_service_64k_pages`, `gnuabi_memory
   descriptor or an ELFv2 global entry).
 - **A32 blocks call the 32-bit runtime library in their arena.** The executor (`common/cpu/arm/exec.c`) loads
   `armlib` into its code arena first, as `arena_load` does with `rtlib` for A64, so blocks share one TOC and reach
-  the runtime only through `cpu->rt`. The Linux runtime runs 32-bit programs on PowerPC64 with it.
+  the runtime only through `cpu->rt`. The Switch runtime runs 32-bit programs on PowerPC64 with it.
 - **Rounding stays on the slow path.** LLVM 19 lowers `llvm.roundeven` to a libm call on POWER8, and fails on its
   vector form, so FRINTN and the rounding conversions use the software path. Fused multiply-add is a fast path, as
   POWER always has it.
@@ -130,7 +124,7 @@ or writes a guest value as a number converts it:
   byte copies. The emitters decide by the target's data layout, so a little-endian host's code is what it was. The
   helpers and the tests that set and check lanes read and write a lane as a number through `SNX_VS` and its kin in
   `cpu.h`, which swap on a big-endian host.
-- The Linux runtime's system calls read and write the guest's structures through `common/utilities/endian.h`
+- The Switch runtime's system calls read and write the guest's structures through `common/utilities/endian.h`
   (`snx_ld_le32`, `snx_st_le64` and their kin), which compile to plain copies on a little-endian host.
 - `scripts/le-unchanged.sh` builds a base commit and the working tree on a little-endian machine and lists every
   object whose code differs, and whether the recompiler's output for an AArch64 program changed.
@@ -141,26 +135,24 @@ root is Debian ports' unstable:
 ```bash
 scripts/ppc64-sysroot.sh ppc64 .cache/sysroot-ppc64
 export SNX_SYSROOT=$PWD/.cache/sysroot-ppc64
-cmake --preset linux-ppc64-cross -DSNX_BUILD_NX=OFF -DSNX_BUILD_3DS=OFF -DSNX_BUILD_VITA=OFF -DSNX_BUILD_AGB=OFF \
-    -DSNX_BUILD_GUI=OFF
+cmake --preset linux-ppc64-cross -DSNX_BUILD_GUI=OFF
 cmake --build --preset linux-ppc64-cross --target scarletnx
 ```
 
-`scarletnx` is then the Linux runtime alone, and `scarletnx-gnuabi` a link to it.
+`scarletnx` is then the Switch runtime alone.
 
-CI's `linux-ppc64` job builds it this way against that system root, made weekly, and runs the Linux runtime's tests
-(`gnuabi_*`, `endian`, `cas128`) under qemu-ppc64. Debian ports' unstable can break for a day, so the job may fail
+CI's `linux-ppc64` job builds it this way against that system root, made weekly, and runs the tests that need no game
+(`endian`, `cas128`) under qemu-ppc64. Debian ports' unstable can break for a day, so the job may fail
 without failing the run.
 
 Arch POWER's big-endian glibc is ELFv2, as LLD links it. Its preset (`linux-ppc64-elfv2-cross`, `SNX_PPC64_ELFV2`)
-builds for ELFv2 with `-mabi=elfv2` and the Linux runtime alone. Its system root is pkgforge's Arch image of the
+builds for ELFv2 with `-mabi=elfv2` and the Switch runtime alone. Its system root is pkgforge's Arch image of the
 architecture with LLVM and GCC's runtime installed into it, as the `appimage-cross` job makes it. The runtime's own
 code generator takes its ABI from the runtime itself (`_CALL_ELF`, `new_ir` in `ir.c`), as LLVMs differ in which
 ABI their `powerpc64-*-linux-gnu` picks: Debian's 19 ELFv1, Arch POWER's 22 ELFv2.
 
-What was run under qemu-ppc64: the Linux runtime's tests (`gnuabi_*`, `endian`, `cas128`), `tools/gnuabi_diff.py
---suite all` against qemu-aarch64 (the CPU suite covers SIMD, floating point, exclusives and unaligned accesses), a
-glibc program, and the AArch64-hosted GCC 16.2 compiling a C file with a glibc system root.
+What was run under qemu-ppc64: the tests that need no game (`endian`, `cas128`), and the AArch64-hosted GCC 16.2
+compiling a C file with a glibc system root.
 
 ### The Switch runtime
 
@@ -193,18 +185,6 @@ cmake --preset linux-ppc64-elfv2-cross
 cmake --build --preset linux-ppc64-elfv2-cross
 ctest --preset linux-ppc64-elfv2-cross -j"$(nproc)"
 ```
-
-The Vita and Game Boy Advance runtimes are ported the same way. Their guests are little-endian Arm, and what reads or
-writes guest memory as a number goes through endian.h: `vita_read16`, `vita_read32` and their writes
-(`vita/runtime/process.h`) for a guest address, and `snx_ld_le32` and its kin for the loader's files, GXP programs,
-the HLE's structures and the GBA's bus, video memory and wave RAM. Network order and the trophy pack stay big-endian
-(`snx_ld_be32`). The Vita renderer's push constants are swapped to little-endian for the device, and the GBA's frame
-is a texture of packed 0xAABBGGRR words (`SDL_PIXELFORMAT_ABGR8888`) in either order. Their tests pass under
-qemu-ppc64, jsmolka's GBA test ROMs among them: their modules are linked by the backend's linker, as the Switch's are.
-No Vita or GBA game has run on a big-endian machine yet.
-
-The 3DS runtime is built too, as the AppImage carries every runtime, but it isn't ported: its board, services and
-GPU read the guest's memory as host numbers, so it doesn't run 3DS games on a big-endian host.
 
 A rebuild that runs CMake again needs the preset's `PKG_CONFIG_LIBDIR` and `PKG_CONFIG_SYSROOT_DIR` in the
 environment: `cmake --build --preset` sets them, a plain `cmake --build` of the folder doesn't, and SDL then finds the
