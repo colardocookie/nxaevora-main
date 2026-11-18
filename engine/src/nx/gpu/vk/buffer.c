@@ -2367,7 +2367,12 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             u32 wnow = vk_ww_now();
             const u64 pt0 = g_perf_times ? plat_ns() : 0;
             if (patch_own(i, host, e->wseen)) {
-                if (pt0) own_note(PO_PATCH, POW_WRITTEN, gva, len, (u64[POT_N]){0, 0, plat_ns() - pt0});
+                if (pt0) {
+                    const u64 ns = plat_ns() - pt0;
+                    own_note(PO_PATCH, POW_WRITTEN, gva, len, (u64[POT_N]){0, 0, ns});
+                    vk_perf_steps(PO_PATCH, (u64[POS_N]){[POS_PATCH] = ns, [POS_WRITTEN] = pre_written},
+                                  (u8[POS_N]){[POS_PATCH] = 1, [POS_WRITTEN] = 1});
+                }
                 e->wseen = wnow;
                 w = 0;
             } else if (pt0) {
@@ -2414,7 +2419,11 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         u64 gnow = gpu_mem_generation(); /* both before the bytes are read */
         const u64 pt0 = g_perf_times ? plat_ns() : 0;
         if (host && patch_dirty(i, gva, host, e->gw, e->wseen)) {
-            if (pt0) own_note(PO_PATCH, POW_DIRTY, gva, len, (u64[POT_N]){0, 0, plat_ns() - pt0});
+            if (pt0) {
+                const u64 ns = plat_ns() - pt0;
+                own_note(PO_PATCH, POW_DIRTY, gva, len, (u64[POT_N]){0, 0, ns});
+                vk_perf_steps(PO_PATCH, (u64[POS_N]){[POS_PATCH] = ns}, (u8[POS_N]){[POS_PATCH] = 1});
+            }
             e->gw = gnow;
             e->wseen = wnow;
             e->epoch = g_vk_epoch;
@@ -2422,7 +2431,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             use(i, buf, off);
             return 1;
         }
-        if (pt0) {
+        if (pt0 && host) { /* tried and failed: without a host pointer it isn't tried */
             pre_patch = plat_ns() - pt0;
             pre_ran |= 1;
         }
@@ -2442,7 +2451,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     u64 st[POS_N] = {0}, mk = ot0; /* PERF-23: by step, mk the last step's end */
     u8 ran[POS_N] = {0};
     if (ot0) {
-        st[POS_PATCH_TRY] = pre_patch, ran[POS_PATCH_TRY] = pre_ran & 1;
+        st[POS_PATCH] = pre_patch, ran[POS_PATCH] = pre_ran & 1;
         st[POS_WRITTEN] = pre_written, ran[POS_WRITTEN] = pre_ran >> 1 & 1;
         st[POS_WHY] = ot0 - why0, ran[POS_WHY] = 1;
     }
@@ -2545,19 +2554,22 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         for (int k = POS_OWNED; k < POS_OTHER; k++) in += st[k];
         st[POS_OTHER] = end - ot0 - in, ran[POS_OTHER] = 1;
         vk_perf_steps(what, st, ran);
-        if (what == PO_OWN_SAME && why == ST_DIRTY) { /* the GPU-side write to the byte */
-            int outside;
-            unsigned kinds;
-            const int q = gpu_mem_written_ask(gw0, gva, len, &outside, &kinds);
-            vk_perf_gsame(q == PSA_IN        ? PSQ_IN
-                          : q == PSA_UNKNOWN ? PSQ_UNKNOWN
-                          : outside > 0      ? PSQ_OUT
-                          : outside == 0     ? PSQ_SPAN
-                                             : PSQ_SPAN_UNKNOWN,
-                          kinds);
-        }
+        if (what == PO_OWN_SAME && why == ST_DIRTY) /* the GPU-side write to the byte, as stamped and as written */
+            for (int real = 0; real < 2; real++) {
+                int outside;
+                unsigned kinds;
+                const int q = gpu_mem_written_ask(gw0, real, gva, len, &outside, &kinds);
+                vk_perf_gsame(real,
+                              q == PSA_IN        ? PSQ_IN
+                              : q == PSA_UNKNOWN ? PSQ_UNKNOWN
+                              : outside > 0      ? PSQ_OUT
+                              : outside == 0     ? PSQ_SPAN
+                                                 : PSQ_SPAN_UNKNOWN,
+                              kinds);
+            }
         if (what == PO_OWN_SAME && why == ST_WRITTEN)
             vk_perf_csame(seen_w == 1, len >= PATCH_MIN, len, seen_w == 1 ? written_pages_note(gva, len, ws0) : 0);
+        vk_perf_probe(plat_ns() - end); /* these asks and walks: outside every step above */
     }
     return 1;
 }

@@ -792,6 +792,29 @@ static void test_own(void) {
 }
 
 /* PERF-23: the GPU-side writes to the byte, and the slow path's steps, own_same's two causes and their line */
+static PerfStamps g_race;
+static pthread_mutex_t g_race_lock = PTHREAD_MUTEX_INITIALIZER;
+static void* race_writer(void* arg) { /* the writers' side, under their lock, into a failure and a lost span */
+    (void)arg;
+    for (uint64_t k = 0; k < 2000; k++) {
+        pthread_mutex_lock(&g_race_lock);
+        perf_stamp_add(&g_race, k == 1500 ? 1ull << 40 : 0x10000 + (k & 63) * 0x40, 0x40, k + 1, PSK_GPU);
+        if (k == 1800) __atomic_store_n(&g_race.failed, 1, __ATOMIC_RELAXED);
+        pthread_mutex_unlock(&g_race_lock);
+    }
+    return NULL;
+}
+static void test_same_threads(void) { /* the line, lock-free, beside a writer: its flags and counts (TSan) */
+    static PerfCopies c;
+    char line[PERF_COPIES_LINE];
+    pthread_t w;
+    perf_copies_reset(&c);
+    CHECK(pthread_create(&w, NULL, race_writer, NULL) == 0);
+    for (int k = 0; k < 200; k++) perf_same_line(&c, &g_race, &g_race, 1, 1, line, sizeof line);
+    pthread_join(w, NULL);
+    perf_same_line(&c, &g_race, &g_race, 1, 1, line, sizeof line);
+    CHECK(strstr(line, " failed") && strstr(line, " span_lost"));
+}
 static uint64_t pages_home(uint64_t page, int bits) { return (page * 0x9E3779B97F4A7C15ull) >> (64 - bits); }
 static void test_same(void) {
     static PerfStamps t;
@@ -843,11 +866,11 @@ static void test_same(void) {
     CHECK(perf_stamp_ask(&t, 21, 0x40450, 4, &out, &kinds) == PSA_IN);
     CHECK(perf_stamp_ask(&t, 21, 0x40280, 4, &out, &kinds) == PSA_NONE);
     /* across a page, and who wrote */
-    perf_stamp_add(&t, 0x50f00, 0x200, 23, PSK_CPU);
+    perf_stamp_add(&t, 0x50f00, 0x200, 23, PSK_PUBLISH);
     perf_stamp_add(&t, 0x51800, 0x10, 24, PSK_RESULT);
     CHECK(perf_stamp_ask(&t, 0, 0x51000, 0x80, &out, &kinds) == PSA_IN);
     CHECK(perf_stamp_ask(&t, 0, 0x51200, 0x400, &out, &kinds) == PSA_NONE && out == 0); /* inside 0 to 0x810 */
-    CHECK(kinds == (1u << PSK_CPU | 1u << PSK_RESULT));
+    CHECK(kinds == (1u << PSK_PUBLISH | 1u << PSK_RESULT));
     CHECK(perf_stamp_ask(&t, 0, 0x51900, 0x100, &out, &kinds) == PSA_NONE && out == 1);
     CHECK(perf_stamp_ask(&t, 23, 0x51200, 0x400, &out, &kinds) == PSA_NONE && kinds == 1u << PSK_RESULT);
     /* a full probe: the page written longest ago makes room, and a page not found is clean only before it */
@@ -859,6 +882,11 @@ static void test_same(void) {
     CHECK(perf_stamp_ask(&t, 100, same[0] << 12, 0x10, &out, &kinds) == PSA_NONE && out == 0); /* its span stays */
     CHECK(perf_stamp_ask(&t, 99, same[1] << 12, 0x10, &out, &kinds) == PSA_IN);
     CHECK(perf_stamp_ask(&t, 99, same[16] << 12, 0x10, &out, &kinds) == PSA_IN);
+    /* made again after making room (reviewer 20:05): what it held before is still unknown */
+    perf_stamp_add(&t, (same[0] << 12) + 128, 0x10, 117, PSK_GPU);
+    CHECK(perf_stamp_ask(&t, 99, same[0] << 12, 0x10, &out, &kinds) == PSA_UNKNOWN);
+    CHECK(perf_stamp_ask(&t, 116, (same[0] << 12) + 128, 4, &out, &kinds) == PSA_IN);
+    CHECK(perf_stamp_ask(&t, 116, same[0] << 12, 0x10, &out, &kinds) == PSA_NONE); /* after the room was made */
     /* a wide write is one run */
     const uint64_t wide = 0x10000000, wsize = (PERF_STAMP_WIDE + 1ull) << 12;
     perf_stamp_add(&t, wide, wsize, 200, PSK_GPU);
@@ -877,11 +905,15 @@ static void test_same(void) {
     perf_copy_steps(&c, PO_OWN_SAME, ns, some);
     perf_copy_steps(&c, PO_N, ns, ran); /* out of range */
     CHECK(c.step_ns[PO_OWN_SAME][POS_HASH] == 8000000 && c.step_n[PO_OWN_SAME][POS_SAMPLE] == 1);
-    perf_copy_gsame(&c, PSQ_OUT, 1u << PSK_GPU | 1u << PSK_CPU);
-    perf_copy_gsame(&c, PSQ_SPAN, 1u << PSK_RESULT);
-    perf_copy_gsame(&c, PSQ_IN, 1u << PSK_RESULT); /* in range: its writers aren't counted */
-    perf_copy_gsame(&c, PSQ_N, 0);
-    CHECK(c.gsame[PSQ_OUT] == 1 && c.gsame[PSQ_IN] == 1 && c.gkinds[PSK_RESULT] == 1 && c.gkinds[PSK_GPU] == 1);
+    perf_copy_gsame(&c, 0, PSQ_OUT, 1u << PSK_GPU | 1u << PSK_PUBLISH);
+    perf_copy_gsame(&c, 0, PSQ_SPAN, 1u << PSK_RESULT);
+    perf_copy_gsame(&c, 0, PSQ_IN, 1u << PSK_RESULT); /* in range: its writers aren't counted */
+    perf_copy_gsame(&c, 0, PSQ_N, 0);
+    perf_copy_gsame(&c, 2, PSQ_OUT, 1u << PSK_LANDED); /* the record as written */
+    CHECK(c.gsame[0][PSQ_OUT] == 1 && c.gsame[0][PSQ_IN] == 1 && c.gkinds[0][PSK_RESULT] == 1);
+    CHECK(c.gkinds[0][PSK_GPU] == 1 && c.gsame[1][PSQ_OUT] == 1 && c.gkinds[1][PSK_LANDED] == 1);
+    perf_copy_probe(&c, 2000000);
+    perf_copy_probe(&c, 1000000);
     perf_copy_csame(&c, 1, 0, 4096, 1024);
     perf_copy_csame(&c, 0, 1, 1 << 20, 0);
     perf_copy_quiet(&c, 3000000);
@@ -901,23 +933,29 @@ static void test_same(void) {
         }
     CHECK(c.wpages_lost == 1);
     char line[PERF_COPIES_LINE];
-    perf_same_line(&c, &t, 4, 21.5, line, sizeof line);
+    static PerfStamps real;
+    perf_stamp_add(&real, 0x1000, 4, 1, PSK_LANDED);
+    perf_same_line(&c, &t, &real, 4, 21.5, line, sizeof line);
     CHECK(strstr(line, "perf-same: frames=4 "));
-    CHECK(strstr(line, " gpu=0.2/0.2/0.0/0.2/0.0 writers=0.2/0.2/0.2 "));
+    CHECK(strstr(line, " gpu=0.2/0.2/0.0/0.2/0.0 writers=0.2/0.2/0.2/0.0 real=0.2/0.0/0.0/0.0/0.0 "
+                       "real_writers=0.0/0.0/0.0/0.2 "));
+    CHECK(strstr(line, " probe=0.5 ms=0.750 ") && strstr(line, " written=0.2/0.2/0.0/0.0 clock="));
     CHECK(strstr(line, " cpu=0.2/0.2 big=0.2 KB=257.0 KB_written=0.2 pages=19/1/2/1 quiet=0.2 ms=0.750 "));
     CHECK(strstr(line, " own_same_ms=0.500/1.000/0.000/1.500/0.000/2.000/0.250/0.125/0.750 n=0.2/0.5/0.5/0.5/0.5/0.5/"
                        "0.2/0.5/0.5 "));
     CHECK(!strstr(line, " staged_ms="));
-    CHECK(strstr(line, " clock=21.5") && !strstr(line, "span_lost") && !strstr(line, "stamps_failed"));
+    CHECK(strstr(line, " clock=21.5") && !strstr(line, "span_lost") && !strstr(line, " failed"));
     CHECK(strstr(line, " stamps="));
     CHECK(__atomic_load_n(&t.stamps, __ATOMIC_RELAXED) == 0 && __atomic_load_n(&t.merged, __ATOMIC_RELAXED) == 0);
     perf_copies_line(&c, 4, line, sizeof line); /* the window's counts go with it */
-    CHECK(c.gsame[PSQ_OUT] == 0 && c.step_n[PO_OWN_SAME][POS_HASH] == 0 && c.wpage[0].page == 0 && !c.wpages_lost);
-    perf_same_line(&c, &t, 4, 1, line, sizeof line);
+    CHECK(c.gsame[0][PSQ_OUT] == 0 && c.probe_n == 0 && c.step_n[PO_OWN_SAME][POS_HASH] == 0);
+    CHECK(c.wpage[0].page == 0 && !c.wpages_lost);
+    perf_same_line(&c, &t, &real, 4, 1, line, sizeof line);
     CHECK(!strstr(line, " gpu=") && !strstr(line, " cpu=") && !strstr(line, " pages=") && !strstr(line, "_ms="));
+    CHECK(!strstr(line, " real=") && !strstr(line, " probe="));
     char small[10];
-    CHECK(perf_same_line(&c, &t, 1, 1, small, sizeof small) == sizeof small - 1);
-    CHECK(perf_same_line(&c, &t, 1, 1, small, 0) == 0);
+    CHECK(perf_same_line(&c, &t, &real, 1, 1, small, sizeof small) == sizeof small - 1);
+    CHECK(perf_same_line(&c, &t, &real, 1, 1, small, 0) == 0);
     /* past PERF_STAMP_WIDES wide runs, one asked about since before the oldest gone is unknown */
     for (uint64_t k = 0; k < PERF_STAMP_WIDES; k++) perf_stamp_add(&t, wide + (k + 1) * wsize, wsize, 300 + k, PSK_GPU);
     CHECK(perf_stamp_ask(&t, 199, 0x10100, 0x100, &out, &kinds) == PSA_UNKNOWN);
@@ -925,7 +963,7 @@ static void test_same(void) {
     /* a write over more pages than a span is kept for: every span unknown */
     perf_stamp_add(&t, 1ull << 36, 1ull << 31, 1000, PSK_GPU);
     CHECK(t.span_lost && perf_stamp_ask(&t, 1000, 0x10400, 0x100, &out, &kinds) == PSA_NONE && out == -1);
-    perf_same_line(&c, &t, 1, 1, line, sizeof line);
+    perf_same_line(&c, &t, &real, 1, 1, line, sizeof line);
     CHECK(strstr(line, " span_lost"));
 }
 
@@ -951,6 +989,7 @@ int main(void) {
     test_writable();
     test_own();
     test_same();
+    test_same_threads();
     CHECK(g_perf_inplace == 0 && g_perf_bind == PBK_OTHER && g_perf_exact == 0); /* unset: today's commands */
     CHECK(g_perf_cp.site == -1 && g_perf_cp.slot == -1 && g_perf_cp.draw == -1 && g_perf_cp.last == -1);
     if (failures) return 1;

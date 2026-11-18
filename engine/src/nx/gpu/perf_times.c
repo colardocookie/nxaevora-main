@@ -460,9 +460,9 @@ void perf_copy_own_drop(PerfCopies* c, uint64_t uses) {
 }
 
 /* PERF-23: the stamps by page. A page's slot is found within STAMP_PROBE of its home, and a page that makes room
-   leaves its newest generation in gone[] by a hash of its own, so a page not found is known clean only when that
-   is older than what is asked */
-PerfStamps g_perf_stamps;
+   leaves its newest generation in gone[] by a hash of its own, so a page not found, or made again since (floor), is
+   known clean only for what is asked after that */
+PerfStamps g_perf_stamps, g_perf_real;
 #define STAMP_PROBE 16u
 #define STAMP_GONE (1u << 16)
 #define STAMP_SPAN_MAX (1u << 18) /* pages of one write whose span is kept: past them every span is unknown */
@@ -491,7 +491,7 @@ static PerfStampPage* stamp_slot(PerfStamps* t, uint64_t page) {
         uint64_t* g = &t->gone[stamp_gone_at(pick->page - 1)];
         if (pick->newest > *g) *g = pick->newest;
     }
-    *pick = (PerfStampPage){.page = page + 1};
+    *pick = (PerfStampPage){.page = page + 1, .floor = t->gone[stamp_gone_at(page)]};
     return pick;
 }
 /* [lo, hi) of the page written at gen: the runs it covers give way, and past PERF_STAMP_RUNS the two closest become
@@ -534,7 +534,7 @@ static void stamp_runs(PerfStamps* t, PerfStampPage* p, uint16_t lo, uint16_t hi
 static void span_add(PerfStamps* t, uint64_t page, uint32_t lo, uint32_t hi) {
     uint8_t** leaf = &t->span[(page >> 12) & 0xFFFF];
     if (page >> 28 || (!*leaf && !(*leaf = calloc(4096, 2)))) {
-        t->span_lost = 1;
+        __atomic_store_n(&t->span_lost, 1, __ATOMIC_RELAXED);
         return;
     }
     uint8_t* s = *leaf + (page & 4095) * 2;
@@ -548,12 +548,12 @@ static void span_add(PerfStamps* t, uint64_t page, uint32_t lo, uint32_t hi) {
     if (last > s[1]) s[1] = (uint8_t)last;
 }
 void perf_stamp_add(PerfStamps* t, uint64_t a, uint64_t size, uint64_t gen, int kind) {
-    if (!size || t->failed || kind < 0 || kind >= PSK_N) return;
+    if (!size || __atomic_load_n(&t->failed, __ATOMIC_RELAXED) || kind < 0 || kind >= PSK_N) return;
     if (!t->page) {
         t->page = calloc(PERF_STAMP_SLOTS, sizeof *t->page);
         t->gone = calloc(STAMP_GONE, sizeof *t->gone);
         if (!t->page || !t->gone) {
-            t->failed = 1;
+            __atomic_store_n(&t->failed, 1, __ATOMIC_RELAXED);
             return;
         }
     }
@@ -564,7 +564,7 @@ void perf_stamp_add(PerfStamps* t, uint64_t a, uint64_t size, uint64_t gen, int 
             span_add(t, p, p == first ? (uint32_t)(a & 0xFFF) : 0,
                      p == last ? (uint32_t)((a + size - 1) & 0xFFF) + 1 : 4096);
     else
-        t->span_lost = 1;
+        __atomic_store_n(&t->span_lost, 1, __ATOMIC_RELAXED);
     if (last - first >= PERF_STAMP_WIDE) {
         PerfStampWide* w = &t->wide[t->nwide++ % PERF_STAMP_WIDES];
         if (t->nwide > PERF_STAMP_WIDES && w->gen > t->wide_gone) t->wide_gone = w->gen;
@@ -582,14 +582,15 @@ int perf_stamp_ask(const PerfStamps* t, uint64_t since, uint64_t a, uint64_t len
     *outside = -1;
     *kinds = 0;
     if (!len) return PSA_NONE;
-    if (t->failed || !t->page) return PSA_UNKNOWN;
+    if (__atomic_load_n(&t->failed, __ATOMIC_RELAXED) || !t->page) return PSA_UNKNOWN;
     const uint64_t first = a >> 12, last = (a + len - 1) >> 12;
-    int in = 0, unknown = 0, out = t->span_lost ? -1 : 1;
+    int in = 0, unknown = 0, out = __atomic_load_n(&t->span_lost, __ATOMIC_RELAXED) ? -1 : 1;
     for (uint64_t p = first; p <= last; p++) {
         const uint32_t lo = p == first ? (uint32_t)(a & 0xFFF) : 0;
         const uint32_t hi = p == last ? (uint32_t)((a + len - 1) & 0xFFF) + 1 : 4096;
         const PerfStampPage* e = stamp_find(t, p);
         if (e) {
+            unknown |= e->floor > since;
             for (uint32_t i = 0; i < e->n; i++)
                 if (e->r[i].gen > since) {
                     *kinds |= e->r[i].kinds;
@@ -620,11 +621,16 @@ void perf_copy_steps(PerfCopies* c, int what, const uint64_t* ns, const uint8_t*
         c->step_n[what][k] += ran[k];
     }
 }
-void perf_copy_gsame(PerfCopies* c, int q, unsigned kinds) {
+void perf_copy_gsame(PerfCopies* c, int real, int q, unsigned kinds) {
     if (q < 0 || q >= PSQ_N) return;
-    c->gsame[q]++;
+    real = !!real;
+    c->gsame[real][q]++;
     if (q <= PSQ_SPAN_UNKNOWN)
-        for (int k = 0; k < PSK_N; k++) c->gkinds[k] += kinds >> k & 1;
+        for (int k = 0; k < PSK_N; k++) c->gkinds[real][k] += kinds >> k & 1;
+}
+void perf_copy_probe(PerfCopies* c, uint64_t ns) {
+    c->probe_ns += ns;
+    c->probe_n++;
 }
 void perf_copy_csame(PerfCopies* c, int tracked, int big, uint64_t bytes, uint64_t written) {
     c->csame[!tracked]++;
@@ -874,20 +880,33 @@ size_t perf_own_line(const PerfCopies* c, uint32_t frames, char* out, size_t siz
     }
     return at < size ? at : size - 1;
 }
-size_t perf_same_line(const PerfCopies* c, PerfStamps* s, uint32_t frames, double clock_ns, char* out, size_t size) {
+static size_t put_stamps(char* out, size_t size, size_t at, const char* name, PerfStamps* s, double f) {
+    const uint64_t stamps = __atomic_exchange_n(&s->stamps, 0, __ATOMIC_RELAXED);
+    const uint64_t pages = __atomic_exchange_n(&s->pages, 0, __ATOMIC_RELAXED);
+    const uint64_t merged = __atomic_exchange_n(&s->merged, 0, __ATOMIC_RELAXED);
+    const uint64_t wides = __atomic_exchange_n(&s->wides, 0, __ATOMIC_RELAXED);
+    return putf(out, size, at, " %s=%.1f/%.1f/%.1f/%.1f%s%s", name, stamps / f, pages / f, merged / f, wides / f,
+                __atomic_load_n(&s->failed, __ATOMIC_RELAXED) ? " failed" : "",
+                __atomic_load_n(&s->span_lost, __ATOMIC_RELAXED) ? " span_lost" : "");
+}
+size_t perf_same_line(const PerfCopies* c, PerfStamps* s, PerfStamps* real, uint32_t frames, double clock_ns, char* out,
+                      size_t size) {
     static const char* const whats[PO_N] = {"staged", "own_made", "own_same", "owned_read", "patch"};
     if (!size) return 0;
     const double f = frames ? frames : 1;
     size_t at = putf(out, size, 0,
-                     "perf-same: frames=%u (a frame: own_same after a GPU-side write by the stamps out/span/"
-                     "span_unknown/in/unknown, of the first three the writers on their pages result/gpu/cpu; after a "
-                     "CPU write tracked/untracked, at or past the patch size, KB, KB on pages written; pages written "
-                     "under them in the window: distinct, every frame, half the frames or more, not kept; written "
-                     "checks finding nothing, ms; by outcome ms and calls by step patch_try/written/why/owned/bytes/"
-                     "hash/sample/use/other; stamps, pages entered, runs merged, wide runs; ns a clock read)",
+                     "perf-same: frames=%u (a frame: own_same after a GPU-side write by the record as stamped and "
+                     "as written out/span/span_unknown/in/unknown, of the first three the writers on their pages "
+                     "result/gpu/publish/landed; after a CPU write tracked/untracked, at or past the patch size, KB, "
+                     "KB on pages written; pages written under them in the window: distinct, every frame, half the "
+                     "frames or more, not kept; written checks finding nothing, ms; by outcome ms and calls by step "
+                     "patch/written/why/owned/bytes/hash/sample/use/other; this probe's asks after them, ms; each "
+                     "record's writes, pages entered, runs merged, wide runs; ns a clock read)",
                      frames ? frames : 1);
-    at = put_counts(out, size, at, "gpu", c->gsame, PSQ_N, f);
-    at = put_counts(out, size, at, "writers", c->gkinds, PSK_N, f);
+    at = put_counts(out, size, at, "gpu", c->gsame[0], PSQ_N, f);
+    at = put_counts(out, size, at, "writers", c->gkinds[0], PSK_N, f);
+    at = put_counts(out, size, at, "real", c->gsame[1], PSQ_N, f);
+    at = put_counts(out, size, at, "real_writers", c->gkinds[1], PSK_N, f);
     if (c->csame[0] | c->csame[1])
         at = putf(out, size, at, " cpu=%.1f/%.1f big=%.1f KB=%.1f KB_written=%.1f", c->csame[0] / f, c->csame[1] / f,
                   c->cbig / f, c->cbytes / f / 1024, c->cbytes_written / f / 1024);
@@ -909,11 +928,9 @@ size_t perf_same_line(const PerfCopies* c, PerfStamps* s, uint32_t frames, doubl
         for (int k = 0; k < POS_N; k++) at = putf(out, size, at, k ? "/%.3f" : "%.3f", c->step_ns[w][k] / f / 1e6);
         at = put_counts(out, size, at, "n", c->step_n[w], POS_N, f);
     }
-    const uint64_t stamps = __atomic_exchange_n(&s->stamps, 0, __ATOMIC_RELAXED);
-    const uint64_t spages = __atomic_exchange_n(&s->pages, 0, __ATOMIC_RELAXED);
-    const uint64_t merged = __atomic_exchange_n(&s->merged, 0, __ATOMIC_RELAXED);
-    const uint64_t wides = __atomic_exchange_n(&s->wides, 0, __ATOMIC_RELAXED);
-    at = putf(out, size, at, " stamps=%.1f/%.1f/%.1f/%.1f%s%s clock=%.1f", stamps / f, spages / f, merged / f,
-              wides / f, s->failed ? " stamps_failed" : "", s->span_lost ? " span_lost" : "", clock_ns);
+    if (c->probe_n) at = putf(out, size, at, " probe=%.1f ms=%.3f", c->probe_n / f, c->probe_ns / f / 1e6);
+    at = put_stamps(out, size, at, "stamps", s, f);
+    at = put_stamps(out, size, at, "written", real, f);
+    at = putf(out, size, at, " clock=%.1f", clock_ns);
     return at < size ? at : size - 1;
 }

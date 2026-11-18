@@ -9,6 +9,7 @@
    Each mark is a ClearBuffers value the stand-in renderer records; the platform's locks are pthreads */
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/maxwell/engines_int.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/gpu/renderer.h"
 #include "support/dma_ref.h"
 #include "nx/hle/services/nvdrv.h"
@@ -323,6 +324,39 @@ int main(void) {
         expect(gpu_mem_dirty_since(g, 0xA000, 0x1000) && gpu_mem_dirty_since(g, 0x4000, 4) &&
                    !gpu_mem_dirty_since(g, 0xB000, 0x1000),
                "a write of guest memory dirties the GPU pages showing it");
+    }
+    /* SNX_ARCEUS_PERF_TIMES (PERF-23): the same writes kept to the byte, as stamped and as written, through the other
+       GPU address too. A result's changed run is in the second record alone and dirties nothing */
+    {
+        int out;
+        unsigned kinds;
+        expect(!g_perf_stamps.page, "with the switch unset nothing is kept");
+        g_perf_times = 1;
+        u64 g = gpu_mem_generation();
+        gpu_mem_landed(0x3007, 1);
+        expect(gpu_mem_generation() == g, "a landed run takes no generation");
+        gpu_mem_written(0x7000, 4); /* one elsewhere publishes the next */
+        expect(!gpu_mem_dirty_since(g, 0x3000, 0x1000) &&
+                   !gpu_mem_dirty_since(g, 0xA000, 0x1000),
+               "a landed run stamps nothing");
+        gpu_mem_written_shader(0x3000, 0x1000);
+        expect(gpu_mem_written_ask(g, 0, 0xA800, 4, &out, &kinds) == PSA_IN && kinds == 1u << PSK_RESULT,
+               "as stamped, the result's whole binding, at the other address too");
+        expect(gpu_mem_written_ask(g, 1, 0xA800, 4, &out, &kinds) == PSA_NONE && out == 1 &&
+                   kinds == 1u << PSK_LANDED,
+               "as written, only its changed byte");
+        expect(gpu_mem_written_ask(g, 1, 0xA007, 1, &out, &kinds) == PSA_IN, "which is there");
+        g = gpu_mem_generation();
+        gpu_mem_written_cpu(0x3010, 4);
+        expect(gpu_mem_written_ask(g, 1, 0xA010, 4, &out, &kinds) == PSA_IN && kinds == 1u << PSK_PUBLISH &&
+                   gpu_mem_written_ask(g, 0, 0xA010, 4, &out, &kinds) == PSA_IN,
+               "a publication's bytes, in both records");
+        g = gpu_mem_generation();
+        gpu_mem_written_all();
+        expect(gpu_mem_dirty_since(g, 0xA800, 4) && gpu_mem_written_ask(g, 0, 0xA800, 4, &out, &kinds) == PSA_UNKNOWN &&
+                   gpu_mem_written_ask(g, 1, 0xA800, 4, &out, &kinds) == PSA_UNKNOWN,
+               "every page written at once: no definite answer since before it");
+        g_perf_times = 0;
     }
 
     /* NVN temporarily forces rendering in passthrough mode, then replays the default override without ever

@@ -32,6 +32,7 @@ static void landing_put(void* ctx, u32 from, u32 n) {
         memcpy(d->dst + from, d->res + from, n);
     else
         gmem_write(d->addr + from, d->res + from, n);
+    if (g_perf_times) gpu_mem_landed(d->addr + from, n); /* PERF-23 */
 }
 
 void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
@@ -85,6 +86,7 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
                 memcpy(dst + start, res + start, i - start);
             else
                 gmem_write(addr + start, res + start, i - start);
+            if (g_perf_times) gpu_mem_landed(addr + start, i - start); /* PERF-23 */
             written += i - start;
             changed = 1;
         } while (i < end);

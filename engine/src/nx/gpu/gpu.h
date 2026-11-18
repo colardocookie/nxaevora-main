@@ -326,8 +326,10 @@ void gpu_mem_written_cpu(u64 cpu, u64 size);
 u64 gpu_mem_generation(void);                   /* the last generation fully published */
 void gpu_mem_written_all(void); /* a save state's load: every page written, after anything asked before */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz); /* a GPU-side write after since touched [a, a + sz) */
-/* SNX_ARCEUS_PERF_TIMES (PERF-23): whether a byte of [a, a + sz) was written after since, perf_times.h's PSA_* */
-int gpu_mem_written_ask(u64 since, u64 a, u64 sz, int* outside, unsigned* kinds);
+/* SNX_ARCEUS_PERF_TIMES (PERF-23): whether a byte of [a, a + sz) was written after since (perf_times.h's PSA_*), as
+   stamped or (real) as written, and a run of a result's bytes that changed, for the record as written only */
+int gpu_mem_written_ask(u64 since, int real, u64 a, u64 sz, int* outside, unsigned* kinds);
+void gpu_mem_landed(u64 gva, u64 size);
 
 /* ---- gpu.c: GPFIFO submission and the GPU thread's queue */
 void gpu_init(void);

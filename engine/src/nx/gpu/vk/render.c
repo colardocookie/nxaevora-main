@@ -80,8 +80,11 @@ void vk_perf_own_drop(u64 uses) {
 void vk_perf_steps(int what, const u64* ns, const u8* ran) {
     if (g_perf_times && perf_here()) perf_copy_steps(&g_perf_cp, what, ns, ran);
 }
-void vk_perf_gsame(int q, unsigned kinds) {
-    if (g_perf_times && perf_here()) perf_copy_gsame(&g_perf_cp, q, kinds);
+void vk_perf_gsame(int real, int q, unsigned kinds) {
+    if (g_perf_times && perf_here()) perf_copy_gsame(&g_perf_cp, real, q, kinds);
+}
+void vk_perf_probe(u64 ns) {
+    if (g_perf_times && perf_here()) perf_copy_probe(&g_perf_cp, ns);
 }
 void vk_perf_csame(int tracked, int big, u64 bytes, u64 written) {
     if (g_perf_times && perf_here()) perf_copy_csame(&g_perf_cp, tracked, big, bytes, written);

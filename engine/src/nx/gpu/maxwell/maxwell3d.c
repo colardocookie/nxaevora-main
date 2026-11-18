@@ -50,20 +50,23 @@ static void guest_runs(u64 gva, u64 size, int (*fn)(u64 cpu, u64 n, void* ctx), 
         left -= n;
     }
 }
-/* a stamp and who made it (PSK_*): SNX_ARCEUS_PERF_TIMES keeps it to the byte too (PERF-23) */
+/* a stamp and who made it (PSK_*): SNX_ARCEUS_PERF_TIMES keeps it to the byte too (PERF-23), as stamped and, but for
+   a result's whole binding, as written. A landed run (PSK_LANDED) is the probe's alone and stamps nothing */
 typedef struct {
     u64 gen;
     int kind;
 } Stamp;
 static void stamp_gpu(u64 gva, u64 n, const Stamp* s) {
-    write_pages_stamp(&g_wgpu, gva, n, s->gen);
-    if (g_perf_times) perf_stamp_add(&g_perf_stamps, gva, n, s->gen, s->kind);
+    if (s->kind != PSK_LANDED) write_pages_stamp(&g_wgpu, gva, n, s->gen);
+    if (!g_perf_times) return;
+    if (s->kind != PSK_LANDED) perf_stamp_add(&g_perf_stamps, gva, n, s->gen, s->kind);
+    if (s->kind != PSK_RESULT) perf_stamp_add(&g_perf_real, gva, n, s->gen, s->kind);
 }
 static void stamp_alias(void* ctx, u64 gva, u64 n) { stamp_gpu(gva, n, ctx); }
 /* guest memory written: the GPU pages showing it */
 static void stamp_cpu(u64 cpu, u64 n, const Stamp* s) {
     gmmu_aliases(cpu, n, stamp_alias, (void*)s);
-    if (wcheck_on()) write_pages_stamp(&g_wcpu, cpu, n, s->gen);
+    if (s->kind != PSK_LANDED && wcheck_on()) write_pages_stamp(&g_wcpu, cpu, n, s->gen);
 }
 static int stamp_run(u64 cpu, u64 n, void* ctx) {
     stamp_cpu(cpu, n, ctx);
@@ -75,22 +78,27 @@ static void mem_written(u64 gva, u64 size, int kind) {
     Stamp s = {g_wgen + 1, kind};
     stamp_gpu(gva, size, &s);
     guest_runs(gva, size, stamp_run, &s);
-    __atomic_store_n(&g_wgen, s.gen, __ATOMIC_RELEASE);
+    if (kind != PSK_LANDED) __atomic_store_n(&g_wgen, s.gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
 }
 void gpu_mem_written(u64 gva, u64 size) { mem_written(gva, size, PSK_GPU); }
 void gpu_mem_written_shader(u64 gva, u64 size) { mem_written(gva, size, PSK_RESULT); }
-/* PERF-23: perf_stamp_ask under the writers' lock */
-int gpu_mem_written_ask(u64 since, u64 a, u64 sz, int* outside, unsigned* kinds) {
+void gpu_mem_landed(u64 gva, u64 size) {
+    if (g_perf_times) mem_written(gva, size, PSK_LANDED); /* the next generation, which the result's stamp takes */
+}
+/* PERF-23: perf_stamp_ask under the writers' lock. A write the page table couldn't hold, or every page written at
+   once (gpu_mem_written_all), leaves no definite answer for what was asked since before it */
+int gpu_mem_written_ask(u64 since, int real, u64 a, u64 sz, int* outside, unsigned* kinds) {
     pm_lock(&g_wlk);
-    const int r = perf_stamp_ask(&g_perf_stamps, since, a, sz, outside, kinds);
+    int r = perf_stamp_ask(real ? &g_perf_real : &g_perf_stamps, since, a, sz, outside, kinds);
+    if (r == PSA_NONE && __atomic_load_n(&g_wgpu.overflow, __ATOMIC_ACQUIRE) > since) r = PSA_UNKNOWN;
     pm_unlock(&g_wlk);
     return r;
 }
 void gpu_mem_written_cpu(u64 cpu, u64 size) {
     if (!size) return;
     pm_lock(&g_wlk);
-    Stamp s = {g_wgen + 1, PSK_CPU};
+    Stamp s = {g_wgen + 1, PSK_PUBLISH};
     stamp_cpu(cpu, size, &s);
     __atomic_store_n(&g_wgen, s.gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
