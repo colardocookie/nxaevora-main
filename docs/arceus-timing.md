@@ -489,5 +489,6 @@ and the user found the opening's timing and the text speed the same as on the Sw
 Limits. The battle's message windows wait for a press or for a count of calls (`main+C67F30`, mode 3, up to 40 counts
 in the session played). The count is made in the glyph step that `SNX_ARCEUS_TEXT_TICK` paces, and with it on the user
 found battle text at 60 FPS the same as on the Switch. The length of a wait was not measured. The state tables hold 8
-jobs, 8 demo controllers and 16 texts. A full table leaves that one as the game runs it, with a count, and the played
-sessions had none.
+jobs, 8 demo controllers and 16 texts. A job's state goes when the job finishes or its address holds another script,
+a controller's after a second without a step while it plays, and a text's once the text was not seen in the previous
+frame. A full table leaves that one as the game runs it, with a count, and the played sessions had none.
