@@ -3155,11 +3155,25 @@ static void test_text_tick(void) {
             assert(text_tick_state(TT_B, 1, frame));
             assert(text_tick_state(0x100000 + 0x200 * k, 1, frame));
         }
-    /* a full table takes the oldest state not seen this frame: 15 seen this frame, one in the previous frame */
+    /* a full table takes a state not seen in the previous frame either, never one seen then (it may be called later
+       in this frame): 14 seen this frame, one in the previous frame, one before that */
     for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++)
-        text_tick_states[k] = (TextTickState){.text = 3000 + k, .generation = 1, .last = k == 7 ? frame - 1 : frame};
+        text_tick_states[k] = (TextTickState){.text = 3000 + k, .generation = 1,
+                                              .last = k == 7 ? frame - 1 : k == 9 ? frame - 2 : frame};
     TextTickState* taken = text_tick_state(0x200000, 1, frame);
-    assert(taken == &text_tick_states[7] && taken->fresh && taken->text == 0x200000);
+    assert(taken == &text_tick_states[9] && taken->fresh && taken->text == 0x200000);
+    assert(!text_tick_state(0x200200, 1, frame) && text_tick_states[7].text == 3000 + 7);
+    /* 17 texts shown every frame, the one without a state called first: the 16 keep their states and budgets, and
+       only the 17th reveals as today (the cascade CodeRabbit found on PR #52) */
+    for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++)
+        text_tick_states[k] = (TextTickState){.text = 3000 + k, .generation = 1, .last = frame - 1};
+    for (unsigned f = 0; f < 8; f++, frame++) {
+        assert(!text_tick_state(0x300000, 1, frame));
+        for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++) {
+            TextTickState* kept = text_tick_state(3000 + k, 1, frame);
+            assert(kept == &text_tick_states[k] && !kept->fresh);
+        }
+    }
     /* every state seen this frame: the new T reveals as today, counted */
     tt_reset();
     tt_frame(16666667);

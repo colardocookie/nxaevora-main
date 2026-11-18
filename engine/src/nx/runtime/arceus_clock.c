@@ -5153,22 +5153,20 @@ static _Thread_local u64 text_tick_skip;
    filled). A shown T is updated every frame, so a state whose T was not seen in the previous frame is free. */
 static int text_tick_stale(const TextTickState* st, u64 frame) { return !st->text || st->last + 1 < frame; }
 /* T's state by its address and its text [T +78]. It starts fresh (its first call a tick) for a new T, a new text there,
-   or a T seen again after a gap. A new T takes a free state first, else the oldest one not seen this frame; NULL only
-   when every state was seen this frame. */
+   or a T seen again after a gap. A new T takes a free state only: one seen in the previous frame may be called later in
+   this one, and taking it would start a chain of fresh, unpaced states. NULL when none is free. */
 static TextTickState* text_tick_state(u64 text, u64 generation, u64 frame) {
-    TextTickState *free = NULL, *oldest = NULL;
+    TextTickState* st = NULL;
     for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++) {
-        TextTickState* st = &text_tick_states[k];
-        if (st->text == text) {
-            if (st->generation != generation || text_tick_stale(st, frame))
-                *st = (TextTickState){.text = text, .generation = generation, .fresh = 1};
-            st->last = frame;
-            return st;
+        TextTickState* t = &text_tick_states[k];
+        if (t->text == text) {
+            if (t->generation != generation || text_tick_stale(t, frame))
+                *t = (TextTickState){.text = text, .generation = generation, .fresh = 1};
+            t->last = frame;
+            return t;
         }
-        if (!free && text_tick_stale(st, frame)) free = st;
-        if (st->last < frame && (!oldest || st->last < oldest->last)) oldest = st;
+        if (!st && text_tick_stale(t, frame)) st = t;
     }
-    TextTickState* st = free ? free : oldest;
     if (!st) return NULL;
     *st = (TextTickState){.text = text, .generation = generation, .last = frame, .fresh = 1};
     text_tick_seen++;
