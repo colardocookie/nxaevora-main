@@ -791,6 +791,144 @@ static void test_own(void) {
     CHECK(perf_own_line(&c, 1, small, sizeof small) == sizeof small - 1 && perf_own_line(&c, 1, small, 0) == 0);
 }
 
+/* PERF-23: the GPU-side writes to the byte, and the slow path's steps, own_same's two causes and their line */
+static uint64_t pages_home(uint64_t page, int bits) { return (page * 0x9E3779B97F4A7C15ull) >> (64 - bits); }
+static void test_same(void) {
+    static PerfStamps t;
+    int out;
+    unsigned kinds;
+    CHECK(perf_stamp_ask(&t, 0, 0x1000, 4, &out, &kinds) == PSA_UNKNOWN); /* nothing kept yet */
+    static PerfStamps far;
+    perf_stamp_add(&far, 1ull << 40, 16, 1, PSK_GPU); /* past the span's table */
+    CHECK(far.span_lost && !t.span_lost);
+    perf_stamp_add(&t, 0x10100, 0x100, 5, PSK_GPU);
+    perf_stamp_add(&t, 0x10000, 0, 9, PSK_GPU); /* empty, */
+    perf_stamp_add(&t, 0x10000, 0x10, 9, PSK_N); /* no such writer: nothing */
+    CHECK(perf_stamp_ask(&t, 4, 0x10100, 0x100, &out, &kinds) == PSA_IN && kinds == 1u << PSK_GPU && out == 0);
+    CHECK(perf_stamp_ask(&t, 5, 0x10100, 0x100, &out, &kinds) == PSA_NONE && kinds == 0 && out == 0); /* not after */
+    CHECK(perf_stamp_ask(&t, 4, 0x10400, 0x100, &out, &kinds) == PSA_NONE && kinds == 1u << PSK_GPU && out == 1);
+    CHECK(perf_stamp_ask(&t, 4, 0x100ff, 1, &out, &kinds) == PSA_NONE && out == 1);  /* the byte before */
+    CHECK(perf_stamp_ask(&t, 4, 0x10200, 16, &out, &kinds) == PSA_NONE && out == 1); /* and after */
+    CHECK(perf_stamp_ask(&t, 4, 0x10000, 0x101, &out, &kinds) == PSA_IN);
+    CHECK(perf_stamp_ask(&t, 0, 0x10000, 0, &out, &kinds) == PSA_NONE);
+    /* the span in 16 byte steps: bytes 5 to 7 stamped make 0 to 15 the span */
+    perf_stamp_add(&t, 0x20005, 3, 6, PSK_GPU);
+    CHECK(perf_stamp_ask(&t, 5, 0x20010, 0x10, &out, &kinds) == PSA_NONE && out == 1);
+    CHECK(perf_stamp_ask(&t, 5, 0x2000f, 1, &out, &kinds) == PSA_NONE && out == 0);
+    CHECK(perf_stamp_ask(&t, 5, 0x20000, 5, &out, &kinds) == PSA_NONE && out == 0);
+    CHECK(perf_stamp_ask(&t, 5, 0x20007, 1, &out, &kinds) == PSA_IN);
+    perf_stamp_add(&t, 0x20ff0, 0x10, 6, PSK_GPU); /* the page's last step widens it */
+    CHECK(perf_stamp_ask(&t, 6, 0x20800, 4, &out, &kinds) == PSA_NONE && out == 0);
+    /* seven runs on a page: the two closest (the first two, ties to the lower) become one with the newer generation */
+    for (uint64_t k = 0; k < 7; k++) perf_stamp_add(&t, 0x30000 + k * 0x100, 0x10, 10 + k, PSK_GPU);
+    CHECK(perf_stamp_ask(&t, 0, 0x30080, 4, &out, &kinds) == PSA_IN);  /* the gap merged in */
+    CHECK(perf_stamp_ask(&t, 10, 0x30080, 4, &out, &kinds) == PSA_IN); /* with the newer generation of the two */
+    CHECK(perf_stamp_ask(&t, 11, 0x30080, 4, &out, &kinds) == PSA_NONE);
+    CHECK(perf_stamp_ask(&t, 0, 0x30180, 4, &out, &kinds) == PSA_NONE); /* a gap still apart */
+    CHECK(perf_stamp_ask(&t, 15, 0x30600, 0x10, &out, &kinds) == PSA_IN);
+    CHECK(__atomic_load_n(&t.merged, __ATOMIC_RELAXED) == 1);
+    static const uint64_t at[7] = {0, 0x100, 0x180, 0x300, 0x400, 0x500, 0x600}; /* 0x100 and 0x180 the closest */
+    for (int k = 0; k < 7; k++) perf_stamp_add(&t, 0x31000 + at[k], 0x10, 10, PSK_GPU);
+    CHECK(perf_stamp_ask(&t, 0, 0x31150, 4, &out, &kinds) == PSA_IN);
+    CHECK(perf_stamp_ask(&t, 0, 0x31080, 4, &out, &kinds) == PSA_NONE);
+    /* a write over part of a run: the rest keeps its generation */
+    perf_stamp_add(&t, 0x40000, 0x1000, 20, PSK_GPU);
+    perf_stamp_add(&t, 0x40400, 0x100, 21, PSK_GPU);
+    CHECK(perf_stamp_ask(&t, 20, 0x40000, 0x100, &out, &kinds) == PSA_NONE);
+    CHECK(perf_stamp_ask(&t, 20, 0x40f00, 0x100, &out, &kinds) == PSA_NONE);
+    CHECK(perf_stamp_ask(&t, 19, 0x40f00, 4, &out, &kinds) == PSA_IN); /* the part after it kept */
+    CHECK(perf_stamp_ask(&t, 20, 0x40450, 4, &out, &kinds) == PSA_IN);
+    CHECK(perf_stamp_ask(&t, 19, 0x40000, 4, &out, &kinds) == PSA_IN);
+    perf_stamp_add(&t, 0x40300, 0x300, 22, PSK_GPU); /* across its start and end */
+    CHECK(perf_stamp_ask(&t, 21, 0x40450, 4, &out, &kinds) == PSA_IN);
+    CHECK(perf_stamp_ask(&t, 21, 0x40280, 4, &out, &kinds) == PSA_NONE);
+    /* across a page, and who wrote */
+    perf_stamp_add(&t, 0x50f00, 0x200, 23, PSK_CPU);
+    perf_stamp_add(&t, 0x51800, 0x10, 24, PSK_RESULT);
+    CHECK(perf_stamp_ask(&t, 0, 0x51000, 0x80, &out, &kinds) == PSA_IN);
+    CHECK(perf_stamp_ask(&t, 0, 0x51200, 0x400, &out, &kinds) == PSA_NONE && out == 0); /* inside 0 to 0x810 */
+    CHECK(kinds == (1u << PSK_CPU | 1u << PSK_RESULT));
+    CHECK(perf_stamp_ask(&t, 0, 0x51900, 0x100, &out, &kinds) == PSA_NONE && out == 1);
+    CHECK(perf_stamp_ask(&t, 23, 0x51200, 0x400, &out, &kinds) == PSA_NONE && kinds == 1u << PSK_RESULT);
+    /* a full probe: the page written longest ago makes room, and a page not found is clean only before it */
+    uint64_t same[17], n = 0;
+    for (uint64_t pg = 0x100000; n < 17; pg++)
+        if (pages_home(pg, 17) == pages_home(0x100000, 17)) same[n++] = pg;
+    for (uint64_t k = 0; k < 17; k++) perf_stamp_add(&t, same[k] << 12, 0x10, 100 + k, PSK_GPU);
+    CHECK(perf_stamp_ask(&t, 99, same[0] << 12, 0x10, &out, &kinds) == PSA_UNKNOWN);
+    CHECK(perf_stamp_ask(&t, 100, same[0] << 12, 0x10, &out, &kinds) == PSA_NONE && out == 0); /* its span stays */
+    CHECK(perf_stamp_ask(&t, 99, same[1] << 12, 0x10, &out, &kinds) == PSA_IN);
+    CHECK(perf_stamp_ask(&t, 99, same[16] << 12, 0x10, &out, &kinds) == PSA_IN);
+    /* a wide write is one run */
+    const uint64_t wide = 0x10000000, wsize = (PERF_STAMP_WIDE + 1ull) << 12;
+    perf_stamp_add(&t, wide, wsize, 200, PSK_GPU);
+    CHECK(__atomic_load_n(&t.wides, __ATOMIC_RELAXED) == 1 && t.nwide == 1);
+    CHECK(perf_stamp_ask(&t, 199, wide + 0x123456, 4, &out, &kinds) == PSA_IN && kinds == 1u << PSK_GPU);
+    CHECK(perf_stamp_ask(&t, 200, wide + 0x123456, 4, &out, &kinds) == PSA_NONE && out == 0);
+    CHECK(perf_stamp_ask(&t, 199, wide + wsize, 4, &out, &kinds) == PSA_NONE && out == 1);
+    CHECK(perf_stamp_ask(&t, 199, wide - 4, 4, &out, &kinds) == PSA_NONE);
+    CHECK(perf_stamp_ask(&t, 199, wide - 4, 5, &out, &kinds) == PSA_IN);
+    /* the window's counts */
+    static PerfCopies c;
+    perf_copies_reset(&c);
+    const uint64_t ns[POS_N] = {1000000, 2000000, 0, 3000000, 0, 4000000, 500000, 250000, 1500000};
+    const uint8_t ran[POS_N] = {1, 1, 1, 1, 1, 1, 1, 1, 1}, some[POS_N] = {0, 1, 1, 1, 1, 1, 0, 1, 1};
+    perf_copy_steps(&c, PO_OWN_SAME, ns, ran);
+    perf_copy_steps(&c, PO_OWN_SAME, ns, some);
+    perf_copy_steps(&c, PO_N, ns, ran); /* out of range */
+    CHECK(c.step_ns[PO_OWN_SAME][POS_HASH] == 8000000 && c.step_n[PO_OWN_SAME][POS_SAMPLE] == 1);
+    perf_copy_gsame(&c, PSQ_OUT, 1u << PSK_GPU | 1u << PSK_CPU);
+    perf_copy_gsame(&c, PSQ_SPAN, 1u << PSK_RESULT);
+    perf_copy_gsame(&c, PSQ_IN, 1u << PSK_RESULT); /* in range: its writers aren't counted */
+    perf_copy_gsame(&c, PSQ_N, 0);
+    CHECK(c.gsame[PSQ_OUT] == 1 && c.gsame[PSQ_IN] == 1 && c.gkinds[PSK_RESULT] == 1 && c.gkinds[PSK_GPU] == 1);
+    perf_copy_csame(&c, 1, 0, 4096, 1024);
+    perf_copy_csame(&c, 0, 1, 1 << 20, 0);
+    perf_copy_quiet(&c, 3000000);
+    for (uint64_t f = 1; f <= 4; f++) {
+        perf_copy_wpage(&c, 7, f); /* every frame, twice in each */
+        perf_copy_wpage(&c, 7, f);
+        if (f % 2) perf_copy_wpage(&c, 8, f); /* half of them */
+    }
+    perf_copy_wpage(&c, 9, 4);
+    for (uint32_t i = 0; i < PERF_WPAGES; i++)
+        if (c.wpage[i].page == 8) CHECK(c.wpage[i].frames == 4); /* page 7: once a frame, however often seen */
+    n = 0;
+    for (uint64_t pg = 0; n < 17; pg++)
+        if (pages_home(pg, 52 - 40) == pages_home(0x1000, 52 - 40) && pg != 7 && pg != 8 && pg != 9) {
+            perf_copy_wpage(&c, pg, 1);
+            n++;
+        }
+    CHECK(c.wpages_lost == 1);
+    char line[PERF_COPIES_LINE];
+    perf_same_line(&c, &t, 4, 21.5, line, sizeof line);
+    CHECK(strstr(line, "perf-same: frames=4 "));
+    CHECK(strstr(line, " gpu=0.2/0.2/0.0/0.2/0.0 writers=0.2/0.2/0.2 "));
+    CHECK(strstr(line, " cpu=0.2/0.2 big=0.2 KB=257.0 KB_written=0.2 pages=19/1/2/1 quiet=0.2 ms=0.750 "));
+    CHECK(strstr(line, " own_same_ms=0.500/1.000/0.000/1.500/0.000/2.000/0.250/0.125/0.750 n=0.2/0.5/0.5/0.5/0.5/0.5/"
+                       "0.2/0.5/0.5 "));
+    CHECK(!strstr(line, " staged_ms="));
+    CHECK(strstr(line, " clock=21.5") && !strstr(line, "span_lost") && !strstr(line, "stamps_failed"));
+    CHECK(strstr(line, " stamps="));
+    CHECK(__atomic_load_n(&t.stamps, __ATOMIC_RELAXED) == 0 && __atomic_load_n(&t.merged, __ATOMIC_RELAXED) == 0);
+    perf_copies_line(&c, 4, line, sizeof line); /* the window's counts go with it */
+    CHECK(c.gsame[PSQ_OUT] == 0 && c.step_n[PO_OWN_SAME][POS_HASH] == 0 && c.wpage[0].page == 0 && !c.wpages_lost);
+    perf_same_line(&c, &t, 4, 1, line, sizeof line);
+    CHECK(!strstr(line, " gpu=") && !strstr(line, " cpu=") && !strstr(line, " pages=") && !strstr(line, "_ms="));
+    char small[10];
+    CHECK(perf_same_line(&c, &t, 1, 1, small, sizeof small) == sizeof small - 1);
+    CHECK(perf_same_line(&c, &t, 1, 1, small, 0) == 0);
+    /* past PERF_STAMP_WIDES wide runs, one asked about since before the oldest gone is unknown */
+    for (uint64_t k = 0; k < PERF_STAMP_WIDES; k++) perf_stamp_add(&t, wide + (k + 1) * wsize, wsize, 300 + k, PSK_GPU);
+    CHECK(perf_stamp_ask(&t, 199, 0x10100, 0x100, &out, &kinds) == PSA_UNKNOWN);
+    CHECK(perf_stamp_ask(&t, 200, 0x10400, 0x100, &out, &kinds) == PSA_NONE && out == 1);
+    /* a write over more pages than a span is kept for: every span unknown */
+    perf_stamp_add(&t, 1ull << 36, 1ull << 31, 1000, PSK_GPU);
+    CHECK(t.span_lost && perf_stamp_ask(&t, 1000, 0x10400, 0x100, &out, &kinds) == PSA_NONE && out == -1);
+    perf_same_line(&c, &t, 1, 1, line, sizeof line);
+    CHECK(strstr(line, " span_lost"));
+}
+
 int main(void) {
     test_rel_window();
     test_subs();
@@ -812,6 +950,7 @@ int main(void) {
     test_inplace_counts();
     test_writable();
     test_own();
+    test_same();
     CHECK(g_perf_inplace == 0 && g_perf_bind == PBK_OTHER && g_perf_exact == 0); /* unset: today's commands */
     CHECK(g_perf_cp.site == -1 && g_perf_cp.slot == -1 && g_perf_cp.draw == -1 && g_perf_cp.last == -1);
     if (failures) return 1;

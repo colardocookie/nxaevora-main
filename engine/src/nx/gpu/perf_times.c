@@ -3,6 +3,7 @@
 #include "nx/gpu/perf_times.h"
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 int g_perf_times;
@@ -457,6 +458,204 @@ void perf_copy_own_drop(PerfCopies* c, uint64_t uses) {
     const unsigned b = uses == 0 ? 0 : uses == 1 ? 1 : uses < 4 ? 2 : uses < 16 ? 3 : uses < 64 ? 4 : 5;
     c->own_uses[b]++;
 }
+
+/* PERF-23: the stamps by page. A page's slot is found within STAMP_PROBE of its home, and a page that makes room
+   leaves its newest generation in gone[] by a hash of its own, so a page not found is known clean only when that
+   is older than what is asked */
+PerfStamps g_perf_stamps;
+#define STAMP_PROBE 16u
+#define STAMP_GONE (1u << 16)
+#define STAMP_SPAN_MAX (1u << 18) /* pages of one write whose span is kept: past them every span is unknown */
+static uint32_t stamp_home(uint64_t page) { return (uint32_t)((page * 0x9E3779B97F4A7C15ull) >> 47); }
+static uint32_t stamp_gone_at(uint64_t page) { return (uint32_t)((page * 0xC2B2AE3D27D4EB4Full) >> 48); }
+static PerfStampPage* stamp_find(const PerfStamps* t, uint64_t page) {
+    const uint32_t at = stamp_home(page);
+    for (uint32_t k = 0; k < STAMP_PROBE; k++) {
+        PerfStampPage* p = &t->page[(at + k) % PERF_STAMP_SLOTS];
+        if (p->page == page + 1) return p;
+    }
+    return NULL;
+}
+static PerfStampPage* stamp_slot(PerfStamps* t, uint64_t page) {
+    const uint32_t at = stamp_home(page);
+    PerfStampPage* pick = NULL;
+    for (uint32_t k = 0; k < STAMP_PROBE; k++) {
+        PerfStampPage* p = &t->page[(at + k) % PERF_STAMP_SLOTS];
+        if (p->page == page + 1) return p;
+        if (!p->page) {
+            if (!pick || pick->page) pick = p;
+        } else if (!pick || (pick->page && p->newest < pick->newest))
+            pick = p;
+    }
+    if (pick->page) {
+        uint64_t* g = &t->gone[stamp_gone_at(pick->page - 1)];
+        if (pick->newest > *g) *g = pick->newest;
+    }
+    *pick = (PerfStampPage){.page = page + 1};
+    return pick;
+}
+/* [lo, hi) of the page written at gen: the runs it covers give way, and past PERF_STAMP_RUNS the two closest become
+   one run over both and the gap between them, with the newer generation */
+static void stamp_runs(PerfStamps* t, PerfStampPage* p, uint16_t lo, uint16_t hi, uint64_t gen, int kind) {
+    PerfStampRun r[PERF_STAMP_RUNS + 2];
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < p->n; i++) {
+        const PerfStampRun o = p->r[i];
+        if (o.hi <= lo || o.lo >= hi) {
+            r[n++] = o;
+            continue;
+        }
+        if (o.lo < lo) r[n++] = (PerfStampRun){o.gen, o.lo, lo, o.kinds};
+        if (o.hi > hi) r[n++] = (PerfStampRun){o.gen, hi, o.hi, o.kinds};
+    }
+    r[n++] = (PerfStampRun){gen, lo, hi, (uint8_t)(1u << kind)};
+    for (uint32_t i = 1; i < n; i++) /* by start */
+        for (uint32_t j = i; j && r[j - 1].lo > r[j].lo; j--) {
+            const PerfStampRun x = r[j];
+            r[j] = r[j - 1];
+            r[j - 1] = x;
+        }
+    while (n > PERF_STAMP_RUNS) {
+        uint32_t b = 0;
+        for (uint32_t i = 1; i + 1 < n; i++)
+            if (r[i + 1].lo - r[i].hi < r[b + 1].lo - r[b].hi) b = i;
+        r[b].hi = r[b + 1].hi;
+        if (r[b + 1].gen > r[b].gen) r[b].gen = r[b + 1].gen;
+        r[b].kinds |= r[b + 1].kinds;
+        memmove(&r[b + 1], &r[b + 2], (n - b - 2) * sizeof *r);
+        n--;
+        __atomic_fetch_add(&t->merged, 1, __ATOMIC_RELAXED);
+    }
+    memcpy(p->r, r, n * sizeof *r);
+    p->n = n;
+    if (gen > p->newest) p->newest = gen;
+}
+/* a page's span: 255 minus its first 16 byte step, then its last, so a zeroed page has none */
+static void span_add(PerfStamps* t, uint64_t page, uint32_t lo, uint32_t hi) {
+    uint8_t** leaf = &t->span[(page >> 12) & 0xFFFF];
+    if (page >> 28 || (!*leaf && !(*leaf = calloc(4096, 2)))) {
+        t->span_lost = 1;
+        return;
+    }
+    uint8_t* s = *leaf + (page & 4095) * 2;
+    const unsigned first = lo / 16, last = (hi - 1) / 16;
+    if (255u - s[0] > s[1]) { /* none yet */
+        s[0] = (uint8_t)(255 - first);
+        s[1] = (uint8_t)last;
+        return;
+    }
+    if (first < 255u - s[0]) s[0] = (uint8_t)(255 - first);
+    if (last > s[1]) s[1] = (uint8_t)last;
+}
+void perf_stamp_add(PerfStamps* t, uint64_t a, uint64_t size, uint64_t gen, int kind) {
+    if (!size || t->failed || kind < 0 || kind >= PSK_N) return;
+    if (!t->page) {
+        t->page = calloc(PERF_STAMP_SLOTS, sizeof *t->page);
+        t->gone = calloc(STAMP_GONE, sizeof *t->gone);
+        if (!t->page || !t->gone) {
+            t->failed = 1;
+            return;
+        }
+    }
+    __atomic_fetch_add(&t->stamps, 1, __ATOMIC_RELAXED);
+    const uint64_t first = a >> 12, last = (a + size - 1) >> 12;
+    if (last - first < STAMP_SPAN_MAX)
+        for (uint64_t p = first; p <= last; p++)
+            span_add(t, p, p == first ? (uint32_t)(a & 0xFFF) : 0,
+                     p == last ? (uint32_t)((a + size - 1) & 0xFFF) + 1 : 4096);
+    else
+        t->span_lost = 1;
+    if (last - first >= PERF_STAMP_WIDE) {
+        PerfStampWide* w = &t->wide[t->nwide++ % PERF_STAMP_WIDES];
+        if (t->nwide > PERF_STAMP_WIDES && w->gen > t->wide_gone) t->wide_gone = w->gen;
+        *w = (PerfStampWide){a, a + size, gen, (uint8_t)(1u << kind)};
+        __atomic_fetch_add(&t->wides, 1, __ATOMIC_RELAXED);
+        return;
+    }
+    for (uint64_t p = first; p <= last; p++) {
+        stamp_runs(t, stamp_slot(t, p), p == first ? (uint16_t)(a & 0xFFF) : 0,
+                   p == last ? (uint16_t)(((a + size - 1) & 0xFFF) + 1) : 4096, gen, kind);
+        __atomic_fetch_add(&t->pages, 1, __ATOMIC_RELAXED);
+    }
+}
+int perf_stamp_ask(const PerfStamps* t, uint64_t since, uint64_t a, uint64_t len, int* outside, unsigned* kinds) {
+    *outside = -1;
+    *kinds = 0;
+    if (!len) return PSA_NONE;
+    if (t->failed || !t->page) return PSA_UNKNOWN;
+    const uint64_t first = a >> 12, last = (a + len - 1) >> 12;
+    int in = 0, unknown = 0, out = t->span_lost ? -1 : 1;
+    for (uint64_t p = first; p <= last; p++) {
+        const uint32_t lo = p == first ? (uint32_t)(a & 0xFFF) : 0;
+        const uint32_t hi = p == last ? (uint32_t)((a + len - 1) & 0xFFF) + 1 : 4096;
+        const PerfStampPage* e = stamp_find(t, p);
+        if (e) {
+            for (uint32_t i = 0; i < e->n; i++)
+                if (e->r[i].gen > since) {
+                    *kinds |= e->r[i].kinds;
+                    in |= e->r[i].lo < hi && e->r[i].hi > lo;
+                }
+        } else if (t->gone[stamp_gone_at(p)] > since)
+            unknown = 1;
+        const uint8_t* leaf = out == 1 ? t->span[(p >> 12) & 0xFFFF] : NULL;
+        if (leaf && !(p >> 28)) {
+            const uint8_t* s = leaf + (p & 4095) * 2;
+            if (255u - s[0] <= s[1] && (255u - s[0]) * 16 < hi && (s[1] + 1u) * 16 > lo) out = 0;
+        }
+    }
+    for (uint64_t i = 0; i < t->nwide && i < PERF_STAMP_WIDES; i++) {
+        const PerfStampWide* w = &t->wide[i];
+        if (w->gen <= since || w->start >= (last + 1) << 12 || w->end <= first << 12) continue;
+        *kinds |= w->kinds;
+        in |= w->start < a + len && w->end > a;
+    }
+    if (t->wide_gone > since) unknown = 1;
+    *outside = out;
+    return in ? PSA_IN : unknown ? PSA_UNKNOWN : PSA_NONE;
+}
+void perf_copy_steps(PerfCopies* c, int what, const uint64_t* ns, const uint8_t* ran) {
+    if (what < 0 || what >= PO_N) return;
+    for (int k = 0; k < POS_N; k++) {
+        c->step_ns[what][k] += ns[k];
+        c->step_n[what][k] += ran[k];
+    }
+}
+void perf_copy_gsame(PerfCopies* c, int q, unsigned kinds) {
+    if (q < 0 || q >= PSQ_N) return;
+    c->gsame[q]++;
+    if (q <= PSQ_SPAN_UNKNOWN)
+        for (int k = 0; k < PSK_N; k++) c->gkinds[k] += kinds >> k & 1;
+}
+void perf_copy_csame(PerfCopies* c, int tracked, int big, uint64_t bytes, uint64_t written) {
+    c->csame[!tracked]++;
+    c->cbig += !!big;
+    c->cbytes += bytes;
+    c->cbytes_written += written;
+}
+void perf_copy_quiet(PerfCopies* c, uint64_t ns) {
+    c->quiet++;
+    c->quiet_ns += ns;
+}
+void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame) {
+    const uint32_t at = (uint32_t)((page * 0x9E3779B97F4A7C15ull) >> 52);
+    for (uint32_t k = 0; k < 16; k++) {
+        PerfWPage* w = &c->wpage[(at + k) % PERF_WPAGES];
+        if (w->page == page + 1) {
+            if (w->last != frame) {
+                w->last = frame;
+                w->frames++;
+            }
+            return;
+        }
+        if (!w->page) {
+            w->page = page + 1;
+            w->last = frame;
+            w->frames = 1;
+            return;
+        }
+    }
+    c->wpages_lost++;
+}
 static int result_covers(const PerfResult* r, uint64_t gva, uint64_t len) {
     return gva >= r->addr && gva + len <= r->addr + r->size;
 }
@@ -673,5 +872,48 @@ size_t perf_own_line(const PerfCopies* c, uint32_t frames, char* out, size_t siz
         at = put_counts(out, size, at, "own", g->own, PO_N, f);
         at = put_counts(out, size, at, "landed", g->own_landed, PO_N, f);
     }
+    return at < size ? at : size - 1;
+}
+size_t perf_same_line(const PerfCopies* c, PerfStamps* s, uint32_t frames, double clock_ns, char* out, size_t size) {
+    static const char* const whats[PO_N] = {"staged", "own_made", "own_same", "owned_read", "patch"};
+    if (!size) return 0;
+    const double f = frames ? frames : 1;
+    size_t at = putf(out, size, 0,
+                     "perf-same: frames=%u (a frame: own_same after a GPU-side write by the stamps out/span/"
+                     "span_unknown/in/unknown, of the first three the writers on their pages result/gpu/cpu; after a "
+                     "CPU write tracked/untracked, at or past the patch size, KB, KB on pages written; pages written "
+                     "under them in the window: distinct, every frame, half the frames or more, not kept; written "
+                     "checks finding nothing, ms; by outcome ms and calls by step patch_try/written/why/owned/bytes/"
+                     "hash/sample/use/other; stamps, pages entered, runs merged, wide runs; ns a clock read)",
+                     frames ? frames : 1);
+    at = put_counts(out, size, at, "gpu", c->gsame, PSQ_N, f);
+    at = put_counts(out, size, at, "writers", c->gkinds, PSK_N, f);
+    if (c->csame[0] | c->csame[1])
+        at = putf(out, size, at, " cpu=%.1f/%.1f big=%.1f KB=%.1f KB_written=%.1f", c->csame[0] / f, c->csame[1] / f,
+                  c->cbig / f, c->cbytes / f / 1024, c->cbytes_written / f / 1024);
+    uint32_t pages = 0, every = 0, half = 0;
+    for (uint32_t i = 0; i < PERF_WPAGES; i++) {
+        if (!c->wpage[i].page) continue;
+        pages++;
+        every += c->wpage[i].frames >= frames;
+        half += 2ull * c->wpage[i].frames >= frames;
+    }
+    if (pages || c->wpages_lost)
+        at = putf(out, size, at, " pages=%u/%u/%u/%llu", pages, every, half, (unsigned long long)c->wpages_lost);
+    if (c->quiet) at = putf(out, size, at, " quiet=%.1f ms=%.3f", c->quiet / f, c->quiet_ns / f / 1e6);
+    for (int w = 0; w < PO_N; w++) {
+        uint64_t any = 0;
+        for (int k = 0; k < POS_N; k++) any |= c->step_n[w][k];
+        if (!any) continue;
+        at = putf(out, size, at, " %s_ms=", whats[w]);
+        for (int k = 0; k < POS_N; k++) at = putf(out, size, at, k ? "/%.3f" : "%.3f", c->step_ns[w][k] / f / 1e6);
+        at = put_counts(out, size, at, "n", c->step_n[w], POS_N, f);
+    }
+    const uint64_t stamps = __atomic_exchange_n(&s->stamps, 0, __ATOMIC_RELAXED);
+    const uint64_t spages = __atomic_exchange_n(&s->pages, 0, __ATOMIC_RELAXED);
+    const uint64_t merged = __atomic_exchange_n(&s->merged, 0, __ATOMIC_RELAXED);
+    const uint64_t wides = __atomic_exchange_n(&s->wides, 0, __ATOMIC_RELAXED);
+    at = putf(out, size, at, " stamps=%.1f/%.1f/%.1f/%.1f%s%s clock=%.1f", stamps / f, spages / f, merged / f,
+              wides / f, s->failed ? " stamps_failed" : "", s->span_lost ? " span_lost" : "", clock_ns);
     return at < size ? at : size - 1;
 }

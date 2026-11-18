@@ -1075,6 +1075,13 @@ void vk_perf_writable(int path, const u64* ns, u64 bytes); /* PERF-20: a new wri
 /* PERF-22: a buf_get slow path (PO_*, POW_*), and an own buffer dropped after uses draws */
 void vk_perf_own(int what, int why, u64 bytes, int landed, const u64* ns);
 void vk_perf_own_drop(u64 uses);
+/* PERF-23: a slow path by step, own_same after a GPU-side write (PSQ_*) and after a CPU write, a written check that
+   found nothing, a host page found written */
+void vk_perf_steps(int what, const u64* ns, const u8* ran);
+void vk_perf_gsame(int q, unsigned kinds);
+void vk_perf_csame(int tracked, int big, u64 bytes, u64 written);
+void vk_perf_quiet(u64 ns);
+void vk_perf_wpage(u64 page);
 void vk_render_draw_texture(GpuChannel* ch);
 void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                     u32 instances);

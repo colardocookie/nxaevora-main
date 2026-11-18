@@ -9,6 +9,7 @@
    GPU-side writes the renderer's caches check */
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/maxwell/write_pages.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/hle/services/nvdrv.h"
 
 /* ------------------------------------------------------------ the record of GPU-side writes */
@@ -49,34 +50,49 @@ static void guest_runs(u64 gva, u64 size, int (*fn)(u64 cpu, u64 n, void* ctx), 
         left -= n;
     }
 }
-static void stamp_alias(void* ctx, u64 gva, u64 n) { write_pages_stamp(&g_wgpu, gva, n, *(const u64*)ctx); }
+/* a stamp and who made it (PSK_*): SNX_ARCEUS_PERF_TIMES keeps it to the byte too (PERF-23) */
+typedef struct {
+    u64 gen;
+    int kind;
+} Stamp;
+static void stamp_gpu(u64 gva, u64 n, const Stamp* s) {
+    write_pages_stamp(&g_wgpu, gva, n, s->gen);
+    if (g_perf_times) perf_stamp_add(&g_perf_stamps, gva, n, s->gen, s->kind);
+}
+static void stamp_alias(void* ctx, u64 gva, u64 n) { stamp_gpu(gva, n, ctx); }
 /* guest memory written: the GPU pages showing it */
-static void stamp_cpu(u64 cpu, u64 n, u64 gen) {
-    gmmu_aliases(cpu, n, stamp_alias, &gen);
-    if (wcheck_on()) write_pages_stamp(&g_wcpu, cpu, n, gen);
+static void stamp_cpu(u64 cpu, u64 n, const Stamp* s) {
+    gmmu_aliases(cpu, n, stamp_alias, (void*)s);
+    if (wcheck_on()) write_pages_stamp(&g_wcpu, cpu, n, s->gen);
 }
 static int stamp_run(u64 cpu, u64 n, void* ctx) {
-    stamp_cpu(cpu, n, *(const u64*)ctx);
+    stamp_cpu(cpu, n, ctx);
     return 0;
 }
-void gpu_mem_written(u64 gva, u64 size) {
-    u64 gen;
+static void mem_written(u64 gva, u64 size, int kind) {
     if (!size) return;
     pm_lock(&g_wlk);
-    gen = g_wgen + 1;
-    write_pages_stamp(&g_wgpu, gva, size, gen);
-    guest_runs(gva, size, stamp_run, &gen);
-    __atomic_store_n(&g_wgen, gen, __ATOMIC_RELEASE);
+    Stamp s = {g_wgen + 1, kind};
+    stamp_gpu(gva, size, &s);
+    guest_runs(gva, size, stamp_run, &s);
+    __atomic_store_n(&g_wgen, s.gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
 }
-void gpu_mem_written_shader(u64 gva, u64 size) { gpu_mem_written(gva, size); }
+void gpu_mem_written(u64 gva, u64 size) { mem_written(gva, size, PSK_GPU); }
+void gpu_mem_written_shader(u64 gva, u64 size) { mem_written(gva, size, PSK_RESULT); }
+/* PERF-23: perf_stamp_ask under the writers' lock */
+int gpu_mem_written_ask(u64 since, u64 a, u64 sz, int* outside, unsigned* kinds) {
+    pm_lock(&g_wlk);
+    const int r = perf_stamp_ask(&g_perf_stamps, since, a, sz, outside, kinds);
+    pm_unlock(&g_wlk);
+    return r;
+}
 void gpu_mem_written_cpu(u64 cpu, u64 size) {
-    u64 gen;
     if (!size) return;
     pm_lock(&g_wlk);
-    gen = g_wgen + 1;
-    stamp_cpu(cpu, size, gen);
-    __atomic_store_n(&g_wgen, gen, __ATOMIC_RELEASE);
+    Stamp s = {g_wgen + 1, PSK_CPU};
+    stamp_cpu(cpu, size, &s);
+    __atomic_store_n(&g_wgen, s.gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
 }
 u64 gpu_mem_generation(void) { return __atomic_load_n(&g_wgen, __ATOMIC_ACQUIRE); }

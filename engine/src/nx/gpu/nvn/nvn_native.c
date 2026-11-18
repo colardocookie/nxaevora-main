@@ -6937,6 +6937,11 @@ static void perf_line(void) {
     LOG("%s\n", line);
     perf_own_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
     LOG("%s\n", line);
+    const u64 c0 = plat_ns(); /* PERF-23: what a clock read costs, from 256 */
+    u64 c1 = c0;
+    for (int k = 0; k < 256; k++) c1 = plat_ns();
+    perf_same_line(&g_perf_cp, &g_perf_stamps, PERF_TIMES_WINDOW, (double)(c1 - c0) / 256, line, PERF_COPIES_LINE);
+    LOG("%s\n", line);
     perf_copies_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
     LOG("%s\n", line);
 }

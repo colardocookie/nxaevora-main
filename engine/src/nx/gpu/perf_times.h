@@ -288,6 +288,58 @@ extern PerfLanded g_perf_landed[PERF_LANDED];
 void perf_landed_add(PerfLanded* t, uint64_t start, uint64_t size, uint64_t frame);
 /* whether [gva, gva + len) lies inside one result landed in frame or the one before */
 int perf_landed_inside(const PerfLanded* t, uint64_t gva, uint64_t len, uint64_t frame);
+
+/* PERF-23 (research 19:40): the GPU-side writes gpu_mem_dirty_since reads by page, kept to the byte, by GPU page.
+   Each page holds the newest generation of up to PERF_STAMP_RUNS runs of its bytes (two runs merged into one span when
+   a write makes more), and, apart from that, the span of every byte ever stamped on it, in 16 byte steps */
+enum { PSK_RESULT, PSK_GPU, PSK_CPU, PSK_N }; /* a landed result (writeback), another GPU-side write, a CPU one */
+#define PERF_STAMP_RUNS 6u
+#define PERF_STAMP_SLOTS (1u << 17) /* pages kept: the one written longest ago in its probe makes room */
+#define PERF_STAMP_WIDE 4096u       /* a write over more pages than this is kept as one wide run */
+#define PERF_STAMP_WIDES 256u
+typedef struct {
+    uint64_t gen;
+    uint16_t lo, hi; /* bytes [lo, hi) of the page */
+    uint8_t kinds;   /* bits of PSK_* */
+} PerfStampRun;
+typedef struct {
+    uint64_t page; /* page + 1, 0 free */
+    uint64_t newest;
+    uint32_t n;
+    PerfStampRun r[PERF_STAMP_RUNS];
+} PerfStampPage;
+typedef struct {
+    uint64_t start, end, gen;
+    uint8_t kinds;
+} PerfStampWide;
+typedef struct {
+    PerfStampPage* page; /* PERF_STAMP_SLOTS, made at the first stamp */
+    uint8_t* span[1u << 16];  /* by 16 MiB of GPU addresses: two bytes a page, first and last 16 byte step, made then */
+    uint64_t* gone;           /* by a hash of the page: the newest generation on a page that made room, made then */
+    PerfStampWide wide[PERF_STAMP_WIDES];
+    uint64_t nwide;           /* ever: past PERF_STAMP_WIDES the oldest are gone */
+    uint64_t wide_gone;       /* the newest generation of a wide run that made room */
+    int failed, span_lost;    /* no memory (every answer unknown), a span not kept (every span unknown) */
+    uint64_t stamps, pages, merged, wides; /* for the line, atomic: taken by it */
+} PerfStamps;
+extern PerfStamps g_perf_stamps;
+/* a stamp of gen on [a, a + size) by kind (PSK_*), under the writers' lock */
+void perf_stamp_add(PerfStamps* t, uint64_t a, uint64_t size, uint64_t gen, int kind);
+enum { PSA_NONE, PSA_IN, PSA_UNKNOWN };
+/* whether a byte of [a, a + len) was stamped after since (PSA_*). *outside: 1 when on each of its pages the range is
+   outside every byte ever stamped there, 0 not, -1 unknown. *kinds: who stamped its pages after since (PSK_* bits) */
+int perf_stamp_ask(const PerfStamps* t, uint64_t since, uint64_t a, uint64_t len, int* outside, unsigned* kinds);
+/* PERF-23: buf_get's slow path by step, with the steps before it that led there (a failed patch, the written check) */
+enum { POS_PATCH_TRY, POS_WRITTEN, POS_WHY, POS_OWNED, POS_BYTES, POS_HASH, POS_SAMPLE, POS_USE, POS_OTHER, POS_N };
+/* an own buffer found the same after a GPU-side write, by the stamps: none in range outside the span ever stamped
+   on its pages, none in range inside it, none with the span unknown, one in range, not known */
+enum { PSQ_OUT, PSQ_SPAN, PSQ_SPAN_UNKNOWN, PSQ_IN, PSQ_UNKNOWN, PSQ_N };
+#define PERF_WPAGES 4096u /* the host pages a window finds written under own buffers found the same */
+typedef struct {
+    uint64_t page; /* + 1, 0 free */
+    uint64_t last; /* the frame it was last seen */
+    uint32_t frames;
+} PerfWPage;
 /* a pending result sharing a byte with the range, oldest first, for perf_inplace_class */
 typedef struct {
     uint64_t addr, size, buf, off;
@@ -327,6 +379,14 @@ typedef struct {
     uint64_t xfb[PXF_N], xfb_bound, xfb_captured; /* bindings by class, their bytes, the bytes provably captured */
     uint64_t own_n[PO_N][POW_N], own_bytes[PO_N], own_landed[PO_N], own_ns[PO_N][POT_N]; /* PERF-22 */
     uint64_t own_uses[PERF_OWN_USES];                                                  /* at each own drop */
+    uint64_t step_ns[PO_N][POS_N], step_n[PO_N][POS_N]; /* PERF-23: the slow path by step, and the calls it ran in */
+    uint64_t gsame[PSQ_N], gkinds[PSK_N]; /* own_same after a GPU-side write, and of those with none in range the
+                                             writers on their pages */
+    uint64_t csame[2], cbig, cbytes, cbytes_written; /* own_same after a CPU write: tracked or not, at or past the
+                                                        patch size, bytes, bytes on the pages written */
+    uint64_t quiet, quiet_ns; /* written checks on own buffers that found nothing */
+    PerfWPage wpage[PERF_WPAGES];
+    uint64_t wpages_lost;
     PerfCopyTarget tg[PERF_COPY_TARGETS];
     int site, slot;   /* the copy being recorded and the slot of the pass it ended: -1 none */
     int draw;         /* the slot of the draw being prepared's first target: -1 none */
@@ -366,6 +426,16 @@ size_t perf_inplace_line(const PerfCopies* c, uint32_t frames, char* out, size_t
 size_t perf_writable_line(const PerfCopies* c, uint32_t frames, char* out, size_t size);
 /* PERF-22's, the same */
 size_t perf_own_line(const PerfCopies* c, uint32_t frames, char* out, size_t size);
+/* PERF-23: a slow path's steps (POS_N) by outcome, an own_same after a GPU-side write by the stamps (PSQ_*, kinds of
+   PSK_* bits), one after a CPU write (tracked, bytes, bytes on written pages), a written check finding nothing, and a
+   host page found written under one in frame */
+void perf_copy_steps(PerfCopies* c, int what, const uint64_t* ns, const uint8_t* ran);
+void perf_copy_gsame(PerfCopies* c, int q, unsigned kinds);
+void perf_copy_csame(PerfCopies* c, int tracked, int big, uint64_t bytes, uint64_t written);
+void perf_copy_quiet(PerfCopies* c, uint64_t ns);
+void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame);
+/* PERF-23's, the same, with the stamps' counts since the last and the cost of one clock read */
+size_t perf_same_line(const PerfCopies* c, PerfStamps* s, uint32_t frames, double clock_ns, char* out, size_t size);
 
 /* SNX_ARCEUS_PERF_INPLACE=1, 2 or 3, bench only (PERF-17, research 02:42), each level with the ones below: 1 a read
    binds in place the newest pending result sharing a byte with its range when it covers it, 2 a vertex stream with

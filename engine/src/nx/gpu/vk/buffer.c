@@ -2292,10 +2292,41 @@ static int own_why(int st) {
 static void own_note(int what, int why, u64 gva, u64 len, const u64* ns) {
     vk_perf_own(what, why, len, perf_landed_inside(g_perf_landed, gva, len, vk_frame_id()), ns);
 }
+/* PERF-23: step k (POS_*) ran from since to now, which is returned */
+static u64 perf_step(u64* st, u8* ran, int k, u64 since) {
+    const u64 now = plat_ns();
+    st[k] += now - since;
+    ran[k] = 1;
+    return now;
+}
+/* SNX_ARCEUS_PERF_TIMES (PERF-23): the host pages of [gva, gva + len) the CPU wrote after since, each to the window's
+   set, and the range's bytes on them. For a range vk_written_since has just asked about, so its pages are marked */
+static u64 written_pages_note(u64 gva, u64 len, u32 since) {
+    u64 bytes = 0;
+    for (u64 o = 0; o < len;) {
+        u64 cpu = 0, n = gmmu_run(gva + o, len - o, &cpu);
+        if (!n) {
+            n = 0x1000 - ((gva + o) & 0xFFF);
+            if (n > len - o) n = len - o;
+        } else {
+            const u64 h = (u64)(GP(cpu) - g_mem);
+            for (u64 pg = h >> 12, last = (h + n - 1) >> 12; pg <= last; pg++)
+                if (page_written(pg, since)) {
+                    const u64 lo = pg << 12 > h ? pg << 12 : h, hi = (pg + 1) << 12 < h + n ? (pg + 1) << 12 : h + n;
+                    bytes += hi - lo;
+                    vk_perf_wpage(pg);
+                }
+        }
+        o += n;
+    }
+    return bytes;
+}
 static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align) {
     int pending;
     u32 i = 0;
     Vb* e = NULL;
+    u64 pre_written = 0, pre_patch = 0; /* PERF-23: the written check, and a patch that failed, before the slow path */
+    int seen_w = 2, pre_ran = 0;        /* the written check's answer (2: not asked); bit 0 a patch tried, 1 asked */
     if (!len || len > 0xFFFFFFFFull) return 0; /* no buffer the GPU reads is 4 GB */
     if (g_vbi) {
         u32 sl = vb_slot(gva, (u32)len);
@@ -2324,8 +2355,14 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             return 1;
         }
         /* with write tracking, an own buffer is checked only when its memory was written */
+        const u64 wt0 = g_perf_times && e->own ? plat_ns() : 0;
         const u8* host = e->own ? entry_host(e, gva, len) : NULL;
         int w = !e->own ? -1 : host ? vk_written_since(host, len, e->wseen) : written_since_gva(gva, len, e->wseen);
+        if (wt0) {
+            pre_written = plat_ns() - wt0;
+            pre_ran |= 2;
+        }
+        seen_w = w;
         if (w == 1 && host && len >= PATCH_MIN) { /* the written pages, not the whole range again */
             u32 wnow = vk_ww_now();
             const u64 pt0 = g_perf_times ? plat_ns() : 0;
@@ -2333,9 +2370,13 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
                 if (pt0) own_note(PO_PATCH, POW_WRITTEN, gva, len, (u64[POT_N]){0, 0, plat_ns() - pt0});
                 e->wseen = wnow;
                 w = 0;
+            } else if (pt0) {
+                pre_patch = plat_ns() - pt0;
+                pre_ran |= 1;
             }
         }
         if (w == 0) {
+            if (wt0 && seen_w == 0) vk_perf_quiet(pre_written);
             e->epoch = g_vk_epoch;
             if (strict) e->strict_epoch = g_vk_epoch;
             use(i, buf, off);
@@ -2381,7 +2422,13 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             use(i, buf, off);
             return 1;
         }
+        if (pt0) {
+            pre_patch = plat_ns() - pt0;
+            pre_ran |= 1;
+        }
     }
+    const u64 why0 = g_perf_times ? plat_ns() : 0, gw0 = e ? e->gw : 0; /* PERF-23: as before this check */
+    const u32 ws0 = e ? e->wseen : 0;
     int why = 0;
     if (copy_stats_on() || g_perf_times)
         why = !e ? ST_NEW
@@ -2392,14 +2439,28 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
                      : ST_EPOCH;
     u64 ot = g_perf_times ? plat_ns() : 0, ons[POT_N] = {0}; /* PERF-22: the slow path's time, by part */
     const u64 ot0 = ot;
-    if (range_owned(gva, len)) {
+    u64 st[POS_N] = {0}, mk = ot0; /* PERF-23: by step, mk the last step's end */
+    u8 ran[POS_N] = {0};
+    if (ot0) {
+        st[POS_PATCH_TRY] = pre_patch, ran[POS_PATCH_TRY] = pre_ran & 1;
+        st[POS_WRITTEN] = pre_written, ran[POS_WRITTEN] = pre_ran >> 1 & 1;
+        st[POS_WHY] = ot0 - why0, ran[POS_WHY] = 1;
+    }
+    const int owned = range_owned(gva, len);
+    if (ot0) mk = perf_step(st, ran, POS_OWNED, mk);
+    if (owned) {
         const int r = buf_get_owned(i, e, gva, len, strict, buf, off);
-        if (ot0 && r) own_note(PO_OWNED_READ, own_why(why), gva, len, (u64[POT_N]){0, 0, plat_ns() - ot0});
+        if (ot0 && r) {
+            own_note(PO_OWNED_READ, own_why(why), gva, len, (u64[POT_N]){0, 0, plat_ns() - ot0});
+            perf_step(st, ran, POS_OTHER, mk);
+            vk_perf_steps(PO_OWNED_READ, st, ran);
+        }
         return r;
     }
     u32 wnow = vk_ww_now();
     const u8* src = guest_bytes(gva, len);
     if (!src) return 0;
+    if (ot0) mk = perf_step(st, ran, POS_BYTES, mk);
     /* Data without a buffer of its own goes into this frame's staging ring whatever its hash says, so it is copied as
        it is hashed and read once: reading it twice, for the hash and then the copy, was half of one game's GPU thread */
     VkBuffer sb = VK_NULL_HANDLE;
@@ -2415,6 +2476,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         const u64 now = plat_ns();
         ons[POT_HASH] += now - ot;
         ot = now;
+        st[POS_HASH] += now - mk, ran[POS_HASH] = 1;
     }
     if (!e) {
         if (!(i = vb_new(gva, (u32)len))) return 0;
@@ -2436,10 +2498,13 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     e->gw = gpu_mem_generation();
     e->wseen = wnow;
     if (e->stable >= 63 && len >= 4096) {
+        const u64 s0 = ot0 ? plat_ns() : 0;
         e->shash = vk_sample_hash(gva, len);
         e->schk = g_vk_epoch;
+        if (s0) perf_step(st, ran, POS_SAMPLE, s0);
     }
     if (!e->own) {
+        const u64 c0 = ot0 ? plat_ns() : 0;
         if (!staged) { /* its own buffer was dropped above: the bytes changed */
             if (!(staged = vk_stage_upload(len, vk_stage_align(), &sb, &so))) return 0;
             memcpy(staged, src, len);
@@ -2448,6 +2513,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             const u64 now = plat_ns();
             ons[POT_HASH] += now - ot;
             ot = now;
+            st[POS_HASH] += now - c0;
         }
         /* a big range takes its own buffer at once when writes are tracked: changes then patch it (patch_own) */
         const int try_own = e->stable >= 2 || (len >= PATCH_MIN && g_ww > 0);
@@ -2468,10 +2534,30 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             e->frame = vk_submit_number();
         }
     }
+    const u64 u0 = ot0 ? plat_ns() : 0;
     use(i, buf, off);
     if (ot0) {
-        ons[POT_REST] = plat_ns() - ot0 - ons[POT_HASH] - ons[POT_CREATE];
-        own_note(made ? PO_OWN_MADE : own_before && e->own ? PO_OWN_SAME : PO_STAGED, own_why(why), gva, len, ons);
+        const u64 end = perf_step(st, ran, POS_USE, u0);
+        ons[POT_REST] = end - ot0 - ons[POT_HASH] - ons[POT_CREATE];
+        const int what = made ? PO_OWN_MADE : own_before && e->own ? PO_OWN_SAME : PO_STAGED;
+        own_note(what, own_why(why), gva, len, ons);
+        u64 in = ons[POT_CREATE];
+        for (int k = POS_OWNED; k < POS_OTHER; k++) in += st[k];
+        st[POS_OTHER] = end - ot0 - in, ran[POS_OTHER] = 1;
+        vk_perf_steps(what, st, ran);
+        if (what == PO_OWN_SAME && why == ST_DIRTY) { /* the GPU-side write to the byte */
+            int outside;
+            unsigned kinds;
+            const int q = gpu_mem_written_ask(gw0, gva, len, &outside, &kinds);
+            vk_perf_gsame(q == PSA_IN        ? PSQ_IN
+                          : q == PSA_UNKNOWN ? PSQ_UNKNOWN
+                          : outside > 0      ? PSQ_OUT
+                          : outside == 0     ? PSQ_SPAN
+                                             : PSQ_SPAN_UNKNOWN,
+                          kinds);
+        }
+        if (what == PO_OWN_SAME && why == ST_WRITTEN)
+            vk_perf_csame(seen_w == 1, len >= PATCH_MIN, len, seen_w == 1 ? written_pages_note(gva, len, ws0) : 0);
     }
     return 1;
 }
