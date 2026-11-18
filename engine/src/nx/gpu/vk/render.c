@@ -2839,16 +2839,23 @@ retry:
             }
             continue;
         }
-        perf_bind(PBK_VERTEX, vq[q].exact);
+        /* SNX_ARCEUS_PERF_INPLACE >= 2 (research 02:42): a stream with pending results on its pages is looked up at
+           the bytes it reads, so one result covering them can be bound in place. The vertices read are the same */
+        u64 qlen = vq[q].len;
+        if (vq[q].exact && g_perf_inplace >= 2 && vk_buf_pending(vq[q].gva, vq[q].len)) {
+            qlen = vq[q].exact;
+            if (g_perf_times) vk_perf_extra(PX_EXACT);
+        }
+        perf_bind(PBK_VERTEX, qlen == vq[q].len ? vq[q].exact : 0);
         /* vertex formats have components of up to 4 bytes, which each attribute's address must be a multiple of */
-        const int got = vk_buf_get_input(vq[q].gva, vq[q].len, 4, &vbuf[vq[q].b], &voff[vq[q].b]);
+        const int got = vk_buf_get_input(vq[q].gva, qlen, 4, &vbuf[vq[q].b], &voff[vq[q].b]);
         perf_bind(PBK_OTHER, 0);
         if (!got) {
             g_vk_skipped++;
             return;
         }
         voff[vq[q].b] += vq[q].base;
-        vsize[vq[q].b] = vq[q].len - vq[q].base;
+        vsize[vq[q].b] = qlen - vq[q].base;
     }
     VkPrimitiveTopology topo = topology_vk(topology);
 
