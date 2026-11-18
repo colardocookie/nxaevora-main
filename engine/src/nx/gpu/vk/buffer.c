@@ -2565,7 +2565,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         vk_perf_steps(what, st, ran);
         if (what == PO_OWN_SAME && why == ST_DIRTY) { /* the GPU-side write to the byte, as stamped and as written */
             unsigned cleared = 0; /* PCL_* */
-            for (int real = 0; real < 2; real++) {
+            for (int real = 0; real < 1 + (g_perf_times > 1); real++) { /* as written only at PERF_TIMES=2 */
                 int outside;
                 unsigned kinds;
                 const int q = gpu_mem_written_ask(gw0, real, gva, len, &outside, &kinds);

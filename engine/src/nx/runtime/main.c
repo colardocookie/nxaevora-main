@@ -900,7 +900,9 @@ int snx_main(int argc, char** argv) {
             g_settings.vulkan_validation_layer = 1;
             g_vk_sync_validation = 1;
         }
-        g_perf_times = times && !strcmp(times, "1"); /* the frame's timing line (gpu/perf_times.h) */
+        /* the frame's timing line (gpu/perf_times.h), 2 also PERF-23's record of every byte as written (it halved
+           T23's frame rate) */
+        g_perf_times = times && !strcmp(times, "1") ? 1 : times && !strcmp(times, "2") ? 2 : 0;
         const char* compute_submit = getenv("SNX_ARCEUS_PERF_COMPUTE_SUBMIT"); /* an experiment (gpu/perf_times.h) */
         if (compute_submit && !strcmp(compute_submit, "0")) {
             g_perf_compute_submit = 0;
@@ -952,7 +954,9 @@ int snx_main(int argc, char** argv) {
         if (g_perf_overlap)
             LOG("nvn-overlap: EXPERIMENT on, a sync wait on a present's fence settles for the present before it "
                 "(SNX_ARCEUS_PERF_OVERLAP)\n");
-        if (g_perf_times) LOG("perf-times: on, a line every %u presents (SNX_ARCEUS_PERF_TIMES)\n", PERF_TIMES_WINDOW);
+        if (g_perf_times)
+            LOG("perf-times: on, a line every %u presents (SNX_ARCEUS_PERF_TIMES)%s\n", PERF_TIMES_WINDOW,
+                g_perf_times > 1 ? ", with the record of every byte as written" : "");
     }
     /* the header the log summary reads (common/utilities/logscan.c): no folder in it, since players attach the log to
        public reports and the folder names their account */

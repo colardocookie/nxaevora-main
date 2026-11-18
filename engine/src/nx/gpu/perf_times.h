@@ -453,7 +453,8 @@ void perf_copy_csame(PerfCopies* c, int tracked, int big, uint64_t bytes, uint64
 void perf_copy_quiet(PerfCopies* c, uint64_t ns);
 void perf_copy_sample_skip(PerfCopies* c);
 void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame);
-/* PERF-23's, the same, with the stamps' counts since the last and the cost of one clock read */
+/* PERF-23's, the same, with the stamps' counts since the last and the cost of one clock read. real NULL: the record as
+   written is not kept (SNX_ARCEUS_PERF_TIMES=1), its columns not printed */
 size_t perf_same_line(const PerfCopies* c, PerfStamps* s, PerfStamps* real, uint32_t frames, double clock_ns, char* out,
                       size_t size);
 

@@ -943,12 +943,14 @@ size_t perf_same_line(const PerfCopies* c, PerfStamps* s, PerfStamps* real, uint
         cl[3] += (b & (PCL_BYTES | PCL_REAL)) == (PCL_BYTES | PCL_REAL) ? c->cleared[b] : 0;
         cl[4] += (b & (PCL_SPAN | PCL_REAL)) == (PCL_SPAN | PCL_REAL) ? c->cleared[b] : 0;
     }
-    if (cl_n)
+    if (cl_n && real)
         at = putf(out, size, at, " cleared=%.1f/%.1f/%.1f/%.1f/%.1f of %.1f", cl[0] / f, cl[1] / f, cl[2] / f,
                   cl[3] / f, cl[4] / f, cl_n / f);
+    else if (cl_n)
+        at = putf(out, size, at, " cleared=%.1f/%.1f/-/-/- of %.1f", cl[0] / f, cl[1] / f, cl_n / f);
     if (c->probe_n) at = putf(out, size, at, " probe=%.1f ms=%.3f", c->probe_n / f, c->probe_ns / f / 1e6);
     at = put_stamps(out, size, at, "stamps", s, f);
-    at = put_stamps(out, size, at, "written", real, f);
+    if (real) at = put_stamps(out, size, at, "written", real, f);
     at = putf(out, size, at, " clock=%.1f", clock_ns);
     return at < size ? at : size - 1;
 }

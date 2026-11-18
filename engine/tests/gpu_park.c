@@ -325,13 +325,19 @@ int main(void) {
                    !gpu_mem_dirty_since(g, 0xB000, 0x1000),
                "a write of guest memory dirties the GPU pages showing it");
     }
-    /* SNX_ARCEUS_PERF_TIMES (PERF-23): the same writes kept to the byte, as stamped and as written, through the other
-       GPU address too. A result's changed run is in the second record alone and dirties nothing */
+    /* SNX_ARCEUS_PERF_TIMES (PERF-23): the same writes kept to the byte, as stamped and at 2 as written, through the
+       other GPU address too. A result's changed run is in the second record alone and dirties nothing */
     {
         int out;
         unsigned kinds;
         expect(!g_perf_stamps.page, "with the switch unset nothing is kept");
-        g_perf_times = 1;
+        g_perf_times = 1; /* the record as stamped only: no write enters the one as written */
+        gpu_mem_landed(0x3007, 1);
+        gpu_mem_written(0x7000, 4);
+        gpu_mem_written_cpu(0x3010, 4);
+        expect(g_perf_stamps.page && !g_perf_real.page && !__atomic_load_n(&g_perf_real.stamps, __ATOMIC_RELAXED),
+               "at PERF_TIMES=1 nothing is kept as written");
+        g_perf_times = 2;
         u64 g = gpu_mem_generation();
         gpu_mem_landed(0x3007, 1);
         expect(gpu_mem_generation() == g, "a landed run takes no generation");

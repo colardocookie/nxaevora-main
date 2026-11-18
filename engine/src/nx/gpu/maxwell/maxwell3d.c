@@ -50,8 +50,8 @@ static void guest_runs(u64 gva, u64 size, int (*fn)(u64 cpu, u64 n, void* ctx), 
         left -= n;
     }
 }
-/* a stamp and who made it (PSK_*): SNX_ARCEUS_PERF_TIMES keeps it to the byte too (PERF-23), as stamped and, but for
-   a result's whole binding, as written. A landed run (PSK_LANDED) is the probe's alone and stamps nothing */
+/* a stamp and who made it (PSK_*): SNX_ARCEUS_PERF_TIMES keeps it to the byte too (PERF-23), as stamped, and at 2
+   also, but for a result's whole binding, as written. A landed run (PSK_LANDED) is the probe's alone, stamps nothing */
 typedef struct {
     u64 gen;
     int kind;
@@ -60,7 +60,7 @@ static void stamp_gpu(u64 gva, u64 n, const Stamp* s) {
     if (s->kind != PSK_LANDED) write_pages_stamp(&g_wgpu, gva, n, s->gen);
     if (!g_perf_times) return;
     if (s->kind != PSK_LANDED) perf_stamp_add(&g_perf_stamps, gva, n, s->gen, s->kind);
-    if (s->kind != PSK_RESULT) perf_stamp_add(&g_perf_real, gva, n, s->gen, s->kind);
+    if (s->kind != PSK_RESULT && g_perf_times > 1) perf_stamp_add(&g_perf_real, gva, n, s->gen, s->kind);
 }
 static void stamp_alias(void* ctx, u64 gva, u64 n) { stamp_gpu(gva, n, ctx); }
 /* guest memory written: the GPU pages showing it */
@@ -84,7 +84,7 @@ static void mem_written(u64 gva, u64 size, int kind) {
 void gpu_mem_written(u64 gva, u64 size) { mem_written(gva, size, PSK_GPU); }
 void gpu_mem_written_shader(u64 gva, u64 size) { mem_written(gva, size, PSK_RESULT); }
 void gpu_mem_landed(u64 gva, u64 size) {
-    if (g_perf_times) mem_written(gva, size, PSK_LANDED); /* the next generation, which the result's stamp takes */
+    if (g_perf_times > 1) mem_written(gva, size, PSK_LANDED); /* the next generation, which the result's stamp takes */
 }
 /* PERF-23: perf_stamp_ask under the writers' lock. A write the page table couldn't hold, or every page written at
    once (gpu_mem_written_all), leaves no definite answer for what was asked since before it */

@@ -339,7 +339,7 @@ static void check_landed_record(void) {
             writeback_direct = direct;
             g_perf_landing = level ? 3 : 0;
             g_landing_masked = level == 2 && landing_masked_supported();
-            for (int on = 0; on < 2; on++) {
+            for (int on = 0; on < 3; on++) { /* PERF_TIMES unset, 1, 2: the record as written only at 2 */
                 g_perf_times = on;
                 memset(memory + mapping, 0, sizeof original);
                 memset(landed, 0, sizeof landed);
@@ -348,7 +348,7 @@ static void check_landed_record(void) {
                 vk_write_changed(0x31000, result, original, sizeof original);
                 vk_unlock();
                 assert(memory[mapping + 7] == 1 && memory[mapping + 128] == 2);
-                if (!on) {
+                if (on < 2) {
                     assert(!landed_calls);
                     continue;
                 }

@@ -952,6 +952,13 @@ static void test_same(void) {
     CHECK(!strstr(line, " staged_ms="));
     CHECK(strstr(line, " clock=21.5") && !strstr(line, "span_lost") && !strstr(line, " failed"));
     CHECK(strstr(line, " stamps="));
+    /* without the record as written (PERF_TIMES=1): its columns left out, the cleared counts of it as - */
+    {
+        char one[PERF_COPIES_LINE];
+        perf_same_line(&c, &t, NULL, 4, 21.5, one, sizeof one);
+        CHECK(strstr(one, " cleared=1.0/0.5/-/-/- of 1.5 probe=0.5 ") && !strstr(one, " written=") &&
+              strstr(one, " clock=21.5"));
+    }
     CHECK(__atomic_load_n(&t.stamps, __ATOMIC_RELAXED) == 0 && __atomic_load_n(&t.merged, __ATOMIC_RELAXED) == 0);
     perf_copies_line(&c, 4, line, sizeof line); /* the window's counts go with it */
     CHECK(c.gsame[0][PSQ_OUT] == 0 && c.probe_n == 0 && c.cleared[PCL_REAL] == 0 && c.step_n[PO_OWN_SAME][POS_HASH] == 0);

@@ -32,7 +32,7 @@ static void landing_put(void* ctx, u32 from, u32 n) {
         memcpy(d->dst + from, d->res + from, n);
     else
         gmem_write(d->addr + from, d->res + from, n);
-    if (g_perf_times) gpu_mem_landed(d->addr + from, n); /* PERF-23 */
+    if (g_perf_times > 1) gpu_mem_landed(d->addr + from, n); /* PERF-23, SNX_ARCEUS_PERF_TIMES=2 */
 }
 /* SNX_ARCEUS_PERF_TIMES (PERF-23): the span a 64-byte masked store of landing_masked wrote, for the record as
    written */
@@ -64,7 +64,7 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
     if (g_perf_landing) { /* SNX_ARCEUS_PERF_LANDING=3: the same bytes, a 64-byte masked store a step */
         LandingDst d = {addr, res, dst};
         if (g_landing_masked && dst)
-            written = landing_masked(res, org, dst, size, landing_put, g_perf_times ? landing_note : NULL, &d);
+            written = landing_masked(res, org, dst, size, landing_put, g_perf_times > 1 ? landing_note : NULL, &d);
         else /* no AVX-512BW, or no contiguous host pointer: found a word at a time */
             written = landing_runs(res, org, cur, size, landing_put, &d);
         changed = written != 0;
@@ -92,7 +92,7 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
                 memcpy(dst + start, res + start, i - start);
             else
                 gmem_write(addr + start, res + start, i - start);
-            if (g_perf_times) gpu_mem_landed(addr + start, i - start); /* PERF-23 */
+            if (g_perf_times > 1) gpu_mem_landed(addr + start, i - start); /* PERF-23, SNX_ARCEUS_PERF_TIMES=2 */
             written += i - start;
             changed = 1;
         } while (i < end);
