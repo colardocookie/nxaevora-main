@@ -83,7 +83,15 @@ packaged ([FAQ](https://github.com/pkgforge-dev/Anylinux-AppImages/blob/main/FAQ
 Installed license texts: `share/licenses/scarletnx/`. AppImage system-library licenses
 and package manifest: `share/licenses/`. Component license files contain the full terms.
 
-Community credits: [README](../README.md#special-thanks).
+## Special thanks
+
+- yuzu, Suyu, Torzu, Ryujinx, [Ryubing](https://git.ryujinx.app/ryubing/ryujinx) (Ryujinx's continuation), [Citron](https://git.citron-emu.org/citron/emulator) and [Eden](https://git.eden-emu.dev/eden-emu/eden).
+- [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)
+- [NeXium](https://nexium-emu.org/) for research and development.
+- [Switchbrew](https://switchbrew.org) for research.
+- [Azahar](https://github.com/azahar-emu/azahar) and Citra, for all of the 3DS emulation.
+- [Vita3K](https://github.com/Vita3K/Vita3K), for the PS Vita's GXM and shader translation, and [vita-headers](https://github.com/vitasdk/vita-headers) for its NIDs.
+- [mGBA](https://github.com/mgba-emu/mgba) as a direct reference for the AGB board.
 
 Wimsy ([SVG metadata](../dist/wimsy.svg)): drawn by Liz, GPL-3.0-or-later.
 The splash's Fuddles ([SVG metadata](../dist/splash/wimsy-fuddles.svg)): Wimsy with Fuddles' tails, circuits and

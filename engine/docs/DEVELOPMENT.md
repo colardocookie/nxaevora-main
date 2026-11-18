@@ -2,7 +2,7 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Development
 
-[Architecture](ARCHITECTURE.md) · [build/toolchains](BUILD.md) · [usage](USAGE.md) · [agent rules](../CLAUDE.md) · [contributing](../CONTRIBUTING.md).
+[Architecture](ARCHITECTURE.md) · [build/toolchains](BUILD.md) · [usage](USAGE.md) · [contributing](../../CONTRIBUTING.md).
 Run from checkout. POSIX examples: Windows uses `python`, `.exe`, PowerShell env syntax.
 The build tree's drivers work in the user's data folder, as an installed copy does ([Folders](USAGE.md#folders));
 the examples name its folders on Linux, and `--data DIR` keeps a run's files in DIR instead:

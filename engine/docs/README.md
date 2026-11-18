@@ -15,7 +15,7 @@ New here? Start with [Build](./BUILD.md), then [Usage](./USAGE.md).
   - **[Testing and reporting](./TESTING.md)** - how to test a build, and the form a report takes
   - **[edenprobe](./EDENPROBE.md)** - hardware probes CI runs against a baseline
 - **[Deprecations](./DEPRECATIONS.md)** - what an older version used, and how it goes away
-- **[Status and roadmap](./ROADMAP.md)**
+- **[Status and roadmap](../../ROADMAP.md)**
 - **[Licenses and credits](./CREDITS.md)**
 - Recompiler:
   - **[Architecture](./ARCHITECTURE.md)** - AArch64 to C to a native module
