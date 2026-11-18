@@ -4865,7 +4865,10 @@ static void event_tick_line(u64 frame) {
 static void event_tick_update(CPU* c, u64 entry) {
     const u64 object = c->x[0];
     if (event_tick_running || !readable(object, 0x148)) { /* a job inside a run, or one we cannot key: as today */
+        const u64* outer = event_tick_running;
+        event_tick_running = NULL; /* its pad natives see the pad as it is, not the outer job's edges */
         event_tick_original(c, entry);
+        event_tick_running = outer;
         return;
     }
     const u64 generation = gr64(object + 0x140), pad = event_tick_pad();

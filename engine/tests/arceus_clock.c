@@ -3224,10 +3224,16 @@ static void event_repeat_stub(CPU* c, u64 entry) {
     c->x[0] = (gr64(EVENT_PAD + 0xa8) | gr64(EVENT_PAD + 0xb8)) != 0;
     c->pc = c->x[30];
 }
+static u64 event_job_nested; /* a job the job at 1024 calls inside its run, before its own natives */
 static void event_job_stub(CPU* c, u64 entry) {
     assert(entry == entry_pc);
     const unsigned which = c->x[0] == 1024 ? 0 : 1;
     event_job_runs[which]++;
+    if (!which && event_job_nested) {
+        CPU j = {.x = {[0] = event_job_nested, [30] = return_pc}, .pc = entry_pc};
+        event_tick_update(&j, entry_pc);
+        assert(j.pc == return_pc);
+    }
     CPU n = {.x = {[0] = 5, [30] = return_pc}, .pc = entry_pc};
     event_tick_trigger(&n, entry_pc);
     event_trigger_seen[which] += (unsigned)n.x[0];
@@ -3363,6 +3369,21 @@ static void test_event_tick(void) {
     assert(!event_call(1024));
     gw64(1024 + 0x140, 0x900);
     assert(event_call(1024));
+    /* a job run inside another's run: as today, its natives see the pad, not the outer job's carried edges, and the
+       outer job still sees them after it */
+    event_reset();
+    gw64(1024 + 0x140, 0x700);
+    event_frame(16666667);
+    assert(event_call(1024));
+    event_frame(16666667);
+    gw64(EVENT_PAD + 0x118, 0x4);
+    assert(!event_call(1024));
+    gw64(EVENT_PAD + 0x118, 0);
+    event_job_nested = 1536;
+    event_frame(16666667);
+    assert(event_call(1024) && event_job_runs[1] == 1);
+    assert(event_trigger_seen[0] == 1 && event_trigger_seen[1] == 0 && gr64(EVENT_PAD + 0x118) == 0);
+    event_job_nested = 0;
     /* the line comes every 600 frames, also with two jobs called each frame */
     event_reset();
     gw64(1024 + 0x140, 0x700);
