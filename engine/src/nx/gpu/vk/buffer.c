@@ -361,8 +361,17 @@ void vk_buf_writable_abort(void) {
     }
     g_prep_tail = NULL;
 }
+/* SNX_ARCEUS_PERF_INPLACE=3: the work index (g_vk_drawn + g_vk_dispatches) of the last draw or dispatch handed a
+   writable result, new or rewritten in place, through any path (astra 02:46: the atlas's outputs too). A read skips
+   the reuse barrier only when that index is below the last barrier's */
+static u64 g_out_write_work;
+static void out_wrote(void) {
+    const u64 work = g_vk_drawn + g_vk_dispatches;
+    if (g_perf_inplace >= 3 && work > g_out_write_work) g_out_write_work = work;
+}
 void vk_buf_writable_commit(void) {
     if (!g_prep) return;
+    out_wrote(); /* every output a draw or dispatch prepared: copies of writable ranges, the atlas's pages */
     for (GfxOut* o = g_prep; o; o = o->next) out_pages(o, 1);
     if (g_out_tail)
         g_out_tail->next = g_prep;
@@ -1075,9 +1084,15 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
         static u64 barrier_frame = ~0ull, barrier_work = ~0ull;
         if (writable) {
             wmark_set(match); /* this draw writes it again */
+            out_wrote();
             if (g_perf_times) vk_perf_made(PR_INPLACE);
         }
-        if (barrier_frame != vk_submit_number() || barrier_work != g_vk_drawn + g_vk_dispatches) {
+        /* SNX_ARCEUS_PERF_INPLACE=3, a read: the barrier recorded before in this submission orders every write of
+           a result recorded before it, all buffers, and no draw or dispatch handed a writable result since */
+        const int covered = g_perf_inplace >= 3 && !writable && barrier_frame == vk_submit_number() &&
+                            g_out_write_work < barrier_work;
+        if (covered && barrier_work != g_vk_drawn + g_vk_dispatches && g_perf_times) vk_perf_extra(PX_SKIPPED);
+        if (!covered && (barrier_frame != vk_submit_number() || barrier_work != g_vk_drawn + g_vk_dispatches)) {
             if (g_perf_times) vk_perf_extra(PX_BARRIER);
             if (g_perf_times) { /* no write of match since the barrier before (a barrier orders all earlier work) */
                 const u32 i = wmark_slot(match);
@@ -1593,6 +1608,7 @@ static int writable_owned(GfxOut* o, u64 gva, u32 len, VkBuffer buf, u64 off) {
    vk_write_changed resolves those writes against the GPU result at the fence. */
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
     GfxOut* o;
+    out_wrote(); /* every way out that hands a buffer is a write (SNX_ARCEUS_PERF_INPLACE=3), the zero one too */
     if (!gva) return vk_buf_copy(0, len, buf, off);
     /* Repeated bindings of one writable range in the same draw must name the same storage. */
     for (GfxOut* p = g_prep; p; p = p->next)
@@ -1784,6 +1800,7 @@ static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, V
     else
         g_prep = o;
     g_prep_tail = o;
+    out_wrote(); /* a result the draw writes (SNX_ARCEUS_PERF_INPLACE=3) */
     if (g_perf_times) vk_perf_made(PR_ATLAS);
     return 1;
 }
@@ -1852,6 +1869,7 @@ static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas,
 int vk_buf_draw_prepare(VkDrawStorage* draw) {
     size_t n = 0;
     int writable = draw_has_writable(draw) && draw_may_alias(draw);
+    if (writable) out_wrote(); /* the atlas is bound writable (SNX_ARCEUS_PERF_INPLACE=3), its outputs at commit too */
     DrawPage* p = writable ? draw_pages(draw, &n) : NULL;
     if (writable && !p) return 0;
     u8 active[32] = {0};

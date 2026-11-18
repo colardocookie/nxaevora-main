@@ -4,8 +4,10 @@
 vk_buf_draw_prepare, draw_output_page, vk_buf_writable_commit and the write stamp are copied out of the source as
 they are, and run against small stand-ins for the rest (no Vulkan, no guest memory).
 
-Level 1 (research 02:48): newer page-only neighbours, a newer partial writer, edited bytes, the frame before, the
-alignment refusal, the allocation failure and a miss.
+Level 3 (research 02:48, astra 02:46): a reuse barrier, then an alias-only writer through the atlas, then a reader
+must record a barrier, two readers with no writer between record one, a new submission records again, and a read
+then a rewrite in place in one draw keeps the barrier before that draw. Level 1: newer page-only neighbours, a newer
+partial writer, edited bytes, the frame before, the alignment refusal, the allocation failure and a miss.
 
 Run: python3 tests/vulkan_inplace.py [compiler and flags], for example
     python3 tests/vulkan_inplace.py clang -std=gnu11 -O2 -fsanitize=address,undefined
@@ -138,10 +140,10 @@ static int vk_buf_copy(u64 a, u64 n, VkBuffer* b, u64* off) { return (void)a, (v
 static void gmem_need(u64 a, u64 n) { (void)a, (void)n; }
 static int range_owned(u64 a, u64 n) { return (void)a, (void)n, 0; }
 static int written_since_gva(u64 a, u64 n, u32 s) { return (void)a, (void)n, (void)s, 0; }
-static GfxOut* gfx_out_new(u32 pages, u32 len) {
+static GfxOut* gfx_out_new(u32 pages, u32 len) { /* one allocation, as buffer.c's: free(o) frees it all */
     (void)pages;
-    GfxOut* o = calloc(1, sizeof *o);
-    if (o) o->org = calloc(1, len), o->ok = 1;
+    GfxOut* o = calloc(1, sizeof *o + len);
+    if (o) o->org = (u8*)(o + 1), o->ok = 1;
     return o;
 }
 static u8 g_guest[1 << 16], g_stage[1 << 16];
@@ -191,15 +193,97 @@ static GfxOut* result(u64 addr, u64 size, VkBuffer buf) {
     return o;
 }
 static void reset(int level) {
-    while (g_out) { GfxOut* o = g_out; g_out = o->next; free(o->org); free(o); }
+    while (g_out) { GfxOut* o = g_out; g_out = o->next; free(o); }
     g_out_tail = NULL;
     vk_buf_writable_abort();
     g_perf_inplace = level;
+    g_out_write_work = 0;
     g_vk_drawn = g_vk_dispatches = 0;
     g_submit = g_frame = 10;
     g_log[0] = 0;
     g_map_fail = lands = holds = composes = classes = 0;
     perf_copies_reset(&g_perf_cp);
+}
+/* a draw that reads o in place */
+static void reads(const GfxOut* o) {
+    VkBuffer b = 0;
+    u64 off = ~0ull;
+    assert(gfx_gpu_src(o->addr, o->size, &b, &off, 0, 4, PB_INPUT) == 1 && b == o->buf && off == o->off);
+}
+static void drawn(void) { note('D'); g_vk_drawn++; }
+/* a draw whose only writable binding is aliased: its result comes from the atlas, not vk_buf_copy_writable */
+static GfxOut* alias_writer(u64 gva) {
+    VkDrawStorage d;
+    memset(&d, 0, sizeof d);
+    d.n[0] = 1;
+    d.b[0][0] = (VkDrawGbuf){gva, 256, 1, 0, 0, 0, 0, 0};
+    assert(vk_buf_draw_prepare(&d) == 1 && d.b[0][0].aliased && g_prep);
+    if (g_perf_inplace >= 3) assert(g_out_write_work == g_vk_drawn + g_vk_dispatches); /* marked before commit */
+    vk_buf_writable_commit();
+    drawn();
+    return g_out_tail;
+}
+static void test_level3(void) {
+    reset(3);
+    g_perf_times = 1;
+    GfxOut* r = result(0x20000, 1024, 5);
+    reads(r); drawn();                   /* 0: the barrier */
+    GfxOut* x = alias_writer(0x30000);   /* 1: an atlas page, after the barrier */
+    assert(x && x->addr == 0x30000 && g_perf_cp.made[PR_ATLAS] == 1);
+    reads(x); drawn();                   /* 2: must record one (astra 02:46) */
+    reads(r); drawn();                   /* 3: no writer since: skipped */
+    reads(x); drawn();                   /* 4: skipped */
+    g_submit++;                          /* a new submission */
+    r->frame = g_submit;                 /* r rewritten in this one, below, so in place */
+    reads(r); drawn();                   /* 5: records */
+    reads(r);                            /* 6: covered by 5's */
+    VkBuffer b;
+    u64 off;
+    assert(vk_buf_copy_writable(r->addr, (u32)r->size, &b, &off) == 1 && b == r->buf); /* then rewritten in place */
+    drawn();
+    reads(r); drawn();                   /* 7: after a writer: records */
+    assert(!strcmp(g_log, "B0 D0 D1 B2 D2 D3 D4 B5 D5 B6 D6 B7 D7 "));
+    assert(g_perf_cp.extra[PX_SKIPPED] == 3 && g_perf_cp.extra[PX_BARRIER] == 5);
+    assert(g_perf_cp.made[PR_INPLACE] == 1);
+    /* a dispatch's result and a transform feedback capture, each through vk_buf_copy_writable, then a reader */
+    reads(r); drawn();                   /* 8: covered by 7's */
+    g_perf_bind = PBK_DISPATCH;
+    assert(vk_buf_copy_writable(0x40000, 512, &b, &off) == 1);
+    g_perf_bind = PBK_OTHER;
+    vk_buf_writable_commit();
+    g_vk_dispatches++;
+    reads(r); drawn();                   /* 10: records */
+    g_perf_bind = PBK_XFB;
+    assert(vk_buf_copy_writable(0x50000, 512, &b, &off) == 1);
+    assert(vk_buf_copy_writable(0x50000, 512, &b, &off) == 1); /* the same range again in that draw */
+    g_perf_bind = PBK_OTHER;
+    vk_buf_writable_commit();
+    drawn();
+    reads(r); drawn();                   /* 12: records */
+    assert(!strcmp(g_log, "B0 D0 D1 B2 D2 D3 D4 B5 D5 B6 D6 B7 D7 D8 B10 D10 D11 B12 D12 "));
+    assert(g_perf_cp.made[PR_DISPATCH] == 1 && g_perf_cp.made[PR_XFB] == 1 && g_perf_cp.made[PR_REPEAT] == 1);
+    /* a producer that reaches the prepared list some other way is caught at its publication */
+    reads(r); drawn();                   /* 13: covered */
+    GfxOut* other = gfx_out_new(1, 64);
+    other->addr = 0x60000, other->size = 64, other->frame = g_submit, other->frame_id = g_frame;
+    g_prep = g_prep_tail = other;
+    vk_buf_writable_commit();
+    drawn();
+    reads(r); drawn();                   /* 15: records */
+    assert(!strcmp(g_log + strlen("B0 D0 D1 B2 D2 D3 D4 B5 D5 B6 D6 B7 D7 D8 B10 D10 D11 B12 D12 "), "D13 D14 B15 D15 "));
+    g_perf_times = 0;
+}
+/* the same sequence unset: a barrier for every reading draw, as before the switch */
+static void test_level0(void) {
+    reset(0);
+    GfxOut* r = result(0x20000, 1024, 5);
+    reads(r); drawn();
+    GfxOut* x = alias_writer(0x30000);
+    reads(x); drawn();
+    reads(r); drawn();
+    reads(x); drawn();
+    assert(!strcmp(g_log, "B0 D0 D1 B2 D2 B3 D3 B4 D4 "));
+    assert(g_out_write_work == 0); /* not kept below level 3 */
 }
 /* level 1: what gfx_gpu_src returns for a read of [0x10000, 0x10100) over r, with others on its pages */
 static int read_at(int level, u64 len, VkBuffer* b) {
@@ -242,12 +326,16 @@ static void test_level1(void) {
     result(0x10000, 0x400, 5);
     result(0x10400, 0x400, 6);
     assert(gfx_gpu_src(0x10000, 0x100, &b, &off, 1, 4, PB_WRITE) == 2);
+    g_vk_drawn = 4;
+    assert(vk_buf_copy_writable(0x10000, 0x100, &b, &off) == 1 && g_out_write_work == 0); /* kept at level 3 only */
     reset(1);
     GfxOut* q = result(0x10200, 0x100, 5); /* no byte of the range in any result: composed as before */
     (void)q;
     assert(read_at(1, 0x100, &b) == 2);
 }
 int main(void) {
+    test_level3();
+    test_level0();
     test_level1();
     reset(0);
     puts("vulkan_inplace: ok");
@@ -259,6 +347,7 @@ int main(void) {
 def main():
     buffer = (SRC / "nx/gpu/vk/buffer.c").read_text()
     code = HEAD
+    code += between(buffer, "static u64 g_out_write_work;", "void vk_buf_writable_commit(void) {")
     for sig in ["void vk_buf_writable_abort(void) {", "void vk_buf_writable_commit(void) {",
                 "static int gfx_gpu_src(u64 gva", "int vk_buf_copy_writable(u64 gva",
                 "static int draw_output_page(", "int vk_buf_draw_prepare(VkDrawStorage* draw) {"]:
