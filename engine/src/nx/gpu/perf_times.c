@@ -12,6 +12,7 @@ int g_perf_submit_why;
 uint64_t g_perf_submit_every_ns = PERF_SUBMIT_EVERY_NS;
 int g_perf_compute_submit = 1;
 int g_perf_inplace;
+int g_perf_query;
 int g_perf_bind;
 uint64_t g_perf_exact;
 

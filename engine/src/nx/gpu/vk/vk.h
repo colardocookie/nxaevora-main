@@ -838,6 +838,8 @@ void vk_query_enable(u32 chan, int on);
 int vk_query_report(u32 chan, u64 gva, u32 len, u64 ticks);
 /* a report performed (release.c): the count of counter's segments [first, end) */
 u64 vk_query_value(u32 counter, u64 first, u64 end);
+/* SNX_ARCEUS_PERF_QUERY=1: the counts copied when half the query ring is not (query.c). 1 when it copied */
+int vk_query_room(void);
 #define VK_QUERY_COUNTERS 8 /* query.c's samples-passed counters, a channel's each */
 /* render enable predicates (release.c's vk_render_predicate): a queued report of counter's segments [first, end) gets
    a predicate slot, held once, that the next vk_query_pred_flush writes (2, *slot set), or its count is known now: 1

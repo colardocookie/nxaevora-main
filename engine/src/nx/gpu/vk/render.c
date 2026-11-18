@@ -2600,6 +2600,7 @@ static void render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u3
     VkDescriptorSet bset[3];
     if (!count || !instances) return;
     vk_frame_check();
+    vk_query_room(); /* SNX_ARCEUS_PERF_QUERY=1: before the draw's setup, as its query segment may begin a new one */
     if (g_draw.check < 0) {
         const char* e = getenv("SNX_DIRTY_CHECK");
         g_draw.check = e && *e && *e != '0';

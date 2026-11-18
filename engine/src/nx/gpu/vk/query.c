@@ -216,6 +216,18 @@ void vk_query_flush(VkCommandBuffer cb) {
     g_qmark[g_qmark_at++ % QMARKS] = (typeof(g_qmark[0])){vk_submit_number(), g_q.copied};
 }
 
+/* SNX_ARCEUS_PERF_QUERY=1 (PERF-19, research 05:05, astra 05:1x): a report leaves the counts to the submission's
+   own copy, so the segments not copied grow until it. At half the ring they are copied as a report did, the open
+   query and the pass ended first. Called wherever a segment may begin: reset, enable, report and before a draw (its
+   segment begins in vk_query_draw, at most one a draw). 1 when it copied */
+int vk_query_room(void) {
+    if (!g_perf_query || g_q.next - g_q.copied < QN / 2) return 0;
+    if (g_perf_times) vk_perf_extra(PX_QUERY_GUARD);
+    perf_pass_why(PE_QUERY);
+    vk_render_end(); /* the open query ends with the pass */
+    vk_query_flush(vk_cmd());
+    return 1;
+}
 /* a segment open now of this counter ends: what comes after is another epoch's, or isn't counted */
 static void end_own(const QCounter* c) {
     if (g_q.open && g_qown[(g_q.next - 1) % QN] == (u8)(c - g_qc + 1)) vk_query_pass_end(vk_cmd());
@@ -230,6 +242,7 @@ void vk_query_reset(u32 chan) {
     }
     QCounter* c = counter(chan, 1);
     if (!c) return;
+    vk_query_room();
     end_own(c);
     if (!c->started) LOG("vulkan: channel %u counts samples passed, with occlusion queries\n", chan);
     c->started = 1;
@@ -239,6 +252,7 @@ void vk_query_reset(u32 chan) {
 void vk_query_enable(u32 chan, int on) {
     QCounter* c = counter(chan, 1);
     if (!c) return;
+    vk_query_room();
     if (!on) end_own(c);
     c->disabled = !on;
 }
@@ -247,9 +261,14 @@ int vk_query_report(u32 chan, u64 gva, u32 len, u64 ticks) {
     if (!c || !c->started || c->bad || c->whead - c->wtail == QWAIT) return 0;
     end_own(c);
     if (g_perf_times) vk_perf_extra(PX_QUERY_REPORTS);
-    perf_pass_why(PE_QUERY);
-    vk_render_end();
-    vk_query_flush(vk_cmd()); /* the segments counted so far, copied in the submit the report waits for */
+    if (g_perf_query) {
+        /* the submission the report waits for (release()'s gate) copies the counts at its end (cmd.c submit) */
+        if (!vk_query_room() && g_perf_times) vk_perf_extra(PX_QUERY_KEPT);
+    } else {
+        perf_pass_why(PE_QUERY);
+        vk_render_end();
+        vk_query_flush(vk_cmd()); /* the segments counted so far, copied in the submit the report waits for */
+    }
     c->wait[c->whead++ % QWAIT] = c->reported;
     c->reported = g_q.next;
     vk_release_samples(gva, len, (u32)(c - g_qc), c->first, g_q.next, ticks);
@@ -494,6 +513,7 @@ int vk_query_pred_flush(void) {
                                       .pBufferInfo = &bufs[i]};
     vkUpdateDescriptorSets(g_vk.dev, 3, w, 0, NULL);
     vk_render_end(); /* a dispatch is outside a rendering pass */
+    if (g_perf_query) vk_query_flush(cb); /* SNX_ARCEUS_PERF_QUERY=1: reports left the counts the batch reads */
     /* the counts' copies (vk_query_flush) and an earlier batch's predicates a group starts from before the shader
        reads them, and the draws predicated on a slot before it is written again. The batch's words are host writes,
        made visible by the submit */

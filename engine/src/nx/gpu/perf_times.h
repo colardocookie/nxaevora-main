@@ -242,7 +242,7 @@ enum {
     PX_WIDE,         /* classified ranges of more than 16 pages: a result on another address meets them by page */
     PX_QUERY_REPORTS, /* samples-passed reports queued (vk_query_report, PERF-19) */
     PX_QUERY_KEPT,    /* of those, left the pass open (SNX_ARCEUS_PERF_QUERY=1) */
-    PX_QUERY_GUARD,   /* of those, ended it as without the switch: half the query ring not copied yet */
+    PX_QUERY_GUARD,   /* vk_query_room's copies: half the query ring not copied (a report, reset, enable, draw) */
     PX_N
 };
 /* a pending result sharing a byte with the range, oldest first, for perf_inplace_class */
@@ -312,5 +312,8 @@ size_t perf_inplace_line(const PerfCopies* c, uint32_t frames, char* out, size_t
    pending results on its pages is looked up at its exact length, 3 a read skips the reuse barrier when no writable
    result was handed out since the last one in its submission. 0 unless set. Read once at start */
 extern int g_perf_inplace;
+/* SNX_ARCEUS_PERF_QUERY=1, bench only (PERF-19, research 05:05): a samples-passed report neither ends the pass nor
+   copies the counts, which the submission it waits for copies at its end (vk/query.c vk_query_room). 0 unless set */
+extern int g_perf_query;
 
 #endif

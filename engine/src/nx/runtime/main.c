@@ -915,6 +915,11 @@ int snx_main(int argc, char** argv) {
                 g_perf_inplace >= 3 ? ", a read skips the reuse barrier with no writable result handed out since" : "");
         } else if (inplace && *inplace && strcmp(inplace, "0"))
             LOG("perf-inplace: '%s' is not 0 to 3, off\n", inplace);
+        const char* query = getenv("SNX_ARCEUS_PERF_QUERY"); /* bench only (gpu/perf_times.h, PERF-19) */
+        g_perf_query = query && !strcmp(query, "1");
+        if (g_perf_query)
+            LOG("perf-query: EXPERIMENT on, a samples-passed report keeps the pass open and its counts are copied at "
+                "the submission's end, or at half the query ring\n");
         const char* submit_us = getenv("SNX_ARCEUS_PERF_SUBMIT_US"); /* bench only: a submission's recording time */
         if (submit_us) {
             char* end = NULL;
