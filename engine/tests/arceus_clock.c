@@ -2703,6 +2703,7 @@ static void test_demo_tick(void) {
     /* one of them not stepped for more than a second is gone: the new controller takes its state, paced from its first
        call; the others keep theirs */
     demo_tick_reset(0);
+    host_ns += 2000000000; /* so that a second before it is not below 0 */
     for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++)
         demo_tick_states[k] = (DemoTickState){.object = 3000 + k, .context = 1, .budget = DEMO_TICK_UNIT,
                                               .seen_ns = host_ns - (k == 5 ? 1000000001 : 1000000000)};
@@ -2723,6 +2724,15 @@ static void test_demo_tick(void) {
     gw32(1200 + 0x3b8, 3);
     assert(demo_tick_call(1200, 16666667) == 92 && demo_tick_full == full + 2);
     assert(demo_tick_states[0].object == DEMO_OBJECT);
+    /* states stepped by another thread a few ns after this one read its clock are live, not a second old (the
+       reviewer's control on cc604bdb): the table is full and the carried budget stays */
+    demo_tick_reset(0);
+    for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++)
+        demo_tick_states[k] =
+            (DemoTickState){.object = 3000 + k, .context = 1, .budget = 12345, .seen_ns = host_ns + 5};
+    assert(!demo_tick_state(DEMO_OBJECT, DEMO_CONTEXT, host_ns) && demo_tick_states[0].budget == 12345);
+    assert(!past_second(host_ns, host_ns + 5) && !past_second(host_ns, host_ns - 1000000000) &&
+           past_second(host_ns, host_ns - 1000000001));
     /* 20 controllers one after another, each playing 30 calls: every one is paced, the table never full */
     demo_tick_reset(0);
     for (unsigned n = 0; n < 20; n++) {
@@ -2951,6 +2961,20 @@ static void test_text_probe(void) {
     text_probe_reveal(&g, entry_pc);
     assert(tp->text == TEXT_OBJECT && tp->calls == 1 && tp->steps == 2 && tp->first_ns == host_ns);
     assert(text_probe_seen == seen + 1);
+    /* a record another thread refreshed a few ns after this one read its clock is live: found as it is */
+    tp->last_ns = host_ns + 5;
+    assert(text_probe_text(TEXT_OBJECT, host_ns) == tp && tp->calls == 1 && tp->last_ns == host_ns);
+    /* 16 records of other texts, one not seen for more than a second: a new text takes that one */
+    {
+        TextProbeText saved[TEXT_PROBE_TEXTS];
+        memcpy(saved, text_probe_texts, sizeof saved);
+        for (unsigned k = 0; k < TEXT_PROBE_TEXTS; k++)
+            text_probe_texts[k] = (TextProbeText){.text = 0x8000 + k, .last_ns = host_ns - (k == 11 ? 1000000001 : 0)};
+        assert(text_probe_text(0x9000, host_ns) == &text_probe_texts[11] && text_probe_texts[11].text == 0x9000);
+        text_probe_texts[11].last_ns = host_ns;
+        assert(!text_probe_text(0x9200, host_ns));
+        memcpy(text_probe_texts, saved, sizeof saved);
+    }
     /* a reveal of another text inside a reveal: each text gets its own glyph steps, the total all of them */
     text_probe_original[0] = text_nest_stub;
     const u64 total = text_probe_steps;

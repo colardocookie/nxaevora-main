@@ -4402,18 +4402,21 @@ static void text_probe_option_poll(u64 now) {
     text_probe_option = value;
     text_probe_option_ns = now;
 }
+/* Whether then lies more than a second before now. Never when then is later: another thread may store a later time
+   after this one read its clock. */
+static int past_second(u64 now, u64 then) { return now > then && now - then > 1000000000ull; }
 /* A text's record, retired when it has not been seen for a second, as a text not shown any more. A text seen again
    after that starts a new record, also in its old slot. */
 static TextProbeText* text_probe_text(u64 text, u64 now) {
     TextProbeText* tp = NULL;
     for (unsigned k = 0; k < TEXT_PROBE_TEXTS && !tp; k++)
         if (text_probe_texts[k].text == text) tp = &text_probe_texts[k];
-    if (tp && now - tp->last_ns <= 1000000000ull) {
+    if (tp && !past_second(now, tp->last_ns)) {
         tp->last_ns = now;
         return tp;
     }
     for (unsigned k = 0; k < TEXT_PROBE_TEXTS && !tp; k++)
-        if (!text_probe_texts[k].text || now - text_probe_texts[k].last_ns > 1000000000ull) tp = &text_probe_texts[k];
+        if (!text_probe_texts[k].text || past_second(now, text_probe_texts[k].last_ns)) tp = &text_probe_texts[k];
     if (!tp) return NULL;
     *tp = (TextProbeText){.text = text, .last_ns = now};
     text_probe_seen++;
@@ -4472,8 +4475,8 @@ static void text_probe_reveal(CPU* c, u64 entry) {
     text_probe_running = outer;
     text_probe_own = outer_steps;
     const int done = !(c->x[0] & 1);
-    const u64 now = plat_ns();
     pm_lock(&text_probe_lock);
+    const u64 now = plat_ns(); /* under the lock, so no record holds a later time */
     text_probe_calls++;
     text_probe_last = text;
     text_probe_option_poll(now);
@@ -5039,7 +5042,7 @@ static DemoTickState* demo_tick_state(u64 object, u64 context, u64 now) {
             st->seen_ns = now;
             return st;
         }
-        if (!free && (!st->object || now - st->seen_ns > 1000000000ull)) free = st;
+        if (!free && (!st->object || past_second(now, st->seen_ns))) free = st;
     }
     if (free) *free = (DemoTickState){object, context, 0, now};
     return free;
@@ -5059,8 +5062,8 @@ static void demo_tick_step(CPU* c, u64 entry) {
     pm_lock(&step_lock);
     const u64 ns = step.step ? step.step : step.initial_ns;
     pm_unlock(&step_lock);
-    const u64 now = plat_ns();
     pm_lock(&demo_tick_lock);
+    const u64 now = plat_ns(); /* under the lock, so no state holds a later time */
     DemoTickState* st = demo_tick_state(object, context, now);
     if (st && before < 0) st->budget = 0; /* the clock restarted: nothing carried */
     unsigned n = 0;
