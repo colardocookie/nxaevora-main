@@ -30,6 +30,13 @@ enum {
     PT_PASS_END,     /* vk_render_end ending an open pass (PERF-11, research 20:41) */
     PT_PASS_BEGIN,   /* a game pass begun: from the end of the pass before to its vkCmdBeginRendering recorded */
     PT_REL_LOCK_ALL, /* the release thread waiting to take vk_lock, the whole frame (PERF-14, research 22:35) */
+    /* PERF-18 (research 04:14), the GPU thread's CPU time in buffer.c */
+    PT_SRC_WALK,     /* gfx_gpu_src past pend_hit: its walks over the pending results, to before a landing or barrier */
+    PT_CLASS_WALK,   /* PERF-17's class walk of a composed input (PERF_TIMES' own cost) */
+    PT_COMPOSE_EMPTY, /* gfx_composed when the composition copied no byte: staging, guest bytes, the overlay walk */
+    PT_COMPOSE_COPY,  /* the same when it copied */
+    PT_COMPOSE_W_EMPTY, /* vk_buf_copy_writable over pending results, after gfx_gpu_src, copying no byte */
+    PT_COMPOSE_W_COPY,  /* the same when it copied */
     /* a present job's tail, each from its syncpoint increment queued at frame_end (PERF-10, research 19:46) */
     PT_TAIL_SUBMIT, /* to the recorder thread handing the submission the increment waits for to the driver */
     PT_TAIL_DONE,   /* to the release thread's wait for that submission returning */
@@ -64,6 +71,8 @@ enum {
     PC_SRC_UNKNOWN,  /* of those, ones whose result's last writer was not kept (the table's slot taken) */
     PC_REL_DEPTH,    /* releases queued and not yet performed when a present's increment was queued */
     PC_WIN_OUTPUTS,  /* storage outputs the release thread landed inside a tail's window */
+    PC_SRC_WALKS,    /* gfx_gpu_src calls past pend_hit (PT_SRC_WALK's) */
+    PC_SRC_RESULTS,  /* the pending results those walked, the first walk's */
     /* from here on printed as totals, not a frame's mean */
     PC_TAIL_UNGATED, /* increments that waited for no submission: no submit or done time */
     PC_TAIL_PARTIAL, /* tails closed with a time missing (performed by another path, or no wait after it) */

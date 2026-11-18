@@ -160,7 +160,11 @@ static void* vk_stage(u64 n, u64 align, VkBuffer* b, u64* off) { return (void)n,
 static int writable_owned(GfxOut* o, u64 a, u32 n, VkBuffer b, u64 off) {
     return (void)o, (void)a, (void)n, (void)b, (void)off, 1;
 }
-static void gfx_overlay(u64 a, u64 n, VkBuffer b, u64 off, int site) { (void)a, (void)n, (void)b, (void)off, (void)site, composes++; }
+static int gfx_overlay(u64 a, u64 n, VkBuffer b, u64 off, int site) {
+    return (void)a, (void)n, (void)b, (void)off, (void)site, composes++, 1;
+}
+static u64 g_clock;
+static u64 plat_ns(void) { return ++g_clock; }
 static void copy_note(u64 a, u64 n) { (void)a, (void)n; }
 static void snx_le32_array(u32* w, size_t n) { (void)w, (void)n; }
 /* the atlas helpers: one writable aliased binding, one page */
@@ -245,6 +249,7 @@ static void test_level3(void) {
     assert(!strcmp(g_log, "B0 D0 D1 B2 D2 D3 D4 B5 D5 B6 D6 B7 D7 "));
     assert(g_perf_cp.extra[PX_SKIPPED] == 3 && g_perf_cp.extra[PX_BARRIER] == 5);
     assert(g_perf_cp.made[PR_INPLACE] == 1);
+    assert(g_perf.count[PC_SRC_WALKS] >= 8 && g_perf.site[PT_SRC_WALK].count == g_perf.count[PC_SRC_WALKS]);
     /* a dispatch's result and a transform feedback capture, each through vk_buf_copy_writable, then a reader */
     reads(r); drawn();                   /* 8: covered by 7's */
     g_perf_bind = PBK_DISPATCH;
@@ -276,6 +281,7 @@ static void test_level3(void) {
 /* the same sequence unset: a barrier for every reading draw, as before the switch */
 static void test_level0(void) {
     reset(0);
+    const u64 clock = g_clock; /* PERF_TIMES off: no clock read (PERF-18's timing) */
     GfxOut* r = result(0x20000, 1024, 5);
     reads(r); drawn();
     GfxOut* x = alias_writer(0x30000);
@@ -284,6 +290,7 @@ static void test_level0(void) {
     reads(x); drawn();
     assert(!strcmp(g_log, "B0 D0 D1 B2 D2 B3 D3 B4 D4 "));
     assert(g_out_write_work == 0); /* not kept below level 3 */
+    assert(g_clock == clock);
 }
 /* level 1: what gfx_gpu_src returns for a read of [0x10000, 0x10100) over r, with others on its pages */
 static int read_at(int level, u64 len, VkBuffer* b) {
@@ -348,7 +355,7 @@ def main():
     buffer = (SRC / "nx/gpu/vk/buffer.c").read_text()
     code = HEAD
     code += between(buffer, "static u64 g_out_write_work;", "void vk_buf_writable_commit(void) {")
-    for sig in ["void vk_buf_writable_abort(void) {", "void vk_buf_writable_commit(void) {",
+    for sig in ["void vk_buf_writable_abort(void) {", "void vk_buf_writable_commit(void) {", "static void src_walked(",
                 "static int gfx_gpu_src(u64 gva", "int vk_buf_copy_writable(u64 gva",
                 "static int draw_output_page(", "int vk_buf_draw_prepare(VkDrawStorage* draw) {"]:
         code += function(buffer, sig)

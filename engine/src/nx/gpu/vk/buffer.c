@@ -937,8 +937,9 @@ static void overlay_span(void* user, u64 at, u64 from, u64 n) {
     if (!cover_take(v->cov, at, at + n, overlay_part, v)) overlay_part(v, at, at + n);
 }
 /* copies the pending results' bytes in [gva, gva + len), through any GPU address, into dst at dst_off, which holds
-   guest memory's bytes (after gfx_gpu_src said they can be): each byte from the newest result over it */
-static void gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, int site) {
+   guest memory's bytes (after gfx_gpu_src said they can be): each byte from the newest result over it. 1 when a byte
+   was copied */
+static int gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, int site) {
     CopyBatch c;
     Covered cov;
     GfxOut *nlocal[64], **newest;
@@ -958,6 +959,7 @@ static void gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, int site) {
     cover_free(&cov);
     if (newest != nlocal) free(newest);
     if (rmap != local) free(rmap);
+    return c.started; /* a byte was copied */
 }
 
 /* A draw or dispatch can read an earlier one's storage result without a round trip through guest RAM. Returns 1 with
@@ -1021,6 +1023,14 @@ static int input_class(u64 gva, u64 len, u64 exact) {
     }
     return perf_inplace_class(r, n, gva, len, exact);
 }
+/* SNX_ARCEUS_PERF_TIMES (PERF-18): gfx_gpu_src's walks over n results took the time since *t0, once (*t0 cleared) */
+static void src_walked(u64* t0, u64 n) {
+    if (!*t0) return;
+    perf_time_add(&g_perf, PT_SRC_WALK, plat_ns() - *t0);
+    perf_count(&g_perf, PC_SRC_WALKS, 1);
+    perf_count(&g_perf, PC_SRC_RESULTS, n);
+    *t0 = 0;
+}
 /* kind: the caller, a PB_* for SNX_ARCEUS_PERF_TIMES */
 static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, u64 align, int kind) {
     GfxOut *match = NULL, *newest = NULL;
@@ -1030,10 +1040,14 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     if (!g_gfx_any || g_out_landing || !gva || !len) return 0;
     if (g_cs_any) vk_compute_mem_need(gva, len);
     if (!pend_hit(&g_out_pages, gva, len)) return 0;
+    u64 walk_t0 = g_perf_times ? plat_ns() : 0, walked = 0;
     range_pages(gva, len, &q);
-    for (GfxOut* o = g_out; o; o = o->next)
+    for (GfxOut* o = g_out; o; o = o->next, walked++)
         if (out_meets_range(o, gva, len, &q)) newest = o;
-    if (!newest) return 0;
+    if (!newest) {
+        src_walked(&walk_t0, walked);
+        return 0;
+    }
     /* SNX_ARCEUS_PERF_INPLACE >= 1, a read (research 02:42): the newest result sharing a BYTE with the range, when it
        covers it at this address. The newer ones on its pages hold none of its bytes, and the checks below run on it
        as on the newest one. Otherwise the code below runs on the newest by page, as without the switch */
@@ -1050,6 +1064,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
        times a frame (114,000 compositions in 600 frames, against 3,600 for an offset or a submit) */
     if (gva >= newest->addr && gva + len <= newest->addr + newest->size) {
         if (!out_still_copyable(newest, gva, len, &rmap, local)) {
+            src_walked(&walk_t0, walked);
             if (copy_stats_on()) g_wb_draw_miss[newest->frame_id != vk_frame_id() ? 0 : 2]++;
             if (g_perf_times) vk_perf_src(kind, newest->frame_id != vk_frame_id() ? PS_OLD : PS_CHANGED);
             if (rmap && rmap != local) free(rmap);
@@ -1063,6 +1078,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
         for (GfxOut* o = g_out; o; o = o->next) {
             if (!out_meets_range(o, gva, len, &q)) continue;
             if (!out_still_copyable(o, gva, len, &rmap, local)) {
+                src_walked(&walk_t0, walked);
                 if (copy_stats_on()) g_wb_draw_miss[o->frame_id != vk_frame_id() ? 0 : 2]++;
                 if (g_perf_times) vk_perf_src(kind, o->frame_id != vk_frame_id() ? PS_OLD : PS_CHANGED);
                 if (rmap && rmap != local) free(rmap);
@@ -1074,6 +1090,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
             before |= o->frame_id != vk_frame_id();
         }
     if (rmap && rmap != local) free(rmap);
+    src_walked(&walk_t0, walked);
     if (!count) return 0;
     if (before) vk_frame_hold(vk_frame_id() - 1);
     if (count == 1 && gva >= match->addr && gva + len <= match->addr + match->size &&
@@ -1126,16 +1143,22 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
         else if ((match->off + (gva - match->addr)) & (align - 1))
             why = PS_ALIGN;
         vk_perf_src(kind, why);
-        if (kind == PB_INPUT) vk_perf_class(input_class(gva, len, g_perf_exact));
+        if (kind == PB_INPUT) {
+            const u64 t0 = plat_ns();
+            vk_perf_class(input_class(gva, len, g_perf_exact));
+            perf_time_add(&g_perf, PT_CLASS_WALK, plat_ns() - t0);
+        }
     }
     return 2;
 }
 /* the range for reading on the GPU, with its pending results composed over guest memory in staging */
 static int gfx_composed(u64 gva, u64 len, VkBuffer* buf, u64* off) {
+    const u64 t0 = g_perf_times ? plat_ns() : 0; /* PERF-18 */
     u8* p = vk_stage(len, vk_stage_align(), buf, off);
     if (!p) return 0;
     read_untracked(gva, p, len);
-    gfx_overlay(gva, len, *buf, *off, PK_COMPOSE);
+    const int copied = gfx_overlay(gva, len, *buf, *off, PK_COMPOSE);
+    if (t0) perf_time_add(&g_perf, copied ? PT_COMPOSE_COPY : PT_COMPOSE_EMPTY, plat_ns() - t0);
     return 1;
 }
 
@@ -1618,8 +1641,9 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
             if (g_perf_times) vk_perf_made(PR_REPEAT);
             return 1;
         }
-    int pending = gfx_gpu_src(gva, len, buf, off, 1, vk_stage_align(), PB_WRITE);
+    int pending = gfx_gpu_src(gva, len, buf, off, 1, vk_stage_align(), PB_WRITE), copied = 0;
     if (pending == 1) return 1;
+    const u64 compose_t0 = g_perf_times && pending == 2 ? plat_ns() : 0; /* PERF-18 */
     if (!pending) gmem_need(gva, len);
     int owned = !pending && range_owned(gva, len);
     if (owned) (void)written_since_gva(gva, len, 0); /* establish the CPU-write baseline before the GPU copy */
@@ -1651,7 +1675,7 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
         }
     } else
         memcpy(o->ptr, o->org, len);
-    if (pending == 2) gfx_overlay(gva, len, *buf, *off, PK_COMPOSE_W);
+    if (pending == 2) copied = gfx_overlay(gva, len, *buf, *off, PK_COMPOSE_W);
     o->addr = gva;
     o->size = len;
     o->buf = *buf;
@@ -1671,6 +1695,7 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
                      : pending == 2                ? PR_COMPOSED
                      : owned                       ? PR_OWNED
                                                    : PR_ORDINARY);
+    if (compose_t0) perf_time_add(&g_perf, copied ? PT_COMPOSE_W_COPY : PT_COMPOSE_W_EMPTY, plat_ns() - compose_t0);
     return 1;
 }
 

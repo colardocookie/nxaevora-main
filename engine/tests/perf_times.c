@@ -33,6 +33,10 @@ static void test_line(void) {
     perf_time_named(&p, NULL, 9); /* no name: counted as lost */
     perf_count(&p, PC_WB_OUTPUTS, 3);
     perf_count(&p, PC_WB_BYTES, 1000);
+    perf_time_add(&p, PT_SRC_WALK, 3000000); /* PERF-18's, a frame's mean like the sites before the tail's */
+    perf_time_add(&p, PT_COMPOSE_W_COPY, 1000000);
+    perf_count(&p, PC_SRC_WALKS, 4);
+    perf_count(&p, PC_SRC_RESULTS, 3300);
     p.overlaps = 1;
     perf_count(&p, PC_COUNTS, 5); /* out of range: overlaps, next in the struct, stays 1 */
     perf_times_line(&p, 2, line, sizeof line);
@@ -44,10 +48,15 @@ static void test_line(void) {
     CHECK(strstr(line, " [a submission]=0.250/0.500"));
     CHECK(strstr(line, " wb_outputs=1.5 wb_bytes=500.0 wc_bytes=0.0"));
     CHECK(strstr(line, " overlaps=1 named_lost=1"));
+    CHECK(strstr(line, " rel_lock_all=0.000/0.000 src_walk=1.500/3.000 class_walk=0.000/0.000"
+                       " compose_empty=0.000/0.000 compose_copy=0.000/0.000 compose_w_empty=0.000/0.000"
+                       " compose_w_copy=0.500/1.000 tail_submit="));
+    CHECK(strstr(line, " win_outputs=0.0 src_walks=2.0 src_results=1650.0 tail_ungated=0 "));
     perf_times_line(&p, 2, line, sizeof line); /* the next window starts empty */
     CHECK(strstr(line, " start_end=0.000/0.000 "));
     CHECK(!strstr(line, "[vk_lock")); /* a name with no wait this window is left out */
     CHECK(strstr(line, " wb_outputs=0.0 "));
+    CHECK(strstr(line, " src_walk=0.000/0.000 ") && strstr(line, " src_walks=0.0 src_results=0.0 "));
     CHECK(strstr(line, " overlaps=0 named_lost=0"));
 }
 

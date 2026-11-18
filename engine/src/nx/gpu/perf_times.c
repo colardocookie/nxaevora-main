@@ -234,19 +234,19 @@ static size_t put(char* out, size_t size, size_t at, const char* name, PerfTime 
     return n > 0 ? at + (size_t)n : at;
 }
 size_t perf_times_line(PerfTimes* p, uint32_t frames, char* out, size_t size) {
-    static const char* const names[PT_SITES] = {"post_start", "start_end", "end_post", "period", "idle", "show",
-                                                "tl_recycle", "tl_finish", "tl_submit", "rec_sync", "rec_full",
-                                                "sync_wait", "acquire", "release_hold", "pass_end", "pass_begin",
-                                                "rel_lock_all", "tail_submit", "tail_done", "tail_incr",
-                                                "tail_free", "tail_wake", "sub_done", "sub_last5", "win_gpu",
-                                                "win_lock", "win_hold", "win_other"};
+    static const char* const names[PT_SITES] = {
+        "post_start",   "start_end",       "end_post",       "period",        "idle",        "show",
+        "tl_recycle",   "tl_finish",       "tl_submit",      "rec_sync",      "rec_full",    "sync_wait",
+        "acquire",      "release_hold",    "pass_end",       "pass_begin",    "rel_lock_all", "src_walk",
+        "class_walk",   "compose_empty",   "compose_copy",   "compose_w_empty", "compose_w_copy", "tail_submit",
+        "tail_done",    "tail_incr",       "tail_free",      "tail_wake",     "sub_done",    "sub_last5",
+        "win_gpu",      "win_lock",        "win_hold",       "win_other"};
     static const char* const sites[SW_SITES] = {"other",   "slice", "release", "finish",  "frame",
                                                 "present", "image", "compute", "readback"};
     static const char* const counts[PC_COUNTS] = {
-        "wb_outputs", "wb_bytes",    "wc_bytes",      "tail_submits", "tail_after",  "passes",
-        "end_other",  "end_gpu_src", "end_copy",      "end_image",    "end_target",  "src_barriers",
-        "src_clean",  "src_unknown", "rel_depth",     "win_outputs",  "tail_ungated", "tail_partial",
-        "tail_lost"};
+        "wb_outputs", "wb_bytes",    "wc_bytes",    "tail_submits", "tail_after",   "passes",       "end_other",
+        "end_gpu_src", "end_copy",   "end_image",   "end_target",   "src_barriers", "src_clean",    "src_unknown",
+        "rel_depth",  "win_outputs", "src_walks",   "src_results",  "tail_ungated", "tail_partial", "tail_lost"};
     if (!size) return 0;
     if (!frames) frames = 1;
     int n = snprintf(out, size, "perf-times: frames=%u (ms a frame/largest ms)", frames);
