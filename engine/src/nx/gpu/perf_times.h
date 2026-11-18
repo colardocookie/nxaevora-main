@@ -312,7 +312,8 @@ typedef struct {
     uint64_t ends[PK_SITES], bytes[PK_SITES];         /* of the copy ends, by site, with the bytes that copy moved */
     uint64_t src[PB_KINDS][PS_N];                     /* its draws' bindings over pending results */
     uint64_t cls[PI_CLASSES];                         /* its draws' composed input bindings (PERF-17) */
-    uint64_t own[PO_N], own_landed;                   /* its draws' buf_get slow paths (PERF-22) */
+    uint64_t own[PO_N], own_landed[PO_N];             /* its draws' buf_get slow paths, and of them inside a
+                                                         landed result, by outcome (PERF-22, reviewer N1) */
 } PerfCopyTarget;
 typedef struct {
     uint64_t ops[PK_SITES], bytes[PK_SITES], ends[PK_SITES]; /* every copy, the ones that ended a pass, all targets */

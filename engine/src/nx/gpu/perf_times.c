@@ -450,7 +450,7 @@ void perf_copy_own(PerfCopies* c, int what, int why, uint64_t bytes, int landed,
     for (int k = 0; k < POT_N; k++) c->own_ns[what][k] += ns[k];
     if (c->draw >= 0) {
         c->tg[c->draw].own[what]++;
-        c->tg[c->draw].own_landed += !!landed;
+        c->tg[c->draw].own_landed[what] += !!landed;
     }
 }
 void perf_copy_own_drop(PerfCopies* c, uint64_t uses) {
@@ -641,7 +641,8 @@ size_t perf_own_line(const PerfCopies* c, uint32_t frames, char* out, size_t siz
     size_t at = putf(out, size, 0,
                      "perf-own: frames=%u (a frame: calls by reason new/nobuf/submit/dirty/written/epoch, KB, inside "
                      "a landed result, ms hash+copy:create:rest; draws on an own buffer at its drop "
-                     "0/1/2-3/4-15/16-63/64+; by target staged/own_made/own_same/owned_read/patch/landed)",
+                     "0/1/2-3/4-15/16-63/64+; by target staged/own_made/own_same/owned_read/patch, then of each "
+                     "inside a landed result)",
                      frames ? frames : 1);
     for (int w = 0; w < PO_N; w++) {
         uint64_t n = 0;
@@ -670,7 +671,7 @@ size_t perf_own_line(const PerfCopies* c, uint32_t frames, char* out, size_t siz
         const PerfCopyTarget* g = &c->tg[shown[j]];
         at = putf(out, size, at, " [%llx %ux%u f%u]", (unsigned long long)g->t.gva, g->t.w, g->t.h, g->t.fmt);
         at = put_counts(out, size, at, "own", g->own, PO_N, f);
-        at = putf(out, size, at, "/%.1f", g->own_landed / f);
+        at = put_counts(out, size, at, "landed", g->own_landed, PO_N, f);
     }
     return at < size ? at : size - 1;
 }

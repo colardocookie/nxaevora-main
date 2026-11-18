@@ -749,7 +749,8 @@ static void test_own(void) {
     CHECK(c.own_bytes[PO_OWN_MADE] == 5120);
     CHECK(c.own_landed[PO_OWN_MADE] == 1 && c.own_n[PO_STAGED][POW_NEW] == 2);
     CHECK(c.own_ns[PO_OWN_MADE][POT_CREATE] == 4000000);
-    CHECK(c.tg[0].own[PO_OWN_MADE] == 2 && c.tg[0].own[PO_STAGED] == 2 && c.tg[0].own_landed == 1);
+    CHECK(c.tg[0].own[PO_OWN_MADE] == 2 && c.tg[0].own[PO_STAGED] == 2 && c.tg[0].own_landed[PO_OWN_MADE] == 1);
+    CHECK(c.tg[0].own_landed[PO_STAGED] == 0);
     const PerfTarget quiet = {0x90000, 8, 8, 1};
     perf_copy_draw(&c, &quiet); /* drawn, no slow path: not printed */
     perf_copy_draw(&c, NULL);
@@ -763,7 +764,25 @@ static void test_own(void) {
     CHECK(strstr(line, " patch=0.0/0.0/0.0/0.0/0.5/0.0 KB=0.1 landed=0.5 "));
     CHECK(!strstr(line, " own_same=") && !strstr(line, " owned_read="));
     CHECK(!strstr(line, "KB=0.0 ") && !strstr(line, "[90000 "));
-    CHECK(strstr(line, " uses=0.5/0.5/1.0/6.0/24.0/3.0 [4401e0000 1920x1080 f129] own=1.0/1.0/0.0/0.0/0.0/0.5"));
+    CHECK(strstr(line, " uses=0.5/0.5/1.0/6.0/24.0/3.0 [4401e0000 1920x1080 f129] own=1.0/1.0/0.0/0.0/0.0"
+                       " landed=0.0/0.5/0.0/0.0/0.0"));
+    /* reviewer's witness (N1): which outcome landed is told apart by target */
+    {
+        static PerfCopies w;
+        char l1[1024], l2[1024];
+        const PerfTarget ta = {0xa0000, 8, 8, 1}, tb = {0xb0000, 8, 8, 1};
+        for (int swap = 0; swap < 2; swap++) {
+            perf_copies_reset(&w);
+            for (int k = 0; k < 2; k++) {
+                perf_copy_draw(&w, k ? &tb : &ta);
+                perf_copy_own(&w, PO_OWN_MADE, POW_DIRTY, 64, (k ^ swap) == 0, ns);
+                perf_copy_own(&w, PO_STAGED, POW_DIRTY, 64, (k ^ swap) == 1, ns);
+            }
+            perf_own_line(&w, 1, swap ? l2 : l1, sizeof l1);
+        }
+        CHECK(strcmp(l1, l2) != 0);
+        CHECK(strstr(l1, " [a0000 8x8 f1] own=1.0/1.0/0.0/0.0/0.0 landed=0.0/1.0/0.0/0.0/0.0"));
+    }
     perf_copies_line(&c, 2, line, sizeof line); /* the window's counts go with it */
     CHECK(c.own_n[PO_OWN_MADE][POW_DIRTY] == 0 && c.own_uses[4] == 0 && c.tg[0].t.gva == 0);
     perf_own_line(&c, 0, line, sizeof line);
