@@ -2693,12 +2693,50 @@ static void test_demo_tick(void) {
     gw32(DEMO_OBJECT + 0x3b8, 5);
     assert(demo_tick_call(DEMO_OBJECT, 16666667) == 78);
     gw32(DEMO_OBJECT + 0x3b8, 3);
-    /* a full table: that controller keeps the game's +2, counted; a reused pointer with another context is fresh */
+    /* a full table of controllers stepped in the last second: that controller keeps the game's +2, counted; a reused
+       pointer with another context is fresh */
     demo_tick_reset(0);
     for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++)
-        demo_tick_states[k] = (DemoTickState){.object = 3000 + k, .context = 1};
+        demo_tick_states[k] = (DemoTickState){.object = 3000 + k, .context = 1, .seen_ns = host_ns - 1000000000};
     const u64 full = demo_tick_full;
     assert(demo_tick_call(DEMO_OBJECT, 16666667) == 2 && demo_tick_full == full + 1);
+    /* one of them not stepped for more than a second is gone: the new controller takes its state, paced from its first
+       call; the others keep theirs */
+    demo_tick_reset(0);
+    for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++)
+        demo_tick_states[k] = (DemoTickState){.object = 3000 + k, .context = 1, .budget = DEMO_TICK_UNIT,
+                                              .seen_ns = host_ns - (k == 5 ? 1000000001 : 1000000000)};
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 1 && demo_tick_full == full + 1);
+    assert(demo_tick_states[5].object == DEMO_OBJECT && demo_tick_states[5].seen_ns == host_ns);
+    for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++)
+        if (k != 5) assert(demo_tick_states[k].object == 3000 + k && demo_tick_states[k].budget == DEMO_TICK_UNIT);
+    /* a controller playing for 1.5 s beside 7 others keeps its state: a new one then finds the table full */
+    demo_tick_reset(0);
+    for (unsigned k = 1; k < DEMO_TICK_CONTROLLERS; k++)
+        demo_tick_states[k] = (DemoTickState){.object = 3000 + k, .context = 1};
+    for (unsigned k = 1; k <= 90; k++) {
+        host_ns += 16666667;
+        for (unsigned j = 1; j < DEMO_TICK_CONTROLLERS; j++) demo_tick_states[j].seen_ns = host_ns;
+        assert(demo_tick_call(DEMO_OBJECT, 16666667) == (int32_t)k);
+    }
+    gw64(1200 + 0x3b0, DEMO_CONTEXT);
+    gw32(1200 + 0x3b8, 3);
+    assert(demo_tick_call(1200, 16666667) == 92 && demo_tick_full == full + 2);
+    assert(demo_tick_states[0].object == DEMO_OBJECT);
+    /* 20 controllers one after another, each playing 30 calls: every one is paced, the table never full */
+    demo_tick_reset(0);
+    for (unsigned n = 0; n < 20; n++) {
+        const u64 controller = 1200 + 16 * n; /* its +3B0 and +3B8 below the context's clock */
+        gw64(controller + 0x3b0, DEMO_CONTEXT);
+        gw32(controller + 0x3b8, 3);
+        gw32(DEMO_CONTEXT + 0x7ec, 0);
+        for (unsigned k = 1; k <= 30; k++) {
+            host_ns += 16666667;
+            assert(demo_tick_call(controller, 16666667) == (int32_t)k);
+        }
+        host_ns += 1000000000;
+    }
+    assert(demo_tick_full == full + 2);
     demo_tick_reset(0);
     demo_tick_states[0] = (DemoTickState){.object = DEMO_OBJECT, .context = 999, .budget = 3 * DEMO_TICK_UNIT};
     assert(demo_tick_call(DEMO_OBJECT, 16666667) == 1 && demo_tick_states[0].context == DEMO_CONTEXT);

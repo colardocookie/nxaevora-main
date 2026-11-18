@@ -5006,7 +5006,7 @@ static void event_tick_init(void) {
    time in 1/60 s units (at most 2 a call, the rest carried, the carry capped at 4 units). Any other change is left. */
 #define DEMO_TICK_UNIT (SCRIPT_TICK_NS / 2)
 #define DEMO_TICK_CONTROLLERS 8
-typedef struct { u64 object, context; int64_t budget; } DemoTickState;
+typedef struct { u64 object, context; int64_t budget; u64 seen_ns; } DemoTickState;
 static DemoTickState demo_tick_states[DEMO_TICK_CONTROLLERS];
 static PMutex demo_tick_lock = PMUTEX_INIT;
 static GuestFn demo_tick_original;
@@ -5025,20 +5025,22 @@ static unsigned demo_tick_units_for(int64_t* budget, u64 step_ns) {
     if (*budget > 4 * DEMO_TICK_UNIT) *budget = 4 * DEMO_TICK_UNIT;
     return (unsigned)n;
 }
-/* The controller's state, fresh for a new controller, or a reused pointer with another context; NULL when the table
-   is full (astra's table point: that controller's clock keeps the game's +2, with a line and a count) */
-static DemoTickState* demo_tick_state(u64 object, u64 context) {
-    for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++)
-        if (demo_tick_states[k].object == object) {
-            if (demo_tick_states[k].context != context) demo_tick_states[k] = (DemoTickState){object, context, 0};
-            return &demo_tick_states[k];
+/* The controller's state, fresh for a new controller, or a reused pointer with another context. A state not stepped
+   while playing for a second is free, as its controller is gone or not playing. NULL when all 8 were stepped in the
+   last second (astra's table point: that controller's clock keeps the game's +2, with a line and a count). */
+static DemoTickState* demo_tick_state(u64 object, u64 context, u64 now) {
+    DemoTickState* free = NULL;
+    for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++) {
+        DemoTickState* st = &demo_tick_states[k];
+        if (st->object == object) {
+            if (st->context != context) *st = (DemoTickState){object, context, 0, now};
+            st->seen_ns = now;
+            return st;
         }
-    for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++)
-        if (!demo_tick_states[k].object) {
-            demo_tick_states[k] = (DemoTickState){object, context, 0};
-            return &demo_tick_states[k];
-        }
-    return NULL;
+        if (!free && (!st->object || now - st->seen_ns > 1000000000ull)) free = st;
+    }
+    if (free) *free = (DemoTickState){object, context, 0, now};
+    return free;
 }
 static void demo_tick_step(CPU* c, u64 entry) {
     const u64 object = c->x[0];
@@ -5055,8 +5057,9 @@ static void demo_tick_step(CPU* c, u64 entry) {
     pm_lock(&step_lock);
     const u64 ns = step.step ? step.step : step.initial_ns;
     pm_unlock(&step_lock);
+    const u64 now = plat_ns();
     pm_lock(&demo_tick_lock);
-    DemoTickState* st = demo_tick_state(object, context);
+    DemoTickState* st = demo_tick_state(object, context, now);
     if (st && before < 0) st->budget = 0; /* the clock restarted: nothing carried */
     unsigned n = 0;
     int changed = 0;
@@ -5076,7 +5079,7 @@ static void demo_tick_step(CPU* c, u64 entry) {
         gw32(context + 0x7ec, (u32)(from + (int32_t)n));
         __atomic_add_fetch(&demo_tick_units, n, __ATOMIC_RELAXED);
     }
-    const u64 calls = __atomic_add_fetch(&demo_tick_calls, 1, __ATOMIC_RELAXED), now = plat_ns();
+    const u64 calls = __atomic_add_fetch(&demo_tick_calls, 1, __ATOMIC_RELAXED);
     u64 last = __atomic_load_n(&demo_tick_ns, __ATOMIC_RELAXED);
     if (!last) {
         if (__atomic_compare_exchange_n(&demo_tick_ns, &last, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
