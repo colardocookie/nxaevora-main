@@ -226,6 +226,25 @@ void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, c
     publish(); /* the timeline value is waited for by whoever needs the work done */
 }
 
+int g_vk_wsi_lock;
+static PMutex g_wsi_mutex = PMUTEX_INIT;
+static u64 g_wsi_present_end; /* producer-owned end of the most recent present packet */
+
+int vk_wsi_present_pending(void) {
+    return __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) < g_wsi_present_end;
+}
+
+int vk_wsi_acquire_locked(int game, VkSemaphore acq, u32* idx, VkResult* result) {
+    if (!game) {
+        /* Present can be waiting for this window thread to dispatch a message. */
+        if (!pm_trylock(&g_wsi_mutex)) return 0;
+    } else
+        pm_lock(&g_wsi_mutex);
+    *result = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 0, acq, VK_NULL_HANDLE, idx);
+    pm_unlock(&g_wsi_mutex);
+    return 1;
+}
+
 /* A present, after the frame's submission. The GPU thread waited for the ring to drain before presenting, and so
    for the recording of its whole frame: a sixth of its time in one game, where it could have gone on with the next
    frame. Its result comes back at a later present (vk_rec_present) */
@@ -243,7 +262,10 @@ static VkResult present_run(const Present* x) {
                            .pSwapchains = &x->sc,
                            .pImageIndices = &x->idx};
     SNX_ZONE(z_queue_present, "vkQueuePresentKHR");
-    return vkQueuePresentKHR(g_vk.gfx, &pi);
+    if (g_vk_wsi_lock) pm_lock(&g_wsi_mutex);
+    VkResult r = vkQueuePresentKHR(g_vk.gfx, &pi);
+    if (g_vk_wsi_lock) pm_unlock(&g_wsi_mutex);
+    return r;
 }
 static void present_queued(const void* p) {
     VkResult r = present_run(p);
@@ -253,6 +275,7 @@ VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait) {
     Present x = {sc, wait, idx};
     if (g_rec <= 0) return present_run(&x);
     *(Present*)rec_push(present_queued, sizeof x) = x;
+    if (g_vk_wsi_lock) g_wsi_present_end = g_pending;
     publish();
     return vk_rec_present_result();
 }

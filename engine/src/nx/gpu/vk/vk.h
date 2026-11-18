@@ -262,6 +262,10 @@ void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, c
                    u32 ns);
 void vk_rec_sync(void);        /* until everything queued is recorded and submitted */
 void vk_rec_queue(VkQueue q);  /* before submitting to or presenting on q outside the ring (vk_lock) */
+/* Under vk_lock. A queued present may still need the window thread to dispatch a message. */
+int vk_wsi_present_pending(void);
+/* Under vk_lock. Returns zero when an optional window redraw must defer, otherwise supplies the Vulkan result. */
+int vk_wsi_acquire_locked(int game, VkSemaphore acq, u32* idx, VkResult* result);
 /* presents image idx of sc once wait is signaled, in order after the submissions queued before it (vk_lock). The
    result is this present's without the recording thread, otherwise that of an earlier one which wasn't VK_SUCCESS,
    or VK_SUCCESS: a swapchain out of date shows a frame later */
