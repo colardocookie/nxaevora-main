@@ -265,6 +265,21 @@ static inline float selftest_output_value(const uint8_t* bytes, size_t pixel, in
     memcpy(&value, bytes + pixel * SELFTEST_OUTPUT_BYTES + (size_t)channel * sizeof value, sizeof value);
     return value;
 }
+/* Since ABI 5 the output may be in the adapter's own format: four 32 bit floats (16 bytes a pixel), or B10G11R11
+   (4 bytes, packed 1). A pixel's red, green and blue out of the read-back. A packed channel whose exponent is all
+   ones (infinity or not a number) comes back as not finite, as a float output's would. */
+static inline void selftest_output_pixel(const uint8_t* bytes, size_t pixel, int packed, double rgb[3]) {
+    if (!packed) {
+        for (int c = 0; c < 3; c++) rgb[c] = (double)selftest_output_value(bytes, pixel, c);
+        return;
+    }
+    uint32_t word;
+    memcpy(&word, bytes + pixel * 4, sizeof word);
+    selftest_b10g11r11_value(word, rgb);
+    const uint32_t exponent[3] = {word >> 6 & 31, word >> 17 & 31, word >> 27 & 31};
+    for (int c = 0; c < 3; c++)
+        if (exponent[c] == 31) rgb[c] = NAN;
+}
 /* 1 when the one staging buffer holds a frame's uploads (colour and depth at 4 bytes a texel, vectors at 8) and
    the output's read-back. Sizes that are not positive, or that do not fit a size_t's product, do not fit. */
 static inline int selftest_staging_fits(uint64_t staging, int w, int h, int ow, int oh) {

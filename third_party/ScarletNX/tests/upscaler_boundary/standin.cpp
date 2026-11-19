@@ -106,13 +106,14 @@ int shutdown(VkDevice device) {
 
 #if SNX_STANDIN == 0
 const SnxUpscalerApi g_api = {SNX_UPSCALER_ABI, SENTINEL_NAME, instance_extensions, device_extensions, create,
-                              prepare, evaluate, destroy, shutdown};
+                              prepare, evaluate, destroy, shutdown, VK_FORMAT_UNDEFINED};
 #elif SNX_STANDIN == 1
 const SnxUpscalerApi g_api = {SNX_UPSCALER_ABI + 1, SENTINEL_NAME, never_instance, never_device, never_create,
-                              never_prepare,        never_evaluate, never_destroy, never_shutdown};
+                              never_prepare,        never_evaluate, never_destroy, never_shutdown,
+                              VK_FORMAT_UNDEFINED};
 #elif SNX_STANDIN == 2
 const SnxUpscalerApi g_api = {SNX_UPSCALER_ABI, SENTINEL_NAME, never_instance, never_device, nullptr,
-                              never_prepare,    never_evaluate, never_destroy, never_shutdown};
+                              never_prepare,    never_evaluate, never_destroy, never_shutdown, VK_FORMAT_UNDEFINED};
 #endif
 }  // namespace
 

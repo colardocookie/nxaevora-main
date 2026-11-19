@@ -14,6 +14,7 @@
 #include "nx/gpu/vk/upscaler.h"
 #include "nx/gpu/vk/upscaler_selftest.h"
 #include "nx/gpu/vk/temporal_math.h"
+#include "nx/gpu/vk/upscaler_protocol.h"
 #include "nx/runtime/platform/log.h"
 u64 plat_ns(void); /* plat.h's, declared alone: plat.h brings windows.h, whose far and INFINITE are macros */
 
@@ -56,7 +57,11 @@ static struct {
     u64 staging_size;
     const SnxUpscalerApi* api;
     VkFormat motion_format; /* the vectors' images: two halves for dlss, four for the others */
+    VkFormat output_format; /* the adapter's own since ABI 5: four 32 bit floats, or B10G11R11 */
     int dlss; /* DLSS's matrix (DL1b revision 2, research's rulings for N4, D3-4): integration only, not quality */
+    int matrix; /* that matrix, for DLSS and for XeSS (XESS-DESIGN.md: DLSS's DL1 matrix and bars) */
+    const char* name; /* the adapter's, for the lines */
+    int at13;         /* the instance and the device at Vulkan 1.3, for XeSS (its least, XS2-a) */
     u32 contexts; /* contexts the adapter handed out and the self-test has not destroyed */
     SelftestLive live; /* which they are: each ends exactly once */
     int ended_wrong;   /* a context destroyed that was not live, or while a command buffer was recorded */
@@ -505,9 +510,10 @@ static int device_make(void) {
         LOG(ST "the layer's limit of repeated messages: not asked off, the headers of this build have no layer "
                "settings\n");
 #endif
+    /* XeSS names Vulkan 1.3 as its least (XS2-a), as the game's device is: for it the self-test is made at 1.3 */
     const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
                                    .pApplicationName = "scarletnx upscaler self-test",
-                                   .apiVersion = VK_API_VERSION_1_2};
+                                   .apiVersion = g.at13 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2};
     const VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                                       .pNext = instance_chain,
                                       .pApplicationInfo = &app,
@@ -556,10 +562,10 @@ static int device_make(void) {
     }
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(g.physical, &props);
-    /* the device is asked for 1.2 features and made at 1.2: the physical device must be 1.2 itself */
-    if (props.apiVersion < VK_API_VERSION_1_2) {
-        LOG(ST "FAIL: the physical device %s is Vulkan %u.%u, below 1.2\n", props.deviceName,
-            VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion));
+    /* the device is asked for 1.2 features and made at 1.2 (1.3 for XeSS): the physical device must be that */
+    if (props.apiVersion < (g.at13 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2)) {
+        LOG(ST "FAIL: the physical device %s is Vulkan %u.%u, below %s\n", props.deviceName,
+            VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion), g.at13 ? "1.3" : "1.2");
         return 0;
     }
     u32 core = 0;
@@ -571,14 +577,16 @@ static int device_make(void) {
     /* Every feature the device has is turned on, 16 bit floats in shaders among them where it has them: that
        is a bit of the 1.2 structure here, and no structure of its own in the chain. The adapter's chain, if it
        has one, goes behind and lives in the adapter. */
+    /* At 1.3 (XeSS) the 1.3 structure follows the 1.2 one, every feature on too, and the adapter's goes behind it */
+    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                            .pNext = (void*)features};
+                                            .pNext = g.at13 ? (void*)&f13 : NULL};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .pNext = &f12};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f11};
-    f12.pNext = NULL;
     vkGetPhysicalDeviceFeatures2(g.physical, &f2);
-    f12.pNext = (void*)features;
+    if (g.at13) f13.pNext = (void*)features;
+    else f12.pNext = (void*)features;
     /* A core bit the adapter needs is a bit of this 1.2 structure, which has every bit the physical device has:
        it is on by that, and here it is held against the need. A physical device without it has no adapter. */
     const int separate = (core & SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL) != 0;
@@ -593,9 +601,34 @@ static int device_make(void) {
                "physical device does not have\n");
         return 0;
     }
-    LOG(ST "the device is made with %u extensions of the adapter%s%s, with separate depth and stencil layouts %s, "
+    /* since ABI 5: storage writes without a format (1.0), 8 bit integers and scalar block layouts (1.2) and, on a
+       device at 1.3, integer dot products are on as every feature the physical device has, and held against the
+       need. A device at 1.2 does not take integer dot products: an adapter that needs them is not available. */
+    if ((core & SNX_UPSCALER_CORE_STORAGE_WRITE_WITHOUT_FORMAT) && !f2.features.shaderStorageImageWriteWithoutFormat) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs storage image writes without a format, "
+               "which the physical device does not have\n");
+        return 0;
+    }
+    if ((core & SNX_UPSCALER_CORE_SHADER_INT8) && !f12.shaderInt8) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs 8 bit integers in shaders, which the "
+               "physical device does not have\n");
+        return 0;
+    }
+    if ((core & SNX_UPSCALER_CORE_SCALAR_BLOCK_LAYOUT) && !f12.scalarBlockLayout) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs scalar block layouts, which the "
+               "physical device does not have\n");
+        return 0;
+    }
+    if ((core & SNX_UPSCALER_CORE_INTEGER_DOT_PRODUCT) && (!g.at13 || !f13.shaderIntegerDotProduct)) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs integer dot products, a feature of "
+               "Vulkan 1.3, and %s\n", g.at13 ? "the physical device does not have them" : "the self-test's device "
+               "is made at 1.2");
+        return 0;
+    }
+    LOG(ST "the device is made at Vulkan %s with %u extensions of the adapter%s%s, with separate depth and stencil "
+           "layouts %s, "
            "%s, and with 16 bit floats in shaders %s\n",
-        device_count, device_count ? ": " : "", device_count ? device_names[0] : "",
+        g.at13 ? "1.3" : "1.2", device_count, device_count ? ": " : "", device_count ? device_names[0] : "",
         separate ? "on for the adapter, which needs them"
                  : f12.separateDepthStencilLayouts ? "on as every feature the physical device has, not asked for by "
                                                      "the adapter"
@@ -966,11 +999,12 @@ static void pictures_free(Session* s) {
 static int output_supported(const Inputs* in, VkImageUsageFlags usage) {
     const VkImageUsageFlags all = usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     VkImageFormatProperties has;
-    const VkResult r = vkGetPhysicalDeviceImageFormatProperties(g.physical, OUTPUT_FORMAT, VK_IMAGE_TYPE_2D,
+    const VkResult r = vkGetPhysicalDeviceImageFormatProperties(g.physical, g.output_format, VK_IMAGE_TYPE_2D,
                                                                 VK_IMAGE_TILING_OPTIMAL, all, 0, &has);
     if (r != VK_SUCCESS || has.maxExtent.width < (u32)in->ow || has.maxExtent.height < (u32)in->oh) {
-        LOG(ST "the adapter is not available on this device: the output's format, four 32 bit floats, is not "
-               "there for the uses %x together at %dx%d (result %d)\n", (unsigned)all, in->ow, in->oh, (int)r);
+        LOG(ST "the adapter is not available on this device: the output's format, Vulkan format %d, is not there "
+               "for the uses %x together at %dx%d (result %d)\n", (int)g.output_format, (unsigned)all, in->ow, in->oh,
+            (int)r);
         return 0;
     }
     if (!selftest_staging_fits(g.staging_size, in->w, in->h, in->ow, in->oh)) {
@@ -990,7 +1024,7 @@ static int pictures_make(Session* s, const Inputs* in, const SnxUpscalerTraits* 
         !picture_make(&s->depth, VK_FORMAT_D24_UNORM_S8_UINT, rw, rh, traits->depth_usage) ||
         !picture_make(&s->motion, g.motion_format, rw, rh, traits->motion_usage) ||
         !output_supported(in, traits->output_usage) ||
-        !picture_make(&s->output, OUTPUT_FORMAT, (u32)in->ow, (u32)in->oh, traits->output_usage))
+        !picture_make(&s->output, g.output_format, (u32)in->ow, (u32)in->oh, traits->output_usage))
         return 0;
     if (in->whole || (in->w == in->rw && in->h == in->rh)) return 1;
     return picture_make(&s->wide_colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, (u32)in->w, (u32)in->h, 0) &&
@@ -1030,6 +1064,15 @@ static void session_close(Session* s) {
     memset(s, 0, sizeof *s);
 }
 
+/* R1 in the self-test: the adapter's prepare between two waits for the device (idle(), which marks the device's
+   state unknown when it fails), outside any command buffer of ours: the library submits on its own */
+static u32 messages_now(void);
+static int selftest_idle(void* user) {
+    (void)user;
+    return idle();
+}
+static int selftest_init(void* user) { return g.api->prepare((SnxUpscaler*)user, VK_NULL_HANDLE) == SNX_UPSCALER_OK; }
+
 /* The context for a configuration, by the states the runtime will keep (temporal_upscaler_*): created, prepared into
    a command buffer that is submitted and has completed, and only then published. 1 when the frame may be
    evaluated on s->live. A context is freed only when its command buffer was discarded or has completed. When
@@ -1052,7 +1095,7 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
                                     .colour_format = VK_FORMAT_B10G11R11_UFLOAT_PACK32,
                                     .depth_format = VK_FORMAT_D24_UNORM_S8_UINT,
                                     .motion_format = g.motion_format,
-                                    .output_format = OUTPUT_FORMAT,
+                                    .output_format = g.output_format,
                                     .folder = "."};
     /* An adapter that submits on its own is refused, and so is one that needs a usage the pictures were not made
        with: inputs sampled, the output sampled and storage, all of them copy sources and destinations. */
@@ -1079,7 +1122,15 @@ static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerCon
     /* Three ends. Nothing was submitted and the command buffer's reset succeeded: what it held is discarded. It
        was submitted and has completed. Or its end is not known: then the context is held and nothing is freed. */
     int prepared = 0, submitted = 0;
-    if (made && begin()) {
+    if (made && traits->submits_at_init) { /* R1: nothing of ours is recorded or submitted for it */
+        const u32 before = messages_now();
+        const SnxInitSteps steps = {selftest_idle, selftest_init, s->pending};
+        const int outcome = snx_init_protocol(&steps);
+        recorded = plat_ns();
+        prepared = submitted = outcome == SNX_INIT_READY;
+        LOG(ST "the adapter's prepare, which submits work of its own, between two waits for the device: %s, %u "
+               "validation messages during it\n", snx_init_text(outcome), messages_now() - before);
+    } else if (made && begin()) {
         prepared = g.api->prepare(s->pending, g.cb) == SNX_UPSCALER_OK;
         recorded = plat_ns();
         if (prepared) submitted = submit();
@@ -1284,13 +1335,15 @@ static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int 
     s->evaluated++;
     selftest_proof_frame(&s->proof, frame.reset, frame.far_plane,
                          selftest_checksum(in->depth + (size_t)i * pixels, pixels * 4, SELFTEST_CHECKSUM_START));
-    /* 16 bytes a pixel, four floats: red, green and blue are taken, and one that is not finite ends the run */
-    for (size_t p = 0; p < (size_t)in->ow * in->oh; p++)
+    /* red, green and blue of the output's format (16 bytes a pixel, or 4 packed), one not finite ends the run */
+    for (size_t p = 0; p < (size_t)in->ow * in->oh; p++) {
+        double rgb[3];
+        selftest_output_pixel(g.staging_bytes, p, g.output_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32, rgb);
         for (int c = 0; c < 3; c++) {
-            const float value = selftest_output_value(g.staging_bytes, p, c);
-            if (!isfinite(value)) return -1;
-            out[3 * p + c] = (double)value;
+            if (!isfinite(rgb[c])) return -1;
+            out[3 * p + c] = rgb[c];
         }
+    }
     return 1;
 }
 
@@ -1488,6 +1541,33 @@ static int not_run(const char* name, int up) {
     snprintf(named, sizeof named, "%s %s", name, up ? "up" : "down");
     step(named);
     return skip_rest();
+}
+
+/* XeSS (XESS-DESIGN.md): case 2's sixteen combinations of the jitter's and the vectors' signs on an unequal
+   translation, at the suite's 320x180 for 480x270, logged and nothing chosen, as DLSS's jitter signs are. Only a
+   run that cannot be made fails. */
+static int vector_signs(int up) {
+    const size_t pixels = (size_t)OUT_W * OUT_H, size = sizeof(double) * 3 * pixels;
+    const double pan[2] = {1.3, 0.7};
+    double *reference = malloc(size), *output = malloc(size);
+    u8* regions = malloc(pixels);
+    Inputs in;
+    char name[64];
+    memset(&in, 0, sizeof in);
+    int ok = reference && output && regions;
+    if (ok && !not_run("case 2", up) && inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, pan, 0, 0)) {
+        truth(&in, up, reference, regions);
+        snprintf(name, sizeof name, "case 2 %s all signs, logged only", up ? "up" : "down");
+        ok = signs(name, &in, 15, SELFTEST_BACKGROUND, reference, regions, output, 0);
+    } else if (!skip_rest()) {
+        SAY(ST "case 2 %s for %s: could not be made: FAIL\n", up ? "up" : "down", g.name);
+        ok = 0;
+    }
+    inputs_free(&in);
+    free(reference);
+    free(output);
+    free(regions);
+    return ok;
 }
 
 /* the whole suite for one sign of the viewport's height: 1 when every case passed */
@@ -1862,8 +1942,9 @@ static int native_base(Native* n, NativeForm* F) {
     F->ran = F->ran && run(&F->in, &CONFIGURED, 0, n->scratch[N_AGAIN], NULL, NULL, NULL, NULL) &&
              run(&ahead, &CONFIGURED, 0, n->scratch[N_AHEAD], NULL, NULL, NULL, NULL);
     /* the logged control of another create property: for DLSS the other depth convention, on the finite form */
-    const int control = !g.dlss || !isinf(F->form->far_plane);
-    if (F->ran && control && !g.dlss) F->ran = run(&F->in, &WITHOUT_HDR, 0, n->scratch[N_OLD], NULL, NULL, NULL, NULL);
+    const int control = !g.matrix || !isinf(F->form->far_plane);
+    if (F->ran && control && !g.matrix)
+        F->ran = run(&F->in, &WITHOUT_HDR, 0, n->scratch[N_OLD], NULL, NULL, NULL, NULL);
     else if (F->ran && control) {
         Inputs other;
         F->ran = native_inputs(n, &other, F->form, n->size, 0, 0);
@@ -1884,7 +1965,7 @@ static int native_base(Native* n, NativeForm* F) {
            "by %.6f, a context made %s from one made as configured by %.6f\n",
         n->suite, n->way, F->name, difference(&F->in, F->fresh, n->reference, n->regions, SELFTEST_BACKGROUND),
         difference(&F->in, n->scratch[N_PLAIN], n->reference, n->regions, SELFTEST_BACKGROUND), first, last, F->noise,
-        !g.dlss  ? "without the flag for colours over 1"
+        !g.matrix ? "without the flag for colours over 1"
         : control ? "with the other depth convention"
                   : "with the other depth convention (not made on this form)",
         control ? difference(&F->in, n->scratch[N_OLD], F->fresh, n->regions, SELFTEST_BACKGROUND) : NAN);
@@ -1967,18 +2048,18 @@ static int native_cases(Native* n, NativeForm* F) {
     /* For DLSS, which takes no colour without the flag for colours over 1: the depth convention, on the finite form,
        with inputs whose depth is of the other convention (research's ruling of N4 Q2). Not run on the infinite
        form, where the change of the far plane's flag is the transition case. */
-    const u32 property = g.dlss ? SNX_UPSCALER_DEPTH_REVERSED : SNX_UPSCALER_COLOUR_LINEAR_HDR;
-    const char* property_name = g.dlss ? "the flag for reversed depth" : "the flag for colours over 1";
-    const int property_run = !g.dlss || !isinf(F->form->far_plane);
+    const u32 property = g.matrix ? SNX_UPSCALER_DEPTH_REVERSED : SNX_UPSCALER_COLOUR_LINEAR_HDR;
+    const char* property_name = g.matrix ? "the flag for reversed depth" : "the flag for colours over 1";
+    const int property_run = !g.matrix || !isinf(F->form->far_plane);
     Inputs other;
     memset(&other, 0, sizeof other);
     int evaluated = 0, changed = ran && property_run && !stopped() && session_open(&s, &F->in, &NATIVE_TRAITS);
-    if (changed && g.dlss) {
+    if (changed && g.matrix) {
         changed = native_inputs(n, &other, F->form, n->size, 0, 0);
         if (changed) selftest_depth_turn(other.depth, (size_t)other.frames * (size_t)other.w * (size_t)other.h);
     }
-    const Inputs* first_inputs = g.dlss ? &other : &F->in;
-    const Variant* first_variant = g.dlss ? &STANDARD_DEPTH : &WITHOUT_HDR;
+    const Inputs* first_inputs = g.matrix ? &other : &F->in;
+    const Variant* first_variant = g.matrix ? &STANDARD_DEPTH : &WITHOUT_HDR;
     for (int i = 0; changed && i < 9; i++) changed = frame_run(&s, first_inputs, i, first_variant, 0, work) >= 0;
     const unsigned before = changed ? s.evaluated : 0;
     for (int i = 1; changed && i <= end; i++) {
@@ -1996,8 +2077,8 @@ static int native_cases(Native* n, NativeForm* F) {
     const double apart = changed ? difference(&F->in, work, F->fresh, n->regions, SELFTEST_BACKGROUND) : NAN;
     int verdict = changed ? selftest_resized(apart, F->noise, F->off) : SELFTEST_FAIL;
     if (!property_run)
-        SAY(ST "%s: not run for dlss on this form: its depth has no other convention here, and the change of the "
-               "far plane's flag is the transition case\n", name);
+        SAY(ST "%s: not run for %s on this form: its depth has no other convention here, and the change of the far "
+               "plane's flag is the transition case\n", name, g.name);
     else {
         SAY(ST "%s (%s): %u frames evaluated without the flag, %d with it, %u contexts made with the flags 0x%x and "
                "then 0x%x: %s. The remade context's picture against a fresh context's made with the flag, on the "
@@ -2184,14 +2265,14 @@ static int native_at(int up, const char* suite, const int size[4], const int sma
         for (int k = 0; k < 2; k++) pass &= (native_cases(&n, &forms[k])) || skip_rest();
         pass &= (native_transition(&n, &forms[0], &forms[1])) || skip_rest();
         pass &= (native_transition(&n, &forms[1], &forms[0])) || skip_rest();
-        if (!g.dlss) pass &= (native_patch(&n, &FINITE, forms[0].name)) || skip_rest();
+        if (!g.matrix) pass &= (native_patch(&n, &FINITE, forms[0].name)) || skip_rest();
         else {
             /* The jitter's four sign variants, logged and nothing chosen (research's ruling of N4 Q4): the frame's
                jitter times each variant's signs, as the module always hands NGX +1 and +1. A run that cannot be
                made still fails, as every call must succeed. */
             char name[160];
-            SAY(ST "%s %s, %s, a nearer patch: not run for dlss, its verdict is one of quality\n", suite, n.way,
-                forms[0].name);
+            SAY(ST "%s %s, %s, a nearer patch: not run for %s, its verdict is one of quality\n", suite, n.way,
+                forms[0].name, g.name);
             snprintf(name, sizeof name, "%s %s, %s, the jitter's signs", suite, n.way, forms[0].name);
             /* only on a form that was generated and ran: its inputs exist, else nothing of them is read */
             if (!forms[0].ran || !forms[0].in.scene) {
@@ -2247,12 +2328,12 @@ static int sign_protocol(int below) {
     step(at);
     /* the experiment's forced sign multiplies every variant's: the protocol would not compare what it says */
     const char* forced = getenv("SNX_ARCEUS_DLSS_JITTER_SIGN");
-    if (selftest_sign_forcing(forced)) { /* as the module: a value other than its eight is not used (BOARD) */
+    if (g.dlss && selftest_sign_forcing(forced)) { /* as the module: a value other than its eight is not used */
         SAY(ST "%s: not run, SNX_ARCEUS_DLSS_JITTER_SIGN is %s (an experiment that forces the sign the module hands "
                "NGX), and the protocol compares the signs itself\n", at, forced);
         return 1;
     }
-    if (forced && forced[0])
+    if (g.dlss && forced && forced[0])
         SAY(ST "%s: SNX_ARCEUS_DLSS_JITTER_SIGN=%s is not one of the module's eight values, which does not use it: "
                "run as without it\n", at, forced);
     double *reference = malloc(sizeof(double) * picture), *work = malloc(sizeof(double) * picture);
@@ -2676,25 +2757,44 @@ static int edges_announce(void) {
 
 /* The mode. The process's result: 0 when every case passed and the validation layer was there and silent. */
 int vk_upscaler_selftest(const char* adapter) {
-    int pass;
+    int pass = 1;
     LOG(ST "started for the adapter \"%s\". No game is loaded and no window is opened\n", adapter);
     if (!edges_announce()) return 1;
     g.api = vk_upscaler_adapter_selftest(adapter);
     g.dlss = !strcmp(adapter, "dlss");
-    g.motion_format = g.dlss ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16G16B16A16_SFLOAT;
+    g.matrix = g.dlss || !strcmp(adapter, "xess");
+    g.name = adapter;
+    g.at13 = !strcmp(adapter, "xess");
+    /* DLSS and XeSS take the vectors in two channels */
+    g.motion_format = g.matrix ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16G16B16A16_SFLOAT;
     if (!g.api) {
         LOG(ST "FAIL: the adapter \"%s\" is not available\n", adapter);
         return 1;
     }
+    /* the output's format, as the adapter declares it when it is loaded (ABI 5), and only one this test reads back */
+    g.output_format = g.api->output_format != VK_FORMAT_UNDEFINED ? g.api->output_format : OUTPUT_FORMAT;
+    if (g.output_format != OUTPUT_FORMAT && g.output_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) {
+        LOG(ST "FAIL: the adapter's output format, Vulkan format %d, is not one the self-test reads back\n",
+            (int)g.output_format);
+        return 1;
+    }
+    LOG(ST "the adapter's output is made in Vulkan format %d%s\n", (int)g.output_format,
+        g.output_format == OUTPUT_FORMAT ? ", four 32 bit floats" : ", B10G11R11");
     g.generation = 1;
     if (!device_make()) return 1;
-    if (g.dlss) { /* DLSS's matrix: the native size, and 1/2 and 2/3 for D3-4, quality not judged (N4 Q1) */
-        LOG(ST "the suite of cases 1 to 6: not run for dlss, its verdicts are of quality (below native, the suites at "
-               "1/2 and 2/3 judge integration)\n");
-        LOG(ST "the change of size below the native one: not run for dlss, its suites at 1/2 and 2/3 change the size "
-               "instead\n");
-        LOG(ST "the edge case, its matched and its response runs: not run for dlss, their verdicts are of quality\n");
-        pass = native(1) || skip_rest();
+    if (g.matrix) { /* DLSS's matrix, XeSS's too: the native size, and 1/2 and 2/3 (D3-4), quality not judged (N4 Q1) */
+        LOG(ST "the suite of cases 1 to 6: not run for %s, its verdicts are of quality (below native, the suites at "
+               "1/2 and 2/3 judge integration)%s\n", g.name, g.dlss ? "" : ". Case 2's vector signs are logged");
+        LOG(ST "the change of size below the native one: not run for %s, its suites at 1/2 and 2/3 change the size "
+               "instead\n", g.name);
+        LOG(ST "the edge case, its matched and its response runs: not run for %s, their verdicts are of quality\n",
+            g.name);
+        if (!g.dlss) /* XeSS (XESS-DESIGN.md): the vectors' signs by case 2's sixteen combinations, logged only */
+            for (int up = 1; up >= 0; up--) {
+                pass &= vector_signs(up) || skip_rest();
+                g.generation++;
+            }
+        pass &= native(1) || skip_rest(); /* with &=, so that the vector signs' runs above stay in the verdict */
         g.generation++;
         pass &= native(0) || skip_rest();
         g.generation++;
@@ -2807,15 +2907,15 @@ int vk_upscaler_selftest(const char* adapter) {
     if (g.halted) LOG(ST "an evaluate answered UNKNOWN: FAIL\n");
     pass = pass && g.validation && g.checks_asked && !others && !late && waited && !g.unknown && !g.halted &&
            !g.ended_wrong;
-    if (g.dlss) { /* DL1 judges integration only: every call, every value, every run, the lifecycle, case 7 */
+    if (g.matrix) { /* DL1 judges integration only: every call, every value, every run, the lifecycle, case 7 */
         if (pass && g.known) /* every other check passed: the failure is the known deviation's alone */
             LOG(ST "DL1 integration checks, quality unassessed: FAIL, with 1 known library deviation alone (the reset "
                    "at 1/2 in performance mode, %d lines, research 22:50) and nothing else failed\n", g.known);
         else
-            LOG(ST "DL1 integration checks, quality unassessed: %s%s\n", pass ? "PASS" : "FAIL",
+            LOG(ST "%s integration checks, quality unassessed: %s%s\n", g.dlss ? "DL1" : g.name, pass ? "PASS" : "FAIL",
                 !pass && g.known ? ", and besides the known library deviation (the reset at 1/2) another check failed"
                                  : "");
-        LOG(ST "quality: not assessed in DL1\n");
+        LOG(ST "quality: not assessed in %s\n", g.dlss ? "DL1" : "this matrix");
     } else
         LOG(ST "RESULT: %s\n", pass ? "PASS" : "FAIL");
     return pass && !g.known ? 0 : 1;

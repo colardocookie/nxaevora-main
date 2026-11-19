@@ -115,6 +115,11 @@ if(WIN32)
     target_sources(snx_vk PRIVATE gpu/vk/upscaler_fsr.cpp)
     set_source_files_properties(gpu/vk/upscaler_fsr.cpp PROPERTIES INCLUDE_DIRECTORIES
                                 "${PROJECT_SOURCE_DIR}/third_party/FidelityFX-SDK")
+    # the XeSS adapter (gpu/vk/upscaler_xess.cpp), against the XeSS SDK's MIT headers in third_party, its library
+    # supplied by the user as FSR's is
+    target_sources(snx_vk PRIVATE gpu/vk/upscaler_xess.cpp)
+    set_source_files_properties(gpu/vk/upscaler_xess.cpp PROPERTIES INCLUDE_DIRECTORIES
+                                "${PROJECT_SOURCE_DIR}/third_party/XeSS/inc")
 endif()
 # Dear ImGui's own files, with the Vulkan backend that loads its functions through volk (gpu/vk/imgui_glue.cpp)
 target_include_directories(snx_vk PRIVATE "${imgui_SOURCE_DIR}" "${imgui_SOURCE_DIR}/backends")

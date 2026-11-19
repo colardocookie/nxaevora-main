@@ -418,7 +418,7 @@ void destroy(SnxUpscaler* u) {
 }
 
 const SnxUpscalerApi g_api = {SNX_UPSCALER_ABI, "fsr", instance_extensions, device_extensions, create, prepare,
-                              evaluate, destroy, nullptr};
+                              evaluate, destroy, nullptr, VK_FORMAT_UNDEFINED};
 }  // namespace
 
 /* the adapter, NULL with one line when the SDK's library is not beside the program */

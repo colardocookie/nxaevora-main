@@ -17,7 +17,8 @@
 #include "nx/runtime/platform/log.h"
 
 #ifdef _WIN32
-const SnxUpscalerApi* snx_upscaler_fsr(void); /* gpu/vk/upscaler_fsr.cpp */
+const SnxUpscalerApi* snx_upscaler_fsr(void);  /* gpu/vk/upscaler_fsr.cpp */
+const SnxUpscalerApi* snx_upscaler_xess(void); /* gpu/vk/upscaler_xess.cpp */
 #endif
 
 static const SnxUpscalerApi* module_adapter(const char* name);
@@ -28,6 +29,10 @@ static const SnxUpscalerApi* adapter_find(const char* name, int* built) {
     if (name && !strcmp(name, "fsr")) {
         *built = 1;
         return snx_upscaler_fsr();
+    }
+    if (name && !strcmp(name, "xess")) {
+        *built = 1;
+        return snx_upscaler_xess();
     }
 #endif
     return NULL;
@@ -187,10 +192,16 @@ int vk_upscaler_device_needs(const SnxUpscalerApi* api, VkInstance instance, VkP
 /* The game's device (upscaler_needs.h has the rules). The one structure the host accepts is Vulkan's. The pure
    header copies its fields out of the object's bytes at its stand-in's offsets, which must be Vulkan's. */
 _Static_assert(SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL == SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL &&
-                   SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS == SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS,
+                   SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS == SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS &&
+                   SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT == SNX_UPSCALER_CORE_STORAGE_WRITE_WITHOUT_FORMAT &&
+                   SNX_NEEDS_CORE_SHADER_INT8 == SNX_UPSCALER_CORE_SHADER_INT8 &&
+                   SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT == SNX_UPSCALER_CORE_INTEGER_DOT_PRODUCT &&
+                   SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT == SNX_UPSCALER_CORE_SCALAR_BLOCK_LAYOUT &&
+                   SNX_NEEDS_CORE_KNOWN == SNX_UPSCALER_CORE_SELFTEST_KNOWN,
                "the core bits of the contract and of the pure rules");
-_Static_assert(SNX_NEEDS_DERIVATIVES == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_NV,
-               "the accepted structure's type");
+_Static_assert(SNX_NEEDS_DERIVATIVES == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_NV &&
+                   SNX_NEEDS_MUTABLE == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT,
+               "the accepted structures' types");
 _Static_assert(offsetof(SnxNeedsNode, type) == offsetof(VkBaseInStructure, sType) &&
                    offsetof(SnxNeedsNode, next) == offsetof(VkBaseInStructure, pNext) &&
                    sizeof(((SnxNeedsNode*)0)->type) == sizeof(VkStructureType) && sizeof(VkBool32) == sizeof(uint32_t),
@@ -203,6 +214,12 @@ _Static_assert(sizeof(SnxNeedsDerivatives) == sizeof(VkPhysicalDeviceComputeShad
                    offsetof(SnxNeedsDerivatives, linear) ==
                        offsetof(VkPhysicalDeviceComputeShaderDerivativesFeaturesNV, computeDerivativeGroupLinear),
                "the accepted structure's layout");
+_Static_assert(sizeof(SnxNeedsMutable) == sizeof(VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT) &&
+                   offsetof(SnxNeedsMutable, next) ==
+                       offsetof(VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT, pNext) &&
+                   offsetof(SnxNeedsMutable, on) ==
+                       offsetof(VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT, mutableDescriptorType),
+               "the mutable descriptor type structure's layout");
 
 static SnxNeedsRecord g_needs; /* what the game's device was made with for an adapter: none until then */
 /* the host's own copies of the names it adds: the device's list points here, never at the adapter's strings */
@@ -252,7 +269,7 @@ int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevi
                            PFN_vkGetInstanceProcAddr lookup, uint32_t has_core, VkUpscalerDeviceAsk* ask) {
     SnxUpscalerExtensions of_instance = {0};
     SnxUpscalerDeviceNeeds needs = {0};
-    SnxNeedsBits asked = {0, 0, 0}, has = {0, 0, 0};
+    SnxNeedsBits asked = {0, 0, 0, 0, 0}, has = {0, 0, 0, 0, 0};
     memset(ask, 0, sizeof *ask);
     if (vk_upscaler_not_in_game(name)) return 0; /* before any lookup: nothing of such a name is loaded or asked */
     int built = 0;
@@ -289,13 +306,18 @@ int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevi
     if (why == SNX_NEEDS_OK) why = snx_needs_chain(needs.features, &asked);
     if (why == SNX_NEEDS_OK) why = snx_needs_owner(needs.extensions.names, needs.extensions.count, &asked);
     if (why == SNX_NEEDS_OK) why = device_names(device, needs.extensions.names, needs.extensions.count);
-    if (why == SNX_NEEDS_OK && asked.have) {
-        /* the host's own question to the physical device, in a structure of its own */
+    if (why == SNX_NEEDS_OK && (asked.have || asked.mutable_have)) {
+        /* the host's own question to the physical device, in structures of its own, each only when asked for */
         VkPhysicalDeviceComputeShaderDerivativesFeaturesNV q = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_NV};
-        VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q};
+        VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT m = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT};
+        if (asked.have && asked.mutable_have) q.pNext = &m;
+        VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                                        .pNext = asked.have ? (void*)&q : (void*)&m};
         vkGetPhysicalDeviceFeatures2(device, &f2);
-        has = (SnxNeedsBits){1, q.computeDerivativeGroupQuads != 0, q.computeDerivativeGroupLinear != 0};
+        has = (SnxNeedsBits){asked.have, q.computeDerivativeGroupQuads != 0, q.computeDerivativeGroupLinear != 0,
+                             asked.mutable_have, m.mutableDescriptorType != 0};
         why = snx_needs_bits(&asked, &has);
     }
     if (why != SNX_NEEDS_OK) {
@@ -315,12 +337,17 @@ int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevi
     ask->have = asked.have;
     ask->quads = asked.quads;
     ask->linear = asked.linear;
+    ask->mutable_have = asked.mutable_have;
+    ask->mutable_on = asked.mutable_on;
     ask->core = needs.core;
     /* bits the adapter does not ask for stay off. The caller sets the next pointer. */
     ask->derivatives = (VkPhysicalDeviceComputeShaderDerivativesFeaturesNV){
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_NV,
         .computeDerivativeGroupQuads = asked.quads ? VK_TRUE : VK_FALSE,
         .computeDerivativeGroupLinear = asked.linear ? VK_TRUE : VK_FALSE};
+    ask->mutable_desc = (VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT){
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT,
+        .mutableDescriptorType = asked.mutable_on ? VK_TRUE : VK_FALSE};
     return 1;
 }
 /* The names behind the game's own count, on a count of the caller's own: the game's list is not changed in
@@ -341,17 +368,21 @@ void vk_upscaler_device_failed(const VkUpscalerDeviceAsk* ask, int result) {
 /* The device was made with the additions: the record, by value, and the one line */
 void vk_upscaler_device_made(const VkUpscalerDeviceAsk* ask) {
     char names[SNX_NEEDS_NAMES * (SNX_NEEDS_NAME_LENGTH + 2) + 1] = "";
-    const SnxNeedsBits on = {ask->have, ask->quads, ask->linear};
+    const SnxNeedsBits on = {ask->have, ask->quads, ask->linear, ask->mutable_have, ask->mutable_on};
     const int kept = snx_needs_record(&g_needs, ask->adapter, ask->names, ask->count, &on, ask->core);
     for (uint32_t i = 0; i < ask->count; i++) {
         if (i) strcat(names, ", ");
         strcat(names, ask->names[i]);
     }
-    LOG("arceus-upscaler: the game's device is made with %s%s%s%s%s for %s%s\n",
+    LOG("arceus-upscaler: the game's device is made with %s%s%s%s%s%s%s%s%s%s for %s%s\n",
         ask->count ? names : "no extension", ask->have ? " and the compute derivatives features" : "",
         ask->quads ? " (quad groups)" : "", ask->linear ? " (linear groups)" : "",
+        ask->mutable_on ? " and the mutable descriptor type" : "",
         ask->core & SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL ? " and separate depth and stencil layouts" : "",
-        ask->adapter,
+        ask->core & SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT ? " and storage writes without a format" : "",
+        ask->core & SNX_NEEDS_CORE_SHADER_INT8 ? " and 8 bit integers in shaders" : "",
+        ask->core & SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT ? " and integer dot products" : "",
+        ask->core & SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT ? " and scalar block layouts" : "", ask->adapter,
         kept == SNX_NEEDS_OK ? "" : ". That could NOT be recorded: the adapter stays not available");
 }
 /* At the start of the upscaler: the adapter's needs, asked again by the caller, against what the game's device

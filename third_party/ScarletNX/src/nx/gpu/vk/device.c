@@ -606,22 +606,49 @@ static int create_device(void) {
     u32 with_count = next;
     int accepted = 0;
     if (upscaler && upscaler[0] && strcmp(upscaler, "0") && strcmp(upscaler, "off")) {
-        /* the core bits the physical device has, as its own 1.2 question answered */
+        /* the core bits the physical device has, as its own 1.0 and 1.2 questions answered, and its 1.3 features
+           asked here alone, with the switch on */
+        VkPhysicalDeviceVulkan13Features q13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+        VkPhysicalDeviceFeatures2 a13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q13};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &a13);
         const u32 has = (q12.separateDepthStencilLayouts ? SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL : 0) |
-                        (q12.bufferDeviceAddress ? SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS : 0);
+                        (q12.bufferDeviceAddress ? SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS : 0) |
+                        (f2.features.shaderStorageImageWriteWithoutFormat ? SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT
+                                                                          : 0) |
+                        (q12.shaderInt8 ? SNX_NEEDS_CORE_SHADER_INT8 : 0) |
+                        (q12.scalarBlockLayout ? SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT : 0) |
+                        (q13.shaderIntegerDotProduct ? SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT : 0);
         accepted = vk_upscaler_device_ask(upscaler, g_vk.instance, g_vk.phys, vkGetInstanceProcAddr, has, &ask) &&
                    vk_upscaler_device_names(&ask, ext, &with_count, room);
     }
-    if (accepted && ask.have) ask.derivatives.pNext = chain;
-    /* A core bit the adapter needs goes into the game's OWN 1.2 structure, for the creation with the additions
-       only: the game's own value is kept and put back before a creation without them. */
+    /* the host's structures in front of the game's chain: the derivatives', then the mutable descriptor type's */
+    void* head = chain;
+    if (accepted && ask.mutable_have) {
+        ask.mutable_desc.pNext = head;
+        head = &ask.mutable_desc;
+    }
+    if (accepted && ask.have) {
+        ask.derivatives.pNext = head;
+        head = &ask.derivatives;
+    }
+    /* A core bit the adapter needs goes into the game's OWN 1.0, 1.2 or 1.3 structure, for the creation with the
+       additions only: the game's own value is kept and put back before a creation without them. */
     const VkBool32 own_separate = f12.separateDepthStencilLayouts, own_address = f12.bufferDeviceAddress;
-    f12.separateDepthStencilLayouts = (VkBool32)snx_needs_core_bit(
-        own_separate != 0, accepted, accepted ? ask.core : 0, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL);
-    f12.bufferDeviceAddress = (VkBool32)snx_needs_core_bit(own_address != 0, accepted, accepted ? ask.core : 0,
-                                                           SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS);
-    const SnxNeedsPlan plan =
-        snx_needs_plan(next, chain, accepted, with_count, accepted && ask.have ? (void*)&ask.derivatives : chain);
+    const VkBool32 own_storage = g_vk.feat.shaderStorageImageWriteWithoutFormat, own_int8 = f12.shaderInt8,
+                   own_dot = f13.shaderIntegerDotProduct, own_scalar = f12.scalarBlockLayout;
+    const u32 bits = accepted ? ask.core : 0;
+    f12.separateDepthStencilLayouts =
+        (VkBool32)snx_needs_core_bit(own_separate != 0, accepted, bits, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL);
+    f12.bufferDeviceAddress =
+        (VkBool32)snx_needs_core_bit(own_address != 0, accepted, bits, SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS);
+    g_vk.feat.shaderStorageImageWriteWithoutFormat =
+        (VkBool32)snx_needs_core_bit(own_storage != 0, accepted, bits, SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT);
+    f12.shaderInt8 = (VkBool32)snx_needs_core_bit(own_int8 != 0, accepted, bits, SNX_NEEDS_CORE_SHADER_INT8);
+    f12.scalarBlockLayout =
+        (VkBool32)snx_needs_core_bit(own_scalar != 0, accepted, bits, SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT);
+    f13.shaderIntegerDotProduct =
+        (VkBool32)snx_needs_core_bit(own_dot != 0, accepted, bits, SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT);
+    const SnxNeedsPlan plan = snx_needs_plan(next, chain, accepted, with_count, head);
     VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
                               .pNext = plan.head,
                               .queueCreateInfoCount = nq,
@@ -640,6 +667,10 @@ static int create_device(void) {
         for (u32 i = next; i < room; i++) ext[i] = NULL;
         f12.separateDepthStencilLayouts = own_separate;
         f12.bufferDeviceAddress = own_address;
+        g_vk.feat.shaderStorageImageWriteWithoutFormat = own_storage;
+        f12.shaderInt8 = own_int8;
+        f12.scalarBlockLayout = own_scalar;
+        f13.shaderIntegerDotProduct = own_dot;
         dci.pNext = chain;
         dci.enabledExtensionCount = next;
         if (!VK_OK(vkCreateDevice(g_vk.phys, &dci, NULL, &g_vk.dev))) return 0;

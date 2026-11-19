@@ -16,6 +16,7 @@
 #include "nx/gpu/vk/temporal_spatial.h"
 #include "nx/gpu/vk/upscaler.h"
 #include "nx/gpu/vk/upscaler_needs.h"
+#include "nx/gpu/vk/upscaler_protocol.h"
 #include "nx/runtime/platform/log.h"
 
 /* the host's monotonic clock in nanoseconds (runtime/platform/plat.h, whose Windows headers define near and far,
@@ -278,6 +279,7 @@ static struct {
        the opt-in */
     int below;
     u32 output_max[2]; /* the output's largest width and height, as the start's format question answered */
+    VkFormat output_format; /* the adapter's, fixed at its start (ABI 5): UPSCALED_FORMAT unless it names another */
     /* the output's uses: the runtime's (sampled for the write-back, storage) and the adapter's traits' (research
        19:00: NGX clears it, a transfer destination), and those the image was last made with */
     VkImageUsageFlags output_usage, output_made_usage;
@@ -2951,7 +2953,7 @@ static int upscaler_key(const Surf* depth, const TemporalUpscalerColour* colour,
     *flags = SNX_UPSCALER_COLOUR_LINEAR_HDR | SNX_UPSCALER_DEPTH_REVERSED | SNX_UPSCALER_VECTORS_UNJITTERED |
              SNX_UPSCALER_EXPOSURE_AUTOMATIC | (projection->far_infinite ? SNX_UPSCALER_FAR_PLANE_INFINITE : 0);
     const TemporalUpscalerMaking making = {colour->format, (unsigned)depth->f.vk, (unsigned)upscaler_motion_format(),
-                                           (unsigned)UPSCALED_FORMAT, colour->layers,        depth->layers,
+                                           (unsigned)g_u.output_format, colour->layers,       depth->layers,
                                            *flags};
     *config = (TemporalUpscalerConfig){colour->w, colour->h, render ? render->w : colour->w,
                                        render ? render->h : colour->h, colour->w, colour->h,
@@ -3016,7 +3018,8 @@ typedef struct {
     SnxUpscaler* context;
     const SnxUpscalerFrame* frame;
     Surf *scene, *depth;
-    u32 number; /* the frame's, for the log */
+    u32 number;  /* the frame's, for the log */
+    int at_init; /* a prepare whose library submits work of its own (submits_at_init, R1) */
 } UpscalerCall;
 /* What must be recorded before the library: the end of our rendering, and for an evaluate the images as the
    library reads and writes them, in a compute shader. The scene's targets go through the renderer's own
@@ -3051,10 +3054,36 @@ static void upscaler_took(VkCommandBuffer cb, Surf* s) {
     s->stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     s->access = UPSCALER_ANY_ACCESS;
 }
-/* The library's answers go through as they are (vk_rec_direct): UNKNOWN is not reduced to a failure (DL2 rev 2) */
+/* R1's steps for an adapter that submits at its init: the whole device idle, under vk_lock with the ring drained
+   (vk_rec_direct runs this on the GPU thread). A wait that fails takes the runtime's path of a failed wait. */
+typedef struct {
+    const UpscalerCall* call;
+    VkCommandBuffer cb;
+} UpscalerInit;
+static int upscaler_idle(void* user) {
+    (void)user;
+    if (VK_OK(vkDeviceWaitIdle(g_vk.dev))) return 1;
+    vk_rec_mark_failed();
+    return 0;
+}
+static int upscaler_init_call(void* user) {
+    const UpscalerInit* i = user;
+    return g_u.api->prepare(i->call->context, i->cb) == SNX_UPSCALER_OK;
+}
+/* The library's answers go through as they are (vk_rec_direct): UNKNOWN is not reduced to a failure (DL2 rev 2).
+   With submits_at_init (R1): a wait before that fails calls nothing, a failed prepare after a good wait is a failed
+   prepare, and a wait after that fails is UNKNOWN, the fatal path: nothing is called, freed or submitted again. */
 static int upscaler_prepare(VkCommandBuffer cb, void* user) {
     const UpscalerCall* c = user;
-    return g_u.api->prepare(c->context, cb);
+    if (!c->at_init) return g_u.api->prepare(c->context, cb);
+    UpscalerInit init = {c, cb};
+    const SnxInitSteps steps = {upscaler_idle, upscaler_init_call, &init};
+    const int outcome = snx_init_protocol(&steps);
+    LOG("arceus-upscaler: %s's prepare, which submits work of its own, between two waits for the device: %s\n",
+        g_u.api->name ? g_u.api->name : "?", snx_init_text(outcome));
+    return outcome == SNX_INIT_READY ? SNX_UPSCALER_OK
+           : outcome == SNX_INIT_FATAL ? SNX_UPSCALER_UNKNOWN
+                                       : SNX_UPSCALER_FAILED;
 }
 /* A library answered UNKNOWN: the frame's command buffer holds the game's earlier work of the frame and what the
    library left, in a state not known. Nothing more is recorded into it, it is never submitted (vk_rec_direct's
@@ -3121,7 +3150,7 @@ static void upscaler_warm(u32 frame, Surf* scene, Surf* depth, int steady) {
                                     .colour_format = scene->f.vk,
                                     .depth_format = depth->f.vk,
                                     .motion_format = upscaler_motion_format(),
-                                    .output_format = UPSCALED_FORMAT,
+                                    .output_format = g_u.output_format,
                                     .folder = "."};
     /* what the images handed over are made with: sampled inputs, a sampled storage image for the output */
     const VkImageUsageFlags inputs = VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -3136,13 +3165,14 @@ static void upscaler_warm(u32 frame, Surf* scene, Surf* depth, int steady) {
     const VkImageUsageFlags output_usage = UPSCALED_USAGE | traits.output_usage;
     const int output_ok =
         created && !(traits.output_usage & ~output) &&
-        VK_OK(vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, UPSCALED_FORMAT, VK_IMAGE_TYPE_2D,
+        VK_OK(vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, g_u.output_format, VK_IMAGE_TYPE_2D,
                                                        VK_IMAGE_TILING_OPTIMAL, output_usage, 0, &output_has));
     if (output_ok) {
         g_u.output_usage = output_usage;
         g_u.output_max[0] = output_has.maxExtent.width;
         g_u.output_max[1] = output_has.maxExtent.height;
     }
+    /* an adapter that submits at its init (ABI 5) is taken: its prepare runs under R1 (upscaler_prepare) */
     if (!created || traits.submits_itself || (reads & ~inputs) || !output_ok) {
         const char* why = !created              ? "a context could not be made on the game's device"
                           : traits.submits_itself ? "the adapter submits work on its own"
@@ -3153,7 +3183,7 @@ static void upscaler_warm(u32 frame, Surf* scene, Surf* depth, int steady) {
         else upscaler_outcome(frame, 0, TEMPORAL_UPSCALER_STOPPED, why);
         return;
     }
-    UpscalerCall call = {made, NULL, NULL, NULL};
+    UpscalerCall call = {made, NULL, NULL, NULL, 0, traits.submits_at_init != 0};
     const int recorded = vk_rec_direct(vk_cmd(), upscaler_before, upscaler_prepare, &call);
     if (recorded == VK_REC_DIRECT_UNKNOWN) upscaler_stop(frame, "prepare"); /* before anything else */
     /* Whatever the answer, work may be recorded for the context: it is kept until the submission that work is
@@ -3264,7 +3294,7 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         g_u.output = (Image){0};
     }
     const VkImageUsageFlags output_usage = g_u.output_usage ? g_u.output_usage : UPSCALED_USAGE;
-    const int imaged = image_ensure(&g_u.output, UPSCALED_FORMAT, scene->sw, scene->sh, output_usage,
+    const int imaged = image_ensure(&g_u.output, g_u.output_format, scene->sw, scene->sh, output_usage,
                                     "upscaler's output");
     if (imaged) g_u.output_made_usage = output_usage;
     VkDescriptorSet set = VK_NULL_HANDLE;
@@ -3334,7 +3364,7 @@ static void upscaler_resolve(u32 frame, VkCommandBuffer cb, Surf* scene, Surf* d
         .near_plane = camera[0],
         .far_plane = camera[1],
         .fov_y = camera[2]};
-    UpscalerCall call = {g_u.live, &handed, scene, depth, frame};
+    UpscalerCall call = {g_u.live, &handed, scene, depth, frame, 0};
     const int recorded = vk_rec_direct(cb, upscaler_before, upscaler_evaluate, &call);
     /* before any barrier back, write-back or draw: nothing more goes into this command buffer */
     if (recorded == VK_REC_DIRECT_UNKNOWN) upscaler_stop(frame, "evaluate");
@@ -3836,8 +3866,9 @@ static void upscaler_start(void) {
         return;
     }
     const SnxUpscalerApi* api = vk_upscaler_adapter(name);
-    g_u.two_channel = !strcmp(name, "dlss"); /* DLSS takes the vectors in two channels (DL2 point 3) */
-    if (g_u.two_channel) {
+    /* DLSS and XeSS take the vectors in two channels (DL2 point 3, XESS-DESIGN.md) */
+    g_u.two_channel = !strcmp(name, "dlss") || !strcmp(name, "xess");
+    if (!strcmp(name, "dlss")) {
         /* SNX_ARCEUS_DLSS_JITTER_SIGN, the module's experiment (research 18:45): said here as the module reads it */
         const char* forced = getenv("SNX_ARCEUS_DLSS_JITTER_SIGN");
         int is_forced = 0;
@@ -3870,16 +3901,20 @@ static void upscaler_start(void) {
                                                device.features, device.core);
         if (met != SNX_NEEDS_OK) why = snx_needs_text(met);
     }
-    /* The private output's format, for the type, tiling, uses and flags image_ensure makes it with. The largest
-       size it answers is kept: the scene's size is held against it before the image is made. */
+    /* The private output's format, the adapter's own since ABI 5 (four 32 bit floats unless it names another), for
+       the type, tiling, uses and flags image_ensure makes it with. The largest size it answers is kept: the scene's
+       size is held against it before the image is made. */
     VkImageFormatProperties has;
-    if (!why && vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, UPSCALED_FORMAT, VK_IMAGE_TYPE_2D,
+    g_u.output_format = api && api->output_format != VK_FORMAT_UNDEFINED ? api->output_format : UPSCALED_FORMAT;
+    if (!why && vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, g_u.output_format, VK_IMAGE_TYPE_2D,
                                                          VK_IMAGE_TILING_OPTIMAL, UPSCALED_USAGE, 0,
                                                          &has) != VK_SUCCESS)
-        why = "the device has no image of four 32 bit floats that is both a storage and a sampled image";
+        why = "the device has no image of the adapter's output format that is both a storage and a sampled image";
     else if (!why) {
         g_u.output_max[0] = has.maxExtent.width;
         g_u.output_max[1] = has.maxExtent.height;
+        LOG("arceus-upscaler: %s's output is made in Vulkan format %d%s\n", api->name ? api->name : name,
+            (int)g_u.output_format, g_u.output_format == UPSCALED_FORMAT ? ", four 32 bit floats" : ", its own");
     }
     if (why) {
         LOG("arceus-upscaler: %s is not available (%s): the run goes on as without the switch\n", name, why);
@@ -3896,24 +3931,32 @@ static void upscaler_start(void) {
     g_t.rect = 1;
     g_t.view = 0;
     g_t.rect_extras_off = 1;
-    LOG("arceus-upscaler: %s asked for. EXPERIMENTAL: its self-test's result is FAIL (the edge case's budgets and "
-        "case 4's comparison with a plainly scaled frame are not met), and nothing about its quality is claimed. "
-        "At full size only, in frames whose scene is the whole target\n", api->name ? api->name : name);
+    /* each adapter's own self-test result (FSR's quality suite, DLSS's and XeSS's integration matrix) */
+    const char* tested = !strcmp(name, "dlss") ? "its integration self-test fails on one known library deviation "
+                                                 "alone (the reset at 1/2 in performance mode)"
+                         : !strcmp(name, "xess") ? "its integration self-test passes"
+                                                 : "its self-test's result is FAIL (the edge case's budgets and case "
+                                                   "4's comparison with a plainly scaled frame are not met)";
+    LOG("arceus-upscaler: %s asked for. EXPERIMENTAL: %s, and nothing about its quality is claimed. In frames whose "
+        "scene is the whole target, at full size, and below it only with the fixed resolution (its own line)\n",
+        api->name ? api->name : name, tested);
     LOG("arceus-upscaler: our own resolve, sharpen, history, numbers and views do not run with it. Without effect: "
         "SNX_ARCEUS_TEMPORAL_HISTORY, _CLAMP, _BLEND, _NEAREST, _LUMA, _SHARPEN, _VIEW and _RECT\n");
-    /* D3-3 and D3-4: with the fixed resolution, frames below native at a listed scale go to FSR or DLSS on D3-2's
-       hand-over, whose lines say "spatial" (the hand-over's name); the scene scale itself is the opt-in */
+    /* D3-3, D3-4 and XeSS: with the fixed resolution, frames below native at a listed scale go to the library on
+       D3-2's hand-over, whose lines say "spatial" (the hand-over's name); the scene scale itself is the opt-in */
     const char* fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
-    g_u.below = fixed && !strcmp(fixed, "1") && (!strcmp(name, "fsr") || !strcmp(name, "dlss"));
+    const int dlss = !strcmp(name, "dlss"), xess = !strcmp(name, "xess");
+    g_u.below = fixed && !strcmp(fixed, "1") && (!strcmp(name, "fsr") || dlss || xess);
     if (g_u.below) {
         g_u.armed_spatial = !g_s.asked;
         g_s.asked = 1;
         LOG("arceus-upscaler: %s below native (%s, EXPERIMENTAL): frames at a scene scale of 1/2, 3/5, 2/3, 3/4 or "
             "4/5 are rendered by it at the rectangle and handed to the game's readers in a larger texture (the "
             "hand-over's lines say spatial); none of our numbers are made for them%s\n",
-            api->name ? api->name : name, g_u.two_channel ? "D3-4" : "D3-3",
-            g_u.two_channel ? ". The mode is the one NGX's optimal settings give for the rectangle (the module's "
-                              "context line)" : "");
+            api->name ? api->name : name, dlss ? "D3-4" : xess ? "XeSS" : "D3-3",
+            dlss   ? ". The mode is the one NGX's optimal settings give for the rectangle (the module's context line)"
+            : xess ? ". The mode is the one XeSS's optimal input resolutions give for the rectangle (its context line)"
+                   : "");
     }
 }
 

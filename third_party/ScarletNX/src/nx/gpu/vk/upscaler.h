@@ -13,7 +13,7 @@
 #include <vulkan/vulkan_core.h>
 #endif
 
-#define SNX_UPSCALER_ABI 4
+#define SNX_UPSCALER_ABI 5
 /* the one symbol a separate module exports: it returns its functions for this ABI number, or NULL */
 #define SNX_UPSCALER_ENTRY "snx_upscaler_api"
 
@@ -39,8 +39,15 @@ typedef struct {
    device. A bit the runtime does not know refuses the adapter. The game's device knows the first only (DL2). */
 #define SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL 1u /* separateDepthStencilLayouts of the 1.2 features */
 #define SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS  2u /* bufferDeviceAddress of the 1.2 features */
+/* since ABI 5, for XeSS: of the 1.0, the 1.2 and the 1.3 features */
+#define SNX_UPSCALER_CORE_STORAGE_WRITE_WITHOUT_FORMAT 4u /* shaderStorageImageWriteWithoutFormat */
+#define SNX_UPSCALER_CORE_SHADER_INT8                  8u /* shaderInt8 */
+#define SNX_UPSCALER_CORE_INTEGER_DOT_PRODUCT          16u /* shaderIntegerDotProduct */
+#define SNX_UPSCALER_CORE_SCALAR_BLOCK_LAYOUT          32u /* scalarBlockLayout (1.2), as XS2-a found XeSS asks */
 #define SNX_UPSCALER_CORE_SELFTEST_KNOWN                                                                                \
-    (SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL | SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS)
+    (SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL | SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS |                              \
+     SNX_UPSCALER_CORE_STORAGE_WRITE_WITHOUT_FORMAT | SNX_UPSCALER_CORE_SHADER_INT8 |                                 \
+     SNX_UPSCALER_CORE_INTEGER_DOT_PRODUCT | SNX_UPSCALER_CORE_SCALAR_BLOCK_LAYOUT)
 typedef struct {
     SnxUpscalerExtensions extensions;
     const void* features; /* a pNext chain of feature structures to turn on, or NULL. Never a core structure */
@@ -81,7 +88,9 @@ typedef struct {
     const char* folder; /* one the library may write to, UTF-8 */
 } SnxUpscalerCreate;
 
-/* What the adapter says of itself at create. One that must submit work on its own is refused by the runtime. One
+/* What the adapter says of itself at create. One that must submit work on its own is refused by the runtime, but one
+   that submits only in its prepare (submits_at_init, since ABI 5) has that prepare run with the device idle before and
+   after it, under the runtime's lock, and its frames are never evaluated before both waits succeeded. One
    that cannot take a rectangle of a larger image gets images of exactly the render size, and one that takes a
    rectangle only from an image's first texel gets copies whenever the rectangle starts elsewhere. The usages
    are what each image handed to evaluate must have been made with. */
@@ -90,6 +99,7 @@ typedef struct {
     uint32_t takes_rectangle;
     uint32_t rectangle_at_origin; /* 1: a rectangle only when render_x and render_y are 0 */
     VkImageUsageFlags colour_usage, depth_usage, motion_usage, output_usage;
+    uint32_t submits_at_init; /* since ABI 5 */
 } SnxUpscalerTraits;
 
 typedef struct {
@@ -152,6 +162,9 @@ typedef struct SnxUpscalerApi {
        OK or FAILED, with the errors destroy could not return. The game never destroys its device: only the
        self-test calls it. */
     int (*shutdown)(VkDevice device);
+    /* Since ABI 5: the output's format, fixed when the adapter is loaded and the same in every create.
+       VK_FORMAT_UNDEFINED is the four 32 bit floats above. */
+    VkFormat output_format;
 } SnxUpscalerApi;
 
 /* The host's log for a module of its own, which cannot use the runtime's: one whole line without its newline. It
@@ -213,7 +226,7 @@ SNX_UPSCALER_AT(SnxUpscalerCreate, depth_format, 84);
 SNX_UPSCALER_AT(SnxUpscalerCreate, motion_format, 88);
 SNX_UPSCALER_AT(SnxUpscalerCreate, output_format, 92);
 SNX_UPSCALER_AT(SnxUpscalerCreate, folder, 96);
-SNX_UPSCALER_LAID(SnxUpscalerTraits, 28, 4);
+SNX_UPSCALER_LAID(SnxUpscalerTraits, 32, 4);
 SNX_UPSCALER_AT(SnxUpscalerTraits, submits_itself, 0);
 SNX_UPSCALER_AT(SnxUpscalerTraits, takes_rectangle, 4);
 SNX_UPSCALER_AT(SnxUpscalerTraits, rectangle_at_origin, 8);
@@ -221,6 +234,7 @@ SNX_UPSCALER_AT(SnxUpscalerTraits, colour_usage, 12);
 SNX_UPSCALER_AT(SnxUpscalerTraits, depth_usage, 16);
 SNX_UPSCALER_AT(SnxUpscalerTraits, motion_usage, 20);
 SNX_UPSCALER_AT(SnxUpscalerTraits, output_usage, 24);
+SNX_UPSCALER_AT(SnxUpscalerTraits, submits_at_init, 28);
 SNX_UPSCALER_LAID(SnxUpscalerImage, 32, 8);
 SNX_UPSCALER_AT(SnxUpscalerImage, image, 0);
 SNX_UPSCALER_AT(SnxUpscalerImage, view, 8);
@@ -246,7 +260,7 @@ SNX_UPSCALER_AT(SnxUpscalerFrame, near_plane, 176);
 SNX_UPSCALER_AT(SnxUpscalerFrame, far_plane, 180);
 SNX_UPSCALER_AT(SnxUpscalerFrame, fov_y, 184);
 SNX_UPSCALER_AT(SnxUpscalerFrame, trace, 188);
-SNX_UPSCALER_LAID(SnxUpscalerApi, 72, 8);
+SNX_UPSCALER_LAID(SnxUpscalerApi, 80, 8);
 SNX_UPSCALER_AT(SnxUpscalerApi, abi, 0);
 SNX_UPSCALER_AT(SnxUpscalerApi, name, 8);
 SNX_UPSCALER_AT(SnxUpscalerApi, instance_extensions, 16);
@@ -256,6 +270,7 @@ SNX_UPSCALER_AT(SnxUpscalerApi, prepare, 40);
 SNX_UPSCALER_AT(SnxUpscalerApi, evaluate, 48);
 SNX_UPSCALER_AT(SnxUpscalerApi, destroy, 56);
 SNX_UPSCALER_AT(SnxUpscalerApi, shutdown, 64);
+SNX_UPSCALER_AT(SnxUpscalerApi, output_format, 72);
 /* what the members are made of, as far as this header can state it without naming a compiler */
 SNX_UPSCALER_LAID(VkInstance, 8, 8);
 SNX_UPSCALER_LAID(VkImage, 8, 8);

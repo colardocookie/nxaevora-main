@@ -7,6 +7,8 @@
 #include "nx/gpu/vk/upscaler_selftest.h"
 #include "nx/gpu/vk/upscaler_module.h"
 #include "nx/gpu/vk/upscaler_needs.h"
+#include "nx/gpu/vk/upscaler_protocol.h"
+#include "nx/gpu/vk/upscaler_modes.h"
 #include "nx/gpu/vk/validation_lines.h"
 #include <assert.h>
 #include <stddef.h>
@@ -2291,16 +2293,18 @@ static void test_upscaler_module(void) {
        either of which would otherwise start the upscaler. */
     assert(snx_module_name("fsr", 0) == SNX_MODULE_NAME_BUILT_IN);
     assert(snx_module_name("fsr", 1) == SNX_MODULE_NAME_BUILT_IN);
+    assert(snx_module_name("xess", 0) == SNX_MODULE_NAME_BUILT_IN);
+    assert(snx_module_name("xess", 1) == SNX_MODULE_NAME_BUILT_IN);
     assert(snx_module_name("dlss", 1) == SNX_MODULE_NAME_MODULE);
     assert(snx_module_name("dlss", 0) == SNX_MODULE_NAME_MODULE); /* in the game too since DL2 */
     assert(snx_module_name("DLSS", 0) == SNX_MODULE_NAME_UNKNOWN);
     assert(snx_module_name("dlss ", 0) == SNX_MODULE_NAME_UNKNOWN);
-    assert(snx_module_name("xess", 1) == SNX_MODULE_NAME_UNKNOWN && snx_module_name("", 0) == SNX_MODULE_NAME_UNKNOWN);
+    assert(snx_module_name("XeSS", 1) == SNX_MODULE_NAME_UNKNOWN && snx_module_name("", 0) == SNX_MODULE_NAME_UNKNOWN);
     assert(snx_module_name(NULL, 0) == SNX_MODULE_NAME_UNKNOWN && snx_module_name(NULL, 1) == SNX_MODULE_NAME_UNKNOWN);
     {
         /* the two answers that would pass every other rule of the game's device and start */
         const char* const one[1] = {"VK_KHR_compute_shader_derivatives"};
-        const SnxNeedsBits nothing = {0, 0, 0};
+        const SnxNeedsBits nothing = {0, 0, 0, 0, 0};
         SnxNeedsRecord r = {0};
         assert(snx_needs_none(0, NULL, 0));                                              /* an empty answer */
         assert(snx_needs_record(&r, "dlss", one, 1, &nothing, 0) == SNX_NEEDS_OK);
@@ -3368,7 +3372,7 @@ static void test_upscaler_output_fits(void) {
 
 /* What the host makes of an adapter's needs of the game's device (upscaler_needs.h). */
 static void test_upscaler_needs(void) {
-    SnxNeedsBits asked = {9, 9, 9};
+    SnxNeedsBits asked = {9, 9, 9, 0, 0};
     /* the adapter's chain: nothing, the one accepted structure, and what is refused */
     assert(snx_needs_chain(NULL, &asked) == SNX_NEEDS_OK && !asked.have && !asked.quads && !asked.linear);
     SnxNeedsDerivatives linear = {SNX_NEEDS_DERIVATIVES, NULL, 0, 1};
@@ -3390,6 +3394,36 @@ static void test_upscaler_needs(void) {
         SnxNeedsNode front = {refused[k], &linear};
         assert(snx_needs_chain(&front, &asked) == SNX_NEEDS_TYPE);
     }
+    /* since ABI 5 the mutable descriptor type's structure (XeSS) too, alone or beside the derivatives, once each */
+    {
+        SnxNeedsMutable mut = {SNX_NEEDS_MUTABLE, NULL, 1}, off = {SNX_NEEDS_MUTABLE, NULL, 0};
+        assert(snx_needs_chain(&mut, &asked) == SNX_NEEDS_OK && asked.mutable_have && asked.mutable_on && !asked.have);
+        assert(snx_needs_chain(&off, &asked) == SNX_NEEDS_OK && asked.mutable_have && !asked.mutable_on);
+        SnxNeedsDerivatives lead = {SNX_NEEDS_DERIVATIVES, &mut, 0, 1};
+        assert(snx_needs_chain(&lead, &asked) == SNX_NEEDS_OK && asked.have && asked.linear && asked.mutable_on);
+        SnxNeedsMutable twice = {SNX_NEEDS_MUTABLE, &mut, 1};
+        assert(snx_needs_chain(&twice, &asked) == SNX_NEEDS_REPEATED);
+        /* its bit against the physical device's, its extension named, and the record */
+        const SnxNeedsBits want = {0, 0, 0, 1, 1}, has = {0, 0, 0, 1, 1};
+        const SnxNeedsBits lacks = {0, 0, 0, 1, 0}, gone = {0, 0, 0, 0, 0};
+        assert(snx_needs_bits(&want, &has) == SNX_NEEDS_OK && snx_needs_bits(&want, &lacks) == SNX_NEEDS_BIT);
+        assert(snx_needs_bits(&want, &gone) == SNX_NEEDS_BIT);
+        const char* const named[1] = {"VK_EXT_mutable_descriptor_type"};
+        const char* const other[1] = {"VK_KHR_compute_shader_derivatives"};
+        assert(snx_needs_owner(named, 1, &want) == SNX_NEEDS_OK);
+        assert(snx_needs_owner(other, 1, &want) == SNX_NEEDS_OWNER);
+        const SnxNeedsBits both = {1, 0, 1, 1, 1};
+        assert(snx_needs_owner(other, 1, &both) == SNX_NEEDS_OWNER);
+        assert(snx_needs_owner(named, 1, &both) == SNX_NEEDS_OWNER); /* each structure needs its own extension */
+        SnxNeedsRecord r;
+        const uint32_t int8 = SNX_NEEDS_CORE_SHADER_INT8, dot8 = SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT;
+        assert(snx_needs_record(&r, "xess", named, 1, &want, int8) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "xess", named, 1, &mut, int8) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "xess", named, 1, &mut, int8 | dot8) == SNX_NEEDS_NOT_RECORDED);
+        assert(snx_needs_record(&r, "xess", named, 1, &gone, 0) == SNX_NEEDS_OK);
+        assert(snx_needs_met(&r, "xess", named, 1, &mut, 0) == SNX_NEEDS_NOT_RECORDED);
+        assert(snx_needs_met(&r, "xess", named, 1, &off, 0) == SNX_NEEDS_NOT_RECORDED); /* the structure itself */
+    }
     /* the accepted type twice, and a structure that points at itself */
     SnxNeedsDerivatives second = {SNX_NEEDS_DERIVATIVES, NULL, 1, 0}, first = {SNX_NEEDS_DERIVATIVES, &second, 0, 1};
     assert(snx_needs_chain(&first, &asked) == SNX_NEEDS_REPEATED);
@@ -3407,8 +3441,10 @@ static void test_upscaler_needs(void) {
     assert(snx_needs_chain(nine, &asked) == SNX_NEEDS_OK && asked.linear);
     /* each bit asked for against what the physical device has */
     {
-        const SnxNeedsBits none = {0, 0, 0}, want_linear = {1, 0, 1}, want_both = {1, 1, 1}, want_quads = {1, 1, 0};
-        const SnxNeedsBits has_linear = {1, 0, 1}, has_both = {1, 1, 1}, has_none = {1, 0, 0}, absent = {0, 1, 1};
+        const SnxNeedsBits none = {0, 0, 0, 0, 0}, want_linear = {1, 0, 1, 0, 0};
+        const SnxNeedsBits want_both = {1, 1, 1, 0, 0}, want_quads = {1, 1, 0, 0, 0};
+        const SnxNeedsBits has_linear = {1, 0, 1, 0, 0}, has_both = {1, 1, 1, 0, 0};
+        const SnxNeedsBits has_none = {1, 0, 0, 0, 0}, absent = {0, 1, 1, 0, 0};
         assert(snx_needs_bits(&none, &absent) == SNX_NEEDS_OK && snx_needs_bits(&none, &has_none) == SNX_NEEDS_OK);
         assert(snx_needs_bits(&want_linear, &has_linear) == SNX_NEEDS_OK);
         assert(snx_needs_bits(&want_linear, &has_both) == SNX_NEEDS_OK);
@@ -3451,7 +3487,7 @@ static void test_upscaler_needs(void) {
     {
         const char* const one[1] = {"VK_KHR_compute_shader_derivatives"};
         const char* const two[2] = {"VK_KHR_compute_shader_derivatives", "VK_EXT_other"};
-        const SnxNeedsBits on_linear = {1, 0, 1}, on_both = {1, 1, 1}, on_none = {0, 0, 0};
+        const SnxNeedsBits on_linear = {1, 0, 1, 0, 0}, on_both = {1, 1, 1, 0, 0}, on_none = {0, 0, 0, 0, 0};
         SnxNeedsRecord r = {0};
         /* no record: an adapter with needs is not met, whatever it asks */
         assert(snx_needs_met(&r, "fsr", one, 1, &linear, 0) == SNX_NEEDS_ADAPTER);
@@ -3479,7 +3515,7 @@ static void test_upscaler_needs(void) {
         assert(snx_needs_met(&r, "fsr", one, 1, NULL, 0) == SNX_NEEDS_OK);
         /* each clause of the bits' comparison alone: the quad groups on and the linear ones asked, and a record
            whose structure is not there whatever its bits say */
-        const SnxNeedsBits on_quads = {1, 1, 0}, not_there = {0, 1, 1};
+        const SnxNeedsBits on_quads = {1, 1, 0, 0, 0}, not_there = {0, 1, 1, 0, 0};
         assert(snx_needs_record(&r, "fsr", one, 1, &on_quads, 0) == SNX_NEEDS_OK);
         assert(snx_needs_met(&r, "fsr", one, 1, &linear, 0) == SNX_NEEDS_NOT_RECORDED);
         assert(snx_needs_record(&r, "fsr", one, 1, &not_there, 0) == SNX_NEEDS_OK);
@@ -3499,16 +3535,27 @@ static void test_upscaler_needs(void) {
         assert(!r.made && snx_needs_met(&r, "fsr", one, 1, &linear, 0) == SNX_NEEDS_ADAPTER);
     }
     assert(snx_needs_none(0, NULL, 0) && !snx_needs_none(1, NULL, 0) && !snx_needs_none(0, &linear, 0));
-    /* Core feature bits: a plain field, two bits known (separate depth and stencil layouts, buffer device addresses,
-       DL2). Unknown bits refuse whatever the device has, a known one needs the physical device to have it, and
-       nothing asked is met by any device. */
+    /* Core feature bits: a plain field, six bits known (separate depth and stencil layouts and buffer device
+       addresses since DL2, four for XeSS since ABI 5). Unknown bits refuse whatever the device has, a known one
+       needs the physical device to have it, and nothing asked is met by any device. */
     const uint32_t sds = SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL, bda = SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS;
     assert(snx_needs_core(0, 0) == SNX_NEEDS_OK && snx_needs_core(0, sds | bda) == SNX_NEEDS_OK);
     assert(snx_needs_core(sds, sds) == SNX_NEEDS_OK && snx_needs_core(sds, 0) == SNX_NEEDS_CORE_BIT);
     assert(snx_needs_core(bda, bda) == SNX_NEEDS_OK && snx_needs_core(bda, sds) == SNX_NEEDS_CORE_BIT);
     assert(snx_needs_core(sds | bda, sds | bda) == SNX_NEEDS_OK);
     assert(snx_needs_core(sds | bda, bda) == SNX_NEEDS_CORE_BIT);
-    for (int bit = 2; bit < 32; bit++) {
+    /* since ABI 5 (XeSS): storage writes without a format, 8 bit integers, integer dot products, each needing the
+       physical device to have it */
+    const uint32_t swf = SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT, i8 = SNX_NEEDS_CORE_SHADER_INT8,
+                   dot = SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT;
+    assert(swf == 4u && i8 == 8u && dot == 16u);
+    assert(snx_needs_core(swf | i8 | dot, swf | i8 | dot) == SNX_NEEDS_OK);
+    assert(snx_needs_core(swf, i8 | dot) == SNX_NEEDS_CORE_BIT && snx_needs_core(i8, swf | dot) == SNX_NEEDS_CORE_BIT);
+    assert(snx_needs_core(dot, swf | i8) == SNX_NEEDS_CORE_BIT);
+    assert(SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT == 32u);
+    assert(snx_needs_core(SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT, SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT) == SNX_NEEDS_OK);
+    assert(snx_needs_core(SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT, swf | i8 | dot) == SNX_NEEDS_CORE_BIT);
+    for (int bit = 6; bit < 32; bit++) {
         assert(snx_needs_core(1u << bit, ~0u) == SNX_NEEDS_CORE_UNKNOWN);
         assert(snx_needs_core(1u << bit | sds, sds) == SNX_NEEDS_CORE_UNKNOWN);
         assert(snx_needs_core(1u << bit | bda, 0) == SNX_NEEDS_CORE_UNKNOWN);
@@ -3538,7 +3585,7 @@ static void test_upscaler_needs(void) {
     /* the record holds the bit by value and the start asks for it */
     {
         const char* const one[1] = {"VK_KHR_compute_shader_derivatives"};
-        const SnxNeedsBits on_linear = {1, 0, 1}, nothing = {0, 0, 0};
+        const SnxNeedsBits on_linear = {1, 0, 1, 0, 0}, nothing = {0, 0, 0, 0, 0};
         const uint32_t separate = SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL;
         SnxNeedsRecord r = {0};
         assert(snx_needs_record(&r, "fsr", one, 1, &on_linear, separate) == SNX_NEEDS_OK && r.core == separate);
@@ -3547,7 +3594,7 @@ static void test_upscaler_needs(void) {
         /* buffer device addresses (DL2) are known: asked of a record without them, not recorded */
         assert(snx_needs_met(&r, "fsr", one, 1, &linear, separate | SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS) ==
                SNX_NEEDS_NOT_RECORDED);
-        assert(snx_needs_met(&r, "fsr", one, 1, &linear, separate | 4u) == SNX_NEEDS_CORE_UNKNOWN);
+        assert(snx_needs_met(&r, "fsr", one, 1, &linear, separate | 64u) == SNX_NEEDS_CORE_UNKNOWN);
         assert(snx_needs_met(&r, "fsr", one, 1, &linear, 0x80000000u) == SNX_NEEDS_CORE_UNKNOWN);
         /* a device made without the bit does not meet an adapter that asks for it */
         assert(snx_needs_record(&r, "fsr", one, 1, &on_linear, 0) == SNX_NEEDS_OK && !r.core);
@@ -3568,7 +3615,7 @@ static void test_upscaler_needs(void) {
         const char* const khr[2] = {"VK_EXT_other", "VK_KHR_compute_shader_derivatives"};
         const char* const nv[1] = {"VK_NV_compute_shader_derivatives"};
         const char* const other[1] = {"VK_EXT_other"};
-        const SnxNeedsBits want = {1, 0, 1}, nothing = {0, 0, 0};
+        const SnxNeedsBits want = {1, 0, 1, 0, 0}, nothing = {0, 0, 0, 0, 0};
         const char* const nv_and[2] = {"VK_NV_compute_shader_derivatives", "VK_EXT_other"};
         const char* const with_khr[2] = {"VK_NV_compute_shader_derivatives", "VK_KHR_compute_shader_derivatives"};
         assert(snx_needs_owner(khr, 2, &want) == SNX_NEEDS_OK);
@@ -5010,6 +5057,75 @@ static void edge_set(double* rgb, int x, int y, double value) {
 }
 
 /* The jitter-sign case's picture, regions, profile and measures. */
+/* XeSS's R1 (upscaler_protocol.h) against stand-in waits and a stand-in call: each outcome, the order of the steps,
+   and no call and no second wait after a failed first one */
+typedef struct {
+    int waits[2], call, n; /* the answers of the two waits and of the call, and the steps taken */
+    char order[8];
+} ProtocolStandin;
+static int standin_wait(void* user) {
+    ProtocolStandin* p = user;
+    const int k = p->order[0] == 'w' && p->n ? 1 : 0;
+    p->order[p->n++] = 'w';
+    return p->waits[k];
+}
+static int standin_call(void* user) {
+    ProtocolStandin* p = user;
+    p->order[p->n++] = 'c';
+    return p->call;
+}
+static void test_upscaler_protocol(void) {
+    static const struct {
+        int before, call, after, outcome;
+        const char* order;
+    } cases[] = {{1, 1, 1, SNX_INIT_READY, "wcw"},      {0, 1, 1, SNX_INIT_NOT_CALLED, "w"},
+                 {0, 0, 0, SNX_INIT_NOT_CALLED, "w"},   {1, 0, 1, SNX_INIT_FAILED, "wcw"},
+                 {1, 1, 0, SNX_INIT_FATAL, "wcw"},      {1, 0, 0, SNX_INIT_FATAL, "wcw"}};
+    for (size_t k = 0; k < sizeof cases / sizeof cases[0]; k++) {
+        ProtocolStandin p = {{cases[k].before, cases[k].after}, cases[k].call, 0, ""};
+        const SnxInitSteps steps = {standin_wait, standin_call, &p};
+        assert(snx_init_protocol(&steps) == cases[k].outcome);
+        assert(!strcmp(p.order, cases[k].order));
+    }
+    for (int a = SNX_INIT_READY; a <= SNX_INIT_FATAL; a++)
+        for (int b = a + 1; b <= SNX_INIT_FATAL; b++) assert(strcmp(snx_init_text(a), snx_init_text(b)));
+}
+/* the mode rule in C (upscaler_modes.h) on the tables DLSS's host cases use, and XeSS's factors at 3840x2160 */
+static void test_upscaler_modes(void) {
+    const SnxMode large[6] = {{1, 1280, 720, 1280, 720, 1280, 720},    {1, 1920, 1080, 1920, 1080, 3840, 2160},
+                              {1, 2227, 1253, 1920, 1080, 3840, 2160}, {1, 2560, 1440, 1920, 1080, 3840, 2160},
+                              {0, 0, 0, 0, 0, 0, 0},                   {1, 3840, 2160, 3802, 2138, 3840, 2160}};
+    assert(snx_mode_choose(large, 6, 5, 3840, 2160, 3840, 2160) == 5);
+    assert(snx_mode_choose(large, 6, 5, 1920, 1080, 3840, 2160) == 1);
+    assert(snx_mode_choose(large, 6, 5, 2560, 1440, 3840, 2160) == 3);
+    assert(snx_mode_choose(large, 6, 5, 2304, 1296, 3840, 2160) == 2);
+    assert(snx_mode_choose(large, 6, 5, 3072, 1728, 3840, 2160) == 3);
+    assert(snx_mode_choose(large, 6, 5, 1900, 1080, 3840, 2160) == -1 && snx_mode_choose(large, 6, 5, 1280, 721,
+                                                                                         3840, 2160) == -1);
+    assert(snx_mode_choose(large, 6, -1, 3840, 2160, 3840, 2160) == -1);
+    SnxMode no_native[6];
+    memcpy(no_native, large, sizeof no_native);
+    no_native[5].got = 0; /* the native mode not answered: the output's own size has no mode */
+    assert(snx_mode_choose(no_native, 6, 5, 3840, 2160, 3840, 2160) == -1);
+    no_native[5] = (SnxMode){1, 3840, 2160, 3802, 2138, 3830, 2160}; /* answered, its range short of the output */
+    assert(snx_mode_choose(no_native, 6, 5, 3840, 2160, 3840, 2160) == -1);
+    /* XeSS by its factors (ultra performance 3.0 ... native 1.0), ranges from its factor up to the output */
+    const SnxMode xess[7] = {{1, 1280, 720, 1280, 720, 3840, 2160},  {1, 1670, 939, 1670, 939, 3840, 2160},
+                             {1, 1920, 1080, 1920, 1080, 3840, 2160}, {1, 2259, 1271, 2259, 1271, 3840, 2160},
+                             {1, 2560, 1440, 2560, 1440, 3840, 2160}, {1, 2954, 1662, 2954, 1662, 3840, 2160},
+                             {1, 3840, 2160, 3840, 2160, 3840, 2160}};
+    assert(snx_mode_choose(xess, 7, 6, 1920, 1080, 3840, 2160) == 2); /* 1/2: balanced */
+    assert(snx_mode_choose(xess, 7, 6, 2560, 1440, 3840, 2160) == 4); /* 2/3: ultra quality */
+    assert(snx_mode_choose(xess, 7, 6, 2304, 1296, 3840, 2160) == 3); /* 3/5: quality, 82 apart */
+    assert(snx_mode_choose(xess, 7, 6, 2880, 1620, 3840, 2160) == 4); /* 3/4: under ultra quality plus's least */
+    assert(snx_mode_choose(xess, 7, 6, 3840, 2160, 3840, 2160) == 6);
+    /* ties to the higher quality, an exact optimal outside its own range first */
+    SnxMode t[2] = {{1, 300, 170, 240, 135, 480, 270}, {1, 320, 180, 240, 135, 480, 270}};
+    assert(snx_mode_choose(t, 2, -1, 310, 175, 480, 270) == 1 && snx_mode_choose(t, 2, -1, 309, 175, 480, 270) == 0);
+    t[0] = (SnxMode){1, 300, 170, 310, 175, 480, 270};
+    assert(snx_mode_choose(t, 2, -1, 300, 170, 480, 270) == 0);
+}
+
 /* research 22:20: NGX's own 09600, by the id, the region and every image NGX's */
 static void test_selftest_ngx_own(void) {
     static const char text[] = "[ Debug region: nv.ngx.dlss.Evaluate ] vkQueueSubmit(): pSubmits[0] command buffer";
@@ -5834,6 +5950,27 @@ static void test_selftest(void) {
         assert(!isfinite((double)selftest_output_value(bytes + 1, 2, 0)));
         assert(selftest_output_value(bytes + 1, 2, 3) == 1.0f);
     }
+    /* the read-back by the adapter's output format (ABI 5): floats as above, or B10G11R11 packed in 4 bytes a pixel,
+       each channel decoded, an all-ones exponent (infinity or not a number) not finite */
+    {
+        const float pixels[1][4] = {{1.0f, 2.0f, 3.0f, 4.0f}};
+        double rgb[3];
+        selftest_output_pixel((const uint8_t*)pixels, 0, 0, rgb);
+        assert(rgb[0] == 1.0 && rgb[1] == 2.0 && rgb[2] == 3.0);
+        const double colour[3] = {0.25, 6.0, 0.5};
+        const uint32_t packed[3] = {0, selftest_b10g11r11(colour), 31u << 6 | 31u << 17};
+        uint8_t bytes[1 + sizeof packed];
+        memcpy(bytes + 1, packed, sizeof packed);
+        selftest_output_pixel(bytes + 1, 1, 1, rgb);
+        assert(rgb[0] == 0.25 && rgb[1] == 6.0 && rgb[2] == 0.5);
+        selftest_output_pixel(bytes + 1, 0, 1, rgb);
+        assert(rgb[0] == 0.0 && rgb[1] == 0.0 && rgb[2] == 0.0);
+        selftest_output_pixel(bytes + 1, 2, 1, rgb);
+        assert(!isfinite(rgb[0]) && !isfinite(rgb[1]) && rgb[2] == 0.0);
+        const uint32_t blue = 31u << 27;
+        selftest_output_pixel((const uint8_t*)&blue, 0, 1, rgb);
+        assert(isfinite(rgb[0]) && isfinite(rgb[1]) && !isfinite(rgb[2]));
+    }
     /* the staging buffer against a frame's uploads and the read-back, at their edges */
     assert(selftest_staging_fits(8u << 20, 480, 270, 640, 360) && selftest_staging_fits(16, 1, 1, 1, 1));
     assert(!selftest_staging_fits(15, 1, 1, 1, 1) && !selftest_staging_fits(31, 2, 1, 1, 1));
@@ -5995,6 +6132,8 @@ int main(void) {
     test_selftest_stop_notice();
     test_selftest_proof();
     test_selftest_ngx_own();
+    test_upscaler_protocol();
+    test_upscaler_modes();
     test_selftest_sign_forcing();
     test_selftest_sign_protocol();
     test_selftest_edges();

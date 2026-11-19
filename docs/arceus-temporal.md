@@ -595,17 +595,19 @@ after the frames in flight. Only once a submission did not run as recorded, or a
 (that sets the same mark), is nothing destroyed any more, to the end of the session. A frame has one
 fate in the counts, the first reported for it, and is counted in one window with its decision.
 
-Below native size (`SNX_ARCEUS_UPSCALER=fsr` or `dlss` with `SNX_ARCEUS_FIXED_RESOLUTION=1` and a scene scale of
-1/2, 3/5, 2/3, 3/4 or 4/5): the library takes the scene's rectangle as its render size and the target as its output,
-and its picture is handed to the game's readers in a larger texture, as the spatial path's hand-over does. DLSS takes
-the mode whose optimal render size NGX gives as the rectangle, else the nearest one whose range holds it. The texture
+Below native size (`SNX_ARCEUS_UPSCALER=fsr`, `dlss` or `xess` with `SNX_ARCEUS_FIXED_RESOLUTION=1` and a scene
+scale of 1/2, 3/5, 2/3, 3/4 or 4/5): the library takes the scene's rectangle as its render size and the target as its
+output, and its picture is handed to the game's readers in a larger texture, as the spatial path's hand-over does.
+DLSS and XeSS take the mode whose optimal render size the library gives as the rectangle, else the nearest one whose
+range holds it. For XeSS, 2/3 looks better than 1/2: in the user's look 1/2 was blurrier, 2/3 sharper, and both were
+softer than DLSS at 1/2 (on an NVIDIA card XeSS runs its generic path). The scale stays the user's choice. The texture
 level bias of such frames is automatic by default, log2 of the scene's scale (-1 at 1/2): in the user's look at DLSS
 1/2 it was much sharper than no bias, and -2 sharper still but shimmered a little. -2 stays available as a set value.
 
-Limits of this piece: FSR and DLSS only, the formats the self-test ran (a B10G11R11 scene colour, a D24S8 depth), one
-layer each, the game's form of projection as two cameras of one place showed it. Any other frame is left
-without jitter. The first context costs at least two frames without jitter and a create in the middle of a
-frame. A change of the colour target between two frames costs one frame drawn with jitter and left as drawn.
+Limits of this piece: FSR, DLSS and XeSS only, the formats the self-test ran (a B10G11R11 scene colour, a D24S8 depth),
+one layer each, the game's form of projection as two cameras of one place showed it. Any other frame is left without
+jitter. The first context costs at least two frames without jitter and a create in the middle of a frame. A change of
+the colour target between two frames costs one frame drawn with jitter and left as drawn.
 
 Lines: `arceus-upscaler:` at the start (what was asked, experimental, what is without effect), for each of the
 first contexts, for the first frames left as drawn and every 600th, when it turns off, and every 600 decided
@@ -773,6 +775,39 @@ device without it, and its device line says that the device is made with it for 
 makers' configurations can be compared from the logs. The game's device takes the same needs by its own path
 (the section before). It closes no condition:
 the library's own storage image messages remain.
+
+## The XeSS adapter (`SNX_ARCEUS_UPSCALER=xess`)
+
+EXPERIMENTAL. `gpu/vk/upscaler_xess.cpp` (Windows only) calls Intel's XeSS Super Resolution through its Vulkan API.
+Its MIT headers are in `third_party/XeSS`. Its library, `libxess.dll` from Intel's XeSS SDK, is the user's to put
+beside the program and is never in this repository. The run that was looked at used the SDK 3.0.2 library, which
+reports version 2.0.2.
+
+Needs. XeSS answers its own questions of the instance (no extension, Vulkan 1.3 at least) and of the device. Its
+feature answer is read back from a chain the adapter makes: storage writes without a format, 8 bit integers, scalar
+block layouts and integer dot products become core bits of the needs, and the mutable descriptor type goes on as a
+structure with its extension. Any other field or structure it sets makes it "not available", each one named by a
+line before the refusal.
+
+Its prepare submits work of its own (the trait `submits_at_init`). The runtime runs it between two waits for the
+whole device to be idle (`gpu/vk/upscaler_protocol.h`, host tested), on the GPU thread under the runtime's lock
+with the ring drained. A failed wait before calls nothing and turns the upscaler off. A failed prepare after a good
+wait turns it off and its context is destroyed as any failed prepare's is. A failed wait after it is the fatal path:
+nothing more is called, freed or submitted. XeSS calls Vulkan through its own loader, so its submissions cannot be
+counted from here. What the self-test shows is the validation layer's messages during each prepare and case 7 for the
+evaluates, nothing more.
+
+Every call goes from the thread that made its first context, and any other thread is refused with a line. A destroy
+from another thread does not call XeSS and leaves the context to the process's end, as intended: the game makes every
+call on its GPU thread and never shuts an adapter down, and the self-test has one thread.
+
+Conventions, as the self-test found them: our jitter with a jitter scale of 1 (the sign protocol gives (+1, +1) at
+1/2), and our vectors times minus the images' size (case 2's sixteen sign variants put that one lowest). The vectors'
+scale is set at create and again only for a frame that brings another one. The output is four 32 bit floats.
+`SNX_ARCEUS_XESS_OUTPUT=b10g11r11` declares B10G11R11 instead, a test override that no run needed. The self-test for
+`xess` makes its device at Vulkan 1.3 and runs DLSS's integration matrix (the native suites, 1/2 and 2/3, the sign
+protocol) plus case 2's sign variants, logged. Its result was PASS with case 7 silent (report
+20261116-040400-report-605f2d).
 
 ## The upscaler's self-test (`SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>`)
 

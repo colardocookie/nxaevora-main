@@ -24,10 +24,12 @@ _Static_assert(SNX_MODULE_TABLE_CALLS == offsetof(SnxUpscalerApi, instance_exten
                    offsetof(SnxUpscalerApi, evaluate) == SNX_MODULE_TABLE_CALLS + 4 * sizeof(void*) &&
                    offsetof(SnxUpscalerApi, destroy) == SNX_MODULE_TABLE_CALLS + 5 * sizeof(void*) &&
                    offsetof(SnxUpscalerApi, shutdown) == SNX_MODULE_TABLE_CALLS + 6 * sizeof(void*) &&
-                   sizeof(SnxUpscalerApi) ==
+                   offsetof(SnxUpscalerApi, output_format) ==
                        SNX_MODULE_TABLE_CALLS + (SNX_MODULE_TABLE_CALL_COUNT + 1) * sizeof(void*) &&
+                   sizeof(SnxUpscalerApi) ==
+                       SNX_MODULE_TABLE_CALLS + (SNX_MODULE_TABLE_CALL_COUNT + 2) * sizeof(void*) &&
                    sizeof(((SnxUpscalerApi*)0)->create) == sizeof(void*),
-               "the table's six calls, and shutdown after them");
+               "the table's six calls, shutdown after them, and since ABI 5 the output's format in the last place");
 
 /* The module at this full path, UTF-8, or NULL with why (SNX_MODULE_*). Its one function is handed the log. A file
    that is refused is unloaded again: nothing of it was called but that function. One that is taken stays loaded
