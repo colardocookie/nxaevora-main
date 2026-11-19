@@ -130,7 +130,7 @@ the block before the frame's first draw into the scene depth cannot be tied to t
 frame may differ in jitter: such a frame has no jitter at all and is left as drawn. All of these are counted and logged
 (`no jitter and no history this frame`, `frame left as drawn`, `is not the one the jitter was decided on`, `binds
 the scene camera's block before`). A scene drawn smaller than its target, as the game's own dynamic scale does, is
-not supported yet.
+left as drawn here: `SNX_ARCEUS_TEMPORAL_RECT=1` (below) takes such frames.
 
 The camera's vectors have both ends without jitter, as the objects' have: the pixel's place as drawn minus the
 frame's jitter, and that point under the camera of a frame ago.
@@ -383,7 +383,8 @@ very target (`SNX_ARCEUS_SCENE_SCALE` takes `2/3`). The list is about whole pixe
 
 A change of the viewport costs two frames without anti-aliasing: one gated, one that seeds the history. A change
 of the fraction alone costs one more, drawn with jitter and not resolved. Lines start with
-`arceus-temporal-rect:`. Not played yet.
+`arceus-temporal-rect:`. Run unattended at a scene scale of 0.75 (reports 20261114-104624-report-5ed4ae and
+20261114-105726-report-d751de).
 
 ## The camera block's projection, read only
 
@@ -441,11 +442,12 @@ and the query pool is kept until the program ends. "Completed" is read from the 
 recorder also signals for a submission that was refused. So the recorder keeps a mark, set before that signal,
 for a command buffer that could not be begun or ended, a refused submission and a command pool that could not be
 reset. The measure reads the timeline, then the mark, before it asks for any result or takes a pair again, and
-with the mark set, or a timeline that cannot be read, it is off for the session. Not run yet.
+with the mark set, or a timeline that cannot be read, it is off for the session. It ran in the unattended runs of
+2026-11-14, among them reports 20261114-103803-report-bdd4f2 and the two rectangle runs above.
 
-## For the upscaler step: rules and an interface that nothing uses yet
+## For the upscaler step: rules and the adapters' interface
 
-Two things are in the sources ahead of their full use.
+Two things the upscalers build on.
 
 The rules for a scene inside a rectangle of its targets (`SNX_ARCEUS_SCENE_SCALE`, `docs/arceus-timing.md`) are pure
 functions in `temporal_math.h` with host tests: the active rectangle of a signed viewport, a frame's geometry
@@ -476,8 +478,8 @@ work for the GPU, `prepare`, which records what the context must run once into a
 submits, `evaluate` and `destroy`. A context may be used only when its preparation's submission has completed. A
 change of anything in the configuration is a new context, and until that one is ready the frames of the new kind
 are left as drawn. If the instance or the device cannot be made with an adapter's extensions it is made again
-without them and the upscaler is off. No adapter exists yet, nothing is loaded, nothing calls the interface, and
-no SDK's library is in this repository.
+without them and the upscaler is off. The adapters for FSR, XeSS and DLSS use it (below). No SDK's library is in
+this repository.
 
 The numbers a frame would carry are made by `temporal_upscaler_frame`:
 - the vector is where the pixel's point was a frame ago less where it is now, in pixels, x to the right and y down
@@ -490,7 +492,7 @@ The host tests work the places out by hand for a moved camera, an object moving 
 camera, jitter over a negative height, a rectangle, a resize and a reset. They cannot show that a library reads
 the signs the same way: that needs a test on a device with the library.
 
-## Handing a library the frame's command buffer (`vk_rec_direct`), used by nothing yet
+## Handing a library the frame's command buffer (`vk_rec_direct`)
 
 The frame's commands go through a ring to a recording thread, and an upscaler's library makes its Vulkan calls
 at once. `vk_rec_direct` in `gpu/vk/record.c` is the one way such a library gets the frame's command buffer, for
@@ -706,19 +708,21 @@ itself (`upscaler_needs.h` has the rules, host-tested, and `upscaler_host.c` app
 - Each extension the adapter names is looked up in the physical device's own list, which must have been read
   whole (asked again when incomplete, three times at most). A name that is not there, or a list that was not
   read whole, refuses. At most eight names of at most 63 characters, kept as the host's own copies.
-- Exactly one feature structure is accepted from an adapter: the compute shader derivatives features, by its
-  type and its two bits. Any other type refuses (a core feature structure, a promoted alias such as the 16 bit
-  float features, anything else), and so does the accepted type twice, a chain that does not end within eight
-  structures, and a bit asked for without `VK_KHR_compute_shader_derivatives` among the names (the NV
-  extension of the same structure is not taken as that: nobody examined it). The bound of eight is the walk's
-  guard against a chain that does not end. With one accepted type it is never the first refusal: a second
-  structure is refused by its type or as a repeat.
+- Two feature structures are accepted from an adapter: the compute shader derivatives features, by its type and
+  its two bits, and since version 5 of the contract the mutable descriptor type features (XeSS), by its one bit.
+  Any other type refuses (a core feature structure, a promoted alias such as the 16 bit float features, anything
+  else), and so does an accepted type twice, a chain that does not end within eight structures, and a bit asked
+  for without `VK_KHR_compute_shader_derivatives` among the names (the NV extension of the same structure is not
+  taken as that: nobody examined it). The bound of eight is the walk's guard against a chain that does not end.
+  With each accepted type taken once it is never the first refusal: a third structure is refused by its type or
+  as a repeat.
 - Each bit asked for is checked against the host's own question to the physical device. A bit it does not have
   refuses. Bits not asked for stay off.
 - A need of a core feature bit is no structure at all. The adapter's answer has a plain field for such bits
   (since version 3 of the contract, and an adapter of another version is refused before anything of it is
-  called). One bit is defined: separate layouts for the depth and the stencil aspect, a bit of the 1.2
-  features. A bit the host does not know refuses. The known one is checked against the question the game's
+  called). The first bit defined, and the one this item describes, is separate layouts for the depth and the
+  stencil aspect, a bit of the 1.2 features. The others in `upscaler.h` came with DLSS and XeSS (XeSS's section
+  below). A bit the host does not know refuses. The known one is checked against the question the game's
   device creation asks the physical device anyway, and a physical device without it means the adapter is not
   available. It is turned on in the game's own 1.2 structure for the creation with the additions and put back
   to the game's own value before a creation without them. No 1.2 structure of an adapter is ever taken or
@@ -811,15 +815,14 @@ protocol) plus case 2's sign variants, logged. Its result was PASS with case 7 s
 
 ## The upscaler's self-test (`SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>`)
 
-With this set to an adapter's name (`fsr`), the program does not load the game. `0` and `off` leave the mode off,
-like no value. The switch is the first thing the
-start looks at: before its options and their key files, the check for dumps, the menu, the guest's address space
-and the game's code. The mode's own path takes the program's folder and the run's name from the command line,
-names the folders, and makes the log the file a report of the run reads. It opens no window and no file of the
-game. Without the switch the start is that one look and otherwise as before. A run whose device state becomes
-unknown (a submission whose end cannot be waited for) stops using the device at once: the cases left are
-reported as not run and the result is a failure. The mode makes a Vulkan instance and device of its
-own without a window, through the steps the runtime will take with an adapter (`gpu/vk/upscaler_host.c`), runs
+With this set to an adapter's name (`fsr`, `dlss` or `xess`), the program does not load the game. `0` and `off`
+leave the mode off, like no value. The switch is the first thing the start looks at: before its options, the check
+for dumps, the menu, the guest's address space and the game's code. The mode's own path takes the program's folder
+and the run's name from the command line, names the folders, and makes the log the file a report of the run reads.
+It opens no window and no file of the game. Without the switch the start is that one look and otherwise as before. A
+run whose device state becomes unknown (a submission whose end cannot be waited for) stops using the device at once:
+the cases left are reported as not run and the result is a failure. The mode makes a Vulkan instance and device of
+its own without a window, through the steps the runtime will take with an adapter (`gpu/vk/upscaler_host.c`), runs
 the adapter on a generated scene, writes its lines and ends the process with 0 for a pass. Every line begins with
 `arceus-upscaler-selftest`. The adapter's own lines begin with `arceus-upscaler`.
 
