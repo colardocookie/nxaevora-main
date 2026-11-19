@@ -826,6 +826,10 @@ add_executable(snx-test-perf-times perf_times.c "${PROJECT_SOURCE_DIR}/src/nx/gp
 snx_test_target(snx-test-perf-times 11)
 add_test(NAME perf_times COMMAND snx-test-perf-times)
 
+add_executable(snx-test-frame-log frame_log.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/frame_log.c")
+snx_test_target(snx-test-frame-log 11)
+add_test(NAME frame_log COMMAND snx-test-frame-log)
+
 add_executable(snx-test-profile-calc profile_calc.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/profile_calc.c")
 snx_test_target(snx-test-profile-calc 11)
 add_test(NAME profile_calc COMMAND snx-test-profile-calc)

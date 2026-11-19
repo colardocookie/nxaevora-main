@@ -20,6 +20,7 @@
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/perf_times.h"
+#include "nx/gpu/frame_log.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/cheats.h"
@@ -6450,6 +6451,12 @@ static void handler_wait_end(u64 start_ns) {
     if (g_settings.nvn_measure) t_handler_wait_ns += plat_ns() - start_ns;
 }
 
+/* SNX_ARCEUS_LATENCY_PROBE: the acquire call's start on this thread, and each window image's last acquire wait, kept
+   under objs_lock for the present that shows the image */
+#define LAT_ACQUIRE_IMAGES 16u
+static _Thread_local u64 t_lat_acquire0;
+static u64 lat_acquire_ns[LAT_ACQUIRE_IMAGES];
+
 static void window_acquire_failed(CPU* c, const char* operation, u64 queue_addr, u64 window_addr, u64 sync_addr,
                                   u64 index_addr, const char* reason) {
     LOG("nvn-native: %s failed: %s (queue=%llx window=%llx sync=%llx index=%llx)\n", operation, reason,
@@ -6519,6 +6526,7 @@ static void window_acquire_texture(CPU* c, u64 queue_addr, u64 window_addr, u64 
         return;
     }
     nvn_window_acquire_take(window->states, &window->last_index, index);
+    if (t_lat_acquire0 && (uint32_t)index < LAT_ACQUIRE_IMAGES) lat_acquire_ns[index] = plat_ns() - t_lat_acquire0;
     /* A free image means its previous frame job has finished. */
     if (sync) sync->state = NVN_SYNC_SIGNALED;
     gw32(index_addr, (uint32_t)index);
@@ -6529,12 +6537,14 @@ static void window_acquire_texture(CPU* c, u64 queue_addr, u64 window_addr, u64 
 static void h_window_acquire_texture(CPU* c, u64 entry) {
     (void)entry;
     const u64 t0 = g_perf_times ? plat_ns() : 0;
+    if (g_latency_probe) t_lat_acquire0 = t0 ? t0 : plat_ns();
     window_acquire_texture(c, 0, c->x[0], c->x[1], c->x[2], "nvnWindowAcquireTexture");
     if (t0) perf_time_add(&g_perf, PT_ACQUIRE, plat_ns() - t0);
 }
 static void h_queue_acquire_texture(CPU* c, u64 entry) {
     (void)entry;
     const u64 t0 = g_perf_times ? plat_ns() : 0;
+    if (g_latency_probe) t_lat_acquire0 = t0 ? t0 : plat_ns();
     window_acquire_texture(c, c->x[0], c->x[1], 0, c->x[2], "nvnQueueAcquireTexture");
     if (t0) perf_time_add(&g_perf, PT_ACQUIRE, plat_ns() - t0);
 }
@@ -6925,6 +6935,29 @@ static u64 perf_present_posted(void) {
     __atomic_store_n(&perf_last_post, now, __ATOMIC_RELAXED);
     return now;
 }
+/* DAILY-LT (gpu/frame_log.h): a present's post, numbered, with the jobs already in flight and its image's acquire
+   wait. Caller holds objs_lock */
+static void daily_present_posted(const FrameJob* job) {
+    static u64 presents;
+    const u64 now = plat_ns(), no = ++presents;
+    if (g_frame_log) frame_log_present(&g_frame_log_buf, no, now);
+    if (g_latency_probe) {
+        const LatPresent p = {.no = no, .post_ns = now, .jobs = frames_in_flight, .diff = -1,
+                              .acquire_ns = job->index < LAT_ACQUIRE_IMAGES ? lat_acquire_ns[job->index] : 0};
+        latency_posted(&g_latency, &p);
+    }
+}
+/* the GPU thread: a full buffer of intervals, as its lines */
+static void frame_log_flush(void) {
+    const int buffer = frame_log_ready(&g_frame_log_buf);
+    if (!buffer) return;
+    char line[2048];
+    for (unsigned part = 0; part < FRAME_LOG_WINDOW / FRAME_LOG_PART; part++) {
+        frame_log_line(&g_frame_log_buf, buffer - 1, part, line, sizeof line);
+        LOG("%s\n", line);
+    }
+    frame_log_done(&g_frame_log_buf);
+}
 static void perf_line(void) {
     static uint32_t presents; /* GPU thread only */
     char line[3072];
@@ -6977,6 +7010,7 @@ static void frame_run(void* arg) {
     }
     if (measure) nvn_measure_native_gpu(plat_ns() - measure_t0);
     const u64 perf_show = perf_start && !flush ? plat_ns() : 0;
+    if (g_latency_probe && !flush && !latency_take(&g_latency, &g_lat_next)) g_lat_next.no = 0;
     int shown = flush ? 0 : frame_show(job, &parts);
     if (perf_show) perf_time_add(&g_perf, PT_SHOW, plat_ns() - perf_show);
     uint32_t list_count = job->frame.handle_count;
@@ -6985,6 +7019,7 @@ static void frame_run(void* arg) {
     frame_finish(job);
     frame_line(job, &stats, shown, fences, list_count, frame_number, dispatches, dispatch_refusals);
     if (perf_start && !flush) perf_line();
+    if (g_frame_log && !flush) frame_log_flush();
     free(job->init_words);
     free(job);
 }
@@ -7020,6 +7055,7 @@ static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget
     if (g_submit_probe && target->kind == NVN_FRAME_FLUSH) submit_probe_flush_posted(queue_addr);
     if (g_perf_times) /* a 32-bit stamp: the post to start interval is far below its 4 s wrap */
         job->post_ns = (uint32_t)(target->kind == NVN_FRAME_PRESENT ? perf_present_posted() : plat_ns());
+    if ((g_frame_log || g_latency_probe) && target->kind == NVN_FRAME_PRESENT) daily_present_posted(job);
     if (!q->init_replayed) {
         if (q->init_word_count) {
             job->init_words = malloc((size_t)q->init_word_count * sizeof *job->init_words);

@@ -22,6 +22,7 @@
 #include "nx/runtime/platform/stats.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/perf_times.h"
+#include "nx/gpu/frame_log.h"
 #include "nx/gpu/vk/scale.h"
 #include "nx/gpu/vk/debug_stats.h"
 #include "nx/gpu/nvn/diag/nvn_measure.h"
@@ -352,6 +353,107 @@ static void flip_src(VkImageBlit* b, u32 transform) {
     }
 }
 
+/* SNX_ARCEUS_LATENCY_PROBE (gpu/frame_log.h): each game frame's picture blitted to LAT_W x LAT_H and copied for the
+   host, read once its submission is done, in present order and never waited for. A ring entry is busy until read */
+#define LAT_RING 4u
+typedef struct {
+    VkImage img;
+    VmaAllocation img_mem, buf_mem;
+    VkBuffer buf;
+    const u8* px;
+    u64 submit;
+    LatPresent p;
+} LatPicture;
+static LatPicture g_lat[LAT_RING];
+static u32 g_lat_head, g_lat_tail;
+static int g_lat_failed, g_lat_has_prev;
+static u8 g_lat_prev[LAT_W * LAT_H * 4];
+static void lat_put(const char* line) { LOG("%s\n", line); }
+static int lat_make(LatPicture* e) {
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = VK_FORMAT_R8G8B8A8_UNORM,
+                            .extent = {LAT_W, LAT_H, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &ai, &e->img, &e->img_mem, NULL))) return 0;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                             .size = LAT_W * LAT_H * 4,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VmaAllocationCreateInfo bai = {
+        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    VmaAllocationInfo info;
+    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bi, &bai, &e->buf, &e->buf_mem, &info))) {
+        vmaDestroyImage(g_vk.vma, e->img, e->img_mem);
+        e->img = VK_NULL_HANDLE;
+        return 0;
+    }
+    vk_mem_track(e->img_mem);
+    vk_mem_track(e->buf_mem);
+    e->px = info.pMappedData;
+    return 1;
+}
+/* the entries whose submission is done, oldest first: each one's difference to the picture before */
+static void lat_collect(void) {
+    const u64 done = vk_submit_done();
+    while (g_lat_tail != g_lat_head && g_lat[g_lat_tail % LAT_RING].submit <= done) {
+        LatPicture* e = &g_lat[g_lat_tail++ % LAT_RING];
+        vmaInvalidateAllocation(g_vk.vma, e->buf_mem, 0, VK_WHOLE_SIZE);
+        e->p.diff = g_lat_has_prev ? latency_picture_diff(e->px, g_lat_prev, LAT_W * LAT_H) : -1;
+        memcpy(g_lat_prev, e->px, sizeof g_lat_prev);
+        g_lat_has_prev = 1;
+        latency_result(&g_latency, &e->p, lat_put);
+    }
+}
+/* the game frame's shown rectangle of src, blitted and copied into the next entry: the entry, or NULL when none is
+   free or the probe could not make one. Outside a pass */
+static LatPicture* lat_picture(Surf* src, u32 transform) {
+    lat_collect();
+    if (g_lat_failed || !g_lat_next.no || !g_last_w || !g_last_h || g_lat_head - g_lat_tail >= LAT_RING) return NULL;
+    LatPicture* e = &g_lat[g_lat_head % LAT_RING];
+    if (!e->img && !lat_make(e)) {
+        g_lat_failed = 1;
+        WARN("arceus-latency: the probe's picture could not be made, no picture differences from here on\n");
+        return NULL;
+    }
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    vk_barrier(cb, e->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, src->base_layer, 1},
+                        .srcOffsets = {{(i32)g_last_x, (i32)g_last_y, 0},
+                                       {(i32)(g_last_x + g_last_w), (i32)(g_last_y + g_last_h), 1}},
+                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .dstOffsets = {{0, 0, 0}, {(i32)LAT_W, (i32)LAT_H, 1}}};
+    flip_src(&blit, transform);
+    rec_CmdBlitImage(cb, src->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, e->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     1, &blit, VK_FILTER_LINEAR);
+    vk_barrier(cb, e->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkBufferImageCopy c = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {LAT_W, LAT_H, 1}};
+    rec_CmdCopyImageToBuffer(cb, e->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, e->buf, 1, &c);
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                           .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                           .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    rec_CmdPipelineBarrier2(cb, &di);
+    e->submit = vk_submit_number(); /* the copy goes with the next submission */
+    e->p = g_lat_next;
+    g_lat_head++;
+    return e;
+}
+
 #if defined(SNX_TRACY)
 /* The heap the caches manage, as vk_mem_use reads it for their own trimming, in bytes (the plot is a Memory one). */
 static void gpu_memory_plots(void) {
@@ -388,6 +490,8 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
         vk_swapchain_create(srgb);
         tried = 1;
     }
+    /* the picture the game made, whether or not the swapchain has an image for it */
+    LatPicture* lat = g_latency_probe && src && game ? lat_picture(src, transform) : NULL;
     VkSemaphore wait = VK_NULL_HANDLE, signal = VK_NULL_HANDLE;
     u32 idx = 0;
     int recreate = 0;
@@ -408,6 +512,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
         else if (r == VK_ERROR_SURFACE_LOST_KHR)
             g_lost = 1;
         else if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) {
+            if (lat) lat->p.shown = 1;
             wait = acq;
             signal = g_vk.sc_done[idx];
             VkImage sc = g_vk.sc_images[idx];

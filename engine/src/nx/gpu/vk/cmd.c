@@ -578,6 +578,11 @@ void vk_frame_check(void) {
 }
 
 u64 vk_submit_number(void) { return g_gval + 1; }
+u64 vk_submit_done(void) {
+    u64 done = 0;
+    if (g_gsem) VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done));
+    return done;
+}
 u32 vk_cb_begun(void) { return g_cb_begun; }
 u64 vk_last_submit(void) { return g_gval; }
 void vk_submit_progress(u64* submitted, u64* done) {

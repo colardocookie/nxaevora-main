@@ -13,6 +13,7 @@
 #include "nx/gpu/nvn/diag/draw_record.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/perf_times.h"
+#include "nx/gpu/frame_log.h"
 #include "nx/gpu/vk/landing.h"
 #include "nx/gpu/nvn/diag/overlap_check.h"
 #include "nx/gpu/nvn/diag/submit_probe.h"
@@ -933,6 +934,17 @@ int snx_main(int argc, char** argv) {
         if (g_patch_hash)
             LOG("patch-hash: EXPERIMENT on, a buffer patched in place is taken as changed at its next full check, and "
                 "the checks without write tracking do not skip it\n");
+        const char* frame_log = getenv("SNX_ARCEUS_FRAME_LOG"); /* log only, DAILY-LT (gpu/frame_log.h) */
+        g_frame_log = frame_log && !strcmp(frame_log, "1");
+        if (g_frame_log)
+            LOG("frame-log: on, every interval between present posts in microseconds, lines every %u presents\n",
+                FRAME_LOG_WINDOW);
+        const char* latency = getenv("SNX_ARCEUS_LATENCY_PROBE"); /* log only, DAILY-LT (gpu/frame_log.h) */
+        g_latency_probe = latency && !strcmp(latency, "1");
+        if (g_latency_probe)
+            LOG("latency-probe: on, a scripted press is stamped where HID hands it to the guest, %u presents before "
+                "and %u from it get a line with a %ux%u picture difference\n",
+                LAT_BEFORE, LAT_AFTER, LAT_W, LAT_H);
         const char* submit_us = getenv("SNX_ARCEUS_PERF_SUBMIT_US"); /* bench only: a submission's recording time */
         if (submit_us) {
             char* end = NULL;
