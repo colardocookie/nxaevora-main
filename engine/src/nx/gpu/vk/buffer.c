@@ -254,6 +254,11 @@ typedef struct GfxOut {
     ChgRun* runs;
     u32 nruns;
     u8 runs_ok, stale;
+    /* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 3): a composed result's places in the walk's index (walk_add), its order
+       among the results and the stamp of the last landing that found it there */
+    struct WalkRef* wrefs;
+    u32 nwrefs, wdepth; /* wdepth: the depth of the vk_buf_frame_done whose list holds it, 0 in g_out or g_prep */
+    u64 seq, wstamp;
     struct GfxOut* next;
 } GfxOut;
 static GfxOut *g_prep, *g_prep_tail, *g_out, *g_out_tail;
@@ -363,10 +368,12 @@ static u64* range_map(u64 gva, u64 len, u64 local[16]) {
 /* Suppress recursive lookups by the landing thread. Other readers still take vk_lock and wait for landing. */
 static _Thread_local int g_out_landing;
 
+static void walk_remove(GfxOut* o);
 void vk_buf_writable_abort(void) {
     while (g_prep) {
         GfxOut* o = g_prep;
         g_prep = o->next;
+        walk_remove(o);
         free(o);
     }
     g_prep_tail = NULL;
@@ -404,6 +411,54 @@ static int pages_meet(const GfxOut* a, const GfxOut* b) {
             return 1;
     }
     return 0;
+}
+/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 3): the composed results not landed yet, by their mapped pages, so that a landing
+   visits the ones on its own pages and not every pending result. A result is in it from its append to g_prep until
+   it leaves the lists, landed or dropped. g_walk_lost: no memory to add one, and the whole walk from then on */
+typedef struct WalkRef {
+    GfxOut* o;
+    u64 page;
+    struct WalkRef *next, **pprev;
+} WalkRef;
+#define WALK_BUCKETS 4096u
+static WalkRef* g_walk[WALK_BUCKETS];
+static int g_walk_lost;
+static u32 g_walk_depth; /* vk_buf_frame_done calls in progress, nested in a write's flush, under vk_lock */
+static u64 g_walk_seq, g_walk_stamp;
+static WalkRef** walk_bucket(u64 page) {
+    return &g_walk[(u32)(page * 0x9E3779B97F4A7C15ull >> 52) & (WALK_BUCKETS - 1)];
+}
+/* at o's append to g_prep, when its pages are final: its order, and a composed one into the index, once a page */
+static void walk_add(GfxOut* o) {
+    if (g_perf_compare != 2) return;
+    o->seq = ++g_walk_seq;
+    if (!o->composed || g_walk_lost) return;
+    u32 n = 0;
+    for (u32 i = 0; i < o->npages && o->pages[i] != ~0ull; i++) n += !i || o->pages[i] != o->pages[i - 1];
+    if (!n) return; /* no mapped page: pages_meet never meets it */
+    o->wrefs = malloc((size_t)n * sizeof *o->wrefs);
+    if (!o->wrefs) {
+        g_walk_lost = 1;
+        return;
+    }
+    for (u32 i = 0, j = 0; i < o->npages && o->pages[i] != ~0ull; i++) {
+        if (i && o->pages[i] == o->pages[i - 1]) continue;
+        WalkRef *r = &o->wrefs[j++], **b = walk_bucket(o->pages[i]);
+        r->o = o, r->page = o->pages[i], r->next = *b, r->pprev = b;
+        if (*b) (*b)->pprev = &r->next;
+        *b = r;
+    }
+    o->nwrefs = n;
+}
+/* o out of the index, as it leaves the lists */
+static void walk_remove(GfxOut* o) {
+    for (u32 i = 0; i < o->nwrefs; i++) {
+        WalkRef* r = &o->wrefs[i];
+        *r->pprev = r->next;
+        if (r->next) r->next->pprev = r->pprev;
+    }
+    free(o->wrefs);
+    o->wrefs = NULL, o->nwrefs = 0;
 }
 /* e has landed: a later composed result o read e's result where they share guest memory, not the bytes org holds
    there, so the bytes e changed become o's original bytes. Then o lands only what its own draw changed, and doesn't
@@ -546,6 +601,40 @@ static void out_rebase(const GfxOut* e, GfxOut* o) {
     Rebase r = {e, o};
     out_spans(e, o->addr, o->size, o->vmap, rebase_span, &r);
 }
+static GfxOut** g_wcand;
+static u32 g_capwcand;
+static int seq_cmp(const void* a, const void* b) {
+    const u64 x = (*(GfxOut* const*)a)->seq, y = (*(GfxOut* const*)b)->seq;
+    return (x > y) - (x < y);
+}
+/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 3): out_rebase_later's walk through the index: each composed result on e's
+   mapped pages once, in the order they were made. The ones the whole walk meets: e left the lists and the index
+   together, and a result in an outer landing's list (wdepth below this one's) is in none of the walk's lists. 0,
+   with nothing rebased, without memory for the list */
+static int walk_index(const GfxOut* e, u64* walk) {
+    const u64 stamp = ++g_walk_stamp;
+    u32 n = 0;
+    for (u32 i = 0; i < e->npages && e->pages[i] != ~0ull; i++)
+        for (WalkRef* r = *walk_bucket(e->pages[i]); r; r = r->next) {
+            if (r->page != e->pages[i] || r->o->wstamp == stamp) continue;
+            if (r->o->wdepth && r->o->wdepth != g_walk_depth) continue;
+            if (n == g_capwcand) {
+                const u32 cap = g_capwcand ? g_capwcand * 2 : 64;
+                GfxOut** b = realloc(g_wcand, (size_t)cap * sizeof *b);
+                if (!b) return 0;
+                g_wcand = b;
+                g_capwcand = cap;
+            }
+            r->o->wstamp = stamp;
+            g_wcand[n++] = r->o;
+        }
+    if (n > 1) qsort(g_wcand, n, sizeof *g_wcand, seq_cmp);
+    for (u32 i = 0; i < n; i++) {
+        if (walk) walk[PCW_VISITED]++, walk[PCW_COMPOSED]++, walk[PCW_MET]++;
+        out_rebase(e, g_wcand[i]);
+    }
+    return 1;
+}
 /* the composed results recorded after e, in this frame's landed list (rest), later frames' and the draw being set up */
 /* SNX_ARCEUS_PERF_TIMES (PERF-27): with walk set, *runs_ns gets the clock after the changed runs and walk the counts
    (PCW_*) */
@@ -555,6 +644,7 @@ static void out_rebase_later(const GfxOut* e, GfxOut* rest, u64* runs_ns, u64* w
     const u32 runs = out_changed_runs(e);
     if (walk) *runs_ns = plat_ns(), walk[PCW_RUNS] += runs, walk[PCW_FOUND] += found;
     if (!runs) return; /* it changed nothing: memory has what every later one took as original */
+    if (g_perf_compare == 2 && !g_walk_lost && walk_index(e, walk)) return;
     for (int l = 0; l < 3; l++)
         for (GfxOut* o = lists[l]; o; o = o->next) {
             if (walk) walk[PCW_VISITED]++, walk[PCW_COMPOSED] += o->composed;
@@ -673,6 +763,7 @@ void vk_buf_frame_done(u64 frame) {
         }
         *pp = o->next;
         o->next = NULL;
+        if (g_perf_compare == 2) o->wdepth = g_walk_depth + 1; /* in this call's list, out of g_out */
         if (done_tail)
             done_tail->next = o;
         else
@@ -684,9 +775,11 @@ void vk_buf_frame_done(u64 frame) {
     g_gfx_any = g_out != NULL || done != NULL;
     VmaAllocation invalidated = VK_NULL_HANDLE;
     g_out_landing++;
+    if (g_perf_compare == 2) g_walk_depth++;
     while (done) {
         GfxOut* o = done;
         done = o->next;
+        walk_remove(o); /* it leaves the lists: no walk meets it now, a nested landing's neither */
         u64 t = g_perf_times ? plat_ns() : 0, ns[PCL_STEPS] = {0}, walk[PCW_N] = {0}, runs_t = 0; /* PERF-27 */
         if (o->mem != invalidated) {
             if (!VK_OK(vmaInvalidateAllocation(g_vk.vma, o->mem, 0, VK_WHOLE_SIZE)))
@@ -738,6 +831,7 @@ void vk_buf_frame_done(u64 frame) {
         free(o);
     }
     g_out_landing--;
+    if (g_perf_compare == 2) g_walk_depth--;
     g_gfx_any = g_out != NULL;
 }
 /* At the frame's submit: its storage results are copied into host-cached memory (vk_stage_back), where landing them
@@ -1925,6 +2019,7 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
     else
         g_prep = o;
     g_prep_tail = o;
+    walk_add(o);
     copy_note(gva, len);
     if (g_perf_times && g_perf_bind == PBK_XFB) cap_note(gva, len);
     if (g_perf_times)
@@ -2068,6 +2163,7 @@ static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, V
     else
         g_prep = o;
     g_prep_tail = o;
+    walk_add(o);
     out_wrote(); /* a result the draw writes (SNX_ARCEUS_PERF_INPLACE=3) */
     if (g_perf_times) vk_perf_made(PR_ATLAS);
     return 1;

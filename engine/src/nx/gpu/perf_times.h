@@ -548,7 +548,7 @@ extern int g_perf_query;
 /* SNX_ARCEUS_PERF_SAMPLE=1 (PERF-24): with write tracking a buffer's full check takes no sample (gpu/vk/buffer.c) */
 extern int g_perf_sample;
 /* SNX_ARCEUS_PERF_COMPARE (PERF-28, gpu/vk/buffer.c): 1, the release thread finds its results' changed runs outside
-   vk_lock (vk_buf_compare_ahead). 2, a landing's masked pass finds them */
+   vk_lock (vk_buf_compare_ahead). 2, a landing's masked pass finds them, and its walk goes through a page index */
 extern int g_perf_compare;
 /* SNX_ARCEUS_PATCH_HASH=1: a patched own buffer takes the next full check as changed (gpu/vk/buffer.c) */
 extern int g_patch_hash;

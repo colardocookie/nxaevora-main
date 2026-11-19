@@ -13,9 +13,10 @@ The pick's gates: none with vk_lock already held or the mark set, nothing picked
 on another thread until it is cleared. Each with SNX_ARCEUS_PERF_LANDING unset and at 3 (masked where the CPU has
 AVX-512BW), and with guest memory reached through a pointer and without one.
 
-Level 2 (PERF-28 1b) against level 0 on the same batches, with landing.c built portable: the runs from the write's
-own masked pass give the same bytes and the same rebases, also with a landing nested in a write and without memory.
-And vk_write_changed_found's answer by path.
+Level 2 (PERF-28 1b and 3) against level 0 on the same batches, with landing.c built portable: the runs from the
+write's own masked pass and the walk through the page index give the same bytes and the same rebases, also with a
+landing nested in a write and without memory. vk_write_changed_found's answer by path, and the index emptied by
+landings and by vk_buf_writable_abort.
 
 Run: python3 tests/vulkan_compare.py [compiler and flags], for example
     python3 tests/vulkan_compare.py clang -std=gnu11 -O2 -fsanitize=address,undefined
@@ -216,6 +217,7 @@ static void build(u32 seed, int n) {
     g_out = g_out_tail = NULL;
     for (int i = 0; i < n; i++) {
         GfxOut* o = make(&s, 1 + (u64)i * FRAMES / n);
+        walk_add(o); /* level 2's index, as at the append to g_prep */
         if (g_out_tail)
             g_out_tail->next = o;
         else
@@ -426,8 +428,9 @@ static void check_stale(void) {
     free_owned();
     g_perf_compare = 0;
 }
-/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 1b, research 22:33): the runs from the write's masked pass, against level 0 on
-   the same batches: the same guest bytes, calls and original bytes after every landing, and the same rebases. landing.c is built portable here (no AVX-512BW on the host), so the masked pass is its scalar
+/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 1b and 3, research 22:33): the runs from the write's masked pass and the walk
+   through the page index, against level 0 on the same batches: the same guest bytes, calls and original bytes after
+   every landing. landing.c is built portable here (no AVX-512BW on the host), so the masked pass is its scalar
    twin, which tells the same words (vulkan_landing tests the real one against it). With nest, every write has a
    landing nested in it that fills g_chg with another result's runs, and the write's own runs must be dropped */
 static uint64_t take64(uint64_t* v) { return __atomic_exchange_n(v, 0, __ATOMIC_RELAXED); }
@@ -445,6 +448,11 @@ static u64 take_met(void) {
     u64 m = 0;
     for (int k = 0; k < 2; k++) m += take64(&g_perf_caps.walk[k][PCW_MET]);
     return m;
+}
+static int index_empty(void) {
+    for (u32 i = 0; i < WALK_BUCKETS; i++)
+        if (g_walk[i]) return 0;
+    return 1;
 }
 static void check_level2(void) {
     u32 trials = 0;
@@ -489,12 +497,12 @@ static void check_level2(void) {
                         found += take64(&g_perf_caps.walk[k][PCW_FOUND]),
                             runs += take64(&g_perf_caps.walk[k][PCW_RUNS]);
                     const u64 met2 = take_met();
-                    assert(met2 == met0); /* the same rebases as level 0 */
+                    assert(met2 == met0); /* the index rebases exactly the results the whole walk meets */
                     met += met2;
                     assert(!memcmp(guest, guest0, GUEST));
                     assert(ncalls == ncalls0 && !memcmp(calls, calls0, sizeof calls[0] * ncalls));
                     assert(norgs == norgs0 && !memcmp(orgs, orgs0, sizeof orgs[0] * norgs));
-                    assert(!t_depth && !result_depth && !g_chg_for);
+                    assert(!t_depth && !result_depth && !g_chg_for && index_empty());
                     trials++;
                 }
     g_perf_compare = 0, g_perf_landing = 0, g_landing_masked = 0, direct = 1;
@@ -502,9 +510,9 @@ static void check_level2(void) {
     free(nest_other);
     free_owned();
     printf("vulkan_compare: level 2, %u batches the same, %llu runs found by the write, %llu changed runs, %llu "
-           "rebased\n", trials, (unsigned long long)found, (unsigned long long)runs,
+           "rebased through the index\n", trials, (unsigned long long)found, (unsigned long long)runs,
            (unsigned long long)met);
-    assert(found > 5000 && runs > 20000 && met > 1000);
+    assert(found > 5000 && runs > 20000 && met > 1000 && !g_walk_lost);
 }
 /* vk_write_changed_found's answer (condition iii and ii): 1 with no run for a result that changed nothing, 1 with
    out_changed_runs' runs through the whole-size masked pass, 0 through the byte loop or without a host pointer */
@@ -537,7 +545,8 @@ static void check_found(void) {
     g_perf_landing = 0, g_landing_masked = 0, direct = 1;
     free_owned();
 }
-/* without memory for the runs: every byte a candidate, and the bytes of level 0 without memory either */
+/* without memory for the runs, the index or the walk's list: every byte a candidate, the whole walk, and the bytes
+   of level 0 without memory either */
 static void check_lost(void) {
     if (g_chg != g_chg_first) free(g_chg); /* back to its first 64 runs, so that growing it fails */
     g_chg = g_chg_first, g_capchg = 64;
@@ -559,8 +568,46 @@ static void check_lost(void) {
         land_all(seed, 0);
         alloc_fails = 0;
         assert(!memcmp(guest, guest0, GUEST) && norgs == norgs0 && !memcmp(orgs, orgs0, sizeof orgs[0] * norgs));
+        assert(index_empty());
+        g_walk_lost = 0;
     }
     g_perf_compare = 0, g_perf_landing = 0, g_landing_masked = 0;
+}
+/* two pages in one bucket of the index: a result on the other page is not visited */
+static void check_collide(void) {
+    g_perf_compare = 2;
+    build(21, 0);
+    u32 s = 3;
+    GfxOut *e = make(&s, 1), *o = make(&s, 2);
+    u64 q = e->pages[0] + 1;
+    while (walk_bucket(q) != walk_bucket(e->pages[0])) q++;
+    o->composed = 1, o->npages = 1, o->pages[0] = q;
+    walk_add(o);
+    e->npages = 1;
+    u64 walk[PCW_N] = {0};
+    assert(walk_index(e, walk) && walk[PCW_MET] == 0);
+    walk_remove(o);
+    assert(index_empty());
+    free(e), free(o);
+    free_owned();
+    g_perf_compare = 0;
+}
+/* a result dropped before it is committed leaves the index too */
+static void check_abort(void) {
+    g_perf_compare = 2;
+    build(3, 0);
+    u32 s = 5;
+    for (int i = 0; i < 20; i++) {
+        GfxOut* o = make(&s, 2);
+        o->composed = 1;
+        walk_add(o);
+        o->next = g_prep, g_prep = o;
+    }
+    assert(!index_empty());
+    vk_buf_writable_abort();
+    assert(!g_prep && index_empty());
+    free_owned();
+    g_perf_compare = 0;
 }
 int main(void) {
     alarm(120); /* a mark never cleared hangs a landing: fail instead (reviewer N3) */
@@ -572,6 +619,8 @@ int main(void) {
     check_level2();
     check_found();
     check_lost();
+    check_collide();
+    check_abort();
     printf("vulkan_compare: all checks passed\n");
     return 0;
 }
@@ -583,7 +632,10 @@ def main():
     writeback = (SRC / "nx/gpu/vk/writeback.c").read_text()
     body = HEAD + "#define malloc test_malloc\n#define realloc test_realloc\n"
     body += between(buffer, "typedef struct GfxOut {", "} GfxOut;") + "} GfxOut;\n"
-    body += "static GfxOut *g_prep, *g_out, *g_out_tail;\n"
+    body += "static GfxOut *g_prep, *g_prep_tail, *g_out, *g_out_tail;\n"
+    body += between(buffer, "/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 3): the composed results not landed yet",
+                    "/* e has landed")
+    body += function(buffer, "void vk_buf_writable_abort(void) {")
     body += between(buffer, "static ChgRun g_chg_first[64];", "/* whether e's w bytes")
     body += between(buffer, "typedef void (*SpanFn)", "/* the run of R's page")
     body += function(buffer, "static int page_cmp(const void* a, const void* b) {")
@@ -600,6 +652,7 @@ def main():
     for sig in ("static u32 out_changed_runs(", "static void rebase_bytes(", "static void rebase_span(",
                 "static void out_rebase(const GfxOut* e, GfxOut* o) {"):
         body += function(buffer, sig)
+    body += between(buffer, "static GfxOut** g_wcand;", "/* the composed results recorded after e")
     for sig in ("static void out_rebase_later(", "static void cap_step("):
         body += function(buffer, sig)
     body += between(buffer, "static GfxOut** g_pick;", "/* o's changed runs")
