@@ -42,5 +42,20 @@ uint64_t landing_masked(const uint8_t* res, const uint8_t* org, uint8_t* dst, ui
                         LandingPut note, void* ctx);
 /* note told the span of the 64-bit mask m's set bits, lowest to highest, as bytes from at: nothing when none */
 void landing_note_mask(uint64_t m, uint32_t at, LandingPut note, void* ctx);
+/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 1b): landing_masked, and chg told the changed 8-byte words of res, counted from
+   byte 0 with a shorter last word, where res differs from org whatever dst holds. Maximal runs in order, [from,
+   from + n): the runs buffer.c's out_changed_runs finds. Off x86 the same, found a word at a time */
+uint64_t landing_masked_chg(const uint8_t* res, const uint8_t* org, uint8_t* dst, uint32_t size, LandingPut put,
+                            LandingPut note, void* ctx, LandingPut chg, void* chg_ctx);
+/* the changed words of one 64-byte step at k from m, its bits where res differs from org, then those of [k, size)
+   word by word with the run open at size put: the two halves of landing_masked_chg's words, for the tests */
+typedef struct {
+    LandingPut chg;
+    void* ctx;
+    uint32_t from;
+    int open;
+} LandingWords;
+void landing_words_step(LandingWords* w, uint64_t m, uint32_t k);
+void landing_words_tail(LandingWords* w, const uint8_t* res, const uint8_t* org, uint32_t k, uint32_t size);
 
 #endif

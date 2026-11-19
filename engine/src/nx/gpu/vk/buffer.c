@@ -422,9 +422,38 @@ static int word_changed(const GfxOut* e, u32 k, u32 w) {
     /* SNX_ARCEUS_PERF_LANDING: a whole word in one compare, not a library call */
     return g_perf_landing ? landing_differs(e->ptr + k, e->org + k, w) : memcmp(e->ptr + k, e->org + k, w) != 0;
 }
+/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 1b): the result whose changed runs its own write put in g_chg (chg_put), until
+   out_changed_runs takes them. g_chg_gen counts every filling of g_chg, so that a landing nested in the write (a
+   render target it flushes) shows. g_chg_lost: no memory for a run, so every byte is a candidate */
+static const GfxOut* g_chg_for;
+static u32 g_chg_gen;
+static int g_chg_lost;
+static void chg_put(void* ctx, u32 from, u32 n) {
+    (void)ctx;
+    if (g_chg_lost) return;
+    if (g_nchg == g_capchg) {
+        const u32 cap = g_capchg * 2;
+        ChgRun* b = g_chg == g_chg_first ? malloc((size_t)cap * sizeof *b) : realloc(g_chg, (size_t)cap * sizeof *b);
+        if (!b) {
+            g_chg_lost = 1;
+            return;
+        }
+        if (g_chg == g_chg_first) memcpy(b, g_chg_first, sizeof g_chg_first);
+        g_chg = b;
+        g_capchg = cap;
+    }
+    g_chg[g_nchg++] = (ChgRun){from, from + n};
+}
 /* e's changed runs into g_chg: 0 when none, or with no memory for them (every byte is a candidate then, one run) */
 static u32 out_changed_runs(const GfxOut* e) {
     u32 k = 0;
+    if (g_chg_for == e) { /* found by e's write, from the same bytes: nothing changed e's since (PERF-28 1b) */
+        g_chg_for = NULL;
+        if (g_chg_lost) g_chg[0] = (ChgRun){0, e->size}, g_nchg = 1;
+        return g_nchg;
+    }
+    g_chg_for = NULL;
+    g_chg_gen++;
     g_nchg = 0;
     if (e->runs_ok && !e->stale) { /* SNX_ARCEUS_PERF_COMPARE: found before its landing, from the same bytes */
         u32 cap = g_capchg;
@@ -522,8 +551,9 @@ static void out_rebase(const GfxOut* e, GfxOut* o) {
    (PCW_*) */
 static void out_rebase_later(const GfxOut* e, GfxOut* rest, u64* runs_ns, u64* walk) {
     GfxOut* lists[3] = {rest, g_out, g_prep};
+    const int found = g_chg_for == e;
     const u32 runs = out_changed_runs(e);
-    if (walk) *runs_ns = plat_ns();
+    if (walk) *runs_ns = plat_ns(), walk[PCW_RUNS] += runs, walk[PCW_FOUND] += found;
     if (!runs) return; /* it changed nothing: memory has what every later one took as original */
     for (int l = 0; l < 3; l++)
         for (GfxOut* o = lists[l]; o; o = o->next) {
@@ -634,7 +664,7 @@ static int g_ww;
 static int written_since_gva(u64 gva, u64 len, u32 since);
 void vk_buf_frame_done(u64 frame) {
     GfxOut *done = NULL, *done_tail = NULL;
-    if (g_perf_compare) pick_wait(); /* PERF-28, before g_out is read */
+    if (g_perf_compare == 1) pick_wait(); /* PERF-28, before g_out is read */
     for (GfxOut** pp = &g_out; *pp;) {
         GfxOut* o = *pp;
         if (o->frame != frame) {
@@ -670,9 +700,15 @@ void vk_buf_frame_done(u64 frame) {
             o->initial = NULL;
         }
         if (t) cap_step(&t, ns, PCL_INVALIDATE);
-        if (o->runs_ok && !o->stale) /* SNX_ARCEUS_PERF_COMPARE */
+        if (o->runs_ok && !o->stale) /* SNX_ARCEUS_PERF_COMPARE=1 */
             vk_write_changed_runs(o->addr, o->ptr, o->org, o->size, o->runs, o->nruns);
-        else
+        else if (g_perf_compare == 2) { /* 1b: the write's own pass finds the changed runs, unless a landing nested */
+            const u32 gen = ++g_chg_gen; /* every filling of g_chg counts, a nested one of this kind too */
+            g_nchg = 0;
+            g_chg_lost = 0;
+            if (vk_write_changed_found(o->addr, o->ptr, o->org, o->size, chg_put, NULL) && g_chg_gen == gen)
+                g_chg_for = o;
+        } else
             vk_write_changed(o->addr, o->ptr, o->org, o->size);
         if (t) cap_step(&t, ns, PCL_WRITE);
         out_pages(o, -1);

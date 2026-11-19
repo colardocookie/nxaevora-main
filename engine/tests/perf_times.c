@@ -732,7 +732,8 @@ static void test_caps(void) {
     CHECK(c.count[PCN_LOST] == 5 && c.ncur == PERF_CAP_MAX);
     perf_caps_frame_end(&c);
     CHECK(c.count[PCN_ABUT] == 2 + PERF_CAP_MAX - 1 && c.count[PCN_OVERLAP] == 2 && c.count[PCN_APART] == 3);
-    const uint64_t ns[PCL_STEPS] = {1000000, 2000000, 3000000, 4000000, 5000000, 6000000}, walk[PCW_N] = {600, 60, 6};
+    const uint64_t ns[PCL_STEPS] = {1000000, 2000000, 3000000, 4000000, 5000000, 6000000},
+                   walk[PCW_N] = {600, 60, 6, 1200, 2};
     perf_caps_landed(&c, 1, ns, walk);
     perf_caps_landed(&c, 1, ns, walk);
     perf_caps_landed(&c, 0, ns, walk);
@@ -746,8 +747,8 @@ static void test_caps(void) {
     CHECK(strstr(line, "perf-captures: frames=2 (") && strlen(line) < sizeof line - 1);
     CHECK(strstr(line, ") captures="));
     CHECK(strstr(line, " lost=2.5 "));
-    CHECK(strstr(line, " release=1.0 ms=1.000/2.000/3.000/4.000/5.000/6.000 walk=600.0/60.0/6.0 "));
-    CHECK(strstr(line, " elsewhere=0.5 ms=0.500/1.000/1.500/2.000/2.500/3.000 walk=300.0/30.0/3.0 "));
+    CHECK(strstr(line, " release=1.0 ms=1.000/2.000/3.000/4.000/5.000/6.000 walk=600.0/60.0/6.0/1200.0/2.0 "));
+    CHECK(strstr(line, " elsewhere=0.5 ms=0.500/1.000/1.500/2.000/2.500/3.000 walk=300.0/30.0/3.0/600.0/1.0 "));
     CHECK(strstr(line, " hold=1.000/2.000/3.000 holds=0.5 picked=200.0 ms=0.500/2.000 stale=0.5 waits=1.0 ms=1.000"));
     perf_caps_line(&c, 2, line, sizeof line); /* the window starts again */
     CHECK(strstr(line, " captures=0.0 lost=0.0 ") && strstr(line, " release=0.0 ms=0.000/") &&

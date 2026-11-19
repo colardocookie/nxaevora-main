@@ -498,7 +498,9 @@ enum { PCN_RANGES, PCN_LOST, PCN_DISTINCT, PCN_OVERLAP, PCN_ABUT, PCN_PAGE, PCN_
 /* a result's landing by step: invalidate, compare and write the changed bytes, unmark its pages, find its changed runs
    for the rebase, walk the later results, the rest */
 enum { PCL_INVALIDATE, PCL_WRITE, PCL_PAGES, PCL_RUNS, PCL_WALK, PCL_OTHER, PCL_STEPS };
-enum { PCW_VISITED, PCW_COMPOSED, PCW_MET, PCW_N }; /* the walk: results passed, composed ones asked, met and rebased */
+/* the walk: results passed, composed ones asked, met and rebased. Then the landed result's changed runs, and 1 when its
+   own write found them (SNX_ARCEUS_PERF_COMPARE=2) */
+enum { PCW_VISITED, PCW_COMPOSED, PCW_MET, PCW_RUNS, PCW_FOUND, PCW_N };
 enum { PCH_COMPUTE, PCH_GRAPHICS, PCH_RELEASES, PCH_N }; /* the release thread's hold by part, end to end */
 /* SNX_ARCEUS_PERF_COMPARE (PERF-28): results picked, their pick under vk_lock and their runs found outside it (ns),
    picked ones whose runs a rebase made stale at their landing, and the landings that waited for the mark (and ns) */
@@ -545,8 +547,8 @@ extern int g_perf_inplace;
 extern int g_perf_query;
 /* SNX_ARCEUS_PERF_SAMPLE=1 (PERF-24): with write tracking a buffer's full check takes no sample (gpu/vk/buffer.c) */
 extern int g_perf_sample;
-/* SNX_ARCEUS_PERF_COMPARE=1 (PERF-28): the release thread finds its results' changed runs outside vk_lock
-   (gpu/vk/buffer.c vk_buf_compare_ahead) */
+/* SNX_ARCEUS_PERF_COMPARE (PERF-28, gpu/vk/buffer.c): 1, the release thread finds its results' changed runs outside
+   vk_lock (vk_buf_compare_ahead). 2, a landing's masked pass finds them */
 extern int g_perf_compare;
 /* SNX_ARCEUS_PATCH_HASH=1: a patched own buffer takes the next full check as changed (gpu/vk/buffer.c) */
 extern int g_patch_hash;

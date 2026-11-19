@@ -878,6 +878,10 @@ typedef struct {
 /* SNX_ARCEUS_PERF_COMPARE (PERF-28): vk_write_changed over the words of the result's n changed runs only, found
    before (out_changed_runs' merged runs): the same bytes, by the same rule, since a changed byte lies in one */
 void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, const ChgRun* runs, u32 n);
+/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 1b): vk_write_changed, and chg told the result's changed runs as
+   landing_masked_chg finds them. 1 when it was told them all (nothing changed, or the whole-size masked pass ran) */
+int vk_write_changed_found(u64 addr, const u8* res, const u8* org, u32 size, void (*chg)(void* ctx, u32 from, u32 n),
+                           void* ctx);
 /* 1 if [host, host+len) was written since the write-tracking clock read `since`, 0 if not, -1 when write tracking
    can't tell (no host pointer, or not available): then check the contents */
 int vk_written_since(const u8* host, u64 len, u32 since);

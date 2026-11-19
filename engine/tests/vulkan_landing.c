@@ -3,7 +3,8 @@
 /* PERF-1 (gpu/vk/landing.c) against the byte loops it replaces: out_changed_runs' word test (buffer.c) and
    vk_write_changed's walk (writeback.c), copied here as they are with SNX_ARCEUS_PERF_LANDING unset. The same runs,
    and the same bytes in guest memory, on random and edge inputs. Level 3's landing_masked: the same bytes and the
-   same count, run only where the CPU and OS have AVX-512BW. And the same, landed run by run (PERF-28). */
+   same count, run only where the CPU and OS have AVX-512BW. And the same, landed run by run (PERF-28), and the
+   changed words the masked pass tells at SNX_ARCEUS_PERF_COMPARE=2. */
 #include "nx/gpu/vk/landing.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -484,6 +485,54 @@ static void test_runs(void) {
         }
     }
 }
+/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 1b): the changed words landing_masked_chg tells are the runs changed_runs finds
+   (buffer.c's word test). Through its two halves, each step's mask made in scalar code, so the rule is tested where
+   AVX-512BW is missing too. Where it runs, through landing_masked_chg itself, with the bytes and count of
+   landing_masked. Sizes off 8 and 64, nothing changed, changes at the head, the tail and the last short word */
+typedef struct {
+    Run runs[MAX];
+    uint32_t count;
+} Told;
+static void tell(void* ctx, uint32_t from, uint32_t n) {
+    Told* t = ctx;
+    if (t->count < MAX) t->runs[t->count++] = (Run){from, n};
+}
+static uint64_t ne_mask(const uint8_t* a, const uint8_t* b) {
+    uint64_t m = 0;
+    for (unsigned j = 0; j < 64; j++) m |= (uint64_t)(a[j] != b[j]) << j;
+    return m;
+}
+static void test_chg(void) {
+    static const int densities[] = {0, 1, 20, 300, 1000};
+    static Run want[MAX];
+    static Told told;
+    unsigned tried = 0, with_runs = 0;
+    for (unsigned round = 0; round < 4000; round++) {
+        const uint32_t size = round % 7 == 0 ? 64 * (1 + rnd() % 8) : round % 3 ? 1 + rnd() % 5000 : 1 + rnd() % 200;
+        fill(size, densities[round % 5], (int)(round / 5 % 2));
+        if (round % 4 == 1) res[0] ^= 0x80;
+        if (round % 4 == 2) res[size - 1] ^= 0x80;
+        if (round % 4 == 3 && size > 9) res[size - 1 - rnd() % 9] ^= 0x41;
+        const uint32_t n = changed_runs(res, org, size, 1, want);
+        told.count = 0;
+        LandingWords w = {tell, &told, 0, 0};
+        uint32_t k = 0;
+        for (; size - k >= 64; k += 64) landing_words_step(&w, ne_mask(res + k, org + k), k);
+        landing_words_tail(&w, res, org, k, size);
+        CHECK(told.count == n && !memcmp(told.runs, want, n * sizeof *want));
+        tried++, with_runs += n != 0;
+        if (!masked) continue;
+        memcpy(old_dst, guest, size);
+        memcpy(new_dst, guest, size);
+        At a = {old_dst, res}, b = {new_dst, res};
+        told.count = 0;
+        const uint64_t plain = landing_masked(res, org, old_dst, size, at_put, NULL, &a);
+        const uint64_t chg = landing_masked_chg(res, org, new_dst, size, at_put, NULL, &b, tell, &told);
+        CHECK(plain == chg && !memcmp(old_dst, new_dst, size));
+        CHECK(told.count == n && !memcmp(told.runs, want, n * sizeof *want));
+    }
+    CHECK(tried == 4000 && with_runs > 2000 && with_runs < tried);
+}
 int main(void) {
     masked = landing_masked_supported();
     printf("vulkan_landing: level 3's masked path %s\n", masked ? "RUNS (AVX-512BW)" : "skipped: no AVX-512BW here");
@@ -495,6 +544,7 @@ int main(void) {
     test_random();
     test_masks();
     test_runs();
+    test_chg();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

@@ -930,10 +930,12 @@ int snx_main(int argc, char** argv) {
             LOG("perf-sample: EXPERIMENT on, with write tracking a buffer's full check takes no sampled hash (only the "
                 "check without write tracking reads one)\n");
         const char* compare = getenv("SNX_ARCEUS_PERF_COMPARE"); /* bench only (gpu/perf_times.h, PERF-28) */
-        g_perf_compare = compare && !strcmp(compare, "1");
-        if (g_perf_compare)
+        g_perf_compare = compare && !strcmp(compare, "1") ? 1 : compare && !strcmp(compare, "2") ? 2 : 0;
+        if (g_perf_compare == 1)
             LOG("perf-compare: EXPERIMENT on, the release thread finds its finished results' changed runs outside "
                 "vk_lock, before its hold\n");
+        if (g_perf_compare == 2)
+            LOG("perf-compare: EXPERIMENT level 2, a landing's whole-size masked pass finds its changed runs\n");
         const char* patch_hash = getenv("SNX_ARCEUS_PATCH_HASH"); /* a fix, off by default (gpu/vk/buffer.c) */
         g_patch_hash = patch_hash && !strcmp(patch_hash, "1");
         if (g_patch_hash)

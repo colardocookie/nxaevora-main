@@ -13,6 +13,10 @@ The pick's gates: none with vk_lock already held or the mark set, nothing picked
 on another thread until it is cleared. Each with SNX_ARCEUS_PERF_LANDING unset and at 3 (masked where the CPU has
 AVX-512BW), and with guest memory reached through a pointer and without one.
 
+Level 2 (PERF-28 1b) against level 0 on the same batches, with landing.c built portable: the runs from the write's
+own masked pass give the same bytes and the same rebases, also with a landing nested in a write and without memory.
+And vk_write_changed_found's answer by path.
+
 Run: python3 tests/vulkan_compare.py [compiler and flags], for example
     python3 tests/vulkan_compare.py clang -std=gnu11 -O2 -fsanitize=address,undefined
 """
@@ -107,7 +111,12 @@ static void note(u64 kind, u64 a, u64 n) {
     assert(ncalls < sizeof calls / sizeof *calls);
     calls[ncalls][0] = kind, calls[ncalls][1] = a, calls[ncalls][2] = n, ncalls++;
 }
-static void vk_rt_before_write(u64 a, u64 n) { note(1, a, n); }
+/* a landing nested in a write's render target flush, as out_changed_runs for another result (level 2's guard) */
+static void (*nested)(void);
+static void vk_rt_before_write(u64 a, u64 n) {
+    note(1, a, n);
+    if (nested) nested();
+}
 static void gpu_mem_written_shader(u64 a, u64 n) { note(2, a, n); }
 static void gpu_mem_landed(u64 a, u64 n) { (void)a, (void)n; }
 /* the longest compare the copied code makes, to see a landing that compares a whole result again (reviewer N1) */
@@ -117,6 +126,10 @@ static int counted_memcmp(const void* a, const void* b, size_t n) {
     return memcmp(a, b, n);
 }
 #define memcmp counted_memcmp
+/* allocations that fail on request after the first n, for the paths without memory */
+static int alloc_fails;
+static void* test_malloc(size_t n) { return alloc_fails ? NULL : malloc(n); }
+static void* test_realloc(void* p, size_t n) { return alloc_fails ? NULL : realloc(p, n); }
 static unsigned result_depth;
 static void vk_result_begin(void) { result_depth++; }
 static void vk_result_end(void) { result_depth--; }
@@ -413,6 +426,142 @@ static void check_stale(void) {
     free_owned();
     g_perf_compare = 0;
 }
+/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 1b, research 22:33): the runs from the write's masked pass, against level 0 on
+   the same batches: the same guest bytes, calls and original bytes after every landing, and the same rebases. landing.c is built portable here (no AVX-512BW on the host), so the masked pass is its scalar
+   twin, which tells the same words (vulkan_landing tests the real one against it). With nest, every write has a
+   landing nested in it that fills g_chg with another result's runs, and the write's own runs must be dropped */
+static uint64_t take64(uint64_t* v) { return __atomic_exchange_n(v, 0, __ATOMIC_RELAXED); }
+static GfxOut* nest_other;
+static void nest_runs(void) { (void)out_changed_runs(nest_other); }
+/* or a whole later frame landing inside the write, once: a level 2 landing nested in one */
+static int nesting;
+static void nest_frame(void) {
+    if (nesting || !g_out) return;
+    nesting = 1;
+    vk_buf_frame_done(g_out->frame);
+    nesting = 0;
+}
+static u64 take_met(void) {
+    u64 m = 0;
+    for (int k = 0; k < 2; k++) m += take64(&g_perf_caps.walk[k][PCW_MET]);
+    return m;
+}
+static void check_level2(void) {
+    u32 trials = 0;
+    u64 found = 0, runs = 0, met = 0;
+    u32 t = 99;
+    nest_other = make(&t, 1);
+    nest_other->size = 4096, nest_other->ptr = malloc(4096); /* not owned: it outlives every batch */
+    nest_other = realloc(nest_other, sizeof *nest_other + 2 * 8 * nest_other->npages + 4096);
+    nest_other->pages = (u64*)(nest_other + 1), nest_other->vmap = nest_other->pages + nest_other->npages;
+    nest_other->org = (u8*)(nest_other->vmap + nest_other->npages);
+    for (u32 k = 0; k < 4096; k++) nest_other->org[k] = 0, nest_other->ptr[k] = (k / 8) % 2; /* a run a word apart */
+    for (int k = 0; k < 2; k++)
+        for (int i = 0; i < PCW_N; i++) (void)take64(&g_perf_caps.walk[k][i]);
+    for (int nest = 0; nest < 3; nest++)
+        for (int landing = 0; landing < 2; landing++)
+            for (direct = 1; direct >= 0; direct--)
+                for (u32 seed = 1; seed <= 150; seed++) {
+                    g_perf_landing = landing ? 3 : 0;
+                    g_landing_masked = landing; /* the portable pass in place of AVX-512BW */
+                    const int n = 2 + (int)(seed % 40);
+                    nested = nest == 2 ? nest_frame : NULL; /* the same nested landing in both */
+                    g_perf_compare = 0;
+                    g_perf_times = 1;
+                    (void)take_met();
+                    build(seed, n);
+                    ncalls = norgs = 0;
+                    land_all(seed, 0);
+                    const u64 met0 = take_met(); /* the whole walk's rebases */
+                    memcpy(guest0, guest, GUEST);
+                    memcpy(calls0, calls, sizeof calls[0] * ncalls);
+                    memcpy(orgs0, orgs, sizeof orgs[0] * norgs);
+                    ncalls0 = ncalls, norgs0 = norgs;
+                    g_perf_compare = 2;
+                    g_perf_times = 1;
+                    nested = nest == 1 ? nest_runs : nest == 2 ? nest_frame : NULL;
+                    build(seed, n);
+                    ncalls = norgs = 0;
+                    land_all(seed, 0);
+                    nested = NULL;
+                    g_perf_times = 0;
+                    for (int k = 0; k < 2; k++)
+                        found += take64(&g_perf_caps.walk[k][PCW_FOUND]),
+                            runs += take64(&g_perf_caps.walk[k][PCW_RUNS]);
+                    const u64 met2 = take_met();
+                    assert(met2 == met0); /* the same rebases as level 0 */
+                    met += met2;
+                    assert(!memcmp(guest, guest0, GUEST));
+                    assert(ncalls == ncalls0 && !memcmp(calls, calls0, sizeof calls[0] * ncalls));
+                    assert(norgs == norgs0 && !memcmp(orgs, orgs0, sizeof orgs[0] * norgs));
+                    assert(!t_depth && !result_depth && !g_chg_for);
+                    trials++;
+                }
+    g_perf_compare = 0, g_perf_landing = 0, g_landing_masked = 0, direct = 1;
+    free(nest_other->ptr);
+    free(nest_other);
+    free_owned();
+    printf("vulkan_compare: level 2, %u batches the same, %llu runs found by the write, %llu changed runs, %llu "
+           "rebased\n", trials, (unsigned long long)found, (unsigned long long)runs,
+           (unsigned long long)met);
+    assert(found > 5000 && runs > 20000 && met > 1000);
+}
+/* vk_write_changed_found's answer (condition iii and ii): 1 with no run for a result that changed nothing, 1 with
+   out_changed_runs' runs through the whole-size masked pass, 0 through the byte loop or without a host pointer */
+static ChgRun told[1 << 12];
+static u32 ntold;
+static void tell(void* ctx, u32 from, u32 n) {
+    (void)ctx;
+    assert(ntold < sizeof told / sizeof *told);
+    told[ntold++] = (ChgRun){from, from + n};
+}
+static void check_found(void) {
+    u32 s = 17, cases[4] = {0};
+    build(13, 0);
+    for (int round = 0; round < 400; round++) {
+        GfxOut* o = make(&s, 1);
+        const int unchanged = !memcmp(o->ptr, o->org, o->size), how = round % 4; /* 3: level 3 without AVX-512BW */
+        g_perf_landing = how ? 3 : 0, g_landing_masked = how == 1 || how == 2, direct = how != 2;
+        ntold = 0;
+        const int r = vk_write_changed_found(o->addr, o->ptr, o->org, o->size, tell, NULL);
+        const u32 want = out_changed_runs(o); /* into g_chg, with nothing put there for o */
+        if (unchanged)
+            assert(r == 1 && !ntold && !want), cases[0]++;
+        else if (how == 1)
+            assert(r == 1 && ntold == want && !memcmp(told, g_chg, want * sizeof *told)), cases[1]++;
+        else
+            assert(r == 0), cases[how == 3 ? 3 : 2]++;
+        free(o);
+    }
+    assert(cases[0] && cases[1] > 50 && cases[2] > 50 && cases[3] > 50);
+    g_perf_landing = 0, g_landing_masked = 0, direct = 1;
+    free_owned();
+}
+/* without memory for the runs: every byte a candidate, and the bytes of level 0 without memory either */
+static void check_lost(void) {
+    if (g_chg != g_chg_first) free(g_chg); /* back to its first 64 runs, so that growing it fails */
+    g_chg = g_chg_first, g_capchg = 64;
+    for (u32 seed = 1; seed <= 150; seed++) {
+        g_perf_landing = 3, g_landing_masked = 1;
+        g_perf_compare = 0;
+        build(seed, 30);
+        ncalls = norgs = 0;
+        alloc_fails = 1;
+        land_all(seed, 0);
+        alloc_fails = 0;
+        memcpy(guest0, guest, GUEST);
+        memcpy(orgs0, orgs, sizeof orgs[0] * norgs);
+        norgs0 = norgs;
+        g_perf_compare = 2;
+        build(seed, 30);
+        ncalls = norgs = 0;
+        alloc_fails = 1;
+        land_all(seed, 0);
+        alloc_fails = 0;
+        assert(!memcmp(guest, guest0, GUEST) && norgs == norgs0 && !memcmp(orgs, orgs0, sizeof orgs[0] * norgs));
+    }
+    g_perf_compare = 0, g_perf_landing = 0, g_landing_masked = 0;
+}
 int main(void) {
     alarm(120); /* a mark never cleared hangs a landing: fail instead (reviewer N3) */
     check_same();
@@ -420,6 +569,9 @@ int main(void) {
     check_race();
     check_gates();
     check_wait();
+    check_level2();
+    check_found();
+    check_lost();
     printf("vulkan_compare: all checks passed\n");
     return 0;
 }
@@ -429,7 +581,7 @@ int main(void) {
 def main():
     buffer = (SRC / "nx/gpu/vk/buffer.c").read_text()
     writeback = (SRC / "nx/gpu/vk/writeback.c").read_text()
-    body = HEAD
+    body = HEAD + "#define malloc test_malloc\n#define realloc test_realloc\n"
     body += between(buffer, "typedef struct GfxOut {", "} GfxOut;") + "} GfxOut;\n"
     body += "static GfxOut *g_prep, *g_out, *g_out_tail;\n"
     body += between(buffer, "static ChgRun g_chg_first[64];", "/* whether e's w bytes")
@@ -437,26 +589,31 @@ def main():
     body += function(buffer, "static int page_cmp(const void* a, const void* b) {")
     body += function(writeback, "static int in_guest(")
     body += between(writeback, "typedef struct {\n    u64 addr;", "static void landing_put(")
-    for sig in ("static void landing_put(", "static void landing_note(", "static void write_changed(",
-                "void vk_write_changed(", "void vk_write_changed_runs("):
+    for sig in ("static void landing_put(", "static void landing_note(", "static int write_changed(",
+                "void vk_write_changed(", "void vk_write_changed_runs(", "int vk_write_changed_found("):
         body += function(writeback, sig)
     body += between(buffer, "typedef struct {\n    const GfxOut* e;", "/* the changed bytes of e's")
     for sig in ("static void out_span_page(", "static void out_spans(", "static int pages_meet(",
-                "static int word_changed(", "static u32 out_changed_runs(", "static void rebase_bytes(",
-                "static void rebase_span(", "static void out_rebase(const GfxOut* e, GfxOut* o) {",
-                "static void out_rebase_later(", "static void cap_step("):
+                "static int word_changed("):
+        body += function(buffer, sig)
+    body += between(buffer, "/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 1b): the result whose", "/* e's changed runs into")
+    for sig in ("static u32 out_changed_runs(", "static void rebase_bytes(", "static void rebase_span(",
+                "static void out_rebase(const GfxOut* e, GfxOut* o) {"):
+        body += function(buffer, sig)
+    for sig in ("static void out_rebase_later(", "static void cap_step("):
         body += function(buffer, sig)
     body += between(buffer, "static GfxOut** g_pick;", "/* o's changed runs")
     for sig in ("static void pick_runs(", "void vk_buf_compare_ahead(", "static void pick_wait(",
                 "void vk_buf_frame_done("):
         body += function(buffer, sig)
-    body += TESTS
+    body += "#undef malloc\n#undef realloc\n" + TESTS
     cc = sys.argv[1:] or ["cc", "-std=gnu11", "-O2"]
     with tempfile.TemporaryDirectory() as d:
         c = pathlib.Path(d) / "compare.c"
         c.write_text(body)
         exe = pathlib.Path(d) / "compare"
-        subprocess.run([*cc, "-I", str(SRC), "-Wall", "-Wno-unused-function", "-o", str(exe), str(c),
+        subprocess.run([*cc, "-I", str(SRC), "-DSNX_LANDING_PORTABLE", "-Wall", "-Wno-unused-function", "-o",
+                        str(exe), str(c),
                         str(SRC / "nx/gpu/vk/landing.c"), str(SRC / "nx/gpu/perf_times.c"), "-lpthread"], check=True)
         return subprocess.run([str(exe)]).returncode
 

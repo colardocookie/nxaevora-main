@@ -596,6 +596,9 @@ int main(void) {
     t_release_thread = 1;
     release_through(0, 0);
     assert(compare_calls == 1);
+    g_perf_compare = 2; /* level 2 picks nothing, on the release thread too */
+    release_through(0, 0);
+    assert(compare_calls == 1);
     t_release_thread = 0;
     g_perf_compare = 0;
     check_tail();
