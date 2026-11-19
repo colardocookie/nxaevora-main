@@ -9,7 +9,7 @@ stage does not start before that. The plan is a proposal until the user accepts 
 - The game calls NVN functions through a dispatch table. The NVN library is inside the game. It writes methods into
   push buffers, and the runtime reads them from the GPFIFO (`src/nx/gpu/maxwell/`, about the console GPU engines and
   the macros in `mme*.c`). The Vulkan side is in `src/nx/gpu/vk/` (`render.c`, `pipeline.c`, `record.c`, `surface.c`).
-- `nvn_trace=1` (`src/nx/gpu/nvn_trace.c`) already lists the NVN functions that the game resolves and counts the calls.
+- `nvn_trace=1` (`src/nx/gpu/nvn/diag/nvn_trace.c`) already lists the NVN functions that the game resolves and counts the calls.
   It wraps the dispatch table entries. It does not see direct branches, so its counts are lower bounds. Calls that the
   game makes without the table are not seen.
 - The translation of shader binaries (`src/nx/gpu/shader/`) and the pipeline cache are independent of the command
@@ -129,6 +129,10 @@ Content: textures, compute, synchronization (fences and events) and memory shari
 Exit condition: in the target scenes, the drawing and the behavior match the old path in a comparison, and each of the 523
 functions is implemented and checked as the coverage file says.
 
+Status (2026-11-14): both parts are true. The comparison of Obsidian Fieldlands and a battle by the draw record found no
+difference between the two paths (`nvn-design.md`, "Stage 4 compare: the draw record", "Result"). All 523 rows of the coverage
+file are `implemented` with a check or a reason (`nvn-unobserved.md`, 4-u3-5 and 4-u4).
+
 ## Stage 5: Measure performance and quality
 
 Content: CPU time, frame time and dropped draws, compared with the old path.
@@ -139,10 +143,13 @@ Content: CPU time, frame time and dropped draws, compared with the old path.
 
 Exit condition: the effect and the limits of the replacement are confirmed. Then decide if the old path is removed.
 
+Decided (2026-11-15): the old path is not removed. The native path is the default, and the debug setting
+`nvn_legacy=1` selects the old path for a comparison (the setting `nvn_native` is deprecated).
+
 ## Rules for all stages
 
 - The user runs and tests the game. After a run, the agent reads the files and reports.
 - A fix explains the mechanism. No tuning of delays, no retries, no special cases.
 - Nothing of the game goes into git (dumps, frame dumps, shader dumps, logs).
 - The 30 frames each second and 0 JIT misses are the baseline. A stage must not make them worse.
-- A change in `third_party/ScarletNX` goes to `docs/build/runtime-changes.md`.
+- A change in `engine` goes to `docs/build/runtime-changes.md`.

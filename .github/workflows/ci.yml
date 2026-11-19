@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the NXAevora contributors
 #
-# Build ScarletNX for Windows in MSYS2 CLANG64 (docs/build/SCARLETNX_BUILD-NOTES.md) and run its ctest suite.
+# Build ScarletNX for Windows in MSYS2 CLANG64 (docs/build/ENGINE_BUILD-NOTES.md) and run its ctest suite.
 # No game file, key or save is used: the tests need none, and a hosted runner has no GPU, so the game is never run.
 # The job name "Windows build and test" is the check name to require on main. Keep it stable.
 name: Build NXAevora (Windows)
@@ -32,7 +32,7 @@ jobs:
     defaults:
       run:
         shell: msys2 {0}
-        working-directory: third_party/ScarletNX
+        working-directory: engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -70,7 +70,7 @@ jobs:
           cmake --version
           clang="$(clang --version | head -n1 | tr -c 'A-Za-z0-9.\n' '-')"
           # The prefix of the FFmpeg and OpenSSL cache keys. The saved keys add the folders in use (see the save step).
-          echo "deps=ffmpeg-openssl-windows-$clang-${{ hashFiles('third_party/ScarletNX/cmake/dependencies.cmake', 'third_party/ScarletNX/cmake/ffmpeg*', 'third_party/ScarletNX/cmake/openssl.cmake', 'third_party/ScarletNX/cmake/deps_*.cmake') }}" >> "$GITHUB_OUTPUT"
+          echo "deps=ffmpeg-openssl-windows-$clang-${{ hashFiles('engine/cmake/dependencies.cmake', 'engine/cmake/ffmpeg*', 'engine/cmake/openssl.cmake', 'engine/cmake/deps_*.cmake') }}" >> "$GITHUB_OUTPUT"
           # FFmpeg and OpenSSL are built once per toolchain and reused (cmake/deps_cache.cmake). CMake wants / here.
           echo "SNX_DEPS_CACHE=$(cygpath -m "$PWD/.cache/deps")" >> "$GITHUB_ENV"
           appdata="$(cygpath -u "$RUNNER_TEMP")/snx-appdata"
@@ -81,8 +81,8 @@ jobs:
       - name: Cache the CPM sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: third_party/ScarletNX/.cache/cpm
-          key: cpm-windows-${{ hashFiles('third_party/ScarletNX/cmake/dependencies.cmake') }}
+          path: engine/.cache/cpm
+          key: cpm-windows-${{ hashFiles('engine/cmake/dependencies.cmake') }}
 
       # The FFmpeg and OpenSSL builds. The cache folder checks its own inputs, so a stale entry is rebuilt, not used.
       # No saved key equals the prefix itself, so this restores the newest entry of the prefix.
@@ -90,11 +90,11 @@ jobs:
         id: deps
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: third_party/ScarletNX/.cache/deps
+          path: engine/.cache/deps
           key: ${{ steps.toolchain.outputs.deps }}
           restore-keys: ${{ steps.toolchain.outputs.deps }}-
 
-      # -mcx16: the 16-byte atomics of two test targets fail -Werror without it (SCARLETNX_BUILD-NOTES.md).
+      # -mcx16: the 16-byte atomics of two test targets fail -Werror without it (ENGINE_BUILD-NOTES.md).
       # SNX_DEPLOY=OFF: CI has no recompiled game to copy the runtime to.
       - name: Configure
         run: |
@@ -131,11 +131,11 @@ jobs:
         if: steps.deps-used.outcome == 'success' && steps.deps-used.outputs.key != steps.deps.outputs.cache-matched-key
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: third_party/ScarletNX/.cache/deps
+          path: engine/.cache/deps
           key: ${{ steps.deps-used.outputs.key }}
 
       - name: Check the executable starts
-        run: build/default/scarletnx.exe --help > /dev/null
+        run: build/default/nxaevora-engine.exe --help > /dev/null
 
       # APPDATA gives the tests that write settings a clean folder of their own.
       - name: Run ctest
@@ -149,6 +149,6 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ctest-log-${{ github.run_id }}-${{ github.run_attempt }}
-          path: third_party/ScarletNX/build/default/Testing/Temporary/LastTest*.log
+          path: engine/build/default/Testing/Temporary/LastTest*.log
           if-no-files-found: ignore
           retention-days: 7

@@ -10,7 +10,7 @@ ScarletNX runtime compiles the code at that moment (the JIT). A fully static bui
 ## Phase 0: Foundation (done)
 
 - The repository, the vendored ScarletNX and the folder layout are in place.
-- ScarletNX builds on Windows with MSYS2 CLANG64. The steps are in `docs/build/SCARLETNX_BUILD-NOTES.md`.
+- ScarletNX builds on Windows with MSYS2 CLANG64. The steps are in `docs/build/ENGINE_BUILD-NOTES.md`.
 - A portable copy of the recompiler runs without MSYS2.
 - The base game and update 1.1.1 recompile in a few minutes.
 - The recompiled game boots to the language selection screen and runs without a crash for 45 seconds.
@@ -84,8 +84,8 @@ What the source of ScarletNX shows (`guest_jit.c`, `rtapi.c`, `jit_service.c`):
 - A miss is already a hard error when the JIT is not running. `rt_miss` then ends the game with the message "The game
   reached code at <pc> that the recompiler missed". The runtime has this path for a JIT that cannot start.
 - The smallest change is a setting or a switch that skips `snx_jit_service_new` in `jit_init()`. It is a few lines.
-  It would be a normal commit in `third_party/ScarletNX`.
-- The game program is the same program as `scarletnx.exe`, with the recompiler and the JIT in it, and it imports
+  It would be a normal commit in `engine`.
+- The game program is the same program as `nxaevora-engine.exe`, with the recompiler and the JIT in it, and it imports
   `libLLVM-23.dll` (154 MB).
 
 The line `jit: ... N misses` of the log shows exactly how often the JIT was needed, so 0 misses in a run means that
@@ -123,7 +123,7 @@ Exit condition: the decision above is recorded. The optional check can be done a
   read (see `docs/analysis/stutter-analysis.md`, the hitch runs). The runtime's sleeps are exact, so no fix is planned. The cause of
   the other slow frames is not known.
 - Audio and save data.
-- Services of the console that Arceus needs and ScarletNX does not have yet (`runtime/hle`).
+- Services of the console that Arceus needs and ScarletNX does not have yet (`engine/src/nx/hle`).
 
 Exit condition: the covered scenes play at the speed and the quality that the user accepts.
 
@@ -141,10 +141,15 @@ started from a CLI, with one new in-game UI.
 
 Not in the plan: audio, memory and video. They stay as they are. Open them again only with a measured problem.
 
-## Phase 6: Graphics, NVN to Vulkan
+## Phase 6: Graphics, NVN to Vulkan (done, in maintenance)
 
-Now: the game calls its own NVN library, which writes a GPU command stream. ScarletNX decodes that stream (the methods
-and macros of the console GPU) and draws with Vulkan. The chain is: game, NVN library inside the game, GPU command
+The five stages are done and the native NVN path is the default. The user closed this phase on 2026-11-15. Fixes and
+maintenance continue: faults of the native path are tracked as issues (#43 and #47 at the close) and are fixed as they
+come. The old path that decodes the command stream stays only to compare results with the native path. It is not
+maintained.
+
+Before this phase, the game called its own NVN library, which wrote a GPU command stream. ScarletNX decoded that
+stream (the methods and macros of the console GPU) and drew with Vulkan. The chain is: game, NVN library inside the game, GPU command
 stream, interpretation by ScarletNX, Vulkan.
 
 Goal: game, NVN implementation on the host, Vulkan. The NVN calls of the game go to code on the PC that calls Vulkan
@@ -162,11 +167,12 @@ and a new path can add visual faults.
 
 Exit condition: the covered scenes draw the same as before with no command stream decode, at 30 frames each second.
 
-## Phase 7: Decrypted game files and a file layer for mods
+## Phase 7: Decrypted game files and a file layer for mods (done)
 
-Now: ScarletNX reads NSP and XCI files and decrypts them with the keys of the console, at the recompile and at each
-start of the game. The code is a copy of hactool in `third_party/ScarletNX/src/nx/runtime/driver/hactool/`. Code that
-decrypts the game can conflict with laws against the circumvention of copy protection, such as the DMCA.
+ScarletNX read NSP and XCI files and decrypted them with the keys of the console, at the recompile and at each start
+of the game. That code is removed. The input is now a decrypted game folder: the ExeFS of the update, one RomFS of the
+game with the update applied, and `control.nacp`. RomFS mods are laid over that folder in the name order of their
+folders.
 
 Goal: NXAevora reads only game files that are already decrypted. The user makes them from their own console: the
 ExeFS of the update and one RomFS of the game with the update applied. ScarletNX has no decryption code and needs no keys.
@@ -184,7 +190,7 @@ and a test mod replaces one file without a change to the decrypted files.
 
 ## Phase 7.5: NXAevora Engine, a CLI first runtime and a new UI
 
-Now: the runtime is the vendored ScarletNX in `third_party/ScarletNX/`. With no argument it opens the start GUI of
+Now: the runtime is the vendored ScarletNX in `engine/`. With no argument it opens the start GUI of
 ScarletNX, and in the game it has two UIs: the old menu of ScarletNX and the windows made with Dear ImGui.
 
 Goal: the base derived from ScarletNX becomes the NXAevora Engine in `engine/`. The Engine starts from its CLI, which
@@ -243,7 +249,7 @@ Exit condition: the whole game is playable with the keyboard and the mouse, and 
 ## Phase 10: Host replacement of SDK functions
 
 Replace SDK functions of the game with code on the host. Use the preparation that exists (the recompile patches in
-`recomp/patches/`, the analysis of the SDK code from the disassembly, and the HLE services in `runtime/hle`). Make the
+`recomp/patches/`, the analysis of the SDK code from the disassembly, and the HLE services in `engine/src/nx/hle`). Make the
 new graphics layer of phase 6 part of it, so that the SDK calls that touch graphics go to the host too.
 
 Exit condition: the replaced functions are listed in `docs/`, each has a test run, and the game runs with 0 misses.

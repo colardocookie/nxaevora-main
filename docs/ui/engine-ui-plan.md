@@ -7,7 +7,7 @@ Status: plan only. No code is changed, no file is moved and no dependency is add
 `ROADMAP.md`, "Phase 7.5". This file holds the details. It replaces the plan of the Dear ImGui windows
 (`imgui-plan.md`), which is now the old plan and stays as history.
 
-The facts below come from a reading of the source at `1ec1b69`. Work unit 2 checks each row again before a removal.
+The inventory of unit 2 is checked (state of `main` at `7283f33`, 2026-11-16). No code is changed yet.
 
 ## Decisions
 
@@ -98,67 +98,118 @@ Each function of the old UI goes to one target, or to more than one:
 The rule: a removal of the old UI never removes the work under it. The processing, the save of the settings and
 the diagnostic data stay. Code that the UI and the game share is separated first and kept.
 
-### First inventory
+### Checked inventory
 
-This table is the first result of a source reading. Unit 2 checks each row, adds the missing ones and records the
-decision of the user where a row says "decide".
+This inventory is the result of a reading of the source at `7283f33` (2026-11-16). It holds the current code
+locations, the shared code to keep, the missing rows and the decisions of the user. A cell that says "check in
+unit 4" is a point that this inventory could not decide from the source.
 
-**Start GUI of ScarletNX** (`src/gui/`, the menu that `entry.c` starts with no argument through `snx_gui_main`)
+**Start GUI of ScarletNX** (`src/gui/`, the menu that `src/nx/runtime/entry.c` starts with no argument through `snx_gui_main`)
 
-| Function | Code | Target |
-|---|---|---|
-| Game library, browser, recent games, the systems Switch, Linux, 3DS, Vita and GBA | `browser.c`, `recent.c`, `model.c` | Delete. NXAevora runs one game. The launcher chooses the game folders (phase 11) |
-| Keys screen, the read of `prod.keys` and `title.keys` | `GUI_KEYS`, driver `--keys` | Delete. Phase 7 removes the keys |
-| Recompile queue and its progress | `queue.c`, `aot.c`, `SCREEN_COMPILING` | CLI (progress lines) and launcher (display) |
-| Settings of the game and of the launcher | `settings.c`, `editor.c` | Launcher, through the shared settings definition (unit 3) |
-| Folders (data, recompiled, work) | `GUI_FOLDERS`, `place.c` | CLI options and the settings file. Launcher for the choice |
-| Logs in one file for a bug report | `logzip.c`, `log.c` | CLI command. Launcher button |
-| Clean the shader cache and the code cache | `clean.c`, `GUI_ASK_CACHE` | CLI command. Launcher button |
-| Setup: language, theme, UI scale, folders, keys, first user | `steps.c`, driver `--setup` | CLI without dialogs (defaults and options). The keys part is deleted. The first user is made by the Engine without a dialog |
-| Move old files of older versions | `--migrate`, `snx_gui_migrate` | Delete (no older NXAevora install exists). Confirm in unit 2 |
-| Themes (default, YoRHa), icons, fonts of the menu | `theme.c`, `themes/`, `icons.h` | Delete |
-| Questions and error boxes of the menu | `GUI_ASK_*` | CLI messages and exit codes. Launcher dialogs |
+| Function | Code (current `path:line`) | Target | Shared code to keep |
+|---|---|---|---|
+| Game library, browser, recent games, the systems Switch, Linux, 3DS, Vita and GBA | `src/gui/browser.c:33` (`gui_is_dump`), `:524` (`gui_games_group`), `src/gui/recent.c:22` (`gui_recent_add`), `src/gui/model.c:39` (`gui_menu_key`) | Delete. NXAevora runs one game. The launcher chooses the game folders (phase 11) | `src/common/utilities/game_ini.c` (`snx_game_system`), `src/nx/runtime/driver/driver.c` (`--game`) |
+| Recompile queue and its progress | `src/gui/queue.c` (`gui_queue_add`, `queue.h:45`), `src/gui/aot.c` (`gui_aot_cache_info`, `aot.h:22`), `GUI_SCREEN_COMPILING` (`theme.h:47`, `main.c:998`) | CLI (progress lines) and launcher (display) | `src/nx/runtime/driver/recompile.c`, the driver stdout that `gui_steps_feed` parses (`steps.h:37`) |
+| Settings of the game and of the launcher | `src/gui/settings.c:43,54` (`gui_settings_read`, `gui_settings_save`), `src/gui/editor.c` | Launcher, through the shared settings definition (unit 3) | `src/nx/runtime/settings.txt`, `settingsgen`, `src/nx/runtime/ini.c`, `src/nx/runtime/options.c` |
+| Folders (data, recompiled, work) | `GUI_FOLDERS` (`src/gui/model.h:20`, `src/gui/main.c:139-159`), `src/gui/place.c` (`place.h:21`) | CLI options and the settings file. Launcher for the choice | `snx_app_dir`, `snx_menu_dir` and `snx_user_path` (`src/common/utilities/common.c:1114-1216`), `app.ini [folders]` (`:1137-1170`) |
+| Logs in one file for a bug report | `src/gui/logzip.c` (`gui_logs_zip`, `logzip.h:17`), `src/gui/log.c` (`gui_log`, `log.h:24`) | CLI command. Launcher button | None in the runtime. `miniz` stays GUI only. The driver has a log summarizer at `driver.c:477-479` (`--scan-log`), not a zip |
+| Clean the shader cache and the code cache | `src/gui/main.c` (`GUI_ASK_CACHE`, about `:3590-3648`) | CLI command. Launcher button | None. The runtime makes the caches again |
+| Setup: language, theme, UI scale, folders, keys, first user | `src/gui/steps.c` (`gui_steps_*`), driver `--setup` | CLI without dialogs (defaults and options). The first user is made by the Engine without a dialog | The terminal setup (`src/nx/runtime/driver/setup.c:321`, `src/common/utilities/setup.c`) and the first user (`driver/setup.c:248-305`, `snx_users_start`) |
+| Move old files of older versions | `--migrate` (`src/nx/runtime/entry.c:57-62`), `snx_gui_migrate` (`src/gui/main.c:14452`), `src/gui/clean.c` (`gui_move_entries`, `gui_clean_inis`) | Delete (confirmed in unit 2: no older NXAevora install exists). The test `gui_clean` goes with it | None |
+| Themes (default, YoRHa), icons, fonts of the menu | `src/gui/theme.c` (`gui_theme_builtin`, `theme.h:140`), `src/gui/themes/default/theme.ini`, `src/gui/themes/yorha/theme.ini`, `src/gui/icons.h`, `src/gui/icons.hex` | Delete | Mixed with the drawing: separate first. `cmake/gui_themes.cmake:9-136` colours feed the runtime old UI (`overlay.c`, `prepare_screen.c`, `hud.c`, `stats.c`, `ui.c`). `icons.h` is used by `overlay.c` and `ui.c` |
+| Questions and error boxes of the menu | `GUI_ASK_*` (`src/gui/model.h:42-60`, `src/gui/main.c:1955-1975`) | CLI messages and exit codes. Launcher dialogs | None |
 
-**Old in-game menu** (`platform/overlay.c`, drawn with the quad list of `platform/ui.c`)
+The keys screen was removed by phase 7. `GUI_KEYS` and `--keys` do not exist. The stale comments
+`src/gui/themes/default/theme.ini:103` and `src/gui/themes/yorha/theme.ini:103` go with the themes.
 
-| Function | Code | Target |
-|---|---|---|
-| On-screen controls and the touch screen | `PAGE_CONTROLS`, `PAGE_BUTTONS`, `vpad.c`, `touch.c` | Decide. They are for touch devices. If kept, settings only, not a page |
-| Gamepads: player, swap, rumble | `PAGE_PADS` | New UI (input settings) |
-| Gamepad button map | `PAGE_MAP`, `gamepad.c` | New UI. The map storage stays in the runtime |
-| Save states: slots, save, load, delete | `PAGE_STATES`, `PAGE_SLOT`, `PAGE_ASK` | Decide (new UI or delete). The game's own save data is not affected |
-| Stats corner | `PAGE_MAIN` item Stats, `stats.c` | New UI (performance view) and the log |
-| Software keyboard box (player name) | `overlay_keyboard_*` | New UI. The state, the ticket and the AM service path stay in the runtime |
+The cache clean is `src/gui/main.c` (`GUI_ASK_CACHE`, about `:3590-3648`), not `clean.c`. `clean.c` cleans old
+`.ini` keys and belongs to the migrate row.
 
-**Dear ImGui windows** (`gpu/vk/imgui*.c*`, `platform/backend/imgui_sdl.c`)
+**Old in-game menu** (`src/nx/runtime/platform/overlay.c`, drawn with the quad list of `src/nx/runtime/platform/ui.c`)
 
-| Function | Code | Target |
-|---|---|---|
-| Menu bar (About, Settings, Mods, Cheats, Debug) | `imgui_ui.cpp` `menu_bar` | New UI (one entry point) |
-| Input settings: mouse, keyboard, controllers | `imgui_settings.c` pages | New UI. The page and preset tables become UI-neutral data of the settings definition |
-| Display settings: display, graphics, performance | `imgui_settings.c` pages | New UI, same rule |
-| Debug window: FPS, frame graph, frame timings, NVML GPU values, CPU and memory | `imgui_ui.cpp`, `debug_stats.c` | New UI (performance view), the log (a periodic stats line), CLI (an option for it). The counters and the hardware poll stay |
-| Test window | `imgui_ui.cpp` `test_window`, setting `imgui_test` | Delete |
-| Name input with the Japanese IME | `imgui_ui.cpp` `keyboard_window`, `imgui_text.c` | New UI. The rules of the game's request (length, number-only, Enter, Escape) stay |
-| Mods and Cheats menus | not available yet | Mods: launcher (the file layer of phase 7). Cheats: decide (launcher, or a toggle in the new UI). `cheats.c` and `mods.c` stay |
-| Input gate (who gets mouse, keys, text) | `imgui_input.c`, `imgui_events.cpp` | New UI base. The rules stay: the game gets no event that the UI took, a key-up is never taken, the mouse look stops over the UI |
+| Function | Code (current `path:line`) | Target | Shared code to keep |
+|---|---|---|---|
+| On-screen controls and the touch screen | `PAGE_CONTROLS`, `PAGE_BUTTONS` (`overlay.c:19,24-52`), `src/nx/runtime/platform/vpad.c` (`vpad_draw` `:457`, edit mode `vpad_edit` `:381`, showcase `vpad_showcase_draw` `:547`) | Delete (decision of the user, 2026-11-16). `touch.c` and the mouse as the touch screen (`touch=2`) stay as the game's touch service. The settings `controls`, `controls_*`, `showcase` and `showcase_corner` go with it | Mixed with the drawing: separate first. `stats.c:87` calls `vpad_showcase_box`. `touch.c` stays (`src/nx/runtime/platform/touch.c`, `sdl3.c:1288-1309,1652-1655`) |
+| Gamepads: player, swap, rumble | `PAGE_PADS` (`overlay.c:53-59,164-171,301-303`) | New UI (input settings) | `src/nx/runtime/platform/backend/gamepad.c` (`gamepad_store`, `gamepad_ini`) |
+| Gamepad button map | `PAGE_MAP` (`overlay.c:175-277`), `gamepad.c` | New UI. The map storage stays in the runtime | `src/common/utilities/pad_screen.c` (`snx_pad_screen_*`), the `gamepad_map` and `gamepad_pN_map` storage |
+| Save states: slots, save, load, delete | `PAGE_STATES`, `PAGE_SLOT`, `PAGE_ASK` (`overlay.c:19,61-65,143-163,312-333`) | New UI (decision of the user): the slots page, the ask box and the toast. F7, F8 and F9, the MCP `state_info` (`driver/mcp.c:869,993`) and the unattended settings stay | Mixed with the drawing: separate first. `state.c` includes `overlay.h` (`:31`) and calls `overlay_slots_set`, `overlay_toast`, `overlay_states_shown` and `overlay_states_stale` (`:1481-1490,1506-1526,1591-1604`). `state_file.c` and `state.h` stay |
+| Stats corner | `PAGE_MAIN` item Stats (`overlay.c:107,289-291,305-309`), `stats.c` (`stats_draw` `:102`) | New UI (performance view) and the log | Mixed with the drawing: separate first. `stats.c` draws with `ui_*` and the theme colours (`stats.c:14-17`). Unit 4 moves its view and keeps its counters |
+| Software keyboard box (player name) | `overlay_keyboard_*` (`src/nx/runtime/platform/overlay.h:106-169`, `overlay.c:460-786`) | New UI. The state, the ticket and the AM service path stay in the runtime | Mixed with the drawing: separate first. The keyboard state is in `overlay.c`. The AM request is `src/nx/hle/services/am.c:1085,1239,1344` through `backend_keyboard_show` (`sdl3.c:305`). `src/nx/runtime/main.c:602` (`frontend_loop`) pauses while `overlay_keyboard_shown` is true |
+| User badge in the head of the old menu | `user_draw` (`overlay.c:439`), nickname and picture of the user | New UI (optional) | Check in unit 4 |
+
+**Dear ImGui windows** (`src/nx/gpu/vk/imgui*.c*`, `src/nx/runtime/platform/backend/imgui_sdl.c`)
+
+| Function | Code (current `path:line`) | Target | Shared code to keep |
+|---|---|---|---|
+| Menu bar (About, Settings, Mods, Cheats, Debug) | `src/nx/gpu/vk/imgui_ui.cpp:49-72` (`menu_bar`). About shows `NXAevora` (`:51`) | New UI (one entry point) | None |
+| Input settings: mouse, keyboard, controllers | `src/nx/gpu/vk/imgui_settings.c:26-28` (`PAGES`), `imgui_ui.cpp:567-575` | New UI. The page and preset tables become UI-neutral data of the settings definition | `settings.txt`, `ini.c` and `options.c` |
+| Display settings: display, graphics, performance | `imgui_settings.c:26-28`, `imgui_ui.cpp:552-566,700` | New UI, same rule | `settings.txt`, `ini.c` and `options.c` |
+| Debug window: FPS, frame graph, frame timings, NVML GPU values, CPU and memory | `imgui_ui.cpp:177-195` (`debug_window`), `src/nx/gpu/vk/debug_stats.c:77` (`debug_stats_get`) | New UI (performance view), the log (a periodic stats line), CLI (an option for it). The counters and the hardware poll stay | `debug_stats.c`. The poll starts only from the window (`:302-311`) |
+| Test window | `imgui_ui.cpp:74-89`, setting `imgui_test` (`settings.txt:911`, `imgui.c:167`) | Delete | None |
+| Name input with the Japanese IME | `imgui_ui.cpp:605-668` (`keyboard_window`), `imgui_text.c`, `imgui_events.cpp:16-19,65` | New UI. The rules of the game's request (length, number-only, Enter, Escape) stay | The game's limits and the ticket (`overlay.h:113-169`, `am.c`) |
+| Mods and Cheats menus | `imgui_ui.cpp:59-66` (`unavailable("Not available yet")`) | Mods: launcher (the file layer of phase 7). Cheats: launcher and New UI (decision of the user). The launcher chooses the cheats and the new UI switches them on and off in the game | `cheats.c`, `src/common/utilities/cheat_list.c` and `src/common/utilities/mods.c` stay. `cheats.c` runs from `present.c:27`, `mods.c` from `fs.c:148-174` |
+| Input gate (who gets mouse, keys, text) | `src/nx/gpu/vk/imgui_input.c`, `imgui_events.cpp:67-101`, `src/nx/runtime/platform/backend/imgui_sdl.c:87-113` | New UI base. The rules stay: the game gets no event that the UI took, a key-up is never taken, the mouse look stops over the UI | None |
 
 **Start and failure screens**
 
-| Function | Code | Target |
-|---|---|---|
-| Crash panel | `fatal_screen.c` | stderr, the log and the exit code always. New UI display when the window works |
-| Shader preparation screen before the game | `prepare_screen.c` | Progress lines (CLI) and a new UI display |
-| Debug warning line | `hud.c` | Log. New UI where the user must see it |
-| Error and help message boxes | `backend/sdl3.c` | stderr, the log and the exit code. No dialog in a normal run |
-| Old UI drawing base | `platform/ui.c`, `gpu/vk/ui.c`, `ui_draw_sdl` | Delete after the last user moves |
+| Function | Code (current `path:line`) | Target | Shared code to keep |
+|---|---|---|---|
+| Crash panel | `src/nx/runtime/platform/backend/sdl3.c:813` (`fatal_screen`, loop `:813-988`) | stderr, the log and the exit code always. New UI display when the window works | `src/nx/runtime/platform/fatal_screen.c` holds text helpers only (`fatal_share_log` `:10`, `fatal_log_url` `:29`, `fatal_wrap` `:86`, `fatal_cut` `:115`, `fatal_cp437` `:133`). `overlay.c` and `prepare_screen.c:70` use them |
+| Shader preparation screen before the game | `prepare_screen.c:38,115` (`prepare_screen_set`, `prepare_screen_draw`) | Progress lines (CLI) and a new UI display | Drawn by `vk_ui_draw` (`src/nx/gpu/vk/ui.c:353`). No other user |
+| Debug warning line | `hud.c:19,46` (`hud_debug_set`, `hud_draw`) | Log. New UI where the user must see it | Drawn by `vk_ui_draw` (`src/nx/gpu/vk/ui.c:364`) |
+| Error and help message boxes | `backend/sdl3.c:1027,1048,1050,1071,1623`, `src/gui/main.c:14484,14486` | stderr, the log and the exit code. No dialog in a normal run | None |
+| Old UI drawing base | `src/nx/runtime/platform/ui.c` (`ui_fill` `:78`, `ui_text` `:82`, `ui_icon` `:92`, `ui_image` `:98`), `src/nx/gpu/vk/ui.c` (`vk_ui_draw` `:333`), `ui_draw_sdl` (`backend/sdl3.c:741`, used `:981`) | Delete after the last user moves | It has the users of the on-screen controls, stats, keyboard, crash panel, prepare screen and debug warning rows |
 
-Kept without a change of target (not UI): `stats.c`, `debug_stats.c`, `keybind.c`, `gamepad.c`, `cheats.c`,
-`mods.c`, `settings.txt` and `ini.c`, `unattended.c` (CI tests), `tracy.c`.
+**Missing rows found in unit 2**
+
+| Function | Code (current `path:line`) | Target | Shared code to keep |
+|---|---|---|---|
+| Hotkeys of the old UI | `hotkey` (`src/nx/runtime/platform/backend/sdl3.c:1066-1128`) | F1 help box (`:1068-1073`): Delete, the text goes to `--help` and the log. F6 (`:1097-1105`): Delete with the on-screen controls. F7, F8 and F9 (`:1107-1109`): stay (save states). F12 stats (`:1110-1119`): New UI (performance view). Pause (`:1124-1127`) and F11 (`:1123`): stay (not UI) | The save-state, pause and full-screen paths stay |
+| Toast notifications | `overlay.c:373-377,977-987`, the log-full toast at `src/nx/runtime/platform/backend/sdl3.c:1897-1899` | New UI (shared: the text and the time of each toast) | Mixed with the drawing: separate first. Used by save states (`state.c:1481-1490`), screenshots (`sdl3.c:1924`) and the overlay |
+| Overlay navigation and placement | `overlay.h:35-39` (`overlay_select`, `_move`, `_scroll`, `_side`, `_back`), `overlay.h:30-34` (`overlay_place`, `_cols`, `_set_display_scale`) | New UI base (focus and gamepad navigation). Delete the old code | None |
+| Start-menu gamepad navigation | `src/gui/pad_menu.c` (`gui_pads_*`, `gui_pad_key`) | Delete | None |
+| Child-process runner | `src/gui/process_win32.c`, `src/gui/process_posix.c`, `src/gui/gui_process.h` | Delete. The CLI (unit 3) and the launcher read the progress stream | None |
+| NRO game discovery through `source=` | `job_play` (`src/gui/main.c:11629-11652`), `snx_record_source` (no NX caller), `tests/gui_sdl.c:583` writes the `source=` itself | Delete with the start GUI. The launcher finds the game through the CLI | None. The NX recompile writes only `romfs=` (`recompile.c:520`) |
+| Start-menu translations | `src/gui/i18n.c`, `po/`, `scripts/build-languages.py` | Delete with the start GUI. The language support of the new UI is decided with the UI base (unit 4) | None |
+| Start-menu glyphs | `src/gui/latin.c`, `src/gui/wide.c`, `src/gui/unifont-*.hex`, `scripts/build-glyphs.py` | Delete with the start GUI | None |
+| Start-menu boot splash | `src/gui/splash.cpp`, `cmake/splash.cmake`, `dist/wimsy.svg`, `dist/splash/` | Delete with the start GUI | Keep lunasvg and plutovg: `src/nx/hle/services/acc.c` uses them |
+| Android and iOS frontends | `src/gui/android.c`, `src/gui/apple.m`, `dist/apple/Frontend.swift` | Delete with the start GUI | None |
+
+Kept without a change of target (not UI): `debug_stats.c`, `keybind.c`, `gamepad.c`, `cheats.c`, `mods.c`,
+`settings.txt` and `ini.c`, `unattended.c` (CI tests), `tracy.c`. `stats.c` is not kept as it is: it draws with
+`ui.c` and the theme colours, so unit 4 moves its view and keeps its counters.
+
+**Settings that only the old UI uses**
+
+- `imgui` (`settings.txt:897`), `legacy_menu` (`:904`) and `imgui_test` (`:911`).
+- The `On-screen controls` section and its `Buttons` page (`:1144`), with `controls` and `controls_*` (`:329-386`)
+  and `showcase` and `showcase_corner` (`:132-159`). `stats` and `stats_corner` stay.
+- The `Player` page (`:1147`) and `gamepad_p<N>_*` (`:539-580`). They move to the new UI input settings.
+- Unit 5 must load an old settings file with a gone key. The key is ignored with a log line.
+
+**Tests of the old UI**
+
+- Unit 5 removes the `gui_*` tests and `uigen` (`src/gui/CMakeLists.txt:143-274`), the splash tests
+  (`cmake/splash.cmake:99-113`) and the tests `overlay`, `vpad`, `hud`, `fatal_screen`, `imgui_input`,
+  `imgui_text` and `imgui_settings` (`tests/CMakeLists.txt:744-769,858-871,902-905`).
+- `stats`, `gamepad`, `keybind` and `settingsgen` stay or move with their code.
+
+### Open points of the old windows
+
+- The Debug window shows "?" for the CPU temperature and power and for the AMD and Intel GPU values.
+  `system_poll` fills only `cpu_load` and `ram_*` (`debug_stats.c:246-260`), and the GPU values need NVML
+  (`:114-239`). The hardware poll runs only while the window is open (`:302-311`). Row: Debug window.
+- The input gate: an arrow key on the frame the pointer arrives reaches the game (`backend/imgui_sdl.c:73,88`,
+  `imgui_ui.cpp:224`, `docs/archive/controller-keyboard-review.md:50-56`). The new UI base must not repeat it.
+  Row: Input gate.
+- The test window goes in unit 5. Row: Test window.
+- The comments and strings that still name a dump go with the start GUI: `src/common/utilities/game_ini.h:17` and
+  `src/gui/main.c:3544,3645,6861,6862,10688`. `src/common/filesystem/tree.h:56` is now stale wording.
+  `game_ini.h:17` is fixed in unit 1 or 3.
 
 ### Exit check
 
-Every row has a target and a short reason. Each row with "decide" has the decision of the user. The shared code of
+Every row has a target and a short reason. The rows with a decision of the user name it. The shared code of
 each row is named, so that unit 5 can remove the drawing and keep the work.
 
 ## Unit 3: CLI
@@ -255,8 +306,8 @@ Remove, after each function has moved:
   `docs/CREDITS.md`.
 - The start GUI (`src/gui/`, `SNX_BUILD_GUI`, `SNX_MULTICALL_GUI`, the call of `snx_gui_main` in `entry.c`,
   `cmake/gui_icons.cmake`, the menu translations in `po/` that only the GUI uses, and the tests of the GUI).
-- The old in-game menu (`overlay.c` drawing and pages) and the old drawing base (`platform/ui.c`, `gpu/vk/ui.c`,
-  `ui_draw_sdl`), after their last user moves.
+- The old in-game menu (`overlay.c` drawing and pages) and the old drawing base (`src/nx/runtime/platform/ui.c`,
+  `src/nx/gpu/vk/ui.c`, `ui_draw_sdl`), after their last user moves.
 - The message boxes of the normal path.
 
 List each removal in `docs/build/runtime-changes.md`. Check that the settings files of a user still load: a key
@@ -277,8 +328,7 @@ settings panel opened and closed, a battle, and a switch between window and full
 
 ## Effect on the other phases
 
-- **Phase 7** removes the keys and the decryption. The keys screen and `--keys` of the inventory go with it. If
-  phase 7.5 starts first, unit 5 leaves the keys code to phase 7.
+- **Phase 7** removes the keys and the decryption. The keys screen and `--keys` are already gone.
 - **Phase 9** keeps the work on the input and the camera themselves: the mouse look in all scenes, the mouse buttons,
   the wheel, rebinding and profiles. Phase 7.5 moves only the screens that exist now. The new screens of phase 9 use
   the new UI base and the settings definition.
@@ -303,6 +353,3 @@ settings panel opened and closed, a battle, and a switch between window and full
 - Keep or remove the drivers for the other systems (3DS, Vita, GBA, Linux programs) in the Engine.
 - The program name (`nxaevora.exe` is the proposal) and the folder and file names of the data folder
   (`%APPDATA%\scarletnx` now).
-- Save states: keep them in the new UI or remove them.
-- Cheats: chosen in the launcher, in the new UI, or both.
-- The on-screen controls and the touch screen: keep the settings or remove them.

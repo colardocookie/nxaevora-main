@@ -61,7 +61,7 @@ This file compares the two ways of `docs/graphics/nvn-plan.md` and holds the des
 
 ## Patch size against upstream
 
-Both ways are code in `third_party/ScarletNX`, which is vendored, so upstream distance is not a hard limit.
+Both ways are code in `engine`, which is vendored, so upstream distance is not a hard limit.
 
 - **A.** Mostly new files (a host NVN layer next to `nvn_trace.c`, which already wraps the table), plus a switch in the
   place that loads the table. Small changes to old files. The old path stays and a setting selects it.
@@ -98,8 +98,11 @@ is the smaller step only at the start.
 
 1. Way A or way B. Decided: A.
 2. The switch is per launch (`nvn_native` setting, old path kept as a comparison target until stage 5 decides). Decided.
+   After stage 5 (2026-11-15): the native path is the default, and the old path stays in the code. The debug setting
+   `nvn_legacy=1` selects the old path. `nvn_native` is deprecated. In the older sections, `nvn_native=1` is the native
+   path and `nvn_native=0` is `nvn_legacy=1`.
 3. The place of the code (`runtime/gfx` or inside ScarletNX) is decided after this choice. The first files go into
-   `third_party/ScarletNX/src/nx/gpu/` next to `nvn_trace.c`.
+   `engine/src/nx/gpu/` next to `nvn_trace.c`.
 
 ## Open points that this choice does not close
 
@@ -201,7 +204,7 @@ a risk. The risk that remains is a hidden use of the stored address or of the po
 
 ## 2-3 Where the host layer attaches (2026-11-02)
 
-Method: `third_party/ScarletNX/src/nx/gpu/nvn_trace.c`, `runtime/main.c`, `runtime/loader.h`, the settings file, and the
+Method: `engine/src/nx/gpu/nvn/diag/nvn_trace.c`, `runtime/main.c`, `runtime/loader.h`, the settings file, and the
 disassembly of the resolver stubs in the `sdk` module.
 
 How `nvn_trace` works, and what the host layer reuses:
@@ -211,7 +214,7 @@ How `nvn_trace` works, and what the host layer reuses:
   dispatch slot `g_disp[(addr - g_code_lo) / 4]` of `nvnBootstrapLoader` with a wrapper. The wrapper then replaces the slot of
   `nvnDeviceGetProcAddress`. Each name that the game resolves gets a wrapper in the slot of its address.
 - With `nvn_native=1` the host handlers replace the game's NVN library for every call through the table. The loader hooks are the
-  ones of `gpu/nvn_trace.c`, one level below it: `nvn_native_init` runs first, and the trace wraps what the slots then hold, so it
+  ones of `gpu/nvn/diag/nvn_trace.c`, one level below it: `nvn_native_init` runs first, and the trace wraps what the slots then hold, so it
   counts the host calls too. A function without a handler gets the missing-function handler, so one run lists every missing function.
 - A handler is a `GuestFn(CPU* c, u64 entry)`. The arguments are `c->x[0..7]` (and `c->v[]` for floats), the result is
   `c->x[0]`, and guest memory is read and written with `GP()`, `gr64()` and the like. The game calls NVN through pointers, and the
@@ -224,7 +227,7 @@ How `nvn_trace` works, and what the host layer reuses:
 
 Design of the attachment:
 
-1. A new file `gpu/nvn_native.c` with `nvn_native_init()`, called in `main.c` next to `nvn_trace_init()`, and a startup setting
+1. A new file `gpu/nvn/nvn_native.c` with `nvn_native_init()`, called in `main.c` next to `nvn_trace_init()`, and a startup setting
    `nvn_native` (0 or 1, default 0) in `settings.txt`.
 2. The resolver hooks (bootstrap and `GetProcAddress`) are shared with `nvn_trace.c`. Today they are private to it. The change
    is to move them into one small piece that calls a list of "on resolve" functions: the native layer first (it installs its
@@ -565,7 +568,7 @@ first runs of 3b and 3c can move a function from one group to another.
 
 Files (new unless it says changed). The names are a proposal, the split follows the groups.
 
-- `third_party/ScarletNX/src/nx/gpu/nvn_native.h`: the shared types (object table, the side table of 2-1, the recorder types).
+- `engine/src/nx/gpu/nvn/nvn_native.h`: the shared types (object table, the side table of 2-1, the recorder types).
 - `nvn_native.c`: the table switch (2-3), "not implemented" handler, G1, G4 and the frame job (2-5 b).
 - `nvn_native_mem.c`: G2 and the GPU address rule of 2-2.
 - `nvn_native_tex.c`: G3, G5, the storage size function, the TIC and TSC encoders (stage 4 uses them with the pools).
@@ -574,7 +577,7 @@ Files (new unless it says changed). The names are a proposal, the split follows 
 - `nvn_trace.c` (changed): the diagnostic of 3a, and the switch to the host table.
 - `nvn_selftest.c` (new): the selftest and the execution test (`nvn-unobserved.md`, "The selftest"), with the recording `Renderer` backend and
   the comparer. The comparer is a separate pure part, so that host tests can use it.
-- `tests/nvn_native.c` (new) and `CMakeLists.txt` (changed): the tests below.
+- `tests/nvn/nvn_native.c` (new) and `CMakeLists.txt` (changed): the tests below.
 - `docs/build/runtime-changes.md` (changed): one row for each commit that touches the runtime.
 
 Steps. Each step is one commit. The game is not started by the agent.
@@ -691,9 +694,9 @@ guess (rule: mechanism first). Each part is one commit.
 
 | Part | Content | State |
 | --- | --- | --- |
-| 3b-1 | The setting `nvn_native`, `gpu/nvn_native.c` (loader hooks below the trace, missing-function handler, exit report), `gpu/nvn_objtab.c` (the record table, test `nvn_objtab`), and the trace of the queries (`nvn-value:` lines for `nvnDeviceGetInteger` and six other queries). | Written and built. The unit tests pass, except `tracked_material`, which fails on the two SMAA `.dds` files that were added before this work (not caused by it). Not run in the game. |
+| 3b-1 | The setting `nvn_native`, `gpu/nvn/nvn_native.c` (loader hooks below the trace, missing-function handler, exit report), `gpu/nvn/nvn_objtab.c` (the record table, test `nvn_objtab`), and the trace of the queries (`nvn-value:` lines for `nvnDeviceGetInteger` and six other queries). | Written and built. The unit tests pass, except `tracked_material`, which fails on the two SMAA `.dds` files that were added before this work (not caused by it). Not run in the game. |
 | 3b-2 | A diagnostic run with `nvn_trace=1` to the title: the agent reads the `nvn-value:` lines. | Done (2026-11-02). The values are in "3b-2 Result" below. |
-| 3b-3 | G1: device and queue builders, `DeviceInitialize`, `DeviceGetInteger` (the table of 3b-2), `GetTimestampInNanoseconds`, `QueueInitialize`. | Written and built (30 handlers, `gpu/nvn_params.c`, test `nvn_params`). Not run with `nvn_native=1`. See "3b-3 Result". |
+| 3b-3 | G1: device and queue builders, `DeviceInitialize`, `DeviceGetInteger` (the table of 3b-2), `GetTimestampInNanoseconds`, `QueueInitialize`. | Written and built (30 handlers, `gpu/nvn/nvn_params.c`, test `nvn_params`). Not run with `nvn_native=1`. See "3b-3 Result". |
 | 3b-4 | G2: memory pool and the GPU address rule (2-2). | Written and built (13 handlers, test `nvn_params`, row 0029). Run of 2026-11-02: all 13 ran without a failure. The GPU page table mapping of a pool is not connected. |
 | 3b-5 | G3 and G5: texture objects, the storage size function (read from the library's disassembly, tested against the 3a table), the pools. | Written and built (29 handlers, row 0030, test `nvn_params`; 40 of 40 size queries of the archived run agree). Not run with `nvn_native=1`. |
 | 3b-6a | G4: window builder and initialization, interval and crop setters, and sync initialization. | Written. |
@@ -773,7 +776,7 @@ Library functions read (update 1.1.1 `sdk` module):
   +0x19dc (the window origin and depth mode) were 1 and 1 at that time.
 - `nvnQueueBuilderGetQueueMemorySize` (d8383f0): reads the builder (flags at +0x10, set bytes at +0x14 to +0x17, sizes at +0x18,
   +0x1c, +0x20) and six device words (+0x8c, +0x94, +0x98, +0xe0, +0xe4, +0x1af4). The run shows 0x80, 2, 1, 1, 0x1000 and 0. The
-  game's builder had flags 0, command 0x20000, compute 0x40000, control 0x20000. The port in `gpu/nvn_params.c` gives 0x8a000 for
+  game's builder had flags 0, command 0x20000, compute 0x40000, control 0x20000. The port in `gpu/nvn/nvn_params.c` gives 0x8a000 for
   it, the library's answer (hand-checked step by step, and in the test `nvn_params`).
 - `nvnDeviceGetInteger` (d82d060): calls d831f40, a switch over `what` (0 to 0x62) that returns a device field or a constant. The
   host uses the table of 3b-2. A `what` that no run asked for gets 0 and one log line.
@@ -896,7 +899,7 @@ unknown part stops with a log line.
    and `CallCommands` take ids only. An id that is not valid is skipped with a log line (counted).
 5. **Lists and ops.** An op is an opcode with a payload of at most `NVN_OP_MAX_PAYLOAD` (512) bytes, padded to 8 bytes (changed
    in the work: `SET_RENDER_TARGETS` holds 8 targets with copied views, so 32 bytes do not fit; viewport and scissor are one op
-   for each rectangle). The list lives in an arena of the command buffer (`gpu/nvn_cmdlist.c`). Values are copied at
+   for each rectangle). The list lives in an arena of the command buffer (`gpu/nvn/nvn_cmdlist.c`). Values are copied at
    record time (viewport floats, scissor integers, clear color, barrier bits, render target arguments). Objects (texture, pool) are
    held as address plus generation and read at replay. Ops of 3c: `SET_TEXTURE_POOL`, `SET_SAMPLER_POOL`, `SET_RENDER_TARGETS`,
    `SET_VIEWPORTS`, `SET_SCISSORS`, `CLEAR_COLOR`, `BARRIER`, `CALL`. Any other command buffer function is a missing function:
@@ -1045,3 +1048,312 @@ Open after the review of 4-u3-4 (the game does not reach these paths up to the t
   each queue across jobs, owned by the GPU thread, reset only with the queue.
 - A cross-queue wait on a `PENDING` fence (item 7, and the command buffer `WaitSync` op, which only logs) does not hold the
   consumer back. Fix: keep the dependency and park the dependent job until the producer job ends.
+
+## Stage 4 compare: the draw record (2026-11-14)
+
+The exit condition of stage 4 asks for a comparison of `nvn_native=0` and `nvn_native=1` in the target scenes. The user chose
+the scenes (Obsidian Fieldlands and a battle, one run with each path) and the method: the runtime records its own draw state,
+and a script compares the two records. Screenshots are not used.
+
+### Facts that decide the design
+
+Checked in the code on 2026-11-14 (analyser report, five claims checked again by the caller):
+
+- Both paths call the same `Renderer` through `g_renderer` (`renderer.h:152`). It is set once at static init
+  (`vk/renderer.c:924`). Only the selftest swaps it for one job (`nvn_selftest_cmd.c:369`, restored at :421). No code calls
+  the Vulkan backend directly for drawing.
+- Both paths put the 3D state into `GpuChannel.r3d[]` through `maxwell3d_method`. The old path decodes the game's stream.
+  The native replay writes the methods on the private channel of the queue (`nvn_native.c:5089`).
+- The GPU addresses are not equal. The native path takes its own pool addresses from `nvn_gpu_va_alloc` in another order,
+  and its shader base is the host constant `NVN_SHADER_REGION_BASE` (`nvn_native.c:327`, written at :5579). So no address,
+  host pointer, channel id or predicate goes into a record.
+- A frame ends at `present_buffer`. The old path calls it in `vi_show_buffer` through `present.c:25`. The native path calls
+  it in `frame_show` (`nvn_native.c:6599`). Both run on the GPU thread as a `gpu_call` item and hold no runtime lock. The
+  old path can drop a present whose key changed (`vi.c:227`), so the two runs are keyed on presents, not on game frames.
+- The draw, clear, dispatch and copy calls run on the GPU thread. The backend takes only its own `vk_lock`.
+- `shader_hash` (`shader/shader.h:175`) is backend independent and ends a program at its EXIT.
+- `nvn_selftest_rec.c` is a test double (no forward, no lock, no frame end). Only its idea of a snapshot is reused.
+
+### Decisions
+
+1. **Setting.** `nvn_drawrec` (int 0 1, default 0, startup) in `settings.txt`, next to `nvn_native`. It works with
+   `nvn_native=0` and `=1`. It does not need `nvn_trace`.
+2. **Module.** A new file pair `src/nx/gpu/nvn/diag/draw_record.{h,c}`. `draw_record_init()` is called in `snx_main` after
+   `nvn_native_init()` (`main.c:956`) and before `video_init` (`main.c:981`), when no other thread uses `g_renderer`. It
+   copies `*g_renderer` into a static `Renderer`, replaces the eight recorded fields with wrappers and sets `g_renderer` to the
+   copy. A field that is NULL in the backend stays NULL. All other fields stay the backend pointers.
+3. **Recorded calls.** `clear`, `draw`, `draw_texture`, `blit`, `dma_copy`, `blit_mem`, `dispatch` and `present_buffer`. Each
+   wrapper records first, then forwards with the same arguments. The record step only reads its arguments, `ch->r3d[]`,
+   `ch->rcomp[]` and guest memory (for the shader hash). It does not change them.
+4. **Lock and threads.** One mutex of the module (`rec_lock`), a leaf lock. The wrapper holds it only in the record step and
+   never while it forwards. The file writes happen outside the lock, from a copy made under it.
+5. **Signature of a call.** A 64-bit hash of path-independent values only:
+   - draw: `indexed`, `topology`, `count`, `instances`; for each enabled program of `MAXWELL3D_PIPELINES` (6 programs of 16
+     words) the `shader_hash` of its code at the shader base plus its offset; for each color target that `RT_CONTROL` enables,
+     the format, width, height and layer words (not the address words); the depth target format and size when depth is on.
+     `first`, `base_vertex` and `base_instance` are left out: they can depend on the buffer layout of the path.
+   - clear: the argument `v`, the clear color or depth value that `v` selects, and the format and size of that target.
+   - draw_texture: the rectangle and step words (0x420 to 0x427) and the format of color target 0.
+   - dispatch: the `shader_hash` of `code`, the grid and block sizes and the shared memory size of the QMD.
+   - blit: format, linear, block height, width and height of both surfaces, and the rectangle arguments.
+   - dma_copy: the flags (multi, remap, fill, ...), width, lines, line bytes, and the block linear flag and pitch of each side.
+     `snap` is left out (only the old path takes a snapshot, `gpu.c:1150`).
+   - blit_mem: bpp, the rectangle and `fmt`.
+   - present_buffer: w, h, pitch, layout and fmt.
+6. **Shader hash cache.** The hash of a program is kept in a fixed table keyed by its GPU address, so a draw does not walk the
+   code again. A full table hashes without a cache and counts the misses. Changed 2026-11-14 (`4b9404d`): the game writes
+   other programs at the same addresses, so the table checks an entry once in each epoch of the backend with its write
+   tracking (`code_same`, `vk/pipeline.c:399`) and hashes it again when it may have changed. An epoch ends at each
+   `mem_may_have_changed` of the renderer (a submitted job, the end of a wait, a frame start), not only at a present. A
+   shader instruction invalidate (`method_barrier` kind 5) and a renderer `reset` clear the table, as the backend drops its
+   address shortcuts there. The
+   log line `draw record: N shader programs hashed again with a new hash` counts the hashes that the check changed.
+7. **Per frame.** Between two presents the module counts the calls of each kind and adds the signatures into two frame hashes:
+   one that depends on the order and one that does not (a sum). At `present_buffer` it appends one line to the frame file
+   and resets the counts.
+8. **Per run.** A fixed open-addressing table maps each signature to its count and to a short text of its first call (kind,
+   topology, count, shader hashes, target formats and sizes). A full table stops new entries, counts them, and logs one line.
+   The table is written to the signature file every `DRAWREC_TABLE_WRITE_FRAMES` presents and at a clean exit, through a
+   temporary file and a rename, so a killed game keeps the last copy.
+9. **Files.** In the game folder, beside the log: `<exe>.drawrec<N>.frames.txt` and `<exe>.drawrec<N>.sigs.txt`, where `N`
+   is the value of `nvn_native`, so the two runs do not overwrite each other. A new run of the same path replaces them.
+   An open or write error logs one line with the path and turns the record off. The game goes on.
+10. **Compare.** A script `tools/drawrec_compare.py` reads the files of the two runs. The two runs are separate plays, so
+    frames do not align. The script reports: the signatures found in one run only, ordered by count per frame; for the shared
+    signatures, the ratio of their counts per frame; and the median, minimum and maximum of each call count per frame. It writes
+    no file into the repository.
+
+### Tests
+
+- A host test `tests/nvn/draw_record.c` for the pure parts: the signature of each kind from a register array and a fake memory
+  reader, the leaving out of the address words (a change of an address does not change the signature), the frame hashes
+  (order dependent and order independent), the table (insert, count, full table), and the shader hash cache (graphics and
+  compute keys, probe collisions, full cache, clear, the check once for each present).
+
+### Work order (one session each)
+
+1. Code writer: the module, the setting, the call in `main.c`, the test. Review, build, `ctest`, commit.
+2. Code writer: `tools/drawrec_compare.py`. The caller checks it on two record files of one short run with each path.
+3. The user runs Obsidian Fieldlands and a battle with `nvn_drawrec=1`, once with `nvn_native=0` and once with `=1`. The caller
+   runs the script and reports the differences.
+
+### Limits
+
+- If the native path changes the shader code bytes (for example a patch of a program), each draw signature differs. The
+  compare then shows it in the shader hashes of the signature text.
+- The scene is played by hand, so a signature found in one run only can come from a different action of the player. Rare
+  signatures are judged by their text, not by their presence alone.
+
+### Result (2026-11-14)
+
+Runs of the update program with `nvn_drawrec=1`. The compare output stays local.
+
+- **Title screen, first run.** On the native path every compute dispatch had the block size 0x0x0, so `vk_dispatch` skipped
+  it. Cause: `program_read_compute_in` read the compute words 5 to 12, 14, 15 and the flag bytes at wrong header offsets.
+  The library reads words 5 to 12 at h+0x748 to h+0x764, words 14 and 15 as the u64 at h+0x778, and the flags as bit 0 of
+  the bytes h+0x830 to h+0x832 for layout 13 to 16 (else 0). It stores the nine fragment bytes as 0 or 1 (d837c64). Fixed in
+  `b2a302c` with the pure function `nvn_program_compute_in_from_header` and host tests. Run again: the dispatches have the
+  block size 32x1x1 on both paths, and no signature is found in the native run only.
+- **Obsidian Fieldlands and a battle, first pair.** Some draws had the same count and fragment shader in both runs but another
+  vertex shader hash. Cause: the record's shader hash cache (decision 6) kept the hash of the first program at an address.
+  Fixed in `4b9404d`.
+- **Obsidian Fieldlands and a battle, second pair** (`nvn_native=0`: 3744 presents, `=1`: 3776 presents). Both runs ended
+  normally, with no fault, drop or refusal. No vertex or compute shader hash is found in one run only. The draw that had two
+  stale hashes in the first pair has the same hash in both runs. The dispatches match. The median calls per frame: draw 544
+  and 514, clear 58, dispatch 5, blit 4 in both. The signatures in one run only are draws with the same shaders and another
+  instance or vertex count (grass, particles, the camera place and the time of the play), and six clears found once each in
+  the native run, of the same kind as the rare clears of the old run. Coverage: 99.5% of the calls of the old run and 99.9% of
+  the native run are in shared signatures.
+
+The compare finds no difference between the two paths in the target scenes, in the values that a signature records
+(decision 5). The blend state, the viewports and the constant buffer bindings are not in a signature, so this result
+does not cover them.
+
+## Stage 5 measure plan (2026-11-14)
+
+Goal: CPU time, frame time and dropped draws of `nvn_native=1`, compared with `nvn_native=0` (`nvn-plan.md`, stage 5).
+
+### Facts that decide the plan
+
+- Measures that exist: the debug window (`vk/debug_stats.c`, window only, `cpu_ms` is the whole process), the `perf:` line
+  (`runtime/main.c`, frames a second every 5 s), the slow-frame line (over 50 ms) and the line of each 600 presents
+  (`vk/renderer.c`, `g_vk_drawn` and `g_vk_skipped` of the renderer, both paths), `vk_gpu_profile` (GPU time), `profile`
+  (`profiler_win32.c`, sampled CPU per function in `profile.txt`), the `nvn-native` frame line (native path only: faults,
+  dropped, missing, skipped lists). Tracy (`SNX_TRACY`) is off in the default build.
+- No measure gives the CPU time of the decode, and no measure splits the CPU time by path.
+- Old path: the guest thread runs the NVN library, the ioctl and `gpu_submit` (`gpu.c`, `job_new` and `scan_job` copy and
+  scan the entries). The `GPU` thread runs `run_job`, which calls `pb_decode` and `method_call` for each word.
+- Native path: the guest thread runs `native_call` and the handlers that record the commands. The `GPU` thread runs
+  `frame_run` and `frame_replay_lists`. Both paths reach `maxwell3d_method` and the same renderer, so the work below it is
+  not removed.
+- `nvn_trace=1` wraps each NVN call and `nvn_drawrec=1` hashes each renderer call: both add CPU time to the measure.
+
+### Decisions
+
+1. A timer for each side and each path, with the same scope. Old path: the guest side is `gpu_submit` from entry to return,
+   the `GPU` side is `run_job`. Native path: the guest side is `native_call` from entry to return (all handlers), the `GPU`
+   side is `frame_run` up to `frame_end`. Each timer adds the nanoseconds of the monotonic clock to a counter of its side.
+   Two parts are left out so that the scopes match: `frame_show` (the present is not in `run_job`), and the time a handler
+   waits for the GPU in `kthread_wait` or `syncpt_wait` or for `present_pace` (on the old path the game's library or
+   `vi.c` waits, not `gpu_submit`).
+   Limit: the old guest side does not include the game's NVN library code that writes the commands. `profile=1` shows it.
+2. The timers run only with the new setting `nvn_measure=1` (default 0), because `native_call` runs many thousand times in
+   a frame and the clock reads cost time.
+3. One log line `nvn-measure:` each 600 presents (the count of the renderer line): the path, the presents, the guest ms
+   and the `GPU` ms for each frame (mean), the frame time median, 99th percentile and maximum of the presents of the window,
+   and the draws and skipped draws of the renderer in the window. The frame times come from the present times that
+   `renderer.c` has. The log line is the only output: no window, no file.
+4. The pure parts (the percentiles from a fixed array, the means) go into a function with host tests. The counters are
+   atomic, because the guest threads and the `GPU` thread add to them.
+
+### Runs (the user)
+
+Settings for each measure run: `nvn_measure=1`, `nvn_trace=0`, `nvn_drawrec=0`, `nvn_selftest=0`, `nvn_exectest=0`,
+`profile=0`. All other settings the same in both paths (also `vk_record`, `render_resolution`, `anti_aliasing`).
+
+- Scene A: Obsidian Fieldlands, stand at one place, camera still, 60 s.
+- Scene B: Obsidian Fieldlands, the same walk of about 60 s.
+- Scene C: a battle with a wild Pokemon, from start to end.
+- Each scene three times for each path, to see the spread. Then one run of each path with `profile=1` (scene B) to see the
+  functions that use the CPU.
+- Quality: missing draws or wrong effects are checked by the user on the screen in the same scenes. A crash in a run is
+  reported. The draw record compare of stage 4 is the check of the draw calls.
+
+### Work order (one session each)
+
+1. Code writer: `nvn_measure` (decisions 1 to 4) with host tests. Review, build, `ctest`, commit.
+2. The user makes the runs. The agent reads the `nvn-measure:` lines and writes the result here.
+3. The user decides if the old path is removed.
+
+### First runs (2026-11-14)
+
+Update program, Obsidian Fieldlands (still and walk) and a battle in one run of about 190 s for each path.
+
+- `GPU` side: native 3.7 to 13.6 ms per frame, old 6.4 to 14.1 ms, about 4 to 15% less at the same draw count. The work
+  below `maxwell3d_method` is the same in both paths, so only the decode is removed.
+- Frame time: median 33.1 to 33.3 ms and 99th percentile 37 to 45 ms on both paths. No skipped draw on either path.
+- Native guest side: 22 to 30 ms per frame in the first two runs. The handler report showed the cause:
+  `nvnWindowAcquireTexture` held 138 s of the 159 s handler time (23 ms per call) in `present_pace`, the swap interval
+  2 pace. It is a wait, so it is now left out as the GPU waits are.
+- Without that wait the handlers use about 3.6 ms per frame of wall time (38.6 million calls, about 6400 a frame), and
+  2 ms of it is a wait for `objs_lock`, which each handler holds for the whole call. Not yet checked: which thread holds
+  it then (another game thread that calls NVN, or the `GPU` thread). The most called handlers are command buffer state
+  calls of 0.4 to 1.4 us each.
+
+### Result (2026-11-14, runs with the pace left out and `profile=1` runs)
+
+- Native guest side: 1.4 to 2.0 ms per frame of handler work, plus 1.9 to 2.3 ms of `objs_lock` wait. Old guest side in
+  `gpu_submit`: 0.01 to 0.02 ms.
+- Old path library: the `profile` samples in the `sdk` module are 7037 on the old path (180 s) and 2285 on the native path
+  (190 s), about 1.3 and 0.4 ms per frame. The sampler counts each thread each millisecond, also a blocked thread, and the
+  file lists only the 200 largest entries, so these are lower bounds. `d901df0` holds most of the difference (5588
+  against 1064).
+- `GPU` side: native 4 to 15% less at the same draw count (13.0 to 13.2 ms against 13.9 to 14.1 ms at about 538000
+  draws in 600 frames).
+- Frame time: the same on both paths at the 30 FPS pace (median 33.0 to 33.4 ms). No skipped draw on either path.
+
+Effect and limits: at 30 FPS the native path does not change the frame time. It removes the decode on the `GPU` thread
+(about 1 ms a frame in the busy scenes) and the library code on the game threads (at least about 1 ms), but its handlers
+add about 1.5 to 2 ms of work and 2 ms of `objs_lock` wait on the game threads. The lock wait is the largest cost that
+the native path adds.
+
+### Who holds `objs_lock` (measure added 2026-11-14)
+
+Each handler holds `objs_lock` for the whole call. The `GPU` thread takes it for short lookups: once per list in
+`frame_replay_lists`, per op in the `replay_host_*` callbacks, and in `frame_read_parts`, `frame_finish` and `frame_line`.
+To find which of them makes the handlers wait, `nvn_measure=1` now records the holder at each blocked take (the
+`nvn-measure: lock` and `holder` lines). The result of a run and the split design follow here.
+
+Run of 2026-11-14 (`3eac584` code, update program, field and a battle, 193 s, clean exit):
+
+- Game threads: 5.76 million blocked takes of 35.75 million handler calls (16%), 11612 ms of wait. 11611 ms of it was
+  held by a handler on another game thread, 1.3 ms by the `GPU` thread. 12 threads ran a handler.
+- `GPU` thread: 1259 blocked takes, 135 ms, nearly all held by a handler. The `GPU` thread is not the cause.
+- A blocked take waits about 2 us on average, longer than the hold of the most called handlers (0.7 to 1.4 us). So the
+  cost is many short collisions of the game's recording threads, not a few long holds.
+- The 10 largest holders (8.7 s of the 11.6 s): `nvnCommandBufferCallCommands` (2715 ms), `AddControlMemory` (1259 ms),
+  `AddCommandMemory` (1182 ms), `BindBlendState` (757 ms), `nvnBufferMap` (708 ms), `SetStencilRef` (600 ms),
+  `SetRenderTargets` (455 ms), `BindProgram` (342 ms), `EndRecording` (334 ms), `nvnMemoryPoolInitialize` (308 ms,
+  494 us per call). All but `nvnBufferMap` and `nvnMemoryPoolInitialize` are command buffer handlers.
+
+Conclusion: the game records different command buffers on many threads at the same time, and the one global lock makes
+them run one after the other. A split must let the handlers of different command buffers run at the same time.
+
+### Split design: `objs_lock` as a read-write lock (decided 2026-11-14)
+
+The user chose a read-write lock (not a lock per command buffer, not a lock-free table) and a concurrent use check that is
+always on.
+
+Facts checked in the code:
+
+- `PMutex` is an `SRWLOCK` on Windows and a `pthread_mutex_t` on POSIX (`common/filesystem/host.h`). An `SRWLOCK` has a
+  shared mode. `kthread_wait(&frame_done_cv, &objs_lock, ...)` waits with the lock in exclusive mode.
+- `nvn_objtab_find` and `probe` only read the table, so a find under the shared mode is safe while every
+  `nvn_objtab_put` and `nvn_objtab_remove` runs under the exclusive mode.
+- `rec_get` can make a record. `command_bind_state` (the `BindBlendState` family) calls it, so today a bind can write the
+  table when the game never called SetDefaults on the state object.
+- `lists` (the command lists) is used by `EndRecording` (publish), `CallCommands` (ref), `CopyCommands` (find and copy),
+  `AddControlMemory` (unref), the queue submit, `frame_finish` (release) and the `GPU` thread (find).
+- `COMMAND_LOG` counts with a plain `++`. `LOG_LIMIT` is atomic.
+
+Decisions:
+
+1. `host.h` gets `pm_lock_shared`, `pm_unlock_shared` and `pm_trylock_shared` for a `PMutex`: the `SRWLOCK` shared calls on
+   Windows. On POSIX they take the mutex in the normal way (correct, but no parallel readers) until the Linux work. They
+   note waits as `pm_lock` does. They do not report to the profiler (changed in step 1): the Tracy C API has only an
+   exclusive lockable context, so two shared holders at the same time would give a wrong pane. `PMutex` stays the type,
+   so `kthread_wait` does not change.
+2. `lists` gets its own mutex `lists_lock`. Lock order: `objs_lock` (either mode), then `lists_lock`, then `g_qlk`. The
+   `GPU` thread takes only `lists_lock` for its list finds. A found list stays alive through the references of its frame,
+   as today.
+3. A handler can take `objs_lock` in the shared mode only when it (a) finds records with `known_record` or
+   `nvn_objtab_find` and never makes or removes one, (b) changes no record except the command buffer named by x0, (c) uses
+   `lists` only under `lists_lock`, and (d) changes globals only with atomics. All other handlers keep the exclusive mode.
+4. The first shared set: the recording, setter and getter handlers of command buffers, `nvnBufferMap` and
+   `nvnBufferGetAddress`. `CommandBufferInitialize` and `Finalize` stay exclusive (they make and remove the record). A bind
+   of a state object without a record reads the library defaults into a local array and makes no record.
+5. Concurrent use check, always on: `CommandBufferRec` gets an owner thread id. A shared handler sets it with one
+   compare-and-swap from 0 at the start and clears it at the end. When another thread owns it, the handler writes a
+   limited log line, counts the conflict, releases the shared mode and runs under the exclusive mode, which waits until
+   all shared holders leave. So a conflict is reported and still correct.
+6. `nvn_measure` splits the lock lines by mode (shared and exclusive takes, blocked count and wait of each). The holder code
+   of a shared take is the last shared taker, which is enough to name the handlers.
+
+Work order (each step is built, tested with `ctest` and committed alone):
+
+1. Decision 1 with a host test: two shared takes at the same time succeed, an exclusive try fails while a shared
+   holder is in, and a shared try fails while an exclusive holder is in (Windows only).
+2. Decision 2 (`lists_lock`), with no shared mode yet. A user run checks that nothing changed.
+3. Decisions 3 to 6: the mode argument of the take, the owner check, the first shared set and the measure split.
+4. User runs with `nvn_measure=1`: the field and a battle, compared with the run above (2.0 to 2.4 ms of lock wait per
+   frame). Many runs, because a race can show only now and then.
+
+Expected effect: the holders that become shared made 8.4 s of the 11.6 s of wait. The exclusive handlers still block
+the shared ones, for example `nvnMemoryPoolInitialize` (494 us per call).
+
+Step 3 (done 2026-11-14): 141 command buffer handlers, `nvnBufferMap` and `nvnBufferGetAddress` take the shared mode
+through `command_hold` and `command_unhold` (the owner helpers `nvn_owner_claim` and `nvn_owner_release` are in
+`nvn_cmdlist.c`). No handler of the set needed to stay exclusive. A conflict falls back to the exclusive mode and finds the
+record again, because a `Finalize` can run in the gap.
+
+Step 4 (user run 2026-11-15, build of step 3, 333 s, field and a battle): no crash, 30 frames each second,
+`command_conflicts=0`. The lock wait per frame fell from 2.0 to 2.4 ms to 0.09 to 0.22 ms. Takes: 43.9 M shared,
+15.2 M exclusive. The game threads waited 1109 ms behind exclusive holders and 372 ms behind shared ones. The GPU thread
+never waited in the shared mode. Top holders: `nvnMemoryPoolInitialize` (378 ms, 597 us per call),
+`nvnCommandBufferCallCommands` (245 ms), `nvnCommandBufferBindUniformBuffer` (149 ms) and `nvnBufferGetSize` (89 ms,
+173,900 waits). `nvnBufferGetSize` reads only the buffer record, like `nvnBufferGetAddress`, so it takes the shared mode
+too (after this run).
+
+Run with the shared `nvnBufferGetSize` (2026-11-15, 163 s, field and a battle): no crash, `command_conflicts=0`. The lock
+wait per frame is 0.02 to 0.11 ms after the loading. `nvnBufferGetSize` made 7.3 ms of wait (was 89 ms in 333 s). The
+game threads waited 2.0 ms each second of play (4.4 ms before). `nvnMemoryPoolInitialize` (220 ms, 488 us per call) is now
+most of the wait that is left.
+
+Pools out of the lock: `nvnMemoryPoolInitialize` cannot take the shared mode, because it adds a record and the table can
+grow. Its time is the GPU work: the address allocation and the two range maps, which have their own nvdrv locks. Now it
+copies the builder under `objs_lock`, does the GPU work with no lock, and adds the record under `objs_lock` at the end, so
+no thread sees a pool that is half made. `nvnMemoryPoolFinalize` copies and removes the record under `objs_lock`, then
+unmaps and frees the address with no lock. Run (2026-11-15, 212 s, field, a battle, and many moves between Jubilife Village
+and the Obsidian Fieldlands): no crash, `command_conflicts=0`. The two pool handlers left the top 10 of the holder list,
+with 5654 Initialize calls (the run before: 1629 calls and 220 ms of wait behind them). The lock wait per frame is 0.02 to
+0.14 ms.

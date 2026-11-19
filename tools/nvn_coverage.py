@@ -21,7 +21,7 @@ import sys
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 COVERAGE = os.path.join(ROOT, 'docs', 'graphics', 'nvn-coverage.md')
 CALLS = os.path.join(ROOT, 'docs', 'graphics', 'nvn-calls.md')
-NATIVE = os.path.join(ROOT, 'third_party', 'ScarletNX', 'src', 'nx', 'gpu', 'nvn_native.c')
+NATIVE = os.path.join(ROOT, 'engine', 'src', 'nx', 'gpu', 'nvn', 'nvn_native.c')
 SDK_BASE = 0xd3c7000  # the address of the sdk module in the update program (the addresses that docs/ quote)
 # The lookup is not in native_procs: the bootstrap hook puts its own hook in the resolver's slot (task 4-u4)
 LOOKUP_HOOKS = {'nvnDeviceGetProcAddress': 'getproc_native'}
@@ -278,15 +278,15 @@ tool keeps them.
   from the name table of the NVN library in the sdk module. The address is the guest address in the update program of
   update 1.1.1.
 - group: G1 to G9 as in `docs/graphics/nvn-design.md`, section 2-6. G10 is a function that no run called.
-- calls: the calls of {calls_source}, through the dispatch table and with the library (`nvn_native=0`).
+- calls: the calls of {calls_source}, through the dispatch table and with the library (`nvn_legacy=1`).
 - handler: `implemented` when `native_procs` of `nvn_native.c` has a host handler (or, for `nvnDeviceGetProcAddress`, the
   host lookup hook), `stub-log` when the missing-function handler answers (it stops the game unless
   `nvn_native_missing=0`, which logs the first call and returns 0).
 - checks: the checks that passed, with their scope (`unit`, `selftest R/M/S/Y` with the build, `exec`). The build
   `update 1.1.1` is the library of that update: the `sdk` module with the build ID
   `B39ADD63421BE525D352E576DAB438D3812EDFF0`. The argument sets of a selftest check are the cases of the function in
-  `third_party/ScarletNX/src/nx/gpu/nvn_selftest*.c`, and each case line of the selftest log names its arguments. seen: a game run
-  with `nvn_native=1` that called it and was read. A function with checks and without seen is not verified in the game.
+  `engine/src/nx/gpu/nvn/test/nvn_selftest*.c`, and each case line of the selftest log names its
+  arguments. seen: a game run with `nvn_legacy=0` that called it and was read. A function with checks and without seen is not verified in the game.
 
 ## Summary
 

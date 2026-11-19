@@ -3,6 +3,8 @@
 
 # ImGui review
 
+Note: `third_party/ScarletNX/` moved to `engine/` in phase 7.5 unit 1. The paths below are the old ones.
+
 Reviewed patches 0013-0019 against the applied files. Locations below are relative to third_party/ScarletNX unless stated otherwise. This is a source review. No source was changed, no build or test was run, and the game was not started.
 
 Checks without a separate finding: vk_ui_draw leaves TRANSFER_DST_OPTIMAL. vk_rec_sync drains recording before the direct ImGui commands, and ImGui restores the layout expected by show(). Swapchain retirement drains recording and waits for the device before shutdown. Reinitialization takes the new format and at least the frames-in-flight buffer count. The bundled backend copies the attachment-format array, so its initialization pointer is not dangling. The statistics ring, hardware snapshot, and event queue have mutex protection. The hardware thread copies the GPU name under its mutex. Its process lifetime alone does not establish a dangling NVML handle. All 15 new source/header files have the required SPDX and copyright lines. Patch paths contain no game files or binary sections. Public C functions have declarations, and recorded C compile commands retain -Werror=missing-prototypes. These checks do not replace runtime validation.
