@@ -2682,6 +2682,16 @@ static void test_demo_tick(void) {
     assert(demo_tick_call(DEMO_OBJECT, 16666667) == 2);
     demo_game_hold = 0;
     assert(demo_tick_call(DEMO_OBJECT, 16666667) == 3);
+    /* a carry from a 100 ms frame is gone when the same controller, same context, is stepped again after more than a
+       second: 1 at 60, as from a fresh budget. Within the second it stays (2, as above). */
+    demo_tick_reset(0);
+    (void)demo_tick_call(DEMO_OBJECT, 100000000);
+    host_ns += 1000000001;
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 3);
+    demo_tick_reset(0);
+    (void)demo_tick_call(DEMO_OBJECT, 100000000);
+    host_ns += 1000000000;
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 4);
     /* a negative clock gives 0 + n; a change other than +2 is left as the game made it; another state is untouched */
     demo_tick_reset(-1);
     assert(demo_tick_call(DEMO_OBJECT, 16666667) == 1);
@@ -3050,6 +3060,83 @@ static void test_text_probe_install(void) {
     g_mod = saved_mod;
     g_disp = saved_disp;
 }
+/* The demo and event probes' installs with a failed compile: the stock word back (the demo and event ticks' guards
+   read it), the range invalidated again, nothing installed. Each in a guest space of its own. */
+static void test_probe_compile_restore(void) {
+    u8* const saved_mem = g_mem;
+    const u64 saved_size = g_as_size, saved_lo = g_code_lo, saved_hi = g_code_hi, saved_base = main_base;
+    const SnxModule* const saved_mod = g_mod;
+    GuestFn* const saved_disp = g_disp;
+    static u8 stale[1];
+    static const GuestFn entries[1] = {text_glyph_stub};
+    jit_stub_on = 1;
+    /* the demo probe: the census's B at +1D8 */
+    {
+        const u64 pc = 0x1000, size = 0x1154, base = pc - 0x1458300;
+        g_as_size = pc + size + 0x1000;
+        g_mem = calloc(1, g_as_size);
+        assert(g_mem);
+        gw32(pc, 0xd10343ff);
+        gw32(pc + 0x1d8, 0x14000069);
+        static u64 fn_lo[1];
+        static u32 fn_len[1];
+        fn_lo[0] = pc;
+        fn_len[0] = (u32)size;
+        const SnxModule module = {.nfns = 1, .fn_lo = fn_lo, .fn_len = fn_len, .stale = stale, .entry_fn = entries};
+        g_mod = &module;
+        g_code_lo = pc;
+        g_code_hi = pc + size;
+        g_disp = NULL;
+        jit_bodies[0] = jit_bodies[1] = NULL;
+        jit_waits = jit_changes = 0;
+        demo_probe = 0;
+        flag("SNX_ARCEUS_DEMO_PROBE", "1");
+        demo_probe_init(base);
+        unset_flag("SNX_ARCEUS_DEMO_PROBE");
+        assert(!demo_probe && !demo_probe_original && gr32(pc + 0x1d8) == 0x14000069);
+        assert(jit_waits == 1 && jit_changes == 2 && jit_changed[0] == pc && jit_changed[1] == pc);
+        free(g_mem);
+    }
+    /* the event probe: the job's MOV at +A4; the resume's site has no stock words, so its guard refuses it */
+    {
+        const u64 pc = 0x1000, base = pc - 0x15ba460;
+        g_as_size = pc + 0x2000;
+        g_mem = calloc(1, g_as_size);
+        assert(g_mem);
+        gw32(pc, 0xd10703ff);
+        gw32(pc + 0xa4, 0xaa0003f3);
+        gw32(pc + 0x134, 0xd65f03c0);
+        static u64 fn_lo[1];
+        static u32 fn_len[1];
+        fn_lo[0] = pc;
+        fn_len[0] = 0x138;
+        const SnxModule module = {.nfns = 1, .fn_lo = fn_lo, .fn_len = fn_len, .stale = stale, .entry_fn = entries};
+        g_mod = &module;
+        g_code_lo = pc;
+        g_code_hi = pc + 0x1000;
+        g_disp = NULL;
+        main_base = base;
+        jit_bodies[0] = jit_bodies[1] = NULL;
+        jit_waits = jit_changes = 0;
+        event_probe = 0;
+        event_probe_original[0] = event_probe_original[1] = NULL;
+        flag("SNX_ARCEUS_EVENT_PROBE", "1");
+        event_probe_init();
+        unset_flag("SNX_ARCEUS_EVENT_PROBE");
+        assert(!event_probe && !event_probe_original[0] && !event_probe_original[1] && gr32(pc + 0xa4) == 0xaa0003f3);
+        assert(jit_waits == 1 && jit_changes == 2 && jit_changed[0] == pc && jit_changed[1] == pc);
+        free(g_mem);
+    }
+    jit_stub_on = 0;
+    logged_count = 0;
+    g_mem = saved_mem;
+    g_as_size = saved_size;
+    g_code_lo = saved_lo;
+    g_code_hi = saved_hi;
+    main_base = saved_base;
+    g_mod = saved_mod;
+    g_disp = saved_disp;
+}
 /* TEXT_TICK on its real wrappers: a stand-in reveal with the game's do-while loop (the step from FBFC24, counted while
    it answers 1 with status 0, up to +A4), and a stand-in step that counts the delay in +9E, moves the cursor +100 and
    the state +A8, as a glyph does */
@@ -3077,6 +3164,19 @@ static void tt_reveal(CPU* c, u64 entry) {
     } while (++n < *GP(t + 0xa4));
     c->x[0] = tt_answer;
     c->pc = c->x[30];
+}
+/* A stand-in reveal that first reveals tt_inner through the wrapper (once, not inside itself), then runs its own loop */
+static u64 tt_inner;
+static unsigned tt_nesting;
+static void tt_reveal_nest(CPU* c, u64 entry) {
+    if (tt_inner && !tt_nesting) {
+        tt_nesting++;
+        CPU n = {.x = {[0] = tt_inner, [30] = return_pc}, .pc = entry};
+        text_tick_reveal(&n, entry);
+        assert(n.pc == return_pc);
+        tt_nesting--;
+    }
+    tt_reveal(c, entry);
 }
 /* one call of T's reveal; the glyphs it made */
 static unsigned tt_call(u64 t) {
@@ -3152,6 +3252,29 @@ static void test_text_tick(void) {
     text_tick_step(&s, entry_pc);
     text_tick_skip = 0;
     assert(gr32(TT_A + 0x100) == 3);
+    /* a reveal inside another runs as today, without the outer one's skip (CodeRabbit on 47a62a26):
+       (1) B nested in A on A's tick frame, in a frame that is not B's own tick, still makes its 2 glyphs */
+    text_tick_original[0] = tt_reveal_nest;
+    tt_reset();
+    tt_inner = 0;
+    tt_frame(16666667);
+    assert(tt_call(TT_B) == 2);
+    tt_frame(16666667);
+    assert(tt_call(TT_B) == 0); /* B's own decision this frame: no tick */
+    tt_inner = TT_B;
+    u32 inner_before = gr32(TT_B + 0x100);
+    assert(tt_call(TT_A) == 2 && gr32(TT_B + 0x100) - inner_before == 2);
+    /* (2) A nested in A on a frame that is not A's tick: the inner reveal's glyphs run, the outer one's are skipped */
+    tt_reset();
+    tt_inner = 0;
+    tt_frame(16666667);
+    assert(tt_call(TT_A) == 2);
+    tt_frame(16666667);
+    tt_inner = TT_A;
+    assert(tt_call(TT_A) == 2);
+    assert(!text_tick_skip && !text_tick_depth);
+    tt_inner = 0;
+    text_tick_original[0] = tt_reveal;
     /* a T paused for a frame and resumed starts fresh, its first call a tick (where the old state would skip); one
        called in consecutive frames keeps its state */
     tt_reset();
@@ -3516,6 +3639,7 @@ int main(void) {
     test_demo_tick();
     test_text_probe();
     test_text_probe_install();
+    test_probe_compile_restore();
     test_text_tick();
     test_ride_swap();
     test_defaults_on();

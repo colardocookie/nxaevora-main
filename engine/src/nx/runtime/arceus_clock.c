@@ -4706,6 +4706,9 @@ static void demo_probe_init(u64 base) {
     jit_code_changed(pc, size);
     demo_probe_original = jit_wait(pc);
     if (!demo_probe_original) {
+        /* Nothing is published, so the stock branch goes back: the demo tick's guard expects it */
+        gw32(pc + 0x1d8, 0x14000069);
+        jit_code_changed(pc, size);
         WARN("arceus-demo-probe: compile failed\n");
         return;
     }
@@ -4751,6 +4754,9 @@ static void event_probe_init(void) {
         jit_code_changed(pc, sites[k].size);
         event_probe_original[k] = jit_wait(pc);
         if (!event_probe_original[k]) {
+            /* Nothing is published at this site, so its stock word goes back: the event tick's guard expects it */
+            gw32(pc + sites[k].patch, sites[k].word);
+            jit_code_changed(pc, sites[k].size);
             WARN("arceus-event-probe: compile failed site=main+%llx\n", (unsigned long long)sites[k].offset);
             continue;
         }
@@ -4890,6 +4896,9 @@ static void event_tick_update(CPU* c, u64 entry) {
             job->fresh = 0;
             job->tick = (ScriptTick){.frame = frame, .decided = 1, .tick = 1, .frames = 1, .ticks = 1};
         }
+        /* One decision a frame for all of this job's calls in it: a job the game calls N times a frame runs N times on a
+           tick frame and none on the others, as at 30 FPS it runs N times every 1/30 s. A second run would not be a
+           second tick. */
         const int decided = job->tick.decided && job->tick.frame == frame;
         u64 cut;
         run = event_tick_decide(&job->tick, frame, ns, &cut);
@@ -5038,7 +5047,8 @@ static DemoTickState* demo_tick_state(u64 object, u64 context, u64 now) {
     for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++) {
         DemoTickState* st = &demo_tick_states[k];
         if (st->object == object) {
-            if (st->context != context) *st = (DemoTickState){object, context, 0, now};
+            /* another context, or one not stepped for a second (expired, so its carry is gone): fresh */
+            if (st->context != context || past_second(now, st->seen_ns)) *st = (DemoTickState){object, context, 0, now};
             st->seen_ns = now;
             return st;
         }
@@ -5154,6 +5164,8 @@ static u64 text_tick_calls, text_tick_ticks, text_tick_skipped, text_tick_full, 
 static unsigned text_tick_seen;
 /* The text whose reveal runs on this thread in a frame that is not its tick, 0 for none */
 static _Thread_local u64 text_tick_skip;
+/* The reveals running on this thread: one inside another runs as today, and without the outer one's skip */
+static _Thread_local unsigned text_tick_depth;
 /* Retirement by staleness (research's ruling on the user's look: no text was ever seen to end, and the table
    filled). A shown T is updated every frame, so a state whose T was not seen in the previous frame is free. */
 static int text_tick_stale(const TextTickState* st, u64 frame) { return !st->text || st->last + 1 < frame; }
@@ -5179,8 +5191,13 @@ static TextTickState* text_tick_state(u64 text, u64 generation, u64 frame) {
 }
 static void text_tick_reveal(CPU* c, u64 entry) {
     const u64 text = c->x[0];
-    if (text_tick_skip || !readable(text + 0x78, 8)) { /* nested, or a T we cannot key: as today */
+    if (text_tick_depth || !readable(text + 0x78, 8)) { /* nested, or a T we cannot key: as today */
+        const u64 outer = text_tick_skip;
+        text_tick_skip = 0; /* the outer reveal's skip is for its own glyph steps only */
+        text_tick_depth++;
         text_tick_original[0](c, entry);
+        text_tick_depth--;
+        text_tick_skip = outer;
         return;
     }
     const u64 generation = gr64(text + 0x78);
@@ -5205,7 +5222,9 @@ static void text_tick_reveal(CPU* c, u64 entry) {
         WARN("arceus-text-tick: table of %u texts full: text %llx reveals as today\n", TEXT_TICK_TEXTS,
              (unsigned long long)text);
     text_tick_skip = tick ? 0 : text;
+    text_tick_depth++;
     text_tick_original[0](c, entry);
+    text_tick_depth--;
     text_tick_skip = 0;
     __atomic_add_fetch(&text_tick_calls, 1, __ATOMIC_RELAXED);
     if (tick) __atomic_add_fetch(&text_tick_ticks, 1, __ATOMIC_RELAXED);
