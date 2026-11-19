@@ -41,15 +41,15 @@ static void landing_note(void* ctx, u32 from, u32 n) {
     gpu_mem_landed(d->addr + from, n);
 }
 
-/* runs NULL: every byte of the result. Else its changed runs, maximal and in order: a byte outside them is unchanged,
-   and a maximal changed byte range never crosses from one into the next (PERF-28) */
+/* runs NULL: every byte of the result. Else its changed runs (nruns of them, at least one), maximal and in order: a
+   byte outside them is unchanged, and a maximal changed byte range never crosses from one into the next (PERF-28) */
 static void write_changed(u64 addr, const u8* res, const u8* org, u32 size, const ChgRun* runs, u32 nruns) {
     /* res and org are host copies: the shader's output read back into host-cached memory, and the bytes it started
        from, snapshotted when it was bound (buffer.c, compute.c, surface.c). Comparing them reads no guest page, so it
        can't fault on one the GPU holds. Only cur below reads guest memory, after vk_rt_before_write */
     if (!size) return;
     if (in_guest(res, size) || in_guest(org, size)) fatal("vulkan: a storage result compared in guest memory");
-    if (runs ? !nruns : !memcmp(res, org, size)) return; /* nothing written: no guest read, allocation or flush */
+    if (!runs && !memcmp(res, org, size)) return; /* nothing written: no guest read, allocation or flush */
     vk_result_begin();
     vk_rt_before_write(addr, size);
     u8* dst = gmem_ptr(addr, size);
@@ -113,5 +113,5 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
     write_changed(addr, res, org, size, NULL, 0);
 }
 void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, const ChgRun* runs, u32 n) {
-    write_changed(addr, res, org, size, runs, n);
+    if (n) write_changed(addr, res, org, size, runs, n); /* none: nothing changed, as the whole memcmp finds */
 }

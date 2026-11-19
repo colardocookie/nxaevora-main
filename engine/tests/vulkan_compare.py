@@ -110,6 +110,13 @@ static void note(u64 kind, u64 a, u64 n) {
 static void vk_rt_before_write(u64 a, u64 n) { note(1, a, n); }
 static void gpu_mem_written_shader(u64 a, u64 n) { note(2, a, n); }
 static void gpu_mem_landed(u64 a, u64 n) { (void)a, (void)n; }
+/* the longest compare the copied code makes, to see a landing that compares a whole result again (reviewer N1) */
+static size_t memcmp_max;
+static int counted_memcmp(const void* a, const void* b, size_t n) {
+    if (n > memcmp_max) memcmp_max = n;
+    return memcmp(a, b, n);
+}
+#define memcmp counted_memcmp
 static unsigned result_depth;
 static void vk_result_begin(void) { result_depth++; }
 static void vk_result_end(void) { result_depth--; }
@@ -389,9 +396,25 @@ static void check_stale(void) {
         assert(!g_out);
         free_owned();
     }
+    /* a picked result that changed nothing lands with no compare of its bytes at all (reviewer N1) */
+    build(5, 0);
+    u32 s = 91;
+    GfxOut* q = make(&s, 1);
+    while (q->size < 64) free(q), q = make(&s, 1); /* long enough that a whole compare shows */
+    memcpy(q->ptr, q->org, q->size);
+    q->initial = NULL;
+    g_out = g_out_tail = q, q->next = NULL;
+    vk_buf_compare_ahead(1);
+    assert(q->runs_ok && !q->nruns && !q->runs);
+    memcmp_max = 0;
+    const u32 calls_before = ncalls;
+    vk_buf_frame_done(1);
+    assert(!g_out && memcmp_max < 8 && ncalls == calls_before);
+    free_owned();
     g_perf_compare = 0;
 }
 int main(void) {
+    alarm(120); /* a mark never cleared hangs a landing: fail instead (reviewer N3) */
     check_same();
     check_stale();
     check_race();
