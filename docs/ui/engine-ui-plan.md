@@ -34,14 +34,15 @@ Each unit is one reviewable pull request, or a short series of them. Each unit b
 `Windows build and test`, and has a game run by the user where the unit changes the runtime.
 
 1. **Move to the Engine** (layout). Section "Unit 1".
+   - Unit 1.5, **Removal of the other drivers and platforms**, comes after unit 1. Section "Unit 1.5".
 2. **Inventory of the UI and its functions**. Section "Unit 2". It is a document change, and it gates units 4 and 5.
 3. **CLI** (arguments, settings file, exit codes, progress). Section "Unit 3".
 4. **New UI base and the move of the functions**. Section "Unit 4". This unit has several pull requests: the
    selection prototype, the base, then one pull request for each group of functions.
 5. **Removal of the old UI and Dear ImGui**. Section "Unit 5".
 
-Unit 2 can start before unit 1 ends. Unit 3 starts after unit 1. Unit 4 needs the decision of the UI base and the
-settings definition of unit 3. Unit 5 comes last.
+Unit 2 can start before unit 1 ends. Unit 1.5 starts after unit 1 and ends before unit 3. Unit 3 starts after unit 1.
+Unit 4 needs the decision of the UI base and the settings definition of unit 3. Unit 5 comes last.
 
 ## Unit 1: Move to the Engine
 
@@ -70,6 +71,9 @@ settings definition of unit 3. Unit 5 comes last.
    - `docs/CREDITS.md` names the Engine as derived from ScarletNX.
    - The upstream `README.md`, `ROADMAP.md` and `docs/` inside the copy stay, or move to a subfolder that says they
      are the upstream documents. They are not deleted for the rename.
+   Changed 2026-11-18: the files `engine/UPSTREAM.md`, `engine/README.md`, `engine/ROADMAP.md`,
+   `engine/CONTRIBUTING.md` and `engine/docs/ROADMAP.md` are deleted, and the origin is recorded in the root files
+   (`README.md`, `CONTRIBUTING.md`, `docs/CREDITS.md` and `docs/build/runtime-changes.md`).
 6. Clean the local Claude files (`CLAUDE.md`, `.claude/WORK_PLAN.md`, `.claude/OLD-WORK_PLAN.md`, the skills and
    `.claude/settings.json`). They are local only and are not in the pull request. Replace the old path and the
    program name. Keep each valid note about the implementation (locks, threads, CRLF files, build traps). Remove
@@ -79,12 +83,41 @@ settings definition of unit 3. Unit 5 comes last.
 
 - Internal identifiers keep their names. A rename of an identifier is done only where it shows to the user.
 - The other drivers of ScarletNX (3DS, Vita, GBA, Linux programs in `src/3ds`, `src/vita`, `src/agb`,
-  `src/gnuabi`) are not part of this unit. Their removal is an open question (see the end of this file).
+  `src/gnuabi`) are not part of this unit. They are removed in unit 1.5.
 
 ### Exit check
 
 The Engine builds in `engine/`, `ctest` passes, CI passes, and the recompile and the start of the update program
 work with the new path and the new program name. The user runs the title screen once.
+
+## Unit 1.5: Removal of the other drivers and platforms
+
+Decision of the user (2026-11-16): the Engine keeps only the Switch driver. The Linux host build stays as a later
+target.
+
+### Steps
+
+1. PR A removes the guest drivers GBA (`engine/src/agb`), 3DS (`engine/src/3ds`), Vita (`engine/src/vita`) and the
+   Linux AArch64 ELF guest driver (`engine/src/gnuabi`), with their CMake targets, tests, CI steps, tools, GUI
+   entries and docs (`engine/docs/AGB.md`, `3DS.md`, `3DS-SUPERTUX.md`, `CTR-IPC.md`, `VITA.md`, `GNUABI.md`).
+   The old program name check at `engine/src/agb/runtime/main.c:103` goes with it.
+2. PR B removes the Android, iOS and macOS frontends and their build support, with `engine/docs/ANDROID.md` and
+   `engine/docs/APPLE.md`.
+3. Before each PR, an inventory lists every file, CMake target, test, CI step and document that the removal touches,
+   and the shared code that the Switch driver or the Linux host still uses. Shared code stays.
+
+### Limits
+
+- The Switch driver and the Linux host build do not change. No unrelated refactor.
+- The other recompiler targets (`engine/docs/PPC64.md`, `RISCV-LOONGARCH.md`) are not part of this unit (open
+  question).
+- CI is Windows only, so Linux-only code and tests can break and nobody sees it. A Linux CI task is proposed when
+  the Linux work starts.
+
+### Exit check
+
+The Engine builds, `ctest` passes, CI passes, `--help` and the GUI name no removed driver or platform, and the user
+runs the title screen once after each PR.
 
 ## Unit 2: Inventory of the UI and its functions
 
@@ -341,6 +374,8 @@ settings panel opened and closed, a battle, and a switch between window and full
 
 - The move to `engine/` touches every path in the build notes, CI and the skills. An old path breaks the build or
   the recompile procedure. Unit 1 searches every reference.
+- A removal of unit 1.5 can delete code that the Switch driver or the Linux host shares. The inventory of each PR
+  lists the shared code first.
 - A second UI base on the render thread can break the lock order, as with Dear ImGui.
 - Flutter needs its own engine library and runtime in the release. RmlUi needs more MD3 parts made by hand.
 - The Japanese IME was only partly done with Dear ImGui (no composition text). The new base must do better, or at
@@ -350,6 +385,8 @@ settings panel opened and closed, a battle, and a switch between window and full
 
 ## Open questions
 
-- Keep or remove the drivers for the other systems (3DS, Vita, GBA, Linux programs) in the Engine.
-- The program name (`nxaevora.exe` is the proposal) and the folder and file names of the data folder
-  (`%APPDATA%\scarletnx` now).
+- The drivers for the other systems (3DS, Vita, GBA, Linux AArch64 programs) and the Android, iOS and macOS
+  frontends are removed in unit 1.5 (decision of the user, 2026-11-16).
+- The other recompiler targets (`engine/docs/PPC64.md`, `engine/docs/RISCV-LOONGARCH.md`) are not part of unit 1.5.
+- The program name and the data folder are decided by PR #58: the program is `nxaevora-engine.exe` and the data
+  folder is `%APPDATA%\nxaevora`.

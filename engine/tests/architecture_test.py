@@ -44,57 +44,42 @@ class ArchitectureTests(unittest.TestCase):
             self.assertEqual(len(errors), 1)
             self.assertIn('common includes nx', errors[0])
 
-    def test_3ds_cannot_include_nx(self):
+    def test_nx_cannot_include_multicall(self):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             root = Path(temporary)
             for owner in architecture.BOUNDARIES:
                 (root / 'src' / owner).mkdir(parents=True)
-            (root / 'src/nx/horizon.h').write_text('/* private */\n', encoding='ascii')
-            (root / 'src/3ds/board.c').write_text('#include "../nx/horizon.h"\n', encoding='ascii')
+            (root / 'src/multicall/main.h').write_text('/* private */\n', encoding='ascii')
+            (root / 'src/nx/horizon.c').write_text('#include "../multicall/main.h"\n', encoding='ascii')
             errors = architecture.check_sources(root)
             self.assertEqual(len(errors), 1)
-            self.assertIn('3ds includes nx', errors[0])
+            self.assertIn('nx includes multicall', errors[0])
 
-    def test_3ds_cannot_link_nx_indirectly(self):
+    def test_common_cannot_link_nx_indirectly(self):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             graph = Path(temporary) / 'targets.dot'
             graph.write_text(
                 'digraph {\n"a" [label = "scarletnx-common"];\n'
-                '"b" [label = "scarletnx-3ds"];\n"c" [label = "adapter"];\n'
-                '"d" [label = "scarletnx-nx"];\n'
-                '"b" -> "a";\n"b" -> "c";\n"c" -> "d";\n}\n',
+                '"b" [label = "adapter"];\n'
+                '"c" [label = "scarletnx-nx"];\n'
+                '"a" -> "b";\n"b" -> "c";\n}\n',
                 encoding='ascii',
             )
             errors = architecture.check_graph(graph)
-            self.assertEqual(errors, ['scarletnx-3ds transitively links forbidden target scarletnx-nx'])
-
-    def test_ctr_cpu_cannot_link_legacy_compiler_runner(self):
-        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
-            graph = Path(temporary) / 'targets.dot'
-            graph.write_text(
-                'digraph {\n"a" [label = "scarletnx-common"];\n'
-                '"b" [label = "snx_ctr_cpu"];\n"c" [label = "adapter"];\n'
-                '"d" [label = "snx_arm_llvm"];\n'
-                '"b" -> "c";\n"c" -> "d";\n}\n',
-                encoding='ascii',
-            )
-            self.assertEqual(
-                architecture.check_graph(graph), ['snx_ctr_cpu transitively links forbidden target snx_arm_llvm']
-            )
+            self.assertEqual(errors, ['scarletnx-common transitively links forbidden target scarletnx-nx'])
 
     def test_transitive_graphics_link_is_rejected(self):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             graph = Path(temporary) / 'targets.dot'
             graph.write_text(
                 'digraph {\n"a" [label = "scarletnx-common", shape = octagon];\n'
-                '"b" [label = "scarletnx-gnuabi", shape = octagon];\n'
                 '"c" [label = "adapter", shape = octagon];\n'
                 '"d" [label = "snx_gpu", shape = octagon];\n'
-                '"b" -> "a";\n"b" -> "c";\n"c" -> "d";\n}\n',
+                '"a" -> "c";\n"c" -> "d";\n}\n',
                 encoding='ascii',
             )
             errors = architecture.check_graph(graph)
-            self.assertEqual(errors, ['scarletnx-gnuabi transitively links graphics/media target snx_gpu'])
+            self.assertEqual(errors, ['scarletnx-common transitively links graphics/media target snx_gpu'])
 
     def test_project_header_named_like_a_system_one_is_rejected(self):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
@@ -130,27 +115,27 @@ class ArchitectureTests(unittest.TestCase):
     def test_include_root_inside_src_is_rejected(self):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             repo = Path(temporary)
-            (repo / 'src/3ds/common').mkdir(parents=True)
+            (repo / 'src/nx/common').mkdir(parents=True)
             reply = repo / 'build/.cmake/api/v1/reply'
             reply.mkdir(parents=True)
             documents = {
                 'index-test.json': {'reply': {'codemodel-v2': {'jsonFile': 'model.json'}}},
                 'model.json': {
                     'configurations': [
-                        {'targets': [{'name': 'ctr', 'jsonFile': 'ctr.json'}, {'name': 'app', 'jsonFile': 'app.json'}]}
+                        {'targets': [{'name': 'lib', 'jsonFile': 'lib.json'}, {'name': 'app', 'jsonFile': 'app.json'}]}
                     ]
                 },
                 # src/ itself, a generated folder and the resource compiler's own folder pass
                 'app.json': {
                     'compileGroups': [
                         {'language': 'C', 'includes': [{'path': 'src'}, {'path': str(repo / 'build/generated')}]},
-                        {'language': 'RC', 'includes': [{'path': 'src/3ds/common'}]},
+                        {'language': 'RC', 'includes': [{'path': 'src/nx/common'}]},
                     ]
                 },
-                'ctr.json': {
+                'lib.json': {
                     'compileGroups': [
-                        {'language': 'C', 'includes': [{'path': 'src'}, {'path': str(repo / 'src/3ds/common')}]},
-                        {'language': 'CXX', 'includes': [{'path': 'src/3ds/common'}]},
+                        {'language': 'C', 'includes': [{'path': 'src'}, {'path': str(repo / 'src/nx/common')}]},
+                        {'language': 'CXX', 'includes': [{'path': 'src/nx/common'}]},
                     ]
                 },
             }
@@ -158,7 +143,7 @@ class ArchitectureTests(unittest.TestCase):
                 (reply / name).write_text(json.dumps(content), encoding='utf-8')
             errors = architecture.check_include_roots(repo, repo / 'build')
             self.assertEqual(
-                errors, ["src/3ds/common is on ctr's include path: include its headers as paths from src/"]
+                errors, ["src/nx/common is on lib's include path: include its headers as paths from src/"]
             )
 
     def test_include_flag_to_a_folder_of_src_is_rejected(self):

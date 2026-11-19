@@ -6,10 +6,10 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <volk.h>
-/* What the Vulkan frontends (the Switch's src/nx/gpu/vk, the 3DS's src/3ds/gpu/vk, the Vita's src/vita/gpu) share of
-   setting up a device: the instance, the extension and layer queries, the choice of a physical device and queue
-   family, memory types, pNext chains and the names of results. Each frontend keeps its own feature lists, queues and
-   resources. The calls go through volk, whose loader the frontend initialized. */
+/* What the Vulkan frontend (the Switch's src/nx/gpu/vk) shares of setting up a device: the instance, the extension
+   and layer queries, the choice of a physical device and queue family, memory types, pNext chains and the names of
+   results. The frontend keeps its own feature lists, queues and resources. The calls go through volk, whose loader
+   the frontend initialized. */
 
 /* VkResult's name ("VkResult" for one it doesn't name) */
 const char* snx_vk_result_str(VkResult r);

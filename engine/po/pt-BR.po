@@ -118,14 +118,6 @@ msgid "Load Switch NRO"
 msgstr "Abrir Switch NRO"
 
 #: src/gui/main.c
-msgid "Load Linux ARM ELF"
-msgstr "Abrir Linux ARM ELF"
-
-#: src/gui/main.c
-msgid "Load 3DS game"
-msgstr "Abrir jogo de 3DS"
-
-#: src/gui/main.c
 msgid "Settings"
 msgstr "Configurações"
 
@@ -815,16 +807,8 @@ msgid "Add a folder"
 msgstr "Adicionar pasta"
 
 #: src/gui/main.c
-msgid "Linux ARM ELF, run with scarletnx-gnuabi"
-msgstr "ELF Linux ARM, rodado com o scarletnx-gnuabi"
-
-#: src/gui/main.c
 msgid "The recent games not shown"
 msgstr "Os jogos recentes não mostrados"
-
-#: src/gui/main.c
-msgid "3DS game, opened with scarletnx-3ds"
-msgstr "Jogo de 3DS, aberto com o scarletnx-3ds"
 
 #: src/gui/main.c
 msgid "A dump, prepared when it runs"
@@ -1148,11 +1132,6 @@ msgstr "Padrões restaurados: nada foi movido"
 #, c-format
 msgid "%s folder %s %s. Settings > App > Folders picks another."
 msgstr "A pasta %s %s %s. Configurações > App > Pastas escolhe outra."
-
-#: src/gui/main.c
-#, c-format
-msgid "Needs about %s, %s free."
-msgstr "Precisa de uns %s, %s livres."
 
 #: src/gui/main.c
 #, c-format

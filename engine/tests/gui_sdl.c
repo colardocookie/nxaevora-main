@@ -556,15 +556,6 @@ static bool has_arg(const char* argv, const char* arg, const char* after) {
     }
     return false;
 }
-/* a console's game not made yet, opened: its first compile through driver, its own (no Switch flag), -r before file
-   and its data folder, run to its end with status (driver_will) */
-static void compiled_by(App* app, const char* driver, const char* file, int status) {
-    char* argv = ran(app, status);
-    assert(strstr(argv, driver) && strstr(argv, driver) < strchr(argv, '\n') && has_arg(argv, "-r", file) &&
-           has_arg(argv, "--data", app->data_dir) && !has_arg(argv, "-S", NULL) &&
-           !has_arg(argv, "--fullscreen=1", NULL));
-    free(argv);
-}
 /* the stamp this build's driver leaves in the game name's folder (<folder>/<name>.abi), as a game it made with no mod has:
    the launcher plays that game as it is (made_here) */
 static void stamp_here(const char* folder, const char* name) {
@@ -1246,7 +1237,7 @@ static void view_box(App* app, const char* temporary) {
     char* was_recent_file = app->recent_file;
     GuiRecent was_recent = app->recent;
     int was_folders = app->folder_count;
-    char *root = snx_path_join(temporary, "view box"), *dumps = snx_path_join(root, "dumps"), *dump, *game, *kept, *cia;
+    char *root = snx_path_join(temporary, "view box"), *dumps = snx_path_join(root, "dumps"), *dump, *game, *kept, *extra;
     char* was_folder = app->folders[0];
     int was_library = app->folders_library[0];
     bool was_deep = app->folders_deep[0];
@@ -1271,13 +1262,13 @@ static void view_box(App* app, const char* temporary) {
         free(delta);
     }
     dump = snx_path_join(dumps, "beta dump.nro");
-    cia = snx_path_join(app->games_dir, "gamma.cia"); /* in the dumps' group, with them */
-    assert(!snx_mkdirs(dumps) && !snx_write_file(dump, "dump", 4) && !snx_write_file(cia, "cia", 3));
+    extra = snx_path_join(dumps, "gamma dump.nro"); /* in the dumps' group, with them */
+    assert(!snx_mkdirs(dumps) && !snx_write_file(dump, "dump", 4) && !snx_write_file(extra, "dump", 4));
     app->recent = (GuiRecent){0};
     assert(!gui_recent_add(&app->recent, game, GUI_SWITCH, 1)); /* a game, as Games opens one */
     go_tab(app, GUI_TAB_GAMES);
     assert(recent_on(app) && dumps_on(app) && app->browser.head == 1 && games_lists(app, "Dumps") &&
-           games_lists(app, "beta dump.nro") && games_lists(app, "gamma.cia") && games_lists(app, "alpha game"));
+           games_lists(app, "beta dump.nro") && games_lists(app, "gamma dump.nro") && games_lists(app, "alpha game"));
     { /* a dump's row has no icon, and no driver is started for one */
         char* got = snx_path_join(root, "icon driver argv");
         driver_will(got, 0, "the fake driver ran");
@@ -1313,7 +1304,7 @@ static void view_box(App* app, const char* temporary) {
     key(app, SDLK_DOWN);
     assert(app->options_focus == 1);
     key(app, SDLK_RIGHT);
-    assert(!dumps_on(app) && app->games.count == 3 && games_lists(app, "alpha game") && !games_lists(app, "gamma.cia"));
+    assert(!dumps_on(app) && app->games.count == 3 && games_lists(app, "alpha game") && !games_lists(app, "gamma dump.nro"));
     /* Down, then Left: Sort by the last opened, the game whose log a run wrote last first, one never run after them */
     assert(!strcmp(app->games.names[0], "alpha game") && !strcmp(app->games.names[1], "delta game") &&
            !strcmp(app->games.names[2], "epsilon game"));
@@ -1460,7 +1451,7 @@ static void view_box(App* app, const char* temporary) {
     assert(!snx_remove_tree(root));
     free(game);
     free(dump);
-    free(cia);
+    free(extra);
     free(dumps);
     free(root);
 }
@@ -3166,11 +3157,6 @@ int main(int argc, char** argv) {
     if (argc > 1) {
         assert(argc == 2 || argc == 6);
         assert(snx_is_file(argv[1]));
-        if (strstr(argv[1], "Game00")) {
-            assert(argc == 2 && strstr(argv[0], "gnuabi"));
-            puts("Linux file selected from games/");
-            return 0;
-        }
         assert(strstr(argv[1], "game with spaces"));
         bool nx = strstr(argv[0], "runtime") != NULL; /* the program the menu is part of */
         if (nx)
@@ -3284,7 +3270,7 @@ int main(int argc, char** argv) {
     char* self = snx_executable(argv[0]);
     char* input = snx_path_join(temporary, "game with spaces;literal.nro");
     assert(!snx_write_file(input, "0", 1));
-    const char* names[] = {"runtime", "scarletnx-gnuabi", "scarletnx-3ds", "scarletnx-vita", "scarletnx-agb"};
+    const char* names[] = {"runtime"};
     for (size_t i = 0; i < sizeof names / sizeof *names; ++i) {
 #ifdef _WIN32
         char* filename = snx_format("%s.exe", names[i]);
@@ -3398,64 +3384,10 @@ int main(int argc, char** argv) {
     shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NRO", yellow);
     assert(!app.menu.activated);
     key(&app, SDLK_DOWN);
-    key(&app, SDLK_RIGHT);
-    assert(app.menu.selected == GUI_3DS);
-    render(&app);
-    shows(&app, "- " ICON_BOX " Load 3DS game", yellow);
-    shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NRO", normal);
-    key(&app, SDLK_RIGHT);
-    assert(app.menu.selected == GUI_VITA);
-    render(&app);
-    shows(&app, "- " ICON_PACKAGE " Load Vita VPK", yellow);
-    key(&app, SDLK_RIGHT);
-    assert(app.menu.selected == GUI_GBA);
-    render(&app);
-    shows(&app, "- " ICON_GAMEPAD " Load GBA ROM", yellow);
-    /* a load whose driver is neither beside the menu nor on PATH (on iOS the four the app leaves out) is greyed, still
-       there, as soon as the folder or PATH it is looked for in changes, and Enter on it says which driver rather than
-       opening its screen; put back, Enter looks again and opens it; gone again, the row greys within a second (#640) */
-    {
-#ifdef _WIN32
-        char* vita = snx_path_join(app.drivers, "scarletnx-vita.exe");
-#else
-        char* vita = snx_path_join(app.drivers, "scarletnx-vita");
-#endif
-        char* aside = snx_format("%s.aside", vita);
-        char* path = SDL_strdup(getenv("PATH"));
-        assert(!rename(vita, aside));
-        set_env("PATH", "/nonexistent"); /* none of the machine's own */
-        render(&app);
-        shows(&app, "- " ICON_PACKAGE " Load Vita VPK", rgb(app.theme.soft)); /* not focused, greyed */
-        shows(&app, "- " ICON_BOX " Load 3DS game", normal);                  /* its driver there */
-        app.menu.selected = GUI_VITA;
-        key(&app, SDLK_RETURN);
-        assert(app.menu.view == GUI_LOAD_NONE && !app.menu.activated && app.menu.selected == GUI_VITA);
-        assert(!strcmp(app.message, "Cannot find scarletnx-vita beside ScarletNX or on PATH."));
-        render(&app);
-        shows(&app, "- " ICON_PACKAGE " Load Vita VPK", rgb(app.theme.soft)); /* focused, greyed */
-        hides(&app, "- " ICON_PACKAGE " Load Vita VPK", yellow);
-        assert(!rename(aside, vita));
-        key(&app, SDLK_RETURN); /* looked for again as it is pressed */
-        assert(app.menu.view == GUI_LOAD_DROP && app.menu.active == GUI_VITA);
-        key(&app, SDLK_ESCAPE);
-        /* gone again, nothing else changed: greyed once it was looked for a second ago */
-        assert(!rename(vita, aside));
-        if (SDL_GetTicks() < 1001) SDL_Delay((Uint32)(1001 - SDL_GetTicks()));
-        app.loads_at = SDL_GetTicks() - 1000;
-        render(&app);
-        shows(&app, "- " ICON_PACKAGE " Load Vita VPK", rgb(app.theme.soft));
-        assert(!rename(aside, vita));
-        set_env("PATH", path);
-        SDL_free(path);
-        free(aside);
-        free(vita);
-        app.menu.activated = false;
-        app.menu.active = GUI_SWITCH;
-        app.menu.selected = GUI_GBA;
-        app.message[0] = 0;
-    }
-    key(&app, SDLK_RIGHT);
     assert(app.menu.selected == GUI_SETTINGS);
+    render(&app);
+    shows(&app, "- " ICON_SETTINGS " Settings", yellow);
+    shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NRO", normal);
     render(&app);
     shows_half(&app, "The game's .ini settings,",
                normal);         /* what it is about, in the tips, a half step under the text's */
@@ -5773,10 +5705,6 @@ int main(int argc, char** argv) {
         }
     }
     key(&app, SDLK_UP);
-    key(&app, SDLK_LEFT);
-    key(&app, SDLK_LEFT);
-    key(&app, SDLK_LEFT);
-    key(&app, SDLK_LEFT);
     /* a load opens the screen its file is picked on at once: games/ is Games' now, not an option under it */
     assert(app.menu.selected == GUI_SWITCH);
     pump(&app);
@@ -5793,11 +5721,11 @@ int main(int argc, char** argv) {
     key(&app, SDLK_ESCAPE);
     assert(app.menu.view == GUI_LOAD_NONE && app.menu.selected == GUI_SWITCH);
     /* the activated item stays pink while the mouse hovers another in yellow; a click selects */
-    point(&app, entry_box(&app, GUI_LINUX), false);
-    assert(app.menu.selected == GUI_LINUX && app.menu.active == GUI_SWITCH && app.menu.view == GUI_LOAD_NONE);
+    point(&app, entry_box(&app, GUI_SETTINGS), false);
+    assert(app.menu.selected == GUI_SETTINGS && app.menu.active == GUI_SWITCH && app.menu.view == GUI_LOAD_NONE);
     render(&app);
     shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NRO", pink);
-    shows(&app, "- " ICON_SQUARE_TERMINAL " Load Linux ARM ELF", yellow);
+    shows(&app, "- " ICON_SETTINGS " Settings", yellow);
     point(&app, entry_box(&app, GUI_SWITCH), true);
     assert(app.menu.view == GUI_LOAD_DROP && app.menu.active == GUI_SWITCH);
     {
@@ -5823,46 +5751,12 @@ int main(int argc, char** argv) {
     }
     /* the NRO made already: opening it plays it, as below (a game not made compiles first) */
     char* input_made = made_game(&app, input, "game with spaces");
-    app.menu.selected = GUI_LINUX; /* a drop runs the item that opened the screen */
+    app.menu.selected = GUI_SWITCH; /* a drop runs the item that opened the screen */
     SDL_Event e = {0};
     e.type = SDL_EVENT_DROP_TEXT;
     e.drop.data = "one\ntwo";
     event(&app, &e);
     assert(app.menu.view == GUI_LOAD_DROP && !app.menu.running);
-    /* a file whose name says another console's, as Android's picker hands any: refused, saying the load that opens it,
-       or the driver it needs where that is not there, looked for again at once; nothing runs or queues */
-    {
-        char* card = snx_path_join(temporary, "a card.cci");
-#ifdef _WIN32
-        char* ctr = snx_path_join(app.drivers, "scarletnx-3ds.exe");
-#else
-        char* ctr = snx_path_join(app.drivers, "scarletnx-3ds");
-#endif
-        char* aside = snx_format("%s.aside", ctr);
-        char* path = SDL_strdup(getenv("PATH"));
-        set_env("PATH", "/nonexistent"); /* none of the machine's own */
-        assert(!snx_write_file(card, "card", 4));
-        drop(&app, card, false);
-        assert(app.menu.selected == GUI_SWITCH && !app.menu.running && !app.queue.count);
-        assert(!strcmp(app.message, "a card.cci opens with Load 3DS game, not Load Switch NRO."));
-        assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR);
-        key(&app, SDLK_RETURN);
-        assert(!app.confirm.shown && app.menu.view == GUI_LOAD_DROP);
-        assert(!rename(ctr, aside)); /* gone within the second the loads were looked for in */
-        drop(&app, card, false);
-        assert(!app.menu.running && !app.queue.count && app.confirm.shown);
-        assert(!strcmp(app.message,
-                       "a card.cci opens with Load 3DS game: cannot find scarletnx-3ds beside ScarletNX or on PATH."));
-        key(&app, SDLK_RETURN);
-        assert(!rename(aside, ctr));
-        set_env("PATH", path);
-        SDL_free(path);
-        free(aside);
-        free(ctr);
-        remove(card);
-        free(card);
-        app.message[0] = 0;
-    }
     e.type = SDL_EVENT_DROP_FILE;
     e.drop.data = input;
     free(app.run_log);                                      /* Folders' Logs may have set one */
@@ -5930,25 +5824,6 @@ int main(int argc, char** argv) {
         free(kept);
     }
     made_gone(&app, input_made);
-    key(&app, SDLK_DOWN);
-    key(&app, SDLK_SPACE);
-    assert(app.menu.selected == GUI_LINUX && app.menu.view == GUI_LOAD_DROP);
-    /* a Linux program's name says no console (an .nro there would be the Switch's, refused above) */
-    char* program = snx_path_join(temporary, "game with spaces;literal");
-    assert(!snx_write_file(program, "1", 1));
-    char* quoted = snx_format("\"%s\"", program);
-    e.type = SDL_EVENT_DROP_TEXT;
-    e.drop.data = quoted;
-    event(&app, &e);
-    free(quoted);
-    assert(app.menu.running);
-    finish(&app, 7);
-    size_t size;
-    unsigned char* runs = snx_read_file(program, &size);
-    assert(runs && size == 1 && runs[0] == '2');
-    free(runs);
-    remove(program);
-    free(program);
     char* flags_input = snx_path_join(temporary, "option flags.nro");
     assert(!snx_write_file(flags_input, "fixture", 7));
     input_made = made_game(&app, flags_input, "option flags");
@@ -5960,7 +5835,7 @@ int main(int argc, char** argv) {
     assert(!app.native && gui_steps_last(&app.steps, "LAUNCH"));
     launcher(&app, false);
     made_gone(&app, input_made);
-    app.menu.selected = GUI_LINUX;
+    app.menu.selected = GUI_SWITCH;
     free(flags_input);
 
     /* a dump with more than one folder of the recompiled library that can take its game: asked which, its Main first
@@ -6100,9 +5975,9 @@ int main(int argc, char** argv) {
             snprintf(start, sizeof start, "%s", app.recent.game[0].path);
             shows(&app, start, normal);
         }
-        app.menu.selected = GUI_LINUX;
+        app.menu.selected = GUI_SWITCH;
         key(&app, SDLK_RETURN);
-        assert(!app.confirm.shown && app.menu.running && app.menu.selected == GUI_LINUX &&
+        assert(!app.confirm.shown && app.menu.running && app.menu.selected == GUI_SWITCH &&
                app.recent.game[0].driver == GUI_SWITCH);
         finish(&app, 0);
         assert(app.recent.count == 1 && app.menu.view == GUI_LOAD_NONE);
@@ -6225,181 +6100,21 @@ int main(int argc, char** argv) {
         app.recent_file = NULL;
         app.message[0] = 0;
         launcher(&app, false);
-        app.menu.selected = GUI_LINUX;
+        app.menu.selected = GUI_SWITCH;
         free(again);
         free(recent_file);
     }
 
     view_box(&app, temporary);
     grid_view(&app, temporary);
-    /* 3DS: its own driver for drops, CIA browser and recents, with no Switch
-       flags or direct execution, even when another item is hovered. */
-    {
-        char* original_games = app.games_dir;
-        char* recent_file = snx_path_join(temporary, "prefs/3ds-recent.txt");
-        app.games_dir = snx_path_join(temporary, "cia-games");
-        char* cia = snx_path_join(app.games_dir, "3ds input.CIA");
-        assert(!snx_mkdirs(app.games_dir) && !snx_write_file(cia, "fixture", 7));
-        char* got = snx_path_join(temporary, "driver argv");
-        recent_open(&app, snx_strdup(recent_file));
-        launcher(&app, true);
-        driver_will(got, 3, "the CIA is no game");
-        point(&app, entry_box(&app, GUI_3DS), true);
-        assert(app.menu.view == GUI_LOAD_DROP && app.menu.active == GUI_3DS);
-        point(&app, entry_box(&app, GUI_LINUX), false); /* where Linux's was: nothing there now */
-        e.type = SDL_EVENT_DROP_FILE;
-        e.drop.data = cia;
-        event(&app, &e);
-        assert(launched(&app) && app.menu.selected == GUI_3DS && !app.native);
-        compiled_by(&app, "scarletnx-3ds", cia, 3);
-        assert(app.recent.count == 1 && app.recent.game[0].driver == GUI_3DS && !app.recent.game[0].prepared);
-        GuiRecent kept;
-        gui_recent_load(&kept, recent_file);
-        assert(kept.count == 1 && kept.game[0].driver == GUI_3DS && !kept.game[0].prepared);
-        open_recent(&app, 0);
-        compiled_by(&app, "scarletnx-3ds", cia, 3);
-        /* a CIA in games/ is one of Games', which compiles it with the 3DS driver */
-        go_tab(&app, GUI_TAB_GAMES);
-        assert(app.menu.view == GUI_LOAD_GAMES && app.games.count == 1);
-        app.browser.selected = app.browser.head; /* the game, under the recent one */
-        key(&app, SDLK_RETURN);
-        assert(launched(&app) && !app.native && app.menu.selected == GUI_3DS);
-        compiled_by(&app, "scarletnx-3ds", cia, 3);
-        driver_will(NULL, 0, NULL);
-        free(got);
-        app.recent = (GuiRecent){0};
-        recent_changed(&app);
-        free(app.recent_file);
-        app.recent_file = NULL;
-        launcher(&app, false);
-        app.menu.selected = GUI_LINUX;
-        free(app.games_dir);
-        app.games_dir = original_games;
-        app.games_stamp = stamp_now(&app);
-        free(cia);
-        free(recent_file);
-    }
-    /* Vita: the same, a VPK with scarletnx-vita */
-    {
-        char* original_games = app.games_dir;
-        char* recent_file = snx_path_join(temporary, "prefs/vita-recent.txt");
-        app.games_dir = snx_path_join(temporary, "vpk-games");
-        char* vpk = snx_path_join(app.games_dir, "vita input.VPK");
-        assert(!snx_mkdirs(app.games_dir) && !snx_write_file(vpk, "fixture", 7));
-        char* got = snx_path_join(temporary, "driver argv");
-        recent_open(&app, snx_strdup(recent_file));
-        launcher(&app, true);
-        driver_will(got, 4, "the VPK has no eboot.bin");
-        point(&app, entry_box(&app, GUI_VITA), true);
-        assert(app.menu.view == GUI_LOAD_DROP && app.menu.active == GUI_VITA);
-        e.type = SDL_EVENT_DROP_FILE;
-        e.drop.data = vpk;
-        event(&app, &e);
-        assert(launched(&app) && app.menu.selected == GUI_VITA && !app.native);
-        compiled_by(&app, "scarletnx-vita", vpk, 4);
-        assert(app.recent.count == 1 && app.recent.game[0].driver == GUI_VITA && !app.recent.game[0].prepared);
-        GuiRecent kept;
-        gui_recent_load(&kept, recent_file);
-        assert(kept.count == 1 && kept.game[0].driver == GUI_VITA && !kept.game[0].prepared);
-        go_tab(&app, GUI_TAB_GAMES);
-        assert(app.menu.view == GUI_LOAD_GAMES && app.games.count == 1);
-        app.browser.selected = app.browser.head;
-        key(&app, SDLK_RETURN);
-        assert(launched(&app) && !app.native && app.menu.selected == GUI_VITA);
-        compiled_by(&app, "scarletnx-vita", vpk, 4);
-        driver_will(NULL, 0, NULL);
-        free(got);
-        app.recent = (GuiRecent){0};
-        recent_changed(&app);
-        free(app.recent_file);
-        app.recent_file = NULL;
-        launcher(&app, false);
-        app.menu.selected = GUI_LINUX;
-        free(app.games_dir);
-        app.games_dir = original_games;
-        app.games_stamp = stamp_now(&app);
-        free(vpk);
-        free(recent_file);
-    }
-    /* GBA: a ROM through scarletnx-agb as a VPK through its driver; then a game a driver made, its folder's .ini saying
-       gba: Games shows it ready, Enter plays it in its folder through that driver, and Recent keeps it made */
-    {
-        char* original_games = app.games_dir;
-        char* recent_file = snx_path_join(temporary, "prefs/gba-recent.txt");
-        app.games_dir = snx_path_join(temporary, "gba-games");
-        char* rom = snx_path_join(app.games_dir, "agb input.gba");
-        char* folder = snx_path_join(app.games_dir, "made");
-#ifdef _WIN32
-        char* program = snx_path_join(folder, "made.exe"); /* a game there is an .exe */
-#else
-        char* program = snx_path_join(folder, "made");
-#endif
-        char kind[160];
-        size_t i;
-        assert(!snx_mkdirs(app.games_dir) && !snx_write_file(rom, "fixture", 7));
-        assert(gui_settings_set(&app.settings, "fullscreen", "1"));
-        char *got = snx_path_join(temporary, "driver argv"), *argv_got, *game_arg = snx_format("--game=%s", folder);
-        recent_open(&app, snx_strdup(recent_file));
-        launcher(&app, true);
-        driver_will(got, 4, "the ROM is no game");
-        point(&app, entry_box(&app, GUI_GBA), true);
-        assert(app.menu.view == GUI_LOAD_DROP && app.menu.active == GUI_GBA);
-        e.type = SDL_EVENT_DROP_FILE;
-        e.drop.data = rom;
-        event(&app, &e);
-        assert(launched(&app) && app.menu.selected == GUI_GBA && !app.native);
-        compiled_by(&app, "scarletnx-agb", rom, 4);
-        assert(app.recent.count == 1 && app.recent.game[0].driver == GUI_GBA && !app.recent.game[0].prepared);
-        assert(!snx_mkdirs(folder) && !snx_write_file(program, "#!/bin/sh\n", 10) && !snx_make_executable(program));
-        assert(!snx_record_system(folder, "made", SNX_SYSTEM_GBA));
-        app.games_stamp = stamp_now(&app);
-        go_tab(&app, GUI_TAB_GAMES);
-        for (i = 0; i < app.games.count && (!app.games.names[i] || strcmp(app.games.names[i], "made")); ++i);
-        assert(i < app.games.count);
-        game_kind(&app, &app.games, i, kind, sizeof kind);
-        assert(!strcmp(kind, "GBA game, ready to run"));
-        app.browser.selected = app.browser.head + i;
-        driver_will(got, 5, "ScarletNX - made"); /* a game made: played in its folder, fullscreen as Settings say */
-        key(&app, SDLK_RETURN);
-        assert(app.menu.running && !app.native && app.menu.selected == GUI_GBA);
-        argv_got = ran(&app, 5);
-        assert(strstr(argv_got, "scarletnx-agb") < strchr(argv_got, '\n') && has_arg(argv_got, game_arg, NULL) &&
-               has_arg(argv_got, "--fullscreen=1", NULL) && !has_arg(argv_got, "--data", NULL));
-        free(argv_got);
-        assert(app.recent.game[0].driver == GUI_GBA && app.recent.game[0].prepared &&
-               !strcmp(app.recent.game[0].path, program));
-        /* the ROM in the games folder is one of Games', which Enter plays through scarletnx-agb as a CIA's */
-        leave_run(&app);
-        go_tab(&app, GUI_TAB_GAMES);
-        focus_game(&app, "agb input.gba");
-        game_kind(&app, &app.games, app.browser.page * app.browser.page_size + app.browser.selected - app.browser.head,
-                  kind, sizeof kind);
-        assert(!strcmp(kind, "GBA ROM, played with scarletnx-agb"));
-        driver_will(got, 4, "the ROM is no game");
-        key(&app, SDLK_RETURN);
-        assert(launched(&app) && !app.native && app.menu.selected == GUI_GBA);
-        compiled_by(&app, "scarletnx-agb", rom, 4);
-        driver_will(NULL, 0, NULL);
-        free(game_arg);
-        free(got);
-        app.recent = (GuiRecent){0};
-        recent_changed(&app);
-        free(app.recent_file);
-        app.recent_file = NULL;
-        launcher(&app, false);
-        app.menu.selected = GUI_LINUX;
-        free(app.games_dir);
-        app.games_dir = original_games;
-        app.games_stamp = stamp_now(&app);
-        free(program);
-        free(folder);
-        free(rom);
-        free(recent_file);
-    }
 
+    size_t size;
     char* hung = snx_path_join(temporary, "hang in join.elf");
     assert(!snx_write_file(hung, "", 0));
+    char* hung_game = made_game(&app, hung, "hang in join"); /* the Switch game the dump made, which a run plays */
+    app.menu.selected = GUI_SWITCH;
     launch(&app, snx_strdup(hung), false);
+    play_made(&app);
     Uint64 until = SDL_GetTicks() + 5000;
     bool ready = false;
     while (SDL_GetTicks() < until) {
@@ -6450,7 +6165,9 @@ int main(int argc, char** argv) {
     shows_half(&app, "Aborted with ESC.", red); /* in the tips */
     /* a finger on a running run's ESC line aborts it, anywhere else it does nothing */
     assert(!snx_write_file(hung, "", 0));
+    app.menu.selected = GUI_SWITCH;
     launch(&app, snx_strdup(hung), false);
+    play_made(&app);
     for (until = SDL_GetTicks() + 5000, ready = false; !ready && SDL_GetTicks() < until; SDL_Delay(5)) {
         unsigned char* data = snx_read_file(hung, &size);
         ready = data && size == 5 && !memcmp(data, "ready", 5);
@@ -6481,7 +6198,9 @@ int main(int argc, char** argv) {
     assert(!app.menu.running && app.abnormal_exit);
     /* closed while it runs, Exit: the run ends, then the screen of what the menu keeps for half a second, then out */
     assert(!snx_write_file(hung, "", 0));
+    app.menu.selected = GUI_SWITCH;
     launch(&app, snx_strdup(hung), false);
+    play_made(&app);
     for (until = SDL_GetTicks() + 5000, ready = false; !ready && SDL_GetTicks() < until; SDL_Delay(5)) {
         unsigned char* data = snx_read_file(hung, &size);
         ready = data && size == 5 && !memcmp(data, "ready", 5);
@@ -6530,7 +6249,9 @@ int main(int argc, char** argv) {
         app.ask_abort = true;
         for (pass = 0; pass < 2; ++pass) {
             assert(!snx_write_file(hung, "", 0));
+            app.menu.selected = GUI_SWITCH;
             launch(&app, snx_strdup(hung), false);
+            play_made(&app);
             for (until = SDL_GetTicks() + 5000, ready = false; !ready && SDL_GetTicks() < until; SDL_Delay(5)) {
                 unsigned char* data = snx_read_file(hung, &size);
                 ready = data && size == 5 && !memcmp(data, "ready", 5);
@@ -6633,7 +6354,39 @@ int main(int argc, char** argv) {
         assert(!app.finished && !app.confirm.shown);
         app.ask_abort = false;
     }
+    made_gone(&app, hung_game);
     free(hung);
+
+    /* a program in games/ whose .ini says another console, with no <name>_data: Games lists it, and Enter refuses it
+       with the message that names its folder; it starts no process and no compile */
+    {
+        char* folder = snx_path_join(app.games_dir, "guest made"), *ini = snx_path_join(folder, "guest made.ini");
+#ifdef _WIN32
+        char* program = snx_path_join(folder, "guest made.exe");
+#else
+        char* program = snx_path_join(folder, "guest made");
+#endif
+        char* expected;
+        assert(!snx_mkdirs(folder) && !snx_write_file(program, "fixture", 7) && !snx_make_executable(program) &&
+               !snx_write_file(ini, "[Game]\nsystem=gba\n", 18));
+        assert(program_driver(program) == -1);
+        go_tab(&app, GUI_TAB_GAMES);
+        assert(app.menu.view == GUI_LOAD_GAMES && app.games.count == 1);
+        app.browser.selected = app.browser.head; /* the game, under no recent row */
+        key(&app, SDLK_RETURN);
+        assert(!app.menu.running && !app.queue.count);
+        expected = snx_format("%s is not a Switch game: ScarletNX plays Switch games only.", folder);
+        assert(!strcmp(app.message, expected));
+        assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR);
+        key(&app, SDLK_RETURN);
+        assert(!app.confirm.shown);
+        free(expected);
+        assert(!snx_remove_tree(folder));
+        free(program);
+        free(ini);
+        free(folder);
+        list_games(&app);
+    }
 
     /* Games: a tab of its own, not an item of the menu; its browser filters, pages and launches both ways. Reopening
        refreshes the folders rather than caching them */
@@ -7142,11 +6895,13 @@ int main(int argc, char** argv) {
         assert(gui_steps_last(&app.steps, "RECOMPILE") && gui_steps_last(&app.steps, "LAUNCH"));
         app.menu.selected = item;
         /* R on it recompiles it through the driver with the backend picked and no option of a run (-S -s, the
-           settings), playing nothing; R on Add Folder or a CIA says why it does nothing. The foot says so, and its
+           settings), playing nothing; R on Add Folder says why it does nothing. The foot says so, and its
            word presses R as the key does */
         {
-            char* cia = snx_path_join(app.games_dir, "r test.cia");
-            assert(!snx_write_file(cia, "fixture", 7));
+            char* dumps = snx_path_join(app.data_dir, "dumps");
+            char* dump = snx_path_join(dumps, "r test.nro"); /* a second group, so row 0 is a heading */
+            bool had_dumps = snx_is_dir(dumps);
+            assert(!snx_mkdirs(dumps) && !snx_write_file(dump, "fixture", 7));
             go_tab(&app, GUI_TAB_GAMES);
             render(&app);
             shows_foot(&app, "R", yellow); /* its key, then what it does */
@@ -7174,28 +6929,6 @@ int main(int argc, char** argv) {
             app.browser.selected = 0;
             key(&app, SDLK_R);
             assert(!app.menu.running && !strcmp(app.message, "No game in focus to recompile."));
-            focus_game(&app, "r test.cia");
-            { /* R is said on any console's game, M on a Switch one alone: R on a CIA, not M */
-                char said[512];
-                assert(strstr(screen_said(&app, true, said, sizeof said), "R: recompile.") &&
-                       !strstr(said, "M: mods."));
-            }
-            {
-                GuiRecent was = app.recent;
-                char* got = snx_path_join(temporary, "driver argv");
-                driver_will(got, 0, "Built r test");
-                key(&app, SDLK_R); /* through the 3DS driver's -r, as a Switch game's through scarletnx -r: queued */
-                assert(launched(&app) && !app.menu.running); /* the menu keeps its item: the job has its console */
-                assert(app.queue.job[0].kind == GUI_JOB_RECOMPILE && app.queue.job[0].console == GUI_3DS &&
-                       !app.queue.job[0].native);
-                compiled_by(&app, "scarletnx-3ds", cia, 0);
-                driver_will(NULL, 0, NULL);
-                free(got);
-                assert(!app.recompile);
-                app.recent = was;
-                recent_changed(&app);
-                go_tab(&app, GUI_TAB_GAMES);
-            }
             focus_game(&app, "folder game");
             {
                 char said[512];
@@ -7326,8 +7059,11 @@ int main(int argc, char** argv) {
             assert(gui_steps_last(&app.ended_steps, "BUILD") && !gui_steps_last(&app.ended_steps, "LAUNCH"));
             launcher(&app, false);
             app.menu.selected = item;
-            assert(!snx_remove_tree(cia));
-            free(cia);
+            /* the second game the checks above compare against, as the removed CIA was */
+            assert(!snx_remove_tree(dump));
+            if (!had_dumps) assert(!snx_remove_tree(dumps));
+            free(dump);
+            free(dumps);
         }
         /* a game's save states (S on Games): a row each, the newest first, the focused one's picture beside the box;
            one this build can't load in the failure colour, Enter saying why; Del deletes one, asked first; Enter
@@ -7914,8 +7650,8 @@ int main(int argc, char** argv) {
         menu_boxes(&app, &m);
         assert(m.place.stacked);
         shown = (int)ui_menu_shown(m.rects, app.scale, UI_MENU_ENTRIES);
-        assert(app.scale == GUI_TEXT_MAX && app.rows == 16 && shown < GUI_ITEM_COUNT &&
-               !m.lists[UI_MENU_ENTRIES].first);
+        assert(app.scale == GUI_TEXT_MAX && app.rows == 16 && !m.lists[UI_MENU_ENTRIES].first);
+        {
         {
             const GuiBar* bar = bar_of(&app, GUI_LIST_MENU);
             GuiRect top = ui_menu_row(m.rects, app.scale, UI_MENU_ENTRIES, 0),
@@ -7927,7 +7663,7 @@ int main(int argc, char** argv) {
         }
         hides(&app, "\x1e", soft);
         hides(&app, "\x1f", soft);           /* the bar says the items below the last row */
-        assert(shown + 2 <= GUI_ITEM_COUNT); /* room to hide rows above and below the ones shown */
+        assert(shown + 1 == GUI_ITEM_COUNT); /* one row is hidden */
         /* ui.txt's scroll, center: each focus the keys put in the middle of the rows shown, the ends where the list
            has no more to move */
         app.pointed = false;
@@ -7940,10 +7676,10 @@ int main(int argc, char** argv) {
         app.menu.selected = (shown - 1) / 2 + 1;
         render(&app);
         menu_boxes(&app, &m);
-        assert(m.lists[UI_MENU_ENTRIES].first == 1 && 1 + shown < GUI_ITEM_COUNT); /* hidden above and below */
+        assert(m.lists[UI_MENU_ENTRIES].first == 1 && 1 + shown == GUI_ITEM_COUNT); /* the first row hidden */
         {
             const GuiBar* bar = bar_of(&app, GUI_LIST_MENU);
-            assert(bar && bar->thumb.y > bar->track.y && bar->thumb.y + bar->thumb.h < bar->track.y + bar->track.h);
+            assert(bar && bar->thumb.y > bar->track.y && bar->thumb.y + bar->thumb.h == bar->track.y + bar->track.h);
         }
         hides(&app, "\x1e", soft);
         hides(&app, "\x1f", soft);
@@ -8081,10 +7817,10 @@ int main(int argc, char** argv) {
             finger_px(&app, SDL_EVENT_FINGER_DOWN, x, y);
             app.clock = 1016;
             finger_px(&app, SDL_EVENT_FINGER_MOTION, x, y - step - step / 2);
-            assert(app.list_held == GUI_LIST_MENU + 1 && app.list_y[GUI_LIST_MENU] == (float)(step + step / 2));
+            assert(app.list_held == GUI_LIST_MENU + 1 && app.list_y[GUI_LIST_MENU] == (float)step); /* one row, its most */
             render(&app);
             menu_boxes(&app, &m);
-            assert(m.lists[UI_MENU_ENTRIES].first == 1 && m.lists[UI_MENU_ENTRIES].shift == step / 2 &&
+            assert(m.lists[UI_MENU_ENTRIES].first == 1 && m.lists[UI_MENU_ENTRIES].shift == 0 &&
                    app.menu.selected == GUI_SWITCH);
             finger_px(&app, SDL_EVENT_FINGER_UP, x, y - step - step / 2); /* at once: flung, no tap */
             assert(!app.list_held && !app.finger && app.list_v[GUI_LIST_MENU] > 0 && !app.menu.running &&
@@ -8100,7 +7836,7 @@ int main(int argc, char** argv) {
             app.clock = 1100;
             render(&app);
             glided = app.list_y[GUI_LIST_MENU];
-            assert(glided > (float)(step + step / 2));
+            assert(glided == (float)step); /* already at its last row */
             for (int i = 0; i < 100 && app.list_v[GUI_LIST_MENU] != 0; ++i) {
                 app.clock += 50;
                 render(&app);
@@ -8118,7 +7854,7 @@ int main(int argc, char** argv) {
                 render(&app);
                 menu_boxes(&app, &m);
                 assert(app.menu.selected == GUI_SWITCH + 2 && m.lists[UI_MENU_ENTRIES].first == 1 &&
-                       m.lists[UI_MENU_ENTRIES].shift == step / 2);
+                       m.lists[UI_MENU_ENTRIES].shift == 0);
             }
             app.clock = 0;
             app.menu.selected = GUI_SWITCH;
@@ -8126,6 +7862,7 @@ int main(int argc, char** argv) {
             render(&app);
             menu_boxes(&app, &m);
             assert(!m.lists[UI_MENU_ENTRIES].first && !m.lists[UI_MENU_ENTRIES].shift);
+        }
         }
         app.side_box = GUI_SIDE_AUTO;
         assert(SDL_SetWindowSize(app.window, 1280, 1024)); /* back to the window the checks below were made for */
@@ -8262,7 +7999,7 @@ int main(int argc, char** argv) {
             e.type = SDL_EVENT_MOUSE_WHEEL;
             e.wheel.integer_y = -3;
             event(&app, &e);
-            assert(app.menu.selected == GUI_VITA);
+            assert(app.menu.selected == GUI_FOLDERS);
             e.wheel.integer_y = 3;
             event(&app, &e);
             assert(app.menu.selected == GUI_SWITCH);
@@ -8932,14 +8669,14 @@ int main(int argc, char** argv) {
         text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- " ICON_LOG_OUT " Exit", normal, black);
         /* the load activated last in the active colour, the focus kept where it is */
         app.menu.activated = true;
-        app.menu.active = GUI_3DS;
+        app.menu.active = GUI_SETTINGS;
         render(&app);
-        b = menu_entry_box(&app, &m, GUI_3DS);
-        text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- " ICON_BOX " Load 3DS game", rgb(app.theme.active),
+        b = menu_entry_box(&app, &m, GUI_SETTINGS);
+        text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- " ICON_SETTINGS " Settings", rgb(app.theme.active),
                    black);
         app.menu.activated = false;
         render(&app);
-        text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- " ICON_BOX " Load 3DS game", normal, black);
+        text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- " ICON_SETTINGS " Settings", normal, black);
         /* a row taller than a cell and a pixel, as Android's 40px: its text in the middle, not at its top */
         b = gui_rect(b.x, b.y, b.w, 40 * s);
         fill_rect(&app, b, app.theme.page); /* the rows it covers, gone */
@@ -9470,8 +9207,10 @@ int main(int argc, char** argv) {
             char* hung = snx_path_join(temporary, "hang in join boxed.elf");
             bool ready = false;
             assert(!snx_write_file(hung, "", 0));
-            app.menu.selected = GUI_LINUX;
+            char* hung_game = made_game(&app, hung, "hang in join boxed"); /* the Switch game the dump made */
+            app.menu.selected = GUI_SWITCH;
             launch(&app, snx_strdup(hung), false);
+            play_made(&app);
             for (until = SDL_GetTicks() + 5000; !ready && SDL_GetTicks() < until; SDL_Delay(5)) {
                 size_t got = 0;
                 unsigned char* data = snx_read_file(hung, &got);
@@ -9485,13 +9224,14 @@ int main(int argc, char** argv) {
             run_console(&app, &p, &cols, &rows);
             assert(app.console.cols == cols && app.console.rows == rows && !p.tabs.h);
             text_px_is(&app, p.list.x + cw, p.list.y + 2 * s, "Output", normal, black);
-            text_px_is(&app, p.side.x + cw, p.side.y + 2 * s, "Load Linux ARM ELF", normal, black);
+            text_px_is(&app, p.side.x + cw, p.side.y + 2 * s, "Load Switch NRO", normal, black);
             r = foot_room(&app, p.keys, app.theme.footer_box);
             foot_px_is(&app, r.x + r.w - (int)strlen(SAY_ABORT) * 8 * foot_scale(&app), r.y, SAY_ABORT, red, black);
             touch_box(&app, p.keys);
             assert(app.aborting);
             for (until = SDL_GetTicks() + 3000; app.menu.running && SDL_GetTicks() < until; SDL_Delay(5)) pump(&app);
             assert(!app.menu.running && !app.finished);
+            made_gone(&app, hung_game);
             free(hung);
             /* one that ends: its message beside the output, the ESC line to go back. The NRO made already plays */
             char* input_made = made_game(&app, input, "game with spaces");
@@ -10212,7 +9952,7 @@ int main(int argc, char** argv) {
             app.recent = kept;
             recent_changed(&app);
         }
-        /* letters too big for the screen: the list scrolls, the focus in view, its scroll bar beside the rows. At
+        /* letters too big for the screen: the menu fits, the focus in view, no scroll bar beside the rows. At
            768 high the menu takes 3x, its foot's letters 2x; 960 wide is under 45 columns (ui.txt's narrow_below),
            where side_box = on (F2) puts the side box under the list, three fifths of the height left to the list */
         assert(SDL_SetWindowSize(app.window, 960, 768));
@@ -10229,16 +9969,12 @@ int main(int argc, char** argv) {
         {
             const UiList* l = &m.lists[UI_MENU_ENTRIES];
             size_t shown = ui_menu_shown(m.rects, app.scale, UI_MENU_ENTRIES);
-            assert(shown < GUI_ITEM_COUNT && l->first > 0 && l->focus < l->first + shown);
-            b = menu_entry_box(&app, &m, (int)l->first);
+            assert(shown >= GUI_ITEM_COUNT && !l->first && l->focus < shown);
+            assert(!ui_bar_width(&app, GUI_ITEM_COUNT, shown));
+            b = menu_entry_box(&app, &m, GUI_EXIT);
         }
-        {
-            const GuiBar* bar = bar_of(&app, GUI_LIST_MENU);
-            GuiRect row = ui_menu_row(m.rects, app.scale, UI_MENU_ENTRIES, 0);
-            assert(bar && bar->track.x == row.x + row.w - cell_w(&app) && bar->track.y == row.y &&
-                   bar->thumb.y + bar->thumb.h == bar->track.y + bar->track.h); /* Exit, the last */
-            hides(&app, "\x1e", rgb(app.theme.soft));
-        }
+        hides(&app, "\x1e", rgb(app.theme.soft));
+        hides(&app, "\x1f", rgb(app.theme.soft));
         app.side_box = GUI_SIDE_AUTO;
         /* and with side_box = auto, the list alone: no side box, no status */
         render(&app);

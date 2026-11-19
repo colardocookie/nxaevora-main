@@ -12,7 +12,7 @@
   * [Videodec/VIC channels](#videodecvic-channels)
 
 ScarletNX compiles AArch64 code into native modules through LLVM IR.
-The CPU implementation is shared by Horizon HLE/Maxwell and CPU-only Linux AArch64 ABI runtimes.
+The CPU implementation is shared by the Horizon HLE/Maxwell runtime and its tools.
 Source map: [CLAUDE.md](../CLAUDE.md).
 
 ## Runtime boundaries
@@ -21,60 +21,26 @@ Source map: [CLAUDE.md](../CLAUDE.md).
 | --- | --- |
 | `src/common/` / `scarletnx-common` | AArch64 CPU state, instruction semantics, code discovery/emission, native module execution, runtime callback interface, host utilities |
 | `src/nx/` / `scarletnx-nx` | Horizon SVC/kernel/services/filesystems, NSO/NRO loading, Switch memory, Maxwell and graphics/media backends, Switch frontend/tooling |
-| `src/gnuabi/` / `scarletnx-gnuabi` | Linux syscall/errno/structure translation, ELF loading, isolated VFS, Linux process/memory/signal/futex compatibility |
 
-The experimental `src/3ds/` / `scarletnx-3ds` target supplies board profiles,
-decrypted CIA/NCCH/ExeFS/RomFS extraction, or the same read in place from the mapped CIA, an independent checked page-memory
-controller and a static-AOT pipeline for Linux and Windows hosts:
-extraction -> the driver's offline LLVM compiler/host linker (only when the module is missing or stale) ->
-a native module (an ELF shared object, or a DLL on Windows) -> checked process/ARM/Thumb dispatch. `snx_ctr_process` maps raw
-ExHeader segments/BSS/stack/TLS; `snx_ctr_native` validates/loads module ABI 1.
-The driver links LLVM for its compiler, the modules do not. The runtime uses neither MCJIT nor NX/GNU
-ABI code. `common/filesystem/` / `scarletnx-filesystem` owns NX and CTR's shared
-indexed host tree, immutable file mappings and on-demand opens. CTR uses its own
-level-3 RomFS serializer/file objects and wire protocol, not Switch FS IPC.
-Host staging/process utilities are also reused.
+The shared A32 backend's A57/flat defaults are unchanged, and its CPU ABI is 3. The
+shared backend CMake target is initialized once when more than one part requests it.
 
-The shared A32 backend's A57/flat defaults are unchanged, and its CPU ABI is 3. ARM11 ISA
-and callback memory are explicit codegen options, never global 3DS defines. The
-shared backend CMake target is initialized once when several runtimes request it.
-The compiler exhaustively emits one-instruction entries for images up to 4 KiB.
-Larger images use bounded offline CFG discovery, code-pointer candidates and a
-bounded PC-relative ADD jump window, with blocks of at most 32 instructions.
-It emits 128 entries per LLVM chunk and links all PIC objects with a separate
-ABI-1 full-geometry index object; unproven targets remain NULL. There is no
-runtime discovery or compilation. SuperTux draws its title screen and plays its
-music through this path, without input yet. See [3DS port](3DS.md) for coverage limits, absent HLE/devices
-and remaining cache/ISA work.
-
-The common target has no runtime-specific imports. NX and GNU ABI each link
-common and have no dependency on each other. The GNU ABI driver is the library
-`scarletnx-gnuabi` (its file `scarletnx-gnuabi-runtime`), command line included, which
-`scarletnx` runs as `scarletnx-gnuabi`. `SNX_BUILD_NX=OFF` builds GNU ABI without fetching or
+The common target has no runtime-specific imports. The Switch runtime links
+common. `SNX_BUILD_NX=OFF` builds the tools without fetching or
 linking NX graphics/media packages. CTest checks include ownership and the actual
 transitive CMake dependency graph and target source ownership.
 
 `src/common/runtime/interface.h` defines `RtAPI`; the active runtime supplies
 the callbacks on `CPU.rt`. NX routes SVC to Horizon: its modules call each SVC's own entry through
-`RtAPI.svcs[imm]`, the number being a constant in the code. GNU ABI accepts `SVC #0`,
-reads Linux syscall number `x8` and arguments `x0` through `x5`, and writes result
-`x0`. CPU helpers and instruction emission are shared; Horizon handlers are never
-used as Linux syscalls.
+`RtAPI.svcs[imm]`, the number being a constant in the code. CPU helpers and instruction emission are shared.
 
-`scarletnx` is every driver the build has: `src/multicall/main.c` is the only `main`, and runs
-the driver its name says from the library of the driver's own folder (`snx_switch_program`,
-`snx_ctr_program`, `snx_vita_program`, `scarletnx-gnuabi`, `snx_agb_program`), so LLVM and SDL
-are in one program once. On Linux and macOS `scarletnx-switch`, `scarletnx-3ds`,
-`scarletnx-vita`, `scarletnx-gnuabi` and `scarletnx-agb` are symlinks to it. Windows has no
-links: the driver's name goes first (`scarletnx.exe scarletnx-3ds ...`), and the launcher runs
-the drivers that way (`snx_menu_has_driver`). A game's copy runs its driver too: a GBA game's by
-its `.ini` (`system=gba`), a 3DS or Vita game's by its title ID, any other the Switch's (or, in a
-build without it, the one driver there is). The 3DS and Vita
-drivers read what a module was compiled for from its file before loading it, and compile first
-when it is stale, so a module is loaded once.
-The original game-name entry points and CLI remain available. GNU ABI has an
-independent CPU-only entry point; see [GNUABI.md](GNUABI.md) for implemented
-syscalls, ELF execution, filesystem scope, and differential testing.
+`scarletnx` is the driver the build has: `src/multicall/main.c` is the only `main`, and runs
+the driver its name says from the library of the driver's own folder (`snx_switch_program`), so LLVM and
+SDL are in one program once. On Linux and macOS the Switch driver is a symlink to it. Windows has no
+links: the driver's name goes first (`scarletnx.exe scarletnx-switch ...`), and the launcher runs it
+that way (`snx_menu_has_driver`). A game's copy runs its driver too, any game the Switch's (or, in a
+build without it, the one driver there is).
+The original game-name entry points and CLI remain available.
 
 ## Recompiler + module ABI
 
@@ -156,11 +122,6 @@ loads it instead of compiling when the guest code it came from is the same byte 
 the same ABI, IR object version, target triple, LLVM, runtime library, host CPU and settings. Its calls into the AOT
 module go through `snx_aot_<pc>` symbols that the loader resolves at each load, so the object holds no host address.
 `cpu_helpers.c` + `helpers/`: SIMD, crypto, FP.
-
-GNU supplies an optional fetch callback that checks execute permissions and
-compares the live instruction against the compiled word. Modified code falls
-back to shared interpreter semantics. NX leaves this callback unset and keeps
-its existing execution path.
 
 ### Module ABI
 

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* SNX_NET_ERRNO(NAME, value): the stack's errno values. They use Linux's numbering, which is what Horizon's bsd
-   reports and what the GNU ABI expects. On POSIX hosts E##NAME is the host's own constant (net.c translates with
+   reports. On POSIX hosts E##NAME is the host's own constant (net.c translates with
    it), so only names every supported host defines go here. */
 SNX_NET_ERRNO(PERM, 1)
 SNX_NET_ERRNO(NOENT, 2)

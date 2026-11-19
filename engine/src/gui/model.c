@@ -31,11 +31,7 @@ GuiMenuDo gui_menu_key(GuiMenu* menu, GuiKey key) {
             menu->activated = true;
             menu->view = GUI_LOAD_NONE;
             switch (menu->selected) {
-                case GUI_SWITCH:
-                case GUI_LINUX:
-                case GUI_3DS:
-                case GUI_VITA: menu->view = GUI_LOAD_DROP; break;
-                case GUI_GBA: menu->view = GUI_LOAD_DROP; break;
+                case GUI_SWITCH: menu->view = GUI_LOAD_DROP; break;
                 case GUI_SETTINGS: return GUI_MENU_SETTINGS;
                 case GUI_LOG: return GUI_MENU_LOG;
                 case GUI_FOLDERS: return GUI_MENU_FOLDERS;

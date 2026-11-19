@@ -4,7 +4,7 @@ option(SNX_TEST_SANITIZERS
        "Build the native regression tests, and the in-tree libraries they exercise, with ASan and UBSan (a test build: \
 the runtime links those libraries too, and isn't deployed)" OFF)
 option(SNX_TEST_VULKAN "Run offscreen Vulkan integration tests (requires a Vulkan 1.3 ICD, e.g. lavapipe)" OFF)
-option(SNX_TEST_ARM_AOT "Build asset-free static ARM11/checked-memory witnesses (requires native LLVM SDK)" OFF)
+option(SNX_TEST_ARM_AOT "Build asset-free static ARM11 and A57/Thumb witnesses (requires native LLVM SDK)" OFF)
 option(SNX_TEST_VP9_VECTORS
        "Run NVDEC's VP9 jobs on libvpx's test vectors (configure downloads 32 files from the WebM project)" OFF)
 if(SNX_TEST_VP9_VECTORS AND SNX_TOOLS_ONLY)
@@ -49,15 +49,6 @@ if(SNX_TEST_SANITIZERS)
         snx-test-build-info
         # the Switch runtime: its components, the shader translator and the Vulkan backend
         scarletnx snx_core snx_kernel snx_hle snx_video snx_gpu snx_platform snx_shader snx_vk
-        # the GNU ABI runtime
-        scarletnx-gnuabi
-        # the 3DS runtime
-        scarletnx-3ds snx_ctr_program snx_ctr_board snx_ctr_memory snx_ctr_loader snx_ctr_cpu snx_ctr_process snx_ctr_native
-        snx_ctr_audio snx_ctr_gpu snx_ctr_gpu_reference
-        # the Vita runtime, its loader and USSE translator
-        scarletnx-vita snx_vita_program snx_vita_loader snx_vita_usse snx-vita-usse
-        # the GBA board and its runner
-        scarletnx-agb snx_agb_program
         # the Switch driver's entry, which scarletnx runs as it runs the others
         snx_switch_program
         # the menu, its splash, icon and pads
@@ -76,7 +67,7 @@ else()
 endif()
 
 # On Windows a sanitized test needs the sanitizer runtime's DLLs on PATH. Each folder that adds tests (this one, the
-# top level, src/nx, src/gnuabi, src/gui) calls this for the ones it has added (the others don't mind the DLLs)
+# top level, src/nx, src/gui) calls this for the ones it has added (the others don't mind the DLLs)
 function(snx_sanitizer_path)
     if(NOT (SNX_TEST_SANITIZERS AND WIN32))
         return()
@@ -126,170 +117,6 @@ function(snx_test_target target standard)
     endif()
     snx_test_sanitize(${target})
 endfunction()
-
-if(TARGET snx_ctr_board)
-    add_executable(snx-test-3ds-board 3ds_board.c)
-    snx_test_target(snx-test-3ds-board 11)
-    target_link_libraries(snx-test-3ds-board PRIVATE snx_ctr_board)
-    add_test(NAME 3ds_board COMMAND snx-test-3ds-board)
-    add_executable(snx-test-3ds-memory 3ds_memory.c)
-    snx_test_target(snx-test-3ds-memory 11)
-        target_link_libraries(snx-test-3ds-memory PRIVATE snx_ctr_memory)
-    add_test(NAME 3ds_memory COMMAND snx-test-3ds-memory)
-    add_executable(snx-test-3ds-memory-track 3ds_memory_track.c)
-    snx_test_target(snx-test-3ds-memory-track 11)
-    target_link_libraries(snx-test-3ds-memory-track PRIVATE snx_ctr_memory)
-    add_test(NAME 3ds_memory_track COMMAND snx-test-3ds-memory-track)
-    add_executable(snx-test-3ds-kernel 3ds_kernel.c)
-    snx_test_target(snx-test-3ds-kernel 11)
-    target_link_libraries(snx-test-3ds-kernel PRIVATE snx_ctr_process)
-    add_test(NAME 3ds_kernel COMMAND snx-test-3ds-kernel)
-    foreach(test services threads)
-        add_executable(snx-test-3ds-${test} 3ds_${test}.c)
-        snx_test_target(snx-test-3ds-${test} 11)
-        target_link_libraries(snx-test-3ds-${test} PRIVATE snx_ctr_process)
-        add_test(NAME 3ds_${test} COMMAND snx-test-3ds-${test})
-    endforeach()
-    add_executable(snx-test-3ds-ipc 3ds_ipc.c)
-    snx_test_target(snx-test-3ds-ipc 11)
-    target_link_libraries(snx-test-3ds-ipc PRIVATE snx_ctr_process)
-    add_test(NAME 3ds_ipc COMMAND snx-test-3ds-ipc)
-    add_executable(snx-test-3ds-hid 3ds_hid.c)
-    snx_test_target(snx-test-3ds-hid 11)
-    target_link_libraries(snx-test-3ds-hid PRIVATE snx_ctr_process)
-    add_test(NAME 3ds_hid COMMAND snx-test-3ds-hid)
-    add_executable(snx-test-ctr-swipc ctr_swipc.c)
-    if(NOT WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
-        snx_test_target(snx-test-ctr-swipc 99)
-            else()
-        snx_test_target(snx-test-ctr-swipc 11)
-    endif()
-    snx_swipc(snx-test-ctr-swipc CTR ROOT "${PROJECT_SOURCE_DIR}" FILES tests/ctr_swipc.swipc)
-    add_test(NAME ctr_swipc_dispatch COMMAND snx-test-ctr-swipc)
-    add_executable(snx-test-3ds-process 3ds_process.c)
-    snx_test_target(snx-test-3ds-process 11)
-    target_link_libraries(snx-test-3ds-process PRIVATE snx_ctr_process)
-    add_test(NAME 3ds_process COMMAND snx-test-3ds-process)
-    add_executable(snx-test-3ds-discover 3ds_discover.c "${PROJECT_SOURCE_DIR}/src/3ds/aot/discover.c"
-        "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/a32.c" "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/thumb_decode.c"
-        "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/vector_decode.c" "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/profile.c")
-    snx_test_target(snx-test-3ds-discover 11)
-    add_test(NAME 3ds_static_discovery COMMAND snx-test-3ds-discover)
-    add_executable(snx-test-3ds-native 3ds_native.c)
-    snx_test_target(snx-test-3ds-native 11)
-    target_link_libraries(snx-test-3ds-native PRIVATE snx_ctr_native)
-    add_executable(snx-test-3ds-blz 3ds_blz.c)
-    snx_test_target(snx-test-3ds-blz 11)
-    target_link_libraries(snx-test-3ds-blz PRIVATE snx_ctr_loader)
-    add_test(NAME 3ds_blz COMMAND snx-test-3ds-blz)
-
-    # The GPU, presentation and DSP tests need neither Python nor POSIX, and Windows is a 3DS target too
-    # the GPU's transfer engine against the CPU reference (gpu/transfer.c), on whatever Vulkan device there is
-    add_executable(snx-test-3ds-vk-transfer 3ds_vk_transfer.c)
-    snx_test_target(snx-test-3ds-vk-transfer 11)
-    target_link_libraries(snx-test-3ds-vk-transfer PRIVATE snx_ctr_gpu)
-    add_test(NAME 3ds_vk_transfer COMMAND snx-test-3ds-vk-transfer)
-    set_tests_properties(3ds_vk_transfer PROPERTIES SKIP_RETURN_CODE 77)
-    # the Y2R engine's conversion on the GPU against its CPU reference
-    add_executable(snx-test-3ds-vk-y2r 3ds_vk_y2r.c)
-    snx_test_target(snx-test-3ds-vk-y2r 11)
-    target_link_libraries(snx-test-3ds-vk-y2r PRIVATE snx_ctr_gpu)
-    add_test(NAME 3ds_vk_y2r COMMAND snx-test-3ds-vk-y2r)
-    set_tests_properties(3ds_vk_y2r PROPERTIES SKIP_RETURN_CODE 77)
-    # the GPU's draws against the software renderer, the CPU reference they replaced, scene by scene
-    add_executable(snx-test-3ds-vk-draw 3ds_vk_draw.c)
-    snx_test_target(snx-test-3ds-vk-draw 11)
-    target_link_libraries(snx-test-3ds-vk-draw PRIVATE snx_ctr_gpu_reference)
-    add_test(NAME 3ds_vk_draw COMMAND snx-test-3ds-vk-draw)
-    set_tests_properties(3ds_vk_draw PROPERTIES SKIP_RETURN_CODE 77)
-    add_executable(snx-test-3ds-gsp 3ds_gsp.c)
-    snx_test_target(snx-test-3ds-gsp 11)
-    target_link_libraries(snx-test-3ds-gsp PRIVATE snx_ctr_process)
-    add_test(NAME 3ds_gsp_gpu COMMAND snx-test-3ds-gsp "${CMAKE_CURRENT_BINARY_DIR}/gsp-frames")
-    # No Vulkan loader/ICD: presentation cannot run here; the probe skips, never fakes a frame.
-    set_tests_properties(3ds_gsp_gpu PROPERTIES SKIP_RETURN_CODE 77)
-    # the transfer engine alone: fills, display transfers, texture copies against hand-written goldens
-    add_executable(snx-test-3ds-transfer 3ds_transfer.c)
-    snx_test_target(snx-test-3ds-transfer 11)
-    target_link_libraries(snx-test-3ds-transfer PRIVATE snx_ctr_gpu)
-    add_test(NAME 3ds_transfer COMMAND snx-test-3ds-transfer)
-    # the PICA command processor: lists in FCRAM, uploads, interrupts, jumps, draw and immediate hooks
-    add_executable(snx-test-3ds-pica 3ds_pica.c)
-    snx_test_target(snx-test-3ds-pica 11)
-    target_link_libraries(snx-test-3ds-pica PRIVATE snx_ctr_gpu_reference m)
-    add_test(NAME 3ds_pica COMMAND snx-test-3ds-pica)
-    # the HLE DSP and dsp::DSP: pipes, regions, sources, mixing, decoding, the service as ndsp drives it
-    add_executable(snx-test-3ds-dsp 3ds_dsp.c)
-    snx_test_target(snx-test-3ds-dsp 11)
-    target_link_libraries(snx-test-3ds-dsp PRIVATE snx_ctr_process)
-    add_test(NAME 3ds_dsp COMMAND snx-test-3ds-dsp)
-
-    if(NOT WIN32)
-        if(Python3_Interpreter_FOUND)
-            add_executable(snx-test-3ds-fs 3ds_fs.c)
-            snx_test_target(snx-test-3ds-fs 11)
-            target_link_libraries(snx-test-3ds-fs PRIVATE snx_ctr_process)
-            add_test(NAME 3ds_filesystem COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_fs.py" $<TARGET_FILE:snx-test-3ds-fs>)
-            add_test(NAME ctr_swipc_validation COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ctr_swipc.py"
-                $<TARGET_FILE:snx-swipc>)
-            add_test(NAME 3ds_driver COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_driver.py"
-                "${SNX_CTR_PROGRAM}")
-            # a CIA read where it lies (snx_ctr_cia_open) against its extraction, on the same fixtures and mutants
-            add_executable(snx-test-3ds-container 3ds_container.c)
-            snx_test_target(snx-test-3ds-container 11)
-            target_link_libraries(snx-test-3ds-container PRIVATE snx_ctr_process)
-            add_test(NAME 3ds_container COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_container.py"
-                "${SNX_CTR_PROGRAM}" $<TARGET_FILE:snx-test-3ds-container>)
-            # a cartridge image or a bare NCCH against its extraction, and the update partition played as the update
-            add_test(NAME 3ds_cci COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_cci.py"
-                "${SNX_CTR_PROGRAM}" $<TARGET_FILE:snx-test-3ds-container>)
-            set(snx_ctr_extract_test_args "")
-
-            set(snx_ctr_extract_test_args --aot)
-            # TODO: fix this
-            if (NOT APPLE)
-                add_test(NAME 3ds_static_pipeline COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_aot.py"
-                    "${SNX_CTR_PROGRAM}" $<TARGET_FILE:snx-test-3ds-native>)
-                # about 20 s here, 4 minutes under a cross build's emulator
-                if(CMAKE_CROSSCOMPILING_EMULATOR)
-                    set_tests_properties(3ds_static_pipeline PROPERTIES TIMEOUT 900)
-                else()
-                    set_tests_properties(3ds_static_pipeline PROPERTIES TIMEOUT 180)
-                endif()
-            endif()
-            add_test(NAME 3ds_decrypt COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_decrypt.py"
-                "${SNX_CTR_PROGRAM}")
-            set_tests_properties(3ds_decrypt PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
-            add_test(NAME 3ds_extract COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_extract.py"
-                "${SNX_CTR_PROGRAM}" ${snx_ctr_extract_test_args})
-            set_tests_properties(3ds_extract PROPERTIES TIMEOUT 120)
-        endif()
-    endif()
-    # The pinned SuperTux gate runs on Windows too, the other Python tests not yet
-    if(SNX_TEST_3DS_SUPERTUX AND Python3_Interpreter_FOUND)
-        get_filename_component(snx_supertux_cia "${SNX_TEST_3DS_SUPERTUX}" ABSOLUTE)
-        set(snx_supertux_oracle_args "")
-        if(SNX_TEST_ARM_DIFF)
-            set(snx_supertux_oracle_args --oracle)
-        endif()
-        add_test(NAME 3ds_supertux_bootstrap COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_supertux.py"
-            "${SNX_CTR_PROGRAM}" "${snx_supertux_cia}" $<TARGET_FILE:snx-test-3ds-native> ${snx_supertux_oracle_args})
-        set_tests_properties(3ds_supertux_bootstrap PROPERTIES TIMEOUT 1800 LABELS "external;bootstrap")
-    endif()
-endif()
-# the 3DS tests that present through Vulkan, sanitized: the Vulkan driver stays loaded (vulkan_drivers_kept.c), as its
-# loader unloads it with an allocation of its own still held, which LeakSanitizer would report from a library gone
-if(SNX_TEST_SANITIZERS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    add_library(snx-test-vulkan-drivers-kept MODULE vulkan_drivers_kept.c)
-    target_compile_options(snx-test-vulkan-drivers-kept PRIVATE -Wall -Wextra -Werror)
-    target_link_libraries(snx-test-vulkan-drivers-kept PRIVATE ${CMAKE_DL_LIBS})
-    foreach(snx_test 3ds_gsp_gpu 3ds_static_pipeline 3ds_extract)
-        if(TEST ${snx_test})
-            set_property(TEST ${snx_test} APPEND PROPERTY ENVIRONMENT
-                         "LD_PRELOAD=$<TARGET_FILE:snx-test-vulkan-drivers-kept>")
-        endif()
-    endforeach()
-endif()
 
 add_executable(snx-test-arm-profile arm_profile.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/a32.c"
     "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/thumb_decode.c"
@@ -388,11 +215,6 @@ add_executable(snx-test-os-error os_error.c)
 snx_test_target(snx-test-os-error 99)
 target_link_libraries(snx-test-os-error PRIVATE scarletnx-common)
 add_test(NAME os_error COMMAND snx-test-os-error)
-# the host's side of a flat guest space (common/memory/host.c): views of one object are the same memory, a commit zeros
-add_executable(snx-test-host-memory host_memory.c)
-snx_test_target(snx-test-host-memory 99)
-target_link_libraries(snx-test-host-memory PRIVATE scarletnx-common)
-add_test(NAME host_memory COMMAND snx-test-host-memory)
 # RtAPI.cas128: the host's 16-byte compare-and-swap and the locked one, a pair stored whole or not at all
 add_executable(snx-test-cas128 cas128.c)
 snx_test_target(snx-test-cas128 11)
@@ -402,25 +224,7 @@ add_test(NAME cas128 COMMAND snx-test-cas128)
 add_executable(snx-test-endian endian.c)
 snx_test_target(snx-test-endian 99)
 add_test(NAME endian COMMAND snx-test-endian)
-if(SNX_BUILD_3DS)
-    add_executable(snx-test-3ds-uds 3ds_uds.c fake_room.c)
-    snx_test_target(snx-test-3ds-uds 11)
-    target_link_libraries(snx-test-3ds-uds PRIVATE snx_ctr_process scarletnx-ldn snx_enet)
-    add_test(NAME 3ds_uds_relay COMMAND snx-test-3ds-uds)
-    add_test(NAME 3ds_uds_delayed_relay COMMAND snx-test-3ds-uds --delay)
-    set_tests_properties(3ds_uds_delayed_relay PROPERTIES TIMEOUT 60)
-    set_tests_properties(3ds_uds_relay PROPERTIES TIMEOUT 60)
-endif()
-if(NOT SNX_BUILD_NX AND NOT SNX_BUILD_GNUABI)
-    # The shared room transport also serves 3DS UDS; keep its socket regression
-    # available when building only the 3DS driver.
-    if(SNX_BUILD_3DS)
-        add_executable(snx-test-ldn-room ldn_room.c fake_room.c)
-        snx_test_target(snx-test-ldn-room 23)
-        target_link_libraries(snx-test-ldn-room PRIVATE scarletnx-ldn snx_enet)
-        add_test(NAME ldn_room COMMAND snx-test-ldn-room)
-        set_tests_properties(ldn_room PROPERTIES TIMEOUT 120)
-    endif()
+if(NOT SNX_BUILD_NX)
     include(architecture.cmake)
     snx_sanitizer_path()
     return()
@@ -648,7 +452,7 @@ target_link_libraries(snx-test-room-service PRIVATE scarletnx-ldn scarletnx-comm
 add_test(NAME room_service COMMAND snx-test-room-service)
 
 # ssl (ssl.c) against a TLS server in the test, on the game's bsd sockets (bsd.c, built beside). OpenSSL comes with
-# the NX and 3DS builds (cmake/dependencies.cmake), not with a GNU ABI-only one
+# the NX build (cmake/dependencies.cmake), and not in a build without it
 if(TARGET OpenSSL::SSL)
     add_executable(snx-test-ssl-service ssl_service.c "${PROJECT_SOURCE_DIR}/src/nx/hle/services/network/bsd.c"
     own_stub.c)
@@ -1013,8 +817,7 @@ endif()
 add_test(NAME startup_options COMMAND snx-test-startup)
 
 add_library(snx_test_common STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/common.c"
-    "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/game_ini.c"
-    "${PROJECT_SOURCE_DIR}/src/common/utilities/script.c")
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/game_ini.c")
 snx_test_target(snx_test_common 99)
 if(WIN32)
     target_link_libraries(snx_test_common PUBLIC advapi32)
@@ -1025,12 +828,6 @@ add_executable(snx-test-game-system game_system.c)
 snx_test_target(snx-test-game-system 99)
 target_link_libraries(snx-test-game-system PRIVATE snx_test_common)
 add_test(NAME game_system COMMAND snx-test-game-system)
-
-# a run's scripted presses (common/utilities/script.c), which the 3DS, Vita and GBA drivers read
-add_executable(snx-test-script script.c)
-snx_test_target(snx-test-script 99)
-target_link_libraries(snx-test-script PRIVATE snx_test_common)
-add_test(NAME script COMMAND snx-test-script)
 
 add_executable(snx-test-driver driver_workflow.c
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/driver.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c"
@@ -1568,33 +1365,6 @@ add_executable(snx-test-blocklinear-glsl glsl/blocklinear_glsl.cpp)
 snx_test_target(snx-test-blocklinear-glsl 23)
 target_include_directories(snx-test-blocklinear-glsl PRIVATE glsl)
 add_test(NAME blocklinear_glsl COMMAND snx-test-blocklinear-glsl)
-# the Vita's texture deswizzle shader's GLSL run on the CPU against Vita3K's loops: no GPU needed
-add_executable(snx-test-vita-swizzle-glsl glsl/vita_swizzle_glsl.cpp)
-snx_test_target(snx-test-vita-swizzle-glsl 23)
-target_include_directories(snx-test-vita-swizzle-glsl PRIVATE glsl)
-add_test(NAME vita_swizzle_glsl COMMAND snx-test-vita-swizzle-glsl)
-# the Vita's decoded picture layout shader's GLSL run on the CPU against the decoder's layout: no GPU needed
-add_executable(snx-test-vita-picture-glsl glsl/vita_picture_glsl.cpp)
-snx_test_target(snx-test-vita-picture-glsl 23)
-target_include_directories(snx-test-vita-picture-glsl PRIVATE glsl)
-add_test(NAME vita_picture_glsl COMMAND snx-test-vita-picture-glsl)
-# the Vita's YUV420 texture shader's GLSL run on the CPU against the conversion written out: no GPU needed
-add_executable(snx-test-vita-yuv-glsl glsl/vita_yuv_glsl.cpp)
-snx_test_target(snx-test-vita-yuv-glsl 23)
-target_include_directories(snx-test-vita-yuv-glsl PRIVATE glsl)
-add_test(NAME vita_yuv_glsl COMMAND snx-test-vita-yuv-glsl)
-# the Vita's 24-bit color surface shader's GLSL run on the CPU against the layout written out: no GPU needed
-add_executable(snx-test-vita-rgb24-glsl glsl/vita_rgb24_glsl.cpp)
-snx_test_target(snx-test-vita-rgb24-glsl 23)
-target_include_directories(snx-test-vita-rgb24-glsl PRIVATE glsl)
-add_test(NAME vita_rgb24_glsl COMMAND snx-test-vita-rgb24-glsl)
-# the Vita's imports given memory that isn't the game's: their errors, and no access there
-if(TARGET snx_vita_program)
-    add_executable(snx-test-vita-hle-memory vita_hle_memory.c)
-    snx_test_target(snx-test-vita-hle-memory 11)
-    target_link_libraries(snx-test-vita-hle-memory PRIVATE snx_vita_program)
-    add_test(NAME vita_hle_memory COMMAND snx-test-vita-hle-memory)
-endif()
 # the texture conversion shader's GLSL run on the CPU against the CPU's conversions and ETC2 and BCn decoders: no GPU
 # needed
 add_executable(snx-test-texconv-glsl glsl/texconv_glsl.cpp support/etc2.c support/bcn.c support/half.c)

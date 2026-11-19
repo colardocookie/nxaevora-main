@@ -12,18 +12,6 @@
 		[button]"Load Switch NRO" {
 			icon = gamepad-2
 		}
-		[button]"Load Linux ARM ELF" {
-			icon = square-terminal
-		}
-		[button]"Load 3DS game" {
-			icon = box
-		}
-		[button]"Load Vita VPK" {
-			icon = package
-		}
-		[button]"Load GBA ROM" {
-			icon = gamepad
-		}
 		[button]"Settings" {
 			icon = settings
 		}

@@ -160,7 +160,7 @@ SNX_RECOMPILER_API GuestFn snx_recompiled_lookup(struct snx_recompiled* m, uint6
 SNX_RECOMPILER_API GuestFn snx_recompiled_function(const struct snx_recompiled* m, uint64_t pc);
 /* What a miss in the module runs (snx_runtime_defaults' RtAPI.miss, snx_recompiled_lookup and _call) instead of the
    module's JIT: a caller's own just-in-time compiler, called as the guest function at the pc, which compiles the code
-   there and runs it. NULL restores the module's JIT. A caller with its own RtAPI.miss and dispatch table (gnuabi)
+   there and runs it. NULL restores the module's JIT. A caller with its own RtAPI.miss and dispatch table
    doesn't need it */
 SNX_RECOMPILER_API void snx_recompiled_set_fallback(struct snx_recompiled* m, GuestFn fallback);
 /* Retire functions overlapping guest code [addr, addr+size) and invalidate matching lazy JIT units. Native code stays

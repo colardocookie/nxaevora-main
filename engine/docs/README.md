@@ -15,16 +15,12 @@ New here? Start with [Build](./BUILD.md), then [Usage](./USAGE.md).
   - **[Testing and reporting](./TESTING.md)** - how to test a build, and the form a report takes
   - **[edenprobe](./EDENPROBE.md)** - hardware probes CI runs against a baseline
 - **[Deprecations](./DEPRECATIONS.md)** - what an older version used, and how it goes away
-- **[Status and roadmap](./ROADMAP.md)**
+- **[Status and roadmap](../../ROADMAP.md)**
 - **[Licenses and credits](./CREDITS.md)**
 - Recompiler:
   - **[Architecture](./ARCHITECTURE.md)** - AArch64 to C to a native module
   - **[The recompiler as a library](./LIBRARY.md)**
   - **[Cortex-A57 divergences](./DIVERGENCES.md)** - where it differs from the CPU
-- Other programs:
-  - **[Linux AArch64 programs (GNU ABI)](./GNUABI.md)**
-  - **[3DS port](./3DS.md)**, its **[IPC and startup services](./CTR-IPC.md)** and its
-    **[SuperTux target](./3DS-SUPERTUX.md)**
 - Switch runtime:
   - **[IPC interfaces](./IPC.md)** - the services a game talks to
   - **[Filesystem](./FILESYSTEM.md)** and its **[shared fonts' stand-ins](./SHARED_FONTS.md)**
