@@ -50,6 +50,7 @@ int vk_trylock(void) {
     return 1;
 }
 u32 vk_lock_owner(void) { return __atomic_load_n(&g_vk_owner, __ATOMIC_RELAXED); }
+int vk_lock_depth(void) { return t_vkdepth; }
 
 int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     if (r >= 0) return 1;

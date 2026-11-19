@@ -3,7 +3,7 @@
 /* PERF-1 (gpu/vk/landing.c) against the byte loops it replaces: out_changed_runs' word test (buffer.c) and
    vk_write_changed's walk (writeback.c), copied here as they are with SNX_ARCEUS_PERF_LANDING unset. The same runs,
    and the same bytes in guest memory, on random and edge inputs. Level 3's landing_masked: the same bytes and the
-   same count, run only where the CPU and OS have AVX-512BW. */
+   same count, run only where the CPU and OS have AVX-512BW. And the same, landed run by run (PERF-28). */
 #include "nx/gpu/vk/landing.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -444,6 +444,46 @@ static void test_guard(void) {
     CHECK(landed == 20000ull * ((GUARD + 3) / 4));
 }
 
+/* SNX_ARCEUS_PERF_COMPARE (PERF-28, reviewer N1): writeback.c lands a result run by run, each run of changed words
+   (changed_runs) a call of its own from the run's first byte. The same bytes and count as old_walk over the whole
+   result, through landing_masked where it runs, through the scalar model of its step, and through landing_runs */
+typedef struct {
+    uint8_t* dst;
+    const uint8_t* res;
+} At;
+static void at_put(void* ctx, uint32_t from, uint32_t n) {
+    const At* a = ctx;
+    memcpy(a->dst + from, a->res + from, n);
+}
+static void test_runs(void) {
+    static const int densities[] = {1, 20, 300, 1000};
+    static Run runs[MAX];
+    for (unsigned round = 0; round < 3000; round++) {
+        const uint32_t size = 1 + rnd() % 5000;
+        fill(size, densities[round % 4], (int)(round / 4 % 2));
+        memcpy(old_dst, guest, size);
+        old_out.count = 0;
+        old_out.dst = old_dst;
+        old_out.res = res;
+        old_walk(res, org, old_dst, size, &old_out);
+        uint64_t want = 0;
+        for (uint32_t i = 0; i < old_out.count; i++) want += old_out.runs[i].n;
+        const uint32_t n = changed_runs(res, org, size, 1, runs);
+        for (int how = 0; how < 3; how++) {
+            if (how == 0 && !masked) continue;
+            uint64_t total = 0;
+            memcpy(new_dst, guest, size);
+            for (uint32_t i = 0; i < n; i++) {
+                const uint32_t at = runs[i].from, len = runs[i].n;
+                At a = {new_dst + at, res + at};
+                total += how == 0   ? landing_masked(res + at, org + at, new_dst + at, len, at_put, NULL, &a)
+                         : how == 1 ? model_masked(res + at, org + at, new_dst + at, len, NULL)
+                                    : landing_runs(res + at, org + at, new_dst + at, len, at_put, &a);
+            }
+            CHECK(total == want && !memcmp(new_dst, old_dst, size));
+        }
+    }
+}
 int main(void) {
     masked = landing_masked_supported();
     printf("vulkan_landing: level 3's masked path %s\n", masked ? "RUNS (AVX-512BW)" : "skipped: no AVX-512BW here");
@@ -454,6 +494,7 @@ int main(void) {
     test_edges();
     test_random();
     test_masks();
+    test_runs();
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

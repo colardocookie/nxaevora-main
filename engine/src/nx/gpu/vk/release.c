@@ -142,6 +142,7 @@ void vk_release_events(void) { syncpt_events(); }
    releases they gate, in order */
 static _Thread_local int t_release_thread; /* SNX_ARCEUS_PERF_TIMES times this thread's holds only */
 static void release_through(u64 gate, u64 cgate) {
+    if (g_perf_compare && t_release_thread) vk_buf_compare_ahead(gate); /* PERF-28: takes vk_lock itself */
     const u64 lock0 = g_perf_times && t_release_thread ? plat_ns() : 0; /* and its wait for vk_lock (PERF-14) */
     vk_lock();
     const u64 held = lock0 ? plat_ns() : 0;

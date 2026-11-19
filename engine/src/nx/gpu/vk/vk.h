@@ -131,6 +131,7 @@ void vk_lock(void);
 void vk_unlock(void);
 int vk_trylock(void); /* vk_lock unless another thread holds it: 1 when taken */
 u32 vk_lock_owner(void); /* the thread (plat_tid) holding vk_lock, 0 when none */
+int vk_lock_depth(void); /* this thread's holds of vk_lock, 0 when it holds none */
 
 /* memory.c. vk_mem_init once the device exists, before the allocator (VMA's blocks are kept within the cap):
    sparse_queue is whether the graphics queue's family can bind sparse memory */
@@ -862,6 +863,7 @@ void vk_buf_land(void);
 void vk_buf_land_syncwait(void);
 void vk_buf_land_map(void);
 void vk_buf_frame_done(u64 frame);
+void vk_buf_compare_ahead(u64 gate); /* SNX_ARCEUS_PERF_COMPARE, the release thread before its hold (PERF-28) */
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame);
 void vk_buf_frame(void);
 /* Land GPU-written bytes only where guest memory still matches the shader's input snapshot. */
@@ -869,6 +871,13 @@ void vk_result_begin(void);
 void vk_result_end(void);
 int vk_result_landing(void);
 void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size);
+/* a run of a storage result's 8-byte words that differ from its original bytes, [from, to) (buffer.c) */
+typedef struct {
+    u32 from, to;
+} ChgRun;
+/* SNX_ARCEUS_PERF_COMPARE (PERF-28): vk_write_changed over the words of the result's n changed runs only, found
+   before (out_changed_runs' merged runs): the same bytes, by the same rule, since a changed byte lies in one */
+void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, const ChgRun* runs, u32 n);
 /* 1 if [host, host+len) was written since the write-tracking clock read `since`, 0 if not, -1 when write tracking
    can't tell (no host pointer, or not available): then check the contents */
 int vk_written_since(const u8* host, u64 len, u32 since);
