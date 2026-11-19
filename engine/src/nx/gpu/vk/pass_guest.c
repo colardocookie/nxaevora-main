@@ -18,9 +18,10 @@ int pass_guest_on(float scale) {
         if (v && !strcmp(v, "1")) {
             if (scale == 2.0f) {
                 g_pass_guest = 1;
-                LOG("arceus-pass-guest: EXPERIMENT, bench only: draws of at most 4 vertices and one instance into "
-                    "colour targets of at most half the presented size read the scaled colour targets they sample "
-                    "through copies at guest size, a line every %u presents (SNX_ARCEUS_PASS_GUEST=1)\n",
+                LOG("arceus-pass-guest: on at render scale 2.0, the only scale it acts at: draws of at most 4 "
+                    "vertices and one instance into colour targets of at most half the presented size read the scaled "
+                    "colour targets they sample through copies at guest size, a line every %u presents "
+                    "(SNX_ARCEUS_PASS_GUEST=1)\n",
                     PASS_GUEST_WINDOW);
             } else
                 WARN("arceus-pass-guest: SNX_ARCEUS_PASS_GUEST=1 is off at render scale %g: its copy is the mean of "
@@ -81,10 +82,13 @@ void pass_guest_window(uint32_t present) {
     char text[PASS_GUEST_PROGRAMS * 32 + 64];
     size_t at = 0;
     text[0] = 0;
-    for (uint32_t i = 0; i < g_pg.nprog && at + 32 < sizeof text; i++)
+    for (uint32_t i = 0; i < g_pg.nprog && at + 32 < sizeof text; i++) {
         at += (size_t)snprintf(text + at, sizeof text - at, "%s %016llx %llu", i ? "," : "",
                                (unsigned long long)g_pg.prog[i], (unsigned long long)g_pg.prog_draws[i]);
-    if (g_pg.more) snprintf(text + at, sizeof text - at, ", other programs %llu", (unsigned long long)g_pg.more);
+        if (at >= sizeof text) at = sizeof text - 1; /* a cut entry ends the list */
+    }
+    if (g_pg.more && at + 1 < sizeof text)
+        snprintf(text + at, sizeof text - at, ", other programs %llu", (unsigned long long)g_pg.more);
     LOG("arceus-pass-guest: presents %u-%u: %llu draws served (%.1f a present), %llu textures read as guest copies, "
         "%llu blits (%.1f a present), fallbacks %llu integer, %llu format, %llu memory; programs served:%s\n",
         g_pg.start, present - 1, (unsigned long long)g_pg.draws, (double)g_pg.draws / presents,

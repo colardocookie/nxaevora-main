@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
     } else if (!strcmp(which, "on")) {
         set("1");
         CHECK(pass_guest_on(2.0f) == 1 && g_pass_guest == 1 && g_test_lines == 1);
-        CHECK(has("arceus-pass-guest: EXPERIMENT") && has("(SNX_ARCEUS_PASS_GUEST=1)"));
+        CHECK(has("arceus-pass-guest: on at render scale 2.0, the only scale") && has("(SNX_ARCEUS_PASS_GUEST=1)"));
         CHECK(pass_guest_on(2.0f) == 1 && g_test_lines == 1);
     } else if (!strcmp(which, "scale")) {
         /* any scale but exactly 2.0: off, and said once */
@@ -61,7 +61,7 @@ int main(int argc, char** argv) {
         set("2");
         CHECK(pass_guest_on(2.0f) == 0 && g_test_lines == 1 && has("SNX_ARCEUS_PASS_GUEST=2 is not 1, ignored"));
     } else if (!strcmp(which, "rule")) {
-        /* PS-4's reduced passes, at most half of 1920x1080 */
+        /* the bloom chain's reduced passes, at most half of 1920x1080 */
         CHECK(one(3, 1, 960, 540) && one(4, 1, 480, 270) && one(3, 1, 64, 33) && one(3, 1, 32, 1) && one(3, 1, 8, 4));
         /* the scene's size, a little under half, more vertices, more instances */
         CHECK(!one(3, 1, 1920, 1080) && !one(3, 1, 961, 540) && !one(3, 1, 960, 541) && !one(5, 1, 480, 270));
@@ -109,6 +109,17 @@ int main(int argc, char** argv) {
         pass_guest_window(PASS_GUEST_WINDOW);
         CHECK(has(" 0000000000001000 2,") && has(" 000000000000100f 1, other programs 4\n"));
         CHECK(!has("0000000000001010"));
+    } else if (!strcmp(which, "full")) {
+        /* the longest lines: 20-digit counts, one of 16 digits so an entry starts 35 bytes short of the end and
+           runs past it, and others after: cut at the buffer, never past it */
+        pass_guest_window(0);
+        for (uint64_t i = 0; i < PASS_GUEST_PROGRAMS + 1; i++) pass_guest_served(0xF000000000000000ull + i, 1);
+        for (uint32_t i = 0; i < PASS_GUEST_PROGRAMS; i++) g_pg.prog_draws[i] = ~0ull;
+        g_pg.prog_draws[13] = 1000000000000000ull;
+        g_pg.more = ~0ull;
+        pass_guest_window(PASS_GUEST_WINDOW);
+        CHECK(g_test_lines == 1 && has(" f000000000000000 18446744073709551615,") && has("\n"));
+        CHECK(strlen(g_test_log) < 1000);
     } else {
         printf("unknown case %s\n", which);
         return 2;

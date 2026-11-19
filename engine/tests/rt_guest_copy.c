@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* SNX_ARCEUS_PASS_GUEST's copies in a render target's copy list (vk/texture.c rt_crop and vk_rt_guest), at render
-   scale 2: a guest copy, a snapshot and a crop of one target are three entries with their own extents (astra 02:40
-   item 4). A guest copy is made by one linear blit, refreshed only when the target was drawn to, and pruned as crops
-   are. An integer format, a format without linear blits and no memory each fall back with their reason */
+   scale 2: a guest copy, a snapshot and a crop of one target are three entries with their own extents. A guest copy is
+   one linear blit of a region kept inside the target, refreshed only when the target was drawn to, pruned as crops
+   are, and says nothing where a smaller crop logs. Integer formats, no linear blits and no memory fall back */
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,15 +60,16 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
     return 1;
 }
 void vk_view_formats(VkImageCreateInfo* ii, VkViewFormats* vf) { (void)ii, (void)vf; }
-/* format features: every format blits and filters but the one named here */
-static VkFormat no_blit = VK_FORMAT_UNDEFINED;
+/* format features: every format blits and filters but no_blit (neither) and no_filter (blits, no linear filter) */
+static VkFormat no_blit = VK_FORMAT_UNDEFINED, no_filter = VK_FORMAT_UNDEFINED;
 static u32 format_asks;
 static void VKAPI_CALL format_props(VkPhysicalDevice pd, VkFormat f, VkFormatProperties* p) {
     (void)pd;
     format_asks++;
-    p->optimalTilingFeatures = f == no_blit ? VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
-                                            : VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
-                                                  VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    p->optimalTilingFeatures = f == no_blit     ? VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
+                               : f == no_filter ? VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT
+                                                : VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
+                                                      VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
 }
 PFN_vkGetPhysicalDeviceFormatProperties vkGetPhysicalDeviceFormatProperties = format_props;
 static u32 blits_counted;
@@ -77,7 +79,16 @@ void pass_guest_blit(void) { blits_counted++; }
 VkState g_vk;
 _Atomic int g_cs_any;
 u32 g_vk_present;
-void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+/* the log, kept: the crop's "only that region is used" line is checked */
+static char g_log[8192];
+void logf_(int lvl, const char* fmt, ...) {
+    va_list ap;
+    size_t at = strlen(g_log);
+    (void)lvl;
+    va_start(ap, fmt);
+    if (at + 1 < sizeof g_log) vsnprintf(g_log + at, sizeof g_log - at, fmt, ap);
+    va_end(ap);
+}
 int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     (void)what, (void)file, (void)line;
     return r == VK_SUCCESS;
@@ -240,7 +251,7 @@ int main(void) {
     int why = -1;
     g_vk_present = 100;
 
-    /* astra's case: a guest copy of T, a snapshot of T in the same frame, a crop at another size: three entries */
+    /* a guest copy of T, a snapshot of T in the same frame, a crop at another size: three entries */
     Surf* t = target(960, 540, F);
     Surf* g = vk_rt_guest(t, 960, 540, &why);
     CHECK(g && g != t && g->guest_copy == 1 && g->w == 960 && g->h == 540 && g->sw == 960 && g->sh == 540);
@@ -266,14 +277,21 @@ int main(void) {
     CHECK(vk_rt_guest(t, 960, 540, &why) == g && nblits == 2 && ncopies == 2 && blits_counted == 2);
     CHECK(vk_rt_snapshot(t) == s && nblits == 2 && ncopies == 3);
 
-    /* the region of a smaller header: a 60x33 guest copy of a 64x33 target reads its scaled 120x66 */
+    /* the region of a smaller header: a 60x33 guest copy of a 64x33 target reads its scaled 120x66, and logs nothing */
     Surf* u = target(64, 33, F);
+    g_log[0] = 0;
     Surf* gu = vk_rt_guest(u, 60, 33, &why);
     CHECK(gu && gu->sw == 60 && gu->sh == 33 && last_blit.srcOffsets[1].x == 120 && last_blit.srcOffsets[1].y == 66);
-    CHECK(last_blit.dstOffsets[1].x == 60 && last_blit.dstOffsets[1].y == 33);
-    /* a guest copy and a crop of one size and format: two entries, the crop at its scaled size */
+    CHECK(last_blit.dstOffsets[1].x == 60 && last_blit.dstOffsets[1].y == 33 && !strstr(g_log, "only that region"));
+    /* a guest copy and a crop of one size and format: two entries, the crop at its scaled size, and its line */
     Surf* cu = rt_crop(u, 60, 33, NULL, 0);
     CHECK(cu && cu != gu && cu->sw == 120 && cu->sh == 66 && entries(u) == 2);
+    CHECK(strstr(g_log, "60x33 texture reads the 64x33 render target") != NULL);
+    /* a target whose image is smaller than its scaled size (a rounded scale): the blit reads no further than it */
+    Surf* r = target(60, 33, F);
+    r->sw = 119, r->sh = 65;
+    CHECK(vk_rt_guest(r, 60, 33, &why) && last_blit.srcOffsets[1].x == 119 && last_blit.srcOffsets[1].y == 65);
+    CHECK(last_blit.dstOffsets[1].x == 60 && last_blit.dstOffsets[1].y == 33);
 
     /* fallbacks: an integer format, a format without linear blits (asked once), no memory */
     u32 made = images, before = nblits;
@@ -287,6 +305,10 @@ int main(void) {
     why = -1;
     CHECK(!vk_rt_guest(tf, 480, 270, &why) && why == PASS_GUEST_FORMAT && entries(tf) == 0);
     CHECK(!vk_rt_guest(tf, 480, 270, &why) && why == PASS_GUEST_FORMAT && format_asks == asks + 1);
+    no_filter = VK_FORMAT_A2B10G10R10_UNORM_PACK32; /* blits, but not with a linear filter */
+    Surf* tl = target(480, 270, no_filter);
+    why = -1;
+    CHECK(!vk_rt_guest(tl, 480, 270, &why) && why == PASS_GUEST_FORMAT && entries(tl) == 0);
     Surf* td = target(480, 270, VK_FORMAT_D32_SFLOAT);
     td->f.depth = 1;
     why = -1;
@@ -306,7 +328,7 @@ int main(void) {
     Surf* g2 = vk_rt_guest(t, 960, 540, &why);
     CHECK(g2 && g2->guest_copy && entries(t) == 2);
 
-    drop(t), drop(u), drop(ti), drop(tf), drop(td), drop(tm);
+    drop(t), drop(u), drop(r), drop(ti), drop(tf), drop(tl), drop(td), drop(tm);
     printf("rt_guest_copy: %u checks passed\n", checks);
     return 0;
 }
