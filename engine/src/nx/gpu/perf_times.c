@@ -354,6 +354,8 @@ void perf_copy_pass_begin(PerfCopies* c, const PerfTarget* t) {
 void perf_copy_pass_end(PerfCopies* c, const PerfTarget* t, int why) {
     if (why < 0 || why >= PE_N) why = PE_OTHER;
     const int i = copy_slot(c, t);
+    c->pass_end_n++;
+    c->end_slot = i;
     if (i >= 0) c->tg[i].why[why]++;
     if (why != PE_COPY || c->site < 0) return;
     c->ends[c->site]++;
@@ -419,8 +421,11 @@ uint64_t perf_xfb_vertices(int prim, uint64_t count, uint64_t instances) {
 PerfLanded g_perf_landed[PERF_LANDED];
 static uint32_t landed_home(uint64_t page) { return (uint32_t)((page * 0x9E3779B97F4A7C15ull) >> 51); }
 #define LANDED_PROBE 8u
-void perf_landed_add(PerfLanded* t, uint64_t start, uint64_t size, uint64_t frame) {
+static uint64_t g_landed_seq;
+void perf_landed_add(PerfLanded* t, uint64_t start, uint64_t size, uint64_t frame, uint64_t made, uint64_t submit,
+                     uint64_t gen, uint32_t wclock) {
     if (!size) return;
+    const uint64_t seq = ++g_landed_seq;
     const uint64_t first = start >> 12, last = (start + size - 1) >> 12;
     for (uint64_t p = first; p <= last && p - first < PERF_LANDED_PAGES; p++) {
         uint32_t at = landed_home(p), pick = at;
@@ -432,8 +437,53 @@ void perf_landed_add(PerfLanded* t, uint64_t start, uint64_t size, uint64_t fram
             }
             if (e->frame < t[pick].frame) pick = (at + k) % PERF_LANDED;
         }
-        t[pick] = (PerfLanded){p, start, start + size, frame};
+        t[pick] = (PerfLanded){p, start, start + size, frame, made, submit, gen, seq, wclock, 0};
     }
+}
+/* the newest result holding byte a, landed in frame or the one before */
+static const PerfLanded* landed_at(const PerfLanded* t, uint64_t a, uint64_t frame) {
+    const uint64_t page = a >> 12;
+    const PerfLanded* best = NULL;
+    for (uint32_t k = 0; k < LANDED_PROBE; k++) {
+        const PerfLanded* e = &t[(landed_home(page) + k) % PERF_LANDED];
+        if (e->end && e->page == page && e->frame + 1 >= frame && e->start <= a && a < e->end &&
+            (!best || e->seq > best->seq))
+            best = e;
+    }
+    return best;
+}
+int perf_landed_find(const PerfLanded* t, uint64_t gva, uint64_t len, uint64_t frame, PerfLanded r[2]) {
+    if (!len) return PLK_NONE;
+    const PerfLanded* a = landed_at(t, gva, frame);
+    if (!a) return PLK_NONE;
+    r[0] = *a;
+    if (gva + len <= a->end) return a->start == gva && a->end == gva + len ? PLK_WHOLE : PLK_PART;
+    const PerfLanded* b = landed_at(t, a->end, frame); /* one holding the first's end byte: it adjoins or overlaps */
+    if (!b || gva + len > b->end) return PLK_NONE;
+    r[1] = *b;
+    return PLK_TWO;
+}
+int perf_landed_later(const PerfLanded* t, uint64_t seq, uint64_t gva, uint64_t len, uint64_t frame) {
+    for (uint64_t p = gva >> 12; len && p <= (gva + len - 1) >> 12; p++)
+        for (uint32_t k = 0; k < LANDED_PROBE; k++) {
+            const PerfLanded* e = &t[(landed_home(p) + k) % PERF_LANDED];
+            if (e->end && e->page == p && e->frame + 1 >= frame && e->seq > seq && e->start < gva + len &&
+                gva < e->end)
+                return 1;
+        }
+    return 0;
+}
+uint64_t perf_landed_keep(PerfLanded* t, const PerfLanded* r) {
+    const uint64_t page = r->start >> 12;
+    for (uint32_t k = 0; k < LANDED_PROBE; k++) {
+        PerfLanded* e = &t[(landed_home(page) + k) % PERF_LANDED];
+        if (e->end && e->page == page && e->seq == r->seq) {
+            if (e->kept) return 0;
+            e->kept = 1;
+            return r->end - r->start;
+        }
+    }
+    return r->end - r->start; /* its first page's slot taken since: counted again, an upper bound */
 }
 int perf_landed_inside(const PerfLanded* t, uint64_t gva, uint64_t len, uint64_t frame) {
     const uint64_t page = gva >> 12;
@@ -642,6 +692,21 @@ void perf_copy_csame(PerfCopies* c, int tracked, int big, uint64_t bytes, uint64
     c->cbytes_written += written;
 }
 void perf_copy_sample_skip(PerfCopies* c) { c->sample_skips++; }
+void perf_copy_landed_kept(PerfCopies* c, uint64_t bytes) { c->lnd_kept += bytes; }
+void perf_copy_landed(PerfCopies* c, int made, int kind, int age, int freed, int clear, unsigned wrote, uint64_t ns,
+                      uint64_t ends, int slot) {
+    made = !!made;
+    if (kind < PLK_WHOLE || kind > PLK_TWO || age < 0 || age > 3 || freed < 0 || freed > 4 || clear < 0 || clear > 2)
+        return;
+    c->lnd_n[made][kind - 1]++;
+    c->lnd_age[made][age]++;
+    c->lnd_freed[made][freed]++;
+    c->lnd_clear[made][clear]++;
+    for (int k = 0; k < PLW_N; k++) c->lnd_wrote[made][k] += wrote >> k & 1;
+    c->lnd_ns[made] += ns;
+    c->lnd_ends[made] += ends;
+    if (ends && slot >= 0 && slot < (int)PERF_COPY_TARGETS) c->tg[slot].lnd_ends += ends;
+}
 void perf_copy_quiet(PerfCopies* c, uint64_t ns) {
     c->quiet++;
     c->quiet_ns += ns;
@@ -892,6 +957,44 @@ static size_t put_stamps(char* out, size_t size, size_t at, const char* name, Pe
     return putf(out, size, at, " %s=%.1f/%.1f/%.1f/%.1f%s%s", name, stamps / f, pages / f, merged / f, wides / f,
                 __atomic_load_n(&s->failed, __ATOMIC_RELAXED) ? " failed" : "",
                 __atomic_load_n(&s->span_lost, __ATOMIC_RELAXED) ? " span_lost" : "");
+}
+static size_t put_list(char* out, size_t size, size_t at, const char* name, const uint64_t* v, int n, double f) {
+    at = putf(out, size, at, " %s=", name);
+    for (int i = 0; i < n; i++) at = putf(out, size, at, i ? "/%.1f" : "%.1f", (double)v[i] / f);
+    return at;
+}
+size_t perf_landed_line(PerfCopies* c, uint32_t frames, char* out, size_t size) {
+    static const char* const made[2] = {"staged", "own_made"};
+    if (!size) return 0;
+    const double f = frames ? frames : 1;
+    size_t at = putf(out, size, 0,
+                     "perf-landed: frames=%u (a frame: buf_get's lookups that end staged or own_made inside a landed "
+                     "result, each: the whole result/a part/two results; submissions since it landed 0/1/2-3/more; "
+                     "its buffer alive/freed 0/1/2-3/more submissions before; cleared by page tests/with the byte "
+                     "record/not; written since by a later result/the front end by page/by byte/the CPU by page; ms "
+                     "at the site; passes ended. Then KB kept alive, and the targets of those pass ends)",
+                     frames ? frames : 1);
+    for (int m = 0; m < 2; m++) {
+        if (!(c->lnd_n[m][0] | c->lnd_n[m][1] | c->lnd_n[m][2])) continue;
+        at = put_list(out, size, at, made[m], c->lnd_n[m], 3, f);
+        at = put_list(out, size, at, "age", c->lnd_age[m], 4, f);
+        at = put_list(out, size, at, "buffer", c->lnd_freed[m], 5, f);
+        at = put_list(out, size, at, "cleared", c->lnd_clear[m], 3, f);
+        at = put_list(out, size, at, "wrote", c->lnd_wrote[m], PLW_N, f);
+        at = putf(out, size, at, " ms=%.3f ends=%.1f", c->lnd_ns[m] / f / 1e6, c->lnd_ends[m] / f);
+    }
+    at = putf(out, size, at, " kept_KB=%.1f", c->lnd_kept / f / 1024);
+    for (unsigned n = 0; n < PERF_COPY_PRINT; n++) { /* the most pass ends first */
+        int best = -1;
+        for (int i = 0; i < (int)PERF_COPY_TARGETS; i++)
+            if (c->tg[i].lnd_ends && (best < 0 || c->tg[i].lnd_ends > c->tg[best].lnd_ends)) best = i;
+        if (best < 0) break;
+        const PerfCopyTarget* g = &c->tg[best];
+        at = putf(out, size, at, " [%llx %ux%u f%u] ends=%.1f", (unsigned long long)g->t.gva, g->t.w, g->t.h, g->t.fmt,
+                  g->lnd_ends / f);
+        c->tg[best].lnd_ends = 0; /* printed: the window's reset clears the rest */
+    }
+    return at < size ? at : size - 1;
 }
 size_t perf_same_line(const PerfCopies* c, PerfStamps* s, PerfStamps* real, uint32_t frames, double clock_ns, char* out,
                       size_t size) {

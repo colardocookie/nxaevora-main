@@ -500,6 +500,8 @@ static void out_rebase_later(const GfxOut* e, GfxOut* rest) {
 }
 
 /* The frame fence has signaled. Its stage allocations still exist here; cmd.c frees them only after this call. */
+static int g_ww;
+static int written_since_gva(u64 gva, u64 len, u32 since);
 void vk_buf_frame_done(u64 frame) {
     GfxOut *done = NULL, *done_tail = NULL;
     for (GfxOut** pp = &g_out; *pp;) {
@@ -545,7 +547,10 @@ void vk_buf_frame_done(u64 frame) {
         if (g_perf_times) {
             perf_count(&g_perf, PC_WB_OUTPUTS, 1);
             perf_count(&g_perf, PC_WB_BYTES, o->size);
-            perf_landed_add(g_perf_landed, o->addr, o->size, vk_frame_id()); /* PERF-22, under vk_lock */
+            /* PERF-25: its own guest writes taken into write tracking first, so that only a later one shows */
+            if (g_ww > 0) (void)written_since_gva(o->addr, o->size, vk_ww_now());
+            perf_landed_add(g_perf_landed, o->addr, o->size, vk_frame_id(), o->frame_id, vk_submit_number(),
+                            gpu_mem_generation(), vk_ww_now()); /* PERF-22, under vk_lock */
         }
         free(o);
     }
@@ -2299,6 +2304,40 @@ static int own_why(int st) {
 static void own_note(int what, int why, u64 gva, u64 len, const u64* ns) {
     vk_perf_own(what, why, len, perf_landed_inside(g_perf_landed, gva, len, vk_frame_id()), ns);
 }
+/* SNX_ARCEUS_PERF_TIMES (PERF-25, research 23:56): a lookup that ended staged or own_made (made) inside a landed
+   result, with its ns at the site and the passes it ended. What wrote its range since the landing: a later result
+   (the table), the front end by page (gpu_mem_dirty_since) and by byte (the record as stamped), the CPU by page.
+   A write tracking query here, and one at the landing, are this probe's own */
+static void landed_note(int made, u64 gva, u64 len, u64 ns, u64 ends, int slot) {
+    const u64 frame = vk_frame_id(), now = vk_submit_number();
+    PerfLanded r[2];
+    const int kind = perf_landed_find(g_perf_landed, gva, len, frame, r);
+    if (kind == PLK_NONE) return;
+    int age = 0, freed = 0;
+    unsigned wrote = 0;
+    for (int k = 0; k < (kind == PLK_TWO ? 2 : 1); k++) { /* two results: each part from its own landing, the worst */
+        const u64 a = gva > r[k].start ? gva : r[k].start, b = gva + len < r[k].end ? gva + len : r[k].end;
+        const u64 since = now - r[k].submit;
+        const int g = since == 0 ? 0 : since == 1 ? 1 : since < 4 ? 2 : 3;
+        u64 at;
+        if (g > age) age = g;
+        if (vk_frame_freed(r[k].made, &at)) {
+            const u64 gone = now - at;
+            const int fr = gone == 0 ? 1 : gone == 1 ? 2 : gone < 4 ? 3 : 4;
+            if (fr > freed) freed = fr;
+            vk_perf_landed_kept(perf_landed_keep(g_perf_landed, &r[k]));
+        }
+        int outside;
+        unsigned kinds;
+        if (perf_landed_later(g_perf_landed, r[k].seq, a, b - a, frame)) wrote |= 1u << PLW_LATER;
+        if (gpu_mem_dirty_since(r[k].gen, a, b - a)) wrote |= 1u << PLW_FRONT_PAGE;
+        if (gpu_mem_written_ask(r[k].gen, 0, a, b - a, &outside, &kinds) != PSA_NONE) wrote |= 1u << PLW_FRONT_BYTE;
+        if (written_since_gva(a, b - a, r[k].wclock) != 0) wrote |= 1u << PLW_CPU; /* -1, no tracking: not cleared */
+    }
+    const unsigned page = 1u << PLW_LATER | 1u << PLW_FRONT_PAGE | 1u << PLW_CPU;
+    const unsigned byte = 1u << PLW_LATER | 1u << PLW_FRONT_BYTE | 1u << PLW_CPU;
+    vk_perf_landed(made, kind, age, freed, !(wrote & page) ? 0 : !(wrote & byte) ? 1 : 2, wrote, ns, ends, slot);
+}
 /* PERF-23: step k (POS_*) ran from since to now, which is returned */
 static u64 perf_step(u64* st, u8* ran, int k, u64 since) {
     const u64 now = plat_ns();
@@ -2457,7 +2496,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             : e->own ? ST_WRITTEN
                      : ST_EPOCH;
     u64 ot = g_perf_times ? plat_ns() : 0, ons[POT_N] = {0}; /* PERF-22: the slow path's time, by part */
-    const u64 ot0 = ot;
+    const u64 ot0 = ot, pe0 = ot0 ? g_perf_cp.pass_end_n : 0; /* PERF-25: the passes ended before it */
     u64 st[POS_N] = {0}, mk = ot0; /* PERF-23: by step, mk the last step's end */
     u8 ran[POS_N] = {0};
     if (ot0) {
@@ -2573,6 +2612,8 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         for (int k = POS_OWNED; k < POS_OTHER; k++) in += st[k];
         st[POS_OTHER] = end - ot0 - in, ran[POS_OTHER] = 1;
         vk_perf_steps(what, st, ran);
+        if (what == PO_STAGED || what == PO_OWN_MADE) /* PERF-25 */
+            landed_note(what == PO_OWN_MADE, gva, len, end - ot0, g_perf_cp.pass_end_n - pe0, g_perf_cp.end_slot);
         if (what == PO_OWN_SAME && why == ST_DIRTY) { /* the GPU-side write to the byte, as stamped and as written */
             unsigned cleared = 0; /* PCL_* */
             for (int real = 0; real < 1 + (g_perf_times > 1); real++) { /* as written only at PERF_TIMES=2 */

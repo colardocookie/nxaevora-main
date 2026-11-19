@@ -92,6 +92,12 @@ void vk_perf_probe(u64 ns) {
 void vk_perf_csame(int tracked, int big, u64 bytes, u64 written) {
     if (g_perf_times && perf_here()) perf_copy_csame(&g_perf_cp, tracked, big, bytes, written);
 }
+void vk_perf_landed(int made, int kind, int age, int freed, int clear, unsigned wrote, u64 ns, u64 ends, int slot) {
+    if (g_perf_times && perf_here()) perf_copy_landed(&g_perf_cp, made, kind, age, freed, clear, wrote, ns, ends, slot);
+}
+void vk_perf_landed_kept(u64 bytes) {
+    if (g_perf_times && perf_here()) perf_copy_landed_kept(&g_perf_cp, bytes);
+}
 void vk_perf_sample_skip(void) {
     if (g_perf_times && perf_here()) perf_copy_sample_skip(&g_perf_cp);
 }

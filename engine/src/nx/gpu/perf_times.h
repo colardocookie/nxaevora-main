@@ -278,16 +278,30 @@ enum {
 enum { POW_NEW, POW_NOBUF, POW_SUBMIT, POW_DIRTY, POW_WRITTEN, POW_EPOCH, POW_N }; /* buf_get's ST_* reasons */
 enum { POT_HASH, POT_CREATE, POT_REST, POT_N }; /* guest bytes, hash and copy; make_own; the rest */
 #define PERF_OWN_USES 6u /* draws using an own buffer before it is dropped: 0, 1, 2-3, 4-15, 16-63, 64 or more */
-/* the graphics results landed lately, by guest page, for buf_get's slow path: under vk_lock, both sides */
+/* the graphics results landed lately, by guest page, for buf_get's slow path: under vk_lock, both sides. PERF-25 keeps
+   for each the frame whose staging holds its buffer (made), the submission open when it landed, the GPU-side write
+   generation and the write tracking's clock after it landed, its landing's order (seq) and whether its bytes were
+   counted as kept alive (kept, in its first page's slot) */
 typedef struct {
     uint64_t page, start, end, frame;
+    uint64_t made, submit, gen, seq;
+    uint32_t wclock, kept;
 } PerfLanded;
 #define PERF_LANDED 8192u
 #define PERF_LANDED_PAGES 16u /* a result's first pages are entered: a range further into a bigger one is missed */
 extern PerfLanded g_perf_landed[PERF_LANDED];
-void perf_landed_add(PerfLanded* t, uint64_t start, uint64_t size, uint64_t frame);
+void perf_landed_add(PerfLanded* t, uint64_t start, uint64_t size, uint64_t frame, uint64_t made, uint64_t submit,
+                     uint64_t gen, uint32_t wclock);
 /* whether [gva, gva + len) lies inside one result landed in frame or the one before */
 int perf_landed_inside(const PerfLanded* t, uint64_t gva, uint64_t len, uint64_t frame);
+/* PERF-25: the result or two adjoining results [gva, gva + len) lies inside, landed in frame or the one before, into
+   r: PLK_WHOLE (its whole range), PLK_PART, PLK_TWO (r[0] holds gva, r[1] the end), else PLK_NONE */
+enum { PLK_NONE, PLK_WHOLE, PLK_PART, PLK_TWO };
+int perf_landed_find(const PerfLanded* t, uint64_t gva, uint64_t len, uint64_t frame, PerfLanded r[2]);
+/* whether a result that landed after seq shares a byte with [gva, gva + len), by the table (its first 16 pages) */
+int perf_landed_later(const PerfLanded* t, uint64_t seq, uint64_t gva, uint64_t len, uint64_t frame);
+/* r's bytes the first time it is asked for after its buffer was freed, else 0 */
+uint64_t perf_landed_keep(PerfLanded* t, const PerfLanded* r);
 
 /* PERF-23 (research 19:40): GPU-side writes by GPU page, kept to the byte, in two records: g_perf_stamps as stamped
    (what gpu_mem_dirty_since reads: a landed result's whole binding), g_perf_real as the bytes written (a result's
@@ -378,6 +392,7 @@ typedef struct {
     uint64_t cls[PI_CLASSES];                         /* its draws' composed input bindings (PERF-17) */
     uint64_t own[PO_N], own_landed[PO_N];             /* its draws' buf_get slow paths, and of them inside a
                                                          landed result, by outcome (PERF-22, reviewer N1) */
+    uint64_t lnd_ends;                                /* PERF-25: passes those inside a landed result ended */
 } PerfCopyTarget;
 typedef struct {
     uint64_t ops[PK_SITES], bytes[PK_SITES], ends[PK_SITES]; /* every copy, the ones that ended a pass, all targets */
@@ -401,6 +416,13 @@ typedef struct {
                                                         patch size, bytes, bytes on the pages written */
     uint64_t quiet, quiet_ns; /* written checks on own buffers that found nothing */
     uint64_t sample_skips;    /* PERF-24: full checks that took no sample */
+    /* PERF-25: buf_get's lookups inside a landed result, staged [0] or own_made [1]: by the range (PLK_* - 1), the
+       submissions since the landing (0, 1, 2-3, more), its buffer alive [0] or freed 0, 1, 2-3, more submissions
+       before, cleared by page tests, with the byte record, not, what wrote it (PLW_*), ns at the site, pass ends */
+    uint64_t lnd_n[2][3], lnd_age[2][4], lnd_freed[2][5], lnd_clear[2][3], lnd_wrote[2][4], lnd_ns[2], lnd_ends[2];
+    uint64_t lnd_kept;   /* the bytes of results asked for after their buffer was freed, each once */
+    uint64_t pass_end_n; /* passes ended, and the target of the last (end_slot), for PERF-25 */
+    int end_slot;
     PerfWPage wpage[PERF_WPAGES];
     uint64_t wpages_lost;
     PerfCopyTarget tg[PERF_COPY_TARGETS];
@@ -452,6 +474,15 @@ void perf_copy_cleared(PerfCopies* c, unsigned tests); /* PCL_* bits */
 void perf_copy_csame(PerfCopies* c, int tracked, int big, uint64_t bytes, uint64_t written);
 void perf_copy_quiet(PerfCopies* c, uint64_t ns);
 void perf_copy_sample_skip(PerfCopies* c);
+enum { PLW_LATER, PLW_FRONT_PAGE, PLW_FRONT_BYTE, PLW_CPU, PLW_N }; /* what wrote a landed range since (PERF-25) */
+/* one lookup inside a landed result: made (own_made, else staged), kind (PLK_*), age and freed buckets (freed 0 for
+   alive), clear (0 page tests, 1 the byte record, 2 not), wrote (PLW_* bits), its ns, the passes it ended and the
+   target slot of the last (-1 none) */
+void perf_copy_landed(PerfCopies* c, int made, int kind, int age, int freed, int clear, unsigned wrote, uint64_t ns,
+                      uint64_t ends, int slot);
+void perf_copy_landed_kept(PerfCopies* c, uint64_t bytes);
+/* PERF-25's line: from the same window as perf-same, before perf-copies resets it */
+size_t perf_landed_line(PerfCopies* c, uint32_t frames, char* out, size_t size);
 void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame);
 /* PERF-23's, the same, with the stamps' counts since the last and the cost of one clock read. real NULL: the record as
    written is not kept (SNX_ARCEUS_PERF_TIMES=1), its columns not printed */

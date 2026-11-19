@@ -142,6 +142,10 @@ static void own_note(int what, int why, u64 gva, u64 len, const u64* ns) {
 static void vk_perf_steps(int what, const u64* st, const u8* ran) { (void)what, (void)st, (void)ran; }
 static void vk_perf_quiet(u64 ns) { (void)ns; }
 static void vk_perf_sample_skip(void) {}
+PerfCopies g_perf_cp;
+static void landed_note(int made, u64 gva, u64 len, u64 ns, u64 ends, int slot) {
+    (void)made, (void)gva, (void)len, (void)ns, (void)ends, (void)slot;
+}
 static void vk_perf_gsame(int real, int q, unsigned k) { (void)real, (void)q, (void)k; }
 static void vk_perf_cleared(unsigned c) { (void)c; }
 static void vk_perf_csame(int a, int b, u64 c, u64 d) { (void)a, (void)b, (void)c, (void)d; }

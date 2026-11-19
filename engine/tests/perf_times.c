@@ -700,35 +700,97 @@ static void test_writable(void) {
     CHECK(perf_writable_line(&c, 1, small, sizeof small) == sizeof small - 1 && perf_writable_line(&c, 1, small, 0) == 0);
 }
 
+/* PERF-25: a lookup's result or two, a later result over it, a freed one's bytes once, and the line */
+static void test_landed(void) {
+    static PerfLanded t[PERF_LANDED];
+    memset(t, 0, sizeof t);
+    PerfLanded r[2];
+    perf_landed_add(t, 0x10000, 0x1000, 7, 6, 40, 5, 9);
+    perf_landed_add(t, 0x11000, 0x800, 7, 6, 41, 6, 10); /* adjoining */
+    CHECK(perf_landed_find(t, 0x10000, 0x1000, 7, r) == PLK_WHOLE && r[0].made == 6 && r[0].submit == 40 &&
+          r[0].gen == 5 && r[0].wclock == 9);
+    CHECK(perf_landed_find(t, 0x10100, 0x100, 8, r) == PLK_PART);
+    CHECK(perf_landed_find(t, 0x10800, 0xa00, 7, r) == PLK_TWO && r[0].start == 0x10000 && r[1].start == 0x11000 &&
+          r[1].submit == 41 && r[1].seq > r[0].seq);
+    CHECK(perf_landed_find(t, 0x10800, 0x1001, 7, r) == PLK_NONE); /* past the second */
+    CHECK(perf_landed_find(t, 0x10000, 0x100, 9, r) == PLK_NONE);  /* landed two frames before */
+    CHECK(perf_landed_find(t, 0x0f000, 0x100, 7, r) == PLK_NONE && perf_landed_find(t, 0x10000, 0, 7, r) == PLK_NONE);
+    perf_landed_add(t, 0x20000, 0x100, 7, 6, 42, 7, 11);
+    perf_landed_add(t, 0x20200, 0x100, 7, 6, 42, 7, 11); /* a gap between them */
+    CHECK(perf_landed_find(t, 0x20000, 0x300, 7, r) == PLK_NONE);
+    /* the newest result over a byte is the one found */
+    perf_landed_add(t, 0x30000, 0x1000, 7, 6, 43, 8, 12);
+    perf_landed_add(t, 0x30000, 0x800, 7, 6, 44, 9, 13);
+    CHECK(perf_landed_find(t, 0x30000, 0x100, 7, r) == PLK_PART && r[0].submit == 44);
+    CHECK(perf_landed_find(t, 0x30700, 0x200, 7, r) == PLK_TWO && r[0].submit == 44 && r[1].submit == 43);
+    /* a later result over a byte of the range, not one before it or beside it */
+    CHECK(perf_landed_find(t, 0x10000, 0x1000, 7, r) == PLK_WHOLE);
+    const PerfLanded a = r[0];
+    CHECK(!perf_landed_later(t, a.seq, 0x10000, 0x1000, 7)); /* 0x11000 starts at its end */
+    perf_landed_add(t, 0x10f00, 0x200, 7, 6, 45, 10, 14);
+    CHECK(!perf_landed_later(t, a.seq, 0x10e00, 0x100, 7) && perf_landed_later(t, a.seq, 0x10e00, 0x101, 7));
+    CHECK(!perf_landed_later(t, a.seq, 0x10e00, 0x200, 9)); /* not within the two frames */
+    CHECK(perf_landed_find(t, 0x10f00, 0x200, 7, r) == PLK_WHOLE &&
+          !perf_landed_later(t, r[0].seq, 0x10000, 0x1000, 7));
+    /* a freed result's bytes once */
+    CHECK(perf_landed_keep(t, &a) == 0x1000 && perf_landed_keep(t, &a) == 0);
+    /* the counts and their line */
+    static PerfCopies c;
+    char line[PERF_COPIES_LINE];
+    perf_copies_reset(&c);
+    const PerfTarget g = {0x9000, 64, 32, 5};
+    perf_copy_draw(&c, &g);
+    perf_copy_pass_end(&c, &g, PE_COPY);
+    CHECK(c.pass_end_n == 1 && c.end_slot == 0);
+    perf_copy_landed(&c, 1, PLK_WHOLE, 2, 0, 0, 0, 2000000, 1, c.end_slot);
+    perf_copy_landed(&c, 1, PLK_TWO, 3, 4, 2, 1u << PLW_LATER | 1u << PLW_CPU, 2000000, 1, c.end_slot);
+    perf_copy_landed(&c, 0, PLK_PART, 0, 1, 1, 1u << PLW_FRONT_PAGE, 1000000, 0, -1);
+    perf_copy_landed(&c, 0, PLK_NONE, 0, 0, 0, 0, 1, 0, -1);   /* not inside: not counted */
+    perf_copy_landed(&c, 0, PLK_WHOLE, 4, 0, 0, 0, 1, 0, -1);  /* past the buckets: not counted */
+    perf_copy_landed_kept(&c, 4096);
+    perf_landed_line(&c, 2, line, sizeof line);
+    CHECK(strstr(line, "perf-landed: frames=2 "));
+    CHECK(strstr(line, " staged=0.0/0.5/0.0 age=0.5/0.0/0.0/0.0 buffer=0.0/0.5/0.0/0.0/0.0 cleared=0.0/0.5/0.0 "
+                       "wrote=0.0/0.5/0.0/0.0 ms=0.500 ends=0.0 "));
+    CHECK(strstr(line, " own_made=0.5/0.0/0.5 age=0.0/0.0/0.5/0.5 buffer=0.5/0.0/0.0/0.0/0.5 cleared=0.5/0.0/0.5 "
+                       "wrote=0.5/0.0/0.0/0.5 ms=2.000 ends=1.0 kept_KB=2.0 [9000 64x32 f5] ends=1.0"));
+    perf_copies_line(&c, 2, line, sizeof line); /* the window's reset */
+    perf_landed_line(&c, 2, line, sizeof line);
+    CHECK(!strstr(line, " staged=") && !strstr(line, " own_made=") && strstr(line, " kept_KB=0.0") &&
+          !strstr(line, "["));
+    char small[10];
+    CHECK(perf_landed_line(&c, 1, small, sizeof small) == sizeof small - 1 && perf_landed_line(&c, 1, small, 0) == 0);
+}
+
 /* PERF-22: the landed ranges by page, and buf_get's slow paths on their line */
 static void test_own(void) {
     static PerfLanded t[PERF_LANDED];
     memset(t, 0, sizeof t);
-    perf_landed_add(t, 0x10100, 0xd00, 7); /* 3.25 KB from 0x10100: pages 0x10 */
-    perf_landed_add(t, 0x20f00, 0x200, 7); /* across a page: 0x20 and 0x21 */
-    perf_landed_add(t, 0x30000, 0, 7);     /* empty: nothing */
+    perf_landed_add(t, 0x10100, 0xd00, 7, 0, 0, 0, 0); /* 3.25 KB from 0x10100: pages 0x10 */
+    perf_landed_add(t, 0x20f00, 0x200, 7, 0, 0, 0, 0); /* across a page: 0x20 and 0x21 */
+    perf_landed_add(t, 0x30000, 0, 7, 0, 0, 0, 0);     /* empty: nothing */
     CHECK(perf_landed_inside(t, 0x10100, 0xd00, 7) && perf_landed_inside(t, 0x10200, 0x100, 8));
     CHECK(!perf_landed_inside(t, 0x10100, 0xd01, 7)); /* past its end */
     CHECK(!perf_landed_inside(t, 0x10000, 0x200, 7)); /* before its start */
     CHECK(!perf_landed_inside(t, 0x10100, 0x100, 9)); /* landed two frames ago */
     CHECK(perf_landed_inside(t, 0x21000, 0x100, 7) && perf_landed_inside(t, 0x20f00, 0x200, 7));
     CHECK(!perf_landed_inside(t, 0x30000, 1, 7));
-    perf_landed_add(t, 0x100000, 0x20000, 7); /* 32 pages: the first 16 entered */
+    perf_landed_add(t, 0x100000, 0x20000, 7, 0, 0, 0, 0); /* 32 pages: the first 16 entered */
     CHECK(perf_landed_inside(t, 0x10f000, 0x100, 7) && !perf_landed_inside(t, 0x110000, 0x100, 7));
     /* 12 results on one page in one frame: a probe holds 8, the ones past it take its first slot (lossy, a census) */
-    for (uint64_t k = 0; k < 12; k++) perf_landed_add(t, 0x50000 + k * 0x100, 0x100, 10);
+    for (uint64_t k = 0; k < 12; k++) perf_landed_add(t, 0x50000 + k * 0x100, 0x100, 10, 0, 0, 0, 0);
     unsigned kept = 0;
     for (uint64_t k = 0; k < 12; k++) kept += perf_landed_inside(t, 0x50000 + k * 0x100, 0x100, 10);
     CHECK(kept == 8 && perf_landed_inside(t, 0x50b00, 0x100, 10) && !perf_landed_inside(t, 0x50000, 0x100, 10));
     /* two frames later every one of them is stale: a new result takes a slot of theirs, not one in use */
-    perf_landed_add(t, 0x50000, 0x80, 12);
+    perf_landed_add(t, 0x50000, 0x80, 12, 0, 0, 0, 0);
     CHECK(perf_landed_inside(t, 0x50000, 0x80, 12) && perf_landed_inside(t, 0x50000, 0x80, 13));
     CHECK(!perf_landed_inside(t, 0x50b00, 0x100, 12)); /* stale for a lookup two frames on */
     /* a full probe of one frame, then two of the next: the second evicts the oldest slot, not the first new one */
     memset(t, 0, sizeof t);
-    for (uint64_t k = 0; k < 8; k++) perf_landed_add(t, 0x60000 + k * 0x100, 0x100, 10);
-    perf_landed_add(t, 0x60800, 0x100, 11);
-    perf_landed_add(t, 0x60900, 0x100, 11);
+    for (uint64_t k = 0; k < 8; k++) perf_landed_add(t, 0x60000 + k * 0x100, 0x100, 10, 0, 0, 0, 0);
+    perf_landed_add(t, 0x60800, 0x100, 11, 0, 0, 0, 0);
+    perf_landed_add(t, 0x60900, 0x100, 11, 0, 0, 0, 0);
     CHECK(perf_landed_inside(t, 0x60800, 0x100, 11) && perf_landed_inside(t, 0x60900, 0x100, 11));
     static PerfCopies c;
     char line[2048];
@@ -1005,6 +1067,7 @@ int main(void) {
     test_inplace_counts();
     test_writable();
     test_own();
+    test_landed();
     test_same();
     test_same_threads();
     CHECK(g_perf_inplace == 0 && g_perf_bind == PBK_OTHER && g_perf_exact == 0); /* unset: today's commands */

@@ -72,6 +72,10 @@ static u64 g_dead_bytes; /* every frame's dead_bytes */
 static u32 g_cur;
 static u32 g_cb_begun = 1; /* command buffers begun, so a command buffer's state is told from an earlier one's */
 static u64 g_frame_id;
+/* SNX_ARCEUS_PERF_TIMES (PERF-25): the submission at which each recent frame's slot was reused, its rings with it */
+static struct {
+    u64 frame, submit;
+} g_freed[8];
 static VkSemaphore g_gsem; /* graphics timeline: submission n signals n */
 static u64 g_gval;         /* the last submission */
 static u64 g_landed;       /* submissions whose storage results vk_buf_frame_done has landed */
@@ -298,6 +302,11 @@ static void frame_recycle(Frame* f) {
         f->istage = 0;
     }
     ring_reset(&f->back, NULL);
+    if (g_perf_times && g_frame_id >= VK_FRAMES) { /* the frame this slot held, two before the one it now records */
+        const u64 old = g_frame_id - VK_FRAMES;
+        g_freed[old % 8].frame = old;
+        g_freed[old % 8].submit = vk_submit_number();
+    }
     vk_rec_frame_reset((u32)(f - g_fr)); /* the slot's sets made on the recording thread too */
     f->icb = 0;
     f->fresh = 0;
@@ -585,6 +594,11 @@ void vk_frame_hold(u64 frame_id) {
     g_fr[(g_cur + VK_FRAMES - 1) % VK_FRAMES].hold = vk_submit_number();
 }
 u32 vk_frame_slot(void) { return g_cur; }
+int vk_frame_freed(u64 frame, u64* submit) {
+    if (g_freed[frame % 8].frame != frame || !g_freed[frame % 8].submit) return 0;
+    *submit = g_freed[frame % 8].submit;
+    return 1;
+}
 
 VkDescriptorPool vk_desc_pool_new(void) {
     /* a thousand sets of the stage layout (gpu/vk/pipeline.c), each with all its descriptors: a frame chains more

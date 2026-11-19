@@ -218,6 +218,8 @@ u64 vk_submit_number(void);
 void vk_wait_foreground(void);
 u32 vk_cb_begun(void); /* command buffers begun so far: changes when a new one starts recording */
 u64 vk_frame_id(void);
+/* SNX_ARCEUS_PERF_TIMES (PERF-25): 1 when frame's staging rings were reused, at the submission in *submit */
+int vk_frame_freed(u64 frame, u64* submit);
 /* the submission being recorded reads buffers in frame frame_id's rings: that frame's slot isn't reused until it is
    done. Only the frame before the current one can be held: older slots were reused already */
 void vk_frame_hold(u64 frame_id);
@@ -1084,6 +1086,8 @@ void vk_perf_cleared(unsigned tests);
 void vk_perf_csame(int tracked, int big, u64 bytes, u64 written);
 void vk_perf_quiet(u64 ns);
 void vk_perf_sample_skip(void);
+void vk_perf_landed(int made, int kind, int age, int freed, int clear, unsigned wrote, u64 ns, u64 ends, int slot);
+void vk_perf_landed_kept(u64 bytes);
 void vk_perf_wpage(u64 page);
 void vk_render_draw_texture(GpuChannel* ch);
 void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
