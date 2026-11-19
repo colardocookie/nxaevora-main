@@ -5,8 +5,8 @@
 #include "common/cpu/arm/arm.h"
 #include <stddef.h>
 
-/* A runnable AArch32 (A32/Thumb) block image, shared by the GNU ABI and NX
-   runtimes. Blocks compile on demand through the ARM LLVM backend. */
+/* A runnable AArch32 (A32/Thumb) block image, shared by the NX runtime's 32-bit module path.
+   Blocks compile on demand through the ARM LLVM backend. */
 typedef struct SnxArmExecRange {
     uint64_t address;
     const unsigned char* data;

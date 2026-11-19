@@ -15,7 +15,6 @@ if [ $# -ne 1 ] || [ ! -f "$1" ]; then
     exit 2
 fi
 runtime=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
-scripts=$(cd "$(dirname "$0")" && pwd)
 exe=
 case $runtime in
     *.exe) exe=.exe ;;
@@ -97,20 +96,6 @@ word smoke.nro 0x88 0xd40004e1 # SVC 0x27, OutputDebugString
 word smoke.nro 0x8c 0xd40000e1 # SVC 7, ExitProcess
 word smoke.nro 0x90 0xd4200000 # BRK
 put smoke.nro 0x100 'NX runtime smoke\n'
-
-# A package of the Linux runtime alone (a big-endian host's) runs Linux AArch64 programs, and nothing else here
-run "${launch[@]}" "$runtime" --help
-if grep -q '^Usage: scarletnx-gnuabi' <<<"$out"; then
-    if [ "$status" -eq 0 ]; then pass "scarletnx-gnuabi --help"; else fail "scarletnx-gnuabi --help exited $status" "$out"; fi
-    "$scripts/aarch64-smoke.sh" smoke
-    run "${launch[@]}" "$runtime" ./smoke
-    if [ "$status" -eq 42 ] && grep -qx 'gnuabi smoke' <<<"$out"; then
-        pass "it runs an AArch64 program"
-    else
-        fail "the AArch64 program exited $status, not 42 with its line" "$out"
-    fi
-    exit $failed
-fi
 
 for mode in "" -r; do
     run "${launch[@]}" "$runtime" ${mode:+"$mode"} --help

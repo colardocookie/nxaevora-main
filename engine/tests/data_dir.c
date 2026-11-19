@@ -240,7 +240,7 @@ int main(void) {
         free(file);
         free(dir);
     }
-    /* snx_dump_name: a dump file's name, which the 3DS target uses for its game */
+    /* snx_dump_name: a dump file's name */
     {
         static const char* const names[][2] = {{"/dumps/My Game [v1.0].nsp", "My Game v10"},
                                                {"C:\\dumps\\two.dots.xci", "twodots"},

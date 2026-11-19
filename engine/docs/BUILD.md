@@ -38,7 +38,7 @@ Run from checkout root. [Extract/AOT/run](USAGE.md) · [Tests/diagnostics](DEVEL
   SDL3 remains a required build dependency.
 - **FFmpeg:** required by every NX runtime build. CMake builds the pinned source release.
   Avoid spaces in checkout/cache paths.
-- **OpenSSL:** required by every build with the NX or 3DS loaders (hashes, ciphers, the ssl service's TLS). CMake
+- **OpenSSL:** required by every build with the NX loader (hashes, ciphers, the ssl service's TLS). CMake
   builds the pinned source release with OpenSSL's Configure, which needs **Perl**.
 
 ## Linux / FreeBSD
@@ -336,7 +336,7 @@ builds, so other trees and branches skip both. A change to any input is a new fo
 ## Build variants
 
 SDL3, Vulkan and FFmpeg are mandatory for the NX runtime, including when running with `-H`.
-There are no renderer or media-decoding disable options. Tools-only and GNUABI-only builds do not need them.
+There are no renderer or media-decoding disable options. Tools-only builds do not need them.
 
 Persistent per-build-dir options (POSIX examples):
 
@@ -357,8 +357,6 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DSNX_DEPS_CACHE=/path`: reuse and publish finished FFmpeg and OpenSSL builds there (default: the environment's
   `SNX_DEPS_CACHE`, else none).
 - `-DSNX_BUILD_NX=OFF`: omit the Switch runtime (default ON).
-- `-DSNX_BUILD_GNUABI=OFF`: omit the CPU-only Linux AArch64 runtime, see [GNUABI.md](GNUABI.md) (default ON).
-- `-DSNX_BUILD_3DS=OFF`: omit the 3DS layer, see [3DS.md](3DS.md) (default ON).
 - `-DSNX_BUILD_GUI=OFF`: omit the SDL3 launcher. The default is ON when `SNX_BUILD_NX` is on and `SNX_TOOLS_ONLY`
   is not, OFF otherwise.
 - `-DSNX_TOOLS_ONLY=ON`: build the extraction/recompilation driver without the runtime, see below (default OFF).
@@ -379,8 +377,7 @@ Test options, read when `BUILD_TESTING` is on (CTest's default), all OFF by defa
   macOS jobs run them.
 - `-DSNX_TEST_A64_FP_DIFF=ON`: add the AArch64 FP differential test, which needs Python unicorn 2.1.4 and a native
   Linux host.
-- `-DSNX_TEST_ARM_AOT=ON`, `-DSNX_TEST_ARM_DIFF=ON`: the 3DS ARM11 witnesses and the A32 unicorn comparison, see
-  [3DS.md](3DS.md).
+- `-DSNX_TEST_ARM_AOT=ON`, `-DSNX_TEST_ARM_DIFF=ON`: the A57/Thumb witnesses and the A32 unicorn comparison.
 
 ```sh
 # Build without the GUI launcher; SDL3 remains required by the runtime:
@@ -469,16 +466,15 @@ takes the version in `LLVM_VERSION` (CI gives it the container's, whose `opt` pr
 and with `SNX_SYSROOT` set it cross-builds for another architecture. `SNX_A64_DISASM=OFF` leaves out `scarletnx
 --mcp`'s A64 disassembler, which is for working on the runtime.
 
-`scarletnx` is every driver the build has (`src/multicall`): each driver is a library with no `main` of its own,
-and the program, whichever drivers are on (`SNX_BUILD_NX` among them), runs the one its name says, so LLVM, SDL and
-the code the drivers share are in it once. `scarletnx-switch`, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-gnuabi`
-and `scarletnx-agb` are links to it on Linux and macOS, made in the build folder and installed. Windows, whose zips
-keep no links, installs `scarletnx.exe` alone, which takes a driver's name as its first argument
-(`scarletnx.exe scarletnx-3ds ...`, how the launcher runs them); its build folder has hard links of those names, for
-the tests. Android's and iOS's apps start the program their own way.
+`scarletnx` is the driver the build has (`src/multicall`): the driver is a library with no `main` of its own,
+and the program, when the driver is on (`SNX_BUILD_NX`), runs the one its name says, so LLVM, SDL and
+the code it shares are in it once. `scarletnx-switch` is a link to it on Linux and macOS, made in the build folder
+and installed. Windows, whose zips keep no links, installs `scarletnx.exe` alone, which takes the driver's name as
+its first argument (`scarletnx.exe scarletnx-switch ...`, how the launcher runs it); its build folder has a hard
+link of that name, for the tests. Android's and iOS's apps start the program their own way.
 
 [Nightly AppImages](https://github.com/scarletnx/nightly/releases/latest), x86_64 and aarch64 · [Launch](USAGE.md).
 
 A pull request's own builds are linked from a comment on it once CI has built them.
 
-[Licenses/credits](CREDITS.md) · [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md).
+[Licenses/credits](CREDITS.md) · [Architecture](ARCHITECTURE.md) · [Roadmap](../../ROADMAP.md).

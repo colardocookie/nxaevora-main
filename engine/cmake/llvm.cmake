@@ -54,7 +54,7 @@ if(NOT SNX_LLVM_VERSION OR NOT EXISTS "${SNX_LLVM_INCLUDE_DIR}/llvm-c/Core.h" OR
                         "installation. Check its headers and libraries or select another SNX_LLVM_CONFIG.")
 endif()
 separate_arguments(SNX_LLVM_LIBS UNIX_COMMAND "${SNX_LLVM_LIBS}")
-# a distribution's libLLVM, whose own dependencies the program's search path has to find (src/3ds)
+# a distribution's libLLVM, whose own dependencies the program's search path has to find (the runtime)
 execute_process(COMMAND "${SNX_LLVM_CONFIG}" --shared-mode OUTPUT_VARIABLE snx_llvm_mode OUTPUT_STRIP_TRAILING_WHITESPACE
                 ERROR_QUIET)
 if(snx_llvm_mode STREQUAL "shared")

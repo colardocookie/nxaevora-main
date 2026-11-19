@@ -213,13 +213,18 @@ The work has five reviewable units:
    functions move to it, with shared MD3 design values.
 5. Removal of Dear ImGui and the old UIs, with their code, settings and build dependencies.
 
+A unit 1.5, after unit 1 and before unit 3, removes the drivers for the GBA, the 3DS, the Vita and the Linux AArch64
+programs, and the Android, iOS and macOS frontends, in two pull requests. The Linux host build stays as a later
+target.
+
 The old and the new UI can both exist during the work, but not at the end of the phase. The details, the first
 inventory and the selection checks are in `docs/ui/engine-ui-plan.md`.
 
 Exit condition: from the new layout the CLI recompiles and runs the game, the Engine does not depend on the old start
-GUI, the needed in-game UI works on the new base, Dear ImGui and the old UI code and dependencies are gone, no function
-was lost in the move, the tests, CI and runs of the target scenes pass, and the Japanese input, the switch of the
-input between the UI and the game, and the load of the new UI are checked.
+GUI, the needed in-game UI works on the new base, Dear ImGui and the old UI code and dependencies are gone, the
+removed drivers and frontends are gone from the build, CI and the docs, no function was lost in the move, the tests,
+CI and runs of the target scenes pass, and the Japanese input, the switch of the input between the UI and the game,
+and the load of the new UI are checked.
 
 ## Phase 8: Shaders and pipelines
 

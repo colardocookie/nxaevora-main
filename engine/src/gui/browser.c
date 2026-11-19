@@ -21,15 +21,6 @@ static bool suffix(const char* name, const char* extension) {
         if (tolower((unsigned char)name[n - e + i]) != extension[i]) return false;
     return true;
 }
-bool gui_is_cia(const char* name) {
-    /* a 3DS game by its extension: the driver reads the file's own header, this is the browser's filter. A
-       .bcci/.bcxi/.bcia is a bundle of one, as Azahar's is */
-    return suffix(name, ".cia") || suffix(name, ".cci") || suffix(name, ".3ds") || suffix(name, ".cxi") ||
-           suffix(name, ".app") || suffix(name, ".hbb") || suffix(name, ".bcci") || suffix(name, ".bcxi") ||
-           suffix(name, ".bcia") || suffix(name, ".zcci") || suffix(name, ".zcxi") || suffix(name, ".zcia");
-}
-bool gui_is_vpk(const char* name) { return suffix(name, ".vpk"); }
-bool gui_is_gba(const char* name) { return suffix(name, ".gba"); }
 bool gui_is_dump(const char* name) { return suffix(name, ".nro"); }
 bool gui_game_folder(const char* path) {
     char *folder = snx_dirname(path), *name, data[SNX_PATH_SIZE];
@@ -80,20 +71,13 @@ uint64_t gui_tree_size(const char* path, const int* stop) {
 #else
 #define GAME_CODE "_code.so"
 #endif
-/* whether a folder's entry is a game of kinds: a CIA or VPK, or one ready to run. Libraries often carry executable bits but
-   are not games, and hidden files are not shown. On Android the shared storage runs nothing: a game is <name> beside
-   <name>_code.so (name is cut there), and a dump put there, to be prepared, shows with its own name */
+/* whether a folder's entry is a game of kinds: one ready to run. Libraries often carry executable bits but are not games,
+   and hidden files are not shown. On Android the shared storage runs nothing: a game is <name> beside <name>_code.so
+   (name is cut there), and a dump put there, to be prepared, shows with its own name */
 static bool playable(const char* directory, char* name, int kinds) {
     char* path;
     bool listed;
     if (name[0] == '.') return false;
-    if (gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name)) {
-        if (!(kinds & GUI_GAMES_CIA)) return false;
-        path = snx_path_join(directory, name);
-        listed = path && snx_is_file(path);
-        free(path);
-        return listed;
-    }
     if ((kinds & GUI_GAMES_DUMP) && gui_is_dump(name)) {
         path = snx_path_join(directory, name);
         listed = path && snx_is_file(path);
@@ -517,10 +501,7 @@ bool gui_games_add_deep(GuiGames* games, const char* directory, int kinds, int d
     return add_games(games, directory, kinds, games->count, depth, error, size);
 }
 bool gui_games_heading(const GuiGames* games, size_t i) { return i < games->count && !games->paths[i]; }
-static bool dump_entry(const GuiGames* games, size_t i) {
-    return gui_is_dump(games->names[i]) || gui_is_cia(games->names[i]) || gui_is_vpk(games->names[i]) ||
-           gui_is_gba(games->names[i]);
-}
+static bool dump_entry(const GuiGames* games, size_t i) { return gui_is_dump(games->names[i]); }
 bool gui_games_group(GuiGames* games, const char* ready, const char* dumps,
                      bool (*made)(const char* path, const void* user), const void* user) {
     size_t room = games->count + 2, n = 0, i, in[2] = {0, 0};
@@ -643,7 +624,7 @@ bool gui_has_folders(const char* directory, int kinds) {
     snx_free_strings(names, count);
     return found;
 }
-bool gui_games_scan(GuiGames* games, const char* directory, bool cia, char* error, size_t size) {
+bool gui_games_scan(GuiGames* games, const char* directory, char* error, size_t size) {
     gui_games_free(games);
-    return gui_games_add(games, directory, cia ? GUI_GAMES_CIA : GUI_GAMES_RUN, error, size);
+    return gui_games_add(games, directory, GUI_GAMES_RUN, error, size);
 }

@@ -14,10 +14,9 @@ char* snx_ini_value(const char* path, const char* key);
 /* key=value in [Game] of the .ini at path, every older key= taken out and the file made when there is none, left as
    it is when it has the value already. value has no line break. 0, or nonzero with a line saying why */
 int snx_ini_record(const char* path, const char* key, const char* value);
-/* the dump the game was made from, owned: what Extract to tmpfs extracts again, and what a game made from its dump
-   without extracting it reads its ExeFS and RomFS from. source= in the game's .ini (snx_game_ini's, else the one in its
-   folder, where the 3DS, Vita and GBA drivers keep theirs), else <folder>/<name>.source, the
-   link an older version made (Windows makes links only with the right to); NULL when that path does not fit (said).
+/* the dump the game was made from, owned: what a game made from its dump without extracting it reads its ExeFS and
+   RomFS from. source= in the game's .ini (snx_game_ini's, else the one in its folder), else <folder>/<name>.source,
+   the link an older version made (Windows makes links only with the right to); NULL when that path does not fit (said).
    recorded, when not NULL: 1 when either names a dump, there or not */
 char* snx_game_source(const char* folder, const char* name, int* recorded);
 /* dump, absolute, as source= in [Game] of the game's .ini, the file made when there is none and left as it is when it
@@ -28,15 +27,13 @@ int snx_record_source(const char* folder, const char* name, const char* dump);
 int snx_record_romfs(const char* folder, const char* name, const char* romfs);
 
 /* the console a game's folder plays, as system= in [Game] of the .ini in it, <folder>/<name>.ini, says: the launcher
-   picks the driver, the options and what R does by it, and cmake/deploy.cmake the runtime it copies there. A folder
-   an older version made says none: a 3DS one's .ini has model=, a Vita one holds ux0/, any other is a Switch game's */
-typedef enum { SNX_SYSTEM_SWITCH, SNX_SYSTEM_3DS, SNX_SYSTEM_VITA, SNX_SYSTEM_GBA } SnxSystem;
+   picks the driver, the options and what R does by it, and cmake/deploy.cmake the runtime it copies there. This build
+   plays the Switch alone, so a folder of another console (a system= word that is not switch, an older .ini with
+   model=, a folder that holds ux0/) is SNX_SYSTEM_OTHER: the launcher refuses it */
+typedef enum { SNX_SYSTEM_SWITCH, SNX_SYSTEM_OTHER } SnxSystem;
 SnxSystem snx_game_system(const char* folder, const char* name);
-/* system='s word for each: "switch", "3ds", "vita", "gba" */
+/* system='s word for each: "switch", "other" */
 const char* snx_system_word(SnxSystem system);
-/* system= in [Game] of the .ini in the game's folder, <folder>/<name>.ini, as the 3DS and Vita drivers keep theirs: the
-   file made when there is none. 0, or nonzero with a line saying why */
-int snx_record_system(const char* folder, const char* name, SnxSystem system);
 /* The game folder's copy of the runtime, which plays the game from then on: runtime copied to copy, through a
    temporary file and a rename (a copy that is running keeps its old file), when copy is missing or another build's;
    nothing when runtime is copy. 1 when it copied, 0 when nothing had to, -1 with error saying why */

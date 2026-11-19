@@ -56,10 +56,6 @@ set(CMAKE_CXX_EXTENSIONS ON)
 # and without extensions (C_STANDARD 99, C_EXTENSIONS OFF on those targets)
 
 option(SNX_BUILD_NX "Build the Switch Horizon/Maxwell runtime" ON)
-option(SNX_BUILD_GNUABI "Build the CPU-only Linux AArch64 runtime" ON)
-option(SNX_BUILD_3DS "Build the 3DS driver: extraction, the ARM11 AOT compiler and the runtime" ON)
-option(SNX_BUILD_VITA "Build the PS Vita driver: VPK extraction, the AArch32 AOT compiler and the runtime" ON)
-option(SNX_BUILD_AGB "Build the Game Boy Advance AGB board runtime" ON)
 # Reject stale backend selections instead of silently changing an existing build's behavior.
 if(SNX_BUILD_NX AND DEFINED SNX_BACKEND AND NOT SNX_BACKEND STREQUAL "sdl3")
     message(FATAL_ERROR "SNX_BACKEND=${SNX_BACKEND}: SDL3 is now mandatory for the NX runtime. "
@@ -106,8 +102,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
 endif()
 option(SNX_BUILD_GUI "Build the keyboard-driven SDL3 launcher" ${snx_gui_default})
 # The program, scarletnx, is every driver the build has (src/multicall): each driver is a library, and the program
-# runs the one its name says. scarletnx-switch, scarletnx-3ds, scarletnx-vita, scarletnx-gnuabi and scarletnx-agb are
-# links to it on Linux and macOS
+# runs the one its name says. scarletnx-switch is a link to it on Linux and macOS
 if(DEFINED CACHE{SNX_MULTICALL}) # an option before, said and taken out of the cache
     message(STATUS "SNX_MULTICALL is no longer an option: scarletnx is every driver the build has")
     unset(SNX_MULTICALL CACHE)
@@ -156,44 +151,27 @@ add_subdirectory(src/common)
 if(SNX_BUILD_NX)
     add_subdirectory(src/nx/runtime/driver host-tools)
 endif()
-# The recompiler library (docs/LIBRARY.md) is configured by the NX driver's tree or the GNU ABI runtime's. Without
-# either, as a project that only wants the library builds ScarletNX, it is configured here, with LLVM alone
-if(NOT SNX_BUILD_NX AND NOT SNX_BUILD_GNUABI)
+# The recompiler library (docs/LIBRARY.md) is configured by the NX driver's tree. Without it, as a project that only
+# wants the library builds ScarletNX, it is configured here, with LLVM alone
+if(NOT SNX_BUILD_NX)
     include(cmake/llvm.cmake)
     add_subdirectory(src/common/cpu/recompiler/llvm llvm-backend)
     add_subdirectory(src/common/cpu/recompiler recompiler-library)
 endif()
 include(cmake/build_info.cmake) # the window titles' line; the driver stamps games with its commit
-if(SNX_BUILD_3DS)
-    # the window's icon, as the Switch runtime's: made here, as the folder including it first owns snx_window_icon,
-    # and a target of src/3ds compiles only src/3ds (tests/architecture.py)
-    include(cmake/window_icon.cmake)
-    add_subdirectory(src/3ds)
-endif()
-if(SNX_BUILD_VITA AND NOT SNX_TOOLS_ONLY)
-    add_subdirectory(src/vita)
-endif()
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
-# the program, wherever the build has a driver: it links the drivers' libraries by name, the ones configured below too,
-# by the conditions their folders are configured by here (a build of the host tools has no Vita driver, and with the
-# Switch's tools it stops here)
-if(SNX_BUILD_NX OR SNX_BUILD_3DS OR SNX_BUILD_GNUABI OR SNX_BUILD_AGB OR (SNX_BUILD_VITA AND NOT SNX_TOOLS_ONLY))
+# the program, wherever the build has a driver: it links the driver's library by name, configured below by the
+# condition its folder is configured by here (a build of the host tools has no driver, and with the Switch's tools it
+# stops here)
+if(SNX_BUILD_NX)
     add_subdirectory(src/multicall)
 endif()
 if(SNX_TOOLS_ONLY AND SNX_BUILD_NX)
     include(GNUInstallDirs)
     install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx)
     return()
-endif()
-if(SNX_BUILD_GNUABI)
-    add_subdirectory(src/gnuabi)
-endif()
-if(SNX_BUILD_AGB)
-    # the runner's window icon, made here as the 3DS's is: a target of src/agb compiles only src/agb
-    include(cmake/window_icon.cmake)
-    add_subdirectory(src/agb)
 endif()
 if(SNX_BUILD_GUI)
     add_subdirectory(src/gui)
@@ -207,15 +185,6 @@ endif()
 if(NOT SNX_BUILD_NX)
     include(GNUInstallDirs)
     install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx)
-    # the Linux runtime alone (a big-endian host's build): its desktop entry, for the AppImage made of it
-    # (scripts/make-appimage.sh), and the license of OpenSSL, which it links
-    if(SNX_BUILD_GNUABI AND NOT SNX_BUILD_3DS)
-        if(NOT WIN32)
-            install(FILES dist/scarletnx-gnuabi.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
-                    COMPONENT desktop)
-        endif()
-        install(FILES "${OpenSSL_SOURCE_DIR}/LICENSE.txt" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx/OpenSSL)
-    endif()
     return()
 endif()
 add_subdirectory(src/nx)
@@ -240,7 +209,6 @@ install(FILES LICENSE DESTINATION ${licenses})
 install(FILES "${FFmpeg_SOURCE_DIR}/COPYING.LGPLv2.1" "${FFmpeg_SOURCE_DIR}/LICENSE.md" cmake/ffmpeg-vp9-nvdec.patch
         DESTINATION ${licenses}/FFmpeg)
 install(FILES dist/licenses/Noto/OFL.txt DESTINATION ${licenses}/Noto) # the shared fonts' stand-ins (pl.c)
-install(FILES dist/licenses/Montserrat/OFL.txt DESTINATION ${licenses}/Montserrat) # the 3DS shared font's stand-in
 install(FILES dist/licenses/Ryujinx/LICENSE.txt DESTINATION ${licenses}/Ryujinx) # the default Miis (misc.c)
 install(FILES "${Vulkan-Headers_SOURCE_DIR}/LICENSE.md" DESTINATION ${licenses}/Vulkan-Headers)
 install(DIRECTORY "${Vulkan-Headers_SOURCE_DIR}/LICENSES" DESTINATION ${licenses}/Vulkan-Headers)

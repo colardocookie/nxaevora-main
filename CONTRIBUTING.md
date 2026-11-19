@@ -41,6 +41,9 @@ disassembly of the game.
 any other source. It does not follow the upstream project, so a fix that helps every game can also be sent upstream.
 The changes of NXAevora are listed in `docs/build/runtime-changes.md`.
 
+The documents in `engine/docs/` come from the upstream project and describe ScarletNX. The NXAevora documents are in
+`docs/`, `README.md` and `ROADMAP.md`.
+
 ## Code
 
 - Give each function one job. Extract a helper when it makes the flow clear or when the rule is reusable. Do not

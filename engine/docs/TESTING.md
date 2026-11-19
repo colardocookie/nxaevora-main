@@ -2,9 +2,9 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Testing and reporting
 
-[Usage](USAGE.md) · [development](DEVELOPMENT.md) · [contributing](../CONTRIBUTING.md) · [edenprobe](EDENPROBE.md).
+[Usage](USAGE.md) · [development](DEVELOPMENT.md) · [contributing](../../CONTRIBUTING.md) · [edenprobe](EDENPROBE.md).
 What to say in a test report so it can be compared with the last one. Nothing of a game goes into a report: no keys,
-dumps, game files or shader and texture dumps ([CONTRIBUTING](../CONTRIBUTING.md#game-data-stays-out)).
+dumps, game files or shader and texture dumps ([CONTRIBUTING](../../CONTRIBUTING.md#game-data-stays-out)).
 
 ## Index
 

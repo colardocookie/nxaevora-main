@@ -1329,7 +1329,7 @@ char* snx_checkout(const char* checkout, const char* build, const char* program_
     free(path);
     return ours ? snx_strdup(checkout) : NULL;
 }
-const char* const snx_checkout_files[SNX_CHECKOUT_FILES] = {"games", "work", "linux"};
+const char* const snx_checkout_files[SNX_CHECKOUT_FILES] = {"games", "work"};
 char* snx_checkout_now(const char* data, int file) {
     if (!strcmp(snx_checkout_files[file], "games")) return snx_recompiled_dir(data);
     char* path = snx_path_join(data, snx_checkout_files[file]);
@@ -1639,7 +1639,7 @@ void snx_tool_console(void) {
 #endif
 }
 /* file's path from the root, its folder resolved and its own name kept: a program found by name runs under that name,
-   which can say what it does (scarletnx-3ds, a link to nxaevora-engine) */
+   which can say what it does (nxaevora-engine-switch, a link to nxaevora-engine) */
 static char* tool_path(const char* file) {
     const char* name = file + strlen(file);
     while (name > file && !snx_is_separator(name[-1])) --name;

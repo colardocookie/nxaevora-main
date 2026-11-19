@@ -1,29 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-if(CMAKE_CROSSCOMPILING OR NOT TARGET snx_ctr_cpu)
-    message(FATAL_ERROR "SNX_TEST_ARM_AOT requires a native build with SNX_BUILD_3DS=ON")
+if(CMAKE_CROSSCOMPILING)
+    message(FATAL_ERROR "SNX_TEST_ARM_AOT requires a native build")
 endif()
-if(NOT SNX_BUILD_NX AND NOT SNX_BUILD_GNUABI)
+if(NOT SNX_BUILD_NX)
     include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" arm-aot-backend)
 endif()
-add_executable(snx-test-arm-checked-emit arm_checked_emit.c)
-snx_test_target(snx-test-arm-checked-emit 11)
-target_link_libraries(snx-test-arm-checked-emit PRIVATE snx_arm_llvm)
-foreach(opt 0 2)
-    set(object "${CMAKE_CURRENT_BINARY_DIR}/arm-checked-O${opt}${CMAKE_C_OUTPUT_EXTENSION}")
-    add_custom_command(OUTPUT "${object}"
-        COMMAND $<TARGET_FILE:snx-test-arm-checked-emit> "${object}" "${opt}"
-        DEPENDS snx-test-arm-checked-emit arm_checked_cases.h VERBATIM)
-    set_source_files_properties("${object}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
-    add_executable(snx-test-arm-checked-O${opt} arm_checked.c "${object}")
-    snx_test_target(snx-test-arm-checked-O${opt} 11)
-    target_compile_options(snx-test-arm-checked-O${opt} PRIVATE -UNDEBUG)
-    target_link_libraries(snx-test-arm-checked-O${opt} PRIVATE snx_ctr_cpu snx_arm_rt)
-    add_test(NAME arm_checked_static_O${opt} COMMAND snx-test-arm-checked-O${opt})
-endforeach()
 # Exercise the unchanged A57 entry points without configuring the NX runtime.
-if(NOT SNX_BUILD_NX AND NOT SNX_BUILD_GNUABI)
+if(NOT SNX_BUILD_NX)
     add_executable(snx-test-arm-emit arm_emit.c)
     snx_test_target(snx-test-arm-emit 11)
     target_link_libraries(snx-test-arm-emit PRIVATE snx_arm_llvm)
