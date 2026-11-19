@@ -9,7 +9,7 @@
 #include <string.h>
 
 namespace snx_dlss {
-// what NGX is given (the names of nvsdk_ngx_helpers_vk.h's evaluation parameters)
+// the numbers NGX's evaluation takes, each beside the name of the parameter it fills
 struct Eval {
     float mv_scale[2];         // InMVScaleX, Y
     float jitter[2];           // InJitterOffsetX, Y
@@ -23,7 +23,7 @@ struct Eval {
 enum {
     EVAL_OK,
     EVAL_NOT_FINITE,  // a number of the frame is not finite
-    EVAL_SCALE_ZERO,  // a vector scale of 0, which NGX says must never be
+    EVAL_SCALE_ZERO,  // a vector scale of 0, which NGX does not accept
     EVAL_JITTER,      // a jitter outside -0.5 to 0.5, NGX's stated range
     EVAL_RECTANGLE,   // a rectangle not at the origin (this step's traits), empty, or beyond the colour image
     EVAL_SECONDS,     // a frame time below 0
