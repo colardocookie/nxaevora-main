@@ -30,7 +30,8 @@ static const HostApi api = {0};
 static struct {
  u32 messages,contexts;
  int validation,unknown,device,limit_asked,checks_asked,checks_why,checks_result;
- int dlss,halted,known,ended_wrong;
+ int dlss,matrix,halted,known,ended_wrong;
+ const char* name;
  char step[160],halted_in[160];
  const HostApi* api;
 } g;
@@ -303,7 +304,8 @@ int main(void){
  assert(validation_counts(&own)==6 && own==1);
  for(int late=0;late<3;late++)for(int known=0;known<2;known++){
   reset();
-  g.dlss=g.validation=g.checks_asked=1;
+  g.dlss=g.matrix=g.validation=g.checks_asked=1;
+ g.name="dlss";
   g.known=known;
   emit_own();
   if(late==1)hook=late_own_on_case;
