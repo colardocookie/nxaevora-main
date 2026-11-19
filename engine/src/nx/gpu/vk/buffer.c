@@ -491,14 +491,29 @@ static void out_rebase(const GfxOut* e, GfxOut* o) {
     out_spans(e, o->addr, o->size, o->vmap, rebase_span, &r);
 }
 /* the composed results recorded after e, in this frame's landed list (rest), later frames' and the draw being set up */
-static void out_rebase_later(const GfxOut* e, GfxOut* rest) {
+/* SNX_ARCEUS_PERF_TIMES (PERF-27): with walk set, *runs_ns gets the clock after the changed runs and walk the counts
+   (PCW_*) */
+static void out_rebase_later(const GfxOut* e, GfxOut* rest, u64* runs_ns, u64* walk) {
     GfxOut* lists[3] = {rest, g_out, g_prep};
-    if (!out_changed_runs(e)) return; /* it changed nothing: memory has what every later one took as original */
+    const u32 runs = out_changed_runs(e);
+    if (walk) *runs_ns = plat_ns();
+    if (!runs) return; /* it changed nothing: memory has what every later one took as original */
     for (int l = 0; l < 3; l++)
-        for (GfxOut* o = lists[l]; o; o = o->next)
-            if (o->composed && pages_meet(e, o)) out_rebase(e, o);
+        for (GfxOut* o = lists[l]; o; o = o->next) {
+            if (walk) walk[PCW_VISITED]++, walk[PCW_COMPOSED] += o->composed;
+            if (o->composed && pages_meet(e, o)) {
+                if (walk) walk[PCW_MET]++;
+                out_rebase(e, o);
+            }
+        }
 }
 
+/* SNX_ARCEUS_PERF_TIMES (PERF-27): the time since *t into ns[step], and *t moved on */
+static void cap_step(u64* t, u64* ns, int step) {
+    const u64 now = plat_ns();
+    ns[step] += now - *t;
+    *t = now;
+}
 /* The frame fence has signaled. Its stage allocations still exist here; cmd.c frees them only after this call. */
 static int g_ww;
 static int written_since_gva(u64 gva, u64 len, u32 since);
@@ -526,6 +541,7 @@ void vk_buf_frame_done(u64 frame) {
     while (done) {
         GfxOut* o = done;
         done = o->next;
+        u64 t = g_perf_times ? plat_ns() : 0, ns[PCL_STEPS] = {0}, walk[PCW_N] = {0}, runs_t = 0; /* PERF-27 */
         if (o->mem != invalidated) {
             if (!VK_OK(vmaInvalidateAllocation(g_vk.vma, o->mem, 0, VK_WHOLE_SIZE)))
                 fatal("Could not invalidate a graphics storage buffer after its frame completed");
@@ -537,9 +553,17 @@ void vk_buf_frame_done(u64 frame) {
             memcpy(o->org, o->initial, o->size);
             o->initial = NULL;
         }
+        if (t) cap_step(&t, ns, PCL_INVALIDATE);
         vk_write_changed(o->addr, o->ptr, o->org, o->size);
+        if (t) cap_step(&t, ns, PCL_WRITE);
         out_pages(o, -1);
-        out_rebase_later(o, done);
+        if (t) cap_step(&t, ns, PCL_PAGES);
+        out_rebase_later(o, done, &runs_t, t ? walk : NULL);
+        if (t) {
+            ns[PCL_RUNS] += runs_t - t;
+            t = runs_t;
+            cap_step(&t, ns, PCL_WALK);
+        }
         if (copy_stats_on()) {
             g_wb_outputs++;
             g_wb_bytes += o->size;
@@ -551,6 +575,8 @@ void vk_buf_frame_done(u64 frame) {
             if (g_ww > 0) (void)written_since_gva(o->addr, o->size, vk_ww_now());
             perf_landed_add(g_perf_landed, o->addr, o->size, vk_frame_id(), o->frame_id, vk_submit_number(),
                             gpu_mem_generation(), vk_ww_now()); /* PERF-22, under vk_lock */
+            cap_step(&t, ns, PCL_OTHER);
+            perf_caps_landed(&g_perf_caps, g_perf_release_thread, ns, walk);
         }
         free(o);
     }
@@ -1658,6 +1684,17 @@ static void wr_step(u64* t, u64* st, int k) {
 }
 /* Each writable binding keeps its original bytes until its draw's frame completes. The guest can keep writing RAM:
    vk_write_changed resolves those writes against the GPU result at the fence. */
+/* SNX_ARCEUS_PERF_TIMES (PERF-27): a capture made, with whether another GPU-side write or a publication stamped its
+   pages since the frame before this one began (the record as stamped). The GPU thread's */
+static void cap_note(u64 gva, u32 len) {
+    static u64 gen[2]; /* the write generation at this frame's start, and at the one before's */
+    const u64 frame = vk_frame_id();
+    if (frame != g_perf_caps.frame) gen[1] = gen[0], gen[0] = gpu_mem_generation();
+    int outside;
+    unsigned kinds = 0;
+    (void)gpu_mem_written_ask(gen[1], 0, gva, len, &outside, &kinds);
+    perf_caps_add(&g_perf_caps, frame, gva, len, kinds & (1u << PSK_GPU | 1u << PSK_PUBLISH));
+}
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
     GfxOut* o;
     out_wrote(); /* every way out that hands a buffer is a write (SNX_ARCEUS_PERF_INPLACE=3), the zero one too */
@@ -1732,6 +1769,7 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
         g_prep = o;
     g_prep_tail = o;
     copy_note(gva, len);
+    if (g_perf_times && g_perf_bind == PBK_XFB) cap_note(gva, len);
     if (g_perf_times)
         vk_perf_made(g_perf_bind == PBK_XFB        ? PR_XFB
                      : g_perf_bind == PBK_DISPATCH ? PR_DISPATCH

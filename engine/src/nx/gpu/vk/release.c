@@ -148,7 +148,9 @@ static void release_through(u64 gate, u64 cgate) {
     const u64 outputs0 = held ? __atomic_load_n(&g_perf.wb_total, __ATOMIC_RELAXED) : 0;
     vk_result_begin();
     vk_compute_land_through(cgate);
+    const u64 compute = held ? plat_ns() : 0; /* PERF-27: the hold by part */
     vk_land_through(gate);
+    const u64 graphics = held ? plat_ns() : 0;
     vk_result_end();
     for (;;) {
         Release r;
@@ -174,6 +176,7 @@ static void release_through(u64 gate, u64 cgate) {
     }
     if (held) {
         const u64 end = plat_ns(), outputs = __atomic_load_n(&g_perf.wb_total, __ATOMIC_RELAXED) - outputs0;
+        perf_caps_hold(&g_perf_caps, compute - held, graphics - compute, end - graphics);
         perf_time_add(&g_perf, PT_RELEASE_HOLD, end - held);
         perf_time_add(&g_perf, PT_REL_LOCK_ALL, held - lock0);
         perf_rel_interval(&g_perf, REL_LOCK, lock0, held, 0);
@@ -186,6 +189,7 @@ static void release_thread(void* p) {
     (void)p;
     SNX_THREAD_NAME("Vulkan release");
     t_release_thread = 1;
+    if (g_perf_times) g_perf_release_thread = 1; /* PERF-27: buffer.c's landings, told apart by thread */
     for (;;) {
         u64 gate, cgate;
         pm_lock(&g_rlock);

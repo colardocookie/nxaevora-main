@@ -701,6 +701,54 @@ static void test_writable(void) {
 }
 
 /* PERF-25: a lookup's result or two, a later result over it, a freed one's bytes once, and the line */
+/* PERF-27: a frame's captures sorted, one bound twice counted once, the next one in address by gap, the ranges at the
+   same place as the frame before, the sizes and the cap; the landing steps and the hold by part, then reset */
+static void test_caps(void) {
+    static PerfCaps c;
+    char line[PERF_COPIES_LINE];
+    memset(&c, 0, sizeof c);
+    perf_caps_add(&c, 7, 0x10000, 0x800, 0);  /* abuts the next */
+    perf_caps_add(&c, 7, 0x12000, 0x400, 0);  /* the same page as 0x12800 */
+    perf_caps_add(&c, 7, 0x10800, 0x1800, 1); /* overlaps 0x11f00 */
+    perf_caps_add(&c, 7, 0x11f00, 0x100, 0);   /* abuts 0x12000 */
+    perf_caps_add(&c, 7, 0x12800, 0x20000, 0); /* apart from 0x40000 */
+    perf_caps_add(&c, 7, 0x40000, 0x4000, 0);  /* ends at a page, the next starts inside the page after: apart */
+    perf_caps_add(&c, 7, 0x44800, 0x100, 0);
+    perf_caps_add(&c, 7, 0x10000, 0x800, 1);   /* bound twice: one range, front */
+    CHECK(c.ncur == 8 && c.count[PCN_RANGES] == 8);
+    perf_caps_add(&c, 8, 0x10000, 0x800, 0); /* the next frame ends this one */
+    CHECK(c.count[PCN_DISTINCT] == 7 && c.nprev == 7 && c.count[PCN_RECUR] == 0 && c.count[PCN_FRONT] == 2);
+    CHECK(c.count[PCN_ABUT] == 2 && c.count[PCN_OVERLAP] == 1 && c.count[PCN_PAGE] == 1 && c.count[PCN_APART] == 2);
+    CHECK(c.count[PCN_SIZE] == 3 && c.count[PCN_SIZE + 1] == 1 && c.count[PCN_SIZE + 2] == 2 &&
+          c.count[PCN_SIZE + 3] == 0 && c.count[PCN_SIZE + 4] == 1);
+    CHECK(c.count[PCN_BYTES] == 0x800 + 0x400 + 0x1800 + 0x100 + 0x20000 + 0x4000 + 0x100);
+    perf_caps_add(&c, 8, 0x40000, 0x4000, 0);
+    perf_caps_add(&c, 8, 0x40000, 0x4001, 0); /* another size at the same address: not the same place */
+    perf_caps_frame_end(&c);
+    CHECK(c.count[PCN_DISTINCT] == 10 && c.count[PCN_RECUR] == 2 && c.nprev == 3 && c.ncur == 0);
+    perf_caps_frame_end(&c); /* nothing collected: nothing counted */
+    CHECK(c.count[PCN_DISTINCT] == 10 && c.nprev == 3);
+    for (uint32_t i = 0; i < PERF_CAP_MAX + 5; i++) perf_caps_add(&c, 9, 0x100000 + 16 * (uint64_t)i, 16, 0);
+    CHECK(c.count[PCN_LOST] == 5 && c.ncur == PERF_CAP_MAX);
+    perf_caps_frame_end(&c);
+    CHECK(c.count[PCN_ABUT] == 2 + PERF_CAP_MAX - 1 && c.count[PCN_OVERLAP] == 2 && c.count[PCN_APART] == 3);
+    const uint64_t ns[PCL_STEPS] = {1000000, 2000000, 3000000, 4000000, 5000000, 6000000}, walk[PCW_N] = {600, 60, 6};
+    perf_caps_landed(&c, 1, ns, walk);
+    perf_caps_landed(&c, 1, ns, walk);
+    perf_caps_landed(&c, 0, ns, walk);
+    perf_caps_hold(&c, 2000000, 4000000, 6000000);
+    perf_caps_line(&c, 2, line, sizeof line);
+    CHECK(strstr(line, "perf-captures: frames=2 (") && strlen(line) < sizeof line - 1);
+    CHECK(strstr(line, ") captures="));
+    CHECK(strstr(line, " lost=2.5 "));
+    CHECK(strstr(line, " release=1.0 ms=1.000/2.000/3.000/4.000/5.000/6.000 walk=600.0/60.0/6.0 "));
+    CHECK(strstr(line, " elsewhere=0.5 ms=0.500/1.000/1.500/2.000/2.500/3.000 walk=300.0/30.0/3.0 "));
+    CHECK(strstr(line, " hold=1.000/2.000/3.000 holds=0.5"));
+    perf_caps_line(&c, 2, line, sizeof line); /* the window starts again */
+    CHECK(strstr(line, " captures=0.0 lost=0.0 ") && strstr(line, " release=0.0 ms=0.000/") &&
+          strstr(line, " hold=0.000/0.000/0.000 holds=0.0"));
+    CHECK(perf_caps_line(&c, 2, line, 0) == 0);
+}
 static void test_landed(void) {
     static PerfLanded t[PERF_LANDED];
     memset(t, 0, sizeof t);
@@ -1068,6 +1116,7 @@ int main(void) {
     test_writable();
     test_own();
     test_landed();
+    test_caps();
     test_same();
     test_same_threads();
     CHECK(g_perf_inplace == 0 && g_perf_bind == PBK_OTHER && g_perf_exact == 0); /* unset: today's commands */

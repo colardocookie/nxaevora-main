@@ -483,6 +483,43 @@ void perf_copy_landed(PerfCopies* c, int made, int kind, int age, int freed, int
 void perf_copy_landed_kept(PerfCopies* c, uint64_t bytes);
 /* PERF-25's line: from the same window as perf-same, before perf-copies resets it */
 size_t perf_landed_line(PerfCopies* c, uint32_t frames, char* out, size_t size);
+
+/* PERF-27 (research 07:07, log only): the transform feedback captures' ranges, a frame at a time, and the landing of
+   graphics results split by step: on the release thread, under the hold PT_RELEASE_HOLD times, and elsewhere. The
+   ranges are the GPU thread's. The landing counts take atomic adds from any thread holding vk_lock */
+#define PERF_CAP_MAX 4096u /* captures a frame kept: more are counted as lost */
+typedef struct {
+    uint64_t a;
+    uint32_t n;
+    uint8_t front; /* another GPU-side write or a publication on its pages since the frame before (PSK_GPU, _PUBLISH) */
+} PerfCapRange;
+enum { PCN_RANGES, PCN_LOST, PCN_DISTINCT, PCN_OVERLAP, PCN_ABUT, PCN_PAGE, PCN_APART, PCN_RECUR, PCN_FRONT, PCN_BYTES,
+       PCN_SIZE, PCN_N = PCN_SIZE + 5 }; /* a window's capture counts, the sizes last: 1, 4, 16, 64 KB or less, more */
+/* a result's landing by step: invalidate, compare and write the changed bytes, unmark its pages, find its changed runs
+   for the rebase, walk the later results, the rest */
+enum { PCL_INVALIDATE, PCL_WRITE, PCL_PAGES, PCL_RUNS, PCL_WALK, PCL_OTHER, PCL_STEPS };
+enum { PCW_VISITED, PCW_COMPOSED, PCW_MET, PCW_N }; /* the walk: results passed, composed ones asked, met and rebased */
+enum { PCH_COMPUTE, PCH_GRAPHICS, PCH_RELEASES, PCH_N }; /* the release thread's hold by part, end to end */
+typedef struct {
+    PerfCapRange cur[PERF_CAP_MAX], prev[PERF_CAP_MAX];
+    uint32_t ncur, nprev;
+    uint64_t frame;        /* the frame being collected */
+    uint64_t count[PCN_N]; /* the GPU thread's, read at the line */
+    uint64_t land_ns[2][PCL_STEPS], landed[2], walk[2][PCW_N]; /* atomic: [0] the release thread, [1] elsewhere */
+    uint64_t hold_ns[PCH_N], holds;                             /* atomic */
+} PerfCaps;
+extern PerfCaps g_perf_caps;
+extern _Thread_local int g_perf_release_thread; /* set on the release thread with SNX_ARCEUS_PERF_TIMES */
+/* a capture [a, a + n) made in frame, front its pages' other writes since the frame before. A new frame first counts
+   the one collected (perf_caps_frame_end) */
+void perf_caps_add(PerfCaps* c, uint64_t frame, uint64_t a, uint32_t n, int front);
+void perf_caps_frame_end(PerfCaps* c);
+/* one result landed, its steps' ns (PCL_*) and its walk's counts (PCW_*), on the release thread or not */
+void perf_caps_landed(PerfCaps* c, int release, const uint64_t ns[PCL_STEPS], const uint64_t walk[PCW_N]);
+/* one hold of the release thread: its parts' ns (PCH_*) */
+void perf_caps_hold(PerfCaps* c, uint64_t compute, uint64_t graphics, uint64_t releases);
+/* PERF-27's line, after perf-landed: the window's counts a frame, which it starts again */
+size_t perf_caps_line(PerfCaps* c, uint32_t frames, char* out, size_t size);
 void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame);
 /* PERF-23's, the same, with the stamps' counts since the last and the cost of one clock read. real NULL: the record as
    written is not kept (SNX_ARCEUS_PERF_TIMES=1), its columns not printed */

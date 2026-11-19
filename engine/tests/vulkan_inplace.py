@@ -166,6 +166,8 @@ static int gfx_overlay(u64 a, u64 n, VkBuffer b, u64 off, int site) {
 static u64 g_clock;
 static u64 plat_ns(void) { return ++g_clock; }
 static void copy_note(u64 a, u64 n) { (void)a, (void)n; }
+static u64 cap_notes, cap_last; /* PERF-27: the captures recorded, and the last one's address */
+static void cap_note(u64 a, u32 n) { (void)n, cap_notes++, cap_last = a; }
 static void snx_le32_array(u32* w, size_t n) { (void)w, (void)n; }
 /* the atlas helpers: one writable aliased binding, one page */
 static int draw_has_writable(const VkDrawStorage* d) { return d->b[0][0].writable; }
@@ -269,6 +271,7 @@ static void test_level3(void) {
     reads(r); drawn();                   /* 12: records */
     assert(!strcmp(g_log, "B0 D0 D1 B2 D2 D3 D4 B5 D5 B6 D6 B7 D7 D8 B10 D10 D11 B12 D12 "));
     assert(g_perf_cp.made[PR_DISPATCH] == 1 && g_perf_cp.made[PR_XFB] == 1 && g_perf_cp.made[PR_REPEAT] == 1);
+    assert(cap_notes == 1 && cap_last == 0x50000); /* PERF-27: the capture once, not the dispatch or the repeat */
     /* PERF-20: the two new results took the plain path, each step timed once (the repeated binding is not one) */
     assert(g_perf_cp.wr_calls[PW_PLAIN] == 2 && g_perf_cp.wr_bytes[PW_PLAIN] == 1024);
     for (int k = 0; k < PWS_N; k++) assert(g_perf_cp.wr_ns[PW_PLAIN][k] == 2);

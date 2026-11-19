@@ -6978,6 +6978,8 @@ static void perf_line(void) {
     LOG("%s\n", line);
     perf_landed_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-25 */
     LOG("%s\n", line);
+    perf_caps_line(&g_perf_caps, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-27 */
+    LOG("%s\n", line);
     perf_copies_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
     LOG("%s\n", line);
 }

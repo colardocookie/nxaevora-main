@@ -16,6 +16,8 @@ int g_perf_inplace;
 int g_perf_query;
 int g_perf_sample;
 int g_patch_hash;
+PerfCaps g_perf_caps;
+_Thread_local int g_perf_release_thread;
 int g_perf_bind;
 uint64_t g_perf_exact;
 
@@ -1056,5 +1058,94 @@ size_t perf_same_line(const PerfCopies* c, PerfStamps* s, PerfStamps* real, uint
     at = put_stamps(out, size, at, "stamps", s, f);
     if (real) at = put_stamps(out, size, at, "written", real, f);
     at = putf(out, size, at, " clock=%.1f", clock_ns);
+    return at < size ? at : size - 1;
+}
+
+static int cap_cmp(const void* x, const void* y) {
+    const PerfCapRange *a = x, *b = y;
+    return a->a != b->a ? (a->a > b->a) - (a->a < b->a) : (a->n > b->n) - (a->n < b->n);
+}
+void perf_caps_frame_end(PerfCaps* c) {
+    if (!c->ncur) return;
+    qsort(c->cur, c->ncur, sizeof *c->cur, cap_cmp);
+    uint32_t d = 0;
+    for (uint32_t i = 0; i < c->ncur; i++) { /* one range bound twice counts once, front if either was */
+        if (d && c->cur[d - 1].a == c->cur[i].a && c->cur[d - 1].n == c->cur[i].n)
+            c->cur[d - 1].front |= c->cur[i].front;
+        else
+            c->cur[d++] = c->cur[i];
+    }
+    c->count[PCN_DISTINCT] += d;
+    for (uint32_t i = 0; i < d; i++) {
+        const PerfCapRange* r = &c->cur[i];
+        const uint64_t end = r->a + r->n;
+        c->count[PCN_BYTES] += r->n;
+        c->count[PCN_FRONT] += r->front;
+        c->count[PCN_SIZE + (r->n <= 1024 ? 0 : r->n <= 4096 ? 1 : r->n <= 16384 ? 2 : r->n <= 65536 ? 3 : 4)]++;
+        if (i + 1 < d) { /* the next one in address */
+            const uint64_t next = c->cur[i + 1].a;
+            c->count[next < end ? PCN_OVERLAP : next == end ? PCN_ABUT : (end - 1) >> 12 == next >> 12 ? PCN_PAGE
+                                                                                                    : PCN_APART]++;
+        }
+        if (bsearch(r, c->prev, c->nprev, sizeof *c->prev, cap_cmp)) c->count[PCN_RECUR]++;
+    }
+    memcpy(c->prev, c->cur, d * sizeof *c->cur);
+    c->nprev = d;
+    c->ncur = 0;
+}
+void perf_caps_add(PerfCaps* c, uint64_t frame, uint64_t a, uint32_t n, int front) {
+    if (frame != c->frame) {
+        perf_caps_frame_end(c);
+        c->frame = frame;
+    }
+    c->count[PCN_RANGES]++;
+    if (c->ncur == PERF_CAP_MAX) {
+        c->count[PCN_LOST]++;
+        return;
+    }
+    c->cur[c->ncur++] = (PerfCapRange){a, n, (uint8_t)(front != 0)};
+}
+void perf_caps_landed(PerfCaps* c, int release, const uint64_t ns[PCL_STEPS], const uint64_t walk[PCW_N]) {
+    const int k = release ? 0 : 1;
+    __atomic_fetch_add(&c->landed[k], 1, __ATOMIC_RELAXED);
+    for (int i = 0; i < PCL_STEPS; i++) __atomic_fetch_add(&c->land_ns[k][i], ns[i], __ATOMIC_RELAXED);
+    for (int i = 0; i < PCW_N; i++) __atomic_fetch_add(&c->walk[k][i], walk[i], __ATOMIC_RELAXED);
+}
+void perf_caps_hold(PerfCaps* c, uint64_t compute, uint64_t graphics, uint64_t releases) {
+    __atomic_fetch_add(&c->hold_ns[PCH_COMPUTE], compute, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&c->hold_ns[PCH_GRAPHICS], graphics, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&c->hold_ns[PCH_RELEASES], releases, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&c->holds, 1, __ATOMIC_RELAXED);
+}
+static uint64_t take64(uint64_t* v) { return __atomic_exchange_n(v, 0, __ATOMIC_RELAXED); }
+size_t perf_caps_line(PerfCaps* c, uint32_t frames, char* out, size_t size) {
+    static const char* const where[2] = {"release", "elsewhere"};
+    if (!size) return 0;
+    const double f = frames ? frames : 1;
+    const uint64_t* n = c->count;
+    size_t at = putf(out, size, 0,
+                     "perf-captures: frames=%u (a frame: captures made, lost, distinct; the next one in address "
+                     "overlapping/abutting/on the same page/apart; at the same place as the frame before; with another "
+                     "GPU-side write or publication on their pages since the frame before; KB; sizes to 1/4/16/64 "
+                     "KB/more. Graphics results landed on the release thread and elsewhere: results, ms by step "
+                     "invalidate/write/pages/runs/walk/other, the walk's results passed/composed ones asked/met. The "
+                     "release thread's holds, ms: compute landing/graphics landing/releases, and how many) "
+                     "captures=%.1f lost=%.1f distinct=%.1f next=%.1f/%.1f/%.1f/%.1f same=%.1f front=%.1f KB=%.1f",
+                     frames, n[PCN_RANGES] / f, n[PCN_LOST] / f, n[PCN_DISTINCT] / f, n[PCN_OVERLAP] / f,
+                     n[PCN_ABUT] / f, n[PCN_PAGE] / f, n[PCN_APART] / f, n[PCN_RECUR] / f, n[PCN_FRONT] / f,
+                     n[PCN_BYTES] / f / 1024);
+    at = put_list(out, size, at, "sizes", n + PCN_SIZE, 5, f);
+    for (int k = 0; k < 2; k++) {
+        uint64_t ns[PCL_STEPS], w[PCW_N];
+        for (int i = 0; i < PCL_STEPS; i++) ns[i] = take64(&c->land_ns[k][i]);
+        for (int i = 0; i < PCW_N; i++) w[i] = take64(&c->walk[k][i]);
+        at = putf(out, size, at, " %s=%.1f ms=", where[k], take64(&c->landed[k]) / f);
+        for (int i = 0; i < PCL_STEPS; i++) at = putf(out, size, at, i ? "/%.3f" : "%.3f", ns[i] / f / 1e6);
+        at = put_list(out, size, at, "walk", w, PCW_N, f);
+    }
+    at = putf(out, size, at, " hold=");
+    for (int i = 0; i < PCH_N; i++) at = putf(out, size, at, i ? "/%.3f" : "%.3f", take64(&c->hold_ns[i]) / f / 1e6);
+    at = putf(out, size, at, " holds=%.1f", take64(&c->holds) / f);
+    memset(c->count, 0, sizeof c->count);
     return at < size ? at : size - 1;
 }
