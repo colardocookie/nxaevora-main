@@ -259,6 +259,7 @@ typedef struct GfxOut {
     struct WalkRef* wrefs;
     u32 nwrefs, wdepth; /* wdepth: the depth of the vk_buf_frame_done whose list holds it, 0 in g_out or g_prep */
     u64 seq, wstamp;
+    u8 in_out; /* in g_out (from its commit until a landing takes it out): what gfx_gpu_src's walks go over */
     struct GfxOut* next;
 } GfxOut;
 static GfxOut *g_prep, *g_prep_tail, *g_out, *g_out_tail;
@@ -389,7 +390,10 @@ static void out_wrote(void) {
 void vk_buf_writable_commit(void) {
     if (!g_prep) return;
     out_wrote(); /* every output a draw or dispatch prepared: copies of writable ranges, the atlas's pages */
-    for (GfxOut* o = g_prep; o; o = o->next) out_pages(o, 1);
+    for (GfxOut* o = g_prep; o; o = o->next) {
+        out_pages(o, 1);
+        o->in_out = 1; /* SNX_ARCEUS_PERF_COMPARE=2's walks */
+    }
     if (g_out_tail)
         g_out_tail->next = g_prep;
     else
@@ -412,9 +416,10 @@ static int pages_meet(const GfxOut* a, const GfxOut* b) {
     }
     return 0;
 }
-/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 3): the composed results not landed yet, by their mapped pages, so that a landing
-   visits the ones on its own pages and not every pending result. A result is in it from its append to g_prep until
-   it leaves the lists, landed or dropped. g_walk_lost: no memory to add one, and the whole walk from then on */
+/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 3): the results not landed yet, by their mapped pages and once under ~0 when
+   one has an unmapped page, so that a landing (composed ones) and gfx_gpu_src (those in g_out) visit the ones on
+   their own pages, not every pending result. A result is in it from its append to g_prep until it leaves the lists,
+   landed or dropped. g_walk_lost: no memory to add one, and the whole walks from then on */
 typedef struct WalkRef {
     GfxOut* o;
     u64 page;
@@ -428,27 +433,31 @@ static u64 g_walk_seq, g_walk_stamp;
 static WalkRef** walk_bucket(u64 page) {
     return &g_walk[(u32)(page * 0x9E3779B97F4A7C15ull >> 52) & (WALK_BUCKETS - 1)];
 }
-/* at o's append to g_prep, when its pages are final: its order, and a composed one into the index, once a page */
+static void walk_ref(GfxOut* o, WalkRef* r, u64 page) {
+    WalkRef** b = walk_bucket(page);
+    r->o = o, r->page = page, r->next = *b, r->pprev = b;
+    if (*b) (*b)->pprev = &r->next;
+    *b = r;
+}
+/* at o's append to g_prep, when its pages are final (sorted, unmapped ones last): its order, and it into the index */
 static void walk_add(GfxOut* o) {
     if (g_perf_compare != 2) return;
     o->seq = ++g_walk_seq;
-    if (!o->composed || g_walk_lost) return;
-    u32 n = 0;
-    for (u32 i = 0; i < o->npages && o->pages[i] != ~0ull; i++) n += !i || o->pages[i] != o->pages[i - 1];
-    if (!n) return; /* no mapped page: pages_meet never meets it */
-    o->wrefs = malloc((size_t)n * sizeof *o->wrefs);
+    if (g_walk_lost) return;
+    u32 n = 0, i = 0;
+    for (; i < o->npages && o->pages[i] != ~0ull; i++) n += !i || o->pages[i] != o->pages[i - 1];
+    const int unmapped = i < o->npages;
+    if (!n && !unmapped) return;
+    o->wrefs = malloc((size_t)(n + unmapped) * sizeof *o->wrefs);
     if (!o->wrefs) {
         g_walk_lost = 1;
         return;
     }
-    for (u32 i = 0, j = 0; i < o->npages && o->pages[i] != ~0ull; i++) {
-        if (i && o->pages[i] == o->pages[i - 1]) continue;
-        WalkRef *r = &o->wrefs[j++], **b = walk_bucket(o->pages[i]);
-        r->o = o, r->page = o->pages[i], r->next = *b, r->pprev = b;
-        if (*b) (*b)->pprev = &r->next;
-        *b = r;
-    }
-    o->nwrefs = n;
+    u32 j = 0;
+    for (i = 0; i < o->npages && o->pages[i] != ~0ull; i++)
+        if (!i || o->pages[i] != o->pages[i - 1]) walk_ref(o, &o->wrefs[j++], o->pages[i]);
+    if (unmapped) walk_ref(o, &o->wrefs[j++], ~0ull);
+    o->nwrefs = j;
 }
 /* o out of the index, as it leaves the lists */
 static void walk_remove(GfxOut* o) {
@@ -616,7 +625,7 @@ static int walk_index(const GfxOut* e, u64* walk) {
     u32 n = 0;
     for (u32 i = 0; i < e->npages && e->pages[i] != ~0ull; i++)
         for (WalkRef* r = *walk_bucket(e->pages[i]); r; r = r->next) {
-            if (r->page != e->pages[i] || r->o->wstamp == stamp) continue;
+            if (r->page != e->pages[i] || r->o->wstamp == stamp || !r->o->composed) continue;
             if (r->o->wdepth && r->o->wdepth != g_walk_depth) continue;
             if (n == g_capwcand) {
                 const u32 cap = g_capwcand ? g_capwcand * 2 : 64;
@@ -763,7 +772,7 @@ void vk_buf_frame_done(u64 frame) {
         }
         *pp = o->next;
         o->next = NULL;
-        if (g_perf_compare == 2) o->wdepth = g_walk_depth + 1; /* in this call's list, out of g_out */
+        if (g_perf_compare == 2) o->wdepth = g_walk_depth + 1, o->in_out = 0; /* in this call's list, out of g_out */
         if (done_tail)
             done_tail->next = o;
         else
@@ -1318,6 +1327,47 @@ static void src_walked(u64* t0, u64 n) {
     perf_count(&g_perf, PC_SRC_RESULTS, n);
     *t0 = 0;
 }
+/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28, research 00:47): gfx_gpu_src's walks go over the results of g_out on the
+   range's mapped pages or with an unmapped page, from the index, in g_out's order (seq), in place of all of g_out:
+   every result out_meets_range or out_meets can take is among them. g_src_indexed 0: the walks go over g_out, as
+   without the switch, for a range of more than 16 mapped pages, a lost index or no memory for the list */
+static GfxOut** g_scand;
+static u32 g_nscand, g_capscand;
+static int g_src_indexed;
+static int src_add(GfxOut* o) {
+    if (g_nscand == g_capscand) {
+        const u32 cap = g_capscand ? g_capscand * 2 : 64;
+        GfxOut** b = realloc(g_scand, (size_t)cap * sizeof *b);
+        if (!b) return 0;
+        g_scand = b;
+        g_capscand = cap;
+    }
+    g_scand[g_nscand++] = o;
+    return 1;
+}
+static void src_index(const RangePages* q) {
+    g_src_indexed = 0;
+    if (g_perf_compare != 2 || g_walk_lost || q->n > 16) return;
+    const u64 stamp = ++g_walk_stamp;
+    g_nscand = 0;
+    for (u32 i = 0; i <= q->n; i++) { /* the range's pages, then ~0 */
+        const u64 page = i < q->n ? q->page[i] : ~0ull;
+        for (WalkRef* r = *walk_bucket(page); r; r = r->next) {
+            if (r->page != page || !r->o->in_out || r->o->wstamp == stamp) continue;
+            r->o->wstamp = stamp;
+            if (!src_add(r->o)) return;
+        }
+    }
+    if (g_nscand > 1) qsort(g_scand, g_nscand, sizeof *g_scand, seq_cmp);
+    g_src_indexed = 1;
+}
+static GfxOut* src_first(u32* at) {
+    *at = 0;
+    return !g_src_indexed ? g_out : g_nscand ? g_scand[0] : NULL;
+}
+static GfxOut* src_next(const GfxOut* o, u32* at) {
+    return !g_src_indexed ? o->next : ++*at < g_nscand ? g_scand[*at] : NULL;
+}
 /* kind: the caller, a PB_* for SNX_ARCEUS_PERF_TIMES */
 static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, u64 align, int kind) {
     GfxOut *match = NULL, *newest = NULL;
@@ -1328,8 +1378,10 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     if (g_cs_any) vk_compute_mem_need(gva, len);
     if (!pend_hit(&g_out_pages, gva, len)) return 0;
     u64 walk_t0 = g_perf_times ? plat_ns() : 0, walked = 0;
+    u32 at;
     range_pages(gva, len, &q);
-    for (GfxOut* o = g_out; o; o = o->next, walked++)
+    src_index(&q);
+    for (GfxOut* o = src_first(&at); o; o = src_next(o, &at), walked++)
         if (out_meets_range(o, gva, len, &q)) newest = o;
     if (!newest) {
         src_walked(&walk_t0, walked);
@@ -1340,7 +1392,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
        as on the newest one. Otherwise the code below runs on the newest by page, as without the switch */
     if (g_perf_inplace >= 1 && !writable && !(gva >= newest->addr && gva + len <= newest->addr + newest->size)) {
         GfxOut* nb = NULL;
-        for (GfxOut* o = g_out; o; o = o->next)
+        for (GfxOut* o = src_first(&at); o; o = src_next(o, &at))
             if (out_meets(o, gva, len, &q, &rmap, local)) nb = o; /* conservative by page without a map */
         if (nb && gva >= nb->addr && gva + len <= nb->addr + nb->size) newest = nb;
     }
@@ -1362,7 +1414,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
         count = 1;
         before = newest->frame_id != vk_frame_id();
     } else
-        for (GfxOut* o = g_out; o; o = o->next) {
+        for (GfxOut* o = src_first(&at); o; o = src_next(o, &at)) {
             if (!out_meets_range(o, gva, len, &q)) continue;
             if (!out_still_copyable(o, gva, len, &rmap, local)) {
                 src_walked(&walk_t0, walked);

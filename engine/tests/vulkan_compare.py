@@ -16,7 +16,8 @@ AVX-512BW), and with guest memory reached through a pointer and without one.
 Level 2 (PERF-28 1b and 3) against level 0 on the same batches, with landing.c built portable: the runs from the
 write's own masked pass and the walk through the page index give the same bytes and the same rebases, also with a
 landing nested in a write and without memory. vk_write_changed_found's answer by path, and the index emptied by
-landings and by vk_buf_writable_abort.
+landings and by vk_buf_writable_abort. And gfx_gpu_src's walks: the results its two tests take, in order, through
+the index and through g_out, with unmapped pages and results not in g_out.
 
 Run: python3 tests/vulkan_compare.py [compiler and flags], for example
     python3 tests/vulkan_compare.py clang -std=gnu11 -O2 -fsanitize=address,undefined
@@ -155,6 +156,9 @@ static u64 vk_submit_number(void) { return 1; }
 static u64 gpu_mem_generation(void) { return 1; }
 static u32 vk_ww_now(void) { return 1; }
 static void out_pages(void* o, int d) { (void)o, (void)d; }
+/* GPU addresses are guest addresses, but for the pages check_src unmaps */
+static u8 unmapped[GUEST >> 12];
+static u64 gmmu_translate(u64 a) { return a < GUEST && !unmapped[a >> 12] ? a : 0; }
 static int g_out_landing, g_gfx_any;
 '''
 
@@ -218,6 +222,7 @@ static void build(u32 seed, int n) {
     for (int i = 0; i < n; i++) {
         GfxOut* o = make(&s, 1 + (u64)i * FRAMES / n);
         walk_add(o); /* level 2's index, as at the append to g_prep */
+        o->in_out = 1; /* and its commit */
         if (g_out_tail)
             g_out_tail->next = o;
         else
@@ -586,11 +591,96 @@ static void check_collide(void) {
     e->npages = 1;
     u64 walk[PCW_N] = {0};
     assert(walk_index(e, walk) && walk[PCW_MET] == 0);
+    o->in_out = 1; /* and gfx_gpu_src's list for a range on e's page leaves it out too */
+    RangePages rq = {.n = 1};
+    rq.page[0] = e->pages[0];
+    src_index(&rq);
+    assert(g_src_indexed && !g_nscand);
     walk_remove(o);
     assert(index_empty());
     free(e), free(o);
     free_owned();
     g_perf_compare = 0;
+}
+/* gfx_gpu_src's walks (research 00:47): for random lists with unmapped pages and ranges at, inside, across and away
+   from results, the results out_meets_range and out_meets take, in order, through the index and through g_out */
+static void check_src(void) {
+    u32 compared = 0, taken = 0, indexed = 0;
+    for (u32 seed = 1; seed <= 300; seed++) {
+        g_perf_compare = 0;
+        build(seed, 2 + (int)(seed % 60));
+        u32 s = seed * 7 + 1;
+        memset(unmapped, 0, sizeof unmapped);
+        if (seed % 3) unmapped[1 + rnd(&s) % 9] = 1;
+        if (seed % 5 == 0) unmapped[1 + rnd(&s) % 9] = 1;
+        g_perf_compare = 2;
+        for (GfxOut* o = g_out; o; o = o->next) { /* its pages as the GMMU maps them, sorted with unmapped ones last */
+            for (u32 i = 0; i < o->npages; i++) {
+                const u64 gp = (o->addr >> 12) + i;
+                o->vmap[i] = unmapped[gp] ? ~0ull : gp;
+                o->pages[i] = o->vmap[i];
+            }
+            qsort(o->pages, o->npages, sizeof *o->pages, page_cmp);
+            o->in_out = 1;
+            walk_add(o);
+        }
+        GfxOut* prep[8]; /* in the index but not in g_out, as in g_prep: never taken */
+        for (int i = 0; i < 8; i++) {
+            prep[i] = make(&s, FRAMES);
+            walk_add(prep[i]);
+        }
+        for (u32 k = 0; k < 200; k++) {
+            GfxOut* pick = g_out;
+            for (u32 j = rnd(&s) % 40; j-- && pick->next;) pick = pick->next;
+            const u32 how = rnd(&s) % 4;
+            u64 gva = how == 0 ? pick->addr : how == 1 ? pick->addr + rnd(&s) % pick->size : 0x1000 + rnd(&s) % 0x9000;
+            u64 len = how == 3 ? 1 + rnd(&s) % (20 * 4096) : 1 + rnd(&s) % 9000;
+            if (gva + len > GUEST) len = GUEST - gva;
+            RangePages q;
+            range_pages(gva, len, &q);
+            const int starve = k % 50 == 7; /* no memory for the list: the walks over g_out */
+            if (starve) free(g_scand), g_scand = NULL, g_capscand = 0, alloc_fails = 1;
+            src_index(&q);
+            alloc_fails = 0;
+            assert(!starve || !g_src_indexed || !g_nscand);
+            indexed += g_src_indexed;
+            for (int pred = 0; pred < 2; pred++) {
+                GfxOut* want[1 << 7];
+                u32 nwant = 0, ngot = 0, at;
+                u64 local[16], *rmap = NULL;
+                for (GfxOut* o = g_out; o; o = o->next)
+                    if (pred ? out_meets(o, gva, len, &q, &rmap, local) : out_meets_range(o, gva, len, &q)) {
+                        assert(nwant < 1 << 7);
+                        want[nwant++] = o;
+                    }
+                if (rmap && rmap != local) free(rmap);
+                rmap = NULL;
+                for (GfxOut* o = src_first(&at); o; o = src_next(o, &at))
+                    if (pred ? out_meets(o, gva, len, &q, &rmap, local) : out_meets_range(o, gva, len, &q)) {
+                        assert(ngot < nwant && want[ngot] == o);
+                        ngot++;
+                    }
+                if (rmap && rmap != local) free(rmap);
+                assert(ngot == nwant);
+                compared++, taken += nwant;
+            }
+        }
+        while (g_out) {
+            GfxOut* o = g_out;
+            g_out = o->next;
+            walk_remove(o);
+            free(o);
+        }
+        for (int i = 0; i < 8; i++) walk_remove(prep[i]), free(prep[i]);
+        g_out_tail = NULL;
+        assert(index_empty());
+        free_owned();
+    }
+    memset(unmapped, 0, sizeof unmapped);
+    g_perf_compare = 0;
+    printf("vulkan_compare: src walks, %u sequences the same, %u results taken, %u ranges through the index\n",
+           compared, taken, indexed);
+    assert(taken > 20000 && indexed > 40000 && indexed < compared / 2); /* some ranges are over 16 pages */
 }
 /* a result dropped before it is committed leaves the index too */
 static void check_abort(void) {
@@ -620,6 +710,7 @@ int main(void) {
     check_found();
     check_lost();
     check_collide();
+    check_src();
     check_abort();
     printf("vulkan_compare: all checks passed\n");
     return 0;
@@ -633,7 +724,7 @@ def main():
     body = HEAD + "#define malloc test_malloc\n#define realloc test_realloc\n"
     body += between(buffer, "typedef struct GfxOut {", "} GfxOut;") + "} GfxOut;\n"
     body += "static GfxOut *g_prep, *g_prep_tail, *g_out, *g_out_tail;\n"
-    body += between(buffer, "/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 3): the composed results not landed yet",
+    body += between(buffer, "/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 3): the results not landed yet",
                     "/* e has landed")
     body += function(buffer, "void vk_buf_writable_abort(void) {")
     body += between(buffer, "static ChgRun g_chg_first[64];", "/* whether e's w bytes")
@@ -653,6 +744,12 @@ def main():
                 "static void out_rebase(const GfxOut* e, GfxOut* o) {"):
         body += function(buffer, sig)
     body += between(buffer, "static GfxOut** g_wcand;", "/* the composed results recorded after e")
+    body += function(buffer, "static u64* range_map(")
+    body += between(buffer, "typedef struct {\n    u64 page[16];", "static void range_pages(")
+    for sig in ("static void range_pages(", "static int backing_overlap(", "static void any_span(",
+                "static int out_meets(const GfxOut* o,", "static int out_meets_range("):
+        body += function(buffer, sig)
+    body += between(buffer, "static GfxOut** g_scand;", "/* kind: the caller")
     for sig in ("static void out_rebase_later(", "static void cap_step("):
         body += function(buffer, sig)
     body += between(buffer, "static GfxOut** g_pick;", "/* o's changed runs")

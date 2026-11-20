@@ -936,7 +936,7 @@ int snx_main(int argc, char** argv) {
                 "vk_lock, before its hold\n");
         if (g_perf_compare == 2)
             LOG("perf-compare: EXPERIMENT level 2, a landing's whole-size masked pass finds its changed runs, and its "
-                "walk visits only the composed results on its pages\n");
+                "walk and a binding's walk visit only the pending results on their pages\n");
         const char* patch_hash = getenv("SNX_ARCEUS_PATCH_HASH"); /* a fix, off by default (gpu/vk/buffer.c) */
         g_patch_hash = patch_hash && !strcmp(patch_hash, "1");
         if (g_patch_hash)
