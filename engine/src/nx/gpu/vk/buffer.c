@@ -392,7 +392,7 @@ void vk_buf_writable_commit(void) {
     out_wrote(); /* every output a draw or dispatch prepared: copies of writable ranges, the atlas's pages */
     for (GfxOut* o = g_prep; o; o = o->next) {
         out_pages(o, 1);
-        o->in_out = 1; /* SNX_ARCEUS_PERF_COMPARE=2's walks */
+        if (g_perf_compare == 2) o->in_out = 1; /* gfx_gpu_src's walks through the index */
     }
     if (g_out_tail)
         g_out_tail->next = g_prep;
