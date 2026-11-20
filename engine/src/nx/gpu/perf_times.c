@@ -1148,6 +1148,12 @@ void perf_release_add(PerfP29* p, int kind, uint64_t ns, uint64_t book_ns) {
     __atomic_fetch_add(&p->rel_ns[kind], ns, __ATOMIC_RELAXED);
     __atomic_fetch_add(&p->rel_book_ns, book_ns, __ATOMIC_RELAXED);
 }
+void perf_index_note(PerfP29* p, int which, int fell_back, uint64_t n) {
+    if (fell_back) __atomic_fetch_add(&p->idx_fell[which], 1, __ATOMIC_RELAXED);
+    uint64_t was = __atomic_load_n(&p->idx_max[which], __ATOMIC_RELAXED);
+    while (n > was && !__atomic_compare_exchange_n(&p->idx_max[which], &was, n, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        continue;
+}
 size_t perf_p29_line(PerfP29* p, uint32_t frames, char* out, size_t size) {
     if (!size) return 0;
     const double f = frames ? frames : 1;
@@ -1163,7 +1169,9 @@ size_t perf_p29_line(PerfP29* p, uint32_t frames, char* out, size_t size) {
                      "draws and the ones timed, one in %u: ms a timed draw for its binds and draw words in all/their "
                      "sends/a decode-only pass over the same words, and words and methods a timed draw. The release "
                      "thread's releases performed, syncpoint/payload/samples report: how many, ms performing, and ms "
-                     "of the queue's bookkeeping under its lock) vk_hash=%llx hash=",
+                     "of the queue's bookkeeping under its lock. The page index's lookups, a binding's/a landing's: "
+                     "those past the bound that walked as without it, and the most candidates one met, as a "
+                     "count) vk_hash=%llx hash=",
                      frames, PERF_REPLAY_SAMPLE, (unsigned long long)base);
     for (int shown = 0;; shown++) { /* the sites by KB, the largest first */
         int best = -1;
@@ -1187,6 +1195,9 @@ size_t perf_p29_line(PerfP29* p, uint32_t frames, char* out, size_t size) {
     for (int i = 0; i < PRL_KINDS; i++) n[i] = take64(&p->rel_n[i]), ns[i] = take64(&p->rel_ns[i]);
     at = putf(out, size, at, " releases=%.1f/%.1f/%.1f ms=%.3f/%.3f/%.3f book=%.3f", n[0] / f, n[1] / f, n[2] / f,
               ns[0] / f / 1e6, ns[1] / f / 1e6, ns[2] / f / 1e6, take64(&p->rel_book_ns) / f / 1e6);
+    at = putf(out, size, at, " index=%.1f/%.1f max=%llu/%llu", take64(&p->idx_fell[0]) / f,
+              take64(&p->idx_fell[1]) / f, (unsigned long long)take64(&p->idx_max[0]),
+              (unsigned long long)take64(&p->idx_max[1]));
     return at < size ? at : size - 1;
 }
 size_t perf_caps_line(PerfCaps* c, uint32_t frames, char* out, size_t size) {

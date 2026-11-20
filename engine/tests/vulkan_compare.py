@@ -178,9 +178,10 @@ static void* own(void* p) {
 static void free_owned(void) {
     while (nowned) free(owned[--nowned]);
 }
+static int crowd; /* every result inside one guest page (the index's bound) */
 static GfxOut* make(u32* s, u64 frame) {
-    u32 size = 1 + rnd(s) % (rnd(s) % 4 ? 300 : 9000);
-    u64 addr = 0x1000 + rnd(s) % (8 * 4096);
+    u32 size = crowd ? 1 + rnd(s) % 900 : 1 + rnd(s) % (rnd(s) % 4 ? 300 : 9000);
+    u64 addr = crowd ? 0x5000 + rnd(s) % (4096 - size) : 0x1000 + rnd(s) % (8 * 4096);
     if (rnd(s) % 3 == 0) addr &= ~7ull;
     u32 npages = (u32)(((addr + size - 1) >> 12) - (addr >> 12) + 1);
     GfxOut* o = calloc(1, sizeof *o + 2 * (size_t)npages * 8 + size);
@@ -716,6 +717,48 @@ static void check_pool(void) {
     free_owned();
     g_perf_compare = 0;
 }
+/* past the bound (research 02:32): batches of up to 200 results on one page, the same as level 0, with the landings'
+   lookups giving up; and a binding's lookup on that page giving up, its walks over g_out, unsorted */
+static void check_bound(void) {
+    crowd = 1;
+    u64 fell = 0, most = 0;
+    for (u32 seed = 1; seed <= 40; seed++) {
+        const int n = 130 + (int)(seed % 70);
+        g_perf_compare = 0;
+        g_perf_times = 1;
+        (void)take_met();
+        build(seed, n);
+        ncalls = norgs = 0;
+        land_all(seed, 0);
+        const u64 met0 = take_met();
+        memcpy(guest0, guest, GUEST);
+        memcpy(orgs0, orgs, sizeof orgs[0] * norgs);
+        norgs0 = norgs;
+        g_perf_compare = 2;
+        build(seed, n);
+        ncalls = norgs = 0;
+        land_all(seed, 0);
+        assert(!memcmp(guest, guest0, GUEST) && norgs == norgs0 && !memcmp(orgs, orgs0, sizeof orgs[0] * norgs));
+        assert(take_met() == met0 && index_empty());
+        fell += take64(&g_perf_p29.idx_fell[1]);
+        const u64 m = take64(&g_perf_p29.idx_max[1]);
+        if (m > most) most = m;
+    }
+    assert(fell > 100 && most == WALK_BOUND + 1);
+    build(77, 120); /* level 2, every result in the index and in g_out */
+    RangePages q;
+    range_pages(0x5000, 64, &q);
+    (void)take64(&g_perf_p29.idx_fell[0]);
+    src_index(&q);
+    assert(!g_src_indexed && take64(&g_perf_p29.idx_fell[0]) == 1 && take64(&g_perf_p29.idx_max[0]) == WALK_BOUND + 1);
+    u32 at;
+    assert(src_first(&at) == g_out); /* the walk over g_out, in its order */
+    land_all(77, 0);
+    assert(index_empty());
+    g_perf_times = 0, g_perf_compare = 0, crowd = 0;
+    printf("vulkan_compare: past the bound, 40 crowded batches the same, %llu landing lookups gave up\n",
+           (unsigned long long)fell);
+}
 /* a result dropped before it is committed leaves the index too */
 static void check_abort(void) {
     g_perf_compare = 2;
@@ -746,6 +789,7 @@ int main(void) {
     check_collide();
     check_src();
     check_pool();
+    check_bound();
     check_abort();
     printf("vulkan_compare: all checks passed\n");
     return 0;

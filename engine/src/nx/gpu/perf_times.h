@@ -545,6 +545,7 @@ typedef struct {
     uint64_t calls[PERF_HASH_SITES + 1], bytes[PERF_HASH_SITES + 1], long_ns[PERF_HASH_SITES + 1]; /* atomic */
     uint64_t replay[PRP_N];                            /* atomic */
     uint64_t rel_n[PRL_KINDS], rel_ns[PRL_KINDS], rel_book_ns; /* the release thread's own */
+    uint64_t idx_fell[2], idx_max[2]; /* atomic: buffer.c's index lookups, gfx_gpu_src's [0] and the landing's [1] */
 } PerfP29;
 extern PerfP29 g_perf_p29;
 /* one vk_hash of n bytes from ra (base: vk_hash), ns for one of 1 KB or more (else 0) */
@@ -552,6 +553,8 @@ void perf_hash_note(PerfP29* p, uint64_t ra, uint64_t base, uint64_t n, uint64_t
 void perf_replay_add(PerfP29* p, int what, uint64_t v);
 /* one release performed: its kind (PRL_*), its own ns, and its queue's bookkeeping under g_rlock without it */
 void perf_release_add(PerfP29* p, int kind, uint64_t ns, uint64_t book_ns);
+/* one index lookup (which: 0 gfx_gpu_src's, 1 the landing's) that met n candidates, or gave up past its bound */
+void perf_index_note(PerfP29* p, int which, int fell_back, uint64_t n);
 size_t perf_p29_line(PerfP29* p, uint32_t frames, char* out, size_t size);
 void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame);
 /* PERF-23's, the same, with the stamps' counts since the last and the cost of one clock read. real NULL: the record as

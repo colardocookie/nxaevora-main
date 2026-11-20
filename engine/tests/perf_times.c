@@ -721,6 +721,8 @@ static void test_p29(void) {
     perf_release_add(&p, PRL_SYNC, 600000, 1200000);
     perf_release_add(&p, PRL_PAYLOAD, 1200000, 600000);
     perf_release_add(&p, PRL_SAMPLES, 600000, 0);
+    perf_index_note(&p, 0, 0, 12), perf_index_note(&p, 0, 1, 65), perf_index_note(&p, 0, 0, 40);
+    perf_index_note(&p, 1, 0, 3);
     CHECK(p.calls[PERF_HASH_SITES] == 5); /* two slots taken first, so five of the loop's callers are past them */
     perf_p29_line(&p, 600, line, sizeof line);
     CHECK(strstr(line, " vk_hash=140000000 hash=+100:0.0/2.0/0.010,"));
@@ -728,7 +730,9 @@ static void test_p29(void) {
     CHECK(strstr(line, " rest=0.0/0.0/0.000 ")); /* five calls of 8 bytes, under 0.05 a frame */
     CHECK(strstr(line, " replay=2.0/0.1 ms=0.0020/0.0010/0.0004 words=40.0 methods=20.0 "));
     CHECK(strstr(line, " releases=0.0/0.0/0.0 ms=0.001/0.002/0.001 book=0.003"));
+    CHECK(strstr(line, " index=0.0/0.0 max=65/3")); /* one fallback in 600 frames, the largest of each kind */
     CHECK(p.calls[PERF_HASH_SITES] == 0 && p.replay[PRP_DRAWS] == 0 && p.rel_n[PRL_SYNC] == 0);
+    CHECK(p.idx_fell[0] == 0 && p.idx_max[0] == 0 && p.idx_max[1] == 0);
     perf_hash_note(&p, base + 0x100, base, 8, 0); /* the slot stays its caller's */
     CHECK(p.ra[1] == base + 0x100 && p.calls[1] == 1);
 }

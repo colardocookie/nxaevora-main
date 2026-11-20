@@ -625,6 +625,13 @@ static void out_rebase(const GfxOut* e, GfxOut* o) {
 }
 static GfxOut** g_wcand;
 static u32 g_capwcand;
+/* the candidates one lookup of the index collects at most (research 02:32): a key with more (results with unmapped
+   pages under ~0, or many on one page) would cost each walk a list and a sort longer than the walk the index saves,
+   so past it that call walks as without the index. Noted with SNX_ARCEUS_PERF_TIMES (PERF-29's line) */
+#define WALK_BOUND 64u
+static void walk_noted(int which, int fell_back, u32 n) {
+    if (g_perf_times) perf_index_note(&g_perf_p29, which, fell_back, n);
+}
 static int seq_cmp(const void* a, const void* b) {
     const u64 x = (*(GfxOut* const*)a)->seq, y = (*(GfxOut* const*)b)->seq;
     return (x > y) - (x < y);
@@ -640,6 +647,10 @@ static int walk_index(const GfxOut* e, u64* walk) {
         for (WalkRef* r = *walk_bucket(e->pages[i]); r; r = r->next) {
             if (r->page != e->pages[i] || r->o->wstamp == stamp || !r->o->composed) continue;
             if (r->o->wdepth && r->o->wdepth != g_walk_depth) continue;
+            if (n == WALK_BOUND) {
+                walk_noted(1, 1, n + 1);
+                return 0;
+            }
             if (n == g_capwcand) {
                 const u32 cap = g_capwcand ? g_capwcand * 2 : 64;
                 GfxOut** b = realloc(g_wcand, (size_t)cap * sizeof *b);
@@ -650,6 +661,7 @@ static int walk_index(const GfxOut* e, u64* walk) {
             r->o->wstamp = stamp;
             g_wcand[n++] = r->o;
         }
+    walk_noted(1, 0, n);
     if (n > 1) qsort(g_wcand, n, sizeof *g_wcand, seq_cmp);
     for (u32 i = 0; i < n; i++) {
         if (walk) walk[PCW_VISITED]++, walk[PCW_COMPOSED]++, walk[PCW_MET]++;
@@ -1368,9 +1380,14 @@ static void src_index(const RangePages* q) {
         for (WalkRef* r = *walk_bucket(page); r; r = r->next) {
             if (r->page != page || !r->o->in_out || r->o->wstamp == stamp) continue;
             r->o->wstamp = stamp;
+            if (g_nscand == WALK_BOUND) { /* past the bound: the walks go over g_out, unsorted, as unset */
+                walk_noted(0, 1, g_nscand + 1);
+                return;
+            }
             if (!src_add(r->o)) return;
         }
     }
+    walk_noted(0, 0, g_nscand);
     if (g_nscand > 1) qsort(g_scand, g_nscand, sizeof *g_scand, seq_cmp);
     g_src_indexed = 1;
 }
