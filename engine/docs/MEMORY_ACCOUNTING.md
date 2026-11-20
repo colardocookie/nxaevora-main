@@ -25,12 +25,12 @@ the process's heap region (`m_max_process_memory`), not at the application pool:
 
 The memory behavior below was checked against Atmosphere's Mesosphere sources at
 commit `c7e6c35e900b52c364d557bdbfe554c857158d97`. This is an independently written
-implementation in ScarletNX, not a port of Atmosphere's GPL-2.0-only code.
+implementation in NXAevora Engine, not a port of Atmosphere's GPL-2.0-only code.
 
 ## Implemented behavior
 
 - Charge the page-rounded loaded images, including data and BSS, and the main
-  thread's page-rounded stack instead of a fixed 256 MiB. ScarletNX's unmapped
+  thread's page-rounded stack instead of a fixed 256 MiB. NXAevora Engine's unmapped
   guard pages are not physical allocations. Images are charged by the loader and
   the main stack is charged before the guest main thread starts.
 - For a single application with a private NPDM system resource, charge that

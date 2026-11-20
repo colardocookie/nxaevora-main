@@ -1,6 +1,6 @@
 # Block linear surfaces and texture conversions on the GPU
 
-Guest memory holds most surfaces in the GPU's block linear layout. ScarletNX moves them between that layout and the
+Guest memory holds most surfaces in the GPU's block linear layout. NXAevora Engine moves them between that layout and the
 linear rows Vulkan's buffer copies take on the GPU, and converts the formats the host can't sample as they are there
 too. The CPU only copies guest memory into staging, and staging into guest memory, as whole ranges. It never takes a
 GOB apart, never converts a texel, and never reads GPU memory to do either.

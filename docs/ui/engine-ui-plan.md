@@ -105,12 +105,14 @@ target.
    `engine/docs/APPLE.md`.
 3. Before each PR, an inventory lists every file, CMake target, test, CI step and document that the removal touches,
    and the shared code that the Switch driver or the Linux host still uses. Shared code stays.
+4. A docs PR corrects the upstream documents of `engine/docs/` and deletes `TESTING.md` and
+   `shader-audit/fixes-001.md` (decision of the user, 2026-11-20).
 
 ### Limits
 
 - The Switch driver and the Linux host build do not change. No unrelated refactor.
-- The other recompiler targets (`engine/docs/PPC64.md`, `RISCV-LOONGARCH.md`) are not part of this unit (open
-  question).
+- The other recompiler targets (`engine/docs/PPC64.md`, `RISCV-LOONGARCH.md`) stay in the Engine and are
+  corrected, and their code stays (decision of the user, 2026-11-20).
 - CI is Windows only, so Linux-only code and tests can break and nobody sees it. A Linux CI task is proposed when
   the Linux work starts.
 
@@ -387,6 +389,7 @@ settings panel opened and closed, a battle, and a switch between window and full
 
 - The drivers for the other systems (3DS, Vita, GBA, Linux AArch64 programs) and the Android, iOS and macOS
   frontends are removed in unit 1.5 (decision of the user, 2026-11-16).
-- The other recompiler targets (`engine/docs/PPC64.md`, `engine/docs/RISCV-LOONGARCH.md`) are not part of unit 1.5.
+- The other recompiler targets (`engine/docs/PPC64.md`, `engine/docs/RISCV-LOONGARCH.md`) stay in the Engine and
+  are corrected, and their code stays (decision of the user, 2026-11-20).
 - The program name and the data folder are decided by PR #58: the program is `nxaevora-engine.exe` and the data
   folder is `%APPDATA%\nxaevora`.

@@ -1,6 +1,6 @@
 # AOT packs from the runtime JIT cache
 
-ScarletNX runs a Switch game with one runtime. A recompiled game module is the default code path (AOT); when
+NXAevora Engine runs a Switch game with one runtime. A recompiled game module is the default code path (AOT); when
 the game reaches a function the module does not have, the runtime compiles that function with the JIT, runs it,
 and returns to the AOT caller. The JIT is always present. The interpreter is not a fallback.
 
@@ -81,13 +81,13 @@ of a pack build.
 The launcher action is the same build the driver already supports:
 
 ```sh
-scarletnx -r path/to/game --jit-cache path/to/game.jitcache -O 2
+nxaevora-engine -r path/to/game --jit-cache path/to/game.jitcache -O 2
 ```
 
 Add `--hook-direct-calls` when the cache was written with `nvn_trace` on:
 
 ```sh
-scarletnx -r path/to/game --jit-cache path/to/game.jitcache -O 2 --hook-direct-calls
+nxaevora-engine -r path/to/game --jit-cache path/to/game.jitcache -O 2 --hook-direct-calls
 ```
 
 `-O` and `--opt=2` set the same recompiler level; the launcher passes `-O` after the settings so the matched
