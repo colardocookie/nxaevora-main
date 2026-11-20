@@ -614,6 +614,7 @@ def main():
     body = HEAD + "#define malloc test_malloc\n#define realloc test_realloc\n"
     body += between(buffer, "typedef struct GfxOut {", "} GfxOut;") + "} GfxOut;\n"
     body += "static GfxOut *g_prep, *g_prep_tail, *g_out, *g_out_tail;\n"
+    body += function(buffer, "static u64 out_block(")
     body += between(buffer, "/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 3): the results not landed yet",
                     "/* e has landed")
     body += function(buffer, "void vk_buf_writable_abort(void) {")

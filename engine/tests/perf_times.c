@@ -705,6 +705,29 @@ static void test_writable(void) {
    same place as the frame before, the sizes and the cap; the landing steps and the hold by part, then reset */
 /* PERF-29: callers in their own slots, the biggest first, offsets against vk_hash either way, the ones past the slots
    together, the replay's means over the timed draws, the releases by kind, and a line that empties its counts */
+/* PERF-31: page faults since the line before, each thread's kernel and user time since then, the blocks by site
+   and the frees by thread, and a second line that starts from the first */
+static void test_mem(void) {
+    static PerfMem m;
+    char line[PERF_COPIES_LINE];
+    memset(&m, 0, sizeof m);
+    perf_mem_line(&m, 600, 1000, line, sizeof line); /* the first line sets the bases */
+    perf_mem_thread(&m, PTH_GPU, 1, 600 * 2000000ull, 600 * 5000000ull);
+    perf_mem_thread(&m, PTH_RELEASE, 2, 600 * 1000000ull, 0);
+    perf_mem_thread(&m, PTH_RELEASE, 3, 600 * 9000000ull, 0); /* a second thread: refused, counted */
+    for (int i = 0; i < 1200; i++) perf_mem_alloc(&m, PMA_RESULT, 8192);
+    perf_mem_alloc(&m, PMA_OWN, 600 * 1024);
+    for (int i = 0; i < 1200; i++) perf_mem_free(&m, 1, 8192);
+    perf_mem_free(&m, 0, 6144);
+    perf_mem_line(&m, 600, 1000 + 600 * 30, line, sizeof line);
+    CHECK(strstr(line, "perf-mem: frames=600 (") && strstr(line, ") faults=30.0 "));
+    CHECK(strstr(line, " gpu=2.000/5.000 release=1.000/0.000 recorder=0.000/0.000 guest=0.000/0.000 "));
+    CHECK(strstr(line, " result=2.0/16.0 result_small=0.0/0.0 range_map=0.0/0.0 list=0.0/0.0 own=0.0/1.0 "));
+    CHECK(strstr(line, " freed=2.0/16.0,0.0/0.0 others=1"));
+    perf_mem_line(&m, 600, 1000 + 600 * 30, line, sizeof line); /* nothing since */
+    CHECK(strstr(line, ") faults=0.0 gpu=0.000/0.000 ") && strstr(line, " result=0.0/0.0 ") &&
+          strstr(line, " freed=0.0/0.0,0.0/0.0 others=0"));
+}
 static void test_p29(void) {
     static PerfP29 p;
     char line[PERF_COPIES_LINE];
@@ -1154,6 +1177,7 @@ int main(void) {
     test_landed();
     test_caps();
     test_p29();
+    test_mem();
     test_same();
     test_same_threads();
     CHECK(g_perf_inplace == 0 && g_perf_bind == PBK_OTHER && g_perf_exact == 0); /* unset: today's commands */

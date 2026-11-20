@@ -20,6 +20,7 @@ int g_perf_compare;
 int g_patch_hash;
 PerfCaps g_perf_caps;
 PerfP29 g_perf_p29;
+PerfMem g_perf_mem;
 _Thread_local int g_perf_release_thread;
 int g_perf_bind;
 uint64_t g_perf_exact;
@@ -1144,6 +1145,52 @@ void perf_index_note(PerfP29* p, int which, int fell_back, uint64_t n) {
     uint64_t was = __atomic_load_n(&p->idx_max[which], __ATOMIC_RELAXED);
     while (n > was && !__atomic_compare_exchange_n(&p->idx_max[which], &was, n, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
         continue;
+}
+void perf_mem_thread(PerfMem* m, int who, uintptr_t token, uint64_t kernel_ns, uint64_t user_ns) {
+    uintptr_t none = 0;
+    if (!__atomic_compare_exchange_n(&m->owner[who], &none, token, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED) &&
+        none != token) {
+        __atomic_fetch_add(&m->others, 1, __ATOMIC_RELAXED);
+        return;
+    }
+    __atomic_store_n(&m->kernel[who], kernel_ns, __ATOMIC_RELAXED);
+    __atomic_store_n(&m->user[who], user_ns, __ATOMIC_RELAXED);
+}
+void perf_mem_alloc(PerfMem* m, int site, uint64_t bytes) {
+    __atomic_fetch_add(&m->alloc_n[site], 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&m->alloc_b[site], bytes, __ATOMIC_RELAXED);
+}
+void perf_mem_free(PerfMem* m, int release, uint64_t bytes) {
+    __atomic_fetch_add(&m->free_n[release ? 0 : 1], 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&m->free_b[release ? 0 : 1], bytes, __ATOMIC_RELAXED);
+}
+size_t perf_mem_line(PerfMem* m, uint32_t frames, uint64_t faults, char* out, size_t size) {
+    static const char* const who[PTH_N] = {"gpu", "release", "recorder", "guest"};
+    static const char* const site[PMA_N] = {"result", "result_small", "range_map", "list", "own"};
+    if (!size) return 0;
+    const double f = frames ? frames : 1;
+    size_t at = putf(out, size, 0,
+                     "perf-mem: frames=%u (a frame: the process's page faults; each thread's ms in the kernel/in user "
+                     "mode, as it last stored them (the guest thread: the first posting presents); blocks made by "
+                     "site, "
+                     "count/KB (result_small: results under 4 KB); results freed on the release thread/elsewhere, "
+                     "count/KB; others: stores refused, from a second thread for a slot) faults=%.1f",
+                     frames, (double)(faults - m->faults0) / f);
+    m->faults0 = faults;
+    for (int i = 0; i < PTH_N; i++) {
+        const uint64_t k = __atomic_load_n(&m->kernel[i], __ATOMIC_RELAXED);
+        const uint64_t u = __atomic_load_n(&m->user[i], __ATOMIC_RELAXED);
+        at = putf(out, size, at, " %s=%.3f/%.3f", who[i], (double)(k - m->kernel0[i]) / f / 1e6,
+                  (double)(u - m->user0[i]) / f / 1e6);
+        m->kernel0[i] = k, m->user0[i] = u;
+    }
+    for (int i = 0; i < PMA_N; i++)
+        at = putf(out, size, at, " %s=%.1f/%.1f", site[i], take64(&m->alloc_n[i]) / f,
+                  take64(&m->alloc_b[i]) / f / 1024);
+    at = putf(out, size, at, " freed=%.1f/%.1f,%.1f/%.1f others=%llu", take64(&m->free_n[0]) / f,
+              take64(&m->free_b[0]) / f / 1024, take64(&m->free_n[1]) / f, take64(&m->free_b[1]) / f / 1024,
+              (unsigned long long)take64(&m->others));
+    return at < size ? at : size - 1;
 }
 size_t perf_p29_line(PerfP29* p, uint32_t frames, char* out, size_t size) {
     if (!size) return 0;

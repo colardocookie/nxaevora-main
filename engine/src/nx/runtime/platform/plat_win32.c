@@ -11,6 +11,7 @@
 #include <SDL3/SDL_thread.h>
 #include <errno.h>
 #include <io.h>
+#include <psapi.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -202,6 +203,18 @@ u8* plat_vm_reserve(u64 size) {
         errno = why == ERROR_NOT_ENOUGH_MEMORY || why == ERROR_COMMITMENT_LIMIT ? ENOMEM : EINVAL;
     }
     return (u8*)p;
+}
+
+void plat_thread_cpu(u64* kernel_ns, u64* user_ns) {
+    FILETIME created, exited, k, u;
+    *kernel_ns = *user_ns = 0;
+    if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &k, &u)) return;
+    *kernel_ns = ((u64)k.dwHighDateTime << 32 | k.dwLowDateTime) * 100; /* 100 ns units */
+    *user_ns = ((u64)u.dwHighDateTime << 32 | u.dwLowDateTime) * 100;
+}
+u64 plat_page_faults(void) {
+    PROCESS_MEMORY_COUNTERS info;
+    return GetProcessMemoryInfo(GetCurrentProcess(), &info, sizeof info) ? (u64)info.PageFaultCount : 0;
 }
 
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {

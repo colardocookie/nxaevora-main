@@ -27,6 +27,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h" /* tests/vulkan_release.c stubs vk.h */
 #include "nx/gpu/perf_times.h"
+#include "nx/gpu/perf_sample.h"
 
 typedef struct {
     u64 gate;  /* the graphics submit whose completion it waits for */
@@ -207,6 +208,7 @@ static void release_thread(void* p) {
         cgate = g_rq[g_rtail % RQ_N].cgate;
         pm_unlock(&g_rlock);
         SNX_ZONE(z_release, "vk release");
+        perf_thread_sample(PTH_RELEASE); /* PERF-31, with SNX_ARCEUS_PERF_PROBES */
         const u64 wait0 = g_perf_times ? plat_ns() : 0;
         vk_wait_submit(gate);
         if (g_perf_times) {

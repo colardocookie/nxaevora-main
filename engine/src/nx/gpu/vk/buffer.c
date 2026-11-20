@@ -296,9 +296,13 @@ static VkAccessFlags2 out_access(void) {
            (g_vk.has_xfb ? VK_ACCESS_2_TRANSFORM_FEEDBACK_WRITE_BIT_EXT : 0);
 }
 /* an output with its page lists and its original bytes after it, in one block */
+/* a result's block: the result, its two page lists and its original bytes (PERF-31 counts it at its free too) */
+static u64 out_block(u32 npages, u32 len) { return sizeof(GfxOut) + 2 * (u64)npages * sizeof(u64) + len; }
 static GfxOut* gfx_out_new(u32 npages, u32 len) {
-    GfxOut* o = calloc(1, sizeof *o + 2 * (size_t)npages * sizeof *o->pages + len);
+    GfxOut* o = calloc(1, (size_t)out_block(npages, len));
     if (!o) return NULL;
+    if (g_perf_probes) perf_mem_alloc(&g_perf_mem, out_block(npages, len) >= 4096 ? PMA_RESULT : PMA_RESULT_SMALL,
+                                      out_block(npages, len));
     o->pages = (u64*)(o + 1);
     o->vmap = o->pages + npages;
     o->npages = npages;
@@ -353,6 +357,7 @@ static u64* range_map(u64 gva, u64 len, u64 local[16]) {
     u64 base = gva & ~4095ull, n = (gva + len - base + 4095) >> 12;
     u64* map = n <= 16 ? local : malloc(n * sizeof *map);
     if (!map) return NULL;
+    if (g_perf_probes && n * sizeof *map >= 4096) perf_mem_alloc(&g_perf_mem, PMA_RANGE_MAP, n * sizeof *map);
     for (u64 i = 0; i < n; i++) {
         u64 cpu = gmmu_translate(base + i * 4096);
         map[i] = cpu ? cpu >> 12 : ~0ull;
@@ -369,6 +374,7 @@ void vk_buf_writable_abort(void) {
         GfxOut* o = g_prep;
         g_prep = o->next;
         walk_remove(o);
+        if (g_perf_probes) perf_mem_free(&g_perf_mem, g_perf_release_thread, out_block(o->npages, o->size));
         free(o);
     }
     g_prep_tail = NULL;
@@ -750,6 +756,7 @@ void vk_buf_frame_done(u64 frame) {
             cap_step(&t, ns, PCL_OTHER);
             perf_caps_landed(&g_perf_caps, g_perf_release_thread, ns, walk);
         }
+        if (g_perf_probes) perf_mem_free(&g_perf_mem, g_perf_release_thread, out_block(o->npages, o->size));
         free(o);
     }
     g_out_landing--;
@@ -1106,6 +1113,7 @@ static int cover_take(Covered* c, u64 a, u64 b, void (*fn)(void* user, u64 a, u6
             u32 cap = c->cap * 2;
             CoverRun* v = c->v == c->first ? malloc((size_t)cap * sizeof *v) : realloc(c->v, (size_t)cap * sizeof *v);
             if (!v) return 0;
+            if (g_perf_probes && cap * sizeof *v >= 4096) perf_mem_alloc(&g_perf_mem, PMA_LIST, cap * sizeof *v);
             if (c->v == c->first) memcpy(v, c->first, sizeof c->first);
             c->v = v;
             c->cap = cap;
@@ -2448,6 +2456,7 @@ static int make_own_(u32 i, VkBuffer sb, u64 so) {
     VkBuffer b;
     VmaAllocation m;
     if (vmaCreateBuffer(g_vk.vma, &bci, &aci, &b, &m, NULL) != VK_SUCCESS) return 0;
+    if (g_perf_probes && len >= 4096) perf_mem_alloc(&g_perf_mem, PMA_OWN, len);
     vk_mem_track(m);
     if (copy_stats_on()) g_copy_owned += len;
     vk_perf_copy(PK_OWN);

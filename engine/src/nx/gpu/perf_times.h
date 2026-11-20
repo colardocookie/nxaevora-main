@@ -556,6 +556,28 @@ void perf_release_add(PerfP29* p, int kind, uint64_t ns, uint64_t book_ns);
 /* one index lookup (which: 0 gfx_gpu_src's, 1 the landing's) that met n candidates, or gave up past its bound */
 void perf_index_note(PerfP29* p, int which, int fell_back, uint64_t n);
 size_t perf_p29_line(PerfP29* p, uint32_t frames, char* out, size_t size);
+/* PERF-31 (research 03:57), log only, with SNX_ARCEUS_PERF_PROBES=1: where the kernel time is. The process's page
+   faults, each named thread's kernel and user time (each thread stores its own, perf_sample.h), and the allocations
+   of 4 KB or more the GPU thread makes by site, with the results' frees by the thread that frees them */
+enum { PTH_GPU, PTH_RELEASE, PTH_RECORDER, PTH_GUEST, PTH_N }; /* PTH_GUEST: the guest thread that posts presents */
+/* a result's block (all sizes, apart below 4 KB), range_map's page map, a walk's or compose's list, an own buffer */
+enum { PMA_RESULT, PMA_RESULT_SMALL, PMA_RANGE_MAP, PMA_LIST, PMA_OWN, PMA_N };
+typedef struct {
+    uint64_t kernel[PTH_N], user[PTH_N];   /* atomic: the thread's CPU time so far, ns, as it last stored it */
+    uintptr_t owner[PTH_N];                /* atomic: the thread a slot is for, the first to store (its token) */
+    uint64_t others;                       /* atomic: stores from another thread, refused */
+    uint64_t kernel0[PTH_N], user0[PTH_N]; /* the line's: those at the line before */
+    uint64_t faults0;                      /* the line's: the page faults at the line before */
+    uint64_t alloc_n[PMA_N], alloc_b[PMA_N]; /* atomic */
+    uint64_t free_n[2], free_b[2];           /* atomic: results freed on the release thread [0], elsewhere [1] */
+} PerfMem;
+extern PerfMem g_perf_mem;
+/* token: one per thread (an address of its own); a slot keeps the first thread's and refuses the others' */
+void perf_mem_thread(PerfMem* m, int who, uintptr_t token, uint64_t kernel_ns, uint64_t user_ns);
+void perf_mem_alloc(PerfMem* m, int site, uint64_t bytes);
+void perf_mem_free(PerfMem* m, int release, uint64_t bytes);
+/* the line, faults the process's page faults so far: the window's are those since the line before */
+size_t perf_mem_line(PerfMem* m, uint32_t frames, uint64_t faults, char* out, size_t size);
 void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame);
 /* PERF-23's, the same, with the stamps' counts since the last and the cost of one clock read. real NULL: the record as
    written is not kept (SNX_ARCEUS_PERF_TIMES=1), its columns not printed */

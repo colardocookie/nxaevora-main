@@ -20,6 +20,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/perf_times.h"
+#include "nx/gpu/perf_sample.h"
 
 typedef void (*RecFn)(const void* args);
 typedef struct {
@@ -66,6 +67,7 @@ static void rec_thread(void* arg) {
             __atomic_store_n(&g_sleep, 0, __ATOMIC_RELAXED);
             pm_unlock(&g_m);
         }
+        perf_thread_sample(PTH_RECORDER); /* PERF-31, with SNX_ARCEUS_PERF_PROBES */
         u64 records __attribute__((unused)) = 0; /* the zone's value; only the profiler reads it */
         SNX_ZONE(z_rec, "vk record");
         while (tail != head) {

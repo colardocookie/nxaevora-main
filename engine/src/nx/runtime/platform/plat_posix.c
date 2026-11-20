@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <time.h>
@@ -400,6 +401,20 @@ static void ww_remapped(u8* p, u64 size) {
     if (__atomic_load_n(&g_pagemap, __ATOMIC_ACQUIRE) < 0 || !ww_register(p, size)) return;
     __atomic_store_n(&g_pagemap, -1, __ATOMIC_RELEASE);
     WARN("memory: could not watch remapped guest memory for writes (error %d): caches compare contents now\n", errno);
+}
+
+void plat_thread_cpu(u64* kernel_ns, u64* user_ns) {
+    *kernel_ns = *user_ns = 0;
+#ifdef RUSAGE_THREAD
+    struct rusage r;
+    if (getrusage(RUSAGE_THREAD, &r)) return;
+    *kernel_ns = (u64)r.ru_stime.tv_sec * 1000000000ull + (u64)r.ru_stime.tv_usec * 1000ull;
+    *user_ns = (u64)r.ru_utime.tv_sec * 1000000000ull + (u64)r.ru_utime.tv_usec * 1000ull;
+#endif
+}
+u64 plat_page_faults(void) {
+    struct rusage r;
+    return getrusage(RUSAGE_SELF, &r) ? 0 : (u64)r.ru_minflt + (u64)r.ru_majflt;
 }
 
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {

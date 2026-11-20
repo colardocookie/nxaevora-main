@@ -20,6 +20,7 @@
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/perf_times.h"
+#include "nx/gpu/perf_sample.h"
 #include "nx/gpu/frame_log.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
@@ -7051,8 +7052,13 @@ static void perf_line(void) {
     LOG("%s\n", line);
     perf_caps_line(&g_perf_caps, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-27 */
     LOG("%s\n", line);
-    if (g_perf_probes) { /* PERF-29 */
+    if (g_perf_probes) { /* PERF-29, and PERF-31 with the GPU thread's own time read now */
         perf_p29_line(&g_perf_p29, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
+        LOG("%s\n", line);
+        u64 kernel, user;
+        plat_thread_cpu(&kernel, &user);
+        perf_mem_thread(&g_perf_mem, PTH_GPU, (uintptr_t)&presents, kernel, user); /* presents: the GPU thread's */
+        perf_mem_line(&g_perf_mem, PERF_TIMES_WINDOW, plat_page_faults(), line, PERF_COPIES_LINE);
         LOG("%s\n", line);
     }
     perf_copies_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
@@ -7132,6 +7138,7 @@ static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget
     if (g_submit_probe && target->kind == NVN_FRAME_FLUSH) submit_probe_flush_posted(queue_addr);
     if (g_perf_times) /* a 32-bit stamp: the post to start interval is far below its 4 s wrap */
         job->post_ns = (uint32_t)(target->kind == NVN_FRAME_PRESENT ? perf_present_posted() : plat_ns());
+    if (target->kind == NVN_FRAME_PRESENT) perf_thread_sample(PTH_GUEST); /* PERF-31, the presenting guest thread */
     if ((g_frame_log || g_latency_probe) && target->kind == NVN_FRAME_PRESENT) daily_present_posted(job);
     if (!q->init_replayed) {
         if (q->init_word_count) {
