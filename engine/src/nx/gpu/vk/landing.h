@@ -47,7 +47,7 @@ void landing_note_mask(uint64_t m, uint32_t at, LandingPut note, void* ctx);
    from + n): the runs buffer.c's out_changed_runs finds. Off x86 the same, found a word at a time */
 uint64_t landing_masked_chg(const uint8_t* res, const uint8_t* org, uint8_t* dst, uint32_t size, LandingPut put,
                             LandingPut note, void* ctx, LandingPut chg, void* chg_ctx);
-/* the changed words of one 64-byte step at k from m, its bits where res differs from org, then those of [k, size)
+/* the changed words of one 64-byte step at k from wm, bit j set when its word j differs, then those of [k, size)
    word by word with the run open at size put: the two halves of landing_masked_chg's words, for the tests */
 typedef struct {
     LandingPut chg;
@@ -55,7 +55,7 @@ typedef struct {
     uint32_t from;
     int open;
 } LandingWords;
-void landing_words_step(LandingWords* w, uint64_t m, uint32_t k);
+void landing_words_step(LandingWords* w, unsigned wm, uint32_t k);
 void landing_words_tail(LandingWords* w, const uint8_t* res, const uint8_t* org, uint32_t k, uint32_t size);
 
 #endif

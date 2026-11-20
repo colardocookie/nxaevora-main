@@ -81,7 +81,7 @@ uint64_t landing_runs(const uint8_t* res, const uint8_t* org, const uint8_t* cur
     return r.total;
 }
 
-static void word_at(LandingWords* w, uint32_t at, int changed) {
+__attribute__((always_inline)) static inline void word_at(LandingWords* w, uint32_t at, int changed) {
     if (changed && !w->open) {
         w->from = at;
         w->open = 1;
@@ -90,13 +90,16 @@ static void word_at(LandingWords* w, uint32_t at, int changed) {
         w->open = 0;
     }
 }
-void landing_words_step(LandingWords* w, uint64_t m, uint32_t k) {
-    if (!m || m == ~0ull) { /* no word changed, or all eight */
-        word_at(w, k, m != 0);
-        return;
+/* the first word's state, then each word whose state differs from the one before it, found with ctz: none to find
+   when no word changed or all eight did */
+__attribute__((always_inline)) static inline void words_step(LandingWords* w, unsigned wm, uint32_t k) {
+    word_at(w, k, wm & 1);
+    for (unsigned t = (wm ^ (wm << 1)) & 0xFEu; t; t &= t - 1) {
+        const unsigned i = (unsigned)__builtin_ctz(t);
+        word_at(w, k + 8 * i, (wm >> i) & 1);
     }
-    for (uint32_t j = 0; j < 8; j++) word_at(w, k + 8 * j, (m >> (8 * j) & 0xFF) != 0);
 }
+void landing_words_step(LandingWords* w, unsigned wm, uint32_t k) { words_step(w, wm & 0xFFu, k); }
 void landing_words_tail(LandingWords* w, const uint8_t* res, const uint8_t* org, uint32_t k, uint32_t size) {
     for (; k < size; k += 8) word_at(w, k, landing_differs(res + k, org + k, size - k < 8 ? size - k : 8));
     word_at(w, size, 0);
@@ -132,7 +135,7 @@ masked(const uint8_t* res, const uint8_t* org, uint8_t* dst, uint32_t size, Land
     for (; size - k >= 64; k += 64) {
         const __m512i r = _mm512_loadu_si512(res + k), o = _mm512_loadu_si512(org + k);
         __mmask64 m = _mm512_cmpneq_epi8_mask(r, o);
-        if (w) landing_words_step(w, m, k); /* before dst's mask: a changed word whatever the guest holds */
+        if (w) words_step(w, _mm512_cmpneq_epi64_mask(r, o), k); /* a word whatever the guest holds */
         if (!m) continue; /* the guest's bytes are read only in a step the shader changed */
         m &= _mm512_cmpeq_epi8_mask(_mm512_loadu_si512(dst + k), o);
         if (!m) continue;

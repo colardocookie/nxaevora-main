@@ -486,8 +486,8 @@ static void test_runs(void) {
     }
 }
 /* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 1b): the changed words landing_masked_chg tells are the runs changed_runs finds
-   (buffer.c's word test). Through its two halves, each step's mask made in scalar code, so the rule is tested where
-   AVX-512BW is missing too. Where it runs, through landing_masked_chg itself, with the bytes and count of
+   (buffer.c's word test). Through its two halves, each step's word mask made in scalar code, so the rule is tested
+   where AVX-512BW is missing too. Where it runs, through landing_masked_chg itself, with the bytes and count of
    landing_masked. Sizes off 8 and 64, nothing changed, changes at the head, the tail and the last short word */
 typedef struct {
     Run runs[MAX];
@@ -497,9 +497,9 @@ static void tell(void* ctx, uint32_t from, uint32_t n) {
     Told* t = ctx;
     if (t->count < MAX) t->runs[t->count++] = (Run){from, n};
 }
-static uint64_t ne_mask(const uint8_t* a, const uint8_t* b) {
-    uint64_t m = 0;
-    for (unsigned j = 0; j < 64; j++) m |= (uint64_t)(a[j] != b[j]) << j;
+static unsigned word_mask(const uint8_t* a, const uint8_t* b) { /* bit j: word j of the step differs */
+    unsigned m = 0;
+    for (unsigned j = 0; j < 8; j++) m |= (unsigned)(memcmp(a + 8 * j, b + 8 * j, 8) != 0) << j;
     return m;
 }
 static void test_chg(void) {
@@ -517,7 +517,7 @@ static void test_chg(void) {
         told.count = 0;
         LandingWords w = {tell, &told, 0, 0};
         uint32_t k = 0;
-        for (; size - k >= 64; k += 64) landing_words_step(&w, ne_mask(res + k, org + k), k);
+        for (; size - k >= 64; k += 64) landing_words_step(&w, word_mask(res + k, org + k), k);
         landing_words_tail(&w, res, org, k, size);
         CHECK(told.count == n && !memcmp(told.runs, want, n * sizeof *want));
         tried++, with_runs += n != 0;
@@ -532,6 +532,24 @@ static void test_chg(void) {
         CHECK(told.count == n && !memcmp(told.runs, want, n * sizeof *want));
     }
     CHECK(tried == 4000 && with_runs > 2000 && with_runs < tried);
+    /* every word mask, after a step with no word changed and after one with all eight, then a closing step: the
+       runs a word at a time would give */
+    for (unsigned before = 0; before < 2; before++)
+        for (unsigned wm = 0; wm < 256; wm++) {
+            unsigned bits[24], nw = 0, n = 0;
+            for (unsigned j = 0; j < 8; j++) bits[nw++] = before;
+            for (unsigned j = 0; j < 8; j++) bits[nw++] = wm >> j & 1;
+            for (unsigned j = 0; j < 8; j++) bits[nw++] = 0;
+            for (unsigned j = 0; j < nw; j++)
+                if (bits[j] && (!j || !bits[j - 1])) want[n++] = (Run){8 * j, 0};
+                else if (!bits[j] && j && bits[j - 1]) want[n - 1].n = 8 * j - want[n - 1].from;
+            told.count = 0;
+            LandingWords w = {tell, &told, 0, 0};
+            landing_words_step(&w, before ? 0xFF : 0, 0);
+            landing_words_step(&w, wm, 64);
+            landing_words_step(&w, 0, 128);
+            CHECK(told.count == n && !memcmp(told.runs, want, n * sizeof *want));
+        }
 }
 int main(void) {
     masked = landing_masked_supported();
