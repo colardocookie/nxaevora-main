@@ -3,6 +3,7 @@
 /* SNX_ARCEUS_PERF_TIMES's counting (gpu/perf_times.c): sums, largest values, the named waits, the counts and the
    line, which starts the next window empty. */
 #include "nx/gpu/perf_times.h"
+#include "common/filesystem/host.h" /* PERF-32's PMW_* kinds */
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -728,6 +729,41 @@ static void test_mem(void) {
     CHECK(strstr(line, ") faults=0.0 gpu=0.000/0.000 ") && strstr(line, " result=0.0/0.0 ") &&
           strstr(line, " freed=0.0/0.0,0.0/0.0 others=0"));
 }
+static PerfWaits g_waits4;
+static void* waits_thread(void* arg) {
+    for (int i = 0; i < 20000; i++)
+        perf_waits_note(&g_waits4, PTH_RELEASE, PMW_COND, (const void*)(uintptr_t)(64 + i % 8), 1);
+    return arg;
+}
+/* PERF-32: notes by thread, kind and caller sum by thread.kind, the sites come most ms first, a caller below the base
+   prints with a minus, a full table counts what it refuses, and the line takes its counts */
+static void test_waits(void) {
+    static PerfWaits w;
+    char line[PERF_COPIES_LINE];
+    memset(&w, 0, sizeof w);
+    w.base = 0x100000;
+    for (int i = 0; i < 600 * 3; i++) perf_waits_note(&w, PTH_GPU, PMW_WAKE, (const void*)0x100040, 1000);
+    for (int i = 0; i < 600; i++) perf_waits_note(&w, PTH_GPU, PMW_WAKE, (const void*)0x100080, 5000);
+    for (int i = 0; i < 600 * 2; i++) perf_waits_note(&w, PTH_RECORDER, PW_SUBMIT, NULL, 50000);
+    perf_waits_note(&w, PWHO_OTHER, PMW_LOCK, (const void*)0xF0000, 600 * 2000000ull);
+    perf_waits_line(&w, 600, line, sizeof line);
+    CHECK(strstr(line, "perf-waits: frames=600 (") && strstr(line, " gpu.wake=4.0/0.008 "));
+    CHECK(strstr(line, " recorder.submit=2.0/0.100 ") && strstr(line, " other.lock=0.0/2.000 lost=0 sites "));
+    CHECK(strstr(line, " sites other.lock@-0x10000=0.0/2.000 recorder.submit@-0x100000=2.0/0.100 "
+                       "gpu.wake@+0x80=1.0/0.005 gpu.wake@+0x40=3.0/0.003"));
+    perf_waits_line(&w, 600, line, sizeof line); /* taken: nothing again */
+    CHECK(strstr(line, ") lost=0 sites") && !strstr(line, "@"));
+    memset(&w, 0, sizeof w); /* every slot a different caller, then one more */
+    for (uint32_t i = 0; i <= PERF_WAIT_SLOTS; i++)
+        perf_waits_note(&w, PTH_GPU, PMW_COND, (const void*)(uintptr_t)(16 + i), 1);
+    perf_waits_line(&w, 1, line, sizeof line);
+    CHECK(strstr(line, " gpu.cond=512.0/0.001 lost=1 sites "));
+    pthread_t t[4]; /* four threads on the same eight callers: none lost, none counted twice */
+    for (int i = 0; i < 4; i++) pthread_create(&t[i], NULL, waits_thread, NULL);
+    for (int i = 0; i < 4; i++) pthread_join(t[i], NULL);
+    perf_waits_line(&g_waits4, 1, line, sizeof line);
+    CHECK(strstr(line, " release.cond=80000.0/0.080 lost=0 sites ") && strstr(line, "@+0x47=10000.0/0.010"));
+}
 static void test_p29(void) {
     static PerfP29 p;
     char line[PERF_COPIES_LINE];
@@ -1178,6 +1214,7 @@ int main(void) {
     test_caps();
     test_p29();
     test_mem();
+    test_waits();
     test_same();
     test_same_threads();
     CHECK(g_perf_inplace == 0 && g_perf_bind == PBK_OTHER && g_perf_exact == 0); /* unset: today's commands */

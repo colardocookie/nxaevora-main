@@ -15,7 +15,7 @@ static inline void perf_thread_sample(int who) {
     last = now;
     u64 kernel, user;
     plat_thread_cpu(&kernel, &user);
-    perf_mem_thread(&g_perf_mem, who, (uintptr_t)&last, kernel, user);
+    if (perf_mem_thread(&g_perf_mem, who, (uintptr_t)&last, kernel, user)) perf_who_set(who); /* PERF-32's label */
 }
 
 #endif

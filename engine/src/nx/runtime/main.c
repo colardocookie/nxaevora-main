@@ -282,6 +282,8 @@ static const SnxModule* load_module(const char* path) {
 }
 
 /* the dispatch table: a function for each code word the recompiler compiled one for */
+static uint64_t perf_hook_now(void) { return plat_ns(); } /* PERF-32's wait hook clock */
+_Static_assert(PW_VKWAIT == PMW_N, "perf_times.h's wait kinds follow host.h's");
 static void dispatch_init(void) {
     u64 words, i;
     g_code_lo = g_mod->code_lo;
@@ -918,9 +920,13 @@ int snx_main(int argc, char** argv) {
         g_perf_times = times && !strcmp(times, "1") ? 1 : times && !strcmp(times, "2") ? 2 : 0;
         const char* probes = getenv("SNX_ARCEUS_PERF_PROBES"); /* PERF-29's line, only with the timing line */
         g_perf_probes = g_perf_times && probes && !strcmp(probes, "1");
-        if (g_perf_probes)
+        if (g_perf_probes) {
+            static const PmWaitHook hook = {perf_hook_now, perf_wait_note}; /* PERF-32 */
+            g_perf_waits.base = (uint64_t)(uintptr_t)&pm_wait_note;
+            pm_wait_hook_set(&hook);
             LOG("perf-probes: on, a perf-p29 line with the hash callers, the replay's draws, the releases by kind and "
-                "the page index's lookups\n");
+                "the page index's lookups, a perf-mem line and a perf-waits line\n");
+        }
         const char* compute_submit = getenv("SNX_ARCEUS_PERF_COMPUTE_SUBMIT"); /* an experiment (gpu/perf_times.h) */
         if (compute_submit && !strcmp(compute_submit, "0")) {
             g_perf_compute_submit = 0;

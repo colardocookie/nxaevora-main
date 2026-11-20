@@ -199,7 +199,9 @@ typedef struct {
 } Submit;
 static void submit_run(const void* p) {
     const Submit* x = p;
+    const u64 e0 = g_perf_probes ? plat_ns() : 0; /* PERF-32 */
     VK_OK(vkEndCommandBuffer(x->cb));
+    if (e0) perf_wait_note(PW_ENDCB, NULL, plat_ns() - e0);
     VkCommandBufferSubmitInfo c = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->cb};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                         .waitSemaphoreInfoCount = x->nw,
@@ -209,7 +211,9 @@ static void submit_run(const void* p) {
                         .signalSemaphoreInfoCount = x->ns,
                         .pSignalSemaphoreInfos = x->s};
     vk_wait_foreground();
+    const u64 q0 = g_perf_probes ? plat_ns() : 0;
     VkResult r = vkQueueSubmit2(g_vk.gfx, 1, &si, VK_NULL_HANDLE);
+    if (q0) perf_wait_note(PW_SUBMIT, NULL, plat_ns() - q0);
     if (g_perf_times) { /* the graphics timeline's value */
         const u64 now = plat_ns();
         perf_tail_handed(&g_perf, x->value, now);

@@ -67,6 +67,16 @@ typedef struct {
 void pm_wait_note(const void* m, const void* at, int cond); /* m NULL: the wait is over */
 int pm_waits(PmWait* out, int max);                          /* the waits now, at most max */
 const void* pm_wait_base(void); /* an address in this module's data, to name a mutex by its offset from */
+/* SNX_ARCEUS_PERF_PROBES (PERF-32): once a hook is set, a contended pm_lock or pm_lock_shared, pc_wait, pc_signal,
+   pc_broadcast, plat_yield and plat_sleep_ns time themselves and tell it, with their caller. Set once, never cleared.
+   Unset, each costs one relaxed load (pm_lock none: it shares the profiler's flag) */
+enum { PMW_LOCK, PMW_COND, PMW_WAKE, PMW_YIELD, PMW_SLEEP, PMW_N };
+typedef struct {
+    uint64_t (*now)(void);
+    void (*note)(int kind, const void* at, uint64_t ns); /* lock-free: it may take no lock and wait on nothing */
+} PmWaitHook;
+extern const PmWaitHook* g_pm_hook;
+void pm_wait_hook_set(const PmWaitHook* h);
 
 int plat_mkdir(const char* path); /* 0, or -1 */
 

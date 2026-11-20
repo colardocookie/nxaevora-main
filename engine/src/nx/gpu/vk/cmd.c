@@ -269,7 +269,9 @@ static void timeline_wait(u64 value, int site) {
     SNX_ZONE_C(z_wait, "vk timeline wait", 0xb05252);
     gpu_wait_note("a graphics submission", value);
     SNX_ZONE_V(z, "timeline wait", value);
+    const u64 w0 = g_perf_probes ? plat_ns() : 0; /* PERF-32 */
     VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
+    if (w0) perf_wait_note(PW_VKWAIT, __builtin_return_address(0), plat_ns() - w0);
     if (g_perf_times) perf_sub_seen(&g_perf, value, plat_ns());
     SNX_ZONE_END(z);
     gpu_wait_note(NULL, 0);

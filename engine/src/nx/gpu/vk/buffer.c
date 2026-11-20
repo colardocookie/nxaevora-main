@@ -1570,7 +1570,9 @@ static int ww_claim(u64 l) {
    failed */
 static int ww_scan_leaves(u64 lo, u64 hi, u32 seen, WwStage* st) {
     t_wstage = st;
+    const u64 s0 = g_perf_probes ? plat_ns() : 0; /* PERF-32 */
     int r = plat_ww_scan(g_mem + (lo << WW_LEAF_SHIFT), (hi - lo + 1) << WW_LEAF_SHIFT, ww_note);
+    if (s0) perf_wait_note(PW_SCAN, __builtin_return_address(0), plat_ns() - s0);
     pm_lock(&g_wres_lk);
     int n = g_wres_n;
     for (int i = 0; i < st->n; i++)
@@ -1697,6 +1699,7 @@ static void ww_scanner(void* arg) {
     u32 last = 0;
     (void)arg;
     SNX_THREAD_NAME("Vulkan write scans");
+    if (g_perf_probes) perf_who_set(PWHO_SCANNER); /* PERF-32 */
     for (;;) {
         u32 e, seen, from;
         pm_lock(&g_wscan_wlk);

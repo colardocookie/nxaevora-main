@@ -21,6 +21,7 @@ int g_patch_hash;
 PerfCaps g_perf_caps;
 PerfP29 g_perf_p29;
 PerfMem g_perf_mem;
+PerfWaits g_perf_waits;
 _Thread_local int g_perf_release_thread;
 int g_perf_bind;
 uint64_t g_perf_exact;
@@ -1146,15 +1147,75 @@ void perf_index_note(PerfP29* p, int which, int fell_back, uint64_t n) {
     while (n > was && !__atomic_compare_exchange_n(&p->idx_max[which], &was, n, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
         continue;
 }
-void perf_mem_thread(PerfMem* m, int who, uintptr_t token, uint64_t kernel_ns, uint64_t user_ns) {
+int perf_mem_thread(PerfMem* m, int who, uintptr_t token, uint64_t kernel_ns, uint64_t user_ns) {
     uintptr_t none = 0;
     if (!__atomic_compare_exchange_n(&m->owner[who], &none, token, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED) &&
         none != token) {
         __atomic_fetch_add(&m->others, 1, __ATOMIC_RELAXED);
-        return;
+        return 0;
     }
     __atomic_store_n(&m->kernel[who], kernel_ns, __ATOMIC_RELAXED);
     __atomic_store_n(&m->user[who], user_ns, __ATOMIC_RELAXED);
+    return 1;
+}
+static _Thread_local int t_perf_who = PWHO_OTHER;
+void perf_who_set(int who) { t_perf_who = who; }
+void perf_waits_note(PerfWaits* w, int who, int kind, const void* at, uint64_t ns) {
+    const uint64_t key = 1ull << 56 | (uint64_t)kind << 52 | (uint64_t)who << 48 | ((uintptr_t)at & 0xFFFFFFFFFFFFull);
+    for (uint32_t i = (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 55), k = 0; k < PERF_WAIT_SLOTS; k++, i++) {
+        i %= PERF_WAIT_SLOTS;
+        uint64_t s = __atomic_load_n(&w->key[i], __ATOMIC_ACQUIRE);
+        if (!s && !__atomic_compare_exchange_n(&w->key[i], &s, key, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) && s != key)
+            continue; /* another key took the free slot */
+        if (s && s != key) continue;
+        __atomic_fetch_add(&w->n[i], 1, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&w->ns[i], ns, __ATOMIC_RELAXED);
+        return;
+    }
+    __atomic_fetch_add(&w->lost, 1, __ATOMIC_RELAXED);
+}
+void perf_wait_note(int kind, const void* at, uint64_t ns) { perf_waits_note(&g_perf_waits, t_perf_who, kind, at, ns); }
+typedef struct {
+    uint64_t key, n, ns;
+} WaitSite;
+static int site_cmp(const void* a, const void* b) { /* most ms first, then by key, so the order is fixed */
+    const WaitSite *x = a, *y = b;
+    return x->ns != y->ns ? (x->ns < y->ns ? 1 : -1) : (x->key > y->key) - (x->key < y->key);
+}
+size_t perf_waits_line(PerfWaits* w, uint32_t frames, char* out, size_t size) {
+    static const char* const who[PWHO_N] = {"gpu", "release", "recorder", "guest", "scanner", "other"};
+    static const char* const kind[PW_N] = {"lock", "cond", "wake", "yield", "sleep",
+                                           "vkwait", "scan", "submit", "endcb"};
+    static WaitSite site[PERF_WAIT_SLOTS]; /* the GPU thread's, which writes the line */
+    uint64_t tn[PWHO_N][PW_N] = {{0}}, tns[PWHO_N][PW_N] = {{0}};
+    uint32_t nsite = 0;
+    if (!size) return 0;
+    for (uint32_t i = 0; i < PERF_WAIT_SLOTS; i++) {
+        const uint64_t key = __atomic_load_n(&w->key[i], __ATOMIC_ACQUIRE), n = take64(&w->n[i]), t = take64(&w->ns[i]);
+        if (!key || !n) continue;
+        tn[key >> 48 & 15][key >> 52 & 15] += n, tns[key >> 48 & 15][key >> 52 & 15] += t;
+        site[nsite++] = (WaitSite){key, n, t};
+    }
+    qsort(site, nsite, sizeof *site, site_cmp);
+    const double f = frames ? frames : 1;
+    size_t at = putf(out, size, 0,
+                     "perf-waits: frames=%u (a frame by thread.kind, calls/ms: lock a contended take, cond a condition "
+                     "wait, wake a signal or broadcast call, vkwait the graphics timeline, scan the write watch's, "
+                     "submit and endcb the recorder's vkQueueSubmit2 and vkEndCommandBuffer; then the 12 callers with "
+                     "most ms, at their offset from pm_wait_note)",
+                     frames);
+    for (int a = 0; a < PWHO_N; a++)
+        for (int k = 0; k < PW_N; k++)
+            if (tn[a][k])
+                at = putf(out, size, at, " %s.%s=%.1f/%.3f", who[a], kind[k], tn[a][k] / f, tns[a][k] / f / 1e6);
+    at = putf(out, size, at, " lost=%llu sites", (unsigned long long)take64(&w->lost));
+    for (uint32_t i = 0; i < nsite && i < 12; i++) {
+        const uint64_t ra = site[i].key & 0xFFFFFFFFFFFFull;
+        at = putf(out, size, at, " %s.%s@%c0x%llx=%.1f/%.3f", who[site[i].key >> 48 & 15], kind[site[i].key >> 52 & 15],
+                  ra >= w->base ? '+' : '-', (unsigned long long)(ra >= w->base ? ra - w->base : w->base - ra),
+                  site[i].n / f, site[i].ns / f / 1e6);
+    }
+    return at < size ? at : size - 1;
 }
 void perf_mem_alloc(PerfMem* m, int site, uint64_t bytes) {
     __atomic_fetch_add(&m->alloc_n[site], 1, __ATOMIC_RELAXED);

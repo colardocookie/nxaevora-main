@@ -7060,6 +7060,8 @@ static void perf_line(void) {
         perf_mem_thread(&g_perf_mem, PTH_GPU, (uintptr_t)&presents, kernel, user); /* presents: the GPU thread's */
         perf_mem_line(&g_perf_mem, PERF_TIMES_WINDOW, plat_page_faults(), line, PERF_COPIES_LINE);
         LOG("%s\n", line);
+        perf_waits_line(&g_perf_waits, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-32 */
+        LOG("%s\n", line);
     }
     perf_copies_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
     LOG("%s\n", line);
@@ -7072,6 +7074,7 @@ static void frame_run(void* arg) {
     const int measure = g_settings.nvn_measure;
     u64 measure_t0 = measure ? plat_ns() : 0;
     const u64 perf_start = g_perf_times ? plat_ns() : 0;
+    if (g_perf_probes) perf_who_set(PTH_GPU); /* PERF-32's label for the GPU thread */
     if (perf_start) perf_time_add(&g_perf, PT_POST_START, (uint32_t)((uint32_t)perf_start - job->post_ns));
     frame_begin();
     FrameParts parts = {0};

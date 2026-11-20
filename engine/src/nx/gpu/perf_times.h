@@ -573,11 +573,28 @@ typedef struct {
 } PerfMem;
 extern PerfMem g_perf_mem;
 /* token: one per thread (an address of its own); a slot keeps the first thread's and refuses the others' */
-void perf_mem_thread(PerfMem* m, int who, uintptr_t token, uint64_t kernel_ns, uint64_t user_ns);
+int perf_mem_thread(PerfMem* m, int who, uintptr_t token, uint64_t kernel_ns, uint64_t user_ns); /* 0: refused */
 void perf_mem_alloc(PerfMem* m, int site, uint64_t bytes);
 void perf_mem_free(PerfMem* m, int release, uint64_t bytes);
 /* the line, faults the process's page faults so far: the window's are those since the line before */
 size_t perf_mem_line(PerfMem* m, uint32_t frames, uint64_t faults, char* out, size_t size);
+/* PERF-32 (research 04:22), log only, with SNX_ARCEUS_PERF_PROBES=1: the waits, wakes, yields and sleeps of every
+   thread by caller (host.h's wait hook), and brackets on the graphics timeline's waits, the write watch's scans and
+   the recorder's submits and command buffer ends. By thread: PTH_* and the write scanner, the rest as other */
+enum { PWHO_SCANNER = PTH_N, PWHO_OTHER, PWHO_N };
+enum { PW_VKWAIT = 5, PW_SCAN, PW_SUBMIT, PW_ENDCB, PW_N }; /* after host.h's PMW_* (lock, cond, wake, yield, sleep) */
+#define PERF_WAIT_SLOTS 512u
+typedef struct {
+    uint64_t key[PERF_WAIT_SLOTS]; /* atomic: 0 free, else 1 << 56 | kind << 52 | who << 48 | the caller's address */
+    uint64_t n[PERF_WAIT_SLOTS], ns[PERF_WAIT_SLOTS]; /* atomic */
+    uint64_t lost;                                    /* atomic: notes the full table refused */
+    uint64_t base;                                    /* the callers are printed against it (pm_wait_note's address) */
+} PerfWaits;
+extern PerfWaits g_perf_waits;
+void perf_who_set(int who); /* the calling thread's label, PWHO_OTHER until set */
+void perf_waits_note(PerfWaits* w, int who, int kind, const void* at, uint64_t ns);
+void perf_wait_note(int kind, const void* at, uint64_t ns); /* the hook's: g_perf_waits, this thread's label */
+size_t perf_waits_line(PerfWaits* w, uint32_t frames, char* out, size_t size);
 void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame);
 /* PERF-23's, the same, with the stamps' counts since the last and the cost of one clock read. real NULL: the record as
    written is not kept (SNX_ARCEUS_PERF_TIMES=1), its columns not printed */
