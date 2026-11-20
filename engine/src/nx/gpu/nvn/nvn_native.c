@@ -5577,7 +5577,9 @@ static int replay_host_draw_sent(void* ctx, const NvnOpDraw* op) {
     if (g_perf_times) g_replay_part = 2; /* the draw's own words, sent below or refused */
     uint32_t words[NVN_DRAW_WORDS_MAX];
     int uses_constants = 0;
-    NvnWordSink* const draw_sink = sink && host->channel->r3d[NVN_MME_DRIVER_CONSTANTS_REGISTER] ? sink : NULL;
+    /* read once before the build, as the check below read it before any send (reviewer N1 on b542467a) */
+    const uint32_t constants = host->channel->r3d[NVN_MME_DRIVER_CONSTANTS_REGISTER];
+    NvnWordSink* const draw_sink = sink && constants ? sink : NULL;
     nvn_word_sink = draw_sink;
     uint32_t count = nvn_draw_words(op->kind, op->mode, op->type, op->count, op->address, op->first,
                                     op->base_vertex, op->base_instance, op->instances, words, &uses_constants);
@@ -5586,7 +5588,7 @@ static int replay_host_draw_sent(void* ctx, const NvnOpDraw* op) {
         replay_bind_refuse(host, "draw", -1, -1, op->kind);
         return 1;
     }
-    if (uses_constants && host->channel->r3d[NVN_MME_DRIVER_CONSTANTS_REGISTER] == 0) {
+    if (uses_constants && constants == 0) {
         replay_bind_refuse(host, "draw constants", -1, -1, op->kind);
         return 1;
     }
