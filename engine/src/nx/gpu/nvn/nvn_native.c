@@ -5302,6 +5302,8 @@ static int replay_host_bind_state(void* ctx, const NvnOpBindState* op) {
     for (uint32_t i = 0; i < op->words; i++) state->w[i] = op->w[i];
     state->bound = 1;
     host->state_dirty[op->kind] = NVN_BIND_DIRTY;
+    if (g_nvn_blend_targets && op->kind == NVN_STATE_BLEND)
+        nvn_blend_slots_store(&host->blend, state->w[0], state->w[1]); /* a slot per target as well */
     if (op->kind == NVN_STATE_MULTISAMPLE)
         LOG_LIMIT(REPLAY_LOG_LIMIT, "nvn-native: multisample state bound, not sent (stage 4): %08x %08x %08x %08x %08x\n",
                   state->w[0], state->w[1], state->w[2], state->w[3], state->w[4]);
@@ -5339,11 +5341,26 @@ static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, ui
     }
     return nvn_word_stream_complete(&stream);
 }
+/* SNX_ARCEUS_NVN_BLEND_TARGETS=1: each target's blend bind since the last draw, in the order the game bound them */
+static void replay_bind_send_blend_slots(NvnNativeReplayHost* host) {
+    uint32_t target;
+    while (nvn_blend_slots_take(&host->blend, &target)) {
+        const uint32_t* w = host->blend.slot[target].w;
+        uint32_t out[NVN_BIND_BLEND_WORDS_MAX];
+        uint32_t count = nvn_bind_blend_words(w[0], w[1], out);
+        if (!count || !replay_bind_send(host, out, count))
+            replay_bind_refuse(host, replay_bind_group[NVN_STATE_BLEND], -1, -1, w[0]);
+    }
+}
 /* Multisample has no builder: its bind is only logged, once for the frame job. */
 static void replay_bind_send_state(NvnNativeReplayHost* host, uint32_t kind) {
     if (!host->state_dirty[kind]) return;
     host->state_dirty[kind] = 0;
     if (kind == NVN_STATE_MULTISAMPLE) return;
+    if (g_nvn_blend_targets && kind == NVN_STATE_BLEND) {
+        replay_bind_send_blend_slots(host);
+        return;
+    }
     const uint32_t* w = host->state[kind].w;
     uint32_t out[NVN_BIND_BLEND_WORDS_MAX];
     uint32_t count;
@@ -6672,6 +6689,24 @@ static int frame_set_target(const FrameJob* job, const FrameParts* parts) {
     nvn_native_replay_env(&host, job->window_origin_flip, &env);
     return env.render_targets(env.ctx, &op);
 }
+#define NVN_BLEND_TARGETS_LINE_PRESENTS 600u
+/* SNX_ARCEUS_NVN_BLEND_TARGETS: the frame job's blend binds by target, and one line every 600 presents with the
+   binds that a single slot would have replaced. Only the GPU thread runs the frame jobs */
+static void blend_targets_line(const FrameJob* job, const NvnBlendSlots* blend) {
+    static uint64_t binds[NVN_BLEND_SLOT_COUNT], replaced;
+    static uint32_t presents;
+    for (uint32_t i = 0; i < NVN_BLEND_SLOT_COUNT; i++) binds[i] += blend->binds[i];
+    replaced += blend->replaced;
+    if (job->kind != NVN_FRAME_PRESENT || ++presents % NVN_BLEND_TARGETS_LINE_PRESENTS) return;
+    LOG("nvn-blend-targets: %u presents, blend binds by target %llu %llu %llu %llu %llu %llu %llu %llu, %llu that one "
+        "slot would have replaced before a draw\n",
+        NVN_BLEND_TARGETS_LINE_PRESENTS, (unsigned long long)binds[0], (unsigned long long)binds[1],
+        (unsigned long long)binds[2], (unsigned long long)binds[3], (unsigned long long)binds[4],
+        (unsigned long long)binds[5], (unsigned long long)binds[6], (unsigned long long)binds[7],
+        (unsigned long long)replaced);
+    memset(binds, 0, sizeof binds);
+    replaced = 0;
+}
 static void frame_replay_lists(const FrameJob* job, NvnReplayStats* stats, uint64_t* dispatches,
                                uint32_t* dispatch_refusals) {
     NvnNativeReplayHost host = {job->channel, NVN_REPLAY_CLIP_LIMIT};
@@ -6689,6 +6724,7 @@ static void frame_replay_lists(const FrameJob* job, NvnReplayStats* stats, uint6
         }
         nvn_replay_list(&env, list, stats);
     }
+    if (g_nvn_blend_targets) blend_targets_line(job, &host.blend);
     if (dispatches) *dispatches = host.dispatches;
     if (dispatch_refusals) *dispatch_refusals = host.dispatch_refusals;
 }
@@ -8094,6 +8130,7 @@ void nvn_native_init(void) {
 }
 
 int nvn_native_active(void) { return active; }
+int g_nvn_blend_targets;
 
 GuestFn nvn_native_handler(const char* name) {
     int missing;

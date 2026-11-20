@@ -868,6 +868,16 @@ int snx_main(int argc, char** argv) {
 #if defined(SNX_TRACY)
     if (g_settings.tracy_profiler) g_opt_tracy_client = 1; /* the .ini's Debug section asks for the client */
 #endif
+    /* SNX_ARCEUS_NVN_BLEND_TARGETS=1: a blend slot per colour target in the native replay (nvn_blend_slots.h) */
+    {
+        const char* targets = getenv("SNX_ARCEUS_NVN_BLEND_TARGETS");
+        g_nvn_blend_targets = targets && !strcmp(targets, "1");
+        if (g_nvn_blend_targets)
+            LOG("nvn-blend-targets: on, the native replay keeps each colour target's blend bind and the draw sends "
+                "them all in bind order, a line every 600 presents (SNX_ARCEUS_NVN_BLEND_TARGETS=1)\n");
+        else if (targets && *targets && strcmp(targets, "0"))
+            WARN("nvn-blend-targets: SNX_ARCEUS_NVN_BLEND_TARGETS=%s is not 1 or 0, ignored\n", targets);
+    }
     /* the header the log summary reads (common/utilities/logscan.c): no folder in it, since players attach the log to
        public reports and the folder names their account */
     LOG(SNX_PROGRAM_NAME " - %s\n", title);
