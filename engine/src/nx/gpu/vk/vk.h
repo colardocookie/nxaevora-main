@@ -131,7 +131,6 @@ void vk_lock(void);
 void vk_unlock(void);
 int vk_trylock(void); /* vk_lock unless another thread holds it: 1 when taken */
 u32 vk_lock_owner(void); /* the thread (plat_tid) holding vk_lock, 0 when none */
-int vk_lock_depth(void); /* this thread's holds of vk_lock, 0 when it holds none */
 
 /* memory.c. vk_mem_init once the device exists, before the allocator (VMA's blocks are kept within the cap):
    sparse_queue is whether the graphics queue's family can bind sparse memory */
@@ -863,7 +862,6 @@ void vk_buf_land(void);
 void vk_buf_land_syncwait(void);
 void vk_buf_land_map(void);
 void vk_buf_frame_done(u64 frame);
-void vk_buf_compare_ahead(u64 gate); /* SNX_ARCEUS_PERF_COMPARE, the release thread before its hold (PERF-28) */
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame);
 void vk_buf_frame(void);
 /* Land GPU-written bytes only where guest memory still matches the shader's input snapshot. */
@@ -875,9 +873,6 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size);
 typedef struct {
     u32 from, to;
 } ChgRun;
-/* SNX_ARCEUS_PERF_COMPARE (PERF-28): vk_write_changed over the words of the result's n changed runs only, found
-   before (out_changed_runs' merged runs): the same bytes, by the same rule, since a changed byte lies in one */
-void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, const ChgRun* runs, u32 n);
 /* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 1b): vk_write_changed, and chg told the result's changed runs as
    landing_masked_chg finds them. 1 when it was told them all (nothing changed, or the whole-size masked pass ran) */
 int vk_write_changed_found(u64 addr, const u8* res, const u8* org, u32 size, void (*chg)(void* ctx, u32 from, u32 n),

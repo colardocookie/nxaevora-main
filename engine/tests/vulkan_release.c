@@ -36,10 +36,6 @@ u64 vk_submit_number(void);
 void vk_submit_progress(u64*, u64*);
 void vk_rt_before_write(u64, u64);
 u64 vk_query_value(u32, u64, u64);
-typedef struct {
-    u32 from, to;
-} ChgRun;
-void vk_buf_compare_ahead(u64);
 #define VK_PRED_EQUAL 0x80000000u
 #define VK_QUERY_COUNTERS 8
 enum { VK_PRED_PREV_NONE, VK_PRED_PREV_ZERO, VK_PRED_PREV_NONZERO, VK_PRED_PREV_SLOT };
@@ -191,12 +187,6 @@ void vk_compute_land_through(u64 gate) {
     }
 }
 void vk_land_through(u64 gate) { assert(waited_graphics >= gate); }
-static int compare_calls; /* SNX_ARCEUS_PERF_COMPARE: release_through asked for a pick (PERF-28) */
-void vk_buf_compare_ahead(u64 gate) {
-    assert(!lock_depth); /* ahead of the hold, which it takes itself */
-    (void)gate;
-    compare_calls++;
-}
 void vk_wait_submit(u64 gate) {
     if (gate > waited_graphics) waited_graphics = gate;
 }
@@ -587,20 +577,6 @@ int main(void) {
 	check_writeback_merge();
     check_landed_record();
     check_release_walks();
-    /* PERF-28, reviewer O1 (a): only the release thread picks. Unset, nothing above asked. Set, release_through on
-       another thread (a full queue, release_match, release submit) does not ask, the release thread does */
-    assert(compare_calls == 0);
-    g_perf_compare = 1;
-    release_through(0, 0);
-    assert(compare_calls == 0);
-    t_release_thread = 1;
-    release_through(0, 0);
-    assert(compare_calls == 1);
-    g_perf_compare = 2; /* level 2 picks nothing, on the release thread too */
-    release_through(0, 0);
-    assert(compare_calls == 1);
-    t_release_thread = 0;
-    g_perf_compare = 0;
     check_tail();
     return 0;
 }

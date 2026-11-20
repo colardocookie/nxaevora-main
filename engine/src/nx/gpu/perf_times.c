@@ -1119,16 +1119,6 @@ void perf_caps_hold(PerfCaps* c, uint64_t compute, uint64_t graphics, uint64_t r
     __atomic_fetch_add(&c->hold_ns[PCH_RELEASES], releases, __ATOMIC_RELAXED);
     __atomic_fetch_add(&c->holds, 1, __ATOMIC_RELAXED);
 }
-void perf_caps_compared(PerfCaps* c, uint32_t n, uint64_t pick_ns, uint64_t runs_ns) {
-    __atomic_fetch_add(&c->compare[PCC_PICKED], n, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&c->compare[PCC_PICK_NS], pick_ns, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&c->compare[PCC_RUNS_NS], runs_ns, __ATOMIC_RELAXED);
-}
-void perf_caps_stale(PerfCaps* c) { __atomic_fetch_add(&c->compare[PCC_STALE], 1, __ATOMIC_RELAXED); }
-void perf_caps_waited(PerfCaps* c, uint64_t ns) {
-    __atomic_fetch_add(&c->compare[PCC_WAITS], 1, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&c->compare[PCC_WAIT_NS], ns, __ATOMIC_RELAXED);
-}
 static uint64_t take64(uint64_t* v) { return __atomic_exchange_n(v, 0, __ATOMIC_RELAXED); }
 void perf_hash_note(PerfP29* p, uint64_t ra, uint64_t base, uint64_t n, uint64_t ns) {
     uint32_t i = 0;
@@ -1217,9 +1207,7 @@ size_t perf_caps_line(PerfCaps* c, uint32_t frames, char* out, size_t size) {
                      "KB/more. Graphics results landed on the release thread and elsewhere: results, ms by step "
                      "invalidate/write/pages/runs/walk/other, the walk's results passed/composed ones asked/met, "
                      "their changed runs/results whose write found them. The "
-                     "release thread's holds, ms: compute landing/graphics landing/releases, and how many. "
-                     "SNX_ARCEUS_PERF_COMPARE: results picked, ms picking under vk_lock/finding runs outside it, "
-                     "stale at their landing, landings that waited for the mark and their ms) "
+                     "release thread's holds, ms: compute landing/graphics landing/releases, and how many) "
                      "captures=%.1f lost=%.1f distinct=%.1f next=%.1f/%.1f/%.1f/%.1f same=%.1f front=%.1f KB=%.1f",
                      frames, n[PCN_RANGES] / f, n[PCN_LOST] / f, n[PCN_DISTINCT] / f, n[PCN_OVERLAP] / f,
                      n[PCN_ABUT] / f, n[PCN_PAGE] / f, n[PCN_APART] / f, n[PCN_RECUR] / f, n[PCN_FRONT] / f,
@@ -1236,11 +1224,6 @@ size_t perf_caps_line(PerfCaps* c, uint32_t frames, char* out, size_t size) {
     at = putf(out, size, at, " hold=");
     for (int i = 0; i < PCH_N; i++) at = putf(out, size, at, i ? "/%.3f" : "%.3f", take64(&c->hold_ns[i]) / f / 1e6);
     at = putf(out, size, at, " holds=%.1f", take64(&c->holds) / f);
-    uint64_t k[PCC_N];
-    for (int i = 0; i < PCC_N; i++) k[i] = take64(&c->compare[i]);
-    at = putf(out, size, at, " picked=%.1f ms=%.3f/%.3f stale=%.1f waits=%.1f ms=%.3f", k[PCC_PICKED] / f,
-              k[PCC_PICK_NS] / f / 1e6, k[PCC_RUNS_NS] / f / 1e6, k[PCC_STALE] / f, k[PCC_WAITS] / f,
-              k[PCC_WAIT_NS] / f / 1e6);
     memset(c->count, 0, sizeof c->count);
     return at < size ? at : size - 1;
 }

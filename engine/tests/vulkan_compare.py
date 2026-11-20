@@ -1,19 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the NXAevora contributors
-"""SNX_ARCEUS_PERF_COMPARE (PERF-28) through buffer.c's and writeback.c's own code: the landing (vk_buf_frame_done
-with out_changed_runs, the rebase walk and vk_write_changed), the release thread's pick (vk_buf_compare_ahead) and
-the landing's wait for its mark are copied out of the source as they are, and run against small stand-ins for the
-rest (no Vulkan, guest memory one array, GPU addresses mapped to it one to one).
+"""SNX_ARCEUS_PERF_COMPARE=2 (PERF-28) through buffer.c's and writeback.c's own code: the landing (vk_buf_frame_done
+with out_changed_runs, the rebase walk and vk_write_changed), the page index and gfx_gpu_src's candidate list are
+copied out of the source as they are, and run against small stand-ins for the rest (no Vulkan, guest memory one
+array, GPU addresses mapped to it one to one).
 
 Random batches of results over shared pages, some composed (rebased by earlier ones), some with a GPU-owned
-baseline, land in order twice from the same start: with the switch unset, and with picks ahead of the landings at
-several gates. Both must leave the same guest bytes, the same original bytes in every pending result after each
-landing, and the same vk_rt_before_write and gpu_mem_written_shader calls. Stale runs must occur and be found again.
-The pick's gates: none with vk_lock already held or the mark set, nothing picked twice. A landing waits for the mark
-on another thread until it is cleared. Each with SNX_ARCEUS_PERF_LANDING unset and at 3 (masked where the CPU has
-AVX-512BW), and with guest memory reached through a pointer and without one.
-
-Level 2 (PERF-28 1b and 3) against level 0 on the same batches, with landing.c built portable: the runs from the
+baseline, land in order at level 0 and at level 2 from the same start, with SNX_ARCEUS_PERF_LANDING unset and at 3,
+and with guest memory reached through a pointer and without one. landing.c is built portable: the runs from the
 write's own masked pass and the walk through the page index give the same bytes and the same rebases, also with a
 landing nested in a write and without memory. vk_write_changed_found's answer by path, and the index emptied by
 landings and by vk_buf_writable_abort. And gfx_gpu_src's walks: the results its two tests take, in order, through
@@ -69,16 +63,9 @@ typedef struct {
 #define VK_WHOLE_SIZE 0
 #define VK_OK(x) ((x) == 0)
 typedef pthread_mutex_t PMutex;
-typedef pthread_cond_t PCond;
 #define PMUTEX_INIT PTHREAD_MUTEX_INITIALIZER
 static void pm_lock(PMutex* m) { pthread_mutex_lock(m); }
 static void pm_unlock(PMutex* m) { pthread_mutex_unlock(m); }
-static void pc_init(PCond* c) { pthread_cond_init(c, NULL); }
-static void pc_broadcast(PCond* c) { pthread_cond_broadcast(c); }
-static int pc_wait(PCond* c, PMutex* m, long t) {
-    (void)t;
-    return pthread_cond_wait(c, m);
-}
 static u64 plat_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -96,7 +83,6 @@ static void vk_lock(void) {
 static void vk_unlock(void) {
     if (!--t_depth) pthread_mutex_unlock(&g_vkl);
 }
-static int vk_lock_depth(void) { return t_depth; }
 
 #define GUEST (1u << 18)
 static u8 guest[GUEST];
@@ -246,20 +232,10 @@ static void note_orgs(void) {
         orgs[norgs++] = hash(o->org, o->size);
     }
 }
-static u32 stale_seen, picked_seen;
-/* lands frames 1 to FRAMES, with picks before some landings when pick is set: their gates from the seed */
-static void land_all(u32 seed, int pick) {
-    u32 s = seed ^ 0x9e3779b9u;
+/* lands frames 1 to FRAMES */
+static void land_all(u32 seed) {
+    (void)seed;
     for (u64 f = 1; f <= FRAMES; f++) {
-        if (pick && rnd(&s) % 3) {
-            u64 gate = f + rnd(&s) % (FRAMES - f + 1);
-            vk_buf_compare_ahead(gate);
-            for (GfxOut* o = g_out; o; o = o->next) { /* those up to gate, and earlier picks kept */
-                assert(o->initial ? !o->runs_ok : o->frame > gate || o->runs_ok);
-                picked_seen += o->runs_ok;
-            }
-        }
-        for (GfxOut* o = g_out; o; o = o->next) stale_seen += o->frame == f && o->runs_ok && o->stale;
         vk_buf_frame_done(f);
         note_orgs();
     }
@@ -269,171 +245,6 @@ static void land_all(u32 seed, int pick) {
 static u8 guest0[GUEST];
 static u64 calls0[1 << 16][3], orgs0[1 << 14];
 static u32 ncalls0, norgs0;
-static void check_same(void) {
-    u32 trials = 0;
-    for (int landing = 0; landing < 2; landing++)
-        for (direct = 1; direct >= 0; direct--)
-            for (u32 seed = 1; seed <= 300; seed++) {
-                g_perf_landing = landing ? 3 : 0;
-                g_landing_masked = landing && landing_masked_supported();
-                const int n = 2 + (int)(seed % 40);
-                g_perf_compare = 0;
-                build(seed, n);
-                ncalls = norgs = 0;
-                land_all(seed, 0);
-                memcpy(guest0, guest, GUEST);
-                memcpy(calls0, calls, sizeof calls[0] * ncalls);
-                memcpy(orgs0, orgs, sizeof orgs[0] * norgs);
-                ncalls0 = ncalls, norgs0 = norgs;
-                g_perf_compare = 1;
-                build(seed, n);
-                ncalls = norgs = 0;
-                land_all(seed, 1);
-                assert(!memcmp(guest, guest0, GUEST));
-                assert(ncalls == ncalls0 && !memcmp(calls, calls0, sizeof calls[0] * ncalls));
-                assert(norgs == norgs0 && !memcmp(orgs, orgs0, sizeof orgs[0] * norgs));
-                assert(!t_depth && !result_depth && !g_picked);
-                trials++;
-            }
-    g_perf_compare = 0, g_perf_landing = 0, g_landing_masked = 0, direct = 1;
-    printf("vulkan_compare: %u batches the same, %u results picked, %u stale at their landing\n", trials,
-           picked_seen, stale_seen);
-    assert(picked_seen > 10000 && stale_seen > 100);
-}
-/* the gates (reviewer O1): vk_lock held on entry, or the mark set, picks nothing */
-static void check_gates(void) {
-    g_perf_compare = 1;
-    build(7, 20);
-    vk_lock();
-    vk_buf_compare_ahead(FRAMES);
-    vk_unlock();
-    for (GfxOut* o = g_out; o; o = o->next) assert(!o->runs_ok);
-    __atomic_store_n(&g_picked, 1, __ATOMIC_RELEASE);
-    vk_buf_compare_ahead(FRAMES);
-    for (GfxOut* o = g_out; o; o = o->next) assert(!o->runs_ok);
-    __atomic_store_n(&g_picked, 0, __ATOMIC_RELEASE);
-    vk_buf_compare_ahead(1);
-    u32 first = 0;
-    for (GfxOut* o = g_out; o; o = o->next) first += o->runs_ok, assert(o->runs_ok == (o->frame <= 1 && !o->initial));
-    ChgRun* kept = g_out->runs;
-    vk_buf_compare_ahead(FRAMES); /* the ones picked before are not picked again */
-    assert(g_out->runs == kept && first);
-    for (u64 f = 1; f <= FRAMES; f++) vk_buf_frame_done(f);
-    assert(!g_out && !g_picked);
-    free_owned();
-    g_perf_compare = 0;
-}
-/* a landing on another thread waits while the mark is set, and goes once it is cleared */
-static int landed_done;
-static void* lander(void* p) {
-    (void)p;
-    vk_lock();
-    vk_buf_frame_done(1);
-    vk_unlock();
-    __atomic_store_n(&landed_done, 1, __ATOMIC_RELEASE);
-    return NULL;
-}
-static void check_wait(void) {
-    g_perf_compare = 1;
-    g_perf_times = 1;
-    build(11, 10);
-    vk_buf_compare_ahead(1); /* makes the condition, as the first pick does */
-    __atomic_store_n(&g_picked, 1, __ATOMIC_RELEASE);
-    pthread_t t;
-    pthread_create(&t, NULL, lander, NULL);
-    usleep(50000);
-    assert(!__atomic_load_n(&landed_done, __ATOMIC_ACQUIRE));
-    pm_lock(&g_pick_lock); /* the clear at the end of vk_buf_compare_ahead */
-    __atomic_store_n(&g_picked, 0, __ATOMIC_RELEASE);
-    pc_broadcast(&g_pick_cv);
-    pm_unlock(&g_pick_lock);
-    pthread_join(t, NULL);
-    assert(landed_done && g_perf_caps.compare[PCC_WAITS] == 1 && g_perf_caps.compare[PCC_WAIT_NS] >= 40000000);
-    for (u64 f = 2; f <= FRAMES; f++) vk_buf_frame_done(f);
-    assert(!g_out);
-    free_owned();
-    g_perf_compare = 0;
-    g_perf_times = 0;
-}
-/* the release thread's pick against a landing of every frame on another thread, as they meet: the same bytes as the
-   landing alone, whichever goes first */
-static void* release_thread(void* p) {
-    vk_buf_compare_ahead((u64)(uintptr_t)p);
-    return NULL;
-}
-static void check_race(void) {
-    for (u32 seed = 1; seed <= 200; seed++) {
-        g_perf_compare = 0;
-        build(seed, 30);
-        ncalls = norgs = 0;
-        land_all(seed, 0);
-        memcpy(guest0, guest, GUEST);
-        ncalls0 = ncalls, norgs0 = norgs;
-        memcpy(calls0, calls, sizeof calls[0] * ncalls);
-        memcpy(orgs0, orgs, sizeof orgs[0] * norgs);
-        g_perf_compare = 1;
-        build(seed, 30);
-        ncalls = norgs = 0;
-        pthread_t t;
-        pthread_create(&t, NULL, release_thread, (void*)(uintptr_t)(1 + seed % FRAMES));
-        for (u64 f = 1; f <= FRAMES; f++) {
-            vk_lock();
-            vk_buf_frame_done(f);
-            note_orgs();
-            vk_unlock();
-        }
-        pthread_join(t, NULL);
-        assert(!g_out && !memcmp(guest, guest0, GUEST));
-        assert(ncalls == ncalls0 && !memcmp(calls, calls0, sizeof calls[0] * ncalls));
-        assert(norgs == norgs0 && !memcmp(orgs, orgs0, sizeof orgs[0] * norgs));
-        free_owned();
-    }
-    g_perf_compare = 0;
-}
-/* reviewer N3: a rebase that changes no byte of a picked result leaves its runs, one that changes a byte makes
-   them stale */
-static void check_stale(void) {
-    for (int changes = 0; changes < 2; changes++) {
-        g_perf_compare = 1;
-        build(5, 0);
-        u32 s = 77;
-        GfxOut* e = make(&s, 1);
-        GfxOut* o = make(&s, 2);
-        free(o);
-        o = make(&s, 2); /* a second one of the same shape, at e's address */
-        o->addr = e->addr, o->size = e->size < 64 ? e->size : 64, o->npages = 1, o->composed = 1, o->initial = NULL;
-        o->pages[0] = o->vmap[0] = e->addr >> 12;
-        memcpy(e->ptr, e->org, e->size);
-        e->ptr[0] ^= 0x11;               /* e changes its first byte */
-        memcpy(o->org, e->ptr, o->size); /* o read it as e wrote it */
-        if (changes) o->org[0] ^= 0x22;  /* or o read the byte before e wrote it */
-        e->initial = NULL;
-        g_out = e, e->next = o, o->next = NULL, g_out_tail = o;
-        vk_buf_compare_ahead(2);
-        assert(e->runs_ok && o->runs_ok && !o->stale);
-        vk_buf_frame_done(1);
-        assert(g_out == o && o->stale == changes);
-        vk_buf_frame_done(2);
-        assert(!g_out);
-        free_owned();
-    }
-    /* a picked result that changed nothing lands with no compare of its bytes at all (reviewer N1) */
-    build(5, 0);
-    u32 s = 91;
-    GfxOut* q = make(&s, 1);
-    while (q->size < 64) free(q), q = make(&s, 1); /* long enough that a whole compare shows */
-    memcpy(q->ptr, q->org, q->size);
-    q->initial = NULL;
-    g_out = g_out_tail = q, q->next = NULL;
-    vk_buf_compare_ahead(1);
-    assert(q->runs_ok && !q->nruns && !q->runs);
-    memcmp_max = 0;
-    const u32 calls_before = ncalls;
-    vk_buf_frame_done(1);
-    assert(!g_out && memcmp_max < 8 && ncalls == calls_before);
-    free_owned();
-    g_perf_compare = 0;
-}
 /* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 1b and 3, research 22:33): the runs from the write's masked pass and the walk
    through the page index, against level 0 on the same batches: the same guest bytes, calls and original bytes after
    every landing. landing.c is built portable here (no AVX-512BW on the host), so the masked pass is its scalar
@@ -485,7 +296,7 @@ static void check_level2(void) {
                     (void)take_met();
                     build(seed, n);
                     ncalls = norgs = 0;
-                    land_all(seed, 0);
+                    land_all(seed);
                     const u64 met0 = take_met(); /* the whole walk's rebases */
                     memcpy(guest0, guest, GUEST);
                     memcpy(calls0, calls, sizeof calls[0] * ncalls);
@@ -496,7 +307,7 @@ static void check_level2(void) {
                     nested = nest == 1 ? nest_runs : nest == 2 ? nest_frame : NULL;
                     build(seed, n);
                     ncalls = norgs = 0;
-                    land_all(seed, 0);
+                    land_all(seed);
                     nested = NULL;
                     g_perf_times = 0;
                     for (int k = 0; k < 2; k++)
@@ -562,7 +373,7 @@ static void check_lost(void) {
         build(seed, 30);
         ncalls = norgs = 0;
         alloc_fails = 1;
-        land_all(seed, 0);
+        land_all(seed);
         alloc_fails = 0;
         memcpy(guest0, guest, GUEST);
         memcpy(orgs0, orgs, sizeof orgs[0] * norgs);
@@ -571,7 +382,7 @@ static void check_lost(void) {
         build(seed, 30);
         ncalls = norgs = 0;
         alloc_fails = 1;
-        land_all(seed, 0);
+        land_all(seed);
         alloc_fails = 0;
         assert(!memcmp(guest, guest0, GUEST) && norgs == norgs0 && !memcmp(orgs, orgs0, sizeof orgs[0] * norgs));
         assert(index_empty());
@@ -694,7 +505,7 @@ static void check_pool(void) {
     for (u32 seed = 1; seed <= 60; seed++) {
         g_perf_compare = 2;
         build(seed, 2 + (int)(seed % 50));
-        land_all(seed, 0);
+        land_all(seed);
         assert(index_empty() && free_count() % WALK_BLOCK == 0 && free_count() >= WALK_BLOCK);
     }
     const u32 all = free_count();
@@ -729,7 +540,7 @@ static void check_bound(void) {
         (void)take_met();
         build(seed, n);
         ncalls = norgs = 0;
-        land_all(seed, 0);
+        land_all(seed);
         const u64 met0 = take_met();
         memcpy(guest0, guest, GUEST);
         memcpy(orgs0, orgs, sizeof orgs[0] * norgs);
@@ -737,7 +548,7 @@ static void check_bound(void) {
         g_perf_compare = 2;
         build(seed, n);
         ncalls = norgs = 0;
-        land_all(seed, 0);
+        land_all(seed);
         assert(!memcmp(guest, guest0, GUEST) && norgs == norgs0 && !memcmp(orgs, orgs0, sizeof orgs[0] * norgs));
         assert(take_met() == met0 && index_empty());
         fell += take64(&g_perf_p29.idx_fell[1]);
@@ -753,7 +564,7 @@ static void check_bound(void) {
     assert(!g_src_indexed && take64(&g_perf_p29.idx_fell[0]) == 1 && take64(&g_perf_p29.idx_max[0]) == WALK_BOUND + 1);
     u32 at;
     assert(src_first(&at) == g_out); /* the walk over g_out, in its order */
-    land_all(77, 0);
+    land_all(77);
     assert(index_empty());
     g_perf_times = 0, g_perf_compare = 0, crowd = 0;
     printf("vulkan_compare: past the bound, 40 crowded batches the same, %llu landing lookups gave up\n",
@@ -778,11 +589,6 @@ static void check_abort(void) {
 }
 int main(void) {
     alarm(120); /* a mark never cleared hangs a landing: fail instead (reviewer N3) */
-    check_same();
-    check_stale();
-    check_race();
-    check_gates();
-    check_wait();
     check_level2();
     check_found();
     check_lost();
@@ -812,7 +618,7 @@ def main():
     body += function(writeback, "static int in_guest(")
     body += between(writeback, "typedef struct {\n    u64 addr;", "static void landing_put(")
     for sig in ("static void landing_put(", "static void landing_note(", "static int write_changed(",
-                "void vk_write_changed(", "void vk_write_changed_runs(", "int vk_write_changed_found("):
+                "void vk_write_changed(", "int vk_write_changed_found("):
         body += function(writeback, sig)
     body += between(buffer, "typedef struct {\n    const GfxOut* e;", "/* the changed bytes of e's")
     for sig in ("static void out_span_page(", "static void out_spans(", "static int pages_meet(",
@@ -831,10 +637,7 @@ def main():
     body += between(buffer, "static GfxOut** g_scand;", "/* kind: the caller")
     for sig in ("static void out_rebase_later(", "static void cap_step("):
         body += function(buffer, sig)
-    body += between(buffer, "static GfxOut** g_pick;", "/* o's changed runs")
-    for sig in ("static void pick_runs(", "void vk_buf_compare_ahead(", "static void pick_wait(",
-                "void vk_buf_frame_done("):
-        body += function(buffer, sig)
+    body += function(buffer, "void vk_buf_frame_done(")
     body += "#undef malloc\n#undef realloc\n" + TESTS
     cc = sys.argv[1:] or ["cc", "-std=gnu11", "-O2"]
     with tempfile.TemporaryDirectory() as d:

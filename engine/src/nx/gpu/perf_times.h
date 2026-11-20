@@ -502,9 +502,6 @@ enum { PCL_INVALIDATE, PCL_WRITE, PCL_PAGES, PCL_RUNS, PCL_WALK, PCL_OTHER, PCL_
    own write found them (SNX_ARCEUS_PERF_COMPARE=2) */
 enum { PCW_VISITED, PCW_COMPOSED, PCW_MET, PCW_RUNS, PCW_FOUND, PCW_N };
 enum { PCH_COMPUTE, PCH_GRAPHICS, PCH_RELEASES, PCH_N }; /* the release thread's hold by part, end to end */
-/* SNX_ARCEUS_PERF_COMPARE (PERF-28): results picked, their pick under vk_lock and their runs found outside it (ns),
-   picked ones whose runs a rebase made stale at their landing, and the landings that waited for the mark (and ns) */
-enum { PCC_PICKED, PCC_PICK_NS, PCC_RUNS_NS, PCC_STALE, PCC_WAITS, PCC_WAIT_NS, PCC_N };
 typedef struct {
     PerfCapRange cur[PERF_CAP_MAX], prev[PERF_CAP_MAX];
     uint32_t ncur, nprev;
@@ -512,7 +509,6 @@ typedef struct {
     uint64_t count[PCN_N]; /* the GPU thread's, read at the line */
     uint64_t land_ns[2][PCL_STEPS], landed[2], walk[2][PCW_N]; /* atomic: [0] the release thread, [1] elsewhere */
     uint64_t hold_ns[PCH_N], holds;                             /* atomic */
-    uint64_t compare[PCC_N];                                    /* atomic */
 } PerfCaps;
 extern PerfCaps g_perf_caps;
 extern _Thread_local int g_perf_release_thread; /* set on the release thread with SNX_ARCEUS_PERF_TIMES */
@@ -524,10 +520,6 @@ void perf_caps_frame_end(PerfCaps* c);
 void perf_caps_landed(PerfCaps* c, int release, const uint64_t ns[PCL_STEPS], const uint64_t walk[PCW_N]);
 /* one hold of the release thread: its parts' ns (PCH_*) */
 void perf_caps_hold(PerfCaps* c, uint64_t compute, uint64_t graphics, uint64_t releases);
-/* PERF-28: one pick of n results, its ns under vk_lock and outside it; a stale one landed; a landing's wait */
-void perf_caps_compared(PerfCaps* c, uint32_t n, uint64_t pick_ns, uint64_t runs_ns);
-void perf_caps_stale(PerfCaps* c);
-void perf_caps_waited(PerfCaps* c, uint64_t ns);
 /* PERF-27's line, after perf-landed: the window's counts a frame, which it starts again */
 size_t perf_caps_line(PerfCaps* c, uint32_t frames, char* out, size_t size);
 /* PERF-29 (research 01:36), log only, with SNX_ARCEUS_PERF_TIMES: vk_hash's and vk_hash_copy's callers by return
@@ -578,9 +570,8 @@ extern int g_perf_inplace;
 extern int g_perf_query;
 /* SNX_ARCEUS_PERF_SAMPLE=1 (PERF-24): with write tracking a buffer's full check takes no sample (gpu/vk/buffer.c) */
 extern int g_perf_sample;
-/* SNX_ARCEUS_PERF_COMPARE (PERF-28, gpu/vk/buffer.c): 1, the release thread finds its results' changed runs outside
-   vk_lock (vk_buf_compare_ahead). 2, a landing's masked pass finds them, and its walk and gfx_gpu_src's go through a
-   page index */
+/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28, gpu/vk/buffer.c): a landing's masked pass finds its changed runs, and its walk
+   and gfx_gpu_src's go through a page index */
 extern int g_perf_compare;
 /* SNX_ARCEUS_PATCH_HASH=1: a patched own buffer takes the next full check as changed (gpu/vk/buffer.c) */
 extern int g_patch_hash;

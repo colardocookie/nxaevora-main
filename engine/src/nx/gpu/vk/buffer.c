@@ -248,12 +248,6 @@ typedef struct GfxOut {
        guest memory without them until each lands (out_rebase) */
     int composed;
     u32 wseen; /* the write tracking clock before org was read (vk_ww_now): copyable_span skips comparing pages since */
-    /* SNX_ARCEUS_PERF_COMPARE (PERF-28): its changed runs once runs_ok, found by the release thread outside vk_lock
-       (NULL when none changed). stale: a rebase changed a byte of org since, and its landing finds them again. Only
-       results in g_out are picked, so only vk_buf_frame_done frees one that has them */
-    ChgRun* runs;
-    u32 nruns;
-    u8 runs_ok, stale;
     /* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 3): a composed result's places in the walk's index (walk_add), its order
        among the results and the stamp of the last landing that found it there */
     struct WalkRef* wrefs; /* its first, the rest through each one's own */
@@ -532,21 +526,6 @@ static u32 out_changed_runs(const GfxOut* e) {
     g_chg_for = NULL;
     g_chg_gen++;
     g_nchg = 0;
-    if (e->runs_ok && !e->stale) { /* SNX_ARCEUS_PERF_COMPARE: found before its landing, from the same bytes */
-        u32 cap = g_capchg;
-        while (cap < e->nruns) cap *= 2;
-        ChgRun* b = cap == g_capchg ? g_chg
-                    : g_chg == g_chg_first ? malloc((size_t)cap * sizeof *b)
-                                           : realloc(g_chg, (size_t)cap * sizeof *b);
-        if (!b) {
-            g_chg[0] = (ChgRun){0, e->size};
-            return g_nchg = 1;
-        }
-        g_chg = b;
-        g_capchg = cap;
-        if (e->nruns) memcpy(g_chg, e->runs, (size_t)e->nruns * sizeof *g_chg);
-        return g_nchg = e->nruns;
-    }
     while (k < e->size) {
         u32 w = e->size - k < 8 ? e->size - k : 8;
         if (word_changed(e, k, w)) {
@@ -593,16 +572,11 @@ static void rebase_bytes(const Rebase* r, u64 at, u64 from, u64 n) {
         m |= m >> 2;
         m |= m >> 1;
         m = (m & 0x0101010101010101ull) * 0xFF;
-        const u64 was = d;
         d = (d & ~m) | (a & m);
-        if (d != was && r->o->runs_ok) r->o->stale = 1; /* SNX_ARCEUS_PERF_COMPARE: only a byte that changed */
         memcpy(dst + k, &d, 8);
     }
     for (; k < n; k++)
-        if (res[k] != org[k]) {
-            if (dst[k] != res[k] && r->o->runs_ok) r->o->stale = 1;
-            dst[k] = res[k];
-        }
+        if (res[k] != org[k]) dst[k] = res[k];
 }
 /* a span of e in o: only where it meets e's changed runs (g_chg, sorted), the first found by binary search */
 static void rebase_span(void* user, u64 at, u64 from, u64 n) {
@@ -695,100 +669,11 @@ static void cap_step(u64* t, u64* ns, int step) {
     ns[step] += now - *t;
     *t = now;
 }
-/* SNX_ARCEUS_PERF_COMPARE (PERF-28, research 12:02 and 12:05): the release thread finds the changed runs of its
-   finished submissions' results outside vk_lock, before its hold. It picks them under vk_lock into its own list and
-   sets the mark, lets the lock go, finds their runs and clears the mark before it asks for vk_lock again: a landing
-   waits for the mark (pick_wait) while it holds vk_lock. Once it is clear any thread may land them first */
-static GfxOut** g_pick;
-static u32 g_cappick;
-static int g_picked; /* atomic: the mark */
-static PMutex g_pick_lock = PMUTEX_INIT;
-static PCond g_pick_cv;
-static int g_pick_cv_made;
-/* o's changed runs, the words out_changed_runs finds, into o: nothing stored without memory for them */
-static void pick_runs(GfxOut* o) {
-    ChgRun* runs = NULL;
-    u32 n = 0, cap = 0;
-    for (u32 k = 0; k < o->size;) {
-        const u32 w = o->size - k < 8 ? o->size - k : 8;
-        if (word_changed(o, k, w)) {
-            if (n && runs[n - 1].to == k)
-                runs[n - 1].to = k + w;
-            else {
-                if (n == cap) {
-                    ChgRun* b = realloc(runs, (size_t)(cap = cap ? cap * 2 : 16) * sizeof *b);
-                    if (!b) {
-                        free(runs);
-                        return;
-                    }
-                    runs = b;
-                }
-                runs[n++] = (ChgRun){k, k + w};
-            }
-        }
-        k += w;
-    }
-    o->runs = runs;
-    o->nruns = n;
-    o->stale = 0;
-    o->runs_ok = 1;
-}
-/* On the release thread, ahead of release_through's hold: only when it holds no vk_lock and no mark is set (reviewer
-   O1), else the landing is today's. The results of submissions up to gate (finished), not yet landed or picked */
-void vk_buf_compare_ahead(u64 gate) {
-    vk_lock();
-    const u64 t0 = g_perf_times ? plat_ns() : 0;
-    u32 n = 0;
-    if (vk_lock_depth() == 1 && !__atomic_load_n(&g_picked, __ATOMIC_ACQUIRE)) {
-        VmaAllocation invalidated = VK_NULL_HANDLE;
-        for (GfxOut* o = g_out; o; o = o->next) {
-            if (o->frame > gate || o->initial || o->runs_ok) continue;
-            if (n == g_cappick) {
-                GfxOut** b = realloc(g_pick, (size_t)(g_cappick ? g_cappick * 2 : 256) * sizeof *b);
-                if (!b) break;
-                g_pick = b;
-                g_cappick = g_cappick ? g_cappick * 2 : 256;
-            }
-            if (o->mem != invalidated) { /* as its landing does, which does it again */
-                if (!VK_OK(vmaInvalidateAllocation(g_vk.vma, o->mem, 0, VK_WHOLE_SIZE)))
-                    fatal("Could not invalidate a graphics storage buffer after its frame completed");
-                invalidated = o->mem;
-            }
-            g_pick[n++] = o;
-        }
-        if (n && !g_pick_cv_made) {
-            pc_init(&g_pick_cv);
-            g_pick_cv_made = 1;
-        }
-        if (n) __atomic_store_n(&g_picked, 1, __ATOMIC_RELEASE);
-    }
-    const u64 t1 = t0 ? plat_ns() : 0;
-    vk_unlock();
-    if (!n) return;
-    for (u32 i = 0; i < n; i++) pick_runs(g_pick[i]); /* its own list, never g_out (research 12:02) */
-    const u64 t2 = t0 ? plat_ns() : 0;
-    pm_lock(&g_pick_lock);
-    __atomic_store_n(&g_picked, 0, __ATOMIC_RELEASE);
-    pc_broadcast(&g_pick_cv);
-    pm_unlock(&g_pick_lock);
-    if (t0) perf_caps_compared(&g_perf_caps, n, t1 - t0, t2 - t1);
-}
-/* a landing, holding vk_lock: until the mark is clear, the picked results being the release thread's */
-static void pick_wait(void) {
-    if (!__atomic_load_n(&g_picked, __ATOMIC_ACQUIRE)) return;
-    const u64 t = g_perf_times ? plat_ns() : 0;
-    pm_lock(&g_pick_lock);
-    while (__atomic_load_n(&g_picked, __ATOMIC_ACQUIRE)) pc_wait(&g_pick_cv, &g_pick_lock, -1);
-    pm_unlock(&g_pick_lock);
-    if (t) perf_caps_waited(&g_perf_caps, plat_ns() - t);
-}
-
 /* The frame fence has signaled. Its stage allocations still exist here; cmd.c frees them only after this call. */
 static int g_ww;
 static int written_since_gva(u64 gva, u64 len, u32 since);
 void vk_buf_frame_done(u64 frame) {
     GfxOut *done = NULL, *done_tail = NULL;
-    if (g_perf_compare == 1) pick_wait(); /* PERF-28, before g_out is read */
     for (GfxOut** pp = &g_out; *pp;) {
         GfxOut* o = *pp;
         if (o->frame != frame) {
@@ -827,9 +712,7 @@ void vk_buf_frame_done(u64 frame) {
             o->initial = NULL;
         }
         if (t) cap_step(&t, ns, PCL_INVALIDATE);
-        if (o->runs_ok && !o->stale) /* SNX_ARCEUS_PERF_COMPARE=1 */
-            vk_write_changed_runs(o->addr, o->ptr, o->org, o->size, o->runs, o->nruns);
-        else if (g_perf_compare == 2) { /* 1b: the write's own pass finds the changed runs, unless a landing nested */
+        if (g_perf_compare == 2) { /* 1b: the write's own pass finds the changed runs, unless a landing nested */
             const u32 gen = ++g_chg_gen; /* every filling of g_chg counts, a nested one of this kind too */
             g_nchg = 0;
             g_chg_lost = 0;
@@ -859,9 +742,7 @@ void vk_buf_frame_done(u64 frame) {
                             gpu_mem_generation(), vk_ww_now()); /* PERF-22, under vk_lock */
             cap_step(&t, ns, PCL_OTHER);
             perf_caps_landed(&g_perf_caps, g_perf_release_thread, ns, walk);
-            if (o->runs_ok && o->stale) perf_caps_stale(&g_perf_caps);
         }
-        free(o->runs);
         free(o);
     }
     g_out_landing--;

@@ -942,10 +942,7 @@ int snx_main(int argc, char** argv) {
             LOG("perf-sample: EXPERIMENT on, with write tracking a buffer's full check takes no sampled hash (only the "
                 "check without write tracking reads one)\n");
         const char* compare = getenv("SNX_ARCEUS_PERF_COMPARE"); /* bench only (gpu/perf_times.h, PERF-28) */
-        g_perf_compare = compare && !strcmp(compare, "1") ? 1 : compare && !strcmp(compare, "2") ? 2 : 0;
-        if (g_perf_compare == 1)
-            LOG("perf-compare: EXPERIMENT on, the release thread finds its finished results' changed runs outside "
-                "vk_lock, before its hold\n");
+        g_perf_compare = compare && !strcmp(compare, "2") ? 2 : 0; /* 1 was PERF-28 1a, not kept and removed */
         if (g_perf_compare == 2)
             LOG("perf-compare: EXPERIMENT level 2, a landing's whole-size masked pass finds its changed runs, and its "
                 "walk and a binding's walk visit only the pending results on their pages\n");
