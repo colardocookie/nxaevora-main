@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Copyright 2026 the ScarletNX contributors -->
-# ScarletNX documentation
+# NXAevora Engine documentation
 
 New here? Start with [Build](./BUILD.md), then [Usage](./USAGE.md).
 
@@ -10,8 +10,7 @@ New here? Start with [Build](./BUILD.md), then [Usage](./USAGE.md).
 - **[PowerPC64](./PPC64.md)**
 - **[RISC-V and LoongArch](./RISCV-LOONGARCH.md)**
 - **[Development](./DEVELOPMENT.md)** - tests and diagnostics
-  - **[Testing and reporting](./TESTING.md)** - how to test a build, and the form a report takes
-  - **[edenprobe](./EDENPROBE.md)** - hardware probes CI runs against a baseline
+  - **[edenprobe](./EDENPROBE.md)** - hardware probes run against a baseline
 - **[Deprecations](./DEPRECATIONS.md)** - what an older version used, and how it goes away
 - **[Status and roadmap](../../ROADMAP.md)**
 - **[Licenses and credits](./CREDITS.md)**
@@ -32,4 +31,3 @@ New here? Start with [Build](./BUILD.md), then [Usage](./USAGE.md).
   - **[Guest buffers on unified memory](./UMA_MEMORY.md)**
   - **[NVN reference](./NVN_HLE.md)** - how games draw through NVN, and what the traces showed
   - **[NVDEC H.264 packet submission audit](./NVDEC.md)**
-  - **[Shader corrections, batch 001](./shader-audit/fixes-001.md)**

@@ -13,7 +13,7 @@
 * [Languages](#languages)
 * [Building and testing](#building-and-testing)
 
-`scarletnx` started with no arguments (or a model's name, or the AppImage), with no game of its
+`nxaevora-engine` started with no arguments (or a model's name, or the AppImage), with no game of its
 name beside it, opens its launcher: a small SDL3 menu for the command-line drivers. A copy named
 after a game, without its code, says so and never opens it. It uses an
 embedded public-domain 8x16 VGA BIOS font, with GNU Unifont's 8x16 glyphs fitted to it for the Latin letters its CP437
@@ -24,11 +24,11 @@ their rows that open a screen or do something (the others keep its columns), a g
 and the game's menu's. No font files or localization packages are needed.
 
 ```sh
-./build/scarletnx
+./build/nxaevora-engine
 ```
 
-The window's title tells which build it is, as `ScarletNX <branch> <commit> (<compiler>, <OS> <arch>)`, for example
-`ScarletNX main 43bf71a (clang 22.1.8, Linux x86_64)`; the commit ends in `-dirty` when the tree had changes, a
+The window's title tells which build it is, as `NXAevora Engine <branch> <commit> (<compiler>, <OS> <arch>)`, for example
+`NXAevora Engine main 43bf71a (clang 22.1.8, Linux x86_64)`; the commit ends in `-dirty` when the tree had changes, a
 build of a detached checkout outside CI says `detached`, and both read `unknown` outside a git checkout. A game's window carries the same line after the game's name.
 
 It opens on a splash: Wimsy, or Fuddles (`dist/splash/`), picked at random each start, a third of the window's
@@ -59,7 +59,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   presses the key when its words all press one. `Arrows`, `mouse`, `pad` and `D-pad` press nothing.
 - The menu, top to bottom: the loads, **Settings**, **Share Log**,
   **Folders**, and **Exit**. The games, and the recent ones, are the Games tab's. A load whose driver
-  is neither beside ScarletNX nor on PATH is greyed out, still there,
+  is neither beside NXAevora Engine nor on PATH is greyed out, still there,
   and Enter or a tap on it says which driver it misses rather than opening its screen; the drivers are looked for
   again each second, and with F5.
 - Space, Enter or a left click explicitly activates an item, marking it bright
@@ -77,16 +77,16 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   picker (on Linux the desktop's, else zenity's). Dropping a file on the window and Ctrl+V with
   a path work too. ESC returns to the menu. A Switch game is read where it lies
   and takes no room. A game from encrypted dumps is not loaded here: decrypt it
-  to a folder (`exefs/`, `romfs/`) and give the folder to `scarletnx -r`. With more than one folder of the recompiled library that can
+  to a folder (`exefs/`, `romfs/`) and give the folder to `nxaevora-engine -r`. With more than one folder of the recompiled library that can
   take a game (its Main, and each Extra that can be written and runs programs), a box asks which the dump's game goes
   in, **Recompile** on its tab: each folder with what it is and its free room, the Main first and in focus; ESC runs
   nothing. The one taken is the run's `--outdir`.
 - **Settings** opens on its groups, Enter opening one and ESC coming back: **App**, then
   **Launch** (the launcher's own and the recompiler's, from `src/nx/runtime/settings.txt`), then a group per section of the game's `.ini` (Display,
   Graphics, Performance, Overlay, Controllers, Network, Debug; Overlay is the runtime's On-screen controls, the
-  name its page in the game and `settings.ini` keep), as `scarletnx --settings`
+  name its page in the game and `settings.ini` keep), as `nxaevora-engine --settings`
   prints them from the runtime's own tables: read from them in the same process where the menu is built into
-  scarletnx, so every section shows at once; a menu built alone asks `scarletnx --settings`. The game's menu's settings have its names and words
+  nxaevora-engine, so every section shows at once; a menu built alone asks `nxaevora-engine --settings`. The game's menu's settings have its names and words
   (*Scale* 100%, *Touch screen* Fingers), and its **Buttons** page, whose **All** steps every row;
   *Edit layout* and *Reset layout* stay in the game's menu, as the layout is each game's own.
   Controllers' **Button map** draws the pad as the game's menu does: each control in a box down either
@@ -153,7 +153,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   that do not fit, until another key closes it;
   Share Log lists them too. **Move Old Files** (its value how many folders an older version left) asks first, with
   how many entries would move and how many stay, then moves what *Left by older versions* lists an entry at a time
-  (`scarletnx --migrate=yes` without the menu, [USAGE](USAGE.md#folders)), the same box saying what moved and why the
+  (`nxaevora-engine --migrate=yes` without the menu, [USAGE](USAGE.md#folders)), the same box saying what moved and why the
   rest did not: one already there, one on another disk, a game laid out beside others, which moves from its dump.
   **Reset to Defaults**, the last row, puts every setting of the groups after App back to its default, asking first with how
   many change. A group of settings shows
@@ -168,7 +168,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   the run takes the game's `.ini`'s, which starts as that; one picked goes to every
   Switch run as `--key=value`, over the `.ini` ([USAGE](USAGE.md)), and is kept for every game:
   what was changed, by the `.ini`'s sections and keys, in `settings.ini` of the config folder on
-  Linux (`~/.config/scarletnx/`), else the data folder's `config/`. A run takes a setting from what that
+  Linux (`~/.config/nxaevora/`), else the data folder's `config/`. A run takes a setting from what that
   run picks, then from the game's own picks (to come), then from these, and last from the game's
   `.ini`. Del puts a setting back to its default, and App's **Reset to Defaults** every one. The launcher's own choices start picked: `fullscreen` 0 and `controls` 0.
   **gdbstub** passes `-S` and `-s`, the
@@ -179,7 +179,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   turns each pass of LLVM's pipelines off and sets the options LLVM's C API takes, its **All** stepping every row. They
   are passed as `--key=value` when the game is recompiled: by **R**, or by a run that has to (a game folder recompiled
   the first time, an NRO each time). A game made already keeps its code until then. The first two settings and these reach
-- The Status box, after the RAM and the CPU, says what ScarletNX's folders take (recompiled/,
+- The Status box, after the RAM and the CPU, says what NXAevora Engine's folders take (recompiled/,
   work/ and themes/ of the data folder, and on Linux its config, state and cache folders, else
   the menu's own) and what is left on that disk, counted as the menu opens and after each run. While a recompile of
   the queue runs its tree's RAM and CPU are in the first line, and a last one says how it goes:
@@ -238,7 +238,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   own log and its fatal errors (below) and the game log. Beside it, whole, the launcher's logs (`launcher/`) and the
   games' logs of the last 14 days, each game's runs under `games/<its name> [<its folder>]/` by when each was last
   written; in every file a home folder is written `~`. **Share Log** saves that summary alone as `scarletnx.log`. Either
-  goes in `share/` of Folders' Logs (`~/.local/state/scarletnx/share/`), emptied of what was shared before, and that folder opens in the system's file manager, to share from
+  goes in `share/` of Folders' Logs (`~/.local/state/nxaevora/share/`), emptied of what was shared before, and that folder opens in the system's file manager, to share from
   there. **Open Logs Folder** opens Folders' Logs, where they all are. After a run or a recompile of the queue that
   ended abnormally (not by ESC) it blinks red (the theme's `failure` colour, at its `blink_ms`) until its logs are saved or a run ends well.
 - **Folders** opens Settings > App > Folders (ESC comes back to the menu). There Enter, or a tap, on a folder gives
@@ -282,14 +282,14 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   game's path. Choosing one runs it again with the driver it was
   loaded with and the options the menu has now; a game whose file is gone leaves the
   list instead. The list is kept in `recent.txt`, beside `last-run.log`, at the root of the menu's state
-  folder ([USAGE](USAGE.md#folders)): `$XDG_STATE_HOME/scarletnx/` on Linux, by default
-  `~/.local/state/scarletnx/`, or `%APPDATA%\scarletnx\state\` on Windows. An
+  folder ([USAGE](USAGE.md#folders)): `$XDG_STATE_HOME/nxaevora/` on Linux, by default
+  `~/.local/state/nxaevora/`, or `%APPDATA%\nxaevora\state\` on Windows. An
   older version's, in a `gui/` folder, stay where they are. A line per
   game: `switch`, `file` or `games` (a program from recompiled/, run as it is: the token keeps its old name),
   the path and the name, separated by tabs. A list that cannot be written there is named in the
   message, after a run's end too, until it can be.
 
-The launcher runs Switch inputs with the `scarletnx` it is part of. Files are passed directly
+The launcher runs Switch inputs with the `nxaevora-engine` it is part of. Files are passed directly
 as argv entries, never through a shell. Spaces, Unicode paths and shell punctuation
 are not evaluated. Local `file://` text drops are decoded, but lists and remote URI
 authorities are rejected. The working directory is not changed and is shown in the
@@ -317,10 +317,10 @@ they are, Keep, Later, the nickname `Player`), writes `setup.ini` and opens the 
   asked about for 15 s as App's is; Enter does as App's (the language or the theme a step on, UI scale's dialog), and on
   Next goes on. What was changed is kept in `app.ini` once the setup is done, in the folders Install picks; Auto
   stays Auto while the language is the system's.
-- **Install**: Installed, or Portable, which makes `.scarletnx/` beside the program and moves the menu's own files
-  there from then on. A box over the two says which the copy is now: `Now: portable, its files in <folder>/.scarletnx`
+- **Install**: Installed, or Portable, which makes `.nxaevora/` beside the program and moves the menu's own files
+  there from then on. A box over the two says which the copy is now: `Now: portable, its files in <folder>/.nxaevora`
   while that folder is there, the focus then on Portable, else `Now: installed, its files in` the user's data folder.
-  Installed is refused while a `.scarletnx/` is there, which keeps the copy portable.
+  Installed is refused while a `.nxaevora/` is there, which keeps the copy portable.
 - **Folders**: Keep, Change recompiled folder (Settings > App > Folders, the recompiled library's Main) or Add a folder
   (an Extra of Settings > App > Folders), each through the folder picker, the page listing what is there now: Recompiled, Dumps
   (the data folder's `dumps/`, with its subfolders), then the player's folders.
@@ -329,13 +329,13 @@ they are, Keep, Later, the nickname `Player`), writes `setup.ini` and opens the 
   the rooms' rule refuses is said, and the page stays.
 
 Once the last page is done the menu opens, `setup.ini` written. After an update that brings a notice, the setup
-shows that notice alone (1/1), with OK, before the menu. `scarletnx --no-setup` opens the menu with no
+shows that notice alone (1/1), with OK, before the menu. `nxaevora-engine --no-setup` opens the menu with no
 setup, writing nothing.
 
 ## Games: the games of recompiled/ and the player's folders
 
 **Games**, the tab, lists the games: the ones ready to run (a recompiled game runs directly). It reads the `recompiled/` of the
-folder the driver works in, which the menu passes it as `--data`: a portable copy's `.scarletnx/` beside the
+folder the driver works in, which the menu passes it as `--data`: a portable copy's `.nxaevora/` beside the
 AppImage (or the GUI), else the user's data folder, a build tree's menu's too ([USAGE](USAGE.md#folders)), then each
 Extra of Settings > App > Folders. Each game is shown by the name in its `control.nacp`, which the recompile copies into
 its data, else by its folder's or file's name, sorted by it in each folder, with its icon (Wimsy in grey for one with
@@ -372,7 +372,7 @@ cannot be read is named and the others still listed.
   a recompiled folder of the Library, asks first, naming the game and its folder: **Play**, in focus, plays it,
   **Recompile** recompiles it where it is, as R does, and Back does neither.
 - **R** recompiles the game in focus, recent or on the page,
-  where it is, or makes its dump again: the driver's `-r` (`scarletnx -r`). It plays nothing, and goes in the queue of compiles, which runs them one
+  where it is, or makes its dump again: the driver's `-r` (`nxaevora-engine -r`). It plays nothing, and goes in the queue of compiles, which runs them one
   at a time behind the screens: with none running it starts at once, the Compile tab showing it; else the tips say
   where it waits. A game of the queue says it on its row (`42%`, `next`, `3rd in queue`) and in the side box; Enter
   on it, or R again, shows it on the Compile tab, and it plays once its compile ended. On
@@ -396,7 +396,7 @@ cannot be read is named and the others still listed.
 - Empty or missing directories show a diagnostic, and the side box says P adds a folder.
 
 A recompiled game, in a folder of its own (`recompiled/<id>/<id>`), runs with the Settings through the menu's own
-`scarletnx` and is never extracted as a dump: it plays as it is when this build made it with the mods it plays, and
+`nxaevora-engine` and is never extracted as a dump: it plays as it is when this build made it with the mods it plays, and
 when another build did, or other mods, it compiles first, where it is, in the queue as a dump's first compile does
 (its `<id>.abi` says which: [USAGE](USAGE.md#extract--aot--run)), then plays if the Compile tab still shows it. A game
 an older version laid out beside the others runs directly. A game of another console
@@ -751,7 +751,7 @@ brings a translation up to the code; a phrase it leaves empty, or marks `fuzzy`,
 - has contexts (`msgctxt`), plurals (`msgid_plural`), a phrase twice, or is not UTF-8.
 
 The runtime's settings stay as the runtime names them (their groups, names, help and words come from
-`scarletnx --settings`), as do the Controllers' button map page, drawn as the game's menu draws it, the theme
+`nxaevora-engine --settings`), as do the Controllers' button map page, drawn as the game's menu draws it, the theme
 editor's rows (the file's own keys) and the lines Share Log adds for us.
 
 ## Building and testing

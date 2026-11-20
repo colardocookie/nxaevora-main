@@ -11,14 +11,13 @@
 * [Big-endian hosts](#big-endian-hosts)
 * [The PowerPC 970 and POWER4](#the-powerpc-970-and-power4)
 
-ScarletNX builds for 64-bit PowerPC Linux from POWER8 on, and big-endian builds from the PowerPC 970 (the PowerMac
+NXAevora Engine builds for 64-bit PowerPC Linux from POWER8 on, and big-endian builds from the PowerPC 970 (the PowerMac
 G5) and POWER4 on. The little-endian port (ppc64le) works: the test suite
 passes under qemu-user, and Super Haxagon, recompiled under qemu, played a level to its game over screen there with
-lavapipe as the Vulkan driver. No real POWER machine has run it yet. CI cross-builds its AppImage
-(`ScarletNX-linux-ppc64le.AppImage`, the `appimage-cross` job in `.github/workflows/build.yml`) against an Arch POWER
-system root and runs it under qemu as installed; the test suite's job, `linux-ppc64le`, is commented out.
-The big-endian port has a job of its own, `linux-ppc64`, which builds the Switch runtime and runs the tests that
-need no game under qemu-ppc64.
+lavapipe as the Vulkan driver. No real POWER machine has run it yet. Its AppImage is
+`ScarletNX-linux-ppc64le.AppImage`, cross-built against an Arch POWER system root and run under qemu as
+installed.
+The big-endian port builds the Switch runtime and runs the tests that need no game under qemu-ppc64.
 
 The Switch runtime is ported to big-endian ELFv2, its services, IPC, memory, GPU front end and video, and the renderer
 treats the Vulkan device as little-endian, as the drivers for big-endian PowerPC64 are. Its test suite passes under
@@ -60,7 +59,7 @@ minutes, against 4 natively on x86-64):
 
 ```bash
 export QEMU_LD_PREFIX=$SNX_SYSROOT VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
-qemu-ppc64le build/linux-ppc64le-cross/scarletnx -r app.nro --name App --outdir games/ppc64le
+qemu-ppc64le build/linux-ppc64le-cross/nxaevora-engine -r app.nro --name App --outdir games/ppc64le
 cd games/ppc64le/App && qemu-ppc64le ./App -H --seconds=120 --shot=/path/to/shot
 ```
 
@@ -78,7 +77,7 @@ when mapped again, as on the console. The differences from a 4 KiB host:
   addresses in 4 KiB steps. The services reach shared memory through the guest's mapping while it lasts.
 
 `SNX_HOST_PAGE=16384` or `65536` in the environment makes any machine work in those pages, which is how the tests
-and CI check these paths on 4 KiB hosts (`ldr_service_64k_pages`, `nx_runtime_homebrew_64k_pages`); `memory_accounting` runs as on 16 and 64 KiB hosts by itself.
+check these paths on 4 KiB hosts (`ldr_service_64k_pages`, `nx_runtime_homebrew_64k_pages`); `memory_accounting` runs as on 16 and 64 KiB hosts by itself.
 
 ## What differs from the other hosts
 
@@ -139,15 +138,13 @@ cmake --preset linux-ppc64-cross -DSNX_BUILD_GUI=OFF
 cmake --build --preset linux-ppc64-cross --target scarletnx
 ```
 
-`scarletnx` is then the Switch runtime alone.
+`nxaevora-engine` is then the Switch runtime alone.
 
-CI's `linux-ppc64` job builds it this way against that system root, made weekly, and runs the tests that need no game
-(`endian`, `cas128`) under qemu-ppc64. Debian ports' unstable can break for a day, so the job may fail
-without failing the run.
+The tests that need no game (`endian`, `cas128`) run under qemu-ppc64.
 
 Arch POWER's big-endian glibc is ELFv2, as LLD links it. Its preset (`linux-ppc64-elfv2-cross`, `SNX_PPC64_ELFV2`)
 builds for ELFv2 with `-mabi=elfv2` and the Switch runtime alone. Its system root is pkgforge's Arch image of the
-architecture with LLVM and GCC's runtime installed into it, as the `appimage-cross` job makes it. The runtime's own
+architecture with LLVM and GCC's runtime installed into it. The runtime's own
 code generator takes its ABI from the runtime itself (`_CALL_ELF`, `new_ir` in `ir.c`), as LLVMs differ in which
 ABI their `powerpc64-*-linux-gnu` picks: Debian's 19 ELFv1, Arch POWER's 22 ELFv2.
 
@@ -177,7 +174,7 @@ compile to nothing on a little-endian host:
   written little-endian, and what it reads back is converted. lavapipe on a big-endian host is not little-endian,
   so it doesn't show a game's rendering there.
 
-The build (the Arch POWER system root of the `appimage-cross` job, with GCC's runtime and LLVM installed):
+The build (an Arch POWER system root with GCC's runtime and LLVM installed):
 
 ```bash
 export SNX_SYSROOT=/path/to/arch-power-ppc64

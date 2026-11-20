@@ -11,9 +11,8 @@
   * [Renderer coherence + lifetime](#renderer-coherence--lifetime)
   * [Videodec/VIC channels](#videodecvic-channels)
 
-ScarletNX compiles AArch64 code into native modules through LLVM IR.
+NXAevora Engine compiles AArch64 code into native modules through LLVM IR.
 The CPU implementation is shared by the Horizon HLE/Maxwell runtime and its tools.
-Source map: [CLAUDE.md](../CLAUDE.md).
 
 ## Runtime boundaries
 
@@ -34,10 +33,10 @@ transitive CMake dependency graph and target source ownership.
 the callbacks on `CPU.rt`. NX routes SVC to Horizon: its modules call each SVC's own entry through
 `RtAPI.svcs[imm]`, the number being a constant in the code. CPU helpers and instruction emission are shared.
 
-`scarletnx` is the driver the build has: `src/multicall/main.c` is the only `main`, and runs
+`nxaevora-engine` is the driver the build has: `src/multicall/main.c` is the only `main`, and runs
 the driver its name says from the library of the driver's own folder (`snx_switch_program`), so LLVM and
 SDL are in one program once. On Linux the Switch driver is a symlink to it. Windows has no
-links: the driver's name goes first (`scarletnx.exe scarletnx-switch ...`), and the launcher runs it
+links: the driver's name goes first (`nxaevora-engine.exe nxaevora-engine-switch ...`), and the launcher runs it
 that way (`snx_menu_has_driver`). A game's copy runs its driver too, any game the Switch's (or, in a
 build without it, the one driver there is).
 The original game-name entry points and CLI remain available.
@@ -68,7 +67,7 @@ the game's image read from that image.
 - `driver.c`: CLI dispatch only; `recompile.c` owns its workflow.
 - `src/nx/loader/loader.c`: NSO/NRO, LZ4, SHA-256, NPDM, MOD0, symbols/relocs/FDEs.
 - `src/common/cpu/aarch64/a64_decoder.c`: the A64 decoder `tools/a64dec` generates from QEMU's `a64.decode` and
-  ScarletNX's `a64.profile` (`src/common/cpu/aarch64/decode/`): each op's flow and the feature it needs, so a target's
+  NXAevora Engine's `a64.profile` (`src/common/cpu/aarch64/decode/`): each op's flow and the feature it needs, so a target's
   feature set (the Switch's Cortex-A57 by default) decides what is UNDEF.
 - `src/common/cpu/recompiler/codegen.c`: function/CFG discovery over platform-neutral image views.
   `src/nx/loader/codegen_view.c` adapts NX images; `module.c` holds what the backends share (the dispatch entry
