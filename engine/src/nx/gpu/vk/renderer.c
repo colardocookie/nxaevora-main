@@ -767,6 +767,7 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
                                u32 transform) {
     SNX_ZONE(z_present, "present");
     vk_lock();
+    if (g_perf_probes) perf_handoff_frame_draws(&g_perf_handoff, g_vk_drawn); /* PERF-33: the frame's draws */
     vk_buf_writable_abort(); /* a draw abandoned during setup has no shader writes to land */
     vk_render_end();
     Surf* src = NULL;

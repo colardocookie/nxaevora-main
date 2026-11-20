@@ -201,13 +201,21 @@ enum { PH_SUBMIT, PH_SUBMIT_LOCK, PH_SUBMIT_ADD, PH_SUBMIT_SCAN, PH_FENCE, PH_PR
 #define PH_POS 5u /* where a frame's last carrying submission sits: the last, 1, 2, 3 before it, or 4 and more */
 typedef struct { /* all atomic */
     uint64_t frames, subs, carry, kinds[PCY_KINDS], pos[PH_POS + 1]; /* pos[PH_POS]: a frame with none */
+    uint64_t pos_noimg[PH_POS + 1]; /* the same with the storage images left out (research 05:40) */
     uint64_t to_land, to_carry_gpu, to_last_gpu, to_incr;           /* ns from the increment's queueing (frame_end) */
     uint64_t land_before, compute_last, compute_after, compute_ns, lost, unregistered;
-    uint64_t n[PH_PARTS], ns[PH_PARTS], ops;
+    uint64_t n[PH_PARTS], ns[PH_PARTS], ops, marked; /* ops walked whole, and read at a mark (PERF_SCAN) */
+    /* the storage images' writes (render.c image_record): how many, their draws' places after the last frame_end,
+       and the last one's place, frame (its frame's draws), guest address, size and format. The GPU thread's */
+    uint64_t img_n, img_at, draws0, frame_draws, img_last_at, img_last_frame, img_gva, img_w, img_h, img_fkey;
+    int img_open; /* an image was written in the frame not yet presented */
 } PerfHandoff;
 extern PerfHandoff g_perf_handoff;
 void perf_handoff_compute(PerfHandoff* h, uint64_t now);
-void perf_handoff_time(PerfHandoff* h, int part, uint64_t ns, uint64_t ops);
+void perf_handoff_time(PerfHandoff* h, int part, uint64_t ns, uint64_t ops, uint64_t marked);
+/* at a present's frame_end, drawn the draws so far; at a storage image's write, drawn and the image */
+void perf_handoff_frame_draws(PerfHandoff* h, uint64_t drawn);
+void perf_handoff_image(PerfHandoff* h, uint64_t drawn, uint64_t gva, uint32_t w, uint32_t hgt, uint32_t fkey);
 size_t perf_handoff_line(PerfHandoff* h, uint32_t frames, char* out, size_t size);
 /* the release thread spent [start, end) in state (REL_*), landing outputs storage outputs while holding vk_lock */
 void perf_rel_interval(PerfTimes* p, int state, uint64_t start, uint64_t end, uint64_t outputs);

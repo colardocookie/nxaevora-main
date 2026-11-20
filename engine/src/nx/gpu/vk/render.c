@@ -1318,6 +1318,7 @@ static int image_pending(Surf* surf) {
     return 0;
 }
 static void image_record(Surf* surf, u8* original, u32 size) {
+    if (g_perf_probes) perf_handoff_image(&g_perf_handoff, g_vk_drawn, surf->gva, surf->w, surf->h, surf->fkey);
     if (image_pending(surf)) {
         free(original);
         return;

@@ -154,7 +154,7 @@ void perf_tail_done(PerfTimes* p, uint64_t value, uint64_t now) {
 static void handoff_frame(PerfTimes* p, PerfHandoff* h, const PerfTail* t, uint64_t now) {
     const uint64_t first = LOAD(t->first), last = LOAD(t->last), t0 = LOAD(t->t0);
     if (!first || last < first || last - first >= PERF_SUBS) return;
-    uint64_t subs = 0, carry = 0, newest = 0, landed = 0;
+    uint64_t subs = 0, carry = 0, newest = 0, newest_noimg = 0, landed = 0;
     for (uint64_t v = first; v <= last; v++) {
         const PerfSub* s = &p->sub[v % PERF_SUBS];
         if (LOAD(s->v) != v) {
@@ -165,11 +165,16 @@ static void handoff_frame(PerfTimes* p, PerfHandoff* h, const PerfTail* t, uint6
         const int c = LOAD(s->carry_v) == v ? LOAD(s->carry) : 0;
         if (!c) continue;
         carry++, newest = v;
+        if (c & ~PCY_IMAGE) newest_noimg = v;
         for (int k = 0; k < PCY_KINDS; k++)
             if (c & 1 << k) __atomic_fetch_add(&h->kinds[k], 1, __ATOMIC_RELAXED);
         if (LOAD(s->landed) > landed) landed = LOAD(s->landed);
     }
     const uint64_t pos = !newest ? PH_POS : last - newest < PH_POS - 1 ? last - newest : PH_POS - 1;
+    const uint64_t pos_noimg = !newest_noimg               ? PH_POS
+                               : last - newest_noimg < PH_POS - 1 ? last - newest_noimg
+                                                                 : PH_POS - 1;
+    __atomic_fetch_add(&h->pos_noimg[pos_noimg], 1, __ATOMIC_RELAXED);
     const uint64_t last_seen = LOAD(p->sub[last % PERF_SUBS].seen);
     const uint64_t carry_seen = newest ? LOAD(p->sub[newest % PERF_SUBS].seen) : 0;
     __atomic_fetch_add(&h->frames, 1, __ATOMIC_RELAXED);
@@ -208,10 +213,22 @@ void perf_sub_landed(PerfTimes* p, uint64_t v, uint64_t now) {
     if (LOAD(s->v) == v) __atomic_store_n(&s->landed, now, __ATOMIC_RELEASE); /* under vk_lock, so in order */
 }
 void perf_handoff_compute(PerfHandoff* h, uint64_t now) { __atomic_store_n(&h->compute_last, now, __ATOMIC_RELEASE); }
-void perf_handoff_time(PerfHandoff* h, int part, uint64_t ns, uint64_t ops) {
+void perf_handoff_time(PerfHandoff* h, int part, uint64_t ns, uint64_t ops, uint64_t marked) {
     __atomic_fetch_add(&h->n[part], 1, __ATOMIC_RELAXED);
     __atomic_fetch_add(&h->ns[part], ns, __ATOMIC_RELAXED);
     if (ops) __atomic_fetch_add(&h->ops, ops, __ATOMIC_RELAXED);
+    if (marked) __atomic_fetch_add(&h->marked, marked, __ATOMIC_RELAXED);
+}
+void perf_handoff_frame_draws(PerfHandoff* h, uint64_t drawn) {
+    h->frame_draws = drawn - h->draws0;
+    if (h->img_open) h->img_last_frame = h->frame_draws, h->img_open = 0; /* the frame of the last image's write */
+    h->draws0 = drawn;
+}
+void perf_handoff_image(PerfHandoff* h, uint64_t drawn, uint64_t gva, uint32_t w, uint32_t hgt, uint32_t fkey) {
+    h->img_n++;
+    h->img_at += drawn - h->draws0;
+    h->img_last_at = drawn - h->draws0, h->img_open = 1;
+    h->img_gva = gva, h->img_w = w, h->img_h = hgt, h->img_fkey = fkey;
 }
 void perf_tail_freed(PerfTimes* p, uint64_t now) {
     for (unsigned i = 0; i < PERF_TAILS; i++) {
@@ -1254,15 +1271,21 @@ size_t perf_handoff_line(PerfHandoff* h, uint32_t frames, char* out, size_t size
                      "perf-handoff: frames=%u (a frame's tail at its increment: submissions, those a guest result "
                      "queued for the release thread in, by kind out/image/compute/payload/samples, where the last of "
                      "those sits (the last, 1, 2, 3, "
-                     "4+ before it, none: share of frames), ms from frame_end to its last landing, to the GPU's end of "
+                     "4+ before it, none: share of frames), the same with the storage image left out, ms from "
+                     "frame_end to its last landing, to the GPU's end of "
                      "it and of the last submission, and to the increment; frames with a compute landing after "
                      "frame_end and its ms; unregistered: landings from a submission never registered; then a "
-                     "frame's handler calls and ms, ops scanned) tails=%llu",
+                     "frame's handler calls and ms, ops walked whole and read at a mark; the storage images written "
+                     "a frame, their draws' mean place after frame_end, and the last one's place/its frame's draws, "
+                     "guest address, size and format) tails=%llu",
                      frames, (unsigned long long)n);
     at = putf(out, size, at, " subs=%.1f carry=%.1f kinds=", take64(&h->subs) / fn, take64(&h->carry) / fn);
     for (int k = 0; k < PCY_KINDS; k++) at = putf(out, size, at, "%s%.1f", k ? "/" : "", take64(&h->kinds[k]) / fn);
     at = putf(out, size, at, " pos=");
     for (unsigned k = 0; k <= PH_POS; k++) at = putf(out, size, at, "%s%.2f", k ? "/" : "", take64(&h->pos[k]) / fn);
+    at = putf(out, size, at, " pos_noimg=");
+    for (unsigned k = 0; k <= PH_POS; k++)
+        at = putf(out, size, at, "%s%.2f", k ? "/" : "", take64(&h->pos_noimg[k]) / fn);
     at = putf(out, size, at, " to_land=%.3f to_carry_gpu=%.3f to_last_gpu=%.3f to_incr=%.3f land_before=%.2f",
               take64(&h->to_land) / fn / 1e6, take64(&h->to_carry_gpu) / fn / 1e6, take64(&h->to_last_gpu) / fn / 1e6,
               take64(&h->to_incr) / fn / 1e6, take64(&h->land_before) / fn);
@@ -1273,7 +1296,13 @@ size_t perf_handoff_line(PerfHandoff* h, uint32_t frames, char* out, size_t size
     if (!ca) take64(&h->compute_ns);
     for (int k = 0; k < PH_PARTS; k++)
         at = putf(out, size, at, " %s=%.2f/%.3f", part[k], take64(&h->n[k]) / f, take64(&h->ns[k]) / f / 1e6);
-    at = putf(out, size, at, " ops=%.1f", take64(&h->ops) / f);
+    at = putf(out, size, at, " ops=%.1f marked=%.1f", take64(&h->ops) / f, take64(&h->marked) / f);
+    const uint64_t in = take64(&h->img_n); /* the GPU thread writes the line and these */
+    at = putf(out, size, at, " images=%.2f at=%.1f last=%llu/%llu@%llx %llux%llu fkey=%llx", in / f,
+              in ? take64(&h->img_at) / (double)in : 0.0, (unsigned long long)h->img_last_at,
+              (unsigned long long)h->img_last_frame, (unsigned long long)h->img_gva, (unsigned long long)h->img_w,
+              (unsigned long long)h->img_h, (unsigned long long)h->img_fkey);
+    if (!in) take64(&h->img_at);
     return at < size ? at : size - 1;
 }
 size_t perf_waits_line(PerfWaits* w, uint32_t frames, char* out, size_t size) {

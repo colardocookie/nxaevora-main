@@ -11,6 +11,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
 #include "nx/gpu/nvn/diag/draw_record.h"
+#include "nx/gpu/nvn/nvn_cmdlist.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/perf_times.h"
 #include "nx/gpu/frame_log.h"
@@ -957,6 +958,11 @@ int snx_main(int argc, char** argv) {
         if (g_perf_compare == 2)
             LOG("perf-compare: EXPERIMENT level 2, a landing's whole-size masked pass finds its changed runs, and its "
                 "walk and a binding's walk visit only the pending results on their pages\n");
+        const char* scan = getenv("SNX_ARCEUS_PERF_SCAN"); /* bench only (gpu/nvn/nvn_cmdlist.h, PERF-33 part 2) */
+        g_nvn_oplist_marks = scan && !strcmp(scan, "1"); /* before any list is recorded */
+        if (g_nvn_oplist_marks)
+            LOG("perf-scan: EXPERIMENT on, a list's fence, wait and call ops are marked as they are appended and the "
+                "submit reads them at their marks, not by walking every op\n");
         const char* patch_hash = getenv("SNX_ARCEUS_PATCH_HASH"); /* a fix, off by default (gpu/vk/buffer.c) */
         g_patch_hash = patch_hash && !strcmp(patch_hash, "1");
         if (g_patch_hash)

@@ -7185,69 +7185,88 @@ static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget
    serial of that sync, so a newer fence replaces it. Its signal is at the end of the frame job, later than in the
    library: a waiter waits longer, never shorter. A wait only checks what the serial order has reached. *flush is set
    to 1 when a fence token has FLUSH_FOR_CPU. Caller holds objs_lock and lists_lock, after the lists were added. */
-static uint64_t scan_ops; /* PERF-33: the ops queue_scan_list walked, under lists_lock */
+static uint64_t scan_ops, scan_marked; /* PERF-33: the ops walked whole and read by mark, under lists_lock */
+static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const NvnOpList* list, uint64_t list_handle,
+                            uint32_t depth, int* flush);
+/* one op of a list as the submit's scan handles it, from the walk or from a mark: a fence's token, a wait's check, a
+   call's target scanned in place */
+static void queue_scan_op(u64 queue_addr, QueueRec* q, const char* name, uint64_t list_handle, uint32_t depth,
+                          int* flush, const NvnOpHeader header, const void* payload) {
+    if (header.code == NVN_OP_FENCE_SYNC) {
+        const NvnOpFenceSync* op = payload;
+        NvnObj* so = nvn_objtab_valid(&objs, op->sync, op->generation) ? nvn_objtab_find(&objs, op->sync) : NULL;
+        if (!so || so->kind != NVN_OBJ_SYNC) {
+            LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx sync=%llx generation=%u is gone\n",
+                      name, (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                      (unsigned long long)op->sync, op->generation);
+        } else {
+            SyncRec* sync = so->data;
+            const uint32_t serial = fence_serial_next(sync);
+            if (!nvn_frame_add_token(&q->pending, op->sync, op->generation, serial)) {
+                LOG_LIMIT(QUEUE_LOG_LIMIT,
+                          "nvn-native: %s queue=%llx list=%llx sync=%llx does not fit in the pending frame\n", name,
+                          (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                          (unsigned long long)op->sync);
+            } else {
+                sync->serial = serial;
+                sync->syncpoint = q->channel_id;
+                sync->state = NVN_SYNC_PENDING;
+                if (op->flags & NVN_QUEUE_FENCE_FLUSH_FOR_CPU) *flush = 1;
+            }
+        }
+    } else if (header.code == NVN_OP_WAIT_SYNC) {
+        const NvnOpWaitSync* op = payload;
+        NvnObj* so = nvn_objtab_valid(&objs, op->sync, op->generation) ? nvn_objtab_find(&objs, op->sync) : NULL;
+        const SyncRec* sync = so && so->kind == NVN_OBJ_SYNC ? so->data : NULL;
+        if (!sync) {
+            LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx sync=%llx generation=%u is gone\n",
+                      name, (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                      (unsigned long long)op->sync, op->generation);
+        } else if (sync->state == NVN_SYNC_UNSIGNALED ||
+                   (sync->state == NVN_SYNC_PENDING && sync->syncpoint != q->channel_id)) {
+            /* a PENDING fence of this queue is earlier in the same pending frame, so it is in order */
+            LOG_LIMIT(QUEUE_LOG_LIMIT,
+                      "nvn-native: %s queue=%llx list=%llx sync=%llx is not reached before the wait\n", name,
+                      (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                      (unsigned long long)op->sync);
+        }
+    } else if (header.code == NVN_OP_CALL) {
+        const NvnOpCall* op = payload;
+        if (depth >= NVN_CALL_DEPTH_MAX) {
+            LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx call=%llx is deeper than %u\n", name,
+                      (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                      (unsigned long long)op->handle, NVN_CALL_DEPTH_MAX);
+            return; /* the next op, as the walk's continue */
+        }
+        const NvnOpList* target = nvn_list_find(&lists, op->handle);
+        if (!target) {
+            LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx call=%llx is not a live list\n", name,
+                      (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                      (unsigned long long)op->handle);
+            return; /* the next op, as the walk's continue */
+        }
+        queue_scan_list(queue_addr, q, name, target, op->handle, depth + 1, flush);
+    }
+}
+/* SNX_ARCEUS_PERF_SCAN=1 (PERF-33 part 2): a list with all its marks is read at them, in list order, as the walk would
+   reach them. Any other list, and a call's target without its marks, is walked whole as before */
 static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const NvnOpList* list, uint64_t list_handle,
                             uint32_t depth, int* flush) {
     size_t pos = 0;
     NvnOpHeader header;
     const void* payload;
+    if (nvn_oplist_marked(list)) {
+        for (uint32_t i = 0; i < list->nmarks; i++) {
+            pos = list->marks[i];
+            if (!nvn_oplist_next(list, &pos, &header, &payload)) break;
+            if (g_perf_probes) scan_marked++;
+            queue_scan_op(queue_addr, q, name, list_handle, depth, flush, header, payload);
+        }
+        return;
+    }
     while (nvn_oplist_next(list, &pos, &header, &payload)) {
         if (g_perf_probes) scan_ops++;
-        if (header.code == NVN_OP_FENCE_SYNC) {
-            const NvnOpFenceSync* op = payload;
-            NvnObj* so = nvn_objtab_valid(&objs, op->sync, op->generation) ? nvn_objtab_find(&objs, op->sync) : NULL;
-            if (!so || so->kind != NVN_OBJ_SYNC) {
-                LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx sync=%llx generation=%u is gone\n",
-                          name, (unsigned long long)queue_addr, (unsigned long long)list_handle,
-                          (unsigned long long)op->sync, op->generation);
-            } else {
-                SyncRec* sync = so->data;
-                const uint32_t serial = fence_serial_next(sync);
-                if (!nvn_frame_add_token(&q->pending, op->sync, op->generation, serial)) {
-                    LOG_LIMIT(QUEUE_LOG_LIMIT,
-                              "nvn-native: %s queue=%llx list=%llx sync=%llx does not fit in the pending frame\n", name,
-                              (unsigned long long)queue_addr, (unsigned long long)list_handle,
-                              (unsigned long long)op->sync);
-                } else {
-                    sync->serial = serial;
-                    sync->syncpoint = q->channel_id;
-                    sync->state = NVN_SYNC_PENDING;
-                    if (op->flags & NVN_QUEUE_FENCE_FLUSH_FOR_CPU) *flush = 1;
-                }
-            }
-        } else if (header.code == NVN_OP_WAIT_SYNC) {
-            const NvnOpWaitSync* op = payload;
-            NvnObj* so = nvn_objtab_valid(&objs, op->sync, op->generation) ? nvn_objtab_find(&objs, op->sync) : NULL;
-            const SyncRec* sync = so && so->kind == NVN_OBJ_SYNC ? so->data : NULL;
-            if (!sync) {
-                LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx sync=%llx generation=%u is gone\n",
-                          name, (unsigned long long)queue_addr, (unsigned long long)list_handle,
-                          (unsigned long long)op->sync, op->generation);
-            } else if (sync->state == NVN_SYNC_UNSIGNALED ||
-                       (sync->state == NVN_SYNC_PENDING && sync->syncpoint != q->channel_id)) {
-                /* a PENDING fence of this queue is earlier in the same pending frame, so it is in order */
-                LOG_LIMIT(QUEUE_LOG_LIMIT,
-                          "nvn-native: %s queue=%llx list=%llx sync=%llx is not reached before the wait\n", name,
-                          (unsigned long long)queue_addr, (unsigned long long)list_handle,
-                          (unsigned long long)op->sync);
-            }
-        } else if (header.code == NVN_OP_CALL) {
-            const NvnOpCall* op = payload;
-            if (depth >= NVN_CALL_DEPTH_MAX) {
-                LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx call=%llx is deeper than %u\n", name,
-                          (unsigned long long)queue_addr, (unsigned long long)list_handle,
-                          (unsigned long long)op->handle, NVN_CALL_DEPTH_MAX);
-                continue;
-            }
-            const NvnOpList* target = nvn_list_find(&lists, op->handle);
-            if (!target) {
-                LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx call=%llx is not a live list\n", name,
-                          (unsigned long long)queue_addr, (unsigned long long)list_handle,
-                          (unsigned long long)op->handle);
-                continue;
-            }
-            queue_scan_list(queue_addr, q, name, target, op->handle, depth + 1, flush);
-        }
+        queue_scan_op(queue_addr, q, name, list_handle, depth, flush, header, payload);
     }
 }
 
@@ -7266,7 +7285,7 @@ static void queue_submit_commands(CPU* c, u64 entry) {
     int probe = 0;
     objs_lock_take();
     const uint64_t t1 = t0 ? plat_ns() : 0;
-    if (t0) perf_handoff_time(&g_perf_handoff, PH_SUBMIT_LOCK, t1 - t0, 0);
+    if (t0) perf_handoff_time(&g_perf_handoff, PH_SUBMIT_LOCK, t1 - t0, 0, 0);
     QueueRec* q = queue_rec(c->x[0], name);
     int32_t count = (int32_t)c->x[1];
     if (!q || count <= 0) {
@@ -7295,7 +7314,7 @@ static void queue_submit_commands(CPU* c, u64 entry) {
     const uint64_t t2 = t0 ? plat_ns() : 0;
     int result = nvn_frame_add_lists(&q->pending, &lists, handles, handle_count, &skipped);
     const uint64_t t3 = t0 ? plat_ns() : 0;
-    if (t0) perf_handoff_time(&g_perf_handoff, PH_SUBMIT_ADD, t3 - t2, 0);
+    if (t0) perf_handoff_time(&g_perf_handoff, PH_SUBMIT_ADD, t3 - t2, 0, 0);
     if (result == NVN_FRAME_MEMORY) {
         free(handles);
         fatal("nvn-native: out of memory for the pending frame of a queue\n");
@@ -7307,12 +7326,13 @@ static void queue_submit_commands(CPU* c, u64 entry) {
         if (skipped)
             LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx skipped %u handles that are not live lists\n",
                       name, (unsigned long long)c->x[0], skipped);
-        const uint64_t ops0 = scan_ops;
+        const uint64_t ops0 = scan_ops, marked0 = scan_marked;
         for (uint32_t i = 0; i < handle_count; i++) {
             const NvnOpList* list = nvn_list_find(&lists, handles[i]);
             if (list) queue_scan_list(c->x[0], q, name, list, handles[i], 0, &flush);
         }
-        if (t0) perf_handoff_time(&g_perf_handoff, PH_SUBMIT_SCAN, plat_ns() - t3, scan_ops - ops0);
+        if (t0)
+            perf_handoff_time(&g_perf_handoff, PH_SUBMIT_SCAN, plat_ns() - t3, scan_ops - ops0, scan_marked - marked0);
         frame_submitted_lists += handle_count - skipped;
         frame_skipped_lists += skipped;
         probe = g_submit_probe;
@@ -7545,7 +7565,7 @@ static void queue_present_texture(CPU* c, u64 entry) {
     static void handler(CPU* c, u64 entry) {                                                                           \
         const uint64_t t0 = g_perf_probes ? plat_ns() : 0;                                                             \
         body(c, entry);                                                                                                \
-        if (t0) perf_handoff_time(&g_perf_handoff, part, plat_ns() - t0, 0);                                           \
+        if (t0) perf_handoff_time(&g_perf_handoff, part, plat_ns() - t0, 0, 0);                                        \
     }
 QUEUE_TIMED(h_queue_submit_commands, queue_submit_commands, PH_SUBMIT)
 QUEUE_TIMED(h_queue_fence_sync, queue_fence_sync, PH_FENCE)

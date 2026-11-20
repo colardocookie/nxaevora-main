@@ -10,6 +10,27 @@
 
 static uint32_t padded(uint32_t bytes) { return (bytes + NVN_OP_ALIGN - 1) & ~(NVN_OP_ALIGN - 1); }
 
+int g_nvn_oplist_marks;
+/* the op stored at pos is marked. One that cannot be (no memory, or past 32 bits) loses the list's marks, never
+   the op */
+static void mark(NvnOpList* list, size_t pos) {
+    if (list->marks_lost) return;
+    if (pos > UINT32_MAX) {
+        list->marks_lost = 1;
+        return;
+    }
+    if (list->nmarks == list->marks_cap) {
+        const uint32_t cap = list->marks_cap ? list->marks_cap * 2 : 16;
+        uint32_t* fresh = cap > list->marks_cap ? realloc(list->marks, (size_t)cap * sizeof *fresh) : NULL;
+        if (!fresh) {
+            list->marks_lost = 1;
+            return;
+        }
+        list->marks = fresh;
+        list->marks_cap = cap;
+    }
+    list->marks[list->nmarks++] = (uint32_t)pos;
+}
 int nvn_oplist_append(NvnOpList* list, NvnOpCode code, const void* payload, uint32_t bytes) {
     if (code <= NVN_OP_NONE || code >= NVN_OP_COUNT || bytes > NVN_OP_MAX_PAYLOAD || (bytes && !payload)) return 0;
     uint32_t body = padded(bytes);
@@ -26,6 +47,8 @@ int nvn_oplist_append(NvnOpList* list, NvnOpCode code, const void* payload, uint
     memcpy(list->data + list->used, &header, sizeof header);
     memcpy(list->data + list->used + sizeof header, payload, bytes);
     memset(list->data + list->used + sizeof header + bytes, 0, body - bytes);
+    if (g_nvn_oplist_marks && (code == NVN_OP_FENCE_SYNC || code == NVN_OP_WAIT_SYNC || code == NVN_OP_CALL))
+        mark(list, list->used);
     list->used = need;
     list->ops++;
     return 1;
@@ -65,6 +88,7 @@ int nvn_oplist_copy(NvnOpList* dst, const NvnOpList* src, NvnListStore* store, u
 
 void nvn_oplist_free(NvnOpList* list) {
     free(list->data);
+    free(list->marks); /* the only place marks go (publish moves them with the list) */
     *list = (NvnOpList){0};
 }
 

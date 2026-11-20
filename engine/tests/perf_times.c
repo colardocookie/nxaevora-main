@@ -170,17 +170,33 @@ static void test_handoff(void) {
     g_perf_probes = 0;
     perf_tail_queued(&p, 3, 316, 316, 316, 10000000);
     perf_tail_performed(&p, 3, 11000000); /* off: not summed */
-    perf_handoff_time(&g_perf_handoff, PH_SUBMIT, 380000, 0);
-    perf_handoff_time(&g_perf_handoff, PH_SUBMIT_SCAN, 250000, 33284);
+    perf_handoff_time(&g_perf_handoff, PH_SUBMIT, 380000, 0, 0);
+    perf_handoff_time(&g_perf_handoff, PH_SUBMIT_SCAN, 250000, 33284, 12);
+    perf_handoff_frame_draws(&g_perf_handoff, 100); /* a frame's draws start at 100 */
+    perf_handoff_image(&g_perf_handoff, 130, 0x1000, 64, 32, 0x2a);
+    perf_handoff_frame_draws(&g_perf_handoff, 150); /* its frame had 50 */
     perf_handoff_line(&g_perf_handoff, 1, line, sizeof line);
     CHECK(strstr(line, "perf-handoff: frames=1 (") &&
           strstr(line, ") tails=1 subs=5.0 carry=2.0 kinds=1.0/1.0/0.0/0.0/1.0 "));
-    CHECK(strstr(line, " pos=0.00/0.00/1.00/0.00/0.00/0.00 "));
+    CHECK(strstr(line, " pos=0.00/0.00/1.00/0.00/0.00/0.00 pos_noimg=0.00/0.00/1.00/0.00/0.00/0.00 "));
     CHECK(strstr(line, " to_land=1.200 to_carry_gpu=1.000 to_last_gpu=3.000 to_incr=4.000 land_before=0.00 "));
     CHECK(strstr(line, " compute_after=1.00/2.000 lost=0 unregistered=1 "));
     CHECK(strstr(line, " submit=1.00/0.380 submit_lock=0.00/0.000 ") && strstr(line, " submit_scan=1.00/0.250 "));
-    CHECK(strstr(line, " present=0.00/0.000 ops=33284.0"));
+    CHECK(strstr(line, " present=0.00/0.000 ops=33284.0 marked=12.0 ") &&
+          strstr(line, " images=1.00 at=30.0 last=30/50@1000 64x32 fkey=2a"));
     perf_handoff_line(&g_perf_handoff, 1, line, sizeof line); /* taken */
+    CHECK(strstr(line, " images=0.00 at=0.0 "));
+    g_perf_probes = 1; /* the newest carrier an image only: pos says the last, pos_noimg the one before it */
+    perf_sub_carry(&p, 317, PCY_OUT);
+    perf_sub_carry(&p, 318, PCY_IMAGE);
+    for (uint64_t v = 317; v <= 318; v++) perf_sub_queued(&p, v, 0, 12000000 + v);
+    perf_sub_seen(&p, 318, 13000000);
+    perf_tail_queued(&p, 4, 318, 318, 318, 12500000);
+    perf_tail_performed(&p, 4, 14000000);
+    g_perf_probes = 0;
+    perf_handoff_line(&g_perf_handoff, 1, line, sizeof line);
+    CHECK(strstr(line, " pos=1.00/0.00/0.00/0.00/0.00/0.00 pos_noimg=0.00/1.00/0.00/0.00/0.00/0.00 "));
+    perf_handoff_line(&g_perf_handoff, 1, line, sizeof line);
     CHECK(strstr(line, " tails=0 subs=0.0 ") && strstr(line, " unregistered=0 ") && strstr(line, " ops=0.0"));
 }
 static void test_tail_line(void) {
