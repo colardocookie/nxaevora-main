@@ -37,8 +37,12 @@ int mem_map(u64 address, u64 size, u32 state, u32 perm) {
     (void)address; (void)size; (void)state; (void)perm;
     assert(0); return -1;
 }
-void jit_code_changed(u64 pc, u64 size) { (void)pc; (void)size; assert(0); }
-GuestFn jit_wait(u64 pc) { (void)pc; assert(0); return NULL; }
+/* Code changes are refused except in test_fixed_resolution, which counts them */
+static int jit_allowed;
+static unsigned jit_changes;
+static void jit_compiled(CPU* c, u64 entry) { (void)c, (void)entry; }
+void jit_code_changed(u64 pc, u64 size) { (void)pc; (void)size; assert(jit_allowed); jit_changes++; }
+GuestFn jit_wait(u64 pc) { (void)pc; assert(jit_allowed); return jit_compiled; }
 
 static unsigned calls, boundaries, calls_this_render, entered_whole;
 /* A command's end check as the game makes it: only in an update entered with the frame on
@@ -253,6 +257,39 @@ static void unset_flag(const char* name) {
     assert(!unsetenv(name));
 #endif
 }
+/* The governor patch at CC35A4 (the user, 2026-11-20: fixed resolution by default): unset or 1 turns its range
+   check's SUB into MOV W9,#3, the governor's early return, 0 or any other value leaves it. */
+static void test_fixed_resolution(void) {
+    static u64 lo[1];
+    static const u32 len[1] = {0x2c8};
+    static u8 stale[1];
+    static GuestFn entry[1];
+    const SnxModule module = {.nfns = 1, .fn_lo = lo, .fn_len = len, .stale = stale, .entry_fn = entry};
+    const SnxModule* const saved_mod = g_mod;
+    const u64 saved_base = main_base, saved_lo = g_code_lo, saved_hi = g_code_hi, pc = 256;
+    const char* const values[] = {NULL, "1", "0", "2"};
+    g_mod = &module, main_base = pc - 0xcc35a4, lo[0] = pc, g_code_lo = 0, g_code_hi = sizeof memory;
+    for (unsigned i = 0; i < sizeof values / sizeof values[0]; i++) {
+        memset(memory + pc, 0, 0x2c8);
+        gw32(pc, 0xd10103ff), gw32(pc + 0x20, 0x51000509), gw32(pc + 0x24, 0x7100093f);
+        gw32(pc + 0x28, 0x54000308), gw32(pc + 0x94, 0xd65f03c0);
+        if (values[i]) flag("SNX_ARCEUS_FIXED_RESOLUTION", values[i]);
+        else unset_flag("SNX_ARCEUS_FIXED_RESOLUTION");
+        const int on = i < 2;
+        jit_allowed = 1, jit_changes = 0;
+        fixed_resolution_init();
+        jit_allowed = 0;
+        assert(gr32(pc + 0x20) == (on ? 0x52800069u : 0x51000509u) && jit_changes == (unsigned)on);
+        assert(gr32(pc) == 0xd10103ff && gr32(pc + 0x24) == 0x7100093f && gr32(pc + 0x94) == 0xd65f03c0);
+    }
+    /* A changed function is refused with the switch on */
+    unset_flag("SNX_ARCEUS_FIXED_RESOLUTION");
+    gw32(pc + 0x20, 0x51000509), gw32(pc + 0x24, 0);
+    fixed_resolution_init();
+    assert(gr32(pc + 0x20) == 0x51000509u);
+    memset(memory + pc, 0, 0x2c8);
+    g_mod = saved_mod, main_base = saved_base, g_code_lo = saved_lo, g_code_hi = saved_hi;
+}
 static void test_defaults_on(void) {
     static const char* const all[] = {
         "SNX_ARCEUS_TIMING_FIXES", "SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60",
@@ -335,7 +372,8 @@ static void test_defaults_on(void) {
         "SNX_ARCEUS_LIST_SCROLL_FIX", "SNX_ARCEUS_WALL_JUMP_FIX", "SNX_ARCEUS_LEDGE_FIX",
         "SNX_ARCEUS_MOVEMENT_FIX", "SNX_ARCEUS_CAPPED_FALL_FIX", "SNX_ARCEUS_AIR_STEERING_FIX",
         "SNX_ARCEUS_RIDE_SWAP_FIX", "SNX_ARCEUS_RIDE_RAMP_FIX",
-        "SNX_ARCEUS_DIRECT_MOVE_FIX", "SNX_ARCEUS_FIELD_WAZA_FIX", "SNX_ARCEUS_WAZA_OBJECT_FIX"
+        "SNX_ARCEUS_DIRECT_MOVE_FIX", "SNX_ARCEUS_FIELD_WAZA_FIX", "SNX_ARCEUS_WAZA_OBJECT_FIX",
+        "SNX_ARCEUS_FIXED_RESOLUTION"
     };
     for (unsigned i = 0; i < sizeof enabled / sizeof enabled[0]; i++)
         assert(arceus_switch_enabled(enabled[i], 1));
@@ -377,8 +415,7 @@ static void test_defaults_on(void) {
     unset_flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
     static const char* const probes[] = {
         "SNX_ARCEUS_CLOCK_TRACE", "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_CAMERA_TRACE",
-        "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE",
-        "SNX_ARCEUS_FIXED_RESOLUTION"
+        "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE"
     };
     for (unsigned i = 0; i < sizeof probes / sizeof probes[0]; i++)
         assert(!arceus_switch_enabled(probes[i], 0));
@@ -2393,6 +2430,7 @@ static void test_whole_step(void) {
 int main(void) {
     test_ride_swap();
     test_defaults_on();
+    test_fixed_resolution();
     test_capped_fall_body();
     test_fade_slots_free();
     test_list_scroll();

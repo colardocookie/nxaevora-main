@@ -1547,11 +1547,10 @@ static void timing_research_init(void) {
    The update averages GPU duration against 33.333 ms and chooses the 0.90/0.85,
    0.85/0.80 and 0.80/0.70 scene scales. Its mode setter is separate (CC3888):
    normal mode begins at 1.0/1.0, with explicit half-size/custom/special modes.
-   Keep those setters intact and skip only this automatic governor's update.
-   The native Vulkan render scale still controls the allocated image size. */
+   Keep those setters intact and skip only this automatic governor's update, by default on the PC port (=0 keeps
+   the governor). The native Vulkan render scale still controls the allocated image size. */
 static void fixed_resolution_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
+    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_FIXED_RESOLUTION", 1)) return;
     const u64 pc = main_base + 0xcc35a4;
     int covered = 0;
     if (!g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
