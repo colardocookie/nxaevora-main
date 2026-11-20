@@ -1028,9 +1028,9 @@ static void test_same(void) {
     int out;
     unsigned kinds;
     CHECK(perf_stamp_ask(&t, 0, 0x1000, 4, &out, &kinds) == PSA_UNKNOWN); /* nothing kept yet */
-    static PerfStamps far;
-    perf_stamp_add(&far, 1ull << 40, 16, 1, PSK_GPU); /* past the span's table */
-    CHECK(far.span_lost && !t.span_lost);
+    static PerfStamps beyond;
+    perf_stamp_add(&beyond, 1ull << 40, 16, 1, PSK_GPU); /* past the span's table */
+    CHECK(beyond.span_lost && !t.span_lost);
     perf_stamp_add(&t, 0x10100, 0x100, 5, PSK_GPU);
     perf_stamp_add(&t, 0x10000, 0, 9, PSK_GPU); /* empty, */
     perf_stamp_add(&t, 0x10000, 0x10, 9, PSK_N); /* no such writer: nothing */
