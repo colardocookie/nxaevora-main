@@ -3,7 +3,8 @@
 /* SNX_ARCEUS_NVN_BLEND_TARGETS (gpu/nvn/nvn_blend_slots.h): the methods a draw sends after blend binds to two targets,
    decoded from nvn_bind_blend_words as the replay sends them. Both targets' factor runs in bind order, the methods
    every bind writes ending with the last bind's values, one run for two binds of one target, and the count of binds a
-   single slot would have replaced. The single slot of today's path sends only the last bind's words */
+   single slot would have replaced, counted once for each bind. The single slot of today's path sends only the last
+   bind's words */
 #include "nx/gpu/nvn/nvn_blend_slots.h"
 #include "nx/gpu/nvn/nvn_params.h"
 #include <stdio.h>
@@ -129,6 +130,16 @@ int main(void) {
     nvn_blend_slots_store(&s, T0_W0 | 7u, T0_W1);
     draw(&s, &sent);
     CHECK(s.replaced == 0 && s.binds[7] == 1 && first(&sent, FUNC0 + 7u * 8u) >= 0 && count(&sent, FUNC0) == 0);
+    /* bits 3 to 7 of the first word are not the target: 0x78 | 2 is target 2 (a wider mask indexes past the slots) */
+    memset(&s, 0, sizeof s);
+    nvn_blend_slots_store(&s, (T0_W0 & ~0xFFu) | 0x7Au, T0_W1);
+    CHECK(s.binds[2] == 1 && s.slot[2].dirty && s.slot[2].w[0] == ((T0_W0 & ~0xFFu) | 0x7Au));
+    /* a bind while two other targets wait counts once, not once for each */
+    memset(&s, 0, sizeof s);
+    nvn_blend_slots_store(&s, T0_W0, T0_W1);
+    nvn_blend_slots_store(&s, T1_W0, T1_W1);
+    nvn_blend_slots_store(&s, T0_W0 | 2u, T0_W1);
+    CHECK(s.replaced == 2);
     printf("%s nvn_blend_slots\n", failures ? "FAIL" : "PASS");
     return failures != 0;
 }
