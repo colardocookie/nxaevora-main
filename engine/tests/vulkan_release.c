@@ -627,7 +627,9 @@ int main(void) {
                    *w = strstr(line, " other.written=");
         assert(h && c && w && strstr(line, " other.query="));
         const double nh = atof(h + 13), nc = atof(c + 12), nw = atof(w + 15);
-        assert(nh >= 1 && nh == nc && nc == nw && nc < payload_writes); /* the landings write without the split */
+        assert(nh >= 1 && nh == nc && nc < payload_writes); /* the landings write without the split */
+        /* a notice each write, or with bit 4 one each hold (notice_close's) */
+        assert(g_perf_small & PSM_NOTICE ? nw == many_calls && many_calls >= 1 : nc == nw);
         perf_handoff_line(&g_perf_handoff, 1, line, sizeof line); /* PERF-33: every gated release was registered */
         assert(strstr(line, " unregistered=0 "));
     }

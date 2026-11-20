@@ -150,11 +150,12 @@ static void write_deferred(u64 gva, const void* src, u64 size) {
         gpu_mem_notice_begin();
         g_notice_open = 1;
     }
-    const u64 t0 = g_perf_probes ? plat_ns() : 0;
+    const int timed = g_perf_probes; /* on the switch, not on a clock that may read 0 */
+    const u64 t0 = timed ? plat_ns() : 0;
     gmem_before_write(gva, size);
-    const u64 t1 = t0 ? plat_ns() : 0;
+    const u64 t1 = timed ? plat_ns() : 0;
     gmem_write_raw(gva, src, size);
-    if (t0) {
+    if (timed) {
         const u64 t2 = plat_ns();
         perf_wait_note(PW_HOOKS, NULL, t1 - t0);
         perf_wait_note(PW_COPY, NULL, t2 - t1);
@@ -167,9 +168,10 @@ static void write_deferred(u64 gva, const void* src, u64 size) {
 }
 /* the hold's one notice, then the pending count lowered */
 static void notice_close(void) {
-    const u64 t0 = g_perf_probes ? plat_ns() : 0;
+    const int timed = g_perf_probes;
+    const u64 t0 = timed ? plat_ns() : 0;
     gpu_mem_written_many(g_notice_gva, g_notice_size, g_notice_n);
-    if (t0) perf_wait_note(PW_WRITTEN, NULL, plat_ns() - t0);
+    if (timed) perf_wait_note(PW_WRITTEN, NULL, plat_ns() - t0);
     g_notice_n = 0;
     g_notice_open = 0;
     gpu_mem_notice_end();
