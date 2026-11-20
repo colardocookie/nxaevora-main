@@ -259,7 +259,10 @@ static void submit_through(u64 gate) {
 /* PERF-33 (research 05:16): the one place a result is queued for the release thread, sub the submission it is
    recorded in. Every producer calls it where it queues one, under vk_lock, testing the switch first. The count
    reads it, and a later gate of the increment will, not a list of kinds. A landing never registered is counted */
-void vk_release_result(u64 sub, int kind) { perf_sub_carry(&g_perf, sub, kind); }
+void vk_release_result(u64 sub, int kind) {
+    perf_sub_carry(&g_perf, sub, kind);
+    perf_handoff_result(&g_perf_handoff, kind, g_vk_drawn); /* its place among the frame's draws (research 08:52) */
+}
 static void release(Release* r) {
     SNX_ZONE_V(z, "vk release queue", r->samples);
     vk_lock();

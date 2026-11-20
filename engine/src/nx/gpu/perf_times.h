@@ -113,8 +113,10 @@ typedef struct {
        carry_v (registered while it is recorded, before it is queued here), and when the last of its landings was */
     uint64_t carry_v, landed;
     int carry;
+    uint32_t kind_n[5]; /* and how many of each kind (PCY_* by bit), with carry_v (research 08:52) */
 } PerfSub;
 enum { PCY_OUT = 1, PCY_IMAGE = 2, PCY_COMPUTE = 4, PCY_PAYLOAD = 8, PCY_SAMPLES = 16, PCY_KINDS = 5 };
+_Static_assert(PCY_KINDS == sizeof((PerfSub){0}.kind_n) / sizeof(uint32_t), "a count per kind");
 /* A tail's times, each written once by the thread that reaches that point, and closed when both its vk_lock release
    and the game's wake are in */
 #define PERF_TAILS 4u
@@ -209,12 +211,18 @@ typedef struct { /* all atomic */
        and the last one's place, frame (its frame's draws), guest address, size and format. The GPU thread's */
     uint64_t img_n, img_at, draws0, frame_draws, img_last_at, img_last_frame, img_gva, img_w, img_h, img_fkey;
     int img_open; /* an image was written in the frame not yet presented */
+    /* research 08:52: the frame's last submission's results by kind, how many and in how many frames; each kind's
+       last registration's place among the frame's draws (res_at, under vk_lock), summed with the frames it came in;
+       and the frame's draws summed over the presents */
+    uint64_t last_n[PCY_KINDS], last_has[PCY_KINDS], res_at[PCY_KINDS], res_place[PCY_KINDS], res_frames[PCY_KINDS];
+    uint64_t draws_sum, presents;
 } PerfHandoff;
 extern PerfHandoff g_perf_handoff;
 void perf_handoff_compute(PerfHandoff* h, uint64_t now);
 void perf_handoff_time(PerfHandoff* h, int part, uint64_t ns, uint64_t ops, uint64_t marked);
 /* at a present's frame_end, drawn the draws so far; at a storage image's write, drawn and the image */
 void perf_handoff_frame_draws(PerfHandoff* h, uint64_t drawn);
+void perf_handoff_result(PerfHandoff* h, int kind, uint64_t drawn); /* a registration of kind with drawn draws so far */
 void perf_handoff_image(PerfHandoff* h, uint64_t drawn, uint64_t gva, uint32_t w, uint32_t hgt, uint32_t fkey);
 size_t perf_handoff_line(PerfHandoff* h, uint32_t frames, char* out, size_t size);
 /* the release thread spent [start, end) in state (REL_*), landing outputs storage outputs while holding vk_lock */
