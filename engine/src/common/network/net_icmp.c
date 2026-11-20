@@ -8,7 +8,7 @@
    the network works). Other ICMP messages are accepted and dropped.
 
    Three ways to get the echo answered, the first that works:
-   - the host's unprivileged ping socket (SOCK_DGRAM + IPPROTO_ICMP: Linux within net.ipv4.ping_group_range, macOS).
+   - the host's unprivileged ping socket (SOCK_DGRAM + IPPROTO_ICMP: Linux within net.ipv4.ping_group_range).
      Real ICMP: the kernel sends the request and hands back the reply. It rewrites the echo identifier to the
      socket's, which the guest of a raw socket gets back as it sent it.
    - the host's ping program, once per request, the way Eden does it (Eden notes that opening a socket for this
@@ -161,14 +161,6 @@ static int run_echo(Request* q, uint8_t** data, size_t* size) {
     IcmpCloseHandle(h);
     return ok;
 }
-#elif defined(__ANDROID__) && __ANDROID_API__ < 28
-/* posix_spawn comes with Android 9, and the app runs on older ones: there echoes have the ping socket alone */
-static int run_echo(Request* q, uint8_t** data, size_t* size) {
-    (void)q;
-    (void)data;
-    (void)size;
-    return 0;
-}
 #else
 static int run_echo(Request* q, uint8_t** data, size_t* size) {
     char addr[64], wait[32];
@@ -178,7 +170,7 @@ static int run_echo(Request* q, uint8_t** data, size_t* size) {
     snprintf(wait, sizeof wait, "%lld", (long long)((q->wait_us + 999999) / 1000000));
     const char* argv[] = {"ping", q->v6 ? "-6" : "-4", "-n", "-q", "-c", "1", "-W", wait, addr, NULL};
 #else
-    /* the BSDs and macOS take milliseconds, and ping6 for IPv6 */
+    /* the BSDs take milliseconds, and ping6 for IPv6 */
     snprintf(wait, sizeof wait, "%lld", (long long)(q->wait_us / 1000));
     const char* argv[] = {q->v6 ? "ping6" : "ping", "-n", "-q", "-c", "1", "-W", wait, addr, NULL};
 #endif
@@ -432,7 +424,7 @@ static int64_t icmp_recv(SnxSocket* s, void* data, size_t size, int flags, SnxSo
             if (r >= 0) {
                 uint8_t* msg = buf;
                 size_t n = (size_t)r;
-                /* macOS hands datagram ICMP sockets the IP header too */
+                /* the host may hand datagram ICMP sockets the IP header too */
                 if (!is_v6(s) && n >= 20 && (msg[0] >> 4) == 4 && msg[9] == SNX_IPPROTO_ICMP) {
                     size_t hl = (size_t)(msg[0] & 15) * 4;
                     if (hl <= n) msg += hl, n -= hl;

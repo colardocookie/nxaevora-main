@@ -22,7 +22,7 @@ import sys
 import time
 
 # The end of a key that changes from one entry of a cache to the next: a run's number and attempt, a hashFiles and
-# what follows it (android-llvm's NDK path), setup-msys2's hash of its package files
+# what follows it, setup-msys2's hash of its package files
 VOLATILE = re.compile(r'-\d+-\d+$|-[0-9a-f]{64}(-.*)?$|-files:[0-9a-f]+$')
 PULL = re.compile(r'refs/pull/(\d+)/(merge|head)')
 

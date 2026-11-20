@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* nxaevora-engine's main, the program's only one: the Switch driver the build has is a library linked into it, run by
-   the name the program was started under (nxaevora-engine-switch: a link beside it on Linux and macOS), or by that name
+   the name the program was started under (nxaevora-engine-switch: a link beside it on Linux), or by that name
    as its first argument (nxaevora-engine nxaevora-engine-switch ..., how the launcher runs it on Windows, which has no
    links). Any other name is the Switch driver, which takes a game's copy's name for the game it runs, or in a build
    without it the one driver there is. One program carries LLVM, SDL and the code they share once */
@@ -15,15 +15,6 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-#if defined(__APPLE__)
-#include <TargetConditionals.h>
-#if TARGET_OS_IOS
-/* UIKit's app is SDL's: this makes the main below SDL_main, run from the real main SDL provides, which starts the app
-   (UIApplicationMain) whose run loop the menu's window needs. Without it SDL_Init fails with "Application didn't
-   initialize properly" and the screen stays black */
-#include <SDL3/SDL_main.h>
-#endif
-#endif
 
 typedef struct {
     const char* name;                 /* its program's name, the link's */
@@ -59,7 +50,6 @@ static const Driver* named(const char* path) {
 static int has_driver(const char* name) { return named(name) != NULL; }
 #endif
 
-/* Android's game activity finds it by name in libscarletnx.so (nx/runtime/platform/android_run.c does the same) */
 __attribute__((visibility("default"))) int main(int argc, char** argv);
 
 int main(int argc, char** argv) {

@@ -66,7 +66,7 @@ cd games/ppc64le/App && qemu-ppc64le ./App -H --seconds=120 --shot=/path/to/shot
 
 ## Host pages larger than 4 KiB
 
-Most ppc64le distributions, Debian's among them, run kernels with 64 KiB pages, and Apple silicon and some AArch64
+Most ppc64le distributions, Debian's among them, run kernels with 64 KiB pages, and some AArch64
 kernels use 16 KiB ones. The Switch maps memory in 4 KiB pages, which a host can only commit and protect in its own,
 so `src/nx/memory/mem.c` keeps the guest's pages in its block list and commits whole host pages under them. Freeing a
 guest page decommits its host page once nothing else in it is mapped, and zeroes the page otherwise, so it reads zero

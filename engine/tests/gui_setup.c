@@ -5,7 +5,7 @@
    user), what it refuses, the user's page with users.ini there, the fixed uid kept for its saves, a notice
    alone after an update, --debug, the question's place as options-dialog says, and Skip */
 #include <SDL3/SDL.h>
-/* the keyboards main.c asks for: SDL keeps no count, and one asked for and dropped in a frame stays up on Android */
+/* the keyboards main.c asks for: SDL keeps no count */
 static int keyboards;
 static bool keyboard_asked(SDL_Window* window) {
     ++keyboards;

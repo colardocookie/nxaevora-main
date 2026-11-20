@@ -4,7 +4,7 @@
 #
 # The compiler is SNX_GLSLANG when it is set. Otherwise it is KhronosGroup's glslang release for the host, a CPM package
 # pinned by its SHA-256 like the libraries (cmake/dependencies.cmake), on the hosts it publishes builds for (Linux
-# x86-64, Windows x86-64, macOS); elsewhere (FreeBSD, Linux on ARM) the glslangValidator on PATH, from the system's
+# x86-64, Windows x86-64); elsewhere (FreeBSD, Linux on ARM) the glslangValidator on PATH, from the system's
 # glslang package. Cross builds run the host's, since the shader is the same for every target.
 
 set(SNX_GLSLANG "" CACHE FILEPATH "glslangValidator to compile shaders with (empty: the pinned release, or PATH)")
@@ -17,9 +17,6 @@ if(NOT SNX_GLSLANG)
     elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows" AND CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
         set(snx_glslang_asset windows-x86_64-release.zip)
         set(snx_glslang_sha256 82bf434e69b9bb4829de7e2b4bc2c5e7a7861e53d66cf75e5cc70f5f694a8d9b)
-    elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
-        set(snx_glslang_asset macos-universal-release.tar.gz)
-        set(snx_glslang_sha256 4f8c05f2888a73ed0b7b274bc524af9130e09ae94b43c0f3f9ed83cfae852834)
     endif()
     if(snx_glslang_asset)
         CPMAddPackage(NAME glslang-tools VERSION ${snx_glslang_version}

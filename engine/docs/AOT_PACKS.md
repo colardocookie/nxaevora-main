@@ -29,11 +29,6 @@ runtime library, the CPU and the hooks, so another AOT level neither drops it no
 their cache are keyed by the GPU, its driver and the build, so no level touches them. A game plays the same at any
 pair of levels until a pack is built.
 
-On Android and iOS the JIT compiles at O0, as any other level breaks it there, and its level is no setting at all: a
-phone's launcher lists no `JIT optimization` row. Every cache a phone writes is O0, and the launcher does not compare
-the two levels there, as a phone's AOT level could only be made to match by recompiling every game at 0. A pack built
-on a phone links the cached code as it is.
-
 The key also contains the ABI, IR object version, target triple, LLVM version, runtime library, host CPU and its
 features, the SVC/hook mode, and whether the SLP vectorizer, FPSR's flags and volatile guest accesses are on. Those
 must match too; the driver validates the full key when it opens the cache. A runtime rebuild can therefore invalidate

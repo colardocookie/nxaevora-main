@@ -3,7 +3,7 @@
 /* The part of every game module the backends don't generate per game: the helpers (cpu_helpers.c) and the C library
    functions LLVM lowers memory intrinsics to. It is compiled once, when the recompiler is built, with the project's Clang and the flags
    toolchain.c gives generated C (-march=native: build == host == target), and linked into each
-   module by link_elf.c, link_coff.c or link_macho.c. The modules import nothing, so they need no dynamic symbol resolution.
+   module by link_elf.c or link_coff.c. The modules import nothing, so they need no dynamic symbol resolution.
    It has no writable globals (a miss goes to RtAPI.miss), so the runtime JIT loads a copy of its own into the code
    arena (jit_service.c) without anything being kept twice */
 #include "common/cpu/aarch64/cpu.h"

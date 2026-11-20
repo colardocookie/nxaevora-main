@@ -13,7 +13,7 @@
    The first two are shared memory mapped twice: the region in the arena, which code runs from and which never
    becomes writable, and a read-write view elsewhere that the loader writes through, with every address computed for
    the arena. So a load goes next to code other threads are running, on the same pages, with no page writable and
-   executable in one view (W^X) and no protection change per load (macOS has one view of them: below). The data region
+   executable in one view (W^X) and no protection change per load. The data region
    is private memory, made read-write a page at a time as loads reach it.
 
    A load's symbols resolve to the load's own definitions first, then to the loader's table: the globals of earlier
@@ -29,8 +29,7 @@
    AArch64 needs more: the instruction cache is invalidated at the executable view's addresses, and every core of the
    process synchronizes its instruction stream (membarrier's PRIVATE_EXPEDITED_SYNC_CORE) before the address goes out,
    since a core may have fetched those bytes before they were written. An AArch64 Linux kernel without it (before
-   4.16) gets no loader. XNU has no membarrier: on macOS each load stops every other thread of the process off its core
-   (thread_get_state), and a thread comes back through a context switch, which XNU synchronizes.
+   4.16) gets no loader.
 
    x86-64 and AArch64 ELF hosts with memfd_create (Linux) or SHM_ANON (FreeBSD), and x86-64 Windows 10 (1803) and
    later, whose objects are COFF. There the views are a pagefile-backed section (CreateFileMapping, with
@@ -44,14 +43,7 @@
    the arena directly: the runtime's functions have a TOC of their own, which only pointer calls (RtAPI) switch to.
    The runtime JIT's arena shares the TOC of the AOT module its units call and jump into (snx_code_loader_new_toc):
    the arena is placed within 32-bit reach of the module's TOC, which every load keeps in r2 instead, so a guest's
-   jump between the module and a load, either way, leaves r2 as the code it reaches wants it.
-
-   macOS on Apple silicon loads ELF objects too, which the IR backend writes there with Darwin's calling convention
-   (snx_ir_new_jit). Memory becomes executable there only as MAP_JIT memory, which can't be shared or placed: the code
-   and read-only data are one MAP_JIT mapping, which each thread sees either writable or executable
-   (pthread_jit_write_protect_np). The loading thread sees it writable while it writes a load, every other thread
-   executable, so no thread can write and run it at once, and nothing loaded may run on the loading thread during
-   snx_code_load (the resolver included). Not iOS, where an app may not make memory executable */
+   jump between the module and a load, either way, leaves r2 as the code it reaches wants it. */
 #ifndef SNX_RECOMPILER_LLVM_CODE_LOADER_H
 #define SNX_RECOMPILER_LLVM_CODE_LOADER_H
 #include "common/utilities/common.h"

@@ -7,10 +7,6 @@
 /* MAP_ANONYMOUS (snx_vm_reserve) is POSIX only since 2024: older glibc and musl define it with this */
 #define _DEFAULT_SOURCE
 #endif
-#ifdef __APPLE__
-/* the POSIX names above would hide Darwin's own (the sysctl and dyld types) */
-#define _DARWIN_C_SOURCE
-#endif
 #include "common/utilities/common.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/bits.h"
@@ -48,15 +44,6 @@
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #include <sys/user.h> /* struct kinfo_proc */
-#endif
-#ifdef __APPLE__
-#include <TargetConditionals.h>
-#include <libkern/OSCacheControl.h> /* sys_icache_invalidate */
-#include <mach-o/dyld.h>
-#include <mach/mach.h>
-#if TARGET_OS_IPHONE
-#include <os/proc.h>
-#endif
 #endif
 
 void* snx_alloc(size_t size) {
@@ -482,15 +469,6 @@ char* snx_executable(const char* argv0) {
         buf[n] = 0;
         return snx_strdup(buf);
     }
-#elif defined(__APPLE__)
-    char buf[8192];
-    uint32_t size = sizeof(buf);
-    char* resolved;
-    if (!_NSGetExecutablePath(buf, &size) && (resolved = realpath(buf, NULL)) != NULL) {
-        char* path = snx_strdup(resolved);
-        free(resolved);
-        return path;
-    }
 #endif
     {
         /* the program's own file, where snx_find_tool keeps the name of a link to it */
@@ -808,50 +786,6 @@ int snx_symlink(const char* target, const char* link) {
     return symlink(target, link) != 0;
 #endif
 }
-char* snx_vulkan_driver(const char* program) {
-#ifdef __APPLE__
-    /* beside the program: the copy a game's runtime is deployed with (snx_deploy_vulkan_driver), which is outside the
-       app that carries the library; then the app bundle's Frameworks, ../Frameworks from its Contents/MacOS; then the
-       framework an iOS app holds in the bundle itself */
-    static const char* const own[] = {"libMoltenVK.dylib", "../Frameworks/libMoltenVK.dylib",
-                                      "Frameworks/MoltenVK.framework/MoltenVK"};
-    char* dir = snx_dirname(program);
-    char* path = NULL;
-    for (size_t i = 0; !path && dir && i < sizeof own / sizeof* own; ++i) {
-        char* found = snx_path_join(dir, own[i]);
-        if (found && snx_is_file(found)) path = found;
-        else free(found);
-    }
-    free(dir);
-    return path;
-#else
-    (void)program;
-    return NULL;
-#endif
-}
-int snx_deploy_vulkan_driver(const char* program, const char* folder) {
-    char *from = snx_vulkan_driver(program), why[256];
-    int rc = 0;
-    /* the system's loader serves everywhere else, and a build that carries none (a checkout's) leaves the system's */
-    if (!from) return 0;
-    char* to = snx_path_join(folder, "libMoltenVK.dylib");
-    if (!to) {
-        snx_error("cannot name the Vulkan driver's place in %s", folder);
-        free(from);
-        return 1;
-    }
-    /* A second name where the disk allows one, so each game does not hold a copy, else a copy. A read-only app image,
-       and an app macOS translocated, take no second name of the library they carry, which is why the copy follows a
-       link that failed. A name of another app's library is broken rather than written through, which would change that
-       app's library and signature too */
-    if (snx_is_file(to) && snx_remove_tree(to))
-        rc = snx_error("cannot remove the Vulkan driver at %s: %s", to, snx_os_error(why, sizeof why));
-    else if (snx_link_file(from, to) && snx_copy_file(from, to))
-        rc = snx_error("cannot put the Vulkan driver %s in %s: %s", from, folder, snx_os_error(why, sizeof why));
-    free(to);
-    free(from);
-    return rc;
-}
 int snx_path_within(const char* path, const char* parent) {
     char *a = snx_absolute(path), *b = snx_absolute(parent);
     size_t i = 0;
@@ -1055,10 +989,10 @@ int snx_same_file(const char* a, const char* b) {
 #endif
 }
 /* The per-user data folder, an installed build's and a build tree's: $XDG_DATA_HOME/nxaevora or
-   ~/.local/share/nxaevora, ~/Library/Application Support/nxaevora on macOS, %APPDATA%\nxaevora on Windows. These are
-   the folders SDL_GetPrefPath("nxaevora", ...) gives the GUI; the app's Documents on iOS. NULL when the environment
+   ~/.local/share/nxaevora, %APPDATA%\nxaevora on Windows. These are
+   the folders SDL_GetPrefPath("nxaevora", ...) gives the GUI. NULL when the environment
    names no home */
-#if !defined(_WIN32) && !defined(SNX_IOS)
+#if !defined(_WIN32)
 /* $var/name, else ~/fallback/name: the XDG spec ignores a relative path */
 static char* home_folder_named(const char* var, const char* fallback, const char* name) {
     const char* base = var ? getenv(var) : NULL;
@@ -1075,26 +1009,15 @@ char* snx_user_data_dir(void) {
 #ifdef _WIN32
     const char* base = getenv("APPDATA");
     return base && base[0] ? snx_path_join(base, SNX_DATA_NAME) : NULL;
-#elif defined(SNX_IOS)
-    /* the app's Documents, which the Files app and the Finder show the user (UIFileSharingEnabled, dist/apple) */
-    const char* home = getenv("HOME");
-    return home && home[0] ? snx_path_join(home, "Documents") : NULL;
-#elif defined(__APPLE__)
-    return home_folder_named(NULL, "Library/Application Support", SNX_DATA_NAME);
 #else
     return home_folder_named("XDG_DATA_HOME", ".local/share", SNX_DATA_NAME);
 #endif
 }
 /* the older version's user data folder: SNX_OLD_DATA_NAME where SNX_DATA_NAME is now */
 static char* old_user_data_dir(void) {
-#if defined(__ANDROID__) || defined(SNX_IOS)
-    /* iOS keeps its data in the app's Documents, and Android's old folder is a game's own: no separate old folder */
-    return NULL;
-#elif defined(_WIN32)
+#ifdef _WIN32
     const char* base = getenv("APPDATA");
     return base && base[0] ? snx_path_join(base, SNX_OLD_DATA_NAME) : NULL;
-#elif defined(__APPLE__)
-    return home_folder_named(NULL, "Library/Application Support", SNX_OLD_DATA_NAME);
 #else
     return home_folder_named("XDG_DATA_HOME", ".local/share", SNX_OLD_DATA_NAME);
 #endif
@@ -1106,16 +1029,6 @@ char* snx_user_dir(int kind) {
     if (kind == SNX_USER_CONFIG) return home_folder_named("XDG_CONFIG_HOME", ".config", SNX_DATA_NAME);
     if (kind == SNX_USER_STATE) return home_folder_named("XDG_STATE_HOME", ".local/state", SNX_DATA_NAME);
     if (kind == SNX_USER_CACHE) return home_folder_named("XDG_CACHE_HOME", ".cache", SNX_DATA_NAME);
-#endif
-#ifdef SNX_IOS
-    /* the Files app shows Documents: what is not the player's to move (settings, state, caches) is in Library, which the system makes */
-    if (kind != SNX_USER_DATA) {
-        const char* home = getenv("HOME");
-        char* base = home && home[0] ? snx_path_join(home, "Library/" SNX_DATA_NAME) : NULL;
-        dir = base ? snx_path_join(base, kind_names[kind]) : NULL;
-        free(base);
-        return dir;
-    }
 #endif
     data = snx_user_data_dir();
     if (!data || kind == SNX_USER_DATA) return data;
@@ -1134,9 +1047,6 @@ int snx_app_dir(const char* folder) {
     if (full && !app)
         app = !strncmp(base, SNX_PORTABLE_DIR, strlen(SNX_PORTABLE_DIR)) &&
               (!base[strlen(SNX_PORTABLE_DIR)] || snx_is_separator(base[strlen(SNX_PORTABLE_DIR)]));
-#ifdef __ANDROID__
-    if (full && !app) app = same_folder(full, SNX_ANDROID_DIR);
-#endif
     free(user);
     free(full);
     return app;
@@ -1384,7 +1294,7 @@ char* snx_dump_name(const char* input) {
 }
 const char* snx_folder_unfit(const char* folder, int run) {
     char* probe;
-#if defined(ST_NOEXEC) && !defined(__ANDROID__) /* there a game's code loads from a copy in the cache */
+#if defined(ST_NOEXEC)
     struct statvfs st;
 #endif
     if (!snx_path_exists(folder)) return "is not there";
@@ -1394,7 +1304,7 @@ const char* snx_folder_unfit(const char* folder, int run) {
     if (!probe) return "cannot be written";
     snx_remove_tree(probe);
     free(probe);
-#if defined(ST_NOEXEC) && !defined(__ANDROID__)
+#if defined(ST_NOEXEC)
     if (run && !statvfs(folder, &st) && (st.f_flag & ST_NOEXEC)) return "is on a disk that runs no programs (noexec)";
 #else
     (void)run;
@@ -1473,7 +1383,7 @@ unsigned snx_cpu_count(void) {
     SYSTEM_INFO info;
     GetSystemInfo(&info);
     return info.dwNumberOfProcessors ? info.dwNumberOfProcessors : 1;
-#elif defined(__linux__) || defined(__APPLE__)
+#elif defined(__linux__)
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (unsigned)n : 1;
 #elif defined(__FreeBSD__)
@@ -1499,13 +1409,7 @@ size_t snx_vm_page_size(void) {
 #endif
 }
 SnxU64 snx_footprint(void) {
-#if defined(__APPLE__)
-    task_vm_info_data_t info;
-    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
-    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) == KERN_SUCCESS)
-        return info.phys_footprint;
-    return 0;
-#elif defined(__linux__)
+#if defined(__linux__)
     unsigned long long pages = 0, resident = 0;
     FILE* f = fopen("/proc/self/statm", "r");
     if (!f) return 0;
@@ -1540,21 +1444,7 @@ SnxU64 snx_process_cpu_ns(void) {
 #endif
 }
 int snx_memory_available(SnxU64* bytes) {
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-    size_t left = os_proc_available_memory(); /* 0 in the simulator, which has no limit */
-    if (!left) return 0;
-    *bytes = left;
-    return 1;
-#elif defined(__APPLE__)
-    vm_statistics64_data_t vm;
-    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
-    vm_size_t page = 0;
-    if (host_page_size(mach_host_self(), &page) != KERN_SUCCESS ||
-        host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&vm, &count) != KERN_SUCCESS)
-        return 0;
-    *bytes = ((SnxU64)vm.free_count + vm.inactive_count + vm.purgeable_count) * page;
-    return 1;
-#elif defined(__linux__)
+#if defined(__linux__)
     char line[128];
     unsigned long long kib = 0;
     int found = 0;
@@ -1612,9 +1502,6 @@ void snx_vm_release(void* p, size_t size) {
 void snx_vm_flush_code(void* p, size_t size) {
 #ifdef _WIN32
     FlushInstructionCache(GetCurrentProcess(), p, size);
-#elif defined(__APPLE__)
-    /* the system's own: iOS links no compiler runtime for __builtin___clear_cache's __clear_cache */
-    sys_icache_invalidate(p, size);
 #else
     /* nothing on x86-64, whose instruction fetch sees stores; AArch64 cleans the data cache to the point of
        unification and invalidates the instruction cache over the range */

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The platform layer on Linux, Android, FreeBSD and Apple systems: threads, condition variables, the guest's address
+/* The platform layer on Linux and FreeBSD: threads, condition variables, the guest's address
    space with written-page tracking, file reads and maps, the environment and the crash handler
    (plat_sdl.c has the clocks, sleeping, libraries and path queries) */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
@@ -23,12 +23,7 @@
 #include <sys/utsname.h>
 #include <time.h>
 #include <unistd.h>
-#if defined(__APPLE__)
-#include <TargetConditionals.h>
-#include <sys/ucontext.h>
-#else
 #include <ucontext.h>
-#endif
 #if defined(__linux__)
 #include <linux/falloc.h>
 #include <linux/fs.h>
@@ -39,13 +34,7 @@
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #endif
-#if defined(__ANDROID__)
-#include <sys/system_properties.h>
-#endif
-#if defined(__APPLE__)
-#include <mach/mach.h>
-#endif
-#if defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__FreeBSD__)
 #include <sys/sysctl.h>
 #endif
 
@@ -66,15 +55,11 @@
 
 /* ================================================================ condition variables */
 void pc_init(PCond* c) {
-#if defined(__APPLE__)
-    pthread_cond_init(&c->c, NULL); /* Darwin has no clock attribute: timed waits are relative there */
-#else
     pthread_condattr_t a;
     pthread_condattr_init(&a);
     pthread_condattr_setclock(&a, CLOCK_MONOTONIC); /* deadlines don't move when the wall clock is set */
     pthread_cond_init(&c->c, &a);
     pthread_condattr_destroy(&a);
-#endif
 }
 void pc_signal(PCond* c) { pthread_cond_signal(&c->c); }
 void pc_broadcast(PCond* c) { pthread_cond_broadcast(&c->c); }
@@ -85,11 +70,6 @@ static int cond_wait(PCond* c, PMutex* m, i64 timeout_ns) {
         pthread_cond_wait(&c->c, &m->l);
         return 0;
     }
-#if defined(__APPLE__)
-    ts.tv_sec = (time_t)(timeout_ns / 1000000000);
-    ts.tv_nsec = (long)(timeout_ns % 1000000000);
-    r = pthread_cond_timedwait_relative_np(&c->c, &m->l, &ts);
-#else
     {
         u64 sec;
         clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -102,7 +82,6 @@ static int cond_wait(PCond* c, PMutex* m, i64 timeout_ns) {
         ts.tv_sec = (time_t)((u64)ts.tv_sec + sec);
     }
     r = pthread_cond_timedwait(&c->c, &m->l, &ts);
-#endif
     return r == ETIMEDOUT;
 }
 /* the wait noted while it lasts, for a hang report (pm_waits) */
@@ -152,7 +131,7 @@ static void* thread_start(void* p) {
     return NULL;
 }
 
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__linux__)
 /* every CPU the process may use (plat_cpus), which plat_thread gives each thread it starts: one a game thread started
    would otherwise run only on the share of that thread's core (plat_thread_cpus) */
 static cpu_set_t g_all_cpus;
@@ -168,18 +147,12 @@ int plat_thread(PThreadFn fn, void* arg, size_t stack) {
     s->alt_stack = stack == 0 || stack >= ALT_STACK_MIN_THREAD;
     pthread_attr_init(&a);
     pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__linux__)
     if (CPU_COUNT(&g_all_cpus)) pthread_attr_setaffinity_np(&a, sizeof g_all_cpus, &g_all_cpus);
 #endif
     if (stack) {
         /* smaller than the minimum, setstacksize fails and the default would be used silently */
         if (stack < THREAD_STACK_FLOOR) stack = THREAD_STACK_FLOOR;
-#if defined(__APPLE__)
-        {
-            size_t page = (size_t)sysconf(_SC_PAGESIZE); /* 16 KiB on Apple silicon; Darwin wants whole pages */
-            stack = (stack + page - 1) / page * page;
-        }
-#endif
         pthread_attr_setstacksize(&a, stack);
     }
     r = pthread_create(&t, &a, thread_start, s);
@@ -197,8 +170,8 @@ void plat_thread_exit(void) {
     SDL_CleanupTLS();
     pthread_exit(NULL);
 }
-/* Linux only: Android's CPUs differ in speed, so a fixed share of them would make a core slow */
-#if defined(__linux__) && !defined(__ANDROID__)
+/* Linux only */
+#if defined(__linux__)
 int plat_cpus(int* ids, int max) {
     int c, n = 0;
     if (sched_getaffinity(0, sizeof g_all_cpus, &g_all_cpus)) {
@@ -228,7 +201,7 @@ void plat_thread_cpus(const int* ids, int n) {
     (void)n;
 }
 #endif
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__linux__)
 /* the text after "key" (and a '=' or ':' with the spaces around it) on the first line of path that starts with it,
    unquoted; out empty when there's none */
 static void file_value(const char* path, const char* key, char* out, size_t cap) {
@@ -253,7 +226,7 @@ static void file_value(const char* path, const char* key, char* out, size_t cap)
     fclose(f);
 }
 #endif
-#if defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__FreeBSD__)
 static void sysctl_text(const char* name, char* out, size_t cap) {
     size_t n = cap;
     if (sysctlbyname(name, out, &n, NULL, 0) || !n) n = 1;
@@ -267,24 +240,7 @@ void plat_system_info(char* out, size_t cap) {
     long threads = sysconf(_SC_NPROCESSORS_ONLN);
     size_t n;
     if (uname(&u)) memset(&u, 0, sizeof u);
-#if defined(__APPLE__)
-    {
-        char v[32];
-        size_t len = sizeof ram;
-        sysctl_text("kern.osproductversion", v, sizeof v);
-        snprintf(os, sizeof os, "%s %s (Darwin %s)", TARGET_OS_IPHONE ? "iOS" : "macOS", v, u.release);
-        sysctl_text("machdep.cpu.brand_string", cpu, sizeof cpu);
-        if (sysctlbyname("hw.memsize", &ram, &len, NULL, 0)) ram = 0;
-    }
-#else
-#if defined(__ANDROID__)
-    {
-        char v[PROP_VALUE_MAX] = {0};
-        __system_property_get("ro.build.version.release", v);
-        snprintf(os, sizeof os, "Android %s (Linux %s)", v, u.release);
-        __system_property_get("ro.soc.model", cpu);
-    }
-#elif defined(__linux__)
+#if defined(__linux__)
     {
         char name[96];
         file_value("/etc/os-release", "PRETTY_NAME", name, sizeof name);
@@ -302,7 +258,6 @@ void plat_system_info(char* out, size_t cap) {
         long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGESIZE);
         if (pages > 0 && page > 0) ram = (unsigned long long)pages * (unsigned long long)page;
     }
-#endif
     while (*c == ' ') c++; /* some CPUs pad their brand string */
     for (n = strlen(c); n && c[n - 1] == ' '; n--) c[n - 1] = 0;
     snprintf(out, cap, "%s%s%s, %ld threads, %llu GB RAM", os, *c ? ", " : "", c, threads > 0 ? threads : 0,
@@ -467,21 +422,6 @@ int plat_address_space(u64* mapped, u64* largest_free) {
         last = hi;
     }
     fclose(f);
-#elif defined(__APPLE__)
-    vm_address_t at = 0;
-    for (;;) {
-        vm_size_t size = 0;
-        vm_region_basic_info_data_64_t info;
-        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
-        mach_port_t object = MACH_PORT_NULL;
-        if (vm_region_64(mach_task_self(), &at, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count,
-                         &object) != KERN_SUCCESS)
-            break;
-        total += size;
-        if (last && at > last && at - last > hole) hole = at - last;
-        last = at + size;
-        at = last;
-    }
 #else
     (void)last;
 #endif
@@ -507,17 +447,16 @@ void plat_vm_decommit(u8* p, u64 size) {
     madvise(p, (size_t)size, MADV_DONTNEED);
     mprotect(p, (size_t)size, PROT_NONE);
 #else
-    /* only Linux's MADV_DONTNEED drops the contents (Darwin's may keep them, FreeBSD's does): fresh pages over the
+    /* only Linux's MADV_DONTNEED drops the contents (FreeBSD's does not): fresh pages over the
        range are certain to read zero */
     mmap(p, (size_t)size, PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
 #endif
 }
 
-/* The alias pool (Linux and Android): one memfd, as large as asked and sparse, whose pages mem.c maps at guest
+/* The alias pool (Linux): one memfd, as large as asked and sparse, whose pages mem.c maps at guest
    addresses with MAP_SHARED, so two addresses of the reservation (and a service's mapping outside it) are the same
    pages, and a freed range is punched out so it reads zero when handed out again. The other systems here keep mem.c's
-   copies: the pool is untested there (FreeBSD has memfd_create and, from 14, fspacectl to free a range; Apple has
-   shm_open, whose descriptors can't be read or written, and no way to free part of one) */
+   copies: the pool is untested there (FreeBSD has memfd_create and, from 14, fspacectl to free a range) */
 static int g_alias = -1;
 static u64 g_alias_size;
 
@@ -716,7 +655,7 @@ static void fault_stack_candidates(uintptr_t sp) {
     local.iov_len = bytes;
     remote.iov_base = (void*)sp;
     remote.iov_len = bytes;
-    /* Android API 21 has no libc declaration for process_vm_readv. Use the kernel interface, as the
+    /* no libc declaration for process_vm_readv on every target. Use the kernel interface, as the
        userfaultfd paths do, and keep the diagnostic optional if the syscall is unavailable or denied. */
     n = syscall(SYS_process_vm_readv, getpid(), &local, 1ul, &remote, 1ul, 0ul);
     if (n <= 0) {
@@ -907,12 +846,9 @@ static __thread void* t_frz_retried; /* the address a thawed write was let go ag
 static int frozen_wait(void* a, int access);
 
 /* A SIGSEGV or SIGBUS no access raised but sent (kill, tgkill, sigqueue), told by its code's name: si_code <= 0 is
-   Linux's alone, and on Darwin x86_64 a real fault may carry 0. A debugger has one sent when it detaches passing a
+   Linux's alone. A debugger has one sent when it detaches passing a
    fault it held: the kernel then delivers it as SI_USER from the tracer, si_addr holding the sender's pid and uid
-   instead of the fault's address. The access behind it, if any, faults again as the thread goes on. Darwin can't
-   tell: its sendsig fills every SIGSEGV's and SIGBUS's code and address from the thread's last fault, sent or not
-   (SEGV_ACCERR and BUS_ADRALN on arm64), so there one sent is reported as a crash. Its debuggers take faults as Mach exceptions
-   and leave none behind */
+   instead of the fault's address. The access behind it, if any, faults again as the thread goes on */
 static int sent_signal(const siginfo_t* si) {
     return si->si_code == SI_USER || si->si_code == SI_QUEUE
 #ifdef SI_TKILL
@@ -941,7 +877,7 @@ static void note_sent(int sig, const siginfo_t* si) {
     msg[n++] = '\n';
     if (write(STDERR_FILENO, msg, n) < 0) return;
 }
-/* SIGSEGV or SIGBUS of a write that may be the freeze's: a protection fault (Darwin reports one as SIGBUS) */
+/* SIGSEGV or SIGBUS of a write that may be the freeze's: a protection fault */
 static int access_fault(int sig, const siginfo_t* si) { return sig == SIGBUS || si->si_code == SEGV_ACCERR; }
 
 /* a process without the crash handler (a test): faults outside a frozen range end it as they would have */
@@ -1096,10 +1032,6 @@ static void* context_pc(void* ctx) {
     return (void*)(uintptr_t)uc->uc_mcontext.mc_rip;
 #elif defined(__FreeBSD__) && defined(__aarch64__)
     return (void*)(uintptr_t)uc->uc_mcontext.mc_gpregs.gp_elr;
-#elif defined(__APPLE__) && defined(__aarch64__)
-    return (void*)(uintptr_t)__darwin_arm_thread_state64_get_pc(uc->uc_mcontext->__ss);
-#elif defined(__APPLE__) && defined(__x86_64__)
-    return (void*)(uintptr_t)uc->uc_mcontext->__ss.__rip;
 #else
     (void)uc;
     return NULL;

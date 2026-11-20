@@ -1231,7 +1231,7 @@ static bool games_lists(const App* app, const char* shown) {
 }
 /* Games' View box (V): Recent Games and Dumps, on by default, and Sort, by title; each changed by Enter, Left, Right
    or a click, kept in app.ini at once and Games listed again by it; an app.ini without them (an older version's) has
-   the defaults, iOS's off; a word it does not know named with the one it keeps */
+   the defaults; a word it does not know named with the one it keeps */
 static void view_box(App* app, const char* temporary) {
     char *was_games = app->games_dir, *was_data = app->data_dir, *was_app = app->app_file;
     char* was_recent_file = app->recent_file;
@@ -1324,22 +1324,19 @@ static void view_box(App* app, const char* temporary) {
     hides(app, "Dumps", rgb(app->theme.soft)); /* a group's heading */
     hides(app, "dumps", rgb(app->theme.soft));
     shows(app, "recompiled", rgb(app->theme.soft));
-    /* read back as the menu opens; an app.ini without them, an older version's, has the defaults: on, iOS's off */
+    /* read back as the menu opens; an app.ini without them, an older version's, has the defaults */
     memset(app->options, 0, sizeof app->options);
     app->message[0] = 0;
     app_load(app);
     assert(!recent_on(app) && !dumps_on(app) && by_last_opened(app) && !app->message[0]);
     snprintf(expected, sizeof expected, "[app]\ntheme = %s\n", app->theme.id);
     assert(!snx_write_file(app->app_file, expected, strlen(expected)));
-    games_defaults(app, false);
+    games_defaults(app);
     app_load(app);
     assert(recent_on(app) && dumps_on(app) && !by_last_opened(app) && !app->message[0]);
     assert(app->options[GUI_OPTION_ICONS] == 1); /* Medium */
-    games_defaults(app, true);
-    app_load(app);
-    assert(!recent_on(app) && !dumps_on(app) && !by_last_opened(app) && !app->message[0]);
     /* a word it does not know: named with the word it keeps, the file's last it knows or the default's */
-    games_defaults(app, false);
+    games_defaults(app);
     {
         const char* broken =
             "[app]\nrecent_games = maybe\ngames_dumps = off\ngames_dumps = none\ngames_sort = newest\n";
@@ -1352,19 +1349,19 @@ static void view_box(App* app, const char* temporary) {
         assert(recent_on(app) && !dumps_on(app) && !by_last_opened(app) && !strcmp(app->message, expected));
         broken = "[app]\nrecent_games = maybe\nrecent_games = off\n"; /* the file's own after it, in use after it */
         assert(!snx_write_file(app->app_file, broken, strlen(broken)));
-        games_defaults(app, false);
+        games_defaults(app);
         app->message[0] = 0;
         app_load(app);
         snprintf(expected, sizeof expected, "Not used from %s: recent_games = maybe (it keeps off)", app->app_file);
         assert(!recent_on(app) && dumps_on(app) && !strcmp(app->message, expected));
         broken = "[app]\ngames_icons = large\ngames_icons = huge\n"; /* Icon size's three words */
         assert(!snx_write_file(app->app_file, broken, strlen(broken)));
-        games_defaults(app, false);
+        games_defaults(app);
         app->message[0] = 0;
         app_load(app);
         snprintf(expected, sizeof expected, "Not used from %s: games_icons = huge (it keeps large)", app->app_file);
         assert(app->options[GUI_OPTION_ICONS] == 2 && !strcmp(app->message, expected));
-        games_defaults(app, false);
+        games_defaults(app);
         app->message[0] = 0;
     }
     /* the pointer: over a row its focus, a click changes it; a click off the box closes it */
@@ -1389,7 +1386,7 @@ static void view_box(App* app, const char* temporary) {
         app->folders_library[0] = GUI_LIBRARY_DUMPS;
         app->folders_deep[0] = false;
         app->folder_count = 1;
-        games_defaults(app, false);
+        games_defaults(app);
         list_games(app);
         assert(strstr(app->message, "gone dumps"));
         app->options[GUI_OPTION_DUMPS] = 1;
@@ -1406,7 +1403,7 @@ static void view_box(App* app, const char* temporary) {
             if (!unreadable) snx_free_strings(names, count);
             list_games(app);
             assert(!app->message[0]);
-            games_defaults(app, false);
+            games_defaults(app);
             list_games(app);
             assert(!unreadable || strstr(app->message, dumps));
         }
@@ -1414,7 +1411,7 @@ static void view_box(App* app, const char* temporary) {
 #endif
         app->message[0] = 0;
     }
-    games_defaults(app, false);
+    games_defaults(app);
     { /* dumps/'s subfolders: their dumps listed with dumps_subfolders on, its default, not with it off; its Folders
          row says which */
         char *sub = snx_path_join(dumps, "more"), *deep = snx_path_join(sub, "deep dump.nro");
@@ -1845,7 +1842,7 @@ static void grid_view(App* app, const char* temporary) {
         assert(grid_focused(app) == tile && g.grid_lists[UI_GAMES_GRID_TILES].first > first);
     }
     app->menu.text_size = was_size;
-    games_defaults(app, false);
+    games_defaults(app);
     app->recent = was_recent;
     app->recent_file = was_recent_file;
     app->folder_count = was_folders;
@@ -1923,7 +1920,6 @@ static void add_mod(App* app, const char* temporary) {
     char *bare = snx_path_join(root, "Bare"), *hidden = snx_path_join(root, ".hidden"),
          *file = snx_path_join(root, "x");
     char *to = snx_path_join(mods, "Better Fonts"), *to_first = snx_path_join(mods, "A first"), want[2048];
-    const char* cloud = "content://com.example.cloud.documents/tree/abc%3Amods";
     static const int tail[] = {ROW_ADD_MOD, ROW_MODS_FOLDER, ROW_ADD_CHEATS, ROW_CHEATS_FOLDER, ROW_OPEN_FOLDER,
                                ROW_STATES,  ROW_CLEAN_CACHE, ROW_SAVE,       ROW_PLAY};
     size_t index = 0;
@@ -1961,11 +1957,6 @@ static void add_mod(App* app, const char* temporary) {
     key(app, SDLK_RETURN);
     addon_answer_is(app, NULL);
     assert(!strcmp(app->message, "Add Mod: no folder was picked.") && !app->addon_adding);
-    /* a phone's folder of an app or a cloud, which no path reaches */
-    key(app, SDLK_RETURN);
-    addon_answer_is(app, cloud);
-    snprintf(want, sizeof want, "Not added: %s is not a folder of this device's storage", cloud);
-    assert(!strcmp(app->message, want));
     /* a file */
     key(app, SDLK_RETURN);
     addon_answer_is(app, file);
@@ -2183,7 +2174,6 @@ static void add_cheats(App* app, const char* temporary) {
     char *cht = snx_path_join(root, "cheats.cht"), *big = snx_path_join(root, "big.txt");
     char *to = snx_path_join(cheats, "0123456789ABCDEF.txt"), *to_mine = snx_path_join(cheats, "FEDCBA9876543210.txt");
     char *to_other = snx_path_join(cheats, "1111111111111111.txt"), want[2048];
-    const char* cloud = "content://com.example.cloud.documents/document/abc%3Acheats.txt";
     const char* named_text = "[60 FPS]\n04000000 0 1\n[Moon Jump]\n04000000 4 2\n";
     const char* mine_text = "; my own\n[Infinite HP]\n04000000 8 3\n[60 FPS]\n04000000 0 1\n";
     size_t index = 0;
@@ -2218,14 +2208,10 @@ static void add_cheats(App* app, const char* temporary) {
     assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR && !strcmp(app->error_line, app->message));
     key(app, SDLK_ESCAPE);
     assert(!app->confirm.shown && app->addons_shown && app->addons_focus == 2);
-    /* none picked; a phone's document of an app or a cloud; a folder; not a .txt; past 1 MiB; no cheat in it */
+    /* none picked; a folder; not a .txt; past 1 MiB; no cheat in it */
     key(app, SDLK_RETURN);
     addon_answer_is(app, NULL);
     assert(!strcmp(app->message, "Add Cheats: no file was picked."));
-    key(app, SDLK_RETURN);
-    addon_answer_is(app, cloud);
-    snprintf(want, sizeof want, "Not added: %s is not a file of this device's storage", cloud);
-    assert(!strcmp(app->message, want));
     key(app, SDLK_RETURN);
     addon_answer_is(app, root);
     snprintf(want, sizeof want, "Not added: %s is not a file", root);
@@ -2868,7 +2854,7 @@ static void recompile_queue(App* app) {
         job_speed(app, said, sizeof said);
         if (raised)
             assert(!app->job_low && priority_of(pid) == own && !strcmp(said, "Full"));
-        else /* Linux and macOS without the privilege */
+        else /* Linux without the privilege */
             assert(app->job_low && priority_of(pid) == low && !strncmp(said, "Gentle until it ends: ", 22));
         printf("gui_sdl: the queue's recompile after the game: %s\n", said);
         free(step);
@@ -3196,7 +3182,7 @@ int main(int argc, char** argv) {
     app.theme = *gui_theme_builtin("default"); /* the checks below read Default's colours */
     assert(!app.animations_off);               /* on by default; the checks read each screen as it settles */
     app.animations_off = true;
-#if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID)
+#if !defined(_WIN32)
     /* no checkout and no games/ beside the test: recompiled/ and themes/ come from the user's data folder */
     assert(!strcmp(app.data_dir, "/nonexistent/snx-gui-test/nxaevora"));
     assert(!strcmp(app.games_dir, "/nonexistent/snx-gui-test/nxaevora/recompiled"));
@@ -5552,7 +5538,7 @@ int main(int argc, char** argv) {
         assert(kept && !strstr(kept, "[folders]"));
         free(kept);
         /* a disk that runs no programs takes the extractions, not the games */
-#if defined(ST_NOEXEC) && !defined(SDL_PLATFORM_ANDROID)
+#if defined(ST_NOEXEC)
         {
             struct statvfs st;
             if (!statvfs("/dev/shm", &st) && (st.f_flag & ST_NOEXEC)) {
@@ -5567,64 +5553,14 @@ int main(int argc, char** argv) {
             }
         }
 #endif
-        /* Android: a folder outside the app's own storage is asked about first, its Use it pressed twice; Back leaves
-           the one in use. One inside is taken at once */
-        {
-            char *own = snx_path_join(temporary, "own"), *inside = snx_path_join(own, "games");
-            int w, h;
-            GuiRect r;
-            GuiChoices l;
-            assert(!snx_mkdirs(inside));
-            app.own_dir = own;
-            app.editor.row = FOLDER_ROW(GUI_ROW_PLACE, GUI_PLACE_WORK);
-            place_set(&app, GUI_PLACE_WORK, temporary);
-            assert(app.confirm.shown && app.confirm.ask == GUI_ASK_OUTSIDE && !app.place[GUI_PLACE_WORK]);
-            /* the question wraps where it is wider than the screen, its choices under it */
-            SDL_GetWindowSize(app.window, &w, &h);
-            assert(SDL_SetWindowSize(app.window, 420, h));
-            render(&app);
-            shows(&app, "Outside the app,", rgb(app.theme.warning));
-            shows(&app, "games may run slower.", rgb(app.theme.warning));
-            ask_boxes(&app, &r, &l);
-            assert(choice_box(&app, &l, 0).y >= r.y + 2 * cell_h(&app));
-            assert(SDL_SetWindowSize(app.window, w, h));
-            render(&app);
-            shows(&app, "- Cancel", yellow);
-            shows(&app, "- Use Anyway", normal);
-            key(&app, SDLK_ESCAPE);
-            assert(!app.confirm.shown && !app.place[GUI_PLACE_WORK] && !strcmp(app.editor.note, "Not changed"));
-            place_set(&app, GUI_PLACE_WORK, temporary);
-            key(&app, SDLK_DOWN);
-            key(&app, SDLK_RETURN);
-            assert(app.confirm.shown && app.confirm.armed && !app.place[GUI_PLACE_WORK]);
-            render(&app);
-            shows(&app, "- Use Anyway: press again", yellow);
-            key(&app, SDLK_RETURN);
-            assert(!app.confirm.shown && app.place[GUI_PLACE_WORK] && same_path(app.work_dir, temporary));
-            assert(!strcmp(app.app_form.folder[FOLDER_ROW(GUI_ROW_PLACE, GUI_PLACE_WORK)], "outside the app"));
-            /* a finger: the first tap on Use it arms it, the second takes it */
-            key(&app, SDLK_DELETE);
-            key(&app, SDLK_DOWN);
-            key(&app, SDLK_RETURN);
-            assert(!app.place[GUI_PLACE_WORK]);
-            place_set(&app, GUI_PLACE_WORK, temporary);
-            ask_boxes(&app, &r, &l);
-            touch_box(&app, choice_box(&app, &l, 1));
-            assert(app.confirm.shown && app.confirm.armed && !app.place[GUI_PLACE_WORK]);
-            touch_box(&app, choice_box(&app, &l, 1));
-            assert(!app.confirm.shown && app.place[GUI_PLACE_WORK]);
-            key(&app, SDLK_DELETE);
-            key(&app, SDLK_DOWN);
-            key(&app, SDLK_RETURN);
-            assert(!app.confirm.shown && !app.place[GUI_PLACE_WORK]);
-            place_set(&app, GUI_PLACE_GAMES, inside);
-            assert(!app.confirm.shown && app.place[GUI_PLACE_GAMES] &&
-                   !strcmp(app.app_form.folder[FOLDER_ROW(GUI_ROW_PLACE, GUI_PLACE_GAMES)], "custom"));
-            app.own_dir = NULL;
-            free(inside);
-            free(own);
-        }
         /* the last row: every one back to its default */
+        {
+            char* custom = snx_path_join(temporary, "custom recompiled");
+            assert(!snx_mkdirs(custom));
+            place_set(&app, GUI_PLACE_GAMES, custom);
+            assert(app.place[GUI_PLACE_GAMES] && same_path(app.place[GUI_PLACE_GAMES], custom));
+            free(custom);
+        }
         place_set(&app, GUI_PLACE_DATA, temporary);
         assert(app.place[GUI_PLACE_DATA] && snx_path_within(app.data_dir, temporary) &&
                snx_path_within(app.games_dir, app.data_dir));
@@ -6238,7 +6174,7 @@ int main(int argc, char** argv) {
         app.clock = 0;
         app.message[0] = 0;
     }
-    /* where ESC is a back gesture made by mistake (ask_abort, Android's) it asks first: ESC again, a click off the box
+    /* where ESC is a back gesture made by mistake (ask_abort) it asks first: ESC again, a click off the box
        or Continue leave the run going; Abort aborts it. The ESC line's tap asks too, and a held key answers nothing */
     {
         int pass;
@@ -6571,7 +6507,7 @@ int main(int argc, char** argv) {
         GuiMenuBoxes m;
         menu_boxes(&app, &m);
         assert(ui_menu_shown(m.rects, app.scale, UI_MENU_ENTRIES) >= GUI_ITEM_COUNT && GUI_SWITCH == 0);
-        /* room past a list's default 8 rows: a ninth entry (Android's Exit) shows where it fits, no scroll */
+        /* room past a list's default 8 rows: a ninth entry (Exit) shows where it fits, no scroll */
         assert(ui_menu_shown(m.rects, app.scale, UI_MENU_ENTRIES) > 8);
     }
     go_tab(&app, GUI_TAB_GAMES);
@@ -6908,8 +6844,8 @@ int main(int argc, char** argv) {
             shows_foot(&app, "recompile", normal);
             assert(hint_keys[hint_pick("R", 0, false)].key == SDLK_R &&
                    hint_keys[hint_pick("R", 5, false)].key == SDLK_R);
-            assert(hint_keys[hint_pick("Recompile", 3, false)].key == SDLK_R); /* Android's: no R to name */
-            assert(hint_keys[hint_pick("Mods", 2, false)].key == SDLK_M);      /* and no M: a tap on it opens the box */
+            assert(hint_keys[hint_pick("Recompile", 3, false)].key == SDLK_R);
+            assert(hint_keys[hint_pick("Mods", 2, false)].key == SDLK_M);      /* a tap on it opens the box */
             { /* a key's word alone is that key (a finger's "Refresh."); a sentence of other words, text */
                 const char* at = "Refresh. Back.";
                 char k[64], w[64];
@@ -6945,9 +6881,7 @@ int main(int argc, char** argv) {
                 /* Games' every key at once, the most parts a foot puts together: each in F1's box, none left out */
                 assert(strstr(said, "R: recompile.") && strstr(said, "M: mods.") && strstr(said, "P: folders.") &&
                        strstr(said, "V: view.") && strstr(said, "ESC: back.") && strstr(said, "Tab: screen."));
-#ifndef SDL_PLATFORM_ANDROID
                 assert(strstr(said, "S: save states."));
-#endif
                 assert(strstr(shown_keys(&app, said, sizeof said), "R: recompile.") && strstr(said, "B: AOT pack.") &&
                        strstr(said, "P: folders.") && strstr(said, "ESC: back."));
                 app.aot_state = state;
@@ -7593,14 +7527,13 @@ int main(int argc, char** argv) {
        resized, and the window keeps 16 rows of them */
     const int sizes[][4] = {{2560, 1440, 45, 160}, {1280, 960, 30, 80}, {800, 480, 16, 50}, {1280, 800, 25, 80}};
     assert(app.auto_scale == 2);
-    /* a start's is twice the display's scale, as far as 16 rows fit on a computer: 100%, 125%, 150% and 200%; a phone
-       keeps 30, so the Poco F8 (408 dpi, 1156 rows of pixels) and the Pixel 9 (420 dpi, 1080) get 2x, with 36 and 33
-       rows */
+    /* a start's is twice the display's scale, as far as 16 rows fit: 100%, 125%, 150% and 200%; high-density
+       displays with 1156 and 1080 pixels in height get 4x */
     assert(pick_auto_scale(1.0f, 800, 16) == 2 && pick_auto_scale(1.25f, 1000, 16) == 2);
     assert(pick_auto_scale(1.5f, 1200, 16) == 3 && pick_auto_scale(2.0f, 1600, 16) == 4);
-    assert(GUI_AUTO_ROWS_PHONE == 30);
-    assert(pick_auto_scale(408.0f / 160, 1156, GUI_AUTO_ROWS_PHONE) == 2 &&
-           pick_auto_scale(420.0f / 160, 1080, GUI_AUTO_ROWS_PHONE) == 2);
+    assert(GUI_AUTO_ROWS == 16);
+    assert(pick_auto_scale(408.0f / 160, 1156, GUI_AUTO_ROWS) == 4 &&
+           pick_auto_scale(420.0f / 160, 1080, GUI_AUTO_ROWS) == 4);
     assert(pick_auto_scale(408.0f / 160, 1156, 16) == 4);
     assert(pick_auto_scale(1.0f, 480, 16) == 1 && pick_auto_scale(0.5f, 800, 16) == 1 &&
            pick_auto_scale(3.0f, 2400, 16) == 6);
@@ -8677,7 +8610,7 @@ int main(int argc, char** argv) {
         app.menu.activated = false;
         render(&app);
         text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- " ICON_SETTINGS " Settings", normal, black);
-        /* a row taller than a cell and a pixel, as Android's 40px: its text in the middle, not at its top */
+        /* a row taller than a cell and a pixel: its text in the middle, not at its top */
         b = gui_rect(b.x, b.y, b.w, 40 * s);
         fill_rect(&app, b, app.theme.page); /* the rows it covers, gone */
         ui_draw_row(&app, b, "Exit", 0, NULL, UI_COLOR_NONE, 0, false);
@@ -8840,7 +8773,7 @@ int main(int argc, char** argv) {
             assert(rows >= 13);
             free(text);
         }
-        /* on a screen of fingers (Android, iOS) the tabs are a finger's row high, as the lists' rows there, their names
+        /* on a screen of fingers the tabs are a finger's row high, as the lists' rows there, their names
            in their middle, and so are the foot's keys' buttons, in the text's letters; a tap low on a tab opens it */
         app.fingers = true;
         render(&app);
@@ -9389,7 +9322,7 @@ int main(int argc, char** argv) {
             press_key(&app, "ESC", 0, false, yellow); /* Games' own ESC, to the menu */
             assert(app.menu.view == GUI_LOAD_NONE);
             key(&app, SDLK_TAB);
-            /* Android's words: Drag, the finger's, presses nothing (the rows follow the finger), Back goes back as ESC, a
+            /* a finger's words: Drag presses nothing (the rows follow the finger), Back goes back as ESC, a
                tap selects; Tap outside, the picker's, presses nothing (a tap off the picker keeps the colour) */
             app.browser.selected = 0;
             assert(!hint_press(&app, "Drag", 0) && !app.browser.selected);
@@ -10339,141 +10272,6 @@ int main(int argc, char** argv) {
         free(first);
         free(state);
     }
-    /* Android's menu: its own files in its data folder's config/ and state/ (.nxaevora/ in the app's own files, which
-       the Files app shows). An older version's, in the app's own files, are neither moved nor read: the menu starts
-       from its defaults, and the box of what older versions left names each file with its size, then how they go while
-       the app is in testing; Share Log too */
-    {
-        static const char* const olds[6][2] = {{"settings.ini", "[Display]\nfullscreen = 0\n"},
-                                               {"app.ini", "[app]\ntheme = yorha\ntext_size = 2\n"},
-                                               {"folders.txt", "/nonexistent/older folder\n"},
-                                               {"gamecontrollerdb.txt", "older mappings\n"},
-                                               {"recent.txt", ""},
-                                               {"last-run.log", "$ an older run\n"}};
-        char *old = snx_path_join(temporary, "own files"), *data = snx_path_join(old, SNX_PORTABLE_DIR);
-        char *home = app.home_dir, *data_dir = app.data_dir, *full, *config, *state, *path, *text, *expected;
-        char *settings_file = app.settings_file, *folders_file = app.folders_file, *app_file = app.app_file;
-        char *recent_file = app.recent_file, *run_log = app.run_log, *job_log = app.job_log;
-        GuiRecent recent = app.recent;
-        size_t head = app.browser.head, size;
-        int i, j, text_size = app.menu.text_size, folder_count = app.folder_count;
-        assert(!snx_mkdirs(data) && (full = snx_absolute(data)) != NULL);
-        for (i = 0; i < 6; ++i) {
-            path = snx_path_join(old, olds[i][0]);
-            if (i == 4) /* a recent game whose file is there, which a read list would keep */
-                text = snx_format("switch\tfile\t%s/app.ini\tolder game\n", old);
-            else
-                text = snx_strdup(olds[i][1]);
-            assert(!snx_write_file(path, text, strlen(text)));
-            free(text);
-            free(path);
-        }
-        path = snx_path_join(old, "other.txt"); /* not the menu's */
-        assert(!snx_write_file(path, "other", 5));
-        free(path);
-        /* the menu opens in its own folders alone: nothing read from the older ones, nothing written */
-        app.home_dir = data;
-        app.data_dir = full;
-        app.menu_old = old;
-        free(app.users_dir); /* the users test's: open_files names the new data folder's */
-        app.users_dir = NULL;
-        app.run_log = app.job_log = NULL; /* kept for after: open_files takes the folder's own, and its log */
-        open_files(&app);
-        config = menu_folder(&app, SNX_USER_CONFIG, false);
-        state = menu_folder(&app, SNX_USER_STATE, false);
-        expected = snx_path_join(full, "config");
-        assert(config && !strcmp(config, expected) && snx_is_dir(config));
-        free(expected);
-        expected = snx_path_join(config, "app.ini");
-        assert(!strcmp(app.app_file, expected) && !snx_path_exists(expected));
-        free(expected);
-        expected = snx_path_join(full, "state");
-        assert(state && !strcmp(state, expected) && snx_is_dir(state));
-        free(expected);
-        expected = snx_path_join(state, "recent.txt");
-        assert(!strcmp(app.recent_file, expected) && !snx_path_exists(expected));
-        free(expected);
-        assert(!strcmp(app.theme.id, "default") && app.menu.text_size == text_size && !app.recent.count &&
-               app.folder_count == folder_count);
-        /* the box: each file with its size, where this one keeps it for Share Log, then how they go */
-        left_behind(&app);
-        assert(app.left_clear);
-        for (i = 0; i < 6; ++i) {
-            path = snx_path_join(old, olds[i][0]);
-            expected = snx_format("%s" SAY_LEFT_BY "%s\n", path, i < 4 ? config : state);
-            assert(strstr(app.left, expected));
-            free(expected);
-            free(path);
-        }
-        assert(!strstr(app.left, "other.txt"));
-        while (!__atomic_load_n(&app.left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
-        for (i = 0; i < 6; ++i) {
-            path = snx_path_join(old, olds[i][0]);
-            for (j = 0; j < app.left_space->count && strcmp(app.left_space->dirs[j], path); ++j) {}
-            assert(j < app.left_space->count && app.left_space->bytes[j] == snx_file_size(path));
-            free(path);
-        }
-        app.left_shown = true;
-        render(&app);
-        shows(&app, SAY_LEFT_TITLE, rgb(app.theme.ink));
-        shows(&app, "While the app is in testing,", rgb(app.theme.ink));
-        app.left_shown = false;
-        app.log_due = true; /* a crash's log: Share Log blinks in the failure colour until it is saved */
-        assert((ui_menu_entries_attr_cb(&app, GUI_LOG) & (UI_ATTR_FAILURE | UI_ATTR_BLINK)) ==
-               (UI_ATTR_FAILURE | UI_ATTR_BLINK));
-        { /* in share/ of Logs, at its default the folder's own state/ */
-            char *logs = app.state_dir, *share = snx_path_join(state, "share");
-            app.state_dir = state;
-            share_log(&app, true);
-            app.state_dir = logs;
-            assert(!app.log_due && !(ui_menu_entries_attr_cb(&app, GUI_LOG) & UI_ATTR_FAILURE));
-            path = shared_path(&app);
-            text = zip_text(path, "summary.txt");
-            assert(path && snx_path_within(path, share) && text && strstr(text, SAY_LEFT_CLEAR "\n"));
-            free(text);
-            free(path);
-            free(share);
-        }
-        /* every older file where it was, as it was */
-        for (i = 0; i < 6; ++i) {
-            path = snx_path_join(old, olds[i][0]);
-            text = (char*)snx_read_file(path, &size);
-            assert(text && (i == 4 ? strstr(text, "older game") != NULL : !strcmp(text, olds[i][1])));
-            free(text);
-            free(path);
-        }
-        /* elsewhere none are looked for */
-        app.menu_old = NULL;
-        left_behind(&app);
-        assert(!app.left_clear && (!app.left || !strstr(app.left, old)));
-        free(app.settings_file);
-        free(app.folders_file);
-        free(app.app_file);
-        free(app.recent_file);
-        free(app.run_log);
-        free(app.job_log);
-        if (app.run_locked) snx_unlock_file(app.run_lock);
-        app.run_locked = false;
-        gui_log_folder(NULL);
-        app.settings_file = settings_file;
-        app.folders_file = folders_file;
-        app.app_file = app_file;
-        app.recent_file = recent_file;
-        app.run_log = run_log;
-        app.job_log = job_log;
-        app.recent = recent;
-        app.browser.head = head;
-        app.message[0] = 0;
-        app.home_dir = home;
-        app.data_dir = data_dir;
-        left_behind(&app);
-        assert(!snx_remove_tree(old));
-        free(state);
-        free(config);
-        free(full);
-        free(data);
-        free(old);
-    }
 #ifdef SNX_XDG
     /* the menu's recent.txt and last-run.log in the state folder; an older build's in the data folder's gui/ stay */
     {
@@ -10764,16 +10562,14 @@ int main(int argc, char** argv) {
         free(data);
     }
 #endif
-    /* the system's picker, as the Android menu opens it for a file to load: a document with no path stays on the
-       screen, and so does none, saying so, for the screen's messages to be read; a path loads */
+    /* the system's picker, as the menu opens it for a file to load: none stays on the screen, saying so, for the
+       screen's messages to be read; a path loads */
     app.picked = SDL_RegisterEvents(1);
     assert(app.picked);
     app.menu.selected = GUI_SWITCH;
     key(&app, SDLK_RETURN);
     key(&app, SDLK_RETURN);
     assert(app.menu.view == GUI_LOAD_DROP);
-    pick(&app, "content://com.android.providers.downloads.documents/document/msf%3A12");
-    assert(app.menu.view == GUI_LOAD_DROP && !app.menu.running && app.message[0]);
     pick(&app, NULL);
     assert(app.menu.view == GUI_LOAD_DROP && !strcmp(app.message, "No file was picked."));
     {
