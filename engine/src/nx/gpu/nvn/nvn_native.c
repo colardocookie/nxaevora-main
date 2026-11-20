@@ -5338,7 +5338,7 @@ static void replay_bind_refuse(NvnNativeReplayHost* host, const char* group, int
 }
 /* One method of a host built stream, routed as gpu.c's method_call does: a puller method (below 0x40) of any
    subchannel goes to the puller, and the other methods of subchannel 0 go to the 3D engine. */
-/* SNX_ARCEUS_PERF_TIMES (PERF-30's count): which part of a draw is being sent (1 its binds, 2 its draw words, 0
+/* SNX_ARCEUS_PERF_PROBES (PERF-30's count): which part of a draw is being sent (1 its binds, 2 its draw words, 0
    none), and its 3D register methods, all and those writing the value held. The replay thread's, flushed a draw */
 static int g_replay_part;
 static uint64_t g_replay_regs[2], g_replay_same[2];
@@ -5367,7 +5367,7 @@ static int replay_bind_words(NvnNativeReplayHost* host, const uint32_t* words, u
     }
     return nvn_word_stream_complete(&stream);
 }
-/* SNX_ARCEUS_PERF_TIMES (PERF-29): set by replay_host_draw for one draw in PERF_REPLAY_SAMPLE, whose sends are timed,
+/* SNX_ARCEUS_PERF_PROBES (PERF-29): set by replay_host_draw for one draw in PERF_REPLAY_SAMPLE, whose sends are timed,
    each after a decode-only pass over its words (the decoder only changes its own stream). The replay thread's */
 static int g_replay_timed;
 static uint64_t g_replay_draws;
@@ -5570,11 +5570,11 @@ static int replay_host_draw_sent(void* ctx, const NvnOpDraw* op) {
         g_replay_sink.method = replay_sink_method, g_replay_sink.ctx = host;
         g_replay_sink.direct = g_perf_replay >= 3;
     }
-    if (g_perf_times) g_replay_part = 1;
+    if (g_perf_probes) g_replay_part = 1;
     nvn_word_sink = sink;
     replay_bind_send_all(host);
     nvn_word_sink = NULL;
-    if (g_perf_times) g_replay_part = 2; /* the draw's own words, sent below or refused */
+    if (g_perf_probes) g_replay_part = 2; /* the draw's own words, sent below or refused */
     uint32_t words[NVN_DRAW_WORDS_MAX];
     int uses_constants = 0;
     /* read once before the build, as the check below read it before any send (reviewer N1 on b542467a) */
@@ -5606,9 +5606,9 @@ static int replay_host_draw_sent(void* ctx, const NvnOpDraw* op) {
     }
     return 1;
 }
-/* SNX_ARCEUS_PERF_TIMES (PERF-29): every draw counted, one in PERF_REPLAY_SAMPLE timed whole and by its sends */
+/* SNX_ARCEUS_PERF_PROBES (PERF-29): every draw counted, one in PERF_REPLAY_SAMPLE timed whole and by its sends */
 static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
-    if (!g_perf_times) return replay_host_draw_sent(ctx, op);
+    if (!g_perf_probes) return replay_host_draw_sent(ctx, op);
     const int timed = ++g_replay_draws % PERF_REPLAY_SAMPLE == 0;
     const uint64_t t0 = plat_ns();
     g_replay_timed = timed;
@@ -7051,8 +7051,10 @@ static void perf_line(void) {
     LOG("%s\n", line);
     perf_caps_line(&g_perf_caps, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-27 */
     LOG("%s\n", line);
-    perf_p29_line(&g_perf_p29, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-29 */
-    LOG("%s\n", line);
+    if (g_perf_probes) { /* PERF-29 */
+        perf_p29_line(&g_perf_p29, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
+        LOG("%s\n", line);
+    }
     perf_copies_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
     LOG("%s\n", line);
 }

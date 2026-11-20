@@ -143,6 +143,9 @@ typedef struct {
 } PerfTimes;
 
 extern int g_perf_times;
+/* SNX_ARCEUS_PERF_PROBES=1 with PERF_TIMES (PERF-29 and the index bound's counts): the perf-p29 line and what it
+   counts, which costs in the code it times. 0 unless both are set */
+extern int g_perf_probes;
 extern PerfTimes g_perf;
 /* SNX_ARCEUS_PERF_SUBMIT_US, bench only (research 20:51): the GPU thread's recording time a submission holds at most
    (vk/cmd.c vk_frame_check), upstream's 1 ms unless set to 250 to 8000 us. Read once at start */
@@ -522,7 +525,7 @@ void perf_caps_landed(PerfCaps* c, int release, const uint64_t ns[PCL_STEPS], co
 void perf_caps_hold(PerfCaps* c, uint64_t compute, uint64_t graphics, uint64_t releases);
 /* PERF-27's line, after perf-landed: the window's counts a frame, which it starts again */
 size_t perf_caps_line(PerfCaps* c, uint32_t frames, char* out, size_t size);
-/* PERF-29 (research 01:36), log only, with SNX_ARCEUS_PERF_TIMES: vk_hash's and vk_hash_copy's callers by return
+/* PERF-29 (research 01:36), log only, with SNX_ARCEUS_PERF_PROBES=1: vk_hash's and vk_hash_copy's callers by return
    address (the first PERF_HASH_SITES, the rest together), the replay's draws timed by step on one in
    PERF_REPLAY_SAMPLE, and the release thread's releases by kind */
 #define PERF_HASH_SITES 24u

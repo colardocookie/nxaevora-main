@@ -154,7 +154,7 @@ static void release_through(u64 gate, u64 cgate) {
     vk_result_end();
     for (;;) {
         Release r;
-        u64 r0 = held ? plat_ns() : 0, own = 0; /* PERF-29: a release's queue work and its own, apart */
+        u64 r0 = held && g_perf_probes ? plat_ns() : 0, own = 0; /* PERF-29: a release's queue work and its own */
         pm_lock(&g_rlock);
         if (g_rtail == g_rheld || g_rq[g_rtail % RQ_N].gate > gate || g_rq[g_rtail % RQ_N].cgate > cgate) {
             pm_unlock(&g_rlock);

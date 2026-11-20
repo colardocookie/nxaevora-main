@@ -7,6 +7,7 @@
 #include <string.h>
 
 int g_perf_times;
+int g_perf_probes;
 PerfTimes g_perf;
 int g_perf_pass_why;
 int g_perf_submit_why;

@@ -536,7 +536,7 @@ static void check_bound(void) {
     for (u32 seed = 1; seed <= 40; seed++) {
         const int n = 130 + (int)(seed % 70);
         g_perf_compare = 0;
-        g_perf_times = 1;
+        g_perf_times = 1, g_perf_probes = 1;
         (void)take_met();
         build(seed, n);
         ncalls = norgs = 0;
@@ -566,7 +566,7 @@ static void check_bound(void) {
     assert(src_first(&at) == g_out); /* the walk over g_out, in its order */
     land_all(77);
     assert(index_empty());
-    g_perf_times = 0, g_perf_compare = 0, crowd = 0;
+    g_perf_times = 0, g_perf_probes = 0, g_perf_compare = 0, crowd = 0;
     printf("vulkan_compare: past the bound, 40 crowded batches the same, %llu landing lookups gave up\n",
            (unsigned long long)fell);
 }

@@ -604,7 +604,7 @@ static u32 g_capwcand;
    so past it that call walks as without the index. Noted with SNX_ARCEUS_PERF_TIMES (PERF-29's line) */
 #define WALK_BOUND 64u
 static void walk_noted(int which, int fell_back, u32 n) {
-    if (g_perf_times) perf_index_note(&g_perf_p29, which, fell_back, n);
+    if (g_perf_probes) perf_index_note(&g_perf_p29, which, fell_back, n);
 }
 static int seq_cmp(const void* a, const void* b) {
     const u64 x = (*(GfxOut* const*)a)->seq, y = (*(GfxOut* const*)b)->seq;
