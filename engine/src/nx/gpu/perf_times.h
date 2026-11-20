@@ -217,6 +217,9 @@ typedef struct { /* all atomic */
     uint64_t last_n[PCY_KINDS], last_has[PCY_KINDS], res_at[PCY_KINDS], res_place[PCY_KINDS], res_frames[PCY_KINDS];
     uint64_t draws_sum, presents;
     uint64_t stamp_off, stamp_pending; /* PERF-34: stamp reads off the renderer's lock, and those a notice met */
+    /* research 12:38: the combined notices, their ranges and the distinct 4 KB pages those cover; the release
+       thread's waits that ended with work to take, and without (woken while nothing was let go) */
+    uint64_t notices, notice_ranges, notice_pages, rwait_work, rwait_idle;
 } PerfHandoff;
 extern PerfHandoff g_perf_handoff;
 void perf_handoff_compute(PerfHandoff* h, uint64_t now);

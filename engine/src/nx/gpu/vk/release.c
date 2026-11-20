@@ -166,8 +166,28 @@ static void write_deferred(u64 gva, const void* src, u64 size) {
     } else
         gpu_mem_written(gva, size);
 }
+static int u64_cmp(const void* a, const void* b) {
+    const u64 x = *(const u64*)a, y = *(const u64*)b;
+    return (x > y) - (x < y);
+}
+/* research 12:38 (PERF_PROBES): the distinct 4 KB pages the hold's ranges cover */
+static void notice_count(void) {
+    static u64 pages[NOTICE_N * 2];
+    u32 n = 0;
+    for (u32 i = 0; i < g_notice_n; i++) {
+        const u64 last = (g_notice_gva[i] + g_notice_size[i] - 1) >> 12;
+        for (u64 p = g_notice_gva[i] >> 12; p <= last && n < NOTICE_N * 2; p++) pages[n++] = p;
+    }
+    qsort(pages, n, sizeof *pages, u64_cmp);
+    u32 distinct = 0;
+    for (u32 i = 0; i < n; i++) distinct += !i || pages[i] != pages[i - 1];
+    __atomic_fetch_add(&g_perf_handoff.notices, 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&g_perf_handoff.notice_ranges, g_notice_n, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&g_perf_handoff.notice_pages, distinct, __ATOMIC_RELAXED);
+}
 /* the hold's one notice, then the pending count lowered */
 static void notice_close(void) {
+    if (g_perf_probes) notice_count();
     const int timed = g_perf_probes;
     const u64 t0 = timed ? plat_ns() : 0;
     gpu_mem_written_many(g_notice_gva, g_notice_size, g_notice_n);
@@ -278,6 +298,9 @@ static void release_thread(void* p) {
             if (g_perf_small & PSM_WAKE) g_rsleep = 1; /* under g_rlock, which pc_wait gives up as it sleeps */
             pc_wait(&g_rcv, &g_rlock, -1);
             if (g_perf_small & PSM_WAKE) g_rsleep = 0;
+            if (g_perf_probes) /* woken with something let go, or for nothing (research 12:38) */
+                __atomic_fetch_add(g_rtail != g_rheld ? &g_perf_handoff.rwait_work : &g_perf_handoff.rwait_idle, 1,
+                                   __ATOMIC_RELAXED);
         }
         gate = g_rq[g_rtail % RQ_N].gate;
         cgate = g_rq[g_rtail % RQ_N].cgate;

@@ -630,6 +630,13 @@ int main(void) {
         assert(nh >= 1 && nh == nc && nc < payload_writes); /* the landings write without the split */
         /* a notice each write, or with bit 4 one each hold (notice_close's) */
         assert(g_perf_small & PSM_NOTICE ? nw == many_calls && many_calls >= 1 : nc == nw);
+        if (g_perf_small & PSM_NOTICE) { /* the notices' count, their ranges, and pages no more than those */
+            perf_handoff_line(&g_perf_handoff, 1, line, sizeof line);
+            const char* q = strstr(line, " notice=");
+            double nn = 0, nr = 0, np = 0;
+            assert(q && sscanf(q + 8, "%lf/%lf/%lf", &nn, &nr, &np) == 3);
+            assert(nn == many_calls && nr == many_ranges && np >= 1 && np <= nr);
+        }
         perf_handoff_line(&g_perf_handoff, 1, line, sizeof line); /* PERF-33: every gated release was registered */
         assert(strstr(line, " unregistered=0 "));
     }

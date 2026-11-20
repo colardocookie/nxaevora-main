@@ -1303,7 +1303,9 @@ size_t perf_handoff_line(PerfHandoff* h, uint32_t frames, char* out, size_t size
                      "guest address, size and format; the last submission's results by kind out/image/compute/"
                      "payload/samples, count@share of frames; each kind's last registration's mean place among the "
                      "frame's draws, -1 none; the frame's mean draws; stamp reads a frame off the renderer's lock, "
-                     "and those a pending notice answered (PERF-34)) tails=%llu",
+                     "and those a pending notice answered (PERF-34); combined notices a frame, their ranges and the "
+                     "distinct 4 KB pages those cover; the release thread's waits that ended with work and without) "
+                     "tails=%llu",
                      frames, (unsigned long long)n);
     at = putf(out, size, at, " subs=%.1f carry=%.1f kinds=", take64(&h->subs) / fn, take64(&h->carry) / fn);
     for (int k = 0; k < PCY_KINDS; k++) at = putf(out, size, at, "%s%.1f", k ? "/" : "", take64(&h->kinds[k]) / fn);
@@ -1342,6 +1344,9 @@ size_t perf_handoff_line(PerfHandoff* h, uint32_t frames, char* out, size_t size
     at = putf(out, size, at, " draws=%.1f", np ? take64(&h->draws_sum) / (double)np : 0.0);
     at = putf(out, size, at, " stamp_off=%.1f stamp_pending=%.1f", take64(&h->stamp_off) / f,
               take64(&h->stamp_pending) / f);
+    at = putf(out, size, at, " notice=%.1f/%.1f/%.1f rwait=%.1f/%.1f", take64(&h->notices) / f,
+              take64(&h->notice_ranges) / f, take64(&h->notice_pages) / f, take64(&h->rwait_work) / f,
+              take64(&h->rwait_idle) / f);
     if (!np) take64(&h->draws_sum);
     return at < size ? at : size - 1;
 }
