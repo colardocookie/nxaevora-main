@@ -256,8 +256,8 @@ typedef struct GfxOut {
     u8 runs_ok, stale;
     /* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 3): a composed result's places in the walk's index (walk_add), its order
        among the results and the stamp of the last landing that found it there */
-    struct WalkRef* wrefs;
-    u32 nwrefs, wdepth; /* wdepth: the depth of the vk_buf_frame_done whose list holds it, 0 in g_out or g_prep */
+    struct WalkRef* wrefs; /* its first, the rest through each one's own */
+    u32 wdepth; /* the depth of the vk_buf_frame_done whose list holds it, 0 in g_out or g_prep */
     u64 seq, wstamp;
     u8 in_out; /* in g_out (from its commit until a landing takes it out): what gfx_gpu_src's walks go over */
     struct GfxOut* next;
@@ -423,51 +423,64 @@ static int pages_meet(const GfxOut* a, const GfxOut* b) {
 typedef struct WalkRef {
     GfxOut* o;
     u64 page;
-    struct WalkRef *next, **pprev;
+    struct WalkRef *next, **pprev; /* its bucket's */
+    struct WalkRef* own;           /* the result's next one, or the free list's */
 } WalkRef;
 #define WALK_BUCKETS 4096u
 static WalkRef* g_walk[WALK_BUCKETS];
+/* the entries not in use, from blocks of WALK_BLOCK kept for the session: no allocation a result. Every add and
+   removal is under vk_lock (all recording is, renderer.c, and so are landings), so the list needs no lock */
+#define WALK_BLOCK 1024u
+static WalkRef* g_walk_free;
+static WalkRef* walk_node(void) {
+    if (!g_walk_free) {
+        WalkRef* b = malloc(WALK_BLOCK * sizeof *b);
+        if (!b) return NULL;
+        for (u32 i = 0; i < WALK_BLOCK; i++) b[i].own = g_walk_free, g_walk_free = &b[i];
+    }
+    WalkRef* r = g_walk_free;
+    g_walk_free = r->own;
+    return r;
+}
 static int g_walk_lost;
 static u32 g_walk_depth; /* vk_buf_frame_done calls in progress, nested in a write's flush, under vk_lock */
 static u64 g_walk_seq, g_walk_stamp;
 static WalkRef** walk_bucket(u64 page) {
     return &g_walk[(u32)(page * 0x9E3779B97F4A7C15ull >> 52) & (WALK_BUCKETS - 1)];
 }
-static void walk_ref(GfxOut* o, WalkRef* r, u64 page) {
-    WalkRef** b = walk_bucket(page);
-    r->o = o, r->page = page, r->next = *b, r->pprev = b;
+/* o under page, one entry more in its own chain: 0 without memory */
+static int walk_ref(GfxOut* o, u64 page) {
+    WalkRef *r = walk_node(), **b = walk_bucket(page);
+    if (!r) return 0;
+    r->o = o, r->page = page, r->next = *b, r->pprev = b, r->own = o->wrefs;
     if (*b) (*b)->pprev = &r->next;
     *b = r;
+    o->wrefs = r;
+    return 1;
 }
 /* at o's append to g_prep, when its pages are final (sorted, unmapped ones last): its order, and it into the index */
 static void walk_add(GfxOut* o) {
     if (g_perf_compare != 2) return;
     o->seq = ++g_walk_seq;
     if (g_walk_lost) return;
-    u32 n = 0, i = 0;
-    for (; i < o->npages && o->pages[i] != ~0ull; i++) n += !i || o->pages[i] != o->pages[i - 1];
-    const int unmapped = i < o->npages;
-    if (!n && !unmapped) return;
-    o->wrefs = malloc((size_t)(n + unmapped) * sizeof *o->wrefs);
-    if (!o->wrefs) {
-        g_walk_lost = 1;
-        return;
-    }
-    u32 j = 0;
-    for (i = 0; i < o->npages && o->pages[i] != ~0ull; i++)
-        if (!i || o->pages[i] != o->pages[i - 1]) walk_ref(o, &o->wrefs[j++], o->pages[i]);
-    if (unmapped) walk_ref(o, &o->wrefs[j++], ~0ull);
-    o->nwrefs = j;
+    u32 i = 0;
+    for (; i < o->npages && o->pages[i] != ~0ull; i++) /* the entries made stay o's until it leaves the lists */
+        if ((!i || o->pages[i] != o->pages[i - 1]) && !walk_ref(o, o->pages[i])) {
+            g_walk_lost = 1;
+            return;
+        }
+    if (i < o->npages && !walk_ref(o, ~0ull)) g_walk_lost = 1; /* an unmapped page */
 }
 /* o out of the index, as it leaves the lists */
 static void walk_remove(GfxOut* o) {
-    for (u32 i = 0; i < o->nwrefs; i++) {
-        WalkRef* r = &o->wrefs[i];
+    for (WalkRef *r = o->wrefs, *own; r; r = own) {
+        own = r->own;
         *r->pprev = r->next;
         if (r->next) r->next->pprev = r->pprev;
+        r->own = g_walk_free;
+        g_walk_free = r;
     }
-    free(o->wrefs);
-    o->wrefs = NULL, o->nwrefs = 0;
+    o->wrefs = NULL;
 }
 /* e has landed: a later composed result o read e's result where they share guest memory, not the bytes org holds
    there, so the bytes e changed become o's original bytes. Then o lands only what its own draw changed, and doesn't

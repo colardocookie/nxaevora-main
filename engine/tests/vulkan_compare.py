@@ -682,6 +682,40 @@ static void check_src(void) {
            compared, taken, indexed);
     assert(taken > 20000 && indexed > 40000 && indexed < compared / 2); /* some ranges are over 16 pages */
 }
+/* the pool (research 01:36): after every batch each entry is back on the free list, which holds whole blocks. Out of
+   memory for a block, also part way through a result: the index is lost, and the entries made return */
+static u32 free_count(void) {
+    u32 n = 0;
+    for (WalkRef* r = g_walk_free; r; r = r->own) n++;
+    return n;
+}
+static void check_pool(void) {
+    for (u32 seed = 1; seed <= 60; seed++) {
+        g_perf_compare = 2;
+        build(seed, 2 + (int)(seed % 50));
+        land_all(seed, 0);
+        assert(index_empty() && free_count() % WALK_BLOCK == 0 && free_count() >= WALK_BLOCK);
+    }
+    const u32 all = free_count();
+    u32 s = 41;
+    build(9, 0);
+    GfxOut* o = make(&s, 1);
+    while (o->npages < 2) free(o), o = make(&s, 1);
+    WalkRef* kept = g_walk_free;
+    WalkRef one = {0};
+    g_walk_free = &one, one.own = NULL; /* room for one entry, and none more */
+    alloc_fails = 1;
+    walk_add(o);
+    alloc_fails = 0;
+    assert(g_walk_lost && o->wrefs == &one && !one.own && !g_walk_free);
+    walk_remove(o);
+    assert(!o->wrefs && g_walk_free == &one && index_empty());
+    g_walk_free = kept, g_walk_lost = 0;
+    assert(free_count() == all);
+    free(o);
+    free_owned();
+    g_perf_compare = 0;
+}
 /* a result dropped before it is committed leaves the index too */
 static void check_abort(void) {
     g_perf_compare = 2;
@@ -711,6 +745,7 @@ int main(void) {
     check_lost();
     check_collide();
     check_src();
+    check_pool();
     check_abort();
     printf("vulkan_compare: all checks passed\n");
     return 0;
