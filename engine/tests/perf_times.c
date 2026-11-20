@@ -703,6 +703,35 @@ static void test_writable(void) {
 /* PERF-25: a lookup's result or two, a later result over it, a freed one's bytes once, and the line */
 /* PERF-27: a frame's captures sorted, one bound twice counted once, the next one in address by gap, the ranges at the
    same place as the frame before, the sizes and the cap; the landing steps and the hold by part, then reset */
+/* PERF-29: callers in their own slots, the biggest first, offsets against vk_hash either way, the ones past the slots
+   together, the replay's means over the timed draws, the releases by kind, and a line that empties its counts */
+static void test_p29(void) {
+    static PerfP29 p;
+    char line[PERF_COPIES_LINE];
+    memset(&p, 0, sizeof p);
+    const uint64_t base = 0x140000000ull;
+    perf_hash_note(&p, base - 0x20, base, 64, 0); /* the first slot, printed after the bigger one */
+    perf_hash_note(&p, base + 0x100, base, 1024 * 600, 3000000); /* 2 calls, 600 KB each */
+    perf_hash_note(&p, base + 0x100, base, 1024 * 600, 3000000);
+    for (uint32_t i = 0; i < PERF_HASH_SITES + 3; i++) perf_hash_note(&p, base + 0x1000 + 16 * i, base, 8, 0);
+    for (int i = 0; i < 4; i++) perf_replay_add(&p, PRP_DRAWS, 300);
+    perf_replay_add(&p, PRP_SAMPLED, 75), perf_replay_add(&p, PRP_ALL_NS, 75 * 2000);
+    perf_replay_add(&p, PRP_SEND_NS, 75 * 1000), perf_replay_add(&p, PRP_DECODE_NS, 75 * 400);
+    perf_replay_add(&p, PRP_WORDS, 75 * 40), perf_replay_add(&p, PRP_METHODS, 75 * 20);
+    perf_release_add(&p, PRL_SYNC, 600000, 1200000);
+    perf_release_add(&p, PRL_PAYLOAD, 1200000, 600000);
+    perf_release_add(&p, PRL_SAMPLES, 600000, 0);
+    CHECK(p.calls[PERF_HASH_SITES] == 5); /* two slots taken first, so five of the loop's callers are past them */
+    perf_p29_line(&p, 600, line, sizeof line);
+    CHECK(strstr(line, " vk_hash=140000000 hash=+100:0.0/2.0/0.010,"));
+    CHECK(strstr(line, ",-20:0.0/0.0/0.000,"));
+    CHECK(strstr(line, " rest=0.0/0.0/0.000 ")); /* five calls of 8 bytes, under 0.05 a frame */
+    CHECK(strstr(line, " replay=2.0/0.1 ms=0.0020/0.0010/0.0004 words=40.0 methods=20.0 "));
+    CHECK(strstr(line, " releases=0.0/0.0/0.0 ms=0.001/0.002/0.001 book=0.003"));
+    CHECK(p.calls[PERF_HASH_SITES] == 0 && p.replay[PRP_DRAWS] == 0 && p.rel_n[PRL_SYNC] == 0);
+    perf_hash_note(&p, base + 0x100, base, 8, 0); /* the slot stays its caller's */
+    CHECK(p.ra[1] == base + 0x100 && p.calls[1] == 1);
+}
 static void test_caps(void) {
     static PerfCaps c;
     char line[PERF_COPIES_LINE];
@@ -1123,6 +1152,7 @@ int main(void) {
     test_own();
     test_landed();
     test_caps();
+    test_p29();
     test_same();
     test_same_threads();
     CHECK(g_perf_inplace == 0 && g_perf_bind == PBK_OTHER && g_perf_exact == 0); /* unset: today's commands */

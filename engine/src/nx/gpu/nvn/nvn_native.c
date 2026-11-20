@@ -5345,7 +5345,7 @@ static void replay_stream_method(GpuChannel* ch, uint32_t subchannel, uint32_t m
         maxwell3d_method(ch, method, value, last);
 }
 /* Sends the builder words of one bind group. A damaged stream is a refusal, and the words sent before it stay. */
-static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, uint32_t count) {
+static int replay_bind_words(NvnNativeReplayHost* host, const uint32_t* words, uint32_t count) {
     NvnWordStream stream = {0};
     for (uint32_t i = 0; i < count; i++) {
         uint32_t method, value;
@@ -5358,6 +5358,27 @@ static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, ui
         }
     }
     return nvn_word_stream_complete(&stream);
+}
+/* SNX_ARCEUS_PERF_TIMES (PERF-29): set by replay_host_draw for one draw in PERF_REPLAY_SAMPLE, whose sends are timed,
+   each after a decode-only pass over its words (the decoder only changes its own stream). The replay thread's */
+static int g_replay_timed;
+static uint64_t g_replay_draws;
+static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, uint32_t count) {
+    if (!g_replay_timed) return replay_bind_words(host, words, count);
+    NvnWordStream probe = {0};
+    const uint64_t t0 = plat_ns(), methods0 = host->bind_methods;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t method, value;
+        int last;
+        if (nvn_word_stream_next(&probe, words[i], &method, &value, &last) < 0) break;
+    }
+    const uint64_t t1 = plat_ns();
+    const int ok = replay_bind_words(host, words, count);
+    perf_replay_add(&g_perf_p29, PRP_SEND_NS, plat_ns() - t1);
+    perf_replay_add(&g_perf_p29, PRP_DECODE_NS, t1 - t0);
+    perf_replay_add(&g_perf_p29, PRP_WORDS, count);
+    perf_replay_add(&g_perf_p29, PRP_METHODS, host->bind_methods - methods0);
+    return ok;
 }
 /* Multisample has no builder: its bind is only logged, once for the frame job. */
 static void replay_bind_send_state(NvnNativeReplayHost* host, uint32_t kind) {
@@ -5523,7 +5544,7 @@ static void replay_bind_send_all(NvnNativeReplayHost* host) {
 #define NVN_MME_DRIVER_CONSTANTS_REGISTER 0xD18u
 
 /* The replay thread writes these without a lock. The first draw and the first dispatch of the run get one log line. */
-static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
+static int replay_host_draw_sent(void* ctx, const NvnOpDraw* op) {
     NvnNativeReplayHost* host = ctx;
     if (op->kind >= (uint32_t)NVN_DRAW_KIND_COUNT) return 0;
     replay_bind_send_all(host);
@@ -5552,6 +5573,18 @@ static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
             host->bind_methods, host->bind_refusals, host->channel->r3d[NVN_MME_DRIVER_CONSTANTS_REGISTER]);
     }
     return 1;
+}
+/* SNX_ARCEUS_PERF_TIMES (PERF-29): every draw counted, one in PERF_REPLAY_SAMPLE timed whole and by its sends */
+static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
+    if (!g_perf_times) return replay_host_draw_sent(ctx, op);
+    const int timed = ++g_replay_draws % PERF_REPLAY_SAMPLE == 0;
+    const uint64_t t0 = timed ? plat_ns() : 0;
+    g_replay_timed = timed;
+    const int r = replay_host_draw_sent(ctx, op);
+    g_replay_timed = 0;
+    perf_replay_add(&g_perf_p29, PRP_DRAWS, 1);
+    if (timed) perf_replay_add(&g_perf_p29, PRP_SAMPLED, 1), perf_replay_add(&g_perf_p29, PRP_ALL_NS, plat_ns() - t0);
+    return r;
 }
 /* The dispatch arena: one guest page that holds the QMD and the driver constant block of every dispatch, mapped once
    at the first dispatch and kept for the run. vk_dispatch reads both during the launch call, so one slot is enough. */
@@ -6979,6 +7012,8 @@ static void perf_line(void) {
     perf_landed_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-25 */
     LOG("%s\n", line);
     perf_caps_line(&g_perf_caps, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-27 */
+    LOG("%s\n", line);
+    perf_p29_line(&g_perf_p29, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-29 */
     LOG("%s\n", line);
     perf_copies_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
     LOG("%s\n", line);

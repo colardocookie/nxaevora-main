@@ -530,6 +530,29 @@ void perf_caps_stale(PerfCaps* c);
 void perf_caps_waited(PerfCaps* c, uint64_t ns);
 /* PERF-27's line, after perf-landed: the window's counts a frame, which it starts again */
 size_t perf_caps_line(PerfCaps* c, uint32_t frames, char* out, size_t size);
+/* PERF-29 (research 01:36), log only, with SNX_ARCEUS_PERF_TIMES: vk_hash's and vk_hash_copy's callers by return
+   address (the first PERF_HASH_SITES, the rest together), the replay's draws timed by step on one in
+   PERF_REPLAY_SAMPLE, and the release thread's releases by kind */
+#define PERF_HASH_SITES 24u
+#define PERF_REPLAY_SAMPLE 16u
+/* the replay's draws, then of the sampled ones: the whole call (its binds and its draw words), their sends, a
+   decode-only pass over the same words before each send, and their words and methods */
+enum { PRP_DRAWS, PRP_SAMPLED, PRP_ALL_NS, PRP_SEND_NS, PRP_DECODE_NS, PRP_WORDS, PRP_METHODS, PRP_N };
+enum { PRL_SYNC, PRL_PAYLOAD, PRL_SAMPLES, PRL_KINDS }; /* a syncpoint increment, a payload, a samples report */
+typedef struct {
+    uint64_t base;                                     /* vk_hash's address, which the callers are printed against */
+    uint64_t ra[PERF_HASH_SITES];                      /* atomic: 0 for a free slot, else the caller's address */
+    uint64_t calls[PERF_HASH_SITES + 1], bytes[PERF_HASH_SITES + 1], long_ns[PERF_HASH_SITES + 1]; /* atomic */
+    uint64_t replay[PRP_N];                            /* atomic */
+    uint64_t rel_n[PRL_KINDS], rel_ns[PRL_KINDS], rel_book_ns; /* the release thread's own */
+} PerfP29;
+extern PerfP29 g_perf_p29;
+/* one vk_hash of n bytes from ra (base: vk_hash), ns for one of 1 KB or more (else 0) */
+void perf_hash_note(PerfP29* p, uint64_t ra, uint64_t base, uint64_t n, uint64_t ns);
+void perf_replay_add(PerfP29* p, int what, uint64_t v);
+/* one release performed: its kind (PRL_*), its own ns, and its queue's bookkeeping under g_rlock without it */
+void perf_release_add(PerfP29* p, int kind, uint64_t ns, uint64_t book_ns);
+size_t perf_p29_line(PerfP29* p, uint32_t frames, char* out, size_t size);
 void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame);
 /* PERF-23's, the same, with the stamps' counts since the last and the cost of one clock read. real NULL: the record as
    written is not kept (SNX_ARCEUS_PERF_TIMES=1), its columns not printed */

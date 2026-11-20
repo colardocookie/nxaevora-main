@@ -155,6 +155,7 @@ static void release_through(u64 gate, u64 cgate) {
     vk_result_end();
     for (;;) {
         Release r;
+        u64 r0 = held ? plat_ns() : 0, own = 0; /* PERF-29: a release's queue work and its own, apart */
         pm_lock(&g_rlock);
         if (g_rtail == g_rheld || g_rq[g_rtail % RQ_N].gate > gate || g_rq[g_rtail % RQ_N].cgate > cgate) {
             pm_unlock(&g_rlock);
@@ -167,13 +168,21 @@ static void release_through(u64 gate, u64 cgate) {
         if (r.gva) pend_add(&g_rpages, r.gva, r.len, -1);
         if (!r.gva) {
             /* release_value sees the transfer from queued to completed atomically. */
+            const u64 p0 = r0 ? plat_ns() : 0;
             perform(&r);
+            if (r0) own = plat_ns() - p0;
             if (r.id < SYNC_N) g_rincr[r.id]--;
             if (g_perf_times) perf_tail_performed(&g_perf, g_rtail - 1, plat_ns());
         }
         if (g_rtail == g_rhead) __atomic_store_n(&g_gpu_releases, 0, __ATOMIC_RELEASE);
         pm_unlock(&g_rlock);
+        const u64 r1 = r0 ? plat_ns() : 0;
         if (r.gva) perform(&r);
+        if (r0) {
+            if (r.gva) own = plat_ns() - r1;
+            perf_release_add(&g_perf_p29, !r.gva ? PRL_SYNC : r.samples ? PRL_SAMPLES : PRL_PAYLOAD, own,
+                             r1 - r0 - (r.gva ? 0 : own));
+        }
     }
     if (held) {
         const u64 end = plat_ns(), outputs = __atomic_load_n(&g_perf.wb_total, __ATOMIC_RELAXED) - outputs0;

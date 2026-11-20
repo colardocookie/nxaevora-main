@@ -18,6 +18,7 @@ int g_perf_sample;
 int g_perf_compare;
 int g_patch_hash;
 PerfCaps g_perf_caps;
+PerfP29 g_perf_p29;
 _Thread_local int g_perf_release_thread;
 int g_perf_bind;
 uint64_t g_perf_exact;
@@ -1129,6 +1130,65 @@ void perf_caps_waited(PerfCaps* c, uint64_t ns) {
     __atomic_fetch_add(&c->compare[PCC_WAIT_NS], ns, __ATOMIC_RELAXED);
 }
 static uint64_t take64(uint64_t* v) { return __atomic_exchange_n(v, 0, __ATOMIC_RELAXED); }
+void perf_hash_note(PerfP29* p, uint64_t ra, uint64_t base, uint64_t n, uint64_t ns) {
+    uint32_t i = 0;
+    for (; i < PERF_HASH_SITES; i++) { /* the caller's slot, or the first free one taken for it */
+        uint64_t was = __atomic_load_n(&p->ra[i], __ATOMIC_ACQUIRE);
+        if (!was && __atomic_compare_exchange_n(&p->ra[i], &was, ra, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) break;
+        if (was == ra) break;
+    }
+    __atomic_store_n(&p->base, base, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&p->calls[i], 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&p->bytes[i], n, __ATOMIC_RELAXED);
+    if (ns) __atomic_fetch_add(&p->long_ns[i], ns, __ATOMIC_RELAXED);
+}
+void perf_replay_add(PerfP29* p, int what, uint64_t v) { __atomic_fetch_add(&p->replay[what], v, __ATOMIC_RELAXED); }
+void perf_release_add(PerfP29* p, int kind, uint64_t ns, uint64_t book_ns) {
+    __atomic_fetch_add(&p->rel_n[kind], 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&p->rel_ns[kind], ns, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&p->rel_book_ns, book_ns, __ATOMIC_RELAXED);
+}
+size_t perf_p29_line(PerfP29* p, uint32_t frames, char* out, size_t size) {
+    if (!size) return 0;
+    const double f = frames ? frames : 1;
+    uint64_t c[PERF_HASH_SITES + 1], b[PERF_HASH_SITES + 1], t[PERF_HASH_SITES + 1], ra[PERF_HASH_SITES];
+    for (uint32_t i = 0; i <= PERF_HASH_SITES; i++) {
+        c[i] = take64(&p->calls[i]), b[i] = take64(&p->bytes[i]), t[i] = take64(&p->long_ns[i]);
+        if (i < PERF_HASH_SITES) ra[i] = __atomic_load_n(&p->ra[i], __ATOMIC_ACQUIRE); /* slots stay a caller's */
+    }
+    const uint64_t base = __atomic_load_n(&p->base, __ATOMIC_RELAXED);
+    size_t at = putf(out, size, 0,
+                     "perf-p29: frames=%u (a frame: vk_hash and vk_hash_copy by caller, its return address less "
+                     "vk_hash's: calls/KB/ms of its calls of 1 KB or more, most KB first, then the rest. The replay's "
+                     "draws and the ones timed, one in %u: ms a timed draw for its binds and draw words in all/their "
+                     "sends/a decode-only pass over the same words, and words and methods a timed draw. The release "
+                     "thread's releases performed, syncpoint/payload/samples report: how many, ms performing, and ms "
+                     "of the queue's bookkeeping under its lock) vk_hash=%llx hash=",
+                     frames, PERF_REPLAY_SAMPLE, (unsigned long long)base);
+    for (int shown = 0;; shown++) { /* the sites by KB, the largest first */
+        int best = -1;
+        for (uint32_t i = 0; i < PERF_HASH_SITES; i++)
+            if (c[i] && (best < 0 || b[i] > b[best])) best = (int)i;
+        if (best < 0) break;
+        const int64_t off = (int64_t)(ra[best] - base);
+        at = putf(out, size, at, "%s%c%llx:%.1f/%.1f/%.3f", shown ? "," : "", off < 0 ? '-' : '+',
+                  (unsigned long long)(off < 0 ? -off : off), c[best] / f, b[best] / f / 1024, t[best] / f / 1e6);
+        c[best] = 0;
+    }
+    at = putf(out, size, at, " rest=%.1f/%.1f/%.3f", c[PERF_HASH_SITES] / f, b[PERF_HASH_SITES] / f / 1024,
+              t[PERF_HASH_SITES] / f / 1e6);
+    uint64_t r[PRP_N];
+    for (int i = 0; i < PRP_N; i++) r[i] = take64(&p->replay[i]);
+    const double s = r[PRP_SAMPLED] ? (double)r[PRP_SAMPLED] : 1;
+    at = putf(out, size, at, " replay=%.1f/%.1f ms=%.4f/%.4f/%.4f words=%.1f methods=%.1f", r[PRP_DRAWS] / f,
+              r[PRP_SAMPLED] / f, r[PRP_ALL_NS] / s / 1e6, r[PRP_SEND_NS] / s / 1e6, r[PRP_DECODE_NS] / s / 1e6,
+              r[PRP_WORDS] / s, r[PRP_METHODS] / s);
+    uint64_t n[PRL_KINDS], ns[PRL_KINDS];
+    for (int i = 0; i < PRL_KINDS; i++) n[i] = take64(&p->rel_n[i]), ns[i] = take64(&p->rel_ns[i]);
+    at = putf(out, size, at, " releases=%.1f/%.1f/%.1f ms=%.3f/%.3f/%.3f book=%.3f", n[0] / f, n[1] / f, n[2] / f,
+              ns[0] / f / 1e6, ns[1] / f / 1e6, ns[2] / f / 1e6, take64(&p->rel_book_ns) / f / 1e6);
+    return at < size ? at : size - 1;
+}
 size_t perf_caps_line(PerfCaps* c, uint32_t frames, char* out, size_t size) {
     static const char* const where[2] = {"release", "elsewhere"};
     if (!size) return 0;

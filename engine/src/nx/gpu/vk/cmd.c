@@ -94,11 +94,21 @@ u32 g_vk_epoch, g_vk_present;
 #include "xxhash.h"
 #define SNX_XXH3(p, n) XXH3_64bits(p, n)
 #endif
-u64 vk_hash(const void* p, u64 size) { return (u64)SNX_XXH3(p, (size_t)size); }
+/* SNX_ARCEUS_PERF_TIMES (PERF-29): a hash by its caller, timed when it is of 1 KB or more */
+__attribute__((noinline)) static u64 hash_noted(const void* p, u64 size, void* ra) {
+    const u64 t0 = size >= 1024 ? plat_ns() : 0;
+    const u64 h = (u64)SNX_XXH3(p, (size_t)size);
+    perf_hash_note(&g_perf_p29, (u64)(uintptr_t)ra, (u64)(uintptr_t)&vk_hash, size, t0 ? plat_ns() - t0 : 0);
+    return h;
+}
+u64 vk_hash(const void* p, u64 size) {
+    if (g_perf_times) return hash_noted(p, size, __builtin_return_address(0));
+    return (u64)SNX_XXH3(p, (size_t)size);
+}
 /* the same hash as vk_hash, which an entry's next check may compute instead, with src copied to dst: the bytes are
    hashed where they are (dst may be write-combined staging, slow to read back) and then copied, from cache */
 u64 vk_hash_copy(void* dst, const void* src, u64 size) {
-    u64 h = (u64)SNX_XXH3(src, (size_t)size);
+    u64 h = g_perf_times ? hash_noted(src, size, __builtin_return_address(0)) : (u64)SNX_XXH3(src, (size_t)size);
     memcpy(dst, src, (size_t)size);
     return h;
 }
