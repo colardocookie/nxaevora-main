@@ -53,12 +53,18 @@ Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns 
 | `SNX_ARCEUS_WAZA_SHOT_FIX` | 2 | Disables shot timing/blending. `1` runs at tick rate; `2` also blends between ticks. |
 | `SNX_ARCEUS_SCRIPT_TICK` | `0x4` | Not a boolean: a mask of state script classes that run 30 times a second. `0` leaves every script on every frame. Explicit masks are used as provided. |
 | `SNX_ARCEUS_SCRIPT_WINDOWS` | `0x1` | Not a boolean: a mask of script windows. Bit 0 is the throw window. `0` turns it off. |
+| `SNX_ARCEUS_EVENT_TICK` | off | `=0` keeps event scripts on every frame. Set to `1` to run them 30 times a second. |
+| `SNX_ARCEUS_DEMO_TICK` | off | `=0` keeps the demo clock at 2 a frame. Set to `1` to step it by elapsed time. |
+| `SNX_ARCEUS_TEXT_TICK` | off | `=0` keeps the message text reveal on every frame. Set to `1` to reveal 30 frames a second. |
 | `SNX_ARCEUS_CLOCK_TRACE` | off | `=0` keeps the trace off; set to `1` to log clock calls. |
 | `SNX_ARCEUS_DIALOGUE_TRACE` | off | `=0` keeps the read-only trace off. |
 | `SNX_ARCEUS_CAMERA_TRACE` | off | `=0` keeps the read-only trace off. |
 | `SNX_ARCEUS_TIMING_RESEARCH` | off | `=0` keeps read-only timing counters off. |
 | `SNX_ARCEUS_CADENCE_CENSUS` | off | `=0` keeps the read-only census off. |
 | `SNX_ARCEUS_GRAVITY_PROBE` | off | `=0` keeps the read-only probe off. |
+| `SNX_ARCEUS_EVENT_PROBE` | off | `=0` keeps the read-only event script probe off. |
+| `SNX_ARCEUS_DEMO_PROBE` | off | `=0` keeps the read-only demo clock probe off. |
+| `SNX_ARCEUS_TEXT_PROBE` | off | `=0` keeps the read-only text reveal probe off. |
 | `SNX_ARCEUS_FIXED_RESOLUTION` | off | `=0` leaves the game's automatic 3D resolution governor enabled. |
 
 The default movement mask selects bits 2 through 8, the seven player movement sites, and bit 10, the player's horizontal position step. Bits 0 and 1 remain off. An explicit mask such as `7fc` adds bit 9's capped-fall selection while preserving the same sites. `1fc` leaves bit 10 out.
@@ -444,3 +450,45 @@ measured. Only the rotation that
 `main+25AB490` sets is blended. The throw wait is the only window, and other waits counted in script updates may
 exist. The kept release event is asked for again only while the same state object is updated on consecutive frames
 and the object's first word is unchanged. An earlier form that asked more queries crashed on a released object.
+
+## Cutscenes and message text
+
+Three parts of a cutscene count calls instead of time, and each is called once per rendered frame. At 60 FPS the
+opening cutscene moved on between its texts about 1.7 times too fast and ended in half the Switch's time, and the text
+in its windows printed about twice as fast, while animation, camera and sound kept their speed. Each part has a
+switch of its own, off by default. None of them installs while the timing layer is off, which it is with
+`SNX_ARCEUS_TIMING_FIXES=0` and, at the default frame-rate selection, at game pace or 30 FPS and below.
+`SNX_ARCEUS_TARGET_FPS=game` keeps the layer on at the runtime's own pace, so there an enabled switch also installs
+at a 30 FPS cap.
+
+Event scripts. The event script job `main+15BA460` runs its Lua script once a call and resumes it through
+`main+F7EC80`. The scripts read no time, so their waits are counts of calls. With `SNX_ARCEUS_EVENT_TICK=1` each job,
+keyed by its address and its script context, runs on its own budget of the measured frame step: a run when the
+budget comes within half a step of 1/30 s, at most one a frame, the carry capped at two runs. A skipped frame answers
+0, as a script that waits does, and writes nothing. The pad natives `IsPadTrigger`, `IsPadRelease` and `IsPadRepeat`
+see the presses of the job's skipped frames in its next run, for their own call only.
+
+The demo clock. A demo's controller step `main+1458300` adds 2 to its clock at `C+7EC` once a call while it plays,
+and the demo ends at a clock value. With `SNX_ARCEUS_DEMO_TICK=1` a call that added exactly 2 sets the clock to the
+elapsed time in 1/60 s units instead, at most 2 a call, the carry capped at 4. A hold clears the carry, and every
+other change of the clock is left as the game made it.
+
+Message text. The text processor's reveal `main+FBFBD0` makes up to a quota of glyph steps (`main+2B315E8`) each call.
+With `SNX_ARCEUS_TEXT_TICK=1` each text is decided once a frame by the event tick's rule. The reveal still runs every
+call, so page input, the held button and the end of a text work as before. In a frame that is not the text's tick,
+its glyph steps answer as steps that made no glyph. A fast finish and a whole page still show at once. A text not seen
+in the previous frame frees its state.
+
+The probes `SNX_ARCEUS_EVENT_PROBE`, `SNX_ARCEUS_DEMO_PROBE` and `SNX_ARCEUS_TEXT_PROBE` are read-only. They log the
+calls a second of these functions, the demo clock at the end of a demo, and the text's glyph steps, quota and speed
+settings, and they install at 30 FPS too. They measured each cause before its fix was built: the job and the demo step
+once a frame, the demo ending at clock 3502 after 33.65 s at 60 FPS and 61.00 s at 30, and a text taking 205 ms at 60
+against 467 ms at 30 for the same calls and glyph steps. With the three switches the demo ended at 61.40 s at 60 FPS,
+and the user found the opening's timing and the text speed the same as on the Switch.
+
+Limits. The battle's message windows wait for a press or for a count of calls (`main+C67F30`, mode 3, up to 40 counts
+in the session played). The count is made in the glyph step that `SNX_ARCEUS_TEXT_TICK` paces, and with it on the user
+found battle text at 60 FPS the same as on the Switch. The length of a wait was not measured. The state tables hold 8
+jobs, 8 demo controllers and 16 texts. A job's state goes when the job finishes or its address holds another script,
+a controller's after a second without a step while it plays, and a text's once the text was not seen in the previous
+frame. A full table leaves that one as the game runs it, with a count, and the played sessions had none.

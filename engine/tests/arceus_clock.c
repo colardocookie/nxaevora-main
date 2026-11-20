@@ -4,6 +4,8 @@
 #include "nx/runtime/arceus_clock.c"
 #include "arceus_steps_30.h"
 #include <assert.h>
+#include <stdarg.h>
+#include <stdio.h>
 
 static u8 memory[4096];
 u8* g_mem = memory;
@@ -17,7 +19,21 @@ void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 static unsigned waza_dependency_warnings;
 static unsigned low_fps_skip_logs;
+static unsigned log_calls;
+/* Only the event probes', the event tick's and the demo probe's lines are kept. */
+static char logged[8][512];
+static unsigned logged_count;
 void logf_(int level, const char* fmt, ...) {
+    log_calls++;
+    if ((!strncmp(fmt, "arceus-event-probe: ", 20) || !strncmp(fmt, "arceus-event-tick: calls", 24) ||
+         !strncmp(fmt, "arceus-demo-probe: s", 20) || !strncmp(fmt, "arceus-demo-probe: p", 20) ||
+         !strncmp(fmt, "arceus-demo-tick: s", 19) || !strncmp(fmt, "arceus-text-probe: ", 19)) &&
+        logged_count < 8) {
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(logged[logged_count++], sizeof logged[0], fmt, args);
+        va_end(args);
+    }
     if (level == 0 && strstr(fmt, "arceus-waza-shot: enabled without WAZA_OBJECT_FIX"))
         waza_dependency_warnings++;
     if (level == 1 && strstr(fmt, "arceus-clock: timing layer skipped at fps_limit="))
@@ -27,7 +43,7 @@ static u64 host_ns = 1000000000;
 u64 plat_ns(void) { return host_ns; }
 void mem_query(u64 address, MemBlock* out) {
     (void)address;
-    *out = (MemBlock){.addr = 1, .size = sizeof memory - 1, .perm = PERM_RW};
+    *out = (MemBlock){.addr = 1, .size = g_as_size - 1, .perm = PERM_RW};
 }
 u64 mem_find_free(u64 lo, u64 hi, u64 size, u64 align) {
     (void)lo; (void)hi; (void)size; (void)align;
@@ -37,8 +53,21 @@ int mem_map(u64 address, u64 size, u32 state, u32 perm) {
     (void)address; (void)size; (void)state; (void)perm;
     assert(0); return -1;
 }
-void jit_code_changed(u64 pc, u64 size) { (void)pc; (void)size; assert(0); }
-GuestFn jit_wait(u64 pc) { (void)pc; assert(0); return NULL; }
+/* Only the text probe's install test compiles: each jit_wait answers the next of jit_bodies, every change is noted */
+static int jit_stub_on;
+static GuestFn jit_bodies[2];
+static unsigned jit_waits, jit_changes;
+static u64 jit_changed[4];
+void jit_code_changed(u64 pc, u64 size) {
+    (void)size;
+    assert(jit_stub_on && jit_changes < 4);
+    jit_changed[jit_changes++] = pc;
+}
+GuestFn jit_wait(u64 pc) {
+    (void)pc;
+    assert(jit_stub_on && jit_waits < 2);
+    return jit_bodies[jit_waits++];
+}
 
 static unsigned calls, boundaries, calls_this_render, entered_whole;
 /* A command's end check as the game makes it: only in an update entered with the frame on
@@ -252,6 +281,67 @@ static void unset_flag(const char* name) {
 #else
     assert(!unsetenv(name));
 #endif
+}
+static void test_probe_master_switch(void) {
+    static const char* const probes[] = {
+        "SNX_ARCEUS_EVENT_PROBE", "SNX_ARCEUS_DEMO_PROBE", "SNX_ARCEUS_TEXT_PROBE"
+    };
+    static const char* const disabled[] = {
+        "0", "invalid",
+#ifndef _WIN32
+        "", /* Windows _putenv_s removes empty values, restoring the default-on state. */
+#endif
+    };
+    static const int runtime_limits[] = {SNX_FPS_GAME, 30, 60, 120, 0};
+    const int saved_fps = g_opt_fps;
+    const SnxModule* saved_mod = g_mod;
+    const u64 saved_base = main_base;
+    const int saved_timing = timing_enabled, saved_clocks = clocks_installed;
+    u8 before[sizeof memory];
+    memcpy(before, memory, sizeof before);
+    main_base = 0;
+    g_mod = NULL;
+    for (unsigned i = 0; i < sizeof probes / sizeof probes[0]; i++) flag(probes[i], "1");
+    for (unsigned r = 0; r < sizeof runtime_limits / sizeof runtime_limits[0]; r++) {
+        g_opt_fps = runtime_limits[r];
+        for (unsigned d = 0; d < sizeof disabled / sizeof disabled[0]; d++) {
+            flag("SNX_ARCEUS_TIMING_FIXES", disabled[d]);
+            for (int installed = 0; installed <= 1; installed++) {
+                timing_enabled = clocks_installed = installed;
+                log_calls = 0;
+                arceus_clock_post_jit();
+                assert(!log_calls && g_opt_fps == runtime_limits[r] && !main_base);
+                assert(timing_enabled == installed && clocks_installed == installed);
+                assert(!event_probe && !demo_probe && !text_probe);
+                assert(!event_probe_original[0] && !event_probe_original[1] && !demo_probe_original);
+                assert(!text_probe_original[0] && !text_probe_original[1] && !text_probe_setup_original);
+                assert(!memcmp(before, memory, sizeof before));
+            }
+        }
+        /* Each enabled initializer refuses this missing module and logs once. Both master-on forms
+           must still reach all three probes when timing hooks are absent, including at game pace. */
+        timing_enabled = clocks_installed = 0;
+        for (unsigned explicit_on = 0; explicit_on < 2; explicit_on++) {
+            if (explicit_on) flag("SNX_ARCEUS_TIMING_FIXES", "1");
+            else unset_flag("SNX_ARCEUS_TIMING_FIXES");
+            for (unsigned p = 0; p < sizeof probes / sizeof probes[0]; p++) {
+                for (unsigned i = 0; i < sizeof probes / sizeof probes[0]; i++)
+                    flag(probes[i], i == p ? "1" : "0");
+                log_calls = 0;
+                arceus_clock_post_jit();
+                assert(log_calls == 1 && !main_base && g_opt_fps == runtime_limits[r]);
+            }
+        }
+        for (unsigned i = 0; i < sizeof probes / sizeof probes[0]; i++) flag(probes[i], "1");
+    }
+    for (unsigned i = 0; i < sizeof probes / sizeof probes[0]; i++) unset_flag(probes[i]);
+    unset_flag("SNX_ARCEUS_TIMING_FIXES");
+    g_opt_fps = saved_fps;
+    g_mod = saved_mod;
+    main_base = saved_base;
+    timing_enabled = saved_timing;
+    clocks_installed = saved_clocks;
+    logged_count = log_calls = 0;
 }
 static void test_defaults_on(void) {
     static const char* const all[] = {
@@ -2390,7 +2480,1167 @@ static void test_whole_step(void) {
     blink_ticks = 0, blink_remainder = 0;
     capture_fix_active = 0;
 }
+/* The event probe: each wrapper calls its original once with the registers as given, counts it, and a line every
+   5 s gives the calls and frames a second since the last line. */
+static unsigned event_stub_runs;
+static void event_stub(CPU* c, u64 entry) {
+    assert(entry == entry_pc && c->x[0] == object && c->x[1] == 7);
+    event_stub_runs++;
+    c->x[0] = 3;
+    c->pc = c->x[30];
+}
+static void test_event_probe(void) {
+    event_probe_original[0] = event_probe_original[1] = event_stub;
+    event_probe_calls[0] = event_probe_calls[1] = event_probe_ns = 0;
+    memset(event_probe_logged, 0, sizeof event_probe_logged);
+    const int clocks = clocks_installed;
+    const u64 frames = event_probe_frames, ns = host_ns;
+    clocks_installed = 1;
+    event_probe_logged[2] = event_probe_frames;
+    logged_count = 0;
+    event_stub_runs = 0;
+    /* 6 s at 60 frames a second: the job once a frame, the resume every other frame */
+    for (unsigned k = 0; k < 360; k++) {
+        host_ns += 16666667;
+        event_probe_frames++;
+        CPU c = {.x = {[0] = object, [1] = 7, [30] = return_pc}, .pc = entry_pc};
+        event_job_probe(&c, entry_pc);
+        assert(c.x[0] == 3 && c.pc == return_pc);
+        if (k % 2) {
+            CPU d = {.x = {[0] = object, [1] = 7, [30] = return_pc}, .pc = entry_pc};
+            event_resume_probe(&d, entry_pc);
+            assert(d.x[0] == 3 && d.pc == return_pc);
+        }
+    }
+    assert(event_stub_runs == 540 && event_probe_calls[0] == 360 && event_probe_calls[1] == 180);
+    /* the first call starts the window, one line 5 s later */
+    assert(logged_count == 1);
+    assert(strstr(logged[0], "arceus-event-probe: seconds=5.00 job_15ba460_per_s=60.00 resume_f7ec80_per_s=30.00 "
+                             "frames_per_s=60.00 job_total=301 resume_total=150"));
+    /* without the clock wrappers the frames are not counted, and the line says so */
+    clocks_installed = 0;
+    for (unsigned k = 0; k < 300; k++) {
+        host_ns += 16666667;
+        CPU c = {.x = {[0] = object, [1] = 7, [30] = return_pc}, .pc = entry_pc};
+        event_job_probe(&c, entry_pc);
+    }
+    assert(logged_count == 2 && strstr(logged[1], "frames_per_s=- (no clock wrappers)"));
+    event_probe_original[0] = event_probe_original[1] = NULL;
+    /* At 30 FPS the timing layer leaves main_base unset: the probe looks for the module itself, and with none
+       supported it refuses, installs nothing and leaves main_base alone */
+    const SnxModule* mod = g_mod;
+    const u64 base = main_base;
+    static const SnxModule none = {0};
+    g_mod = &none;
+    main_base = 0;
+    event_probe = 0;
+    flag("SNX_ARCEUS_EVENT_PROBE", "1");
+    event_probe_init();
+    unset_flag("SNX_ARCEUS_EVENT_PROBE");
+    assert(!event_probe && !main_base && !event_probe_original[0] && !event_probe_original[1]);
+    g_mod = mod;
+    main_base = base;
+    clocks_installed = clocks;
+    event_probe_frames = frames;
+    host_ns = ns;
+    logged_count = 0;
+}
+/* The demo probe on its real wrapper: a stand-in step that adds 2 to the clock while playing and ends the demo on a
+   given call. The step is called once with the registers as given; the probe writes nothing. */
+#define DEMO_OBJECT 64
+#define DEMO_CONTEXT 1100
+static unsigned demo_stub_calls, demo_stub_end;
+static void demo_stub(CPU* c, u64 entry) {
+    assert(entry == entry_pc && c->x[0] == DEMO_OBJECT && c->x[1] == 9);
+    if (gr32(DEMO_OBJECT + 0x3b8) == 3) {
+        gw32(DEMO_CONTEXT + 0x7ec, gr32(DEMO_CONTEXT + 0x7ec) + 2);
+        if (++demo_stub_calls == demo_stub_end) gw32(DEMO_OBJECT + 0x3b8, 5);
+    }
+    c->x[0] = 1;
+    c->pc = c->x[30];
+}
+static void test_demo_probe(void) {
+    memset(memory, 0, sizeof memory);
+    const u64 ns = host_ns, frames = event_probe_frames;
+    const int clocks = clocks_installed;
+    clocks_installed = 1;
+    gw64(DEMO_OBJECT + 0x3b0, DEMO_CONTEXT);
+    gw32(DEMO_OBJECT + 0x3b8, 3);
+    for (unsigned k = 0; k < 5; k++) gw64(DEMO_CONTEXT + 0x7f0 + 8 * k, DEMO_EMPTY_NAME);
+    demo_probe_original = demo_stub;
+    demo_probe_ns = demo_probe_object = 0;
+    demo_stub_calls = 0;
+    demo_stub_end = 400;
+    logged_count = 0;
+    /* 60 frames a second: the clock gains 120 a second, and playing ends after 400 calls at 800 */
+    for (unsigned k = 0; k < 420; k++) {
+        host_ns += 16666667;
+        event_probe_frames++;
+        u8 before[4096];
+        memcpy(before, memory, sizeof memory);
+        CPU c = {.x = {[0] = DEMO_OBJECT, [1] = 9, [30] = return_pc}, .pc = entry_pc};
+        demo_probe_step(&c, entry_pc);
+        assert(c.x[0] == 1 && c.pc == return_pc);
+        /* only the stand-in's own writes: the clock and, at the end, the state */
+        memcpy(before + DEMO_CONTEXT + 0x7ec, memory + DEMO_CONTEXT + 0x7ec, 4);
+        memcpy(before + DEMO_OBJECT + 0x3b8, memory + DEMO_OBJECT + 0x3b8, 4);
+        assert(!memcmp(before, memory, sizeof memory));
+    }
+    assert(logged_count == 2);
+    assert(strstr(logged[0], "arceus-demo-probe: seconds=5.00 step_1458300_per_s=60.00 frames_per_s=60.00 state=3 ") &&
+           strstr(logged[0], " context=44c clock=602 clock_per_s=120.0 slots_empty=1 calls_total=301"));
+    assert(strstr(logged[1], "arceus-demo-probe: playing ended: state=5 clock=800 (from 2, 6.65 s at 120.0 a second)"));
+    /* a name slot that holds the demo shows as not empty */
+    gw64(DEMO_CONTEXT + 0x800, 7);
+    u32 state;
+    u64 context;
+    int32_t clock;
+    int empty;
+    assert(demo_probe_read(DEMO_OBJECT, &state, &context, &clock, &empty) && !empty && context == DEMO_CONTEXT);
+    /* an unreadable context: nothing read, the step still called once */
+    gw64(DEMO_OBJECT + 0x3b0, 0);
+    assert(!demo_probe_read(DEMO_OBJECT, &state, &context, &clock, &empty));
+    demo_probe_original = NULL;
+    clocks_installed = clocks;
+    host_ns = ns;
+    event_probe_frames = frames;
+    logged_count = 0;
+    memset(memory, 0, sizeof memory);
+}
+/* DEMO_TICK on its real wrapper: a stand-in step that, in state 3 or 4, adds 2 to the clock from max(clock, 0), or
+   holds it, or sets another value */
+static int demo_game_hold, demo_game_other;
+static void demo_game_step(CPU* c, u64 entry) {
+    (void)entry;
+    const u64 object = c->x[0], context = gr64(object + 0x3b0);
+    const u32 state = gr32(object + 0x3b8);
+    const int32_t clock = (int32_t)gr32(context + 0x7ec);
+    if ((state == 3 || state == 4) && !demo_game_hold)
+        gw32(context + 0x7ec, (u32)(demo_game_other ? 77 : (clock < 0 ? 0 : clock) + 2));
+    c->x[0] = 1;
+    c->pc = c->x[30];
+}
+static int32_t demo_tick_call(u64 object, u64 ns) {
+    step.step = ns;
+    CPU c = {.x = {[0] = object, [30] = return_pc}, .pc = entry_pc};
+    demo_tick_step(&c, entry_pc);
+    assert(c.x[0] == 1 && c.pc == return_pc);
+    return (int32_t)gr32(gr64(object + 0x3b0) + 0x7ec);
+}
+static void demo_tick_reset(int32_t clock) {
+    memset(demo_tick_states, 0, sizeof demo_tick_states);
+    gw32(DEMO_CONTEXT + 0x7ec, (u32)clock);
+    demo_game_hold = demo_game_other = 0;
+}
+static void test_demo_tick(void) {
+    memset(memory, 0, sizeof memory);
+    const u64 ns = step.step;
+    gw64(DEMO_OBJECT + 0x3b0, DEMO_CONTEXT);
+    gw32(DEMO_OBJECT + 0x3b8, 3);
+    demo_tick_original = demo_game_step;
+    /* 30 FPS: 2 a call, as the game */
+    demo_tick_reset(0);
+    for (unsigned k = 1; k <= 30; k++) assert(demo_tick_call(DEMO_OBJECT, 33333334) == (int32_t)(2 * k));
+    /* 60 FPS: 1 a call, 60 a second */
+    demo_tick_reset(0);
+    for (unsigned k = 1; k <= 60; k++) assert(demo_tick_call(DEMO_OBJECT, 16666667) == (int32_t)k);
+    /* 19.2 ms frames, 52 a second: 60 units within 1, never more than 2 a call */
+    demo_tick_reset(0);
+    int32_t clock = 0;
+    for (unsigned k = 0; k < 52; k++) {
+        const int32_t next = demo_tick_call(DEMO_OBJECT, 19200000);
+        assert(next - clock >= 0 && next - clock <= 2);
+        clock = next;
+    }
+    assert(clock >= 59 && clock <= 61);
+    /* a 100 ms frame at 60 FPS: 2 there, its carry of 4 units 2 a call over the next calls, then 1 a call: 13 units
+       for 216.7 ms, nothing lost */
+    demo_tick_reset(0);
+    clock = 0;
+    static const int32_t gains[8] = {1, 1, 2, 2, 2, 2, 2, 1};
+    static const u64 steps[8] = {16666667, 16666667, 100000000, 16666667, 16666667, 16666667, 16666667, 16666667};
+    for (unsigned k = 0; k < 8; k++) {
+        const int32_t next = demo_tick_call(DEMO_OBJECT, steps[k]);
+        assert(next - clock == gains[k]);
+        clock = next;
+    }
+    /* five 100 ms frames: 2 a call, and the carry is capped at 4 units, so at 60 FPS after them four calls give 2 and
+       then 1 a call again (the time beyond the cap is not owed) */
+    demo_tick_reset(0);
+    for (unsigned k = 0; k < 5; k++) (void)demo_tick_call(DEMO_OBJECT, 100000000);
+    clock = (int32_t)gr32(DEMO_CONTEXT + 0x7ec);
+    assert(clock == 10);
+    for (unsigned k = 0; k < 6; k++) {
+        const int32_t next = demo_tick_call(DEMO_OBJECT, 16666667);
+        assert(next - clock == (k < 4 ? 2 : 1));
+        clock = next;
+    }
+    /* a hold adds nothing and clears the carry: after it, 1 a call at 60 again */
+    demo_tick_reset(0);
+    (void)demo_tick_call(DEMO_OBJECT, 100000000);
+    demo_game_hold = 1;
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 2);
+    demo_game_hold = 0;
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 3);
+    /* a carry from a 100 ms frame is gone when the same controller, same context, is stepped again after more than a
+       second: 1 at 60, as from a fresh budget. Within the second it stays (2, as above). */
+    demo_tick_reset(0);
+    (void)demo_tick_call(DEMO_OBJECT, 100000000);
+    host_ns += 1000000001;
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 3);
+    demo_tick_reset(0);
+    (void)demo_tick_call(DEMO_OBJECT, 100000000);
+    host_ns += 1000000000;
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 4);
+    /* a negative clock gives 0 + n; a change other than +2 is left as the game made it; another state is untouched */
+    demo_tick_reset(-1);
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 1);
+    demo_game_other = 1;
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 77);
+    demo_game_other = 0;
+    gw32(DEMO_OBJECT + 0x3b8, 4); /* the skip state steps the same way */
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 78);
+    gw32(DEMO_OBJECT + 0x3b8, 5);
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 78);
+    gw32(DEMO_OBJECT + 0x3b8, 3);
+    /* a full table of controllers stepped in the last second: that controller keeps the game's +2, counted; a reused
+       pointer with another context is fresh */
+    demo_tick_reset(0);
+    for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++)
+        demo_tick_states[k] = (DemoTickState){.object = 3000 + k, .context = 1, .seen_ns = host_ns - 1000000000};
+    const u64 full = demo_tick_full;
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 2 && demo_tick_full == full + 1);
+    /* one of them not stepped for more than a second is gone: the new controller takes its state, paced from its first
+       call; the others keep theirs */
+    demo_tick_reset(0);
+    host_ns += 2000000000; /* so that a second before it is not below 0 */
+    for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++)
+        demo_tick_states[k] = (DemoTickState){.object = 3000 + k, .context = 1, .budget = DEMO_TICK_UNIT,
+                                              .seen_ns = host_ns - (k == 5 ? 1000000001 : 1000000000)};
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 1 && demo_tick_full == full + 1);
+    assert(demo_tick_states[5].object == DEMO_OBJECT && demo_tick_states[5].seen_ns == host_ns);
+    for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++)
+        if (k != 5) assert(demo_tick_states[k].object == 3000 + k && demo_tick_states[k].budget == DEMO_TICK_UNIT);
+    /* a controller playing for 1.5 s beside 7 others keeps its state: a new one then finds the table full */
+    demo_tick_reset(0);
+    for (unsigned k = 1; k < DEMO_TICK_CONTROLLERS; k++)
+        demo_tick_states[k] = (DemoTickState){.object = 3000 + k, .context = 1};
+    for (unsigned k = 1; k <= 90; k++) {
+        host_ns += 16666667;
+        for (unsigned j = 1; j < DEMO_TICK_CONTROLLERS; j++) demo_tick_states[j].seen_ns = host_ns;
+        assert(demo_tick_call(DEMO_OBJECT, 16666667) == (int32_t)k);
+    }
+    gw64(1200 + 0x3b0, DEMO_CONTEXT);
+    gw32(1200 + 0x3b8, 3);
+    assert(demo_tick_call(1200, 16666667) == 92 && demo_tick_full == full + 2);
+    assert(demo_tick_states[0].object == DEMO_OBJECT);
+    /* states stepped by another thread a few ns after this one read its clock are live, not a second old (the
+       reviewer's control on cc604bdb): the table is full and the carried budget stays */
+    demo_tick_reset(0);
+    for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++)
+        demo_tick_states[k] =
+            (DemoTickState){.object = 3000 + k, .context = 1, .budget = 12345, .seen_ns = host_ns + 5};
+    assert(!demo_tick_state(DEMO_OBJECT, DEMO_CONTEXT, host_ns) && demo_tick_states[0].budget == 12345);
+    assert(!past_second(host_ns, host_ns + 5) && !past_second(host_ns, host_ns - 1000000000) &&
+           past_second(host_ns, host_ns - 1000000001));
+    /* 20 controllers one after another, each playing 30 calls: every one is paced, the table never full */
+    demo_tick_reset(0);
+    for (unsigned n = 0; n < 20; n++) {
+        const u64 controller = 1200 + 16 * n; /* its +3B0 and +3B8 below the context's clock */
+        gw64(controller + 0x3b0, DEMO_CONTEXT);
+        gw32(controller + 0x3b8, 3);
+        gw32(DEMO_CONTEXT + 0x7ec, 0);
+        for (unsigned k = 1; k <= 30; k++) {
+            host_ns += 16666667;
+            assert(demo_tick_call(controller, 16666667) == (int32_t)k);
+        }
+        host_ns += 1000000000;
+    }
+    assert(demo_tick_full == full + 2);
+    demo_tick_reset(0);
+    demo_tick_states[0] = (DemoTickState){.object = DEMO_OBJECT, .context = 999, .budget = 3 * DEMO_TICK_UNIT};
+    assert(demo_tick_call(DEMO_OBJECT, 16666667) == 1 && demo_tick_states[0].context == DEMO_CONTEXT);
+    /* inside the demo probe the probe reads the clock as the tick left it */
+    demo_tick_reset(0);
+    demo_probe_original = demo_tick_step;
+    demo_probe_ns = demo_probe_object = 0;
+    CPU c = {.x = {[0] = DEMO_OBJECT, [1] = 9, [30] = return_pc}, .pc = entry_pc};
+    step.step = 16666667;
+    demo_probe_step(&c, entry_pc);
+    assert(gr32(DEMO_CONTEXT + 0x7ec) == 1 && demo_probe_clock == 1);
+    demo_probe_original = NULL;
+    /* with the demo tick alone the frames are counted too, and its line gives their rate (the reviewer's note on
+       69038158) */
+    {
+        const int probes[2] = {event_probe, demo_probe}, ticked = demo_tick;
+        event_probe = demo_probe = 0;
+        demo_tick = 0;
+        assert(!probe_frames_wanted());
+        demo_tick = 1;
+        assert(probe_frames_wanted());
+        demo_tick_reset(0);
+        demo_tick_ns = 0;
+        logged_count = 0;
+        for (unsigned k = 0; k < 330; k++) {
+            host_ns += 16666667;
+            if (probe_frames_wanted()) probe_frame();
+            (void)demo_tick_call(DEMO_OBJECT, 16666667);
+        }
+        assert(logged_count == 1 && strstr(logged[0], "arceus-demo-tick: seconds=5.00 calls_per_s=60.00 "
+                                                      "units_per_s=60.00 frames_per_s=60.00 held="));
+        event_probe = probes[0];
+        demo_probe = probes[1];
+        demo_tick = ticked;
+        logged_count = 0;
+    }
+    /* with the demo probe alone, the frame count runs and no event probe line comes (the reviewer's note) */
+    const int event = event_probe;
+    event_probe = 0;
+    event_probe_ns = 0;
+    logged_count = 0;
+    for (unsigned k = 0; k < 10; k++) {
+        host_ns += 1000000000;
+        probe_frame();
+    }
+    assert(!logged_count);
+    event_probe = event;
+    demo_tick_original = NULL;
+    step.step = ns;
+    memset(memory, 0, sizeof memory);
+}
+/* The text probe on its real wrappers: a stand-in reveal does a set number of glyph steps through the step's wrapper,
+   as the game's loop does (return address FBFC24, the status word on its stack), and answers 1 while text remains */
+#define TEXT_OBJECT 512
+#define TEXT_STATUS 1800
+static unsigned text_stub_steps, text_stub_answer, text_stub_status;
+static u64 text_stub_caller;
+static void text_glyph_stub(CPU* c, u64 entry) {
+    (void)entry;
+    gw32(c->x[1], text_stub_status);
+    c->x[0] = 1;
+    c->pc = c->x[30];
+}
+static void text_reveal_stub(CPU* c, u64 entry) {
+    assert(entry == entry_pc && c->x[0] == TEXT_OBJECT);
+    for (unsigned k = 0; k < text_stub_steps; k++) {
+        CPU s = {.x = {[0] = TEXT_OBJECT, [1] = TEXT_STATUS, [30] = text_stub_caller}, .pc = entry_pc};
+        text_probe_step(&s, entry_pc);
+        assert(s.pc == text_stub_caller);
+    }
+    c->x[0] = text_stub_answer;
+    c->pc = c->x[30];
+}
+/* The outer text: 2 glyph steps, a reveal of TEXT_INNER (4 steps), then 1 more step */
+#define TEXT_INNER 1200
+static void text_nest_stub(CPU* c, u64 entry) {
+    const u64 text = c->x[0];
+    const unsigned before = text == TEXT_INNER ? 4 : 2;
+    for (unsigned k = 0; k < before; k++) {
+        CPU s = {.x = {[0] = text, [1] = TEXT_STATUS, [30] = text_stub_caller}, .pc = entry_pc};
+        text_probe_step(&s, entry_pc);
+    }
+    if (text != TEXT_INNER) {
+        CPU n = {.x = {[0] = TEXT_INNER, [30] = return_pc}, .pc = entry_pc};
+        text_probe_reveal(&n, entry);
+        assert(text_probe_running == text);
+        CPU s = {.x = {[0] = text, [1] = TEXT_STATUS, [30] = text_stub_caller}, .pc = entry_pc};
+        text_probe_step(&s, entry_pc);
+    }
+    c->x[0] = 1;
+    c->pc = c->x[30];
+}
+static void text_setup_stub(CPU* c, u64 entry) {
+    (void)entry;
+    *GP(c->x[0] + 0x9d) = *GP(c->x[0] + 0xa5) = 0;
+    *GP(c->x[0] + 0xa4) = *GP(c->x[0] + 0xa6) = 4;
+    c->pc = c->x[30];
+}
+static void test_text_probe(void) {
+    memset(memory, 0, sizeof memory);
+    const u64 ns = host_ns, frames = event_probe_frames;
+    const int clocks = clocks_installed;
+    clocks_installed = 1;
+    text_probe_base = 3000 - 0x40f0138ull; /* the speed int at 3000 */
+    gw32(3000, 2);
+    *GP(TEXT_OBJECT + 0x9d) = 0;
+    *GP(TEXT_OBJECT + 0xa4) = 2;
+    text_probe_original[0] = text_reveal_stub;
+    text_probe_original[1] = text_glyph_stub;
+    memset(text_probe_texts, 0, sizeof text_probe_texts);
+    text_probe_calls = text_probe_steps = text_probe_ns = 0;
+    text_probe_seen = 0;
+    text_probe_option = -1; /* as installed with the options word not readable (here: outside the test memory) */
+    text_stub_caller = text_probe_base + 0xfbfc24;
+    text_stub_status = 0;
+    text_stub_answer = 1;
+    logged_count = 0;
+    /* 60 calls a second with 2 steps each for 6 s, then the text ends */
+    for (unsigned k = 0; k < 360; k++) {
+        host_ns += 16666667;
+        event_probe_frames++;
+        text_stub_steps = 2;
+        if (k == 359) text_stub_answer = 0;
+        CPU c = {.x = {[0] = TEXT_OBJECT, [30] = return_pc}, .pc = entry_pc};
+        text_probe_reveal(&c, entry_pc);
+        assert(c.pc == return_pc && c.x[0] == (k == 359 ? 0u : 1u));
+    }
+    assert(logged_count == 3);
+    assert(strstr(logged[0], "arceus-text-probe: text 200 first seen: +9D=0 +A4=2 +A5=0 +A6=0"));
+    assert(strstr(logged[1], "arceus-text-probe: seconds=5.00 reveal_fbfbd0_per_s=60.00 glyph_steps_per_s=120.00 "
+                             "frames_per_s=60.00 texts=1 speed=2 ") &&
+           strstr(logged[1], " +9D=0 +A4=2 ") && strstr(logged[1], " live(+9D/+A4/+A6)=200:0/2/0\n"));
+    assert(strstr(logged[2], "arceus-text-probe: text 200 ended: calls=360 glyph_steps=720 ms=5983.3"));
+    /* steps from another caller, with a status other than 0, or outside a reveal are not counted */
+    const u64 counted = text_probe_steps;
+    text_stub_answer = 1;
+    text_stub_caller = text_probe_base + 0x2b31568;
+    CPU c = {.x = {[0] = TEXT_OBJECT, [30] = return_pc}, .pc = entry_pc};
+    text_probe_reveal(&c, entry_pc);
+    text_stub_caller = text_probe_base + 0xfbfc24;
+    text_stub_status = 1;
+    CPU d = {.x = {[0] = TEXT_OBJECT, [30] = return_pc}, .pc = entry_pc};
+    text_probe_reveal(&d, entry_pc);
+    text_stub_status = 0;
+    CPU s = {.x = {[0] = TEXT_OBJECT, [1] = TEXT_STATUS, [30] = text_stub_caller}, .pc = entry_pc};
+    text_probe_step(&s, entry_pc);
+    assert(text_probe_steps == counted);
+    /* a change of the bytes between two calls gives one line, with the call and the caller */
+    logged_count = 0;
+    text_probe_change_lines = 0;
+    *GP(TEXT_OBJECT + 0xa4) = 4;
+    CPU v = {.x = {[0] = TEXT_OBJECT, [30] = text_probe_base + 0x27379f0}, .pc = entry_pc};
+    host_ns += 16666667;
+    text_probe_reveal(&v, entry_pc);
+    CPU w = {.x = {[0] = TEXT_OBJECT, [30] = text_probe_base + 0x27379f0}, .pc = entry_pc};
+    host_ns += 16666667;
+    text_probe_reveal(&w, entry_pc);
+    assert(logged_count == 1 && strstr(logged[0], "arceus-text-probe: text 200 bytes changed at call ") &&
+           strstr(logged[0], ": +9D 0 -> 0, +A4 2 -> 4, +A6 0 -> 0 (FBFBD0 called from main+27379f0)"));
+    /* the options word [[[main+4279560]]+230]+68: its bits 0-1 at install and on each change, polled each frame */
+    {
+        const u64 probe_base = text_probe_base;
+        text_probe_base = 2000 - 0x4279560ull;
+        gw64(2000, 2100);
+        gw64(2100, 2200);
+        gw64(2200 + 0x230, 2600);
+        gw32(2600 + 0x68, 0x101);
+        text_probe_option = -2;
+        logged_count = 0;
+        text_probe_option_poll(host_ns);
+        text_probe_frame();
+        gw32(2600 + 0x68, 0x102);
+        host_ns += 2000000000;
+        text_probe_frame();
+        gw32(2600 + 0x68, 0x106); /* bit 2 is not the option's */
+        text_probe_frame();
+        assert(logged_count == 2 &&
+               strstr(logged[0], "arceus-text-probe: options word bits 0-1 at install -1 -> 1 at ") &&
+               strstr(logged[1], "arceus-text-probe: options word bits 0-1 1 -> 2 at ") &&
+               strstr(logged[1], " (2.000 s after the previous)"));
+        gw64(2200 + 0x230, 0);
+        text_probe_frame();
+        assert(logged_count == 3 && strstr(logged[2], "bits 0-1 2 -> -1 "));
+        text_probe_base = probe_base;
+        memset(memory + 2000, 0, 1100);
+    }
+    /* the setup FBF57C: its arguments and the language byte before, the bytes it set after, the game's call once */
+    logged_count = 0;
+    text_probe_setup_lines = 0;
+    text_probe_setup_original = text_setup_stub;
+    CPU u = {.x = {[0] = TEXT_OBJECT, [1] = 1, [2] = 0, [30] = return_pc}, .pc = entry_pc};
+    text_probe_setup(&u, entry_pc);
+    assert(u.pc == return_pc && logged_count == 1);
+    assert(strstr(logged[0],
+                  "arceus-text-probe: setup FBF57C text=200 w1=1 w2=0 language=255: +9D=0 +A4=4 +A5=0 +A6=4"));
+    /* a text not seen for more than a second starts a new record in its old slot: no calls or steps carried */
+    text_probe_original[0] = text_reveal_stub;
+    text_stub_steps = 2;
+    text_stub_answer = 1;
+    for (unsigned k = 0; k < 2; k++) { /* the options' 2 s above retired the record: these two make a new one */
+        host_ns += 16666667;
+        CPU e = {.x = {[0] = TEXT_OBJECT, [30] = return_pc}, .pc = entry_pc};
+        text_probe_reveal(&e, entry_pc);
+    }
+    TextProbeText* tp = NULL;
+    for (unsigned k = 0; k < TEXT_PROBE_TEXTS; k++)
+        if (text_probe_texts[k].text == TEXT_OBJECT) tp = &text_probe_texts[k];
+    assert(tp && tp->calls == 2 && tp->steps == 4);
+    const unsigned seen = text_probe_seen;
+    host_ns += 1500000000;
+    CPU g = {.x = {[0] = TEXT_OBJECT, [30] = return_pc}, .pc = entry_pc};
+    text_probe_reveal(&g, entry_pc);
+    assert(tp->text == TEXT_OBJECT && tp->calls == 1 && tp->steps == 2 && tp->first_ns == host_ns);
+    assert(text_probe_seen == seen + 1);
+    /* a record another thread refreshed a few ns after this one read its clock is live: found as it is */
+    tp->last_ns = host_ns + 5;
+    assert(text_probe_text(TEXT_OBJECT, host_ns) == tp && tp->calls == 1 && tp->last_ns == host_ns);
+    /* 16 records of other texts, one not seen for more than a second: a new text takes that one */
+    {
+        TextProbeText saved[TEXT_PROBE_TEXTS];
+        memcpy(saved, text_probe_texts, sizeof saved);
+        for (unsigned k = 0; k < TEXT_PROBE_TEXTS; k++)
+            text_probe_texts[k] = (TextProbeText){.text = 0x8000 + k, .last_ns = host_ns - (k == 11 ? 1000000001 : 0)};
+        assert(text_probe_text(0x9000, host_ns) == &text_probe_texts[11] && text_probe_texts[11].text == 0x9000);
+        text_probe_texts[11].last_ns = host_ns;
+        assert(!text_probe_text(0x9200, host_ns));
+        memcpy(text_probe_texts, saved, sizeof saved);
+    }
+    /* a reveal of another text inside a reveal: each text gets its own glyph steps, the total all of them */
+    text_probe_original[0] = text_nest_stub;
+    const u64 total = text_probe_steps;
+    host_ns += 16666667;
+    CPU o = {.x = {[0] = TEXT_OBJECT, [30] = return_pc}, .pc = entry_pc};
+    text_probe_reveal(&o, entry_pc);
+    assert(o.pc == return_pc && text_probe_running == 0 && text_probe_own == 0);
+    TextProbeText* inner = NULL;
+    for (unsigned k = 0; k < TEXT_PROBE_TEXTS; k++)
+        if (text_probe_texts[k].text == TEXT_INNER) inner = &text_probe_texts[k];
+    assert(tp->calls == 2 && tp->steps == 2 + 3 && inner && inner->calls == 1 && inner->steps == 4);
+    assert(text_probe_steps == total + 7);
+    text_probe_setup_original = NULL;
+    text_probe_original[0] = text_probe_original[1] = NULL;
+    text_probe_base = 0;
+    clocks_installed = clocks;
+    host_ns = ns;
+    event_probe_frames = frames;
+    logged_count = 0;
+    memset(memory, 0, sizeof memory);
+}
+/* The text probe's install with a failed compile, at either site: both stock words back (the text tick's guards read
+   them), each changed range invalidated, nothing published (g_disp is NULL here). The two sites lie 28 MB apart, so
+   this test has a guest space of its own. */
+static void test_text_probe_install(void) {
+    u8* const saved_mem = g_mem;
+    const u64 saved_size = g_as_size, saved_lo = g_code_lo, saved_hi = g_code_hi;
+    const SnxModule* const saved_mod = g_mod;
+    GuestFn* const saved_disp = g_disp;
+    const u64 pc[2] = {0x1000, 0x1000 + 0x2b315e8 - 0xfbfbd0}, base = pc[0] - 0xfbfbd0;
+    g_as_size = pc[1] + 0x1000;
+    g_mem = calloc(1, g_as_size);
+    assert(g_mem);
+    static const u32 words[2][5][2] = {
+        {{0, 0xd100c3ff}, {0x10, 0xaa0003f3}, {0x24, 0xb9418a68}, {0x12c, 0x7100053f}, {0x158, 0x17ffffe7}},
+        {{0, 0xfc1b0fe8}, {0x3c, 0xaa0103f4}, {0x18, 0xb900003f}, {0x868, 0xd65f03c0}, {0x18, 0xb900003f}},
+    };
+    for (unsigned k = 0; k < 2; k++)
+        for (unsigned w = 0; w < 5; w++) gw32(pc[k] + words[k][w][0], words[k][w][1]);
+    static const u64 fn_lo[2] = {0x1000, 0x1000 + 0x2b315e8 - 0xfbfbd0};
+    static const u32 fn_len[2] = {0x15c, 0x9c4};
+    static u8 stale[2];
+    static const GuestFn entries[1] = {text_glyph_stub};
+    const SnxModule module = {.nfns = 2, .fn_lo = fn_lo, .fn_len = fn_len, .stale = stale, .entry_fn = entries};
+    g_mod = &module;
+    g_code_lo = pc[0];
+    g_code_hi = pc[1] + 0x9c4;
+    g_disp = NULL;
+    u8 before[2][0x9c4];
+    for (unsigned k = 0; k < 2; k++) memcpy(before[k], GP(pc[k]), sizeof before[k]);
+    flag("SNX_ARCEUS_TEXT_PROBE", "1");
+    jit_stub_on = 1;
+    for (unsigned failed = 0; failed < 2; failed++) {
+        jit_bodies[0] = failed ? text_glyph_stub : NULL;
+        jit_bodies[1] = NULL;
+        jit_waits = jit_changes = 0;
+        text_probe_init(base);
+        assert(!text_probe && !text_probe_base && !text_probe_original[0] && !text_probe_original[1]);
+        for (unsigned k = 0; k < 2; k++) assert(!memcmp(before[k], GP(pc[k]), sizeof before[k]));
+        /* the compiles in order, then one change for each site put back */
+        assert(jit_waits == failed + 1 && jit_changes == 2 * (failed + 1));
+        if (!failed) assert(jit_changed[0] == pc[0] && jit_changed[1] == pc[0]);
+        else assert(jit_changed[0] == pc[0] && jit_changed[1] == pc[1] && jit_changed[2] == pc[0] &&
+                    jit_changed[3] == pc[1]);
+    }
+    jit_stub_on = 0;
+    unset_flag("SNX_ARCEUS_TEXT_PROBE");
+    free(g_mem);
+    g_mem = saved_mem;
+    g_as_size = saved_size;
+    g_code_lo = saved_lo;
+    g_code_hi = saved_hi;
+    g_mod = saved_mod;
+    g_disp = saved_disp;
+}
+/* The demo and event probes' installs with a failed compile: the stock word back (the demo and event ticks' guards
+   read it), the range invalidated again, nothing installed. Each in a guest space of its own. */
+static void test_probe_compile_restore(void) {
+    u8* const saved_mem = g_mem;
+    const u64 saved_size = g_as_size, saved_lo = g_code_lo, saved_hi = g_code_hi, saved_base = main_base;
+    const SnxModule* const saved_mod = g_mod;
+    GuestFn* const saved_disp = g_disp;
+    static u8 stale[1];
+    static const GuestFn entries[1] = {text_glyph_stub};
+    jit_stub_on = 1;
+    /* the demo probe: the census's B at +1D8 */
+    {
+        const u64 pc = 0x1000, size = 0x1154, base = pc - 0x1458300;
+        g_as_size = pc + size + 0x1000;
+        g_mem = calloc(1, g_as_size);
+        assert(g_mem);
+        gw32(pc, 0xd10343ff);
+        gw32(pc + 0x1d8, 0x14000069);
+        static u64 fn_lo[1];
+        static u32 fn_len[1];
+        fn_lo[0] = pc;
+        fn_len[0] = (u32)size;
+        const SnxModule module = {.nfns = 1, .fn_lo = fn_lo, .fn_len = fn_len, .stale = stale, .entry_fn = entries};
+        g_mod = &module;
+        g_code_lo = pc;
+        g_code_hi = pc + size;
+        g_disp = NULL;
+        jit_bodies[0] = jit_bodies[1] = NULL;
+        jit_waits = jit_changes = 0;
+        demo_probe = 0;
+        flag("SNX_ARCEUS_DEMO_PROBE", "1");
+        demo_probe_init(base);
+        unset_flag("SNX_ARCEUS_DEMO_PROBE");
+        assert(!demo_probe && !demo_probe_original && gr32(pc + 0x1d8) == 0x14000069);
+        assert(jit_waits == 1 && jit_changes == 2 && jit_changed[0] == pc && jit_changed[1] == pc);
+        free(g_mem);
+    }
+    /* the event probe: the job's MOV at +A4; the resume's site has no stock words, so its guard refuses it */
+    {
+        const u64 pc = 0x1000, base = pc - 0x15ba460;
+        g_as_size = pc + 0x2000;
+        g_mem = calloc(1, g_as_size);
+        assert(g_mem);
+        gw32(pc, 0xd10703ff);
+        gw32(pc + 0xa4, 0xaa0003f3);
+        gw32(pc + 0x134, 0xd65f03c0);
+        static u64 fn_lo[1];
+        static u32 fn_len[1];
+        fn_lo[0] = pc;
+        fn_len[0] = 0x138;
+        const SnxModule module = {.nfns = 1, .fn_lo = fn_lo, .fn_len = fn_len, .stale = stale, .entry_fn = entries};
+        g_mod = &module;
+        g_code_lo = pc;
+        g_code_hi = pc + 0x1000;
+        g_disp = NULL;
+        main_base = base;
+        jit_bodies[0] = jit_bodies[1] = NULL;
+        jit_waits = jit_changes = 0;
+        event_probe = 0;
+        event_probe_original[0] = event_probe_original[1] = NULL;
+        flag("SNX_ARCEUS_EVENT_PROBE", "1");
+        event_probe_init();
+        unset_flag("SNX_ARCEUS_EVENT_PROBE");
+        assert(!event_probe && !event_probe_original[0] && !event_probe_original[1] && gr32(pc + 0xa4) == 0xaa0003f3);
+        assert(jit_waits == 1 && jit_changes == 2 && jit_changed[0] == pc && jit_changed[1] == pc);
+        free(g_mem);
+    }
+    jit_stub_on = 0;
+    logged_count = 0;
+    g_mem = saved_mem;
+    g_as_size = saved_size;
+    g_code_lo = saved_lo;
+    g_code_hi = saved_hi;
+    main_base = saved_base;
+    g_mod = saved_mod;
+    g_disp = saved_disp;
+}
+/* TEXT_TICK on its real wrappers: a stand-in reveal with the game's do-while loop (the step from FBFC24, counted while
+   it answers 1 with status 0, up to +A4), and a stand-in step that counts the delay in +9E, moves the cursor +100 and
+   the state +A8, as a glyph does */
+#define TT_A 512
+#define TT_B 1024
+#define TT_STATUS 1800
+static unsigned tt_answer;
+static void tt_step(CPU* c, u64 entry) {
+    (void)entry;
+    const u64 t = c->x[0];
+    gw32(c->x[1], 0);
+    *GP(t + 0x9e) = (u8)(*GP(t + 0x9e) + 1);
+    gw32(t + 0x100, gr32(t + 0x100) + 1);
+    gw32(t + 0xa8, 3);
+    c->x[0] = 1;
+    c->pc = c->x[30];
+}
+static void tt_reveal(CPU* c, u64 entry) {
+    const u64 t = c->x[0];
+    unsigned n = 0;
+    do {
+        CPU s = {.x = {[0] = t, [1] = TT_STATUS, [30] = main_base + 0xfbfc24}, .pc = entry};
+        text_tick_step(&s, entry);
+        assert(s.pc == main_base + 0xfbfc24 && gr32(TT_STATUS) == 0 && s.x[0] == 1);
+    } while (++n < *GP(t + 0xa4));
+    c->x[0] = tt_answer;
+    c->pc = c->x[30];
+}
+/* A stand-in reveal that first reveals tt_inner through the wrapper (once, not inside itself), then runs its own loop */
+static u64 tt_inner;
+static unsigned tt_nesting;
+static void tt_reveal_nest(CPU* c, u64 entry) {
+    if (tt_inner && !tt_nesting) {
+        tt_nesting++;
+        CPU n = {.x = {[0] = tt_inner, [30] = return_pc}, .pc = entry};
+        text_tick_reveal(&n, entry);
+        assert(n.pc == return_pc);
+        tt_nesting--;
+    }
+    tt_reveal(c, entry);
+}
+/* one call of T's reveal; the glyphs it made */
+static unsigned tt_call(u64 t) {
+    const u32 before = gr32(t + 0x100);
+    CPU c = {.x = {[0] = t, [30] = return_pc}, .pc = entry_pc};
+    text_tick_reveal(&c, entry_pc);
+    assert(c.pc == return_pc);
+    return gr32(t + 0x100) - before;
+}
+static void tt_reset(void) {
+    memset(text_tick_states, 0, sizeof text_tick_states);
+    for (unsigned k = 0; k < 2; k++) {
+        const u64 t = k ? TT_B : TT_A;
+        memset(memory + t, 0, 0x110);
+        gw64(t + 0x78, 0x7000 + k);
+        *GP(t + 0xa4) = 2;
+    }
+    tt_answer = 1;
+}
+static void tt_frame(u64 ns) {
+    step.step = ns;
+    __atomic_add_fetch(&frame_step_frames, 1, __ATOMIC_RELEASE);
+}
+static void test_text_tick(void) {
+    memset(memory, 0, sizeof memory);
+    const u64 ns = step.step, frames = frame_step_frames, base = main_base;
+    main_base = 0x10000;
+    text_tick_original[0] = tt_reveal;
+    text_tick_original[1] = tt_step;
+    /* 30 FPS: every call a tick, 2 glyphs a call as the game */
+    tt_reset();
+    for (unsigned k = 0; k < 30; k++) {
+        tt_frame(33333334);
+        assert(tt_call(TT_A) == 2);
+    }
+    /* 60 FPS: a tick every other frame; on the other frames nothing of T moves, and the reveal still answers */
+    tt_reset();
+    for (unsigned k = 0; k < 12; k++) {
+        tt_frame(16666667);
+        u8 before[0x110];
+        memcpy(before, memory + TT_A, sizeof before);
+        const unsigned glyphs = tt_call(TT_A);
+        assert(glyphs == (k % 2 ? 0u : 2u)); /* the first call a tick */
+        if (!glyphs) assert(!memcmp(before, memory + TT_A, sizeof before));
+    }
+    /* two T a frame, each called twice in it: one decision a frame each, its budget fed once (research 13:50) */
+    tt_reset();
+    unsigned a = 0, b = 0;
+    for (unsigned k = 0; k < 60; k++) {
+        tt_frame(16666667);
+        a += tt_call(TT_A) + tt_call(TT_A);
+        b += tt_call(TT_B);
+    }
+    assert(a == 30 * 4 && b == 30 * 2);
+    /* a fast finish (+A4 100) and the whole page (255) on a frame that is not a tick run the game's steps */
+    tt_reset();
+    tt_frame(16666667);
+    (void)tt_call(TT_A);
+    tt_frame(16666667);
+    *GP(TT_A + 0xa4) = 100;
+    assert(tt_call(TT_A) == 100);
+    tt_frame(16666667);
+    tt_frame(16666667);
+    *GP(TT_A + 0xa4) = 255;
+    assert(tt_call(TT_A) == 255);
+    /* a step from another return address runs */
+    tt_reset();
+    tt_frame(16666667);
+    (void)tt_call(TT_A);
+    tt_frame(16666667);
+    text_tick_skip = TT_A;
+    CPU s = {.x = {[0] = TT_A, [1] = TT_STATUS, [30] = main_base + 0x2b31568}, .pc = entry_pc};
+    text_tick_step(&s, entry_pc);
+    text_tick_skip = 0;
+    assert(gr32(TT_A + 0x100) == 3);
+    /* a reveal inside another runs as today, without the outer one's skip (CodeRabbit on 47a62a26):
+       (1) B nested in A on A's tick frame, in a frame that is not B's own tick, still makes its 2 glyphs */
+    text_tick_original[0] = tt_reveal_nest;
+    tt_reset();
+    tt_inner = 0;
+    tt_frame(16666667);
+    assert(tt_call(TT_B) == 2);
+    tt_frame(16666667);
+    assert(tt_call(TT_B) == 0); /* B's own decision this frame: no tick */
+    tt_inner = TT_B;
+    u32 inner_before = gr32(TT_B + 0x100);
+    assert(tt_call(TT_A) == 2 && gr32(TT_B + 0x100) - inner_before == 2);
+    /* (2) A nested in A on a frame that is not A's tick: the inner reveal's glyphs run, the outer one's are skipped */
+    tt_reset();
+    tt_inner = 0;
+    tt_frame(16666667);
+    assert(tt_call(TT_A) == 2);
+    tt_frame(16666667);
+    tt_inner = TT_A;
+    assert(tt_call(TT_A) == 2);
+    assert(!text_tick_skip && !text_tick_depth);
+    tt_inner = 0;
+    text_tick_original[0] = tt_reveal;
+    /* a T paused for a frame and resumed starts fresh, its first call a tick (where the old state would skip); one
+       called in consecutive frames keeps its state */
+    tt_reset();
+    tt_frame(16666667);
+    assert(tt_call(TT_A) == 2);
+    tt_frame(16666667);
+    assert(tt_call(TT_A) == 0);
+    tt_frame(16666667);
+    assert(tt_call(TT_A) == 2);
+    tt_frame(16666667); /* not called in this frame */
+    tt_frame(16666667);
+    assert(tt_call(TT_A) == 2);
+    tt_frame(16666667);
+    assert(tt_call(TT_A) == 0);
+    /* a new text at the same T ([T +78] changed) is fresh too */
+    tt_frame(16666667);
+    gw64(TT_A + 0x78, 0x7100);
+    assert(tt_call(TT_A) == 2);
+    /* 100 texts one after another, each shown 5 frames, beside a T shown in every frame: with 16 states the table
+       never runs out (research's retirement ruling) */
+    memset(text_tick_states, 0, sizeof text_tick_states);
+    u64 frame = 1000;
+    for (unsigned k = 0; k < 100; k++)
+        for (unsigned f = 0; f < 5; f++, frame++) {
+            assert(text_tick_state(TT_B, 1, frame));
+            assert(text_tick_state(0x100000 + 0x200 * k, 1, frame));
+        }
+    /* a full table takes a state not seen in the previous frame either, never one seen then (it may be called later
+       in this frame): 14 seen this frame, one in the previous frame, one before that */
+    for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++)
+        text_tick_states[k] = (TextTickState){.text = 3000 + k, .generation = 1,
+                                              .last = k == 7 ? frame - 1 : k == 9 ? frame - 2 : frame};
+    TextTickState* taken = text_tick_state(0x200000, 1, frame);
+    assert(taken == &text_tick_states[9] && taken->fresh && taken->text == 0x200000);
+    assert(!text_tick_state(0x200200, 1, frame) && text_tick_states[7].text == 3000 + 7);
+    /* 17 texts shown every frame, the one without a state called first: the 16 keep their states and budgets, and
+       only the 17th reveals as today (the cascade CodeRabbit found on PR #52) */
+    for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++)
+        text_tick_states[k] = (TextTickState){.text = 3000 + k, .generation = 1, .last = frame - 1};
+    for (unsigned f = 0; f < 8; f++, frame++) {
+        assert(!text_tick_state(0x300000, 1, frame));
+        for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++) {
+            TextTickState* kept = text_tick_state(3000 + k, 1, frame);
+            assert(kept == &text_tick_states[k] && !kept->fresh);
+        }
+    }
+    /* every state seen this frame: the new T reveals as today, counted */
+    tt_reset();
+    tt_frame(16666667);
+    const u64 now = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
+    for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++)
+        text_tick_states[k] = (TextTickState){.text = 3000 + k, .generation = 1, .last = now};
+    const u64 full = text_tick_full;
+    assert(tt_call(TT_A) == 2 && text_tick_full == full + 1);
+    /* with the text probe: the reveal inside the probe's, the step outside it, as text_tick_init chains them, so the
+       probe counts only the glyphs made (60 in 60 calls at 60 FPS: 30 ticks of 2) */
+    tt_reset();
+    text_probe_base = main_base;
+    text_probe_original[0] = text_tick_reveal;
+    text_tick_original[0] = tt_reveal;
+    text_tick_original[1] = text_probe_step;
+    text_probe_original[1] = tt_step;
+    const u64 probed = text_probe_steps;
+    for (unsigned k = 0; k < 60; k++) {
+        tt_frame(16666667);
+        CPU c = {.x = {[0] = TT_A, [30] = return_pc}, .pc = entry_pc};
+        text_probe_reveal(&c, entry_pc);
+    }
+    assert(text_probe_steps - probed == 60 && gr32(TT_A + 0x100) == 60);
+    text_probe_original[0] = text_probe_original[1] = NULL;
+    text_probe_base = 0;
+    text_tick_original[0] = text_tick_original[1] = NULL;
+    memset(text_tick_states, 0, sizeof text_tick_states);
+    main_base = base;
+    step.step = ns;
+    frame_step_frames = frames;
+    memset(memory, 0, sizeof memory);
+}
+/* EVENT_TICK-2's decision on the measured step: runs over frame times, the budget never above two ticks */
+static unsigned event_decide_runs(const u64* steps, unsigned count, unsigned repeat, char* pattern, u64* cut_total) {
+    ScriptTick t = {0};
+    unsigned runs = 0, n = 0;
+    *cut_total = 0;
+    for (unsigned r = 0; r < repeat; r++)
+        for (unsigned k = 0; k < count; k++, n++) {
+            u64 cut;
+            const int run = event_tick_decide(&t, n + 1, steps[k], &cut);
+            *cut_total += cut;
+            assert(event_tick_decide(&t, n + 1, steps[k], &cut) == run && !cut); /* once a frame */
+            assert(t.budget >= -SCRIPT_TICK_NS / 2 && t.budget <= 2 * SCRIPT_TICK_NS); /* half a step early at most */
+            runs += (unsigned)run;
+            if (pattern && n < 63) pattern[n] = run ? '1' : '0', pattern[n + 1] = 0;
+        }
+    return runs;
+}
+static void test_event_tick_decide(void) {
+    char pattern[64];
+    u64 cut;
+    /* steady 19.2 ms frames (52 a second): 30 runs a second */
+    static const u64 steady[1] = {19200000};
+    assert(event_decide_runs(steady, 1, 52, NULL, &cut) == 30);
+    /* 2, 2, 53.6 ms (51 frames, 979 ms): 28 runs with nothing cut, where the 1/30 s cap gave 19 */
+    static const u64 uneven[3] = {2000000, 2000000, 53600000};
+    const unsigned runs = event_decide_runs(uneven, 3, 17, NULL, &cut);
+    assert(runs >= 28 && runs <= 29 && !cut);
+    {
+        ScriptTick t = {0};
+        unsigned old = 0;
+        for (unsigned k = 0; k < 51; k++) old += (unsigned)script_tick_decide(&t, k + 1, uneven[k % 3]);
+        assert(old <= 19);
+    }
+    /* 16.67 ms: every other frame, 2 and 2 apart; 33.33 ms and 35 ms: every frame */
+    static const u64 sixty[1] = {16666667}, thirty[1] = {33333334}, slow[1] = {35000000};
+    (void)event_decide_runs(sixty, 1, 12, pattern, &cut);
+    assert(!strcmp(pattern, "010101010101"));
+    (void)event_decide_runs(thirty, 1, 12, pattern, &cut);
+    assert(!strcmp(pattern, "111111111111"));
+    (void)event_decide_runs(slow, 1, 12, pattern, &cut);
+    assert(!strcmp(pattern, "111111111111"));
+    /* one 100 ms frame at 60 FPS: its three ticks caught up one a frame, then every other frame again, nothing cut */
+    static const u64 hitch[13] = {16666667, 16666667, 16666667, 16666667, 100000000, 16666667, 16666667, 16666667,
+                                  16666667, 16666667, 16666667, 16666667, 16666667};
+    (void)event_decide_runs(hitch, 13, 1, pattern, &cut);
+    assert(!strcmp(pattern, "0101111110101") && !cut);
+    /* steady 100 ms frames: a run every frame, and what one run a frame cannot take is cut above two ticks */
+    static const u64 ten[1] = {100000000};
+    (void)event_decide_runs(ten, 1, 5, pattern, &cut);
+    assert(!strcmp(pattern, "11111") && cut > 266000000 && cut < 267000000);
+}
+/* The event tick on its real wrappers: a stand-in job that, when it runs, asks IsPadTrigger through the wrapper. */
+#define EVENT_PAD 3200
+static unsigned event_job_runs[3], event_trigger_seen[3], event_release_seen[3], event_repeat_seen[3];
+static u64 event_job_answer;
+static void event_trigger_stub(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = gr64(EVENT_PAD + 0x118) != 0;
+    c->pc = c->x[30];
+}
+static void event_release_stub(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = gr64(EVENT_PAD + 0xb0) != 0;
+    c->pc = c->x[30];
+}
+static void event_repeat_stub(CPU* c, u64 entry) {
+    (void)entry;
+    c->x[0] = (gr64(EVENT_PAD + 0xa8) | gr64(EVENT_PAD + 0xb8)) != 0;
+    c->pc = c->x[30];
+}
+/* the jobs the jobs at 1024 and 1536 call inside their runs, before their own natives */
+static u64 event_job_nested[2];
+static void event_job_stub(CPU* c, u64 entry) {
+    assert(entry == entry_pc);
+    const unsigned which = c->x[0] == 1024 ? 0 : c->x[0] == 1536 ? 1 : 2;
+    event_job_runs[which]++;
+    if (which < 2 && event_job_nested[which]) {
+        CPU j = {.x = {[0] = event_job_nested[which], [30] = return_pc}, .pc = entry_pc};
+        event_tick_update(&j, entry_pc);
+        assert(j.pc == return_pc);
+    }
+    CPU n = {.x = {[0] = 5, [30] = return_pc}, .pc = entry_pc};
+    event_tick_trigger(&n, entry_pc);
+    event_trigger_seen[which] += (unsigned)n.x[0];
+    CPU m = {.x = {[0] = 5, [30] = return_pc}, .pc = entry_pc};
+    event_tick_release(&m, entry_pc);
+    assert(m.pc == return_pc);
+    event_release_seen[which] += (unsigned)m.x[0];
+    CPU q = {.x = {[0] = 5, [30] = return_pc}, .pc = entry_pc};
+    event_tick_repeat(&q, entry_pc);
+    assert(q.pc == return_pc);
+    event_repeat_seen[which] += (unsigned)q.x[0];
+    c->x[0] = event_job_answer;
+    c->pc = c->x[30];
+}
+static void event_frame(u64 ns) {
+    step.step = ns;
+    __atomic_add_fetch(&frame_step_frames, 1, __ATOMIC_RELEASE);
+}
+/* One call of the job at the object; 1 when it ran. A skip answers 0 and leaves the job's memory alone. */
+static int event_call(u64 object) {
+    u8 before[0x148];
+    memcpy(before, memory + object, sizeof before);
+    const unsigned runs = event_job_runs[0] + event_job_runs[1] + event_job_runs[2];
+    CPU c = {.x = {[0] = object, [30] = return_pc}, .pc = entry_pc};
+    event_tick_update(&c, entry_pc);
+    assert(c.pc == return_pc);
+    const int ran = event_job_runs[0] + event_job_runs[1] + event_job_runs[2] != runs;
+    if (!ran) assert(c.x[0] == 0 && !memcmp(before, memory + object, sizeof before));
+    return ran;
+}
+static void event_reset(void) {
+    memset(event_tick_jobs, 0, sizeof event_tick_jobs);
+    memset(event_job_runs, 0, sizeof event_job_runs);
+    memset(event_trigger_seen, 0, sizeof event_trigger_seen);
+    memset(event_release_seen, 0, sizeof event_release_seen);
+    memset(event_repeat_seen, 0, sizeof event_repeat_seen);
+    event_job_answer = 0;
+}
+static void test_event_tick(void) {
+    const u64 base = main_base, ns = step.step, frames = frame_step_frames;
+    memset(memory, 0, sizeof memory);
+    main_base = 3000 - EVENT_TICK_PAD; /* the pad's slot at 3000, its holder at 3100, the pad at 3200 */
+    gw64(3000, 3100);
+    gw64(3100, EVENT_PAD);
+    gw64(1024 + 0x140, 0x700);
+    gw64(1536 + 0x140, 0x800);
+    event_tick_original = event_job_stub;
+    event_tick_pad_original[0] = event_trigger_stub;
+    event_tick_pad_original[1] = event_release_stub;
+    event_tick_pad_original[2] = event_repeat_stub;
+    /* the runs a second at 30, 60 and 120 FPS and at uneven 12 and 20 ms frames: 30, the first call at once */
+    static const u64 steps[4][2] = {
+        {33333334, 33333334}, {16666667, 16666667}, {8333334, 8333333}, {12000000, 20000000}};
+    static const unsigned frames_per_second[4] = {30, 60, 120, 62};
+    for (unsigned k = 0; k < 4; k++) {
+        event_reset();
+        unsigned ran = 0, first = 0;
+        for (unsigned f = 0; f < frames_per_second[k]; f++) {
+            event_frame(steps[k][f & 1]);
+            const int run = event_call(1024);
+            if (!f) first = (unsigned)run;
+            ran += (unsigned)run;
+        }
+        assert(first && ran >= 30 && ran <= 31);
+        if (!k) assert(ran == 30); /* at 30 FPS every frame runs, as the game does */
+    }
+    /* at 60 FPS a one-frame trigger in a skipped frame is seen by the next run once, and only once; the pad's word is
+       as before afterwards, and the held word is never written */
+    event_reset();
+    gw64(EVENT_PAD + 0xa0, 0x40);
+    event_frame(16666667);
+    assert(event_call(1024));
+    event_frame(16666667);
+    gw64(EVENT_PAD + 0x118, 0x40);
+    assert(!event_call(1024));
+    gw64(EVENT_PAD + 0x118, 0);
+    event_frame(16666667);
+    assert(event_call(1024) && event_trigger_seen[0] == 1 && gr64(EVENT_PAD + 0x118) == 0);
+    for (unsigned f = 0; f < 4; f++) {
+        event_frame(16666667);
+        (void)event_call(1024);
+    }
+    assert(event_trigger_seen[0] == 1 && gr64(EVENT_PAD + 0xa0) == 0x40);
+    /* the release (+B0) and the repeat's two words (+A8, +B8) the same way: each seen once, each word put back, and
+       the other natives see nothing of them */
+    for (unsigned w = 0; w < 3; w++) {
+        static const u32 at[3] = {0xb0, 0xa8, 0xb8};
+        event_reset();
+        event_frame(16666667);
+        assert(event_call(1024));
+        event_frame(16666667);
+        gw64(EVENT_PAD + at[w], 0x10);
+        assert(!event_call(1024));
+        gw64(EVENT_PAD + at[w], 0);
+        event_frame(16666667);
+        assert(event_call(1024) && gr64(EVENT_PAD + at[w]) == 0);
+        for (unsigned f = 0; f < 4; f++) {
+            event_frame(16666667);
+            (void)event_call(1024);
+        }
+        assert(event_release_seen[0] == (w == 0) && event_repeat_seen[0] == (w > 0) && !event_trigger_seen[0]);
+    }
+    /* two jobs at once, each on its own budget and latch: the trigger seen once by each */
+    event_reset();
+    event_frame(16666667);
+    assert(event_call(1024));
+    event_frame(16666667);
+    assert(!event_call(1024) && event_call(1536)); /* the second job's first call runs at once */
+    event_frame(16666667);
+    gw64(EVENT_PAD + 0x118, 0x8);
+    assert(event_call(1024) && !event_call(1536));
+    gw64(EVENT_PAD + 0x118, 0);
+    event_frame(16666667);
+    assert(!event_call(1024) && event_call(1536));
+    assert(event_trigger_seen[0] == 1 && event_trigger_seen[1] == 1);
+    /* a finished job's state goes: a new job at the same address runs at once with nothing carried */
+    event_reset();
+    event_frame(16666667);
+    assert(event_call(1024));
+    event_frame(16666667);
+    gw64(EVENT_PAD + 0x118, 0x2);
+    assert(!event_call(1024));
+    gw64(EVENT_PAD + 0x118, 0);
+    event_job_answer = 1;
+    event_frame(16666667);
+    assert(event_call(1024) && event_trigger_seen[0] == 1);
+    assert(!event_tick_jobs[0].object);
+    event_job_answer = 0;
+    event_frame(16666667);
+    assert(event_call(1024) && event_trigger_seen[0] == 1);
+    /* the same address with another script context is another job: fresh too */
+    event_frame(16666667);
+    assert(!event_call(1024));
+    gw64(1024 + 0x140, 0x900);
+    assert(event_call(1024));
+    /* a job run inside another's run: as today, its natives see the pad, not the outer job's carried edges, and the
+       outer job still sees them after it */
+    event_reset();
+    gw64(1024 + 0x140, 0x700);
+    event_frame(16666667);
+    assert(event_call(1024));
+    event_frame(16666667);
+    gw64(EVENT_PAD + 0x118, 0x4);
+    assert(!event_call(1024));
+    gw64(EVENT_PAD + 0x118, 0);
+    event_job_nested[0] = 1536;
+    event_frame(16666667);
+    assert(event_call(1024) && event_job_runs[1] == 1);
+    assert(event_trigger_seen[0] == 1 && event_trigger_seen[1] == 0 && gr64(EVENT_PAD + 0x118) == 0);
+    /* three levels (the reviewer's control on cc604bdb): 1024 runs 1536, 1536 runs 2048. At 120 FPS with 1024 fresh
+       each frame both nested jobs run in every run of 1024, with no state of their own, as today */
+    event_reset();
+    gw64(2048 + 0x140, 0x900);
+    event_job_nested[0] = 1536;
+    event_job_nested[1] = 2048;
+    for (unsigned f = 0; f < 120; f++) {
+        event_frame(8333334);
+        gw64(1024 + 0x140, 0x1000 + f);
+        assert(event_call(1024));
+    }
+    assert(event_job_runs[0] == 120 && event_job_runs[1] == 120 && event_job_runs[2] == 120);
+    for (unsigned k = 0; k < EVENT_TICK_JOBS; k++)
+        assert(event_tick_jobs[k].object != 1536 && event_tick_jobs[k].object != 2048);
+    event_job_nested[0] = event_job_nested[1] = 0;
+    gw64(1024 + 0x140, 0x700);
+    /* the line comes every 600 frames, also with two jobs called each frame */
+    event_reset();
+    gw64(1024 + 0x140, 0x700);
+    logged_count = 0;
+    event_tick_line_frame = 0;
+    for (unsigned f = 0; f < 1300; f++) {
+        event_frame(16666667);
+        (void)event_call(1024);
+        (void)event_call(1536);
+    }
+    assert(logged_count == 2 && strstr(logged[0], "(in the last 600 frames: ran 600, skipped 600, fed ") &&
+           strstr(logged[0], " ms, cut by the cap 0.0 ms)"));
+    logged_count = 0;
+    /* a full table: a ninth job runs every frame as today, counted */
+    event_reset();
+    const u64 full = event_tick_full;
+    for (unsigned k = 0; k < EVENT_TICK_JOBS; k++)
+        event_tick_jobs[k] = (EventTickJob){.object = 2000 + k, .generation = 1};
+    for (unsigned f = 0; f < 4; f++) {
+        event_frame(16666667);
+        assert(event_call(1536));
+    }
+    assert(event_tick_full == full + 4);
+    event_reset();
+    event_tick_original = NULL;
+    event_tick_pad_original[0] = event_tick_pad_original[1] = event_tick_pad_original[2] = NULL;
+    main_base = base;
+    step.step = ns;
+    frame_step_frames = frames;
+    memset(memory, 0, sizeof memory);
+}
 int main(void) {
+    test_probe_master_switch();
+    test_event_probe();
+    test_event_tick();
+    test_event_tick_decide();
+    test_demo_probe();
+    test_demo_tick();
+    test_text_probe();
+    test_text_probe_install();
+    test_probe_compile_restore();
+    test_text_tick();
     test_ride_swap();
     test_defaults_on();
     test_capped_fall_body();
