@@ -757,6 +757,19 @@ static void land_copy(void) {
     __atomic_fetch_add(&g_perf_handoff.land_copy_ns, plat_ns() - t0, __ATOMIC_RELAXED);
     g_land_n = 0;
 }
+/* SNX_ARCEUS_PERF_SMALL bit 5 (16, PERF-34, research 14:17): the next result's three streams prefetched, up to 4 KB of
+   each, while the current one lands: its result bytes, its original, and the guest bytes it writes over. Inert */
+#define LAND_PREFETCH 4096u
+static void land_prefetch(const GfxOut* n) {
+    const u32 len = n->size < LAND_PREFETCH ? n->size : LAND_PREFETCH;
+    const u8* guest = n->npages && n->vmap[0] != ~0ull ? GP(n->vmap[0] << 12) + (n->addr & 0xFFF) : NULL;
+    const u32 glen = guest ? (u32)(len < 4096 - (n->addr & 0xFFF) ? len : 4096 - (n->addr & 0xFFF)) : 0;
+    for (u32 at = 0; at < len; at += 64) {
+        __builtin_prefetch(n->ptr + at, 0, 3);
+        __builtin_prefetch(n->org + at, 0, 3);
+        if (at < glen) __builtin_prefetch(guest + at, 1, 3);
+    }
+}
 void vk_buf_frame_done(u64 frame) {
     GfxOut *done = NULL, *done_tail = NULL;
     for (GfxOut** pp = &g_out; *pp;) {
@@ -786,6 +799,7 @@ void vk_buf_frame_done(u64 frame) {
     while (done) {
         GfxOut* o = done;
         done = o->next;
+        if ((g_perf_small & PSM_PREFETCH) && done) land_prefetch(done); /* bit 5: while o lands */
         walk_remove(o); /* it leaves the lists: no walk meets it now, a nested landing's neither */
         u64 t = g_perf_times ? plat_ns() : 0, ns[PCL_STEPS] = {0}, walk[PCW_N] = {0}, runs_t = 0; /* PERF-27 */
         if (o->mem != invalidated) {
