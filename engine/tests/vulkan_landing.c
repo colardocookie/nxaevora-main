@@ -539,8 +539,9 @@ static void test_chg(void) {
 /* Research 14:37: is the masked byte store what costs? A timing mode (argument "timing"), with blocks shaped like
    the bench's (829 results of 3,456 bytes, each result, original and destination its own block): ns a 64-byte step
    for the pass as it is (landing_masked), the same loop with its store left out, with a full 64-byte store in place
-   of the masked one, and a plain copy. Two cases: every byte changed with the guest bytes equal to the original
-   (every step stores 64), and nothing changed. Best of 20 rounds, the destinations reset outside the timing */
+   of the masked one, and a plain copy. Three cases, the guest bytes equal to the original: every byte changed (every
+   step stores 64), some bytes of each 8-byte word changed and some not (research 14:55: 95 % of the game's steps store
+   a partial mask), and nothing changed. Best of 20 rounds, the destinations reset outside the timing */
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
 #include <time.h>
@@ -580,11 +581,18 @@ static int timing(void) {
         res[b] = malloc(TIME_SIZE), org[b] = malloc(TIME_SIZE), dst[b] = malloc(TIME_SIZE);
         if (!res[b] || !org[b] || !dst[b]) return 1;
     }
-    for (int changed = 1; changed >= 0; changed--) {
+    static const char* const cases[3] = {"every byte changed, guest equal to the original",
+                                         "some bytes of every 8-byte word changed, guest equal to the original",
+                                         "nothing changed"};
+    for (int kind = 0; kind < 3; kind++) {
         for (uint32_t b = 0; b < TIME_BLOCKS; b++)
-            for (uint32_t i = 0; i < TIME_SIZE; i++) {
-                org[b][i] = (uint8_t)rnd();
-                res[b][i] = changed ? (uint8_t)(org[b][i] ^ 0x5A) : org[b][i];
+            for (uint32_t i = 0; i < TIME_SIZE; i += 8) {
+                unsigned word = kind == 0 ? 0xFFu : kind == 2 ? 0 : rnd() & 0xFFu; /* the word's changed bytes */
+                if (kind == 1 && (word == 0 || word == 0xFFu)) word = 0x5Au; /* some, and not all */
+                for (unsigned j = 0; j < 8; j++) {
+                    org[b][i + j] = (uint8_t)rnd();
+                    res[b][i + j] = word >> j & 1 ? (uint8_t)(org[b][i + j] ^ 0x5A) : org[b][i + j];
+                }
             }
         double best[4];
         for (int v = 0; v < 4; v++) {
@@ -609,7 +617,7 @@ static int timing(void) {
         }
         printf("vulkan_landing timing: %s, ns a 64-byte step (%u blocks of %u bytes, best of %d): as is %.2f, no "
                "store %.2f, full store %.2f, plain copy %.2f\n",
-               changed ? "every byte changed, guest equal to the original" : "nothing changed", TIME_BLOCKS,
+               cases[kind], TIME_BLOCKS,
                TIME_SIZE, TIME_ROUNDS, best[0], best[1], best[2], best[3]);
     }
     for (uint32_t b = 0; b < TIME_BLOCKS; b++) free(res[b]), free(org[b]), free(dst[b]);
