@@ -967,8 +967,8 @@ int snx_main(int argc, char** argv) {
         if (small && *small) {
             char* end = NULL;
             const unsigned long m = strtoul(small, &end, 0);
-            if (*end || m > 31)
-                WARN("perf-small: '%s' is not a mask of 0 to 31, off\n", small);
+            if (*end || m > 15)
+                WARN("perf-small: '%s' is not a mask of 0 to 15, off\n", small);
             else
                 g_perf_small = (int)m;
         }
@@ -985,9 +985,6 @@ int snx_main(int argc, char** argv) {
             g_perf_small &= ~PSM_NOTICE;
             LOG("perf-small: bit 4 off with SNX_ARCEUS_PERF_TIMES=2\n");
         }
-        if (g_perf_small & PSM_PREFETCH)
-            LOG("perf-small: EXPERIMENT bit 5, a landing prefetches the next result's bytes, original and guest "
-                "bytes while it lands the current one\n");
         if (g_perf_small & PSM_NOTICE)
             LOG("perf-small: EXPERIMENT bit 4, a release hold's payload writes get one written notice at its end, "
                 "stamp reads answer written while it is pending\n");

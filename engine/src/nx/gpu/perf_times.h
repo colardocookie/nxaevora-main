@@ -644,7 +644,7 @@ enum { PW_HOOKS = PW_N0, PW_COPY, PW_WRITTEN, PW_QUERY, PW_ALLOC, PW_UNREF, PW_N
    before it is read. 4: a freed list's CALLs are found at its marks. 8: one written notice for a release hold's
    payload writes, each distinct page stamped once */
 extern int g_perf_small;
-enum { PSM_WAKE = 1, PSM_NOZERO = 2, PSM_UNREF = 4, PSM_NOTICE = 8, PSM_PREFETCH = 16 }; /* 16: research 14:17 */
+enum { PSM_WAKE = 1, PSM_NOZERO = 2, PSM_UNREF = 4, PSM_NOTICE = 8 };
 #define PERF_WAIT_SLOTS 512u
 typedef struct {
     uint64_t key[PERF_WAIT_SLOTS]; /* atomic: 0 free, else 1 << 56 | kind << 52 | who << 48 | the caller's address */
