@@ -1167,7 +1167,9 @@ size_t perf_p29_line(PerfP29* p, uint32_t frames, char* out, size_t size) {
                      "perf-p29: frames=%u (a frame: vk_hash and vk_hash_copy by caller, its return address less "
                      "vk_hash's: calls/KB/ms of its calls of 1 KB or more, most KB first, then the rest. The replay's "
                      "draws and the ones timed, one in %u: ms a timed draw for its binds and draw words in all/their "
-                     "sends/a decode-only pass over the same words, and words and methods a timed draw. The release "
+                     "sends/a decode-only pass over the same words, and words and methods a timed draw. A draw's 3D "
+                     "register methods, from its binds/from its draw words, each as all of them and those that write "
+                     "the value the register holds. The release "
                      "thread's releases performed, syncpoint/payload/samples report: how many, ms performing, and ms "
                      "of the queue's bookkeeping under its lock. The page index's lookups, a binding's/a landing's: "
                      "those past the bound that walked as without it, and the most candidates one met, as a "
@@ -1191,6 +1193,9 @@ size_t perf_p29_line(PerfP29* p, uint32_t frames, char* out, size_t size) {
     at = putf(out, size, at, " replay=%.1f/%.1f ms=%.4f/%.4f/%.4f words=%.1f methods=%.1f", r[PRP_DRAWS] / f,
               r[PRP_SAMPLED] / f, r[PRP_ALL_NS] / s / 1e6, r[PRP_SEND_NS] / s / 1e6, r[PRP_DECODE_NS] / s / 1e6,
               r[PRP_WORDS] / s, r[PRP_METHODS] / s);
+    const double d = r[PRP_DRAWS] ? (double)r[PRP_DRAWS] : 1;
+    at = putf(out, size, at, " regs=%.1f:%.1f/%.1f:%.1f", r[PRP_BIND_REGS] / d, r[PRP_BIND_SAME] / d,
+              r[PRP_DRAW_REGS] / d, r[PRP_DRAW_SAME] / d);
     uint64_t n[PRL_KINDS], ns[PRL_KINDS];
     for (int i = 0; i < PRL_KINDS; i++) n[i] = take64(&p->rel_n[i]), ns[i] = take64(&p->rel_ns[i]);
     at = putf(out, size, at, " releases=%.1f/%.1f/%.1f ms=%.3f/%.3f/%.3f book=%.3f", n[0] / f, n[1] / f, n[2] / f,

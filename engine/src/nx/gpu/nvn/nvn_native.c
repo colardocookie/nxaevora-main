@@ -5338,7 +5338,15 @@ static void replay_bind_refuse(NvnNativeReplayHost* host, const char* group, int
 }
 /* One method of a host built stream, routed as gpu.c's method_call does: a puller method (below 0x40) of any
    subchannel goes to the puller, and the other methods of subchannel 0 go to the 3D engine. */
+/* SNX_ARCEUS_PERF_TIMES (PERF-30's count): which part of a draw is being sent (1 its binds, 2 its draw words, 0
+   none), and its 3D register methods, all and those writing the value held. The replay thread's, flushed a draw */
+static int g_replay_part;
+static uint64_t g_replay_regs[2], g_replay_same[2];
 static void replay_stream_method(GpuChannel* ch, uint32_t subchannel, uint32_t method, uint32_t value, int last) {
+    if (g_replay_part && !subchannel && method >= PULLER_NON_PULLER_METHODS && method < MAXWELL3D_NUM_REGS) {
+        g_replay_regs[g_replay_part - 1]++;
+        g_replay_same[g_replay_part - 1] += ch->r3d[method] == value;
+    }
     if (subchannel || method < PULLER_NON_PULLER_METHODS)
         gpu_channel_method(ch, subchannel, method, value, last);
     else
@@ -5547,7 +5555,9 @@ static void replay_bind_send_all(NvnNativeReplayHost* host) {
 static int replay_host_draw_sent(void* ctx, const NvnOpDraw* op) {
     NvnNativeReplayHost* host = ctx;
     if (op->kind >= (uint32_t)NVN_DRAW_KIND_COUNT) return 0;
+    if (g_perf_times) g_replay_part = 1;
     replay_bind_send_all(host);
+    if (g_perf_times) g_replay_part = 2; /* the draw's own words, sent below or refused */
     uint32_t words[NVN_DRAW_WORDS_MAX];
     int uses_constants = 0;
     uint32_t count = nvn_draw_words(op->kind, op->mode, op->type, op->count, op->address, op->first,
@@ -5581,8 +5591,13 @@ static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
     const uint64_t t0 = timed ? plat_ns() : 0;
     g_replay_timed = timed;
     const int r = replay_host_draw_sent(ctx, op);
-    g_replay_timed = 0;
+    g_replay_timed = 0, g_replay_part = 0;
     perf_replay_add(&g_perf_p29, PRP_DRAWS, 1);
+    perf_replay_add(&g_perf_p29, PRP_BIND_REGS, g_replay_regs[0]);
+    perf_replay_add(&g_perf_p29, PRP_BIND_SAME, g_replay_same[0]);
+    perf_replay_add(&g_perf_p29, PRP_DRAW_REGS, g_replay_regs[1]);
+    perf_replay_add(&g_perf_p29, PRP_DRAW_SAME, g_replay_same[1]);
+    g_replay_regs[0] = g_replay_regs[1] = g_replay_same[0] = g_replay_same[1] = 0;
     if (timed) perf_replay_add(&g_perf_p29, PRP_SAMPLED, 1), perf_replay_add(&g_perf_p29, PRP_ALL_NS, plat_ns() - t0);
     return r;
 }

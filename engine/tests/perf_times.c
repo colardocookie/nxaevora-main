@@ -718,6 +718,8 @@ static void test_p29(void) {
     perf_replay_add(&p, PRP_SAMPLED, 75), perf_replay_add(&p, PRP_ALL_NS, 75 * 2000);
     perf_replay_add(&p, PRP_SEND_NS, 75 * 1000), perf_replay_add(&p, PRP_DECODE_NS, 75 * 400);
     perf_replay_add(&p, PRP_WORDS, 75 * 40), perf_replay_add(&p, PRP_METHODS, 75 * 20);
+    perf_replay_add(&p, PRP_BIND_REGS, 1200 * 60), perf_replay_add(&p, PRP_BIND_SAME, 1200 * 45);
+    perf_replay_add(&p, PRP_DRAW_REGS, 1200 * 8), perf_replay_add(&p, PRP_DRAW_SAME, 1200 * 2);
     perf_release_add(&p, PRL_SYNC, 600000, 1200000);
     perf_release_add(&p, PRL_PAYLOAD, 1200000, 600000);
     perf_release_add(&p, PRL_SAMPLES, 600000, 0);
@@ -728,7 +730,7 @@ static void test_p29(void) {
     CHECK(strstr(line, " vk_hash=140000000 hash=+100:0.0/2.0/0.010,"));
     CHECK(strstr(line, ",-20:0.0/0.0/0.000,"));
     CHECK(strstr(line, " rest=0.0/0.0/0.000 ")); /* five calls of 8 bytes, under 0.05 a frame */
-    CHECK(strstr(line, " replay=2.0/0.1 ms=0.0020/0.0010/0.0004 words=40.0 methods=20.0 "));
+    CHECK(strstr(line, " replay=2.0/0.1 ms=0.0020/0.0010/0.0004 words=40.0 methods=20.0 regs=60.0:45.0/8.0:2.0 "));
     CHECK(strstr(line, " releases=0.0/0.0/0.0 ms=0.001/0.002/0.001 book=0.003"));
     CHECK(strstr(line, " index=0.0/0.0 max=65/3")); /* one fallback in 600 frames, the largest of each kind */
     CHECK(p.calls[PERF_HASH_SITES] == 0 && p.replay[PRP_DRAWS] == 0 && p.rel_n[PRL_SYNC] == 0);
