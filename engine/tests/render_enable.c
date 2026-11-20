@@ -271,9 +271,18 @@ int main(void) {
         gpu_mem_written_many(a, n, 2);
         const u64 g1 = gpu_mem_generation();
         gpu_mem_notice_end();
-        if (!pending || g1 != g0 + 1 || !gpu_mem_dirty_since(g0, 0x40000, 16) || !gpu_mem_dirty_since(g0, 0x50020, 4) ||
-            gpu_mem_dirty_since(g0, 0x90000, 4) || gpu_mem_dirty_since(g1, 0x40000, 16) ||
-            gpu_mem_dirty_since(g1, 0x50000, 64)) {
+        /* ranges on the same pages and on neighbours, stamped page by page once: the same pages as one by one */
+        const u64 b[4] = {0x60010, 0x60800, 0x61000, 0x63ff0}, m[4] = {8, 8, 4, 32};
+        gpu_mem_notice_begin();
+        gpu_mem_written_many(b, m, 4);
+        const u64 g2 = gpu_mem_generation();
+        gpu_mem_notice_end();
+        const int pages = g2 == g1 + 1 && gpu_mem_dirty_since(g1, 0x60000, 4) && gpu_mem_dirty_since(g1, 0x61ff0, 4) &&
+                          !gpu_mem_dirty_since(g1, 0x62000, 0x1000) && gpu_mem_dirty_since(g1, 0x63000, 4) &&
+                          gpu_mem_dirty_since(g1, 0x64008, 4) && !gpu_mem_dirty_since(g1, 0x65000, 4);
+        if (!pending || !pages || g1 != g0 + 1 || !gpu_mem_dirty_since(g0, 0x40000, 16) ||
+            !gpu_mem_dirty_since(g0, 0x50020, 4) || gpu_mem_dirty_since(g0, 0x90000, 4) ||
+            gpu_mem_dirty_since(g1, 0x40000, 16) || gpu_mem_dirty_since(g1, 0x50000, 64)) {
             fprintf(stderr, "FAIL: a hold's one notice (pending %d, generations %llu to %llu)\n", pending,
                     (unsigned long long)g0, (unsigned long long)g1);
             failures++;

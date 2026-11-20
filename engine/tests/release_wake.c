@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* SNX_ARCEUS_PERF_SMALL bit 1 (PERF-34, gpu/vk/release.c): the release thread is woken only while it sleeps. A model
-   of release.c's protocol with real threads: the release thread's wait (release_thread, "while (g_rtail == g_rheld)"
-   with g_rsleep set and cleared around pc_wait) and its wakers (release, vk_release_submit, release_match: g_rheld
-   moved and release_wake under g_rlock). Producers race the waiter, and a lost wake would leave it asleep past the
-   alarm. Run with and without the bit, under the thread sanitizer too. Usage: release_wake 0|1 */
+/* SNX_ARCEUS_PERF_SMALL bit 1 (PERF-34, gpu/vk/release.c, research 12:53): release() wakes the release thread only
+   when it moved g_rheld. A model of release.c's protocol with real threads: the release thread's one wait
+   (release_thread, "while (g_rtail == g_rheld)"), release() (a release queued, g_rheld moved only when the queue was
+   full, its wake then only with the bit) and the wakers that let go (vk_release_submit, release_match: g_rheld =
+   g_rhead and a wake). Producers race the waiter, and a lost wake would leave it asleep past the alarm. Run with
+   and without the bit, under the thread sanitizer too. Usage: release_wake 0|1 */
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -17,11 +18,11 @@
 static pthread_mutex_t g_rlock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_rcv = PTHREAD_COND_INITIALIZER;
 static unsigned long g_rtail, g_rheld, g_rhead;
-static int g_bit, g_rsleep;
+static int g_bit;
 static unsigned long broadcasts, waits;
 
-static void release_wake(void) { /* release.c's, the bit as g_perf_small & PSM_WAKE */
-    if (!g_bit || g_rsleep) {
+static void release_wake(int moved) { /* release.c's, the bit as g_perf_small & PSM_WAKE */
+    if (!g_bit || moved) {
         broadcasts++;
         pthread_cond_broadcast(&g_rcv);
     }
@@ -29,10 +30,17 @@ static void release_wake(void) { /* release.c's, the bit as g_perf_small & PSM_W
 static void* producer(void* arg) {
     for (unsigned i = 0; i < EACH; i++) {
         pthread_mutex_lock(&g_rlock);
+        int moved = 0;
+        if (arg && !(i % 97)) g_rheld = g_rhead, moved = 1; /* release()'s full queue: the oldest goes */
         g_rhead++;
-        if (i % 3 != 1 || arg) g_rheld = g_rhead; /* most releases are let go at once, some by a later one */
-        release_wake();
+        release_wake(moved); /* release(): queued, let go by a later call */
         pthread_mutex_unlock(&g_rlock);
+        if (i % 5 == 4) { /* vk_release_submit or release_match: everything so far goes */
+            pthread_mutex_lock(&g_rlock);
+            g_rheld = g_rhead;
+            release_wake(1);
+            pthread_mutex_unlock(&g_rlock);
+        }
         if (!(i % 64)) sched_yield();
     }
     return NULL;
@@ -41,7 +49,7 @@ static void* finisher(void* arg) { /* vk_release_submit at the end: whatever is 
     (void)arg;
     pthread_mutex_lock(&g_rlock);
     g_rheld = g_rhead;
-    release_wake();
+    release_wake(1);
     pthread_mutex_unlock(&g_rlock);
     return NULL;
 }
@@ -65,10 +73,8 @@ int main(int argc, char** argv) {
     while (done < total) { /* the release thread: take what is let go, perform it, wait for more */
         pthread_mutex_lock(&g_rlock);
         while (g_rtail == g_rheld) {
-            if (g_bit) g_rsleep = 1;
             waits++;
             pthread_cond_wait(&g_rcv, &g_rlock);
-            if (g_bit) g_rsleep = 0;
         }
         done += g_rheld - g_rtail;
         g_rtail = g_rheld;

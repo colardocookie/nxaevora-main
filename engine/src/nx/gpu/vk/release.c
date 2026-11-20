@@ -268,6 +268,7 @@ static void release_through(u64 gate, u64 cgate) {
                              r1 - r0 - (r.gva ? 0 : own));
         }
     }
+    if (notice && !--g_notice_depth && g_notice_open) notice_close(); /* inside the hold's stopwatch (12:52) */
     if (held) {
         const u64 end = plat_ns(), outputs = __atomic_load_n(&g_perf.wb_total, __ATOMIC_RELAXED) - outputs0;
         perf_caps_hold(&g_perf_caps, compute - held, graphics - compute, end - graphics);
@@ -276,15 +277,13 @@ static void release_through(u64 gate, u64 cgate) {
         perf_rel_interval(&g_perf, REL_LOCK, lock0, held, 0);
         perf_rel_interval(&g_perf, REL_HOLD, held, end, outputs); /* the outputs landed under this hold */
     }
-    if (notice && !--g_notice_depth && g_notice_open) notice_close();
     vk_unlock();
     if (g_perf_times) perf_tail_freed(&g_perf, plat_ns());
 }
-/* SNX_ARCEUS_PERF_SMALL bit 1 (PERF-34): the release thread is woken only while it sleeps. The thread sets the
-   flag and every waker reads it under g_rlock, and pc_wait gives the lock up as it sleeps, so no wake is lost */
-static int g_rsleep;
-static void release_wake(void) {
-    if (!(g_perf_small & PSM_WAKE) || g_rsleep) pc_broadcast(&g_rcv);
+/* SNX_ARCEUS_PERF_SMALL bit 1 (PERF-34, research 12:53): release() wakes the release thread only when it moved
+   g_rheld. The thread's one wait ends on g_rtail != g_rheld alone, and a wake that moved neither cannot end it */
+static void release_wake(int moved) {
+    if (!(g_perf_small & PSM_WAKE) || moved) pc_broadcast(&g_rcv);
 }
 static void release_thread(void* p) {
     (void)p;
@@ -295,9 +294,7 @@ static void release_thread(void* p) {
         u64 gate, cgate;
         pm_lock(&g_rlock);
         while (g_rtail == g_rheld) {
-            if (g_perf_small & PSM_WAKE) g_rsleep = 1; /* under g_rlock, which pc_wait gives up as it sleeps */
             pc_wait(&g_rcv, &g_rlock, -1);
-            if (g_perf_small & PSM_WAKE) g_rsleep = 0;
             if (g_perf_probes) /* woken with something let go, or for nothing (research 12:38) */
                 __atomic_fetch_add(g_rtail != g_rheld ? &g_perf_handoff.rwait_work : &g_perf_handoff.rwait_idle, 1,
                                    __ATOMIC_RELAXED);
@@ -359,8 +356,10 @@ static void release(Release* r) {
         r->gate =
             r->samples || vk_buf_pending_unsubmitted() || vk_gfx_image_in_flight(1) ? recording : vk_last_submit();
     pm_lock(&g_rlock);
+    int moved = 0; /* whether this release let anything go (bit 1's wake below) */
     if (g_rhead - g_rtail == RQ_N) { /* full: the oldest goes now, held or not */
         g_rheld = g_rhead;
+        moved = 1;
         u64 oldest = g_rq[g_rtail % RQ_N].gate, coldest = g_rq[g_rtail % RQ_N].cgate;
         pm_unlock(&g_rlock);
         submit_through(oldest);
@@ -398,7 +397,7 @@ static void release(Release* r) {
             fatal("could not start the GPU release thread: %s", snx_os_error(why, sizeof why));
         }
     }
-    release_wake();
+    release_wake(moved);
     pm_unlock(&g_rlock);
     vk_unlock();
 }
@@ -419,7 +418,7 @@ void vk_release_submit(void) {
     pm_lock(&g_rlock);
     g_rheld = g_rhead; /* the commands after the releases have read guest memory */
     u64 gate = g_rhead != g_rtail ? g_rq[(g_rhead - 1) % RQ_N].gate : 0; /* the gates only grow */
-    if (g_rthread) release_wake();
+    if (g_rthread) release_wake(1);
     pm_unlock(&g_rlock);
     release_through(0, 0); /* those no GPU work holds */
     submit_through(gate);
@@ -572,7 +571,7 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
     }
     pm_lock(&g_rlock);
     g_rheld = g_rhead; /* needed now: the stream holds them no longer */
-    if (g_rthread) release_wake();
+    if (g_rthread) release_wake(1);
     found = perf_storage_walk() ? release_find_runs(gva, len, id, all, &gate, &cgate)
                                 : release_find(gva, len, id, all, &gate, &cgate);
     pm_unlock(&g_rlock);

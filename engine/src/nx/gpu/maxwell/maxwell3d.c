@@ -91,14 +91,44 @@ void gpu_mem_notice_begin(void) {
     pm_unlock(&g_wlk);
     __atomic_thread_fence(__ATOMIC_SEQ_CST); /* before the first deferred copy */
 }
+static int page_cmp(const void* a, const void* b) {
+    const u64 x = *(const u64*)a, y = *(const u64*)b;
+    return (x > y) - (x < y);
+}
+/* research 12:52: each distinct GPU page of the ranges stamped once, in runs of consecutive pages. The stamps are per
+   page (write_pages), so the same pages get the same generation as the ranges one by one. Past WRITTEN_PAGES the
+   ranges are stamped as they are. Under g_wlk */
+#define WRITTEN_PAGES 16384u
 void gpu_mem_written_many(const u64* gva, const u64* size, u32 n) {
+    static u64 page[WRITTEN_PAGES];
     pm_lock(&g_wlk);
     Stamp s = {g_wgen + 1, PSK_GPU};
-    for (u32 i = 0; i < n; i++)
-        if (size[i]) {
-            stamp_gpu(gva[i], size[i], &s);
-            guest_runs(gva[i], size[i], stamp_run, &s);
+    u32 np = 0;
+    int whole = 1;
+    for (u32 i = 0; i < n && whole; i++)
+        for (u64 p = gva[i] >> 12; size[i] && p <= (gva[i] + size[i] - 1) >> 12; p++) {
+            if (np == WRITTEN_PAGES) {
+                whole = 0;
+                break;
+            }
+            page[np++] = p;
         }
+    if (whole) {
+        qsort(page, np, sizeof *page, page_cmp);
+        for (u32 i = 0; i < np;) {
+            u32 j = i + 1;
+            while (j < np && page[j] <= page[j - 1] + 1) j++; /* a run of consecutive pages, the same ones once */
+            const u64 at = page[i] << 12, len = (page[j - 1] - page[i] + 1) << 12;
+            stamp_gpu(at, len, &s);
+            guest_runs(at, len, stamp_run, &s);
+            i = j;
+        }
+    } else
+        for (u32 i = 0; i < n; i++)
+            if (size[i]) {
+                stamp_gpu(gva[i], size[i], &s);
+                guest_runs(gva[i], size[i], stamp_run, &s);
+            }
     __atomic_store_n(&g_wgen, s.gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
 }
