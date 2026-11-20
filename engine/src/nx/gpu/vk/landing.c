@@ -111,6 +111,8 @@ void landing_note_mask(uint64_t m, uint32_t at, LandingPut note, void* ctx) {
     note(ctx, at + lo, 64 - (unsigned)__builtin_clzll(m) - lo);
 }
 
+int g_landing_count;
+uint64_t g_landing_mask[LMS_N];
 int landing_masked_supported(void) {
 #if LANDING_X86
     unsigned a, b, c, d, lo, hi;
@@ -129,19 +131,31 @@ int landing_masked_supported(void) {
 /* w NULL (landing_masked): no word is told, and the loop is the one without it */
 __attribute__((target("avx512f,avx512bw"), always_inline)) static inline uint64_t
 masked(const uint8_t* res, const uint8_t* org, uint8_t* dst, uint32_t size, LandingPut put, LandingPut note, void* ctx,
-       LandingWords* w) {
-    uint64_t total = 0;
+       LandingWords* w, const int count) {
+    uint64_t total = 0, none = 0, all = 0, steps = 0;
     uint32_t k = 0;
     for (; size - k >= 64; k += 64) {
         const __m512i r = _mm512_loadu_si512(res + k), o = _mm512_loadu_si512(org + k);
         __mmask64 m = _mm512_cmpneq_epi8_mask(r, o);
+        if (count) steps++;
         if (w) words_step(w, _mm512_cmpneq_epi64_mask(r, o), k); /* a word whatever the guest holds */
-        if (!m) continue; /* the guest's bytes are read only in a step the shader changed */
+        if (!m) { /* the guest's bytes are read only in a step the shader changed */
+            if (count) none++;
+            continue;
+        }
         m &= _mm512_cmpeq_epi8_mask(_mm512_loadu_si512(dst + k), o);
-        if (!m) continue;
+        if (!m) {
+            if (count) none++;
+            continue;
+        }
+        if (count && m == ~0ull) all++;
         _mm512_mask_storeu_epi8(dst + k, m, r); /* the bytes of a clear mask bit are not stored */
         total += (uint64_t)__builtin_popcountll(m);
         if (note) landing_note_mask(m, k, note, ctx);
+    }
+    if (count) {
+        g_landing_mask[LMS_STEPS] += steps, g_landing_mask[LMS_NONE] += none, g_landing_mask[LMS_ALL] += all;
+        g_landing_mask[LMS_SOME] += steps - none - all;
     }
     if (w) landing_words_tail(w, res, org, k, size);
     Runs r = {put, ctx, 0, 0, 0};
@@ -151,14 +165,16 @@ masked(const uint8_t* res, const uint8_t* org, uint8_t* dst, uint32_t size, Land
 __attribute__((target("avx512f,avx512bw"))) uint64_t landing_masked(const uint8_t* res, const uint8_t* org,
                                                                     uint8_t* dst, uint32_t size, LandingPut put,
                                                                     LandingPut note, void* ctx) {
-    return masked(res, org, dst, size, put, note, ctx, NULL);
+    return g_landing_count ? masked(res, org, dst, size, put, note, ctx, NULL, 1)
+                           : masked(res, org, dst, size, put, note, ctx, NULL, 0);
 }
 __attribute__((target("avx512f,avx512bw"))) uint64_t landing_masked_chg(const uint8_t* res, const uint8_t* org,
                                                                         uint8_t* dst, uint32_t size, LandingPut put,
                                                                         LandingPut note, void* ctx, LandingPut chg,
                                                                         void* chg_ctx) {
     LandingWords w = {chg, chg_ctx, 0, 0};
-    return masked(res, org, dst, size, put, note, ctx, &w);
+    return g_landing_count ? masked(res, org, dst, size, put, note, ctx, &w, 1)
+                           : masked(res, org, dst, size, put, note, ctx, &w, 0);
 }
 #else
 uint64_t landing_masked(const uint8_t* res, const uint8_t* org, uint8_t* dst, uint32_t size, LandingPut put,

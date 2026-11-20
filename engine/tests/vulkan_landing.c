@@ -351,6 +351,7 @@ static void compare_masked(uint32_t size) {
 typedef struct {
     uint32_t calls, from, n;
 } Heard;
+static void no_put(void* ctx, uint32_t at, uint32_t n) { (void)ctx, (void)at, (void)n; }
 static void heard(void* ctx, uint32_t from, uint32_t n) {
     Heard* h = ctx;
     h->calls++, h->from = from, h->n = n;
@@ -366,6 +367,21 @@ static void test_masked(void) {
         Heard h = {0, 0, 0};
         landing_note_mask(spans[i].m, 64, heard, &h);
         CHECK(h.calls == spans[i].calls && (!h.calls || (h.from == spans[i].from && h.n == spans[i].n)));
+    }
+    if (masked) { /* PERF-35's count: one step unchanged, one all changed, one half, the guest equal to org */
+        static uint8_t r3[192], o3[192], d3[192];
+        for (int i = 0; i < 192; i++)
+            o3[i] = (uint8_t)i, r3[i] = (uint8_t)(i < 64 ? i : i < 128 || (i & 1) ? i ^ 0xFF : i);
+        memcpy(d3, o3, sizeof d3);
+        memset(g_landing_mask, 0, sizeof g_landing_mask);
+        g_landing_count = 1;
+        (void)landing_masked(r3, o3, d3, 192, no_put, NULL, NULL);
+        g_landing_count = 0;
+        CHECK(g_landing_mask[LMS_STEPS] == 3 && g_landing_mask[LMS_NONE] == 1 && g_landing_mask[LMS_ALL] == 1 &&
+              g_landing_mask[LMS_SOME] == 1 && !memcmp(d3, r3, sizeof d3));
+        memset(g_landing_mask, 0, sizeof g_landing_mask);
+        (void)landing_masked(o3, o3, d3, 192, no_put, NULL, NULL); /* not counted with the flag off */
+        CHECK(!g_landing_mask[LMS_STEPS]);
     }
     for (uint32_t size = 0; size < 300; size++) {
         fill_blocks(size);
@@ -520,7 +536,94 @@ static void test_chg(void) {
             CHECK(told.count == n && !memcmp(told.runs, want, n * sizeof *want));
         }
 }
-int main(void) {
+/* Research 14:37: is the masked byte store what costs? A timing mode (argument "timing"), with blocks shaped like
+   the bench's (829 results of 3,456 bytes, each result, original and destination its own block): ns a 64-byte step
+   for the pass as it is (landing_masked), the same loop with its store left out, with a full 64-byte store in place
+   of the masked one, and a plain copy. Two cases: every byte changed with the guest bytes equal to the original
+   (every step stores 64), and nothing changed. Best of 20 rounds, the destinations reset outside the timing */
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#include <time.h>
+#define TIME_BLOCKS 829u
+#define TIME_SIZE 3456u
+#define TIME_ROUNDS 20
+static uint64_t time_ns(void) {
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+static void time_put(void* ctx, uint32_t at, uint32_t n) { (void)ctx, (void)at, (void)n; }
+static volatile uint64_t time_sink;
+/* masked()'s loop at landing.c, store: 0 none, 1 the masked one, 2 a full 64-byte store */
+__attribute__((target("avx512f,avx512bw"))) static uint64_t time_loop(const uint8_t* res, const uint8_t* org,
+                                                                      uint8_t* dst, uint32_t size, int store) {
+    uint64_t total = 0;
+    for (uint32_t k = 0; size - k >= 64; k += 64) {
+        const __m512i r = _mm512_loadu_si512(res + k), o = _mm512_loadu_si512(org + k);
+        __mmask64 m = _mm512_cmpneq_epi8_mask(r, o);
+        if (!m) continue;
+        m &= _mm512_cmpeq_epi8_mask(_mm512_loadu_si512(dst + k), o);
+        if (!m) continue;
+        if (store == 1) _mm512_mask_storeu_epi8(dst + k, m, r);
+        if (store == 2) _mm512_storeu_si512(dst + k, r);
+        total += (uint64_t)__builtin_popcountll(m);
+    }
+    return total;
+}
+static int timing(void) {
+    if (!landing_masked_supported()) {
+        printf("vulkan_landing timing: skipped, no AVX-512BW here\n");
+        return 0;
+    }
+    static uint8_t *res[TIME_BLOCKS], *org[TIME_BLOCKS], *dst[TIME_BLOCKS];
+    for (uint32_t b = 0; b < TIME_BLOCKS; b++) {
+        res[b] = malloc(TIME_SIZE), org[b] = malloc(TIME_SIZE), dst[b] = malloc(TIME_SIZE);
+        if (!res[b] || !org[b] || !dst[b]) return 1;
+    }
+    for (int changed = 1; changed >= 0; changed--) {
+        for (uint32_t b = 0; b < TIME_BLOCKS; b++)
+            for (uint32_t i = 0; i < TIME_SIZE; i++) {
+                org[b][i] = (uint8_t)rnd();
+                res[b][i] = changed ? (uint8_t)(org[b][i] ^ 0x5A) : org[b][i];
+            }
+        double best[4];
+        for (int v = 0; v < 4; v++) {
+            uint64_t low = ~0ull;
+            for (int round = 0; round < TIME_ROUNDS; round++) {
+                for (uint32_t b = 0; b < TIME_BLOCKS; b++) memcpy(dst[b], org[b], TIME_SIZE);
+                const uint64_t t0 = time_ns();
+                uint64_t sum = 0;
+                for (uint32_t b = 0; b < TIME_BLOCKS; b++) {
+                    if (v == 0)
+                        sum += landing_masked(res[b], org[b], dst[b], TIME_SIZE, time_put, NULL, NULL);
+                    else if (v == 3)
+                        memcpy(dst[b], res[b], TIME_SIZE);
+                    else
+                        sum += time_loop(res[b], org[b], dst[b], TIME_SIZE, v == 1 ? 0 : 2);
+                }
+                const uint64_t t = time_ns() - t0;
+                time_sink += sum;
+                if (t < low) low = t;
+            }
+            best[v] = (double)low / (TIME_BLOCKS * (TIME_SIZE / 64));
+        }
+        printf("vulkan_landing timing: %s, ns a 64-byte step (%u blocks of %u bytes, best of %d): as is %.2f, no "
+               "store %.2f, full store %.2f, plain copy %.2f\n",
+               changed ? "every byte changed, guest equal to the original" : "nothing changed", TIME_BLOCKS,
+               TIME_SIZE, TIME_ROUNDS, best[0], best[1], best[2], best[3]);
+    }
+    for (uint32_t b = 0; b < TIME_BLOCKS; b++) free(res[b]), free(org[b]), free(dst[b]);
+    return 0;
+}
+#else
+static int timing(void) {
+    printf("vulkan_landing timing: skipped, not x86-64\n");
+    return 0;
+}
+#endif
+
+int main(int argc, char** argv) {
+    if (argc > 1 && !strcmp(argv[1], "timing")) return timing();
     masked = landing_masked_supported();
     printf("vulkan_landing: level 3's masked path %s\n", masked ? "RUNS (AVX-512BW)" : "skipped: no AVX-512BW here");
     test_masked();

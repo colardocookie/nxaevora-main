@@ -824,6 +824,7 @@ add_test(NAME gpuprof_tail COMMAND snx-test-gpuprof-tail)
 add_executable(snx-test-vulkan-landing vulkan_landing.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/landing.c")
 snx_test_target(snx-test-vulkan-landing 11)
 add_test(NAME vulkan_landing COMMAND snx-test-vulkan-landing)
+add_test(NAME vulkan_landing_timing COMMAND snx-test-vulkan-landing timing) # research 14:37: prints, always passes
 
 add_executable(snx-test-perf-times perf_times.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/perf_times.c")
 snx_test_target(snx-test-perf-times 11)

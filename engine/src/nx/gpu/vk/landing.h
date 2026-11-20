@@ -33,6 +33,11 @@ uint64_t landing_runs(const uint8_t* res, const uint8_t* org, const uint8_t* cur
 
 /* whether the CPU has AVX-512F and BW and the OS saves their state (CPUID and XGETBV). 0 off x86 */
 int landing_masked_supported(void);
+/* PERF-35 (research 14:37, SNX_ARCEUS_PERF_PROBES): the masked pass's 64-byte steps by their final mask: all, none
+   stored, all 64 stored, some. Counted only while g_landing_count is set (a separate copy of the loop), summed */
+enum { LMS_STEPS, LMS_NONE, LMS_ALL, LMS_SOME, LMS_N };
+extern int g_landing_count;
+extern uint64_t g_landing_mask[LMS_N];
 /* The bytes of landing_runs with cur being dst, 64 a step, with
    a byte-masked store of res under (res != org) and (cur == org). The tail under 64 bytes goes to landing_runs' loop
    and put, which must write dst. note, when not NULL, hears each masked store's span, from its lowest byte stored to

@@ -840,6 +840,10 @@ void vk_buf_frame_done(u64 frame) {
     if (land_probe) {
         __atomic_fetch_add(&g_perf_handoff.land_loop_ns, plat_ns() - loop0, __ATOMIC_RELAXED);
         land_copy();
+        for (int k = 0; k < LMS_N; k++) { /* the masked pass's counts, nested landings' too, under vk_lock */
+            __atomic_fetch_add(&g_perf_handoff.land_steps[k], g_landing_mask[k], __ATOMIC_RELAXED);
+            g_landing_mask[k] = 0;
+        }
     }
     g_out_landing--;
     if (g_perf_compare == 2) g_walk_depth--;

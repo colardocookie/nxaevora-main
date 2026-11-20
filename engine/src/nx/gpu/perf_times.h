@@ -225,6 +225,7 @@ typedef struct { /* all atomic */
        PLD_*); bytes whose page could not be told; and one bracket each around a landing's write loop and around a
        plain copy of the same bytes */
     uint64_t land_results, land_bytes[5], land_unknown, land_loop_ns, land_copy_ns;
+    uint64_t land_steps[4]; /* the masked pass's 64-byte steps: all, none stored, all 64, some (landing.c's count) */
 } PerfHandoff;
 extern PerfHandoff g_perf_handoff;
 void perf_handoff_compute(PerfHandoff* h, uint64_t now);
