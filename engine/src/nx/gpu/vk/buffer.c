@@ -452,6 +452,12 @@ static int walk_ref(GfxOut* o, u64 page) {
     o->wrefs = r;
     return 1;
 }
+/* no memory for an entry: the walks go over every pending result for the rest of the session, said once (reviewer
+   N2 on ce3c2804) */
+static void walk_lost(void) {
+    g_walk_lost = 1;
+    LOG_LIMIT(1, "perf-compare: no memory for the page index, the walks go over every pending result from now on\n");
+}
 /* at o's append to g_prep, when its pages are final (sorted, unmapped ones last): its order, and it into the index */
 static void walk_add(GfxOut* o) {
     if (g_perf_compare != 2) return;
@@ -460,10 +466,10 @@ static void walk_add(GfxOut* o) {
     u32 i = 0;
     for (; i < o->npages && o->pages[i] != ~0ull; i++) /* the entries made stay o's until it leaves the lists */
         if ((!i || o->pages[i] != o->pages[i - 1]) && !walk_ref(o, o->pages[i])) {
-            g_walk_lost = 1;
+            walk_lost();
             return;
         }
-    if (i < o->npages && !walk_ref(o, ~0ull)) g_walk_lost = 1; /* an unmapped page */
+    if (i < o->npages && !walk_ref(o, ~0ull)) walk_lost(); /* an unmapped page */
 }
 /* o out of the index, as it leaves the lists */
 static void walk_remove(GfxOut* o) {
@@ -506,7 +512,8 @@ static void chg_put(void* ctx, u32 from, u32 n) {
         const u32 cap = g_capchg * 2;
         ChgRun* b = g_chg == g_chg_first ? malloc((size_t)cap * sizeof *b) : realloc(g_chg, (size_t)cap * sizeof *b);
         if (!b) {
-            g_chg_lost = 1;
+            g_chg_lost = 1; /* every byte a candidate for this result, said once (reviewer N2 on ce3c2804) */
+            LOG_LIMIT(1, "perf-compare: no memory for a result's changed runs, its rebase compares all its bytes\n");
             return;
         }
         if (g_chg == g_chg_first) memcpy(b, g_chg_first, sizeof g_chg_first);

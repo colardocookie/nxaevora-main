@@ -71,6 +71,8 @@ static u64 plat_ns(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (u64)ts.tv_sec * 1000000000ull + (u64)ts.tv_nsec;
 }
+static unsigned said; /* LOG_LIMIT's lines, counted */
+#define LOG_LIMIT(n, ...) ((void)(n), said++)
 static void fatal(const char* why) {
     fprintf(stderr, "fatal: %s\n", why);
     abort();
@@ -365,6 +367,7 @@ static void check_found(void) {
 /* without memory for the runs, the index or the walk's list: every byte a candidate, the whole walk, and the bytes
    of level 0 without memory either */
 static void check_lost(void) {
+    const unsigned said0 = said;
     if (g_chg != g_chg_first) free(g_chg); /* back to its first 64 runs, so that growing it fails */
     g_chg = g_chg_first, g_capchg = 64;
     for (u32 seed = 1; seed <= 150; seed++) {
@@ -389,6 +392,7 @@ static void check_lost(void) {
         g_walk_lost = 0;
     }
     g_perf_compare = 0, g_perf_landing = 0, g_landing_masked = 0;
+    assert(said > said0); /* a lost run list is said (reviewer N2) */
 }
 /* two pages in one bucket of the index: a result on the other page is not visited */
 static void check_collide(void) {
@@ -516,10 +520,11 @@ static void check_pool(void) {
     WalkRef* kept = g_walk_free;
     WalkRef one = {0};
     g_walk_free = &one, one.own = NULL; /* room for one entry, and none more */
+    const unsigned said0 = said;
     alloc_fails = 1;
     walk_add(o);
     alloc_fails = 0;
-    assert(g_walk_lost && o->wrefs == &one && !one.own && !g_walk_free);
+    assert(g_walk_lost && o->wrefs == &one && !one.own && !g_walk_free && said == said0 + 1); /* said (N2) */
     walk_remove(o);
     assert(!o->wrefs && g_walk_free == &one && index_empty());
     g_walk_free = kept, g_walk_lost = 0;
