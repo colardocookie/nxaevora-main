@@ -374,6 +374,7 @@ static void cs_land_oldest(void) {
     int was = g_landing;
     cs_wait(b->cval);
     g_landing = 1;
+    if (g_perf_probes) perf_handoff_compute(&g_perf_handoff, plat_ns()); /* PERF-33 */
 #if defined(SNX_TRACY)
     cs_times(b->qpool, b->q0, b->q1, b->ep);
 #endif
@@ -558,7 +559,10 @@ void vk_compute_land(void) {
 u64 vk_compute_put_aside(void) {
     u64 gate = 0;
     vk_lock();
-    if (g_nout) cs_put_aside();
+    if (g_nout) {
+        cs_put_aside();
+        if (g_perf_probes) vk_release_result(vk_submit_number(), PCY_COMPUTE); /* the release thread's (PERF-33) */
+    }
     if (g_ptail != g_phead) gate = g_pend[(g_phead - 1) % CS_PENDING].cval;
     vk_unlock();
     return gate;

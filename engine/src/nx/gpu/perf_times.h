@@ -109,12 +109,18 @@ typedef struct {
 typedef struct {
     uint64_t v, queued, handed, seen;
     int state; /* the site << 2, and SUB_SEEN and SUB_LAST5: whoever sets the second adds the last five's time */
+    /* PERF-33, with SNX_ARCEUS_PERF_PROBES: the PCY_* kinds of result queued for the release thread in submission
+       carry_v (registered while it is recorded, before it is queued here), and when the last of its landings was */
+    uint64_t carry_v, landed;
+    int carry;
 } PerfSub;
+enum { PCY_OUT = 1, PCY_IMAGE = 2, PCY_COMPUTE = 4, PCY_PAYLOAD = 8, PCY_SAMPLES = 16, PCY_KINDS = 5 };
 /* A tail's times, each written once by the thread that reaches that point, and closed when both its vk_lock release
    and the game's wake are in */
 #define PERF_TAILS 4u
 typedef struct {
     uint64_t armed, gate, seq, t0, t_submit, t_done, t_incr, t_free, t_wake;
+    uint64_t first, last; /* PERF-33: its frame's submissions, after the previous tail's last up to its own */
     int closes;
 } PerfTail;
 typedef struct {
@@ -186,6 +192,23 @@ void perf_sub_queued(PerfTimes* p, uint64_t v, int site, uint64_t now);
 void perf_sub_handed(PerfTimes* p, uint64_t v, uint64_t now);
 void perf_sub_seen(PerfTimes* p, uint64_t value, uint64_t now);
 void perf_sub_frame_end(PerfTimes* p, uint64_t now);
+/* PERF-33 (research 05:12, 05:16), log only, with SNX_ARCEUS_PERF_PROBES=1: the frame hand-off. A result of kind
+   (PCY_*) queued for the release thread in submission v (release.c vk_release_result, the one place), a guest
+   result of v landed (under vk_lock: one v never registered is counted), and a compute batch's results landed */
+void perf_sub_carry(PerfTimes* p, uint64_t v, int kind);
+void perf_sub_landed(PerfTimes* p, uint64_t v, uint64_t now);
+enum { PH_SUBMIT, PH_SUBMIT_LOCK, PH_SUBMIT_ADD, PH_SUBMIT_SCAN, PH_FENCE, PH_PRESENT, PH_PARTS };
+#define PH_POS 5u /* where a frame's last carrying submission sits: the last, 1, 2, 3 before it, or 4 and more */
+typedef struct { /* all atomic */
+    uint64_t frames, subs, carry, kinds[PCY_KINDS], pos[PH_POS + 1]; /* pos[PH_POS]: a frame with none */
+    uint64_t to_land, to_carry_gpu, to_last_gpu, to_incr;           /* ns from the increment's queueing (frame_end) */
+    uint64_t land_before, compute_last, compute_after, compute_ns, lost, unregistered;
+    uint64_t n[PH_PARTS], ns[PH_PARTS], ops;
+} PerfHandoff;
+extern PerfHandoff g_perf_handoff;
+void perf_handoff_compute(PerfHandoff* h, uint64_t now);
+void perf_handoff_time(PerfHandoff* h, int part, uint64_t ns, uint64_t ops);
+size_t perf_handoff_line(PerfHandoff* h, uint32_t frames, char* out, size_t size);
 /* the release thread spent [start, end) in state (REL_*), landing outputs storage outputs while holding vk_lock */
 void perf_rel_interval(PerfTimes* p, int state, uint64_t start, uint64_t end, uint64_t outputs);
 /* Writes the window's line into out and starts the next window. frames: the presents it covers. */

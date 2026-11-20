@@ -149,6 +149,7 @@ static void perform(Release* r) {
             snx_st_le64(r->data, v);
     }
     vk_result_begin();
+    if (r->gva && g_perf_probes) perf_sub_landed(&g_perf, r->gate, plat_ns()); /* PERF-33 */
     if (r->gva && g_perf_probes)
         write_timed(r->gva, r->data, r->len);
     else if (r->gva)
@@ -254,6 +255,10 @@ static void submit_through(u64 gate) {
     }
 }
 /* r once everything recorded before it has landed and the stream has stopped (g_rheld) */
+/* PERF-33 (research 05:16): the one place a result is queued for the release thread, sub the submission it is
+   recorded in. Every producer calls it where it queues one, under vk_lock, testing the switch first. The count
+   reads it, and a later gate of the increment will, not a list of kinds. A landing never registered is counted */
+void vk_release_result(u64 sub, int kind) { perf_sub_carry(&g_perf, sub, kind); }
 static void release(Release* r) {
     SNX_ZONE_V(z, "vk release queue", r->samples);
     vk_lock();
@@ -290,6 +295,7 @@ static void release(Release* r) {
         if (r->gate < prev->gate) r->gate = prev->gate;
         if (r->cgate < prev->cgate) r->cgate = prev->cgate;
     }
+    if (g_perf_probes && r->gva && r->gate) vk_release_result(r->gate, r->samples ? PCY_SAMPLES : PCY_PAYLOAD);
     if (r->gva) rix_track(r, g_rhead, 1);
     /* SNX_ARCEUS_PERF_TIMES: a present's increment starts its tail, under g_rlock so its perform comes after */
     if (!r->gva && g_perf_times && gpu_on_gpu_thread() && perf_tail_take(&g_perf)) {

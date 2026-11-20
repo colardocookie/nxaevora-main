@@ -809,6 +809,9 @@ void vk_renderdoc_present(u64 present);
 
 /* release.c: releases the game can observe, once the results before them land (renderer.h release_write) */
 void vk_release_write(u64 gva, const void* data, u32 len);
+/* the one place a result is queued for the release thread: kind (perf_times.h PCY_*) recorded in submission sub, under
+   vk_lock. Every producer calls it, with SNX_ARCEUS_PERF_PROBES for now (PERF-33) */
+void vk_release_result(u64 sub, int kind);
 void vk_release_incr(u32 id);
 /* a samples-passed report: len bytes at gva (4, or 16 with ticks after the count), the count of query.c's counter's
    segments [first, end), once the GPU has done the submit being recorded */

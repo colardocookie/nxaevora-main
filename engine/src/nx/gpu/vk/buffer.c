@@ -393,6 +393,7 @@ void vk_buf_writable_commit(void) {
     for (GfxOut* o = g_prep; o; o = o->next) {
         out_pages(o, 1);
         if (g_perf_compare == 2) o->in_out = 1; /* gfx_gpu_src's walks through the index */
+        if (g_perf_probes) vk_release_result(o->frame, PCY_OUT); /* the release thread lands it (PERF-33) */
     }
     if (g_out_tail)
         g_out_tail->next = g_prep;
@@ -756,7 +757,10 @@ void vk_buf_frame_done(u64 frame) {
             cap_step(&t, ns, PCL_OTHER);
             perf_caps_landed(&g_perf_caps, g_perf_release_thread, ns, walk);
         }
-        if (g_perf_probes) perf_mem_free(&g_perf_mem, g_perf_release_thread, out_block(o->npages, o->size));
+        if (g_perf_probes) {
+            perf_mem_free(&g_perf_mem, g_perf_release_thread, out_block(o->npages, o->size));
+            perf_sub_landed(&g_perf, o->frame, plat_ns()); /* PERF-33: a result of that submission */
+        }
         free(o);
     }
     g_out_landing--;

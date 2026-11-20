@@ -1367,6 +1367,7 @@ static void image_land(size_t index) {
     GfxImageOut* o = &g_img_out[index];
     vmaInvalidateAllocation(g_vk.vma, o->back_mem, o->back_off, o->back_size);
     vk_surf_flush_land(o->surf, o->back, o->original, o->wgen);
+    if (g_perf_probes) perf_sub_landed(&g_perf, o->sub, plat_ns()); /* PERF-33 */
     image_remove(index);
 }
 /* the entry whose bytes from before the draw are original (each its own allocation): waiting for the GPU can land
@@ -1454,6 +1455,7 @@ void vk_gfx_image_put_aside(void) {
         }
         vk_surf_flush_record(o->surf, buf, off);
         o->sub = vk_submit_number();
+        if (g_perf_probes) vk_release_result(o->sub, PCY_IMAGE); /* the release thread lands it (PERF-33) */
         o->back = p;
         o->back_mem = mem;
         o->back_off = off;

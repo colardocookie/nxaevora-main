@@ -22,6 +22,7 @@ PerfCaps g_perf_caps;
 PerfP29 g_perf_p29;
 PerfMem g_perf_mem;
 PerfWaits g_perf_waits;
+PerfHandoff g_perf_handoff;
 _Thread_local int g_perf_release_thread;
 int g_perf_bind;
 uint64_t g_perf_exact;
@@ -96,6 +97,8 @@ void perf_tail_queued(PerfTimes* p, uint64_t seq, uint64_t gate, uint64_t submit
     __atomic_store_n(&t->gate, gate, __ATOMIC_RELAXED);
     __atomic_store_n(&t->seq, seq, __ATOMIC_RELAXED);
     __atomic_store_n(&t->t0, now, __ATOMIC_RELAXED);
+    __atomic_store_n(&t->first, p->tail_mark ? p->tail_mark + 1 : 0, __ATOMIC_RELAXED); /* PERF-33 */
+    __atomic_store_n(&t->last, gate > submitted ? gate : submitted, __ATOMIC_RELAXED);
     uint64_t* times[] = {&t->t_submit, &t->t_done, &t->t_incr, &t->t_free, &t->t_wake};
     for (unsigned i = 0; i < sizeof times / sizeof times[0]; i++) __atomic_store_n(times[i], 0, __ATOMIC_RELAXED);
     __atomic_store_n(&t->closes, 0, __ATOMIC_RELAXED);
@@ -147,11 +150,68 @@ void perf_tail_done(PerfTimes* p, uint64_t value, uint64_t now) {
         if (LOAD(t->armed) && gate && gate <= value && stamp(&t->t_done, now)) rel_window(p, LOAD(t->t0), now);
     }
 }
+/* PERF-33: the frame of tail t at its increment, when every landing of its submissions is in (they come first) */
+static void handoff_frame(PerfTimes* p, PerfHandoff* h, const PerfTail* t, uint64_t now) {
+    const uint64_t first = LOAD(t->first), last = LOAD(t->last), t0 = LOAD(t->t0);
+    if (!first || last < first || last - first >= PERF_SUBS) return;
+    uint64_t subs = 0, carry = 0, newest = 0, landed = 0;
+    for (uint64_t v = first; v <= last; v++) {
+        const PerfSub* s = &p->sub[v % PERF_SUBS];
+        if (LOAD(s->v) != v) {
+            __atomic_fetch_add(&h->lost, 1, __ATOMIC_RELAXED);
+            continue;
+        }
+        subs++;
+        const int c = LOAD(s->carry_v) == v ? LOAD(s->carry) : 0;
+        if (!c) continue;
+        carry++, newest = v;
+        for (int k = 0; k < PCY_KINDS; k++)
+            if (c & 1 << k) __atomic_fetch_add(&h->kinds[k], 1, __ATOMIC_RELAXED);
+        if (LOAD(s->landed) > landed) landed = LOAD(s->landed);
+    }
+    const uint64_t pos = !newest ? PH_POS : last - newest < PH_POS - 1 ? last - newest : PH_POS - 1;
+    const uint64_t last_seen = LOAD(p->sub[last % PERF_SUBS].seen);
+    const uint64_t carry_seen = newest ? LOAD(p->sub[newest % PERF_SUBS].seen) : 0;
+    __atomic_fetch_add(&h->frames, 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&h->subs, subs, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&h->carry, carry, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&h->pos[pos], 1, __ATOMIC_RELAXED);
+    if (landed && landed < t0) __atomic_fetch_add(&h->land_before, 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&h->to_land, landed > t0 ? landed - t0 : 0, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&h->to_carry_gpu, carry_seen > t0 ? carry_seen - t0 : 0, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&h->to_last_gpu, last_seen > t0 ? last_seen - t0 : 0, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&h->to_incr, now > t0 ? now - t0 : 0, __ATOMIC_RELAXED);
+    const uint64_t cl = LOAD(h->compute_last);
+    if (cl > t0) {
+        __atomic_fetch_add(&h->compute_after, 1, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&h->compute_ns, cl - t0, __ATOMIC_RELAXED);
+    }
+}
 void perf_tail_performed(PerfTimes* p, uint64_t seq, uint64_t now) {
     for (unsigned i = 0; i < PERF_TAILS; i++) {
         PerfTail* t = &p->tail[i];
-        if (LOAD(t->armed) && LOAD(t->seq) == seq) stamp(&t->t_incr, now);
+        if (LOAD(t->armed) && LOAD(t->seq) == seq && stamp(&t->t_incr, now) && g_perf_probes)
+            handoff_frame(p, &g_perf_handoff, t, now);
     }
+}
+void perf_sub_carry(PerfTimes* p, uint64_t v, int kind) { /* the registrations are under vk_lock */
+    PerfSub* s = &p->sub[v % PERF_SUBS];
+    if (LOAD(s->carry_v) != v) {
+        __atomic_store_n(&s->carry, kind, __ATOMIC_RELAXED);
+        __atomic_store_n(&s->carry_v, v, __ATOMIC_RELEASE);
+    } else
+        __atomic_fetch_or(&s->carry, kind, __ATOMIC_RELAXED);
+}
+void perf_sub_landed(PerfTimes* p, uint64_t v, uint64_t now) {
+    PerfSub* s = &p->sub[v % PERF_SUBS];
+    if (LOAD(s->carry_v) != v) __atomic_fetch_add(&g_perf_handoff.unregistered, 1, __ATOMIC_RELAXED);
+    if (LOAD(s->v) == v) __atomic_store_n(&s->landed, now, __ATOMIC_RELEASE); /* under vk_lock, so in order */
+}
+void perf_handoff_compute(PerfHandoff* h, uint64_t now) { __atomic_store_n(&h->compute_last, now, __ATOMIC_RELEASE); }
+void perf_handoff_time(PerfHandoff* h, int part, uint64_t ns, uint64_t ops) {
+    __atomic_fetch_add(&h->n[part], 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&h->ns[part], ns, __ATOMIC_RELAXED);
+    if (ops) __atomic_fetch_add(&h->ops, ops, __ATOMIC_RELAXED);
 }
 void perf_tail_freed(PerfTimes* p, uint64_t now) {
     for (unsigned i = 0; i < PERF_TAILS; i++) {
@@ -180,6 +240,7 @@ void perf_sub_queued(PerfTimes* p, uint64_t v, int site, uint64_t now) {
     __atomic_store_n(&s->handed, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&s->seen, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&s->queued, now, __ATOMIC_RELAXED);
+    __atomic_store_n(&s->landed, 0, __ATOMIC_RELAXED); /* PERF-33 (its carry is by number: registered before this) */
     __atomic_store_n(&s->v, v, __ATOMIC_RELEASE);
     __atomic_fetch_add(&p->sub_site[site][0], 1, __ATOMIC_RELAXED);
     __atomic_store_n(&p->sub_last, v, __ATOMIC_RELEASE);
@@ -1182,6 +1243,38 @@ typedef struct {
 static int site_cmp(const void* a, const void* b) { /* most ms first, then by key, so the order is fixed */
     const WaitSite *x = a, *y = b;
     return x->ns != y->ns ? (x->ns < y->ns ? 1 : -1) : (x->key > y->key) - (x->key < y->key);
+}
+size_t perf_handoff_line(PerfHandoff* h, uint32_t frames, char* out, size_t size) {
+    static const char* const part[PH_PARTS] = {"submit", "submit_lock", "submit_add", "submit_scan", "fence",
+                                                "present"};
+    if (!size) return 0;
+    const uint64_t n = take64(&h->frames);
+    const double fn = n ? n : 1, f = frames ? frames : 1;
+    size_t at = putf(out, size, 0,
+                     "perf-handoff: frames=%u (a frame's tail at its increment: submissions, those a guest result "
+                     "queued for the release thread in, by kind out/image/compute/payload/samples, where the last of "
+                     "those sits (the last, 1, 2, 3, "
+                     "4+ before it, none: share of frames), ms from frame_end to its last landing, to the GPU's end of "
+                     "it and of the last submission, and to the increment; frames with a compute landing after "
+                     "frame_end and its ms; unregistered: landings from a submission never registered; then a "
+                     "frame's handler calls and ms, ops scanned) tails=%llu",
+                     frames, (unsigned long long)n);
+    at = putf(out, size, at, " subs=%.1f carry=%.1f kinds=", take64(&h->subs) / fn, take64(&h->carry) / fn);
+    for (int k = 0; k < PCY_KINDS; k++) at = putf(out, size, at, "%s%.1f", k ? "/" : "", take64(&h->kinds[k]) / fn);
+    at = putf(out, size, at, " pos=");
+    for (unsigned k = 0; k <= PH_POS; k++) at = putf(out, size, at, "%s%.2f", k ? "/" : "", take64(&h->pos[k]) / fn);
+    at = putf(out, size, at, " to_land=%.3f to_carry_gpu=%.3f to_last_gpu=%.3f to_incr=%.3f land_before=%.2f",
+              take64(&h->to_land) / fn / 1e6, take64(&h->to_carry_gpu) / fn / 1e6, take64(&h->to_last_gpu) / fn / 1e6,
+              take64(&h->to_incr) / fn / 1e6, take64(&h->land_before) / fn);
+    const uint64_t ca = take64(&h->compute_after);
+    at = putf(out, size, at, " compute_after=%.2f/%.3f lost=%llu unregistered=%llu", ca / fn,
+              ca ? take64(&h->compute_ns) / (double)ca / 1e6 : 0.0, (unsigned long long)take64(&h->lost),
+              (unsigned long long)take64(&h->unregistered));
+    if (!ca) take64(&h->compute_ns);
+    for (int k = 0; k < PH_PARTS; k++)
+        at = putf(out, size, at, " %s=%.2f/%.3f", part[k], take64(&h->n[k]) / f, take64(&h->ns[k]) / f / 1e6);
+    at = putf(out, size, at, " ops=%.1f", take64(&h->ops) / f);
+    return at < size ? at : size - 1;
 }
 size_t perf_waits_line(PerfWaits* w, uint32_t frames, char* out, size_t size) {
     static const char* const who[PWHO_N] = {"gpu", "release", "recorder", "guest", "scanner", "other"};

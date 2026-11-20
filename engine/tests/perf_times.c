@@ -142,6 +142,47 @@ static void test_tail(void) {
     CHECK(strstr(line, " tail_incr=0.000/0.000/3 ")); /* three tails closed, their times under a microsecond */
 }
 /* a tail closed in the line: its mean over the tails, not over the frames, and how many */
+/* PERF-33: a frame's submissions after the last tail's, those registered with a result for the release thread and
+   their kinds, where the newest of them sits, the times from the increment's queueing, a compute landing after it,
+   a landing never registered, once a tail, nothing with the probes off, and the handlers' times */
+static void test_handoff(void) {
+    static PerfTimes p;
+    char line[PERF_COPIES_LINE];
+    memset(&p, 0, sizeof p);
+    memset(&g_perf_handoff, 0, sizeof g_perf_handoff);
+    g_perf_probes = 1;
+    perf_tail_queued(&p, 1, 310, 310, 310, 1000); /* the first tail: no frame before it to start from */
+    perf_tail_performed(&p, 1, 2000);
+    perf_sub_carry(&p, 312 - PERF_SUBS, PCY_PAYLOAD); /* an old submission's, in 312's slot: not 312's */
+    perf_sub_carry(&p, 311, PCY_OUT); /* registered while recorded, before queued */
+    perf_sub_carry(&p, 313, PCY_IMAGE);
+    perf_sub_carry(&p, 313, PCY_SAMPLES);
+    for (uint64_t v = 311; v <= 315; v++) perf_sub_queued(&p, v, 0, 3000000 + v);
+    perf_sub_seen(&p, 313, 5000000);
+    perf_sub_seen(&p, 315, 7000000);
+    perf_sub_landed(&p, 311, 5100000);
+    perf_sub_landed(&p, 313, 5200000);
+    perf_sub_landed(&p, 314, 5300000); /* never registered: counted, and not a carrier */
+    perf_handoff_compute(&g_perf_handoff, 6000000);
+    perf_tail_queued(&p, 2, 315, 315, 312, 4000000);
+    perf_tail_performed(&p, 2, 8000000);
+    perf_tail_performed(&p, 2, 9000000); /* once */
+    g_perf_probes = 0;
+    perf_tail_queued(&p, 3, 316, 316, 316, 10000000);
+    perf_tail_performed(&p, 3, 11000000); /* off: not summed */
+    perf_handoff_time(&g_perf_handoff, PH_SUBMIT, 380000, 0);
+    perf_handoff_time(&g_perf_handoff, PH_SUBMIT_SCAN, 250000, 33284);
+    perf_handoff_line(&g_perf_handoff, 1, line, sizeof line);
+    CHECK(strstr(line, "perf-handoff: frames=1 (") &&
+          strstr(line, ") tails=1 subs=5.0 carry=2.0 kinds=1.0/1.0/0.0/0.0/1.0 "));
+    CHECK(strstr(line, " pos=0.00/0.00/1.00/0.00/0.00/0.00 "));
+    CHECK(strstr(line, " to_land=1.200 to_carry_gpu=1.000 to_last_gpu=3.000 to_incr=4.000 land_before=0.00 "));
+    CHECK(strstr(line, " compute_after=1.00/2.000 lost=0 unregistered=1 "));
+    CHECK(strstr(line, " submit=1.00/0.380 submit_lock=0.00/0.000 ") && strstr(line, " submit_scan=1.00/0.250 "));
+    CHECK(strstr(line, " present=0.00/0.000 ops=33284.0"));
+    perf_handoff_line(&g_perf_handoff, 1, line, sizeof line); /* taken */
+    CHECK(strstr(line, " tails=0 subs=0.0 ") && strstr(line, " unregistered=0 ") && strstr(line, " ops=0.0"));
+}
 static void test_tail_line(void) {
     static PerfTimes p;
     char line[2048];
@@ -1217,6 +1258,7 @@ int main(void) {
     test_p29();
     test_mem();
     test_waits();
+    test_handoff();
     test_same();
     test_same_threads();
     CHECK(g_perf_inplace == 0 && g_perf_bind == PBK_OTHER && g_perf_exact == 0); /* unset: today's commands */

@@ -7062,6 +7062,8 @@ static void perf_line(void) {
         LOG("%s\n", line);
         perf_waits_line(&g_perf_waits, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-32 */
         LOG("%s\n", line);
+        perf_handoff_line(&g_perf_handoff, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-33 */
+        LOG("%s\n", line);
     }
     perf_copies_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
     LOG("%s\n", line);
@@ -7183,12 +7185,14 @@ static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget
    serial of that sync, so a newer fence replaces it. Its signal is at the end of the frame job, later than in the
    library: a waiter waits longer, never shorter. A wait only checks what the serial order has reached. *flush is set
    to 1 when a fence token has FLUSH_FOR_CPU. Caller holds objs_lock and lists_lock, after the lists were added. */
+static uint64_t scan_ops; /* PERF-33: the ops queue_scan_list walked, under lists_lock */
 static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const NvnOpList* list, uint64_t list_handle,
                             uint32_t depth, int* flush) {
     size_t pos = 0;
     NvnOpHeader header;
     const void* payload;
     while (nvn_oplist_next(list, &pos, &header, &payload)) {
+        if (g_perf_probes) scan_ops++;
         if (header.code == NVN_OP_FENCE_SYNC) {
             const NvnOpFenceSync* op = payload;
             NvnObj* so = nvn_objtab_valid(&objs, op->sync, op->generation) ? nvn_objtab_find(&objs, op->sync) : NULL;
@@ -7251,15 +7255,18 @@ static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const
    frame (decision 8). The game alternates two arrays and reuses them, so the copy is not optional. A fence op with
    FLUSH_FOR_CPU posts the frame after the scan. */
 static const NvnOpList* overlap_find(void* ctx, uint64_t handle);
-static void h_queue_submit_commands(CPU* c, u64 entry) {
+static void queue_submit_commands(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueueSubmitCommands";
+    const uint64_t t0 = g_perf_probes ? plat_ns() : 0; /* PERF-33: the lock's wait, the add and the scan apart */
     FrameJob* job = NULL;
     /* SNX_ARCEUS_PERF_SUBMIT_PROBE: the call's time and the flushes posted before it */
     const uint64_t probe_ns = g_submit_probe ? plat_ns() : 0;
     const uint64_t probe_flushes = g_submit_probe ? submit_probe_flushes() : 0;
     int probe = 0;
     objs_lock_take();
+    const uint64_t t1 = t0 ? plat_ns() : 0;
+    if (t0) perf_handoff_time(&g_perf_handoff, PH_SUBMIT_LOCK, t1 - t0, 0);
     QueueRec* q = queue_rec(c->x[0], name);
     int32_t count = (int32_t)c->x[1];
     if (!q || count <= 0) {
@@ -7285,7 +7292,10 @@ static void h_queue_submit_commands(CPU* c, u64 entry) {
     uint32_t skipped = 0;
     int flush = 0;
     pm_lock(&lists_lock);
+    const uint64_t t2 = t0 ? plat_ns() : 0;
     int result = nvn_frame_add_lists(&q->pending, &lists, handles, handle_count, &skipped);
+    const uint64_t t3 = t0 ? plat_ns() : 0;
+    if (t0) perf_handoff_time(&g_perf_handoff, PH_SUBMIT_ADD, t3 - t2, 0);
     if (result == NVN_FRAME_MEMORY) {
         free(handles);
         fatal("nvn-native: out of memory for the pending frame of a queue\n");
@@ -7297,10 +7307,12 @@ static void h_queue_submit_commands(CPU* c, u64 entry) {
         if (skipped)
             LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx skipped %u handles that are not live lists\n",
                       name, (unsigned long long)c->x[0], skipped);
+        const uint64_t ops0 = scan_ops;
         for (uint32_t i = 0; i < handle_count; i++) {
             const NvnOpList* list = nvn_list_find(&lists, handles[i]);
             if (list) queue_scan_list(c->x[0], q, name, list, handles[i], 0, &flush);
         }
+        if (t0) perf_handoff_time(&g_perf_handoff, PH_SUBMIT_SCAN, plat_ns() - t3, scan_ops - ops0);
         frame_submitted_lists += handle_count - skipped;
         frame_skipped_lists += skipped;
         probe = g_submit_probe;
@@ -7319,7 +7331,7 @@ static void h_queue_submit_commands(CPU* c, u64 entry) {
 
 /* nvnQueueFenceSync(queue, sync, condition, flags): a token in the pending frame, or the syncpoint value of the
    queue when it has no pending list (decisions 8 and 10). Bit 0 also posts the pending frame. */
-static void h_queue_fence_sync(CPU* c, u64 entry) {
+static void queue_fence_sync(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueueFenceSync";
     const uint32_t flags = (uint32_t)c->x[3];
@@ -7487,7 +7499,7 @@ static const NvnOpList* overlap_find(void* ctx, uint64_t handle) {
     (void)ctx;
     return nvn_list_find(&lists, handle);
 }
-static void h_queue_present_texture(CPU* c, u64 entry) {
+static void queue_present_texture(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueuePresentTexture";
     const u64 queue_addr = c->x[0], window_addr = c->x[1];
@@ -7527,6 +7539,17 @@ static void h_queue_present_texture(CPU* c, u64 entry) {
     pm_unlock(&objs_lock);
     if (check >= 0) overlap_check_post_hash(check); /* on the game's thread, outside objs_lock */
 }
+
+/* SNX_ARCEUS_PERF_PROBES (PERF-33): the three handlers of the frame hand-off, each timed whole */
+#define QUEUE_TIMED(handler, body, part)                                                                               \
+    static void handler(CPU* c, u64 entry) {                                                                           \
+        const uint64_t t0 = g_perf_probes ? plat_ns() : 0;                                                             \
+        body(c, entry);                                                                                                \
+        if (t0) perf_handoff_time(&g_perf_handoff, part, plat_ns() - t0, 0);                                           \
+    }
+QUEUE_TIMED(h_queue_submit_commands, queue_submit_commands, PH_SUBMIT)
+QUEUE_TIMED(h_queue_fence_sync, queue_fence_sync, PH_FENCE)
+QUEUE_TIMED(h_queue_present_texture, queue_present_texture, PH_PRESENT)
 
 /* The host handlers by NVN function name. Later steps add their entries here (G2 to G5 of nvn-design.md, 2-6). */
 typedef struct {
