@@ -974,7 +974,8 @@ int snx_main(int argc, char** argv) {
         }
         g_nvn_unref_marks = (g_perf_small & PSM_UNREF) && g_nvn_oplist_marks;
         if (g_perf_small & PSM_WAKE)
-            LOG("perf-small: EXPERIMENT bit 1, the release thread is woken only as it sleeps\n");
+            LOG("perf-small: EXPERIMENT bit 1, queueing a release wakes the release thread only when it moved "
+                "g_rheld\n");
         if (g_perf_small & PSM_NOZERO)
             LOG("perf-small: EXPERIMENT bit 2, a result's block is zeroed only where nothing writes it first\n");
         if (g_perf_small & PSM_UNREF)
