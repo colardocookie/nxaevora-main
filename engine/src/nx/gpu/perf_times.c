@@ -1158,6 +1158,7 @@ int perf_mem_thread(PerfMem* m, int who, uintptr_t token, uint64_t kernel_ns, ui
     __atomic_store_n(&m->user[who], user_ns, __ATOMIC_RELAXED);
     return 1;
 }
+_Static_assert(PW_N <= 16 && PWHO_N <= 16, "a wait's kind and thread take 4 bits each of its key");
 static _Thread_local int t_perf_who = PWHO_OTHER;
 void perf_who_set(int who) { t_perf_who = who; }
 void perf_waits_note(PerfWaits* w, int who, int kind, const void* at, uint64_t ns) {
@@ -1184,8 +1185,8 @@ static int site_cmp(const void* a, const void* b) { /* most ms first, then by ke
 }
 size_t perf_waits_line(PerfWaits* w, uint32_t frames, char* out, size_t size) {
     static const char* const who[PWHO_N] = {"gpu", "release", "recorder", "guest", "scanner", "other"};
-    static const char* const kind[PW_N] = {"lock", "cond", "wake", "yield", "sleep",
-                                           "vkwait", "scan", "submit", "endcb"};
+    static const char* const kind[PW_N] = {"lock",   "cond", "wake",  "yield",  "sleep",   "vkwait", "scan",
+                                           "submit", "endcb", "hooks", "copy", "written", "query"};
     static WaitSite site[PERF_WAIT_SLOTS]; /* the GPU thread's, which writes the line */
     uint64_t tn[PWHO_N][PW_N] = {{0}}, tns[PWHO_N][PW_N] = {{0}};
     uint32_t nsite = 0;
@@ -1201,7 +1202,9 @@ size_t perf_waits_line(PerfWaits* w, uint32_t frames, char* out, size_t size) {
     size_t at = putf(out, size, 0,
                      "perf-waits: frames=%u (a frame by thread.kind, calls/ms: lock a contended take, cond a condition "
                      "wait, wake a signal or broadcast call, vkwait the graphics timeline, scan the write watch's, "
-                     "submit and endcb the recorder's vkQueueSubmit2 and vkEndCommandBuffer; then the 12 callers with "
+                     "submit and endcb the recorder's vkQueueSubmit2 and vkEndCommandBuffer, hooks, copy and written "
+                     "a payload release's write in its three steps, query a samples report's sum; then the 12 callers "
+                     "with "
                      "most ms, at their offset from pm_wait_note)",
                      frames);
     for (int a = 0; a < PWHO_N; a++)

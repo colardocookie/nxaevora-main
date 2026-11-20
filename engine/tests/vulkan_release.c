@@ -142,13 +142,27 @@ void syncpt_events(void) {
     events_due = 0;
     events_signaled++;
 }
-int gmem_write(u64 address, const void* data, u64 size) {
+/* gmem_write's three steps, as gpu.c makes it of them: perform calls them one by one with the probes on (PERF-32) */
+static unsigned hook_calls, written_calls;
+void gmem_before_write(u64 address, u64 size) {
     assert(lock_depth && vk_result_landing());
+    hook_calls++;
     vk_release_need(address, size); /* the real memory layer reenters here */
+}
+void gmem_write_raw(u64 address, const void* data, u64 size) {
     u64 physical = gmmu_translate(address);
     assert(physical && physical + size <= sizeof memory);
     memcpy(memory + physical, data, size);
     payload_writes++;
+}
+void gpu_mem_written(u64 address, u64 size) {
+    (void)address, (void)size;
+    written_calls++;
+}
+int gmem_write(u64 address, const void* data, u64 size) {
+    gmem_before_write(address, size);
+    gmem_write_raw(address, data, size);
+    gpu_mem_written(address, size);
     return 1;
 }
 u8* gmem_ptr(u64 address, u64 size) {
@@ -438,6 +452,7 @@ static void check_release_walks(void) {
 }
 
 int main(void) {
+    g_perf_probes = getenv("SNX_TEST_PROBES") != NULL; /* the same checks again with perform's split (PERF-32) */
     pending = 1;
     next_compute = 9;
     vk_release_incr(3);
@@ -578,5 +593,15 @@ int main(void) {
     check_landed_record();
     check_release_walks();
     check_tail();
+    assert(hook_calls == payload_writes && written_calls == payload_writes); /* each copy has both, split or not */
+    if (g_perf_probes) { /* each payload write noted its three steps once each, and the samples reports' sums */
+        char line[PERF_COPIES_LINE];
+        perf_waits_line(&g_perf_waits, 1, line, sizeof line);
+        const char *h = strstr(line, " other.hooks="), *c = strstr(line, " other.copy="),
+                   *w = strstr(line, " other.written=");
+        assert(h && c && w && strstr(line, " other.query="));
+        const double nh = atof(h + 13), nc = atof(c + 12), nw = atof(w + 15);
+        assert(nh >= 1 && nh == nc && nc == nw && nc < payload_writes); /* the landings write without the split */
+    }
     return 0;
 }

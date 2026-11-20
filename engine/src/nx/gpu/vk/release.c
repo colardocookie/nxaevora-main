@@ -123,16 +123,35 @@ static void rix_track(Release* r, u64 seq, int delta) {
     }
 }
 
+/* gmem_write's three steps, each timed (PERF-32's split, research 04:3x): the same calls in the same order */
+static void write_timed(u64 gva, const void* src, u64 size) {
+    if (!size) return;
+    const u64 t0 = plat_ns();
+    gmem_before_write(gva, size);
+    const u64 t1 = plat_ns();
+    gmem_write_raw(gva, src, size);
+    const u64 t2 = plat_ns();
+    gpu_mem_written(gva, size);
+    const u64 t3 = plat_ns();
+    perf_wait_note(PW_HOOKS, NULL, t1 - t0);
+    perf_wait_note(PW_COPY, NULL, t2 - t1);
+    perf_wait_note(PW_WRITTEN, NULL, t3 - t2);
+}
 static void perform(Release* r) {
     if (r->samples) { /* the count, as the report's structure size says: one word, or the value and the timestamp */
+        const int timed = g_perf_probes;
+        const u64 q0 = timed ? plat_ns() : 0;
         u64 v = vk_query_value(r->qch, r->qfirst, r->qend);
+        if (timed) perf_wait_note(PW_QUERY, NULL, plat_ns() - q0);
         if (r->len == 4)
             snx_st_le32(r->data, (u32)v);
         else
             snx_st_le64(r->data, v);
     }
     vk_result_begin();
-    if (r->gva)
+    if (r->gva && g_perf_probes)
+        write_timed(r->gva, r->data, r->len);
+    else if (r->gva)
         gmem_write(r->gva, r->data, r->len);
     else
         syncpt_add_quiet(r->id, 1); /* under vk_lock: the events it reaches are signaled as it is let go */

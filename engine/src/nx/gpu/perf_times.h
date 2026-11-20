@@ -582,7 +582,10 @@ size_t perf_mem_line(PerfMem* m, uint32_t frames, uint64_t faults, char* out, si
    thread by caller (host.h's wait hook), and brackets on the graphics timeline's waits, the write watch's scans and
    the recorder's submits and command buffer ends. By thread: PTH_* and the write scanner, the rest as other */
 enum { PWHO_SCANNER = PTH_N, PWHO_OTHER, PWHO_N };
-enum { PW_VKWAIT = 5, PW_SCAN, PW_SUBMIT, PW_ENDCB, PW_N }; /* after host.h's PMW_* (lock, cond, wake, yield, sleep) */
+enum { PW_VKWAIT = 5, PW_SCAN, PW_SUBMIT, PW_ENDCB, PW_N0 }; /* after host.h's PMW_* (lock, cond, wake, yield, sleep) */
+/* a payload release's split (release.c perform): its write's before-write hooks, copy and written notice, and a
+   samples report's sum */
+enum { PW_HOOKS = PW_N0, PW_COPY, PW_WRITTEN, PW_QUERY, PW_N };
 #define PERF_WAIT_SLOTS 512u
 typedef struct {
     uint64_t key[PERF_WAIT_SLOTS]; /* atomic: 0 free, else 1 << 56 | kind << 52 | who << 48 | the caller's address */

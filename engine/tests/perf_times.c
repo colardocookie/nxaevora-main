@@ -745,12 +745,14 @@ static void test_waits(void) {
     for (int i = 0; i < 600 * 3; i++) perf_waits_note(&w, PTH_GPU, PMW_WAKE, (const void*)0x100040, 1000);
     for (int i = 0; i < 600; i++) perf_waits_note(&w, PTH_GPU, PMW_WAKE, (const void*)0x100080, 5000);
     for (int i = 0; i < 600 * 2; i++) perf_waits_note(&w, PTH_RECORDER, PW_SUBMIT, NULL, 50000);
+    perf_waits_note(&w, PTH_RELEASE, PW_QUERY, NULL, 600 * 1000ull); /* the last kind has its name */
     perf_waits_note(&w, PWHO_OTHER, PMW_LOCK, (const void*)0xF0000, 600 * 2000000ull);
     perf_waits_line(&w, 600, line, sizeof line);
     CHECK(strstr(line, "perf-waits: frames=600 (") && strstr(line, " gpu.wake=4.0/0.008 "));
     CHECK(strstr(line, " recorder.submit=2.0/0.100 ") && strstr(line, " other.lock=0.0/2.000 lost=0 sites "));
+    CHECK(strstr(line, " release.query=0.0/0.001 "));
     CHECK(strstr(line, " sites other.lock@-0x10000=0.0/2.000 recorder.submit@-0x100000=2.0/0.100 "
-                       "gpu.wake@+0x80=1.0/0.005 gpu.wake@+0x40=3.0/0.003"));
+                       "gpu.wake@+0x80=1.0/0.005 gpu.wake@+0x40=3.0/0.003 release.query@-0x100000=0.0/0.001"));
     perf_waits_line(&w, 600, line, sizeof line); /* taken: nothing again */
     CHECK(strstr(line, ") lost=0 sites") && !strstr(line, "@"));
     memset(&w, 0, sizeof w); /* every slot a different caller, then one more */

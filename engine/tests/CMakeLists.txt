@@ -1958,6 +1958,8 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vulkan-release 11)
     target_link_libraries(snx-test-vulkan-release PRIVATE scarletnx-common) # release.c's snx_os_error
     add_test(NAME vulkan_release COMMAND snx-test-vulkan-release)
+    add_test(NAME vulkan_release_probes COMMAND snx-test-vulkan-release) # perform's split (PERF-32)
+    set_tests_properties(vulkan_release_probes PROPERTIES ENVIRONMENT SNX_TEST_PROBES=1)
     add_executable(snx-test-vulkan-backing vulkan_backing.c)
     snx_test_target(snx-test-vulkan-backing 11)
     add_test(NAME vulkan_backing COMMAND snx-test-vulkan-backing)
