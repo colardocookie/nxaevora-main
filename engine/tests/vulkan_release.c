@@ -453,6 +453,7 @@ static void check_release_walks(void) {
 
 int main(void) {
     g_perf_probes = getenv("SNX_TEST_PROBES") != NULL; /* the same checks again with perform's split (PERF-32) */
+    if (g_perf_probes) g_perf.sub[0].carry_v = PERF_SUBS; /* slot 0 as in a long run: a gate 0 would show (PERF-33) */
     pending = 1;
     next_compute = 9;
     vk_release_incr(3);
@@ -602,6 +603,8 @@ int main(void) {
         assert(h && c && w && strstr(line, " other.query="));
         const double nh = atof(h + 13), nc = atof(c + 12), nw = atof(w + 15);
         assert(nh >= 1 && nh == nc && nc == nw && nc < payload_writes); /* the landings write without the split */
+        perf_handoff_line(&g_perf_handoff, 1, line, sizeof line); /* PERF-33: every gated release was registered */
+        assert(strstr(line, " unregistered=0 "));
     }
     return 0;
 }

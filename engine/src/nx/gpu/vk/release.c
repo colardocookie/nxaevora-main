@@ -149,7 +149,8 @@ static void perform(Release* r) {
             snx_st_le64(r->data, v);
     }
     vk_result_begin();
-    if (r->gva && g_perf_probes) perf_sub_landed(&g_perf, r->gate, plat_ns()); /* PERF-33 */
+    /* PERF-33: a release with gate 0 (nothing pending) was never registered, release() registers gated ones only */
+    if (r->gva && r->gate && g_perf_probes) perf_sub_landed(&g_perf, r->gate, plat_ns());
     if (r->gva && g_perf_probes)
         write_timed(r->gva, r->data, r->len);
     else if (r->gva)
