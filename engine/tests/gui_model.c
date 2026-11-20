@@ -366,42 +366,14 @@ int main(void) {
     assert(!gui_drop_path("file:///tmp/%zz", true));
     assert(!gui_drop_path("one\ntwo", true));
     assert(!gui_drop_path("", true));
-    /* what a picker gives: the Android one's documents of the device's storage and its cards, a download by path; no
-       other of its documents has a path */
-    path =
-        gui_document_path("content://com.android.externalstorage.documents/document/primary%3ADownload%2FGame%20X.nro");
-    assert(path && !strcmp(path, "/storage/emulated/0/Download/Game X.nro"));
-    free(path);
-    path = gui_document_path("content://com.android.externalstorage.documents/document/1A2B-3C4D%3Agames%2Fa.nro");
-    assert(path && !strcmp(path, "/storage/1A2B-3C4D/games/a.nro"));
-    free(path);
-    path = gui_document_path("content://com.android.providers.downloads.documents/document/"
-                             "raw%3A%2Fstorage%2Femulated%2F0%2FDownload%2Fnotes.txt");
-    assert(path && !strcmp(path, "/storage/emulated/0/Download/notes.txt"));
-    free(path);
-    assert(!gui_document_path("content://com.android.providers.downloads.documents/document/msf%3A1234"));
-    assert(!gui_document_path("content://com.android.providers.media.documents/document/document%3A12"));
-    assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary%3A%zz"));
-    assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary%3A%00.nro"));
-    assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary"));
-    /* a folder its folder picker gave: a tree of the device's storage, its root too, or a card's; Downloads' has none */
-    path = gui_document_path("content://com.android.externalstorage.documents/tree/primary%3AGames%2FSwitch");
-    assert(path && !strcmp(path, "/storage/emulated/0/Games/Switch"));
-    free(path);
-    path = gui_document_path("content://com.android.externalstorage.documents/tree/primary%3A");
-    assert(path && !strcmp(path, "/storage/emulated/0/"));
-    free(path);
-    path = gui_document_path("content://com.android.externalstorage.documents/tree/1A2B-3C4D%3Agames");
-    assert(path && !strcmp(path, "/storage/1A2B-3C4D/games"));
-    free(path);
-    assert(!gui_document_path("content://com.android.providers.downloads.documents/tree/downloads"));
+    /* what a picker gives: a path, or a file:// URI */
     path = gui_document_path("file:///tmp/a%20b.nro");
     assert(path && !strcmp(path, "/tmp/a b.nro"));
     free(path);
     path = gui_document_path("/tmp/ a.nro ");
     assert(path && !strcmp(path, "/tmp/ a.nro "));
     free(path);
-    /* the dumps the Android games/ list offers, to prepare first: NRO files alone */
+    /* the dumps a games/ list offers, to prepare first: NRO files alone */
     assert(gui_is_dump("a.NRO"));
     assert(!gui_is_dump("b.xci") && !gui_is_dump("c.nsp") && !gui_is_dump("d.dxci") && !gui_is_dump("e.dnsp"));
     assert(!gui_is_dump("e_code.so") && !gui_is_dump("nro") && !gui_is_dump("f.nro.ini"));

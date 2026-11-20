@@ -26,7 +26,7 @@ Avoid builds during timing runs. Formatting isn't checked: `git clang-format` (c
 FS tests use production tree/HLE + synthetic temp data; `--only tree|service` selects a suite.
 
 CI: Linux/Windows builds, ABI syntax, native tool/FS regressions, optional Python diagnostics, the Linux AppImages
-and the Windows zip (each then run as installed), the Android APK, and [edenprobe](EDENPROBE.md)'s probes on lavapipe
+and the Windows zip (each then run as installed), and [edenprobe](EDENPROBE.md)'s probes on lavapipe
 against the cases that passed before (`scripts/edenprobe.py`). `.github/workflows/publish.yml` publishes what
 builds everywhere, each said on Discord (`scripts/publish-builds.py`): a version tag pushed (`v1.0.0`; `v1.0.0-rc1` a
 prerelease) as this repository's release of it, the latest, its notes listing the changes since the version before;
@@ -124,7 +124,7 @@ beside it:
 
 The profiler is not part of the ordinary runtime: `SNX_TRACY` defaults to OFF, so `scarletnx` carries the pinned
 Tracy 0.14.1 client only in a build that asks for it — `cmake --preset tracy -B build/tracy && cmake --build
-build/tracy`, or `-DSNX_TRACY=ON` in a build of your own (Android's app leaves it out, and iOS cannot have it).
+build/tracy`, or `-DSNX_TRACY=ON` in a build of your own.
 The client starts only when profiling is requested: the launcher setting, `--tracy-capture`, `--tracy`, or `F10`.
 Without one, a run does not connect.
 
@@ -174,7 +174,7 @@ Tracy port` (`tracy_port`) on when the setting names one. With the setting off, 
 client; use `--tracy` for a
 GUI-only run, or the launcher's `Settings > Debug > Tracy profiler`, which starts the run with the client up for
 the GUI to attach to. `--tracy-capture` also needs Tracy 0.14.1's `tracy-capture`; a runtime built with
-`-DSNX_TRACY=OFF` (Android, iOS) refuses both flags.
+`-DSNX_TRACY=OFF` refuses both flags.
 A capture that cannot start, or one whose handshake the loading game missed three times, leaves the run going
 without a capture and says why in the log: a setting does not cost the game its launch. A capture gets a port of its
 own, so an earlier capture (or a GUI) on 8086 is not in the way, and the run waits for the capture before it starts
@@ -223,7 +223,7 @@ must have; they are taken when the runtime is profiled (a GUI connected or a cap
 `SNX_VK_GPU_PROFILE=1` asks for them, which also logs what the GPU's time went to every 10 s. The binary is
 not deployed beside every game the way an ordinary build is, so a game it is not run through the profiled driver for
 keeps the runtime it already had: run it through the profiled driver once, and launcher rows work from then.
-`SNX_TRACY=OFF` leaves the client out; iOS has none. The Windows-only `profile=1` sampler is separate.
+`SNX_TRACY=OFF` leaves the client out. The Windows-only `profile=1` sampler is separate.
 
 The guest's own file I/O is in the trace too: a read or a write is a zone with the file's name and the bytes, and
 `io read MB/s` and `io write MB/s` are the rate. The game's assets go through those reads too: they are mapped from the
@@ -252,8 +252,7 @@ machine in a cross build, as swipc is) checks it and writes the opcode enum and 
 build folder, so nothing is set up at run time. Two patterns may overlap only when one is strictly narrower, and
 that one is tried first. A new opcode is a row there (its `O_` name then exists for the translator), and
 `ctest -R 'shaderdec|shader_decode'` checks the spec and decodes every row back to itself.
-`[Debug] shader_corpus=` in the game's INI does the same for every run. Where the game gets no command line
-(Android), its INI's `[Debug] diag=1` keeps each shader's entry in `captures/shaders` beside the game, for the same `snx-shaderc`.
+`[Debug] shader_corpus=` in the game's INI does the same for every run. Its INI's `[Debug] diag=1` keeps each shader's entry in `captures/shaders` beside the game, for the same `snx-shaderc`.
 
 ## SVCs
 

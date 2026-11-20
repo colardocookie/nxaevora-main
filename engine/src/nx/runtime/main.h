@@ -16,8 +16,7 @@ extern const SnxVariants* g_variants;
    program's own path */
 extern int (*snx_menu)(const char* self);
 /* the launcher's loading look (gui/theme.h's gui_run_theme), for the runtime's own loading screen: NULL in a runtime
-   built without the menu, which keeps the YoRHa theme's built in. Android's is one (src/nx/CMakeLists.txt: the
-   launcher is the app's own library there), so its screen is YoRHa's whatever theme the launcher shows */
+   built without the menu, which keeps the YoRHa theme's built in */
 extern void (*snx_menu_run_theme)(const char* folder, SnxRunTheme* out);
 /* Saves what outlives the run (the hints, the renderer's pipeline cache) and reports nvn_trace before a clean exit:
    the main loop's, the unattended limit's, svcExitProcess. The first caller saves; one that comes while it does waits,

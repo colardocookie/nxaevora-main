@@ -15,13 +15,6 @@
 #ifdef SNX_WITH_GUI
 #include "gui/gui.h"
 #include "gui/theme.h"
-#if defined(__APPLE__)
-#include <TargetConditionals.h>
-#if TARGET_OS_IOS
-#include "gui/apple.h"
-#define SNX_MENU_THEN_GAME 1
-#endif
-#endif
 #endif
 #ifdef SNX_WITH_GUI
 /* the game's settings as scarletnx --settings prints them, for the menu built into this program (snx_menu_settings) */
@@ -35,9 +28,6 @@ static char* runtime_settings(void) {
 int snx_switch_main(int argc, char** argv) {
     int result;
     char why[160];
-#ifdef SNX_MENU_THEN_GAME
-    gui_apple_log_start(); /* before anything prints: a phone has no console */
-#endif
     /* a launcher reads our progress through pipes: lines as they end, errors at once */
     setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -53,7 +43,7 @@ int snx_switch_main(int argc, char** argv) {
     snx_menu_settings = runtime_settings;
 #endif
     if (argc > 1 && !strcmp(argv[1], "--mcp")) return snx_mcp(argc, argv);
-#if defined(SNX_WITH_GUI) && !defined(__ANDROID__) && !defined(SNX_MENU_THEN_GAME)
+#if defined(SNX_WITH_GUI)
     if (argc > 1 && !strncmp(argv[1], "--migrate", 9) && (!argv[1][9] || argv[1][9] == '=')) {
         if (argc > 2) {
             fprintf(stderr, "scarletnx: %s takes nothing after it: %s\n", argv[1], argv[2]);
@@ -64,16 +54,5 @@ int snx_switch_main(int argc, char** argv) {
 #endif
     result = snx_driver(argc, argv);
     if (result >= 0) return result;
-#ifdef SNX_MENU_THEN_GAME
-    /* iOS has one process: the menu runs first, then the game it picked, here */
-    if (argc <= 1) {
-        char** played;
-        int played_argc = 0;
-        result = snx_gui_main(argv[0]);
-        played = gui_apple_played(&played_argc);
-        if (!played) return result;
-        return snx_main(played_argc, played);
-    }
-#endif
     return snx_main(argc, argv);
 }

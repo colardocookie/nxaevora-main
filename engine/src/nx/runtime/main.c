@@ -46,32 +46,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef __APPLE__
-#include <TargetConditionals.h>
-#endif
-/* iOS loads no code that was not shipped with the app: the game's code is a pack of objects (recompile --target ios)
-   that the JIT loader places in memory a debugger made executable (load_pack) */
-#if defined(__APPLE__) && TARGET_OS_IOS
-#define MODULE_PACK 1
-#include "common/cpu/recompiler/llvm/code_loader.h"
-#include "common/cpu/recompiler/llvm/objects_pack.h"
-/* src/gui/apple.m's (gui/apple.h pulls in SDL's headers, which this part of the runtime is not built with) */
-void gui_apple_stats(char* out, size_t size);
-#include "common/cpu/recompiler/llvm/rtlib_object.h"
-#endif
-
 #if defined(_WIN32)
 #define MODULE_SUFFIX "_code.dll"
-#elif defined(MODULE_PACK)
-#define MODULE_SUFFIX "_code.snxobj"
 #else
 #define MODULE_SUFFIX "_code.so"
 #endif
 /* The old user data folder, named without the account's path in the log */
 #ifdef _WIN32
 #define SNX_OLD_USER_FOLDER_TEXT "the old user data folder (%APPDATA%\\scarletnx)"
-#elif defined(__APPLE__)
-#define SNX_OLD_USER_FOLDER_TEXT "the old user data folder (~/Library/Application Support/scarletnx)"
 #else
 #define SNX_OLD_USER_FOLDER_TEXT "the old user data folder ($XDG_DATA_HOME/scarletnx or ~/.local/share/scarletnx)"
 #endif
@@ -159,7 +141,6 @@ static void name_game(const char* from) {
     drop_suffix(g_exename, ".AppImage");
     drop_suffix(g_exename, "_code.so");
     drop_suffix(g_exename, "_code.dll");
-    drop_suffix(g_exename, "_code.snxobj");
     path[cut] = 0;
 #if defined(_WIN32)
     snprintf(g_exedir, sizeof g_exedir, "%s", path);
@@ -179,57 +160,6 @@ static const char* program_path(const char* argv0) {
 
 /* ---- the game's code ---- */
 
-#ifdef MODULE_PACK
-/* The pack's objects loaded into an arena of the JIT loader's, after the runtime library this app embeds (the pack has
-   none: its host had none for this machine). Each of the arena's regions is what the two loads take of it
-   (snx_code_need), not a share of twice the file: a pack whose code passes five eighths of that fits, and an arena
-   whose every page is prepared (ios_arena's debugger) costs the memory the code uses. The module's descriptor is its
-   one export. A debugger the arena needs is asked for by the loader, which says what to enable when there is none */
-static const SnxModule* load_pack(const char* path) {
-    SnxLinkInput rtlib, *inputs;
-    SnxCodeLoader* loader;
-    const char* names[1];
-    SnxU64 address = 0;
-    ModuleFn get;
-    size_t size = 0, count = 0, need[3], rtlib_need[3], k;
-    unsigned char* data = (unsigned char*)snx_read_file(path, &size);
-    char error[1024];
-    if (!data) fatal("%s could not be read", path);
-    inputs = snx_objects_unpack(data, size, "game code", &count);
-    if (!inputs) fatal("%s is not a pack of recompiled code: recompile the game with --target ios", path);
-    memset(&rtlib, 0, sizeof(rtlib));
-    rtlib.data = snx_rtlib_object;
-    rtlib.size = snx_rtlib_object_size;
-    rtlib.name = "rtlib";
-    if (snx_code_need(&rtlib, 1, rtlib_need, error, sizeof(error)) ||
-        snx_code_need(inputs, count, need, error, sizeof(error)))
-        fatal("The game's code cannot be loaded: %s", error);
-    for (k = 0; k < 3; ++k) need[k] += rtlib_need[k];
-    LOG("game: a code arena of %.1f MiB of code, %.1f MiB of read-only data and %.1f MiB of data for its %.1f MB of "
-        "objects\n",
-        (double)need[0] / 1048576.0, (double)need[1] / 1048576.0, (double)need[2] / 1048576.0, (double)size / 1e6);
-    loader = snx_code_loader_new_regions(need, error, sizeof(error));
-    if (!loader) fatal("The game's code cannot be loaded: %s", error);
-    names[0] = "snx_module";
-    if (snx_code_load(loader, &rtlib, 1, NULL, 0, NULL, error, sizeof(error)) ||
-        snx_code_load(loader, inputs, count, names, 1, &address, error, sizeof(error)))
-        fatal("The game's code cannot be loaded: %s", error);
-    free(inputs);
-    free(data); /* the loaded code is a copy */
-    {
-        SnxU64 variants = 0;
-        if (snx_code_lookup(loader, "snx_variants", &variants)) { /* a global of the pack, in the loader's table */
-            VariantsFn get_variants = (VariantsFn)(uintptr_t)variants;
-            g_variants = get_variants();
-            if (!g_variants || g_variants->version != SNX_VARIANTS_VERSION)
-                fatal("%s has a runtime variant table of another version", path);
-        }
-    }
-    get = (ModuleFn)(uintptr_t)address;
-    return get();
-}
-#endif
-
 static const SnxModule* load_module(const char* path) {
     void *lib, *sym;
     ModuleFn get;
@@ -242,11 +172,6 @@ static const SnxModule* load_module(const char* path) {
         fatal("Cannot find the recompiled code: %s. A copy of the runtime runs the game it is named after, with "
               "that code beside it, or --game=PATH names the game (--game=recompiled/Game)",
               path);
-#ifdef MODULE_PACK
-    m = load_pack(path);
-    if (!m) fatal("%s could not be loaded: it describes no game", path);
-    return m;
-#endif
     lib = plat_dl_open(path);
     if (!lib) fatal("%s could not be loaded: %s", path, plat_dl_error());
     if ((sym = plat_dl_sym(lib, "snx_module")) != NULL) {
@@ -592,19 +517,12 @@ static void frontend_loop(void) {
         if (tick % 900 == 0) write_threads(tick / VI_REFRESH_HZ);
         now = plat_ns();
         shown = __atomic_load_n(&g_frames, __ATOMIC_RELAXED);
-        /* the pace the game is shown at, in the log every five seconds: a phone has no overlay to read it from */
+        /* the pace the game is shown at, in the log every five seconds */
         if (now - rate_at >= 5000000000u) {
             LOG("perf: %.1f frames a second over %.1f s (%d shown in all)\n",
                 (double)(shown - rate_frames) * 1e9 / (double)(now - rate_at), (double)(now - rate_at) / 1e9, shown);
             rate_at = now;
             rate_frames = shown;
-#ifdef MODULE_PACK
-            {
-                char line[320];
-                gui_apple_stats(line, sizeof line);
-                LOG("%s\n", line);
-            }
-#endif
         }
         /* a paused game shows nothing new, and isn't stalled; nor is one that waits for the keyboard's box */
         if (shown != frames || paused || overlay_keyboard_shown()) {
@@ -740,13 +658,8 @@ static void prepare_wait(const char* title) {
             }
             free(dir);
             themed = 1;
-#if defined(__ANDROID__) /* no Esc there: back opens the menu, whose Exit quits */
-            prepare_draw(look, title, st, n, &p,
-                         "Any button or tap: start now. The rest is prepared while you play. Back: menu.");
-#else
             prepare_draw(look, title, st, n, &p,
                          "Any key, button or tap: start now. The rest is prepared while you play. Esc: quit.");
-#endif
             shown = 1;
         }
         plat_sleep_ns(16000000);
@@ -825,10 +738,9 @@ int snx_main(int argc, char** argv) {
         status = open_menu(argv[0]);
         goto done;
     }
-    /* the game's errors in its log, where a fatal's "the line before" is: a game's process on Android has no stderr */
+    /* the game's errors in its log, where a fatal's "the line before" is */
     snx_error_sink(log_error_line);
-    /* the guest's address space before the game's code, which would take a share of a small one: a pack's arena with its
-       write alias leaves an iOS app's 13 GiB or so no run of the 5 GiB the guest needs */
+    /* the guest's address space before the game's code, which would take a share of a small one */
     mem_reserve();
     /* the code before anything is written: a mistyped --game leaves no .ini and no log behind */
     mod = load_module(module);
@@ -910,9 +822,6 @@ int snx_main(int argc, char** argv) {
 
     fs_init(); /* the npdm is read through it, and mem_init's layout comes before */
     npdm_layout(); /* the address space type's layout, before mem_init sizes its blocks in it */
-#ifdef MODULE_PACK
-    g_settings.log_level = 2; /* a phone's log is the only way to see what a run did: everything, until it is steadier */
-#endif
     mem_init();
     if (g_settings.memory_fit) { /* before the game allocates: what the process holds is the runtime's alone */
         SnxU64 available = 0, footprint = snx_footprint();

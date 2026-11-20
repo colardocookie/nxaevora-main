@@ -83,7 +83,7 @@ Windows 10 (10.0.19044), Xeon E5-2640 v3 (8 cores, 16 threads), GeForce RTX 3070
 ```
 
 - Linux: `lscpu` and `vulkaninfo --summary`. Windows: *Settings > System > About*, and the driver from the vendor's
-  panel or `vulkaninfo`. Android: the model and the Android version.
+  panel or `vulkaninfo`.
 - Name a software renderer (lavapipe, llvmpipe) as such. It is not a GPU result.
 - Leave out the machine's name, user name and home folder.
 

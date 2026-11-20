@@ -6,9 +6,6 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-#ifdef __APPLE__
-#include <TargetConditionals.h>
-#endif
 
 int main(void) {
     char want[256];
@@ -19,10 +16,6 @@ int main(void) {
     os = "Linux";
 #elif defined(__FreeBSD__)
     os = "FreeBSD";
-#elif defined(__APPLE__) && TARGET_OS_IPHONE
-    os = "iOS";
-#elif defined(__APPLE__)
-    os = "macOS";
 #else
     os = "unknown OS";
 #endif

@@ -49,8 +49,6 @@ static void usage(void) {
          "                         else the user's data folder,\n"
 #ifdef _WIN32
          "                         %APPDATA%\\nxaevora)");
-#elif defined(__APPLE__)
-         "                         ~/Library/Application Support/nxaevora)");
 #else
          "                         ~/.local/share/nxaevora)");
 #endif
@@ -88,22 +86,6 @@ static int same_bytes(const char* a, const char* b) {
     if (y) fclose(y);
     return same;
 }
-/* 1 when the runtime a game runs carries a Vulkan driver its folder has not (snx_vulkan_driver): the deploy puts it
-   there, and a folder that lost it gets it again (docs/APPLE.md) */
-static int driver_missing(const char* run, const char* game) {
-#if defined(__APPLE__) && !defined(SNX_IOS)
-    char* carried = snx_vulkan_driver(run);
-    char* there = carried ? snx_vulkan_driver(game) : NULL;
-    int missing = carried && !there;
-    free(carried);
-    free(there);
-    return missing;
-#else
-    (void)run;
-    (void)game;
-    return 0;
-#endif
-}
 /* A game made by another build of this ABI runs the code it was recompiled into (stamped), with its folder's copy of
    that build's runtime: replaced by this build's when the two differ, so its fixes reach the games made before it. 0,
    or nonzero with a line saying why */
@@ -113,15 +95,14 @@ static int refresh_runtime(const SnxPaths* paths, const char* game) {
     /* a build without the runtime deploys one it builds, not itself: there is nothing here to hold the copy to */
     if (!run) return 0;
     same = same_bytes(run, game);
-    /* the library beside the runtime is deployed with it (snx_deploy_runtime): a folder that lost it gets it back */
-    if (!same || driver_missing(run, game)) {
+    /* the library beside the runtime is deployed with it (snx_deploy_runtime) */
+    if (!same) {
         rc = snx_deploy_runtime(run, game);
         if (!rc && !same) printf("%s ran another build's runtime: it runs %s now\n", game, run);
     }
     free(run);
     return rc;
 }
-#ifndef SNX_IOS /* the pack of an app has no stamp: the loader checks its ABI */
 /* whether this build made the game at base (<folder>/<name>, a game's or its update's), with the mods its game plays
    now (mods.h's snx_game_stamp_is) */
 static int stamped(const char* base) {
@@ -131,7 +112,6 @@ static int stamped(const char* base) {
     free(made);
     return same;
 }
-#endif
 /* a game the recompile made, named by its folder (recompiled/<id>) or its program there (recompiled/<id>/<id>, .exe on
    Windows): 1 with its folder and name, owned when asked for. A game an older version laid out beside the others is not
    one */
@@ -323,21 +303,13 @@ made:
 #ifdef _WIN32
     code = snx_format("%s_code.dll", base);
     game = snx_format("%s.exe", base);
-#elif defined(SNX_IOS)
-    /* the app is the runtime: a game is its pack of objects, made on the device (--target ios) */
-    code = snx_format("%s_code.snxobj", base);
-    game = snx_strdup(code);
 #else
     code = snx_format("%s_code.so", base);
     game = snx_strdup(base);
 #endif
     {
         /* Always restage an NRO: a same-named cached game may belong to another input or an older build. */
-#ifdef SNX_IOS
-        if (nro || (flags & SNX_RECOMP) || !snx_is_file(code)) {
-#else
         if (nro || (flags & SNX_RECOMP) || !snx_is_file(game) || !snx_is_file(code) || !stamped(base)) {
-#endif
             command[5] = "-r";
             command[6] = "--outdir";
             command[7] = games;
@@ -347,10 +319,6 @@ made:
                 command[n++] = opt;
             }
             for (j = 0; j < recompiling; ++j) command[n++] = recompile[j];
-#ifdef SNX_IOS
-            command[n++] = "--target";
-            command[n++] = "ios";
-#endif
             command[n++] = "--";
             command[n++] = source;
             if (named) command[n++] = name;
@@ -371,12 +339,6 @@ made:
         rc = 1;
         goto done;
     }
-#if defined(__ANDROID__) || defined(SNX_IOS)
-    /* an app's child process has no window to play in: the app runs the game this names (docs/ANDROID.md) */
-    printf("Ready %s\n", name);
-    rc = 0;
-    goto done;
-#endif
     rc = refresh_runtime(paths, game);
     if (rc) goto done;
     n = 0;
@@ -459,9 +421,6 @@ int snx_driver(int argc, char** argv) {
     unsigned flags = 0;
     int i, n = 0, separator = argc, result = -1, tool_paths = 0, help = 0, parsed, automatic;
     int repo_given = 0, settings = 0, recompiling = 0, taken = 0;
-#ifdef SNX_IOS
-    snx_set_stage_runner(snx_driver); /* no child process there: the stages are this driver again, on this thread */
-#endif
     if (argc <= 1 && snx_setup_again) {
         result = setup_run(argv[0], 1); /* scarletnx --setup */
         goto done;

@@ -108,9 +108,7 @@ void gui_log(const char* format, ...) {
     vsnprintf(text, n > 0 ? (size_t)n + 1 : 1, format, again);
     va_end(again);
     va_end(args);
-#ifndef SNX_IOS /* there stderr is the log's file */
     fprintf(stderr, "scarletnx: %s\n", text);
-#endif
     log_to(SNX_CONSOLE_LOG, text);
     free(text);
 }

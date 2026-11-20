@@ -7,10 +7,6 @@
 #include "nx/loader/module.h"
 #include "nx/loader/module_llvm.h"
 #include "common/cpu/recompiler/llvm/ir.h"
-
-/* the triple of the iOS app's code: Darwin's calling convention and the generic AArch64 CPU, in the object format the
-   JIT loader reads (recompiler/llvm/ir.c's host_triple). The version only names the ABI */
-#define SNX_IOS_TRIPLE "arm64-apple-ios16.0-elf"
 #include "nx/runtime/driver/toolchain.h"
 #include "snx_settings.h"
 #include "common/utilities/build_info.h"
@@ -41,7 +37,6 @@ static void usage(void) {
            "                         unit_instructions\n",
            g_settings.unit_size);
     puts("  --target auto|linux|win64  The host only: modules are built for the machine that builds them\n"
-         "  --target ios           A pack of objects for the iOS app, which loads them into JIT memory (docs/APPLE.md)\n"
          "  --no-build             Stage data/INI only, generate no code");
     puts("  --jit-only             Generate no code: the runtime JIT compiles all of it\n"
          "  --runtime FILE         Deploy this runtime instead of building one\n"
@@ -104,7 +99,7 @@ static int copy_dlls(const char* run, const char* out) {
 int snx_deploy_runtime(const char* run, const char* exe) {
     char* tmp = snx_format("%s.tmp", exe);
     int rc;
-#if defined(_WIN32) || defined(__APPLE__)
+#ifdef _WIN32
     char* folder = snx_dirname(exe); /* what a program loads from its own folder goes beside it before it does */
 #endif
 #ifdef _WIN32
@@ -116,22 +111,10 @@ int snx_deploy_runtime(const char* run, const char* exe) {
         return rc;
     }
 #endif
-#if defined(__APPLE__) && !defined(SNX_IOS)
-    /* MoltenVK, the Vulkan driver the app carries in its Frameworks: a game's copy of the runtime plays outside the
-       bundle, where SDL finds neither the app's Frameworks nor a system loader (docs/APPLE.md). A copy the disk refuses
-       (a game folder on a read-only image) is said, and no reason to refuse the run: the system's loader may serve it */
-    if (folder) snx_deploy_vulkan_driver(run, folder);
-#endif
-#if defined(_WIN32) || defined(__APPLE__)
+#ifdef _WIN32
     free(folder);
 #endif
-#ifdef __ANDROID__
-    /* the shared storage runs nothing (the game runs on the app's own runtime), and before Android 11 it refuses a
-       mode change: there the copy only marks the recompile done */
-    rc = snx_copy_file(run, tmp) || snx_replace(tmp, exe);
-#else
     rc = snx_copy_file(run, tmp) || snx_make_executable(tmp) || snx_replace(tmp, exe);
-#endif
     if (rc) {
         snx_error("cannot deploy the runtime %s to %s", run, exe);
         if (snx_is_file(tmp)) snx_remove_tree(tmp);
@@ -301,7 +284,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     char error[1024], option[64], why[256];
     const char* equal;
     size_t option_size;
-    int i, rc = 1, ios = 0, no_build = 0, keep_c = 0, host_win = 0, positional = 0;
+    int i, rc = 1, no_build = 0, keep_c = 0, host_win = 0, positional = 0;
     memset(&compile, 0, sizeof(compile));
     memset(&gen, 0, sizeof(gen));
     memset(&program, 0, sizeof(program));
@@ -416,10 +399,8 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         compile.target_win = 1;
     else if (!strcmp(target, "linux"))
         compile.target_win = 0;
-    else if (!strcmp(target, "ios"))
-        ios = 1;
     else if (strcmp(target, "auto"))
-        return snx_error("--target %s: not auto, linux, win64 or ios", target);
+        return snx_error("--target %s: not auto, linux or win64", target);
     /* The backends write the module for the machine they run on (build == host == target) */
     if (compile.target_win != host_win)
         return snx_error("--target %s: modules are built for this host only (%s)", target,
@@ -525,15 +506,10 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         rc = 0;
         goto done;
     }
-    if (ios && !program.npdm.is64) {
-        snx_error("--target ios: 32-bit games are not supported yet");
-        goto done;
-    }
-    code = ios ? snx_format("%s_code.snxobj", base) : snx_format("%s_code.%s", base, compile.target_win ? "dll" : "so");
+    code = snx_format("%s_code.%s", base, compile.target_win ? "dll" : "so");
     {
         char *kept = keep_c ? snx_format("%s_build", base) : NULL, *units = NULL;
         llvm.output = code;
-        llvm.triple = ios ? SNX_IOS_TRIPLE : NULL;
         llvm.opt = compile.opt[0];
         snx_ir_slp_vectorizer(g_settings.slp_vectorizer);
         snx_ir_fpsr_flags(g_settings.fpsr_flags);
@@ -571,11 +547,6 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         free(kept);
         free(units);
         if (i) goto done;
-    }
-    if (ios) { /* the iOS app is the runtime: only the code is made here */
-        if (!compile.quiet) printf("Built %s\n", code);
-        rc = 0;
-        goto done;
     }
     if (runtime) run = snx_absolute(runtime);
 #ifdef SNX_WITH_RUNTIME

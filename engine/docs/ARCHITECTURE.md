@@ -36,7 +36,7 @@ the callbacks on `CPU.rt`. NX routes SVC to Horizon: its modules call each SVC's
 
 `scarletnx` is the driver the build has: `src/multicall/main.c` is the only `main`, and runs
 the driver its name says from the library of the driver's own folder (`snx_switch_program`), so LLVM and
-SDL are in one program once. On Linux and macOS the Switch driver is a symlink to it. Windows has no
+SDL are in one program once. On Linux the Switch driver is a symlink to it. Windows has no
 links: the driver's name goes first (`scarletnx.exe scarletnx-switch ...`), and the launcher runs it
 that way (`snx_menu_has_driver`). A game's copy runs its driver too, any game the Switch's (or, in a
 build without it, the one driver there is).
@@ -72,15 +72,15 @@ the game's image read from that image.
   feature set (the Switch's Cortex-A57 by default) decides what is UNDEF.
 - `src/common/cpu/recompiler/codegen.c`: function/CFG discovery over platform-neutral image views.
   `src/nx/loader/codegen_view.c` adapts NX images; `module.c` holds what the backends share (the dispatch entry
-  table, chunk labels, progress lines); chunks batch whole functions up to `SNX_CHUNK_INSTRUCTIONS`, 90000 (20000 on Android).
+  table, chunk labels, progress lines); chunks batch whole functions up to `SNX_CHUNK_INSTRUCTIONS`, 90000.
 - `toolchain.c`: the runtime build for deployment.
 - The code generator, LLVM (`src/common/cpu/recompiler/llvm/`, a required dependency), builds LLVM IR with the
   LLVM-C API: `ir_int.c`, `ir_ldst.c`, `ir_fpu.c` and `ir_vec*.c`, ported from QEMU's `translate-a64.c`, emit each
   op of the generated decoder, `ir_codegen.c` the functions of `codegen.c`, and
   `src/nx/loader/module_llvm.c` the chunks and `SnxModule` of `module.c`. It links the objects itself (`link_elf.c`,
-  `link_coff.c`, `link_macho.c`) with `rtlib.c`, the helpers compiled when the recompiler is built, into a module
-  with no imports, for the host it runs on: x86-64 (ELF or COFF), AArch64 (ELF, or on macOS and iOS a Mach-O dylib
-  with an ad hoc signature, either with a veneer for a branch past 128 MiB) or PowerPC64 (ELF, ELFv1 or ELFv2, with a stub for a branch past 32 MiB: [PowerPC64](./PPC64.md)). `tests/llvm_qemu_differential.c` runs its step functions against
+  `link_coff.c`) with `rtlib.c`, the helpers compiled when the recompiler is built, into a module
+  with no imports, for the host it runs on: x86-64 (ELF or COFF), AArch64 (ELF, with a veneer for a branch past 128 MiB)
+  or PowerPC64 (ELF, ELFv1 or ELFv2, with a stub for a branch past 32 MiB: [PowerPC64](./PPC64.md)). `tests/llvm_qemu_differential.c` runs its step functions against
   `qemu-aarch64 -cpu max` (`tests/qemu_ref/`) on random states, for words of every row of the generated decoder, with
   the groups known to differ in `tests/llvm_qemu_expected.txt` (a new group, or a listed one that no longer differs,
   fails it; `--sweep` runs more of each), loaded as a module, with the JIT's loader and in the emitters' portable

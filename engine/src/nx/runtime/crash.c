@@ -17,9 +17,7 @@
 #include <dlfcn.h>
 #include <signal.h>
 #include <string.h>
-#if !defined(__ANDROID__)
 #include <execinfo.h>
-#endif
 #endif
 
 #if defined(__ELF__)
@@ -111,7 +109,7 @@ static void report_place(void* host_pc) {
                  (unsigned long long)((const u8*)host_pc - (const u8*)di.dli_fbase), di.dli_sname ? di.dli_sname : "?",
                  kthread_cur() ? "a game thread" : "one of the runtime's threads");
         }
-#if !defined(__ANDROID__) && !defined(__FreeBSD__) /* Android's libc has dladdr but not backtrace */
+#if !defined(__FreeBSD__) /* FreeBSD's libc has dladdr but not backtrace */
         {
             void* bt[24];
             int n = backtrace(bt, 24);

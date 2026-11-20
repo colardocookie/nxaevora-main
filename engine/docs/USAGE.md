@@ -70,7 +70,7 @@ which then starts fullscreen (not in timed test runs). `--fullscreen=0` starts i
 game's `.ini` decides (`fullscreen=1` starts fullscreen).
 `--touch=0|1|2` is forwarded to the game too: its touch screen takes nothing, the fingers, or the fingers and the
 mouse's left button (the default). The game's menu sets it too; the game's `.ini` keeps its own `touch`.
-`--controls=0|1` likewise hides or shows the [on-screen controls](#on-screen-controls) (on by default on Android);
+`--controls=0|1` likewise hides or shows the [on-screen controls](#on-screen-controls);
 the game's `.ini` keeps `controls`. Any other `--key=value` of the game's
 `.ini` is forwarded as well, for that run (`scarletnx --settings` lists them all), and so are the timed-run ones
 (`--seconds=`, `--shot=`...); any other key stops the run with `unknown option`.
@@ -130,11 +130,8 @@ under its own name, the original left where it is; the mod shows checked at once
 The copy goes into a hidden `.<name>.adding` first and takes the mod's name once every file is in, so a copy that
 stops never shows as a mod. It refuses, naming the folder: a name the mods folder has already, a folder inside the
 mods folder or one that holds it, one with neither `exefs/` nor `romfs/`, a name that starts with a dot (the mods list
-hides those), a link inside the folder, and on a phone a folder of an app or a cloud that no path reaches; a file that
-cannot be copied is named with the system's reason. On Android and iOS Open Mods Folder, Open Cheats Folder and Open
-Folder show the folder in the system's Files app: Android's shows the app's data folder and the shared storage (a
-dump's folder in `Download/`), iOS's the app's Documents alone, so there a folder of the app's `Library/` is greyed and
-says so.
+hides those), a link inside the folder; a file that
+cannot be copied is named with the system's reason.
 
 The box also has **Open Folder**, the game's other folders a row each: its dump's (as the recompile named it), the game's
 own, its saves (`<id>_data/save/`), its settings, its logs and its caches, each where the table below puts it. One not
@@ -170,8 +167,7 @@ A file already named by a build ID (16 hex digits) keeps that name, in capitals,
 with another, the message naming both. Another takes the build ID of the main module the game plays with as the box has
 it: a played mod's `exefs/main`, else the checked update's own, else the game's `exefs/main` or `main.nro`; with none
 to read, the file is refused, the message naming the module it looked for. It refuses too a name the cheats folder has
-already (files are never merged), a file that is not a `.txt`, one over 1 MiB, one with no `[name]` line, and on a
-phone a document of an app or a cloud that no path reaches.
+already (files are never merged), a file that is not a `.txt`, one over 1 MiB, one with no `[name]` line.
 
 Run the same command again to retry after a failure or interruption:
 
@@ -245,13 +241,11 @@ Remaining examples: POSIX.
   (`--aot_threads=abc`) stops the recompile. The code the runtime compiles while the game runs keeps LLVM's own, but
   for the SLP vectorizer, which `slp_vectorizer` turns on or off for both.
   `--target auto|linux|win64` takes only this host's own system: modules are built for the machine that builds
-  them. `--target ios` writes `<id>_code.snxobj` instead, a pack of the code's objects for the iOS app to load into JIT
-  memory (64-bit games only, [APPLE](APPLE.md)); it makes no runtime copy. `--runtime FILE` deploys that runtime instead of the running one, or of the one a tools-only build builds in
+  them. `--runtime FILE` deploys that runtime instead of the running one, or of the one a tools-only build builds in
   its checkout's `build/native-recomp` (`build/win64-recomp` on Windows). `-q` (`--quiet`) prints no progress.
   `--keep-c` is the deprecated spelling of `--keep-ir`.
 - **Codegen:** `--no-build` stages data/INI only; `--jit-only` omits AOT functions.
-  `--chunk N` (`--unit_instructions=N`) sets the instructions per code unit: 90000 by default, 20000 on Android and
-  iOS, where a smaller unit takes less memory at once. Each unit's object, a 32-bit game's blocks too, is kept in
+  `--chunk N` (`--unit_instructions=N`) sets the instructions per code unit: 90000 by default. Each unit's object, a 32-bit game's blocks too, is kept in
   `units/` of the cache folder ([Folders](#folders)), which every game's recompile shares, under the SHA-256 of the
   unit's LLVM IR, the LLVM, the CPU and its features, the optimization level and the LLVM Internals: a unit found
   there is not compiled again (a recompile after an `SNX_ABI` change that leaves the unit's IR alone, of a game whose
@@ -406,9 +400,7 @@ The driver works in one folder, its data folder, the first of these that applies
 
 1. the one `--data DIR` names (the menu names its own);
 2. a portable copy's: `.scarletnx/` beside the AppImage, or beside the Windows zip's programs, when it is there;
-3. the user's data folder: `~/.local/share/scarletnx` on Linux, `%APPDATA%\scarletnx` on Windows,
-   `~/Library/Application Support/scarletnx` on macOS. On Android the app names its own, `.scarletnx/` in its own
-   storage ([ANDROID](ANDROID.md)).
+3. the user's data folder: `~/.local/share/scarletnx` on Linux, `%APPDATA%\scarletnx` on Windows.
 
 A driver run from its build tree works in the same folder as an installed one: the checkout it was built from is
 not a data folder. `--data DIR`, or `--outdir DIR` for a recompile, keeps a run's files in one folder of your choice.
@@ -431,8 +423,8 @@ list). The user's data folder and a portable copy's keep each kind of file apart
 | the menu's themes, `<name>/theme.ini` | - | `~/.local/share/scarletnx/themes/` | `themes/` |
 | the menu's `settings.ini`, `app.ini`, `folders.txt`, `gamecontrollerdb.txt` | - | `~/.config/scarletnx/` | `config/` |
 | the setup's `setup.ini` ([Setup](#setup)) | - | `~/.config/scarletnx/` | `config/` |
-| the menu's `recent.txt`, `last-run.log`, `last-recompile.log` (a second launcher open at once `last-run-2.log` and `last-recompile-2.log`), its log `scarletnx-console-<date>.log` (a file a day, the 14 newest kept) and fatal errors `scarletnx-error.log` ([GUI](GUI.md); iOS: `logs/` of its Documents) | - | `~/.local/state/scarletnx/` | `state/` |
-| the menu's Share Log, `scarletnx-logs-<date>.zip` or `scarletnx.log` (iOS: `logs/share/` of its Documents) | - | `~/.local/state/scarletnx/share/` | `state/share/` |
+| the menu's `recent.txt`, `last-run.log`, `last-recompile.log` (a second launcher open at once `last-run-2.log` and `last-recompile-2.log`), its log `scarletnx-console-<date>.log` (a file a day, the 14 newest kept) and fatal errors `scarletnx-error.log` ([GUI](GUI.md)) | - | `~/.local/state/scarletnx/` | `state/` |
+| the menu's Share Log, `scarletnx-logs-<date>.zip` or `scarletnx.log` | - | `~/.local/state/scarletnx/share/` | `state/share/` |
 | the console's users, `users.ini` and `<uid>.jpg` ([Users](#users)), and `online.ini`, an Eden room's password (`room`) | `users/` of the user's data folder | `~/.local/share/scarletnx/users/` | `users/` |
 
 The menu works in the user's data folder or a portable copy's, unless its Settings > App > Folders picks a data
@@ -441,8 +433,7 @@ and its own files stay where they are. Its Logs and Caches move the state and
 cache folders of the table: `[folders] state =` and `cache =` in `app.ini`, full paths, which the menu, the drivers
 and the games read (a game's `.folders` below names them), its files going to the same place under them
 (`recompiled/<id>/<id>.log` of the state folder); a value that is not a full path is said once and the default kept.
-The config folder holds `app.ini`, so it moves only with `$XDG_CONFIG_HOME` or a portable copy. On Android they
-are in its data folder's `config/` and `state/`, in the app's own storage, which needs no permission. `~/.local/share`, `~/.config`, `~/.local/state` and `~/.cache` are the
+The config folder holds `app.ini`, so it moves only with `$XDG_CONFIG_HOME` or a portable copy. `~/.local/share`, `~/.config`, `~/.local/state` and `~/.cache` are the
 defaults of `$XDG_DATA_HOME`, `$XDG_CONFIG_HOME`, `$XDG_STATE_HOME` and `$XDG_CACHE_HOME` (a relative one is ignored).
 Each time the driver makes or starts a game of the user's data folder, it names the folders of the game's settings, log
 and caches in `recompiled/<id>/<id>.folders`, where the game reads them: started with other variables (its copy of an
@@ -502,7 +493,7 @@ only said, nothing is moved), then asks:
    one is picked), and in the launcher's setup its theme, UI scale, side panel and Games' view and icon size beside it;
    the terminal's asks the language alone.
 2. **Install type**: installed, in the user's folders ([Folders](#folders)), or portable, everything in
-   `.scarletnx/` beside the program (or the AppImage), which it makes. An app (Android, iOS) has no other.
+   `.scarletnx/` beside the program (or the AppImage), which it makes.
 3. **Folders**, the launcher's: where its recompiled games go and the folders of dumps it lists (Settings > App >
    Folders).
 4. **First user**: a `users/users.ini` there is kept, or overwritten, the one before kept as `users.ini.old`. A new one
@@ -559,14 +550,14 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle |
 | `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS |
 | `memory_gb` | `0` | Memory the game sees. Below `6` it is the console's 3.2 GB, `6` gives 4.8 GB and `8` gives 6.8 GB. Games that run out of memory on 3.2 GB need `6` |
-| `memory_fit` | `0` (iOS `1`) | `1` tells the game no more of `memory_gb`'s memory than the device can still give it, measured as the game starts, less what the rest of ScarletNX takes, so a device with less than the console has is not run out of memory. The log says what it measured. `0` tells it all of it |
+| `memory_fit` | `0` | `1` tells the game no more of `memory_gb`'s memory than the device can still give it, measured as the game starts, less what the rest of ScarletNX takes, so a device with less than the console has is not run out of memory. The log says what it measured. `0` tells it all of it |
 | `heap_max_mb` | `0` | The most heap the game can allocate, in MB. `0` is as much as the memory allows |
-| `map_limit_mb` | `0` (iOS `256`) | The most of the game's RomFS and ExeFS files mapped into memory, in MB: the ExeFS and a `romfs.bin` at start, a `romfs` folder's files as the game first reads them. `0` is no limit. A file past it is read from disk when the game asks, which is slower and leaves address space for threads and graphics where a device has little |
-| `map_limit_files` | `0` (iOS `2048`) | The most of those files mapped. `0` is no limit. Each mapped file holds a descriptor, of which a device may give the whole app a few thousand |
-| `thread_stack_mb` | `32` (iOS `8`) | The host stack of each of the game's threads, in MB, which a game's deep calls take. Less leaves address space for more threads where a device has little, and a game that calls very deep may then stop |
+| `map_limit_mb` | `0` | The most of the game's RomFS and ExeFS files mapped into memory, in MB: the ExeFS and a `romfs.bin` at start, a `romfs` folder's files as the game first reads them. `0` is no limit. A file past it is read from disk when the game asks, which is slower and leaves address space for threads and graphics where a device has little |
+| `map_limit_files` | `0` | The most of those files mapped. `0` is no limit. Each mapped file holds a descriptor, of which a device may give the whole app a few thousand |
+| `thread_stack_mb` | `32` | The host stack of each of the game's threads, in MB, which a game's deep calls take. Less leaves address space for more threads where a device has little, and a game that calls very deep may then stop |
 | `pipeline_threads` | `0` | Threads that make the GPU's new pipelines while the game goes on, and those of earlier runs before it starts with `prepare_shaders=2`. `0` uses all the computer's threads but two, two to twelve. `1` to `32` is that many. More make a first run's new pipelines sooner, with less CPU left for the game |
 | `async_pipelines` | `0` | `1` skips what a new shader draws while its pipeline is made, where the game would otherwise pause until it is ready. The game no longer stops where a new shader first appears, and the things that shader draws show up a few frames later. `0` waits for every pipeline |
-| `prepare_shaders` | `2` | Prepares the shaders the game ships in its files and executables ahead of time, so the game's draws needn't make them and it stutters less. They are prepared again after ScarletNX, the GPU or its driver is updated. `0` (Off) makes each shader only when the game first draws with it. `1` (While playing) prepares them in the background, and the game uses them once all are ready. `2` (Before starting) prepares them behind a loading screen in the launcher theme's look, which also waits for the shader cache of earlier sessions, so an opening movie doesn't stutter. A key that types, an arrow or the keypad, a gamepad button other than Home, or a tap starts the game at once, and the rest is prepared while it runs. Esc quits (on Android, back opens the menu, whose Exit quits). F2 or a gamepad's Home opens the menu, and F11 or Alt+Enter switches fullscreen, without starting the game. The screen shows only when the wait passes a quarter second, its words are in English, and a timed run (`--seconds`) starts its clock after it |
+| `prepare_shaders` | `2` | Prepares the shaders the game ships in its files and executables ahead of time, so the game's draws needn't make them and it stutters less. They are prepared again after ScarletNX, the GPU or its driver is updated. `0` (Off) makes each shader only when the game first draws with it. `1` (While playing) prepares them in the background, and the game uses them once all are ready. `2` (Before starting) prepares them behind a loading screen in the launcher theme's look, which also waits for the shader cache of earlier sessions, so an opening movie doesn't stutter. A key that types, an arrow or the keypad, a gamepad button other than Home, or a tap starts the game at once, and the rest is prepared while it runs. Esc quits. F2 or a gamepad's Home opens the menu, and F11 or Alt+Enter switches fullscreen, without starting the game. The screen shows only when the wait passes a quarter second, its words are in English, and a timed run (`--seconds`) starts its clock after it |
 | `jit_threads` | `0` | Threads compiling the game code the recompiler missed, which a thread waits for when it reaches it. `0` uses every CPU the game may run on but two, at most 4. They run below the game's threads |
 | `network` | `0` | `0` reports offline and lets the game reach only loopback, which is not a network sandbox. `1` uses the computer's connection, and the resolver blocks known console service domains. Local wireless works either way (`ldn`) |
 | `airplane_mode` | `0` | `1` is the console in airplane mode: offline whatever `network` says, no local wireless, as the game hears it, and in no Eden room |
@@ -574,7 +565,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `room` | empty | The Eden room `ldn=room` joins at start: `host` or `host:port` (`24872` without one); empty with `ldn=room`, or with a space in it, stops the game. The console is there as the user playing, by its nickname ([Users](#users)), at the address the room gives it (`192.168.x.y`), which nifm gives the game too, and the game's datagrams go through the room. A room with a password takes it from `users/online.ini` ([Folders](#folders)), a file only you may read (`chmod 600`, not checked on Windows) that holds `room_password=...` alone: another key or a section stops the game. A room that refuses stops the game and says why |
 | `user` | `1` | The console's user the game plays as, `1` to `8`, as [Users](#users) lists them. A number with no user stops the game |
 | `touch` | `2` | The game's touch screen: `2` fingers and the mouse's left button, `1` fingers, `0` off |
-| `controls` | `1` on Android, else `0` | The [on-screen controls](#on-screen-controls) shown |
+| `controls` | `0` | The [on-screen controls](#on-screen-controls) shown |
 | `controls_snap`, `controls_scale`, `controls_opacity`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics` | `0`, `50`, `100`, `1`, `1`, `1` | As [On-screen controls](#on-screen-controls) describes them. `controls_scale` runs from `0` to `100` for 50% to 150% |
 | `gamepad_swap_ab` | `0` | `1` swaps a gamepad's A and B. `0` sends A, B, X and Y where the console's are |
 | `gamepad_map` | none | The player's map over that, below |
@@ -624,7 +615,7 @@ restart the game after changing it.
 
 For a joystick that SDL detects but does not recognize as a gamepad, put SDL mapping lines in
 `gamecontrollerdb.txt` beside the launcher's `settings.ini` ([Folders](#folders)). A game in the launcher's
-`recompiled/` reads the same file; any other game, the user's (on Android every game, the launcher's). To use a file
+`recompiled/` reads the same file; any other game, the user's. To use a file
 elsewhere, set
 `SDL_GAMECONTROLLERCONFIG_FILE` to its path before starting the launcher or game. A mapping line starts with the
 joystick GUID shown in the game log or the launcher's Controllers page, which names the file too, followed by a name
@@ -634,7 +625,7 @@ and SDL button and axis bindings. For example:
 GUID,My Controller,a:b0,b:b1,x:b2,y:b3,leftx:a0,lefty:a1,rightx:a2,righty:a3,platform:Linux,
 ```
 
-Replace `GUID` and each binding with values for the device, and `Linux` with `Windows`, `FreeBSD` or `Android`
+Replace `GUID` and each binding with values for the device, and `Linux` with `Windows` or `FreeBSD`
 where it runs: SDL takes a line of the file only with its own platform. This SDL mapping selects physical joystick
 controls; `gamepad_map` instead selects which Switch buttons the mapped controls send. The game log reports every
 detected joystick, whether it has an SDL mapping, and any gamepad open error. On Linux, installing
@@ -681,16 +672,14 @@ B do the same, the on-screen controls' too, and a direction held goes on after a
 
 A game that asks for text (a name, a password, a search) shows a box over the game, in the menu's look and the same
 on every platform: the game's own words for it, the line with the text the game started it with, and how many
-characters it holds against the game's least and most. What you type goes in, from the keyboard or an input method,
-and on Android and iOS the system's keyboard comes up with the box (a tap on the line brings it back). Backspace takes
+characters it holds against the game's least and most. What you type goes in, from the keyboard or an input method. Backspace takes
 the last character away, Enter or A gives the line, and Esc or B cancels; a tap on the box's OK or Cancel does the
 same. Short of the game's least, Enter says how many more it needs. The menu (Home, F2) opens over the box, and
 `swkbd_text` answers in its place. With no window to show it in (`-H`), the game's text is the answer, or the
 nickname of the user playing when the game gives none, and the log says which.
 
 A game that stops on an error shows a panel with **Share Log**, **Copy path** and **Close**. Share Log saves
-`scarletnx.log` (the build, the error and the game's log) beside the game's log, as the menu's does, and on Android
-sends it to the app you pick; Copy path copies that file's path once it is saved, else the game's log's. The panel says
+`scarletnx.log` (the build, the error and the game's log) beside the game's log, as the menu's does; Copy path copies that file's path once it is saved, else the game's log's. The panel says
 what each did. Up and Down move between the items, Enter or A does the one in focus, and any other key or button
 closes it. On a desktop the game's log path is
 underlined once the log exists: a click opens it in the system's viewer, the panel staying open.
@@ -700,11 +689,11 @@ underlined once the log exists: a click opens it in the system's viewer, the pan
 A pad drawn over the game, with rEden's buttons and sizes, laid out as the console's two controllers hold them:
 sticks, D-pad, A B X Y, L R ZL ZR, plus and minus, the stick buttons, Home (the game's menu) and Capture (a
 screenshot). Fingers press them, the mouse's left button too; a finger that lands off them goes to the game's
-touch screen. They are on by default on Android and off elsewhere.
+touch screen. They are off by default.
 
-The game's menu (Back on Android, Home on a gamepad, F2) has their page: show them, *Edit layout* (drag a control;
+The game's menu (Home on a gamepad, F2) has their page: show them, *Edit layout* (drag a control;
 tap one and size it with the bar on top; *Done* or Back ends it), snap to a grid, scale and opacity, the buttons
-shown, a stick's middle where the finger lands, a D-pad a finger slides on, a buzz on each press (Android), the touch
+shown, a stick's middle where the finger lands, a D-pad a finger slides on, the touch
 screen, and *Reset layout*. The game's `.ini` keeps them: `controls`, `controls_scale`, `controls_opacity`,
 `controls_snap`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics`, a control's place once it
 was moved (`controls_a=0.930 0.470 100`: its middle across the screen and its size in percent), and whether it is

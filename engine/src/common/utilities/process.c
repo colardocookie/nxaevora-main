@@ -164,7 +164,7 @@ static int run_stage(const char* const* argv, const char* cwd, const char* stage
         tty = 1;
     }
     /* The stage leads a process group of its own, which the parent alone makes, and the child waits on this pipe for
-       it before going on: both sides making the same group at once had macOS refuse one of them with EPERM, the
+       it before going on: both sides making the same group at once had one refused with EPERM, the
        group not made yet as the loser saw it. The child reads the parent's errno, 0 when the group is made */
     if (pipe(group) || fcntl(group[0], F_SETFD, FD_CLOEXEC) || fcntl(group[1], F_SETFD, FD_CLOEXEC)) goto setup_failed;
     fflush(NULL);
@@ -242,26 +242,7 @@ done:
     return rc;
 }
 #endif
-static int (*stage_runner)(int argc, char** argv);
-void snx_set_stage_runner(int (*run)(int argc, char** argv)) {
-    stage_runner = run;
-}
-/* a stage run in this process: its own copy of argv, as a driver's main may rearrange it */
-static int run_stage_here(const char* const* argv, const char* stage) {
-    int argc = 0;
-    char** copy;
-    while (argv[argc]) ++argc;
-    copy = (char**)snx_alloc((size_t)(argc + 1) * sizeof(*copy));
-    for (int i = 0; i < argc; ++i) copy[i] = snx_strdup(argv[i]);
-    copy[argc] = NULL;
-    int rc = stage_runner(argc, copy);
-    for (int i = 0; i < argc; ++i) free(copy[i]);
-    free(copy);
-    if (rc) snx_error("%s failed (exit status %d). You can run the same command again.", stage, rc);
-    return rc;
-}
 int snx_run_stage(const char* const* argv, const char* cwd, const char* stage) {
-    if (stage_runner && !cwd) return run_stage_here(argv, stage);
     return run_stage(argv, cwd, stage, 0);
 }
 int snx_run_debug_stage(const char* const* argv, const char* cwd, const char* stage) {

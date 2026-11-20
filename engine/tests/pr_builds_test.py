@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""scripts/pr-builds.sh --print against a fake gh that has a run's artifacts: the builds linked, the APK's halves and
+"""scripts/pr-builds.sh --print against a fake gh that has a run's artifacts: the builds linked, a build's halves and
 edenprobe's report left out, the jobs that did not succeed named, and edenprobe's line, its result linked to the run,
 never among them. Offline."""
 
@@ -18,7 +18,7 @@ ARTIFACTS = {
     'artifacts': [
         {'id': 2, 'name': 'ScarletNX-windows-x86_64-abc1234', 'size_in_bytes': 3 << 20, 'expired': False,
          'expires_at': '2026-11-01T00:00:00Z'},
-        {'id': 1, 'name': 'ScarletNX-android-arm64-v8a-abc1234-stage', 'size_in_bytes': 1 << 20, 'expired': False,
+        {'id': 1, 'name': 'ScarletNX-linux-x86_64-abc1234-stage', 'size_in_bytes': 1 << 20, 'expired': False,
          'expires_at': '2026-11-01T00:00:00Z'},
         {'id': 3, 'name': 'edenprobe-abc1234-1', 'size_in_bytes': 1 << 20, 'expired': False,
          'expires_at': '2026-11-01T00:00:00Z'},
@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory() as temporary:
     title = 'edenprobe a7f2beb: 906 passed, 20 failed, 3 skipped, 1 crashed'
     text = comment(built | {'edenprobe': {'result': 'success', 'outputs': {'result': title}}})
     check(
-        "the builds linked, the halves of the APK and edenprobe's report left out",
+        "the builds linked, a build's halves and edenprobe's report left out",
         f'- [ScarletNX-windows-x86_64-abc1234]({RUN}/artifacts/2), 3 MiB' in text
         and '-stage' not in text
         and 'edenprobe-abc1234' not in text,

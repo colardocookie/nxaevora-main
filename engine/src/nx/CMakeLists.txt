@@ -38,11 +38,6 @@ snx_component(core runtime/main.c runtime/arm.c runtime/loader.c runtime/rtapi.c
               runtime/cheats.c runtime/arceus_clock.c)
 target_link_libraries(snx_core PRIVATE snx_driver snx_lz4 snx_zstd snx_build_info)
 target_link_libraries(snx_core PUBLIC snx_settings_runtime) # the game's .ini's tables (cmake/settings.cmake)
-if(APPLE)
-    # main.c's weak snx_module_static, which no build defines yet: ld64 refuses an undefined symbol, weak or not,
-    # unless told it is resolved at run time
-    target_link_options(snx_core INTERFACE "LINKER:-U,_snx_module_static")
-endif()
 snx_component(kernel hle/hle.c hle/kernel/kernel.c hle/kernel/thread.c hle/kernel/sync.c hle/svc/svc.c hle/svc/svc_mem.c hle/kernel/debug.c
               memory/mem.c memory/own.c hle/kernel/ipc.c)
 # the SVC dispatch, generated from hle/svc/hos.svc
@@ -149,24 +144,15 @@ set_source_files_properties("${imgui_SOURCE_DIR}/imgui.cpp" "${imgui_SOURCE_DIR}
                             "${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp" PROPERTIES COMPILE_OPTIONS
                             "${snx_third_party_flags}" COMPILE_DEFINITIONS IMGUI_IMPL_VULKAN_USE_VOLK)
 
-if(ANDROID)
-    # the menu runs the program (src/multicall's libscarletnx.so) as libscarletnx-run.so, an executable named for the
-    # app's libraries folder, which takes only lib*.so
-    add_executable(scarletnx-run runtime/platform/android_run.c)
-    set_target_properties(scarletnx-run PROPERTIES OUTPUT_NAME libscarletnx-run.so RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
-    target_link_libraries(scarletnx-run PRIVATE ${CMAKE_DL_LIBS})
-    install(TARGETS scarletnx-run RUNTIME DESTINATION lib/${ANDROID_ABI})
-endif()
 list(TRANSFORM components PREPEND snx_)
 add_library(scarletnx-nx STATIC)
 set_target_properties(scarletnx-nx PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(scarletnx-nx PUBLIC snx_nx_flags ${components} snx_driver)
 # The Switch driver's entry (runtime/entry.c's snx_switch_main), which scarletnx runs (src/multicall). Started with
-# nothing to run it opens the menu (src/gui), which runs games with it; Android's app has the menu as a library of its
-# own
+# nothing to run it opens the menu (src/gui), which runs games with it
 add_library(snx_switch_program STATIC runtime/entry.c)
 target_link_libraries(snx_switch_program PUBLIC scarletnx-nx SDL3::SDL3)
-if(TARGET scarletnx-gui AND NOT ANDROID)
+if(TARGET scarletnx-gui)
     target_link_libraries(snx_switch_program PUBLIC scarletnx-gui)
     target_compile_definitions(snx_switch_program PRIVATE SNX_WITH_GUI)
 endif()
