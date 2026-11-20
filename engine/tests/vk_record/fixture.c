@@ -5,6 +5,7 @@
    Vulkan and the renderer (include/), with the host's own mutex. Every Vulkan call is a fake that notes itself.
    Usage: fixture thread|once <scenario>. One scenario a process, since the failure mark is never cleared. */
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/upscaler.h" /* the answers, generated from the real header by run.sh */
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/plat.h"
 #include <assert.h>
@@ -14,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <time.h>
 
 /* ------------------------------------------------------------ what the recorder's file needs of the runtime */
@@ -189,6 +191,7 @@ void vkCmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d) {
          d->memoryBarrierCount | d->bufferMemoryBarrierCount << 4 | d->imageMemoryBarrierCount << 8 | marks << 12);
 }
 void fake_command(VkCommandBuffer cb, const char* name, ...) { note(COMMAND, cb, name, 0); }
+void plat_exit_now(int code) { _exit(code); } /* vk_rec_end_run's, not called by a scenario */
 void vk_render_forget_state(void) {
     assert(t_vkdepth > 0); /* inside the stretch, under the lock */
     note(FORGET, NULL, "vk_render_forget_state", 0);
@@ -301,7 +304,8 @@ static int direct(VkCommandBuffer cb, void* user) {
 static void scenario_order(void) {
     struct VkCommandBuffer_T buffer;
     VkCommandBuffer cb = &buffer;
-    Stretch s = {.before_first = 100000, .before_n = 40, .direct_first = 200000, .direct_n = 3, .answer = 1};
+    Stretch s = {.before_first = 100000, .before_n = 40, .direct_first = 200000, .direct_n = 3,
+                 .answer = SNX_UPSCALER_OK};
     size_t at = 0;
     vk_lock();
     begin(cb);
@@ -345,7 +349,8 @@ static void* intruder(void* p) {
 static void scenario_intruder(void) {
     struct VkCommandBuffer_T buffer;
     VkCommandBuffer cb = &buffer;
-    Stretch s = {.before_first = 100000, .before_n = 3, .direct_first = 200000, .direct_n = 2, .answer = 1,
+    Stretch s = {.before_first = 100000, .before_n = 3, .direct_first = 200000, .direct_n = 2,
+                 .answer = SNX_UPSCALER_OK,
                  .release = {&g_release[0], &g_release[1]}, .landed = {&g_landed[0], &g_landed[1]}};
     pthread_t threads[2];
     g_intruded = cb;
@@ -383,7 +388,8 @@ static void scenario_intruder(void) {
 static void scenario_failed_begin(void) {
     struct VkCommandBuffer_T buffer;
     VkCommandBuffer cb = &buffer;
-    Stretch s = {.before_first = 100000, .before_n = 2, .direct_first = 200000, .direct_n = 2, .answer = 1};
+    Stretch s = {.before_first = 100000, .before_n = 2, .direct_first = 200000, .direct_n = 2,
+                 .answer = SNX_UPSCALER_OK};
     g_fail_begin = 1;
     g_slow_ms = 200;
     vk_lock();
@@ -403,7 +409,8 @@ static void scenario_failed_begin(void) {
    the library is still not called. A refused submission is signalled by the host. */
 static void scenario_failed_earlier(int submission) {
     struct VkCommandBuffer_T first, second;
-    Stretch s = {.before_first = 100000, .before_n = 2, .direct_first = 200000, .direct_n = 2, .answer = 1};
+    Stretch s = {.before_first = 100000, .before_n = 2, .direct_first = 200000, .direct_n = 2,
+                 .answer = SNX_UPSCALER_OK};
     g_slow_ms = 200;
     vk_lock();
     begin(&first);
@@ -427,14 +434,40 @@ static void scenario_failed_earlier(int submission) {
     CHECK(lock_is_free());
 }
 
+/* A library that answers UNKNOWN (DL2, a955a146): the call answers UNKNOWN and sets the mark, the state is
+   forgotten and the lock is free, and the library's command was made at once like any other */
+static void scenario_unknown(void) {
+    struct VkCommandBuffer_T buffer;
+    VkCommandBuffer cb = &buffer;
+    Stretch s = {.direct_first = 200000, .direct_n = 1, .answer = SNX_UPSCALER_UNKNOWN};
+    size_t at = 0;
+    vk_lock();
+    begin(cb);
+    draws(cb, 1, 3);
+    s.made_before = 1 + 3 + 1;
+    CHECK(!vk_rec_unknown());
+    CHECK(vk_rec_direct(cb, before, direct, &s) == VK_REC_DIRECT_UNKNOWN);
+    CHECK(s.direct_calls == 1 && vk_rec_unknown() && !vk_rec_submit_failed());
+    vk_rec_sync();
+    vk_unlock();
+    CHECK(lock_is_free());
+    expect(&at, BEGIN, NULL, queued_by(1));
+    expect_draws(&at, cb, 1, 3, queued_by(1));
+    expect(&at, COMMAND, "vkCmdEndRendering", queued_by(1));
+    expect_draws(&at, cb, 200000, 1, 1);
+    expect(&at, COMMAND, "vkCmdDispatch", 1);
+    expect(&at, FORGET, NULL, 1);
+}
+
 /* A library that fails after one command, as a prepare, and one that succeeds after it in the same frame, as an
    evaluate. The failure costs nothing but its own call: the state is forgotten, the lock is free, the ring goes
    on, the mark is not set, and the next call is made. */
 static void scenario_refused(void) {
     struct VkCommandBuffer_T buffer;
     VkCommandBuffer cb = &buffer;
-    Stretch prepare = {.direct_first = 200000, .direct_n = 1, .answer = 0};
-    Stretch evaluate = {.before_first = 100000, .before_n = 2, .direct_first = 210000, .direct_n = 2, .answer = 1};
+    Stretch prepare = {.direct_first = 200000, .direct_n = 1, .answer = SNX_UPSCALER_REFUSED};
+    Stretch evaluate = {.before_first = 100000, .before_n = 2, .direct_first = 210000, .direct_n = 2,
+                        .answer = SNX_UPSCALER_OK};
     size_t at = 0;
     vk_lock();
     begin(cb);
@@ -475,7 +508,8 @@ static void scenario_refused(void) {
 static void scenario_no_buffer(void) {
     struct VkCommandBuffer_T buffer, other;
     VkCommandBuffer cb = &buffer;
-    Stretch s = {.before_first = 100000, .before_n = 2, .direct_first = 200000, .direct_n = 2, .answer = 1};
+    Stretch s = {.before_first = 100000, .before_n = 2, .direct_first = 200000, .direct_n = 2,
+                 .answer = SNX_UPSCALER_OK};
     memset(&other, 0, sizeof other);
     vk_rec_init();
     CHECK(vk_rec_direct(cb, before, direct, &s) == VK_REC_DIRECT_NO_BUFFER);
@@ -495,7 +529,7 @@ static void scenario_no_buffer(void) {
     /* without a before the call is the same: NULL is taken */
     begin(cb);
     vk_rec_sync(); /* the list is read here: nothing may be writing it */
-    s = (Stretch){.direct_first = 200000, .direct_n = 1, .answer = 1, .made_before = g_count};
+    s = (Stretch){.direct_first = 200000, .direct_n = 1, .answer = SNX_UPSCALER_OK, .made_before = g_count};
     CHECK(vk_rec_direct(cb, NULL, direct, &s) == VK_REC_DIRECT_OK && s.direct_calls == 1);
     submit(cb, 3);
     vk_rec_sync();
@@ -512,7 +546,7 @@ static void scenario_wrap(void) {
     for (u32 f = 0; f < 60; f++) {
         VkCommandBuffer cb = &buffers[f];
         Stretch s = {.before_first = 100000 + f, .before_n = 1, .direct_first = 200000 + 10 * f, .direct_n = 2,
-                     .answer = 1};
+                     .answer = SNX_UPSCALER_OK};
         begin(cb);
         draws(cb, 1, 3000);
         s.made_before = (size_t)f * 3509 + 1 + 3000 + 1 + 1;
@@ -590,6 +624,7 @@ int main(int argc, char** argv) {
                  {"intruder", scenario_intruder},
                  {"failed-begin", scenario_failed_begin},
                  {"refused", scenario_refused},
+                 {"unknown", scenario_unknown},
                  {"no-buffer", scenario_no_buffer},
                  {"wrap", scenario_wrap},
                  {"barrier", scenario_barrier}};

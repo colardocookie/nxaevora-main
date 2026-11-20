@@ -253,6 +253,8 @@ void vk_render_forget_state(void);
 /* record.c's own declarations, word for word from the real vk.h */
 int vk_rec_submit_failed(void);
 void vk_rec_mark_failed(void);
+int vk_rec_unknown(void); /* 1 once a library left the frame's command buffer in a state not known */
+void vk_rec_end_run(int code) __attribute__((noreturn));
 void vk_rec_init(void);
 int vk_rec_threaded(void);
 u64 vk_rec_behind(void);
@@ -261,7 +263,7 @@ void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, c
                    u32 ns);
 void vk_rec_sync(void);
 void vk_rec_queue(VkQueue q);
-enum { VK_REC_DIRECT_OK, VK_REC_DIRECT_REFUSED, VK_REC_DIRECT_FAILED, VK_REC_DIRECT_NO_BUFFER };
+enum { VK_REC_DIRECT_OK, VK_REC_DIRECT_REFUSED, VK_REC_DIRECT_FAILED, VK_REC_DIRECT_NO_BUFFER, VK_REC_DIRECT_UNKNOWN };
 typedef void (*VkRecBefore)(VkCommandBuffer cb, void* user);
 typedef int (*VkRecDirect)(VkCommandBuffer cb, void* user);
 int vk_rec_direct(VkCommandBuffer cb, VkRecBefore before, VkRecDirect direct, void* user);
