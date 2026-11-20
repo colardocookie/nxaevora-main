@@ -978,6 +978,22 @@ typedef struct { uint32_t mode, method, remaining, subchannel; } NvnWordStream;
 int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint32_t* value, int* last);
 /* 1 when no run is left open (remaining 0), so the array ended on a method call. */
 int nvn_word_stream_complete(const NvnWordStream* s);
+/* SNX_ARCEUS_PERF_REPLAY=2 (PERF-30): while a sink is set on this thread, the bind and draw builders hand each word
+   to it as they write it, and it decodes it as nvn_word_stream_next does and calls method for each method word, in
+   place of storing it (the builders still return their word counts). A word that does not decode latches failed,
+   and no later word is decoded. nvn_word_sink_take gives a group's result, as replay_bind_send's (1 when nothing
+   failed and the stream ended), and readies the sink for the next group. direct (SNX_ARCEUS_PERF_REPLAY=3): the
+   header helpers set the stream as decoding their header would and bind_value makes its call, when the stream is
+   idle and the header's fields hold their arguments, and a run's data words take the decoder's open-run branch
+   inline (nvn_params.c bind_word) */
+typedef struct {
+    void (*method)(void* ctx, uint32_t subchannel, uint32_t method, uint32_t value, int last);
+    void* ctx;
+    NvnWordStream s;
+    int failed, direct;
+} NvnWordSink;
+extern _Thread_local NvnWordSink* nvn_word_sink;
+int nvn_word_sink_take(NvnWordSink* k);
 
 /* The words that nvnCommandBufferBarrier writes, in order (nvn-design.md, decision 6, item "Barrier"). The bit 3
    range records are not words: they split the library's command memory, not this stream. Bits 9 to 31 are ignored. */

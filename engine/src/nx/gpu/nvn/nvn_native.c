@@ -5371,7 +5371,15 @@ static int replay_bind_words(NvnNativeReplayHost* host, const uint32_t* words, u
    each after a decode-only pass over its words (the decoder only changes its own stream). The replay thread's */
 static int g_replay_timed;
 static uint64_t g_replay_draws;
+/* SNX_ARCEUS_PERF_REPLAY=2 (PERF-30): the replay thread's sink, which the builders' words reach as they are written */
+static NvnWordSink g_replay_sink;
+static void replay_sink_method(void* ctx, uint32_t subchannel, uint32_t method, uint32_t value, int last) {
+    NvnNativeReplayHost* host = ctx;
+    replay_stream_method(host->channel, subchannel, method, value, last);
+    host->bind_methods++;
+}
 static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, uint32_t count) {
+    if (nvn_word_sink) return nvn_word_sink_take(nvn_word_sink); /* the words went to the engine as they were built */
     if (!g_replay_timed) return replay_bind_words(host, words, count);
     NvnWordStream probe = {0};
     const uint64_t t0 = plat_ns(), methods0 = host->bind_methods;
@@ -5555,13 +5563,25 @@ static void replay_bind_send_all(NvnNativeReplayHost* host) {
 static int replay_host_draw_sent(void* ctx, const NvnOpDraw* op) {
     NvnNativeReplayHost* host = ctx;
     if (op->kind >= (uint32_t)NVN_DRAW_KIND_COUNT) return 0;
+    /* SNX_ARCEUS_PERF_REPLAY=2: the words go to the engine as they are built, but not a timed draw's (PERF-29 times
+       the stored ones), and not the draw's own words while 0xD18 is 0, which the check below refuses after the build */
+    NvnWordSink* const sink = g_perf_replay >= 2 && !g_replay_timed ? &g_replay_sink : NULL;
+    if (sink) {
+        g_replay_sink.method = replay_sink_method, g_replay_sink.ctx = host;
+        g_replay_sink.direct = g_perf_replay >= 3;
+    }
     if (g_perf_times) g_replay_part = 1;
+    nvn_word_sink = sink;
     replay_bind_send_all(host);
+    nvn_word_sink = NULL;
     if (g_perf_times) g_replay_part = 2; /* the draw's own words, sent below or refused */
     uint32_t words[NVN_DRAW_WORDS_MAX];
     int uses_constants = 0;
+    NvnWordSink* const draw_sink = sink && host->channel->r3d[NVN_MME_DRIVER_CONSTANTS_REGISTER] ? sink : NULL;
+    nvn_word_sink = draw_sink;
     uint32_t count = nvn_draw_words(op->kind, op->mode, op->type, op->count, op->address, op->first,
                                     op->base_vertex, op->base_instance, op->instances, words, &uses_constants);
+    nvn_word_sink = NULL;
     if (!count) {
         replay_bind_refuse(host, "draw", -1, -1, op->kind);
         return 1;
@@ -5570,7 +5590,7 @@ static int replay_host_draw_sent(void* ctx, const NvnOpDraw* op) {
         replay_bind_refuse(host, "draw constants", -1, -1, op->kind);
         return 1;
     }
-    if (!replay_bind_send(host, words, count)) {
+    if (!(draw_sink ? nvn_word_sink_take(draw_sink) : replay_bind_send(host, words, count))) {
         replay_bind_refuse(host, "draw words", -1, -1, op->kind);
         return 1;
     }
@@ -5588,7 +5608,7 @@ static int replay_host_draw_sent(void* ctx, const NvnOpDraw* op) {
 static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
     if (!g_perf_times) return replay_host_draw_sent(ctx, op);
     const int timed = ++g_replay_draws % PERF_REPLAY_SAMPLE == 0;
-    const uint64_t t0 = timed ? plat_ns() : 0;
+    const uint64_t t0 = plat_ns();
     g_replay_timed = timed;
     const int r = replay_host_draw_sent(ctx, op);
     g_replay_timed = 0, g_replay_part = 0;
@@ -5599,6 +5619,7 @@ static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
     perf_replay_add(&g_perf_p29, PRP_DRAW_SAME, g_replay_same[1]);
     g_replay_regs[0] = g_replay_regs[1] = g_replay_same[0] = g_replay_same[1] = 0;
     if (timed) perf_replay_add(&g_perf_p29, PRP_SAMPLED, 1), perf_replay_add(&g_perf_p29, PRP_ALL_NS, plat_ns() - t0);
+    else perf_replay_add(&g_perf_p29, PRP_PLAIN_NS, plat_ns() - t0);
     return r;
 }
 /* The dispatch arena: one guest page that holds the QMD and the driver constant block of every dispatch, mapped once

@@ -14,7 +14,9 @@ void nvn_native_init(void);
 /* at a clean exit: the functions that the game called and the host does not have */
 void nvn_native_report(void);
 /* 1 once nvn_native_init found nvn_legacy=0 and hooked the loader */
-/* SNX_ARCEUS_PERF_REPLAY=1: the draw's bind walks stop at a table's last set flag (nvn_dirty.h), read once at start */
+/* SNX_ARCEUS_PERF_REPLAY=1: the draw's bind walks stop at a table's last set flag (nvn_dirty.h), read once at start.
+   2: also a draw's words go to the engine as they are written (nvn_word_sink, PERF-30). 3: also the header helpers
+   act on the decoder's state without their words (NvnWordSink.direct) */
 extern int g_perf_replay;
 int nvn_native_active(void);
 /* the host handler of an NVN function by name, or NULL when the host has none (the selftest compares it with the

@@ -2265,22 +2265,87 @@ typedef struct {
     uint32_t at;
 } NvnBindWriter;
 
-static void bind_word(NvnBindWriter* w, uint32_t word) { w->out[w->at++] = word; }
+_Thread_local NvnWordSink* nvn_word_sink;
+static void sink_word(NvnWordSink* k, uint32_t word) {
+    uint32_t method, value;
+    int last;
+    if (k->failed) return;
+    const int r = nvn_word_stream_next(&k->s, word, &method, &value, &last);
+    if (r < 0)
+        k->failed = 1;
+    else if (r == 1)
+        k->method(k->ctx, k->s.subchannel, method, value, last);
+}
+int nvn_word_sink_take(NvnWordSink* k) {
+    const int ok = !k->failed && nvn_word_stream_complete(&k->s);
+    k->s = (NvnWordStream){0};
+    k->failed = 0;
+    return ok;
+}
+
+/* A data word of an open run, as nvn_word_stream_next's remaining branch makes its call: the run's method, last at
+   its end, the method stepping for mode 1 and once for mode 5 (SNX_ARCEUS_PERF_REPLAY=3) */
+static void sink_data(NvnWordSink* k, uint32_t word) {
+    NvnWordStream* s = &k->s;
+    const uint32_t method = s->method;
+    s->remaining--;
+    if (s->mode == NVN_WORD_MODE_INCREASING) {
+        s->method++;
+    } else if (s->mode == NVN_WORD_MODE_INCREASE_ONCE) {
+        s->method++;
+        s->mode = NVN_WORD_MODE_NON_INCREASING;
+    }
+    k->method(k->ctx, s->subchannel, method, word, s->remaining == 0);
+}
+static void bind_word(NvnBindWriter* w, uint32_t word) {
+    NvnWordSink* k = nvn_word_sink;
+    if (!k) {
+        w->out[w->at++] = word;
+        return;
+    }
+    w->at++;
+    if (k->direct && !k->failed && k->s.remaining)
+        sink_data(k, word);
+    else
+        sink_word(k, word);
+}
+/* The direct form of a header (SNX_ARCEUS_PERF_REPLAY=3): when the stream is idle and the header's fields hold method
+   (12 bits) and count (13 bits, not 0), the stream as decoding it leaves it, subchannel 0, and no word. 0 otherwise:
+   the header word is written, and decoded as every word is */
+static int bind_header(NvnBindWriter* w, uint32_t mode, uint32_t method, uint32_t count) {
+    NvnWordSink* k = nvn_word_sink;
+    if (!k || !k->direct || k->failed || k->s.remaining || method > NVN_WORD_METHOD_MASK || !count ||
+        count > NVN_WORD_COUNT_MASK)
+        return 0;
+    k->s = (NvnWordStream){mode, method, count, 0};
+    w->at++;
+    return 1;
+}
 
 static void bind_run(NvnBindWriter* w, uint32_t method, uint32_t count) {
+    if (bind_header(w, NVN_WORD_MODE_INCREASING, method, count)) return;
     bind_word(w, NVN_PROGRAM_MODE_INCREASING | (count << NVN_PROGRAM_COUNT_SHIFT) | method);
 }
 
 static void bind_fixed(NvnBindWriter* w, uint32_t method, uint32_t count) {
+    if (bind_header(w, NVN_WORD_MODE_NON_INCREASING, method, count)) return;
     bind_word(w, NVN_PROGRAM_MODE_NON_INCREASING | (count << NVN_PROGRAM_COUNT_SHIFT) | method);
 }
 
 static void bind_value(NvnBindWriter* w, uint32_t method, uint32_t value) {
+    NvnWordSink* k = nvn_word_sink;
+    if (k && k->direct && !k->failed && !k->s.remaining && method <= NVN_WORD_METHOD_MASK) {
+        k->s.subchannel = 0; /* an inline header leaves the stream idle, at its subchannel */
+        w->at++;
+        k->method(k->ctx, 0, method, value & NVN_PROGRAM_IMMEDIATE_VALUE_MAX, 1);
+        return;
+    }
     bind_word(w, NVN_PROGRAM_MODE_INLINE | ((value & NVN_PROGRAM_IMMEDIATE_VALUE_MAX) << NVN_PROGRAM_COUNT_SHIFT) |
                      method);
 }
 
 static void bind_macro(NvnBindWriter* w, uint32_t method, uint32_t count) {
+    if (bind_header(w, NVN_WORD_MODE_INCREASE_ONCE, method, count)) return;
     bind_word(w, NVN_PROGRAM_MODE_INCREASE_ONCE | (count << NVN_PROGRAM_COUNT_SHIFT) | method);
 }
 

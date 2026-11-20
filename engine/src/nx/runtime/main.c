@@ -894,8 +894,20 @@ int snx_main(int argc, char** argv) {
         if (g_submit_probe)
             LOG("perf-submit-probe: on, %s, a line every 600 presents, log only\n",
                 g_submit_probe == 1 ? "with the hashes" : "the times alone");
-        g_perf_replay = replay && !strcmp(replay, "1"); /* the draw's bind walks stop early (gpu/nvn/nvn_dirty.h) */
+        /* 1: the draw's bind walks stop early (gpu/nvn/nvn_dirty.h). 2: also the builders' words go to the replay as
+           they are written (PERF-30, gpu/nvn/nvn_params.h). 3: also the header helpers act without their words */
+        g_perf_replay = !replay                ? 0
+                        : !strcmp(replay, "1") ? 1
+                        : !strcmp(replay, "2") ? 2
+                        : !strcmp(replay, "3") ? 3
+                                               : 0;
         if (g_perf_replay) LOG("perf-replay: on, the draw's bind walks stop at their last set flag\n");
+        if (g_perf_replay >= 2)
+            LOG("perf-replay: EXPERIMENT level 2, a draw's bind and draw words go to the 3D engine as they are "
+                "written, decoded as before, not stored and decoded after\n");
+        if (g_perf_replay >= 3)
+            LOG("perf-replay: EXPERIMENT level 3, a header helper sets the decoder's state itself and a run's words "
+                "take its open-run branch inline\n");
         if (validation && !strcmp(validation, "1")) g_settings.vulkan_validation_layer = 1; /* vk_validation */
         if (validation && !strcmp(validation, "2")) { /* and its synchronization checks, never saved in the settings */
             g_settings.vulkan_validation_layer = 1;

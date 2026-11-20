@@ -540,7 +540,9 @@ size_t perf_caps_line(PerfCaps* c, uint32_t frames, char* out, size_t size);
 enum { PRP_DRAWS, PRP_SAMPLED, PRP_ALL_NS, PRP_SEND_NS, PRP_DECODE_NS, PRP_WORDS, PRP_METHODS,
        /* every draw's 3D register methods (0x40 to below the macro calls), its binds' and its draw words' apart, and
           of them the ones that write the value the register already holds (PERF-30, research 02:39) */
-       PRP_BIND_REGS, PRP_BIND_SAME, PRP_DRAW_REGS, PRP_DRAW_SAME, PRP_N };
+       PRP_BIND_REGS, PRP_BIND_SAME, PRP_DRAW_REGS, PRP_DRAW_SAME,
+       PRP_PLAIN_NS, /* the draws not timed, each whole (PERF-30): what the replay's binds and draw words cost */
+       PRP_N };
 enum { PRL_SYNC, PRL_PAYLOAD, PRL_SAMPLES, PRL_KINDS }; /* a syncpoint increment, a payload, a samples report */
 typedef struct {
     uint64_t base;                                     /* vk_hash's address, which the callers are printed against */
