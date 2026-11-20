@@ -1284,6 +1284,20 @@ static int site_cmp(const void* a, const void* b) { /* most ms first, then by ke
     const WaitSite *x = a, *y = b;
     return x->ns != y->ns ? (x->ns < y->ns ? 1 : -1) : (x->key > y->key) - (x->key < y->key);
 }
+size_t perf_land_line(PerfHandoff* h, uint32_t frames, char* out, size_t size) {
+    if (!size) return 0;
+    const double f = frames ? frames : 1;
+    size_t at = putf(out, size, 0,
+                     "perf-land: frames=%u (PERF-35, a frame: the outermost landings' results, and their KB all / on "
+                     "pages with no CPU write since the original / no other GPU-side write over them since / no "
+                     "composed result there / all three; KB whose page could not be told; ms of one bracket around "
+                     "the landing's loop and around a plain copy of the same bytes after it) results=%.1f kb=",
+                     frames, take64(&h->land_results) / f);
+    for (int k = 0; k < 5; k++) at = putf(out, size, at, "%s%.1f", k ? "/" : "", take64(&h->land_bytes[k]) / f / 1024);
+    at = putf(out, size, at, " unknown=%.1f loop=%.3f copy=%.3f", take64(&h->land_unknown) / f / 1024,
+              take64(&h->land_loop_ns) / f / 1e6, take64(&h->land_copy_ns) / f / 1e6);
+    return at < size ? at : size - 1;
+}
 size_t perf_handoff_line(PerfHandoff* h, uint32_t frames, char* out, size_t size) {
     static const char* const part[PH_PARTS] = {"submit", "submit_lock", "submit_add", "submit_scan", "fence",
                                                 "present"};

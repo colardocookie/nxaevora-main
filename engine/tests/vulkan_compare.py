@@ -643,6 +643,7 @@ def main():
     body += between(buffer, "static GfxOut** g_scand;", "/* kind: the caller")
     for sig in ("static void out_rebase_later(", "static void cap_step("):
         body += function(buffer, sig)
+    body += "static void land_count(GfxOut* d) { (void)d; }\nstatic void land_copy(void) {}\n"  # PERF-35's, apart
     body += function(buffer, "void vk_buf_frame_done(")
     body += "#undef malloc\n#undef realloc\n" + TESTS
     cc = sys.argv[1:] or ["cc", "-std=gnu11", "-O2"]

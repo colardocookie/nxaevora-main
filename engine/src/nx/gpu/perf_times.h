@@ -220,6 +220,11 @@ typedef struct { /* all atomic */
     /* research 12:38: the combined notices, their ranges and the distinct 4 KB pages those cover; the release
        thread's waits that ended with work to take, and without (woken while nothing was let go) */
     uint64_t notices, notice_ranges, notice_pages, rwait_work, rwait_idle;
+    /* PERF-35 (research 13:57): the landed results, their bytes, and those on pages with no CPU write since the
+       original was taken, no other GPU-side write over them since, no composed result there, and all three (by page,
+       PLD_*); bytes whose page could not be told; and one bracket each around a landing's write loop and around a
+       plain copy of the same bytes */
+    uint64_t land_results, land_bytes[5], land_unknown, land_loop_ns, land_copy_ns;
 } PerfHandoff;
 extern PerfHandoff g_perf_handoff;
 void perf_handoff_compute(PerfHandoff* h, uint64_t now);
@@ -232,6 +237,7 @@ static inline void perf_stamp_read(PerfHandoff* h, int pending) {
 }
 void perf_handoff_image(PerfHandoff* h, uint64_t drawn, uint64_t gva, uint32_t w, uint32_t hgt, uint32_t fkey);
 size_t perf_handoff_line(PerfHandoff* h, uint32_t frames, char* out, size_t size);
+size_t perf_land_line(PerfHandoff* h, uint32_t frames, char* out, size_t size); /* PERF-35's, its own line */
 /* the release thread spent [start, end) in state (REL_*), landing outputs storage outputs while holding vk_lock */
 void perf_rel_interval(PerfTimes* p, int state, uint64_t start, uint64_t end, uint64_t outputs);
 /* Writes the window's line into out and starts the next window. frames: the presents it covers. */

@@ -253,6 +253,7 @@ typedef struct GfxOut {
     struct WalkRef* wrefs; /* its first, the rest through each one's own */
     u32 wdepth; /* the depth of the vk_buf_frame_done whose list holds it, 0 in g_out or g_prep */
     u64 seq, wstamp;
+    u64 gw0; /* PERF-35 (PERF_PROBES): the write generation before org was read */
     u8 in_out; /* in g_out (from its commit until a landing takes it out): what gfx_gpu_src's walks go over */
     struct GfxOut* next;
 } GfxOut;
@@ -309,6 +310,7 @@ static GfxOut* gfx_out_new(u32 npages, u32 len) {
     if (a0) perf_wait_note(PW_ALLOC, NULL, plat_ns() - a0); /* PERF-34: the block made, zeroed or not */
     if (g_perf_probes) perf_mem_alloc(&g_perf_mem, out_block(npages, len) >= 4096 ? PMA_RESULT : PMA_RESULT_SMALL,
                                       out_block(npages, len));
+    if (g_perf_probes) o->gw0 = gpu_mem_generation(); /* PERF-35: before its caller reads org */
     o->pages = (u64*)(o + 1);
     o->vmap = o->pages + npages;
     o->npages = npages;
@@ -692,6 +694,69 @@ static void cap_step(u64* t, u64* ns, int step) {
 /* The frame fence has signaled. Its stage allocations still exist here; cmd.c frees them only after this call. */
 static int g_ww;
 static int written_since_gva(u64 gva, u64 len, u32 since);
+/* PERF-35 (research 13:57, PERF_PROBES): before a landing's writes, each result's bytes counted by page against the
+   three tests a plain copy would need: no CPU write on the page since org was read, no other GPU-side write over
+   them since, no composed result on the page (itself included). Then the loop gets one bracket, and after it a plain
+   copy of the same bytes into a scratch block gets one. The counts walk pages, never inside the bracket */
+static const u8** g_land_ptr;
+static u32* g_land_len;
+static u32 g_land_n, g_land_cap;
+static u8* g_land_scratch;
+static u64 g_land_scratch_cap;
+static int land_composed_on(const GfxOut* o, u64 page) {
+    for (const WalkRef* r = *walk_bucket(page); r; r = r->next)
+        if (r->page == page && r->o != o && r->o->composed) return 1;
+    return 0;
+}
+static void land_count(GfxOut* done) {
+    g_land_n = 0;
+    for (GfxOut* o = done; o; o = o->next) {
+        __atomic_fetch_add(&g_perf_handoff.land_results, 1, __ATOMIC_RELAXED);
+        const u64 base = o->addr & ~4095ull, end = o->addr + o->size;
+        for (u32 i = 0; i < o->npages; i++) {
+            const u64 pa = base + (u64)i * 4096 > o->addr ? base + (u64)i * 4096 : o->addr;
+            const u64 pb = base + (u64)(i + 1) * 4096 < end ? base + (u64)(i + 1) * 4096 : end;
+            if (pa >= pb) continue;
+            const u64 n = pb - pa, cpu = o->vmap[i];
+            __atomic_fetch_add(&g_perf_handoff.land_bytes[0], n, __ATOMIC_RELAXED);
+            const int ww = cpu == ~0ull ? 0 : written_since_gva(pa, n, o->wseen);
+            const int told = ww >= 0 && cpu != ~0ull && g_perf_compare == 2 && !g_walk_lost;
+            if (!told) {
+                __atomic_fetch_add(&g_perf_handoff.land_unknown, n, __ATOMIC_RELAXED);
+                continue;
+            }
+            const int a = !ww, b = !gpu_mem_dirty_since(o->gw0, pa, n), c = !o->composed && !land_composed_on(o, cpu);
+            if (a) __atomic_fetch_add(&g_perf_handoff.land_bytes[1], n, __ATOMIC_RELAXED);
+            if (b) __atomic_fetch_add(&g_perf_handoff.land_bytes[2], n, __ATOMIC_RELAXED);
+            if (c) __atomic_fetch_add(&g_perf_handoff.land_bytes[3], n, __ATOMIC_RELAXED);
+            if (a && b && c) __atomic_fetch_add(&g_perf_handoff.land_bytes[4], n, __ATOMIC_RELAXED);
+        }
+        if (g_land_n == g_land_cap) {
+            const u32 cap = g_land_cap ? g_land_cap * 2 : 1024;
+            const u8** p = realloc(g_land_ptr, cap * sizeof *p);
+            u32* l = realloc(g_land_len, cap * sizeof *l);
+            if (p) g_land_ptr = p;
+            if (l) g_land_len = l;
+            if (!p || !l) continue;
+            g_land_cap = cap;
+        }
+        g_land_ptr[g_land_n] = o->ptr, g_land_len[g_land_n] = o->size, g_land_n++;
+    }
+}
+/* the plain copy, after the loop: the same bytes, now warm, so a lower bound on a cold copy */
+static void land_copy(void) {
+    const u64 t0 = plat_ns();
+    for (u32 i = 0; i < g_land_n; i++) {
+        if (g_land_len[i] > g_land_scratch_cap) {
+            u8* s = realloc(g_land_scratch, g_land_len[i]);
+            if (!s) continue;
+            g_land_scratch = s, g_land_scratch_cap = g_land_len[i];
+        }
+        memcpy(g_land_scratch, g_land_ptr[i], g_land_len[i]);
+    }
+    __atomic_fetch_add(&g_perf_handoff.land_copy_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+    g_land_n = 0;
+}
 void vk_buf_frame_done(u64 frame) {
     GfxOut *done = NULL, *done_tail = NULL;
     for (GfxOut** pp = &g_out; *pp;) {
@@ -715,6 +780,9 @@ void vk_buf_frame_done(u64 frame) {
     VmaAllocation invalidated = VK_NULL_HANDLE;
     g_out_landing++;
     if (g_perf_compare == 2) g_walk_depth++;
+    const int land_probe = g_perf_probes && g_out_landing == 1 && done; /* PERF-35, the outermost landing only */
+    if (land_probe) land_count(done);
+    const u64 loop0 = land_probe ? plat_ns() : 0;
     while (done) {
         GfxOut* o = done;
         done = o->next;
@@ -768,6 +836,10 @@ void vk_buf_frame_done(u64 frame) {
             perf_sub_landed(&g_perf, o->frame, plat_ns()); /* PERF-33: a result of that submission */
         }
         free(o);
+    }
+    if (land_probe) {
+        __atomic_fetch_add(&g_perf_handoff.land_loop_ns, plat_ns() - loop0, __ATOMIC_RELAXED);
+        land_copy();
     }
     g_out_landing--;
     if (g_perf_compare == 2) g_walk_depth--;

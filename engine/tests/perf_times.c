@@ -145,6 +145,24 @@ static void test_tail(void) {
 /* PERF-33: a frame's submissions after the last tail's, those registered with a result for the release thread and
    their kinds, where the newest of them sits, the times from the increment's queueing, a compute landing after it,
    a landing never registered, once a tail, nothing with the probes off, and the handlers' times */
+/* PERF-35's line: the results, the KB by test, the KB not told and the two brackets, taken; both lines fit the log */
+static void test_land(void) {
+    static PerfHandoff h;
+    char line[PERF_COPIES_LINE];
+    memset(&h, 0, sizeof h);
+    h.land_results = 1608, h.land_bytes[0] = 2 * 2900 * 1024, h.land_bytes[1] = 2 * 2000 * 1024;
+    h.land_bytes[2] = 2 * 2800 * 1024, h.land_bytes[3] = 2 * 1500 * 1024, h.land_bytes[4] = 2 * 1000 * 1024;
+    h.land_unknown = 2 * 10 * 1024, h.land_loop_ns = 2 * 1243000, h.land_copy_ns = 2 * 300000;
+    const size_t n = perf_land_line(&h, 2, line, sizeof line);
+    CHECK(strstr(line, "perf-land: frames=2 (") &&
+          strstr(line, ") results=804.0 kb=2900.0/2000.0/2800.0/1500.0/1000.0 unknown=10.0 loop=1.243 copy=0.300"));
+    CHECK(n < PERF_COPIES_LINE - 1);
+    perf_land_line(&h, 2, line, sizeof line);
+    CHECK(strstr(line, " results=0.0 kb=0.0/0.0/0.0/0.0/0.0 unknown=0.0 loop=0.000 copy=0.000"));
+    memset(&h, 0, sizeof h); /* the handoff line with every field at its widest still fits */
+    for (int k = 0; k < PCY_KINDS; k++) h.kinds[k] = h.last_n[k] = h.last_has[k] = h.res_frames[k] = 999999999;
+    CHECK(perf_handoff_line(&h, 1, line, sizeof line) < PERF_COPIES_LINE - 1);
+}
 static void test_handoff(void) {
     static PerfTimes p;
     char line[PERF_COPIES_LINE];
@@ -1287,6 +1305,7 @@ int main(void) {
     test_mem();
     test_waits();
     test_handoff();
+    test_land();
     test_same();
     test_same_threads();
     CHECK(g_perf_inplace == 0 && g_perf_bind == PBK_OTHER && g_perf_exact == 0); /* unset: today's commands */
