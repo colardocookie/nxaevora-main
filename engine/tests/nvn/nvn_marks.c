@@ -198,8 +198,51 @@ static void test_traversal(void) {
     }
 }
 
+/* PERF-34 bit 3: freeing a list through its marks gives up the references of the same CALLs as the whole walk. Two
+   identical stores, one freed each way, keep the same lists alive at each step, lost lists walked whole */
+static void build_store(NvnListStore* s, uint64_t* h, uint32_t n, uint32_t seed) {
+    rnd_state = seed;
+    for (uint32_t k = 0; k < n; k++) {
+        NvnOpList l = {0};
+        const int ops = (int)(rnd() % 80);
+        for (int i = 0; i < ops; i++) CHECK(append_random(&l, h, k));
+        if (rnd() % 5 == 0) l.marks_lost = 1;
+        h[k] = nvn_list_publish(s, &l);
+        for (uint32_t j = 0; j < k; j++) /* calls take references: each earlier list called is kept by this one */
+            if (rnd() % 3 == 0) CHECK(nvn_list_ref(s, h[j]));
+    }
+}
+static void test_unref_marks(void) {
+    g_nvn_oplist_marks = 1;
+    for (int round = 0; round < 40; round++) {
+        NvnListStore a = {0}, b = {0};
+        uint64_t ha[20], hb[20];
+        const uint32_t seed = 1000u + (uint32_t)round;
+        build_store(&a, ha, 20, seed);
+        build_store(&b, hb, 20, seed);
+        for (uint32_t k = 20; k-- > 0;) { /* the newest first, as frames let their lists go */
+            g_nvn_unref_marks = 0;
+            nvn_list_unref(&a, ha[k]);
+            g_nvn_unref_marks = 1;
+            nvn_list_unref(&b, hb[k]);
+            CHECK(nvn_list_live(&a) == nvn_list_live(&b));
+        }
+        g_nvn_unref_marks = 0;
+        for (uint32_t k = 0; k < 20; k++) { /* the references the calls took, gone the same way */
+            nvn_list_unref(&a, ha[k]);
+            g_nvn_unref_marks = 1;
+            nvn_list_unref(&b, hb[k]);
+            g_nvn_unref_marks = 0;
+            CHECK(nvn_list_live(&a) == nvn_list_live(&b));
+        }
+        nvn_list_store_free(&a);
+        nvn_list_store_free(&b);
+    }
+}
+
 int main(void) {
     test_random_lists();
+    test_unref_marks();
     test_off();
     test_lost();
     test_publish_copy();

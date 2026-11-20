@@ -3256,7 +3256,9 @@ static void h_command_buffer_add_control_memory(CPU* c, u64 entry) {
         cb->control_begin = c->x[1];
         cb->control_end = c->x[1] <= UINT64_MAX - c->x[2] ? c->x[1] + c->x[2] : UINT64_MAX;
         cb->control_adds++;
+        const uint64_t u0 = g_perf_probes ? plat_ns() : 0; /* PERF-34: the lists' unref walk, on this thread */
         command_buffer_drop_owned(cb, owned_overlaps, cb->control_begin, cb->control_end);
+        if (u0) perf_wait_note(PW_UNREF, NULL, plat_ns() - u0);
     }
     command_unhold(&hold);
 }
@@ -6882,7 +6884,9 @@ static void frame_finish(FrameJob* job) {
             window->states[job->index] = NVN_IMAGE_FREE;
     }
     pm_lock(&lists_lock);
+    const uint64_t u0 = g_perf_probes ? plat_ns() : 0; /* PERF-34: the lists' unref walk, on this thread */
     nvn_frame_release(&job->frame, &lists);
+    if (u0) perf_wait_note(PW_UNREF, NULL, plat_ns() - u0);
     pm_unlock(&lists_lock);
     frames_in_flight--;
     pc_broadcast(&frame_done_cv); /* the image and the syncs are up to date */

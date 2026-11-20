@@ -160,6 +160,25 @@ void gpu_mem_written(u64 address, u64 size) {
     (void)address, (void)size;
     written_calls++;
 }
+/* PERF-34 bit 4: a hold's one notice, under the lock, between a begin and an end */
+static unsigned notice_begins, notice_ends, many_calls, many_ranges;
+static int notice_pending;
+void gpu_mem_notice_begin(void) {
+    assert(lock_depth && !notice_pending); /* one hold's notice at a time on this thread */
+    notice_begins++;
+    notice_pending++;
+}
+void gpu_mem_written_many(const u64* gva, const u64* size, u32 n) {
+    (void)gva, (void)size;
+    assert(lock_depth && notice_pending == 1 && n);
+    many_calls++;
+    many_ranges += n;
+}
+void gpu_mem_notice_end(void) {
+    assert(notice_pending == 1);
+    notice_pending--;
+    notice_ends++;
+}
 int gmem_write(u64 address, const void* data, u64 size) {
     gmem_before_write(address, size);
     gmem_write_raw(address, data, size);
@@ -454,6 +473,7 @@ static void check_release_walks(void) {
 
 int main(void) {
     g_perf_probes = getenv("SNX_TEST_PROBES") != NULL; /* the same checks again with perform's split (PERF-32) */
+    g_perf_small = getenv("SNX_TEST_SMALL") ? atoi(getenv("SNX_TEST_SMALL")) : 0; /* and with PERF-34's bits */
     if (g_perf_probes) g_perf.sub[0].carry_v = PERF_SUBS; /* slot 0 as in a long run: a gate 0 would show (PERF-33) */
     pending = 1;
     next_compute = 9;
@@ -595,7 +615,11 @@ int main(void) {
     check_landed_record();
     check_release_walks();
     check_tail();
-    assert(hook_calls == payload_writes && written_calls == payload_writes); /* each copy has both, split or not */
+    /* each copy has its hooks and its notice: its own, or with bit 4 a range in its hold's one notice */
+    assert(hook_calls == payload_writes && written_calls + many_ranges == payload_writes);
+    assert(!notice_pending && notice_begins == notice_ends && notice_ends == many_calls);
+    if (g_perf_small & PSM_NOTICE) assert(many_calls >= 1 && many_ranges >= many_calls);
+    else assert(!notice_begins && !many_ranges);
     if (g_perf_probes) { /* each payload write noted its three steps once each, and the samples reports' sums */
         char line[PERF_COPIES_LINE];
         perf_waits_line(&g_perf_waits, 1, line, sizeof line);

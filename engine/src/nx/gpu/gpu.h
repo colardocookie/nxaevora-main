@@ -319,6 +319,13 @@ void dma_snap_staged_free(DmaStaged* d);
 /* maxwell3d.c: the record of GPU-side writes. Each write stamps a new generation on the pages it covers, by GPU
    address and by the guest pages behind them */
 void gpu_mem_written(u64 gva, u64 size);
+/* SNX_ARCEUS_PERF_SMALL bit 4 (PERF-34): a release hold's payload writes, one notice for all. notice_begin raises
+   the pending count before the first write (gpu_mem_dirty_since answers 1 while it is up), written_many stamps the
+   ranges with one generation, and notice_end lowers the count after it is published */
+void gpu_mem_notice_begin(void);
+void gpu_mem_written_many(const u64* gva, const u64* size, u32 n);
+void gpu_mem_notice_end(void);
+extern int (*gpu_lock_mine)(void); /* the renderer's: whether this thread holds its lock (PERF-34's probe) */
 void gpu_mem_written_shader(u64 gva, u64 size); /* a shader's result landing in guest memory */
 /* guest CPU bytes [cpu, cpu + size) written by an engine that doesn't go through the GPU's address space (VIC's
    picture, published over them, memory/own.c): what is built from them checks them again */

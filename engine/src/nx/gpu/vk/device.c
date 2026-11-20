@@ -44,6 +44,7 @@ static void vk_let_go(void) {
 void vk_unlock(void) {
     if (!--t_vkdepth) vk_let_go();
 }
+static int vk_lock_mine(void) { return t_vkdepth > 0; } /* gpu_lock_mine (PERF-34's probe) */
 int vk_trylock(void) {
     if (!t_vkdepth && !pm_trylock(&g_vklock)) return 0;
     if (!t_vkdepth++) __atomic_store_n(&g_vk_owner, plat_tid(), __ATOMIC_RELAXED);
@@ -762,6 +763,7 @@ int vk_swapchain_create(int srgb) {
 }
 
 int vk_init(void) {
+    gpu_lock_mine = vk_lock_mine;
     pm_init(&g_vklock);
     if (g_opt_headless) {
         /* Load libvulkan/vulkan-1 directly, or the driver the program's folders carry (an Apple app's MoltenVK): no SDL

@@ -218,6 +218,8 @@ typedef struct {
 } NvnOpList;
 /* the marks are taken, set once at start before any list is recorded (main.c), and read by the submit's scan */
 extern int g_nvn_oplist_marks;
+/* SNX_ARCEUS_PERF_SMALL bit 3 (PERF-34): nvn_list_unref finds a freed list's CALLs at its marks when it has them all */
+extern int g_nvn_unref_marks;
 /* 1 when the list's marks hold every FENCE_SYNC, WAIT_SYNC and CALL op: with the marks on and none lost */
 static inline int nvn_oplist_marked(const NvnOpList* list) { return g_nvn_oplist_marks && !list->marks_lost; }
 

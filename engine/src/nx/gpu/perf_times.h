@@ -216,6 +216,7 @@ typedef struct { /* all atomic */
        and the frame's draws summed over the presents */
     uint64_t last_n[PCY_KINDS], last_has[PCY_KINDS], res_at[PCY_KINDS], res_place[PCY_KINDS], res_frames[PCY_KINDS];
     uint64_t draws_sum, presents;
+    uint64_t stamp_off, stamp_pending; /* PERF-34: stamp reads off the renderer's lock, and those a notice met */
 } PerfHandoff;
 extern PerfHandoff g_perf_handoff;
 void perf_handoff_compute(PerfHandoff* h, uint64_t now);
@@ -223,6 +224,9 @@ void perf_handoff_time(PerfHandoff* h, int part, uint64_t ns, uint64_t ops, uint
 /* at a present's frame_end, drawn the draws so far; at a storage image's write, drawn and the image */
 void perf_handoff_frame_draws(PerfHandoff* h, uint64_t drawn);
 void perf_handoff_result(PerfHandoff* h, int kind, uint64_t drawn); /* a registration of kind with drawn draws so far */
+static inline void perf_stamp_read(PerfHandoff* h, int pending) {
+    __atomic_fetch_add(pending ? &h->stamp_pending : &h->stamp_off, 1, __ATOMIC_RELAXED);
+}
 void perf_handoff_image(PerfHandoff* h, uint64_t drawn, uint64_t gva, uint32_t w, uint32_t hgt, uint32_t fkey);
 size_t perf_handoff_line(PerfHandoff* h, uint32_t frames, char* out, size_t size);
 /* the release thread spent [start, end) in state (REL_*), landing outputs storage outputs while holding vk_lock */
@@ -624,7 +628,13 @@ enum { PWHO_SCANNER = PTH_N, PWHO_OTHER, PWHO_N };
 enum { PW_VKWAIT = 5, PW_SCAN, PW_SUBMIT, PW_ENDCB, PW_N0 }; /* after host.h's PMW_* (lock, cond, wake, yield, sleep) */
 /* a payload release's split (release.c perform): its write's before-write hooks, copy and written notice, and a
    samples report's sum */
-enum { PW_HOOKS = PW_N0, PW_COPY, PW_WRITTEN, PW_QUERY, PW_N };
+/* PERF-34's probes: a result's block made, and a freed list's walk for its CALLs */
+enum { PW_HOOKS = PW_N0, PW_COPY, PW_WRITTEN, PW_QUERY, PW_ALLOC, PW_UNREF, PW_N };
+/* SNX_ARCEUS_PERF_SMALL (PERF-34, research 11:52): small exact steps, a bit each, read once at start. 1: the release
+   thread is woken only while it sleeps. 2: a result's block is not zeroed where every byte is written before it is
+   read. 4: a freed list's CALLs are found at its marks. 8: one written notice for a release hold's payload writes */
+extern int g_perf_small;
+enum { PSM_WAKE = 1, PSM_NOZERO = 2, PSM_UNREF = 4, PSM_NOTICE = 8 };
 #define PERF_WAIT_SLOTS 512u
 typedef struct {
     uint64_t key[PERF_WAIT_SLOTS]; /* atomic: 0 free, else 1 << 56 | kind << 52 | who << 48 | the caller's address */

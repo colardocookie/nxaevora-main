@@ -82,6 +82,27 @@ static void mem_written(u64 gva, u64 size, int kind) {
     pm_unlock(&g_wlk);
 }
 void gpu_mem_written(u64 gva, u64 size) { mem_written(gva, size, PSK_GPU); }
+/* PERF-34 bit 4: the combined notices pending (a count: holds may come from more than one thread) */
+static u64 g_wpending;
+int (*gpu_lock_mine)(void);
+void gpu_mem_notice_begin(void) {
+    pm_lock(&g_wlk);
+    __atomic_add_fetch(&g_wpending, 1, __ATOMIC_SEQ_CST);
+    pm_unlock(&g_wlk);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST); /* before the first deferred copy */
+}
+void gpu_mem_written_many(const u64* gva, const u64* size, u32 n) {
+    pm_lock(&g_wlk);
+    Stamp s = {g_wgen + 1, PSK_GPU};
+    for (u32 i = 0; i < n; i++)
+        if (size[i]) {
+            stamp_gpu(gva[i], size[i], &s);
+            guest_runs(gva[i], size[i], stamp_run, &s);
+        }
+    __atomic_store_n(&g_wgen, s.gen, __ATOMIC_RELEASE);
+    pm_unlock(&g_wlk);
+}
+void gpu_mem_notice_end(void) { __atomic_sub_fetch(&g_wpending, 1, __ATOMIC_RELEASE); /* after g_wgen's store */ }
 void gpu_mem_written_shader(u64 gva, u64 size) { mem_written(gva, size, PSK_RESULT); }
 void gpu_mem_landed(u64 gva, u64 size) {
     if (g_perf_times > 1) mem_written(gva, size, PSK_LANDED); /* the next generation, which the result's stamp takes */
@@ -103,7 +124,10 @@ void gpu_mem_written_cpu(u64 cpu, u64 size) {
     __atomic_store_n(&g_wgen, s.gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
 }
-u64 gpu_mem_generation(void) { return __atomic_load_n(&g_wgen, __ATOMIC_ACQUIRE); }
+u64 gpu_mem_generation(void) {
+    if (g_perf_probes && gpu_lock_mine && !gpu_lock_mine()) perf_stamp_read(&g_perf_handoff, 0); /* PERF-34 */
+    return __atomic_load_n(&g_wgen, __ATOMIC_ACQUIRE);
+}
 /* a save state's load: every page reads as written after anything asked before, through the tables' overflow, which
    covers every page */
 void gpu_mem_written_all(void) {
@@ -130,6 +154,11 @@ static int dirty_run(u64 cpu, u64 n, void* ctx) {
    one game */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) {
     DirtyAsk q;
+    if (g_perf_probes && gpu_lock_mine && !gpu_lock_mine()) perf_stamp_read(&g_perf_handoff, 0); /* PERF-34 */
+    if (sz && __atomic_load_n(&g_wpending, __ATOMIC_SEQ_CST)) { /* a hold's writes not stamped yet: dirty */
+        if (g_perf_probes) perf_stamp_read(&g_perf_handoff, 1);
+        return 1;
+    }
     if (!sz || since >= __atomic_load_n(&g_wgen, __ATOMIC_ACQUIRE)) return 0;
     if (write_pages_since(&g_wgpu, since, a, sz)) return 1;
     if (!wcheck_on()) return 0;

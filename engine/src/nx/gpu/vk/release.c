@@ -137,6 +137,43 @@ static void write_timed(u64 gva, const void* src, u64 size) {
     perf_wait_note(PW_COPY, NULL, t2 - t1);
     perf_wait_note(PW_WRITTEN, NULL, t3 - t2);
 }
+/* SNX_ARCEUS_PERF_SMALL bit 4 (PERF-34): the payload writes of a hold, the outermost release_through's, get one
+   written notice at its end. Their ranges wait here, under vk_lock. Past NOTICE_N, a write stamps itself */
+#define NOTICE_N 4096u
+static u64 g_notice_gva[NOTICE_N], g_notice_size[NOTICE_N];
+static u32 g_notice_n, g_notice_depth;
+static int g_notice_open;
+static int notice_on(void) { return (g_perf_small & PSM_NOTICE) && g_perf_times <= 1; }
+static void write_deferred(u64 gva, const void* src, u64 size) {
+    if (!size) return;
+    if (!g_notice_open) { /* before the first deferred copy (the fence is in notice_begin) */
+        gpu_mem_notice_begin();
+        g_notice_open = 1;
+    }
+    const u64 t0 = g_perf_probes ? plat_ns() : 0;
+    gmem_before_write(gva, size);
+    const u64 t1 = t0 ? plat_ns() : 0;
+    gmem_write_raw(gva, src, size);
+    if (t0) {
+        const u64 t2 = plat_ns();
+        perf_wait_note(PW_HOOKS, NULL, t1 - t0);
+        perf_wait_note(PW_COPY, NULL, t2 - t1);
+    }
+    if (g_notice_n < NOTICE_N) {
+        g_notice_gva[g_notice_n] = gva, g_notice_size[g_notice_n] = size;
+        g_notice_n++;
+    } else
+        gpu_mem_written(gva, size);
+}
+/* the hold's one notice, then the pending count lowered */
+static void notice_close(void) {
+    const u64 t0 = g_perf_probes ? plat_ns() : 0;
+    gpu_mem_written_many(g_notice_gva, g_notice_size, g_notice_n);
+    if (t0) perf_wait_note(PW_WRITTEN, NULL, plat_ns() - t0);
+    g_notice_n = 0;
+    g_notice_open = 0;
+    gpu_mem_notice_end();
+}
 static void perform(Release* r) {
     if (r->samples) { /* the count, as the report's structure size says: one word, or the value and the timestamp */
         const int timed = g_perf_probes;
@@ -151,7 +188,9 @@ static void perform(Release* r) {
     vk_result_begin();
     /* PERF-33: a release with gate 0 (nothing pending) was never registered, release() registers gated ones only */
     if (r->gva && r->gate && g_perf_probes) perf_sub_landed(&g_perf, r->gate, plat_ns());
-    if (r->gva && g_perf_probes)
+    if (r->gva && g_notice_depth)
+        write_deferred(r->gva, r->data, r->len);
+    else if (r->gva && g_perf_probes)
         write_timed(r->gva, r->data, r->len);
     else if (r->gva)
         gmem_write(r->gva, r->data, r->len);
@@ -166,6 +205,8 @@ static _Thread_local int t_release_thread; /* SNX_ARCEUS_PERF_TIMES times this t
 static void release_through(u64 gate, u64 cgate) {
     const u64 lock0 = g_perf_times && t_release_thread ? plat_ns() : 0; /* and its wait for vk_lock (PERF-14) */
     vk_lock();
+    const int notice = notice_on(); /* PERF-34 bit 4: this call's payload writes wait for the outermost's notice */
+    if (notice) g_notice_depth++;
     const u64 held = lock0 ? plat_ns() : 0;
     const u64 outputs0 = held ? __atomic_load_n(&g_perf.wb_total, __ATOMIC_RELAXED) : 0;
     vk_result_begin();
@@ -213,8 +254,15 @@ static void release_through(u64 gate, u64 cgate) {
         perf_rel_interval(&g_perf, REL_LOCK, lock0, held, 0);
         perf_rel_interval(&g_perf, REL_HOLD, held, end, outputs); /* the outputs landed under this hold */
     }
+    if (notice && !--g_notice_depth && g_notice_open) notice_close();
     vk_unlock();
     if (g_perf_times) perf_tail_freed(&g_perf, plat_ns());
+}
+/* SNX_ARCEUS_PERF_SMALL bit 1 (PERF-34): the release thread is woken only while it sleeps. The thread sets the
+   flag and every waker reads it under g_rlock, and pc_wait gives the lock up as it sleeps, so no wake is lost */
+static int g_rsleep;
+static void release_wake(void) {
+    if (!(g_perf_small & PSM_WAKE) || g_rsleep) pc_broadcast(&g_rcv);
 }
 static void release_thread(void* p) {
     (void)p;
@@ -224,7 +272,11 @@ static void release_thread(void* p) {
     for (;;) {
         u64 gate, cgate;
         pm_lock(&g_rlock);
-        while (g_rtail == g_rheld) pc_wait(&g_rcv, &g_rlock, -1);
+        while (g_rtail == g_rheld) {
+            if (g_perf_small & PSM_WAKE) g_rsleep = 1; /* under g_rlock, which pc_wait gives up as it sleeps */
+            pc_wait(&g_rcv, &g_rlock, -1);
+            if (g_perf_small & PSM_WAKE) g_rsleep = 0;
+        }
         gate = g_rq[g_rtail % RQ_N].gate;
         cgate = g_rq[g_rtail % RQ_N].cgate;
         pm_unlock(&g_rlock);
@@ -321,7 +373,7 @@ static void release(Release* r) {
             fatal("could not start the GPU release thread: %s", snx_os_error(why, sizeof why));
         }
     }
-    pc_broadcast(&g_rcv);
+    release_wake();
     pm_unlock(&g_rlock);
     vk_unlock();
 }
@@ -342,7 +394,7 @@ void vk_release_submit(void) {
     pm_lock(&g_rlock);
     g_rheld = g_rhead; /* the commands after the releases have read guest memory */
     u64 gate = g_rhead != g_rtail ? g_rq[(g_rhead - 1) % RQ_N].gate : 0; /* the gates only grow */
-    if (g_rthread) pc_broadcast(&g_rcv);
+    if (g_rthread) release_wake();
     pm_unlock(&g_rlock);
     release_through(0, 0); /* those no GPU work holds */
     submit_through(gate);
@@ -495,7 +547,7 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
     }
     pm_lock(&g_rlock);
     g_rheld = g_rhead; /* needed now: the stream holds them no longer */
-    if (g_rthread) pc_broadcast(&g_rcv);
+    if (g_rthread) release_wake();
     found = perf_storage_walk() ? release_find_runs(gva, len, id, all, &gate, &cgate)
                                 : release_find(gva, len, id, all, &gate, &cgate);
     pm_unlock(&g_rlock);

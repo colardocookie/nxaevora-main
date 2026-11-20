@@ -23,6 +23,7 @@ PerfP29 g_perf_p29;
 PerfMem g_perf_mem;
 PerfWaits g_perf_waits;
 PerfHandoff g_perf_handoff;
+int g_perf_small;
 _Thread_local int g_perf_release_thread;
 int g_perf_bind;
 uint64_t g_perf_exact;
@@ -1301,7 +1302,8 @@ size_t perf_handoff_line(PerfHandoff* h, uint32_t frames, char* out, size_t size
                      "a frame, their draws' mean place after frame_end, and the last one's place/its frame's draws, "
                      "guest address, size and format; the last submission's results by kind out/image/compute/"
                      "payload/samples, count@share of frames; each kind's last registration's mean place among the "
-                     "frame's draws, -1 none; the frame's mean draws) tails=%llu",
+                     "frame's draws, -1 none; the frame's mean draws; stamp reads a frame off the renderer's lock, "
+                     "and those a pending notice answered (PERF-34)) tails=%llu",
                      frames, (unsigned long long)n);
     at = putf(out, size, at, " subs=%.1f carry=%.1f kinds=", take64(&h->subs) / fn, take64(&h->carry) / fn);
     for (int k = 0; k < PCY_KINDS; k++) at = putf(out, size, at, "%s%.1f", k ? "/" : "", take64(&h->kinds[k]) / fn);
@@ -1338,13 +1340,16 @@ size_t perf_handoff_line(PerfHandoff* h, uint32_t frames, char* out, size_t size
         if (!nf) take64(&h->res_place[k]);
     }
     at = putf(out, size, at, " draws=%.1f", np ? take64(&h->draws_sum) / (double)np : 0.0);
+    at = putf(out, size, at, " stamp_off=%.1f stamp_pending=%.1f", take64(&h->stamp_off) / f,
+              take64(&h->stamp_pending) / f);
     if (!np) take64(&h->draws_sum);
     return at < size ? at : size - 1;
 }
 size_t perf_waits_line(PerfWaits* w, uint32_t frames, char* out, size_t size) {
     static const char* const who[PWHO_N] = {"gpu", "release", "recorder", "guest", "scanner", "other"};
     static const char* const kind[PW_N] = {"lock",   "cond", "wake",  "yield",  "sleep",   "vkwait", "scan",
-                                           "submit", "endcb", "hooks", "copy", "written", "query"};
+                                           "submit", "endcb", "hooks", "copy", "written", "query", "alloc",
+                                           "unref"};
     static WaitSite site[PERF_WAIT_SLOTS]; /* the GPU thread's, which writes the line */
     uint64_t tn[PWHO_N][PW_N] = {{0}}, tns[PWHO_N][PW_N] = {{0}};
     uint32_t nsite = 0;

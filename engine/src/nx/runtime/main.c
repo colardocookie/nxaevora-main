@@ -963,6 +963,30 @@ int snx_main(int argc, char** argv) {
         if (g_nvn_oplist_marks)
             LOG("perf-scan: EXPERIMENT on, a list's fence, wait and call ops are marked as they are appended and the "
                 "submit reads them at their marks, not by walking every op\n");
+        const char* small = getenv("SNX_ARCEUS_PERF_SMALL"); /* bench only, a mask (gpu/perf_times.h, PERF-34) */
+        if (small && *small) {
+            char* end = NULL;
+            const unsigned long m = strtoul(small, &end, 0);
+            if (*end || m > 15)
+                WARN("perf-small: '%s' is not a mask of 0 to 15, off\n", small);
+            else
+                g_perf_small = (int)m;
+        }
+        g_nvn_unref_marks = (g_perf_small & PSM_UNREF) && g_nvn_oplist_marks;
+        if (g_perf_small & PSM_WAKE)
+            LOG("perf-small: EXPERIMENT bit 1, the release thread is woken only as it sleeps\n");
+        if (g_perf_small & PSM_NOZERO)
+            LOG("perf-small: EXPERIMENT bit 2, a result's block is zeroed only where nothing writes it first\n");
+        if (g_perf_small & PSM_UNREF)
+            LOG("perf-small: EXPERIMENT bit 3, %s\n", g_nvn_unref_marks
+                ? "a freed list's CALLs are read at its marks" : "no marks without SNX_ARCEUS_PERF_SCAN=1: as before");
+        if ((g_perf_small & PSM_NOTICE) && g_perf_times > 1) { /* PERF-23's record keeps a notice a write */
+            g_perf_small &= ~PSM_NOTICE;
+            LOG("perf-small: bit 4 off with SNX_ARCEUS_PERF_TIMES=2\n");
+        }
+        if (g_perf_small & PSM_NOTICE)
+            LOG("perf-small: EXPERIMENT bit 4, a release hold's payload writes get one written notice at its end, "
+                "stamp reads answer written while it is pending\n");
         const char* patch_hash = getenv("SNX_ARCEUS_PATCH_HASH"); /* a fix, off by default (gpu/vk/buffer.c) */
         g_patch_hash = patch_hash && !strcmp(patch_hash, "1");
         if (g_patch_hash)

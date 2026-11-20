@@ -262,6 +262,24 @@ int main(void) {
         }
     }
 
+    /* PERF-34 bit 4 (maxwell3d.c): while a hold's notice is pending every range reads as written, even since the newest
+       generation; its writes get one generation; after it, a since from before sees them written, one from after not */
+    {
+        const u64 g0 = gpu_mem_generation(), a[2] = {0x40000, 0x50000}, n[2] = {16, 64};
+        gpu_mem_notice_begin();
+        const int pending = gpu_mem_dirty_since(g0, 0x90000, 4) && gpu_mem_dirty_since(g0 + 1000, 0x40000, 16);
+        gpu_mem_written_many(a, n, 2);
+        const u64 g1 = gpu_mem_generation();
+        gpu_mem_notice_end();
+        if (!pending || g1 != g0 + 1 || !gpu_mem_dirty_since(g0, 0x40000, 16) || !gpu_mem_dirty_since(g0, 0x50020, 4) ||
+            gpu_mem_dirty_since(g0, 0x90000, 4) || gpu_mem_dirty_since(g1, 0x40000, 16) ||
+            gpu_mem_dirty_since(g1, 0x50000, 64)) {
+            fprintf(stderr, "FAIL: a hold's one notice (pending %d, generations %llu to %llu)\n", pending,
+                    (unsigned long long)g0, (unsigned long long)g1);
+            failures++;
+        }
+    }
+
     if (failures) return 1;
     puts("SetRenderEnable: FALSE, TRUE, CONDITIONAL, IF_EQUAL, IF_NOT_EQUAL and the override gate draws and clears; a "
          "report semaphore acquire waits");
