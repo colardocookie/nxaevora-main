@@ -14,10 +14,10 @@
 void nvn_native_init(void);
 /* at a clean exit: the functions that the game called and the host does not have */
 void nvn_native_report(void);
-/* 1 once nvn_native_init found nvn_legacy=0 and hooked the loader */
 /* SNX_ARCEUS_NVN_BLEND_TARGETS=1: a blend slot per colour target in the replay (nvn_blend_slots.h), read once at
    start */
 extern int g_nvn_blend_targets;
+/* 1 once nvn_native_init found nvn_legacy=0 and hooked the loader */
 int nvn_native_active(void);
 /* the host handler of an NVN function by name, or NULL when the host has none (the selftest compares it with the
    library). It does not need nvn_legacy=0. */
