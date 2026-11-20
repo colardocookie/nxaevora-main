@@ -46,6 +46,7 @@ void vk_query_pred_hold(u32);
 void vk_query_pred_drop(u32);
 int vk_render_predicate(u64 a, int equal, u32* pred);
 void vk_render_predicate_drop(u32 pred);
+static u64 g_vk_drawn; /* vk.h is stood in: release.c reads the draw count with the probes (PERF-33) */
 #include "nx/gpu/vk/release.c"
 #include "nx/gpu/vk/writeback.c"
 
