@@ -6,6 +6,7 @@
 #include "common/utilities/logscan.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
+#include "common/utilities/exit_codes.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1675,14 +1676,14 @@ int snx_logscan_main(int argc, char** argv, SnxDemangle demangle) {
         else if (!strcmp(argv[i], "--format") && i + 1 < argc) {
             if (strcmp(argv[i + 1], "json") && strcmp(argv[i + 1], "markdown")) {
                 fprintf(stderr, "%s: --format is json or markdown\n", argv[0]);
-                return 2;
+                return SNX_EXIT_USAGE;
             }
             markdown = !strcmp(argv[++i], "markdown");
         } else
             files++;
     if (!files) {
         fprintf(stderr, "usage: %s LOG... [--format json|markdown] [--name NAME]   (- reads stdin)\n", argv[0]);
-        return 2;
+        return SNX_EXIT_USAGE;
     }
     for (i = 1; i < argc; i++) {
         char* out;
@@ -1694,14 +1695,14 @@ int snx_logscan_main(int argc, char** argv, SnxDemangle demangle) {
         FILE* f = strcmp(argv[i], "-") ? fopen(argv[i], "rb") : stdin;
         if (!f) {
             fprintf(stderr, "%s: %s cannot be read\n", argv[0], argv[i]);
-            rc = 1;
+            rc = SNX_EXIT_INTERNAL;
             continue;
         }
         if (snx_logscan_file(&s, f)) {
             fprintf(stderr, "%s: %s: out of memory or a read error\n", argv[0], argv[i]);
             snx_logscan_free(&s);
             if (f != stdin) fclose(f);
-            rc = 1;
+            rc = SNX_EXIT_INTERNAL;
             continue;
         }
         if (f != stdin) fclose(f);

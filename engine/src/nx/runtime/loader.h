@@ -10,8 +10,11 @@
 /* The loaded game module and its dispatch table, indexed by (guest address - g_code_lo) / 4 (main.c) */
 extern const SnxModule* g_mod;
 extern GuestFn* g_disp;
-/* Maps every module g_mod lists at its base, from the game's data folder, and sets its pages' permissions. 0, or -1
-   after logging why */
+/* loader_load's results: the game's executables are loaded, one is missing or invalid, or the host could not commit
+   their memory (a start failure, not a game-file failure) */
+enum { SNX_LOADER_OK = 0, SNX_LOADER_INVALID = -1, SNX_LOADER_NOMEM = -2 };
+/* Maps every module g_mod lists at its base, from the game's data folder, and sets its pages' permissions. 0, or the
+   value above after logging why */
 int loader_load(void);
 /* each module's read-only and data segments, while each returns 0: their name ("main.ro", "main.data"), their bytes
    in guest memory, guest address and size, and whether the game can write them (its data segment, which changes once

@@ -257,24 +257,147 @@ each row is named, so that unit 5 can remove the drawing and keep the work.
 - **Inputs.** The decrypted ExeFS and RomFS of phase 7, the data folder, the output folder and the settings file.
   Each one has an option and a default. The working directory has no effect on the result, or the CLI says which
   path it uses.
-- **Settings file.** One file format and one place (now `<id>.ini` beside the program and `%APPDATA%\scarletnx`).
-  The CLI can read, write and check a setting without a start of the game.
+- **Settings file.** One file format and one place (now `<config>/<id>.ini` under `%APPDATA%\nxaevora`,
+  `engine/src/common/utilities/common.h:113`). The CLI can read, write and check a setting without a start
+  of the game.
 - **Exit codes.** A table: success, wrong usage, missing or wrong game files, recompile failure, start failure
-  before the window, crash of the game, stop by the user. The launcher acts on the code only.
+  before the renderer runs, crash of the game, stop by the user. The launcher acts on the code only.
 - **Progress and errors for the launcher.** A machine-readable stream (the proposal is JSON Lines on stdout with an
   option, and the human text on stderr). Each line has a stage, a value and, on an error, the stage that failed and
   the cause. `entry.c` already sets line buffering for a launcher on a pipe. The format has a version number.
 - **No dialog.** A normal recompile or run needs no GUI and no question. The setup asks nothing when the options and
   the settings file give the values. A missing value is an error with a clear message and an exit code.
-- **Failure before the window.** An error before the renderer starts goes to stderr and to the log, with the stage
+- **Failure before the renderer.** An error before the renderer starts goes to stderr and to the log, with the stage
   and the cause. It does not depend on a message box.
 
 ### Settings definition
 
 `settings.txt` stays the one source of the settings. It generates the C tables now. Unit 3 adds an output of the
-definition that the launcher and the new UI read (for example a JSON file made at build time, or a CLI command that
-prints it): key, type, range, default, words, page, label, help and scope. The read, the write and the check of the
-values go to code that has no UI. The launcher and the new UI never keep their own copy of the definition.
+definition that the launcher and the new UI read (the command `settings schema`, see "Commands"): key, type,
+range, default, words, page, label, help and scope. The read, the write and the check of the values go to code
+that has no UI. The launcher and the new UI never keep their own copy of the definition.
+
+### Commands
+
+The program is `nxaevora-engine`. The first argument selects the command. A command name is only `argv[1]`. A
+relative path argument uses the current directory. Every other path does not depend on it.
+
+| Command | Job | Old form |
+|---|---|---|
+| `recompile <game folder> [options] [--KEY=VALUE]` | Recompile the game. All current recompile options stay | `-r` |
+| `run <game program> [--KEY=VALUE] [-- game arguments]` | Run the game | Play mode and `--game=PATH` |
+| `settings list [--scope=game\|recompile]` | Print the nine-field settings text, with the current format | `--settings`, `--settings=recompile` |
+| `settings schema` | Print the settings definition as one JSON document on stdout | None |
+| `settings get KEY --game=PATH` | Read one value of the game's `<config>/<id>.ini` | None |
+| `settings set KEY VALUE --game=PATH` | Write one value of that file | None |
+| `settings check KEY VALUE` | Check one value against the settings definition. It reads and writes no file | None |
+| `logs export --game=PATH [--out FILE.zip]` | Write one zip with the diagnostic files | None |
+| `cache clean --game=PATH [--shaders] [--code] [--units]` | Delete the game caches | None |
+
+`settings list` refuses other arguments with exit 2. It does not ignore them.
+
+`settings schema` comes from the `settings.txt` tables at run time. It is not a file made at build time. The
+top level is `{"v":1,"settings":[...]}`. Each setting has these fields:
+
+| Field | Content |
+|---|---|
+| `key`, `section`, `page` | The names in `settings.txt` |
+| `type` | `int`, `float` or `text` |
+| `min`, `max` | The range |
+| `default` | The default value |
+| `words` | The choice words |
+| `label`, `help` | The label and the help text |
+| `scope` | `startup`, `in-game`, `recompile` or `launcher` |
+
+In-game rows are in the schema, unlike `list`.
+
+`settings get` and `settings set` use the same file that `engine/src/nx/runtime/main.c:770` opens.
+`settings check` reads and writes no file and needs no `--game`. It uses the same check as `ini_check`
+(`engine/src/nx/runtime/ini.c:68-84`) against the value and the settings definition only. The three setting
+commands need no window and no game start. The code has no UI dependency.
+
+`logs export` writes one zip. It holds the game log, the kept older logs (`<state>/logs/`), `threads.txt`, the
+`.ini` and the early error file. miniz moves from the GUI-only dependency to the runtime. The default output is
+`<state>/<id>-logs-<date>_<time>.zip`.
+
+`cache clean` with no flag deletes the shader cache and the `<id>.jitcache` of the game. `--units` also deletes
+the recompile unit cache (`<cache>/units`). The command stops while the game runs only if a check exists that
+needs no guess. Without such a check, the rule stays a rule of use and the command does not test it.
+
+These developer tools stay as they are: `--help`, `<command> --help`, `--scan-log`, `--dump-modules`, `--mcp`,
+`--setup` and `--no-setup`.
+
+The old flags are aliases:
+
+| Old form | Command |
+|---|---|
+| `-r` | `recompile` |
+| Play mode and `--game=PATH` | `run` |
+| `--settings` | `settings list` |
+| `--settings=recompile` | `settings list --scope=recompile` |
+| No argument | The old start GUI, until unit 5 |
+
+### Exit codes
+
+One header holds the named constants. The proposal is `engine/src/common/utilities/exit_codes.h`.
+
+| Code | Meaning |
+|---|---|
+| 0 | Success. Also a normal game end and a window close by the user |
+| 1 | Internal error: a bug or out of memory |
+| 2 | Wrong usage: unknown command or option, bad argument count |
+| 3 | Game files missing or wrong: the input folder, `exefs/main`, the RomFS or `romfs=` |
+| 4 | Recompile failed: compile, link or build |
+| 5 | Start failed before the renderer runs: the settings file is not readable, or Vulkan or the renderer did not start |
+| 6 | Crash of the game: `fatal`, a crash report or an unhandled exception |
+| 7 | Setting value refused: `settings set` and `settings check` |
+| 8 | The game ended with a nonzero code. The code goes to the log and to `game_code` of the exit line |
+| 126 | POSIX only: a driver stage program could not be prepared (process group, terminal or working directory) |
+| 127 | POSIX only: a driver stage program could not be started (exec failed) |
+| 130 | Stopped by the user (Ctrl+C). This value does not change |
+
+A child stage uses the same table, so the driver passes its code on. A child code above 255 stays 1. On POSIX a
+stage that cannot be prepared exits 126 and one that cannot be started exits 127; the driver passes both on. On
+Windows a start failure is 1.
+
+### Progress stream
+
+`--progress=jsonl` works for `recompile` and `run`. Then stdout carries only JSON Lines and the human text goes
+to stderr. Each line is one object with `"v":1`, `"stage"` and `"event"`, and the optional fields of the event.
+The stages are `input`, `extract`, `recompile`, `link`, `build`, `prepare` (shader preparation), `start` (window)
+and `run`.
+
+| Event | Fields |
+|---|---|
+| `start` | None |
+| `progress` | `"value"`, `"total"`, for example the compiled blocks |
+| `done` | None |
+| `error` | `"message"` with the cause, `"code"` with the exit code |
+
+The last line is the exit line, `{"v":1,"event":"exit","code":N}`. It has no stage. When the game ends with a
+nonzero code, the exit line has `code` 8 and one more field, `"game_code":N`, the game's own code. `v` changes when
+a field changes its meaning. A test reads the stream of a recompile (PR 3d).
+
+### Failure before the renderer runs
+
+Only a `fatal` before the renderer starts goes to stderr, the log and the early error file `scarletnx-error.log`. A
+usage error (exit 2) before the log file exists goes to stderr only. The internal name stays, per the "Internal names"
+decision.
+
+No dialog shows before the renderer runs. After the renderer runs, the crash box stays until the new UI of unit 4
+replaces it. It does not show with `--headless` or in an unattended run.
+
+### Pull requests
+
+| PR | Content |
+|---|---|
+| 3a | The exit-code table, the failure before the renderer, and this design text |
+| 3b | The subcommand dispatch with the old-flag aliases |
+| 3c | `settings list\|schema\|get\|set\|check` |
+| 3d | The JSON Lines progress stream with its test |
+| 3e | `logs export` (zip) and `cache clean` |
+
+Each PR builds, passes `ctest`, and updates `engine/docs/USAGE.md` for its commands.
 
 ### Exit check
 

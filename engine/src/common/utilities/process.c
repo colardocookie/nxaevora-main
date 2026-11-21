@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #define _POSIX_C_SOURCE 200809L
 #include "common/utilities/common.h"
+#include "common/utilities/exit_codes.h"
 #include <errno.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -71,7 +72,7 @@ static int run_stage(const char* const* argv, const char* cwd, const char* stage
     HANDLE job;
     wchar_t *command = stage_command(argv), *directory = cwd ? stage_wide(cwd) : NULL;
     DWORD code = 1, error = 0, waited;
-    int rc = 1, handler = 0;
+    int rc = SNX_EXIT_INTERNAL, handler = 0;
     (void)debugger;
     startup.cb = sizeof(startup);
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -96,7 +97,7 @@ static int run_stage(const char* const* argv, const char* cwd, const char* stage
             TerminateJobObject(job, 130);
             WaitForSingleObject(process.hProcess, INFINITE);
             snx_error("%s interrupted. You can run the same command again.", stage);
-            rc = 130;
+            rc = SNX_EXIT_INTERRUPT;
             goto done;
         }
         waited = WaitForSingleObject(process.hProcess, 50);
@@ -105,7 +106,7 @@ static int run_stage(const char* const* argv, const char* cwd, const char* stage
     }
     if (!GetExitCodeProcess(process.hProcess, &code)) goto failed;
     /* Negative driver results mean "not a tool command" to the runtime entry point. */
-    rc = code <= 255 ? (int)code : 1;
+    rc = code <= 255 ? (int)code : SNX_EXIT_INTERNAL;
     if (rc) snx_error("%s failed (exit status %lu). You can run the same command again.", stage, (unsigned long)code);
     goto done;
 failed:
@@ -137,13 +138,13 @@ static int run_stage(const char* const* argv, const char* cwd, const char* stage
     struct sigaction action, old[4], ignore, old_ttou;
     sigset_t blocked, previous;
     pid_t pid, waited, foreground = -1;
-    int status = 0, rc = 1, sig = 0, installed = 0, tty = 0, group[2] = {-1, -1}, made;
+    int status = 0, rc = SNX_EXIT_INTERNAL, sig = 0, installed = 0, tty = 0, group[2] = {-1, -1}, made;
     size_t i;
     sigemptyset(&blocked);
     for (i = 0; i < 4; ++i) sigaddset(&blocked, signals[i]);
     if (sigprocmask(SIG_BLOCK, &blocked, &previous)) {
         perror("scarletnx: blocking stage signals");
-        return 1;
+        return SNX_EXIT_INTERNAL;
     }
     memset(&action, 0, sizeof(action));
     action.sa_handler = stage_interrupt;

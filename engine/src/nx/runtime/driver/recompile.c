@@ -10,6 +10,7 @@
 #include "nx/runtime/driver/toolchain.h"
 #include "snx_settings.h"
 #include "common/utilities/build_info.h"
+#include "common/utilities/exit_codes.h"
 #include "common/utilities/mods.h"
 #include "common/utilities/patches.h"
 #include <ctype.h>
@@ -284,7 +285,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     char error[1024], option[64], why[256];
     const char* equal;
     size_t option_size;
-    int i, rc = 1, no_build = 0, keep_c = 0, host_win = 0, positional = 0;
+    int i, rc = SNX_EXIT_RECOMPILE, no_build = 0, keep_c = 0, host_win = 0, positional = 0;
     memset(&compile, 0, sizeof(compile));
     memset(&gen, 0, sizeof(gen));
     memset(&program, 0, sizeof(program));
@@ -300,13 +301,15 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
                 input = arg;
             else if (!name)
                 name = arg;
-            else
-                return snx_error("unexpected argument: %s", arg);
+            else {
+                snx_error("unexpected argument: %s", arg);
+                return SNX_EXIT_USAGE;
+            }
             continue;
         }
         if (!strcmp(arg, "--help") || !strcmp(arg, "-h")) {
             usage();
-            return 0;
+            return SNX_EXIT_OK;
         }
         if (!strcmp(arg, "--")) {
             positional = 1;
@@ -332,28 +335,41 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
                 arg = "-O";
             } else if ((equal = strchr(arg, '=')) != NULL) {
                 option_size = (size_t)(equal - arg);
-                if (option_size >= sizeof(option))
-                    return snx_error("unknown option: %s (scarletnx -r -h lists them)", arg);
+                if (option_size >= sizeof(option)) {
+                    snx_error("unknown option: %s (scarletnx -r -h lists them)", arg);
+                    return SNX_EXIT_USAGE;
+                }
                 memcpy(option, arg, option_size);
                 option[option_size] = 0;
                 value = equal + 1;
                 arg = option;
                 if (arg[1] == '-' && snx_recompile_setting(arg + 2)) {
                     const IniOpt* o = snx_recompile_setting(arg + 2);
-                    if (ini_check(o, value, error, sizeof error)) return snx_error("%s", error);
+                    if (ini_check(o, value, error, sizeof error)) {
+                        snx_error("%s", error);
+                        return SNX_EXIT_USAGE;
+                    }
                     ini_read(o, value);
                     continue;
                 }
             }
             if (strcmp(arg, "-o") && strcmp(arg, "--name") && strcmp(arg, "--out") && strcmp(arg, "--outname") &&
                 strcmp(arg, "--outdir") && strcmp(arg, "--runtime") && strcmp(arg, "--target") && strcmp(arg, "-O") &&
-                strcmp(arg, "--jobs") && strcmp(arg, "--chunk") && strcmp(arg, "--jit-cache"))
-                return snx_error("unknown option: %s (scarletnx -r -h lists them)", arg);
+                strcmp(arg, "--jobs") && strcmp(arg, "--chunk") && strcmp(arg, "--jit-cache")) {
+                snx_error("unknown option: %s (scarletnx -r -h lists them)", arg);
+                return SNX_EXIT_USAGE;
+            }
             if (!value) {
-                if (++i == argc) return snx_error("%s requires a value", arg);
+                if (++i == argc) {
+                    snx_error("%s requires a value", arg);
+                    return SNX_EXIT_USAGE;
+                }
                 value = argv[i];
             }
-            if (!*value) return snx_error("%s requires a nonempty value", arg);
+            if (!*value) {
+                snx_error("%s requires a nonempty value", arg);
+                return SNX_EXIT_USAGE;
+            }
             if (!strcmp(arg, "-o") || !strcmp(arg, "--out") || !strcmp(arg, "--outname"))
                 snx_option_renamed(!strcmp(arg, "-o") ? "-o" : !strcmp(arg, "--out") ? "--out" : "--outname", "--name");
             if (!strcmp(arg, "-o") || !strcmp(arg, "--name") || !strcmp(arg, "--out") || !strcmp(arg, "--outname"))
@@ -365,33 +381,44 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
             else if (!strcmp(arg, "--target"))
                 target = value;
             else if (!strcmp(arg, "-O")) {
-                if (strlen(value) != 1 || !strchr("0123sz", value[0]))
-                    return snx_error("-O %s: not 0, 1, 2, 3, s or z", value);
+                if (strlen(value) != 1 || !strchr("0123sz", value[0])) {
+                    snx_error("-O %s: not 0, 1, 2, 3, s or z", value);
+                    return SNX_EXIT_USAGE;
+                }
                 strcpy(g_settings.optimization_level, value);
             } else if (!strcmp(arg, "--jobs")) {
                 g_settings.aot_threads = (int)number(value, 1024);
-                if (!g_settings.aot_threads) return snx_error("--jobs %s: not a whole number from 1 to 1024", value);
+                if (!g_settings.aot_threads) {
+                    snx_error("--jobs %s: not a whole number from 1 to 1024", value);
+                    return SNX_EXIT_USAGE;
+                }
             } else if (!strcmp(arg, "--jit-cache")) {
                 jit_cache = value;
             } else {
                 g_settings.unit_size = (int)number(value, INT_MAX);
-                if (!g_settings.unit_size)
-                    return snx_error("--chunk %s: not a whole number of instructions from 1", value);
+                if (!g_settings.unit_size) {
+                    snx_error("--chunk %s: not a whole number of instructions from 1", value);
+                    return SNX_EXIT_USAGE;
+                }
             }
         } else if (!input)
             input = arg;
         else if (!name)
             name = arg;
-        else
-            return snx_error("unexpected argument: %s", arg);
+        else {
+            snx_error("unexpected argument: %s", arg);
+            return SNX_EXIT_USAGE;
+        }
     }
     if (!input) {
         usage();
-        return 2;
+        return SNX_EXIT_USAGE;
     }
     /* the settings, whichever way they came: -O and --jobs, or --opt= and --aot_threads= as the launcher passes them */
-    if (strlen(g_settings.optimization_level) != 1 || !strchr("0123sz", g_settings.optimization_level[0]))
-        return snx_error("opt = %s: not 0, 1, 2, 3, s or z", g_settings.optimization_level);
+    if (strlen(g_settings.optimization_level) != 1 || !strchr("0123sz", g_settings.optimization_level[0])) {
+        snx_error("opt = %s: not 0, 1, 2, 3, s or z", g_settings.optimization_level);
+        return SNX_EXIT_USAGE;
+    }
     compile.opt = g_settings.optimization_level;
     gen.chunk_instrs = (size_t)g_settings.unit_size;
     compile.jobs = g_settings.aot_threads > 0 ? (unsigned)g_settings.aot_threads : snx_cpu_count();
@@ -399,16 +426,23 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         compile.target_win = 1;
     else if (!strcmp(target, "linux"))
         compile.target_win = 0;
-    else if (strcmp(target, "auto"))
-        return snx_error("--target %s: not auto, linux or win64", target);
+    else if (strcmp(target, "auto")) {
+        snx_error("--target %s: not auto, linux or win64", target);
+        return SNX_EXIT_USAGE;
+    }
     /* The backends write the module for the machine they run on (build == host == target) */
-    if (compile.target_win != host_win)
-        return snx_error("--target %s: modules are built for this host only (%s)", target,
-                         host_win ? "win64" : "linux");
+    if (compile.target_win != host_win) {
+        snx_error("--target %s: modules are built for this host only (%s)", target,
+                  host_win ? "win64" : "linux");
+        return SNX_EXIT_USAGE;
+    }
     gen.abi = snx_game_abi();
     /* an encrypted dump is refused: an ExeFS folder or an NRO is an input */
-    if (snx_refuse_encrypted_dump(input)) return 1;
-    if (snx_load_program(input, &program, error, sizeof(error))) return snx_error("%s", error);
+    if (snx_refuse_encrypted_dump(input)) return SNX_EXIT_GAME_FILES;
+    if (snx_load_program(input, &program, error, sizeof(error))) {
+        snx_error("%s", error);
+        return SNX_EXIT_GAME_FILES;
+    }
     title = snx_game_shown(name, &program);
     game = snx_game_name(name, &program.npdm, program.entry_path);
     out = outdir ? snx_absolute(outdir) : snx_recompiled_dir(paths->repo);
@@ -419,6 +453,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     if ((program.romfs_path && snx_path_within(out, program.romfs_path)) ||
         (program.exefs_path && snx_path_within(out, program.exefs_path))) {
         snx_error("%s must be outside the input ExeFS/RomFS", out);
+        rc = SNX_EXIT_USAGE;
         goto done;
     }
     if (snx_mkdirs(out)) {
@@ -445,6 +480,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         snx_free_program(&program);
         if (snx_load_program_mods(input, mod_names, mod_files, mod_count, &program, error, sizeof error)) {
             snx_error("%s", error);
+            rc = SNX_EXIT_GAME_FILES;
             goto done;
         }
         if (!compile.quiet)
@@ -503,7 +539,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         if (failed) goto done;
     }
     if (no_build) {
-        rc = 0;
+        rc = SNX_EXIT_OK;
         goto done;
     }
     code = snx_format("%s_code.%s", base, compile.target_win ? "dll" : "so");
@@ -583,7 +619,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         }
     }
     if (!compile.quiet) printf("Built %s\n", exe);
-    rc = 0;
+    rc = SNX_EXIT_OK;
 done:
     snx_free_program(&program);
     snx_free_strings(mod_names, mod_count);

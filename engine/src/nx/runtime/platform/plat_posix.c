@@ -9,6 +9,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/log.h"
+#include "common/utilities/exit_codes.h"
 #include <SDL3/SDL_thread.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -1054,7 +1055,7 @@ static void crash_signal(int sig, siginfo_t* si, void* ctx) {
         return;
     }
     /* a fault inside the report itself */
-    if (t_crashed) _exit(1);
+    if (t_crashed) _exit(SNX_EXIT_CRASH);
     t_crashed = 1;
     /* one report at a time: it ends the process, so a second crashing thread just waits for that */
     if (!__atomic_compare_exchange_n(&g_crash_reporting, &idle, 1, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
@@ -1063,7 +1064,7 @@ static void crash_signal(int sig, siginfo_t* si, void* ctx) {
     /* for SIGILL and SIGFPE si_addr is the instruction, not an address it touched */
     fault = sig == SIGSEGV || sig == SIGBUS ? si->si_addr : NULL;
     crash_report(context_pc(ctx), fault, sig);
-    _exit(1);
+    _exit(SNX_EXIT_CRASH);
 }
 
 /* abort() (a driver's assert, a failed allocation in a library): say so, then let it go on to end the process */

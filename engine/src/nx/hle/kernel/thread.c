@@ -3,6 +3,7 @@
 /* guest threads (each on a host thread of its own), the thread table, process exit, and the four cores the threads
    take turns on */
 #include "nx/hle/kernel/kernel_int.h"
+#include "common/utilities/exit_codes.h"
 #include <errno.h>
 #include <string.h>
 #include "nx/runtime/arm.h"
@@ -605,5 +606,5 @@ void process_exit(int code) {
     LOG("The game exited (code %d)\n", code);
     snx_save_before_exit();
     snx_tracy_shutdown();
-    plat_exit_now(code);
+    plat_exit_now(code ? SNX_EXIT_GAME_CODE : SNX_EXIT_OK);
 }

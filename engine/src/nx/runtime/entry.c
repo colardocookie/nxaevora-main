@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "common/utilities/exit_codes.h"
 #include "common/utilities/setup.h"
 #include "nx/runtime/driver/driver.h"
 #include "nx/runtime/driver/mcp.h"
@@ -35,7 +36,7 @@ int snx_switch_main(int argc, char** argv) {
     argc = snx_setup_options(argc, argv, why, sizeof why);
     if (argc < 0) {
         fprintf(stderr, "nxaevora-engine: %s\n", why);
-        return 2;
+        return SNX_EXIT_USAGE;
     }
 #ifdef SNX_WITH_GUI
     snx_menu = snx_gui_main;
@@ -47,7 +48,7 @@ int snx_switch_main(int argc, char** argv) {
     if (argc > 1 && !strncmp(argv[1], "--migrate", 9) && (!argv[1][9] || argv[1][9] == '=')) {
         if (argc > 2) {
             fprintf(stderr, "scarletnx: %s takes nothing after it: %s\n", argv[1], argv[2]);
-            return 2;
+            return SNX_EXIT_USAGE;
         }
         return snx_gui_migrate(argv[0], argv[1]);
     }

@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Startup-only switches, parsed before loading game code or showing any fatal error box. */
 #include "nx/runtime/startup.h"
+#include "common/utilities/exit_codes.h"
 #include "nx/runtime/cli.h"
 #include <stdio.h>
 
@@ -19,7 +20,7 @@ int snx_startup_options(int argc, char** argv) {
         if (result < 0 || (flags & SNX_RECOMP) ||
             (!result && argv[i][0] == '-' && argv[i][1] != '-' && strcmp(argv[i], "-v"))) {
             fprintf(stderr, "scarletnx: unknown startup option: %s\n", argv[i]);
-            return 2;
+            return SNX_EXIT_USAGE;
         }
     }
     g_opt_headless = !!(flags & SNX_HEADLESS);
@@ -31,8 +32,8 @@ int snx_startup_options(int argc, char** argv) {
 #if !defined(SNX_TRACY)
     if (g_opt_tracy_capture || g_opt_tracy_client) {
         fputs("scarletnx: --tracy and --tracy-capture need a runtime built with SNX_TRACY\n", stderr);
-        return 2;
+        return SNX_EXIT_USAGE;
     }
 #endif
-    return 0;
+    return SNX_EXIT_OK;
 }

@@ -50,6 +50,7 @@ u64 g_addon;
 const u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull}; /* am.c's: the first user */
 static jmp_buf* test_fatal_jump;                                   /* a fatal() the test waits for comes back here */
 static char test_fatal_text[1024];
+static int test_game_files; /* the last fatal was fatal_game_files: its exit is 3 */
 static unsigned test_checks, test_scans, test_objects;
 static int test_scans_allowed = 1;
 
@@ -182,17 +183,25 @@ void logf_(int level, const char* format, ...) {
 }
 /* options.c's: the game's settings, where the runtime read them */
 const char* ini_file(void) { return "config/Game.ini"; }
-void fatal(const char* format, ...) {
-    va_list args;
-    va_start(args, format);
+static void test_fatal(const char* format, va_list args, int game_files) __attribute__((noreturn));
+static void test_fatal(const char* format, va_list args, int game_files) {
+    test_game_files = game_files;
     if (test_fatal_jump) {
         vsnprintf(test_fatal_text, sizeof test_fatal_text, format, args);
-        va_end(args);
         longjmp(*test_fatal_jump, 1);
     }
     vfprintf(stderr, format, args);
-    va_end(args);
     exit(1);
+}
+void fatal(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    test_fatal(format, args, 0);
+}
+void fatal_game_files(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    test_fatal(format, args, 1);
 }
 void frontend_frame(void) {}
 
@@ -1866,6 +1875,7 @@ int main(int argc, char** argv) {
         }
         test_fatal_jump = NULL;
         CHECK(strstr(test_fatal_text, "has no exefs/") != NULL && strstr(test_fatal_text, "-r") != NULL);
+        CHECK(test_game_files);
         CHECK(strstr(test_log_text, "fs: source=noexefs-data/Game.nsp") != NULL);
         cleanup_service();
         free(g_mem);
@@ -1892,6 +1902,7 @@ int main(int argc, char** argv) {
         test_fatal_jump = NULL;
         CHECK(strstr(test_fatal_text, g_addondir) != NULL && strstr(test_fatal_text, "has no exefs/") != NULL &&
               strstr(test_fatal_text, "-r") != NULL);
+        CHECK(test_game_files);
         cleanup_service();
         free(g_mem);
         printf("PASS %u checks: an update's data folder without exefs/ stops the game\n", test_checks);
@@ -1934,6 +1945,7 @@ int main(int argc, char** argv) {
             }
             free(said);
             CHECK(test_fatal_text[0] && !strstr(test_fatal_text, romfs));
+            CHECK(test_game_files);
             cleanup_service();
             free(g_mem);
             free(romfs);
