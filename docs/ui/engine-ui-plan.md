@@ -261,13 +261,13 @@ each row is named, so that unit 5 can remove the drawing and keep the work.
   `engine/src/common/utilities/common.h:113`). The CLI can read, write and check a setting without a start
   of the game.
 - **Exit codes.** A table: success, wrong usage, missing or wrong game files, recompile failure, start failure
-  before the window, crash of the game, stop by the user. The launcher acts on the code only.
+  before the renderer runs, crash of the game, stop by the user. The launcher acts on the code only.
 - **Progress and errors for the launcher.** A machine-readable stream (the proposal is JSON Lines on stdout with an
   option, and the human text on stderr). Each line has a stage, a value and, on an error, the stage that failed and
   the cause. `entry.c` already sets line buffering for a launcher on a pipe. The format has a version number.
 - **No dialog.** A normal recompile or run needs no GUI and no question. The setup asks nothing when the options and
   the settings file give the values. A missing value is an error with a clear message and an exit code.
-- **Failure before the window.** An error before the renderer starts goes to stderr and to the log, with the stage
+- **Failure before the renderer.** An error before the renderer starts goes to stderr and to the log, with the stage
   and the cause. It does not depend on a message box.
 
 ### Settings definition
@@ -348,13 +348,17 @@ One header holds the named constants. The proposal is `engine/src/common/utiliti
 | 2 | Wrong usage: unknown command or option, bad argument count |
 | 3 | Game files missing or wrong: the input folder, `exefs/main`, the RomFS or `romfs=` |
 | 4 | Recompile failed: compile, link or build |
-| 5 | Start failed before the window: the settings file is not readable, or Vulkan or the renderer did not start |
+| 5 | Start failed before the renderer runs: the settings file is not readable, or Vulkan or the renderer did not start |
 | 6 | Crash of the game: `fatal`, a crash report or an unhandled exception |
 | 7 | Setting value refused: `settings set` and `settings check` |
-| 8 | The game ended with a nonzero code. The code goes to the log and the progress stream |
+| 8 | The game ended with a nonzero code. The code goes to the log and to `game_code` of the exit line |
+| 126 | POSIX only: a driver stage program could not be prepared (process group, terminal or working directory) |
+| 127 | POSIX only: a driver stage program could not be started (exec failed) |
 | 130 | Stopped by the user (Ctrl+C). This value does not change |
 
-A child stage uses the same table, so the driver passes its code on. A child code above 255 stays 1.
+A child stage uses the same table, so the driver passes its code on. A child code above 255 stays 1. On POSIX a
+stage that cannot be prepared exits 126 and one that cannot be started exits 127; the driver passes both on. On
+Windows a start failure is 1.
 
 ### Progress stream
 
@@ -370,22 +374,24 @@ and `run`.
 | `done` | None |
 | `error` | `"message"` with the cause, `"code"` with the exit code |
 
-The last line is the exit line, `{"v":1,"event":"exit","code":N}`. It has no stage. `v` changes when a field
-changes its meaning. A test reads the stream of a recompile (PR 3d).
+The last line is the exit line, `{"v":1,"event":"exit","code":N}`. It has no stage. When the game ends with a
+nonzero code, the exit line has `code` 8 and one more field, `"game_code":N`, the game's own code. `v` changes when
+a field changes its meaning. A test reads the stream of a recompile (PR 3d).
 
-### Failure before the window
+### Failure before the renderer runs
 
-Every failure before the renderer starts goes to stderr and to a log. Before `g_mod` is set, the line goes to
-the early error file `scarletnx-error.log`. The internal name stays, per the "Internal names" decision.
+Only a `fatal` before the renderer starts goes to stderr, the log and the early error file `scarletnx-error.log`. A
+usage error (exit 2) before the log file exists goes to stderr only. The internal name stays, per the "Internal names"
+decision.
 
-No dialog shows before the window. After the window exists, the crash box stays until the new UI of unit 4
+No dialog shows before the renderer runs. After the renderer runs, the crash box stays until the new UI of unit 4
 replaces it. It does not show with `--headless` or in an unattended run.
 
 ### Pull requests
 
 | PR | Content |
 |---|---|
-| 3a | The exit-code table, the failure before the window, and this design text |
+| 3a | The exit-code table, the failure before the renderer, and this design text |
 | 3b | The subcommand dispatch with the old-flag aliases |
 | 3c | `settings list\|schema\|get\|set\|check` |
 | 3d | The JSON Lines progress stream with its test |

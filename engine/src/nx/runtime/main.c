@@ -830,7 +830,12 @@ int snx_main(int argc, char** argv) {
     dispatch_init();
     if (g_arm_mod) arm_dispatch_init();
     load_hints();
-    if (loader_load()) fatal_game_files("Could not load the game executables. See the .log for details.");
+    {
+        int loaded = loader_load();
+        if (loaded == SNX_LOADER_NOMEM)
+            fatal("Out of host memory for the game's executables. See the .log for details.");
+        if (loaded) fatal_game_files("Could not load the game executables. See the .log for details.");
+    }
     kernel_load_symbols();
     nvn_native_init(); /* before the trace, which wraps the slots that the native layer fills */
     nvn_trace_init();

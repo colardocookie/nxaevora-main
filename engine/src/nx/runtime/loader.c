@@ -152,14 +152,15 @@ static int protect(const SnxModInfo* mi) {
 
 static int load_module(const SnxModInfo* mi) {
     PFileMap map;
-    int rc;
+    int rc, mapped;
     memset(&map, 0, sizeof map);
-    if (open_module(mi, &map)) return -1;
-    if (mem_map(mi->base, mi->size, MS_CODE, PERM_RW)) {
+    if (open_module(mi, &map)) return SNX_LOADER_INVALID;
+    mapped = mem_map(mi->base, mi->size, MS_CODE, PERM_RW);
+    if (mapped) {
         WARN("Cannot map %s at 0x%llx (0x%llx bytes)\n", mi->name, (unsigned long long)mi->base,
              (unsigned long long)mi->size);
         plat_file_unmap(&map);
-        return -1;
+        return mapped == MEM_NOMEM ? SNX_LOADER_NOMEM : SNX_LOADER_INVALID;
     }
     /* everything is checked before guest memory is written */
     rc = mi->is_nro ? check_nro(mi, &map) : check_nso(mi, &map);
@@ -171,21 +172,23 @@ static int load_module(const SnxModInfo* mi) {
             rc = patch_nso(mi);
     }
     plat_file_unmap(&map);
-    if (rc) return rc;
+    if (rc) return SNX_LOADER_INVALID;
     if (protect(mi)) {
         WARN("Cannot set the permissions of %s\n", mi->name);
-        return -1;
+        return SNX_LOADER_INVALID;
     }
     /* the whole mapping counts as the process's code memory (the guard pages between modules don't) */
     g_code_memory += mi->size;
     LOG("Loaded %s at 0x%llx\n", mi->name, (unsigned long long)mi->base);
-    return 0;
+    return SNX_LOADER_OK;
 }
 
 int loader_load(void) {
-    for (u32 i = 0; i < g_mod->nmods; i++)
-        if (load_module(&g_mod->mods[i])) return -1;
-    return 0;
+    for (u32 i = 0; i < g_mod->nmods; i++) {
+        int r = load_module(&g_mod->mods[i]);
+        if (r) return r;
+    }
+    return SNX_LOADER_OK;
 }
 void loader_segments(LoaderSegEach each, void* ctx) {
     for (u32 i = 0; g_mod && i < g_mod->nmods; i++) {

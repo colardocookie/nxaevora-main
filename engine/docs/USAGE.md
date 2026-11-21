@@ -288,15 +288,19 @@ reads the text on stderr.
 | 2 | Wrong usage: an unknown option or command, a bad argument count |
 | 3 | Game files missing or wrong: the input folder, `exefs/main`, the NPDM or the RomFS |
 | 4 | The recompile failed: compile, link, staging or build |
-| 5 | The start failed before the window: the settings file exists but cannot be read, or Vulkan or the renderer did not start |
+| 5 | The start failed before the renderer runs: the settings file exists but cannot be read, or Vulkan or the renderer did not start |
 | 6 | A crash of the game: `fatal`, a crash report or an unhandled exception |
 | 7 | A setting value was refused (`settings set` and `settings check`) |
 | 8 | The game ended with a nonzero code, which the log keeps |
+| 126 | POSIX only: a driver stage program could not be prepared (process group, terminal or working directory) |
+| 127 | POSIX only: a driver stage program could not be started (exec failed) |
 | 130 | The command was stopped by the user (Ctrl+C) |
 
-A child stage uses the same table, and the driver passes its code on unchanged. A code above 255 stays 1. A failure
-before the window goes to stderr and to `scarletnx-error.log` in the state folder ([Folders](#folders)) and shows no
-dialog; after the window a crash still shows the box until the new UI replaces it.
+A child stage uses the same table, and the driver passes its code on unchanged. A code above 255 stays 1. On POSIX a
+stage that cannot be prepared exits 126 and one that cannot be started exits 127, and the driver passes both on; on
+Windows a start failure is 1. A `fatal` before the renderer runs goes to stderr and to `scarletnx-error.log` in the
+state folder ([Folders](#folders)) and shows no dialog; after the renderer runs a crash still shows the box until the
+new UI replaces it. A usage error before the log file exists goes to stderr only.
 
 ## GDB (Linux)
 
