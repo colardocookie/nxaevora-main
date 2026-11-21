@@ -4985,8 +4985,9 @@ static GuestFn event_tick_body(u64 offset, u32 size, u32 head, u32 patch, u32 wo
     if (!body) WARN("arceus-event-tick: compile failed site=main+%llx\n", (unsigned long long)offset);
     return body;
 }
+static int event_tick_enabled(void) { return arceus_switch_enabled("SNX_ARCEUS_EVENT_TICK", 1); }
 static void event_tick_init(void) {
-    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_EVENT_TICK", 0)) return;
+    if (!main_base || !event_tick_enabled()) return;
     if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
     if (!frame_step_cell_init("arceus-event-tick")) return;
     /* MOV X0,X8 -> ADD X0,X8,#0 in each native; the trigger's load of +118 and the others' tail calls guarded */
@@ -5119,8 +5120,9 @@ static void demo_tick_step(CPU* c, u64 entry) {
     demo_tick_logged[1] = units;
     demo_tick_logged[2] = frames;
 }
+static int demo_tick_enabled(void) { return arceus_switch_enabled("SNX_ARCEUS_DEMO_TICK", 1); }
 static void demo_tick_init(void) {
-    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_DEMO_TICK", 0)) return;
+    if (!main_base || !demo_tick_enabled()) return;
     if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
     const u64 pc = main_base + 0x1458300, size = 0x1154;
     if (demo_probe_original) {
@@ -5263,8 +5265,9 @@ static void text_tick_step(CPU* c, u64 entry) {
     }
     text_tick_original[1](c, entry);
 }
+static int text_tick_enabled(void) { return arceus_switch_enabled("SNX_ARCEUS_TEXT_TICK", 1); }
 static void text_tick_init(void) {
-    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_TEXT_TICK", 0)) return;
+    if (!main_base || !text_tick_enabled()) return;
     if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
     if (!frame_step_cell_init("arceus-text-tick")) return;
     static const u32 offsets[2] = {0xfbfbd0, 0x2b315e8};
