@@ -28,7 +28,11 @@
 #endif
 
 static void usage(void) {
-    puts("Usage: nxaevora-engine [OPTIONS] INPUT [-- GAME_ARGUMENTS...]\n"
+    puts("Usage: nxaevora-engine <command> [OPTIONS]\n"
+         "  recompile INPUT        Recompile a decrypted game folder or an NRO, without playing\n"
+         "  run PROGRAM            Run a recompiled game (its arguments go after --)\n"
+         "  settings list          List the settings, tab-separated (--scope=game|recompile)");
+    puts("The old options are aliases:\n"
          "  INPUT                  A game made already, or an NRO; a decrypted game folder with -r\n"
          "  -r, --recompile        Recompile a decrypted game folder or an NRO, without playing\n"
          "  -H, --headless         Run without a window or swapchain");
@@ -538,13 +542,24 @@ int snx_driver(int argc, char** argv) {
                 memcpy(key, rest[i] + 2, length);
                 key[length] = 0;
             }
-            int recompiles = length < sizeof key && snx_recompile_setting(key), plays = setting_known(rest[i] + 2);
-            if (!recompiles && !plays) {
+            const IniOpt* recompiled = length < sizeof key ? snx_recompile_setting(key) : NULL;
+            int plays = setting_known(rest[i] + 2);
+            if (!recompiled && !plays) {
                 snx_error("unknown option: %s", rest[i]);
                 result = SNX_EXIT_USAGE;
                 goto done;
             }
-            if (recompiles) recompile[recompiling++] = rest[i];
+            if (recompiled) {
+                /* the recompile path checks each value with ini_check (recompile.c): check it here too, before the
+                   stamp decides that the game is made and the recompile is skipped */
+                char why[256];
+                if (ini_check(recompiled, strchr(rest[i], '=') + 1, why, sizeof why)) {
+                    snx_error("%s", why);
+                    result = SNX_EXIT_USAGE;
+                    goto done;
+                }
+                recompile[recompiling++] = rest[i];
+            }
             if (plays) setting[settings++] = rest[i]; /* both for one both take (slp_vectorizer) */
             ++taken;
         } else

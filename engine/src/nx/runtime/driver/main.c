@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/exit_codes.h"
 #include "common/utilities/setup.h"
+#include "nx/runtime/command.h"
 #include "nx/runtime/driver/driver.h"
 #include "nx/runtime/driver/mcp.h"
 #include "nx/runtime/entry.h"
@@ -17,6 +18,8 @@ int snx_switch_main(int argc, char** argv) {
         fprintf(stderr, "scarletnx: %s\n", why);
         return SNX_EXIT_USAGE;
     }
+    result = snx_command_translate(argc, argv, &argc, &argv);
+    if (result >= 0) return result;
     if (argc > 1 && !strcmp(argv[1], "--mcp")) return snx_mcp(argc, argv);
     result = snx_driver(argc, argv);
     if (result >= 0) return result;
