@@ -185,6 +185,8 @@ if(BUILD_TESTING)
     add_test(NAME shader_direct_regressions COMMAND $<TARGET_FILE:snx-test-shader-direct-regressions>)
     add_test(NAME runtime_settings_list COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
              -P "${PROJECT_SOURCE_DIR}/tests/settings_list.cmake")
+    add_test(NAME runtime_cli_commands COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
+             -P "${PROJECT_SOURCE_DIR}/tests/cli_commands.cmake")
     add_test(NAME runtime_unknown_option COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
              -P "${PROJECT_SOURCE_DIR}/tests/unknown_option.cmake")
     add_test(NAME runtime_recompile_settings COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>

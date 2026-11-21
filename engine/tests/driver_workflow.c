@@ -498,6 +498,11 @@ int main(int argc, char** argv) {
         run(exe, repo, nro, log, 0, "RG", NULL);
         free(stamp);
     }
+    /* a recompile-only --KEY=VALUE is checked in the play path too, before a current stamp skips the recompile: a
+       value the recompile refuses stops the run and the game does not start */
+    set_env("SNX_WORKFLOW_FLAGS", "--aot_threads=abc");
+    run(exe, repo, game, log, 2, "", "aot_threads=abc is not a whole number from 0 to 1024");
+    set_env("SNX_WORKFLOW_FLAGS", "");
     /* a game whose runtime another build of this ABI deployed: played as it is, the runtime replaced by this build's
        first; one already this build's is left as it is (a link to it stays the same file) */
     {

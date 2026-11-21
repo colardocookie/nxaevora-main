@@ -4,6 +4,7 @@
 
 ## Index
 
+* [Commands](#commands)
 * [Extract → AOT → run](#extract--aot--run)
   * [Updates and DLC](#updates-and-dlc)
   * [NRO applications](#nro-applications)
@@ -20,6 +21,31 @@
 
 Setup: [BUILD](BUILD.md). Checkout CWD; own game files.
 For the keyboard-controlled SDL3 menu and file drops, see [GUI](GUI.md).
+
+## Commands
+
+The first argument selects the command:
+
+| Command | Job | Old form |
+|---|---|---|
+| `recompile <game folder> [options] [--KEY=VALUE]` | Recompile the game. All recompile options stay | `-r` |
+| `run <game program> [--KEY=VALUE] [-- game arguments]` | Run the game | Play mode and `--game=PATH` |
+| `settings list [--scope=game\|recompile]` | Print the nine-field settings text | `--settings`, `--settings=recompile` |
+
+`recompile --help` shows the recompile options. `run --help`, `settings --help` and `settings list --help` show the
+command's usage. `logs` and `cache` are reserved: they stop with exit 2 until their command exists.
+
+The old flags are aliases:
+
+| Old form | Command |
+|---|---|
+| `-r` | `recompile` |
+| Play mode and `--game=PATH` | `run` |
+| `--settings` | `settings list` |
+| `--settings=recompile` | `settings list --scope=recompile` |
+| No argument | The old start GUI, until unit 5 |
+
+Later: `settings schema`, `settings get`, `settings set`, `settings check`, `logs export` and `cache clean`.
 
 ## Extract → AOT → run
 

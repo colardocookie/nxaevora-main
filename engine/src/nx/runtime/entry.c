@@ -8,6 +8,7 @@
 
 #include "common/utilities/exit_codes.h"
 #include "common/utilities/setup.h"
+#include "nx/runtime/command.h"
 #include "nx/runtime/driver/driver.h"
 #include "nx/runtime/driver/mcp.h"
 #include "nx/runtime/entry.h"
@@ -38,6 +39,8 @@ int snx_switch_main(int argc, char** argv) {
         fprintf(stderr, "nxaevora-engine: %s\n", why);
         return SNX_EXIT_USAGE;
     }
+    result = snx_command_translate(argc, argv, &argc, &argv);
+    if (result >= 0) return result;
 #ifdef SNX_WITH_GUI
     snx_menu = snx_gui_main;
     snx_menu_run_theme = gui_run_theme;
