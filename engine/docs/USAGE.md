@@ -52,7 +52,7 @@ check` reads and writes no file and needs no `--game`.
 
 `settings check` takes every key that `settings schema` prints. `settings get` and `settings set` take the game's
 `.ini` keys only. `get` prints a number as the runtime keeps it: a float has 6 significant digits. `--game=` given
-twice: the last one wins.
+twice: the last one wins. An update's program (`<game>_<update id>`) is refused with exit 2: name the game's program.
 
 The old flags are aliases:
 

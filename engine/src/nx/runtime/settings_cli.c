@@ -5,6 +5,7 @@
    only. No window, no game start, no poll (docs/ui/engine-ui-plan.md, unit 3) */
 #include "nx/runtime/settings_cli.h"
 
+#include "common/utilities/common.h"
 #include "common/utilities/exit_codes.h"
 #include "nx/runtime/command.h"
 #include "nx/runtime/ini.h"
@@ -19,6 +20,7 @@
 #define SETTINGS_CLI_PATH 1400 /* the game's .ini's path, as main.c's ini has */
 #define SETTINGS_CLI_WORDS 2   /* the key and the value a command names at most */
 #define SETTINGS_CLI_JSON 8192 /* the schema's first buffer, then doubled */
+#define SETTINGS_CLI_BASE 256 /* the base game's name of an update, as g_exename */
 
 static const char* const USAGE_SCHEMA =
     "Usage: nxaevora-engine settings schema\n"
@@ -58,12 +60,33 @@ static void parse_args(int argc, char** argv, int first, Args* a) {
 }
 
 /* The game's settings file, <config>/<name>.ini, for the program path of --game: main.c's naming of the game's path and
-   folders, then the .ini that snx_main opens. 0, or -1 for a path that names no game (the folders are not made) */
-static int settings_file(const char* program, char* out, size_t n) {
+   folders, then the .ini that snx_main opens. 0, -1 for a path that names no game (the folders are not made), or 1 for
+   an update's program, whose run opens the base game's .ini (addon_init), the base game's name then in base */
+static int settings_file(const char* program, char* out, size_t n, char* base, size_t base_size) {
     snx_game_locate(program);
     if (!g_exename[0]) return -1;
+    if (snx_game_addon(g_exedir, g_exename, base, base_size, NULL) == SNX_ADDON_UPDATE) return 1;
     snx_game_folders();
     snprintf(out, n, "%s%s.ini", g_confdir, g_exename);
+    return 0;
+}
+
+/* the file's keys into the store, or the exit code that stops the command: 0 */
+static int load_file(const char* name, const char* path) {
+    char why[256];
+    int status = snx_settings_load(path, why, sizeof why);
+    if (status == 0) {
+        snx_command_error("%s: no %s: run recompile first, or check --game=PATH", name, path);
+        return SNX_EXIT_GAME_FILES;
+    }
+    if (status == -2) {
+        snx_command_error("%s: %s: %s", name, path, why);
+        return SNX_EXIT_INTERNAL;
+    }
+    if (status < 0) {
+        snx_command_error("%s: read %s: %s", name, path, why);
+        return SNX_EXIT_INTERNAL;
+    }
     return 0;
 }
 
@@ -268,7 +291,7 @@ int snx_settings_schema(int argc, char** argv) {
 }
 
 int snx_settings_get(int argc, char** argv) {
-    char path[SETTINGS_CLI_PATH], value[SETTINGS_CLI_PATH], why[256];
+    char path[SETTINGS_CLI_PATH], value[SETTINGS_CLI_PATH], base[SETTINGS_CLI_BASE];
     const IniOpt* o;
     const char* text;
     int status = snx_command_help(argc, argv, 3, "settings get", USAGE_GET);
@@ -289,19 +312,17 @@ int snx_settings_get(int argc, char** argv) {
     }
     o = snx_setting_row(a.word[0]);
     if (!o) return unknown_key("settings get", a.word[0]);
-    if (settings_file(a.game, path, sizeof path)) {
+    status = settings_file(a.game, path, sizeof path, base, sizeof base);
+    if (status > 0) {
+        snx_command_error("settings get: %s is an update of %s: name the game's program", a.game, base);
+        return SNX_EXIT_USAGE;
+    }
+    if (status < 0) {
         snx_command_error("settings get: %s: not a game's program: check --game", a.game);
         return SNX_EXIT_GAME_FILES;
     }
-    status = snx_settings_load(path, why, sizeof why);
-    if (status == 0) {
-        snx_command_error("settings get: no %s: run recompile first, or check --game=PATH", path);
-        return SNX_EXIT_GAME_FILES;
-    }
-    if (status < 0) {
-        snx_command_error("settings get: read %s: %s", path, why);
-        return SNX_EXIT_INTERNAL;
-    }
+    status = load_file("settings get", path);
+    if (status) return status;
     text = snx_settings_value(o);
     ini_set_say(say_clamped);
     if (text) {
@@ -318,7 +339,7 @@ int snx_settings_get(int argc, char** argv) {
 }
 
 int snx_settings_set(int argc, char** argv) {
-    char path[SETTINGS_CLI_PATH], why[256];
+    char path[SETTINGS_CLI_PATH], why[256], base[SETTINGS_CLI_BASE];
     const IniOpt* o;
     int status = snx_command_help(argc, argv, 3, "settings set", USAGE_SET);
     Args a;
@@ -342,19 +363,17 @@ int snx_settings_set(int argc, char** argv) {
         snx_command_error("settings set: %s", why);
         return SNX_EXIT_SETTING;
     }
-    if (settings_file(a.game, path, sizeof path)) {
+    status = settings_file(a.game, path, sizeof path, base, sizeof base);
+    if (status > 0) {
+        snx_command_error("settings set: %s is an update of %s: name the game's program", a.game, base);
+        return SNX_EXIT_USAGE;
+    }
+    if (status < 0) {
         snx_command_error("settings set: %s: not a game's program: check --game", a.game);
         return SNX_EXIT_GAME_FILES;
     }
-    status = snx_settings_load(path, why, sizeof why);
-    if (status == 0) {
-        snx_command_error("settings set: no %s: run recompile first, or check --game=PATH", path);
-        return SNX_EXIT_GAME_FILES;
-    }
-    if (status < 0) {
-        snx_command_error("settings set: read %s: %s", path, why);
-        return SNX_EXIT_INTERNAL;
-    }
+    status = load_file("settings set", path);
+    if (status) return status;
     status = snx_settings_save(a.word[0], a.word[1], why, sizeof why);
     if (status) {
         snx_command_error("settings set: %s", why);

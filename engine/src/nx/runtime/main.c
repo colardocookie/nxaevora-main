@@ -290,28 +290,39 @@ void snx_game_folders(void) {
     free(full);
 }
 
-/* An update of the game whose folder it is in (snx_addon_name: <folder>/<folder>_<the update's title ID>) runs as
-   that game: with its settings, ini set to the game's .ini, and its data folder, its saves the
-   game's (g_datadir, set by the caller from base). Its own .ini names only the add-on's dump, source=, and its own data
-   folder lies over the game's, both read by fs.c. base: the game's name, "" for no add-on */
-static void addon_init(char* ini, size_t ini_size, char* base, size_t base_size) {
-    char* dir = snx_absolute(g_exedir[0] ? g_exedir : ".");
-    size_t n = dir ? strlen(dir) : 0, cut;
-    base[0] = 0;
-    while (n > 1 && is_separator(dir[n - 1])) dir[--n] = 0;
-    for (cut = n; cut && !is_separator(dir[cut - 1]); cut--) continue;
-    if (dir && snx_addon_name(dir + cut, g_exename, &g_addon)) {
-        SnxU64 game = 0;
-        snx_title_parse(dir + cut, &game);
-        if (snx_addon_kind(game, g_addon) != SNX_ADDON_UPDATE)
-            fatal("%s is a DLC's program, which an older version made: a DLC plays with its game, checked in the "
-                  "game's list of updates and DLCs (addons= in its .ini). Play the DLC's dump again",
-                  g_exename);
-        snprintf(base, base_size, "%s", dir + cut);
-        snprintf(g_addondir, sizeof g_addondir, "%s%s_data/", g_exedir, g_exename);
-        snprintf(ini, ini_size, "%s%s.ini", g_confdir, base);
+/* The add-on the program at exedir named exename is (snx_addon_name: <folder>/<folder>_<the add-on's entry>, the folder
+   the base game's name): SNX_ADDON_UPDATE or SNX_ADDON_DLC, its ID in *id, the base game's name in base; SNX_ADDON_NONE
+   for the game's own program, base "". addon_init and the CLI's settings get and set both read a program so */
+int snx_game_addon(const char* exedir, const char* exename, char* base, size_t base_size, u64* id) {
+    char* dir = snx_absolute(exedir[0] ? exedir : ".");
+    size_t len = dir ? strlen(dir) : 0, cut;
+    u64 addon = 0, game = 0;
+    int kind = SNX_ADDON_NONE;
+    if (base_size) base[0] = 0;
+    while (len > 1 && is_separator(dir[len - 1])) dir[--len] = 0;
+    for (cut = len; cut && !is_separator(dir[cut - 1]); cut--) continue;
+    if (dir && snx_addon_name(dir + cut, exename, &addon) && snx_title_parse(dir + cut, &game)) {
+        kind = snx_addon_kind(game, addon);
+        if (base_size) snprintf(base, base_size, "%s", dir + cut);
     }
+    if (id) *id = addon;
     free(dir);
+    return kind;
+}
+
+/* An update of the game whose folder it is in (snx_game_addon) runs as that game: with its settings, ini set to the
+   game's .ini, and its data folder, its saves the game's (g_datadir, set by the caller from base). Its own .ini names
+   only the add-on's dump, source=, and its own data folder lies over the game's, both read by fs.c. base: the game's
+   name, "" for no add-on */
+static void addon_init(char* ini, size_t ini_size, char* base, size_t base_size) {
+    int kind = snx_game_addon(g_exedir, g_exename, base, base_size, &g_addon);
+    if (kind == SNX_ADDON_NONE) return;
+    if (kind != SNX_ADDON_UPDATE)
+        fatal("%s is a DLC's program, which an older version made: a DLC plays with its game, checked in the "
+              "game's list of updates and DLCs (addons= in its .ini). Play the DLC's dump again",
+              g_exename);
+    snprintf(g_addondir, sizeof g_addondir, "%s%s_data/", g_exedir, g_exename);
+    snprintf(ini, ini_size, "%s%s.ini", g_confdir, base);
 }
 
 /* what the game plays with, for its window's title: its update by its version ("Update 1.2.0") and the DLCs found,
