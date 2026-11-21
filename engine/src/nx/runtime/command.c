@@ -2,7 +2,7 @@
    Copyright 2026 the NXAevora contributors */
 /* The subcommand dispatch: argv[1] recompile, run or settings, translated to the old option form, and the settings
    commands that read, write and check one value (settings_cli.c). The old flags stay as aliases
-   (docs/ui/engine-ui-plan.md, unit 3) */
+   (docs/records/ui/engine-ui-plan.md, unit 3) */
 #include "nx/runtime/command.h"
 
 #include "common/utilities/common.h"

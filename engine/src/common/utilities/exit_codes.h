@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The process's exit codes, one table for the CLI and the runtime (docs/ui/engine-ui-plan.md, unit 3) */
+/* The process's exit codes, one table for the CLI and the runtime (docs/records/ui/engine-ui-plan.md, unit 3) */
 #ifndef SNX_EXIT_CODES_H
 #define SNX_EXIT_CODES_H
 

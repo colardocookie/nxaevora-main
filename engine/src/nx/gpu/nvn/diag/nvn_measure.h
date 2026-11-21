@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The nvn_measure setting (docs/graphics/nvn-design.md, "Stage 5 measure plan"): CPU time counters for the guest and
+/* The nvn_measure setting (docs/records/graphics/nvn-design.md, "Stage 5 measure plan"): CPU time counters for the guest and
    GPU sides of both NVN paths, and one log line each 600 presents with the frame times and the draw counts. */
 #ifndef SNX_GPU_NVN_MEASURE_H
 #define SNX_GPU_NVN_MEASURE_H

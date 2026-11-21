@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 # NVN design: the choice of the way (phase 6, stage 2)
 
-This file compares the two ways of `docs/graphics/nvn-plan.md` and holds the design of the chosen way. The input is
-`docs/graphics/nvn-survey.md` (section 1-5). Nothing here is built yet.
+This file compares the two ways of `docs/records/graphics/nvn-plan.md` and holds the design of the chosen way. The input is
+`docs/records/graphics/nvn-survey.md` (section 1-5). Nothing here is built yet.
 
 **Decided by the user (2026-11-02):**
 
@@ -11,7 +11,7 @@ This file compares the two ways of `docs/graphics/nvn-plan.md` and holds the des
    existing `Renderer` and its state update code are reused.
 3. The old path stays as a comparison target and is selected for each launch.
 4. The 242 functions that the played scenes called are not the limit of the work. The goal is all 523 functions that the
-   game resolves, with a plan to check the ones that no scene has called (`docs/graphics/nvn-unobserved.md`).
+   game resolves, with a plan to check the ones that no scene has called (`docs/records/graphics/nvn-unobserved.md`).
 
 ## The two ways
 
@@ -414,7 +414,7 @@ rewrite of the `r3d` readers in `vk/`. Until then choice 2 is a candidate for cl
 
 ## 2-5 Design of the three hard parts (2026-11-02)
 
-Method: the numbers of the survey (`docs/graphics/nvn-calls.md`), `gpu/gpu.c` (`gpu_call`, `gpu_submit`), `runtime/present.c` and
+Method: the numbers of the survey (`docs/records/graphics/nvn-calls.md`), `gpu/gpu.c` (`gpu_call`, `gpu_submit`), `runtime/present.c` and
 `hle/services/vi.c` (the present path now), and the rules of section 2-4. Nothing here ran. Each assumption that needs a run is
 listed at the end, as the first work of stage 3.
 
@@ -532,7 +532,7 @@ Assumptions to confirm in stage 3 (each is a plain yes or no from the first runs
 
 ## 2-6 Order of the work of stage 3, files and test plan (2026-11-02)
 
-Source: the 242 functions of `docs/graphics/nvn-calls.md` and the design of 2-1 to 2-5. The call counts do not show the order of the
+Source: the 242 functions of `docs/records/graphics/nvn-calls.md` and the design of 2-1 to 2-5. The call counts do not show the order of the
 calls, so the groups below follow the dependencies. The user accepts this section before stage 3 starts.
 
 ### Rule for the unknown
@@ -620,13 +620,13 @@ skill `nx-log-read` and reports the result. The user is only asked for what is o
 ## Unobserved functions
 
 The plan for the functions and argument values that no scene called (coverage file, selftest, execution test, steps
-4-u1 to 4-u4 and the U3 design) is in `docs/graphics/nvn-unobserved.md`.
+4-u1 to 4-u4 and the U3 design) is in `docs/records/graphics/nvn-unobserved.md`.
 
 ## 3a Result of the diagnostic run (2026-11-02)
 
 Run: update program, 43.4 s, 1149 frames at 30 frames a second, 0 JIT misses, no crash. The user ran to the title scene once. The
 log has 40 `gpu-submit:` blocks and 40 `nvn-size:` queries. The window had 1 call of each builder function (the same as the run of
-`docs/graphics/nvn-calls.md`), 1149 calls of the four frame functions, and 432 calls of `SetMemoryCallback`.
+`docs/records/graphics/nvn-calls.md`), 1149 calls of the four frame functions, and 432 calls of `SetMemoryCallback`.
 
 ### The library entries of a submission
 

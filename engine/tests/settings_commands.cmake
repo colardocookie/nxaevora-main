@@ -382,7 +382,7 @@ if(NOT set_update_code EQUAL 2 OR at LESS 0)
     message(FATAL_ERROR "settings set of an update's program ended with ${set_update_code}, not 2: ${set_update_err}")
 endif()
 
-# ---- --help: the five words, each with the usage line that docs/ui/engine-ui-plan.md's "Commands" gives it. --help
+# ---- --help: the five words, each with the usage line that docs/records/ui/engine-ui-plan.md's "Commands" gives it. --help
 # ---- with any other argument is exit 2, the one rule they share
 engine(help_settings settings --help)
 if(NOT help_settings_code EQUAL 0 OR NOT "${help_settings_err}" STREQUAL "")

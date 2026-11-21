@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The exit-code table of the CLI and the runtime start (docs/ui/engine-ui-plan.md, "Unit 3: CLI", "Exit codes").
+/* The exit-code table of the CLI and the runtime start (docs/records/ui/engine-ui-plan.md, "Unit 3: CLI", "Exit codes").
    The numbers are written here from that table, not read from the header */
 #include "common/utilities/exit_codes.h"
 #include <stdio.h>

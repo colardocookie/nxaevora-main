@@ -25,7 +25,7 @@
 #define ST_CMD_BYTES 0x1000u
 #define ST_CONTROL_BYTES 0x800u
 #define ST_CMD_REFILL_BYTES 0x400u
-#define ST_CB_OBJ_BYTES 0x200u /* the NVN part of a game command buffer is at most 0xE0 (docs/graphics/nvn-design.md) */
+#define ST_CB_OBJ_BYTES 0x200u /* the NVN part of a game command buffer is at most 0xE0 (docs/records/graphics/nvn-design.md) */
 #define ST_MAX_RANGES 64u
 #define ST_VIEWPORTS 2u
 #define ST_SCISSORS 2u
@@ -1108,7 +1108,7 @@ static const uint32_t st_ignore_dma_in[] = {
     ST_IGNORE_REG(NVN_ST_ENGINE_RDMA, 0x100u), ST_IGNORE_REG(NVN_ST_ENGINE_RDMA, 0x101u)};
 
 /* TiledDownsample: the host has no driver program and uses the 2D engine, so the 3D words of the library and the 2D
-   addresses of the host are a known difference (user decision 2026-11-12, docs/graphics/nvn-unobserved.md). */
+   addresses of the host are a known difference (user decision 2026-11-12, docs/records/graphics/nvn-unobserved.md). */
 static const uint32_t st_ignore_tiled_downsample[] = {
     ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x049u), ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x811u),
     ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x813u), ST_IGNORE_REG(NVN_ST_ENGINE_R3D, 0x851u),

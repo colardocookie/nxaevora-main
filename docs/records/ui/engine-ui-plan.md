@@ -56,7 +56,7 @@ Unit 4 needs the decision of the UI base and the settings definition of unit 3. 
    - `.gitattributes` (the `linguist-vendored` line: decide if the Engine still counts as vendored).
    - `.github/pull_request_template.md`, `CONTRIBUTING.md`, `README.md`, `ROADMAP.md`, `recomp/patches/README.md`.
    - `docs/` (build notes, `runtime-changes.md`, `CREDITS.md`, and the notes that give source paths). The archived
-     reviews in `docs/archive/` keep their old paths and get one line that names the move.
+     reviews in `docs/records/archive/` keep their old paths and get one line that names the move.
    - `tools/` (the scripts that name the source or the build folder).
    - The build folder `build/default` moves with the source. The build notes give the new path.
 3. Change the shown name: the window title, the message boxes (`SDL_ShowSimpleMessageBox` and `MessageBoxW` in
@@ -235,7 +235,7 @@ Kept without a change of target (not UI): `debug_stats.c`, `keybind.c`, `gamepad
   `system_poll` fills only `cpu_load` and `ram_*` (`debug_stats.c:246-260`), and the GPU values need NVML
   (`:114-239`). The hardware poll runs only while the window is open (`:302-311`). Row: Debug window.
 - The input gate: an arrow key on the frame the pointer arrives reaches the game (`backend/imgui_sdl.c:73,88`,
-  `imgui_ui.cpp:224`, `docs/archive/controller-keyboard-review.md:50-56`). The new UI base must not repeat it.
+  `imgui_ui.cpp:224`, `docs/records/archive/controller-keyboard-review.md:50-56`). The new UI base must not repeat it.
   Row: Input gate.
 - The test window goes in unit 5. Row: Test window.
 - The comments and strings that still name a dump go with the start GUI: `src/common/utilities/game_ini.h:17` and
@@ -430,7 +430,7 @@ Compare also, from the documentation and the source:
 - the MD3 parts that must be written by hand (buttons, switches, sliders, lists, dialogs, text fields, the state
   layers of hover, focus, press and disabled),
 - the work to connect it to the existing SDL and Vulkan code and to the render thread and its locks
-  (`docs/ui/imgui-plan.md`, "Findings of step 1", has the lock order and the draw point),
+  (`docs/records/ui/imgui-plan.md`, "Findings of step 1", has the lock order and the draw point),
 - accessibility (screen readers, focus order, contrast),
 - the files and the size that the release must ship, the license, and the build in MSYS2 CLANG64 and in CI,
 - the work to keep it up to date.

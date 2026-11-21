@@ -2,7 +2,7 @@
    Copyright 2026 the NXAevora contributors */
 /* The settings commands (settings_cli.h): the definition from the generated tables as one JSON document, one value of
    the game's .ini read or written with the runtime's reader and writer, and one value checked against the definition
-   only. No window, no game start, no poll (docs/ui/engine-ui-plan.md, unit 3) */
+   only. No window, no game start, no poll (docs/records/ui/engine-ui-plan.md, unit 3) */
 #include "nx/runtime/settings_cli.h"
 
 #include "common/utilities/common.h"

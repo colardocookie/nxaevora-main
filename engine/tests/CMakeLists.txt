@@ -134,7 +134,7 @@ add_executable(snx-test-patches patches.c)
 snx_test_target(snx-test-patches 99)
 target_link_libraries(snx-test-patches PRIVATE scarletnx-common)
 add_test(NAME patches COMMAND snx-test-patches)
-# the exit codes of docs/ui/engine-ui-plan.md, unit 3: the numbers of its table
+# the exit codes of docs/records/ui/engine-ui-plan.md, unit 3: the numbers of its table
 add_executable(snx-test-exit-codes exit_codes.c)
 snx_test_target(snx-test-exit-codes 99)
 add_test(NAME exit_codes COMMAND snx-test-exit-codes)

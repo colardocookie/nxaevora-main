@@ -42,7 +42,8 @@ any other source. It does not follow the upstream project, so a fix that helps e
 The changes of NXAevora are listed in `docs/build/runtime-changes.md`.
 
 The documents in `engine/docs/` come from upstream ScarletNX and describe NXAevora Engine. The NXAevora documents are in
-`docs/`, `README.md` and `ROADMAP.md`.
+`docs/`, `README.md` and `ROADMAP.md`. `docs/` holds the guides for contributors, and `docs/records/` holds the records of
+the investigations, plans and reviews.
 
 ## Code
 
