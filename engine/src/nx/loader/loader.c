@@ -1164,7 +1164,7 @@ static int load_exefs_program(const char* entry, char* const* names, char* const
     if (snx_is_file(nacp_path)) {
         program->nacp = snx_read_file(nacp_path, &program->nacp_size);
         if (!program->nacp) {
-            fail(error, error_size, snx_format("cannot query control.nacp in %s", root));
+            rc = fail(error, error_size, snx_format("cannot query control.nacp in %s", root));
             free(nacp_path);
             goto done;
         }

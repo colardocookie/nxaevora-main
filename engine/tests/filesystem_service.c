@@ -1891,7 +1891,7 @@ int main(int argc, char** argv) {
         }
         test_fatal_jump = NULL;
         CHECK(strstr(test_fatal_text, "has no exefs/") != NULL && strstr(test_fatal_text, "-r") != NULL);
-        CHECK(test_game_files);
+        CHECK(test_game_files == 1);
         CHECK(strstr(test_log_text, "fs: source=noexefs-data/Game.nsp") != NULL);
         cleanup_service();
         free(g_mem);
@@ -1918,7 +1918,7 @@ int main(int argc, char** argv) {
         test_fatal_jump = NULL;
         CHECK(strstr(test_fatal_text, g_addondir) != NULL && strstr(test_fatal_text, "has no exefs/") != NULL &&
               strstr(test_fatal_text, "-r") != NULL);
-        CHECK(test_game_files);
+        CHECK(test_game_files == 1);
         cleanup_service();
         free(g_mem);
         printf("PASS %u checks: an update's data folder without exefs/ stops the game\n", test_checks);
@@ -1961,7 +1961,7 @@ int main(int argc, char** argv) {
             }
             free(said);
             CHECK(test_fatal_text[0] && !strstr(test_fatal_text, romfs));
-            CHECK(test_game_files);
+            CHECK(test_game_files == 1);
             cleanup_service();
             free(g_mem);
             free(romfs);
