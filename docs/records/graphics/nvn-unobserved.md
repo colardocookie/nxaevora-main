@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 # NVN unobserved functions: coverage and checks (phase 6, stage 4)
 
-Decided on 2026-11-02. This part was in `docs/graphics/nvn-design.md` until 2026-11-11. The design of the host layer
+Decided on 2026-11-02. This part was in `docs/records/graphics/nvn-design.md` until 2026-11-11. The design of the host layer
 and its decisions stay there.
 
 The run of 2026-11-02 called 242 of the 523 resolved functions, and the scenes were the ones that the user played. A function
@@ -22,7 +22,7 @@ functions did not get in the run.
 
 ### The coverage file
 
-`docs/graphics/nvn-coverage.md` (new, made by a script `tools/nvn_coverage.py` from the resolved names and the call counts of the trace)
+`docs/records/graphics/nvn-coverage.md` (new, made by a script `tools/nvn_coverage.py` from the resolved names and the call counts of the trace)
 has one row for each of the 523 functions: name, group (G1 to G10), calls in the last run, and the state of the handler. The
 states, in order: `none`, `stub-log` (the missing handler), `implemented` (read from the disassembly, written), `unit`
 (a host test passes), `selftest` (the comparison below passes), `exec` (the execution test below passes), `seen` (a game run
@@ -184,7 +184,7 @@ functions that no run reached stay `implemented` plus `unit`, `selftest` or `exe
 
 ### Steps in stage 4 for this part
 
-- 4-u1: the tool `tools/nvn_coverage.py` and the first `docs/graphics/nvn-coverage.md`, with the trace of the argument values and the
+- 4-u1: the tool `tools/nvn_coverage.py` and the first `docs/records/graphics/nvn-coverage.md`, with the trace of the argument values and the
   separate columns for `selftest`, `exec` and `seen`. Done 2026-11-06 except the trace of the argument values: the tool
   reads the 523 names and addresses from the sdk module (`--sdk`) or a trace log (`--log`). The first file has 274 host
   handlers and 249 missing-function handlers, and every one of the 242 functions of `nvn-calls.md` has a host handler.

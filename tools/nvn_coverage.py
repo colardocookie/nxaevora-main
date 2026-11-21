@@ -19,8 +19,8 @@ import struct
 import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
-COVERAGE = os.path.join(ROOT, 'docs', 'graphics', 'nvn-coverage.md')
-CALLS = os.path.join(ROOT, 'docs', 'graphics', 'nvn-calls.md')
+COVERAGE = os.path.join(ROOT, 'docs', 'records', 'graphics', 'nvn-coverage.md')
+CALLS = os.path.join(ROOT, 'docs', 'records', 'graphics', 'nvn-calls.md')
 NATIVE = os.path.join(ROOT, 'engine', 'src', 'nx', 'gpu', 'nvn', 'nvn_native.c')
 SDK_BASE = 0xd3c7000  # the address of the sdk module in the update program (the addresses that docs/ quote)
 # The lookup is not in native_procs: the bootstrap hook puts its own hook in the resolver's slot (task 4-u4)
@@ -176,7 +176,7 @@ def from_log(path):
 
 
 def calls_doc(path):
-    """{name: calls} from the list in docs/graphics/nvn-calls.md"""
+    """{name: calls} from the list in docs/records/graphics/nvn-calls.md"""
     calls = {}
     with open(path, encoding='utf-8') as f:
         for line in f:
@@ -213,7 +213,7 @@ def existing_rows(path):
     return rows
 
 
-# --- the groups of docs/graphics/nvn-design.md (2-6). A function that no run called is G10. ---
+# --- the groups of docs/records/graphics/nvn-design.md (2-6). A function that no run called is G10. ---
 
 G6 = {'Initialize', 'Finalize', 'AddCommandMemory', 'AddControlMemory', 'SetMemoryCallback', 'SetMemoryCallbackData',
       'BeginRecording', 'EndRecording', 'CallCommands', 'SetTexturePool', 'SetSamplerPool', 'SetRenderTargets',
@@ -270,14 +270,14 @@ HEADER = """<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
 # NVN coverage of the host layer
 
-Made by `tools/nvn_coverage.py` (step 4-u1 of `docs/graphics/nvn-unobserved.md`). Do not edit the
+Made by `tools/nvn_coverage.py` (step 4-u1 of `docs/records/graphics/nvn-unobserved.md`). Do not edit the
 columns function to handler by hand: run the tool again. The columns checks, seen and notes are written by hand and the
 tool keeps them.
 
 - function, address: the {count} functions that the game resolves, from the `nvn:` lines of a log with `nvn_trace=1` or
   from the name table of the NVN library in the sdk module. The address is the guest address in the update program of
   update 1.1.1.
-- group: G1 to G9 as in `docs/graphics/nvn-design.md`, section 2-6. G10 is a function that no run called.
+- group: G1 to G9 as in `docs/records/graphics/nvn-design.md`, section 2-6. G10 is a function that no run called.
 - calls: the calls of {calls_source}, through the dispatch table and with the library (`nvn_legacy=1`).
 - handler: `implemented` when `native_procs` of `nvn_native.c` has a host handler (or, for `nvnDeviceGetProcAddress`, the
   host lookup hook), `stub-log` when the missing-function handler answers (it stops the game unless
@@ -344,7 +344,7 @@ def main():
     if used is not None:
         calls, calls_source = used, 'the `nvn-used:` lines of the log'
     else:
-        calls, calls_source = calls_doc(CALLS), 'the run in `docs/graphics/nvn-calls.md`'
+        calls, calls_source = calls_doc(CALLS), 'the run in `docs/records/graphics/nvn-calls.md`'
     unknown = sorted(set(calls) - set(resolved))
     if unknown:
         raise SystemExit('called but not resolved: %s' % ', '.join(unknown))

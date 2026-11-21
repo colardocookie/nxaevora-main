@@ -3,15 +3,15 @@
 
 # NVN coverage of the host layer
 
-Made by `tools/nvn_coverage.py` (step 4-u1 of `docs/graphics/nvn-unobserved.md`). Do not edit the
+Made by `tools/nvn_coverage.py` (step 4-u1 of `docs/records/graphics/nvn-unobserved.md`). Do not edit the
 columns function to handler by hand: run the tool again. The columns checks, seen and notes are written by hand and the
 tool keeps them.
 
 - function, address: the 523 functions that the game resolves, from the `nvn:` lines of a log with `nvn_trace=1` or
   from the name table of the NVN library in the sdk module. The address is the guest address in the update program of
   update 1.1.1.
-- group: G1 to G9 as in `docs/graphics/nvn-design.md`, section 2-6. G10 is a function that no run called.
-- calls: the calls of the run in `docs/graphics/nvn-calls.md`, through the dispatch table and with the library (`nvn_legacy=1`).
+- group: G1 to G9 as in `docs/records/graphics/nvn-design.md`, section 2-6. G10 is a function that no run called.
+- calls: the calls of the run in `docs/records/graphics/nvn-calls.md`, through the dispatch table and with the library (`nvn_legacy=1`).
 - handler: `implemented` when `native_procs` of `nvn_native.c` has a host handler (or, for `nvnDeviceGetProcAddress`, the
   host lookup hook), `stub-log` when the missing-function handler answers (it stops the game unless
   `nvn_native_missing=0`, which logs the first call and returns 0).
