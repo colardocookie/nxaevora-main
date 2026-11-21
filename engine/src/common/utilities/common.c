@@ -11,6 +11,7 @@
 #include "common/utilities/ascii.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/exit_codes.h"
 #include "common/utilities/ini_lines.h"
 #include <errno.h>
 #include <limits.h>
@@ -50,7 +51,7 @@ void* snx_alloc(size_t size) {
     void* p = malloc(size ? size : 1);
     if (!p) {
         fputs("scarletnx: out of memory\n", stderr);
-        exit(1);
+        exit(SNX_EXIT_INTERNAL);
     }
     return p;
 }
@@ -58,7 +59,7 @@ void* snx_realloc(void* ptr, size_t size) {
     void* p = realloc(ptr, size ? size : 1);
     if (!p) {
         fputs("scarletnx: out of memory\n", stderr);
-        exit(1);
+        exit(SNX_EXIT_INTERNAL);
     }
     return p;
 }

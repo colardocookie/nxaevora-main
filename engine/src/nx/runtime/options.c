@@ -488,14 +488,8 @@ void ini_open(const char* path) {
         if (!snx_setting_known(g_over[i].key)) WARN("--%s is not a setting, so it does nothing\n", g_over[i].key);
     text = snx_read_file(g_path, &size);
     if (!text) snx_os_error(why, sizeof why);
-    if (!text && snx_path_exists(g_path)) {
-        WARN("settings: cannot read %s (%s): every setting takes its default, and the file is not written over\n",
-             g_path, why);
-        apply_all();
-        debug_shown(0);
-        g_started = 1;
-        return;
-    }
+    if (!text && snx_path_exists(g_path))
+        fatal("The settings file %s exists but cannot be read (%s)", g_path, why);
     if (text) {
         store_parse((char*)text);
         g_hash = g_seen = fnv1a(text, size);

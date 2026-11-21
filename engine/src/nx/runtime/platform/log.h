@@ -33,6 +33,14 @@ void log_error_line(const char* line);
 
 /* Logs "FATAL: ..." and ends the process, after the error box where there is one */
 void fatal(const char* fmt, ...) __attribute__((format(printf, 1, 2), noreturn));
+/* the same, for a missing or unreadable game program: SNX_EXIT_GAME_FILES before the renderer runs, where fatal's own
+   code would be SNX_EXIT_START */
+void fatal_game_files(const char* fmt, ...) __attribute__((format(printf, 1, 2), noreturn));
+
+/* set once the renderer runs, in a window or headless, by the window backend (backend/sdl3.c): fatal shows its box
+   only after it, and exits SNX_EXIT_START before it. Atomic, set before any other thread reads it */
+void plat_window_ready(void);
+int plat_window_is_ready(void);
 
 /* While set, the calling thread's lines go to this file and nowhere else (the main loop's threads.txt dump). It is
    per thread so the others keep writing the log during the dump */

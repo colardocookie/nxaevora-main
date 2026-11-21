@@ -79,6 +79,8 @@ u32 backend_window_generation(void);
 int backend_keyboard_show(const OverlayKeyboard* k);
 void backend_keyboard_hide(u32 ticket);
 
+/* fatal's line in the early error file (SNX_ERROR_LOG, common.h). Called on every platform and from any thread */
+void win_fatal_log(const char* msg);
 /* fatal's message box. Called on every platform and from any thread; does nothing where there is no box */
 void win_fatal_box(const char* msg);
 

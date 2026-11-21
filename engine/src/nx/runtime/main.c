@@ -9,6 +9,7 @@
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
+#include "common/utilities/exit_codes.h"
 #include "common/utilities/ini_lines.h"
 #include "nx/gpu/nvn/diag/draw_record.h"
 #include "nx/gpu/gpu.h"
@@ -169,11 +170,11 @@ static const SnxModule* load_module(const char* path) {
     const SnxModule* m;
     if (snx_module_static) return snx_module_static();
     if (!snx_is_file(path))
-        fatal("Cannot find the recompiled code: %s. A copy of the runtime runs the game it is named after, with "
-              "that code beside it, or --game=PATH names the game (--game=recompiled/Game)",
-              path);
+        fatal_game_files("Cannot find the recompiled code: %s. A copy of the runtime runs the game it is named after, "
+                         "with that code beside it, or --game=PATH names the game (--game=recompiled/Game)",
+                         path);
     lib = plat_dl_open(path);
-    if (!lib) fatal("%s could not be loaded: %s", path, plat_dl_error());
+    if (!lib) fatal_game_files("%s could not be loaded: %s", path, plat_dl_error());
     if ((sym = plat_dl_sym(lib, "snx_module")) != NULL) {
         memcpy(&get, &sym, sizeof get); /* ISO C has no conversion from an object pointer to a function's */
         m = get();
@@ -184,19 +185,19 @@ static const SnxModule* load_module(const char* path) {
            reports are grouped by */
         if (arm && arm->abi != SNX_ARM_MODULE_ABI) {
             WARN("game: its code is %s\n", path);
-            fatal("The recompiled code is from another ScarletNX version (32-bit ABI %08x, where this one runs %08x): "
-                  "recompile the game with this one",
-                  (unsigned)arm->abi, (unsigned)SNX_ARM_MODULE_ABI);
+            fatal_game_files("The recompiled code is from another ScarletNX version (32-bit ABI %08x, where this one "
+                             "runs %08x): recompile the game with this one",
+                             (unsigned)arm->abi, (unsigned)SNX_ARM_MODULE_ABI);
         }
         m = arm_module(arm);
     } else
-        fatal("%s is not a ScarletNX game module", path);
-    if (!m) fatal("%s could not be loaded: it describes no game", path);
+        fatal_game_files("%s is not a ScarletNX game module", path);
+    if (!m) fatal_game_files("%s could not be loaded: it describes no game", path);
     if ((sym = plat_dl_sym(lib, "snx_variants")) != NULL) {
         memcpy(&get_variants, &sym, sizeof get_variants);
         g_variants = get_variants();
         if (!g_variants || g_variants->version != SNX_VARIANTS_VERSION)
-            fatal("%s has a runtime variant table of another version", path);
+            fatal_game_files("%s has a runtime variant table of another version", path);
     }
     return m;
 }
@@ -209,10 +210,8 @@ static void dispatch_init(void) {
     if (g_code_hi <= g_code_lo) return;
     words = (g_code_hi - g_code_lo) / 4;
     if (words > SIZE_MAX / sizeof *g_disp) fatal("The game's code range is too large");
-    g_disp = (GuestFn*)calloc((size_t)words, sizeof *g_disp);
-    if (!g_disp)
-        fatal("Out of memory for the game's dispatch table (%llu MiB)",
-              (unsigned long long)(words * sizeof *g_disp >> 20));
+    g_disp = (GuestFn*)snx_alloc((size_t)words * sizeof *g_disp);
+    memset(g_disp, 0, (size_t)words * sizeof *g_disp);
     for (i = 0; i < g_mod->nentries; i++) {
         u64 a = g_mod->entry_addr[i];
         if (a >= g_code_lo && a < g_code_hi && !(a & 3)) g_disp[(a - g_code_lo) / 4] = g_mod->entry_fn[i];
@@ -548,7 +547,7 @@ static void frontend_loop(void) {
     snx_save_before_exit();
     LOG("Exit.\n");
     snx_tracy_shutdown();
-    plat_exit_now(0);
+    plat_exit_now(SNX_EXIT_OK);
 }
 
 /* The shaders and pipelines the renderer makes before the game's first thread runs (prepare_shaders 2, the
@@ -713,21 +712,21 @@ int snx_main(int argc, char** argv) {
     if (status) goto done;
     if (argc == 2 && !strcmp(argv[1], "--settings")) {
         ini_list(g_ini_sections, g_ini_sections_count);
-        status = 0;
+        status = SNX_EXIT_OK;
         goto done;
     }
     if (argc == 2 && !strcmp(argv[1], "--settings=recompile")) {
         ini_list(g_launch_sections, g_launch_sections_count);
-        status = 0;
+        status = SNX_EXIT_OK;
         goto done;
     }
     if (g_opt_gdb && snx_gdb_start(g_opt_gdb_stop, SNX_GDB_PORT)) {
-        status = 2;
+        status = SNX_EXIT_START;
         goto done; /* before any other thread */
     }
     if (argc == 2 && !strncmp(argv[1], "--settings=", 11)) {
         fprintf(stderr, "scarletnx: %s: not --settings (the game's) or --settings=recompile\n", argv[1]);
-        status = 2;
+        status = SNX_EXIT_USAGE;
         goto done;
     }
     game = game_option(argc, argv);
@@ -746,9 +745,9 @@ int snx_main(int argc, char** argv) {
     mod = load_module(module);
     if (mod->abi != SNX_ABI) {
         WARN("game: its code is %s\n", module);
-        fatal("The recompiled code is from another ScarletNX version (ABI %u, where this one runs %u): recompile the "
-              "game with this one",
-              (unsigned)mod->abi, (unsigned)SNX_ABI);
+        fatal_game_files("The recompiled code is from another ScarletNX version (ABI %u, where this one runs %u): "
+                         "recompile the game with this one",
+                         (unsigned)mod->abi, (unsigned)SNX_ABI);
     }
     game_dirs();
     if (g_arm_mod) mem_layout32(g_arm_mod->aspace); /* before anything sizes or reads guest memory */
@@ -831,7 +830,7 @@ int snx_main(int argc, char** argv) {
     dispatch_init();
     if (g_arm_mod) arm_dispatch_init();
     load_hints();
-    if (loader_load()) fatal("Could not load the game executables. See the .log for details.");
+    if (loader_load()) fatal_game_files("Could not load the game executables. See the .log for details.");
     kernel_load_symbols();
     nvn_native_init(); /* before the trace, which wraps the slots that the native layer fills */
     nvn_trace_init();
@@ -874,7 +873,7 @@ int snx_main(int argc, char** argv) {
         kernel_run_main(mod->mods[0].base + mod->mods[0].text_off, mod->main_stack, (int)mod->main_prio,
                         (int)mod->main_core);
     frontend_loop();
-    status = 0;
+    status = SNX_EXIT_OK;
 done:
     return status;
 }

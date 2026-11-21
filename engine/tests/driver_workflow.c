@@ -539,7 +539,7 @@ int main(int argc, char** argv) {
         run(exe, repo, game, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_HEADLESS", "");
         set_env("SNX_WORKFLOW_FLAGS", "--resoltion=2");
-        run(exe, repo, game, log, 1, "", "unknown option: --resoltion=2");
+        run(exe, repo, game, log, 2, "", "unknown option: --resoltion=2");
         set_env("SNX_WORKFLOW_FLAGS", "--touch=2");
         run(exe, repo, game, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_FLAGS", "");
@@ -556,7 +556,7 @@ int main(int argc, char** argv) {
         set_env("SNX_WORKFLOW_OUTDIR", "");
         run(exe, repo, moved, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_OUTDIR", "none");
-        run(exe, repo, nro, log, 1, "", "--outdir requires a directory");
+        run(exe, repo, nro, log, 2, "", "--outdir requires a directory");
         set_env("SNX_WORKFLOW_OUTDIR", "");
         set_env("SNX_WORKFLOW_GAMES", folder);
         free(moved);
@@ -569,16 +569,16 @@ int main(int argc, char** argv) {
         char* addon = snx_path_join(addon_folder, "0100000000AB0000_0100000000AB0800" TEST_PROGRAM_SUFFIX);
         reset(repo, nro);
         CHECK(!snx_mkdirs(addon_folder) && !snx_write_file(addon, "synthetic", 9));
-        run(exe, repo, addon, log, 1, "", "made from a dump");
+        run(exe, repo, addon, log, 3, "", "made from a dump");
         set_env("SNX_WORKFLOW_FLAGS", "-r");
-        run(exe, repo, addon, log, 1, "", "made from a dump");
+        run(exe, repo, addon, log, 3, "", "made from a dump");
         set_env("SNX_WORKFLOW_FLAGS", "");
         free(addon);
         free(addon_folder);
     }
     /* an encrypted dump is refused, with the line that says what to give instead */
     reset(repo, xci);
-    run(exe, repo, xci, log, 1, "", "is an encrypted dump");
+    run(exe, repo, xci, log, 3, "", "is an encrypted dump");
 #ifndef _WIN32
     for (i = 0; i < sizeof(modes) / sizeof(modes[0]); ++i) {
         reset(repo, nro);
@@ -596,7 +596,7 @@ int main(int argc, char** argv) {
     reset(repo, nro);
     set_env("SNX_WORKFLOW_MODE", "missing");
     set_env("SNX_WORKFLOW_FAIL", "R");
-    run(exe, repo, nro, log, 1, "R", "recompilation finished without creating");
+    run(exe, repo, nro, log, 4, "R", "recompilation finished without creating");
     set_env("SNX_WORKFLOW_FAIL", "");
     set_env("SNX_WORKFLOW_MODE", "exit");
     run(exe, repo, nro, log, 0, "RG", NULL);
@@ -649,7 +649,7 @@ int main(int argc, char** argv) {
         setup[1] = "--debug";
         setup[2] = "/nonexistent/game";
         output = NULL;
-        CHECK(snx_run(setup, NULL, home, &output) == 1 && strstr(output, "/nonexistent/game is not a file") &&
+        CHECK(snx_run(setup, NULL, home, &output) == 3 && strstr(output, "/nonexistent/game is not a file") &&
               !strstr(output, "Changed"));
         free(output);
         free(home);

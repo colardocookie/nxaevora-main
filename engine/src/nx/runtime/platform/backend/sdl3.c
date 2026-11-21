@@ -29,6 +29,7 @@
 #include "nx/runtime/platform/gamepad.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/pad_screen.h"
+#include "common/utilities/exit_codes.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -332,6 +333,8 @@ void video_init(const char* title, const char* addons) {
         unattended_start();
         if (!g_renderer->start()) fatal("Headless Vulkan could not start (see the log). Vulkan 1.3 is required.");
         LOG("renderer: Vulkan headless (no window, surface or swapchain)\n");
+        /* the renderer runs: a fatal from here exits SNX_EXIT_CRASH, and the box keeps its headless guard */
+        plat_window_ready();
         return;
     }
     /* a finger and the mouse each reach the touch screen once: SDL would also send each as the other, and a pen as both
@@ -372,6 +375,8 @@ void video_init(const char* title, const char* addons) {
         fatal("Vulkan could not start (see the log). " SNX_PROGRAM_NAME
               " needs a GPU and driver with Vulkan 1.3.");
     LOG("renderer: Vulkan\n");
+    /* the window and the renderer both run: from here fatal shows its box and a crash exits SNX_EXIT_CRASH */
+    plat_window_ready();
     /* not for an unattended run: nobody is at the screen, and it would cover the desktop of whoever is */
     if (g_settings.fullscreen && !unattended_active()) set_fullscreen(1);
 #ifdef _WIN32
@@ -895,33 +900,46 @@ static int fatal_screen(const char* msg) {
     SDL_DestroyRenderer(r);
     return 1;
 }
+/* The early error file's path: beside the launcher's log (docs/USAGE.md#folders), whose Share Log sends it, for a game
+   of a data folder in that folder's state folder; another folder's game beside its own log, or before it has one in its
+   folder. NULL when no folder is known yet */
+static char* early_error_path(void) {
+    char here[sizeof g_exedir], *moved, *folder, *path;
+    size_t n = strlen(g_exedir);
+    snprintf(here, sizeof here, "%.*s", (int)(n ? n - 1 : 0), g_exedir); /* without its separator */
+    moved = snx_user_path(here[0] ? here : ".", SNX_USER_STATE);
+    folder = moved && strcmp(moved, here[0] ? here : ".") ? snx_menu_dir(here[0] ? here : ".", SNX_USER_STATE)
+             : g_statedir[0]                              ? snx_strdup(g_statedir)
+             : here[0]                                    ? snx_strdup(here)
+                                                          : NULL; /* nothing known yet: stderr has it */
+    free(moved);
+    if (!folder) folder = snx_user_dir(SNX_USER_STATE); /* no game folder: the user's state folder */
+    path = folder && !snx_mkdirs(folder) ? snx_path_join(folder, SNX_ERROR_LOG) : NULL;
+    free(folder);
+    return path;
+}
+/* appends text to the early error file. 1 when the state folder is known (the write was tried), 0 when it is not */
+static int win_early_error_line(const char* text) {
+    char* path = early_error_path();
+    if (!path) return 0;
+    if (snx_log_lines(path, text)) {
+        char why[256];
+        fprintf(stderr, "%s could not be written (%s)\n", path, snx_os_error(why, sizeof why));
+    }
+    free(path);
+    return 1;
+}
+/* plat.c's fatal error, its line in the early error file */
+void win_fatal_log(const char* msg) {
+    char* line = snx_format("%s: %s", g_exename[0] ? g_exename : "scarletnx", msg);
+    win_early_error_line(line);
+    free(line);
+}
 /* plat.c's fatal error: the screen above on the main thread, which owns the window; SDL's box when it can't be drawn.
    From another thread, the main thread's loop (video_poll) shows it, and this thread waits for the exit; when the main
    thread doesn't come (held up elsewhere), Windows' own box (it takes any thread) and none on Linux: the error is in
    the log and on stderr. Nothing for an unattended run, where nobody would close it */
 void win_fatal_box(const char* msg) {
-    /* beside the launcher's log (docs/USAGE.md#folders), whose Share Log sends it, for a game of a data folder: in that
-       folder's state folder; another folder's game beside its own log, or before it has one in its folder */
-    {
-        char here[sizeof g_exedir], *moved, *folder;
-        size_t n = strlen(g_exedir);
-        snprintf(here, sizeof here, "%.*s", (int)(n ? n - 1 : 0), g_exedir); /* without its separator */
-        moved = snx_user_path(here[0] ? here : ".", SNX_USER_STATE);
-        folder = moved && strcmp(moved, here[0] ? here : ".") ? snx_menu_dir(here[0] ? here : ".", SNX_USER_STATE)
-                 : g_statedir[0]                              ? snx_strdup(g_statedir)
-                 : here[0]                                    ? snx_strdup(here)
-                                                              : NULL; /* nothing known yet: stderr has it */
-        free(moved);
-        char* path = folder && !snx_mkdirs(folder) ? snx_path_join(folder, SNX_ERROR_LOG) : NULL;
-        char* line = snx_format("%s: %s", g_exename[0] ? g_exename : "scarletnx", msg);
-        if (path && snx_log_lines(path, line)) {
-            char why[256];
-            fprintf(stderr, "%s could not be written (%s)\n", path, snx_os_error(why, sizeof why));
-        }
-        free(line);
-        free(path);
-        free(folder);
-    }
     if (g_opt_headless || unattended_active()) return;
     if (SDL_IsMainThread()) {
         /* an error another thread left first: this one followed from it */
@@ -1525,7 +1543,7 @@ void video_poll(void) {
     if (left) { /* another thread's fatal error, left for this thread to show */
         __atomic_store_n(&g_fatal_taken, 1, __ATOMIC_RELEASE);
         if (!fatal_screen(left)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, SNX_PROGRAM_NAME, left, g_win);
-        plat_exit_now(1);
+        plat_exit_now(SNX_EXIT_CRASH);
     }
     /* the menu, or the keyboard's box, had the controls when this poll began: the press that closes it (B, or A that
        gives the box's line) is in this poll's state */
