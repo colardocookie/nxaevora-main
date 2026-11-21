@@ -73,14 +73,14 @@ The main switches:
 | `SNX_ARCEUS_TIMER_CARRY_FIX` | on | Integer timers catch up, with a backlog cap of 1 second. |
 | `SNX_ARCEUS_SCRIPT_TICK` | `0x4` | The hex mask of the script state classes that run on 30 Hz ticks. The default is Braviary. |
 | `SNX_ARCEUS_SCRIPT_WINDOWS` | `0x1` | The hex mask of the script windows. The default is the throw window. |
+| `SNX_ARCEUS_EVENT_TICK` | on | Runs the event job on a 30 Hz tick instead of every frame. `0` turns it off. |
+| `SNX_ARCEUS_DEMO_TICK` | on | Runs the demo clock on a 1/60 second unit. `0` turns it off. |
+| `SNX_ARCEUS_TEXT_TICK` | on | Runs the text reveal and the glyph step on the text's own tick. `0` turns it off. |
 
 #### Off by default, change the game when set to 1
 
 | Switch | Default | Effect |
 | --- | --- | --- |
-| `SNX_ARCEUS_EVENT_TICK` | off | Runs the event job on a 30 Hz tick instead of every frame. |
-| `SNX_ARCEUS_DEMO_TICK` | off | Runs the demo clock on a 1/60 second unit. |
-| `SNX_ARCEUS_TEXT_TICK` | off | Runs the text reveal and the glyph step on the text's own tick. |
 | `SNX_ARCEUS_FIXED_RESOLUTION` | off | Skips the automatic 3D resolution governor update. |
 
 #### Probes and traces, off by default, observe only
@@ -174,16 +174,17 @@ The gravity site `198DA8C` in `198D7E4` loads the negated step. The movement sit
 | Capped falls and air steering | The falls and the ride steering assume one frame. `capped_fall_init` follows elapsed time for five ride classes and the steering at `+6F0`. |
 | Script tick | The state scripts run a frame a call. `script_tick_init` runs the masked classes on the frame nearest each whole 1/30 second, keeps one-frame inputs, and holds the frame-step cell at 1/30 during a ticked run. |
 | Script windows | The throw window runs between its native calls. `script_tick_init` installs the window between `main+1A91624` and `main+1A8EBA4` or `main+1A91370`. |
-| Event tick | The event job runs a frame a call. `event_tick_init` has 8 job slots, runs at most one a frame, caps the carry at two runs and carries pad presses for `IsPadTrigger`, `IsPadRelease` and `IsPadRepeat`. Off by default. |
-| Demo tick | The demo clock runs a frame a call. `demo_tick_init` uses the clock at `C+7EC` with a 1/60 second unit, runs at most two a call, caps the carry at 4 and handles 8 controllers. Off by default. |
-| Text tick | The text reveal and the glyph step run a frame a call. `text_tick_init` runs the reveal every call and skips the glyph step on frames that are not the text's tick. It keeps 16 text records. Off by default. |
+| Event tick | The event job runs a frame a call. `event_tick_init` has 8 job slots, runs at most one a frame, caps the carry at two runs and carries pad presses for `IsPadTrigger`, `IsPadRelease` and `IsPadRepeat`. On by default. |
+| Demo tick | The demo clock runs a frame a call. `demo_tick_init` uses the clock at `C+7EC` with a 1/60 second unit, runs at most two a call, caps the carry at 4 and handles 8 controllers. On by default. |
+| Text tick | The text reveal and the glyph step run a frame a call. `text_tick_init` runs the reveal every call and skips the glyph step on frames that are not the text's tick. It keeps 16 text records. On by default. |
 
 ## Current state
 
 - On the supported build with a frame limit above 30 FPS or unlimited, the elapsed-time clocks install by default.
 - The default sub-fixes install when the clocks install: physics, navigation, world timers, gravity, movement, capture, battle sequence, map cursor, fade, AI tick, turn, list scroll, ride swap, ride ramp, capped falls, air steering, direct move, field attacks, attack object, shot, cloud, climb, wall jump, ledge, event camera, blink, menu repeat, camera input and camera rate.
 - Water and effects install in the same post-JIT pass, near its end.
-- Off by default: the probes and traces, the event, demo and text ticks, and the fixed resolution switch. The probes and traces only observe. The ticks and the fixed resolution switch need an explicit value of `1`.
+- Off by default: the probes and traces and the fixed resolution switch. The probes and traces only observe. The fixed resolution switch needs an explicit value of `1`.
+- Known issue, not fixed: with `SNX_ARCEUS_TEXT_TICK` on, the "next" prompt at the bottom right of the text box shows for a short time and then goes away.
 - At `fps_limit=game` or 1 to 30 FPS with no target, the whole layer installs nothing.
 - The layer supports only the `main` module of build 1.1.1. Another build logs one line and installs nothing.
 - Limits: a step above 100 ms is cut to 100 ms. The integer timer carry is capped at 1 second. The cave light ratio is at least 0.001. The thrown-object ratio is at least 0.0625 and at most 1. The capture and map-cursor carry is capped at 1 second. The frame-step cell reports at most 1/30 second.

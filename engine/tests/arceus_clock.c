@@ -343,6 +343,30 @@ static void test_probe_master_switch(void) {
     clocks_installed = saved_clocks;
     logged_count = log_calls = 0;
 }
+static void test_tick_switch_defaults(void) {
+    unset_flag("SNX_ARCEUS_EVENT_TICK");
+    assert(event_tick_enabled() == 1);
+    flag("SNX_ARCEUS_EVENT_TICK", "0");
+    assert(event_tick_enabled() == 0);
+    flag("SNX_ARCEUS_EVENT_TICK", "1");
+    assert(event_tick_enabled() == 1);
+    unset_flag("SNX_ARCEUS_DEMO_TICK");
+    assert(demo_tick_enabled() == 1);
+    flag("SNX_ARCEUS_DEMO_TICK", "0");
+    assert(demo_tick_enabled() == 0);
+    flag("SNX_ARCEUS_DEMO_TICK", "1");
+    assert(demo_tick_enabled() == 1);
+    unset_flag("SNX_ARCEUS_TEXT_TICK");
+    assert(text_tick_enabled() == 1);
+    flag("SNX_ARCEUS_TEXT_TICK", "0");
+    assert(text_tick_enabled() == 0);
+    flag("SNX_ARCEUS_TEXT_TICK", "1");
+    assert(text_tick_enabled() == 1);
+    unset_flag("SNX_ARCEUS_EVENT_TICK");
+    unset_flag("SNX_ARCEUS_DEMO_TICK");
+    unset_flag("SNX_ARCEUS_TEXT_TICK");
+}
+
 static void test_defaults_on(void) {
     static const char* const all[] = {
         "SNX_ARCEUS_TIMING_FIXES", "SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60",
@@ -3643,6 +3667,7 @@ int main(void) {
     test_text_tick();
     test_ride_swap();
     test_defaults_on();
+    test_tick_switch_defaults();
     test_capped_fall_body();
     test_fade_slots_free();
     test_list_scroll();
