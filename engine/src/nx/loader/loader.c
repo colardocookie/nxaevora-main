@@ -51,8 +51,8 @@ static const char* const module_names[] = {"rtld",    "main",    "subsdk0", "sub
 
 /* ------------------------------------------------------------------ small helpers */
 
-/* Copies message (allocated, consumed) into error, cut to fit and always terminated. Returns -1 */
-static int fail(char* error, size_t error_size, char* message) {
+/* Copies message (allocated, consumed) into error, cut to fit and always terminated. Returns rc */
+static int fail_as(int rc, char* error, size_t error_size, char* message) {
     size_t n = strlen(message);
     if (error_size) {
         if (n > error_size - 1) n = error_size - 1;
@@ -60,7 +60,11 @@ static int fail(char* error, size_t error_size, char* message) {
         error[n] = 0;
     }
     free(message);
-    return -1;
+    return rc;
+}
+/* the same, for the user's files: SNX_LOAD_INPUT */
+static int fail(char* error, size_t error_size, char* message) {
+    return fail_as(SNX_LOAD_INPUT, error, error_size, message);
 }
 
 static SnxU32 rd16(const unsigned char* p) { return (SnxU32)p[0] | (SnxU32)p[1] << 8; }
@@ -734,7 +738,8 @@ static int decode_nso(SnxModuleImage* m, const unsigned char* file, size_t file_
             unsigned char digest[EVP_MAX_MD_SIZE];
             unsigned length = 0;
             if (!EVP_Digest(out, size[i], digest, &length, EVP_sha256(), NULL) || length != 32)
-                return fail(error, error_size, snx_format("%s: out of memory hashing a segment", m->path));
+                return fail_as(SNX_LOAD_INTERNAL, error, error_size,
+                               snx_format("%s: out of memory hashing a segment", m->path));
             if (memcmp(digest, file + 0xa0 + i * 0x20, 32))
                 return fail(error, error_size,
                             snx_format("%s: the %s segment's SHA-256 doesn't match", m->path, segment_names[i]));
@@ -769,9 +774,10 @@ static int decode_nso_file(unsigned char* file, size_t file_size, const char* pa
         free(own);
     } else
         set_names(module, name, path);
-    rc = decode_nso(module, file, file_size, error, error_size) || read_metadata(module, is64, error, error_size);
+    rc = decode_nso(module, file, file_size, error, error_size);
+    if (!rc) rc = read_metadata(module, is64, error, error_size);
     if (rc) snx_free_module(module);
-    return rc ? -1 : 0;
+    return rc;
 }
 
 static int load_nso(const char* path, const char* name, int is64, SnxModuleImage* module, char* error,
@@ -884,13 +890,14 @@ int snx_load_nro(const char* path, SnxModuleImage* module, char* error, size_t e
             module->image_size - sizeof header)
             rc = fail(error, error_size, snx_format("cannot read %s", path));
     }
-    if (!rc)
-        rc = read_nro_assets(module, file, file_size, error, error_size) ||
-             read_metadata(module, 1, error, error_size);
+    if (!rc) {
+        rc = read_nro_assets(module, file, file_size, error, error_size);
+        if (!rc) rc = read_metadata(module, 1, error, error_size);
+    }
     fclose(file);
     if (rc) {
         snx_free_module(module);
-        return -1;
+        return rc;
     }
     return 0;
 }
@@ -1066,9 +1073,11 @@ static void set_paths(SnxProgram* program, const char* entry, const char* exefs,
 
 static int load_nro_program(const char* entry, SnxProgram* program, char* error, size_t error_size) {
     SnxModuleImage* m;
+    int rc;
     program->modules = (SnxModuleImage*)snx_alloc(sizeof(*program->modules));
     m = program->modules;
-    if (snx_load_nro(entry, m, error, error_size)) return -1;
+    rc = snx_load_nro(entry, m, error, error_size);
+    if (rc) return rc;
     program->module_count = 1;
     m->base = SNX_CODE_BASE;
     if (m->size > CODE_END64 - SNX_CODE_BASE)
@@ -1112,7 +1121,7 @@ static int load_modules(const SnxExefsReader* exefs, const char* where, SnxProgr
         failed = decode_nso_file(file, size, path, module_names[i], program->npdm.is64, m, error, error_size);
         free(file);
         free(path);
-        if (failed) return -1;
+        if (failed) return failed;
         ++program->module_count;
         if (m->size > end - cursor) return fail(error, error_size, snx_strdup("modules exceed guest address space"));
         m->base = cursor;
@@ -1129,7 +1138,7 @@ static int load_exefs_program(const char* entry, char* const* names, char* const
     char *exefs, *root, *romfs = NULL, *path, *nacp_path;
     const char* name;
     size_t length;
-    int rc = -1;
+    int rc = SNX_LOAD_INPUT;
     exefs = find_exefs(entry);
     if (!exefs) return fail(error, error_size, snx_format("%s holds no exefs/main", entry));
     name = leaf(exefs, &length);
@@ -1149,7 +1158,8 @@ static int load_exefs_program(const char* entry, char* const* names, char* const
     folder.read = folder_read;
     folder.source = exefs;
     snx_exefs_mods(&mods, &folder, names, paths, count);
-    if (load_modules(&mods.reader, exefs, program, error, error_size)) goto done;
+    rc = load_modules(&mods.reader, exefs, program, error, error_size);
+    if (rc) goto done;
     nacp_path = snx_path_join(root, "control.nacp");
     if (snx_is_file(nacp_path)) {
         program->nacp = snx_read_file(nacp_path, &program->nacp_size);
@@ -1212,13 +1222,16 @@ void snx_free_program(SnxProgram* program) {
 /* ------------------------------------------------------------------ dump for tools */
 
 
-int snx_dump_program(const char* entry, const char* outdir, char* error, size_t error_size) {
+SnxDumpResult snx_dump_program(const char* entry, const char* outdir, char* error, size_t error_size) {
     SnxProgram program;
     char *path = NULL, *index = NULL, *partial = NULL, *file_name;
     FILE* f = NULL;
     size_t i, j;
-    int rc = -1;
-    if (snx_load_program(entry, &program, error, error_size)) return -1;
+    int loaded;
+    SnxDumpResult rc = SNX_DUMP_OUTPUT;
+    loaded = snx_load_program(entry, &program, error, error_size);
+    if (loaded == SNX_LOAD_INTERNAL) return SNX_DUMP_INTERNAL;
+    if (loaded) return SNX_DUMP_INPUT;
     if (snx_mkdirs(outdir)) {
         fail(error, error_size, snx_format("cannot create %s", outdir));
         goto done;
@@ -1259,7 +1272,7 @@ int snx_dump_program(const char* entry, const char* outdir, char* error, size_t 
         goto done;
     }
     f = NULL;
-    rc = 0;
+    rc = SNX_DUMP_OK;
 done:
     if (f) fclose(f);
     free(path);

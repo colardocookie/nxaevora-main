@@ -74,6 +74,9 @@ int snx_is_dir(const char* path);
 int snx_is_link(const char* path);
 /* Any existing directory entry, including dangling symlinks and special files. */
 int snx_path_exists(const char* path);
+/* 1 when path does not exist: lstat fails with ENOENT or ENOTDIR, or on Windows the attribute call fails with
+   ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND. Every other failure is not missing */
+int snx_path_missing(const char* path);
 int snx_mkdirs(const char* path);
 int snx_remove_tree(const char* path);
 /* the folder at path taken away when it is empty, and only then (0); nonzero, and nothing touched, when it is not */
