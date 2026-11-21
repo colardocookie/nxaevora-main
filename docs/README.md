@@ -11,7 +11,18 @@ The notes of NXAevora, by subject.
 - [runtime-changes.md](build/runtime-changes.md): the list of the changes in the vendored ScarletNX. Kept up to date.
 - [CREDITS.md](CREDITS.md): the projects and works that NXAevora uses, and their licenses.
 
-The project has no specification documents yet.
+## Specifications
+
+These documents tell how the engine works now. They come from the code. The state of a part changes over time, so each document keeps it in a "Current state" section.
+
+### engine
+
+- [overview.md](dev/engine/overview.md): what NXAevora Engine is, the program flow, the commands, the settings, the folder map and the build.
+- [aot-recompiler.md](dev/engine/aot-recompiler.md): the input, the stages, the output, the dispatch table, the JIT fallback and the hints.
+- [nvn-vulkan.md](dev/engine/nvn-vulkan.md): the two NVN paths, the host objects, the command lists, the frame job, the replay and the shaders.
+- [arceus-timing.md](dev/engine/arceus-timing.md): the elapsed-time clocks of the game and the hook groups that follow the frame step.
+
+The launcher specification comes later.
 
 ## Records
 
