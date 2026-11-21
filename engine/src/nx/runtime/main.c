@@ -122,8 +122,9 @@ static void drop_suffix(char* name, const char* suffix) {
 
 /* g_exedir and g_exename from the path of the game or of the runtime's copy named after it: a folder is the game of
    its own name in it (games/<id>/ is games/<id>/<id>), and the program's suffixes and the code module's are dropped,
-   so any of them names the same game */
-static void name_game(const char* from) {
+   so any of them names the same game. The CLI's settings commands call it for their --game, with no game started
+   (settings_cli.c) */
+void snx_game_locate(const char* from) {
     char path[1024], base[256];
     size_t n, cut;
     snprintf(path, sizeof path, "%s", from);
@@ -255,8 +256,8 @@ static void kind_dir(char* out, size_t cap, int kind, const char* what, const ch
 
 /* the game's folders of each kind: those its driver recorded in <name>.folders beside it (snx_record_folders), which
    the environment the game runs in may not name (an AppImage's copy, without its portable home or config), else its
-   environment's */
-static void game_dirs(void) {
+   environment's. The CLI's settings commands call it after snx_game_locate, before they open the game's .ini */
+void snx_game_folders(void) {
     static const char* const keys[] = {"config", "state", "cache"};
     char path[sizeof g_exedir + sizeof g_exename + 16], why[256], *text, *key, *value, *full;
     char* recorded[SNX_USER_CACHE + 1] = {NULL}; /* in text */
@@ -289,28 +290,39 @@ static void game_dirs(void) {
     free(full);
 }
 
-/* An update of the game whose folder it is in (snx_addon_name: <folder>/<folder>_<the update's title ID>) runs as
-   that game: with its settings, ini set to the game's .ini, and its data folder, its saves the
-   game's (g_datadir, set by the caller from base). Its own .ini names only the add-on's dump, source=, and its own data
-   folder lies over the game's, both read by fs.c. base: the game's name, "" for no add-on */
-static void addon_init(char* ini, size_t ini_size, char* base, size_t base_size) {
-    char* dir = snx_absolute(g_exedir[0] ? g_exedir : ".");
-    size_t n = dir ? strlen(dir) : 0, cut;
-    base[0] = 0;
-    while (n > 1 && is_separator(dir[n - 1])) dir[--n] = 0;
-    for (cut = n; cut && !is_separator(dir[cut - 1]); cut--) continue;
-    if (dir && snx_addon_name(dir + cut, g_exename, &g_addon)) {
-        SnxU64 game = 0;
-        snx_title_parse(dir + cut, &game);
-        if (snx_addon_kind(game, g_addon) != SNX_ADDON_UPDATE)
-            fatal("%s is a DLC's program, which an older version made: a DLC plays with its game, checked in the "
-                  "game's list of updates and DLCs (addons= in its .ini). Play the DLC's dump again",
-                  g_exename);
-        snprintf(base, base_size, "%s", dir + cut);
-        snprintf(g_addondir, sizeof g_addondir, "%s%s_data/", g_exedir, g_exename);
-        snprintf(ini, ini_size, "%s%s.ini", g_confdir, base);
+/* The add-on the program at exedir named exename is (snx_addon_name: <folder>/<folder>_<the add-on's entry>, the folder
+   the base game's name): SNX_ADDON_UPDATE or SNX_ADDON_DLC, its ID in *id, the base game's name in base; SNX_ADDON_NONE
+   for the game's own program, base "". addon_init and the CLI's settings get and set both read a program so */
+int snx_game_addon(const char* exedir, const char* exename, char* base, size_t base_size, u64* id) {
+    char* dir = snx_absolute(exedir[0] ? exedir : ".");
+    size_t len = dir ? strlen(dir) : 0, cut;
+    u64 addon = 0, game = 0;
+    int kind = SNX_ADDON_NONE;
+    if (base_size) base[0] = 0;
+    while (len > 1 && is_separator(dir[len - 1])) dir[--len] = 0;
+    for (cut = len; cut && !is_separator(dir[cut - 1]); cut--) continue;
+    if (dir && snx_addon_name(dir + cut, exename, &addon) && snx_title_parse(dir + cut, &game)) {
+        kind = snx_addon_kind(game, addon);
+        if (base_size) snprintf(base, base_size, "%s", dir + cut);
     }
+    if (id) *id = addon;
     free(dir);
+    return kind;
+}
+
+/* An update of the game whose folder it is in (snx_game_addon) runs as that game: with its settings, ini set to the
+   game's .ini, and its data folder, its saves the game's (g_datadir, set by the caller from base). Its own .ini names
+   only the add-on's dump, source=, and its own data folder lies over the game's, both read by fs.c. base: the game's
+   name, "" for no add-on */
+static void addon_init(char* ini, size_t ini_size, char* base, size_t base_size) {
+    int kind = snx_game_addon(g_exedir, g_exename, base, base_size, &g_addon);
+    if (kind == SNX_ADDON_NONE) return;
+    if (kind != SNX_ADDON_UPDATE)
+        fatal("%s is a DLC's program, which an older version made: a DLC plays with its game, checked in the "
+              "game's list of updates and DLCs (addons= in its .ini). Play the DLC's dump again",
+              g_exename);
+    snprintf(g_addondir, sizeof g_addondir, "%s%s_data/", g_exedir, g_exename);
+    snprintf(ini, ini_size, "%s%s.ini", g_confdir, base);
 }
 
 /* what the game plays with, for its window's title: its update by its version ("Update 1.2.0") and the DLCs found,
@@ -731,7 +743,7 @@ int snx_main(int argc, char** argv) {
     }
     game = game_option(argc, argv);
     refuse_dumps(argc, argv, game);
-    name_game(game ? game : program_path(argv[0]));
+    snx_game_locate(game ? game : program_path(argv[0]));
     snprintf(module, sizeof module, "%s%s%s", g_exedir, g_exename, MODULE_SUFFIX);
     if (argc == 1 && !snx_module_static && snx_menu && snx_launcher_name(g_exename) && !snx_is_file(module)) {
         status = open_menu(argv[0]);
@@ -749,7 +761,7 @@ int snx_main(int argc, char** argv) {
                          "recompile the game with this one",
                          (unsigned)mod->abi, (unsigned)SNX_ABI);
     }
-    game_dirs();
+    snx_game_folders();
     if (g_arm_mod) mem_layout32(g_arm_mod->aspace); /* before anything sizes or reads guest memory */
     if (mod->title_id) g_hle.kernel.title_id = mod->title_id;
     /* this run's settings: each --key=value before a "--" (-v is log=2); -f and --fullscreen=0|1 through startup.c's
